@@ -10,7 +10,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<th>Nom</th>
 			<th>Description</th>	
 		</tr>
-  	<tr>
+		<tr>
+			<td><b>ASC2C.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source C.</td>
+		</tr>
+  	        <tr>
 			<td><b>ASC2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source Pascal.</td>
 		</tr>
