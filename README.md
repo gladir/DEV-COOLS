@@ -60,7 +60,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>DIR.PAS</b></td>
-			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, PASCAL, SQL, XML,...</td>
+			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, HTML, PASCAL, SQL, XML,...</td>
 		</tr>
 		<tr>
 			<td><b>HTML2TXT.PAS</b></td>
