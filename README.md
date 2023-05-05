@@ -63,6 +63,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, HTML, PASCAL, SQL, XML,...</td>
 		</tr>
 		<tr>
+			<td>HEXDUMP.PAS</td>
+			<td>Cette commande permet d'afficher le contenu d'un fichier en format hexadecimal et d'avoir des formats de sortie comme C, CSV, JSON, HTML, PASCAL, SQL, XML,... Cette commande est inspiré de la commande de Linux.</td>
+		</tr>
+		<tr>
 			<td><b>HTML2TXT.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier en HTML en texte seulement (enlève le code HTML).</td>
 		</tr>
