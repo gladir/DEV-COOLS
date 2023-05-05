@@ -50,13 +50,17 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>BIN2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier binaire en tableau de code source Pascal.</td>
 		</tr>
-    <tr>
+    		<tr>
 			<td><b>CV.PAS</b></td>
 			<td>Cette commande permet de lancer un clone de CodeView. Cette utilitaire était fournit avec MASM, Microsoft C,...</td>
 		</tr>
-     <tr>
+     		<tr>
 			 <td><b>DEBUG.PAS</b></td>
 			 <td>Cette commande permet de deboguer un programme.</td>
+		</tr>
+		<tr>
+			<td><b>DIR.PAS</b></td>
+			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, PASCAL, SQL, XML,...</td>
 		</tr>
 		<tr>
 			<td><b>HTML2TXT.PAS</b></td>
@@ -66,11 +70,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>PMETER.PAS</b></td>
 			<td>Cette commande permet de faire des tests de charge.</td>
 		</tr>
-    <tr>
+    		<tr>
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
 		</tr>
-    <tr>
+    		<tr>
 			<td><b>TOKEN2BAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
 		</tr>	
