@@ -50,6 +50,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>BIN2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier binaire en tableau de code source Pascal.</td>
 		</tr>
+		<tr>
+			<td><b>CSV2SQL.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier .CSV en format SQL.</td>
+		</tr>	
     		<tr>
 			<td><b>CV.PAS</b></td>
 			<td>Cette commande permet de lancer un clone de CodeView. Cette utilitaire était fournit avec MASM, Microsoft C,...</td>
