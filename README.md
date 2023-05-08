@@ -59,12 +59,20 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer un clone de CodeView. Cette utilitaire était fournit avec MASM, Microsoft C,...</td>
 		</tr>
 		<tr>
+			<td><b>DBF2HTML.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier .DBF (DBase III) en format HTML.</td>
+		</tr>
+		<tr>
 			<td><b>DBF2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .DBF (DBase III) en format Pascal.</td>
 		</tr>	
 		<tr>
 			<td><b>DBF2SQL.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .DBF (DBase III) en format SQL.</td>
+		</tr>
+		<tr>
+			<td><b>DBF2XML.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier .DBF (DBase III) en format XML.</td>
 		</tr>
      		<tr>
 			 <td><b>DEBUG.PAS</b></td>
