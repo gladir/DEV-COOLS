@@ -94,6 +94,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>HTML2TXT.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier en HTML en texte seulement (enlève le code HTML).</td>
 		</tr>
+		<tr>
+			<td><b>LOGO.PAS</b></td>
+			<td>Cette commande permet de lancer l'interpréteur de commande du langage de programmation LOGO. Il supporte aussi la tortue.</td>
+		</tr>
 	        <tr>
 			<td><b>PMETER.PAS</b></td>
 			<td>Cette commande permet de faire des tests de charge.</td>
