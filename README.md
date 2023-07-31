@@ -110,6 +110,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>TOKEN2BAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier de TOKEN (GWBASIC, CoCo,...) de BASIC en BASIC ASCII.</td>
 		</tr>	
+		<tr>
+			<td><b>TPUINFO.PAS</b></td>
+			<td>Cette commande permet de retourner les informations de version d''une unité Turbo Pascal.</td>
+		</tr>
 	</table>
 
 <h2>Compilation</h2>
