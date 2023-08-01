@@ -112,7 +112,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>	
 		<tr>
 			<td><b>TPUINFO.PAS</b></td>
-			<td>Cette commande permet de retourner les informations de version d''une unité Turbo Pascal.</td>
+			<td>Cette commande permet de retourner les informations de version d'une unité Turbo Pascal.</td>
 		</tr>
 	</table>
 
