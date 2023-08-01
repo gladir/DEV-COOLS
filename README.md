@@ -51,6 +51,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier binaire en tableau de code source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>COM2EXE.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
+		</tr>
+		<tr>
 			<td><b>CSV2SQL.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .CSV en format SQL.</td>
 		</tr>	
