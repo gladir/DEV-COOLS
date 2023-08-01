@@ -91,7 +91,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir les chaines de caractères DRAW du langage de programmation BASIC en instruction du langage de programmation LOGO.</td>
 		</tr>
 	        <tr>
-			<td>HEXCOM.PAS</td></td>
+			<td><b>HEXCOM.PAS</b></td>
 	                <td>Cette commande permet de charger un HEX (fichier de vidage hexadécimal) et en fait un fichier de format  «.COM».</td>
                 </tr>
 		<tr>
