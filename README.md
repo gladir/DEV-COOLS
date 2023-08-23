@@ -52,8 +52,8 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>BUGFIND.PAS</b></td>
-			<td>Cette commande permet de rechercher des anomalies dans des fichiers.</tr>td>
-		</td>
+			<td>Cette commande permet de rechercher des anomalies dans des fichiers.</td>
+		</tr>
 		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
