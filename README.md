@@ -52,7 +52,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>BUGFIND.PAS</b></td>
-			<td>Cette commande permet de rechercher des anomalies dans des fichiers.<td>
+			<td>Cette commande permet de rechercher des anomalies dans des fichiers.</tr>td>
 		</td>
 		<tr>
 			<td><b>COM2EXE.PAS</b></td>
