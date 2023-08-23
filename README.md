@@ -71,6 +71,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier binaire en tableau de code source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>BINLINE.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier BIN en code source Pascal Inline.</td>
+		</tr>
+		<tr>
 			<td><b>BUGFIND.PAS</b></td>
 			<td>Cette commande permet de rechercher des anomalies dans des fichiers.</td>
 		</tr>
