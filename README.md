@@ -155,6 +155,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de retourner les informations de version d'une unité Free Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>QPUDEP.PAS</b></td>
+			<td>Cette commande permet d'afficher les dépendances d'un unité QPU de QuickPascal.</td>
+		</tr>
+		<tr>
 			<td><b>QPU2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .QPU de QuickPascal en code source Pascal.</td>
 		</tr>
