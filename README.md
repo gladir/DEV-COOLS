@@ -46,6 +46,42 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>ASC2C.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source C.</td>
 		</tr>
+		<tr>
+			<td><b>ASC2CFM.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source ColdFusion.</td>
+		</tr>
+		<tr>
+			<td><b>ASC2CPP.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source C++.</td>
+		</tr>	
+		<tr>
+			<td><b>ASC2CS.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source C# (C Sharp).</td>
+		</tr>
+		<tr>
+			<td><b>ASC2CSP.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source CSP (C Server Pages).</td>
+		</tr>
+		<tr>
+			<td><b>ASC2JAVA.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source Java.</td>
+		</tr>
+		<tr>
+			<td><b>ASC2JS.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source JavaScript.</td>
+		</tr>	
+		<tr>
+			<td><b>ASC2JSP.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source JSP (Java Server Pages).</td>
+		</tr>
+		<tr>
+			<td><b>ASC2LOGO.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source Logo.</td>
+		</tr>
+		<tr>
+			<td><b>ASC2LSS.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source LotusScript.</td>
+		</tr>
   	        <tr>
 			<td><b>ASC2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source Pascal.</td>
