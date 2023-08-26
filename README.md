@@ -160,7 +160,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>QPUINFO.PAS</b></td>
-			<td>Cette commande permet d''afficher les informations sommaires d'un unité QPU de Quick Pascal.</td>
+			<td>Cette commande permet d'afficher les informations sommaires d'un unité QPU de QuickPascal.</td>
 		</tr>
 		<tr>
 			<td><b>QPU2PAS.PAS</b></td>
