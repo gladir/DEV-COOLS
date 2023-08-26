@@ -130,6 +130,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>ASMZ80.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur Z80.</td>
 		</tr>
+		<tr>
+			<td><b>BASIC.PAS</b></td>
+			<td>Cette commande permet de lancer l'interpréteur de langage de programmation BASIC.</td>
+		</tr>
                 <tr>
 			<td><b>BIN2BGI.PAS</b></td>
 			<td>Cette programme permet l'écriture d'entête de la portion du pilote BGI.</td>
