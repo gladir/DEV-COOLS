@@ -86,6 +86,34 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>ASC2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source Pascal.</td>
 		</tr>
+		<tr>			
+			<td><b>ASC2PERL.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source Perl.</td>
+		</tr>	
+		<tr>			
+			<td><b>ASC2PHP.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source PHP.</td>
+		</tr>		
+		<tr>
+			<td><b>ASC2PSP.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source PSP (Pascal Server Pages).</td>
+		</tr>	
+		<tr>			
+			<td><b>ASC2PY.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source Python.</td>
+		</tr>
+		<tr>
+			<td><b>ASC2REXX.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source REXX.</td>
+		</tr>
+		<tr>
+			<td><b>ASC2RUBY.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source Ruby.</td>
+		</tr>
+		<tr>
+			<td><b>ASC2SAS.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier ASCII en code source SAS.</td>
+		</tr>
 		<tr>
 			<td><b>ASM6502.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur 6502.</td>
