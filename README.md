@@ -226,6 +226,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>LOGO.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de commande du langage de programmation LOGO. Il supporte aussi la tortue.</td>
 		</tr>
+		<tr>
+			<td><b>PAS2RSJ.PAS</b></td>
+			<td>Cette commande permet de convertir des constantes Pascal en fichier de ressource RSJ.</td>
+		</tr>
 	        <tr>
 			<td><b>PMETER.PAS</b></td>
 			<td>Cette commande permet de faire des tests de charge.</td>
