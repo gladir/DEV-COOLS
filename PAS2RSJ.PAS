@@ -12,6 +12,7 @@ Var
  SourcePAS,TargetRSJ:Text;
  CurrName,CurrLine,CurrWord,CurrValue:String;
  I:Integer;
+ RV:String;
  First:Boolean;
 
 Function TrimL(S:String):String;
@@ -39,21 +40,6 @@ End;
 
 Function Trim(s:String):String;Begin
  Trim:=TrimL(TrimR(s));
-End;
-
-Function StringToValue(S:String):String;
-Var
- I:Integer;
- R,RV:String;
-
-Begin
- R:='';
- For I:=1 to Length(S)do Begin
-  Str(Byte(S[I]),RV);
-  R:=R+RV;
-  If I<Length(S)Then R:=R+',';
- End;
- StringToValue:=R;
 End;
 
 Function Path2Name(S:String):String;
@@ -113,7 +99,8 @@ BEGIN
      If(CurrLine[I]='''')and(I<=Length(CurrLine))Then Begin
       Inc(I);
       While I<=Length(CurrLine)do Begin
-       If(CurrLine[I]='''')and(CurrLine[I+1]='''')Then Begin
+       If(CurrLine[I]='''')and(CurrLine[I+1]='''')and
+         (I+1<=Length(CurrLine))Then Begin
         CurrValue:=CurrValue+'''';
         Inc(I,2);
        End
@@ -132,7 +119,13 @@ BEGIN
               Else WriteLn(TargetRSJ,'   ,');
      WriteLn(TargetRSJ,'   {"hash":1234567,');
      WriteLn(TargetRSJ,'    "name":"',CurrName,'.',CurrWord,'",');
-     WriteLn(TargetRSJ,'    "sourcebytes":[',StringToValue(CurrValue),'],');
+     Write(TargetRSJ,'    "sourcebytes":[');
+     For I:=1 to Length(CurrValue)do Begin
+      Str(Byte(CurrValue[I]),RV);
+      Write(TargetRSJ,RV);
+      If I<Length(CurrValue)Then Write(TargetRSJ,',');
+     End;
+     WriteLn(TargetRSJ,'],');
      WriteLn(TargetRSJ,'    "value":"',CurrValue,'",');
      WriteLn(TargetRSJ,'   }');
     End;
