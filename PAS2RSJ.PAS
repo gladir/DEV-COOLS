@@ -52,6 +52,24 @@ Begin
  Path2Name:=N;
 End;
 
+Function Hash(S:String):LongInt;
+Var
+ TheHash,G,I:LongInt;
+Begin
+ thehash:=0;
+ For I:=1 to Length(S)do Begin
+  TheHash:=TheHash shl 4;
+  Inc(TheHash,Ord(S[i]));
+  G:=TheHash and LongInt($f shl 28);
+  If g<>0 Then Begin
+   TheHash:=TheHash xor (g shr 24);
+   TheHash:=TheHash xor g;
+  End;
+ End;
+ If TheHash=0 Then Hash:=LongInt($ffffffff)
+              Else Hash:=TheHash;
+End;
+
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')Then Begin
   WriteLn('PAS2RSJ : Cette commande permet de convertir des constantes ',
@@ -117,7 +135,7 @@ BEGIN
     If CurrWord<>''Then Begin
      If(First)Then First:=False
               Else WriteLn(TargetRSJ,'   ,');
-     WriteLn(TargetRSJ,'   {"hash":1234567,');
+     WriteLn(TargetRSJ,'   {"hash":',Hash(CurrWord),',');
      WriteLn(TargetRSJ,'    "name":"',CurrName,'.',CurrWord,'",');
      Write(TargetRSJ,'    "sourcebytes":[');
      For I:=1 to Length(CurrValue)do Begin
