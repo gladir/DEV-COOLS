@@ -167,6 +167,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer un interpréteur de langage de programmation C.</td>
 		</tr>
 		<tr>
+			<td><b>C2PAS.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier «.C» en «.PAS».</td>
+		</tr>	
+		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
