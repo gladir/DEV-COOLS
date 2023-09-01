@@ -207,7 +207,6 @@ Type
  End;
 
 Type
-
  PCharByteRec=Record
   PChr:PChar;
   Nm:Byte;
@@ -395,7 +394,6 @@ Begin
  DuplicateString:=S;
 End;
 
-
 Function PadRight(S:String;Space:Byte):String;
 Var
  I:Byte;
@@ -433,11 +431,11 @@ Begin
 End;
 
 Procedure ArrayListInit(Var Q:ArrayList);Begin
- Q.PCurrPtr := -1;
- Q.CurrPtr := NIL;
- Q.List := NIL;
- Q.EndListPtr := NIL;
- Q.Count := 0;
+ Q.PCurrPtr:=-1;
+ Q.CurrPtr:=NIL;
+ Q.List:=NIL;
+ Q.EndListPtr:=NIL;
+ Q.Count:=0;
 End;
 
 Function ArrayListIsEmpty(Var Q:ArrayList):Boolean;
@@ -1262,7 +1260,7 @@ Begin
    Inc(I);
   End;
  End;
- XtrkWord:=Copy(L,Start,I-Start+1);
+ XtrkWord:=Copy(L,Start,I-Start);
 End;
 
 Function FormuleC2Pascal(Var Info:SwitchC2Pascal;Put:Boolean):Integer;
@@ -2792,7 +2790,7 @@ Procedure StartUpC2Pas(Var Q:SwitchC2Pascal);Var I:Byte;Str:String;
   WriteLn('C2PAS - Cette commande permet de convertir un fichier .C en .PAS.');
   WriteLn;
   WriteLn('Syntaxe : C2PAS [fichier[.C]] [ option ]');
-  WriteLn(' * = par d,faut');
+  WriteLn(' * = par d‚faut');
   WriteLn;
   WriteLn(' /?     Retourne ces messages');
   WriteLn(' /NR    Pas de remarque');
@@ -2918,8 +2916,8 @@ Begin
  For I:=1to(Q.WarPos)do Begin
   Q.L:=Q.Warning[Q.WarPos-1].Line;
   Case Q.Warning[Q.WarPos-1].War of
-   SkipDefineFar: Warning(Q,'D‚finition "far" non sp,cifi,.');
-   SkipDefineSizeOf: Warning(Q,'D‚finition "sizeof" non d,clar,.');
+   SkipDefineFar: Warning(Q,'D‚finition "far" non sp‚cifi‚.');
+   SkipDefineSizeOf: Warning(Q,'D‚finition "sizeof" non d‚clar‚.');
    DuplicateDefineSymbol: Warning(Q,'Duplicate de symbole de definition.');
    WrongValueInDefineDirective: Warning(Q,'Valeur incompatible dans la d‚finition de la directive.');
   End;
@@ -3046,8 +3044,8 @@ Var
       Write(Q.HandlePas,Header);
       Break;
      End;
-     #123: Error(Q,MisplacedBeginSymbol); { Symbole de d,but mal plac,. }
-     ';': Error(Q,MisplacedPointComma);  { ';' mal plac,. }
+     #123: Error(Q,MisplacedBeginSymbol); { Symbole de d‚but mal plac‚. }
+     ';': Error(Q,MisplacedPointComma);  { ';' mal plac‚. }
      Else Begin
 	   If Q.Line[Q.I]='*'Then Begin
 	    Write(Q.HandlePas,'^');
@@ -3060,7 +3058,7 @@ Var
 	    SkipSpcRem(False);
 	    Header:=XtrkWord(Q.I,Q.Line);
             UHeader:=StrUp(Header);
-	    If UHeader='UNSIGNED'Then HaltMsg(Q,'Variable illogique 2 fois non-sign,...') else
+	    If UHeader='UNSIGNED'Then HaltMsg(Q,'Variable illogique 2 fois non-sign‚...') else
 	    If UHeader='SHORT'Then Write(Q.HandlePas,'Word') else
 	    If UHeader='INT'Then Write(Q.HandlePas,'Word') else
 	    If UHeader='LONG'Then Write(Q.HandlePas,'LongInt{Word}') else
@@ -3398,7 +3396,7 @@ Begin
        End;
       End
        Else
-      HaltMsg(Q,'Erreur de syntax dans la d,finition de "typedef".');
+      HaltMsg(Q,'Erreur de syntaxe dans la d‚finition de "typedef".');
      End
       Else
      If UWordC='STRUCT'Then Error(Q,StructC2Pascal(Q))
@@ -3446,7 +3444,7 @@ Begin
        Write(Q.HandlePas,PPGetLastProcName(Proc),' := ');
       End
        Else
-      HaltMsg(Q,'Retour de fonction ind,sirable.');
+      HaltMsg(Q,'Retour de fonction ind‚sirable.');
      End
       Else
      If FuncVar('SHORT','Integer')Then Q.Mode:={_Func_}_None_
@@ -3471,7 +3469,8 @@ Begin
      If UWordC='LOCAL'Then Write(Q.HandlePAS,'{ * * LOCAL * * }')Else
      If FuncVar('INT','Integer')Then Q.Mode:={_Func_}_None_ Else
      If UWordC='GLOBAL'Then Write(Q.HandlePAS,'{ * * GLOBAL * * }')Else
-     If FuncVar('CHAR','Char')Then Q.Mode:={_Func_}_None_
+     If FuncVar('CHAR','Char')Then Q.Mode:={_Func_}_None_ Else
+     If UWordC='PRINTF'Then Write(Q.HandlePas,'Write')
       Else
      Begin
       Error(Q,UnknownIdentifier); { Unknown identifier. }
@@ -3623,21 +3622,21 @@ Procedure DoneC2Pas(Var Q:SwitchC2Pascal);Begin
  Close(Q.HandlePas);
 End;
 
- Var
-  MainName:PathStr;
-  D:DirStr;
-  N:NameStr;
-  E:ExtStr;
-  NamePAS:PathStr;
-  I:Byte;
-  Q:SwitchC2Pascal;
+Var
+ MainName:PathStr;
+ D:DirStr;
+ N:NameStr;
+ E:ExtStr;
+ NamePAS:PathStr;
+ I:Byte;
+ Q:SwitchC2Pascal;
 
 BEGIN
  InitC2Pas(Q);
  StartUpC2Pas(Q);
  WarnNum:=0;
  If Q.SourceName=''Then Begin
-  System.WriteLn('Erreur: Pas de nom de fichier dans les paramStres');
+  System.WriteLn('Erreur: Pas de nom de fichier dans les paramŠtres');
   Halt;
  End;
  MainName:=Q.SourceName;
@@ -3645,7 +3644,7 @@ BEGIN
  NamePAS:=D+N+'.PAS';
  If FileExist(NamePas)Then Begin
   If(Q.WarningMsg)Then Begin
-   System.WriteLn('Attention: Fichier existant ''',NamePAS,''', puis ,craser');
+   WriteLn('Attention: Fichier existant ''',NamePAS,''', puis ‚craser');
    Inc(WarnNum);
   End;
  End;
