@@ -258,7 +258,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>READELF.PAS</b></td>
-			<td>Cette commande permet d'afficher des inforamtions sur un ELF.</td>
+			<td>Cette commande permet d'afficher des informations sur un ELF.</td>
 		</tr>
     		<tr>
 			<td><b>SYMDEB.PAS</b></td>
