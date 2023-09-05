@@ -256,6 +256,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>QPU2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .QPU de QuickPascal en code source Pascal.</td>
 		</tr>
+		<tr>
+			<td><b>READELF.PAS</b></td>
+			<td>Cette commande permet d'afficher des inforamtions sur un ELF.</td>
+		</tr>
     		<tr>
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
