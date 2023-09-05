@@ -177,6 +177,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
 		<tr>
+			<td><b>CONVERT.PAS</b></td>
+			<td>Cette commande permet de convertir un fichier de code source Pascal en minuscule, majuscule ou capitale. Cette commande est inspiré de la commande CONVERT du Pascal pour FLEX.</td>
+		</tr>
+		<tr>
 			<td><b>CSV2SQL.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .CSV en format SQL.</td>
 		</tr>	
