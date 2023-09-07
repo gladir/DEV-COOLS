@@ -280,6 +280,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>TPUINFO.PAS</b></td>
 			<td>Cette commande permet de retourner les informations de version d'une unité Turbo Pascal.</td>
 		</tr>
+		<tr>
+			<td><b>TXT2INC.PAS</b></td>
+			<td>Cette commande permet de convertir un texte en chaine de caractères entre guillemet pour Pascal.</td>
+		</tr>
 	</table>
 
 <h2>Compilation</h2>
