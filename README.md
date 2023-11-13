@@ -233,6 +233,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier en HTML en texte seulement (enlève le code HTML).</td>
 		</tr>
 		<tr>
+			<td><b>ICO2PAS.PAS</b></td>
+			<td>Cette commande permet de transformer un icône (.ICO) en code source Pascal.</td>
+		</tr>
+		<tr>
 			<td><b>LOGO.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de commande du langage de programmation LOGO. Il supporte aussi la tortue.</td>
 		</tr>
