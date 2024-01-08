@@ -220,6 +220,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>DRAW2LGO.PAS</b></td>
 			<td>Cette commande permet de convertir les chaines de caractères DRAW du langage de programmation BASIC en instruction du langage de programmation LOGO.</td>
 		</tr>
+		<tr>
+			<td><b>FNT2PAS.PAS</b></td>
+			<td>Cette commande permet de convertir des fichiers de polices de caractères .FNT en code source Pascal.</td>
+		</tr>
 	        <tr>
 			<td><b>HEXCOM.PAS</b></td>
 	                <td>Cette commande permet de charger un HEX (fichier de vidage hexadécimal) et en fait un fichier de format  «.COM».</td>
