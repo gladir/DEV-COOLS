@@ -72,7 +72,7 @@ BEGIN
     Inc(Position);
     If Position=HeightChar Then BEgin
      Write(Target);
-     If Char(CurrChar)in[#33..#126]Then Write(Target,' { ''',Char(CurrChar),''' }')
+     If Char(CurrChar)in[#33..#122]Then Write(Target,' { ''',Char(CurrChar),''' }')
                                    Else Write(Target,' { #',CurrChar,' }');
      Inc(CurrChar);
      WriteLn(Target);
