@@ -276,10 +276,14 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>READELF.PAS</b></td>
 			<td>Cette commande permet d'afficher des informations sur un ELF.</td>
 		</tr>
-	<tr>
-		<td><b>RGB2HTML.PAS</b></td>
-		<td>Cette commande permet de convertir les trois valeurs RGB (RVB) en code couleur HTML.</td>
-	</tr>
+		<tr>
+			<td><b>RGB2HTML.PAS</b></td>
+			<td>Cette commande permet de convertir les trois valeurs RGB (RVB) en code couleur HTML.</td>
+		</tr>
+		<tr>
+			<td><b>ROT13PAS.PAS</b></td>
+			<td>Cette commande permet d'obscurcir le code Pascal en le transformant avec l'algorithme rot13 sur les identificateurs du programme.</tr>
+		</tr>
     		<tr>
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
