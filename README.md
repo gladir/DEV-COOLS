@@ -282,7 +282,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>ROT13PAS.PAS</b></td>
-			<td>Cette commande permet d'obscurcir le code Pascal en le transformant avec l'algorithme rot13 sur les identificateurs du programme.</tr>
+			<td>Cette commande permet d'obscurcir le code Pascal en le transformant avec l'algorithme rot13 sur les identificateurs du programme.</td>
 		</tr>
     		<tr>
 			<td><b>SYMDEB.PAS</b></td>
