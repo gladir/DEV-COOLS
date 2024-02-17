@@ -12,6 +12,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<th>Nom</th>
 			<th>Description</th>	
 		</tr>
+ 		<tr>
+		    <td><b>8080Z80.PAS</b></td>
+		    <td>Cette commande permet de convertir un code source assembleur de microprocesseur 8080 en code source Z80.</td>
+		  </tr>	
 		<tr>
 			<td><b>ASC2ABAP.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source ABAP/4.</td>
