@@ -217,8 +217,28 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet d'afficher les fichiers d'un répertoire et de transformer la sortie en CSV, JSON, HTML, PASCAL, SQL, XML,...</td>
 		</tr>
 		<tr>
+			<td><b>DIS6502.PAS</b></td>
+			<td>Cette commande permet de désassembler un code binaire de microprocesseur 6502 en langage de programmation assembleur 6502.</td>
+		</tr>
+		<tr>
+			<td><b>DIS6809.PAS</b></td>
+			<td>Cette commande permet de désassembler un code binaire de microprocesseur 6809 en langage de programmation assembleur 6809.</td>
+		</tr>
+		<tr>
+			<td><b>DIS8080.PAS</b></td>
+			<td>Cette commande permet de désassembler un code binaire de microprocesseur 8080 en langage de programmation assembleur 8080.</td>
+		</tr>
+		<tr>
+			<td><b>DIS8086.PAS</b></td>
+			<td>Cette commande permet de désassembler un code binaire de microprocesseur 8086 en langage de programmation assembleur 8086.</td>
+		</tr>	
+		<tr>
 			<td><b>DISOBJ.PAS</b></td>
 			<td>Cette commande permet d'analyser et de désassembler un fichier d'extension «.OBJ».</td>
+		</tr>
+			<tr>
+			<td><b>DISZ80.PAS</b></td>
+			<td>Cette commande permet de désassembler un code binaire de microprocesseur Z80 en langage de programmation assembleur Z80.</td>
 		</tr>
 		<tr>
 			<td><b>DRAW2LGO.PAS</b></td>
