@@ -1,5 +1,5 @@
 # DEV-COOLS
-Suite de commandes pour les développeur écrit en Pascal fonctionnant sous DOS et Windows.
+Suite de commandes pour les développeur écrit en Pascal (Turbo Pascal ou Free Pascal) fonctionnant sous DOS et Windows.
 
 Le projet DEV-COOLS se veut un peu comme une solution de remplacement de BINUTILS des distributions Linux en Pascal.
 
