@@ -178,30 +178,30 @@ Var
  symtab: TSymTab;
  glbptr, locptr: Integer;
 
- { Function management }
+ { Gestion de fonction }
  function_table: TFunctionTable;
  function_count: Integer;
  current_function: Integer;  { Index of currently parsing function }
  call_stack_depth: Integer; { Current call depth }
 
- { Optimization context }
+ { Contexte d'optimisation }
  opt_context: TOptContext;
 
- { Input line }
+ { Ligne d'entrÇe }
  line: TLine;
  lptr: Integer;
 
- { Labels and counters }
+ { êtiquettes et compteurs }
  nxtlab: Integer;
- nextlabel: Integer; { For expression parser }
+ nextlabel: Integer; { Pour l'analyseur d'expressions }
 
- { Flags and options }
+ { Drapeaux et options }
  first_func, declared: Boolean;
  stkp: Integer;
  errcnt, eof: Integer;
  optimize, ctext, cmode, lastst: Integer;
 
- { File handles }
+ { Gestionnaires de fichiers }
  input, output: Text;
  asmtype: Integer;
  use_stdout: Boolean;
@@ -238,156 +238,117 @@ Function upper(ch: Char): Char;Begin
                      Else upper := ch;
 End;
 
-Function an(ch: Char): Boolean;
-Begin
+Function an(ch: Char):Boolean;Begin
  an := ch in ['A'..'Z', 'a'..'z', '_'];
 End;
 
-Function numeric(ch: Char): Boolean;
-Begin
+Function numeric(ch: Char): Boolean;Begin
  numeric := ch in ['0'..'9'];
 End;
 
-{ String utilities }
-Function streq(s1, s2: String): Boolean;
-Begin
+ { Utilitaires de chaine de caractäres }
+Function streq(s1, s2: String): Boolean;Begin
  streq := s1 = s2;
 End;
 
-{ Input/Output functions }
-Function ch: Char;
-Begin
+ { Fonctions d'entrÇe/sortie }
+Function ch:Char;Begin
  If lptr <= Length(line) Then ch := line[lptr]
                          Else ch := #0;
 End;
 
-Function gch: Char;
-Begin
- If lptr <= Length(line) Then
- Begin
+Function gch:Char;Begin
+ If lptr <= Length(line) Then Begin
   gch := line[lptr];
   Inc(lptr);
  End
- Else gch := #0;
+  Else
+ gch := #0;
 End;
 
-Procedure kill;
-Begin
+Procedure kill;Begin
  lptr := Length(line) + 1;
 End;
 
-Procedure nl;
-Begin
- If use_stdout Then
-  WriteLn
- Else
-  WriteLn(output);
+Procedure nl;Begin
+ If use_stdout Then WriteLn
+               Else WriteLn(output);
 End;
 
-Procedure ol(s: String);
-Begin
- If use_stdout Then
-  WriteLn(#9, s)
- Else
-  WriteLn(output, #9, s);
+Procedure ol(s:String);Begin
+ If use_stdout Then WriteLn(#9, s)
+               Else WriteLn(output, #9, s);
 End;
 
-{ Write line to output with conditional routing }
-Procedure outln(s: String);
-Begin
- If use_stdout Then
-  WriteLn(s)
- Else
-  WriteLn(output, s);
+ { êcrire la ligne dans la sortie avec routage conditionnel }
+Procedure outln(s: String);Begin
+ If use_stdout Then WriteLn(s)
+               Else WriteLn(output, s);
 End;
 
-Procedure outstr(s: String);
-Begin
- If use_stdout Then
-  Write(s)
- Else
-  Write(output, s);
+Procedure outstr(s:String);Begin
+ If use_stdout Then Write(s)
+               Else Write(output, s);
 End;
 
-Procedure outdec(n: Integer);
-Begin
- If use_stdout Then
-  Write(n)
- Else
-  Write(output, n);
+Procedure outdec(n:Integer);Begin
+ If use_stdout Then Write(n)
+               Else Write(output, n);
 End;
 
-{ Label generation functions }
-Function getlabel: Integer;
-Begin
+ { Fonctions de gÇnÇration d'Çtiquettes }
+Function getlabel:Integer;Begin
  Inc(nextlabel);
  getlabel := nextlabel;
 End;
 
-Procedure printlabel(labelnum: Integer);
-Begin
+Procedure printlabel(labelnum: Integer);Begin
  outstr('L');
  outdec(labelnum);
 End;
 
-Procedure prelabel(lab: Integer);
-Begin
- If use_stdout Then
-  WriteLn('L', lab, ':')
- Else
-  WriteLn(output, 'L', lab, ':');
+Procedure prelabel(lab:Integer);Begin
+ If use_stdout Then WriteLn('L', lab, ':')
+               Else WriteLn(output, 'L', lab, ':');
 End;
 
-{ Code generation }
-Procedure ot(s: String);
-Begin
- If use_stdout Then
-  Write(#9, s) { TAB then string }
- Else
-  Write(output, #9, s); { TAB then string }
+ { Code generation }
+Procedure ot(s: String);Begin
+ If use_stdout Then Write(#9, s) { TAB alors chaine de caractäres }
+               Else Write(output, #9, s); { TAB alors chaine de caractäres }
 End;
 
-{ Expression parsing utility functions }
-Function is_alpha(ch: Char): Boolean;
-Begin
+ { Fonctions utilitaires d'analyse d'expressions }
+Function is_alpha(ch:Char):Boolean;Begin
  is_alpha := ((ch >= 'A') and (ch <= 'Z')) or ((ch >= 'a') and (ch <= 'z')) or (ch = '_');
 End;
 
-Function is_digit(ch: Char): Boolean;
-Begin
+Function is_digit(ch:Char):Boolean;Begin
  is_digit := (ch >= '0') and (ch <= '9');
 End;
 
-Function is_alnum(ch: Char): Boolean;
-Begin
+Function is_alnum(ch:Char):Boolean;Begin
  is_alnum := is_alpha(ch) or is_digit(ch);
 End;
 
-Procedure skip_whitespace;
-Begin
- While (lptr <= Length(line)) and ((line[lptr] = ' ') or (line[lptr] = #9)) do
-  Inc(lptr);
+Procedure skip_whitespace;Begin
+ While (lptr <= Length(line)) and ((line[lptr] = ' ') or (line[lptr] = #9)) do Inc(lptr);
 End;
 
-Function peek_char: Char;
-Begin
+Function peek_char:Char;Begin
  skip_whitespace;
- If lptr <= Length(line) Then
-  peek_char := line[lptr]
- Else
-  peek_char := #0;
+ If lptr <= Length(line)Then peek_char := line[lptr]
+                        Else peek_char := #0;
 End;
 
-Function next_char: Char;
-Begin
+Function next_char:Char;Begin
  skip_whitespace;
- If lptr <= Length(line) Then
- Begin
+ If lptr <= Length(line) Then Begin
   next_char := line[lptr];
   Inc(lptr);
  End
- Else
-  next_char := #0;
+  Else
+ next_char := #0;
 End;
 
 Function parse_number: Integer;
@@ -396,8 +357,7 @@ Var
 Begin
  result := 0;
  skip_whitespace;
- While (lptr <= Length(line)) and is_digit(line[lptr]) do
- Begin
+ While (lptr <= Length(line)) and is_digit(line[lptr]) do Begin
   result := result * 10 + (Ord(line[lptr]) - Ord('0'));
   Inc(lptr);
  End;
@@ -410,38 +370,34 @@ Var
 Begin
  result := '';
  skip_whitespace;
- While (lptr <= Length(line)) and is_alnum(line[lptr]) do
- Begin
+ While (lptr <= Length(line)) and is_alnum(line[lptr]) do Begin
   result := result + line[lptr];
   Inc(lptr);
  End;
  parse_identifier := result;
 End;
 
-{ Error reporting }
-Procedure errrpt(msg: String);
-Begin
+{ Signalement des erreurs }
+Procedure errrpt(msg: String);Begin
  Inc(errcnt);
- WriteLn('Error: ', msg, ' at line ', lptr);
+ Case Language of
+  _English: WriteLn('Error: ', msg, ' at line ', lptr);
+  Else Write('Erreur: ',msg,' Ö la ligne ', lptr);
+ End;
 End;
 
-{ Missing outbyte procedure }
-Procedure outbyte(b: Byte);
-Begin
- If use_stdout Then
-  Write(Chr(b))
- Else
-  Write(output, Chr(b));
+Procedure outbyte(b: Byte);Begin
+ If use_stdout Then Write(Chr(b))
+               Else Write(output, Chr(b));
 End;
 
-{ Lexical analysis }
+ { Analyse lexicale }
 Function blanks: Boolean;
 Var
  found: Boolean;
 Begin
  found := False;
- While (lptr <= Length(line)) and (line[lptr] in [' ', #9]) do
- Begin
+ While (lptr <= Length(line)) and (line[lptr] in [' ', #9]) do Begin
   Inc(lptr);
   found := True;
  End;
@@ -455,10 +411,8 @@ Var
 Begin
  blanks;
  matched := True;
- For i := 1 to Length(s) do
- Begin
-  If (lptr + i - 1 > Length(line)) or (line[lptr + i - 1] <> s[i]) Then
-  Begin
+ For i := 1 to Length(s) do Begin
+  If (lptr + i - 1 > Length(line)) or (line[lptr + i - 1] <> s[i]) Then Begin
    matched := False;
    Break;
   End;
@@ -467,8 +421,7 @@ Begin
  match := matched;
 End;
 
-Function amatch(s: String; len: Integer): Boolean;
-Begin
+Function amatch(s: String; len: Integer): Boolean;Begin
  amatch := match(Copy(s, 1, len));
 End;
 
@@ -492,7 +445,7 @@ Begin
  Else symname := False;
 End;
 
-{ Number parsing }
+{ Analyse des nombres }
 Function number(Var value: Integer): Boolean;
 Var
  n: Integer;
@@ -500,11 +453,9 @@ Begin
  blanks;
  n := 0;
  number := False;
- If (lptr <= Length(line)) and numeric(line[lptr]) Then
- Begin
+ If (lptr <= Length(line)) and numeric(line[lptr]) Then Begin
   number := True;
-  While (lptr <= Length(line)) and numeric(line[lptr]) do
-  Begin
+  While (lptr <= Length(line)) and numeric(line[lptr]) do Begin
    n := n * 10 + (Ord(line[lptr]) - Ord('0'));
    Inc(lptr);
   End;
@@ -512,7 +463,7 @@ Begin
  End;
 End;
 
-{ Symbol table management }
+ { Gestion des tables de symboles }
 Function hash(sname: String): Integer;
 Var
  h, i: Integer;
@@ -523,31 +474,29 @@ Begin
  hash := h;
 End;
 
-{ Symbol table operations }
+ { OpÇrations sur la table des symboles }
 Function addsym(sname: String; typ: Integer; storage: Integer; offset: Integer): Integer;
 Var
  ptr: Integer;
 Begin
  ptr := glbptr;
- If ptr + symsiz > endglb Then
- Begin
-  errrpt('Symbol table overflow');
+ If ptr + symsiz > endglb Then Begin
+  Case Language of
+   _English:errrpt('Symbol table overflow');
+   Else errrpt('DÇbordement de la table des symboles');
+  End;
   addsym := 0;
   Exit;
  End;
-
- { Store symbol name }
+  { Nom du symbole de magasin }
  Move(sname[1], symtab[ptr + name], Length(sname));
  symtab[ptr + name + Length(sname)] := #0;
-
- { Store attributes }
+ { Attributs de magasin }
  symtab[ptr + ident] := Chr(it_variable);
  symtab[ptr + ctype] := Chr(typ);
  symtab[ptr + storage] := Chr(storage);
-
- { Store offset }
+ { DÇplacement de magasin }
  Move(offset, symtab[ptr + offset], offsize);
-
  glbptr := glbptr + symsiz;
  addsym := ptr;
 End;
@@ -558,35 +507,27 @@ Var
  stored_name: String;
 Begin
  ptr := startglb;
- While ptr < glbptr do
- Begin
-  { Extract stored name }
+ While ptr < glbptr do Begin
+  { Extraire le nom entreposÇ }
   stored_name := '';
-  While (symtab[ptr + name + Length(stored_name)] <> #0) and
-        (Length(stored_name) < namemax) do
-  Begin
+  While (symtab[ptr + name + Length(stored_name)] <> #0) and (Length(stored_name) < namemax) do Begin
    stored_name := stored_name + symtab[ptr + name + Length(stored_name)];
   End;
-
-  If stored_name = sname Then
-  Begin
+  If stored_name = sname Then Begin
    findsym := ptr;
    Exit;
   End;
-
   ptr := ptr + symsiz;
  End;
-
  findsym := 0;
 End;
 
 { ============================================================================ }
-{ TYPE MANAGEMENT FUNCTIONS                                                    }
+{ FONCTIONS DE GESTION DES TYPES                                               }
 { ============================================================================ }
 
-{ Initialize type information structure }
-Procedure init_type_info(var type_info: TTypeInfo);
-Begin
+{ Initialiser la structure d'informations de type }
+Procedure init_type_info(var type_info: TTypeInfo);Begin
  FillChar(type_info, SizeOf(type_info), 0);
  type_info.base_type := cint;
  type_info.pointer_level := 0;
@@ -598,9 +539,8 @@ Begin
  type_info.size := sizeof_int;
 End;
 
-{ Get size of a base type }
-Function get_type_size(base_type: Integer): Integer;
-Begin
+{ Obtenir la taille d'un type de base }
+Function get_type_size(base_type: Integer): Integer;Begin
  Case base_type of
   cvoid: get_type_size := sizeof_void;
   cchar, cuchar: get_type_size := sizeof_char;
@@ -610,23 +550,18 @@ Begin
   cfloat: get_type_size := sizeof_float;
   cdouble: get_type_size := sizeof_double;
   cpointer: get_type_size := sizeof_pointer;
- Else
-  get_type_size := sizeof_int; { Default }
+  Else get_type_size := sizeof_int; { Par dÇfaut }
  End;
 End;
 
-{ Calculate total size of a type including arrays and pointers }
+{ Calculer la taille totale d'un type, tableaux et pointeurs inclus }
 Function calculate_type_size(var type_info: TTypeInfo): Integer;
 Var
  result_size: Integer;
 Begin
- If type_info.pointer_level > 0 Then
-  result_size := sizeof_pointer
- Else If type_info.array_size > 0 Then
-  result_size := get_type_size(type_info.base_type) * type_info.array_size
- Else
-  result_size := get_type_size(type_info.base_type);
-
+ If type_info.pointer_level > 0 Then result_size := sizeof_pointer Else
+ If type_info.array_size > 0 Then result_size := get_type_size(type_info.base_type) * type_info.array_size
+                             Else result_size := get_type_size(type_info.base_type);
  type_info.size := result_size;
  calculate_type_size := result_size;
 End;
