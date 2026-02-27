@@ -144,10 +144,41 @@ Type
   last_result_reg: String; { Last register used for result }
  End;
 
+ { Function parameter structure }
+ TParameter = Record
+  name: String[20];       { Parameter name }
+  typ: Integer;          { Parameter type }
+  type_info: TTypeInfo;  { Detailed type information }
+  offset: Integer;       { Stack offset }
+ End;
+
+ { Function information structure }
+ TFunction = Record
+  name: String[20];         { Function name }
+  return_type: Integer;     { Return type }
+  return_type_info: TTypeInfo; { Detailed return type }
+  param_count: Integer;     { Number of parameters }
+  parameters: Array[0..9] of TParameter; { Parameter list }
+  is_defined: Boolean;      { True if function is defined (has body) }
+  is_declared: Boolean;     { True if function is declared }
+  label_id: Integer;        { Assembly label for function }
+  local_vars_size: Integer; { Size of local variables }
+  is_main: Boolean;         { True if this is main function }
+ End;
+
+ { Function table }
+ TFunctionTable = Array[0..99] of TFunction;
+
 Var
  { Symbol tables }
  symtab: TSymTab;
  glbptr, locptr: Integer;
+
+ { Function management }
+ function_table: TFunctionTable;
+ function_count: Integer;
+ current_function: Integer;  { Index of currently parsing function }
+ call_stack_depth: Integer; { Current call depth }
 
  { Optimization context }
  opt_context: TOptContext;
@@ -1034,6 +1065,211 @@ Begin
  IntToStr := temp;
 End;
 
+{ ============================================================================ }
+{ FUNCTION MANAGEMENT FUNCTIONS                                                }
+{ ============================================================================ }
+
+{ Initialize function management system }
+Procedure init_functions;
+Begin
+ function_count := 0;
+ current_function := -1;
+ call_stack_depth := 0;
+ FillChar(function_table, SizeOf(function_table), 0);
+End;
+
+{ Find function by name }
+Function find_function(func_name: String): Integer;
+Var
+ i: Integer;
+Begin
+ find_function := -1;
+ For i := 0 to function_count - 1 do
+ Begin
+  If function_table[i].name = func_name Then
+  Begin
+   find_function := i;
+   Exit;
+  End;
+ End;
+End;
+
+{ Add new function to table }
+Function add_function(func_name: String; return_type: Integer): Integer;
+Var
+ func_index: Integer;
+Begin
+ add_function := -1;
+ 
+ { Check if function already exists }
+ func_index := find_function(func_name);
+ If func_index <> -1 Then
+ Begin
+  add_function := func_index;
+  Exit;
+ End;
+ 
+ { Add new function }
+ If function_count >= 100 Then
+ Begin
+  errrpt('Function table overflow');
+  Exit;
+ End;
+ 
+ func_index := function_count;
+ With function_table[func_index] do
+ Begin
+  name := func_name;
+  return_type := return_type;
+  init_type_info(return_type_info);
+  return_type_info.base_type := return_type;
+  calculate_type_size(return_type_info);
+  param_count := 0;
+  is_defined := False;
+  is_declared := False;
+  label_id := getlabel;
+  local_vars_size := 0;
+  is_main := (func_name = 'main');
+ End;
+ 
+ Inc(function_count);
+ add_function := func_index;
+End;
+
+{ Add parameter to function }
+Function add_parameter(func_index: Integer; param_name: String; param_type: Integer): Boolean;
+Begin
+ add_parameter := False;
+ 
+ If (func_index < 0) or (func_index >= function_count) Then Exit;
+ 
+ With function_table[func_index] do
+ Begin
+  If param_count >= 10 Then
+  Begin
+   errrpt('Too many parameters for function ' + name);
+   Exit;
+  End;
+  
+  With parameters[param_count] do
+  Begin
+   name := param_name;
+   typ := param_type;
+   init_type_info(type_info);
+   type_info.base_type := param_type;
+   calculate_type_size(type_info);
+   offset := param_count * 2; { 2 bytes per parameter on 6809 stack }
+  End;
+  
+  Inc(param_count);
+  add_parameter := True;
+ End;
+End;
+
+{ Generate function prologue }
+Procedure generate_function_prologue(func_index: Integer);
+Begin
+ If (func_index < 0) or (func_index >= function_count) Then Exit;
+ 
+ With function_table[func_index] do
+ Begin
+  WriteLn(output, '; Function: ', name);
+  WriteLn(output, name, ':');
+  
+  { Standard 6809 function prologue }
+  If not is_main Then
+  Begin
+   ol('pshs x,y  ; save frame pointer and return address context');
+   ol('tfr  s,x  ; set up frame pointer');
+   
+   { Allocate space for local variables if needed }
+   If local_vars_size > 0 Then
+   Begin
+    WriteLn(output, '; Allocate local variables (', local_vars_size, ' bytes)');
+    ot('leas -');
+    outdec(local_vars_size);
+    outstr(',s');
+    nl;
+   End;
+  End
+  Else
+  Begin
+   WriteLn(output, '; Main function entry point');
+  End;
+ End;
+End;
+
+{ Generate function epilogue }
+Procedure generate_function_epilogue(func_index: Integer);
+Begin
+ If (func_index < 0) or (func_index >= function_count) Then Exit;
+ 
+ With function_table[func_index] do
+ Begin
+  WriteLn(output, '; End of function: ', name);
+  
+  If not is_main Then
+  Begin
+   { Standard 6809 function epilogue }
+   If local_vars_size > 0 Then
+   Begin
+    WriteLn(output, '; Deallocate local variables');
+    ot('leas ');
+    outdec(local_vars_size);
+    outstr(',s');
+    nl;
+   End;
+   
+   ol('puls x,y  ; restore frame pointer');
+   ol('rts       ; return to caller');
+  End
+  Else
+  Begin
+   WriteLn(output, '; Main function exit');
+   ol('swi       ; software interrupt (program end)');
+  End;
+ End;
+End;
+
+{ Generate function call }
+Procedure generate_function_call(func_index: Integer; arg_count: Integer);
+Begin
+ If (func_index < 0) or (func_index >= function_count) Then Exit;
+ 
+ With function_table[func_index] do
+ Begin
+  WriteLn(output, '; Call function: ', name);
+  
+  { Check parameter count }
+  If arg_count <> param_count Then
+   WriteLn(output, '; Warning: Argument count mismatch (expected ', param_count, ', got ', arg_count, ')');
+  
+  { Generate call instruction }
+  ot('jsr  ');
+  outstr(name);
+  nl;
+  
+  { Clean up stack if parameters were passed }
+  If param_count > 0 Then
+  Begin
+   WriteLn(output, '; Clean up ', param_count * 2, ' bytes of parameters');
+   ot('leas ');
+   outdec(param_count * 2);
+   outstr(',s');
+   nl;
+  End;
+  
+  Inc(call_stack_depth);
+ End;
+End;
+
+{ Forward declarations for expression parsing and parsing functions }
+Function expression_bool(var lval: TLVal): Boolean; forward;
+Procedure primary_expression(var lval: TLVal); forward;
+Procedure unary_expression(var lval: TLVal); forward;
+Procedure multiplicative_expression(var lval: TLVal); forward;
+Procedure additive_expression(var lval: TLVal); forward;
+
 { Enhanced type specifier parsing with full C type support }
 Function parse_type_specifier: Integer;
 Var
@@ -1169,6 +1405,169 @@ Begin
  parse_declarator := result_type;
 End;
 
+{ Parse function declaration/definition }
+Function parse_function_declaration(return_type: Integer): Boolean;
+Var
+ func_name, param_name: String;
+ param_type: Integer;
+ func_index: Integer;
+ type_info: TTypeInfo;
+ has_body: Boolean;
+Begin
+ parse_function_declaration := False;
+ 
+ { Get function name }
+ If not symname(func_name) Then
+ Begin
+  errrpt('Expected function name');
+  Exit;
+ End;
+ 
+ { Expect opening parenthesis }
+ If not match('(') Then
+ Begin
+  errrpt('Expected ( after function name');
+  Exit;
+ End;
+ 
+ { Add or find function }
+ func_index := add_function(func_name, return_type);
+ If func_index = -1 Then Exit;
+ 
+ WriteLn(output, '; Function declaration: ', func_name);
+ 
+ { Parse parameter list }
+ If not match(')') Then
+ Begin
+  Repeat
+   { Handle void parameter list }
+   If match('void') Then
+   Begin
+    If not match(')') Then
+     errrpt('Expected ) after void');
+    Break;
+   End;
+   
+   { Parse parameter type }
+   param_type := parse_type_specifier;
+   If param_type = 0 Then
+   Begin
+    errrpt('Invalid parameter type');
+    Exit;
+   End;
+   
+   { Parse parameter declarator }
+   If parse_declarator(param_name, param_type, type_info) = 0 Then
+    param_name := ''; { Allow unnamed parameters }
+   
+   { Add parameter to function }
+   If not add_parameter(func_index, param_name, param_type) Then
+    Exit;
+    
+   WriteLn(output, '; Parameter: ', param_name, ' (', get_type_name(type_info), ')');
+   
+  Until not match(',');
+  
+  { Expect closing parenthesis }
+  If not match(')') Then
+   errrpt('Expected ) after parameter list');
+ End;
+ 
+ { Check if this is a definition (has body) or just declaration }
+ has_body := match('{');
+ 
+ With function_table[func_index] do
+ Begin
+  If has_body Then
+  Begin
+   { This is a function definition }
+   If is_defined Then
+   Begin
+    errrpt('Function ' + func_name + ' already defined');
+    Exit;
+   End;
+   
+   is_defined := True;
+   is_declared := True;
+   current_function := func_index;
+   
+   { Generate function prologue }
+   generate_function_prologue(func_index);
+   
+   parse_function_declaration := True;
+  End
+  Else
+  Begin
+   { This is just a declaration }
+   If not match(';') Then
+    errrpt('Expected ; after function declaration');
+    
+   is_declared := True;
+   parse_function_declaration := True;
+  End;
+ End;
+End;
+
+{ Parse function call }
+Function parse_function_call(func_name: String; var lval: TLVal): Boolean;
+Var
+ func_index: Integer;
+ arg_count: Integer;
+ arg_lval: TLVal;
+Begin
+ parse_function_call := False;
+ 
+ { Find function }
+ func_index := find_function(func_name);
+ If func_index = -1 Then
+ Begin
+  WriteLn(output, '; Warning: Undeclared function ', func_name);
+  { Treat as undeclared function returning int }
+  func_index := add_function(func_name, cint);
+ End;
+ 
+ WriteLn(output, '; Function call: ', func_name);
+ 
+ { Expect opening parenthesis }
+ If not match('(') Then
+ Begin
+  errrpt('Expected ( in function call');
+  Exit;
+ End;
+ 
+ arg_count := 0;
+ 
+ { Parse arguments }
+ If not match(')') Then
+ Begin
+  Repeat
+   WriteLn(output, '; Argument ', arg_count + 1);
+   
+   { Parse argument expression }
+   expression_bool(arg_lval);
+   
+   { Push argument onto stack }
+   ol('pshs d  ; push argument');
+   Inc(arg_count);
+   
+  Until not match(',');
+  
+  { Expect closing parenthesis }
+  If not match(')') Then
+   errrpt('Expected ) after function arguments');
+ End;
+ 
+ { Generate function call }
+ generate_function_call(func_index, arg_count);
+ 
+ { Set up return value }
+ FillChar(lval, SizeOf(lval), 0);
+ lval.typ := function_table[func_index].return_type;
+ lval.constant := False;
+ 
+ parse_function_call := True;
+End;
+
 { Enhanced variable declaration with type information }
 Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo);
 Var
@@ -1201,6 +1600,35 @@ Begin
  End;
 End;
 
+{ Enhanced identifier lookup with symbol table }
+Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
+Var
+ sym_ptr: Integer;
+Begin
+ lookup_variable := False;
+ FillChar(lval, SizeOf(lval), 0);
+ 
+ sym_ptr := findsym(var_name);
+ If sym_ptr <> 0 Then
+ Begin
+  lookup_variable := True;
+  lval.symbol := sym_ptr;
+  lval.typ := Ord(symtab[sym_ptr + ctype]);
+  lval.storage := Ord(symtab[sym_ptr + storage]);
+  lval.indirect := 0;
+  lval.constant := False;
+ End
+ Else
+ Begin
+  { Variable not found - treat as new variable for now }
+  WriteLn(output, '; Warning: Undeclared variable ', var_name);
+  lval.symbol := 0;
+  lval.typ := cint;
+  lval.constant := False;
+  lookup_variable := True;
+ End;
+End;
+
 { File operations }
 Function readinline: Boolean;
 Begin
@@ -1217,14 +1645,12 @@ Begin
  End;
 End;
 
-{ Forward declarations for expression parsing }
-Function expression_bool(var lval: TLVal): Boolean; forward;
-
-{ Primary expression parser }
+{ Primary expression parser with function call support }
 Procedure primary_expression(var lval: TLVal);
 Var
  id: String;
  num: Integer;
+ save_lptr: Integer;
 Begin
  FillChar(lval, SizeOf(lval), 0);
 
@@ -1241,12 +1667,41 @@ Begin
 
   'A'..'Z', 'a'..'z', '_': Begin
     id := parse_identifier;
-    lval.symbol := 0; { TODO: lookup in symbol table }
-    lval.typ := cint;
-    lval.constant := False;
-    ot('ldd  ');
-    outstr(id);
-    nl;
+    
+    { Check if this is a function call }
+    If peek_char = '(' Then
+    Begin
+     { This is a function call }
+     If parse_function_call(id, lval) Then
+     Begin
+      { Function call result is already in D register }
+      WriteLn(output, '; Function ', id, ' returned in D');
+     End
+     Else
+     Begin
+      errrpt('Invalid function call: ' + id);
+     End;
+    End
+    Else
+    Begin
+     { This is a variable reference }
+     If lookup_variable(id, lval) Then
+     Begin
+      ot('ldd  ');
+      outstr(id);
+      nl;
+     End
+     Else
+     Begin
+      { Undeclared variable }
+      lval.symbol := 0;
+      lval.typ := cint;
+      lval.constant := False;
+      ot('ldd  ');
+      outstr(id);
+      nl;
+     End;
+    End;
    End;
 
   '(': Begin
@@ -1385,6 +1840,7 @@ Var
  var_name: String;
  lval: TLVal;
  type_info: TTypeInfo;
+ save_lptr: Integer;
 Begin
  parse_declaration := False;
  
@@ -1392,13 +1848,62 @@ Begin
  base_type := parse_type_specifier;
  If base_type = 0 Then Exit; { No valid type found }
  
- { Parse variable declarator(s) }
- Repeat
+ { Save position to check for function vs variable }
+ save_lptr := lptr;
+ 
+ { Try to parse as declarator to get the name }
+ var_type := parse_declarator(var_name, base_type, type_info);
+ If var_type = 0 Then Exit;
+ 
+ { Check if this is a function declaration/definition }
+ If match('(') Then
+ Begin
+  { This is a function - restore position and parse as function }
+  lptr := save_lptr;
+  If parse_function_declaration(base_type) Then
+   parse_declaration := True;
+  Exit;
+ End;
+ 
+ { This is a variable declaration }
+ declare_variable(var_name, var_type, type_info);
+ parse_declaration := True;
+ 
+ { Check for initialization }
+ If match('=') Then
+ Begin
+  WriteLn(output, '; Initializing variable: ', var_name, ' (', get_type_name(type_info), ')');
+  expression(lval);
+  
+  { TODO: Add type checking for initialization }
+  { Generate type-appropriate initialization code }
+  Case type_info.size of
+   1: Begin
+       ot('stb  '); { Store byte for char }
+       outstr(var_name);
+       nl;
+      End;
+   2: Begin
+       ot('std  '); { Store word for int/short/pointers }
+       outstr(var_name);
+       nl;
+      End;
+  Else
+   Begin
+    ot('std  '); { Default to word }
+    outstr(var_name);
+    nl;
+   End;
+  End;
+ End;
+ 
+ { Handle multiple variable declarations }
+ While match(',') do
+ Begin
   var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
   
   declare_variable(var_name, var_type, type_info);
-  parse_declaration := True;
   
   { Check for initialization }
   If match('=') Then
@@ -1406,65 +1911,31 @@ Begin
    WriteLn(output, '; Initializing variable: ', var_name, ' (', get_type_name(type_info), ')');
    expression(lval);
    
-   { TODO: Add type checking for initialization }
-   { Generate type-appropriate initialization code }
+   { Generate initialization code }
    Case type_info.size of
     1: Begin
-        ot('stb  '); { Store byte for char }
+        ot('stb  ');
         outstr(var_name);
         nl;
        End;
     2: Begin
-        ot('std  '); { Store word for int/short/pointers }
+        ot('std  ');
         outstr(var_name);
         nl;
        End;
    Else
     Begin
-     ot('std  '); { Default to word }
+     ot('std  ');
      outstr(var_name);
      nl;
     End;
    End;
   End;
-  
-  { Check for multiple declarations separated by comma }
-  If match(',') Then Continue
-  Else Break;
- Until False;
+ End;
  
- { Expect semicolon }
+ { Expect semicolon for variable declarations }
  If not match(';') Then
   errrpt('Expected semicolon after declaration');
-End;
-
-{ Enhanced identifier lookup with symbol table }
-Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
-Var
- sym_ptr: Integer;
-Begin
- lookup_variable := False;
- FillChar(lval, SizeOf(lval), 0);
- 
- sym_ptr := findsym(var_name);
- If sym_ptr <> 0 Then
- Begin
-  lookup_variable := True;
-  lval.symbol := sym_ptr;
-  lval.typ := Ord(symtab[sym_ptr + ctype]);
-  lval.storage := Ord(symtab[sym_ptr + storage]);
-  lval.indirect := 0;
-  lval.constant := False;
- End
- Else
- Begin
-  { Variable not found - treat as new variable for now }
-  WriteLn(output, '; Warning: Undeclared variable ', var_name);
-  lval.symbol := 0;
-  lval.typ := cint;
-  lval.constant := False;
-  lookup_variable := True;
- End;
 End;
 
 { Forward declarations for statement parsing }
@@ -1827,6 +2298,13 @@ Begin
  End;
  
  WriteLn(output, '; Compound statement end');
+ 
+ { Check if this is the end of a function body }
+ If current_function <> -1 Then
+ Begin
+  generate_function_epilogue(current_function);
+  current_function := -1;
+ End;
 End;
 
 { Expression statement parsing }
@@ -1959,6 +2437,9 @@ Begin
 
  { Initialize optimization system }
  init_optimization;
+ 
+ { Initialize function management system }
+ init_functions;
 
  asmtype := AS6809;
 End;
