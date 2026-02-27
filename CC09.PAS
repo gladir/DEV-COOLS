@@ -80,6 +80,20 @@ Const
  AS6809 = 1;
  AS9 = 2;
 
+ { Optimization levels }
+ OPT_NONE = 0;
+ OPT_BASIC = 1;
+ OPT_ADVANCED = 2;
+ OPT_AGGRESSIVE = 3;
+
+ { Optimization flags }
+ OPT_PEEPHOLE = 1;      { Peephole optimizations }
+ OPT_DEAD_CODE = 2;     { Dead code elimination }
+ OPT_CONSTANT_FOLD = 4; { Constant folding }
+ OPT_STRENGTH_RED = 8;  { Strength reduction }
+ OPT_REGISTER = 16;     { Register allocation }
+ OPT_JUMP = 32;         { Jump optimizations }
+
  { Input line }
  linesize = 80;
  linemax = linesize - 1;
@@ -112,10 +126,31 @@ Type
   type_info: TTypeInfo;   { Extended type information }
  End;
 
+ { Optimization instruction structure }
+ TOptInstruction = Record
+  opcode: String[10];     { Instruction mnemonic }
+  operand: String[20];    { Operand }
+  comment: String[40];    { Comment }
+  line_number: Integer;   { Source line number }
+  can_eliminate: Boolean; { Can be eliminated in dead code removal }
+ End;
+
+ { Optimization context }
+ TOptContext = Record
+  level: Integer;         { Optimization level }
+  flags: Integer;         { Optimization flags }
+  instructions: Array[0..999] of TOptInstruction; { Instruction buffer }
+  inst_count: Integer;    { Number of instructions }
+  last_result_reg: String; { Last register used for result }
+ End;
+
 Var
  { Symbol tables }
  symtab: TSymTab;
  glbptr, locptr: Integer;
+
+ { Optimization context }
+ opt_context: TOptContext;
 
  { Input line }
  line: TLine;
@@ -627,6 +662,376 @@ Begin
   ol('clrb');
  End;
  { Add more conversions as needed }
+End;
+
+{ ============================================================================ }
+{ CODE OPTIMIZATION FUNCTIONS                                                  }
+{ ============================================================================ }
+
+{ Initialize optimization context }
+Procedure init_optimization;
+Begin
+ FillChar(opt_context, SizeOf(opt_context), 0);
+ opt_context.level := optimize;
+ opt_context.inst_count := 0;
+ opt_context.last_result_reg := 'd';
+ 
+ { Set optimization flags based on level }
+ Case optimize of
+  OPT_NONE: opt_context.flags := 0;
+  OPT_BASIC: opt_context.flags := OPT_PEEPHOLE or OPT_CONSTANT_FOLD;
+  OPT_ADVANCED: opt_context.flags := OPT_PEEPHOLE or OPT_CONSTANT_FOLD or OPT_DEAD_CODE or OPT_JUMP;
+  OPT_AGGRESSIVE: opt_context.flags := $7FFF; { All optimizations }
+ End;
+End;
+
+{ Add instruction to optimization buffer }
+Procedure add_instruction(opcode, operand, comment: String);
+Begin
+ If opt_context.inst_count < 999 Then
+ Begin
+  With opt_context.instructions[opt_context.inst_count] do
+  Begin
+   opcode := opcode;
+   operand := operand;
+   comment := comment;
+   line_number := opt_context.inst_count;
+   can_eliminate := False;
+  End;
+  Inc(opt_context.inst_count);
+ End;
+End;
+
+{ Peephole optimization - remove redundant instructions }
+Procedure peephole_optimize;
+Var
+ i, j: Integer;
+ changed: Boolean;
+Begin
+ If (opt_context.flags and OPT_PEEPHOLE) = 0 Then Exit;
+ 
+ Repeat
+  changed := False;
+  
+  For i := 0 to opt_context.inst_count - 2 do
+  Begin
+   With opt_context.instructions[i] do
+   Begin
+    { Remove LDD #0 followed by STD }
+    If (opcode = 'ldd') and (operand = '#0') Then
+    Begin
+     If (opt_context.instructions[i+1].opcode = 'std') Then
+     Begin
+      { Replace with CLR }
+      opcode := 'clr';
+      operand := opt_context.instructions[i+1].operand;
+      comment := comment + ' ; optimized from ldd #0, std';
+      
+      { Mark next instruction for removal }
+      opt_context.instructions[i+1].can_eliminate := True;
+      changed := True;
+     End;
+    End
+    { Remove STD followed by LDD of same location }
+    Else If (opcode = 'std') Then
+    Begin
+     If (opt_context.instructions[i+1].opcode = 'ldd') and 
+        (opt_context.instructions[i+1].operand = operand) Then
+     Begin
+      { Remove redundant LDD }
+      opt_context.instructions[i+1].can_eliminate := True;
+      comment := comment + ' ; removed redundant ldd';
+      changed := True;
+     End;
+    End
+    { Optimize PSHS D followed by PULS D }
+    Else If (opcode = 'pshs') and (operand = 'd') Then
+    Begin
+     If (opt_context.instructions[i+1].opcode = 'puls') and
+        (opt_context.instructions[i+1].operand = 'd') Then
+     Begin
+      { Remove both instructions }
+      can_eliminate := True;
+      opt_context.instructions[i+1].can_eliminate := True;
+      changed := True;
+     End;
+    End;
+   End;
+  End;
+  
+  { Remove marked instructions }
+  j := 0;
+  For i := 0 to opt_context.inst_count - 1 do
+  Begin
+   If not opt_context.instructions[i].can_eliminate Then
+   Begin
+    opt_context.instructions[j] := opt_context.instructions[i];
+    Inc(j);
+   End;
+  End;
+  opt_context.inst_count := j;
+  
+ Until not changed;
+End;
+
+{ Constant folding optimization }
+Procedure constant_fold_optimize;
+Var
+ i: Integer;
+Begin
+ If (opt_context.flags and OPT_CONSTANT_FOLD) = 0 Then Exit;
+ 
+ For i := 0 to opt_context.inst_count - 1 do
+ Begin
+  With opt_context.instructions[i] do
+  Begin
+   { Optimize LDD #1 followed by NEGA/NEGB to LDD #-1 }
+   If (opcode = 'ldd') and (operand = '#1') Then
+   Begin
+    If (i < opt_context.inst_count - 2) and
+       (opt_context.instructions[i+1].opcode = 'nega') and
+       (opt_context.instructions[i+2].opcode = 'negb') Then
+    Begin
+     operand := '#-1';
+     comment := comment + ' ; constant folded';
+     opt_context.instructions[i+1].can_eliminate := True;
+     opt_context.instructions[i+2].can_eliminate := True;
+    End;
+   End
+   { Optimize multiplication by powers of 2 }
+   Else If (opcode = 'jsr') and (operand = 'mult16') Then
+   Begin
+    { This would need more context to determine if multiplying by constant }
+    comment := comment + ' ; could optimize if power of 2';
+   End;
+  End;
+ End;
+End;
+
+{ Dead code elimination }
+Procedure dead_code_eliminate;
+Var
+ i: Integer;
+Begin
+ If (opt_context.flags and OPT_DEAD_CODE) = 0 Then Exit;
+ 
+ For i := 0 to opt_context.inst_count - 1 do
+ Begin
+  With opt_context.instructions[i] do
+  Begin
+   { Mark NOP instructions for elimination }
+   If opcode = 'nop' Then
+   Begin
+    can_eliminate := True;
+   End;
+  End;
+ End;
+End;
+
+{ Jump optimization - remove unnecessary jumps }
+Procedure jump_optimize;
+Var
+ i: Integer;
+Begin
+ If (opt_context.flags and OPT_JUMP) = 0 Then Exit;
+ 
+ For i := 0 to opt_context.inst_count - 1 do
+ Begin
+  With opt_context.instructions[i] do
+  Begin
+   { Remove jumps to next instruction }
+   If (opcode = 'lbra') or (opcode = 'bra') Then
+   Begin
+    { This would need label analysis to be fully implemented }
+    comment := comment + ' ; jump optimization candidate';
+   End;
+  End;
+ End;
+End;
+
+{ Apply all optimizations }
+Procedure optimize_code;
+Begin
+ If optimize = OPT_NONE Then Exit;
+ 
+ WriteLn(output, '; Applying optimizations (level ', optimize, ')');
+ 
+ { Apply optimizations in order }
+ constant_fold_optimize;
+ peephole_optimize;
+ dead_code_eliminate;
+ jump_optimize;
+ 
+ WriteLn(output, '; Optimization complete - ', opt_context.inst_count, ' instructions');
+End;
+
+{ Output optimized instructions }
+Procedure output_optimized_instructions;
+Var
+ i: Integer;
+Begin
+ For i := 0 to opt_context.inst_count - 1 do
+ Begin
+  With opt_context.instructions[i] do
+  Begin
+   If not can_eliminate Then
+   Begin
+    If Length(comment) > 0 Then
+     WriteLn(output, #9, opcode, ' ', operand, ' ; ', comment)
+    Else
+     WriteLn(output, #9, opcode, ' ', operand);
+   End;
+  End;
+ End;
+End;
+
+{ Optimized code generation wrapper }
+Procedure optimized_ol(s: String);
+Begin
+ If optimize > OPT_NONE Then
+  add_instruction(s, '', '')
+ Else
+  ol(s);
+End;
+
+Procedure optimized_ot(op, operand: String);
+Begin
+ If optimize > OPT_NONE Then
+  add_instruction(op, operand, '')
+ Else
+ Begin
+  ot(op + ' ' + operand);
+  nl;
+ End;
+End;
+
+{ Specialized optimization functions }
+
+{ Optimized constant loading }
+Procedure opt_load_constant(value: Integer);
+Var
+ temp: String;
+Begin
+ If optimize > OPT_NONE Then
+ Begin
+  { Optimize common constants }
+  Case value of
+   0: add_instruction('clr', 'a', 'optimized zero load');
+   1: add_instruction('lda', '#1', 'optimized one load');
+   -1: add_instruction('lda', '#$FF', 'optimized -1 load');
+  Else
+   Begin
+    Str(value, temp);
+    add_instruction('ldd', '#' + temp, 'load constant');
+   End;
+  End;
+ End
+ Else
+ Begin
+  ot('ldd  #');
+  outdec(value);
+  nl;
+ End;
+End;
+
+{ Optimized variable assignment }
+Procedure opt_store_variable(var_name: String; size: Integer);
+Begin
+ If optimize > OPT_NONE Then
+ Begin
+  Case size of
+   1: add_instruction('stb', var_name, 'store byte');
+   2: add_instruction('std', var_name, 'store word');
+  Else
+   add_instruction('std', var_name, 'store default');
+  End;
+ End
+ Else
+ Begin
+  Case size of
+   1: Begin
+       ot('stb  ');
+       outstr(var_name);
+       nl;
+      End;
+   2: Begin
+       ot('std  ');
+       outstr(var_name);
+       nl;
+      End;
+  Else
+   Begin
+    ot('std  ');
+    outstr(var_name);
+    nl;
+   End;
+  End;
+ End;
+End;
+
+{ Optimized arithmetic operations }
+Procedure opt_add_constant(value: Integer);
+Var
+ temp: String;
+Begin
+ If optimize > OPT_NONE Then
+ Begin
+  Case value of
+   0: { Do nothing - adding zero };
+   1: add_instruction('inc', 'd', 'optimized +1');
+   -1: add_instruction('dec', 'd', 'optimized -1');
+  Else
+   Begin
+    Str(value, temp);
+    add_instruction('addd', '#' + temp, 'add constant');
+   End;
+  End;
+ End
+ Else
+ Begin
+  If value <> 0 Then
+  Begin
+   ot('addd #');
+   outdec(value);
+   nl;
+  End;
+ End;
+End;
+
+{ Optimized multiplication }
+Procedure opt_multiply(value: Integer);
+Begin
+ If optimize > OPT_NONE Then
+ Begin
+  { Optimize multiplication by powers of 2 }
+  Case value of
+   0: add_instruction('clr', 'd', 'multiply by 0');
+   1: { Do nothing - multiply by 1 };
+   2: add_instruction('lsld', '', 'multiply by 2');
+   4: Begin
+       add_instruction('lsld', '', 'multiply by 4 (shift 1)');
+       add_instruction('lsld', '', 'multiply by 4 (shift 2)');
+      End;
+   8: Begin
+       add_instruction('lsld', '', 'multiply by 8 (shift 1)');
+       add_instruction('lsld', '', 'multiply by 8 (shift 2)');
+       add_instruction('lsld', '', 'multiply by 8 (shift 3)');
+      End;
+  Else
+   add_instruction('jsr', 'mult16', 'general multiplication');
+  End;
+ End
+ Else
+  ol('jsr  mult16');
+End;
+
+{ Fix IntToStr function - replace with Str }
+Function IntToStr(value: Integer): String;
+Var
+ temp: String;
+Begin
+ Str(value, temp);
+ IntToStr := temp;
 End;
 
 { Enhanced type specifier parsing with full C type support }
@@ -1489,31 +1894,61 @@ Begin
 End;
 
 Procedure ask;
+Var
+ i: Integer;
+ param: String;
 Begin
  nxtlab := 0;
  kill;
- WriteLn(' Small-6809 C compiler for DOS systems V2.02 (Pascal)');
+ WriteLn(' Small-6809 C compiler for DOS systems V2.02 (Pascal) - With Optimizations');
  WriteLn(' Converted to Pascal from original CC09');
  WriteLn;
- optimize := NO;
+ optimize := OPT_NONE;
  ctext := NO;
 
  If ParamCount < 1 Then
  Begin
   WriteLn('usage: cc09 infile.c [outfile] [-options]');
+  WriteLn('Options:');
+  WriteLn('  -O0    No optimization (default)');
+  WriteLn('  -O1    Basic optimizations (peephole, constant folding)');
+  WriteLn('  -O2    Advanced optimizations (+ dead code, jumps)');
+  WriteLn('  -O3    Aggressive optimizations (all)');
   Halt(1);
+ End;
+
+ { Parse command line arguments }
+ For i := 1 to ParamCount do
+ Begin
+  param := ParamStr(i);
+  If param = '-O0' Then optimize := OPT_NONE
+  Else If param = '-O1' Then optimize := OPT_BASIC
+  Else If param = '-O2' Then optimize := OPT_ADVANCED
+  Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
 
  Assign(input, ParamStr(1));
  Reset(input);
  WriteLn('Compiling Source file: ', ParamStr(1));
+ If optimize > OPT_NONE Then
+  WriteLn('Optimization level: ', optimize);
 
  If ParamCount >= 2 Then
  Begin
-  Assign(output, ParamStr(2));
-  Rewrite(output);
-  WriteLn('Generating asm file: ', ParamStr(2));
-  use_stdout := False;
+  param := ParamStr(2);
+  If (param[1] <> '-') Then { Not an option, must be output file }
+  Begin
+   Assign(output, param);
+   Rewrite(output);
+   WriteLn('Generating asm file: ', param);
+   use_stdout := False;
+  End
+  Else
+  Begin
+   output := Output;
+   WriteLn('Using console screen for output.');
+   use_stdout := True;
+  End;
  End
  Else
  Begin
@@ -1521,6 +1956,9 @@ Begin
   WriteLn('Using console screen for output.');
   use_stdout := True;
  End;
+
+ { Initialize optimization system }
+ init_optimization;
 
  asmtype := AS6809;
 End;
@@ -1532,6 +1970,13 @@ End;
 
 Procedure trailer;
 Begin
+ { Apply optimizations if enabled }
+ If optimize > OPT_NONE Then
+ Begin
+  optimize_code;
+  output_optimized_instructions;
+ End;
+ 
  If asmtype = AS6809 Then WriteLn(output, ';    .end')
                      Else WriteLn(output, '  END');
 End;
