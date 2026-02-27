@@ -269,22 +269,43 @@ End;
 
 Procedure nl;
 Begin
- WriteLn(output);
+ If use_stdout Then
+  WriteLn
+ Else
+  WriteLn(output);
 End;
 
 Procedure ol(s: String);
 Begin
- WriteLn(output, #9, s);
+ If use_stdout Then
+  WriteLn(#9, s)
+ Else
+  WriteLn(output, #9, s);
+End;
+
+{ Write line to output with conditional routing }
+Procedure outln(s: String);
+Begin
+ If use_stdout Then
+  WriteLn(s)
+ Else
+  WriteLn(output, s);
 End;
 
 Procedure outstr(s: String);
 Begin
- Write(output, s);
+ If use_stdout Then
+  Write(s)
+ Else
+  Write(output, s);
 End;
 
 Procedure outdec(n: Integer);
 Begin
- Write(output, n);
+ If use_stdout Then
+  Write(n)
+ Else
+  Write(output, n);
 End;
 
 { Label generation functions }
@@ -302,13 +323,19 @@ End;
 
 Procedure prelabel(lab: Integer);
 Begin
- WriteLn(output, 'L', lab, ':');
+ If use_stdout Then
+  WriteLn('L', lab, ':')
+ Else
+  WriteLn(output, 'L', lab, ':');
 End;
 
 { Code generation }
 Procedure ot(s: String);
 Begin
- Write(output, #9, s); { TAB then string }
+ If use_stdout Then
+  Write(#9, s) { TAB then string }
+ Else
+  Write(output, #9, s); { TAB then string }
 End;
 
 { Expression parsing utility functions }
@@ -392,7 +419,10 @@ End;
 { Missing outbyte procedure }
 Procedure outbyte(b: Byte);
 Begin
- Write(output, Chr(b));
+ If use_stdout Then
+  Write(Chr(b))
+ Else
+  Write(output, Chr(b));
 End;
 
 { Lexical analysis }
@@ -2426,14 +2456,14 @@ Begin
   End
   Else
   Begin
-   output := Output;
+   { Don't assign Output to output - use flag instead }
    WriteLn('Using console screen for output.');
    use_stdout := True;
   End;
  End
  Else
  Begin
-  output := Output;
+  { Don't assign Output to output - use flag instead }
   WriteLn('Using console screen for output.');
   use_stdout := True;
  End;
@@ -2449,7 +2479,10 @@ End;
 
 Procedure header;
 Begin
- WriteLn(output, '; ', VERSION);
+ If use_stdout Then
+  WriteLn('; ', VERSION)
+ Else
+  WriteLn(output, '; ', VERSION);
 End;
 
 Procedure trailer;
@@ -2461,8 +2494,16 @@ Begin
   output_optimized_instructions;
  End;
 
- If asmtype = AS6809 Then WriteLn(output, ';    .end')
-                     Else WriteLn(output, '  END');
+ If use_stdout Then
+ Begin
+  If asmtype = AS6809 Then WriteLn(';    .end')
+                      Else WriteLn('  END');
+ End
+ Else
+ Begin
+  If asmtype = AS6809 Then WriteLn(output, ';    .end')
+                      Else WriteLn(output, '  END');
+ End;
 End;
 
 Procedure closeout;
