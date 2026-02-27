@@ -566,27 +566,22 @@ Begin
  calculate_type_size := result_size;
 End;
 
-{ Check if two types are compatible }
-Function types_compatible(var type1, type2: TTypeInfo): Boolean;
-Begin
+{ V‚rifiez si deux types sont compatibles }
+Function types_compatible(var type1, type2: TTypeInfo): Boolean;Begin
  types_compatible := (type1.base_type = type2.base_type) and
                     (type1.pointer_level = type2.pointer_level) and
                     (type1.is_unsigned = type2.is_unsigned);
 End;
 
-{ Check if type can be converted to another }
-Function can_convert_type(var from_type, to_type: TTypeInfo): Boolean;
-Begin
- { Pointers can be converted to pointers }
- If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then
- Begin
+{ V‚rifier si le type peut ˆtre converti en un autre }
+Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
+  { Les pointeurs peuvent ˆtre convertis en pointeurs }
+ If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then Begin
   can_convert_type := True;
   Exit;
  End;
-
- { Numeric types can usually be converted }
- If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then
- Begin
+  { Les types num‚riques peuvent g‚n‚ralement ˆtre convertis }
+ If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then Begin
   Case from_type.base_type of
    cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
     Case to_type.base_type of
@@ -603,13 +598,13 @@ Begin
   can_convert_type := False;
 End;
 
-{ Get type name as string for debugging/error messages }
+ { R‚cup‚rer le nom du type sous forme de chaine de caractŠres pour les messages de d‚bogage/d'erreur }
 Function get_type_name(var type_info: TTypeInfo): String;
 Var
  base_name, temp_str: String;
  i: Integer;
 Begin
- { Get base type name }
+  { Obtenir le nom du type de base }
  Case type_info.base_type of
   cvoid: base_name := 'void';
   cchar: base_name := 'char';
@@ -622,39 +617,30 @@ Begin
   culong: base_name := 'unsigned long';
   cfloat: base_name := 'float';
   cdouble: base_name := 'double';
- Else
-  base_name := 'unknown';
+  Else base_name := 'unknown';
  End;
-
- { Add const/volatile qualifiers }
+  { Ajouter les qualificateurs const/volatile }
  If type_info.is_const Then base_name := 'const ' + base_name;
  If type_info.is_volatile Then base_name := 'volatile ' + base_name;
-
- { Add pointer asterisks }
- For i := 1 to type_info.pointer_level do
-  base_name := base_name + '*';
-
- { Add array notation }
- If type_info.array_size > 0 Then
- Begin
+  { Ajouter des ast‚ristiques de pointeur }
+ For i := 1 to type_info.pointer_level do base_name := base_name + '*';
+  { Ajouter la notation de tableau }
+ If type_info.array_size > 0 Then Begin
   Str(type_info.array_size, temp_str);
   base_name := base_name + '[' + temp_str + ']';
  End;
-
  get_type_name := base_name;
 End;
 
-{ Generate assembly code for type conversion }
-Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);
-Begin
- WriteLn(output, '; Type conversion from ', get_type_name(from_type),
-         ' to ', get_type_name(to_type));
-
- { Handle char to int conversion }
- If (from_type.base_type = cchar) and (to_type.base_type = cint) Then
- Begin
-  If from_type.is_unsigned Then
-  Begin
+ { G‚n‚rer le code assembleur pour la conversion de type }
+Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
+ Case Language of
+  _English:WriteLn(output, '; Type conversion from ', get_type_name(from_type),' to ', get_type_name(to_type));
+  Else WriteLn(output, '; Conversion de type de ', get_type_name(from_type),' … ', get_type_name(to_type));
+ End;
+ { G‚rer la conversion char en int }
+ If (from_type.base_type = cchar) and (to_type.base_type = cint) Then Begin
+  If from_type.is_unsigned Then Begin
    ol('clra   ; zero extend unsigned char');
   End
   Else
@@ -662,23 +648,22 @@ Begin
    ol('sex    ; sign extend signed char');
   End;
  End
- { Handle int to char conversion }
- Else If (from_type.base_type = cint) and (to_type.base_type = cchar) Then
- Begin
+  { G‚rer la conversion int vers char }
+  Else
+ If (from_type.base_type = cint) and (to_type.base_type = cchar) Then Begin
   ol('tfr  d,x ; keep only low byte');
   ol('tfr  b,a');
   ol('clrb');
  End;
- { Add more conversions as needed }
+  { Ajoutez des conversions suppl‚mentaires si n‚cessaires }
 End;
 
 { ============================================================================ }
-{ CODE OPTIMIZATION FUNCTIONS                                                  }
+{ FONCTIONS D'OPTIMISATION DU CODE                                             }
 { ============================================================================ }
 
-{ Initialize optimization context }
-Procedure init_optimization;
-Begin
+ { Initialize optimization context }
+Procedure init_optimization;Begin
  FillChar(opt_context, SizeOf(opt_context), 0);
  opt_context.level := optimize;
  opt_context.inst_count := 0;
