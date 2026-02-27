@@ -2,7 +2,7 @@
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
   @abstract(Target: Turbo Pascal, Free Pascal)
-  @description: Small-C Compiler for 6809
+  @description: Compilateur C pour 6809
 }
 
 Program CC09;
@@ -10,12 +10,14 @@ Program CC09;
 {$A-}
 {$I-}
 
+Uses DOS;
+
 Const
- VERSION = 'small-c V2.3 (Pascal)';
+ VERSION = 'Compilateur C V1.1';
  YES = 1;
  NO = 0;
 
- { Symbol table parameters }
+ { Paramätres de la table de symbole }
  symsiz = 14;
  symtbsz = 8008;
  numglbs = 512;
@@ -166,11 +168,13 @@ Type
   is_main: Boolean;         { True if this is main function }
  End;
 
- { Function table }
+ { Table de fonction }
  TFunctionTable = Array[0..99] of TFunction;
 
 Var
- { Symbol tables }
+ Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
+ TmpLanguage:String;
+ { Tables de symbole }
  symtab: TSymTab;
  glbptr, locptr: Integer;
 
@@ -202,29 +206,34 @@ Var
  asmtype: Integer;
  use_stdout: Boolean;
 
-Function startglb: Integer;
-Begin
+Function startglb: Integer;Begin
  startglb := 0;
 End;
 
-Function endglb: Integer;
-Begin
+Function endglb: Integer;Begin
  endglb := startglb + numglbs * symsiz;
 End;
 
-Function startloc: Integer;
-Begin
+Function startloc: Integer;Begin
  startloc := endglb + symsiz;
 End;
 
-Function endloc: Integer;
-Begin
+Function endloc: Integer;Begin
  endloc := symtbsz - symsiz;
 End;
 
-{ Utility functions }
-Function upper(ch: Char): Char;
+ { Fonctions utilitaires }
+Function StrToUpper(S:String):String;
+Var
+ I:Byte;
 Begin
+ For I:=1 to Length(S)do Begin
+  If S[I] in['a'..'z']Then S[I]:=Chr(Ord(S[I])-32);
+ End;
+ StrToUpper:=S;
+End;
+
+Function upper(ch: Char): Char;Begin
  If ch in ['a'..'z'] Then upper := Chr(Ord(ch) - 32)
                      Else upper := ch;
 End;
@@ -2522,79 +2531,6 @@ Begin
   parse_statement := True;
 End;
 
-Procedure ask;
-Var
- i: Integer;
- param: String;
-Begin
- nxtlab := 0;
- kill;
- WriteLn(' Small-6809 C compiler for DOS systems V2.02 (Pascal) - With Optimizations');
- WriteLn(' Converted to Pascal from original CC09');
- WriteLn;
- optimize := OPT_NONE;
- ctext := NO;
-
- If ParamCount < 1 Then
- Begin
-  WriteLn('usage: cc09 infile.c [outfile] [-options]');
-  WriteLn('Options:');
-  WriteLn('  -O0    No optimization (default)');
-  WriteLn('  -O1    Basic optimizations (peephole, constant folding)');
-  WriteLn('  -O2    Advanced optimizations (+ dead code, jumps)');
-  WriteLn('  -O3    Aggressive optimizations (all)');
-  Halt(1);
- End;
-
- { Parse command line arguments }
- For i := 1 to ParamCount do
- Begin
-  param := ParamStr(i);
-  If param = '-O0' Then optimize := OPT_NONE
-  Else If param = '-O1' Then optimize := OPT_BASIC
-  Else If param = '-O2' Then optimize := OPT_ADVANCED
-  Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
- End;
-
- Assign(input, ParamStr(1));
- Reset(input);
- WriteLn('Compiling Source file: ', ParamStr(1));
- If optimize > OPT_NONE Then
-  WriteLn('Optimization level: ', optimize);
-
- If ParamCount >= 2 Then
- Begin
-  param := ParamStr(2);
-  If (param[1] <> '-') Then { Not an option, must be output file }
-  Begin
-   Assign(output, param);
-   Rewrite(output);
-   WriteLn('Generating asm file: ', param);
-   use_stdout := False;
-  End
-  Else
-  Begin
-   { Don't assign Output to output - use flag instead }
-   WriteLn('Using console screen for output.');
-   use_stdout := True;
-  End;
- End
- Else
- Begin
-  { Don't assign Output to output - use flag instead }
-  WriteLn('Using console screen for output.');
-  use_stdout := True;
- End;
-
- { Initialize optimization system }
- init_optimization;
-
- { Initialize function management system }
- init_functions;
-
- asmtype := AS6809;
-End;
-
 Procedure header;
 Begin
  If use_stdout Then
@@ -2603,8 +2539,7 @@ Begin
   WriteLn(output, '; ', VERSION);
 End;
 
-Procedure trailer;
-Begin
+Procedure trailer;Begin
  { Apply optimizations if enabled }
  If optimize > OPT_NONE Then
  Begin
@@ -2624,13 +2559,11 @@ Begin
  End;
 End;
 
-Procedure closeout;
-Begin
+Procedure closeout;Begin
  If not use_stdout Then Close(output);
 End;
 
-Procedure errrptsummary;
-Begin
+Procedure errrptsummary;Begin
  WriteLn;
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
@@ -2642,8 +2575,7 @@ Var
  sname: String;
  save_lptr: Integer;
 Begin
- While eof = 0 do
- Begin
+ While eof = 0 do Begin
   If not readinline Then Break;
 
   { Simple comment processing }
@@ -2692,7 +2624,7 @@ Begin
     Begin
      { TODO: Check if variable is const and prevent assignment }
      WriteLn(output, '; Checking const qualifier for assignment');
-     
+
      { Use expression parser for right side }
      expression(lval);
 
@@ -2740,9 +2672,61 @@ Begin
  End;
 End;
 
-{ Main program }
+Var
+ i: Integer;
+ param: String;
+
 BEGIN
- { Initialize variables }
+ Language:=_French;
+ TmpLanguage:=GetEnv('LANGUAGE');
+ If TmpLanguage<>''Then Begin
+  If TmpLanguage[1]='"'Then TmpLanguage:=Copy(TmpLanguage,2,255);
+  If StrToUpper(Copy(TmpLanguage,1,2))='EN'Then Language:=_English Else
+  If StrToUpper(Copy(TmpLanguage,1,2))='GR'Then Language:=_Germany Else
+  If StrToUpper(Copy(TmpLanguage,1,2))='IT'Then Language:=_Italian Else
+  If StrToUpper(Copy(TmpLanguage,1,2))='SP'Then Language:=_Spain Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='SQ')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='ALB')Then Language:=_Albanian Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='PT')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='PRT')Then Language:=_Portuguese Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='SE')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='SWE')Then Language:=_Swedish Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='DK')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='DNK')Then Language:=_Danish Else
+  If(StrToUpper(Copy(TmpLanguage,1,2))='JP')or
+    (StrToUpper(Copy(TmpLanguage,1,3))='JPN')Then Language:=_Japanese;
+ End;
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  Case Language of
+   _English:Begin
+    WriteLn('CC09 - This command allows you to launch the C compiler for ',
+            'the 6809 microprocessor.');
+    WriteLn;
+    WriteLn('usage: cc09 infile.c [outfile] [-options]');
+    WriteLn;
+    WriteLn('Options:');
+    WriteLn('  -O0    No optimization (default)');
+    WriteLn('  -O1    Basic optimizations (peephole, constant folding)');
+    WriteLn('  -O2    Advanced optimizations (+ dead code, jumps)');
+    WriteLn('  -O3    Aggressive optimizations (all)');
+   End;
+   Else Begin
+    WriteLn('CC09 - Cette commande permet de lancer le compilateur C pour ',
+            'le microprocesseur 6809.');
+    WriteLn;
+    WriteLn('Syntaxe : cc09 infile.c [outfile] [-options]');
+    WriteLn;
+    WriteLn('Options :');
+    WriteLn('  -O0    Pas d''optimisation (valeur par dÇfaut)');
+    WriteLn('  -O1    Optimisations de base (oeilleon, pliage constant)');
+    WriteLn('  -O2    Optimisations avancÇes (code mort, sauts)');
+    WriteLn('  -O3    Optimisations aggressives (toutes)');
+   End;
+  End;
+  Halt(1);
+ End;
+  { Initialise les variables }
  FillChar(symtab, SizeOf(symtab), 0);
  glbptr := startglb;
  locptr := startloc;
@@ -2754,12 +2738,60 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
-
- { Compiler main body }
- ask;      { Get user options }
- header;   { Intro code }
- parse;    { Process ALL input }
- trailer;  { Follow-up code }
- closeout; { Close the output }
- errrptsummary; { Summarize errors }
+  { Compiler main body }
+ nxtlab := 0;
+ kill;
+ WriteLn('CC09 - Compilateur C pour 6809 V1.01');
+ WriteLn;
+ optimize := OPT_NONE;
+ ctext := NO;
+ { Parse command line arguments }
+ For i := 1 to ParamCount do Begin
+  param := ParamStr(i);
+  If param = '-O0' Then optimize := OPT_NONE
+  Else If param = '-O1' Then optimize := OPT_BASIC
+  Else If param = '-O2' Then optimize := OPT_ADVANCED
+  Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
+ End;
+ Assign(input, ParamStr(1));
+ Reset(input);
+ WriteLn('Compiling Source file: ', ParamStr(1));
+ If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
+ If ParamCount >= 2 Then Begin
+  param := ParamStr(2);
+  If (param[1] <> '-') Then Begin { Option impossible, fichier de sortie obligatoire }
+   Assign(output, param);
+   Rewrite(output);
+   WriteLn('Generating asm file: ', param);
+   use_stdout := False;
+  End
+   Else
+  Begin
+   { Ne pas assigner de sortie Ö la sortie; utiliser plutìt un drapeau }
+   Case Language of
+    _English:WriteLn('Using console screen for output.');
+    Else WriteLn('Affichage de la sortie sur la console.');
+   End;
+   use_stdout := True;
+  End;
+ End
+  Else
+ Begin
+   { Ne pas assigner de sortie Ö la sortie; utiliser plutìt un drapeau }
+  Case Language of
+   _English:WriteLn('Using console screen for output.');
+   Else Write('Affichage de la sortie sur la console.');
+  End;
+  use_stdout := True;
+ End;
+  { Initialisation du systäme d'opimisation }
+ init_optimization;
+  { Initialisaton du systäme de gestion des fonctions }
+ init_functions;
+ asmtype := AS6809;
+ header;        { Code d''introduction }
+ parse;         { Analyse toutes les entrÇe }
+ trailer;       { Code de suivi }
+ closeout;      { Fermer la sortie }
+ errrptsummary; { RÇsumer les erreurs }
 END.
