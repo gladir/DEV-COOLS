@@ -406,7 +406,11 @@ Procedure push_loop_context(loop_type: Integer; break_lbl, continue_lbl: Integer
 Begin
  If loop_depth >= 32 Then
  Begin
-  errrpt('Too many nested loops');
+  Case Language of
+   _English: errrpt('Too many nested loops');
+   _Germany: errrpt('Zu viele verschachtelte Schleifen');
+   Else errrpt('Trop de boucles imbriquées');
+  End;
   Exit;
  End;
  
@@ -1114,7 +1118,11 @@ Begin
  { Add new function }
  If function_count >= 100 Then
  Begin
-  errrpt('Function table overflow');
+  Case Language of
+   _English: errrpt('Function table overflow');
+   _Germany: errrpt('Funktionstabelle-Überlauf');
+   Else errrpt('Débordement de la table des fonctions');
+  End;
   Exit;
  End;
 
@@ -1149,7 +1157,11 @@ Begin
  Begin
   If param_count >= 10 Then
   Begin
-   errrpt('Too many parameters for function ' + name);
+   Case Language of
+    _English: errrpt('Too many parameters for function ' + name);
+    _Germany: errrpt('Zu viele Parameter für Funktion ' + name);
+    Else errrpt('Trop de paramètres pour la fonction ' + name);
+   End;
    Exit;
   End;
 
@@ -1498,7 +1510,11 @@ Begin
  { Parse variable name }
  If not symname(var_name) Then
  Begin
-  errrpt('Expected variable name');
+  Case Language of
+   _English: errrpt('Expected variable name');
+   _Germany: errrpt('Erwarteter Variablenname');
+   Else errrpt('Nom de variable attendu');
+  End;
   parse_declarator := 0;
   Exit;
  End;
@@ -1517,7 +1533,13 @@ Begin
   End;
 
   If not match(']') Then
-   errrpt('Expected closing bracket');
+  Begin
+   Case Language of
+    _English: errrpt('Expected closing bracket');
+    _Germany: errrpt('Erwartete schließende Klammer');
+    Else errrpt('Crochet fermant attendu');
+   End;
+  End;
 
   result_type := carray;
  End;
@@ -1542,14 +1564,22 @@ Begin
  { Get function name }
  If not symname(func_name) Then
  Begin
-  errrpt('Expected function name');
+  Case Language of
+   _English: errrpt('Expected function name');
+   _Germany: errrpt('Erwarteter Funktionsname');
+   Else errrpt('Nom de fonction attendu');
+  End;
   Exit;
  End;
 
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
-  errrpt('Expected ( after function name');
+  Case Language of
+   _English: errrpt('Expected ( after function name');
+   _Germany: errrpt('Erwartete ( nach Funktionsname');
+   Else errrpt('( attendu après le nom de fonction');
+  End;
   Exit;
  End;
 
@@ -1567,7 +1597,13 @@ Begin
    If match('void') Then
    Begin
     If not match(')') Then
-     errrpt('Expected ) after void');
+    Begin
+     Case Language of
+      _English: errrpt('Expected ) after void');
+      _Germany: errrpt('Erwartete ) nach void');
+      Else errrpt(') attendu après void');
+     End;
+    End;
     Break;
    End;
 
@@ -1575,7 +1611,11 @@ Begin
    param_type := parse_type_specifier;
    If param_type = 0 Then
    Begin
-    errrpt('Invalid parameter type');
+    Case Language of
+     _English: errrpt('Invalid parameter type');
+     _Germany: errrpt('Ungültiger Parametertyp');
+     Else errrpt('Type de paramètre invalide');
+    End;
     Exit;
    End;
 
@@ -1593,7 +1633,13 @@ Begin
 
   { Expect closing parenthesis }
   If not match(')') Then
-   errrpt('Expected ) after parameter list');
+  Begin
+   Case Language of
+    _English: errrpt('Expected ) after parameter list');
+    _Germany: errrpt('Erwartete ) nach Parameterliste');
+    Else errrpt(') attendu après la liste des paramètres');
+   End;
+  End;
  End;
 
  { Check if this is a definition (has body) or just declaration }
@@ -1606,7 +1652,11 @@ Begin
    { This is a function definition }
    If is_defined Then
    Begin
-    errrpt('Function ' + func_name + ' already defined');
+    Case Language of
+     _English: errrpt('Function ' + func_name + ' already defined');
+     _Germany: errrpt('Funktion ' + func_name + ' bereits definiert');
+     Else errrpt('Fonction ' + func_name + ' déjà définie');
+    End;
     Exit;
    End;
 
@@ -1626,7 +1676,13 @@ Begin
   Begin
    { This is just a declaration }
    If not match(';') Then
-    errrpt('Expected ; after function declaration');
+   Begin
+    Case Language of
+     _English: errrpt('Expected ; after function declaration');
+     _Germany: errrpt('Erwarteter ; nach Funktionsdeklaration');
+     Else errrpt('; attendu après la déclaration de fonction');
+    End;
+   End;
 
    is_declared := True;
    parse_function_declaration := True;
@@ -1657,7 +1713,11 @@ Begin
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
-  errrpt('Expected ( in function call');
+  Case Language of
+   _English: errrpt('Expected ( in function call');
+   _Germany: errrpt('Erwartete ( im Funktionsaufruf');
+   Else errrpt('( attendu dans l''appel de fonction');
+  End;
   Exit;
  End;
 
@@ -1680,7 +1740,13 @@ Begin
 
   { Expect closing parenthesis }
   If not match(')') Then
-   errrpt('Expected ) after function arguments');
+  Begin
+   Case Language of
+    _English: errrpt('Expected ) after function arguments');
+    _Germany: errrpt('Erwartete ) nach Funktionsargumenten');
+    Else errrpt(') attendu après les arguments de fonction');
+   End;
+  End;
  End;
 
  { Generate function call }
@@ -1703,7 +1769,11 @@ Begin
  { Check if already declared }
  If findsym(var_name) <> 0 Then
  Begin
-  errrpt('Variable ' + var_name + ' already declared');
+  Case Language of
+   _English: errrpt('Variable ' + var_name + ' already declared');
+   _Germany: errrpt('Variable ' + var_name + ' bereits deklariert');
+   Else errrpt('Variable ' + var_name + ' déjà déclarée');
+  End;
   Exit;
  End;
 
@@ -1848,7 +1918,11 @@ Begin
      End
      Else
      Begin
-      errrpt('Invalid function call: ' + id);
+      Case Language of
+       _English: errrpt('Invalid function call: ' + id);
+       _Germany: errrpt('Ungültiger Funktionsaufruf: ' + id);
+       Else errrpt('Appel de fonction invalide: ' + id);
+      End;
      End;
     End
     Else
@@ -1879,11 +1953,21 @@ Begin
     If peek_char = ')' Then
      next_char { consume ')' }
     Else
-     errrpt('Missing )');
+    Begin
+     Case Language of
+      _English: errrpt('Missing )');
+      _Germany: errrpt('Fehlende )');
+      Else errrpt(') manquant');
+     End;
+    End;
    End;
 
   Else
-   errrpt('Invalid primary expression');
+   Case Language of
+    _English: errrpt('Invalid primary expression');
+    _Germany: errrpt('Ungültiger primärer Ausdruck');
+    Else errrpt('Expression primaire invalide');
+   End;
  End;
 End;
 
@@ -2075,7 +2159,11 @@ Begin
   { Check if const variable needs initialization }
   If type_info.is_const Then
   Begin
-   errrpt('const variable ' + var_name + ' must be initialized');
+   Case Language of
+    _English: errrpt('const variable ' + var_name + ' must be initialized');
+    _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
+    Else errrpt('la variable const ' + var_name + ' doit être initialisée');
+   End;
   End;
  End;
 
@@ -2118,7 +2206,11 @@ Begin
    { Check if const variable needs initialization }
    If type_info.is_const Then
    Begin
-    errrpt('const variable ' + var_name + ' must be initialized');
+    Case Language of
+     _English: errrpt('const variable ' + var_name + ' must be initialized');
+     _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
+     Else errrpt('la variable const ' + var_name + ' doit être initialisée');
+    End;
    End;
   End;
  End;
@@ -2516,7 +2608,11 @@ Begin
  Begin
   If eof <> 0 Then
   Begin
-   errrpt('Unexpected end of file in compound statement');
+   Case Language of
+    _English: errrpt('Unexpected end of file in compound statement');
+    _Germany: errrpt('Unerwartetes Dateiende in zusammengesetzter Anweisung');
+    Else errrpt('Fin de fichier inattendue dans l''instruction composée');
+   End;
    Exit;
   End;
 
@@ -2594,7 +2690,11 @@ Begin
     { Check if variable is const }
     If lval.type_info.is_const Then
     Begin
-     errrpt('Cannot assign to const variable: ' + var_name);
+     Case Language of
+      _English: errrpt('Cannot assign to const variable: ' + var_name);
+      _Germany: errrpt('Kann const Variable nicht zuweisen: ' + var_name);
+      Else errrpt('Impossible d''assigner à la variable const: ' + var_name);
+     End;
      Exit;
     End;
     
@@ -2753,7 +2853,11 @@ Begin
      { Check if variable is const and prevent assignment }
      If lval.type_info.is_const Then
      Begin
-      errrpt('Cannot assign to const variable: ' + sname);
+      Case Language of
+       _English: errrpt('Cannot assign to const variable: ' + sname);
+       _Germany: errrpt('Kann const Variable nicht zuweisen: ' + sname);
+       Else errrpt('Impossible d''assigner à la variable const: ' + sname);
+      End;
      End
      Else
      Begin
