@@ -36,10 +36,36 @@ Const
  arr = 2;
  pointer = 3;
  func = 4;
+ struct_type = 5;
+ union_type = 6;
+ typedef_type = 7;
 
  { Data types }
- cchar = 4;
- cint = 8;
+ cvoid = 0;
+ cchar = 1;
+ cuchar = 2;
+ cshort = 3;
+ cushort = 4;
+ cint = 5;
+ cuint = 6;
+ clong = 7;
+ culong = 8;
+ cfloat = 9;
+ cdouble = 10;
+ cpointer = 11;
+ carray = 12;
+ cstruct = 13;
+ cunion = 14;
+
+ { Type sizes in bytes }
+ sizeof_void = 0;
+ sizeof_char = 1;
+ sizeof_short = 2;
+ sizeof_int = 2;
+ sizeof_long = 4;
+ sizeof_float = 4;
+ sizeof_double = 8;
+ sizeof_pointer = 2;
 
  { Storage classes }
  statik = 1;
@@ -62,14 +88,28 @@ Type
  TSymTab = Array[0..symtbsz-1] of Char;
  TLine = String[linesize];
 
+ { Type information structure }
+ PTypeInfo = ^TTypeInfo;
+ TTypeInfo = Record
+  base_type: Integer;      { Base data type (cint, cchar, etc.) }
+  pointer_level: Integer;  { Number of indirection levels }
+  array_size: Integer;     { Array size (0 if not array) }
+  is_unsigned: Boolean;    { True for unsigned types }
+  is_const: Boolean;       { True for const types }
+  is_volatile: Boolean;    { True for volatile types }
+  struct_id: Integer;      { Struct/union identifier }
+  size: Integer;           { Total size in bytes }
+ End;
+
  { Expression value structure }
  TLVal = Record
-  symbol: Integer;     { pointer to symbol table entry }
-  indirect: Integer;   { 0=direct, 1=indirect }
-  typ: Integer;        { data type }
-  storage: Integer;    { storage class }
-  constant: Boolean;   { true if constant value }
-  value: Integer;      { constant value if applicable }
+  symbol: Integer;         { pointer to symbol table entry }
+  indirect: Integer;       { 0=direct, 1=indirect }
+  typ: Integer;           { data type }
+  storage: Integer;       { storage class }
+  constant: Boolean;      { true if constant value }
+  value: Integer;         { constant value if applicable }
+  type_info: TTypeInfo;   { Extended type information }
  End;
 
 Var
@@ -435,30 +475,260 @@ Begin
  findsym := 0;
 End;
 
-{ Variable declaration parsing }
-Function parse_type_specifier: Integer;
+{ ============================================================================ }
+{ TYPE MANAGEMENT FUNCTIONS                                                    }
+{ ============================================================================ }
+
+{ Initialize type information structure }
+Procedure init_type_info(var type_info: TTypeInfo);
 Begin
- parse_type_specifier := cint; { Default to int }
- 
- If match('int') Then
-  parse_type_specifier := cint
- Else If match('char') Then
-  parse_type_specifier := cchar
- Else If match('void') Then
-  parse_type_specifier := 0;
+ FillChar(type_info, SizeOf(type_info), 0);
+ type_info.base_type := cint;
+ type_info.pointer_level := 0;
+ type_info.array_size := 0;
+ type_info.is_unsigned := False;
+ type_info.is_const := False;
+ type_info.is_volatile := False;
+ type_info.struct_id := 0;
+ type_info.size := sizeof_int;
 End;
 
-Function parse_declarator(var var_name: String; base_type: Integer): Integer;
+{ Get size of a base type }
+Function get_type_size(base_type: Integer): Integer;
+Begin
+ Case base_type of
+  cvoid: get_type_size := sizeof_void;
+  cchar, cuchar: get_type_size := sizeof_char;
+  cshort, cushort: get_type_size := sizeof_short;
+  cint, cuint: get_type_size := sizeof_int;
+  clong, culong: get_type_size := sizeof_long;
+  cfloat: get_type_size := sizeof_float;
+  cdouble: get_type_size := sizeof_double;
+  cpointer: get_type_size := sizeof_pointer;
+ Else
+  get_type_size := sizeof_int; { Default }
+ End;
+End;
+
+{ Calculate total size of a type including arrays and pointers }
+Function calculate_type_size(var type_info: TTypeInfo): Integer;
+Begin
+ If type_info.pointer_level > 0 Then
+  calculate_type_size := sizeof_pointer
+ Else If type_info.array_size > 0 Then
+  calculate_type_size := get_type_size(type_info.base_type) * type_info.array_size
+ Else
+  calculate_type_size := get_type_size(type_info.base_type);
+  
+ type_info.size := calculate_type_size;
+End;
+
+{ Check if two types are compatible }
+Function types_compatible(var type1, type2: TTypeInfo): Boolean;
+Begin
+ types_compatible := (type1.base_type = type2.base_type) and 
+                    (type1.pointer_level = type2.pointer_level) and
+                    (type1.is_unsigned = type2.is_unsigned);
+End;
+
+{ Check if type can be converted to another }
+Function can_convert_type(var from_type, to_type: TTypeInfo): Boolean;
+Begin
+ { Pointers can be converted to pointers }
+ If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then
+ Begin
+  can_convert_type := True;
+  Exit;
+ End;
+ 
+ { Numeric types can usually be converted }
+ If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then
+ Begin
+  Case from_type.base_type of
+   cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
+    Case to_type.base_type of
+     cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
+      can_convert_type := True;
+    Else
+     can_convert_type := False;
+    End;
+  Else
+   can_convert_type := False;
+  End;
+ End
+ Else
+  can_convert_type := False;
+End;
+
+{ Get type name as string for debugging/error messages }
+Function get_type_name(var type_info: TTypeInfo): String;
+Var
+ base_name, temp_str: String;
+ i: Integer;
+Begin
+ { Get base type name }
+ Case type_info.base_type of
+  cvoid: base_name := 'void';
+  cchar: base_name := 'char';
+  cuchar: base_name := 'unsigned char';
+  cshort: base_name := 'short';
+  cushort: base_name := 'unsigned short';
+  cint: base_name := 'int';
+  cuint: base_name := 'unsigned int';
+  clong: base_name := 'long';
+  culong: base_name := 'unsigned long';
+  cfloat: base_name := 'float';
+  cdouble: base_name := 'double';
+ Else
+  base_name := 'unknown';
+ End;
+ 
+ { Add const/volatile qualifiers }
+ If type_info.is_const Then base_name := 'const ' + base_name;
+ If type_info.is_volatile Then base_name := 'volatile ' + base_name;
+ 
+ { Add pointer asterisks }
+ For i := 1 to type_info.pointer_level do
+  base_name := base_name + '*';
+  
+ { Add array notation }
+ If type_info.array_size > 0 Then
+ Begin
+  Str(type_info.array_size, temp_str);
+  base_name := base_name + '[' + temp_str + ']';
+ End;
+  
+ get_type_name := base_name;
+End;
+
+{ Generate assembly code for type conversion }
+Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);
+Begin
+ WriteLn(output, '; Type conversion from ', get_type_name(from_type), 
+         ' to ', get_type_name(to_type));
+         
+ { Handle char to int conversion }
+ If (from_type.base_type = cchar) and (to_type.base_type = cint) Then
+ Begin
+  If from_type.is_unsigned Then
+  Begin
+   ol('clra   ; zero extend unsigned char');
+  End
+  Else
+  Begin
+   ol('sex    ; sign extend signed char');
+  End;
+ End
+ { Handle int to char conversion }
+ Else If (from_type.base_type = cint) and (to_type.base_type = cchar) Then
+ Begin
+  ol('tfr  d,x ; keep only low byte');
+  ol('tfr  b,a');
+  ol('clrb');
+ End;
+ { Add more conversions as needed }
+End;
+
+{ Enhanced type specifier parsing with full C type support }
+Function parse_type_specifier: Integer;
+Var
+ is_unsigned, is_signed: Boolean;
+ base_type: Integer;
+Begin
+ is_unsigned := False;
+ is_signed := False;
+ base_type := cint; { Default }
+ 
+ { Parse type qualifiers and specifiers }
+ Repeat
+  If match('unsigned') Then
+  Begin
+   is_unsigned := True;
+   Continue;
+  End
+  Else If match('signed') Then
+  Begin
+   is_signed := True;
+   Continue;
+  End
+  Else If match('const') Then
+  Begin
+   { TODO: Handle const qualifier }
+   Continue;
+  End
+  Else If match('volatile') Then
+  Begin
+   { TODO: Handle volatile qualifier }
+   Continue;
+  End
+  Else If match('void') Then
+  Begin
+   base_type := cvoid;
+   Break;
+  End
+  Else If match('char') Then
+  Begin
+   If is_unsigned Then base_type := cuchar
+   Else base_type := cchar;
+   Break;
+  End
+  Else If match('short') Then
+  Begin
+   If match('int') Then; { optional }
+   If is_unsigned Then base_type := cushort
+   Else base_type := cshort;
+   Break;
+  End
+  Else If match('long') Then
+  Begin
+   If match('int') Then; { optional }
+   If is_unsigned Then base_type := culong
+   Else base_type := clong;
+   Break;
+  End
+  Else If match('int') Then
+  Begin
+   If is_unsigned Then base_type := cuint
+   Else base_type := cint;
+   Break;
+  End
+  Else If match('float') Then
+  Begin
+   base_type := cfloat;
+   Break;
+  End
+  Else If match('double') Then
+  Begin
+   base_type := cdouble;
+   Break;
+  End
+  Else
+   Break; { No more type specifiers }
+ Until False;
+ 
+ parse_type_specifier := base_type;
+End;
+
+{ Enhanced declarator parsing with type information }
+Function parse_declarator(var var_name: String; base_type: Integer; var type_info: TTypeInfo): Integer;
 Var
  result_type: Integer;
  array_size: Integer;
 Begin
+ { Initialize type info }
+ init_type_info(type_info);
+ type_info.base_type := base_type;
  result_type := base_type;
  
  { Handle pointer declarations }
  While match('*') do
  Begin
-  result_type := pointer;
+  Inc(type_info.pointer_level);
+  result_type := cpointer;
+  
+  { Handle const/volatile after * }
+  If match('const') Then type_info.is_const := True;
+  If match('volatile') Then type_info.is_volatile := True;
  End;
  
  { Parse variable name }
@@ -473,22 +743,32 @@ Begin
  If match('[') Then
  Begin
   If number(array_size) Then
-   WriteLn(output, '; Array size: ', array_size)
+  Begin
+   type_info.array_size := array_size;
+   WriteLn(output, '; Array size: ', array_size);
+  End
   Else
-   array_size := 1;
+  Begin
+   type_info.array_size := 1; { Unknown size array }
+  End;
    
   If not match(']') Then
    errrpt('Expected closing bracket');
    
-  result_type := arr;
+  result_type := carray;
  End;
+ 
+ { Calculate final size }
+ calculate_type_size(type_info);
  
  parse_declarator := result_type;
 End;
 
-Procedure declare_variable(var_name: String; var_type: Integer);
+{ Enhanced variable declaration with type information }
+Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo);
 Var
  sym_ptr: Integer;
+ type_size: Integer;
 Begin
  { Check if already declared }
  If findsym(var_name) <> 0 Then
@@ -501,18 +781,18 @@ Begin
  sym_ptr := addsym(var_name, var_type, automatic, 0);
  If sym_ptr <> 0 Then
  Begin
-  WriteLn(output, '; Declared variable: ', var_name, ' (type: ', var_type, ')');
+  WriteLn(output, '; Declared variable: ', var_name, ' (', get_type_name(type_info), ')');
   
-  { Generate storage allocation }
+  { Generate storage allocation based on type }
   outstr(var_name);
-  Case var_type of
-   cchar: WriteLn(output, ': rmb 1');
-   cint: WriteLn(output, ': rmb 2');
-   pointer: WriteLn(output, ': rmb 2');
-   arr: WriteLn(output, ': rmb 2 ; array pointer');
+  type_size := type_info.size;
+  
+  If type_size = 1 Then
+   WriteLn(output, ': rmb 1')
   Else
-   WriteLn(output, ': rmb 2');
-  End;
+   WriteLn(output, ': rmb ', type_size);
+   
+  WriteLn(output, '; Size: ', type_size, ' bytes');
  End;
 End;
 
@@ -693,11 +973,13 @@ Begin
 End;
 
 { Variable declaration parsing functions - moved after expression }
+{ Enhanced declaration parsing with full type support }
 Function parse_declaration: Boolean;
 Var
  base_type, var_type: Integer;
  var_name: String;
  lval: TLVal;
+ type_info: TTypeInfo;
 Begin
  parse_declaration := False;
  
@@ -707,22 +989,38 @@ Begin
  
  { Parse variable declarator(s) }
  Repeat
-  var_type := parse_declarator(var_name, base_type);
+  var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
   
-  declare_variable(var_name, var_type);
+  declare_variable(var_name, var_type, type_info);
   parse_declaration := True;
   
   { Check for initialization }
   If match('=') Then
   Begin
-   WriteLn(output, '; Initializing variable: ', var_name);
+   WriteLn(output, '; Initializing variable: ', var_name, ' (', get_type_name(type_info), ')');
    expression(lval);
    
-   { Generate initialization code }
-   ot('std  ');
-   outstr(var_name);
-   nl;
+   { TODO: Add type checking for initialization }
+   { Generate type-appropriate initialization code }
+   Case type_info.size of
+    1: Begin
+        ot('stb  '); { Store byte for char }
+        outstr(var_name);
+        nl;
+       End;
+    2: Begin
+        ot('std  '); { Store word for int/short/pointers }
+        outstr(var_name);
+        nl;
+       End;
+   Else
+    Begin
+     ot('std  '); { Default to word }
+     outstr(var_name);
+     nl;
+    End;
+   End;
   End;
   
   { Check for multiple declarations separated by comma }
