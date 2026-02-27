@@ -32,13 +32,13 @@ Const
  offsize = 2;
 
  { Identifier types }
- variable = 1;
- arr = 2;
- pointer = 3;
- func = 4;
- struct_type = 5;
- union_type = 6;
- typedef_type = 7;
+ it_variable = 1;
+ it_array = 2;
+ it_pointer = 3;
+ it_function = 4;
+ it_struct_type = 5;
+ it_union_type = 6;
+ it_typedef_type = 7;
 
  { Data types }
  cvoid = 0;
@@ -532,7 +532,7 @@ Begin
  symtab[ptr + name + Length(sname)] := #0;
 
  { Store attributes }
- symtab[ptr + ident] := Chr(variable);
+ symtab[ptr + ident] := Chr(it_variable);
  symtab[ptr + ctype] := Chr(typ);
  symtab[ptr + storage] := Chr(storage);
 
