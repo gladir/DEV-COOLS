@@ -347,6 +347,26 @@ Begin
  Else symname := False;
 End;
 
+{ Number parsing }
+Function number(Var value: Integer): Boolean;
+Var
+ n: Integer;
+Begin
+ blanks;
+ n := 0;
+ number := False;
+ If (lptr <= Length(line)) and numeric(line[lptr]) Then
+ Begin
+  number := True;
+  While (lptr <= Length(line)) and numeric(line[lptr]) do
+  Begin
+   n := n * 10 + (Ord(line[lptr]) - Ord('0'));
+   Inc(lptr);
+  End;
+  value := n;
+ End;
+End;
+
 { Symbol table management }
 Function hash(sname: String): Integer;
 Var
@@ -356,6 +376,144 @@ Begin
  For i := 1 to Length(sname) do
   h := (h shl 1) + Ord(sname[i]);
  hash := h;
+End;
+
+{ Symbol table operations }
+Function addsym(sname: String; typ: Integer; storage: Integer; offset: Integer): Integer;
+Var
+ ptr: Integer;
+Begin
+ ptr := glbptr;
+ If ptr + symsiz > endglb Then
+ Begin
+  errrpt('Symbol table overflow');
+  addsym := 0;
+  Exit;
+ End;
+ 
+ { Store symbol name }
+ Move(sname[1], symtab[ptr + name], Length(sname));
+ symtab[ptr + name + Length(sname)] := #0;
+ 
+ { Store attributes }
+ symtab[ptr + ident] := Chr(variable);
+ symtab[ptr + ctype] := Chr(typ);
+ symtab[ptr + storage] := Chr(storage);
+ 
+ { Store offset }
+ Move(offset, symtab[ptr + offset], offsize);
+ 
+ glbptr := glbptr + symsiz;
+ addsym := ptr;
+End;
+
+Function findsym(sname: String): Integer;
+Var
+ ptr: Integer;
+ stored_name: String;
+Begin
+ ptr := startglb;
+ While ptr < glbptr do
+ Begin
+  { Extract stored name }
+  stored_name := '';
+  While (symtab[ptr + name + Length(stored_name)] <> #0) and 
+        (Length(stored_name) < namemax) do
+  Begin
+   stored_name := stored_name + symtab[ptr + name + Length(stored_name)];
+  End;
+  
+  If stored_name = sname Then
+  Begin
+   findsym := ptr;
+   Exit;
+  End;
+  
+  ptr := ptr + symsiz;
+ End;
+ 
+ findsym := 0;
+End;
+
+{ Variable declaration parsing }
+Function parse_type_specifier: Integer;
+Begin
+ parse_type_specifier := cint; { Default to int }
+ 
+ If match('int') Then
+  parse_type_specifier := cint
+ Else If match('char') Then
+  parse_type_specifier := cchar
+ Else If match('void') Then
+  parse_type_specifier := 0;
+End;
+
+Function parse_declarator(var var_name: String; base_type: Integer): Integer;
+Var
+ result_type: Integer;
+ array_size: Integer;
+Begin
+ result_type := base_type;
+ 
+ { Handle pointer declarations }
+ While match('*') do
+ Begin
+  result_type := pointer;
+ End;
+ 
+ { Parse variable name }
+ If not symname(var_name) Then
+ Begin
+  errrpt('Expected variable name');
+  parse_declarator := 0;
+  Exit;
+ End;
+ 
+ { Handle array declarations }
+ If match('[') Then
+ Begin
+  If number(array_size) Then
+   WriteLn(output, '; Array size: ', array_size)
+  Else
+   array_size := 1;
+   
+  If not match(']') Then
+   errrpt('Expected closing bracket');
+   
+  result_type := arr;
+ End;
+ 
+ parse_declarator := result_type;
+End;
+
+Procedure declare_variable(var_name: String; var_type: Integer);
+Var
+ sym_ptr: Integer;
+Begin
+ { Check if already declared }
+ If findsym(var_name) <> 0 Then
+ Begin
+  errrpt('Variable ' + var_name + ' already declared');
+  Exit;
+ End;
+ 
+ { Add to symbol table }
+ sym_ptr := addsym(var_name, var_type, automatic, 0);
+ If sym_ptr <> 0 Then
+ Begin
+  WriteLn(output, '; Declared variable: ', var_name, ' (type: ', var_type, ')');
+  
+  { Generate storage allocation }
+  outstr(var_name);
+  Case var_type of
+   cchar: WriteLn(output, ': rmb 1');
+   cint: WriteLn(output, ': rmb 2');
+   pointer: WriteLn(output, ': rmb 2');
+   arr: WriteLn(output, ': rmb 2 ; array pointer');
+  Else
+   WriteLn(output, ': rmb 2');
+  End;
+ End;
 End;
 
 { File operations }
@@ -527,6 +685,78 @@ Begin
  additive_expression(lval);
 End;
 
+{ Variable declaration parsing functions - moved after expression }
+Function parse_declaration: Boolean;
+Var
+ base_type, var_type: Integer;
+ var_name: String;
+ lval: TLVal;
+Begin
+ parse_declaration := False;
+ 
+ { Parse type specifier }
+ base_type := parse_type_specifier;
+ If base_type = 0 Then Exit; { No valid type found }
+ 
+ { Parse variable declarator(s) }
+ Repeat
+  var_type := parse_declarator(var_name, base_type);
+  If var_type = 0 Then Exit;
+  
+  declare_variable(var_name, var_type);
+  parse_declaration := True;
+  
+  { Check for initialization }
+  If match('=') Then
+  Begin
+   WriteLn(output, '; Initializing variable: ', var_name);
+   expression(lval);
+   
+   { Generate initialization code }
+   ot('std  ');
+   outstr(var_name);
+   nl;
+  End;
+  
+  { Check for multiple declarations separated by comma }
+  If match(',') Then Continue
+  Else Break;
+ Until False;
+ 
+ { Expect semicolon }
+ If not match(';') Then
+  errrpt('Expected semicolon after declaration');
+End;
+
+{ Enhanced identifier lookup with symbol table }
+Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
+Var
+ sym_ptr: Integer;
+Begin
+ lookup_variable := False;
+ FillChar(lval, SizeOf(lval), 0);
+ 
+ sym_ptr := findsym(var_name);
+ If sym_ptr <> 0 Then
+ Begin
+  lookup_variable := True;
+  lval.symbol := sym_ptr;
+  lval.typ := Ord(symtab[sym_ptr + ctype]);
+  lval.storage := Ord(symtab[sym_ptr + storage]);
+  lval.indirect := 0;
+  lval.constant := False;
+ End
+ Else
+ Begin
+  { Variable not found - treat as new variable for now }
+  WriteLn(output, '; Warning: Undeclared variable ', var_name);
+  lval.symbol := 0;
+  lval.typ := cint;
+  lval.constant := False;
+  lookup_variable := True;
+ End;
+End;
+
 Procedure ask;
 Begin
  nxtlab := 0;
@@ -586,11 +816,12 @@ Begin
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
 
-{ Enhanced parsing with expression parser }
+{ Enhanced parsing with variable declarations and expression parser }
 Procedure parse;
 Var
  lval: TLVal;
  sname: String;
+ save_lptr: Integer;
 Begin
  While eof = 0 do
  Begin
@@ -613,9 +844,20 @@ Begin
 
   WriteLn(output, '; Processing: ', line);
 
-  { Reset position for expression parser }
+  { Reset position for parsing }
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
+
+  { Try to parse as variable declaration first }
+  save_lptr := lptr;
+  If parse_declaration Then
+  Begin
+   WriteLn(output, '; Declaration processed');
+   Continue;
+  End;
+  
+  { Reset position if declaration failed }
+  lptr := save_lptr;
 
   { Parse identifiers and expressions }
   If symname(sname) Then
@@ -629,20 +871,27 @@ Begin
     WriteLn(output, '; Assignment to ', sname);
     blanks;
 
-    { Use expression parser for right side }
-    expression(lval);
+    { Look up variable in symbol table }
+    If lookup_variable(sname, lval) Then
+    Begin
+     { Use expression parser for right side }
+     expression(lval);
 
-    { Store result in variable }
-    ot('std  ');
-    outstr(sname);
-    nl;
+     { Store result in variable }
+     ot('std  ');
+     outstr(sname);
+     nl;
+    End;
    End
    Else
    Begin
     { Load variable }
-    ot('ldd  ');
-    outstr(sname);
-    nl;
+    If lookup_variable(sname, lval) Then
+    Begin
+     ot('ldd  ');
+     outstr(sname);
+     nl;
+    End;
    End;
    Continue;
   End;
