@@ -2950,6 +2950,18 @@ BEGIN
     WriteLn('  -O2    Advanced optimizations (+ dead code, jumps)');
     WriteLn('  -O3    Aggressive optimizations (all)');
    End;
+   _Germany:Begin
+    WriteLn('CC09 - Dieser Befehl ermöglicht es, den C-Compiler für ',
+            'den 6809-Mikroprozessor zu starten.');
+    WriteLn;
+    WriteLn('Syntax: cc09 infile.c [outfile] [-optionen]');
+    WriteLn;
+    WriteLn('Optionen:');
+    WriteLn('  -O0    Keine Optimierung (Standard)');
+    WriteLn('  -O1    Grundlegende Optimierungen (Guckloch, Konstantenfaltung)');
+    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, Sprünge)');
+    WriteLn('  -O3    Aggressive Optimierungen (alle)');
+   End;
    Else Begin
     WriteLn('CC09 - Cette commande permet de lancer le compilateur C pour ',
             'le microprocesseur 6809.');
