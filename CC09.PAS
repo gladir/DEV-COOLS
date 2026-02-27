@@ -139,7 +139,7 @@ Type
  TOptContext = Record
   level: Integer;         { Optimization level }
   flags: Integer;         { Optimization flags }
-  instructions: Array[0..999] of TOptInstruction; { Instruction buffer }
+  instructions: Array[0..{$IFDEF FPC}999{$ELSE}99{$ENDIF}] of TOptInstruction; { Instruction buffer }
   inst_count: Integer;    { Number of instructions }
   last_result_reg: String; { Last register used for result }
  End;
@@ -496,19 +496,19 @@ Begin
   addsym := 0;
   Exit;
  End;
- 
+
  { Store symbol name }
  Move(sname[1], symtab[ptr + name], Length(sname));
  symtab[ptr + name + Length(sname)] := #0;
- 
+
  { Store attributes }
  symtab[ptr + ident] := Chr(variable);
  symtab[ptr + ctype] := Chr(typ);
  symtab[ptr + storage] := Chr(storage);
- 
+
  { Store offset }
  Move(offset, symtab[ptr + offset], offsize);
- 
+
  glbptr := glbptr + symsiz;
  addsym := ptr;
 End;
@@ -523,21 +523,21 @@ Begin
  Begin
   { Extract stored name }
   stored_name := '';
-  While (symtab[ptr + name + Length(stored_name)] <> #0) and 
+  While (symtab[ptr + name + Length(stored_name)] <> #0) and
         (Length(stored_name) < namemax) do
   Begin
    stored_name := stored_name + symtab[ptr + name + Length(stored_name)];
   End;
-  
+
   If stored_name = sname Then
   Begin
    findsym := ptr;
    Exit;
   End;
-  
+
   ptr := ptr + symsiz;
  End;
- 
+
  findsym := 0;
 End;
 
@@ -578,21 +578,24 @@ End;
 
 { Calculate total size of a type including arrays and pointers }
 Function calculate_type_size(var type_info: TTypeInfo): Integer;
+Var
+ result_size: Integer;
 Begin
  If type_info.pointer_level > 0 Then
-  calculate_type_size := sizeof_pointer
+  result_size := sizeof_pointer
  Else If type_info.array_size > 0 Then
-  calculate_type_size := get_type_size(type_info.base_type) * type_info.array_size
+  result_size := get_type_size(type_info.base_type) * type_info.array_size
  Else
-  calculate_type_size := get_type_size(type_info.base_type);
-  
- type_info.size := calculate_type_size;
+  result_size := get_type_size(type_info.base_type);
+
+ type_info.size := result_size;
+ calculate_type_size := result_size;
 End;
 
 { Check if two types are compatible }
 Function types_compatible(var type1, type2: TTypeInfo): Boolean;
 Begin
- types_compatible := (type1.base_type = type2.base_type) and 
+ types_compatible := (type1.base_type = type2.base_type) and
                     (type1.pointer_level = type2.pointer_level) and
                     (type1.is_unsigned = type2.is_unsigned);
 End;
@@ -606,7 +609,7 @@ Begin
   can_convert_type := True;
   Exit;
  End;
- 
+
  { Numeric types can usually be converted }
  If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then
  Begin
@@ -648,31 +651,31 @@ Begin
  Else
   base_name := 'unknown';
  End;
- 
+
  { Add const/volatile qualifiers }
  If type_info.is_const Then base_name := 'const ' + base_name;
  If type_info.is_volatile Then base_name := 'volatile ' + base_name;
- 
+
  { Add pointer asterisks }
  For i := 1 to type_info.pointer_level do
   base_name := base_name + '*';
-  
+
  { Add array notation }
  If type_info.array_size > 0 Then
  Begin
   Str(type_info.array_size, temp_str);
   base_name := base_name + '[' + temp_str + ']';
  End;
-  
+
  get_type_name := base_name;
 End;
 
 { Generate assembly code for type conversion }
 Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);
 Begin
- WriteLn(output, '; Type conversion from ', get_type_name(from_type), 
+ WriteLn(output, '; Type conversion from ', get_type_name(from_type),
          ' to ', get_type_name(to_type));
-         
+
  { Handle char to int conversion }
  If (from_type.base_type = cchar) and (to_type.base_type = cint) Then
  Begin
@@ -706,7 +709,7 @@ Begin
  opt_context.level := optimize;
  opt_context.inst_count := 0;
  opt_context.last_result_reg := 'd';
- 
+
  { Set optimization flags based on level }
  Case optimize of
   OPT_NONE: opt_context.flags := 0;
@@ -740,10 +743,10 @@ Var
  changed: Boolean;
 Begin
  If (opt_context.flags and OPT_PEEPHOLE) = 0 Then Exit;
- 
+
  Repeat
   changed := False;
-  
+
   For i := 0 to opt_context.inst_count - 2 do
   Begin
    With opt_context.instructions[i] do
@@ -757,7 +760,7 @@ Begin
       opcode := 'clr';
       operand := opt_context.instructions[i+1].operand;
       comment := comment + ' ; optimized from ldd #0, std';
-      
+
       { Mark next instruction for removal }
       opt_context.instructions[i+1].can_eliminate := True;
       changed := True;
@@ -766,7 +769,7 @@ Begin
     { Remove STD followed by LDD of same location }
     Else If (opcode = 'std') Then
     Begin
-     If (opt_context.instructions[i+1].opcode = 'ldd') and 
+     If (opt_context.instructions[i+1].opcode = 'ldd') and
         (opt_context.instructions[i+1].operand = operand) Then
      Begin
       { Remove redundant LDD }
@@ -789,7 +792,7 @@ Begin
     End;
    End;
   End;
-  
+
   { Remove marked instructions }
   j := 0;
   For i := 0 to opt_context.inst_count - 1 do
@@ -801,7 +804,7 @@ Begin
    End;
   End;
   opt_context.inst_count := j;
-  
+
  Until not changed;
 End;
 
@@ -811,7 +814,7 @@ Var
  i: Integer;
 Begin
  If (opt_context.flags and OPT_CONSTANT_FOLD) = 0 Then Exit;
- 
+
  For i := 0 to opt_context.inst_count - 1 do
  Begin
   With opt_context.instructions[i] do
@@ -845,7 +848,7 @@ Var
  i: Integer;
 Begin
  If (opt_context.flags and OPT_DEAD_CODE) = 0 Then Exit;
- 
+
  For i := 0 to opt_context.inst_count - 1 do
  Begin
   With opt_context.instructions[i] do
@@ -865,7 +868,7 @@ Var
  i: Integer;
 Begin
  If (opt_context.flags and OPT_JUMP) = 0 Then Exit;
- 
+
  For i := 0 to opt_context.inst_count - 1 do
  Begin
   With opt_context.instructions[i] do
@@ -884,15 +887,15 @@ End;
 Procedure optimize_code;
 Begin
  If optimize = OPT_NONE Then Exit;
- 
+
  WriteLn(output, '; Applying optimizations (level ', optimize, ')');
- 
+
  { Apply optimizations in order }
  constant_fold_optimize;
  peephole_optimize;
  dead_code_eliminate;
  jump_optimize;
- 
+
  WriteLn(output, '; Optimization complete - ', opt_context.inst_count, ' instructions');
 End;
 
@@ -1100,7 +1103,7 @@ Var
  func_index: Integer;
 Begin
  add_function := -1;
- 
+
  { Check if function already exists }
  func_index := find_function(func_name);
  If func_index <> -1 Then
@@ -1108,14 +1111,14 @@ Begin
   add_function := func_index;
   Exit;
  End;
- 
+
  { Add new function }
  If function_count >= 100 Then
  Begin
   errrpt('Function table overflow');
   Exit;
  End;
- 
+
  func_index := function_count;
  With function_table[func_index] do
  Begin
@@ -1131,7 +1134,7 @@ Begin
   local_vars_size := 0;
   is_main := (func_name = 'main');
  End;
- 
+
  Inc(function_count);
  add_function := func_index;
 End;
@@ -1140,9 +1143,9 @@ End;
 Function add_parameter(func_index: Integer; param_name: String; param_type: Integer): Boolean;
 Begin
  add_parameter := False;
- 
+
  If (func_index < 0) or (func_index >= function_count) Then Exit;
- 
+
  With function_table[func_index] do
  Begin
   If param_count >= 10 Then
@@ -1150,7 +1153,7 @@ Begin
    errrpt('Too many parameters for function ' + name);
    Exit;
   End;
-  
+
   With parameters[param_count] do
   Begin
    name := param_name;
@@ -1160,7 +1163,7 @@ Begin
    calculate_type_size(type_info);
    offset := param_count * 2; { 2 bytes per parameter on 6809 stack }
   End;
-  
+
   Inc(param_count);
   add_parameter := True;
  End;
@@ -1170,18 +1173,18 @@ End;
 Procedure generate_function_prologue(func_index: Integer);
 Begin
  If (func_index < 0) or (func_index >= function_count) Then Exit;
- 
+
  With function_table[func_index] do
  Begin
   WriteLn(output, '; Function: ', name);
   WriteLn(output, name, ':');
-  
+
   { Standard 6809 function prologue }
   If not is_main Then
   Begin
    ol('pshs x,y  ; save frame pointer and return address context');
    ol('tfr  s,x  ; set up frame pointer');
-   
+
    { Allocate space for local variables if needed }
    If local_vars_size > 0 Then
    Begin
@@ -1203,11 +1206,11 @@ End;
 Procedure generate_function_epilogue(func_index: Integer);
 Begin
  If (func_index < 0) or (func_index >= function_count) Then Exit;
- 
+
  With function_table[func_index] do
  Begin
   WriteLn(output, '; End of function: ', name);
-  
+
   If not is_main Then
   Begin
    { Standard 6809 function epilogue }
@@ -1219,7 +1222,7 @@ Begin
     outstr(',s');
     nl;
    End;
-   
+
    ol('puls x,y  ; restore frame pointer');
    ol('rts       ; return to caller');
   End
@@ -1235,20 +1238,20 @@ End;
 Procedure generate_function_call(func_index: Integer; arg_count: Integer);
 Begin
  If (func_index < 0) or (func_index >= function_count) Then Exit;
- 
+
  With function_table[func_index] do
  Begin
   WriteLn(output, '; Call function: ', name);
-  
+
   { Check parameter count }
   If arg_count <> param_count Then
    WriteLn(output, '; Warning: Argument count mismatch (expected ', param_count, ', got ', arg_count, ')');
-  
+
   { Generate call instruction }
   ot('jsr  ');
   outstr(name);
   nl;
-  
+
   { Clean up stack if parameters were passed }
   If param_count > 0 Then
   Begin
@@ -1258,7 +1261,7 @@ Begin
    outstr(',s');
    nl;
   End;
-  
+
   Inc(call_stack_depth);
  End;
 End;
@@ -1279,7 +1282,7 @@ Begin
  is_unsigned := False;
  is_signed := False;
  base_type := cint; { Default }
- 
+
  { Parse type qualifiers and specifiers }
  Repeat
   If match('unsigned') Then
@@ -1346,7 +1349,7 @@ Begin
   Else
    Break; { No more type specifiers }
  Until False;
- 
+
  parse_type_specifier := base_type;
 End;
 
@@ -1360,18 +1363,18 @@ Begin
  init_type_info(type_info);
  type_info.base_type := base_type;
  result_type := base_type;
- 
+
  { Handle pointer declarations }
  While match('*') do
  Begin
   Inc(type_info.pointer_level);
   result_type := cpointer;
-  
+
   { Handle const/volatile after * }
   If match('const') Then type_info.is_const := True;
   If match('volatile') Then type_info.is_volatile := True;
  End;
- 
+
  { Parse variable name }
  If not symname(var_name) Then
  Begin
@@ -1379,7 +1382,7 @@ Begin
   parse_declarator := 0;
   Exit;
  End;
- 
+
  { Handle array declarations }
  If match('[') Then
  Begin
@@ -1392,16 +1395,16 @@ Begin
   Begin
    type_info.array_size := 1; { Unknown size array }
   End;
-   
+
   If not match(']') Then
    errrpt('Expected closing bracket');
-   
+
   result_type := carray;
  End;
- 
+
  { Calculate final size }
  calculate_type_size(type_info);
- 
+
  parse_declarator := result_type;
 End;
 
@@ -1415,27 +1418,27 @@ Var
  has_body: Boolean;
 Begin
  parse_function_declaration := False;
- 
+
  { Get function name }
  If not symname(func_name) Then
  Begin
   errrpt('Expected function name');
   Exit;
  End;
- 
+
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
   errrpt('Expected ( after function name');
   Exit;
  End;
- 
+
  { Add or find function }
  func_index := add_function(func_name, return_type);
  If func_index = -1 Then Exit;
- 
+
  WriteLn(output, '; Function declaration: ', func_name);
- 
+
  { Parse parameter list }
  If not match(')') Then
  Begin
@@ -1447,7 +1450,7 @@ Begin
      errrpt('Expected ) after void');
     Break;
    End;
-   
+
    { Parse parameter type }
    param_type := parse_type_specifier;
    If param_type = 0 Then
@@ -1455,27 +1458,27 @@ Begin
     errrpt('Invalid parameter type');
     Exit;
    End;
-   
+
    { Parse parameter declarator }
    If parse_declarator(param_name, param_type, type_info) = 0 Then
     param_name := ''; { Allow unnamed parameters }
-   
+
    { Add parameter to function }
    If not add_parameter(func_index, param_name, param_type) Then
     Exit;
-    
+
    WriteLn(output, '; Parameter: ', param_name, ' (', get_type_name(type_info), ')');
-   
+
   Until not match(',');
-  
+
   { Expect closing parenthesis }
   If not match(')') Then
    errrpt('Expected ) after parameter list');
  End;
- 
+
  { Check if this is a definition (has body) or just declaration }
  has_body := match('{');
- 
+
  With function_table[func_index] do
  Begin
   If has_body Then
@@ -1486,14 +1489,14 @@ Begin
     errrpt('Function ' + func_name + ' already defined');
     Exit;
    End;
-   
+
    is_defined := True;
    is_declared := True;
    current_function := func_index;
-   
+
    { Generate function prologue }
    generate_function_prologue(func_index);
-   
+
    parse_function_declaration := True;
   End
   Else
@@ -1501,7 +1504,7 @@ Begin
    { This is just a declaration }
    If not match(';') Then
     errrpt('Expected ; after function declaration');
-    
+
    is_declared := True;
    parse_function_declaration := True;
   End;
@@ -1516,7 +1519,7 @@ Var
  arg_lval: TLVal;
 Begin
  parse_function_call := False;
- 
+
  { Find function }
  func_index := find_function(func_name);
  If func_index = -1 Then
@@ -1525,46 +1528,46 @@ Begin
   { Treat as undeclared function returning int }
   func_index := add_function(func_name, cint);
  End;
- 
+
  WriteLn(output, '; Function call: ', func_name);
- 
+
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
   errrpt('Expected ( in function call');
   Exit;
  End;
- 
+
  arg_count := 0;
- 
+
  { Parse arguments }
  If not match(')') Then
  Begin
   Repeat
    WriteLn(output, '; Argument ', arg_count + 1);
-   
+
    { Parse argument expression }
    expression_bool(arg_lval);
-   
+
    { Push argument onto stack }
    ol('pshs d  ; push argument');
    Inc(arg_count);
-   
+
   Until not match(',');
-  
+
   { Expect closing parenthesis }
   If not match(')') Then
    errrpt('Expected ) after function arguments');
  End;
- 
+
  { Generate function call }
  generate_function_call(func_index, arg_count);
- 
+
  { Set up return value }
  FillChar(lval, SizeOf(lval), 0);
  lval.typ := function_table[func_index].return_type;
  lval.constant := False;
- 
+
  parse_function_call := True;
 End;
 
@@ -1580,22 +1583,22 @@ Begin
   errrpt('Variable ' + var_name + ' already declared');
   Exit;
  End;
- 
+
  { Add to symbol table }
  sym_ptr := addsym(var_name, var_type, automatic, 0);
  If sym_ptr <> 0 Then
  Begin
   WriteLn(output, '; Declared variable: ', var_name, ' (', get_type_name(type_info), ')');
-  
+
   { Generate storage allocation based on type }
   outstr(var_name);
   type_size := type_info.size;
-  
+
   If type_size = 1 Then
    WriteLn(output, ': rmb 1')
   Else
    WriteLn(output, ': rmb ', type_size);
-   
+
   WriteLn(output, '; Size: ', type_size, ' bytes');
  End;
 End;
@@ -1607,7 +1610,7 @@ Var
 Begin
  lookup_variable := False;
  FillChar(lval, SizeOf(lval), 0);
- 
+
  sym_ptr := findsym(var_name);
  If sym_ptr <> 0 Then
  Begin
@@ -1667,7 +1670,7 @@ Begin
 
   'A'..'Z', 'a'..'z', '_': Begin
     id := parse_identifier;
-    
+
     { Check if this is a function call }
     If peek_char = '(' Then
     Begin
@@ -1843,18 +1846,18 @@ Var
  save_lptr: Integer;
 Begin
  parse_declaration := False;
- 
+
  { Parse type specifier }
  base_type := parse_type_specifier;
  If base_type = 0 Then Exit; { No valid type found }
- 
+
  { Save position to check for function vs variable }
  save_lptr := lptr;
- 
+
  { Try to parse as declarator to get the name }
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
- 
+
  { Check if this is a function declaration/definition }
  If match('(') Then
  Begin
@@ -1864,17 +1867,17 @@ Begin
    parse_declaration := True;
   Exit;
  End;
- 
+
  { This is a variable declaration }
  declare_variable(var_name, var_type, type_info);
  parse_declaration := True;
- 
+
  { Check for initialization }
  If match('=') Then
  Begin
   WriteLn(output, '; Initializing variable: ', var_name, ' (', get_type_name(type_info), ')');
   expression(lval);
-  
+
   { TODO: Add type checking for initialization }
   { Generate type-appropriate initialization code }
   Case type_info.size of
@@ -1896,21 +1899,21 @@ Begin
    End;
   End;
  End;
- 
+
  { Handle multiple variable declarations }
  While match(',') do
  Begin
   var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
-  
+
   declare_variable(var_name, var_type, type_info);
-  
+
   { Check for initialization }
   If match('=') Then
   Begin
    WriteLn(output, '; Initializing variable: ', var_name, ' (', get_type_name(type_info), ')');
    expression(lval);
-   
+
    { Generate initialization code }
    Case type_info.size of
     1: Begin
@@ -1932,7 +1935,7 @@ Begin
    End;
   End;
  End;
- 
+
  { Expect semicolon for variable declarations }
  If not match(';') Then
   errrpt('Expected semicolon after declaration');
@@ -1949,38 +1952,38 @@ Var
  else_label, end_label: Integer;
 Begin
  parse_if_statement := False;
- 
+
  If not match('if') Then Exit;
  parse_if_statement := True;
- 
+
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
   errrpt('Expected ( after if');
   Exit;
  End;
- 
+
  { Parse condition }
  WriteLn(output, '; IF condition');
  expression_bool(lval);
- 
+
  { Expect closing parenthesis }
  If not match(')') Then
   errrpt('Expected ) after if condition');
- 
+
  { Generate conditional jump }
  else_label := getlabel;
  end_label := getlabel;
- 
+
  ol('tstd');
  ot('lbeq ');
  printlabel(else_label);
  nl;
- 
+
  { Parse then statement }
  WriteLn(output, '; IF then block');
  parse_statement;
- 
+
  { Check for else clause }
  If match('else') Then
  Begin
@@ -1988,19 +1991,19 @@ Begin
   ot('lbra ');
   printlabel(end_label);
   nl;
-  
+
   { Else block }
   prelabel(else_label);
   WriteLn(output, '; ELSE block');
   parse_statement;
-  
+
   prelabel(end_label);
  End
  Else
  Begin
   prelabel(else_label);
  End;
- 
+
  WriteLn(output, '; End IF');
 End;
 
@@ -2010,48 +2013,48 @@ Var
  loop_label, end_label: Integer;
 Begin
  parse_while_statement := False;
- 
+
  If not match('while') Then Exit;
  parse_while_statement := True;
- 
+
  { Generate loop labels }
  loop_label := getlabel;
  end_label := getlabel;
- 
+
  { Loop start }
  prelabel(loop_label);
  WriteLn(output, '; WHILE loop start');
- 
+
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
   errrpt('Expected ( after while');
   Exit;
  End;
- 
+
  { Parse condition }
  WriteLn(output, '; WHILE condition');
  expression_bool(lval);
- 
+
  { Expect closing parenthesis }
  If not match(')') Then
   errrpt('Expected ) after while condition');
- 
+
  { Generate conditional jump }
  ol('tstd');
  ot('lbeq ');
  printlabel(end_label);
  nl;
- 
+
  { Parse loop body }
  WriteLn(output, '; WHILE body');
  parse_statement;
- 
+
  { Jump back to condition }
  ot('lbra ');
  printlabel(loop_label);
  nl;
- 
+
  { End label }
  prelabel(end_label);
  WriteLn(output, '; End WHILE');
@@ -2063,24 +2066,24 @@ Var
  loop_label, condition_label, end_label: Integer;
 Begin
  parse_for_statement := False;
- 
+
  If not match('for') Then Exit;
  parse_for_statement := True;
- 
+
  { Generate loop labels }
  condition_label := getlabel;
  loop_label := getlabel;
  end_label := getlabel;
- 
+
  WriteLn(output, '; FOR loop start');
- 
+
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
   errrpt('Expected ( after for');
   Exit;
  End;
- 
+
  { Parse initialization }
  WriteLn(output, '; FOR initialization');
  If not match(';') Then
@@ -2089,16 +2092,16 @@ Begin
   If not match(';') Then
    errrpt('Expected ; after for initialization');
  End;
- 
+
  { Jump to condition }
  ot('lbra ');
  printlabel(condition_label);
  nl;
- 
+
  { Loop increment label }
  prelabel(loop_label);
  WriteLn(output, '; FOR increment');
- 
+
  { Parse increment }
  If not match(')') Then
  Begin
@@ -2106,11 +2109,11 @@ Begin
   If not match(')') Then
    errrpt('Expected ) after for increment');
  End;
- 
+
  { Condition label }
  prelabel(condition_label);
  WriteLn(output, '; FOR condition');
- 
+
  { Parse condition }
  If not match(';') Then
  Begin
@@ -2124,22 +2127,22 @@ Begin
   ot('ldd  #1');
   nl;
  End;
- 
+
  { Generate conditional jump }
  ol('tstd');
  ot('lbeq ');
  printlabel(end_label);
  nl;
- 
+
  { Parse loop body }
  WriteLn(output, '; FOR body');
  parse_statement;
- 
+
  { Jump back to increment }
  ot('lbra ');
  printlabel(loop_label);
  nl;
- 
+
  { End label }
  prelabel(end_label);
  WriteLn(output, '; End FOR');
@@ -2151,52 +2154,52 @@ Var
  loop_label: Integer;
 Begin
  parse_do_while_statement := False;
- 
+
  If not match('do') Then Exit;
  parse_do_while_statement := True;
- 
+
  { Generate loop label }
  loop_label := getlabel;
- 
+
  { Loop start }
  prelabel(loop_label);
  WriteLn(output, '; DO-WHILE loop start');
- 
+
  { Parse loop body }
  parse_statement;
- 
+
  { Expect while }
  If not match('while') Then
  Begin
   errrpt('Expected while after do body');
   Exit;
  End;
- 
+
  { Expect opening parenthesis }
  If not match('(') Then
  Begin
   errrpt('Expected ( after while');
   Exit;
  End;
- 
+
  { Parse condition }
  WriteLn(output, '; DO-WHILE condition');
  expression_bool(lval);
- 
+
  { Expect closing parenthesis }
  If not match(')') Then
   errrpt('Expected ) after while condition');
- 
+
  { Expect semicolon }
  If not match(';') Then
   errrpt('Expected ; after do-while');
- 
+
  { Generate conditional jump back }
  ol('tstd');
  ot('lbne ');
  printlabel(loop_label);
  nl;
- 
+
  WriteLn(output, '; End DO-WHILE');
 End;
 
@@ -2205,12 +2208,12 @@ Var
  lval: TLVal;
 Begin
  parse_return_statement := False;
- 
+
  If not match('return') Then Exit;
  parse_return_statement := True;
- 
+
  WriteLn(output, '; RETURN statement');
- 
+
  { Check for return value }
  If not match(';') Then
  Begin
@@ -2224,7 +2227,7 @@ Begin
   ot('ldd  #0');
   nl;
  End;
- 
+
  { Generate return code }
  ol('rts');
 End;
@@ -2232,16 +2235,16 @@ End;
 Function parse_break_statement: Boolean;
 Begin
  parse_break_statement := False;
- 
+
  If not match('break') Then Exit;
  parse_break_statement := True;
- 
+
  WriteLn(output, '; BREAK statement');
- 
+
  { Expect semicolon }
  If not match(';') Then
   errrpt('Expected ; after break');
- 
+
  { TODO: Jump to end of current loop }
  ol('nop ; break - jump to loop end');
 End;
@@ -2249,16 +2252,16 @@ End;
 Function parse_continue_statement: Boolean;
 Begin
  parse_continue_statement := False;
- 
+
  If not match('continue') Then Exit;
  parse_continue_statement := True;
- 
+
  WriteLn(output, '; CONTINUE statement');
- 
+
  { Expect semicolon }
  If not match(';') Then
   errrpt('Expected ; after continue');
- 
+
  { TODO: Jump to loop condition }
  ol('nop ; continue - jump to loop condition');
 End;
@@ -2267,12 +2270,12 @@ End;
 Function parse_compound_statement: Boolean;
 Begin
  parse_compound_statement := False;
- 
+
  If not match('{') Then Exit;
  parse_compound_statement := True;
- 
+
  WriteLn(output, '; Compound statement start');
- 
+
  { Parse statements until closing brace }
  While not match('}') do
  Begin
@@ -2281,7 +2284,7 @@ Begin
    errrpt('Unexpected end of file in compound statement');
    Exit;
   End;
-  
+
   If not parse_statement Then
   Begin
    { Skip unknown tokens }
@@ -2296,9 +2299,9 @@ Begin
    End;
   End;
  End;
- 
+
  WriteLn(output, '; Compound statement end');
- 
+
  { Check if this is the end of a function body }
  If current_function <> -1 Then
  Begin
@@ -2313,7 +2316,7 @@ Var
  lval: TLVal;
 Begin
  parse_expression_statement := False;
- 
+
  { Check for empty statement (just semicolon) }
  If match(';') Then
  Begin
@@ -2321,16 +2324,16 @@ Begin
   WriteLn(output, '; Empty statement');
   Exit;
  End;
- 
+
  { Try to parse expression }
  If expression_bool(lval) Then
  Begin
   parse_expression_statement := True;
-  
+
   { Expect semicolon }
   If not match(';') Then
    errrpt('Expected ; after expression');
-   
+
   WriteLn(output, '; Expression statement');
  End;
 End;
@@ -2339,7 +2342,7 @@ End;
 Function parse_statement: Boolean;
 Begin
  parse_statement := False;
- 
+
  { Skip empty lines and comments }
  blanks;
  If Length(line) = 0 Then
@@ -2347,7 +2350,7 @@ Begin
   parse_statement := True;
   Exit;
  End;
- 
+
  { Try different statement types }
  If parse_compound_statement Then
   parse_statement := True
@@ -2437,7 +2440,7 @@ Begin
 
  { Initialize optimization system }
  init_optimization;
- 
+
  { Initialize function management system }
  init_functions;
 
@@ -2457,7 +2460,7 @@ Begin
   optimize_code;
   output_optimized_instructions;
  End;
- 
+
  If asmtype = AS6809 Then WriteLn(output, ';    .end')
                      Else WriteLn(output, '  END');
 End;
