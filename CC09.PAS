@@ -533,7 +533,7 @@ Begin
 End;
 
 { Forward declarations for expression parsing }
-Procedure expression(var lval: TLVal); forward;
+Function expression_bool(var lval: TLVal): Boolean; forward;
 
 { Primary expression parser }
 Procedure primary_expression(var lval: TLVal);
@@ -566,7 +566,7 @@ Begin
 
   '(': Begin
     next_char; { consume '(' }
-    expression(lval);
+    expression_bool(lval);
     If peek_char = ')' Then
      next_char { consume ')' }
     Else
@@ -680,9 +680,16 @@ Begin
 End;
 
 { Main expression parser }
-Procedure expression(var lval: TLVal);
+Function expression_bool(var lval: TLVal): Boolean;
 Begin
  additive_expression(lval);
+ expression_bool := True;
+End;
+
+{ Wrapper procedure for backward compatibility }
+Procedure expression(var lval: TLVal);
+Begin
+ expression_bool(lval);
 End;
 
 { Variable declaration parsing functions - moved after expression }
@@ -757,6 +764,432 @@ Begin
  End;
 End;
 
+{ Forward declarations for statement parsing }
+Function parse_statement: Boolean; forward;
+Function parse_compound_statement: Boolean; forward;
+
+{ Control structure parsing }
+Function parse_if_statement: Boolean;
+Var
+ lval: TLVal;
+ else_label, end_label: Integer;
+Begin
+ parse_if_statement := False;
+ 
+ If not match('if') Then Exit;
+ parse_if_statement := True;
+ 
+ { Expect opening parenthesis }
+ If not match('(') Then
+ Begin
+  errrpt('Expected ( after if');
+  Exit;
+ End;
+ 
+ { Parse condition }
+ WriteLn(output, '; IF condition');
+ expression_bool(lval);
+ 
+ { Expect closing parenthesis }
+ If not match(')') Then
+  errrpt('Expected ) after if condition');
+ 
+ { Generate conditional jump }
+ else_label := getlabel;
+ end_label := getlabel;
+ 
+ ol('tstd');
+ ot('lbeq ');
+ printlabel(else_label);
+ nl;
+ 
+ { Parse then statement }
+ WriteLn(output, '; IF then block');
+ parse_statement;
+ 
+ { Check for else clause }
+ If match('else') Then
+ Begin
+  { Jump over else block }
+  ot('lbra ');
+  printlabel(end_label);
+  nl;
+  
+  { Else block }
+  prelabel(else_label);
+  WriteLn(output, '; ELSE block');
+  parse_statement;
+  
+  prelabel(end_label);
+ End
+ Else
+ Begin
+  prelabel(else_label);
+ End;
+ 
+ WriteLn(output, '; End IF');
+End;
+
+Function parse_while_statement: Boolean;
+Var
+ lval: TLVal;
+ loop_label, end_label: Integer;
+Begin
+ parse_while_statement := False;
+ 
+ If not match('while') Then Exit;
+ parse_while_statement := True;
+ 
+ { Generate loop labels }
+ loop_label := getlabel;
+ end_label := getlabel;
+ 
+ { Loop start }
+ prelabel(loop_label);
+ WriteLn(output, '; WHILE loop start');
+ 
+ { Expect opening parenthesis }
+ If not match('(') Then
+ Begin
+  errrpt('Expected ( after while');
+  Exit;
+ End;
+ 
+ { Parse condition }
+ WriteLn(output, '; WHILE condition');
+ expression_bool(lval);
+ 
+ { Expect closing parenthesis }
+ If not match(')') Then
+  errrpt('Expected ) after while condition');
+ 
+ { Generate conditional jump }
+ ol('tstd');
+ ot('lbeq ');
+ printlabel(end_label);
+ nl;
+ 
+ { Parse loop body }
+ WriteLn(output, '; WHILE body');
+ parse_statement;
+ 
+ { Jump back to condition }
+ ot('lbra ');
+ printlabel(loop_label);
+ nl;
+ 
+ { End label }
+ prelabel(end_label);
+ WriteLn(output, '; End WHILE');
+End;
+
+Function parse_for_statement: Boolean;
+Var
+ lval: TLVal;
+ loop_label, condition_label, end_label: Integer;
+Begin
+ parse_for_statement := False;
+ 
+ If not match('for') Then Exit;
+ parse_for_statement := True;
+ 
+ { Generate loop labels }
+ condition_label := getlabel;
+ loop_label := getlabel;
+ end_label := getlabel;
+ 
+ WriteLn(output, '; FOR loop start');
+ 
+ { Expect opening parenthesis }
+ If not match('(') Then
+ Begin
+  errrpt('Expected ( after for');
+  Exit;
+ End;
+ 
+ { Parse initialization }
+ WriteLn(output, '; FOR initialization');
+ If not match(';') Then
+ Begin
+  expression_bool(lval);
+  If not match(';') Then
+   errrpt('Expected ; after for initialization');
+ End;
+ 
+ { Jump to condition }
+ ot('lbra ');
+ printlabel(condition_label);
+ nl;
+ 
+ { Loop increment label }
+ prelabel(loop_label);
+ WriteLn(output, '; FOR increment');
+ 
+ { Parse increment }
+ If not match(')') Then
+ Begin
+  expression_bool(lval);
+  If not match(')') Then
+   errrpt('Expected ) after for increment');
+ End;
+ 
+ { Condition label }
+ prelabel(condition_label);
+ WriteLn(output, '; FOR condition');
+ 
+ { Parse condition }
+ If not match(';') Then
+ Begin
+  expression_bool(lval);
+  If not match(';') Then
+   errrpt('Expected ; after for condition');
+ End
+ Else
+ Begin
+  { No condition = infinite loop }
+  ot('ldd  #1');
+  nl;
+ End;
+ 
+ { Generate conditional jump }
+ ol('tstd');
+ ot('lbeq ');
+ printlabel(end_label);
+ nl;
+ 
+ { Parse loop body }
+ WriteLn(output, '; FOR body');
+ parse_statement;
+ 
+ { Jump back to increment }
+ ot('lbra ');
+ printlabel(loop_label);
+ nl;
+ 
+ { End label }
+ prelabel(end_label);
+ WriteLn(output, '; End FOR');
+End;
+
+Function parse_do_while_statement: Boolean;
+Var
+ lval: TLVal;
+ loop_label: Integer;
+Begin
+ parse_do_while_statement := False;
+ 
+ If not match('do') Then Exit;
+ parse_do_while_statement := True;
+ 
+ { Generate loop label }
+ loop_label := getlabel;
+ 
+ { Loop start }
+ prelabel(loop_label);
+ WriteLn(output, '; DO-WHILE loop start');
+ 
+ { Parse loop body }
+ parse_statement;
+ 
+ { Expect while }
+ If not match('while') Then
+ Begin
+  errrpt('Expected while after do body');
+  Exit;
+ End;
+ 
+ { Expect opening parenthesis }
+ If not match('(') Then
+ Begin
+  errrpt('Expected ( after while');
+  Exit;
+ End;
+ 
+ { Parse condition }
+ WriteLn(output, '; DO-WHILE condition');
+ expression_bool(lval);
+ 
+ { Expect closing parenthesis }
+ If not match(')') Then
+  errrpt('Expected ) after while condition');
+ 
+ { Expect semicolon }
+ If not match(';') Then
+  errrpt('Expected ; after do-while');
+ 
+ { Generate conditional jump back }
+ ol('tstd');
+ ot('lbne ');
+ printlabel(loop_label);
+ nl;
+ 
+ WriteLn(output, '; End DO-WHILE');
+End;
+
+Function parse_return_statement: Boolean;
+Var
+ lval: TLVal;
+Begin
+ parse_return_statement := False;
+ 
+ If not match('return') Then Exit;
+ parse_return_statement := True;
+ 
+ WriteLn(output, '; RETURN statement');
+ 
+ { Check for return value }
+ If not match(';') Then
+ Begin
+  expression_bool(lval);
+  If not match(';') Then
+   errrpt('Expected ; after return value');
+ End
+ Else
+ Begin
+  { Return void - load 0 }
+  ot('ldd  #0');
+  nl;
+ End;
+ 
+ { Generate return code }
+ ol('rts');
+End;
+
+Function parse_break_statement: Boolean;
+Begin
+ parse_break_statement := False;
+ 
+ If not match('break') Then Exit;
+ parse_break_statement := True;
+ 
+ WriteLn(output, '; BREAK statement');
+ 
+ { Expect semicolon }
+ If not match(';') Then
+  errrpt('Expected ; after break');
+ 
+ { TODO: Jump to end of current loop }
+ ol('nop ; break - jump to loop end');
+End;
+
+Function parse_continue_statement: Boolean;
+Begin
+ parse_continue_statement := False;
+ 
+ If not match('continue') Then Exit;
+ parse_continue_statement := True;
+ 
+ WriteLn(output, '; CONTINUE statement');
+ 
+ { Expect semicolon }
+ If not match(';') Then
+  errrpt('Expected ; after continue');
+ 
+ { TODO: Jump to loop condition }
+ ol('nop ; continue - jump to loop condition');
+End;
+
+{ Compound statement parsing }
+Function parse_compound_statement: Boolean;
+Begin
+ parse_compound_statement := False;
+ 
+ If not match('{') Then Exit;
+ parse_compound_statement := True;
+ 
+ WriteLn(output, '; Compound statement start');
+ 
+ { Parse statements until closing brace }
+ While not match('}') do
+ Begin
+  If eof <> 0 Then
+  Begin
+   errrpt('Unexpected end of file in compound statement');
+   Exit;
+  End;
+  
+  If not parse_statement Then
+  Begin
+   { Skip unknown tokens }
+   If lptr <= Length(line) Then
+   Begin
+    Inc(lptr);
+    Continue;
+   End
+   Else
+   Begin
+    If not readinline Then Break;
+   End;
+  End;
+ End;
+ 
+ WriteLn(output, '; Compound statement end');
+End;
+
+{ Expression statement parsing }
+Function parse_expression_statement: Boolean;
+Var
+ lval: TLVal;
+Begin
+ parse_expression_statement := False;
+ 
+ { Check for empty statement (just semicolon) }
+ If match(';') Then
+ Begin
+  parse_expression_statement := True;
+  WriteLn(output, '; Empty statement');
+  Exit;
+ End;
+ 
+ { Try to parse expression }
+ If expression_bool(lval) Then
+ Begin
+  parse_expression_statement := True;
+  
+  { Expect semicolon }
+  If not match(';') Then
+   errrpt('Expected ; after expression');
+   
+  WriteLn(output, '; Expression statement');
+ End;
+End;
+
+{ Main statement parser }
+Function parse_statement: Boolean;
+Begin
+ parse_statement := False;
+ 
+ { Skip empty lines and comments }
+ blanks;
+ If Length(line) = 0 Then
+ Begin
+  parse_statement := True;
+  Exit;
+ End;
+ 
+ { Try different statement types }
+ If parse_compound_statement Then
+  parse_statement := True
+ Else If parse_if_statement Then
+  parse_statement := True
+ Else If parse_while_statement Then
+  parse_statement := True
+ Else If parse_for_statement Then
+  parse_statement := True
+ Else If parse_do_while_statement Then
+  parse_statement := True
+ Else If parse_return_statement Then
+  parse_statement := True
+ Else If parse_break_statement Then
+  parse_statement := True
+ Else If parse_continue_statement Then
+  parse_statement := True
+ Else If parse_declaration Then
+  parse_statement := True
+ Else If parse_expression_statement Then
+  parse_statement := True;
+End;
+
 Procedure ask;
 Begin
  nxtlab := 0;
@@ -816,7 +1249,7 @@ Begin
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
 
-{ Enhanced parsing with variable declarations and expression parser }
+{ Enhanced parsing with variable declarations, control structures and expression parser }
 Procedure parse;
 Var
  lval: TLVal;
@@ -848,18 +1281,15 @@ Begin
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
 
-  { Try to parse as variable declaration first }
-  save_lptr := lptr;
-  If parse_declaration Then
+  { Try to parse as statement (includes declarations and control structures) }
+  If parse_statement Then
   Begin
-   WriteLn(output, '; Declaration processed');
+   WriteLn(output, '; Statement processed');
    Continue;
   End;
-  
-  { Reset position if declaration failed }
-  lptr := save_lptr;
 
-  { Parse identifiers and expressions }
+  { Fallback: Parse identifiers and expressions for backward compatibility }
+  lptr := 1;
   If symname(sname) Then
   Begin
    WriteLn(output, '; Identifier: ', sname);
