@@ -19,7 +19,7 @@ Const
 
   { Param�tres de la table de symbole }
  symsiz = 14;
- symtbsz = {$IFDEF FPC}8008{$ELSE}700{$ENDIF};
+ symtbsz = {$IFDEF FPC}8008{$ELSE}500{$ENDIF};
  numglbs = 512;
  MASKGLBS = 511;
  namesize = 9;
@@ -175,6 +175,14 @@ Type
   continue_label: Integer; { Label to jump for continue }
  End;
 
+ { Include file management }
+ TIncludeFile = Record
+  filename: String;
+  saved_line: TLine;
+  saved_lptr: Integer;
+  saved_eof: Integer;
+ End;
+
   { Table de fonction }
  TFunctionTable = Array[0..99] of TFunction;
 
@@ -197,6 +205,11 @@ Var
  { Loop context stack for break/continue }
  loop_stack: Array[0..31] of TLoopContext;
  loop_depth: Integer;
+
+ { Include file stack }
+ include_stack: Array[0..9] of TIncludeFile;  { Max 10 levels of inclusion }
+ include_depth: Integer;
+ current_filename: String;
 
  { Extended type information table }
  type_info_table: Array[1..SYMTBSZ] of TTypeInfo;
@@ -1868,20 +1881,175 @@ Begin
  End;
 End;
 
+Function pop_include_file: Boolean;
+Begin
+ pop_include_file := False;
+ 
+ If include_depth <= 0 Then Exit;
+ 
+ { Close current include file }
+ System.Close(input);
+ 
+ { Restore previous file state }
+ Dec(include_depth);
+ With include_stack[include_depth] do
+ Begin
+  current_filename := filename;
+  System.Assign(input, filename);
+  System.Reset(input);
+ End;
+ 
+ pop_include_file := True;
+End;
+
 { File operations }
 Function readinline: Boolean;
 Begin
- If not System.Eof(input) Then
+ Repeat
+  { Try to read from current file }
+  If not System.Eof(input) Then
+  Begin
+   ReadLn(input, line);
+   lptr := 1;
+   readinline := True;
+   Exit;
+  End
+  Else
+  Begin
+   { Current file is at EOF }
+   If include_depth > 0 Then
+   Begin
+    { We're in an include file, return to previous file }
+    If not pop_include_file Then
+    Begin
+     eof := 1;
+     readinline := False;
+     Exit;
+    End;
+    { Continue loop to try reading from restored file }
+   End
+   Else
+   Begin
+    { Main file is at EOF }
+    eof := 1;
+    readinline := False;
+    Exit;
+   End;
+  End;
+ Until False;
+End;
+
+{ Include file management functions }
+Function extract_filename(include_line: String): String;
+Var
+ start_pos, end_pos: Integer;
+ filename: String;
+Begin
+ filename := '';
+ 
+ { Skip #include and whitespace }
+ start_pos := Pos('#include', include_line);
+ If start_pos > 0 Then
  Begin
-  ReadLn(input, line);
-  lptr := 1;
-  readinline := True;
- End
- Else
- Begin
-  eof := 1;
-  readinline := False;
+  start_pos := start_pos + 8; { Length of '#include' }
+  
+  { Skip whitespace }
+  While (start_pos <= Length(include_line)) and 
+        ((include_line[start_pos] = ' ') or (include_line[start_pos] = #9)) do
+   Inc(start_pos);
+  
+  { Check for quotes or angle brackets }
+  If start_pos <= Length(include_line) Then
+  Begin
+   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then
+   Begin
+    Inc(start_pos); { Skip opening quote/bracket }
+    end_pos := start_pos;
+    
+    { Find closing quote or bracket }
+    While (end_pos <= Length(include_line)) and 
+          (include_line[end_pos] <> '"') and 
+          (include_line[end_pos] <> '>') do
+     Inc(end_pos);
+    
+    If end_pos <= Length(include_line) Then
+     filename := Copy(include_line, start_pos, end_pos - start_pos);
+   End;
+  End;
  End;
+ 
+ extract_filename := filename;
+End;
+
+Function push_include_file(include_filename: String): Boolean;
+Begin
+ push_include_file := False;
+ 
+ { Check for maximum include depth }
+ If include_depth >= 10 Then
+ Begin
+  Case Language of
+   _English: errrpt('Include depth too deep (max 10): ' + include_filename);
+   _Germany: errrpt('Include-Tiefe zu tief (max 10): ' + include_filename);
+   Else errrpt('Profondeur d''inclusion trop importante (max 10): ' + include_filename);
+  End;
+  Exit;
+ End;
+ 
+ { Save current file state }
+ With include_stack[include_depth] do
+ Begin
+  filename := current_filename;
+  saved_line := line;
+  saved_lptr := lptr;
+  saved_eof := eof;
+ End;
+ 
+ { Try to open the include file }
+ Assign(input, include_filename);
+ {$I-} Reset(input); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  { Restore previous file by reopening it }
+  Assign(input, include_stack[include_depth].filename);
+  Reset(input);
+  
+  Case Language of
+   _English: errrpt('Cannot open include file: ' + include_filename);
+   _Germany: errrpt('Kann Include-Datei nicht öffnen: ' + include_filename);
+   Else errrpt('Impossible d''ouvrir le fichier d''inclusion: ' + include_filename);
+  End;
+  Exit;
+ End;
+ 
+ { Update state }
+ Inc(include_depth);
+ current_filename := include_filename;
+ eof := 0;
+ 
+ WriteLn(output, '; Including file: ', include_filename);
+ push_include_file := True;
+End;
+
+Function process_include_directive(include_line: String): Boolean;
+Var
+ filename: String;
+Begin
+ process_include_directive := False;
+ 
+ filename := extract_filename(include_line);
+ If filename = '' Then
+ Begin
+  Case Language of
+   _English: errrpt('Invalid #include directive syntax');
+   _Germany: errrpt('Ungültige #include-Direktiven-Syntax');
+   Else errrpt('Syntaxe de directive #include invalide');
+  End;
+  Exit;
+ End;
+ 
+ If push_include_file(filename) Then
+  process_include_directive := True;
 End;
 
 { Primary expression parser with function call support }
@@ -2814,8 +2982,27 @@ Begin
    Continue;
   End;
 
-  { Skip preprocessor directives }
-  If match('#') Then Continue;
+  { Process preprocessor directives }
+  If match('#') Then
+  Begin
+   If match('include') Then
+   Begin
+    { Process #include directive }
+    If process_include_directive(line) Then
+     Continue  { Continue with included file }
+    Else
+    Begin
+     { Error already reported, skip this line }
+     Continue;
+    End;
+   End
+   Else
+   Begin
+    { Other preprocessor directives - skip for now }
+    WriteLn(output, '; Skipping preprocessor directive: ', line);
+    Continue;
+   End;
+  End;
 
   { Skip empty lines }
   blanks;
@@ -2989,6 +3176,9 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
+ { Initialize include file system }
+ include_depth := 0;
+ current_filename := '';
   { Compiler main body }
  nxtlab := 0;
  kill;
@@ -3006,6 +3196,7 @@ BEGIN
  End;
  Assign(input, ParamStr(1));
  Reset(input);
+ current_filename := ParamStr(1); { Set initial filename for include system }
  WriteLn('Compiling Source file: ', ParamStr(1));
  If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
  If ParamCount >= 2 Then Begin
