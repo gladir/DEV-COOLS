@@ -17,7 +17,7 @@ Const
  YES = 1;
  NO = 0;
 
-  { ParamŠtres de la table de symbole }
+  { Paramï¿½tres de la table de symbole }
  symsiz = 14;
  symtbsz = 8008;
  numglbs = 512;
@@ -25,7 +25,7 @@ Const
  namesize = 9;
  namemax = 8;
 
-  { D‚placement du format d'entr‚e de la table des symboles }
+  { Dï¿½placement du format d'entrï¿½e de la table des symboles }
  name = 0;
  ident = 9;
  ctype = 10;
@@ -42,22 +42,22 @@ Const
  it_union_type = 6;
  it_typedef_type = 7;
 
-  { Types de donn‚es }
- cvoid = 0;
- cchar = 1;
- cuchar = 2;
- cshort = 3;
- cushort = 4;
- cint = 5;
- cuint = 6;
- clong = 7;
- culong = 8;
- cfloat = 9;
- cdouble = 10;
- cpointer = 11;
- carray = 12;
- cstruct = 13;
- cunion = 14;
+  { Types de donnï¿½es }
+ cvoid = 1;
+ cchar = 2;
+ cuchar = 3;
+ cshort = 4;
+ cushort = 5;
+ cint = 6;
+ cuint = 7;
+ clong = 8;
+ culong = 9;
+ cfloat = 10;
+ cdouble = 11;
+ cpointer = 12;
+ carray = 13;
+ cstruct = 14;
+ cunion = 15;
 
   { Taille du type en octets }
  sizeof_void = 0;
@@ -90,13 +90,13 @@ Const
 
  { Option d'optimisation }
  OPT_PEEPHOLE = 1;      { Optimisations pour analyse de code }
- OPT_DEAD_CODE = 2;     { limination du code mort }
+ OPT_DEAD_CODE = 2;     { ï¿½limination du code mort }
  OPT_CONSTANT_FOLD = 4; { Simplification des constantes }
- OPT_STRENGTH_RED = 8;  { R‚duction de la complexit‚ }
+ OPT_STRENGTH_RED = 8;  { Rï¿½duction de la complexitï¿½ }
  OPT_REGISTER = 16;     { Allocation de registres }
  OPT_JUMP = 32;         { Optimisations de sauts }
 
- { Ligne d''entr‚e }
+ { Ligne d''entrï¿½e }
  linesize = 80;
  linemax = linesize - 1;
 
@@ -107,10 +107,10 @@ Type
  { Structure d'information de type }
  PTypeInfo = ^TTypeInfo;
  TTypeInfo = Record
-  base_type: Integer;      { Type de donn‚es de base (cint, cchar, etc.) }
+  base_type: Integer;      { Type de donnï¿½es de base (cint, cchar, etc.) }
   pointer_level: Integer;  { Nombre de niveaux d'indirection }
   array_size: Integer;     { Taille du tableau (0 si ce n'est pas un tableau) }
-  is_unsigned: Boolean;    { Vrai pour les types non sign‚s }
+  is_unsigned: Boolean;    { Vrai pour les types non signï¿½s }
   is_const: Boolean;       { Vrai pour les types constants }
   is_volatile: Boolean;    { Vrai pour les types volatils }
   struct_id: Integer;      { Identifiant de struct/union }
@@ -119,22 +119,22 @@ Type
 
  { Structure de valeur d'expression }
  TLVal = Record
-  symbol: Integer;        { Pointeur vers l'entr‚e de la table de symboles }
+  symbol: Integer;        { Pointeur vers l'entrï¿½e de la table de symboles }
   indirect: Integer;      { 0=direct, 1=indirect }
-  typ: Integer;           { Type de donn‚es }
+  typ: Integer;           { Type de donnï¿½es }
   storage: Integer;       { Classe d'entreposage }
   constant: Boolean;      { Vrai si la valeur est constante }
-  value: Integer;         { Valeur constante, le cas ‚ch‚ant }
-  type_info: TTypeInfo;   { Informations de type ‚tendues }
+  value: Integer;         { Valeur constante, le cas ï¿½chï¿½ant }
+  type_info: TTypeInfo;   { Informations de type ï¿½tendues }
  End;
 
  { Structure d'instruction d'optimisation }
  TOptInstruction = Record
-  opcode: String[10];     { Mn‚monique d'instruction }
-  operand: String[20];    { Op‚rande }
+  opcode: String[10];     { Mnï¿½monique d'instruction }
+  operand: String[20];    { Opï¿½rande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { Num‚ro de ligne source }
-  can_eliminate: Boolean; { Peut ˆtre supprim‚ lors de la suppression du code mort }
+  line_number: Integer;   { Numï¿½ro de ligne source }
+  can_eliminate: Boolean; { Peut ï¿½tre supprimï¿½ lors de la suppression du code mort }
  End;
 
  { Optimisation de contexte }
@@ -143,29 +143,36 @@ Type
   flags: Integer;                                                              { Drapeaux d'optimisation }
   instructions: Array[0..{$IFDEF FPC}999{$ELSE}99{$ENDIF}] of TOptInstruction; { Tampon d'instruction }
   inst_count: Integer;                                                         { Nombre d'instructions }
-  last_result_reg: String;                                                     { Dernier registre utilis‚ pour le r‚sultat }
+  last_result_reg: String; { Dernier registre utilisï¿½ pour le rï¿½sultat }
  End;
 
- { Structure de paramŠtres de la fonction }
+ { Structure de paramï¿½tres de la fonction }
  TParameter = Record
-  name: String[20];      { Nom du paramŠtre }
-  typ: Integer;          { Type du paramŠtre }
-  type_info: TTypeInfo;  { Informations d‚taill‚es sur le type }
-  offset: Integer;       { D‚placement de la pile }
+  name: String[20];      { Nom du paramï¿½tre }
+  typ: Integer;          { Type du paramï¿½tre }
+  type_info: TTypeInfo;  { Informations dï¿½taillï¿½es sur le type }
+  offset: Integer;       { Dï¿½placement de la pile }
  End;
 
  { Function information structure }
  TFunction = Record
   name: String[20];                      { Nom de la fonction }
   return_type: Integer;                  { Type de retour }
-  return_type_info: TTypeInfo;           { Type de retour d‚taill‚ }
-  param_count: Integer;                  { Nombre de paramŠtres }
-  parameters: Array[0..9] of TParameter; { Liste des paramŠtres }
-  is_defined: Boolean;                   { Vrai si la fonction est d‚finie (possŠde un corps) }
-  is_declared: Boolean;                  { Vrai si la fonction est d‚clar‚e }
+  return_type_info: TTypeInfo;           { Type de retour dï¿½taillï¿½ }
+  param_count: Integer;                  { Nombre de paramï¿½tres }
+  parameters: Array[0..9] of TParameter; { Liste des paramï¿½tres }
+  is_defined: Boolean;                   { Vrai si la fonction est dï¿½finie (possï¿½de un corps) }
+  is_declared: Boolean;                  { Vrai si la fonction est dï¿½clarï¿½e }
   label_id: Integer;                     { Etiquette assembleur de la fonction }
   local_vars_size: Integer;              { Taille dees variables locales }
   is_main: Boolean;                      { Vrai s'il s'agit de la fonction principale }
+ End;
+
+ { Loop context structure for break/continue support }
+ TLoopContext = Record
+  loop_type: Integer;     { 1=while, 2=for, 3=do-while }
+  break_label: Integer;   { Label to jump for break }
+  continue_label: Integer; { Label to jump for continue }
  End;
 
   { Table de fonction }
@@ -187,11 +194,15 @@ Var
  { Contexte d'optimisation }
  opt_context: TOptContext;
 
- { Ligne d'entr‚e }
+ { Loop context stack for break/continue }
+ loop_stack: Array[0..31] of TLoopContext;
+ loop_depth: Integer;
+
+ { Ligne d'entrï¿½e }
  line: TLine;
  lptr: Integer;
 
- { tiquettes et compteurs }
+ { ï¿½tiquettes et compteurs }
  nxtlab: Integer;
  nextlabel: Integer; { Pour l'analyseur d'expressions }
 
@@ -246,12 +257,12 @@ Function numeric(ch: Char): Boolean;Begin
  numeric := ch in ['0'..'9'];
 End;
 
- { Utilitaires de chaine de caractŠres }
+ { Utilitaires de chaine de caractï¿½res }
 Function streq(s1, s2: String): Boolean;Begin
  streq := s1 = s2;
 End;
 
- { Fonctions d'entr‚e/sortie }
+ { Fonctions d'entrï¿½e/sortie }
 Function ch:Char;Begin
  If lptr <= Length(line) Then ch := line[lptr]
                          Else ch := #0;
@@ -280,7 +291,7 @@ Procedure ol(s:String);Begin
                Else WriteLn(output, #9, s);
 End;
 
- { crire la ligne dans la sortie avec routage conditionnel }
+ { ï¿½crire la ligne dans la sortie avec routage conditionnel }
 Procedure outln(s: String);Begin
  If use_stdout Then WriteLn(s)
                Else WriteLn(output, s);
@@ -296,7 +307,7 @@ Procedure outdec(n:Integer);Begin
                Else Write(output, n);
 End;
 
- { Fonctions de g‚n‚ration d'‚tiquettes }
+ { Fonctions de gï¿½nï¿½ration d'ï¿½tiquettes }
 Function getlabel:Integer;Begin
  Inc(nextlabel);
  getlabel := nextlabel;
@@ -314,8 +325,8 @@ End;
 
  { Code generation }
 Procedure ot(s: String);Begin
- If use_stdout Then Write(#9, s) { TAB alors chaine de caractŠres }
-               Else Write(output, #9, s); { TAB alors chaine de caractŠres }
+ If use_stdout Then Write(#9, s) { TAB alors chaine de caractï¿½res }
+               Else Write(output, #9, s); { TAB alors chaine de caractï¿½res }
 End;
 
  { Fonctions utilitaires d'analyse d'expressions }
@@ -382,8 +393,46 @@ Procedure errrpt(msg: String);Begin
  Inc(errcnt);
  Case Language of
   _English: WriteLn('Error: ', msg, ' at line ', lptr);
-  Else Write('Erreur: ',msg,' … la ligne ', lptr);
+  Else Write('Erreur: ',msg,' ï¿½ la ligne ', lptr);
  End;
+End;
+
+{ Loop context management for break/continue support }
+Procedure push_loop_context(loop_type: Integer; break_lbl, continue_lbl: Integer);
+Begin
+ If loop_depth >= 32 Then
+ Begin
+  errrpt('Too many nested loops');
+  Exit;
+ End;
+ 
+ { Defensive check - ensure loop_depth is initialized }
+ If loop_depth < 0 Then loop_depth := 0;
+ 
+ loop_stack[loop_depth].loop_type := loop_type;
+ loop_stack[loop_depth].break_label := break_lbl;
+ loop_stack[loop_depth].continue_label := continue_lbl;
+ Inc(loop_depth);
+End;
+
+Procedure pop_loop_context;
+Begin
+ If loop_depth > 0 Then
+  Dec(loop_depth);
+End;
+
+Function get_current_break_label: Integer;
+Begin
+ get_current_break_label := -1;
+ If loop_depth > 0 Then
+  get_current_break_label := loop_stack[loop_depth-1].break_label;
+End;
+
+Function get_current_continue_label: Integer;
+Begin
+ get_current_continue_label := -1;
+ If loop_depth > 0 Then
+  get_current_continue_label := loop_stack[loop_depth-1].continue_label;
 End;
 
 Procedure outbyte(b: Byte);Begin
@@ -474,7 +523,7 @@ Begin
  hash := h;
 End;
 
- { Op‚rations sur la table des symboles }
+ { Opï¿½rations sur la table des symboles }
 Function addsym(sname: String; typ: Integer; storage: Integer; offset: Integer): Integer;
 Var
  ptr: Integer;
@@ -483,7 +532,7 @@ Begin
  If ptr + symsiz > endglb Then Begin
   Case Language of
    _English:errrpt('Symbol table overflow');
-   Else errrpt('D‚bordement de la table des symboles');
+   Else errrpt('Dï¿½bordement de la table des symboles');
   End;
   addsym := 0;
   Exit;
@@ -495,7 +544,7 @@ Begin
  symtab[ptr + ident] := Chr(it_variable);
  symtab[ptr + ctype] := Chr(typ);
  symtab[ptr + storage] := Chr(storage);
- { D‚placement de magasin }
+ { Dï¿½placement de magasin }
  Move(offset, symtab[ptr + offset], offsize);
  glbptr := glbptr + symsiz;
  addsym := ptr;
@@ -508,7 +557,7 @@ Var
 Begin
  ptr := startglb;
  While ptr < glbptr do Begin
-  { Extraire le nom entrepos‚ }
+  { Extraire le nom entreposï¿½ }
   stored_name := '';
   While (symtab[ptr + name + Length(stored_name)] <> #0) and (Length(stored_name) < namemax) do Begin
    stored_name := stored_name + symtab[ptr + name + Length(stored_name)];
@@ -550,7 +599,7 @@ Function get_type_size(base_type: Integer): Integer;Begin
   cfloat: get_type_size := sizeof_float;
   cdouble: get_type_size := sizeof_double;
   cpointer: get_type_size := sizeof_pointer;
-  Else get_type_size := sizeof_int; { Par d‚faut }
+  Else get_type_size := sizeof_int; { Par dï¿½faut }
  End;
 End;
 
@@ -566,21 +615,21 @@ Begin
  calculate_type_size := result_size;
 End;
 
-{ V‚rifiez si deux types sont compatibles }
+{ Vï¿½rifiez si deux types sont compatibles }
 Function types_compatible(var type1, type2: TTypeInfo): Boolean;Begin
  types_compatible := (type1.base_type = type2.base_type) and
                     (type1.pointer_level = type2.pointer_level) and
                     (type1.is_unsigned = type2.is_unsigned);
 End;
 
-{ V‚rifier si le type peut ˆtre converti en un autre }
+{ Vï¿½rifier si le type peut ï¿½tre converti en un autre }
 Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
-  { Les pointeurs peuvent ˆtre convertis en pointeurs }
+  { Les pointeurs peuvent ï¿½tre convertis en pointeurs }
  If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then Begin
   can_convert_type := True;
   Exit;
  End;
-  { Les types num‚riques peuvent g‚n‚ralement ˆtre convertis }
+  { Les types numï¿½riques peuvent gï¿½nï¿½ralement ï¿½tre convertis }
  If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then Begin
   Case from_type.base_type of
    cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
@@ -598,7 +647,7 @@ Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
   can_convert_type := False;
 End;
 
- { R‚cup‚rer le nom du type sous forme de chaine de caractŠres pour les messages de d‚bogage/d'erreur }
+ { Rï¿½cupï¿½rer le nom du type sous forme de chaine de caractï¿½res pour les messages de dï¿½bogage/d'erreur }
 Function get_type_name(var type_info: TTypeInfo): String;
 Var
  base_name, temp_str: String;
@@ -622,7 +671,7 @@ Begin
   { Ajouter les qualificateurs const/volatile }
  If type_info.is_const Then base_name := 'const ' + base_name;
  If type_info.is_volatile Then base_name := 'volatile ' + base_name;
-  { Ajouter des ast‚ristiques de pointeur }
+  { Ajouter des astï¿½ristiques de pointeur }
  For i := 1 to type_info.pointer_level do base_name := base_name + '*';
   { Ajouter la notation de tableau }
  If type_info.array_size > 0 Then Begin
@@ -632,13 +681,13 @@ Begin
  get_type_name := base_name;
 End;
 
- { G‚n‚rer le code assembleur pour la conversion de type }
+ { Gï¿½nï¿½rer le code assembleur pour la conversion de type }
 Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
  Case Language of
   _English:WriteLn(output, '; Type conversion from ', get_type_name(from_type),' to ', get_type_name(to_type));
-  Else WriteLn(output, '; Conversion de type de ', get_type_name(from_type),' … ', get_type_name(to_type));
+  Else WriteLn(output, '; Conversion de type de ', get_type_name(from_type),' ï¿½ ', get_type_name(to_type));
  End;
- { G‚rer la conversion char en int }
+ { Gï¿½rer la conversion char en int }
  If (from_type.base_type = cchar) and (to_type.base_type = cint) Then Begin
   If from_type.is_unsigned Then Begin
    ol('clra   ; zero extend unsigned char');
@@ -648,14 +697,14 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
    ol('sex    ; sign extend signed char');
   End;
  End
-  { G‚rer la conversion int vers char }
+  { Gï¿½rer la conversion int vers char }
   Else
  If (from_type.base_type = cint) and (to_type.base_type = cchar) Then Begin
   ol('tfr  d,x ; keep only low byte');
   ol('tfr  b,a');
   ol('clrb');
  End;
-  { Ajoutez des conversions suppl‚mentaires si n‚cessaires }
+  { Ajoutez des conversions supplï¿½mentaires si nï¿½cessaires }
 End;
 
 { ============================================================================ }
@@ -668,7 +717,7 @@ Procedure init_optimization;Begin
  opt_context.level := optimize;
  opt_context.inst_count := 0;
  opt_context.last_result_reg := 'd';
-  { D‚finir les indicateurs d'optimisation en fonction du niveau }
+  { Dï¿½finir les indicateurs d'optimisation en fonction du niveau }
  Case optimize of
   OPT_NONE: opt_context.flags := 0;
   OPT_BASIC: opt_context.flags := OPT_PEEPHOLE or OPT_CONSTANT_FOLD;
@@ -702,19 +751,19 @@ Begin
   changed := False;
   For i := 0 to opt_context.inst_count - 2 do Begin
    With opt_context.instructions[i] do Begin
-    { EnlŠve LDD #0 suivi par STD }
+    { Enlï¿½ve LDD #0 suivi par STD }
     If(opcode = 'ldd')and(operand = '#0')Then Begin
      If (opt_context.instructions[i+1].opcode = 'std') Then Begin
       { Remplace avec CLR }
       opcode := 'clr';
       operand := opt_context.instructions[i+1].operand;
-      comment := comment + ' ; optimis‚ de ldd #0, std';
+      comment := comment + ' ; optimisï¿½ de ldd #0, std';
        { Marquer la prochaine instruction pour le retrait }
       opt_context.instructions[i+1].can_eliminate := True;
       changed := True;
      End;
     End
-     { EnlŠve STD suivi par LDD dans le mˆme emplacement }
+     { Enlï¿½ve STD suivi par LDD dans le mï¿½me emplacement }
      Else
     If (opcode = 'std') Then Begin
      If (opt_context.instructions[i+1].opcode = 'ldd') and
@@ -740,7 +789,7 @@ Begin
     End;
    End;
   End;
-   { EnlŠve les instructions marqu‚es }
+   { Enlï¿½ve les instructions marquï¿½es }
   j := 0;
   For i := 0 to opt_context.inst_count - 1 do Begin
    If not opt_context.instructions[i].can_eliminate Then Begin
@@ -760,14 +809,14 @@ Begin
  If (opt_context.flags and OPT_CONSTANT_FOLD) = 0 Then Exit;
  For i := 0 to opt_context.inst_count - 1 do Begin
   With opt_context.instructions[i] do Begin
-   { Optimise LDD #1 suivi par NEGA/NEGB … LDD #-1 }
+   { Optimise LDD #1 suivi par NEGA/NEGB ï¿½ LDD #-1 }
    If (opcode = 'ldd') and (operand = '#1') Then Begin
     If (i < opt_context.inst_count - 2) and
        (opt_context.instructions[i+1].opcode = 'nega') and
        (opt_context.instructions[i+2].opcode = 'negb') Then
     Begin
      operand := '#-1';
-     comment := comment + ' ; constante pli‚';
+     comment := comment + ' ; constante pliï¿½';
      opt_context.instructions[i+1].can_eliminate := True;
      opt_context.instructions[i+2].can_eliminate := True;
     End;
@@ -776,17 +825,17 @@ Begin
     Else
    If (opcode = 'jsr') and (operand = 'mult16') Then
    Begin
-    { Il faudrait plus de contexte pour d‚terminer s'il s'agit d'une multiplication par une constante }
+    { Il faudrait plus de contexte pour dï¿½terminer s'il s'agit d'une multiplication par une constante }
     Case Language of
      _English: comment := comment + ' ; could optimize if power of 2';
-     Else comment:= comment + ' ; pourrait ˆtre optimis‚ si c''est une puissance de 2';
+     Else comment:= comment + ' ; pourrait ï¿½tre optimisï¿½ si c''est une puissance de 2';
     End;
    End;
   End;
  End;
 End;
 
- { limination des codes morts }
+ { ï¿½limination des codes morts }
 Procedure dead_code_eliminate;
 Var
  i: Integer;
@@ -794,7 +843,7 @@ Begin
  If (opt_context.flags and OPT_DEAD_CODE) = 0 Then Exit;
  For i := 0 to opt_context.inst_count - 1 do Begin
   With opt_context.instructions[i] do Begin
-   { Instructions d'‚limination de Mark NOP }
+   { Instructions d'ï¿½limination de Mark NOP }
    If opcode = 'nop' Then Begin
     can_eliminate := True;
    End;
@@ -1300,12 +1349,14 @@ Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer
 Var
  is_unsigned, is_signed, is_const, is_volatile: Boolean;
  base_type: Integer;
+ type_found: Boolean;
 Begin
  is_unsigned := False;
  is_signed := False;
  is_const := False;
  is_volatile := False;
- base_type := cint; { Default }
+ base_type := -1; { No type initially }
+ type_found := False;
 
  { Initialize type_info }
  init_type_info(type_info);
@@ -1337,12 +1388,14 @@ Begin
   Else If match('void') Then
   Begin
    base_type := cvoid;
+   type_found := True;
    Break;
   End
   Else If match('char') Then
   Begin
    If is_unsigned Then base_type := cuchar
    Else base_type := cchar;
+   type_found := True;
    Break;
   End
   Else If match('short') Then
@@ -1350,6 +1403,7 @@ Begin
    If match('int') Then; { optional }
    If is_unsigned Then base_type := cushort
    Else base_type := cshort;
+   type_found := True;
    Break;
   End
   Else If match('long') Then
@@ -1357,27 +1411,46 @@ Begin
    If match('int') Then; { optional }
    If is_unsigned Then base_type := culong
    Else base_type := clong;
+   type_found := True;
    Break;
   End
   Else If match('int') Then
   Begin
    If is_unsigned Then base_type := cuint
    Else base_type := cint;
+   type_found := True;
    Break;
   End
   Else If match('float') Then
   Begin
    base_type := cfloat;
+   type_found := True;
    Break;
   End
   Else If match('double') Then
   Begin
    base_type := cdouble;
+   type_found := True;
    Break;
   End
   Else
    Break; { No more type specifiers }
  Until False;
+
+ { If no explicit type but unsigned/signed specified, default to int }
+ If not type_found and (is_unsigned or is_signed) Then
+ Begin
+  If is_unsigned Then base_type := cuint
+  Else base_type := cint;
+  type_found := True;
+ End;
+
+ { Return -1 if no type found }
+ If not type_found Then
+ Begin
+  parse_type_specifier_with_qualifiers := -1;
+  Exit;
+ End;
 
  { Set type information }
  type_info.base_type := base_type;
@@ -1533,6 +1606,9 @@ Begin
 
    { Generate function prologue }
    generate_function_prologue(func_index);
+
+   { Mark that we found a function body for main parser to handle }
+   WriteLn(output, '; Function body detected - will be parsed by main loop');
 
    parse_function_declaration := True;
   End
@@ -1746,7 +1822,7 @@ Begin
 
   '(': Begin
     next_char; { consume '(' }
-    expression_bool(lval);
+    additive_expression(lval);
     If peek_char = ')' Then
      next_char { consume ')' }
     Else
@@ -1886,7 +1962,7 @@ Begin
 
  { Parse type specifier with qualifiers }
  base_type := parse_type_specifier_with_qualifiers(type_info);
- If base_type = 0 Then Exit; { No valid type found }
+ If base_type = -1 Then Exit; { No valid type found }
 
  { Save position to check for function vs variable }
  save_lptr := lptr;
@@ -2079,6 +2155,9 @@ Begin
  loop_label := getlabel;
  end_label := getlabel;
 
+ { Push loop context for break/continue }
+ push_loop_context(1, end_label, loop_label);
+
  { Loop start }
  prelabel(loop_label);
  WriteLn(output, '; WHILE loop start');
@@ -2116,6 +2195,9 @@ Begin
  { End label }
  prelabel(end_label);
  WriteLn(output, '; End WHILE');
+
+ { Pop loop context }
+ pop_loop_context;
 End;
 
 Function parse_for_statement: Boolean;
@@ -2132,6 +2214,9 @@ Begin
  condition_label := getlabel;
  loop_label := getlabel;
  end_label := getlabel;
+
+ { Push loop context for break/continue }
+ { push_loop_context(2, end_label, loop_label); }
 
  WriteLn(output, '; FOR loop start');
 
@@ -2204,20 +2289,28 @@ Begin
  { End label }
  prelabel(end_label);
  WriteLn(output, '; End FOR');
+
+ { Pop loop context }
+ pop_loop_context;
 End;
 
 Function parse_do_while_statement: Boolean;
 Var
  lval: TLVal;
- loop_label: Integer;
+ loop_label, condition_label, end_label: Integer;
 Begin
  parse_do_while_statement := False;
 
  If not match('do') Then Exit;
  parse_do_while_statement := True;
 
- { Generate loop label }
+ { Generate loop labels }
  loop_label := getlabel;
+ condition_label := getlabel;
+ end_label := getlabel;
+
+ { Push loop context for break/continue }
+ { push_loop_context(3, end_label, condition_label); }
 
  { Loop start }
  prelabel(loop_label);
@@ -2241,6 +2334,7 @@ Begin
  End;
 
  { Parse condition }
+ prelabel(condition_label);
  WriteLn(output, '; DO-WHILE condition');
  expression_bool(lval);
 
@@ -2258,7 +2352,12 @@ Begin
  printlabel(loop_label);
  nl;
 
+ { End label }
+ prelabel(end_label);
  WriteLn(output, '; End DO-WHILE');
+
+ { Pop loop context }
+ { pop_loop_context; }
 End;
 
 Function parse_return_statement: Boolean;
@@ -2291,6 +2390,8 @@ Begin
 End;
 
 Function parse_break_statement: Boolean;
+Var
+ break_label: Integer;
 Begin
  parse_break_statement := False;
 
@@ -2303,11 +2404,23 @@ Begin
  If not match(';') Then
   errrpt('Expected ; after break');
 
- { TODO: Jump to end of current loop }
- ol('nop ; break - jump to loop end');
+ { Get current break label from loop context }
+ break_label := get_current_break_label;
+ If break_label = -1 Then
+ Begin
+  errrpt('break statement not within a loop');
+  Exit;
+ End;
+
+ { Jump to end of current loop }
+ ot('lbra ');
+ printlabel(break_label);
+ nl;
 End;
 
 Function parse_continue_statement: Boolean;
+Var
+ continue_label: Integer;
 Begin
  parse_continue_statement := False;
 
@@ -2320,8 +2433,18 @@ Begin
  If not match(';') Then
   errrpt('Expected ; after continue');
 
- { TODO: Jump to loop condition }
- ol('nop ; continue - jump to loop condition');
+ { Get current continue label from loop context }
+ continue_label := get_current_continue_label;
+ If continue_label = -1 Then
+ Begin
+  errrpt('continue statement not within a loop');
+  Exit;
+ End;
+
+ { Jump to loop condition }
+ ot('lbra ');
+ printlabel(continue_label);
+ nl;
 End;
 
 { Compound statement parsing }
@@ -2345,16 +2468,8 @@ Begin
 
   If not parse_statement Then
   Begin
-   { Skip unknown tokens }
-   If lptr <= Length(line) Then
-   Begin
-    Inc(lptr);
-    Continue;
-   End
-   Else
-   Begin
-    If not readinline Then Break;
-   End;
+   { Skip to next line to avoid infinite loops }
+   If not readinline Then Break;
   End;
  End;
 
@@ -2372,6 +2487,7 @@ End;
 Function parse_expression_statement: Boolean;
 Var
  lval: TLVal;
+ save_lptr: Integer;
 Begin
  parse_expression_statement := False;
 
@@ -2383,17 +2499,20 @@ Begin
   Exit;
  End;
 
+ { Check if there's something that looks like an expression }
+ save_lptr := lptr;
+ If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then
+  Exit;
+
  { Try to parse expression }
- If expression_bool(lval) Then
- Begin
-  parse_expression_statement := True;
+ expression_bool(lval);
+ parse_expression_statement := True;
 
-  { Expect semicolon }
-  If not match(';') Then
-   errrpt('Expected ; after expression');
+ { Expect semicolon }
+ If not match(';') Then
+  errrpt('Expected ; after expression');
 
-  WriteLn(output, '; Expression statement');
- End;
+ WriteLn(output, '; Expression statement');
 End;
 
 { Main statement parser }
@@ -2619,9 +2738,9 @@ BEGIN
     WriteLn('Syntaxe : cc09 infile.c [outfile] [-options]');
     WriteLn;
     WriteLn('Options :');
-    WriteLn('  -O0    Pas d''optimisation (valeur par d‚faut)');
+    WriteLn('  -O0    Pas d''optimisation (valeur par dï¿½faut)');
     WriteLn('  -O1    Optimisations de base (oeilleon, pliage constant)');
-    WriteLn('  -O2    Optimisations avanc‚es (code mort, sauts)');
+    WriteLn('  -O2    Optimisations avancï¿½es (code mort, sauts)');
     WriteLn('  -O3    Optimisations aggressives (toutes)');
    End;
   End;
@@ -2668,7 +2787,7 @@ BEGIN
   End
    Else
   Begin
-   { Ne pas assigner de sortie … la sortie; utiliser plut“t un drapeau }
+   { Ne pas assigner de sortie ï¿½ la sortie; utiliser plutï¿½t un drapeau }
    Case Language of
     _English:WriteLn('Using console screen for output.');
     Else WriteLn('Affichage de la sortie sur la console.');
@@ -2678,21 +2797,23 @@ BEGIN
  End
   Else
  Begin
-   { Ne pas assigner de sortie … la sortie; utiliser plut“t un drapeau }
+   { Ne pas assigner de sortie ï¿½ la sortie; utiliser plutï¿½t un drapeau }
   Case Language of
    _English:WriteLn('Using console screen for output.');
    Else Write('Affichage de la sortie sur la console.');
   End;
   use_stdout := True;
  End;
-  { Initialisation du systŠme d'opimisation }
+  { Initialisation du systï¿½me d'opimisation }
  init_optimization;
-  { Initialisaton du systŠme de gestion des fonctions }
+ { Initialize loop context stack }
+ loop_depth := 0;
+  { Initialisaton du systï¿½me de gestion des fonctions }
  init_functions;
  asmtype := AS6809;
  header;        { Code d''introduction }
- parse;         { Analyse toutes les entr‚e }
+ parse;         { Analyse toutes les entrï¿½e }
  trailer;       { Code de suivi }
  closeout;      { Fermer la sortie }
- errrptsummary; { R‚sumer les erreurs }
+ errrptsummary; { Rï¿½sumer les erreurs }
 END.
