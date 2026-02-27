@@ -222,7 +222,7 @@ Var
  use_stdout: Boolean;
 
 Function startglb: Integer;Begin
- startglb := 0;
+ startglb := 1; { Start at 1 to reserve 0 as "not found" value }
 End;
 
 Function endglb: Integer;Begin
@@ -528,7 +528,7 @@ Begin
 End;
 
  { Op�rations sur la table des symboles }
-Function addsym(sname: String; typ: Integer; storage: Integer; offset: Integer): Integer;
+Function addsym(sname: String; typ: Integer; storage: Integer; offset_value: Integer): Integer;
 Var
  ptr: Integer;
  i: Integer;
@@ -554,7 +554,7 @@ Begin
  symtab[ptr + ctype] := Chr(typ);
  symtab[ptr + storage] := Chr(storage);
  { D�placement de magasin }
- Move(offset, symtab[ptr + offset], offsize);
+ Move(offset_value, symtab[ptr + offset], offsize);
  glbptr := glbptr + symsiz;
  addsym := ptr;
 End;
