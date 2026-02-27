@@ -137,38 +137,38 @@ Type
   can_eliminate: Boolean; { Peut ˆtre supprim‚ lors de la suppression du code mort }
  End;
 
- { Optimization context }
+ { Optimisation de contexte }
  TOptContext = Record
-  level: Integer;         { Optimization level }
-  flags: Integer;         { Optimization flags }
-  instructions: Array[0..{$IFDEF FPC}999{$ELSE}99{$ENDIF}] of TOptInstruction; { Instruction buffer }
-  inst_count: Integer;    { Number of instructions }
-  last_result_reg: String; { Last register used for result }
+  level: Integer;                                                              { Niveau d'optimisation }
+  flags: Integer;                                                              { Drapeaux d'optimisation }
+  instructions: Array[0..{$IFDEF FPC}999{$ELSE}99{$ENDIF}] of TOptInstruction; { Tampon d'instruction }
+  inst_count: Integer;                                                         { Nombre d'instructions }
+  last_result_reg: String;                                                     { Dernier registre utilis‚ pour le r‚sultat }
  End;
 
- { Function parameter structure }
+ { Structure de paramŠtres de la fonction }
  TParameter = Record
-  name: String[20];       { Parameter name }
-  typ: Integer;          { Parameter type }
-  type_info: TTypeInfo;  { Detailed type information }
-  offset: Integer;       { Stack offset }
+  name: String[20];      { Nom du paramŠtre }
+  typ: Integer;          { Type du paramŠtre }
+  type_info: TTypeInfo;  { Informations d‚taill‚es sur le type }
+  offset: Integer;       { D‚placement de la pile }
  End;
 
  { Function information structure }
  TFunction = Record
-  name: String[20];         { Function name }
-  return_type: Integer;     { Return type }
-  return_type_info: TTypeInfo; { Detailed return type }
-  param_count: Integer;     { Number of parameters }
-  parameters: Array[0..9] of TParameter; { Parameter list }
-  is_defined: Boolean;      { True if function is defined (has body) }
-  is_declared: Boolean;     { True if function is declared }
-  label_id: Integer;        { Assembly label for function }
-  local_vars_size: Integer; { Size of local variables }
-  is_main: Boolean;         { True if this is main function }
+  name: String[20];                      { Nom de la fonction }
+  return_type: Integer;                  { Type de retour }
+  return_type_info: TTypeInfo;           { Type de retour d‚taill‚ }
+  param_count: Integer;                  { Nombre de paramŠtres }
+  parameters: Array[0..9] of TParameter; { Liste des paramŠtres }
+  is_defined: Boolean;                   { Vrai si la fonction est d‚finie (possŠde un corps) }
+  is_declared: Boolean;                  { Vrai si la fonction est d‚clar‚e }
+  label_id: Integer;                     { Etiquette assembleur de la fonction }
+  local_vars_size: Integer;              { Taille dees variables locales }
+  is_main: Boolean;                      { Vrai s'il s'agit de la fonction principale }
  End;
 
- { Table de fonction }
+  { Table de fonction }
  TFunctionTable = Array[0..99] of TFunction;
 
 Var
