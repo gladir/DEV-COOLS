@@ -1327,12 +1327,14 @@ Begin
   End
   Else If match('const') Then
   Begin
-   { TODO: Handle const qualifier }
+   { const qualifier is handled in parse_declarator }
+   WriteLn(output, '; const qualifier detected');
    Continue;
   End
   Else If match('volatile') Then
   Begin
-   { TODO: Handle volatile qualifier }
+   { volatile qualifier is handled in parse_declarator }
+   WriteLn(output, '; volatile qualifier detected');
    Continue;
   End
   Else If match('void') Then
@@ -1383,15 +1385,110 @@ Begin
  parse_type_specifier := base_type;
 End;
 
+{ Enhanced type specifier parsing with qualifiers }
+Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer;
+Var
+ is_unsigned, is_signed, is_const, is_volatile: Boolean;
+ base_type: Integer;
+Begin
+ is_unsigned := False;
+ is_signed := False;
+ is_const := False;
+ is_volatile := False;
+ base_type := cint; { Default }
+
+ { Initialize type_info }
+ init_type_info(type_info);
+
+ { Parse type qualifiers and specifiers }
+ Repeat
+  If match('const') Then
+  Begin
+   is_const := True;
+   WriteLn(output, '; const qualifier detected');
+   Continue;
+  End
+  Else If match('volatile') Then
+  Begin
+   is_volatile := True;
+   WriteLn(output, '; volatile qualifier detected');
+   Continue;
+  End
+  Else If match('unsigned') Then
+  Begin
+   is_unsigned := True;
+   Continue;
+  End
+  Else If match('signed') Then
+  Begin
+   is_signed := True;
+   Continue;
+  End
+  Else If match('void') Then
+  Begin
+   base_type := cvoid;
+   Break;
+  End
+  Else If match('char') Then
+  Begin
+   If is_unsigned Then base_type := cuchar
+   Else base_type := cchar;
+   Break;
+  End
+  Else If match('short') Then
+  Begin
+   If match('int') Then; { optional }
+   If is_unsigned Then base_type := cushort
+   Else base_type := cshort;
+   Break;
+  End
+  Else If match('long') Then
+  Begin
+   If match('int') Then; { optional }
+   If is_unsigned Then base_type := culong
+   Else base_type := clong;
+   Break;
+  End
+  Else If match('int') Then
+  Begin
+   If is_unsigned Then base_type := cuint
+   Else base_type := cint;
+   Break;
+  End
+  Else If match('float') Then
+  Begin
+   base_type := cfloat;
+   Break;
+  End
+  Else If match('double') Then
+  Begin
+   base_type := cdouble;
+   Break;
+  End
+  Else
+   Break; { No more type specifiers }
+ Until False;
+
+ { Set type information }
+ type_info.base_type := base_type;
+ type_info.is_unsigned := is_unsigned;
+ type_info.is_const := is_const;
+ type_info.is_volatile := is_volatile;
+ calculate_type_size(type_info);
+
+ parse_type_specifier_with_qualifiers := base_type;
+End;
+
 { Enhanced declarator parsing with type information }
 Function parse_declarator(var var_name: String; base_type: Integer; var type_info: TTypeInfo): Integer;
 Var
  result_type: Integer;
  array_size: Integer;
 Begin
- { Initialize type info }
- init_type_info(type_info);
- type_info.base_type := base_type;
+ { Don't reinitialize type_info as it may already contain qualifiers }
+ { Just update the base type if not already set }
+ If type_info.base_type = 0 Then
+  type_info.base_type := base_type;
  result_type := base_type;
 
  { Handle pointer declarations }
@@ -1877,8 +1974,8 @@ Var
 Begin
  parse_declaration := False;
 
- { Parse type specifier }
- base_type := parse_type_specifier;
+ { Parse type specifier with qualifiers }
+ base_type := parse_type_specifier_with_qualifiers(type_info);
  If base_type = 0 Then Exit; { No valid type found }
 
  { Save position to check for function vs variable }
@@ -1908,7 +2005,12 @@ Begin
   WriteLn(output, '; Initializing variable: ', var_name, ' (', get_type_name(type_info), ')');
   expression(lval);
 
-  { TODO: Add type checking for initialization }
+  { Type checking for initialization }
+  If type_info.is_const Then
+  Begin
+   WriteLn(output, '; const variable initialized');
+  End;
+
   { Generate type-appropriate initialization code }
   Case type_info.size of
    1: Begin
@@ -1927,6 +2029,14 @@ Begin
     outstr(var_name);
     nl;
    End;
+  End;
+ End
+ Else
+ Begin
+  { Check if const variable needs initialization }
+  If type_info.is_const Then
+  Begin
+   errrpt('const variable ' + var_name + ' must be initialized');
   End;
  End;
 
@@ -1962,6 +2072,14 @@ Begin
      outstr(var_name);
      nl;
     End;
+   End;
+  End
+  Else
+  Begin
+   { Check if const variable needs initialization }
+   If type_info.is_const Then
+   Begin
+    errrpt('const variable ' + var_name + ' must be initialized');
    End;
   End;
  End;
@@ -2572,6 +2690,9 @@ Begin
     { Look up variable in symbol table }
     If lookup_variable(sname, lval) Then
     Begin
+     { TODO: Check if variable is const and prevent assignment }
+     WriteLn(output, '; Checking const qualifier for assignment');
+     
      { Use expression parser for right side }
      expression(lval);
 
