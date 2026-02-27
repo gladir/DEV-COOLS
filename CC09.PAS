@@ -17,7 +17,7 @@ Const
  YES = 1;
  NO = 0;
 
- { Paramätres de la table de symbole }
+  { Paramätres de la table de symbole }
  symsiz = 14;
  symtbsz = 8008;
  numglbs = 512;
@@ -25,7 +25,7 @@ Const
  namesize = 9;
  namemax = 8;
 
- { Symbol table entry format offsets }
+  { DÇplacement du format d'entrÇe de la table des symboles }
  name = 0;
  ident = 9;
  ctype = 10;
@@ -33,7 +33,7 @@ Const
  offset = 12;
  offsize = 2;
 
- { Identifier types }
+  { Types d'identificateurs }
  it_variable = 1;
  it_array = 2;
  it_pointer = 3;
@@ -42,7 +42,7 @@ Const
  it_union_type = 6;
  it_typedef_type = 7;
 
- { Data types }
+  { Types de donnÇes }
  cvoid = 0;
  cchar = 1;
  cuchar = 2;
@@ -59,7 +59,7 @@ Const
  cstruct = 13;
  cunion = 14;
 
- { Type sizes in bytes }
+  { Taille du type en octets }
  sizeof_void = 0;
  sizeof_char = 1;
  sizeof_short = 2;
@@ -69,34 +69,34 @@ Const
  sizeof_double = 8;
  sizeof_pointer = 2;
 
- { Storage classes }
+  { Classes d'entreposage }
  statik = 1;
  stkloc = 2;
  CEXTERNAL = 3;
  automatic = 4;
 
- { Statement types }
+  { Types d'instructions }
  streturn = 3;
 
- { Assembler types }
+  { Types d''assembleurs }
  AS6809 = 1;
  AS9 = 2;
 
- { Optimization levels }
+  { Niveau d''opimisations }
  OPT_NONE = 0;
  OPT_BASIC = 1;
  OPT_ADVANCED = 2;
  OPT_AGGRESSIVE = 3;
 
- { Optimization flags }
- OPT_PEEPHOLE = 1;      { Peephole optimizations }
- OPT_DEAD_CODE = 2;     { Dead code elimination }
- OPT_CONSTANT_FOLD = 4; { Constant folding }
- OPT_STRENGTH_RED = 8;  { Strength reduction }
- OPT_REGISTER = 16;     { Register allocation }
- OPT_JUMP = 32;         { Jump optimizations }
+ { Option d'optimisation }
+ OPT_PEEPHOLE = 1;      { Optimisations pour analyse de code }
+ OPT_DEAD_CODE = 2;     { êlimination du code mort }
+ OPT_CONSTANT_FOLD = 4; { Simplification des constantes }
+ OPT_STRENGTH_RED = 8;  { RÇduction de la complexitÇ }
+ OPT_REGISTER = 16;     { Allocation de registres }
+ OPT_JUMP = 32;         { Optimisations de sauts }
 
- { Input line }
+ { Ligne d''entrÇe }
  linesize = 80;
  linemax = linesize - 1;
 
@@ -104,37 +104,37 @@ Type
  TSymTab = Array[0..symtbsz-1] of Char;
  TLine = String[linesize];
 
- { Type information structure }
+ { Structure d'information de type }
  PTypeInfo = ^TTypeInfo;
  TTypeInfo = Record
-  base_type: Integer;      { Base data type (cint, cchar, etc.) }
-  pointer_level: Integer;  { Number of indirection levels }
-  array_size: Integer;     { Array size (0 if not array) }
-  is_unsigned: Boolean;    { True for unsigned types }
-  is_const: Boolean;       { True for const types }
-  is_volatile: Boolean;    { True for volatile types }
-  struct_id: Integer;      { Struct/union identifier }
-  size: Integer;           { Total size in bytes }
+  base_type: Integer;      { Type de donnÇes de base (cint, cchar, etc.) }
+  pointer_level: Integer;  { Nombre de niveaux d'indirection }
+  array_size: Integer;     { Taille du tableau (0 si ce n'est pas un tableau) }
+  is_unsigned: Boolean;    { Vrai pour les types non signÇs }
+  is_const: Boolean;       { Vrai pour les types constants }
+  is_volatile: Boolean;    { Vrai pour les types volatils }
+  struct_id: Integer;      { Identifiant de struct/union }
+  size: Integer;           { Taille totale en octets }
  End;
 
- { Expression value structure }
+ { Structure de valeur d'expression }
  TLVal = Record
-  symbol: Integer;         { pointer to symbol table entry }
-  indirect: Integer;       { 0=direct, 1=indirect }
-  typ: Integer;           { data type }
-  storage: Integer;       { storage class }
-  constant: Boolean;      { true if constant value }
-  value: Integer;         { constant value if applicable }
-  type_info: TTypeInfo;   { Extended type information }
+  symbol: Integer;        { Pointeur vers l'entrÇe de la table de symboles }
+  indirect: Integer;      { 0=direct, 1=indirect }
+  typ: Integer;           { Type de donnÇes }
+  storage: Integer;       { Classe d'entreposage }
+  constant: Boolean;      { Vrai si la valeur est constante }
+  value: Integer;         { Valeur constante, le cas ÇchÇant }
+  type_info: TTypeInfo;   { Informations de type Çtendues }
  End;
 
- { Optimization instruction structure }
+ { Structure d'instruction d'optimisation }
  TOptInstruction = Record
-  opcode: String[10];     { Instruction mnemonic }
-  operand: String[20];    { Operand }
-  comment: String[40];    { Comment }
-  line_number: Integer;   { Source line number }
-  can_eliminate: Boolean; { Can be eliminated in dead code removal }
+  opcode: String[10];     { MnÇmonique d'instruction }
+  operand: String[20];    { OpÇrande }
+  comment: String[40];    { Commentaire }
+  line_number: Integer;   { NumÇro de ligne source }
+  can_eliminate: Boolean; { Peut àtre supprimÇ lors de la suppression du code mort }
  End;
 
  { Optimization context }
