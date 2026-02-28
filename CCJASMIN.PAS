@@ -6671,9 +6671,7 @@ Begin
     expression(right_lval);
 
     { Generate assignment code }
-    ot('std  ');
-    outstr(var_name);
-    nl;
+    ol('std   ' + var_name);
 
     safe_writeln('; Assignment to variable: ' + var_name);
     parse_assignment_statement := True;
@@ -6996,9 +6994,7 @@ Begin
       expression(right_lval);
 
       { Store result in variable }
-      ot('std  ');
-      outstr(sname);
-      nl;
+      ol('std   ' + sname);
      End;
     End;
    End

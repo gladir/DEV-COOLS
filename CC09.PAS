@@ -2527,14 +2527,13 @@ Begin
    End;
    safe_writeln('; Membre ajout‚: ' + member_name);
   Until False; { La boucle se termine par les Break }
-
-  { Consommer l'accolade de fermeture }
+   { Consommer l'accolade de fermeture }
   If not match('}') Then
   Begin
    Case Language of
     _English: errrpt('Expected } to close struct/union');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete } zum SchlieÃŸen der Struct/Union');
+    _Germany: errrpt('Erwartete } zum Schlieáen der Struct/Union');
     {$ENDIF}
     Else errrpt('} attendu pour fermer struct/union');
    End;
@@ -2542,19 +2541,18 @@ Begin
   End;
 
   { Afficher les informations de la structure }
-  With struct_def^ do
-  Begin
+  With struct_def^ do Begin
    If is_union Then
-    safe_writeln('; Union ' + name + ' dÃ©finie, taille: ' + IntToStr(total_size) + ' octets')
+    safe_writeln('; Union ' + name + ' d‚finie, taille: ' + IntToStr(total_size) + ' octets')
    Else
-    safe_writeln('; Structure ' + name + ' dÃ©finie, taille: ' + IntToStr(total_size) + ' octets');
+    safe_writeln('; Structure ' + name + ' d‚finie, taille: ' + IntToStr(total_size) + ' octets');
   End;
 
   parse_struct_declaration := struct_def^.struct_id;
  End
- Else
+  Else
  Begin
-  { RÃ©fÃ©rence Ã  une structure existante }
+   { R‚f‚rence … une structure existante }
   struct_def := find_struct(struct_name);
   If struct_def = nil Then
   Begin
@@ -2567,12 +2565,11 @@ Begin
    End;
    Exit;
   End;
-
   parse_struct_declaration := struct_def^.struct_id;
  End;
 End;
 
-{ DÃ©clarations anticipÃ©es pour l'analyse d'expression et les fonctions d'analyse }
+{ D‚clarations anticip‚es pour l'analyse d'expression et les fonctions d'analyse }
 Function expression_bool(var lval: TLVal): Boolean; forward;
 Procedure primary_expression(var lval: TLVal); forward;
 Procedure unary_expression(var lval: TLVal); forward;
@@ -2590,39 +2587,34 @@ Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_po
 Procedure parse_dereference(var lval: TLVal); forward;
 Procedure parse_address_of(var lval: TLVal); forward;
 
-{ Convertir un type entier en nom de type string }
-function get_type_name_from_id(type_id: Integer): String;
-begin
+ { Convertir un type entier en nom de type string }
+function get_type_name_from_id(type_id: Integer): String;begin
   case type_id of
     cvoid: get_type_name_from_id := 'void';
     cchar: get_type_name_from_id := 'char';
     cint: get_type_name_from_id := 'int';
-    else get_type_name_from_id := 'int'; { Par dÃ©faut }
+    else get_type_name_from_id := 'int'; { Par d‚faut }
   end;
 end;
 
-{ Obtenir le nom d'un symbole depuis son pointeur stockÃ© comme entier }
+{ Obtenir le nom d'un symbole depuis son pointeur entrepos‚ comme entier }
 function get_symbol_name(symbol_ptr_as_int: Integer): String;
 var
   sym_ptr: PSymbol;
 begin
-  if symbol_ptr_as_int = 0 then
-  begin
-    get_symbol_name := 'unknown';
-    exit;
-  end;
-
-  sym_ptr := PSymbol(symbol_ptr_as_int);
-  if sym_ptr = nil then
-  begin
-    get_symbol_name := 'invalid';
-    exit;
-  end;
-
-  get_symbol_name := sym_ptr^.name;
+ if symbol_ptr_as_int = 0 then begin
+  get_symbol_name := 'unknown';
+  exit;
+ end;
+ sym_ptr := PSymbol(symbol_ptr_as_int);
+ if sym_ptr = nil then begin
+  get_symbol_name := 'invalid';
+  exit;
+ end;
+ get_symbol_name := sym_ptr^.name;
 end;
 
-{ Analyse amÃ©liorÃ©e des spÃ©cificateurs de type avec support complet des types C }
+ { Analyse am‚lior‚e des sp‚cificateurs de type avec support complet des types C }
 Function parse_type_specifier: Integer;
 Var
  is_unsigned, is_signed: Boolean;
@@ -2630,30 +2622,28 @@ Var
 Begin
  is_unsigned := False;
  is_signed := False;
- base_type := cint; { Par dÃ©faut }
-
- { Analyser les qualificateurs et spÃ©cificateurs de type }
+ base_type := cint; { Par d‚faut }
+  { Analyser les qualificateurs et sp‚cificateurs de type }
  Repeat
-  If match('unsigned') Then
-  Begin
+  If match('unsigned') Then Begin
    is_unsigned := True;
    Continue;
   End
-  Else If match('signed') Then
-  Begin
+   Else
+  If match('signed') Then Begin
    is_signed := True;
    Continue;
   End
-  Else If match('const') Then
-  Begin
-   { Le qualificateur const est gÃ©rÃ© dans parse_declarator }
-   safe_writeln('; qualificateur const dÃ©tectÃ©');
+   Else
+  If match('const') Then Begin
+   { Le qualificateur const est g‚r‚ dans parse_declarator }
+   safe_writeln('; qualificateur const d‚tect‚');
    Continue;
   End
-  Else If match('volatile') Then
-  Begin
-   { Le qualificateur volatile est gÃ©rÃ© dans parse_declarator }
-   safe_writeln('; qualificateur volatile dÃ©tectÃ©');
+   Else
+  If match('volatile') Then Begin
+   { Le qualificateur volatile est g‚r‚ dans parse_declarator }
+   safe_writeln('; qualificateur volatile d‚tect‚');
    Continue;
   End
   Else If match('void') Then
