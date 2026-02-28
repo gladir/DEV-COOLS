@@ -374,6 +374,8 @@ End;
 
 { Ajouter un symbole à la table }
 Function AddSymbol(name: String; sym_type, data_type, storage: Integer): Integer;
+Var
+ upper_name: String;
 Begin
  If symbol_count >= MAX_SYMBOLS Then
  Begin
@@ -382,11 +384,12 @@ Begin
   Exit;
  End;
 
+ upper_name := UpperCase(name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
  With symbol_table[symbol_count]^ do
  Begin
-  name := UpperCase(name);
+  name := upper_name;  { Utiliser la version en majuscules }
   symbol_type := sym_type;
   data_type := data_type;
   storage_class := storage;
@@ -436,6 +439,12 @@ Begin
  EmitLine('.STACK 100h');
  EmitLine('');
  EmitLine('.DATA');
+ 
+ { Définir les chaînes constantes pour les booléens }
+ EmitLine('TRUE_STR  DB ''TRUE$''');
+ EmitLine('FALSE_STR DB ''FALSE$''');
+ EmitLine('');
+ 
  data_segment := True;
 End;
 
@@ -557,20 +566,32 @@ End;
 Procedure ParseExpression;
 Var
  sym_index: Integer;
+ temp_token: String;
 Begin
  If current_symbol = SYM_UNKNOWN Then
  Begin
-  { C'est peut-être un identificateur ou un nombre }
-  If (current_char >= '0') and (current_char <= '9') Then
+  temp_token := current_token;
+  
+  { Vérifier si c'est un caractère littéral (longueur 1, lettre) }
+  If (Length(temp_token) = 1) and 
+     (((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) or
+      ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
   Begin
-   { Nombre littéral }
-   Emit('mov ax, ' + current_token);
+   { Caractère littéral - traiter comme valeur ASCII }
+   Emit('mov al, ' + IntToStr(Ord(temp_token[1])));
    NextToken;
   End
-  Else
+  { C'est peut-être un nombre }
+  Else If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
+  Begin
+   { Nombre littéral }
+   Emit('mov ax, ' + temp_token);
+   NextToken;
+  End
+  Else If temp_token <> '' Then
   Begin
    { Identificateur - chercher dans la table des symboles }
-   sym_index := FindSymbol(current_token);
+   sym_index := FindSymbol(temp_token);
    If sym_index > 0 Then
    Begin
     Case symbol_table[sym_index]^.data_type of
@@ -581,9 +602,19 @@ Begin
     End;
    End
    Else
-    Error('Variable non déclarée: ' + current_token);
+   Begin
+    Error('Variable non déclarée: ' + temp_token);
+   End;
    NextToken;
+  End
+  Else
+  Begin
+   NextToken; { Token vide, continuer }
   End;
+ End
+ Else
+ Begin
+  NextToken; { Symbole reconnu, continuer }
  End;
 End;
 
@@ -596,13 +627,15 @@ Begin
  If sym_index = 0 Then
  Begin
   Error('Variable non déclarée: ' + var_name);
+  NextToken; { Consommer le token pour éviter la boucle infinie }
   Exit;
  End;
 
  { Attendre := }
+ NextToken; { Consommer l'identificateur de variable }
  If current_token = ':=' Then
  Begin
-  NextToken;
+  NextToken; { Consommer := }
   ParseExpression;
 
   { Générer le code d'affectation }
@@ -614,13 +647,160 @@ Begin
   End;
  End
  Else
+ Begin
   Error('Attendu := pour l''affectation, trouvé: ' + current_token);
+  NextToken; { Consommer le token erroné pour éviter la boucle infinie }
+ End;
+End;
+
+{ Parser une instruction WRITE (sans saut de ligne) }
+Procedure ParseWrite;
+Var
+ i, sym_index: Integer;
+ is_string: Boolean;
+ var_name: String;
+Begin
+ NextToken; { Consommer WRITE }
+
+ If current_token = '(' Then
+ Begin
+  NextToken;
+
+  { Traitement des paramètres multiples séparés par des virgules }
+  Repeat
+   is_string := False;
+   
+   { Vérifier si c'est une chaîne littérale (entre guillemets) }
+   If (current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
+      (Pos('''', current_line) > 0) Then
+   Begin
+    { Chaîne littérale }
+    is_string := True;
+    EmitComment('Affichage chaîne (Write): ' + current_token);
+    
+    { Optimisation: utiliser l'interruption DOS 09h pour les chaînes }
+    If Length(current_token) > 0 Then
+    Begin
+     { Générer une étiquette de données pour la chaîne }
+     If not data_segment Then
+     Begin
+      EmitLine('.DATA');
+      data_segment := True;
+     End;
+     
+     EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
+     
+     { Retour au segment de code }
+     If not code_segment Then
+      BeginCodeSection;
+      
+     { Afficher la chaîne avec DOS function 09h }
+     Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
+     Emit('mov ah, 09h');
+     Emit('int 21h');
+     Inc(next_label_id);
+    End;
+    
+    NextToken;
+   End
+   Else If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
+   Begin
+    { Vérifier si c'est un nombre ou une variable }
+    If (current_token[1] >= '0') and (current_token[1] <= '9') Then
+    Begin
+     { Nombre littéral }
+     EmitComment('Affichage nombre (Write): ' + current_token);
+     Emit('mov ax, ' + current_token);
+     Emit('call PRINT_NUM');
+    End
+    Else
+    Begin
+     { Variable - vérifier dans la table des symboles }
+     var_name := current_token;
+     sym_index := FindSymbol(var_name);
+     If sym_index > 0 Then
+     Begin
+      EmitComment('Affichage variable (Write): ' + var_name);
+      Case symbol_table[sym_index]^.data_type of
+       TYPE_INTEGER, TYPE_WORD:
+        Begin
+         Emit('mov ax, ' + symbol_table[sym_index]^.name);
+         Emit('call PRINT_NUM');
+        End;
+       TYPE_BYTE:
+        Begin
+         Emit('mov al, ' + symbol_table[sym_index]^.name);
+         Emit('mov ah, 0');
+         Emit('call PRINT_NUM');
+        End;
+       TYPE_CHAR:
+        Begin
+         Emit('mov dl, ' + symbol_table[sym_index]^.name);
+         Emit('mov ah, 02h');
+         Emit('int 21h');
+        End;
+       TYPE_STRING:
+        Begin
+         Emit('mov dx, OFFSET ' + symbol_table[sym_index]^.name);
+         Emit('mov ah, 09h');
+         Emit('int 21h');
+        End;
+       TYPE_BOOLEAN:
+        Begin
+         Emit('mov al, ' + symbol_table[sym_index]^.name);
+         Emit('cmp al, 0');
+         Emit('je FALSE_' + IntToStr(next_label_id));
+         Emit('mov dx, OFFSET TRUE_STR');
+         Emit('jmp BOOL_END_' + IntToStr(next_label_id));
+         EmitLabel('FALSE_' + IntToStr(next_label_id));
+         Emit('mov dx, OFFSET FALSE_STR');
+         EmitLabel('BOOL_END_' + IntToStr(next_label_id));
+         Emit('mov ah, 09h');
+         Emit('int 21h');
+         Inc(next_label_id);
+        End;
+      Else
+       Begin
+        Emit('mov ax, ' + symbol_table[sym_index]^.name);
+        Emit('call PRINT_NUM');
+       End;
+      End;
+     End
+     Else
+     Begin
+      Error('Variable non déclarée: ' + var_name);
+     End;
+    End;
+    
+    NextToken;
+   End;
+   
+   { Vérifier s'il y a d'autres paramètres }
+   If current_token = ',' Then
+   Begin
+    NextToken;
+    Continue; { Traiter le paramètre suivant }
+   End
+   Else
+    Break; { Fin des paramètres }
+    
+  Until False;
+
+  If current_token = ')' Then
+   NextToken
+  Else
+   Error('Attendu ) après les paramètres de Write');
+ End;
+ 
+ { Pas de saut de ligne pour WRITE (contrairement à WRITELN) }
 End;
 
 { Parser une instruction WRITELN }
 Procedure ParseWriteln;
 Var
- i: Integer;
+ i, sym_index: Integer;
+ is_string: Boolean;
+ var_name: String;
 Begin
  NextToken; { Consommer WRITELN }
 
@@ -628,39 +808,150 @@ Begin
  Begin
   NextToken;
 
-  { Vérifier si c'est une chaîne ou une expression }
-  If (current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) Then
-  Begin
-   { C'est soit une chaîne, soit un identificateur }
-   EmitComment('Affichage de: ' + current_token);
-
-   { Générer le code pour afficher la chaîne caractère par caractère }
-   If Length(current_token) > 0 Then
+  { Traitement des paramètres multiples séparés par des virgules }
+  Repeat
+   is_string := False;
+   
+   { Vérifier si c'est une chaîne littérale - détection améliorée }
+   If (current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
+      (Length(current_line) > 0) and (line_pos > 1) and 
+      (current_line[line_pos-Length(current_token)-1] = '''') Then
    Begin
-    For i := 1 to Length(current_token) do
+    { Chaîne littérale }
+    is_string := True;
+    EmitComment('Affichage chaîne: ' + current_token);
+    
+    { Optimisation: utiliser l'interruption DOS 09h pour les chaînes }
+    If Length(current_token) > 0 Then
     Begin
-     Emit('mov dl, ' + IntToStr(Ord(current_token[i])));
-     Emit('mov ah, 02h');
+     { Générer une étiquette de données pour la chaîne }
+     If not data_segment Then
+     Begin
+      EmitLine('.DATA');
+      data_segment := True;
+     End;
+     
+     EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
+     
+     { Retour au segment de code }
+     If not code_segment Then
+      BeginCodeSection;
+      
+     { Afficher la chaîne avec DOS function 09h }
+     Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
+     Emit('mov ah, 09h');
      Emit('int 21h');
+     Inc(next_label_id);
     End;
+    
+    NextToken;
+   End
+   Else If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
+   Begin
+    { Vérifier si c'est un nombre ou une variable }
+    If (current_token[1] >= '0') and (current_token[1] <= '9') Then
+    Begin
+     { Nombre littéral }
+     EmitComment('Affichage nombre: ' + current_token);
+     Emit('mov ax, ' + current_token);
+     Emit('call PRINT_NUM');
+    End
+    Else
+    Begin
+     { Variable - vérifier dans la table des symboles }
+     var_name := current_token;
+     sym_index := FindSymbol(var_name);
+     If sym_index > 0 Then
+     Begin
+      EmitComment('Affichage variable: ' + var_name);
+      Case symbol_table[sym_index]^.data_type of
+       TYPE_INTEGER, TYPE_WORD:
+        Begin
+         Emit('mov ax, ' + symbol_table[sym_index]^.name);
+         Emit('call PRINT_NUM');
+        End;
+       TYPE_BYTE:
+        Begin
+         Emit('mov al, ' + symbol_table[sym_index]^.name);
+         Emit('mov ah, 0');
+         Emit('call PRINT_NUM');
+        End;
+       TYPE_CHAR:
+        Begin
+         Emit('mov dl, ' + symbol_table[sym_index]^.name);
+         Emit('mov ah, 02h');
+         Emit('int 21h');
+        End;
+       TYPE_STRING:
+        Begin
+         Emit('mov dx, OFFSET ' + symbol_table[sym_index]^.name);
+         Emit('mov ah, 09h');
+         Emit('int 21h');
+        End;
+       TYPE_BOOLEAN:
+        Begin
+         Emit('mov al, ' + symbol_table[sym_index]^.name);
+         Emit('cmp al, 0');
+         Emit('je FALSE_' + IntToStr(next_label_id));
+         Emit('mov dx, OFFSET TRUE_STR');
+         Emit('jmp BOOL_END_' + IntToStr(next_label_id));
+         EmitLabel('FALSE_' + IntToStr(next_label_id));
+         Emit('mov dx, OFFSET FALSE_STR');
+         EmitLabel('BOOL_END_' + IntToStr(next_label_id));
+         Emit('mov ah, 09h');
+         Emit('int 21h');
+         Inc(next_label_id);
+        End;
+      Else
+       Begin
+        Emit('mov ax, ' + symbol_table[sym_index]^.name);
+        Emit('call PRINT_NUM');
+       End;
+      End;
+     End
+     Else
+     Begin
+      { Traiter comme chaîne littérale si non trouvé }
+      EmitComment('Affichage chaîne: ' + current_token);
+      If not data_segment Then
+      Begin
+       EmitLine('.DATA');
+       data_segment := True;
+      End;
+      
+      EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
+      
+      If not code_segment Then
+       BeginCodeSection;
+       
+      Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
+      Emit('mov ah, 09h');
+      Emit('int 21h');
+      Inc(next_label_id);
+     End;
+    End;
+    
+    NextToken;
    End;
-
-   NextToken;
-  End
-  Else
-  Begin
-   ParseExpression;
-   EmitComment('Affichage d''un nombre (procédure simplifiée)');
-   Emit('call PRINT_NUM'); { Appel à une procédure d'affichage }
-  End;
+   
+   { Vérifier s'il y a d'autres paramètres }
+   If current_token = ',' Then
+   Begin
+    NextToken;
+    Continue; { Traiter le paramètre suivant }
+   End
+   Else
+    Break; { Fin des paramètres }
+    
+  Until False;
 
   If current_token = ')' Then
    NextToken
   Else
-   Error('Attendu )');
+   Error('Attendu ) après les paramètres de WriteLn');
  End;
 
- { Générer nouvelle ligne }
+ { Générer saut de ligne pour WRITELN }
  Emit('mov dl, 13');
  Emit('mov ah, 02h');
  Emit('int 21h');
@@ -741,9 +1032,13 @@ Begin
      Begin
       { C'est peut-être une affectation ou une instruction inconnue }
       If FindSymbol(current_token) > 0 Then
-       ParseAssignment(current_token)
+      Begin
+       ParseAssignment(current_token); { ParseAssignment gérera NextToken }
+      End
       Else If current_symbol = SYM_WRITELN Then
        ParseWriteln
+      Else If current_symbol = SYM_WRITE Then
+       ParseWrite
       Else
       Begin
        NextToken; { Ignorer et continuer }
@@ -769,6 +1064,9 @@ Begin
   SYM_WHILE:
    ParseWhile;
 
+  SYM_WRITE:
+   ParseWrite;
+
   SYM_WRITELN:
    ParseWriteln;
 
@@ -778,7 +1076,9 @@ Begin
     Begin
      { Peut-être une affectation }
      If FindSymbol(current_token) > 0 Then
-      ParseAssignment(current_token)
+     Begin
+      ParseAssignment(current_token); { ParseAssignment gérera NextToken }
+     End
      Else
       NextToken; { Ignorer token inconnu }
     End
@@ -971,14 +1271,47 @@ Procedure GenerateHelpProcedures;
 Begin
  EmitLine('');
  EmitComment('Procédures d''aide pour l''affichage');
+ 
+ { Procédure pour afficher un nombre entier }
  EmitLine('PRINT_NUM PROC');
- EmitComment('Affiche le nombre dans AX');
- EmitLine('    ; Implémentation simplifiée pour afficher un nombre');
- EmitLine('    ; (code complet requis pour conversion décimale)');
- EmitLine('    mov dx, ax');
- EmitLine('    add dl, 48  ; Convertir en ASCII (pour chiffres 0-9 seulement)');
+ EmitComment('Affiche le nombre dans AX en décimal');
+ EmitLine('    push ax');
+ EmitLine('    push bx');
+ EmitLine('    push cx'); 
+ EmitLine('    push dx');
+ EmitLine('');
+ EmitComment('Traiter le signe négatif');
+ EmitLine('    cmp ax, 0');
+ EmitLine('    jge PRINT_POSITIVE');
+ EmitLine('    mov dl, ''-''');
  EmitLine('    mov ah, 02h');
  EmitLine('    int 21h');
+ EmitLine('    neg ax');
+ EmitLine('');
+ EmitLine('PRINT_POSITIVE:');
+ EmitComment('Conversion en décimal et affichage');
+ EmitLine('    mov cx, 0    ; Compteur de chiffres');
+ EmitLine('    mov bx, 10   ; Diviseur');
+ EmitLine('');
+ EmitLine('PUSH_DIGITS:');
+ EmitLine('    mov dx, 0');
+ EmitLine('    div bx       ; AX = AX / 10, DX = reste');
+ EmitLine('    add dl, 48   ; Convertir en ASCII');
+ EmitLine('    push dx      ; Empiler le chiffre');
+ EmitLine('    inc cx       ; Incrémenter compteur');
+ EmitLine('    cmp ax, 0');
+ EmitLine('    jne PUSH_DIGITS');
+ EmitLine('');
+ EmitLine('POP_DIGITS:');
+ EmitLine('    pop dx       ; Dépiler et afficher');
+ EmitLine('    mov ah, 02h');
+ EmitLine('    int 21h');
+ EmitLine('    loop POP_DIGITS');
+ EmitLine('');
+ EmitLine('    pop dx');
+ EmitLine('    pop cx');
+ EmitLine('    pop bx');
+ EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('PRINT_NUM ENDP');
 End;

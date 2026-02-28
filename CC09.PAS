@@ -6455,13 +6455,11 @@ Begin
    blanks;
    If match('=') Then
    Begin
-    safe_writeln('; Assignment to ' + sname);
+    safe_writeln('; Affectation … ' + sname);
     blanks;
-
-    { Look up variable in symbol table }
-    If lookup_variable(sname, lval) Then
-    Begin
-     { Check if variable is const and prevent assignment }
+     { Recherchez la variable dans le tableau des symboles }
+    If lookup_variable(sname, lval) Then Begin
+     { V‚rifier si la variable est const et empˆcher son affectation }
      If lval.type_info.is_const Then
      Begin
       Case Language of
@@ -6469,17 +6467,15 @@ Begin
        {$IFDEF FPC}
        _Germany: errrpt('Kann const Variable nicht zuweisen: ' + sname);
        {$ENDIF}
-       Else errrpt('Impossible d''assigner Ã  la variable const: ' + sname);
+       Else errrpt('Impossible d''assigner … la variable const: ' + sname);
       End;
      End
      Else
      Begin
-      safe_writeln('; Assignment to variable: ' + sname);
-
-      { Use expression parser for right side }
+      safe_writeln('; Affectation … une variable: ' + sname);
+       { Utilise l'analyse d'expression pour le c“t‚ droit }
       expression(right_lval);
-
-      { Store result in variable }
+       { Entrepose le r‚sultat dans la variable }
       ot('std  ');
       outstr(sname);
       nl;
@@ -6488,9 +6484,8 @@ Begin
    End
    Else
    Begin
-    { Load variable }
-    If lookup_variable(sname, lval) Then
-    Begin
+    { Charge la variable }
+    If lookup_variable(sname, lval) Then Begin
      ot('ldd  ');
      outstr(sname);
      nl;
@@ -6498,28 +6493,24 @@ Begin
    End;
    Continue;
   End;
-
-  { Try to parse as expression }
+   { Essayez d'analyser comme une expression }
   lptr := 1;
   blanks;
   If (peek_char >= '0') and (peek_char <= '9') Then
   Begin
-   safe_writeln('; Expression detected');
+   safe_writeln('; Expression detect‚');
    expression(lval);
    Continue;
   End;
-
-  { Simple function detection fallback }
+   { Simple function detection fallback }
   If Pos('(', line) > 0 Then
   Begin
-   safe_writeln('; Function found: ' + line);
-   ol('nop ; placeholder for function');
+   safe_writeln('; Fonction trouv‚: ' + line);
+   ol('nop ; espace r‚serv‚ pour la fonction');
   End;
-
-  { Output any remaining content as comment }
-  If Length(line) > 0 Then
-  Begin
-   safe_writeln('; Unknown: ' + line);
+   { Afficher le contenu restant sous forme de commentaire }
+  If Length(line) > 0 Then Begin
+   safe_writeln('; Inconnu: ' + line);
   End;
  End;
 End;
@@ -6584,16 +6575,15 @@ BEGIN
     WriteLn('Syntaxe : cc09 infile.c [outfile] [-options]');
     WriteLn;
     WriteLn('Options :');
-    WriteLn('  -O0    Pas d''optimisation (valeur par dï¿½faut)');
+    WriteLn('  -O0    Pas d''optimisation (valeur par d‚faut)');
     WriteLn('  -O1    Optimisations de base (oeilleon, pliage constant)');
-    WriteLn('  -O2    Optimisations avancï¿½es (code mort, sauts)');
+    WriteLn('  -O2    Optimisations avanc‚es (code mort, sauts)');
     WriteLn('  -O3    Optimisations aggressives (toutes)');
    End;
   End;
   Halt(1);
  End;
-  { Initialize variables - symtab no longer needed }
- { FillChar(symtab, SizeOf(symtab), 0); -- Old symbol table removed }
+  { FillChar(symtab, SizeOf(symtab), 0); -- Vielle table de symboles pouvant ˆtre enlever }
  glbptr := startglb;
  locptr := startloc;
  stkp := 0;
@@ -6604,21 +6594,21 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
- { Initialize include file system }
+ { Initialise le systŠme include de fichier }
  include_depth := 0;
  current_filename := '';
- { Initialize define system }
+ { Initialise le systŠme define }
  init_defines;
- { Initialize heap-based symbol table }
+ { Initialise la table de symbole dans la m‚moire de tas }
  init_symbols;
-  { Compiler main body }
+  { Compiler le corps du main }
  nxtlab := 0;
  kill;
  WriteLn('CC09 - Compilateur C pour 6809 V1.01');
  WriteLn;
  optimize := OPT_NONE;
  ctext := NO;
- { Parse command line arguments }
+ { Analyse les paramŠtres de la ligne de commande }
  For i := 1 to ParamCount do Begin
   param := ParamStr(i);
   If param = '-O0' Then optimize := OPT_NONE
@@ -6626,65 +6616,55 @@ BEGIN
   Else If param = '-O2' Then optimize := OPT_ADVANCED
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
-
- { Open input file with error checking }
+  { Ouvrir le fichier d'entr‚e avec la v‚rification d'erreur }
  Assign(input, ParamStr(1));
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
-  WriteLn('Error: Cannot open input file: ', ParamStr(1));
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur: Impossible d''ouvrir le fichier d''entr‚e : ', ParamStr(1));
   Halt(1);
  End;
  {$I+}
-
  current_filename := ParamStr(1); { Set initial filename for include system }
- WriteLn('Compiling Source file: ', ParamStr(1));
-
- { Initialize global variables }
+ WriteLn('Compile le fichier source : ', ParamStr(1));
+  { Initialise les variables globals }
  eof := 0;
  errcnt := 0;
  lptr := 1;
  line := '';
  nextlabel := 0;
- use_stdout := True; { Initialize early - may be changed later }
-
- { Initialize heap-based symbol table }
+ use_stdout := True;
+  { Initialise la table de symbole sur la m‚moire de tas }
  init_symbols;
-
- { Initialize defines table }
+ { Initialise la table de define }
  init_defines;
-
- { Initialize inclusion system }
+  { Initialise le systŠme d'inclusion }
  init_inclusion_system;
-
- { Initialize conditions system }
+  { Initialise le systŠme de conditions }
  init_conditions;
-
- { Initialize control flow tables }
+  { Initialise la table de contr“le de flux }
  init_goto_table;
  init_switch_table;
 
- If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
+ If optimize > OPT_NONE Then WriteLn('Niveau d''optimisation : ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
   If (param[1] <> '-') Then Begin { Option impossible, fichier de sortie obligatoire }
    Assign(output, param);
    {$I-}
    Rewrite(output);
-   If IOResult <> 0 Then
-   Begin
-    WriteLn('Error: Cannot create output file: ', param);
+   If IOResult <> 0 Then Begin
+    WriteLn('Erreur: Impossible de cr‚er le fichier de sortie: ', param);
     Halt(1);
    End;
    {$I+}
-   { Message supprimÃ© temporairement }
-   { WriteLn('Generating asm file: ', param); }
+   { Message supprim‚ temporairement }
+   { WriteLn('G‚n‚rer un fichier asm : ', param); }
    use_stdout := False;
   End
    Else
   Begin
-   { Ne pas assigner de sortie ï¿½ la sortie; utiliser plutï¿½t un drapeau }
+   { Ne pas assigner de sortie … la sortie; utiliser plut“t un drapeau }
    Case Language of
     _English:WriteLn('Using console screen for output.');
     Else WriteLn('Affichage de la sortie sur la console.');
@@ -6694,33 +6674,33 @@ BEGIN
  End
   Else
  Begin
-   { Ne pas assigner de sortie ï¿½ la sortie; utiliser plutï¿½t un drapeau }
+   { Ne pas assigner de sortie … la sortie; utiliser plut“t un drapeau }
   Case Language of
    _English:WriteLn('Using console screen for output.');
    Else WriteLn('Affichage de la sortie sur la console.');
   End;
   use_stdout := True;
  End;
-  { Initialisation du systÃ¨me d'optimisation }
+  { Initialisation du systŠme d'optimisation }
  init_optimization;
- { Initialize loop context stack }
+ { Initialise la boucle de contexte de pile }
  loop_depth := 0;
- { Initialize type info table }
+ { Initialise la table d'information de type }
  type_info_count := 0;
-  { Initialisaton du systï¿½me de gestion des fonctions }
+  { Initialisaton du systŠme de gestion des fonctions }
  init_functions;
-  { Initialisation du systÃ¨me de gestion des structures }
+  { Initialisation du systŠme de gestion des structures }
  init_structs;
- { Initialisation de la table des Ã©tiquettes goto }
+ { Initialisation de la table des ‚tiquettes goto }
  init_goto_table;
  asmtype := AS6809;
- header;        { Code d''introduction }
- parse;         { Analyse toutes les entrï¿½e }
- trailer;       { Code de suivi }
- free_defines;  { Free define memory from heap }
- free_conditions; { Free conditions system }
- free_symbols;  { Free symbol table from heap }
- free_structs;  { Free struct definitions from heap }
- closeout;      { Fermer la sortie }
- errrptsummary; { Rï¿½sumer les erreurs }
+ header;          { Code d'introduction }
+ parse;           { Analyse toutes les entr‚e }
+ trailer;         { Code de suivi }
+ free_defines;    { LibŠre les define de la m‚moire de tas }
+ free_conditions; { LibŠre le systŠme de conditions }
+ free_symbols;    { LibŠre la table de symboles de la m‚moire de tas }
+ free_structs;    { LibŠre les d‚finitions de "struct" de la m‚moire de tas }
+ closeout;        { Fermer la sortie }
+ errrptsummary;   { R‚umer les erreurs }
 END.
