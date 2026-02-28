@@ -14,23 +14,23 @@ Uses DOS;
 
 Const
  VERSION = 'Compilateur C V1.1';  { Version du compilateur C pour 6809 }
- YES = 1;                         { Valeur bool√©enne vraie }
- NO = 0;                          { Valeur bool√©enne fausse }
+ YES = 1;                         { Valeur boolÇenne vraie }
+ NO = 0;                          { Valeur boolÇenne fausse }
 
-  { Param√®tres de la table de symbole }
- symsiz = 14;       { Taille d'une entr√©e de symbole en octets }
+  { Paramätres de la table de symbole }
+ symsiz = 14;       { Taille d'une entrÇe de symbole en octets }
  numglbs = 512;     { Nombre maximum de symboles globaux }
  MASKGLBS = 511;    { Masque pour le hachage de la table de symboles }
  namesize = 32;     { Taille maximale d'un nom de symbole incluant le terminateur }
  namemax = 31;      { Longueur maximale d'un nom de symbole }
 
-  { D√©placement du format d'entr√©e de la table des symboles }
- name = 0;          { Offset du nom du symbole dans l'entr√©e }
- ident = 9;         { Offset de l'identificateur de type }
- ctype = 10;        { Offset du type de donn√©es C }
- storage = 11;      { Offset de la classe de stockage }
- offset = 12;       { Offset de la valeur/adresse du symbole }
- offsize = 2;       { Taille en octets du champ offset }
+  { DÇplacement du format d'entrÇe de la table des symboles }
+ name = 0;          { DÇplacement du nom du symbole dans l'entrÇe }
+ ident = 9;         { DÇplacement de l'identificateur de type }
+ ctype = 10;        { DÇplacement du type de donnÇes C }
+ storage = 11;      { DÇplacement de la classe d'entreposage }
+ offset = 12;       { DÇplacement de la valeur/adresse du symbole }
+ offsize = 2;       { Taille en octets du champ dÇplacement }
 
   { Types d'identificateurs }
  it_variable = 1;     { Variable simple }
@@ -39,25 +39,25 @@ Const
  it_function = 4;     { Fonction }
  it_struct_type = 5;  { Type structure }
  it_union_type = 6;   { Type union }
- it_typedef_type = 7; { Type d√©fini par typedef }
+ it_typedef_type = 7; { Type dÇfini par typedef }
 
-  { Types de donn√©es }
+  { Types de donnÇes }
  cvoid = 1;      { Type void (aucune valeur) }
- cchar = 2;      { Caract√®re sign√© 8 bits }
- cuchar = 3;     { Caract√®re non sign√© 8 bits }
- cshort = 4;     { Entier court sign√© 16 bits }
- cushort = 5;    { Entier court non sign√© 16 bits }
- cint = 6;       { Entier sign√© 16 bits }
- cuint = 7;      { Entier non sign√© 16 bits }
- clong = 8;      { Entier long sign√© 32 bits }
- culong = 9;     { Entier long non sign√© 32 bits }
- cfloat = 10;    { Nombre flottant simple pr√©cision }
- cdouble = 11;   { Nombre flottant double pr√©cision }
+ cchar = 2;      { Caractäre signÇ 8 bits }
+ cuchar = 3;     { Caractäre non signÇ 8 bits }
+ cshort = 4;     { Entier court signÇ 16 bits }
+ cushort = 5;    { Entier court non signÇ 16 bits }
+ cint = 6;       { Entier signÇ 16 bits }
+ cuint = 7;      { Entier non signÇ 16 bits }
+ clong = 8;      { Entier long signÇ 32 bits }
+ culong = 9;     { Entier long non signÇ 32 bits }
+ cfloat = 10;    { Nombre flottant simple prÇcision }
+ cdouble = 11;   { Nombre flottant double prÇcision }
  cpointer = 12;  { Pointeur vers un type }
- carray = 13;    { Tableau d'√©l√©ments }
- cstruct = 14;   { Structure de donn√©es }
- cunion = 15;    { Union de donn√©es }
- cenum = 16;     { √ânum√©ration de valeurs }
+ carray = 13;    { Tableau d'ÇlÇments }
+ cstruct = 14;   { Structure de donnÇes }
+ cunion = 15;    { Union de donnÇes }
+ cenum = 16;     { ênumÇration de valeurs }
 
   { Taille du type en octets }
  sizeof_void = 0;     { Taille du type void (aucune taille) }
@@ -71,10 +71,10 @@ Const
  sizeof_enum = 2;     { Taille du type enum (2 octets, comme int) }
 
   { Classes d'entreposage }
- statik = 1;      { Variable statique (dur√©e de vie du programme) }
+ statik = 1;      { Variable statique (durÇe de vie du programme) }
  stkloc = 2;      { Variable locale sur la pile }
- CEXTERNAL = 3;   { Variable externe d√©finie ailleurs }
- automatic = 4;   { Variable automatique (locale par d√©faut) }
+ CEXTERNAL = 3;   { Variable externe dÇfinie ailleurs }
+ automatic = 4;   { Variable automatique (locale par dÇfaut) }
 
   { Types d'instructions }
  streturn = 3;    { Instruction de retour de fonction }
@@ -86,70 +86,70 @@ Const
   { Niveau d'optimisations }
  OPT_NONE = 0;        { Aucune optimisation }
  OPT_BASIC = 1;       { Optimisations de base }
- OPT_ADVANCED = 2;    { Optimisations avanc√©es }
- OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activ√©es) }
+ OPT_ADVANCED = 2;    { Optimisations avancÇes }
+ OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activÇes) }
 
  { Option d'optimisation }
  OPT_PEEPHOLE = 1;      { Optimisations pour analyse de code }
- OPT_DEAD_CODE = 2;     { ÔøΩlimination du code mort }
+ OPT_DEAD_CODE = 2;     { êlimination du code mort }
  OPT_CONSTANT_FOLD = 4; { Simplification des constantes }
- OPT_STRENGTH_RED = 8;  { RÔøΩduction de la complexitÔøΩ }
+ OPT_STRENGTH_RED = 8;  { RÇduction de la complexitÇ }
  OPT_REGISTER = 16;     { Allocation de registres }
  OPT_JUMP = 32;         { Optimisations de sauts }
 
- { Ligne d'entr√©e }
- linesize = 80;            { Taille maximale d'une ligne d'entr√©e }
+ { Ligne d'entrÇe }
+ linesize = 80;            { Taille maximale d'une ligne d'entrÇe }
  linemax = linesize - 1;   { Index maximum valide dans une ligne }
 
 Type
- { TSymTab no longer needed - using heap-based symbol table }
+ { TSymTab n'est plus nÇcessaire - utilisation d'une table de symboles basÇe sur le tas }
  TLine = String[linesize];
 
  { Structure d'information de type }
  PTypeInfo = ^TTypeInfo;
  TTypeInfo = Record
-  base_type: Integer;      { Type de donnÔøΩes de base (cint, cchar, etc.) }
+  base_type: Integer;      { Type de donnÇes de base (cint, cchar,...) }
   pointer_level: Integer;  { Nombre de niveaux d'indirection }
   array_size: Integer;     { Taille du tableau (0 si ce n'est pas un tableau) }
-  is_unsigned: Boolean;    { Vrai pour les types non signÔøΩs }
+  is_unsigned: Boolean;    { Vrai pour les types non signÇs }
   is_const: Boolean;       { Vrai pour les types constants }
   is_volatile: Boolean;    { Vrai pour les types volatils }
   struct_id: Integer;      { Identifiant de struct/union }
-  typedef_name: String;    { Nom du typedef si c'est un type d√©fini }
+  typedef_name: String;    { Nom du typedef si c'est un type dÇfini }
   is_typedef: Boolean;     { Vrai si c'est un typedef }
   size: Integer;           { Taille totale en octets }
  End;
 
  { Structure de valeur d'expression }
  TLVal = Record
-  symbol: Integer;        { Pointeur vers l'entrÔøΩe de la table de symboles }
+  symbol: Integer;        { Pointeur vers l'entrÇe de la table de symboles }
   indirect: Integer;      { 0=direct, 1=indirect }
-  typ: Integer;           { Type de donnÔøΩes }
+  typ: Integer;           { Type de donnÇes }
   storage: Integer;       { Classe d'entreposage }
   constant: Boolean;      { Vrai si la valeur est constante }
-  value: Integer;         { Valeur constante, le cas ÔøΩchÔøΩant }
-  type_info: TTypeInfo;   { Informations de type ÔøΩtendues }
+  value: Integer;         { Valeur constante, le cas ÇchÇant }
+  type_info: TTypeInfo;   { Informations de type Çtendues }
  End;
 
  { Structure d'instruction d'optimisation }
  TOptInstruction = Record
-  opcode: String[10];     { Mn√©monique d'instruction }
-  operand: String[20];    { Op√©rande }
+  opcode: String[10];     { MnÇmonique d'instruction }
+  operand: String[20];    { OpÇrande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { Num√©ro de ligne source }
-  can_eliminate: Boolean; { Peut √™tre supprim√© lors de la suppression du code mort }
+  line_number: Integer;   { NumÇro de ligne source }
+  can_eliminate: Boolean; { Peut àtre supprimÇ lors de la suppression du code mort }
  End;
 
  { Pointeur vers instruction d'optimisation }
  POptInst = ^TOptInst;
- 
+
  { Structure d'instruction d'optimisation dans le tas }
  TOptInst = Record
-  opcode: String[10];     { Mn√©monique d'instruction }
-  operand: String[20];    { Op√©rande }
+  opcode: String[10];     { MnÇmonique d'instruction }
+  operand: String[20];    { OpÇrande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { Num√©ro de ligne source }
-  can_eliminate: Boolean; { Peut √™tre supprim√© lors de la suppression du code mort }
+  line_number: Integer;   { NumÇro de ligne source }
+  can_eliminate: Boolean; { Peut àtre supprimÇ lors de la suppression du code mort }
   next: POptInst;         { Pointeur vers instruction suivante }
  End;
 
@@ -157,45 +157,45 @@ Type
  TOptContext = Record
   level: Integer;           { Niveau d'optimisation }
   flags: Integer;           { Drapeaux d'optimisation }
-  inst_list: POptInst;      { Liste cha√Æn√©e d'instructions dans le tas }
+  inst_list: POptInst;      { Liste chaånÇe d'instructions dans le tas }
   inst_count: Integer;      { Nombre d'instructions }
-  last_result_reg: String;  { Dernier registre utilis√© pour le r√©sultat }
+  last_result_reg: String;  { Dernier registre utilisÇ pour le rÇsultat }
  End;
 
- { Structure de paramÔøΩtres de la fonction }
+ { Structure de paramätres de la fonction }
  TParameter = Record
-  name: String[20];      { Nom du paramÔøΩtre }
-  typ: Integer;          { Type du paramÔøΩtre }
-  type_info: TTypeInfo;  { Informations dÔøΩtaillÔøΩes sur le type }
-  offset: Integer;       { DÔøΩplacement de la pile }
+  name: String[20];      { Nom du paramätre }
+  typ: Integer;          { Type du paramätre }
+  type_info: TTypeInfo;  { Informations dÇtaillÇes sur le type }
+  offset: Integer;       { DÇplacement de la pile }
  End;
 
- { Function information structure }
+ { Structure d'informations de fonction }
  TFunction = Record
   name: String[20];                      { Nom de la fonction }
   return_type: Integer;                  { Type de retour }
-  return_type_info: TTypeInfo;           { Type de retour dÔøΩtaillÔøΩ }
-  param_count: Integer;                  { Nombre de paramÔøΩtres }
-  parameters: Array[0..9] of TParameter; { Liste des paramÔøΩtres }
-  is_defined: Boolean;                   { Vrai si la fonction est dÔøΩfinie (possÔøΩde un corps) }
-  is_declared: Boolean;                  { Vrai si la fonction est dÔøΩclarÔøΩe }
+  return_type_info: TTypeInfo;           { Type de retour dÇtaillÇ }
+  param_count: Integer;                  { Nombre de paramätres }
+  parameters: Array[0..9] of TParameter; { Liste des paramätres }
+  is_defined: Boolean;                   { Vrai si la fonction est dÇfinie (possäde un corps) }
+  is_declared: Boolean;                  { Vrai si la fonction est dÇclarÇe }
   label_id: Integer;                     { Etiquette assembleur de la fonction }
   local_vars_size: Integer;              { Taille dees variables locales }
   is_main: Boolean;                      { Vrai s'il s'agit de la fonction principale }
  End;
 
- { Structure de contexte de boucle pour le support break/continue }
+  { Structure de contexte de boucle pour le support break/continue }
  TLoopContext = Record
   loop_type: Integer;     { 1=while, 2=for, 3=do-while }
-  break_label: Integer;   { √âtiquette √† utiliser pour break }
-  continue_label: Integer; { √âtiquette √† utiliser pour continue }
+  break_label: Integer;   { êtiquette Ö utiliser pour break }
+  continue_label: Integer; { êtiquette Ö utiliser pour continue }
  End;
 
- { Membre d'une structure ou union }
+  { Membre d'une structure ou union }
  TStructMember = Record
   name: String[20];       { Nom du membre }
   member_type: Integer;   { Type de base du membre }
-  type_info: TTypeInfo;   { Informations d√©taill√©es du type }
+  type_info: TTypeInfo;   { Informations dÇtaillÇes du type }
   offset: Integer;        { Offset du membre dans la structure }
   size: Integer;          { Taille du membre en octets }
  End;
@@ -220,7 +220,7 @@ Type
   saved_eof: Integer;
  End;
 
- { Table des fichiers d√©j√† inclus pour √©viter l'inclusion circulaire }
+ { Table des fichiers dÇjÖ inclus pour Çviter l'inclusion circulaire }
  TIncludedFile = Record
   filename: String;
   is_included: Boolean;
@@ -232,10 +232,10 @@ Type
   name: String;
   value: String;
   in_use: Boolean;
-  next: PDefine;        { Pointeur vers le prochain define dans la liste cha√Æn√©e }
+  next: PDefine;        { Pointeur vers le prochain define dans la liste chaånÇe }
  End;
 
- { Gestion des directives de pr√©processeur conditionnelles }
+ { Gestion des directives de prÇprocesseur conditionnelles }
  TConditionType = (
   COND_IF,      { #if }
   COND_IFDEF,   { #ifdef }
@@ -245,129 +245,129 @@ Type
 
  TConditionState = Record
   condition_type: TConditionType; { Type de condition }
-  is_true: Boolean;               { √âvaluation actuelle de la condition }
-  has_true_branch: Boolean;       { Si une branche vraie a √©t√© trouv√©e }
+  is_true: Boolean;               { êvaluation actuelle de la condition }
+  has_true_branch: Boolean;       { Si une branche vraie a ÇtÇ trouvÇe }
   in_else: Boolean;               { Si nous sommes dans un bloc #else }
-  line_number: Integer;           { Num√©ro de ligne pour debug }
+  line_number: Integer;           { NumÇro de ligne pour debug }
  End;
 
- { Pile de conditions pour directives imbriqu√©es }
+ { Pile de conditions pour directives imbriquÇes }
  TConditionStack = Array[0..31] of TConditionState;
 
- { Table de symboles utilisant la m√©moire de tas au lieu du segment de donn√©es }
+ { Table de symboles utilisant la mÇmoire de tas au lieu du segment de donnÇes }
  PSymbol = ^TSymbol;
  TSymbol = Record
   name: String;
-  ident: Integer;    { it_variable, it_function, etc. }
-  ctype: Integer;    { Type de symbole }
-  storage: Integer;  { Classe de stockage }
-  offset_value: Integer; { D√©calage ou valeur }
-  type_info: TTypeInfo; { Information de type √©tendue }
-  next: PSymbol;     { Symbole suivant dans la cha√Æne }
+  ident: Integer;        { it_variable, it_function,... }
+  ctype: Integer;        { Type de symbole }
+  storage: Integer;      { Classe d'entreposage }
+  offset_value: Integer; { DÇplacement ou valeur }
+  type_info: TTypeInfo;  { Information de type √©tendue }
+  next: PSymbol;         { Symbole suivant dans la cha√Æne }
  End;
 
-  { Pointeur vers fonction dans le tas }
+  { Pointeur vers fonction dans la mÇmoire de tas }
  PFunction = ^TFunctionNode;
- 
- { Noeud de fonction pour liste cha√Æn√©e dans le tas }
+
+ { Noeud de fonction pour liste chaånÇe dans la mÇmoire de tas }
  TFunctionNode = Record
-  func_data: TFunction;    { Donn√©es de la fonction }
+  func_data: TFunction;    { DonnÇes de la fonction }
   next: PFunction;         { Fonction suivante dans la liste }
  End;
 
-{ Structure pour g√©rer les √©tiquettes goto }
+  { Structure pour gÇrer les Çtiquettes goto }
  TGotoLabel = Record
-  name: String[20];       { Nom de l'√©tiquette }
-  label_id: Integer;      { ID num√©rique de l'√©tiquette }
-  is_defined: Boolean;    { Vrai si l'√©tiquette a √©t√© d√©finie }
-  is_used: Boolean;       { Vrai si l'√©tiquette a √©t√© r√©f√©renc√©e }
+  name: String[20];       { Nom de l'Çtiquette }
+  label_id: Integer;      { ID numÇrique de l'Çtiquette }
+  is_defined: Boolean;    { Vrai si l'Çtiquette a ÇtÇ dÇfinie }
+  is_used: Boolean;       { Vrai si l'Çtiquette a ÇtÇ rÇfÇrencÇe }
  End;
 
- { Table des √©tiquettes goto }
- TGotoTable = Array[0..31] of TGotoLabel; { Max 32 √©tiquettes par fonction }
+ { Table des Çtiquettes goto }
+ TGotoTable = Array[0..31] of TGotoLabel; { Maximum 32 Çtiquettes par fonction }
 
- { Structure pour g√©rer les instructions switch/case }
+ { Structure pour gÇrer les instructions switch/case }
  TSwitchCase = Record
   value: Integer;         { Valeur du case }
-  label_id: Integer;      { ID de l'√©tiquette pour ce case }
+  label_id: Integer;      { ID de l'Çtiquette pour ce case }
  End;
 
  TSwitchStatement = Record
-  expression_type: Integer;     { Type de l'expression switch }
-  case_count: Integer;          { Nombre de cases }
+  expression_type: Integer;           { Type de l'expression switch }
+  case_count: Integer;                { Nombre de cases }
   cases: Array[0..31] of TSwitchCase; { Max 32 cases par switch }
-  default_label: Integer;       { √âtiquette pour default (-1 si pas de default) }
-  end_label: Integer;           { √âtiquette de fin de switch }
-  has_default: Boolean;         { Vrai s'il y a une clause default }
+  default_label: Integer;             { êtiquette pour default (-1 si pas de default) }
+  end_label: Integer;                 { êtiquette de fin de switch }
+  has_default: Boolean;               { Vrai s'il y a une clause default }
  End;
 
- { Table des switch imbriqu√©s }
- TSwitchTable = Array[0..7] of TSwitchStatement; { Max 8 switch imbriqu√©s }
+ { Table des switch imbriquÇs }
+ TSwitchTable = Array[0..7] of TSwitchStatement; { Maximum 8 switch imbriquÇs }
 
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  { Tables de symbole }
- { Variables h√©rit√©es - conserv√©es pour la compatibilit√© avec certains calculs }
+ { Variables hÇritÇes - conservÇes pour la compatibilitÇ avec certains calculs }
  glbptr, locptr: Integer;
 
- { Nouvelle table de symboles bas√©e sur le tas }
- symbol_list: PSymbol;    { T√™te de la liste de symboles }
+ { Nouvelle table de symboles basÇe sur le tas }
+ symbol_list: PSymbol;    { Tàte de la liste de symboles }
  symbol_count: Integer;   { Compteur pour les statistiques }
 
- { Gestion de fonction - liste cha√Æn√©e bas√©e sur le tas }
- function_list: PFunction;          { T√™te de la liste de fonctions }
+ { Gestion de fonction - liste chaånÇe basÇe sur le tas }
+ function_list: PFunction;          { Tàte de la liste de fonctions }
  function_count: Integer;           { Compteur pour les statistiques }
  current_function_node: PFunction;  { Noeud de la fonction en cours d'analyse }
- current_function: Integer;         { Index de fonction pour compatibilit√© }
+ current_function: Integer;         { Index de fonction pour compatibilitÇ }
  call_stack_depth: Integer;         { Profondeur d'appel actuelle }
 
  { Contexte d'optimisation }
  opt_context: TOptContext;
 
- { Gestion des structures et unions - liste cha√Æn√©e bas√©e sur le tas }
- struct_list: PStructDef;     { T√™te de la liste de structures/unions }
+ { Gestion des structures et unions - liste chaånÇe basÇe sur la mÇmoire de tas }
+ struct_list: PStructDef;     { Tàte de la liste de structures/unions }
  struct_count: Integer;       { Compteur de structures/unions }
  next_struct_id: Integer;     { Prochain ID de structure disponible }
 
- { Pile de contexte de boucle pour break/continue }
+  { Pile de contexte de boucle pour break/continue }
  loop_stack: Array[0..31] of TLoopContext;
  loop_depth: Integer;
 
- { Pile de fichiers d'inclusion }
- include_stack: Array[0..9] of TIncludeFile;  { Max 10 niveaux d'inclusion }
+  { Pile de fichiers d'inclusion }
+ include_stack: Array[0..9] of TIncludeFile;  { Maximum 10 niveaux d'inclusion }
  include_depth: Integer;
  current_filename: String;
 
- { Table des fichiers inclus pour √©viter l'inclusion circulaire }
- included_files: Array[0..49] of TIncludedFile; { Max 50 fichiers diff√©rents }
+  { Table des fichiers inclus pour Çviter l'inclusion circulaire }
+ included_files: Array[0..49] of TIncludedFile; { Maximum 50 fichiers diffÇrents }
  included_count: Integer;
 
- { Gestion Define/Macro - utilisation du tas (liste cha√Æn√©e) }
- define_list: PDefine;  { T√™te de la liste cha√Æn√©e des defines }
- define_count: Integer; { Nombre de d√©finitions actuellement en usage }
+ { Gestion Define/Macro - utilisation du tas (liste chaånÇe) }
+ define_list: PDefine;  { Tàte de la liste chaånÇe des defines }
+ define_count: Integer; { Nombre de dÇfinitions actuellement en usage }
 
- { Gestion des directives conditionnelles de pr√©processeur }
+ { Gestion des directives conditionnelles de prÇprocesseur }
  condition_stack: TConditionStack; { Pile de conditions }
  condition_depth: Integer;         { Profondeur actuelle de la pile }
  skip_code: Boolean;               { Vrai si on doit ignorer le code actuel }
 
- { Informations de type √©tendues - maintenant stock√©es directement dans les symboles }
+ { Informations de type Çtendues - maintenant entreposÇes directement dans les symboles }
   type_info_count: Integer;
 
- { Ligne d'entrÔøΩe }
+ { Ligne d'entrÇe }
  line: TLine;
  lptr: Integer;
 
- { ÔøΩtiquettes et compteurs }
+ { êtiquettes et compteurs }
  nxtlab: Integer;
  nextlabel: Integer; { Pour l'analyseur d'expressions }
 
- { Table des √©tiquettes goto }
+ { Table des Çtiquettes goto }
  goto_table: TGotoTable;
  goto_count: Integer;
 
- { Table des switch imbriqu√©s }
+ { Table des switch imbriquÇs }
  switch_table: TSwitchTable;
  switch_depth: Integer;
 
@@ -382,7 +382,7 @@ Var
  asmtype: Integer;
  use_stdout: Boolean;
 
-{ D√©clarations anticip√©es }
+{ DÇclarations anticipÇes }
 Procedure init_type_info(var type_info: TTypeInfo); forward;
 Function parse_type_specifier: Integer; forward;
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
@@ -396,21 +396,21 @@ Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol; f
 Function parse_typedef_declaration: Boolean; forward;
 Function resolve_typedef_type(typedef_name: String; var resolved_type: TTypeInfo): Boolean; forward;
 
-{ Fonctions h√©rit√©es - plus n√©cessaires avec la table de symboles bas√©e sur le tas }
+{ Fonctions hÇritÇes - plus nÇcessaires avec la table de symboles basÇe sur la mÇmoire de tas }
 Function startglb: Integer;Begin
- startglb := 1; { Commence √† 1 pour r√©server 0 comme valeur "non trouv√©" }
+ startglb := 1; { Commence Ö 1 pour rÇserver 0 comme valeur "non trouvÇ" }
 End;
 
 Function endglb: Integer;Begin
- endglb := 1000; { Valeur fictive pour la compatibilit√© }
+ endglb := 1000; { Valeur fictive pour la compatibilitÇ }
 End;
 
 Function startloc: Integer;Begin
- startloc := 1000; { Valeur fictive pour la compatibilit√© }
+ startloc := 1000; { Valeur fictive pour la compatibilitÇ }
 End;
 
 Function endloc: Integer;Begin
- endloc := 2000; { Valeur fictive pour la compatibilit√© }
+ endloc := 2000; { Valeur fictive pour la compatibilitÇ }
 End;
 
  { Fonctions utilitaires }
@@ -437,12 +437,12 @@ Function numeric(ch: Char): Boolean;Begin
  numeric := ch in ['0'..'9'];
 End;
 
- { Utilitaires de chaine de caractÔøΩres }
+ { Utilitaires de chaine de caractäres }
 Function streq(s1, s2: String): Boolean;Begin
  streq := s1 = s2;
 End;
 
- { Fonctions d'entrÔøΩe/sortie }
+ { Fonctions d'entrÇe/sortie }
 Function ch:Char;Begin
  If lptr <= Length(line) Then ch := line[lptr]
                          Else ch := #0;
@@ -461,25 +461,20 @@ Procedure kill;Begin
  lptr := Length(line) + 1;
 End;
 
-{ Fonctions d'√©criture de fichier s√©curis√©es }
-Function is_output_ready: Boolean;
-Begin
- { Retourne toujours vrai car nous g√©rons la v√©rification de fichier ailleurs }
+{ Fonctions d'Çcriture de fichier sÇcurisÇes }
+Function is_output_ready: Boolean;Begin
+ { Retourne toujours vrai car nous gÇrons la vÇrification de fichier ailleurs }
  is_output_ready := True;
 End;
 
-Procedure safe_write(s: String);
-Begin
- { Utilise toujours stdout pour l'instant pour √©viter les probl√®mes de fichier }
+Procedure safe_write(s: String);Begin
+ { Utilise toujours stdout pour l'instant pour Çviter les problämes de fichier }
  Write(s);
 End;
 
-Procedure safe_writeln(s: String);
-Begin
- If use_stdout Then
-  WriteLn(s)
- Else
-  WriteLn(output, s);
+Procedure safe_writeln(s: String);Begin
+ If use_stdout Then WriteLn(s)
+               Else WriteLn(output, s);
 End;
 
 Procedure nl;Begin
@@ -490,7 +485,7 @@ Procedure ol(s:String);Begin
  safe_writeln(#9 + s);
 End;
 
- { √âcrire la ligne dans la sortie avec routage conditionnel }
+ { êcrire la ligne dans la sortie avec routage conditionnel }
 Procedure outln(s: String);Begin
  safe_writeln(s);
 End;
@@ -507,7 +502,7 @@ Begin
  safe_write(temp);
 End;
 
- { Fonctions de gÔøΩnÔøΩration d'ÔøΩtiquettes }
+ { Fonctions de gÇnÇration d'Çtiquettes }
 Function getlabel:Integer;Begin
  Inc(nextlabel);
  getlabel := nextlabel;
@@ -526,9 +521,9 @@ Begin
  safe_writeln('L' + temp + ':');
 End;
 
- { G√©n√©ration de code }
+ { GÇnÇration de code }
 Procedure ot(s: String);Begin
- safe_write(#9 + s + ' '); { TAB puis cha√Æne de caract√®res avec espace }
+ safe_write(#9 + s + ' '); { TAB puis chaåne de caractäres avec espace }
 End;
 
  { Fonctions utilitaires d'analyse d'expressions }
@@ -600,10 +595,10 @@ Procedure errrpt(msg: String);Begin
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DES √âTIQUETTES GOTO                                    }
+{ FONCTIONS DE GESTION DES êTIQUETTES GOTO                                     }
 { ============================================================================ }
 
-{ Initialiser la table des √©tiquettes goto }
+{ Initialiser la table des Çtiquettes goto }
 Procedure init_goto_table;
 Var
  i: Integer;
@@ -621,7 +616,7 @@ Begin
  goto_count := 0;
 End;
 
-{ Trouver une √©tiquette goto par nom }
+ { Trouver une Çtiquette goto par nom }
 Function find_goto_label(label_name: String): Integer;
 Var
  i: Integer;
@@ -637,22 +632,19 @@ Begin
  End;
 End;
 
-{ Ajouter ou r√©cup√©rer une √©tiquette goto }
+ { Ajouter ou rÇcupÇrer une Çtiquette goto }
 Function add_goto_label(label_name: String): Integer;
 Var
  index: Integer;
 Begin
  add_goto_label := -1;
- 
- { V√©rifier si l'√©tiquette existe d√©j√† }
+  { VÇrifier si l'Çtiquette existe dÇjÖ }
  index := find_goto_label(label_name);
- If index <> -1 Then
- Begin
+ If index <> -1 Then Begin
   add_goto_label := index;
   Exit;
  End;
- 
- { V√©rifier s'il y a de la place }
+  { VÇrifier s'il y a de la place }
  If goto_count >= 32 Then
  Begin
   Case Language of
@@ -660,26 +652,23 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele Goto-Labels (max 32)');
    {$ENDIF}
-   Else errrpt('Trop d''√©tiquettes goto (max 32)');
+   Else errrpt('Trop d''Çtiquettes goto (max 32)');
   End;
   Exit;
  End;
- 
- { Ajouter la nouvelle √©tiquette }
+  { Ajouter la nouvelle Çtiquette }
  index := goto_count;
- With goto_table[index] do
- Begin
+ With goto_table[index] do Begin
   name := label_name;
   label_id := getlabel;
   is_defined := False;
   is_used := False;
  End;
- 
  Inc(goto_count);
  add_goto_label := index;
 End;
 
-{ Marquer une √©tiquette comme d√©finie }
+{ Marquer une Çtiquette comme dÇfinie }
 Procedure define_goto_label(label_name: String);
 Var
  index: Integer;
@@ -694,34 +683,32 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('Label bereits definiert: ' + label_name);
     {$ENDIF}
-    Else errrpt('√âtiquette d√©j√† d√©finie: ' + label_name);
+    Else errrpt('êtiquette dÇjÖ dÇfinie: ' + label_name);
    End;
    Exit;
   End;
-
   goto_table[index].is_defined := True;
   prelabel(goto_table[index].label_id);
-  safe_writeln('; √âtiquette d√©finie: ' + label_name);
+  safe_writeln('; êtiquette dÇfinie: ' + label_name);
  End;
 End;
 
-{ Marquer une √©tiquette comme utilis√©e et g√©n√©rer le saut }
+{ Marquer une Çtiquette comme utilisÇe et gÇnÇrer le saut }
 Procedure use_goto_label(label_name: String);
 Var
  index: Integer;
 Begin
  index := add_goto_label(label_name);
- If index <> -1 Then
- Begin
+ If index <> -1 Then Begin
   goto_table[index].is_used := True;
   ot('lbra ');
   printlabel(goto_table[index].label_id);
   nl;
-  safe_writeln('; Saut vers √©tiquette: ' + label_name);
+  safe_writeln('; Saut vers Çtiquette: ' + label_name);
  End;
 End;
 
-{ V√©rifier les √©tiquettes non d√©finies √† la fin de fonction }
+ { VÇrifier les Çtiquettes non dÇfinies Ö la fin de fonction }
 Procedure check_goto_labels;
 Var
  i: Integer;
@@ -730,43 +717,37 @@ Begin
  has_errors := False;
  For i := 0 to goto_count - 1 do
  Begin
-  With goto_table[i] do
-  Begin
-   If is_used and not is_defined Then
-   Begin
+  With goto_table[i] do Begin
+   If is_used and not is_defined Then Begin
     Case Language of
      _English: errrpt('Undefined label: ' + name);
      {$IFDEF FPC}
      _Germany: errrpt('Undefiniertes Label: ' + name);
      {$ENDIF}
-     Else errrpt('√âtiquette non d√©finie: ' + name);
+     Else errrpt('êtiquette non dÇfinie: ' + name);
     End;
     has_errors := True;
    End;
   End;
  End;
-
  If not has_errors Then
-  safe_writeln('; Toutes les √©tiquettes goto sont correctement d√©finies');
+  safe_writeln('; Toutes les Çtiquettes goto sont correctement dÇfinies');
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DES INSTRUCTIONS SWITCH/CASE/DEFAULT                   }
+{ FONCTIONS DE GESTION DES INSTRUCTIONS SWITCH/CASE/DEFAULT                    }
 { ============================================================================ }
 
-{ Initialiser la table des switch }
+ { Initialiser la table des switch }
 Procedure init_switch_table;
 Var
  i, j: Integer;
 Begin
- For i := 0 to 7 do
- Begin
-  With switch_table[i] do
-  Begin
+ For i := 0 to 7 do Begin
+  With switch_table[i] do Begin
    expression_type := cint;
    case_count := 0;
-   For j := 0 to 31 do
-   Begin
+   For j := 0 to 31 do Begin
     cases[j].value := 0;
     cases[j].label_id := 0;
    End;
@@ -778,13 +759,10 @@ Begin
  switch_depth := 0;
 End;
 
-{ Commencer un nouveau switch }
-Function begin_switch_statement(expr_type: Integer): Boolean;
-Begin
+ { Commencer un nouveau switch }
+Function begin_switch_statement(expr_type:Integer):Boolean;Begin
  begin_switch_statement := False;
-
- If switch_depth >= 8 Then
- Begin
+ If switch_depth >= 8 Then Begin
   Case Language of
    _English: errrpt('Too many nested switch statements (max 8)');
    {$IFDEF FPC}
@@ -794,21 +772,18 @@ Begin
   End;
   Exit;
  End;
-
- With switch_table[switch_depth] do
- Begin
+ With switch_table[switch_depth] do Begin
   expression_type := expr_type;
   case_count := 0;
   default_label := -1;
   end_label := getlabel;
   has_default := False;
  End;
- 
  Inc(switch_depth);
  begin_switch_statement := True;
 End;
 
-{ Ajouter un case au switch courant }
+ { Ajouter un case au switch courant }
 Function add_switch_case(case_value: Integer): Integer;
 Var
  case_label: Integer;
@@ -816,50 +791,41 @@ Var
  case_str: String;
 Begin
  add_switch_case := -1;
- 
- If switch_depth = 0 Then
- Begin
+ If switch_depth = 0 Then Begin
   Case Language of
    _English: errrpt('case statement outside switch');
    {$IFDEF FPC}
-   _Germany: errrpt('case-Anweisung au√üerhalb von switch');
+   _Germany: errrpt('case-Anweisung au·erhalb von switch');
    {$ENDIF}
    Else errrpt('instruction case en dehors de switch');
   End;
   Exit;
  End;
-
- With switch_table[switch_depth - 1] do
- Begin
-  { V√©rifier si la valeur existe d√©j√† }
-  For i := 0 to case_count - 1 do
-  Begin
-   If cases[i].value = case_value Then
-   Begin
+ With switch_table[switch_depth - 1] do Begin
+  { VÇrifier si la valeur existe dÇjÖ }
+  For i := 0 to case_count - 1 do Begin
+   If cases[i].value = case_value Then Begin
     Str(case_value, case_str);
     Case Language of
      _English: errrpt('Duplicate case value: ' + case_str);
      {$IFDEF FPC}
      _Germany: errrpt('Doppelter case-Wert: ' + case_str);
      {$ENDIF}
-     Else errrpt('Valeur case dupliqu√©e: ' + case_str);
+     Else errrpt('Valeur case dupliquÇe: ' + case_str);
     End;
     Exit;
    End;
   End;
-
-  If case_count >= 32 Then
-  Begin
+  If case_count >= 32 Then Begin
    Case Language of
     _English: errrpt('Too many case labels (max 32)');
     {$IFDEF FPC}
     _Germany: errrpt('Zu viele case-Labels (max 32)');
     {$ENDIF}
-    Else errrpt('Trop d''√©tiquettes case (max 32)');
+    Else errrpt('Trop d''Çtiquettes case (max 32)');
    End;
    Exit;
   End;
-
   case_label := getlabel;
   cases[case_count].value := case_value;
   cases[case_count].label_id := case_label;
@@ -868,25 +834,20 @@ Begin
  End;
 End;
 
-{ Ajouter une clause default au switch courant }
-Function add_switch_default: Integer;
-Begin
+ { Ajouter une clause default au switch courant }
+Function add_switch_default: Integer;Begin
  add_switch_default := -1;
- 
- If switch_depth = 0 Then
- Begin
+ If switch_depth = 0 Then Begin
   Case Language of
    _English: errrpt('default statement outside switch');
    {$IFDEF FPC}
-   _Germany: errrpt('default-Anweisung au√üerhalb von switch');
+   _Germany: errrpt('default-Anweisung au·erhalb von switch');
    {$ENDIF}
    Else errrpt('instruction default en dehors de switch');
   End;
   Exit;
  End;
-
- With switch_table[switch_depth - 1] do
- Begin
+ With switch_table[switch_depth - 1] do Begin
   If has_default Then
   Begin
    Case Language of
@@ -894,31 +855,26 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('Mehrere default-Labels in switch');
     {$ENDIF}
-    Else errrpt('Plusieurs √©tiquettes default dans switch');
+    Else errrpt('Plusieurs Çtiquettes default dans switch');
    End;
    Exit;
   End;
-
   default_label := getlabel;
   has_default := True;
   add_switch_default := default_label;
  End;
 End;
 
-{ G√©n√©rer le code de comparaison pour un switch }
+ { GÇnÇrer le code de comparaison pour un switch }
 Procedure generate_switch_comparisons;
 Var
  i: Integer;
  case_str: String;
 Begin
  If switch_depth = 0 Then Exit;
-
- With switch_table[switch_depth - 1] do
- Begin
-  safe_writeln('; G√©n√©ration des comparaisons switch');
-
-  For i := 0 to case_count - 1 do
-  Begin
+ With switch_table[switch_depth - 1] do Begin
+  safe_writeln('; GÇnÇration des comparaisons switch');
+  For i := 0 to case_count - 1 do Begin
    Str(cases[i].value, case_str);
    safe_writeln('; Test case ' + case_str);
    ot('cmpi #');
@@ -928,15 +884,13 @@ Begin
    printlabel(cases[i].label_id);
    nl;
   End;
-
-  { Saut vers default ou fin }
-  If has_default Then
-  Begin
+   { Saut vers default ou fin }
+  If has_default Then Begin
    ot('lbra ');
    printlabel(default_label);
    nl;
   End
-  Else
+   Else
   Begin
    ot('lbra ');
    printlabel(end_label);
@@ -945,13 +899,10 @@ Begin
  End;
 End;
 
-{ Terminer le switch courant }
-Function end_switch_statement: Integer;
-Begin
+ { Terminer le switch courant }
+Function end_switch_statement:Integer;Begin
  end_switch_statement := -1;
-
- If switch_depth = 0 Then
- Begin
+ If switch_depth = 0 Then Begin
   Case Language of
    _English: errrpt('Unexpected end of switch');
    {$IFDEF FPC}
@@ -961,78 +912,62 @@ Begin
   End;
   Exit;
  End;
-
  Dec(switch_depth);
  end_switch_statement := switch_table[switch_depth].end_label;
-
- { G√©n√©rer l'√©tiquette de fin }
+  { GÇnÇrer l'Çtiquette de fin }
  prelabel(switch_table[switch_depth].end_label);
  safe_writeln('; Fin du switch');
 End;
 
-{ Obtenir l'√©tiquette de fin du switch courant (pour break) }
-Function get_current_switch_end: Integer;
-Begin
+ { Obtenir l'Çtiquette de fin du switch courant (pour break) }
+Function get_current_switch_end:Integer;Begin
  get_current_switch_end := -1;
  If switch_depth > 0 Then
   get_current_switch_end := switch_table[switch_depth - 1].end_label;
 End;
 
-{ Gestion de contexte de boucle pour le support break/continue }
-Procedure push_loop_context(loop_type: Integer; break_lbl, continue_lbl: Integer);
-Begin
- If loop_depth >= 32 Then
- Begin
+ { Gestion de contexte de boucle pour le support break/continue }
+Procedure push_loop_context(loop_type:Integer;break_lbl,continue_lbl:Integer);Begin
+ If loop_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested loops');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte Schleifen');
    {$ENDIF}
-   Else errrpt('Trop de boucles imbriqu√©es');
+   Else errrpt('Trop de boucles imbriquÇes');
   End;
   Exit;
  End;
-
- { V√©rification d√©fensive - s'assurer que loop_depth est initialis√© }
+  { VÇrification dÇfensive - s'assurer que loop_depth est initialisÇ }
  If loop_depth < 0 Then loop_depth := 0;
-
  loop_stack[loop_depth].loop_type := loop_type;
  loop_stack[loop_depth].break_label := break_lbl;
  loop_stack[loop_depth].continue_label := continue_lbl;
  Inc(loop_depth);
 End;
 
-Procedure pop_loop_context;
-Begin
- If loop_depth > 0 Then
-  Dec(loop_depth);
+Procedure pop_loop_context;Begin
+ If loop_depth > 0 Then Dec(loop_depth);
 End;
 
-Function get_current_break_label: Integer;
-Begin
+Function get_current_break_label:Integer;Begin
  get_current_break_label := -1;
-
- { V√©rifier d'abord s'il y a un switch actif }
- If switch_depth > 0 Then
- Begin
+  { VÇrifier d'abord s'il y a un switch actif }
+ If switch_depth > 0 Then Begin
   get_current_break_label := switch_table[switch_depth-1].end_label;
   Exit;
  End;
-
- { Sinon, v√©rifier s'il y a une boucle active }
- If loop_depth > 0 Then
-  get_current_break_label := loop_stack[loop_depth-1].break_label;
+  { Sinon, vÇrifier s'il y a une boucle active }
+ If loop_depth > 0 Then get_current_break_label := loop_stack[loop_depth-1].break_label;
 End;
 
-Function get_current_continue_label: Integer;
-Begin
+Function get_current_continue_label: Integer;Begin
  get_current_continue_label := -1;
- If loop_depth > 0 Then
-  get_current_continue_label := loop_stack[loop_depth-1].continue_label;
+ If loop_depth > 0 Then get_current_continue_label := loop_stack[loop_depth-1].continue_label;
 End;
 
 Procedure outbyte(b: Byte);Begin
- Write(Chr(b)); { Utilise toujours stdout pour la s√©curit√© }
+ Write(Chr(b)); { Utilise toujours stdout pour la sÇcuritÇ }
 End;
 
  { Analyse lexicale }
@@ -1105,7 +1040,9 @@ Begin
   End;
   value := n;
  End;
-End; { Gestion des tables de symboles }
+End;
+
+{ Gestion des tables de symboles }
 Function hash(sname: String): Integer;
 Var
  h, i: Integer;
@@ -1117,26 +1054,23 @@ Begin
 End;
 
 { ============================================================================ }
-{ NOUVELLES FONCTIONS DE TABLE DE SYMBOLES BAS√âE SUR LE TAS                   }
+{ NOUVELLES FONCTIONS DE TABLE DE SYMBOLES BASêE SUR LE TAS                    }
 { ============================================================================ }
 
-{ Initialiser la table de symboles bas√©e sur le tas }
-Procedure init_symbols;
-Begin
+{ Initialiser la table de symboles basÇe sur le tas }
+Procedure init_symbols;Begin
  symbol_list := nil;
  symbol_count := 0;
 End;
 
-{ Trouver un symbole dans la table de symboles bas√©e sur le tas }
+{ Trouver un symbole dans la table de symboles basÇe sur la mÇmoire de tas }
 Function find_symbol(sname: String): PSymbol;
 Var
  current: PSymbol;
 Begin
  find_symbol := nil;
  current := symbol_list;
- 
- While current <> nil do
- Begin
+ While current <> nil do Begin
   If current^.name = sname Then
   Begin
    find_symbol := current;
@@ -1152,14 +1086,14 @@ Var
  new_symbol: PSymbol;
 Begin
  add_symbol := nil;
- 
+
  { V√©rifier si le symbole existe d√©j√† }
  If find_symbol(sname) <> nil Then
  Begin
   { Le symbole existe d√©j√† }
   Exit;
  End;
- 
+
  { Allouer de la m√©moire sur le tas }
  New(new_symbol);
  If new_symbol = nil Then
@@ -1167,7 +1101,7 @@ Begin
   { M√©moire insuffisante }
   Exit;
  End;
- 
+
  { Initialiser le nouveau symbole }
  With new_symbol^ do
  Begin
@@ -1180,11 +1114,11 @@ Begin
   type_info.base_type := sym_type;
   next := symbol_list;  { Ins√©rer au d√©but de la liste }
  End;
- 
+
  { Mettre √† jour la t√™te de liste }
  symbol_list := new_symbol;
  Inc(symbol_count);
- 
+
  add_symbol := new_symbol;
 End;
 
@@ -1212,7 +1146,7 @@ Begin
   Dispose(current);
   current := next;
  End;
- 
+
  symbol_list := nil;
  If use_stdout Then WriteLn('; Freed ', symbol_count, ' symbols from heap')
                Else safe_writeln('; Freed symbols from heap');
@@ -1430,7 +1364,7 @@ Var
 Begin
  find_typedef := nil;
  current := symbol_list;
- 
+
  While current <> nil do
  Begin
   If (current^.name = typedef_name) and (current^.ident = it_typedef_type) Then
@@ -1448,7 +1382,7 @@ Var
  new_symbol: PSymbol;
 Begin
  add_typedef := nil;
- 
+
  { V√©rifier si le typedef existe d√©j√† }
  If find_typedef(typedef_name) <> nil Then
  Begin
@@ -1503,13 +1437,13 @@ Var
  typedef_symbol: PSymbol;
 Begin
  resolve_typedef_type := False;
- 
+
  typedef_symbol := find_typedef(typedef_name);
  If typedef_symbol = nil Then Exit;
- 
+
  { Initialiser la structure de destination proprement }
  init_type_info(resolved_type);
- 
+
  { Copier les informations de type essentielles du typedef }
  resolved_type.base_type := typedef_symbol^.type_info.base_type;
  resolved_type.pointer_level := typedef_symbol^.type_info.pointer_level;
@@ -1521,7 +1455,7 @@ Begin
  resolved_type.size := typedef_symbol^.type_info.size;
  resolved_type.is_typedef := True;
  resolved_type.typedef_name := typedef_name;
- 
+
  resolve_typedef_type := True;
 End;
 
@@ -1534,11 +1468,11 @@ Var
  temp_str: String;
 Begin
  parse_typedef_declaration := False;
- 
+
  safe_writeln('; Parsing d√©claration typedef');
- 
+
  { Le mot cl√© typedef a d√©j√† √©t√© consomm√© }
- 
+
  { Parser le type de base }
  base_type := parse_type_specifier_with_qualifiers(type_info);
  If base_type = -1 Then
@@ -1676,7 +1610,7 @@ Begin
   current := opt_context.inst_list;
   While (current <> nil) and (current^.next <> nil) do Begin
    next_inst := current^.next;
-   
+
    { Enl√®ve LDD #0 suivi par STD }
    If(current^.opcode = 'ldd')and(current^.operand = '#0')Then Begin
     If (next_inst^.opcode = 'std') Then Begin
@@ -1712,19 +1646,19 @@ Begin
      changed := True;
     End;
    End;
-   
+
    current := current^.next;
   End;
-  
+
   { Enl√®ve les instructions marqu√©es }
   current := opt_context.inst_list;
   opt_context.inst_list := nil;
   opt_context.inst_count := 0;
-  
+
   While current <> nil do Begin
    temp := current;
    current := current^.next;
-   
+
    If not temp^.can_eliminate Then Begin
     temp^.next := opt_context.inst_list;
     opt_context.inst_list := temp;
@@ -1746,7 +1680,7 @@ Begin
  While (current <> nil) and (current^.next <> nil) and (current^.next^.next <> nil) do Begin
   next1 := current^.next;
   next2 := current^.next^.next;
-  
+
   { Optimise LDD #1 suivi par NEGA/NEGB √† LDD #-1 }
   If (current^.opcode = 'ldd') and (current^.operand = '#1') Then Begin
    If (next1^.opcode = 'nega') and (next2^.opcode = 'negb') Then
@@ -1766,7 +1700,7 @@ Begin
     Else current^.comment:= current^.comment + ' ; pourrait √™tre optimis√© si c''est une puissance de 2';
    End;
   End;
-  
+
   current := current^.next;
  End;
 End;
@@ -2006,7 +1940,7 @@ Begin
  ol('; Ajouter deux longs sur la pile');
  ol('puls y      ; adresse de retour');
  ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute'); 
+ ol('puls x      ; premier long - partie haute');
  ol('pshs x,d    ; sauvegarder premier long');
  ol('puls d      ; deuxi√®me long - partie basse');
  ol('addd 2,s    ; additionner parties basses');
@@ -2047,7 +1981,7 @@ Begin
  ol('puls y      ; adresse de retour');
  ol('puls d      ; premier long - partie basse');
  ol('puls x      ; premier long - partie haute');
- ol('puls u      ; deuxi√®me long - partie basse'); 
+ ol('puls u      ; deuxi√®me long - partie basse');
  ol('pshs u      ; sauvegarder deuxi√®me long partie basse');
  ol('puls u      ; deuxi√®me long - partie haute');
  ol('; Multiplication simplifi√©e: A*B = A_low*B_low (truncated)');
@@ -2071,7 +2005,7 @@ Begin
  ol('puls y      ; adresse de retour');
  ol('puls d      ; dividende partie basse');
  ol('leas 2,s    ; ignorer dividende partie haute');
- ol('puls x      ; diviseur partie basse'); 
+ ol('puls x      ; diviseur partie basse');
  ol('leas 2,s    ; ignorer diviseur partie haute');
  ol('jsr  div16  ; D / X -> D');
  ol('pshs d      ; r√©sultat partie basse');
@@ -2108,15 +2042,15 @@ Var
 Begin
  high_part := Integer(value shr 16);
  low_part := Integer(value and $FFFF);
- 
+
  safe_writeln('; Charger constante long: ' + IntToStr(value));
- 
+
  { Charger partie haute }
  ot('ldd  #');
  outdec(high_part);
  nl;
  ol('pshs d      ; partie haute sur pile');
- 
+
  { Charger partie basse }
  ot('ldd  #');
  outdec(low_part);
@@ -2173,7 +2107,7 @@ Var
 Begin
  find_function_node := nil;
  current := function_list;
- 
+
  While current <> nil do
  Begin
   If current^.func_data.name = func_name Then
@@ -2194,7 +2128,7 @@ Begin
  find_function := -1;
  current := function_list;
  index := 0;
- 
+
  While current <> nil do
  Begin
   If current^.func_data.name = func_name Then
@@ -2256,7 +2190,7 @@ Begin
  { Ins√©rer au d√©but de la liste }
  func_node^.next := function_list;
  function_list := func_node;
- 
+
  func_index := function_count;
  Inc(function_count);
  add_function := func_index;
@@ -2269,9 +2203,9 @@ Var
  i: Integer;
 Begin
  get_function_node := nil;
- 
+
  If (func_index < 0) or (func_index >= function_count) Then Exit;
- 
+
  current := function_list;
  For i := 0 to func_index do
  Begin
@@ -2442,7 +2376,7 @@ Begin
   Dispose(current);
   current := next;
  End;
- 
+
  function_list := nil;
  If use_stdout Then WriteLn('; Lib√©r√© ', function_count, ' fonctions du tas')
                Else safe_writeln('; Lib√©r√© fonctions du tas');
@@ -2468,7 +2402,7 @@ Var
 Begin
  find_struct := nil;
  current := struct_list;
- 
+
  While current <> nil do
  Begin
   If current^.name = struct_name Then
@@ -2487,7 +2421,7 @@ Var
 Begin
  find_struct_by_id := nil;
  current := struct_list;
- 
+
  While current <> nil do
  Begin
   If current^.struct_id = struct_id Then
@@ -2614,9 +2548,9 @@ Var
  i: Integer;
 Begin
  find_struct_member := -1;
- 
+
  If struct_def = nil Then Exit;
- 
+
  For i := 0 to struct_def^.member_count - 1 do
  Begin
   If struct_def^.members[i].name = member_name Then
@@ -2639,7 +2573,7 @@ Begin
   Dispose(current);
   current := next;
  End;
- 
+
  struct_list := nil;
  If use_stdout Then WriteLn('; Lib√©r√© ', struct_count, ' structures du tas')
                Else safe_writeln('; Lib√©r√© structures du tas');
@@ -2655,7 +2589,7 @@ Var
  member_type_info: TTypeInfo;
 Begin
  parse_struct_declaration := -1;
- 
+
  { Obtenir le nom de la structure/union (optionnel) }
  If symname(struct_name) Then
  Begin
@@ -2671,18 +2605,18 @@ Begin
   Str(next_struct_id, struct_name);
   struct_name := '_anon_struct_' + struct_name;
  End;
- 
+
  { V√©rifier s'il y a une d√©finition de corps }
  If match('{') Then
  Begin
   { Cr√©er la nouvelle structure }
   struct_def := create_struct(struct_name, is_union);
   If struct_def = nil Then Exit;
-  
+
   { Analyser les membres }
   safe_writeln('; D√©but parsing membres struct');
   blanks; { S'assurer qu'on ignore les espaces au d√©but }
-  
+
   Repeat
    { V√©rifier si nous avons atteint la fin de la ligne }
    If lptr > Length(line) Then
@@ -2846,14 +2780,14 @@ begin
     get_symbol_name := 'unknown';
     exit;
   end;
-  
+
   sym_ptr := PSymbol(symbol_ptr_as_int);
   if sym_ptr = nil then
   begin
     get_symbol_name := 'invalid';
     exit;
   end;
-  
+
   get_symbol_name := sym_ptr^.name;
 end;
 
@@ -3070,7 +3004,7 @@ Begin
   Begin
    { V√©rifier si c'est un typedef }
    saved_lptr := lptr; { Sauvegarder la position actuelle }
-   
+
    If symname(potential_typedef) Then
    Begin
     If resolve_typedef_type(potential_typedef, typedef_type_info) Then
@@ -3088,7 +3022,7 @@ Begin
      lptr := saved_lptr;
     End;
    End;
-   
+
    Break; { Plus de sp√©cificateurs de type }
   End
  Until False;
@@ -3129,7 +3063,7 @@ Var
 Begin
  enum_value := 0; { Valeur par d√©faut de la premi√®re constante enum }
  parse_enum_type := cenum;
- 
+
  { V√©rifier s'il y a un nom d'enum optionnel }
  If symname(enum_name) Then
  Begin
@@ -3139,17 +3073,17 @@ Begin
  Begin
   safe_writeln('; Enum anonyme');
  End;
- 
+
  If not match('{') Then
  Begin
   safe_writeln('; R√©f√©rence √† enum: ' + enum_name);
   Exit;
  End;
- 
+
  { Parser la liste des identifiants enum }
  Repeat
   If not symname(identifier) Then Break;
-  
+
   { V√©rifier s'il y a une valeur explicite }
   If match('=') Then
   Begin
@@ -3195,7 +3129,7 @@ End;
 Function parse_storage_class_specifier: Integer;
 Begin
  parse_storage_class_specifier := automatic; { Par d√©faut }
- 
+
  If match('typedef') Then
  Begin
   safe_writeln('; Sp√©cificateur de classe de stockage: typedef');
@@ -3335,7 +3269,7 @@ Begin
  { Ignorer les param√®tres pour l'instant - aller jusqu'√† la parenth√®se fermante }
  While (ch <> ')') and (ch <> #0) Do
   gch;
- 
+
  If ch = ')' Then gch; { Consommer la parenth√®se fermante }
 
  { V√©rifier s'il y a un corps de fonction }
@@ -3346,10 +3280,10 @@ Begin
  Begin
   { Ajouter la fonction √† la table des symboles }
   func_index := add_function(func_name, return_type);
-  
+
   { G√©n√©rer l'√©tiquette de fonction }
   safe_writeln(func_name + ':');
-  
+
   { Traiter le corps de fonction }
   If match('{') Then
   Begin
@@ -3476,7 +3410,7 @@ Begin
   lval.typ := func_node^.func_data.return_type
  Else
   lval.typ := cint; { Type par d√©faut en cas d'erreur }
-  
+
  lval.constant := False;
 
  parse_function_call := True;
@@ -3579,7 +3513,7 @@ Begin
   lval.storage := automatic;
   lval.indirect := 0;
   lval.constant := False;
-  
+
   { Initialiser les infos de type comme const }
   init_type_info(lval.type_info);
   lval.type_info.base_type := cint;
@@ -3588,7 +3522,7 @@ Begin
  End;
 
  sym_ptr := find_symbol(var_name);
- 
+
  If sym_ptr <> nil Then
  Begin
   lookup_variable := True;
@@ -3618,9 +3552,9 @@ End;
 Function pop_include_file: Boolean;
 Begin
  pop_include_file := False;
- 
+
  If include_depth <= 0 Then Exit;
- 
+
  { Unmark current file as no longer being processed }
  { unmark_file_included(current_filename); } { Commented out for now }
 
@@ -3628,7 +3562,7 @@ Begin
  {$I-}
  System.Close(input);
  {$I+}
- 
+
  { Restaurer l'√©tat du fichier pr√©c√©dent }
  Dec(include_depth);
  With include_stack[include_depth] do
@@ -3644,13 +3578,13 @@ Begin
    Exit;
   End;
   {$I+}
-  
+
   { Restore line state properly }
   line := saved_line;
   lptr := saved_lptr;
   eof := saved_eof;
  End;
- 
+
  safe_writeln('; Returned from include file to: ' + current_filename);
  pop_include_file := True;
 End;
@@ -3659,7 +3593,7 @@ End;
 Function readinline: Boolean;
 Begin
  readinline := False;
- 
+
  Repeat
   { V√©rifier si le fichier d'entr√©e est correctement initialis√© }
   {$I-}
@@ -3716,7 +3650,7 @@ Begin
  include_depth := 0;
  included_count := 0;
  current_filename := 'main.c'; { Default main file }
- 
+
  For i := 0 to 49 do
  Begin
   included_files[i].filename := '';
@@ -3754,7 +3688,7 @@ Begin
    Exit;
   End;
  End;
- 
+
  { Add new entry if space available }
  If included_count < 50 Then
  Begin
@@ -3784,18 +3718,18 @@ Var
  filename: String;
 Begin
  filename := '';
- 
+
  { Skip #include and whitespace }
  start_pos := Pos('#include', include_line);
  If start_pos > 0 Then
  Begin
   start_pos := start_pos + 8; { Length of '#include' }
-  
+
   { Skip whitespace }
-  While (start_pos <= Length(include_line)) and 
+  While (start_pos <= Length(include_line)) and
         ((include_line[start_pos] = ' ') or (include_line[start_pos] = #9)) do
    Inc(start_pos);
-  
+
   { Check for quotes or angle brackets }
   If start_pos <= Length(include_line) Then
   Begin
@@ -3805,24 +3739,24 @@ Begin
     end_pos := start_pos;
 
     { Find closing quote or bracket }
-    While (end_pos <= Length(include_line)) and 
-          (include_line[end_pos] <> '"') and 
+    While (end_pos <= Length(include_line)) and
+          (include_line[end_pos] <> '"') and
           (include_line[end_pos] <> '>') do
      Inc(end_pos);
-    
+
     If end_pos <= Length(include_line) Then
      filename := Copy(include_line, start_pos, end_pos - start_pos);
    End;
   End;
  End;
- 
+
  extract_filename := filename;
 End;
 
 Function push_include_file(include_filename: String): Boolean;
 Begin
  push_include_file := False;
- 
+
  { Check for circular inclusion }
  If is_file_included(include_filename) Then
  Begin
@@ -3857,11 +3791,11 @@ Begin
   saved_lptr := lptr;
   saved_eof := eof;
  End;
- 
+
  { Try to open the include file }
  Assign(input, include_filename);
- {$I-} 
- Reset(input); 
+ {$I-}
+ Reset(input);
  If IOResult <> 0 Then
  Begin
   { Restore previous file by reopening it }
@@ -3881,16 +3815,16 @@ Begin
   Exit;
  End;
  {$I+}
- 
+
  { Mark file as included to prevent circular inclusion }
  mark_file_included(include_filename);
- 
+
  { Update state }
  Inc(include_depth);
  current_filename := include_filename;
  eof := 0;
  lptr := 1; { Reset line pointer for new file }
- 
+
  safe_writeln('; Including file: ' + include_filename);
  push_include_file := True;
 End;
@@ -3900,7 +3834,7 @@ Var
  filename: String;
 Begin
  process_include_directive := False;
- 
+
  filename := extract_filename(include_line);
  If filename = '' Then
  Begin
@@ -3913,7 +3847,7 @@ Begin
   End;
   Exit;
  End;
- 
+
  If push_include_file(filename) Then
   process_include_directive := True;
 End;
@@ -3937,7 +3871,7 @@ Var
 Begin
  find_define := nil;
  current := define_list;
- 
+
  While current <> nil do
  Begin
   If current^.in_use and (current^.name = def_name) Then
@@ -3957,7 +3891,7 @@ Begin
  remove_define := False;
  current := define_list;
  prev := nil;
- 
+
  While current <> nil do
  Begin
   If current^.in_use and (current^.name = def_name) Then
@@ -3967,7 +3901,7 @@ Begin
     define_list := current^.next  { First in list }
    Else
     prev^.next := current^.next;  { Not first in list }
-   
+
    Dispose(current);
    Dec(define_count);
    remove_define := True;
@@ -3984,7 +3918,7 @@ Var
  new_define: PDefine;
 Begin
  add_define := False;
- 
+
  { Check if already defined and allow redefinition with warning }
  If find_define(def_name) <> nil Then
  Begin
@@ -4007,7 +3941,7 @@ Begin
     End;
   End;
  End;
- 
+
  { Allocate new define in heap }
  New(new_define);
  If new_define = nil Then
@@ -4021,7 +3955,7 @@ Begin
   End;
   Exit;
  End;
- 
+
  { Initialize new define }
  With new_define^ do
  Begin
@@ -4030,11 +3964,11 @@ Begin
   in_use := True;
   next := define_list;  { Insert at beginning of list }
  End;
- 
+
  { Update list head }
  define_list := new_define;
  Inc(define_count);
- 
+
  If use_stdout Then WriteLn('; Defined macro: ', def_name, ' = ', def_value)
                Else safe_writeln('; Defined macro: ' + def_name + ' = ' + def_value);
  add_define := True;
@@ -4060,21 +3994,21 @@ Begin
  process_define_directive := False;
  def_name := '';
  def_value := '';
- 
+
  { Skip #define and whitespace }
  line_pos := Pos('#define', define_line);
  If line_pos <= 0 Then Exit;
- 
+
  line_pos := line_pos + 7; { Length of '#define' }
- 
+
  { Skip whitespace }
- While (line_pos <= Length(define_line)) and 
+ While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
- 
+
  { Extract macro name }
  start_pos := line_pos;
- While (line_pos <= Length(define_line)) and 
+ While (line_pos <= Length(define_line)) and
        (((define_line[line_pos] >= 'A') and (define_line[line_pos] <= 'Z')) or
         ((define_line[line_pos] >= 'a') and (define_line[line_pos] <= 'z')) or
         ((define_line[line_pos] >= '0') and (define_line[line_pos] <= '9')) or
@@ -4099,18 +4033,18 @@ Begin
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
- 
+
  { Extract value (rest of line) }
  If line_pos <= Length(define_line) Then
   def_value := Copy(define_line, line_pos, Length(define_line) - line_pos + 1)
  Else
   def_value := '1'; { Default value for macros without explicit value }
- 
+
  { Remove trailing whitespace from value }
- While (Length(def_value) > 0) and 
+ While (Length(def_value) > 0) and
        ((def_value[Length(def_value)] = ' ') or (def_value[Length(def_value)] = #9)) do
   Delete(def_value, Length(def_value), 1);
- 
+
  { Add the define }
  If add_define(def_name, def_value) Then
   process_define_directive := True;
@@ -4126,12 +4060,12 @@ Var
  changed: Boolean;
 Begin
  result_line := input_line;
- 
+
  { Multiple passes to handle nested expansions }
  Repeat
   changed := False;
   line_pos := 1;
-  
+
   While line_pos <= Length(result_line) do
   Begin
    { Check if we're at the start of an identifier }
@@ -4141,15 +4075,15 @@ Begin
    Begin
     { Extract identifier }
     start_pos := line_pos;
-    While (line_pos <= Length(result_line)) and 
+    While (line_pos <= Length(result_line)) and
           (((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
            ((result_line[line_pos] >= 'a') and (result_line[line_pos] <= 'z')) or
            ((result_line[line_pos] >= '0') and (result_line[line_pos] <= '9')) or
            (result_line[line_pos] = '_')) do
      Inc(line_pos);
-    
+
     token := Copy(result_line, start_pos, line_pos - start_pos);
-    
+
     { Check if this token is a defined macro }
     define_ptr := find_define(token);
     If define_ptr <> nil Then
@@ -4167,7 +4101,7 @@ Begin
     Inc(line_pos);
   End;
  Until not changed;
- 
+
  expand_macros := result_line;
 End;
 
@@ -4183,7 +4117,7 @@ Begin
   Dispose(current);
   current := next;
  End;
- 
+
  define_list := nil;
  If use_stdout Then WriteLn('; Cleared ', define_count, ' macro definitions from heap')
                Else safe_writeln('; Cleared macro definitions from heap');
@@ -4212,13 +4146,13 @@ Var
 Begin
  result := 0;
  temp_str := expr;
- 
+
  { Supprimer les espaces au d√©but et √† la fin }
  While (Length(temp_str) > 0) and (temp_str[1] = ' ') do
   Delete(temp_str, 1, 1);
  While (Length(temp_str) > 0) and (temp_str[Length(temp_str)] = ' ') do
   Delete(temp_str, Length(temp_str), 1);
- 
+
  { V√©rifier si c'est un nombre }
  If (Length(temp_str) > 0) and (temp_str[1] in ['0'..'9']) Then
  Begin
@@ -4237,7 +4171,7 @@ Begin
   Else
    result := 0; { Define non trouv√© = 0 }
  End;
- 
+
  evaluate_constant_expression := result;
 End;
 
@@ -4247,7 +4181,7 @@ Var
  i: Integer;
 Begin
  should_skip_code := False;
- 
+
  { Parcourir la pile de conditions }
  For i := 0 to condition_depth - 1 do
  Begin
@@ -4270,14 +4204,14 @@ Var
  temp_condition: String;
 Begin
  process_if_directive := False;
- 
+
  { Nettoyer la condition (supprimer espaces et retour chariot) }
  temp_condition := condition;
  While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
   Delete(temp_condition, 1, 1);
  While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
   Delete(temp_condition, Length(temp_condition), 1);
- 
+
  If condition_depth >= 32 Then
  Begin
   Case Language of
@@ -4291,7 +4225,7 @@ Begin
  End;
 
  condition_value := evaluate_constant_expression(temp_condition);
- 
+
  With condition_stack[condition_depth] do
  Begin
   condition_type := COND_IF;
@@ -4300,13 +4234,13 @@ Begin
   in_else := False;
   line_number := 0; { √Ä impl√©menter si n√©cessaire }
  End;
- 
+
  Inc(condition_depth);
  skip_code := should_skip_code;
- 
+
  If use_stdout Then WriteLn('; #if ', temp_condition, ' = ', condition_value)
                Else safe_writeln('; #if ' + temp_condition + ' = ' + IntToStr(condition_value));
- 
+
  process_if_directive := True;
 End;
 
@@ -4317,7 +4251,7 @@ Var
  temp_name: String;
 Begin
  process_ifdef_directive := False;
- 
+
  { Nettoyer le nom (supprimer espaces et retour chariot) }
  temp_name := define_name;
  While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
@@ -4336,9 +4270,9 @@ Begin
   End;
   Exit;
  End;
- 
+
  define_exists := (find_define(temp_name) <> nil);
- 
+
  With condition_stack[condition_depth] do
  Begin
   condition_type := COND_IFDEF;
@@ -4347,13 +4281,13 @@ Begin
   in_else := False;
   line_number := 0;
  End;
- 
+
  Inc(condition_depth);
  skip_code := should_skip_code;
- 
+
  If use_stdout Then WriteLn('; #ifdef ', temp_name, ' = ', define_exists)
                Else safe_writeln('; #ifdef ' + temp_name + ' = ' + IntToStr(Ord(define_exists)));
- 
+
  process_ifdef_directive := True;
 End;
 
@@ -4364,7 +4298,7 @@ Var
  temp_name: String;
 Begin
  process_ifndef_directive := False;
- 
+
  { Nettoyer le nom (supprimer espaces et retour chariot) }
  temp_name := define_name;
  While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
@@ -4394,13 +4328,13 @@ Begin
   in_else := False;
   line_number := 0;
  End;
- 
+
  Inc(condition_depth);
  skip_code := should_skip_code;
- 
+
  If use_stdout Then WriteLn('; #ifndef ', temp_name, ' = ', not define_exists)
                Else safe_writeln('; #ifndef ' + temp_name + ' = ' + IntToStr(Ord(not define_exists)));
- 
+
  process_ifndef_directive := True;
 End;
 
@@ -4411,14 +4345,14 @@ Var
  temp_condition: String;
 Begin
  process_elif_directive := False;
- 
+
  { Nettoyer la condition (supprimer espaces et retour chariot) }
  temp_condition := condition;
  While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
   Delete(temp_condition, 1, 1);
  While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
   Delete(temp_condition, Length(temp_condition), 1);
- 
+
  If condition_depth = 0 Then
  Begin
   Case Language of
@@ -4430,7 +4364,7 @@ Begin
   End;
   Exit;
  End;
- 
+
  With condition_stack[condition_depth - 1] do
  Begin
   If in_else Then
@@ -4455,9 +4389,9 @@ Begin
   Else
    is_true := False; { Une branche pr√©c√©dente √©tait vraie }
  End;
- 
+
  skip_code := should_skip_code;
- 
+
  If use_stdout Then WriteLn('; #elif ', temp_condition)
                Else safe_writeln('; #elif ' + temp_condition);
 
@@ -4499,12 +4433,12 @@ Begin
   { #else est vrai seulement si aucune branche pr√©c√©dente n'√©tait vraie }
   is_true := not has_true_branch;
  End;
- 
+
  skip_code := should_skip_code;
- 
+
  If use_stdout Then WriteLn('; #else')
                Else safe_writeln('; #else');
- 
+
  process_else_directive := True;
 End;
 
@@ -4524,13 +4458,13 @@ Begin
   End;
   Exit;
  End;
- 
+
  Dec(condition_depth);
  skip_code := should_skip_code;
- 
+
  If use_stdout Then WriteLn('; #endif')
                Else safe_writeln('; #endif');
- 
+
  process_endif_directive := True;
 End;
 
@@ -4909,10 +4843,10 @@ Begin
    Exit;
   End;
  End;
- 
+
  { Restaurer la position pour l'analyse normale }
  lptr := save_lptr;
- 
+
  Case peek_char of
   '+': Begin
     next_char;
@@ -4934,7 +4868,7 @@ Begin
     { Convertir en bool√©en: 0 si non-z√©ro, 1 si z√©ro }
     true_label := getlabel;
     end_label := getlabel;
-    
+
     ol('tstd');      { Tester D (le r√©sultat de l''expression) }
     ol('beq  L' + IntToStr(true_label)); { Si z√©ro, c''est vrai (!0 = 1) }
     ol('ldd  #0');   { Sinon c''est faux (!non_z√©ro = 0) }
@@ -4975,7 +4909,7 @@ var
   ptr_name: String;
 Begin
  safe_writeln('; D√©r√©f√©rencement de pointeur');
- 
+
  { V√©rifier que c'est bien un pointeur }
  If lval.type_info.pointer_level = 0 Then
  Begin
@@ -4988,7 +4922,7 @@ Begin
   End;
   Exit;
  End;
- 
+
  { G√©n√©rer le code de d√©r√©f√©rencement }
  If lval.symbol > 0 Then
  Begin
@@ -5016,7 +4950,7 @@ Begin
   End;
   Exit;
  End;
- 
+
  { G√©n√©rer le code de d√©r√©f√©rencement }
  If lval.symbol > 0 Then
  Begin
@@ -5034,21 +4968,21 @@ Begin
 
  { D√©cr√©menter le niveau de pointeur }
  Dec(lval.type_info.pointer_level);
- 
+
  { Le r√©sultat est maintenant une valeur }
  lval.indirect := 0;
- 
+
  safe_writeln('; Pointeur d√©r√©f√©renc√©, nouveau niveau: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
-{ Op√©rateur d'adresse (&var) }  
+{ Op√©rateur d'adresse (&var) }
 Procedure parse_address_of(var lval: TLVal);
 Var
   var_name: String;
   sym_ptr: PSymbol;
 Begin
  safe_writeln('; Prise d''adresse de variable');
- 
+
  { Lire le nom de la variable directement }
  If not symname(var_name) Then
  Begin
@@ -5100,11 +5034,11 @@ Begin
  lval.storage := sym_ptr^.storage;
  lval.constant := False;
  lval.value := 0;
- 
+
  { Copier les informations de type et incr√©menter le niveau de pointeur }
  lval.type_info := sym_ptr^.type_info;
  Inc(lval.type_info.pointer_level);
- 
+
  safe_writeln('; Adresse de ' + var_name + ' prise, niveau pointeur: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
@@ -5118,7 +5052,7 @@ Var
  expr_lval: TLVal;
 Begin
  safe_writeln('; Op√©rateur sizeof');
- 
+
  { Consommer le mot-cl√© 'sizeof' }
  If not match('sizeof') Then
  Begin
@@ -5131,7 +5065,7 @@ Begin
   End;
   Exit;
  End;
- 
+
  { Attendre parenth√®se ouvrante }
  If not match('(') Then
  Begin
@@ -5151,13 +5085,13 @@ Begin
 
  { Essayer d'analyser comme un type d'abord }
  type_id := parse_type_specifier_with_qualifiers(type_info);
- 
+
  If type_id <> -1 Then
  Begin
   { C'est un type - calculer sa taille }
   safe_writeln('; sizeof sur type: ' + get_type_name(type_info));
   size_value := calculate_type_size(type_info);
-  
+
   { Attendre la parenth√®se fermante }
   If not match(')') Then
   Begin
@@ -5175,13 +5109,13 @@ Begin
  Begin
   { Ce n'est pas un type - essayer comme expression }
   safe_writeln('; sizeof sur expression');
-  
+
   { Analyser l'expression }
   unary_expression(expr_lval);
-  
+
   { Calculer la taille bas√©e sur le type de l'expression }
   size_value := calculate_type_size(expr_lval.type_info);
-  
+
   { Attendre la parenth√®se fermante }
   If not match(')') Then
   Begin
@@ -5195,12 +5129,12 @@ Begin
    Exit;
   End;
  End;
- 
+
  { G√©n√©rer le code pour charger la taille comme constante }
  ot('ldd  #');
  outdec(size_value);
  nl;
- 
+
  { Configurer lval pour le r√©sultat }
  FillChar(lval, SizeOf(lval), 0);
  lval.typ := cint;
@@ -5280,7 +5214,7 @@ End;
 Procedure relational_expression(var lval: TLVal);
 Begin
  additive_expression(lval);
- 
+
  While True do
  Begin
   If match('>') Then
@@ -5376,7 +5310,7 @@ End;
 Procedure bitwise_and_expression(var lval: TLVal);
 Begin
  relational_expression(lval);
- 
+
  While match('&') do
  Begin
   { V√©rifier que ce n'est pas && }
@@ -5386,11 +5320,11 @@ Begin
    Dec(lptr);
    Break;
   End;
-  
+
   safe_writeln('; Op√©rateur & (ET binaire)');
   ol('pshs d');    { Push left operand }
   relational_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }  
+  ol('tfr  d,x');  { Right operand to X }
   ol('puls d');    { Left operand to D }
   ol('tfr  a,u');  { Save A in U }
   ol('tfr  b,a');  { B to A for low byte }
@@ -5405,7 +5339,7 @@ End;
 Procedure bitwise_xor_expression(var lval: TLVal);
 Begin
  bitwise_and_expression(lval);
- 
+
  While match('^') do
  Begin
   safe_writeln('; Op√©rateur ^ (XOR binaire)');
@@ -5426,7 +5360,7 @@ End;
 Procedure bitwise_or_expression(var lval: TLVal);
 Begin
  bitwise_xor_expression(lval);
- 
+
  While match('|') do
  Begin
   { V√©rifier que ce n'est pas || }
@@ -5436,7 +5370,7 @@ Begin
    Dec(lptr);
    Break;
   End;
-  
+
   safe_writeln('; Op√©rateur | (OU binaire)');
   ol('pshs d');    { Push left operand }
   bitwise_xor_expression(lval);
@@ -5457,34 +5391,34 @@ Var
  false_label, end_label: Integer;
 Begin
  bitwise_or_expression(lval);
- 
+
  While match('&') and match('&') do
  Begin
   safe_writeln('; Op√©rateur && (ET logique)');
-  
+
   { G√©n√©rer les √©tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-  
+
   { Tester la premi√®re expression }
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-  
+
   { √âvaluer la deuxi√®me expression }
   bitwise_or_expression(lval);
   ol('tstd');
-  ot('lbeq '); 
+  ot('lbeq ');
   printlabel(false_label);
   nl;
-  
+
   { Les deux sont vraies - r√©sultat = 1 }
   ol('ldd #1');
   ot('lbra ');
   printlabel(end_label);
   nl;
-  
+
   { Au moins une est fausse - r√©sultat = 0 }
   prelabel(false_label);
   ol('ldd #0');
@@ -5500,38 +5434,38 @@ Var
  true_label, end_label: Integer;
 Begin
  logical_and_expression(lval);
- 
+
  While match('|') and match('|') do
  Begin
   safe_writeln('; Op√©rateur || (OU logique)');
-  
+
   { G√©n√©rer les √©tiquettes }
   true_label := getlabel;
   end_label := getlabel;
 
   { Tester la premi√®re expression }
   ol('tstd');
-  ot('lbne '); 
+  ot('lbne ');
   printlabel(true_label);
   nl;
-  
+
   { √âvaluer la deuxi√®me expression }
   logical_and_expression(lval);
   ol('tstd');
-  ot('lbne '); 
+  ot('lbne ');
   printlabel(true_label);
   nl;
-  
+
   { Les deux sont fausses - r√©sultat = 0 }
   ol('ldd #0');
   ot('lbra ');
   printlabel(end_label);
   nl;
-  
+
   { Au moins une est vraie - r√©sultat = 1 }
   prelabel(true_label);
   ol('ldd #1');
-  
+
   { Fin }
   prelabel(end_label);
  End;
@@ -5544,7 +5478,7 @@ Var
  true_lval, false_lval: TLVal;
 Begin
  logical_or_expression(lval);
- 
+
  If match('?') Then
  Begin
   safe_writeln('; Op√©rateur ternaire ? : (expression conditionnelle)');
@@ -5552,17 +5486,17 @@ Begin
   { G√©n√©rer les √©tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-  
+
   { Tester la condition }
   ol('tstd');         { Tester le r√©sultat de la condition }
   ot('lbeq ');        { Si faux, aller √† l''expression fausse }
   printlabel(false_label);
   nl;
-  
+
   { Analyser l'expression vraie }
   safe_writeln('; Expression vraie du ternaire');
   logical_or_expression(true_lval);
-  
+
   { Sauter l'expression fausse }
   ot('lbra ');
   printlabel(end_label);
@@ -5818,11 +5752,11 @@ Begin
 
  { Parse then statement (can be single statement or compound) }
  safe_writeln('; IF then block');
- 
+
  { Check if we need to read next line for the statement }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- 
+
  If not parse_statement Then
  Begin
   errrpt('Expected statement after if condition');
@@ -5832,7 +5766,7 @@ Begin
  { Check for else clause - may be on next line }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- 
+
  If match('else') Then
  Begin
   { Jump over else block }
@@ -5843,11 +5777,11 @@ Begin
   { Else block }
   prelabel(else_label);
   safe_writeln('; ELSE block');
-  
+
   { Check if we need to read next line for the else statement }
   blanks;
   If (lptr > Length(line)) and (eof = 0) Then readinline;
-  
+
   If not parse_statement Then
   Begin
    errrpt('Expected statement after else');
@@ -6461,10 +6395,10 @@ Begin
    If not readinline Then Break;
    lptr := 1;
   End;
-  
+
   { Check for closing brace }
   If match('}') Then Break;
-  
+
   If eof <> 0 Then
   Begin
    Case Language of
@@ -6598,7 +6532,7 @@ Begin
 
  { Calculer la taille d'un √©l√©ment }
  element_size := get_type_size(array_symbol^.type_info.base_type);
- 
+
  { Si la taille d'√©l√©ment n'est pas 1, multiplier l'index }
  If element_size > 1 Then
  Begin
@@ -6652,12 +6586,12 @@ Var
 Begin
  parse_assignment_statement := False;
  save_lptr := lptr;
- 
+
  { Try to parse identifier }
  If symname(var_name) Then
  Begin
   blanks;
-  
+
   { Check if this is an array access }
   If match('[') Then
   Begin
@@ -6693,7 +6627,7 @@ Begin
     ot('std  ');
     outstr(var_name);
     nl;
-    
+
     safe_writeln('; Assignment to variable: ' + var_name);
     parse_assignment_statement := True;
    End;
@@ -7128,7 +7062,7 @@ BEGIN
   Else If param = '-O2' Then optimize := OPT_ADVANCED
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
- 
+
  { Open input file with error checking }
  Assign(input, ParamStr(1));
  {$I-}
@@ -7139,10 +7073,10 @@ BEGIN
   Halt(1);
  End;
  {$I+}
- 
+
  current_filename := ParamStr(1); { Set initial filename for include system }
  WriteLn('Compiling Source file: ', ParamStr(1));
- 
+
  { Initialize global variables }
  eof := 0;
  errcnt := 0;
@@ -7150,23 +7084,23 @@ BEGIN
  line := '';
  nextlabel := 0;
  use_stdout := True; { Initialize early - may be changed later }
- 
+
  { Initialize heap-based symbol table }
  init_symbols;
- 
+
  { Initialize defines table }
  init_defines;
- 
+
  { Initialize inclusion system }
  init_inclusion_system;
- 
+
  { Initialize conditions system }
  init_conditions;
- 
+
  { Initialize control flow tables }
  init_goto_table;
  init_switch_table;
- 
+
  If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
