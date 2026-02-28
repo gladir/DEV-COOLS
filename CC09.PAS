@@ -257,6 +257,24 @@ Type
  { Table des étiquettes goto }
  TGotoTable = Array[0..31] of TGotoLabel; { Max 32 étiquettes par fonction }
 
+ { Structure pour gérer les instructions switch/case }
+ TSwitchCase = Record
+  value: Integer;         { Valeur du case }
+  label_id: Integer;      { ID de l'étiquette pour ce case }
+ End;
+
+ TSwitchStatement = Record
+  expression_type: Integer;     { Type de l'expression switch }
+  case_count: Integer;          { Nombre de cases }
+  cases: Array[0..31] of TSwitchCase; { Max 32 cases par switch }
+  default_label: Integer;       { Étiquette pour default (-1 si pas de default) }
+  end_label: Integer;           { Étiquette de fin de switch }
+  has_default: Boolean;         { Vrai s'il y a une clause default }
+ End;
+
+ { Table des switch imbriqués }
+ TSwitchTable = Array[0..7] of TSwitchStatement; { Max 8 switch imbriqués }
+
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
@@ -310,6 +328,10 @@ Var
  { Table des étiquettes goto }
  goto_table: TGotoTable;
  goto_count: Integer;
+
+ { Table des switch imbriqués }
+ switch_table: TSwitchTable;
+ switch_depth: Integer;
 
  { Drapeaux et options }
  first_func, declared: Boolean;
@@ -674,6 +696,220 @@ Begin
   safe_writeln('; Toutes les étiquettes goto sont correctement définies');
 End;
 
+{ ============================================================================ }
+{ FONCTIONS DE GESTION DES INSTRUCTIONS SWITCH/CASE/DEFAULT                   }
+{ ============================================================================ }
+
+{ Initialiser la table des switch }
+Procedure init_switch_table;
+Var
+ i, j: Integer;
+Begin
+ For i := 0 to 7 do
+ Begin
+  With switch_table[i] do
+  Begin
+   expression_type := cint;
+   case_count := 0;
+   For j := 0 to 31 do
+   Begin
+    cases[j].value := 0;
+    cases[j].label_id := 0;
+   End;
+   default_label := -1;
+   end_label := 0;
+   has_default := False;
+  End;
+ End;
+ switch_depth := 0;
+End;
+
+{ Commencer un nouveau switch }
+Function begin_switch_statement(expr_type: Integer): Boolean;
+Begin
+ begin_switch_statement := False;
+ 
+ If switch_depth >= 8 Then
+ Begin
+  Case Language of
+   _English: errrpt('Too many nested switch statements (max 8)');
+   _Germany: errrpt('Zu viele verschachtelte Switch-Anweisungen (max 8)');
+   Else errrpt('Trop d''instructions switch imbriquées (max 8)');
+  End;
+  Exit;
+ End;
+ 
+ With switch_table[switch_depth] do
+ Begin
+  expression_type := expr_type;
+  case_count := 0;
+  default_label := -1;
+  end_label := getlabel;
+  has_default := False;
+ End;
+ 
+ Inc(switch_depth);
+ begin_switch_statement := True;
+End;
+
+{ Ajouter un case au switch courant }
+Function add_switch_case(case_value: Integer): Integer;
+Var
+ case_label: Integer;
+ i: Integer;
+ case_str: String;
+Begin
+ add_switch_case := -1;
+ 
+ If switch_depth = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('case statement outside switch');
+   _Germany: errrpt('case-Anweisung außerhalb von switch');
+   Else errrpt('instruction case en dehors de switch');
+  End;
+  Exit;
+ End;
+ 
+ With switch_table[switch_depth - 1] do
+ Begin
+  { Vérifier si la valeur existe déjà }
+  For i := 0 to case_count - 1 do
+  Begin
+   If cases[i].value = case_value Then
+   Begin
+    Str(case_value, case_str);
+    Case Language of
+     _English: errrpt('Duplicate case value: ' + case_str);
+     _Germany: errrpt('Doppelter case-Wert: ' + case_str);
+     Else errrpt('Valeur case dupliquée: ' + case_str);
+    End;
+    Exit;
+   End;
+  End;
+  
+  If case_count >= 32 Then
+  Begin
+   Case Language of
+    _English: errrpt('Too many case labels (max 32)');
+    _Germany: errrpt('Zu viele case-Labels (max 32)');
+    Else errrpt('Trop d''étiquettes case (max 32)');
+   End;
+   Exit;
+  End;
+  
+  case_label := getlabel;
+  cases[case_count].value := case_value;
+  cases[case_count].label_id := case_label;
+  Inc(case_count);
+  add_switch_case := case_label;
+ End;
+End;
+
+{ Ajouter une clause default au switch courant }
+Function add_switch_default: Integer;
+Begin
+ add_switch_default := -1;
+ 
+ If switch_depth = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('default statement outside switch');
+   _Germany: errrpt('default-Anweisung außerhalb von switch');
+   Else errrpt('instruction default en dehors de switch');
+  End;
+  Exit;
+ End;
+ 
+ With switch_table[switch_depth - 1] do
+ Begin
+  If has_default Then
+  Begin
+   Case Language of
+    _English: errrpt('Multiple default labels in switch');
+    _Germany: errrpt('Mehrere default-Labels in switch');
+    Else errrpt('Plusieurs étiquettes default dans switch');
+   End;
+   Exit;
+  End;
+  
+  default_label := getlabel;
+  has_default := True;
+  add_switch_default := default_label;
+ End;
+End;
+
+{ Générer le code de comparaison pour un switch }
+Procedure generate_switch_comparisons;
+Var
+ i: Integer;
+ case_str: String;
+Begin
+ If switch_depth = 0 Then Exit;
+ 
+ With switch_table[switch_depth - 1] do
+ Begin
+  safe_writeln('; Génération des comparaisons switch');
+  
+  For i := 0 to case_count - 1 do
+  Begin
+   Str(cases[i].value, case_str);
+   safe_writeln('; Test case ' + case_str);
+   ot('cmpi #');
+   outdec(cases[i].value);
+   nl;
+   ot('lbeq ');
+   printlabel(cases[i].label_id);
+   nl;
+  End;
+  
+  { Saut vers default ou fin }
+  If has_default Then
+  Begin
+   ot('lbra ');
+   printlabel(default_label);
+   nl;
+  End
+  Else
+  Begin
+   ot('lbra ');
+   printlabel(end_label);
+   nl;
+  End;
+ End;
+End;
+
+{ Terminer le switch courant }
+Function end_switch_statement: Integer;
+Begin
+ end_switch_statement := -1;
+ 
+ If switch_depth = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('Unexpected end of switch');
+   _Germany: errrpt('Unerwartetes Ende von switch');
+   Else errrpt('Fin inattendue de switch');
+  End;
+  Exit;
+ End;
+ 
+ Dec(switch_depth);
+ end_switch_statement := switch_table[switch_depth].end_label;
+ 
+ { Générer l'étiquette de fin }
+ prelabel(switch_table[switch_depth].end_label);
+ safe_writeln('; Fin du switch');
+End;
+
+{ Obtenir l'étiquette de fin du switch courant (pour break) }
+Function get_current_switch_end: Integer;
+Begin
+ get_current_switch_end := -1;
+ If switch_depth > 0 Then
+  get_current_switch_end := switch_table[switch_depth - 1].end_label;
+End;
+
 { Gestion de contexte de boucle pour le support break/continue }
 Procedure push_loop_context(loop_type: Integer; break_lbl, continue_lbl: Integer);
 Begin
@@ -705,6 +941,15 @@ End;
 Function get_current_break_label: Integer;
 Begin
  get_current_break_label := -1;
+ 
+ { Vérifier d'abord s'il y a un switch actif }
+ If switch_depth > 0 Then
+ Begin
+  get_current_break_label := switch_table[switch_depth-1].end_label;
+  Exit;
+ End;
+ 
+ { Sinon, vérifier s'il y a une boucle active }
  If loop_depth > 0 Then
   get_current_break_label := loop_stack[loop_depth-1].break_label;
 End;
@@ -2483,6 +2728,8 @@ Begin
    check_goto_labels;
    { Réinitialiser la table goto pour la prochaine fonction }
    init_goto_table;
+   { Réinitialiser la table switch pour la prochaine fonction }
+   init_switch_table;
   End
   Else
   Begin
@@ -3835,6 +4082,9 @@ Function parse_assignment_statement: Boolean; forward;
 Procedure parse_array_assignment(array_name: String); forward;
 Function parse_goto_statement: Boolean; forward;
 Function parse_label_statement: Boolean; forward;
+Function parse_switch_statement: Boolean; forward;
+Function parse_case_statement: Boolean; forward;
+Function parse_default_statement: Boolean; forward;
 
 { Control structure parsing }
 Function parse_if_statement: Boolean;
@@ -4260,6 +4510,164 @@ Begin
  End;
 End;
 
+{ Analyser une instruction switch }
+Function parse_switch_statement: Boolean;
+Var
+ lval: TLVal;
+ switch_expr_type: Integer;
+Begin
+ parse_switch_statement := False;
+
+ If not match('switch') Then Exit;
+ parse_switch_statement := True;
+
+ safe_writeln('; SWITCH statement');
+
+ { Attendre parenthèse ouvrante }
+ If not match('(') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ( after switch');
+   _Germany: errrpt('Erwartete ( nach switch');
+   Else errrpt('( attendu après switch');
+  End;
+  Exit;
+ End;
+
+ { Analyser l'expression switch }
+ safe_writeln('; Expression switch');
+ expression_bool(lval);
+ switch_expr_type := lval.typ;
+
+ { Attendre parenthèse fermante }
+ If not match(')') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ) after switch expression');
+   _Germany: errrpt('Erwartete ) nach switch-Ausdruck');
+   Else errrpt(') attendu après expression switch');
+  End;
+  Exit;
+ End;
+
+ { Commencer le switch }
+ If not begin_switch_statement(switch_expr_type) Then Exit;
+
+ { Sauvegarder la valeur de l'expression pour comparaison }
+ ol('std  switch_temp ; sauver valeur switch');
+
+ { Générer les comparaisons }
+ generate_switch_comparisons;
+
+ { Analyser le corps du switch }
+ If not match('{') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected { after switch statement');
+   _Germany: errrpt('Erwartete { nach switch-Anweisung');
+   Else errrpt('{ attendu après instruction switch');
+  End;
+  Exit;
+ End;
+
+ safe_writeln('; Corps du switch');
+ While (ch <> '}') and (ch <> #0) Do
+ Begin
+  If not parse_statement Then
+  Begin
+   If ch <> #0 Then gch;
+  End;
+ End;
+
+ If not match('}') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected } to close switch');
+   _Germany: errrpt('Erwartete } zum Schließen von switch');
+   Else errrpt('} attendu pour fermer switch');
+  End;
+ End;
+
+ { Terminer le switch }
+ end_switch_statement;
+End;
+
+{ Analyser une instruction case }
+Function parse_case_statement: Boolean;
+Var
+ case_value: Integer;
+ case_label: Integer;
+Begin
+ parse_case_statement := False;
+
+ If not match('case') Then Exit;
+ parse_case_statement := True;
+
+ safe_writeln('; CASE statement');
+
+ { Obtenir la valeur du case }
+ If not number(case_value) Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected constant after case');
+   _Germany: errrpt('Erwartete Konstante nach case');
+   Else errrpt('Constante attendue après case');
+  End;
+  Exit;
+ End;
+
+ { Attendre deux-points }
+ If not match(':') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected : after case value');
+   _Germany: errrpt('Erwartete : nach case-Wert');
+   Else errrpt(': attendu après valeur case');
+  End;
+  Exit;
+ End;
+
+ { Ajouter le case au switch courant }
+ case_label := add_switch_case(case_value);
+ If case_label <> -1 Then
+ Begin
+  prelabel(case_label);
+  safe_writeln('; Case ' + IntToStr(case_value) + ' défini');
+ End;
+End;
+
+{ Analyser une instruction default }
+Function parse_default_statement: Boolean;
+Var
+ default_label: Integer;
+Begin
+ parse_default_statement := False;
+
+ If not match('default') Then Exit;
+ parse_default_statement := True;
+
+ safe_writeln('; DEFAULT statement');
+
+ { Attendre deux-points }
+ If not match(':') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected : after default');
+   _Germany: errrpt('Erwartete : nach default');
+   Else errrpt(': attendu après default');
+  End;
+  Exit;
+ End;
+
+ { Ajouter le default au switch courant }
+ default_label := add_switch_default;
+ If default_label <> -1 Then
+ Begin
+  prelabel(default_label);
+  safe_writeln('; Default défini');
+ End;
+End;
+
 { Compound statement parsing }
 Function parse_compound_statement: Boolean;
 Begin
@@ -4526,6 +4934,10 @@ Begin
  { Try different statement types }
  If parse_label_statement Then
   parse_statement := True
+ Else If parse_case_statement Then
+  parse_statement := True
+ Else If parse_default_statement Then
+  parse_statement := True
  Else If parse_compound_statement Then
   parse_statement := True
  Else If parse_assignment_statement Then
@@ -4537,6 +4949,8 @@ Begin
  Else If parse_for_statement Then
   parse_statement := True
  Else If parse_do_while_statement Then
+  parse_statement := True
+ Else If parse_switch_statement Then
   parse_statement := True
  Else If parse_return_statement Then
   parse_statement := True
@@ -4884,6 +5298,10 @@ BEGIN
  { Initialize defines table }
  init_defines;
  
+ { Initialize control flow tables }
+ init_goto_table;
+ init_switch_table;
+ 
  If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
@@ -4897,7 +5315,8 @@ BEGIN
     Halt(1);
    End;
    {$I+}
-   WriteLn('Generating asm file: ', param);
+   { Message supprimé temporairement }
+   { WriteLn('Generating asm file: ', param); }
    use_stdout := False;
   End
    Else
