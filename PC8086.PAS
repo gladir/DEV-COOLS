@@ -71,6 +71,9 @@ Type
   value: Integer;
   defined: Boolean;
  End;
+ 
+ { Pointeur vers un symbole }
+ PSymbol = ^TSymbol;
 
  { Structure pour les étiquettes }
  TLabel = Record
@@ -79,6 +82,9 @@ Type
   defined: Boolean;
   address: Integer;
  End;
+ 
+ { Pointeur vers une étiquette }
+ PLabel = ^TLabel;
 
 Var
  { Variables globales }
@@ -90,11 +96,11 @@ Var
  line_number: Integer;
 
  { Table des symboles }
- symbol_table: Array[1..MAX_SYMBOLS] of TSymbol;
+ symbol_table: Array[1..MAX_SYMBOLS] of PSymbol;
  symbol_count: Integer;
 
  { Table des étiquettes }
- label_table: Array[1..MAX_LABEL_COUNT] of TLabel;
+ label_table: Array[1..MAX_LABEL_COUNT] of PLabel;
  label_count: Integer;
  next_label_id: Integer;
 
@@ -358,7 +364,7 @@ Var
 Begin
  name := UpperCase(name);
  For i := 1 to symbol_count do
-  If symbol_table[i].name = name Then
+  If (symbol_table[i] <> nil) and (symbol_table[i]^.name = name) Then
   Begin
    FindSymbol := i;
    Exit;
@@ -377,7 +383,8 @@ Begin
  End;
 
  Inc(symbol_count);
- With symbol_table[symbol_count] do
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
  Begin
   name := UpperCase(name);
   symbol_type := sym_type;
@@ -566,11 +573,11 @@ Begin
    sym_index := FindSymbol(current_token);
    If sym_index > 0 Then
    Begin
-    Case symbol_table[sym_index].data_type of
-     TYPE_INTEGER, TYPE_WORD: Emit('mov ax, ' + symbol_table[sym_index].name);
-     TYPE_BYTE, TYPE_CHAR: Emit('mov al, ' + symbol_table[sym_index].name);
+    Case symbol_table[sym_index]^.data_type of
+     TYPE_INTEGER, TYPE_WORD: Emit('mov ax, ' + symbol_table[sym_index]^.name);
+     TYPE_BYTE, TYPE_CHAR: Emit('mov al, ' + symbol_table[sym_index]^.name);
     Else
-     Emit('mov ax, ' + symbol_table[sym_index].name);
+     Emit('mov ax, ' + symbol_table[sym_index]^.name);
     End;
    End
    Else
@@ -599,11 +606,11 @@ Begin
   ParseExpression;
 
   { Générer le code d'affectation }
-  Case symbol_table[sym_index].data_type of
-   TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index].name + ', ax');
-   TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index].name + ', al');
+  Case symbol_table[sym_index]^.data_type of
+   TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+   TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
   Else
-   Emit('mov ' + symbol_table[sym_index].name + ', ax');
+   Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
   End;
  End
  Else
@@ -922,7 +929,15 @@ End;
 
 { Initialiser le compilateur }
 Procedure InitCompiler;
+Var
+ i: Integer;
 Begin
+ { Initialiser les tables de symboles et d'étiquettes }
+ For i := 1 to MAX_SYMBOLS do
+  symbol_table[i] := nil;
+ For i := 1 to MAX_LABEL_COUNT do
+  label_table[i] := nil;
+  
  symbol_count := 0;
  label_count := 0;
  next_label_id := 0;
@@ -933,6 +948,22 @@ Begin
  code_segment := False;
  data_segment := False;
  stack_offset := 0;
+End;
+
+{ Libérer la mémoire allouée }
+Procedure CleanupCompiler;
+Var
+ i: Integer;
+Begin
+ { Libérer les symboles }
+ For i := 1 to symbol_count do
+  If symbol_table[i] <> nil Then
+   Dispose(symbol_table[i]);
+   
+ { Libérer les étiquettes }
+ For i := 1 to label_count do
+  If label_table[i] <> nil Then
+   Dispose(label_table[i]);
 End;
 
 { Générer les procédures d'aide (comme PRINT_NUM) }
@@ -955,7 +986,7 @@ End;
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('PC8086 - Cette commande permet de lancer une compilateur Pascal g�n�rant du code pour le ',
+  WriteLn('PC8086 - Cette commande permet de lancer une compilateur Pascal g�n�rant du code pour le ',
           'microprocesseur 8086 ou 8088.');
   WriteLn;
   WriteLn('Syntaxe: PC8086 <fichier.pas> [fichier.asm]');
@@ -1030,6 +1061,9 @@ BEGIN
  { Fermer les fichiers }
  Close(input_file);
  Close(output_file);
+ 
+ { Libérer la mémoire }
+ CleanupCompiler;
 
  WriteLn('Compilation terminée.');
  WriteLn('Erreurs: ', error_count);
