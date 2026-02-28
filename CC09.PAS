@@ -2331,6 +2331,7 @@ Procedure primary_expression(var lval: TLVal); forward;
 Procedure unary_expression(var lval: TLVal); forward;
 Procedure multiplicative_expression(var lval: TLVal); forward;
 Procedure additive_expression(var lval: TLVal); forward;
+Procedure relational_expression(var lval: TLVal); forward;
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean); forward;
 Procedure parse_dereference(var lval: TLVal); forward;
 Procedure parse_address_of(var lval: TLVal); forward;
@@ -3984,10 +3985,106 @@ Begin
  End;
 End;
 
+{ Relational expression parser - handles >, <, >=, <=, ==, != }
+Procedure relational_expression(var lval: TLVal);
+Begin
+ additive_expression(lval);
+ 
+ While True do
+ Begin
+  If match('>') Then
+  Begin
+   If match('=') Then
+   Begin
+    { >= operator }
+    safe_writeln('; Opérateur >=');
+    ol('pshs d');    { Push left operand }
+    additive_expression(lval);
+    ol('puls x');    { Left operand to X }
+    ol('cmpx d');    { Compare X with D }
+    ol('bge *+5');   { Branch if greater or equal }
+    ol('ldd #0');    { False result }
+    ol('bra *+3');   { Skip true result }
+    ol('ldd #1');    { True result }
+   End
+   Else
+   Begin
+    { > operator }
+    safe_writeln('; Opérateur >');
+    ol('pshs d');    { Push left operand }
+    additive_expression(lval);
+    ol('puls x');    { Left operand to X }
+    ol('cmpx d');    { Compare X with D }
+    ol('bgt *+5');   { Branch if greater }
+    ol('ldd #0');    { False result }
+    ol('bra *+3');   { Skip true result }
+    ol('ldd #1');    { True result }
+   End;
+  End
+  Else If match('<') Then
+  Begin
+   If match('=') Then
+   Begin
+    { <= operator }
+    safe_writeln('; Opérateur <=');
+    ol('pshs d');    { Push left operand }
+    additive_expression(lval);
+    ol('puls x');    { Left operand to X }
+    ol('cmpx d');    { Compare X with D }
+    ol('ble *+5');   { Branch if less or equal }
+    ol('ldd #0');    { False result }
+    ol('bra *+3');   { Skip true result }
+    ol('ldd #1');    { True result }
+   End
+   Else
+   Begin
+    { < operator }
+    safe_writeln('; Opérateur <');
+    ol('pshs d');    { Push left operand }
+    additive_expression(lval);
+    ol('puls x');    { Left operand to X }
+    ol('cmpx d');    { Compare X with D }
+    ol('blt *+5');   { Branch if less }
+    ol('ldd #0');    { False result }
+    ol('bra *+3');   { Skip true result }
+    ol('ldd #1');    { True result }
+   End;
+  End
+  Else If match('=') and match('=') Then
+  Begin
+   { == operator }
+   safe_writeln('; Opérateur ==');
+   ol('pshs d');    { Push left operand }
+   additive_expression(lval);
+   ol('puls x');    { Left operand to X }
+   ol('cmpx d');    { Compare X with D }
+   ol('beq *+5');   { Branch if equal }
+   ol('ldd #0');    { False result }
+   ol('bra *+3');   { Skip true result }
+   ol('ldd #1');    { True result }
+  End
+  Else If match('!') and match('=') Then
+  Begin
+   { != operator }
+   safe_writeln('; Opérateur !=');
+   ol('pshs d');    { Push left operand }
+   additive_expression(lval);
+   ol('puls x');    { Left operand to X }
+   ol('cmpx d');    { Compare X with D }
+   ol('bne *+5');   { Branch if not equal }
+   ol('ldd #0');    { False result }
+   ol('bra *+3');   { Skip true result }
+   ol('ldd #1');    { True result }
+  End
+  Else
+   Break; { No more relational operators }
+ End;
+End;
+
 { Main expression parser }
 Function expression_bool(var lval: TLVal): Boolean;
 Begin
- additive_expression(lval);
+ relational_expression(lval);
  expression_bool := True;
 End;
 
@@ -4159,6 +4256,8 @@ Begin
  parse_if_statement := True;
 
  { Expect opening parenthesis }
+ blanks;
+ If (lptr > Length(line)) and (eof = 0) Then readinline;
  If not match('(') Then
  Begin
   errrpt('Expected ( after if');
@@ -4170,8 +4269,13 @@ Begin
  expression_bool(lval);
 
  { Expect closing parenthesis }
+ blanks;
+ If (lptr > Length(line)) and (eof = 0) Then readinline;
  If not match(')') Then
+ Begin
   errrpt('Expected ) after if condition');
+  Exit;
+ End;
 
  { Generate conditional jump }
  else_label := getlabel;
@@ -4182,11 +4286,23 @@ Begin
  printlabel(else_label);
  nl;
 
- { Parse then statement }
+ { Parse then statement (can be single statement or compound) }
  safe_writeln('; IF then block');
- parse_statement;
+ 
+ { Check if we need to read next line for the statement }
+ blanks;
+ If (lptr > Length(line)) and (eof = 0) Then readinline;
+ 
+ If not parse_statement Then
+ Begin
+  errrpt('Expected statement after if condition');
+  Exit;
+ End;
 
- { Check for else clause }
+ { Check for else clause - may be on next line }
+ blanks;
+ If (lptr > Length(line)) and (eof = 0) Then readinline;
+ 
  If match('else') Then
  Begin
   { Jump over else block }
@@ -4197,7 +4313,16 @@ Begin
   { Else block }
   prelabel(else_label);
   safe_writeln('; ELSE block');
-  parse_statement;
+  
+  { Check if we need to read next line for the else statement }
+  blanks;
+  If (lptr > Length(line)) and (eof = 0) Then readinline;
+  
+  If not parse_statement Then
+  Begin
+   errrpt('Expected statement after else');
+   Exit;
+  End;
 
   prelabel(end_label);
  End
@@ -4782,8 +4907,18 @@ Begin
  safe_writeln('; Compound statement start');
 
  { Parse statements until closing brace }
- While not match('}') do
- Begin
+ Repeat
+  { Check if we need to read a new line }
+  blanks;
+  If (lptr > Length(line)) or (Length(line) = 0) Then
+  Begin
+   If not readinline Then Break;
+   lptr := 1;
+  End;
+  
+  { Check for closing brace }
+  If match('}') Then Break;
+  
   If eof <> 0 Then
   Begin
    Case Language of
@@ -4798,17 +4933,11 @@ Begin
   Begin
    { Skip to next line to avoid infinite loops }
    If not readinline Then Break;
+   lptr := 1;
   End;
- End;
+ Until False;
 
  safe_writeln('; Compound statement end');
-
- { Check if this is the end of a function body }
- If current_function <> -1 Then
- Begin
-  generate_function_epilogue(current_function);
-  current_function := -1;
- End;
 End;
 
 { Expression statement parsing }
