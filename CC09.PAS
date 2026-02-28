@@ -3749,6 +3749,8 @@ End;
 
 { Unary expression parser }
 Procedure unary_expression(var lval: TLVal);
+Var
+ true_label, end_label: Integer;
 Begin
  Case peek_char of
   '+': Begin
@@ -3766,11 +3768,19 @@ Begin
 
   '!': Begin
     next_char;
+    safe_writeln('; Opérateur ! (NOT logique)');
     unary_expression(lval);
-    ol('subd #0');
-    ol('seq');
-    ol('clra');
-    ol('tfr  b,a');
+    { Convertir en booléen: 0 si non-zéro, 1 si zéro }
+    true_label := getlabel;
+    end_label := getlabel;
+    
+    ol('tstd');      { Tester D (le résultat de l''expression) }
+    ol('beq  L' + IntToStr(true_label)); { Si zéro, c''est vrai (!0 = 1) }
+    ol('ldd  #0');   { Sinon c''est faux (!non_zéro = 0) }
+    ol('bra  L' + IntToStr(end_label));
+    prelabel(true_label);
+    ol('ldd  #1');   { Résultat vrai }
+    prelabel(end_label);
    End;
 
   '~': Begin
