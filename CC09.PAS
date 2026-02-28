@@ -331,30 +331,61 @@ Procedure kill;Begin
  lptr := Length(line) + 1;
 End;
 
+{ Safe file writing functions }
+Function is_output_ready: Boolean;
+Begin
+ If use_stdout Then
+  is_output_ready := True
+ Else
+ Begin
+  {$I-}
+  Write(output, ''); { Test write }
+  is_output_ready := (IOResult = 0);
+  {$I+}
+ End;
+End;
+
+Procedure safe_write(s: String);
+Begin
+ If is_output_ready Then
+ Begin
+  If use_stdout Then Write(s)
+                Else Write(output, s);
+ End;
+End;
+
+Procedure safe_writeln(s: String);
+Begin
+ If is_output_ready Then
+ Begin
+  If use_stdout Then WriteLn(s)
+                Else WriteLn(output, s);
+ End;
+End;
+
 Procedure nl;Begin
- If use_stdout Then WriteLn
-               Else WriteLn(output);
+ safe_writeln('');
 End;
 
 Procedure ol(s:String);Begin
- If use_stdout Then WriteLn(#9, s)
-               Else WriteLn(output, #9, s);
+ safe_writeln(#9 + s);
 End;
 
  { �crire la ligne dans la sortie avec routage conditionnel }
 Procedure outln(s: String);Begin
- If use_stdout Then WriteLn(s)
-               Else WriteLn(output, s);
+ safe_writeln(s);
 End;
 
 Procedure outstr(s:String);Begin
- If use_stdout Then Write(s)
-               Else Write(output, s);
+ safe_write(s);
 End;
 
-Procedure outdec(n:Integer);Begin
- If use_stdout Then Write(n)
-               Else Write(output, n);
+Procedure outdec(n:Integer);
+Var
+ temp: String;
+Begin
+ Str(n, temp);
+ safe_write(temp);
 End;
 
  { Fonctions de g�n�ration d'�tiquettes }
@@ -368,15 +399,17 @@ Procedure printlabel(labelnum: Integer);Begin
  outdec(labelnum);
 End;
 
-Procedure prelabel(lab:Integer);Begin
- If use_stdout Then WriteLn('L', lab, ':')
-               Else WriteLn(output, 'L', lab, ':');
+Procedure prelabel(lab:Integer);
+Var
+ temp: String;
+Begin
+ Str(lab, temp);
+ safe_writeln('L' + temp + ':');
 End;
 
  { Code generation }
 Procedure ot(s: String);Begin
- If use_stdout Then Write(#9, s) { TAB alors chaine de caract�res }
-               Else Write(output, #9, s); { TAB alors chaine de caract�res }
+ safe_write(#9 + s + ' '); { TAB alors chaine de caractères avec espace }
 End;
 
  { Fonctions utilitaires d'analyse d'expressions }
@@ -443,7 +476,7 @@ Procedure errrpt(msg: String);Begin
  Inc(errcnt);
  Case Language of
   _English: WriteLn('Error: ', msg, ' at line ', lptr);
-  Else Write('Erreur: ',msg,' � la ligne ', lptr);
+  Else WriteLn('Erreur: ', msg, ' à la ligne ', lptr);
  End;
 End;
 
@@ -1962,8 +1995,10 @@ Begin
  
  If include_depth <= 0 Then Exit;
  
- { Close current include file }
+ { Close current include file safely }
+ {$I-}
  System.Close(input);
+ {$I+}
  
  { Restore previous file state }
  Dec(include_depth);
@@ -1971,7 +2006,15 @@ Begin
  Begin
   current_filename := filename;
   System.Assign(input, filename);
+  {$I-}
   System.Reset(input);
+  If IOResult <> 0 Then
+  Begin
+   { Error restoring file }
+   eof := 1;
+   Exit;
+  End;
+  {$I+}
  End;
  
  pop_include_file := True;
@@ -1980,15 +2023,29 @@ End;
 { File operations }
 Function readinline: Boolean;
 Begin
+ readinline := False;
+ 
  Repeat
-  { Try to read from current file }
+  { Check if input file is properly initialized }
+  {$I-}
   If not System.Eof(input) Then
   Begin
    ReadLn(input, line);
-   lptr := 1;
-   readinline := True;
-   Exit;
+   If IOResult = 0 Then
+   Begin
+    lptr := 1;
+    readinline := True;
+    Exit;
+   End
+   Else
+   Begin
+    { Error reading file }
+    eof := 1;
+    readinline := False;
+    Exit;
+   End;
   End
+  {$I+}
   Else
   Begin
    { Current file is at EOF }
@@ -2082,12 +2139,16 @@ Begin
  
  { Try to open the include file }
  Assign(input, include_filename);
- {$I-} Reset(input); {$I+}
+ {$I-} 
+ Reset(input); 
  If IOResult <> 0 Then
  Begin
   { Restore previous file by reopening it }
-  Assign(input, include_stack[include_depth].filename);
-  Reset(input);
+  If include_depth > 0 Then
+  Begin
+   Assign(input, include_stack[include_depth].filename);
+   Reset(input);
+  End;
   
   Case Language of
    _English: errrpt('Cannot open include file: ' + include_filename);
@@ -2096,6 +2157,7 @@ Begin
   End;
   Exit;
  End;
+ {$I+}
  
  { Update state }
  Inc(include_depth);
@@ -3274,7 +3336,14 @@ Var
  expanded_line: String;
 Begin
  While eof = 0 do Begin
+  {$I-}
   If not readinline Then Break;
+  If IOResult <> 0 Then
+  Begin
+   eof := 1;
+   Break;
+  End;
+  {$I+}
 
   { Apply macro expansion to the line before processing }
   expanded_line := expand_macros(line);
@@ -3520,16 +3589,47 @@ BEGIN
   Else If param = '-O2' Then optimize := OPT_ADVANCED
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
+ 
+ { Open input file with error checking }
  Assign(input, ParamStr(1));
+ {$I-}
  Reset(input);
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('Error: Cannot open input file: ', ParamStr(1));
+  Halt(1);
+ End;
+ {$I+}
+ 
  current_filename := ParamStr(1); { Set initial filename for include system }
  WriteLn('Compiling Source file: ', ParamStr(1));
+ 
+ { Initialize global variables }
+ eof := 0;
+ errcnt := 0;
+ lptr := 1;
+ line := '';
+ nextlabel := 0;
+ 
+ { Initialize heap-based symbol table }
+ init_symbols;
+ 
+ { Initialize defines table }
+ init_defines;
+ 
  If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
   If (param[1] <> '-') Then Begin { Option impossible, fichier de sortie obligatoire }
    Assign(output, param);
+   {$I-}
    Rewrite(output);
+   If IOResult <> 0 Then
+   Begin
+    WriteLn('Error: Cannot create output file: ', param);
+    Halt(1);
+   End;
+   {$I+}
    WriteLn('Generating asm file: ', param);
    use_stdout := False;
   End
