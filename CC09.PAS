@@ -101,7 +101,7 @@ Const
  linemax = linesize - 1;
 
 Type
- TSymTab = Array[0..symtbsz-1] of Char;
+ { TSymTab no longer needed - using heap-based symbol table }
  TLine = String[linesize];
 
  { Structure d'information de type }
@@ -211,8 +211,7 @@ Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  { Tables de symbole }
- { Legacy symbol table for compatibility - now smaller }
- symtab: TSymTab;
+ { Legacy variables - kept for compatibility with some calculations }
  glbptr, locptr: Integer;
 
  { New heap-based symbol table }
@@ -241,8 +240,8 @@ Var
  define_table: TDefineTable;
  define_count: Integer; { Number of defines currently in use }
 
- { Extended type information table }
- type_info_table: Array[1..SYMTBSZ] of TTypeInfo;
+ { Extended type information - now stored directly in symbols }
+ { type_info_table: Array[1..SYMTBSZ] of TTypeInfo;  -- No longer needed }
  type_info_count: Integer;
 
  { Ligne d'entr�e }
@@ -267,20 +266,21 @@ Var
 { Forward declarations }
 Procedure init_type_info(var type_info: TTypeInfo); forward;
 
+{ Legacy functions - no longer needed with heap-based symbol table }
 Function startglb: Integer;Begin
  startglb := 1; { Start at 1 to reserve 0 as "not found" value }
 End;
 
 Function endglb: Integer;Begin
- endglb := startglb + numglbs * symsiz;
+ endglb := 1000; { Dummy value for compatibility }
 End;
 
 Function startloc: Integer;Begin
- startloc := endglb + symsiz;
+ startloc := 1000; { Dummy value for compatibility }
 End;
 
 Function endloc: Integer;Begin
- endloc := symtbsz - symsiz;
+ endloc := 2000; { Dummy value for compatibility }
 End;
 
  { Fonctions utilitaires }
@@ -575,60 +575,6 @@ Begin
  For i := 1 to Length(sname) do
   h := (h shl 1) + Ord(sname[i]);
  hash := h;
-End;
-
- { Op�rations sur la table des symboles }
-Function addsym(sname: String; typ: Integer; storage: Integer; offset_value: Integer): Integer;
-Var
- ptr: Integer;
- i: Integer;
-Begin
- ptr := glbptr;
- If ptr + symsiz > endglb Then Begin
-  Case Language of
-   _English:errrpt('Symbol table overflow');
-   Else errrpt('D�bordement de la table des symboles');
-  End;
-  addsym := 0;
-  Exit;
- End;
-  { Nom du symbole de magasin }
- For i := 1 to Length(sname) do
- Begin
-  symtab[ptr + name + i - 1] := sname[i];
- End;
- symtab[ptr + name + Length(sname)] := #0;
- 
- { Attributs de magasin }
- symtab[ptr + ident] := Chr(it_variable);
- symtab[ptr + ctype] := Chr(typ);
- symtab[ptr + storage] := Chr(storage);
- { D�placement de magasin }
- Move(offset_value, symtab[ptr + offset], offsize);
- glbptr := glbptr + symsiz;
- addsym := ptr;
-End;
-
-Function findsym(sname: String): Integer;
-Var
- ptr: Integer;
- stored_name: String;
-Begin
- ptr := startglb;
- While ptr < glbptr do Begin
-  { Extraire le nom entrepos� }
-  stored_name := '';
-  While (symtab[ptr + name + Length(stored_name)] <> #0) and (Length(stored_name) < namemax) do Begin
-   stored_name := stored_name + symtab[ptr + name + Length(stored_name)];
-  End;
-  
-  If stored_name = sname Then Begin
-   findsym := ptr;
-   Exit;
-  End;
-  ptr := ptr + symsiz;
- End;
- findsym := 0;
 End;
 
 { ============================================================================ }
@@ -3540,8 +3486,8 @@ BEGIN
   End;
   Halt(1);
  End;
-  { Initialise les variables }
- FillChar(symtab, SizeOf(symtab), 0);
+  { Initialize variables - symtab no longer needed }
+ { FillChar(symtab, SizeOf(symtab), 0); -- Old symbol table removed }
  glbptr := startglb;
  locptr := startloc;
  stkp := 0;
