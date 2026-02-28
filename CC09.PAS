@@ -180,14 +180,14 @@ Type
   is_main: Boolean;                      { Vrai s'il s'agit de la fonction principale }
  End;
 
- { Loop context structure for break/continue support }
+ { Structure de contexte de boucle pour le support break/continue }
  TLoopContext = Record
   loop_type: Integer;     { 1=while, 2=for, 3=do-while }
-  break_label: Integer;   { Label to jump for break }
-  continue_label: Integer; { Label to jump for continue }
+  break_label: Integer;   { Étiquette à utiliser pour break }
+  continue_label: Integer; { Étiquette à utiliser pour continue }
  End;
 
- { Include file management }
+ { Gestion des fichiers d'inclusion }
  TIncludeFile = Record
   filename: String{$IFNDEF FPC}[80]{$ENDIF};
   saved_line: TLine;
@@ -195,25 +195,25 @@ Type
   saved_eof: Integer;
  End;
 
- { Macro/Define management - using static arrays instead of heap }
+ { Gestion des macros/Define - utilisation de tableaux statiques au lieu du tas }
  TDefine = Record
   name: String;
   value: String;
   in_use: Boolean;
  End;
 
- TDefineTable = Array[0..{$IFDEF FPC}99{$ELSE}49{$ENDIF}] of TDefine; { Max 100 defines }
+ TDefineTable = Array[0..{$IFDEF FPC}99{$ELSE}49{$ENDIF}] of TDefine; { Max 100 définitions }
 
- { Symbol table using heap memory instead of data segment }
+ { Table de symboles utilisant la mémoire de tas au lieu du segment de données }
  PSymbol = ^TSymbol;
  TSymbol = Record
   name: String;
   ident: Integer;    { it_variable, it_function, etc. }
-  ctype: Integer;    { Type of symbol }
-  storage: Integer;  { Storage class }
-  offset_value: Integer; { Offset or value }
-  type_info: TTypeInfo; { Extended type information }
-  next: PSymbol;     { Next symbol in chain }
+  ctype: Integer;    { Type de symbole }
+  storage: Integer;  { Classe de stockage }
+  offset_value: Integer; { Décalage ou valeur }
+  type_info: TTypeInfo; { Information de type étendue }
+  next: PSymbol;     { Symbole suivant dans la chaîne }
  End;
 
   { Table de fonction }
@@ -223,36 +223,36 @@ Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  { Tables de symbole }
- { Legacy variables - kept for compatibility with some calculations }
+ { Variables héritées - conservées pour la compatibilité avec certains calculs }
  glbptr, locptr: Integer;
 
- { New heap-based symbol table }
- symbol_list: PSymbol;    { Head of symbol list }
- symbol_count: Integer;   { Counter for statistics }
+ { Nouvelle table de symboles basée sur le tas }
+ symbol_list: PSymbol;    { Tête de la liste de symboles }
+ symbol_count: Integer;   { Compteur pour les statistiques }
 
  { Gestion de fonction }
  function_table: TFunctionTable;
  function_count: Integer;
- current_function: Integer;  { Index of currently parsing function }
- call_stack_depth: Integer; { Current call depth }
+ current_function: Integer;  { Index de la fonction en cours d'analyse }
+ call_stack_depth: Integer; { Profondeur d'appel actuelle }
 
  { Contexte d'optimisation }
  opt_context: TOptContext;
 
- { Loop context stack for break/continue }
+ { Pile de contexte de boucle pour break/continue }
  loop_stack: Array[0..31] of TLoopContext;
  loop_depth: Integer;
 
- { Include file stack }
- include_stack: Array[0..9] of TIncludeFile;  { Max 10 levels of inclusion }
+ { Pile de fichiers d'inclusion }
+ include_stack: Array[0..9] of TIncludeFile;  { Max 10 niveaux d'inclusion }
  include_depth: Integer;
  current_filename: String;
 
- { Define/Macro management - using static table }
+ { Gestion Define/Macro - utilisation de table statique }
  define_table: TDefineTable;
- define_count: Integer; { Number of defines currently in use }
+ define_count: Integer; { Nombre de définitions actuellement en usage }
 
- { Extended type information - now stored directly in symbols }
+ { Informations de type étendues - maintenant stockées directement dans les symboles }
   type_info_count: Integer;
 
  { Ligne d'entr�e }
@@ -274,24 +274,24 @@ Var
  asmtype: Integer;
  use_stdout: Boolean;
 
-{ Forward declarations }
+{ Déclarations anticipées }
 Procedure init_type_info(var type_info: TTypeInfo); forward;
 
-{ Legacy functions - no longer needed with heap-based symbol table }
+{ Fonctions héritées - plus nécessaires avec la table de symboles basée sur le tas }
 Function startglb: Integer;Begin
- startglb := 1; { Start at 1 to reserve 0 as "not found" value }
+ startglb := 1; { Commence à 1 pour réserver 0 comme valeur "non trouvé" }
 End;
 
 Function endglb: Integer;Begin
- endglb := 1000; { Dummy value for compatibility }
+ endglb := 1000; { Valeur fictive pour la compatibilité }
 End;
 
 Function startloc: Integer;Begin
- startloc := 1000; { Dummy value for compatibility }
+ startloc := 1000; { Valeur fictive pour la compatibilité }
 End;
 
 Function endloc: Integer;Begin
- endloc := 2000; { Dummy value for compatibility }
+ endloc := 2000; { Valeur fictive pour la compatibilité }
 End;
 
  { Fonctions utilitaires }
@@ -342,22 +342,22 @@ Procedure kill;Begin
  lptr := Length(line) + 1;
 End;
 
-{ Safe file writing functions }
+{ Fonctions d'écriture de fichier sécurisées }
 Function is_output_ready: Boolean;
 Begin
- { Always return true since we handle file checking elsewhere }
+ { Retourne toujours vrai car nous gérons la vérification de fichier ailleurs }
  is_output_ready := True;
 End;
 
 Procedure safe_write(s: String);
 Begin
- { Always use stdout for now to avoid file issues }
+ { Utilise toujours stdout pour l'instant pour éviter les problèmes de fichier }
  Write(s);
 End;
 
 Procedure safe_writeln(s: String);
 Begin
- { Always use stdout for now to avoid file issues }
+ { Utilise toujours stdout pour l'instant pour éviter les problèmes de fichier }
  WriteLn(s);
 End;
 
@@ -369,7 +369,7 @@ Procedure ol(s:String);Begin
  safe_writeln(#9 + s);
 End;
 
- { �crire la ligne dans la sortie avec routage conditionnel }
+ { Écrire la ligne dans la sortie avec routage conditionnel }
 Procedure outln(s: String);Begin
  safe_writeln(s);
 End;
@@ -405,9 +405,9 @@ Begin
  safe_writeln('L' + temp + ':');
 End;
 
- { Code generation }
+ { Génération de code }
 Procedure ot(s: String);Begin
- safe_write(#9 + s + ' '); { TAB alors chaine de caractères avec espace }
+ safe_write(#9 + s + ' '); { TAB puis chaîne de caractères avec espace }
 End;
 
  { Fonctions utilitaires d'analyse d'expressions }
@@ -478,7 +478,7 @@ Procedure errrpt(msg: String);Begin
  End;
 End;
 
-{ Loop context management for break/continue support }
+{ Gestion de contexte de boucle pour le support break/continue }
 Procedure push_loop_context(loop_type: Integer; break_lbl, continue_lbl: Integer);
 Begin
  If loop_depth >= 32 Then
@@ -491,7 +491,7 @@ Begin
   Exit;
  End;
  
- { Defensive check - ensure loop_depth is initialized }
+ { Vérification défensive - s'assurer que loop_depth est initialisé }
  If loop_depth < 0 Then loop_depth := 0;
  
  loop_stack[loop_depth].loop_type := loop_type;
@@ -521,7 +521,7 @@ Begin
 End;
 
 Procedure outbyte(b: Byte);Begin
- Write(Chr(b)); { Always use stdout for safety }
+ Write(Chr(b)); { Utilise toujours stdout pour la sécurité }
 End;
 
  { Analyse lexicale }
@@ -578,7 +578,7 @@ Begin
  Else symname := False;
 End;
 
-{ Analyse des nombres }
+ { Analyse des nombres }
 Function number(Var value: Integer): Boolean;
 Var
  n: Integer;
@@ -594,9 +594,7 @@ Begin
   End;
   value := n;
  End;
-End;
-
- { Gestion des tables de symboles }
+End; { Gestion des tables de symboles }
 Function hash(sname: String): Integer;
 Var
  h, i: Integer;
@@ -608,17 +606,17 @@ Begin
 End;
 
 { ============================================================================ }
-{ NEW HEAP-BASED SYMBOL TABLE FUNCTIONS                                       }
+{ NOUVELLES FONCTIONS DE TABLE DE SYMBOLES BASÉE SUR LE TAS                   }
 { ============================================================================ }
 
-{ Initialize the heap-based symbol table }
+{ Initialiser la table de symboles basée sur le tas }
 Procedure init_symbols;
 Begin
  symbol_list := nil;
  symbol_count := 0;
 End;
 
-{ Find a symbol in the heap-based symbol table }
+{ Trouver un symbole dans la table de symboles basée sur le tas }
 Function find_symbol(sname: String): PSymbol;
 Var
  current: PSymbol;
@@ -637,29 +635,29 @@ Begin
  End;
 End;
 
-{ Add a symbol to the heap-based symbol table }
+{ Ajouter un symbole à la table de symboles basée sur le tas }
 Function add_symbol(sname: String; id_type: Integer; sym_type: Integer; stor_class: Integer; offset_val: Integer): PSymbol;
 Var
  new_symbol: PSymbol;
 Begin
  add_symbol := nil;
  
- { Check if symbol already exists }
+ { Vérifier si le symbole existe déjà }
  If find_symbol(sname) <> nil Then
  Begin
-  { Symbol already exists }
+  { Le symbole existe déjà }
   Exit;
  End;
  
- { Allocate memory on heap }
+ { Allouer de la mémoire sur le tas }
  New(new_symbol);
  If new_symbol = nil Then
  Begin
-  { Out of memory }
+  { Mémoire insuffisante }
   Exit;
  End;
  
- { Initialize the new symbol }
+ { Initialiser le nouveau symbole }
  With new_symbol^ do
  Begin
   name := sname;
@@ -669,29 +667,29 @@ Begin
   offset_value := offset_val;
   init_type_info(type_info);
   type_info.base_type := sym_type;
-  next := symbol_list;  { Insert at beginning of list }
+  next := symbol_list;  { Insérer au début de la liste }
  End;
  
- { Update list head }
+ { Mettre à jour la tête de liste }
  symbol_list := new_symbol;
  Inc(symbol_count);
  
  add_symbol := new_symbol;
 End;
 
-{ Enhanced addsym function using heap }
+{ Fonction addsym améliorée utilisant le tas }
 Function addsym_heap(sname: String; typ: Integer; storage: Integer; offset_value: Integer): PSymbol;
 Begin
  addsym_heap := add_symbol(sname, it_variable, typ, storage, offset_value);
 End;
 
-{ Enhanced findsym function using heap }
+{ Fonction findsym améliorée utilisant le tas }
 Function findsym_heap(sname: String): PSymbol;
 Begin
  findsym_heap := find_symbol(sname);
 End;
 
-{ Free all symbols from heap memory }
+{ Libérer tous les symboles de la mémoire de tas }
 Procedure free_symbols;
 Var
  current, next: PSymbol;
@@ -738,7 +736,7 @@ Function get_type_size(base_type: Integer): Integer;Begin
   cfloat: get_type_size := sizeof_float;
   cdouble: get_type_size := sizeof_double;
   cpointer: get_type_size := sizeof_pointer;
-  Else get_type_size := sizeof_int; { Par d�faut }
+  Else get_type_size := sizeof_int; { Par défaut }
  End;
 End;
 
@@ -754,21 +752,21 @@ Begin
  calculate_type_size := result_size;
 End;
 
-{ V�rifiez si deux types sont compatibles }
+{ Vérifiez si deux types sont compatibles }
 Function types_compatible(var type1, type2: TTypeInfo): Boolean;Begin
  types_compatible := (type1.base_type = type2.base_type) and
                     (type1.pointer_level = type2.pointer_level) and
                     (type1.is_unsigned = type2.is_unsigned);
 End;
 
-{ V�rifier si le type peut �tre converti en un autre }
+{ Vérifier si le type peut être converti en un autre }
 Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
-  { Les pointeurs peuvent �tre convertis en pointeurs }
+  { Les pointeurs peuvent être convertis en pointeurs }
  If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then Begin
   can_convert_type := True;
   Exit;
  End;
-  { Les types num�riques peuvent g�n�ralement �tre convertis }
+  { Les types numériques peuvent généralement être convertis }
  If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then Begin
   Case from_type.base_type of
    cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
@@ -786,7 +784,7 @@ Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
   can_convert_type := False;
 End;
 
- { R�cup�rer le nom du type sous forme de chaine de caract�res pour les messages de d�bogage/d'erreur }
+ { Récupérer le nom du type sous forme de chaîne de caractères pour les messages de débogage/d'erreur }
 Function get_type_name(var type_info: TTypeInfo): String;
 Var
  base_name, temp_str: String;
@@ -810,7 +808,7 @@ Begin
   { Ajouter les qualificateurs const/volatile }
  If type_info.is_const Then base_name := 'const ' + base_name;
  If type_info.is_volatile Then base_name := 'volatile ' + base_name;
-  { Ajouter des ast�ristiques de pointeur }
+  { Ajouter des astéristiques de pointeur }
  For i := 1 to type_info.pointer_level do base_name := base_name + '*';
   { Ajouter la notation de tableau }
  If type_info.array_size > 0 Then Begin
@@ -820,30 +818,30 @@ Begin
  get_type_name := base_name;
 End;
 
- { G�n�rer le code assembleur pour la conversion de type }
+ { Générer le code assembleur pour la conversion de type }
 Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
  Case Language of
   _English:safe_writeln('; Type conversion from ' + get_type_name(from_type) + ' to ' + get_type_name(to_type));
   Else safe_writeln('; Conversion de type de ' + get_type_name(from_type) + ' à ' + get_type_name(to_type));
  End;
- { G�rer la conversion char en int }
+ { Gérer la conversion char en int }
  If (from_type.base_type = cchar) and (to_type.base_type = cint) Then Begin
   If from_type.is_unsigned Then Begin
-   ol('clra   ; zero extend unsigned char');
+   ol('clra   ; extension zéro char non signé');
   End
   Else
   Begin
-   ol('sex    ; sign extend signed char');
+   ol('sex    ; extension de signe char signé');
   End;
  End
-  { G�rer la conversion int vers char }
+  { Gérer la conversion int vers char }
   Else
  If (from_type.base_type = cint) and (to_type.base_type = cchar) Then Begin
-  ol('tfr  d,x ; keep only low byte');
+  ol('tfr  d,x ; ne garder que l''octet faible');
   ol('tfr  b,a');
   ol('clrb');
  End;
-  { Ajoutez des conversions suppl�mentaires si n�cessaires }
+  { Ajouter des conversions supplémentaires si nécessaires }
 End;
 
 { ============================================================================ }
@@ -956,13 +954,13 @@ Begin
      changed := True;
     End;
    End
-   { Optimize PSHS D followed by PULS D }
+   { Optimise PSHS D suivi par PULS D }
    Else If (current^.opcode = 'pshs') and (current^.operand = 'd') Then
    Begin
     If (next_inst^.opcode = 'puls') and
        (next_inst^.operand = 'd') Then
     Begin
-     { Remove both instructions }
+     { Supprimer les deux instructions }
      current^.can_eliminate := True;
      next_inst^.can_eliminate := True;
      changed := True;
@@ -1053,33 +1051,33 @@ Begin
  current := opt_context.inst_list;
  While current <> nil do
  Begin
-  { Remove jumps to next instruction }
+  { Supprimer les sauts vers l'instruction suivante }
   If (current^.opcode = 'lbra') or (current^.opcode = 'bra') Then
   Begin
-   { This would need label analysis to be fully implemented }
-   current^.comment := current^.comment + ' ; jump optimization candidate';
+   { Cela nécessiterait une analyse d'étiquettes pour être entièrement implémenté }
+   current^.comment := current^.comment + ' ; candidat à l''optimisation de saut';
   End;
   current := current^.next;
  End;
 End;
 
-{ Apply all optimizations }
+{ Appliquer toutes les optimisations }
 Procedure optimize_code;
 Begin
  If optimize = OPT_NONE Then Exit;
 
- safe_writeln('; Applying optimizations');
+ safe_writeln('; Application des optimisations');
 
- { Apply optimizations in order }
+ { Appliquer les optimisations dans l'ordre }
  constant_fold_optimize;
  peephole_optimize;
  dead_code_eliminate;
  jump_optimize;
 
- safe_writeln('; Optimization complete');
+ safe_writeln('; Optimisation terminée');
 End;
 
-{ Output optimized instructions }
+{ Sortie des instructions optimisées }
 Procedure output_optimized_instructions;
 Var
  current: POptInst;
@@ -1101,7 +1099,7 @@ Begin
  End;
 End;
 
-{ Optimized code generation wrapper }
+{ Emballage de génération de code optimisé }
 Procedure optimized_ol(s: String);
 Begin
  If optimize > OPT_NONE Then
@@ -1121,24 +1119,24 @@ Begin
  End;
 End;
 
-{ Specialized optimization functions }
+{ Fonctions d'optimisation spécialisées }
 
-{ Optimized constant loading }
+{ Chargement de constante optimisé }
 Procedure opt_load_constant(value: Integer);
 Var
  temp: String;
 Begin
  If optimize > OPT_NONE Then
  Begin
-  { Optimize common constants }
+  { Optimiser les constantes communes }
   Case value of
-   0: add_instruction('clr', 'a', 'optimized zero load');
-   1: add_instruction('lda', '#1', 'optimized one load');
-   -1: add_instruction('lda', '#$FF', 'optimized -1 load');
+   0: add_instruction('clr', 'a', 'chargement zéro optimisé');
+   1: add_instruction('lda', '#1', 'chargement un optimisé');
+   -1: add_instruction('lda', '#$FF', 'chargement -1 optimisé');
   Else
    Begin
     Str(value, temp);
-    add_instruction('ldd', '#' + temp, 'load constant');
+    add_instruction('ldd', '#' + temp, 'charger constante');
    End;
   End;
  End
@@ -1150,16 +1148,16 @@ Begin
  End;
 End;
 
-{ Optimized variable assignment }
+{ Affectation de variable optimisée }
 Procedure opt_store_variable(var_name: String; size: Integer);
 Begin
  If optimize > OPT_NONE Then
  Begin
   Case size of
-   1: add_instruction('stb', var_name, 'store byte');
-   2: add_instruction('std', var_name, 'store word');
+   1: add_instruction('stb', var_name, 'stocker octet');
+   2: add_instruction('std', var_name, 'stocker mot');
   Else
-   add_instruction('std', var_name, 'store default');
+   add_instruction('std', var_name, 'stocker par défaut');
   End;
  End
  Else
@@ -1185,7 +1183,7 @@ Begin
  End;
 End;
 
-{ Optimized arithmetic operations }
+{ Opérations arithmétiques optimisées }
 Procedure opt_add_constant(value: Integer);
 Var
  temp: String;
@@ -1193,13 +1191,13 @@ Begin
  If optimize > OPT_NONE Then
  Begin
   Case value of
-   0: { Do nothing - adding zero };
-   1: add_instruction('inc', 'd', 'optimized +1');
-   -1: add_instruction('dec', 'd', 'optimized -1');
+   0: { Ne rien faire - ajouter zéro };
+   1: add_instruction('inc', 'd', '+1 optimisé');
+   -1: add_instruction('dec', 'd', '-1 optimisé');
   Else
    Begin
     Str(value, temp);
-    add_instruction('addd', '#' + temp, 'add constant');
+    add_instruction('addd', '#' + temp, 'ajouter constante');
    End;
   End;
  End
@@ -1214,34 +1212,34 @@ Begin
  End;
 End;
 
-{ Optimized multiplication }
+{ Multiplication optimisée }
 Procedure opt_multiply(value: Integer);
 Begin
  If optimize > OPT_NONE Then
  Begin
-  { Optimize multiplication by powers of 2 }
+  { Optimiser la multiplication par des puissances de 2 }
   Case value of
-   0: add_instruction('clr', 'd', 'multiply by 0');
-   1: { Do nothing - multiply by 1 };
-   2: add_instruction('lsld', '', 'multiply by 2');
+   0: add_instruction('clr', 'd', 'multiplier par 0');
+   1: { Ne rien faire - multiplier par 1 };
+   2: add_instruction('lsld', '', 'multiplier par 2');
    4: Begin
-       add_instruction('lsld', '', 'multiply by 4 (shift 1)');
-       add_instruction('lsld', '', 'multiply by 4 (shift 2)');
+       add_instruction('lsld', '', 'multiplier par 4 (décalage 1)');
+       add_instruction('lsld', '', 'multiplier par 4 (décalage 2)');
       End;
    8: Begin
-       add_instruction('lsld', '', 'multiply by 8 (shift 1)');
-       add_instruction('lsld', '', 'multiply by 8 (shift 2)');
-       add_instruction('lsld', '', 'multiply by 8 (shift 3)');
+       add_instruction('lsld', '', 'multiplier par 8 (décalage 1)');
+       add_instruction('lsld', '', 'multiplier par 8 (décalage 2)');
+       add_instruction('lsld', '', 'multiplier par 8 (décalage 3)');
       End;
   Else
-   add_instruction('jsr', 'mult16', 'general multiplication');
+   add_instruction('jsr', 'mult16', 'multiplication générale');
   End;
  End
  Else
   ol('jsr  mult16');
 End;
 
-{ Fix IntToStr function - replace with Str }
+{ Corriger la fonction IntToStr - remplacer par Str }
 Function IntToStr(value: Integer): String;
 Var
  temp: String;
@@ -1251,10 +1249,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ FUNCTION MANAGEMENT FUNCTIONS                                                }
+{ FONCTIONS DE GESTION DES FONCTIONS                                          }
 { ============================================================================ }
 
-{ Initialize function management system }
+{ Initialiser le système de gestion des fonctions }
 Procedure init_functions;
 Begin
  function_count := 0;
@@ -1263,7 +1261,7 @@ Begin
  FillChar(function_table, SizeOf(function_table), 0);
 End;
 
-{ Find function by name }
+{ Trouver une fonction par nom }
 Function find_function(func_name: String): Integer;
 Var
  i: Integer;
@@ -1279,14 +1277,14 @@ Begin
  End;
 End;
 
-{ Add new function to table }
+{ Ajouter une nouvelle fonction à la table }
 Function add_function(func_name: String; return_type: Integer): Integer;
 Var
  func_index: Integer;
 Begin
  add_function := -1;
 
- { Check if function already exists }
+ { Vérifier si la fonction existe déjà }
  func_index := find_function(func_name);
  If func_index <> -1 Then
  Begin
@@ -1294,7 +1292,7 @@ Begin
   Exit;
  End;
 
- { Add new function }
+ { Ajouter une nouvelle fonction }
  If function_count >= 100 Then
  Begin
   Case Language of
@@ -1325,7 +1323,7 @@ Begin
  add_function := func_index;
 End;
 
-{ Add parameter to function }
+{ Ajouter un paramètre à la fonction }
 Function add_parameter(func_index: Integer; param_name: String; param_type: Integer): Boolean;
 Begin
  add_parameter := False;
@@ -1351,7 +1349,7 @@ Begin
    init_type_info(type_info);
    type_info.base_type := param_type;
    calculate_type_size(type_info);
-   offset := param_count * 2; { 2 bytes per parameter on 6809 stack }
+   offset := param_count * 2; { 2 octets par paramètre sur la pile 6809 }
   End;
 
   Inc(param_count);
@@ -1359,26 +1357,26 @@ Begin
  End;
 End;
 
-{ Generate function prologue }
+{ Générer le prologue de fonction }
 Procedure generate_function_prologue(func_index: Integer);
 Begin
  If (func_index < 0) or (func_index >= function_count) Then Exit;
 
  With function_table[func_index] do
  Begin
-  safe_writeln('; Function: ' + name);
+  safe_writeln('; Fonction: ' + name);
   safe_writeln(name + ':');
 
-  { Standard 6809 function prologue }
+  { Prologue standard 6809 }
   If not is_main Then
   Begin
-   ol('pshs x,y  ; save frame pointer and return address context');
-   ol('tfr  s,x  ; set up frame pointer');
+   ol('pshs x,y  ; sauvegarder pointeur de cadre et contexte d''adresse de retour');
+   ol('tfr  s,x  ; configurer pointeur de cadre');
 
-   { Allocate space for local variables if needed }
+   { Allouer de l'espace pour les variables locales si nécessaire }
    If local_vars_size > 0 Then
    Begin
-    safe_writeln('; Allocate local variables (size bytes)');
+    safe_writeln('; Allouer variables locales (octets de taille)');
     ot('leas -');
     outdec(local_vars_size);
     outstr(',s');
@@ -1387,65 +1385,65 @@ Begin
   End
   Else
   Begin
-   safe_writeln('; Main function entry point');
+   safe_writeln('; Point d''entrée de la fonction principale');
   End;
  End;
 End;
 
-{ Generate function epilogue }
+{ Générer l'épilogue de fonction }
 Procedure generate_function_epilogue(func_index: Integer);
 Begin
  If (func_index < 0) or (func_index >= function_count) Then Exit;
 
  With function_table[func_index] do
  Begin
-  safe_writeln('; End of function: ' + name);
+  safe_writeln('; Fin de fonction: ' + name);
 
   If not is_main Then
   Begin
-   { Standard 6809 function epilogue }
+   { Épilogue standard 6809 }
    If local_vars_size > 0 Then
    Begin
-    safe_writeln('; Deallocate local variables');
+    safe_writeln('; Désallouer variables locales');
     ot('leas ');
     outdec(local_vars_size);
     outstr(',s');
     nl;
    End;
 
-   ol('puls x,y  ; restore frame pointer');
-   ol('rts       ; return to caller');
+   ol('puls x,y  ; restaurer pointeur de cadre');
+   ol('rts       ; retourner à l''appelant');
   End
   Else
   Begin
-   safe_writeln('; Main function exit');
-   ol('swi       ; software interrupt (program end)');
+   safe_writeln('; Sortie de fonction principale');
+   ol('swi       ; interruption logicielle (fin de programme)');
   End;
  End;
 End;
 
-{ Generate function call }
+{ Générer un appel de fonction }
 Procedure generate_function_call(func_index: Integer; arg_count: Integer);
 Begin
  If (func_index < 0) or (func_index >= function_count) Then Exit;
 
  With function_table[func_index] do
  Begin
-  safe_writeln('; Call function: ' + name);
+  safe_writeln('; Appel de fonction: ' + name);
 
-  { Check parameter count }
+  { Vérifier le nombre de paramètres }
   If arg_count <> param_count Then
-   safe_writeln('; Warning: Argument count mismatch');
+   safe_writeln('; Attention: Nombre d''arguments ne correspond pas');
 
-  { Generate call instruction }
+  { Générer l'instruction d'appel }
   ot('jsr  ');
   outstr(name);
   nl;
 
-  { Clean up stack if parameters were passed }
+  { Nettoyer la pile si des paramètres ont été passés }
   If param_count > 0 Then
   Begin
-   safe_writeln('; Clean up stack parameters');
+   safe_writeln('; Nettoyer les paramètres de pile');
    ot('leas ');
    outdec(param_count * 2);
    outstr(',s');
@@ -1456,14 +1454,14 @@ Begin
  End;
 End;
 
-{ Forward declarations for expression parsing and parsing functions }
+{ Déclarations anticipées pour l'analyse d'expression et les fonctions d'analyse }
 Function expression_bool(var lval: TLVal): Boolean; forward;
 Procedure primary_expression(var lval: TLVal); forward;
 Procedure unary_expression(var lval: TLVal); forward;
 Procedure multiplicative_expression(var lval: TLVal); forward;
 Procedure additive_expression(var lval: TLVal); forward;
 
-{ Enhanced type specifier parsing with full C type support }
+{ Analyse améliorée des spécificateurs de type avec support complet des types C }
 Function parse_type_specifier: Integer;
 Var
  is_unsigned, is_signed: Boolean;
@@ -1471,9 +1469,9 @@ Var
 Begin
  is_unsigned := False;
  is_signed := False;
- base_type := cint; { Default }
+ base_type := cint; { Par défaut }
 
- { Parse type qualifiers and specifiers }
+ { Analyser les qualificateurs et spécificateurs de type }
  Repeat
   If match('unsigned') Then
   Begin
@@ -1487,14 +1485,14 @@ Begin
   End
   Else If match('const') Then
   Begin
-   { const qualifier is handled in parse_declarator }
-   safe_writeln('; const qualifier detected');
+   { Le qualificateur const est géré dans parse_declarator }
+   safe_writeln('; qualificateur const détecté');
    Continue;
   End
   Else If match('volatile') Then
   Begin
-   { volatile qualifier is handled in parse_declarator }
-   safe_writeln('; volatile qualifier detected');
+   { Le qualificateur volatile est géré dans parse_declarator }
+   safe_writeln('; qualificateur volatile détecté');
    Continue;
   End
   Else If match('void') Then
@@ -1539,13 +1537,13 @@ Begin
    Break;
   End
   Else
-   Break; { No more type specifiers }
+   Break; { Plus de spécificateurs de type }
  Until False;
 
  parse_type_specifier := base_type;
 End;
 
-{ Enhanced type specifier parsing with qualifiers }
+{ Analyse améliorée des spécificateurs de type avec qualificateurs }
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer;
 Var
  is_unsigned, is_signed, is_const, is_volatile: Boolean;
@@ -1556,24 +1554,24 @@ Begin
  is_signed := False;
  is_const := False;
  is_volatile := False;
- base_type := -1; { No type initially }
+ base_type := -1; { Aucun type initialement }
  type_found := False;
 
- { Initialize type_info }
+ { Initialiser type_info }
  init_type_info(type_info);
 
- { Parse type qualifiers and specifiers }
+ { Analyser les qualificateurs et spécificateurs de type }
  Repeat
   If match('const') Then
   Begin
    is_const := True;
-   safe_writeln('; const qualifier detected');
+   safe_writeln('; qualificateur const détecté');
    Continue;
   End
   Else If match('volatile') Then
   Begin
    is_volatile := True;
-   safe_writeln('; volatile qualifier detected');
+   safe_writeln('; qualificateur volatile détecté');
    Continue;
   End
   Else If match('unsigned') Then
@@ -1635,10 +1633,10 @@ Begin
    Break;
   End
   Else
-   Break; { No more type specifiers }
+   Break; { Plus de spécificateurs de type }
  Until False;
 
- { If no explicit type but unsigned/signed specified, default to int }
+ { Si aucun type explicite mais unsigned/signed spécifié, int par défaut }
  If not type_found and (is_unsigned or is_signed) Then
  Begin
   If is_unsigned Then base_type := cuint
@@ -1646,14 +1644,14 @@ Begin
   type_found := True;
  End;
 
- { Return -1 if no type found }
+ { Retourner -1 si aucun type trouvé }
  If not type_found Then
  Begin
   parse_type_specifier_with_qualifiers := -1;
   Exit;
  End;
 
- { Set type information }
+ { Définir les informations de type }
  type_info.base_type := base_type;
  type_info.is_unsigned := is_unsigned;
  type_info.is_const := is_const;
@@ -1663,30 +1661,30 @@ Begin
  parse_type_specifier_with_qualifiers := base_type;
 End;
 
-{ Enhanced declarator parsing with type information }
+{ Analyse améliorée du déclarateur avec informations de type }
 Function parse_declarator(var var_name: String; base_type: Integer; var type_info: TTypeInfo): Integer;
 Var
  result_type: Integer;
  array_size: Integer;
 Begin
- { Don't reinitialize type_info as it may already contain qualifiers }
- { Just update the base type if not already set }
+ { Ne pas réinitialiser type_info car il peut déjà contenir des qualificateurs }
+ { Mettre à jour seulement le type de base s'il n'est pas déjà défini }
  If type_info.base_type = 0 Then
   type_info.base_type := base_type;
  result_type := base_type;
 
- { Handle pointer declarations }
+ { Gérer les déclarations de pointeur }
  While match('*') do
  Begin
   Inc(type_info.pointer_level);
   result_type := cpointer;
 
-  { Handle const/volatile after * }
+  { Gérer const/volatile après * }
   If match('const') Then type_info.is_const := True;
   If match('volatile') Then type_info.is_volatile := True;
  End;
 
- { Parse variable name }
+ { Analyser le nom de variable }
  If not symname(var_name) Then
  Begin
   Case Language of
@@ -1698,17 +1696,17 @@ Begin
   Exit;
  End;
 
- { Handle array declarations }
+ { Gérer les déclarations de tableau }
  If match('[') Then
  Begin
   If number(array_size) Then
   Begin
    type_info.array_size := array_size;
-   safe_writeln('; Array size detected');
+   safe_writeln('; Taille de tableau détectée');
   End
   Else
   Begin
-   type_info.array_size := 1; { Unknown size array }
+   type_info.array_size := 1; { Tableau de taille inconnue }
   End;
 
   If not match(']') Then
@@ -1723,13 +1721,13 @@ Begin
   result_type := carray;
  End;
 
- { Calculate final size }
+ { Calculer la taille finale }
  calculate_type_size(type_info);
 
  parse_declarator := result_type;
 End;
 
-{ Parse function declaration/definition }
+{ Analyser la déclaration/définition de fonction }
 Function parse_function_declaration(return_type: Integer): Boolean;
 Var
  func_name, param_name: String;
@@ -1740,7 +1738,7 @@ Var
 Begin
  parse_function_declaration := False;
 
- { Get function name }
+ { Obtenir le nom de fonction }
  If not symname(func_name) Then
  Begin
   Case Language of
@@ -1751,15 +1749,15 @@ Begin
   Exit;
  End;
 
- { SIMPLIFIED: Just output a comment and skip advanced processing }
- safe_writeln('; Function declaration: ' + func_name);
+ { SIMPLIFIÉ: Sortir seulement un commentaire et ignorer le traitement avancé }
+ safe_writeln('; Déclaration de fonction: ' + func_name);
  
- { Skip to end of line to avoid further processing }
+ { Aller à la fin de ligne pour éviter plus de traitement }
  kill;
  parse_function_declaration := True;
 End;
 
-{ Parse function call }
+{ Analyser l'appel de fonction }
 Function parse_function_call(func_name: String; var lval: TLVal): Boolean;
 Var
  func_index: Integer;
@@ -1768,18 +1766,18 @@ Var
 Begin
  parse_function_call := False;
 
- { Find function }
+ { Trouver la fonction }
  func_index := find_function(func_name);
  If func_index = -1 Then
  Begin
-  safe_writeln('; Warning: Undeclared function ' + func_name);
-  { Treat as undeclared function returning int }
+  safe_writeln('; Attention: Fonction non déclarée ' + func_name);
+  { Traiter comme fonction non déclarée retournant int }
   func_index := add_function(func_name, cint);
  End;
 
- safe_writeln('; Function call: ' + func_name);
+ safe_writeln('; Appel de fonction: ' + func_name);
 
- { Expect opening parenthesis }
+ { Attendre parenthèse ouvrante }
  If not match('(') Then
  Begin
   Case Language of
@@ -1792,22 +1790,22 @@ Begin
 
  arg_count := 0;
 
- { Parse arguments }
+ { Analyser les arguments }
  If not match(')') Then
  Begin
   Repeat
-   safe_writeln('; Argument (next)');
+   safe_writeln('; Argument (suivant)');
 
-   { Parse argument expression }
+   { Analyser l'expression d'argument }
    expression_bool(arg_lval);
 
-   { Push argument onto stack }
-   ol('pshs d  ; push argument');
+   { Pousser l'argument sur la pile }
+   ol('pshs d  ; pousser argument');
    Inc(arg_count);
 
   Until not match(',');
 
-  { Expect closing parenthesis }
+  { Attendre parenthèse fermante }
   If not match(')') Then
   Begin
    Case Language of
@@ -1818,10 +1816,10 @@ Begin
   End;
  End;
 
- { Generate function call }
+ { Générer l'appel de fonction }
  generate_function_call(func_index, arg_count);
 
- { Set up return value }
+ { Configurer la valeur de retour }
  FillChar(lval, SizeOf(lval), 0);
  lval.typ := function_table[func_index].return_type;
  lval.constant := False;
@@ -1829,13 +1827,13 @@ Begin
  parse_function_call := True;
 End;
 
-{ Enhanced variable declaration with heap-based symbol table }
+{ Déclaration de variable améliorée avec table de symboles basée sur le tas }
 Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo);
 Var
  sym_ptr: PSymbol;
  type_size: Integer;
 Begin
- { Check if already declared using new heap table }
+ { Vérifier si déjà déclarée en utilisant la nouvelle table de tas }
  If find_symbol(var_name) <> nil Then
  Begin
   Case Language of
@@ -1846,17 +1844,17 @@ Begin
   Exit;
  End;
 
- { Add to heap-based symbol table }
+ { Ajouter à la table de symboles basée sur le tas }
  sym_ptr := add_symbol(var_name, it_variable, var_type, automatic, 0);
  If sym_ptr <> nil Then
  Begin
-  { Store type information directly in the symbol }
+  { Stocker les informations de type directement dans le symbole }
   sym_ptr^.type_info := type_info;
   
-  If use_stdout Then WriteLn('; Declared variable: ', var_name, ' (', get_type_name(type_info), ')')
-                Else safe_writeln('; Declared variable: ' + var_name);
+  If use_stdout Then WriteLn('; Variable déclarée: ', var_name, ' (', get_type_name(type_info), ')')
+                Else safe_writeln('; Variable déclarée: ' + var_name);
 
-  { Generate storage allocation based on type }
+  { Générer l'allocation de stockage basée sur le type }
   If use_stdout Then Write(var_name)
                 Else outstr(var_name);
   type_size := type_info.size;
@@ -1869,15 +1867,15 @@ Begin
   Else
   Begin
    If use_stdout Then WriteLn(': rmb ', type_size)
-                 Else safe_writeln(': rmb (size)');
+                 Else safe_writeln(': rmb (taille)');
   End;
 
-  If use_stdout Then WriteLn('; Size: ', type_size, ' bytes')
-                Else safe_writeln('; Variable size in bytes');
+  If use_stdout Then WriteLn('; Taille: ', type_size, ' octets')
+                Else safe_writeln('; Taille de variable en octets');
  End;
 End;
 
-{ Enhanced identifier lookup with heap-based symbol table }
+{ Recherche d'identificateur améliorée avec table de symboles basée sur le tas }
 Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
 Var
  sym_ptr: PSymbol;
@@ -1885,7 +1883,7 @@ Begin
  lookup_variable := False;
  FillChar(lval, SizeOf(lval), 0);
 
- { TEMPORARY: Simulate finding a const variable for testing }
+ { TEMPORAIRE: Simuler la recherche d'une variable const pour test }
  If var_name = 'consttest' Then
  Begin
   lookup_variable := True;
@@ -1895,10 +1893,10 @@ Begin
   lval.indirect := 0;
   lval.constant := False;
   
-  { Initialize type info as const }
+  { Initialiser les infos de type comme const }
   init_type_info(lval.type_info);
   lval.type_info.base_type := cint;
-  lval.type_info.is_const := True;  { Make it const for testing }
+  lval.type_info.is_const := True;  { Rendre const pour test }
   Exit;
  End;
 
@@ -1907,20 +1905,20 @@ Begin
  If sym_ptr <> nil Then
  Begin
   lookup_variable := True;
-  lval.symbol := Integer(sym_ptr); { Store pointer as integer for compatibility }
+  lval.symbol := Integer(sym_ptr); { Stocker le pointeur comme entier pour compatibilité }
   lval.typ := sym_ptr^.ctype;
   lval.storage := sym_ptr^.storage;
   lval.indirect := 0;
   lval.constant := False;
 
-  { Type information is stored directly in the symbol }
+  { Les informations de type sont stockées directement dans le symbole }
   lval.type_info := sym_ptr^.type_info;
  End
  Else
  Begin
-  { Variable not found - treat as new variable for now }
-  If use_stdout Then WriteLn('; Warning: Undeclared variable ', var_name)
-                Else safe_writeln('; Warning: Undeclared variable ' + var_name);
+  { Variable non trouvée - traiter comme nouvelle variable pour l'instant }
+  If use_stdout Then WriteLn('; Attention: Variable non déclarée ', var_name)
+                Else safe_writeln('; Attention: Variable non déclarée ' + var_name);
   lval.symbol := 0;
   lval.typ := cint;
   lval.constant := False;
@@ -1936,12 +1934,12 @@ Begin
  
  If include_depth <= 0 Then Exit;
  
- { Close current include file safely }
+ { Fermer le fichier d'inclusion actuel en toute sécurité }
  {$I-}
  System.Close(input);
  {$I+}
  
- { Restore previous file state }
+ { Restaurer l'état du fichier précédent }
  Dec(include_depth);
  With include_stack[include_depth] do
  Begin
@@ -1951,7 +1949,7 @@ Begin
   System.Reset(input);
   If IOResult <> 0 Then
   Begin
-   { Error restoring file }
+   { Erreur de restauration du fichier }
    eof := 1;
    Exit;
   End;
@@ -1961,13 +1959,13 @@ Begin
  pop_include_file := True;
 End;
 
-{ File operations }
+{ Opérations sur les fichiers }
 Function readinline: Boolean;
 Begin
  readinline := False;
  
  Repeat
-  { Check if input file is properly initialized }
+  { Vérifier si le fichier d'entrée est correctement initialisé }
   {$I-}
   If not System.Eof(input) Then
   Begin
@@ -1980,7 +1978,7 @@ Begin
    End
    Else
    Begin
-    { Error reading file }
+    { Erreur de lecture de fichier }
     eof := 1;
     readinline := False;
     Exit;
@@ -1989,21 +1987,21 @@ Begin
   {$I+}
   Else
   Begin
-   { Current file is at EOF }
+   { Le fichier actuel est à la fin }
    If include_depth > 0 Then
    Begin
-    { We're in an include file, return to previous file }
+    { Nous sommes dans un fichier d'inclusion, retourner au fichier précédent }
     If not pop_include_file Then
     Begin
      eof := 1;
      readinline := False;
      Exit;
     End;
-    { Continue loop to try reading from restored file }
+    { Continuer la boucle pour essayer de lire depuis le fichier restauré }
    End
    Else
    Begin
-    { Main file is at EOF }
+    { Le fichier principal est à la fin }
     eof := 1;
     readinline := False;
     Exit;
