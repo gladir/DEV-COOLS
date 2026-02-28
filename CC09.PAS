@@ -214,20 +214,20 @@ Type
 
  { Gestion des fichiers d'inclusion }
  TIncludeFile = Record
-  filename: String{$IFNDEF FPC}[80]{$ENDIF};
+  filename: String;
   saved_line: TLine;
   saved_lptr: Integer;
   saved_eof: Integer;
  End;
 
- { Gestion des macros/Define - utilisation de tableaux statiques au lieu du tas }
+ { Gestion des macros/Define - utilisation du tas au lieu de tableaux statiques }
+ PDefine = ^TDefine;
  TDefine = Record
   name: String;
   value: String;
   in_use: Boolean;
+  next: PDefine;        { Pointeur vers le prochain define dans la liste chaînée }
  End;
-
- TDefineTable = Array[0..{$IFDEF FPC}99{$ELSE}49{$ENDIF}] of TDefine; { Max 100 définitions }
 
  { Table de symboles utilisant la mémoire de tas au lieu du segment de données }
  PSymbol = ^TSymbol;
@@ -314,8 +314,8 @@ Var
  include_depth: Integer;
  current_filename: String;
 
- { Gestion Define/Macro - utilisation de table statique }
- define_table: TDefineTable;
+ { Gestion Define/Macro - utilisation du tas (liste chaînée) }
+ define_list: PDefine;  { Tête de la liste chaînée des defines }
  define_count: Integer; { Nombre de définitions actuellement en usage }
 
  { Informations de type étendues - maintenant stockées directement dans les symboles }
@@ -3711,44 +3711,40 @@ End;
 
 { Initialize define system }
 Procedure init_defines;
-Var
- i: Integer;
 Begin
- For i := 0 to 99 do
- Begin
-  define_table[i].name := '';
-  define_table[i].value := '';
-  define_table[i].in_use := False;
- End;
+ define_list := nil;     { Initialiser la liste chaînée comme vide }
  define_count := 0;
  { Don't write to output here as it may not be initialized yet }
 End;
 
-{ Find a #define constant by name }
-Function find_define_index(def_name: String): Integer;
+{ Find a #define constant by name - returns pointer }
+Function find_define(def_name: String): PDefine;
 Var
- i: Integer;
+ current: PDefine;
 Begin
- find_define_index := -1;
- For i := 0 to 99 do
+ find_define := nil;
+ current := define_list;
+ 
+ While current <> nil do
  Begin
-  If define_table[i].in_use and (define_table[i].name = def_name) Then
+  If current^.in_use and (current^.name = def_name) Then
   Begin
-   find_define_index := i;
+   find_define := current;
    Exit;
   End;
+  current := current^.next;
  End;
 End;
 
 { Add a new #define constant }
 Function add_define(def_name, def_value: String): Boolean;
 Var
- i: Integer;
+ new_define: PDefine;
 Begin
  add_define := False;
  
  { Check if already defined }
- If find_define_index(def_name) <> -1 Then
+ If find_define(def_name) <> nil Then
  Begin
   Case Language of
    _English: errrpt('Macro ' + def_name + ' already defined');
@@ -3758,39 +3754,45 @@ Begin
   Exit;
  End;
  
- { Find empty slot }
- For i := 0 to 99 do
+ { Allocate new define in heap }
+ New(new_define);
+ If new_define = nil Then
  Begin
-  If not define_table[i].in_use Then
-  Begin
-   define_table[i].name := def_name;
-   define_table[i].value := def_value;
-   define_table[i].in_use := True;
-   Inc(define_count);
-   If use_stdout Then WriteLn('; Defined macro: ', def_name, ' = ', def_value)
-                 Else safe_writeln('; Defined macro: ' + def_name + ' = ' + def_value);
-   add_define := True;
-   Exit;
+  Case Language of
+   _English: errrpt('Out of memory for #define constants');
+   _Germany: errrpt('Kein Speicher für #define-Konstanten');
+   Else errrpt('Mémoire insuffisante pour les constantes #define');
   End;
+  Exit;
  End;
  
- { Table full }
- Case Language of
-  _English: errrpt('Too many #define constants (max 100)');
-  _Germany: errrpt('Zu viele #define-Konstanten (max 100)');
-  Else errrpt('Trop de constantes #define (max 100)');
+ { Initialize new define }
+ With new_define^ do
+ Begin
+  name := def_name;
+  value := def_value;
+  in_use := True;
+  next := define_list;  { Insert at beginning of list }
  End;
+ 
+ { Update list head }
+ define_list := new_define;
+ Inc(define_count);
+ 
+ If use_stdout Then WriteLn('; Defined macro: ', def_name, ' = ', def_value)
+               Else safe_writeln('; Defined macro: ' + def_name + ' = ' + def_value);
+ add_define := True;
 End;
 
 { Get the value of a #define constant }
 Function get_define_value(def_name: String): String;
 Var
- index: Integer;
+ define_ptr: PDefine;
 Begin
  get_define_value := '';
- index := find_define_index(def_name);
- If index <> -1 Then
-  get_define_value := define_table[index].value;
+ define_ptr := find_define(def_name);
+ If define_ptr <> nil Then
+  get_define_value := define_ptr^.value;
 End;
 
 { Process #define directive }
@@ -3862,7 +3864,7 @@ Var
  result_line: String;
  line_pos, start_pos, end_pos: Integer;
  token: String;
- index: Integer;
+ define_ptr: PDefine;
  changed: Boolean;
 Begin
  result_line := input_line;
@@ -3891,16 +3893,16 @@ Begin
     token := Copy(result_line, start_pos, line_pos - start_pos);
     
     { Check if this token is a defined macro }
-    index := find_define_index(token);
-    If index <> -1 Then
+    define_ptr := find_define(token);
+    If define_ptr <> nil Then
     Begin
      { Replace the token with its value }
      Delete(result_line, start_pos, Length(token));
-     Insert(define_table[index].value, result_line, start_pos);
-     line_pos := start_pos + Length(define_table[index].value);
+     Insert(define_ptr^.value, result_line, start_pos);
+     line_pos := start_pos + Length(define_ptr^.value);
      changed := True;
-     If use_stdout Then WriteLn('; Expanded macro: ', token, ' -> ', define_table[index].value)
-                   Else safe_writeln('; Expanded macro: ' + token + ' -> ' + define_table[index].value);
+     If use_stdout Then WriteLn('; Expanded macro: ', token, ' -> ', define_ptr^.value)
+                   Else safe_writeln('; Expanded macro: ' + token + ' -> ' + define_ptr^.value);
     End;
    End
    Else
@@ -3911,23 +3913,22 @@ Begin
  expand_macros := result_line;
 End;
 
-{ Clear all defines from table }
+{ Clear all defines from heap }
 Procedure free_defines;
 Var
- i: Integer;
+ current, next: PDefine;
 Begin
- For i := 0 to 99 do
+ current := define_list;
+ While current <> nil do
  Begin
-  If define_table[i].in_use Then
-  Begin
-   define_table[i].name := '';
-   define_table[i].value := '';
-   define_table[i].in_use := False;
-  End;
+  next := current^.next;
+  Dispose(current);
+  current := next;
  End;
  
- If use_stdout Then WriteLn('; Cleared ', define_count, ' macro definitions from table')
-               Else safe_writeln('; Cleared macro definitions from table');
+ define_list := nil;
+ If use_stdout Then WriteLn('; Cleared ', define_count, ' macro definitions from heap')
+               Else safe_writeln('; Cleared macro definitions from heap');
  define_count := 0;
 End;
 
