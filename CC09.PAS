@@ -1947,7 +1947,10 @@ Begin
  End;
 
  { Ajouter à la table de symboles basée sur le tas }
- sym_ptr := add_symbol(var_name, it_variable, var_type, automatic, 0);
+ If type_info.array_size > 0 Then
+  sym_ptr := add_symbol(var_name, it_array, var_type, automatic, 0)
+ Else
+  sym_ptr := add_symbol(var_name, it_variable, var_type, automatic, 0);
  If sym_ptr <> nil Then
  Begin
   { Stocker les informations de type directement dans le symbole }
@@ -2456,6 +2459,117 @@ Begin
  define_count := 0;
 End;
 
+{ Analyser l'accès aux tableaux avec indexation }
+Procedure parse_array_access(array_name: String; var lval: TLVal);
+Var
+ index_lval: TLVal;
+ array_symbol: PSymbol;
+ element_size: Integer;
+Begin
+ { Trouver le symbole du tableau }
+ array_symbol := find_symbol(array_name);
+ If array_symbol = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Array not found: ' + array_name);
+   _Germany: errrpt('Array nicht gefunden: ' + array_name);
+   Else errrpt('Tableau non trouvé: ' + array_name);
+  End;
+  Exit;
+ End;
+
+ { Vérifier que c'est bien un tableau }
+ If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
+ Begin
+  Case Language of
+   _English: errrpt('Variable is not an array: ' + array_name);
+   _Germany: errrpt('Variable ist kein Array: ' + array_name);
+   Else errrpt('La variable n''est pas un tableau: ' + array_name);
+  End;
+  Exit;
+ End;
+
+ { Consommer '[' }
+ If not match('[') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected [ for array index');
+   _Germany: errrpt('Erwartete [ für Array-Index');
+   Else errrpt('[ attendu pour l''index du tableau');
+  End;
+  Exit;
+ End;
+
+ safe_writeln('; Calcul de l''index du tableau ' + array_name);
+
+ { Analyser l'expression d'index }
+ additive_expression(index_lval);
+
+ { Consommer ']' }
+ If not match(']') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ] after array index');
+   _Germany: errrpt('Erwartete ] nach Array-Index');
+   Else errrpt('] attendu après l''index du tableau');
+  End;
+  Exit;
+ End;
+
+ { Calculer la taille d'un élément }
+ element_size := get_type_size(array_symbol^.type_info.base_type);
+ 
+ { Générer le code pour calculer l'adresse de l'élément }
+ safe_writeln('; Calculer adresse élément tableau');
+ 
+ { Si la taille d'élément n'est pas 1, multiplier l'index }
+ If element_size > 1 Then
+ Begin
+  safe_writeln('; Multiplier index par taille élément');
+  Case element_size of
+   2: ol('lsld    ; multiplier par 2');
+   4: Begin
+       ol('lsld    ; multiplier par 4 (shift 1)');
+       ol('lsld    ; multiplier par 4 (shift 2)');
+      End;
+   8: Begin
+       ol('lsld    ; multiplier par 8 (shift 1)');
+       ol('lsld    ; multiplier par 8 (shift 2)');
+       ol('lsld    ; multiplier par 8 (shift 3)');
+      End;
+  Else
+   Begin
+    { Multiplication générale }
+    ot('ldb  #');
+    outdec(element_size);
+    nl;
+    ol('jsr  mult16');
+   End;
+  End;
+ End;
+
+ { Ajouter l'adresse de base du tableau }
+ ot('addd #');
+ outstr(array_name);
+ nl;
+
+ { Charger la valeur à l'adresse calculée }
+ ol('tfr  d,x    ; adresse dans X');
+ Case element_size of
+  1: ol('ldb  ,x     ; charger octet');
+  2: ol('ldd  ,x     ; charger mot');
+ Else
+  ol('ldd  ,x     ; charger mot par défaut');
+ End;
+
+ { Configurer lval pour le résultat }
+ lval.typ := array_symbol^.type_info.base_type;
+ lval.indirect := 1; { Valeur chargée indirectement }
+ lval.constant := False;
+ lval.type_info := array_symbol^.type_info;
+ lval.type_info.array_size := 0; { Ce n'est plus un tableau mais un élément }
+End;
+
 { Primary expression parser with function call support }
 Procedure primary_expression(var lval: TLVal);
 Var
@@ -2502,9 +2616,19 @@ Begin
      { This is a variable reference }
      If lookup_variable(id, lval) Then
      Begin
-      ot('ldd  ');
-      outstr(id);
-      nl;
+      { Check if this is an array access }
+      If peek_char = '[' Then
+      Begin
+       { Array indexing }
+       parse_array_access(id, lval);
+      End
+      Else
+      Begin
+       { Simple variable access }
+       ot('ldd  ');
+       outstr(id);
+       nl;
+      End;
      End
      Else
      Begin
@@ -2796,6 +2920,7 @@ End;
 Function parse_statement: Boolean; forward;
 Function parse_compound_statement: Boolean; forward;
 Function parse_assignment_statement: Boolean; forward;
+Procedure parse_array_assignment(array_name: String); forward;
 
 { Control structure parsing }
 Function parse_if_statement: Boolean;
@@ -3237,6 +3362,123 @@ Begin
  safe_writeln('; Expression statement');
 End;
 
+{ Analyser l'assignation aux éléments de tableau }
+Procedure parse_array_assignment(array_name: String);
+Var
+ index_lval, right_lval: TLVal;
+ array_symbol: PSymbol;
+ element_size: Integer;
+Begin
+ { Trouver le symbole du tableau }
+ array_symbol := find_symbol(array_name);
+ If array_symbol = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Array not found: ' + array_name);
+   _Germany: errrpt('Array nicht gefunden: ' + array_name);
+   Else errrpt('Tableau non trouvé: ' + array_name);
+  End;
+  Exit;
+ End;
+
+ { Vérifier que c'est bien un tableau }
+ If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
+ Begin
+  Case Language of
+   _English: errrpt('Variable is not an array: ' + array_name);
+   _Germany: errrpt('Variable ist kein Array: ' + array_name);
+   Else errrpt('La variable n''est pas un tableau: ' + array_name);
+  End;
+  Exit;
+ End;
+
+ safe_writeln('; Assignation à élément de tableau ' + array_name);
+
+ { Analyser l'expression d'index (le '[' a déjà été consommé) }
+ additive_expression(index_lval);
+
+ { Consommer ']' }
+ If not match(']') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ] after array index');
+   _Germany: errrpt('Erwartete ] nach Array-Index');
+   Else errrpt('] attendu après l''index du tableau');
+  End;
+  Exit;
+ End;
+
+ { Consommer '=' }
+ If not match('=') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected = in array assignment');
+   _Germany: errrpt('Erwartete = in Array-Zuweisung');
+   Else errrpt('= attendu dans l''assignation de tableau');
+  End;
+  Exit;
+ End;
+
+ { Sauvegarder l'index sur la pile }
+ ol('pshs d      ; sauvegarder index sur pile');
+
+ { Analyser l'expression du côté droit }
+ expression(right_lval);
+
+ { Sauvegarder la valeur à assigner }
+ ol('pshs d      ; sauvegarder valeur à assigner');
+
+ { Récupérer l'index }
+ ol('puls x      ; récupérer valeur dans X');
+ ol('puls d      ; récupérer index dans D');
+
+ { Calculer la taille d'un élément }
+ element_size := get_type_size(array_symbol^.type_info.base_type);
+ 
+ { Si la taille d'élément n'est pas 1, multiplier l'index }
+ If element_size > 1 Then
+ Begin
+  safe_writeln('; Multiplier index par taille élément');
+  Case element_size of
+   2: ol('lsld    ; multiplier par 2');
+   4: Begin
+       ol('lsld    ; multiplier par 4 (shift 1)');
+       ol('lsld    ; multiplier par 4 (shift 2)');
+      End;
+   8: Begin
+       ol('lsld    ; multiplier par 8 (shift 1)');
+       ol('lsld    ; multiplier par 8 (shift 2)');
+       ol('lsld    ; multiplier par 8 (shift 3)');
+      End;
+  Else
+   Begin
+    { Multiplication générale }
+    ot('ldb  #');
+    outdec(element_size);
+    nl;
+    ol('jsr  mult16');
+   End;
+  End;
+ End;
+
+ { Ajouter l'adresse de base du tableau }
+ ot('addd #');
+ outstr(array_name);
+ nl;
+
+ { Stocker la valeur à l'adresse calculée }
+ ol('tfr  d,y    ; adresse dans Y');
+ ol('tfr  x,d    ; récupérer valeur dans D');
+ Case element_size of
+  1: ol('stb  ,y     ; stocker octet');
+  2: ol('std  ,y     ; stocker mot');
+ Else
+  ol('std  ,y     ; stocker mot par défaut');
+ End;
+
+ safe_writeln('; Assignation à ' + array_name + '[] terminée');
+End;
+
 { Assignment statement parser }
 Function parse_assignment_statement: Boolean;
 Var
@@ -3251,9 +3493,17 @@ Begin
  If symname(var_name) Then
  Begin
   blanks;
-  If match('=') Then
+  
+  { Check if this is an array access }
+  If match('[') Then
   Begin
-   { This is an assignment }
+   { Array element assignment: array[index] = value }
+   parse_array_assignment(var_name);
+   parse_assignment_statement := True;
+  End
+  Else If match('=') Then
+  Begin
+   { This is a simple variable assignment }
    blanks;
    
    { Look up variable }
