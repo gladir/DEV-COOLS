@@ -21,8 +21,8 @@ Const
  symsiz = 14;       { Taille d'une entrée de symbole en octets }
  numglbs = 512;     { Nombre maximum de symboles globaux }
  MASKGLBS = 511;    { Masque pour le hachage de la table de symboles }
- namesize = 9;      { Taille maximale d'un nom de symbole incluant le terminateur }
- namemax = 8;       { Longueur maximale d'un nom de symbole }
+ namesize = 32;     { Taille maximale d'un nom de symbole incluant le terminateur }
+ namemax = 31;      { Longueur maximale d'un nom de symbole }
 
   { Déplacement du format d'entrée de la table des symboles }
  name = 0;          { Offset du nom du symbole dans l'entrée }
