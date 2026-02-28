@@ -129,20 +129,33 @@ Type
 
  { Structure d'instruction d'optimisation }
  TOptInstruction = Record
-  opcode: String[10];     { Mn�monique d'instruction }
-  operand: String[20];    { Op�rande }
+  opcode: String[10];     { Mnémonique d'instruction }
+  operand: String[20];    { Opérande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { Num�ro de ligne source }
-  can_eliminate: Boolean; { Peut �tre supprim� lors de la suppression du code mort }
+  line_number: Integer;   { Numéro de ligne source }
+  can_eliminate: Boolean; { Peut être supprimé lors de la suppression du code mort }
+ End;
+
+ { Pointeur vers instruction d'optimisation }
+ POptInst = ^TOptInst;
+ 
+ { Structure d'instruction d'optimisation dans le tas }
+ TOptInst = Record
+  opcode: String[10];     { Mnémonique d'instruction }
+  operand: String[20];    { Opérande }
+  comment: String[40];    { Commentaire }
+  line_number: Integer;   { Numéro de ligne source }
+  can_eliminate: Boolean; { Peut être supprimé lors de la suppression du code mort }
+  next: POptInst;         { Pointeur vers instruction suivante }
  End;
 
  { Optimisation de contexte }
  TOptContext = Record
-  level: Integer;                                                              { Niveau d'optimisation }
-  flags: Integer;                                                              { Drapeaux d'optimisation }
-  instructions: Array[0..{$IFDEF FPC}999{$ELSE}79{$ENDIF}] of TOptInstruction; { Tampon d'instruction }
-  inst_count: Integer;                                                         { Nombre d'instructions }
-  last_result_reg: String; { Dernier registre utilis� pour le r�sultat }
+  level: Integer;           { Niveau d'optimisation }
+  flags: Integer;           { Drapeaux d'optimisation }
+  inst_list: POptInst;      { Liste chaînée d'instructions dans le tas }
+  inst_count: Integer;      { Nombre d'instructions }
+  last_result_reg: String;  { Dernier registre utilisé pour le résultat }
  End;
 
  { Structure de param�tres de la fonction }
@@ -834,6 +847,55 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
 End;
 
 { ============================================================================ }
+{ FONCTIONS DE GESTION DE LA LISTE D'INSTRUCTIONS D'OPTIMISATION              }
+{ ============================================================================ }
+
+ { Ajouter une instruction à la liste chaînée }
+Function add_opt_instruction(opcode, operand, comment: String): POptInst;
+Var
+ new_inst: POptInst;
+Begin
+ New(new_inst);
+ new_inst^.opcode := opcode;
+ new_inst^.operand := operand;
+ new_inst^.comment := comment;
+ new_inst^.line_number := opt_context.inst_count;
+ new_inst^.can_eliminate := False;
+ new_inst^.next := opt_context.inst_list;
+ opt_context.inst_list := new_inst;
+ Inc(opt_context.inst_count);
+ add_opt_instruction := new_inst;
+End;
+
+ { Obtenir l'instruction à l'index donné (pour compatibilité) }
+Function get_opt_instruction(index: Integer): POptInst;
+Var
+ current: POptInst;
+ i: Integer;
+Begin
+ current := opt_context.inst_list;
+ For i := opt_context.inst_count - 1 downto index + 1 do Begin
+  If current <> nil Then current := current^.next;
+ End;
+ get_opt_instruction := current;
+End;
+
+ { Libérer toute la liste d'instructions }
+Procedure free_opt_instructions;
+Var
+ current, temp: POptInst;
+Begin
+ current := opt_context.inst_list;
+ While current <> nil do Begin
+  temp := current;
+  current := current^.next;
+  Dispose(temp);
+ End;
+ opt_context.inst_list := nil;
+ opt_context.inst_count := 0;
+End;
+
+{ ============================================================================ }
 { FONCTIONS D'OPTIMISATION DU CODE                                             }
 { ============================================================================ }
 
@@ -841,9 +903,10 @@ End;
 Procedure init_optimization;Begin
  FillChar(opt_context, SizeOf(opt_context), 0);
  opt_context.level := optimize;
+ opt_context.inst_list := nil;
  opt_context.inst_count := 0;
  opt_context.last_result_reg := 'd';
-  { D�finir les indicateurs d'optimisation en fonction du niveau }
+  { Définir les indicateurs d'optimisation en fonction du niveau }
  Case optimize of
   OPT_NONE: opt_context.flags := 0;
   OPT_BASIC: opt_context.flags := OPT_PEEPHOLE or OPT_CONSTANT_FOLD;
@@ -854,147 +917,149 @@ End;
 
  { Ajouter des instructions au tampon d'optimisation }
 Procedure add_instruction(opcode,operand,comment:String);Begin
- If opt_context.inst_count < 999 Then Begin
-  With opt_context.instructions[opt_context.inst_count] do Begin
-   opcode := opcode;
-   operand := operand;
-   comment := comment;
-   line_number := opt_context.inst_count;
-   can_eliminate := False;
-  End;
-  Inc(opt_context.inst_count);
- End;
+ add_opt_instruction(opcode, operand, comment);
 End;
 
 { Optimisation du judas - suppression des instructions redondantes }
 Procedure peephole_optimize;
 Var
- i, j: Integer;
+ current, next_inst, temp: POptInst;
  changed: Boolean;
 Begin
  If (opt_context.flags and OPT_PEEPHOLE) = 0 Then Exit;
  Repeat
   changed := False;
-  For i := 0 to opt_context.inst_count - 2 do Begin
-   With opt_context.instructions[i] do Begin
-    { Enl�ve LDD #0 suivi par STD }
-    If(opcode = 'ldd')and(operand = '#0')Then Begin
-     If (opt_context.instructions[i+1].opcode = 'std') Then Begin
-      { Remplace avec CLR }
-      opcode := 'clr';
-      operand := opt_context.instructions[i+1].operand;
-      comment := comment + ' ; optimis� de ldd #0, std';
-       { Marquer la prochaine instruction pour le retrait }
-      opt_context.instructions[i+1].can_eliminate := True;
-      changed := True;
-     End;
-    End
-     { Enl�ve STD suivi par LDD dans le m�me emplacement }
-     Else
-    If (opcode = 'std') Then Begin
-     If (opt_context.instructions[i+1].opcode = 'ldd') and
-        (opt_context.instructions[i+1].operand = operand) Then
-     Begin
-      { Supprime les LDD redondants LDD }
-      opt_context.instructions[i+1].can_eliminate := True;
-      comment := comment + ' ; supprime les LDD redondants ldd';
-      changed := True;
-     End;
-    End
-    { Optimize PSHS D followed by PULS D }
-    Else If (opcode = 'pshs') and (operand = 'd') Then
+  current := opt_context.inst_list;
+  While (current <> nil) and (current^.next <> nil) do Begin
+   next_inst := current^.next;
+   
+   { Enlève LDD #0 suivi par STD }
+   If(current^.opcode = 'ldd')and(current^.operand = '#0')Then Begin
+    If (next_inst^.opcode = 'std') Then Begin
+     { Remplace avec CLR }
+     current^.opcode := 'clr';
+     current^.operand := next_inst^.operand;
+     current^.comment := current^.comment + ' ; optimisé de ldd #0, std';
+     { Marquer la prochaine instruction pour le retrait }
+     next_inst^.can_eliminate := True;
+     changed := True;
+    End;
+   End
+   { Enlève STD suivi par LDD dans le même emplacement }
+   Else If (current^.opcode = 'std') Then Begin
+    If (next_inst^.opcode = 'ldd') and
+       (next_inst^.operand = current^.operand) Then
     Begin
-     If (opt_context.instructions[i+1].opcode = 'puls') and
-        (opt_context.instructions[i+1].operand = 'd') Then
-     Begin
-      { Remove both instructions }
-      can_eliminate := True;
-      opt_context.instructions[i+1].can_eliminate := True;
-      changed := True;
-     End;
+     { Supprime les LDD redondants }
+     next_inst^.can_eliminate := True;
+     current^.comment := current^.comment + ' ; supprime les LDD redondants ldd';
+     changed := True;
+    End;
+   End
+   { Optimize PSHS D followed by PULS D }
+   Else If (current^.opcode = 'pshs') and (current^.operand = 'd') Then
+   Begin
+    If (next_inst^.opcode = 'puls') and
+       (next_inst^.operand = 'd') Then
+    Begin
+     { Remove both instructions }
+     current^.can_eliminate := True;
+     next_inst^.can_eliminate := True;
+     changed := True;
     End;
    End;
+   
+   current := current^.next;
   End;
-   { Enl�ve les instructions marqu�es }
-  j := 0;
-  For i := 0 to opt_context.inst_count - 1 do Begin
-   If not opt_context.instructions[i].can_eliminate Then Begin
-    opt_context.instructions[j] := opt_context.instructions[i];
-    Inc(j);
+  
+  { Enlève les instructions marquées }
+  current := opt_context.inst_list;
+  opt_context.inst_list := nil;
+  opt_context.inst_count := 0;
+  
+  While current <> nil do Begin
+   temp := current;
+   current := current^.next;
+   
+   If not temp^.can_eliminate Then Begin
+    temp^.next := opt_context.inst_list;
+    opt_context.inst_list := temp;
+    Inc(opt_context.inst_count);
+   End Else Begin
+    Dispose(temp);
    End;
   End;
-  opt_context.inst_count := j;
  Until not changed;
 End;
 
  { Optimisation constante du pliage }
 Procedure constant_fold_optimize;
 Var
- i: Integer;
+ current, next1, next2: POptInst;
 Begin
  If (opt_context.flags and OPT_CONSTANT_FOLD) = 0 Then Exit;
- For i := 0 to opt_context.inst_count - 1 do Begin
-  With opt_context.instructions[i] do Begin
-   { Optimise LDD #1 suivi par NEGA/NEGB � LDD #-1 }
-   If (opcode = 'ldd') and (operand = '#1') Then Begin
-    If (i < opt_context.inst_count - 2) and
-       (opt_context.instructions[i+1].opcode = 'nega') and
-       (opt_context.instructions[i+2].opcode = 'negb') Then
-    Begin
-     operand := '#-1';
-     comment := comment + ' ; constante pli�';
-     opt_context.instructions[i+1].can_eliminate := True;
-     opt_context.instructions[i+2].can_eliminate := True;
-    End;
-   End
-   { Optimise la multiplication par la puissance de 2 }
-    Else
-   If (opcode = 'jsr') and (operand = 'mult16') Then
+ current := opt_context.inst_list;
+ While (current <> nil) and (current^.next <> nil) and (current^.next^.next <> nil) do Begin
+  next1 := current^.next;
+  next2 := current^.next^.next;
+  
+  { Optimise LDD #1 suivi par NEGA/NEGB à LDD #-1 }
+  If (current^.opcode = 'ldd') and (current^.operand = '#1') Then Begin
+   If (next1^.opcode = 'nega') and (next2^.opcode = 'negb') Then
    Begin
-    { Il faudrait plus de contexte pour d�terminer s'il s'agit d'une multiplication par une constante }
-    Case Language of
-     _English: comment := comment + ' ; could optimize if power of 2';
-     Else comment:= comment + ' ; pourrait �tre optimis� si c''est une puissance de 2';
-    End;
+    current^.operand := '#-1';
+    current^.comment := current^.comment + ' ; constante pliée';
+    next1^.can_eliminate := True;
+    next2^.can_eliminate := True;
+   End;
+  End
+  { Optimise la multiplication par la puissance de 2 }
+  Else If (current^.opcode = 'jsr') and (current^.operand = 'mult16') Then
+  Begin
+   { Il faudrait plus de contexte pour déterminer s'il s'agit d'une multiplication par une constante }
+   Case Language of
+    _English: current^.comment := current^.comment + ' ; could optimize if power of 2';
+    Else current^.comment:= current^.comment + ' ; pourrait être optimisé si c''est une puissance de 2';
    End;
   End;
+  
+  current := current^.next;
  End;
 End;
 
- { �limination des codes morts }
+ { Élimination des codes morts }
 Procedure dead_code_eliminate;
 Var
- i: Integer;
+ current: POptInst;
 Begin
  If (opt_context.flags and OPT_DEAD_CODE) = 0 Then Exit;
- For i := 0 to opt_context.inst_count - 1 do Begin
-  With opt_context.instructions[i] do Begin
-   { Instructions d'�limination de Mark NOP }
-   If opcode = 'nop' Then Begin
-    can_eliminate := True;
-   End;
+ current := opt_context.inst_list;
+ While current <> nil do Begin
+  { Instructions d'élimination de Mark NOP }
+  If current^.opcode = 'nop' Then Begin
+   current^.can_eliminate := True;
   End;
+  current := current^.next;
  End;
 End;
 
  { Optimisation des sauts - suppression des sauts inutiles }
 Procedure jump_optimize;
 Var
- i: Integer;
+ current: POptInst;
 Begin
  If (opt_context.flags and OPT_JUMP) = 0 Then Exit;
 
- For i := 0 to opt_context.inst_count - 1 do
+ current := opt_context.inst_list;
+ While current <> nil do
  Begin
-  With opt_context.instructions[i] do
+  { Remove jumps to next instruction }
+  If (current^.opcode = 'lbra') or (current^.opcode = 'bra') Then
   Begin
-   { Remove jumps to next instruction }
-   If (opcode = 'lbra') or (opcode = 'bra') Then
-   Begin
-    { This would need label analysis to be fully implemented }
-    comment := comment + ' ; jump optimization candidate';
-   End;
+   { This would need label analysis to be fully implemented }
+   current^.comment := current^.comment + ' ; jump optimization candidate';
   End;
+  current := current^.next;
  End;
 End;
 
@@ -1017,11 +1082,12 @@ End;
 { Output optimized instructions }
 Procedure output_optimized_instructions;
 Var
- i: Integer;
+ current: POptInst;
 Begin
- For i := 0 to opt_context.inst_count - 1 do
+ current := opt_context.inst_list;
+ While current <> nil do
  Begin
-  With opt_context.instructions[i] do
+  With current^ do
   Begin
    If not can_eliminate Then
    Begin
@@ -1031,6 +1097,7 @@ Begin
      safe_writeln(#9 + opcode + ' ' + operand);
    End;
   End;
+  current := current^.next;
  End;
 End;
 
@@ -3177,6 +3244,7 @@ Procedure trailer;Begin
  Begin
   optimize_code;
   output_optimized_instructions;
+  free_opt_instructions; { Libérer la mémoire des instructions d'optimisation }
  End;
 
  If use_stdout Then
