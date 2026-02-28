@@ -13,79 +13,79 @@ Program CC09;
 Uses DOS;
 
 Const
- VERSION = 'Compilateur C V1.1';
- YES = 1;
- NO = 0;
+ VERSION = 'Compilateur C V1.1';  { Version du compilateur C pour 6809 }
+ YES = 1;                         { Valeur booléenne vraie }
+ NO = 0;                          { Valeur booléenne fausse }
 
-  { Param�tres de la table de symbole }
- symsiz = 14;
- numglbs = 512;
- MASKGLBS = 511;
- namesize = 9;
- namemax = 8;
+  { Paramètres de la table de symbole }
+ symsiz = 14;       { Taille d'une entrée de symbole en octets }
+ numglbs = 512;     { Nombre maximum de symboles globaux }
+ MASKGLBS = 511;    { Masque pour le hachage de la table de symboles }
+ namesize = 9;      { Taille maximale d'un nom de symbole incluant le terminateur }
+ namemax = 8;       { Longueur maximale d'un nom de symbole }
 
-  { D�placement du format d'entr�e de la table des symboles }
- name = 0;
- ident = 9;
- ctype = 10;
- storage = 11;
- offset = 12;
- offsize = 2;
+  { Déplacement du format d'entrée de la table des symboles }
+ name = 0;          { Offset du nom du symbole dans l'entrée }
+ ident = 9;         { Offset de l'identificateur de type }
+ ctype = 10;        { Offset du type de données C }
+ storage = 11;      { Offset de la classe de stockage }
+ offset = 12;       { Offset de la valeur/adresse du symbole }
+ offsize = 2;       { Taille en octets du champ offset }
 
   { Types d'identificateurs }
- it_variable = 1;
- it_array = 2;
- it_pointer = 3;
- it_function = 4;
- it_struct_type = 5;
- it_union_type = 6;
- it_typedef_type = 7;
+ it_variable = 1;     { Variable simple }
+ it_array = 2;        { Tableau }
+ it_pointer = 3;      { Pointeur }
+ it_function = 4;     { Fonction }
+ it_struct_type = 5;  { Type structure }
+ it_union_type = 6;   { Type union }
+ it_typedef_type = 7; { Type défini par typedef }
 
-  { Types de donn�es }
- cvoid = 1;
- cchar = 2;
- cuchar = 3;
- cshort = 4;
- cushort = 5;
- cint = 6;
- cuint = 7;
- clong = 8;
- culong = 9;
- cfloat = 10;
- cdouble = 11;
- cpointer = 12;
- carray = 13;
- cstruct = 14;
- cunion = 15;
+  { Types de données }
+ cvoid = 1;      { Type void (aucune valeur) }
+ cchar = 2;      { Caractère signé 8 bits }
+ cuchar = 3;     { Caractère non signé 8 bits }
+ cshort = 4;     { Entier court signé 16 bits }
+ cushort = 5;    { Entier court non signé 16 bits }
+ cint = 6;       { Entier signé 16 bits }
+ cuint = 7;      { Entier non signé 16 bits }
+ clong = 8;      { Entier long signé 32 bits }
+ culong = 9;     { Entier long non signé 32 bits }
+ cfloat = 10;    { Nombre flottant simple précision }
+ cdouble = 11;   { Nombre flottant double précision }
+ cpointer = 12;  { Pointeur vers un type }
+ carray = 13;    { Tableau d'éléments }
+ cstruct = 14;   { Structure de données }
+ cunion = 15;    { Union de données }
 
   { Taille du type en octets }
- sizeof_void = 0;
- sizeof_char = 1;
- sizeof_short = 2;
- sizeof_int = 2;
- sizeof_long = 4;
- sizeof_float = 4;
- sizeof_double = 8;
- sizeof_pointer = 2;
+ sizeof_void = 0;     { Taille du type void (aucune taille) }
+ sizeof_char = 1;     { Taille du type char (1 octet) }
+ sizeof_short = 2;    { Taille du type short (2 octets) }
+ sizeof_int = 2;      { Taille du type int sur 6809 (2 octets) }
+ sizeof_long = 4;     { Taille du type long (4 octets) }
+ sizeof_float = 4;    { Taille du type float (4 octets) }
+ sizeof_double = 8;   { Taille du type double (8 octets) }
+ sizeof_pointer = 2;  { Taille d'un pointeur sur 6809 (2 octets) }
 
   { Classes d'entreposage }
- statik = 1;
- stkloc = 2;
- CEXTERNAL = 3;
- automatic = 4;
+ statik = 1;      { Variable statique (durée de vie du programme) }
+ stkloc = 2;      { Variable locale sur la pile }
+ CEXTERNAL = 3;   { Variable externe définie ailleurs }
+ automatic = 4;   { Variable automatique (locale par défaut) }
 
   { Types d'instructions }
- streturn = 3;
+ streturn = 3;    { Instruction de retour de fonction }
 
-  { Types d''assembleurs }
- AS6809 = 1;
- AS9 = 2;
+  { Types d'assembleurs }
+ AS6809 = 1;      { Assembleur pour processeur Motorola 6809 }
+ AS9 = 2;         { Assembleur AS9 pour 6809 }
 
-  { Niveau d''opimisations }
- OPT_NONE = 0;
- OPT_BASIC = 1;
- OPT_ADVANCED = 2;
- OPT_AGGRESSIVE = 3;
+  { Niveau d'optimisations }
+ OPT_NONE = 0;        { Aucune optimisation }
+ OPT_BASIC = 1;       { Optimisations de base }
+ OPT_ADVANCED = 2;    { Optimisations avancées }
+ OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activées) }
 
  { Option d'optimisation }
  OPT_PEEPHOLE = 1;      { Optimisations pour analyse de code }
@@ -95,9 +95,9 @@ Const
  OPT_REGISTER = 16;     { Allocation de registres }
  OPT_JUMP = 32;         { Optimisations de sauts }
 
- { Ligne d''entr�e }
- linesize = 80;
- linemax = linesize - 1;
+ { Ligne d'entrée }
+ linesize = 80;            { Taille maximale d'une ligne d'entrée }
+ linemax = linesize - 1;   { Index maximum valide dans une ligne }
 
 Type
  { TSymTab no longer needed - using heap-based symbol table }
