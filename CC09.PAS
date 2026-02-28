@@ -348,6 +348,7 @@ Var
 Procedure init_type_info(var type_info: TTypeInfo); forward;
 Function parse_type_specifier: Integer; forward;
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
+Function parse_storage_class_specifier: Integer; forward;
 Function readinline: Boolean; forward;
 
 { Fonctions héritées - plus nécessaires avec la table de symboles basée sur le tas }
@@ -2596,6 +2597,33 @@ Begin
  parse_type_specifier_with_qualifiers := base_type;
 End;
 
+{ Parser les spécificateurs de classe de stockage }
+Function parse_storage_class_specifier: Integer;
+Begin
+ parse_storage_class_specifier := automatic; { Par défaut }
+ 
+ If match('extern') Then
+ Begin
+  safe_writeln('; Spécificateur de classe de stockage: extern');
+  parse_storage_class_specifier := CEXTERNAL;
+ End
+ Else If match('static') Then
+ Begin
+  safe_writeln('; Spécificateur de classe de stockage: static');
+  parse_storage_class_specifier := statik;
+ End
+ Else If match('auto') Then
+ Begin
+  safe_writeln('; Spécificateur de classe de stockage: auto');
+  parse_storage_class_specifier := automatic;
+ End
+ Else If match('register') Then
+ Begin
+  safe_writeln('; Spécificateur de classe de stockage: register (traité comme auto)');
+  parse_storage_class_specifier := automatic;
+ End;
+End;
+
 { Analyse améliorée du déclarateur avec informations de type }
 Function parse_declarator(var var_name: String; base_type: Integer; var type_info: TTypeInfo): Integer;
 Var
@@ -2840,7 +2868,7 @@ Begin
 End;
 
 { Déclaration de variable améliorée avec table de symboles basée sur le tas }
-Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo);
+Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo; storage_class: Integer);
 Var
  sym_ptr: PSymbol;
  type_size: Integer;
@@ -2858,9 +2886,9 @@ Begin
 
  { Ajouter à la table de symboles basée sur le tas }
  If type_info.array_size > 0 Then
-  sym_ptr := add_symbol(var_name, it_array, var_type, automatic, 0)
+  sym_ptr := add_symbol(var_name, it_array, var_type, storage_class, 0)
  Else
-  sym_ptr := add_symbol(var_name, it_variable, var_type, automatic, 0);
+  sym_ptr := add_symbol(var_name, it_variable, var_type, storage_class, 0);
  If sym_ptr <> nil Then
  Begin
   { Stocker les informations de type directement dans le symbole }
@@ -2869,24 +2897,51 @@ Begin
   If use_stdout Then WriteLn('; Variable déclarée: ', var_name, ' (', get_type_name(type_info), ')')
                 Else safe_writeln('; Variable déclarée: ' + var_name);
 
-  { Générer l'allocation de stockage basée sur le type }
-  If use_stdout Then Write(var_name)
-                Else outstr(var_name);
-  type_size := type_info.size;
-
-  If type_size = 1 Then
-  Begin
-   If use_stdout Then WriteLn(': rmb 1')
-                 Else safe_writeln(': rmb 1');
-  End
-  Else
-  Begin
-   If use_stdout Then WriteLn(': rmb ', type_size)
-                 Else safe_writeln(': rmb (taille)');
+  { Générer l'allocation de stockage basée sur la classe de stockage }
+  Case storage_class of
+   CEXTERNAL:
+   Begin
+    { Variable externe - ne pas générer d'allocation, juste référencer }
+    safe_writeln('; Variable externe: ' + var_name + ' (définie ailleurs)');
+   End;
+   statik:
+   Begin
+    { Variable statique - générer allocation dans section données }
+    If use_stdout Then Write(var_name)
+                  Else outstr(var_name);
+    type_size := type_info.size;
+    If type_size = 1 Then
+    Begin
+     If use_stdout Then WriteLn(': rmb 1')
+                   Else safe_writeln(': rmb 1');
+    End
+    Else
+    Begin
+     If use_stdout Then WriteLn(': rmb ', type_size)
+                   Else safe_writeln(': rmb (taille)');
+    End;
+    safe_writeln('; Variable statique: ' + var_name);
+   End;
+   Else
+   Begin
+    { Variable automatique - allocation normale }
+    If use_stdout Then Write(var_name)
+                  Else outstr(var_name);
+    type_size := type_info.size;
+    If type_size = 1 Then
+    Begin
+     If use_stdout Then WriteLn(': rmb 1')
+                   Else safe_writeln(': rmb 1');
+    End
+    Else
+    Begin
+     If use_stdout Then WriteLn(': rmb ', type_size)
+                   Else safe_writeln(': rmb (taille)');
+    End;
+    If use_stdout Then WriteLn('; Taille: ', type_size, ' octets')
+                  Else safe_writeln('; Taille de variable en octets');
+   End;
   End;
-
-  If use_stdout Then WriteLn('; Taille: ', type_size, ' octets')
-                Else safe_writeln('; Taille de variable en octets');
  End;
 End;
 
@@ -3946,13 +4001,16 @@ End;
 { Enhanced declaration parsing with full type support }
 Function parse_declaration: Boolean;
 Var
- base_type, var_type: Integer;
+ base_type, var_type, storage_class: Integer;
  var_name: String;
  lval: TLVal;
  type_info: TTypeInfo;
  save_lptr: Integer;
 Begin
  parse_declaration := False;
+
+ { Parse storage class specifier first }
+ storage_class := parse_storage_class_specifier;
 
  { Parse type specifier with qualifiers }
  base_type := parse_type_specifier_with_qualifiers(type_info);
@@ -3975,8 +4033,8 @@ Begin
   Exit;
  End;
 
- { This is a variable declaration }
- declare_variable(var_name, var_type, type_info);
+ { This is a variable declaration - pass storage class }
+ declare_variable(var_name, var_type, type_info, storage_class);
  parse_declaration := True;
 
  { Check for initialization }
@@ -4030,7 +4088,7 @@ Begin
   var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
 
-  declare_variable(var_name, var_type, type_info);
+  declare_variable(var_name, var_type, type_info, storage_class);
 
   { Check for initialization }
   If match('=') Then
