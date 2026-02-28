@@ -54,6 +54,12 @@ Const
  SYM_LESSEQ = 28;     { <= }
  SYM_GREATEREQ = 29;  { >= }
 
+ { Opérateurs arithmétiques }
+ SYM_PLUS = 30;       { + }
+ SYM_MINUS = 31;      { - }
+ SYM_MULTIPLY = 32;   { * }
+ SYM_DIVIDE = 33;     { / }
+
  { Types de données Pascal }
  TYPE_INTEGER = 1;
  TYPE_BYTE = 2;
@@ -387,6 +393,31 @@ Begin
   current_symbol := SYM_EQUAL;
   NextChar;
  End
+ { Opérateurs arithmétiques }
+ Else If current_char = '+' Then
+ Begin
+  current_token := '+';
+  current_symbol := SYM_PLUS;
+  NextChar;
+ End
+ Else If current_char = '-' Then
+ Begin
+  current_token := '-';
+  current_symbol := SYM_MINUS;
+  NextChar;
+ End
+ Else If current_char = '*' Then
+ Begin
+  current_token := '*';
+  current_symbol := SYM_MULTIPLY;
+  NextChar;
+ End
+ Else If current_char = '/' Then
+ Begin
+  current_token := '/';
+  current_symbol := SYM_DIVIDE;
+  NextChar;
+ End
  { Identifier ou mot-clé }
  Else If ((current_char >= 'A') and (current_char <= 'Z')) or
     ((current_char >= 'a') and (current_char <= 'z')) or
@@ -685,6 +716,71 @@ Begin
  Begin
   NextToken; { Symbole reconnu, continuer }
   left_operand := 'ax';
+ End;
+ 
+ { Vérifier s'il y a une opération arithmétique avant la comparaison }
+ If (current_symbol = SYM_PLUS) or (current_symbol = SYM_MINUS) or
+    (current_symbol = SYM_MULTIPLY) or (current_symbol = SYM_DIVIDE) Then
+ Begin
+  comparison_op := current_symbol;
+  NextToken; { Consommer l'opérateur arithmétique }
+  
+  { Parser le deuxième opérande }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   temp_token := current_token;
+   
+   { Nombre littéral }
+   If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
+   Begin
+    { Générer l'opération arithmétique }
+    Case comparison_op of
+     SYM_PLUS: 
+      Begin
+       If left_operand = 'ax' Then
+        Emit('add ax, ' + temp_token)
+       Else
+        Emit('add al, ' + temp_token);
+      End;
+     SYM_MINUS:
+      Begin
+       If left_operand = 'ax' Then
+        Emit('sub ax, ' + temp_token)
+       Else
+        Emit('sub al, ' + temp_token);
+      End;
+     SYM_MULTIPLY:
+      Begin
+       If left_operand = 'ax' Then
+       Begin
+        Emit('mov bx, ' + temp_token);
+        Emit('mul bx');
+       End
+       Else
+       Begin
+        Emit('mov bl, ' + temp_token);
+        Emit('mul bl');
+       End;
+      End;
+     SYM_DIVIDE:
+      Begin
+       If left_operand = 'ax' Then
+       Begin
+        Emit('mov bx, ' + temp_token);
+        Emit('div bx');
+       End
+       Else
+       Begin
+        Emit('mov bl, ' + temp_token);
+        Emit('div bl');
+       End;
+      End;
+    End;
+    NextToken;
+   End;
+   
+   left_operand := 'ax'; { Le résultat est toujours dans AX }
+  End;
  End;
  
  { Vérifier s'il y a un opérateur de comparaison }
@@ -1179,6 +1275,40 @@ Begin
   EmitLabel(else_label);
 End;
 
+{ Parser une instruction REPEAT }
+Procedure ParseRepeat;
+Var
+ start_label: String;
+Begin
+ NextToken; { Consommer REPEAT }
+
+ start_label := NewLabel;
+ EmitLabel(start_label);
+
+ { Parser le corps de la boucle }
+ While not Accept(SYM_UNTIL) and (current_char <> #0) do
+ Begin
+  ParseStatement;
+  
+  { Gérer les point-virgules optionnels }
+  If current_token = ';' Then
+   NextToken;
+ End;
+
+ { Traiter UNTIL }
+ If Accept(SYM_UNTIL) Then
+ Begin
+  NextToken; { Consommer UNTIL }
+  ParseExpression;
+  
+  { Générer le code de test - condition inversée par rapport à WHILE }
+  Emit('cmp ax, 0');
+  Emit('je ' + start_label); { Sauter au début si condition FAUSSE }
+ End
+ Else
+  Error('Attendu UNTIL après REPEAT');
+End;
+
 { Parser une instruction WHILE }
 Procedure ParseWhile;
 Var
@@ -1250,6 +1380,9 @@ Begin
 
   SYM_WHILE:
    ParseWhile;
+
+  SYM_REPEAT:
+   ParseRepeat;
 
   SYM_WRITE:
    ParseWrite;
