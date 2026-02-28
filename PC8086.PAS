@@ -9,6 +9,8 @@ Program PC8086;
 
 {$A-}
 
+Uses DOS;
+
 { ============================================================================ }
 { CONSTANTES ET TYPES                                                          }
 { ============================================================================ }
@@ -513,9 +515,46 @@ End;
 
 { Générer l'en-tête du programme }
 Procedure GenerateHeader;
+Var
+ year, month, day, dayofweek: Word;
+ hour, minute, second, sec100: Word;
+ date_str, time_str, temp: String;
 Begin
  EmitComment('Compilé par PC8086 - Compilateur Pascal vers 8086');
- EmitComment('Date: 2026-02-28');
+ 
+ { Obtenir la date système }
+ GetDate(year, month, day, dayofweek);
+ 
+ { Construire la chaîne de date manuellement }
+ Str(year, temp);
+ date_str := temp + '-';
+ 
+ If month < 10 Then date_str := date_str + '0';
+ Str(month, temp);
+ date_str := date_str + temp + '-';
+ 
+ If day < 10 Then date_str := date_str + '0';
+ Str(day, temp);
+ date_str := date_str + temp;
+ 
+ { Obtenir l'heure système }
+ GetTime(hour, minute, second, sec100);
+ 
+ { Construire la chaîne d'heure }
+ time_str := '';
+ If hour < 10 Then time_str := time_str + '0';
+ Str(hour, temp);
+ time_str := time_str + temp + ':';
+ 
+ If minute < 10 Then time_str := time_str + '0';
+ Str(minute, temp);
+ time_str := time_str + temp + ':';
+ 
+ If second < 10 Then time_str := time_str + '0';
+ Str(second, temp);
+ time_str := time_str + temp;
+ 
+ EmitComment('Date: ' + date_str + ' ' + time_str);
  EmitLine('');
  EmitLine('.MODEL SMALL');
  EmitLine('.STACK 100h');

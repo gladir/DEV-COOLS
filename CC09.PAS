@@ -6304,14 +6304,12 @@ Begin
  While eof = 0 do Begin
   {$I-}
   If not readinline Then Break;
-  If IOResult <> 0 Then
-  Begin
+  If IOResult <> 0 Then Begin
    eof := 1;
    Break;
   End;
   {$I+}
-
-  { Simple comment processing }
+   { Traitement d'un simple commentaire }
   If match('/*') Then
   Begin
    While (not match('*/')) and (eof = 0) do
