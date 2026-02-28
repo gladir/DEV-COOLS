@@ -19,7 +19,7 @@ Const
 
   { Param�tres de la table de symbole }
  symsiz = 14;
- symtbsz = {$IFDEF FPC}8008{$ELSE}500{$ENDIF};
+ symtbsz = {$IFDEF FPC}8008{$ELSE}250{$ENDIF};
  numglbs = 512;
  MASKGLBS = 511;
  namesize = 9;
@@ -141,7 +141,7 @@ Type
  TOptContext = Record
   level: Integer;                                                              { Niveau d'optimisation }
   flags: Integer;                                                              { Drapeaux d'optimisation }
-  instructions: Array[0..{$IFDEF FPC}999{$ELSE}99{$ENDIF}] of TOptInstruction; { Tampon d'instruction }
+  instructions: Array[0..{$IFDEF FPC}999{$ELSE}79{$ENDIF}] of TOptInstruction; { Tampon d'instruction }
   inst_count: Integer;                                                         { Nombre d'instructions }
   last_result_reg: String; { Dernier registre utilis� pour le r�sultat }
  End;
@@ -177,14 +177,23 @@ Type
 
  { Include file management }
  TIncludeFile = Record
-  filename: String;
+  filename: String{$IFNDEF FPC}[80]{$ENDIF};
   saved_line: TLine;
   saved_lptr: Integer;
   saved_eof: Integer;
  End;
 
+ { Macro/Define management - using static arrays instead of heap }
+ TDefine = Record
+  name: String;
+  value: String;
+  in_use: Boolean;
+ End;
+
+ TDefineTable = Array[0..{$IFDEF FPC}99{$ELSE}49{$ENDIF}] of TDefine; { Max 100 defines }
+
   { Table de fonction }
- TFunctionTable = Array[0..99] of TFunction;
+ TFunctionTable = Array[0..{$IFDEF FPC}99{$ELSE}50{$ENDIF}] of TFunction;
 
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
@@ -210,6 +219,10 @@ Var
  include_stack: Array[0..9] of TIncludeFile;  { Max 10 levels of inclusion }
  include_depth: Integer;
  current_filename: String;
+
+ { Define/Macro management - using static table }
+ define_table: TDefineTable;
+ define_count: Integer; { Number of defines currently in use }
 
  { Extended type information table }
  type_info_table: Array[1..SYMTBSZ] of TTypeInfo;
@@ -2052,6 +2065,232 @@ Begin
   process_include_directive := True;
 End;
 
+{ ============================================================================ }
+{ DEFINE/MACRO MANAGEMENT FUNCTIONS                                           }
+{ ============================================================================ }
+
+{ Initialize define system }
+Procedure init_defines;
+Var
+ i: Integer;
+Begin
+ For i := 0 to 99 do
+ Begin
+  define_table[i].name := '';
+  define_table[i].value := '';
+  define_table[i].in_use := False;
+ End;
+ define_count := 0;
+ { Don't write to output here as it may not be initialized yet }
+End;
+
+{ Find a #define constant by name }
+Function find_define_index(def_name: String): Integer;
+Var
+ i: Integer;
+Begin
+ find_define_index := -1;
+ For i := 0 to 99 do
+ Begin
+  If define_table[i].in_use and (define_table[i].name = def_name) Then
+  Begin
+   find_define_index := i;
+   Exit;
+  End;
+ End;
+End;
+
+{ Add a new #define constant }
+Function add_define(def_name, def_value: String): Boolean;
+Var
+ i: Integer;
+Begin
+ add_define := False;
+ 
+ { Check if already defined }
+ If find_define_index(def_name) <> -1 Then
+ Begin
+  Case Language of
+   _English: errrpt('Macro ' + def_name + ' already defined');
+   _Germany: errrpt('Makro ' + def_name + ' bereits definiert');
+   Else errrpt('Macro ' + def_name + ' déjà défini');
+  End;
+  Exit;
+ End;
+ 
+ { Find empty slot }
+ For i := 0 to 99 do
+ Begin
+  If not define_table[i].in_use Then
+  Begin
+   define_table[i].name := def_name;
+   define_table[i].value := def_value;
+   define_table[i].in_use := True;
+   Inc(define_count);
+   If use_stdout Then WriteLn('; Defined macro: ', def_name, ' = ', def_value)
+                 Else WriteLn(output, '; Defined macro: ', def_name, ' = ', def_value);
+   add_define := True;
+   Exit;
+  End;
+ End;
+ 
+ { Table full }
+ Case Language of
+  _English: errrpt('Too many #define constants (max 100)');
+  _Germany: errrpt('Zu viele #define-Konstanten (max 100)');
+  Else errrpt('Trop de constantes #define (max 100)');
+ End;
+End;
+
+{ Get the value of a #define constant }
+Function get_define_value(def_name: String): String;
+Var
+ index: Integer;
+Begin
+ get_define_value := '';
+ index := find_define_index(def_name);
+ If index <> -1 Then
+  get_define_value := define_table[index].value;
+End;
+
+{ Process #define directive }
+Function process_define_directive(define_line: String): Boolean;
+Var
+ line_pos, start_pos, end_pos: Integer;
+ def_name, def_value: String;
+Begin
+ process_define_directive := False;
+ def_name := '';
+ def_value := '';
+ 
+ { Skip #define and whitespace }
+ line_pos := Pos('#define', define_line);
+ If line_pos <= 0 Then Exit;
+ 
+ line_pos := line_pos + 7; { Length of '#define' }
+ 
+ { Skip whitespace }
+ While (line_pos <= Length(define_line)) and 
+       ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
+  Inc(line_pos);
+ 
+ { Extract macro name }
+ start_pos := line_pos;
+ While (line_pos <= Length(define_line)) and 
+       (((define_line[line_pos] >= 'A') and (define_line[line_pos] <= 'Z')) or
+        ((define_line[line_pos] >= 'a') and (define_line[line_pos] <= 'z')) or
+        ((define_line[line_pos] >= '0') and (define_line[line_pos] <= '9')) or
+        (define_line[line_pos] = '_')) do
+  Inc(line_pos);
+ 
+ If line_pos > start_pos Then
+  def_name := Copy(define_line, start_pos, line_pos - start_pos)
+ Else
+ Begin
+  Case Language of
+   _English: errrpt('Invalid #define directive: missing name');
+   _Germany: errrpt('Ungültige #define-Direktive: Name fehlt');
+   Else errrpt('Directive #define invalide: nom manquant');
+  End;
+  Exit;
+ End;
+ 
+ { Skip whitespace before value }
+ While (line_pos <= Length(define_line)) and 
+       ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
+  Inc(line_pos);
+ 
+ { Extract value (rest of line) }
+ If line_pos <= Length(define_line) Then
+  def_value := Copy(define_line, line_pos, Length(define_line) - line_pos + 1)
+ Else
+  def_value := '1'; { Default value for macros without explicit value }
+ 
+ { Remove trailing whitespace from value }
+ While (Length(def_value) > 0) and 
+       ((def_value[Length(def_value)] = ' ') or (def_value[Length(def_value)] = #9)) do
+  Delete(def_value, Length(def_value), 1);
+ 
+ { Add the define }
+ If add_define(def_name, def_value) Then
+  process_define_directive := True;
+End;
+
+{ Expand macros in a line of code }
+Function expand_macros(input_line: String): String;
+Var
+ result_line: String;
+ line_pos, start_pos, end_pos: Integer;
+ token: String;
+ index: Integer;
+ changed: Boolean;
+Begin
+ result_line := input_line;
+ 
+ { Multiple passes to handle nested expansions }
+ Repeat
+  changed := False;
+  line_pos := 1;
+  
+  While line_pos <= Length(result_line) do
+  Begin
+   { Check if we're at the start of an identifier }
+   If ((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
+      ((result_line[line_pos] >= 'a') and (result_line[line_pos] <= 'z')) or
+      (result_line[line_pos] = '_') Then
+   Begin
+    { Extract identifier }
+    start_pos := line_pos;
+    While (line_pos <= Length(result_line)) and 
+          (((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
+           ((result_line[line_pos] >= 'a') and (result_line[line_pos] <= 'z')) or
+           ((result_line[line_pos] >= '0') and (result_line[line_pos] <= '9')) or
+           (result_line[line_pos] = '_')) do
+     Inc(line_pos);
+    
+    token := Copy(result_line, start_pos, line_pos - start_pos);
+    
+    { Check if this token is a defined macro }
+    index := find_define_index(token);
+    If index <> -1 Then
+    Begin
+     { Replace the token with its value }
+     Delete(result_line, start_pos, Length(token));
+     Insert(define_table[index].value, result_line, start_pos);
+     line_pos := start_pos + Length(define_table[index].value);
+     changed := True;
+     If use_stdout Then WriteLn('; Expanded macro: ', token, ' -> ', define_table[index].value)
+                   Else WriteLn(output, '; Expanded macro: ', token, ' -> ', define_table[index].value);
+    End;
+   End
+   Else
+    Inc(line_pos);
+  End;
+ Until not changed;
+ 
+ expand_macros := result_line;
+End;
+
+{ Clear all defines from table }
+Procedure free_defines;
+Var
+ i: Integer;
+Begin
+ For i := 0 to 99 do
+ Begin
+  If define_table[i].in_use Then
+  Begin
+   define_table[i].name := '';
+   define_table[i].value := '';
+   define_table[i].in_use := False;
+  End;
+ End;
+ 
+ If use_stdout Then WriteLn('; Cleared ', define_count, ' macro definitions from table')
+               Else WriteLn(output, '; Cleared ', define_count, ' macro definitions from table');
+ define_count := 0;
+End;
+
 { Primary expression parser with function call support }
 Procedure primary_expression(var lval: TLVal);
 Var
@@ -2970,9 +3209,19 @@ Var
  right_lval: TLVal;
  sname: String;
  save_lptr: Integer;
+ expanded_line: String;
 Begin
  While eof = 0 do Begin
   If not readinline Then Break;
+
+  { Apply macro expansion to the line before processing }
+  expanded_line := expand_macros(line);
+  If expanded_line <> line Then
+  Begin
+   line := expanded_line;
+   If use_stdout Then WriteLn('; Line after macro expansion: ', line)
+                 Else WriteLn(output, '; Line after macro expansion: ', line);
+  End;
 
   { Simple comment processing }
   If match('/*') Then
@@ -2990,6 +3239,17 @@ Begin
     { Process #include directive }
     If process_include_directive(line) Then
      Continue  { Continue with included file }
+    Else
+    Begin
+     { Error already reported, skip this line }
+     Continue;
+    End;
+   End
+   Else If match('define') Then
+   Begin
+    { Process #define directive }
+    If process_define_directive(line) Then
+     Continue  { Continue with next line }
     Else
     Begin
      { Error already reported, skip this line }
@@ -3179,6 +3439,8 @@ BEGIN
  { Initialize include file system }
  include_depth := 0;
  current_filename := '';
+ { Initialize define system }
+ init_defines;
   { Compiler main body }
  nxtlab := 0;
  kill;
@@ -3238,6 +3500,7 @@ BEGIN
  header;        { Code d''introduction }
  parse;         { Analyse toutes les entr�e }
  trailer;       { Code de suivi }
+ free_defines;  { Free define memory from heap }
  closeout;      { Fermer la sortie }
  errrptsummary; { R�sumer les erreurs }
 END.
