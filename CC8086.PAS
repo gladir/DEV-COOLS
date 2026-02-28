@@ -4966,9 +4966,9 @@ Begin
   '-': Begin
     next_char;
     unary_expression(lval);
-    ol('nega');
-    ol('negb');
-    ol('sbca #0');
+    ol('NEG  AL');
+    ol('NEG  AH');
+    ol('SBB  AH, 0');
    End;
 
   '!': Begin
@@ -4991,8 +4991,8 @@ Begin
   '~': Begin
     next_char;
     unary_expression(lval);
-    ol('coma');
-    ol('comb');
+    ol('NOT  AL');
+    ol('NOT  AH');
    End;
 
   '*': Begin
@@ -5038,14 +5038,14 @@ Begin
  Begin
   ptr_name := get_symbol_name(lval.symbol);
   safe_writeln('; Déréférencement de: ' + ptr_name);
-  ol('ldx  ' + ptr_name);  { Charger l'adresse stockée dans le pointeur }
-  ol('ldd  ,x');           { Charger la valeur pointée }
+  ol('MOV  BX, ' + ptr_name);  { Charger l'adresse stockée dans le pointeur }
+  ol('MOV  AX, [BX]');           { Charger la valeur pointée }
  End
  Else
  Begin
   safe_writeln('; Déréférencement indirect');
-  ol('ldx  ,s++');         { Récupérer l'adresse depuis la pile }
-  ol('ldd  ,x');           { Charger la valeur pointée }
+  ol('POP  BX');         { Récupérer l'adresse depuis la pile }
+  ol('MOV  AX, [BX]');           { Charger la valeur pointée }
  End;
 
  { Vérifier que c'est bien un pointeur }
@@ -5066,14 +5066,14 @@ Begin
  Begin
   ptr_name := get_symbol_name(lval.symbol);
   safe_writeln('; Déréférencement de: ' + ptr_name);
-  ol('ldx  ' + ptr_name);  { Charger l'adresse stockée dans le pointeur }
-  ol('ldd  ,x');           { Charger la valeur pointée }
+  ol('MOV  BX, ' + ptr_name);  { Charger l'adresse stockée dans le pointeur }
+  ol('MOV  AX, [BX]');           { Charger la valeur pointée }
  End
  Else
  Begin
   safe_writeln('; Déréférencement indirect');
-  ol('ldx  ,s++');         { Récupérer l'adresse depuis la pile }
-  ol('ldd  ,x');           { Charger la valeur pointée }
+  ol('POP  BX');         { Récupérer l'adresse depuis la pile }
+  ol('MOV  AX, [BX]');           { Charger la valeur pointée }
  End;
 
  { Décrémenter le niveau de pointeur }
@@ -6354,7 +6354,7 @@ Begin
  If not begin_switch_statement(switch_expr_type) Then Exit;
 
  { Sauvegarder la valeur de l'expression pour comparaison }
- ol('std  switch_temp ; sauver valeur switch');
+ ol('MOV  switch_temp, AX ; sauver valeur switch');
 
  { Générer les comparaisons }
  generate_switch_comparisons;
@@ -6671,7 +6671,7 @@ Begin
  ol('tfr  x,d    ; récupérer valeur dans D');
  Case element_size of
   1: ol('stb  ,y     ; stocker octet');
-  2: ol('std  ,y     ; stocker mot');
+  2: ol('MOV  [BP], AX     ; stocker mot');
  Else
   ol('std  ,y     ; stocker mot par défaut');
  End;

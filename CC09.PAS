@@ -1071,8 +1071,7 @@ Begin
  find_symbol := nil;
  current := symbol_list;
  While current <> nil do Begin
-  If current^.name = sname Then
-  Begin
+  If current^.name = sname Then Begin
    find_symbol := current;
    Exit;
   End;
@@ -1080,31 +1079,25 @@ Begin
  End;
 End;
 
-{ Ajouter un symbole Ã  la table de symboles basÃ©e sur le tas }
+{ Ajouter un symbole … la table de symboles bas‚e sur la m‚moire de tas }
 Function add_symbol(sname: String; id_type: Integer; sym_type: Integer; stor_class: Integer; offset_val: Integer): PSymbol;
 Var
  new_symbol: PSymbol;
 Begin
  add_symbol := nil;
-
- { VÃ©rifier si le symbole existe dÃ©jÃ  }
- If find_symbol(sname) <> nil Then
- Begin
-  { Le symbole existe dÃ©jÃ  }
+  { V‚rifier si le symbole existe d‚j… }
+ If find_symbol(sname) <> nil Then Begin
+  { Le symbole existe d‚j… }
   Exit;
  End;
-
- { Allouer de la mÃ©moire sur le tas }
+  { Allouer de la m‚moire sur la m‚moire de tas }
  New(new_symbol);
- If new_symbol = nil Then
- Begin
-  { MÃ©moire insuffisante }
+ If new_symbol = nil Then Begin
+  { M‚moire insuffisante }
   Exit;
  End;
-
- { Initialiser le nouveau symbole }
- With new_symbol^ do
- Begin
+  { Initialiser le nouveau symbole }
+ With new_symbol^ do Begin
   name := sname;
   ident := id_type;
   ctype := sym_type;
@@ -1112,41 +1105,35 @@ Begin
   offset_value := offset_val;
   init_type_info(type_info);
   type_info.base_type := sym_type;
-  next := symbol_list;  { InsÃ©rer au dÃ©but de la liste }
+  next := symbol_list;  { Ins‚rer au d‚but de la liste }
  End;
-
- { Mettre Ã  jour la tÃªte de liste }
+  { Mettre … jour la tˆte de liste }
  symbol_list := new_symbol;
  Inc(symbol_count);
-
  add_symbol := new_symbol;
 End;
 
-{ Fonction addsym amÃ©liorÃ©e utilisant le tas }
-Function addsym_heap(sname: String; typ: Integer; storage: Integer; offset_value: Integer): PSymbol;
-Begin
+ { Fonction addsym am‚lior‚e utilisant la m‚moire de tas }
+Function addsym_heap(sname: String; typ: Integer; storage: Integer; offset_value: Integer):PSymbol;Begin
  addsym_heap := add_symbol(sname, it_variable, typ, storage, offset_value);
 End;
 
-{ Fonction findsym amÃ©liorÃ©e utilisant le tas }
-Function findsym_heap(sname: String): PSymbol;
-Begin
+ { Fonction findsym am‚lior‚e utilisant le tas }
+Function findsym_heap(sname: String):PSymbol;Begin
  findsym_heap := find_symbol(sname);
 End;
 
-{ LibÃ©rer tous les symboles de la mÃ©moire de tas }
+ { Lib‚rer tous les symboles de la m‚moire de tas }
 Procedure free_symbols;
 Var
  current, next: PSymbol;
 Begin
  current := symbol_list;
- While current <> nil do
- Begin
+ While current <> nil do Begin
   next := current^.next;
   Dispose(current);
   current := next;
  End;
-
  symbol_list := nil;
  If use_stdout Then WriteLn('; Freed ', symbol_count, ' symbols from heap')
                Else safe_writeln('; Freed symbols from heap');
@@ -1157,7 +1144,7 @@ End;
 { FONCTIONS DE GESTION DES TYPES                                               }
 { ============================================================================ }
 
-{ Initialiser la structure d'informations de type }
+ { Initialiser la structure d'informations de type }
 Procedure init_type_info(var type_info: TTypeInfo);Begin
  type_info.base_type := cint;
  type_info.pointer_level := 0;
@@ -1171,7 +1158,7 @@ Procedure init_type_info(var type_info: TTypeInfo);Begin
  type_info.size := sizeof_int;
 End;
 
-{ Obtenir la taille d'un type de base }
+ { Obtenir la taille d'un type de base }
 Function get_type_size(base_type: Integer): Integer;Begin
  Case base_type of
   cvoid: get_type_size := sizeof_void;
@@ -1187,7 +1174,7 @@ Function get_type_size(base_type: Integer): Integer;Begin
  End;
 End;
 
-{ Calculer la taille totale d'un type, tableaux et pointeurs inclus }
+ { Calculer la taille totale d'un type, tableaux et pointeurs inclus }
 Function calculate_type_size(var type_info: TTypeInfo): Integer;
 Var
  result_size: Integer;
@@ -1199,21 +1186,21 @@ Begin
  calculate_type_size := result_size;
 End;
 
-{ VÃ©rifiez si deux types sont compatibles }
+ { V‚rifiez si deux types sont compatibles }
 Function types_compatible(var type1, type2: TTypeInfo): Boolean;Begin
  types_compatible := (type1.base_type = type2.base_type) and
                     (type1.pointer_level = type2.pointer_level) and
                     (type1.is_unsigned = type2.is_unsigned);
 End;
 
-{ VÃ©rifier si le type peut Ãªtre converti en un autre }
+ { V‚rifier si le type peut ˆtre converti en un autre }
 Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
-  { Les pointeurs peuvent Ãªtre convertis en pointeurs }
+  { Les pointeurs peuvent ˆtre convertis en pointeurs }
  If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then Begin
   can_convert_type := True;
   Exit;
  End;
-  { Les types numÃ©riques peuvent gÃ©nÃ©ralement Ãªtre convertis }
+  { Les types num‚riques peuvent g‚n‚ralement ˆtre convertis }
  If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then Begin
   Case from_type.base_type of
    cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
@@ -1227,11 +1214,10 @@ Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
    can_convert_type := False;
   End;
  End
- Else
-  can_convert_type := False;
+ Else can_convert_type := False;
 End;
 
- { RÃ©cupÃ©rer le nom du type sous forme de chaÃ®ne de caractÃ¨res pour les messages de dÃ©bogage/d'erreur }
+ { R‚cup‚rer le nom du type sous forme de chaŒne de caractŠres pour les messages de d‚bogage/d'erreur }
 Function get_type_name(var type_info: TTypeInfo): String;
 Var
  base_name, temp_str: String;
@@ -1256,7 +1242,7 @@ Begin
   { Ajouter les qualificateurs const/volatile }
  If type_info.is_const Then base_name := 'const ' + base_name;
  If type_info.is_volatile Then base_name := 'volatile ' + base_name;
-  { Ajouter des astÃ©ristiques de pointeur }
+  { Ajouter des ast‚ristiques de pointeur }
  For i := 1 to type_info.pointer_level do base_name := base_name + '*';
   { Ajouter la notation de tableau }
  If type_info.array_size > 0 Then Begin
@@ -1266,30 +1252,30 @@ Begin
  get_type_name := base_name;
 End;
 
- { GÃ©nÃ©rer le code assembleur pour la conversion de type }
+ { G‚n‚rer le code assembleur pour la conversion de type }
 Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
  Case Language of
   _English:safe_writeln('; Type conversion from ' + get_type_name(from_type) + ' to ' + get_type_name(to_type));
   Else safe_writeln('; Conversion de type de ' + get_type_name(from_type) + ' Ã  ' + get_type_name(to_type));
  End;
- { GÃ©rer la conversion char en int }
+ { G‚rer la conversion char en int }
  If (from_type.base_type = cchar) and (to_type.base_type = cint) Then Begin
   If from_type.is_unsigned Then Begin
-   ol('clra   ; extension zÃ©ro char non signÃ©');
+   ol('clra   ; extension z‚ro char non sign‚');
   End
-  Else
+   Else
   Begin
    ol('sex    ; extension de signe char signÃ©');
   End;
  End
-  { GÃ©rer la conversion int vers char }
+  { G‚rer la conversion int vers char }
   Else
  If (from_type.base_type = cint) and (to_type.base_type = cchar) Then Begin
   ol('tfr  d,x ; ne garder que l''octet faible');
   ol('tfr  b,a');
   ol('clrb');
  End
- { GÃ©rer la conversion int vers long }
+  { G‚rer la conversion int vers long }
  Else If (from_type.base_type = cint) and (to_type.base_type = clong) Then Begin
   If from_type.is_unsigned Then Begin
    ol('clr  -2,s   ; partie haute = 0 pour unsigned');
@@ -1299,7 +1285,7 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   Begin
    ol('tsta        ; test du signe');
    ol('bpl  +      ; si positif, partie haute = 0');
-   ol('ldd  #$FFFF ; si nÃ©gatif, partie haute = $FFFF');
+   ol('ldd  #$FFFF ; si n‚gatif, partie haute = $FFFF');
    ol('std  -2,s   ; stocker partie haute');
    ol('bra  ++');
    ol('+ clr  -2,s  ; partie haute = 0');
@@ -1307,15 +1293,16 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
    ol('++');
   End;
  End
- { GÃ©rer la conversion long vers int }
+  { G‚rer la conversion long vers int }
  Else If (from_type.base_type = clong) and (to_type.base_type = cint) Then Begin
   ol('ldd  -2,s    ; charger partie basse du long');
-  ol('leas 2,s     ; ajuster pile (partie haute ignorÃ©e)');
+  ol('leas 2,s     ; ajuster pile (partie haute ignor‚e)');
  End
- { GÃ©rer la conversion char vers long }
- Else If (from_type.base_type = cchar) and (to_type.base_type = clong) Then Begin
+  { G‚rer la conversion char vers long }
+  Else
+ If (from_type.base_type = cchar) and (to_type.base_type = clong)Then Begin
   If from_type.is_unsigned Then Begin
-   ol('clra        ; extension zÃ©ro char');
+   ol('clra        ; extension z‚ro char');
    ol('clr  -2,s   ; partie haute = 0');
    ol('clr  -1,s');
   End
@@ -1324,31 +1311,34 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
    ol('sex         ; extension de signe char vers int');
    ol('tsta        ; test du signe de la partie int');
    ol('bpl  +      ; si positif, partie haute = 0');
-   ol('ldd  #$FFFF ; si nÃ©gatif, partie haute = $FFFF');
-   ol('std  -2,s   ; stocker partie haute');
+   ol('ldd  #$FFFF ; si n‚gatif, partie haute = $FFFF');
+   ol('std  -2,s   ; entreposer partie haute');
    ol('bra  ++');
    ol('+ clr  -2,s  ; partie haute = 0');
    ol('clr  -1,s');
    ol('++');
   End;
  End
- { GÃ©rer la conversion long vers char }
- Else If (from_type.base_type = clong) and (to_type.base_type = cchar) Then Begin
+  { G‚rer la conversion long vers char }
+  Else
+ If (from_type.base_type = clong) and (to_type.base_type = cchar) Then Begin
   ol('ldd  -2,s    ; charger partie basse du long');
   ol('tfr  b,a     ; ne garder que l''octet faible');
   ol('clrb');
-  ol('leas 4,s     ; ajuster pile (libÃ©rer long)');
+  ol('leas 4,s     ; ajuster pile (lib‚rer long)');
  End
- { GÃ©rer les conversions enum (traitÃ© comme int) }
- Else If (from_type.base_type = cenum) and (to_type.base_type <> cenum) Then Begin
-  { Enum vers autre type - d'abord convertir enum vers int puis vers type cible }
+ { G‚rer les conversions enum (trait‚ comme int) }
+  Else
+ If (from_type.base_type = cenum) and (to_type.base_type <> cenum)Then Begin
+   { Enum vers autre type - d'abord convertir enum vers int puis vers type cible }
   from_type.base_type := cint; { Traiter enum comme int }
-  generate_type_conversion(from_type, to_type); { RÃ©cursion }
+  generate_type_conversion(from_type, to_type); { R‚cursion }
  End
- Else If (from_type.base_type <> cenum) and (to_type.base_type = cenum) Then Begin
+  Else
+ If (from_type.base_type <> cenum) and (to_type.base_type = cenum) Then Begin
   { Autre type vers enum - d'abord convertir vers int puis vers enum }
   to_type.base_type := cint; { Traiter enum comme int }
-  generate_type_conversion(from_type, to_type); { RÃ©cursion }
+  generate_type_conversion(from_type, to_type); { R‚cursion }
  End;
   { Ajouter des conversions supplÃ©mentaires si nÃ©cessaires }
 End;
@@ -1357,18 +1347,15 @@ End;
 { FONCTIONS DE GESTION DES TYPEDEF                                             }
 { ============================================================================ }
 
-{ Trouver un typedef dans la table des symboles }
+ { Trouver un typedef dans la table des symboles }
 Function find_typedef(typedef_name: String): PSymbol;
 Var
  current: PSymbol;
 Begin
  find_typedef := nil;
  current := symbol_list;
-
- While current <> nil do
- Begin
-  If (current^.name = typedef_name) and (current^.ident = it_typedef_type) Then
-  Begin
+ While current <> nil do Begin
+  If (current^.name = typedef_name) and (current^.ident = it_typedef_type) Then Begin
    find_typedef := current;
    Exit;
   End;
@@ -1376,30 +1363,26 @@ Begin
  End;
 End;
 
-{ Ajouter un nouveau typedef Ã  la table des symboles }
+ { Ajouter un nouveau typedef … la table des symboles }
 Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol;
 Var
  new_symbol: PSymbol;
 Begin
  add_typedef := nil;
-
- { VÃ©rifier si le typedef existe dÃ©jÃ  }
- If find_typedef(typedef_name) <> nil Then
- Begin
+  { V‚rifier si le typedef existe d‚j… }
+ If find_typedef(typedef_name) <> nil Then Begin
   Case Language of
    _English: errrpt('Typedef already defined: ' + typedef_name);
    {$IFDEF FPC}
    _Germany: errrpt('Typedef bereits definiert: ' + typedef_name);
    {$ENDIF}
-   Else errrpt('Typedef dÃ©jÃ  dÃ©fini: ' + typedef_name);
+   Else errrpt('Typedef d‚j… d‚fini: ' + typedef_name);
   End;
   Exit;
  End;
-
- { Allouer de la mÃ©moire sur le tas }
+  { Allouer de la m‚moire sur le tas }
  New(new_symbol);
- If new_symbol = nil Then
- Begin
+ If new_symbol = nil Then Begin
   Case Language of
    _English: errrpt('Out of memory for typedef table');
    {$IFDEF FPC}
