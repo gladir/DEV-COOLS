@@ -1931,6 +1931,7 @@ Procedure parse_address_of(var lval: TLVal); forward;
 function get_type_name_from_id(type_id: Integer): String;
 begin
   case type_id of
+    cvoid: get_type_name_from_id := 'void';
     cchar: get_type_name_from_id := 'char';
     cint: get_type_name_from_id := 'int';
     else get_type_name_from_id := 'int'; { Par défaut }
@@ -2276,11 +2277,74 @@ Begin
   Exit;
  End;
 
- { SIMPLIFIÉ: Sortir seulement un commentaire et ignorer le traitement avancé }
- safe_writeln('; Déclaration de fonction: ' + func_name);
+ safe_writeln('; Déclaration de fonction: ' + func_name + ' (type: ' + get_type_name_from_id(return_type) + ')');
+
+ { Attendre parenthèse ouvrante }
+ If not match('(') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ( after function name');
+   _Germany: errrpt('Erwartete ( nach Funktionsname');
+   Else errrpt('( attendu après le nom de fonction');
+  End;
+  Exit;
+ End;
+
+ { Ignorer les paramètres pour l'instant - aller jusqu'à la parenthèse fermante }
+ While (ch <> ')') and (ch <> #0) Do
+  gch;
  
- { Aller à la fin de ligne pour éviter plus de traitement }
- kill;
+ If ch = ')' Then gch; { Consommer la parenthèse fermante }
+
+ { Vérifier s'il y a un corps de fonction }
+ blanks;
+ has_body := (ch = '{');
+
+ If has_body Then
+ Begin
+  { Ajouter la fonction à la table des symboles }
+  func_index := add_function(func_name, return_type);
+  
+  { Générer l'étiquette de fonction }
+  safe_writeln(func_name + ':');
+  
+  { Traiter le corps de fonction }
+  If match('{') Then
+  Begin
+   safe_writeln('; Corps de fonction ' + func_name);
+   { Parser simplifié - ignorer le contenu pour l'instant }
+   While (ch <> #0) and (ch <> '}') Do
+   Begin
+    gch;
+   End;
+   If ch = '}' Then gch; { Consommer l'accolade fermante }
+   safe_writeln('; Fin du corps de fonction ' + func_name);
+  End
+  Else
+  Begin
+   Case Language of
+    _English: errrpt('Expected { to begin function body');
+    _Germany: errrpt('Erwartete { um Funktionskorper zu beginnen');
+    Else errrpt('{ attendu pour commencer le corps de fonction');
+   End;
+   Exit;
+  End;
+ End
+ Else
+ Begin
+  { Déclaration de fonction sans corps - juste ajouter à la table }
+  func_index := add_function(func_name, return_type);
+  If not match(';') Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected ; after function declaration');
+    _Germany: errrpt('Erwartete ; nach Funktionsdeklaration');
+    Else errrpt('; attendu après déclaration de fonction');
+   End;
+   Exit;
+  End;
+ End;
+
  parse_function_declaration := True;
 End;
 
