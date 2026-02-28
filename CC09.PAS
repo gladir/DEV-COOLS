@@ -4214,6 +4214,8 @@ Function parse_for_statement: Boolean;
 Var
  lval: TLVal;
  increment_label, condition_label, end_label: Integer;
+ condition_start, condition_end, increment_start, increment_end: Integer;
+ saved_lptr: Integer;
 Begin
  parse_for_statement := False;
 
@@ -4237,28 +4239,80 @@ Begin
   Exit;
  End;
 
- { Parse and execute initialization immediately }
+ { Parse and execute initialization }
  safe_writeln('; FOR initialization');
+ blanks;
+ If ch <> ';' Then
+ Begin
+  parse_assignment_statement;  { Parse and execute initialization }
+ End;
  If not match(';') Then
  Begin
-  expression_bool(lval);
-  If not match(';') Then
-   errrpt('Expected ; after for initialization');
+  errrpt('Expected ; after for initialization');
+  Exit;
  End;
 
- { Store increment expression for later (we need to parse it now but execute it later) }
- { For now, skip condition and increment parsing }
+ { Save position for condition parsing }
+ blanks;
+ condition_start := lptr;
  
- { Skip to condition parsing }
+ { Skip over condition to find its end }
+ While (ch <> ';') and (ch <> #0) Do gch;
+ condition_end := lptr;
+ If not match(';') Then
+ Begin
+  errrpt('Expected ; after for condition');
+  Exit;
+ End;
+
+ { Save position for increment parsing }
+ blanks;
+ increment_start := lptr;
+ 
+ { Skip over increment to find its end }
+ While (ch <> ')') and (ch <> #0) Do gch;
+ increment_end := lptr;
+ If not match(')') Then
+ Begin
+  errrpt('Expected ) after for increment');
+  Exit;
+ End;
+
+ { Jump to condition check }
+ ot('lbra ');
+ printlabel(condition_label);
+ nl;
+
+ { Increment label - where continue jumps to }
+ prelabel(increment_label);
+ safe_writeln('; FOR increment');
+ 
+ { Re-parse and execute increment from saved position }
+ saved_lptr := lptr;  { Save current position }
+ lptr := increment_start;  { Set to increment start }
+ gch;  { Refresh current character }
+ If increment_end > increment_start Then
+ Begin
+  parse_assignment_statement;  { Parse and execute increment }
+ End;
+ lptr := saved_lptr;  { Restore position }
+ gch;  { Refresh current character }
+ 
+ ot('lbra ');
+ printlabel(condition_label);
+ nl;
+
+ { Condition check label }
  prelabel(condition_label);
  safe_writeln('; FOR condition check');
 
- { Parse condition }
- If not match(';') Then
+ { Re-parse condition from saved position }
+ saved_lptr := lptr;  { Save current position }
+ lptr := condition_start;  { Set to condition start }
+ gch;  { Refresh current character }
+ If condition_end > condition_start Then
  Begin
-  expression_bool(lval);
-  If not match(';') Then
-   errrpt('Expected ; after for condition');
+  expression_bool(lval);  { Parse condition }
  End
  Else
  Begin
@@ -4266,6 +4320,8 @@ Begin
   ot('ldd  #1');
   nl;
  End;
+ lptr := saved_lptr;  { Restore position }
+ gch;  { Refresh current character }
 
  { Generate conditional jump to end if false }
  ol('tstd');
@@ -4273,30 +4329,16 @@ Begin
  printlabel(end_label);
  nl;
 
- { Skip increment for now - we need to parse it but not execute it }
- If not match(')') Then
- Begin
-  { We should store the increment expression, but for now just skip it }
-  expression_bool(lval);
-  If not match(')') Then
-   errrpt('Expected ) after for increment');
- End;
-
  { Parse loop body }
  safe_writeln('; FOR body');
  parse_statement;
 
- { Increment label - this is where continue jumps }
- prelabel(increment_label);
- safe_writeln('; FOR increment (continue target)');
- 
- { Here we should execute the increment expression that we stored earlier }
- { For now, jump back to condition }
+ { Jump to increment }
  ot('lbra ');
- printlabel(condition_label);
+ printlabel(increment_label);
  nl;
 
- { End label - this is where break jumps }
+ { End label - where break jumps to }
  prelabel(end_label);
  safe_writeln('; End FOR');
 
