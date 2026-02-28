@@ -57,6 +57,7 @@ Const
  carray = 13;    { Tableau d'éléments }
  cstruct = 14;   { Structure de données }
  cunion = 15;    { Union de données }
+ cenum = 16;     { Énumération de valeurs }
 
   { Taille du type en octets }
  sizeof_void = 0;     { Taille du type void (aucune taille) }
@@ -67,6 +68,7 @@ Const
  sizeof_float = 4;    { Taille du type float (4 octets) }
  sizeof_double = 8;   { Taille du type double (8 octets) }
  sizeof_pointer = 2;  { Taille d'un pointeur sur 6809 (2 octets) }
+ sizeof_enum = 2;     { Taille du type enum (2 octets, comme int) }
 
   { Classes d'entreposage }
  statik = 1;      { Variable statique (durée de vie du programme) }
@@ -351,6 +353,7 @@ Procedure init_type_info(var type_info: TTypeInfo); forward;
 Function parse_type_specifier: Integer; forward;
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
 Function parse_storage_class_specifier: Integer; forward;
+Function parse_enum_type: Integer; forward;
 Function readinline: Boolean; forward;
 
 { Déclarations anticipées pour typedef }
@@ -1189,6 +1192,7 @@ Function get_type_size(base_type: Integer): Integer;Begin
   cfloat: get_type_size := sizeof_float;
   cdouble: get_type_size := sizeof_double;
   cpointer: get_type_size := sizeof_pointer;
+  cenum: get_type_size := sizeof_enum;
   Else get_type_size := sizeof_int; { Par défaut }
  End;
 End;
@@ -1256,6 +1260,7 @@ Begin
   culong: base_name := 'unsigned long';
   cfloat: base_name := 'float';
   cdouble: base_name := 'double';
+  cenum: base_name := 'enum';
   Else base_name := 'unknown';
  End;
   { Ajouter les qualificateurs const/volatile }
@@ -1343,6 +1348,17 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   ol('tfr  b,a     ; ne garder que l''octet faible');
   ol('clrb');
   ol('leas 4,s     ; ajuster pile (libérer long)');
+ End
+ { Gérer les conversions enum (traité comme int) }
+ Else If (from_type.base_type = cenum) and (to_type.base_type <> cenum) Then Begin
+  { Enum vers autre type - d'abord convertir enum vers int puis vers type cible }
+  from_type.base_type := cint; { Traiter enum comme int }
+  generate_type_conversion(from_type, to_type); { Récursion }
+ End
+ Else If (from_type.base_type <> cenum) and (to_type.base_type = cenum) Then Begin
+  { Autre type vers enum - d'abord convertir vers int puis vers enum }
+  to_type.base_type := cint; { Traiter enum comme int }
+  generate_type_conversion(from_type, to_type); { Récursion }
  End;
   { Ajouter des conversions supplémentaires si nécessaires }
 End;
@@ -2828,6 +2844,11 @@ Begin
    base_type := cdouble;
    Break;
   End
+  Else If match('enum') Then
+  Begin
+   base_type := parse_enum_type;
+   Break;
+  End
   Else
    Break; { Plus de spécificateurs de type }
  Until False;
@@ -3007,6 +3028,75 @@ Begin
  calculate_type_size(type_info);
 
  parse_type_specifier_with_qualifiers := base_type;
+End;
+
+{ Parser une déclaration enum }
+Function parse_enum_type: Integer;
+Var
+ enum_name: String;
+ enum_value: Integer;
+ identifier: String;
+ value_str: String;
+ temp_value: Integer;
+Begin
+ enum_value := 0; { Valeur par défaut de la première constante enum }
+ parse_enum_type := cenum;
+ 
+ { Vérifier s'il y a un nom d'enum optionnel }
+ If symname(enum_name) Then
+ Begin
+  safe_writeln('; Enum nommé: ' + enum_name);
+ End
+ Else
+ Begin
+  safe_writeln('; Enum anonyme');
+ End;
+ 
+ If not match('{') Then
+ Begin
+  safe_writeln('; Référence à enum: ' + enum_name);
+  Exit;
+ End;
+ 
+ { Parser la liste des identifiants enum }
+ Repeat
+  If not symname(identifier) Then Break;
+  
+  { Vérifier s'il y a une valeur explicite }
+  If match('=') Then
+  Begin
+   If number(temp_value) Then
+   Begin
+    enum_value := temp_value;
+   End
+   Else
+   Begin
+    Case Language of
+     _English: errrpt('Expected number in enum initializer');
+     _Germany: errrpt('Zahl in Enum-Initialisierung erwartet');
+     Else errrpt('Nombre attendu dans initialisation enum');
+    End;
+   End;
+  End;
+  
+  { Ajouter la constante enum à la table des symboles }
+  Str(enum_value, value_str);
+  safe_writeln(identifier + ' equ ' + value_str);
+  Inc(enum_value); { Prochaine valeur par défaut }
+  
+  { Continuer avec les autres identifiants si virgule }
+  If not match(',') Then Break;
+ Until False;
+ 
+ { Attendre la fermeture de accolade }
+ If not match('}') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected closing brace in enum');
+   _Germany: errrpt('Schliessende Klammer in Enum erwartet');
+   Else errrpt('Accolade fermante attendue dans enum');
+  End;
+ End;
 End;
 
 { Parser les spécificateurs de classe de stockage }
@@ -6346,7 +6436,7 @@ BEGIN
   End;
   use_stdout := True;
  End;
-  { Initialisation du syst�me d'opimisation }
+  { Initialisation du système d'optimisation }
  init_optimization;
  { Initialize loop context stack }
  loop_depth := 0;
