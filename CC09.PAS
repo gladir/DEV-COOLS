@@ -1924,6 +1924,8 @@ Procedure unary_expression(var lval: TLVal); forward;
 Procedure multiplicative_expression(var lval: TLVal); forward;
 Procedure additive_expression(var lval: TLVal); forward;
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean); forward;
+Procedure parse_dereference(var lval: TLVal); forward;
+Procedure parse_address_of(var lval: TLVal); forward;
 
 { Convertir un type entier en nom de type string }
 function get_type_name_from_id(type_id: Integer): String;
@@ -1933,6 +1935,27 @@ begin
     cint: get_type_name_from_id := 'int';
     else get_type_name_from_id := 'int'; { Par défaut }
   end;
+end;
+
+{ Obtenir le nom d'un symbole depuis son pointeur stocké comme entier }
+function get_symbol_name(symbol_ptr_as_int: Integer): String;
+var
+  sym_ptr: PSymbol;
+begin
+  if symbol_ptr_as_int = 0 then
+  begin
+    get_symbol_name := 'unknown';
+    exit;
+  end;
+  
+  sym_ptr := PSymbol(symbol_ptr_as_int);
+  if sym_ptr = nil then
+  begin
+    get_symbol_name := 'invalid';
+    exit;
+  end;
+  
+  get_symbol_name := sym_ptr^.name;
 end;
 
 { Analyse améliorée des spécificateurs de type avec support complet des types C }
@@ -3256,9 +3279,125 @@ Begin
     ol('comb');
    End;
 
+  '*': Begin
+    { Opérateur de déréférencement }
+    next_char;
+    unary_expression(lval);
+    parse_dereference(lval);
+   End;
+
+  '&': Begin
+    { Opérateur d'adresse }
+    next_char;
+    parse_address_of(lval);
+   End;
+
   Else
    primary_expression(lval);
  End;
+End;
+
+{ Opérateur de déréférencement (*ptr) }
+Procedure parse_dereference(var lval: TLVal);
+var
+  ptr_name: String;
+Begin
+ safe_writeln('; Déréférencement de pointeur');
+ 
+ { Vérifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('Cannot dereference non-pointer type');
+   _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
+   Else errrpt('Impossible de déréférencer un type non-pointeur');
+  End;
+  Exit;
+ End;
+ 
+ { Générer le code de déréférencement }
+ If lval.symbol > 0 Then
+ Begin
+  ptr_name := get_symbol_name(lval.symbol);
+  safe_writeln('; Déréférencement de: ' + ptr_name);
+  ol('ldx  ' + ptr_name);  { Charger l'adresse stockée dans le pointeur }
+  ol('ldd  ,x');           { Charger la valeur pointée }
+ End
+ Else
+ Begin
+  safe_writeln('; Déréférencement indirect');
+  ol('ldx  ,s++');         { Récupérer l'adresse depuis la pile }
+  ol('ldd  ,x');           { Charger la valeur pointée }
+ End;
+ 
+ { Décrémenter le niveau de pointeur }
+ Dec(lval.type_info.pointer_level);
+ 
+ { Le résultat est maintenant une valeur }
+ lval.indirect := 0;
+ 
+ safe_writeln('; Pointeur déréférencé, nouveau niveau: ' + IntToStr(lval.type_info.pointer_level));
+End;
+
+{ Opérateur d'adresse (&var) }  
+Procedure parse_address_of(var lval: TLVal);
+Var
+  var_name: String;
+  sym_ptr: PSymbol;
+Begin
+ safe_writeln('; Prise d''adresse de variable');
+ 
+ { Lire le nom de la variable directement }
+ If not symname(var_name) Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected variable name after &');
+   _Germany: errrpt('Variablenname nach & erwartet'); 
+   Else errrpt('Nom de variable attendu après &');
+  End;
+  Exit;
+ End;
+ 
+ { Chercher la variable dans la table des symboles }
+ sym_ptr := find_symbol(var_name);
+ If sym_ptr = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Undefined variable: ' + var_name);
+   _Germany: errrpt('Undefinierte Variable: ' + var_name);
+   Else errrpt('Variable non définie: ' + var_name);
+  End;
+  Exit;
+ End;
+ 
+ { Vérifier que c'est bien une variable (pas une constante) }
+ If sym_ptr^.ident <> it_variable Then
+ Begin
+  Case Language of
+   _English: errrpt('Cannot take address of non-variable');
+   _Germany: errrpt('Kann Adresse von Nicht-Variable nicht nehmen'); 
+   Else errrpt('Impossible de prendre l''adresse d''une non-variable');
+  End;
+  Exit;
+ End;
+ 
+ { Générer le code pour obtenir l'adresse }
+ ol('leax ' + var_name);
+ ol('pshs x'); { Empiler l'adresse }
+ 
+ { Configurer lval pour le résultat }
+ lval.symbol := Integer(sym_ptr);
+ lval.indirect := 1; { Résultat sur la pile }
+ lval.typ := cpointer;
+ lval.storage := sym_ptr^.storage;
+ lval.constant := False;
+ lval.value := 0;
+ 
+ { Copier les informations de type et incrémenter le niveau de pointeur }
+ lval.type_info := sym_ptr^.type_info;
+ Inc(lval.type_info.pointer_level);
+ 
+ safe_writeln('; Adresse de ' + var_name + ' prise, niveau pointeur: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
 { Multiplicative expression parser }
