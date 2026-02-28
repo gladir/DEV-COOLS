@@ -2332,6 +2332,11 @@ Procedure unary_expression(var lval: TLVal); forward;
 Procedure multiplicative_expression(var lval: TLVal); forward;
 Procedure additive_expression(var lval: TLVal); forward;
 Procedure relational_expression(var lval: TLVal); forward;
+Procedure bitwise_and_expression(var lval: TLVal); forward;
+Procedure bitwise_xor_expression(var lval: TLVal); forward;
+Procedure bitwise_or_expression(var lval: TLVal); forward;
+Procedure logical_and_expression(var lval: TLVal); forward;
+Procedure logical_or_expression(var lval: TLVal); forward;
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean); forward;
 Procedure parse_dereference(var lval: TLVal); forward;
 Procedure parse_address_of(var lval: TLVal); forward;
@@ -4081,10 +4086,175 @@ Begin
  End;
 End;
 
+{ Bitwise AND expression parser - handles & }
+Procedure bitwise_and_expression(var lval: TLVal);
+Begin
+ relational_expression(lval);
+ 
+ While match('&') do
+ Begin
+  { Vérifier que ce n'est pas && }
+  If peek_char = '&' Then
+  Begin
+   { Reculer car c'est && qui sera traité par logical_and }
+   Dec(lptr);
+   Break;
+  End;
+  
+  safe_writeln('; Opérateur & (ET binaire)');
+  ol('pshs d');    { Push left operand }
+  relational_expression(lval);
+  ol('tfr  d,x');  { Right operand to X }  
+  ol('puls d');    { Left operand to D }
+  ol('tfr  a,u');  { Save A in U }
+  ol('tfr  b,a');  { B to A for low byte }
+  ol('anda 1,x');  { AND low bytes }
+  ol('tfr  a,b');  { Result low byte to B }
+  ol('tfr  u,a');  { Restore high byte from U }
+  ol('anda 0,x');  { AND high bytes }
+ End;
+End;
+
+{ Bitwise XOR expression parser - handles ^ }
+Procedure bitwise_xor_expression(var lval: TLVal);
+Begin
+ bitwise_and_expression(lval);
+ 
+ While match('^') do
+ Begin
+  safe_writeln('; Opérateur ^ (XOR binaire)');
+  ol('pshs d');    { Push left operand }
+  bitwise_and_expression(lval);
+  ol('tfr  d,x');  { Right operand to X }
+  ol('puls d');    { Left operand to D }
+  ol('tfr  a,u');  { Save A in U }
+  ol('tfr  b,a');  { B to A for low byte }
+  ol('eora 1,x');  { XOR low bytes }
+  ol('tfr  a,b');  { Result low byte to B }
+  ol('tfr  u,a');  { Restore high byte from U }
+  ol('eora 0,x');  { XOR high bytes }
+ End;
+End;
+
+{ Bitwise OR expression parser - handles | }
+Procedure bitwise_or_expression(var lval: TLVal);
+Begin
+ bitwise_xor_expression(lval);
+ 
+ While match('|') do
+ Begin
+  { Vérifier que ce n'est pas || }
+  If peek_char = '|' Then
+  Begin
+   { Reculer car c'est || qui sera traité par logical_or }
+   Dec(lptr);
+   Break;
+  End;
+  
+  safe_writeln('; Opérateur | (OU binaire)');
+  ol('pshs d');    { Push left operand }
+  bitwise_xor_expression(lval);
+  ol('tfr  d,x');  { Right operand to X }
+  ol('puls d');    { Left operand to D }
+  ol('tfr  a,u');  { Save A in U }
+  ol('tfr  b,a');  { B to A for low byte }
+  ol('ora  1,x');  { OR low bytes }
+  ol('tfr  a,b');  { Result low byte to B }
+  ol('tfr  u,a');  { Restore high byte from U }
+  ol('ora  0,x');  { OR high bytes }
+ End;
+End;
+
+{ Logical AND expression parser - handles && }
+Procedure logical_and_expression(var lval: TLVal);
+Var
+ false_label, end_label: Integer;
+Begin
+ bitwise_or_expression(lval);
+ 
+ While match('&') and match('&') do
+ Begin
+  safe_writeln('; Opérateur && (ET logique)');
+  
+  { Générer les étiquettes }
+  false_label := getlabel;
+  end_label := getlabel;
+  
+  { Tester la première expression }
+  ol('tstd');
+  ot('lbeq '); 
+  printlabel(false_label);
+  nl;
+  
+  { Évaluer la deuxième expression }
+  bitwise_or_expression(lval);
+  ol('tstd');
+  ot('lbeq '); 
+  printlabel(false_label);
+  nl;
+  
+  { Les deux sont vraies - résultat = 1 }
+  ol('ldd #1');
+  ot('lbra ');
+  printlabel(end_label);
+  nl;
+  
+  { Au moins une est fausse - résultat = 0 }
+  prelabel(false_label);
+  ol('ldd #0');
+  
+  { Fin }
+  prelabel(end_label);
+ End;
+End;
+
+{ Logical OR expression parser - handles || }
+Procedure logical_or_expression(var lval: TLVal);
+Var
+ true_label, end_label: Integer;
+Begin
+ logical_and_expression(lval);
+ 
+ While match('|') and match('|') do
+ Begin
+  safe_writeln('; Opérateur || (OU logique)');
+  
+  { Générer les étiquettes }
+  true_label := getlabel;
+  end_label := getlabel;
+  
+  { Tester la première expression }
+  ol('tstd');
+  ot('lbne '); 
+  printlabel(true_label);
+  nl;
+  
+  { Évaluer la deuxième expression }
+  logical_and_expression(lval);
+  ol('tstd');
+  ot('lbne '); 
+  printlabel(true_label);
+  nl;
+  
+  { Les deux sont fausses - résultat = 0 }
+  ol('ldd #0');
+  ot('lbra ');
+  printlabel(end_label);
+  nl;
+  
+  { Au moins une est vraie - résultat = 1 }
+  prelabel(true_label);
+  ol('ldd #1');
+  
+  { Fin }
+  prelabel(end_label);
+ End;
+End;
+
 { Main expression parser }
 Function expression_bool(var lval: TLVal): Boolean;
 Begin
- relational_expression(lval);
+ logical_or_expression(lval);
  expression_bool := True;
 End;
 
