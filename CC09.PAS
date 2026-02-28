@@ -220,6 +220,12 @@ Type
   saved_eof: Integer;
  End;
 
+ { Table des fichiers déjà inclus pour éviter l'inclusion circulaire }
+ TIncludedFile = Record
+  filename: String;
+  is_included: Boolean;
+ End;
+
  { Gestion des macros/Define - utilisation du tas au lieu de tableaux statiques }
  PDefine = ^TDefine;
  TDefine = Record
@@ -332,6 +338,10 @@ Var
  include_stack: Array[0..9] of TIncludeFile;  { Max 10 niveaux d'inclusion }
  include_depth: Integer;
  current_filename: String;
+
+ { Table des fichiers inclus pour éviter l'inclusion circulaire }
+ included_files: Array[0..49] of TIncludedFile; { Max 50 fichiers différents }
+ included_count: Integer;
 
  { Gestion Define/Macro - utilisation du tas (liste chaînée) }
  define_list: PDefine;  { Tête de la liste chaînée des defines }
@@ -647,7 +657,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Too many goto labels (max 32)');
+   {$IFDEF FPC}
    _Germany: errrpt('Zu viele Goto-Labels (max 32)');
+   {$ENDIF}
    Else errrpt('Trop d''étiquettes goto (max 32)');
   End;
   Exit;
@@ -679,12 +691,14 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Label already defined: ' + label_name);
+    {$IFDEF FPC}
     _Germany: errrpt('Label bereits definiert: ' + label_name);
+    {$ENDIF}
     Else errrpt('Étiquette déjà définie: ' + label_name);
    End;
    Exit;
   End;
-  
+
   goto_table[index].is_defined := True;
   prelabel(goto_table[index].label_id);
   safe_writeln('; Étiquette définie: ' + label_name);
@@ -722,14 +736,16 @@ Begin
    Begin
     Case Language of
      _English: errrpt('Undefined label: ' + name);
+     {$IFDEF FPC}
      _Germany: errrpt('Undefiniertes Label: ' + name);
+     {$ENDIF}
      Else errrpt('Étiquette non définie: ' + name);
     End;
     has_errors := True;
    End;
   End;
  End;
- 
+
  If not has_errors Then
   safe_writeln('; Toutes les étiquettes goto sont correctement définies');
 End;
@@ -766,17 +782,19 @@ End;
 Function begin_switch_statement(expr_type: Integer): Boolean;
 Begin
  begin_switch_statement := False;
- 
+
  If switch_depth >= 8 Then
  Begin
   Case Language of
    _English: errrpt('Too many nested switch statements (max 8)');
+   {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte Switch-Anweisungen (max 8)');
+   {$ENDIF}
    Else errrpt('Trop d''instructions switch imbriquées (max 8)');
   End;
   Exit;
  End;
- 
+
  With switch_table[switch_depth] do
  Begin
   expression_type := expr_type;
@@ -803,12 +821,14 @@ Begin
  Begin
   Case Language of
    _English: errrpt('case statement outside switch');
+   {$IFDEF FPC}
    _Germany: errrpt('case-Anweisung außerhalb von switch');
+   {$ENDIF}
    Else errrpt('instruction case en dehors de switch');
   End;
   Exit;
  End;
- 
+
  With switch_table[switch_depth - 1] do
  Begin
   { Vérifier si la valeur existe déjà }
@@ -819,23 +839,27 @@ Begin
     Str(case_value, case_str);
     Case Language of
      _English: errrpt('Duplicate case value: ' + case_str);
+     {$IFDEF FPC}
      _Germany: errrpt('Doppelter case-Wert: ' + case_str);
+     {$ENDIF}
      Else errrpt('Valeur case dupliquée: ' + case_str);
     End;
     Exit;
    End;
   End;
-  
+
   If case_count >= 32 Then
   Begin
    Case Language of
     _English: errrpt('Too many case labels (max 32)');
+    {$IFDEF FPC}
     _Germany: errrpt('Zu viele case-Labels (max 32)');
+    {$ENDIF}
     Else errrpt('Trop d''étiquettes case (max 32)');
    End;
    Exit;
   End;
-  
+
   case_label := getlabel;
   cases[case_count].value := case_value;
   cases[case_count].label_id := case_label;
@@ -853,24 +877,28 @@ Begin
  Begin
   Case Language of
    _English: errrpt('default statement outside switch');
+   {$IFDEF FPC}
    _Germany: errrpt('default-Anweisung außerhalb von switch');
+   {$ENDIF}
    Else errrpt('instruction default en dehors de switch');
   End;
   Exit;
  End;
- 
+
  With switch_table[switch_depth - 1] do
  Begin
   If has_default Then
   Begin
    Case Language of
     _English: errrpt('Multiple default labels in switch');
+    {$IFDEF FPC}
     _Germany: errrpt('Mehrere default-Labels in switch');
+    {$ENDIF}
     Else errrpt('Plusieurs étiquettes default dans switch');
    End;
    Exit;
   End;
-  
+
   default_label := getlabel;
   has_default := True;
   add_switch_default := default_label;
@@ -884,11 +912,11 @@ Var
  case_str: String;
 Begin
  If switch_depth = 0 Then Exit;
- 
+
  With switch_table[switch_depth - 1] do
  Begin
   safe_writeln('; Génération des comparaisons switch');
-  
+
   For i := 0 to case_count - 1 do
   Begin
    Str(cases[i].value, case_str);
@@ -900,7 +928,7 @@ Begin
    printlabel(cases[i].label_id);
    nl;
   End;
-  
+
   { Saut vers default ou fin }
   If has_default Then
   Begin
@@ -921,20 +949,22 @@ End;
 Function end_switch_statement: Integer;
 Begin
  end_switch_statement := -1;
- 
+
  If switch_depth = 0 Then
  Begin
   Case Language of
    _English: errrpt('Unexpected end of switch');
+   {$IFDEF FPC}
    _Germany: errrpt('Unerwartetes Ende von switch');
+   {$ENDIF}
    Else errrpt('Fin inattendue de switch');
   End;
   Exit;
  End;
- 
+
  Dec(switch_depth);
  end_switch_statement := switch_table[switch_depth].end_label;
- 
+
  { Générer l'étiquette de fin }
  prelabel(switch_table[switch_depth].end_label);
  safe_writeln('; Fin du switch');
@@ -955,15 +985,17 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Too many nested loops');
+   {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte Schleifen');
+   {$ENDIF}
    Else errrpt('Trop de boucles imbriquées');
   End;
   Exit;
  End;
- 
+
  { Vérification défensive - s'assurer que loop_depth est initialisé }
  If loop_depth < 0 Then loop_depth := 0;
- 
+
  loop_stack[loop_depth].loop_type := loop_type;
  loop_stack[loop_depth].break_label := break_lbl;
  loop_stack[loop_depth].continue_label := continue_lbl;
@@ -979,14 +1011,14 @@ End;
 Function get_current_break_label: Integer;
 Begin
  get_current_break_label := -1;
- 
+
  { Vérifier d'abord s'il y a un switch actif }
  If switch_depth > 0 Then
  Begin
   get_current_break_label := switch_table[switch_depth-1].end_label;
   Exit;
  End;
- 
+
  { Sinon, vérifier s'il y a une boucle active }
  If loop_depth > 0 Then
   get_current_break_label := loop_stack[loop_depth-1].break_label;
@@ -1422,24 +1454,28 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Typedef already defined: ' + typedef_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Typedef bereits definiert: ' + typedef_name);
+   {$ENDIF}
    Else errrpt('Typedef déjà défini: ' + typedef_name);
   End;
   Exit;
  End;
- 
+
  { Allouer de la mémoire sur le tas }
  New(new_symbol);
  If new_symbol = nil Then
  Begin
   Case Language of
    _English: errrpt('Out of memory for typedef table');
+   {$IFDEF FPC}
    _Germany: errrpt('Kein Speicher für Typedef-Tabelle');
+   {$ENDIF}
    Else errrpt('Mémoire insuffisante pour la table typedef');
   End;
   Exit;
  End;
- 
+
  { Initialiser le nouveau typedef }
  With new_symbol^ do
  Begin
@@ -1453,11 +1489,11 @@ Begin
   new_symbol^.type_info.typedef_name := typedef_name;
   next := symbol_list;  { Insérer au début de la liste }
  End;
- 
+
  { Mettre à jour la tête de liste }
  symbol_list := new_symbol;
  Inc(symbol_count);
- 
+
  add_typedef := new_symbol;
 End;
 
@@ -1509,7 +1545,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Invalid type specifier in typedef');
+   {$IFDEF FPC}
    _Germany: errrpt('Ungültiger Typ-Spezifizierer in typedef');
+   {$ENDIF}
    Else errrpt('Spécificateur de type invalide dans typedef');
   End;
   Exit;
@@ -1517,29 +1555,33 @@ Begin
 
  Str(base_type, temp_str);
  safe_writeln('; Type analysé: ' + temp_str);
- 
+
  { Parser le déclarateur (nom du typedef) }
  If not symname(typedef_name) Then
  Begin
   Case Language of
    _English: errrpt('Expected typedef name');
+   {$IFDEF FPC}
    _Germany: errrpt('Typedef-Name erwartet');
+   {$ENDIF}
    Else errrpt('Nom de typedef attendu');
   End;
   Exit;
  End;
- 
+
  { Attendre point-virgule }
  If not match(';') Then
  Begin
   Case Language of
    _English: errrpt('Expected ; after typedef declaration');
+   {$IFDEF FPC}
    _Germany: errrpt('; nach typedef-Deklaration erwartet');
+   {$ENDIF}
    Else errrpt('; attendu après déclaration typedef');
   End;
   Exit;
  End;
- 
+
  { Ajouter le typedef à la table des symboles }
  If add_typedef(typedef_name, type_info) <> nil Then
  Begin
@@ -2187,7 +2229,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Out of memory for function table');
+   {$IFDEF FPC}
    _Germany: errrpt('Kein Speicher für Funktionstabelle');
+   {$ENDIF}
    Else errrpt('Mémoire insuffisante pour la table de fonctions');
   End;
   Exit;
@@ -2257,7 +2301,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Too many parameters for function ' + name);
+    {$IFDEF FPC}
     _Germany: errrpt('Zu viele Parameter für Funktion ' + name);
+    {$ENDIF}
     Else errrpt('Trop de paramètres pour la fonction ' + name);
    End;
    Exit;
@@ -2459,30 +2505,34 @@ Var
  new_struct: PStructDef;
 Begin
  create_struct := nil;
- 
+
  { Vérifier si la structure existe déjà }
  If find_struct(struct_name) <> nil Then
  Begin
   Case Language of
    _English: errrpt('Struct/Union already defined: ' + struct_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Struct/Union bereits definiert: ' + struct_name);
+   {$ENDIF}
    Else errrpt('Structure/Union déjà définie: ' + struct_name);
   End;
   Exit;
  End;
- 
+
  { Allouer mémoire pour la nouvelle structure }
  New(new_struct);
  If new_struct = nil Then
  Begin
   Case Language of
    _English: errrpt('Out of memory for struct definition');
+   {$IFDEF FPC}
    _Germany: errrpt('Kein Speicher für Struct-Definition');
+   {$ENDIF}
    Else errrpt('Mémoire insuffisante pour la définition de structure');
   End;
   Exit;
  End;
- 
+
  { Initialiser la structure }
  With new_struct^ do
  Begin
@@ -2494,11 +2544,11 @@ Begin
   Inc(next_struct_id);
   next := struct_list;
  End;
- 
+
  { Ajouter au début de la liste }
  struct_list := new_struct;
  Inc(struct_count);
- 
+
  create_struct := new_struct;
 End;
 
@@ -2509,24 +2559,26 @@ Var
  member_size: Integer;
 Begin
  add_struct_member := False;
- 
+
  If struct_def = nil Then Exit;
- 
+
  With struct_def^ do
  Begin
   If member_count >= 16 Then
   Begin
    Case Language of
     _English: errrpt('Too many members in struct: ' + name);
+    {$IFDEF FPC}
     _Germany: errrpt('Zu viele Mitglieder in Struct: ' + name);
+    {$ENDIF}
     Else errrpt('Trop de membres dans la structure: ' + name);
    End;
    Exit;
   End;
-  
+
   { Calculer la taille du membre }
   member_size := calculate_type_size(type_info);
-  
+
   { Initialiser le membre }
   With members[member_count] do
   Begin
@@ -2534,7 +2586,7 @@ Begin
    member_type := member_type;
    type_info := type_info;
    size := member_size;
-   
+
    If is_union Then
    Begin
     { Dans une union, tous les membres ont offset 0 }
@@ -2550,7 +2602,7 @@ Begin
     total_size := total_size + member_size;
    End;
   End;
-  
+
   Inc(member_count);
   add_struct_member := True;
  End;
@@ -2640,20 +2692,22 @@ Begin
     Begin
      Case Language of
       _English: errrpt('Unexpected end of file in struct/union');
-      _Germany: errrpt('Unerwartetes Dateiende in Struct/Union');  
+      {$IFDEF FPC}
+      _Germany: errrpt('Unerwartetes Dateiende in Struct/Union');
+      {$ENDIF}
       Else errrpt('Fin de fichier inattendue dans struct/union');
      End;
      Exit;
     End;
    End;
-   
+
    blanks; { Ignorer les espaces }
-   
+
    { Vérifier si c'est la fin de la struct }
    If peek_char = '}' Then Break;
-   
+
    safe_writeln('; Dans boucle parsing - membre détecté');
-   safe_writeln('; Parsing membre...'); 
+   safe_writeln('; Parsing membre...');
    blanks; { S'assurer qu'on ignore les espaces }
    { Analyser le type du membre }
    member_type := parse_type_specifier;
@@ -2665,55 +2719,63 @@ Begin
    Begin
     Case Language of
      _English: errrpt('Expected member type in struct/union');
+     {$IFDEF FPC}
      _Germany: errrpt('Erwarteter Mitgliedstyp in Struct/Union');
+     {$ENDIF}
      Else errrpt('Type de membre attendu dans struct/union');
     End;
     Exit;
    End;
-   
+
    { Analyser le nom du membre }
    safe_writeln('; Tentative lecture nom membre...');
    If not symname(member_name) Then
    Begin
     Case Language of
      _English: errrpt('Expected member name in struct/union');
+     {$IFDEF FPC}
      _Germany: errrpt('Erwarteter Mitgliedsname in Struct/Union');
+     {$ENDIF}
      Else errrpt('Nom de membre attendu dans struct/union');
     End;
     Exit;
    End;
-   
+
    safe_writeln('; Nom de membre lu: ' + member_name);
-   
+
    { Ajouter le membre à la structure }
    If not add_struct_member(struct_def, member_name, member_type, member_type_info) Then
     Exit;
-   
+
    { Consommer le point-virgule }
    If not match(';') Then
    Begin
     Case Language of
      _English: errrpt('Expected ; after struct member');
+     {$IFDEF FPC}
      _Germany: errrpt('Erwartete ; nach Struct-Mitglied');
+     {$ENDIF}
      Else errrpt('; attendu après membre de structure');
     End;
     Exit;
    End;
-   
+
    safe_writeln('; Membre ajouté: ' + member_name);
   Until False; { La boucle se termine par les Break }
-  
+
   { Consommer l'accolade de fermeture }
   If not match('}') Then
   Begin
    Case Language of
     _English: errrpt('Expected } to close struct/union');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete } zum Schließen der Struct/Union');
+    {$ENDIF}
     Else errrpt('} attendu pour fermer struct/union');
    End;
    Exit;
   End;
-  
+
   { Afficher les informations de la structure }
   With struct_def^ do
   Begin
@@ -2722,7 +2784,7 @@ Begin
    Else
     safe_writeln('; Structure ' + name + ' définie, taille: ' + IntToStr(total_size) + ' octets');
   End;
-  
+
   parse_struct_declaration := struct_def^.struct_id;
  End
  Else
@@ -2733,12 +2795,14 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Undefined struct/union: ' + struct_name);
+    {$IFDEF FPC}
     _Germany: errrpt('Undefinierte Struct/Union: ' + struct_name);
+    {$ENDIF}
     Else errrpt('Structure/Union non définie: ' + struct_name);
    End;
    Exit;
   End;
-  
+
   parse_struct_declaration := struct_def^.struct_id;
  End;
 End;
@@ -3097,27 +3161,31 @@ Begin
    Begin
     Case Language of
      _English: errrpt('Expected number in enum initializer');
+     {$IFDEF FPC}
      _Germany: errrpt('Zahl in Enum-Initialisierung erwartet');
+     {$ENDIF}
      Else errrpt('Nombre attendu dans initialisation enum');
     End;
    End;
   End;
-  
+
   { Ajouter la constante enum à la table des symboles }
   Str(enum_value, value_str);
   safe_writeln(identifier + ' equ ' + value_str);
   Inc(enum_value); { Prochaine valeur par défaut }
-  
+
   { Continuer avec les autres identifiants si virgule }
   If not match(',') Then Break;
  Until False;
- 
+
  { Attendre la fermeture de accolade }
  If not match('}') Then
  Begin
   Case Language of
    _English: errrpt('Expected closing brace in enum');
+   {$IFDEF FPC}
    _Germany: errrpt('Schliessende Klammer in Enum erwartet');
+   {$ENDIF}
    Else errrpt('Accolade fermante attendue dans enum');
   End;
  End;
@@ -3183,7 +3251,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected variable name');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwarteter Variablenname');
+   {$ENDIF}
    Else errrpt('Nom de variable attendu');
   End;
   parse_declarator := 0;
@@ -3207,7 +3277,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected closing bracket');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete schließende Klammer');
+    {$ENDIF}
     Else errrpt('Crochet fermant attendu');
    End;
   End;
@@ -3237,7 +3309,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected function name');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwarteter Funktionsname');
+   {$ENDIF}
    Else errrpt('Nom de fonction attendu');
   End;
   Exit;
@@ -3250,7 +3324,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ( after function name');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach Funktionsname');
+   {$ENDIF}
    Else errrpt('( attendu après le nom de fonction');
   End;
   Exit;
@@ -3296,7 +3372,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected { to begin function body');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete { um Funktionskorper zu beginnen');
+    {$ENDIF}
     Else errrpt('{ attendu pour commencer le corps de fonction');
    End;
    Exit;
@@ -3310,7 +3388,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected ; after function declaration');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete ; nach Funktionsdeklaration');
+    {$ENDIF}
     Else errrpt('; attendu après déclaration de fonction');
    End;
    Exit;
@@ -3346,7 +3426,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ( in function call');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( im Funktionsaufruf');
+   {$ENDIF}
    Else errrpt('( attendu dans l''appel de fonction');
   End;
   Exit;
@@ -3374,7 +3456,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected ) after function arguments');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach Funktionsargumenten');
+    {$ENDIF}
     Else errrpt(') attendu après les arguments de fonction');
    End;
   End;
@@ -3385,7 +3469,7 @@ Begin
 
  { Configurer la valeur de retour }
  FillChar(lval, SizeOf(lval), 0);
- 
+
  { Obtenir le type de retour depuis la liste chaînée }
  func_node := get_function_node(func_index);
  If func_node <> nil Then
@@ -3409,7 +3493,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Variable ' + var_name + ' already declared');
+   {$IFDEF FPC}
    _Germany: errrpt('Variable ' + var_name + ' bereits deklariert');
+   {$ENDIF}
    Else errrpt('Variable ' + var_name + ' déjà déclarée');
   End;
   Exit;
@@ -3424,7 +3510,7 @@ Begin
  Begin
   { Stocker les informations de type directement dans le symbole }
   sym_ptr^.type_info := type_info;
-  
+
   If use_stdout Then WriteLn('; Variable déclarée: ', var_name, ' (', get_type_name(type_info), ')')
                 Else safe_writeln('; Variable déclarée: ' + var_name);
 
@@ -3535,6 +3621,9 @@ Begin
  
  If include_depth <= 0 Then Exit;
  
+ { Unmark current file as no longer being processed }
+ { unmark_file_included(current_filename); } { Commented out for now }
+
  { Fermer le fichier d'inclusion actuel en toute sécurité }
  {$I-}
  System.Close(input);
@@ -3555,8 +3644,14 @@ Begin
    Exit;
   End;
   {$I+}
+  
+  { Restore line state properly }
+  line := saved_line;
+  lptr := saved_lptr;
+  eof := saved_eof;
  End;
  
+ safe_writeln('; Returned from include file to: ' + current_filename);
  pop_include_file := True;
 End;
 
@@ -3612,6 +3707,77 @@ Begin
 End;
 
 { Include file management functions }
+
+{ Initialize inclusion system }
+Procedure init_inclusion_system;
+Var
+ i: Integer;
+Begin
+ include_depth := 0;
+ included_count := 0;
+ current_filename := 'main.c'; { Default main file }
+ 
+ For i := 0 to 49 do
+ Begin
+  included_files[i].filename := '';
+  included_files[i].is_included := False;
+ End;
+End;
+
+{ Check if a file is already included }
+Function is_file_included(filename: String): Boolean;
+Var
+ i: Integer;
+Begin
+ is_file_included := False;
+ For i := 0 to included_count - 1 do
+ Begin
+  If included_files[i].filename = filename Then
+  Begin
+   is_file_included := included_files[i].is_included;
+   Exit;
+  End;
+ End;
+End;
+
+{ Mark a file as included }
+Procedure mark_file_included(filename: String);
+Var
+ i: Integer;
+Begin
+ { Check if already in table }
+ For i := 0 to included_count - 1 do
+ Begin
+  If included_files[i].filename = filename Then
+  Begin
+   included_files[i].is_included := True;
+   Exit;
+  End;
+ End;
+ 
+ { Add new entry if space available }
+ If included_count < 50 Then
+ Begin
+  included_files[included_count].filename := filename;
+  included_files[included_count].is_included := True;
+  Inc(included_count);
+ End;
+End;
+
+{ Unmark a file when leaving its scope }
+Procedure unmark_file_included(filename: String);
+Var
+ i: Integer;
+Begin
+ For i := 0 to included_count - 1 do
+ Begin
+  If included_files[i].filename = filename Then
+  Begin
+   included_files[i].is_included := False;
+   Exit;
+  End;
+ End;
+End;
 Function extract_filename(include_line: String): String;
 Var
  start_pos, end_pos: Integer;
@@ -3637,7 +3803,7 @@ Begin
    Begin
     Inc(start_pos); { Skip opening quote/bracket }
     end_pos := start_pos;
-    
+
     { Find closing quote or bracket }
     While (end_pos <= Length(include_line)) and 
           (include_line[end_pos] <> '"') and 
@@ -3657,17 +3823,32 @@ Function push_include_file(include_filename: String): Boolean;
 Begin
  push_include_file := False;
  
+ { Check for circular inclusion }
+ If is_file_included(include_filename) Then
+ Begin
+  Case Language of
+   _English: errrpt('Circular inclusion detected: ' + include_filename);
+   {$IFDEF FPC}
+   _Germany: errrpt('Zirkuläre Einbindung erkannt: ' + include_filename);
+   {$ENDIF}
+   Else errrpt('Inclusion circulaire détectée: ' + include_filename);
+  End;
+  Exit;
+ End;
+
  { Check for maximum include depth }
  If include_depth >= 10 Then
  Begin
   Case Language of
    _English: errrpt('Include depth too deep (max 10): ' + include_filename);
+   {$IFDEF FPC}
    _Germany: errrpt('Include-Tiefe zu tief (max 10): ' + include_filename);
+   {$ENDIF}
    Else errrpt('Profondeur d''inclusion trop importante (max 10): ' + include_filename);
   End;
   Exit;
  End;
- 
+
  { Save current file state }
  With include_stack[include_depth] do
  Begin
@@ -3689,20 +3870,26 @@ Begin
    Assign(input, include_stack[include_depth].filename);
    Reset(input);
   End;
-  
+
   Case Language of
    _English: errrpt('Cannot open include file: ' + include_filename);
+   {$IFDEF FPC}
    _Germany: errrpt('Kann Include-Datei nicht öffnen: ' + include_filename);
+   {$ENDIF}
    Else errrpt('Impossible d''ouvrir le fichier d''inclusion: ' + include_filename);
   End;
   Exit;
  End;
  {$I+}
  
+ { Mark file as included to prevent circular inclusion }
+ mark_file_included(include_filename);
+ 
  { Update state }
  Inc(include_depth);
  current_filename := include_filename;
  eof := 0;
+ lptr := 1; { Reset line pointer for new file }
  
  safe_writeln('; Including file: ' + include_filename);
  push_include_file := True;
@@ -3719,7 +3906,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Invalid #include directive syntax');
+   {$IFDEF FPC}
    _Germany: errrpt('Ungültige #include-Direktiven-Syntax');
+   {$ENDIF}
    Else errrpt('Syntaxe de directive #include invalide');
   End;
   Exit;
@@ -3760,6 +3949,35 @@ Begin
  End;
 End;
 
+{ Remove a #define constant }
+Function remove_define(def_name: String): Boolean;
+Var
+ current, prev: PDefine;
+Begin
+ remove_define := False;
+ current := define_list;
+ prev := nil;
+ 
+ While current <> nil do
+ Begin
+  If current^.in_use and (current^.name = def_name) Then
+  Begin
+   { Found it - remove from list }
+   If prev = nil Then
+    define_list := current^.next  { First in list }
+   Else
+    prev^.next := current^.next;  { Not first in list }
+   
+   Dispose(current);
+   Dec(define_count);
+   remove_define := True;
+   Exit;
+  End;
+  prev := current;
+  current := current^.next;
+ End;
+End;
+
 { Add a new #define constant }
 Function add_define(def_name, def_value: String): Boolean;
 Var
@@ -3767,15 +3985,27 @@ Var
 Begin
  add_define := False;
  
- { Check if already defined }
+ { Check if already defined and allow redefinition with warning }
  If find_define(def_name) <> nil Then
  Begin
   Case Language of
-   _English: errrpt('Macro ' + def_name + ' already defined');
-   _Germany: errrpt('Makro ' + def_name + ' bereits definiert');
-   Else errrpt('Macro ' + def_name + ' déjà défini');
+   _English:Begin
+     WriteLn('; Warning: Macro ' + def_name + ' redefined (previous definition ignored)');
+     { Remove old definition }
+     remove_define(def_name);
+    End;
+    {$IFDEF FPC}
+   _Germany:Begin
+     WriteLn('; Warnung: Makro ' + def_name + ' neu definiert (vorherige Definition ignoriert)');
+     remove_define(def_name);
+    End;
+    {$ENDIF}
+   Else
+    Begin
+     WriteLn('; Avertissement: Macro ' + def_name + ' redéfini (définition précédente ignorée)');
+     remove_define(def_name);
+    End;
   End;
-  Exit;
  End;
  
  { Allocate new define in heap }
@@ -3784,7 +4014,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Out of memory for #define constants');
+   {$IFDEF FPC}
    _Germany: errrpt('Kein Speicher für #define-Konstanten');
+   {$ENDIF}
    Else errrpt('Mémoire insuffisante pour les constantes #define');
   End;
   Exit;
@@ -3848,21 +4080,23 @@ Begin
         ((define_line[line_pos] >= '0') and (define_line[line_pos] <= '9')) or
         (define_line[line_pos] = '_')) do
   Inc(line_pos);
- 
+
  If line_pos > start_pos Then
   def_name := Copy(define_line, start_pos, line_pos - start_pos)
  Else
  Begin
   Case Language of
    _English: errrpt('Invalid #define directive: missing name');
+   {$IFDEF FPC}
    _Germany: errrpt('Ungültige #define-Direktive: Name fehlt');
+   {$ENDIF}
    Else errrpt('Directive #define invalide: nom manquant');
   End;
   Exit;
  End;
- 
+
  { Skip whitespace before value }
- While (line_pos <= Length(define_line)) and 
+ While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
  
@@ -4048,12 +4282,14 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Too many nested #if directives (max 32)');
+   {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #if-Direktiven (max 32)');
+   {$ENDIF}
    Else errrpt('Trop de directives #if imbriquées (max 32)');
   End;
   Exit;
  End;
- 
+
  condition_value := evaluate_constant_expression(temp_condition);
  
  With condition_stack[condition_depth] do
@@ -4088,12 +4324,14 @@ Begin
   Delete(temp_name, 1, 1);
  While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
   Delete(temp_name, Length(temp_name), 1);
- 
+
  If condition_depth >= 32 Then
  Begin
   Case Language of
    _English: errrpt('Too many nested #ifdef directives (max 32)');
+   {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #ifdef-Direktiven (max 32)');
+   {$ENDIF}
    Else errrpt('Trop de directives #ifdef imbriquées (max 32)');
   End;
   Exit;
@@ -4133,19 +4371,21 @@ Begin
   Delete(temp_name, 1, 1);
  While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
   Delete(temp_name, Length(temp_name), 1);
- 
+
  If condition_depth >= 32 Then
  Begin
   Case Language of
    _English: errrpt('Too many nested #ifndef directives (max 32)');
+   {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #ifndef-Direktiven (max 32)');
+   {$ENDIF}
    Else errrpt('Trop de directives #ifndef imbriquées (max 32)');
   End;
   Exit;
  End;
- 
+
  define_exists := (find_define(temp_name) <> nil);
- 
+
  With condition_stack[condition_depth] do
  Begin
   condition_type := COND_IFNDEF;
@@ -4183,7 +4423,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('#elif without matching #if');
+   {$IFDEF FPC}
    _Germany: errrpt('#elif ohne passendes #if');
+   {$ENDIF}
    Else errrpt('#elif sans #if correspondant');
   End;
   Exit;
@@ -4195,12 +4437,14 @@ Begin
   Begin
    Case Language of
     _English: errrpt('#elif after #else');
+    {$IFDEF FPC}
     _Germany: errrpt('#elif nach #else');
+    {$ENDIF}
     Else errrpt('#elif après #else');
    End;
    Exit;
   End;
-  
+
   { Évaluer seulement si aucune branche précédente n'était vraie }
   If not has_true_branch Then
   Begin
@@ -4216,7 +4460,7 @@ Begin
  
  If use_stdout Then WriteLn('; #elif ', temp_condition)
                Else safe_writeln('; #elif ' + temp_condition);
- 
+
  process_elif_directive := True;
 End;
 
@@ -4224,29 +4468,33 @@ End;
 Function process_else_directive: Boolean;
 Begin
  process_else_directive := False;
- 
+
  If condition_depth = 0 Then
  Begin
   Case Language of
    _English: errrpt('#else without matching #if');
+   {$IFDEF FPC}
    _Germany: errrpt('#else ohne passendes #if');
+   {$ENDIF}
    Else errrpt('#else sans #if correspondant');
   End;
   Exit;
  End;
- 
+
  With condition_stack[condition_depth - 1] do
  Begin
   If in_else Then
   Begin
    Case Language of
     _English: errrpt('Multiple #else in same #if block');
+    {$IFDEF FPC}
     _Germany: errrpt('Mehrere #else im selben #if-Block');
+    {$ENDIF}
     Else errrpt('Plusieurs #else dans le même bloc #if');
    End;
    Exit;
   End;
-  
+
   in_else := True;
   { #else est vrai seulement si aucune branche précédente n'était vraie }
   is_true := not has_true_branch;
@@ -4264,12 +4512,14 @@ End;
 Function process_endif_directive: Boolean;
 Begin
  process_endif_directive := False;
- 
+
  If condition_depth = 0 Then
  Begin
   Case Language of
    _English: errrpt('#endif without matching #if');
+   {$IFDEF FPC}
    _Germany: errrpt('#endif ohne passendes #if');
+   {$ENDIF}
    Else errrpt('#endif sans #if correspondant');
   End;
   Exit;
@@ -4306,7 +4556,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Array not found: ' + array_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
+   {$ENDIF}
    Else errrpt('Tableau non trouvé: ' + array_name);
   End;
   Exit;
@@ -4317,7 +4569,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Variable is not an array: ' + array_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Variable ist kein Array: ' + array_name);
+   {$ENDIF}
    Else errrpt('La variable n''est pas un tableau: ' + array_name);
   End;
   Exit;
@@ -4328,7 +4582,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected [ for array index');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete [ für Array-Index');
+   {$ENDIF}
    Else errrpt('[ attendu pour l''index du tableau');
   End;
   Exit;
@@ -4344,7 +4600,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ] after array index');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
+   {$ENDIF}
    Else errrpt('] attendu après l''index du tableau');
   End;
   Exit;
@@ -4382,19 +4640,23 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Struct variable not found: ' + struct_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Struct-Variable nicht gefunden: ' + struct_name);
+   {$ENDIF}
    Else errrpt('Variable de structure non trouvée: ' + struct_name);
   End;
   Exit;
  End;
 
  { Vérifier que c'est bien une structure }
- If (struct_symbol^.type_info.base_type <> cstruct) and 
+ If (struct_symbol^.type_info.base_type <> cstruct) and
     (struct_symbol^.type_info.base_type <> cunion) Then
  Begin
   Case Language of
    _English: errrpt('Variable is not a struct/union: ' + struct_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Variable ist kein Struct/Union: ' + struct_name);
+   {$ENDIF}
    Else errrpt('La variable n''est pas une structure/union: ' + struct_name);
   End;
   Exit;
@@ -4407,7 +4669,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected -> for pointer member access');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete -> für Pointer-Mitgliedszugriff');
+    {$ENDIF}
     Else errrpt('-> attendu pour l''accès aux membres de pointeur');
    End;
    Exit;
@@ -4419,7 +4683,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected . for struct member access');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete . für Struct-Mitgliedszugriff');
+    {$ENDIF}
     Else errrpt('. attendu pour l''accès aux membres de structure');
    End;
    Exit;
@@ -4431,7 +4697,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected member name after .');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwarteter Mitgliedsname nach .');
+   {$ENDIF}
    Else errrpt('Nom de membre attendu après .');
   End;
   Exit;
@@ -4443,7 +4711,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Struct definition not found');
+   {$IFDEF FPC}
    _Germany: errrpt('Struct-Definition nicht gefunden');
+   {$ENDIF}
    Else errrpt('Définition de structure non trouvée');
   End;
   Exit;
@@ -5401,7 +5671,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('const variable ' + var_name + ' must be initialized');
+    {$IFDEF FPC}
     _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
+    {$ENDIF}
     Else errrpt('la variable const ' + var_name + ' doit être initialisée');
    End;
   End;
@@ -5448,7 +5720,9 @@ Begin
    Begin
     Case Language of
      _English: errrpt('const variable ' + var_name + ' must be initialized');
+     {$IFDEF FPC}
      _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
+     {$ENDIF}
      Else errrpt('la variable const ' + var_name + ' doit être initialisée');
     End;
    End;
@@ -5666,7 +5940,7 @@ Begin
  { Save position for condition parsing }
  blanks;
  condition_start := lptr;
- 
+
  { Skip over condition to find its end }
  While (ch <> ';') and (ch <> #0) Do gch;
  condition_end := lptr;
@@ -5679,7 +5953,7 @@ Begin
  { Save position for increment parsing }
  blanks;
  increment_start := lptr;
- 
+
  { Skip over increment to find its end }
  While (ch <> ')') and (ch <> #0) Do gch;
  increment_end := lptr;
@@ -5697,7 +5971,7 @@ Begin
  { Increment label - where continue jumps to }
  prelabel(increment_label);
  safe_writeln('; FOR increment');
- 
+
  { Re-parse and execute increment from saved position }
  saved_lptr := lptr;  { Save current position }
  lptr := increment_start;  { Set to increment start }
@@ -5708,7 +5982,7 @@ Begin
  End;
  lptr := saved_lptr;  { Restore position }
  gch;  { Refresh current character }
- 
+
  ot('lbra ');
  printlabel(condition_label);
  nl;
@@ -5927,7 +6201,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected label name after goto');
+   {$IFDEF FPC}
    _Germany: errrpt('Label-Name nach goto erwartet');
+   {$ENDIF}
    Else errrpt('Nom d''étiquette attendu après goto');
   End;
   Exit;
@@ -5984,7 +6260,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ( after switch');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach switch');
+   {$ENDIF}
    Else errrpt('( attendu après switch');
   End;
   Exit;
@@ -6000,7 +6278,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ) after switch expression');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ) nach switch-Ausdruck');
+   {$ENDIF}
    Else errrpt(') attendu après expression switch');
   End;
   Exit;
@@ -6020,7 +6300,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected { after switch statement');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete { nach switch-Anweisung');
+   {$ENDIF}
    Else errrpt('{ attendu après instruction switch');
   End;
   Exit;
@@ -6039,7 +6321,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected } to close switch');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete } zum Schließen von switch');
+   {$ENDIF}
    Else errrpt('} attendu pour fermer switch');
   End;
  End;
@@ -6066,7 +6350,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected constant after case');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete Konstante nach case');
+   {$ENDIF}
    Else errrpt('Constante attendue après case');
   End;
   Exit;
@@ -6077,7 +6363,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected : after case value');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach case-Wert');
+   {$ENDIF}
    Else errrpt(': attendu après valeur case');
   End;
   Exit;
@@ -6109,7 +6397,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected : after default');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach default');
+   {$ENDIF}
    Else errrpt(': attendu après default');
   End;
   Exit;
@@ -6151,7 +6441,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Unexpected end of file in compound statement');
+    {$IFDEF FPC}
     _Germany: errrpt('Unerwartetes Dateiende in zusammengesetzter Anweisung');
+    {$ENDIF}
     Else errrpt('Fin de fichier inattendue dans l''instruction composée');
    End;
    Exit;
@@ -6194,9 +6486,7 @@ Begin
  parse_expression_statement := True;
 
  { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after expression');
-
+ If not match(';') Then errrpt('Expected ; after expression');
  safe_writeln('; Expression statement');
 End;
 
@@ -6213,7 +6503,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Array not found: ' + array_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
+   {$ENDIF}
    Else errrpt('Tableau non trouvé: ' + array_name);
   End;
   Exit;
@@ -6224,7 +6516,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Variable is not an array: ' + array_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Variable ist kein Array: ' + array_name);
+   {$ENDIF}
    Else errrpt('La variable n''est pas un tableau: ' + array_name);
   End;
   Exit;
@@ -6240,7 +6534,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ] after array index');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
+   {$ENDIF}
    Else errrpt('] attendu après l''index du tableau');
   End;
   Exit;
@@ -6251,7 +6547,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected = in array assignment');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete = in Array-Zuweisung');
+   {$ENDIF}
    Else errrpt('= attendu dans l''assignation de tableau');
   End;
   Exit;
@@ -6343,7 +6641,7 @@ Begin
   Begin
    { This is a simple variable assignment }
    blanks;
-   
+
    { Look up variable }
    If lookup_variable(var_name, lval) Then
    Begin
@@ -6352,15 +6650,17 @@ Begin
     Begin
      Case Language of
       _English: errrpt('Cannot assign to const variable: ' + var_name);
+      {$IFDEF FPC}
       _Germany: errrpt('Kann const Variable nicht zuweisen: ' + var_name);
+      {$ENDIF}
       Else errrpt('Impossible d''assigner à la variable const: ' + var_name);
      End;
      Exit;
     End;
-    
+
     { Parse right side expression }
     expression(right_lval);
-    
+
     { Generate assignment code }
     ot('std  ');
     outstr(var_name);
@@ -6502,7 +6802,11 @@ Begin
     If not should_skip_code Then
     Begin
      If process_include_directive(line) Then
-      Continue  { Continue with included file }
+     Begin
+      { Include successful - reset line pointer and continue with included file }
+      lptr := Length(line) + 1; { Force readinline to be called for new file }
+      Continue;
+     End
      Else
      Begin
       { Error already reported, skip this line }
@@ -6636,7 +6940,9 @@ Begin
      Begin
       Case Language of
        _English: errrpt('Cannot assign to const variable: ' + sname);
+       {$IFDEF FPC}
        _Germany: errrpt('Kann const Variable nicht zuweisen: ' + sname);
+       {$ENDIF}
        Else errrpt('Impossible d''assigner à la variable const: ' + sname);
       End;
      End
@@ -6822,6 +7128,9 @@ BEGIN
  
  { Initialize defines table }
  init_defines;
+ 
+ { Initialize inclusion system }
+ init_inclusion_system;
  
  { Initialize conditions system }
  init_conditions;
