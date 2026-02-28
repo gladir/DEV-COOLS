@@ -229,6 +229,25 @@ Type
   next: PDefine;        { Pointeur vers le prochain define dans la liste chaînée }
  End;
 
+ { Gestion des directives de préprocesseur conditionnelles }
+ TConditionType = (
+  COND_IF,      { #if }
+  COND_IFDEF,   { #ifdef }
+  COND_IFNDEF,  { #ifndef }
+  COND_ELIF     { #elif }
+ );
+
+ TConditionState = Record
+  condition_type: TConditionType; { Type de condition }
+  is_true: Boolean;               { Évaluation actuelle de la condition }
+  has_true_branch: Boolean;       { Si une branche vraie a été trouvée }
+  in_else: Boolean;               { Si nous sommes dans un bloc #else }
+  line_number: Integer;           { Numéro de ligne pour debug }
+ End;
+
+ { Pile de conditions pour directives imbriquées }
+ TConditionStack = Array[0..31] of TConditionState;
+
  { Table de symboles utilisant la mémoire de tas au lieu du segment de données }
  PSymbol = ^TSymbol;
  TSymbol = Record
@@ -317,6 +336,11 @@ Var
  { Gestion Define/Macro - utilisation du tas (liste chaînée) }
  define_list: PDefine;  { Tête de la liste chaînée des defines }
  define_count: Integer; { Nombre de définitions actuellement en usage }
+
+ { Gestion des directives conditionnelles de préprocesseur }
+ condition_stack: TConditionStack; { Pile de conditions }
+ condition_depth: Integer;         { Profondeur actuelle de la pile }
+ skip_code: Boolean;               { Vrai si on doit ignorer le code actuel }
 
  { Informations de type étendues - maintenant stockées directement dans les symboles }
   type_info_count: Integer;
@@ -3932,6 +3956,343 @@ Begin
  define_count := 0;
 End;
 
+{ ============================================================================ }
+{ FONCTIONS DE GESTION DES DIRECTIVES CONDITIONNELLES                         }
+{ ============================================================================ }
+
+{ Initialiser la pile de conditions }
+Procedure init_conditions;
+Begin
+ condition_depth := 0;
+ skip_code := False;
+End;
+
+{ Évaluer une expression constante simple pour #if }
+Function evaluate_constant_expression(expr: String): Integer;
+Var
+ result: Integer;
+ error_code: Integer;
+ define_ptr: PDefine;
+ temp_str: String;
+ i: Integer;
+Begin
+ result := 0;
+ temp_str := expr;
+ 
+ { Supprimer les espaces au début et à la fin }
+ While (Length(temp_str) > 0) and (temp_str[1] = ' ') do
+  Delete(temp_str, 1, 1);
+ While (Length(temp_str) > 0) and (temp_str[Length(temp_str)] = ' ') do
+  Delete(temp_str, Length(temp_str), 1);
+ 
+ { Vérifier si c'est un nombre }
+ If (Length(temp_str) > 0) and (temp_str[1] in ['0'..'9']) Then
+ Begin
+  Val(temp_str, result, error_code);
+  If error_code <> 0 Then result := 0; { Si erreur, retourner 0 }
+ End
+ { Vérifier si c'est un define }
+ Else If temp_str <> '' Then
+ Begin
+  define_ptr := find_define(temp_str);
+  If define_ptr <> nil Then
+  Begin
+   { Évaluer récursivement la valeur du define }
+   result := evaluate_constant_expression(define_ptr^.value);
+  End
+  Else
+   result := 0; { Define non trouvé = 0 }
+ End;
+ 
+ evaluate_constant_expression := result;
+End;
+
+{ Vérifier si on doit ignorer le code actuel }
+Function should_skip_code: Boolean;
+Var
+ i: Integer;
+Begin
+ should_skip_code := False;
+ 
+ { Parcourir la pile de conditions }
+ For i := 0 to condition_depth - 1 do
+ Begin
+  With condition_stack[i] do
+  Begin
+   { Si une condition est fausse et qu'on n'est pas dans un else vrai }
+   If not is_true and not (in_else and not has_true_branch) Then
+   Begin
+    should_skip_code := True;
+    Exit;
+   End;
+  End;
+ End;
+End;
+
+{ Traiter la directive #if }
+Function process_if_directive(condition: String): Boolean;
+Var
+ condition_value: Integer;
+ temp_condition: String;
+Begin
+ process_if_directive := False;
+ 
+ { Nettoyer la condition (supprimer espaces et retour chariot) }
+ temp_condition := condition;
+ While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
+  Delete(temp_condition, 1, 1);
+ While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
+  Delete(temp_condition, Length(temp_condition), 1);
+ 
+ If condition_depth >= 32 Then
+ Begin
+  Case Language of
+   _English: errrpt('Too many nested #if directives (max 32)');
+   _Germany: errrpt('Zu viele verschachtelte #if-Direktiven (max 32)');
+   Else errrpt('Trop de directives #if imbriquées (max 32)');
+  End;
+  Exit;
+ End;
+ 
+ condition_value := evaluate_constant_expression(temp_condition);
+ 
+ With condition_stack[condition_depth] do
+ Begin
+  condition_type := COND_IF;
+  is_true := (condition_value <> 0);
+  has_true_branch := is_true;
+  in_else := False;
+  line_number := 0; { À implémenter si nécessaire }
+ End;
+ 
+ Inc(condition_depth);
+ skip_code := should_skip_code;
+ 
+ If use_stdout Then WriteLn('; #if ', temp_condition, ' = ', condition_value)
+               Else safe_writeln('; #if ' + temp_condition + ' = ' + IntToStr(condition_value));
+ 
+ process_if_directive := True;
+End;
+
+{ Traiter la directive #ifdef }
+Function process_ifdef_directive(define_name: String): Boolean;
+Var
+ define_exists: Boolean;
+ temp_name: String;
+Begin
+ process_ifdef_directive := False;
+ 
+ { Nettoyer le nom (supprimer espaces et retour chariot) }
+ temp_name := define_name;
+ While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
+  Delete(temp_name, 1, 1);
+ While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
+  Delete(temp_name, Length(temp_name), 1);
+ 
+ If condition_depth >= 32 Then
+ Begin
+  Case Language of
+   _English: errrpt('Too many nested #ifdef directives (max 32)');
+   _Germany: errrpt('Zu viele verschachtelte #ifdef-Direktiven (max 32)');
+   Else errrpt('Trop de directives #ifdef imbriquées (max 32)');
+  End;
+  Exit;
+ End;
+ 
+ define_exists := (find_define(temp_name) <> nil);
+ 
+ With condition_stack[condition_depth] do
+ Begin
+  condition_type := COND_IFDEF;
+  is_true := define_exists;
+  has_true_branch := is_true;
+  in_else := False;
+  line_number := 0;
+ End;
+ 
+ Inc(condition_depth);
+ skip_code := should_skip_code;
+ 
+ If use_stdout Then WriteLn('; #ifdef ', temp_name, ' = ', define_exists)
+               Else safe_writeln('; #ifdef ' + temp_name + ' = ' + IntToStr(Ord(define_exists)));
+ 
+ process_ifdef_directive := True;
+End;
+
+{ Traiter la directive #ifndef }
+Function process_ifndef_directive(define_name: String): Boolean;
+Var
+ define_exists: Boolean;
+ temp_name: String;
+Begin
+ process_ifndef_directive := False;
+ 
+ { Nettoyer le nom (supprimer espaces et retour chariot) }
+ temp_name := define_name;
+ While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
+  Delete(temp_name, 1, 1);
+ While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
+  Delete(temp_name, Length(temp_name), 1);
+ 
+ If condition_depth >= 32 Then
+ Begin
+  Case Language of
+   _English: errrpt('Too many nested #ifndef directives (max 32)');
+   _Germany: errrpt('Zu viele verschachtelte #ifndef-Direktiven (max 32)');
+   Else errrpt('Trop de directives #ifndef imbriquées (max 32)');
+  End;
+  Exit;
+ End;
+ 
+ define_exists := (find_define(temp_name) <> nil);
+ 
+ With condition_stack[condition_depth] do
+ Begin
+  condition_type := COND_IFNDEF;
+  is_true := not define_exists;
+  has_true_branch := is_true;
+  in_else := False;
+  line_number := 0;
+ End;
+ 
+ Inc(condition_depth);
+ skip_code := should_skip_code;
+ 
+ If use_stdout Then WriteLn('; #ifndef ', temp_name, ' = ', not define_exists)
+               Else safe_writeln('; #ifndef ' + temp_name + ' = ' + IntToStr(Ord(not define_exists)));
+ 
+ process_ifndef_directive := True;
+End;
+
+{ Traiter la directive #elif }
+Function process_elif_directive(condition: String): Boolean;
+Var
+ condition_value: Integer;
+ temp_condition: String;
+Begin
+ process_elif_directive := False;
+ 
+ { Nettoyer la condition (supprimer espaces et retour chariot) }
+ temp_condition := condition;
+ While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
+  Delete(temp_condition, 1, 1);
+ While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
+  Delete(temp_condition, Length(temp_condition), 1);
+ 
+ If condition_depth = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('#elif without matching #if');
+   _Germany: errrpt('#elif ohne passendes #if');
+   Else errrpt('#elif sans #if correspondant');
+  End;
+  Exit;
+ End;
+ 
+ With condition_stack[condition_depth - 1] do
+ Begin
+  If in_else Then
+  Begin
+   Case Language of
+    _English: errrpt('#elif after #else');
+    _Germany: errrpt('#elif nach #else');
+    Else errrpt('#elif après #else');
+   End;
+   Exit;
+  End;
+  
+  { Évaluer seulement si aucune branche précédente n'était vraie }
+  If not has_true_branch Then
+  Begin
+   condition_value := evaluate_constant_expression(temp_condition);
+   is_true := (condition_value <> 0);
+   If is_true Then has_true_branch := True;
+  End
+  Else
+   is_true := False; { Une branche précédente était vraie }
+ End;
+ 
+ skip_code := should_skip_code;
+ 
+ If use_stdout Then WriteLn('; #elif ', temp_condition)
+               Else safe_writeln('; #elif ' + temp_condition);
+ 
+ process_elif_directive := True;
+End;
+
+{ Traiter la directive #else }
+Function process_else_directive: Boolean;
+Begin
+ process_else_directive := False;
+ 
+ If condition_depth = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('#else without matching #if');
+   _Germany: errrpt('#else ohne passendes #if');
+   Else errrpt('#else sans #if correspondant');
+  End;
+  Exit;
+ End;
+ 
+ With condition_stack[condition_depth - 1] do
+ Begin
+  If in_else Then
+  Begin
+   Case Language of
+    _English: errrpt('Multiple #else in same #if block');
+    _Germany: errrpt('Mehrere #else im selben #if-Block');
+    Else errrpt('Plusieurs #else dans le même bloc #if');
+   End;
+   Exit;
+  End;
+  
+  in_else := True;
+  { #else est vrai seulement si aucune branche précédente n'était vraie }
+  is_true := not has_true_branch;
+ End;
+ 
+ skip_code := should_skip_code;
+ 
+ If use_stdout Then WriteLn('; #else')
+               Else safe_writeln('; #else');
+ 
+ process_else_directive := True;
+End;
+
+{ Traiter la directive #endif }
+Function process_endif_directive: Boolean;
+Begin
+ process_endif_directive := False;
+ 
+ If condition_depth = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('#endif without matching #if');
+   _Germany: errrpt('#endif ohne passendes #if');
+   Else errrpt('#endif sans #if correspondant');
+  End;
+  Exit;
+ End;
+ 
+ Dec(condition_depth);
+ skip_code := should_skip_code;
+ 
+ If use_stdout Then WriteLn('; #endif')
+               Else safe_writeln('; #endif');
+ 
+ process_endif_directive := True;
+End;
+
+{ Libérer les ressources des conditions }
+Procedure free_conditions;
+Begin
+ condition_depth := 0;
+ skip_code := False;
+ If use_stdout Then WriteLn('; Conditional compilation context cleared')
+               Else safe_writeln('; Contexte de compilation conditionnelle effacé');
+End;
+
 { Analyser l'accès aux tableaux avec indexation }
 Procedure parse_array_access(array_name: String; var lval: TLVal);
 Var
@@ -6124,15 +6485,6 @@ Begin
   End;
   {$I+}
 
-  { Apply macro expansion to the line before processing }
-  expanded_line := expand_macros(line);
-  If expanded_line <> line Then
-  Begin
-   line := expanded_line;
-   If use_stdout Then WriteLn('; Line after macro expansion: ', line)
-                 Else safe_writeln('; Line after macro expansion: ' + line);
-  End;
-
   { Simple comment processing }
   If match('/*') Then
   Begin
@@ -6141,30 +6493,86 @@ Begin
    Continue;
   End;
 
-  { Process preprocessor directives }
+  { Process preprocessor directives BEFORE macro expansion }
   If match('#') Then
   Begin
    If match('include') Then
    Begin
     { Process #include directive }
-    If process_include_directive(line) Then
-     Continue  { Continue with included file }
+    If not should_skip_code Then
+    Begin
+     If process_include_directive(line) Then
+      Continue  { Continue with included file }
+     Else
+     Begin
+      { Error already reported, skip this line }
+      Continue;
+     End;
+    End
     Else
     Begin
-     { Error already reported, skip this line }
+     { Skip include in conditional block }
      Continue;
     End;
    End
    Else If match('define') Then
    Begin
     { Process #define directive }
-    If process_define_directive(line) Then
-     Continue  { Continue with next line }
+    If not should_skip_code Then
+    Begin
+     If process_define_directive(line) Then
+      Continue  { Continue with next line }
+     Else
+     Begin
+      { Error already reported, skip this line }
+      Continue;
+     End;
+    End
     Else
     Begin
-     { Error already reported, skip this line }
+     { Skip define in conditional block }
      Continue;
     End;
+   End
+   Else If match('if ') Then
+   Begin
+    { Process #if directive }
+    blanks;
+    process_if_directive(Copy(line, lptr, 255));
+    Continue;
+   End
+   Else If match('ifdef ') Then
+   Begin
+    { Process #ifdef directive }
+    blanks;
+    process_ifdef_directive(Copy(line, lptr, 255));
+    Continue;
+   End
+   Else If match('ifndef ') Then
+   Begin
+    { Process #ifndef directive }
+    blanks;
+    process_ifndef_directive(Copy(line, lptr, 255));
+    Continue;
+   End
+   Else If match('elif ') Then
+   Begin
+    { Process #elif directive }
+    blanks;
+    process_elif_directive(Copy(line, lptr, 255));
+    Continue;
+   End
+   Else If match('else') Then
+   Begin
+    { Process #else directive }
+    process_else_directive;
+    Continue;
+   End
+   Else If match('endif') Then
+   Begin
+    { Process #endif directive }
+    process_endif_directive;
+    Continue;
    End
    Else
    Begin
@@ -6172,6 +6580,22 @@ Begin
     safe_writeln('; Skipping preprocessor directive: ' + line);
     Continue;
    End;
+  End;
+
+  { Check if we should skip code due to conditional compilation }
+  If should_skip_code Then
+  Begin
+   { Skip this line completely }
+   Continue;
+  End;
+
+  { Apply macro expansion to the line AFTER conditional processing }
+  expanded_line := expand_macros(line);
+  If expanded_line <> line Then
+  Begin
+   line := expanded_line;
+   If use_stdout Then WriteLn('; Line after macro expansion: ', line)
+                 Else safe_writeln('; Line after macro expansion: ' + line);
   End;
 
   { Skip empty lines }
@@ -6307,6 +6731,7 @@ BEGIN
     WriteLn('  -O2    Advanced optimizations (+ dead code, jumps)');
     WriteLn('  -O3    Aggressive optimizations (all)');
    End;
+   {$IFDEF FPC}
    _Germany:Begin
     WriteLn('CC09 - Dieser Befehl ermöglicht es, den C-Compiler für ',
             'den 6809-Mikroprozessor zu starten.');
@@ -6319,6 +6744,7 @@ BEGIN
     WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, Sprünge)');
     WriteLn('  -O3    Aggressive Optimierungen (alle)');
    End;
+   {$ENDIF}
    Else Begin
     WriteLn('CC09 - Cette commande permet de lancer le compilateur C pour ',
             'le microprocesseur 6809.');
@@ -6397,6 +6823,9 @@ BEGIN
  { Initialize defines table }
  init_defines;
  
+ { Initialize conditions system }
+ init_conditions;
+ 
  { Initialize control flow tables }
  init_goto_table;
  init_switch_table;
@@ -6454,6 +6883,7 @@ BEGIN
  parse;         { Analyse toutes les entr�e }
  trailer;       { Code de suivi }
  free_defines;  { Free define memory from heap }
+ free_conditions; { Free conditions system }
  free_symbols;  { Free symbol table from heap }
  free_structs;  { Free struct definitions from heap }
  closeout;      { Fermer la sortie }
