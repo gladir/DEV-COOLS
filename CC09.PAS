@@ -3317,19 +3317,15 @@ Function pop_include_file: Boolean;Begin
  pop_include_file := True;
 End;
 
-{ OpÃ©rations sur les fichiers }
-Function readinline: Boolean;
-Begin
+{ Op‚rations sur les fichiers }
+Function readinline: Boolean;Begin
  readinline := False;
-
  Repeat
-  { VÃ©rifier si le fichier d'entrÃ©e est correctement initialisÃ© }
+  { V‚rifier si le fichier d'entr‚e est correctement initialis‚ }
   {$I-}
-  If not System.Eof(input) Then
-  Begin
+  If not System.Eof(input) Then Begin
    ReadLn(input, line);
-   If IOResult = 0 Then
-   Begin
+   If IOResult = 0 Then Begin
     lptr := 1;
     readinline := True;
     Exit;
@@ -3345,21 +3341,21 @@ Begin
   {$I+}
   Else
   Begin
-   { Le fichier actuel est Ã  la fin }
+   { Le fichier actuel est … la fin }
    If include_depth > 0 Then
    Begin
-    { Nous sommes dans un fichier d'inclusion, retourner au fichier prÃ©cÃ©dent }
+    { Nous sommes dans un fichier d'inclusion, retourner au fichier pr‚c‚dent }
     If not pop_include_file Then
     Begin
      eof := 1;
      readinline := False;
      Exit;
     End;
-    { Continuer la boucle pour essayer de lire depuis le fichier restaurÃ© }
+    { Continuer la boucle pour essayer de lire depuis le fichier restaur‚ }
    End
    Else
    Begin
-    { Le fichier principal est Ã  la fin }
+    { Le fichier principal est … la fin }
     eof := 1;
     readinline := False;
     Exit;
@@ -3368,65 +3364,57 @@ Begin
  Until False;
 End;
 
-{ Include file management functions }
+{ Inclure les fonctions de gestion de fichiers }
 
-{ Initialize inclusion system }
+{ Initialise les inclusions systŠme }
 Procedure init_inclusion_system;
 Var
  i: Integer;
 Begin
  include_depth := 0;
  included_count := 0;
- current_filename := 'main.c'; { Default main file }
-
- For i := 0 to 49 do
- Begin
+ current_filename := 'main.c'; { Par d‚faut le fichier main }
+ For i := 0 to 49 do Begin
   included_files[i].filename := '';
   included_files[i].is_included := False;
  End;
 End;
 
-{ Check if a file is already included }
+{ V‚rifie si un fichier est d‚j… inclus }
 Function is_file_included(filename: String): Boolean;
 Var
  i: Integer;
 Begin
  is_file_included := False;
- For i := 0 to included_count - 1 do
- Begin
-  If included_files[i].filename = filename Then
-  Begin
+ For i := 0 to included_count - 1 do Begin
+  If included_files[i].filename = filename Then Begin
    is_file_included := included_files[i].is_included;
    Exit;
   End;
  End;
 End;
 
-{ Mark a file as included }
+{ Marque un fichier comme inclus }
 Procedure mark_file_included(filename: String);
 Var
  i: Integer;
 Begin
- { Check if already in table }
- For i := 0 to included_count - 1 do
- Begin
-  If included_files[i].filename = filename Then
-  Begin
+ { V‚rifie s'il est d‚j… dans la table }
+ For i := 0 to included_count - 1 do Begin
+  If included_files[i].filename = filename Then Begin
    included_files[i].is_included := True;
    Exit;
   End;
  End;
-
- { Add new entry if space available }
- If included_count < 50 Then
- Begin
+  { Ajout un nouvel entr‚e si l'espace est disponible }
+ If included_count < 50 Then Begin
   included_files[included_count].filename := filename;
   included_files[included_count].is_included := True;
   Inc(included_count);
  End;
 End;
 
-{ Unmark a file when leaving its scope }
+{ D‚sactivez le marquage d'un fichier lorsque vous quittez son p‚rimŠtre }
 Procedure unmark_file_included(filename: String);
 Var
  i: Integer;

@@ -1405,13 +1405,18 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   End
   Else
   Begin
-   ol('tsta        ; test du signe');
+   ol('cmp #0      ; test du signe');
    ol('bpl  +      ; si positif, partie haute = 0');
-   ol('ldd  #$FFFF ; si n�gatif, partie haute = $FFFF');
-   ol('std  -2,s   ; stocker partie haute');
-   ol('bra  ++');
-   ol('+ clr  -2,s  ; partie haute = 0');
-   ol('clr  -1,s');
+   ol('lda #$FF    ; si négatif, partie haute = $FFFF');
+   ol('ldx #$FF');
+   ol('sta $01FF,x ; stocker partie haute sur pile (6502)');
+   ol('dex');
+   ol('stx $01FF,x');
+   ol('jmp  ++');
+   ol('+ lda #0     ; partie haute = 0');
+   ol('sta $01FF,x ; nettoyer pile');
+   ol('dex');
+   ol('sta $01FF,x');
    ol('++');
   End;
  End
@@ -1424,19 +1429,27 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   Else
  If (from_type.base_type = cchar) and (to_type.base_type = clong)Then Begin
   If from_type.is_unsigned Then Begin
-   ol('clra        ; extension z�ro char');
-   ol('clr  -2,s   ; partie haute = 0');
-   ol('clr  -1,s');
+   ol('lda #0      ; extension zéro char');
+   ol('sta $01FF,x ; partie haute = 0');
+   ol('dex');
+   ol('sta $01FF,x');
   End
   Else
   Begin
-   ol('sex         ; extension de signe char vers int');
-   ol('tsta        ; test du signe de la partie int');
+   ol('bpl +       ; extension de signe char vers int');
+   ol('ldx #$FF');
+   ol('bne ++');
+   ol('+ ldx #$00');
+   ol('++ cmp #0   ; test du signe de la partie int');
    ol('bpl  +      ; si positif, partie haute = 0');
-   ol('ldd  #$FFFF ; si n�gatif, partie haute = $FFFF');
-   ol('std  -2,s   ; entreposer partie haute');
-   ol('bra  ++');
-   ol('+ clr  -2,s  ; partie haute = 0');
+   ol('lda #$FF    ; si négatif, partie haute = $FFFF');
+   ol('ldx #$FF');
+   ol('sta $01FF,x ; entreposer partie haute sur pile');
+   ol('dex');
+   ol('stx $01FF,x');
+   ol('jmp  ++');
+   ol('+ lda #0     ; partie haute = 0');
+   ol('sta $01FF,x');
    ol('clr  -1,s');
    ol('++');
   End;
@@ -1698,36 +1711,35 @@ Begin
   current := opt_context.inst_list;
   While (current <> nil) and (current^.next <> nil) do Begin
    next_inst := current^.next;
-    { Enl�ve LDD #0 suivi par STD }
-   If(current^.opcode = 'ldd')and(current^.operand = '#0')Then Begin
-    If (next_inst^.opcode = 'std') Then Begin
+    { Enlève LDA #0 suivi par STA }
+   If(current^.opcode = 'lda')and(current^.operand = '#0')Then Begin
+    If (next_inst^.opcode = 'sta') Then Begin
      { Remplace avec CLR }
      current^.opcode := 'clr';
      current^.operand := next_inst^.operand;
-     current^.comment := current^.comment + ' ; optimisé de ldd #0, std';
+     current^.comment := current^.comment + ' ; optimisé de lda #0, sta';
      { Marquer la prochaine instruction pour le retrait }
      next_inst^.can_eliminate := True;
      changed := True;
     End;
    End
-   { Enl�ve STD suivi par LDD dans le m�me emplacement }
-   Else If (current^.opcode = 'std') Then Begin
-    If (next_inst^.opcode = 'ldd') and
+   { Enlève STA suivi par LDA dans le même emplacement }
+   Else If (current^.opcode = 'sta') Then Begin
+    If (next_inst^.opcode = 'lda') and
        (next_inst^.operand = current^.operand) Then
     Begin
-     { Supprime les LDD redondants }
+     { Supprime les LDA redondants }
      next_inst^.can_eliminate := True;
-     current^.comment := current^.comment + ' ; supprime les LDD redondants ldd';
+     current^.comment := current^.comment + ' ; supprime les LDA redondants lda';
      changed := True;
     End;
    End
-   { Optimise PSHS D suivi par PULS D }
-   Else If (current^.opcode = 'pshs') and (current^.operand = 'd') Then
+   { Optimise PHA suivi par PLA }
+   Else If (current^.opcode = 'pha') Then
    Begin
-    If (next_inst^.opcode = 'puls') and
-       (next_inst^.operand = 'd') Then
+    If (next_inst^.opcode = 'pla') Then
     Begin
-     { Supprimer les deux instructions }
+     { Supprimer les deux instructions PHA/PLA redondantes }
      current^.can_eliminate := True;
      next_inst^.can_eliminate := True;
      changed := True;
@@ -1898,28 +1910,28 @@ End;
 Procedure opt_store_variable(var_name: String; size: Integer);Begin
  If optimize > OPT_NONE Then Begin
   Case size of
-   1: add_instruction('stb', var_name, 'stocker octet');
-   2: add_instruction('std', var_name, 'stocker mot');
+   1: add_instruction('sta', var_name, 'stocker octet');
+   2: add_instruction('sta', var_name, 'stocker mot (partie basse)');
   Else
-   add_instruction('std', var_name, 'stocker par défaut');
+   add_instruction('sta', var_name, 'stocker par défaut');
   End;
  End
   Else
  Begin
   Case size of
    1: Begin
-       ot('stb  ');
+       ot('sta  ');
        outstr(var_name);
        nl;
       End;
    2: Begin
-       ot('std  ');
+       ot('sta  ');
        outstr(var_name);
        nl;
       End;
   Else
    Begin
-    ot('std  ');
+    ot('sta  ');
     outstr(var_name);
     nl;
    End;
@@ -1994,99 +2006,42 @@ End;
 
  { G�n�rer une routine d'addition long (32 bits) }
 Procedure generate_long_add;Begin
- safe_writeln('; Addition long 32 bits');
+ safe_writeln('; Addition long 32 bits - TODO: Implémenter pour 6502');
  safe_writeln('long_add:');
- ol('; Ajouter deux longs sur la pile');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('pshs x,d    ; sauvegarder premier long');
- ol('puls d      ; deuxi�me long - partie basse');
- ol('addd 2,s    ; additionner parties basses');
- ol('std  2,s    ; stocker r�sultat partie basse');
- ol('puls d      ; deuxi�me long - partie haute');
- ol('adcb 1,s    ; additionner partie haute avec carry');
- ol('adca ,s     ; additionner partie haute avec carry');
- ol('std  ,s     ; entreposer r�sultat partie haute');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; TODO: Convertir les routines long 6809 vers 6502');
+ ol('rts         ; retour temporaire');
 End;
 
 { G�n�rer une routine de soustraction long (32 bits) }
 Procedure generate_long_sub;Begin
- safe_writeln('; Soustraction long 32 bits');
+ safe_writeln('; Soustraction long 32 bits - TODO: Implémenter pour 6502');
  safe_writeln('long_sub:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('pshs x,d    ; sauvegarder premier long');
- ol('puls d      ; deuxi�me long - partie basse');
- ol('subd 2,s    ; soustraire parties basses');
- ol('std  2,s    ; entreposer r�sultat partie basse');
- ol('puls d      ; deuxi�me long - partie haute');
- ol('sbcb 1,s    ; soustraire partie haute avec borrow');
- ol('sbca ,s     ; soustraire partie haute avec borrow');
- ol('std  ,s     ; entreposer r�sultat partie haute');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; TODO: Convertir les routines long 6809 vers 6502');
+ ol('rts         ; retour temporaire');
 End;
 
 { G�n�rer une routine de multiplication long (32 bits) }
 Procedure generate_long_mul;Begin
- safe_writeln('; Multiplication long 32 bits (simplifi�e)');
+ safe_writeln('; Multiplication long 32 bits - TODO: Implémenter pour 6502');
  safe_writeln('long_mul:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('puls u      ; deuxi�me long - partie basse');
- ol('pshs u      ; sauvegarder deuxi�me long partie basse');
- ol('puls u      ; deuxi�me long - partie haute');
- ol('; Multiplication simplifi�e: A*B = A_low*B_low (truncated)');
- ol('pshs x      ; sauvegarder premi�re partie haute');
- ol('tfr  d,x    ; premier dans X');
- ol('ldd  2,s    ; charger deuxi�me partie basse');
- ol('jsr  mult16 ; X * D -> D (partie basse seulement)');
- ol('leas 4,s    ; nettoyer pile');
- ol('pshs d      ; r�sultat partie basse');
- ol('clr  -2,s   ; partie haute = 0 (multiplication tronqu�e)');
- ol('clr  -1,s');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; TODO: Convertir les routines long 6809 vers 6502');
+ ol('rts         ; retour temporaire');
 End;
 
  { G�n�rer une routine de division long (32 bits) - version simplifi�e }
 Procedure generate_long_div;Begin
- safe_writeln('; Division long 32 bits (simplifi�e - partie basse seulement)');
+ safe_writeln('; Division long 32 bits - TODO: Implémenter pour 6502');
  safe_writeln('long_div:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; dividende partie basse');
- ol('leas 2,s    ; ignorer dividende partie haute');
- ol('puls x      ; diviseur partie basse');
- ol('leas 2,s    ; ignorer diviseur partie haute');
- ol('jsr  div16  ; D / X -> D');
- ol('pshs d      ; r�sultat partie basse');
- ol('clr  -2,s   ; partie haute = 0');
- ol('clr  -1,s');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; TODO: Convertir les routines long 6809 vers 6502');
+ ol('rts         ; retour temporaire');
 End;
 
 { G�n�rer les routines de comparaison long }
 Procedure generate_long_compare;Begin
- safe_writeln('; Comparaison long 32 bits');
+ safe_writeln('; Comparaison long 32 bits - TODO: Implémenter pour 6502');
  safe_writeln('long_cmp:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('puls u      ; deuxi�me long - partie basse');
- ol('tfr  u,u    ; tester si z�ro');
- ol('puls u      ; deuxi�me long - partie haute');
- ol('cmpx u      ; comparer parties hautes');
- ol('bne  done   ; si diff�rentes, on a le r�sultat');
- ol('cmpd 2,s    ; comparer parties basses');
- ol('done:');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; TODO: Convertir les routines long 6809 vers 6502');
+ ol('rts         ; retour temporaire');
 End;
 
 { Charger une constante long sur la pile }
