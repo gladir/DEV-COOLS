@@ -113,6 +113,8 @@ Type
   is_const: Boolean;       { Vrai pour les types constants }
   is_volatile: Boolean;    { Vrai pour les types volatils }
   struct_id: Integer;      { Identifiant de struct/union }
+  typedef_name: String;    { Nom du typedef si c'est un type défini }
+  is_typedef: Boolean;     { Vrai si c'est un typedef }
   size: Integer;           { Taille totale en octets }
  End;
 
@@ -350,6 +352,12 @@ Function parse_type_specifier: Integer; forward;
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
 Function parse_storage_class_specifier: Integer; forward;
 Function readinline: Boolean; forward;
+
+{ Déclarations anticipées pour typedef }
+Function find_typedef(typedef_name: String): PSymbol; forward;
+Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol; forward;
+Function parse_typedef_declaration: Boolean; forward;
+Function resolve_typedef_type(typedef_name: String; var resolved_type: TTypeInfo): Boolean; forward;
 
 { Fonctions héritées - plus nécessaires avec la table de symboles basée sur le tas }
 Function startglb: Integer;Begin
@@ -1158,7 +1166,6 @@ End;
 
 { Initialiser la structure d'informations de type }
 Procedure init_type_info(var type_info: TTypeInfo);Begin
- FillChar(type_info, SizeOf(type_info), 0);
  type_info.base_type := cint;
  type_info.pointer_level := 0;
  type_info.array_size := 0;
@@ -1166,6 +1173,8 @@ Procedure init_type_info(var type_info: TTypeInfo);Begin
  type_info.is_const := False;
  type_info.is_volatile := False;
  type_info.struct_id := 0;
+ type_info.typedef_name := '';
+ type_info.is_typedef := False;
  type_info.size := sizeof_int;
 End;
 
@@ -1286,6 +1295,167 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   ol('clrb');
  End;
   { Ajouter des conversions supplémentaires si nécessaires }
+End;
+
+{ ============================================================================ }
+{ FONCTIONS DE GESTION DES TYPEDEF                                             }
+{ ============================================================================ }
+
+{ Trouver un typedef dans la table des symboles }
+Function find_typedef(typedef_name: String): PSymbol;
+Var
+ current: PSymbol;
+Begin
+ find_typedef := nil;
+ current := symbol_list;
+ 
+ While current <> nil do
+ Begin
+  If (current^.name = typedef_name) and (current^.ident = it_typedef_type) Then
+  Begin
+   find_typedef := current;
+   Exit;
+  End;
+  current := current^.next;
+ End;
+End;
+
+{ Ajouter un nouveau typedef à la table des symboles }
+Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol;
+Var
+ new_symbol: PSymbol;
+Begin
+ add_typedef := nil;
+ 
+ { Vérifier si le typedef existe déjà }
+ If find_typedef(typedef_name) <> nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Typedef already defined: ' + typedef_name);
+   _Germany: errrpt('Typedef bereits definiert: ' + typedef_name);
+   Else errrpt('Typedef déjà défini: ' + typedef_name);
+  End;
+  Exit;
+ End;
+ 
+ { Allouer de la mémoire sur le tas }
+ New(new_symbol);
+ If new_symbol = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Out of memory for typedef table');
+   _Germany: errrpt('Kein Speicher für Typedef-Tabelle');
+   Else errrpt('Mémoire insuffisante pour la table typedef');
+  End;
+  Exit;
+ End;
+ 
+ { Initialiser le nouveau typedef }
+ With new_symbol^ do
+ Begin
+  name := typedef_name;
+  ident := it_typedef_type;
+  ctype := type_info.base_type;
+  storage := statik;  { Les typedef sont généralement statiques }
+  offset_value := 0;
+  new_symbol^.type_info := type_info;  { Copier toutes les informations de type explicitement }
+  new_symbol^.type_info.is_typedef := True;
+  new_symbol^.type_info.typedef_name := typedef_name;
+  next := symbol_list;  { Insérer au début de la liste }
+ End;
+ 
+ { Mettre à jour la tête de liste }
+ symbol_list := new_symbol;
+ Inc(symbol_count);
+ 
+ add_typedef := new_symbol;
+End;
+
+{ Résoudre un typedef en son type réel }
+Function resolve_typedef_type(typedef_name: String; var resolved_type: TTypeInfo): Boolean;
+Var
+ typedef_symbol: PSymbol;
+Begin
+ resolve_typedef_type := False;
+ 
+ typedef_symbol := find_typedef(typedef_name);
+ If typedef_symbol = nil Then Exit;
+ 
+ { Initialiser la structure de destination proprement }
+ init_type_info(resolved_type);
+ 
+ { Copier les informations de type essentielles du typedef }
+ resolved_type.base_type := typedef_symbol^.type_info.base_type;
+ resolved_type.pointer_level := typedef_symbol^.type_info.pointer_level;
+ resolved_type.array_size := typedef_symbol^.type_info.array_size;
+ resolved_type.is_unsigned := typedef_symbol^.type_info.is_unsigned;
+ resolved_type.is_const := typedef_symbol^.type_info.is_const;
+ resolved_type.is_volatile := typedef_symbol^.type_info.is_volatile;
+ resolved_type.struct_id := typedef_symbol^.type_info.struct_id;
+ resolved_type.size := typedef_symbol^.type_info.size;
+ resolved_type.is_typedef := True;
+ resolved_type.typedef_name := typedef_name;
+ 
+ resolve_typedef_type := True;
+End;
+
+{ Analyser une déclaration typedef }
+Function parse_typedef_declaration: Boolean;
+Var
+ base_type: Integer;
+ type_info: TTypeInfo;
+ typedef_name: String;
+ temp_str: String;
+Begin
+ parse_typedef_declaration := False;
+ 
+ safe_writeln('; Parsing déclaration typedef');
+ 
+ { Le mot clé typedef a déjà été consommé }
+ 
+ { Parser le type de base }
+ base_type := parse_type_specifier_with_qualifiers(type_info);
+ If base_type = -1 Then
+ Begin
+  Case Language of
+   _English: errrpt('Invalid type specifier in typedef');
+   _Germany: errrpt('Ungültiger Typ-Spezifizierer in typedef');
+   Else errrpt('Spécificateur de type invalide dans typedef');
+  End;
+  Exit;
+ End;
+
+ Str(base_type, temp_str);
+ safe_writeln('; Type analysé: ' + temp_str);
+ 
+ { Parser le déclarateur (nom du typedef) }
+ If not symname(typedef_name) Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected typedef name');
+   _Germany: errrpt('Typedef-Name erwartet');
+   Else errrpt('Nom de typedef attendu');
+  End;
+  Exit;
+ End;
+ 
+ { Attendre point-virgule }
+ If not match(';') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ; after typedef declaration');
+   _Germany: errrpt('; nach typedef-Deklaration erwartet');
+   Else errrpt('; attendu après déclaration typedef');
+  End;
+  Exit;
+ End;
+ 
+ { Ajouter le typedef à la table des symboles }
+ If add_typedef(typedef_name, type_info) <> nil Then
+ Begin
+  safe_writeln('; Typedef défini: ' + typedef_name + ' = ' + get_type_name(type_info));
+  parse_typedef_declaration := True;
+ End;
 End;
 
 { ============================================================================ }
@@ -2463,6 +2633,9 @@ Var
  is_unsigned, is_signed, is_const, is_volatile: Boolean;
  base_type: Integer;
  type_found: Boolean;
+ potential_typedef: String;
+ saved_lptr: Integer;
+ typedef_type_info: TTypeInfo;
 Begin
  is_unsigned := False;
  is_signed := False;
@@ -2577,7 +2750,30 @@ Begin
    Break;
   End
   Else
+  Begin
+   { Vérifier si c'est un typedef }
+   saved_lptr := lptr; { Sauvegarder la position actuelle }
+   
+   If symname(potential_typedef) Then
+   Begin
+    If resolve_typedef_type(potential_typedef, typedef_type_info) Then
+    Begin
+     { C'est un typedef valide - utiliser ses informations de type }
+     type_info := typedef_type_info;
+     base_type := typedef_type_info.base_type;
+     type_found := True;
+     safe_writeln('; Typedef résolu: ' + potential_typedef + ' = ' + get_type_name(typedef_type_info));
+     Break;
+    End
+    Else
+    Begin
+     { Ce n'est pas un typedef - restaurer la position }
+     lptr := saved_lptr;
+    End;
+   End;
+   
    Break; { Plus de spécificateurs de type }
+  End
  Until False;
 
  { Si aucun type explicite mais unsigned/signed spécifié, int par défaut }
@@ -2610,7 +2806,12 @@ Function parse_storage_class_specifier: Integer;
 Begin
  parse_storage_class_specifier := automatic; { Par défaut }
  
- If match('extern') Then
+ If match('typedef') Then
+ Begin
+  safe_writeln('; Spécificateur de classe de stockage: typedef');
+  parse_storage_class_specifier := it_typedef_type;
+ End
+ Else If match('extern') Then
  Begin
   safe_writeln('; Spécificateur de classe de stockage: extern');
   parse_storage_class_specifier := CEXTERNAL;
@@ -4466,6 +4667,15 @@ Begin
 
  { Parse storage class specifier first }
  storage_class := parse_storage_class_specifier;
+
+ { Check if this is a typedef declaration }
+ If storage_class = it_typedef_type Then
+ Begin
+  { Handle typedef declaration }
+  If parse_typedef_declaration Then
+   parse_declaration := True;
+  Exit;
+ End;
 
  { Parse type specifier with qualifiers }
  base_type := parse_type_specifier_with_qualifiers(type_info);
