@@ -246,6 +246,17 @@ Type
   next: PFunction;         { Fonction suivante dans la liste }
  End;
 
+{ Structure pour gérer les étiquettes goto }
+ TGotoLabel = Record
+  name: String[20];       { Nom de l'étiquette }
+  label_id: Integer;      { ID numérique de l'étiquette }
+  is_defined: Boolean;    { Vrai si l'étiquette a été définie }
+  is_used: Boolean;       { Vrai si l'étiquette a été référencée }
+ End;
+
+ { Table des étiquettes goto }
+ TGotoTable = Array[0..31] of TGotoLabel; { Max 32 étiquettes par fonction }
+
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
@@ -295,6 +306,10 @@ Var
  { �tiquettes et compteurs }
  nxtlab: Integer;
  nextlabel: Integer; { Pour l'analyseur d'expressions }
+
+ { Table des étiquettes goto }
+ goto_table: TGotoTable;
+ goto_count: Integer;
 
  { Drapeaux et options }
  first_func, declared: Boolean;
@@ -512,6 +527,151 @@ Procedure errrpt(msg: String);Begin
   _English: WriteLn('Error: ', msg, ' at line ', lptr);
   Else WriteLn('Erreur: ', msg, ' à la ligne ', lptr);
  End;
+End;
+
+{ ============================================================================ }
+{ FONCTIONS DE GESTION DES ÉTIQUETTES GOTO                                    }
+{ ============================================================================ }
+
+{ Initialiser la table des étiquettes goto }
+Procedure init_goto_table;
+Var
+ i: Integer;
+Begin
+ For i := 0 to 31 do
+ Begin
+  With goto_table[i] do
+  Begin
+   name := '';
+   label_id := 0;
+   is_defined := False;
+   is_used := False;
+  End;
+ End;
+ goto_count := 0;
+End;
+
+{ Trouver une étiquette goto par nom }
+Function find_goto_label(label_name: String): Integer;
+Var
+ i: Integer;
+Begin
+ find_goto_label := -1;
+ For i := 0 to goto_count - 1 do
+ Begin
+  If goto_table[i].name = label_name Then
+  Begin
+   find_goto_label := i;
+   Exit;
+  End;
+ End;
+End;
+
+{ Ajouter ou récupérer une étiquette goto }
+Function add_goto_label(label_name: String): Integer;
+Var
+ index: Integer;
+Begin
+ add_goto_label := -1;
+ 
+ { Vérifier si l'étiquette existe déjà }
+ index := find_goto_label(label_name);
+ If index <> -1 Then
+ Begin
+  add_goto_label := index;
+  Exit;
+ End;
+ 
+ { Vérifier s'il y a de la place }
+ If goto_count >= 32 Then
+ Begin
+  Case Language of
+   _English: errrpt('Too many goto labels (max 32)');
+   _Germany: errrpt('Zu viele Goto-Labels (max 32)');
+   Else errrpt('Trop d''étiquettes goto (max 32)');
+  End;
+  Exit;
+ End;
+ 
+ { Ajouter la nouvelle étiquette }
+ index := goto_count;
+ With goto_table[index] do
+ Begin
+  name := label_name;
+  label_id := getlabel;
+  is_defined := False;
+  is_used := False;
+ End;
+ 
+ Inc(goto_count);
+ add_goto_label := index;
+End;
+
+{ Marquer une étiquette comme définie }
+Procedure define_goto_label(label_name: String);
+Var
+ index: Integer;
+Begin
+ index := add_goto_label(label_name);
+ If index <> -1 Then
+ Begin
+  If goto_table[index].is_defined Then
+  Begin
+   Case Language of
+    _English: errrpt('Label already defined: ' + label_name);
+    _Germany: errrpt('Label bereits definiert: ' + label_name);
+    Else errrpt('Étiquette déjà définie: ' + label_name);
+   End;
+   Exit;
+  End;
+  
+  goto_table[index].is_defined := True;
+  prelabel(goto_table[index].label_id);
+  safe_writeln('; Étiquette définie: ' + label_name);
+ End;
+End;
+
+{ Marquer une étiquette comme utilisée et générer le saut }
+Procedure use_goto_label(label_name: String);
+Var
+ index: Integer;
+Begin
+ index := add_goto_label(label_name);
+ If index <> -1 Then
+ Begin
+  goto_table[index].is_used := True;
+  ot('lbra ');
+  printlabel(goto_table[index].label_id);
+  nl;
+  safe_writeln('; Saut vers étiquette: ' + label_name);
+ End;
+End;
+
+{ Vérifier les étiquettes non définies à la fin de fonction }
+Procedure check_goto_labels;
+Var
+ i: Integer;
+ has_errors: Boolean;
+Begin
+ has_errors := False;
+ For i := 0 to goto_count - 1 do
+ Begin
+  With goto_table[i] do
+  Begin
+   If is_used and not is_defined Then
+   Begin
+    Case Language of
+     _English: errrpt('Undefined label: ' + name);
+     _Germany: errrpt('Undefiniertes Label: ' + name);
+     Else errrpt('Étiquette non définie: ' + name);
+    End;
+    has_errors := True;
+   End;
+  End;
+ End;
+ 
+ If not has_errors Then
+  safe_writeln('; Toutes les étiquettes goto sont correctement définies');
 End;
 
 { Gestion de contexte de boucle pour le support break/continue }
@@ -2319,6 +2479,10 @@ Begin
    End;
    If ch = '}' Then gch; { Consommer l'accolade fermante }
    safe_writeln('; Fin du corps de fonction ' + func_name);
+   { Vérifier que toutes les étiquettes goto sont définies }
+   check_goto_labels;
+   { Réinitialiser la table goto pour la prochaine fonction }
+   init_goto_table;
   End
   Else
   Begin
@@ -3013,43 +3177,6 @@ Begin
   Exit;
  End;
 
- { Calculer la taille d'un élément }
- element_size := get_type_size(array_symbol^.type_info.base_type);
- 
- { Générer le code pour calculer l'adresse de l'élément }
- safe_writeln('; Calculer adresse élément tableau');
- 
- { Si la taille d'élément n'est pas 1, multiplier l'index }
- If element_size > 1 Then
- Begin
-  safe_writeln('; Multiplier index par taille élément');
-  Case element_size of
-   2: ol('lsld    ; multiplier par 2');
-   4: Begin
-       ol('lsld    ; multiplier par 4 (shift 1)');
-       ol('lsld    ; multiplier par 4 (shift 2)');
-      End;
-   8: Begin
-       ol('lsld    ; multiplier par 8 (shift 1)');
-       ol('lsld    ; multiplier par 8 (shift 2)');
-       ol('lsld    ; multiplier par 8 (shift 3)');
-      End;
-  Else
-   Begin
-    { Multiplication générale }
-    ot('ldb  #');
-    outdec(element_size);
-    nl;
-    ol('jsr  mult16');
-   End;
-  End;
- End;
-
- { Ajouter l'adresse de base du tableau }
- ot('addd #');
- outstr(array_name);
- nl;
-
  { Charger la valeur à l'adresse calculée }
  ol('tfr  d,x    ; adresse dans X');
  Case element_size of
@@ -3394,6 +3521,32 @@ Begin
   ol('ldd  ,x');           { Charger la valeur pointée }
  End;
  
+ { Vérifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then
+ Begin
+  Case Language of
+   _English: errrpt('Cannot dereference non-pointer type');
+   _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
+   Else errrpt('Impossible de déréférencer un type non-pointeur');
+  End;
+  Exit;
+ End;
+ 
+ { Générer le code de déréférencement }
+ If lval.symbol > 0 Then
+ Begin
+  ptr_name := get_symbol_name(lval.symbol);
+  safe_writeln('; Déréférencement de: ' + ptr_name);
+  ol('ldx  ' + ptr_name);  { Charger l'adresse stockée dans le pointeur }
+  ol('ldd  ,x');           { Charger la valeur pointée }
+ End
+ Else
+ Begin
+  safe_writeln('; Déréférencement indirect');
+  ol('ldx  ,s++');         { Récupérer l'adresse depuis la pile }
+  ol('ldd  ,x');           { Charger la valeur pointée }
+ End;
+ 
  { Décrémenter le niveau de pointeur }
  Dec(lval.type_info.pointer_level);
  
@@ -3680,6 +3833,8 @@ Function parse_statement: Boolean; forward;
 Function parse_compound_statement: Boolean; forward;
 Function parse_assignment_statement: Boolean; forward;
 Procedure parse_array_assignment(array_name: String); forward;
+Function parse_goto_statement: Boolean; forward;
+Function parse_label_statement: Boolean; forward;
 
 { Control structure parsing }
 Function parse_if_statement: Boolean;
@@ -4049,6 +4204,62 @@ Begin
  nl;
 End;
 
+{ Analyser une instruction goto }
+Function parse_goto_statement: Boolean;
+Var
+ label_name: String;
+Begin
+ parse_goto_statement := False;
+
+ If not match('goto') Then Exit;
+ parse_goto_statement := True;
+
+ safe_writeln('; GOTO statement');
+
+ { Obtenir le nom de l'étiquette }
+ If not symname(label_name) Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected label name after goto');
+   _Germany: errrpt('Label-Name nach goto erwartet');
+   Else errrpt('Nom d''étiquette attendu après goto');
+  End;
+  Exit;
+ End;
+
+ { Attendre point-virgule }
+ If not match(';') Then
+  errrpt('Expected ; after goto statement');
+
+ { Générer le saut vers l'étiquette }
+ use_goto_label(label_name);
+End;
+
+{ Analyser une définition d'étiquette (label:) }
+Function parse_label_statement: Boolean;
+Var
+ label_name: String;
+ save_lptr: Integer;
+Begin
+ parse_label_statement := False;
+
+ { Sauvegarder la position pour pouvoir revenir en arrière }
+ save_lptr := lptr;
+
+ { Vérifier s'il y a un identificateur suivi de ':' }
+ If symname(label_name) and match(':') Then
+ Begin
+  parse_label_statement := True;
+  safe_writeln('; Définition d''étiquette: ' + label_name);
+  define_goto_label(label_name);
+ End
+ Else
+ Begin
+  { Ce n'est pas une étiquette, revenir en arrière }
+  lptr := save_lptr;
+ End;
+End;
+
 { Compound statement parsing }
 Function parse_compound_statement: Boolean;
 Begin
@@ -4313,7 +4524,9 @@ Begin
  End;
 
  { Try different statement types }
- If parse_compound_statement Then
+ If parse_label_statement Then
+  parse_statement := True
+ Else If parse_compound_statement Then
   parse_statement := True
  Else If parse_assignment_statement Then
   parse_statement := True
@@ -4330,6 +4543,8 @@ Begin
  Else If parse_break_statement Then
   parse_statement := True
  Else If parse_continue_statement Then
+  parse_statement := True
+ Else If parse_goto_statement Then
   parse_statement := True
  Else If parse_declaration Then
   parse_statement := True
@@ -4714,6 +4929,8 @@ BEGIN
  init_functions;
   { Initialisation du système de gestion des structures }
  init_structs;
+ { Initialisation de la table des étiquettes goto }
+ init_goto_table;
  asmtype := AS6809;
  header;        { Code d''introduction }
  parse;         { Analyse toutes les entr�e }
