@@ -46,6 +46,14 @@ Const
  SYM_READ = 22;
  SYM_READLN = 23;
 
+ { Opérateurs de comparaison }
+ SYM_EQUAL = 24;      { = }
+ SYM_NOTEQUAL = 25;   { <> }
+ SYM_LESS = 26;       { < }
+ SYM_GREATER = 27;    { > }
+ SYM_LESSEQ = 28;     { <= }
+ SYM_GREATEREQ = 29;  { >= }
+
  { Types de données Pascal }
  TYPE_INTEGER = 1;
  TYPE_BYTE = 2;
@@ -336,6 +344,49 @@ Begin
    current_symbol := SYM_UNKNOWN;
   End;
  End
+ { Opérateurs de comparaison }
+ Else If current_char = '<' Then
+ Begin
+  NextChar;
+  If current_char = '=' Then
+  Begin
+   current_token := '<=';
+   current_symbol := SYM_LESSEQ;
+   NextChar;
+  End
+  Else If current_char = '>' Then
+  Begin
+   current_token := '<>';
+   current_symbol := SYM_NOTEQUAL;
+   NextChar;
+  End
+  Else
+  Begin
+   current_token := '<';
+   current_symbol := SYM_LESS;
+  End;
+ End
+ Else If current_char = '>' Then
+ Begin
+  NextChar;
+  If current_char = '=' Then
+  Begin
+   current_token := '>=';
+   current_symbol := SYM_GREATEREQ;
+   NextChar;
+  End
+  Else
+  Begin
+   current_token := '>';
+   current_symbol := SYM_GREATER;
+  End;
+ End
+ Else If current_char = '=' Then
+ Begin
+  current_token := '=';
+  current_symbol := SYM_EQUAL;
+  NextChar;
+ End
  { Identifier ou mot-clé }
  Else If ((current_char >= 'A') and (current_char <= 'Z')) or
     ((current_char >= 'a') and (current_char <= 'z')) or
@@ -567,7 +618,10 @@ Procedure ParseExpression;
 Var
  sym_index: Integer;
  temp_token: String;
+ left_operand: String;
+ comparison_op: Integer;
 Begin
+ { Parser le premier opérande }
  If current_symbol = SYM_UNKNOWN Then
  Begin
   temp_token := current_token;
@@ -579,6 +633,7 @@ Begin
   Begin
    { Caractère littéral - traiter comme valeur ASCII }
    Emit('mov al, ' + IntToStr(Ord(temp_token[1])));
+   left_operand := 'al';
    NextToken;
   End
   { C'est peut-être un nombre }
@@ -586,6 +641,7 @@ Begin
   Begin
    { Nombre littéral }
    Emit('mov ax, ' + temp_token);
+   left_operand := 'ax';
    NextToken;
   End
   Else If temp_token <> '' Then
@@ -595,26 +651,157 @@ Begin
    If sym_index > 0 Then
    Begin
     Case symbol_table[sym_index]^.data_type of
-     TYPE_INTEGER, TYPE_WORD: Emit('mov ax, ' + symbol_table[sym_index]^.name);
-     TYPE_BYTE, TYPE_CHAR: Emit('mov al, ' + symbol_table[sym_index]^.name);
+     TYPE_INTEGER, TYPE_WORD: 
+      Begin
+       Emit('mov ax, ' + symbol_table[sym_index]^.name);
+       left_operand := 'ax';
+      End;
+     TYPE_BYTE, TYPE_CHAR: 
+      Begin
+       Emit('mov al, ' + symbol_table[sym_index]^.name);
+       left_operand := 'al';
+      End;
     Else
-     Emit('mov ax, ' + symbol_table[sym_index]^.name);
+     Begin
+      Emit('mov ax, ' + symbol_table[sym_index]^.name);
+      left_operand := 'ax';
+     End;
     End;
    End
    Else
    Begin
     Error('Variable non déclarée: ' + temp_token);
+    left_operand := 'ax';
    End;
    NextToken;
   End
   Else
   Begin
    NextToken; { Token vide, continuer }
+   left_operand := 'ax';
   End;
  End
  Else
  Begin
   NextToken; { Symbole reconnu, continuer }
+  left_operand := 'ax';
+ End;
+ 
+ { Vérifier s'il y a un opérateur de comparaison }
+ comparison_op := current_symbol;
+ If (comparison_op = SYM_EQUAL) or (comparison_op = SYM_NOTEQUAL) or 
+    (comparison_op = SYM_LESS) or (comparison_op = SYM_GREATER) or
+    (comparison_op = SYM_LESSEQ) or (comparison_op = SYM_GREATEREQ) Then
+ Begin
+  NextToken; { Consommer l'opérateur }
+  
+  { Parser le deuxième opérande }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   temp_token := current_token;
+   
+   { Nombre littéral }
+   If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
+   Begin
+    If left_operand = 'ax' Then
+     Emit('cmp ax, ' + temp_token)
+    Else
+     Emit('cmp al, ' + temp_token);
+    NextToken;
+   End
+   Else If temp_token <> '' Then
+   Begin
+    { Variable }
+    sym_index := FindSymbol(temp_token);
+    If sym_index > 0 Then
+    Begin
+     Case symbol_table[sym_index]^.data_type of
+      TYPE_INTEGER, TYPE_WORD:
+       Begin
+        If left_operand = 'ax' Then
+         Emit('cmp ax, ' + symbol_table[sym_index]^.name)
+        Else
+        Begin
+         Emit('mov bx, ' + symbol_table[sym_index]^.name);
+         Emit('cmp al, bl');
+        End;
+       End;
+      TYPE_BYTE, TYPE_CHAR:
+       Begin
+        If left_operand = 'al' Then
+         Emit('cmp al, ' + symbol_table[sym_index]^.name)
+        Else
+        Begin
+         Emit('mov bl, ' + symbol_table[sym_index]^.name);
+         Emit('cmp ax, bx');
+        End;
+       End;
+     Else
+      Begin
+       If left_operand = 'ax' Then
+        Emit('cmp ax, ' + symbol_table[sym_index]^.name)
+       Else
+        Emit('cmp al, ' + symbol_table[sym_index]^.name);
+      End;
+     End;
+    End
+    Else
+     Error('Variable non déclarée: ' + temp_token);
+    NextToken;
+   End;
+   
+   { Générer le code conditionnel selon l'opérateur }
+   Case comparison_op of
+    SYM_EQUAL: 
+     Begin
+      Emit('mov ax, 1');
+      Emit('je COMP_TRUE_' + IntToStr(next_label_id));
+      Emit('mov ax, 0');
+      EmitLabel('COMP_TRUE_' + IntToStr(next_label_id));
+      Inc(next_label_id);
+     End;
+    SYM_NOTEQUAL:
+     Begin
+      Emit('mov ax, 1');
+      Emit('jne COMP_TRUE_' + IntToStr(next_label_id));
+      Emit('mov ax, 0');
+      EmitLabel('COMP_TRUE_' + IntToStr(next_label_id));
+      Inc(next_label_id);
+     End;
+    SYM_LESS:
+     Begin
+      Emit('mov ax, 1');
+      Emit('jl COMP_TRUE_' + IntToStr(next_label_id));
+      Emit('mov ax, 0');
+      EmitLabel('COMP_TRUE_' + IntToStr(next_label_id));
+      Inc(next_label_id);
+     End;
+    SYM_GREATER:
+     Begin
+      Emit('mov ax, 1');
+      Emit('jg COMP_TRUE_' + IntToStr(next_label_id));
+      Emit('mov ax, 0');
+      EmitLabel('COMP_TRUE_' + IntToStr(next_label_id));
+      Inc(next_label_id);
+     End;
+    SYM_LESSEQ:
+     Begin
+      Emit('mov ax, 1');
+      Emit('jle COMP_TRUE_' + IntToStr(next_label_id));
+      Emit('mov ax, 0');
+      EmitLabel('COMP_TRUE_' + IntToStr(next_label_id));
+      Inc(next_label_id);
+     End;
+    SYM_GREATEREQ:
+     Begin
+      Emit('mov ax, 1');
+      Emit('jge COMP_TRUE_' + IntToStr(next_label_id));
+      Emit('mov ax, 0');
+      EmitLabel('COMP_TRUE_' + IntToStr(next_label_id));
+      Inc(next_label_id);
+     End;
+   End;
+  End;
  End;
 End;
 

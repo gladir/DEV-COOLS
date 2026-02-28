@@ -6411,41 +6411,32 @@ Begin
     Continue;
    End;
   End;
-
-  { Check if we should skip code due to conditional compilation }
-  If should_skip_code Then
-  Begin
-   { Skip this line completely }
+   { V‚rifier si nous devons ignorer du code en raison d'une compilation conditionnelle }
+  If should_skip_code Then Begin
+   { Saut cette ligne complŠtement }
    Continue;
   End;
-
-  { Apply macro expansion to the line AFTER conditional processing }
+   { Appliquer l''expansion de macro … la ligne APRES le traitement conditionnel }
   expanded_line := expand_macros(line);
-  If expanded_line <> line Then
-  Begin
+  If expanded_line <> line Then Begin
    line := expanded_line;
-   If use_stdout Then WriteLn('; Line after macro expansion: ', line)
+   If use_stdout Then WriteLn('; Ligne aprŠs l''expansion de macro: ', line)
                  Else safe_writeln('; Line after macro expansion: ' + line);
   End;
-
-  { Skip empty lines }
+   { Saute les lignes vides }
   blanks;
   If Length(line) = 0 Then Continue;
-
-  safe_writeln('; Processing: ' + line);
-
-  { Reset position for parsing }
+  safe_writeln('; Traitement: ' + line);
+   { R‚initialiser la position pour l'analyse }
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
-
-  { Try to parse as statement (includes declarations and control structures) }
+   { Try to parse as statement (includes declarations and control structures) }
   If parse_statement Then
   Begin
-   safe_writeln('; Statement processed');
+   safe_writeln('; Traitement d''instruction');
    Continue;
   End;
-
-  { Fallback: Parse identifiers and expressions for backward compatibility }
+   { Solution de repli: Analyser les identifiants et les expressions pour assurer la r‚trocompatibilit‚ }
   lptr := 1;
   If symname(sname) Then
   Begin
