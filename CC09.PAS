@@ -187,6 +187,27 @@ Type
   continue_label: Integer; { Étiquette à utiliser pour continue }
  End;
 
+ { Membre d'une structure ou union }
+ TStructMember = Record
+  name: String[20];       { Nom du membre }
+  member_type: Integer;   { Type de base du membre }
+  type_info: TTypeInfo;   { Informations détaillées du type }
+  offset: Integer;        { Offset du membre dans la structure }
+  size: Integer;          { Taille du membre en octets }
+ End;
+
+ { Définition de structure ou union }
+ PStructDef = ^TStructDef;
+ TStructDef = Record
+  name: String[20];                        { Nom de la structure/union }
+  is_union: Boolean;                       { Vrai si c'est une union, faux si struct }
+  member_count: Integer;                   { Nombre de membres }
+  members: Array[0..15] of TStructMember;  { Liste des membres (max 16) }
+  total_size: Integer;                     { Taille totale de la structure }
+  struct_id: Integer;                      { ID unique de la structure }
+  next: PStructDef;                        { Structure suivante dans la liste }
+ End;
+
  { Gestion des fichiers d'inclusion }
  TIncludeFile = Record
   filename: String{$IFNDEF FPC}[80]{$ENDIF};
@@ -246,6 +267,11 @@ Var
  { Contexte d'optimisation }
  opt_context: TOptContext;
 
+ { Gestion des structures et unions - liste chaînée basée sur le tas }
+ struct_list: PStructDef;     { Tête de la liste de structures/unions }
+ struct_count: Integer;       { Compteur de structures/unions }
+ next_struct_id: Integer;     { Prochain ID de structure disponible }
+
  { Pile de contexte de boucle pour break/continue }
  loop_stack: Array[0..31] of TLoopContext;
  loop_depth: Integer;
@@ -283,6 +309,9 @@ Var
 
 { Déclarations anticipées }
 Procedure init_type_info(var type_info: TTypeInfo); forward;
+Function parse_type_specifier: Integer; forward;
+Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
+Function readinline: Boolean; forward;
 
 { Fonctions héritées - plus nécessaires avec la table de symboles basée sur le tas }
 Function startglb: Integer;Begin
@@ -1548,12 +1577,363 @@ Begin
  function_count := 0;
 End;
 
+{ ============================================================================ }
+{ FONCTIONS DE GESTION DES STRUCTURES ET UNIONS                               }
+{ ============================================================================ }
+
+{ Initialiser le système de gestion des structures }
+Procedure init_structs;
+Begin
+ struct_list := nil;
+ struct_count := 0;
+ next_struct_id := 1;
+End;
+
+{ Trouver une structure par nom }
+Function find_struct(struct_name: String): PStructDef;
+Var
+ current: PStructDef;
+Begin
+ find_struct := nil;
+ current := struct_list;
+ 
+ While current <> nil do
+ Begin
+  If current^.name = struct_name Then
+  Begin
+   find_struct := current;
+   Exit;
+  End;
+  current := current^.next;
+ End;
+End;
+
+{ Trouver une structure par ID }
+Function find_struct_by_id(struct_id: Integer): PStructDef;
+Var
+ current: PStructDef;
+Begin
+ find_struct_by_id := nil;
+ current := struct_list;
+ 
+ While current <> nil do
+ Begin
+  If current^.struct_id = struct_id Then
+  Begin
+   find_struct_by_id := current;
+   Exit;
+  End;
+  current := current^.next;
+ End;
+End;
+
+{ Créer une nouvelle structure/union }
+Function create_struct(struct_name: String; is_union: Boolean): PStructDef;
+Var
+ new_struct: PStructDef;
+Begin
+ create_struct := nil;
+ 
+ { Vérifier si la structure existe déjà }
+ If find_struct(struct_name) <> nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Struct/Union already defined: ' + struct_name);
+   _Germany: errrpt('Struct/Union bereits definiert: ' + struct_name);
+   Else errrpt('Structure/Union déjà définie: ' + struct_name);
+  End;
+  Exit;
+ End;
+ 
+ { Allouer mémoire pour la nouvelle structure }
+ New(new_struct);
+ If new_struct = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Out of memory for struct definition');
+   _Germany: errrpt('Kein Speicher für Struct-Definition');
+   Else errrpt('Mémoire insuffisante pour la définition de structure');
+  End;
+  Exit;
+ End;
+ 
+ { Initialiser la structure }
+ With new_struct^ do
+ Begin
+  name := struct_name;
+  is_union := is_union;
+  member_count := 0;
+  total_size := 0;
+  struct_id := next_struct_id;
+  Inc(next_struct_id);
+  next := struct_list;
+ End;
+ 
+ { Ajouter au début de la liste }
+ struct_list := new_struct;
+ Inc(struct_count);
+ 
+ create_struct := new_struct;
+End;
+
+{ Ajouter un membre à une structure }
+Function add_struct_member(struct_def: PStructDef; member_name: String;
+                          member_type: Integer; var type_info: TTypeInfo): Boolean;
+Var
+ member_size: Integer;
+Begin
+ add_struct_member := False;
+ 
+ If struct_def = nil Then Exit;
+ 
+ With struct_def^ do
+ Begin
+  If member_count >= 16 Then
+  Begin
+   Case Language of
+    _English: errrpt('Too many members in struct: ' + name);
+    _Germany: errrpt('Zu viele Mitglieder in Struct: ' + name);
+    Else errrpt('Trop de membres dans la structure: ' + name);
+   End;
+   Exit;
+  End;
+  
+  { Calculer la taille du membre }
+  member_size := calculate_type_size(type_info);
+  
+  { Initialiser le membre }
+  With members[member_count] do
+  Begin
+   name := member_name;
+   member_type := member_type;
+   type_info := type_info;
+   size := member_size;
+   
+   If is_union Then
+   Begin
+    { Dans une union, tous les membres ont offset 0 }
+    offset := 0;
+    { La taille de l'union est la taille du plus grand membre }
+    If member_size > total_size Then
+     total_size := member_size;
+   End
+   Else
+   Begin
+    { Dans une structure, les membres sont alignés séquentiellement }
+    offset := total_size;
+    total_size := total_size + member_size;
+   End;
+  End;
+  
+  Inc(member_count);
+  add_struct_member := True;
+ End;
+End;
+
+{ Trouver un membre dans une structure }
+Function find_struct_member(struct_def: PStructDef; member_name: String): Integer;
+Var
+ i: Integer;
+Begin
+ find_struct_member := -1;
+ 
+ If struct_def = nil Then Exit;
+ 
+ For i := 0 to struct_def^.member_count - 1 do
+ Begin
+  If struct_def^.members[i].name = member_name Then
+  Begin
+   find_struct_member := i;
+   Exit;
+  End;
+ End;
+End;
+
+{ Libérer toutes les structures de la mémoire de tas }
+Procedure free_structs;
+Var
+ current, next: PStructDef;
+Begin
+ current := struct_list;
+ While current <> nil do
+ Begin
+  next := current^.next;
+  Dispose(current);
+  current := next;
+ End;
+ 
+ struct_list := nil;
+ If use_stdout Then WriteLn('; Libéré ', struct_count, ' structures du tas')
+               Else safe_writeln('; Libéré structures du tas');
+ struct_count := 0;
+End;
+
+{ Analyser une déclaration de structure ou union }
+Function parse_struct_declaration(is_union: Boolean): Integer;
+Var
+ struct_name, member_name: String;
+ struct_def: PStructDef;
+ member_type: Integer;
+ member_type_info: TTypeInfo;
+Begin
+ parse_struct_declaration := -1;
+ 
+ { Obtenir le nom de la structure/union (optionnel) }
+ If symname(struct_name) Then
+ Begin
+  { Structure nommée }
+  If is_union Then
+   safe_writeln('; Déclaration union: ' + struct_name)
+  Else
+   safe_writeln('; Déclaration struct: ' + struct_name);
+ End
+ Else
+ Begin
+  { Structure anonyme - générer un nom unique }
+  Str(next_struct_id, struct_name);
+  struct_name := '_anon_struct_' + struct_name;
+ End;
+ 
+ { Vérifier s'il y a une définition de corps }
+ If match('{') Then
+ Begin
+  { Créer la nouvelle structure }
+  struct_def := create_struct(struct_name, is_union);
+  If struct_def = nil Then Exit;
+  
+  { Analyser les membres }
+  safe_writeln('; Début parsing membres struct');
+  blanks; { S'assurer qu'on ignore les espaces au début }
+  
+  Repeat
+   { Vérifier si nous avons atteint la fin de la ligne }
+   If lptr > Length(line) Then
+   Begin
+    safe_writeln('; Lecture nouvelle ligne pour struct...');
+    If not readinline Then
+    Begin
+     Case Language of
+      _English: errrpt('Unexpected end of file in struct/union');
+      _Germany: errrpt('Unerwartetes Dateiende in Struct/Union');  
+      Else errrpt('Fin de fichier inattendue dans struct/union');
+     End;
+     Exit;
+    End;
+   End;
+   
+   blanks; { Ignorer les espaces }
+   
+   { Vérifier si c'est la fin de la struct }
+   If peek_char = '}' Then Break;
+   
+   safe_writeln('; Dans boucle parsing - membre détecté');
+   safe_writeln('; Parsing membre...'); 
+   blanks; { S'assurer qu'on ignore les espaces }
+   { Analyser le type du membre }
+   member_type := parse_type_specifier;
+   init_type_info(member_type_info);
+   member_type_info.base_type := member_type;
+   calculate_type_size(member_type_info);
+   safe_writeln('; Type membre analysé: ' + IntToStr(member_type));
+   If member_type = -1 Then
+   Begin
+    Case Language of
+     _English: errrpt('Expected member type in struct/union');
+     _Germany: errrpt('Erwarteter Mitgliedstyp in Struct/Union');
+     Else errrpt('Type de membre attendu dans struct/union');
+    End;
+    Exit;
+   End;
+   
+   { Analyser le nom du membre }
+   safe_writeln('; Tentative lecture nom membre...');
+   If not symname(member_name) Then
+   Begin
+    Case Language of
+     _English: errrpt('Expected member name in struct/union');
+     _Germany: errrpt('Erwarteter Mitgliedsname in Struct/Union');
+     Else errrpt('Nom de membre attendu dans struct/union');
+    End;
+    Exit;
+   End;
+   
+   safe_writeln('; Nom de membre lu: ' + member_name);
+   
+   { Ajouter le membre à la structure }
+   If not add_struct_member(struct_def, member_name, member_type, member_type_info) Then
+    Exit;
+   
+   { Consommer le point-virgule }
+   If not match(';') Then
+   Begin
+    Case Language of
+     _English: errrpt('Expected ; after struct member');
+     _Germany: errrpt('Erwartete ; nach Struct-Mitglied');
+     Else errrpt('; attendu après membre de structure');
+    End;
+    Exit;
+   End;
+   
+   safe_writeln('; Membre ajouté: ' + member_name);
+  Until False; { La boucle se termine par les Break }
+  
+  { Consommer l'accolade de fermeture }
+  If not match('}') Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected } to close struct/union');
+    _Germany: errrpt('Erwartete } zum Schließen der Struct/Union');
+    Else errrpt('} attendu pour fermer struct/union');
+   End;
+   Exit;
+  End;
+  
+  { Afficher les informations de la structure }
+  With struct_def^ do
+  Begin
+   If is_union Then
+    safe_writeln('; Union ' + name + ' définie, taille: ' + IntToStr(total_size) + ' octets')
+   Else
+    safe_writeln('; Structure ' + name + ' définie, taille: ' + IntToStr(total_size) + ' octets');
+  End;
+  
+  parse_struct_declaration := struct_def^.struct_id;
+ End
+ Else
+ Begin
+  { Référence à une structure existante }
+  struct_def := find_struct(struct_name);
+  If struct_def = nil Then
+  Begin
+   Case Language of
+    _English: errrpt('Undefined struct/union: ' + struct_name);
+    _Germany: errrpt('Undefinierte Struct/Union: ' + struct_name);
+    Else errrpt('Structure/Union non définie: ' + struct_name);
+   End;
+   Exit;
+  End;
+  
+  parse_struct_declaration := struct_def^.struct_id;
+ End;
+End;
+
 { Déclarations anticipées pour l'analyse d'expression et les fonctions d'analyse }
 Function expression_bool(var lval: TLVal): Boolean; forward;
 Procedure primary_expression(var lval: TLVal); forward;
 Procedure unary_expression(var lval: TLVal); forward;
 Procedure multiplicative_expression(var lval: TLVal); forward;
 Procedure additive_expression(var lval: TLVal); forward;
+Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean); forward;
+
+{ Convertir un type entier en nom de type string }
+function get_type_name_from_id(type_id: Integer): String;
+begin
+  case type_id of
+    cchar: get_type_name_from_id := 'char';
+    cint: get_type_name_from_id := 'int';
+    else get_type_name_from_id := 'int'; { Par défaut }
+  end;
+end;
 
 { Analyse améliorée des spécificateurs de type avec support complet des types C }
 Function parse_type_specifier: Integer;
@@ -1723,6 +2103,36 @@ Begin
   Else If match('double') Then
   Begin
    base_type := cdouble;
+   type_found := True;
+   Break;
+  End
+  Else If match('struct') Then
+  Begin
+   { Analyser la déclaration de structure complète }
+   base_type := parse_struct_declaration(False); { False = struct, pas union }
+   If base_type = -1 Then
+   Begin
+    parse_type_specifier_with_qualifiers := -1;
+    Exit;
+   End;
+   { Convertir l'ID de struct vers le type cstruct }
+   type_info.struct_id := base_type;
+   base_type := cstruct;
+   type_found := True;
+   Break;
+  End
+  Else If match('union') Then
+  Begin
+   { Analyser la déclaration d'union complète }
+   base_type := parse_struct_declaration(True); { True = union }
+   If base_type = -1 Then
+   Begin
+    parse_type_specifier_with_qualifiers := -1;
+    Exit;
+   End;
+   { Convertir l'ID d'union vers le type cunion }
+   type_info.struct_id := base_type;
+   base_type := cunion;
    type_found := True;
    Break;
   End
@@ -2570,6 +2980,147 @@ Begin
  lval.type_info.array_size := 0; { Ce n'est plus un tableau mais un élément }
 End;
 
+{ Analyser l'accès aux membres de structure }
+Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean);
+Var
+ member_name: String;
+ struct_symbol: PSymbol;
+ struct_def: PStructDef;
+ member_index: Integer;
+ member_offset, member_size: Integer;
+Begin
+ { Trouver le symbole de la structure }
+ struct_symbol := find_symbol(struct_name);
+ If struct_symbol = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Struct variable not found: ' + struct_name);
+   _Germany: errrpt('Struct-Variable nicht gefunden: ' + struct_name);
+   Else errrpt('Variable de structure non trouvée: ' + struct_name);
+  End;
+  Exit;
+ End;
+
+ { Vérifier que c'est bien une structure }
+ If (struct_symbol^.type_info.base_type <> cstruct) and 
+    (struct_symbol^.type_info.base_type <> cunion) Then
+ Begin
+  Case Language of
+   _English: errrpt('Variable is not a struct/union: ' + struct_name);
+   _Germany: errrpt('Variable ist kein Struct/Union: ' + struct_name);
+   Else errrpt('La variable n''est pas une structure/union: ' + struct_name);
+  End;
+  Exit;
+ End;
+
+ { Consommer '.' ou '->' }
+ If is_pointer Then
+ Begin
+  If not (match('-') and match('>')) Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected -> for pointer member access');
+    _Germany: errrpt('Erwartete -> für Pointer-Mitgliedszugriff');
+    Else errrpt('-> attendu pour l''accès aux membres de pointeur');
+   End;
+   Exit;
+  End;
+ End
+ Else
+ Begin
+  If not match('.') Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected . for struct member access');
+    _Germany: errrpt('Erwartete . für Struct-Mitgliedszugriff');
+    Else errrpt('. attendu pour l''accès aux membres de structure');
+   End;
+   Exit;
+  End;
+ End;
+
+ { Obtenir le nom du membre }
+ If not symname(member_name) Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected member name after .');
+   _Germany: errrpt('Erwarteter Mitgliedsname nach .');
+   Else errrpt('Nom de membre attendu après .');
+  End;
+  Exit;
+ End;
+
+ { Trouver la définition de la structure }
+ struct_def := find_struct_by_id(struct_symbol^.type_info.struct_id);
+ If struct_def = nil Then
+ Begin
+  Case Language of
+   _English: errrpt('Struct definition not found');
+   _Germany: errrpt('Struct-Definition nicht gefunden');
+   Else errrpt('Définition de structure non trouvée');
+  End;
+  Exit;
+ End;
+
+ { Trouver le membre dans la structure }
+ member_index := find_struct_member(struct_def, member_name);
+ If member_index = -1 Then
+ Begin
+  Case Language of
+   _English: errrpt('Member not found in struct: ' + member_name);
+   _Germany: errrpt('Mitglied nicht in Struct gefunden: ' + member_name);
+   Else errrpt('Membre non trouvé dans la structure: ' + member_name);
+  End;
+  Exit;
+ End;
+
+ { Obtenir les informations du membre }
+ With struct_def^.members[member_index] do
+ Begin
+  member_offset := offset;
+  member_size := size;
+ End;
+
+ safe_writeln('; Accès au membre ' + member_name + ' (offset: ' + IntToStr(member_offset) + ')');
+
+ { Générer le code pour calculer l'adresse du membre }
+ If member_offset = 0 Then
+ Begin
+  { Le membre est au début de la structure }
+  ot('ldd  #');
+  outstr(struct_name);
+  nl;
+ End
+ Else
+ Begin
+  { Ajouter l'offset du membre }
+  ot('ldd  #');
+  outstr(struct_name);
+  nl;
+  ot('addd #');
+  outdec(member_offset);
+  nl;
+ End;
+
+ { Charger la valeur du membre }
+ ol('tfr  d,x    ; adresse du membre dans X');
+ Case member_size of
+  1: ol('ldb  ,x     ; charger octet');
+  2: ol('ldd  ,x     ; charger mot');
+ Else
+  ol('ldd  ,x     ; charger mot par défaut');
+ End;
+
+ { Configurer lval pour le résultat }
+ With struct_def^.members[member_index] do
+ Begin
+  lval.typ := member_type;
+  lval.indirect := 1;
+  lval.constant := False;
+  lval.type_info := type_info;
+ End;
+End;
+
 { Primary expression parser with function call support }
 Procedure primary_expression(var lval: TLVal);
 Var
@@ -2621,6 +3172,11 @@ Begin
       Begin
        { Array indexing }
        parse_array_access(id, lval);
+      End
+      Else If peek_char = '.' Then
+      Begin
+       { Structure member access }
+       parse_struct_member_access(id, lval, False);
       End
       Else
       Begin
@@ -3953,12 +4509,15 @@ BEGIN
  type_info_count := 0;
   { Initialisaton du syst�me de gestion des fonctions }
  init_functions;
+  { Initialisation du système de gestion des structures }
+ init_structs;
  asmtype := AS6809;
  header;        { Code d''introduction }
  parse;         { Analyse toutes les entr�e }
  trailer;       { Code de suivi }
  free_defines;  { Free define memory from heap }
  free_symbols;  { Free symbol table from heap }
+ free_structs;  { Free struct definitions from heap }
  closeout;      { Fermer la sortie }
  errrptsummary; { R�sumer les erreurs }
 END.
