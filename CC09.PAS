@@ -1293,6 +1293,56 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   ol('tfr  d,x ; ne garder que l''octet faible');
   ol('tfr  b,a');
   ol('clrb');
+ End
+ { Gérer la conversion int vers long }
+ Else If (from_type.base_type = cint) and (to_type.base_type = clong) Then Begin
+  If from_type.is_unsigned Then Begin
+   ol('clr  -2,s   ; partie haute = 0 pour unsigned');
+   ol('clr  -1,s');
+  End
+  Else
+  Begin
+   ol('tsta        ; test du signe');
+   ol('bpl  +      ; si positif, partie haute = 0');
+   ol('ldd  #$FFFF ; si négatif, partie haute = $FFFF');
+   ol('std  -2,s   ; stocker partie haute');
+   ol('bra  ++');
+   ol('+ clr  -2,s  ; partie haute = 0');
+   ol('clr  -1,s');
+   ol('++');
+  End;
+ End
+ { Gérer la conversion long vers int }
+ Else If (from_type.base_type = clong) and (to_type.base_type = cint) Then Begin
+  ol('ldd  -2,s    ; charger partie basse du long');
+  ol('leas 2,s     ; ajuster pile (partie haute ignorée)');
+ End
+ { Gérer la conversion char vers long }
+ Else If (from_type.base_type = cchar) and (to_type.base_type = clong) Then Begin
+  If from_type.is_unsigned Then Begin
+   ol('clra        ; extension zéro char');
+   ol('clr  -2,s   ; partie haute = 0');
+   ol('clr  -1,s');
+  End
+  Else
+  Begin
+   ol('sex         ; extension de signe char vers int');
+   ol('tsta        ; test du signe de la partie int');
+   ol('bpl  +      ; si positif, partie haute = 0');
+   ol('ldd  #$FFFF ; si négatif, partie haute = $FFFF');
+   ol('std  -2,s   ; stocker partie haute');
+   ol('bra  ++');
+   ol('+ clr  -2,s  ; partie haute = 0');
+   ol('clr  -1,s');
+   ol('++');
+  End;
+ End
+ { Gérer la conversion long vers char }
+ Else If (from_type.base_type = clong) and (to_type.base_type = cchar) Then Begin
+  ol('ldd  -2,s    ; charger partie basse du long');
+  ol('tfr  b,a     ; ne garder que l''octet faible');
+  ol('clrb');
+  ol('leas 4,s     ; ajuster pile (libérer long)');
  End;
   { Ajouter des conversions supplémentaires si nécessaires }
 End;
@@ -1860,6 +1910,164 @@ Var
 Begin
  Str(value, temp);
  IntToStr := temp;
+End;
+
+{ ============================================================================ }
+{ FONCTIONS DE SUPPORT POUR LES OPÉRATIONS LONG (32 BITS) SUR 6809            }
+{ ============================================================================ }
+
+{ Générer une routine d'addition long (32 bits) }
+Procedure generate_long_add;
+Begin
+ safe_writeln('; Addition long 32 bits');
+ safe_writeln('long_add:');
+ ol('; Ajouter deux longs sur la pile');
+ ol('puls y      ; adresse de retour');
+ ol('puls d      ; premier long - partie basse');
+ ol('puls x      ; premier long - partie haute'); 
+ ol('pshs x,d    ; sauvegarder premier long');
+ ol('puls d      ; deuxième long - partie basse');
+ ol('addd 2,s    ; additionner parties basses');
+ ol('std  2,s    ; stocker résultat partie basse');
+ ol('puls d      ; deuxième long - partie haute');
+ ol('adcb 1,s    ; additionner partie haute avec carry');
+ ol('adca ,s     ; additionner partie haute avec carry');
+ ol('std  ,s     ; stocker résultat partie haute');
+ ol('pshs y      ; remettre adresse de retour');
+ ol('rts');
+End;
+
+{ Générer une routine de soustraction long (32 bits) }
+Procedure generate_long_sub;
+Begin
+ safe_writeln('; Soustraction long 32 bits');
+ safe_writeln('long_sub:');
+ ol('puls y      ; adresse de retour');
+ ol('puls d      ; premier long - partie basse');
+ ol('puls x      ; premier long - partie haute');
+ ol('pshs x,d    ; sauvegarder premier long');
+ ol('puls d      ; deuxième long - partie basse');
+ ol('subd 2,s    ; soustraire parties basses');
+ ol('std  2,s    ; stocker résultat partie basse');
+ ol('puls d      ; deuxième long - partie haute');
+ ol('sbcb 1,s    ; soustraire partie haute avec borrow');
+ ol('sbca ,s     ; soustraire partie haute avec borrow');
+ ol('std  ,s     ; stocker résultat partie haute');
+ ol('pshs y      ; remettre adresse de retour');
+ ol('rts');
+End;
+
+{ Générer une routine de multiplication long (32 bits) }
+Procedure generate_long_mul;
+Begin
+ safe_writeln('; Multiplication long 32 bits (simplifiée)');
+ safe_writeln('long_mul:');
+ ol('puls y      ; adresse de retour');
+ ol('puls d      ; premier long - partie basse');
+ ol('puls x      ; premier long - partie haute');
+ ol('puls u      ; deuxième long - partie basse'); 
+ ol('pshs u      ; sauvegarder deuxième long partie basse');
+ ol('puls u      ; deuxième long - partie haute');
+ ol('; Multiplication simplifiée: A*B = A_low*B_low (truncated)');
+ ol('pshs x      ; sauvegarder première partie haute');
+ ol('tfr  d,x    ; premier dans X');
+ ol('ldd  2,s    ; charger deuxième partie basse');
+ ol('jsr  mult16 ; X * D -> D (partie basse seulement)');
+ ol('leas 4,s    ; nettoyer pile');
+ ol('pshs d      ; résultat partie basse');
+ ol('clr  -2,s   ; partie haute = 0 (multiplication tronquée)');
+ ol('clr  -1,s');
+ ol('pshs y      ; remettre adresse de retour');
+ ol('rts');
+End;
+
+{ Générer une routine de division long (32 bits) - version simplifiée }
+Procedure generate_long_div;
+Begin
+ safe_writeln('; Division long 32 bits (simplifiée - partie basse seulement)');
+ safe_writeln('long_div:');
+ ol('puls y      ; adresse de retour');
+ ol('puls d      ; dividende partie basse');
+ ol('leas 2,s    ; ignorer dividende partie haute');
+ ol('puls x      ; diviseur partie basse'); 
+ ol('leas 2,s    ; ignorer diviseur partie haute');
+ ol('jsr  div16  ; D / X -> D');
+ ol('pshs d      ; résultat partie basse');
+ ol('clr  -2,s   ; partie haute = 0');
+ ol('clr  -1,s');
+ ol('pshs y      ; remettre adresse de retour');
+ ol('rts');
+End;
+
+{ Générer les routines de comparaison long }
+Procedure generate_long_compare;
+Begin
+ safe_writeln('; Comparaison long 32 bits');
+ safe_writeln('long_cmp:');
+ ol('puls y      ; adresse de retour');
+ ol('puls d      ; premier long - partie basse');
+ ol('puls x      ; premier long - partie haute');
+ ol('puls u      ; deuxième long - partie basse');
+ ol('tfr  u,u    ; tester si zéro');
+ ol('puls u      ; deuxième long - partie haute');
+ ol('cmpx u      ; comparer parties hautes');
+ ol('bne  done   ; si différentes, on a le résultat');
+ ol('cmpd 2,s    ; comparer parties basses');
+ ol('done:');
+ ol('pshs y      ; remettre adresse de retour');
+ ol('rts');
+End;
+
+{ Charger une constante long sur la pile }
+Procedure load_long_constant(value: LongInt);
+Var
+ high_part, low_part: Integer;
+ temp_str: String;
+Begin
+ high_part := Integer(value shr 16);
+ low_part := Integer(value and $FFFF);
+ 
+ safe_writeln('; Charger constante long: ' + IntToStr(value));
+ 
+ { Charger partie haute }
+ ot('ldd  #');
+ outdec(high_part);
+ nl;
+ ol('pshs d      ; partie haute sur pile');
+ 
+ { Charger partie basse }
+ ot('ldd  #');
+ outdec(low_part);
+ nl;
+ ol('pshs d      ; partie basse sur pile');
+End;
+
+{ Charger une variable long depuis la mémoire }
+Procedure load_long_variable(var_name: String);
+Begin
+ safe_writeln('; Charger variable long: ' + var_name);
+ ot('ldd  ');
+ outstr(var_name + '+2'); { Partie haute }
+ nl;
+ ol('pshs d      ; partie haute sur pile');
+ ot('ldd  ');
+ outstr(var_name);        { Partie basse }
+ nl;
+ ol('pshs d      ; partie basse sur pile');
+End;
+
+{ Stocker un long de la pile vers une variable }
+Procedure store_long_variable(var_name: String);
+Begin
+ safe_writeln('; Stocker variable long: ' + var_name);
+ ol('puls d      ; partie basse depuis pile');
+ ot('std  ');
+ outstr(var_name);        { Stocker partie basse }
+ nl;
+ ol('puls d      ; partie haute depuis pile');
+ ot('std  ');
+ outstr(var_name + '+2'); { Stocker partie haute }
+ nl;
 End;
 
 { ============================================================================ }
