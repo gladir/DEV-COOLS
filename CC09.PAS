@@ -2338,6 +2338,7 @@ Procedure bitwise_or_expression(var lval: TLVal); forward;
 Procedure logical_and_expression(var lval: TLVal); forward;
 Procedure logical_or_expression(var lval: TLVal); forward;
 Procedure conditional_expression(var lval: TLVal); forward;
+Procedure parse_sizeof_expression(var lval: TLVal); forward;
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean); forward;
 Procedure parse_dereference(var lval: TLVal); forward;
 Procedure parse_address_of(var lval: TLVal); forward;
@@ -3752,7 +3753,27 @@ End;
 Procedure unary_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
+ save_lptr: Integer;
+ id: String;
 Begin
+ { Vérifier d'abord si c'est le mot-clé sizeof }
+ save_lptr := lptr;
+ blanks;
+ If is_alpha(peek_char) Then
+ Begin
+  id := parse_identifier;
+  If id = 'sizeof' Then
+  Begin
+   { C'est sizeof - restaurer la position et l'analyser }
+   lptr := save_lptr;
+   parse_sizeof_expression(lval);
+   Exit;
+  End;
+ End;
+ 
+ { Restaurer la position pour l'analyse normale }
+ lptr := save_lptr;
+ 
  Case peek_char of
   '+': Begin
     next_char;
@@ -3936,6 +3957,103 @@ Begin
  Inc(lval.type_info.pointer_level);
  
  safe_writeln('; Adresse de ' + var_name + ' prise, niveau pointeur: ' + IntToStr(lval.type_info.pointer_level));
+End;
+
+{ Opérateur sizeof - calcule la taille d'un type ou d'une expression }
+Procedure parse_sizeof_expression(var lval: TLVal);
+Var
+ type_name: String;
+ type_id: Integer;
+ type_info: TTypeInfo;
+ size_value: Integer;
+ expr_lval: TLVal;
+Begin
+ safe_writeln('; Opérateur sizeof');
+ 
+ { Consommer le mot-clé 'sizeof' }
+ If not match('sizeof') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected sizeof keyword');
+   _Germany: errrpt('Erwartetes sizeof-Schlüsselwort');
+   Else errrpt('Mot-clé sizeof attendu');
+  End;
+  Exit;
+ End;
+ 
+ { Attendre parenthèse ouvrante }
+ If not match('(') Then
+ Begin
+  Case Language of
+   _English: errrpt('Expected ( after sizeof');
+   _Germany: errrpt('Erwartete ( nach sizeof');
+   Else errrpt('( attendu après sizeof');
+  End;
+  Exit;
+ End;
+ 
+ { Analyser le contenu - peut être un type ou une expression }
+ { Sauvegarder la position pour pouvoir revenir en arrière }
+ blanks;
+ 
+ { Essayer d'analyser comme un type d'abord }
+ type_id := parse_type_specifier_with_qualifiers(type_info);
+ 
+ If type_id <> -1 Then
+ Begin
+  { C'est un type - calculer sa taille }
+  safe_writeln('; sizeof sur type: ' + get_type_name(type_info));
+  size_value := calculate_type_size(type_info);
+  
+  { Attendre la parenthèse fermante }
+  If not match(')') Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected ) after sizeof type');
+    _Germany: errrpt('Erwartete ) nach sizeof-Typ');
+    Else errrpt(') attendu après le type sizeof');
+   End;
+   Exit;
+  End;
+ End
+ Else
+ Begin
+  { Ce n'est pas un type - essayer comme expression }
+  safe_writeln('; sizeof sur expression');
+  
+  { Analyser l'expression }
+  unary_expression(expr_lval);
+  
+  { Calculer la taille basée sur le type de l'expression }
+  size_value := calculate_type_size(expr_lval.type_info);
+  
+  { Attendre la parenthèse fermante }
+  If not match(')') Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected ) after sizeof expression');
+    _Germany: errrpt('Erwartete ) nach sizeof-Ausdruck');
+    Else errrpt(') attendu après l''expression sizeof');
+   End;
+   Exit;
+  End;
+ End;
+ 
+ { Générer le code pour charger la taille comme constante }
+ ot('ldd  #');
+ outdec(size_value);
+ nl;
+ 
+ { Configurer lval pour le résultat }
+ FillChar(lval, SizeOf(lval), 0);
+ lval.typ := cint;
+ lval.constant := True;
+ lval.value := size_value;
+ init_type_info(lval.type_info);
+ lval.type_info.base_type := cint;
+ lval.type_info.size := sizeof_int;
+ 
+ safe_writeln('; sizeof résultat: ' + IntToStr(size_value) + ' octets');
 End;
 
 { Multiplicative expression parser }
