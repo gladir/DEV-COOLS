@@ -192,6 +192,18 @@ Type
 
  TDefineTable = Array[0..{$IFDEF FPC}99{$ELSE}49{$ENDIF}] of TDefine; { Max 100 defines }
 
+ { Symbol table using heap memory instead of data segment }
+ PSymbol = ^TSymbol;
+ TSymbol = Record
+  name: String{$IFNDEF FPC}[80]{$ENDIF};
+  ident: Integer;    { it_variable, it_function, etc. }
+  ctype: Integer;    { Type of symbol }
+  storage: Integer;  { Storage class }
+  offset_value: Integer; { Offset or value }
+  type_info: TTypeInfo; { Extended type information }
+  next: PSymbol;     { Next symbol in chain }
+ End;
+
   { Table de fonction }
  TFunctionTable = Array[0..{$IFDEF FPC}99{$ELSE}50{$ENDIF}] of TFunction;
 
@@ -199,8 +211,13 @@ Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  { Tables de symbole }
+ { Legacy symbol table for compatibility - now smaller }
  symtab: TSymTab;
  glbptr, locptr: Integer;
+
+ { New heap-based symbol table }
+ symbol_list: PSymbol;    { Head of symbol list }
+ symbol_count: Integer;   { Counter for statistics }
 
  { Gestion de fonction }
  function_table: TFunctionTable;
@@ -246,6 +263,9 @@ Var
  input, output: Text;
  asmtype: Integer;
  use_stdout: Boolean;
+
+{ Forward declarations }
+Procedure init_type_info(var type_info: TTypeInfo); forward;
 
 Function startglb: Integer;Begin
  startglb := 1; { Start at 1 to reserve 0 as "not found" value }
@@ -609,6 +629,109 @@ Begin
   ptr := ptr + symsiz;
  End;
  findsym := 0;
+End;
+
+{ ============================================================================ }
+{ NEW HEAP-BASED SYMBOL TABLE FUNCTIONS                                       }
+{ ============================================================================ }
+
+{ Initialize the heap-based symbol table }
+Procedure init_symbols;
+Begin
+ symbol_list := nil;
+ symbol_count := 0;
+End;
+
+{ Find a symbol in the heap-based symbol table }
+Function find_symbol(sname: String): PSymbol;
+Var
+ current: PSymbol;
+Begin
+ find_symbol := nil;
+ current := symbol_list;
+ 
+ While current <> nil do
+ Begin
+  If current^.name = sname Then
+  Begin
+   find_symbol := current;
+   Exit;
+  End;
+  current := current^.next;
+ End;
+End;
+
+{ Add a symbol to the heap-based symbol table }
+Function add_symbol(sname: String; id_type: Integer; sym_type: Integer; stor_class: Integer; offset_val: Integer): PSymbol;
+Var
+ new_symbol: PSymbol;
+Begin
+ add_symbol := nil;
+ 
+ { Check if symbol already exists }
+ If find_symbol(sname) <> nil Then
+ Begin
+  { Symbol already exists }
+  Exit;
+ End;
+ 
+ { Allocate memory on heap }
+ New(new_symbol);
+ If new_symbol = nil Then
+ Begin
+  { Out of memory }
+  Exit;
+ End;
+ 
+ { Initialize the new symbol }
+ With new_symbol^ do
+ Begin
+  name := sname;
+  ident := id_type;
+  ctype := sym_type;
+  storage := stor_class;
+  offset_value := offset_val;
+  init_type_info(type_info);
+  type_info.base_type := sym_type;
+  next := symbol_list;  { Insert at beginning of list }
+ End;
+ 
+ { Update list head }
+ symbol_list := new_symbol;
+ Inc(symbol_count);
+ 
+ add_symbol := new_symbol;
+End;
+
+{ Enhanced addsym function using heap }
+Function addsym_heap(sname: String; typ: Integer; storage: Integer; offset_value: Integer): PSymbol;
+Begin
+ addsym_heap := add_symbol(sname, it_variable, typ, storage, offset_value);
+End;
+
+{ Enhanced findsym function using heap }
+Function findsym_heap(sname: String): PSymbol;
+Begin
+ findsym_heap := find_symbol(sname);
+End;
+
+{ Free all symbols from heap memory }
+Procedure free_symbols;
+Var
+ current, next: PSymbol;
+Begin
+ current := symbol_list;
+ While current <> nil do
+ Begin
+  next := current^.next;
+  Dispose(current);
+  current := next;
+ End;
+ 
+ symbol_list := nil;
+ If use_stdout Then WriteLn('; Freed ', symbol_count, ' symbols from heap')
+               Else WriteLn(output, '; Freed ', symbol_count, ' symbols from heap');
+ symbol_count := 0;
 End;
 
 { ============================================================================ }
@@ -1786,14 +1909,14 @@ Begin
  parse_function_call := True;
 End;
 
-{ Enhanced variable declaration with type information }
+{ Enhanced variable declaration with heap-based symbol table }
 Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo);
 Var
- sym_ptr: Integer;
+ sym_ptr: PSymbol;
  type_size: Integer;
 Begin
- { Check if already declared }
- If findsym(var_name) <> 0 Then
+ { Check if already declared using new heap table }
+ If find_symbol(var_name) <> nil Then
  Begin
   Case Language of
    _English: errrpt('Variable ' + var_name + ' already declared');
@@ -1803,39 +1926,41 @@ Begin
   Exit;
  End;
 
- { Add to symbol table }
- sym_ptr := addsym(var_name, var_type, automatic, 0);
- If sym_ptr <> 0 Then
+ { Add to heap-based symbol table }
+ sym_ptr := add_symbol(var_name, it_variable, var_type, automatic, 0);
+ If sym_ptr <> nil Then
  Begin
-  WriteLn(output, '; Declared variable: ', var_name, ' (', get_type_name(type_info), ')');
-
-  { Store extended type information }
-  If type_info_count < SYMTBSZ Then
-  Begin
-   Inc(type_info_count);
-   type_info_table[type_info_count] := type_info;
-   { Store index in symbol table for lookup }
-   symtab[sym_ptr + 10] := Chr(type_info_count); { Use offset 10 for type_info index }
-  End;
+  { Store type information directly in the symbol }
+  sym_ptr^.type_info := type_info;
+  
+  If use_stdout Then WriteLn('; Declared variable: ', var_name, ' (', get_type_name(type_info), ')')
+                Else WriteLn(output, '; Declared variable: ', var_name, ' (', get_type_name(type_info), ')');
 
   { Generate storage allocation based on type }
-  outstr(var_name);
+  If use_stdout Then Write(var_name)
+                Else outstr(var_name);
   type_size := type_info.size;
 
   If type_size = 1 Then
-   WriteLn(output, ': rmb 1')
+  Begin
+   If use_stdout Then WriteLn(': rmb 1')
+                 Else WriteLn(output, ': rmb 1');
+  End
   Else
-   WriteLn(output, ': rmb ', type_size);
+  Begin
+   If use_stdout Then WriteLn(': rmb ', type_size)
+                 Else WriteLn(output, ': rmb ', type_size);
+  End;
 
-  WriteLn(output, '; Size: ', type_size, ' bytes');
+  If use_stdout Then WriteLn('; Size: ', type_size, ' bytes')
+                Else WriteLn(output, '; Size: ', type_size, ' bytes');
  End;
 End;
 
-{ Enhanced identifier lookup with symbol table }
+{ Enhanced identifier lookup with heap-based symbol table }
 Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
 Var
- sym_ptr: Integer;
- type_info_index: Integer;
+ sym_ptr: PSymbol;
 Begin
  lookup_variable := False;
  FillChar(lval, SizeOf(lval), 0);
@@ -1857,34 +1982,25 @@ Begin
   Exit;
  End;
 
- sym_ptr := findsym(var_name);
+ sym_ptr := find_symbol(var_name);
  
- If sym_ptr <> 0 Then
+ If sym_ptr <> nil Then
  Begin
   lookup_variable := True;
-  lval.symbol := sym_ptr;
-  lval.typ := Ord(symtab[sym_ptr + ctype]);
-  lval.storage := Ord(symtab[sym_ptr + storage]);
+  lval.symbol := Integer(sym_ptr); { Store pointer as integer for compatibility }
+  lval.typ := sym_ptr^.ctype;
+  lval.storage := sym_ptr^.storage;
   lval.indirect := 0;
   lval.constant := False;
 
-  { Retrieve extended type information }
-  type_info_index := Ord(symtab[sym_ptr + 10]); { Offset 10 for type_info index }
-  If (type_info_index > 0) and (type_info_index <= type_info_count) Then
-  Begin
-   lval.type_info := type_info_table[type_info_index];
-  End
-  Else
-  Begin
-   { Initialize default type info }
-   init_type_info(lval.type_info);
-   lval.type_info.base_type := lval.typ;
-  End;
+  { Type information is stored directly in the symbol }
+  lval.type_info := sym_ptr^.type_info;
  End
  Else
  Begin
   { Variable not found - treat as new variable for now }
-  WriteLn(output, '; Warning: Undeclared variable ', var_name);
+  If use_stdout Then WriteLn('; Warning: Undeclared variable ', var_name)
+                Else WriteLn(output, '; Warning: Undeclared variable ', var_name);
   lval.symbol := 0;
   lval.typ := cint;
   lval.constant := False;
@@ -3441,6 +3557,8 @@ BEGIN
  current_filename := '';
  { Initialize define system }
  init_defines;
+ { Initialize heap-based symbol table }
+ init_symbols;
   { Compiler main body }
  nxtlab := 0;
  kill;
@@ -3501,6 +3619,7 @@ BEGIN
  parse;         { Analyse toutes les entr�e }
  trailer;       { Code de suivi }
  free_defines;  { Free define memory from heap }
+ free_symbols;  { Free symbol table from heap }
  closeout;      { Fermer la sortie }
  errrptsummary; { R�sumer les erreurs }
 END.
