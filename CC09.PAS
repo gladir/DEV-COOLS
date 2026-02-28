@@ -4725,7 +4725,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Member not found in struct: ' + member_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Mitglied nicht in Struct gefunden: ' + member_name);
+   {$ENDIF}
    Else errrpt('Membre non trouvé dans la structure: ' + member_name);
   End;
   Exit;
@@ -4814,7 +4816,9 @@ Begin
      Begin
       Case Language of
        _English: errrpt('Invalid function call: ' + id);
+       {$IFDEF FPC}
        _Germany: errrpt('Ungültiger Funktionsaufruf: ' + id);
+       {$ENDIF}
        Else errrpt('Appel de fonction invalide: ' + id);
       End;
      End;
@@ -4865,7 +4869,9 @@ Begin
     Begin
      Case Language of
       _English: errrpt('Missing )');
+      {$IFDEF FPC}
       _Germany: errrpt('Fehlende )');
+      {$ENDIF}
       Else errrpt(') manquant');
      End;
     End;
@@ -4874,7 +4880,9 @@ Begin
   Else
    Case Language of
     _English: errrpt('Invalid primary expression');
+    {$IFDEF FPC}
     _Germany: errrpt('Ungültiger primärer Ausdruck');
+    {$ENDIF}
     Else errrpt('Expression primaire invalide');
    End;
  End;
@@ -4973,7 +4981,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
+   {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
+   {$ENDIF}
    Else errrpt('Impossible de déréférencer un type non-pointeur');
   End;
   Exit;
@@ -4993,13 +5003,15 @@ Begin
   ol('ldx  ,s++');         { Récupérer l'adresse depuis la pile }
   ol('ldd  ,x');           { Charger la valeur pointée }
  End;
- 
+
  { Vérifier que c'est bien un pointeur }
  If lval.type_info.pointer_level = 0 Then
  Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
+   {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
+   {$ENDIF}
    Else errrpt('Impossible de déréférencer un type non-pointeur');
   End;
   Exit;
@@ -5019,7 +5031,7 @@ Begin
   ol('ldx  ,s++');         { Récupérer l'adresse depuis la pile }
   ol('ldd  ,x');           { Charger la valeur pointée }
  End;
- 
+
  { Décrémenter le niveau de pointeur }
  Dec(lval.type_info.pointer_level);
  
@@ -5042,39 +5054,45 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected variable name after &');
-   _Germany: errrpt('Variablenname nach & erwartet'); 
+   {$IFDEF FPC}
+   _Germany: errrpt('Variablenname nach & erwartet');
+   {$ENDIF}
    Else errrpt('Nom de variable attendu après &');
   End;
   Exit;
  End;
- 
+
  { Chercher la variable dans la table des symboles }
  sym_ptr := find_symbol(var_name);
  If sym_ptr = nil Then
  Begin
   Case Language of
    _English: errrpt('Undefined variable: ' + var_name);
+   {$IFDEF FPC}
    _Germany: errrpt('Undefinierte Variable: ' + var_name);
+   {$ENDIF}
    Else errrpt('Variable non définie: ' + var_name);
   End;
   Exit;
  End;
- 
+
  { Vérifier que c'est bien une variable (pas une constante) }
  If sym_ptr^.ident <> it_variable Then
  Begin
   Case Language of
    _English: errrpt('Cannot take address of non-variable');
-   _Germany: errrpt('Kann Adresse von Nicht-Variable nicht nehmen'); 
+   {$IFDEF FPC}
+   _Germany: errrpt('Kann Adresse von Nicht-Variable nicht nehmen');
+   {$ENDIF}
    Else errrpt('Impossible de prendre l''adresse d''une non-variable');
   End;
   Exit;
  End;
- 
+
  { Générer le code pour obtenir l'adresse }
  ol('leax ' + var_name);
  ol('pshs x'); { Empiler l'adresse }
- 
+
  { Configurer lval pour le résultat }
  lval.symbol := Integer(sym_ptr);
  lval.indirect := 1; { Résultat sur la pile }
@@ -5106,7 +5124,9 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected sizeof keyword');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartetes sizeof-Schlüsselwort');
+   {$ENDIF}
    Else errrpt('Mot-clé sizeof attendu');
   End;
   Exit;
@@ -5117,16 +5137,18 @@ Begin
  Begin
   Case Language of
    _English: errrpt('Expected ( after sizeof');
+   {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach sizeof');
+   {$ENDIF}
    Else errrpt('( attendu après sizeof');
   End;
   Exit;
  End;
- 
+
  { Analyser le contenu - peut être un type ou une expression }
  { Sauvegarder la position pour pouvoir revenir en arrière }
  blanks;
- 
+
  { Essayer d'analyser comme un type d'abord }
  type_id := parse_type_specifier_with_qualifiers(type_info);
  
@@ -5141,7 +5163,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected ) after sizeof type');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach sizeof-Typ');
+    {$ENDIF}
     Else errrpt(') attendu après le type sizeof');
    End;
    Exit;
@@ -5163,7 +5187,9 @@ Begin
   Begin
    Case Language of
     _English: errrpt('Expected ) after sizeof expression');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach sizeof-Ausdruck');
+    {$ENDIF}
     Else errrpt(') attendu après l''expression sizeof');
    End;
    Exit;
@@ -5183,7 +5209,7 @@ Begin
  init_type_info(lval.type_info);
  lval.type_info.base_type := cint;
  lval.type_info.size := sizeof_int;
- 
+
  safe_writeln('; sizeof résultat: ' + IntToStr(size_value) + ' octets');
 End;
 
@@ -5442,7 +5468,7 @@ Begin
   
   { Tester la première expression }
   ol('tstd');
-  ot('lbeq '); 
+  ot('lbeq ');
   printlabel(false_label);
   nl;
   
@@ -5462,7 +5488,7 @@ Begin
   { Au moins une est fausse - résultat = 0 }
   prelabel(false_label);
   ol('ldd #0');
-  
+
   { Fin }
   prelabel(end_label);
  End;
@@ -5482,7 +5508,7 @@ Begin
   { Générer les étiquettes }
   true_label := getlabel;
   end_label := getlabel;
-  
+
   { Tester la première expression }
   ol('tstd');
   ot('lbne '); 
@@ -5522,7 +5548,7 @@ Begin
  If match('?') Then
  Begin
   safe_writeln('; Opérateur ternaire ? : (expression conditionnelle)');
-  
+
   { Générer les étiquettes }
   false_label := getlabel;
   end_label := getlabel;
@@ -5541,28 +5567,30 @@ Begin
   ot('lbra ');
   printlabel(end_label);
   nl;
-  
+
   { Attendre ':' }
   If not match(':') Then
   Begin
    Case Language of
     _English: errrpt('Expected : in ternary operator');
+    {$IFDEF FPC}
     _Germany: errrpt('Erwartete : im ternären Operator');
+    {$ENDIF}
     Else errrpt(': attendu dans l''opérateur ternaire');
    End;
    Exit;
   End;
-  
+
   { Étiquette pour l'expression fausse }
   prelabel(false_label);
-  
+
   { Analyser l'expression fausse }
   safe_writeln('; Expression fausse du ternaire');
   logical_or_expression(false_lval);
-  
+
   { Étiquette de fin }
   prelabel(end_label);
-  
+
   { Le résultat est dans D - copier les informations de type appropriées }
   { Pour simplifier, utiliser le type de l'expression vraie }
   lval := true_lval;
