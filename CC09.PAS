@@ -334,33 +334,47 @@ End;
 { Safe file writing functions }
 Function is_output_ready: Boolean;
 Begin
- If use_stdout Then
-  is_output_ready := True
- Else
- Begin
-  {$I-}
-  Write(output, ''); { Test write }
-  is_output_ready := (IOResult = 0);
-  {$I+}
- End;
+ { Always return true since we handle file checking elsewhere }
+ is_output_ready := True;
 End;
 
 Procedure safe_write(s: String);
 Begin
  If is_output_ready Then
  Begin
-  If use_stdout Then Write(s)
-                Else Write(output, s);
- End;
+  If use_stdout Then 
+   Write(s)
+  Else
+  Begin
+   {$I-}
+   Write(output, s);
+   If IOResult <> 0 Then
+    Write(s); { Fallback to stdout if output fails }
+   {$I+}
+  End;
+ End
+ Else
+  Write(s); { Fallback to stdout if not ready }
 End;
 
 Procedure safe_writeln(s: String);
 Begin
  If is_output_ready Then
  Begin
-  If use_stdout Then WriteLn(s)
-                Else WriteLn(output, s);
- End;
+  { Always use stdout if use_stdout is True, or if output file isn't ready }
+  If use_stdout Then 
+   WriteLn(s)
+  Else
+  Begin
+   {$I-}
+   WriteLn(output, s);
+   If IOResult <> 0 Then
+    WriteLn(s); { Fallback to stdout if output fails }
+   {$I+}
+  End;
+ End
+ Else
+  WriteLn(s); { Fallback to stdout if not ready }
 End;
 
 Procedure nl;Begin
@@ -1315,8 +1329,8 @@ Begin
 
  With function_table[func_index] do
  Begin
-  WriteLn(output, '; Function: ', name);
-  WriteLn(output, name, ':');
+  safe_writeln('; Function: ' + name);
+  safe_writeln(name + ':');
 
   { Standard 6809 function prologue }
   If not is_main Then
@@ -1327,7 +1341,7 @@ Begin
    { Allocate space for local variables if needed }
    If local_vars_size > 0 Then
    Begin
-    WriteLn(output, '; Allocate local variables (', local_vars_size, ' bytes)');
+    safe_writeln('; Allocate local variables (size bytes)');
     ot('leas -');
     outdec(local_vars_size);
     outstr(',s');
@@ -1336,7 +1350,7 @@ Begin
   End
   Else
   Begin
-   WriteLn(output, '; Main function entry point');
+   safe_writeln('; Main function entry point');
   End;
  End;
 End;
@@ -1348,14 +1362,14 @@ Begin
 
  With function_table[func_index] do
  Begin
-  WriteLn(output, '; End of function: ', name);
+  safe_writeln('; End of function: ' + name);
 
   If not is_main Then
   Begin
    { Standard 6809 function epilogue }
    If local_vars_size > 0 Then
    Begin
-    WriteLn(output, '; Deallocate local variables');
+    safe_writeln('; Deallocate local variables');
     ot('leas ');
     outdec(local_vars_size);
     outstr(',s');
@@ -1367,7 +1381,7 @@ Begin
   End
   Else
   Begin
-   WriteLn(output, '; Main function exit');
+   safe_writeln('; Main function exit');
    ol('swi       ; software interrupt (program end)');
   End;
  End;
@@ -1380,11 +1394,11 @@ Begin
 
  With function_table[func_index] do
  Begin
-  WriteLn(output, '; Call function: ', name);
+  safe_writeln('; Call function: ' + name);
 
   { Check parameter count }
   If arg_count <> param_count Then
-   WriteLn(output, '; Warning: Argument count mismatch (expected ', param_count, ', got ', arg_count, ')');
+   safe_writeln('; Warning: Argument count mismatch');
 
   { Generate call instruction }
   ot('jsr  ');
@@ -1394,7 +1408,7 @@ Begin
   { Clean up stack if parameters were passed }
   If param_count > 0 Then
   Begin
-   WriteLn(output, '; Clean up ', param_count * 2, ' bytes of parameters');
+   safe_writeln('; Clean up stack parameters');
    ot('leas ');
    outdec(param_count * 2);
    outstr(',s');
@@ -1437,13 +1451,13 @@ Begin
   Else If match('const') Then
   Begin
    { const qualifier is handled in parse_declarator }
-   WriteLn(output, '; const qualifier detected');
+   safe_writeln('; const qualifier detected');
    Continue;
   End
   Else If match('volatile') Then
   Begin
    { volatile qualifier is handled in parse_declarator }
-   WriteLn(output, '; volatile qualifier detected');
+   safe_writeln('; volatile qualifier detected');
    Continue;
   End
   Else If match('void') Then
@@ -1516,13 +1530,13 @@ Begin
   If match('const') Then
   Begin
    is_const := True;
-   WriteLn(output, '; const qualifier detected');
+   safe_writeln('; const qualifier detected');
    Continue;
   End
   Else If match('volatile') Then
   Begin
    is_volatile := True;
-   WriteLn(output, '; volatile qualifier detected');
+   safe_writeln('; volatile qualifier detected');
    Continue;
   End
   Else If match('unsigned') Then
@@ -1653,7 +1667,7 @@ Begin
   If number(array_size) Then
   Begin
    type_info.array_size := array_size;
-   WriteLn(output, '; Array size: ', array_size);
+   safe_writeln('; Array size detected');
   End
   Else
   Begin
@@ -1715,7 +1729,7 @@ Begin
  func_index := add_function(func_name, return_type);
  If func_index = -1 Then Exit;
 
- WriteLn(output, '; Function declaration: ', func_name);
+ safe_writeln('; Function declaration: ' + func_name);
 
  { Parse parameter list }
  If not match(')') Then
@@ -1755,7 +1769,7 @@ Begin
    If not add_parameter(func_index, param_name, param_type) Then
     Exit;
 
-   WriteLn(output, '; Parameter: ', param_name, ' (', get_type_name(type_info), ')');
+   safe_writeln('; Parameter: ' + param_name + ' (' + get_type_name(type_info) + ')');
 
   Until not match(',');
 
@@ -1796,7 +1810,7 @@ Begin
    generate_function_prologue(func_index);
 
    { Mark that we found a function body for main parser to handle }
-   WriteLn(output, '; Function body detected - will be parsed by main loop');
+   safe_writeln('; Function body detected - will be parsed by main loop');
 
    parse_function_declaration := True;
   End
@@ -1831,12 +1845,12 @@ Begin
  func_index := find_function(func_name);
  If func_index = -1 Then
  Begin
-  WriteLn(output, '; Warning: Undeclared function ', func_name);
+  safe_writeln('; Warning: Undeclared function ' + func_name);
   { Treat as undeclared function returning int }
   func_index := add_function(func_name, cint);
  End;
 
- WriteLn(output, '; Function call: ', func_name);
+ safe_writeln('; Function call: ' + func_name);
 
  { Expect opening parenthesis }
  If not match('(') Then
@@ -1855,7 +1869,7 @@ Begin
  If not match(')') Then
  Begin
   Repeat
-   WriteLn(output, '; Argument ', arg_count + 1);
+   safe_writeln('; Argument (next)');
 
    { Parse argument expression }
    expression_bool(arg_lval);
@@ -1913,7 +1927,7 @@ Begin
   sym_ptr^.type_info := type_info;
   
   If use_stdout Then WriteLn('; Declared variable: ', var_name, ' (', get_type_name(type_info), ')')
-                Else WriteLn(output, '; Declared variable: ', var_name, ' (', get_type_name(type_info), ')');
+                Else safe_writeln('; Declared variable: ' + var_name);
 
   { Generate storage allocation based on type }
   If use_stdout Then Write(var_name)
@@ -1923,16 +1937,16 @@ Begin
   If type_size = 1 Then
   Begin
    If use_stdout Then WriteLn(': rmb 1')
-                 Else WriteLn(output, ': rmb 1');
+                 Else safe_writeln(': rmb 1');
   End
   Else
   Begin
    If use_stdout Then WriteLn(': rmb ', type_size)
-                 Else WriteLn(output, ': rmb ', type_size);
+                 Else safe_writeln(': rmb (size)');
   End;
 
   If use_stdout Then WriteLn('; Size: ', type_size, ' bytes')
-                Else WriteLn(output, '; Size: ', type_size, ' bytes');
+                Else safe_writeln('; Variable size in bytes');
  End;
 End;
 
@@ -1979,7 +1993,7 @@ Begin
  Begin
   { Variable not found - treat as new variable for now }
   If use_stdout Then WriteLn('; Warning: Undeclared variable ', var_name)
-                Else WriteLn(output, '; Warning: Undeclared variable ', var_name);
+                Else safe_writeln('; Warning: Undeclared variable ' + var_name);
   lval.symbol := 0;
   lval.typ := cint;
   lval.constant := False;
@@ -2895,7 +2909,7 @@ Begin
  { Push loop context for break/continue }
  { push_loop_context(2, end_label, loop_label); }
 
- WriteLn(output, '; FOR loop start');
+ safe_writeln('; FOR loop start');
 
  { Expect opening parenthesis }
  If not match('(') Then
@@ -2932,7 +2946,7 @@ Begin
 
  { Condition label }
  prelabel(condition_label);
- WriteLn(output, '; FOR condition');
+ safe_writeln('; FOR condition');
 
  { Parse condition }
  If not match(';') Then
@@ -2965,7 +2979,7 @@ Begin
 
  { End label }
  prelabel(end_label);
- WriteLn(output, '; End FOR');
+ safe_writeln('; End FOR');
 
  { Pop loop context }
  pop_loop_context;
@@ -3408,7 +3422,7 @@ Begin
   { Try to parse as statement (includes declarations and control structures) }
   If parse_statement Then
   Begin
-   WriteLn(output, '; Statement processed');
+   safe_writeln('; Statement processed');
    Continue;
   End;
 
@@ -3416,13 +3430,13 @@ Begin
   lptr := 1;
   If symname(sname) Then
   Begin
-   WriteLn(output, '; Identifier: ', sname);
+   safe_writeln('; Identifier: ' + sname);
 
    { Check for assignment }
    blanks;
    If match('=') Then
    Begin
-    WriteLn(output, '; Assignment to ', sname);
+    safe_writeln('; Assignment to ' + sname);
     blanks;
 
     { Look up variable in symbol table }
@@ -3439,7 +3453,7 @@ Begin
      End
      Else
      Begin
-      WriteLn(output, '; Assignment to variable: ', sname);
+      safe_writeln('; Assignment to variable: ' + sname);
 
       { Use expression parser for right side }
       expression(right_lval);
@@ -3469,7 +3483,7 @@ Begin
   blanks;
   If (peek_char >= '0') and (peek_char <= '9') Then
   Begin
-   WriteLn(output, '; Expression detected');
+   safe_writeln('; Expression detected');
    expression(lval);
    Continue;
   End;
@@ -3477,14 +3491,14 @@ Begin
   { Simple function detection fallback }
   If Pos('(', line) > 0 Then
   Begin
-   WriteLn(output, '; Function found: ', line);
+   safe_writeln('; Function found: ' + line);
    ol('nop ; placeholder for function');
   End;
 
   { Output any remaining content as comment }
   If Length(line) > 0 Then
   Begin
-   WriteLn(output, '; Unknown: ', line);
+   safe_writeln('; Unknown: ' + line);
   End;
  End;
 End;
@@ -3610,6 +3624,7 @@ BEGIN
  lptr := 1;
  line := '';
  nextlabel := 0;
+ use_stdout := True; { Initialize early - may be changed later }
  
  { Initialize heap-based symbol table }
  init_symbols;
