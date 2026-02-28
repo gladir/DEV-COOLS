@@ -6318,96 +6318,90 @@ Begin
     readinline;
    Continue;
   End;
-
-  { Process preprocessor directives BEFORE macro expansion }
-  If match('#') Then
-  Begin
-   If match('include') Then
-   Begin
-    { Process #include directive }
-    If not should_skip_code Then
-    Begin
-     If process_include_directive(line) Then
-     Begin
-      { Include successful - reset line pointer and continue with included file }
-      lptr := Length(line) + 1; { Force readinline to be called for new file }
+   { Traitement de la directive de pr‚processeur AVANT la macro ‚tendue }
+  If match('#') Then Begin
+   If match('include') Then Begin
+    { Traite la directive #include }
+    If not should_skip_code Then Begin
+     If process_include_directive(line)Then Begin
+      { SuccŠs du include - r‚initialise le pointeur de ligne et continue avec le fichier include }
+      lptr := Length(line) + 1; { Force readinline a ˆtre appel‚ pour le nouveau fichier }
       Continue;
      End
-     Else
+      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d‚j… rapport‚, saute cette ligne }
       Continue;
      End;
     End
-    Else
+     Else
     Begin
-     { Skip include in conditional block }
+     { Saute include dans le bloc conditionnel }
      Continue;
     End;
    End
-   Else If match('define') Then
-   Begin
-    { Process #define directive }
-    If not should_skip_code Then
-    Begin
+    Else
+   If match('define') Then Begin
+    { Traite la directive #define }
+    If not should_skip_code Then Begin
      If process_define_directive(line) Then
-      Continue  { Continue with next line }
-     Else
+      Continue  { Continue … la prochaine ligne }
+      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d‚ja rapport‚, saute cette ligne }
       Continue;
      End;
     End
-    Else
+     Else
     Begin
-     { Skip define in conditional block }
+     { Saute le define dans le bloc conditionnel }
      Continue;
     End;
    End
-   Else If match('if ') Then
-   Begin
-    { Process #if directive }
+    Else
+   If match('if ') Then Begin
+    { Traite la directive #if }
     blanks;
     process_if_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('ifdef ') Then
-   Begin
-    { Process #ifdef directive }
+    Else
+   If match('ifdef ') Then Begin
+    { Traite la directive #ifdef }
     blanks;
     process_ifdef_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('ifndef ') Then
-   Begin
-    { Process #ifndef directive }
+    Else
+   If match('ifndef ') Then Begin
+    { Traite la directive #ifndef }
     blanks;
     process_ifndef_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('elif ') Then
-   Begin
-    { Process #elif directive }
+    Else
+   If match('elif ') Then Begin
+    { Traite la directive #elif }
     blanks;
     process_elif_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('else') Then
-   Begin
-    { Process #else directive }
+    Else
+   If match('else') Then Begin
+    { Traite la directive #else }
     process_else_directive;
     Continue;
    End
-   Else If match('endif') Then
-   Begin
-    { Process #endif directive }
+    Else
+   If match('endif') Then Begin
+    { Traite la directive #endif }
     process_endif_directive;
     Continue;
    End
-   Else
+    Else
    Begin
-    { Other preprocessor directives - skip for now }
-    safe_writeln('; Skipping preprocessor directive: ' + line);
+    { Autres directives pr‚processeur - saute pour le moment }
+    safe_writeln('; Saute la directive pr‚processeur : ' + line);
     Continue;
    End;
   End;
