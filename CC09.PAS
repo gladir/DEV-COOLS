@@ -3419,76 +3419,61 @@ Procedure unmark_file_included(filename: String);
 Var
  i: Integer;
 Begin
- For i := 0 to included_count - 1 do
- Begin
-  If included_files[i].filename = filename Then
-  Begin
+ For i := 0 to included_count - 1 do Begin
+  If included_files[i].filename = filename Then Begin
    included_files[i].is_included := False;
    Exit;
   End;
  End;
 End;
+
 Function extract_filename(include_line: String): String;
 Var
  start_pos, end_pos: Integer;
  filename: String;
 Begin
  filename := '';
-
- { Skip #include and whitespace }
+ { Saut le #include et les espaces blancs }
  start_pos := Pos('#include', include_line);
- If start_pos > 0 Then
- Begin
-  start_pos := start_pos + 8; { Length of '#include' }
-
-  { Skip whitespace }
+ If start_pos > 0 Then Begin
+  start_pos := start_pos + 8; { Longueur de '#include' }
+   { Saute les espaces blancs }
   While (start_pos <= Length(include_line)) and
         ((include_line[start_pos] = ' ') or (include_line[start_pos] = #9)) do
    Inc(start_pos);
-
-  { Check for quotes or angle brackets }
-  If start_pos <= Length(include_line) Then
-  Begin
-   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then
-   Begin
-    Inc(start_pos); { Skip opening quote/bracket }
+  { VÇrifie pour les guillemets ou de signe plus grand }
+  If start_pos <= Length(include_line) Then Begin
+   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then Begin
+    Inc(start_pos); { Ignorer la citation/signe plus grand }
     end_pos := start_pos;
-
-    { Find closing quote or bracket }
+     { Trouvez le cours de guillemet ou de signe plus grand }
     While (end_pos <= Length(include_line)) and
           (include_line[end_pos] <> '"') and
           (include_line[end_pos] <> '>') do
      Inc(end_pos);
-
     If end_pos <= Length(include_line) Then
      filename := Copy(include_line, start_pos, end_pos - start_pos);
    End;
   End;
  End;
-
  extract_filename := filename;
 End;
 
-Function push_include_file(include_filename: String): Boolean;
-Begin
+Function push_include_file(include_filename: String): Boolean;Begin
  push_include_file := False;
-
- { Check for circular inclusion }
- If is_file_included(include_filename) Then
- Begin
+  { VÇrifie pour une inclusion circulaire }
+ If is_file_included(include_filename) Then Begin
   Case Language of
    _English: errrpt('Circular inclusion detected: ' + include_filename);
    {$IFDEF FPC}
-   _Germany: errrpt('Zirkul√§re Einbindung erkannt: ' + include_filename);
+   _Germany: errrpt('ZirkulÑre Einbindung erkannt: ' + include_filename);
    {$ENDIF}
-   Else errrpt('Inclusion circulaire d√©tect√©e: ' + include_filename);
+   Else errrpt('Inclusion circulaire dÇtectÇe: ' + include_filename);
   End;
   Exit;
  End;
-
- { Check for maximum include depth }
- If include_depth >= 10 Then
- Begin
+  { VÇrifier la profondeur d'inclusion maximale }
+ If include_depth >= 10 Then Begin
   Case Language of
    _English: errrpt('Include depth too deep (max 10): ' + include_filename);
    {$IFDEF FPC}
@@ -3498,33 +3483,27 @@ Begin
   End;
   Exit;
  End;
-
- { Save current file state }
- With include_stack[include_depth] do
- Begin
+  { Sauvegarde l'Çtat du fichier courant }
+ With include_stack[include_depth] do Begin
   filename := current_filename;
   saved_line := line;
   saved_lptr := lptr;
   saved_eof := eof;
  End;
-
- { Try to open the include file }
+  { Essaie d'ouvrir le fichier d'inclusion }
  Assign(input, include_filename);
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
-  { Restore previous file by reopening it }
-  If include_depth > 0 Then
-  Begin
+ If IOResult <> 0 Then Begin
+  { Restaurez le fichier prÇcÇdent en le rÇouvrant }
+  If include_depth > 0 Then Begin
    Assign(input, include_stack[include_depth].filename);
    Reset(input);
   End;
-
   Case Language of
    _English: errrpt('Cannot open include file: ' + include_filename);
    {$IFDEF FPC}
-   _Germany: errrpt('Kann Include-Datei nicht √∂ffnen: ' + include_filename);
+   _Germany: errrpt('Kann Include-Datei nicht îffnen: ' + include_filename);
    {$ENDIF}
    Else errrpt('Impossible d''ouvrir le fichier d''inclusion: ' + include_filename);
   End;
@@ -3532,16 +3511,15 @@ Begin
  End;
  {$I+}
 
- { Mark file as included to prevent circular inclusion }
+  { Indiquez que le fichier est inclus pour Çviter l'inclusion circulaire }
  mark_file_included(include_filename);
-
- { Update state }
+  { Mise Ö jour de l'Çtat }
  Inc(include_depth);
  current_filename := include_filename;
  eof := 0;
- lptr := 1; { Reset line pointer for new file }
+ lptr := 1; { RÇinitialiser le pointeur de ligne pour le nouveau fichier }
 
- safe_writeln('; Including file: ' + include_filename);
+ safe_writeln('; Fichier inclus: ' + include_filename);
  push_include_file := True;
 End;
 
@@ -3550,48 +3528,41 @@ Var
  filename: String;
 Begin
  process_include_directive := False;
-
  filename := extract_filename(include_line);
  If filename = '' Then
  Begin
   Case Language of
    _English: errrpt('Invalid #include directive syntax');
    {$IFDEF FPC}
-   _Germany: errrpt('Ung√ºltige #include-Direktiven-Syntax');
+   _Germany: errrpt('UngÅltige #include-Direktiven-Syntax');
    {$ENDIF}
    Else errrpt('Syntaxe de directive #include invalide');
   End;
   Exit;
  End;
-
- If push_include_file(filename) Then
-  process_include_directive := True;
+ If push_include_file(filename) Then process_include_directive := True;
 End;
 
 { ============================================================================ }
-{ DEFINE/MACRO MANAGEMENT FUNCTIONS                                           }
+{ FONCTIONS DE GESTION DE DEFINE/MACRO                                         }
 { ============================================================================ }
 
-{ Initialize define system }
-Procedure init_defines;
-Begin
- define_list := nil;     { Initialiser la liste cha√Æn√©e comme vide }
+{ Initialise le systäme define }
+Procedure init_defines;Begin
+ define_list := nil;     { Initialiser la liste chaånÇe comme vide }
  define_count := 0;
- { Don't write to output here as it may not be initialized yet }
+ { N'Çcrivez pas dans le champ de sortie car il n'est pas encore initialisÇ }
 End;
 
-{ Find a #define constant by name - returns pointer }
+{ Trouver une constante #define par nom - renvoyer un pointeur }
 Function find_define(def_name: String): PDefine;
 Var
  current: PDefine;
 Begin
  find_define := nil;
  current := define_list;
-
- While current <> nil do
- Begin
-  If current^.in_use and (current^.name = def_name) Then
-  Begin
+ While current <> nil do Begin
+  If current^.in_use and (current^.name = def_name) Then Begin
    find_define := current;
    Exit;
   End;
@@ -3599,7 +3570,7 @@ Begin
  End;
 End;
 
-{ Remove a #define constant }
+ { Eneläve une constante #define }
 Function remove_define(def_name: String): Boolean;
 Var
  current, prev: PDefine;
@@ -3607,17 +3578,11 @@ Begin
  remove_define := False;
  current := define_list;
  prev := nil;
-
- While current <> nil do
- Begin
-  If current^.in_use and (current^.name = def_name) Then
-  Begin
-   { Found it - remove from list }
-   If prev = nil Then
-    define_list := current^.next  { First in list }
-   Else
-    prev^.next := current^.next;  { Not first in list }
-
+ While current <> nil do Begin
+  If current^.in_use and (current^.name = def_name) Then Begin
+   { TrouvÇ - Ö retirer de la liste }
+   If prev = nil Then define_list := current^.next  { Premier dans la liste }
+                 Else prev^.next := current^.next;  { Ce n'est pas le premier dans la liste }
    Dispose(current);
    Dec(define_count);
    remove_define := True;
@@ -3628,14 +3593,13 @@ Begin
  End;
 End;
 
-{ Add a new #define constant }
+{ Ajouter une nouvelle constante #define }
 Function add_define(def_name, def_value: String): Boolean;
 Var
  new_define: PDefine;
 Begin
  add_define := False;
-
- { Check if already defined and allow redefinition with warning }
+  { VÇrifier si la dÇfinition existe dÇjÖ et autorisÇ sa redÇfinition avec avertissement }
  If find_define(def_name) <> nil Then
  Begin
   Case Language of

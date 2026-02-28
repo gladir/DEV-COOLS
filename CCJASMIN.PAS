@@ -583,19 +583,19 @@ Procedure ol_ldd_imm(value: Integer);
 Var temp: String;
 Begin
  Str(value, temp);
- ol('ldd  #' + temp);
+ ol('bipush ' + temp);
 End;
 
 { Générer instruction ldd avec variable }  
 Procedure ol_ldd_var(varname: String);
 Begin
- ol('ldd   ' + varname);
+ ol('iload ' + varname);
 End;
 
 { Générer instruction std avec variable }
 Procedure ol_std_var(varname: String);
 Begin
- ol('std   ' + varname);
+ ol('istore ' + varname);
 End;
 
  { �crire la ligne dans la sortie avec routage conditionnel }
@@ -814,7 +814,7 @@ Begin
  index := add_goto_label(label_name);
  If index <> -1 Then Begin
   goto_table[index].is_used := True;
-  ot('lbra ');
+  ot('goto ');
   printlabel(goto_table[index].label_id);
   nl;
   safe_writeln('; Saut vers �tiquette: ' + label_name);
@@ -999,13 +999,13 @@ Begin
   End;
    { Saut vers default ou fin }
   If has_default Then Begin
-   ot('lbra ');
+   ot('goto ');
    printlabel(default_label);
    nl;
   End
    Else
   Begin
-   ot('lbra ');
+   ot('goto ');
    printlabel(end_label);
    nl;
   End;
@@ -1378,15 +1378,13 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   End
    Else
   Begin
-   ol('sex    ; extension de signe char signé');
+   ol('i2b    ; extension byte JVM');
   End;
  End
   { G�rer la conversion int vers char }
   Else
  If (from_type.base_type = cint) and (to_type.base_type = cchar) Then Begin
-  ol('tfr  d,x ; ne garder que l''octet faible');
-  ol('tfr  b,a');
-  ol('clrb');
+  ol('i2b    ; conversion int vers byte JVM');
  End
   { G�rer la conversion int vers long }
  Else If (from_type.base_type = cint) and (to_type.base_type = clong) Then Begin
@@ -1906,13 +1904,13 @@ Begin
  Begin
   { Optimiser les constantes communes }
   Case value of
-   0: add_instruction('clr', 'a', 'chargement zéro optimisé');
-   1: add_instruction('lda', '#1', 'chargement un optimisé');
-   -1: add_instruction('lda', '#$FF', 'chargement -1 optimisé');
+   0: add_instruction('iconst_0', '', 'chargement zéro optimisé JVM');
+   1: add_instruction('iconst_1', '', 'chargement un optimisé JVM');
+   -1: add_instruction('iconst_m1', '', 'chargement -1 optimisé JVM');
   Else
    Begin
     Str(value, temp);
-    add_instruction('ldd', '#' + temp, 'charger constante');
+    add_instruction('bipush', temp, 'charger constante JVM');
    End;
   End;
  End
@@ -1928,24 +1926,24 @@ Begin
  If optimize > OPT_NONE Then
  Begin
   Case size of
-   1: add_instruction('stb', var_name, 'stocker octet');
-   2: add_instruction('std', var_name, 'stocker mot');
+   1: add_instruction('istore', var_name, 'stocker byte JVM');
+   2: add_instruction('istore', var_name, 'stocker int JVM');
   Else
-   add_instruction('std', var_name, 'stocker par défaut');
+   add_instruction('istore', var_name, 'stocker par défaut JVM');
   End;
  End
  Else
  Begin
   Case size of
    1: Begin
-       ol('stb   ' + var_name);
+       ol('istore ' + var_name);
       End;
    2: Begin
-       ol('std   ' + var_name);
+       ol('istore ' + var_name);
       End;
   Else
    Begin
-    ol('std   ' + var_name);
+    ol('istore ' + var_name);
    End;
   End;
  End;
@@ -1987,24 +1985,26 @@ Begin
  Begin
   { Optimiser la multiplication par des puissances de 2 }
   Case value of
-   0: add_instruction('clr', 'd', 'multiplier par 0');
+   0: add_instruction('iconst_0', '', 'multiplier par 0 JVM');
    1: { Ne rien faire - multiplier par 1 };
-   2: add_instruction('lsld', '', 'multiplier par 2');
+   2: Begin
+       add_instruction('iconst_1', '', 'décalage pour *2 JVM');
+       add_instruction('ishl', '', 'décalage gauche JVM');
+      End;
    4: Begin
-       add_instruction('lsld', '', 'multiplier par 4 (décalage 1)');
-       add_instruction('lsld', '', 'multiplier par 4 (décalage 2)');
+       add_instruction('iconst_2', '', 'décalage pour *4 JVM');
+       add_instruction('ishl', '', 'décalage gauche JVM');
       End;
    8: Begin
-       add_instruction('lsld', '', 'multiplier par 8 (décalage 1)');
-       add_instruction('lsld', '', 'multiplier par 8 (décalage 2)');
-       add_instruction('lsld', '', 'multiplier par 8 (décalage 3)');
+       add_instruction('iconst_3', '', 'décalage pour *8 JVM');
+       add_instruction('ishl', '', 'décalage gauche JVM');
       End;
   Else
-   add_instruction('jsr', 'mult16', 'multiplication générale');
+   add_instruction('imul', '', 'multiplication générale JVM');
   End;
  End
  Else
-  ol('jsr  mult16');
+  ol('imul      ; multiplication JVM');
 End;
 
 { Corriger la fonction IntToStr - remplacer par Str }
@@ -2023,144 +2023,75 @@ End;
 { Générer une routine d'addition long (32 bits) }
 Procedure generate_long_add;
 Begin
- safe_writeln('; Addition long 32 bits');
+ safe_writeln('; Addition long 32 bits - Jasmin JVM');
  safe_writeln('long_add:');
- ol('; Ajouter deux longs sur la pile');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('pshs x,d    ; sauvegarder premier long');
- ol('puls d      ; deuxième long - partie basse');
- ol('addd 2,s    ; additionner parties basses');
- ol('std  2,s    ; stocker résultat partie basse');
- ol('puls d      ; deuxième long - partie haute');
- ol('adcb 1,s    ; additionner partie haute avec carry');
- ol('adca ,s     ; additionner partie haute avec carry');
- ol('std  ,s     ; stocker résultat partie haute');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; Addition long : JVM gère nativement les longs 64-bit');
+ ol('ladd        ; addition long JVM (64-bit)');
+ ol('return      ; retour JVM');
 End;
 
 { Générer une routine de soustraction long (32 bits) }
 Procedure generate_long_sub;
 Begin
- safe_writeln('; Soustraction long 32 bits');
+ safe_writeln('; Soustraction long 32 bits - Jasmin JVM');
  safe_writeln('long_sub:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('pshs x,d    ; sauvegarder premier long');
- ol('puls d      ; deuxième long - partie basse');
- ol('subd 2,s    ; soustraire parties basses');
- ol('std  2,s    ; stocker résultat partie basse');
- ol('puls d      ; deuxième long - partie haute');
- ol('sbcb 1,s    ; soustraire partie haute avec borrow');
- ol('sbca ,s     ; soustraire partie haute avec borrow');
- ol('std  ,s     ; stocker résultat partie haute');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; Soustraction long : JVM gère nativement les longs 64-bit');
+ ol('lsub        ; soustraction long JVM (64-bit)');
+ ol('return      ; retour JVM');
 End;
 
 { Générer une routine de multiplication long (32 bits) }
 Procedure generate_long_mul;
 Begin
- safe_writeln('; Multiplication long 32 bits (simplifiée)');
+ safe_writeln('; Multiplication long 32 bits - Jasmin JVM');
  safe_writeln('long_mul:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('puls u      ; deuxième long - partie basse');
- ol('pshs u      ; sauvegarder deuxième long partie basse');
- ol('puls u      ; deuxième long - partie haute');
- ol('; Multiplication simplifiée: A*B = A_low*B_low (truncated)');
- ol('pshs x      ; sauvegarder première partie haute');
- ol('tfr  d,x    ; premier dans X');
- ol('ldd  2,s    ; charger deuxième partie basse');
- ol('jsr  mult16 ; X * D -> D (partie basse seulement)');
- ol('leas 4,s    ; nettoyer pile');
- ol('pshs d      ; résultat partie basse');
- ol('clr  -2,s   ; partie haute = 0 (multiplication tronquée)');
- ol('clr  -1,s');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; Multiplication long : JVM gère nativement les longs 64-bit');
+ ol('lmul        ; multiplication long JVM (64-bit)');
+ ol('return      ; retour JVM');
 End;
 
 { Générer une routine de division long (32 bits) - version simplifiée }
 Procedure generate_long_div;
 Begin
- safe_writeln('; Division long 32 bits (simplifiée - partie basse seulement)');
+ safe_writeln('; Division long 32 bits - Jasmin JVM');
  safe_writeln('long_div:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; dividende partie basse');
- ol('leas 2,s    ; ignorer dividende partie haute');
- ol('puls x      ; diviseur partie basse');
- ol('leas 2,s    ; ignorer diviseur partie haute');
- ol('jsr  div16  ; D / X -> D');
- ol('pshs d      ; résultat partie basse');
- ol('clr  -2,s   ; partie haute = 0');
- ol('clr  -1,s');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; Division long : JVM gère nativement les longs 64-bit');
+ ol('ldiv        ; division long JVM (64-bit)');
+ ol('return      ; retour JVM');
 End;
 
 { Générer les routines de comparaison long }
 Procedure generate_long_compare;
 Begin
- safe_writeln('; Comparaison long 32 bits');
+ safe_writeln('; Comparaison long 32 bits - Jasmin JVM');
  safe_writeln('long_cmp:');
- ol('puls y      ; adresse de retour');
- ol('puls d      ; premier long - partie basse');
- ol('puls x      ; premier long - partie haute');
- ol('puls u      ; deuxième long - partie basse');
- ol('tfr  u,u    ; tester si zéro');
- ol('puls u      ; deuxième long - partie haute');
- ol('cmpx u      ; comparer parties hautes');
- ol('bne  done   ; si différentes, on a le résultat');
- ol('cmpd 2,s    ; comparer parties basses');
- ol('done:');
- ol('pshs y      ; remettre adresse de retour');
- ol('rts');
+ ol('; Comparaison long : JVM gère nativement les longs 64-bit');
+ ol('lcmp        ; comparaison long JVM (64-bit)');
+ ol('return      ; retour JVM');
 End;
 
 { Charger une constante long sur la pile }
 Procedure load_long_constant(value: LongInt);
 Var
- high_part, low_part: Integer;
  temp_str: String;
 Begin
- high_part := Integer(value shr 16);
- low_part := Integer(value and $FFFF);
-
- safe_writeln('; Charger constante long: ' + IntToStr(value));
-
- { Charger partie haute }
- ol_ldd_imm(high_part);
- ol('pshs d      ; partie haute sur pile');
-
- { Charger partie basse }
- ol_ldd_imm(low_part);
- nl;
- ol('pshs d      ; partie basse sur pile');
+ Str(value, temp_str);
+ safe_writeln('; Charger constante long: ' + temp_str);
+ ol('ldc2_w ' + temp_str + 'L  ; charger constante long JVM');
 End;
 
 { Charger une variable long depuis la mémoire }
 Procedure load_long_variable(var_name: String);
 Begin
  safe_writeln('; Charger variable long: ' + var_name);
- ol('ldd   ' + var_name + '+2'); { Partie haute }
- ol('pshs d      ; partie haute sur pile');
- ol('ldd   ' + var_name);        { Partie basse }
- ol('pshs d      ; partie basse sur pile');
+ ol('lload ' + var_name + '     ; charger variable long JVM');
 End;
 
 { Stocker un long de la pile vers une variable }
 Procedure store_long_variable(var_name: String);
 Begin
  safe_writeln('; Stocker variable long: ' + var_name);
- ol('puls d      ; partie basse depuis pile');
- ol('std   ' + var_name);        { Stocker partie basse }
- ol('puls d      ; partie haute depuis pile');
- ol('std   ' + var_name + '+2'); { Stocker partie haute }
+ ol('lstore ' + var_name + '    ; stocker variable long JVM');
 End;
 
 { ============================================================================ }
@@ -2348,25 +2279,15 @@ Begin
   safe_writeln('; Fonction: ' + name);
   safe_writeln(name + ':');
 
-  { Prologue standard 6809 }
+  { Prologue standard Jasmin JVM }
   If not is_main Then
   Begin
-   ol('pshs x,y  ; sauvegarder pointeur de cadre et contexte d''adresse de retour');
-   ol('tfr  s,x  ; configurer pointeur de cadre');
-
-   { Allouer de l'espace pour les variables locales si nécessaire }
-   If local_vars_size > 0 Then
-   Begin
-    safe_writeln('; Allouer variables locales (octets de taille)');
-    ot('leas -');
-    outdec(local_vars_size);
-    outstr(',s');
-    nl;
-   End;
+   safe_writeln('; Prologue fonction JVM - gestion automatique');
+   safe_writeln('; Variables locales allouées automatiquement par JVM');
   End
   Else
   Begin
-   safe_writeln('; Point d''entrée de la fonction principale');
+   safe_writeln('; Point d''entrée de la fonction principale JVM');
   End;
  End;
 End;
@@ -2385,23 +2306,14 @@ Begin
 
   If not is_main Then
   Begin
-   { Épilogue standard 6809 }
-   If local_vars_size > 0 Then
-   Begin
-    safe_writeln('; Désallouer variables locales');
-    ot('leas ');
-    outdec(local_vars_size);
-    outstr(',s');
-    nl;
-   End;
-
-   ol('puls x,y  ; restaurer pointeur de cadre');
-   ol('rts       ; retourner à l''appelant');
+   { Épilogue standard Jasmin JVM }
+   safe_writeln('; Désallocation automatique JVM');
+   ol('return    ; retourner à l''appelant JVM');
   End
   Else
   Begin
    safe_writeln('; Sortie de fonction principale');
-   ol('swi       ; interruption logicielle (fin de programme)');
+   ol('return    ; fin de programme JVM');
   End;
  End;
 End;
@@ -2423,18 +2335,14 @@ Begin
    safe_writeln('; Attention: Nombre d''arguments ne correspond pas');
 
   { Générer l'instruction d'appel }
-  ot('jsr  ');
+  ot('invokestatic ');
   outstr(name);
-  nl;
+  ol('()V');
 
-  { Nettoyer la pile si des paramètres ont été passés }
+  { Nettoyer la pile - gestion automatique JVM }
   If param_count > 0 Then
   Begin
-   safe_writeln('; Nettoyer les paramètres de pile');
-   ot('leas ');
-   outdec(param_count * 2);
-   outstr(',s');
-   nl;
+   safe_writeln('; Paramètres gérés automatiquement par JVM');
   End;
 
   Inc(call_stack_depth);
@@ -3457,7 +3365,7 @@ Begin
    expression_bool(arg_lval);
 
    { Pousser l'argument sur la pile }
-   ol('pshs d  ; pousser argument');
+   ol('; argument poussé automatiquement sur pile JVM');
    Inc(arg_count);
 
   Until not match(',');
@@ -6595,10 +6503,8 @@ Begin
   Else
    Begin
     { Multiplication générale }
-    ot('ldb  #');
-    outdec(element_size);
-    nl;
-    ol('jsr  mult16');
+    ol('bipush ' + IntToStr(element_size));
+    ol('imul     ; multiplication JVM');
    End;
   End;
  End;
