@@ -2337,6 +2337,7 @@ Procedure bitwise_xor_expression(var lval: TLVal); forward;
 Procedure bitwise_or_expression(var lval: TLVal); forward;
 Procedure logical_and_expression(var lval: TLVal); forward;
 Procedure logical_or_expression(var lval: TLVal); forward;
+Procedure conditional_expression(var lval: TLVal); forward;
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean); forward;
 Procedure parse_dereference(var lval: TLVal); forward;
 Procedure parse_address_of(var lval: TLVal); forward;
@@ -4261,10 +4262,69 @@ Begin
  End;
 End;
 
+{ Conditional expression parser - handles ?: (ternary operator) }
+Procedure conditional_expression(var lval: TLVal);
+Var
+ false_label, end_label: Integer;
+ true_lval, false_lval: TLVal;
+Begin
+ logical_or_expression(lval);
+ 
+ If match('?') Then
+ Begin
+  safe_writeln('; Opérateur ternaire ? : (expression conditionnelle)');
+  
+  { Générer les étiquettes }
+  false_label := getlabel;
+  end_label := getlabel;
+  
+  { Tester la condition }
+  ol('tstd');         { Tester le résultat de la condition }
+  ot('lbeq ');        { Si faux, aller à l''expression fausse }
+  printlabel(false_label);
+  nl;
+  
+  { Analyser l'expression vraie }
+  safe_writeln('; Expression vraie du ternaire');
+  logical_or_expression(true_lval);
+  
+  { Sauter l'expression fausse }
+  ot('lbra ');
+  printlabel(end_label);
+  nl;
+  
+  { Attendre ':' }
+  If not match(':') Then
+  Begin
+   Case Language of
+    _English: errrpt('Expected : in ternary operator');
+    _Germany: errrpt('Erwartete : im ternären Operator');
+    Else errrpt(': attendu dans l''opérateur ternaire');
+   End;
+   Exit;
+  End;
+  
+  { Étiquette pour l'expression fausse }
+  prelabel(false_label);
+  
+  { Analyser l'expression fausse }
+  safe_writeln('; Expression fausse du ternaire');
+  logical_or_expression(false_lval);
+  
+  { Étiquette de fin }
+  prelabel(end_label);
+  
+  { Le résultat est dans D - copier les informations de type appropriées }
+  { Pour simplifier, utiliser le type de l'expression vraie }
+  lval := true_lval;
+  safe_writeln('; Fin opérateur ternaire');
+ End;
+End;
+
 { Main expression parser }
 Function expression_bool(var lval: TLVal): Boolean;
 Begin
- logical_or_expression(lval);
+ conditional_expression(lval);
  expression_bool := True;
 End;
 
