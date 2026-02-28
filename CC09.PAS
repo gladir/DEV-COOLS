@@ -216,8 +216,14 @@ Type
   next: PSymbol;     { Symbole suivant dans la chaîne }
  End;
 
-  { Table de fonction }
- TFunctionTable = Array[0..{$IFDEF FPC}99{$ELSE}50{$ENDIF}] of TFunction;
+  { Pointeur vers fonction dans le tas }
+ PFunction = ^TFunctionNode;
+ 
+ { Noeud de fonction pour liste chaînée dans le tas }
+ TFunctionNode = Record
+  func_data: TFunction;    { Données de la fonction }
+  next: PFunction;         { Fonction suivante dans la liste }
+ End;
 
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
@@ -230,11 +236,12 @@ Var
  symbol_list: PSymbol;    { Tête de la liste de symboles }
  symbol_count: Integer;   { Compteur pour les statistiques }
 
- { Gestion de fonction }
- function_table: TFunctionTable;
- function_count: Integer;
- current_function: Integer;  { Index de la fonction en cours d'analyse }
- call_stack_depth: Integer; { Profondeur d'appel actuelle }
+ { Gestion de fonction - liste chaînée basée sur le tas }
+ function_list: PFunction;          { Tête de la liste de fonctions }
+ function_count: Integer;           { Compteur pour les statistiques }
+ current_function_node: PFunction;  { Noeud de la fonction en cours d'analyse }
+ current_function: Integer;         { Index de fonction pour compatibilité }
+ call_stack_depth: Integer;         { Profondeur d'appel actuelle }
 
  { Contexte d'optimisation }
  opt_context: TOptContext;
@@ -1252,34 +1259,61 @@ End;
 { FONCTIONS DE GESTION DES FONCTIONS                                          }
 { ============================================================================ }
 
-{ Initialiser le système de gestion des fonctions }
+{ Initialiser le système de gestion des fonctions basé sur le tas }
 Procedure init_functions;
 Begin
+ function_list := nil;
  function_count := 0;
+ current_function_node := nil;
  current_function := -1;
  call_stack_depth := 0;
- FillChar(function_table, SizeOf(function_table), 0);
 End;
 
-{ Trouver une fonction par nom }
-Function find_function(func_name: String): Integer;
+{ Trouver une fonction par nom - retourne le pointeur vers le noeud }
+Function find_function_node(func_name: String): PFunction;
 Var
- i: Integer;
+ current: PFunction;
 Begin
- find_function := -1;
- For i := 0 to function_count - 1 do
+ find_function_node := nil;
+ current := function_list;
+ 
+ While current <> nil do
  Begin
-  If function_table[i].name = func_name Then
+  If current^.func_data.name = func_name Then
   Begin
-   find_function := i;
+   find_function_node := current;
    Exit;
   End;
+  current := current^.next;
  End;
 End;
 
-{ Ajouter une nouvelle fonction à la table }
+{ Trouver une fonction par nom - retourne l'index pour compatibilité }
+Function find_function(func_name: String): Integer;
+Var
+ current: PFunction;
+ index: Integer;
+Begin
+ find_function := -1;
+ current := function_list;
+ index := 0;
+ 
+ While current <> nil do
+ Begin
+  If current^.func_data.name = func_name Then
+  Begin
+   find_function := index;
+   Exit;
+  End;
+  current := current^.next;
+  Inc(index);
+ End;
+End;
+
+{ Ajouter une nouvelle fonction à la liste chaînée }
 Function add_function(func_name: String; return_type: Integer): Integer;
 Var
+ func_node: PFunction;
  func_index: Integer;
 Begin
  add_function := -1;
@@ -1292,19 +1326,20 @@ Begin
   Exit;
  End;
 
- { Ajouter une nouvelle fonction }
- If function_count >= 100 Then
+ { Allouer mémoire pour nouvelle fonction dans le tas }
+ New(func_node);
+ If func_node = nil Then
  Begin
   Case Language of
-   _English: errrpt('Function table overflow');
-   _Germany: errrpt('Funktionstabelle-Überlauf');
-   Else errrpt('Débordement de la table des fonctions');
+   _English: errrpt('Out of memory for function table');
+   _Germany: errrpt('Kein Speicher für Funktionstabelle');
+   Else errrpt('Mémoire insuffisante pour la table de fonctions');
   End;
   Exit;
  End;
 
- func_index := function_count;
- With function_table[func_index] do
+ { Initialiser les données de la fonction }
+ With func_node^.func_data do
  Begin
   name := func_name;
   return_type := return_type;
@@ -1319,18 +1354,49 @@ Begin
   is_main := (func_name = 'main');
  End;
 
+ { Insérer au début de la liste }
+ func_node^.next := function_list;
+ function_list := func_node;
+ 
+ func_index := function_count;
  Inc(function_count);
  add_function := func_index;
 End;
 
+{ Obtenir le noeud de fonction par index pour compatibilité }
+Function get_function_node(func_index: Integer): PFunction;
+Var
+ current: PFunction;
+ i: Integer;
+Begin
+ get_function_node := nil;
+ 
+ If (func_index < 0) or (func_index >= function_count) Then Exit;
+ 
+ current := function_list;
+ For i := 0 to func_index do
+ Begin
+  If current = nil Then Exit;
+  If i = func_index Then
+  Begin
+   get_function_node := current;
+   Exit;
+  End;
+  current := current^.next;
+ End;
+End;
+
 { Ajouter un paramètre à la fonction }
 Function add_parameter(func_index: Integer; param_name: String; param_type: Integer): Boolean;
+Var
+ func_node: PFunction;
 Begin
  add_parameter := False;
 
- If (func_index < 0) or (func_index >= function_count) Then Exit;
+ func_node := get_function_node(func_index);
+ If func_node = nil Then Exit;
 
- With function_table[func_index] do
+ With func_node^.func_data do
  Begin
   If param_count >= 10 Then
   Begin
@@ -1359,10 +1425,13 @@ End;
 
 { Générer le prologue de fonction }
 Procedure generate_function_prologue(func_index: Integer);
+Var
+ func_node: PFunction;
 Begin
- If (func_index < 0) or (func_index >= function_count) Then Exit;
+ func_node := get_function_node(func_index);
+ If func_node = nil Then Exit;
 
- With function_table[func_index] do
+ With func_node^.func_data do
  Begin
   safe_writeln('; Fonction: ' + name);
   safe_writeln(name + ':');
@@ -1392,10 +1461,13 @@ End;
 
 { Générer l'épilogue de fonction }
 Procedure generate_function_epilogue(func_index: Integer);
+Var
+ func_node: PFunction;
 Begin
- If (func_index < 0) or (func_index >= function_count) Then Exit;
+ func_node := get_function_node(func_index);
+ If func_node = nil Then Exit;
 
- With function_table[func_index] do
+ With func_node^.func_data do
  Begin
   safe_writeln('; Fin de fonction: ' + name);
 
@@ -1424,10 +1496,13 @@ End;
 
 { Générer un appel de fonction }
 Procedure generate_function_call(func_index: Integer; arg_count: Integer);
+Var
+ func_node: PFunction;
 Begin
- If (func_index < 0) or (func_index >= function_count) Then Exit;
+ func_node := get_function_node(func_index);
+ If func_node = nil Then Exit;
 
- With function_table[func_index] do
+ With func_node^.func_data do
  Begin
   safe_writeln('; Appel de fonction: ' + name);
 
@@ -1452,6 +1527,25 @@ Begin
 
   Inc(call_stack_depth);
  End;
+End;
+
+{ Libérer toute la liste de fonctions du tas }
+Procedure free_functions;
+Var
+ current, next: PFunction;
+Begin
+ current := function_list;
+ While current <> nil do
+ Begin
+  next := current^.next;
+  Dispose(current);
+  current := next;
+ End;
+ 
+ function_list := nil;
+ If use_stdout Then WriteLn('; Libéré ', function_count, ' fonctions du tas')
+               Else safe_writeln('; Libéré fonctions du tas');
+ function_count := 0;
 End;
 
 { Déclarations anticipées pour l'analyse d'expression et les fonctions d'analyse }
@@ -1763,6 +1857,7 @@ Var
  func_index: Integer;
  arg_count: Integer;
  arg_lval: TLVal;
+ func_node: PFunction;
 Begin
  parse_function_call := False;
 
@@ -1821,7 +1916,14 @@ Begin
 
  { Configurer la valeur de retour }
  FillChar(lval, SizeOf(lval), 0);
- lval.typ := function_table[func_index].return_type;
+ 
+ { Obtenir le type de retour depuis la liste chaînée }
+ func_node := get_function_node(func_index);
+ If func_node <> nil Then
+  lval.typ := func_node^.func_data.return_type
+ Else
+  lval.typ := cint; { Type par défaut en cas d'erreur }
+  
  lval.constant := False;
 
  parse_function_call := True;
@@ -2776,7 +2878,7 @@ Begin
 
  { Loop start }
  prelabel(loop_label);
- WriteLn(output, '; WHILE loop start');
+ safe_writeln('; WHILE loop start');
 
  { Expect opening parenthesis }
  If not match('(') Then
@@ -2786,7 +2888,7 @@ Begin
  End;
 
  { Parse condition }
- WriteLn(output, '; WHILE condition');
+ safe_writeln('; WHILE condition');
  expression_bool(lval);
 
  { Expect closing parenthesis }
@@ -2800,7 +2902,7 @@ Begin
  nl;
 
  { Parse loop body }
- WriteLn(output, '; WHILE body');
+ safe_writeln('; WHILE body');
  parse_statement;
 
  { Jump back to condition }
@@ -2810,7 +2912,7 @@ Begin
 
  { End label }
  prelabel(end_label);
- WriteLn(output, '; End WHILE');
+ safe_writeln('; End WHILE');
 
  { Pop loop context }
  pop_loop_context;
@@ -2844,7 +2946,7 @@ Begin
  End;
 
  { Parse initialization }
- WriteLn(output, '; FOR initialization');
+ safe_writeln('; FOR initialization');
  If not match(';') Then
  Begin
   expression_bool(lval);
@@ -2859,7 +2961,7 @@ Begin
 
  { Loop increment label }
  prelabel(loop_label);
- WriteLn(output, '; FOR increment');
+ safe_writeln('; FOR increment');
 
  { Parse increment }
  If not match(')') Then
@@ -2894,7 +2996,7 @@ Begin
  nl;
 
  { Parse loop body }
- WriteLn(output, '; FOR body');
+ safe_writeln('; FOR body');
  parse_statement;
 
  { Jump back to increment }
@@ -2930,7 +3032,7 @@ Begin
 
  { Loop start }
  prelabel(loop_label);
- WriteLn(output, '; DO-WHILE loop start');
+ safe_writeln('; DO-WHILE loop start');
 
  { Parse loop body }
  parse_statement;
@@ -2951,7 +3053,7 @@ Begin
 
  { Parse condition }
  prelabel(condition_label);
- WriteLn(output, '; DO-WHILE condition');
+ safe_writeln('; DO-WHILE condition');
  expression_bool(lval);
 
  { Expect closing parenthesis }
@@ -2970,7 +3072,7 @@ Begin
 
  { End label }
  prelabel(end_label);
- WriteLn(output, '; End DO-WHILE');
+ safe_writeln('; End DO-WHILE');
 
  { Pop loop context }
  { pop_loop_context; }
@@ -2985,7 +3087,7 @@ Begin
  If not match('return') Then Exit;
  parse_return_statement := True;
 
- WriteLn(output, '; RETURN statement');
+ safe_writeln('; RETURN statement');
 
  { Check for return value }
  If not match(';') Then
@@ -3014,7 +3116,7 @@ Begin
  If not match('break') Then Exit;
  parse_break_statement := True;
 
- WriteLn(output, '; BREAK statement');
+ safe_writeln('; BREAK statement');
 
  { Expect semicolon }
  If not match(';') Then
@@ -3043,7 +3145,7 @@ Begin
  If not match('continue') Then Exit;
  parse_continue_statement := True;
 
- WriteLn(output, '; CONTINUE statement');
+ safe_writeln('; CONTINUE statement');
 
  { Expect semicolon }
  If not match(';') Then
@@ -3071,7 +3173,7 @@ Begin
  If not match('{') Then Exit;
  parse_compound_statement := True;
 
- WriteLn(output, '; Compound statement start');
+ safe_writeln('; Compound statement start');
 
  { Parse statements until closing brace }
  While not match('}') do
@@ -3093,7 +3195,7 @@ Begin
   End;
  End;
 
- WriteLn(output, '; Compound statement end');
+ safe_writeln('; Compound statement end');
 
  { Check if this is the end of a function body }
  If current_function <> -1 Then
@@ -3115,7 +3217,7 @@ Begin
  If match(';') Then
  Begin
   parse_expression_statement := True;
-  WriteLn(output, '; Empty statement');
+  safe_writeln('; Empty statement');
   Exit;
  End;
 
@@ -3132,7 +3234,7 @@ Begin
  If not match(';') Then
   errrpt('Expected ; after expression');
 
- WriteLn(output, '; Expression statement');
+ safe_writeln('; Expression statement');
 End;
 
 { Assignment statement parser }
@@ -3176,7 +3278,7 @@ Begin
     outstr(var_name);
     nl;
     
-    WriteLn(output, '; Assignment to variable: ', var_name);
+    safe_writeln('; Assignment to variable: ' + var_name);
     parse_assignment_statement := True;
    End;
   End
@@ -3233,7 +3335,7 @@ Begin
  If use_stdout Then
   WriteLn('; ', VERSION)
  Else
-  WriteLn(output, '; ', VERSION);
+  safe_writeln('; ' + VERSION);
 End;
 
 Procedure trailer;Begin
@@ -3252,8 +3354,8 @@ Procedure trailer;Begin
  End
  Else
  Begin
-  If asmtype = AS6809 Then WriteLn(output, ';    .end')
-                      Else WriteLn(output, '  END');
+  If asmtype = AS6809 Then safe_writeln(';    .end')
+                      Else safe_writeln('  END');
  End;
 End;
 
@@ -3291,7 +3393,7 @@ Begin
   Begin
    line := expanded_line;
    If use_stdout Then WriteLn('; Line after macro expansion: ', line)
-                 Else WriteLn(output, '; Line after macro expansion: ', line);
+                 Else safe_writeln('; Line after macro expansion: ' + line);
   End;
 
   { Simple comment processing }
@@ -3330,7 +3432,7 @@ Begin
    Else
    Begin
     { Other preprocessor directives - skip for now }
-    WriteLn(output, '; Skipping preprocessor directive: ', line);
+    safe_writeln('; Skipping preprocessor directive: ' + line);
     Continue;
    End;
   End;
@@ -3339,7 +3441,7 @@ Begin
   blanks;
   If Length(line) = 0 Then Continue;
 
-  WriteLn(output, '; Processing: ', line);
+  safe_writeln('; Processing: ' + line);
 
   { Reset position for parsing }
   lptr := 1;
@@ -3589,7 +3691,7 @@ BEGIN
    { Ne pas assigner de sortie � la sortie; utiliser plut�t un drapeau }
   Case Language of
    _English:WriteLn('Using console screen for output.');
-   Else Write('Affichage de la sortie sur la console.');
+   Else WriteLn('Affichage de la sortie sur la console.');
   End;
   use_stdout := True;
  End;
