@@ -4321,25 +4321,23 @@ Begin
       End;
      End;
     End
-    Else
+     Else
     Begin
-     { This is a variable reference }
-     If lookup_variable(id, lval) Then
-     Begin
-      { Check if this is an array access }
-      If peek_char = '[' Then
-      Begin
-       { Array indexing }
+     { C'est une rÇfÇrence de variable }
+     If lookup_variable(id, lval) Then Begin
+      { VÇrifie si c'est un tableau d'accäs }
+      If peek_char = '[' Then Begin
+       { Indexation de tableau }
        parse_array_access(id, lval);
       End
-      Else If peek_char = '.' Then
-      Begin
-       { Structure member access }
+       Else
+      If peek_char = '.' Then Begin
+        { Accäs un membre de structure }
        parse_struct_member_access(id, lval, False);
       End
       Else
       Begin
-       { Simple variable access }
+       { Simple accäs Ö une variable }
        ot('ldd  ');
        outstr(id);
        nl;
@@ -4347,7 +4345,7 @@ Begin
      End
      Else
      Begin
-      { Undeclared variable }
+      { Variable non dÇclarÇ }
       lval.symbol := 0;
       lval.typ := cint;
       lval.constant := False;
@@ -4357,7 +4355,6 @@ Begin
      End;
     End;
    End;
-
   '(': Begin
     next_char; { consume '(' }
     additive_expression(lval);
@@ -4374,49 +4371,43 @@ Begin
      End;
     End;
    End;
-
   Else
    Case Language of
     _English: errrpt('Invalid primary expression');
     {$IFDEF FPC}
-    _Germany: errrpt('Ung√ºltiger prim√§rer Ausdruck');
+    _Germany: errrpt('UngÅltiger primÑrer Ausdruck');
     {$ENDIF}
     Else errrpt('Expression primaire invalide');
    End;
  End;
 End;
 
-{ Unary expression parser }
+ { Analyseur d'expressions unaires }
 Procedure unary_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
  save_lptr: Integer;
  id: String;
 Begin
- { V√©rifier d'abord si c'est le mot-cl√© sizeof }
+ { VÇrifier d'abord si c'est le mot-clef sizeof }
  save_lptr := lptr;
  blanks;
- If is_alpha(peek_char) Then
- Begin
+ If is_alpha(peek_char) Then Begin
   id := parse_identifier;
-  If id = 'sizeof' Then
-  Begin
+  If id = 'sizeof' Then Begin
    { C'est sizeof - restaurer la position et l'analyser }
    lptr := save_lptr;
    parse_sizeof_expression(lval);
    Exit;
   End;
  End;
-
- { Restaurer la position pour l'analyse normale }
+  { Restaurer la position pour l'analyse normale }
  lptr := save_lptr;
-
  Case peek_char of
   '+': Begin
     next_char;
     unary_expression(lval);
    End;
-
   '-': Begin
     next_char;
     unary_expression(lval);
@@ -4424,65 +4415,57 @@ Begin
     ol('negb');
     ol('sbca #0');
    End;
-
   '!': Begin
     next_char;
-    safe_writeln('; Op√©rateur ! (NOT logique)');
+    safe_writeln('; OpÇrateur ! (NOT logique)');
     unary_expression(lval);
-    { Convertir en bool√©en: 0 si non-z√©ro, 1 si z√©ro }
+    { Convertir en boolÇen: 0 si non-zÇro, 1 si zÇro }
     true_label := getlabel;
     end_label := getlabel;
-
-    ol('tstd');      { Tester D (le r√©sultat de l''expression) }
-    ol('beq  L' + IntToStr(true_label)); { Si z√©ro, c''est vrai (!0 = 1) }
-    ol('ldd  #0');   { Sinon c''est faux (!non_z√©ro = 0) }
+    ol('tstd');                          { Tester D (le rÇsultat de l''expression) }
+    ol('beq  L' + IntToStr(true_label)); { Si zÇro, c'est vrai (!0 = 1) }
+    ol('ldd  #0');                       { Sinon c''est faux (!non_zÇro = 0) }
     ol('bra  L' + IntToStr(end_label));
     prelabel(true_label);
-    ol('ldd  #1');   { R√©sultat vrai }
+    ol('ldd  #1');                       { RÇsultat vrai }
     prelabel(end_label);
    End;
-
   '~': Begin
     next_char;
     unary_expression(lval);
     ol('coma');
     ol('comb');
    End;
-
   '*': Begin
-    { Op√©rateur de d√©r√©f√©rencement }
+    { OpÇrateur de dÇrÇfÇrencement }
     next_char;
     unary_expression(lval);
     parse_dereference(lval);
    End;
-
   '&': Begin
-    { Op√©rateur d'adresse }
+    { OpÇrateur d'adresse }
     next_char;
     parse_address_of(lval);
    End;
-
   Else
    primary_expression(lval);
  End;
 End;
 
-{ Op√©rateur de d√©r√©f√©rencement (*ptr) }
+ { OpÇrateur de dÇrÇfÇrencement (*ptr) }
 Procedure parse_dereference(var lval: TLVal);
 var
   ptr_name: String;
 Begin
- safe_writeln('; D√©r√©f√©rencement de pointeur');
-
- { V√©rifier que c'est bien un pointeur }
- If lval.type_info.pointer_level = 0 Then
- Begin
+ safe_writeln('; DÇrÇfÇrencement de pointeur');
+  { VÇrifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
    {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
    {$ENDIF}
-   Else errrpt('Impossible de d√©r√©f√©rencer un type non-pointeur');
+   Else errrpt('Impossible de dÇrÇfÇrencer un type non-pointeur');
   End;
   Exit;
  End;

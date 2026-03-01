@@ -1074,12 +1074,112 @@ Begin
  Begin
   temp_token := current_token;
   
-  { Vérifier si c'est une chaîne littérale }
-  If (Length(temp_token) > 1) or 
-     ((Length(temp_token) = 1) and not ((temp_token[1] >= '0') and (temp_token[1] <= '9')) and
-      not ((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) and 
-      not ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
+  { Vérifier d'abord si c'est un symbole connu }
+  sym_index := FindSymbol(temp_token);
+  If sym_index > 0 Then
   Begin
+   { C'est un symbole connu - traiter selon le type }
+   left_type := symbol_table[sym_index]^.data_type;
+    
+   { Vérifier si c'est un appel de fonction }
+   If symbol_table[sym_index]^.is_function Then
+   Begin
+    { Appel de fonction }
+    EmitComment('Appel fonction: ' + temp_token);
+    NextToken; { Consommer le nom de la fonction }
+    
+    { Gérer les paramètres (pour l'instant, on ignore) }
+    If current_token = '(' Then
+    Begin
+     NextToken;
+     While (current_token <> ')') and (current_char <> #0) do
+      NextToken;
+     If current_token = ')' Then
+      NextToken;
+    End;
+    
+    { Générer l'appel }
+    Emit('call ' + symbol_table[sym_index]^.name);
+    
+    { Le résultat est dans AX ou AL selon le type de retour }
+    Case symbol_table[sym_index]^.return_type of
+     TYPE_INTEGER, TYPE_WORD: left_operand := 'ax';
+     TYPE_BYTE, TYPE_CHAR: left_operand := 'al';
+     TYPE_STRING: left_operand := 'si';
+    Else
+     left_operand := 'ax';
+    End;
+    left_type := symbol_table[sym_index]^.return_type;
+   End
+   { Vérifier si c'est une constante }
+   Else If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
+   Begin
+    { C'est une constante - utiliser la valeur directement }
+    Case symbol_table[sym_index]^.data_type of
+     TYPE_INTEGER, TYPE_WORD: 
+      Begin
+       Emit('mov ax, ' + IntToStr(symbol_table[sym_index]^.value));
+       left_operand := 'ax';
+      End;
+     TYPE_BYTE, TYPE_CHAR: 
+      Begin
+       Emit('mov al, ' + IntToStr(symbol_table[sym_index]^.value));
+       left_operand := 'al';
+      End;
+     TYPE_BOOLEAN:
+      Begin
+       Emit('mov ax, ' + IntToStr(symbol_table[sym_index]^.value));
+       left_operand := 'ax';
+      End;
+    Else
+     Begin
+      Emit('mov ax, ' + IntToStr(symbol_table[sym_index]^.value));
+      left_operand := 'ax';
+     End;
+    End;
+    left_type := symbol_table[sym_index]^.data_type;
+    NextToken;
+   End
+   { Traite les autres types de symboles comme avant... }
+   Else
+   Begin
+    { Code existant pour variables, procédures, etc. }
+    left_type := symbol_table[sym_index]^.data_type;
+    
+    { Vérifier si c'est un appel de fonction }
+    If symbol_table[sym_index]^.is_function Then
+    Begin
+     { (le code existant pour les fonctions reste inchangé) }
+    End
+    Else
+    Begin
+     { Variable ou autre symbole }
+     Case left_type of
+      TYPE_INTEGER, TYPE_WORD:
+       Begin
+        left_operand := 'word ptr [' + IntToStr(symbol_table[sym_index]^.offset) + ']';
+       End;
+      TYPE_BYTE, TYPE_CHAR:
+       Begin  
+        left_operand := 'byte ptr [' + IntToStr(symbol_table[sym_index]^.offset) + ']';
+       End;
+      TYPE_BOOLEAN:
+       Begin
+        left_operand := 'byte ptr [' + IntToStr(symbol_table[sym_index]^.offset) + ']';
+       End;
+     End;
+     NextToken;
+    End;
+   End;
+  End
+  Else
+  Begin
+   { Pas un symbole connu - vérifier si c'est une chaîne littérale }
+   If (Length(temp_token) > 1) or 
+      ((Length(temp_token) = 1) and not ((temp_token[1] >= '0') and (temp_token[1] <= '9')) and
+       not ((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) and 
+       not ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
+   Begin
    { C'est probablement une chaîne littérale }
    is_string_literal := True;
    left_type := TYPE_STRING;
@@ -1126,131 +1226,15 @@ Begin
    left_type := TYPE_INTEGER;
    NextToken;
   End
-  Else If temp_token <> '' Then
-  Begin
-   { Identificateur - chercher dans la table des symboles }
-   sym_index := FindSymbol(temp_token);
-   If sym_index > 0 Then
-   Begin
-    left_type := symbol_table[sym_index]^.data_type;
-    
-    { Vérifier si c'est un appel de fonction }
-    If symbol_table[sym_index]^.is_function Then
-    Begin
-     { Appel de fonction }
-     EmitComment('Appel fonction: ' + temp_token);
-     NextToken; { Consommer le nom de la fonction }
-     
-     { Gérer les paramètres (pour l'instant, on ignore) }
-     If current_token = '(' Then
-     Begin
-      NextToken;
-      While (current_token <> ')') and (current_char <> #0) do
-       NextToken;
-      If current_token = ')' Then
-       NextToken;
-     End;
-     
-     { Générer l'appel }
-     Emit('call ' + symbol_table[sym_index]^.name);
-     
-     { Le résultat est dans AX ou AL selon le type de retour }
-     Case symbol_table[sym_index]^.return_type of
-      TYPE_INTEGER, TYPE_WORD: left_operand := 'ax';
-      TYPE_BYTE, TYPE_CHAR: left_operand := 'al';
-      TYPE_STRING: left_operand := 'si';
-     Else
-      left_operand := 'ax';
-     End;
-     left_type := symbol_table[sym_index]^.return_type;
-    End
-    { Vérifier si c'est un appel de procédure }
-    Else If symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE Then
-    Begin
-     { Appel de procédure }
-     EmitComment('Appel procédure: ' + temp_token);
-     NextToken; { Consommer le nom de la procédure }
-     
-     { Gérer les paramètres (pour l'instant, on ignore) }
-     If current_token = '(' Then
-     Begin
-      NextToken;
-      While (current_token <> ')') and (current_char <> #0) do
-       NextToken;
-      If current_token = ')' Then
-       NextToken;
-     End;
-     
-     { Générer l'appel - les procédures ne retournent pas de valeur }
-     Emit('call ' + symbol_table[sym_index]^.name);
-     left_operand := 'ax'; { Valeur par défaut }
-     left_type := TYPE_INTEGER;
-    End
-    { Vérifier si c'est un appel d'interruption }
-    Else If symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT Then
-    Begin
-     { Appel d'interruption }
-     EmitComment('Appel interruption: ' + temp_token);
-     NextToken; { Consommer le nom de l'interruption }
-     
-     { Gérer les paramètres (pour l'instant, on ignore) }
-     If current_token = '(' Then
-     Begin
-      NextToken;
-      While (current_token <> ')') and (current_char <> #0) do
-       NextToken;
-      If current_token = ')' Then
-       NextToken;
-     End;
-     
-     { Générer l'appel - les interruptions ne retournent pas de valeur }
-     Emit('call ' + symbol_table[sym_index]^.name);
-     left_operand := 'ax'; { Valeur par défaut }
-     left_type := TYPE_INTEGER;
-    End
-    Else
-    Begin
-     { Variable normale }
-     Case symbol_table[sym_index]^.data_type of
-      TYPE_INTEGER, TYPE_WORD: 
-       Begin
-        Emit('mov ax, ' + symbol_table[sym_index]^.name);
-        left_operand := 'ax';
-       End;
-      TYPE_BYTE, TYPE_CHAR: 
-       Begin
-        Emit('mov al, ' + symbol_table[sym_index]^.name);
-        left_operand := 'al';
-       End;
-      TYPE_STRING:
-       Begin
-        Emit('mov si, OFFSET ' + symbol_table[sym_index]^.name);
-        left_operand := 'si';
-       End;
-     Else
-      Begin
-       Emit('mov ax, ' + symbol_table[sym_index]^.name);
-       left_operand := 'ax';
-      End;
-     End;
-     NextToken;
-    End;
-   End
-   Else
-   Begin
-    Error('Variable non déclarée: ' + temp_token);
-    left_operand := 'ax';
-    left_type := TYPE_INTEGER;
-    NextToken;
-   End;
-  End
   Else
   Begin
-   NextToken; { Token vide, continuer }
+   { Identificateur non reconnu }
+   Error('Variable non déclarée: ' + temp_token);
    left_operand := 'ax';
    left_type := TYPE_INTEGER;
+   NextToken;
   End;
- End
+ End;
  Else
  Begin
   NextToken; { Symbole reconnu, continuer }
@@ -2484,6 +2468,116 @@ Begin
  End;
 End;
 
+{ Parser les déclarations de constantes }
+Procedure ParseConstDeclarations;
+Var
+ const_name: String;
+ const_value: Integer;
+ const_str_value: String;
+ const_type: Integer;
+ sym_index: Integer;
+Begin
+ NextToken; { Consommer CONST }
+ 
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
+ Begin
+  { Lire le nom de la constante }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   const_name := current_token;
+   NextToken;
+  End
+  Else
+  Begin
+   Error('Attendu nom de constante');
+   Break;
+  End;
+
+  { Attendre le signe égal }
+  If current_token = '=' Then
+   NextToken
+  Else
+  Begin
+   Error('Attendu = après nom de constante');
+   Break;
+  End;
+
+  { Lire la valeur de la constante }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   { Vérifier d'abord si c'est un nombre tokenizé }
+   If (Length(current_token) > 0) and (current_token[1] >= '0') and (current_token[1] <= '9') Then
+   Begin
+    { Constante numérique }
+    const_value := current_value; { current_value est défini par ReadNumber }
+    const_type := TYPE_INTEGER;
+    EmitComment('Constante numérique: ' + const_name + ' = ' + IntToStr(const_value));
+   End
+   { Vérifier si c'est une chaîne }
+   Else If (Length(current_token) > 0) and (current_token[1] = '''') Then
+   Begin
+    { Constante chaîne }
+    const_str_value := current_token;
+    const_type := TYPE_STRING;
+    EmitComment('Constante chaîne: ' + const_name + ' = ''' + const_str_value + '''');
+   End
+   { Vérifier les constantes booléennes }
+   Else If UpperCase(current_token) = 'TRUE' Then
+   Begin
+    const_value := 1;
+    const_type := TYPE_BOOLEAN;
+    EmitComment('Constante booléenne: ' + const_name + ' = TRUE');
+   End
+   Else If UpperCase(current_token) = 'FALSE' Then
+   Begin
+    const_value := 0;
+    const_type := TYPE_BOOLEAN;
+    EmitComment('Constante booléenne: ' + const_name + ' = FALSE');
+   End
+   Else
+   Begin
+    { Essayer de parser comme nombre avec Val }
+    Val(current_token, const_value, sym_index);
+    If sym_index = 0 Then
+    Begin
+     const_type := TYPE_INTEGER;
+     EmitComment('Constante numérique: ' + const_name + ' = ' + IntToStr(const_value));
+    End
+    Else
+    Begin
+     const_value := 0;
+     const_type := TYPE_INTEGER;
+     Warning('Valeur de constante non reconnue: ' + current_token + ', assumé 0');
+    End;
+   End;
+   NextToken;
+  End
+  Else
+  Begin
+   Error('Attendu valeur de constante');
+   Break;
+  End;
+
+  { Ajouter la constante à la table des symboles }
+  sym_index := AddSymbol(const_name, SYM_CONST, const_type, STORAGE_GLOBAL);
+  If sym_index > 0 Then
+  Begin
+   { Stocker la valeur dans le champ value du symbole }
+   symbol_table[sym_index]^.value := const_value;
+   symbol_table[sym_index]^.defined := True;
+  End;
+
+  { Attendre le point-virgule }
+  If current_token = ';' Then
+   NextToken
+  Else
+  Begin
+   Error('Attendu ; après déclaration de constante');
+   Break;
+  End;
+ End;
+End;
+
 { Parser les déclarations de types }
 Procedure ParseTypeDeclarations;
 Var
@@ -2977,6 +3071,10 @@ Begin
  { Gérer les déclarations LABEL }
  If Accept(SYM_LABEL) Then
   ParseLabelDeclarations;
+
+ { Gérer les déclarations CONST }	
+ If Accept(SYM_CONST) Then
+  ParseConstDeclarations;
 
  { Gérer les déclarations TYPE }
  If Accept(SYM_TYPE) Then
