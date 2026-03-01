@@ -183,6 +183,7 @@ Var
 
  { Options du compilateur }
  option_units_support: Boolean; { Option 3: Support complet des UNIT/INTERFACE/IMPLEMENTATION/USES }
+ option_crt_dos_support: Boolean; { Option 2: Support partiel interne Uses Crt,DOS }
 
 { ============================================================================ }
 { FONCTIONS UTILITAIRES                                                        }
@@ -3154,9 +3155,9 @@ Var
 Begin
  NextToken; { Consommer USES }
  
- If not option_units_support Then
+ If not option_units_support and not option_crt_dos_support Then
  Begin
-  Warning('USES ignoré - option 3 non activée');
+  Warning('USES ignoré - aucune option d''unité activée (/2 ou /3)');
   { Ignorer jusqu'au point-virgule }
   While (current_token <> ';') and (current_char <> #0) do
    NextToken;
@@ -3165,28 +3166,65 @@ Begin
   Exit;
  End;
 
- EmitComment('Clause USES détectée');
- 
- { Lire les noms d'unités }
- Repeat
-  If current_symbol = SYM_UNKNOWN Then
-  Begin
-   unit_name := current_token;
-   EmitComment('  Unité requise: ' + unit_name);
-   NextToken;
-  End
-  Else
-  Begin
-   Error('Attendu nom d''unité dans clause USES');
-   Break;
-  End;
+ If option_crt_dos_support and not option_units_support Then
+ Begin
+  { Mode option /2: Support partiel pour Uses Crt,DOS seulement }
+  EmitComment('Clause USES (mode partiel Crt,DOS)');
   
-  { Gérer les virgules }
-  If current_token = ',' Then
-   NextToken
-  Else
-   Break;
- Until False;
+  { Lire les noms d'unités et vérifier qu'elles sont supportées }
+  Repeat
+   If current_symbol = SYM_UNKNOWN Then
+   Begin
+    unit_name := UpperCase(current_token);
+    If (unit_name = 'CRT') or (unit_name = 'DOS') Then
+    Begin
+     EmitComment('  Unité interne supportée: ' + unit_name);
+    End
+    Else
+    Begin
+     Warning('Unité non supportée en mode /2: ' + unit_name + ' (seuls Crt et DOS sont supportés)');
+    End;
+    NextToken;
+   End
+   Else
+   Begin
+    Error('Attendu nom d''unité dans clause USES');
+    Break;
+   End;
+   
+   { Gérer les virgules }
+   If current_token = ',' Then
+    NextToken
+   Else
+    Break;
+  Until False;
+ End
+ Else
+ Begin
+  { Mode option /3: Support complet des unités }
+  EmitComment('Clause USES détectée');
+  
+  { Lire les noms d'unités }
+  Repeat
+   If current_symbol = SYM_UNKNOWN Then
+   Begin
+    unit_name := current_token;
+    EmitComment('  Unité requise: ' + unit_name);
+    NextToken;
+   End
+   Else
+   Begin
+    Error('Attendu nom d''unité dans clause USES');
+    Break;
+   End;
+   
+   { Gérer les virgules }
+   If current_token = ',' Then
+    NextToken
+   Else
+    Break;
+  Until False;
+ End;
  
  { Attendre le point-virgule }
  If current_token = ';' Then
@@ -3556,6 +3594,7 @@ BEGIN
   WriteLn('Syntaxe: PC8086 [options] <fichier.pas> [fichier.asm]');
   WriteLn('');
   WriteLn('Options:');
+  WriteLn('  /2         : Activer support partiel interne Uses Crt,DOS');
   WriteLn('  /3         : Activer support complet UNIT/INTERFACE/IMPLEMENTATION/USES');
   WriteLn('');
   WriteLn('  <fichier.pas>  : Fichier source Pascal');
@@ -3565,9 +3604,20 @@ BEGIN
 
  { Initialiser les options par défaut }
  option_units_support := False;
+ option_crt_dos_support := False;
 
  { Traiter les options }
- If (ParamCount >= 1) and (ParamStr(1) = '/3') Then
+ If (ParamCount >= 1) and (ParamStr(1) = '/2') Then
+ Begin
+  option_crt_dos_support := True;
+  WriteLn('Option 2 activée: Support partiel interne Uses Crt,DOS');
+  source_filename := ParamStr(2);
+  If ParamCount >= 3 Then
+   output_filename := ParamStr(3)
+  Else
+   output_filename := '';
+ End
+ Else If (ParamCount >= 1) and (ParamStr(1) = '/3') Then
  Begin
   option_units_support := True;
   WriteLn('Option 3 activée: Support complet des unités Pascal');
