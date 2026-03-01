@@ -5548,12 +5548,10 @@ Begin
  ot('lbra ');
  printlabel(increment_label);
  nl;
-
  { End label - where break jumps to }
  prelabel(end_label);
  safe_writeln('; End FOR');
-
- { Pop loop context }
+  { Contexte de boucle Pop }
  pop_loop_context;
 End;
 
@@ -5563,19 +5561,16 @@ Var
  loop_label, condition_label, end_label: Integer;
 Begin
  parse_do_while_statement := False;
-
  If not match('do') Then Exit;
  parse_do_while_statement := True;
-
- { Generate loop labels }
+  { GÇnäe les Çtiquettes de boucle }
  loop_label := getlabel;
  condition_label := getlabel;
  end_label := getlabel;
-
- { Push loop context for break/continue }
+ { Boucle de contexte Push pour break/continue }
  { push_loop_context(3, end_label, condition_label); }
 
- { Loop start }
+ { DÇbut de la boucle }
  prelabel(loop_label);
  safe_writeln('; DO-WHILE loop start');
  { Analyse du corps de la boucle }

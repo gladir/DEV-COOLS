@@ -534,6 +534,37 @@ Begin
  AddFunction := symbol_count;
 End;
 
+{ Ajouter une procédure à la table des symboles }
+Function AddProcedure(name: String): Integer;
+Var
+ upper_name: String;
+Begin
+ If symbol_count >= MAX_SYMBOLS Then
+ Begin
+  Error('Table des symboles pleine');
+  AddProcedure := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(name);
+ Inc(symbol_count);
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
+ Begin
+  name := upper_name;
+  symbol_type := SYM_PROCEDURE;
+  data_type := TYPE_INTEGER; { Pas utilisé pour les procédures }
+  storage_class := STORAGE_GLOBAL;
+  offset := 0;
+  value := 0;
+  defined := True;
+  return_type := TYPE_INTEGER; { Pas utilisé }
+  is_function := False; { Procédure, pas fonction }
+ End;
+
+ AddProcedure := symbol_count;
+End;
+
 { ============================================================================ }
 { GÉNÉRATION DE CODE ASSEMBLEUR 8086                                          }
 { ============================================================================ }
@@ -796,6 +827,27 @@ Begin
      Else
       left_operand := 'ax';
      End;
+    End
+    { Vérifier si c'est un appel de procédure }
+    Else If symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE Then
+    Begin
+     { Appel de procédure }
+     EmitComment('Appel procédure: ' + temp_token);
+     NextToken; { Consommer le nom de la procédure }
+     
+     { Gérer les paramètres (pour l'instant, on ignore) }
+     If current_token = '(' Then
+     Begin
+      NextToken;
+      While (current_token <> ')') and (current_char <> #0) do
+       NextToken;
+      If current_token = ')' Then
+       NextToken;
+     End;
+     
+     { Générer l'appel - les procédures ne retournent pas de valeur }
+     Emit('call ' + symbol_table[sym_index]^.name);
+     left_operand := 'ax'; { Valeur par défaut }
     End
     Else
     Begin
@@ -1575,6 +1627,8 @@ End;
 
 { Parser une instruction }
 Procedure ParseStatement;
+Var
+ sym_idx: Integer;
 Begin
  Case current_symbol of
   SYM_BEGIN:
@@ -1588,7 +1642,27 @@ Begin
      Else If current_token <> '' Then
      Begin
       { C'est peut-être une affectation ou une instruction inconnue }
-      If FindSymbol(current_token) > 0 Then
+      sym_idx := FindSymbol(current_token);
+      If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_PROCEDURE) Then
+      Begin
+       { Appel de procédure }
+       EmitComment('Appel procédure: ' + current_token);
+       NextToken; { Consommer le nom de la procédure }
+       
+       { Gérer les paramètres (pour l'instant, on ignore) }
+       If current_token = '(' Then
+       Begin
+        NextToken;
+        While (current_token <> ')') and (current_char <> #0) do
+         NextToken;
+        If current_token = ')' Then
+         NextToken;
+       End;
+       
+       { Générer l'appel }
+       Emit('call ' + symbol_table[sym_idx]^.name);
+      End
+      Else If sym_idx > 0 Then
       Begin
        ParseAssignment(current_token); { ParseAssignment gérera NextToken }
       End
@@ -1634,8 +1708,29 @@ Begin
    Begin
     If current_token <> '' Then
     Begin
+     { Vérifier d'abord si c'est un appel de procédure }
+     sym_idx := FindSymbol(current_token);
+     If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_PROCEDURE) Then
+     Begin
+      { Appel de procédure }
+      EmitComment('Appel procédure: ' + current_token);
+      NextToken; { Consommer le nom de la procédure }
+      
+      { Gérer les paramètres (pour l'instant, on ignore) }
+      If current_token = '(' Then
+      Begin
+       NextToken;
+       While (current_token <> ')') and (current_char <> #0) do
+        NextToken;
+       If current_token = ')' Then
+        NextToken;
+      End;
+      
+      { Générer l'appel }
+      Emit('call ' + symbol_table[sym_idx]^.name);
+     End
      { Peut-être une affectation }
-     If FindSymbol(current_token) > 0 Then
+     Else If sym_idx > 0 Then
      Begin
       ParseAssignment(current_token); { ParseAssignment gérera NextToken }
      End
@@ -1841,6 +1936,86 @@ Begin
  in_function := False;
 End;
 
+{ Parser une déclaration de procédure }
+Procedure ParseProcedureDeclaration;
+Var
+ proc_name: String;
+ sym_index: Integer;
+ begin_count: Integer;
+Begin
+ NextToken; { Consommer PROCEDURE }
+
+ { Lire le nom de la procédure }
+ If current_symbol = SYM_UNKNOWN Then
+ Begin
+  proc_name := current_token;
+  NextToken;
+ End
+ Else
+ Begin
+  Error('Attendu nom de procédure');
+  Exit;
+ End;
+
+ { Ignorer les paramètres pour l'instant }
+ If current_token = '(' Then
+ Begin
+  NextToken;
+  While (current_token <> ')') and (current_char <> #0) do
+   NextToken;
+  If current_token = ')' Then
+   NextToken;
+ End;
+
+ { Attendre le point-virgule }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après déclaration de procédure');
+
+ { Ajouter la procédure à la table des symboles }
+ sym_index := AddProcedure(proc_name);
+ 
+ { Configurer l'état pour la procédure }
+ current_function_name := UpperCase(proc_name);
+ current_function_type := TYPE_INTEGER; { Pas utilisé }
+ in_function := True; { Utilise le même flag pour les procédures }
+
+ { Ignorer toute déclaration VAR locale }
+ While Accept(SYM_VAR) do
+ Begin
+  NextToken; { Consommer VAR }
+  { Ignorer jusqu'au prochain BEGIN }
+  While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
+   NextToken;
+ End;
+
+ { Parser le corps de la procédure - pour l'instant on l'ignore mais on compte les BEGIN/END }
+ If Accept(SYM_BEGIN) Then
+ Begin
+  NextToken; { Consommer BEGIN }
+  
+  begin_count := 1;
+  While (begin_count > 0) and (current_char <> #0) do
+  Begin
+   If Accept(SYM_BEGIN) Then
+    Inc(begin_count)
+   Else If Accept(SYM_END) Then
+    Dec(begin_count);
+   
+   NextToken;
+  End;
+ End;
+
+ { Attendre le point-virgule final }
+ If current_token = ';' Then
+  NextToken;
+
+ { Réinitialiser l'état }
+ current_function_name := '';
+ in_function := False;
+End;
+
 { Parser un bloc Pascal }
 Procedure ParseBlock;
 Begin
@@ -1851,6 +2026,10 @@ Begin
  { Gérer les déclarations FUNCTION }
  While Accept(SYM_FUNCTION) do
   ParseFunctionDeclaration;
+
+ { Gérer les déclarations PROCEDURE }
+ While Accept(SYM_PROCEDURE) do
+  ParseProcedureDeclaration;
 
  { Gérer le BEGIN principal }
  If Accept(SYM_BEGIN) Then
