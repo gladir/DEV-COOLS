@@ -2912,6 +2912,23 @@ Begin
    { Créer un type array basique }
    AddSymbol(type_name, SYM_TYPE, TYPE_ARRAY, STORAGE_GLOBAL);
   End
+  { Vérifier si c'est un type POINTEUR : PType = ^AutreType }
+  Else If current_token = '^' Then
+  Begin
+   NextToken; { Consommer '^' }
+   { Lire le nom du type pointé }
+   If current_symbol = SYM_UNKNOWN Then
+   Begin
+    { Enregistrer comme type pointeur - 2 octets sur 8086 }
+    AddSymbol(type_name, SYM_TYPE, TYPE_POINTER, STORAGE_GLOBAL);
+    NextToken; { Consommer le nom du type pointé }
+   End
+   Else
+   Begin
+    Error('Attendu nom de type après ^');
+    AddSymbol(type_name, SYM_TYPE, TYPE_POINTER, STORAGE_GLOBAL);
+   End;
+  End
   Else
   Begin
    { Type alias - référence à un autre type }
