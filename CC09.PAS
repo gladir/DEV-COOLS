@@ -4935,49 +4935,43 @@ Begin
    Break;
   End;
 
-  safe_writeln('; Op√©rateur | (OU binaire)');
-  ol('pshs d');    { Push left operand }
+  safe_writeln('; OpÇrateur | (OU binaire)');
+  ol('pshs d');    { Empile l'opÇrateur Ö gauche }
   bitwise_xor_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('ora  1,x');  { OR low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('ora  0,x');  { OR high bytes }
+  ol('tfr  d,x');  { OpÇrande de droite Ö X }
+  ol('puls d');    { OpÇrande de gauche Ö D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B Ö A pour l'octet bas }
+  ol('ora  1,x');  { Octets bas OR }
+  ol('tfr  a,b');  { RÇsultat de l'octet bas Ö B }
+  ol('tfr  u,a');  { Restaure l'octet haut de U }
+  ol('ora  0,x');  { Haut octets OR }
  End;
 End;
 
-{ Logical AND expression parser - handles && }
+{ Analyse de l'expression logique AND - gestionnbaire && }
 Procedure logical_and_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
 Begin
  bitwise_or_expression(lval);
-
- While match('&') and match('&') do
- Begin
-  safe_writeln('; Op√©rateur && (ET logique)');
-
-  { G√©n√©rer les √©tiquettes }
+ While match('&') and match('&') do Begin
+  safe_writeln('; OpÇrateur && (ET logique)');
+  { GÇnÇrer les Çtiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premi√®re expression }
+   { Tester la premiäre expression }
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-
-  { √âvaluer la deuxi√®me expression }
+   { êvaluer la deuxiäme expression }
   bitwise_or_expression(lval);
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-
-  { Les deux sont vraies - r√©sultat = 1 }
+   { Les deux sont vraies - rÇsultat = 1 }
   ol('ldd #1');
   ot('lbra ');
   printlabel(end_label);

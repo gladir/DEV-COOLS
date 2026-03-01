@@ -360,8 +360,27 @@ Begin
 
   While (current_char <> '''') and (current_char <> #0) do
   Begin
-   current_token := current_token + current_char;
-   NextChar;
+   { Gérer les caractères d'échappement }
+   If current_char = '''' Then
+   Begin
+    NextChar;
+    If current_char = '''' Then
+    Begin
+     { Double guillemet = guillemet littéral }
+     current_token := current_token + '''';
+     NextChar;
+    End
+    Else
+    Begin
+     { Fin de chaîne }
+     Break;
+    End;
+   End
+   Else
+   Begin
+    current_token := current_token + current_char;
+    NextChar;
+   End;
   End;
 
   If current_char = '''' Then
@@ -829,7 +848,11 @@ Begin
  Case var_type of
   TYPE_INTEGER, TYPE_WORD: EmitLine(var_name + ' DW ?');
   TYPE_BYTE, TYPE_CHAR: EmitLine(var_name + ' DB ?');
-  TYPE_STRING: EmitLine(var_name + ' DB 256 DUP(?)');
+  TYPE_STRING: 
+   Begin
+    { Une chaîne Pascal a un octet de longueur suivi des caractères }
+    EmitLine(var_name + ' DB 256 DUP(?)')
+   End;
   TYPE_BOOLEAN: EmitLine(var_name + ' DB ?');
   TYPE_RECORD: 
    Begin
@@ -956,21 +979,60 @@ Var
  sym_index: Integer;
  temp_token: String;
  left_operand: String;
+ left_type: Integer; { Type du premier opérande }
  comparison_op: Integer;
+ is_string_literal: Boolean;
+ string_label: String;
 Begin
+ left_type := TYPE_INTEGER; { Type par défaut }
+ is_string_literal := False;
+ 
  { Parser le premier opérande }
  If current_symbol = SYM_UNKNOWN Then
  Begin
   temp_token := current_token;
   
+  { Vérifier si c'est une chaîne littérale }
+  If (Length(temp_token) > 1) or 
+     ((Length(temp_token) = 1) and not ((temp_token[1] >= '0') and (temp_token[1] <= '9')) and
+      not ((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) and 
+      not ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
+  Begin
+   { C'est probablement une chaîne littérale }
+   is_string_literal := True;
+   left_type := TYPE_STRING;
+   
+   { Créer une étiquette pour la chaîne }
+   string_label := 'STR' + IntToStr(next_label_id);
+   Inc(next_label_id);
+   
+   { Générer la chaîne dans le segment de données }
+   If not data_segment Then
+   Begin
+    EmitLine('.DATA');
+    data_segment := True;
+   End;
+   
+   EmitLine(string_label + ' DB ' + IntToStr(Length(temp_token)) + ', ''' + temp_token + '''');
+   
+   { Retour au segment de code }
+   If not code_segment Then
+    BeginCodeSection;
+    
+   { Charger l'adresse de la chaîne }
+   Emit('mov si, OFFSET ' + string_label);
+   left_operand := 'si';
+   NextToken;
+  End
   { Vérifier si c'est un caractère littéral (longueur 1, lettre) }
-  If (Length(temp_token) = 1) and 
+  Else If (Length(temp_token) = 1) and 
      (((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) or
       ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
   Begin
    { Caractère littéral - traiter comme valeur ASCII }
    Emit('mov al, ' + IntToStr(Ord(temp_token[1])));
    left_operand := 'al';
+   left_type := TYPE_CHAR;
    NextToken;
   End
   { C'est peut-être un nombre }
@@ -979,6 +1041,7 @@ Begin
    { Nombre littéral }
    Emit('mov ax, ' + temp_token);
    left_operand := 'ax';
+   left_type := TYPE_INTEGER;
    NextToken;
   End
   Else If temp_token <> '' Then
@@ -987,6 +1050,8 @@ Begin
    sym_index := FindSymbol(temp_token);
    If sym_index > 0 Then
    Begin
+    left_type := symbol_table[sym_index]^.data_type;
+    
     { Vérifier si c'est un appel de fonction }
     If symbol_table[sym_index]^.is_function Then
     Begin
@@ -1011,9 +1076,11 @@ Begin
      Case symbol_table[sym_index]^.return_type of
       TYPE_INTEGER, TYPE_WORD: left_operand := 'ax';
       TYPE_BYTE, TYPE_CHAR: left_operand := 'al';
+      TYPE_STRING: left_operand := 'si';
      Else
       left_operand := 'ax';
      End;
+     left_type := symbol_table[sym_index]^.return_type;
     End
     { Vérifier si c'est un appel de procédure }
     Else If symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE Then
@@ -1035,6 +1102,7 @@ Begin
      { Générer l'appel - les procédures ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
      left_operand := 'ax'; { Valeur par défaut }
+     left_type := TYPE_INTEGER;
     End
     { Vérifier si c'est un appel d'interruption }
     Else If symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT Then
@@ -1056,6 +1124,7 @@ Begin
      { Générer l'appel - les interruptions ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
      left_operand := 'ax'; { Valeur par défaut }
+     left_type := TYPE_INTEGER;
     End
     Else
     Begin
@@ -1071,6 +1140,11 @@ Begin
         Emit('mov al, ' + symbol_table[sym_index]^.name);
         left_operand := 'al';
        End;
+      TYPE_STRING:
+       Begin
+        Emit('mov si, OFFSET ' + symbol_table[sym_index]^.name);
+        left_operand := 'si';
+       End;
      Else
       Begin
        Emit('mov ax, ' + symbol_table[sym_index]^.name);
@@ -1084,6 +1158,7 @@ Begin
    Begin
     Error('Variable non déclarée: ' + temp_token);
     left_operand := 'ax';
+    left_type := TYPE_INTEGER;
     NextToken;
    End;
   End
@@ -1091,12 +1166,14 @@ Begin
   Begin
    NextToken; { Token vide, continuer }
    left_operand := 'ax';
+   left_type := TYPE_INTEGER;
   End;
  End
  Else
  Begin
   NextToken; { Symbole reconnu, continuer }
   left_operand := 'ax';
+  left_type := TYPE_INTEGER;
  End;
  
  { Vérifier s'il y a une opération arithmétique ou logique avant la comparaison }
@@ -1119,7 +1196,14 @@ Begin
     Case comparison_op of
      SYM_PLUS: 
       Begin
-       If left_operand = 'ax' Then
+       { Vérifier si c'est une concaténation de chaînes }
+       If left_type = TYPE_STRING Then
+       Begin
+        { Concaténation de chaînes - pour l'instant on génère un appel de fonction }
+        EmitComment('Concaténation de chaînes');
+        Emit('call CONCAT_STR');
+       End
+       Else If left_operand = 'ax' Then
         Emit('add ax, ' + temp_token)
        Else
         Emit('add al, ' + temp_token);
@@ -1190,7 +1274,14 @@ Begin
      Case comparison_op of
       SYM_PLUS:
        Begin
-        If left_operand = 'ax' Then
+        { Vérifier si c'est une concaténation de chaînes }
+        If (left_type = TYPE_STRING) and (symbol_table[sym_index]^.data_type = TYPE_STRING) Then
+        Begin
+         EmitComment('Concaténation de chaînes');
+         Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name);
+         Emit('call CONCAT_STR'); { Appel de fonction de concaténation }
+        End
+        Else If left_operand = 'ax' Then
          Emit('add ax, ' + symbol_table[sym_index]^.name)
         Else
          Emit('add al, ' + symbol_table[sym_index]^.name);
@@ -1382,6 +1473,8 @@ End;
 Procedure ParseAssignment(var_name: String);
 Var
  sym_index: Integer;
+ string_temp: String;
+ is_string_assignment: Boolean;
 Begin
  sym_index := FindSymbol(var_name);
  If sym_index = 0 Then
@@ -1396,36 +1489,102 @@ Begin
  If current_token = ':=' Then
  Begin
   NextToken; { Consommer := }
-  ParseExpression;
-
-  { Vérifier si c'est une affectation au résultat d'une fonction }
-  If symbol_table[sym_index]^.is_function and (symbol_table[sym_index]^.name = current_function_name) Then
+  
+  { Vérifier si c'est une affectation de chaîne littérale }
+  is_string_assignment := False;
+  If (symbol_table[sym_index]^.data_type = TYPE_STRING) Then
   Begin
-   { Affectation au résultat de la fonction }
-   EmitComment('Affectation résultat fonction: ' + var_name);
-   Case symbol_table[sym_index]^.return_type of
-    TYPE_INTEGER, TYPE_WORD: 
-     Begin
-      Emit('mov [bp-2], ax');  { Stocker le résultat dans l'espace local }
-     End;
-    TYPE_BYTE, TYPE_CHAR: 
-     Begin
-      Emit('mov [bp-2], al');
-     End;
-   Else
-    Begin
-     Emit('mov [bp-2], ax');
-    End;
+   { Pour une variable string, vérifier si on a une chaîne littérale en cours }
+   string_temp := current_token;
+   { Considérer que c'est une chaîne littérale si ce n'est pas un nombre }
+   If (Length(string_temp) > 0) and 
+      not ((string_temp[1] >= '0') and (string_temp[1] <= '9')) Then
+   Begin
+    is_string_assignment := True;
    End;
+  End;
+  
+  If is_string_assignment Then
+  Begin
+   { Affectation de chaîne littérale }
+   EmitComment('Affectation chaîne: ' + var_name + ' := ''' + string_temp + '''');
+   
+   { Stocker la longueur d'abord (format Pascal) }
+   Emit('mov al, ' + IntToStr(Length(string_temp)));
+   Emit('mov ' + symbol_table[sym_index]^.name + ', al');
+   
+   { Copier les caractères si la chaîne n'est pas vide }
+   If Length(string_temp) > 0 Then
+   Begin
+    { Générer la chaîne constante dans le segment de données }
+    If not data_segment Then
+    Begin
+     EmitLine('.DATA');
+     data_segment := True;
+    End;
+    
+    EmitLine('STR_CONST' + IntToStr(next_label_id) + ' DB ''' + string_temp + '''');
+    
+    { Retour au segment de code }
+    If not code_segment Then
+     BeginCodeSection;
+    
+    { Copier les caractères }
+    Emit('mov si, OFFSET STR_CONST' + IntToStr(next_label_id));
+    Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name + '+1');
+    Emit('mov cx, ' + IntToStr(Length(string_temp)));
+    Emit('rep movsb');
+    
+    Inc(next_label_id);
+   End;
+   
+   NextToken; { Consommer la chaîne }
   End
   Else
   Begin
-   { Générer le code d'affectation normal }
-   Case symbol_table[sym_index]^.data_type of
-    TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
-    TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
+   ParseExpression;
+
+   { Vérifier si c'est une affectation au résultat d'une fonction }
+   If symbol_table[sym_index]^.is_function and (symbol_table[sym_index]^.name = current_function_name) Then
+   Begin
+    { Affectation au résultat de la fonction }
+    EmitComment('Affectation résultat fonction: ' + var_name);
+    Case symbol_table[sym_index]^.return_type of
+     TYPE_INTEGER, TYPE_WORD: 
+      Begin
+       Emit('mov [bp-2], ax');  { Stocker le résultat dans l'espace local }
+      End;
+     TYPE_BYTE, TYPE_CHAR: 
+      Begin
+       Emit('mov [bp-2], al');
+      End;
+     TYPE_STRING:
+      Begin
+       { Pour les chaînes, copier depuis SI vers l'espace local }
+       Emit('mov di, [bp-2]');
+       Emit('call COPY_STR');
+      End;
+    Else
+     Begin
+      Emit('mov [bp-2], ax');
+     End;
+    End;
+   End
    Else
-    Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+   Begin
+    { Générer le code d'affectation normal }
+    Case symbol_table[sym_index]^.data_type of
+     TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+     TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
+     TYPE_STRING: 
+      Begin
+       EmitComment('Copie de chaîne');
+       Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name);
+       Emit('call COPY_STR'); { SI -> DI }
+      End;
+    Else
+     Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+    End;
    End;
   End;
  End
@@ -1524,9 +1683,9 @@ Begin
         End;
        TYPE_STRING:
         Begin
-         Emit('mov dx, OFFSET ' + symbol_table[sym_index]^.name);
-         Emit('mov ah, 09h');
-         Emit('int 21h');
+         EmitComment('Affichage variable chaîne (Write): ' + var_name);
+         Emit('mov si, OFFSET ' + symbol_table[sym_index]^.name);
+         Emit('call PRINT_STR');
         End;
        TYPE_BOOLEAN:
         Begin
@@ -1667,9 +1826,9 @@ Begin
         End;
        TYPE_STRING:
         Begin
-         Emit('mov dx, OFFSET ' + symbol_table[sym_index]^.name);
-         Emit('mov ah, 09h');
-         Emit('int 21h');
+         EmitComment('Affichage variable chaîne: ' + var_name);
+         Emit('mov si, OFFSET ' + symbol_table[sym_index]^.name);
+         Emit('call PRINT_STR');
         End;
        TYPE_BOOLEAN:
         Begin
@@ -2819,6 +2978,147 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('PRINT_NUM ENDP');
+ 
+ EmitLine('');
+ EmitComment('Procédures d''aide pour les chaînes');
+ 
+ { Procédure de copie de chaînes }
+ EmitLine('COPY_STR PROC');
+ EmitComment('Copie une chaîne de SI vers DI (format Pascal: longueur + caractères)');
+ EmitLine('    push ax');
+ EmitLine('    push cx');
+ EmitLine('    push si');
+ EmitLine('    push di');
+ EmitLine('');
+ EmitComment('Copier la longueur');
+ EmitLine('    lodsb        ; Charger longueur depuis [SI]');
+ EmitLine('    stosb        ; Stocker longueur vers [DI]');
+ EmitLine('    mov cl, al   ; Nombre de caractères à copier');
+ EmitLine('    mov ch, 0');
+ EmitLine('');
+ EmitComment('Copier les caractères');
+ EmitLine('    rep movsb    ; Copier CX caractères');
+ EmitLine('');
+ EmitLine('    pop di');
+ EmitLine('    pop si');
+ EmitLine('    pop cx');
+ EmitLine('    pop ax');
+ EmitLine('    ret');
+ EmitLine('COPY_STR ENDP');
+ 
+ { Procédure de concaténation de chaînes }
+ EmitLine('');
+ EmitLine('CONCAT_STR PROC');
+ EmitComment('Concatène deux chaînes: SI (source1) + DI (source2) -> SI (résultat)');
+ EmitLine('    push ax');
+ EmitLine('    push bx');
+ EmitLine('    push cx');
+ EmitLine('    push dx');
+ EmitLine('    push di');
+ EmitLine('');
+ EmitComment('Calculer la longueur totale');
+ EmitLine('    mov al, [si]     ; Longueur chaîne 1');
+ EmitLine('    mov bl, [di]     ; Longueur chaîne 2');
+ EmitLine('    add al, bl       ; Longueur totale');
+ EmitLine('    cmp al, 255      ; Vérifier dépassement');
+ EmitLine('    jbe CONCAT_OK');
+ EmitLine('    mov al, 255      ; Limiter à 255');
+ EmitLine('');
+ EmitLine('CONCAT_OK:');
+ EmitComment('Stocker nouvelle longueur');
+ EmitLine('    mov [si], al');
+ EmitLine('');
+ EmitComment('Positionner pour copie de la deuxième chaîne');
+ EmitLine('    mov cl, [si]     ; Longueur chaîne 1 originale');
+ EmitLine('    mov ch, 0');
+ EmitLine('    mov dx, si');
+ EmitLine('    inc dx           ; Pointer après longueur');
+ EmitLine('    add dx, cx       ; Pointer après chaîne 1');
+ EmitLine('');
+ EmitComment('Copier la deuxième chaîne');
+ EmitLine('    mov cl, [di]     ; Longueur chaîne 2');
+ EmitLine('    inc di           ; Pointer après longueur');
+ EmitLine('    mov si, di       ; Source = chaîne 2');
+ EmitLine('    mov di, dx       ; Destination = fin de chaîne 1');
+ EmitLine('    rep movsb        ; Copier');
+ EmitLine('');
+ EmitLine('    pop di');
+ EmitLine('    pop dx');
+ EmitLine('    pop cx');
+ EmitLine('    pop bx');
+ EmitLine('    pop ax');
+ EmitLine('    ret');
+ EmitLine('CONCAT_STR ENDP');
+ 
+ { Procédure de comparaison de chaînes }
+ EmitLine('');
+ EmitLine('COMPARE_STR PROC');
+ EmitComment('Compare deux chaînes SI et DI, résultat dans AX (0=égal, 1=différent)');
+ EmitLine('    push bx');
+ EmitLine('    push cx');
+ EmitLine('    push dx');
+ EmitLine('    push si');
+ EmitLine('    push di');
+ EmitLine('');
+ EmitComment('Comparer les longueurs');
+ EmitLine('    mov al, [si]');
+ EmitLine('    mov bl, [di]');
+ EmitLine('    cmp al, bl');
+ EmitLine('    jne COMP_DIFF    ; Longueurs différentes');
+ EmitLine('');
+ EmitComment('Comparer les caractères');
+ EmitLine('    mov cl, al       ; Nombre de caractères');
+ EmitLine('    mov ch, 0');
+ EmitLine('    inc si           ; Pointer après longueur');
+ EmitLine('    inc di');
+ EmitLine('    repe cmpsb       ; Comparer caractères');
+ EmitLine('    je COMP_EQUAL');
+ EmitLine('');
+ EmitLine('COMP_DIFF:');
+ EmitLine('    mov ax, 1        ; Différent');
+ EmitLine('    jmp COMP_END');
+ EmitLine('');
+ EmitLine('COMP_EQUAL:');
+ EmitLine('    mov ax, 0        ; Égal');
+ EmitLine('');
+ EmitLine('COMP_END:');
+ EmitLine('    pop di');
+ EmitLine('    pop si');
+ EmitLine('    pop dx');
+ EmitLine('    pop cx');
+ EmitLine('    pop bx');
+ EmitLine('    ret');
+ EmitLine('COMPARE_STR ENDP');
+ 
+ { Procédure d'affichage de chaînes }
+ EmitLine('');
+ EmitLine('PRINT_STR PROC');
+ EmitComment('Affiche une chaîne Pascal pointée par SI');
+ EmitLine('    push ax');
+ EmitLine('    push cx');
+ EmitLine('    push dx');
+ EmitLine('    push si');
+ EmitLine('');
+ EmitComment('Lire la longueur');
+ EmitLine('    lodsb            ; AL = longueur');
+ EmitLine('    mov cl, al');
+ EmitLine('    mov ch, 0');
+ EmitLine('    jcxz PRINT_STR_END');
+ EmitLine('');
+ EmitLine('PRINT_CHAR_LOOP:');
+ EmitLine('    lodsb            ; Charger caractère');
+ EmitLine('    mov dl, al       ; Caractère à afficher');
+ EmitLine('    mov ah, 02h      ; Fonction DOS affichage caractère');
+ EmitLine('    int 21h');
+ EmitLine('    loop PRINT_CHAR_LOOP');
+ EmitLine('');
+ EmitLine('PRINT_STR_END:');
+ EmitLine('    pop si');
+ EmitLine('    pop dx');
+ EmitLine('    pop cx');
+ EmitLine('    pop ax');
+ EmitLine('    ret');
+ EmitLine('PRINT_STR ENDP');
 End;
 
 BEGIN
