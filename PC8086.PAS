@@ -39,36 +39,40 @@ Const
  SYM_DO = 13;
  SYM_FOR = 14;
  SYM_TO = 15;
- SYM_REPEAT = 16;
- SYM_UNTIL = 17;
- SYM_CASE = 18;
- SYM_OF = 19;
- SYM_WRITE = 20;
- SYM_WRITELN = 21;
- SYM_READ = 22;
- SYM_READLN = 23;
- SYM_INTERRUPT = 24;
- SYM_RECORD = 25;
- SYM_ARRAY = 26;
+ SYM_DOWNTO = 16;
+ SYM_REPEAT = 17;
+ SYM_UNTIL = 18;
+ SYM_CASE = 19;
+ SYM_OF = 20;
+ SYM_WRITE = 21;
+ SYM_WRITELN = 22;
+ SYM_READ = 23;
+ SYM_READLN = 24;
+ SYM_INTERRUPT = 25;
+ SYM_RECORD = 26;
+ SYM_ARRAY = 27;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 27;      { = }
- SYM_NOTEQUAL = 28;   { <> }
- SYM_LESS = 29;       { < }
- SYM_GREATER = 30;    { > }
- SYM_LESSEQ = 31;     { <= }
- SYM_GREATEREQ = 32;  { >= }
+ SYM_EQUAL = 28;      { = }
+ SYM_NOTEQUAL = 29;   { <> }
+ SYM_LESS = 30;       { < }
+ SYM_GREATER = 31;    { > }
+ SYM_LESSEQ = 32;     { <= }
+ SYM_GREATEREQ = 33;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 33;       { + }
- SYM_MINUS = 34;      { - }
- SYM_MULTIPLY = 35;   { * }
- SYM_DIVIDE = 36;     { / }
+ SYM_PLUS = 34;       { + }
+ SYM_MINUS = 35;      { - }
+ SYM_MULTIPLY = 36;   { * }
+ SYM_DIVIDE = 37;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 37;        { AND }
- SYM_OR = 38;         { OR }
- SYM_XOR = 39;        { XOR }
+ SYM_AND = 38;        { AND }
+ SYM_OR = 39;         { OR }
+ SYM_XOR = 40;        { XOR }
+
+ { Caractères spéciaux }
+ SYM_DOT = 41;        { . }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -292,6 +296,7 @@ Begin
  Else If current_token = 'DO' Then current_symbol := SYM_DO
  Else If current_token = 'FOR' Then current_symbol := SYM_FOR
  Else If current_token = 'TO' Then current_symbol := SYM_TO
+ Else If current_token = 'DOWNTO' Then current_symbol := SYM_DOWNTO
  Else If current_token = 'REPEAT' Then current_symbol := SYM_REPEAT
  Else If current_token = 'UNTIL' Then current_symbol := SYM_UNTIL
  Else If current_token = 'CASE' Then current_symbol := SYM_CASE
@@ -455,6 +460,12 @@ Begin
  Else If (current_char >= '0') and (current_char <= '9') Then
   ReadNumber
  { Caractères spéciaux }
+ Else If current_char = '.' Then
+ Begin
+  current_token := '.';
+  current_symbol := SYM_DOT;
+  NextChar;
+ End
  Else
  Begin
   current_token := current_char;
@@ -919,6 +930,7 @@ End;
 Procedure ParseStatement; forward;
 Procedure ParseExpression; forward;
 Procedure ParseBlock; forward;
+Procedure ParseFor; forward;
 
 { Vérifier si le token actuel correspond }
 Function Accept(expected_symbol: Integer): Boolean;
@@ -1818,6 +1830,93 @@ Begin
  EmitLabel(end_label);
 End;
 
+{ Parser une boucle FOR }
+Procedure ParseFor;
+Var
+ start_label, end_label, increment_label: String;
+ var_name: String;
+ is_downto: Boolean;
+ sym_idx: Integer;
+Begin
+ NextToken; { Consommer FOR }
+ 
+ { Lire la variable de contrôle }
+ If current_symbol = SYM_UNKNOWN Then
+ Begin
+  var_name := current_token;
+  sym_idx := FindSymbol(var_name);
+  If sym_idx <= 0 Then
+   Error('Variable de contrôle non déclarée: ' + var_name);
+  NextToken;
+ End
+ Else
+  Error('Attendu nom de variable après FOR');
+  
+ { Attendre := }
+ If current_token = ':=' Then
+  NextToken
+ Else
+  Error('Attendu := après nom de variable');
+  
+ { Analyser l'expression de départ }
+ ParseExpression;
+ Emit('mov [' + var_name + '], ax'); { Stocker valeur initiale }
+ 
+ { Vérifier TO ou DOWNTO }
+ If current_symbol = SYM_TO Then
+ Begin
+  is_downto := False;
+  NextToken;
+ End
+ Else If current_symbol = SYM_DOWNTO Then
+ Begin
+  is_downto := True;
+  NextToken;
+ End
+ Else
+  Error('Attendu TO ou DOWNTO dans boucle FOR');
+  
+ { Analyser l'expression de fin }
+ ParseExpression;
+ Emit('mov bx, ax'); { Stocker valeur finale dans BX }
+ 
+ { Attendre DO }
+ Expect(SYM_DO, 'Attendu DO après expression finale');
+ 
+ { Générer les étiquettes }
+ start_label := NewLabel;
+ increment_label := NewLabel;
+ end_label := NewLabel;
+ 
+ { Début de la boucle }
+ EmitLabel(start_label);
+ 
+ { Comparer la variable de contrôle avec la valeur finale }
+ Emit('mov ax, [' + var_name + ']');
+ Emit('cmp ax, bx');
+ 
+ If is_downto Then
+  Emit('jl ' + end_label) { Si var < limite_finale, sortir }
+ Else  
+  Emit('jg ' + end_label); { Si var > limite_finale, sortir }
+ 
+ { Exécuter le corps de la boucle }
+ ParseStatement;
+ 
+ { Incrémenter ou décrémenter la variable de contrôle }
+ EmitLabel(increment_label);
+ Emit('mov ax, [' + var_name + ']');
+ If is_downto Then
+  Emit('dec ax')
+ Else
+  Emit('inc ax');
+ Emit('mov [' + var_name + '], ax');
+ 
+ { Retourner au début }
+ Emit('jmp ' + start_label);
+ EmitLabel(end_label);
+End;
+
 { Parser une instruction }
 Procedure ParseStatement;
 Var
@@ -1906,6 +2005,9 @@ Begin
 
   SYM_WHILE:
    ParseWhile;
+
+  SYM_FOR:
+   ParseFor;
 
   SYM_REPEAT:
    ParseRepeat;
@@ -2518,10 +2620,9 @@ Begin
  ParseBlock;
 
  { Attendre le point final }
- If current_token = '.' Then
+ If current_symbol = SYM_DOT Then
   NextToken
  Else
-  Error('Attendu . à la fin du programme');
   Error('Attendu . à la fin du programme');
 
  GenerateFooter;
