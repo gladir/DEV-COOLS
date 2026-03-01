@@ -2265,63 +2265,9 @@ Begin
     Begin
      If current_symbol <> SYM_UNKNOWN Then
       ParseStatement
-     Else If current_token <> '' Then
-     Begin
-      { C'est peut-être une affectation ou une instruction inconnue }
-      sym_idx := FindSymbol(current_token);
-      If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_PROCEDURE) Then
-      Begin
-       { Appel de procédure }
-       EmitComment('Appel procédure: ' + current_token);
-       NextToken; { Consommer le nom de la procédure }
-       
-       { Gérer les paramètres (pour l'instant, on ignore) }
-       If current_token = '(' Then
-       Begin
-        NextToken;
-        While (current_token <> ')') and (current_char <> #0) do
-         NextToken;
-        If current_token = ')' Then
-         NextToken;
-       End;
-       
-       { Générer l'appel }
-       Emit('call ' + symbol_table[sym_idx]^.name);
-      End
-      Else If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_INTERRUPT) Then
-      Begin
-       { Appel d'interruption }
-       EmitComment('Appel interruption: ' + current_token);
-       NextToken; { Consommer le nom de l'interruption }
-       
-       { Gérer les paramètres (pour l'instant, on ignore) }
-       If current_token = '(' Then
-       Begin
-        NextToken;
-        While (current_token <> ')') and (current_char <> #0) do
-         NextToken;
-        If current_token = ')' Then
-         NextToken;
-       End;
-       
-       { Générer l'appel }
-       Emit('call ' + symbol_table[sym_idx]^.name);
-      End
-      Else If sym_idx > 0 Then
-      Begin
-       ParseAssignment(current_token); { ParseAssignment gérera NextToken }
-      End
-      Else If current_symbol = SYM_WRITELN Then
-       ParseWriteln
-      Else If current_symbol = SYM_WRITE Then
-       ParseWrite
-      Else
-      Begin
-       NextToken; { Ignorer et continuer }
-      End;
-     End
      Else
-      NextToken;
+      { Laisser ParseStatement gérer les tokens SYM_UNKNOWN pour les labels et affectations }
+      ParseStatement;
 
      { Gérer les point-virgules optionnels }
      If current_token = ';' Then
@@ -2428,7 +2374,7 @@ Begin
        EmitLabel(UpperCase(label_name) + '_LABEL');
        
        { Marquer l'étiquette comme définie dans la table }
-       sym_idx := FindLabel(label_name);
+       sym_idx := FindLabel(UpperCase(label_name));
        If sym_idx > 0 Then
         label_table[sym_idx]^.defined := True;
        
@@ -2807,78 +2753,81 @@ Begin
   If sym_index > 0 Then
    symbol_table[sym_index]^.is_forward := True;
    
-  Exit; { Sortir - pas de corps à analyser }
- End;
-
- { Attendre le point-virgule }
- If current_token = ';' Then
-  NextToken
- Else
-  Error('Attendu ; après déclaration de fonction');
-
- { Vérifier s'il y a une déclaration FORWARD existante }
- sym_index := FindSymbol(func_name);
- If sym_index > 0 Then
- Begin
-  { Vérifier si c'est une déclaration FORWARD }
-  If symbol_table[sym_index]^.is_forward And 
-     (symbol_table[sym_index]^.symbol_type = SYM_FUNCTION) And
-     (symbol_table[sym_index]^.data_type = return_type) Then
-  Begin
-   { Marquer comme implémentée }
-   symbol_table[sym_index]^.is_forward := False;
-   symbol_table[sym_index]^.defined := True;
-  End
-  Else
-  Begin
-   Error('Redéfinition de fonction: ' + func_name);
-   Exit;
-  End;
+  { Pas de corps à analyser pour FORWARD, terminer ici }
  End
  Else
  Begin
-  { Ajouter la fonction à la table des symboles }
-  sym_index := AddFunction(func_name, return_type);
- End;
- 
- { Configurer l'état pour la fonction }
- current_function_name := UpperCase(func_name);
- current_function_type := return_type;
- in_function := True;
+  { Traitement normal de la fonction }
+  { Attendre le point-virgule }
+  If current_token = ';' Then
+   NextToken
+  Else
+   Error('Attendu ; après déclaration de fonction');
 
- { Ignorer toute déclaration VAR locale }
- While Accept(SYM_VAR) do
- Begin
-  NextToken; { Consommer VAR }
-  { Ignorer jusqu'au prochain BEGIN }
-  While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
-   NextToken;
- End;
-
- { Parser le corps de la fonction - pour l'instant on l'ignore mais on compte les BEGIN/END }
- If Accept(SYM_BEGIN) Then
- Begin
-  NextToken; { Consommer BEGIN }
-  
-  begin_count := 1;
-  While (begin_count > 0) and (current_char <> #0) do
+  { Vérifier s'il y a une déclaration FORWARD existante }
+  sym_index := FindSymbol(func_name);
+  If sym_index > 0 Then
   Begin
-   If Accept(SYM_BEGIN) Then
-    Inc(begin_count)
-   Else If Accept(SYM_END) Then
-    Dec(begin_count);
-   
-   NextToken;
+   { Vérifier si c'est une déclaration FORWARD }
+   If symbol_table[sym_index]^.is_forward And 
+      (symbol_table[sym_index]^.symbol_type = SYM_FUNCTION) And
+      (symbol_table[sym_index]^.data_type = return_type) Then
+   Begin
+    { Marquer comme implémentée }
+    symbol_table[sym_index]^.is_forward := False;
+    symbol_table[sym_index]^.defined := True;
+   End
+   Else
+   Begin
+    Error('Redéfinition de fonction: ' + func_name);
+    Exit;
+   End;
+  End
+  Else
+  Begin
+   { Ajouter la fonction à la table des symboles }
+   sym_index := AddFunction(func_name, return_type);
   End;
+ 
+  { Configurer l'état pour la fonction }
+  current_function_name := UpperCase(func_name);
+  current_function_type := return_type;
+  in_function := True;
+
+  { Ignorer toute déclaration VAR locale }
+  While Accept(SYM_VAR) do
+  Begin
+   NextToken; { Consommer VAR }
+   { Ignorer jusqu'au prochain BEGIN }
+   While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
+    NextToken;
+  End;
+
+  { Parser le corps de la fonction - pour l'instant on l'ignore mais on compte les BEGIN/END }
+  If Accept(SYM_BEGIN) Then
+  Begin
+   NextToken; { Consommer BEGIN }
+  
+   begin_count := 1;
+   While (begin_count > 0) and (current_char <> #0) do
+   Begin
+    If Accept(SYM_BEGIN) Then
+     Inc(begin_count)
+    Else If Accept(SYM_END) Then
+     Dec(begin_count);
+   
+    NextToken;
+   End;
+  End;
+
+  { Attendre le point-virgule final }
+  If current_token = ';' Then
+   NextToken;
+
+  { Réinitialiser l'état }
+  current_function_name := '';
+  in_function := False;
  End;
-
- { Attendre le point-virgule final }
- If current_token = ';' Then
-  NextToken;
-
- { Réinitialiser l'état }
- current_function_name := '';
- in_function := False;
 End;
 
 { Parser une déclaration de procédure }
@@ -2941,81 +2890,84 @@ Begin
   If sym_index > 0 Then
    symbol_table[sym_index]^.is_forward := True;
    
-  Exit; { Sortir - pas de corps à analyser }
- End;
-
- { Attendre le point-virgule }
- If current_token = ';' Then
-  NextToken
- Else
-  Error('Attendu ; après déclaration de procédure');
-
- { Vérifier s'il y a une déclaration FORWARD existante }
- sym_index := FindSymbol(proc_name);
- If sym_index > 0 Then
- Begin
-  { Vérifier si c'est une déclaration FORWARD }
-  If symbol_table[sym_index]^.is_forward And 
-     ((symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE) Or
-      (symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT)) Then
-  Begin
-   { Marquer comme implémentée }
-   symbol_table[sym_index]^.is_forward := False;
-   symbol_table[sym_index]^.defined := True;
-  End
-  Else
-  Begin
-   Error('Redéfinition de procédure: ' + proc_name);
-   Exit;
-  End;
+  { Pas de corps à analyser pour FORWARD, terminer ici }
  End
  Else
  Begin
-  { Ajouter la procédure à la table des symboles }
-  If is_interrupt Then
-   sym_index := AddInterrupt(proc_name)
+  { Traitement normal de la procédure }
+  { Attendre le point-virgule }
+  If current_token = ';' Then
+   NextToken
   Else
-   sym_index := AddProcedure(proc_name);
- End;
- 
- { Configurer l'état pour la procédure }
- current_function_name := UpperCase(proc_name);
- current_function_type := TYPE_INTEGER; { Pas utilisé }
- in_function := True; { Utilise le même flag pour les procédures }
+   Error('Attendu ; après déclaration de procédure');
 
- { Ignorer toute déclaration VAR locale }
- While Accept(SYM_VAR) do
- Begin
-  NextToken; { Consommer VAR }
-  { Ignorer jusqu'au prochain BEGIN }
-  While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
-   NextToken;
- End;
-
- { Parser le corps de la procédure - pour l'instant on l'ignore mais on compte les BEGIN/END }
- If Accept(SYM_BEGIN) Then
- Begin
-  NextToken; { Consommer BEGIN }
-  
-  begin_count := 1;
-  While (begin_count > 0) and (current_char <> #0) do
+  { Vérifier s'il y a une déclaration FORWARD existante }
+  sym_index := FindSymbol(proc_name);
+  If sym_index > 0 Then
   Begin
-   If Accept(SYM_BEGIN) Then
-    Inc(begin_count)
-   Else If Accept(SYM_END) Then
-    Dec(begin_count);
-   
-   NextToken;
+   { Vérifier si c'est une déclaration FORWARD }
+   If symbol_table[sym_index]^.is_forward And 
+      ((symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE) Or
+       (symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT)) Then
+   Begin
+    { Marquer comme implémentée }
+    symbol_table[sym_index]^.is_forward := False;
+    symbol_table[sym_index]^.defined := True;
+   End
+   Else
+   Begin
+    Error('Redéfinition de procédure: ' + proc_name);
+    Exit;
+   End;
+  End
+  Else
+  Begin
+   { Ajouter la procédure à la table des symboles }
+   If is_interrupt Then
+    sym_index := AddInterrupt(proc_name)
+   Else
+    sym_index := AddProcedure(proc_name);
   End;
+ 
+  { Configurer l'état pour la procédure }
+  current_function_name := UpperCase(proc_name);
+  current_function_type := TYPE_INTEGER; { Pas utilisé }
+  in_function := True; { Utilise le même flag pour les procédures }
+
+  { Ignorer toute déclaration VAR locale }
+  While Accept(SYM_VAR) do
+  Begin
+   NextToken; { Consommer VAR }
+   { Ignorer jusqu'au prochain BEGIN }
+   While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
+    NextToken;
+  End;
+
+  { Parser le corps de la procédure - pour l'instant on l'ignore mais on compte les BEGIN/END }
+  If Accept(SYM_BEGIN) Then
+  Begin
+   NextToken; { Consommer BEGIN }
+  
+   begin_count := 1;
+   While (begin_count > 0) and (current_char <> #0) do
+   Begin
+    If Accept(SYM_BEGIN) Then
+     Inc(begin_count)
+    Else If Accept(SYM_END) Then
+     Dec(begin_count);
+   
+    NextToken;
+   End;
+  End;
+
+  { Attendre le point-virgule final }
+  If current_token = ';' Then
+   NextToken;
+
+  { Réinitialiser l'état }
+  current_function_name := '';
+  in_function := False;
  End;
-
- { Attendre le point-virgule final }
- If current_token = ';' Then
-  NextToken;
-
- { Réinitialiser l'état }
- current_function_name := '';
- in_function := False;
 End;
 
 { Parser un bloc Pascal }
@@ -3033,14 +2985,14 @@ Begin
  If Accept(SYM_VAR) Then
   ParseVarDeclarations;
 
- { Gérer toutes les déclarations de fonctions et procédures }
+ { Première passe: gérer les déclarations FORWARD }
  While Accept(SYM_FUNCTION) or Accept(SYM_PROCEDURE) do
  Begin
-  If Accept(SYM_FUNCTION) Then
+  If current_symbol = SYM_FUNCTION Then
   Begin
    ParseFunctionDeclaration;
   End
-  Else If Accept(SYM_PROCEDURE) Then
+  Else If current_symbol = SYM_PROCEDURE Then
   Begin
    ParseProcedureDeclaration;
   End;
