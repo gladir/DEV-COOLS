@@ -3461,61 +3461,47 @@ Var
  filename: String;
 Begin
  filename := '';
-
- { Ignorer #include et les espaces }
+  { Ignorer #include et les espaces }
  start_pos := Pos('#include', include_line);
- If start_pos > 0 Then
- Begin
+ If start_pos > 0 Then Begin
   start_pos := start_pos + 8; { Longueur de '#include' }
-
-  { Ignorer les espaces }
+   { Ignorer les espaces }
   While (start_pos <= Length(include_line)) and
         ((include_line[start_pos] = ' ') or (include_line[start_pos] = #9)) do
    Inc(start_pos);
-
-  { VÔøΩrifier les guillemets ou les crochets angulaires }
-  If start_pos <= Length(include_line) Then
-  Begin
-   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then
-   Begin
+   { VÇrifier les guillemets ou les crochets angulaires }
+  If start_pos <= Length(include_line) Then Begin
+   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then Begin
     Inc(start_pos); { Ignorer le guillemet/crochet ouvrant }
     end_pos := start_pos;
-
-    { Trouver le guillemet/crochet fermant }
+     { Trouver le guillemet/crochet fermant }
     While (end_pos <= Length(include_line)) and
           (include_line[end_pos] <> '"') and
           (include_line[end_pos] <> '>') do
      Inc(end_pos);
-
     If end_pos <= Length(include_line) Then
      filename := Copy(include_line, start_pos, end_pos - start_pos);
    End;
   End;
  End;
-
  extract_filename := filename;
 End;
 
-Function push_include_file(include_filename: String): Boolean;
-Begin
+Function push_include_file(include_filename: String): Boolean;Begin
  push_include_file := False;
-
- { VÔøΩrifier l'inclusion circulaire }
- If is_file_included(include_filename) Then
- Begin
+  { VÇrifier l'inclusion circulaire }
+ If is_file_included(include_filename) Then Begin
   Case Language of
    _English: errrpt('Circular inclusion detected: ' + include_filename);
    {$IFDEF FPC}
-   _Germany: errrpt('Zirkul√§re Einbindung erkannt: ' + include_filename);
+   _Germany: errrpt('ZirkulÑre Einbindung erkannt: ' + include_filename);
    {$ENDIF}
-   Else errrpt('Inclusion circulaire d√©tect√©e: ' + include_filename);
+   Else errrpt('Inclusion circulaire dÇtectÇe: ' + include_filename);
   End;
   Exit;
  End;
-
- { VÔøΩrifier la profondeur maximale d'inclusion }
- If include_depth >= 10 Then
- Begin
+  { VÇrifier la profondeur maximale d'inclusion }
+ If include_depth >= 10 Then Begin
   Case Language of
    _English: errrpt('Include depth too deep (max 10): ' + include_filename);
    {$IFDEF FPC}
@@ -3525,29 +3511,23 @@ Begin
   End;
   Exit;
  End;
-
- { Sauvegarder l'ÔøΩtat actuel du fichier }
- With include_stack[include_depth] do
- Begin
+  { Sauvegarder l'Çtat actuel du fichier }
+ With include_stack[include_depth] do Begin
   filename := current_filename;
   saved_line := line;
   saved_lptr := lptr;
   saved_eof := eof;
  End;
-
- { Essayer d'ouvrir le fichier d'inclusion }
+  { Essayer d'ouvrir le fichier d'inclusion }
  Assign(input, include_filename);
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
-  { Restaurer le fichier prÔøΩcÔøΩdent en le rÔøΩouvrant }
-  If include_depth > 0 Then
-  Begin
+ If IOResult <> 0 Then Begin
+  { Restaurer le fichier prÇcÇdent en le rÇouvrant }
+  If include_depth > 0 Then Begin
    Assign(input, include_stack[include_depth].filename);
    Reset(input);
   End;
-
   Case Language of
    _English: errrpt('Cannot open include file: ' + include_filename);
    {$IFDEF FPC}
@@ -3558,53 +3538,45 @@ Begin
   Exit;
  End;
  {$I+}
-
- { Marquer le fichier comme inclus pour ÔøΩviter l'inclusion circulaire }
+  { Marquer le fichier comme inclus pour Çviter l'inclusion circulaire }
  mark_file_included(include_filename);
-
- { Update state }
+  { Mise Ö jour de l'Çtat }
  Inc(include_depth);
  current_filename := include_filename;
  eof := 0;
- lptr := 1; { RÔøΩinitialiser le pointeur de ligne pour le nouveau fichier }
-
- safe_writeln('; Including file: ' + include_filename);
+ lptr := 1; { RÇinitialiser le pointeur de ligne pour le nouveau fichier }
+ safe_writeln('; Inclure le fichier: ' + include_filename);
  push_include_file := True;
 End;
 
-Function process_include_directive(include_line: String): Boolean;
+Function process_include_directive(include_line:String):Boolean;
 Var
  filename: String;
 Begin
  process_include_directive := False;
-
  filename := extract_filename(include_line);
- If filename = '' Then
- Begin
+ If filename = '' Then Begin
   Case Language of
    _English: errrpt('Invalid #include directive syntax');
    {$IFDEF FPC}
-   _Germany: errrpt('Ung√ºltige #include-Direktiven-Syntax');
+   _Germany: errrpt('UngÅltige #include-Direktiven-Syntax');
    {$ENDIF}
    Else errrpt('Syntaxe de directive #include invalide');
   End;
   Exit;
  End;
-
- If push_include_file(filename) Then
-  process_include_directive := True;
+ If push_include_file(filename) Then process_include_directive := True;
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DES DÔøΩFINITIONS/MACROS                                 }
+{ FONCTIONS DE GESTION DES DêFINITIONS/MACROS                                  }
 { ============================================================================ }
 
-{ Initialiser le systÔøΩme de dÔøΩfinition }
-Procedure init_defines;
-Begin
- define_list := nil;     { Initialiser la liste cha√Æn√©e comme vide }
+ { Initialiser le systäme de dÇfinition }
+Procedure init_defines;Begin
+ define_list := nil;     { Initialiser la liste chaånÇe comme vide }
  define_count := 0;
- { Ne pas ÔøΩcrire dans la sortie ici car elle peut ne pas ÔøΩtre encore initialisÔøΩe }
+ { Ne pas Çcrire dans la sortie ici car elle peut ne pas àtre encore initialisÇe }
 End;
 
 { Trouver une constante #define par nom - retourne un pointeur }
@@ -3614,11 +3586,8 @@ Var
 Begin
  find_define := nil;
  current := define_list;
-
- While current <> nil do
- Begin
-  If current^.in_use and (current^.name = def_name) Then
-  Begin
+ While current <> nil do Begin
+  If current^.in_use and (current^.name = def_name) Then Begin
    find_define := current;
    Exit;
   End;
@@ -3626,7 +3595,7 @@ Begin
  End;
 End;
 
-{ Supprimer une constante #define }
+ { Supprimer une constante #define }
 Function remove_define(def_name: String): Boolean;
 Var
  current, prev: PDefine;
@@ -3634,17 +3603,13 @@ Begin
  remove_define := False;
  current := define_list;
  prev := nil;
-
- While current <> nil do
- Begin
-  If current^.in_use and (current^.name = def_name) Then
-  Begin
-   { TrouvÔøΩ - supprimer de la liste }
+ While current <> nil do Begin
+  If current^.in_use and (current^.name = def_name) Then Begin
+   { TrouvÇ - supprimer de la liste }
    If prev = nil Then
     define_list := current^.next  { Premier dans la liste }
    Else
     prev^.next := current^.next;  { Pas le premier dans la liste }
-
    Dispose(current);
    Dec(define_count);
    remove_define := True;
@@ -3655,20 +3620,18 @@ Begin
  End;
 End;
 
-{ Add a new #define constant }
+ { Ajouter une nouvelle constante #define }
 Function add_define(def_name, def_value: String): Boolean;
 Var
  new_define: PDefine;
 Begin
  add_define := False;
-
- { VÔøΩrifier si dÔøΩjÔøΩ dÔøΩfini et permettre la redÔøΩfinition avec avertissement }
- If find_define(def_name) <> nil Then
- Begin
+  { VÇrifier si dÇjÖ dÇfini et permettre la redÇfinition avec avertissement }
+ If find_define(def_name) <> nil Then Begin
   Case Language of
    _English:Begin
      WriteLn('; Warning: Macro ' + def_name + ' redefined (previous definition ignored)');
-     { Supprimer l'ancienne dÔøΩfinition }
+     { Supprimer l'ancienne dÇfinition }
      remove_define(def_name);
     End;
     {$IFDEF FPC}
@@ -3679,45 +3642,39 @@ Begin
     {$ENDIF}
    Else
     Begin
-     WriteLn('; Avertissement: Macro ' + def_name + ' red√©fini (d√©finition pr√©c√©dente ignor√©e)');
+     WriteLn('; Avertissement: Macro ' + def_name + ' redÇfini (dÇfinition prÇcÇdente ignorÇe)');
      remove_define(def_name);
     End;
   End;
  End;
-
- { Allouer un nouveau define dans le tas }
+  { Allouer un nouveau define dans la mÇmoire de tas }
  New(new_define);
- If new_define = nil Then
- Begin
+ If new_define = nil Then Begin
   Case Language of
    _English: errrpt('Out of memory for #define constants');
    {$IFDEF FPC}
-   _Germany: errrpt('Kein Speicher f√ºr #define-Konstanten');
+   _Germany: errrpt('Kein Speicher fÅr #define-Konstanten');
    {$ENDIF}
-   Else errrpt('M√©moire insuffisante pour les constantes #define');
+   Else errrpt('MÇmoire insuffisante pour les constantes #define');
   End;
   Exit;
  End;
-
- { Initialiser le nouveau define }
- With new_define^ do
- Begin
+  { Initialiser le nouveau define }
+ With new_define^ do Begin
   name := def_name;
   value := def_value;
   in_use := True;
-  next := define_list;  { InsÔøΩrer au dÔøΩbut de la liste }
+  next := define_list;  { InsÇrer au dÇbut de la liste }
  End;
-
- { Update list head }
+  { Mise Ö jour de la liste d'entàte }
  define_list := new_define;
  Inc(define_count);
-
- If use_stdout Then WriteLn('; Defined macro: ', def_name, ' = ', def_value)
-               Else safe_writeln('; Defined macro: ' + def_name + ' = ' + def_value);
+ If use_stdout Then WriteLn('; Macro dÇfini: ', def_name, ' = ', def_value)
+               Else safe_writeln('; Macro dÇfini: ' + def_name + ' = ' + def_value);
  add_define := True;
 End;
 
-{ Obtenir la valeur d'une constante #define }
+ { Obtenir la valeur d'une constante #define }
 Function get_define_value(def_name: String): String;
 Var
  define_ptr: PDefine;
@@ -3737,19 +3694,15 @@ Begin
  process_define_directive := False;
  def_name := '';
  def_value := '';
-
- { Ignorer #define et les espaces }
+  { Ignorer #define et les espaces }
  line_pos := Pos('#define', define_line);
  If line_pos <= 0 Then Exit;
-
- line_pos := line_pos + 7; { Length of '#define' }
-
- { Ignorer les espaces }
+ line_pos := line_pos + 7; { Longueur de '#define' }
+  { Ignorer les espaces }
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
-
- { Extraire le nom de macro }
+  { Extraire le nom de macro }
  start_pos := line_pos;
  While (line_pos <= Length(define_line)) and
        (((define_line[line_pos] >= 'A') and (define_line[line_pos] <= 'Z')) or
@@ -3757,43 +3710,36 @@ Begin
         ((define_line[line_pos] >= '0') and (define_line[line_pos] <= '9')) or
         (define_line[line_pos] = '_')) do
   Inc(line_pos);
-
- If line_pos > start_pos Then
-  def_name := Copy(define_line, start_pos, line_pos - start_pos)
- Else
+ If line_pos > start_pos Then def_name := Copy(define_line, start_pos, line_pos - start_pos)
+  Else
  Begin
   Case Language of
    _English: errrpt('Invalid #define directive: missing name');
    {$IFDEF FPC}
-   _Germany: errrpt('Ung√ºltige #define-Direktive: Name fehlt');
+   _Germany: errrpt('UngÅltige #define-Direktive: Name fehlt');
    {$ENDIF}
    Else errrpt('Directive #define invalide: nom manquant');
   End;
   Exit;
  End;
-
- { Ignorer les espaces avant la valeur }
+  { Ignorer les espaces avant la valeur }
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
-
- { Extraire la valeur (reste de la ligne) }
+  { Extraire la valeur (reste de la ligne) }
  If line_pos <= Length(define_line) Then
   def_value := Copy(define_line, line_pos, Length(define_line) - line_pos + 1)
  Else
   def_value := '1'; { Valeur par dÔøΩfaut pour les macros sans valeur explicite }
-
- { Supprimer les espaces en fin de valeur }
+  { Supprimer les espaces en fin de valeur }
  While (Length(def_value) > 0) and
        ((def_value[Length(def_value)] = ' ') or (def_value[Length(def_value)] = #9)) do
   Delete(def_value, Length(def_value), 1);
-
- { Ajouter le define }
- If add_define(def_name, def_value) Then
-  process_define_directive := True;
+  { Ajouter le define }
+ If add_define(def_name, def_value) Then process_define_directive := True;
 End;
 
-{ DÔøΩvelopper les macros dans une ligne de code }
+{ DÇvelopper les macros dans une ligne de code }
 Function expand_macros(input_line: String): String;
 Var
  result_line: String;
@@ -3803,15 +3749,12 @@ Var
  changed: Boolean;
 Begin
  result_line := input_line;
-
- { Plusieurs passes pour gÔøΩrer les expansions imbriquÔøΩes }
+  { Plusieurs passes pour gÔøΩrer les expansions imbriquÇes }
  Repeat
   changed := False;
   line_pos := 1;
-
-  While line_pos <= Length(result_line) do
-  Begin
-   { VÔøΩrifier si on est au dÔøΩbut d'un identifiant }
+  While line_pos <= Length(result_line) do Begin
+   { VÇrifier si on est au dÇbut d'un identifiant }
    If ((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
       ((result_line[line_pos] >= 'a') and (result_line[line_pos] <= 'z')) or
       (result_line[line_pos] = '_') Then
@@ -3824,10 +3767,8 @@ Begin
            ((result_line[line_pos] >= '0') and (result_line[line_pos] <= '9')) or
            (result_line[line_pos] = '_')) do
      Inc(line_pos);
-
     token := Copy(result_line, start_pos, line_pos - start_pos);
-
-    { VÔøΩrifier si ce jeton est une macro dÔøΩfinie }
+     { VÇrifier si ce jeton est une macro dÇfinie }
     define_ptr := find_define(token);
     If define_ptr <> nil Then
     Begin
@@ -3844,11 +3785,10 @@ Begin
     Inc(line_pos);
   End;
  Until not changed;
-
  expand_macros := result_line;
 End;
 
-{ Supprimer tous les defines du tas }
+ { Supprimer tous les defines de la mÇmoire de tas }
 Procedure free_defines;
 Var
  current, next: PDefine;
@@ -3860,7 +3800,6 @@ Begin
   Dispose(current);
   current := next;
  End;
-
  define_list := nil;
  If use_stdout Then WriteLn('; Cleared ', define_count, ' macro definitions from heap')
                Else safe_writeln('; Cleared macro definitions from heap');
@@ -3871,14 +3810,14 @@ End;
 { FONCTIONS DE GESTION DES DIRECTIVES CONDITIONNELLES                         }
 { ============================================================================ }
 
-{ Initialiser la pile de conditions }
+ { Initialiser la pile de conditions }
 Procedure init_conditions;
 Begin
  condition_depth := 0;
  skip_code := False;
 End;
 
-{ √âvaluer une expression constante simple pour #if }
+ { êvaluer une expression constante simple pour #if }
 Function evaluate_constant_expression(expr: String): Integer;
 Var
  result: Integer;
@@ -3889,50 +3828,41 @@ Var
 Begin
  result := 0;
  temp_str := expr;
-
- { Supprimer les espaces au d√©but et √† la fin }
+  { Supprimer les espaces au dÇbut et Ö la fin }
  While (Length(temp_str) > 0) and (temp_str[1] = ' ') do
   Delete(temp_str, 1, 1);
  While (Length(temp_str) > 0) and (temp_str[Length(temp_str)] = ' ') do
   Delete(temp_str, Length(temp_str), 1);
-
- { V√©rifier si c'est un nombre }
- If (Length(temp_str) > 0) and (temp_str[1] in ['0'..'9']) Then
- Begin
+  { VÇrifier si c'est un nombre }
+ If (Length(temp_str) > 0) and (temp_str[1] in ['0'..'9']) Then Begin
   Val(temp_str, result, error_code);
   If error_code <> 0 Then result := 0; { Si erreur, retourner 0 }
  End
- { V√©rifier si c'est un define }
- Else If temp_str <> '' Then
- Begin
+  { VÇrifier si c'est un define }
+  Else
+ If temp_str <> '' Then Begin
   define_ptr := find_define(temp_str);
-  If define_ptr <> nil Then
-  Begin
-   { √âvaluer r√©cursivement la valeur du define }
+  If define_ptr <> nil Then Begin
+   { êvaluer rÇcursivement la valeur du define }
    result := evaluate_constant_expression(define_ptr^.value);
   End
-  Else
-   result := 0; { Define non trouv√© = 0 }
+   Else
+  result := 0; { Define non trouvÇ = 0 }
  End;
-
  evaluate_constant_expression := result;
 End;
 
-{ V√©rifier si on doit ignorer le code actuel }
+ { VÇrifier si on doit ignorer le code actuel }
 Function should_skip_code: Boolean;
 Var
  i: Integer;
 Begin
  should_skip_code := False;
-
- { Parcourir la pile de conditions }
- For i := 0 to condition_depth - 1 do
- Begin
-  With condition_stack[i] do
-  Begin
+  { Parcourir la pile de conditions }
+ For i := 0 to condition_depth - 1 do Begin
+  With condition_stack[i] do Begin
    { Si une condition est fausse et qu'on n'est pas dans un else vrai }
-   If not is_true and not (in_else and not has_true_branch) Then
-   Begin
+   If not is_true and not (in_else and not has_true_branch) Then Begin
     should_skip_code := True;
     Exit;
    End;
@@ -3940,23 +3870,20 @@ Begin
  End;
 End;
 
-{ Traiter la directive #if }
+ { Traiter la directive #if }
 Function process_if_directive(condition: String): Boolean;
 Var
  condition_value: Integer;
  temp_condition: String;
 Begin
  process_if_directive := False;
-
- { Nettoyer la condition (supprimer espaces et retour chariot) }
+  { Nettoyer la condition (supprimer espaces et retour chariot) }
  temp_condition := condition;
  While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
   Delete(temp_condition, 1, 1);
  While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
   Delete(temp_condition, Length(temp_condition), 1);
-
- If condition_depth >= 32 Then
- Begin
+ If condition_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested #if directives (max 32)');
    {$IFDEF FPC}
@@ -3966,91 +3893,73 @@ Begin
   End;
   Exit;
  End;
-
  condition_value := evaluate_constant_expression(temp_condition);
-
- With condition_stack[condition_depth] do
- Begin
+ With condition_stack[condition_depth] do Begin
   condition_type := COND_IF;
   is_true := (condition_value <> 0);
   has_true_branch := is_true;
   in_else := False;
   line_number := 0; { √Ä impl√©menter si n√©cessaire }
  End;
-
  Inc(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #if ', temp_condition, ' = ', condition_value)
                Else safe_writeln('; #if ' + temp_condition + ' = ' + IntToStr(condition_value));
-
  process_if_directive := True;
 End;
 
-{ Traiter la directive #ifdef }
+ { Traiter la directive #ifdef }
 Function process_ifdef_directive(define_name: String): Boolean;
 Var
  define_exists: Boolean;
  temp_name: String;
 Begin
  process_ifdef_directive := False;
-
- { Nettoyer le nom (supprimer espaces et retour chariot) }
+  { Nettoyer le nom (supprimer espaces et retour chariot) }
  temp_name := define_name;
  While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
   Delete(temp_name, 1, 1);
  While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
   Delete(temp_name, Length(temp_name), 1);
-
- If condition_depth >= 32 Then
- Begin
+ If condition_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested #ifdef directives (max 32)');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #ifdef-Direktiven (max 32)');
    {$ENDIF}
-   Else errrpt('Trop de directives #ifdef imbriqu√©es (max 32)');
+   Else errrpt('Trop de directives #ifdef imbriquÇes (max 32)');
   End;
   Exit;
  End;
-
  define_exists := (find_define(temp_name) <> nil);
-
- With condition_stack[condition_depth] do
- Begin
+ With condition_stack[condition_depth] do Begin
   condition_type := COND_IFDEF;
   is_true := define_exists;
   has_true_branch := is_true;
   in_else := False;
   line_number := 0;
  End;
-
  Inc(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #ifdef ', temp_name, ' = ', define_exists)
                Else safe_writeln('; #ifdef ' + temp_name + ' = ' + IntToStr(Ord(define_exists)));
-
  process_ifdef_directive := True;
 End;
 
-{ Traiter la directive #ifndef }
+ { Traiter la directive #ifndef }
 Function process_ifndef_directive(define_name: String): Boolean;
 Var
  define_exists: Boolean;
  temp_name: String;
 Begin
  process_ifndef_directive := False;
-
- { Nettoyer le nom (supprimer espaces et retour chariot) }
+  { Nettoyer le nom (supprimer espaces et retour chariot) }
  temp_name := define_name;
  While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
   Delete(temp_name, 1, 1);
  While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
   Delete(temp_name, Length(temp_name), 1);
-
- If condition_depth >= 32 Then
- Begin
+ If condition_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested #ifndef directives (max 32)');
    {$IFDEF FPC}
@@ -4060,44 +3969,35 @@ Begin
   End;
   Exit;
  End;
-
  define_exists := (find_define(temp_name) <> nil);
-
- With condition_stack[condition_depth] do
- Begin
+ With condition_stack[condition_depth] do Begin
   condition_type := COND_IFNDEF;
   is_true := not define_exists;
   has_true_branch := is_true;
   in_else := False;
   line_number := 0;
  End;
-
  Inc(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #ifndef ', temp_name, ' = ', not define_exists)
                Else safe_writeln('; #ifndef ' + temp_name + ' = ' + IntToStr(Ord(not define_exists)));
-
  process_ifndef_directive := True;
 End;
 
-{ Traiter la directive #elif }
+ { Traiter la directive #elif }
 Function process_elif_directive(condition: String): Boolean;
 Var
  condition_value: Integer;
  temp_condition: String;
 Begin
  process_elif_directive := False;
-
- { Nettoyer la condition (supprimer espaces et retour chariot) }
+  { Nettoyer la condition (supprimer espaces et retour chariot) }
  temp_condition := condition;
  While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
   Delete(temp_condition, 1, 1);
  While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
   Delete(temp_condition, Length(temp_condition), 1);
-
- If condition_depth = 0 Then
- Begin
+ If condition_depth = 0 Then Begin
   Case Language of
    _English: errrpt('#elif without matching #if');
    {$IFDEF FPC}
@@ -4107,24 +4007,19 @@ Begin
   End;
   Exit;
  End;
-
- With condition_stack[condition_depth - 1] do
- Begin
-  If in_else Then
-  Begin
+ With condition_stack[condition_depth - 1] do Begin
+  If in_else Then Begin
    Case Language of
     _English: errrpt('#elif after #else');
     {$IFDEF FPC}
     _Germany: errrpt('#elif nach #else');
     {$ENDIF}
-    Else errrpt('#elif apr√®s #else');
+    Else errrpt('#elif apräs #else');
    End;
    Exit;
   End;
-
-  { √âvaluer seulement si aucune branche pr√©c√©dente n'√©tait vraie }
-  If not has_true_branch Then
-  Begin
+   { êvaluer seulement si aucune branche prÇcÇdente n'Çtait vraie }
+  If not has_true_branch Then Begin
    condition_value := evaluate_constant_expression(temp_condition);
    is_true := (condition_value <> 0);
    If is_true Then has_true_branch := True;
@@ -4132,22 +4027,16 @@ Begin
   Else
    is_true := False; { Une branche pr√©c√©dente √©tait vraie }
  End;
-
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #elif ', temp_condition)
                Else safe_writeln('; #elif ' + temp_condition);
-
  process_elif_directive := True;
 End;
 
-{ Traiter la directive #else }
-Function process_else_directive: Boolean;
-Begin
+ { Traiter la directive #else }
+Function process_else_directive:Boolean;Begin
  process_else_directive := False;
-
- If condition_depth = 0 Then
- Begin
+ If condition_depth = 0 Then Begin
   Case Language of
    _English: errrpt('#else without matching #if');
    {$IFDEF FPC}
@@ -4157,11 +4046,8 @@ Begin
   End;
   Exit;
  End;
-
- With condition_stack[condition_depth - 1] do
- Begin
-  If in_else Then
-  Begin
+ With condition_stack[condition_depth - 1] do Begin
+  If in_else Then Begin
    Case Language of
     _English: errrpt('Multiple #else in same #if block');
     {$IFDEF FPC}
@@ -4171,27 +4057,20 @@ Begin
    End;
    Exit;
   End;
-
   in_else := True;
-  { #else est vrai seulement si aucune branche pr√©c√©dente n'√©tait vraie }
+  { #else est vrai seulement si aucune branche prÇcÇdente n'Çtait vraie }
   is_true := not has_true_branch;
  End;
-
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #else')
                Else safe_writeln('; #else');
-
  process_else_directive := True;
 End;
 
 { Traiter la directive #endif }
-Function process_endif_directive: Boolean;
-Begin
+Function process_endif_directive: Boolean;Begin
  process_endif_directive := False;
-
- If condition_depth = 0 Then
- Begin
+ If condition_depth = 0 Then Begin
   Case Language of
    _English: errrpt('#endif without matching #if');
    {$IFDEF FPC}
@@ -4201,23 +4080,19 @@ Begin
   End;
   Exit;
  End;
-
  Dec(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #endif')
                Else safe_writeln('; #endif');
-
  process_endif_directive := True;
 End;
 
-{ Lib√©rer les ressources des conditions }
-Procedure free_conditions;
-Begin
+ { LibÇrer les ressources des conditions }
+Procedure free_conditions;Begin
  condition_depth := 0;
  skip_code := False;
  If use_stdout Then WriteLn('; Conditional compilation context cleared')
-               Else safe_writeln('; Contexte de compilation conditionnelle effac√©');
+               Else safe_writeln('; Contexte de compilation conditionnelle effacÇe');
 End;
 
 { Analyser l'acc√®s aux tableaux avec indexation }
@@ -4236,14 +4111,12 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
    {$ENDIF}
-   Else errrpt('Tableau non trouv√©: ' + array_name);
+   Else errrpt('Tableau non trouvÇ: ' + array_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien un tableau }
- If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
- Begin
+  { VÇrifier que c'est bien un tableau }
+ If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then Begin
   Case Language of
    _English: errrpt('Variable is not an array: ' + array_name);
    {$IFDEF FPC}
@@ -4253,48 +4126,40 @@ Begin
   End;
   Exit;
  End;
-
- { Consommer '[' }
- If not match('[') Then
- Begin
+  { Consommer '[' }
+ If not match('[') Then Begin
   Case Language of
    _English: errrpt('Expected [ for array index');
    {$IFDEF FPC}
-   _Germany: errrpt('Erwartete [ f√ºr Array-Index');
+   _Germany: errrpt('Erwartete [ fÅr Array-Index');
    {$ENDIF}
    Else errrpt('[ attendu pour l''index du tableau');
   End;
   Exit;
  End;
-
  safe_writeln('; Calcul de l''index du tableau ' + array_name);
-
- { Analyser l'expression d'index }
+  { Analyser l'expression d'index }
  additive_expression(index_lval);
-
- { Consommer ']' }
- If not match(']') Then
- Begin
+  { Consommer ']' }
+ If not match(']') Then Begin
   Case Language of
    _English: errrpt('Expected ] after array index');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
    {$ENDIF}
-   Else errrpt('] attendu apr√®s l''index du tableau');
+   Else errrpt('] attendu apräs l''index du tableau');
   End;
   Exit;
  End;
-
- { Charger la valeur √† l'adresse calcul√©e }
+  { Charger la valeur Ö l'adresse calculÇe }
  ol('mov  si,ax  ; adresse dans SI');
  Case element_size of
   1: ol('mov  al,[si] ; charger octet');
   2: ol('mov  ax,[si] ; charger mot');
  Else
-  ol('mov  ax,[si] ; charger mot par d√©faut');
+  ol('mov  ax,[si] ; charger mot par dÇfaut');
  End;
-
- { Configurer lval pour le r√©sultat }
+  { Configurer lval pour le rÇsultat }
  lval.typ := array_symbol^.type_info.base_type;
  lval.indirect := 1; { Valeur charg√©e indirectement }
  lval.constant := False;
@@ -4302,7 +4167,7 @@ Begin
  lval.type_info.array_size := 0; { Ce n'est plus un tableau mais un √©l√©ment }
 End;
 
-{ Analyser l'acc√®s aux membres de structure }
+ { Analyser l'accäs aux membres de structure }
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean);
 Var
  member_name: String;
@@ -4313,19 +4178,17 @@ Var
 Begin
  { Trouver le symbole de la structure }
  struct_symbol := find_symbol(struct_name);
- If struct_symbol = nil Then
- Begin
+ If struct_symbol = nil Then Begin
   Case Language of
    _English: errrpt('Struct variable not found: ' + struct_name);
    {$IFDEF FPC}
    _Germany: errrpt('Struct-Variable nicht gefunden: ' + struct_name);
    {$ENDIF}
-   Else errrpt('Variable de structure non trouv√©e: ' + struct_name);
+   Else errrpt('Variable de structure non trouvÇe: ' + struct_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien une structure }
+  { VÇrifier que c'est bien une structure }
  If (struct_symbol^.type_info.base_type <> cstruct) and
     (struct_symbol^.type_info.base_type <> cunion) Then
  Begin
@@ -4338,40 +4201,34 @@ Begin
   End;
   Exit;
  End;
-
- { Consommer '.' ou '->' }
- If is_pointer Then
- Begin
-  If not (match('-') and match('>')) Then
-  Begin
+  { Consommer '.' ou '->' }
+ If is_pointer Then Begin
+  If not (match('-') and match('>')) Then Begin
    Case Language of
     _English: errrpt('Expected -> for pointer member access');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete -> f√ºr Pointer-Mitgliedszugriff');
+    _Germany: errrpt('Erwartete -> fÅr Pointer-Mitgliedszugriff');
     {$ENDIF}
-    Else errrpt('-> attendu pour l''acc√®s aux membres de pointeur');
+    Else errrpt('-> attendu pour l''accäs aux membres de pointeur');
    End;
    Exit;
   End;
  End
- Else
+  Else
  Begin
-  If not match('.') Then
-  Begin
+  If not match('.') Then Begin
    Case Language of
     _English: errrpt('Expected . for struct member access');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete . f√ºr Struct-Mitgliedszugriff');
+    _Germany: errrpt('Erwartete . fÅr Struct-Mitgliedszugriff');
     {$ENDIF}
-    Else errrpt('. attendu pour l''acc√®s aux membres de structure');
+    Else errrpt('. attendu pour l''accäs aux membres de structure');
    End;
    Exit;
   End;
  End;
-
- { Obtenir le nom du membre }
- If not symname(member_name) Then
- Begin
+  { Obtenir le nom du membre }
+ If not symname(member_name) Then Begin
   Case Language of
    _English: errrpt('Expected member name after .');
    {$IFDEF FPC}
@@ -4381,11 +4238,9 @@ Begin
   End;
   Exit;
  End;
-
- { Trouver la d√©finition de la structure }
+  { Trouver la dÇfinition de la structure }
  struct_def := find_struct_by_id(struct_symbol^.type_info.struct_id);
- If struct_def = nil Then
- Begin
+ If struct_def = nil Then Begin
   Case Language of
    _English: errrpt('Struct definition not found');
    {$IFDEF FPC}
@@ -4395,39 +4250,32 @@ Begin
   End;
   Exit;
  End;
-
- { Trouver le membre dans la structure }
+  { Trouver le membre dans la structure }
  member_index := find_struct_member(struct_def, member_name);
- If member_index = -1 Then
- Begin
+ If member_index = -1 Then Begin
   Case Language of
    _English: errrpt('Member not found in struct: ' + member_name);
    {$IFDEF FPC}
    _Germany: errrpt('Mitglied nicht in Struct gefunden: ' + member_name);
    {$ENDIF}
-   Else errrpt('Membre non trouv√© dans la structure: ' + member_name);
+   Else errrpt('Membre non trouvÇ dans la structure: ' + member_name);
   End;
   Exit;
  End;
-
- { Obtenir les informations du membre }
- With struct_def^.members[member_index] do
- Begin
+  { Obtenir les informations du membre }
+ With struct_def^.members[member_index] do Begin
   member_offset := offset;
   member_size := size;
  End;
-
- safe_writeln('; Acc√®s au membre ' + member_name + ' (offset: ' + IntToStr(member_offset) + ')');
-
- { G√©n√©rer le code pour calculer l'adresse du membre }
- If member_offset = 0 Then
- Begin
-  { Le membre est au d√©but de la structure }
+ safe_writeln('; Accäs au membre ' + member_name + ' (offset: ' + IntToStr(member_offset) + ')');
+ { GÇnÇrer le code pour calculer l'adresse du membre }
+ If member_offset = 0 Then Begin
+  { Le membre est au dÇbut de la structure }
   ot('mov  ax,');
   outstr(struct_name);
   nl;
  End
- Else
+  Else
  Begin
   { Ajouter l'offset du membre }
   ot('mov  ax,');
@@ -4437,17 +4285,15 @@ Begin
   outdec(member_offset);
   nl;
  End;
-
- { Charger la valeur du membre }
+  { Charger la valeur du membre }
  ol('MOV  BX, AX    ; adresse du membre dans BX');
  Case member_size of
   1: ol('MOV  AL, [BX]     ; charger octet');
   2: ol('MOV  AX, [BX]     ; charger mot');
  Else
-  ol('MOV  AX, [BX]     ; charger mot par d√©faut');
+  ol('MOV  AX, [BX]     ; charger mot par dÇfaut');
  End;
-
- { Configurer lval pour le r√©sultat }
+  { Configurer lval pour le rÇsultat }
  With struct_def^.members[member_index] do
  Begin
   lval.typ := member_type;
@@ -4457,7 +4303,7 @@ Begin
  End;
 End;
 
-{ Analyseur d'expression primaire avec support des appels de fonction }
+ { Analyseur d'expression primaire avec support des appels de fonction }
 Procedure primary_expression(var lval: TLVal);
 Var
  id: String;
@@ -4465,7 +4311,6 @@ Var
  save_lptr: Integer;
 Begin
  FillChar(lval, SizeOf(lval), 0);
-
  Case peek_char of
   '0'..'9': Begin
     num := parse_number;
@@ -4476,49 +4321,43 @@ Begin
     outdec(num);
     nl;
    End;
-
   'A'..'Z', 'a'..'z', '_': Begin
     id := parse_identifier;
-
-    { VÔøΩrifier si c'est un appel de fonction }
-    If peek_char = '(' Then
-    Begin
+    { VÇrifier si c'est un appel de fonction }
+    If peek_char = '(' Then Begin
      { C'est un appel de fonction }
-     If parse_function_call(id, lval) Then
-     Begin
-      { Le rÔøΩsultat de l'appel de fonction est dÔøΩjÔøΩ dans le registre D }
+     If parse_function_call(id, lval) Then Begin
+      { Le rÇsultat de l'appel de fonction est dÇjÖ dans le registre D }
       safe_writeln('; Function ' + id + ' returned in D');
      End
-     Else
+      Else
      Begin
       Case Language of
        _English: errrpt('Invalid function call: ' + id);
        {$IFDEF FPC}
-       _Germany: errrpt('Ung√ºltiger Funktionsaufruf: ' + id);
+       _Germany: errrpt('UngÅltiger Funktionsaufruf: ' + id);
        {$ENDIF}
        Else errrpt('Appel de fonction invalide: ' + id);
       End;
      End;
     End
-    Else
+     Else
     Begin
-     { This is a variable reference }
-     If lookup_variable(id, lval) Then
-     Begin
-      { VÔøΩrifier si c'est un accÔøΩs ÔøΩ un tableau }
-      If peek_char = '[' Then
-      Begin
-       { Array indexing }
+     { C'est une rÇfÇrence de variable }
+     If lookup_variable(id, lval) Then Begin
+      { VÇrifier si c'est un accäs Ö un tableau }
+      If peek_char = '[' Then Begin
+       { Indexation d'un tableau }
        parse_array_access(id, lval);
       End
-      Else If peek_char = '.' Then
-      Begin
-       { Structure member access }
+       Else
+      If peek_char = '.' Then Begin
+       { Accäs au membre d'une structure }
        parse_struct_member_access(id, lval, False);
       End
-      Else
+       Else
       Begin
-       { Simple variable access }
+       { Simple accäs de variable }
        ot('mov  ax,');
        outstr(id);
        nl;
@@ -4526,7 +4365,7 @@ Begin
      End
      Else
      Begin
-      { Undeclared variable }
+      { Variable non dÇclarÇ }
       lval.symbol := 0;
       lval.typ := cint;
       lval.constant := False;
@@ -4536,12 +4375,11 @@ Begin
      End;
     End;
    End;
-
   '(': Begin
-    next_char; { consume '(' }
+    next_char; { consomme '(' }
     additive_expression(lval);
     If peek_char = ')' Then
-     next_char { consume ')' }
+     next_char { consomme ')' }
     Else
     Begin
      Case Language of
@@ -4553,12 +4391,11 @@ Begin
      End;
     End;
    End;
-
   Else
    Case Language of
     _English: errrpt('Invalid primary expression');
     {$IFDEF FPC}
-    _Germany: errrpt('Ung√ºltiger prim√§rer Ausdruck');
+    _Germany: errrpt('UngÅltiger primÑrer Ausdruck');
     {$ENDIF}
     Else errrpt('Expression primaire invalide');
    End;
@@ -4572,30 +4409,25 @@ Var
  save_lptr: Integer;
  id: String;
 Begin
- { V√©rifier d'abord si c'est le mot-cl√© sizeof }
+  { VÇrifier d'abord si c'est le mot-clef sizeof }
  save_lptr := lptr;
  blanks;
- If is_alpha(peek_char) Then
- Begin
+ If is_alpha(peek_char) Then Begin
   id := parse_identifier;
-  If id = 'sizeof' Then
-  Begin
+  If id = 'sizeof' Then Begin
    { C'est sizeof - restaurer la position et l'analyser }
    lptr := save_lptr;
    parse_sizeof_expression(lval);
    Exit;
   End;
  End;
-
- { Restaurer la position pour l'analyse normale }
+  { Restaurer la position pour l'analyse normale }
  lptr := save_lptr;
-
  Case peek_char of
   '+': Begin
     next_char;
     unary_expression(lval);
    End;
-
   '-': Begin
     next_char;
     unary_expression(lval);
@@ -4603,143 +4435,124 @@ Begin
     ol('NEG  AH');
     ol('SBB  AH, 0');
    End;
-
   '!': Begin
     next_char;
-    safe_writeln('; Op√©rateur ! (NOT logique)');
+    safe_writeln('; OpÇrateur ! (NOT logique)');
     unary_expression(lval);
-    { Convertir en bool√©en: 0 si non-z√©ro, 1 si z√©ro }
+     { Convertir en boolÇen: 0 si non-zÇro, 1 si zÇro }
     true_label := getlabel;
     end_label := getlabel;
-
-    ol('CMP  AX, 0');      { Tester AX (le r√©sultat de l''expression) }
-    ol('JE   L' + IntToStr(true_label)); { Si z√©ro, c''est vrai (!0 = 1) }
-    ol('MOV  AX, 0');   { Sinon c''est faux (!non_z√©ro = 0) }
+    ol('CMP  AX, 0');                    { Tester AX (le rÇsultat de l''expression) }
+    ol('JE   L' + IntToStr(true_label)); { Si zÇro, c'est vrai (!0 = 1) }
+    ol('MOV  AX, 0');                    { Sinon c'est faux (!non_zÇro = 0) }
     ol('JMP  L' + IntToStr(end_label));
     prelabel(true_label);
-    ol('MOV  AX, 1');   { R√©sultat vrai }
+    ol('MOV  AX, 1');                    { RÇsultat vrai }
     prelabel(end_label);
    End;
-
   '~': Begin
     next_char;
     unary_expression(lval);
     ol('NOT  AL');
     ol('NOT  AH');
    End;
-
   '*': Begin
-    { Op√©rateur de d√©r√©f√©rencement }
+    { OpÇrateur de dÇrÇfÇrencement }
     next_char;
     unary_expression(lval);
     parse_dereference(lval);
    End;
-
   '&': Begin
-    { Op√©rateur d'adresse }
+    { OpÇrateur d'adresse }
     next_char;
     parse_address_of(lval);
    End;
-
   Else
    primary_expression(lval);
  End;
 End;
 
-{ Op√©rateur de d√©r√©f√©rencement (*ptr) }
+ { OpÇrateur de dÇrÇfÇrencement (*ptr) }
 Procedure parse_dereference(var lval: TLVal);
 var
   ptr_name: String;
 Begin
- safe_writeln('; D√©r√©f√©rencement de pointeur');
-
- { V√©rifier que c'est bien un pointeur }
- If lval.type_info.pointer_level = 0 Then
- Begin
+ safe_writeln('; DÇrÇfÇrencement de pointeur');
+  { VÇrifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
    {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
    {$ENDIF}
-   Else errrpt('Impossible de d√©r√©f√©rencer un type non-pointeur');
+   Else errrpt('Impossible de dÇrÇfÇrencer un type non-pointeur');
   End;
   Exit;
  End;
-
- { G√©n√©rer le code de d√©r√©f√©rencement }
+  { GÇnÇrer le code de dÇrÇfÇrencement }
  If lval.symbol > 0 Then
  Begin
   ptr_name := get_symbol_name(lval.symbol);
-  safe_writeln('; D√©r√©f√©rencement de: ' + ptr_name);
-  ol('MOV  BX, ' + ptr_name);  { Charger l'adresse stock√©e dans le pointeur }
-  ol('MOV  AX, [BX]');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement de: ' + ptr_name);
+  ol('MOV  BX, ' + ptr_name);  { Charger l'adresse entreposÇe dans le pointeur }
+  ol('MOV  AX, [BX]');         { Charger la valeur pointÇe }
  End
- Else
+  Else
  Begin
-  safe_writeln('; D√©r√©f√©rencement indirect');
-  ol('POP  BX');         { R√©cup√©rer l'adresse depuis la pile }
-  ol('MOV  AX, [BX]');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement indirect');
+  ol('POP  BX');         { RÇcupÇrer l'adresse depuis la pile }
+  ol('MOV  AX, [BX]');   { Charger la valeur pointÇe }
  End;
-
- { V√©rifier que c'est bien un pointeur }
- If lval.type_info.pointer_level = 0 Then
- Begin
+  { VÇrifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
    {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
    {$ENDIF}
-   Else errrpt('Impossible de d√©r√©f√©rencer un type non-pointeur');
+   Else errrpt('Impossible de dÇrÇfÇrencer un type non-pointeur');
   End;
   Exit;
  End;
-
- { G√©n√©rer le code de d√©r√©f√©rencement }
- If lval.symbol > 0 Then
- Begin
+ { GÇnÇrer le code de dÇrÇfÇrencement }
+ If lval.symbol > 0 Then Begin
   ptr_name := get_symbol_name(lval.symbol);
-  safe_writeln('; D√©r√©f√©rencement de: ' + ptr_name);
-  ol('MOV  BX, ' + ptr_name);  { Charger l'adresse stock√©e dans le pointeur }
-  ol('MOV  AX, [BX]');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement de: ' + ptr_name);
+  ol('MOV  BX, ' + ptr_name);  { Charger l'adresse entreposÇe dans le pointeur }
+  ol('MOV  AX, [BX]');         { Charger la valeur pointÇe }
  End
- Else
+  Else
  Begin
-  safe_writeln('; D√©r√©f√©rencement indirect');
-  ol('POP  BX');         { R√©cup√©rer l'adresse depuis la pile }
-  ol('MOV  AX, [BX]');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement indirect');
+  ol('POP  BX');               { RÇcupÇrer l'adresse depuis la pile }
+  ol('MOV  AX, [BX]');         { Charger la valeur pointÇe }
  End;
-
- { D√©cr√©menter le niveau de pointeur }
+  { DÇcrÇmenter le niveau de pointeur }
  Dec(lval.type_info.pointer_level);
-
- { Le r√©sultat est maintenant une valeur }
+  { Le rÇsultat est maintenant une valeur }
  lval.indirect := 0;
-
- safe_writeln('; Pointeur d√©r√©f√©renc√©, nouveau niveau: ' + IntToStr(lval.type_info.pointer_level));
+ safe_writeln('; Pointeur dÇrÇfÇrencÇ, nouveau niveau: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
-{ Op√©rateur d'adresse (&var) }
+ { OpÇrateur d'adresse (&var) }
 Procedure parse_address_of(var lval: TLVal);
 Var
   var_name: String;
   sym_ptr: PSymbol;
 Begin
  safe_writeln('; Prise d''adresse de variable');
-
- { Lire le nom de la variable directement }
- If not symname(var_name) Then
- Begin
+  { Lire le nom de la variable directement }
+ If not symname(var_name) Then Begin
   Case Language of
    _English: errrpt('Expected variable name after &');
    {$IFDEF FPC}
    _Germany: errrpt('Variablenname nach & erwartet');
    {$ENDIF}
-   Else errrpt('Nom de variable attendu apr√®s &');
+   Else errrpt('Nom de variable attendu apräs &');
   End;
   Exit;
  End;
-
- { Chercher la variable dans la table des symboles }
+  { Chercher la variable dans la table des symboles }
  sym_ptr := find_symbol(var_name);
  If sym_ptr = nil Then
  Begin
@@ -4748,14 +4561,12 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Undefinierte Variable: ' + var_name);
    {$ENDIF}
-   Else errrpt('Variable non d√©finie: ' + var_name);
+   Else errrpt('Variable non dÇfinie: ' + var_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien une variable (pas une constante) }
- If sym_ptr^.ident <> it_variable Then
- Begin
+  { VÇrifier que c'est bien une variable (pas une constante) }
+ If sym_ptr^.ident <> it_variable Then Begin
   Case Language of
    _English: errrpt('Cannot take address of non-variable');
    {$IFDEF FPC}
@@ -4765,27 +4576,23 @@ Begin
   End;
   Exit;
  End;
-
- { G√©n√©rer le code pour obtenir l'adresse }
+  { GÇnÇrer le code pour obtenir l'adresse }
  ol('leax ' + var_name);
  ol('PUSH BX'); { Empiler l'adresse }
-
- { Configurer lval pour le r√©sultat }
+  { Configurer lval pour le rÇsultat }
  lval.symbol := Integer(sym_ptr);
- lval.indirect := 1; { R√©sultat sur la pile }
+ lval.indirect := 1; { RÇsultat sur la pile }
  lval.typ := cpointer;
  lval.storage := sym_ptr^.storage;
  lval.constant := False;
  lval.value := 0;
-
- { Copier les informations de type et incr√©menter le niveau de pointeur }
+  { Copier les informations de type et incrÇmenter le niveau de pointeur }
  lval.type_info := sym_ptr^.type_info;
  Inc(lval.type_info.pointer_level);
-
  safe_writeln('; Adresse de ' + var_name + ' prise, niveau pointeur: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
-{ Op√©rateur sizeof - calcule la taille d'un type ou d'une expression }
+{ OpÇrateur sizeof - calcule la taille d'un type ou d'une expression }
 Procedure parse_sizeof_expression(var lval: TLVal);
 Var
  type_name: String;
@@ -4794,35 +4601,30 @@ Var
  size_value: Integer;
  expr_lval: TLVal;
 Begin
- safe_writeln('; Op√©rateur sizeof');
-
- { Consommer le mot-cl√© 'sizeof' }
- If not match('sizeof') Then
- Begin
+ safe_writeln('; OpÇrateur sizeof');
+  { Consommer le mot-clef 'sizeof' }
+ If not match('sizeof')Then Begin
   Case Language of
    _English: errrpt('Expected sizeof keyword');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartetes sizeof-Schl√ºsselwort');
    {$ENDIF}
-   Else errrpt('Mot-cl√© sizeof attendu');
+   Else errrpt('Mot-clef sizeof attendu');
   End;
   Exit;
  End;
-
- { Attendre parenth√®se ouvrante }
- If not match('(') Then
- Begin
+  { Attendre parenthäse ouvrante }
+ If not match('(') Then Begin
   Case Language of
    _English: errrpt('Expected ( after sizeof');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach sizeof');
    {$ENDIF}
-   Else errrpt('( attendu apr√®s sizeof');
+   Else errrpt('( attendu apräs sizeof');
   End;
   Exit;
  End;
-
- { Analyser le contenu - peut √™tre un type ou une expression }
+  { Analyser le contenu - peut √™tre un type ou une expression }
  { Sauvegarder la position pour pouvoir revenir en arri√®re }
  blanks;
 

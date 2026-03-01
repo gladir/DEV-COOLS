@@ -291,6 +291,9 @@ Const
  SYM_SOURCE_COMPUTER= 297; { SOURCE-COMPUTER }
  SYM_SPECIAL_NAMES  = 298; { SPECIAL-NAMES }
  SYM_REPOSITORY     = 299; { REPOSITORY }
+ { Supplementaires (> 299) }
+ SYM_FD            = 300; { FD (File Description)   }
+ SYM_COMP_3        = 301; { COMP-3 / COMPUTATIONAL-3 }
 
  { ---------------------------------------------------------------- }
  { Table des symboles : limites                                      }
@@ -337,6 +340,7 @@ Const
  VALTYPE_NULL     = 8;  { NULL/NULLS }
  VALTYPE_TRUE_V   = 9;  { TRUE  (niveau 88) }
  VALTYPE_FALSE_V  = 10; { FALSE (niveau 88) }
+ VALTYPE_ALL      = 11; { ALL literal        }
 
 { ============================================================================ }
 { TYPES STRUCTURES                                                             }
@@ -718,9 +722,13 @@ Begin
    Else If current_token = 'CANCEL'      Then current_symbol := SYM_CANCEL
    Else If current_token = 'CLASS'       Then current_symbol := SYM_CLASS
    Else If current_token = 'CLOSE'       Then current_symbol := SYM_CLOSE
-   Else If current_token = 'COMP'        Then current_symbol := SYM_COMP
-   Else If current_token = 'COMPUTATIONAL' Then current_symbol := SYM_COMPUTATIONAL
-   Else If current_token = 'COMPUTE'     Then current_symbol := SYM_COMPUTE
+   Else If current_token = 'COMP'           Then current_symbol := SYM_COMP
+   Else If current_token = 'COMP-3'         Then current_symbol := SYM_COMP_3
+   Else If current_token = 'COMP-1'         Then current_symbol := SYM_COMP
+   Else If current_token = 'COMP-2'         Then current_symbol := SYM_COMP
+   Else If current_token = 'COMPUTATIONAL'  Then current_symbol := SYM_COMPUTATIONAL
+   Else If current_token = 'COMPUTATIONAL-3' Then current_symbol := SYM_COMP_3
+   Else If current_token = 'COMPUTE'        Then current_symbol := SYM_COMPUTE
    Else If current_token = 'CONFIGURATION' Then current_symbol := SYM_CONFIGURATION
    Else If current_token = 'CONTENT'     Then current_symbol := SYM_CONTENT
    Else If current_token = 'CONTINUE'    Then current_symbol := SYM_CONTINUE_KW
@@ -771,8 +779,9 @@ Begin
    Else If current_token = 'EXTERNAL'    Then current_symbol := SYM_EXTERNAL;
 
   'F':
-   If current_token = 'FALSE'            Then current_symbol := SYM_FALSE_KW
-   Else If current_token = 'FILE'        Then current_symbol := SYM_FILE_SEC
+   If current_token = 'FD'              Then current_symbol := SYM_FD
+   Else If current_token = 'FALSE'      Then current_symbol := SYM_FALSE_KW
+   Else If current_token = 'FILE'       Then current_symbol := SYM_FILE_SEC
    Else If current_token = 'FILE-CONTROL' Then current_symbol := SYM_FILE_CONTROL
    Else If current_token = 'FILE-STATUS' Then current_symbol := SYM_FILE_STATUS
    Else If current_token = 'FILLER'      Then current_symbol := SYM_FILLER
@@ -2253,6 +2262,533 @@ Begin
           ' ASSIGN TO ', file_table[i]^.assign_to);
 End;
 
+{ =====================================================================
+  PARSER - DATA DIVISION
+  ===================================================================== }
+
+{ Lit et reconstruit la chaine PIC a partir des tokens suivants.
+  S'arrete sur un mot-cle de clause ou un point terminal. }
+Function ReadPicString: String;
+Var
+ pic  : String;
+ done : Boolean;
+Begin
+ pic  := '';
+ done := False;
+ Repeat
+  Case current_symbol Of
+   TOK_WORD:
+    Begin
+     { Arret sur mots-cles qui debutent une nouvelle clause }
+     If (current_symbol = SYM_VALUE)    Or (current_symbol = SYM_VALUES)   Or
+        (current_symbol = SYM_USAGE)    Or (current_symbol = SYM_OCCURS)   Or
+        (current_symbol = SYM_REDEFINES) Or (current_symbol = SYM_BLANK)   Or
+        (current_symbol = SYM_IS)       Or (current_symbol = SYM_ARE)      Or
+        (current_symbol = SYM_GLOBAL)   Or (current_symbol = SYM_EXTERNAL) Or
+        TokenIs('JUSTIFIED') Or TokenIs('JUST')  Or
+        TokenIs('SIGN')      Or TokenIs('SYNCHRONIZED') Or TokenIs('SYNC') Then
+      done := True
+     Else
+     Begin
+      pic := pic + current_token;
+      Consume;
+     End;
+    End;
+   TOK_LPAREN : Begin pic := pic + '('; Consume; End;
+   TOK_RPAREN : Begin pic := pic + ')'; Consume; End;
+   TOK_NUMBER : Begin pic := pic + current_token; Consume; End;
+   TOK_PERIOD : done := True;
+   TOK_EOF    : done := True;
+   Else         done := True;
+  End;
+ Until done;
+ ReadPicString := pic;
+End;
+
+{ Analyse la chaine PIC brute (item.pic_str) et remplit les champs
+  data_type, pic_digits, pic_decimals, pic_size, is_signed, byte_size. }
+Procedure AnalyzePicString(Var item : TDataItem);
+Var
+ pic   : String;
+ i, n  : Integer;
+ ch    : Char;
+ afterV: Boolean;
+ base  : Char;
+Begin
+ pic    := item.pic_str;
+ i      := 1;
+ afterV := False;
+ base   := ' ';
+ item.pic_digits   := 0;
+ item.pic_decimals := 0;
+ item.is_signed    := False;
+ { S initial = numerique signe }
+ If (Length(pic) >= 1) And (pic[1] = 'S') Then
+ Begin item.is_signed := True; i := 2; End;
+ While i <= Length(pic) Do
+ Begin
+  ch := pic[i];
+  n  := 1;
+  { Lire le repeteur (n) si '(' suit immediatement }
+  If (i < Length(pic)) And (pic[i + 1] = '(') Then
+  Begin
+   n := 0;
+   i := i + 2; { sauter 'ch' et '(' }
+   While (i <= Length(pic)) And (pic[i] <> ')') Do
+   Begin n := n * 10 + Ord(pic[i]) - 48; i := i + 1; End;
+   { i pointe sur ')' ; l'increment en bas le sautera }
+  End;
+  Case ch Of
+   '9', 'Z', '0', '+', '-', '*':
+    Begin
+     If afterV Then item.pic_decimals := item.pic_decimals + n
+     Else           item.pic_digits   := item.pic_digits   + n;
+     If base = ' ' Then base := '9';
+    End;
+   'X': Begin item.pic_digits := item.pic_digits + n; base := 'X'; End;
+   'A': Begin item.pic_digits := item.pic_digits + n; base := 'A'; End;
+   'V', '.': afterV := True;
+   'P': ; { facteur d'echelle, ignore }
+   Else  ; { B, /, CR, DB, etc. ignore }
+  End;
+  i := i + 1;
+ End;
+ item.pic_size := item.pic_digits + item.pic_decimals;
+ { Determiner le type de donnee }
+ If base = 'X' Then      item.data_type := TYPE_PIC_X
+ Else If base = 'A' Then item.data_type := TYPE_PIC_A
+ Else If item.pic_decimals > 0 Then
+ Begin
+  If item.is_signed Then item.data_type := TYPE_PIC_S9V9
+  Else                   item.data_type := TYPE_PIC_9V9;
+ End
+ Else
+ Begin
+  If item.is_signed Then item.data_type := TYPE_PIC_S9
+  Else                   item.data_type := TYPE_PIC_9;
+ End;
+ item.byte_size := CalcByteSize(item.data_type, item.usage,
+                                item.pic_digits, item.pic_decimals);
+End;
+
+{ Retourne le niveau COBOL du token courant (01..49, 66, 77, 88)
+  ou 0 si ce n'est pas un niveau valide. Ne consomme pas le token. }
+Function PeekLevel: Integer;
+Var
+ v : Integer;
+Begin
+ PeekLevel := 0;
+ If current_symbol <> TOK_NUMBER Then Exit;
+ v := Integer(current_value);
+ If ((v >= 1) And (v <= 49)) Or (v = 66) Or (v = 77) Or (v = 88) Then
+  PeekLevel := v;
+End;
+
+{ Parse les clauses d'un element de donnees deja cree.
+  Modifie directement les champs de item via reference.
+  S'arrete sur le point terminal ou EOF. }
+Procedure ParseDataItemClauses(Var item : TDataItem);
+Begin
+ While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do
+ Begin
+  { ---- PIC / PICTURE [IS] string ---- }
+  If (current_symbol = SYM_PIC) Or (current_symbol = SYM_PICTURE) Then
+  Begin
+   Consume; { PIC ou PICTURE }
+   If current_symbol = SYM_IS Then Consume;
+   item.pic_str := ReadPicString;
+   AnalyzePicString(item);
+  End
+
+  { ---- USAGE [IS] ... ---- }
+  Else If current_symbol = SYM_USAGE Then
+  Begin
+   Consume;
+   If current_symbol = SYM_IS Then Consume;
+   If current_symbol = SYM_DISPLAY Then
+    Begin item.usage := USAGE_DISPLAY; Consume; End
+   Else If (current_symbol = SYM_COMP) Or (current_symbol = SYM_COMPUTATIONAL) Then
+    Begin item.usage := USAGE_COMP; Consume; End
+   Else If (current_symbol = SYM_COMP_3) Or (current_symbol = SYM_PACKED_DECIMAL) Then
+    Begin item.usage := USAGE_COMP_3; Consume; End
+   Else If current_symbol = SYM_BINARY Then
+    Begin item.usage := USAGE_BINARY; Consume; End
+   Else Consume;
+  End
+
+  { ---- COMP / COMP-3 / BINARY / DISPLAY directement (sans USAGE) ---- }
+  Else If (current_symbol = SYM_COMP) Or (current_symbol = SYM_COMPUTATIONAL) Then
+   Begin item.usage := USAGE_COMP; Consume; End
+  Else If (current_symbol = SYM_COMP_3) Or (current_symbol = SYM_PACKED_DECIMAL) Then
+   Begin item.usage := USAGE_COMP_3; Consume; End
+  Else If current_symbol = SYM_BINARY Then
+   Begin item.usage := USAGE_BINARY; Consume; End
+  Else If current_symbol = SYM_DISPLAY Then
+   Begin item.usage := USAGE_DISPLAY; Consume; End
+
+  { ---- OCCURS n [TO m] [TIMES] [DEPENDING ON var] [INDEXED BY ...] ---- }
+  Else If current_symbol = SYM_OCCURS Then
+  Begin
+   Consume;
+   If current_symbol = TOK_NUMBER Then
+   Begin item.occurs_count := Integer(current_value); Consume; End;
+   If current_symbol = SYM_TO Then
+   Begin Consume; If current_symbol = TOK_NUMBER Then Consume; End;
+   If current_symbol = SYM_TIMES Then Consume;
+   If current_symbol = SYM_DEPENDING Then
+   Begin
+    Consume;
+    If current_symbol = SYM_ON Then Consume;
+    If IsIdentifier Then Consume; { nom de variable (resolution differee) }
+   End;
+   If current_symbol = SYM_INDEXED Then
+   Begin
+    Consume;
+    If current_symbol = SYM_BY Then Consume;
+    While IsIdentifier Do Consume;
+   End;
+  End
+
+  { ---- REDEFINES var-name ---- }
+  Else If current_symbol = SYM_REDEFINES Then
+  Begin
+   Consume;
+   If IsIdentifier Then
+   Begin
+    item.redefines_idx := FindDataItem(current_token, current_section);
+    Consume;
+   End;
+  End
+
+  { ---- VALUE [IS] / VALUES [ARE] ... ---- }
+  Else If (current_symbol = SYM_VALUE) Or (current_symbol = SYM_VALUES) Then
+  Begin
+   Consume;
+   If (current_symbol = SYM_IS) Or (current_symbol = SYM_ARE) Then Consume;
+   item.has_value := True;
+   If current_symbol = TOK_STRING Then
+   Begin
+    item.val_type := VALTYPE_STRING; item.val_str := current_token; Consume;
+   End
+   Else If current_symbol = TOK_NUMBER Then
+   Begin
+    item.val_type := VALTYPE_NUMBER;
+    item.val_num := current_value;
+    Consume;
+    { VALUE x THRU y (niveau 88 surtout) }
+    If (current_symbol = SYM_THRU) Or (current_symbol = SYM_THROUGH) Then
+    Begin
+     Consume; item.has_thru := True;
+     If current_symbol = TOK_NUMBER Then
+     Begin item.thru_num := current_value; Consume; End
+     Else If current_symbol = TOK_STRING Then
+     Begin item.thru_str := current_token; Consume; End;
+    End;
+   End
+   Else If (current_symbol = SYM_ZERO)  Or (current_symbol = SYM_ZEROS) Or
+           (current_symbol = SYM_ZEROES) Then
+    Begin item.val_type := VALTYPE_ZERO; Consume; End
+   Else If (current_symbol = SYM_SPACE) Or (current_symbol = SYM_SPACES) Then
+    Begin item.val_type := VALTYPE_SPACE; Consume; End
+   Else If TokenIs('LOW-VALUE') Or TokenIs('LOW-VALUES') Then
+    Begin item.val_type := VALTYPE_LOW; Consume; End
+   Else If TokenIs('HIGH-VALUE') Or TokenIs('HIGH-VALUES') Then
+    Begin item.val_type := VALTYPE_HIGH; Consume; End
+   Else If (current_symbol = SYM_QUOTE_KW) Or (current_symbol = SYM_QUOTES) Then
+    Begin item.val_type := VALTYPE_QUOTE; Consume; End
+   Else If TokenIs('ALL') Then
+   Begin
+    Consume; item.val_type := VALTYPE_ALL;
+    If current_symbol = TOK_STRING Then
+    Begin item.val_str := current_token; Consume; End;
+   End
+   Else If TokenIs('TRUE')  Then Begin item.val_type := VALTYPE_TRUE_V;  Consume; End
+   Else If TokenIs('FALSE') Then Begin item.val_type := VALTYPE_FALSE_V; Consume; End
+   Else Consume;
+  End
+
+  { ---- BLANK WHEN ZERO ---- }
+  Else If current_symbol = SYM_BLANK Then
+  Begin
+   Consume;
+   If current_symbol = SYM_WHEN Then Consume;
+   If (current_symbol = SYM_ZERO) Or (current_symbol = SYM_ZEROS) Or
+      (current_symbol = SYM_ZEROES) Then Consume;
+  End
+
+  { ---- JUSTIFIED / JUST [RIGHT] ---- }
+  Else If TokenIs('JUSTIFIED') Or TokenIs('JUST') Then
+  Begin Consume; If TokenIs('RIGHT') Then Consume; End
+
+  { ---- SIGN [IS] LEADING/TRAILING [SEPARATE [CHARACTER]] ---- }
+  Else If TokenIs('SIGN') Then
+  Begin
+   Consume;
+   If current_symbol = SYM_IS Then Consume;
+   If TokenIs('LEADING') Or TokenIs('TRAILING') Then Consume;
+   If TokenIs('SEPARATE') Then
+   Begin Consume; If TokenIs('CHARACTER') Then Consume; End;
+  End
+
+  { ---- SYNCHRONIZED / SYNC [LEFT/RIGHT] ---- }
+  Else If TokenIs('SYNCHRONIZED') Or TokenIs('SYNC') Then
+  Begin Consume; If TokenIs('LEFT') Or TokenIs('RIGHT') Then Consume; End
+
+  { ---- GLOBAL / EXTERNAL ---- }
+  Else If current_symbol = SYM_GLOBAL   Then Consume
+  Else If current_symbol = SYM_EXTERNAL Then Consume
+
+  { ---- IS / ARE (connecteurs) ---- }
+  Else If (current_symbol = SYM_IS) Or (current_symbol = SYM_ARE) Then Consume
+
+  Else Consume; { clause inconnue, skip }
+
+ End; { While }
+End;
+
+{ Parse les elements de donnees d'une section.
+  section_id   : SECT_xxx en cours.
+  file_idx_in  : index dans file_table pour SECT_FILE (0 sinon). }
+Procedure ParseDataItems(section_id, file_idx_in : Integer);
+Const
+ MAX_STACK = 50;
+Var
+ lev, parent_idx, new_idx : Integer;
+ item_name                : String;
+ item                     : PDataItem;
+ g                        : Integer;
+ level_stack              : Array[1..MAX_STACK] Of Integer;
+ parent_stack             : Array[1..MAX_STACK] Of Integer;
+ stack_top                : Integer;
+Begin
+ stack_top := 0;
+ Repeat
+  lev := PeekLevel;
+  If lev = 0 Then Break;
+  Consume; { numero de niveau }
+
+  { Nom de l'article ou FILLER }
+  If current_symbol = SYM_FILLER Then
+   Begin item_name := 'FILLER'; Consume; End
+  Else If IsIdentifier Then
+   Begin item_name := current_token; Consume; End
+  Else
+  Begin
+   Error('Nom attendu apres le niveau');
+   SkipToPeriod;
+   If current_symbol = TOK_PERIOD Then Consume;
+   Continue;
+  End;
+
+  { Trouver le parent dans la pile de niveaux }
+  parent_idx := 0;
+  If stack_top > 0 Then
+  Begin
+   While (stack_top > 0) And (level_stack[stack_top] >= lev) Do
+    stack_top := stack_top - 1;
+   If stack_top > 0 Then parent_idx := parent_stack[stack_top];
+  End;
+
+  { Creer l'article (TYPE_GROUP par defaut ; modifie par clause PIC) }
+  new_idx := AddDataItem(item_name, lev, TYPE_GROUP, section_id);
+  If new_idx = 0 Then Exit;
+
+  item           := data_table[new_idx];
+  item^.parent   := parent_idx;
+  item^.file_idx := file_idx_in;
+  item^.defined  := True;
+  If lev = 88 Then item^.data_type := TYPE_COND_88;
+
+  { Parser les clauses }
+  ParseDataItemClauses(item^);
+
+  { Recalculer byte_size avec l'USAGE definitif (peut changer si USAGE suit PIC) }
+  If item^.data_type <> TYPE_GROUP Then
+   item^.byte_size := CalcByteSize(item^.data_type, item^.usage,
+                                    item^.pic_digits, item^.pic_decimals);
+
+  { is_group = pas de clause PIC }
+  item^.is_group := (item^.data_type = TYPE_GROUP);
+
+  { Marquer le parent comme groupe (sauf si enfant de niveau 88 = condition) }
+  If (parent_idx > 0) And (lev <> 88) Then data_table[parent_idx]^.is_group := True;
+
+  { Empiler ce niveau }
+  If stack_top < MAX_STACK Then
+  Begin
+   stack_top := stack_top + 1;
+   level_stack[stack_top]  := lev;
+   parent_stack[stack_top] := new_idx;
+  End;
+
+  If current_symbol = TOK_PERIOD Then Consume;
+ Until (current_symbol = TOK_EOF) Or (PeekLevel = 0);
+
+ { Recalculer les tailles des groupes STRUCTURELS (du bas vers le haut) }
+ For g := data_count DownTo 1 Do
+  If (data_table[g]^.section = section_id) And data_table[g]^.is_group
+     And (data_table[g]^.level <> 88) Then
+   RecalcGroupSize(g);
+End;
+
+{ Parse un descripteur FD.
+  Syntaxe : FD fd-name [clauses...] .  puis les records 01+. }
+Procedure ParseFDEntry;
+Var
+ fd_name : String;
+ fi      : Integer;
+Begin
+ If Not IsIdentifier Then
+ Begin
+  Error('Nom de fichier attendu apres FD');
+  SkipToPeriod;
+  If current_symbol = TOK_PERIOD Then Consume;
+  Exit;
+ End;
+ fd_name := UpperStr(current_token);
+ Consume;
+
+ fi := FindFileEntry(fd_name);
+ If fi = 0 Then
+  Warning('FD ' + fd_name + ' non declare dans FILE-CONTROL');
+
+ { Clauses FD : parcourir jusqu'au point }
+ While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do
+ Begin
+  { LABEL RECORD IS STANDARD/OMITTED }
+  If TokenIs('LABEL') Then
+  Begin
+   Consume;
+   If current_symbol = SYM_RECORD Then Consume;
+   If current_symbol = SYM_IS     Then Consume;
+   If TokenIs('STANDARD') Or (current_symbol = SYM_STANDARD) Or
+      TokenIs('OMITTED')  Then Consume;
+  End
+  { RECORD CONTAINS n [TO m] CHARACTERS }
+  Else If current_symbol = SYM_RECORD Then
+  Begin
+   Consume;
+   If TokenIs('CONTAINS') Then Consume;
+   If current_symbol = TOK_NUMBER Then Consume;
+   If current_symbol = SYM_TO Then
+   Begin Consume; If current_symbol = TOK_NUMBER Then Consume; End;
+   If TokenIs('CHARACTER') Or TokenIs('CHARACTERS') Then Consume;
+  End
+  { BLOCK CONTAINS n [TO m] RECORDS/CHARACTERS }
+  Else If TokenIs('BLOCK') Then
+  Begin
+   Consume;
+   If TokenIs('CONTAINS') Then Consume;
+   If current_symbol = TOK_NUMBER Then Consume;
+   If current_symbol = SYM_TO Then
+   Begin Consume; If current_symbol = TOK_NUMBER Then Consume; End;
+   If (current_symbol = SYM_RECORD) Or TokenIs('RECORDS') Or
+      TokenIs('CHARACTER') Or TokenIs('CHARACTERS') Then Consume;
+  End
+  { DATA RECORD IS / DATA RECORDS ARE name... }
+  Else If current_symbol = SYM_DATA Then
+  Begin
+   Consume;
+   If (current_symbol = SYM_RECORD) Or TokenIs('RECORDS') Then Consume;
+   If (current_symbol = SYM_IS) Or (current_symbol = SYM_ARE) Then Consume;
+   While IsIdentifier Do Consume;
+  End
+  { RECORDING MODE IS F/V/U/S }
+  Else If TokenIs('RECORDING') Then
+  Begin
+   Consume;
+   If TokenIs('MODE') Then Consume;
+   If current_symbol = SYM_IS Then Consume;
+   Consume;
+  End
+  Else Consume;
+ End;
+ If current_symbol = TOK_PERIOD Then Consume;
+
+ { Parser les records de ce FD (niveaux 01+) }
+ ParseDataItems(SECT_FILE, fi);
+End;
+
+{ Parse la FILE SECTION.
+  Appele apres avoir consomme 'FILE SECTION .' }
+Procedure ParseFileSection;
+Begin
+ WriteLn('INFO: Parsing FILE SECTION...');
+ While current_symbol = SYM_FD Do
+ Begin
+  Consume; { FD }
+  ParseFDEntry;
+ End;
+ WriteLn('INFO: FILE SECTION terminee. Items total: ', data_count);
+End;
+
+{ Parse la DATA DIVISION.
+  En entree : current_symbol = SYM_DATA.
+  Consomme DATA DIVISION . puis dispatch sur les sections. }
+Procedure ParseDataDivision;
+Var
+ done : Boolean;
+Begin
+ Consume; { DATA }
+ If current_symbol = SYM_DIVISION Then Consume;
+ If current_symbol = TOK_PERIOD   Then Consume;
+ WriteLn('INFO: Parsing DATA DIVISION...');
+ done := False;
+ Repeat
+  { FILE SECTION }
+  If current_symbol = SYM_FILE_SEC Then
+  Begin
+   Consume;
+   If current_symbol = SYM_SECTION Then Consume;
+   If current_symbol = TOK_PERIOD  Then Consume;
+   current_section := SECT_FILE;
+   ParseFileSection;
+  End
+  { WORKING-STORAGE SECTION }
+  Else If current_symbol = SYM_WORKING_STORAGE Then
+  Begin
+   Consume;
+   If current_symbol = SYM_SECTION Then Consume;
+   If current_symbol = TOK_PERIOD  Then Consume;
+   current_section := SECT_WORKING_STORAGE;
+   WriteLn('INFO: Parsing WORKING-STORAGE SECTION...');
+   ParseDataItems(SECT_WORKING_STORAGE, 0);
+   WriteLn('INFO: WORKING-STORAGE terminee. Items total: ', data_count);
+  End
+  { LOCAL-STORAGE SECTION }
+  Else If current_symbol = SYM_LOCAL_STORAGE Then
+  Begin
+   Consume;
+   If current_symbol = SYM_SECTION Then Consume;
+   If current_symbol = TOK_PERIOD  Then Consume;
+   current_section := SECT_LOCAL_STORAGE;
+   WriteLn('INFO: Parsing LOCAL-STORAGE SECTION...');
+   ParseDataItems(SECT_LOCAL_STORAGE, 0);
+   WriteLn('INFO: LOCAL-STORAGE terminee. Items total: ', data_count);
+  End
+  { LINKAGE SECTION }
+  Else If current_symbol = SYM_LINKAGE Then
+  Begin
+   Consume;
+   If current_symbol = SYM_SECTION Then Consume;
+   If current_symbol = TOK_PERIOD  Then Consume;
+   current_section := SECT_LINKAGE;
+   WriteLn('INFO: Parsing LINKAGE SECTION...');
+   ParseDataItems(SECT_LINKAGE, 0);
+   WriteLn('INFO: LINKAGE terminee. Items total: ', data_count);
+  End
+  { PROCEDURE DIVISION ou fin de fichier = on sort }
+  Else If (current_symbol = SYM_PROCEDURE) Or (current_symbol = TOK_EOF) Then
+   done := True
+  Else
+  Begin
+   Warning('Section DATA DIVISION inconnue: ' + current_token);
+   Consume;
+  End;
+ Until done;
+ WriteLn('INFO: DATA DIVISION terminee. Elements declares: ', data_count);
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn(VERSION, ' - Compilateur COBOL pour 8086/8088');
@@ -2353,7 +2889,11 @@ Begin
  If current_symbol = SYM_ENVIRONMENT Then
   ParseEnvironmentDivision;
 
- { TODO: ParseDataDivision, ParseProcedureDivision }
+ { DATA DIVISION }
+ If current_symbol = SYM_DATA Then
+  ParseDataDivision;
+
+ { TODO: ParseProcedureDivision }
 
  If opt_dump_sym Then DumpSymbolTable;
 
