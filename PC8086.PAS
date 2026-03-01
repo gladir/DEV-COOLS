@@ -48,25 +48,26 @@ Const
  SYM_READ = 22;
  SYM_READLN = 23;
  SYM_INTERRUPT = 24;
+ SYM_RECORD = 25;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 25;      { = }
- SYM_NOTEQUAL = 26;   { <> }
- SYM_LESS = 27;       { < }
- SYM_GREATER = 28;    { > }
- SYM_LESSEQ = 29;     { <= }
- SYM_GREATEREQ = 30;  { >= }
+ SYM_EQUAL = 26;      { = }
+ SYM_NOTEQUAL = 27;   { <> }
+ SYM_LESS = 28;       { < }
+ SYM_GREATER = 29;    { > }
+ SYM_LESSEQ = 30;     { <= }
+ SYM_GREATEREQ = 31;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 31;       { + }
- SYM_MINUS = 32;      { - }
- SYM_MULTIPLY = 33;   { * }
- SYM_DIVIDE = 34;     { / }
+ SYM_PLUS = 32;       { + }
+ SYM_MINUS = 33;      { - }
+ SYM_MULTIPLY = 34;   { * }
+ SYM_DIVIDE = 35;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 35;        { AND }
- SYM_OR = 36;         { OR }
- SYM_XOR = 37;        { XOR }
+ SYM_AND = 36;        { AND }
+ SYM_OR = 37;         { OR }
+ SYM_XOR = 38;        { XOR }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -76,6 +77,7 @@ Const
  TYPE_CHAR = 5;
  TYPE_BOOLEAN = 6;
  TYPE_REAL = 7;
+ TYPE_RECORD = 8;
 
  { Classes de stockage }
  STORAGE_GLOBAL = 1;
@@ -95,6 +97,8 @@ Type
   defined: Boolean;
   return_type: Integer;      { Type de retour pour les fonctions }
   is_function: Boolean;      { Indicateur fonction vs procédure }
+  record_size: Integer;      { Taille totale du record }
+  field_count: Integer;      { Nombre de champs dans le record }
  End;
  
  { Pointeur vers un symbole }
@@ -293,6 +297,7 @@ Begin
  Else If current_token = 'WRITELN' Then current_symbol := SYM_WRITELN
  Else If current_token = 'READ' Then current_symbol := SYM_READ
  Else If current_token = 'READLN' Then current_symbol := SYM_READLN
+ Else If current_token = 'RECORD' Then current_symbol := SYM_RECORD
  Else If current_token = 'AND' Then current_symbol := SYM_AND
  Else If current_token = 'OR' Then current_symbol := SYM_OR
  Else If current_token = 'XOR' Then current_symbol := SYM_XOR
@@ -499,6 +504,8 @@ Begin
   defined := False;
   return_type := TYPE_INTEGER;  { Par défaut }
   is_function := False;
+  record_size := 0;
+  field_count := 0;
  End;
 
  AddSymbol := symbol_count;
@@ -530,6 +537,8 @@ Begin
   defined := True;
   return_type := return_type;
   is_function := True;
+  record_size := 0;
+  field_count := 0;
  End;
 
  AddFunction := symbol_count;
@@ -561,6 +570,8 @@ Begin
   defined := True;
   return_type := TYPE_INTEGER; { Pas utilisé }
   is_function := False; { Procédure, pas fonction }
+  record_size := 0;
+  field_count := 0;
  End;
 
  AddProcedure := symbol_count;
@@ -592,9 +603,81 @@ Begin
   defined := True;
   return_type := TYPE_INTEGER; { Pas utilisé }
   is_function := False; { Procédure d'interruption, pas fonction }
+  record_size := 0;
+  field_count := 0;
  End;
 
  AddInterrupt := symbol_count;
+End;
+
+{ Ajouter un type RECORD à la table des symboles }
+Function AddRecord(name: String; size: Integer): Integer;
+Var
+ upper_name: String;
+Begin
+ If symbol_count >= MAX_SYMBOLS Then
+ Begin
+  Error('Table des symboles pleine');
+  AddRecord := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(name);
+ Inc(symbol_count);
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
+ Begin
+  name := upper_name;
+  symbol_type := SYM_TYPE;
+  data_type := TYPE_RECORD;
+  storage_class := STORAGE_GLOBAL;
+  offset := 0;
+  value := 0;
+  defined := True;
+  return_type := TYPE_INTEGER; { Pas utilisé }
+  is_function := False;
+  record_size := size;
+  field_count := 0;
+ End;
+
+ AddRecord := symbol_count;
+End;
+
+{ Ajouter un champ de RECORD à la table des symboles }
+Function AddRecordField(field_name: String; field_type: Integer; record_index: Integer; field_offset: Integer): Integer;
+Var
+ upper_name: String;
+Begin
+ If symbol_count >= MAX_SYMBOLS Then
+ Begin
+  Error('Table des symboles pleine');
+  AddRecordField := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(field_name);
+ Inc(symbol_count);
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
+ Begin
+  name := upper_name;
+  symbol_type := SYM_VAR; { Les champs sont traités comme des variables }
+  data_type := field_type;
+  storage_class := STORAGE_PARAMETER; { Utilisé pour indiquer que c'est un champ }
+  offset := field_offset;
+  value := record_index; { Index du record parent }
+  defined := True;
+  return_type := TYPE_INTEGER;
+  is_function := False;
+  record_size := 0;
+  field_count := 0;
+ End;
+
+ { Incrémenter le nombre de champs du record parent }
+ If (record_index > 0) and (record_index <= symbol_count) Then
+  Inc(symbol_table[record_index]^.field_count);
+
+ AddRecordField := symbol_count;
 End;
 
 { ============================================================================ }
@@ -683,6 +766,9 @@ End;
 
 { Générer la déclaration d'une variable }
 Procedure GenerateVariableDeclaration(var_name: String; var_type: Integer);
+Var
+ type_index: Integer;
+ record_size: Integer;
 Begin
  If not data_segment Then
  Begin
@@ -695,6 +781,13 @@ Begin
   TYPE_BYTE, TYPE_CHAR: EmitLine(var_name + ' DB ?');
   TYPE_STRING: EmitLine(var_name + ' DB 256 DUP(?)');
   TYPE_BOOLEAN: EmitLine(var_name + ' DB ?');
+  TYPE_RECORD: 
+   Begin
+    { Chercher la taille du record dans la table des symboles }
+    type_index := FindSymbol(var_name); { Ceci ne fonctionnera pas, il faudrait passer le type }
+    { Pour l'instant, utiliser une taille par défaut }
+    EmitLine(var_name + ' DB 64 DUP(?) ; Record (taille estimée)');
+   End;
  Else
   EmitLine(var_name + ' DW ?'); { Par défaut }
  End;
@@ -1889,8 +1982,15 @@ Begin
    Else If type_name = 'BOOLEAN' Then var_type := TYPE_BOOLEAN
    Else
    Begin
-    Error('Type inconnu: ' + type_name);
-    var_type := TYPE_INTEGER;
+    { Vérifier si c'est un type RECORD défini }
+    sym_index := FindSymbol(type_name);
+    If (sym_index > 0) and (symbol_table[sym_index]^.data_type = TYPE_RECORD) Then
+     var_type := TYPE_RECORD
+    Else
+    Begin
+     Error('Type inconnu: ' + type_name);
+     var_type := TYPE_INTEGER;
+    End;
    End;
    NextToken;
   End
@@ -1913,6 +2013,151 @@ Begin
    NextToken
   Else
    Error('Attendu ; après déclaration de variable');
+ End;
+End;
+
+{ Parser les déclarations de types }
+Procedure ParseTypeDeclarations;
+Var
+ type_name: String;
+ record_index: Integer;
+ field_names: Array[1..50] of String;
+ field_types: Array[1..50] of Integer;
+ field_count: Integer;
+ field_type: Integer;
+ type_name_field: String;
+ i: Integer;
+ current_offset: Integer;
+Begin
+ NextToken; { Consommer TYPE }
+
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
+ Begin
+  { Lire le nom du type }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   type_name := current_token;
+   NextToken;
+  End
+  Else
+  Begin
+   Error('Attendu nom de type');
+   Break;
+  End;
+
+  { Attendre le signe = }
+  If current_token = '=' Then
+   NextToken
+  Else
+   Error('Attendu = après nom de type');
+
+  { Vérifier si c'est un RECORD }
+  If Accept(SYM_RECORD) Then
+  Begin
+   NextToken; { Consommer RECORD }
+   
+   { Créer le type record dans la table des symboles }
+   record_index := AddRecord(type_name, 0); { Taille calculée plus tard }
+   current_offset := 0;
+
+   { Lire les champs du record }
+   While not Accept(SYM_END) and (current_char <> #0) do
+   Begin
+    { Lire les noms de champs }
+    field_count := 0;
+    Repeat
+     If current_symbol = SYM_UNKNOWN Then
+     Begin
+      Inc(field_count);
+      field_names[field_count] := current_token;
+      NextToken;
+     End
+     Else
+     Begin
+      Error('Attendu nom de champ');
+      Break;
+     End;
+
+     If current_token = ',' Then
+      NextToken
+     Else
+      Break;
+    Until False;
+
+    { Attendre le deux-points }
+    If current_token = ':' Then
+     NextToken
+    Else
+     Error('Attendu : après nom de champ');
+
+    { Lire le type du champ }
+    If current_symbol = SYM_UNKNOWN Then
+    Begin
+     type_name_field := UpperCase(current_token);
+     If type_name_field = 'INTEGER' Then field_type := TYPE_INTEGER
+     Else If type_name_field = 'BYTE' Then field_type := TYPE_BYTE
+     Else If type_name_field = 'WORD' Then field_type := TYPE_WORD
+     Else If type_name_field = 'STRING' Then field_type := TYPE_STRING
+     Else If type_name_field = 'CHAR' Then field_type := TYPE_CHAR
+     Else If type_name_field = 'BOOLEAN' Then field_type := TYPE_BOOLEAN
+     Else
+     Begin
+      Error('Type de champ inconnu: ' + type_name_field);
+      field_type := TYPE_INTEGER;
+     End;
+     NextToken;
+    End
+    Else
+    Begin
+     Error('Attendu type de champ');
+     field_type := TYPE_INTEGER;
+    End;
+
+    { Ajouter les champs à la table des symboles }
+    For i := 1 to field_count do
+    Begin
+     AddRecordField(field_names[i], field_type, record_index, current_offset);
+     
+     { Calculer l'offset suivant }
+     Case field_type of
+      TYPE_INTEGER, TYPE_WORD: Inc(current_offset, 2);
+      TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN: Inc(current_offset, 1);
+      TYPE_STRING: Inc(current_offset, 256);
+     Else
+      Inc(current_offset, 2);
+     End;
+    End;
+
+    { Attendre le point-virgule }
+    If current_token = ';' Then
+     NextToken
+    Else If not Accept(SYM_END) Then
+     Error('Attendu ; après déclaration de champ');
+   End;
+
+   { Consommer END }
+   If Accept(SYM_END) Then
+    NextToken
+   Else
+    Error('Attendu END après déclaration de RECORD');
+
+   { Mettre à jour la taille du record }
+   If record_index > 0 Then
+    symbol_table[record_index]^.record_size := current_offset;
+  End
+  Else
+  Begin
+   { Types simples non supportés pour l'instant }
+   Error('Seuls les types RECORD sont supportés');
+   While (current_token <> ';') and (current_char <> #0) do
+    NextToken;
+  End;
+
+  { Attendre le point-virgule final }
+  If current_token = ';' Then
+   NextToken
+  Else
+   Error('Attendu ; après déclaration de type');
  End;
 End;
 
@@ -2122,6 +2367,10 @@ End;
 { Parser un bloc Pascal }
 Procedure ParseBlock;
 Begin
+ { Gérer les déclarations TYPE }
+ If Accept(SYM_TYPE) Then
+  ParseTypeDeclarations;
+
  { Gérer les déclarations VAR }
  If Accept(SYM_VAR) Then
   ParseVarDeclarations;

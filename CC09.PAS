@@ -5502,28 +5502,23 @@ Begin
  saved_lptr := lptr;  { Save current position }
  lptr := increment_start;  { Set to increment start }
  gch;  { Refresh current character }
- If increment_end > increment_start Then
- Begin
-  parse_assignment_statement;  { Parse and execute increment }
+ If increment_end > increment_start Then Begin
+  parse_assignment_statement;  { Analyse et ex‚cute l'incr‚mentation }
  End;
- lptr := saved_lptr;  { Restore position }
- gch;  { Refresh current character }
-
+ lptr := saved_lptr;  { Position de restauration }
+ gch;  { Rafraichie le caractŠre courant }
  ot('lbra ');
  printlabel(condition_label);
  nl;
-
- { Condition check label }
+  { V‚rifie la condition d'‚tiquette }
  prelabel(condition_label);
- safe_writeln('; FOR condition check');
-
- { Re-parse condition from saved position }
- saved_lptr := lptr;  { Save current position }
- lptr := condition_start;  { Set to condition start }
- gch;  { Refresh current character }
- If condition_end > condition_start Then
- Begin
-  expression_bool(lval);  { Parse condition }
+ safe_writeln('; condition de v‚rification FOR');
+  { Reanalyse la condition de la position de sauvegarde }
+ saved_lptr := lptr;  { Sauvegarde la position courante }
+ lptr := condition_start;  { Fixe au d‚but de la condition }
+ gch;  { Rafraichie le caractŠre courant }
+ If condition_end > condition_start Then Begin
+  expression_bool(lval);  { Analyse la condition }
  End
  Else
  Begin
