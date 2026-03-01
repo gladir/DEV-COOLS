@@ -2789,6 +2789,1645 @@ Begin
  WriteLn('INFO: DATA DIVISION terminee. Elements declares: ', data_count);
 End;
 
+{ ======================================================================
+  GENERATEUR DE CODE - CONSTANTES OPERANDES
+  ====================================================================== }
+Const
+ OP_NONE    = 0;
+ OP_LITNUM  = 1;  { Litteral numerique }
+ OP_LITSTR  = 2;  { Litteral chaine    }
+ OP_VAR     = 3;  { Variable COBOL     }
+ OP_ZERO    = 4;  { ZERO/ZEROS/ZEROES  }
+ OP_SPACE   = 5;  { SPACE/SPACES       }
+ OP_HIGH    = 6;  { HIGH-VALUE(S)      }
+ OP_LOW     = 7;  { LOW-VALUE(S)       }
+ OP_QUOTE_V = 8;  { QUOTE/QUOTES       }
+ MAX_NEST   = 32; { Profondeur max imbrication }
+
+{ ======================================================================
+  GENERATEUR DE CODE - VARIABLES GLOBALES
+  ====================================================================== }
+Var
+ label_counter : Integer;   { Compteur labels uniques }
+ gen_enabled   : Boolean;   { Active si generation ASM demandee }
+ lit_counter   : Integer;   { Compteur litteraux inline CODE }
+ first_para_lbl: String;    { Label ASM du 1er paragraphe }
+ cur_para_name : String;    { Nom COBOL du paragraphe courant }
+ need_ret      : Boolean;   { Vrai si on doit emettre RET avant prochain label }
+
+{ ======================================================================
+  PRIMITIVES D'EMISSION ASM
+  ====================================================================== }
+
+{ Helper : LongInt -> String }
+Function ItoS(n: LongInt): String;
+Var s: String;
+Begin Str(n, s); ItoS := s; End;
+
+{ Helper : Integer -> String }
+Function ItoSI(n: Integer): String;
+Var s: String;
+Begin Str(n, s); ItoSI := s; End;
+
+{ Sanitize a string for ASM DB : double the apostrophes (MASM format) }
+Function AsmStr(Const s: String): String;
+Var i: Integer; r: String;
+Begin
+ r := '';
+ For i := 1 to Length(s) do
+  If s[i] = '''' Then r := r + ''''''
+  Else r := r + s[i];
+ AsmStr := r;
+End;
+
+Procedure Emit(Const s: String);
+Begin If gen_enabled Then WriteLn(output_file, s); End;
+
+Procedure EmitLabel(Const lbl: String);
+Begin If gen_enabled Then WriteLn(output_file, lbl, ':'); End;
+
+Procedure EmitComment(Const s: String);
+Begin If gen_enabled Then WriteLn(output_file, '        ; ', s); End;
+
+Procedure EmitBlank;
+Begin If gen_enabled Then WriteLn(output_file); End;
+
+Function NewLabel: String;
+Var s: String;
+Begin
+ Inc(label_counter);
+ s := ItoSI(label_counter);
+ While Length(s) < 4 do s := '0' + s;
+ NewLabel := '_CBL' + s;
+End;
+
+{ ======================================================================
+  PARSEUR D'OPERANDES
+  ====================================================================== }
+{ Remplit op_kind / op_str (text) / op_num (valeur si litnum) / op_idx (index data_table).
+  Consomme les tokens de l'operande. }
+Procedure ParseOperand(Var op_kind: Integer; Var op_str: String;
+                        Var op_num: LongInt; Var op_idx: Integer);
+Begin
+ op_kind := OP_NONE; op_str := ''; op_num := 0; op_idx := 0;
+ If current_symbol = TOK_STRING Then
+  Begin op_kind := OP_LITSTR; op_str := current_token; Consume; End
+ Else If current_symbol = TOK_NUMBER Then
+  Begin
+   op_kind := OP_LITNUM; op_num := current_value;
+   op_str  := ItoS(current_value); Consume;
+  End
+ Else If (current_symbol = SYM_ZERO) Or (current_symbol = SYM_ZEROS) Or
+         (current_symbol = SYM_ZEROES) Then
+  Begin op_kind := OP_ZERO; op_str := '0'; Consume; End
+ Else If (current_symbol = SYM_SPACE) Or (current_symbol = SYM_SPACES) Then
+  Begin op_kind := OP_SPACE; op_str := ' '; Consume; End
+ Else If (current_symbol = SYM_HIGH_VALUE) Or (current_symbol = SYM_HIGH_VALUES) Then
+  Begin op_kind := OP_HIGH; Consume; End
+ Else If (current_symbol = SYM_LOW_VALUE) Or (current_symbol = SYM_LOW_VALUES) Then
+  Begin op_kind := OP_LOW; Consume; End
+ Else If (current_symbol = SYM_QUOTE_KW) Or (current_symbol = SYM_QUOTES) Then
+  Begin op_kind := OP_QUOTE_V; op_str := '"'; Consume; End
+ Else If IsIdentifier Or (current_symbol = SYM_FILLER) Then
+ Begin
+  op_kind := OP_VAR; op_str := current_token;
+  op_idx  := FindDataItem(current_token, SECT_NONE);
+  Consume;
+  { Qualificateur OF / IN }
+  If TokenIs('OF') Or TokenIs('IN') Then Begin Consume; If IsIdentifier Then Consume; End;
+  { Indice tableau (var(idx)) }
+  If current_symbol = TOK_LPAREN Then
+  Begin
+   Consume;
+   While (current_symbol <> TOK_RPAREN) And (current_symbol <> TOK_EOF) Do Consume;
+   If current_symbol = TOK_RPAREN Then Consume;
+  End;
+ End;
+End;
+
+{ Retourner etiquette ASM d'une variable (ou ?? si non trouvee) }
+Function VarAsmRef(idx: Integer): String;
+Begin
+ If (idx < 1) Or (idx > data_count) Then VarAsmRef := '_UNDEF_'
+ Else VarAsmRef := data_table[idx]^.asm_label;
+End;
+
+{ Taille en octets d'une variable (min 1) }
+Function VarSz(idx: Integer): Integer;
+Begin
+ If (idx < 1) Or (idx > data_count) Then VarSz := 1
+ Else If data_table[idx]^.byte_size <= 0 Then VarSz := 1
+ Else VarSz := data_table[idx]^.byte_size;
+End;
+
+{ Vrai si token est un verbe COBOL (debut de nouvelle instruction) }
+Function IsVerb: Boolean;
+Begin
+ IsVerb :=
+  (current_symbol = SYM_MOVE)      Or (current_symbol = SYM_ADD)         Or
+  (current_symbol = SYM_SUBTRACT)  Or (current_symbol = SYM_MULTIPLY_V)  Or
+  (current_symbol = SYM_DIVIDE_V)  Or (current_symbol = SYM_COMPUTE)     Or
+  (current_symbol = SYM_IF)        Or (current_symbol = SYM_EVALUATE)    Or
+  (current_symbol = SYM_PERFORM)   Or (current_symbol = SYM_DISPLAY)     Or
+  (current_symbol = SYM_ACCEPT)    Or (current_symbol = SYM_OPEN)        Or
+  (current_symbol = SYM_CLOSE)     Or (current_symbol = SYM_READ)        Or
+  (current_symbol = SYM_WRITE)     Or (current_symbol = SYM_REWRITE)     Or
+  (current_symbol = SYM_DELETE_KW) Or (current_symbol = SYM_STOP)        Or
+  (current_symbol = SYM_GO)        Or (current_symbol = SYM_CALL)        Or
+  (current_symbol = SYM_EXIT)      Or (current_symbol = SYM_CONTINUE_KW) Or
+  (current_symbol = SYM_INITIALIZE)Or (current_symbol = SYM_INSPECT)     Or
+  (current_symbol = SYM_STRING_KW) Or (current_symbol = SYM_UNSTRING)    Or
+  (current_symbol = SYM_CANCEL);
+End;
+
+{ ======================================================================
+  GENERATION SEGMENT DE DONNEES (Todo 19-20)
+  ====================================================================== }
+Procedure GenDataSegment;
+Var
+ i: Integer; p: PDataItem;
+ fill_byte, init_val, szs: String; sz: Integer;
+Begin
+ Emit('.DATA');
+ EmitBlank;
+ Emit('; === WORKING-STORAGE SECTION ===');
+ For i := 1 to data_count do
+ Begin
+  p := data_table[i];
+  If (p^.section <> SECT_WORKING_STORAGE) And (p^.section <> SECT_LINKAGE) And
+     (p^.section <> SECT_LOCAL_STORAGE) Then Continue;
+  If p^.level = 88 Then Continue;
+  sz := p^.byte_size; If sz <= 0 Then sz := 1;
+  { Valeur initiale }
+  init_val := '';
+  If p^.has_value Then
+  Begin
+   Case p^.val_type Of
+    VALTYPE_ZERO:
+     If (p^.data_type = TYPE_PIC_X) Or (p^.data_type = TYPE_PIC_A) Then
+      init_val := 'DUP(20h)' Else init_val := 'DUP(30h)';
+    VALTYPE_SPACE:  init_val := 'DUP(20h)';
+    VALTYPE_HIGH:   init_val := 'DUP(0FFh)';
+    VALTYPE_LOW:    init_val := 'DUP(0)';
+    VALTYPE_NUMBER:
+    Begin
+     Str(p^.val_num, szs);
+     { Generer la valeur comme DB sequence }
+     init_val := 'DUP(30h)'; { defaut, valeur precise en DATA init  }
+    End;
+   Else init_val := '';
+   End;
+  End;
+  If init_val = '' Then
+  Begin
+   If (p^.data_type = TYPE_PIC_9) Or (p^.data_type = TYPE_PIC_S9) Or
+      (p^.data_type = TYPE_PIC_9V9) Or (p^.data_type = TYPE_PIC_S9V9) Then
+    init_val := 'DUP(30h)' Else init_val := 'DUP(20h)';
+  End;
+  Str(sz, szs);
+  Emit('    ' + PadR(p^.asm_label, 24) + 'DB  ' + szs + ' ' + init_val +
+       '  ; ' + p^.name + ' PIC ' + p^.pic_str);
+ End;
+ EmitBlank;
+ { FILE SECTION - buffers de records niveau 01 }
+ If file_count > 0 Then
+ Begin
+  Emit('; === FILE SECTION ===');
+  For i := 1 to data_count do
+  Begin
+   p := data_table[i];
+   If (p^.section <> SECT_FILE) Or (p^.level <> 1) Then Continue;
+   sz := p^.byte_size; If sz <= 0 Then sz := 80;
+   Str(sz, szs);
+   Emit('    ' + PadR(p^.asm_label, 24) + 'DB  ' + szs + ' DUP(20h)  ; ' + p^.name);
+  End;
+  EmitBlank;
+  Emit('; === FILE HANDLES ===');
+  For i := 1 to file_count do
+  Begin
+   Str(i, szs);
+   Emit('    ' + PadR('_FH_' + ItoSI(i), 24) + 'DW  0FFFFh  ; HANDLE ' + file_table[i]^.name);
+   Emit('    ' + PadR('_FN_' + ItoSI(i), 24) + 'DB  ''' + file_table[i]^.assign_to + ''', 0  ; ' + file_table[i]^.assign_to);
+  End;
+  EmitBlank;
+ End;
+ Emit('; === INTERNAL BUFFERS ===');
+ Emit('    ' + PadR('_CRLF',24)     + 'DB  13, 10, ''$''');
+ Emit('    ' + PadR('_INPUTBUF',24) + 'DB  82, 0, 80 DUP(0)');
+ Emit('    ' + PadR('_NUMBUF',24)   + 'DB  20 DUP(30h), ''$''');
+ EmitBlank;
+End;
+
+{ ======================================================================
+  GENERATION EN-TETE + FOOTER (Todo 18, 21)
+  ====================================================================== }
+Procedure GenHeader;
+Begin
+ Emit('; ----------------------------------------------------------------');
+ Emit('; Generated by COBOL86 V1.0');
+ Emit('; Source  : ' + source_filename);
+ Emit('; Program : ' + program_name);
+ Emit('; ----------------------------------------------------------------');
+ EmitBlank;
+ Emit('        .MODEL SMALL');
+ Emit('        .STACK 256');
+ EmitBlank;
+ GenDataSegment;
+ EmitBlank;
+ Emit('.CODE');
+ EmitBlank;
+End;
+
+Procedure GenFooter;
+Begin
+ EmitBlank;
+ Emit('END START');
+End;
+
+{ ======================================================================
+  GENERATION RUNTIME HELPERS (Todo 24)
+  ====================================================================== }
+Procedure GenRuntimeHelpers;
+Begin
+ EmitBlank;
+ Emit('; ----------------------------------------------------------------');
+ Emit('; RUNTIME HELPERS');
+ Emit('; ----------------------------------------------------------------');
+ EmitBlank;
+ Emit('_DISP_STR:');
+ Emit('        MOV     AH, 09h');
+ Emit('        INT     21h');
+ Emit('        RET');
+ EmitBlank;
+ Emit('_DISP_CRLF:');
+ Emit('        LEA     DX, _CRLF');
+ Emit('        MOV     AH, 09h');
+ Emit('        INT     21h');
+ Emit('        RET');
+ EmitBlank;
+ Emit('        ; _DISP_VAR: SI=src, CX=nb_bytes -> affiche sur stdout');
+ Emit('_DISP_VAR:');
+ Emit('        JCXZ    _DVR_DONE');
+ Emit('_DVR_LP:MOV     DL, [SI]');
+ Emit('        MOV     AH, 02h');
+ Emit('        INT     21h');
+ Emit('        INC     SI');
+ Emit('        LOOP    _DVR_LP');
+ Emit('_DVR_DONE: RET');
+ EmitBlank;
+ Emit('        ; _ACCEPT_VAR: DI=dest, CX=max_size -> saisie clavier');
+ Emit('_ACCEPT_VAR:');
+ Emit('        PUSH    CX');
+ Emit('        MOV     _INPUTBUF, CL');
+ Emit('        LEA     DX, _INPUTBUF');
+ Emit('        MOV     AH, 0Ah');
+ Emit('        INT     21h');
+ Emit('        CALL    _DISP_CRLF');
+ Emit('        MOV     CL, _INPUTBUF+1');
+ Emit('        XOR     CH, CH');
+ Emit('        LEA     SI, _INPUTBUF+2');
+ Emit('        POP     BX');
+ Emit('        CMP     CX, BX');
+ Emit('        JBE     _ACC_CP');
+ Emit('        MOV     CX, BX');
+ Emit('_ACC_CP: PUSH   CX');
+ Emit('        REP     MOVSB');
+ Emit('        POP     CX');
+ Emit('        SUB     BX, CX');
+ Emit('        MOV     AL, 20h');
+ Emit('        MOV     CX, BX');
+ Emit('        REP     STOSB');
+ Emit('        RET');
+ EmitBlank;
+ Emit('        ; _MOVE_STR_LJ: SI=src, CX=src_len, DI=dest, BX=dest_len -> left-justify + space-fill');
+ Emit('_MOVE_STR_LJ:');
+ Emit('        CMP     CX, BX');
+ Emit('        JBE     _MSL_SZ');
+ Emit('        MOV     CX, BX');
+ Emit('_MSL_SZ: PUSH   CX');
+ Emit('        PUSH    BX');
+ Emit('        REP     MOVSB');
+ Emit('        POP     BX');
+ Emit('        POP     CX');
+ Emit('        SUB     BX, CX');
+ Emit('        MOV     AL, 20h');
+ Emit('        MOV     CX, BX');
+ Emit('        REP     STOSB');
+ Emit('        RET');
+ EmitBlank;
+ Emit('        ; _MOVE_NUM_RJ: SI=src, CX=src_len, DI=dest, BX=dest_len -> right-justify + zero-fill');
+ Emit('_MOVE_NUM_RJ:');
+ Emit('        CMP     CX, BX');
+ Emit('        JBE     _MNR_PAD');
+ Emit('        ADD     SI, CX');
+ Emit('        SUB     SI, BX');
+ Emit('        MOV     CX, BX');
+ Emit('        REP     MOVSB');
+ Emit('        RET');
+ Emit('_MNR_PAD:');
+ Emit('        SUB     BX, CX');
+ Emit('        MOV     AL, 30h');
+ Emit('        PUSH    CX');
+ Emit('        MOV     CX, BX');
+ Emit('        REP     STOSB');
+ Emit('        POP     CX');
+ Emit('        REP     MOVSB');
+ Emit('        RET');
+ EmitBlank;
+ Emit('_EXIT:');
+ Emit('        MOV     AX, 4C00h');
+ Emit('        INT     21h');
+ EmitBlank;
+End;
+
+{ ======================================================================
+  GENERATION DISPLAY (Todo 15, 24)
+  ====================================================================== }
+Procedure GenDisplayOp(op_kind: Integer; Const op_str: String; op_idx: Integer);
+Var cnts, szs: String;
+Begin
+ Case op_kind Of
+  OP_LITSTR:
+  Begin
+   Inc(lit_counter); cnts := ItoSI(lit_counter);
+   EmitComment('DISPLAY ''' + op_str + '''');
+   Emit('        JMP     _DL' + cnts + 'E');
+   EmitLabel('_DL' + cnts);
+   Emit('        DB      ''' + AsmStr(op_str) + ''', ''$''');
+   EmitLabel('_DL' + cnts + 'E');
+   Emit('        LEA     DX, _DL' + cnts);
+   Emit('        CALL    _DISP_STR');
+  End;
+  OP_LITNUM:
+  Begin
+   Inc(lit_counter); cnts := ItoSI(lit_counter);
+   EmitComment('DISPLAY ' + op_str);
+   Emit('        JMP     _DL' + cnts + 'E');
+   EmitLabel('_DL' + cnts);
+   Emit('        DB      ''' + op_str + ''', ''$''');
+   EmitLabel('_DL' + cnts + 'E');
+   Emit('        LEA     DX, _DL' + cnts);
+   Emit('        CALL    _DISP_STR');
+  End;
+  OP_VAR:
+  Begin
+   If op_idx > 0 Then
+   Begin
+    szs := ItoSI(VarSz(op_idx));
+    EmitComment('DISPLAY ' + data_table[op_idx]^.name + ' (' + szs + ' bytes)');
+    Emit('        LEA     SI, ' + VarAsmRef(op_idx));
+    Emit('        MOV     CX, ' + szs);
+    Emit('        CALL    _DISP_VAR');
+   End Else
+    EmitComment('DISPLAY ???' + op_str + ' (variable non declaree)');
+  End;
+  OP_ZERO:  Begin Emit('        MOV     DL, 30h'); Emit('        MOV     AH, 02h'); Emit('        INT     21h'); End;
+  OP_SPACE: Begin Emit('        MOV     DL, 20h'); Emit('        MOV     AH, 02h'); Emit('        INT     21h'); End;
+  OP_HIGH:  Begin Emit('        MOV     DL, 0FFh'); Emit('        MOV     AH, 02h'); Emit('        INT     21h'); End;
+  OP_LOW:   Begin Emit('        MOV     DL, 00h'); Emit('        MOV     AH, 02h'); Emit('        INT     21h'); End;
+  Else EmitComment('DISPLAY <operande non supporte>');
+ End;
+End;
+
+Procedure ParseDisplay;
+Var ok: Integer; os: String; on2: LongInt; oi: Integer; no_adv: Boolean;
+Begin
+ Consume; { DISPLAY }
+ no_adv := False;
+ EmitComment('---- DISPLAY ----');
+ Repeat
+  { WITH NO ADVANCING }
+  If (current_symbol = SYM_WITH) Or TokenIs('NO') Then
+  Begin
+   If current_symbol = SYM_WITH Then Consume;
+   If TokenIs('NO') Then
+   Begin Consume; If TokenIs('ADVANCING') Then Begin Consume; no_adv := True; End; End;
+   Break;
+  End;
+  If (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Then Break;
+  If IsVerb Then Break;
+  ParseOperand(ok, os, on2, oi);
+  If ok <> OP_NONE Then GenDisplayOp(ok, os, oi)
+  Else Break;
+ Until False;
+ If Not no_adv Then Emit('        CALL    _DISP_CRLF');
+End;
+
+{ ======================================================================
+  GENERATION ACCEPT (Todo 15)
+  ====================================================================== }
+Procedure ParseAccept;
+Var idx: Integer; szs: String;
+Begin
+ Consume; { ACCEPT }
+ EmitComment('---- ACCEPT ----');
+ If IsIdentifier Then
+ Begin
+  idx := FindDataItem(current_token, SECT_NONE); Consume;
+  If current_symbol = SYM_FROM Then
+  Begin
+   Consume;
+   If TokenIs('DATE') Or TokenIs('TIME') Or TokenIs('DAY') Or
+      TokenIs('DATE-AND-TIME') Or TokenIs('DATE-OF-TODAY') Then
+   Begin
+    EmitComment('ACCEPT FROM DATE/TIME/DAY (stub)'); Consume;
+   End Else Consume;
+  End Else
+  Begin
+   If idx > 0 Then
+   Begin
+    szs := ItoSI(VarSz(idx));
+    EmitComment('ACCEPT ' + data_table[idx]^.name + ' (' + szs + ' bytes)');
+    Emit('        LEA     DI, ' + VarAsmRef(idx));
+    Emit('        MOV     CX, ' + szs);
+    Emit('        CALL    _ACCEPT_VAR');
+   End Else
+    EmitComment('ACCEPT (variable inconnue)');
+  End;
+ End Else EmitComment('ACCEPT (non reconnu)');
+ While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) And
+       Not IsVerb Do Consume;
+End;
+
+{ ======================================================================
+  GENERATION MOVE (Todo 9)
+  ====================================================================== }
+Procedure GenMoveToVar(op_kind: Integer; Const op_str: String;
+                        op_num: LongInt; op_idx: Integer; dest_idx: Integer);
+Var
+ sz, src_sz: Integer; szs, srcs, os2, cs: String;
+ dest_p, src_p: PDataItem; is_alpha: Boolean;
+Begin
+ If dest_idx <= 0 Then Begin EmitComment('MOVE -> dest inconnue'); Exit; End;
+ dest_p   := data_table[dest_idx];
+ sz       := VarSz(dest_idx); szs := ItoSI(sz);
+ is_alpha := (dest_p^.data_type = TYPE_PIC_X) Or (dest_p^.data_type = TYPE_PIC_A) Or dest_p^.is_group;
+ Case op_kind Of
+  OP_ZERO:
+  Begin
+   EmitComment('MOVE ZERO TO ' + dest_p^.name);
+   If is_alpha Then os2 := '20h' Else os2 := '30h';
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     AL, ' + os2);
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+  End;
+  OP_SPACE:
+  Begin
+   EmitComment('MOVE SPACES TO ' + dest_p^.name);
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     AL, 20h');
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+  End;
+  OP_HIGH:
+  Begin
+   EmitComment('MOVE HIGH-VALUES TO ' + dest_p^.name);
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     AL, 0FFh');
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+  End;
+  OP_LOW:
+  Begin
+   EmitComment('MOVE LOW-VALUES TO ' + dest_p^.name);
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     AL, 00h');
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+  End;
+  OP_QUOTE_V:
+  Begin
+   EmitComment('MOVE QUOTE TO ' + dest_p^.name);
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     AL, 22h');
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+  End;
+  OP_LITNUM:
+  Begin
+   EmitComment('MOVE ' + op_str + ' TO ' + dest_p^.name);
+   { Zero-fill d'abord }
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     AL, 30h');
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+   { Puis ecrire les chiffres a droite }
+   src_sz := Length(op_str);
+   srcs   := ItoSI(src_sz);
+   If src_sz <= sz Then
+   Begin
+    Inc(lit_counter); cs := ItoSI(lit_counter);
+    Emit('        JMP     _NL' + cs + 'E');
+    EmitLabel('_NL' + cs);
+    Emit('        DB      ''' + op_str + '''');
+    EmitLabel('_NL' + cs + 'E');
+    Emit('        LEA     SI, _NL' + cs);
+    Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+    { Right-justify : pointer a sz-src_sz }
+    If sz > src_sz Then Emit('        ADD     DI, ' + ItoSI(sz - src_sz));
+    Emit('        MOV     CX, ' + srcs);
+    Emit('        REP     MOVSB');
+   End;
+  End;
+  OP_LITSTR:
+  Begin
+   EmitComment('MOVE ''' + op_str + ''' TO ' + dest_p^.name);
+   src_sz := Length(op_str); srcs := ItoSI(src_sz);
+   Inc(lit_counter); cs := ItoSI(lit_counter);
+   Emit('        JMP     _SL' + cs + 'E');
+   EmitLabel('_SL' + cs);
+   Emit('        DB      ''' + AsmStr(op_str) + '''');
+   EmitLabel('_SL' + cs + 'E');
+   Emit('        LEA     SI, _SL' + cs);
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   Emit('        MOV     CX, ' + srcs);
+   Emit('        MOV     BX, ' + szs);
+   Emit('        CALL    _MOVE_STR_LJ');
+  End;
+  OP_VAR:
+  Begin
+   src_p := Nil;
+   If op_idx > 0 Then src_p := data_table[op_idx];
+   If src_p = Nil Then Begin EmitComment('MOVE ???' + op_str + ' TO ' + dest_p^.name); Exit; End;
+   src_sz := VarSz(op_idx); srcs := ItoSI(src_sz);
+   EmitComment('MOVE ' + src_p^.name + ' TO ' + dest_p^.name);
+   Emit('        LEA     SI, ' + VarAsmRef(op_idx));
+   Emit('        LEA     DI, ' + VarAsmRef(dest_idx));
+   If is_alpha Then
+   Begin
+    Emit('        MOV     CX, ' + srcs);
+    Emit('        MOV     BX, ' + szs);
+    Emit('        CALL    _MOVE_STR_LJ');
+   End Else
+   Begin
+    Emit('        MOV     CX, ' + srcs);
+    Emit('        MOV     BX, ' + szs);
+    Emit('        CALL    _MOVE_NUM_RJ');
+   End;
+  End;
+  Else EmitComment('MOVE <operande non implemente> TO ' + dest_p^.name);
+ End;
+End;
+
+Procedure ParseMove;
+Var ok: Integer; os: String; on2: LongInt; oi: Integer;
+    ok2: Integer; os2: String; on3: LongInt; oi2: Integer;
+Begin
+ Consume; { MOVE }
+ EmitComment('---- MOVE ----');
+ ParseOperand(ok, os, on2, oi);
+ { MOVE CORRESPONDING }
+ If (current_symbol = SYM_CORRESPONDING) Or (current_symbol = SYM_CORR) Then
+ Begin
+  While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+  EmitComment('MOVE CORRESPONDING - stub'); Exit;
+ End;
+ If current_symbol = SYM_TO Then Consume;
+ Repeat
+  ParseOperand(ok2, os2, on3, oi2);
+  If (ok2 <> OP_VAR) And (ok2 <> OP_NONE) Then Break;
+  If (ok2 = OP_VAR) And (oi2 > 0) Then
+   GenMoveToVar(ok, os, on2, oi, oi2)
+  Else Break;
+  If (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Or IsVerb Then Break;
+ Until False;
+End;
+
+{ ======================================================================
+  GENERATION ARITHMETIQUE (Todos 10-11)
+  ====================================================================== }
+{ Helper : emettre la lecture d'un operande numerique vers AX pour ADD/SUB }
+Procedure EmitLoadNum(op_kind: Integer; Const op_str: String;
+                      op_num: LongInt; op_idx: Integer);
+Var szs: String;
+Begin
+ Case op_kind Of
+  OP_LITNUM: Emit('        MOV     AX, ' + op_str);
+  OP_ZERO:   Emit('        XOR     AX, AX');
+  OP_VAR:
+   If (op_idx > 0) And (VarSz(op_idx) <= 2) Then
+   Begin
+    szs := ItoSI(VarSz(op_idx));
+    If VarSz(op_idx) = 1 Then
+    Begin
+     Emit('        XOR     AH, AH');
+     Emit('        MOV     AL, ' + VarAsmRef(op_idx));
+     Emit('        SUB     AL, 30h');  { zoned decimal -> binary }
+    End Else
+    Begin
+     Emit('        MOV     AX, WORD PTR ' + VarAsmRef(op_idx));
+    End;
+   End Else
+    Emit('        MOV     AX, 0  ; TODO: load ' + op_str);
+  Else Emit('        MOV     AX, 0');
+ End;
+End;
+
+Procedure ParseAdd;
+Var ok: Integer; os: String; on2: LongInt; oi: Integer;
+    dest_idx: Integer; szs: String; first_src: Boolean;
+Begin
+ Consume; { ADD }
+ EmitComment('---- ADD ----');
+ If (current_symbol = SYM_CORRESPONDING) Or (current_symbol = SYM_CORR) Then
+ Begin
+  While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+  EmitComment('ADD CORRESPONDING - stub'); Exit;
+ End;
+ { Lire les operandes source jusqu'a TO ou GIVING - accumuler dans AX }
+ first_src := True;
+ Repeat
+  ParseOperand(ok, os, on2, oi);
+  If ok = OP_NONE Then Break;
+  If first_src Then
+  Begin
+   EmitLoadNum(ok, os, on2, oi);
+   first_src := False;
+  End Else
+  Begin
+   Emit('        PUSH    AX');
+   EmitLoadNum(ok, os, on2, oi);
+   Emit('        POP     BX');
+   Emit('        ADD     AX, BX');
+  End;
+  If (current_symbol = SYM_TO) Or (current_symbol = SYM_GIVING) Then Break;
+ Until False;
+ If first_src Then Emit('        XOR     AX, AX  ; aucune source');
+ If (current_symbol = SYM_TO) Or (current_symbol = SYM_GIVING) Then Consume;
+ Repeat
+  ParseOperand(ok, os, on2, oi);
+  dest_idx := oi;
+  If (ok <> OP_VAR) Or (dest_idx <= 0) Then Break;
+  szs := ItoSI(VarSz(dest_idx));
+  EmitComment('ADD ... TO ' + data_table[dest_idx]^.name);
+  If VarSz(dest_idx) = 1 Then
+  Begin
+   Emit('        SUB     AX, 30h');  { enlever le '0' ASCII pour converger }
+   Emit('        ADD     BYTE PTR ' + VarAsmRef(dest_idx) + ', AL');
+   Emit('        ADD     BYTE PTR ' + VarAsmRef(dest_idx) + ', 30h');
+  End Else
+  Begin
+   Emit('        ADD     WORD PTR ' + VarAsmRef(dest_idx) + ', AX');
+  End;
+  If TokenIs('ROUNDED') Then Consume;
+  If (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Or IsVerb Then Break;
+ Until False;
+ { ON SIZE ERROR }
+ If TokenIs('ON') Then Consume;
+ If TokenIs('SIZE') Then Begin Consume; If TokenIs('ERROR') Then Consume; End;
+ If (current_symbol = SYM_END_ADD) Then Consume;
+End;
+
+Procedure ParseSubtract;
+Var ok: Integer; os: String; on2: LongInt; oi: Integer; dest_idx: Integer;
+    first_src: Boolean;
+Begin
+ Consume; { SUBTRACT }
+ EmitComment('---- SUBTRACT ----');
+ If (current_symbol = SYM_CORRESPONDING) Or (current_symbol = SYM_CORR) Then
+ Begin
+  While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+  EmitComment('SUBTRACT CORRESPONDING - stub'); Exit;
+ End;
+ first_src := True;
+ Repeat
+  ParseOperand(ok, os, on2, oi);
+  If ok = OP_NONE Then Break;
+  If first_src Then
+  Begin
+   EmitLoadNum(ok, os, on2, oi);
+   first_src := False;
+  End Else
+  Begin
+   Emit('        PUSH    AX');
+   EmitLoadNum(ok, os, on2, oi);
+   Emit('        POP     BX');
+   Emit('        ADD     AX, BX');
+  End;
+  If TokenIs('FROM') Or (current_symbol = SYM_FROM) Or (current_symbol = SYM_GIVING) Then Break;
+ Until False;
+ If first_src Then Emit('        XOR     AX, AX  ; aucune source');
+ If TokenIs('FROM') Or (current_symbol = SYM_FROM) Then Consume;
+ If (current_symbol = SYM_GIVING) Then Consume;
+ Repeat
+  ParseOperand(ok, os, on2, oi);
+  dest_idx := oi;
+  If (ok <> OP_VAR) Or (dest_idx <= 0) Then Break;
+  EmitComment('SUBTRACT ... FROM ' + data_table[dest_idx]^.name);
+  If VarSz(dest_idx) = 1 Then
+  Begin
+   Emit('        SUB     BYTE PTR ' + VarAsmRef(dest_idx) + ', AL');
+   Emit('        CMP     BYTE PTR ' + VarAsmRef(dest_idx) + ', 30h');
+   Emit('        JAE     _SUB_OK' + ItoSI(label_counter));
+   Emit('        ADD     BYTE PTR ' + VarAsmRef(dest_idx) + ', 30h');
+   EmitLabel('_SUB_OK' + ItoSI(label_counter));
+  End Else
+   Emit('        SUB     WORD PTR ' + VarAsmRef(dest_idx) + ', AX');
+  If TokenIs('ROUNDED') Then Consume;
+  If (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Or IsVerb Then Break;
+ Until False;
+ If TokenIs('ON') Then Consume;
+ If TokenIs('SIZE') Then Begin Consume; If TokenIs('ERROR') Then Consume; End;
+ If (current_symbol = SYM_END_SUBTRACT) Then Consume;
+End;
+
+Procedure ParseMultiply;
+Begin
+ Consume; { MULTIPLY }
+ EmitComment('---- MULTIPLY (stub) ----');
+ While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) And
+       Not (current_symbol = SYM_END_SUBTRACT) Do Consume;
+ If TokenIs('END-MULTIPLY') Then Consume;
+End;
+
+Procedure ParseDivide;
+Begin
+ Consume; { DIVIDE }
+ EmitComment('---- DIVIDE (stub) ----');
+ While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+ If TokenIs('END-DIVIDE') Then Consume;
+End;
+
+Procedure ParseCompute;
+Var ok: Integer; os: String; on2: LongInt; oi: Integer; dest_idx: Integer;
+Begin
+ Consume; { COMPUTE }
+ EmitComment('---- COMPUTE ----');
+ ParseOperand(ok, os, on2, oi); dest_idx := oi;
+ If TokenIs('ROUNDED') Then Consume;
+ While (current_symbol <> TOK_EQUAL) And (current_symbol <> TOK_PERIOD) And
+       (current_symbol <> TOK_EOF) Do Consume;
+ If current_symbol = TOK_EQUAL Then Consume;
+ ParseOperand(ok, os, on2, oi);
+ If (dest_idx > 0) And (ok <> OP_NONE) Then
+ Begin
+  EmitComment('COMPUTE ' + data_table[dest_idx]^.name + ' = ...');
+  GenMoveToVar(ok, os, on2, oi, dest_idx);
+ End;
+ { Ignorer reste expression (op complexe) }
+ While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) And
+       (current_symbol <> SYM_END_COMPUTE) And Not IsVerb Do Consume;
+ If current_symbol = SYM_END_COMPUTE Then Consume;
+End;
+
+{ ======================================================================
+  GENERATION CONDITIONS (pour IF/EVALUATE/PERFORM)
+  ====================================================================== }
+{ Emet le code CMP + saut conditionnel.
+  lbl_false : ou sauter si la condition est FAUSSE. }
+Procedure GenSimpleCondition(Const lbl_false: String);
+Var
+ ok1, ok2: Integer; os1, os2: String; on1, on2: LongInt; oi1, oi2: Integer;
+ neg: Boolean; rel_op: Integer;  { 0== 1<> 2< 3> 4<= 5>= }
+ lbl_neg: Integer;
+Begin
+ neg := False;
+ If current_symbol = SYM_NOT Then Begin neg := True; Consume; End;
+ ParseOperand(ok1, os1, on1, oi1);
+ { Operateur relationnel }
+ rel_op := 0; { = par defaut }
+ If current_symbol = SYM_IS Then Consume;
+ If current_symbol = SYM_NOT Then Begin neg := Not neg; Consume; End;
+ Case current_symbol Of
+  TOK_EQUAL:    Begin rel_op := 0; Consume; End;
+  TOK_LESS:     Begin rel_op := 2; Consume; End;
+  TOK_GREATER:  Begin rel_op := 3; Consume; End;
+  TOK_LESSEQ:   Begin rel_op := 4; Consume; End;
+  TOK_GREATEREQ:Begin rel_op := 5; Consume; End;
+  TOK_NOTEQUAL: Begin rel_op := 1; Consume; End;
+  SYM_EQUAL_KW:
+   Begin rel_op := 0; Consume; If current_symbol = SYM_TO Then Consume; End;
+  SYM_GREATER_KW:
+   Begin
+    Consume; rel_op := 3;
+    If (current_symbol = SYM_OR) Or TokenIs('OR') Then
+    Begin Consume; If TokenIs('EQUAL') Then Begin Consume; If current_symbol = SYM_TO Then Consume; End; rel_op := 5; End
+    Else If current_symbol = SYM_TO Then Consume;
+   End;
+  SYM_LESS_KW:
+   Begin
+    Consume; rel_op := 2;
+    If (current_symbol = SYM_OR) Or TokenIs('OR') Then
+    Begin Consume; If TokenIs('EQUAL') Then Begin Consume; If current_symbol = SYM_TO Then Consume; End; rel_op := 4; End
+    Else If current_symbol = SYM_TO Then Consume;
+   End;
+ End;
+ ParseOperand(ok2, os2, on2, oi2);
+ { === Generer la comparaison === }
+ If (ok1 = OP_VAR) And (oi1 > 0) Then
+ Begin
+  If (ok2 = OP_LITSTR) And (Length(os2) = 1) Then
+  Begin
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   Emit('        CMP     AL, ''' + AsmStr(os2) + '''');
+  End Else If (ok2 = OP_LITNUM) Then
+  Begin
+   If VarSz(oi1) = 1 Then
+   Begin
+    Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+    Inc(label_counter);
+    Emit('        CMP     AL, 0' + os2 + '+30h');
+   End Else
+   Begin
+    Emit('        MOV     AX, WORD PTR ' + VarAsmRef(oi1));
+    Emit('        CMP     AX, ' + os2);
+   End;
+  End Else If (ok2 = OP_ZERO) Then
+  Begin
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   Emit('        CMP     AL, 30h');
+  End Else If (ok2 = OP_SPACE) Then
+  Begin
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   Emit('        CMP     AL, 20h');
+  End Else If (ok2 = OP_HIGH) Then
+  Begin
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   Emit('        CMP     AL, 0FFh');
+  End Else If (ok2 = OP_LOW) Then
+  Begin
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   Emit('        CMP     AL, 00h');
+  End Else If (ok2 = OP_VAR) And (oi2 > 0) Then
+  Begin
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   Emit('        CMP     AL, BYTE PTR ' + VarAsmRef(oi2));
+  End Else If (ok2 = OP_LITSTR) And (Length(os2) > 1) Then
+  Begin
+   { Multi-char : comparer premier octet seulement (simplification) }
+   Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi1));
+   If Length(os2) >= 1 Then Emit('        CMP     AL, ''' + AsmStr(Copy(os2,1,1)) + '''');
+  End Else
+   EmitComment('condition non supportee (stub ok1=VAR ok2=' + ItoSI(ok2) + ')');
+ End Else If (ok1 = OP_LITNUM) And (ok2 = OP_VAR) And (oi2 > 0) Then
+ Begin
+  Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(oi2));
+  Emit('        CMP     AL, 0' + os1 + '+30h');
+  { Inverser l'operateur car on a echange operandes }
+  Case rel_op Of
+   2: rel_op := 3;  3: rel_op := 2;
+   4: rel_op := 5;  5: rel_op := 4;
+  End;
+ End Else
+  EmitComment('condition non supportee (stub)');
+ { Appliquer la negation }
+ If neg Then
+  Case rel_op Of
+   0: rel_op := 1;  1: rel_op := 0;
+   2: rel_op := 5;  5: rel_op := 2;
+   3: rel_op := 4;  4: rel_op := 3;
+  End;
+ { Emettre le saut conditionnel (saute vers lbl_false si condition FAUSSE) }
+ Case rel_op Of
+  0: Emit('        JNE     ' + lbl_false);
+  1: Emit('        JE      ' + lbl_false);
+  2: Emit('        JAE     ' + lbl_false);
+  3: Emit('        JBE     ' + lbl_false);
+  4: Emit('        JA      ' + lbl_false);
+  5: Emit('        JB      ' + lbl_false);
+ Else Emit('        JNE     ' + lbl_false);
+ End;
+End;
+
+{ ======================================================================
+  GENERATION IF / ELSE / END-IF (Todo 12) + ParseStatement (Forward)
+  ====================================================================== }
+Procedure ParseStatement; Forward;
+
+Procedure ParseIf;
+Var lbl_else, lbl_end: String; has_else: Boolean;
+Begin
+ Consume; { IF }
+ EmitComment('---- IF ----');
+ lbl_else := NewLabel + 'E';
+ lbl_end  := NewLabel + 'F';
+ has_else := False;
+ GenSimpleCondition(lbl_else);
+ If current_symbol = SYM_THEN Then Consume;
+ While (current_symbol <> SYM_ELSE)     And
+       (current_symbol <> SYM_END_IF)   And
+       (current_symbol <> TOK_PERIOD)   And
+       (current_symbol <> TOK_EOF) Do
+  ParseStatement;
+ If current_symbol = SYM_ELSE Then
+ Begin
+  has_else := True;
+  Emit('        JMP     ' + lbl_end);
+  EmitLabel(lbl_else);
+  Consume; { ELSE }
+  While (current_symbol <> SYM_END_IF) And
+        (current_symbol <> TOK_PERIOD)  And
+        (current_symbol <> TOK_EOF) Do
+   ParseStatement;
+ End;
+ If current_symbol = SYM_END_IF Then Consume;
+ If Not has_else Then EmitLabel(lbl_else);
+ EmitLabel(lbl_end);
+End;
+
+{ ======================================================================
+  GENERATION EVALUATE (Todo 13)
+  ====================================================================== }
+Procedure ParseEvaluate;
+Var
+ lbl_end, lbl_next: String;
+ ok: Integer; os: String; on2: LongInt; oi: Integer;
+ eval_idx: Integer;
+Begin
+ Consume; { EVALUATE }
+ EmitComment('---- EVALUATE ----');
+ lbl_end := NewLabel + 'EV';
+ ParseOperand(ok, os, on2, oi); eval_idx := oi;
+ While current_symbol = SYM_WHEN Do
+ Begin
+  Consume; { WHEN }
+  lbl_next := NewLabel + 'WN';
+  If TokenIs('OTHER') Then
+  Begin Consume; EmitComment('WHEN OTHER'); End
+  Else
+  Begin
+   EmitComment('WHEN ...');
+   If (eval_idx > 0) And (ok = OP_VAR) Then
+   Begin
+    Emit('        MOV     AL, BYTE PTR ' + VarAsmRef(eval_idx));
+   End;
+   ParseOperand(ok, os, on2, oi);
+   case ok of
+    OP_LITSTR: If Length(os) >= 1 Then Emit('        CMP     AL, ''' + AsmStr(Copy(os,1,1)) + '''');
+    OP_LITNUM: Emit('        CMP     AL, 0' + os + '+30h');
+    OP_ZERO:   Emit('        CMP     AL, 30h');
+    OP_SPACE:  Emit('        CMP     AL, 20h');
+    OP_VAR:    If oi > 0 Then Emit('        CMP     AL, BYTE PTR ' + VarAsmRef(oi));
+    Else EmitComment('WHEN <operande non supporte>');
+   End;
+   Emit('        JNE     ' + lbl_next);
+  End;
+  While (current_symbol <> SYM_WHEN) And
+        (current_symbol <> SYM_END_EVALUATE) And
+        (current_symbol <> TOK_PERIOD) And
+        (current_symbol <> TOK_EOF) Do
+   ParseStatement;
+  Emit('        JMP     ' + lbl_end);
+  EmitLabel(lbl_next);
+ End;
+ If current_symbol = SYM_END_EVALUATE Then Consume;
+ EmitLabel(lbl_end);
+End;
+
+{ ======================================================================
+  GENERATION PERFORM (Todo 14)
+  ====================================================================== }
+Procedure ParsePerform;
+Var
+ para_name, thru_name: String;
+ para_idx: Integer;
+ lbl_loop, lbl_done: String;
+ ok: Integer; os: String; on2: LongInt; oi: Integer;
+ times_count: LongInt; times_s: String;
+Begin
+ Consume; { PERFORM }
+ EmitComment('---- PERFORM ----');
+ { PERFORM VARYING }
+ If current_symbol = SYM_VARYING Then
+ Begin
+  EmitComment('PERFORM VARYING (stub)');
+  While (current_symbol <> SYM_END_PERFORM) And
+        (current_symbol <> TOK_PERIOD) And
+        (current_symbol <> TOK_EOF) Do
+   ParseStatement;
+  If current_symbol = SYM_END_PERFORM Then Consume;
+  Exit;
+ End;
+ { PERFORM UNTIL inline }
+ If current_symbol = SYM_UNTIL Then
+ Begin
+  lbl_loop := NewLabel + 'PL';
+  lbl_done := NewLabel + 'PD';
+  Consume;
+  EmitLabel(lbl_loop);
+  GenSimpleCondition(lbl_done);
+  While (current_symbol <> SYM_END_PERFORM) And
+        (current_symbol <> TOK_PERIOD) And
+        (current_symbol <> TOK_EOF) Do
+   ParseStatement;
+  Emit('        JMP     ' + lbl_loop);
+  EmitLabel(lbl_done);
+  If current_symbol = SYM_END_PERFORM Then Consume;
+  Exit;
+ End;
+ { PERFORM para-name }
+ If IsIdentifier Then
+ Begin
+  para_name := current_token; Consume;
+  thru_name := '';
+  If (current_symbol = SYM_THRU) Or (current_symbol = SYM_THROUGH) Then
+  Begin Consume; If IsIdentifier Then Begin thru_name := current_token; Consume; End; End;
+  { n TIMES }
+  If current_symbol = TOK_NUMBER Then
+  Begin
+   times_count := current_value; times_s := ItoS(times_count); Consume;
+   If current_symbol = SYM_TIMES Then Consume;
+   para_idx := FindParagraph(para_name);
+   lbl_loop := NewLabel + 'PT';
+   EmitComment('PERFORM ' + para_name + ' ' + times_s + ' TIMES');
+   Emit('        MOV     CX, ' + times_s);
+   EmitLabel(lbl_loop);
+   Emit('        PUSH    CX');
+   If para_idx > 0 Then Emit('        CALL    ' + ParaAsmLabel(para_idx))
+   Else Emit('        ; CALL ' + para_name + ' (para non encore defini)');
+   Emit('        POP     CX');
+   Emit('        LOOP    ' + lbl_loop);
+   Exit;
+  End;
+  If (current_symbol = SYM_TIMES) Then { PERFORM para TIMES - rarest form }
+  Begin Consume; para_idx := FindParagraph(para_name);
+   EmitComment('PERFORM ' + para_name);
+   If para_idx > 0 Then Emit('        CALL    ' + ParaAsmLabel(para_idx));
+   Exit;
+  End;
+  { PERFORM para UNTIL }
+  If current_symbol = SYM_UNTIL Then
+  Begin
+   lbl_loop := NewLabel + 'PL'; lbl_done := NewLabel + 'PD';
+   Consume;
+   EmitLabel(lbl_loop);
+   GenSimpleCondition(lbl_done);
+   para_idx := FindParagraph(para_name);
+   If para_idx > 0 Then Emit('        CALL    ' + ParaAsmLabel(para_idx))
+   Else Emit('        ; CALL ' + para_name);
+   Emit('        JMP     ' + lbl_loop);
+   EmitLabel(lbl_done);
+   Exit;
+  End;
+  { PERFORM para inline avec TEST BEFORE/AFTER VARYING }
+  If (current_symbol = SYM_WITH) Or (TokenIs('WITH')) Then
+  Begin
+   While (current_symbol <> SYM_END_PERFORM) And (current_symbol <> TOK_PERIOD) And
+         (current_symbol <> TOK_EOF) Do Consume;
+   If current_symbol = SYM_END_PERFORM Then Consume;
+   EmitComment('PERFORM WITH VARYING (stub)');
+   Exit;
+  End;
+  { PERFORM para simple }
+  para_idx := FindParagraph(para_name);
+  If thru_name <> '' Then EmitComment('PERFORM ' + para_name + ' THRU ' + thru_name)
+  Else EmitComment('PERFORM ' + para_name);
+  If para_idx > 0 Then Emit('        CALL    ' + ParaAsmLabel(para_idx))
+  Else Emit('        ; CALL ' + para_name + ' (non encore defini, a resoudre)');
+ End Else
+ Begin
+  { PERFORM inline sans nom : PERFORM ... END-PERFORM }
+  While (current_symbol <> SYM_END_PERFORM) And
+        (current_symbol <> TOK_PERIOD) And
+        (current_symbol <> TOK_EOF) Do
+   ParseStatement;
+  If current_symbol = SYM_END_PERFORM Then Consume;
+ End;
+End;
+
+{ ======================================================================
+  GENERATION FILE I/O (Todo 16)
+  ====================================================================== }
+Procedure ParseOpen;
+Var mode_s, fname, fh: String; mode, fi: Integer; lbl: String;
+Begin
+ Consume; { OPEN }
+ EmitComment('---- OPEN ----');
+ Repeat
+  mode_s := 'INPUT'; mode := 0;
+  If TokenIs('INPUT')  Then Begin mode := 0; mode_s := 'INPUT';  Consume; End
+  Else If TokenIs('OUTPUT') Then Begin mode := 1; mode_s := 'OUTPUT'; Consume; End
+  Else If TokenIs('I-O')    Then Begin mode := 2; mode_s := 'I-O';    Consume; End
+  Else If (current_symbol = SYM_EXTEND) Or TokenIs('EXTEND') Then
+   Begin mode := 3; mode_s := 'EXTEND'; Consume; End
+  Else Break;
+  Repeat
+   If Not IsIdentifier Then Break;
+   fname := current_token; Consume;
+   fi := FindFileEntry(fname);
+   EmitComment('OPEN ' + mode_s + ' ' + fname);
+   If fi > 0 Then
+   Begin
+    fh  := '_FH_' + ItoSI(fi);
+    lbl := 'LOPN' + ItoSI(fi) + '_' + ItoSI(label_counter);
+    Inc(label_counter);
+    If mode = 0 Then { INPUT }
+    Begin
+     Emit('        LEA     DX, _FN_' + ItoSI(fi));
+     Emit('        MOV     AX, 3D00h');
+     Emit('        INT     21h');
+     Emit('        JC      ' + lbl + 'E');
+     Emit('        MOV     ' + fh + ', AX');
+     Emit('        JMP     ' + lbl + 'K');
+    End Else { OUTPUT / I-O / EXTEND }
+    Begin
+     Emit('        LEA     DX, _FN_' + ItoSI(fi));
+     Emit('        XOR     CX, CX');
+     Emit('        MOV     AH, 3Ch');
+     Emit('        INT     21h');
+     Emit('        JC      ' + lbl + 'E');
+     Emit('        MOV     ' + fh + ', AX');
+     Emit('        JMP     ' + lbl + 'K');
+    End;
+    EmitLabel(lbl + 'E');
+    Emit('        MOV     ' + fh + ', 0FFFFh');
+    EmitLabel(lbl + 'K');
+   End Else EmitComment('OPEN: ' + fname + ' non declare');
+   If TokenIs('WITH') Then Consume;
+   If TokenIs('NO') Then Begin Consume; If TokenIs('REWIND') Then Consume; End;
+  Until (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Or
+        TokenIs('INPUT') Or TokenIs('OUTPUT') Or TokenIs('I-O') Or
+        (current_symbol = SYM_EXTEND);
+ Until (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF);
+End;
+
+Procedure ParseClose;
+Var fname, fh: String; fi: Integer; lbl: String;
+Begin
+ Consume; { CLOSE }
+ EmitComment('---- CLOSE ----');
+ Repeat
+  If Not IsIdentifier Then Break;
+  fname := current_token; Consume;
+  fi := FindFileEntry(fname);
+  EmitComment('CLOSE ' + fname);
+  If fi > 0 Then
+  Begin
+   fh  := '_FH_' + ItoSI(fi);
+   lbl := 'LCLZ' + ItoSI(fi) + '_' + ItoSI(label_counter); Inc(label_counter);
+   Emit('        MOV     BX, ' + fh);
+   Emit('        CMP     BX, 0FFFFh');
+   Emit('        JE      ' + lbl);
+   Emit('        MOV     AH, 3Eh');
+   Emit('        INT     21h');
+   Emit('        MOV     ' + fh + ', 0FFFFh');
+   EmitLabel(lbl);
+  End Else EmitComment('CLOSE: ' + fname + ' non declare');
+  If TokenIs('WITH') Then Consume;
+  If TokenIs('LOCK') Or TokenIs('NO') Or TokenIs('REWIND') Then Consume;
+  If (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Or IsVerb Then Break;
+ Until False;
+End;
+
+Procedure ParseRead;
+Var fname, fh, rb: String; fi, sz, i2: Integer;
+    lbl_ae, lbl_ne, lbl_done: String;
+Begin
+ Consume; { READ }
+ EmitComment('---- READ ----');
+ If Not IsIdentifier Then
+ Begin
+  While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume; Exit;
+ End;
+ fname := current_token; Consume;
+ fi := FindFileEntry(fname);
+ lbl_ae   := NewLabel + 'AE';
+ lbl_ne   := NewLabel + 'NE';
+ lbl_done := NewLabel + 'RD';
+ If current_symbol = SYM_INTO Then Begin Consume; If IsIdentifier Then Consume; End;
+ If TokenIs('NEXT') Or TokenIs('PREVIOUS') Then Consume;
+ If TokenIs('RECORD') Then Consume;
+ EmitComment('READ ' + fname);
+ If fi > 0 Then
+ Begin
+  { Trouver buffer du FD }
+  rb  := '_UNDEF_'; sz := 80;
+  fh  := '_FH_' + ItoSI(fi);
+  { Chercher le record 01 de ce fichier }
+  For i2 := 1 to data_count do
+   If (data_table[i2]^.section = SECT_FILE) And
+      (data_table[i2]^.level = 1) And
+      (data_table[i2]^.file_idx = fi) Then
+   Begin
+    rb := VarAsmRef(i2); sz := VarSz(i2); Break;
+   End;
+  Emit('        MOV     BX, ' + fh);
+  Emit('        LEA     DX, ' + rb);
+  Emit('        MOV     CX, ' + ItoSI(sz));
+  Emit('        MOV     AH, 3Fh');
+  Emit('        INT     21h');
+  Emit('        JC      ' + lbl_ae);
+  Emit('        CMP     AX, 0');
+  Emit('        JE      ' + lbl_ae);
+  Emit('        JMP     ' + lbl_ne);
+ End Else EmitComment('READ: ' + fname + ' non declare');
+ EmitLabel(lbl_ae);
+ If (current_symbol = SYM_AT) Or TokenIs('AT') Then Consume;
+ If TokenIs('END') Then
+ Begin
+  Consume;
+  While Not (current_symbol = SYM_NOT) And Not TokenIs('NOT') And
+        Not IsVerb And
+        (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) And
+        Not TokenIs('END-READ') And (current_symbol <> SYM_END_READ) Do
+   ParseStatement;
+ End;
+ Emit('        JMP     ' + lbl_done);
+ EmitLabel(lbl_ne);
+ If (current_symbol = SYM_NOT) Or TokenIs('NOT') Then Consume;
+ If (current_symbol = SYM_AT) Or TokenIs('AT') Then Consume;
+ If TokenIs('END') Then
+ Begin
+  Consume;
+  While Not TokenIs('END-READ') And (current_symbol <> SYM_END_READ) And
+        Not IsVerb And
+        (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do
+   ParseStatement;
+ End;
+ EmitLabel(lbl_done);
+ If (current_symbol = SYM_END_READ) Then Consume;
+End;
+
+Procedure ParseWrite;
+Var
+ rec_name, fh: String; fi, sz, oi2: Integer;
+ ok: Integer; os: String; on2: LongInt; oi: Integer;
+Begin
+ Consume; { WRITE }
+ EmitComment('---- WRITE ----');
+ If Not IsIdentifier Then
+ Begin
+  While (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume; Exit;
+ End;
+ rec_name := current_token; Consume;
+ { FROM var }
+ If current_symbol = SYM_FROM Then
+ Begin
+  Consume;
+  ParseOperand(ok, os, on2, oi);
+  { Copier operande vers buffer FD }
+  oi2 := FindDataItem(rec_name, SECT_FILE);
+  If (oi2 > 0) And (ok = OP_VAR) And (oi > 0) Then
+  Begin
+   Emit('        LEA     SI, ' + VarAsmRef(oi));
+   Emit('        LEA     DI, ' + VarAsmRef(oi2));
+   Emit('        MOV     CX, ' + ItoSI(VarSz(oi)));
+   Emit('        MOV     BX, ' + ItoSI(VarSz(oi2)));
+   Emit('        CALL    _MOVE_STR_LJ');
+  End;
+ End;
+ { AFTER/BEFORE ADVANCING }
+ If (current_symbol = SYM_AFTER) Or (current_symbol = SYM_BEFORE) Then
+ Begin
+  Consume;
+  If TokenIs('ADVANCING') Or TokenIs('WRITING') Then Consume;
+  While Not IsVerb And (current_symbol <> TOK_PERIOD) And
+        (current_symbol <> TOK_EOF) And
+        Not TokenIs('END-WRITE') And (current_symbol <> SYM_END_WRITE) Do Consume;
+ End;
+ { Chercher le fichier owning le record }
+ EmitComment('WRITE ' + rec_name);
+ oi2 := FindDataItem(rec_name, SECT_FILE);
+ If oi2 > 0 Then
+ Begin
+  fi := data_table[oi2]^.file_idx;
+  sz := VarSz(oi2);
+  If fi > 0 Then
+  Begin
+   fh := '_FH_' + ItoSI(fi);
+   Emit('        MOV     BX, ' + fh);
+   Emit('        LEA     DX, ' + VarAsmRef(oi2));
+   Emit('        MOV     CX, ' + ItoSI(sz));
+   Emit('        MOV     AH, 40h');
+   Emit('        INT     21h');
+  End Else EmitComment('WRITE: pas de fichier associe a ' + rec_name);
+ End Else EmitComment('WRITE: record ' + rec_name + ' non trouve');
+ If current_symbol = SYM_END_WRITE Then Consume;
+End;
+
+Procedure ParseRewrite;
+Begin
+ Consume; { REWRITE }
+ EmitComment('---- REWRITE (stub) ----');
+ While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+End;
+
+Procedure ParseDeleteKW;
+Begin
+ Consume; { DELETE }
+ EmitComment('---- DELETE (stub) ----');
+ While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+End;
+
+{ ======================================================================
+  GENERATION STOP/GO/CALL/EXIT/DIVERS (Todo 17)
+  ====================================================================== }
+Procedure ParseStop;
+Begin
+ Consume; { STOP }
+ If TokenIs('RUN') Then Consume;
+ EmitComment('STOP RUN');
+ Emit('        MOV     AX, 4C00h');
+ Emit('        INT     21h');
+End;
+
+Procedure ParseGoTo;
+Var para_name: String; para_idx: Integer;
+Begin
+ Consume; { GO }
+ If current_symbol = SYM_TO Then Consume;
+ EmitComment('---- GO TO ----');
+ If IsIdentifier Then
+ Begin
+  para_name := current_token; Consume;
+  para_idx  := FindParagraph(para_name);
+  EmitComment('GO TO ' + para_name);
+  If para_idx > 0 Then Emit('        JMP     ' + ParaAsmLabel(para_idx))
+  Else
+  Begin
+   { Para pas encore dans la table - generer un JMP avec label provisoire }
+   Inc(label_counter);
+   Emit('        ; JMP ' + para_name + ' (para pas encore defini)');
+   Emit('        JMP     PARA_' + para_name);  { sera resolu si para existe }
+  End;
+  If current_symbol = SYM_DEPENDING Then
+  Begin
+   EmitComment('DEPENDING ON (stub)');
+   While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+  End;
+ End;
+End;
+
+Procedure ParseCall;
+Var prog_name: String;
+Begin
+ Consume; { CALL }
+ prog_name := '';
+ If current_symbol = TOK_STRING Then Begin prog_name := current_token; Consume; End
+ Else If IsIdentifier Then Begin prog_name := current_token; Consume; End;
+ EmitComment('---- CALL ''' + prog_name + ''' ----');
+ If current_symbol = SYM_USING Then
+ Begin
+  Consume;
+  While IsIdentifier Or (current_symbol = SYM_BY) Or
+        (current_symbol = SYM_REFERENCE) Or (current_symbol = SYM_CONTENT) Do
+  Begin
+   If IsIdentifier Then
+   Begin
+    EmitComment('  USING ' + current_token);
+    Emit('        LEA     AX, ' + VarAsmRef(FindDataItem(current_token, SECT_NONE)));
+    Emit('        PUSH    AX  ; USING ' + current_token);
+   End;
+   Consume;
+  End;
+ End;
+ Emit('        ; CALL ' + prog_name + ' (external - stub)');
+ { ON EXCEPTION }
+ If TokenIs('ON') Then Consume;
+ If TokenIs('EXCEPTION') Or TokenIs('OVERFLOW') Then
+ Begin Consume; While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume; End;
+ If TokenIs('NOT') Then Begin Consume; If TokenIs('ON') Then Consume; If TokenIs('EXCEPTION') Then Consume; End;
+ If TokenIs('END-CALL') Then Consume;
+End;
+
+Procedure ParseExitStmt;
+Begin
+ Consume; { EXIT }
+ If TokenIs('PROGRAM') Then
+ Begin Consume; EmitComment('EXIT PROGRAM'); Emit('        RET     ; EXIT PROGRAM'); End
+ Else
+  EmitComment('EXIT (para terminus)');
+End;
+
+Procedure ParseContinue;
+Begin
+ Consume; { CONTINUE }
+ EmitComment('CONTINUE (nop)');
+ Emit('        NOP');
+End;
+
+Procedure ParseInitialize;
+Var ok: Integer; os: String; on2: LongInt; oi: Integer; szs: String;
+Begin
+ Consume; { INITIALIZE }
+ EmitComment('---- INITIALIZE ----');
+ Repeat
+  ParseOperand(ok, os, on2, oi);
+  If ok = OP_NONE Then Break;
+  If (ok = OP_VAR) And (oi > 0) Then
+  Begin
+   szs := ItoSI(VarSz(oi));
+   EmitComment('INITIALIZE ' + data_table[oi]^.name);
+   Emit('        LEA     DI, ' + VarAsmRef(oi));
+   If (data_table[oi]^.data_type = TYPE_PIC_X) Or
+      (data_table[oi]^.data_type = TYPE_PIC_A) Or
+      data_table[oi]^.is_group Then
+    Emit('        MOV     AL, 20h') Else Emit('        MOV     AL, 30h');
+   Emit('        MOV     CX, ' + szs);
+   Emit('        REP     STOSB');
+  End;
+  If (current_symbol = TOK_PERIOD) Or (current_symbol = TOK_EOF) Or IsVerb Then Break;
+ Until False;
+ If TokenIs('REPLACING') Then
+  While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+End;
+
+Procedure ParseStringKW;
+Begin
+ Consume; { STRING }
+ EmitComment('---- STRING (stub) ----');
+ While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) And
+       Not TokenIs('END-STRING') Do Consume;
+ If TokenIs('END-STRING') Then Consume;
+End;
+
+Procedure ParseUnstring;
+Begin
+ Consume; { UNSTRING }
+ EmitComment('---- UNSTRING (stub) ----');
+ While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) And
+       Not TokenIs('END-UNSTRING') Do Consume;
+ If TokenIs('END-UNSTRING') Then Consume;
+End;
+
+Procedure ParseInspect;
+Begin
+ Consume; { INSPECT }
+ EmitComment('---- INSPECT (stub) ----');
+ While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+End;
+
+Procedure ParseCancel;
+Begin
+ Consume; { CANCEL }
+ EmitComment('---- CANCEL (stub) ----');
+ While Not IsVerb And (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+End;
+
+{ ======================================================================
+  DISPATCHER D'INSTRUCTIONS (Todo 8)
+  ====================================================================== }
+Procedure ParseStatement;
+Begin
+ { Passer les points-virgules et virgules entre enonces }
+ While (current_symbol = TOK_SEMICOLON) Or (current_symbol = TOK_COMMA) Do Consume;
+ Case current_symbol Of
+  SYM_MOVE:       ParseMove;
+  SYM_ADD:        ParseAdd;
+  SYM_SUBTRACT:   ParseSubtract;
+  SYM_MULTIPLY_V: ParseMultiply;
+  SYM_DIVIDE_V:   ParseDivide;
+  SYM_COMPUTE:    ParseCompute;
+  SYM_IF:         ParseIf;
+  SYM_EVALUATE:   ParseEvaluate;
+  SYM_PERFORM:    ParsePerform;
+  SYM_DISPLAY:    ParseDisplay;
+  SYM_ACCEPT:     ParseAccept;
+  SYM_OPEN:       ParseOpen;
+  SYM_CLOSE:      ParseClose;
+  SYM_READ:       ParseRead;
+  SYM_WRITE:      ParseWrite;
+  SYM_REWRITE:    ParseRewrite;
+  SYM_DELETE_KW:  ParseDeleteKW;
+  SYM_STOP:       ParseStop;
+  SYM_GO:         ParseGoTo;
+  SYM_CALL:       ParseCall;
+  SYM_EXIT:       ParseExitStmt;
+  SYM_CONTINUE_KW:ParseContinue;
+  SYM_INITIALIZE: ParseInitialize;
+  SYM_INSPECT:    ParseInspect;
+  SYM_STRING_KW:  ParseStringKW;
+  SYM_UNSTRING:   ParseUnstring;
+  SYM_CANCEL:     ParseCancel;
+ Else
+  { Consommer le token courant (instruction inconnue - eviter boucle infinie) }
+  If (current_symbol <> TOK_PERIOD) And (current_symbol <> TOK_EOF) Then
+  Begin
+   If current_symbol >= 100 Then
+    EmitComment('instruction inconnue: ' + current_token);
+   Consume;
+  End;
+ End;
+ { Consommer le point terminateur si present }
+ If current_symbol = TOK_PERIOD Then Consume;
+End;
+
+{ ======================================================================
+  PROCEDURE DIVISION PARSER (Todo 8)
+  ====================================================================== }
+{ Teste si le token courant est DEBUT d'un nouveau paragraphe.
+  Un paragraphe commence par un identifiant en colonne A (col 8) suivi de '.'
+  Heuristique : si token_column <= 4 (colonne relative < 4 dans source_zone)
+  et que c'est un identifiant non suivi d'un niveau, c'est un para. }
+Function IsParaBegin: Boolean;
+Begin
+ IsParaBegin :=
+  (IsIdentifier Or (current_symbol = TOK_WORD)) And
+  ( (current_symbol <> SYM_SECTION) ) And
+  Not IsVerb;
+End;
+
+Procedure ParseProcedureDivision;
+Var
+ para_name : String;
+ para_idx  : Integer;
+ first_para: Boolean;
+ nxt_tok   : Integer;
+Begin
+ Consume; { PROCEDURE }
+ If current_symbol = SYM_DIVISION Then Consume;
+ { USING clause (programmes appeles) }
+ If current_symbol = SYM_USING Then
+ Begin
+  EmitComment('PROCEDURE DIVISION USING (stub)');
+  While Not (current_symbol = TOK_PERIOD) And (current_symbol <> TOK_EOF) Do Consume;
+ End;
+ If current_symbol = TOK_PERIOD Then Consume;
+ WriteLn('INFO: Parsing PROCEDURE DIVISION...');
+ { Generer le point d entree du programme }
+ Emit('START:');
+ Emit('        MOV     AX, @DATA');
+ Emit('        MOV     DS, AX');
+ Emit('        MOV     ES, AX');
+ EmitBlank;
+ { Appeler le premier paragraphe ; il se terminera par STOP RUN ou RET }
+ first_para_lbl := '';
+ first_para     := True;
+ need_ret       := False;
+ { Boucle principale : parser les paragraphes }
+ While (current_symbol <> TOK_EOF) Do
+ Begin
+  { Gerer les declarations de section (saut) }
+  nxt_tok := current_symbol;
+  { Detecter un nouveau nom de paragraphe :
+    Identifiant en colonne <= 12 dans la zone source, suivi de '.' (next tok) }
+  If IsIdentifier And Not IsVerb Then
+  Begin
+   para_name := current_token;
+   Consume;
+   { Si suivi de 'SECTION .' : c'est une section COBOL }
+   If current_symbol = SYM_SECTION Then
+   Begin
+    Consume;
+    If current_symbol = TOK_PERIOD Then Consume;
+    EmitComment('=== SECTION : ' + para_name + ' ===');
+    Continue;
+   End;
+   { Sinon c'est un paragraphe }
+   If current_symbol = TOK_PERIOD Then Consume;
+   { Emettre RET a la fin du paragraphe precedent (sauf tout debut) }
+   If Not first_para And need_ret Then
+   Begin
+    Emit('        RET     ; fin de ' + cur_para_name);
+    EmitBlank;
+   End;
+   { Enregistrer le paragraphe }
+   para_idx := FindParagraph(para_name);
+   If para_idx = 0 Then para_idx := AddParagraph(para_name, '');
+   { Emettre le label ASM }
+   EmitComment('=== ' + para_name + ' ===');
+   EmitLabel(ParaAsmLabel(para_idx));
+   { Aussi emettre le label avec le nom COBOL pour les GO TO forwards }
+   Emit('PARA_' + para_name + ':');
+   { Si premier paragraphe, emettre le JMP depuis START }
+   If first_para Then
+   Begin
+    { On doit maintenant emettre le CALL au premier para depuis START.
+      Mais on est deja dans le CODE. On va emetre un JMP entre START et le para. }
+    { Ruse : on a deja emis 'START:' + MOV AX,@DATA etc. Maintenant on genere
+      CALL premier_para juste avant le label du para, puis apres on met le label.
+      Probleme : ordre. Solution : emettre le CALL+EXIT avant le label. }
+    { Pragmatique : on accepte que START tombe directement sur le premier para }
+    first_para_lbl := ParaAsmLabel(para_idx);
+    first_para     := False;
+   End;
+   cur_para_name := para_name;
+   need_ret      := True;
+   Continue;
+  End;
+  { Parser les instructions du paragraphe courant }
+  If (current_symbol = TOK_EOF) Then Break;
+  ParseStatement;
+ End;
+ { Emettre le RET final du dernier paragraphe }
+ If need_ret Then
+ Begin
+  Emit('        RET     ; fin de ' + cur_para_name);
+  EmitBlank;
+ End;
+ { Si le programme n a pas de STOP RUN, ajouter un EXIT propre }
+ Emit('        ; Fin du programme (fallthrough)');
+ Emit('        MOV     AX, 4C00h');
+ Emit('        INT     21h');
+ WriteLn('INFO: PROCEDURE DIVISION terminee. Paragraphes: ', para_count);
+ GenRuntimeHelpers;
+ GenFooter;
+End;
+
+{ ======================================================================
+  INITIALISATION DU GENERATEUR
+  ====================================================================== }
+Procedure InitCodegen;
+Begin
+ label_counter  := 0;
+ lit_counter    := 0;
+ gen_enabled    := False; { Active par le main si fichier de sortie est ouvert }
+ first_para_lbl := '';
+ cur_para_name  := '';
+ need_ret       := False;
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn(VERSION, ' - Compilateur COBOL pour 8086/8088');
@@ -2868,6 +4507,7 @@ Begin
  WriteLn(VERSION, ' - Compilation de: ', source_filename);
 
  InitSymbolTable;
+ InitCodegen;
  InitTokenizer;
 
  If opt_dump_tok Then
@@ -2878,7 +4518,6 @@ Begin
   Halt(0);
  End;
 
- { TODO: Appel au parseur principal (prochaines etapes) }
  { Dispatcher selon la division courante }
  If current_symbol = SYM_IDENTIFICATION Then
   ParseIdentificationDivision
@@ -2893,9 +4532,38 @@ Begin
  If current_symbol = SYM_DATA Then
   ParseDataDivision;
 
- { TODO: ParseProcedureDivision }
-
  If opt_dump_sym Then DumpSymbolTable;
+
+ { PROCEDURE DIVISION : ouvrir la sortie ASM puis generer }
+ If Not opt_dump_tok And Not opt_dump_sym Then
+ Begin
+  Assign(output_file, output_filename);
+  Rewrite(output_file);
+  If IOResult <> 0 Then
+  Begin
+   WriteLn('ERREUR: Impossible de creer le fichier ASM: ', output_filename);
+   Halt(1);
+  End;
+  gen_enabled := True;
+  GenHeader;
+  { PROCEDURE DIVISION }
+  If current_symbol = SYM_PROCEDURE Then
+   ParseProcedureDivision
+  Else
+  Begin
+   { Pas de PROCEDURE DIVISION : generer au minimum un main vide }
+   Emit('START:');
+   Emit('        MOV     AX, @DATA');
+   Emit('        MOV     DS, AX');
+   Emit('        MOV     ES, AX');
+   Emit('        MOV     AX, 4C00h');
+   Emit('        INT     21h');
+   GenRuntimeHelpers;
+   GenFooter;
+  End;
+  Close(output_file);
+  WriteLn('ASM genere: ', output_filename);
+ End;
 
  Close(input_file);
  WriteLn('Termine. Erreurs: ', error_count);

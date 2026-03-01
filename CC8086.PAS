@@ -4625,62 +4625,51 @@ Begin
   Exit;
  End;
   { Analyser le contenu - peut Ãªtre un type ou une expression }
- { Sauvegarder la position pour pouvoir revenir en arriÃ¨re }
+ { Sauvegarder la position pour pouvoir revenir en arriŠre }
  blanks;
-
- { Essayer d'analyser comme un type d'abord }
+  { Essayer d'analyser comme un type d'abord }
  type_id := parse_type_specifier_with_qualifiers(type_info);
-
- If type_id <> -1 Then
- Begin
-  { C'est un type - calculer sa taille }
+ If type_id <> -1 Then Begin
+   { C'est un type - calculer sa taille }
   safe_writeln('; sizeof sur type: ' + get_type_name(type_info));
   size_value := calculate_type_size(type_info);
-
-  { Attendre la parenthÃ¨se fermante }
-  If not match(')') Then
-  Begin
+   { Attendre la parenthŠse fermante }
+  If not match(')') Then Begin
    Case Language of
     _English: errrpt('Expected ) after sizeof type');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach sizeof-Typ');
     {$ENDIF}
-    Else errrpt(') attendu aprÃ¨s le type sizeof');
+    Else errrpt(') attendu aprŠs le type sizeof');
    End;
    Exit;
   End;
  End
- Else
+  Else
  Begin
-  { Ce n'est pas un type - essayer comme expression }
+   { Ce n'est pas un type - essayer comme expression }
   safe_writeln('; sizeof sur expression');
-
-  { Analyser l'expression }
+   { Analyser l'expression }
   unary_expression(expr_lval);
-
-  { Calculer la taille basÃ©e sur le type de l'expression }
+   { Calculer la taille bas‚e sur le type de l'expression }
   size_value := calculate_type_size(expr_lval.type_info);
-
-  { Attendre la parenthÃ¨se fermante }
-  If not match(')') Then
-  Begin
+   { Attendre la parenthŠse fermante }
+  If not match(')') Then Begin
    Case Language of
     _English: errrpt('Expected ) after sizeof expression');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach sizeof-Ausdruck');
     {$ENDIF}
-    Else errrpt(') attendu aprÃ¨s l''expression sizeof');
+    Else errrpt(') attendu aprŠs l''expression sizeof');
    End;
    Exit;
   End;
  End;
-
- { GÃ©nÃ©rer le code pour charger la taille comme constante }
+  { G‚n‚rer le code pour charger la taille comme constante }
  ot('mov  ax,');
  outdec(size_value);
  nl;
-
- { Configurer lval pour le rÃ©sultat }
+  { Configurer lval pour le r‚sultat }
  FillChar(lval, SizeOf(lval), 0);
  lval.typ := cint;
  lval.constant := True;
@@ -4688,400 +4677,339 @@ Begin
  init_type_info(lval.type_info);
  lval.type_info.base_type := cint;
  lval.type_info.size := sizeof_int;
-
- safe_writeln('; sizeof rÃ©sultat: ' + IntToStr(size_value) + ' octets');
+ safe_writeln('; sizeof r‚sultat: ' + IntToStr(size_value) + ' octets');
 End;
 
-{ Analyseur d'expression multiplicative }
+ { Analyseur d'expression multiplicative }
 Procedure multiplicative_expression(var lval: TLVal);
 Var
  op: Char;
 Begin
  unary_expression(lval);
-
- While (peek_char = '*') or (peek_char = '/') or (peek_char = '%') do
- Begin
+ While (peek_char = '*') or (peek_char = '/') or (peek_char = '%') do Begin
   op := next_char;
-  ol('push ax'); { empiler l'opï¿½rande gauche }
-
+  ol('push ax'); { empiler l'op‚rande gauche }
   unary_expression(lval);
-
   Case op of
    '*': Begin
-     ol('POP  BX'); { dï¿½piler l'opï¿½rande gauche vers BX }
+     ol('POP  BX');     { d‚piler l'op‚rande gauche vers BX }
      ol('call mult16'); { appeler la routine de multiplication }
     End;
-
    '/': Begin
-     ol('MOV  BX, AX'); { opï¿½rande droit vers BX }
-     ol('POP  AX'); { opï¿½rande gauche vers AX }
-     ol('CALL div16'); { appeler la routine de division }
+     ol('MOV  BX, AX'); { op‚rande droit vers BX }
+     ol('POP  AX');     { op‚rande gauche vers AX }
+     ol('CALL div16');  { appeler la routine de division }
     End;
-
    '%': Begin
-     ol('MOV  BX, AX'); { opï¿½rande droit vers BX }
-     ol('POP  AX'); { opï¿½rande gauche vers AX }
-     ol('CALL mod16'); { appeler la routine de modulo }
+     ol('MOV  BX, AX'); { op‚rande droit vers BX }
+     ol('POP  AX');     { op‚rande gauche vers AX }
+     ol('CALL mod16');  { appeler la routine de modulo }
     End;
   End;
  End;
 End;
 
-{ Analyseur d'expression additive }
+ { Analyseur d'expression additive }
 Procedure additive_expression(var lval: TLVal);
 Var
  op: Char;
 Begin
  multiplicative_expression(lval);
-
- While (peek_char = '+') or (peek_char = '-') do
- Begin
+ While (peek_char = '+') or (peek_char = '-') do Begin
   op := next_char;
-  ol('PUSH AX'); { empiler l'opï¿½rande gauche }
-
+  ol('PUSH AX'); { empiler l'op‚rande gauche }
   multiplicative_expression(lval);
-
   Case op of
    '+': Begin
      ol('ADD  AX, [SP] ; puis ADD SP, 2'); { additionner et nettoyer la pile }
      ol('ADD  SP, 2'); { nettoyer la pile }
     End;
-
    '-': Begin
-     ol('MOV  BX, AX'); { opï¿½rande droit vers BX }
-     ol('POP  AX'); { opï¿½rande gauche vers AX }
+     ol('MOV  BX, AX'); { op‚rande droit vers BX }
+     ol('POP  AX');     { op‚rande gauche vers AX }
      ol('SUB  AX, BX'); { soustraire }
     End;
   End;
  End;
 End;
 
-{ Analyseur d'expression relationnelle - gï¿½re >, <, >=, <=, ==, != }
-Procedure relational_expression(var lval: TLVal);
-Begin
+ { Analyseur d'expression relationnelle - gŠre >, <, >=, <=, ==, != }
+Procedure relational_expression(var lval: TLVal);Begin
  additive_expression(lval);
-
- While True do
- Begin
-  If match('>') Then
-  Begin
-   If match('=') Then
-   Begin
+ While True do Begin
+  If match('>') Then Begin
+   If match('=') Then Begin
     { >= operator }
-    safe_writeln('; OpÃ©rateur >=');
-    ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+    safe_writeln('; Op‚rateur >=');
+    ol('PUSH AX');       { Empiler l'op‚rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Opï¿½rande gauche vers BX }
-    ol('CMP  BX, AX');    { Comparer BX avec AX }
-    ol('JGE  $+5');   { Brancher si supï¿½rieur ou ï¿½gal }
-    ol('MOV  AX, 0');    { Rï¿½sultat faux }
-    ol('JMP  $+3');   { Ignorer le rï¿½sultat vrai }
-    ol('MOV  AX, 1');    { Rï¿½sultat vrai }
+    ol('POP  BX');       { Op‚rande gauche vers BX }
+    ol('CMP  BX, AX');   { Comparer BX avec AX }
+    ol('JGE  $+5');      { Brancher si supï¿½rieur ou ï¿½gal }
+    ol('MOV  AX, 0');    { R‚sultat faux }
+    ol('JMP  $+3');      { Ignorer le r‚sultat vrai }
+    ol('MOV  AX, 1');    { R‚sultat vrai }
    End
-   Else
+    Else
    Begin
-    { > operator }
-    safe_writeln('; OpÃ©rateur >');
-    ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+     { > operator }
+    safe_writeln('; Op‚rateur >');
+    ol('PUSH AX');       { Empiler l'op‚rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Opï¿½rande gauche vers BX }
-    ol('CMP  BX, AX');    { Comparer BX avec AX }
-    ol('JG   $+5');   { Brancher si supï¿½rieur }
-    ol('MOV  AX, 0');    { Rï¿½sultat faux }
-    ol('JMP  $+3');   { Ignorer le rï¿½sultat vrai }
-    ol('MOV  AX, 1');    { Rï¿½sultat vrai }
+    ol('POP  BX');       { Op‚rande gauche vers BX }
+    ol('CMP  BX, AX');   { Comparer BX avec AX }
+    ol('JG   $+5');      { Brancher si sup‚rieur }
+    ol('MOV  AX, 0');    { R‚sultat faux }
+    ol('JMP  $+3');      { Ignorer le r‚sultat vrai }
+    ol('MOV  AX, 1');    { R‚sultat vrai }
    End;
   End
-  Else If match('<') Then
-  Begin
-   If match('=') Then
-   Begin
-    { <= operator }
-    safe_writeln('; OpÃ©rateur <=');
-    ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
-    additive_expression(lval);
-    ol('POP  BX');    { Opï¿½rande gauche vers BX }
-    ol('CMP  BX, AX');    { Comparer BX avec AX }
-    ol('JLE  $+5');   { Brancher si infï¿½rieur ou ï¿½gal }
-    ol('MOV  AX, 0');    { Rï¿½sultat faux }
-    ol('JMP  $+3');   { Ignorer le rï¿½sultat vrai }
-    ol('MOV  AX, 1');    { Rï¿½sultat vrai }
-   End
    Else
-   Begin
-    { < operator }
-    safe_writeln('; OpÃ©rateur <');
-    ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+  If match('<') Then Begin
+   If match('=') Then Begin
+     { <= operator }
+    safe_writeln('; Op‚rateur <=');
+    ol('PUSH AX');       { Empiler l'op‚rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Opï¿½rande gauche vers BX }
-    ol('CMP  BX, AX');    { Comparer BX avec AX }
-    ol('JL   $+5');   { Brancher si infï¿½rieur }
-    ol('MOV  AX, 0');    { Rï¿½sultat faux }
-    ol('JMP  $+3');   { Ignorer le rï¿½sultat vrai }
-    ol('MOV  AX, 1');    { Rï¿½sultat vrai }
+    ol('POP  BX');       { Op‚rande gauche vers BX }
+    ol('CMP  BX, AX');   { Comparer BX avec AX }
+    ol('JLE  $+5');      { Brancher si inf‚rieur ou ‚gal }
+    ol('MOV  AX, 0');    { R‚sultat faux }
+    ol('JMP  $+3');      { Ignorer le r‚sultat vrai }
+    ol('MOV  AX, 1');    { R‚sultat vrai }
+   End
+    Else
+   Begin
+     { Op‚rateur < }
+    safe_writeln('; Op‚rateur <');
+    ol('PUSH AX');       { Empiler l'op‚rande gauche }
+    additive_expression(lval);
+    ol('POP  BX');       { Op‚rande gauche vers BX }
+    ol('CMP  BX, AX');   { Comparer BX avec AX }
+    ol('JL   $+5');      { Brancher si inf‚rieur }
+    ol('MOV  AX, 0');    { R‚sultat faux }
+    ol('JMP  $+3');      { Ignorer le r‚sultat vrai }
+    ol('MOV  AX, 1');    { R‚sultat vrai }
    End;
   End
-  Else If match('=') and match('=') Then
-  Begin
-   { == operator }
-   safe_writeln('; OpÃ©rateur ==');
-   ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+   Else
+  If match('=') and match('=')Then Begin
+    { Op‚rateur == }
+   safe_writeln('; Op‚rateur ==');
+   ol('PUSH AX');        { Empiler l'op‚rande gauche }
    additive_expression(lval);
-   ol('POP  BX');    { Opï¿½rande gauche vers BX }
+   ol('POP  BX');        { Op‚rande gauche vers BX }
    ol('CMP  BX, AX');    { Comparer BX avec AX }
-   ol('JE   $+5');   { Brancher si ï¿½gal }
-   ol('MOV  AX, 0');    { Rï¿½sultat faux }
-   ol('JMP  $+3');   { Ignorer le rï¿½sultat vrai }
-   ol('MOV  AX, 1');    { Rï¿½sultat vrai }
+   ol('JE   $+5');       { Brancher si ‚gal }
+   ol('MOV  AX, 0');     { R‚sultat faux }
+   ol('JMP  $+3');       { Ignorer le r‚sultat vrai }
+   ol('MOV  AX, 1');     { R‚sultat vrai }
   End
-  Else If match('!') and match('=') Then
-  Begin
-   { != operator }
-   safe_writeln('; OpÃ©rateur !=');
-   ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+   Else
+  If match('!') and match('=') Then Begin
+    { != operator }
+   safe_writeln('; Op‚rateur !=');
+   ol('PUSH AX');        { Empiler l'op‚rande gauche }
    additive_expression(lval);
-   ol('POP  BX');    { Opï¿½rande gauche vers BX }
+   ol('POP  BX');        { Op‚rande gauche vers BX }
    ol('CMP  BX, AX');    { Comparer BX avec AX }
-   ol('JNE  $+5');   { Brancher si diffï¿½rent }
-   ol('MOV  AX, 0');    { Rï¿½sultat faux }
-   ol('JMP  $+3');   { Ignorer le rï¿½sultat vrai }
-   ol('MOV  AX, 1');    { Rï¿½sultat vrai }
+   ol('JNE  $+5');       { Brancher si diff‚rent }
+   ol('MOV  AX, 0');     { R‚sultat faux }
+   ol('JMP  $+3');       { Ignorer le r‚sultat vrai }
+   ol('MOV  AX, 1');     { R‚sultat vrai }
   End
-  Else
-   Break; { Plus d'opï¿½rateurs relationnels }
+   Else
+  Break; { Plus d'op‚rateurs relationnels }
  End;
 End;
 
-{ Analyseur d'expression ET binaire - gï¿½re & }
-Procedure bitwise_and_expression(var lval: TLVal);
-Begin
+ { Analyseur d'expression ET binaire - gŠre & }
+Procedure bitwise_and_expression(var lval:TLVal);Begin
  relational_expression(lval);
-
- While match('&') do
- Begin
-  { VÃ©rifier que ce n'est pas && }
-  If peek_char = '&' Then
-  Begin
-   { Reculer car c'est && qui sera traitÃ© par logical_and }
+ While match('&') do Begin
+  { V‚rifier que ce n'est pas && }
+  If peek_char = '&' Then Begin
+   { Reculer car c'est && qui sera trait‚ par logical_and }
    Dec(lptr);
    Break;
   End;
-
-  safe_writeln('; OpÃ©rateur & (ET binaire)');
-  ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+  safe_writeln('; Op‚rateur & (ET binaire)');
+  ol('PUSH AX');      { Empiler l'op‚rande gauche }
   relational_expression(lval);
-  ol('MOV  BX, AX');  { Opï¿½rande droit vers BX }
-  ol('POP  AX');    { Opï¿½rande gauche vers AX }
-  ol('AND  AX, BX'); { Opï¿½ration ET binaire }
-  ol('tfr  a,b');  { Octet bas du rï¿½sultat vers B }
-  ol('tfr  u,a');  { Restaurer l'octet haut depuis U }
-  ol('anda 0,x');  { ET sur les octets hauts }
+  ol('MOV  BX, AX');  { Op‚rande droit vers BX }
+  ol('POP  AX');      { Op‚rande gauche vers AX }
+  ol('AND  AX, BX');  { Op‚ration ET binaire }
+  ol('tfr  a,b');     { Octet bas du r‚sultat vers B }
+  ol('tfr  u,a');     { Restaurer l'octet haut depuis U }
+  ol('anda 0,x');     { ET sur les octets hauts }
  End;
 End;
 
-{ Analyseur d'expression XOR binaire - gï¿½re ^ }
-Procedure bitwise_xor_expression(var lval: TLVal);
-Begin
+ { Analyseur d'expression XOR binaire - gŠre ^ }
+Procedure bitwise_xor_expression(var lval: TLVal);Begin
  bitwise_and_expression(lval);
-
- While match('^') do
- Begin
-  safe_writeln('; OpÃ©rateur ^ (XOR binaire)');
-  ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+ While match('^') do Begin
+  safe_writeln('; Op‚rateur ^ (XOR binaire)');
+  ol('PUSH AX');      { Empiler l'op‚rande gauche }
   bitwise_and_expression(lval);
-  ol('MOV  BX, AX');  { Opï¿½rande droit vers BX }
-  ol('POP  AX');    { Opï¿½rande gauche vers AX }
-  ol('XOR  AX, BX'); { Opï¿½ration XOR binaire }
+  ol('MOV  BX, AX');  { Op‚rande droit vers BX }
+  ol('POP  AX');      { Op‚rande gauche vers AX }
+  ol('XOR  AX, BX');  { Op‚ration XOR binaire }
  End;
 End;
 
-{ Analyseur d'expression OU binaire - gï¿½re | }
-Procedure bitwise_or_expression(var lval: TLVal);
-Begin
+ { Analyseur d'expression OU binaire - gŠre | }
+Procedure bitwise_or_expression(var lval: TLVal);Begin
  bitwise_xor_expression(lval);
-
- While match('|') do
- Begin
-  { VÃ©rifier que ce n'est pas || }
-  If peek_char = '|' Then
-  Begin
-   { Reculer car c'est || qui sera traitÃ© par logical_or }
+ While match('|') do Begin
+   { V‚rifier que ce n'est pas || }
+  If peek_char = '|' Then Begin
+   { Reculer car c'est || qui sera trait‚ par logical_or }
    Dec(lptr);
    Break;
   End;
-
-  safe_writeln('; OpÃ©rateur | (OU binaire)');
-  ol('PUSH AX');    { Empiler l'opï¿½rande gauche }
+  safe_writeln('; Op‚rateur | (OU binaire)');
+  ol('PUSH AX');      { Empiler l'op‚rande gauche }
   bitwise_xor_expression(lval);
-  ol('MOV  BX, AX');  { Opï¿½rande droit vers BX }
-  ol('POP  AX');    { Opï¿½rande gauche vers AX }
-  ol('OR   AX, BX'); { Opï¿½ration OU binaire }
-  ol('ora  0,x');  { OU sur les octets hauts }
+  ol('MOV  BX, AX');  { Op‚rande droit vers BX }
+  ol('POP  AX');      { Op‚rande gauche vers AX }
+  ol('OR   AX, BX');  { Op‚ration OU binaire }
+  ol('ora  0,x');     { OU sur les octets hauts }
  End;
 End;
 
-{ Analyseur d'expression ET logique - gï¿½re && }
+ { Analyseur d'expression ET logique - gŠre && }
 Procedure logical_and_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
 Begin
  bitwise_or_expression(lval);
-
- While match('&') and match('&') do
- Begin
-  safe_writeln('; OpÃ©rateur && (ET logique)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+ While match('&') and match('&') do Begin
+  safe_writeln('; Op‚rateur && (ET logique)');
+   { G‚nŠrer les ‚tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premiÃ¨re expression }
+   { Tester la premiŠre expression }
   ol('CMP  AX, 0');
   ot('JE   ');
   printlabel(false_label);
   nl;
-
-  { Ã‰valuer la deuxiÃ¨me expression }
+   { valuer la deuxiŠme expression }
   bitwise_or_expression(lval);
   ol('CMP  AX, 0');
   ot('JE   ');
   printlabel(false_label);
   nl;
-
-  { Les deux sont vraies - rÃ©sultat = 1 }
+   { Les deux sont vraies - r‚sultat = 1 }
   ol('MOV  AX, 1');
   ot('JMP  ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est fausse - rÃ©sultat = 0 }
+   { Au moins une est fausse - r‚sultat = 0 }
   prelabel(false_label);
   ol('MOV  AX, 0');
-
-  { Fin }
+   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Analyseur d'expression OU logique - gï¿½re || }
+ { Analyseur d'expression OU logique - gŠre || }
 Procedure logical_or_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
 Begin
  logical_and_expression(lval);
-
- While match('|') and match('|') do
- Begin
+ While match('|')and match('|')do Begin
   safe_writeln('; OpÃ©rateur || (OU logique)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+   { G‚nŠrer les ‚tiquettes }
   true_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premiÃ¨re expression }
+   { Tester la premiŠre expression }
   ol('CMP  AX, 0');
   ot('JNE  ');
   printlabel(true_label);
   nl;
-
-  { Ã‰valuer la deuxiÃ¨me expression }
+   { valuer la deuxiŠme expression }
   logical_and_expression(lval);
   ol('CMP  AX, 0');
   ot('JNE  ');
   printlabel(true_label);
   nl;
-
-  { Les deux sont fausses - rÃ©sultat = 0 }
+   { Les deux sont fausses - r‚sultat = 0 }
   ol('MOV  AX, 0');
   ot('JMP  ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est vraie - rÃ©sultat = 1 }
+   { Au moins une est vraie - r‚sultat = 1 }
   prelabel(true_label);
   ol('MOV  AX, 1');
-
-  { Fin }
+   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Analyseur d'expression conditionnelle - gï¿½re ?: (opï¿½rateur ternaire) }
+ { Analyseur d'expression conditionnelle - gŠre ?: (op‚rateur ternaire) }
 Procedure conditional_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
  true_lval, false_lval: TLVal;
 Begin
  logical_or_expression(lval);
-
- If match('?') Then
- Begin
-  safe_writeln('; OpÃ©rateur ternaire ? : (expression conditionnelle)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+ If match('?') Then Begin
+  safe_writeln('; Op‚rateur ternaire ? : (expression conditionnelle)');
+   { G‚n‚rer les ‚tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
   { Tester la condition }
-  ol('CMP  AX, 0');         { Tester le rÃ©sultat de la condition }
-  ot('JE   ');        { Si faux, aller Ã  l''expression fausse }
+  ol('CMP  AX, 0');        { Tester le rÃ©sultat de la condition }
+  ot('JE   ');             { Si faux, aller Ã  l''expression fausse }
   printlabel(false_label);
   nl;
-
-  { Analyser l'expression vraie }
+   { Analyser l'expression vraie }
   safe_writeln('; Expression vraie du ternaire');
   logical_or_expression(true_lval);
-
-  { Sauter l'expression fausse }
+   { Sauter l'expression fausse }
   ot('JMP  ');
   printlabel(end_label);
   nl;
-
-  { Attendre ':' }
-  If not match(':') Then
-  Begin
+   { Attendre ':' }
+  If not match(':')Then Begin
    Case Language of
     _English: errrpt('Expected : in ternary operator');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete : im ternÃ¤ren Operator');
     {$ENDIF}
-    Else errrpt(': attendu dans l''opÃ©rateur ternaire');
+    Else errrpt(': attendu dans l''op‚rateur ternaire');
    End;
    Exit;
   End;
-
-  { Ã‰tiquette pour l'expression fausse }
+   { tiquette pour l'expression fausse }
   prelabel(false_label);
-
-  { Analyser l'expression fausse }
+   { Analyser l'expression fausse }
   safe_writeln('; Expression fausse du ternaire');
   logical_or_expression(false_lval);
-
-  { Ã‰tiquette de fin }
+   { tiquette de fin }
   prelabel(end_label);
-
-  { Le rÃ©sultat est dans D - copier les informations de type appropriÃ©es }
-  { Pour simplifier, utiliser le type de l'expression vraie }
+   { Le r‚sultat est dans D - copier les informations de type appropri‚es }
+   { Pour simplifier, utiliser le type de l'expression vraie }
   lval := true_lval;
   safe_writeln('; Fin opÃ©rateur ternaire');
  End;
 End;
 
-{ Analyseur d'expressions principal }
-Function expression_bool(var lval: TLVal): Boolean;
-Begin
+ { Analyseur d'expressions principal }
+Function expression_bool(var lval: TLVal):Boolean;Begin
  conditional_expression(lval);
  expression_bool := True;
 End;
 
-{ Wrapper procedure for backward compatibility }
-Procedure expression(var lval: TLVal);
-Begin
+{ Proc‚dure enveloppant pour la compatibilit‚ ascendante }
+Procedure expression(var lval: TLVal);Begin
  expression_bool(lval);
 End;
 
-{ Variable declaration parsing functions - moved after expression }
-{ Enhanced declaration parsing with full type support }
+ { Fonction d'analyse de d‚claration de variable - d‚place aprŠs l'expression }
+ { Analyse la d‚claration ‚tendue avec un support de type plein }
 Function parse_declaration: Boolean;
 Var
  base_type, var_type, storage_class: Integer;
@@ -5091,66 +5019,52 @@ Var
  save_lptr: Integer;
 Begin
  parse_declaration := False;
-
- { Analyser d'abord le spï¿½cificateur de classe de stockage }
+  { Analyser d'abord le sp‚cificateur de classe d'entreposage }
  storage_class := parse_storage_class_specifier;
-
- { Vï¿½rifier si c'est une dï¿½claration typedef }
- If storage_class = it_typedef_type Then
- Begin
-  { Gï¿½rer la dï¿½claration typedef }
+  { V‚rifier si c'est une d‚claration typedef }
+ If storage_class = it_typedef_type Then Begin
+  { G‚rer la d‚claration typedef }
   If parse_typedef_declaration Then
    parse_declaration := True;
   Exit;
  End;
-
- { Analyser le spï¿½cificateur de type avec qualificateurs }
+  { Analyser le sp‚cificateur de type avec qualificateurs }
  base_type := parse_type_specifier_with_qualifiers(type_info);
- If base_type = -1 Then Exit; { Aucun type valide trouvï¿½ }
-
- { Sauvegarder la position pour vï¿½rifier fonction vs variable }
+ If base_type = -1 Then Exit; { Aucun type valide trouv‚ }
+  { Sauvegarder la position pour v‚rifier fonction vs variable }
  save_lptr := lptr;
-
- { Essayer d'analyser comme dï¿½clarateur pour obtenir le nom }
+  { Essayer d'analyser comme d‚clarateur pour obtenir le nom }
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
-
- { Vï¿½rifier si c'est une dï¿½claration/dï¿½finition de fonction }
- If match('(') Then
- Begin
+  { V‚rifier si c'est une d‚claration/d‚finition de fonction }
+ If match('(') Then Begin
   { C'est une fonction - restaurer la position et analyser comme fonction }
   lptr := save_lptr;
   If parse_function_declaration(base_type) Then
    parse_declaration := True;
   Exit;
  End;
-
- { C'est une dï¿½claration de variable - passer la classe de stockage }
+  { C'est une dï¿½claration de variable - passer la classe de stockage }
  declare_variable(var_name, var_type, type_info, storage_class);
  parse_declaration := True;
-
- { Vï¿½rifier l'initialisation }
- If match('=') Then
- Begin
+  { V‚rifier l'initialisation }
+ If match('=') Then Begin
   safe_writeln('; Initialisation de la variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
   expression(lval);
-
-  { Vï¿½rification du type pour l'initialisation }
-  If type_info.is_const Then
-  Begin
-   safe_writeln('; variable const initialisï¿½e');
+   { V‚rification du type pour l'initialisation }
+  If type_info.is_const Then Begin
+   safe_writeln('; variable const initialis‚e');
   End;
-
-  { Gï¿½nï¿½rer le code d'initialisation appropriï¿½ au type }
+   { G‚n‚rer le code d'initialisation appropri‚ au type }
   Case type_info.size of
    1: Begin
-       ot('MOV  '); { Stocker l'octet pour char }
+       ot('MOV  '); { Entreposer l'octet pour char }
        outstr(var_name);
        outstr(', AL');
        nl;
       End;
    2: Begin
-       ot('mov  '); { Stocker le mot pour int/short/pointeurs }
+       ot('mov  '); { Entreposer le mot pour int/short/pointeurs }
        outstr(var_name);
        nl;
       End;
@@ -5162,9 +5076,9 @@ Begin
    End;
   End;
  End
- Else
+  Else
  Begin
-  { Vï¿½rifier si la variable const nï¿½cessite une initialisation }
+  { V‚rifier si la variable const nï¿½cessite une initialisation }
   If type_info.is_const Then
   Begin
    Case Language of
