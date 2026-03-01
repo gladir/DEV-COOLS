@@ -1949,6 +1949,310 @@ Begin
  WriteLn('INFO: IDENTIFICATION DIVISION parsed. PROGRAM-ID = ', program_name);
 End;
 
+{ ============================================================================ }
+{ PARSEUR ENVIRONMENT DIVISION                                                 }
+{ ============================================================================ }
+
+{
+  Grammaire de l'ENVIRONMENT DIVISION (COBOL-85) :
+
+    ENVIRONMENT DIVISION .
+      [ CONFIGURATION SECTION .
+          [ SOURCE-COMPUTER . computer-name [WITH DEBUGGING MODE] . ]
+          [ OBJECT-COMPUTER  . computer-name
+              [ MEMORY SIZE n (WORDS|CHARACTERS|MODULES) ]
+              [ PROGRAM COLLATING SEQUENCE IS alphabet-name ] . ]
+          [ SPECIAL-NAMES .
+              [ implementor-name IS mnemonic-name ]
+              [ DECIMAL-POINT IS COMMA ] ... ] ]
+      [ INPUT-OUTPUT SECTION .
+          [ FILE-CONTROL .
+              ( SELECT [OPTIONAL] file-name
+                ASSIGN TO implementor-name-or-literal
+                [ORGANIZATION IS (SEQUENTIAL|RANDOM|RELATIVE)]
+                [ACCESS MODE IS (SEQUENTIAL|RANDOM|DYNAMIC)]
+                [RELATIVE KEY IS data-name]
+                [FILE STATUS IS data-name] . )... ] ]
+
+  On arrive ici avec current_token = 'ENVIRONMENT'.
+  La FILE-CONTROL est la seule partie qui alimente la table des symboles
+  (file_table). Tout le reste est lu et ignore ou stocke a titre informatif.
+}
+
+{ Consommer un identifiant ou un mot reserve quelconque (nom libre COBOL) }
+Function ParseWordOrReserved: String;
+Begin
+ If (current_symbol = TOK_WORD) or (current_symbol >= 100) Then
+ Begin
+  ParseWordOrReserved := current_token;
+  Consume;
+ End
+ Else
+ Begin
+  Error('Attendu un identifiant, trouve ''' + current_token + '''');
+  ParseWordOrReserved := '';
+ End;
+End;
+
+{ ---- CONFIGURATION SECTION ---- }
+
+Procedure ParseConfigurationSection;
+Begin
+ { On arrive apres 'CONFIGURATION SECTION .' }
+
+ { SOURCE-COMPUTER optionnel }
+ If current_symbol = SYM_SOURCE_COMPUTER Then
+ Begin
+  Consume; { SOURCE-COMPUTER }
+  If current_symbol = TOK_PERIOD Then Consume; { . }
+  { Nom de l'ordinateur source (libre) }
+  While (current_symbol <> TOK_PERIOD) and (current_symbol <> TOK_EOF) and
+        (current_symbol <> SYM_OBJECT_COMPUTER) and
+        (current_symbol <> SYM_SPECIAL_NAMES) do
+   Consume;
+  If current_symbol = TOK_PERIOD Then Consume;
+ End;
+
+ { OBJECT-COMPUTER optionnel }
+ If current_symbol = SYM_OBJECT_COMPUTER Then
+ Begin
+  Consume; { OBJECT-COMPUTER }
+  If current_symbol = TOK_PERIOD Then Consume; { . }
+  { Tout jusqu'au prochain point : MEMORY SIZE, COLLATING SEQUENCE... }
+  SkipToPeriod;
+ End;
+
+ { SPECIAL-NAMES optionnel }
+ If current_symbol = SYM_SPECIAL_NAMES Then
+ Begin
+  Consume; { SPECIAL-NAMES }
+  If current_symbol = TOK_PERIOD Then Consume; { . }
+  { Lire les clauses jusqu'a la prochaine section ou fin de division }
+  While (current_symbol <> SYM_INPUT_OUTPUT) and
+        (current_symbol <> SYM_FILE_CONTROL) and
+        (current_symbol <> SYM_DATA)         and
+        (current_symbol <> SYM_PROCEDURE)    and
+        (current_symbol <> TOK_EOF) do
+  Begin
+   { Clause DECIMAL-POINT IS COMMA : noter mais non implemente ici }
+   If current_symbol = SYM_DECIMAL_POINT Then
+   Begin
+    Consume; { DECIMAL-POINT }
+    If current_symbol = SYM_IS Then Consume; { IS }
+    If TokenIs('COMMA') Then
+    Begin
+     Consume;
+     Warning('DECIMAL-POINT IS COMMA non supporte - ignore');
+    End;
+    If current_symbol = TOK_PERIOD Then Consume;
+   End
+   Else
+   Begin
+    { Toute autre clause SPECIAL-NAMES : ignorer jusqu'au '.' }
+    SkipToPeriod;
+   End;
+  End;
+ End;
+End;
+
+{ ---- FILE-CONTROL : SELECT ... ASSIGN ... ---- }
+
+Procedure ParseFileControl;
+Var
+ fname : String;
+ fidx  : Integer;
+ org   : Integer; { 0=sequential,1=random,2=relative }
+ acc   : Integer; { 0=sequential,1=random,2=dynamic }
+ fstat : String;
+Begin
+ { On arrive apres 'FILE-CONTROL .' }
+
+ { Boucle sur les clauses SELECT (une par fichier) }
+ While (current_symbol <> SYM_DATA)      and
+       (current_symbol <> SYM_PROCEDURE) and
+       (current_symbol <> TOK_EOF)       and
+       not ((current_symbol = SYM_INPUT_OUTPUT) or
+            TokenIs('SORT-MERGE')) do
+ Begin
+
+  If current_symbol <> SYM_SELECT Then
+  Begin
+   { Token inattendu dans FILE-CONTROL }
+   Warning('Attendu SELECT dans FILE-CONTROL, trouve ''' + current_token + '''');
+   SkipToPeriod;
+   Continue;
+  End;
+  Consume; { SELECT }
+
+  { OPTIONAL optionnel }
+  If TokenIs('OPTIONAL') Then Consume;
+
+  { Nom logique du fichier }
+  fname := ParseWordOrReserved;
+  If fname = '' Then Begin SkipToPeriod; Continue; End;
+
+  org  := 0;  { defaut SEQUENTIAL }
+  acc  := 0;
+  fstat := '';
+
+  { Ajouter a la table des fichiers }
+  fidx := FindFileEntry(fname);
+  If fidx = 0 Then
+   fidx := AddFileEntry(fname);
+
+  { Clauses SELECT jusqu'au point terminateur }
+  While (current_symbol <> TOK_PERIOD) and (current_symbol <> TOK_EOF) do
+  Begin
+
+   { ASSIGN TO ... }
+   If current_symbol = SYM_ASSIGN Then
+   Begin
+    Consume; { ASSIGN }
+    If current_symbol = SYM_TO Then Consume; { TO optionnel }
+    { Nom physique : identifiant ou chaine litterale }
+    If current_symbol = TOK_STRING Then
+    Begin
+     file_table[fidx]^.assign_to := current_token;
+     Consume;
+    End
+    Else If (current_symbol = TOK_WORD) or (current_symbol >= 100) Then
+    Begin
+     file_table[fidx]^.assign_to := current_token;
+     Consume;
+     { Peut etre suivi d'un tiret : ex 'DISK' tout comme un mot }
+    End
+    Else
+    Begin
+     Error('Attendu nom ou chaine apres ASSIGN TO');
+     SkipToPeriod;
+     Continue;
+    End;
+   End
+
+   { ORGANIZATION IS ... }
+   Else If current_symbol = SYM_ORGANIZATION Then
+   Begin
+    Consume; { ORGANIZATION }
+    If current_symbol = SYM_IS Then Consume; { IS }
+    If current_symbol = SYM_SEQUENTIAL Then Begin org := 0; Consume; End
+    Else If current_symbol = SYM_RANDOM    Then Begin org := 1; Consume; End
+    Else If current_symbol = SYM_RELATIVE  Then Begin org := 2; Consume; End
+    Else Begin Warning('Organisation inconnue : ' + current_token); Consume; End;
+    file_table[fidx]^.organization := org;
+   End
+
+   { ACCESS MODE IS ... }
+   Else If current_symbol = SYM_ACCESS Then
+   Begin
+    Consume; { ACCESS }
+    If current_symbol = SYM_MODE Then Consume; { MODE }
+    If current_symbol = SYM_IS   Then Consume; { IS }
+    If current_symbol = SYM_SEQUENTIAL Then Begin acc := 0; Consume; End
+    Else If current_symbol = SYM_RANDOM   Then Begin acc := 1; Consume; End
+    Else If current_symbol = SYM_DYNAMIC  Then Begin acc := 2; Consume; End
+    Else Begin Warning('Mode acces inconnu : ' + current_token); Consume; End;
+    file_table[fidx]^.access_mode := acc;
+   End
+
+   { FILE STATUS IS data-name }
+   Else If current_symbol = SYM_FILE_STATUS Then
+   Begin
+    Consume; { FILE-STATUS }
+    If current_symbol = SYM_IS Then Consume; { IS }
+    fstat := ParseWordOrReserved;
+    file_table[fidx]^.file_status := fstat;
+   End
+
+   { RELATIVE KEY IS data-name : noter, ignorer pour l'instant }
+   Else If TokenIs('RELATIVE') Then
+   Begin
+    Consume; { RELATIVE }
+    If current_symbol = SYM_KEY Then Consume; { KEY }
+    If current_symbol = SYM_IS  Then Consume; { IS }
+    ParseWordOrReserved; { data-name, valeur ignoree ici }
+   End
+
+   { RECORD DELIMITER, PADDING CHARACTER, etc. : ignorer }
+   Else
+    Consume;
+
+  End; { While pas de '.' }
+
+  If current_symbol = TOK_PERIOD Then Consume; { . fin de SELECT }
+  file_table[fidx]^.defined := True;
+
+ End; { While SELECT }
+End;
+
+{ ---- INPUT-OUTPUT SECTION ---- }
+
+Procedure ParseInputOutputSection;
+Begin
+ { On arrive apres 'INPUT-OUTPUT SECTION .' }
+
+ { FILE-CONTROL optionnel }
+ If current_symbol = SYM_FILE_CONTROL Then
+ Begin
+  Consume; { FILE-CONTROL }
+  If current_symbol = TOK_PERIOD Then Consume; { . }
+  ParseFileControl;
+ End;
+
+ { SORT-MERGE FILE CONTROL (non supporte, sauter) }
+ If TokenIs('I-O-CONTROL') Then
+ Begin
+  Warning('I-O-CONTROL non supporte - ignore');
+  SkipToWord('SECTION');
+  SkipToPeriod;
+ End;
+End;
+
+{ ---- Parseur principal ENVIRONMENT DIVISION ---- }
+
+Procedure ParseEnvironmentDivision;
+Var
+ nb_files: Integer;
+ i       : Integer;
+Begin
+ { On arrive ici avec current_token = 'ENVIRONMENT' }
+ Consume; { ENVIRONMENT }
+
+ If current_symbol <> SYM_DIVISION Then
+  Error('Attendu DIVISION apres ENVIRONMENT, trouve ''' + current_token + '''')
+ Else
+  Consume; { DIVISION }
+
+ If current_symbol <> TOK_PERIOD Then
+  Error('Attendu ''.'' apres ENVIRONMENT DIVISION')
+ Else
+  Consume; { . }
+
+ { --- CONFIGURATION SECTION (optionnelle) --- }
+ If current_symbol = SYM_CONFIGURATION Then
+ Begin
+  Consume; { CONFIGURATION }
+  If current_symbol = SYM_SECTION Then Consume; { SECTION }
+  If current_symbol = TOK_PERIOD  Then Consume; { . }
+  ParseConfigurationSection;
+ End;
+
+ { --- INPUT-OUTPUT SECTION (optionnelle) --- }
+ If current_symbol = SYM_INPUT_OUTPUT Then
+ Begin
+  Consume; { INPUT-OUTPUT }
+  If current_symbol = SYM_SECTION Then Consume; { SECTION }
+  If current_symbol = TOK_PERIOD  Then Consume; { . }
+  ParseInputOutputSection;
+ End;
+
+ { Compter les fichiers declares et afficher le bilan }
+ nb_files := file_count;
+ WriteLn('INFO: ENVIRONMENT DIVISION parsed. Fichiers declares: ', nb_files);
+ For i := 1 to nb_files do
+  WriteLn('INFO:   FILE ', i, ' = ', file_table[i]^.name,
+          ' ASSIGN TO ', file_table[i]^.assign_to);
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn(VERSION, ' - Compilateur COBOL pour 8086/8088');
@@ -2043,12 +2347,13 @@ Begin
  If current_symbol = SYM_IDENTIFICATION Then
   ParseIdentificationDivision
  Else
- Begin
   Warning('Fichier COBOL ne commencant pas par IDENTIFICATION DIVISION');
-  { Tenter quand meme de continuer }
- End;
 
- { TODO: ParseEnvironmentDivision, ParseDataDivision, ParseProcedureDivision }
+ { ENVIRONMENT DIVISION (optionnelle) }
+ If current_symbol = SYM_ENVIRONMENT Then
+  ParseEnvironmentDivision;
+
+ { TODO: ParseDataDivision, ParseProcedureDivision }
 
  If opt_dump_sym Then DumpSymbolTable;
 

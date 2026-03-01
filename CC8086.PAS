@@ -3406,47 +3406,41 @@ Begin
  End;
 End;
 
- { V‚rifier si un fichier a dï¿½jï¿½ ï¿½tï¿½ inclus }
-Function is_file_included(filename: String): Boolean;
+ { V‚rifier si un fichier a d‚j… ‚t‚ inclus }
+Function is_file_included(filename:String):Boolean;
 Var
  i: Integer;
 Begin
  is_file_included := False;
- For i := 0 to included_count - 1 do
- Begin
-  If included_files[i].filename = filename Then
-  Begin
+ For i := 0 to included_count-1 do Begin
+  If included_files[i].filename = filename Then Begin
    is_file_included := included_files[i].is_included;
    Exit;
   End;
  End;
 End;
 
-{ Marquer un fichier comme inclus }
+ { Marquer un fichier comme inclus }
 Procedure mark_file_included(filename: String);
 Var
  i: Integer;
 Begin
- { Vï¿½rifier si dï¿½jï¿½ dans la table }
- For i := 0 to included_count - 1 do
- Begin
-  If included_files[i].filename = filename Then
-  Begin
+  { V‚rifier si d‚j… dans la table }
+ For i := 0 to included_count - 1 do Begin
+  If included_files[i].filename = filename Then Begin
    included_files[i].is_included := True;
    Exit;
   End;
  End;
-
- { Ajouter une nouvelle entrï¿½e si de l'espace est disponible }
- If included_count < 50 Then
- Begin
+  { Ajouter une nouvelle entr‚e si de l'espace est disponible }
+ If included_count < 50 Then Begin
   included_files[included_count].filename := filename;
   included_files[included_count].is_included := True;
   Inc(included_count);
  End;
 End;
 
-{ Unmark a file when leaving its scope }
+ { D‚sactivez le marquage d'un fichier lorsque vous quitez son p‚rimŠtre }
 Procedure unmark_file_included(filename: String);
 Var
  i: Integer;
@@ -3460,6 +3454,7 @@ Begin
   End;
  End;
 End;
+
 Function extract_filename(include_line: String): String;
 Var
  start_pos, end_pos: Integer;
