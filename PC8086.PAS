@@ -56,28 +56,30 @@ Const
  SYM_RECORD = 30;
  SYM_ARRAY = 31;
  SYM_OTHERWISE = 32;
+ SYM_LABEL = 33;
+ SYM_GOTO = 34;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 33;      { = }
- SYM_NOTEQUAL = 34;   { <> }
- SYM_LESS = 35;       { < }
- SYM_GREATER = 36;    { > }
- SYM_LESSEQ = 37;     { <= }
- SYM_GREATEREQ = 38;  { >= }
+ SYM_EQUAL = 35;      { = }
+ SYM_NOTEQUAL = 36;   { <> }
+ SYM_LESS = 37;       { < }
+ SYM_GREATER = 38;    { > }
+ SYM_LESSEQ = 39;     { <= }
+ SYM_GREATEREQ = 40;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 39;       { + }
- SYM_MINUS = 40;      { - }
- SYM_MULTIPLY = 41;   { * }
- SYM_DIVIDE = 42;     { / }
+ SYM_PLUS = 41;       { + }
+ SYM_MINUS = 42;      { - }
+ SYM_MULTIPLY = 43;   { * }
+ SYM_DIVIDE = 44;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 43;        { AND }
- SYM_OR = 44;         { OR }
- SYM_XOR = 45;        { XOR }
+ SYM_AND = 45;        { AND }
+ SYM_OR = 46;         { OR }
+ SYM_XOR = 47;        { XOR }
 
  { Caractères spéciaux }
- SYM_DOT = 46;        { . }
+ SYM_DOT = 48;        { . }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -332,6 +334,8 @@ Begin
  Else If current_token = 'RECORD' Then current_symbol := SYM_RECORD
  Else If current_token = 'ARRAY' Then current_symbol := SYM_ARRAY
  Else If current_token = 'OTHERWISE' Then current_symbol := SYM_OTHERWISE
+ Else If current_token = 'LABEL' Then current_symbol := SYM_LABEL
+ Else If current_token = 'GOTO' Then current_symbol := SYM_GOTO
  Else If current_token = 'AND' Then current_symbol := SYM_AND
  Else If current_token = 'OR' Then current_symbol := SYM_OR
  Else If current_token = 'XOR' Then current_symbol := SYM_XOR
@@ -984,9 +988,51 @@ Procedure ParseUnit; forward;
 Procedure ParseInterface; forward;
 Procedure ParseImplementation; forward;
 Procedure ParseUses; forward;
+Procedure ParseLabelDeclarations; forward;
+Procedure ParseGoto; forward;
 Procedure ParseProgramMain; forward;
 
-{ Vérifier si le token actuel correspond }
+{ Ajouter une étiquette à la table }
+Function AddLabel(name: String): Integer;
+Var
+ upper_name: String;
+Begin
+ If label_count >= MAX_LABEL_COUNT Then
+ Begin
+  Error('Table des étiquettes pleine');
+  AddLabel := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(name);
+ Inc(label_count);
+ New(label_table[label_count]);
+ With label_table[label_count]^ do
+ Begin
+  name := upper_name;
+  label_id := next_label_id;
+  defined := False;
+  address := 0;
+ End;
+
+ Inc(next_label_id);
+ AddLabel := label_count;
+End;
+
+{ Rechercher une étiquette dans la table }
+Function FindLabel(name: String): Integer;
+Var
+ i: Integer;
+Begin
+ name := UpperCase(name);
+ For i := 1 to label_count do
+  If (label_table[i] <> nil) and (label_table[i]^.name = name) Then
+  Begin
+   FindLabel := i;
+   Exit;
+  End;
+ FindLabel := 0;
+End;
 Function Accept(expected_symbol: Integer): Boolean;
 Begin
  Accept := (current_symbol = expected_symbol);
@@ -2201,6 +2247,7 @@ End;
 Procedure ParseStatement;
 Var
  sym_idx: Integer;
+ label_name: String;
 Begin
  Case current_symbol of
   SYM_BEGIN:
@@ -2300,6 +2347,9 @@ Begin
 
   SYM_WRITELN:
    ParseWriteln;
+  
+  SYM_GOTO:
+   ParseGoto;
 
   SYM_UNKNOWN:
    Begin
@@ -2350,8 +2400,37 @@ Begin
      Begin
       ParseAssignment(current_token); { ParseAssignment gérera NextToken }
      End
+     { Vérifier si c'est une étiquette suivie de ':' }
+     Else If current_token <> '' Then
+     Begin
+      { DEBUG: Information sur le token courant }
+      EmitComment('DEBUG: Token = [' + current_token + ']');
+      
+      { Sauvegarder le nom potentiel de l'étiquette }
+      label_name := current_token;
+      NextToken; { Lire le token suivant }
+      
+      { DEBUG: Information sur le token suivant }
+      EmitComment('DEBUG: Token suivant = [' + current_token + ']');
+      
+      { Si le token suivant est ':', c'est une définition d'étiquette }
+      If current_token = ':' Then
+      Begin
+       { C'est une définition d'étiquette }
+       EmitComment('Étiquette définie: ' + label_name);
+       EmitLabel(UpperCase(label_name) + '_LABEL');
+       
+       { Marquer l'étiquette comme définie dans la table }
+       sym_idx := FindLabel(label_name);
+       If sym_idx > 0 Then
+        label_table[sym_idx]^.defined := True;
+       
+       NextToken; { Consommer ':' }
+      End;
+      { Si ce n'est pas ':', on a déjà consommé le token, continuer }
+     End
      Else
-      NextToken; { Ignorer token inconnu }
+      NextToken;
     End
     Else
      NextToken;
@@ -2849,6 +2928,10 @@ End;
 { Parser un bloc Pascal }
 Procedure ParseBlock;
 Begin
+ { Gérer les déclarations LABEL }
+ If Accept(SYM_LABEL) Then
+  ParseLabelDeclarations;
+
  { Gérer les déclarations TYPE }
  If Accept(SYM_TYPE) Then
   ParseTypeDeclarations;
@@ -3136,6 +3219,84 @@ Begin
  current_unit_name := '';
 End;
 
+{ Parser les déclarations de labels }
+Procedure ParseLabelDeclarations;
+Var
+ label_name: String;
+ label_index: Integer;
+Begin
+ NextToken; { Consommer LABEL }
+
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
+ Begin
+  { Lire le nom de l'étiquette }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   label_name := current_token;
+   
+   { Vérifier si l'étiquette existe déjà }
+   If FindLabel(label_name) > 0 Then
+    Error('Étiquette déjà déclarée: ' + label_name)
+   Else
+   Begin
+    { Ajouter l'étiquette à la table }
+    label_index := AddLabel(label_name);
+    If label_index > 0 Then
+     EmitComment('Déclaration étiquette: ' + label_name);
+   End;
+   
+   NextToken;
+  End
+  Else
+  Begin
+   Error('Attendu nom d''étiquette');
+   Break;
+  End;
+
+  { Gérer les virgules }
+  If current_token = ',' Then
+   NextToken
+  Else
+   Break;
+ End;
+
+ { Attendre le point-virgule }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après déclarations de labels');
+End;
+
+{ Parser une instruction GOTO }
+Procedure ParseGoto;
+Var
+ label_name: String;
+ label_index: Integer;
+Begin
+ NextToken; { Consommer GOTO }
+
+ { Lire le nom de l'étiquette }
+ If current_symbol = SYM_UNKNOWN Then
+ Begin
+  label_name := current_token;
+  
+  { Vérifier si l'étiquette est déclarée }
+  label_index := FindLabel(label_name);
+  If label_index = 0 Then
+   Error('Étiquette non déclarée: ' + label_name)
+  Else
+  Begin
+   { Générer l'instruction de saut }
+   EmitComment('GOTO ' + label_name);
+   Emit('jmp ' + UpperCase(label_name) + '_LABEL');
+  End;
+  
+  NextToken;
+ End
+ Else
+  Error('Attendu nom d''étiquette après GOTO');
+End;
+
 { Générer les procédures d'aide (comme PRINT_NUM) }
 Procedure GenerateHelpProcedures;
 Begin
@@ -3326,6 +3487,16 @@ Begin
  EmitLine('PRINT_STR ENDP');
 End;
 
+{ Vérifier les étiquettes non définies }
+Procedure CheckUndefinedLabels;
+Var
+ i: Integer;
+Begin
+ For i := 1 to label_count do
+  If (label_table[i] <> nil) and not label_table[i]^.defined Then
+   Error('Étiquette déclarée mais non définie: ' + label_table[i]^.name);
+End;
+
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
@@ -3424,6 +3595,9 @@ BEGIN
 
  { Générer les procédures d'aide }
  GenerateHelpProcedures;
+
+ { Vérifier les étiquettes }
+ CheckUndefinedLabels;
 
  { Fermer les fichiers }
  Close(input_file);
