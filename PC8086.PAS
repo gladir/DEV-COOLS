@@ -59,6 +59,7 @@ Const
  SYM_LABEL = 33;
  SYM_GOTO = 34;
  SYM_FORWARD = 35;
+ SYM_STRING_LITERAL = 50; { Chaîne littérale entre guillemets simples }
 
  { Opérateurs de comparaison }
  SYM_EQUAL = 36;      { = }
@@ -386,7 +387,7 @@ Begin
  If current_char = '''' Then
  Begin
   current_token := '';
-  current_symbol := SYM_UNKNOWN;
+  current_symbol := SYM_STRING_LITERAL;
   NextChar; { Ignorer le premier guillemet }
 
   While (current_char <> '''') and (current_char <> #0) do
@@ -997,6 +998,7 @@ Procedure ParseInterface; forward;
 Procedure ParseImplementation; forward;
 Procedure ParseUses; forward;
 Procedure ParseLabelDeclarations; forward;
+Procedure ParseConstDeclarations; forward;
 Procedure ParseGoto; forward;
 Procedure ParseProgramMain; forward;
 
@@ -1070,57 +1072,31 @@ Begin
  is_string_literal := False;
  
  { Parser le premier opérande }
- If current_symbol = SYM_UNKNOWN Then
+ { Chaîne littérale entre guillemets simples }
+ If current_symbol = SYM_STRING_LITERAL Then
  Begin
   temp_token := current_token;
-  
-  { Vérifier si c'est une chaîne littérale }
-  If (Length(temp_token) > 1) or 
-     ((Length(temp_token) = 1) and not ((temp_token[1] >= '0') and (temp_token[1] <= '9')) and
-      not ((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) and 
-      not ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
+  string_label := 'STR' + IntToStr(next_label_id);
+  Inc(next_label_id);
+  If not data_segment Then
   Begin
-   { C'est probablement une chaîne littérale }
-   is_string_literal := True;
-   left_type := TYPE_STRING;
-   
-   { Créer une étiquette pour la chaîne }
-   string_label := 'STR' + IntToStr(next_label_id);
-   Inc(next_label_id);
-   
-   { Générer la chaîne dans le segment de données }
-   If not data_segment Then
-   Begin
-    EmitLine('.DATA');
-    data_segment := True;
-   End;
-   
-   EmitLine(string_label + ' DB ' + IntToStr(Length(temp_token)) + ', ''' + temp_token + '''');
-   
-   { Retour au segment de code }
-   If not code_segment Then
-    BeginCodeSection;
-    
-   { Charger l'adresse de la chaîne }
-   Emit('mov si, OFFSET ' + string_label);
-   left_operand := 'si';
-   NextToken;
-  End
-  { Vérifier si c'est un caractère littéral (longueur 1, lettre) }
-  Else If (Length(temp_token) = 1) and 
-     (((temp_token[1] >= 'A') and (temp_token[1] <= 'Z')) or
-      ((temp_token[1] >= 'a') and (temp_token[1] <= 'z'))) Then
+   EmitLine('.DATA');
+   data_segment := True;
+  End;
+  EmitLine(string_label + ' DB ' + IntToStr(Length(temp_token)) + ', ''' + temp_token + '''');
+  If not code_segment Then BeginCodeSection;
+  Emit('mov si, OFFSET ' + string_label);
+  left_operand := 'si';
+  left_type := TYPE_STRING;
+  NextToken;
+ End
+ Else If current_symbol = SYM_UNKNOWN Then
+ Begin
+  temp_token := current_token;
+
+  { Nombre littéral (commence par un chiffre) }
+  If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
   Begin
-   { Caractère littéral - traiter comme valeur ASCII }
-   Emit('mov al, ' + IntToStr(Ord(temp_token[1])));
-   left_operand := 'al';
-   left_type := TYPE_CHAR;
-   NextToken;
-  End
-  { C'est peut-être un nombre }
-  Else If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
-  Begin
-   { Nombre littéral }
    Emit('mov ax, ' + temp_token);
    left_operand := 'ax';
    left_type := TYPE_INTEGER;
@@ -1128,7 +1104,7 @@ Begin
   End
   Else If temp_token <> '' Then
   Begin
-   { Identificateur - chercher dans la table des symboles }
+   { Identificateur - chercher dans la table des symboles en PREMIER }
    sym_index := FindSymbol(temp_token);
    If sym_index > 0 Then
    Begin
@@ -1207,6 +1183,30 @@ Begin
      Emit('call ' + symbol_table[sym_index]^.name);
      left_operand := 'ax'; { Valeur par défaut }
      left_type := TYPE_INTEGER;
+    End
+    { Vérifier si c'est une constante }
+    Else If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
+    Begin
+     { Constante - émettre la valeur immédiate directement }
+     Case symbol_table[sym_index]^.data_type of
+      TYPE_STRING:
+       Begin
+        Emit('mov si, OFFSET ' + UpperCase(symbol_table[sym_index]^.name) + '_STR');
+        left_operand := 'si';
+       End;
+      TYPE_BYTE, TYPE_CHAR:
+       Begin
+        Emit('mov al, ' + IntToStr(symbol_table[sym_index]^.value));
+        left_operand := 'al';
+       End;
+     Else
+      Begin
+       Emit('mov ax, ' + IntToStr(symbol_table[sym_index]^.value));
+       left_operand := 'ax';
+      End;
+     End;
+     left_type := symbol_table[sym_index]^.data_type;
+     NextToken;
     End
     Else
     Begin
@@ -1566,6 +1566,14 @@ Begin
   Exit;
  End;
 
+ { Refuser l'affectation à une constante }
+ If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
+ Begin
+  Error('Impossible d''affecter une valeur à la constante: ' + var_name);
+  NextToken;
+  Exit;
+ End;
+
  { Attendre := }
  NextToken; { Consommer l'identificateur de variable }
  If current_token = ':=' Then
@@ -1695,8 +1703,9 @@ Begin
    is_string := False;
    
    { Vérifier si c'est une chaîne littérale (entre guillemets) }
-   If (current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
-      (Pos('''', current_line) > 0) Then
+   If (current_symbol = SYM_STRING_LITERAL) or
+      ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
+       (Pos('''', current_line) > 0)) Then
    Begin
     { Chaîne littérale }
     is_string := True;
@@ -1744,9 +1753,37 @@ Begin
      sym_index := FindSymbol(var_name);
      If sym_index > 0 Then
      Begin
-      EmitComment('Affichage variable (Write): ' + var_name);
-      Case symbol_table[sym_index]^.data_type of
-       TYPE_INTEGER, TYPE_WORD:
+      { Constante : émettre la valeur immédiate }
+      If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
+      Begin
+       EmitComment('Affichage constante (Write): ' + var_name);
+       Case symbol_table[sym_index]^.data_type of
+        TYPE_STRING:
+         Begin
+          Emit('mov si, OFFSET ' + UpperCase(var_name) + '_STR');
+          Emit('call PRINT_STR');
+         End;
+        TYPE_BOOLEAN:
+         Begin
+          If symbol_table[sym_index]^.value <> 0 Then
+           Emit('mov dx, OFFSET TRUE_STR')
+          Else
+           Emit('mov dx, OFFSET FALSE_STR');
+          Emit('mov ah, 09h');
+          Emit('int 21h');
+         End;
+       Else
+        Begin
+         Emit('mov ax, ' + IntToStr(symbol_table[sym_index]^.value));
+         Emit('call PRINT_NUM');
+        End;
+       End;
+      End
+      Else
+      Begin
+       EmitComment('Affichage variable (Write): ' + var_name);
+       Case symbol_table[sym_index]^.data_type of
+        TYPE_INTEGER, TYPE_WORD:
         Begin
          Emit('mov ax, ' + symbol_table[sym_index]^.name);
          Emit('call PRINT_NUM');
@@ -1788,8 +1825,9 @@ Begin
         Emit('mov ax, ' + symbol_table[sym_index]^.name);
         Emit('call PRINT_NUM');
        End;
-      End;
-     End
+      End; { Case data_type }
+      End; { Else variable normale }
+     End { If sym_index > 0 }
      Else
      Begin
       Error('Variable non déclarée: ' + var_name);
@@ -1837,9 +1875,10 @@ Begin
    is_string := False;
    
    { Vérifier si c'est une chaîne littérale - détection améliorée }
-   If (current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
-      (Length(current_line) > 0) and (line_pos > 1) and 
-      (current_line[line_pos-Length(current_token)-1] = '''') Then
+   If (current_symbol = SYM_STRING_LITERAL) or
+      ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
+       (Length(current_line) > 0) and (line_pos > 1) and 
+       (current_line[line_pos-Length(current_token)-1] = '''')) Then
    Begin
     { Chaîne littérale }
     is_string := True;
@@ -1887,9 +1926,37 @@ Begin
      sym_index := FindSymbol(var_name);
      If sym_index > 0 Then
      Begin
-      EmitComment('Affichage variable: ' + var_name);
-      Case symbol_table[sym_index]^.data_type of
-       TYPE_INTEGER, TYPE_WORD:
+      { Constante : émettre la valeur immédiate }
+      If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
+      Begin
+       EmitComment('Affichage constante: ' + var_name);
+       Case symbol_table[sym_index]^.data_type of
+        TYPE_STRING:
+         Begin
+          Emit('mov si, OFFSET ' + UpperCase(var_name) + '_STR');
+          Emit('call PRINT_STR');
+         End;
+        TYPE_BOOLEAN:
+         Begin
+          If symbol_table[sym_index]^.value <> 0 Then
+           Emit('mov dx, OFFSET TRUE_STR')
+          Else
+           Emit('mov dx, OFFSET FALSE_STR');
+          Emit('mov ah, 09h');
+          Emit('int 21h');
+         End;
+       Else
+        Begin
+         Emit('mov ax, ' + IntToStr(symbol_table[sym_index]^.value));
+         Emit('call PRINT_NUM');
+        End;
+       End;
+      End
+      Else
+      Begin
+       EmitComment('Affichage variable: ' + var_name);
+       Case symbol_table[sym_index]^.data_type of
+        TYPE_INTEGER, TYPE_WORD:
         Begin
          Emit('mov ax, ' + symbol_table[sym_index]^.name);
          Emit('call PRINT_NUM');
@@ -1931,8 +1998,9 @@ Begin
         Emit('mov ax, ' + symbol_table[sym_index]^.name);
         Emit('call PRINT_NUM');
        End;
-      End;
-     End
+      End; { Case data_type }
+      End; { Else variable normale }
+     End { If sym_index > 0 }
      Else
      Begin
       { Traiter comme chaîne littérale si non trouvé }
@@ -2392,6 +2460,160 @@ Begin
 
   Else
    NextToken; { Ignorer les autres tokens }
+ End;
+End;
+
+{ Parser les déclarations de constantes }
+Procedure ParseConstDeclarations;
+Var
+ const_name: String;
+ const_val_str: String;
+ const_val: Integer;
+ const_type: Integer;
+ is_negative: Boolean;
+ sym_index: Integer;
+ code_val: Integer;
+Begin
+ NextToken; { Consommer CONST }
+
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
+ Begin
+  const_name := current_token;
+  NextToken; { Consommer le nom }
+
+  { Attendre le = }
+  If current_token <> '=' Then
+  Begin
+   Error('Attendu = après nom de constante: ' + const_name);
+   Break;
+  End;
+  NextToken; { Consommer = }
+
+  { Lire la valeur }
+  is_negative := False;
+  If current_token = '-' Then
+  Begin
+   is_negative := True;
+   NextToken; { Consommer le signe moins }
+  End;
+
+  const_val := 0;
+  const_type := TYPE_INTEGER;
+  const_val_str := '';
+
+  { Vérifier d'abord si c'est une chaîne entre guillemets simples }
+  If current_symbol = SYM_STRING_LITERAL Then
+  Begin
+   { Constante entre guillemets simples }
+   const_val_str := current_token;
+   If Length(const_val_str) = 1 Then
+   Begin
+    { Caractère unique : TYPE_CHAR }
+    const_val := Ord(const_val_str[1]);
+    const_type := TYPE_CHAR;
+   End
+   Else
+   Begin
+    { Chaîne de plusieurs caractères : émettre dans .DATA }
+    const_type := TYPE_STRING;
+    If data_segment Then
+     EmitLine(UpperCase(const_name) + '_STR DB ''' + const_val_str + ''', 0')
+    Else
+    Begin
+     EmitLine('.DATA');
+     data_segment := True;
+     EmitLine(UpperCase(const_name) + '_STR DB ''' + const_val_str + ''', 0');
+    End;
+    const_val := 0;
+   End;
+   NextToken;
+  End
+  Else If UpperCase(current_token) = 'TRUE' Then
+  Begin
+   const_val := 1;
+   const_type := TYPE_BOOLEAN;
+   NextToken;
+  End
+  Else If UpperCase(current_token) = 'FALSE' Then
+  Begin
+   const_val := 0;
+   const_type := TYPE_BOOLEAN;
+   NextToken;
+  End
+  Else If (Length(current_token) = 1) and
+          ((current_token[1] >= '0') and (current_token[1] <= '9') or
+           (current_token[1] = '$')) Then
+  Begin
+   { Nombre décimal ou hexadécimal }
+   Val(current_token, const_val, code_val);
+   If code_val <> 0 Then
+   Begin
+    Warning('Valeur numérique invalide pour la constante: ' + const_name + ', assumé 0');
+    const_val := 0;
+   End;
+   If is_negative Then const_val := -const_val;
+   const_type := TYPE_INTEGER;
+   NextToken;
+  End
+  Else If (Length(current_token) > 1) and
+          (current_token[1] >= '0') and (current_token[1] <= '9') Then
+  Begin
+   { Nombre à plusieurs chiffres }
+   Val(current_token, const_val, code_val);
+   If code_val <> 0 Then
+   Begin
+    Warning('Valeur numérique invalide pour la constante: ' + const_name + ', assumé 0');
+    const_val := 0;
+   End;
+   If is_negative Then const_val := -const_val;
+   const_type := TYPE_INTEGER;
+   NextToken;
+  End
+  Else
+  Begin
+   { Référencer un autre symbole CONST ou expression inconnue }
+   sym_index := FindSymbol(current_token);
+   If (sym_index > 0) and (symbol_table[sym_index]^.symbol_type = SYM_CONST) Then
+   Begin
+    const_val := symbol_table[sym_index]^.value;
+    const_type := symbol_table[sym_index]^.data_type;
+   End
+   Else
+   Begin
+    Warning('Valeur de constante non reconnue: ' + current_token + ', assumé 0');
+    const_val := 0;
+    const_type := TYPE_INTEGER;
+   End;
+   NextToken;
+  End;
+
+  { Ajouter la constante à la table des symboles }
+  sym_index := AddSymbol(const_name, SYM_CONST, const_type, STORAGE_GLOBAL);
+  If sym_index > 0 Then
+  Begin
+   symbol_table[sym_index]^.value := const_val;
+   { Émettre un commentaire dans le .ASM pour documenter la constante }
+   If const_type = TYPE_STRING Then
+    EmitComment('Constante: ' + UpperCase(const_name) + ' = ''' +
+                const_val_str + ''' (label: ' + UpperCase(const_name) + '_STR)')
+   Else If const_type = TYPE_BOOLEAN Then
+   Begin
+    If const_val <> 0 Then
+     EmitComment('Constante: ' + UpperCase(const_name) + ' = TRUE')
+    Else
+     EmitComment('Constante: ' + UpperCase(const_name) + ' = FALSE');
+   End
+   Else If const_type = TYPE_CHAR Then
+    EmitComment('Constante: ' + UpperCase(const_name) + ' = ''' + Chr(const_val) + '''')
+   Else
+    EmitComment('Constante: ' + UpperCase(const_name) + ' = ' + IntToStr(const_val));
+  End;
+
+  { Attendre ; }
+  If current_token = ';' Then
+   NextToken
+  Else
+   Error('Attendu ; après déclaration de constante');
  End;
 End;
 
@@ -2977,6 +3199,10 @@ Begin
  { Gérer les déclarations LABEL }
  If Accept(SYM_LABEL) Then
   ParseLabelDeclarations;
+
+ { Gérer les déclarations CONST }
+ If Accept(SYM_CONST) Then
+  ParseConstDeclarations;
 
  { Gérer les déclarations TYPE }
  If Accept(SYM_TYPE) Then
