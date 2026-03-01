@@ -3323,51 +3323,42 @@ Function pop_include_file: Boolean;Begin
  {$I-}
  System.Close(input);
  {$I+}
-
- { Restaurer l'Ã©tat du fichier prÃ©cÃ©dent }
+  { Restaurer l'‚tat du fichier pr‚c‚dent }
  Dec(include_depth);
- With include_stack[include_depth] do
- Begin
+ With include_stack[include_depth] do Begin
   current_filename := filename;
   System.Assign(input, filename);
   {$I-}
   System.Reset(input);
-  If IOResult <> 0 Then
-  Begin
+  If IOResult <> 0 Then Begin
    { Erreur de restauration du fichier }
    eof := 1;
    Exit;
   End;
   {$I+}
-
-  { Restaurer correctement l'ï¿½tat de la ligne }
+   { Restaurer correctement l'‚tat de la ligne }
   line := saved_line;
   lptr := saved_lptr;
   eof := saved_eof;
  End;
-
- safe_writeln('; Returned from include file to: ' + current_filename);
+ safe_writeln('; Retourner du fichier d''inclusion …: ' + current_filename);
  pop_include_file := True;
 End;
 
-{ OpÃ©rations sur les fichiers }
-Function readinline: Boolean;
-Begin
+ { Op‚rations sur les fichiers }
+Function readinline: Boolean;Begin
  readinline := False;
-
  Repeat
-  { VÃ©rifier si le fichier d'entrÃ©e est correctement initialisÃ© }
+  { V‚rifier si le fichier d'entr‚e est correctement initialis‚ }
   {$I-}
-  If not System.Eof(input) Then
-  Begin
+  If not System.Eof(input)Then Begin
    ReadLn(input, line);
-   If IOResult = 0 Then
-   Begin
+   If IOResult = 0 Then Begin
     lptr := 1;
     readinline := True;
     Exit;
    End
-   Else
+    Else
    Begin
     { Erreur de lecture de fichier }
     eof := 1;
@@ -3376,23 +3367,21 @@ Begin
    End;
   End
   {$I+}
-  Else
+   Else
   Begin
-   { Le fichier actuel est Ã  la fin }
-   If include_depth > 0 Then
-   Begin
-    { Nous sommes dans un fichier d'inclusion, retourner au fichier prÃ©cÃ©dent }
-    If not pop_include_file Then
-    Begin
+   { Le fichier actuel est … la fin }
+   If include_depth > 0 Then Begin
+    { Nous sommes dans un fichier d'inclusion, retourner au fichier pr‚c‚dent }
+    If not pop_include_file Then Begin
      eof := 1;
      readinline := False;
      Exit;
     End;
-    { Continuer la boucle pour essayer de lire depuis le fichier restaurÃ© }
+     { Continuer la boucle pour essayer de lire depuis le fichier restaur‚ }
    End
-   Else
+    Else
    Begin
-    { Le fichier principal est Ã  la fin }
+    { Le fichier principal est … la fin }
     eof := 1;
     readinline := False;
     Exit;
@@ -3401,9 +3390,9 @@ Begin
  Until False;
 End;
 
-{ Fonctions de gestion des fichiers d'inclusion }
+ { Fonctions de gestion des fichiers d'inclusion }
 
-{ Initialiser le systï¿½me d'inclusion }
+ { Initialiser le systŠme d'inclusion }
 Procedure init_inclusion_system;
 Var
  i: Integer;
@@ -3411,15 +3400,13 @@ Begin
  include_depth := 0;
  included_count := 0;
  current_filename := 'main.c'; { Default main file }
-
- For i := 0 to 49 do
- Begin
+ For i := 0 to 49 do Begin
   included_files[i].filename := '';
   included_files[i].is_included := False;
  End;
 End;
 
-{ Vï¿½rifier si un fichier a dï¿½jï¿½ ï¿½tï¿½ inclus }
+ { V‚rifier si un fichier a dï¿½jï¿½ ï¿½tï¿½ inclus }
 Function is_file_included(filename: String): Boolean;
 Var
  i: Integer;

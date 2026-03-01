@@ -1833,6 +1833,122 @@ End;
 { PROGRAMME PRINCIPAL                                                          }
 { ============================================================================ }
 
+{ ============================================================================ }
+{ PARSEUR IDENTIFICATION DIVISION                                              }
+{ ============================================================================ }
+
+{
+  Grammaire simplifiee de l'IDENTIFICATION DIVISION (COBOL-85) :
+
+    IDENTIFICATION DIVISION .
+    PROGRAM-ID . program-name [ IS [ INITIAL ] PROGRAM ] .
+    [ AUTHOR . text-words* . ]
+    [ INSTALLATION . text-words* . ]
+    [ DATE-WRITTEN . text-words* . ]
+    [ DATE-COMPILED . text-words* . ]
+    [ SECURITY . text-words* . ]
+
+  Tous les paragraphes apres PROGRAM-ID sont optionnels et leur contenu
+  est libre (texte commentaire) : on les lit jusqu'au prochain point.
+  La fin de la division est detectee quand le token courant est :
+    - ENVIRONMENT ou DATA ou PROCEDURE (le debut de la division suivante)
+    - ou EOF.
+}
+
+Procedure ParseIdentificationDivision;
+Begin
+
+ { --- En-tete IDENTIFICATION DIVISION . --- }
+ { On arrive ici avec current_token = 'IDENTIFICATION' }
+ Consume; { IDENTIFICATION }
+
+ If current_symbol <> SYM_DIVISION Then
+  Error('Attendu DIVISION apres IDENTIFICATION, trouve ''' + current_token + '''')
+ Else
+  Consume; { DIVISION }
+
+ If current_symbol <> TOK_PERIOD Then
+  Error('Attendu ''.'' apres IDENTIFICATION DIVISION, trouve ''' + current_token + '''')
+ Else
+  Consume; { . }
+
+ { --- PROGRAM-ID . program-name . --- }
+ If current_symbol <> SYM_PROGRAM_ID Then
+ Begin
+  Error('Attendu PROGRAM-ID, trouve ''' + current_token + '''');
+  SkipToPeriod;
+ End
+ Else
+ Begin
+  Consume; { PROGRAM-ID }
+
+  If current_symbol <> TOK_PERIOD Then
+   Error('Attendu ''.'' apres PROGRAM-ID, trouve ''' + current_token + '''')
+  Else
+   Consume; { . }
+
+  { Nom du programme : identifiant ou mot reserve utilise comme nom }
+  If (current_symbol = TOK_WORD) or (current_symbol >= 100) Then
+  Begin
+   program_name := current_token;
+   Consume;
+  End
+  Else
+   Error('Attendu un nom de programme, trouve ''' + current_token + '''');
+
+  { Clause optionnelle : IS [INITIAL] PROGRAM }
+  If current_symbol = SYM_IS Then
+  Begin
+   Consume; { IS }
+   { INITIAL optionnel }
+   If TokenIs('INITIAL') Then Consume;
+   If current_symbol = SYM_PROGRAM Then
+    Consume { PROGRAM }
+   Else
+    Error('Attendu PROGRAM dans IS [INITIAL] PROGRAM');
+  End;
+
+  { Le point terminateur de PROGRAM-ID }
+  If current_symbol <> TOK_PERIOD Then
+   Error('Attendu ''.'' apres le nom du programme, trouve ''' + current_token + '''')
+  Else
+   Consume; { . }
+ End;
+
+ { --- Paragraphes optionnels (contenu libre jusqu'au '.') --- }
+ While True do
+ Begin
+  { Detection de fin de division }
+  If (current_symbol = SYM_ENVIRONMENT) or
+     (current_symbol = SYM_DATA)        or
+     (current_symbol = SYM_PROCEDURE)   or
+     (current_symbol = TOK_EOF) Then
+   Break;
+
+  { Paragraphes reconnus : on ignore leur contenu (commentaires COBOL) }
+  If (current_symbol = SYM_AUTHOR)       or
+     (current_symbol = SYM_INSTALLATION) or
+     (current_symbol = SYM_DATE_WRITTEN) or
+     (current_symbol = SYM_DATE_COMPILED)or
+     (current_symbol = SYM_SECURITY)     Then
+  Begin
+   Consume; { nom du paragraphe }
+   { Consommer le '.' apres le nom du paragraphe }
+   If current_symbol = TOK_PERIOD Then Consume;
+   { Lire le contenu (texte libre) jusqu'au prochain '.' }
+   SkipToPeriod;
+  End
+  Else
+  Begin
+   { Token inattendu dans IDENTIFICATION DIVISION }
+   Warning('Paragraphe inconnu dans IDENTIFICATION DIVISION: ''' + current_token + '''');
+   SkipToPeriod;
+  End;
+ End;
+
+ WriteLn('INFO: IDENTIFICATION DIVISION parsed. PROGRAM-ID = ', program_name);
+End;
+
 Procedure ShowHelp;
 Begin
  WriteLn(VERSION, ' - Compilateur COBOL pour 8086/8088');
@@ -1923,7 +2039,16 @@ Begin
  End;
 
  { TODO: Appel au parseur principal (prochaines etapes) }
- WriteLn('INFO: Parseur non encore implemente.');
+ { Dispatcher selon la division courante }
+ If current_symbol = SYM_IDENTIFICATION Then
+  ParseIdentificationDivision
+ Else
+ Begin
+  Warning('Fichier COBOL ne commencant pas par IDENTIFICATION DIVISION');
+  { Tenter quand meme de continuer }
+ End;
+
+ { TODO: ParseEnvironmentDivision, ParseDataDivision, ParseProcedureDivision }
 
  If opt_dump_sym Then DumpSymbolTable;
 
