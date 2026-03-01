@@ -51,28 +51,29 @@ Const
  SYM_INTERRUPT = 25;
  SYM_RECORD = 26;
  SYM_ARRAY = 27;
+ SYM_OTHERWISE = 28;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 28;      { = }
- SYM_NOTEQUAL = 29;   { <> }
- SYM_LESS = 30;       { < }
- SYM_GREATER = 31;    { > }
- SYM_LESSEQ = 32;     { <= }
- SYM_GREATEREQ = 33;  { >= }
+ SYM_EQUAL = 29;      { = }
+ SYM_NOTEQUAL = 30;   { <> }
+ SYM_LESS = 31;       { < }
+ SYM_GREATER = 32;    { > }
+ SYM_LESSEQ = 33;     { <= }
+ SYM_GREATEREQ = 34;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 34;       { + }
- SYM_MINUS = 35;      { - }
- SYM_MULTIPLY = 36;   { * }
- SYM_DIVIDE = 37;     { / }
+ SYM_PLUS = 35;       { + }
+ SYM_MINUS = 36;      { - }
+ SYM_MULTIPLY = 37;   { * }
+ SYM_DIVIDE = 38;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 38;        { AND }
- SYM_OR = 39;         { OR }
- SYM_XOR = 40;        { XOR }
+ SYM_AND = 39;        { AND }
+ SYM_OR = 40;         { OR }
+ SYM_XOR = 41;        { XOR }
 
  { Caractères spéciaux }
- SYM_DOT = 41;        { . }
+ SYM_DOT = 42;        { . }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -307,6 +308,7 @@ Begin
  Else If current_token = 'READLN' Then current_symbol := SYM_READLN
  Else If current_token = 'RECORD' Then current_symbol := SYM_RECORD
  Else If current_token = 'ARRAY' Then current_symbol := SYM_ARRAY
+ Else If current_token = 'OTHERWISE' Then current_symbol := SYM_OTHERWISE
  Else If current_token = 'AND' Then current_symbol := SYM_AND
  Else If current_token = 'OR' Then current_symbol := SYM_OR
  Else If current_token = 'XOR' Then current_symbol := SYM_XOR
@@ -931,6 +933,7 @@ Procedure ParseStatement; forward;
 Procedure ParseExpression; forward;
 Procedure ParseBlock; forward;
 Procedure ParseFor; forward;
+Procedure ParseCase; forward;
 
 { Vérifier si le token actuel correspond }
 Function Accept(expected_symbol: Integer): Boolean;
@@ -1917,6 +1920,96 @@ Begin
  EmitLabel(end_label);
 End;
 
+{ Parser une instruction CASE }
+Procedure ParseCase;
+Var
+ end_label, else_label, case_label: String;
+ case_value: Integer;
+Begin
+ NextToken; { Consommer CASE }
+ 
+ { Analyser l'expression de sélection }
+ ParseExpression;
+ Emit('mov bx, ax'); { Stocker la valeur du case dans BX }
+ 
+ { Attendre OF }
+ Expect(SYM_OF, 'Attendu OF après expression CASE');
+ 
+ { Générer les étiquettes }
+ end_label := NewLabel;
+ else_label := NewLabel;
+ 
+ { Parser chaque cas }
+ While (current_symbol <> SYM_END) and (current_symbol <> SYM_ELSE) and 
+       (current_symbol <> SYM_OTHERWISE) and (current_char <> #0) do
+ Begin
+  { Lire la valeur du cas - c'est un nombre }
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   { Vérifier si c'est un nombre }
+   If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
+   Begin
+    case_value := current_value;
+    NextToken;
+    
+    { Attendre : }
+    If current_token = ':' Then
+     NextToken
+    Else
+     Error('Attendu : après valeur de cas');
+    
+    { Générer l'étiquette pour ce cas }
+    case_label := NewLabel;
+    
+    { Tester la valeur }
+    Emit('cmp bx, ' + IntToStr(case_value));
+    Emit('je ' + case_label);
+    
+    { Parser l'instruction }
+    EmitLabel(case_label);
+    ParseStatement;
+    
+    { Saut vers la fin après exécution du cas }
+    Emit('jmp ' + end_label);
+    
+    { Point-virgule optionnel }
+    If current_token = ';' Then
+     NextToken;
+   End
+   Else
+    NextToken; { Ignorer token non-numérique }
+  End
+  Else
+   NextToken; { Ignorer autres symboles }
+ End;
+ 
+ { Si aucun cas n'a matché, aller au ELSE }
+ Emit('jmp ' + else_label);
+ 
+ { Gérer ELSE ou OTHERWISE }
+ If Accept(SYM_ELSE) or Accept(SYM_OTHERWISE) Then
+ Begin
+  NextToken; { Consommer ELSE/OTHERWISE }
+  EmitLabel(else_label);
+  ParseStatement;
+  
+  { Point-virgule optionnel après ELSE }
+  If current_token = ';' Then
+   NextToken;
+ End
+ Else
+ Begin
+  { Pas d'ELSE - juste une étiquette vide }
+  EmitLabel(else_label);
+ End;
+ 
+ { Attendre END }
+ Expect(SYM_END, 'Attendu END pour fermer CASE');
+ 
+ { Étiquette de fin }
+ EmitLabel(end_label);
+End;
+
 { Parser une instruction }
 Procedure ParseStatement;
 Var
@@ -2008,6 +2101,9 @@ Begin
 
   SYM_FOR:
    ParseFor;
+
+  SYM_CASE:
+   ParseCase;
 
   SYM_REPEAT:
    ParseRepeat;

@@ -4982,135 +4982,111 @@ Begin
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est fausse - rÃ©sultat = 0 }
+   { Au moins une est fausse - r‚sultat = 0 }
   prelabel(false_label);
   ol('ldd #0');
-
-  { Fin }
+   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Logical OR expression parser - handles || }
+ { Analyse l'expression logical OR - gestionaire || }
 Procedure logical_or_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
 Begin
  logical_and_expression(lval);
-
- While match('|') and match('|') do
- Begin
+ While match('|') and match('|') do Begin
   safe_writeln('; OpÃ©rateur || (OU logique)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+  { G‚n‚rer les ‚tiquettes }
   true_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premiÃ¨re expression }
+   { Tester la premiŠre expression }
   ol('tstd');
   ot('lbne ');
   printlabel(true_label);
   nl;
-
-  { Ã‰valuer la deuxiÃ¨me expression }
+   { valuer la deuxiŠme expression }
   logical_and_expression(lval);
   ol('tstd');
   ot('lbne ');
   printlabel(true_label);
   nl;
-
-  { Les deux sont fausses - rÃ©sultat = 0 }
+   { Les deux sont fausses - r‚sultat = 0 }
   ol('ldd #0');
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est vraie - rÃ©sultat = 1 }
+   { Au moins une est vraie - r‚sultat = 1 }
   prelabel(true_label);
   ol('ldd #1');
-
-  { Fin }
+   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Conditional expression parser - handles ?: (ternary operator) }
+ { Analyse l'expression conditionnel - gestionnaire ?: (op‚rateur ternaire) }
 Procedure conditional_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
  true_lval, false_lval: TLVal;
 Begin
  logical_or_expression(lval);
-
- If match('?') Then
- Begin
-  safe_writeln('; OpÃ©rateur ternaire ? : (expression conditionnelle)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+ If match('?') Then Begin
+  safe_writeln('; Op‚rateur ternaire ? : (expression conditionnelle)');
+  { G‚n‚rer les ‚tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la condition }
-  ol('tstd');         { Tester le rÃ©sultat de la condition }
-  ot('lbeq ');        { Si faux, aller Ã  l''expression fausse }
+   { Tester la condition }
+  ol('tstd');         { Tester le r‚sultat de la condition }
+  ot('lbeq ');        { Si faux, aller … l''expression fausse }
   printlabel(false_label);
   nl;
-
-  { Analyser l'expression vraie }
+   { Analyser l'expression vraie }
   safe_writeln('; Expression vraie du ternaire');
   logical_or_expression(true_lval);
-
-  { Sauter l'expression fausse }
+   { Sauter l'expression fausse }
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Attendre ':' }
-  If not match(':') Then
-  Begin
+   { Attendre ':' }
+  If not match(':') Then Begin
    Case Language of
     _English: errrpt('Expected : in ternary operator');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete : im ternÃ¤ren Operator');
     {$ENDIF}
-    Else errrpt(': attendu dans l''opÃ©rateur ternaire');
+    Else errrpt(': attendu dans l''op‚rateur ternaire');
    End;
    Exit;
   End;
-
-  { Ã‰tiquette pour l'expression fausse }
+   { tiquette pour l'expression fausse }
   prelabel(false_label);
-
-  { Analyser l'expression fausse }
+   { Analyser l'expression fausse }
   safe_writeln('; Expression fausse du ternaire');
   logical_or_expression(false_lval);
-
-  { Ã‰tiquette de fin }
+   { tiquette de fin }
   prelabel(end_label);
-
-  { Le rÃ©sultat est dans D - copier les informations de type appropriÃ©es }
-  { Pour simplifier, utiliser le type de l'expression vraie }
+   { Le r‚sultat est dans D - copier les informations de type appropri‚es }
+   { Pour simplifier, utiliser le type de l'expression vraie }
   lval := true_lval;
-  safe_writeln('; Fin opÃ©rateur ternaire');
+  safe_writeln('; Fin d''op‚rateur ternaire');
  End;
 End;
 
-{ Main expression parser }
-Function expression_bool(var lval: TLVal): Boolean;
-Begin
+{ Analyse l'expression Main }
+Function expression_bool(var lval: TLVal): Boolean;Begin
  conditional_expression(lval);
  expression_bool := True;
 End;
 
-{ Wrapper procedure for backward compatibility }
-Procedure expression(var lval: TLVal);
-Begin
+{ Enveloppe de proc‚dure pour compatibilit‚ ascendante }
+Procedure expression(var lval: TLVal);Begin
  expression_bool(lval);
 End;
 
-{ Variable declaration parsing functions - moved after expression }
-{ Enhanced declaration parsing with full type support }
+{ Analyse de fonction de d‚claration de variable - d‚place aprŠs l'expression }
+{ D‚claration ‚tendue d'analyse avec le support complet de type }
 Function parse_declaration: Boolean;
 Var
  base_type, var_type, storage_class: Integer;
@@ -5120,79 +5096,66 @@ Var
  save_lptr: Integer;
 Begin
  parse_declaration := False;
-
- { Parse storage class specifier first }
+  { Analyse l'entreposage de classe sp‚cifi‚ en premier }
  storage_class := parse_storage_class_specifier;
-
- { Check if this is a typedef declaration }
- If storage_class = it_typedef_type Then
- Begin
-  { Handle typedef declaration }
+  { V‚rifie si c'est une d‚claration typedef }
+ If storage_class = it_typedef_type Then Begin
+  { Gestion de d‚claration typedef }
   If parse_typedef_declaration Then
    parse_declaration := True;
   Exit;
  End;
-
- { Parse type specifier with qualifiers }
+  { Analyse de type sp‚cifi‚ avec qualificateurs }
  base_type := parse_type_specifier_with_qualifiers(type_info);
- If base_type = -1 Then Exit; { No valid type found }
-
- { Save position to check for function vs variable }
+ If base_type = -1 Then Exit; { Pas de type valide trouv‚ }
+  { Sauvegarde la position … v‚rifier pour la fonction fonction vs variable }
  save_lptr := lptr;
-
- { Try to parse as declarator to get the name }
+  { Essai d'analyser une d‚clarateur au nom demand‚ }
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
-
- { Check if this is a function declaration/definition }
- If match('(') Then
- Begin
-  { This is a function - restore position and parse as function }
+  { V‚rifie si c'est une d‚claration/d‚finition de fonction }
+ If match('(') Then Begin
+  { C'est une fonction - restaure la position et analyse une fonction }
   lptr := save_lptr;
   If parse_function_declaration(base_type) Then
    parse_declaration := True;
   Exit;
  End;
-
- { This is a variable declaration - pass storage class }
+  { C'est une d‚claration de variable - passage d'une classe d'entrposage }
  declare_variable(var_name, var_type, type_info, storage_class);
  parse_declaration := True;
-
- { Check for initialization }
+  { V‚rifie pour l'initialisation }
  If match('=') Then
  Begin
-  safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
+  safe_writeln('; Initialise la variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
   expression(lval);
-
-  { Type checking for initialization }
-  If type_info.is_const Then
-  Begin
+   { V‚rifie le type pour l'initialisation }
+  If type_info.is_const Then Begin
    safe_writeln('; const variable initialized');
   End;
-
-  { Generate type-appropriate initialization code }
+   { G‚nŠre l'initialisation de code pour le type appropri‚ }
   Case type_info.size of
    1: Begin
-       ot('stb  '); { Store byte for char }
+       ot('stb  '); { Store byte pour char }
        outstr(var_name);
        nl;
       End;
    2: Begin
-       ot('std  '); { Store word for int/short/pointers }
+       ot('std  '); { Store word pour int/short/pointers }
        outstr(var_name);
        nl;
       End;
   Else
    Begin
-    ot('std  '); { Default to word }
+    ot('std  '); { Default … mot }
     outstr(var_name);
     nl;
    End;
   End;
  End
- Else
+  Else
  Begin
-  { Check if const variable needs initialization }
+  { V‚rifie si la variable const … besoin d'une initialisation }
   If type_info.is_const Then
   Begin
    Case Language of
@@ -5200,26 +5163,21 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
     {$ENDIF}
-    Else errrpt('la variable const ' + var_name + ' doit Ãªtre initialisÃ©e');
+    Else errrpt('la variable const ' + var_name + ' doit ˆtre initialis‚e');
    End;
   End;
  End;
-
- { Handle multiple variable declarations }
- While match(',') do
- Begin
+  { Gestionn de multiple d‚clarations de variable }
+ While match(',') do Begin
   var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
-
   declare_variable(var_name, var_type, type_info, storage_class);
-
-  { Check for initialization }
+   { V‚rifie pour l'initialisation }
   If match('=') Then
   Begin
    safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
    expression(lval);
-
-   { Generate initialization code }
+    { Generate initialization code }
    Case type_info.size of
     1: Begin
         ot('stb  ');
@@ -5239,9 +5197,9 @@ Begin
     End;
    End;
   End
-  Else
+   Else
   Begin
-   { Check if const variable needs initialization }
+   { V‚rifie si la variable const variable n‚cessite une initialisation }
    If type_info.is_const Then
    Begin
     Case Language of
@@ -5249,18 +5207,17 @@ Begin
      {$IFDEF FPC}
      _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
      {$ENDIF}
-     Else errrpt('la variable const ' + var_name + ' doit Ãªtre initialisÃ©e');
+     Else errrpt('la variable const ' + var_name + ' doit ˆtre initialis‚e');
     End;
    End;
   End;
  End;
-
- { Expect semicolon for variable declarations }
+ { Point-virgule attendue pour les d‚clarations de variable }
  If not match(';') Then
   errrpt('Expected semicolon after declaration');
 End;
 
-{ Forward declarations for statement parsing }
+{ D‚clarations anticip‚es pour l'analyse syntaxique des instructions }
 Function parse_statement: Boolean; forward;
 Function parse_compound_statement: Boolean; forward;
 Function parse_assignment_statement: Boolean; forward;
@@ -5272,48 +5229,40 @@ Function parse_case_statement: Boolean; forward;
 Function parse_default_statement: Boolean; forward;
 Function parse_for_statement: Boolean; forward;
 
-{ Control structure parsing }
+{ Analyse structure de contr“le }
 Function parse_if_statement: Boolean;
 Var
  lval: TLVal;
  else_label, end_label: Integer;
 Begin
  parse_if_statement := False;
-
  If not match('if') Then Exit;
  parse_if_statement := True;
-
- { Expect opening parenthesis }
+  { Ouverture de parenthŠse attendue }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- If not match('(') Then
- Begin
+ If not match('(') Then Begin
   errrpt('Expected ( after if');
   Exit;
  End;
-
- { Parse condition }
+  { Condition d'analyse }
  safe_writeln('; IF condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
+  { Fermeture de parenthŠse attendue }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- If not match(')') Then
- Begin
+ If not match(')') Then Begin
   errrpt('Expected ) after if condition');
   Exit;
  End;
-
- { Generate conditional jump }
+  { G‚nŠre un saut conditionnel }
  else_label := getlabel;
  end_label := getlabel;
-
  ol('tstd');
  ot('lbeq ');
  printlabel(else_label);
  nl;
- { Parse then statement (can be single statement or compound) }
+ { Analyser l'instruction (peut ˆtre une instruction simple ou compos‚e) }
  safe_writeln('; IF then block');
   { V‚rifiez si nous devons lire la ligne suivante pour l'instruction }
  blanks;
