@@ -58,28 +58,29 @@ Const
  SYM_OTHERWISE = 32;
  SYM_LABEL = 33;
  SYM_GOTO = 34;
+ SYM_FORWARD = 35;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 35;      { = }
- SYM_NOTEQUAL = 36;   { <> }
- SYM_LESS = 37;       { < }
- SYM_GREATER = 38;    { > }
- SYM_LESSEQ = 39;     { <= }
- SYM_GREATEREQ = 40;  { >= }
+ SYM_EQUAL = 36;      { = }
+ SYM_NOTEQUAL = 37;   { <> }
+ SYM_LESS = 38;       { < }
+ SYM_GREATER = 39;    { > }
+ SYM_LESSEQ = 40;     { <= }
+ SYM_GREATEREQ = 41;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 41;       { + }
- SYM_MINUS = 42;      { - }
- SYM_MULTIPLY = 43;   { * }
- SYM_DIVIDE = 44;     { / }
+ SYM_PLUS = 42;       { + }
+ SYM_MINUS = 43;      { - }
+ SYM_MULTIPLY = 44;   { * }
+ SYM_DIVIDE = 45;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 45;        { AND }
- SYM_OR = 46;         { OR }
- SYM_XOR = 47;        { XOR }
+ SYM_AND = 46;        { AND }
+ SYM_OR = 47;         { OR }
+ SYM_XOR = 48;        { XOR }
 
  { Caractères spéciaux }
- SYM_DOT = 48;        { . }
+ SYM_DOT = 49;        { . }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -117,6 +118,7 @@ Type
   field_count: Integer;      { Nombre de champs dans le record }
   unit_name: String[MAX_SYMBOL_NAME]; { Nom de l'unité d'origine }
   is_external: Boolean;      { Symbole défini dans une autre unité }
+  is_forward: Boolean;       { Déclaration anticipée (forward) }
  End;
  
  { Pointeur vers un symbole }
@@ -336,6 +338,7 @@ Begin
  Else If current_token = 'OTHERWISE' Then current_symbol := SYM_OTHERWISE
  Else If current_token = 'LABEL' Then current_symbol := SYM_LABEL
  Else If current_token = 'GOTO' Then current_symbol := SYM_GOTO
+ Else If current_token = 'FORWARD' Then current_symbol := SYM_FORWARD
  Else If current_token = 'AND' Then current_symbol := SYM_AND
  Else If current_token = 'OR' Then current_symbol := SYM_OR
  Else If current_token = 'XOR' Then current_symbol := SYM_XOR
@@ -569,6 +572,7 @@ Begin
   is_function := False;
   record_size := 0;
   field_count := 0;
+  is_forward := False;
  End;
 
  AddSymbol := symbol_count;
@@ -602,6 +606,7 @@ Begin
   is_function := True;
   record_size := 0;
   field_count := 0;
+  is_forward := False;
  End;
 
  AddFunction := symbol_count;
@@ -635,6 +640,7 @@ Begin
   is_function := False; { Procédure, pas fonction }
   record_size := 0;
   field_count := 0;
+  is_forward := False;
  End;
 
  AddProcedure := symbol_count;
@@ -668,6 +674,7 @@ Begin
   is_function := False; { Procédure d'interruption, pas fonction }
   record_size := 0;
   field_count := 0;
+  is_forward := False;
  End;
 
  AddInterrupt := symbol_count;
@@ -2784,14 +2791,55 @@ Begin
   return_type := TYPE_INTEGER;
  End;
 
+ { Vérifier si c'est une déclaration FORWARD }
+ If current_symbol = SYM_FORWARD Then
+ Begin
+  NextToken; { Consommer FORWARD }
+  
+  { Attendre le point-virgule }
+  If current_token = ';' Then
+   NextToken
+  Else
+   Error('Attendu ; après FORWARD');
+
+  { Ajouter la fonction à la table des symboles avec is_forward := True }
+  sym_index := AddFunction(func_name, return_type);
+  If sym_index > 0 Then
+   symbol_table[sym_index]^.is_forward := True;
+   
+  Exit; { Sortir - pas de corps à analyser }
+ End;
+
  { Attendre le point-virgule }
  If current_token = ';' Then
   NextToken
  Else
   Error('Attendu ; après déclaration de fonction');
 
- { Ajouter la fonction à la table des symboles }
- sym_index := AddFunction(func_name, return_type);
+ { Vérifier s'il y a une déclaration FORWARD existante }
+ sym_index := FindSymbol(func_name);
+ If sym_index > 0 Then
+ Begin
+  { Vérifier si c'est une déclaration FORWARD }
+  If symbol_table[sym_index]^.is_forward And 
+     (symbol_table[sym_index]^.symbol_type = SYM_FUNCTION) And
+     (symbol_table[sym_index]^.data_type = return_type) Then
+  Begin
+   { Marquer comme implémentée }
+   symbol_table[sym_index]^.is_forward := False;
+   symbol_table[sym_index]^.defined := True;
+  End
+  Else
+  Begin
+   Error('Redéfinition de fonction: ' + func_name);
+   Exit;
+  End;
+ End
+ Else
+ Begin
+  { Ajouter la fonction à la table des symboles }
+  sym_index := AddFunction(func_name, return_type);
+ End;
  
  { Configurer l'état pour la fonction }
  current_function_name := UpperCase(func_name);
@@ -2873,17 +2921,62 @@ Begin
   NextToken; { Consommer INTERRUPT }
  End;
 
+ { Vérifier si c'est une déclaration FORWARD }
+ If current_symbol = SYM_FORWARD Then
+ Begin
+  NextToken; { Consommer FORWARD }
+  
+  { Attendre le point-virgule }
+  If current_token = ';' Then
+   NextToken
+  Else
+   Error('Attendu ; après FORWARD');
+
+  { Ajouter la procédure à la table des symboles avec is_forward := True }
+  If is_interrupt Then
+   sym_index := AddInterrupt(proc_name)
+  Else
+   sym_index := AddProcedure(proc_name);
+   
+  If sym_index > 0 Then
+   symbol_table[sym_index]^.is_forward := True;
+   
+  Exit; { Sortir - pas de corps à analyser }
+ End;
+
  { Attendre le point-virgule }
  If current_token = ';' Then
   NextToken
  Else
   Error('Attendu ; après déclaration de procédure');
 
- { Ajouter la procédure à la table des symboles }
- If is_interrupt Then
-  sym_index := AddInterrupt(proc_name)
+ { Vérifier s'il y a une déclaration FORWARD existante }
+ sym_index := FindSymbol(proc_name);
+ If sym_index > 0 Then
+ Begin
+  { Vérifier si c'est une déclaration FORWARD }
+  If symbol_table[sym_index]^.is_forward And 
+     ((symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE) Or
+      (symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT)) Then
+  Begin
+   { Marquer comme implémentée }
+   symbol_table[sym_index]^.is_forward := False;
+   symbol_table[sym_index]^.defined := True;
+  End
+  Else
+  Begin
+   Error('Redéfinition de procédure: ' + proc_name);
+   Exit;
+  End;
+ End
  Else
-  sym_index := AddProcedure(proc_name);
+ Begin
+  { Ajouter la procédure à la table des symboles }
+  If is_interrupt Then
+   sym_index := AddInterrupt(proc_name)
+  Else
+   sym_index := AddProcedure(proc_name);
+ End;
  
  { Configurer l'état pour la procédure }
  current_function_name := UpperCase(proc_name);
@@ -2940,13 +3033,18 @@ Begin
  If Accept(SYM_VAR) Then
   ParseVarDeclarations;
 
- { Gérer les déclarations FUNCTION }
- While Accept(SYM_FUNCTION) do
-  ParseFunctionDeclaration;
-
- { Gérer les déclarations PROCEDURE (y compris INTERRUPT) }
- While Accept(SYM_PROCEDURE) do
-  ParseProcedureDeclaration;
+ { Gérer toutes les déclarations de fonctions et procédures }
+ While Accept(SYM_FUNCTION) or Accept(SYM_PROCEDURE) do
+ Begin
+  If Accept(SYM_FUNCTION) Then
+  Begin
+   ParseFunctionDeclaration;
+  End
+  Else If Accept(SYM_PROCEDURE) Then
+  Begin
+   ParseProcedureDeclaration;
+  End;
+ End;
 
  { Gérer le BEGIN principal }
  If Accept(SYM_BEGIN) Then
