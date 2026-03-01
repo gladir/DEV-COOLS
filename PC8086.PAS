@@ -60,6 +60,10 @@ Const
  SYM_GOTO = 34;
  SYM_FORWARD = 35;
  SYM_STRING_LITERAL = 50; { Chaîne littérale entre guillemets simples }
+ SYM_NOT        = 51; { Opérateur NOT }
+ SYM_HALT       = 52; { Procédure HALT }
+ SYM_PARAMCOUNT = 53; { Fonction ParamCount }
+ SYM_PARAMSTR   = 54; { Fonction ParamStr }
 
  { Opérateurs de comparaison }
  SYM_EQUAL = 36;      { = }
@@ -347,6 +351,10 @@ Begin
  Else If current_token = 'AND' Then current_symbol := SYM_AND
  Else If current_token = 'OR' Then current_symbol := SYM_OR
  Else If current_token = 'XOR' Then current_symbol := SYM_XOR
+ Else If current_token = 'NOT' Then current_symbol := SYM_NOT
+ Else If current_token = 'HALT' Then current_symbol := SYM_HALT
+ Else If current_token = 'PARAMCOUNT' Then current_symbol := SYM_PARAMCOUNT
+ Else If current_token = 'PARAMSTR' Then current_symbol := SYM_PARAMSTR
  Else current_symbol := SYM_UNKNOWN;
 End;
 
@@ -1123,8 +1131,17 @@ Begin
  Begin
   temp_token := current_token;
 
+  { Expression groupée entre parenthèses }
+  If temp_token = '(' Then
+  Begin
+   NextToken; { Consommer ( }
+   ParseExpression; { Évaluer l'expression interne, résultat dans AX }
+   left_operand := 'ax';
+   left_type := TYPE_INTEGER;
+   If current_token = ')' Then NextToken;
+  End
   { Nombre littéral (commence par un chiffre) }
-  If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
+  Else If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
   Begin
    Emit('mov ax, ' + temp_token);
    left_operand := 'ax';
@@ -1280,6 +1297,100 @@ Begin
    left_type := TYPE_INTEGER;
   End;
  End
+ Else If current_symbol = SYM_NOT Then
+ Begin
+  NextToken; { Consommer NOT }
+  { Parser le token suivant comme opérande de NOT }
+  If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
+  Begin
+   temp_token := current_token;
+   sym_index := FindSymbol(temp_token);
+   If sym_index > 0 Then
+   Begin
+    { Appel de fonction dans NOT }
+    If symbol_table[sym_index]^.is_function Then
+    Begin
+     NextToken; { Consommer nom de la fonction }
+     If current_token = '(' Then
+     Begin
+      NextToken;
+      While (current_token <> ')') and (current_char <> #0) do NextToken;
+      If current_token = ')' Then NextToken;
+     End;
+     Emit('call ' + symbol_table[sym_index]^.name);
+    End
+    Else
+    Begin
+     Case symbol_table[sym_index]^.data_type of
+      TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN:
+       Begin
+        Emit('mov al, ' + symbol_table[sym_index]^.name);
+        Emit('mov ah, 0');
+       End;
+     Else
+      Emit('mov ax, ' + symbol_table[sym_index]^.name);
+     End;
+     NextToken;
+    End;
+    Emit('xor ax, 1'); { NOT booléen }
+   End
+   Else
+   Begin
+    Error('Variable non déclarée après NOT: ' + temp_token);
+    Emit('xor ax, 1');
+   End;
+   NextToken;
+  End
+  Else
+  Begin
+   { NOT appliqué à une sous-expression déjà dans AX }
+   ParseExpression;
+   Emit('xor ax, 1');
+  End;
+  left_operand := 'ax';
+  left_type := TYPE_BOOLEAN;
+ End
+ Else If current_symbol = SYM_PARAMCOUNT Then
+ Begin
+  Emit('call PARAMCOUNT'); { Nombre de paramètres → AX }
+  left_operand := 'ax';
+  left_type := TYPE_INTEGER;
+  NextToken;
+ End
+ Else If current_symbol = SYM_PARAMSTR Then
+ Begin
+  NextToken; { Consommer PARAMSTR }
+  If current_token = '(' Then
+  Begin
+   NextToken; { Consommer ( }
+   { Parser l'index du paramètre dans AX }
+   If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
+   Begin
+    If (current_token[1] >= '0') and (current_token[1] <= '9') Then
+    Begin
+     Emit('mov ax, ' + current_token);
+     NextToken;
+    End
+    Else
+    Begin
+     sym_index := FindSymbol(current_token);
+     If sym_index > 0 Then
+      Emit('mov ax, ' + symbol_table[sym_index]^.name)
+     Else
+      Emit('mov ax, 1');
+     NextToken;
+    End;
+   End
+   Else
+    Emit('mov ax, 1');
+   If current_token = ')' Then NextToken;
+  End
+  Else
+   Emit('mov ax, 1'); { Défaut: premier paramètre }
+  Emit('call PARAMSTR'); { Résultat: SI = pointeur chaîne Pascal }
+  left_operand := 'si';
+  left_type := TYPE_STRING;
+ End
  Else
  Begin
   NextToken; { Symbole reconnu, continuer }
@@ -1287,16 +1398,34 @@ Begin
   left_type := TYPE_INTEGER;
  End;
  
- { Vérifier s'il y a une opération arithmétique ou logique avant la comparaison }
- If (current_symbol = SYM_PLUS) or (current_symbol = SYM_MINUS) or
+ { Traiter toutes les opérations arithmétiques ou logiques (AND/OR/XOR en chaîne) }
+ While (current_symbol = SYM_PLUS) or (current_symbol = SYM_MINUS) or
     (current_symbol = SYM_MULTIPLY) or (current_symbol = SYM_DIVIDE) or
-    (current_symbol = SYM_AND) or (current_symbol = SYM_OR) or (current_symbol = SYM_XOR) Then
+    (current_symbol = SYM_AND) or (current_symbol = SYM_OR) or (current_symbol = SYM_XOR) Do
  Begin
   comparison_op := current_symbol;
   NextToken; { Consommer l'opérateur }
   
   { Parser le deuxième opérande }
-  If current_symbol = SYM_UNKNOWN Then
+  { Expression groupée entre parenthèses }
+  If (current_symbol = SYM_UNKNOWN) and (current_token = '(') Then
+  Begin
+   Emit('push ax'); { Sauvegarder résultat du premier opérande }
+   NextToken; { Consommer ( }
+   ParseExpression; { Évaluer expression interne → AX }
+   Emit('pop bx'); { Premier opérande → BX }
+   Case comparison_op of
+    SYM_AND: Emit('and bx, ax');
+    SYM_OR:  Emit('or bx, ax');
+    SYM_XOR: Emit('xor bx, ax');
+   Else
+    Emit('or bx, ax');
+   End;
+   Emit('mov ax, bx');
+   left_operand := 'ax';
+   If current_token = ')' Then NextToken;
+  End
+  Else If current_symbol = SYM_UNKNOWN Then
   Begin
    temp_token := current_token;
    
@@ -1305,7 +1434,7 @@ Begin
    Begin
     { Générer l'opération }
     Case comparison_op of
-     SYM_PLUS: 
+     SYM_PLUS:
       Begin
        { Vérifier si c'est une concaténation de chaînes }
        If left_type = TYPE_STRING Then
@@ -1471,7 +1600,25 @@ Begin
   NextToken; { Consommer l'opérateur }
   
   { Parser le deuxième opérande }
-  If current_symbol = SYM_UNKNOWN Then
+  If current_symbol = SYM_STRING_LITERAL Then
+  Begin
+   { Comparaison de chaîne littérale: appel COMPARE_STR }
+   temp_token := current_token;
+   string_label := 'CMP_STR' + IntToStr(next_label_id);
+   Inc(next_label_id);
+   If not data_segment Then
+   Begin
+    EmitLine('.DATA');
+    data_segment := True;
+   End;
+   EmitLine(string_label + ' DB ' + IntToStr(Length(temp_token)) + ', ''' + temp_token + '''');
+   If not code_segment Then BeginCodeSection;
+   Emit('mov di, OFFSET ' + string_label); { DI = chaîne droite }
+   Emit('call COMPARE_STR');               { AX = 0 si égal, 1 si différent }
+   Emit('cmp ax, 0');                      { Préparer drapeaux pour saut conditionnel }
+   NextToken;
+  End
+  Else If current_symbol = SYM_UNKNOWN Then
   Begin
    temp_token := current_token;
    
@@ -2401,6 +2548,22 @@ Begin
   
   SYM_GOTO:
    ParseGoto;
+
+  SYM_HALT:
+   Begin
+    NextToken; { Consommer HALT }
+    { Argument optionnel (code de retour) }
+    If current_token = '(' Then
+    Begin
+     NextToken; { Consommer ( }
+     While (current_token <> ')') and (current_char <> #0) do
+      NextToken;
+     If current_token = ')' Then NextToken;
+    End;
+    If not code_segment Then BeginCodeSection;
+    Emit('mov ax, 4C00h');
+    Emit('int 21h');
+   End;
 
   SYM_UNKNOWN:
    Begin
@@ -3615,6 +3778,46 @@ Begin
  in_interface := False;
  in_implementation := False;
  unit_symbols_start := 0;
+
+ { Pré-enregistrer TRUE et FALSE comme constantes booléennes }
+ i := AddSymbol('TRUE', SYM_CONST, TYPE_BOOLEAN, STORAGE_GLOBAL);
+ If i > 0 Then Begin symbol_table[i]^.value := 1; symbol_table[i]^.defined := True; End;
+ i := AddSymbol('FALSE', SYM_CONST, TYPE_BOOLEAN, STORAGE_GLOBAL);
+ If i > 0 Then Begin symbol_table[i]^.value := 0; symbol_table[i]^.defined := True; End;
+
+ { Pré-enregistrer les fonctions et variables système courantes }
+ i := AddFunction('EOF',      TYPE_BOOLEAN); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('EOLN',     TYPE_BOOLEAN); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('POS',      TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('LENGTH',   TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('COPY',     TYPE_STRING);  If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('CONCAT',   TYPE_STRING);  If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('UPCASE',   TYPE_CHAR);    If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('CHR',      TYPE_CHAR);    If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('ORD',      TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('SUCC',     TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('PRED',     TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddFunction('ABS',      TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
+ { IORESULT = variable globale entier (0 après succès) }
+ i := AddSymbol('IORESULT', SYM_VAR, TYPE_INTEGER, STORAGE_GLOBAL);
+ If i > 0 Then symbol_table[i]^.defined := True;
+
+ { Pré-enregistrer les procédures système courantes }
+ i := AddProcedure('ASSIGN');   If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('RESET');    If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('REWRITE');  If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('CLOSE');    If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('EXIT');     If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('INC');      If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('DEC');      If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('NEW');      If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('DISPOSE');  If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('STR');      If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('VAL');      If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('FILLCHAR'); If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('MOVE');     If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('DELETE');   If i > 0 Then symbol_table[i]^.defined := True;
+ i := AddProcedure('INSERT');   If i > 0 Then symbol_table[i]^.defined := True;
 End;
 
 { Libérer la mémoire allouée }
@@ -4058,6 +4261,141 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('PRINT_STR ENDP');
+
+ { Routine PARAMCOUNT - compte les paramètres de la ligne de commande DOS }
+ EmitLine('');
+ EmitComment('Routine PARAMCOUNT - compte les paramètres de la ligne de commande');
+ EmitLine('PARAMCOUNT PROC');
+ EmitComment('Résultat dans AX = nombre de paramètres');
+ EmitLine('    push bx');
+ EmitLine('    push cx');
+ EmitLine('    push dx');
+ EmitLine('    push es');
+ EmitLine('    mov ah, 62h');
+ EmitLine('    int 21h');
+ EmitLine('    mov es, bx');
+ EmitLine('    xor ax, ax');
+ EmitLine('    mov cl, es:[80h]');
+ EmitLine('    xor ch, ch');
+ EmitLine('    jcxz PCT_DONE');
+ EmitLine('    mov bx, 81h');
+ EmitLine('    xor dh, dh');
+ EmitLine('PCT_LOOP:');
+ EmitLine('    mov dl, es:[bx]');
+ EmitLine('    inc bx');
+ EmitLine('    cmp dl, 20h');
+ EmitLine('    je PCT_SPC');
+ EmitLine('    cmp dl, 09h');
+ EmitLine('    je PCT_SPC');
+ EmitLine('    cmp dl, 13');
+ EmitLine('    je PCT_DONE');
+ EmitLine('    cmp dl, 0');
+ EmitLine('    je PCT_DONE');
+ EmitLine('    test dh, dh');
+ EmitLine('    jnz PCT_INTOK');
+ EmitLine('    inc ax');
+ EmitLine('    mov dh, 1');
+ EmitLine('PCT_INTOK:');
+ EmitLine('    loop PCT_LOOP');
+ EmitLine('    jmp PCT_DONE');
+ EmitLine('PCT_SPC:');
+ EmitLine('    xor dh, dh');
+ EmitLine('    loop PCT_LOOP');
+ EmitLine('PCT_DONE:');
+ EmitLine('    pop es');
+ EmitLine('    pop dx');
+ EmitLine('    pop cx');
+ EmitLine('    pop bx');
+ EmitLine('    ret');
+ EmitLine('PARAMCOUNT ENDP');
+
+ { Routine PARAMSTR - extrait le Nième paramètre de la ligne de commande DOS }
+ EmitLine('');
+ EmitComment('Buffer pour PARAMSTR (format Pascal: longueur + contenu)');
+ EmitLine('.DATA');
+ EmitLine('PARAMSTR_BUF DB 256 DUP(0)');
+ EmitLine('.CODE');
+ EmitComment('Routine PARAMSTR - AX = index (base 1), résultat SI = chaîne Pascal');
+ EmitLine('PARAMSTR PROC');
+ EmitLine('    push bx');
+ EmitLine('    push cx');
+ EmitLine('    push dx');
+ EmitLine('    push di');
+ EmitLine('    push es');
+ EmitLine('    push ax');
+ EmitLine('    mov ah, 62h');
+ EmitLine('    int 21h');
+ EmitLine('    mov es, bx');
+ EmitLine('    pop ax');
+ EmitLine('    cmp ax, 0');
+ EmitLine('    je PS_EMPTY');
+ EmitLine('    mov cx, ax');
+ EmitLine('    mov bx, 81h');
+ EmitLine('    xor dl, dl');
+ EmitLine('    mov dh, es:[80h]');
+ EmitLine('    xor di, di');
+ EmitLine('    xor ah, ah');
+ EmitLine('PS_FIND:');
+ EmitLine('    cmp di, dx');
+ EmitLine('    jge PS_EMPTY');
+ EmitLine('    mov al, es:[bx+di]');
+ EmitLine('    inc di');
+ EmitLine('    cmp al, 20h');
+ EmitLine('    je PS_SPC');
+ EmitLine('    cmp al, 09h');
+ EmitLine('    je PS_SPC');
+ EmitLine('    cmp al, 13');
+ EmitLine('    je PS_EMPTY');
+ EmitLine('    cmp al, 0');
+ EmitLine('    je PS_EMPTY');
+ EmitLine('    test ah, ah');
+ EmitLine('    jnz PS_INTOK');
+ EmitLine('    dec cx');
+ EmitLine('    jz PS_COPY');
+ EmitLine('    mov ah, 1');
+ EmitLine('PS_INTOK:');
+ EmitLine('    jmp PS_FIND');
+ EmitLine('PS_SPC:');
+ EmitLine('    xor ah, ah');
+ EmitLine('    jmp PS_FIND');
+ EmitLine('PS_COPY:');
+ EmitLine('    dec di');
+ EmitLine('    mov si, OFFSET PARAMSTR_BUF');
+ EmitLine('    push si');
+ EmitLine('    inc si');
+ EmitLine('    xor cl, cl');
+ EmitLine('PS_CPLOOP:');
+ EmitLine('    cmp di, dx');
+ EmitLine('    jge PS_CPDONE');
+ EmitLine('    mov al, es:[bx+di]');
+ EmitLine('    inc di');
+ EmitLine('    cmp al, 20h');
+ EmitLine('    je PS_CPDONE');
+ EmitLine('    cmp al, 09h');
+ EmitLine('    je PS_CPDONE');
+ EmitLine('    cmp al, 13');
+ EmitLine('    je PS_CPDONE');
+ EmitLine('    cmp al, 0');
+ EmitLine('    je PS_CPDONE');
+ EmitLine('    mov [si], al');
+ EmitLine('    inc si');
+ EmitLine('    inc cl');
+ EmitLine('    jmp PS_CPLOOP');
+ EmitLine('PS_CPDONE:');
+ EmitLine('    pop si');
+ EmitLine('    mov [si], cl');
+ EmitLine('    jmp PS_DONE');
+ EmitLine('PS_EMPTY:');
+ EmitLine('    mov si, OFFSET PARAMSTR_BUF');
+ EmitLine('    mov byte ptr [si], 0');
+ EmitLine('PS_DONE:');
+ EmitLine('    pop es');
+ EmitLine('    pop di');
+ EmitLine('    pop dx');
+ EmitLine('    pop cx');
+ EmitLine('    pop bx');
+ EmitLine('    ret');
+ EmitLine('PARAMSTR ENDP');
 End;
 
 { Vérifier les étiquettes non définies }
