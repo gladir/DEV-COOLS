@@ -1,7 +1,7 @@
 { @author: Sylvain Maltais
   @created: 2026
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal, Free Pascal)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
   @description: Compilateur C pour Intel 8086
 }
 
@@ -14,22 +14,22 @@ Uses DOS;
 
 Const
  VERSION = 'Compilateur C pour Intel 8086 V1.1';  { Version du compilateur C pour Intel 8086 }
- YES = 1;                         { Valeur bool√©enne vraie }
- NO = 0;                          { Valeur bool√©enne fausse }
+ YES = 1;                                         { Valeur boolÇenne vraie }
+ NO = 0;                                          { Valeur boolÇenne fausse }
 
-  { Param√®tres de la table de symbole }
- symsiz = 14;       { Taille d'une entr√©e de symbole en octets }
+  { Paramätres de la table de symbole }
+ symsiz = 14;       { Taille d'une entrÇe de symbole en octets }
  numglbs = 512;     { Nombre maximum de symboles globaux }
  MASKGLBS = 511;    { Masque pour le hachage de la table de symboles }
  namesize = 32;     { Taille maximale d'un nom de symbole incluant le terminateur }
  namemax = 31;      { Longueur maximale d'un nom de symbole }
 
-  { D√©placement du format d'entr√©e de la table des symboles }
- name = 0;          { Offset du nom du symbole dans l'entr√©e }
- ident = 9;         { Offset de l'identificateur de type }
- ctype = 10;        { Offset du type de donn√©es C }
- storage = 11;      { Offset de la classe de stockage }
- offset = 12;       { Offset de la valeur/adresse du symbole }
+  { DÇplacement du format d'entrÇe de la table des symboles }
+ name = 0;          { DÇplacement du nom du symbole dans l'entrÇe }
+ ident = 9;         { DÇplacement de l'identificateur de type }
+ ctype = 10;        { DÇplacement du type de donn√©es C }
+ storage = 11;      { DÇplacement de la classe de stockage }
+ offset = 12;       { DÇplacement de la valeur/adresse du symbole }
  offsize = 2;       { Taille en octets du champ offset }
 
   { Types d'identificateurs }
@@ -493,7 +493,7 @@ Var
  i: Integer;
 Begin
  result := s;
- 
+
  { Convertir les instructions 6809 vers 8086 }
  If Pos('ldd  #', result) = 1 Then
   result := 'MOV  AX,' + Copy(result, 6, Length(result))
@@ -584,7 +584,7 @@ Begin
    If result[i] in ['a'..'z'] Then
     result[i] := Chr(Ord(result[i]) - 32);
  End;
- 
+
  convert_to_8086_upper := result;
 End;
 

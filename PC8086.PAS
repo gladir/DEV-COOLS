@@ -869,8 +869,11 @@ Begin
  data_segment := True;
 End;
 
+{ Déclaration anticipée - définie plus loin dans le fichier }
+Function IntToStr(value: Integer): String; forward;
+
 { Générer la déclaration d'une variable }
-Procedure GenerateVariableDeclaration(var_name: String; var_type: Integer);
+Procedure GenerateVariableDeclaration(var_name: String; var_type: Integer; string_size: Integer);
 Var
  type_index: Integer;
  record_size: Integer;
@@ -884,10 +887,10 @@ Begin
  Case var_type of
   TYPE_INTEGER, TYPE_WORD: EmitLine(var_name + ' DW ?');
   TYPE_BYTE, TYPE_CHAR: EmitLine(var_name + ' DB ?');
-  TYPE_STRING: 
+  TYPE_STRING:
    Begin
-    { Une chaîne Pascal a un octet de longueur suivi des caractères }
-    EmitLine(var_name + ' DB 256 DUP(?)')
+    { Une chaîne Pascal: 1 octet longueur + string_size caractères }
+    EmitLine(var_name + ' DB ' + IntToStr(string_size + 1) + ' DUP(?)')
    End;
   TYPE_BOOLEAN: EmitLine(var_name + ' DB ?');
   TYPE_RECORD: 
@@ -2625,6 +2628,8 @@ Var
  var_type: Integer;
  type_name: String;
  i, sym_index: Integer;
+ string_size: Integer;   { Taille de STRING (255 par défaut) }
+ const_idx: Integer;     { Index pour chercher une constante }
 Begin
  NextToken; { Consommer VAR }
 
@@ -2683,6 +2688,35 @@ Begin
     End;
    End;
    NextToken;
+
+   { Parser la taille optionnelle de STRING: String[255] ou String[MA_CONSTANTE] }
+   string_size := 255; { Taille par défaut }
+   If (var_type = TYPE_STRING) and (current_token = '[') Then
+   Begin
+    NextToken; { Consommer '[' }
+    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
+    Begin
+     { Taille numérique littérale }
+     string_size := current_value;
+     NextToken;
+    End
+    Else If current_symbol = SYM_UNKNOWN Then
+    Begin
+     { Taille définie par une constante }
+     const_idx := FindSymbol(current_token);
+     If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
+      string_size := symbol_table[const_idx]^.value
+     Else
+      Error('Taille de STRING invalide: ' + current_token);
+     NextToken;
+    End
+    Else
+     Error('Attendu taille numérique ou constante après String[');
+    If current_token = ']' Then
+     NextToken
+    Else
+     Error('Attendu ] après taille de STRING');
+   End;
   End
   Else
   Begin
@@ -2695,7 +2729,7 @@ Begin
   Begin
    sym_index := AddSymbol(var_names[i], SYM_VAR, var_type, STORAGE_GLOBAL);
    If sym_index > 0 Then
-    GenerateVariableDeclaration(var_names[i], var_type);
+    GenerateVariableDeclaration(var_names[i], var_type, string_size);
   End;
 
   { Attendre le point-virgule }
@@ -2719,6 +2753,8 @@ Var
  i: Integer;
  current_offset: Integer;
  sym_index: Integer;  { Variable manquante ajoutée }
+ field_string_size: Integer; { Taille STRING du champ courant }
+ const_idx: Integer;         { Index pour chercher une constante }
 Begin
  NextToken; { Consommer TYPE }
 
@@ -2797,6 +2833,33 @@ Begin
       field_type := TYPE_INTEGER;
      End;
      NextToken;
+
+     { Parser la taille optionnelle de STRING: String[255] ou String[MA_CONST] }
+     field_string_size := 255; { Taille par défaut }
+     If (field_type = TYPE_STRING) and (current_token = '[') Then
+     Begin
+      NextToken; { Consommer '[' }
+      If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
+      Begin
+       field_string_size := current_value;
+       NextToken;
+      End
+      Else If current_symbol = SYM_UNKNOWN Then
+      Begin
+       const_idx := FindSymbol(current_token);
+       If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
+        field_string_size := symbol_table[const_idx]^.value
+       Else
+        Error('Taille de STRING invalide: ' + current_token);
+       NextToken;
+      End
+      Else
+       Error('Attendu taille numérique ou constante après String[');
+      If current_token = ']' Then
+       NextToken
+      Else
+       Error('Attendu ] après taille de STRING');
+     End;
     End
     Else
     Begin
@@ -2808,12 +2871,12 @@ Begin
     For i := 1 to field_count do
     Begin
      AddRecordField(field_names[i], field_type, record_index, current_offset);
-     
+
      { Calculer l'offset suivant }
      Case field_type of
       TYPE_INTEGER, TYPE_WORD: Inc(current_offset, 2);
       TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN: Inc(current_offset, 1);
-      TYPE_STRING: Inc(current_offset, 256);
+      TYPE_STRING: Inc(current_offset, field_string_size + 1);
      Else
       Inc(current_offset, 2);
      End;
