@@ -3259,6 +3259,7 @@ Begin
   End;
 
   { Parser le corps de la fonction - pour l'instant on l'ignore mais on compte les BEGIN/END }
+  { Note: CASE...OF...END et RECORD...END comptent aussi comme blocs ouvrants }
   If Accept(SYM_BEGIN) Then
   Begin
    NextToken; { Consommer BEGIN }
@@ -3266,7 +3267,7 @@ Begin
    begin_count := 1;
    While (begin_count > 0) and (current_char <> #0) do
    Begin
-    If Accept(SYM_BEGIN) Then
+    If Accept(SYM_BEGIN) or Accept(SYM_CASE) or Accept(SYM_RECORD) Then
      Inc(begin_count)
     Else If Accept(SYM_END) Then
      Dec(begin_count);
@@ -3417,6 +3418,7 @@ Begin
   End;
 
   { Parser le corps de la procédure - pour l'instant on l'ignore mais on compte les BEGIN/END }
+  { Note: CASE...OF...END et RECORD...END comptent aussi comme blocs ouvrants }
   If Accept(SYM_BEGIN) Then
   Begin
    NextToken; { Consommer BEGIN }
@@ -3424,7 +3426,7 @@ Begin
    begin_count := 1;
    While (begin_count > 0) and (current_char <> #0) do
    Begin
-    If Accept(SYM_BEGIN) Then
+    If Accept(SYM_BEGIN) or Accept(SYM_CASE) or Accept(SYM_RECORD) Then
      Inc(begin_count)
     Else If Accept(SYM_END) Then
      Dec(begin_count);
