@@ -174,11 +174,11 @@ Type
  TFunction = Record
   name: String[20];                      { Nom de la fonction }
   return_type: Integer;                  { Type de retour }
-  return_type_info: TTypeInfo;           { Type de retour dÔøΩtaillÔøΩ }
-  param_count: Integer;                  { Nombre de paramÔøΩtres }
-  parameters: Array[0..9] of TParameter; { Liste des paramÔøΩtres }
-  is_defined: Boolean;                   { Vrai si la fonction est dÔøΩfinie (possÔøΩde un corps) }
-  is_declared: Boolean;                  { Vrai si la fonction est dÔøΩclarÔøΩe }
+  return_type_info: TTypeInfo;           { Type de retour dÇtaillÇ }
+  param_count: Integer;                  { Nombre de paramätres }
+  parameters: Array[0..9] of TParameter; { Liste des paramätres }
+  is_defined: Boolean;                   { Vrai si la fonction est dÇfinie (possäde un corps) }
+  is_declared: Boolean;                  { Vrai si la fonction est dÇclarÇe }
   label_id: Integer;                     { Etiquette assembleur de la fonction }
   local_vars_size: Integer;              { Taille dees variables locales }
   is_main: Boolean;                      { Vrai s'il s'agit de la fonction principale }
@@ -187,26 +187,26 @@ Type
  { Structure de contexte de boucle pour le support break/continue }
  TLoopContext = Record
   loop_type: Integer;     { 1=while, 2=for, 3=do-while }
-  break_label: Integer;   { √âtiquette √† utiliser pour break }
-  continue_label: Integer; { √âtiquette √† utiliser pour continue }
+  break_label: Integer;   { êtiquette Ö utiliser pour break }
+  continue_label: Integer; { êtiquette Ö utiliser pour continue }
  End;
 
  { Membre d'une structure ou union }
  TStructMember = Record
   name: String[20];       { Nom du membre }
   member_type: Integer;   { Type de base du membre }
-  type_info: TTypeInfo;   { Informations d√©taill√©es du type }
-  offset: Integer;        { Offset du membre dans la structure }
+  type_info: TTypeInfo;   { Informations dÇtaillÇes du type }
+  offset: Integer;        { DÇplacement du membre dans la structure }
   size: Integer;          { Taille du membre en octets }
  End;
 
- { D√©finition de structure ou union }
+ { DÇfinition de structure ou union }
  PStructDef = ^TStructDef;
  TStructDef = Record
   name: String[20];                        { Nom de la structure/union }
   is_union: Boolean;                       { Vrai si c'est une union, faux si struct }
   member_count: Integer;                   { Nombre de membres }
-  members: Array[0..15] of TStructMember;  { Liste des membres (max 16) }
+  members: Array[0..15] of TStructMember;  { Liste des membres (maximum 16) }
   total_size: Integer;                     { Taille totale de la structure }
   struct_id: Integer;                      { ID unique de la structure }
   next: PStructDef;                        { Structure suivante dans la liste }
@@ -220,22 +220,22 @@ Type
   saved_eof: Integer;
  End;
 
- { Table des fichiers d√©j√† inclus pour √©viter l'inclusion circulaire }
+ { Table des fichiers dÇjÖ inclus pour Çviter l'inclusion circulaire }
  TIncludedFile = Record
   filename: String;
   is_included: Boolean;
  End;
 
- { Gestion des macros/Define - utilisation du tas au lieu de tableaux statiques }
+  { Gestion des macros/Define - utilisation du tas au lieu de tableaux statiques }
  PDefine = ^TDefine;
  TDefine = Record
   name: String;
   value: String;
   in_use: Boolean;
-  next: PDefine;        { Pointeur vers le prochain define dans la liste cha√Æn√©e }
+  next: PDefine;        { Pointeur vers le prochain define dans la liste chaånÇe }
  End;
 
- { Gestion des directives de pr√©processeur conditionnelles }
+ { Gestion des directives de prÇprocesseur conditionnelles }
  TConditionType = (
   COND_IF,      { #if }
   COND_IFDEF,   { #ifdef }
@@ -245,16 +245,16 @@ Type
 
  TConditionState = Record
   condition_type: TConditionType; { Type de condition }
-  is_true: Boolean;               { √âvaluation actuelle de la condition }
-  has_true_branch: Boolean;       { Si une branche vraie a √©t√© trouv√©e }
+  is_true: Boolean;               { êvaluation actuelle de la condition }
+  has_true_branch: Boolean;       { Si une branche vraie a ÇtÇ trouvÇe }
   in_else: Boolean;               { Si nous sommes dans un bloc #else }
-  line_number: Integer;           { Num√©ro de ligne pour debug }
+  line_number: Integer;           { NumÇro de ligne pour debug }
  End;
 
- { Pile de conditions pour directives imbriqu√©es }
+ { Pile de conditions pour directives imbriquÇes }
  TConditionStack = Array[0..31] of TConditionState;
 
- { Table de symboles utilisant la m√©moire de tas au lieu du segment de donn√©es }
+ { Table de symboles utilisant la mÇmoire de tas au lieu du segment de donnÇes }
  PSymbol = ^TSymbol;
  TSymbol = Record
   name: String;

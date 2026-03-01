@@ -163,7 +163,8 @@ Var
  error_count: Integer;
 
  { Variables de génération de code }
- code_segment: Boolean;
+ code_segment: Boolean;  { True si MAIN PROC a été émis }
+ code_header: Boolean;   { True si .CODE a été émis (début de section, avant MAIN PROC) }
  data_segment: Boolean;
  stack_offset: Integer;
 
@@ -929,8 +930,8 @@ Begin
  End;
 End;
 
-{ Commencer la section de code }
-Procedure BeginCodeSection;
+{ Commencer la section .CODE sans MAIN PROC (pour les procédures utilisateur) }
+Procedure StartCodeSection;
 Begin
  If data_segment Then
  Begin
@@ -938,9 +939,20 @@ Begin
   data_segment := False;
  End;
 
- If not code_segment Then
+ If not code_header Then
  Begin
   EmitLine('.CODE');
+  code_header := True;
+ End;
+End;
+
+{ Commencer la section de code principale (MAIN PROC) }
+Procedure BeginCodeSection;
+Begin
+ StartCodeSection; { Assure que .CODE est émis }
+
+ If not code_segment Then
+ Begin
   EmitLine('MAIN PROC');
   EmitLine('    mov ax, @data');
   EmitLine('    mov ds, ax');
@@ -3188,7 +3200,10 @@ Begin
   { Ajouter la fonction à la table des symboles avec is_forward := True }
   sym_index := AddFunction(func_name, return_type);
   If sym_index > 0 Then
+  Begin
    symbol_table[sym_index]^.is_forward := True;
+   symbol_table[sym_index]^.defined := False; { Corps absent jusqu'à l'implémentation }
+  End;
    
   { Pas de corps à analyser pour FORWARD, terminer ici }
  End
@@ -3226,6 +3241,14 @@ Begin
   current_function_type := return_type;
   in_function := True;
 
+  { Émettre l'en-tête de procédure assembleur }
+  StartCodeSection; { Assurer .CODE sans MAIN PROC }
+  EmitLine('');
+  EmitLine(UpperCase(func_name) + ' PROC');
+  EmitLine('    push bp');
+  EmitLine('    mov bp, sp');
+  EmitLine('');
+
   { Ignorer toute déclaration VAR locale }
   While Accept(SYM_VAR) do
   Begin
@@ -3255,6 +3278,12 @@ Begin
   { Attendre le point-virgule final }
   If current_token = ';' Then
    NextToken;
+
+  { Émettre l'épilogue de la fonction }
+  EmitLine('');
+  EmitLine('    pop bp');
+  EmitLine('    ret');
+  EmitLine(UpperCase(func_name) + ' ENDP');
 
   { Réinitialiser l'état }
   current_function_name := '';
@@ -3326,7 +3355,10 @@ Begin
    sym_index := AddProcedure(proc_name);
    
   If sym_index > 0 Then
+  Begin
    symbol_table[sym_index]^.is_forward := True;
+   symbol_table[sym_index]^.defined := False; { Corps absent jusqu'à l'implémentation }
+  End;
    
   { Pas de corps à analyser pour FORWARD, terminer ici }
  End
@@ -3367,6 +3399,14 @@ Begin
   current_function_type := TYPE_INTEGER; { Pas utilisé }
   in_function := True; { Utilise le même flag pour les procédures }
 
+  { Émettre l'en-tête de procédure assembleur }
+  StartCodeSection; { Assurer .CODE sans MAIN PROC }
+  EmitLine('');
+  EmitLine(UpperCase(proc_name) + ' PROC');
+  EmitLine('    push bp');
+  EmitLine('    mov bp, sp');
+  EmitLine('');
+
   { Ignorer toute déclaration VAR locale }
   While Accept(SYM_VAR) do
   Begin
@@ -3396,6 +3436,12 @@ Begin
   { Attendre le point-virgule final }
   If current_token = ';' Then
    NextToken;
+
+  { Émettre l'épilogue de la procédure }
+  EmitLine('');
+  EmitLine('    pop bp');
+  EmitLine('    ret');
+  EmitLine(UpperCase(proc_name) + ' ENDP');
 
   { Réinitialiser l'état }
   current_function_name := '';
@@ -3554,6 +3600,7 @@ Begin
  line_pos := 1;
  current_char := ' ';
  code_segment := False;
+ code_header := False;
  data_segment := False;
  stack_offset := 0;
  current_function_name := '';
