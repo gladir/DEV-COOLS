@@ -27,8 +27,8 @@ Const
   { D‚placement du format d'entr‚e de la table des symboles }
  name = 0;          { D‚placement du nom du symbole dans l'entr‚e }
  ident = 9;         { D‚placement de l'identificateur de type }
- ctype = 10;        { D‚placement du type de donnÃ©es C }
- storage = 11;      { D‚placement de la classe de stockage }
+ ctype = 10;        { D‚placement du type de donn‚es C }
+ storage = 11;      { D‚placement de la classe d'entreposage }
  offset = 12;       { D‚placement de la valeur/adresse du symbole }
  offsize = 2;       { Taille en octets du champ offset }
 
@@ -39,25 +39,25 @@ Const
  it_function = 4;     { Fonction }
  it_struct_type = 5;  { Type structure }
  it_union_type = 6;   { Type union }
- it_typedef_type = 7; { Type dÃ©fini par typedef }
+ it_typedef_type = 7; { Type d‚fini par typedef }
 
-  { Types de donnÃ©es }
+  { Types de donn‚es }
  cvoid = 1;      { Type void (aucune valeur) }
- cchar = 2;      { CaractÃ¨re signÃ© 8 bits }
- cuchar = 3;     { CaractÃ¨re non signÃ© 8 bits }
- cshort = 4;     { Entier court signÃ© 16 bits }
- cushort = 5;    { Entier court non signÃ© 16 bits }
- cint = 6;       { Entier signÃ© 16 bits }
- cuint = 7;      { Entier non signÃ© 16 bits }
- clong = 8;      { Entier long signÃ© 32 bits }
- culong = 9;     { Entier long non signÃ© 32 bits }
- cfloat = 10;    { Nombre flottant simple prÃ©cision }
- cdouble = 11;   { Nombre flottant double prÃ©cision }
+ cchar = 2;      { CaractŠre sign‚ 8 bits }
+ cuchar = 3;     { CaractŠre non sign‚ 8 bits }
+ cshort = 4;     { Entier court sign‚ 16 bits }
+ cushort = 5;    { Entier court non sign‚ 16 bits }
+ cint = 6;       { Entier sign‚ 16 bits }
+ cuint = 7;      { Entier non sign‚ 16 bits }
+ clong = 8;      { Entier long sign‚ 32 bits }
+ culong = 9;     { Entier long non sign‚ 32 bits }
+ cfloat = 10;    { Nombre flottant simple pr‚cision }
+ cdouble = 11;   { Nombre flottant double pr‚cision }
  cpointer = 12;  { Pointeur vers un type }
- carray = 13;    { Tableau d'Ã©lÃ©ments }
- cstruct = 14;   { Structure de donnÃ©es }
- cunion = 15;    { Union de donnÃ©es }
- cenum = 16;     { Ã‰numÃ©ration de valeurs }
+ carray = 13;    { Tableau d'‚l‚ments }
+ cstruct = 14;   { Structure de donn‚es }
+ cunion = 15;    { Union de donn‚es }
+ cenum = 16;     { num‚ration de valeurs }
 
   { Taille du type en octets }
  sizeof_void = 0;     { Taille du type void (aucune taille) }
@@ -71,10 +71,10 @@ Const
  sizeof_enum = 2;     { Taille du type enum (2 octets, comme int) }
 
   { Classes d'entreposage }
- statik = 1;      { Variable statique (durÃ©e de vie du programme) }
+ statik = 1;      { Variable statique (dur‚e de vie du programme) }
  stkloc = 2;      { Variable locale sur la pile }
- CEXTERNAL = 3;   { Variable externe dÃ©finie ailleurs }
- automatic = 4;   { Variable automatique (locale par dÃ©faut) }
+ CEXTERNAL = 3;   { Variable externe d‚finie ailleurs }
+ automatic = 4;   { Variable automatique (locale par d‚faut) }
 
   { Types d'instructions }
  streturn = 3;    { Instruction de retour de fonction }
@@ -86,70 +86,70 @@ Const
   { Niveau d'optimisations }
  OPT_NONE = 0;        { Aucune optimisation }
  OPT_BASIC = 1;       { Optimisations de base }
- OPT_ADVANCED = 2;    { Optimisations avancÃ©es }
- OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activÃ©es) }
+ OPT_ADVANCED = 2;    { Optimisations avanc‚es }
+ OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activ‚es) }
 
  { Option d'optimisation }
  OPT_PEEPHOLE = 1;      { Optimisations pour analyse de code }
- OPT_DEAD_CODE = 2;     { ï¿½limination du code mort }
+ OPT_DEAD_CODE = 2;     { limination du code mort }
  OPT_CONSTANT_FOLD = 4; { Simplification des constantes }
- OPT_STRENGTH_RED = 8;  { Rï¿½duction de la complexitï¿½ }
+ OPT_STRENGTH_RED = 8;  { R‚duction de la complexit‚ }
  OPT_REGISTER = 16;     { Allocation de registres }
  OPT_JUMP = 32;         { Optimisations de sauts }
 
  { Ligne d'entrÃ©e }
- linesize = 80;            { Taille maximale d'une ligne d'entrÃ©e }
+ linesize = 80;            { Taille maximale d'une ligne d'entr‚e }
  linemax = linesize - 1;   { Index maximum valide dans une ligne }
 
 Type
- { TSymTab no longer needed - using heap-based symbol table }
+  { TSymTab n'est plus n‚cessaire - utiliser maintenant la m‚moire de tas pour la table des symboles }
  TLine = String[linesize];
 
  { Structure d'information de type }
  PTypeInfo = ^TTypeInfo;
  TTypeInfo = Record
-  base_type: Integer;      { Type de donnï¿½es de base (cint, cchar, etc.) }
+  base_type: Integer;      { Type de donn‚es de base (cint, cchar, etc.) }
   pointer_level: Integer;  { Nombre de niveaux d'indirection }
   array_size: Integer;     { Taille du tableau (0 si ce n'est pas un tableau) }
   is_unsigned: Boolean;    { Vrai pour les types non signï¿½s }
   is_const: Boolean;       { Vrai pour les types constants }
   is_volatile: Boolean;    { Vrai pour les types volatils }
   struct_id: Integer;      { Identifiant de struct/union }
-  typedef_name: String;    { Nom du typedef si c'est un type dÃ©fini }
+  typedef_name: String;    { Nom du typedef si c'est un type d‚fini }
   is_typedef: Boolean;     { Vrai si c'est un typedef }
   size: Integer;           { Taille totale en octets }
  End;
 
- { Structure de valeur d'expression }
+  { Structure de valeur d'expression }
  TLVal = Record
-  symbol: Integer;        { Pointeur vers l'entrï¿½e de la table de symboles }
+  symbol: Integer;        { Pointeur vers l'entr‚e de la table de symboles }
   indirect: Integer;      { 0=direct, 1=indirect }
-  typ: Integer;           { Type de donnï¿½es }
+  typ: Integer;           { Type de donn‚es }
   storage: Integer;       { Classe d'entreposage }
   constant: Boolean;      { Vrai si la valeur est constante }
-  value: Integer;         { Valeur constante, le cas ï¿½chï¿½ant }
-  type_info: TTypeInfo;   { Informations de type ï¿½tendues }
+  value: Integer;         { Valeur constante, le cas ‚ch‚ant }
+  type_info: TTypeInfo;   { Informations de type ‚tendues }
  End;
 
  { Structure d'instruction d'optimisation }
  TOptInstruction = Record
-  opcode: String[10];     { MnÃ©monique d'instruction }
-  operand: String[20];    { OpÃ©rande }
+  opcode: String[10];     { Mn‚monique d'instruction }
+  operand: String[20];    { Op‚rande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { NumÃ©ro de ligne source }
-  can_eliminate: Boolean; { Peut Ãªtre supprimÃ© lors de la suppression du code mort }
+  line_number: Integer;   { Num‚ro de ligne source }
+  can_eliminate: Boolean; { Peut ˆtre supprim‚ lors de la suppression du code mort }
  End;
 
  { Pointeur vers instruction d'optimisation }
  POptInst = ^TOptInst;
 
- { Structure d'instruction d'optimisation dans le tas }
+ { Structure d'instruction d'optimisation dans la m‚moire tas }
  TOptInst = Record
-  opcode: String[10];     { MnÃ©monique d'instruction }
-  operand: String[20];    { OpÃ©rande }
+  opcode: String[10];     { Mn‚monique d'instruction }
+  operand: String[20];    { Op‚rande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { NumÃ©ro de ligne source }
-  can_eliminate: Boolean; { Peut Ãªtre supprimÃ© lors de la suppression du code mort }
+  line_number: Integer;   { Num‚ro de ligne source }
+  can_eliminate: Boolean; { Peut ˆtre supprim‚ lors de la suppression du code mort }
   next: POptInst;         { Pointeur vers instruction suivante }
  End;
 
@@ -157,20 +157,20 @@ Type
  TOptContext = Record
   level: Integer;           { Niveau d'optimisation }
   flags: Integer;           { Drapeaux d'optimisation }
-  inst_list: POptInst;      { Liste chaÃ®nÃ©e d'instructions dans le tas }
+  inst_list: POptInst;      { Liste chaŒn‚e d'instructions dans la m‚moire de tas }
   inst_count: Integer;      { Nombre d'instructions }
-  last_result_reg: String;  { Dernier registre utilisÃ© pour le rÃ©sultat }
+  last_result_reg: String;  { Dernier registre utilis‚ pour le r‚sultat }
  End;
 
- { Structure de paramï¿½tres de la fonction }
+  { Structure de paramŠtres de la fonction }
  TParameter = Record
-  name: String[20];      { Nom du paramï¿½tre }
-  typ: Integer;          { Type du paramï¿½tre }
-  type_info: TTypeInfo;  { Informations dï¿½taillï¿½es sur le type }
-  offset: Integer;       { Dï¿½placement de la pile }
+  name: String[20];      { Nom du paramŠtre }
+  typ: Integer;          { Type du paramŠtre }
+  type_info: TTypeInfo;  { Informations d‚taill‚es sur le type }
+  offset: Integer;       { D‚placement de la pile }
  End;
 
- { Function information structure }
+ { Structure d'informations de fonction }
  TFunction = Record
   name: String[20];                      { Nom de la fonction }
   return_type: Integer;                  { Type de retour }

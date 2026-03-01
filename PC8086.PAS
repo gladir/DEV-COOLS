@@ -586,6 +586,7 @@ End;
 Function AddFunction(name: String; return_type: Integer): Integer;
 Var
  upper_name: String;
+ rt: Integer; { Copie locale du paramètre return_type (évite le masquage par le champ With) }
 Begin
  If symbol_count >= MAX_SYMBOLS Then
  Begin
@@ -595,18 +596,19 @@ Begin
  End;
 
  upper_name := UpperCase(name);
+ rt := return_type; { Sauvegarder avant le bloc With }
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
  With symbol_table[symbol_count]^ do
  Begin
   name := upper_name;
   symbol_type := SYM_FUNCTION;
-  data_type := return_type;
+  data_type := rt;
   storage_class := STORAGE_GLOBAL;
   offset := 0;
   value := 0;
   defined := True;
-  return_type := return_type;
+  return_type := rt;
   is_function := True;
   record_size := 0;
   field_count := 0;
@@ -3166,12 +3168,18 @@ Begin
   return_type := TYPE_INTEGER;
  End;
 
+ { Consommer le point-virgule après le type de retour }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après type de retour de fonction');
+
  { Vérifier si c'est une déclaration FORWARD }
  If current_symbol = SYM_FORWARD Then
  Begin
   NextToken; { Consommer FORWARD }
   
-  { Attendre le point-virgule }
+  { Attendre le point-virgule final après FORWARD }
   If current_token = ';' Then
    NextToken
   Else
@@ -3186,12 +3194,7 @@ Begin
  End
  Else
  Begin
-  { Traitement normal de la fonction }
-  { Attendre le point-virgule }
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; après déclaration de fonction');
+  { Traitement normal de la fonction - le ; est déjà consommé }
 
   { Vérifier s'il y a une déclaration FORWARD existante }
   sym_index := FindSymbol(func_name);
@@ -3299,12 +3302,18 @@ Begin
   NextToken; { Consommer INTERRUPT }
  End;
 
+ { Consommer le point-virgule après la signature }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après signature de procédure');
+
  { Vérifier si c'est une déclaration FORWARD }
  If current_symbol = SYM_FORWARD Then
  Begin
   NextToken; { Consommer FORWARD }
   
-  { Attendre le point-virgule }
+  { Attendre le point-virgule final après FORWARD }
   If current_token = ';' Then
    NextToken
   Else
@@ -3323,12 +3332,7 @@ Begin
  End
  Else
  Begin
-  { Traitement normal de la procédure }
-  { Attendre le point-virgule }
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; après déclaration de procédure');
+  { Traitement normal de la procédure - le ; est déjà consommé }
 
   { Vérifier s'il y a une déclaration FORWARD existante }
   sym_index := FindSymbol(proc_name);
