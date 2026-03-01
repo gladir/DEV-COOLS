@@ -49,25 +49,26 @@ Const
  SYM_READLN = 23;
  SYM_INTERRUPT = 24;
  SYM_RECORD = 25;
+ SYM_ARRAY = 26;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 26;      { = }
- SYM_NOTEQUAL = 27;   { <> }
- SYM_LESS = 28;       { < }
- SYM_GREATER = 29;    { > }
- SYM_LESSEQ = 30;     { <= }
- SYM_GREATEREQ = 31;  { >= }
+ SYM_EQUAL = 27;      { = }
+ SYM_NOTEQUAL = 28;   { <> }
+ SYM_LESS = 29;       { < }
+ SYM_GREATER = 30;    { > }
+ SYM_LESSEQ = 31;     { <= }
+ SYM_GREATEREQ = 32;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 32;       { + }
- SYM_MINUS = 33;      { - }
- SYM_MULTIPLY = 34;   { * }
- SYM_DIVIDE = 35;     { / }
+ SYM_PLUS = 33;       { + }
+ SYM_MINUS = 34;      { - }
+ SYM_MULTIPLY = 35;   { * }
+ SYM_DIVIDE = 36;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 36;        { AND }
- SYM_OR = 37;         { OR }
- SYM_XOR = 38;        { XOR }
+ SYM_AND = 37;        { AND }
+ SYM_OR = 38;         { OR }
+ SYM_XOR = 39;        { XOR }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -78,6 +79,8 @@ Const
  TYPE_BOOLEAN = 6;
  TYPE_REAL = 7;
  TYPE_RECORD = 8;
+ TYPE_ARRAY = 9;
+ TYPE_POINTER = 10;
 
  { Classes de stockage }
  STORAGE_GLOBAL = 1;
@@ -298,6 +301,7 @@ Begin
  Else If current_token = 'READ' Then current_symbol := SYM_READ
  Else If current_token = 'READLN' Then current_symbol := SYM_READLN
  Else If current_token = 'RECORD' Then current_symbol := SYM_RECORD
+ Else If current_token = 'ARRAY' Then current_symbol := SYM_ARRAY
  Else If current_token = 'AND' Then current_symbol := SYM_AND
  Else If current_token = 'OR' Then current_symbol := SYM_OR
  Else If current_token = 'XOR' Then current_symbol := SYM_XOR
@@ -680,6 +684,39 @@ Begin
  AddRecordField := symbol_count;
 End;
 
+{ Ajouter un type alias à la table des symboles }
+Function AddTypeAlias(type_name: String; base_type: Integer): Integer;
+Var
+ upper_name: String;
+Begin
+ If symbol_count >= MAX_SYMBOLS Then
+ Begin
+  Error('Table des symboles pleine');
+  AddTypeAlias := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(type_name);
+ Inc(symbol_count);
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
+ Begin
+  name := upper_name;
+  symbol_type := SYM_TYPE;
+  data_type := base_type;
+  storage_class := STORAGE_GLOBAL;
+  offset := 0;
+  value := 0;
+  defined := True;
+  return_type := TYPE_INTEGER;
+  is_function := False;
+  record_size := 0;
+  field_count := 0;
+ End;
+
+ AddTypeAlias := symbol_count;
+End;
+
 { ============================================================================ }
 { GÉNÉRATION DE CODE ASSEMBLEUR 8086                                          }
 { ============================================================================ }
@@ -787,6 +824,16 @@ Begin
     type_index := FindSymbol(var_name); { Ceci ne fonctionnera pas, il faudrait passer le type }
     { Pour l'instant, utiliser une taille par défaut }
     EmitLine(var_name + ' DB 64 DUP(?) ; Record (taille estimée)');
+   End;
+  TYPE_ARRAY:
+   Begin
+    { Pour l'instant, utiliser une taille par défaut pour les arrays }
+    EmitLine(var_name + ' DW 100 DUP(?) ; Array (taille estimée)');
+   End;
+  TYPE_POINTER:
+   Begin
+    { Les pointeurs sont des mots de 16 bits en 8086 }
+    EmitLine(var_name + ' DW ? ; Pointeur');
    End;
  Else
   EmitLine(var_name + ' DW ?'); { Par défaut }
@@ -1982,10 +2029,13 @@ Begin
    Else If type_name = 'BOOLEAN' Then var_type := TYPE_BOOLEAN
    Else
    Begin
-    { Vérifier si c'est un type RECORD défini }
+    { Vérifier si c'est un type défini par l'utilisateur }
     sym_index := FindSymbol(type_name);
-    If (sym_index > 0) and (symbol_table[sym_index]^.data_type = TYPE_RECORD) Then
-     var_type := TYPE_RECORD
+    If (sym_index > 0) and (symbol_table[sym_index]^.symbol_type = SYM_TYPE) Then
+    Begin
+     { C'est un type défini par l'utilisateur }
+     var_type := symbol_table[sym_index]^.data_type;
+    End
     Else
     Begin
      Error('Type inconnu: ' + type_name);
@@ -2028,6 +2078,7 @@ Var
  type_name_field: String;
  i: Integer;
  current_offset: Integer;
+ sym_index: Integer;  { Variable manquante ajoutée }
 Begin
  NextToken; { Consommer TYPE }
 
@@ -2145,12 +2196,58 @@ Begin
    If record_index > 0 Then
     symbol_table[record_index]^.record_size := current_offset;
   End
-  Else
+  { Vérifier si c'est un type ARRAY }
+  Else If Accept(SYM_ARRAY) Then
   Begin
-   { Types simples non supportés pour l'instant }
-   Error('Seuls les types RECORD sont supportés');
+   NextToken; { Consommer ARRAY }
+   
+   { Pour l'instant, on traite les arrays comme des types simples }
+   { TODO: Implémenter le parsing complet des arrays }
    While (current_token <> ';') and (current_char <> #0) do
     NextToken;
+    
+   { Créer un type array basique }
+   AddSymbol(type_name, SYM_TYPE, TYPE_ARRAY, STORAGE_GLOBAL);
+  End
+  Else
+  Begin
+   { Type alias - référence à un autre type }
+   If current_symbol = SYM_UNKNOWN Then
+   Begin
+    type_name_field := UpperCase(current_token);
+    If type_name_field = 'INTEGER' Then
+     AddTypeAlias(type_name, TYPE_INTEGER)
+    Else If type_name_field = 'BYTE' Then
+     AddTypeAlias(type_name, TYPE_BYTE)
+    Else If type_name_field = 'WORD' Then
+     AddTypeAlias(type_name, TYPE_WORD)
+    Else If type_name_field = 'STRING' Then
+     AddTypeAlias(type_name, TYPE_STRING)
+    Else If type_name_field = 'CHAR' Then
+     AddTypeAlias(type_name, TYPE_CHAR)
+    Else If type_name_field = 'BOOLEAN' Then
+     AddTypeAlias(type_name, TYPE_BOOLEAN)
+    Else
+    Begin
+     { Vérifier si c'est une référence à un type défini }
+     sym_index := FindSymbol(type_name_field);
+     If sym_index > 0 Then
+      AddTypeAlias(type_name, symbol_table[sym_index]^.data_type)
+     Else
+     Begin
+      Error('Type de référence inconnu: ' + type_name_field);
+      AddTypeAlias(type_name, TYPE_INTEGER);
+     End;
+    End;
+    NextToken;
+   End
+   Else
+   Begin
+    { Types simples non supportés pour l'instant }
+    Error('Type non supporté');
+    While (current_token <> ';') and (current_char <> #0) do
+     NextToken;
+   End;
   End;
 
   { Attendre le point-virgule final }
@@ -2425,6 +2522,7 @@ Begin
   NextToken
  Else
   Error('Attendu . à la fin du programme');
+  Error('Attendu . à la fin du programme');
 
  GenerateFooter;
 End;
@@ -2442,6 +2540,7 @@ Begin
  For i := 1 to MAX_SYMBOLS do
   symbol_table[i] := nil;
  For i := 1 to MAX_LABEL_COUNT do
+  label_table[i] := nil;
   label_table[i] := nil;
   
  symbol_count := 0;

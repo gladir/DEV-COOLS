@@ -5496,12 +5496,11 @@ Begin
 
  { Increment label - where continue jumps to }
  prelabel(increment_label);
- safe_writeln('; FOR increment');
-
- { Re-parse and execute increment from saved position }
- saved_lptr := lptr;  { Save current position }
- lptr := increment_start;  { Set to increment start }
- gch;  { Refresh current character }
+ safe_writeln('; incr‚mentation FOR ');
+  { Re-parse and execute increment from saved position }
+ saved_lptr := lptr;  { Sauvegarde la position courant }
+ lptr := increment_start;  { Fixe le d‚but de l'incr‚mentation }
+ gch;  { Rafraichie le caractŠre courant }
  If increment_end > increment_start Then Begin
   parse_assignment_statement;  { Analyse et ex‚cute l'incr‚mentation }
  End;
