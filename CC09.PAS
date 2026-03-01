@@ -5578,47 +5578,35 @@ Begin
  { Loop start }
  prelabel(loop_label);
  safe_writeln('; DO-WHILE loop start');
-
- { Parse loop body }
+ { Analyse du corps de la boucle }
  parse_statement;
-
- { Expect while }
- If not match('while') Then
- Begin
+ { while attendue }
+ If not match('while') Then Begin
   errrpt('Expected while after do body');
   Exit;
  End;
-
- { Expect opening parenthesis }
- If not match('(') Then
- Begin
+  { Ouverture de parenthäse attendue }
+ If not match('(') Then Begin
   errrpt('Expected ( after while');
   Exit;
  End;
-
- { Parse condition }
+  { Analyse la condition }
  prelabel(condition_label);
- safe_writeln('; DO-WHILE condition');
+ safe_writeln('; condition DO-WHILE');
  expression_bool(lval);
-
- { Expect closing parenthesis }
+  { Fermeture de parenthäse attendue }
  If not match(')') Then
-  errrpt('Expected ) after while condition');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after do-while');
-
- { Generate conditional jump back }
+  errrpt('Æ)Ø attendue apräs la condition while');
+ { Point-virgule attendue }
+ If not match(';') Then errrpt('Æ;Ø attendu apräs do-while');
+ { GÇnäre un saut conditionnel par l'arriäre }
  ol('tstd');
  ot('lbne ');
  printlabel(loop_label);
  nl;
-
- { End label }
+  { Fin de l'Çtiquette }
  prelabel(end_label);
- safe_writeln('; End DO-WHILE');
-
+ safe_writeln('; Fin DO-WHILE');
  { Pop loop context }
  { pop_loop_context; }
 End;
@@ -5628,27 +5616,22 @@ Var
  lval: TLVal;
 Begin
  parse_return_statement := False;
-
  If not match('return') Then Exit;
  parse_return_statement := True;
-
- safe_writeln('; RETURN statement');
-
- { Check for return value }
- If not match(';') Then
- Begin
+ safe_writeln('; instruction RETURN');
+  { VÇrifie pour la valeur de retour }
+ If not match(';') Then Begin
   expression_bool(lval);
   If not match(';') Then
-   errrpt('Expected ; after return value');
+   errrpt('Æ;Ø attendu apräs la valeur de return');
  End
  Else
  Begin
-  { Return void - load 0 }
+  { Retourne void - load 0 }
   ot('ldd  #0');
   nl;
  End;
-
- { Generate return code }
+ { GÇnäre le code de retour }
  ol('rts');
 End;
 
@@ -5657,31 +5640,25 @@ Var
  break_label: Integer;
 Begin
  parse_break_statement := False;
-
  If not match('break') Then Exit;
  parse_break_statement := True;
-
- safe_writeln('; BREAK statement');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after break');
-
- { Get current break label from loop context }
+ safe_writeln('; instruction BREAK ');
+  { Point-virgule attendue }
+ If not match(';') Then errrpt('Æ;Ø attendu apräs break');
+  { Demande l'Çtiquette du break courant du contexte de la boucle }
  break_label := get_current_break_label;
  If break_label = -1 Then
  Begin
-  errrpt('break statement not within a loop');
+  errrpt('instruction break en dehors d''une boucle');
   Exit;
  End;
-
- { Jump to end of current loop }
+  { Saut vers la fin dans la boucle courante }
  ot('lbra ');
  printlabel(break_label);
  nl;
 End;
 
-Function parse_continue_statement: Boolean;
+Function parse_continue_statement:Boolean;
 Var
  continue_label: Integer;
 Begin
@@ -5691,8 +5668,7 @@ Begin
  parse_continue_statement := True;
 
  safe_writeln('Æ;Ø instruction CONTINUE');
-
- { Expect semicolon }
+ { Point-virgule attendue }
  If not match(';') Then errrpt('Æ;Ø attend apräs continue');
   { RÇcupÇrer l'Çtiquette continue actuelle Ö partir du contexte de boucle }
  continue_label := get_current_continue_label;
