@@ -94,6 +94,8 @@ Const
  TYPE_RECORD = 8;
  TYPE_ARRAY = 9;
  TYPE_POINTER = 10;
+ TYPE_TEXT = 11;   { Fichier texte (TextRec: 256 octets) }
+ TYPE_FILE = 12;   { Fichier binaire générique (FileRec: 128 octets) }
 
  { Classes de stockage }
  STORAGE_GLOBAL = 1;
@@ -909,6 +911,16 @@ Begin
    Begin
     { Les pointeurs sont des mots de 16 bits en 8086 }
     EmitLine(var_name + ' DW ? ; Pointeur');
+   End;
+  TYPE_TEXT:
+   Begin
+    { TextRec de Turbo Pascal = 256 octets }
+    EmitLine(var_name + ' DB 256 DUP(?) ; TextRec');
+   End;
+  TYPE_FILE:
+   Begin
+    { FileRec de Turbo Pascal = 128 octets }
+    EmitLine(var_name + ' DB 128 DUP(?) ; FileRec');
    End;
  Else
   EmitLine(var_name + ' DW ?'); { Par défaut }
@@ -2672,6 +2684,8 @@ Begin
    Else If type_name = 'STRING' Then var_type := TYPE_STRING
    Else If type_name = 'CHAR' Then var_type := TYPE_CHAR
    Else If type_name = 'BOOLEAN' Then var_type := TYPE_BOOLEAN
+   Else If type_name = 'TEXT' Then var_type := TYPE_TEXT
+   Else If type_name = 'FILE' Then var_type := TYPE_FILE
    Else
    Begin
     { Vérifier si c'est un type défini par l'utilisateur }
@@ -2827,6 +2841,8 @@ Begin
      Else If type_name_field = 'STRING' Then field_type := TYPE_STRING
      Else If type_name_field = 'CHAR' Then field_type := TYPE_CHAR
      Else If type_name_field = 'BOOLEAN' Then field_type := TYPE_BOOLEAN
+     Else If type_name_field = 'TEXT' Then field_type := TYPE_TEXT
+     Else If type_name_field = 'FILE' Then field_type := TYPE_FILE
      Else
      Begin
       Error('Type de champ inconnu: ' + type_name_field);
@@ -2877,6 +2893,8 @@ Begin
       TYPE_INTEGER, TYPE_WORD: Inc(current_offset, 2);
       TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN: Inc(current_offset, 1);
       TYPE_STRING: Inc(current_offset, field_string_size + 1);
+      TYPE_TEXT: Inc(current_offset, 256);
+      TYPE_FILE: Inc(current_offset, 128);
      Else
       Inc(current_offset, 2);
      End;
@@ -2947,6 +2965,10 @@ Begin
      AddTypeAlias(type_name, TYPE_CHAR)
     Else If type_name_field = 'BOOLEAN' Then
      AddTypeAlias(type_name, TYPE_BOOLEAN)
+    Else If type_name_field = 'TEXT' Then
+     AddTypeAlias(type_name, TYPE_TEXT)
+    Else If type_name_field = 'FILE' Then
+     AddTypeAlias(type_name, TYPE_FILE)
     Else
     Begin
      { Vérifier si c'est une référence à un type défini }
