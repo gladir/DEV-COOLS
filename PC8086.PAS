@@ -1234,7 +1234,7 @@ Begin
    left_type := TYPE_INTEGER;
    NextToken;
   End;
- End;
+ End
  Else
  Begin
   NextToken; { Symbole reconnu, continuer }
