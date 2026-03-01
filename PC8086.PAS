@@ -904,8 +904,8 @@ Begin
    End;
   TYPE_ARRAY:
    Begin
-    { Pour l'instant, utiliser une taille par défaut pour les arrays }
-    EmitLine(var_name + ' DW 100 DUP(?) ; Array (taille estimée)');
+    { Taille totale en octets transmise via le paramètre string_size }
+    EmitLine(var_name + ' DB ' + IntToStr(string_size) + ' DUP(?) ; Tableau');
    End;
   TYPE_POINTER:
    Begin
@@ -2640,8 +2640,9 @@ Var
  var_type: Integer;
  type_name: String;
  i, sym_index: Integer;
- string_size: Integer;   { Taille de STRING (255 par défaut) }
+ string_size: Integer;   { Taille de STRING ou taille totale en octets (ARRAY) }
  const_idx: Integer;     { Index pour chercher une constante }
+ array_low, array_high, array_elem_size: Integer; { Bornes et taille élément du tableau }
 Begin
  NextToken; { Consommer VAR }
 
@@ -2675,7 +2676,110 @@ Begin
    Error('Attendu : après nom de variable');
 
   { Lire le type }
-  If current_symbol = SYM_UNKNOWN Then
+  If Accept(SYM_ARRAY) Then
+  Begin
+   { Syntaxe: Array[low..high] of ElementType }
+   NextToken; { Consommer ARRAY }
+   array_low := 0;
+   array_high := 0;
+   array_elem_size := 2;
+
+   If current_token = '[' Then
+   Begin
+    NextToken; { Consommer '[' }
+
+    { Borne inférieure: nombre ou constante }
+    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
+    Begin
+     array_low := current_value;
+     NextToken;
+    End
+    Else If current_symbol = SYM_UNKNOWN Then
+    Begin
+     const_idx := FindSymbol(current_token);
+     If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
+      array_low := symbol_table[const_idx]^.value
+     Else
+      Error('Borne inférieure invalide: ' + current_token);
+     NextToken;
+    End
+    Else
+     Error('Attendu borne inférieure du tableau');
+
+    { Consommer '..' (deux SYM_DOT consécutifs) }
+    If current_symbol = SYM_DOT Then NextToken;
+    If current_symbol = SYM_DOT Then NextToken;
+
+    { Borne supérieure: nombre ou constante }
+    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
+    Begin
+     array_high := current_value;
+     NextToken;
+    End
+    Else If current_symbol = SYM_UNKNOWN Then
+    Begin
+     const_idx := FindSymbol(current_token);
+     If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
+      array_high := symbol_table[const_idx]^.value
+     Else
+      Error('Borne supérieure invalide: ' + current_token);
+     NextToken;
+    End
+    Else
+     Error('Attendu borne supérieure du tableau');
+
+    { Consommer ']' }
+    If current_token = ']' Then
+     NextToken
+    Else
+     Error('Attendu ] après bornes du tableau');
+   End
+   Else
+    Error('Attendu [ après ARRAY');
+
+   { Consommer OF }
+   If Accept(SYM_OF) Then
+    NextToken
+   Else
+    Error('Attendu OF après Array[...]');
+
+   { Lire le type des éléments et déterminer sa taille }
+   If current_symbol = SYM_UNKNOWN Then
+   Begin
+    type_name := UpperCase(current_token);
+    If (type_name = 'INTEGER') or (type_name = 'WORD') Then array_elem_size := 2
+    Else If (type_name = 'BYTE') or (type_name = 'CHAR') or (type_name = 'BOOLEAN') Then array_elem_size := 1
+    Else If type_name = 'STRING' Then array_elem_size := 256
+    Else If (type_name = 'TEXT') Then array_elem_size := 256
+    Else If (type_name = 'FILE') Then array_elem_size := 128
+    Else
+    Begin
+     { Pointeur ou type défini par l'utilisateur = 2 octets sur 8086 }
+     const_idx := FindSymbol(type_name);
+     If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_TYPE) Then
+     Begin
+      Case symbol_table[const_idx]^.data_type of
+       TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN: array_elem_size := 1;
+       TYPE_TEXT: array_elem_size := 256;
+       TYPE_FILE: array_elem_size := 128;
+      Else
+       array_elem_size := 2;
+      End;
+     End
+     Else
+      array_elem_size := 2; { Par défaut: mot 16 bits }
+    End;
+    NextToken;
+   End
+   Else
+    Error('Attendu type d''élément après OF');
+
+   var_type := TYPE_ARRAY;
+   { string_size contient le nombre total d'octets du tableau }
+   string_size := (array_high - array_low + 1) * array_elem_size;
+   If string_size <= 0 Then string_size := 2; { Sécurité }
+  End
+  Else If current_symbol = SYM_UNKNOWN Then
   Begin
    type_name := UpperCase(current_token);
    If type_name = 'INTEGER' Then var_type := TYPE_INTEGER
