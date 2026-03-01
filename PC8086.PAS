@@ -25,55 +25,56 @@ Const
  { Types de symboles Pascal }
  SYM_UNKNOWN = 0;
  SYM_PROGRAM = 1;
- SYM_VAR = 2;
- SYM_CONST = 3;
- SYM_TYPE = 4;
- SYM_PROCEDURE = 5;
- SYM_FUNCTION = 6;
- SYM_BEGIN = 7;
- SYM_END = 8;
- SYM_IF = 9;
- SYM_THEN = 10;
- SYM_ELSE = 11;
- SYM_WHILE = 12;
- SYM_DO = 13;
- SYM_FOR = 14;
- SYM_TO = 15;
- SYM_DOWNTO = 16;
- SYM_REPEAT = 17;
- SYM_UNTIL = 18;
- SYM_CASE = 19;
- SYM_OF = 20;
- SYM_WRITE = 21;
- SYM_WRITELN = 22;
- SYM_READ = 23;
- SYM_READLN = 24;
- SYM_INTERRUPT = 25;
- SYM_RECORD = 26;
- SYM_ARRAY = 27;
- SYM_OTHERWISE = 28;
+ SYM_USES = 2;
+ SYM_VAR = 3;
+ SYM_CONST = 4;
+ SYM_TYPE = 5;
+ SYM_PROCEDURE = 6;
+ SYM_FUNCTION = 7;
+ SYM_BEGIN = 8;
+ SYM_END = 9;
+ SYM_IF = 10;
+ SYM_THEN = 11;
+ SYM_ELSE = 12;
+ SYM_WHILE = 13;
+ SYM_DO = 14;
+ SYM_FOR = 15;
+ SYM_TO = 16;
+ SYM_DOWNTO = 17;
+ SYM_REPEAT = 18;
+ SYM_UNTIL = 19;
+ SYM_CASE = 20;
+ SYM_OF = 21;
+ SYM_WRITE = 22;
+ SYM_WRITELN = 23;
+ SYM_READ = 24;
+ SYM_READLN = 25;
+ SYM_INTERRUPT = 26;
+ SYM_RECORD = 27;
+ SYM_ARRAY = 28;
+ SYM_OTHERWISE = 29;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 29;      { = }
- SYM_NOTEQUAL = 30;   { <> }
- SYM_LESS = 31;       { < }
- SYM_GREATER = 32;    { > }
- SYM_LESSEQ = 33;     { <= }
- SYM_GREATEREQ = 34;  { >= }
+ SYM_EQUAL = 30;      { = }
+ SYM_NOTEQUAL = 31;   { <> }
+ SYM_LESS = 32;       { < }
+ SYM_GREATER = 33;    { > }
+ SYM_LESSEQ = 34;     { <= }
+ SYM_GREATEREQ = 35;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 35;       { + }
- SYM_MINUS = 36;      { - }
- SYM_MULTIPLY = 37;   { * }
- SYM_DIVIDE = 38;     { / }
+ SYM_PLUS = 36;       { + }
+ SYM_MINUS = 37;      { - }
+ SYM_MULTIPLY = 38;   { * }
+ SYM_DIVIDE = 39;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 39;        { AND }
- SYM_OR = 40;         { OR }
- SYM_XOR = 41;        { XOR }
+ SYM_AND = 40;        { AND }
+ SYM_OR = 41;         { OR }
+ SYM_XOR = 42;        { XOR }
 
  { Caractères spéciaux }
- SYM_DOT = 42;        { . }
+ SYM_DOT = 43;        { . }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -283,6 +284,7 @@ Begin
  current_token := UpperCase(current_token);
 
  If current_token = 'PROGRAM' Then current_symbol := SYM_PROGRAM
+ Else If current_token = 'USES' Then current_symbol := SYM_USES
  Else If current_token = 'VAR' Then current_symbol := SYM_VAR
  Else If current_token = 'CONST' Then current_symbol := SYM_CONST
  Else If current_token = 'TYPE' Then current_symbol := SYM_TYPE
@@ -2849,15 +2851,44 @@ End;
 
 { Parser un programme Pascal }
 Procedure ParseProgram;
+Var
+ program_name: String;
 Begin
  { En-tête PROGRAM }
  If Accept(SYM_PROGRAM) Then
  Begin
-  NextToken;
+  NextToken; { Consommer PROGRAM }
+  
   If current_symbol = SYM_UNKNOWN Then
   Begin
-   EmitComment('Programme: ' + current_token);
-   NextToken;
+   program_name := current_token;
+   EmitComment('Programme: ' + program_name);
+   NextToken; { Consommer le nom }
+   
+   { Gérer les paramètres optionnels du programme }
+   If current_token = '(' Then
+   Begin
+    NextToken; { Consommer ( }
+    EmitComment('Paramètres du programme:');
+    
+    { Ignorer les paramètres pour l'instant }
+    While (current_token <> ')') and (current_char <> #0) do
+    Begin
+     If current_symbol = SYM_UNKNOWN Then
+      EmitComment('  - ' + current_token);
+     NextToken;
+     
+     { Gérer les virgules }
+     If current_token = ',' Then
+      NextToken;
+    End;
+    
+    If current_token = ')' Then
+     NextToken
+    Else
+     Error('Attendu ) après paramètres du programme');
+   End;
+   
    If current_token = ';' Then
     NextToken
    Else
@@ -2867,7 +2898,45 @@ Begin
    Error('Attendu nom de programme');
  End
  Else
-  Error('Attendu PROGRAM au début');
+ Begin
+  { Programme sans en-tête PROGRAM - accepté mais avec avertissement }
+  Warning('Programme sans en-tête PROGRAM - assumé programme principal');
+  EmitComment('Programme: (sans nom)');
+ End;
+
+ { Gérer les déclarations USES optionnelles }
+ While Accept(SYM_USES) do
+ Begin
+  NextToken; { Consommer USES }
+  EmitComment('Unités utilisées:');
+  
+  Repeat
+   If current_symbol = SYM_UNKNOWN Then
+   Begin
+    EmitComment('  - Unité: ' + current_token);
+    NextToken;
+   End
+   Else
+   Begin
+    Error('Attendu nom d''unité après USES');
+    Break;
+   End;
+   
+   { Gérer les virgules }
+   If current_token = ',' Then
+   Begin
+    NextToken;
+    Continue;
+   End
+   Else
+    Break;
+  Until False;
+  
+  If current_token = ';' Then
+   NextToken
+  Else
+   Error('Attendu ; après déclaration USES');
+ End;
 
  GenerateHeader;
 
