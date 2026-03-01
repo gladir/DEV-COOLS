@@ -3665,7 +3665,7 @@ Begin
 
  If include_depth <= 0 Then Exit;
 
- { Unmark current file as no longer being processed }
+ { D�sactiver le marquage du fichier actuel comme n'�tant plus en cours de traitement }
  { unmark_file_included(current_filename); } { Commented out for now }
 
  { Fermer le fichier d'inclusion actuel en toute sécurité }
@@ -3689,7 +3689,7 @@ Begin
   End;
   {$I+}
 
-  { Restore line state properly }
+  { Restaurer correctement l'�tat de la ligne }
   line := saved_line;
   lptr := saved_lptr;
   eof := saved_eof;
@@ -3750,9 +3750,9 @@ Begin
  Until False;
 End;
 
-{ Include file management functions }
+{ Fonctions de gestion des fichiers d'inclusion }
 
-{ Initialize inclusion system }
+{ Initialiser le syst�me d'inclusion }
 Procedure init_inclusion_system;
 Var
  i: Integer;
@@ -3768,7 +3768,7 @@ Begin
  End;
 End;
 
-{ Check if a file is already included }
+{ V�rifier si un fichier a d�j� �t� inclus }
 Function is_file_included(filename: String): Boolean;
 Var
  i: Integer;
@@ -3784,12 +3784,12 @@ Begin
  End;
 End;
 
-{ Mark a file as included }
+{ Marquer un fichier comme inclus }
 Procedure mark_file_included(filename: String);
 Var
  i: Integer;
 Begin
- { Check if already in table }
+ { V�rifier si d�j� dans la table }
  For i := 0 to included_count - 1 do
  Begin
   If included_files[i].filename = filename Then
@@ -3799,7 +3799,7 @@ Begin
   End;
  End;
 
- { Add new entry if space available }
+ { Ajouter une nouvelle entr�e si de l'espace est disponible }
  If included_count < 50 Then
  Begin
   included_files[included_count].filename := filename;
@@ -3829,26 +3829,26 @@ Var
 Begin
  filename := '';
 
- { Skip #include and whitespace }
+ { Ignorer #include et les espaces }
  start_pos := Pos('#include', include_line);
  If start_pos > 0 Then
  Begin
-  start_pos := start_pos + 8; { Length of '#include' }
+  start_pos := start_pos + 8; { Longueur de '#include' }
 
-  { Skip whitespace }
+  { Ignorer les espaces }
   While (start_pos <= Length(include_line)) and
         ((include_line[start_pos] = ' ') or (include_line[start_pos] = #9)) do
    Inc(start_pos);
 
-  { Check for quotes or angle brackets }
+  { V�rifier les guillemets ou les crochets angulaires }
   If start_pos <= Length(include_line) Then
   Begin
    If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then
    Begin
-    Inc(start_pos); { Skip opening quote/bracket }
+    Inc(start_pos); { Ignorer le guillemet/crochet ouvrant }
     end_pos := start_pos;
 
-    { Find closing quote or bracket }
+    { Trouver le guillemet/crochet fermant }
     While (end_pos <= Length(include_line)) and
           (include_line[end_pos] <> '"') and
           (include_line[end_pos] <> '>') do
@@ -3867,7 +3867,7 @@ Function push_include_file(include_filename: String): Boolean;
 Begin
  push_include_file := False;
 
- { Check for circular inclusion }
+ { V�rifier l'inclusion circulaire }
  If is_file_included(include_filename) Then
  Begin
   Case Language of
@@ -3880,7 +3880,7 @@ Begin
   Exit;
  End;
 
- { Check for maximum include depth }
+ { V�rifier la profondeur maximale d'inclusion }
  If include_depth >= 10 Then
  Begin
   Case Language of
@@ -3893,7 +3893,7 @@ Begin
   Exit;
  End;
 
- { Save current file state }
+ { Sauvegarder l'�tat actuel du fichier }
  With include_stack[include_depth] do
  Begin
   filename := current_filename;
@@ -3902,13 +3902,13 @@ Begin
   saved_eof := eof;
  End;
 
- { Try to open the include file }
+ { Essayer d'ouvrir le fichier d'inclusion }
  Assign(input, include_filename);
  {$I-}
  Reset(input);
  If IOResult <> 0 Then
  Begin
-  { Restore previous file by reopening it }
+  { Restaurer le fichier pr�c�dent en le r�ouvrant }
   If include_depth > 0 Then
   Begin
    Assign(input, include_stack[include_depth].filename);
@@ -3926,14 +3926,14 @@ Begin
  End;
  {$I+}
 
- { Mark file as included to prevent circular inclusion }
+ { Marquer le fichier comme inclus pour �viter l'inclusion circulaire }
  mark_file_included(include_filename);
 
  { Update state }
  Inc(include_depth);
  current_filename := include_filename;
  eof := 0;
- lptr := 1; { Reset line pointer for new file }
+ lptr := 1; { R�initialiser le pointeur de ligne pour le nouveau fichier }
 
  safe_writeln('; Including file: ' + include_filename);
  push_include_file := True;
@@ -3963,18 +3963,18 @@ Begin
 End;
 
 { ============================================================================ }
-{ DEFINE/MACRO MANAGEMENT FUNCTIONS                                           }
+{ FONCTIONS DE GESTION DES D�FINITIONS/MACROS                                 }
 { ============================================================================ }
 
-{ Initialize define system }
+{ Initialiser le syst�me de d�finition }
 Procedure init_defines;
 Begin
  define_list := nil;     { Initialiser la liste chaînée comme vide }
  define_count := 0;
- { Don't write to output here as it may not be initialized yet }
+ { Ne pas �crire dans la sortie ici car elle peut ne pas �tre encore initialis�e }
 End;
 
-{ Find a #define constant by name - returns pointer }
+{ Trouver une constante #define par nom - retourne un pointeur }
 Function find_define(def_name: String): PDefine;
 Var
  current: PDefine;
@@ -3993,7 +3993,7 @@ Begin
  End;
 End;
 
-{ Remove a #define constant }
+{ Supprimer une constante #define }
 Function remove_define(def_name: String): Boolean;
 Var
  current, prev: PDefine;
@@ -4006,11 +4006,11 @@ Begin
  Begin
   If current^.in_use and (current^.name = def_name) Then
   Begin
-   { Found it - remove from list }
+   { Trouv� - supprimer de la liste }
    If prev = nil Then
-    define_list := current^.next  { First in list }
+    define_list := current^.next  { Premier dans la liste }
    Else
-    prev^.next := current^.next;  { Not first in list }
+    prev^.next := current^.next;  { Pas le premier dans la liste }
 
    Dispose(current);
    Dec(define_count);
@@ -4029,13 +4029,13 @@ Var
 Begin
  add_define := False;
 
- { Check if already defined and allow redefinition with warning }
+ { V�rifier si d�j� d�fini et permettre la red�finition avec avertissement }
  If find_define(def_name) <> nil Then
  Begin
   Case Language of
    _English:Begin
      WriteLn('; Warning: Macro ' + def_name + ' redefined (previous definition ignored)');
-     { Remove old definition }
+     { Supprimer l'ancienne d�finition }
      remove_define(def_name);
     End;
     {$IFDEF FPC}
@@ -4052,7 +4052,7 @@ Begin
   End;
  End;
 
- { Allocate new define in heap }
+ { Allouer un nouveau define dans le tas }
  New(new_define);
  If new_define = nil Then
  Begin
@@ -4066,13 +4066,13 @@ Begin
   Exit;
  End;
 
- { Initialize new define }
+ { Initialiser le nouveau define }
  With new_define^ do
  Begin
   name := def_name;
   value := def_value;
   in_use := True;
-  next := define_list;  { Insert at beginning of list }
+  next := define_list;  { Ins�rer au d�but de la liste }
  End;
 
  { Update list head }
@@ -4084,7 +4084,7 @@ Begin
  add_define := True;
 End;
 
-{ Get the value of a #define constant }
+{ Obtenir la valeur d'une constante #define }
 Function get_define_value(def_name: String): String;
 Var
  define_ptr: PDefine;
@@ -4095,7 +4095,7 @@ Begin
   get_define_value := define_ptr^.value;
 End;
 
-{ Process #define directive }
+{ Traiter la directive #define }
 Function process_define_directive(define_line: String): Boolean;
 Var
  line_pos, start_pos, end_pos: Integer;
@@ -4105,18 +4105,18 @@ Begin
  def_name := '';
  def_value := '';
 
- { Skip #define and whitespace }
+ { Ignorer #define et les espaces }
  line_pos := Pos('#define', define_line);
  If line_pos <= 0 Then Exit;
 
  line_pos := line_pos + 7; { Length of '#define' }
 
- { Skip whitespace }
+ { Ignorer les espaces }
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
 
- { Extract macro name }
+ { Extraire le nom de macro }
  start_pos := line_pos;
  While (line_pos <= Length(define_line)) and
        (((define_line[line_pos] >= 'A') and (define_line[line_pos] <= 'Z')) or
@@ -4139,28 +4139,28 @@ Begin
   Exit;
  End;
 
- { Skip whitespace before value }
+ { Ignorer les espaces avant la valeur }
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
 
- { Extract value (rest of line) }
+ { Extraire la valeur (reste de la ligne) }
  If line_pos <= Length(define_line) Then
   def_value := Copy(define_line, line_pos, Length(define_line) - line_pos + 1)
  Else
-  def_value := '1'; { Default value for macros without explicit value }
+  def_value := '1'; { Valeur par d�faut pour les macros sans valeur explicite }
 
- { Remove trailing whitespace from value }
+ { Supprimer les espaces en fin de valeur }
  While (Length(def_value) > 0) and
        ((def_value[Length(def_value)] = ' ') or (def_value[Length(def_value)] = #9)) do
   Delete(def_value, Length(def_value), 1);
 
- { Add the define }
+ { Ajouter le define }
  If add_define(def_name, def_value) Then
   process_define_directive := True;
 End;
 
-{ Expand macros in a line of code }
+{ D�velopper les macros dans une ligne de code }
 Function expand_macros(input_line: String): String;
 Var
  result_line: String;
@@ -4171,19 +4171,19 @@ Var
 Begin
  result_line := input_line;
 
- { Multiple passes to handle nested expansions }
+ { Plusieurs passes pour g�rer les expansions imbriqu�es }
  Repeat
   changed := False;
   line_pos := 1;
 
   While line_pos <= Length(result_line) do
   Begin
-   { Check if we're at the start of an identifier }
+   { V�rifier si on est au d�but d'un identifiant }
    If ((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
       ((result_line[line_pos] >= 'a') and (result_line[line_pos] <= 'z')) or
       (result_line[line_pos] = '_') Then
    Begin
-    { Extract identifier }
+    { Extraire l'identifiant }
     start_pos := line_pos;
     While (line_pos <= Length(result_line)) and
           (((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
@@ -4194,11 +4194,11 @@ Begin
 
     token := Copy(result_line, start_pos, line_pos - start_pos);
 
-    { Check if this token is a defined macro }
+    { V�rifier si ce jeton est une macro d�finie }
     define_ptr := find_define(token);
     If define_ptr <> nil Then
     Begin
-     { Replace the token with its value }
+     { Remplacer le jeton par sa valeur }
      Delete(result_line, start_pos, Length(token));
      Insert(define_ptr^.value, result_line, start_pos);
      line_pos := start_pos + Length(define_ptr^.value);
@@ -4215,7 +4215,7 @@ Begin
  expand_macros := result_line;
 End;
 
-{ Clear all defines from heap }
+{ Supprimer tous les defines du tas }
 Procedure free_defines;
 Var
  current, next: PDefine;
@@ -4824,7 +4824,7 @@ Begin
  End;
 End;
 
-{ Primary expression parser with function call support }
+{ Analyseur d'expression primaire avec support des appels de fonction }
 Procedure primary_expression(var lval: TLVal);
 Var
  id: String;
@@ -4847,13 +4847,13 @@ Begin
   'A'..'Z', 'a'..'z', '_': Begin
     id := parse_identifier;
 
-    { Check if this is a function call }
+    { V�rifier si c'est un appel de fonction }
     If peek_char = '(' Then
     Begin
-     { This is a function call }
+     { C'est un appel de fonction }
      If parse_function_call(id, lval) Then
      Begin
-      { Function call result is already in D register }
+      { Le r�sultat de l'appel de fonction est d�j� dans le registre D }
       safe_writeln('; Function ' + id + ' returned in D');
      End
      Else
@@ -4872,7 +4872,7 @@ Begin
      { This is a variable reference }
      If lookup_variable(id, lval) Then
      Begin
-      { Check if this is an array access }
+      { V�rifier si c'est un acc�s � un tableau }
       If peek_char = '[' Then
       Begin
        { Array indexing }
@@ -4932,7 +4932,7 @@ Begin
  End;
 End;
 
-{ Unary expression parser }
+{ Analyseur d'expression unaire }
 Procedure unary_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
@@ -5257,7 +5257,7 @@ Begin
  safe_writeln('; sizeof résultat: ' + IntToStr(size_value) + ' octets');
 End;
 
-{ Multiplicative expression parser }
+{ Analyseur d'expression multiplicative }
 Procedure multiplicative_expression(var lval: TLVal);
 Var
  op: Char;
@@ -5267,32 +5267,32 @@ Begin
  While (peek_char = '*') or (peek_char = '/') or (peek_char = '%') do
  Begin
   op := next_char;
-  ol('push ax'); { push left operand }
+  ol('push ax'); { empiler l'op�rande gauche }
 
   unary_expression(lval);
 
   Case op of
    '*': Begin
-     ol('POP  BX'); { pop left operand to BX }
-     ol('call mult16'); { call multiply routine }
+     ol('POP  BX'); { d�piler l'op�rande gauche vers BX }
+     ol('call mult16'); { appeler la routine de multiplication }
     End;
 
    '/': Begin
-     ol('MOV  BX, AX'); { right operand to BX }
-     ol('POP  AX'); { left operand to AX }
-     ol('CALL div16'); { call divide routine }
+     ol('MOV  BX, AX'); { op�rande droit vers BX }
+     ol('POP  AX'); { op�rande gauche vers AX }
+     ol('CALL div16'); { appeler la routine de division }
     End;
 
    '%': Begin
-     ol('MOV  BX, AX'); { right operand to BX }
-     ol('POP  AX'); { left operand to AX }
-     ol('CALL mod16'); { call modulo routine }
+     ol('MOV  BX, AX'); { op�rande droit vers BX }
+     ol('POP  AX'); { op�rande gauche vers AX }
+     ol('CALL mod16'); { appeler la routine de modulo }
     End;
   End;
  End;
 End;
 
-{ Additive expression parser }
+{ Analyseur d'expression additive }
 Procedure additive_expression(var lval: TLVal);
 Var
  op: Char;
@@ -5302,26 +5302,26 @@ Begin
  While (peek_char = '+') or (peek_char = '-') do
  Begin
   op := next_char;
-  ol('PUSH AX'); { push left operand }
+  ol('PUSH AX'); { empiler l'op�rande gauche }
 
   multiplicative_expression(lval);
 
   Case op of
    '+': Begin
-     ol('ADD  AX, [SP] ; puis ADD SP, 2'); { add and clean stack }
-     ol('ADD  SP, 2'); { clean stack }
+     ol('ADD  AX, [SP] ; puis ADD SP, 2'); { additionner et nettoyer la pile }
+     ol('ADD  SP, 2'); { nettoyer la pile }
     End;
 
    '-': Begin
-     ol('MOV  BX, AX'); { right operand to BX }
-     ol('POP  AX'); { left operand to AX }
-     ol('SUB  AX, BX'); { subtract }
+     ol('MOV  BX, AX'); { op�rande droit vers BX }
+     ol('POP  AX'); { op�rande gauche vers AX }
+     ol('SUB  AX, BX'); { soustraire }
     End;
   End;
  End;
 End;
 
-{ Relational expression parser - handles >, <, >=, <=, ==, != }
+{ Analyseur d'expression relationnelle - g�re >, <, >=, <=, ==, != }
 Procedure relational_expression(var lval: TLVal);
 Begin
  additive_expression(lval);
@@ -5334,27 +5334,27 @@ Begin
    Begin
     { >= operator }
     safe_writeln('; Opérateur >=');
-    ol('PUSH AX');    { Push left operand }
+    ol('PUSH AX');    { Empiler l'op�rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Left operand to BX }
-    ol('CMP  BX, AX');    { Compare BX with AX }
-    ol('JGE  $+5');   { Branch if greater or equal }
-    ol('MOV  AX, 0');    { False result }
-    ol('JMP  $+3');   { Skip true result }
-    ol('MOV  AX, 1');    { True result }
+    ol('POP  BX');    { Op�rande gauche vers BX }
+    ol('CMP  BX, AX');    { Comparer BX avec AX }
+    ol('JGE  $+5');   { Brancher si sup�rieur ou �gal }
+    ol('MOV  AX, 0');    { R�sultat faux }
+    ol('JMP  $+3');   { Ignorer le r�sultat vrai }
+    ol('MOV  AX, 1');    { R�sultat vrai }
    End
    Else
    Begin
     { > operator }
     safe_writeln('; Opérateur >');
-    ol('PUSH AX');    { Push left operand }
+    ol('PUSH AX');    { Empiler l'op�rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Left operand to BX }
-    ol('CMP  BX, AX');    { Compare BX with AX }
-    ol('JG   $+5');   { Branch if greater }
-    ol('MOV  AX, 0');    { False result }
-    ol('JMP  $+3');   { Skip true result }
-    ol('MOV  AX, 1');    { True result }
+    ol('POP  BX');    { Op�rande gauche vers BX }
+    ol('CMP  BX, AX');    { Comparer BX avec AX }
+    ol('JG   $+5');   { Brancher si sup�rieur }
+    ol('MOV  AX, 0');    { R�sultat faux }
+    ol('JMP  $+3');   { Ignorer le r�sultat vrai }
+    ol('MOV  AX, 1');    { R�sultat vrai }
    End;
   End
   Else If match('<') Then
@@ -5363,61 +5363,61 @@ Begin
    Begin
     { <= operator }
     safe_writeln('; Opérateur <=');
-    ol('PUSH AX');    { Push left operand }
+    ol('PUSH AX');    { Empiler l'op�rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Left operand to BX }
-    ol('CMP  BX, AX');    { Compare BX with AX }
-    ol('JLE  $+5');   { Branch if less or equal }
-    ol('MOV  AX, 0');    { False result }
-    ol('JMP  $+3');   { Skip true result }
-    ol('MOV  AX, 1');    { True result }
+    ol('POP  BX');    { Op�rande gauche vers BX }
+    ol('CMP  BX, AX');    { Comparer BX avec AX }
+    ol('JLE  $+5');   { Brancher si inf�rieur ou �gal }
+    ol('MOV  AX, 0');    { R�sultat faux }
+    ol('JMP  $+3');   { Ignorer le r�sultat vrai }
+    ol('MOV  AX, 1');    { R�sultat vrai }
    End
    Else
    Begin
     { < operator }
     safe_writeln('; Opérateur <');
-    ol('PUSH AX');    { Push left operand }
+    ol('PUSH AX');    { Empiler l'op�rande gauche }
     additive_expression(lval);
-    ol('POP  BX');    { Left operand to BX }
-    ol('CMP  BX, AX');    { Compare BX with AX }
-    ol('JL   $+5');   { Branch if less }
-    ol('MOV  AX, 0');    { False result }
-    ol('JMP  $+3');   { Skip true result }
-    ol('MOV  AX, 1');    { True result }
+    ol('POP  BX');    { Op�rande gauche vers BX }
+    ol('CMP  BX, AX');    { Comparer BX avec AX }
+    ol('JL   $+5');   { Brancher si inf�rieur }
+    ol('MOV  AX, 0');    { R�sultat faux }
+    ol('JMP  $+3');   { Ignorer le r�sultat vrai }
+    ol('MOV  AX, 1');    { R�sultat vrai }
    End;
   End
   Else If match('=') and match('=') Then
   Begin
    { == operator }
    safe_writeln('; Opérateur ==');
-   ol('PUSH AX');    { Push left operand }
+   ol('PUSH AX');    { Empiler l'op�rande gauche }
    additive_expression(lval);
-   ol('POP  BX');    { Left operand to BX }
-   ol('CMP  BX, AX');    { Compare BX with AX }
-   ol('JE   $+5');   { Branch if equal }
-   ol('MOV  AX, 0');    { False result }
-   ol('JMP  $+3');   { Skip true result }
-   ol('MOV  AX, 1');    { True result }
+   ol('POP  BX');    { Op�rande gauche vers BX }
+   ol('CMP  BX, AX');    { Comparer BX avec AX }
+   ol('JE   $+5');   { Brancher si �gal }
+   ol('MOV  AX, 0');    { R�sultat faux }
+   ol('JMP  $+3');   { Ignorer le r�sultat vrai }
+   ol('MOV  AX, 1');    { R�sultat vrai }
   End
   Else If match('!') and match('=') Then
   Begin
    { != operator }
    safe_writeln('; Opérateur !=');
-   ol('PUSH AX');    { Push left operand }
+   ol('PUSH AX');    { Empiler l'op�rande gauche }
    additive_expression(lval);
-   ol('POP  BX');    { Left operand to BX }
-   ol('CMP  BX, AX');    { Compare BX with AX }
-   ol('JNE  $+5');   { Branch if not equal }
-   ol('MOV  AX, 0');    { False result }
-   ol('JMP  $+3');   { Skip true result }
-   ol('MOV  AX, 1');    { True result }
+   ol('POP  BX');    { Op�rande gauche vers BX }
+   ol('CMP  BX, AX');    { Comparer BX avec AX }
+   ol('JNE  $+5');   { Brancher si diff�rent }
+   ol('MOV  AX, 0');    { R�sultat faux }
+   ol('JMP  $+3');   { Ignorer le r�sultat vrai }
+   ol('MOV  AX, 1');    { R�sultat vrai }
   End
   Else
-   Break; { No more relational operators }
+   Break; { Plus d'op�rateurs relationnels }
  End;
 End;
 
-{ Bitwise AND expression parser - handles & }
+{ Analyseur d'expression ET binaire - g�re & }
 Procedure bitwise_and_expression(var lval: TLVal);
 Begin
  relational_expression(lval);
@@ -5433,18 +5433,18 @@ Begin
   End;
 
   safe_writeln('; Opérateur & (ET binaire)');
-  ol('PUSH AX');    { Push left operand }
+  ol('PUSH AX');    { Empiler l'op�rande gauche }
   relational_expression(lval);
-  ol('MOV  BX, AX');  { Right operand to BX }
-  ol('POP  AX');    { Left operand to AX }
-  ol('AND  AX, BX'); { AND operation }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('anda 0,x');  { AND high bytes }
+  ol('MOV  BX, AX');  { Op�rande droit vers BX }
+  ol('POP  AX');    { Op�rande gauche vers AX }
+  ol('AND  AX, BX'); { Op�ration ET binaire }
+  ol('tfr  a,b');  { Octet bas du r�sultat vers B }
+  ol('tfr  u,a');  { Restaurer l'octet haut depuis U }
+  ol('anda 0,x');  { ET sur les octets hauts }
  End;
 End;
 
-{ Bitwise XOR expression parser - handles ^ }
+{ Analyseur d'expression XOR binaire - g�re ^ }
 Procedure bitwise_xor_expression(var lval: TLVal);
 Begin
  bitwise_and_expression(lval);
@@ -5452,15 +5452,15 @@ Begin
  While match('^') do
  Begin
   safe_writeln('; Opérateur ^ (XOR binaire)');
-  ol('PUSH AX');    { Push left operand }
+  ol('PUSH AX');    { Empiler l'op�rande gauche }
   bitwise_and_expression(lval);
-  ol('MOV  BX, AX');  { Right operand to BX }
-  ol('POP  AX');    { Left operand to AX }
-  ol('XOR  AX, BX'); { XOR operation }
+  ol('MOV  BX, AX');  { Op�rande droit vers BX }
+  ol('POP  AX');    { Op�rande gauche vers AX }
+  ol('XOR  AX, BX'); { Op�ration XOR binaire }
  End;
 End;
 
-{ Bitwise OR expression parser - handles | }
+{ Analyseur d'expression OU binaire - g�re | }
 Procedure bitwise_or_expression(var lval: TLVal);
 Begin
  bitwise_xor_expression(lval);
@@ -5476,16 +5476,16 @@ Begin
   End;
 
   safe_writeln('; Opérateur | (OU binaire)');
-  ol('PUSH AX');    { Push left operand }
+  ol('PUSH AX');    { Empiler l'op�rande gauche }
   bitwise_xor_expression(lval);
-  ol('MOV  BX, AX');  { Right operand to BX }
-  ol('POP  AX');    { Left operand to AX }
-  ol('OR   AX, BX'); { OR operation }
-  ol('ora  0,x');  { OR high bytes }
+  ol('MOV  BX, AX');  { Op�rande droit vers BX }
+  ol('POP  AX');    { Op�rande gauche vers AX }
+  ol('OR   AX, BX'); { Op�ration OU binaire }
+  ol('ora  0,x');  { OU sur les octets hauts }
  End;
 End;
 
-{ Logical AND expression parser - handles && }
+{ Analyseur d'expression ET logique - g�re && }
 Procedure logical_and_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
@@ -5528,7 +5528,7 @@ Begin
  End;
 End;
 
-{ Logical OR expression parser - handles || }
+{ Analyseur d'expression OU logique - g�re || }
 Procedure logical_or_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
@@ -5571,7 +5571,7 @@ Begin
  End;
 End;
 
-{ Conditional expression parser - handles ?: (ternary operator) }
+{ Analyseur d'expression conditionnelle - g�re ?: (op�rateur ternaire) }
 Procedure conditional_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
@@ -5632,7 +5632,7 @@ Begin
  End;
 End;
 
-{ Main expression parser }
+{ Analyseur d'expressions principal }
 Function expression_bool(var lval: TLVal): Boolean;
 Begin
  conditional_expression(lval);
@@ -5657,71 +5657,71 @@ Var
 Begin
  parse_declaration := False;
 
- { Parse storage class specifier first }
+ { Analyser d'abord le sp�cificateur de classe de stockage }
  storage_class := parse_storage_class_specifier;
 
- { Check if this is a typedef declaration }
+ { V�rifier si c'est une d�claration typedef }
  If storage_class = it_typedef_type Then
  Begin
-  { Handle typedef declaration }
+  { G�rer la d�claration typedef }
   If parse_typedef_declaration Then
    parse_declaration := True;
   Exit;
  End;
 
- { Parse type specifier with qualifiers }
+ { Analyser le sp�cificateur de type avec qualificateurs }
  base_type := parse_type_specifier_with_qualifiers(type_info);
- If base_type = -1 Then Exit; { No valid type found }
+ If base_type = -1 Then Exit; { Aucun type valide trouv� }
 
- { Save position to check for function vs variable }
+ { Sauvegarder la position pour v�rifier fonction vs variable }
  save_lptr := lptr;
 
- { Try to parse as declarator to get the name }
+ { Essayer d'analyser comme d�clarateur pour obtenir le nom }
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
 
- { Check if this is a function declaration/definition }
+ { V�rifier si c'est une d�claration/d�finition de fonction }
  If match('(') Then
  Begin
-  { This is a function - restore position and parse as function }
+  { C'est une fonction - restaurer la position et analyser comme fonction }
   lptr := save_lptr;
   If parse_function_declaration(base_type) Then
    parse_declaration := True;
   Exit;
  End;
 
- { This is a variable declaration - pass storage class }
+ { C'est une d�claration de variable - passer la classe de stockage }
  declare_variable(var_name, var_type, type_info, storage_class);
  parse_declaration := True;
 
- { Check for initialization }
+ { V�rifier l'initialisation }
  If match('=') Then
  Begin
-  safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
+  safe_writeln('; Initialisation de la variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
   expression(lval);
 
-  { Type checking for initialization }
+  { V�rification du type pour l'initialisation }
   If type_info.is_const Then
   Begin
-   safe_writeln('; const variable initialized');
+   safe_writeln('; variable const initialis�e');
   End;
 
-  { Generate type-appropriate initialization code }
+  { G�n�rer le code d'initialisation appropri� au type }
   Case type_info.size of
    1: Begin
-       ot('MOV  '); { Store byte for char }
+       ot('MOV  '); { Stocker l'octet pour char }
        outstr(var_name);
        outstr(', AL');
        nl;
       End;
    2: Begin
-       ot('mov  '); { Store word for int/short/pointers }
+       ot('mov  '); { Stocker le mot pour int/short/pointeurs }
        outstr(var_name);
        nl;
       End;
   Else
    Begin
-    ot('mov  '); { Default to word }
+    ot('mov  '); { Par d�faut: mot }
     outstr(var_name);
     nl;
    End;
@@ -5729,7 +5729,7 @@ Begin
  End
  Else
  Begin
-  { Check if const variable needs initialization }
+  { V�rifier si la variable const n�cessite une initialisation }
   If type_info.is_const Then
   Begin
    Case Language of
@@ -5742,7 +5742,7 @@ Begin
   End;
  End;
 
- { Handle multiple variable declarations }
+ { G�rer les d�clarations de variables multiples }
  While match(',') do
  Begin
   var_type := parse_declarator(var_name, base_type, type_info);
@@ -5750,13 +5750,13 @@ Begin
 
   declare_variable(var_name, var_type, type_info, storage_class);
 
-  { Check for initialization }
+  { V�rifier l'initialisation }
   If match('=') Then
   Begin
-   safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
+   safe_writeln('; Initialisation de la variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
    expression(lval);
 
-   { Generate initialization code }
+   { G�n�rer le code d'initialisation }
    Case type_info.size of
     1: Begin
         ot('MOV  ');
@@ -5779,7 +5779,7 @@ Begin
   End
   Else
   Begin
-   { Check if const variable needs initialization }
+   { V�rifier si la variable const n�cessite une initialisation }
    If type_info.is_const Then
    Begin
     Case Language of
@@ -5821,7 +5821,7 @@ Begin
  If not match('if') Then Exit;
  parse_if_statement := True;
 
- { Expect opening parenthesis }
+ { Attendre la parenth�se ouvrante }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
  If not match('(') Then
@@ -5830,7 +5830,7 @@ Begin
   Exit;
  End;
 
- { Parse condition }
+ { Analyser la condition }
  safe_writeln('; IF condition');
  expression_bool(lval);
 
@@ -5843,7 +5843,7 @@ Begin
   Exit;
  End;
 
- { Generate conditional jump }
+ { G�n�rer le saut conditionnel }
  else_label := getlabel;
  end_label := getlabel;
 
@@ -5852,10 +5852,10 @@ Begin
  printlabel(else_label);
  nl;
 
- { Parse then statement (can be single statement or compound) }
+ { Analyser l'instruction then (peut �tre simple ou compos�e) }
  safe_writeln('; IF then block');
 
- { Check if we need to read next line for the statement }
+ { V�rifier si on doit lire la ligne suivante pour l'instruction }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
 
@@ -5865,22 +5865,22 @@ Begin
   Exit;
  End;
 
- { Check for else clause - may be on next line }
+ { V�rifier la clause else - peut �tre sur la ligne suivante }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
 
  If match('else') Then
  Begin
-  { Jump over else block }
+  { Sauter le bloc else }
   ot('JMP  ');
   printlabel(end_label);
   nl;
 
-  { Else block }
+  { Bloc else }
   prelabel(else_label);
   safe_writeln('; ELSE block');
 
-  { Check if we need to read next line for the else statement }
+  { V�rifier si on doit lire la ligne suivante pour l'instruction else }
   blanks;
   If (lptr > Length(line)) and (eof = 0) Then readinline;
 
@@ -5910,25 +5910,25 @@ Begin
  If not match('while') Then Exit;
  parse_while_statement := True;
 
- { Generate loop labels }
+ { G�n�rer les �tiquettes de boucle }
  loop_label := getlabel;
  end_label := getlabel;
 
- { Push loop context for break/continue }
+ { Empiler le contexte de boucle pour break/continue }
  push_loop_context(1, end_label, loop_label);
 
- { Loop start }
+ { D�but de boucle }
  prelabel(loop_label);
  safe_writeln('; WHILE loop start');
 
- { Expect opening parenthesis }
+ { Attendre la parenth�se ouvrante }
  If not match('(') Then
  Begin
   errrpt('Expected ( after while');
   Exit;
  End;
 
- { Parse condition }
+ { Analyser la condition }
  safe_writeln('; WHILE condition');
  expression_bool(lval);
 
@@ -5936,26 +5936,26 @@ Begin
  If not match(')') Then
   errrpt('Expected ) after while condition');
 
- { Generate conditional jump }
+ { G�n�rer le saut conditionnel }
  ol('CMP  AX, 0');
  ot('JE   ');
  printlabel(end_label);
  nl;
 
- { Parse loop body }
+ { Analyser le corps de la boucle }
  safe_writeln('; WHILE body');
  parse_statement;
 
- { Jump back to condition }
+ { Retourner � la condition }
  ot('JMP  ');
  printlabel(loop_label);
  nl;
 
- { End label }
+ { �tiquette de fin }
  prelabel(end_label);
  safe_writeln('; End WHILE');
 
- { Pop loop context }
+ { D�piler le contexte de boucle }
  pop_loop_context;
 End;
 
@@ -5971,29 +5971,29 @@ Begin
  If not match('for') Then Exit;
  parse_for_statement := True;
 
- { Generate loop labels }
+ { G�n�rer les �tiquettes de boucle }
  condition_label := getlabel;
  increment_label := getlabel;
  end_label := getlabel;
 
- { Push loop context for break/continue }
+ { Empiler le contexte de boucle pour break/continue }
  push_loop_context(2, end_label, increment_label);
 
  safe_writeln('; FOR loop start');
 
- { Expect opening parenthesis }
+ { Attendre la parenth�se ouvrante }
  If not match('(') Then
  Begin
   errrpt('Expected ( after for');
   Exit;
  End;
 
- { Parse and execute initialization }
+ { Analyser et exécuter l'initialisation }
  safe_writeln('; FOR initialization');
  blanks;
  If ch <> ';' Then
  Begin
-  parse_assignment_statement;  { Parse and execute initialization }
+  parse_assignment_statement;  { Analyser et ex�cuter l'initialisation }
  End;
  If not match(';') Then
  Begin
@@ -6001,11 +6001,11 @@ Begin
   Exit;
  End;
 
- { Save position for condition parsing }
+ { Sauvegarder la position pour l'analyse de la condition }
  blanks;
  condition_start := lptr;
 
- { Skip over condition to find its end }
+ { Ignorer la condition pour trouver sa fin }
  While (ch <> ';') and (ch <> #0) Do gch;
  condition_end := lptr;
  If not match(';') Then
@@ -6014,11 +6014,11 @@ Begin
   Exit;
  End;
 
- { Save position for increment parsing }
+ { Sauvegarder la position pour l'analyse de l'incr�ment }
  blanks;
  increment_start := lptr;
 
- { Skip over increment to find its end }
+ { Ignorer l'incr�ment pour trouver sa fin }
  While (ch <> ')') and (ch <> #0) Do gch;
  increment_end := lptr;
  If not match(')') Then
@@ -6027,71 +6027,71 @@ Begin
   Exit;
  End;
 
- { Jump to condition check }
+ { Sauter vers la v�rification de la condition }
  ot('JMP  ');
  printlabel(condition_label);
  nl;
 
- { Increment label - where continue jumps to }
+ { �tiquette d'incr�ment - o� continue saute }
  prelabel(increment_label);
  safe_writeln('; FOR increment');
 
- { Re-parse and execute increment from saved position }
- saved_lptr := lptr;  { Save current position }
- lptr := increment_start;  { Set to increment start }
- gch;  { Refresh current character }
+ { R�-analyser et ex�cuter l'incr�ment depuis la position sauvegard�e }
+ saved_lptr := lptr;  { Sauvegarder la position actuelle }
+ lptr := increment_start;  { D�finir la position au d�but de l'incr�ment }
+ gch;  { Rafra�chir le caract�re courant }
  If increment_end > increment_start Then
  Begin
-  parse_assignment_statement;  { Parse and execute increment }
+  parse_assignment_statement;  { Analyser et ex�cuter l'incr�ment }
  End;
- lptr := saved_lptr;  { Restore position }
- gch;  { Refresh current character }
+ lptr := saved_lptr;  { Restaurer la position }
+ gch;  { Rafra�chir le caract�re courant }
 
  ot('JMP  ');
  printlabel(condition_label);
  nl;
 
- { Condition check label }
+ { �tiquette de v�rification de la condition }
  prelabel(condition_label);
  safe_writeln('; FOR condition check');
 
- { Re-parse condition from saved position }
- saved_lptr := lptr;  { Save current position }
- lptr := condition_start;  { Set to condition start }
- gch;  { Refresh current character }
+ { R�-analyser la condition depuis la position sauvegard�e }
+ saved_lptr := lptr;  { Sauvegarder la position actuelle }
+ lptr := condition_start;  { D�finir la position au d�but de la condition }
+ gch;  { Rafra�chir le caract�re courant }
  If condition_end > condition_start Then
  Begin
-  expression_bool(lval);  { Parse condition }
+  expression_bool(lval);  { Analyser la condition }
  End
  Else
  Begin
-  { No condition = infinite loop }
+  { Pas de condition = boucle infinie }
   ot('MOV  AX, 1');
   nl;
  End;
- lptr := saved_lptr;  { Restore position }
- gch;  { Refresh current character }
+ lptr := saved_lptr;  { Restaurer la position }
+ gch;  { Rafra�chir le caract�re courant }
 
- { Generate conditional jump to end if false }
+ { G�n�rer le saut conditionnel vers la fin si faux }
  ol('CMP  AX, 0');
  ot('JE   ');
  printlabel(end_label);
  nl;
 
- { Parse loop body }
+ { Analyser le corps de la boucle }
  safe_writeln('; FOR body');
  parse_statement;
 
- { Jump to increment }
+ { Sauter vers l'incr�ment }
  ot('JMP  ');
  printlabel(increment_label);
  nl;
 
- { End label - where break jumps to }
+ { �tiquette de fin - o� break saute }
  prelabel(end_label);
  safe_writeln('; End FOR');
 
- { Pop loop context }
+ { D�piler le contexte de boucle }
  pop_loop_context;
 End;
 
@@ -6105,19 +6105,19 @@ Begin
  If not match('do') Then Exit;
  parse_do_while_statement := True;
 
- { Generate loop labels }
+ { G�n�rer les �tiquettes de boucle }
  loop_label := getlabel;
  condition_label := getlabel;
  end_label := getlabel;
 
- { Push loop context for break/continue }
+ { Empiler le contexte de boucle pour break/continue }
  { push_loop_context(3, end_label, condition_label); }
 
- { Loop start }
+ { D�but de boucle }
  prelabel(loop_label);
  safe_writeln('; DO-WHILE loop start');
 
- { Parse loop body }
+ { Analyser le corps de la boucle }
  parse_statement;
 
  { Expect while }
@@ -6127,14 +6127,14 @@ Begin
   Exit;
  End;
 
- { Expect opening parenthesis }
+ { Attendre la parenth�se ouvrante }
  If not match('(') Then
  Begin
   errrpt('Expected ( after while');
   Exit;
  End;
 
- { Parse condition }
+ { Analyser la condition }
  prelabel(condition_label);
  safe_writeln('; DO-WHILE condition');
  expression_bool(lval);
@@ -6147,17 +6147,17 @@ Begin
  If not match(';') Then
   errrpt('Expected ; after do-while');
 
- { Generate conditional jump back }
+ { G�n�rer le saut conditionnel en retour }
  ol('CMP  AX, 0');
  ot('JNE  ');
  printlabel(loop_label);
  nl;
 
- { End label }
+ { �tiquette de fin }
  prelabel(end_label);
  safe_writeln('; End DO-WHILE');
 
- { Pop loop context }
+ { D�piler le contexte de boucle }
  { pop_loop_context; }
 End;
 
@@ -6172,7 +6172,7 @@ Begin
 
  safe_writeln('; RETURN statement');
 
- { Check for return value }
+ { V�rifier s'il y a une valeur de retour }
  If not match(';') Then
  Begin
   expression_bool(lval);
@@ -6181,12 +6181,12 @@ Begin
  End
  Else
  Begin
-  { Return void - load 0 }
+  { Retour void - charger 0 }
   ot('MOV  AX, 0');
   nl;
  End;
 
- { Generate return code }
+ { G�n�rer le code de retour }
  ol('ret');
 End;
 
@@ -6205,7 +6205,7 @@ Begin
  If not match(';') Then
   errrpt('Expected ; after break');
 
- { Get current break label from loop context }
+ { Obtenir l'�tiquette break courante du contexte de boucle }
  break_label := get_current_break_label;
  If break_label = -1 Then
  Begin
@@ -6213,7 +6213,7 @@ Begin
   Exit;
  End;
 
- { Jump to end of current loop }
+ { Sauter � la fin de la boucle courante }
  ot('JMP  ');
  printlabel(break_label);
  nl;
@@ -6234,7 +6234,7 @@ Begin
  If not match(';') Then
   errrpt('Expected ; after continue');
 
- { Get current continue label from loop context }
+ { Obtenir l'�tiquette continue courante du contexte de boucle }
  continue_label := get_current_continue_label;
  If continue_label = -1 Then
  Begin
@@ -6242,7 +6242,7 @@ Begin
   Exit;
  End;
 
- { Jump to loop condition }
+ { Sauter � la condition de boucle }
  ot('JMP  ');
  printlabel(continue_label);
  nl;
@@ -6488,9 +6488,9 @@ Begin
 
  safe_writeln('; Compound statement start');
 
- { Parse statements until closing brace }
+ { Analyser les instructions jusqu'� l'accolade fermante }
  Repeat
-  { Check if we need to read a new line }
+  { V�rifier si on doit lire une nouvelle ligne }
   blanks;
   If (lptr > Length(line)) or (Length(line) = 0) Then
   Begin
@@ -6498,7 +6498,7 @@ Begin
    lptr := 1;
   End;
 
-  { Check for closing brace }
+  { V�rifier l'accolade fermante }
   If match('}') Then Break;
 
   If eof <> 0 Then
@@ -6515,7 +6515,7 @@ Begin
 
   If not parse_statement Then
   Begin
-   { Skip to next line to avoid infinite loops }
+   { Passer � la ligne suivante pour �viter les boucles infinies }
    If not readinline Then Break;
    lptr := 1;
   End;
@@ -6532,7 +6532,7 @@ Var
 Begin
  parse_expression_statement := False;
 
- { Check for empty statement (just semicolon) }
+ { V�rifier une instruction vide (juste un point-virgule) }
  If match(';') Then
  Begin
   parse_expression_statement := True;
@@ -6540,12 +6540,12 @@ Begin
   Exit;
  End;
 
- { Check if there's something that looks like an expression }
+ { V�rifier s'il y a quelque chose qui ressemble � une expression }
  save_lptr := lptr;
  If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then
   Exit;
 
- { Try to parse expression }
+ { Essayer d'analyser l'expression }
  expression_bool(lval);
  parse_expression_statement := True;
 
@@ -6679,7 +6679,7 @@ Begin
  safe_writeln('; Assignation à ' + array_name + '[] terminée');
 End;
 
-{ Assignment statement parser }
+{ Analyseur d'instructions d'affectation }
 Function parse_assignment_statement: Boolean;
 Var
  var_name: String;
@@ -6689,27 +6689,27 @@ Begin
  parse_assignment_statement := False;
  save_lptr := lptr;
 
- { Try to parse identifier }
+ { Essayer d'analyser un identifiant }
  If symname(var_name) Then
  Begin
   blanks;
 
-  { Check if this is an array access }
+  { V�rifier si c'est un acc�s � un tableau }
   If match('[') Then
   Begin
-   { Array element assignment: array[index] = value }
+   { Assignation � un �l�ment de tableau: tableau[index] = valeur }
    parse_array_assignment(var_name);
    parse_assignment_statement := True;
   End
   Else If match('=') Then
   Begin
-   { This is a simple variable assignment }
+   { C'est une assignation simple � une variable }
    blanks;
 
-   { Look up variable }
+   { Rechercher la variable }
    If lookup_variable(var_name, lval) Then
    Begin
-    { Check if variable is const }
+    { V�rifier si la variable est constante }
     If lval.type_info.is_const Then
     Begin
      Case Language of
@@ -6722,33 +6722,33 @@ Begin
      Exit;
     End;
 
-    { Parse right side expression }
+    { Analyser l'expression du c�t� droit }
     expression(right_lval);
 
-    { Generate assignment code }
+    { G�n�rer le code d'affectation }
     ot('MOV  ');
     outstr(var_name);
     outstr(', AX');
     nl;
 
-    safe_writeln('; Assignment to variable: ' + var_name);
+    safe_writeln('; Affectation � la variable: ' + var_name);
     parse_assignment_statement := True;
    End;
   End
   Else
   Begin
-   { Not an assignment, restore position }
+   { Ce n'est pas une affectation, restaurer la position }
    lptr := save_lptr;
   End;
  End;
 End;
 
-{ Main statement parser }
+{ Analyseur d'instructions principal }
 Function parse_statement: Boolean;
 Begin
  parse_statement := False;
 
- { Skip empty lines and comments }
+ { Ignorer les lignes vides et les commentaires }
  blanks;
  If Length(line) = 0 Then
  Begin
@@ -6756,7 +6756,7 @@ Begin
   Exit;
  End;
 
- { Try different statement types }
+ { Essayer les diff�rents types d'instructions }
  If parse_label_statement Then
   parse_statement := True
  Else If parse_case_statement Then
@@ -6802,7 +6802,7 @@ Begin
 End;
 
 Procedure trailer;Begin
- { Apply optimizations if enabled }
+ { Appliquer les optimisations si activ�es }
  If optimize > OPT_NONE Then
  Begin
   optimize_code;
@@ -6831,7 +6831,7 @@ Procedure errrptsummary;Begin
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
 
-{ Enhanced parsing with variable declarations, control structures and expression parser }
+{ Analyse am�lior�e avec d�clarations de variables, structures de contr�le et analyseur d'expressions }
 Procedure parse;
 Var
  lval: TLVal;
@@ -6850,7 +6850,7 @@ Begin
   End;
   {$I+}
 
-  { Simple comment processing }
+  { Traitement simple des commentaires }
   If match('/*') Then
   Begin
    While (not match('*/')) and (eof = 0) do
@@ -6858,107 +6858,107 @@ Begin
    Continue;
   End;
 
-  { Process preprocessor directives BEFORE macro expansion }
+  { Traiter les directives de pr�processeur AVANT l'expansion des macros }
   If match('#') Then
   Begin
    If match('include') Then
    Begin
-    { Process #include directive }
+    { Traiter la directive #include }
     If not should_skip_code Then
     Begin
      If process_include_directive(line) Then
      Begin
-      { Include successful - reset line pointer and continue with included file }
-      lptr := Length(line) + 1; { Force readinline to be called for new file }
+      { Inclusion r�ussie - r�initialiser le pointeur de ligne et continuer avec le fichier inclus }
+      lptr := Length(line) + 1; { Forcer l'appel de readinline pour le nouveau fichier }
       Continue;
      End
      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d�j� signal�e, ignorer cette ligne }
       Continue;
      End;
     End
     Else
     Begin
-     { Skip include in conditional block }
+     { Ignorer l'inclusion dans un bloc conditionnel }
      Continue;
     End;
    End
    Else If match('define') Then
    Begin
-    { Process #define directive }
+    { Traiter la directive #define }
     If not should_skip_code Then
     Begin
      If process_define_directive(line) Then
-      Continue  { Continue with next line }
+      Continue  { Continuer avec la ligne suivante }
      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d�j� signal�e, ignorer cette ligne }
       Continue;
      End;
     End
     Else
     Begin
-     { Skip define in conditional block }
+     { Ignorer le define dans un bloc conditionnel }
      Continue;
     End;
    End
    Else If match('if ') Then
    Begin
-    { Process #if directive }
+    { Traiter la directive #if }
     blanks;
     process_if_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('ifdef ') Then
    Begin
-    { Process #ifdef directive }
+    { Traiter la directive #ifdef }
     blanks;
     process_ifdef_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('ifndef ') Then
    Begin
-    { Process #ifndef directive }
+    { Traiter la directive #ifndef }
     blanks;
     process_ifndef_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('elif ') Then
    Begin
-    { Process #elif directive }
+    { Traiter la directive #elif }
     blanks;
     process_elif_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('else') Then
    Begin
-    { Process #else directive }
+    { Traiter la directive #else }
     process_else_directive;
     Continue;
    End
    Else If match('endif') Then
    Begin
-    { Process #endif directive }
+    { Traiter la directive #endif }
     process_endif_directive;
     Continue;
    End
    Else
    Begin
-    { Other preprocessor directives - skip for now }
+    { Autres directives de pr�processeur - ignorer pour l'instant }
     safe_writeln('; Skipping preprocessor directive: ' + line);
     Continue;
    End;
   End;
 
-  { Check if we should skip code due to conditional compilation }
+  { V�rifier si on doit ignorer le code en raison de la compilation conditionnelle }
   If should_skip_code Then
   Begin
-   { Skip this line completely }
+   { Ignorer cette ligne compl�tement }
    Continue;
   End;
 
-  { Apply macro expansion to the line AFTER conditional processing }
+  { Appliquer l'expansion des macros � la ligne APR�S le traitement conditionnel }
   expanded_line := expand_macros(line);
   If expanded_line <> line Then
   Begin
@@ -6967,40 +6967,40 @@ Begin
                  Else safe_writeln('; Line after macro expansion: ' + line);
   End;
 
-  { Skip empty lines }
+  { Ignorer les lignes vides }
   blanks;
   If Length(line) = 0 Then Continue;
 
   safe_writeln('; Processing: ' + line);
 
-  { Reset position for parsing }
+  { R�initialiser la position pour l'analyse }
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
 
-  { Try to parse as statement (includes declarations and control structures) }
+  { Essayer d'analyser comme instruction (inclut les d�clarations et les structures de contr�le) }
   If parse_statement Then
   Begin
    safe_writeln('; Statement processed');
    Continue;
   End;
 
-  { Fallback: Parse identifiers and expressions for backward compatibility }
+  { Repli: Analyser les identifiants et les expressions pour la compatibilit� ascendante }
   lptr := 1;
   If symname(sname) Then
   Begin
    safe_writeln('; Identifier: ' + sname);
 
-   { Check for assignment }
+   { V�rifier l'affectation }
    blanks;
    If match('=') Then
    Begin
-    safe_writeln('; Assignment to ' + sname);
+    safe_writeln('; Affectation � ' + sname);
     blanks;
 
-    { Look up variable in symbol table }
+    { Rechercher la variable dans la table de symboles }
     If lookup_variable(sname, lval) Then
     Begin
-     { Check if variable is const and prevent assignment }
+     { V�rifier si la variable est constante et emp�cher l'affectation }
      If lval.type_info.is_const Then
      Begin
       Case Language of
@@ -7013,12 +7013,12 @@ Begin
      End
      Else
      Begin
-      safe_writeln('; Assignment to variable: ' + sname);
+      safe_writeln('; Affectation � la variable: ' + sname);
 
-      { Use expression parser for right side }
+      { Utiliser l'analyseur d'expressions pour le c�t� droit }
       expression(right_lval);
 
-      { Store result in variable }
+      { Stocker le r�sultat dans la variable }
       ot('MOV  ');
       outstr(sname);
       outstr(', AX');
@@ -7028,7 +7028,7 @@ Begin
    End
    Else
    Begin
-    { Load variable }
+    { Charger la variable }
     If lookup_variable(sname, lval) Then
     Begin
      ot('MOV  AX, ');
@@ -7039,7 +7039,7 @@ Begin
    Continue;
   End;
 
-  { Try to parse as expression }
+  { Essayer d'analyser comme expression }
   lptr := 1;
   blanks;
   If (peek_char >= '0') and (peek_char <= '9') Then
@@ -7049,14 +7049,14 @@ Begin
    Continue;
   End;
 
-  { Simple function detection fallback }
+  { Repli pour la d�tection simple de fonction }
   If Pos('(', line) > 0 Then
   Begin
    safe_writeln('; Function found: ' + line);
    ol('nop ; placeholder for function');
   End;
 
-  { Output any remaining content as comment }
+  { Produire le contenu restant sous forme de commentaire }
   If Length(line) > 0 Then
   Begin
    safe_writeln('; Unknown: ' + line);
@@ -7132,8 +7132,8 @@ BEGIN
   End;
   Halt(1);
  End;
-  { Initialize variables - symtab no longer needed }
- { FillChar(symtab, SizeOf(symtab), 0); -- Old symbol table removed }
+  { Initialiser les variables - symtab plus n�cessaire }
+ { FillChar(symtab, SizeOf(symtab), 0); -- Ancienne table de symboles supprim�e }
  glbptr := startglb;
  locptr := startloc;
  stkp := 0;
@@ -7144,21 +7144,21 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
- { Initialize include file system }
+ { Initialiser le syst�me de fichiers d'inclusion }
  include_depth := 0;
  current_filename := '';
- { Initialize define system }
+ { Initialiser le syst�me de d�finition }
  init_defines;
- { Initialize heap-based symbol table }
+ { Initialiser la table de symboles bas�e sur le tas }
  init_symbols;
-  { Compiler main body }
+  { Corps principal du compilateur }
  nxtlab := 0;
  kill;
  WriteLn('CC8086 - Compilateur C pour 8086 V1.01');
  WriteLn;
  optimize := OPT_NONE;
  ctext := NO;
- { Parse command line arguments }
+ { Analyser les arguments de la ligne de commande }
  For i := 1 to ParamCount do Begin
   param := ParamStr(i);
   If param = '-O0' Then optimize := OPT_NONE
@@ -7167,7 +7167,7 @@ BEGIN
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
 
- { Open input file with error checking }
+ { Ouvrir le fichier d'entr�e avec v�rification d'erreur }
  Assign(input, ParamStr(1));
  {$I-}
  Reset(input);
@@ -7178,34 +7178,34 @@ BEGIN
  End;
  {$I+}
 
- current_filename := ParamStr(1); { Set initial filename for include system }
- WriteLn('Compiling Source file: ', ParamStr(1));
+ current_filename := ParamStr(1); { D�finir le nom de fichier initial pour le syst�me d'inclusion }
+ WriteLn('Compilation du fichier source: ', ParamStr(1));
 
- { Initialize global variables }
+ { Initialiser les variables globales }
  eof := 0;
  errcnt := 0;
  lptr := 1;
  line := '';
  nextlabel := 0;
- use_stdout := True; { Initialize early - may be changed later }
+ use_stdout := True; { Initialiser t�t - peut �tre modifi� plus tard }
 
- { Initialize heap-based symbol table }
+ { Initialiser la table de symboles bas�e sur le tas }
  init_symbols;
 
- { Initialize defines table }
+ { Initialiser la table de d�finitions }
  init_defines;
 
- { Initialize inclusion system }
+ { Initialiser le syst�me d'inclusion }
  init_inclusion_system;
 
- { Initialize conditions system }
+ { Initialiser le syst�me de conditions }
  init_conditions;
 
- { Initialize control flow tables }
+ { Initialiser les tables de flux de contr�le }
  init_goto_table;
  init_switch_table;
 
- If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
+ If optimize > OPT_NONE Then WriteLn('Niveau d''optimisation: ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
   If (param[1] <> '-') Then Begin { Option impossible, fichier de sortie obligatoire }
@@ -7243,9 +7243,9 @@ BEGIN
  End;
   { Initialisation du système d'optimisation }
  init_optimization;
- { Initialize loop context stack }
+ { Initialiser la pile de contexte de boucle }
  loop_depth := 0;
- { Initialize type info table }
+ { Initialiser la table d'informations de type }
  type_info_count := 0;
   { Initialisaton du syst�me de gestion des fonctions }
  init_functions;
@@ -7257,10 +7257,10 @@ BEGIN
  header;        { Code d''introduction }
  parse;         { Analyse toutes les entr�e }
  trailer;       { Code de suivi }
- free_defines;  { Free define memory from heap }
- free_conditions; { Free conditions system }
- free_symbols;  { Free symbol table from heap }
- free_structs;  { Free struct definitions from heap }
+ free_defines;  { Lib�rer la m�moire des d�finitions du tas }
+ free_conditions; { Lib�rer le syst�me de conditions }
+ free_symbols;  { Lib�rer la table de symboles du tas }
+ free_structs;  { Lib�rer les d�finitions de structures du tas }
  closeout;      { Fermer la sortie }
  errrptsummary; { R�sumer les erreurs }
 END.
