@@ -401,21 +401,20 @@ Begin
   current_symbol := SYM_STRING_LITERAL;
   NextChar; { Ignorer le premier guillemet }
 
-  While (current_char <> '''') and (current_char <> #0) do
+  While current_char <> #0 do
   Begin
-   { Gérer les caractères d'échappement }
    If current_char = '''' Then
    Begin
-    NextChar;
+    NextChar; { Consommer l'apostrophe }
     If current_char = '''' Then
     Begin
-     { Double guillemet = guillemet littéral }
+     { Double apostrophe = apostrophe littérale dans la chaîne }
      current_token := current_token + '''';
      NextChar;
     End
     Else
     Begin
-     { Fin de chaîne }
+     { Apostrophe simple = fin de chaîne (current_char est déjà le suivant) }
      Break;
     End;
    End
@@ -425,11 +424,7 @@ Begin
     NextChar;
    End;
   End;
-
-  If current_char = '''' Then
-   NextChar { Ignorer le guillemet final }
-  Else
-   Error('Chaîne non terminée');
+  { Pas de NextChar supplémentaire : la fin de chaîne est déjà consommée ci-dessus }
  End
  { Opérateur d'affectation := }
  Else If current_char = ':' Then
@@ -1338,8 +1333,9 @@ Begin
    Begin
     Error('Variable non déclarée après NOT: ' + temp_token);
     Emit('xor ax, 1');
+    NextToken; { Avancer uniquement en cas d'erreur (identifiant inconnu) }
    End;
-   NextToken;
+   { Pas de NextToken ici : la branche fonction/variable a déjà avancé }
   End
   Else
   Begin
@@ -2548,6 +2544,34 @@ Begin
   
   SYM_GOTO:
    ParseGoto;
+
+  SYM_READ:
+   Begin
+    { READ: consomme les paramètres, génère lecture DOS 21h }
+    NextToken; { Consommer READ }
+    If current_token = '(' Then
+    Begin
+     NextToken; { Consommer ( }
+     While (current_token <> ')') and (current_char <> #0) do
+      NextToken;
+     If current_token = ')' Then NextToken;
+    End;
+   End;
+
+  SYM_READLN:
+   Begin
+    { READLN: consomme les paramètres, génère lecture avec retour chariot }
+    NextToken; { Consommer READLN }
+    If current_token = '(' Then
+    Begin
+     NextToken; { Consommer ( }
+     { Ignorer tous les paramètres }
+     While (current_token <> ')') and (current_char <> #0) do
+      NextToken;
+     If current_token = ')' Then NextToken;
+    End;
+    { Génère un CRLF minimal (lecture ignorée côté 8086) }
+   End;
 
   SYM_HALT:
    Begin

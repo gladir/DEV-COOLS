@@ -2496,11 +2496,9 @@ Begin
    { Analyser les membres }
   safe_writeln('; D‚but parsing membres struct');
   blanks; { S'assurer qu'on ignore les espaces au d‚but }
-
   Repeat
-   { VÃ©rifier si nous avons atteint la fin de la ligne }
-   If lptr > Length(line) Then
-   Begin
+   { V‚rifier si nous avons atteint la fin de la ligne }
+   If lptr > Length(line) Then Begin
     safe_writeln('; Lecture nouvelle ligne pour struct...');
     If not readinline Then
     Begin
@@ -2514,13 +2512,10 @@ Begin
      Exit;
     End;
    End;
-
    blanks; { Ignorer les espaces }
-
-   { VÃ©rifier si c'est la fin de la struct }
+    { V‚rifier si c'est la fin de la struct }
    If peek_char = '}' Then Break;
-
-   safe_writeln('; Dans boucle parsing - membre dÃ©tectÃ©');
+   safe_writeln('; Dans boucle parsing - membre d‚tect‚');
    safe_writeln('; Parsing membre...');
    blanks; { S'assurer qu'on ignore les espaces }
    { Analyser le type du membre }
@@ -2528,7 +2523,7 @@ Begin
    init_type_info(member_type_info);
    member_type_info.base_type := member_type;
    calculate_type_size(member_type_info);
-   safe_writeln('; Type membre analysÃ©: ' + IntToStr(member_type));
+   safe_writeln('; Type membre analys‚: ' + IntToStr(member_type));
    If member_type = -1 Then
    Begin
     Case Language of
