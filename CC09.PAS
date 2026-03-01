@@ -4920,21 +4920,17 @@ Begin
  End;
 End;
 
-{ Bitwise OR expression parser - handles | }
-Procedure bitwise_or_expression(var lval: TLVal);
-Begin
+{ Analyse de l'expression binaire OR - gestionnaire | }
+Procedure bitwise_or_expression(var lval: TLVal);Begin
  bitwise_xor_expression(lval);
-
- While match('|') do
- Begin
-  { VÃ©rifier que ce n'est pas || }
+ While match('|') do Begin
+  { V‚rifier que ce n'est pas || }
   If peek_char = '|' Then
   Begin
-   { Reculer car c'est || qui sera traitÃ© par logical_or }
+   { Reculer car c'est || ‚tant trait‚ par logical_or }
    Dec(lptr);
    Break;
   End;
-
   safe_writeln('; Op‚rateur | (OU binaire)');
   ol('pshs d');    { Empile l'op‚rateur … gauche }
   bitwise_xor_expression(lval);

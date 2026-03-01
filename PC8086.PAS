@@ -25,56 +25,59 @@ Const
  { Types de symboles Pascal }
  SYM_UNKNOWN = 0;
  SYM_PROGRAM = 1;
- SYM_USES = 2;
- SYM_VAR = 3;
- SYM_CONST = 4;
- SYM_TYPE = 5;
- SYM_PROCEDURE = 6;
- SYM_FUNCTION = 7;
- SYM_BEGIN = 8;
- SYM_END = 9;
- SYM_IF = 10;
- SYM_THEN = 11;
- SYM_ELSE = 12;
- SYM_WHILE = 13;
- SYM_DO = 14;
- SYM_FOR = 15;
- SYM_TO = 16;
- SYM_DOWNTO = 17;
- SYM_REPEAT = 18;
- SYM_UNTIL = 19;
- SYM_CASE = 20;
- SYM_OF = 21;
- SYM_WRITE = 22;
- SYM_WRITELN = 23;
- SYM_READ = 24;
- SYM_READLN = 25;
- SYM_INTERRUPT = 26;
- SYM_RECORD = 27;
- SYM_ARRAY = 28;
- SYM_OTHERWISE = 29;
+ SYM_UNIT = 2;
+ SYM_USES = 3;
+ SYM_INTERFACE = 4;
+ SYM_IMPLEMENTATION = 5;
+ SYM_VAR = 6;
+ SYM_CONST = 7;
+ SYM_TYPE = 8;
+ SYM_PROCEDURE = 9;
+ SYM_FUNCTION = 10;
+ SYM_BEGIN = 11;
+ SYM_END = 12;
+ SYM_IF = 13;
+ SYM_THEN = 14;
+ SYM_ELSE = 15;
+ SYM_WHILE = 16;
+ SYM_DO = 17;
+ SYM_FOR = 18;
+ SYM_TO = 19;
+ SYM_DOWNTO = 20;
+ SYM_REPEAT = 21;
+ SYM_UNTIL = 22;
+ SYM_CASE = 23;
+ SYM_OF = 24;
+ SYM_WRITE = 25;
+ SYM_WRITELN = 26;
+ SYM_READ = 27;
+ SYM_READLN = 28;
+ SYM_INTERRUPT = 29;
+ SYM_RECORD = 30;
+ SYM_ARRAY = 31;
+ SYM_OTHERWISE = 32;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 30;      { = }
- SYM_NOTEQUAL = 31;   { <> }
- SYM_LESS = 32;       { < }
- SYM_GREATER = 33;    { > }
- SYM_LESSEQ = 34;     { <= }
- SYM_GREATEREQ = 35;  { >= }
+ SYM_EQUAL = 33;      { = }
+ SYM_NOTEQUAL = 34;   { <> }
+ SYM_LESS = 35;       { < }
+ SYM_GREATER = 36;    { > }
+ SYM_LESSEQ = 37;     { <= }
+ SYM_GREATEREQ = 38;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 36;       { + }
- SYM_MINUS = 37;      { - }
- SYM_MULTIPLY = 38;   { * }
- SYM_DIVIDE = 39;     { / }
+ SYM_PLUS = 39;       { + }
+ SYM_MINUS = 40;      { - }
+ SYM_MULTIPLY = 41;   { * }
+ SYM_DIVIDE = 42;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 40;        { AND }
- SYM_OR = 41;         { OR }
- SYM_XOR = 42;        { XOR }
+ SYM_AND = 43;        { AND }
+ SYM_OR = 44;         { OR }
+ SYM_XOR = 45;        { XOR }
 
  { Caractères spéciaux }
- SYM_DOT = 43;        { . }
+ SYM_DOT = 46;        { . }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -93,6 +96,8 @@ Const
  STORAGE_LOCAL = 2;
  STORAGE_PARAMETER = 3;
  STORAGE_FUNCTION_RESULT = 4;
+ STORAGE_UNIT_INTERFACE = 5;   { Symbole défini dans l'interface d'une unité }
+ STORAGE_UNIT_IMPLEMENTATION = 6; { Symbole défini dans l'implémentation d'une unité }
 
 Type
  { Structure pour les symboles }
@@ -108,6 +113,8 @@ Type
   is_function: Boolean;      { Indicateur fonction vs procédure }
   record_size: Integer;      { Taille totale du record }
   field_count: Integer;      { Nombre de champs dans le record }
+  unit_name: String[MAX_SYMBOL_NAME]; { Nom de l'unité d'origine }
+  is_external: Boolean;      { Symbole défini dans une autre unité }
  End;
  
  { Pointeur vers un symbole }
@@ -156,11 +163,22 @@ Var
  { Noms des fichiers }
  source_filename: String;
  output_filename: String;
+ program_name: String;
 
  { Variables pour les fonctions }
  current_function_name: String;
  current_function_type: Integer;
  in_function: Boolean;
+
+ { Variables pour les unités }
+ current_unit_name: String;
+ in_unit: Boolean;
+ in_interface: Boolean;
+ in_implementation: Boolean;
+ unit_symbols_start: Integer; { Index du premier symbole de l'unité courante }
+
+ { Options du compilateur }
+ option_units_support: Boolean; { Option 3: Support complet des UNIT/INTERFACE/IMPLEMENTATION/USES }
 
 { ============================================================================ }
 { FONCTIONS UTILITAIRES                                                        }
@@ -284,7 +302,10 @@ Begin
  current_token := UpperCase(current_token);
 
  If current_token = 'PROGRAM' Then current_symbol := SYM_PROGRAM
+ Else If current_token = 'UNIT' Then current_symbol := SYM_UNIT
  Else If current_token = 'USES' Then current_symbol := SYM_USES
+ Else If current_token = 'INTERFACE' Then current_symbol := SYM_INTERFACE
+ Else If current_token = 'IMPLEMENTATION' Then current_symbol := SYM_IMPLEMENTATION
  Else If current_token = 'VAR' Then current_symbol := SYM_VAR
  Else If current_token = 'CONST' Then current_symbol := SYM_CONST
  Else If current_token = 'TYPE' Then current_symbol := SYM_TYPE
@@ -959,6 +980,11 @@ Procedure ParseExpression; forward;
 Procedure ParseBlock; forward;
 Procedure ParseFor; forward;
 Procedure ParseCase; forward;
+Procedure ParseUnit; forward;
+Procedure ParseInterface; forward;
+Procedure ParseImplementation; forward;
+Procedure ParseUses; forward;
+Procedure ParseProgramMain; forward;
 
 { Vérifier si le token actuel correspond }
 Function Accept(expected_symbol: Integer): Boolean;
@@ -2849,10 +2875,22 @@ Begin
   Error('Attendu BEGIN');
 End;
 
-{ Parser un programme Pascal }
+{ Parser un programme ou une unité Pascal }
 Procedure ParseProgram;
-Var
- program_name: String;
+Begin
+ { Vérifier si c'est une UNIT }
+ If Accept(SYM_UNIT) Then
+ Begin
+  ParseUnit;
+  Exit;
+ End;
+ 
+ { Sinon, traiter comme un PROGRAM }
+ ParseProgramMain;
+End;
+
+{ Parser un programme principal Pascal }
+Procedure ParseProgramMain;
 Begin
  { En-tête PROGRAM }
  If Accept(SYM_PROGRAM) Then
@@ -2892,10 +2930,10 @@ Begin
    If current_token = ';' Then
     NextToken
    Else
-    Error('Attendu ; après nom de programme');
+    Error('Attendu ; après nom d''unité');
   End
   Else
-   Error('Attendu nom de programme');
+   Error('Attendu nom d''unité');
  End
  Else
  Begin
@@ -2904,39 +2942,9 @@ Begin
   EmitComment('Programme: (sans nom)');
  End;
 
- { Gérer les déclarations USES optionnelles }
- While Accept(SYM_USES) do
- Begin
-  NextToken; { Consommer USES }
-  EmitComment('Unités utilisées:');
-  
-  Repeat
-   If current_symbol = SYM_UNKNOWN Then
-   Begin
-    EmitComment('  - Unité: ' + current_token);
-    NextToken;
-   End
-   Else
-   Begin
-    Error('Attendu nom d''unité après USES');
-    Break;
-   End;
-   
-   { Gérer les virgules }
-   If current_token = ',' Then
-   Begin
-    NextToken;
-    Continue;
-   End
-   Else
-    Break;
-  Until False;
-  
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; après déclaration USES');
- End;
+ { Gérer la clause USES }
+ If Accept(SYM_USES) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'USES')) Then
+  ParseUses;
 
  GenerateHeader;
 
@@ -2981,6 +2989,13 @@ Begin
  current_function_name := '';
  current_function_type := TYPE_INTEGER;
  in_function := False;
+ 
+ { Initialiser les variables pour les unités }
+ current_unit_name := '';
+ in_unit := False;
+ in_interface := False;
+ in_implementation := False;
+ unit_symbols_start := 0;
 End;
 
 { Libérer la mémoire allouée }
@@ -2997,6 +3012,128 @@ Begin
  For i := 1 to label_count do
   If label_table[i] <> nil Then
    Dispose(label_table[i]);
+End;
+
+{ Parser une clause USES }
+Procedure ParseUses;
+Var
+ unit_name: String;
+Begin
+ NextToken; { Consommer USES }
+ 
+ If not option_units_support Then
+ Begin
+  Warning('USES ignoré - option 3 non activée');
+  { Ignorer jusqu'au point-virgule }
+  While (current_token <> ';') and (current_char <> #0) do
+   NextToken;
+  If current_token = ';' Then
+   NextToken;
+  Exit;
+ End;
+
+ EmitComment('Clause USES détectée');
+ 
+ { Lire les noms d'unités }
+ Repeat
+  If current_symbol = SYM_UNKNOWN Then
+  Begin
+   unit_name := current_token;
+   EmitComment('  Unité requise: ' + unit_name);
+   NextToken;
+  End
+  Else
+  Begin
+   Error('Attendu nom d''unité dans clause USES');
+   Break;
+  End;
+  
+  { Gérer les virgules }
+  If current_token = ',' Then
+   NextToken
+  Else
+   Break;
+ Until False;
+ 
+ { Attendre le point-virgule }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après clause USES');
+End;
+
+{ Parser la section INTERFACE d'une UNIT }
+Procedure ParseInterface;
+Begin
+ NextToken; { Consommer INTERFACE }
+ Warning('Section INTERFACE détectée - implémentation basique');
+ 
+ { Pour l'instant, ignorer jusqu'à IMPLEMENTATION ou END (sans les consommer) }
+ While not ((current_symbol = SYM_UNKNOWN) and 
+          ((UpperCase(current_token) = 'IMPLEMENTATION') or 
+           (UpperCase(current_token) = 'END'))) and 
+       (current_symbol <> SYM_END) and (current_char <> #0) do
+  NextToken;
+End;
+
+{ Parser la section IMPLEMENTATION d'une UNIT }
+Procedure ParseImplementation;
+Begin
+ NextToken; { Consommer IMPLEMENTATION }
+ Warning('Section IMPLEMENTATION détectée - implémentation basique');
+ 
+ { Pour l'instant, ignorer jusqu'à END (sans le consommer) }
+ While not ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) and 
+       (current_symbol <> SYM_END) and (current_char <> #0) do
+  NextToken;
+End;
+
+{ Parser une UNIT complète }
+Procedure ParseUnit;
+Begin
+ NextToken; { Consommer UNIT }
+
+ { Lire le nom de l'unité }
+ If current_symbol = SYM_UNKNOWN Then
+ Begin
+  current_unit_name := current_token;
+  EmitComment('Unité: ' + current_unit_name);
+  NextToken;
+ End
+ Else
+ Begin
+  Error('Attendu nom d''unité');
+  current_unit_name := '';
+ End;
+
+ { Attendre le point-virgule }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après nom d''unité');
+
+ { Parser l'interface (si présente) }
+ If Accept(SYM_INTERFACE) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'INTERFACE')) Then
+  ParseInterface;
+
+ { Parser l'implémentation (si présente) }
+ If Accept(SYM_IMPLEMENTATION) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'IMPLEMENTATION')) Then
+  ParseImplementation;
+
+ { Attendre END et le point final }
+ If Accept(SYM_END) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) Then
+ Begin
+  NextToken;
+  If current_token = '.' Then
+   NextToken
+  Else
+   Error('Attendu . après END d''unité');
+ End
+ Else
+  Error('Attendu END à la fin de l''unité');
+
+ { Réinitialiser l'état }
+ current_unit_name := '';
 End;
 
 { Générer les procédures d'aide (comme PRINT_NUM) }
@@ -3059,14 +3196,14 @@ Begin
  EmitLine('    push si');
  EmitLine('    push di');
  EmitLine('');
- EmitComment('Copier la longueur');
- EmitLine('    lodsb        ; Charger longueur depuis [SI]');
- EmitLine('    stosb        ; Stocker longueur vers [DI]');
- EmitLine('    mov cl, al   ; Nombre de caractères à copier');
+ EmitComment('Lire la longueur');
+ EmitLine('    lodsb            ; Charger longueur depuis [SI]');
+ EmitLine('    stosb            ; Stocker longueur vers [DI]');
+ EmitLine('    mov cl, al       ; Nombre de caractères à copier');
  EmitLine('    mov ch, 0');
  EmitLine('');
  EmitComment('Copier les caractères');
- EmitLine('    rep movsb    ; Copier CX caractères');
+ EmitLine('    rep movsb        ; Copier CX caractères');
  EmitLine('');
  EmitLine('    pop di');
  EmitLine('    pop si');
@@ -3129,19 +3266,18 @@ Begin
  EmitLine('    push si');
  EmitLine('    push di');
  EmitLine('');
- EmitComment('Comparer les longueurs');
- EmitLine('    mov al, [si]');
- EmitLine('    mov bl, [di]');
- EmitLine('    cmp al, bl');
- EmitLine('    jne COMP_DIFF    ; Longueurs différentes');
- EmitLine('');
- EmitComment('Comparer les caractères');
- EmitLine('    mov cl, al       ; Nombre de caractères');
+ EmitComment('Lire la longueur');
+ EmitLine('    lodsb            ; Charger longueur depuis [SI]');
+ EmitLine('    mov cl, al');
  EmitLine('    mov ch, 0');
- EmitLine('    inc si           ; Pointer après longueur');
- EmitLine('    inc di');
- EmitLine('    repe cmpsb       ; Comparer caractères');
- EmitLine('    je COMP_EQUAL');
+ EmitLine('    jcxz COMP_STR_END');
+ EmitLine('');
+ EmitLine('COMP_STR_LOOP:');
+ EmitLine('    lodsb            ; Charger caractère');
+ EmitLine('    mov dl, al       ; Caractère à comparer');
+ EmitLine('    cmp dl, [di]');
+ EmitLine('    jne COMP_DIFF');
+ EmitLine('    loop COMP_STR_LOOP');
  EmitLine('');
  EmitLine('COMP_DIFF:');
  EmitLine('    mov ax, 1        ; Différent');
@@ -3196,20 +3332,44 @@ BEGIN
   WriteLn('PC8086 - Cette commande permet de lancer une compilateur Pascal g�n�rant du code pour le ',
           'microprocesseur 8086 ou 8088.');
   WriteLn;
-  WriteLn('Syntaxe: PC8086 <fichier.pas> [fichier.asm]');
+  WriteLn('Syntaxe: PC8086 [options] <fichier.pas> [fichier.asm]');
+  WriteLn('');
+  WriteLn('Options:');
+  WriteLn('  /3         : Activer support complet UNIT/INTERFACE/IMPLEMENTATION/USES');
   WriteLn('');
   WriteLn('  <fichier.pas>  : Fichier source Pascal');
   WriteLn('  [fichier.asm]  : Fichier assembleur de sortie (optionnel)');
   Halt;
  End;
+
+ { Initialiser les options par défaut }
+ option_units_support := False;
+
+ { Traiter les options }
+ If (ParamCount >= 1) and (ParamStr(1) = '/3') Then
+ Begin
+  option_units_support := True;
+  WriteLn('Option 3 activée: Support complet des unités Pascal');
+  source_filename := ParamStr(2);
+  If ParamCount >= 3 Then
+   output_filename := ParamStr(3)
+  Else
+   output_filename := '';
+ End
+ Else
+ Begin
+  source_filename := ParamStr(1);
+  If ParamCount >= 2 Then
+   output_filename := ParamStr(2)
+  Else
+   output_filename := '';
+ End;
  WriteLn('PC8086 - Compilateur Pascal vers Assembleur 8086 v1.0');
  WriteLn('======================================================');
  WriteLn('');
- source_filename := ParamStr(1);
 
- If ParamCount >= 2 Then
-  output_filename := ParamStr(2)
- Else
+ { Générer le nom de fichier de sortie si nécessaire }
+ If output_filename = '' Then
  Begin
   output_filename := source_filename;
   { Changer l'extension .pas en .asm }
