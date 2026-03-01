@@ -5690,161 +5690,131 @@ Begin
  If not match('continue') Then Exit;
  parse_continue_statement := True;
 
- safe_writeln('; CONTINUE statement');
+ safe_writeln('Æ;Ø instruction CONTINUE');
 
  { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after continue');
-
- { Get current continue label from loop context }
+ If not match(';') Then errrpt('Æ;Ø attend apräs continue');
+  { RÇcupÇrer l'Çtiquette continue actuelle Ö partir du contexte de boucle }
  continue_label := get_current_continue_label;
- If continue_label = -1 Then
- Begin
-  errrpt('continue statement not within a loop');
+ If continue_label = -1 Then Begin
+  errrpt('L''instruction continue n''est pas Ö l''intÇrieur d''une boucle');
   Exit;
  End;
-
  { Jump to loop condition }
  ot('lbra ');
  printlabel(continue_label);
  nl;
 End;
 
-{ Analyser une instruction goto }
+ { Analyser une instruction goto }
 Function parse_goto_statement: Boolean;
 Var
  label_name: String;
 Begin
  parse_goto_statement := False;
-
  If not match('goto') Then Exit;
  parse_goto_statement := True;
-
- safe_writeln('; GOTO statement');
-
- { Obtenir le nom de l'√©tiquette }
- If not symname(label_name) Then
- Begin
+  safe_writeln('; instruction GOTO');
+  { Obtenir le nom de l'Çtiquette }
+ If not symname(label_name) Then Begin
   Case Language of
    _English: errrpt('Expected label name after goto');
    {$IFDEF FPC}
    _Germany: errrpt('Label-Name nach goto erwartet');
    {$ENDIF}
-   Else errrpt('Nom d''√©tiquette attendu apr√®s goto');
+   Else errrpt('Nom d''Çtiquette attendu apräs goto');
   End;
   Exit;
  End;
-
- { Attendre point-virgule }
+  { Attendre point-virgule }
  If not match(';') Then
   errrpt('Expected ; after goto statement');
-
- { G√©n√©rer le saut vers l'√©tiquette }
+  { GÇnÇrer le saut vers l'Çtiquette }
  use_goto_label(label_name);
 End;
 
-{ Analyser une d√©finition d'√©tiquette (label:) }
+ { Analyser une dÇfinition d'Çtiquette (label:) }
 Function parse_label_statement: Boolean;
 Var
  label_name: String;
  save_lptr: Integer;
 Begin
  parse_label_statement := False;
-
- { Sauvegarder la position pour pouvoir revenir en arri√®re }
+  { Sauvegarder la position pour pouvoir revenir en arriäre }
  save_lptr := lptr;
-
- { V√©rifier s'il y a un identificateur suivi de ':' }
- If symname(label_name) and match(':') Then
- Begin
+  { VÇrifier s'il y a un identificateur suivi de ':' }
+ If symname(label_name) and match(':') Then Begin
   parse_label_statement := True;
-  safe_writeln('; D√©finition d''√©tiquette: ' + label_name);
+  safe_writeln('; DÇfinition d''Çtiquette: ' + label_name);
   define_goto_label(label_name);
  End
  Else
  Begin
-  { Ce n'est pas une √©tiquette, revenir en arri√®re }
+   { Ce n'est pas une Çtiquette, revenir en arriäre }
   lptr := save_lptr;
  End;
 End;
 
-{ Analyser une instruction switch }
+ { Analyser une instruction switch }
 Function parse_switch_statement: Boolean;
 Var
  lval: TLVal;
  switch_expr_type: Integer;
 Begin
  parse_switch_statement := False;
-
  If not match('switch') Then Exit;
  parse_switch_statement := True;
-
  safe_writeln('; SWITCH statement');
-
- { Attendre parenth√®se ouvrante }
- If not match('(') Then
- Begin
+  { Attendre parenthäse ouvrante }
+ If not match('(') Then Begin
   Case Language of
    _English: errrpt('Expected ( after switch');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach switch');
    {$ENDIF}
-   Else errrpt('( attendu apr√®s switch');
+   Else errrpt('( attendu apräs switch');
   End;
   Exit;
  End;
-
- { Analyser l'expression switch }
+  { Analyser l'expression switch }
  safe_writeln('; Expression switch');
  expression_bool(lval);
  switch_expr_type := lval.typ;
-
- { Attendre parenth√®se fermante }
- If not match(')') Then
- Begin
+  { Attendre parenthäse fermante }
+ If not match(')') Then Begin
   Case Language of
    _English: errrpt('Expected ) after switch expression');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ) nach switch-Ausdruck');
    {$ENDIF}
-   Else errrpt(') attendu apr√®s expression switch');
+   Else errrpt(') attendu apräs expression switch');
   End;
   Exit;
  End;
-
- { Commencer le switch }
+  { Commencer le switch }
  If not begin_switch_statement(switch_expr_type) Then Exit;
-
- { Sauvegarder la valeur de l'expression pour comparaison }
+  { Sauvegarder la valeur de l'expression pour comparaison }
  ol('std  switch_temp ; sauver valeur switch');
-
- { G√©n√©rer les comparaisons }
+  { GÇnÇrer les comparaisons }
  generate_switch_comparisons;
-
- { Analyser le corps du switch }
- If not match('{') Then
- Begin
+  { Analyser le corps du switch }
+ If not match('{') Then Begin
   Case Language of
    _English: errrpt('Expected { after switch statement');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete { nach switch-Anweisung');
    {$ENDIF}
-   Else errrpt('{ attendu apr√®s instruction switch');
+   Else errrpt('{ attendu apräs instruction switch');
   End;
   Exit;
  End;
-
  safe_writeln('; Corps du switch');
- While (ch <> '}') and (ch <> #0) Do
- Begin
-  If not parse_statement Then
-  Begin
+ While (ch <> '}') and (ch <> #0) Do Begin
+  If not parse_statement Then Begin
    If ch <> #0 Then gch;
   End;
  End;
-
- If not match('}') Then
- Begin
+ If not match('}') Then Begin
   Case Language of
    _English: errrpt('Expected } to close switch');
    {$IFDEF FPC}
@@ -5853,25 +5823,21 @@ Begin
    Else errrpt('} attendu pour fermer switch');
   End;
  End;
-
- { Terminer le switch }
+  { Terminer le switch }
  end_switch_statement;
 End;
 
-{ Analyser une instruction case }
+ { Analyser une instruction case }
 Function parse_case_statement: Boolean;
 Var
  case_value: Integer;
  case_label: Integer;
 Begin
  parse_case_statement := False;
-
  If not match('case') Then Exit;
  parse_case_statement := True;
-
- safe_writeln('; CASE statement');
-
- { Obtenir la valeur du case }
+ safe_writeln('; instruction CASE');
+  { Obtenir la valeur du case }
  If not number(case_value) Then
  Begin
   Case Language of
@@ -5879,30 +5845,26 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete Konstante nach case');
    {$ENDIF}
-   Else errrpt('Constante attendue apr√®s case');
+   Else errrpt('Constante attendue apräs case');
   End;
   Exit;
  End;
-
- { Attendre deux-points }
- If not match(':') Then
- Begin
+  { Attendre deux-points }
+ If not match(':') Then Begin
   Case Language of
    _English: errrpt('Expected : after case value');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach case-Wert');
    {$ENDIF}
-   Else errrpt(': attendu apr√®s valeur case');
+   Else errrpt(': attendu apräs valeur case');
   End;
   Exit;
  End;
-
- { Ajouter le case au switch courant }
+  { Ajouter le case au switch courant }
  case_label := add_switch_case(case_value);
- If case_label <> -1 Then
- Begin
+ If case_label <> -1 Then Begin
   prelabel(case_label);
-  safe_writeln('; Case ' + IntToStr(case_value) + ' d√©fini');
+  safe_writeln('; Case ' + IntToStr(case_value) + ' dÇfini');
  End;
 End;
 
@@ -5912,13 +5874,10 @@ Var
  default_label: Integer;
 Begin
  parse_default_statement := False;
-
  If not match('default') Then Exit;
  parse_default_statement := True;
-
- safe_writeln('; DEFAULT statement');
-
- { Attendre deux-points }
+ safe_writeln('; Instruction DEFAULT ');
+  { Attendre deux-points }
  If not match(':') Then
  Begin
   Case Language of
@@ -5926,97 +5885,78 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach default');
    {$ENDIF}
-   Else errrpt(': attendu apr√®s default');
+   Else errrpt(': attendu apräs default');
   End;
   Exit;
  End;
-
- { Ajouter le default au switch courant }
+  { Ajouter le default au switch courant }
  default_label := add_switch_default;
- If default_label <> -1 Then
- Begin
+ If default_label <> -1 Then Begin
   prelabel(default_label);
-  safe_writeln('; Default d√©fini');
+  safe_writeln('; Default dÇfini');
  End;
 End;
 
-{ Compound statement parsing }
-Function parse_compound_statement: Boolean;
-Begin
+ { Analyse l'instruction composÇ }
+Function parse_compound_statement: Boolean;Begin
  parse_compound_statement := False;
-
  If not match('{') Then Exit;
  parse_compound_statement := True;
-
- safe_writeln('; Compound statement start');
-
- { Parse statements until closing brace }
+ safe_writeln('; DÇbut d''une instruction composÇ');
+  { Analyse les instructions jusqu'Ö la fermeture de l'accolade }
  Repeat
-  { Check if we need to read a new line }
+  { VÇrifier si nous devons lire une nouvelle ligne }
   blanks;
-  If (lptr > Length(line)) or (Length(line) = 0) Then
-  Begin
+  If (lptr > Length(line)) or (Length(line) = 0) Then Begin
    If not readinline Then Break;
    lptr := 1;
   End;
-
-  { Check for closing brace }
+   { VÇrifie pour la fermeture de l'accolade }
   If match('}') Then Break;
-
-  If eof <> 0 Then
-  Begin
+  If eof <> 0 Then Begin
    Case Language of
     _English: errrpt('Unexpected end of file in compound statement');
     {$IFDEF FPC}
     _Germany: errrpt('Unerwartetes Dateiende in zusammengesetzter Anweisung');
     {$ENDIF}
-    Else errrpt('Fin de fichier inattendue dans l''instruction compos√©e');
+    Else errrpt('Fin de fichier inattendue dans l''instruction composÇe');
    End;
    Exit;
   End;
-
-  If not parse_statement Then
-  Begin
-   { Skip to next line to avoid infinite loops }
+  If not parse_statement Then Begin
+   { Saute Ö la prochaine ligne pour Çviter une boucle infinie }
    If not readinline Then Break;
    lptr := 1;
   End;
  Until False;
-
- safe_writeln('; Compound statement end');
+ safe_writeln('; Fin de l''instruction composÇ');
 End;
 
-{ Expression statement parsing }
+{ Analyse l'instruction d'expression }
 Function parse_expression_statement: Boolean;
 Var
  lval: TLVal;
  save_lptr: Integer;
 Begin
  parse_expression_statement := False;
-
- { Check for empty statement (just semicolon) }
- If match(';') Then
- Begin
+  { VÇrifie pour une instruction vide (seulement un point-virgule) }
+ If match(';') Then Begin
   parse_expression_statement := True;
-  safe_writeln('; Empty statement');
+  safe_writeln('; Instruction vide');
   Exit;
  End;
-
- { Check if there's something that looks like an expression }
+  { VÇrifiez s'il y a quelque chose ressemblant Ö une expression }
  save_lptr := lptr;
- If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then
-  Exit;
-
- { Try to parse expression }
+ If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then Exit;
+  { Essai d'analyser l'expression }
  expression_bool(lval);
  parse_expression_statement := True;
-
- { Expect semicolon }
+  { Point-virgule attendue }
  If not match(';') Then errrpt('Expected ; after expression');
- safe_writeln('; Expression statement');
+ safe_writeln('; Instruction d''expression');
 End;
 
-{ Analyser l'assignation aux √©l√©ments de tableau }
+{ Analyser l'assignation aux ÇlÇments de tableau }
 Procedure parse_array_assignment(array_name: String);
 Var
  index_lval, right_lval: TLVal;
@@ -6025,19 +5965,17 @@ Var
 Begin
  { Trouver le symbole du tableau }
  array_symbol := find_symbol(array_name);
- If array_symbol = nil Then
- Begin
+ If array_symbol = nil Then Begin
   Case Language of
    _English: errrpt('Array not found: ' + array_name);
    {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
    {$ENDIF}
-   Else errrpt('Tableau non trouv√©: ' + array_name);
+   Else errrpt('Tableau non trouvÇ: ' + array_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien un tableau }
+  { VÇrifier que c'est bien un tableau }
  If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
  Begin
   Case Language of
@@ -6049,26 +5987,21 @@ Begin
   End;
   Exit;
  End;
-
- safe_writeln('; Assignation √† √©l√©ment de tableau ' + array_name);
-
- { Analyser l'expression d'index (le '[' a d√©j√† √©t√© consomm√©) }
+ safe_writeln('; Assignation Ö ÇlÇment de tableau ' + array_name);
+  { Analyser l'expression d'index (le '[' a dÇjÖ ÇtÇ consommÇ) }
  additive_expression(index_lval);
-
- { Consommer ']' }
- If not match(']') Then
- Begin
+  { Consommer ']' }
+ If not match(']') Then Begin
   Case Language of
    _English: errrpt('Expected ] after array index');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
    {$ENDIF}
-   Else errrpt('] attendu apr√®s l''index du tableau');
+   Else errrpt('] attendu apräs l''index du tableau');
   End;
   Exit;
  End;
-
- { Consommer '=' }
+  { Consommer '=' }
  If not match('=') Then
  Begin
   Case Language of
@@ -6080,27 +6013,20 @@ Begin
   End;
   Exit;
  End;
-
- { Sauvegarder l'index sur la pile }
+  { Sauvegarder l'index sur la pile }
  ol('pshs d      ; sauvegarder index sur pile');
-
- { Analyser l'expression du c√¥t√© droit }
+  { Analyser l'expression du cìtÇ droit }
  expression(right_lval);
-
- { Sauvegarder la valeur √† assigner }
- ol('pshs d      ; sauvegarder valeur √† assigner');
-
- { R√©cup√©rer l'index }
- ol('puls x      ; r√©cup√©rer valeur dans X');
- ol('puls d      ; r√©cup√©rer index dans D');
-
- { Calculer la taille d'un √©l√©ment }
+  { Sauvegarder la valeur Ö assigner }
+ ol('pshs d      ; sauvegarder valeur Ö assigner');
+  { RÇcupÇrer l'index }
+ ol('puls x      ; rÇcupÇrer valeur dans X');
+ ol('puls d      ; rÇcupÇrer index dans D');
+  { Calculer la taille d'un ÇlÇment }
  element_size := get_type_size(array_symbol^.type_info.base_type);
-
- { Si la taille d'√©l√©ment n'est pas 1, multiplier l'index }
- If element_size > 1 Then
- Begin
-  safe_writeln('; Multiplier index par taille √©l√©ment');
+  { Si la taille d'ÇlÇment n'est pas 1, multiplier l'index }
+ If element_size > 1 Then Begin
+  safe_writeln('; Multiplier index par taille ÇlÇment');
   Case element_size of
    2: ol('lsld    ; multiplier par 2');
    4: Begin
@@ -6114,7 +6040,7 @@ Begin
       End;
   Else
    Begin
-    { Multiplication g√©n√©rale }
+    { Multiplication gÇnÇrale }
     ot('ldb  #');
     outdec(element_size);
     nl;
@@ -6122,23 +6048,20 @@ Begin
    End;
   End;
  End;
-
- { Ajouter l'adresse de base du tableau }
+  { Ajouter l'adresse de base du tableau }
  ot('addd #');
  outstr(array_name);
  nl;
-
- { Stocker la valeur √† l'adresse calcul√©e }
+ { Entreposer la valeur √† l'adresse calcul√©e }
  ol('tfr  d,y    ; adresse dans Y');
- ol('tfr  x,d    ; r√©cup√©rer valeur dans D');
+ ol('tfr  x,d    ; rÇcupÇrer valeur dans D');
  Case element_size of
-  1: ol('stb  ,y     ; stocker octet');
-  2: ol('std  ,y     ; stocker mot');
+  1: ol('stb  ,y     ; entreposer octet');
+  2: ol('std  ,y     ; entreposer mot');
  Else
-  ol('std  ,y     ; stocker mot par d√©faut');
+  ol('std  ,y     ; entreposer mot par dÇfaut');
  End;
-
- safe_writeln('; Assignation √† ' + array_name + '[] termin√©e');
+ safe_writeln('; Assignation Ö ' + array_name + '[] terminÇe');
 End;
 
 { Assignment statement parser }
@@ -6150,28 +6073,23 @@ Var
 Begin
  parse_assignment_statement := False;
  save_lptr := lptr;
-
- { Try to parse identifier }
+  { Essai Ö analyser l'identificateur }
  If symname(var_name) Then
  Begin
   blanks;
-
-  { Check if this is an array access }
-  If match('[') Then
-  Begin
+  { VÇrifie si c'est un accäs au tableau }
+  If match('[') Then Begin
    { Array element assignment: array[index] = value }
    parse_array_assignment(var_name);
    parse_assignment_statement := True;
   End
-  Else If match('=') Then
-  Begin
-   { This is a simple variable assignment }
+   Else
+  If match('=') Then Begin
+   { C'est une simple affectation Ö une variable }
    blanks;
-
-   { Look up variable }
-   If lookup_variable(var_name, lval) Then
-   Begin
-    { Check if variable is const }
+    { VÇrifier la variable }
+   If lookup_variable(var_name, lval) Then Begin
+    { VÇrifie si la variable est const }
     If lval.type_info.is_const Then
     Begin
      Case Language of
@@ -6179,45 +6097,38 @@ Begin
       {$IFDEF FPC}
       _Germany: errrpt('Kann const Variable nicht zuweisen: ' + var_name);
       {$ENDIF}
-      Else errrpt('Impossible d''assigner √† la variable const: ' + var_name);
+      Else errrpt('Impossible d''assigner Ö la variable const: ' + var_name);
      End;
      Exit;
     End;
-
-    { Parse right side expression }
+     { Analyse l'expression du cìtÇ droite }
     expression(right_lval);
-
-    { Generate assignment code }
+     { GenÇre le code d'affectation }
     ot('std  ');
     outstr(var_name);
     nl;
-
-    safe_writeln('; Assignment to variable: ' + var_name);
+    safe_writeln('; Affectation Ö une variable : ' + var_name);
     parse_assignment_statement := True;
    End;
   End
   Else
   Begin
-   { Not an assignment, restore position }
+   { Ce n'est pas une affectation, restorons la position }
    lptr := save_lptr;
   End;
  End;
 End;
 
-{ Main statement parser }
-Function parse_statement: Boolean;
-Begin
+{ Analyseur d'instructions du main }
+Function parse_statement:Boolean;Begin
  parse_statement := False;
-
- { Skip empty lines and comments }
+  { Saute les lignes vides et les commentaires }
  blanks;
- If Length(line) = 0 Then
- Begin
+ If Length(line) = 0 Then Begin
   parse_statement := True;
   Exit;
  End;
-
- { Try different statement types }
+  { Essai diffÇrent types d'instructions }
  If parse_label_statement Then
   parse_statement := True
  Else If parse_case_statement Then
@@ -6254,25 +6165,20 @@ Begin
   parse_statement := True;
 End;
 
-Procedure header;
-Begin
- If use_stdout Then
-  WriteLn('; ', VERSION)
- Else
-  safe_writeln('; ' + VERSION);
+Procedure header;Begin
+ If use_stdout Then WriteLn('; ', VERSION)
+               Else safe_writeln('; ' + VERSION);
 End;
 
 Procedure trailer;Begin
- { Apply optimizations if enabled }
+ { Applique les optimisations si activÇ }
  If optimize > OPT_NONE Then
  Begin
   optimize_code;
   output_optimized_instructions;
-  free_opt_instructions; { Lib√©rer la m√©moire des instructions d'optimisation }
+  free_opt_instructions; { LibÇrer la mÇmoire des instructions d'optimisation }
  End;
-
- If use_stdout Then
- Begin
+ If use_stdout Then Begin
   If asmtype = AS6809 Then WriteLn(';    .end')
                       Else WriteLn('  END');
  End
@@ -6289,10 +6195,10 @@ End;
 
 Procedure errrptsummary;Begin
  WriteLn;
- WriteLn(errcnt, ' error(s) in compilation.');
+ WriteLn(errcnt, ' erreur(s) dans la compilation.');
 End;
 
-{ Enhanced parsing with variable declarations, control structures and expression parser }
+ { Analyse syntaxique amÇliorÇe avec dÇclarations de variables, structures de contrìle et analyseur d'expressions }
 Procedure parse;
 Var
  lval: TLVal;

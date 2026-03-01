@@ -62,6 +62,11 @@ Const
  SYM_MULTIPLY = 32;   { * }
  SYM_DIVIDE = 33;     { / }
 
+ { Opérateurs logiques }
+ SYM_AND = 34;        { AND }
+ SYM_OR = 35;         { OR }
+ SYM_XOR = 36;        { XOR }
+
  { Types de données Pascal }
  TYPE_INTEGER = 1;
  TYPE_BYTE = 2;
@@ -75,6 +80,7 @@ Const
  STORAGE_GLOBAL = 1;
  STORAGE_LOCAL = 2;
  STORAGE_PARAMETER = 3;
+ STORAGE_FUNCTION_RESULT = 4;
 
 Type
  { Structure pour les symboles }
@@ -86,6 +92,8 @@ Type
   offset: Integer;
   value: Integer;
   defined: Boolean;
+  return_type: Integer;      { Type de retour pour les fonctions }
+  is_function: Boolean;      { Indicateur fonction vs procédure }
  End;
  
  { Pointeur vers un symbole }
@@ -134,6 +142,11 @@ Var
  { Noms des fichiers }
  source_filename: String;
  output_filename: String;
+
+ { Variables pour les fonctions }
+ current_function_name: String;
+ current_function_type: Integer;
+ in_function: Boolean;
 
 { ============================================================================ }
 { FONCTIONS UTILITAIRES                                                        }
@@ -279,6 +292,9 @@ Begin
  Else If current_token = 'WRITELN' Then current_symbol := SYM_WRITELN
  Else If current_token = 'READ' Then current_symbol := SYM_READ
  Else If current_token = 'READLN' Then current_symbol := SYM_READLN
+ Else If current_token = 'AND' Then current_symbol := SYM_AND
+ Else If current_token = 'OR' Then current_symbol := SYM_OR
+ Else If current_token = 'XOR' Then current_symbol := SYM_XOR
  Else current_symbol := SYM_UNKNOWN;
 End;
 
@@ -480,9 +496,42 @@ Begin
   offset := 0;
   value := 0;
   defined := False;
+  return_type := TYPE_INTEGER;  { Par défaut }
+  is_function := False;
  End;
 
  AddSymbol := symbol_count;
+End;
+
+{ Ajouter une fonction à la table des symboles }
+Function AddFunction(name: String; return_type: Integer): Integer;
+Var
+ upper_name: String;
+Begin
+ If symbol_count >= MAX_SYMBOLS Then
+ Begin
+  Error('Table des symboles pleine');
+  AddFunction := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(name);
+ Inc(symbol_count);
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
+ Begin
+  name := upper_name;
+  symbol_type := SYM_FUNCTION;
+  data_type := return_type;
+  storage_class := STORAGE_GLOBAL;
+  offset := 0;
+  value := 0;
+  defined := True;
+  return_type := return_type;
+  is_function := True;
+ End;
+
+ AddFunction := symbol_count;
 End;
 
 { ============================================================================ }
@@ -720,30 +769,63 @@ Begin
    sym_index := FindSymbol(temp_token);
    If sym_index > 0 Then
    Begin
-    Case symbol_table[sym_index]^.data_type of
-     TYPE_INTEGER, TYPE_WORD: 
+    { Vérifier si c'est un appel de fonction }
+    If symbol_table[sym_index]^.is_function Then
+    Begin
+     { Appel de fonction }
+     EmitComment('Appel fonction: ' + temp_token);
+     NextToken; { Consommer le nom de la fonction }
+     
+     { Gérer les paramètres (pour l'instant, on ignore) }
+     If current_token = '(' Then
+     Begin
+      NextToken;
+      While (current_token <> ')') and (current_char <> #0) do
+       NextToken;
+      If current_token = ')' Then
+       NextToken;
+     End;
+     
+     { Générer l'appel }
+     Emit('call ' + symbol_table[sym_index]^.name);
+     
+     { Le résultat est dans AX ou AL selon le type de retour }
+     Case symbol_table[sym_index]^.return_type of
+      TYPE_INTEGER, TYPE_WORD: left_operand := 'ax';
+      TYPE_BYTE, TYPE_CHAR: left_operand := 'al';
+     Else
+      left_operand := 'ax';
+     End;
+    End
+    Else
+    Begin
+     { Variable normale }
+     Case symbol_table[sym_index]^.data_type of
+      TYPE_INTEGER, TYPE_WORD: 
+       Begin
+        Emit('mov ax, ' + symbol_table[sym_index]^.name);
+        left_operand := 'ax';
+       End;
+      TYPE_BYTE, TYPE_CHAR: 
+       Begin
+        Emit('mov al, ' + symbol_table[sym_index]^.name);
+        left_operand := 'al';
+       End;
+     Else
       Begin
        Emit('mov ax, ' + symbol_table[sym_index]^.name);
        left_operand := 'ax';
       End;
-     TYPE_BYTE, TYPE_CHAR: 
-      Begin
-       Emit('mov al, ' + symbol_table[sym_index]^.name);
-       left_operand := 'al';
-      End;
-    Else
-     Begin
-      Emit('mov ax, ' + symbol_table[sym_index]^.name);
-      left_operand := 'ax';
      End;
+     NextToken;
     End;
    End
    Else
    Begin
     Error('Variable non déclarée: ' + temp_token);
     left_operand := 'ax';
+    NextToken;
    End;
-   NextToken;
   End
   Else
   Begin
@@ -757,12 +839,13 @@ Begin
   left_operand := 'ax';
  End;
  
- { Vérifier s'il y a une opération arithmétique avant la comparaison }
+ { Vérifier s'il y a une opération arithmétique ou logique avant la comparaison }
  If (current_symbol = SYM_PLUS) or (current_symbol = SYM_MINUS) or
-    (current_symbol = SYM_MULTIPLY) or (current_symbol = SYM_DIVIDE) Then
+    (current_symbol = SYM_MULTIPLY) or (current_symbol = SYM_DIVIDE) or
+    (current_symbol = SYM_AND) or (current_symbol = SYM_OR) or (current_symbol = SYM_XOR) Then
  Begin
   comparison_op := current_symbol;
-  NextToken; { Consommer l'opérateur arithmétique }
+  NextToken; { Consommer l'opérateur }
   
   { Parser le deuxième opérande }
   If current_symbol = SYM_UNKNOWN Then
@@ -772,7 +855,7 @@ Begin
    { Nombre littéral }
    If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
    Begin
-    { Générer l'opération arithmétique }
+    { Générer l'opération }
     Case comparison_op of
      SYM_PLUS: 
       Begin
@@ -814,7 +897,102 @@ Begin
         Emit('div bl');
        End;
       End;
+     SYM_AND:
+      Begin
+       If left_operand = 'ax' Then
+        Emit('and ax, ' + temp_token)
+       Else
+        Emit('and al, ' + temp_token);
+      End;
+     SYM_OR:
+      Begin
+       If left_operand = 'ax' Then
+        Emit('or ax, ' + temp_token)
+       Else
+        Emit('or al, ' + temp_token);
+      End;
+     SYM_XOR:
+      Begin
+       If left_operand = 'ax' Then
+        Emit('xor ax, ' + temp_token)
+       Else
+        Emit('xor al, ' + temp_token);
+      End;
     End;
+    NextToken;
+   End
+   Else If temp_token <> '' Then
+   Begin
+    { Variable - chercher dans la table des symboles }
+    sym_index := FindSymbol(temp_token);
+    If sym_index > 0 Then
+    Begin
+     Case comparison_op of
+      SYM_PLUS:
+       Begin
+        If left_operand = 'ax' Then
+         Emit('add ax, ' + symbol_table[sym_index]^.name)
+        Else
+         Emit('add al, ' + symbol_table[sym_index]^.name);
+       End;
+      SYM_MINUS:
+       Begin
+        If left_operand = 'ax' Then
+         Emit('sub ax, ' + symbol_table[sym_index]^.name)
+        Else
+         Emit('sub al, ' + symbol_table[sym_index]^.name);
+       End;
+      SYM_MULTIPLY:
+       Begin
+        If left_operand = 'ax' Then
+        Begin
+         Emit('mov bx, ' + symbol_table[sym_index]^.name);
+         Emit('mul bx');
+        End
+        Else
+        Begin
+         Emit('mov bl, ' + symbol_table[sym_index]^.name);
+         Emit('mul bl');
+        End;
+       End;
+      SYM_DIVIDE:
+       Begin
+        If left_operand = 'ax' Then
+        Begin
+         Emit('mov bx, ' + symbol_table[sym_index]^.name);
+         Emit('div bx');
+        End
+        Else
+        Begin
+         Emit('mov bl, ' + symbol_table[sym_index]^.name);
+         Emit('div bl');
+        End;
+       End;
+      SYM_AND:
+       Begin
+        If left_operand = 'ax' Then
+         Emit('and ax, ' + symbol_table[sym_index]^.name)
+        Else
+         Emit('and al, ' + symbol_table[sym_index]^.name);
+       End;
+      SYM_OR:
+       Begin
+        If left_operand = 'ax' Then
+         Emit('or ax, ' + symbol_table[sym_index]^.name)
+        Else
+         Emit('or al, ' + symbol_table[sym_index]^.name);
+       End;
+      SYM_XOR:
+       Begin
+        If left_operand = 'ax' Then
+         Emit('xor ax, ' + symbol_table[sym_index]^.name)
+        Else
+         Emit('xor al, ' + symbol_table[sym_index]^.name);
+       End;
+     End;
+    End
+    Else
+     Error('Variable non déclarée: ' + temp_token);
     NextToken;
    End;
    
@@ -960,12 +1138,35 @@ Begin
   NextToken; { Consommer := }
   ParseExpression;
 
-  { Générer le code d'affectation }
-  Case symbol_table[sym_index]^.data_type of
-   TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
-   TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
+  { Vérifier si c'est une affectation au résultat d'une fonction }
+  If symbol_table[sym_index]^.is_function and (symbol_table[sym_index]^.name = current_function_name) Then
+  Begin
+   { Affectation au résultat de la fonction }
+   EmitComment('Affectation résultat fonction: ' + var_name);
+   Case symbol_table[sym_index]^.return_type of
+    TYPE_INTEGER, TYPE_WORD: 
+     Begin
+      Emit('mov [bp-2], ax');  { Stocker le résultat dans l'espace local }
+     End;
+    TYPE_BYTE, TYPE_CHAR: 
+     Begin
+      Emit('mov [bp-2], al');
+     End;
+   Else
+    Begin
+     Emit('mov [bp-2], ax');
+    End;
+   End;
+  End
   Else
-   Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+  Begin
+   { Générer le code d'affectation normal }
+   Case symbol_table[sym_index]^.data_type of
+    TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+    TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
+   Else
+    Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
+   End;
   End;
  End
  Else
@@ -1529,12 +1730,127 @@ Begin
  End;
 End;
 
+{ Parser une déclaration de fonction }
+Procedure ParseFunctionDeclaration;
+Var
+ func_name: String;
+ return_type: Integer;
+ type_name: String;
+ sym_index: Integer;
+ begin_count: Integer;
+Begin
+ NextToken; { Consommer FUNCTION }
+
+ { Lire le nom de la fonction }
+ If current_symbol = SYM_UNKNOWN Then
+ Begin
+  func_name := current_token;
+  NextToken;
+ End
+ Else
+ Begin
+  Error('Attendu nom de fonction');
+  Exit;
+ End;
+
+ { Ignorer les paramètres pour l'instant }
+ If current_token = '(' Then
+ Begin
+  NextToken;
+  While (current_token <> ')') and (current_char <> #0) do
+   NextToken;
+  If current_token = ')' Then
+   NextToken;
+ End;
+
+ { Attendre le deux-points pour le type de retour }
+ If current_token = ':' Then
+  NextToken
+ Else
+  Error('Attendu : après nom de fonction');
+
+ { Lire le type de retour }
+ If current_symbol = SYM_UNKNOWN Then
+ Begin
+  type_name := UpperCase(current_token);
+  If type_name = 'INTEGER' Then return_type := TYPE_INTEGER
+  Else If type_name = 'BYTE' Then return_type := TYPE_BYTE  
+  Else If type_name = 'WORD' Then return_type := TYPE_WORD
+  Else If type_name = 'STRING' Then return_type := TYPE_STRING
+  Else If type_name = 'CHAR' Then return_type := TYPE_CHAR
+  Else If type_name = 'BOOLEAN' Then return_type := TYPE_BOOLEAN
+  Else
+  Begin
+   Error('Type de retour inconnu: ' + type_name);
+   return_type := TYPE_INTEGER;
+  End;
+  NextToken;
+ End
+ Else
+ Begin
+  Error('Attendu type de retour');
+  return_type := TYPE_INTEGER;
+ End;
+
+ { Attendre le point-virgule }
+ If current_token = ';' Then
+  NextToken
+ Else
+  Error('Attendu ; après déclaration de fonction');
+
+ { Ajouter la fonction à la table des symboles }
+ sym_index := AddFunction(func_name, return_type);
+ 
+ { Configurer l'état pour la fonction }
+ current_function_name := UpperCase(func_name);
+ current_function_type := return_type;
+ in_function := True;
+
+ { Ignorer toute déclaration VAR locale }
+ While Accept(SYM_VAR) do
+ Begin
+  NextToken; { Consommer VAR }
+  { Ignorer jusqu'au prochain BEGIN }
+  While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
+   NextToken;
+ End;
+
+ { Parser le corps de la fonction - pour l'instant on l'ignore mais on compte les BEGIN/END }
+ If Accept(SYM_BEGIN) Then
+ Begin
+  NextToken; { Consommer BEGIN }
+  
+  begin_count := 1;
+  While (begin_count > 0) and (current_char <> #0) do
+  Begin
+   If Accept(SYM_BEGIN) Then
+    Inc(begin_count)
+   Else If Accept(SYM_END) Then
+    Dec(begin_count);
+   
+   NextToken;
+  End;
+ End;
+
+ { Attendre le point-virgule final }
+ If current_token = ';' Then
+  NextToken;
+
+ { Réinitialiser l'état }
+ current_function_name := '';
+ in_function := False;
+End;
+
 { Parser un bloc Pascal }
 Procedure ParseBlock;
 Begin
  { Gérer les déclarations VAR }
  If Accept(SYM_VAR) Then
   ParseVarDeclarations;
+
+ { Gérer les déclarations FUNCTION }
+ While Accept(SYM_FUNCTION) do
+  ParseFunctionDeclaration;
 
  { Gérer le BEGIN principal }
  If Accept(SYM_BEGIN) Then
@@ -1607,6 +1923,9 @@ Begin
  code_segment := False;
  data_segment := False;
  stack_offset := 0;
+ current_function_name := '';
+ current_function_type := TYPE_INTEGER;
+ in_function := False;
 End;
 
 { Libérer la mémoire allouée }
