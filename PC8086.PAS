@@ -47,25 +47,26 @@ Const
  SYM_WRITELN = 21;
  SYM_READ = 22;
  SYM_READLN = 23;
+ SYM_INTERRUPT = 24;
 
  { Opérateurs de comparaison }
- SYM_EQUAL = 24;      { = }
- SYM_NOTEQUAL = 25;   { <> }
- SYM_LESS = 26;       { < }
- SYM_GREATER = 27;    { > }
- SYM_LESSEQ = 28;     { <= }
- SYM_GREATEREQ = 29;  { >= }
+ SYM_EQUAL = 25;      { = }
+ SYM_NOTEQUAL = 26;   { <> }
+ SYM_LESS = 27;       { < }
+ SYM_GREATER = 28;    { > }
+ SYM_LESSEQ = 29;     { <= }
+ SYM_GREATEREQ = 30;  { >= }
 
  { Opérateurs arithmétiques }
- SYM_PLUS = 30;       { + }
- SYM_MINUS = 31;      { - }
- SYM_MULTIPLY = 32;   { * }
- SYM_DIVIDE = 33;     { / }
+ SYM_PLUS = 31;       { + }
+ SYM_MINUS = 32;      { - }
+ SYM_MULTIPLY = 33;   { * }
+ SYM_DIVIDE = 34;     { / }
 
  { Opérateurs logiques }
- SYM_AND = 34;        { AND }
- SYM_OR = 35;         { OR }
- SYM_XOR = 36;        { XOR }
+ SYM_AND = 35;        { AND }
+ SYM_OR = 36;         { OR }
+ SYM_XOR = 37;        { XOR }
 
  { Types de données Pascal }
  TYPE_INTEGER = 1;
@@ -565,6 +566,37 @@ Begin
  AddProcedure := symbol_count;
 End;
 
+{ Ajouter une procédure d'interruption à la table des symboles }
+Function AddInterrupt(name: String): Integer;
+Var
+ upper_name: String;
+Begin
+ If symbol_count >= MAX_SYMBOLS Then
+ Begin
+  Error('Table des symboles pleine');
+  AddInterrupt := 0;
+  Exit;
+ End;
+
+ upper_name := UpperCase(name);
+ Inc(symbol_count);
+ New(symbol_table[symbol_count]);
+ With symbol_table[symbol_count]^ do
+ Begin
+  name := upper_name;
+  symbol_type := SYM_INTERRUPT;
+  data_type := TYPE_INTEGER; { Pas utilisé pour les interruptions }
+  storage_class := STORAGE_GLOBAL;
+  offset := 0;
+  value := 0;
+  defined := True;
+  return_type := TYPE_INTEGER; { Pas utilisé }
+  is_function := False; { Procédure d'interruption, pas fonction }
+ End;
+
+ AddInterrupt := symbol_count;
+End;
+
 { ============================================================================ }
 { GÉNÉRATION DE CODE ASSEMBLEUR 8086                                          }
 { ============================================================================ }
@@ -846,6 +878,27 @@ Begin
      End;
      
      { Générer l'appel - les procédures ne retournent pas de valeur }
+     Emit('call ' + symbol_table[sym_index]^.name);
+     left_operand := 'ax'; { Valeur par défaut }
+    End
+    { Vérifier si c'est un appel d'interruption }
+    Else If symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT Then
+    Begin
+     { Appel d'interruption }
+     EmitComment('Appel interruption: ' + temp_token);
+     NextToken; { Consommer le nom de l'interruption }
+     
+     { Gérer les paramètres (pour l'instant, on ignore) }
+     If current_token = '(' Then
+     Begin
+      NextToken;
+      While (current_token <> ')') and (current_char <> #0) do
+       NextToken;
+      If current_token = ')' Then
+       NextToken;
+     End;
+     
+     { Générer l'appel - les interruptions ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
      left_operand := 'ax'; { Valeur par défaut }
     End
@@ -1662,6 +1715,25 @@ Begin
        { Générer l'appel }
        Emit('call ' + symbol_table[sym_idx]^.name);
       End
+      Else If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_INTERRUPT) Then
+      Begin
+       { Appel d'interruption }
+       EmitComment('Appel interruption: ' + current_token);
+       NextToken; { Consommer le nom de l'interruption }
+       
+       { Gérer les paramètres (pour l'instant, on ignore) }
+       If current_token = '(' Then
+       Begin
+        NextToken;
+        While (current_token <> ')') and (current_char <> #0) do
+         NextToken;
+        If current_token = ')' Then
+         NextToken;
+       End;
+       
+       { Générer l'appel }
+       Emit('call ' + symbol_table[sym_idx]^.name);
+      End
       Else If sym_idx > 0 Then
       Begin
        ParseAssignment(current_token); { ParseAssignment gérera NextToken }
@@ -1715,6 +1787,25 @@ Begin
       { Appel de procédure }
       EmitComment('Appel procédure: ' + current_token);
       NextToken; { Consommer le nom de la procédure }
+      
+      { Gérer les paramètres (pour l'instant, on ignore) }
+      If current_token = '(' Then
+      Begin
+       NextToken;
+       While (current_token <> ')') and (current_char <> #0) do
+        NextToken;
+       If current_token = ')' Then
+        NextToken;
+      End;
+      
+      { Générer l'appel }
+      Emit('call ' + symbol_table[sym_idx]^.name);
+     End
+     Else If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_INTERRUPT) Then
+     Begin
+      { Appel d'interruption }
+      EmitComment('Appel interruption: ' + current_token);
+      NextToken; { Consommer le nom de l'interruption }
       
       { Gérer les paramètres (pour l'instant, on ignore) }
       If current_token = '(' Then
@@ -1942,8 +2033,10 @@ Var
  proc_name: String;
  sym_index: Integer;
  begin_count: Integer;
+ is_interrupt: Boolean;
 Begin
  NextToken; { Consommer PROCEDURE }
+ is_interrupt := False;
 
  { Lire le nom de la procédure }
  If current_symbol = SYM_UNKNOWN Then
@@ -1967,6 +2060,13 @@ Begin
    NextToken;
  End;
 
+ { Vérifier si c'est une procédure d'interruption }
+ If UpperCase(current_token) = 'INTERRUPT' Then
+ Begin
+  is_interrupt := True;
+  NextToken; { Consommer INTERRUPT }
+ End;
+
  { Attendre le point-virgule }
  If current_token = ';' Then
   NextToken
@@ -1974,7 +2074,10 @@ Begin
   Error('Attendu ; après déclaration de procédure');
 
  { Ajouter la procédure à la table des symboles }
- sym_index := AddProcedure(proc_name);
+ If is_interrupt Then
+  sym_index := AddInterrupt(proc_name)
+ Else
+  sym_index := AddProcedure(proc_name);
  
  { Configurer l'état pour la procédure }
  current_function_name := UpperCase(proc_name);
@@ -2027,7 +2130,7 @@ Begin
  While Accept(SYM_FUNCTION) do
   ParseFunctionDeclaration;
 
- { Gérer les déclarations PROCEDURE }
+ { Gérer les déclarations PROCEDURE (y compris INTERRUPT) }
  While Accept(SYM_PROCEDURE) do
   ParseProcedureDeclaration;
 

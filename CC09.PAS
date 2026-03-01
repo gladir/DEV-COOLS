@@ -5527,30 +5527,27 @@ Begin
  End
  Else
  Begin
-  { No condition = infinite loop }
+  { Pas de condition = boucle infinie }
   ot('ldd  #1');
   nl;
  End;
- lptr := saved_lptr;  { Restore position }
- gch;  { Refresh current character }
-
- { Generate conditional jump to end if false }
+ lptr := saved_lptr;  { Restaure la position }
+ gch;  { Rafraichis le caractäre courant }
+  { GÇnäre la condition de saut Ö la fin si false }
  ol('tstd');
  ot('lbeq ');
  printlabel(end_label);
  nl;
-
- { Parse loop body }
- safe_writeln('; FOR body');
+  { Analyse la boucle du corps }
+ safe_writeln('; corps du FOR ');
  parse_statement;
-
- { Jump to increment }
+ { Saute Ö l'incrÇmentation }
  ot('lbra ');
  printlabel(increment_label);
  nl;
- { End label - where break jumps to }
+ { Fin de l'Çtiquette - oó le break faut son saut Ö }
  prelabel(end_label);
- safe_writeln('; End FOR');
+ safe_writeln('; Fin FOR');
   { Contexte de boucle Pop }
  pop_loop_context;
 End;
