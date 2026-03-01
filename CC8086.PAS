@@ -3208,61 +3208,55 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Variable ' + var_name + ' bereits deklariert');
    {$ENDIF}
-   Else errrpt('Variable ' + var_name + ' d√©j√† d√©clar√©e');
+   Else errrpt('Variable ' + var_name + ' dÇjÖ dÇclarÇe');
   End;
   Exit;
  End;
-
- { Ajouter √† la table de symboles bas√©e sur le tas }
+  { Ajouter Ö la table de symboles basÇe sur la mÇmoire de tas }
  If type_info.array_size > 0 Then
   sym_ptr := add_symbol(var_name, it_array, var_type, storage_class, 0)
  Else
   sym_ptr := add_symbol(var_name, it_variable, var_type, storage_class, 0);
- If sym_ptr <> nil Then
- Begin
-  { Stocker les informations de type directement dans le symbole }
+ If sym_ptr <> nil Then Begin
+  { Entreposer les informations de type directement dans le symbole }
   sym_ptr^.type_info := type_info;
-
-  If use_stdout Then WriteLn('; Variable d√©clar√©e: ', var_name, ' (', get_type_name(type_info), ')')
-                Else safe_writeln('; Variable d√©clar√©e: ' + var_name);
-
-  { G√©n√©rer l'allocation de stockage bas√©e sur la classe de stockage }
+  If use_stdout Then WriteLn('; Variable dÇclarÇe: ', var_name, ' (', get_type_name(type_info), ')')
+                Else safe_writeln('; Variable dÇclarÇe: ' + var_name);
+   { GÇnÇrer l'allocation de stockage bas√©e sur la classe d'entreposage }
   Case storage_class of
    CEXTERNAL:
    Begin
-    { Variable externe - ne pas g√©n√©rer d'allocation, juste r√©f√©rencer }
-    safe_writeln('; Variable externe: ' + var_name + ' (d√©finie ailleurs)');
+    { Variable externe - ne pas gÇnÇrer d'allocation, juste rÇfÇrencer }
+    safe_writeln('; Variable externe: ' + var_name + ' (dÇfinie ailleurs)');
    End;
    statik:
    Begin
-    { Variable statique - g√©n√©rer allocation dans section donn√©es }
+    { Variable statique - gÇnÇrer allocation dans section donnÇes }
     If use_stdout Then Write(var_name)
                   Else outstr(var_name);
     type_size := type_info.size;
-    If type_size = 1 Then
-    Begin
+    If type_size = 1 Then Begin
      If use_stdout Then WriteLn(': rmb 1')
                    Else safe_writeln(': rmb 1');
     End
-    Else
+     Else
     Begin
      If use_stdout Then WriteLn(': rmb ', type_size)
                    Else safe_writeln(': rmb (taille)');
     End;
     safe_writeln('; Variable statique: ' + var_name);
    End;
-   Else
+    Else
    Begin
-    { Variable automatique - allocation normale }
+     { Variable automatique - allocation normale }
     If use_stdout Then Write(var_name)
                   Else outstr(var_name);
     type_size := type_info.size;
-    If type_size = 1 Then
-    Begin
+    If type_size = 1 Then Begin
      If use_stdout Then WriteLn(': rmb 1')
                    Else safe_writeln(': rmb 1');
     End
-    Else
+     Else
     Begin
      If use_stdout Then WriteLn(': rmb ', type_size)
                    Else safe_writeln(': rmb (taille)');
@@ -3274,50 +3268,43 @@ Begin
  End;
 End;
 
-{ Recherche d'identificateur am√©lior√©e avec table de symboles bas√©e sur le tas }
+ { Recherche d'identificateur amÇliorÇe avec table de symboles basÇe sur la mÇmoire de tas }
 Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
 Var
  sym_ptr: PSymbol;
 Begin
  lookup_variable := False;
  FillChar(lval, SizeOf(lval), 0);
-
- { TEMPORAIRE: Simuler la recherche d'une variable const pour test }
- If var_name = 'consttest' Then
- Begin
+  { TEMPORAIRE: Simuler la recherche d'une variable const pour test }
+ If var_name = 'consttest' Then Begin
   lookup_variable := True;
   lval.symbol := 1;
   lval.typ := cint;
   lval.storage := automatic;
   lval.indirect := 0;
   lval.constant := False;
-
-  { Initialiser les infos de type comme const }
+   { Initialiser les infos de type comme const }
   init_type_info(lval.type_info);
   lval.type_info.base_type := cint;
   lval.type_info.is_const := True;  { Rendre const pour test }
   Exit;
  End;
-
  sym_ptr := find_symbol(var_name);
-
- If sym_ptr <> nil Then
- Begin
+ If sym_ptr <> nil Then Begin
   lookup_variable := True;
   lval.symbol := Integer(sym_ptr); { Stocker le pointeur comme entier pour compatibilit√© }
   lval.typ := sym_ptr^.ctype;
   lval.storage := sym_ptr^.storage;
   lval.indirect := 0;
   lval.constant := False;
-
-  { Les informations de type sont stock√©es directement dans le symbole }
+   { Les informations de type sont stock√©es directement dans le symbole }
   lval.type_info := sym_ptr^.type_info;
  End
- Else
+  Else
  Begin
   { Variable non trouv√©e - traiter comme nouvelle variable pour l'instant }
-  If use_stdout Then WriteLn('; Attention: Variable non d√©clar√©e ', var_name)
-                Else safe_writeln('; Attention: Variable non d√©clar√©e ' + var_name);
+  If use_stdout Then WriteLn('; Attention: Variable non dÇclarÇe ', var_name)
+                Else safe_writeln('; Attention: Variable non dÇclarÇe ' + var_name);
   lval.symbol := 0;
   lval.typ := cint;
   lval.constant := False;
@@ -3327,16 +3314,12 @@ Begin
  End;
 End;
 
-Function pop_include_file: Boolean;
-Begin
+Function pop_include_file: Boolean;Begin
  pop_include_file := False;
-
  If include_depth <= 0 Then Exit;
-
- { DÔøΩsactiver le marquage du fichier actuel comme n'ÔøΩtant plus en cours de traitement }
- { unmark_file_included(current_filename); } { Commented out for now }
-
- { Fermer le fichier d'inclusion actuel en toute s√©curit√© }
+  { DÇsactiver le marquage du fichier actuel comme n'Çtant plus en cours de traitement }
+  { unmark_file_included(current_filename); } { Commented out for now }
+  { Fermer le fichier d'inclusion actuel en toute sÇcuritÇ }
  {$I-}
  System.Close(input);
  {$I+}

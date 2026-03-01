@@ -292,6 +292,145 @@ Const
  SYM_SPECIAL_NAMES  = 298; { SPECIAL-NAMES }
  SYM_REPOSITORY     = 299; { REPOSITORY }
 
+ { ---------------------------------------------------------------- }
+ { Table des symboles : limites                                      }
+ { ---------------------------------------------------------------- }
+ MAX_DATA_ITEMS  = 2000; { Nombre max d'articles de donnees (01..77..88) }
+ MAX_PARAGRAPHS  = 500;  { Nombre max de paragraphes/sections PROCEDURE   }
+ MAX_FILES       = 50;   { Nombre max de fichiers declares en FILE SECTION }
+ MAX_ITEM_NAME   = 30;   { Longueur max d'un nom COBOL (norme : 30)        }
+ MAX_PIC_STR     = 50;   { Longueur max d'une chaine PIC brute             }
+ MAX_VALUE_STR   = 255;  { Longueur max d'un litteral VALUE                }
+
+ { Types de donnees PIC }
+ TYPE_GROUP      = 0;  { Article de groupe (pas de clause PIC)           }
+ TYPE_PIC_9      = 1;  { PIC 9... : numerique non signe                  }
+ TYPE_PIC_S9     = 2;  { PIC S9.. : numerique signe                      }
+ TYPE_PIC_X      = 3;  { PIC X... : alphanumerique                       }
+ TYPE_PIC_A      = 4;  { PIC A... : alphabetique                         }
+ TYPE_PIC_9V9    = 5;  { PIC 9V9. : numerique decimal implicite          }
+ TYPE_PIC_S9V9   = 6;  { PIC S9V9 : numerique decimal signe              }
+ TYPE_COND_88    = 7;  { Niveau 88 : nom de condition                    }
+
+ { Sous-type USAGE (stockage interne) }
+ USAGE_DISPLAY   = 0;  { USAGE DISPLAY (defaut) : 1 octet par chiffre/car }
+ USAGE_COMP      = 1;  { USAGE COMP / COMPUTATIONAL : binaire 16 bits     }
+ USAGE_COMP_3    = 2;  { USAGE COMP-3 / PACKED-DECIMAL : BCD tasse       }
+ USAGE_BINARY    = 3;  { USAGE BINARY : synonyme COMP                    }
+
+ { Sections de DATA DIVISION }
+ SECT_NONE           = 0;
+ SECT_WORKING_STORAGE= 1;
+ SECT_FILE           = 2;
+ SECT_LINKAGE        = 3;
+ SECT_LOCAL_STORAGE  = 4;
+
+ { Valeurs speciales VALUE (litteraux figuratifs) }
+ VALTYPE_NONE     = 0;  { Pas de clause VALUE }
+ VALTYPE_STRING   = 1;  { Litteral chaine }
+ VALTYPE_NUMBER   = 2;  { Litteral numerique }
+ VALTYPE_ZERO     = 3;  { ZERO/ZEROS/ZEROES }
+ VALTYPE_SPACE    = 4;  { SPACE/SPACES }
+ VALTYPE_HIGH     = 5;  { HIGH-VALUE/HIGH-VALUES }
+ VALTYPE_LOW      = 6;  { LOW-VALUE/LOW-VALUES }
+ VALTYPE_QUOTE    = 7;  { QUOTE/QUOTES }
+ VALTYPE_NULL     = 8;  { NULL/NULLS }
+ VALTYPE_TRUE_V   = 9;  { TRUE  (niveau 88) }
+ VALTYPE_FALSE_V  = 10; { FALSE (niveau 88) }
+
+{ ============================================================================ }
+{ TYPES STRUCTURES                                                             }
+{ ============================================================================ }
+
+Type
+
+ {
+   TDataItem : represente un article de donnees COBOL.
+   Chaque entree de la WORKING-STORAGE, FILE, LINKAGE SECTION
+   est decrite par un TDataItem.
+
+   Hierarchie :
+     level    = numero de niveau COBOL (01..49, 66, 77, 88)
+     parent   = index 1-base du parent dans data_table (0 = racine)
+     is_group = True si l'item n'a pas de clause PIC (article de groupe)
+
+   Mise en memoire :
+     offset   = deplacement en octets depuis le debut du segment .DATA
+     byte_size = taille physique en octets de cet item
+               (pour un groupe = somme des feuilles; pour les tableaux * occurs)
+
+   Pour OCCURS :
+     occurs_count > 0  => tableau de occurs_count elements
+     depends_on  = index de la variable DEPENDING ON (0 = taille fixe)
+
+   Pour REDEFINES :
+     redefines_idx = index de l'item redefini (0 = pas de REDEFINES)
+
+   Pour le niveau 88 :
+     data_type = TYPE_COND_88
+     parent    = index de l'item auquel la condition est attachee
+     val_type  = VALTYPE_xxx + val_str/val_num = la valeur de la condition
+     thru_str/thru_num = valeur haute (si VALUE x THRU y)
+ }
+ TDataItem = Record
+  name          : String[MAX_ITEM_NAME]; { Nom de l'article (FILLER si vide) }
+  level         : Integer;              { Niveau COBOL : 01-49, 66, 77, 88   }
+  data_type     : Integer;              { TYPE_xxx   }
+  usage         : Integer;              { USAGE_xxx  }
+  section       : Integer;              { SECT_xxx   }
+  parent        : Integer;              { Index du parent (0 = top-level)     }
+  is_group      : Boolean;              { Pas de PIC : article de groupe      }
+  pic_str       : String[MAX_PIC_STR];  { Chaine PIC brute ex: '9(5)V99'     }
+  pic_digits    : Integer;              { Nombre total de chiffres entiers    }
+  pic_decimals  : Integer;              { Chiffres apres la virgule (V)       }
+  pic_size      : Integer;              { Largeur totale en caracteres/chif.  }
+  is_signed     : Boolean;              { S devant le PIC                     }
+  byte_size     : Integer;              { Octets en memoire (apres USAGE)     }
+  offset        : Integer;             { Offset depuis debut de DATA segment  }
+  occurs_count  : Integer;              { 0 = pas de tableau ; N = N elem.    }
+  depends_on    : Integer;              { Index de la var DEPENDING ON (0=non)}
+  redefines_idx : Integer;              { Index de l'item redefini (0=non)    }
+  has_value     : Boolean;              { Clause VALUE presente               }
+  val_type      : Integer;              { VALTYPE_xxx                         }
+  val_str       : String[MAX_VALUE_STR];{ Valeur litterale chaine             }
+  val_num       : LongInt;              { Valeur litterale numerique          }
+  has_thru      : Boolean;              { VALUE x THRU y (niveau 88)         }
+  thru_str      : String[MAX_VALUE_STR];{ Borne haute THRU (chaine)          }
+  thru_num      : LongInt;              { Borne haute THRU (numerique)       }
+  asm_label     : String[MAX_ITEM_NAME];{ Etiquette ASM generee (ex: WS_NOM) }
+  file_idx      : Integer;              { Index dans file_table (SECT_FILE)  }
+  defined       : Boolean;              { True une fois l'article complet    }
+ End;
+ PDataItem = ^TDataItem;
+
+ {
+   TParagraph : represente un paragraphe ou une section de la PROCEDURE DIVISION.
+   Chaque etiquette cible d'un PERFORM ou GO TO doit etre dans cette table.
+ }
+ TParagraph = Record
+  name         : String[MAX_ITEM_NAME]; { Nom du paragraphe }
+  section_name : String[MAX_ITEM_NAME]; { Section proprietaire (vide = global)}
+  label_id     : Integer;              { Numero unique => etiquette ASM PARA_nnn }
+  defined      : Boolean;              { True si le paragraphe a ete vu      }
+ End;
+ PParagraph = ^TParagraph;
+
+ {
+   TFileEntry : represente un fichier declare dans la FILE-CONTROL
+   (SELECT ... ASSIGN TO ...).
+ }
+ TFileEntry = Record
+  name         : String[MAX_ITEM_NAME]; { Nom logique COBOL (FD name)     }
+  assign_to    : String[MAX_VALUE_STR]; { Nom physique (ASSIGN TO '...')  }
+  organization : Integer;              { 0=SEQUENTIAL, 1=RANDOM, 2=RELATIVE }
+  access_mode  : Integer;              { 0=SEQUENTIAL, 1=RANDOM, 2=DYNAMIC  }
+  file_status  : String[MAX_ITEM_NAME]; { Variable FILE-STATUS (ou vide)  }
+  fd_item_idx  : Integer;              { Premier item de l'FD (01 level)  }
+  handle_label : String[MAX_ITEM_NAME]; { Etiquette ASM du handle DOS      }
+  defined      : Boolean;
+ End;
+ PFileEntry = ^TFileEntry;
+
 { ============================================================================ }
 { VARIABLES GLOBALES DU TOKENISEUR                                             }
 { ============================================================================ }
@@ -320,6 +459,30 @@ Var
  token_column   : Integer;  { Colonne de debut du token dans la ligne source }
  error_count    : Integer;  { Nombre d'erreurs rencontrees }
  eof_reached    : Boolean;  { Vrai quand le fichier est entierement lu }
+
+{ ============================================================================ }
+{ VARIABLES GLOBALES DE LA TABLE DES SYMBOLES                                  }
+{ ============================================================================ }
+
+ { Table des articles de donnees COBOL }
+ data_table     : Array[1..MAX_DATA_ITEMS] of PDataItem;
+ data_count     : Integer;   { Nombre d'articles enregistres }
+ data_offset    : Integer;   { Offset courant dans le segment DATA }
+
+ { Table des paragraphes / sections PROCEDURE DIVISION }
+ para_table     : Array[1..MAX_PARAGRAPHS] of PParagraph;
+ para_count     : Integer;   { Nombre de paragraphes enregistres }
+ next_para_id   : Integer;   { Compteur pour les etiquettes ASM uniques }
+
+ { Table des fichiers (FILE-CONTROL) }
+ file_table     : Array[1..MAX_FILES] of PFileEntry;
+ file_count     : Integer;
+
+ { Nom du programme COBOL (PROGRAM-ID) }
+ program_name   : String;
+
+ { Section DATA DIVISION active lors du parsing }
+ current_section: Integer;  { SECT_xxx }
 
 { ============================================================================ }
 { UTILITAIRES                                                                  }
@@ -1100,6 +1263,389 @@ Begin
  IsIdentifier := current_symbol = TOK_WORD;
 End;
 
+{ ============================================================================ }
+{ GESTION DE LA TABLE DES SYMBOLES                                             }
+{ ============================================================================ }
+
+{ ---- Utilitaires de noms ASM ---- }
+
+{
+  Convertir un nom COBOL en etiquette ASM valide.
+  Regles : majuscules, tirets '-' -> '_', max 30 chars, prefixe de section.
+  Ex: 'WS-NOM-CLIENT' -> 'WS_NOM_CLIENT'
+      'DETAIL-RECORD' (FILE) -> 'FD_DETAIL_RECORD'
+}
+Function CobolNameToAsm(s: String; sect: Integer): String;
+Var
+ i: Integer;
+ r: String;
+Begin
+ r := '';
+ Case sect of
+  SECT_WORKING_STORAGE: r := 'WS_';
+  SECT_FILE:            r := 'FD_';
+  SECT_LINKAGE:         r := 'LK_';
+  SECT_LOCAL_STORAGE:   r := 'LS_';
+ Else r := 'DT_';
+ End;
+ If s = 'FILLER' Then
+ Begin
+  { Les FILLER recoivent un label unique base sur data_count }
+  Str(data_count, s);
+  r := r + 'FILL_' + s;
+  CobolNameToAsm := r;
+  Exit;
+ End;
+ For i := 1 to Length(s) do
+ Begin
+  If s[i] = '-' Then r := r + '_'
+  Else If ((s[i] >= 'A') and (s[i] <= 'Z')) or
+           ((s[i] >= '0') and (s[i] <= '9')) Then r := r + s[i]
+  Else r := r + '_';
+ End;
+ CobolNameToAsm := r;
+End;
+
+{ ---- Calcul de la taille d'un article ---- }
+
+{
+  Calculer la taille en octets d'un item selon son type PIC et son USAGE.
+
+  USAGE DISPLAY (defaut) :
+    PIC 9(n)    -> n octets (1 char par chiffre en zone decimale)
+    PIC 9(n)V9(d) -> n+d octets
+    PIC X(n)    -> n octets
+    PIC A(n)    -> n octets
+  USAGE COMP (BINARY) :
+    1-4  chiffres  -> 2 octets (WORD)
+    5-9  chiffres  -> 4 octets (DWORD) -- simplifie : on garde 2 (16 bits 8086)
+  USAGE COMP-3 (PACKED) :
+    (n+1) div 2 octets
+}
+Function CalcByteSize(dtype, usage, pic_digits, pic_decimals: Integer): Integer;
+Var
+ total_digits: Integer;
+Begin
+ total_digits := pic_digits + pic_decimals;
+ Case usage of
+
+  USAGE_COMP, USAGE_BINARY:
+   Begin
+    { 8086 : on utilise des WORD (2 octets) pour les nombres binaires }
+    If total_digits <= 4 Then CalcByteSize := 2
+    Else CalcByteSize := 4; { DWORD pour > 4 chiffres }
+   End;
+
+  USAGE_COMP_3:
+   { PACKED-DECIMAL : (n+1) div 2 }
+   CalcByteSize := (total_digits + 1) div 2;
+
+ Else { USAGE_DISPLAY }
+  Case dtype of
+   TYPE_PIC_9, TYPE_PIC_S9:       CalcByteSize := pic_digits;
+   TYPE_PIC_9V9, TYPE_PIC_S9V9:   CalcByteSize := total_digits;
+   TYPE_PIC_X, TYPE_PIC_A:        CalcByteSize := pic_digits; { pic_digits = largeur X }
+   TYPE_COND_88:                   CalcByteSize := 0; { Pas de stockage }
+   TYPE_GROUP:                     CalcByteSize := 0; { Calcule apres agregation }
+  Else CalcByteSize := 1;
+  End;
+ End;
+End;
+
+{ ---- Operations sur la table des articles ---- }
+
+{ Ajouter un article de donnees ; retourne son index (1-base) }
+Function AddDataItem(the_name: String; the_level, the_type, the_sect: Integer): Integer;
+Var
+ p: PDataItem;
+Begin
+ If data_count >= MAX_DATA_ITEMS Then
+ Begin
+  Error('Trop d''articles de donnees (max ' + Chr(Ord('0') + MAX_DATA_ITEMS div 1000) + '000)');
+  AddDataItem := 0;
+  Exit;
+ End;
+ New(p);
+ Inc(data_count);
+ data_table[data_count] := p;
+
+ p^.name          := the_name;
+ p^.level         := the_level;
+ p^.data_type     := the_type;
+ p^.usage         := USAGE_DISPLAY;
+ p^.section       := the_sect;
+ p^.parent        := 0;
+ p^.is_group      := (the_type = TYPE_GROUP);
+ p^.pic_str       := '';
+ p^.pic_digits    := 0;
+ p^.pic_decimals  := 0;
+ p^.pic_size      := 0;
+ p^.is_signed     := False;
+ p^.byte_size     := 0;
+ p^.offset        := 0;
+ p^.occurs_count  := 0;
+ p^.depends_on    := 0;
+ p^.redefines_idx := 0;
+ p^.has_value     := False;
+ p^.val_type      := VALTYPE_NONE;
+ p^.val_str       := '';
+ p^.val_num       := 0;
+ p^.has_thru      := False;
+ p^.thru_str      := '';
+ p^.thru_num      := 0;
+ p^.asm_label     := CobolNameToAsm(the_name, the_sect);
+ p^.file_idx      := 0;
+ p^.defined       := False;
+
+ AddDataItem := data_count;
+End;
+
+{
+  Rechercher un article par nom (insensible a la casse).
+  Si section_hint <> SECT_NONE, on cherche d'abord dans cette section.
+  Retourne l'index 1-base ou 0 si non trouve.
+}
+Function FindDataItem(the_name: String; section_hint: Integer): Integer;
+Var
+ i, found_any: Integer;
+Begin
+ the_name  := UpperStr(the_name);
+ found_any := 0;
+
+ { Premier passage : chercher dans la section demandee }
+ If section_hint <> SECT_NONE Then
+  For i := 1 to data_count do
+   If (data_table[i]^.name = the_name) and
+      (data_table[i]^.section = section_hint) Then
+   Begin
+    FindDataItem := i;
+    Exit;
+   End;
+
+ { Deuxieme passage : toutes les sections (premier trouve) }
+ For i := 1 to data_count do
+  If data_table[i]^.name = the_name Then
+  Begin
+   found_any := i;
+   Break;
+  End;
+
+ FindDataItem := found_any;
+End;
+
+{
+  Remonter la chaine de parents pour calculer l'indentation / la hierarchie.
+  Retourne le niveau de profondeur (0 = article racine 01/77).
+}
+Function DataItemDepth(idx: Integer): Integer;
+Var
+ d: Integer;
+Begin
+ d := 0;
+ While (idx > 0) and (data_table[idx]^.parent > 0) do
+ Begin
+  Inc(d);
+  idx := data_table[idx]^.parent;
+ End;
+ DataItemDepth := d;
+End;
+
+{
+  Apres avoir parse tous les items d'un groupe, calculer la taille du groupe
+  comme la somme des tailles de ses enfants directs.
+  Appeler a la fin de chaque article de groupe (quand on rencontre un item
+  de niveau egal ou inferieur).
+}
+Procedure RecalcGroupSize(group_idx: Integer);
+Var
+ i, total: Integer;
+Begin
+ total := 0;
+ For i := 1 to data_count do
+  If data_table[i]^.parent = group_idx Then
+  Begin
+   If data_table[i]^.occurs_count > 0 Then
+    Inc(total, data_table[i]^.byte_size * data_table[i]^.occurs_count)
+   Else
+    Inc(total, data_table[i]^.byte_size);
+  End;
+ data_table[group_idx]^.byte_size := total;
+End;
+
+{ ---- Operations sur la table des paragraphes ---- }
+
+{ Ajouter un paragraphe ; retourne son index }
+Function AddParagraph(the_name, the_section: String): Integer;
+Var
+ p: PParagraph;
+Begin
+ If para_count >= MAX_PARAGRAPHS Then
+ Begin
+  Error('Trop de paragraphes (max ' + Chr(Ord('0') + MAX_PARAGRAPHS div 100) + '00)');
+  AddParagraph := 0;
+  Exit;
+ End;
+ New(p);
+ Inc(para_count);
+ para_table[para_count] := p;
+ Inc(next_para_id);
+
+ p^.name         := UpperStr(the_name);
+ p^.section_name := UpperStr(the_section);
+ p^.label_id     := next_para_id;
+ p^.defined      := False;
+
+ AddParagraph := para_count;
+End;
+
+{ Rechercher un paragraphe par nom ; retourne index ou 0 }
+Function FindParagraph(the_name: String): Integer;
+Var
+ i: Integer;
+Begin
+ the_name := UpperStr(the_name);
+ For i := 1 to para_count do
+  If para_table[i]^.name = the_name Then
+  Begin
+   FindParagraph := i;
+   Exit;
+  End;
+ FindParagraph := 0;
+End;
+
+{ Retourner l'etiquette ASM d'un paragraphe (ex: PARA_0042) }
+Function ParaAsmLabel(idx: Integer): String;
+Var
+ s: String;
+Begin
+ If (idx < 1) or (idx > para_count) Then
+ Begin
+  ParaAsmLabel := 'PARA_UNDEF';
+  Exit;
+ End;
+ Str(para_table[idx]^.label_id, s);
+ While Length(s) < 4 do s := '0' + s;
+ ParaAsmLabel := 'PARA_' + s;
+End;
+
+{ ---- Fichiers (FILE SECTION) ---- }
+
+{ Ajouter un fichier ; retourne son index }
+Function AddFileEntry(the_name: String): Integer;
+Var
+ f: PFileEntry;
+Begin
+ If file_count >= MAX_FILES Then
+ Begin
+  Error('Trop de fichiers declares (max 50)');
+  AddFileEntry := 0;
+  Exit;
+ End;
+ New(f);
+ Inc(file_count);
+ file_table[file_count] := f;
+
+ f^.name         := UpperStr(the_name);
+ f^.assign_to    := '';
+ f^.organization  := 0;
+ f^.access_mode  := 0;
+ f^.file_status  := '';
+ f^.fd_item_idx  := 0;
+ f^.handle_label := 'FH_' + UpperStr(the_name);
+ f^.defined      := False;
+
+ AddFileEntry := file_count;
+End;
+
+{ Rechercher un fichier par nom ; retourne index ou 0 }
+Function FindFileEntry(the_name: String): Integer;
+Var
+ i: Integer;
+Begin
+ the_name := UpperStr(the_name);
+ For i := 1 to file_count do
+  If file_table[i]^.name = the_name Then
+  Begin
+   FindFileEntry := i;
+   Exit;
+  End;
+ FindFileEntry := 0;
+End;
+
+{ ---- Initialisation ---- }
+
+Procedure InitSymbolTable;
+Begin
+ data_count     := 0;
+ data_offset    := 0;
+ para_count     := 0;
+ next_para_id   := 0;
+ file_count     := 0;
+ current_section:= SECT_NONE;
+ program_name   := 'PROGRAM';
+End;
+
+{ ---- Debug : afficher la table des symboles (mode /S) ---- }
+
+{ Creer une chaine de n espaces }
+Function Spaces(n: Integer): String;
+Var
+ s: String;
+ i: Integer;
+Begin
+ s := '';
+ For i := 1 to n do s := s + ' ';
+ Spaces := s;
+End;
+
+{ Cadrer une chaine a gauche dans un champ de largeur w }
+Function PadR(s: String; w: Integer): String;
+Begin
+ While Length(s) < w do s := s + ' ';
+ If Length(s) > w Then s := Copy(s, 1, w);
+ PadR := s;
+End;
+
+Procedure DumpSymbolTable;
+Const
+ TYPE_NAMES: Array[0..7] of String[10] =
+  ('GROUP','PIC9','PICS9','PICX','PICA','PIC9V9','PICS9V9','COND88');
+ SECT_NAMES: Array[0..4] of String[8] =
+  ('NONE','WRKSTG','FILE','LINK','LOCAL');
+Var
+ i: Integer;
+ p: PDataItem;
+ szs, offs: String;
+Begin
+ WriteLn('=== TABLE DES DONNEES (', data_count, ' articles) ===');
+ WriteLn('Idx  Lv  Nom                    Type     Sect     Sz  Off  Asm-label');
+ WriteLn('---- --  ---------------------- -------- -------- --  ---  ----------');
+ For i := 1 to data_count do
+ Begin
+  p := data_table[i];
+  Str(p^.byte_size, szs);
+  Str(p^.offset, offs);
+  WriteLn(i:4, ' ', p^.level:2, '  ',
+          PadR(p^.name, 22),
+          PadR(TYPE_NAMES[p^.data_type], 9),
+          PadR(SECT_NAMES[p^.section], 9),
+          PadR(szs, 4),
+          PadR(offs, 5),
+          p^.asm_label);
+ End;
+ WriteLn;
+ WriteLn('=== PARAGRAPHES (', para_count, ') ===');
+ For i := 1 to para_count do
+  WriteLn(i:4, '  [', ParaAsmLabel(i), ']  ',
+          PadR(para_table[i]^.name, 22),
+          'section: ', para_table[i]^.section_name);
+ WriteLn;
+ WriteLn('=== FICHIERS (', file_count, ') ===');
+ For i := 1 to file_count do
+  WriteLn(i:4, '  ', PadR(file_table[i]^.name, 20),
+          ' ASSIGN TO: ', file_table[i]^.assign_to);
+End;
+
 { Consommer le token courant }
 Procedure Consume;
 Begin
@@ -1295,6 +1841,7 @@ Begin
  WriteLn;
  WriteLn('Options:');
  WriteLn('  /T   Decharge des tokens (debug tokeniseur)');
+ WriteLn('  /S   Decharge la table des symboles (debug parseur)');
  WriteLn('  /?   Afficher cette aide');
  WriteLn;
  WriteLn('Exemples:');
@@ -1306,10 +1853,12 @@ End;
 Var
  i            : Integer;
  opt_dump_tok : Boolean;
+ opt_dump_sym : Boolean;
  arg          : String;
 
 Begin
  opt_dump_tok    := False;
+ opt_dump_sym    := False;
  source_filename := '';
  output_filename := '';
 
@@ -1323,6 +1872,8 @@ Begin
   End
   Else If (UpperStr(arg) = '/T') or (UpperStr(arg) = '-T') Then
    opt_dump_tok := True
+  Else If (UpperStr(arg) = '/S') or (UpperStr(arg) = '-S') Then
+   opt_dump_sym := True
   Else If source_filename = '' Then
    source_filename := arg
   Else If output_filename = '' Then
@@ -1360,6 +1911,7 @@ Begin
 
  WriteLn(VERSION, ' - Compilation de: ', source_filename);
 
+ InitSymbolTable;
  InitTokenizer;
 
  If opt_dump_tok Then
@@ -1372,6 +1924,8 @@ Begin
 
  { TODO: Appel au parseur principal (prochaines etapes) }
  WriteLn('INFO: Parseur non encore implemente.');
+
+ If opt_dump_sym Then DumpSymbolTable;
 
  Close(input_file);
  WriteLn('Termine. Erreurs: ', error_count);
