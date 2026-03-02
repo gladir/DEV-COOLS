@@ -296,7 +296,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>PAS2RSJ.PAS</b></td>
 			<td>Cette commande permet de convertir des constantes Pascal en fichier de ressource RSJ.</td>
 		</tr>
-	        <tr>
+		<tr>
+			<td><b>PLI86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur PL/I pour 8086/8088.</td>
+		</tr>
+	    <tr>
 			<td><b>PMETER.PAS</b></td>
 			<td>Cette commande permet de faire des tests de charge.</td>
 		</tr>
