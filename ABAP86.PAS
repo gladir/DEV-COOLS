@@ -3542,6 +3542,546 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 15 - PARSEUR : MOVE / COMPUTE / ARITHMETIC        [COMPLET]            }
+{ ============================================================================ }
+
+{ Aide : resoudre un identifiant -> sym_idx, avec warning si inconnu }
+Function ResolveIdent(Const nm: String): Integer;
+Var idx: Integer;
+Begin
+ idx := FindSym(nm);
+ If idx = 0 Then Warning('Variable inconnue ''' + nm + '''');
+ ResolveIdent := idx;
+End;
+
+{ Parse var = expr.   (affectation directe, style ABAP Objet)
+
+  Vrai si le token courant est un ident non-mot-cle suivi de '='.
+  Appele depuis ParseStatement quand ce patron est detecte.
+  Ici on suppose que le nom de la variable a deja ete lu (fname)
+  et que le '=' a deja ete consomme.                                          }
+
+Procedure ParseAssignment;
+{ Appelee depuis ParseStatement, qui a deja vu : IDENT '='
+  On recoit le nom de la var dans cur_tok_str AVANT le Consume qui a lu '='.
+  Schema d'appel dans ParseStatement :
+    fname := cur_tok_str; Consume; (ident)
+    Consume;  ('=')
+    ParseAssignment(caller passe le sym_idx)
+  => Pour simplifier : ParseAssignment lit elle-meme le nom et le '='.       }
+Var sym_idx : Integer;
+    fname   : String;
+Begin
+ fname   := cur_tok_str; Consume; { ident }
+ If cur_tok_type <> TOK_EQ Then
+ Begin Error('= attendu dans affectation'); SkipToDot; Exit; End;
+ Consume; { skip '=' }
+ sym_idx := ResolveIdent(fname);
+ EmitComment(fname + ' = ...');
+ ParseExpr;
+ If sym_idx > 0 Then GenStoreVar(sym_idx);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres affectation');
+End;
+
+{ Parse MOVE source TO destination.
+  Equivalent : destination := source.                                          }
+Procedure ParseMove;
+Var src_idx, dst_idx : Integer;
+Begin
+ Consume; { skip MOVE }
+ { source : expression quelconque -> AX }
+ EmitComment('MOVE ... TO ...');
+ ParseExpr;
+ EmitI('PUSH    AX  ; sauvegarder source');
+ { TO }
+ If TokIsKw(KW_TO) Then Consume
+ Else Error('TO attendu apres MOVE');
+ { destination : identifiant }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable destination attendue apres TO'); SkipToDot; Exit; End;
+ dst_idx := ResolveIdent(cur_tok_str); Consume;
+ EmitI('POP     AX  ; restaurer source');
+ If dst_idx > 0 Then GenStoreVar(dst_idx);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres MOVE');
+End;
+
+{ Parse COMPUTE var = expr.                                                    }
+Procedure ParseCompute;
+Var dst_idx : Integer;
+Begin
+ Consume; { skip COMPUTE }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres COMPUTE'); SkipToDot; Exit; End;
+ dst_idx := ResolveIdent(cur_tok_str);
+ EmitComment('COMPUTE ' + cur_tok_str + ' = ...');
+ Consume; { ident }
+ If cur_tok_type <> TOK_EQ Then
+ Begin Error('= attendu apres variable dans COMPUTE'); SkipToDot; Exit; End;
+ Consume; { skip '=' }
+ ParseExpr;
+ If dst_idx > 0 Then GenStoreVar(dst_idx);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres COMPUTE');
+End;
+
+{ Parse ADD val TO var.          -> var = var + val
+         ADD val1 TO val2 GIVING var. -> var = val1 + val2                    }
+Procedure ParseAdd;
+Var sym_val1, sym_to, sym_res : Integer;
+    lbl_val1, lbl_to          : String;
+Begin
+ Consume; { skip ADD }
+ EmitComment('ADD');
+ { Evaluer val1 -> AX, sauvegarder }
+ ParseExpr;
+ EmitI('PUSH    AX  ; val1');
+ lbl_val1 := ''; sym_val1 := 0; { initialiser pour eviter warning }
+ { TO }
+ If Not TokIsKw(KW_TO) Then
+ Begin Error('TO attendu apres ADD val'); SkipToDot; Exit; End;
+ Consume; { skip TO }
+ { val2 / var : lire le nom pour check GIVING }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres ADD … TO'); SkipToDot; Exit; End;
+ lbl_to  := cur_tok_str;
+ sym_to  := ResolveIdent(lbl_to);
+ Consume; { ident val2 / var }
+ If TokIsKw(KW_GIVING) Then
+ Begin
+  { ADD val1 TO val2 GIVING var :  var = val1 + val2 }
+  Consume; { skip GIVING }
+  If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+  Begin Error('Variable result attendue apres GIVING'); SkipToDot; Exit; End;
+  sym_res := ResolveIdent(cur_tok_str); Consume;
+  { Charger val2 -> BX }
+  If sym_to > 0 Then GenLoadVar(sym_to)
+  Else           EmitI('XOR     AX, AX');
+  EmitI('MOV     BX, AX');
+  { Recuperer val1 -> AX }
+  EmitI('POP     AX');
+  EmitI('ADD     AX, BX');
+  If sym_res > 0 Then GenStoreVar(sym_res);
+ End Else
+ Begin
+  { ADD val TO var :  var = var + val }
+  { Charger var -> BX }
+  If sym_to > 0 Then GenLoadVar(sym_to)
+  Else           EmitI('XOR     AX, AX');
+  EmitI('MOV     BX, AX');
+  { Recuperer val -> AX }
+  EmitI('POP     AX');
+  EmitI('ADD     AX, BX');
+  If sym_to > 0 Then GenStoreVar(sym_to);
+ End;
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres ADD');
+End;
+
+{ Parse SUBTRACT val FROM var.   -> var = var - val                           }
+Procedure ParseSubtract;
+Var sym_var : Integer; vname : String;
+Begin
+ Consume; { skip SUBTRACT }
+ EmitComment('SUBTRACT');
+ { Evaluer val -> AX, sauvegarder }
+ ParseExpr;
+ EmitI('PUSH    AX  ; val a soustraire');
+ If Not TokIsKw(KW_FROM) Then
+ Begin Error('FROM attendu apres SUBTRACT val'); SkipToDot; Exit; End;
+ Consume; { skip FROM }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres SUBTRACT … FROM'); SkipToDot; Exit; End;
+ vname   := cur_tok_str;
+ sym_var := ResolveIdent(vname); Consume;
+ { var -> AX }
+ If sym_var > 0 Then GenLoadVar(sym_var)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('MOV     BX, AX    ; BX = var');
+ EmitI('POP     AX        ; AX = val');
+ EmitI('SUB     BX, AX    ; var - val');
+ EmitI('MOV     AX, BX');
+ If sym_var > 0 Then GenStoreVar(sym_var);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres SUBTRACT');
+End;
+
+{ Parse MULTIPLY var BY val.     -> var = var * val                           }
+Procedure ParseMultiply;
+Var sym_var : Integer; vname : String;
+Begin
+ Consume; { skip MULTIPLY }
+ EmitComment('MULTIPLY');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres MULTIPLY'); SkipToDot; Exit; End;
+ vname   := cur_tok_str;
+ sym_var := ResolveIdent(vname); Consume;
+ If Not TokIsKw(KW_BY) Then
+ Begin Error('BY attendu apres MULTIPLY var'); SkipToDot; Exit; End;
+ Consume; { skip BY }
+ { Evaluer val -> AX }
+ ParseExpr;
+ EmitI('MOV     BX, AX    ; BX = val');
+ { var -> AX }
+ If sym_var > 0 Then GenLoadVar(sym_var)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('IMUL    BX');
+ If sym_var > 0 Then GenStoreVar(sym_var);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres MULTIPLY');
+End;
+
+{ Parse DIVIDE var BY val.       -> var = var DIV val (entier)                }
+Procedure ParseDivide;
+Var sym_var : Integer; vname : String;
+Begin
+ Consume; { skip DIVIDE }
+ EmitComment('DIVIDE');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres DIVIDE'); SkipToDot; Exit; End;
+ vname   := cur_tok_str;
+ sym_var := ResolveIdent(vname); Consume;
+ If Not TokIsKw(KW_BY) Then
+ Begin Error('BY attendu apres DIVIDE var'); SkipToDot; Exit; End;
+ Consume; { skip BY }
+ { Evaluer val -> AX }
+ ParseExpr;
+ EmitI('MOV     BX, AX    ; BX = diviseur');
+ { var -> AX }
+ If sym_var > 0 Then GenLoadVar(sym_var)
+ Else            EmitI('XOR     AX, AX');
+ { AX = var DIV BX }
+ GenModDiv(True);
+ If sym_var > 0 Then GenStoreVar(sym_var);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres DIVIDE');
+End;
+
+{ ============================================================================ }
+{ TODO 16 - PARSEUR : LOOP AT / APPEND / READ / SORT / DELETE [COMPLET]       }
+{ ============================================================================ }
+
+{ Consomme une clause WHERE ... jusqu'au point (skip les tokens)              }
+Procedure SkipWhereClause;
+Begin
+ { Skip all tokens until '.' or stop keyword }
+ While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF) Do
+ Begin
+  If TokIsKw(KW_ENDLOOP) Or TokIsKw(KW_ENDDO) Or TokIsKw(KW_ENDWHILE) Then Break;
+  Consume;
+ End;
+End;
+
+{ Parse LOOP AT itab [INTO wa] [WHERE cond].  instructions.  ENDLOOP.
+
+  Generation (stub lineaire) :
+    LEA  SI, itab              ; SI = pointeur courant dans la table
+    MOV  WORD PTR [_SY_TABIX], 0
+  lbl_top:
+    ; test fin de table : stub -> toujours boucle infinie protegee EXIT
+    INC  WORD PTR [_SY_TABIX]
+    [si INTO : copie element courant dans wa via _ABAP_STR_COPY ou MOV]
+    ; ... corps ...
+    JMP  lbl_top
+  lbl_end:                     ; EXIT sort ici
+}
+Procedure ParseLoopAt;
+Var itab_idx, wa_idx     : Integer;
+    itab_name, wa_name   : String;
+    lbl_top, lbl_end     : String;
+    has_into             : Boolean;
+    sy_tabix             : Integer;
+Begin
+ Consume; { skip LOOP }
+ If Not TokIsKw(KW_AT) Then
+ Begin Error('AT attendu apres LOOP'); SkipToDot; Exit; End;
+ Consume; { skip AT }
+
+ { Nom de la table interne }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table attendu apres LOOP AT'); SkipToDot; Exit; End;
+ itab_name := cur_tok_str;
+ itab_idx  := FindSym(itab_name);
+ If itab_idx = 0 Then
+  Warning('LOOP AT : table inconnue ''' + itab_name + '''');
+ Consume;
+
+ { Clause INTO wa optionnelle }
+ has_into := False; wa_idx := 0; wa_name := '';
+ If TokIsKw(KW_INTO) Then
+ Begin
+  Consume; { skip INTO }
+  If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+  Begin
+   wa_name  := cur_tok_str;
+   wa_idx   := FindSym(wa_name);
+   If wa_idx = 0 Then Warning('LOOP AT INTO : variable ''' + wa_name + ''' inconnue');
+   has_into := True;
+   Consume;
+  End Else Warning('Nom de zone de travail attendu apres INTO');
+ End;
+
+ { Clause WHERE : skip (stub) }
+ If TokIsKw(KW_WHERE) Then
+ Begin
+  Consume; { skip WHERE }
+  Warning('LOOP AT WHERE : condition ignoree (stub)');
+  SkipWhereClause;
+ End;
+
+ { Point terminateur de l'entete LOOP AT }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres entete LOOP AT');
+
+ { Generer le code de boucle }
+ lbl_top := NewLabel + 'LT';
+ lbl_end := NewLabel + 'LE';
+ EmitComment('LOOP AT ' + itab_name);
+
+ { SY-TABIX = 0 avant la boucle }
+ sy_tabix := FindSym('SY-TABIX');
+ If sy_tabix > 0 Then
+ Begin
+  EmitI('MOV     WORD PTR [' + sym_table[sy_tabix].asm_label + '], 0');
+ End;
+
+ { Adresse debut de la table -> SI (stub : table en .DATA) }
+ If itab_idx > 0 Then
+  EmitI('LEA     SI, ' + sym_table[itab_idx].asm_label)
+ Else
+  EmitI('XOR     SI, SI  ; table inconnue');
+
+ EmitLabel(lbl_top);
+
+ { Incrementer SY-TABIX }
+ If sy_tabix > 0 Then
+  EmitI('INC     WORD PTR [' + sym_table[sy_tabix].asm_label + ']');
+
+ { Copier element courant -> wa (stub : on suppose element = 2 octets = WORD) }
+ If has_into And (wa_idx > 0) Then
+ Begin
+  EmitI('MOV     AX, [SI]  ; charger element courant (stub 2 octets)');
+  GenStoreVar(wa_idx);
+ End;
+
+ { Corps de la boucle }
+ EnterScope(SK_LOOP, 0);
+ SetExitLabel(lbl_end);
+ SetContLabel(lbl_top);
+ ParseBlock(KW_ENDLOOP, KW_NONE, KW_NONE);
+ LeaveScope;
+
+ { Avancer le pointeur SI de 2 octets (stub element = WORD) et reboucler }
+ EmitI('ADD     SI, 2   ; element suivant (stub 2 octets)');
+ GenJmp(lbl_top);
+ EmitLabel(lbl_end);
+
+ { ENDLOOP. }
+ If TokIsKw(KW_ENDLOOP) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDLOOP');
+ End
+ Else Error('ENDLOOP attendu');
+End;
+
+{ Parse APPEND [wa TO] itab.
+
+  Generation (stub) :
+    [si wa fourni] charger adresse wa -> AX, puis appel stub _ABAP_TBL_APPEND
+    SY-SUBRC := 0                                                              }
+Procedure ParseAppend;
+Var wa_idx, itab_idx : Integer;
+    first_name       : String;
+    sy_subrc         : Integer;
+Begin
+ Consume; { skip APPEND }
+ EmitComment('APPEND');
+ { Lire premier ident : soit wa (si TO suit), soit itab directement }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table ou zone attendu apres APPEND'); SkipToDot; Exit; End;
+ first_name := cur_tok_str; Consume;
+
+ If TokIsKw(KW_TO) Then
+ Begin
+  { APPEND wa TO itab }
+  Consume; { skip TO }
+  wa_idx   := FindSym(first_name);
+  If wa_idx = 0 Then Warning('APPEND : zone ''' + first_name + ''' inconnue');
+  If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+  Begin Error('Nom de table attendu apres APPEND wa TO'); SkipToDot; Exit; End;
+  itab_idx := FindSym(cur_tok_str);
+  If itab_idx = 0 Then Warning('APPEND : table ''' + cur_tok_str + ''' inconnue');
+  Consume;
+  { Generer : passer wa et itab au stub runtime }
+  If wa_idx > 0 Then GenLoadAddr(wa_idx)
+  Else           EmitI('XOR     AX, AX');
+  EmitI('PUSH    AX  ; @ zone de travail');
+  If itab_idx > 0 Then GenLoadAddr(itab_idx)
+  Else             EmitI('XOR     AX, AX');
+  EmitI('PUSH    AX  ; @ table');
+  EmitI('CALL    _ABAP_TBL_APPEND');
+  EmitI('ADD     SP, 4');
+ End Else
+ Begin
+  { APPEND itab (append initial record stub) }
+  itab_idx := FindSym(first_name);
+  If itab_idx = 0 Then Warning('APPEND : table ''' + first_name + ''' inconnue');
+  If itab_idx > 0 Then GenLoadAddr(itab_idx)
+  Else             EmitI('XOR     AX, AX');
+  EmitI('PUSH    AX  ; @ table');
+  EmitI('CALL    _ABAP_TBL_APPEND');
+  EmitI('ADD     SP, 2');
+ End;
+ { SY-SUBRC = 0 }
+ sy_subrc := FindSym('SY-SUBRC');
+ If sy_subrc > 0 Then
+  EmitI('MOV     WORD PTR [' + sym_table[sy_subrc].asm_label + '], 0');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres APPEND');
+End;
+
+{ Parse READ TABLE itab INTO wa [INDEX i | WITH KEY f = v].
+
+  Generation (stub) :
+    Pousser itab, wa, i/cle -> appel _ABAP_TBL_READ.
+    SY-SUBRC = 4 si non trouve (stub : on met 0 pour simplifier).             }
+Procedure ParseReadTable;
+Var itab_idx, wa_idx : Integer;
+    sy_subrc         : Integer;
+Begin
+ Consume; { skip READ }
+ If Not TokIsKw(KW_TABLE) Then
+ Begin Error('TABLE attendu apres READ'); SkipToDot; Exit; End;
+ Consume; { skip TABLE }
+ EmitComment('READ TABLE');
+
+ { Nom de la table }
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table attendu apres READ TABLE'); SkipToDot; Exit; End;
+ itab_idx := FindSym(cur_tok_str);
+ If itab_idx = 0 Then Warning('READ TABLE : table ''' + cur_tok_str + ''' inconnue');
+ Consume;
+
+ { Clause INTO wa }
+ wa_idx := 0;
+ If TokIsKw(KW_INTO) Then
+ Begin
+  Consume; { skip INTO }
+  If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+  Begin
+   wa_idx := FindSym(cur_tok_str);
+   If wa_idx = 0 Then Warning('READ TABLE INTO : variable ''' + cur_tok_str + ''' inconnue');
+   Consume;
+  End;
+ End;
+
+ { Clause INDEX i OU WITH KEY f = v : skip (stub) }
+ If TokIsKw(KW_INDEX) Then
+ Begin
+  Consume;
+  ParseExpr; { index -> AX (non utilise, stub) }
+  EmitI('MOV     BX, AX  ; INDEX (stub)');
+ End Else If TokIsKw(KW_WITH) Then
+ Begin
+  Consume; { skip WITH }
+  If TokIsKw(KW_KEY) Then Consume; { skip KEY }
+  { Lire f = v : skip jusqu'au point }
+  Warning('READ TABLE WITH KEY : cle ignoree (stub)');
+  While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF) Do Consume;
+ End;
+
+ { Generer l'appel stub }
+ If itab_idx > 0 Then GenLoadAddr(itab_idx)
+ Else             EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX  ; @ table');
+ If wa_idx > 0 Then GenLoadAddr(wa_idx)
+ Else           EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX  ; @ zone de travail');
+ EmitI('CALL    _ABAP_TBL_READ');
+ EmitI('ADD     SP, 4');
+
+ sy_subrc := FindSym('SY-SUBRC');
+ If sy_subrc > 0 Then
+  EmitI('MOV     [' + sym_table[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
+
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres READ TABLE');
+End;
+
+{ Parse SORT itab [BY champ [ASCENDING | DESCENDING]].
+
+  Generation (stub) : appel _ABAP_TBL_SORT.                                  }
+Procedure ParseSort;
+Var itab_idx : Integer;
+Begin
+ Consume; { skip SORT }
+ EmitComment('SORT');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table attendu apres SORT'); SkipToDot; Exit; End;
+ itab_idx := FindSym(cur_tok_str);
+ If itab_idx = 0 Then Warning('SORT : table ''' + cur_tok_str + ''' inconnue');
+ Consume;
+ { Clause BY champ [ASCENDING|DESCENDING] : skip (stub) }
+ If TokIsKw(KW_BY) Then
+ Begin
+  Consume; { skip BY }
+  While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Do Consume;
+  If TokIsKw(KW_ASCENDING)  Then Consume;
+  If TokIsKw(KW_DESCENDING) Then Consume;
+ End;
+ { Generer l'appel stub }
+ If itab_idx > 0 Then GenLoadAddr(itab_idx)
+ Else             EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX');
+ EmitI('CALL    _ABAP_TBL_SORT');
+ EmitI('ADD     SP, 2');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres SORT');
+End;
+
+{ Parse DELETE itab [WHERE cond | INDEX i].
+
+  Generation (stub) : appel _ABAP_TBL_DELETE.                                }
+Procedure ParseDeleteTable;
+Var itab_idx : Integer;
+    sy_subrc : Integer;
+Begin
+ Consume; { skip DELETE }
+ EmitComment('DELETE');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table attendu apres DELETE'); SkipToDot; Exit; End;
+ itab_idx := FindSym(cur_tok_str);
+ If itab_idx = 0 Then Warning('DELETE : table ''' + cur_tok_str + ''' inconnue');
+ Consume;
+ { Clause WHERE ou INDEX : skip (stub) }
+ If TokIsKw(KW_WHERE) Then
+ Begin
+  Consume;
+  Warning('DELETE WHERE : condition ignoree (stub)');
+  SkipWhereClause;
+ End Else If TokIsKw(KW_INDEX) Then
+ Begin
+  Consume;
+  ParseExpr; { index -> AX }
+  EmitI('MOV     BX, AX  ; INDEX a supprimer');
+ End;
+ { Generer l'appel stub }
+ If itab_idx > 0 Then GenLoadAddr(itab_idx)
+ Else             EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX');
+ EmitI('CALL    _ABAP_TBL_DELETE');
+ EmitI('ADD     SP, 2');
+ sy_subrc := FindSym('SY-SUBRC');
+ If sy_subrc > 0 Then
+  EmitI('MOV     [' + sym_table[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres DELETE');
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 

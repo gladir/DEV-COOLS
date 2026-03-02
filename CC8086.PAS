@@ -5528,50 +5528,43 @@ Begin
   { VÇrifier s'il y a un identificateur suivi de ':' }
  If symname(label_name) and match(':') Then Begin
   parse_label_statement := True;
-  safe_writeln('; D√©finition d''√©tiquette: ' + label_name);
+  safe_writeln('; DÇfinition d''Çtiquette: ' + label_name);
   define_goto_label(label_name);
  End
- Else
+  Else
  Begin
-  { Ce n'est pas une √©tiquette, revenir en arri√®re }
+   { Ce n'est pas une Çtiquette, revenir en arriäre }
   lptr := save_lptr;
  End;
 End;
 
-{ Analyser une instruction switch }
+ { Analyser une instruction switch }
 Function parse_switch_statement: Boolean;
 Var
  lval: TLVal;
  switch_expr_type: Integer;
 Begin
  parse_switch_statement := False;
-
  If not match('switch') Then Exit;
  parse_switch_statement := True;
-
  safe_writeln('; SWITCH statement');
-
- { Attendre parenth√®se ouvrante }
- If not match('(') Then
- Begin
+  { Attendre parenthäse ouvrante }
+ If not match('(') Then Begin
   Case Language of
    _English: errrpt('Expected ( after switch');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach switch');
    {$ENDIF}
-   Else errrpt('( attendu apr√®s switch');
+   Else errrpt('( attendu apräs switch');
   End;
   Exit;
  End;
-
- { Analyser l'expression switch }
+  { Analyser l'expression switch }
  safe_writeln('; Expression switch');
  expression_bool(lval);
  switch_expr_type := lval.typ;
-
- { Attendre parenth√®se fermante }
- If not match(')') Then
- Begin
+  { Attendre parenthäse fermante }
+ If not match(')') Then Begin
   Case Language of
    _English: errrpt('Expected ) after switch expression');
    {$IFDEF FPC}
@@ -5581,160 +5574,127 @@ Begin
   End;
   Exit;
  End;
-
- { Commencer le switch }
+  { Commencer le switch }
  If not begin_switch_statement(switch_expr_type) Then Exit;
-
- { Sauvegarder la valeur de l'expression pour comparaison }
+  { Sauvegarder la valeur de l'expression pour comparaison }
  ol('MOV  switch_temp, AX ; sauver valeur switch');
-
- { G√©n√©rer les comparaisons }
+  { GÇnÇrer les comparaisons }
  generate_switch_comparisons;
-
- { Analyser le corps du switch }
- If not match('{') Then
- Begin
+  { Analyser le corps du switch }
+ If not match('{') Then Begin
   Case Language of
    _English: errrpt('Expected { after switch statement');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete { nach switch-Anweisung');
    {$ENDIF}
-   Else errrpt('{ attendu apr√®s instruction switch');
+   Else errrpt('{ attendu apräs instruction switch');
   End;
   Exit;
  End;
-
  safe_writeln('; Corps du switch');
- While (ch <> '}') and (ch <> #0) Do
- Begin
-  If not parse_statement Then
-  Begin
+ While (ch <> '}') and (ch <> #0) Do Begin
+  If not parse_statement Then Begin
    If ch <> #0 Then gch;
   End;
  End;
-
- If not match('}') Then
- Begin
+ If not match('}') Then Begin
   Case Language of
    _English: errrpt('Expected } to close switch');
    {$IFDEF FPC}
-   _Germany: errrpt('Erwartete } zum Schlie√üen von switch');
+   _Germany: errrpt('Erwartete } zum Schlie·en von switch');
    {$ENDIF}
    Else errrpt('} attendu pour fermer switch');
   End;
  End;
-
- { Terminer le switch }
+  { Terminer le switch }
  end_switch_statement;
 End;
 
-{ Analyser une instruction case }
+ { Analyser une instruction case }
 Function parse_case_statement: Boolean;
 Var
  case_value: Integer;
  case_label: Integer;
 Begin
  parse_case_statement := False;
-
  If not match('case') Then Exit;
  parse_case_statement := True;
-
  safe_writeln('; CASE statement');
-
- { Obtenir la valeur du case }
- If not number(case_value) Then
- Begin
+  { Obtenir la valeur du case }
+ If not number(case_value) Then Begin
   Case Language of
    _English: errrpt('Expected constant after case');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete Konstante nach case');
    {$ENDIF}
-   Else errrpt('Constante attendue apr√®s case');
+   Else errrpt('Constante attendue apräs case');
   End;
   Exit;
  End;
-
- { Attendre deux-points }
- If not match(':') Then
- Begin
+  { Attendre deux-points }
+ If not match(':') Then Begin
   Case Language of
    _English: errrpt('Expected : after case value');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach case-Wert');
    {$ENDIF}
-   Else errrpt(': attendu apr√®s valeur case');
+   Else errrpt(': attendu apräs valeur case');
   End;
   Exit;
  End;
-
- { Ajouter le case au switch courant }
+  { Ajouter le case au switch courant }
  case_label := add_switch_case(case_value);
- If case_label <> -1 Then
- Begin
+ If case_label <> -1 Then Begin
   prelabel(case_label);
-  safe_writeln('; Case ' + IntToStr(case_value) + ' d√©fini');
+  safe_writeln('; Case ' + IntToStr(case_value) + ' dÇfini');
  End;
 End;
 
-{ Analyser une instruction default }
+ { Analyser une instruction default }
 Function parse_default_statement: Boolean;
 Var
  default_label: Integer;
 Begin
  parse_default_statement := False;
-
  If not match('default') Then Exit;
  parse_default_statement := True;
-
  safe_writeln('; DEFAULT statement');
-
- { Attendre deux-points }
- If not match(':') Then
- Begin
+  { Attendre deux-points }
+ If not match(':') Then Begin
   Case Language of
    _English: errrpt('Expected : after default');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach default');
    {$ENDIF}
-   Else errrpt(': attendu apr√®s default');
+   Else errrpt(': attendu apräs default');
   End;
   Exit;
  End;
-
- { Ajouter le default au switch courant }
+  { Ajouter le default au switch courant }
  default_label := add_switch_default;
- If default_label <> -1 Then
- Begin
+ If default_label <> -1 Then Begin
   prelabel(default_label);
-  safe_writeln('; Default d√©fini');
+  safe_writeln('; Default dÇfini');
  End;
 End;
 
-{ Compound statement parsing }
-Function parse_compound_statement: Boolean;
-Begin
+ { Analyse une instruction composÇ }
+Function parse_compound_statement: Boolean;Begin
  parse_compound_statement := False;
-
  If not match('{') Then Exit;
  parse_compound_statement := True;
-
- safe_writeln('; Compound statement start');
-
- { Analyser les instructions jusqu'ÔøΩ l'accolade fermante }
+ safe_writeln('; DÇbut d''une instruction composÇ');
+  { Analyser les instructions jusqu'Ö l'accolade fermante }
  Repeat
-  { VÔøΩrifier si on doit lire une nouvelle ligne }
+  { VÇrifier si on doit lire une nouvelle ligne }
   blanks;
-  If (lptr > Length(line)) or (Length(line) = 0) Then
-  Begin
+  If (lptr > Length(line)) or (Length(line) = 0) Then Begin
    If not readinline Then Break;
    lptr := 1;
   End;
-
-  { VÔøΩrifier l'accolade fermante }
+   { VÇrifier l'accolade fermante }
   If match('}') Then Break;
-
-  If eof <> 0 Then
-  Begin
+  If eof <> 0 Then Begin
    Case Language of
     _English: errrpt('Unexpected end of file in compound statement');
     {$IFDEF FPC}
@@ -5744,10 +5704,8 @@ Begin
    End;
    Exit;
   End;
-
-  If not parse_statement Then
-  Begin
-   { Passer ÔøΩ la ligne suivante pour ÔøΩviter les boucles infinies }
+  If not parse_statement Then Begin
+   { Passer Ö la ligne suivante pour ÔøΩviter les boucles infinies }
    If not readinline Then Break;
    lptr := 1;
   End;
