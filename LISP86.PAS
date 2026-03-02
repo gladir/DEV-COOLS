@@ -791,13 +791,17 @@ Begin
    Consume;
    Break;
   End;
-  If cur_tok_type = TOK_EOF Then
-  Begin Error('EOF inattendu dans la liste'); Break; End;
+  If cur_tok_type = TOK_EOF Then Begin
+   Error('EOF inattendu dans la liste');
+   Break;
+  End;
   elem_v := ReadExpr;
   cell_v := MakeCons(elem_v, LVAL_NIL);
-  If IsNilVal(head_v) Then
-  Begin head_v := cell_v; tail_v := cell_v; End
-  Else
+  If IsNilVal(head_v) Then Begin
+   head_v := cell_v;
+   tail_v := cell_v;
+  End
+   Else
   Begin
    heap_cons[PayOf(tail_v)].cdr_val := cell_v;
    tail_v := cell_v;
@@ -807,7 +811,9 @@ Begin
 End;
 
 Function ReadExpr: TLispVal;
-Var sym_idx, q_idx: Integer; inner: TLispVal;
+Var
+ sym_idx, q_idx: Integer;
+ inner: TLispVal;
 Begin
  Case cur_tok_type Of
   TOK_EOF:
@@ -868,20 +874,20 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 06 - RECONNAISSANCE DES FORMES SPECIALES          [COMPLET]            }
+{ RECONNAISSANCE DES FORMES SPECIALES                                          }
 { ============================================================================ }
 
-Function GetSpecialForm(sym_idx: Integer): Integer;
-Begin
- { TODO 06 : Retourner SF_xxx du symbole si c'est une forme speciale }
- If (sym_idx < 1) Or (sym_idx > sym_count) Then
-  Begin GetSpecialForm := SF_NONE; Exit; End;
+Function GetSpecialForm(sym_idx: Integer): Integer;Begin
+ { Retourner SF_xxx du symbole si c'est une forme sp‚ciale }
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then Begin
+  GetSpecialForm := SF_NONE;
+  Exit;
+ End;
  GetSpecialForm := sym_table[sym_idx]^.special;
 End;
 
-Function GetPrim(sym_idx: Integer): Integer;
-Begin
- { TODO 06 : Retourner PRIM_xxx du symbole si c'est une primitive }
+Function GetPrim(sym_idx: Integer): Integer;Begin
+ { Retourner PRIM_xxx du symbole si c'est une primitive }
  If (sym_idx < 1) Or (sym_idx > sym_count) Then
   Begin GetPrim := PRIM_NONE; Exit; End;
  GetPrim := sym_table[sym_idx]^.prim;
