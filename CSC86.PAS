@@ -895,22 +895,22 @@ End;
 
 { --------------------------------------------------------------------------
   LexMakeTok : construire un TToken a partir des elements courants.
+  Turbo Pascal ne supporte pas les fonctions retournant un Record ;
+  on utilise donc un parametre Var r en sortie.
   -------------------------------------------------------------------------- }
-Function LexMakeTok(k : TTokenKind; Const v : TString) : TToken;
-Var t : TToken;
+Procedure LexMakeTok(k : TTokenKind; Const v : TString; Var r : TToken);
 Begin
-  t.kind    := k;
-  t.val     := v;
-  t.int_val := 0;
-  t.line    := lex_lineno;
-  t.col     := lex_colno;
-  LexMakeTok := t;
+  r.kind    := k;
+  r.val     := v;
+  r.int_val := 0;
+  r.line    := lex_lineno;
+  r.col     := lex_colno;
 End;
 
 { --------------------------------------------------------------------------
   LexReadIdent : lire un identifiant ou mot-cle a partir de lex_pos.
   -------------------------------------------------------------------------- }
-Function LexReadIdent : TToken;
+Procedure LexReadIdent(Var r : TToken);
 Var s : TString;
     k : TTokenKind;
 Begin
@@ -922,16 +922,15 @@ Begin
   End;
   If LexIsKeyword(s) Then k := TK_KEYWORD
   Else                     k := TK_IDENT;
-  LexReadIdent := LexMakeTok(k, s);
+  LexMakeTok(k, s, r);
 End;
 
 { --------------------------------------------------------------------------
   LexReadNumber : lire une constante entiere (decimale ou 0x...).
   -------------------------------------------------------------------------- }
-Function LexReadNumber : TToken;
+Procedure LexReadNumber(Var r : TToken);
 Var s   : TString;
     v   : LongInt;
-    t   : TToken;
     hex : Boolean;
 Begin
   s   := '';
@@ -962,16 +961,15 @@ Begin
   End;
   { Sauter suffixes optionnels u / l / ul / lu }
   While LexCurChar In ['u', 'U', 'l', 'L'] Do LexAdvance;
-  t         := LexMakeTok(TK_INT, s);
-  t.int_val := v;
-  LexReadNumber := t;
+  LexMakeTok(TK_INT, s, r);
+  r.int_val := v;
 End;
 
 { --------------------------------------------------------------------------
   LexReadString : lire une chaine litterale delimitee par ".
   Les sequences \n \t \\ \" \xHH sont decodees.
   -------------------------------------------------------------------------- }
-Function LexReadString : TToken;
+Procedure LexReadString(Var r : TToken);
 Var s : TString;
     c : Char;
 Begin
@@ -992,16 +990,15 @@ Begin
     If Length(s) < MAX_TOKSTR Then s := s + c;
   End;
   If LexCurChar = '"' Then LexAdvance;   { sauter '"' fermant }
-  LexReadString := LexMakeTok(TK_STRING, s);
+  LexMakeTok(TK_STRING, s, r);
 End;
 
 { --------------------------------------------------------------------------
   LexReadChar2 : lire un char litteral delimite par des apostrophes ' '.
   -------------------------------------------------------------------------- }
-Function LexReadChar2 : TToken;
+Procedure LexReadChar2(Var r : TToken);
 Var s : TString;
     c : Char;
-    t : TToken;
 Begin
   LexAdvance;   { sauter "'" ouvrant }
   If LexCurChar = '\' Then
@@ -1016,16 +1013,15 @@ Begin
   End;
   If LexCurChar = '''' Then LexAdvance;   { sauter "'" fermant }
   s := c;
-  t         := LexMakeTok(TK_CHAR, s);
-  t.int_val := Ord(c);
-  LexReadChar2 := t;
+  LexMakeTok(TK_CHAR, s, r);
+  r.int_val := Ord(c);
 End;
 
 { --------------------------------------------------------------------------
   LexReadOp : lire un operateur ou signe de ponctuation.
   Gere les operateurs a 2 caracteres : == != <= >= && || ++ -- += -= *= /= %=
   -------------------------------------------------------------------------- }
-Function LexReadOp : TToken;
+Procedure LexReadOp(Var r : TToken);
 Var c1, c2 : Char;
     s       : TString;
     k       : TTokenKind;
@@ -1060,31 +1056,28 @@ Begin
       k := TK_PUNCT;
     LexAdvance;
   End;
-  LexReadOp := LexMakeTok(k, s);
+  LexMakeTok(k, s, r);
 End;
 
 { --------------------------------------------------------------------------
   LexNext : produire le prochain token depuis le flux source.
-  Met a jour lex_cur_tok et retourne le token.
+  Met a jour lex_cur_tok (accessible directement apres l'appel).
+  Compatible Turbo Pascal : pas de retour de Record.
   -------------------------------------------------------------------------- }
-Function LexNext : TToken;
-Var t : TToken;
+Procedure LexNext;
 Begin
   { Si un token est en attente (peek), le consommer }
   If lex_has_peek Then
   Begin
     lex_cur_tok  := lex_peek_tok;
     lex_has_peek := False;
-    LexNext      := lex_cur_tok;
     Exit;
   End;
 
   { Assurer qu'il y a des donnees a lire }
   If Not LexRefill Then
   Begin
-    t := LexMakeTok(TK_EOF, '');
-    lex_cur_tok := t;
-    LexNext     := t;
+    LexMakeTok(TK_EOF, '', lex_cur_tok);
     Exit;
   End;
 
@@ -1094,9 +1087,7 @@ Begin
   Begin
     If Not LexRefill Then
     Begin
-      t := LexMakeTok(TK_EOF, '');
-      lex_cur_tok := t;
-      LexNext := t;
+      LexMakeTok(TK_EOF, '', lex_cur_tok);
       Exit;
     End;
     LexSkipWS;
@@ -1104,41 +1095,35 @@ Begin
 
   If LexCurChar = LEX_EOF_CHAR Then
   Begin
-    t := LexMakeTok(TK_EOF, '');
-    lex_cur_tok := t;
-    LexNext := t;
+    LexMakeTok(TK_EOF, '', lex_cur_tok);
     Exit;
   End;
 
   { Dispatcher selon le premier caractere }
   If LexIsAlpha(LexCurChar) Then
-    t := LexReadIdent
+    LexReadIdent(lex_cur_tok)
   Else If LexIsDigit(LexCurChar) Then
-    t := LexReadNumber
+    LexReadNumber(lex_cur_tok)
   Else If LexCurChar = '"' Then
-    t := LexReadString
+    LexReadString(lex_cur_tok)
   Else If LexCurChar = '''' Then
-    t := LexReadChar2
+    LexReadChar2(lex_cur_tok)
   Else
-    t := LexReadOp;
-
-  lex_cur_tok := t;
-  LexNext := t;
+    LexReadOp(lex_cur_tok);
 End;
 
 { --------------------------------------------------------------------------
   LexPeek : retourner le prochain token SANS le consommer.
+  Resultat accessible via lex_peek_tok apres l'appel.
   -------------------------------------------------------------------------- }
-Function LexPeek : TToken;
+Procedure LexPeek;
 Begin
   If Not lex_has_peek Then
   Begin
-    lex_peek_tok := LexNext;
+    LexNext;
+    lex_peek_tok := lex_cur_tok;
     lex_has_peek := True;
-    { Remettre cur_tok a l'etat precedent n'est pas necessaire car
-      LexNext sera appele par LexPeek, on remet simplement le flag }
   End;
-  LexPeek := lex_peek_tok;
 End;
 
 { --------------------------------------------------------------------------
@@ -1146,27 +1131,25 @@ End;
   Si le token ne correspond pas a val, emettre une erreur.
   -------------------------------------------------------------------------- }
 Procedure LexExpect(Const expected_val : TString);
-Var t : TToken;
 Begin
-  t := LexNext;
-  If t.val <> expected_val Then
+  LexNext;
+  If lex_cur_tok.val <> expected_val Then
   Begin
     Inc(err_count);
-    WriteLn('Erreur syntaxique ligne ', t.line, ' col ', t.col,
-            ' : attendu ''', expected_val, ''' mais lu ''', t.val, '''');
+    WriteLn('Erreur syntaxique ligne ', lex_cur_tok.line, ' col ', lex_cur_tok.col,
+            ' : attendu ''', expected_val, ''' mais lu ''', lex_cur_tok.val, '''');
   End;
 End;
 
 { --------------------------------------------------------------------------
   LexExpectKind : consommer le prochain token en verifiant son kind.
-  Retourne le token consomme.
+  Resultat accessible via lex_cur_tok apres l'appel.
   -------------------------------------------------------------------------- }
-Function LexExpectKind(k : TTokenKind) : TToken;
-Var t     : TToken;
-    kname : TString;
+Procedure LexExpectKind(k : TTokenKind);
+Var kname : TString;
 Begin
-  t := LexNext;
-  If t.kind <> k Then
+  LexNext;
+  If lex_cur_tok.kind <> k Then
   Begin
     Inc(err_count);
     Case k Of
@@ -1176,10 +1159,9 @@ Begin
       TK_KEYWORD : kname := 'mot-cle';
     Else             kname := 'token';
     End;
-    WriteLn('Erreur syntaxique ligne ', t.line, ' col ', t.col,
-            ' : attendu ', kname, ' mais lu ''', t.val, '''');
+    WriteLn('Erreur syntaxique ligne ', lex_cur_tok.line, ' col ', lex_cur_tok.col,
+            ' : attendu ', kname, ' mais lu ''', lex_cur_tok.val, '''');
   End;
-  LexExpectKind := t;
 End;
 
 { --------------------------------------------------------------------------
@@ -2149,7 +2131,7 @@ Function ParseTypeSpec(Var vt : TValueKind; Var is_array : Boolean) : Boolean;
 Var t  : TToken;
     t2, t3 : TToken;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not IsTypeKeyword(t) Then
   Begin
     ParseTypeSpec := False;
@@ -2162,13 +2144,13 @@ Begin
   is_array := False;
 
   { Detect '[]' : le lexeur emet '[' puis ']' comme deux tokens TK_PUNCT }
-  t2 := LexPeek;
+  LexPeek; t2 := lex_peek_tok;
   If (t2.kind = TK_PUNCT) And (t2.val = '[') Then
   Begin
-    t3 := LexPeek;  { on ne peut regarder qu'un token en avance avec LexPeek }
+    LexPeek; t3 := lex_peek_tok;  { on ne peut regarder qu'un token en avance avec LexPeek }
     { On avance avec LexNext pour obtenir le token suivant le '[' }
     LexNext;        { consommer '[' }
-    t3 := LexPeek;
+    LexPeek; t3 := lex_peek_tok;
     If (t3.kind = TK_PUNCT) And (t3.val = ']') Then
     Begin
       LexNext;      { consommer ']' }
@@ -2189,7 +2171,7 @@ Procedure SkipToSemicolon;
 Var t : TToken;
 Begin
   Repeat
-    t := LexNext;
+    LexNext; t := lex_cur_tok;
   Until (t.kind = TK_EOF) Or
         ((t.kind = TK_PUNCT) And (t.val = ';'));
 End;
@@ -2207,7 +2189,7 @@ Var t   : TToken;
     lhs : LongInt;
     op  : TString;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
 
   { Parenthese }
   If (t.kind = TK_PUNCT) And (t.val = '(') Then
@@ -2241,7 +2223,7 @@ Begin
     LexNext;
     lhs := t.int_val;
     { Operateurs binaires }
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
     While (t.kind = TK_OP) And
           ((t.val = '+') Or (t.val = '-') Or
            (t.val = '*') Or (t.val = '/') Or (t.val = '%')) Do
@@ -2262,7 +2244,7 @@ Begin
         If v <> 0 Then lhs := lhs Mod v
         Else begin ParseError('Modulo par zero dans expression constante'); lhs := 0; end;
       End;
-      t := LexPeek;
+      LexPeek; t := lex_peek_tok;
     End;
     ParseConstIntExpr := lhs;
     Exit;
@@ -2313,7 +2295,7 @@ Begin
     SkipToSemicolon;
     Exit;
   End;
-  t := LexExpectKind(TK_IDENT);
+  LexExpectKind(TK_IDENT); t := lex_cur_tok;
   name := t.val;
   LexExpect('=');
   cval := ParseConstIntExpr;
@@ -2357,7 +2339,7 @@ Begin
     SkipToSemicolon;
     Exit;
   End;
-  t := LexExpectKind(TK_IDENT);
+  LexExpectKind(TK_IDENT); t := lex_cur_tok;
   name := t.val;
 
   arr_size := 0;
@@ -2368,11 +2350,11 @@ Begin
   If FindSym(name) > 0 Then
     ParseWarn('Redeclaration de : ' + name);
 
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_OP) And (t.val = '=') Then
   Begin
     LexNext;   { consommer '=' }
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
 
     If is_arr Then
     Begin
@@ -2381,7 +2363,7 @@ Begin
       Begin
         LexNext;   { 'new' }
         { Consommer uniquement le mot-cle de type de base (sans tenter '[]]') }
-        t := LexPeek;
+        LexPeek; t := lex_peek_tok;
         If IsTypeKeyword(t) Then
           LexNext
         Else
@@ -2443,7 +2425,7 @@ Begin
   cur_func_idx := func_idx;
 
   LexExpect('(');
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_PUNCT) And (t.val = ')') Then
   Begin
     LexNext;   { liste vide }
@@ -2457,10 +2439,10 @@ Begin
       ParseError('Type attendu dans la liste de parametres');
       Break;
     End;
-    t := LexExpectKind(TK_IDENT);
+    LexExpectKind(TK_IDENT); t := lex_cur_tok;
     name := t.val;
     AddParam(name, vt);
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
     If (t.kind = TK_PUNCT) And (t.val = ',') Then
       LexNext
     Else
@@ -2602,7 +2584,7 @@ Var count : Integer;
 Begin
   count := 0;
   LexExpect('(');
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not ((t.kind = TK_PUNCT) And (t.val = ')')) Then
   Begin
     Repeat
@@ -2619,7 +2601,7 @@ Begin
         EmitI1('PUSH', 'AX');
         Inc(count);
       End;
-      t := LexPeek;
+      LexPeek; t := lex_peek_tok;
       If (t.kind = TK_PUNCT) And (t.val = ',') Then
         LexNext
       Else
@@ -2640,7 +2622,7 @@ Var vt    : TValueKind;
     t     : TToken;
 Begin
   LexExpect('(');
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_PUNCT) And (t.val = ')') Then
   Begin
     LexNext;  { Console.Write() sans argument }
@@ -2700,7 +2682,7 @@ Var t      : TToken;
     vt     : TValueKind;
     lbl    : TString;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
 
   { ----- Literal entier ----- }
   If t.kind = TK_INT Then
@@ -2781,7 +2763,7 @@ Begin
     If t.val = 'Console' Then
     Begin
       LexExpect('.');
-      t2 := LexPeek;
+      LexPeek; t2 := lex_peek_tok;
       If (t2.kind = TK_IDENT) And (t2.val = 'Write') Then
       Begin
         LexNext;
@@ -2809,7 +2791,7 @@ Begin
     End;
 
     { Appel de methode : ident '(' ... ')' }
-    t2 := LexPeek;
+    LexPeek; t2 := lex_peek_tok;
     If (t2.kind = TK_PUNCT) And (t2.val = '(') Then
     Begin
       fidx := FindFunc(t.val);
@@ -2818,9 +2800,13 @@ Begin
         ParseError('Methode inconnue : ' + t.val);
         { Consommer les arguments quand meme }
         LexNext;  { '(' }
-        While Not ((LexPeek.kind = TK_PUNCT) And (LexPeek.val = ')')) And
-              Not (LexPeek.kind = TK_EOF) Do
+        LexPeek;
+        While Not ((lex_peek_tok.kind = TK_PUNCT) And (lex_peek_tok.val = ')')) And
+              Not (lex_peek_tok.kind = TK_EOF) Do
+        Begin
           LexNext;
+          LexPeek;
+        End;
         LexExpect(')');
         ParseExprPrimary := VK_UNDEF;
         Exit;
@@ -2878,7 +2864,7 @@ Var vt   : TValueKind;
 Begin
   vt := ParseExprPrimary;
   Repeat
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
 
     { arr[index] }
     If (t.kind = TK_PUNCT) And (t.val = '[') Then
@@ -2921,7 +2907,7 @@ Begin
     Else If (t.kind = TK_PUNCT) And (t.val = '.') Then
     Begin
       LexNext;
-      t := LexExpectKind(TK_IDENT);
+      LexExpectKind(TK_IDENT); t := lex_cur_tok;
       If t.val = 'Length' Then
       Begin
         { Pour un tableau : DX contient la longueur (stockee a l'init) }
@@ -2946,7 +2932,7 @@ Function ParseExprUnary : TValueKind;
 Var t   : TToken;
     vt  : TValueKind;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
 
   { NOT logique }
   If (t.kind = TK_OP) And (t.val = '!') Then
@@ -3010,7 +2996,7 @@ Var vt  : TValueKind;
 Begin
   vt := ParseExprUnary;
   Repeat
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
     If Not ((t.kind = TK_OP) And
             ((t.val = '*') Or (t.val = '/') Or (t.val = '%'))) Then Break;
     op := t.val;
@@ -3040,7 +3026,7 @@ Var vt  : TValueKind;
 Begin
   vt := ParseExprMul;
   Repeat
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
     If Not ((t.kind = TK_OP) And
             ((t.val = '+') Or (t.val = '-'))) Then Break;
     op := t.val;
@@ -3085,7 +3071,7 @@ Var vt     : TValueKind;
     lbl_f  : TString;
 Begin
   vt := ParseExprAdd;
-  t  := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_OP) And
      ((t.val = '<') Or (t.val = '<=') Or
       (t.val = '>') Or (t.val = '>=')) Then
@@ -3124,7 +3110,7 @@ Var vt    : TValueKind;
     lbl_f : TString;
 Begin
   vt := ParseExprRel;
-  t  := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_OP) And ((t.val = '==') Or (t.val = '!=')) Then
   Begin
     op := t.val;
@@ -3175,7 +3161,7 @@ Var vt    : TValueKind;
     lbl_f : TString;
 Begin
   vt := ParseExprEq;
-  t  := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_OP) And (t.val = '&&') Then
   Begin
     lbl_f := NewLabel;
@@ -3186,7 +3172,7 @@ Begin
       ParseExprEq;
       EmitI1('TEST', 'AX, AX');
       EmitI1('JZ', lbl_f);
-      t := LexPeek;
+      LexPeek; t := lex_peek_tok;
     Until Not ((t.kind = TK_OP) And (t.val = '&&'));
     EmitI1('MOV', 'AX, 1');
     EmitLabel(lbl_f);
@@ -3204,7 +3190,7 @@ Var vt    : TValueKind;
     lbl_t : TString;
 Begin
   vt := ParseExprAnd;
-  t  := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_OP) And (t.val = '||') Then
   Begin
     lbl_t := NewLabel;
@@ -3215,7 +3201,7 @@ Begin
       ParseExprAnd;
       EmitI1('TEST', 'AX, AX');
       EmitI1('JNZ', lbl_t);
-      t := LexPeek;
+      LexPeek; t := lex_peek_tok;
     Until Not ((t.kind = TK_OP) And (t.val = '||'));
     EmitI0('XOR  AX, AX');
     EmitLabel(lbl_t);
@@ -3343,12 +3329,12 @@ Var t : TToken;
 Begin
   LexExpect('{');
   ScopeEnter;
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   While Not ((t.kind = TK_PUNCT) And (t.val = '}')) And
         Not (t.kind = TK_EOF) Do
   Begin
     ParseStatement;
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
   End;
   LexExpect('}');
   ScopeLeave;
@@ -3371,7 +3357,7 @@ Begin
   EmitI1('TEST', 'AX, AX');
   EmitI1('JZ',   lbl_else);
   ParseStatement;                     { branche then }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_KEYWORD) And (t.val = 'else') Then
   Begin
     EmitI1('JMP', lbl_end);
@@ -3458,7 +3444,7 @@ Begin
   ScopeEnter;  { portee du for }
 
   { --- Initialisation --- }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not ((t.kind = TK_PUNCT) And (t.val = ';')) Then
   Begin
     If IsTypeKeyword(t) Then
@@ -3472,7 +3458,7 @@ Begin
   EmitLabel(lbl_top);
 
   { --- Condition --- }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not ((t.kind = TK_PUNCT) And (t.val = ';')) Then
   Begin
     ParseExpr;
@@ -3487,7 +3473,7 @@ Begin
   EmitLabel(lbl_incr);
 
   { --- Incrementation --- }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not ((t.kind = TK_PUNCT) And (t.val = ')')) Then
     ParseExpr;
   LexExpect(')');
@@ -3545,7 +3531,7 @@ Var t  : TToken;
 Begin
   LexExpect('return');
   fi := cur_func_idx;
-  t  := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_PUNCT) And (t.val = ';') Then
   Begin
     LexNext;
@@ -3578,7 +3564,7 @@ Var t    : TToken;
     vt   : TValueKind;
     op   : TString;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
 
   { Tentative de detection d'une affectation : ident PUIS operateur }
   If t.kind = TK_IDENT Then
@@ -3588,7 +3574,7 @@ Begin
     Begin
       { Regarder le token suivant au-dela de l'ident }
       LexNext;   { consommer l'ident }
-      t2 := LexPeek;
+      LexPeek; t2 := lex_peek_tok;
 
       { --- Indexation : ident[expr] = expr --- }
       If (t2.kind = TK_PUNCT) And (t2.val = '[') Then
@@ -3686,7 +3672,7 @@ End;
 Procedure ParseStatement;
 Var t     : TToken;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
 
   { Bloc }
   If (t.kind = TK_PUNCT) And (t.val = '{') Then
@@ -3806,15 +3792,15 @@ End;
 Procedure ParseUsings;
 Var t : TToken;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   While (t.kind = TK_KEYWORD) And (t.val = 'using') Do
   Begin
     LexNext;   { 'using' }
     { Consommer jusqu'au ';' }
     Repeat
-      t := LexNext;
+      LexNext; t := lex_cur_tok;
     Until (t.kind = TK_PUNCT) And (t.val = ';') Or (t.kind = TK_EOF);
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
   End;
 End;
 
@@ -3826,13 +3812,13 @@ End;
 Procedure ParseNamespace;
 Var t : TToken;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not ((t.kind = TK_KEYWORD) And (t.val = 'namespace')) Then Exit;
   LexNext;   { 'namespace' }
   { Consommer le nom qualifie : Ident puis '.' Ident en boucle }
   Repeat
-    t := LexNext;
-    t := LexPeek;
+    LexNext; t := lex_cur_tok;
+    LexPeek; t := lex_peek_tok;
   Until Not ((t.kind = TK_PUNCT) And (t.val = '.'));
   LexExpect('{');
 End;
@@ -3866,12 +3852,12 @@ Var vt      : TValueKind;
     old_fi  : Integer;
 Begin
   { Optionnel : 'static' }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_KEYWORD) And (t.val = 'static') Then
     LexNext;
 
   { Optionnel : 'public' / 'private' }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_KEYWORD) And
      ((t.val = 'public') Or (t.val = 'private')) Then
     LexNext;
@@ -3885,7 +3871,7 @@ Begin
   End;
 
   { Nom de la methode }
-  t    := LexExpectKind(TK_IDENT);
+  LexExpectKind(TK_IDENT); t := lex_cur_tok;
   name := t.val;
 
   { Enregistrer dans func_table }
@@ -3925,7 +3911,8 @@ Begin
   GenFunctionPrologue(fi);
 
   { Instructions }
-  If (LexPeek.kind = TK_PUNCT) And (LexPeek.val = '{') Then
+  LexPeek;
+  If (lex_peek_tok.kind = TK_PUNCT) And (lex_peek_tok.val = '{') Then
     ParseBlock
   Else
   Begin
@@ -3976,7 +3963,7 @@ Var t      : TToken;
     cval2  : LongInt;
     is_arr : Boolean;
 Begin
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   While Not ((t.kind = TK_PUNCT) And (t.val = '}')) And
         Not (t.kind = TK_EOF) Do
   Begin
@@ -3992,7 +3979,7 @@ Begin
       LexNext;
       vt := KeywordToValueKind(t.val);
       { Detecter [] }
-      peek2 := LexPeek;
+      LexPeek; peek2 := lex_peek_tok;
       If (peek2.kind = TK_PUNCT) And (peek2.val = '[') Then
       Begin
         LexNext;
@@ -4003,7 +3990,7 @@ Begin
       Else
         is_arr := False;
 
-      peek2 := LexPeek;
+      LexPeek; peek2 := lex_peek_tok;
       If peek2.kind <> TK_IDENT Then
       Begin
         ParseError('Identifiant attendu apres le type');
@@ -4012,7 +3999,7 @@ Begin
       Else
       Begin
         LexNext;    { consommer l'ident }
-        t := LexPeek;
+        LexPeek; t := lex_peek_tok;
 
         If (t.kind = TK_PUNCT) And (t.val = '(') Then
         Begin
@@ -4037,7 +4024,8 @@ Begin
             If func_table^[fi2].is_main Then
               EmitI('INIT_DS', '', 'initialiser le segment de donnees');
             GenFunctionPrologue(fi2);
-            If (LexPeek.kind = TK_PUNCT) And (LexPeek.val = '{') Then
+            LexPeek;
+            If (lex_peek_tok.kind = TK_PUNCT) And (lex_peek_tok.val = '{') Then
               ParseBlock
             Else
             Begin
@@ -4075,7 +4063,7 @@ Begin
       ParseError('Membre de classe inconnu : ' + t.val);
       LexNext;
     End;
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
   End;
 End;
 
@@ -4086,10 +4074,10 @@ Procedure ParseClassDecl;
 Var t : TToken;
 Begin
   LexExpect('class');
-  t := LexExpectKind(TK_IDENT);
+  LexExpectKind(TK_IDENT); t := lex_cur_tok;
   EmitComment('Classe : ' + t.val);
   { Optionnel : heritage (ignore) }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If (t.kind = TK_PUNCT) And (t.val = ':') Then
   Begin
     LexNext;
@@ -4109,7 +4097,7 @@ Var t : TToken;
 Begin
   ParseUsings;
 
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   ns_open := False;
   If (t.kind = TK_KEYWORD) And (t.val = 'namespace') Then
   Begin
@@ -4118,17 +4106,17 @@ Begin
   End;
 
   { Une ou plusieurs classes }
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   While (t.kind = TK_KEYWORD) And (t.val = 'class') Do
   Begin
     ParseClassDecl;
-    t := LexPeek;
+    LexPeek; t := lex_peek_tok;
     { Sauter d'eventuels mots-cles de visibilite hors classe }
     If (t.kind = TK_KEYWORD) And
        ((t.val = 'public') Or (t.val = 'internal') Or (t.val = 'static')) Then
     Begin
       LexNext;
-      t := LexPeek;
+      LexPeek; t := lex_peek_tok;
     End;
   End;
 
@@ -5585,7 +5573,7 @@ Begin
   n_words := 0;
   n_args  := func_table^[fi].param_count;
   LexExpect('(');
-  t := LexPeek;
+  LexPeek; t := lex_peek_tok;
   If Not ((t.kind = TK_PUNCT) And (t.val = ')')) Then
   Begin
     i := 0;
@@ -5593,7 +5581,7 @@ Begin
       vt := ParseExpr;
       n_words := n_words + GenPushArgByType(vt);
       Inc(i);
-      t := LexPeek;
+      LexPeek; t := lex_peek_tok;
       If (t.kind = TK_PUNCT) And (t.val = ',') Then
         LexNext
       Else
@@ -6424,7 +6412,7 @@ End;
 Procedure ErrorMsg(Const msg : TString);
 Begin
   Inc(err_count);
-  WriteLn(StdErr, ErrPrefix('erreur') + ' : ' + msg);
+  WriteLn( ErrPrefix('erreur') + ' : ' + msg);
 End;
 
 { --------------------------------------------------------------------------
@@ -6433,7 +6421,7 @@ End;
 Procedure WarnMsg(Const msg : TString);
 Begin
   Inc(warn_count);
-  WriteLn(StdErr, ErrPrefix('attention') + ' : ' + msg);
+  WriteLn( ErrPrefix('attention') + ' : ' + msg);
 End;
 
 { --------------------------------------------------------------------------
@@ -6443,8 +6431,8 @@ End;
 Procedure FatalError(Const msg : TString);
 Begin
   Inc(err_count);
-  WriteLn(StdErr, ErrPrefix('fatal') + ' : ' + msg);
-  WriteLn(StdErr, 'Compilation interrompue (' + IntToStr(err_count) + ' erreur(s)).');
+  WriteLn( ErrPrefix('fatal') + ' : ' + msg);
+  WriteLn( 'Compilation interrompue (' + IntToStr(err_count) + ' erreur(s)).');
   FreeTables;
   Halt(1);
 End;
@@ -6455,7 +6443,7 @@ End;
 Procedure LexError(Const msg : TString);
 Begin
   Inc(err_count);
-  WriteLn(StdErr, ErrPrefix('lexical') + ' : ' + msg);
+  WriteLn( ErrPrefix('lexical') + ' : ' + msg);
 End;
 
 { --------------------------------------------------------------------------
@@ -6464,7 +6452,7 @@ End;
 Procedure SemError(Const msg : TString);
 Begin
   Inc(err_count);
-  WriteLn(StdErr, ErrPrefix('semantique') + ' : ' + msg);
+  WriteLn( ErrPrefix('semantique') + ' : ' + msg);
 End;
 
 { --------------------------------------------------------------------------
@@ -6473,7 +6461,7 @@ End;
 Procedure SynError(Const msg : TString);
 Begin
   Inc(err_count);
-  WriteLn(StdErr, ErrPrefix('syntaxe') + ' : ' + msg);
+  WriteLn( ErrPrefix('syntaxe') + ' : ' + msg);
 End;
 
 { --------------------------------------------------------------------------
@@ -6547,7 +6535,7 @@ Procedure AssertNoErrors;
 Begin
   If err_count > 0 Then
   Begin
-    WriteLn(StdErr, IntToStr(err_count) + ' erreur(s) detectee(s). Compilation echouee.');
+    WriteLn( IntToStr(err_count) + ' erreur(s) detectee(s). Compilation echouee.');
     Halt(1);
   End;
 End;
@@ -6703,7 +6691,7 @@ Begin
     End
     Else If (Length(arg) > 0) And (arg[1] = '-') Then
     Begin
-      WriteLn(StdErr, 'Option inconnue : ', arg);
+      WriteLn( 'Option inconnue : ', arg);
     End
     Else
     Begin
@@ -6727,7 +6715,7 @@ Begin
       End
       Else
       Begin
-        WriteLn(StdErr, 'Argument inattendu : ', arg);
+        WriteLn( 'Argument inattendu : ', arg);
       End;
     End;
   End;
@@ -6735,8 +6723,8 @@ Begin
   { Verifier la source }
   If Not found_src Then
   Begin
-    WriteLn(StdErr, 'Erreur : aucun fichier source specifie.');
-    WriteLn(StdErr, 'Utilisez -h pour l''aide.');
+    WriteLn( 'Erreur : aucun fichier source specifie.');
+    WriteLn( 'Utilisez -h pour l''aide.');
     ParseCommandLine := False;
     Exit;
   End;
