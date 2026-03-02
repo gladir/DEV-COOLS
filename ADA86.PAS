@@ -3625,29 +3625,11 @@ Begin
   End
   Else If sc = STORE_AUTO Then
   Begin
-   { Variable locale : espace deja alloue par AddSym.
-     Si init runtime (AX), stocker ; si init const, MOV + stocker.            }
-   If has_init Then
-   Begin
-    If got_const Then
-    Begin
-     { Constante connue : MOV AX, val }
-     EmitI('MOV AX, ' + IntToStr(init_val));
-    End
-    Else
-    Begin
-     { Cas multi-noms avec runtime : AX deja calcule pour le premier ;
-       les suivants doivent elu MOV AX (on reevalue).  Pour simplifier :
-       on ne reevalue que pour i=1, pour i>1 on recharge depuis BP.
-       Strategie : stocker AX en temp dans le premier, puis copier.           }
-     If i > 1 Then
-     Begin
-      { Recharger depuis le premier symbole si auto }
-      GenLoadVar(sym_idx - (i - 1));  { index premiere variable }
-     End;
-    End;
-    GenVarInit(sym_idx);
-   End;
+   { Variable locale : l'espace est alloue par AddSym via bp_top.
+     L'initialisation est DIFFEREE : emise apres SUB SP dans ParseProcedureBody.
+     On stocke seulement has_init / init_num (deja fait plus haut).           }
+   If has_init And Not got_const Then
+    Warning('Init runtime de variable locale differee non supportee : ' + names[i]);
   End;
   { STORE_CONST : rien a emettre, valeur dans init_num }
  End;
@@ -3835,13 +3817,363 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 13 - ParseProcedureBody / ParseFunctionBody : corps de sous-programmes  }
+{ ============================================================================ }
+
+{ ---- Prototypes forward (corps dans TODO 15) ---- }
+Procedure ParseStatement;      Forward;
+Procedure ParseDeclarativePart; Forward;
+
+{ ---- ParseSequenceOfStatements ----
+  Lit des instructions jusqu'a une borne de fin de bloc :
+  END | EXCEPTION | ELSIF | ELSE | WHEN | TOK_EOF                             }
+
+Procedure ParseSequenceOfStatements;
+Begin
+ While True do
+ Begin
+  { Conditions de fin de sequence }
+  If cur_tok_type = TOK_EOF Then Break;
+  If TokIsKw(KW_END)       Then Break;
+  If TokIsKw(KW_EXCEPTION) Then Break;
+  If TokIsKw(KW_ELSIF)     Then Break;
+  If TokIsKw(KW_ELSE)      Then Break;
+  If TokIsKw(KW_WHEN)      Then Break;
+  ParseStatement;
+ End;
+End;
+
+{ ---- RegisterParamSymbols : enregistre les parametres comme symboles locaux --
+  Parametres sur la pile (au-dessus de BP) :
+    [BP+0] = ancien BP, [BP+2] = adresse retour
+    [BP+4] = 1er param, [BP+6] = 2eme param, ...                              }
+
+Procedure RegisterParamSymbols(sub_idx: Integer);
+Var i      : Integer;
+    pc     : Integer;
+    ti     : Integer;
+    mode   : Integer;
+    off    : Integer;
+    sym    : Integer;
+Begin
+ pc  := sub_table^[sub_idx].param_count;
+ off := 4;   { [BP+4] = premier parametre }
+ For i := 1 to pc do
+ Begin
+  ti   := sub_table^[sub_idx].param_types[i];
+  mode := sub_table^[sub_idx].param_modes[i];
+  sym  := AddSym(sub_table^[sub_idx].param_names[i], ti, STORE_AUTO);
+  If sym = 0 Then Continue;
+  { Surcharger l'offset BP calcule par AddSym : les params sont au-dessus }
+  sym_table^[sym].bp_offset := off;
+  { OUT/IN OUT : la variable est un pointeur (2 octets), ti reste le type Ada }
+  Inc(off, 2);  { chaque parametre occupe 2 octets sur la pile 8086 }
+ End;
+End;
+
+{ ---- EmitLocalInits : emet les MOV [BP-n], val pour toutes les vars locales
+  ayant has_init=True et un init_num connu (compile-time).                    }
+
+Procedure EmitLocalInits(sym_start: Integer);
+Var i : Integer;
+Begin
+ For i := sym_start to sym_count do
+  If sym_table^[i].has_init And (sym_table^[i].store_class = STORE_AUTO) Then
+  Begin
+   EmitI('MOV AX, ' + IntToStr(sym_table^[i].init_num));
+   GenStoreVar(i);
+  End;
+End;
+
+{ ---- ParseExceptionHandlers : EXCEPTION handler [handler ...] ----
+  WHEN [nom |] typ => instructions
+  WHEN OTHERS     => instructions
+  Compile les handlers : CMP AX, code d'exception + Jcc.                      }
+
+Procedure ParseExceptionHandlers(Const lbl_end: String);
+Var lbl_next : String;
+Begin
+ { AX = code exception (ou 0 si pas d'exception) }
+ While TokIsKw(KW_WHEN) And (cur_tok_type <> TOK_EOF) do
+ Begin
+  Consume; { WHEN }
+  lbl_next := NewLabel;
+  If TokIsKw(KW_OTHERS) Then
+  Begin
+   Consume;
+  End
+  Else
+  Begin
+   { Nom d'exception : ident optionnel suivi de '=>' ou ':' }
+   If cur_tok_type = TOK_IDENT Then
+   Begin
+    { Stub : on accepte n'importe quel nom d'exception }
+    Consume;
+    { Alias nom : ident => skip }
+    If cur_tok_type = TOK_COLON Then
+    Begin Consume;
+     If cur_tok_type = TOK_IDENT Then Consume;
+    End;
+   End;
+  End;
+  Expect(TOK_ARROW, '`=>` attendu apres WHEN');
+  ParseSequenceOfStatements;
+  EmitI('JMP ' + lbl_end);   { apres traitement, sauter a la fin }
+  EmitLabel(lbl_next);
+ End;
+End;
+
+{ ---- ParseSubBody : corps commun PROCEDURE et FUNCTION ----
+  sub_idx : entree sub_table deja creee par le parseur appelant               }
+
+Procedure ParseSubBody(sub_idx: Integer; kind: Integer);
+Var frame_size  : Integer;
+    param_bytes : Integer;
+    lbl_exit    : String;
+    lbl_except  : String;
+    has_except  : Boolean;
+    sym_start   : Integer;
+    end_name    : String;
+Begin
+ { Emettre le label de la procedure / fonction }
+ EmitBlank;
+ EmitComment(sub_table^[sub_idx].name);
+ EmitLabel(sub_table^[sub_idx].asm_label);
+
+ { Empiler le scope }
+ PushScope(kind, sub_idx);
+ sym_start := scope_stack^[scope_top].sym_start;
+
+ { Enregistrer les parametres comme symboles locaux (bp_offset positifs) }
+ RegisterParamSymbols(sub_idx);
+
+ { Debut de frame : PUSH BP / MOV BP,SP }
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+
+ { Parser les declarations (types, constantes, variables, sous-progs) }
+ { Apres cet appel, bp_top contiendra l'espace local total }
+ ParseDeclarativePart;
+
+ { Maintenant on connait la taille de frame }
+ frame_size := -scope_stack^[scope_top].bp_top;
+ If frame_size > 0 Then
+  EmitI('SUB  SP, ' + IntToStr(frame_size));
+
+ { Emettre les initialisations compile-time des variables locales }
+ EmitLocalInits(sym_start);
+
+ { Label de sortie (pour RETURN interieur) }
+ lbl_exit   := NewLabel;
+ lbl_except := NewLabel;
+ has_except := False;
+ SetExitLabel(lbl_exit);
+
+ { Attendre BEGIN }
+ ExpectKw(KW_BEGIN, 'BEGIN', '`BEGIN` attendu apres partie declarative');
+
+ { Corps }
+ ParseSequenceOfStatements;
+
+ { Bloc EXCEPTION optionnel }
+ If TokIsKw(KW_EXCEPTION) Then
+ Begin
+  has_except := True;
+  EmitI('JMP ' + lbl_exit);  { code normal saute les handlers }
+  EmitLabel(lbl_except);
+  Consume; { EXCEPTION }
+  ParseExceptionHandlers(lbl_exit);
+ End;
+
+ { Label de sortie : debut de l'epilogue }
+ EmitLabel(lbl_exit);
+
+ { Epilogue }
+ param_bytes := SubParamBytes(sub_idx);
+ If frame_size > 0 Then
+  EmitI('MOV  SP, BP');
+ EmitI('POP  BP');
+ If param_bytes > 0 Then
+  EmitI('RET  ' + IntToStr(param_bytes))
+ Else
+  EmitI('RET');
+
+ { Mettre a jour frame_size dans sub_table }
+ sub_table^[sub_idx].frame_size  := frame_size;
+ sub_table^[sub_idx].is_forward  := False;
+
+ { Depiler le scope }
+ PopScope;
+
+ { END [nom] ; }
+ ExpectKw(KW_END, 'END', '`END` attendu en fin de sous-programme');
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  end_name := UpCaseStr(cur_tok_str);
+  If end_name <> sub_table^[sub_idx].name Then
+   Warning('Nom apres END (' + end_name + ') different du nom declare (' +
+           sub_table^[sub_idx].name + ')');
+  Consume;
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres END de sous-programme');
+End;
+
+{ ---- ParseProcedureBody : PROCEDURE nom [(params)] IS ... ---- }
+
+Procedure ParseProcedureBody;
+Var nm  : String;
+    idx : Integer;
+Begin
+ Consume; { PROCEDURE }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de procedure attendu'); Exit; End;
+ nm  := UpCaseStr(cur_tok_str);
+ Consume;
+
+ { Chercher un forward ou creer }
+ idx := FindSub(nm);
+ If idx = 0 Then
+  idx := AddSub(nm, False, TYPE_VOID);
+ If idx = 0 Then Exit;
+
+ { Parametres : relire si pas de forward, ou ignorer si deja definis }
+ If sub_table^[idx].param_count = 0 Then
+ Begin
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   ParseParamList(idx);
+   Expect(TOK_RPAREN, '`)` attendu apres parametres');
+  End;
+ End
+ Else
+ Begin
+  { Forward : consommer la liste si presente (non enregistree) }
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+   Consume; { ) }
+  End;
+ End;
+
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres signature de procedure');
+ ParseSubBody(idx, SK_PROC);
+End;
+
+{ ---- ParseFunctionBody : FUNCTION nom [(params)] RETURN type IS ... ---- }
+
+Procedure ParseFunctionBody;
+Var nm     : String;
+    idx    : Integer;
+    ret_ti : Integer;
+Begin
+ Consume; { FUNCTION }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de fonction attendu'); Exit; End;
+ nm  := UpCaseStr(cur_tok_str);
+ Consume;
+
+ idx := FindSub(nm);
+ If idx = 0 Then
+  idx := AddSub(nm, True, TYPE_UNKNOWN);
+ If idx = 0 Then Exit;
+
+ sub_table^[idx].is_function := True;
+
+ If sub_table^[idx].param_count = 0 Then
+ Begin
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   ParseParamList(idx);
+   Expect(TOK_RPAREN, '`)` attendu apres parametres');
+  End;
+ End
+ Else
+ Begin
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+   Consume;
+  End;
+ End;
+
+ ExpectKw(KW_RETURN, 'RETURN', '`RETURN` attendu dans corps de fonction');
+ ret_ti := ParseTypeRef;
+ sub_table^[idx].ret_type := ret_ti;
+
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres signature de fonction');
+ ParseSubBody(idx, SK_FUNC);
+End;
+
+{ ---- ParseDeclarativePart : types, constants, variables, sous-progs ----
+  Boucle jusqu'a BEGIN ou END (partie declarative terminee).                   }
+
+Procedure ParseDeclarativePart;
+Begin
+ While True do
+ Begin
+  If cur_tok_type = TOK_EOF Then Break;
+  If TokIsKw(KW_BEGIN)     Then Break;
+  If TokIsKw(KW_END)       Then Break;
+
+  If TokIsKw(KW_TYPE)    Then ParseTypeDecl
+  Else If TokIsKw(KW_SUBTYPE)  Then ParseSubtypeDecl
+  Else If TokIsKw(KW_PROCEDURE) Then
+  Begin
+   { Body si IS present apres nom/params, sinon spec forward }
+   ParseProcedureBody;
+  End
+  Else If TokIsKw(KW_FUNCTION) Then
+   ParseFunctionBody
+  Else If TokIsKw(KW_PRAGMA) Then
+  Begin
+   Consume; { PRAGMA }
+   If cur_tok_type = TOK_IDENT Then Consume;
+   If cur_tok_type = TOK_LPAREN Then
+   Begin
+    Consume;
+    While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+    Consume;
+   End;
+   Expect(TOK_SEMI, '`;` attendu apres PRAGMA');
+  End
+  Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+  Begin
+   { Declaration d'objet : ident : [CONSTANT] type [:= expr] ; }
+   ParseObjectDecl;
+  End
+  Else If TokIsKw(KW_USE) Then
+   ParseUse
+  Else
+  Begin
+   { Token inattendu dans la partie declarative }
+   ErrorTok('Element inattendu dans partie declarative');
+   SkipToSemi;
+  End;
+ End;
+End;
+
+{ ---- ParseStatement : stub (sera complete au TODO 15) ---- }
+Procedure ParseStatement;
+Begin
+ { Stub minimal : absorbe une instruction jusqu'au ';' }
+ SkipToSemi;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 12 OK (signatures de sous-programmes OK)');
-  WriteLn('  ParseParamList (IN / OUT / IN OUT, valeur defaut)');
-  WriteLn('  ParseProcedureSpec (PROCEDURE nom [(params)] ;)');
-  WriteLn('  ParseFunctionSpec  (FUNCTION  nom [(params)] RETURN type ;)');
-  WriteLn('  VerifySubSignature (coherence forward vs body)');
+  WriteLn('ADA86 V1.0 - TODO 13 OK (corps de sous-programmes OK)');
+  WriteLn('  ParseSequenceOfStatements (stub ParseStatement)');
+  WriteLn('  RegisterParamSymbols (offsets BP positifs pour params)');
+  WriteLn('  EmitLocalInits (init compile-time apres SUB SP)');
+  WriteLn('  ParseExceptionHandlers (WHEN ... =>)');
+  WriteLn('  ParseSubBody (label + prologue + decl + stmt + epilogue)');
+  WriteLn('  ParseProcedureBody, ParseFunctionBody');
+  WriteLn('  ParseDeclarativePart (types + objets + sous-progs)');
 End.

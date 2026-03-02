@@ -13,17 +13,17 @@ Program ABAP86;
 Uses DOS;
 
 { ============================================================================ }
-{ TODO 01 - Architecture, constantes, types de base, utilitaires [COMPLET]    }
+{ Architecture, constantes, types de base, utilitaires                         }
 { ============================================================================ }
 
 Const
  VERSION = 'ABAP86 V1.0';
 
- { ---- Types de tokens ABAP ---- }
+ { ---- Types de jetons ABAP ---- }
  TOK_UNKNOWN  =  0;
- TOK_IDENT    =  1;   { identificateur / mot-cle                  }
- TOK_NUMBER   =  2;   { litterale entiere  : 123                  }
- TOK_FLOAT    =  3;   { litterale decimale : 1.5 / 1E3            }
+ TOK_IDENT    =  1;   { identificateur / mot-clef                 }
+ TOK_NUMBER   =  2;   { litt‚rale entiere  : 123                  }
+ TOK_FLOAT    =  3;   { litt‚rale decimale : 1.5 / 1E3            }
  TOK_STRING   =  4;   { 'texte' (apostrophe doublee '')           }
  TOK_PLUS     =  5;   { +                                         }
  TOK_MINUS    =  6;   { -                                         }
@@ -40,15 +40,15 @@ Const
  TOK_GT       = 17;   { >                                         }
  TOK_LE       = 18;   { <=                                        }
  TOK_GE       = 19;   { >=                                        }
- TOK_CONCAT   = 20;   { && (concatenation expressions)            }
+ TOK_CONCAT   = 20;   { && (concat‚nation expressions)            }
  TOK_LBRACKET = 21;   { [  (indice tableau)                       }
  TOK_RBRACKET = 22;   { ]                                         }
  TOK_HASH     = 23;   { #  (debut pragma)                         }
- TOK_PIPE     = 24;   { |  (chaine template ABAP 7.4, stub)       }
+ TOK_PIPE     = 24;   { |  (chaine de gabarit ABAP 7.4, stub)     }
  TOK_AT       = 25;   { @  (reference inline ABAP 7.4, stub)      }
  TOK_EOF      = 99;
 
- { ---- Types de donnees ABAP ---- }
+ { ---- Types de donn‚es ABAP ---- }
  TYPE_UNKNOWN  =  0;
  TYPE_I        =  1;   { I        : entier 16 bits (ici 2 octets) }
  TYPE_F        =  2;   { F        : flottant 8 octets (stub)      }
@@ -64,14 +64,14 @@ Const
  TYPE_REF      = 12;   { REF TO   : reference objet (stub)        }
  TYPE_VOID     = 13;   { pas de type de retour (FORM/EVENT)       }
 
- { ---- Classes de stockage ---- }
+ { ---- Classes d'entreposage ---- }
  STORE_AUTO     = 0;   { variable locale FORM (pile, offset BP)   }
  STORE_STATIC   = 1;   { variable globale REPORT (segment .DATA)  }
  STORE_PARAM    = 2;   { parametre USING/CHANGING d'une FORM      }
  STORE_TABLE    = 3;   { table interne (tableau en .DATA)         }
- STORE_CONSTANT = 4;   { CONSTANTS (valeur immediate, pas de DW) }
+ STORE_CONSTANT = 4;   { CONSTANTS (valeur imm‚diate, pas de DW)  }
 
- { ---- Codes des mots-cles ABAP ---- }
+ { ---- Codes des mots-clefs ABAP ---- }
  KW_NONE            =   0;
  KW_REPORT          =   1;
  KW_PROGRAM         =   2;
@@ -225,12 +225,12 @@ Const
  KW_ALL             = 150;
  KW_FIRST           = 151;
 
- { ---- Types de parametre FORM (USING / CHANGING / TABLES) ---- }
+ { ---- Types de paramŠtre FORM (USING / CHANGING / TABLES) ---- }
  PARAM_USING    = 0;   { passage par valeur             }
  PARAM_CHANGING = 1;   { passage par adresse (ref)      }
  PARAM_TABLES   = 2;   { table interne (adresse)        }
 
- { ---- Types d'evenements ABAP ---- }
+ { ---- Types d'‚v‚nements ABAP ---- }
  EV_START_OF_SEL = 0;
  EV_END_OF_SEL   = 1;
  EV_TOP_OF_PAGE  = 2;
@@ -246,13 +246,13 @@ Const
  SK_EVENT   = 4;
 
  { ---- Limites ---- }
- MAX_SYM    = {$IFDEF FPC}512{$ELSE}256{$ENDIF}; { Variables + labels max               }
+ MAX_SYM    = {$IFDEF FPC}512{$ELSE}256{$ENDIF};   { Variables + labels max               }
  MAX_FORM   = {$IFDEF FPC}128{$ELSE}32{$ENDIF};    { FORMs + FUNCTIONs max                }
  MAX_LOCAL  = 64;     { Variables locales par scope          }
  MAX_PARAM  = 20;     { Parametres max par FORM              }
  MAX_DEPTH  = 24;     { Profondeur de scope max              }
  MAX_LABEL  = 9999;   { Limite compteur labels ASM           }
- MAX_STR    = {$IFDEF FPC}256{$ELSE}128{$ENDIF};    { Litteraux chaines max                }
+ MAX_STR    = {$IFDEF FPC}256{$ELSE}128{$ENDIF};    { Litt‚raux chaines max               }
  MAX_FIELD  = 32;     { Champs max par structure             }
  MAX_EVTS   = 8;      { Evenements ABAP max                  }
 
@@ -282,10 +282,10 @@ Type
   scope_lev   : Integer;       { niveau de scope (0 = global)     }
  End;
 
- { ----- Entree de la table des FORMs / FUNCTIONs ----- }
+ { ----- Entr‚e de la table des FORMs / FUNCTIONs ----- }
  TFormEntry = Record
   name          : String[48];
-  asm_label     : String[48];   { ex: _ABAP_FORM_nomform       }
+  asm_label     : String[48];    { ex: _ABAP_FORM_nomform       }
   param_count   : Integer;       { total USING + CHANGING       }
   using_count   : Integer;
   changing_count: Integer;
@@ -297,25 +297,25 @@ Type
   param_types   : Array[1..MAX_PARAM] of Integer;   { TYPE_xxx  }
  End;
 
- { ----- Scope (frame de compilation) ----- }
+ { ----- tendue (frame de compilation) ----- }
  TScopeEntry = Record
   kind        : Integer;         { SK_xxx                        }
   form_idx    : Integer;         { index dans form_table si FORM }
   bp_top      : Integer;         { prochain offset BP negatif    }
   sym_start   : Integer;         { premier sym index du scope    }
   sym_end     : Integer;         { dernier sym index du scope    }
-  lbl_exit    : String[32];     { label de sortie (EXIT/RETURN) }
-  lbl_cont    : String[32];     { label continue (LOOP/WHILE)   }
-  lbl_end     : String[32];     { label fin de bloc (ENDLOOP..) }
+  lbl_exit    : String[32];     { ‚tiquette de sortie (EXIT/RETURN) }
+  lbl_cont    : String[32];     { ‚tiquette continue (LOOP/WHILE)   }
+  lbl_end     : String[32];     { ‚tiquette fin de bloc (ENDLOOP..) }
  End;
 
- { ----- Litterale chaine ----- }
+ { ----- Litt‚rale chaŒne ----- }
  TStrEntry = Record
   text        : String;
   asm_label   : String[32];
  End;
 
- { ----- Evenement ABAP (START-OF-SELECTION etc.) ----- }
+ { ----- Ev‚nement ABAP (START-OF-SELECTION etc.) ----- }
  TEventEntry = Record
   ev_kind     : Integer;         { EV_xxx                        }
   asm_label   : String[48];
@@ -387,7 +387,7 @@ Var
  error_count   : Integer;
 
 { ============================================================================ }
-{ TODO 01 - Utilitaires de base                          [COMPLET]            }
+{ Utilitaires de base                                                          }
 { ============================================================================ }
 
 { Conversion entier -> chaine (LongInt) }
@@ -554,7 +554,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 02 - TOKENISEUR ABAP                              [COMPLET]            }
+{ TOKENISEUR ABAP                                                              }
 { ============================================================================ }
 
 { Lit le prochain caractere brut depuis la source.
@@ -601,17 +601,23 @@ End;
 Function SrcPeekChar: Char;
 Var ch: Char;
 Begin
- If has_peek Then Begin SrcPeekChar := peek_char; Exit; End;
+ If has_peek Then Begin
+  SrcPeekChar := peek_char;
+  Exit;
+ End;
  ch := SrcGetChar;
- If ch = #0 Then Begin SrcPeekChar := #0; Exit; End;
- { On remet le car dans le buffer ; on repositionne src_col }
+ If ch = #0 Then Begin
+  SrcPeekChar := #0;
+  Exit;
+ End;
+ { On remet le car dans le tampon ; on repositionne src_col }
  has_peek   := True;
  peek_char  := ch;
  Dec(src_col);
  SrcPeekChar := ch;
 End;
 
-{ Prototype anticipe pour IsKeyword (defini au TODO 03) }
+{ Prototype anticipe pour IsKeyword }
 Function IsKeyword(Const s: String): Integer; Forward;
 
 { Prototype anticipe pour NextToken (utilise dans InitTokenizer) }
@@ -683,8 +689,7 @@ Begin
 End;
 
 { Sauter jusqu'au prochain '.' (fin d'instruction) inclus }
-Procedure SkipToDot;
-Begin
+Procedure SkipToDot;Begin
  While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF) Do
   Consume;
  If cur_tok_type = TOK_DOT Then Consume;
@@ -893,7 +898,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 03 - RECONNAISSANCE DES MOTS-CLES ABAP/4          [COMPLET]            }
+{ RECONNAISSANCE DES MOTS-CLES ABAP/4                                          }
 { ============================================================================ }
 
 { Retourne le code KW_xxx correspondant au nom ABAP (deja en majuscules),
@@ -1085,7 +1090,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 - TABLE DES SYMBOLES ET DES FORMS              [COMPLET]            }
+{ TABLE DES SYMBOLES ET DES FORMS                                              }
 { ============================================================================ }
 
 { Initialise toutes les tables (symboles, formes, chaines) }
@@ -1253,7 +1258,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 05 - GESTION DES SCOPES                           [COMPLET]            }
+{ GESTION DES SCOPES                                                           }
 { ============================================================================ }
 
 { Initialise la pile de scopes : scope 0 = global REPORT }
@@ -1376,7 +1381,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 06 - PARSEUR : REPORT / PROGRAM (en-tete)         [COMPLET]            }
+{ ANALYSEUR : REPORT / PROGRAM (en-tete)                                       }
 { ============================================================================ }
 
 { ParseReport / ParseProgram
@@ -1416,7 +1421,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS           [COMPLET]            }
+{ ANALYSEUR : DATA / TYPES / CONSTANTS                                         }
 { ============================================================================ }
 
 { --- Analyse du type ABAP apres TYPE ou LIKE ---
