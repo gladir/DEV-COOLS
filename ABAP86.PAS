@@ -2836,12 +2836,16 @@ End;
 Procedure ParseStatement; Forward;
 
 { Parse un bloc d'instructions jusqu'a l'un des trois mots-cles d'arret.
-  Passe KW_NONE (=0) pour un emplacement inutilise.                           }
+  Passe KW_NONE (=0) pour un emplacement inutilise.
+  Note : KW_NONE = 0, donc on verifie kw <> KW_NONE avant TokIsKw pour eviter
+  de confondre les identifiants non-mot-cle avec un marqueur d'arret.         }
 Procedure ParseBlock(stop1, stop2, stop3: Integer);
 Begin
  While (cur_tok_type <> TOK_EOF) Do
  Begin
-  If TokIsKw(stop1) Or TokIsKw(stop2) Or TokIsKw(stop3) Then Break;
+  If ((stop1 <> KW_NONE) And TokIsKw(stop1)) Or
+     ((stop2 <> KW_NONE) And TokIsKw(stop2)) Or
+     ((stop3 <> KW_NONE) And TokIsKw(stop3)) Then Break;
   ParseStatement;
  End;
 End;
@@ -2938,6 +2942,116 @@ Begin
 
  { Etiquette de fin commune a toutes les branches }
  EmitLabel(lbl_end);
+End;
+
+{ ============================================================================ }
+{ TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE [COMPLET]           }
+{ ============================================================================ }
+
+{ Parse CASE variable. WHEN val [OR val2]. ... [WHEN OTHERS. ...] ENDCASE.
+
+  Syntaxe ABAP :
+    CASE var.
+      WHEN val1.              instructions.
+      WHEN val2 OR val3.      instructions.
+      WHEN OTHERS.            instructions.
+    ENDCASE.
+
+  Generation 8086 :
+    ParseExpr(var) -> AX ; MOV DX, AX     ; DX = valeur de selection
+    Pour chaque WHEN :
+      ParseExpr(val) -> AX ; CMP DX, AX
+      S'il y a OR : JE lbl_body, puis ParseExpr(val_suivante) -> AX ; CMP DX, AX
+      Apres la derniere valeur : JNE lbl_next
+    lbl_body:
+      corps
+      JMP lbl_endcase
+    lbl_next:   <- prochain WHEN ou fall-through vers ENDCASE
+    WHEN OTHERS -> corps direct (pas de test), JMP lbl_endcase
+    EmitLabel(lbl_endcase)
+}
+Procedure ParseCase;
+Var lbl_endcase, lbl_next, lbl_body : String;
+Begin
+ Consume; { skip CASE }
+ EmitComment('---- CASE ----');
+
+ { Evaluer la variable de selection -> AX, puis sauvegarde dans DX }
+ ParseExpr;
+ EmitI('MOV     DX, AX');
+
+ { Consommer le point apres la variable }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres variable CASE');
+
+ lbl_endcase := NewLabel + 'EC';
+
+ { ----------------------------------------------------------------
+   Boucle sur les clauses WHEN
+   ---------------------------------------------------------------- }
+ While TokIsKw(KW_WHEN) Do
+ Begin
+  Consume; { skip WHEN }
+
+  { WHEN OTHERS : clause par defaut }
+  If TokIsKw(KW_OTHERS) Then
+  Begin
+   Consume; { skip OTHERS }
+   If cur_tok_type = TOK_DOT Then Consume
+   Else Warning('Point attendu apres WHEN OTHERS');
+   EmitComment('---- WHEN OTHERS ----');
+   EnterScope(SK_BLOCK, 0);
+   ParseBlock(KW_ENDCASE, KW_NONE, KW_NONE);
+   LeaveScope;
+   GenJmp(lbl_endcase);
+   Break; { WHEN OTHERS termine la liste des clauses }
+  End;
+
+  { WHEN valeur [OR valeur2 ...] }
+  lbl_next := NewLabel + 'WN';
+  lbl_body := NewLabel + 'WB';
+  EmitComment('---- WHEN ----');
+
+  { Evaluer la premiere valeur -> AX, comparer avec DX }
+  ParseExpr;
+  EmitI('CMP     DX, AX');
+
+  { Valeurs supplementaires separees par OR }
+  While TokIsKw(KW_OR) Do
+  Begin
+   EmitI('JE      ' + lbl_body); { correspond a cette valeur -> corps }
+   Consume; { skip OR }
+   ParseExpr; { valeur suivante -> AX }
+   EmitI('CMP     DX, AX');
+  End;
+
+  { Apres la derniere valeur : sauter si pas egal }
+  EmitI('JNE     ' + lbl_next);
+
+  { --- Corps de la clause --- }
+  EmitLabel(lbl_body);
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres valeur(s) WHEN');
+
+  EnterScope(SK_BLOCK, 0);
+  ParseBlock(KW_WHEN, KW_ENDCASE, KW_NONE);
+  LeaveScope;
+  GenJmp(lbl_endcase);
+
+  { Etiquette pour la clause suivante }
+  EmitLabel(lbl_next);
+ End; { While WHEN }
+
+ { ENDCASE. }
+ If TokIsKw(KW_ENDCASE) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDCASE');
+ End
+ Else Error('ENDCASE attendu');
+
+ EmitLabel(lbl_endcase);
 End;
 
 { ============================================================================ }
