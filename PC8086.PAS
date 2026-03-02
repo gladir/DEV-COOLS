@@ -1640,45 +1640,35 @@ Begin
    Emit('mov al, ' + IntToStr(Length(string_temp)));
    Emit('mov ' + symbol_table[sym_index]^.name + ', al');
     { Copier les caractäres si la chaåne n'est pas vide }
-   If Length(string_temp) > 0 Then
-   Begin
-    { G√©n√©rer la cha√Æne constante dans le segment de donn√©es }
-    If not data_segment Then
-    Begin
+   If Length(string_temp) > 0 Then Begin
+    { GÇnÇrer la chaåne constante dans le segment de donnÇes }
+    If not data_segment Then Begin
      EmitLine('.DATA');
      data_segment := True;
     End;
-
     EmitLine('STR_CONST' + IntToStr(next_label_id) + ' DB ''' + string_temp + '''');
-
-    { Retour au segment de code }
-    If not code_segment Then
-     BeginCodeSection;
-
-    { Copier les caract√®res }
+     { Retour au segment de code }
+    If not code_segment Then BeginCodeSection;
+     { Copier les caractäres }
     Emit('mov si, OFFSET STR_CONST' + IntToStr(next_label_id));
     Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name + '+1');
     Emit('mov cx, ' + IntToStr(Length(string_temp)));
     Emit('rep movsb');
-
     Inc(next_label_id);
    End;
-
-   NextToken; { Consommer la cha√Æne }
+   NextToken; { Consommer la chaåne }
   End
-  Else
+   Else
   Begin
    ParseExpression;
-
-   { V√©rifier si c'est une affectation au r√©sultat d'une fonction }
-   If symbol_table[sym_index]^.is_function and (symbol_table[sym_index]^.name = current_function_name) Then
-   Begin
-    { Affectation au r√©sultat de la fonction }
-    EmitComment('Affectation r√©sultat fonction: ' + var_name);
+    { VÇrifier si c'est une affectation au rÇsultat d'une fonction }
+   If symbol_table[sym_index]^.is_function and (symbol_table[sym_index]^.name = current_function_name) Then Begin
+     { Affectation au rÇsultat de la fonction }
+    EmitComment('Affectation rÇsultat fonction: ' + var_name);
     Case symbol_table[sym_index]^.return_type of
      TYPE_INTEGER, TYPE_WORD:
       Begin
-       Emit('mov [bp-2], ax');  { Stocker le r√©sultat dans l'espace local }
+       Emit('mov [bp-2], ax');  { Entreposer le rÇsultat dans l'espace local }
       End;
      TYPE_BYTE, TYPE_CHAR:
       Begin
@@ -1686,7 +1676,7 @@ Begin
       End;
      TYPE_STRING:
       Begin
-       { Pour les cha√Ænes, copier depuis SI vers l'espace local }
+       { Pour les chaånes, copier depuis SI vers l'espace local }
        Emit('mov di, [bp-2]');
        Emit('call COPY_STR');
       End;
@@ -1698,13 +1688,13 @@ Begin
    End
    Else
    Begin
-    { G√©n√©rer le code d'affectation normal }
+    { GÇnÇrer le code d'affectation normal }
     Case symbol_table[sym_index]^.data_type of
      TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
      TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
      TYPE_STRING:
       Begin
-       EmitComment('Copie de cha√Æne');
+       EmitComment('Copie de chaåne');
        Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name);
        Emit('call COPY_STR'); { SI -> DI }
       End;
@@ -1716,12 +1706,12 @@ Begin
  End
  Else
  Begin
-  Error('Attendu := pour l''affectation, trouv√©: ' + current_token);
-  NextToken; { Consommer le token erron√© pour √©viter la boucle infinie }
+  Error('Attendu := pour l''affectation, trouvÇ: ' + current_token);
+  NextToken; { Consommer le token erronÇ pour Çviter la boucle infinie }
  End;
 End;
 
-{ Parser une instruction WRITE (sans saut de ligne) }
+ { Analyser une instruction WRITE (sans saut de ligne) }
 Procedure ParseWrite;
 Var
  i, sym_index: Integer;
@@ -1729,69 +1719,54 @@ Var
  var_name: String;
 Begin
  NextToken; { Consommer WRITE }
-
- If current_token = '(' Then
- Begin
+ If current_token = '(' Then Begin
   NextToken;
-
-  { Traitement des param√®tres multiples s√©par√©s par des virgules }
+   { Traitement des paramätres multiples sÇparÇs par des virgules }
   Repeat
    is_string := False;
-
-   { V√©rifier si c'est une cha√Æne litt√©rale (entre guillemets) }
+    { VÇrifier si c'est une chaåne littÇrale (entre guillemets) }
    If (current_symbol = SYM_STRING_LITERAL) or
       ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and
        (Pos('''', current_line) > 0)) Then
    Begin
-    { Cha√Æne litt√©rale }
+    { Chaåne littÇrale }
     is_string := True;
-    EmitComment('Affichage cha√Æne (Write): ' + current_token);
-
-    { Optimisation: utiliser l'interruption DOS 09h pour les cha√Ænes }
-    If Length(current_token) > 0 Then
-    Begin
-     { G√©n√©rer une √©tiquette de donn√©es pour la cha√Æne }
-     If not data_segment Then
-     Begin
+    EmitComment('Affichage chaåne (Write): ' + current_token);
+     { Optimisation: utiliser l'interruption DOS 09h pour les chaånes }
+    If Length(current_token) > 0 Then Begin
+     { GÇnÇrer une Çtiquette de donnÇes pour la chaåne }
+     If not data_segment Then Begin
       EmitLine('.DATA');
       data_segment := True;
      End;
-
      EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
-
-     { Retour au segment de code }
-     If not code_segment Then
-      BeginCodeSection;
-
-     { Afficher la cha√Æne avec DOS function 09h }
+      { Retour au segment de code }
+     If not code_segment Then BeginCodeSection;
+      { Afficher la chaåne avec DOS function 09h }
      Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
      Emit('mov ah, 09h');
      Emit('int 21h');
      Inc(next_label_id);
     End;
-
     NextToken;
    End
-   Else If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
-   Begin
-    { V√©rifier si c'est un nombre ou une variable }
-    If (current_token[1] >= '0') and (current_token[1] <= '9') Then
-    Begin
-     { Nombre litt√©ral }
+    Else
+   If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then Begin
+    { VÇrifier si c'est un nombre ou une variable }
+    If (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
+     { Nombre littÇral }
      EmitComment('Affichage nombre (Write): ' + current_token);
      Emit('mov ax, ' + current_token);
      Emit('call PRINT_NUM');
     End
-    Else
+     Else
     Begin
-     { Variable - v√©rifier dans la table des symboles }
+     { Variable - vÇrifier dans la table des symboles }
      var_name := current_token;
      sym_index := FindSymbol(var_name);
-     If sym_index > 0 Then
-     Begin
-      { Constante : √©mettre la valeur imm√©diate }
-      If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
-      Begin
+     If sym_index > 0 Then Begin
+      { Constante : êmettre la valeur immÇdiate }
+      If symbol_table[sym_index]^.symbol_type = SYM_CONST Then Begin
        EmitComment('Affichage constante (Write): ' + var_name);
        Case symbol_table[sym_index]^.data_type of
         TYPE_STRING:
@@ -1815,7 +1790,7 @@ Begin
         End;
        End;
       End
-      Else
+       Else
       Begin
        EmitComment('Affichage variable (Write): ' + var_name);
        Case symbol_table[sym_index]^.data_type of
@@ -1838,7 +1813,7 @@ Begin
         End;
        TYPE_STRING:
         Begin
-         EmitComment('Affichage variable cha√Æne (Write): ' + var_name);
+         EmitComment('Affichage variable chaåne (Write): ' + var_name);
          Emit('mov si, OFFSET ' + symbol_table[sym_index]^.name);
          Emit('call PRINT_STR');
         End;
@@ -1864,36 +1839,28 @@ Begin
       End; { Case data_type }
       End; { Else variable normale }
      End { If sym_index > 0 }
-     Else
+      Else
      Begin
-      Error('Variable non d√©clar√©e: ' + var_name);
+      Error('Variable non dÇclarÇe: ' + var_name);
      End;
     End;
-
     NextToken;
    End;
-
-   { V√©rifier s'il y a d'autres param√®tres }
-   If current_token = ',' Then
-   Begin
+    { VÇrifier s'il y a d'autres paramätres }
+   If current_token = ',' Then Begin
     NextToken;
-    Continue; { Traiter le param√®tre suivant }
+    Continue; { Traiter le paramätre suivant }
    End
-   Else
-    Break; { Fin des param√®tres }
-
+    Else
+   Break; { Fin des paramätres }
   Until False;
-
-  If current_token = ')' Then
-   NextToken
-  Else
-   Error('Attendu ) apr√®s les param√®tres de Write');
+  If current_token = ')' Then NextToken
+                         Else Error('Attendu ) apräs les paramätres de Write');
  End;
-
- { Pas de saut de ligne pour WRITE (contrairement √† WRITELN) }
+  { Pas de saut de ligne pour WRITE (contrairement Ö WRITELN) }
 End;
 
-{ Parser une instruction WRITELN }
+ { Analyser une instruction WRITELN }
 Procedure ParseWriteln;
 Var
  i, sym_index: Integer;
@@ -1901,70 +1868,55 @@ Var
  var_name: String;
 Begin
  NextToken; { Consommer WRITELN }
-
- If current_token = '(' Then
- Begin
+ If current_token = '(' Then Begin
   NextToken;
-
-  { Traitement des param√®tres multiples s√©par√©s par des virgules }
+   { Traitement des paramätres multiples sÇparÇs par des virgules }
   Repeat
    is_string := False;
-
-   { V√©rifier si c'est une cha√Æne litt√©rale - d√©tection am√©lior√©e }
+    { VÇrifier si c'est une chaåne littÇrale - dÇtection amÇliorÇe }
    If (current_symbol = SYM_STRING_LITERAL) or
       ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and
        (Length(current_line) > 0) and (line_pos > 1) and
        (current_line[line_pos-Length(current_token)-1] = '''')) Then
    Begin
-    { Cha√Æne litt√©rale }
+    { Chaåne littÇrale }
     is_string := True;
-    EmitComment('Affichage cha√Æne: ' + current_token);
-
-    { Optimisation: utiliser l'interruption DOS 09h pour les cha√Ænes }
-    If Length(current_token) > 0 Then
-    Begin
-     { G√©n√©rer une √©tiquette de donn√©es pour la cha√Æne }
-     If not data_segment Then
-     Begin
+    EmitComment('Affichage chaåne: ' + current_token);
+     { Optimisation: utiliser l'interruption DOS 09h pour les chaånes }
+    If Length(current_token) > 0 Then Begin
+     { GÇnÇrer une Çtiquette de donnÇes pour la chaåne }
+     If not data_segment Then Begin
       EmitLine('.DATA');
       data_segment := True;
      End;
-
      EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
-
-     { Retour au segment de code }
-     If not code_segment Then
-      BeginCodeSection;
-
-     { Afficher la cha√Æne avec DOS function 09h }
+      { Retour au segment de code }
+     If not code_segment Then BeginCodeSection;
+      { Afficher la chaåne avec DOS function 09h }
      Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
      Emit('mov ah, 09h');
      Emit('int 21h');
      Inc(next_label_id);
     End;
-
     NextToken;
    End
-   Else If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
-   Begin
-    { V√©rifier si c'est un nombre ou une variable }
-    If (current_token[1] >= '0') and (current_token[1] <= '9') Then
-    Begin
-     { Nombre litt√©ral }
-     EmitComment('Affichage nombre: ' + current_token);
-     Emit('mov ax, ' + current_token);
-     Emit('call PRINT_NUM');
-    End
     Else
+   If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then Begin
+    { VÇrifier si c'est un nombre ou une variable }
+    If (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
+     { Nombre littÇral }
+      EmitComment('Affichage nombre: ' + current_token);
+      Emit('mov ax, ' + current_token);
+      Emit('call PRINT_NUM');
+    End
+     Else
     Begin
-     { Variable - v√©rifier dans la table des symboles }
+     { Variable - vÇrifier dans la table des symboles }
      var_name := current_token;
      sym_index := FindSymbol(var_name);
-     If sym_index > 0 Then
-     Begin
-      { Constante : √©mettre la valeur imm√©diate }
-      If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
-      Begin
+     If sym_index > 0 Then Begin
+      { Constante : êmettre la valeur immÇdiate }
+      If symbol_table[sym_index]^.symbol_type = SYM_CONST Then Begin
        EmitComment('Affichage constante: ' + var_name);
        Case symbol_table[sym_index]^.data_type of
         TYPE_STRING:
@@ -2037,49 +1989,36 @@ Begin
       End; { Case data_type }
       End; { Else variable normale }
      End { If sym_index > 0 }
-     Else
+      Else
      Begin
-      { Traiter comme cha√Æne litt√©rale si non trouv√© }
-      EmitComment('Affichage cha√Æne: ' + current_token);
-      If not data_segment Then
-      Begin
+      { Traiter comme chaåne littÇrale si non trouvÇ }
+      EmitComment('Affichage chaåne: ' + current_token);
+      If not data_segment Then Begin
        EmitLine('.DATA');
        data_segment := True;
       End;
-
       EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
-
-      If not code_segment Then
-       BeginCodeSection;
-
+      If not code_segment Then BeginCodeSection;
       Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
       Emit('mov ah, 09h');
       Emit('int 21h');
       Inc(next_label_id);
      End;
     End;
-
     NextToken;
    End;
-
-   { V√©rifier s'il y a d'autres param√®tres }
-   If current_token = ',' Then
-   Begin
+    { VÇrifier s'il y a d'autres paramätres }
+   If current_token = ',' Then Begin
     NextToken;
-    Continue; { Traiter le param√®tre suivant }
+    Continue; { Traiter le paramätre suivant }
    End
-   Else
-    Break; { Fin des param√®tres }
-
+    Else
+   Break; { Fin des paramätres }
   Until False;
-
-  If current_token = ')' Then
-   NextToken
-  Else
-   Error('Attendu ) apr√®s les param√®tres de WriteLn');
+  If current_token = ')'Then NextToken
+                        Else Error('Attendu ) apräs les paramätres de WriteLn');
  End;
-
- { G√©n√©rer saut de ligne pour WRITELN }
+  { GÇnÇrer saut de ligne pour WRITELN }
  Emit('mov dl, 13');
  Emit('mov ah, 02h');
  Emit('int 21h');
@@ -2088,87 +2027,68 @@ Begin
  Emit('int 21h');
 End;
 
-{ Parser une instruction IF }
+{ Analyser une instruction IF }
 Procedure ParseIf;
 Var
  else_label, end_label: String;
 Begin
  NextToken; { Consommer IF }
-
  ParseExpression;
-
- Expect(SYM_THEN, 'Attendu THEN apr√®s IF');
-
- { G√©n√©rer le code de test }
+ Expect(SYM_THEN, 'Attendu THEN apräs IF');
+  { GÇnÇrer le code de test }
  else_label := NewLabel;
  end_label := NewLabel;
-
  Emit('cmp ax, 0');
  Emit('je ' + else_label);
-
  ParseStatement;
-
- If Accept(SYM_ELSE) Then
- Begin
+ If Accept(SYM_ELSE) Then Begin
   NextToken;
   Emit('jmp ' + end_label);
   EmitLabel(else_label);
   ParseStatement;
   EmitLabel(end_label);
  End
- Else
-  EmitLabel(else_label);
+  Else
+ EmitLabel(else_label);
 End;
 
-{ Parser une instruction REPEAT }
+ { Analyser une instruction REPEAT }
 Procedure ParseRepeat;
 Var
  start_label: String;
 Begin
  NextToken; { Consommer REPEAT }
-
  start_label := NewLabel;
  EmitLabel(start_label);
-
- { Parser le corps de la boucle }
- While not Accept(SYM_UNTIL) and (current_char <> #0) do
- Begin
+  { Analyser le corps de la boucle }
+ While not Accept(SYM_UNTIL) and (current_char <> #0) do Begin
   ParseStatement;
-
-  { G√©rer les point-virgules optionnels }
-  If current_token = ';' Then
-   NextToken;
+   { GÇrer les point-virgules optionnels }
+  If current_token = ';' Then NextToken;
  End;
-
- { Traiter UNTIL }
- If Accept(SYM_UNTIL) Then
- Begin
+  { Traiter UNTIL }
+ If Accept(SYM_UNTIL) Then Begin
   NextToken; { Consommer UNTIL }
   ParseExpression;
-
-  { G√©n√©rer le code de test - condition invers√©e par rapport √† WHILE }
+  { GÇnÇrer le code de test - condition inversÇe par rapport Ö WHILE }
   Emit('cmp ax, 0');
-  Emit('je ' + start_label); { Sauter au d√©but si condition FAUSSE }
+  Emit('je ' + start_label); { Sauter au dÇbut si condition FAUSSE }
  End
- Else
-  Error('Attendu UNTIL apr√®s REPEAT');
+  Else
+ Error('Attendu UNTIL apräs REPEAT');
 End;
 
-{ Parser une instruction WHILE }
+ { Analyser une instruction WHILE }
 Procedure ParseWhile;
 Var
  start_label, end_label: String;
 Begin
  NextToken; { Consommer WHILE }
-
  start_label := NewLabel;
  end_label := NewLabel;
-
  EmitLabel(start_label);
  ParseExpression;
-
  Expect(SYM_DO, 'Attendu DO apr√®s WHILE');
-
  Emit('cmp ax, 0');
  Emit('je ' + end_label);
 

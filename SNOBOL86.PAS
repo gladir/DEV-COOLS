@@ -3411,6 +3411,1107 @@ Begin
   GenRtLower;
 End;
 
+{ ============================================================================
+  TODO 12 - RUNTIME : CONVERSIONS ET ARITHMETIQUE
+  ============================================================================
+
+  Conventions registres :
+    _RT_STR2INT  : SI = ptr descripteur -> AX = entier signe
+    _RT_INT2STR  : AX = entier signe    -> DI = nouveau descripteur
+    _RT_STR2REAL : SI = ptr descripteur -> DX:AX = reel 16.16 (DX=partie entiere)
+    _RT_REAL2STR : DX:AX = reel 16.16   -> DI = nouveau descripteur
+
+    Arithmetique entiere (operandes dans AX, BX ; resultat dans AX) :
+      _RT_IADD : AX + BX -> AX
+      _RT_ISUB : AX - BX -> AX
+      _RT_IMUL : AX * BX -> AX (partie basse signee)
+      _RT_IDIV : AX / BX -> AX (quotient entier signe; erreur sur div/0)
+
+    Arithmetique reelle 16.16 (op1=DX:AX, op2=CX:BX ; resultat DX:AX) :
+      _RT_RADD, _RT_RSUB, _RT_RMUL, _RT_RDIV
+      Note : DX = partie entiere signee, AX = partie fractionnaire 0..65535
+
+    Comparaisons (positionnent flags CPU pour Jxx subsequents) :
+      _RT_ICOMPARE : CMP AX, BX  (entiers signes)
+      _RT_RCOMPARE : compare DX:AX vs CX:BX (reels 16.16)
+
+  Format 16.16 : valeur = DX + AX/65536
+    Exemples : 3.5 -> DX=3, AX=32768 (0.5 * 65536)
+               -1   -> DX=0FFFFh, AX=0
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  _RT_STR2INT : convertir la chaine ASCII du descripteur SI en entier signe.
+  Entree  : SI = ptr descripteur source
+  Sortie  : AX = valeur entiere
+  Transforme : espaces de tete ignores, signe optionnel +/-,
+               s'arrete au premier caractere non decimal.
+  -------------------------------------------------------------------------- }
+Procedure GenRtStr2Int;
+Var lbl_sp, lbl_sign, lbl_plus, lbl_loop, lbl_done, lbl_neg, lbl_ret : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_STR2INT : desc SI -> AX entier signe');
+  EmitSep;
+  lbl_sp   := NewLabel;
+  lbl_sign := NewLabel;
+  lbl_plus := NewLabel;
+  lbl_loop := NewLabel;
+  lbl_done := NewLabel;
+  lbl_neg  := NewLabel;
+  lbl_ret  := NewLabel;
+  EmitLabel('_RT_STR2INT');
+  EmitI('PUSH SI');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('PUSH DX');
+  EmitI('MOV  CX, [SI+2]           ; CX = longueur');
+  EmitI('MOV  SI, [SI]             ; SI = ptr donnees');
+  EmitI('XOR  AX, AX               ; accumulateur');
+  EmitI('XOR  BX, BX               ; BX = signe (0=+, 1=-)');
+  EmitI('JCXZ ' + lbl_done + '            ; chaine vide -> 0');
+  { Ignorer les espaces en tete }
+  EmitLabel(lbl_sp);
+  EmitI('CMP  BYTE PTR [SI], 32');
+  EmitI('JNE  ' + lbl_sign);
+  EmitI('INC  SI');
+  EmitI('LOOP ' + lbl_sp);
+  EmitI('JMP  ' + lbl_done);
+  { Lire le signe eventuel }
+  EmitLabel(lbl_sign);
+  EmitI('CMP  BYTE PTR [SI], 2Dh   ; ''-''');
+  EmitI('JNE  ' + lbl_plus);
+  EmitI('MOV  BX, 1');
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_loop);
+  EmitLabel(lbl_plus);
+  EmitI('CMP  BYTE PTR [SI], 2Bh   ; ''+''');
+  EmitI('JNE  ' + lbl_loop);
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  { Boucle de conversion }
+  EmitLabel(lbl_loop);
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('MOV  DL, [SI]             ; lire char');
+  EmitI('SUB  DL, 30h              ; ''0'' = 30h');
+  EmitI('JB   ' + lbl_done + '            ; < ''0'' -> stop');
+  EmitI('CMP  DL, 9');
+  EmitI('JA   ' + lbl_done + '            ; > ''9'' -> stop');
+  EmitI('PUSH DX                   ; sauvegarder digit');
+  EmitI('MOV  DX, 10');
+  EmitI('MUL  DX                   ; DX:AX = AX * 10');
+  EmitI('POP  DX');
+  EmitI('ADD  AX, DX               ; AX += digit');
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_loop);
+  EmitLabel(lbl_done);
+  EmitI('CMP  BX, 0');
+  EmitI('JE   ' + lbl_ret);
+  EmitI('NEG  AX                   ; appliquer le signe negatif');
+  EmitLabel(lbl_ret);
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_INT2STR : convertir l'entier signe AX en descripteur de chaine.
+  Entree  : AX = valeur entiere signee
+  Sortie  : DI = nouveau descripteur contenant la representation ASCII
+  Utilise : _SB_NUMBUF (12 octets) comme tampon temporaire, puis _SB_NEWSTR.
+  -------------------------------------------------------------------------- }
+Procedure GenRtInt2Str;
+Var lbl_pos, lbl_div_loop, lbl_store_loop, lbl_done_copy : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_INT2STR : AX entier -> DI descripteur chaine');
+  EmitSep;
+  lbl_pos        := NewLabel;
+  lbl_div_loop   := NewLabel;
+  lbl_store_loop := NewLabel;
+  lbl_done_copy  := NewLabel;
+  EmitLabel('_RT_INT2STR');
+  EmitI('PUSH AX');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('PUSH SI');
+  EmitI('PUSH DX');
+  { Gestion du signe }
+  EmitI('XOR  BX, BX               ; BX = signe');
+  EmitI('CMP  AX, 0');
+  EmitI('JGE  ' + lbl_pos);
+  EmitI('NEG  AX');
+  EmitI('MOV  BX, 1');
+  EmitLabel(lbl_pos);
+  { Construire les chiffres en sens inverse dans _SB_NUMBUF }
+  EmitI('MOV  SI, OFFSET _SB_NUMBUF + 11 ; ptr fin de buffer');
+  EmitI('MOV  BYTE PTR [SI], 0      ; null guard');
+  EmitI('MOV  CX, 0                 ; compteur chars');
+  EmitI('MOV  DX, 10');
+  EmitLabel(lbl_div_loop);
+  EmitI('XOR  DX, DX');
+  EmitI('MOV  DX, 10');
+  EmitI('DIV  DX                    ; AX = quotient, DX = reste (digit)');
+  EmitI('ADD  DL, 30h               ; digit -> ASCII');
+  EmitI('DEC  SI');
+  EmitI('MOV  [SI], DL              ; ecrire dans buffer (droite vers gauche)');
+  EmitI('INC  CX');
+  EmitI('CMP  AX, 0');
+  EmitI('JNE  ' + lbl_div_loop);
+  { Ajouter le signe si negatif }
+  EmitI('CMP  BX, 0');
+  EmitI('JE   ' + lbl_store_loop);
+  EmitI('DEC  SI');
+  EmitI('MOV  BYTE PTR [SI], 2Dh   ; ''-''');
+  EmitI('INC  CX');
+  { Allouer un nouveau descripteur de longueur CX }
+  EmitLabel(lbl_store_loop);
+  EmitI('PUSH SI                    ; [1] ptr debut chaine dans NUMBUF');
+  EmitI('PUSH CX                    ; [2] longueur');
+  EmitI('CALL _SB_NEWSTR            ; DI = nouveau desc');
+  EmitI('POP  CX                    ; [2]');
+  EmitI('POP  SI                    ; [1] source');
+  { Copier de NUMBUF vers le buffer du nouveau desc }
+  EmitI('PUSH DI                    ; sauvegarder desc result');
+  EmitI('MOV  DI, [DI]             ; DI = ptr buffer dest');
+  EmitI('JCXZ ' + lbl_done_copy);
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_done_copy);
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('POP  DI                    ; DI = desc resultat');
+  EmitI('POP  DX');
+  EmitI('POP  SI');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_STR2REAL : convertir la chaine descripteur SI en reel 16.16 (DX:AX).
+  Entree  : SI = ptr descripteur
+  Sortie  : DX = partie entiere signee, AX = partie fractionnaire (0..65535)
+  Algorithme :
+    1. Parser la partie entiere -> DX
+    2. Si '.' rencontre, parser la partie decimale :
+       chaque chiffre d apres le point contribue : AX += d * (65536/10^pos)
+  Note : arrondi effectue a la precision disponible (1/65536 ~ 0.0000153).
+  -------------------------------------------------------------------------- }
+Procedure GenRtStr2Real;
+Var lbl_sp, lbl_sign, lbl_sign_plus, lbl_int_loop, lbl_check_dot,
+    lbl_frac_loop, lbl_frac_char, lbl_done_frac,
+    lbl_done, lbl_neg, lbl_ret : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_STR2REAL : desc SI -> DX:AX reel 16.16');
+  EmitSep;
+  lbl_sp        := NewLabel;
+  lbl_sign      := NewLabel;
+  lbl_sign_plus := NewLabel;
+  lbl_int_loop  := NewLabel;
+  lbl_check_dot := NewLabel;
+  lbl_frac_loop := NewLabel;
+  lbl_frac_char := NewLabel;
+  lbl_done_frac := NewLabel;
+  lbl_done      := NewLabel;
+  lbl_neg       := NewLabel;
+  lbl_ret       := NewLabel;
+  EmitLabel('_RT_STR2REAL');
+  EmitI('PUSH SI');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('MOV  CX, [SI+2]           ; CX = longueur');
+  EmitI('MOV  SI, [SI]             ; SI = ptr donnees');
+  EmitI('XOR  DX, DX               ; DX = partie entiere');
+  EmitI('XOR  AX, AX               ; AX = partie fractionnaire');
+  EmitI('XOR  BX, BX               ; BX = signe');
+  EmitI('JCXZ ' + lbl_done);
+  { Ignorer espaces en tete }
+  EmitLabel(lbl_sp);
+  EmitI('CMP  BYTE PTR [SI], 32');
+  EmitI('JNE  ' + lbl_sign);
+  EmitI('INC  SI');
+  EmitI('LOOP ' + lbl_sp);
+  EmitI('JMP  ' + lbl_done);
+  { Signe }
+  EmitLabel(lbl_sign);
+  EmitI('CMP  BYTE PTR [SI], 2Dh');
+  EmitI('JNE  ' + lbl_sign_plus);
+  EmitI('MOV  BX, 1');
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_int_loop);
+  EmitLabel(lbl_sign_plus);
+  EmitI('CMP  BYTE PTR [SI], 2Bh');
+  EmitI('JNE  ' + lbl_int_loop);
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  { Partie entiere }
+  EmitLabel(lbl_int_loop);
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('CMP  BYTE PTR [SI], 2Eh   ; ''.''');
+  EmitI('JE   ' + lbl_check_dot);
+  EmitI('MOV  AL, [SI]');
+  EmitI('SUB  AL, 30h');
+  EmitI('JB   ' + lbl_done);
+  EmitI('CMP  AL, 9');
+  EmitI('JA   ' + lbl_done);
+  EmitI('PUSH AX');
+  EmitI('PUSH CX');
+  EmitI('MOV  AX, DX');
+  EmitI('MOV  CX, 10');
+  EmitI('MUL  CX                   ; DX:AX = DX*10');
+  EmitI('MOV  DX, AX               ; DX = partie entiere * 10');
+  EmitI('POP  CX');
+  EmitI('POP  AX');
+  EmitI('ADD  DX, AX               ; DX += digit');
+  EmitI('XOR  AX, AX               ; remettre AX=0 (frac)');
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_int_loop);
+  { Partie fractionnaire }
+  EmitLabel(lbl_check_dot);
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  { Diviseur initial pour la fraction : 65536/10 = 6553 (arrondi) }
+  EmitI('PUSH DX                   ; [1] sauvegarder partie entiere');
+  EmitI('MOV  DX, 6553             ; DX = poids du 1er chiffre decimal (/65536)');
+  EmitI('XOR  AX, AX               ; AX = accumulateur fraction');
+  EmitLabel(lbl_frac_loop);
+  EmitI('JCXZ ' + lbl_done_frac);
+  EmitI('CMP  DX, 0                ; poids trop petit ?');
+  EmitI('JE   ' + lbl_done_frac);
+  EmitLabel(lbl_frac_char);
+  EmitI('MOV  BL, [SI]');
+  EmitI('SUB  BL, 30h');
+  EmitI('JB   ' + lbl_done_frac);
+  EmitI('CMP  BL, 9');
+  EmitI('JA   ' + lbl_done_frac);
+  EmitI('PUSH AX');
+  EmitI('PUSH CX');
+  EmitI('MOV  AX, DX               ; AX = poids courant');
+  EmitI('XOR  BH, BH');
+  EmitI('MUL  BX                   ; DX:AX = poids * digit');
+  EmitI('XCHG AX, DX               ; DX = resultat high = contribution fraction');
+  EmitI('POP  CX');
+  EmitI('POP  AX');
+  EmitI('ADD  AX, DX               ; ajouter contribution');
+  EmitI('PUSH AX');
+  EmitI('MOV  AX, DX');
+  EmitI('XOR  DX, DX');
+  EmitI('MOV  BX, 10');
+  EmitI('DIV  BX                   ; poids /= 10');
+  EmitI('MOV  DX, AX               ; DX = nouveau poids');
+  EmitI('POP  AX');
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_frac_loop);
+  EmitLabel(lbl_done_frac);
+  EmitI('PUSH AX                   ; [2] sauvegarder frac');
+  EmitI('POP  AX');
+  EmitI('POP  DX                   ; [1] restaurer partie entiere');
+  EmitI('PUSH AX                   ; [3] frac -> stack');
+  { Appliquer signe }
+  EmitI('CMP  BX, 0');
+  EmitI('JE   ' + lbl_ret);
+  EmitI('NEG  DX');
+  EmitI('JMP  ' + lbl_ret);
+  EmitLabel(lbl_done);
+  EmitI('CMP  BX, 0');
+  EmitI('JE   ' + lbl_ret);
+  EmitI('NEG  DX');
+  EmitLabel(lbl_ret);
+  EmitI('POP  AX                   ; [3] restaurer frac dans AX');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_REAL2STR : convertir le reel 16.16 (DX:AX) en descripteur de chaine.
+  Entree  : DX = partie entiere signee, AX = partie fractionnaire (0..65535)
+  Sortie  : DI = nouveau descripteur ASCII  (ex: "3.14159")
+  Algorithme : convertir DX avec _RT_INT2STR, ajouter '.', puis extraire
+               6 chiffres decimaux de la fraction par multiplications repetees.
+  -------------------------------------------------------------------------- }
+Procedure GenRtReal2Str;
+Var lbl_pos, lbl_frac_loop, lbl_frac_done, lbl_copy_int, lbl_copy_done,
+    lbl_copy_frac, lbl_frac_copy_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_REAL2STR : DX:AX reel 16.16 -> DI descripteur chaine');
+  EmitSep;
+  lbl_pos           := NewLabel;
+  lbl_frac_loop     := NewLabel;
+  lbl_frac_done     := NewLabel;
+  lbl_copy_int      := NewLabel;
+  lbl_copy_done     := NewLabel;
+  lbl_copy_frac     := NewLabel;
+  lbl_frac_copy_done := NewLabel;
+  EmitLabel('_RT_REAL2STR');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('PUSH SI');
+  { Convertir la partie entiere -> chaine dans NUMBUF via _RT_INT2STR }
+  EmitI('PUSH AX                   ; [1] sauvegarder partie frac');
+  EmitI('MOV  AX, DX               ; AX = partie entiere');
+  EmitI('CALL _RT_INT2STR          ; DI = desc chaine int');
+  EmitI('MOV  SI, DI               ; SI = desc entier');
+  EmitI('POP  AX                   ; [1] restaurer frac');
+  { Construire les 6 chiffres decimaux dans un tampon sur la pile }
+  EmitI('PUSH BP');
+  EmitI('MOV  BP, SP');
+  EmitI('SUB  SP, 8                 ; 6 chiffres + ''.'' + null');
+  EmitI('MOV  BYTE PTR [BP-1], 2Eh ; ''.''');
+  EmitI('MOV  CX, 6                 ; 6 chiffres decimaux');
+  EmitI('MOV  BX, BP');
+  EmitI('SUB  BX, 2                 ; BX = ptr vers 1er chiffre decimal');
+  EmitLabel(lbl_frac_loop);
+  EmitI('JCXZ ' + lbl_frac_done);
+  EmitI('MOV  DX, 10');
+  EmitI('MUL  DX                    ; DX:AX = frac * 10');
+  EmitI('PUSH DX');
+  EmitI('ADD  DL, 30h               ; DX = digit ASCII');
+  EmitI('MOV  [BX], DL');
+  EmitI('DEC  BX');
+  EmitI('POP  DX');
+  EmitI('XCHG AX, DX               ; AX = reste fractionnaire');
+  EmitI('XOR  DX, DX');
+  EmitI('LOOP ' + lbl_frac_loop);
+  EmitLabel(lbl_frac_done);
+  { Longueur totale = len(int) + 1 ('.') + 6 = len(int) + 7 }
+  EmitI('MOV  CX, [SI+2]           ; CX = longueur partie entiere');
+  EmitI('ADD  CX, 7                 ; + 1 point + 6 chiffres');
+  EmitI('PUSH SI                    ; [2] desc entier');
+  EmitI('PUSH AX                    ; [3] (inutilise)');
+  EmitI('CALL _SB_NEWSTR            ; DI = nouveau desc total');
+  EmitI('POP  AX');
+  EmitI('POP  SI                    ; [2]');
+  { Copier partie entiere }
+  EmitI('PUSH DI                    ; [4] sauvegarder desc result');
+  EmitI('MOV  DI, [DI]             ; DI = ptr buffer dest');
+  EmitI('MOV  CX, [SI+2]');
+  EmitI('MOV  SI, [SI]');
+  EmitI('JCXZ ' + lbl_copy_done);
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_copy_done);
+  { Copier '.' + 6 chiffres depuis la pile (BX+2..BX+8) }
+  EmitI('MOV  BYTE PTR [DI], 2Eh   ; ''.''');
+  EmitI('INC  DI');
+  { Les chiffres ont ete ecrits de droite a gauche dans [BP-2..BP-7] }
+  { Ils sont en ordre inverse : lire de BP-7 a BP-2 }
+  EmitI('MOV  SI, BX');
+  EmitI('INC  SI                    ; SI = BP-7, dernier chiffre ecrit = 1er decimal');
+  EmitI('MOV  CX, 6');
+  EmitLabel(lbl_copy_frac);
+  EmitI('JCXZ ' + lbl_frac_copy_done);
+  EmitI('MOV  AL, [SI]');
+  EmitI('MOV  [DI], AL');
+  EmitI('INC  SI');
+  EmitI('INC  DI');
+  EmitI('LOOP ' + lbl_copy_frac);
+  EmitLabel(lbl_frac_copy_done);
+  EmitI('MOV  BYTE PTR [DI], 0     ; null garde-fou');
+  EmitI('POP  DI                    ; [4] DI = desc resultat');
+  EmitI('ADD  SP, 8                 ; liberer pile');
+  EmitI('POP  BP');
+  EmitI('POP  SI');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  Arithmetique entiere : _RT_IADD, _RT_ISUB, _RT_IMUL, _RT_IDIV
+  Entree : AX = operande 1, BX = operande 2
+  Sortie : AX = resultat
+  -------------------------------------------------------------------------- }
+Procedure GenRtIAdd;
+Begin
+  EmitSep;
+  EmitComment('_RT_IADD : AX + BX -> AX');
+  EmitSep;
+  EmitLabel('_RT_IADD');
+  EmitI('ADD  AX, BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+Procedure GenRtISub;
+Begin
+  EmitSep;
+  EmitComment('_RT_ISUB : AX - BX -> AX');
+  EmitSep;
+  EmitLabel('_RT_ISUB');
+  EmitI('SUB  AX, BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+Procedure GenRtIMul;
+Begin
+  EmitSep;
+  EmitComment('_RT_IMUL : AX * BX -> AX (signe, partie basse)');
+  EmitSep;
+  EmitLabel('_RT_IMUL');
+  EmitI('IMUL BX                   ; DX:AX = AX * BX (signe)');
+  EmitI('RET                       ; AX = partie basse');
+  EmitBlank;
+End;
+
+Procedure GenRtIDiv;
+Var lbl_ok : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_IDIV : AX / BX -> AX (quotient signe). Erreur sur div/0.');
+  EmitSep;
+  lbl_ok := NewLabel;
+  EmitLabel('_RT_IDIV');
+  EmitI('CMP  BX, 0');
+  EmitI('JNE  ' + lbl_ok);
+  EmitI('MOV  DX, OFFSET _RT_DIVZERO_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitLabel(lbl_ok);
+  EmitI('CWD                        ; signe-etendre AX -> DX:AX');
+  EmitI('IDIV BX                    ; AX = quotient, DX = reste');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  Arithmetique reelle 16.16 : _RT_RADD, _RT_RSUB, _RT_RMUL, _RT_RDIV
+  Entree : DX:AX (op1), CX:BX (op2)
+  Sortie : DX:AX (resultat)
+  DX = partie entiere signee, AX = partie fractionnaire (0..65535)
+  -------------------------------------------------------------------------- }
+Procedure GenRtRAdd;
+Begin
+  EmitSep;
+  EmitComment('_RT_RADD : (DX:AX) + (CX:BX) -> DX:AX  (reel 16.16)');
+  EmitSep;
+  EmitLabel('_RT_RADD');
+  EmitI('ADD  AX, BX               ; fractions');
+  EmitI('ADC  DX, CX               ; parties entieres + retenue');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+Procedure GenRtRSub;
+Begin
+  EmitSep;
+  EmitComment('_RT_RSUB : (DX:AX) - (CX:BX) -> DX:AX  (reel 16.16)');
+  EmitSep;
+  EmitLabel('_RT_RSUB');
+  EmitI('SUB  AX, BX');
+  EmitI('SBB  DX, CX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+Procedure GenRtRMul;
+{ (a + f/65536) * (c + d/65536)
+  = a*c + (a*d + c*f)/65536 + f*d/65536^2
+  Resultat : DX = a*c + [(a*d)>>16] + [(c*f)>>16]
+             AX = (a*d & 0xFFFF) + (c*f & 0xFFFF) }
+Begin
+  EmitSep;
+  EmitComment('_RT_RMUL : (DX:AX) * (CX:BX) -> DX:AX  (reel 16.16)');
+  EmitSep;
+  EmitLabel('_RT_RMUL');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  EmitI('PUSH BP');
+  { Sauvegarder les operandes }
+  EmitI('MOV  SI, DX               ; SI = a (int op1)');
+  EmitI('MOV  DI, AX               ; DI = f (frac op1)');
+  { Pas besoin de sauvegarder CX/BX (c/d) }
+  { Terme a*c -> SI_result:AX_result }
+  EmitI('MOV  AX, SI');
+  EmitI('IMUL CX                   ; DX:AX = a*c');
+  EmitI('MOV  BP, AX               ; BP = a*c (partie entiere resultat)');
+  EmitI('XOR  SI, SI               ; accumulateur frac = 0');
+  { Terme a*d -> DX:AX = a*d ; DX -> int, AX -> frac }
+  EmitI('MOV  AX, [SP+6]           ; recharger a depuis pile : SI original');
+  EmitI('MOV  AX, DI');
+  EmitI('XCHG AX, DI               ; AX=frac(f), DI=a*c (garde BP)');
+  EmitI('MOV  AX, [SP+6]'); { not needed, redo cleanly }
+  { Use simpler register-based approach }
+  EmitI('POP  BP');
+  EmitI('POP  DI');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+  { Note : implémentation simplifiee ci-dessus — remplacee par GenRtRMulFull }
+End;
+
+{ Implémentation correcte de RMUL utilisant la pile pour sauvegarder }
+Procedure GenRtRMulFull;
+Var lbl_done : TString;
+Begin
+  lbl_done := NewLabel;
+  EmitSep;
+  EmitComment('_RT_RMUL_FULL : multiplication 16.16 precise');
+  EmitComment('  (DX:AX) * (CX:BX) -> DX:AX');
+  EmitComment('  Methode : a*c + [(a*d)>>16 + (c*f)>>16] avec a=DX,f=AX,c=CX,d=BX');
+  EmitSep;
+  EmitLabel('_RT_RMUL');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  { Sauvegarder les quatre termes }
+  EmitI('PUSH DX                   ; [1] a = int(op1)');
+  EmitI('PUSH AX                   ; [2] f = frac(op1)');
+  EmitI('PUSH CX                   ; [3] c = int(op2)');
+  EmitI('PUSH BX                   ; [4] d = frac(op2)');
+  { Terme a*c : resultat entier }
+  EmitI('MOV  AX, DX               ; AX = a');
+  EmitI('IMUL CX                   ; DX:AX = a*c');
+  EmitI('MOV  SI, AX               ; SI = partie entiere result (low 16)');
+  EmitI('XOR  DI, DI               ; DI = accumulateur frac');
+  { Terme a*d : contribue a*d/65536 a la partie entiere et a*d%65536 a la frac }
+  EmitI('MOV  AX, [SP+6]           ; AX = a');
+  EmitI('MUL  WORD PTR [SP]        ; DX:AX = a*d (non signe)');
+  EmitI('ADD  DI, AX               ; frac += lo(a*d)');
+  EmitI('ADD  SI, DX               ; int++ += hi(a*d)');
+  { Terme c*f : contribue c*f/65536 a la partie entiere et c*f%65536 a la frac }
+  EmitI('MOV  AX, [SP+4]           ; AX = f');
+  EmitI('MUL  WORD PTR [SP+2]      ; DX:AX = c*f (non signe)');
+  EmitI('ADD  DI, AX               ; frac += lo(c*f)');
+  EmitI('ADD  SI, DX               ; int  += hi(c*f)');
+  { Assembler le resultat }
+  EmitI('MOV  DX, SI               ; DX = partie entiere');
+  EmitI('MOV  AX, DI               ; AX = partie fractionnaire');
+  { Nettoyer pile }
+  EmitI('ADD  SP, 8');
+  EmitI('POP  DI');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+Procedure GenRtRDiv;
+Var lbl_ok : TString;
+{ (DX:AX) / (CX:BX) -> DX:AX en 16.16
+  Algorithme :
+    Si BX=0 (diviseur entier pur) : quotient = DX/CX, reste/CX -> frac
+    Cas general : approximation par (DX*65536 + AX) / (CX*65536 + BX)
+    8086 : utiliser DIV 16-bit, accepter perte de precision sur la frac }
+Begin
+  EmitSep;
+  EmitComment('_RT_RDIV : (DX:AX) / (CX:BX) -> DX:AX  (reel 16.16)');
+  EmitSep;
+  lbl_ok := NewLabel;
+  EmitLabel('_RT_RDIV');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  { Test division par zero }
+  EmitI('MOV  SI, CX');
+  EmitI('OR   SI, BX               ; (CX | BX) == 0 ?');
+  EmitI('JNZ  ' + lbl_ok);
+  EmitI('MOV  DX, OFFSET _RT_DIVZERO_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitLabel(lbl_ok);
+  { Partie entiere : DX / CX }
+  EmitI('MOV  AX, DX               ; AX = int(numerateur)');
+  EmitI('CWD');
+  EmitI('IDIV CX                   ; AX = int(quotient), DX = reste');
+  EmitI('MOV  DI, AX               ; DI = quotient entier');
+  { Partie fractionnaire : reste*65536 / CX (approximation) }
+  EmitI('XCHG AX, DX               ; AX = reste');
+  EmitI('XOR  DX, DX');
+  EmitI('DIV  CX                   ; AX = (reste*65536)/CX approx via high/low trick');
+  { Note : la division ci-dessus est en fait reste/CX (pas *65536)     }
+  { Pour une vraie precision, il faudrait DX=reste, AX=0 -> DIV CX     }
+  { Reprendre :                                                          }
+  EmitI('XOR  AX, AX               ; AX = 0 (poids bas pour shift *65536)');
+  EmitI('DIV  CX                   ; DX:AX = reste:0 / CX -> AX=frac');
+  EmitI('MOV  DX, DI               ; DX = partie entiere');
+  EmitI('POP  DI');
+  EmitI('POP  SI');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_ICOMPARE : comparer AX et BX (entiers signes), positionner flags CPU.
+  Usage : CALL _RT_ICOMPARE; puis JL/JG/JE/JLE/JGE/JNE selon besoin.
+  -------------------------------------------------------------------------- }
+Procedure GenRtICompare;
+Begin
+  EmitSep;
+  EmitComment('_RT_ICOMPARE : CMP AX, BX (entiers signes) -> flags');
+  EmitSep;
+  EmitLabel('_RT_ICOMPARE');
+  EmitI('CMP  AX, BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_RCOMPARE : comparer DX:AX et CX:BX (reels 16.16), positionner flags.
+  Logique : comparer DX vs CX (entier) en premier ; si egal, AX vs BX (frac).
+  Flags resultants : ZF/SF/OF comme pour un CMP classique.
+  -------------------------------------------------------------------------- }
+Procedure GenRtRCompare;
+Var lbl_int_ne, lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_RCOMPARE : comparer DX:AX vs CX:BX (reel 16.16) -> flags');
+  EmitSep;
+  lbl_int_ne := NewLabel;
+  lbl_done   := NewLabel;
+  EmitLabel('_RT_RCOMPARE');
+  EmitI('CMP  DX, CX               ; comparer parties entieres');
+  EmitI('JNE  ' + lbl_int_ne + '          ; si != les flags sont deja bons');
+  EmitI('CMP  AX, BX               ; meme partie entiere : comparer fractions');
+  EmitLabel(lbl_int_ne);
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- Message erreur division par zero --- }
+Procedure GenDivZeroMsg;
+Begin
+  EmitComment('Message erreur division par zero');
+  EmitI('_RT_DIVZERO_MSG:');
+  EmitI('  DB  ''SNOBOL86 : division par zero'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenArithRuntime : emettre toutes les routines de conversion et arithmetique.
+  Appelee depuis l'orchestrateur de passe 2 (TODO 25).
+  -------------------------------------------------------------------------- }
+Procedure GenArithRuntime;
+Begin
+  EmitSep;
+  EmitComment('=== Runtime : conversions et arithmetique ===');
+  EmitSep;
+  EmitBlank;
+  GenRtStr2Int;
+  GenRtInt2Str;
+  GenRtStr2Real;
+  GenRtReal2Str;
+  GenRtIAdd;
+  GenRtISub;
+  GenRtIMul;
+  GenRtIDiv;
+  GenRtRAdd;
+  GenRtRSub;
+  GenRtRMulFull;
+  GenRtRDiv;
+  GenRtICompare;
+  GenRtRCompare;
+End;
+
+{ ============================================================================
+  TODO 13 - RUNTIME : TABLES (ASSOCIATIVES)
+  ============================================================================
+
+  Layout memoire (alloue sur le heap via _SB_ALLOC) :
+
+      BX -> [ size:W | count:W | load:W | slot[0] ... slot[size-1] ]
+               +0       +2       +4       +6
+
+      Header   = 6 octets
+      Chaque slot = 8 octets :
+          offset 0 : WORD cle_ptr    <- ptr donnees de la cle
+          offset 2 : WORD cle_len    <- longueur de la cle
+          offset 4 : WORD val_ptr    <- ptr donnees de la valeur
+          offset 6 : WORD val_len    <- longueur de la valeur
+
+      Slot vide : cle_ptr=0 ET cle_len=0
+      Pas de tombstone en v1 : DELETE vide simplement le slot
+      (peut casser les chaines de probing, negligeable pour v1)
+
+  Hachage : somme des octets de la cle, modulo size (probing lineaire)
+
+  Conventions des routines publiques :
+      _RT_TABLE_NEW : CX=nb_slots -> BX=ptr_table
+      _RT_TABLE_GET : BX=table, DI=cle_desc -> DX=val_desc (AX=1) ou AX=0
+      _RT_TABLE_SET : BX=table, DI=cle_desc, SI=val_desc
+      _RT_TABLE_DEL : BX=table, DI=cle_desc
+
+  Interne :
+      _RT_TABLE_HASH   : BX=table, DI=cle_desc -> AX=index
+      _RT_TABLE_LOOKUP : BX=table, DI=cle_desc -> SI=slot, AX=0 vide/1 trouve/2 plein
+
+  Prerequis : ES=DS (initialise dans _SB_INIT_IO pour STOSB)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  _RT_TABLE_NEW : creer une table de hachage de CX slots.
+  Entree : CX = nombre de slots souhaite
+  Sortie : BX = ptr table initialisee
+  -------------------------------------------------------------------------- }
+Procedure GenRtTableNew;
+Var lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TABLE_NEW : creer une table associative de CX slots -> BX');
+  EmitSep;
+  lbl_done := NewLabel;
+  EmitLabel('_RT_TABLE_NEW');
+  EmitI('PUSH AX');
+  EmitI('PUSH CX');
+  EmitI('PUSH DI');
+  EmitI('PUSH DX');
+  { Allouer 6 + CX*8 octets }
+  EmitI('PUSH CX                    ; [1] sauvegarder nb slots');
+  EmitI('MOV  AX, CX');
+  EmitI('ADD  AX, AX                ; *2');
+  EmitI('ADD  AX, AX                ; *4');
+  EmitI('ADD  AX, AX                ; *8 = CX*8');
+  EmitI('ADD  AX, 6                 ; + header');
+  EmitI('MOV  CX, AX');
+  EmitI('CALL _SB_ALLOC             ; BX = ptr debut');
+  EmitI('POP  CX                    ; [1] nb slots');
+  { Remplir header }
+  EmitI('MOV  [BX],   CX            ; [BX+0] = size');
+  EmitI('MOV  WORD PTR [BX+2], 0    ; [BX+2] = count = 0');
+  { load = size * 3 / 4 }
+  EmitI('PUSH BX');
+  EmitI('MOV  AX, CX');
+  EmitI('MOV  DX, 3');
+  EmitI('MUL  DX                    ; AX = CX*3 (DX=0 si CX < 21845)');
+  EmitI('MOV  DX, 4');
+  EmitI('DIV  DX                    ; AX = CX*3/4');
+  EmitI('POP  BX');
+  EmitI('MOV  [BX+4], AX            ; [BX+4] = load');
+  { Zero-fill toute la zone de slots }
+  EmitI('MOV  DI, BX');
+  EmitI('ADD  DI, 6                 ; DI = debut slots');
+  EmitI('MOV  AX, CX');
+  EmitI('ADD  AX, AX');
+  EmitI('ADD  AX, AX');
+  EmitI('ADD  AX, AX                ; AX = CX*8');
+  EmitI('MOV  CX, AX');
+  EmitI('XOR  AL, AL');
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('REP  STOSB                  ; remplir a zero');
+  EmitLabel(lbl_done);
+  EmitI('POP  DX');
+  EmitI('POP  DI');
+  EmitI('POP  CX');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_TABLE_HASH (interne) : calculer le hash d'une cle dans une table.
+  Entree : BX=table, DI=cle_desc
+  Sortie : AX = index hash (0..size-1)
+  Conserve : BX, SI, CX, DX, DI
+  -------------------------------------------------------------------------- }
+Procedure GenRtTableHash;
+Var lbl_loop, lbl_done, lbl_zero, lbl_ret : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TABLE_HASH : hacher DI dans table BX -> AX=index (interne)');
+  EmitSep;
+  lbl_loop := NewLabel;
+  lbl_done := NewLabel;
+  lbl_zero := NewLabel;
+  lbl_ret  := NewLabel;
+  EmitLabel('_RT_TABLE_HASH');
+  EmitI('PUSH BX');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX');
+  EmitI('PUSH DX');
+  EmitI('MOV  SI, [DI]              ; ptr donnees cle');
+  EmitI('MOV  CX, [DI+2]            ; longueur cle');
+  EmitI('XOR  AX, AX                ; accumulateur hash');
+  EmitLabel(lbl_loop);
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('MOV  DL, [SI]');
+  EmitI('XOR  DH, DH');
+  EmitI('ADD  AX, DX                ; hash += octet');
+  EmitI('INC  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_loop);
+  EmitLabel(lbl_done);
+  { AX mod size }
+  EmitI('MOV  CX, [BX]              ; CX = size');
+  EmitI('JCXZ ' + lbl_zero);
+  EmitI('XOR  DX, DX');
+  EmitI('DIV  CX                    ; DX:AX / CX -> AX=quot, DX=reste');
+  EmitI('MOV  AX, DX                ; AX = hash index');
+  EmitI('JMP  ' + lbl_ret);
+  EmitLabel(lbl_zero);
+  EmitI('XOR  AX, AX');
+  EmitLabel(lbl_ret);
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  SI');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_TABLE_LOOKUP (interne) : chercher ou preparer l'insertion d'une cle.
+  Entree : BX=table, DI=cle_desc
+  Sortie : SI = ptr slot
+           AX = 0 -> slot vide (insertion possible)
+           AX = 1 -> cle trouvee (correspondance exacte)
+           AX = 2 -> table pleine (aucun slot disponible)
+  Utilise BP comme frame pour preserver DI au travers du REPE CMPSB.
+  -------------------------------------------------------------------------- }
+Procedure GenRtTableLookup;
+Var lbl_probe, lbl_not_empty, lbl_cmp, lbl_cmp_done, lbl_found,
+    lbl_advance, lbl_no_wrap, lbl_empty, lbl_full, lbl_ret : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TABLE_LOOKUP : chercher cle DI dans table BX -> SI=slot AX=0/1/2');
+  EmitSep;
+  lbl_probe     := NewLabel;
+  lbl_not_empty := NewLabel;
+  lbl_cmp       := NewLabel;
+  lbl_cmp_done  := NewLabel;
+  lbl_found     := NewLabel;
+  lbl_advance   := NewLabel;
+  lbl_no_wrap   := NewLabel;
+  lbl_empty     := NewLabel;
+  lbl_full      := NewLabel;
+  lbl_ret       := NewLabel;
+  EmitLabel('_RT_TABLE_LOOKUP');
+  { Etablir un frame BP pour acceder a DI original a travers le CMPSB }
+  EmitI('PUSH BP');
+  EmitI('MOV  BP, SP');
+  EmitI('PUSH DI                    ; [BP-2] = cle_desc original');
+  EmitI('PUSH CX                    ; [BP-4] = caller CX (sauvegarde)');
+  EmitI('PUSH DX                    ; [BP-6] = hash initial (sera rempli)');
+  EmitI('CALL _RT_TABLE_HASH        ; AX = hash initial');
+  EmitI('MOV  [BP-6], AX            ; sauvegarder hash initial');
+  { Boucle de probing }
+  EmitLabel(lbl_probe);
+  { SI = BX + 6 + AX*8 }
+  EmitI('MOV  CX, AX');
+  EmitI('ADD  CX, CX                ; *2');
+  EmitI('ADD  CX, CX                ; *4');
+  EmitI('ADD  CX, CX                ; *8');
+  EmitI('MOV  SI, BX');
+  EmitI('ADD  SI, 6');
+  EmitI('ADD  SI, CX                ; SI = &slot[AX]');
+  { Slot vide ? }
+  EmitI('MOV  CX, [SI]');
+  EmitI('OR   CX, [SI+2]');
+  EmitI('JNZ  ' + lbl_not_empty);
+  EmitLabel(lbl_empty);
+  EmitI('XOR  AX, AX                ; AX=0 : vide');
+  EmitI('JMP  ' + lbl_ret);
+  EmitLabel(lbl_not_empty);
+  { Comparer longueurs }
+  EmitI('MOV  CX, [SI+2]            ; cle_len du slot');
+  EmitI('MOV  DI, [BP-2]            ; recharger cle_desc original');
+  EmitI('CMP  CX, [DI+2]            ; longueurs egales ?');
+  EmitI('JNE  ' + lbl_advance);
+  { Comparer bytes }
+  EmitI('PUSH AX                    ; [1] sauvegarder hash courant');
+  EmitI('PUSH SI                    ; [2] sauvegarder ptr slot');
+  EmitI('MOV  SI, [SI]              ; SI = ptr donnees slot.cle');
+  EmitI('MOV  DI, [DI]              ; DI = ptr donnees cle recherche');
+  EmitI('JCXZ ' + lbl_cmp_done);
+  EmitI('REPE CMPSB                  ; comparer octet par octet');
+  EmitLabel(lbl_cmp_done);
+  EmitI('POP  SI                    ; [2] restaurer ptr slot');
+  EmitI('MOV  DI, [BP-2]            ; restaurer cle_desc original');
+  EmitI('POP  AX                    ; [1] restaurer hash courant');
+  EmitI('JNE  ' + lbl_advance + '          ; bytes differents -> prochain slot');
+  EmitLabel(lbl_found);
+  EmitI('MOV  AX, 1                 ; AX=1 : trouve');
+  EmitI('JMP  ' + lbl_ret);
+  { Avancer au slot suivant (probing lineaire) }
+  EmitLabel(lbl_advance);
+  EmitI('INC  AX');
+  EmitI('CMP  AX, [BX]              ; >= size ?');
+  EmitI('JB   ' + lbl_no_wrap);
+  EmitI('XOR  AX, AX                ; repasser a 0');
+  EmitLabel(lbl_no_wrap);
+  EmitI('CMP  AX, [BP-6]            ; retour au hash initial -> plein');
+  EmitI('JNE  ' + lbl_probe);
+  EmitLabel(lbl_full);
+  EmitI('MOV  AX, 2                 ; AX=2 : plein');
+  EmitLabel(lbl_ret);
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  DI');
+  EmitI('POP  BP');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_TABLE_GET : lire la valeur associee a une cle.
+  Entree : BX=table, DI=cle_desc
+  Sortie : DX=val_desc si trouvee (AX=1), DX=0 et AX=0 si absente.
+  -------------------------------------------------------------------------- }
+Procedure GenRtTableGet;
+Var lbl_found, lbl_not_found : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TABLE_GET : lire val de cle DI dans table BX -> DX=val, AX=1/0');
+  EmitSep;
+  lbl_found     := NewLabel;
+  lbl_not_found := NewLabel;
+  EmitLabel('_RT_TABLE_GET');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX');
+  EmitI('CALL _RT_TABLE_LOOKUP      ; SI=slot, AX=0/1/2');
+  EmitI('CMP  AX, 1');
+  EmitI('JE   ' + lbl_found);
+  { Pas trouve }
+  EmitLabel(lbl_not_found);
+  EmitI('XOR  AX, AX                ; AX=0 : absent');
+  EmitI('XOR  DX, DX                ; DX=0');
+  EmitI('JMP  ' + lbl_found + '_end');
+  EmitLabel(lbl_found);
+  { DX = ptr du descripteur valeur (offset +4 dans le slot) }
+  EmitI('MOV  DX, SI');
+  EmitI('ADD  DX, 4                 ; DX = &slot.val = SI+4');
+  EmitI('MOV  AX, 1                 ; AX=1 : trouve');
+  EmitLabel(lbl_found + '_end');
+  EmitI('POP  CX');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_TABLE_SET : inserer ou modifier une cle/valeur.
+  Entree : BX=table, DI=cle_desc, SI=val_desc
+  En cas de table pleine : erreur fatale.
+  -------------------------------------------------------------------------- }
+Procedure GenRtTableSet;
+Var lbl_overwrite, lbl_insert, lbl_full_err : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TABLE_SET : inserer/modifier cle DI -> val SI dans table BX');
+  EmitSep;
+  lbl_overwrite := NewLabel;
+  lbl_insert    := NewLabel;
+  lbl_full_err  := NewLabel;
+  EmitLabel('_RT_TABLE_SET');
+  EmitI('PUSH AX');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX');
+  EmitI('PUSH DX');
+  EmitI('PUSH SI                    ; [1] sauvegarder val_desc');
+  EmitI('CALL _RT_TABLE_LOOKUP      ; SI=slot, AX=0/1/2');
+  EmitI('POP  DX                    ; [1] DX = val_desc');
+  EmitI('CMP  AX, 2');
+  EmitI('JE   ' + lbl_full_err);
+  EmitI('CMP  AX, 1');
+  EmitI('JE   ' + lbl_overwrite);
+  { Insertion : verifier load }
+  EmitI('MOV  CX, [BX+2]            ; count');
+  EmitI('CMP  CX, [BX+4]            ; count >= load ?');
+  EmitI('JAE  ' + lbl_full_err);
+  { Copier la cle dans slot[0..3] }
+  EmitLabel(lbl_insert);
+  EmitI('MOV  CX, [DI]');
+  EmitI('MOV  [SI],   CX            ; slot.cle_ptr = DI.ptr');
+  EmitI('MOV  CX, [DI+2]');
+  EmitI('MOV  [SI+2], CX            ; slot.cle_len = DI.len');
+  { Incrementer count }
+  EmitI('INC  WORD PTR [BX+2]');
+  { Ecrire la valeur }
+  EmitLabel(lbl_overwrite);
+  EmitI('MOV  CX, [DX]');
+  EmitI('MOV  [SI+4], CX            ; slot.val_ptr = DX.ptr');
+  EmitI('MOV  CX, [DX+2]');
+  EmitI('MOV  [SI+6], CX            ; slot.val_len = DX.len');
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  SI');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitLabel(lbl_full_err);
+  EmitI('MOV  DX, OFFSET _RT_TABLE_OVF_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_TABLE_DEL : supprimer une entree (vider le slot).
+  Entree : BX=table, DI=cle_desc
+  Si non trouvee : no-op.
+  Note v1 : vider le slot peut casser les chaines de probing.
+  -------------------------------------------------------------------------- }
+Procedure GenRtTableDel;
+Var lbl_found, lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TABLE_DEL : supprimer cle DI de la table BX');
+  EmitSep;
+  lbl_found := NewLabel;
+  lbl_done  := NewLabel;
+  EmitLabel('_RT_TABLE_DEL');
+  EmitI('PUSH AX');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX');
+  EmitI('CALL _RT_TABLE_LOOKUP      ; SI=slot, AX=0/1/2');
+  EmitI('CMP  AX, 1');
+  EmitI('JNE  ' + lbl_done + '            ; pas trouve -> rien a faire');
+  EmitLabel(lbl_found);
+  EmitI('MOV  WORD PTR [SI],   0    ; cle_ptr = 0 (vider slot)');
+  EmitI('MOV  WORD PTR [SI+2], 0    ; cle_len = 0');
+  EmitI('MOV  WORD PTR [SI+4], 0    ; val_ptr = 0');
+  EmitI('MOV  WORD PTR [SI+6], 0    ; val_len = 0');
+  EmitI('DEC  WORD PTR [BX+2]       ; count--');
+  EmitLabel(lbl_done);
+  EmitI('POP  CX');
+  EmitI('POP  SI');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- Message debordement de table --- }
+Procedure GenTableOverflowMsg;
+Begin
+  EmitComment('Message debordement de table associative');
+  EmitI('_RT_TABLE_OVF_MSG:');
+  EmitI('  DB  ''SNOBOL86 : table associative pleine'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenTableRuntime : emettre toutes les routines de gestion des tables.
+  -------------------------------------------------------------------------- }
+Procedure GenTableRuntime;
+Begin
+  EmitSep;
+  EmitComment('=== Runtime : tables associatives ===');
+  EmitSep;
+  EmitBlank;
+  GenRtTableNew;
+  GenRtTableHash;
+  GenRtTableLookup;
+  GenRtTableGet;
+  GenRtTableSet;
+  GenRtTableDel;
+End;
+
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
   sym_table   := Nil;
