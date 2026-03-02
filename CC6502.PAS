@@ -508,41 +508,50 @@ Begin
  If pos('pshs a', instruction) > 0 then begin
   result_str := 'pha  ; pshs a';
  end
- else if pos('pshs b', instruction) > 0 then begin
-  result_str := 'txa' + #13#10 + #9 + 'pha  ; pshs b → sauvegarde X puis empile A';
+  Else
+ If pos('pshs b', instruction) > 0 then begin
+  result_str := 'txa' + #13#10 + #9 + 'pha  ; pshs b � sauvegarde X puis empile A';
  end
- else if pos('pshs d', instruction) > 0 then begin
-  result_str := 'pha' + #13#10 + #9 + 'txa' + #13#10 + #9 + 'pha  ; pshs d → empile A et X';
+  Else
+ If pos('pshs d', instruction) > 0 then begin
+  result_str := 'pha' + #13#10 + #9 + 'txa' + #13#10 + #9 + 'pha  ; pshs d � empile A et X';
  end
- else if pos('pshs x', instruction) > 0 then begin
-  result_str := 'txa' + #13#10 + #9 + 'pha' + #13#10 + #9 + 'tya' + #13#10 + #9 + 'pha  ; pshs x → empile X';
+  Else
+ If pos('pshs x', instruction) > 0 then begin
+  result_str := 'txa' + #13#10 + #9 + 'pha' + #13#10 + #9 + 'tya' + #13#10 + #9 + 'pha  ; pshs x � empile X';
  end
- else if pos('puls a', instruction) > 0 then begin
+  Else
+ If pos('puls a', instruction) > 0 then begin
   result_str := 'pla  ; puls a';
  end
- else if pos('puls b', instruction) > 0 then begin
-  result_str := 'pla' + #13#10 + #9 + 'tax  ; puls b → dépile vers X';
+  Else
+ If pos('puls b', instruction) > 0 then begin
+  result_str := 'pla' + #13#10 + #9 + 'tax  ; puls b � d�pile vers X';
  end
- else if pos('puls d', instruction) > 0 then begin
+  Else
+ If pos('puls d', instruction) > 0 Then Begin
   result_str := 'pla' + #13#10 + #9 + 'tax' + #13#10 + #9 + 'pla  ; puls d → dépile X et A';
- end
- else if pos('puls x', instruction) > 0 then begin
+ End
+  Else
+ If pos('puls x', instruction) > 0 then begin
   result_str := 'pla' + #13#10 + #9 + 'tay' + #13#10 + #9 + 'pla' + #13#10 + #9 + 'tax  ; puls x → dépile vers X';
  end
-
- { Instructions de chargement/stockage complètes }
- else if pos('ldd #', instruction) > 0 then begin
+  { Instructions de chargement/stockage complètes }
+  Else
+ If pos('ldd #', instruction) > 0 then Begin
   result_str := 'lda #<(' + copy(instruction, pos('#', instruction)+1, length(instruction)) + ')' + #13#10 + #9 +
                 'ldx #>(' + copy(instruction, pos('#', instruction)+1, length(instruction)) + ')  ; ldd #value → lda/ldx';
- end
- else if pos('ldd ', instruction) > 0 then begin
+ End
+  Else
+ If pos('ldd ', instruction) > 0 then begin
   result_str := 'lda ' + copy(instruction, 5, length(instruction)) + #13#10 + #9 +
-                'ldx ' + copy(instruction, 5, length(instruction)) + '+1  ; ldd addr → lda/ldx';
- end
- else if pos('std ', instruction) > 0 then begin
+                'ldx ' + copy(instruction, 5, length(instruction)) + '+1  ; ldd addr � lda/ldx';
+ End
+  Else
+ If pos('std ', instruction) > 0 then begin
   result_str := 'sta ' + copy(instruction, 5, length(instruction)) + #13#10 + #9 +
-                'stx ' + copy(instruction, 5, length(instruction)) + '+1  ; std addr → sta/stx';
- end
+                'stx ' + copy(instruction, 5, length(instruction)) + '+1  ; std addr � sta/stx';
+ End
 
  { Instructions arithmétiques }
  else if pos('addd ', instruction) > 0 then begin

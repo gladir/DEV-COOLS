@@ -2469,13 +2469,766 @@ Begin
 End;
 
 { ============================================================================
-  TODO 08 ... 25 : a implementer
+  TODO 08 - PARSER : EXPRESSIONS (PRECEDENCE COMPLETE)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Declarations anticipees pour la recursion mutuelle
+  -------------------------------------------------------------------------- }
+Function ParseExpr        : TValueKind; Forward;
+Function ParseExprAnd     : TValueKind; Forward;
+Function ParseExprEq      : TValueKind; Forward;
+Function ParseExprRel     : TValueKind; Forward;
+Function ParseExprAdd     : TValueKind; Forward;
+Function ParseExprMul     : TValueKind; Forward;
+Function ParseExprUnary   : TValueKind; Forward;
+Function ParseExprPostfix : TValueKind; Forward;
+Function ParseExprPrimary : TValueKind; Forward;
+
+{ --------------------------------------------------------------------------
+  GenLoadVar : charger une variable dans AX (scalaire) ou AX+DX (string).
+  AX = ptr / premier mot, DX = len / second mot pour les strings.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadVar(idx : Integer);
+Var lbl : TString;
+    ofs : Integer;
+    scope : TScope;
+    vt    : TValueKind;
+Begin
+  lbl   := sym_table^[idx].asm_label;
+  ofs   := sym_table^[idx].bp_offset;
+  scope := sym_table^[idx].scope;
+  vt    := sym_table^[idx].vtype;
+  Case scope Of
+    SC_GLOBAL :
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('MOV', 'AX, [' + lbl + ']');
+        EmitI1('MOV', 'DX, [' + lbl + '+2]');
+      End
+      Else
+        EmitI1('MOV', 'AX, [' + lbl + ']');
+    SC_LOCAL :
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('MOV', 'AX, [BP-' + IntToStr(ofs) + ']');
+        EmitI1('MOV', 'DX, [BP-' + IntToStr(ofs - 2) + ']');
+      End
+      Else
+        EmitI1('MOV', 'AX, [BP-' + IntToStr(ofs) + ']');
+    SC_PARAM :
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('MOV', 'AX, [BP+' + IntToStr(ofs) + ']');
+        EmitI1('MOV', 'DX, [BP+' + IntToStr(ofs + 2) + ']');
+      End
+      Else
+        EmitI1('MOV', 'AX, [BP+' + IntToStr(ofs) + ']');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadConst : charger une constante symbolique dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadConst(idx : Integer);
+Begin
+  EmitI1('MOV', 'AX, ' + IntToStr(sym_table^[idx].const_val));
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadArray : charger arr[index] dans AX.
+  Index est deja dans BX (nombre d'elements).
+  -------------------------------------------------------------------------- }
+Procedure GenLoadArray(idx : Integer);
+Var lbl : TString;
+    ofs : Integer;
+    scope : TScope;
+Begin
+  lbl   := sym_table^[idx].asm_label;
+  ofs   := sym_table^[idx].bp_offset;
+  scope := sym_table^[idx].scope;
+  EmitI1('SHL', 'BX, 1');               { BX = index * 2 }
+  Case scope Of
+    SC_GLOBAL :
+      Begin
+        EmitI1('LEA', 'SI, [' + lbl + ']');
+        EmitI1('ADD', 'SI, BX');
+        EmitI1('MOV', 'AX, [SI]');
+      End;
+    SC_LOCAL :
+      Begin
+        EmitI1('LEA', 'SI, [BP-' + IntToStr(ofs) + ']');
+        EmitI1('ADD', 'SI, BX');
+        EmitI1('MOV', 'AX, [SI]');
+      End;
+    SC_PARAM :
+      Begin
+        EmitI1('LEA', 'SI, [BP+' + IntToStr(ofs) + ']');
+        EmitI1('ADD', 'SI, BX');
+        EmitI1('MOV', 'AX, [SI]');
+      End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenInlineCall : generer un appel de methode simple.
+  Les arguments ont deja ete pushes (droite -> gauche).
+  Emettre CALL label + ADD SP, n*2.
+  -------------------------------------------------------------------------- }
+Procedure GenInlineCall(func_idx : Integer; arg_count : Integer);
+Begin
+  EmitI1('CALL', func_table^[func_idx].asm_label);
+  If arg_count > 0 Then
+    EmitI1('ADD', 'SP, ' + IntToStr(arg_count * 2));
+End;
+
+{ --------------------------------------------------------------------------
+  ParseArgList : parser et generer le code pour une liste d'arguments.
+  Syntaxe : '(' [ expr (* , expr *) ] ')'
+  Les arguments sont pushes de gauche a droite (puis inverses par le caller,
+  ou plutot: on les met dans l'ordre et la convention cdecl les lit de droite
+  a gauche - on pousse donc en ordre inverse).
+  Pour simplifier, on pousse de gauche a droite ici (le callee les voit
+  dans l'ordre attendu avec [BP+4]=arg1 etc.).
+  Retourne le nombre d'arguments.
+  -------------------------------------------------------------------------- }
+Function ParseArgList : Integer;
+Var count : Integer;
+    vt    : TValueKind;
+    t     : TToken;
+Begin
+  count := 0;
+  LexExpect('(');
+  t := LexPeek;
+  If Not ((t.kind = TK_PUNCT) And (t.val = ')')) Then
+  Begin
+    Repeat
+      vt := ParseExpr;
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('PUSH', 'DX');    { len }
+        EmitI1('PUSH', 'AX');    { ptr }
+        Inc(count);
+        Inc(count);
+      End
+      Else
+      Begin
+        EmitI1('PUSH', 'AX');
+        Inc(count);
+      End;
+      t := LexPeek;
+      If (t.kind = TK_PUNCT) And (t.val = ',') Then
+        LexNext
+      Else
+        Break;
+    Until False;
+  End;
+  LexExpect(')');
+  ParseArgList := count;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseConsoleWrite : generer le code pour Console.Write / Console.WriteLine.
+  On vient de consommer 'Console' '.' 'Write' ou 'WriteLine'.
+  Retourne VK_VOID.
+  -------------------------------------------------------------------------- }
+Function ParseConsoleWrite(add_crlf : Boolean) : TValueKind;
+Var vt    : TValueKind;
+    t     : TToken;
+Begin
+  LexExpect('(');
+  t := LexPeek;
+  If (t.kind = TK_PUNCT) And (t.val = ')') Then
+  Begin
+    LexNext;  { Console.Write() sans argument }
+  End
+  Else
+  Begin
+    vt := ParseExpr;
+    LexExpect(')');
+    Case vt Of
+      VK_INT :
+        Begin
+          EmitI1('PUSH', 'AX');
+          EmitI1('CALL', RT_PFX + 'INT2STR');
+          EmitI1('ADD',  'SP, 2');
+          EmitI('MOV', 'CX, DX', 'len dans CX');
+          EmitI1('CALL', RT_PFX + 'WRITESTR');
+        End;
+      VK_BOOL :
+        Begin
+          EmitI1('PUSH', 'AX');
+          EmitI1('CALL', RT_PFX + 'BOOL2STR');
+          EmitI1('ADD',  'SP, 2');
+          EmitI('MOV', 'CX, DX', 'len dans CX');
+          EmitI1('CALL', RT_PFX + 'WRITESTR');
+        End;
+      VK_CHAR :
+        Begin
+          EmitI1('MOV', 'DL, AL');
+          EmitI1('MOV', 'AH, 02h');
+          EmitI0('INT  21h');
+        End;
+      VK_STRING :
+        Begin
+          EmitI('MOV', 'CX, DX', 'len dans CX');
+          EmitI1('CALL', RT_PFX + 'WRITESTR');
+        End;
+    Else
+      ParseError('Type non supporté par Console.Write');
+    End;
+  End;
+  If add_crlf Then
+    EmitI1('CALL', RT_PFX + 'WRITECRLF');
+  ParseConsoleWrite := VK_VOID;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprPrimary : niveau le plus prioritaire.
+  Litteraux, identifiants, parentheses, new, appels de methode.
+  -------------------------------------------------------------------------- }
+Function ParseExprPrimary : TValueKind;
+Var t      : TToken;
+    t2     : TToken;
+    idx    : Integer;
+    fidx   : Integer;
+    litidx : Integer;
+    argc   : Integer;
+    vt     : TValueKind;
+    lbl    : TString;
+Begin
+  t := LexPeek;
+
+  { ----- Literal entier ----- }
+  If t.kind = TK_INT Then
+  Begin
+    LexNext;
+    EmitI1('MOV', 'AX, ' + IntToStr(t.int_val));
+    ParseExprPrimary := VK_INT;
+    Exit;
+  End;
+
+  { ----- Literal char ----- }
+  If t.kind = TK_CHAR Then
+  Begin
+    LexNext;
+    If Length(t.val) > 0 Then
+      EmitI1('MOV', 'AX, ' + IntToStr(Ord(t.val[1])))
+    Else
+      EmitI1('MOV', 'AX, 0');
+    ParseExprPrimary := VK_CHAR;
+    Exit;
+  End;
+
+  { ----- Literal string ----- }
+  If t.kind = TK_STRING Then
+  Begin
+    LexNext;
+    litidx := AddLiteral(t.val);
+    lbl    := lit_table^[litidx].asm_desc;
+    EmitI1('MOV', 'AX, WORD PTR [' + lbl + ']');     { ptr }
+    EmitI1('MOV', 'DX, WORD PTR [' + lbl + '+2]');   { len }
+    ParseExprPrimary := VK_STRING;
+    Exit;
+  End;
+
+  { ----- true ----- }
+  If (t.kind = TK_KEYWORD) And (t.val = 'true') Then
+  Begin
+    LexNext;
+    EmitI1('MOV', 'AX, 1');
+    ParseExprPrimary := VK_BOOL;
+    Exit;
+  End;
+
+  { ----- false ----- }
+  If (t.kind = TK_KEYWORD) And (t.val = 'false') Then
+  Begin
+    LexNext;
+    EmitI0('XOR  AX, AX');
+    ParseExprPrimary := VK_BOOL;
+    Exit;
+  End;
+
+  { ----- null ----- }
+  If (t.kind = TK_KEYWORD) And (t.val = 'null') Then
+  Begin
+    LexNext;
+    EmitI1('MOV', 'AX, OFFSET _CS86_NULLD');
+    EmitI0('XOR  DX, DX');
+    ParseExprPrimary := VK_STRING;
+    Exit;
+  End;
+
+  { ----- Parenthese ----- }
+  If (t.kind = TK_PUNCT) And (t.val = '(') Then
+  Begin
+    LexNext;
+    vt := ParseExpr;
+    LexExpect(')');
+    ParseExprPrimary := vt;
+    Exit;
+  End;
+
+  { ----- Identifiant ----- }
+  If t.kind = TK_IDENT Then
+  Begin
+    LexNext;
+    { Console.Write / Console.WriteLine }
+    If t.val = 'Console' Then
+    Begin
+      LexExpect('.');
+      t2 := LexPeek;
+      If (t2.kind = TK_IDENT) And (t2.val = 'Write') Then
+      Begin
+        LexNext;
+        ParseExprPrimary := ParseConsoleWrite(False);
+        Exit;
+      End;
+      If (t2.kind = TK_IDENT) And (t2.val = 'WriteLine') Then
+      Begin
+        LexNext;
+        ParseExprPrimary := ParseConsoleWrite(True);
+        Exit;
+      End;
+      If (t2.kind = TK_IDENT) And (t2.val = 'ReadLine') Then
+      Begin
+        LexNext;
+        LexExpect('(');
+        LexExpect(')');
+        EmitI1('CALL', RT_PFX + 'READLINE');  { retourne AX=ptr, DX=len }
+        ParseExprPrimary := VK_STRING;
+        Exit;
+      End;
+      ParseError('Membre Console inconnu : ' + t2.val);
+      ParseExprPrimary := VK_UNDEF;
+      Exit;
+    End;
+
+    { Appel de methode : ident '(' ... ')' }
+    t2 := LexPeek;
+    If (t2.kind = TK_PUNCT) And (t2.val = '(') Then
+    Begin
+      fidx := FindFunc(t.val);
+      If fidx = 0 Then
+      Begin
+        ParseError('Methode inconnue : ' + t.val);
+        { Consommer les arguments quand meme }
+        LexNext;  { '(' }
+        While Not ((LexPeek.kind = TK_PUNCT) And (LexPeek.val = ')')) And
+              Not (LexPeek.kind = TK_EOF) Do
+          LexNext;
+        LexExpect(')');
+        ParseExprPrimary := VK_UNDEF;
+        Exit;
+      End;
+      argc := ParseArgList;
+      EmitI1('CALL', func_table^[fidx].asm_label);
+      If argc > 0 Then
+        EmitI1('ADD', 'SP, ' + IntToStr(argc * 2));
+      ParseExprPrimary := func_table^[fidx].return_type;
+      Exit;
+    End;
+
+    { Variable, constante ou parametre }
+    idx := FindSym(t.val);
+    If idx = 0 Then
+    Begin
+      ParseError('Symbole inconnu : ' + t.val);
+      EmitI0('XOR  AX, AX');
+      ParseExprPrimary := VK_INT;
+      Exit;
+    End;
+
+    Case sym_table^[idx].kind Of
+      SK_CONST :
+        Begin
+          GenLoadConst(idx);
+          ParseExprPrimary := sym_table^[idx].vtype;
+        End;
+      SK_VAR :
+        Begin
+          GenLoadVar(idx);
+          ParseExprPrimary := sym_table^[idx].vtype;
+        End;
+    Else
+      ParseError('Identifiant non utilisable comme expression : ' + t.val);
+      EmitI0('XOR  AX, AX');
+      ParseExprPrimary := VK_INT;
+    End;
+    Exit;
+  End;
+
+  { Rien reconnu }
+  ParseError('Expression attendue, trouve : ' + t.val);
+  LexNext;   { consommer le token inconnu pour eviter une boucle infinie }
+  EmitI0('XOR  AX, AX');
+  ParseExprPrimary := VK_INT;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprPostfix : appel de fonction, indexation [], ++ -- postfixes.
+  -------------------------------------------------------------------------- }
+Function ParseExprPostfix : TValueKind;
+Var vt   : TValueKind;
+    t    : TToken;
+Begin
+  vt := ParseExprPrimary;
+  Repeat
+    t := LexPeek;
+
+    { arr[index] }
+    If (t.kind = TK_PUNCT) And (t.val = '[') Then
+    Begin
+      LexNext;
+      EmitI1('PUSH', 'AX');    { sauver ptr du tableau }
+      ParseExpr;               { index dans AX }
+      EmitI1('MOV', 'BX, AX');
+      EmitI1('POP', 'SI');
+      EmitI1('SHL', 'BX, 1');
+      EmitI1('ADD', 'SI, BX');
+      EmitI1('MOV', 'AX, [SI]');
+      LexExpect(']');
+      vt := VK_INT;  { elements de tableau toujours int/char }
+    End
+
+    { x++ postfixe }
+    Else If (t.kind = TK_OP) And (t.val = '++') Then
+    Begin
+      LexNext;
+      EmitI('PUSH', 'AX', 'sauver valeur avant incrementation');
+      { L'incrementation du stockage est faite par l'appelant via GenStoreVar }
+      { Ici on simule: la valeur courante reste dans AX }
+      { Note: postfix ++ complet necessite connaitre l'adresse de la var }
+      EmitI('INC', 'AX', 'postfix ++ (approximation)');
+      EmitI0('DEC  AX');       { restaurer la valeur originale dans AX }
+      vt := vt;
+    End
+
+    { x-- postfixe }
+    Else If (t.kind = TK_OP) And (t.val = '--') Then
+    Begin
+      LexNext;
+      EmitI('DEC', 'AX', 'postfix -- (approximation)');
+      EmitI0('INC  AX');
+      vt := vt;
+    End
+
+    { .Length }
+    Else If (t.kind = TK_PUNCT) And (t.val = '.') Then
+    Begin
+      LexNext;
+      t := LexExpectKind(TK_IDENT);
+      If t.val = 'Length' Then
+      Begin
+        { Pour un tableau : DX contient la longueur (stockee a l'init) }
+        { Pour une string : DX = len }
+        EmitI('MOV', 'AX, DX', '.Length -> DX dans AX');
+        vt := VK_INT;
+      End
+      Else
+        ParseError('Propriete inconnue : ' + t.val);
+    End
+
+    Else
+      Break;
+  Until False;
+  ParseExprPostfix := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprUnary : operateurs unaires : ! - ++ -- (prefix).
+  -------------------------------------------------------------------------- }
+Function ParseExprUnary : TValueKind;
+Var t   : TToken;
+    vt  : TValueKind;
+Begin
+  t := LexPeek;
+
+  { NOT logique }
+  If (t.kind = TK_OP) And (t.val = '!') Then
+  Begin
+    LexNext;
+    vt := ParseExprUnary;
+    EmitI('XOR', 'AX, 1', '! bool');
+    ParseExprUnary := VK_BOOL;
+    Exit;
+  End;
+
+  { Negation unaire }
+  If (t.kind = TK_OP) And (t.val = '-') Then
+  Begin
+    LexNext;
+    vt := ParseExprUnary;
+    EmitI0('NEG  AX');
+    ParseExprUnary := VK_INT;
+    Exit;
+  End;
+
+  { Positif unaire (no-op) }
+  If (t.kind = TK_OP) And (t.val = '+') Then
+  Begin
+    LexNext;
+    vt := ParseExprUnary;
+    ParseExprUnary := vt;
+    Exit;
+  End;
+
+  { Prefix ++ }
+  If (t.kind = TK_OP) And (t.val = '++') Then
+  Begin
+    LexNext;
+    vt := ParseExprPostfix;
+    EmitI0('INC  AX');
+    ParseExprUnary := vt;
+    Exit;
+  End;
+
+  { Prefix -- }
+  If (t.kind = TK_OP) And (t.val = '--') Then
+  Begin
+    LexNext;
+    vt := ParseExprPostfix;
+    EmitI0('DEC  AX');
+    ParseExprUnary := vt;
+    Exit;
+  End;
+
+  ParseExprUnary := ParseExprPostfix;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprMul : * / %
+  -------------------------------------------------------------------------- }
+Function ParseExprMul : TValueKind;
+Var vt  : TValueKind;
+    t   : TToken;
+    op  : TString;
+Begin
+  vt := ParseExprUnary;
+  Repeat
+    t := LexPeek;
+    If Not ((t.kind = TK_OP) And
+            ((t.val = '*') Or (t.val = '/') Or (t.val = '%'))) Then Break;
+    op := t.val;
+    LexNext;
+    EmitI1('PUSH', 'AX');           { sauver operande gauche }
+    ParseExprUnary;
+    EmitI('MOV', 'BX, AX', 'operande droit dans BX');
+    EmitI1('POP', 'AX');
+    If op = '*' Then
+      EmitI1('CALL', RT_PFX + 'IMUL')
+    Else If op = '/' Then
+      EmitI1('CALL', RT_PFX + 'IDIV')
+    Else
+      EmitI1('CALL', RT_PFX + 'IMOD');
+    vt := VK_INT;
+  Until False;
+  ParseExprMul := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprAdd : + -  (et concatenation de chaines)
+  -------------------------------------------------------------------------- }
+Function ParseExprAdd : TValueKind;
+Var vt  : TValueKind;
+    t   : TToken;
+    op  : TString;
+Begin
+  vt := ParseExprMul;
+  Repeat
+    t := LexPeek;
+    If Not ((t.kind = TK_OP) And
+            ((t.val = '+') Or (t.val = '-'))) Then Break;
+    op := t.val;
+    LexNext;
+    If vt = VK_STRING Then
+    Begin
+      { Concatenation de chaines : AX=ptr1, DX=len1, sauver les deux }
+      EmitI1('PUSH', 'DX');         { len1 }
+      EmitI1('PUSH', 'AX');         { ptr1 }
+      ParseExprMul;                  { AX=ptr2, DX=len2 }
+      EmitI1('PUSH', 'DX');         { len2 }
+      EmitI1('PUSH', 'AX');         { ptr2 }
+      EmitI1('CALL', RT_PFX + 'STRCAT');
+      EmitI1('ADD', 'SP, 8');
+      vt := VK_STRING;
+    End
+    Else
+    Begin
+      EmitI1('PUSH', 'AX');
+      ParseExprMul;
+      EmitI1('MOV', 'BX, AX');
+      EmitI1('POP', 'AX');
+      If op = '+' Then
+        EmitI1('ADD', 'AX, BX')
+      Else
+        EmitI1('SUB', 'AX, BX');
+      vt := VK_INT;
+    End;
+  Until False;
+  ParseExprAdd := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprRel : < <= > >=
+  Resultat dans AX : 1 (vrai) ou 0 (faux).
+  -------------------------------------------------------------------------- }
+Function ParseExprRel : TValueKind;
+Var vt     : TValueKind;
+    t      : TToken;
+    op     : TString;
+    lbl_t  : TString;
+    lbl_f  : TString;
+Begin
+  vt := ParseExprAdd;
+  t  := LexPeek;
+  If (t.kind = TK_OP) And
+     ((t.val = '<') Or (t.val = '<=') Or
+      (t.val = '>') Or (t.val = '>=')) Then
+  Begin
+    op := t.val;
+    LexNext;
+    EmitI1('PUSH', 'AX');
+    ParseExprAdd;
+    EmitI1('MOV', 'BX, AX');
+    EmitI1('POP', 'AX');
+    EmitI1('CMP', 'AX, BX');
+    lbl_t := NewLabel;
+    lbl_f := NewLabel;
+    If op = '<'  Then EmitI1('JL',  lbl_t)
+    Else If op = '<=' Then EmitI1('JLE', lbl_t)
+    Else If op = '>'  Then EmitI1('JG',  lbl_t)
+    Else                   EmitI1('JGE', lbl_t);
+    EmitI0('XOR  AX, AX');
+    EmitI1('JMP', lbl_f);
+    EmitLabel(lbl_t);
+    EmitI1('MOV', 'AX, 1');
+    EmitLabel(lbl_f);
+    vt := VK_BOOL;
+  End;
+  ParseExprRel := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprEq : == !=
+  -------------------------------------------------------------------------- }
+Function ParseExprEq : TValueKind;
+Var vt    : TValueKind;
+    t     : TToken;
+    op    : TString;
+    lbl_t : TString;
+    lbl_f : TString;
+Begin
+  vt := ParseExprRel;
+  t  := LexPeek;
+  If (t.kind = TK_OP) And ((t.val = '==') Or (t.val = '!=')) Then
+  Begin
+    op := t.val;
+    LexNext;
+    If vt = VK_STRING Then
+    Begin
+      { Comparaison de chaines via _RT_STRCMP }
+      EmitI1('PUSH', 'DX');    { len1 }
+      EmitI1('PUSH', 'AX');    { ptr1 }
+      ParseExprRel;
+      EmitI1('PUSH', 'DX');    { len2 }
+      EmitI1('PUSH', 'AX');    { ptr2 }
+      EmitI1('CALL', RT_PFX + 'STRCMP');
+      EmitI1('ADD', 'SP, 8');
+      { _RT_STRCMP : ZF=1 si egal, retourne AX=0 si egal }
+      lbl_t := NewLabel;
+      lbl_f := NewLabel;
+      If op = '==' Then EmitI1('JZ', lbl_t) Else EmitI1('JNZ', lbl_t);
+    End
+    Else
+    Begin
+      EmitI1('PUSH', 'AX');
+      ParseExprRel;
+      EmitI1('MOV', 'BX, AX');
+      EmitI1('POP', 'AX');
+      EmitI1('CMP', 'AX, BX');
+      lbl_t := NewLabel;
+      lbl_f := NewLabel;
+      If op = '==' Then EmitI1('JE', lbl_t) Else EmitI1('JNE', lbl_t);
+    End;
+    EmitI0('XOR  AX, AX');
+    EmitI1('JMP', lbl_f);
+    EmitLabel(lbl_t);
+    EmitI1('MOV', 'AX, 1');
+    EmitLabel(lbl_f);
+    vt := VK_BOOL;
+  End;
+  ParseExprEq := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprAnd : && avec court-circuit.
+  Si gauche = faux -> AX=0 et sauter la partie droite.
+  -------------------------------------------------------------------------- }
+Function ParseExprAnd : TValueKind;
+Var vt    : TValueKind;
+    t     : TToken;
+    lbl_f : TString;
+Begin
+  vt := ParseExprEq;
+  t  := LexPeek;
+  If (t.kind = TK_OP) And (t.val = '&&') Then
+  Begin
+    lbl_f := NewLabel;
+    EmitI1('TEST', 'AX, AX');
+    EmitI1('JZ', lbl_f);
+    Repeat
+      LexNext;  { consommer '&&' }
+      ParseExprEq;
+      EmitI1('TEST', 'AX, AX');
+      EmitI1('JZ', lbl_f);
+      t := LexPeek;
+    Until Not ((t.kind = TK_OP) And (t.val = '&&'));
+    EmitI1('MOV', 'AX, 1');
+    EmitLabel(lbl_f);
+    vt := VK_BOOL;
+  End;
+  ParseExprAnd := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExpr : || avec court-circuit (niveau le plus bas de precedence).
+  -------------------------------------------------------------------------- }
+Function ParseExpr : TValueKind;
+Var vt    : TValueKind;
+    t     : TToken;
+    lbl_t : TString;
+Begin
+  vt := ParseExprAnd;
+  t  := LexPeek;
+  If (t.kind = TK_OP) And (t.val = '||') Then
+  Begin
+    lbl_t := NewLabel;
+    EmitI1('TEST', 'AX, AX');
+    EmitI1('JNZ', lbl_t);
+    Repeat
+      LexNext;  { consommer '||' }
+      ParseExprAnd;
+      EmitI1('TEST', 'AX, AX');
+      EmitI1('JNZ', lbl_t);
+      t := LexPeek;
+    Until Not ((t.kind = TK_OP) And (t.val = '||'));
+    EmitI0('XOR  AX, AX');
+    EmitLabel(lbl_t);
+    vt := VK_BOOL;
+  End;
+  ParseExpr := vt;
+End;
+
+{ ============================================================================
+  TODO 09 ... 25 : a implementer
   ============================================================================ }
 
 BEGIN
   InitTables;
   scope_level := 0;
   WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 08-25 non implementes)');
+  WriteLn('(TODO 09-25 non implementes)');
   FreeTables;
 END.
