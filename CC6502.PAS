@@ -14,22 +14,22 @@ Uses DOS;
 
 Const
  VERSION = 'Compilateur C pour 6502 V1.1';  { Version du compilateur C pour 6502 }
- YES = 1;                         { Valeur boolï¿½enne vraie }
- NO = 0;                          { Valeur boolï¿½enne fausse }
+ YES = 1;                         { Valeur bool‚enne vraie }
+ NO = 0;                          { Valeur bool‚enne fausse }
 
-  { Paramï¿½tres de la table de symbole }
- symsiz = 14;       { Taille d'une entrï¿½e de symbole en octets }
+  { ParamŠtres de la table de symbole }
+ symsiz = 14;       { Taille d'une entr‚e de symbole en octets }
  numglbs = 512;     { Nombre maximum de symboles globaux }
  MASKGLBS = 511;    { Masque pour le hachage de la table de symboles }
  namesize = 32;     { Taille maximale d'un nom de symbole incluant le terminateur }
  namemax = 31;      { Longueur maximale d'un nom de symbole }
 
-  { Dï¿½placement du format d'entrï¿½e de la table des symboles }
- name = 0;          { Dï¿½placement du nom du symbole dans l'entrï¿½e }
- ident = 9;         { Dï¿½placement de l'identificateur de type }
- ctype = 10;        { Dï¿½placement du type de donnï¿½es C }
- storage = 11;      { Dï¿½placement de la classe d'entreposage }
- offset = 12;       { Dï¿½placement de la valeur/adresse du symbole }
+  { D‚placement du format d'entr‚e de la table des symboles }
+ name = 0;          { D‚placement du nom du symbole dans l'entr‚e }
+ ident = 9;         { D‚placement de l'identificateur de type }
+ ctype = 10;        { D‚placement du type de donn‚es C }
+ storage = 11;      { D‚placement de la classe d'entreposage }
+ offset = 12;       { D‚placement de la valeur/adresse du symbole }
  offsize = 2;       { Taille en octets du champ dï¿½placement }
 
   { Types d'identificateurs }
@@ -39,15 +39,15 @@ Const
  it_function = 4;     { Fonction }
  it_struct_type = 5;  { Type structure }
  it_union_type = 6;   { Type union }
- it_typedef_type = 7; { Type dï¿½fini par typedef }
+ it_typedef_type = 7; { Type d‚fini par typedef }
 
-  { Types de donnï¿½es }
+  { Types de donn‚es }
  cvoid = 1;      { Type void (aucune valeur) }
- cchar = 2;      { Caractï¿½re signï¿½ 8 bits }
- cuchar = 3;     { Caractï¿½re non signï¿½ 8 bits }
- cshort = 4;     { Entier court signï¿½ 16 bits }
- cushort = 5;    { Entier court non signï¿½ 16 bits }
- cint = 6;       { Entier signï¿½ 16 bits }
+ cchar = 2;      { CaractŠre sign‚ 8 bits }
+ cuchar = 3;     { CaractŠre non sign‚ 8 bits }
+ cshort = 4;     { Entier court sign‚ 16 bits }
+ cushort = 5;    { Entier court non sign‚ 16 bits }
+ cint = 6;       { Entier sign‚ 16 bits }
  cuint = 7;      { Entier non signï¿½ 16 bits }
  clong = 8;      { Entier long signï¿½ 32 bits }
  culong = 9;     { Entier long non signï¿½ 32 bits }
@@ -376,7 +376,7 @@ Var
  stkp: Integer;
  errcnt, eof: Integer;
  optimize, ctext, cmode, lastst: Integer;
- 
+
  { Variables pour la conversion 6502 }
  in_ldd_instruction: Boolean;
  in_std_instruction: Boolean;
@@ -491,7 +491,7 @@ Var
 Begin
  { Convertir les instructions 6809 vers 6502 }
  result_str := instruction;
- 
+
  { Instructions partielles communes }
  if instruction = 'ldd  #' then begin
   result_str := 'lda #';  { Conversion simple : ldd # â†’ lda # }
@@ -502,7 +502,7 @@ Begin
  else if instruction = 'rts' then begin
   result_str := 'rts';    { rts est identique sur 6502 }
  end
- 
+
  { Instructions de pile complÃ¨tes }
  else if pos('pshs a', instruction) > 0 then begin
   result_str := 'pha  ; pshs a';
@@ -528,34 +528,34 @@ Begin
  else if pos('puls x', instruction) > 0 then begin
   result_str := 'pla' + #13#10 + #9 + 'tay' + #13#10 + #9 + 'pla' + #13#10 + #9 + 'tax  ; puls x â†’ dÃ©pile vers X';
  end
- 
+
  { Instructions de chargement/stockage complÃ¨tes }
  else if pos('ldd #', instruction) > 0 then begin
-  result_str := 'lda #<(' + copy(instruction, pos('#', instruction)+1, length(instruction)) + ')' + #13#10 + #9 + 
+  result_str := 'lda #<(' + copy(instruction, pos('#', instruction)+1, length(instruction)) + ')' + #13#10 + #9 +
                 'ldx #>(' + copy(instruction, pos('#', instruction)+1, length(instruction)) + ')  ; ldd #value â†’ lda/ldx';
  end
  else if pos('ldd ', instruction) > 0 then begin
-  result_str := 'lda ' + copy(instruction, 5, length(instruction)) + #13#10 + #9 + 
+  result_str := 'lda ' + copy(instruction, 5, length(instruction)) + #13#10 + #9 +
                 'ldx ' + copy(instruction, 5, length(instruction)) + '+1  ; ldd addr â†’ lda/ldx';
  end
  else if pos('std ', instruction) > 0 then begin
-  result_str := 'sta ' + copy(instruction, 5, length(instruction)) + #13#10 + #9 + 
+  result_str := 'sta ' + copy(instruction, 5, length(instruction)) + #13#10 + #9 +
                 'stx ' + copy(instruction, 5, length(instruction)) + '+1  ; std addr â†’ sta/stx';
  end
- 
+
  { Instructions arithmÃ©tiques }
  else if pos('addd ', instruction) > 0 then begin
-  result_str := 'clc' + #13#10 + #9 + 'adc ' + copy(instruction, 6, length(instruction)) + #13#10 + #9 + 
+  result_str := 'clc' + #13#10 + #9 + 'adc ' + copy(instruction, 6, length(instruction)) + #13#10 + #9 +
                 'bcc +' + #13#10 + #9 + 'inx' + #13#10 + '+  ; addd â†’ adc avec carry';
  end
  else if pos('subd ', instruction) > 0 then begin
-  result_str := 'sec' + #13#10 + #9 + 'sbc ' + copy(instruction, 6, length(instruction)) + #13#10 + #9 + 
+  result_str := 'sec' + #13#10 + #9 + 'sbc ' + copy(instruction, 6, length(instruction)) + #13#10 + #9 +
                 'bcs +' + #13#10 + #9 + 'dex' + #13#10 + '+  ; subd â†’ sbc avec borrow';
  end
  else if pos('cmpd ', instruction) > 0 then begin
   result_str := 'cmp ' + copy(instruction, 6, length(instruction)) + '  ; cmpd â†’ cmp (partie basse)';
  end
- 
+
  { Instructions de saut }
  else if pos('lbra ', instruction) > 0 then begin
   result_str := 'jmp ' + copy(instruction, 6, length(instruction));
@@ -563,7 +563,7 @@ Begin
  else if pos('lbeq ', instruction) > 0 then begin
   result_str := 'beq ' + copy(instruction, 6, length(instruction));
  end
- 
+
  { Instructions spÃ©cialisÃ©es 6809 â†’ 6502 }
  else if pos('tfr d,x', instruction) > 0 then begin
   result_str := '  ; tfr d,x â†’ dÃ©jÃ  en A/X sur 6502';
@@ -588,7 +588,7 @@ Begin
  else if pos('tsta', instruction) > 0 then begin
   result_str := 'cmp #0  ; tsta';
  end
- 
+
  { Instructions de pile et registres }
  else if pos('clr ', instruction) > 0 then begin
   if pos(',s', instruction) > 0 then begin
@@ -599,7 +599,7 @@ Begin
    result_str := 'lda #0' + #13#10 + #9 + 'sta ' + copy(instruction, 5, length(instruction)) + '  ; clr addr';
   end;
  end;
- 
+
  convert_to_6502 := result_str;
 End;
 
@@ -6938,11 +6938,11 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
- 
+
  { Initialisation des variables 6502 }
  in_ldd_instruction := false;
  in_std_instruction := false;
- 
+
  { Initialize include file system }
  include_depth := 0;
  current_filename := '';

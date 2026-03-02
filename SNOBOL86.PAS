@@ -5120,6 +5120,7 @@ End;
   -------------------------------------------------------------------------- }
 Procedure GenLoadSysVar(Const nm : TString); Forward;
 Procedure GenStoreSysVar(Const nm : TString); Forward;
+Procedure GenIORuntime; Forward;
 
 Function AsmVarDesc(Const varname : TString) : TString;
 Begin
@@ -5576,7 +5577,7 @@ Begin
   If lbl_idx = 0 Then
     lbl_idx := AddLabel(inst_label);
   DefineLabel(lbl_idx, 0);
-  EmitLabel(AsmSafeIdent(UpCaseStr(inst_label)));
+  EmitLabel(SB_LBL_PFX + AsmSafeIdent(UpCaseStr(inst_label)));
 End;
 
 { --------------------------------------------------------------------------
@@ -6719,6 +6720,260 @@ Begin
     EmitI('MOV  [' + SysVarAsmLabel(u) + '], AX     ; &' + u);
   End;
 End;
+{ ============================================================================
+  TODO 24 - GESTION DE L'ENTREE/SORTIE (INPUT / OUTPUT)
+  _RT_READLINE  : lire une ligne de stdin (INT 21h AH=0Ah) dans _SB_INPUTBUF,
+                  construire un descripteur dans _SB_SYS_INPUT_D,
+                  retourner DI=&_SB_SYS_INPUT_D, AX=1 succes / AX=0 EOF.
+  _RT_WRITELINE : ecrire la chaine decrite par SI sur stdout (INT 21h AH=40h),
+                  suivie de CRLF, retourner AX=1.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenReadlineRuntime : emettre _RT_READLINE dans le segment .CODE.
+  Retour : DI = adresse _SB_SYS_INPUT_D, AX = 1 (succes) ou AX = 0 (EOF).
+  -------------------------------------------------------------------------- }
+Procedure GenReadlineRuntime;
+Begin
+  EmitSep;
+  EmitComment('_RT_READLINE : lire une ligne stdin -> descripteur _SB_SYS_INPUT_D');
+  EmitSep;
+  EmitLabel('_RT_READLINE');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('PUSH DX');
+  EmitComment('INT 21h AH=0Ah : saisie tamponnee sur stdin');
+  EmitI('MOV  AH, 0Ah');
+  EmitI('LEA  DX, [_SB_INPUTBUF]');
+  EmitI('INT  21h');
+  EmitComment('Longueur reelle = _SB_INPUTBUF+1');
+  EmitI('XOR  CX, CX');
+  EmitI('MOV  CL, [_SB_INPUTBUF+1]');
+  EmitComment('Longueur nulle => ligne vide; 1Ah en premier => EOF DOS');
+  EmitI('CMP  CX, 0');
+  EmitI('JE   _RT_READLINE_EOF');
+  EmitI('LEA  BX, [_SB_INPUTBUF+2]');
+  EmitI('MOV  AL, [BX]');
+  EmitI('CMP  AL, 1Ah              ; Ctrl+Z = EOF DOS');
+  EmitI('JE   _RT_READLINE_EOF');
+  EmitComment('Construire descripteur : ptr = &_SB_INPUTBUF+2, len = CX');
+  EmitI('LEA  DI, [_SB_SYS_INPUT_D]');
+  EmitI('MOV  [DI],   BX           ; ptr -> donnees');
+  EmitI('MOV  [DI+2], CX           ; len = chars lus');
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('MOV  AX, 1                ; AX=1 => succes');
+  EmitI('RET');
+  EmitLabel('_RT_READLINE_EOF');
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('XOR  AX, AX               ; AX=0 => EOF/echec');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenWritelineRuntime : emettre _RT_WRITELINE dans le segment .CODE.
+  Convention d'appel : SI = adresse du descripteur a ecrire.
+  Retour : AX = 1.
+  -------------------------------------------------------------------------- }
+Procedure GenWritelineRuntime;
+Begin
+  EmitSep;
+  EmitComment('_RT_WRITELINE : ecrire chaine [SI] sur stdout + CRLF');
+  EmitSep;
+  EmitLabel('_RT_WRITELINE');
+  EmitI('PUSH BX');
+  EmitI('PUSH CX');
+  EmitI('PUSH DX');
+  EmitComment('Extraire len et ptr du descripteur SI');
+  EmitI('MOV  DX, [SI]             ; ptr donnees');
+  EmitI('MOV  CX, [SI+2]           ; len');
+  EmitI('CMP  CX, 0');
+  EmitI('JE   _RT_WRITELINE_CRLF   ; chaine vide : sauter au CRLF');
+  EmitComment('INT 21h AH=40h : ecrire CX octets sur stdout (handle 1)');
+  EmitI('MOV  AH, 40h');
+  EmitI('MOV  BX, 1                ; handle stdout');
+  EmitI('INT  21h');
+  EmitLabel('_RT_WRITELINE_CRLF');
+  EmitComment('Ecrire CRLF');
+  EmitI('MOV  AH, 40h');
+  EmitI('MOV  BX, 1');
+  EmitI('MOV  CX, 2');
+  EmitI('LEA  DX, [_SB_CRLF_BUF]');
+  EmitI('INT  21h');
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  BX');
+  EmitI('MOV  AX, 1');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenIORuntime : emettre toutes les routines I/O dans le segment .CODE.
+  Appelee depuis l'orchestrateur de passe 2 (TODO 25).
+  -------------------------------------------------------------------------- }
+Procedure GenIORuntime;
+Begin
+  EmitSep;
+  EmitComment('=== Runtime : entree / sortie (stdin / stdout) ===');
+  EmitSep;
+  EmitBlank;
+  GenReadlineRuntime;
+  GenWritelineRuntime;
+End;
+
+{ ============================================================================
+  TODO 25 - PROCEDURE COMPILE ET ORCHESTRATION DEUX PASSES
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenInstruction : dispatcher apres ParseInstruction.
+  -------------------------------------------------------------------------- }
+Procedure GenInstruction;
+Var subj_up  : TString;
+    auto_lbl : TString;
+Begin
+  GenLabelDef;
+  If first_instr_lbl = '' Then
+  Begin
+    If inst_label <> '' Then
+      SetFirstInstrLabel(SB_LBL_PFX + AsmSafeIdent(UpCaseStr(inst_label)))
+    Else
+    Begin
+      auto_lbl := NewLabel;
+      EmitLabel(auto_lbl);
+      SetFirstInstrLabel(auto_lbl);
+    End;
+  End;
+  If (inst_subject = '') And (inst_pattern = '') And (Not inst_has_eq) Then
+  Begin
+    If (inst_goto_u <> '') Or (inst_goto_s <> '') Or (inst_goto_f <> '') Then
+      EmitGotoSection;
+    Exit;
+  End;
+  GenStcountCheck;
+  subj_up := UpCaseStr(inst_subject);
+  If (Length(subj_up) >= 7) And (Copy(subj_up, 1, 7) = 'DEFINE(') Then
+    GenDefineInstruction(Copy(inst_subject, 8, Length(inst_subject) - 8))
+  Else If inst_pattern <> '' Then
+    GenMatchInstruction
+  Else If inst_has_eq Then
+    GenSimpleAssign
+  Else
+    GenSimpleAccess;
+End;
+
+{ --------------------------------------------------------------------------
+  CopyTmpToOut : re-ouvrir tmp_file en lecture et recopier dans out_file.
+  -------------------------------------------------------------------------- }
+Procedure CopyTmpToOut;
+Var line : String;
+Begin
+  EmitComment('--- Code programme SNOBOL (passe 1) ---');
+  {$I-}
+  Reset(tmp_file);
+  {$I+}
+  If IOResult <> 0 Then Begin Warning('CopyTmpToOut : relecture impossible : ' + tmp_fname); Exit; End;
+  While Not Eof(tmp_file) Do
+  Begin
+    ReadLn(tmp_file, line);
+    WriteLn(out_file, line);
+  End;
+  CloseFile(tmp_file);
+  tmp_open := False;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  Compile : orchestrateur principal - passe 1 puis passe 2.
+  -------------------------------------------------------------------------- }
+Procedure Compile;
+Begin
+  If ParamStr(1) = '' Then
+  Begin
+    WriteLn('SNOBOL86 v', SNOBOL86_VERSION, ' - compilateur SNOBOL 4 -> 8086 MASM');
+    WriteLn('Usage : SNOBOL86 source.SBL [sortie.ASM]');
+    Halt(1);
+  End;
+  src_fname := ParamStr(1);
+  If ParamStr(2) <> '' Then
+    out_fname := ParamStr(2)
+  Else
+  Begin
+    out_fname := src_fname;
+    If (Length(out_fname) > 4) And
+       (UpCaseStr(Copy(out_fname, Length(out_fname)-3, 4)) = '.SBL') Then
+      Delete(out_fname, Length(out_fname)-3, 4);
+    out_fname := out_fname + '.ASM';
+  End;
+  tmp_fname := src_fname + '.TMP';
+  WriteLn('SNOBOL86 v', SNOBOL86_VERSION, ' - compilation : ', src_fname, ' -> ', out_fname);
+  InitSymTable;
+  InitLabelTable;
+  InitPatTable;
+  InitFuncTable;
+  InitFwdTable;
+  InitPredefined;
+  {$I-}
+  Assign(src_file, src_fname); Reset(src_file);
+  {$I+}
+  If IOResult <> 0 Then Begin WriteLn('ERREUR : impossible d''ouvrir : ', src_fname); Halt(2); End;
+  {$I-}
+  Assign(tmp_file, tmp_fname); Rewrite(tmp_file);
+  {$I+}
+  If IOResult <> 0 Then Begin CloseFile(src_file); WriteLn('ERREUR : impossible de creer : ', tmp_fname); Halt(2); End;
+  tmp_open := True;
+  cur_out  := @tmp_file;
+  lex_at_eof := False;
+  { PASSE 1 }
+  While LexReadLine Do
+  Begin
+    If lex_line = SB_END_SENTINEL Then
+    Begin
+      GenEndSentinel; Break;
+    End;
+    ParseInstruction;
+    GenInstruction;
+    Inc(instr_count);
+  End;
+  CloseFile(src_file);
+  If tmp_open Then Begin CloseFile(tmp_file); tmp_open := False; End;
+  { PASSE 2 }
+  {$I-}
+  Assign(out_file, out_fname); Rewrite(out_file);
+  {$I+}
+  If IOResult <> 0 Then Begin WriteLn('ERREUR : impossible de creer : ', out_fname); Halt(2); End;
+  cur_out := @out_file;
+  GenHeader;
+  GenDataSegment;
+  GenCodeSegHeader;
+  GenInitIO;
+  GenInitSysVars;
+  {$I-}
+  Assign(tmp_file, tmp_fname);
+  {$I+}
+  CopyTmpToOut;
+  GenEndProg;
+  GenDumpVarsStub;
+  GenHeapRuntime;
+  GenStringRuntime;
+  GenArithRuntime;
+  GenTableRuntime;
+  GenArrayRuntime;
+  GenFunctionReturnStubs;
+  GenIORuntime;
+  ResolveForwardRefs;
+  GenFooter;
+  CloseFile(out_file);
+  {$I-} Assign(tmp_file, tmp_fname); Erase(tmp_file); {$I+}
+  BilanCompilation;
+  DisposeAllTables;
+End;
+
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
   sym_table   := Nil;
@@ -6745,7 +7000,6 @@ Begin
   main_proc_label := '';
   first_instr_lbl := '';
   cur_func_idx    := 0;
-  { Corps principal : sera rempli par TODO 25 (Procedure Compile) }
-  WriteLn('SNOBOL86 v', SNOBOL86_VERSION, ' - compilateur SNOBOL 4 -> 8086 MASM');
-  WriteLn('Usage : SNOBOL86 source.SBL [sortie.ASM]');
+  { TODO 25 : Orchestration de la compilation en deux passes }
+  Compile;
 End.
