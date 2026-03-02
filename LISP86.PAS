@@ -19,42 +19,42 @@ Uses DOS;
 Const
  VERSION = 'LISP86 V1.0';
 
- { ---- Types de tokens LISP ---- }
+  { ---- Types de jetons LISP ---- }
  TOK_UNKNOWN  = 0;
- TOK_LPAREN   = 1;   { (                          }
- TOK_RPAREN   = 2;   { )                          }
- TOK_ATOM     = 3;   { identifiant / mot-cle      }
- TOK_NUMBER   = 4;   { litterale numerique entiere }
- TOK_STRING   = 5;   { "texte"                    }
- TOK_QUOTE    = 6;   { '  (sucre syntaxique)      }
- TOK_BQUOTE   = 7;   { `  (backquote)             }
- TOK_COMMA    = 8;   { ,  (unquote)               }
- TOK_COMMA_AT = 9;   { ,@ (splice)                }
- TOK_HASH_T   = 10;  { #t  => T                   }
- TOK_HASH_F   = 11;  { #f  => NIL                 }
- TOK_CHAR     = 12;  { #\a => code ASCII          }
+ TOK_LPAREN   = 1;   { (                           }
+ TOK_RPAREN   = 2;   { )                           }
+ TOK_ATOM     = 3;   { identifiant / mot-cle       }
+ TOK_NUMBER   = 4;   { litt‚rale num‚rique entiŠre }
+ TOK_STRING   = 5;   { "texte"                     }
+ TOK_QUOTE    = 6;   { '  (sucre syntaxique)       }
+ TOK_BQUOTE   = 7;   { `  (backquote)              }
+ TOK_COMMA    = 8;   { ,  (unquote)                }
+ TOK_COMMA_AT = 9;   { ,@ (splice)                 }
+ TOK_HASH_T   = 10;  { #t  => T                    }
+ TOK_HASH_F   = 11;  { #f  => NIL                  }
+ TOK_CHAR     = 12;  { #\a => code ASCII           }
  TOK_EOF      = 99;
 
- { ---- Tags de valeurs LISP (3 bits hauts d'un Word) ---- }
+ { ---- Balises de valeurs LISP (3 bits hauts d'un Word) ---- }
  { Valeur encodee : TTTVVVVVVVVVVVVV (3 bits tag + 13 bits payload) }
- LTAG_NIL    = 0; { NIL / faux        : Word = 0000_0 = $0000 }
- LTAG_T      = 1; { T / vrai          : Word = 001_xxxxx      }
+ LTAG_NIL    = 0; { NIL / faux        : Word = 0000_0 = $0000    }
+ LTAG_T      = 1; { T / vrai          : Word = 001_xxxxx         }
  LTAG_FIXNUM = 2; { Entier 13 bits    : Word = 010_vvvvvvvvvvvvv }
- LTAG_SYM    = 3; { Symbole           : Word = 011_index_sym  }
- LTAG_CONS   = 4; { Cons cell         : Word = 100_index_heap }
- LTAG_STR    = 5; { Chaine (heap)     : Word = 101_index_str  }
- LTAG_FUNC   = 6; { Fonction compilee : Word = 110_index_func }
- LTAG_LAMBDA = 7; { Closure           : Word = 111_index_func }
+ LTAG_SYM    = 3; { Symbole           : Word = 011_index_sym     }
+ LTAG_CONS   = 4; { Cons cell         : Word = 100_index_heap    }
+ LTAG_STR    = 5; { Chaine (tas)      : Word = 101_index_str     }
+ LTAG_FUNC   = 6; { Fonction compil‚e : Word = 110_index_func    }
+ LTAG_LAMBDA = 7; { Closure           : Word = 111_index_func    }
 
- { Constantes Word pre-calculees }
- LVAL_NIL  = $0000;  { tag NIL, payload 0 }
- LVAL_T    = $2000;  { tag T  ($2000 = 001_0000000000000) }
+  { Constantes Word pr‚-calcul‚es }
+ LVAL_NIL  = $0000;  { balise NIL, payload 0 }
+ LVAL_T    = $2000;  { balise T  ($2000 = 001_0000000000000) }
 
- { Decalage tag }
+ { D‚calage de balise }
  LTAG_SHIFT = 13;
  LPAY_MASK  = $1FFF;  { 13 bits de payload }
 
- { ---- Formes speciales ---- }
+  { ---- Formes sp‚ciales ---- }
  SF_NONE    =  0;
  SF_DEFUN   =  1;
  SF_LAMBDA  =  2;
@@ -80,7 +80,7 @@ Const
  SF_APPLY   = 22;
  SF_FUNCALL = 23;
 
- { ---- Primitives arithmetiques ---- }
+  { ---- Primitives arithm‚tiques ---- }
  PRIM_NONE  = 0;
  PRIM_ADD   = 1; { +   }
  PRIM_SUB   = 2; { -   }
@@ -93,7 +93,7 @@ Const
  PRIM_LE    = 9; { <=  }
  PRIM_GE    = 10;{ >=  }
  PRIM_NEQ   = 11;{ /=  }
- PRIM_EQP   = 12;{ EQ   (identite pointeur) }
+ PRIM_EQP   = 12;{ EQ   (identit‚ pointeur) }
  PRIM_EQUAL = 13;{ EQUAL (structurel) }
  PRIM_CAR   = 14;{ CAR  }
  PRIM_CDR   = 15;{ CDR  }
@@ -110,14 +110,14 @@ Const
  PRIM_APPEND= 26;{ APPEND }
  PRIM_REVERSE=27;{ REVERSE }
 
- { ---- Limites ---- }
- MAX_SYM   = 256;  { Symboles max dans la table }
- MAX_FUNC  = 64;   { Fonctions DEFUN max        }
- MAX_CONS  = 1024; { Cellules cons dans le tas  }
- MAX_STR   = 256;  { Chaines litterales max     }
- MAX_LOCAL = 32;   { Variables locales par scope}
- MAX_DEPTH = 64;   { Profondeur max imbrication }
- MAX_LABEL = 9999; { Limite compteur labels     }
+  { ---- Limites ---- }
+ MAX_SYM   = 256;  { Symboles maximum dans la table       }
+ MAX_FUNC  = 64;   { Fonctions DEFUN maximum              }
+ MAX_CONS  = 1024; { Cellules cons dans la m‚moire de tas }
+ MAX_STR   = 256;  { Chaines litt‚rales maximum           }
+ MAX_LOCAL = 32;   { Variables locales par scope          }
+ MAX_DEPTH = 64;   { Profondeur maximum d'imbrication     }
+ MAX_LABEL = 9999; { Limite de compteur d'‚tiquettes      }
 
 { ============================================================================ }
 { TYPES                                                                        }
@@ -125,42 +125,42 @@ Const
 
 Type
  { ----- Valeur LISP encodee ----- }
- TLispVal = Word;   { 3 bits tag + 13 bits payload }
+ TLispVal = Word;   { 3 bits de balise + 13 bits payload }
 
- { ----- Cellule cons (tas) ----- }
+ { ----- Cellule cons (m‚moire de tas) ----- }
  TConsCell = Record
   car_val : TLispVal;
   cdr_val : TLispVal;
  End;
 
- { ----- Entree de la table des symboles ----- }
+  { ----- Entr‚e de la table des symboles ----- }
  TSymEntry = Record
-  name       : String[48];   { Nom LISP (upper-case) }
-  asm_name   : String[48];   { Nom ASM sanitise : _SYM_FACT etc. }
-  global_val : TLispVal;     { Valeur globale courante        }
+  name       : String[48];    { Nom LISP (upper-case) }
+  asm_name   : String[48];    { Nom ASM sanitise : _SYM_FACT,... }
+  global_val : TLispVal;      { Valeur globale courante        }
   special    : Integer;       { SF_xxx si forme speciale       }
   prim       : Integer;       { PRIM_xxx si primitive          }
   func_idx   : Integer;       { 0 si non-fonction compilee     }
  End;
  PSymEntry = ^TSymEntry;
 
- { ----- Entree de la table des fonctions DEFUN ----- }
+ { ----- Entr‚e de la table des fonctions DEFUN ----- }
  TFuncEntry = Record
   name        : String[48];
-  asm_label   : String[48];   { ex: _LISP_FACT }
+  asm_label   : String[48];   { exemple: _LISP_FACT }
   param_count : Integer;
   param_names : Array[1..MAX_LOCAL] of String[48];
   defined     : Boolean;
  End;
  PFuncEntry = ^TFuncEntry;
 
- { ----- Variable locale (scope courant) ----- }
+  { ----- Variable locale (‚tendue courant) ----- }
  TLocalEntry = Record
   name      : String[48];
-  bp_offset : Integer;   { offset depuis BP : -2, -4, -6... }
+  bp_offset : Integer;   { d‚placement depuis BP : -2, -4, -6... }
  End;
 
- { ----- Chaine litterale interne ----- }
+ { ----- ChaŒne litt‚rale interne ----- }
  TStrEntry = Record
   text     : String;
   asm_label: String[32];
@@ -180,22 +180,22 @@ Var
 
  { --- Options en ligne de commande --- }
  opt_dump_tok  : Boolean;  { /T : afficher les tokens }
- opt_dump_ast  : Boolean;  { /A : afficher l'AST     }
+ opt_dump_ast  : Boolean;  { /A : afficher l'AST      }
  opt_verbose   : Boolean;  { /V : mode verbeux        }
 
- { --- Etat du tokeniseur --- }
- src_line      : String;   { Ligne courante lue          }
- src_line_num  : Integer;  { Numero de ligne courante    }
- src_col       : Integer;  { Colonne courante (1-base)   }
- src_eof       : Boolean;  { Fin de fichier atteinte     }
- cur_tok_type  : Integer;  { TOK_xxx courant             }
- cur_tok_str   : String;   { Texte du token courant      }
- cur_tok_num   : LongInt;  { Valeur numerique si TOK_NUMBER }
- cur_tok_char  : Byte;     { Code ASCII si TOK_CHAR      }
+  { --- Etat du tokeniseur --- }
+ src_line      : String;   { Ligne courante lue              }
+ src_line_num  : Integer;  { Num‚ro de ligne courante        }
+ src_col       : Integer;  { Colonne courante (1-base)       }
+ src_eof       : Boolean;  { Fin de fichier atteinte         }
+ cur_tok_type  : Integer;  { TOK_xxx courant                 }
+ cur_tok_str   : String;   { Texte du jeton courant          }
+ cur_tok_num   : LongInt;  { Valeur num‚rique si TOK_NUMBER  }
+ cur_tok_char  : Byte;     { Code ASCII si TOK_CHAR          }
  peek_char     : Char;     { Caractere en attente (PeekChar) }
- has_peek      : Boolean;  { True si peek_char valide    }
+ has_peek      : Boolean;  { True si peek_char valide        }
 
- { --- Table des symboles --- }
+  { --- Table des symboles --- }
  sym_table     : Array[1..MAX_SYM] of PSymEntry;
  sym_count     : Integer;
 
@@ -203,22 +203,22 @@ Var
  func_table    : Array[1..MAX_FUNC] of PFuncEntry;
  func_count    : Integer;
 
- { --- Tas de cons cells (pour AST en memoire Pascal) --- }
+ { --- M‚moire de tas de cons cells (pour AST en m‚moire Pascal) --- }
  heap_cons     : Array[1..MAX_CONS] of TConsCell;
  heap_free     : Integer;  { Prochaine cellule libre (1-base) }
 
- { --- Chaines litterales --- }
+ { --- ChaŒnes litt‚rales --- }
  str_table     : Array[1..MAX_STR] of PStrEntry;
  str_count     : Integer;
 
- { --- Scope courant (variables locales) --- }
+ { --- tendue courante (variables locales) --- }
  local_vars    : Array[1..MAX_LOCAL] of TLocalEntry;
  local_count   : Integer;
- local_bp_top  : Integer;   { Prochain offset BP (negatif : -2, -4...) }
- in_func       : Boolean;   { True si on compile l'interieur d'un DEFUN }
- cur_func_name : String;    { Nom de la fonction en cours            }
+ local_bp_top  : Integer;   { Prochain d‚placement BP (n‚gatif : -2, -4...) }
+ in_func       : Boolean;   { True si on compile l'int‚rieur d'un DEFUN     }
+ cur_func_name : String;    { Nom de la fonction en cours                   }
 
- { --- Generateur de code --- }
+ { --- G‚nerateur de code --- }
  label_counter : Integer;
  lit_counter   : Integer;
  gen_enabled   : Boolean;
@@ -228,35 +228,42 @@ Var
 { PROTOTYPES ANTICIPES                                                         }
 { ============================================================================ }
 
-{ Forward declarations pour procedures mutuellement dependantes }
+{ D‚clarations FORWARD pour proc‚dures mutuellement d‚pendantes }
 Procedure NextToken; Forward;
 Function AddSymbol(Const name: String): Integer; Forward;
-{ TODO 05 ReadExpr et TODO 12 GenExpr declares en inline (Forward) }
 
 { ============================================================================ }
-{ TODO 01 - Architecture + utilitaires de base                [COMPLET]        }
+{ Architecture + utilitaires de base                                           }
 { ============================================================================ }
 
 Function ItoS(n: LongInt): String;
 Var s: String;
-Begin Str(n, s); ItoS := s; End;
+Begin
+ Str(n, s);
+ ItoS := s;
+End;
 
 Function ItoSI(n: Integer): String;
 Var s: String;
-Begin Str(n, s); ItoSI := s; End;
+Begin
+ Str(n, s);
+ ItoSI := s;
+End;
 
 Function UpCaseStr(Const s: String): String;
-Var i: Integer; r: String;
+Var
+ i: Integer;
+ r: String;
 Begin
  r := s;
- For i := 1 to Length(r) do
-  If (r[i] >= 'a') And (r[i] <= 'z') Then
-   r[i] := Chr(Ord(r[i]) - 32);
+ For i := 1 to Length(r) do If (r[i] >= 'a') And (r[i] <= 'z') Then r[i] := Chr(Ord(r[i]) - 32);
  UpCaseStr := r;
 End;
 
 Function AsmStr(Const s: String): String;
-Var i: Integer; r: String;
+Var
+ i: Integer;
+ r: String;
 Begin
  r := '';
  For i := 1 to Length(s) do
@@ -265,9 +272,11 @@ Begin
  AsmStr := r;
 End;
 
-{ Sanitise un nom LISP en etiquette ASM valide }
+ { Sanitise un nom LISP en ‚tiquette ASM valide }
 Function SymToAsm(Const name: String): String;
-Var i: Integer; r: String;
+Var
+ i: Integer;
+ r: String;
 Begin
  r := '_SYM_';
  For i := 1 to Length(name) do
@@ -281,7 +290,7 @@ Begin
    '<': r := r + 'LT';
    '>': r := r + 'GT';
    '=': r := r + 'EQ';
-   '?': r := r + 'P';    { predicats LISP finissent souvent par ? }
+   '?': r := r + 'P';    { pr‚dicats LISP finissent souvent par ? }
    '!': r := r + 'E';
   Else r := r + 'X';
   End;
@@ -289,7 +298,9 @@ Begin
 End;
 
 Function FuncToAsm(Const name: String): String;
-Var i: Integer; r: String;
+Var
+ i: Integer;
+ r: String;
 Begin
  r := '_LISP_';
  For i := 1 to Length(name) do
@@ -304,32 +315,37 @@ Begin
  FuncToAsm := r;
 End;
 
-Procedure Error(Const msg: String);
-Begin
+Procedure Error(Const msg: String);Begin
  WriteLn('ERREUR (ligne ', src_line_num, ') : ', msg);
  Inc(error_count);
 End;
 
-Procedure Warning(Const msg: String);
-Begin
+Procedure Warning(Const msg: String);Begin
  WriteLn('ATTENTION (ligne ', src_line_num, ') : ', msg);
 End;
 
 { ============================================================================ }
-{ TODO 02 - TOKENISEUR LISP                              [COMPLET]             }
+{ TOKENISEUR LISP                                                              }
 { ============================================================================ }
 
-{ ---- Helpers lecture caracteres depuis fichier texte ---- }
+{ ---- Assistants de lecture caractŠres depuis fichier texte ---- }
 
-Function SrcGetChar: Char;
-Begin
- If has_peek Then
- Begin SrcGetChar := peek_char; has_peek := False; Exit; End;
- If src_eof Then Begin SrcGetChar := #0; Exit; End;
- While (src_col > Length(src_line)) And Not src_eof Do
- Begin
-  If EOF(input_file) Then
-  Begin src_eof := True; SrcGetChar := #0; Exit; End;
+Function SrcGetChar:Char;Begin
+ If has_peek Then Begin
+  SrcGetChar := peek_char;
+  has_peek := False;
+  Exit;
+ End;
+ If src_eof Then Begin
+  SrcGetChar := #0;
+  Exit;
+ End;
+ While (src_col > Length(src_line)) And Not src_eof Do Begin
+  If EOF(input_file) Then Begin
+   src_eof := True;
+   SrcGetChar := #0;
+   Exit;
+  End;
   ReadLn(input_file, src_line);
   Inc(src_line_num);
   src_col := 1;
@@ -341,24 +357,36 @@ Begin
 End;
 
 Function SrcPeekChar: Char;
-Var ch: Char;
+Var
+ ch: Char;
 Begin
- If has_peek Then Begin SrcPeekChar := peek_char; Exit; End;
+ If has_peek Then Begin
+  SrcPeekChar := peek_char;
+  Exit;
+ End;
  ch := SrcGetChar;
- If ch = #0 Then Begin SrcPeekChar := #0; Exit; End;
- has_peek := True; peek_char := ch; SrcPeekChar := ch;
+ If ch = #0 Then Begin
+  SrcPeekChar := #0;
+  Exit;
+ End;
+ has_peek := True;
+ peek_char := ch;
+ SrcPeekChar := ch;
 End;
 
-Procedure InitTokenizer;
-Begin
- src_line_num := 0;  src_col      := 1;  src_eof      := False;
- has_peek     := False; peek_char    := #0;
- cur_tok_type := TOK_UNKNOWN; cur_tok_str  := '';
- cur_tok_num  := 0;  cur_tok_char := 0;
+Procedure InitTokenizer;Begin
+ src_line_num := 0;
+ src_col      := 1;
+ src_eof      := False;
+ has_peek     := False;
+ peek_char    := #0;
+ cur_tok_type := TOK_UNKNOWN;
+ cur_tok_str  := '';
+ cur_tok_num  := 0;
+ cur_tok_char := 0;
  src_line     := '';
- If EOF(input_file) Then
-  src_eof := True
- Else
+ If EOF(input_file) Then src_eof := True
+  Else
  Begin
   ReadLn(input_file, src_line);
   src_line_num := 1;
@@ -368,37 +396,65 @@ Begin
 End;
 
 Procedure NextToken;
-Var c, c2: Char; neg: Boolean; n: LongInt; s: String; esc: Boolean;
+Var
+ c, c2: Char;
+ neg: Boolean;
+ n: LongInt;
+ s: String;
+ esc: Boolean;
 Begin
  cur_tok_str := ''; cur_tok_num := 0; cur_tok_char := 0;
  { 1. Sauter espaces, tabulations et commentaires LISP (;) }
  Repeat
   c := SrcPeekChar;
   If c = #0 Then Break;
-  If c = ';' Then
-  Begin
+  If c = ';' Then Begin
    has_peek := False;
    src_col := Length(src_line) + 1;
-  End Else If (c = ' ') Or (c = #9) Or (c = #13) Or (c = #10) Then
-   SrcGetChar
-  Else Break;
+  End
+   Else
+  If (c = ' ') Or (c = #9) Or (c = #13) Or (c = #10) Then SrcGetChar
+                                                     Else Break;
  Until False;
- If SrcPeekChar = #0 Then
- Begin cur_tok_type := TOK_EOF; cur_tok_str := 'EOF'; Exit; End;
- { 2. Lire le prochain caractere significatif }
+ If SrcPeekChar = #0 Then Begin
+  cur_tok_type := TOK_EOF;
+  cur_tok_str := 'EOF';
+  Exit;
+ End;
+  { 2. Lire le prochain caractere significatif }
  c := SrcGetChar;
  Case c Of
-  '(':  Begin cur_tok_type := TOK_LPAREN;  cur_tok_str := '('; End;
-  ')':  Begin cur_tok_type := TOK_RPAREN;  cur_tok_str := ')'; End;
-  '''': Begin cur_tok_type := TOK_QUOTE;   cur_tok_str := ''''; End;
-  '`':  Begin cur_tok_type := TOK_BQUOTE;  cur_tok_str := '`'; End;
-  ',':  Begin
-         If SrcPeekChar = '@' Then
-         Begin SrcGetChar; cur_tok_type := TOK_COMMA_AT; cur_tok_str := ',@'; End
-         Else Begin cur_tok_type := TOK_COMMA; cur_tok_str := ','; End;
-        End;
-  '"':  Begin
-         s := ''; esc := False;
+  '(':  Begin
+   cur_tok_type := TOK_LPAREN;
+   cur_tok_str := '(';
+  End;
+  ')':  Begin
+   cur_tok_type := TOK_RPAREN;
+   cur_tok_str := ')';
+  End;
+  '''': Begin
+   cur_tok_type := TOK_QUOTE;
+   cur_tok_str := '''';
+  End;
+  '`': Begin
+   cur_tok_type := TOK_BQUOTE;
+   cur_tok_str := '`';
+  End;
+  ',': Begin
+   If SrcPeekChar = '@' Then Begin
+    SrcGetChar;
+    cur_tok_type := TOK_COMMA_AT;
+    cur_tok_str := ',@';
+   End
+    Else
+   Begin
+    cur_tok_type := TOK_COMMA;
+    cur_tok_str := ',';
+   End;
+  End;
+  '"': Begin
+         s := '';
+         esc := False;
          Repeat
           c2 := SrcGetChar;
           If c2 = #0 Then Break;
@@ -412,43 +468,48 @@ Begin
            Else  s := s + c2;
            End;
            esc := False;
-          End Else If c2 = '\' Then esc := True
-          Else If c2 = '"' Then Break
-          Else s := s + c2;
+          End
+           Else
+          If c2 = '\' Then esc := True Else
+          If c2 = '"' Then Break
+                      Else s := s + c2;
          Until False;
          cur_tok_type := TOK_STRING; cur_tok_str := s;
         End;
   '#':  Begin
          c2 := SrcGetChar;
-         If UpCase(c2) = 'T' Then
-          Begin cur_tok_type := TOK_HASH_T; cur_tok_str := '#T'; End
-         Else If UpCase(c2) = 'F' Then
-          Begin cur_tok_type := TOK_HASH_F; cur_tok_str := '#F'; End
-         Else If c2 = '\' Then
-          Begin
-           c2 := SrcGetChar;
-           cur_tok_type := TOK_CHAR; cur_tok_char := Ord(c2);
-           cur_tok_str := '#' + c2;
-          End
-         Else
-          Begin
-           s := '#' + UpCase(c2);
-           Repeat
-            c2 := SrcPeekChar;
-            If (c2 = #0) Or (c2 = ' ') Or (c2 = #9) Or
-               (c2 = '(') Or (c2 = ')') Or (c2 = '"') Or (c2 = ';') Then Break;
-            s := s + UpCase(SrcGetChar);
-           Until False;
-           cur_tok_type := TOK_ATOM; cur_tok_str := s;
-          End;
+         If UpCase(c2) = 'T' Then Begin
+          cur_tok_type := TOK_HASH_T;
+          cur_tok_str := '#T';
+         End
+          Else
+         If UpCase(c2) = 'F' Then Begin
+          cur_tok_type := TOK_HASH_F;
+          cur_tok_str := '#F';
+         End
+          Else
+         If c2 = '\' Then Begin
+          c2 := SrcGetChar;
+          cur_tok_type := TOK_CHAR; cur_tok_char := Ord(c2);
+         cur_tok_str := '#' + c2;
+         End
+          Else
+         Begin
+          s := '#' + UpCase(c2);
+          Repeat
+           c2 := SrcPeekChar;
+           If (c2 = #0) Or (c2 = ' ') Or (c2 = #9) Or
+              (c2 = '(') Or (c2 = ')') Or (c2 = '"') Or (c2 = ';') Then Break;
+           s := s + UpCase(SrcGetChar);
+          Until False;
+          cur_tok_type := TOK_ATOM; cur_tok_str := s;
+         End;
         End;
  Else
   { Nombre ou atome }
   neg := False;
-  If (c = '+') Or (c = '-') Then
-  Begin
-   If (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Then
-   Begin
+  If (c = '+') Or (c = '-') Then Begin
+   If (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Then Begin
     neg := (c = '-');
     c := SrcGetChar; n := Ord(c) - 48;
     While (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Do
@@ -458,15 +519,14 @@ Begin
     cur_tok_str := ItoS(n); Exit;
    End;
   End;
-  If (c >= '0') And (c <= '9') Then
-  Begin
+  If (c >= '0') And (c <= '9') Then Begin
    n := Ord(c) - 48;
    While (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Do
     n := n * 10 + (Ord(SrcGetChar) - 48);
    cur_tok_type := TOK_NUMBER; cur_tok_num := n;
    cur_tok_str := ItoS(n); Exit;
   End;
-  { Atome : lire jusqu'au prochain delimiteur }
+   { Atome : lire jusqu'au prochain delimiteur }
   s := UpCase(c);
   Repeat
    c2 := SrcPeekChar;
@@ -478,23 +538,25 @@ Begin
  End;
 End;
 
-Function TokenIs(Const s: String): Boolean;
-Begin TokenIs := cur_tok_str = UpCaseStr(s); End;
+Function TokenIs(Const s: String): Boolean;Begin
+ TokenIs := cur_tok_str = UpCaseStr(s);
+End;
 
-Procedure Consume;
-Begin NextToken; End;
+Procedure Consume;Begin
+ NextToken;
+End;
 
 { ============================================================================ }
-{ TODO 03 - TABLE DES SYMBOLES                           [COMPLET]             }
+{ TABLE DES SYMBOLES                                                           }
 { ============================================================================ }
 
-{ Enregistrer un symbole built-in avec ses attributs }
+ { Enregistrer un symbole built-in avec ses attributs }
 Procedure RegSym(Const name: String; sf, prim: Integer);
-Var idx: Integer;
+Var
+ idx: Integer;
 Begin
  idx := AddSymbol(name);
- If idx > 0 Then
- Begin
+ If idx > 0 Then Begin
   sym_table[idx]^.special := sf;
   sym_table[idx]^.prim    := prim;
   If name = 'T' Then sym_table[idx]^.global_val := LVAL_T
@@ -502,8 +564,7 @@ Begin
  End;
 End;
 
-Procedure InitSymbolTable;
-Begin
+Procedure InitSymbolTable;Begin
  sym_count := 0;
  { Atomes constants }
  RegSym('NIL',      SF_NONE,    PRIM_NONE   );
@@ -552,7 +613,7 @@ Begin
  RegSym('LIST',     SF_NONE,    PRIM_LIST   );
  RegSym('ATOM',     SF_NONE,    PRIM_ATOM   );
  RegSym('NULL',     SF_NONE,    PRIM_NULL   );
- { Entrees/Sorties }
+ { Entr‚es/Sorties }
  RegSym('PRINT',    SF_NONE,    PRIM_PRINT  );
  RegSym('WRITE',    SF_NONE,    PRIM_WRITE  );
  RegSym('READ',     SF_NONE,    PRIM_READ   );
@@ -563,22 +624,35 @@ Begin
 End;
 
 Function FindSymbol(Const name: String): Integer;
-Var i: Integer; u: String;
+Var
+ i: Integer;
+ u: String;
 Begin
  u := UpCaseStr(name);
- For i := 1 to sym_count do
-  If sym_table[i]^.name = u Then Begin FindSymbol := i; Exit; End;
+ For i := 1 to sym_count do If sym_table[i]^.name = u Then Begin
+  FindSymbol := i;
+  Exit;
+ End;
  FindSymbol := 0;
 End;
 
 Function AddSymbol(Const name: String): Integer;
-Var p: PSymEntry; u: String; existing: Integer;
+Var
+ p: PSymEntry;
+ u: String;
+ existing: Integer;
 Begin
  u := UpCaseStr(name);
  existing := FindSymbol(u);
- If existing > 0 Then Begin AddSymbol := existing; Exit; End;
- If sym_count >= MAX_SYM Then
- Begin Error('Table des symboles pleine'); AddSymbol := 0; Exit; End;
+ If existing > 0 Then Begin
+  AddSymbol := existing;
+  Exit;
+ End;
+ If sym_count >= MAX_SYM Then Begin
+  Error('Table des symboles pleine');
+  AddSymbol := 0;
+  Exit;
+ End;
  New(p);
  p^.name       := u;
  p^.asm_name   := SymToAsm(u);
@@ -592,21 +666,22 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 - REPRESENTATION INTERNE DES S-EXPRESSIONS     [COMPLET]            }
+{ REPRESENTATION INTERNE DES S-EXPRESSIONS                                     }
 { ============================================================================ }
 
-Procedure InitHeap;
-Begin
- { TODO 04 : Initialiser le tas de cons cells }
+Procedure InitHeap;Begin
+ { Initialiser la m‚moire de tas de cons cells }
  heap_free := 1;
  FillChar(heap_cons, SizeOf(heap_cons), 0);
 End;
 
-Function MakeNil: TLispVal;
-Begin MakeNil := LVAL_NIL; End;
+Function MakeNil: TLispVal;Begin
+ MakeNil := LVAL_NIL;
+End;
 
-Function MakeT: TLispVal;
-Begin MakeT := LVAL_T; End;
+Function MakeT: TLispVal;Begin
+ MakeT := LVAL_T;
+End;
 
 Function MakeFix(n: Integer): TLispVal;
 Begin

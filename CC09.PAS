@@ -6299,7 +6299,7 @@ BEGIN
   Halt(1);
  End;
  {$I+}
- current_filename := ParamStr(1); { Set initial filename for include system }
+ current_filename := ParamStr(1); { Fixe le nom de fichier initiale pour inclure dans le systäme }
  WriteLn('Compile le fichier source : ', ParamStr(1));
   { Initialise les variables globals }
  eof := 0;

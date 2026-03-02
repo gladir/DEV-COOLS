@@ -2096,6 +2096,15 @@ Begin
  ParseTypeSpec(sym_idx);
  { VALUE ... }
  ParseValue(sym_idx);
+ { Auto-ajuster char_len TYPE C si pas de (n) et VALUE fourni }
+ If (sym_table[sym_idx].data_type = TYPE_C) Or
+    (sym_table[sym_idx].data_type = TYPE_N) Then
+ Begin
+  If (sym_table[sym_idx].char_len <= 1) And
+     sym_table[sym_idx].has_init And
+     (Length(sym_table[sym_idx].init_str) > 1) Then
+   sym_table[sym_idx].char_len := Length(sym_table[sym_idx].init_str);
+ End;
  { ---- Allocation memoire / generation ASM ---- }
  If sc = STORE_CONSTANT Then
  Begin
@@ -2834,6 +2843,9 @@ End;
 
 { Forward pour ParseStatement (defini au TODO 23) }
 Procedure ParseStatement; Forward;
+Procedure ParseEvent(ev_kind: Integer; Const ev_label, ev_name: String; is_stub: Boolean); Forward;
+Procedure ParseParameters; Forward;
+Procedure ParseSelectOptions; Forward;
 
 { Parse un bloc d'instructions jusqu'a l'un des trois mots-cles d'arret.
   Passe KW_NONE (=0) pour un emplacement inutilise.
@@ -5424,7 +5436,7 @@ Begin
  Begin
   { --- Declarations -------------------------------------------- }
   If TokIsKw(KW_REPORT) Or TokIsKw(KW_PROGRAM) Then
-  Begin ParseReport; Exit; End;
+  Begin Consume; ParseReport; Exit; End;
 
   If TokIsKw(KW_DATA) Then
   Begin Consume; ParseData(False); Exit; End;
@@ -5502,38 +5514,53 @@ Begin
         Pour TODO 23 : stub minimal -> emettre label + SkipToDot  }
   If TokIsKw(KW_START_OF_SEL) Then
   Begin
-   EmitBlank;
-   EmitComment('--- START-OF-SELECTION (TODO 24) ---');
-   EmitLabel('_ABAP_EV_START_OF_SEL');
-   Consume;
-   If cur_tok_type = TOK_DOT Then Consume;
+   ParseEvent(EV_START_OF_SEL, '_ABAP_EV_START_OF_SEL',
+              'START-OF-SELECTION', False);
    Exit;
   End;
   If TokIsKw(KW_END_OF_SEL) Then
   Begin
-   EmitBlank;
-   EmitComment('--- END-OF-SELECTION (TODO 24) ---');
-   EmitLabel('_ABAP_EV_END_OF_SEL');
-   Consume;
-   If cur_tok_type = TOK_DOT Then Consume;
+   ParseEvent(EV_END_OF_SEL, '_ABAP_EV_END_OF_SEL',
+              'END-OF-SELECTION', False);
    Exit;
   End;
-  If TokIsKw(KW_TOP_OF_PAGE) Or TokIsKw(KW_END_OF_PAGE) Then
+  If TokIsKw(KW_TOP_OF_PAGE) Then
   Begin
-   EmitComment('; ' + cur_tok_str + ' (stub)');
-   Consume;
-   If cur_tok_type = TOK_DOT Then Consume;
+   ParseEvent(EV_TOP_OF_PAGE, '_ABAP_EV_TOP_OF_PAGE',
+              'TOP-OF-PAGE', True);
+   Exit;
+  End;
+  If TokIsKw(KW_END_OF_PAGE) Then
+  Begin
+   ParseEvent(EV_END_OF_PAGE, '_ABAP_EV_END_OF_PAGE',
+              'END-OF-PAGE', True);
+   Exit;
+  End;
+  If TokIsKw(KW_AT) Then
+  Begin
+   { Regarder le token suivant pour differencier LINE-SELECTION / USER-COMMAND }
+   Consume; { skip AT }
+   If TokIsKw(KW_LINE_SEL) Then
+   Begin
+    { Re-simuler l'appel : ParseEvent attend le token de l'evenement courant }
+    ParseEvent(EV_LINE_SEL, '_ABAP_EV_LINE_SEL',
+               'AT LINE-SELECTION', True);
+   End Else If TokIsKw(KW_USER_CMD) Then
+   Begin
+    ParseEvent(EV_USER_CMD, '_ABAP_EV_USER_CMD',
+               'AT USER-COMMAND', True);
+   End Else
+   Begin
+    Warning('AT : LINE-SELECTION ou USER-COMMAND attendu');
+    SkipToDot;
+    If cur_tok_type = TOK_DOT Then Consume;
+   End;
    Exit;
   End;
 
-  { --- Ecran de selection (TODO 24 : stub skip) ---------------- }
-  If TokIsKw(KW_PARAMETERS) Or TokIsKw(KW_SELECT_OPTIONS) Then
-  Begin
-   EmitComment('; ' + cur_tok_str + ' (stub - skip)');
-   Consume; SkipToDot;
-   If cur_tok_type = TOK_DOT Then Consume;
-   Exit;
-  End;
+  { --- Ecran de selection ---------------------------------------- }
+  If TokIsKw(KW_PARAMETERS)     Then Begin ParseParameters;    Exit; End;
+  If TokIsKw(KW_SELECT_OPTIONS) Then Begin ParseSelectOptions; Exit; End;
 
   { --- Mot-cle non reconnu : skip jusqu'au point --------------- }
   Warning('ParseStatement : mot-cle non reconnu : ' + cur_tok_str);
@@ -5577,10 +5604,336 @@ Begin
  End;
 
  { ------------------------------------------------------------------ }
+ { ------------------------------------------------------------------ }
  { Tout autre token : skip pour eviter une boucle infinie              }
  Warning('ParseStatement : token inattendu : ' + cur_tok_str);
  Consume;
 End;
 
+{ ============================================================================ }
+{ TODO 24 - PARSEUR : EVENEMENTS ABAP + ECRAN DE SELECTION [COMPLET]          }
+{ ============================================================================ }
+
+{ Retourne True si le token courant marque le debut d'un evenement ABAP
+  ou d'un FORM/FUNCTION (= frontiere qui delimite la fin d'un bloc event).    }
+Function IsEventBoundary: Boolean;
 Begin
+ IsEventBoundary :=
+  TokIsKw(KW_START_OF_SEL) Or TokIsKw(KW_END_OF_SEL) Or
+  TokIsKw(KW_TOP_OF_PAGE)  Or TokIsKw(KW_END_OF_PAGE) Or
+  TokIsKw(KW_AT)           Or
+  TokIsKw(KW_FORM)         Or TokIsKw(KW_FUNCTION);
+End;
+
+{ Parse le corps d'un evenement jusqu'a une frontiere ou EOF.                 }
+Procedure ParseEventBody;
+Begin
+ While (cur_tok_type <> TOK_EOF) And Not IsEventBoundary Do
+  ParseStatement;
+End;
+
+{ Parse et genere un bloc evenement ABAP.
+  ev_kind  : EV_xxx (indice dans evt_table)
+  ev_label : label assembleur (ex. '_ABAP_EV_START_OF_SEL')
+  ev_name  : nom lisible pour les commentaires
+  is_stub  : si True, le corps est vide (TOP-OF-PAGE, END-OF-PAGE, AT xxx)   }
+Procedure ParseEvent(ev_kind: Integer; Const ev_label, ev_name: String;
+                     is_stub: Boolean);
+Var lbl_exit : String;
+Begin
+ { Consommer le mot-cle de l'evenement }
+ Consume;
+ { AT LINE-SELECTION / AT USER-COMMAND : consommer le 2e token compose }
+ If TokIsKw(KW_LINE_SEL) Or TokIsKw(KW_USER_CMD) Then Consume;
+ { Point final }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres ' + ev_name);
+
+ { Enregistrer dans evt_table }
+ If ev_kind <= MAX_EVTS Then
+ Begin
+  evt_table[ev_kind].defined   := True;
+  evt_table[ev_kind].asm_label := ev_label;
+ End;
+
+ EmitBlank;
+ EmitComment('--- ' + ev_name + ' ---');
+ EmitLabel(ev_label);
+ EmitI('PUSH    BP');
+ EmitI('MOV     BP, SP');
+
+ If is_stub Then
+ Begin
+  EmitComment('; ' + ev_name + ' (stub vide)');
+ End Else
+ Begin
+  lbl_exit := NewLabel;
+  EnterScope(SK_EVENT, 0);
+  SetExitLabel(lbl_exit);
+  ParseEventBody;
+  LeaveScope;
+  EmitBlank;
+  EmitLabel(lbl_exit);
+ End;
+
+ EmitI('POP     BP');
+ EmitI('RET');
+ EmitBlank;
+End;
+
+{ Genere la procedure REPORT _ABAP_RPT_nom.
+  Cette procedure est la cible de CALL dans GenCodeSegmentHeader.
+  Elle appelle dans l'ordre tous les evenements definis.                       }
+Procedure GenReportEntryProc;
+Var rpt_label : String;
+Begin
+ rpt_label := AsmIdent('_ABAP_RPT_', prog_name);
+ EmitBlank;
+ EmitComment('--- Procedure REPORT ' + prog_name + ' ---');
+ EmitLabel(rpt_label);
+ EmitI('PUSH    BP');
+ EmitI('MOV     BP, SP');
+ EmitBlank;
+ If evt_table[EV_START_OF_SEL].defined Then
+  EmitI('CALL    ' + evt_table[EV_START_OF_SEL].asm_label
+        + '  ; START-OF-SELECTION');
+ If evt_table[EV_END_OF_SEL].defined Then
+  EmitI('CALL    ' + evt_table[EV_END_OF_SEL].asm_label
+        + '  ; END-OF-SELECTION');
+ If evt_table[EV_TOP_OF_PAGE].defined Then
+  EmitI('CALL    ' + evt_table[EV_TOP_OF_PAGE].asm_label
+        + '  ; TOP-OF-PAGE');
+ If evt_table[EV_END_OF_PAGE].defined Then
+  EmitI('CALL    ' + evt_table[EV_END_OF_PAGE].asm_label
+        + '  ; END-OF-PAGE');
+ If evt_table[EV_LINE_SEL].defined Then
+  EmitI('CALL    ' + evt_table[EV_LINE_SEL].asm_label
+        + '  ; AT LINE-SELECTION');
+ If evt_table[EV_USER_CMD].defined Then
+  EmitI('CALL    ' + evt_table[EV_USER_CMD].asm_label
+        + '  ; AT USER-COMMAND');
+ { Si aucun evenement : REPORT vide -> NOP }
+ If Not (evt_table[EV_START_OF_SEL].defined Or
+         evt_table[EV_END_OF_SEL].defined   Or
+         evt_table[EV_TOP_OF_PAGE].defined  Or
+         evt_table[EV_END_OF_PAGE].defined  Or
+         evt_table[EV_LINE_SEL].defined     Or
+         evt_table[EV_USER_CMD].defined) Then
+  EmitComment('; REPORT vide (aucun evenement declare)');
+ EmitBlank;
+ EmitI('POP     BP');
+ EmitI('RET');
+ EmitBlank;
+End;
+
+{ Parse PARAMETERS p [TYPE t | LIKE f] [DEFAULT val] [OBLIGATORY].
+  Declare une variable globale utilisable dans tout le REPORT.                }
+Procedure ParseParameters;
+Var pname   : String;
+    sym_idx : Integer;
+Begin
+ Consume; { skip PARAMETERS }
+ EmitComment('PARAMETERS (declaration globale)');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom attendu apres PARAMETERS'); SkipToDot; Exit; End;
+ pname   := cur_tok_str; Consume;
+ sym_idx := AddSym(pname, TYPE_I, STORE_STATIC);
+ If sym_idx = 0 Then
+ Begin Warning('PARAMETERS : impossible d''ajouter ''' + pname + ''''); SkipToDot; Exit; End;
+ { TYPE / LIKE optionnel }
+ If TokIsKw(KW_TYPE) Or TokIsKw(KW_LIKE) Then ParseTypeSpec(sym_idx);
+ { DEFAULT val }
+ If TokIsKw(KW_DEFAULT) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_STRING Then
+  Begin
+   sym_table[sym_idx].init_str := cur_tok_str; Consume;
+  End Else If cur_tok_type = TOK_NUMBER Then
+  Begin
+   sym_table[sym_idx].init_num := cur_tok_num;
+   Str(cur_tok_num, sym_table[sym_idx].init_str);
+   Consume;
+  End Else Warning('PARAMETERS DEFAULT : valeur attendue');
+ End;
+ { OBLIGATORY (ignore) }
+ If cur_tok_str = 'OBLIGATORY' Then Consume;
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres PARAMETERS ' + pname);
+End;
+
+{ Parse SELECT-OPTIONS s FOR fieldname.
+  Cree deux variables globales TYPE_C(128) : s_LOW et s_HIGH (stub).          }
+Procedure ParseSelectOptions;
+Var soname       : String;
+    sym_low, sym_high : Integer;
+Begin
+ Consume; { skip SELECT-OPTIONS }
+ EmitComment('SELECT-OPTIONS (stub LOW/HIGH)');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom attendu apres SELECT-OPTIONS'); SkipToDot; Exit; End;
+ soname := cur_tok_str; Consume;
+ { FOR fieldname : on consomme sans erreur si absent }
+ If cur_tok_str = 'FOR' Then
+ Begin Consume; If (cur_tok_type = TOK_IDENT) Or (cur_tok_kw = KW_NONE) Then Consume; End;
+ { Options supplementaires jusqu'au '.' }
+ While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF) Do Consume;
+ { Declarer les deux bornes comme TYPE_C(128) }
+ sym_low  := AddSym(soname + '_LOW',  TYPE_C, STORE_STATIC);
+ sym_high := AddSym(soname + '_HIGH', TYPE_C, STORE_STATIC);
+ If sym_low  > 0 Then sym_table[sym_low].char_len  := 128;
+ If sym_high > 0 Then sym_table[sym_high].char_len := 128;
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres SELECT-OPTIONS ' + soname);
+End;
+
+{ ============================================================================ }
+{ TODO 25 - PROGRAMME DE TEST + BOUCLE PRINCIPALE [COMPLET]                   }
+{ ============================================================================ }
+
+{ Copie le fichier texte 'src' (deja ouvert en lecture) vers output_file
+  ligne par ligne. 'src' est referme apres la copie.                         }
+Procedure AppendFileToOutput(Var src: Text);
+Var line: String;
+Begin
+ Reset(src); { rebobiner }
+ While Not EOF(src) Do
+ Begin
+  ReadLn(src, line);
+  WriteLn(output_file, line);
+ End;
+ Close(src);
+End;
+
+{ Compilation complete d'un fichier ABAP.
+
+  Algorithme deux passes :
+  1. Passe parsing  : le code genere (FORMs, evenements, corps d'instructions)
+     est ecrit dans un fichier temporaire code_tmp.
+  2. Assemblage final dans output_filename :
+       a. GenHeader        (.MODEL SMALL + .STACK)
+       b. GenDataSegment   (.DATA + toutes les variables + .CODE)
+       c. GenCodeSegmentHeader (START: + init DS/ES + CALL RPT + exit)
+       d. Contenu de code_tmp     (FORMs + corps evenements)
+       e. GenReportEntryProc      (_ABAP_RPT_xxx: qui appelle les events)
+       f. GenRuntimeHelpers       (helpers DOS 8086)
+       g. GenFooter               (END START)
+
+  Affiche un bilan de compilation sur stderr.                                 }
+Procedure Compile;
+Const TMP_EXT = '.$$T'; { extension du fichier temporaire CODE }
+Var tmp_filename : String;
+    code_tmp     : Text;   { fichier temporaire pour le segment .CODE }
+    i            : Integer;
+Begin
+ { ----- 1. Validation des arguments ----- }
+ If ParamCount < 1 Then
+ Begin
+  WriteLn('Usage : ABAP86 source.abap [dest.asm]');
+  WriteLn('  dest.asm : par defaut = source avec extension .ASM');
+  Halt(1);
+ End;
+ source_filename := ParamStr(1);
+ If ParamCount >= 2 Then
+  output_filename := ParamStr(2)
+ Else
+ Begin
+  { Deduire le nom de sortie en changeant l''extension en .ASM }
+  output_filename := source_filename;
+  i := Length(output_filename);
+  While (i > 0) And (output_filename[i] <> '.') And
+        (output_filename[i] <> '\') And (output_filename[i] <> '/') Do
+   Dec(i);
+  If (i > 0) And (output_filename[i] = '.') Then
+   output_filename := Copy(output_filename, 1, i - 1) + '.ASM'
+  Else
+   output_filename := output_filename + '.ASM';
+ End;
+
+ { ----- 2. Ouvrir le source ----- }
+ Assign(input_file, source_filename);
+ {$I-} Reset(input_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('ERREUR : impossible d''ouvrir ''' + source_filename + '''');
+  Halt(2);
+ End;
+
+ { ----- 3. Fichier temporaire pour le segment .CODE ----- }
+ tmp_filename := output_filename + TMP_EXT;
+ { Ouvrir output_file directement sur le temporaire pour que Emit()  }
+ { ecrive dans le bon buffer (evite l'aliasing de buffer Text FPC).  }
+ Assign(output_file, tmp_filename);
+ {$I-} Rewrite(output_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('ERREUR : impossible de creer le fichier temporaire ''' +
+          tmp_filename + '''');
+  Close(input_file);
+  Halt(3);
+ End;
+
+ { ----- 4. Passe parsing : generer le CODE dans output_file (tmp) ----- }
+ InitAll;
+ { output_file est deja le fichier temporaire - pas besoin de copie }
+ NextToken;               { amorcer le lexeur }
+ While cur_tok_type <> TOK_EOF Do
+  ParseStatement;
+
+ { ----- 5. Generer la procedure REPORT (appelle les events) ----- }
+ GenReportEntryProc;
+ Close(output_file);  { ferme + vide le buffer du fichier temporaire }
+ Close(input_file);
+
+ { ----- 6. Ouvrir le fichier de sortie final ----- }
+ Assign(output_file, output_filename);
+ {$I-} Rewrite(output_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('ERREUR : impossible de creer ''' + output_filename + '''');
+  Halt(4);
+ End;
+
+ { ----- 7. Assembler le fichier final ----- }
+ { a) En-tete + .DATA }
+ GenHeader;
+ GenDataSegment;  { emet aussi '.CODE' + EmitBlank en fin }
+
+ { b) Point d''entree : START: + init + CALL RPT + exit DOS }
+ GenCodeSegmentHeader;
+
+ { c) Corps des FORMs et des evenements (code genere au parsing) }
+ Assign(code_tmp, tmp_filename);
+ AppendFileToOutput(code_tmp); { relit + copie + ferme }
+
+ { d) Helpers runtime 8086 }
+ GenRuntimeHelpers;
+
+ { e) Directive de fin }
+ GenFooter;
+
+ Close(output_file);
+
+ { ----- 8. Suppression du fichier temporaire ----- }
+ Assign(code_tmp, tmp_filename);
+ {$I-} Erase(code_tmp); {$I+}
+ If IOResult <> 0 Then { ignorer si deja supprime } ;
+
+ { ----- 9. Bilan de compilation ----- }
+ WriteLn;
+ WriteLn('ABAP86 - Compilation terminee');
+ WriteLn('  Source  : ', source_filename);
+ WriteLn('  Sortie  : ', output_filename);
+ WriteLn('  Symboles: ', sym_count);
+ WriteLn('  FORMs   : ', form_count);
+ WriteLn('  Erreurs : ', error_count);
+ If error_count > 0 Then
+ Begin
+  WriteLn('  *** COMPILATION AVEC ERREURS ***');
+  Halt(1);
+ End;
+End;
+
+Begin
+ Compile;
 End.
