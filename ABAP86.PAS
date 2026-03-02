@@ -5397,14 +5397,188 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
+{ TODO 23 - PARSEUR : DISPATCHER ParseStatement [COMPLET]                     }
 { ============================================================================ }
 
+{ L'instruction courante est reconnaissable par cur_tok_type + cur_tok_kw.
+  Pour le cas IDENT sans mot-cle, on avance d'un token pour discriminer :
+    IDENT '='  -> affectation inline (identique a ParseAssignment)
+    IDENT '.'  -> instruction vide / label
+    IDENT ???  -> warning + SkipToDot                                        }
 Procedure ParseStatement;
+Var tmp_name : String;
+    sym_idx  : Integer;
 Begin
- { Stub requis pour resoudre le Forward de ParseBlock/ParseIf. }
- { TODO 23 : dispatcher complet sur cur_tok_type / cur_kw. }
- Error('ParseStatement : non encore implemente (stub TODO 23)');
+ { ------------------------------------------------------------------ }
+ { Ignorer les points solitaires (instructions vides)                  }
+ If cur_tok_type = TOK_DOT Then
+ Begin Consume; Exit; End;
+
+ { ------------------------------------------------------------------ }
+ { Fin de fichier                                                       }
+ If cur_tok_type = TOK_EOF Then Exit;
+
+ { ------------------------------------------------------------------ }
+ { Mots-cles : dispatch sur cur_tok_kw                                 }
+ If cur_tok_kw <> KW_NONE Then
+ Begin
+  { --- Declarations -------------------------------------------- }
+  If TokIsKw(KW_REPORT) Or TokIsKw(KW_PROGRAM) Then
+  Begin ParseReport; Exit; End;
+
+  If TokIsKw(KW_DATA) Then
+  Begin Consume; ParseData(False); Exit; End;
+
+  If TokIsKw(KW_TYPES) Then
+  Begin Consume; ParseTypes; Exit; End;
+
+  If TokIsKw(KW_CONSTANTS) Then
+  Begin Consume; ParseData(True); Exit; End;
+
+  { --- Structures de controle ---------------------------------- }
+  If TokIsKw(KW_IF)    Then Begin ParseIf;    Exit; End;
+  If TokIsKw(KW_CASE)  Then Begin ParseCase;  Exit; End;
+  If TokIsKw(KW_WHILE) Then Begin ParseWhile; Exit; End;
+  If TokIsKw(KW_DO)    Then Begin ParseDo;    Exit; End;
+  If TokIsKw(KW_LOOP)  Then Begin ParseLoopAt; Exit; End;
+
+  { --- Sous-programmes ----------------------------------------- }
+  If TokIsKw(KW_PERFORM) Then Begin ParsePerform;     Exit; End;
+  If TokIsKw(KW_FORM)    Then Begin ParseForm;         Exit; End;
+  If TokIsKw(KW_FUNCTION) Then Begin ParseFunction;   Exit; End;
+
+  { --- Affichage ----------------------------------------------- }
+  If TokIsKw(KW_WRITE)    Then Begin ParseWrite;   Exit; End;
+  If TokIsKw(KW_SKIP)     Then Begin ParseSkip;    Exit; End;
+  If TokIsKw(KW_NEW_LINE) Then Begin ParseNewLine; Exit; End;
+
+  { --- Affectations et calculs --------------------------------- }
+  If TokIsKw(KW_MOVE)     Then Begin ParseMove;     Exit; End;
+  If TokIsKw(KW_COMPUTE)  Then Begin ParseCompute;  Exit; End;
+  If TokIsKw(KW_ADD)      Then Begin ParseAdd;      Exit; End;
+  If TokIsKw(KW_SUBTRACT) Then Begin ParseSubtract; Exit; End;
+  If TokIsKw(KW_MULTIPLY) Then Begin ParseMultiply; Exit; End;
+  If TokIsKw(KW_DIVIDE)   Then Begin ParseDivide;   Exit; End;
+
+  { --- Operations sur tables internes -------------------------- }
+  If TokIsKw(KW_APPEND) Then Begin ParseAppend;      Exit; End;
+  If TokIsKw(KW_READ)   Then Begin ParseReadTable;   Exit; End;
+  If TokIsKw(KW_SORT)   Then Begin ParseSort;        Exit; End;
+  If TokIsKw(KW_DELETE) Then Begin ParseDeleteTable; Exit; End;
+
+  { INSERT / MODIFY -> stub simple : skip jusqu'au point }
+  If TokIsKw(KW_INSERT) Or TokIsKw(KW_MODIFY) Then
+  Begin
+   EmitComment('; ' + cur_tok_str + ' (stub - skip)');
+   Consume; SkipToDot;
+   If cur_tok_type = TOK_DOT Then Consume;
+   Exit;
+  End;
+
+  { --- Operations sur chaines ---------------------------------- }
+  If TokIsKw(KW_CONCATENATE) Then Begin ParseConcatenate; Exit; End;
+  If TokIsKw(KW_SPLIT)       Then Begin ParseSplit;       Exit; End;
+  If TokIsKw(KW_SHIFT)       Then Begin ParseShift;       Exit; End;
+  If TokIsKw(KW_REPLACE)     Then Begin ParseReplace;     Exit; End;
+  If TokIsKw(KW_TRANSLATE)   Then Begin ParseTranslate;   Exit; End;
+  If TokIsKw(KW_CONDENSE)    Then Begin ParseCondense;    Exit; End;
+  If TokIsKw(KW_FIND)        Then Begin ParseFind;        Exit; End;
+
+  { --- Gestion memoire / tables -------------------------------- }
+  If TokIsKw(KW_CLEAR)   Then Begin ParseClear;   Exit; End;
+  If TokIsKw(KW_REFRESH) Then Begin ParseRefresh; Exit; End;
+  If TokIsKw(KW_FREE)    Then Begin ParseFree;    Exit; End;
+
+  { --- Controle de flux ---------------------------------------- }
+  If TokIsKw(KW_CHECK)    Then Begin ParseCheck;    Exit; End;
+  If TokIsKw(KW_EXIT)     Then Begin ParseExit;     Exit; End;
+  If TokIsKw(KW_CONTINUE) Then Begin ParseContinue; Exit; End;
+
+  { --- Base de donnees ----------------------------------------- }
+  If TokIsKw(KW_SELECT) Then Begin ParseSelect;        Exit; End;
+  If TokIsKw(KW_CALL)   Then Begin ParseCallFunction;  Exit; End;
+
+  { --- Evenements ABAP (TODO 24 gere le corps) :
+        Pour TODO 23 : stub minimal -> emettre label + SkipToDot  }
+  If TokIsKw(KW_START_OF_SEL) Then
+  Begin
+   EmitBlank;
+   EmitComment('--- START-OF-SELECTION (TODO 24) ---');
+   EmitLabel('_ABAP_EV_START_OF_SEL');
+   Consume;
+   If cur_tok_type = TOK_DOT Then Consume;
+   Exit;
+  End;
+  If TokIsKw(KW_END_OF_SEL) Then
+  Begin
+   EmitBlank;
+   EmitComment('--- END-OF-SELECTION (TODO 24) ---');
+   EmitLabel('_ABAP_EV_END_OF_SEL');
+   Consume;
+   If cur_tok_type = TOK_DOT Then Consume;
+   Exit;
+  End;
+  If TokIsKw(KW_TOP_OF_PAGE) Or TokIsKw(KW_END_OF_PAGE) Then
+  Begin
+   EmitComment('; ' + cur_tok_str + ' (stub)');
+   Consume;
+   If cur_tok_type = TOK_DOT Then Consume;
+   Exit;
+  End;
+
+  { --- Ecran de selection (TODO 24 : stub skip) ---------------- }
+  If TokIsKw(KW_PARAMETERS) Or TokIsKw(KW_SELECT_OPTIONS) Then
+  Begin
+   EmitComment('; ' + cur_tok_str + ' (stub - skip)');
+   Consume; SkipToDot;
+   If cur_tok_type = TOK_DOT Then Consume;
+   Exit;
+  End;
+
+  { --- Mot-cle non reconnu : skip jusqu'au point --------------- }
+  Warning('ParseStatement : mot-cle non reconnu : ' + cur_tok_str);
+  Consume; SkipToDot;
+  If cur_tok_type = TOK_DOT Then Consume;
+  Exit;
+ End;
+
+ { ------------------------------------------------------------------ }
+ { IDENT sans mot-cle : affectation (var = expr.) ou instruction vide  }
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  tmp_name := cur_tok_str;
+  Consume; { avancer apres le nom }
+
+  If cur_tok_type = TOK_EQ Then
+  Begin
+   { Affectation : var = expr. }
+   sym_idx := ResolveIdent(tmp_name);
+   Consume; { skip '=' }
+   EmitComment(tmp_name + ' = ...');
+   ParseExpr;
+   If sym_idx > 0 Then GenStoreVar(sym_idx);
+   If cur_tok_type = TOK_DOT Then Consume
+   Else Warning('Point attendu apres affectation');
+  End
+  Else If cur_tok_type = TOK_DOT Then
+  Begin
+   { Instruction vide ou label : nom. }
+   EmitComment('; ' + tmp_name);
+   Consume;
+  End
+  Else
+  Begin
+   Warning('ParseStatement : token inattendu apres ''' + tmp_name
+           + ''' : ' + cur_tok_str);
+   SkipToDot;
+   If cur_tok_type = TOK_DOT Then Consume;
+  End;
+  Exit;
+ End;
+
+ { ------------------------------------------------------------------ }
+ { Tout autre token : skip pour eviter une boucle infinie              }
+ Warning('ParseStatement : token inattendu : ' + cur_tok_str);
  Consume;
 End;
 
