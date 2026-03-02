@@ -5844,7 +5844,6 @@ Begin
  Else
   ol('std  ,y     ; entreposer mot par d‚faut');
  End;
-
  safe_writeln('; Assignation … ' + array_name + '[] termin‚e');
 End;
 
@@ -5857,75 +5856,61 @@ Var
 Begin
  parse_assignment_statement := False;
  save_lptr := lptr;
-
- { Essayer d'analyser un identifiant }
- If symname(var_name) Then
- Begin
+  { Essayer d'analyser un identifiant }
+ If symname(var_name) Then Begin
   blanks;
-
-  { Vï¿½rifier si c'est un accï¿½s ï¿½ un tableau }
-  If match('[') Then
-  Begin
-   { Assignation ï¿½ un ï¿½lï¿½ment de tableau: tableau[index] = valeur }
+   { V‚rifier si c'est un accŠs … un tableau }
+  If match('[') Then Begin
+   { Assignation … un ‚l‚ment de tableau: tableau[index] = valeur }
    parse_array_assignment(var_name);
    parse_assignment_statement := True;
   End
-  Else If match('=') Then
-  Begin
-   { C'est une assignation simple ï¿½ une variable }
+   Else
+  If match('=') Then Begin
+   { C'est une assignation simple … une variable }
    blanks;
-
-   { Rechercher la variable }
-   If lookup_variable(var_name, lval) Then
-   Begin
-    { Vï¿½rifier si la variable est constante }
-    If lval.type_info.is_const Then
-    Begin
+    { Rechercher la variable }
+   If lookup_variable(var_name, lval) Then Begin
+    { V‚rifier si la variable est constante }
+    If lval.type_info.is_const Then Begin
      Case Language of
       _English: errrpt('Cannot assign to const variable: ' + var_name);
       {$IFDEF FPC}
       _Germany: errrpt('Kann const Variable nicht zuweisen: ' + var_name);
       {$ENDIF}
-      Else errrpt('Impossible d''assigner Ã  la variable const: ' + var_name);
+      Else errrpt('Impossible d''assigner … la variable const: ' + var_name);
      End;
      Exit;
     End;
-
-    { Analyser l'expression du cï¿½tï¿½ droit }
+     { Analyser l'expression du c“t‚ droit }
     expression(right_lval);
-
-    { Gï¿½nï¿½rer le code d'affectation }
+     { G‚n‚rer le code d'affectation }
     ot('MOV  ');
     outstr(var_name);
     outstr(', AX');
     nl;
-
-    safe_writeln('; Affectation ï¿½ la variable: ' + var_name);
+    safe_writeln('; Affectation … la variable: ' + var_name);
     parse_assignment_statement := True;
    End;
   End
-  Else
+   Else
   Begin
-   { Ce n'est pas une affectation, restaurer la position }
+    { Ce n'est pas une affectation, restaurer la position }
    lptr := save_lptr;
   End;
  End;
 End;
 
-{ Analyseur d'instructions principal }
-Function parse_statement: Boolean;
-Begin
+ { Analyseur d'instructions principal }
+Function parse_statement: Boolean;Begin
  parse_statement := False;
-
- { Ignorer les lignes vides et les commentaires }
+  { Ignorer les lignes vides et les commentaires }
  blanks;
- If Length(line) = 0 Then
- Begin
+ If Length(line) = 0 Then Begin
   parse_statement := True;
   Exit;
  End;
-
- { Essayer les diffï¿½rents types d'instructions }
+  { Essayer les diff‚rents types d'instructions }
  If parse_label_statement Then
   parse_statement := True
  Else If parse_case_statement Then
@@ -5962,8 +5947,7 @@ Begin
   parse_statement := True;
 End;
 
-Procedure header;
-Begin
+Procedure header;Begin
  If use_stdout Then
   WriteLn('; ', VERSION)
  Else
@@ -5971,20 +5955,18 @@ Begin
 End;
 
 Procedure trailer;Begin
- { Appliquer les optimisations si activï¿½es }
+  { Appliquer les optimisations si activ‚es }
  If optimize > OPT_NONE Then
  Begin
   optimize_code;
   output_optimized_instructions;
-  free_opt_instructions; { LibÃ©rer la mÃ©moire des instructions d'optimisation }
+  free_opt_instructions; { Lib‚rer la m‚moire des instructions d'optimisation }
  End;
-
- If use_stdout Then
- Begin
+ If use_stdout Then Begin
   If asmtype = AS8086 Then WriteLn(';    .end')
                       Else WriteLn('  END');
  End
- Else
+  Else
  Begin
   If asmtype = AS8086 Then safe_writeln(';    .end')
                       Else safe_writeln('  END');
@@ -6000,7 +5982,7 @@ Procedure errrptsummary;Begin
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
 
-{ Analyse amï¿½liorï¿½e avec dï¿½clarations de variables, structures de contrï¿½le et analyseur d'expressions }
+ { Analyse am‚lior‚e avec d‚clarations de variables, structures de contr“le et analyseur d'expressions }
 Procedure parse;
 Var
  lval: TLVal;
@@ -6018,62 +6000,54 @@ Begin
    Break;
   End;
   {$I+}
-
-  { Traitement simple des commentaires }
-  If match('/*') Then
-  Begin
+   { Traitement simple des commentaires }
+  If match('/*') Then Begin
    While (not match('*/')) and (eof = 0) do
     readinline;
    Continue;
   End;
-
-  { Traiter les directives de prï¿½processeur AVANT l'expansion des macros }
-  If match('#') Then
-  Begin
-   If match('include') Then
-   Begin
-    { Traiter la directive #include }
-    If not should_skip_code Then
-    Begin
-     If process_include_directive(line) Then
-     Begin
-      { Inclusion rï¿½ussie - rï¿½initialiser le pointeur de ligne et continuer avec le fichier inclus }
+   { Traiter les directives de pr‚processeur AVANT l'expansion des macros }
+  If match('#') Then Begin
+   If match('include') Then Begin
+     { Traiter la directive #include }
+    If not should_skip_code Then Begin
+     If process_include_directive(line) Then Begin
+      { Inclusion r‚ussie - r‚initialiser le pointeur de ligne et continuer avec le fichier inclus }
       lptr := Length(line) + 1; { Forcer l'appel de readinline pour le nouveau fichier }
       Continue;
      End
-     Else
+      Else
      Begin
-      { Erreur dï¿½jï¿½ signalï¿½e, ignorer cette ligne }
+      { Erreur d‚j… signal‚e, ignorer cette ligne }
       Continue;
      End;
     End
-    Else
+     Else
     Begin
      { Ignorer l'inclusion dans un bloc conditionnel }
      Continue;
     End;
    End
-   Else If match('define') Then
-   Begin
+    Else
+   If match('define') Then Begin
     { Traiter la directive #define }
-    If not should_skip_code Then
-    Begin
+    If not should_skip_code Then Begin
      If process_define_directive(line) Then
       Continue  { Continuer avec la ligne suivante }
-     Else
+      Else
      Begin
-      { Erreur dï¿½jï¿½ signalï¿½e, ignorer cette ligne }
+      { Erreur d‚j… signal‚e, ignorer cette ligne }
       Continue;
      End;
     End
-    Else
+     Else
     Begin
      { Ignorer le define dans un bloc conditionnel }
      Continue;
     End;
    End
-   Else If match('if ') Then
-   Begin
+    Else
+   If match('if ') Then Begin
     { Traiter la directive #if }
     blanks;
     process_if_directive(Copy(line, lptr, 255));

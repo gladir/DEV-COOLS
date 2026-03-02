@@ -4604,6 +4604,379 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 19 - GENERATION : POINT D'ENTREE + HELPERS RUNTIME [COMPLET]           }
+{ ============================================================================ }
+
+{ Genere le point d'entree du programme dans le segment .CODE.
+  Remarque : '.CODE' est deja emis en fin de GenDataSegment.
+  Cette procedure emet START:, l'initialisation DS/ES, l'appel au REPORT
+  principal puis la sortie DOS propre.                                         }
+Procedure GenCodeSegmentHeader;
+Var rpt_label : String;
+Begin
+ rpt_label := AsmIdent('_ABAP_RPT_', prog_name);
+ EmitComment('--- Point d''entree ---');
+ Emit('START:');
+ EmitI('MOV     AX, @DATA');
+ EmitI('MOV     DS, AX');
+ EmitI('MOV     ES, AX');
+ EmitBlank;
+ EmitI('CALL    ' + rpt_label + '   ; appel REPORT ' + prog_name);
+ EmitBlank;
+ EmitComment('Sortie DOS propre');
+ EmitI('MOV     AX, 4C00h');
+ EmitI('INT     21h');
+ EmitBlank;
+End;
+
+{ Genere tous les helpers runtime en assembleur 8086 pur.
+  Utilise uniquement INT 21h (API DOS) :
+    AH=02h  : afficher caractere DL
+    AH=09h  : afficher chaine '$'-terminee pointee par DX
+    AH=0Ah  : saisie chaine (buffer DOS)
+    AH=4Ch  : terminer processus (exit)
+
+  Helpers emis :
+    _ABAP_CRLF          afficher CR+LF
+    _ABAP_PRINT_STR     afficher DX = ptr chaine '$'-terminee
+    _ABAP_PRINT_CHAR    afficher caractere DL
+    _ABAP_PRINT_INT     afficher entier word signe (STACK arg)
+    _ABAP_READ_STR      lire chaine dans buffer (STACK arg)
+    _ABAP_READ_INT      lire entier depuis stdin -> AX
+    _ABAP_STR_LEN       longueur de [SI] -> CX (jusqu'a '$')
+    _ABAP_STR_COPY      copier DE SI vers DI jusqu'a '$' (incl.)
+    _ABAP_STR_CONCAT    concatener [SI] apres [DI] (remplace '$' de DI)
+    _ABAP_STR_TRANSLATE  UPPER/LOWER (STACK: @str, flag)
+    _ABAP_STR_CONDENSE  retirer espaces multiples (STACK: @str, flag)
+    _ABAP_STR_SPLIT     (stub)
+    _ABAP_STR_SHIFT     (stub)
+    _ABAP_STR_REPLACE   (stub)
+    _ABAP_STR_FIND      chercher patron -> SY-SUBRC en AX (stub)
+    _ABAP_TBL_APPEND    (stub)
+    _ABAP_TBL_READ      (stub)
+    _ABAP_TBL_SORT      (stub)
+    _ABAP_TBL_DELETE    (stub)
+    _ABAP_ERROR         afficher message d'erreur + quitter (code 1)
+}
+Procedure GenRuntimeHelpers;
+Begin
+ EmitBlank;
+ EmitComment('============================================================');
+ EmitComment(' HELPERS RUNTIME ABAP86');
+ EmitComment('============================================================');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_CRLF : afficher CR+LF');
+ Emit('_ABAP_CRLF:');
+ EmitI('PUSH    AX');
+ EmitI('PUSH    DX');
+ EmitI('LEA     DX, _ABAP_CRLF_STR');
+ EmitI('MOV     AH, 09h');
+ EmitI('INT     21h');
+ EmitI('POP     DX');
+ EmitI('POP     AX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_PRINT_STR : DX = ptr chaine terminee par $');
+ Emit('_ABAP_PRINT_STR:');
+ EmitI('PUSH    AX');
+ EmitI('MOV     AH, 09h');
+ EmitI('INT     21h');
+ EmitI('POP     AX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_PRINT_CHAR : DL = caractere a afficher');
+ Emit('_ABAP_PRINT_CHAR:');
+ EmitI('PUSH    AX');
+ EmitI('MOV     AH, 02h');
+ EmitI('INT     21h');
+ EmitI('POP     AX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_PRINT_INT : [SP+2] = entier signe 16 bits -> afficher decimal');
+ EmitComment('  Appelant fait : PUSH valeur / CALL / ADD SP,2');
+ Emit('_ABAP_PRINT_INT:');
+ EmitI('PUSH    BP');
+ EmitI('MOV     BP, SP');
+ EmitI('PUSH    AX');
+ EmitI('PUSH    BX');
+ EmitI('PUSH    CX');
+ EmitI('PUSH    DX');
+ EmitI('PUSH    SI');
+ EmitI('MOV     AX, [BP+4]     ; valeur a afficher');
+ EmitI('LEA     SI, _NUMBUF+15 ; ecrire de droite a gauche');
+ EmitI('MOV     BYTE PTR [SI], ''$''');
+ EmitI('DEC     SI');
+ EmitI('CMP     AX, 0');
+ EmitI('JGE     _APINT_POS');
+ EmitI('PUSH    AX             ; sauvegarder le signe');
+ EmitI('NEG     AX');
+ EmitI('PUSH    1              ; flag negatif');
+ EmitI('JMP     _APINT_LOOP');
+ Emit('_APINT_POS:');
+ EmitI('PUSH    0              ; pas de signe');
+ EmitI('PUSH    0');
+ Emit('_APINT_LOOP:');
+ EmitI('MOV     DX, 0');
+ EmitI('MOV     BX, 10');
+ EmitI('DIV     BX             ; AX = quotient, DX = reste');
+ EmitI('ADD     DL, ''0''');
+ EmitI('MOV     [SI], DL');
+ EmitI('DEC     SI');
+ EmitI('CMP     AX, 0');
+ EmitI('JNE     _APINT_LOOP');
+ EmitI('POP     CX             ; flag negatif');
+ EmitI('POP     AX             ; (inutilise)');
+ EmitI('CMP     CX, 1');
+ EmitI('JNE     _APINT_NOMIN');
+ EmitI('MOV     BYTE PTR [SI], ''-''');
+ EmitI('DEC     SI');
+ Emit('_APINT_NOMIN:');
+ EmitI('INC     SI             ; SI pointe le premier chiffre');
+ EmitI('MOV     DX, SI');
+ EmitI('MOV     AH, 09h');
+ EmitI('INT     21h');
+ EmitI('POP     SI');
+ EmitI('POP     DX');
+ EmitI('POP     CX');
+ EmitI('POP     BX');
+ EmitI('POP     AX');
+ EmitI('POP     BP');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_READ_STR : [BP+4]=@buffer DOS (128,0,128 dup)');
+ EmitComment('  Appelant : PUSH @buf / CALL / ADD SP,2');
+ Emit('_ABAP_READ_STR:');
+ EmitI('PUSH    BP');
+ EmitI('MOV     BP, SP');
+ EmitI('PUSH    AX');
+ EmitI('PUSH    DX');
+ EmitI('MOV     DX, [BP+4]');
+ EmitI('MOV     AH, 0Ah');
+ EmitI('INT     21h');
+ EmitI('CALL    _ABAP_CRLF');
+ EmitI('POP     DX');
+ EmitI('POP     AX');
+ EmitI('POP     BP');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_READ_INT : lire un entier depuis stdin -> AX');
+ Emit('_ABAP_READ_INT:');
+ EmitI('PUSH    BX');
+ EmitI('PUSH    CX');
+ EmitI('PUSH    DX');
+ EmitI('PUSH    SI');
+ EmitI('LEA     DX, _INPUTBUF');
+ EmitI('MOV     AH, 0Ah');
+ EmitI('INT     21h');
+ EmitI('CALL    _ABAP_CRLF');
+ EmitI('LEA     SI, _INPUTBUF+2  ; debut des caracteres saisis');
+ EmitI('MOV     CL, [_INPUTBUF+1]');
+ EmitI('MOV     CH, 0');
+ EmitI('XOR     AX, AX');
+ EmitI('XOR     BX, BX');
+ EmitI('CMP     CX, 0');
+ EmitI('JE      _ARINT_DONE');
+ Emit('_ARINT_LOOP:');
+ EmitI('MOV     BL, [SI]');
+ EmitI('SUB     BL, ''0''');
+ EmitI('IMUL    AX, 10');
+ EmitI('ADD     AX, BX');
+ EmitI('INC     SI');
+ EmitI('LOOP    _ARINT_LOOP');
+ Emit('_ARINT_DONE:');
+ EmitI('POP     SI');
+ EmitI('POP     DX');
+ EmitI('POP     CX');
+ EmitI('POP     BX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_LEN : SI=ptr chaine $-terminee -> CX=longueur');
+ Emit('_ABAP_STR_LEN:');
+ EmitI('PUSH    SI');
+ EmitI('XOR     CX, CX');
+ Emit('_ASLEN_LOOP:');
+ EmitI('CMP     BYTE PTR [SI], ''$''');
+ EmitI('JE      _ASLEN_DONE');
+ EmitI('INC     SI');
+ EmitI('INC     CX');
+ EmitI('JMP     _ASLEN_LOOP');
+ Emit('_ASLEN_DONE:');
+ EmitI('POP     SI');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_COPY : copier [SI] vers [DI] jusqu''a $ inclus');
+ Emit('_ABAP_STR_COPY:');
+ EmitI('PUSH    AX');
+ Emit('_ASCOPY_LOOP:');
+ EmitI('MOV     AL, [SI]');
+ EmitI('MOV     [DI], AL');
+ EmitI('INC     SI');
+ EmitI('INC     DI');
+ EmitI('CMP     AL, ''$''');
+ EmitI('JNE     _ASCOPY_LOOP');
+ EmitI('POP     AX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_CONCAT : concatener [SI] apres [DI]');
+ EmitComment('  Avancer DI jusqu''au $, puis copier SI');
+ Emit('_ABAP_STR_CONCAT:');
+ EmitI('PUSH    AX');
+ EmitI('PUSH    SI');
+ EmitI('PUSH    DI');
+ Emit('_ASCAT_FIND:');
+ EmitI('CMP     BYTE PTR [DI], ''$''');
+ EmitI('JE      _ASCAT_COPY');
+ EmitI('INC     DI');
+ EmitI('JMP     _ASCAT_FIND');
+ Emit('_ASCAT_COPY:');
+ EmitI('MOV     AL, [SI]');
+ EmitI('MOV     [DI], AL');
+ EmitI('INC     SI');
+ EmitI('INC     DI');
+ EmitI('CMP     AL, ''$''');
+ EmitI('JNE     _ASCAT_COPY');
+ EmitI('POP     DI');
+ EmitI('POP     SI');
+ EmitI('POP     AX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_TRANSLATE : PUSH @str, flag / CALL / ADD SP,4');
+ EmitComment('  flag=1 -> UPPER, flag=0 -> LOWER');
+ Emit('_ABAP_STR_TRANSLATE:');
+ EmitI('PUSH    BP');
+ EmitI('MOV     BP, SP');
+ EmitI('PUSH    AX');
+ EmitI('PUSH    SI');
+ EmitI('MOV     SI, [BP+4]   ; @str');
+ EmitI('MOV     AX, [BP+6]   ; flag');
+ Emit('_ASTR_LOOP:');
+ EmitI('CMP     BYTE PTR [SI], ''$''');
+ EmitI('JE      _ASTR_DONE');
+ EmitI('CMP     AX, 1');
+ EmitI('JE      _ASTR_UPPER');
+ EmitI('CMP     BYTE PTR [SI], ''A''');
+ EmitI('JB      _ASTR_NEXT');
+ EmitI('CMP     BYTE PTR [SI], ''Z''');
+ EmitI('JA      _ASTR_NEXT');
+ EmitI('ADD     BYTE PTR [SI], 32   ; A-Z -> a-z');
+ EmitI('JMP     _ASTR_NEXT');
+ Emit('_ASTR_UPPER:');
+ EmitI('CMP     BYTE PTR [SI], ''a''');
+ EmitI('JB      _ASTR_NEXT');
+ EmitI('CMP     BYTE PTR [SI], ''z''');
+ EmitI('JA      _ASTR_NEXT');
+ EmitI('SUB     BYTE PTR [SI], 32   ; a-z -> A-Z');
+ Emit('_ASTR_NEXT:');
+ EmitI('INC     SI');
+ EmitI('JMP     _ASTR_LOOP');
+ Emit('_ASTR_DONE:');
+ EmitI('POP     SI');
+ EmitI('POP     AX');
+ EmitI('POP     BP');
+ EmitI('RET     4');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_CONDENSE : stub - retourne sans erreur');
+ Emit('_ABAP_STR_CONDENSE:');
+ EmitI('RET     4');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_SPLIT : stub');
+ Emit('_ABAP_STR_SPLIT:');
+ EmitI('POP     AX             ; recuperer adresse retour');
+ EmitI('ADD     SP, [SP]       ; nettoyer arguments (approximatif)');
+ EmitI('PUSH    AX');
+ EmitI('RET');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_SHIFT : stub PUSH@var,dir,n -> RET 6');
+ Emit('_ABAP_STR_SHIFT:');
+ EmitI('RET     6');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_REPLACE : stub PUSH@old,@dst,@new,flag -> RET 8');
+ Emit('_ABAP_STR_REPLACE:');
+ EmitI('RET     8');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_STR_FIND : stub PUSH@pat,@var,@off,@len -> AX=4 (non trouve)');
+ Emit('_ABAP_STR_FIND:');
+ EmitI('MOV     AX, 4          ; SY-SUBRC=4 non trouve (stub)');
+ EmitI('RET     8');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_TBL_APPEND : stub PUSH@wa,@tbl -> RET 4 (ou 2)');
+ Emit('_ABAP_TBL_APPEND:');
+ EmitI('XOR     AX, AX         ; SY-SUBRC=0');
+ EmitI('RET     4');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_TBL_READ : stub PUSH@tbl,@wa -> AX=4 (non trouve)');
+ Emit('_ABAP_TBL_READ:');
+ EmitI('MOV     AX, 4');
+ EmitI('RET     4');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_TBL_SORT : stub PUSH@tbl -> RET 2');
+ Emit('_ABAP_TBL_SORT:');
+ EmitI('XOR     AX, AX');
+ EmitI('RET     2');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_TBL_DELETE : stub PUSH@tbl -> AX=0 RET 2');
+ Emit('_ABAP_TBL_DELETE:');
+ EmitI('XOR     AX, AX');
+ EmitI('RET     2');
+ EmitBlank;
+
+ { ------------------------------------------------------------------ }
+ EmitComment('_ABAP_ERROR : afficher _ERR_STR puis quitter (code 1)');
+ Emit('_ABAP_ERROR:');
+ EmitI('LEA     DX, _ERR_STR');
+ EmitI('MOV     AH, 09h');
+ EmitI('INT     21h');
+ EmitI('MOV     AX, 4C01h      ; exit code 1');
+ EmitI('INT     21h');
+ EmitBlank;
+End;
+
+{ Genere la directive de fin de fichier assembleur : END START             }
+Procedure GenFooter;
+Begin
+ EmitBlank;
+ Emit('        END     START');
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
