@@ -273,6 +273,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de transformer un icône (.ICO) en code source Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>LISP86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur LISP pour de l'assembleur du microprocesseur 8086/8088.</td>
+		</tr>
+		<tr>
 			<td><b>LOGO.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de commande du langage de programmation LOGO. Il supporte aussi la tortue.</td>
 		</tr>
