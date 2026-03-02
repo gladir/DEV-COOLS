@@ -2974,9 +2974,8 @@ End;
   Appele lors de la generation du segment .DATA pour les variables
   dont le type necessite un gabarit . }
 
-Procedure GenTypeData(ti: Integer);
-Begin
- { Pour l'instant : stub —  les variables elles-memes emettent leurs DW/DB }
+Procedure GenTypeData(ti: Integer);Begin
+ { Pour l'instant : stub ... les variables elles-memes emettent leurs DW/DB }
  { Les tableaux et records emettent via GenVarData dans ParseObjectDecl     }
 End;
 
@@ -3090,11 +3089,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 11 - ParseObjectDecl : declarations d'objets                           }
+{ ParseObjectDecl : declarations d'objets                                      }
 { ============================================================================ }
 
 { ---- GenVarData : emission .DATA pour une variable statique globale ----
-  Appele lors de la passe .DATA (TODO 24).  Ici on l'ecrit directement
+  Appele lors de la passe .DATA.  Ici on l'ecrit directement
   dans output_file car les variables globales sont declarees avant BEGIN.     }
 
 Procedure GenVarData(sym_idx: Integer);
@@ -3329,7 +3328,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 12 - ParseProcedureSpec / ParseFunctionSpec : signatures               }
+{ ParseProcedureSpec / ParseFunctionSpec : signatures                          }
 { ============================================================================ }
 
 { ---- ParseParamList : ( nom [, nom2] : [IN|IN OUT|OUT] type [:= def] ; ...) }
@@ -3508,10 +3507,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - ParseProcedureBody / ParseFunctionBody : corps de sous-programmes  }
+{ ParseProcedureBody / ParseFunctionBody : corps de sous-programmes            }
 { ============================================================================ }
 
-{ ---- Prototypes forward (corps dans TODO 15) ---- }
+{ ---- Prototypes forward ---- }
 Procedure ParseStatement;      Forward;
 Procedure ParseDeclarativePart; Forward;
 
@@ -3896,10 +3895,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 15 - ParseStatement : dispatcher principal des instructions             }
+{ ParseStatement : dispatcher principal des instructions                       }
 { ============================================================================ }
 
-{ ---- Prototypes forward pour instructions complexes (TODOs 16-18) ---- }
+{ ---- Prototypes forward pour instructions complexes ---- }
 Procedure ParseAssignment;   Forward;
 Procedure ParseProcedureCall; Forward;
 Procedure ParseIf;           Forward;
@@ -4156,11 +4155,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 14 - ParsePackageSpec / ParsePackageBody                               }
+{ ParsePackageSpec / ParsePackageBody                                          }
 { ============================================================================ }
 
 { ---- Helpers Text_IO : stubs Put / Put_Line / New_Line / Get / Get_Line ----
-  Ces stubs s'appuient sur des helpers runtime assembleur (TODO 22).
+  Ces stubs s'appuient sur des helpers runtime assembleur.
   Convention : argument en AX (pointeur chaine ou valeur entiere).            }
 
 Procedure GenTextIO_Stubs;
@@ -4532,10 +4531,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ Point d'entree (sera remplace par Compile a TODO 24)                        }
+{ Point d'entree                                                               }
 { ============================================================================ }
 
-{ --- TODO 16 : ParseAssignment + ParseProcedureCall (implementation complete) --- }
+{ --- ParseAssignment + ParseProcedureCall (implementation complete) --- }
 
 { ---- GenLoadAddrBX : charge l'adresse d'un symbole dans BX ---- }
 
@@ -4661,7 +4660,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 20 - Acces tableaux : GenElemOffset, GenLoadElement, GenStoreElement   }
+{ Acces tableaux : GenElemOffset, GenLoadElement, GenStoreElement              }
 { ============================================================================ }
 
 { ---- GenElemOffset : AX = index -> SI = byte offset dans le tableau ----
@@ -4722,7 +4721,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - Acces records : GenLoadField, GenStoreField, agregats             }
+{ Acces records : GenLoadField, GenStoreField, agregats                        }
 { ============================================================================ }
 
 { ---- GenLoadField : charge le champ a field_off octets de sym dans AX ---- }
@@ -5074,7 +5073,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 17 - ParseIf / ParseCase                                               }
+{ ParseIf / ParseCase                                                          }
 { ============================================================================ }
 
 { ---- ParseIf : IF cond THEN stmts [ELSIF cond THEN stmts]* [ELSE stmts] END IF ; ---- }
@@ -5212,7 +5211,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 18 - ParseLoop / ParseWhile / ParseFor                                 }
+{ ParseLoop / ParseWhile / ParseFor                                            }
 { ============================================================================ }
 
 { ---- ParseLoop : LOOP stmts END LOOP ;  (boucle infinie) ---- }
@@ -5388,7 +5387,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 19 - ParseRaise (ameliore) et ParseExceptionDecl (via ParseObjectDecl) }
+{ ParseRaise (ameliore) et ParseExceptionDecl (via ParseObjectDecl)            }
 { ============================================================================ }
 
 Procedure ParseRaise;
@@ -5439,7 +5438,7 @@ Begin
 End;
 
 { ============================================================= }
-{ TODO 22 — GenRuntimeData + GenRuntimeHelpers                  }
+{ GenRuntimeData + GenRuntimeHelpers                            }
 { GenRuntimeData  : declare _NUMBUF + _INPUTBUF dans .DATA      }
 { GenRuntimeHelpers : emets les helpers runtime 8086/DOS        }
 {   _RT_NEWLINE   _RT_PUTCHAR  _RT_PUTS                         }
@@ -5665,7 +5664,7 @@ Begin
  EmitI('MOV  AX, 4C01h');
  EmitI('INT  21h');
 
- { ==== TODO 23 : helpers publics _ADA_xxx ==== }
+ { ==== Assistants publics _ADA_xxx ==== }
  EmitBlank;
  EmitComment('=== Helpers publics Ada (_ADA_xxx) ===');
 
@@ -5815,8 +5814,8 @@ Begin
 End;
 
 { ============================================================= }
-{ TODO 23 — GenHeader / GenDataSegment / GenCodeSegmentHeader  }
-{           GenFooter / GenRuntimeHelpers etendu               }
+{ GenHeader / GenDataSegment / GenCodeSegmentHeader             }
+{            GenFooter / GenRuntimeHelpers etendu               }
 { ============================================================= }
 
 { Emet la declaration ASM d'une variable globale dans .DATA }
@@ -5931,7 +5930,7 @@ Begin
 End;
 
 { ============================================================= }
-{ TODO 24 — Procedure Compile : orchestration deux passes      }
+{ Procedure Compile : orchestration deux passes                 }
 { ============================================================= }
 
 Procedure Compile;
@@ -5946,7 +5945,7 @@ Begin
  { 1. Validation argument }
  If ParamCount < 1 Then
  Begin
-  WriteLn('Usage: ADA86 source.adb [sortie.asm]');
+  WriteLn('Syntaxe: ADA86 source.adb [sortie.asm]');
   WriteLn('  Compile un programme Ada 83/95 en assembleur 8086 MASM.');
   Halt(1);
  End;
@@ -6113,5 +6112,5 @@ End;
 { ============================================================= }
 
 BEGIN
-  Compile;
+ Compile;
 END.

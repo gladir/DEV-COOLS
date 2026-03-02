@@ -5118,6 +5118,9 @@ End;
   AsmVarDesc : nom du descripteur ASM d'une variable (label_D).
   Identique a DescLabel deficit dans TODO 04.
   -------------------------------------------------------------------------- }
+Procedure GenLoadSysVar(Const nm : TString); Forward;
+Procedure GenStoreSysVar(Const nm : TString); Forward;
+
 Function AsmVarDesc(Const varname : TString) : TString;
 Begin
   Result := AsmSafeIdent(UpCaseStr(varname)) + '_D';
@@ -5139,6 +5142,11 @@ End;
 Procedure EmitLoadVarDesc(Const varname : TString);
 Var sym : Integer;
 Begin
+  If (Length(varname) > 1) And (varname[1] = '&') Then
+  Begin
+    GenLoadSysVar(Copy(varname, 2, Length(varname) - 1));
+    Exit;
+  End;
   sym := FindSym(UpCaseStr(varname));
   If sym < 0 Then
     sym := AddSym(UpCaseStr(varname), SK_VAR, VK_UNDEF);
@@ -5171,6 +5179,11 @@ End;
 Procedure EmitStoreVarDesc(Const varname : TString);
 Var lbl : TString;
 Begin
+  If (Length(varname) > 1) And (varname[1] = '&') Then
+  Begin
+    GenStoreSysVar(Copy(varname, 2, Length(varname) - 1));
+    Exit;
+  End;
   lbl := AsmVarDesc(varname);
   EmitI('PUSH AX');
   EmitI('MOV  AX, [DI]');
@@ -6609,6 +6622,102 @@ Begin
   { ---- Done ---- }
   EmitLabel(lbl_done);
   EmitBlank;
+End;
+{ ============================================================================
+  TODO 23 - GESTION DES VARIABLES SYSTEME (&xxx)
+  ============================================================================
+  SysVarAsmLabel  : 'ANCHOR' -> '_SB_SYS_ANCHOR'
+  GenLoadSysVar   : charger &xxx dans DI (descripteur string)
+  GenStoreSysVar  : stocker DI (desc string) dans &xxx
+  Variables numeriques : _RT_INT2STR / _RT_STR2INT
+  &INPUT  : CALL _RT_READLINE -> DI (stub ; TODO 24 fournira le runtime)
+  &OUTPUT : MOV SI,DI + CALL _RT_WRITELINE (stub ; TODO 24)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  SysVarAsmLabel : traduire le nom (sans '&') en label ASM .DATA.
+  Ex : 'ANCHOR' -> '_SB_SYS_ANCHOR'
+  -------------------------------------------------------------------------- }
+Function SysVarAsmLabel(Const nm : TString) : TString;
+Begin
+  SysVarAsmLabel := '_SB_SYS_' + UpCaseStr(nm);
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadSysVar : charger la valeur d'une variable systeme dans DI.
+  nm = nom sans '&', peut etre en casse quelconque.
+  Post : DI = adresse descripteur (string) representant la valeur.
+  Variables numeriques exportees comme string via _RT_INT2STR.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadSysVar(Const nm : TString);
+Var u : TString;
+Begin
+  u := UpCaseStr(nm);
+  EmitComment('Load sysvar &' + u);
+  If u = 'INPUT' Then
+  Begin
+    EmitI('CALL _RT_READLINE          ; &INPUT : lire ligne stdin -> DI');
+  End
+  Else If u = 'ALPHABET' Then
+  Begin
+    EmitI('LEA  DI, [_SB_SYS_ALPHABET_D]  ; &ALPHABET');
+  End
+  Else If u = 'FAIL' Then
+  Begin
+    EmitI('LEA  DI, [_SB_FAIL_DESC]   ; &FAIL');
+  End
+  Else If (u = 'OUTPUT') Or (u = 'SUBJECT') Then
+  Begin
+    EmitI('LEA  DI, [_SB_SYS_' + u + '_D]  ; &' + u + ' desc');
+  End
+  Else If (u = 'SUCCESS') Or (u = 'FENCE') Then
+  Begin
+    EmitI('LEA  DI, [_SB_EMPTY_DESC]   ; &' + u + ' : patron stub');
+  End
+  Else
+  Begin
+    { Sysvar numerique : charger DW -> AX -> _RT_INT2STR -> DI }
+    EmitI('MOV  AX, [' + SysVarAsmLabel(u) + ']    ; &' + u);
+    EmitI('CALL _RT_INT2STR             ; AX -> DI (desc chaine)');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreSysVar : stocker le descripteur DI dans une variable systeme.
+  nm = nom sans '&', peut etre en casse quelconque.
+  Variables numeriques : convertir desc -> AX -> stocker en DW.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreSysVar(Const nm : TString);
+Var u : TString;
+Begin
+  u := UpCaseStr(nm);
+  EmitComment('Store sysvar &' + u);
+  If u = 'OUTPUT' Then
+  Begin
+    EmitI('MOV  SI, DI');
+    EmitI('CALL _RT_WRITELINE          ; &OUTPUT : ecrire SI sur stdout');
+  End
+  Else If u = 'SUBJECT' Then
+  Begin
+    EmitI('PUSH AX');
+    EmitI('MOV  AX, [DI]');
+    EmitI('MOV  [_SB_SYS_SUBJECT_D],   AX  ; stocker ptr');
+    EmitI('MOV  AX, [DI+2]');
+    EmitI('MOV  [_SB_SYS_SUBJECT_D+2], AX  ; stocker len');
+    EmitI('POP  AX');
+  End
+  Else If (u = 'INPUT') Or (u = 'ALPHABET') Or (u = 'FAIL') Or
+          (u = 'FENCE') Or (u = 'SUCCESS') Then
+  Begin
+    EmitComment('  &' + u + ' : lecture seule, affectation ignoree');
+  End
+  Else
+  Begin
+    { Sysvar numerique : desc DI -> AX int -> stocker DW }
+    EmitI('MOV  SI, DI');
+    EmitI('CALL _RT_STR2INT             ; SI=desc -> AX entier');
+    EmitI('MOV  [' + SysVarAsmLabel(u) + '], AX     ; &' + u);
+  End;
 End;
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
