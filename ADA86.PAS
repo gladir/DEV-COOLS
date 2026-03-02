@@ -4767,27 +4767,255 @@ End;
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
-{ --- Stubs des instructions complexes (implementees aux TODOs 16-18) --- }
+{ --- TODO 16 : ParseAssignment + ParseProcedureCall (implementation complete) --- }
+
+{ ---- GenLoadAddrBX : charge l'adresse d'un symbole dans BX ---- }
+
+Procedure GenLoadAddrBX(sym_idx: Integer);
+Var off : Integer;
+Begin
+ Case sym_table^[sym_idx].store_class Of
+  STORE_STATIC :
+   EmitI('MOV  BX, OFFSET ' + sym_table^[sym_idx].asm_label);
+  STORE_AUTO :
+  Begin
+   off := sym_table^[sym_idx].bp_offset;
+   EmitI('MOV  BX, BP');
+   If off < 0 Then
+    EmitI('ADD  BX, ' + IntToStr(off))
+   Else If off > 0 Then
+    EmitI('ADD  BX, ' + IntToStr(off));
+  End;
+ End;
+End;
+
+{ ---- GenPushAddr : pousse l'adresse d'un symbole (pour OUT/IN OUT) ---- }
+
+Procedure GenPushAddr(sym_idx: Integer);
+Begin
+ GenLoadAddrBX(sym_idx);
+ EmitI('PUSH BX');
+End;
+
+{ ---- ParseLhsInfo : parse un LHS et retourne descripteur ----
+  Entree  : cur_tok sur l'identifiant de base                                 }
+
+Function ParseLhsInfo(Var sym_idx, field_off: Integer;
+                      Var has_index: Boolean): Boolean;
+Var nm  : String;
+    ti  : Integer;
+    i   : Integer;
+Begin
+ field_off := 0;
+ has_index := False;
+ sym_idx   := 0;
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Identifiant attendu dans LHS'); ParseLhsInfo := False; Exit; End;
+ nm := UpCaseStr(cur_tok_str);
+ Consume;
+ sym_idx := FindSym(nm);
+ If sym_idx = 0 Then
+ Begin Error('Symbole inconnu dans LHS : ' + nm); ParseLhsInfo := False; Exit; End;
+ ti := sym_table^[sym_idx].type_idx;
+ { .champ }
+ If cur_tok_type = TOK_DOT Then
+ Begin
+  Consume;
+  If cur_tok_type <> TOK_IDENT Then
+  Begin ErrorTok('Nom de champ attendu apres `.`'); ParseLhsInfo := False; Exit; End;
+  nm := UpCaseStr(cur_tok_str);
+  Consume;
+  If (ti > 0) And (type_table^[ti].kind = TK_RECORD) Then
+  Begin
+   For i := 1 to type_table^[ti].field_count do
+    If type_table^[ti].field_names[i] = nm Then
+    Begin field_off := type_table^[ti].field_offs[i]; Break; End;
+  End
+  Else Warning('Acces `.champ` sur type non-RECORD');
+ End
+ { (index) }
+ Else If cur_tok_type = TOK_LPAREN Then
+ Begin
+  has_index := True;
+  Consume;
+  ParseExpr;   { AX = index }
+  { SI = (index - lo_bound) * elem_size }
+  If (ti > 0) And (type_table^[ti].kind = TK_ARRAY) Then
+  Begin
+   EmitI('SUB  AX, ' + IntToStr(type_table^[ti].lo_bound));
+   If type_table^[ti].elem_size > 1 Then
+   Begin
+    EmitI('MOV  BX, ' + IntToStr(type_table^[ti].elem_size));
+    EmitI('IMUL BX');
+   End;
+  End
+  Else
+  Begin
+   EmitI('DEC  AX');     { lo_bound = 1 par defaut }
+   EmitI('SHL  AX, 1');  { stride = 2 octets }
+  End;
+  EmitI('MOV  SI, AX');
+  Expect(TOK_RPAREN, '`)` attendu apres index de tableau dans LHS');
+ End;
+ ParseLhsInfo := True;
+End;
+
+{ ---- GenStoreLhs : stocke AX dans le LHS decrit ---- }
+
+Procedure GenStoreLhs(sym_idx, field_off: Integer; has_index: Boolean);
+Var sc  : Integer;
+    off : Integer;
+    lbl : String;
+Begin
+ If sym_table^[sym_idx].is_const Then
+ Begin Error('Assignation a une constante : ' + sym_table^[sym_idx].name); Exit; End;
+ sc  := sym_table^[sym_idx].store_class;
+ off := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
+ If has_index Then
+ Begin
+  GenLoadAddrBX(sym_idx);
+  EmitI('ADD  BX, SI');
+  If field_off > 0 Then EmitI('ADD  BX, ' + IntToStr(field_off));
+  EmitI('MOV  [BX], AX');
+ End
+ Else If sc = STORE_STATIC Then
+ Begin
+  If field_off > 0 Then
+   EmitI('MOV  WORD PTR [' + lbl + '+' + IntToStr(field_off) + '], AX')
+  Else
+   EmitI('MOV  [' + lbl + '], AX');
+ End
+ Else
+ Begin
+  off := off + field_off;
+  If off < 0 Then
+   EmitI('MOV  [BP' + IntToStr(off) + '], AX')
+  Else If off > 0 Then
+   EmitI('MOV  [BP+' + IntToStr(off) + '], AX')
+  Else
+   EmitI('MOV  [BP], AX');
+ End;
+End;
+
+{ ---- ParseAssignment : ident [.champ | (index)] := expr ; ---- }
 
 Procedure ParseAssignment;
+Var sym_idx   : Integer;
+    field_off : Integer;
+    has_index : Boolean;
 Begin
- { stub : consomme ident := expr ; }
- Consume;  { ident }
- If cur_tok_type = TOK_COLONASSIGN Then Consume;
+ If Not ParseLhsInfo(sym_idx, field_off, has_index) Then
+ Begin SkipToSemi; Exit; End;
+ Expect(TOK_COLONASSIGN, '`:=` attendu dans assignation');
  ParseExpr;
+ GenStoreLhs(sym_idx, field_off, has_index);
  Expect(TOK_SEMI, '`;` attendu apres assignation');
 End;
 
-Procedure ParseProcedureCall;
+{ ---- ParseOneArg : un argument d'appel (mode IN, OUT, ou IN OUT) ----
+  IN      : evaluer expression -> PUSH AX
+  OUT/INOUT : pousser adresse de la variable effective -> PUSH BX             }
+
+Procedure ParseOneArg(mode: Integer);
+Var nm      : String;
+    lhs_sym : Integer;
 Begin
- { stub : consomme ident [(args)] ; }
- Consume;  { ident }
+ If (mode = PARAM_OUT) Or (mode = PARAM_INOUT) Then
+ Begin
+  { L-valeur obligatoire (variable) ; gestion ident => var }
+  If cur_tok_type = TOK_IDENT Then
+  Begin
+   nm := UpCaseStr(cur_tok_str); Consume;
+   If cur_tok_type = TOK_ARROW Then
+   Begin Consume; nm := UpCaseStr(cur_tok_str); Consume; End;
+   lhs_sym := FindSym(nm);
+   If lhs_sym > 0 Then GenPushAddr(lhs_sym)
+   Else Begin Error('Variable OUT attendue : ' + nm); EmitI('PUSH 0'); End;
+   { Absorber .champ ou (index) sur le LHS OUT }
+   If cur_tok_type = TOK_DOT Then
+   Begin Consume; If cur_tok_type = TOK_IDENT Then Consume; End;
+   If cur_tok_type = TOK_LPAREN Then
+   Begin
+    Consume;
+    While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+    Consume;
+   End;
+  End
+  Else Begin ParseExpr; EmitI('PUSH AX'); End;
+ End
+ Else { PARAM_IN }
+ Begin
+  { Detection association nommee : ident => expr }
+  If cur_tok_type = TOK_IDENT Then
+  Begin
+   nm := UpCaseStr(cur_tok_str); Consume;
+   If cur_tok_type = TOK_ARROW Then
+   Begin
+    Consume;   { sauter => }
+    ParseExpr;
+    EmitI('PUSH AX');
+   End
+   Else
+   Begin
+    { nm est le debut de l'expression (variable seule, common case) }
+    lhs_sym := FindSym(nm);
+    If lhs_sym > 0 Then GenLoadVar(lhs_sym)
+    Else EmitI('XOR  AX, AX');
+    EmitI('PUSH AX');
+   End;
+  End
+  Else
+  Begin
+   ParseExpr;
+   EmitI('PUSH AX');
+  End;
+ End;
+End;
+
+{ ---- ParseProcedureCall : nom [(arg1, arg2, ...)] ; ---- }
+
+Procedure ParseProcedureCall;
+Var nm       : String;
+    sub_idx  : Integer;
+    pc       : Integer;
+    arg_num  : Integer;
+    mode     : Integer;
+Begin
+ nm := UpCaseStr(cur_tok_str);
+ Consume;   { identifiant }
+ sub_idx := FindSub(nm);
+ If sub_idx = 0 Then
+ Begin
+  Warning('Procedure inconnue : ' + nm);
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+   Consume;
+  End;
+  Expect(TOK_SEMI, '`;` attendu apres appel');
+  Exit;
+ End;
+ pc := sub_table^[sub_idx].param_count;
  If cur_tok_type = TOK_LPAREN Then
  Begin
   Consume;
-  While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
-  Consume;
+  arg_num := 0;
+  While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do
+  Begin
+   Inc(arg_num);
+   If (arg_num >= 1) And (arg_num <= pc) Then
+    mode := sub_table^[sub_idx].param_modes[arg_num]
+   Else
+    mode := PARAM_IN;
+   ParseOneArg(mode);
+   If cur_tok_type = TOK_COMMA Then Consume;
+  End;
+  Consume; { ) }
  End;
+ EmitI('CALL ' + sub_table^[sub_idx].asm_label);
+ { Callee-cleanup: RET n dans le sous-programme, pas d'ADD SP ici }
  Expect(TOK_SEMI, '`;` attendu apres appel de procedure');
 End;
 
@@ -4886,13 +5114,12 @@ Begin
 End;
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 15 OK (dispatcher ParseStatement OK)');
-  WriteLn('  ParseStatement (dispatcher complet)');
-  WriteLn('  IsEndBoundary (fin de sequence)');
-  WriteLn('  ParseNull, ParsePragma, ParseExit, ParseGoto');
-  WriteLn('  ParseLabeledStatement (<<nom>>)');
-  WriteLn('  ParseBeginBlock (DECLARE/BEGIN...END)');
-  WriteLn('  ParseReturn, ParseRaise (stubs fonctionnels)');
+  WriteLn('ADA86 V1.0 - TODO 16 OK (ParseAssignment + ParseProcedureCall OK)');
+  WriteLn('  GenLoadAddrBX, GenPushAddr : adresses OUT/IN OUT');
+  WriteLn('  ParseLhsInfo   : LHS avec .champ et (index)');
+  WriteLn('  GenStoreLhs    : stockage AX dans LHS');
+  WriteLn('  ParseAssignment: ident [.champ|(index)] := expr ;');
+  WriteLn('  ParseOneArg    : IN par valeur, OUT/INOUT par adresse');
+  WriteLn('  ParseProcedureCall : appel avec arguments positionnels/nommes');
   WriteLn('  ParseIf, ParseCase, ParseLoop, ParseWhile, ParseFor (stubs)');
-  WriteLn('  ParseAssignment, ParseProcedureCall (stubs)');
 End.
