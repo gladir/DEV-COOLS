@@ -1500,9 +1500,8 @@ End;
 { GENERATION : PRINT / READ / TERPRI                                           }
 { ============================================================================ }
 
-Procedure GenPrint(arg: TLispVal);
-Begin
- { TODO 20 : Generer PRINT selon le tag de la valeur }
+Procedure GenPrint(arg: TLispVal);Begin
+ { G‚n‚rer PRINT selon la balise de la valeur }
  EmitComment('---- PRINT ----');
  GenExpr(arg);
  Emit('        PUSH    AX');
@@ -1511,17 +1510,15 @@ Begin
  Emit('        ; resultat = valeur imprimee (convention LISP)');
 End;
 
-Procedure GenTerpri;
-Begin
- { TODO 20 : Generer TERPRI }
+Procedure GenTerpri;Begin
+ { G‚n‚rer TERPRI }
  EmitComment('TERPRI');
  Emit('        CALL    _LISP_CRLF');
  Emit('        XOR     AX, AX  ; TERPRI retourne NIL');
 End;
 
-Procedure GenRead(sym_idx: Integer);
-Begin
- { TODO 20 : Generer READ vers un symbole global }
+Procedure GenRead(sym_idx: Integer);Begin
+ { G‚n‚rer READ vers un symbole global }
  EmitComment('READ -> ' + ItoSI(sym_idx));
  Emit('        CALL    _LISP_READ_INT');
  If sym_idx > 0 Then
@@ -1531,26 +1528,27 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - GENERATION : DEFUN + APPEL DE FONCTION       [COMPLET]            }
+{ GENERATION : DEFUN + APPEL DE FONCTION                                       }
 { ============================================================================ }
 
 Procedure GenFuncBody(func_idx: Integer; body: TLispVal);
-Var fp: PFuncEntry; i, offset: Integer;
+Var
+ fp: PFuncEntry;
+ i, offset: Integer;
 Begin
- { TODO 21 : Generer le corps d'une DEFUN }
+ { G‚n‚rer le corps d'une DEFUN }
  fp := func_table[func_idx];
  EmitBlank;
  EmitLabel(fp^.asm_label);
  Emit('        PUSH    BP');
  Emit('        MOV     BP, SP');
- { Reserver de l'espace pour les locaux (si LET ou LET-STAR) }
+ { R‚server de l'espace pour les locaux (si LET ou LET-STAR) }
  EmitComment('Parametres: ' + ItoSI(fp^.param_count));
- { Les parametres sont sur la pile : [BP+4] = 1er, [BP+6] = 2eme... }
+ { Les paramŠtres sont sur la pile : [BP+4] = 1er, [BP+6] = 2eme... }
  { (BP+0 = ancien BP, BP+2 = adresse retour) }
  EnterScope;
  offset := 4;
- For i := 1 to fp^.param_count do
- Begin
+ For i := 1 to fp^.param_count do Begin
   Inc(local_count);
   local_vars[local_count].name      := fp^.param_names[i];
   local_vars[local_count].bp_offset := offset;
@@ -1567,7 +1565,10 @@ Begin
 End;
 
 Procedure GenFuncCall(func_idx: Integer; args: TLispVal);
-Var fp: PFuncEntry; n: Integer; tmp: TLispVal;
+Var
+ fp: PFuncEntry;
+ n: Integer;
+ tmp: TLispVal;
 Begin
  { TODO 21 : Generer un appel de DEFUN }
  fp := func_table[func_idx];

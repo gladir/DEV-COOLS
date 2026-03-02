@@ -1705,11 +1705,295 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 05 - Tables des types, sous-programmes et packages                     }
+{ ============================================================================ }
+
+{ ---- Table des types utilisateur ----------------------------------------- }
+
+Procedure InitTypeTable;
+Var i, j : Integer;
+Begin
+ If type_table = nil Then New(type_table);
+ type_count := 0;
+ For i := 1 to MAX_TYPE do
+ Begin
+  type_table^[i].name       := '';
+  type_table^[i].kind       := TK_PREDEF;
+  type_table^[i].base_type  := TYPE_UNKNOWN;
+  type_table^[i].lo_bound   := 0;
+  type_table^[i].hi_bound   := 0;
+  type_table^[i].field_count:= 0;
+  type_table^[i].elem_type  := TYPE_UNKNOWN;
+  type_table^[i].elem_size  := 2;
+  type_table^[i].enum_count := 0;
+  type_table^[i].total_size := 2;
+  For j := 1 to MAX_FIELD do
+  Begin
+   type_table^[i].field_names[j] := '';
+   type_table^[i].field_types[j] := TYPE_UNKNOWN;
+   type_table^[i].field_offs[j]  := 0;
+  End;
+  For j := 1 to MAX_ENUM do
+   type_table^[i].enum_names[j] := '';
+ End;
+End;
+
+{ Enregistre les types Ada predefinis aux indices TYPE_xxx connus.
+  Doit etre appele au debut de la compilation (apres InitTypeTable).          }
+Procedure RegisterPredefinedTypes;
+Var i : Integer;
+Begin
+ { On "pre-rempli" les entrees aux indices TYPE_INT..TYPE_STR directement }
+ For i := 1 to 5 do
+ Begin
+  type_table^[i].kind      := TK_PREDEF;
+  type_table^[i].base_type := TYPE_UNKNOWN;
+  type_table^[i].lo_bound  := 0;
+  type_table^[i].hi_bound  := 0;
+ End;
+
+ { TYPE_INT = 1 : Integer 16 bits signe [-32768 .. 32767] }
+ type_table^[TYPE_INT].name       := 'INTEGER';
+ type_table^[TYPE_INT].total_size := 2;
+ type_table^[TYPE_INT].lo_bound   := -32768;
+ type_table^[TYPE_INT].hi_bound   :=  32767;
+ type_table^[TYPE_INT].kind       := TK_RANGE;
+ type_table^[TYPE_INT].base_type  := TYPE_INT;
+
+ { TYPE_FLOAT = 2 : Float 32 bits (stocke en DD, calculs entiers stubs) }
+ type_table^[TYPE_FLOAT].name       := 'FLOAT';
+ type_table^[TYPE_FLOAT].total_size := 4;
+ type_table^[TYPE_FLOAT].kind       := TK_PREDEF;
+
+ { TYPE_BOOL = 3 : Boolean (0 = False, -1 = True en 8086 / 0xFFFF) }
+ type_table^[TYPE_BOOL].name       := 'BOOLEAN';
+ type_table^[TYPE_BOOL].total_size := 2;
+ type_table^[TYPE_BOOL].kind       := TK_ENUM;
+ type_table^[TYPE_BOOL].enum_count := 2;
+ type_table^[TYPE_BOOL].enum_names[1] := 'FALSE';
+ type_table^[TYPE_BOOL].enum_names[2] := 'TRUE';
+
+ { TYPE_CHAR = 4 : Character (code ASCII 0..127, stocke en DW) }
+ type_table^[TYPE_CHAR].name       := 'CHARACTER';
+ type_table^[TYPE_CHAR].total_size := 2;
+ type_table^[TYPE_CHAR].kind       := TK_RANGE;
+ type_table^[TYPE_CHAR].lo_bound   := 0;
+ type_table^[TYPE_CHAR].hi_bound   := 127;
+
+ { TYPE_STR = 5 : String (longueur variable, stocke comme pointeur 16 bits) }
+ type_table^[TYPE_STR].name       := 'STRING';
+ type_table^[TYPE_STR].total_size := 2;  { adresse 16 bits }
+ type_table^[TYPE_STR].kind       := TK_ARRAY;
+ type_table^[TYPE_STR].elem_type  := TYPE_CHAR;
+ type_table^[TYPE_STR].elem_size  := 2;
+
+ { Les 5 premiers slots sont occupes par les types predefinis }
+ type_count := 5;
+End;
+
+{ Ajoute un type utilisateur ; retourne l'index (>5) ou 0 si plein }
+Function AddType(Const name: String; kind: Integer): Integer;
+Var u : String;
+Begin
+ If type_count >= MAX_TYPE Then
+ Begin
+  Error('Table des types pleine (MAX_TYPE=' + IntToStr(MAX_TYPE) + ')');
+  AddType := 0; Exit;
+ End;
+ u := UpCaseStr(name);
+ Inc(type_count);
+ type_table^[type_count].name       := u;
+ type_table^[type_count].kind       := kind;
+ type_table^[type_count].base_type  := TYPE_UNKNOWN;
+ type_table^[type_count].lo_bound   := 0;
+ type_table^[type_count].hi_bound   := 0;
+ type_table^[type_count].field_count:= 0;
+ type_table^[type_count].elem_type  := TYPE_UNKNOWN;
+ type_table^[type_count].elem_size  := 2;
+ type_table^[type_count].enum_count := 0;
+ type_table^[type_count].total_size := 2;
+ AddType := type_count;
+End;
+
+{ Recherche un type par nom (majuscules) ; retourne l'index ou 0 }
+Function FindType(Const name: String): Integer;
+Var i : Integer;
+    u : String;
+Begin
+ u := UpCaseStr(name);
+ For i := type_count DownTo 1 do
+  If type_table^[i].name = u Then Begin FindType := i; Exit; End;
+ FindType := 0;
+End;
+
+{ Taille en octets d'un type selon son index dans type_table.
+  Pour les types predefinis, identique a PrimTypeSize.
+  Pour les types utilisateur, lit total_size.
+  Un type de taille 0 (non resolu) est traite comme 2 octets.                }
+Function GetTypeSize(type_idx: Integer): Integer;
+Var sz : Integer;
+Begin
+ If (type_idx < 1) Or (type_idx > type_count) Then
+ Begin GetTypeSize := 2; Exit; End;
+
+ sz := type_table^[type_idx].total_size;
+ If sz <= 0 Then sz := 2;
+ GetTypeSize := sz;
+End;
+
+{ ---- Table des sous-programmes (procedures + fonctions) ------------------- }
+
+Procedure InitSubTable;
+Var i, j : Integer;
+Begin
+ If sub_table = nil Then New(sub_table);
+ sub_count := 0;
+ For i := 1 to MAX_SUB do
+ Begin
+  sub_table^[i].name        := '';
+  sub_table^[i].asm_label   := '';
+  sub_table^[i].ret_type    := TYPE_VOID;
+  sub_table^[i].param_count := 0;
+  sub_table^[i].is_forward  := False;
+  sub_table^[i].is_function := False;
+  sub_table^[i].frame_size  := 0;
+  For j := 1 to MAX_PARAM do
+  Begin
+   sub_table^[i].param_names[j] := '';
+   sub_table^[i].param_types[j] := TYPE_UNKNOWN;
+   sub_table^[i].param_modes[j] := PARAM_IN;
+  End;
+ End;
+End;
+
+{ Ajoute un sous-programme ; retourne l'index ou 0 si plein }
+Function AddSub(Const name: String; is_func: Boolean; ret_type: Integer): Integer;
+Var u   : String;
+    idx : Integer;
+Begin
+ If sub_count >= MAX_SUB Then
+ Begin
+  Error('Table sous-programmes pleine (MAX_SUB=' + IntToStr(MAX_SUB) + ')');
+  AddSub := 0; Exit;
+ End;
+ u := UpCaseStr(name);
+ Inc(sub_count);
+ idx := sub_count;
+ sub_table^[idx].name        := u;
+ sub_table^[idx].is_function := is_func;
+ sub_table^[idx].ret_type    := ret_type;
+ sub_table^[idx].param_count := 0;
+ sub_table^[idx].is_forward  := False;
+ sub_table^[idx].frame_size  := 0;
+ If is_func Then
+  sub_table^[idx].asm_label := AsmIdent('_ADA_FUNC_', u)
+ Else
+  sub_table^[idx].asm_label := AsmIdent('_ADA_PROC_', u);
+ AddSub := idx;
+End;
+
+{ Recherche un sous-programme par nom ; retourne l'index ou 0 }
+Function FindSub(Const name: String): Integer;
+Var i : Integer;
+    u : String;
+Begin
+ u := UpCaseStr(name);
+ For i := sub_count DownTo 1 do
+  If sub_table^[i].name = u Then Begin FindSub := i; Exit; End;
+ FindSub := 0;
+End;
+
+{ Taille totale en octets des parametres IN d'un sous-programme
+  (pour le nettoyage de pile callee-cleanup : RET n).                         }
+Function SubParamBytes(sub_idx: Integer): Integer;
+Var i   : Integer;
+    tot : Integer;
+Begin
+ tot := 0;
+ If (sub_idx < 1) Or (sub_idx > sub_count) Then
+ Begin SubParamBytes := 0; Exit; End;
+ For i := 1 to sub_table^[sub_idx].param_count do
+ Begin
+  { OUT et IN OUT passent par adresse -> toujours 2 octets (ptr 16 bits) }
+  If (sub_table^[sub_idx].param_modes[i] = PARAM_OUT) Or
+     (sub_table^[sub_idx].param_modes[i] = PARAM_INOUT) Then
+   Inc(tot, 2)
+  Else
+   Inc(tot, GetTypeSize(sub_table^[sub_idx].param_types[i]));
+ End;
+ SubParamBytes := tot;
+End;
+
+{ ---- Table des packages importes (WITH / USE) ----------------------------- }
+
+Procedure InitPkgTable;
+Var i : Integer;
+Begin
+ If pkg_table = nil Then New(pkg_table);
+ pkg_count := 0;
+ For i := 1 to MAX_PKG do
+ Begin
+  pkg_table^[i].name        := '';
+  pkg_table^[i].is_standard := False;
+  pkg_table^[i].use_active  := False;
+ End;
+End;
+
+{ Enregistre un package importe (WITH).
+  Retourne l'index ou 0 si plein ou deja present.                             }
+Function AddPkg(Const name: String; is_std: Boolean): Integer;
+Var u   : String;
+    i   : Integer;
+    idx : Integer;
+Begin
+ u := UpCaseStr(name);
+ { Verifier si deja present }
+ For i := 1 to pkg_count do
+  If pkg_table^[i].name = u Then Begin AddPkg := i; Exit; End;
+ If pkg_count >= MAX_PKG Then
+ Begin
+  Warning('Table packages pleine, ' + name + ' ignore');
+  AddPkg := 0; Exit;
+ End;
+ Inc(pkg_count);
+ idx := pkg_count;
+ pkg_table^[idx].name        := u;
+ pkg_table^[idx].is_standard := is_std;
+ pkg_table^[idx].use_active  := False;
+ AddPkg := idx;
+End;
+
+{ Recherche un package ; retourne l'index ou 0 }
+Function FindPkg(Const name: String): Integer;
+Var i : Integer;
+    u : String;
+Begin
+ u := UpCaseStr(name);
+ For i := 1 to pkg_count do
+  If pkg_table^[i].name = u Then Begin FindPkg := i; Exit; End;
+ FindPkg := 0;
+End;
+
+{ Teste si Ada.Text_IO (ou equivalent) est importe et actif via USE }
+Function TextIO_Active: Boolean;
+Var i : Integer;
+Begin
+ For i := 1 to pkg_count do
+  If pkg_table^[i].use_active And
+     ((pkg_table^[i].name = 'ADA.TEXT_IO') Or
+      (pkg_table^[i].name = 'TEXT_IO')) Then
+  Begin TextIO_Active := True; Exit; End;
+ TextIO_Active := False;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 04 OK (table des symboles OK)');
-  WriteLn('  InitSymTable, AddSym, FindSym, FindSymLocal');
-  WriteLn('  GetSymSize, PrimTypeSize, AlignWord, FixSymBpOffset');
+  WriteLn('ADA86 V1.0 - TODO 05 OK (types, sous-programmes, packages OK)');
+  WriteLn('  InitTypeTable, AddType, FindType, GetTypeSize');
+  WriteLn('  RegisterPredefinedTypes (INTEGER/FLOAT/BOOLEAN/CHARACTER/STRING)');
+  WriteLn('  InitSubTable, AddSub, FindSub, SubParamBytes');
+  WriteLn('  InitPkgTable, AddPkg, FindPkg, TextIO_Active');
 End.
