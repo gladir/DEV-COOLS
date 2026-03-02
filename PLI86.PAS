@@ -277,7 +277,7 @@ Var
  main_proc_idx : Integer;   { index de la procedure MAIN }
 
 { ============================================================================ }
-{ TODO 01 - Architecture + utilitaires de base           [COMPLET]            }
+{ Architecture + utilitaires de base                                           }
 { ============================================================================ }
 
 Function ItoS(n: LongInt): String;
@@ -333,11 +333,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 02 - TOKENISEUR PL/I                              [COMPLET]            }
+{ TOKENISEUR PL/I                                                              }
 { ============================================================================ }
 
-Function SrcGetChar: Char;
-Begin
+Function SrcGetChar: Char;Begin
  If has_peek Then
  Begin SrcGetChar := peek_char; has_peek := False; Exit; End;
  If src_eof Then Begin SrcGetChar := #0; Exit; End;
@@ -521,7 +520,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 03 - RECONNAISSANCE DES MOTS-CLES PL/I            [COMPLET]            }
+{ RECONNAISSANCE DES MOTS-CLEFS PL/I                                           }
 { ============================================================================ }
 
 Function IsKeyword(Const s: String): Integer;
@@ -612,7 +611,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 - TABLE DES SYMBOLES ET DES PROCEDURES         [COMPLET]            }
+{ TABLE DES SYMBOLES ET DES PROCEDURES                                         }
 { ============================================================================ }
 
 Procedure InitSymTable;
@@ -690,7 +689,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 05 - GESTION DES SCOPES                           [COMPLET]            }
+{ GESTION DES ETENDUES                                                         }
 { ============================================================================ }
 
 Procedure InitScopes;
@@ -739,7 +738,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - PRIMITIVES D'EMISSION ASM                    [COMPLET]            }
+{ PRIMITIVES D'EMISSION ASM                                                    }
 { ============================================================================ }
 
 Procedure Emit(Const s: String);
@@ -776,7 +775,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 - GENERATION : CHARGE / STOCKE VARIABLE        [COMPLET]            }
+{ GENERATION : CHARGE / STOCKE VARIABLE                                        }
 { ============================================================================ }
 
 Procedure GenLoadVar(sym_idx: Integer);
@@ -852,7 +851,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 18 - GENERATION : PROLOGUE / EPILOGUE PROCEDURE   [COMPLET]            }
+{ GENERATION : PROLOGUE / EPILOGUE PROCEDURE                                   }
 { ============================================================================ }
 
 Procedure GenPrologue(local_size: Integer);
@@ -871,7 +870,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 19 - GENERATION : TABLEAUX (DIMENSION/DIM)        [COMPLET]            }
+{ GENERATION : TABLEAUX (DIMENSION/DIM)                                        }
 { ============================================================================ }
 
 Procedure GenArrayLoad(sym_idx: Integer);
@@ -915,7 +914,7 @@ End;
 Function ParseExpr: Integer; Forward;
 
 { ============================================================================ }
-{ TODO 20 - FONCTIONS BUILT-IN PL/I                      [COMPLET]            }
+{ FONCTIONS BUILT-IN PL/I                                                      }
 { ============================================================================ }
 
 Function GenBuiltIn(Const bname: String): Boolean;
@@ -1036,7 +1035,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 - PARSEUR : EXPRESSIONS                        [COMPLET]            }
+{ PARSEUR : EXPRESSIONS                                                        }
 { ============================================================================ }
 
 { Forward deja declare plus haut pour GenBuiltIn }
@@ -1236,7 +1235,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 06 - PARSEUR : DECLARE / DCL                      [COMPLET]            }
+{ ANALYSEUR : DECLARE / DCL                                                    }
 { ============================================================================ }
 
 Procedure ParseDeclare;
@@ -1381,7 +1380,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - PARSEUR : AFFECTATION                        [COMPLET]            }
+{ ANALYSEUR : AFFECTATION                                                      }
 { ============================================================================ }
 
 Procedure ParseAssignment(Const vname: String);
@@ -1409,7 +1408,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 - PARSEUR : IF / THEN / ELSE                   [COMPLET]            }
+{ ANALYSEUR : IF / THEN / ELSE                                                 }
 { ============================================================================ }
 
 Procedure ParseStatement; Forward;
@@ -1435,7 +1434,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 11 - PARSEUR : DO ... END                         [COMPLET]            }
+{ ANALYSEUR : DO ... END                                                       }
 { ============================================================================ }
 
 Procedure ParseDo;
@@ -1525,7 +1524,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 12 - PARSEUR : SELECT / WHEN / OTHERWISE          [COMPLET]            }
+{ ANALYSEUR : SELECT / WHEN / OTHERWISE                                        }
 { ============================================================================ }
 
 Procedure ParseSelect;
@@ -1579,7 +1578,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 15 - PARSEUR : PUT / GET                          [COMPLET]            }
+{ ANALYSEUR : PUT / GET                                                        }
 { ============================================================================ }
 
 Procedure ParsePut;
@@ -1652,7 +1651,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 14 - PARSEUR : CALL                               [COMPLET]            }
+{ ANALYSEUR : CALL                                                             }
 { ============================================================================ }
 
 Procedure ParseCall;
@@ -1692,7 +1691,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - PARSEUR : RETURN                             [COMPLET]            }
+{ ANALYSEUR : RETURN                                                           }
 { ============================================================================ }
 
 Procedure ParseReturn;
@@ -1709,7 +1708,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 24 - PARSEUR : GOTO / GO TO                       [COMPLET]            }
+{ ANALYSEUR : GOTO / GO TO                                                     }
 { ============================================================================ }
 
 Procedure ParseGoto;
@@ -1730,7 +1729,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - PARSEUR : ON / SIGNAL                        [COMPLET]            }
+{ ANALYSEUR - PARSEUR : ON / SIGNAL                                            }
 { ============================================================================ }
 
 Procedure ParseOn;
@@ -1751,7 +1750,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 - PARSEUR : INSTRUCTION + BLOC                 [COMPLET]            }
+{ ANALYSEUR : INSTRUCTION + BLOC                                               }
 { ============================================================================ }
 
 Procedure ParseStatement;
@@ -1793,7 +1792,7 @@ Begin
     { Si suivi de PROCEDURE, c'est la declaration d'une procedure }
     If TokIsKw(KW_PROCEDURE) Then
     Begin
-     { TODO 13 : traite dans ParseTopLevel }
+     { Traite dans ParseTopLevel }
      EmitComment('PROCEDURE ' + vname + ' (voir ParseTopLevel)');
     End Else
      ParseStatement; { instruction qui suit le label }
@@ -1841,7 +1840,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - PARSEUR : PROCEDURE                          [COMPLET]            }
+{ ANALYSEUR : PROCEDURE                                                        }
 { ============================================================================ }
 
 Procedure ParseTopLevel;
@@ -1955,7 +1954,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 16 - GENERATION : EN-TETE + SEGMENT .DATA         [COMPLET]            }
+{ GENERATION : EN-TETE + SEGMENT .DATA                                         }
 { ============================================================================ }
 
 Procedure GenDataSegment;

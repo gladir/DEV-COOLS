@@ -2576,6 +2576,11 @@ Begin
  EmitLabel(lbl_end);
 End;
 
+{ ---- Forward declarations pour helpers tableaux (definis en TODO 16/20) ---- }
+Procedure GenLoadAddrBX(sym_idx: Integer); Forward;
+Procedure GenElemOffset(sym_idx: Integer); Forward;
+Procedure GenLoadElement(sym_idx: Integer); Forward;
+
 { ---- ParsePrimary : litteraux, idents, appels, (expr), attributs ---- }
 
 Procedure ParsePrimary;
@@ -2723,16 +2728,18 @@ Begin
     End;
     Consume; { ( }
     ParseExpr;         { AX = index }
-    { Calcul adresse : base + (index - lo) * elem_size }
-    ti := FindType(sym_table^[sym].name);
-    { Simplifie : stride 2 (Word) par defaut }
-    EmitI('MOV BX, AX');          { BX = index }
-    EmitI('DEC BX');               { BX = index - 1 (hypothese lo=1) }
-    EmitI('SHL BX, 1');            { BX *= 2 (stride 2 octets) }
-    If sym_table^[sym].store_class = STORE_STATIC Then
-     EmitI('MOV AX, [' + sym_table^[sym].asm_label + ' + BX]')
-    Else
-     EmitI('MOV AX, [BP' + IntToStr(sym_table^[sym].bp_offset) + ' + BX]');
+    { Slice T(lo..hi) : warning + ignorer borne haute }
+    If cur_tok_type = TOK_DOTDOT Then
+    Begin
+     Warning('Slice Ada non supporte, lecture de l''element lo uniquement');
+     Consume;
+     ParseExpr;   { consommer hi }
+     Expect(TOK_RPAREN, '`)` attendu apres slice');
+     EmitI('XOR AX, AX');
+     Exit;
+    End;
+    { Calcul adresse exact : GenLoadElement utilise lo_bound et elem_size reels }
+    GenLoadElement(sym);
     Expect(TOK_RPAREN, '`)` attendu apres index tableau');
    End;
    Exit;
@@ -4927,22 +4934,16 @@ Begin
   has_index := True;
   Consume;
   ParseExpr;   { AX = index }
-  { SI = (index - lo_bound) * elem_size }
-  If (ti > 0) And (type_table^[ti].kind = TK_ARRAY) Then
+  { Slice T(lo..hi) : warning, on ignore hi et met offset=0 }
+  If cur_tok_type = TOK_DOTDOT Then
   Begin
-   EmitI('SUB  AX, ' + IntToStr(type_table^[ti].lo_bound));
-   If type_table^[ti].elem_size > 1 Then
-   Begin
-    EmitI('MOV  BX, ' + IntToStr(type_table^[ti].elem_size));
-    EmitI('IMUL BX');
-   End;
-  End
-  Else
-  Begin
-   EmitI('DEC  AX');     { lo_bound = 1 par defaut }
-   EmitI('SHL  AX, 1');  { stride = 2 octets }
+   Warning('Slice Ada dans LHS non supporte, seule la borne basse est utilisee');
+   Consume;
+   ParseExpr;   { consommer hi }
+   EmitI('MOV  AX, 0');   { offset = 0 par defaut }
   End;
-  EmitI('MOV  SI, AX');
+  { SI = (AX - lo_bound) * elem_size via GenElemOffset }
+  GenElemOffset(sym_idx);
   Expect(TOK_RPAREN, '`)` attendu apres index de tableau dans LHS');
  End;
  ParseLhsInfo := True;
@@ -4984,6 +4985,67 @@ Begin
   Else
    EmitI('MOV  [BP], AX');
  End;
+End;
+
+{ ============================================================================ }
+{ TODO 20 - Acces tableaux : GenElemOffset, GenLoadElement, GenStoreElement   }
+{ ============================================================================ }
+
+{ ---- GenElemOffset : AX = index -> SI = byte offset dans le tableau ----
+  Utilise lo_bound et elem_size reels de type_table quand le symbole est
+  un tableau 1D de type TK_ARRAY ; sinon hypothese lo=1, stride=2.            }
+
+Procedure GenElemOffset(sym_idx: Integer);
+Var ti  : Integer;
+    lo  : LongInt;
+    esz : Integer;
+Begin
+ ti  := sym_table^[sym_idx].type_idx;
+ If (ti > 0) And (type_table^[ti].kind = TK_ARRAY) Then
+ Begin
+  lo  := type_table^[ti].lo_bound;
+  esz := type_table^[ti].elem_size;
+  If lo <> 0 Then
+   EmitI('SUB  AX, ' + IntToStr(lo));
+  If esz = 2 Then
+   EmitI('SHL  AX, 1')
+  Else If esz > 2 Then
+  Begin
+   EmitI('MOV  BX, ' + IntToStr(esz));
+   EmitI('IMUL BX');
+  End;
+  { esz = 1 : pas de multiplication (acces octet) }
+ End
+ Else
+ Begin
+  { Tableau generique ou type inconnu : lo=1, stride=2 }
+  EmitI('DEC  AX');
+  EmitI('SHL  AX, 1');
+ End;
+ EmitI('MOV  SI, AX');
+End;
+
+{ ---- GenLoadElement : AX=index en entree -> charge elem[AX] dans AX ----
+  Sequence : compute SI via GenElemOffset, BX <- base, AX <- [BX+SI]         }
+
+Procedure GenLoadElement(sym_idx: Integer);
+Begin
+ GenElemOffset(sym_idx);    { SI = byte offset }
+ GenLoadAddrBX(sym_idx);    { BX = adresse de base (STATIC ou AUTO) }
+ EmitI('ADD  BX, SI');
+ EmitI('MOV  AX, [BX]');
+End;
+
+{ ---- GenStoreElement : AX=valeur, SI=byte offset -> stocke dans tab[SI] ---
+  Sauvegarde AX, charge adresse dans BX, restaure et ecrit.                   }
+
+Procedure GenStoreElement(sym_idx: Integer);
+Begin
+ EmitI('PUSH AX');           { sauver valeur }
+ GenLoadAddrBX(sym_idx);    { BX = adresse de base }
+ EmitI('ADD  BX, SI');
+ EmitI('POP  AX');
+ EmitI('MOV  [BX], AX');
 End;
 
 { ---- ParseAssignment : ident [.champ | (index)] := expr ; ---- }
@@ -5473,9 +5535,10 @@ Begin
 End;
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 19 OK (Exceptions OK)');
-  WriteLn('  RegisterStdExceptions : CONSTRAINT_ERROR..NUMERIC_ERROR (codes 1-5)');
-  WriteLn('  ParseObjectDecl       : detection nom : EXCEPTION ; -> STORE_CONST');
-  WriteLn('  ParseRaise            : MOV AX, code; JMP lbl_except (ou INT 21H)');
-  WriteLn('  ParseExceptionHandlers: CMP AX, code; JNE / OTHERS / | multi-choix');
+  WriteLn('ADA86 V1.0 - TODO 20 OK (Acces tableaux OK)');
+  WriteLn('  GenElemOffset   : AX=index -> SI=(AX-lo)*esz (lo_bound+elem_size reels)');
+  WriteLn('  GenLoadElement  : AX=index -> AX=tab[index] via BX+SI');
+  WriteLn('  GenStoreElement : AX=valeur, SI=offset -> tab[SI] := AX');
+  WriteLn('  ParsePrimary    : acces lecture tableau corrige + detection slice');
+  WriteLn('  ParseLhsInfo    : acces ecriture tableau refactorise (GenElemOffset)');
 End.
