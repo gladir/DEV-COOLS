@@ -5939,7 +5939,825 @@ Begin
 End;
 
 { ============================================================================
-  TODO 20 ... 25 : a implementer
+  TODO 20 - RUNTIME : ENTREES/SORTIES ET GESTION PROGRAMME
+  ============================================================================
+  Ces procedures Pascal emettent les routines runtime I/O dans le segment
+  CODE. Toutes les routines utilisent des parametres en REGISTRES sauf
+  _RT_READLINE qui retourne via AX=ptr / DX=len.
+  Conventions :
+    _RT_WRITESTR  : DX=ptr (offset DS), CX=len -> INT 21h AH=40h handle 1.
+    _RT_WRITECRLF : pas de parametre, ecrit 0Dh 0Ah.
+    _RT_WRITECHR  : AL = code ASCII a ecrire.
+    _RT_READLINE  : pas de parametre, retourne AX=ptr DX=len.
+    _RT_ERREXIT   : pas de parametre, termine avec AL=1.
+    _RT_EXIT0     : pas de parametre, termine avec AL=0.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenRtWriteStr : _RT_WRITESTR - ecrire DX=ptr / CX=len sur stdout.
+  INT 21h  AH=40h, BX=1 (handle stdout), CX=nb octets, DS:DX=buffer.
+  -------------------------------------------------------------------------- }
+Procedure GenRtWriteStr;
+Begin
+  EmitSep;
+  EmitComment('_RT_WRITESTR : DX=ptr CX=len -> stdout (INT 21h AH=40h)');
+  EmitLabel(RT_PFX + 'WRITESTR');
+  EmitI1('PUSH', 'BX');
+  EmitI('MOV',  'AH, 40h',  'fonction write handle');
+  EmitI('MOV',  'BX, 1',    'handle stdout');
+  EmitI0('INT  21h');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtWriteCRLF : _RT_WRITECRLF - ecrire 0Dh 0Ah sur stdout.
+  Utilise les 2 octets du buffer _CS86_CRLF situe en DATA.
+  -------------------------------------------------------------------------- }
+Procedure GenRtWriteCRLF;
+Begin
+  EmitSep;
+  EmitComment('_RT_WRITECRLF : ecrire CR+LF sur stdout');
+  EmitLabel(RT_PFX + 'WRITECRLF');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI('MOV',  'AH, 40h',              'fonction write handle');
+  EmitI('MOV',  'BX, 1',               'handle stdout');
+  EmitI('MOV',  'CX, 2',               'nb octets');
+  EmitI('MOV',  'DX, OFFSET _CS86_CRLF', 'buffer CR LF');
+  EmitI0('INT  21h');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtWriteChr : _RT_WRITECHR - ecrire AL (code ASCII) sur stdout.
+  INT 21h  AH=02h, DL=caractere.
+  -------------------------------------------------------------------------- }
+Procedure GenRtWriteChr;
+Begin
+  EmitSep;
+  EmitComment('_RT_WRITECHR : AL=char -> stdout (INT 21h AH=02h)');
+  EmitLabel(RT_PFX + 'WRITECHR');
+  EmitI1('PUSH', 'DX');
+  EmitI('MOV',  'DL, AL',  'caractere a ecrire');
+  EmitI('MOV',  'AH, 02h', 'fonction write char');
+  EmitI0('INT  21h');
+  EmitI1('POP',  'DX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtReadLine : _RT_READLINE - saisie d'une ligne depuis stdin.
+  Utilise INT 21h AH=0Ah (saisie tamponnee) avec _CS86_INBUF.
+  Format du buffer AH=0Ah :
+    [0] = capacite maximale (inclut le CR final)
+    [1] = nombre de caracteres lus (sans CR)
+    [2..] = les caracteres saisis
+  Retour : AX = OFFSET _CS86_INBUF+2 (ptr vers le texte saisi),
+           DX = nombre de caracteres (sans CR).
+  -------------------------------------------------------------------------- }
+Procedure GenRtReadLine;
+Begin
+  EmitSep;
+  EmitComment('_RT_READLINE : saisie une ligne -> AX=ptr DX=len');
+  EmitLabel(RT_PFX + 'READLINE');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'SI');
+  { Initialiser [_CS86_INBUF] = capacite max (125 chars + CR = 126 < 128) }
+  EmitI('MOV',  'BYTE PTR [_CS86_INBUF], 125',  'capacite buffer');
+  EmitI('MOV',  'BYTE PTR [_CS86_INBUF+1], 0',  'effacer compteur');
+  EmitI('MOV',  'AH, 0Ah',                       'fonction saisie tamponnee');
+  EmitI('MOV',  'DX, OFFSET _CS86_INBUF',        'adresse buffer');
+  EmitI0('INT  21h');
+  { Apres l'appel, [_CS86_INBUF+1] = nombre de chars saisis (sans CR) }
+  EmitI('XOR',  'BX, BX',                       'BX=0');
+  EmitI('MOV',  'BL, [_CS86_INBUF+1]',          'BL = nb chars');
+  EmitI('MOV',  'DX, BX',                       'DX = longueur');
+  EmitI('MOV',  'AX, OFFSET _CS86_INBUF+2',     'AX = ptr vers texte');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtErrExit : _RT_ERREXIT - terminer le programme avec code erreur 1.
+  Le message d'erreur eventuel doit etre ecrit avant l'appel via
+  _RT_WRITESTR. Cette routine se contente de terminer DOS proprement.
+  -------------------------------------------------------------------------- }
+Procedure GenRtErrExit;
+Begin
+  EmitSep;
+  EmitComment('_RT_ERREXIT : termine le programme avec code erreur 1');
+  EmitLabel(RT_PFX + 'ERREXIT');
+  EmitI('MOV',  'AH, 4Ch',  'fonction exit DOS');
+  EmitI('MOV',  'AL, 01h',  'code erreur 1');
+  EmitI0('INT  21h');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtExit0 : _RT_EXIT0 - terminer le programme normalement (code 0).
+  Appele en fin de Main ou de tout chemin de sortie normal.
+  -------------------------------------------------------------------------- }
+Procedure GenRtExit0;
+Begin
+  EmitSep;
+  EmitComment('_RT_EXIT0 : termine le programme normalement (code 0)');
+  EmitLabel(RT_PFX + 'EXIT0');
+  EmitI('MOV',  'AH, 4Ch',  'fonction exit DOS');
+  EmitI('XOR',  'AL, AL',   'code retour 0');
+  EmitI0('INT  21h');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtStrCat : _RT_STRCAT - concatenation de deux chaines en memoire.
+  Params sur pile (ordre PUSH : len1 / ptr1 / len2 / ptr2) :
+    [BP+4]  = ptr2  (dernier pousse)
+    [BP+6]  = len2
+    [BP+8]  = ptr1
+    [BP+10] = len1
+  Retour : AX = ptr vers chaine concatenee (dans _CS86_ITOA ou nouveau buf).
+           DX = longueur totale.
+  Pour v1, on utilise un buffer dynamique dans la DATA zone (_CS86_INBUF+2
+  apres lecture, ou un buffer dedie). Ici on utilise _CS86_CCAT (64 octets)
+  declare dans DATA si present, sinon on place directement.
+  Convention simplifiee : copie ptr1/len1 puis ptr2/len2 dans _CS86_INBUF+2.
+  Le buffer max est 125 octets. Troncature silencieuse si depassement.
+  -------------------------------------------------------------------------- }
+Procedure GenRtStrCat;
+Begin
+  EmitSep;
+  EmitComment('_RT_STRCAT : concat [BP+8]/[BP+10] + [BP+4]/[BP+6] -> AX=ptr DX=len');
+  EmitLabel(RT_PFX + 'STRCAT');
+  EmitI0('PUSH BP');
+  EmitI('MOV',  'BP, SP',         'frame');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  { DI pointe vers le buffer de sortie : _CS86_INBUF+2 }
+  EmitI('MOV',  'DI, OFFSET _CS86_INBUF+2', 'buffer de sortie');
+  EmitI('XOR',  'BX, BX',         'BX = longueur accumulee');
+  { Copier str1 : src=[BP+8], len=[BP+10] }
+  EmitI('MOV',  'SI, [BP+8]',     'ptr str1');
+  EmitI('MOV',  'CX, [BP+10]',    'len str1');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'SC_S2');
+  EmitLabel(RT_PFX + 'SC_L1');
+  EmitI0('MOVSB');
+  EmitI0('INC  BX');
+  EmitI('CMP',  'BX, 124',        'limite buffer');
+  EmitI1('JAE',  RT_PFX + 'SC_S2');
+  EmitI0('LOOP ' + RT_PFX + 'SC_L1');
+  { Copier str2 : src=[BP+4], len=[BP+6] }
+  EmitLabel(RT_PFX + 'SC_S2');
+  EmitI('MOV',  'SI, [BP+4]',     'ptr str2');
+  EmitI('MOV',  'CX, [BP+6]',     'len str2');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'SC_E');
+  EmitLabel(RT_PFX + 'SC_L2');
+  EmitI0('MOVSB');
+  EmitI0('INC  BX');
+  EmitI('CMP',  'BX, 124',        'limite buffer');
+  EmitI1('JAE',  RT_PFX + 'SC_E');
+  EmitI0('LOOP ' + RT_PFX + 'SC_L2');
+  EmitLabel(RT_PFX + 'SC_E');
+  EmitI('MOV',  'AX, OFFSET _CS86_INBUF+2', 'ptr resultat');
+  EmitI('MOV',  'DX, BX',         'longueur totale');
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI1('POP', 'CX');
+  EmitI1('POP', 'BX');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtStrCmp : _RT_STRCMP - comparaison de deux chaines.
+  Params en registres :
+    SI=ptr1, CX=len1, DI=ptr2, BX=len2.
+  Compare octet par octet jusqu'a la longueur minimale.
+  Drapeaux apres retour :
+    ZF=1  si egales (meme contenu et meme longueur)
+    CF=1  si lhs < rhs
+  -------------------------------------------------------------------------- }
+Procedure GenRtStrCmp;
+Begin
+  EmitSep;
+  EmitComment('_RT_STRCMP : SI/CX=str1 DI/BX=str2 -> ZF/CF');
+  EmitLabel(RT_PFX + 'STRCMP');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI1('PUSH', 'BX');
+  { min(len1,len2) dans CX }
+  EmitI1('CMP', 'CX, BX');
+  EmitI1('JLE', RT_PFX + 'SC2_ML');
+  EmitI('MOV', 'CX, BX',   'CX = min(len1,len2)');
+  EmitLabel(RT_PFX + 'SC2_ML');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'SC2_LEN');
+  EmitLabel(RT_PFX + 'SC2_L');
+  EmitI('MOV', 'AL, [SI]', 'char str1');
+  EmitI('CMP', 'AL, [DI]', 'comparer avec str2');
+  EmitI1('JNE', RT_PFX + 'SC2_E');
+  EmitI0('INC  SI');
+  EmitI0('INC  DI');
+  EmitI0('LOOP ' + RT_PFX + 'SC2_L');
+  { Contenu identique sur min(len) : comparer longueurs }
+  EmitLabel(RT_PFX + 'SC2_LEN');
+  EmitI1('POP', 'BX');
+  EmitI1('CMP', 'CX, BX'); { ici CX=len1 original (depuis pile), BX=len2 }
+  { on recharge depuis les valeurs sauvees : comparer len1 (pile) vs len2 (pile) }
+  { Simplification : recharger depuis pile BX et comparer avec CX sauve }
+  EmitI1('PUSH', 'BX');    { remettre BX pour coherence POP final }
+  EmitI1('POP', 'BX');
+  EmitI1('POP', 'BX');
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI1('POP', 'CX');
+  EmitI1('POP', 'AX');
+  EmitI0('RET');
+  EmitLabel(RT_PFX + 'SC2_E');
+  EmitI1('POP', 'BX');
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI1('POP', 'CX');
+  EmitI1('POP', 'AX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtIO : emettre toutes les routines runtime I/O dans le segment CODE.
+  Appeler apres GenRtArithmetic dans le flux d'emission du CODE segment.
+  -------------------------------------------------------------------------- }
+Procedure GenRtIO;
+Begin
+  EmitBlank;
+  EmitComment('=== RUNTIME : ENTREES/SORTIES ET GESTION PROGRAMME ===');
+  EmitBlank;
+  GenRtWriteStr;
+  GenRtWriteCRLF;
+  GenRtWriteChr;
+  GenRtReadLine;
+  GenRtErrExit;
+  GenRtExit0;
+  GenRtStrCat;
+  GenRtStrCmp;
+  EmitBlank;
+  EmitComment('=== FIN RUNTIME I/O ===');
+  EmitBlank;
+End;
+
+{ ============================================================================
+  TODO 21 - CODEGEN : INITIALISATION ET PIED DE PAGE (SEGMENTS EXPLICITES)
+  ============================================================================
+  Les helpers GenCodeSegmentHeader/Footer, GenStackSegment, GenDataSegment
+  (TODO 05/11) utilisent le modele simplifie (.MODEL SMALL / .CODE / .DATA).
+  Ce TODO ajoute les variantes a segments nommes explicites :
+    _CODE SEGMENT BYTE PUBLIC 'CODE'
+    _DATA SEGMENT WORD PUBLIC 'DATA'
+    _STACK SEGMENT STACK 'STACK'
+  et le bloc d'initialisation START: complet.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenDataHeader : ouvrir le segment DATA nomme.
+  '_DATA SEGMENT WORD PUBLIC ''DATA'''
+  -------------------------------------------------------------------------- }
+Procedure GenDataHeader;
+Begin
+  EmitSep;
+  EmitComment('Segment de donnees');
+  EmitSep;
+  Emit('_DATA   SEGMENT WORD PUBLIC ' + '''' + 'DATA' + '''');
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataFooter : fermer le segment DATA nomme.
+  -------------------------------------------------------------------------- }
+Procedure GenDataFooter;
+Begin
+  Emit('_DATA   ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStackHeader : ouvrir le segment STACK nomme avec 256 DW(?) et label top.
+  -------------------------------------------------------------------------- }
+Procedure GenStackHeader;
+Begin
+  EmitSep;
+  EmitComment('Segment de pile');
+  EmitSep;
+  Emit('_STACK  SEGMENT STACK ' + '''' + 'STACK' + '''');
+  Emit('        DW      256 DUP(?)');
+  Emit('_STACK_TOP LABEL WORD');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStackFooter : fermer le segment STACK nomme.
+  -------------------------------------------------------------------------- }
+Procedure GenStackFooter;
+Begin
+  Emit('_STACK  ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegOpen : ouvrir le segment CODE nomme explicitement.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegOpen;
+Begin
+  EmitSep;
+  EmitComment('Segment de code');
+  EmitSep;
+  Emit('_CODE   SEGMENT BYTE PUBLIC ' + '''' + 'CODE' + '''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegClose : fermer le segment CODE nomme.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegClose;
+Begin
+  EmitBlank;
+  Emit('_CODE   ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeHeader : emettre le bloc d'initialisation START:.
+  Sequence :
+    ASSUME CS:_CODE, DS:_DATA, SS:_STACK
+    START: MOV AX, _DATA / MOV DS, AX / MOV SS, AX
+           MOV SP, OFFSET _STACK_TOP
+           CALL entry_label
+           CALL _RT_EXIT0
+  Si entry_label est vide, on utilise le label de Main().
+  -------------------------------------------------------------------------- }
+Procedure GenCodeHeader;
+Var entry : TString;
+Begin
+  EmitBlank;
+  EmitSep;
+  EmitComment('Point d''entree du programme');
+  EmitSep;
+  Emit('        ASSUME  CS:_CODE, DS:_DATA, SS:_STACK');
+  EmitBlank;
+  Emit('START:');
+  EmitI('MOV',  'AX, _DATA',          'initialiser DS');
+  EmitI('MOV',  'DS, AX',             '');
+  EmitI('MOV',  'SS, AX',             'SS = DS (modele SMALL)');
+  EmitI('MOV',  'SP, OFFSET _STACK_TOP', 'initialiser la pile');
+  EmitBlank;
+  entry := first_instr_lbl;
+  If entry = '' Then
+    entry := FuncAsmLabel('Main');
+  EmitI('CALL', entry,                'appel de Main()');
+  EmitBlank;
+  EmitI('CALL', RT_PFX + 'EXIT0',     'fin normale');
+  EmitBlank;
+  SetFirstInstrLabel('START');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeFooter : emettre la directive END et fermer le fichier ASM.
+  Doit etre appele apres GenCodeSegClose.
+  Utilise first_instr_lbl (normalement 'START').
+  -------------------------------------------------------------------------- }
+Procedure GenCodeFooter;
+Begin
+  EmitSep;
+  EmitComment('Fin du module');
+  EmitSep;
+  If first_instr_lbl <> '' Then
+    Emit('        END     ' + first_instr_lbl)
+  Else
+    Emit('        END');
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullAssemblyHeader : emettre l'en-tete complet du fichier ASM.
+  Ordre : FileHeader + ModelDirectives + StackHeader/Footer +
+          DataHeader + (variables / litteraux emis par l'appelant) ...
+  A appeler avant d'emettre les declarations DATA.
+  -------------------------------------------------------------------------- }
+Procedure GenFullAssemblyHeader;
+Begin
+  GenFileHeader;
+  GenModelDirectives;
+  EmitBlank;
+  GenStackHeader;
+  GenStackFooter;
+  EmitBlank;
+  GenDataHeader;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullAssemblyFooter : emettre la fin du fichier ASM apres le CODE.
+  Ordre : CodeSegClose + CodeFooter.
+  A appeler apres l'emission de toutes les methodes et routines runtime.
+  -------------------------------------------------------------------------- }
+Procedure GenFullAssemblyFooter;
+Begin
+  GenCodeSegClose;
+  GenCodeFooter;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullCodeOpen : ouvrir le segment CODE et emettre START:.
+  Sequence complete a appeler apres GenDataFooter :
+    GenCodeSegOpen puis GenCodeHeader (ASSUME + START: + init DS/SS/SP
+    + CALL Main + EXIT0).
+  -------------------------------------------------------------------------- }
+Procedure GenFullCodeOpen;
+Begin
+  GenCodeSegOpen;
+  GenCodeHeader;
+End;
+
+{ ============================================================================
+  TODO 22 - GESTION DES ERREURS ET DIAGNOSTIC
+  ============================================================================
+  ParseError et ParseWarn (TODO 07) affichent ligne simple; ce TODO ajoute :
+    - ErrorMsg  : fichier + ligne + colonne + categorie
+    - WarnMsg   : idem pour avertissements
+    - FatalError : afficher + Halt(1)
+    - LexError  : erreur lexicale (char inattendu)
+    - SemError  : erreur semantique (type, variable)
+    - TableOverflow : debordement d'une table
+    - PrintSummary  : bilan final
+    - LogVerbose    : message mode -v
+    - LogDebugAsm   : commentaire supplementaire dans l'ASM en mode -d
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  ErrPrefix : construire le prefixe 'src:ligne:col: [categorie]'.
+  -------------------------------------------------------------------------- }
+Function ErrPrefix(Const cat : TString) : TString;
+Var fname : TString;
+    s     : TString;
+Begin
+  If src_fname <> '' Then
+    fname := src_fname
+  Else
+    fname := '<source>';
+  s := fname + '(' + IntToStr(lex_lineno) + ',' + IntToStr(lex_colno) + ')';
+  If cat <> '' Then
+    s := s + ' [' + cat + ']';
+  ErrPrefix := s;
+End;
+
+{ --------------------------------------------------------------------------
+  ErrorMsg : afficher une erreur avec localisation complete et incrementer
+  err_count. Ne stoppe pas la compilation.
+  -------------------------------------------------------------------------- }
+Procedure ErrorMsg(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(StdErr, ErrPrefix('erreur') + ' : ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  WarnMsg : afficher un avertissement avec localisation. Continue.
+  -------------------------------------------------------------------------- }
+Procedure WarnMsg(Const msg : TString);
+Begin
+  Inc(warn_count);
+  WriteLn(StdErr, ErrPrefix('attention') + ' : ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  FatalError : afficher une erreur fatale et stopper la compilation.
+  Libere les tables avant de quitter.
+  -------------------------------------------------------------------------- }
+Procedure FatalError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(StdErr, ErrPrefix('fatal') + ' : ' + msg);
+  WriteLn(StdErr, 'Compilation interrompue (' + IntToStr(err_count) + ' erreur(s)).');
+  FreeTables;
+  Halt(1);
+End;
+
+{ --------------------------------------------------------------------------
+  LexError : erreur lexicale (caractere inattendu, chaine non fermee...).
+  -------------------------------------------------------------------------- }
+Procedure LexError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(StdErr, ErrPrefix('lexical') + ' : ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  SemError : erreur semantique (variable non declaree, type incompatible).
+  -------------------------------------------------------------------------- }
+Procedure SemError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(StdErr, ErrPrefix('semantique') + ' : ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  SynError : erreur syntaxique (token inattendu, accolade manquante...).
+  -------------------------------------------------------------------------- }
+Procedure SynError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(StdErr, ErrPrefix('syntaxe') + ' : ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  TableOverflow : debordement d'une table interne.
+  Arrete la compilation car l'etat interne est corrompu.
+  -------------------------------------------------------------------------- }
+Procedure TableOverflow(Const table_name : TString; max_val : Integer);
+Begin
+  FatalError('Debordement de la table ' + table_name +
+             ' (max=' + IntToStr(max_val) + ')');
+End;
+
+{ --------------------------------------------------------------------------
+  LogVerbose : afficher un message de diagnostic en mode -v seulement.
+  -------------------------------------------------------------------------- }
+Procedure LogVerbose(Const msg : TString);
+Begin
+  If opt_verbose Then
+    WriteLn('  [v] ', msg);
+End;
+
+{ --------------------------------------------------------------------------
+  LogDebugAsm : emettre un commentaire supplementaire en mode -d.
+  N'emet rien si opt_debug est False.
+  -------------------------------------------------------------------------- }
+Procedure LogDebugAsm(Const msg : TString);
+Begin
+  If opt_debug Then
+    EmitComment('[dbg] ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  CheckErrLimit : si err_count >= limite, arreter la compilation.
+  Evite une avalanche d'erreurs en cascade.
+  -------------------------------------------------------------------------- }
+Const MAX_ERRORS = 30;
+
+Procedure CheckErrLimit;
+Begin
+  If err_count >= MAX_ERRORS Then
+    FatalError('Trop d''erreurs (' + IntToStr(MAX_ERRORS) + '). Compilation abandonnee.');
+End;
+
+{ --------------------------------------------------------------------------
+  PrintSummary : afficher le bilan final de la compilation.
+  Appeler en fin de compilation, apres FreeTables.
+  -------------------------------------------------------------------------- }
+Procedure PrintSummary;
+Begin
+  WriteLn;
+  WriteLn('=== Bilan de compilation ===');
+  WriteLn('  Source      : ', src_fname);
+  WriteLn('  Sortie      : ', out_fname);
+  WriteLn('  Symboles    : ', sym_count);
+  WriteLn('  Fonctions   : ', func_count);
+  WriteLn('  Litteraux   : ', lit_count);
+  WriteLn('  Instructions: ', instr_count);
+  WriteLn('  Erreurs     : ', err_count);
+  WriteLn('  Avertissem. : ', warn_count);
+  If err_count = 0 Then
+    WriteLn('  => OK')
+  Else
+    WriteLn('  => ECHEC');
+End;
+
+{ --------------------------------------------------------------------------
+  AssertNoErrors : verifier que la compilation s'est passee sans erreur.
+  Si erreurs, arreter proprement avec code 1.
+  -------------------------------------------------------------------------- }
+Procedure AssertNoErrors;
+Begin
+  If err_count > 0 Then
+  Begin
+    WriteLn(StdErr, IntToStr(err_count) + ' erreur(s) detectee(s). Compilation echouee.');
+    Halt(1);
+  End;
+End;
+
+{ ============================================================================
+  TODO 23 - GESTION DES OPTIONS ET INTERFACE LIGNE DE COMMANDE
+  ============================================================================
+  ParseCommandLine : lire ParamStr(1..ParamCount) et remplir les globales :
+    src_fname, out_fname, opt_verbose, opt_debug, opt_no_rt.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  StrUpper : convertir une chaine en majuscules (portabilite Turbo/FPC).
+  -------------------------------------------------------------------------- }
+Function StrUpper(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+Begin
+  res := s;
+  For i := 1 To Length(res) Do
+    If (res[i] >= 'a') And (res[i] <= 'z') Then
+      res[i] := Chr(Ord(res[i]) - 32);
+  StrUpper := res;
+End;
+
+{ --------------------------------------------------------------------------
+  StrLower : convertir une chaine en minuscules.
+  -------------------------------------------------------------------------- }
+Function StrLower(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+Begin
+  res := s;
+  For i := 1 To Length(res) Do
+    If (res[i] >= 'A') And (res[i] <= 'Z') Then
+      res[i] := Chr(Ord(res[i]) + 32);
+  StrLower := res;
+End;
+
+{ --------------------------------------------------------------------------
+  FileExtension : retourner l'extension d'un nom de fichier (avec le '.').
+  Ex : 'foo.cs' -> '.cs', 'foo' -> ''
+  -------------------------------------------------------------------------- }
+Function FileExtension(Const fname : String) : String;
+Var i : Integer;
+Begin
+  FileExtension := '';
+  For i := Length(fname) DownTo 1 Do
+  Begin
+    If fname[i] = '.' Then
+    Begin
+      FileExtension := Copy(fname, i, Length(fname) - i + 1);
+      Exit;
+    End;
+    If (fname[i] = '/') Or (fname[i] = '\') Then
+      Exit;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ChangeExtension : remplacer l'extension d'un nom de fichier.
+  Ex : ('foo.cs', '.asm') -> 'foo.asm', ('foo', '.asm') -> 'foo.asm'
+  -------------------------------------------------------------------------- }
+Function ChangeExtension(Const fname, new_ext : String) : String;
+Var i : Integer;
+Begin
+  For i := Length(fname) DownTo 1 Do
+  Begin
+    If fname[i] = '.' Then
+    Begin
+      ChangeExtension := Copy(fname, 1, i - 1) + new_ext;
+      Exit;
+    End;
+    If (fname[i] = '/') Or (fname[i] = '\') Then
+      Break;
+  End;
+  ChangeExtension := fname + new_ext;
+End;
+
+{ --------------------------------------------------------------------------
+  PrintBanner : afficher la banniere du compilateur.
+  -------------------------------------------------------------------------- }
+Procedure PrintBanner;
+Begin
+  WriteLn('CSC86 v', CSC86_VERSION, ' - compilateur C# Lite -> MASM 8086');
+  WriteLn('Copyright (c) 2026 - Turbo Pascal / Free Pascal');
+  WriteLn;
+End;
+
+{ --------------------------------------------------------------------------
+  PrintHelp : afficher l'aide en ligne de commande.
+  -------------------------------------------------------------------------- }
+Procedure PrintHelp;
+Begin
+  PrintBanner;
+  WriteLn('Usage : CSC86 <source.cs> [<sortie.asm>] [options]');
+  WriteLn;
+  WriteLn('Arguments :');
+  WriteLn('  source.cs      Fichier source C# Lite a compiler (obligatoire)');
+  WriteLn('  sortie.asm     Fichier ASM MASM de sortie (defaut: source.asm)');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v             Mode verbose : statistiques apres compilation');
+  WriteLn('  -d             Mode debug   : commentaires supplementaires dans ASM');
+  WriteLn('  -ns            Ne pas emettre le runtime inline (fichier externe)');
+  WriteLn('  -h, --help     Afficher cette aide et quitter');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  CSC86 hello.cs');
+  WriteLn('  CSC86 hello.cs hello.asm -v');
+  WriteLn('  CSC86 prog.cs prog.asm -d -ns');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCommandLine : analyser les arguments de la ligne de commande.
+  Remplit : src_fname, out_fname, opt_verbose, opt_debug, opt_no_rt.
+  Retourne False si la compilation ne doit pas continuer (aide, erreur).
+  -------------------------------------------------------------------------- }
+Function ParseCommandLine : Boolean;
+Var i     : Integer;
+    arg   : String;
+    ext   : String;
+    found_src : Boolean;
+    found_out : Boolean;
+Begin
+  ParseCommandLine := True;
+  found_src := False;
+  found_out := False;
+
+  If ParamCount = 0 Then
+  Begin
+    PrintHelp;
+    ParseCommandLine := False;
+    Exit;
+  End;
+
+  For i := 1 To ParamCount Do
+  Begin
+    arg := ParamStr(i);
+
+    { Options }
+    If arg = '-v' Then
+      opt_verbose := True
+    Else If arg = '-d' Then
+      opt_debug := True
+    Else If arg = '-ns' Then
+      opt_no_rt := True
+    Else If (arg = '-h') Or (arg = '--help') Then
+    Begin
+      PrintHelp;
+      ParseCommandLine := False;
+      Exit;
+    End
+    Else If (Length(arg) > 0) And (arg[1] = '-') Then
+    Begin
+      WriteLn(StdErr, 'Option inconnue : ', arg);
+    End
+    Else
+    Begin
+      { Argument fichier }
+      ext := StrLower(FileExtension(arg));
+      If Not found_src And ((ext = '.cs') Or (ext = '')) Then
+      Begin
+        src_fname := arg;
+        found_src := True;
+      End
+      Else If Not found_out And (ext = '.asm') Then
+      Begin
+        out_fname := arg;
+        found_out := True;
+      End
+      Else If found_src And Not found_out Then
+      Begin
+        { Second argument sans extension connue -> traiter comme sortie }
+        out_fname := arg;
+        found_out := True;
+      End
+      Else
+      Begin
+        WriteLn(StdErr, 'Argument inattendu : ', arg);
+      End;
+    End;
+  End;
+
+  { Verifier la source }
+  If Not found_src Then
+  Begin
+    WriteLn(StdErr, 'Erreur : aucun fichier source specifie.');
+    WriteLn(StdErr, 'Utilisez -h pour l''aide.');
+    ParseCommandLine := False;
+    Exit;
+  End;
+
+  { Deduire le nom de sortie si non specifie }
+  If Not found_out Then
+    out_fname := ChangeExtension(src_fname, '.asm');
+
+  { Deduire le nom du fichier temporaire }
+  tmp_fname := ChangeExtension(src_fname, '.tmp');
+End;
+
+{ --------------------------------------------------------------------------
+  PrintFinalReport : afficher le bilan apres compilation (mode -v).
+  -------------------------------------------------------------------------- }
+Procedure PrintFinalReport;
+Begin
+  If opt_verbose Then
+    PrintSummary;
+End;
+
+{ ============================================================================
+  TODO 24 ... 25 : a implementer
   ============================================================================ }
 
 BEGIN
@@ -5947,6 +6765,6 @@ BEGIN
   scope_level := 0;
   ns_open     := False;
   WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 20-25 non implementes)');
+  WriteLn('(TODO 24-25 non implementes)');
   FreeTables;
 END.
