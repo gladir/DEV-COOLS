@@ -1821,5 +1821,855 @@ Begin
  CurrentFormIdx := 0;
 End;
 
+{ ============================================================================ }
+{ TODO 06 - PARSEUR : REPORT / PROGRAM (en-tete)         [COMPLET]            }
+{ ============================================================================ }
+
+{ ParseReport / ParseProgram
+  Syntaxes :
+    REPORT nom_programme [MESSAGE-ID xx] [NO STANDARD PAGE HEADING].
+    PROGRAM nom_programme.
+  Le mot-cle REPORT ou PROGRAM a deja ete consomme par l'appelant.
+  On memorise le nom dans prog_name et on ignore les options.             }
+Procedure ParseReport;
+Var name: String;
+Begin
+ { Le nom du programme est obligatoire }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin
+  Error('Nom de programme attendu apres REPORT/PROGRAM');
+  SkipToDot;
+  Exit;
+ End;
+ name      := cur_tok_str;
+ prog_name := name;
+ Consume;
+ EmitComment('Programme ABAP : ' + name);
+ { Sauter toutes les options jusqu'au '.' }
+ { Options reconnues (ignorees) :
+     MESSAGE-ID xx
+     NO STANDARD PAGE HEADING
+     LINE-SIZE nn
+     LINE-COUNT nn (nn)
+ }
+ While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF) Do
+ Begin
+  { On peut donner un avertissement pour les options inconnues si besoin }
+  Consume;
+ End;
+ { Consommer le '.' final }
+ If cur_tok_type = TOK_DOT Then Consume;
+End;
+
+{ ============================================================================ }
+{ TODO 07 - PARSEUR : DATA / TYPES / CONSTANTS           [COMPLET]            }
+{ ============================================================================ }
+
+{ --- Analyse du type ABAP apres TYPE ou LIKE ---
+  Remplit data_type, char_len, dec_scale dans le symbole sym_idx.
+  TYPE I / F / C / C(n) / N(n) / D / T / P / STRING / XSTRING
+  TYPE TABLE OF xxx  (table interne)
+  LIKE xxx           (meme type qu'une autre variable)                        }
+Procedure ParseTypeSpec(sym_idx: Integer);
+Var refname: String; ref_idx: Integer;
+Begin
+ If TokIsKw(KW_LIKE) Then
+ Begin
+  Consume;
+  { LIKE TABLE OF var }
+  If TokIsKw(KW_TABLE) Then
+  Begin
+   Consume; EatKw(KW_OF);
+   sym_table[sym_idx].data_type  := TYPE_TABLE;
+   sym_table[sym_idx].char_len   := 0;
+   If cur_tok_type = TOK_IDENT Then Consume;
+   Exit;
+  End;
+  { LIKE varname : copie le type de la variable reference }
+  refname := cur_tok_str; Consume;
+  ref_idx := FindSym(refname);
+  If ref_idx > 0 Then
+  Begin
+   sym_table[sym_idx].data_type  := sym_table[ref_idx].data_type;
+   sym_table[sym_idx].char_len   := sym_table[ref_idx].char_len;
+   sym_table[sym_idx].dec_scale  := sym_table[ref_idx].dec_scale;
+  End Else
+  Begin
+   Warning('LIKE: variable inconnue ' + refname + ', TYPE I suppose');
+   sym_table[sym_idx].data_type := TYPE_I;
+  End;
+  Exit;
+ End;
+ { TYPE ... }
+ If Not TokIsKw(KW_TYPE) Then Exit;
+ Consume;
+ { TABLE OF xxx }
+ If TokIsKw(KW_TABLE) Then
+ Begin
+  Consume; EatKw(KW_OF);
+  sym_table[sym_idx].data_type := TYPE_TABLE;
+  sym_table[sym_idx].char_len  := 0;
+  If cur_tok_type = TOK_IDENT Then Consume;
+  Exit;
+ End;
+ { REF TO xxx (stub) }
+ If cur_tok_str = 'REF' Then
+ Begin
+  Consume; EatKw(KW_TO);
+  sym_table[sym_idx].data_type := TYPE_REF;
+  If cur_tok_type = TOK_IDENT Then Consume;
+  Exit;
+ End;
+ { Types scalaires }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin Warning('Type ABAP attendu'); Exit; End;
+ If cur_tok_str = 'I' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_I;
+  sym_table[sym_idx].char_len  := 2;
+  Consume;
+ End Else If cur_tok_str = 'F' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_F;
+  sym_table[sym_idx].char_len  := 8;
+  Consume;
+ End Else If cur_tok_str = 'C' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_C;
+  sym_table[sym_idx].char_len  := 1;
+  Consume;
+  { TYPE C(n) }
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   sym_table[sym_idx].char_len := cur_tok_num;
+   If cur_tok_type = TOK_NUMBER Then Consume;
+   If cur_tok_type = TOK_RPAREN Then Consume;
+  End;
+ End Else If cur_tok_str = 'N' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_N;
+  sym_table[sym_idx].char_len  := 1;
+  Consume;
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   sym_table[sym_idx].char_len := cur_tok_num;
+   If cur_tok_type = TOK_NUMBER Then Consume;
+   If cur_tok_type = TOK_RPAREN Then Consume;
+  End;
+ End Else If cur_tok_str = 'D' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_D;
+  sym_table[sym_idx].char_len  := 8;
+  Consume;
+ End Else If cur_tok_str = 'T' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_T;
+  sym_table[sym_idx].char_len  := 6;
+  Consume;
+ End Else If cur_tok_str = 'P' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_P;
+  sym_table[sym_idx].char_len  := 2;
+  Consume;
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   Consume;
+   sym_table[sym_idx].char_len := cur_tok_num;
+   If cur_tok_type = TOK_NUMBER Then Consume;
+   If cur_tok_type = TOK_RPAREN Then Consume;
+  End;
+  { DECIMALS n }
+  If TokIsKw(KW_DECIMALS) Then
+  Begin
+   Consume;
+   sym_table[sym_idx].dec_scale := cur_tok_num;
+   If cur_tok_type = TOK_NUMBER Then Consume;
+  End;
+ End Else If cur_tok_str = 'STRING' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_STRING;
+  sym_table[sym_idx].char_len  := 255;
+  Consume;
+ End Else If cur_tok_str = 'XSTRING' Then
+ Begin
+  sym_table[sym_idx].data_type := TYPE_XSTRING;
+  sym_table[sym_idx].char_len  := 255;
+  Consume;
+ End Else
+ Begin
+  { Type utilisateur (structure ou table definie par TYPES) : stub TYPE_STRUCT }
+  sym_table[sym_idx].data_type := TYPE_STRUCT;
+  sym_table[sym_idx].char_len  := 2;
+  Consume;
+ End;
+End;
+
+{ --- Taille en octets d'une variable selon son type et char_len --- }
+Function SymByteSize(sym_idx: Integer): Integer;
+Var dt, cl: Integer;
+Begin
+ dt := sym_table[sym_idx].data_type;
+ cl := sym_table[sym_idx].char_len;
+ Case dt Of
+  TYPE_I, TYPE_N : SymByteSize := 2;
+  TYPE_F         : SymByteSize := 8;
+  TYPE_C         : If cl < 1 Then SymByteSize := 1 Else SymByteSize := cl + 1;
+  TYPE_D         : SymByteSize := 9;   { 8 chars + '$' }
+  TYPE_T         : SymByteSize := 7;   { 6 chars + '$' }
+  TYPE_P         : SymByteSize := cl * 2;
+  TYPE_STRING,
+  TYPE_XSTRING   : SymByteSize := 256; { buffer fixe 255+1 }
+  TYPE_TABLE     : SymByteSize := 0;   { taille calculee a l'allocation }
+  TYPE_STRUCT    : SymByteSize := cl * 2;
+ Else              SymByteSize := 2;
+ End;
+End;
+
+{ --- Lit la clause VALUE xxx ---
+  Remplit init_str / init_num / has_init.
+  VALUE 0 / VALUE 42 / VALUE 'texte' / VALUE IS INITIAL (= 0/' ')           }
+Procedure ParseValue(sym_idx: Integer);
+Begin
+ If Not TokIsKw(KW_VALUE) Then Exit;
+ Consume;
+ sym_table[sym_idx].has_init := True;
+ { VALUE IS INITIAL -> valeur zero }
+ If TokIsKw(KW_IS) Then
+ Begin
+  Consume; EatKw(KW_INITIAL);
+  sym_table[sym_idx].init_num := 0;
+  sym_table[sym_idx].init_str := '';
+  Exit;
+ End;
+ If cur_tok_type = TOK_NUMBER Then
+ Begin
+  sym_table[sym_idx].init_num := cur_tok_num;
+  Str(cur_tok_num, sym_table[sym_idx].init_str);
+  Consume;
+ End Else If cur_tok_type = TOK_STRING Then
+ Begin
+  sym_table[sym_idx].init_str := cur_tok_str;
+  sym_table[sym_idx].init_num := 0;
+  Consume;
+ End Else If cur_tok_type = TOK_MINUS Then
+ Begin
+  Consume;
+  sym_table[sym_idx].init_num := -cur_tok_num;
+  sym_table[sym_idx].init_str := '-' + ItoS(cur_tok_num);
+  If cur_tok_type = TOK_NUMBER Then Consume;
+ End Else
+  Warning('Valeur VALUE non reconnue dans declaration');
+End;
+
+{ --- Declaration d'une seule variable ABAP ---
+  Syntaxe : nom[(n)] [TYPE t | LIKE var] [VALUE x]
+  name_in : si non vide, le nom a deja ete lu (appel depuis ParseData).     }
+Procedure ParseOneVar(Const name_in: String; is_const: Boolean);
+Var vname: String; sym_idx: Integer; sc: Integer;
+    bytes, bpoff: Integer; lblfx: String;
+Begin
+ { Nom de la variable }
+ If name_in <> '' Then vname := name_in
+ Else
+ Begin
+  If cur_tok_type <> TOK_IDENT Then
+  Begin Error('Nom de variable attendu'); Exit; End;
+  vname := cur_tok_str; Consume;
+ End;
+ { Longueur inline : DATA nom(n) TYPE C }
+ If scope_top = 0 Then sc := STORE_STATIC Else sc := STORE_AUTO;
+ If is_const Then sc := STORE_CONSTANT;
+ sym_idx := AddSym(vname, TYPE_I, sc);
+ If sym_idx = 0 Then Exit;
+ { Longueur inline : DATA nom(n) TYPE C }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  Consume;
+  sym_table[sym_idx].char_len  := cur_tok_num;
+  sym_table[sym_idx].data_type := TYPE_C;  { defaut si pas TYPE apres }
+  If cur_tok_type = TOK_NUMBER Then Consume;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+ End;
+ { TYPE ... ou LIKE ... }
+ ParseTypeSpec(sym_idx);
+ { VALUE ... }
+ ParseValue(sym_idx);
+ { ---- Allocation memoire / generation ASM ---- }
+ If sc = STORE_CONSTANT Then
+ Begin
+  { CONSTANTS : pas de DW, valeur immediate utilisee a la compilation }
+  sym_table[sym_idx].is_const := True;
+  EmitComment('CONSTANTS ' + vname + ' = ' + sym_table[sym_idx].init_str);
+  Exit;
+ End;
+ bytes := SymByteSize(sym_idx);
+ If sc = STORE_AUTO Then
+ Begin
+  { Variable locale dans une FORM }
+  If bytes < 2 Then bytes := 2;
+  bpoff  := AllocLocalBp(bytes);
+  sym_table[sym_idx].bp_offset := bpoff;
+  EmitI('SUB     SP, ' + ItoSI(bytes) + '   ; LOCAL ' + vname);
+  { Initialisation si VALUE }
+  If sym_table[sym_idx].has_init Then
+  Begin
+   Case sym_table[sym_idx].data_type Of
+    TYPE_I, TYPE_N, TYPE_P:
+     EmitI('MOV     WORD PTR [BP' + ItoSI(bpoff) + '], ' +
+           ItoS(sym_table[sym_idx].init_num));
+    TYPE_C, TYPE_STRING, TYPE_D, TYPE_T:
+    Begin
+     If sym_table[sym_idx].init_str = '' Then
+      EmitI('MOV     BYTE PTR [BP' + ItoSI(bpoff) + '], 32  ; espace')
+     Else
+     Begin
+      lblfx := AddStringLit(sym_table[sym_idx].init_str);
+      EmitI('LEA     SI, ' + lblfx);
+      EmitI('LEA     DI, [BP' + ItoSI(bpoff) + ']');
+      EmitI('CALL    _ABAP_STR_COPY');
+     End;
+    End;
+   End;
+  End;
+ End Else
+ Begin
+  { Variable globale → sera emise dans le DataSegment (GenDataSegment) }
+  { Ici on emet juste un commentaire ; la definition DW/DB est differee }
+  EmitComment('DATA ' + vname + ' : ' + sym_table[sym_idx].asm_label + ' (global)');
+ End;
+End;
+
+{ --- TYPES: BEGIN OF struc ... END OF struc (stub structure) ---
+  On enregistre juste le nom de la structure dans la table des types.
+  Les champs sont ignores (stub) pour l'instant.                          }
+Procedure ParseTypesBlock;
+Begin
+ EatKw(KW_BEGIN); EatKw(KW_OF);
+ { Nom de la structure }
+ If cur_tok_type = TOK_IDENT Then Consume;
+ If cur_tok_type = TOK_COMMA Then Consume;
+ { Sauter les champs jusqu'a END OF }
+ While Not (cur_tok_type = TOK_EOF) Do
+ Begin
+  If TokIsKw(KW_END) Then
+  Begin
+   Consume; EatKw(KW_OF);
+   If cur_tok_type = TOK_IDENT Then Consume;
+   If cur_tok_type = TOK_DOT Then Consume;
+   Break;
+  End;
+  Consume;
+ End;
+End;
+
+{ --- ParseData : DATA [: ] liste de declarations ---
+  Syntaxe :
+    DATA nom TYPE I [VALUE 0].
+    DATA: nom TYPE I, nom2 TYPE C(20), ...
+    DATA: BEGIN OF struc, champ TYPE I, END OF struc.
+    DATA itab TYPE TABLE OF struc.                                          }
+Procedure ParseData(is_const: Boolean);
+Var multi: Boolean; vname: String;
+Begin
+ { DATA ou CONSTANTS : mot-cle deja consomme par l'appelant }
+ multi := (cur_tok_type = TOK_COLON);
+ If multi Then Consume;
+ Repeat
+  { TYPES: BEGIN OF ... -> traitement special }
+  If TokIsKw(KW_BEGIN) Then
+  Begin
+   ParseTypesBlock;
+   If Not multi Then Break;
+   If cur_tok_type = TOK_COMMA Then Consume Else Break;
+   Continue;
+  End;
+  If cur_tok_type <> TOK_IDENT Then Break;
+  vname := cur_tok_str; Consume;
+  ParseOneVar(vname, is_const);
+  If (Not multi) Or (cur_tok_type <> TOK_COMMA) Then Break;
+  Consume; { sauter la virgule }
+ Until (cur_tok_type = TOK_DOT) Or (cur_tok_type = TOK_EOF);
+ If cur_tok_type = TOK_DOT Then Consume;
+End;
+
+{ --- ParseTypes : TYPES [: ] liste de definitions ---
+  Similaire a DATA mais definit des types (structures), pas des variables.
+  Syntaxe simple : TYPES: BEGIN OF struc, ... END OF struc.              }
+Procedure ParseTypes;
+Var multi: Boolean;
+Begin
+ multi := (cur_tok_type = TOK_COLON);
+ If multi Then Consume;
+ Repeat
+  If TokIsKw(KW_BEGIN) Then
+  Begin ParseTypesBlock; If Not multi Then Break; End
+  Else
+  Begin
+   { TYPES nom TYPE I : alias de type (stub, ignore) }
+   While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_COMMA)
+         And (cur_tok_type <> TOK_EOF) Do Consume;
+  End;
+  If (Not multi) Or (cur_tok_type <> TOK_COMMA) Then Break;
+  Consume;
+ Until (cur_tok_type = TOK_DOT) Or (cur_tok_type = TOK_EOF);
+ If cur_tok_type = TOK_DOT Then Consume;
+End;
+
+{ ============================================================================ }
+{ TODO 08 - PARSEUR : EXPRESSIONS ABAP                   [COMPLET]            }
+{ ============================================================================ }
+
+{ --- Primitives de generation (pre-requises pour les expressions).
+  Ces routines seront completees / documentees au TODO 09.            ------- }
+
+{ Charge une variable dans AX selon son type et sa classe de stockage }
+Procedure GenLoadVar(sym_idx: Integer);
+Var sc, dt, bp: Integer; lbl: String;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin EmitComment('GenLoadVar: idx invalide'); Exit; End;
+ sc  := sym_table[sym_idx].store_class;
+ dt  := sym_table[sym_idx].data_type;
+ bp  := sym_table[sym_idx].bp_offset;
+ lbl := sym_table[sym_idx].asm_label;
+ { CONSTANT : valeur immediate }
+ If sc = STORE_CONSTANT Then
+ Begin
+  EmitI('MOV     AX, ' + ItoS(sym_table[sym_idx].init_num));
+  Exit;
+ End;
+ Case dt Of
+  TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+  Begin
+   { Chaine : charger l'adresse (LEA) }
+   If sc = STORE_AUTO Then
+   Begin
+    If bp >= 0 Then EmitI('LEA     AX, [BP+' + ItoSI(bp) + ']')
+    Else             EmitI('LEA     AX, [BP' + ItoSI(bp) + ']');
+   End Else          EmitI('LEA     AX, ' + lbl);
+  End;
+ Else
+  { Numerique : charger la valeur (MOV) }
+  If sc = STORE_AUTO Then
+  Begin
+   If bp >= 0 Then EmitI('MOV     AX, [BP+' + ItoSI(bp) + ']')
+   Else            EmitI('MOV     AX, [BP' + ItoSI(bp) + ']');
+  End Else         EmitI('MOV     AX, [' + lbl + ']');
+ End;
+End;
+
+{ Stocke AX dans une variable selon son type et sa classe de stockage }
+Procedure GenStoreVar(sym_idx: Integer);
+Var sc, dt, bp: Integer; lbl: String;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin EmitComment('GenStoreVar: idx invalide'); Exit; End;
+ sc  := sym_table[sym_idx].store_class;
+ dt  := sym_table[sym_idx].data_type;
+ bp  := sym_table[sym_idx].bp_offset;
+ lbl := sym_table[sym_idx].asm_label;
+ If sc = STORE_CONSTANT Then
+ Begin Warning('Affectation a une CONSTANT ignoree'); Exit; End;
+ Case dt Of
+  TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+  Begin
+   { Chaine : AX = adresse source -> copier vers dest }
+   EmitI('MOV     SI, AX');
+   If sc = STORE_AUTO Then
+   Begin
+    If bp >= 0 Then EmitI('LEA     DI, [BP+' + ItoSI(bp) + ']')
+    Else            EmitI('LEA     DI, [BP' + ItoSI(bp) + ']');
+   End Else         EmitI('LEA     DI, ' + lbl);
+   EmitI('CALL    _ABAP_STR_COPY');
+  End;
+ Else
+  { Numerique : MOV }
+  If sc = STORE_AUTO Then
+  Begin
+   If bp >= 0 Then EmitI('MOV     [BP+' + ItoSI(bp) + '], AX')
+   Else            EmitI('MOV     [BP' + ItoSI(bp) + '], AX');
+  End Else         EmitI('MOV     [' + lbl + '], AX');
+ End;
+End;
+
+{ Genere l'operation binaire : AX op BX -> AX }
+Procedure GenBinOp(op: Integer);
+Begin
+ Case op Of
+  TOK_PLUS:  EmitI('ADD     AX, BX');
+  TOK_MINUS: EmitI('SUB     AX, BX');
+  TOK_STAR:  EmitI('IMUL    BX');
+  TOK_SLASH:
+  Begin
+   EmitI('CWD');
+   EmitI('IDIV    BX');
+  End;
+  TOK_CONCAT: EmitComment('&& concatenation (stub)');
+ Else EmitComment('GenBinOp: op inconnu');
+ End;
+End;
+
+{ Genere une comparaison : AX CMP BX -> AX = 0FFFFh (vrai) ou 0 (faux) }
+Procedure GenCompare(op: Integer);
+Var lbl_f, lbl_e: String;
+Begin
+ lbl_f := NewLabel;
+ lbl_e := NewLabel;
+ EmitI('CMP     AX, BX');
+ Case op Of
+  TOK_EQ,  KW_EQ: EmitI('JNE     ' + lbl_f);
+  TOK_NE,  KW_NE: EmitI('JE      ' + lbl_f);
+  TOK_LT,  KW_LT: EmitI('JGE     ' + lbl_f);
+  TOK_LE,  KW_LE: EmitI('JG      ' + lbl_f);
+  TOK_GT,  KW_GT: EmitI('JLE     ' + lbl_f);
+  TOK_GE,  KW_GE: EmitI('JL      ' + lbl_f);
+  Else             EmitI('JNE     ' + lbl_f);
+ End;
+ EmitI('MOV     AX, 0FFFFh');
+ EmitI('JMP     ' + lbl_e);
+ EmitLabel(lbl_f);
+ EmitI('XOR     AX, AX');
+ EmitLabel(lbl_e);
+End;
+
+{ --- Prototypes anticipes --- }
+Function ParseExpr: Integer; Forward;
+
+{ --- Built-ins ABAP reconnus dans les expressions --- }
+Function GenBuiltIn(Const bname: String): Boolean;
+Var lbl1, lbl2: String;
+Begin
+ GenBuiltIn := True;
+ lbl1 := NewLabel;
+ lbl2 := NewLabel;
+ If bname = 'STRLEN' Then
+ Begin
+  { STRLEN( var ) -> longueur d'une chaine terminee par '$' }
+  ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitI('MOV     SI, AX');
+  EmitI('XOR     CX, CX');
+  EmitLabel(lbl1);
+  EmitI('MOV     AL, [SI]');
+  EmitI('CMP     AL, 24h');
+  EmitI('JE      ' + lbl2);
+  EmitI('INC     SI');
+  EmitI('INC     CX');
+  EmitI('JMP     ' + lbl1);
+  EmitLabel(lbl2);
+  EmitI('MOV     AX, CX');
+ End Else If bname = 'ABS' Then
+ Begin
+  { ABS( expr ) -> valeur absolue }
+  ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitI('CWD');
+  EmitI('XOR     AX, DX');
+  EmitI('SUB     AX, DX');
+ End Else If bname = 'SIGN' Then
+ Begin
+  ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitI('TEST    AX, AX');
+  EmitI('JZ      ' + lbl2);
+  EmitI('JNS     ' + lbl1);
+  EmitI('MOV     AX, 0FFFFh');
+  EmitI('JMP     ' + lbl2);
+  EmitLabel(lbl1);
+  EmitI('MOV     AX, 1');
+  EmitLabel(lbl2);
+ End Else If bname = 'LINES' Then
+ Begin
+  { LINES( itab ) -> stub -> 0 }
+  ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitI('XOR     AX, AX');
+  EmitComment('LINES( itab ) stub = 0');
+ End Else
+  GenBuiltIn := False;
+End;
+
+{ --- Niveau 1 : expression primaire ---
+  Constante numerique, chaine, variable, built-in, parentheses, unaire -     }
+Function ParsePrimaryExpr: Integer;
+Var sym_idx, nargs: Integer; s: String; lbl_t, lbl_e: String;
+Begin
+ ParsePrimaryExpr := TYPE_I;
+ Case cur_tok_type Of
+  { Constante entiere }
+  TOK_NUMBER:
+  Begin
+   EmitI('MOV     AX, ' + ItoS(cur_tok_num));
+   Consume;
+  End;
+  { Constante flottante (stub : partie entiere seulement) }
+  TOK_FLOAT:
+  Begin
+   EmitI('MOV     AX, ' + ItoS(cur_tok_num) + '  ; FLOAT stub');
+   Consume;
+  End;
+  { Chaine litterale }
+  TOK_STRING:
+  Begin
+   s := AddStringLit(cur_tok_str + '$');
+   EmitI('LEA     AX, ' + s);
+   Consume;
+   ParsePrimaryExpr := TYPE_C;
+  End;
+  { Expression parenthesee }
+  TOK_LPAREN:
+  Begin
+   Consume;
+   ParsePrimaryExpr := ParseExpr;
+   If cur_tok_type = TOK_RPAREN Then Consume
+   Else Error('Attendu ) dans expression');
+  End;
+  { Unaire : - expr }
+  TOK_MINUS:
+  Begin
+   Consume;
+   ParsePrimaryExpr := ParsePrimaryExpr;
+   EmitI('NEG     AX');
+  End;
+  { Identificateur : variable, constante, built-in }
+  TOK_IDENT:
+  Begin
+   { NOT en tant qu'operateur unaire }
+   If cur_tok_kw = KW_NOT Then
+   Begin
+    lbl_t := NewLabel; lbl_e := NewLabel;
+    Consume;
+    ParsePrimaryExpr := ParsePrimaryExpr;
+    EmitI('TEST    AX, AX');
+    EmitI('JNZ     ' + lbl_t);
+    EmitI('MOV     AX, 0FFFFh');
+    EmitI('JMP     ' + lbl_e);
+    EmitLabel(lbl_t);
+    EmitI('XOR     AX, AX');
+    EmitLabel(lbl_e);
+   End Else
+   Begin
+    s := cur_tok_str; Consume;
+    { Appel built-in ou PERFORM comme expression }
+    If cur_tok_type = TOK_LPAREN Then
+    Begin
+     Consume;
+     If Not GenBuiltIn(s) Then
+     Begin
+      { Appel de FORM comme expression (stub) }
+      nargs := 0;
+      While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) Do
+      Begin
+       ParseExpr;
+       EmitI('PUSH    AX');
+       Inc(nargs);
+       If cur_tok_type = TOK_COMMA Then Consume;
+      End;
+      If cur_tok_type = TOK_RPAREN Then Consume;
+      EmitI('CALL    ' + AsmIdent('_ABAP_FORM_', s));
+      If nargs > 0 Then EmitI('ADD     SP, ' + ItoSI(nargs * 2));
+     End;
+    End Else
+    Begin
+     { Chargement d'une variable / constante }
+     sym_idx := FindSym(s);
+     If sym_idx > 0 Then
+     Begin
+      GenLoadVar(sym_idx);
+      ParsePrimaryExpr := sym_table[sym_idx].data_type;
+     End Else
+     Begin
+      EmitComment('Variable inconnue: ' + s + ' (suppose 0)');
+      EmitI('XOR     AX, AX');
+     End;
+    End;
+   End;
+  End;
+ Else
+  EmitComment('ParsePrimaryExpr: token inattendu: ' + cur_tok_str);
+  Consume;
+ End;
+End;
+
+{ --- Niveau 2 : multiplication / division ---
+  * / (DIV et MOD via formes verbales traitees par ParseArithVerb)           }
+Function ParseMulExpr: Integer;
+Var op: Integer;
+Begin
+ ParseMulExpr := ParsePrimaryExpr;
+ While (cur_tok_type = TOK_STAR) Or (cur_tok_type = TOK_SLASH) Do
+ Begin
+  op := cur_tok_type; Consume;
+  EmitI('PUSH    AX');
+  ParseMulExpr := ParsePrimaryExpr;
+  EmitI('MOV     BX, AX');
+  EmitI('POP     AX');
+  GenBinOp(op);
+ End;
+End;
+
+{ --- Niveau 3 : addition / soustraction --- }
+Function ParseAddExpr: Integer;
+Var op: Integer;
+Begin
+ ParseAddExpr := ParseMulExpr;
+ While (cur_tok_type = TOK_PLUS) Or (cur_tok_type = TOK_MINUS) Do
+ Begin
+  op := cur_tok_type; Consume;
+  EmitI('PUSH    AX');
+  ParseAddExpr := ParseMulExpr;
+  EmitI('MOV     BX, AX');
+  EmitI('POP     AX');
+  GenBinOp(op);
+ End;
+End;
+
+{ --- Niveau 4 : comparaison ---
+  Operateurs : = <> < > <= >= EQ NE LT GT LE GE
+  Formes speciales ABAP:
+    var IS [NOT] INITIAL  -> TEST AX, AX
+    var IS [NOT] BOUND    -> stub (0 / 1)
+    var BETWEEN lo AND hi -> double comparaison                              }
+Function ParseCompareExpr: Integer;
+Var op, kw: Integer; lbl_f, lbl_e: String; is_not: Boolean;
+Begin
+ ParseCompareExpr := ParseAddExpr;
+ { Operateurs de comparaison symboliques }
+ op := cur_tok_type;
+ kw := cur_tok_kw;
+ If (op = TOK_EQ) Or (op = TOK_NE) Or
+    (op = TOK_LT) Or (op = TOK_LE) Or
+    (op = TOK_GT) Or (op = TOK_GE) Then
+ Begin
+  Consume;
+  EmitI('PUSH    AX');
+  ParseCompareExpr := ParseAddExpr;
+  EmitI('MOV     BX, AX');
+  EmitI('POP     AX');
+  GenCompare(op);
+ End Else If (cur_tok_type = TOK_IDENT) And
+             ((kw = KW_EQ) Or (kw = KW_NE) Or
+              (kw = KW_LT) Or (kw = KW_LE) Or
+              (kw = KW_GT) Or (kw = KW_GE)) Then
+ Begin
+  { Formes verbales EQ / NE / LT / GT / LE / GE }
+  Consume;
+  EmitI('PUSH    AX');
+  ParseCompareExpr := ParseAddExpr;
+  EmitI('MOV     BX, AX');
+  EmitI('POP     AX');
+  GenCompare(kw);
+ End Else If TokIsKw(KW_IS) Then
+ Begin
+  { var IS [NOT] INITIAL | BOUND }
+  Consume;
+  is_not := False;
+  If TokIsKw(KW_NOT) Then Begin Consume; is_not := True; End;
+  lbl_f := NewLabel; lbl_e := NewLabel;
+  If TokIsKw(KW_INITIAL) Then
+  Begin
+   Consume;
+   EmitI('TEST    AX, AX');
+   If is_not Then EmitI('JNZ     ' + lbl_f)
+   Else           EmitI('JZ      ' + lbl_f);
+   EmitI('MOV     AX, 0FFFFh');
+   EmitI('JMP     ' + lbl_e);
+   EmitLabel(lbl_f);
+   EmitI('XOR     AX, AX');
+   EmitLabel(lbl_e);
+  End Else If TokIsKw(KW_BOUND) Then
+  Begin
+   Consume;
+   { IS BOUND : stub = toujours vrai (0FFFFh) }
+   EmitComment('IS BOUND stub = vrai');
+   If is_not Then EmitI('XOR     AX, AX')
+   Else           EmitI('MOV     AX, 0FFFFh');
+  End Else
+   Warning('IS : predicat inconnu -> ignore');
+ End Else If TokIsKw(KW_BETWEEN) Then
+ Begin
+  { var BETWEEN lo AND hi : vrai si lo <= var <= hi }
+  { AX = var deja calcule }
+  Consume;
+  lbl_f    := NewLabel;
+  lbl_e    := NewLabel;
+  EmitI('PUSH    AX');        { sauver var }
+  ParseAddExpr;               { AX = lo }
+  EmitI('MOV     BX, AX');
+  EmitI('POP     AX');
+  EmitI('PUSH    AX');        { re-sauver var }
+  EmitI('CMP     AX, BX');   { var < lo ? }
+  EmitI('JL      ' + lbl_f);
+  EatKw(KW_AND);
+  ParseAddExpr;               { AX = hi }
+  EmitI('MOV     BX, AX');
+  EmitI('POP     AX');        { restaurer var }
+  EmitI('CMP     AX, BX');   { var > hi ? }
+  EmitI('JG      ' + lbl_f);
+  EmitI('MOV     AX, 0FFFFh');
+  EmitI('JMP     ' + lbl_e);
+  EmitLabel(lbl_f);
+  EmitI('XOR     AX, AX');
+  EmitLabel(lbl_e);
+ End Else If TokIsKw(KW_IN) Then
+ Begin
+  { var IN sy-set (stub) : toujours faux }
+  Consume;
+  If cur_tok_type = TOK_IDENT Then Consume;
+  EmitComment('IN set stub = faux');
+  EmitI('XOR     AX, AX');
+ End;
+End;
+
+{ --- Niveau 5 : NOT logique --- }
+Function ParseNotExpr: Integer;
+Var lbl_t, lbl_e: String;
+Begin
+ If TokIsKw(KW_NOT) Then
+ Begin
+  Consume;
+  lbl_t := NewLabel; lbl_e := NewLabel;
+  ParseNotExpr := ParseCompareExpr;
+  EmitI('TEST    AX, AX');
+  EmitI('JNZ     ' + lbl_t);
+  EmitI('MOV     AX, 0FFFFh');
+  EmitI('JMP     ' + lbl_e);
+  EmitLabel(lbl_t);
+  EmitI('XOR     AX, AX');
+  EmitLabel(lbl_e);
+ End Else
+  ParseNotExpr := ParseCompareExpr;
+End;
+
+{ --- Niveau 6 : AND logique --- }
+Function ParseAndExpr: Integer;
+Begin
+ ParseAndExpr := ParseNotExpr;
+ While TokIsKw(KW_AND) Do
+ Begin
+  Consume;
+  EmitI('PUSH    AX');
+  ParseAndExpr := ParseNotExpr;
+  EmitI('POP     BX');
+  EmitI('AND     AX, BX');
+ End;
+End;
+
+{ --- Niveau 7 (racine) : OR logique --- }
+Function ParseExpr: Integer;
+Begin
+ ParseExpr := ParseAndExpr;
+ While TokIsKw(KW_OR) Do
+ Begin
+  Consume;
+  EmitI('PUSH    AX');
+  ParseExpr := ParseAndExpr;
+  EmitI('POP     BX');
+  EmitI('OR      AX, BX');
+ End;
+End;
+
 Begin
 End.
