@@ -1377,7 +1377,8 @@ Begin
   Exit;
  End;
 
- If ch In ['A'..'Z', 'a'..'z', '_'] Then LexIdent
+ If ch In ['A'..'Z', 'a'..'z', '_'] Then
+ Begin UngetChar(ch); LexIdent; End
  Else If ch In ['0'..'9'] Then LexNumber(ch)
  Else If ch = '''' Then LexCharOrTick
  Else If ch = '"' Then LexString
@@ -6222,15 +6223,187 @@ Begin
  Emit('END START');
 End;
 
+{ ============================================================= }
+{ TODO 24 — Procedure Compile : orchestration deux passes      }
+{ ============================================================= }
+
+Procedure Compile;
+Var tmp_name    : String;
+    tmp_file    : Text;
+    line        : String;
+    i           : Integer;
+    ext_start   : Integer;
+    sub_before  : Integer;
+    tmp_ok      : Boolean;
 Begin
-  WriteLn('ADA86 V1.0 - TODO 23 OK (GenHeader / Segments / Footer OK)');
-  WriteLn('  GenVarDecl        : DB/DW/DD par type pour variables STORE_STATIC');
-  WriteLn('  GenHeader         : .MODEL SMALL / .STACK 256 / .DATA');
-  WriteLn('  GenDataSegment    : variables globales + _ADA_CRLF_STR + litteraux + buffers + .CODE');
-  WriteLn('  GenCodeSegmentHeader: START: / MOV DS,AX / CALL _ADA_PROC_xxx / exit 4C00h');
-  WriteLn('  GenFooter         : END START');
-  WriteLn('  GenRuntimeHelpers+: _ADA_CRLF / _ADA_PUT_STR / _ADA_PUT_CHAR / _ADA_PUT_INT');
-  WriteLn('                      _ADA_PUT_FLOAT(stub) / _ADA_GET_INT / _ADA_GET_STR');
-  WriteLn('                      _ADA_STR_LEN / _ADA_STR_COPY / _ADA_STR_CONCAT');
-  WriteLn('                      _ADA_CHECK_RANGE (Constraint_Error) / _ADA_ERROR');
+ { 1. Validation argument }
+ If ParamCount < 1 Then
+ Begin
+  WriteLn('Usage: ADA86 source.adb [sortie.asm]');
+  WriteLn('  Compile un programme Ada 83/95 en assembleur 8086 MASM.');
+  Halt(1);
+ End;
+ source_filename := ParamStr(1);
+
+ { Chemin ASM de sortie }
+ If ParamCount >= 2 Then
+  output_filename := ParamStr(2)
+ Else
+ Begin
+  output_filename := source_filename;
+  ext_start := 0;
+  For i := Length(output_filename) DownTo 1 do
+   If output_filename[i] = '.' Then
+   Begin ext_start := i; Break; End;
+  If ext_start > 1 Then
+   output_filename := Copy(output_filename, 1, ext_start - 1) + '.ASM'
+  Else
+   output_filename := output_filename + '.ASM';
+ End;
+
+ tmp_name := output_filename + '.$$T';
+
+ { 2. Ouvrir le fichier source }
+ Assign(input_file, source_filename);
+ {$I-} Reset(input_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('Erreur : impossible d''ouvrir "', source_filename, '"');
+  Halt(1);
+ End;
+
+ { Initialiser l''etat du lexeur }
+ src_line     := '';
+ src_line_num := 0;
+ src_col      := 1;
+ src_eof      := False;
+ has_peek     := False;
+ peek_char    := #0;
+ cur_tok_type := TOK_UNKNOWN;
+ cur_tok_str  := '';
+ cur_tok_num  := 0;
+ cur_tok_flt  := 0.0;
+ cur_tok_kw   := 0;
+ cur_column   := 0;
+
+ { 3. Initialiser toutes les tables }
+ InitSymTable;
+ InitTypeTable;
+ RegisterPredefinedTypes;
+ InitSubTable;
+ RegisterTextIO_Subs;   { enregistre PUT_LINE, PUT, NEW_LINE, etc. }
+ InitPkgTable;
+ InitScopeStack;
+ InitStrTable;
+
+ label_counter    := 0;
+ error_count      := 0;
+ warn_count       := 0;
+ gen_enabled      := True;
+ prog_name        := '';
+
+ { Passe 1 : output_file -> fichier temporaire (corps des proc/func) }
+ Assign(output_file, tmp_name);
+ {$I-} ReWrite(output_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('Erreur : impossible de creer le fichier temporaire "', tmp_name, '"');
+  {$I-} Close(input_file); {$I+}
+  Halt(1);
+ End;
+
+ { 4. Tokeniser et parser }
+ NextToken;
+ ParseWithUseSection;   { WITH xxx ; USE xxx ; ... }
+
+ { 5. Library unit = PROCEDURE ou PACKAGE }
+ sub_before := sub_count;
+ If TokIsKw(KW_PROCEDURE) Then
+ Begin
+  ParseProcedureBody;
+  { Le sous-programme de bibliotheque est le premier ajoute apres sub_before }
+  If sub_count > sub_before Then
+   prog_name := sub_table^[sub_before + 1].name;
+ End
+ Else If TokIsKw(KW_PACKAGE) Then
+ Begin
+  ParsePackage;
+  If sub_count > sub_before Then
+   prog_name := sub_table^[sub_before + 1].name
+  Else If pkg_count > 0 Then
+   prog_name := pkg_table^[pkg_count].name;
+ End
+ Else
+ Begin
+  Error('PROCEDURE ou PACKAGE attendu comme library unit Ada');
+ End;
+
+ { 6. Fermer fichier temporaire + source }
+ Close(output_file);
+ Close(input_file);
+
+ { 7. Ouvrir le fichier ASM final }
+ Assign(output_file, output_filename);
+ {$I-} ReWrite(output_file); {$I+}
+ If IOResult <> 0 Then
+ Begin
+  WriteLn('Erreur : impossible de creer "', output_filename, '"');
+  Halt(1);
+ End;
+
+ { 8. En-tete + segment .DATA + point d''entree .CODE }
+ GenHeader;
+ GenDataSegment;
+ GenCodeSegmentHeader;
+
+ { 9. Copier le corps des proc/func depuis le temporaire }
+ tmp_ok := False;
+ Assign(tmp_file, tmp_name);
+ {$I-} Reset(tmp_file); {$I+}
+ If IOResult = 0 Then
+ Begin
+  tmp_ok := True;
+  EmitBlank;
+  EmitComment('=== Corps des procedures/fonctions Ada ===');
+  While Not EOF(tmp_file) do
+  Begin
+   ReadLn(tmp_file, line);
+   WriteLn(output_file, line);
+  End;
+  Close(tmp_file);
+ End;
+
+ { 10. Stubs TextIO + helpers runtime + footer }
+ GenTextIO_Stubs;
+ GenRuntimeHelpers;
+ GenFooter;
+
+ { 11. Fermer ASM final + supprimer le temporaire }
+ Close(output_file);
+ If tmp_ok Then
+ Begin
+  {$I-} Erase(tmp_file); {$I+}
+ End;
+
+ { 12. Liberer toutes les tables du tas }
+ If sym_table   <> nil Then Begin Dispose(sym_table);   sym_table   := nil; End;
+ If sub_table   <> nil Then Begin Dispose(sub_table);   sub_table   := nil; End;
+ If type_table  <> nil Then Begin Dispose(type_table);  type_table  := nil; End;
+ If pkg_table   <> nil Then Begin Dispose(pkg_table);   pkg_table   := nil; End;
+ If scope_stack <> nil Then Begin Dispose(scope_stack); scope_stack := nil; End;
+ If str_table   <> nil Then Begin Dispose(str_table);   str_table   := nil; End;
+ If lbl_table   <> nil Then Begin Dispose(lbl_table);   lbl_table   := nil; End;
+
+ { 13. Bilan }
+ BilanCompilation;
+
+ If error_count > 0 Then Halt(1);
+End;
+
+{ ============================================================= }
+{ Programme principal                                           }
+{ ============================================================= }
+
+Begin
+  Compile;
 End.

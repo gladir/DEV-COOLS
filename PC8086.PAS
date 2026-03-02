@@ -788,40 +788,34 @@ Begin
  date_str := date_str + temp;
   { Obtenir l'heure systäme }
  GetTime(hour, minute, second, sec100);
-
- { Construire la cha√Æne d'heure }
+  { Construire la chaåne d'heure }
  time_str := '';
  If hour < 10 Then time_str := time_str + '0';
  Str(hour, temp);
  time_str := time_str + temp + ':';
-
  If minute < 10 Then time_str := time_str + '0';
  Str(minute, temp);
  time_str := time_str + temp + ':';
-
  If second < 10 Then time_str := time_str + '0';
  Str(second, temp);
  time_str := time_str + temp;
-
  EmitComment('Date: ' + date_str + ' ' + time_str);
  EmitLine('');
  EmitLine('.MODEL SMALL');
  EmitLine('.STACK 100h');
  EmitLine('');
  EmitLine('.DATA');
-
- { D√©finir les cha√Ænes constantes pour les bool√©ens }
+ { DÇfinir les cha√Ænes constantes pour les boolÇens }
  EmitLine('TRUE_STR  DB ''TRUE$''');
  EmitLine('FALSE_STR DB ''FALSE$''');
  EmitLine('');
-
  data_segment := True;
 End;
 
-{ D√©claration anticip√©e - d√©finie plus loin dans le fichier }
+{ DÇclaration anticipÇe - dÇfinie plus loin dans le fichier }
 Function IntToStr(value: Integer): String; forward;
 
-{ G√©n√©rer la d√©claration d'une variable }
+{ GÇnÇrer la dÇclaration d'une variable }
 Procedure GenerateVariableDeclaration(var_name: String; var_type: Integer; string_size: Integer);
 Var
  type_index: Integer;
@@ -838,7 +832,7 @@ Begin
   TYPE_BYTE, TYPE_CHAR: EmitLine(var_name + ' DB ?');
   TYPE_STRING:
    Begin
-    { Une cha√Æne Pascal: 1 octet longueur + string_size caract√®res }
+    { Une chaåne Pascal: 1 octet longueur + string_size caractäres }
     EmitLine(var_name + ' DB ' + IntToStr(string_size + 1) + ' DUP(?)')
    End;
   TYPE_BOOLEAN: EmitLine(var_name + ' DB ?');
@@ -846,12 +840,12 @@ Begin
    Begin
     { Chercher la taille du record dans la table des symboles }
     type_index := FindSymbol(var_name); { Ceci ne fonctionnera pas, il faudrait passer le type }
-    { Pour l'instant, utiliser une taille par d√©faut }
-    EmitLine(var_name + ' DB 64 DUP(?) ; Record (taille estim√©e)');
+    { Pour l'instant, utiliser une taille par dÇfaut }
+    EmitLine(var_name + ' DB 64 DUP(?) ; Record (taille estimÇe)');
    End;
   TYPE_ARRAY:
    Begin
-    { Taille totale en octets transmise via le param√®tre string_size }
+    { Taille totale en octets transmise via le paramätre string_size }
     EmitLine(var_name + ' DB ' + IntToStr(string_size) + ' DUP(?) ; Tableau');
    End;
   TYPE_POINTER:
@@ -874,15 +868,13 @@ Begin
  End;
 End;
 
-{ Commencer la section .CODE sans MAIN PROC (pour les proc√©dures utilisateur) }
-Procedure StartCodeSection;
-Begin
+{ Commencer la section .CODE sans MAIN PROC (pour les procÇdures utilisateur) }
+Procedure StartCodeSection;Begin
  If data_segment Then
  Begin
   EmitLine('');
   data_segment := False;
  End;
-
  If not code_header Then
  Begin
   EmitLine('.CODE');
@@ -891,12 +883,9 @@ Begin
 End;
 
 { Commencer la section de code principale (MAIN PROC) }
-Procedure BeginCodeSection;
-Begin
+Procedure BeginCodeSection;Begin
  StartCodeSection; { Assure que .CODE est √©mis }
-
- If not code_segment Then
- Begin
+ If not code_segment Then Begin
   EmitLine('MAIN PROC');
   EmitLine('    mov ax, @data');
   EmitLine('    mov ds, ax');
@@ -905,9 +894,8 @@ Begin
  End;
 End;
 
-{ Terminer le programme }
-Procedure GenerateFooter;
-Begin
+ { Terminer le programme }
+Procedure GenerateFooter;Begin
  If code_segment Then
  Begin
   EmitLine('');
@@ -918,40 +906,31 @@ Begin
  End;
 End;
 
-{ Convertir un entier en cha√Æne }
+ { Convertir un entier en chaåne }
 Function IntToStr(value: Integer): String;
 Var
  result: String;
  negative: Boolean;
  digit: Integer;
 Begin
- If value = 0 Then
- Begin
+ If value = 0 Then Begin
   IntToStr := '0';
   Exit;
  End;
-
  result := '';
  negative := value < 0;
- If negative Then
-  value := -value;
-
- While value > 0 do
- Begin
+ If negative Then value := -value;
+ While value > 0 do Begin
   digit := value mod 10;
   result := Chr(48 + digit) + result;
   value := value div 10;
  End;
-
- If negative Then
-  result := '-' + result;
-
+ If negative Then result := '-' + result;
  IntToStr := result;
 End;
 
-{ G√©n√©rer une nouvelle √©tiquette }
-Function NewLabel: String;
-Begin
+{ GÇnÇrer une nouvelle Çtiquette }
+Function NewLabel: String;Begin
  Inc(next_label_id);
  NewLabel := 'L' + IntToStr(next_label_id);
 End;
@@ -960,7 +939,7 @@ End;
 { ANALYSEUR SYNTAXIQUE PASCAL                                                 }
 { ============================================================================ }
 
-{ D√©clarations anticip√©es }
+{ DÇclarations anticipÇes }
 Procedure ParseStatement; forward;
 Procedure ParseExpression; forward;
 Procedure ParseBlock; forward;
@@ -975,84 +954,75 @@ Procedure ParseConstDeclarations; forward;
 Procedure ParseGoto; forward;
 Procedure ParseProgramMain; forward;
 
-{ Ajouter une √©tiquette √† la table }
+ { Ajouter une Çtiquette Ö la table }
 Function AddLabel(name: String): Integer;
 Var
  upper_name: String;
 Begin
- If label_count >= MAX_LABEL_COUNT Then
- Begin
-  Error('Table des √©tiquettes pleine');
+ If label_count >= MAX_LABEL_COUNT Then Begin
+  Error('Table des Çtiquettes pleine');
   AddLabel := 0;
   Exit;
  End;
-
  upper_name := UpperCase(name);
  Inc(label_count);
  New(label_table[label_count]);
- With label_table[label_count]^ do
- Begin
+ With label_table[label_count]^ do Begin
   name := upper_name;
   label_id := next_label_id;
   defined := False;
   address := 0;
  End;
-
  Inc(next_label_id);
  AddLabel := label_count;
 End;
 
-{ Rechercher une √©tiquette dans la table }
+ { Rechercher une Çtiquette dans la table }
 Function FindLabel(name: String): Integer;
 Var
  i: Integer;
 Begin
  name := UpperCase(name);
  For i := 1 to label_count do
-  If (label_table[i] <> nil) and (label_table[i]^.name = name) Then
-  Begin
+  If (label_table[i] <> nil) and (label_table[i]^.name = name) Then Begin
    FindLabel := i;
    Exit;
   End;
  FindLabel := 0;
 End;
-Function Accept(expected_symbol: Integer): Boolean;
-Begin
+
+Function Accept(expected_symbol: Integer): Boolean;Begin
  Accept := (current_symbol = expected_symbol);
 End;
 
-{ Consommer un token attendu }
-Procedure Expect(expected_symbol: Integer; error_msg: String);
-Begin
+ { Consommer un token attendu }
+Procedure Expect(expected_symbol: Integer; error_msg: String);Begin
  If current_symbol = expected_symbol Then
   NextToken
  Else
-  Error(error_msg + ', trouv√©: ' + current_token);
+  Error(error_msg + ', trouvÇ: ' + current_token);
 End;
 
-{ Parser une expression simple }
+ { Analyser une expression simple }
 Procedure ParseExpression;
 Var
  sym_index: Integer;
  temp_token: String;
  left_operand: String;
- left_type: Integer; { Type du premier op√©rande }
+ left_type: Integer; { Type du premier opÇrande }
  comparison_op: Integer;
  is_string_literal: Boolean;
  string_label: String;
 Begin
- left_type := TYPE_INTEGER; { Type par d√©faut }
+ left_type := TYPE_INTEGER; { Type par dÇfaut }
  is_string_literal := False;
-
- { Parser le premier op√©rande }
- { Cha√Æne litt√©rale entre guillemets simples }
- If current_symbol = SYM_STRING_LITERAL Then
- Begin
+  { Analyser le premier opÇrande }
+ { Chaåne littÇrale entre guillemets simples }
+ If current_symbol = SYM_STRING_LITERAL Then Begin
   temp_token := current_token;
   string_label := 'STR' + IntToStr(next_label_id);
   Inc(next_label_id);
-  If not data_segment Then
-  Begin
+  If not data_segment Then Begin
    EmitLine('.DATA');
    data_segment := True;
   End;
@@ -1063,20 +1033,18 @@ Begin
   left_type := TYPE_STRING;
   NextToken;
  End
- Else If current_symbol = SYM_UNKNOWN Then
- Begin
+  Else
+ If current_symbol = SYM_UNKNOWN Then Begin
   temp_token := current_token;
-
-  { Expression group√©e entre parenth√®ses }
-  If temp_token = '(' Then
-  Begin
+  { Expression groupÇe entre parenthäses }
+  If temp_token = '(' Then Begin
    NextToken; { Consommer ( }
-   ParseExpression; { √âvaluer l'expression interne, r√©sultat dans AX }
+   ParseExpression; { êvaluer l'expression interne, rÇsultat dans AX }
    left_operand := 'ax';
    left_type := TYPE_INTEGER;
    If current_token = ')' Then NextToken;
   End
-  { Nombre litt√©ral (commence par un chiffre) }
+  { Nombre littÇral (commence par un chiffre) }
   Else If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
   Begin
    Emit('mov ax, ' + temp_token);
@@ -1091,28 +1059,22 @@ Begin
    If sym_index > 0 Then
    Begin
     left_type := symbol_table[sym_index]^.data_type;
-
-    { V√©rifier si c'est un appel de fonction }
-    If symbol_table[sym_index]^.is_function Then
-    Begin
+     { VÇrifier si c'est un appel de fonction }
+    If symbol_table[sym_index]^.is_function Then Begin
      { Appel de fonction }
      EmitComment('Appel fonction: ' + temp_token);
      NextToken; { Consommer le nom de la fonction }
-
-     { G√©rer les param√®tres (pour l'instant, on ignore) }
-     If current_token = '(' Then
-     Begin
+      { GÇrer les paramätres (pour l'instant, on ignore) }
+     If current_token = '(' Then Begin
       NextToken;
       While (current_token <> ')') and (current_char <> #0) do
        NextToken;
       If current_token = ')' Then
        NextToken;
      End;
-
-     { G√©n√©rer l'appel }
+      { GÇnÇrer l'appel }
      Emit('call ' + symbol_table[sym_index]^.name);
-
-     { Le r√©sultat est dans AX ou AL selon le type de retour }
+     { Le rÇsultat est dans AX ou AL selon le type de retour }
      Case symbol_table[sym_index]^.return_type of
       TYPE_INTEGER, TYPE_WORD: left_operand := 'ax';
       TYPE_BYTE, TYPE_CHAR: left_operand := 'al';
@@ -1122,14 +1084,13 @@ Begin
      End;
      left_type := symbol_table[sym_index]^.return_type;
     End
-    { V√©rifier si c'est un appel de proc√©dure }
+    { VÇrifier si c'est un appel de procÇdure }
     Else If symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE Then
     Begin
-     { Appel de proc√©dure }
-     EmitComment('Appel proc√©dure: ' + temp_token);
-     NextToken; { Consommer le nom de la proc√©dure }
-
-     { G√©rer les param√®tres (pour l'instant, on ignore) }
+     { Appel de procÇdure }
+     EmitComment('Appel procÇdure: ' + temp_token);
+     NextToken; { Consommer le nom de la procÇdure }
+     { GÇrer les paramätres (pour l'instant, on ignore) }
      If current_token = '(' Then
      Begin
       NextToken;
