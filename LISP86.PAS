@@ -948,37 +948,41 @@ Function FuncAsmLabel(idx: Integer):String;Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 - VARIABLES LOCALES (SCOPE)                    [COMPLET]            }
+{ VARIABLES LOCALES (ETENDUE)                                                  }
 { ============================================================================ }
 
-Procedure EnterScope;
-Begin
- { TODO 08 : Sauvegarder le contexte local courant }
+Procedure EnterScope;Begin
+ { Sauvegarder le contexte local courant }
  local_count  := 0;
  local_bp_top := 0;
 End;
 
-Procedure LeaveScope;
-Begin
- { TODO 08 : Restaurer le contexte local }
+Procedure LeaveScope;Begin
+ { Restaurer le contexte local }
  local_count  := 0;
  local_bp_top := 0;
 End;
 
 Function FindLocal(Const name: String): Integer;
-Var i: Integer; u: String;
+Var
+ i: Integer;
+ u: String;
 Begin
  u := UpCaseStr(name);
- For i := local_count DownTo 1 do
-  If local_vars[i].name = u Then Begin FindLocal := i; Exit; End;
+ For i := local_count DownTo 1 do If local_vars[i].name = u Then Begin
+  FindLocal := i;
+  Exit;
+ End;
  FindLocal := 0;
 End;
 
-Function AddLocal(Const name: String): Integer;
-Begin
- { TODO 08 : Ajouter une variable locale et lui assigner un offset BP }
- If local_count >= MAX_LOCAL Then
- Begin Error('Trop de variables locales'); AddLocal := 0; Exit; End;
+Function AddLocal(Const name: String): Integer;Begin
+ { Ajouter une variable locale et lui assigner un d‚placement BP }
+ If local_count >= MAX_LOCAL Then Begin
+  Error('Trop de variables locales');
+  AddLocal := 0;
+  Exit;
+ End;
  Inc(local_count);
  Dec(local_bp_top, 2);  { -2, -4, -6... }
  local_vars[local_count].name      := UpCaseStr(name);
@@ -987,23 +991,28 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - PRIMITIVES D'EMISSION ASM                    [COMPLET]            }
+{ PRIMITIVES D'EMISSION ASM                                                    }
 { ============================================================================ }
 
-Procedure Emit(Const s: String);
-Begin If gen_enabled Then WriteLn(output_file, s); End;
+Procedure Emit(Const s: String);Begin
+ If gen_enabled Then WriteLn(output_file, s);
+End;
 
-Procedure EmitLabel(Const lbl: String);
-Begin If gen_enabled Then WriteLn(output_file, lbl, ':'); End;
+Procedure EmitLabel(Const lbl: String);Begin
+ If gen_enabled Then WriteLn(output_file, lbl, ':');
+End;
 
-Procedure EmitComment(Const s: String);
-Begin If gen_enabled Then WriteLn(output_file, '        ; ', s); End;
+Procedure EmitComment(Const s: String);Begin
+ If gen_enabled Then WriteLn(output_file, '        ; ', s);
+End;
 
-Procedure EmitBlank;
-Begin If gen_enabled Then WriteLn(output_file); End;
+Procedure EmitBlank;Begin
+ If gen_enabled Then WriteLn(output_file);
+End;
 
 Function NewLabel: String;
-Var s: String;
+Var
+ s: String;
 Begin
  Inc(label_counter);
  s := ItoSI(label_counter);
@@ -1012,7 +1021,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 - GENERATION : EN-TETE + SEGMENT .DATA         [COMPLET]            }
+{ GENERATION : EN-TETE + SEGMENT .DATA                                         }
 { ============================================================================ }
 
 Procedure GenDataSegment;

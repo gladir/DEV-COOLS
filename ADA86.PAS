@@ -289,7 +289,7 @@
   ------------------------------
   ParseIf :
     IF cond THEN stmts
-    {ELSIF cond THEN stmts}
+    [ELSIF cond THEN stmts]
     [ELSE stmts]
     END IF ;
   - GenLabel pour chaque branche, JZ vers suivant, JMP vers END IF
@@ -439,11 +439,364 @@
     - END START en derniere ligne                                    }
 
 { ============================================================================ }
-{ FIN DU FICHIER SQUELETTE - Implementer les TODOs dans l'ordre               }
+{ FIN DES TODOs - CODE SOURCE                                                  }
 { ============================================================================ }
 
-Program ADA86_Stub;
+Program ADA86;
+
+{ ============================================================================ }
+{ TODO 01 - Architecture de base : constantes, types internes, variables       }
+{ ============================================================================ }
+
+Const
+
+  { ------------------------------------------------------------------ }
+  { Types de tokens                                                     }
+  { ------------------------------------------------------------------ }
+  TOK_UNKNOWN    = 0;
+  TOK_IDENT      = 1;   { identifiant ou mot-cle Ada                   }
+  TOK_INTEGER    = 2;   { litteral entier  42  16#FF#  2#1010#         }
+  TOK_FLOAT      = 3;   { litteral flottant 3.14  1.5E-3               }
+  TOK_CHAR       = 4;   { litteral caractere 'c'                       }
+  TOK_STRING     = 5;   { litteral chaine "texte"                      }
+  TOK_PLUS       = 6;   { +                                            }
+  TOK_MINUS      = 7;   { -                                            }
+  TOK_STAR       = 8;   { *                                            }
+  TOK_SLASH      = 9;   { /                                            }
+  TOK_COLONASSIGN= 10;  { :=                                           }
+  TOK_COLON      = 11;  { :                                            }
+  TOK_SEMI       = 12;  { ;                                            }
+  TOK_COMMA      = 13;  { ,                                            }
+  TOK_DOT        = 14;  { .                                            }
+  TOK_DOTDOT     = 15;  { ..                                           }
+  TOK_LPAREN     = 16;  { (                                            }
+  TOK_RPAREN     = 17;  { )                                            }
+  TOK_EQ         = 18;  { =                                            }
+  TOK_NEQ        = 19;  { /=                                           }
+  TOK_LT         = 20;  { <                                            }
+  TOK_GT         = 21;  { >                                            }
+  TOK_LE         = 22;  { <=                                           }
+  TOK_GE         = 23;  { >=                                           }
+  TOK_ARROW      = 24;  { =>  (association de parametre, WHEN)         }
+  TOK_BAR        = 25;  { |   (alternatives WHEN)                      }
+  TOK_TICK       = 26;  { '   (attribut T'FIRST, qualificatif T'(x))  }
+  TOK_STARSTAR   = 27;  { **  (puissance)                              }
+  TOK_AMP        = 28;  { &   (concatenation de chaines)              }
+  TOK_HASH       = 29;  { #   (litteraux en base n#val#)               }
+  TOK_EOF        = 99;  { fin de fichier                               }
+
+  { ------------------------------------------------------------------ }
+  { Mots-cles Ada (insensibles a la casse -> stockes en majuscules)    }
+  { ------------------------------------------------------------------ }
+  KW_NONE        =  0;
+  KW_PROCEDURE   =  1;
+  KW_FUNCTION    =  2;
+  KW_PACKAGE     =  3;
+  KW_BEGIN       =  4;
+  KW_END         =  5;
+  KW_IS          =  6;
+  KW_WITH        =  7;
+  KW_USE         =  8;
+  KW_TYPE        =  9;
+  KW_SUBTYPE     = 10;
+  KW_CONSTANT    = 11;
+  KW_ARRAY       = 12;
+  KW_RECORD      = 13;
+  KW_OF          = 14;
+  KW_RANGE       = 15;
+  KW_IF          = 16;
+  KW_THEN        = 17;
+  KW_ELSIF       = 18;
+  KW_ELSE        = 19;
+  KW_CASE        = 20;
+  KW_WHEN        = 21;
+  KW_OTHERS      = 22;
+  KW_LOOP        = 23;
+  KW_EXIT        = 24;
+  KW_WHILE       = 25;
+  KW_FOR         = 26;
+  KW_IN          = 27;
+  KW_REVERSE     = 28;
+  KW_RETURN      = 29;
+  KW_NULL        = 30;
+  KW_RAISE       = 31;
+  KW_EXCEPTION   = 32;
+  KW_PRAGMA      = 33;
+  KW_RENAMES     = 34;
+  KW_SEPARATE    = 35;
+  KW_ABSTRACT    = 36;
+  KW_PRIVATE     = 37;
+  KW_BODY        = 38;
+  KW_AND         = 39;
+  KW_OR          = 40;
+  KW_NOT         = 41;
+  KW_XOR         = 42;
+  KW_MOD         = 43;
+  KW_REM         = 44;
+  KW_NEW         = 45;
+  KW_ALL         = 46;
+  KW_ACCESS      = 47;
+  KW_OUT         = 48;
+  KW_DECLARE     = 49;
+  KW_DO          = 50;
+  KW_GOTO        = 51;
+  KW_ABS         = 52;
+  KW_DELTA       = 53;
+  KW_DIGITS      = 54;
+  KW_AT          = 55;
+  KW_ACCEPT      = 56;
+  KW_TASK        = 57;
+  KW_PROTECTED   = 58;
+  KW_GENERIC     = 59;
+  KW_LIMITED     = 60;
+  KW_TAGGED      = 61;
+  KW_SELECT      = 62;
+  KW_TERMINATE   = 63;
+  KW_DELAY       = 64;
+  KW_UNTIL       = 65;
+  KW_REQUEUE     = 66;
+  KW_ENTRY       = 67;
+  KW_INTERFACE   = 68;
+  KW_OVERRIDING  = 69;
+  KW_SYNCHRONIZED= 70;
+  KW_SOME        = 71;
+  KW_TRUE        = 72;  { predefined Boolean constant                  }
+  KW_FALSE       = 73;  { predefined Boolean constant                  }
+  KW_ANDTHEN     = 74;  { pseudo-KW : AND THEN (court-circuit)         }
+  KW_ORELSE      = 75;  { pseudo-KW : OR ELSE  (court-circuit)         }
+  KW_INOUT       = 76;  { pseudo-KW : IN OUT (mode parametre)          }
+
+  { ------------------------------------------------------------------ }
+  { Types Ada internes (indices predefinis dans type_table)            }
+  { ------------------------------------------------------------------ }
+  TYPE_UNKNOWN   =  0;
+  TYPE_INT       =  1;  { Integer  (16 bits signe, DW)                 }
+  TYPE_FLOAT     =  2;  { Float    (32 bits, DD, stub)                 }
+  TYPE_BOOL      =  3;  { Boolean  (8 bits, DB, 0/1)                   }
+  TYPE_CHAR      =  4;  { Character(8 bits, DB)                        }
+  TYPE_STR       =  5;  { String(n)(DB n DUP, $ termine)               }
+  TYPE_ENUM      =  6;  { type enumere utilisateur                     }
+  TYPE_RANGE     =  7;  { sous-type entier avec borne lo..hi           }
+  TYPE_ARRAY     =  8;  { tableau 1D borne fixe                        }
+  TYPE_RECORD    =  9;  { enregistrement                               }
+  TYPE_ACCESS    = 10;  { pointeur (adresse 16 bits)                   }
+  TYPE_DERIVED   = 11;  { type derive (NEW basetype)                   }
+  TYPE_VOID      = 12;  { aucun type de retour (procedure)             }
+
+  { ------------------------------------------------------------------ }
+  { Categories de type (TTypeEntry.kind = TK_xxx)                      }
+  { ------------------------------------------------------------------ }
+  TK_PREDEF      = 0;   { type predefini (Integer, Float, etc.)        }
+  TK_ENUM        = 1;   { type enumere (a, b, c)                       }
+  TK_RANGE       = 2;   { sous-type entier Range lo..hi                }
+  TK_ARRAY       = 3;   { tableau 1D : elem_type, lo_bound, hi_bound   }
+  TK_RECORD      = 4;   { enregistrement : field_names/types/offs      }
+  TK_ACCESS      = 5;   { type pointeur vers base_type                 }
+  TK_DERIVED     = 6;   { derivation simple (alias base_type)          }
+
+  { ------------------------------------------------------------------ }
+  { Classes de stockage                                                 }
+  { ------------------------------------------------------------------ }
+  STORE_STATIC   = 1;   { variable globale -> segment .DATA            }
+  STORE_AUTO     = 0;   { variable locale  -> pile [BP-n]              }
+  STORE_CONST    = 2;   { constante        -> valeur immediate          }
+
+  { ------------------------------------------------------------------ }
+  { Modes de parametre Ada                                              }
+  { ------------------------------------------------------------------ }
+  PARAM_IN       = 0;   { IN      : passage par valeur (PUSH)          }
+  PARAM_OUT      = 1;   { OUT     : passage par adresse (PUSH offset)  }
+  PARAM_INOUT    = 2;   { IN OUT  : passage par adresse (PUSH offset)  }
+
+  { ------------------------------------------------------------------ }
+  { Categories de sous-programme                                        }
+  { ------------------------------------------------------------------ }
+  SUB_PROC       = 0;   { PROCEDURE (pas de valeur de retour)          }
+  SUB_FUNC       = 1;   { FUNCTION  (valeur de retour dans AX/DX:AX)  }
+
+  { ------------------------------------------------------------------ }
+  { Categories de scope (TScopeEntry.kind = SK_xxx)                    }
+  { ------------------------------------------------------------------ }
+  SK_GLOBAL      = 0;   { scope global (declarations de bibliotheque)  }
+  SK_PROC        = 1;   { corps de PROCEDURE                           }
+  SK_FUNC        = 2;   { corps de FUNCTION                            }
+  SK_BLOCK       = 3;   { bloc DECLARE ... BEGIN ... END               }
+  SK_LOOP        = 4;   { corps de boucle (LOOP/WHILE/FOR)             }
+  SK_EXCEPT      = 5;   { bloc BEGIN ... EXCEPTION ... END             }
+  SK_PACKAGE     = 6;   { corps de PACKAGE BODY                        }
+
+  { ------------------------------------------------------------------ }
+  { Limites des tables (dimensionnement)                                }
+  { ------------------------------------------------------------------ }
+  MAX_SYM    = 512;     { Variables + constantes max                   }
+  MAX_SUB    = 128;     { Procedures + fonctions max                   }
+  MAX_TYPE   = 128;     { Types utilisateur max                        }
+  MAX_PKG    = 32;      { Packages importes max                        }
+  MAX_PARAM  = 20;      { Parametres max par sous-programme            }
+  MAX_FIELD  = 32;      { Champs max par record                        }
+  MAX_ENUM   = 64;      { Litteraux max par type enumere               }
+  MAX_DEPTH  = 24;      { Profondeur de scope max                      }
+  MAX_STR    = 512;     { Litteraux chaines max                        }
+  MAX_LABEL  = 9999;    { Limite compteur labels ASM                   }
+
+{ ============================================================================ }
+{ Types internes                                                               }
+{ ============================================================================ }
+
+Type
+
+  { --- Entree de table des symboles (variables + constantes) --- }
+  TSymEntry = Record
+    name        : String[48];  { Nom Ada (majuscules)                   }
+    asm_label   : String[48];  { Etiquette ASM : _VAR_nom               }
+    type_idx    : Integer;     { Index dans type_table (TYPE_xxx)       }
+    store_class : Integer;     { STORE_xxx                              }
+    bp_offset   : Integer;     { offset [BP-n] si STORE_AUTO            }
+    array_size  : Integer;     { 0 si scalaire, n si tableau            }
+    char_len    : Integer;     { longueur pour TYPE_STR / TYPE_CHAR     }
+    is_const    : Boolean;     { True si CONSTANT                       }
+    scope_lev   : Integer;     { niveau de scope (0 = global)           }
+    init_num    : LongInt;     { valeur initiale numerique              }
+    init_str    : String[64];  { valeur initiale chaine                 }
+    has_init    : Boolean;     { True si initialisation specifiee       }
+  End;
+
+  { --- Entree de table des sous-programmes (proc + func) --- }
+  TSubEntry = Record
+    name          : String[48];
+    asm_label     : String[48];  { ex: _ADA_PROC_nom / _ADA_FUNC_nom    }
+    ret_type      : Integer;     { TYPE_xxx de retour (TYPE_VOID si proc)}
+    param_count   : Integer;     { nombre total de parametres            }
+    param_names   : Array[1..MAX_PARAM] of String[48];
+    param_types   : Array[1..MAX_PARAM] of Integer;
+    param_modes   : Array[1..MAX_PARAM] of Integer;   { PARAM_xxx        }
+    is_forward    : Boolean;     { True si forward declaration           }
+    is_function   : Boolean;     { True si FUNCTION, False si PROCEDURE  }
+    frame_size    : Integer;     { taille frame locale en octets         }
+  End;
+
+  { --- Entree de table des types utilisateur --- }
+  TTypeEntry = Record
+    name        : String[48];
+    kind        : Integer;       { TK_xxx                               }
+    base_type   : Integer;       { index type_table pour derives/ranges }
+    lo_bound    : LongInt;       { borne inferieure (RANGE / ARRAY)     }
+    hi_bound    : LongInt;       { borne superieure                     }
+    field_count : Integer;       { nombre de champs (RECORD)            }
+    field_names : Array[1..MAX_FIELD] of String[48];
+    field_types : Array[1..MAX_FIELD] of Integer;
+    field_offs  : Array[1..MAX_FIELD] of Integer;   { offsets en octets }
+    elem_type   : Integer;       { type des elements (ARRAY)            }
+    elem_size   : Integer;       { taille d'un element en octets        }
+    enum_count  : Integer;       { nombre de litteraux (ENUM)           }
+    enum_names  : Array[1..MAX_ENUM] of String[48];
+    total_size  : Integer;       { taille totale du type en octets      }
+  End;
+
+  { --- Entree de table des packages importes --- }
+  TPkgEntry = Record
+    name        : String[64];   { nom complet ex: ADA.TEXT_IO           }
+    is_standard : Boolean;      { True si package standard reconnu      }
+    use_active  : Boolean;      { True si USE activé (acces direct)     }
+  End;
+
+  { --- Entree de pile de scopes --- }
+  TScopeEntry = Record
+    kind        : Integer;       { SK_xxx                               }
+    sub_idx     : Integer;       { index dans sub_table (0 si global)   }
+    bp_top      : Integer;       { prochain offset BP libre (negatif)   }
+    sym_start   : Integer;       { premier index sym dans ce scope      }
+    lbl_exit    : String[32];   { label de sortie (RETURN / EXIT)      }
+    lbl_cont    : String[32];   { label de continuation (boucle)       }
+    lbl_end     : String[32];   { label de fin de bloc                  }
+    has_except  : Boolean;       { True si bloc EXCEPTION present        }
+    lbl_except  : String[32];   { label du bloc EXCEPTION               }
+  End;
+
+  { --- Alias tableaux + pointeurs pour allocation sur le tas --- }
+  TSymTableArr  = Array[1..MAX_SYM]  of TSymEntry;
+  TSubTableArr  = Array[1..MAX_SUB]  of TSubEntry;
+  TTypeTableArr = Array[1..MAX_TYPE] of TTypeEntry;
+  TPkgTableArr  = Array[1..MAX_PKG]  of TPkgEntry;
+  TScopeArr     = Array[0..MAX_DEPTH] of TScopeEntry;
+  TStrTableArr  = Array[1..MAX_STR]  of String;      { texte litteral   }
+  TLblTableArr  = Array[1..MAX_STR]  of String[32];  { label _LSn       }
+
+  PSymTable   = ^TSymTableArr;
+  PSubTable   = ^TSubTableArr;
+  PTypeTable  = ^TTypeTableArr;
+  PPkgTable   = ^TPkgTableArr;
+  PScopeArr   = ^TScopeArr;
+  PStrTable   = ^TStrTableArr;
+  PLblTable   = ^TLblTableArr;
+
+{ ============================================================================ }
+{ Variables globales                                                           }
+{ ============================================================================ }
+
+Var
+
+  { --- Fichiers --- }
+  source_filename : String;
+  output_filename : String;
+  input_file      : Text;
+  output_file     : Text;
+
+  { --- Options --- }
+  opt_verbose     : Boolean;
+  opt_dump_tok    : Boolean;
+
+  { --- Etat du tokeniseur --- }
+  src_line        : String;
+  src_line_num    : Integer;
+  src_col         : Integer;
+  src_eof         : Boolean;
+  cur_tok_type    : Integer;   { TOK_xxx                                }
+  cur_tok_str     : String;    { texte brut du token (idents, strings)  }
+  cur_tok_num     : LongInt;   { valeur si TOK_INTEGER                  }
+  cur_tok_flt     : Double;    { valeur si TOK_FLOAT                    }
+  cur_tok_kw      : Integer;   { KW_xxx si TOK_IDENT est un mot-cle    }
+  peek_char       : Char;      { caractere en attente (lookahead)       }
+  has_peek        : Boolean;
+  cur_column      : Integer;   { colonne courante (1-base)              }
+
+  { --- Nom de la procedure principale (library unit) --- }
+  prog_name       : String;
+
+  { --- Tables sur le tas --- }
+  sym_table   : PSymTable;     { variables + constantes                 }
+  sym_count   : Integer;
+  sub_table   : PSubTable;     { procedures + fonctions                 }
+  sub_count   : Integer;
+  type_table  : PTypeTable;    { types utilisateur + predefinis         }
+  type_count  : Integer;
+  pkg_table   : PPkgTable;     { packages importes (WITH/USE)           }
+  pkg_count   : Integer;
+  str_table   : PStrTable;     { textes des litteraux chaines           }
+  lbl_table   : PLblTable;     { labels ASM des litteraux (_LS1..._LSn) }
+  str_count   : Integer;
+
+  { --- Pile de scopes --- }
+  scope_stack : PScopeArr;
+  scope_top   : Integer;
+
+  { --- Compteurs --- }
+  label_counter : Integer;     { pour NewLabel -> @@L0001, @@L0002 ...  }
+  lit_counter   : Integer;     { pour AddStringLit -> _LS1, _LS2 ...    }
+  error_count   : Integer;
+  warn_count    : Integer;
+  gen_enabled   : Boolean;     { False -> Emit() ne fait rien (erreur)  }
+
+{ ============================================================================ }
+{ Point d'entree provisiore (sera remplace par Compile a TODO 24)             }
+{ ============================================================================ }
+
 Begin
-  WriteLn('ADA86 - Compilateur Ada -> 8086 (non encore implemente)');
-  WriteLn('Implementez les 25 TODOs dans ADA86.PAS');
+  WriteLn('ADA86 V1.0 - TODO 01 OK (architecture de base compilee)');
+  WriteLn('  TOK_xxx   : ', TOK_EOF,       ' tokens definis');
+  WriteLn('  KW_xxx    : ', KW_INOUT,      ' mots-cles definis');
+  WriteLn('  TYPE_xxx  : ', TYPE_VOID,     ' types predefinis');
+  WriteLn('  MAX_SYM   : ', MAX_SYM,       ' / MAX_SUB : ', MAX_SUB);
+  WriteLn('  MAX_TYPE  : ', MAX_TYPE,      ' / MAX_STR : ', MAX_STR);
+  WriteLn('  Tailles pointeurs : PSymTable PSubTable PTypeTable OK');
 End.
