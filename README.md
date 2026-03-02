@@ -17,6 +17,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		    <td>Cette commande permet de convertir un code source assembleur de microprocesseur 8080 en code source Z80.</td>
 		  </tr>	
 		<tr>
+			<td><b>ABAP86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur ABAP/4 pour de l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>ASC2ABAP.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier ASCII en code source ABAP/4.</td>
 		</tr>	
