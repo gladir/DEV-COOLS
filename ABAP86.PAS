@@ -2221,8 +2221,8 @@ End;
 { TODO 08 - PARSEUR : EXPRESSIONS ABAP                   [COMPLET]            }
 { ============================================================================ }
 
-{ --- Primitives de generation (pre-requises pour les expressions).
-  Ces routines seront completees / documentees au TODO 09.            ------- }
+{ --- Primitives de generation incluses ici car pre-requises par ParseExpr.
+  La section TODO 09 ci-dessous documente et complete l'infrastructure.  --- }
 
 { Charge une variable dans AX selon son type et sa classe de stockage }
 Procedure GenLoadVar(sym_idx: Integer);
@@ -2669,6 +2669,163 @@ Begin
   EmitI('POP     BX');
   EmitI('OR      AX, BX');
  End;
+End;
+
+{ ============================================================================ }
+{ TODO 09 - GENERATION DE CODE : INFRASTRUCTURE COMPLETE [COMPLET]            }
+{ ============================================================================ }
+{ Note : GenLoadVar, GenStoreVar, GenBinOp, GenCompare, GenBuiltIn sont        }
+{ places dans la section TODO 08 car pre-requis par ParseExpr.                }
+{ Ce TODO ajoute : GenLoadAddr, GenPrologue, GenEpilogue,                     }
+{                  GenModDiv, GenClearVar, GenWordToStr.                       }
+
+{ --- Charge l'ADRESSE d'une variable dans AX (pour CHANGING / LEA) ---
+  Equivalent a LEA AX, var ; utile pour passer par reference dans PERFORM.   }
+Procedure GenLoadAddr(sym_idx: Integer);
+Var sc, bp: Integer; lbl: String;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin EmitComment('GenLoadAddr: idx invalide'); Exit; End;
+ sc  := sym_table[sym_idx].store_class;
+ bp  := sym_table[sym_idx].bp_offset;
+ lbl := sym_table[sym_idx].asm_label;
+ If sc = STORE_AUTO Then
+ Begin
+  If bp >= 0 Then EmitI('LEA     AX, [BP+' + ItoSI(bp) + ']')
+  Else            EmitI('LEA     AX, [BP' + ItoSI(bp) + ']');
+ End Else
+  EmitI('LEA     AX, ' + lbl);
+End;
+
+{ --- Accede a une variable CHANGING via son adresse (DI pointe dessus) ---
+  Utilise apres CALL FORM pour lire/ecrire un parametre CHANGING.            }
+Procedure GenIndirectLoad;
+Begin
+ EmitI('MOV     AX, [DI]');
+End;
+
+Procedure GenIndirectStore;
+Begin
+ EmitI('MOV     [DI], AX');
+End;
+
+{ --- Prologue standard d'une FORM (sauvegarde frame) ---
+  local_size : taille totale des variables locales en octets (positif).     }
+Procedure GenPrologue(local_size: Integer);
+Begin
+ EmitI('PUSH    BP');
+ EmitI('MOV     BP, SP');
+ If local_size > 0 Then
+  EmitI('SUB     SP, ' + ItoSI(local_size) + '  ; variables locales');
+End;
+
+{ --- Epilogue standard d'une FORM (restauration frame + retour) ---
+  param_bytes : taille totale des parametres empiles (nparams * 2 octets).  }
+Procedure GenEpilogue(param_bytes: Integer);
+Begin
+ EmitI('MOV     SP, BP');
+ EmitI('POP     BP');
+ If param_bytes > 0 Then
+  EmitI('RET     ' + ItoSI(param_bytes))
+ Else
+  EmitI('RET');
+End;
+
+{ --- Division entiere et modulo : AX / BX ---
+  is_div = True  -> resultat = quotient  (AX apres IDIV)
+  is_div = False -> resultat = reste     (DX apres IDIV)                     }
+Procedure GenModDiv(is_div: Boolean);
+Begin
+ EmitI('CWD');
+ EmitI('IDIV    BX');
+ If Not is_div Then
+  EmitI('MOV     AX, DX  ; reste (MOD)');
+End;
+
+{ --- Efface une variable (CLEAR) ---
+  TYPE I / N / P / F : MOV WORD PTR, 0
+  TYPE C / STRING    : remplissage d'espaces (20h) jusqu'a char_len          }
+Procedure GenClearVar(sym_idx: Integer);
+Var sc, dt, bp, cl: Integer; lbl: String;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin EmitComment('GenClearVar: idx invalide'); Exit; End;
+ sc  := sym_table[sym_idx].store_class;
+ dt  := sym_table[sym_idx].data_type;
+ bp  := sym_table[sym_idx].bp_offset;
+ cl  := sym_table[sym_idx].char_len;
+ lbl := sym_table[sym_idx].asm_label;
+ EmitComment('CLEAR ' + sym_table[sym_idx].name);
+ Case dt Of
+  TYPE_I, TYPE_P, TYPE_F:
+  Begin
+   If sc = STORE_AUTO Then
+   Begin
+    If bp >= 0 Then EmitI('MOV     WORD PTR [BP+' + ItoSI(bp) + '], 0')
+    Else            EmitI('MOV     WORD PTR [BP' + ItoSI(bp) + '], 0');
+   End Else         EmitI('MOV     WORD PTR [' + lbl + '], 0');
+  End;
+  TYPE_C, TYPE_N, TYPE_D, TYPE_T, TYPE_STRING, TYPE_XSTRING:
+  Begin
+   { Remplir le buffer avec des espaces (20h) via REP STOSB }
+   If cl < 1 Then cl := 1;
+   EmitI('MOV     AL, 20h  ; espace');
+   EmitI('MOV     CX, ' + ItoSI(cl));
+   If sc = STORE_AUTO Then
+   Begin
+    If bp >= 0 Then EmitI('LEA     DI, [BP+' + ItoSI(bp) + ']')
+    Else            EmitI('LEA     DI, [BP' + ItoSI(bp) + ']');
+   End Else         EmitI('LEA     DI, ' + lbl);
+   EmitI('REP     STOSB');
+   { Terminer par '$' pour les routines PRINT_STR }
+   EmitI('MOV     BYTE PTR [DI], 24h  ; terminateur $');
+  End;
+ Else
+  { Types inconnus : juste un zero-word }
+  If sc = STORE_AUTO Then
+  Begin
+   If bp >= 0 Then EmitI('MOV     WORD PTR [BP+' + ItoSI(bp) + '], 0')
+   Else            EmitI('MOV     WORD PTR [BP' + ItoSI(bp) + '], 0');
+  End Else         EmitI('MOV     WORD PTR [' + lbl + '], 0');
+ End;
+End;
+
+{ --- Conversion AX (entier signe) vers chaine dans NUMBUF ---
+  Utilise par _ABAP_PRINT_INT ; genere l'appel au helper runtime.            }
+Procedure GenPrintInt;
+Begin
+ EmitI('PUSH    AX');
+ EmitI('CALL    _ABAP_PRINT_INT');
+ EmitI('ADD     SP, 2');
+End;
+
+{ --- Impression d'une chaine AX (pointeur vers chaine terminee '$') ---
+  Genere l'appel au helper runtime _ABAP_PRINT_STR.                          }
+Procedure GenPrintStr;
+Begin
+ EmitI('MOV     DX, AX');
+ EmitI('CALL    _ABAP_PRINT_STR');
+End;
+
+{ --- Saut conditionnel depuis AX (resultat d'une expression boolenne) ---
+  Saute vers lbl si la condition est FAUSSE (AX = 0).                        }
+Procedure GenJmpIfFalse(Const lbl: String);
+Begin
+ EmitI('TEST    AX, AX');
+ EmitI('JZ      ' + lbl);
+End;
+
+{ --- Saut conditionnel : saute si la condition est VRAIE (AX <> 0) --- }
+Procedure GenJmpIfTrue(Const lbl: String);
+Begin
+ EmitI('TEST    AX, AX');
+ EmitI('JNZ     ' + lbl);
+End;
+
+{ --- Saut inconditionnel --- }
+Procedure GenJmp(Const lbl: String);
+Begin
+ EmitI('JMP     ' + lbl);
 End;
 
 Begin
