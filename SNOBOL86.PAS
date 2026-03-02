@@ -945,6 +945,2472 @@ Begin
  If fwd_table   <> Nil Then Begin Dispose(fwd_table);   fwd_table   := Nil; End;
 End;
 
+{ ============================================================================
+  TODO 04 - DESCRIPTEUR DE CHAINE RUNTIME (STRING DESCRIPTOR)
+  ============================================================================
+
+  En memoire cible (8086), chaque valeur SNOBOL est representee par un
+  "descripteur" de 4 octets (DWORD) :
+
+      Offset 0 : WORD  ptr  ->  adresse des octets de donnees dans le heap
+      Offset 2 : WORD  len  ->  longueur courante de la chaine (0..65535)
+
+  Un descripteur vide (chaine "") a ptr=OFFSET _SB_EMPTY_BUF, len=0.
+  Les registres utilises par convention :
+      DI = adresse du descripteur a lire/ecrire
+      BX = ptr (apres _RT_STR_PTR)
+      CX = len (apres _RT_STR_LEN)
+
+  Heap dynamique : zone lineaire en .DATA, croissant vers le haut.
+    _HEAP_BASE DD ?   <- premier octet du heap (base fixe)
+    _HEAP_PTR  DD ?   <- prochain octet libre (avance a chaque alloc)
+    _HEAP_END  DD ?   <- premiere adresse invalide (base + taille)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Infrastructure d'emission ASM (Emit / EmitI / EmitLabel / EmitComment)
+  Toutes les routines de generation de code passent par ces helpers.
+  La variable cur_out pointe sur out_file ou tmp_file selon la passe.
+  -------------------------------------------------------------------------- }
+
+Var
+  cur_out : ^Text;    { pointeur sur le fichier de sortie courant        }
+
+{$WARN 5036 OFF} { cur_out : pointeur global initialise dans Begin }
+Procedure Emit(Const s: String);
+Begin
+  WriteLn(cur_out^, s);
+End;
+
+Procedure EmitI(Const s: String);
+{ Emettre une instruction avec TAB de mise en forme }
+Begin
+  WriteLn(cur_out^, #9, s);
+End;
+
+Procedure EmitLabel(Const lbl: String);
+Begin
+  WriteLn(cur_out^, lbl, ':');
+End;
+
+Procedure EmitBlank;
+Begin
+  WriteLn(cur_out^, '');
+End;
+
+Procedure EmitComment(Const s: String);
+Begin
+  WriteLn(cur_out^, '; ', s);
+End;
+
+Procedure EmitSep;
+{ Ligne separatrice de section }
+Begin
+  WriteLn(cur_out^, '; ', StringOfChar('-', 72));
+End;
+
+{ --------------------------------------------------------------------------
+  Helpers : noms de labels predefined pour les descripteurs et le heap
+  -------------------------------------------------------------------------- }
+
+Function DescLabel(Const var_name: TString): TString;
+{ Label ASM du descripteur d'une variable SNOBOL : _SBV_xxx_DESC }
+Begin
+  DescLabel := SB_VAR_PFX + AsmSafeIdent(UpCaseStr(var_name)) + '_D';
+End;
+
+Function DataLabel(Const var_name: TString): TString;
+{ Label ASM du buffer de donnees d'une variable SNOBOL : _SBV_xxx_BUF }
+Begin
+  DataLabel := SB_VAR_PFX + AsmSafeIdent(UpCaseStr(var_name)) + '_B';
+End;
+
+Function LitDescLabel(idx: Integer): TString;
+{ Label ASM du descripteur d'un litteral : _SBS_nnn_D }
+Begin
+  LitDescLabel := SB_LIT_PFX + IntToStr(idx) + '_D';
+End;
+
+Function LitDataLabel(idx: Integer): TString;
+{ Label ASM du buffer de donnees d'un litteral : _SBS_nnn_B }
+Begin
+  LitDataLabel := SB_LIT_PFX + IntToStr(idx) + '_B';
+End;
+
+{ --------------------------------------------------------------------------
+  GenDescriptor : emettre un descripteur + son buffer dans le segment .DATA
+  --------------------------------------------------------------------------
+  Forme emise :
+      <desc_lbl>:   DW  OFFSET <data_lbl>   ; ptr
+                    DW  <initial_len>        ; len
+      <data_lbl>:   DB  <initial_len> DUP(0); buffer (init a vide)
+                    DB  0                    ; garde-fou null
+  -------------------------------------------------------------------------- }
+
+Procedure GenDescriptor(Const desc_lbl, data_lbl: TString;
+                        init_len: Integer);
+Begin
+  EmitComment('Descripteur : ' + desc_lbl);
+  EmitI(desc_lbl + ':');
+  EmitI('DW  OFFSET ' + data_lbl + '  ; ptr');
+  EmitI('DW  0                       ; len courante (init = 0)');
+  EmitI(data_lbl + ':');
+  If init_len > 0 Then
+    EmitI('DB  ' + IntToStr(init_len) + ' DUP(0) ; buffer')
+  Else
+    EmitI('DB  0                    ; buffer vide (chaine "")');
+  EmitI('DB  0                    ; garde-fou null');
+End;
+
+{ --------------------------------------------------------------------------
+  GenDescriptorFromLit : emettre un descripteur pour un litteral SNOBOL
+  Le buffer contient les octets de la chaine (longueur connue).
+  -------------------------------------------------------------------------- }
+
+Procedure GenDescriptorFromLit(Const desc_lbl, data_lbl, s: TString);
+Var i   : Integer;
+    hex : String;
+    b   : Byte;
+Begin
+  EmitComment('Litteral : ''' + s + '''');
+  EmitI(desc_lbl + ':');
+  EmitI('DW  OFFSET ' + data_lbl + '  ; ptr');
+  EmitI('DW  ' + IntToStr(Length(s)) + '           ; len');
+  EmitI(data_lbl + ':');
+  If Length(s) = 0 Then
+  Begin
+    EmitI('DB  0  ; buffer vide');
+  End
+  Else
+  Begin
+    { Emettre les octets en une ligne DB }
+    hex := 'DB  ';
+    For i := 1 To Length(s) Do
+    Begin
+      b := Ord(s[i]);
+      If i > 1 Then hex := hex + ', ';
+      hex := hex + IntToStr(b);
+    End;
+    EmitI(hex);
+    EmitI('DB  0  ; garde-fou null');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenHeapData : emettre les variables du heap dynamique dans le .DATA
+  Emis une seule fois par GenDataSeg (TODO 08).
+  --------------------------------------------------------------------------
+
+  Structure emise :
+
+      ; --- Heap dynamique SNOBOL runtime ---
+      _HEAP_BASE  DW  0              ; offset base (rempli par _SB_INIT_HEAP)
+      _HEAP_PTR   DW  0              ; offset prochain octet libre
+      _HEAP_END   DW  0              ; offset premiere adresse invalide
+      _HEAP_BUF   DB  8192 DUP(0)   ; zone de donnees brute
+
+  Note : on utilise des WORDs pour rester dans l'espace adressable 16 bits
+  du segment DS en .MODEL SMALL.
+  -------------------------------------------------------------------------- }
+
+Procedure GenHeapData(heap_size: Integer);
+Begin
+  EmitSep;
+  EmitComment('Heap dynamique SNOBOL runtime (' + IntToStr(heap_size) + ' octets)');
+  EmitSep;
+  EmitI('_HEAP_BASE  DW  0            ; offset base dans DS');
+  EmitI('_HEAP_PTR   DW  0            ; offset prochain octet libre');
+  EmitI('_HEAP_END   DW  0            ; offset premiere adresse invalide');
+  EmitI('_HEAP_BUF   DB  ' + IntToStr(heap_size) + ' DUP(0)  ; zone de donnees');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenInitHeap : emettre la routine _SB_INIT_HEAP dans le segment .CODE
+  Appele depuis GenCodeHeader (TODO 09).
+
+  Logique :
+      MOV AX, OFFSET _HEAP_BUF
+      MOV [_HEAP_BASE], AX
+      MOV [_HEAP_PTR],  AX
+      ADD AX, <heap_size>
+      MOV [_HEAP_END],  AX
+      RET
+  -------------------------------------------------------------------------- }
+
+Procedure GenInitHeap(heap_size: Integer);
+Begin
+  EmitSep;
+  EmitComment('_SB_INIT_HEAP : initialiser le heap dynamique');
+  EmitSep;
+  EmitLabel('_SB_INIT_HEAP');
+  EmitI('MOV  AX, OFFSET _HEAP_BUF');
+  EmitI('MOV  [_HEAP_BASE], AX');
+  EmitI('MOV  [_HEAP_PTR],  AX');
+  EmitI('ADD  AX, ' + IntToStr(heap_size));
+  EmitI('MOV  [_HEAP_END],  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrPtrMacro / GenStrLenMacro : sequences inline pour acceder a un
+  descripteur pointe par DI.
+
+  Equivalent ASM des "macros" :
+      _RT_STR_PTR : MOV BX, [DI]      ; BX <- ptr donnees
+      _RT_STR_LEN : MOV CX, [DI+2]    ; CX <- longueur
+  Ces sequences sont emises inline plutot que comme CALL pour minimiser
+  le surcoût sur 8086 (pas de MACRO MASM en ciblant TASM minimal).
+  -------------------------------------------------------------------------- }
+
+Procedure GenLoadStrPtr;
+{ Emettre : MOV BX, [DI] -- BX <- ptr donnees du descripteur en DI }
+Begin
+  EmitI('MOV  BX, [DI]    ; ptr <- descripteur[DI].ptr');
+End;
+
+Procedure GenLoadStrLen;
+{ Emettre : MOV CX, [DI+2] -- CX <- longueur du descripteur en DI }
+Begin
+  EmitI('MOV  CX, [DI+2]  ; len <- descripteur[DI].len');
+End;
+
+Procedure GenStoreStrPtr;
+{ Emettre : MOV [DI], BX -- descripteur[DI].ptr <- BX }
+Begin
+  EmitI('MOV  [DI], BX    ; descripteur[DI].ptr <- BX');
+End;
+
+Procedure GenStoreStrLen;
+{ Emettre : MOV [DI+2], CX -- descripteur[DI].len <- CX }
+Begin
+  EmitI('MOV  [DI+2], CX  ; descripteur[DI].len <- CX');
+End;
+
+Procedure GenLoadDesc(Const desc_label: TString);
+{ Emettre : MOV DI, OFFSET <label> -- DI pointe sur le descripteur }
+Begin
+  EmitI('MOV  DI, OFFSET ' + desc_label);
+End;
+
+{ --------------------------------------------------------------------------
+  GenEmptyStrData : emettre la constante chaine vide (_SB_EMPTY_BUF)
+  et son descripteur (_SB_EMPTY_DESC) dans le .DATA.
+  Utilise comme valeur initiale de toute variable non initialisee.
+  -------------------------------------------------------------------------- }
+
+Procedure GenEmptyStrData;
+Begin
+  EmitComment('"" - chaine vide (descripteur initial de toute variable)');
+  EmitI('_SB_EMPTY_DESC:');
+  EmitI('  DW  OFFSET _SB_EMPTY_BUF  ; ptr');
+  EmitI('  DW  0                      ; len = 0');
+  EmitI('_SB_EMPTY_BUF:');
+  EmitI('  DB  0                      ; buffer null');
+  EmitBlank;
+End;
+{$WARN 5036 ON}
+
+{ --------------------------------------------------------------------------
+  GenCrlfData : emettre le descripteur CRLF (_SB_CRLF_DESC) dans .DATA.
+  Utilise par _RT_WRITELINE / New_Line.
+  -------------------------------------------------------------------------- }
+
+Procedure GenCrlfData;
+Begin
+  EmitComment('CRLF - fin de ligne');
+  EmitI('_SB_CRLF_DESC:');
+  EmitI('  DW  OFFSET _SB_CRLF_BUF  ; ptr');
+  EmitI('  DW  2                     ; len = 2');
+  EmitI('_SB_CRLF_BUF:');
+  EmitI('  DB  0Dh, 0Ah, 0          ; CR LF null');
+  EmitBlank;
+End;
+{$WARN 5036 ON}
+
+{ ============================================================================
+  TODO 05 - LEXEUR : LECTURE SOURCE ET TOKENISATION
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Variables d'etat du lexeur
+  -------------------------------------------------------------------------- }
+
+Var
+  lex_line     : String;        { ligne source courante (brute)             }
+  lex_pos      : Integer;       { position courante dans lex_line (1-base)  }
+  lex_line_raw : String;        { copie de la ligne avant toute modification}
+  lex_at_eol   : Boolean;       { True quand la ligne est entierement lue   }
+  lex_at_eof   : Boolean;       { True quand le fichier source est epuise   }
+  lex_in_cont  : Boolean;       { True si la ligne est une continuation     }
+  { Token courant }
+  cur_tok_type : TTokType;      { type du token en cours                    }
+  cur_tok_str  : TString;       { valeur chaine du token                    }
+  cur_tok_num  : LongInt;       { valeur entiere du token                   }
+  cur_tok_real : LongInt;       { valeur reelle 16.16 du token              }
+
+{ --------------------------------------------------------------------------
+  Helpers internes du lexeur
+  -------------------------------------------------------------------------- }
+
+Function LexCurChar: Char;
+{ Caractere courant sans avancer }
+Begin
+  If lex_pos > Length(lex_line) Then LexCurChar := #0
+  Else LexCurChar := lex_line[lex_pos];
+End;
+
+Function LexPeekChar(offset: Integer): Char;
+{ Regarder le caractere a lex_pos + offset (0 = courant) }
+Var p : Integer;
+Begin
+  p := lex_pos + offset;
+  If (p < 1) Or (p > Length(lex_line)) Then LexPeekChar := #0
+  Else LexPeekChar := lex_line[p];
+End;
+
+Procedure LexAdvance;
+{ Avancer d'un caractere dans la ligne }
+Begin
+  If lex_pos <= Length(lex_line) Then Inc(lex_pos);
+End;
+
+Procedure LexSkipSpaces;
+{ Sauter les espaces et tabulations en position courante }
+Begin
+  While (lex_pos <= Length(lex_line)) And
+        (lex_line[lex_pos] In [' ', #9]) Do
+    Inc(lex_pos);
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadLine : lire la prochaine ligne significative du fichier source.
+
+  Regles SNOBOL 4 :
+    - Ligne dont le premier caractere est '*'  -> commentaire, ignorer.
+    - Ligne dont le premier caractere est '+'
+      ou '-' -> continuation de l'instruction precedente :
+      on retire le premier caractere et on concatène au buffer en cours.
+    - Ligne "-END-" (apres trim) -> fin de programme.
+    - Ligne vide -> ignoree (ligne blanche).
+  La fonction retourne True si une nouvelle instruction demarre,
+  False si EOF.
+  -------------------------------------------------------------------------- }
+
+Function LexReadLine: Boolean;
+Var raw : String;
+    ch1 : Char;
+Begin
+  LexReadLine := False;
+  Repeat
+    If Eof(src_file) Then Begin lex_at_eof := True; Exit; End;
+    ReadLn(src_file, raw);
+    Inc(src_line_num);
+    { Normaliser : retirer CR residuel eventuel (DOS/Unix) }
+    If (Length(raw) > 0) And (raw[Length(raw)] = #13) Then
+      Delete(raw, Length(raw), 1);
+
+    { Ligne vide -> ignorer }
+    If Length(raw) = 0 Then Continue;
+
+    ch1 := raw[1];
+
+    { Commentaire : col 1 = '*' ou '!' }
+    If ch1 In ['*', '!'] Then Continue;
+
+    { Fin de programme }
+    If raw = SB_END_SENTINEL Then
+    Begin
+      lex_at_eof := True;
+      lex_line   := raw;
+      lex_pos    := 1;
+      LexReadLine := True;
+      Exit;
+    End;
+
+    { Continuation : col 1 = '+' ou '-' }
+    If ch1 In ['+', '-'] Then
+    Begin
+      { Concatener au contenu deja dans lex_line apres la colonne 1 }
+      lex_line    := lex_line + Copy(raw, 2, Length(raw) - 1);
+      lex_in_cont := True;
+      Continue;
+    End;
+
+    { Nouvelle instruction }
+    lex_line     := raw;
+    lex_line_raw := raw;
+    lex_pos      := 1;
+    lex_at_eol   := False;
+    lex_in_cont  := False;
+    LexReadLine  := True;
+    Exit;
+  Until False;
+End;
+
+{ --------------------------------------------------------------------------
+  Decomposition d'une ligne SNOBOL 4 en champs :
+    LABEL (col 1..initialement, jusqu'au premier espace/tab ou hors col 1)
+    SUBJECT
+    PATTERN = REPLACEMENT
+    :GOTO
+
+  En SNOBOL 4, le LABEL est en colonne 1 (concerne seulement si le
+  premier caractere n'est pas un espace).
+  Le sujet, patron et remplacement sont separes par des espaces.
+  La section goto commence au premier ':' non guillemete.
+  -------------------------------------------------------------------------- }
+
+{ Champs de l'instruction en cours }
+Var
+  inst_label   : TString;    { etiquette de l'instruction (peut etre '')    }
+  inst_subject : TString;    { sujet (variable ou '')                       }
+  inst_pattern : TString;    { patron brut (chaine, avant parsing)          }
+  inst_repl    : TString;    { remplacement brut                            }
+  inst_goto_s  : TString;    { label goto succes                            }
+  inst_goto_f  : TString;    { label goto echec                             }
+  inst_goto_u  : TString;    { label goto inconditionnel                    }
+  inst_has_eq  : Boolean;    { True si '=' remplacement present             }
+
+{ --------------------------------------------------------------------------
+  LexExtractLabel : extraire le label eventuel de la ligne (colonne 1)
+  Un label est present ssi le premier caractere de la ligne n'est pas
+  un espace/tabulation.
+  Le label se termine au premier espace/tab ou a la fin de la ligne.
+  -------------------------------------------------------------------------- }
+
+Procedure LexExtractLabel;
+Var i : Integer;
+Begin
+  inst_label := '';
+  { Si la ligne commence par un espace/tab -> pas de label }
+  If (Length(lex_line) = 0) Or (lex_line[1] In [' ', #9]) Then
+  Begin
+    lex_pos := 1;
+    Exit;
+  End;
+  { Lire jusqu'au premier espace/tab }
+  i := 1;
+  While (i <= Length(lex_line)) And Not (lex_line[i] In [' ', #9]) Do
+    Inc(i);
+  inst_label := UpCaseStr(Copy(lex_line, 1, i - 1));
+  lex_pos   := i;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadToken : lire le prochain token depuis la position lex_pos.
+  Remplit cur_tok_type / cur_tok_str / cur_tok_num.
+  -------------------------------------------------------------------------- }
+
+Procedure LexReadToken;
+Var ch    : Char;
+    s     : TString;
+    n     : LongInt;
+    code  : Integer;
+    delim : Char;
+    i     : Integer;
+    r     : LongInt;      { partie decimale 16.16 }
+    frac  : LongInt;
+    denom : LongInt;
+Begin
+  LexSkipSpaces;
+  cur_tok_str  := '';
+  cur_tok_num  := 0;
+  cur_tok_real := 0;
+
+  If lex_pos > Length(lex_line) Then
+  Begin
+    cur_tok_type := TOK_EOL;
+    lex_at_eol  := True;
+    Exit;
+  End;
+
+  ch := lex_line[lex_pos];
+
+  { --- Debut de la section GOTO : ':' --- }
+  If ch = ':' Then
+  Begin
+    LexAdvance;
+    ch := LexCurChar;
+    If ch = 'S' Then
+    Begin
+      LexAdvance; { S }
+      LexAdvance; { ( }
+      cur_tok_type := TOK_GOTO_S;
+    End
+    Else If ch = 'F' Then
+    Begin
+      LexAdvance; { F }
+      LexAdvance; { ( }
+      cur_tok_type := TOK_GOTO_F;
+    End
+    Else If ch = '(' Then
+    Begin
+      LexAdvance; { ( }
+      cur_tok_type := TOK_GOTO_UNC;
+    End
+    Else
+      cur_tok_type := TOK_COLON;
+    Exit;
+  End;
+
+  { --- Litteral chaine : apostrophe ou guillemet --- }
+  If ch In ['''', '"'] Then
+  Begin
+    delim := ch;
+    LexAdvance;
+    s := '';
+    While lex_pos <= Length(lex_line) Do
+    Begin
+      ch := lex_line[lex_pos];
+      LexAdvance;
+      If ch = delim Then
+      Begin
+        { Double delimiteur -> delimiteur litterral }
+        If (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = delim) Then
+        Begin
+          s := s + delim;
+          LexAdvance;
+        End
+        Else Break;
+      End
+      Else
+        s := s + ch;
+    End;
+    cur_tok_type := TOK_STRING;
+    cur_tok_str  := s;
+    Exit;
+  End;
+
+  { --- Entier ou reel --- }
+  If ch In ['0'..'9'] Then
+  Begin
+    s := '';
+    While (lex_pos <= Length(lex_line)) And
+          (lex_line[lex_pos] In ['0'..'9']) Do
+    Begin
+      s := s + lex_line[lex_pos];
+      LexAdvance;
+    End;
+    { Verifier presence d'un '.' pour reel }
+    If (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = '.') Then
+    Begin
+      { Partie decimale }
+      LexAdvance; { sauter '.' }
+      frac  := 0;
+      denom := 1;
+      While (lex_pos <= Length(lex_line)) And
+            (lex_line[lex_pos] In ['0'..'9']) Do
+      Begin
+        frac  := frac * 10 + (Ord(lex_line[lex_pos]) - Ord('0'));
+        denom := denom * 10;
+        LexAdvance;
+      End;
+      Val(s, n, code);
+      { Representation 16.16 fixe : partie entiere * 65536 + frac/denom*65536 }
+      cur_tok_real := (n shl 16) Or ((frac * 65536) Div denom);
+      cur_tok_type := TOK_REAL;
+    End
+    Else
+    Begin
+      Val(s, n, code);
+      cur_tok_num  := n;
+      cur_tok_type := TOK_INTEGER;
+    End;
+    Exit;
+  End;
+
+  { --- Identifiant --- }
+  If ch In ['A'..'Z','a'..'z','_'] Then
+  Begin
+    s := '';
+    While (lex_pos <= Length(lex_line)) And
+          (lex_line[lex_pos] In ['A'..'Z','a'..'z','0'..'9','_','.']) Do
+    Begin
+      s := s + lex_line[lex_pos];
+      LexAdvance;
+    End;
+    cur_tok_type := TOK_IDENT;
+    cur_tok_str  := UpCaseStr(s);
+    Exit;
+  End;
+
+  { --- Variable systeme : & suivi d'un ident --- }
+  If ch = '&' Then
+  Begin
+    LexAdvance;
+    s := '';
+    While (lex_pos <= Length(lex_line)) And
+          (lex_line[lex_pos] In ['A'..'Z','a'..'z','0'..'9','_']) Do
+    Begin
+      s := s + lex_line[lex_pos];
+      LexAdvance;
+    End;
+    cur_tok_type := TOK_AMP;
+    cur_tok_str  := UpCaseStr(s);
+    Exit;
+  End;
+
+  { --- Operateurs et ponctuation simples --- }
+  LexAdvance;
+  Case ch Of
+    '(' : cur_tok_type := TOK_LPAREN;
+    ')' : cur_tok_type := TOK_RPAREN;
+    '<' : cur_tok_type := TOK_LANGLE;
+    '>' : cur_tok_type := TOK_RANGLE;
+    ',' : cur_tok_type := TOK_COMMA;
+    '=' : cur_tok_type := TOK_EQ;
+    '.' : cur_tok_type := TOK_DOT;
+    '$' : cur_tok_type := TOK_DOLLAR;
+    '@' : cur_tok_type := TOK_AT;
+    '!' : cur_tok_type := TOK_BANG;
+    '|' : cur_tok_type := TOK_PIPE;
+    '*' : cur_tok_type := TOK_STAR;
+    '#' : cur_tok_type := TOK_HASH;
+    '/' : cur_tok_type := TOK_SLASH;
+    '+' : cur_tok_type := TOK_PLUS;
+    '-' : cur_tok_type := TOK_MINUS;
+    '~' : cur_tok_type := TOK_TILDE;
+    '^' : cur_tok_type := TOK_CARET;
+    Else  cur_tok_type := TOK_UNKNOWN;
+  End;
+  cur_tok_str := ch;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExtractGoto : lire les labels de goto depuis la position courante.
+  Appele quand LexReadToken retourne TOK_GOTO_S / TOK_GOTO_F / TOK_GOTO_UNC.
+  Remplit inst_goto_s, inst_goto_f, inst_goto_u.
+  La forme attendue dans lex_line a partir de lex_pos est :
+      label)[:S(label)][:F(label)]
+  -------------------------------------------------------------------------- }
+
+Procedure LexReadGotoLabel(Var lbl: TString);
+{ Lire le label jusqu'a ')' et avancer apres le ')' }
+Var s : TString;
+Begin
+  s := '';
+  While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] <> ')') Do
+  Begin
+    s := s + lex_line[lex_pos];
+    LexAdvance;
+  End;
+  If lex_pos <= Length(lex_line) Then LexAdvance; { sauter ')' }
+  lbl := UpCaseStr(s);
+End;
+
+Procedure LexExtractGotos;
+{ Parser toutes les sections :S(lbl) :F(lbl) :(lbl) sur la ligne }
+Var ch : Char;
+Begin
+  inst_goto_s := '';
+  inst_goto_f := '';
+  inst_goto_u := '';
+  Repeat
+    LexSkipSpaces;
+    If (lex_pos > Length(lex_line)) Or (LexCurChar <> ':') Then Break;
+    LexAdvance; { ':' }
+    ch := LexCurChar;
+    If ch = 'S' Then
+    Begin
+      LexAdvance; LexAdvance; { S( }
+      LexReadGotoLabel(inst_goto_s);
+    End
+    Else If ch = 'F' Then
+    Begin
+      LexAdvance; LexAdvance; { F( }
+      LexReadGotoLabel(inst_goto_f);
+    End
+    Else If ch = '(' Then
+    Begin
+      LexAdvance; { ( }
+      LexReadGotoLabel(inst_goto_u);
+    End
+    Else Break;
+  Until False;
+End;
+
+{ --------------------------------------------------------------------------
+  InitLexer : initialiser l'etat du lexeur avant la premiere ligne
+  -------------------------------------------------------------------------- }
+
+Procedure InitLexer;
+Begin
+  lex_line     := '';
+  lex_pos      := 1;
+  lex_line_raw := '';
+  lex_at_eol   := False;
+  lex_at_eof   := False;
+  lex_in_cont  := False;
+  cur_tok_type := TOK_EOF;
+  cur_tok_str  := '';
+  cur_tok_num  := 0;
+  cur_tok_real := 0;
+  { Champs d'instruction }
+  inst_label   := '';
+  inst_subject := '';
+  inst_pattern := '';
+  inst_repl    := '';
+  inst_goto_s  := '';
+  inst_goto_f  := '';
+  inst_goto_u  := '';
+  inst_has_eq  := False;
+End;
+
+{ ============================================================================
+  TODO 06 - TABLE DES MOTS-CLES ET IDENTIFICATEURS PREDEFINIS
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  RegisterBuiltin : enregistrer une fonction integree dans SymTable + FuncTable
+  -------------------------------------------------------------------------- }
+
+Procedure RegisterBuiltin(Const nm: TString; nparams: Integer);
+Var si, fi : Integer;
+Begin
+  si := AddSym(nm, SK_BUILTIN, VK_STR);
+  If si = 0 Then Exit;
+  sym_table^[si].param_idx := nparams;   { nb params attendus (0 = variable) }
+  fi := AddFunc(nm, SUB_BUILTIN);
+  If fi = 0 Then Exit;
+  func_table^[fi].param_count := nparams;
+End;
+
+{ --------------------------------------------------------------------------
+  RegisterSysVar : enregistrer une variable systeme &NOM dans SymTable
+  -------------------------------------------------------------------------- }
+
+Procedure RegisterSysVar(Const nm: TString; init_val: LongInt; vk: TValueKind);
+Var si : Integer;
+Begin
+  si := AddSym(nm, SK_SYSVAR, vk);
+  If si = 0 Then Exit;
+  sym_table^[si].init_num  := init_val;
+  sym_table^[si].asm_label := '_SB_SYS_' + AsmSafeIdent(nm);
+End;
+
+{ --------------------------------------------------------------------------
+  RegisterBuiltins : enregistrer toutes les fonctions integrees SNOBOL 4
+  --------------------------------------------------------------------------
+
+  Fonctions de manipulation de chaines
+  ------------------------------------
+  SIZE(s)            -> longueur de s (entier)
+  SUBSTR(s, i, n)    -> sous-chaine de s a partir de i sur n chars
+  DUPL(s, n)         -> s repete n fois
+  REPLACE(s, t, u)   -> s avec traduction par table t->u
+  TRIM(s)            -> s sans espaces de fin
+  LPAD(s, n)         -> s complete a gauche par des espaces jusqu'a n chars
+  RPAD(s, n)         -> s complete a droite par des espaces jusqu'a n chars
+  REVERSE(s)         -> s inverse caractere par caractere
+  UPPER(s)           -> s en majuscules
+  LOWER(s)           -> s en minuscules
+
+  Fonctions de conversion et typage
+  ----------------------------------
+  CONVERT(v, t)      -> convertir v vers le type nomme par t
+  DATATYPE(v)        -> nom du type de v ('STRING', 'INTEGER', 'REAL'...)
+  INTEGER(s)         -> predicat : retourne entier si s est entier, sinon FAIL
+  REAL(s)            -> predicat : retourne reel si s est reel, sinon FAIL
+  NUMERIC(s)         -> predicat : retourne s si numerique (entier ou reel)
+  CHAR(n)            -> chaine d'un seul caractere de code ASCII n
+  ORD(s)             -> entier : code ASCII du premier caractere de s
+
+  Predicats de comparaison numerique (retournent leur 2e arg si vrai, FAIL sinon)
+  ---------------------------------------------------------------------------------
+  LT(x, y)  / LE(x, y) / GT(x, y) / GE(x, y) / EQ(x, y) / NE(x, y)
+
+  Predicats d'identite de chaines
+  --------------------------------
+  IDENT(s1, s2)      -> s1 = s2 exactement (retourne s1 si vrai, FAIL sinon)
+  DIFFER(s1, s2)     -> s1 # s2 (retourne s1 si vrai, FAIL sinon)
+
+  Fonctions systeme
+  -----------------
+  DATE               -> chaine date DOS (AH=2Ah INT 21h)
+  TIME               -> chaine heure DOS (AH=2Ch INT 21h)
+  -------------------------------------------------------------------------- }
+
+Procedure RegisterBuiltins;
+Begin
+  { --- Manipulation de chaines --- }
+  RegisterBuiltin('SIZE',     1);
+  RegisterBuiltin('SUBSTR',   3);
+  RegisterBuiltin('DUPL',     2);
+  RegisterBuiltin('REPLACE',  3);
+  RegisterBuiltin('TRIM',     1);
+  RegisterBuiltin('LPAD',     2);
+  RegisterBuiltin('RPAD',     2);
+  RegisterBuiltin('REVERSE',  1);
+  RegisterBuiltin('UPPER',    1);
+  RegisterBuiltin('LOWER',    1);
+
+  { --- Conversion et typage --- }
+  RegisterBuiltin('CONVERT',  2);
+  RegisterBuiltin('DATATYPE', 1);
+  RegisterBuiltin('INTEGER',  1);
+  RegisterBuiltin('REAL',     1);
+  RegisterBuiltin('NUMERIC',  1);
+  RegisterBuiltin('CHAR',     1);
+  RegisterBuiltin('ORD',      1);
+
+  { --- Predicats de comparaison numerique --- }
+  RegisterBuiltin('LT',       2);
+  RegisterBuiltin('LE',       2);
+  RegisterBuiltin('GT',       2);
+  RegisterBuiltin('GE',       2);
+  RegisterBuiltin('EQ',       2);
+  RegisterBuiltin('NE',       2);
+
+  { --- Predicats d'identite de chaines --- }
+  RegisterBuiltin('IDENT',    2);
+  RegisterBuiltin('DIFFER',   2);
+
+  { --- Fonctions systeme --- }
+  RegisterBuiltin('DATE',     0);
+  RegisterBuiltin('TIME',     0);
+
+  { --- Patterns predifinis (retournent un TPatNode) --- }
+  RegisterBuiltin('ANY',      1);
+  RegisterBuiltin('NOTANY',   1);
+  RegisterBuiltin('SPAN',     1);
+  RegisterBuiltin('BREAK',    1);
+  RegisterBuiltin('BREAKX',   1);
+  RegisterBuiltin('LEN',      1);
+  RegisterBuiltin('POS',      1);
+  RegisterBuiltin('RPOS',     1);
+  RegisterBuiltin('TAB',      1);
+  RegisterBuiltin('RTAB',     1);
+  RegisterBuiltin('ARB',      0);
+  RegisterBuiltin('ARBNO',    1);
+  RegisterBuiltin('REM',      0);
+  RegisterBuiltin('FAIL',     0);
+  RegisterBuiltin('FENCE',    0);
+  RegisterBuiltin('ABORT',    0);
+  RegisterBuiltin('SUCCEED',  0);
+End;
+
+{ --------------------------------------------------------------------------
+  RegisterSysVars : enregistrer toutes les variables systeme &xxx
+  --------------------------------------------------------------------------
+
+  &ALPHABET  -> chaine des 256 caracteres ASCII (0..255)
+  &ANCHOR    -> entier 0/1 : mode ancrage du matching (defaut 0 = libre)
+  &DUMP      -> entier : afficher dump des variables si <>0 a la fin
+  &FAIL      -> patron : echoue toujours (alias de FAIL)
+  &FENCE     -> patron : coupe le backtrack
+  &FNCODE    -> entier : code retour de derniere fonction externe
+  &FULLSCAN  -> entier : mode scan complet (defaut 0)
+  &INPUT     -> chaine : lecture d'une ligne sur stdin a chaque evaluation
+  &OUTPUT    -> chaine : ecriture sur stdout a chaque affectation
+  &STCOUNT   -> entier : compteur d'instructions executees
+  &STFAIL    -> entier : nombre d'echecs de matching
+  &STLIMIT   -> entier : limite max de &STCOUNT (defaut 50000)
+  &SUBJECT   -> chaine : sujet courant du matching en cours
+  &SUCCESS   -> patron : reussit toujours (alias de SUCCEED)
+  &TRIM      -> entier 0/1 : trim auto de l'entree (defaut 0)
+  -------------------------------------------------------------------------- }
+
+Procedure RegisterSysVars;
+Begin
+  RegisterSysVar('ALPHABET', 0,     VK_STR);   { init par GenPredefinedData }
+  RegisterSysVar('ANCHOR',   0,     VK_INT);
+  RegisterSysVar('DUMP',     0,     VK_INT);
+  RegisterSysVar('FAIL',     0,     VK_PAT);   { patron FAIL }
+  RegisterSysVar('FENCE',    0,     VK_PAT);   { patron FENCE }
+  RegisterSysVar('FNCODE',   0,     VK_INT);
+  RegisterSysVar('FULLSCAN', 0,     VK_INT);
+  RegisterSysVar('INPUT',    0,     VK_STR);   { lecture stdin }
+  RegisterSysVar('OUTPUT',   0,     VK_STR);   { ecriture stdout }
+  RegisterSysVar('STCOUNT',  0,     VK_INT);
+  RegisterSysVar('STFAIL',   0,     VK_INT);
+  RegisterSysVar('STLIMIT',  50000, VK_INT);
+  RegisterSysVar('SUBJECT',  0,     VK_STR);
+  RegisterSysVar('SUCCESS',  0,     VK_PAT);   { patron SUCCEED }
+  RegisterSysVar('TRIM',     0,     VK_INT);
+End;
+
+{ --------------------------------------------------------------------------
+  Fonctions de recherche rapide dans les tables predefinis
+  -------------------------------------------------------------------------- }
+
+Function IsBuiltin(Const nm: TString): Boolean;
+{ True si nm est une fonction integree }
+Var si : Integer;
+Begin
+  si := FindSym(nm);
+  IsBuiltin := (si > 0) And (sym_table^[si].kind = SK_BUILTIN);
+End;
+
+Function IsSysVar(Const nm: TString): Boolean;
+{ True si nm est une variable systeme (&xxx) }
+Var si : Integer;
+Begin
+  si := FindSym(nm);
+  IsSysVar := (si > 0) And (sym_table^[si].kind = SK_SYSVAR);
+End;
+
+Function GetBuiltinParamCount(Const nm: TString): Integer;
+{ Nombre de parametres attendus par la fonction integree nm }
+Var si : Integer;
+Begin
+  si := FindSym(nm);
+  If (si > 0) And (sym_table^[si].kind = SK_BUILTIN) Then
+    GetBuiltinParamCount := sym_table^[si].param_idx
+  Else
+    GetBuiltinParamCount := -1;
+End;
+
+Function IsPatternBuiltin(Const nm: TString): Boolean;
+{ True si nm est une fonction retournant un patron (ANY, LEN, ARB...) }
+Const pat_builtins : Array[1..17] Of String[8] = (
+  'ANY','NOTANY','SPAN','BREAK','BREAKX',
+  'LEN','POS','RPOS','TAB','RTAB',
+  'ARB','ARBNO','REM','FAIL','FENCE','ABORT','SUCCEED');
+Var i : Integer;
+    u : TString;
+Begin
+  u := UpCaseStr(nm);
+  IsPatternBuiltin := False;
+  For i := 1 To 17 Do
+    If pat_builtins[i] = u Then Begin IsPatternBuiltin := True; Exit; End;
+End;
+
+Function IsPredicateBuiltin(Const nm: TString): Boolean;
+{ True si nm est un predicat numerique ou de chaine (LT/LE/.../IDENT/DIFFER) }
+Const pred_builtins : Array[1..8] Of String[6] = (
+  'LT','LE','GT','GE','EQ','NE','IDENT','DIFFER');
+Var i : Integer;
+    u : TString;
+Begin
+  u := UpCaseStr(nm);
+  IsPredicateBuiltin := False;
+  For i := 1 To 8 Do
+    If pred_builtins[i] = u Then Begin IsPredicateBuiltin := True; Exit; End;
+End;
+
+{ --------------------------------------------------------------------------
+  InitPredefined : appel groupé enregistrant builtins + sysvars.
+  Appelee une seule fois au debut de Compile (TODO 25).
+  -------------------------------------------------------------------------- }
+
+Procedure InitPredefined;
+Begin
+  RegisterBuiltins;
+  RegisterSysVars;
+End;
+
+{ ============================================================================
+  TODO 07 - GESTION DES ERREURS ET DES AVERTISSEMENTS
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Helpers de formatage
+  -------------------------------------------------------------------------- }
+
+Function PadLeft(Const s: String; n: Integer): String;
+{ Cadrer s a gauche dans un champ de n caracteres }
+Var r : String;
+Begin
+  r := s;
+  While Length(r) < n Do r := ' ' + r;
+  PadLeft := r;
+End;
+
+Function PadRight(Const s: String; n: Integer): String;
+{ Cadrer s a droite dans un champ de n caracteres }
+Var r : String;
+Begin
+  r := s;
+  While Length(r) < n Do r := r + ' ';
+  PadRight := r;
+End;
+
+{ --------------------------------------------------------------------------
+  Affichage des messages d'erreur / avertissement sur stderr
+  Les messages sont toujours affiches sur la console (WriteLn),
+  independamment du fichier de sortie courant.
+  -------------------------------------------------------------------------- }
+
+Procedure PrintMsg(Const prefix, msg: String);
+{ Afficher  PREFIX  (ligne N) : message }
+Begin
+  If src_line_num > 0 Then
+    WriteLn(prefix, ' (ligne ', src_line_num, ') : ', msg)
+  Else
+    WriteLn(prefix, ' : ', msg);
+End;
+
+Procedure PrintMsgLine;
+{ Afficher le contexte : la ligne source et un pointeur sous le token }
+Begin
+  If Length(lex_line) > 0 Then
+  Begin
+    WriteLn('  >> ', lex_line);
+    If lex_pos > 1 Then
+      WriteLn('  >> ', StringOfChar(' ', lex_pos - 1), '^');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  Error / ErrorTok / Warning / FatalError
+  -------------------------------------------------------------------------- }
+
+Procedure Error(Const msg: String);
+{ Erreur de compilation : incrementer le compteur, afficher, continuer. }
+Begin
+  Inc(err_count);
+  PrintMsg('ERREUR', msg);
+  PrintMsgLine;
+  If opt_strict Then
+  Begin
+    WriteLn('Arret sur premiere erreur (mode strict).');
+    Halt(1);
+  End;
+End;
+
+Procedure ErrorTok(Const msg: String);
+{ Erreur liee au token courant (ajoute le token au message). }
+Var tok_info : String;
+Begin
+  Case cur_tok_type Of
+    TOK_IDENT    : tok_info := '''' + cur_tok_str + '''';
+    TOK_STRING   : tok_info := '"' + cur_tok_str + '"';
+    TOK_INTEGER  : tok_info := IntToStr(cur_tok_num);
+    TOK_EOF      : tok_info := '<EOF>';
+    TOK_EOL      : tok_info := '<EOL>';
+    TOK_UNKNOWN  : tok_info := '''' + cur_tok_str + '''';
+    Else           tok_info := '''' + cur_tok_str + '''';
+  End;
+  Error(msg + ' (token : ' + tok_info + ')');
+End;
+
+Procedure Warning(Const msg: String);
+{ Avertissement : n'interrompt pas la compilation. }
+Begin
+  Inc(warn_count);
+  PrintMsg('ATTENTION', msg);
+  If opt_debug >= DBG_ERRORS Then PrintMsgLine;
+End;
+
+Procedure FatalError(Const msg: String);
+{ Erreur interne ou irrecuperable : afficher et arreter immediatement. }
+Begin
+  Inc(err_count);
+  WriteLn('ERREUR FATALE : ', msg);
+  If src_line_num > 0 Then
+    WriteLn('  Ligne source : ', src_line_num);
+  WriteLn('Compilation abandonnee.');
+  { Fermer les fichiers proprement avant de quitter }
+  {$I-}
+  If lst_open Then CloseFile(lst_file);
+  If tmp_open Then CloseFile(tmp_file);
+  {$I+}
+  Halt(2);
+End;
+
+Procedure InternalError(Const msg: String);
+{ Erreur de bug interne du compilateur lui-meme. }
+Begin
+  FatalError('BUG INTERNE - ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  CheckLabel : verifier que tous les labels cibles ont ete definis.
+  Appelee en fin de passe 1 pour detecter les forward refs non resolues.
+  -------------------------------------------------------------------------- }
+
+Procedure CheckUndefinedLabels;
+Var i : Integer;
+Begin
+  For i := 1 To label_count Do
+    If Not label_table^[i].defined Then
+      Error('Label non defini : ' + label_table^[i].name);
+End;
+
+{ --------------------------------------------------------------------------
+  BilanCompilation : afficher le resume final de la compilation.
+  Appelee a la fin de Compile (TODO 25).
+  -------------------------------------------------------------------------- }
+
+Procedure BilanCompilation;
+Var ok : Boolean;
+Begin
+  WriteLn;
+  WriteLn('SNOBOL86 - Compilation terminee');
+  WriteLn('  Source     : ', src_fname);
+  WriteLn('  Sortie     : ', out_fname);
+  WriteLn('  Instructions : ', PadLeft(IntToStr(instr_count),  6));
+  WriteLn('  Symboles     : ', PadLeft(IntToStr(sym_count),    6));
+  WriteLn('  Labels       : ', PadLeft(IntToStr(label_count),  6));
+  WriteLn('  Patrons      : ', PadLeft(IntToStr(pat_count),    6));
+  WriteLn('  Fonctions    : ', PadLeft(IntToStr(func_count),   6));
+  WriteLn('  Erreurs      : ', PadLeft(IntToStr(err_count),    6));
+  WriteLn('  Attention    : ', PadLeft(IntToStr(warn_count),   6));
+  ok := (err_count = 0);
+  If Not ok Then
+    WriteLn('  *** COMPILATION AVEC ERREURS ***')
+  Else If warn_count > 0 Then
+    WriteLn('  (compilation reussie avec avertissements)')
+  Else
+    WriteLn('  (compilation reussie)');
+End;
+
+{ --------------------------------------------------------------------------
+  DebugMsg : trace interne conditionnelle selon opt_debug
+  -------------------------------------------------------------------------- }
+
+Procedure DebugMsg(level: Integer; Const msg: String);
+Begin
+  If opt_debug >= level Then
+    WriteLn('[DEBUG] ', msg);
+End;
+
+{ ============================================================================
+  TODO 08 - GENERATION D'EN-TETE ASM ET SEGMENT .DATA
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenHeader : emettre le commentaire d'en-tete, .MODEL SMALL, .STACK 256
+  -------------------------------------------------------------------------- }
+
+Procedure GenHeader;
+Begin
+  EmitComment(StringOfChar('=', 72));
+  EmitComment('Genere par SNOBOL86 v' + SNOBOL86_VERSION +
+              ' - SNOBOL 4 -> 8086 MASM');
+  EmitComment('Source : ' + src_fname);
+  EmitComment(StringOfChar('=', 72));
+  EmitBlank;
+  Emit('.MODEL SMALL');
+  Emit('.STACK 256');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataSegHeader : ouvrir le segment .DATA
+  -------------------------------------------------------------------------- }
+
+Procedure GenDataSegHeader;
+Begin
+  Emit('.DATA');
+  EmitBlank;
+  EmitComment('--- Constantes systeme ---');
+End;
+
+{ --------------------------------------------------------------------------
+  GenPredefinedData : emettre les constantes et descripteurs predifinis :
+    - Chaine vide (_SB_EMPTY_DESC / _SB_EMPTY_BUF)
+    - CRLF       (_SB_CRLF_DESC  / _SB_CRLF_BUF)
+    - &ALPHABET  (256 octets 0..255)
+    - _SB_FAIL_DESC  (sentinel d'echec : ptr=0, len=0FFFFh)
+  -------------------------------------------------------------------------- }
+
+Procedure GenPredefinedData;
+Var i : Integer;
+    s : String;
+Begin
+  { Chaine vide }
+  GenEmptyStrData;
+
+  { CRLF }
+  GenCrlfData;
+
+  { &ALPHABET : 256 caracteres de code 0 a 255 }
+  EmitComment('&ALPHABET - les 256 caracteres ASCII');
+  EmitI('_SB_SYS_ALPHABET_D:');
+  EmitI('  DW  OFFSET _SB_SYS_ALPHABET_B  ; ptr');
+  EmitI('  DW  256                         ; len');
+  EmitI('_SB_SYS_ALPHABET_B:');
+  s := 'DB  ';
+  For i := 0 To 255 Do
+  Begin
+    If i > 0 Then s := s + ', ';
+    s := s + IntToStr(i);
+    { Ligne de 16 valeurs pour lisibilite }
+    If (i > 0) And ((i Mod 16) = 15) And (i < 255) Then
+    Begin
+      EmitI(s);
+      s := 'DB  ';
+    End;
+  End;
+  If s <> 'DB  ' Then EmitI(s);
+  EmitBlank;
+
+  { Sentinel FAIL : ptr=0, len=0FFFFh -> valeur magique non-string }
+  EmitComment('_SB_FAIL_DESC - sentinel d''echec (len=0FFFFh)');
+  EmitI('_SB_FAIL_DESC:');
+  EmitI('  DW  0       ; ptr nul');
+  EmitI('  DW  0FFFFh  ; len magique = echec');
+  EmitBlank;
+
+  { Variables systeme numeriques }
+  EmitComment('--- Variables systeme (&xxx) ---');
+  EmitI('_SB_SYS_ANCHOR  DW  0       ; &ANCHOR');
+  EmitI('_SB_SYS_DUMP    DW  0       ; &DUMP');
+  EmitI('_SB_SYS_FNCODE  DW  0       ; &FNCODE');
+  EmitI('_SB_SYS_FULLSCAN DW 0       ; &FULLSCAN');
+  EmitI('_SB_SYS_STCOUNT  DW 0       ; &STCOUNT');
+  EmitI('_SB_SYS_STFAIL   DW 0       ; &STFAIL');
+  EmitI('_SB_SYS_STLIMIT  DW 50000   ; &STLIMIT');
+  EmitI('_SB_SYS_TRIM     DW 0       ; &TRIM');
+  EmitBlank;
+
+  { &INPUT / &OUTPUT / &SUBJECT comme descripteurs }
+  GenDescriptor('_SB_SYS_INPUT_D',   '_SB_SYS_INPUT_B',   0);
+  GenDescriptor('_SB_SYS_OUTPUT_D',  '_SB_SYS_OUTPUT_B',  0);
+  GenDescriptor('_SB_SYS_SUBJECT_D', '_SB_SYS_SUBJECT_B', 0);
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenVarDescriptors : emettre les descripteurs de toutes les variables
+  SNOBOL globales (SK_VAR) declarees dans SymTable.
+  Les variables locales (is_local=True) sont sur la pile, pas en .DATA.
+  -------------------------------------------------------------------------- }
+
+Procedure GenVarDescriptors;
+Var i      : Integer;
+    e      : TSymEntry;
+    buflen : Integer;
+Begin
+  EmitComment('--- Descripteurs de variables SNOBOL ---');
+  For i := 1 To sym_count Do
+  Begin
+    e := sym_table^[i];
+    If (e.kind = SK_VAR) And Not e.is_local Then
+    Begin
+      { Taille de buffer initiale : longueur de la valeur initiale ou 16 min }
+      buflen := Length(e.init_str);
+      If buflen < 16 Then buflen := 16;
+      GenDescriptor(e.asm_label + '_D', e.asm_label + '_B', buflen);
+    End;
+  End;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenLiteralPool : emettre tous les litteraux de chaine collectes
+  pendant la passe 1 (enregistres dans str_pool via StrPoolAdd).
+  Chaque litteral i genere _SBS_i_D (descripteur) + _SBS_i_B (buffer).
+  Pour simplifier, on re-parcourt sym_table cherchant SK_CONST_STR.
+  -------------------------------------------------------------------------- }
+
+Procedure GenLiteralPool;
+Var i   : Integer;
+    e   : TSymEntry;
+    s   : TString;
+Begin
+  EmitComment('--- Pool de litteraux de chaine ---');
+  For i := 1 To sym_count Do
+  Begin
+    e := sym_table^[i];
+    If e.kind = SK_CONST_STR Then
+    Begin
+      s := StrPoolGet(e.str_idx, e.str_len);
+      GenDescriptorFromLit(
+        LitDescLabel(e.str_idx),
+        LitDataLabel(e.str_idx),
+        s);
+    End;
+  End;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenHeapDataSeg : emettre la zone heap dans .DATA
+  -------------------------------------------------------------------------- }
+
+Procedure GenHeapDataSeg;
+Begin
+  GenHeapData(opt_heap_size);
+End;
+
+{ --------------------------------------------------------------------------
+  GenRuntimeBuffers : buffers de travail utilises par le runtime
+    _SB_NUMBUF   : buffer temporaire pour conversion entier->chaine (12 b)
+    _SB_INPUTBUF : buffer lecture ligne stdin (128 b, format DOS AH=0Ah)
+    _SB_WORKDESC : descripteur temporaire (scratch)
+    _SB_WORKBUF  : buffer de travail general (256 b)
+  -------------------------------------------------------------------------- }
+
+Procedure GenRuntimeBuffers;
+Begin
+  EmitComment('--- Buffers runtime ---');
+  EmitI('_SB_NUMBUF    DB  12 DUP(0)   ; conversion entier->chaine');
+  EmitI('_SB_INPUTBUF  DB  128 DUP(0)  ; lecture ligne DOS AH=0Ah');
+  EmitI('_SB_WORKDESC:');
+  EmitI('  DW  OFFSET _SB_WORKBUF  ; ptr scratch');
+  EmitI('  DW  0                   ; len scratch');
+  EmitI('_SB_WORKBUF   DB  256 DUP(0)  ; buffer de travail');
+  EmitBlank;
+End;
+
+{ Forward : GenStlimitMsg definie en TODO 09 }
+Procedure GenStlimitMsg; Forward;
+
+{ --------------------------------------------------------------------------
+  GenDataSegment : orchestrateur complet du segment .DATA.
+  Appele par Compile (TODO 25) en debut de passe 2.
+  -------------------------------------------------------------------------- }
+
+Procedure GenDataSegment;
+Begin
+  GenDataSegHeader;
+  GenPredefinedData;
+  GenVarDescriptors;
+  GenLiteralPool;
+  GenHeapDataSeg;
+  GenRuntimeBuffers;
+  GenStlimitMsg;
+End;
+
+{ --------------------------------------------------------------------------
+  AddLiteral : enregistrer un litteral de chaine dans SymTable + str_pool.
+  Retourne l'index str_pool du debut du litteral (utilise comme cle unique).
+  Si le meme litteral existe deja, retourne l'index existant.
+  -------------------------------------------------------------------------- }
+
+Function AddLiteral(Const s: TString): Integer;
+Var i   : Integer;
+    idx : Integer;
+Begin
+  { Chercher un litteral identique deja enregistre }
+  For i := 1 To sym_count Do
+    If (sym_table^[i].kind = SK_CONST_STR) And
+       (StrPoolGet(sym_table^[i].str_idx, sym_table^[i].str_len) = s) Then
+    Begin
+      AddLiteral := sym_table^[i].str_idx;
+      Exit;
+    End;
+  { Nouveau litteral }
+  idx := StrPoolAdd(s);
+  If idx < 0 Then Begin Error('Pool de chaines plein'); AddLiteral := 0; Exit; End;
+  i := AddSym('_LIT_' + IntToStr(idx), SK_CONST_STR, VK_STR);
+  If i = 0 Then Begin Error('Table des symboles pleine'); AddLiteral := 0; Exit; End;
+  sym_table^[i].str_idx := idx;
+  sym_table^[i].str_len := Length(s);
+  AddLiteral := idx;
+End;
+
+{ ============================================================================
+  TODO 09 - GENERATION DU SEGMENT .CODE ET POINT D'ENTREE
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Variables de suivi du segment .CODE
+  -------------------------------------------------------------------------- }
+
+Var
+  main_proc_label : TString;   { label ASM de la procedure principale     }
+  first_instr_lbl : TString;   { label de la premiere instruction SNOBOL  }
+
+{ --------------------------------------------------------------------------
+  GenCodeSegHeader : ouvrir .CODE et emettre le point d'entree START:
+
+  Structure emise :
+    .CODE
+    START:
+        MOV  AX, @DATA
+        MOV  DS, AX
+        MOV  ES, AX
+        CALL _SB_INIT_HEAP
+        CALL _SB_INIT_IO
+        CALL _SB_INIT_SYSVARS
+        JMP  <premiere_instruction>
+
+  Si le programme source est vide (aucune instruction), on saute
+  directement vers _SB_END_PROG.
+  -------------------------------------------------------------------------- }
+
+Procedure GenCodeSegHeader;
+Begin
+  EmitBlank;
+  Emit('.CODE');
+  EmitBlank;
+  EmitComment(StringOfChar('=', 72));
+  EmitComment('Point d''entree du programme');
+  EmitComment(StringOfChar('=', 72));
+  EmitLabel('START');
+  EmitI('MOV  AX, @DATA');
+  EmitI('MOV  DS, AX');
+  EmitI('MOV  ES, AX');
+  EmitBlank;
+  EmitComment('Initialisation runtime SNOBOL');
+  EmitI('CALL _SB_INIT_HEAP');
+  EmitI('CALL _SB_INIT_IO');
+  EmitI('CALL _SB_INIT_SYSVARS');
+  EmitBlank;
+  EmitComment('Saut vers la premiere instruction du programme');
+  If first_instr_lbl <> '' Then
+    EmitI('JMP  ' + first_instr_lbl)
+  Else
+    EmitI('JMP  _SB_END_PROG');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenInitIO : emettre la routine _SB_INIT_IO dans le segment .CODE.
+  En v1, stdin/stdout sont deja ouverts sous DOS -> initialisation nulle.
+  La routine prepare juste le buffer _SB_INPUTBUF pour AH=0Ah.
+  -------------------------------------------------------------------------- }
+
+Procedure GenInitIO;
+Begin
+  EmitSep;
+  EmitComment('_SB_INIT_IO : initialiser stdin/stdout (DOS : deja ouvert)');
+  EmitSep;
+  EmitLabel('_SB_INIT_IO');
+  EmitI('MOV  AL, 127');
+  EmitI('MOV  [_SB_INPUTBUF], AL    ; max chars pour AH=0Ah');
+  EmitI('MOV  BYTE PTR [_SB_INPUTBUF+1], 0');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenInitSysVars : emettre la routine _SB_INIT_SYSVARS.
+  Remet a zero / initialise les variables systeme au lancement.
+  -------------------------------------------------------------------------- }
+
+Procedure GenInitSysVars;
+Begin
+  EmitSep;
+  EmitComment('_SB_INIT_SYSVARS : initialiser les variables systeme &xxx');
+  EmitSep;
+  EmitLabel('_SB_INIT_SYSVARS');
+  EmitI('XOR  AX, AX');
+  EmitI('MOV  [_SB_SYS_ANCHOR],   AX');
+  EmitI('MOV  [_SB_SYS_DUMP],     AX');
+  EmitI('MOV  [_SB_SYS_FNCODE],   AX');
+  EmitI('MOV  [_SB_SYS_FULLSCAN], AX');
+  EmitI('MOV  [_SB_SYS_STCOUNT],  AX');
+  EmitI('MOV  [_SB_SYS_STFAIL],   AX');
+  EmitI('MOV  [_SB_SYS_TRIM],     AX');
+  EmitI('MOV  AX, 50000');
+  EmitI('MOV  [_SB_SYS_STLIMIT],  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStcountCheck : emettre une verification &STCOUNT / &STLIMIT.
+  Emise inline avant chaque instruction SNOBOL (TODO 16+).
+
+  Logique :
+      INC  [_SB_SYS_STCOUNT]
+      MOV  AX, [_SB_SYS_STCOUNT]
+      CMP  AX, [_SB_SYS_STLIMIT]
+      JBE  @@ok
+      ; depasser la limite : afficher message et quitter
+      MOV  DX, OFFSET _SB_STLIMIT_MSG
+      MOV  AH, 9
+      INT  21h
+      JMP  _SB_END_PROG
+  @@ok:
+  -------------------------------------------------------------------------- }
+
+Procedure GenStcountCheck;
+Var lbl_ok : TString;
+Begin
+  lbl_ok := NewLabel;
+  EmitI('INC  WORD PTR [_SB_SYS_STCOUNT]');
+  EmitI('MOV  AX, [_SB_SYS_STCOUNT]');
+  EmitI('CMP  AX, [_SB_SYS_STLIMIT]');
+  EmitI('JBE  ' + lbl_ok);
+  EmitI('MOV  DX, OFFSET _SB_STLIMIT_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitLabel(lbl_ok);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStlimitMsg : emettre la chaine de message de depassement STLIMIT
+  dans le .DATA. (Appellee depuis GenDataSegment si besoin.)
+  Utilise le format DOS : chaine terminee par '$' pour INT 21h AH=9.
+  -------------------------------------------------------------------------- }
+
+Procedure GenStlimitMsg;
+Begin
+  EmitComment('Message depassement &STLIMIT');
+  EmitI('_SB_STLIMIT_MSG:');
+  EmitI('  DB  ''Erreur : &STLIMIT depasse'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenEndProg : emettre la routine de fin de programme _SB_END_PROG.
+
+  Structure emise :
+    _SB_END_PROG:
+        ; Si &DUMP <> 0 -> appeler _SB_DUMP_VARS
+        MOV  AX, [_SB_SYS_DUMP]
+        CMP  AX, 0
+        JE   @@nodump
+        CALL _SB_DUMP_VARS
+    @@nodump:
+        MOV  AX, 4C00h
+        INT  21h
+  -------------------------------------------------------------------------- }
+
+Procedure GenEndProg;
+Var lbl_nodump : TString;
+Begin
+  EmitSep;
+  EmitComment('_SB_END_PROG : fin du programme SNOBOL');
+  EmitSep;
+  EmitLabel('_SB_END_PROG');
+  lbl_nodump := NewLabel;
+  EmitI('MOV  AX, [_SB_SYS_DUMP]');
+  EmitI('CMP  AX, 0');
+  EmitI('JE   ' + lbl_nodump);
+  EmitI('CALL _SB_DUMP_VARS');
+  EmitLabel(lbl_nodump);
+  EmitBlank;
+  EmitComment('Retour DOS - code 0');
+  EmitI('MOV  AX, 4C00h');
+  EmitI('INT  21h');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDumpVarsStub : emettre un stub _SB_DUMP_VARS (v1 : ne fait rien).
+  En v2, cette routine afficherait toutes les variables si &DUMP <> 0.
+  -------------------------------------------------------------------------- }
+
+Procedure GenDumpVarsStub;
+Begin
+  EmitSep;
+  EmitComment('_SB_DUMP_VARS : dump variables globales (stub v1)');
+  EmitSep;
+  EmitLabel('_SB_DUMP_VARS');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFooter : emettre la directive END START en toute fin de fichier ASM.
+  C'est la derniere chose generee en passe 2 (apres tout le runtime).
+  -------------------------------------------------------------------------- }
+
+Procedure GenFooter;
+Begin
+  EmitBlank;
+  EmitComment(StringOfChar('=', 72));
+  EmitComment('Fin du fichier genere par SNOBOL86');
+  EmitComment(StringOfChar('=', 72));
+  Emit('END START');
+End;
+
+{ --------------------------------------------------------------------------
+  SetFirstInstrLabel : enregistrer le label de la 1ere instruction SNOBOL.
+  Appele par le parseur (TODO 15) quand il emet la premiere instruction.
+  -------------------------------------------------------------------------- }
+
+Procedure SetFirstInstrLabel(Const lbl: TString);
+Begin
+  If first_instr_lbl = '' Then
+    first_instr_lbl := lbl;
+End;
+
+{ --------------------------------------------------------------------------
+  GenEndSentinel : traiter la ligne "-END-" du source.
+  Emet un JMP vers _SB_END_PROG a l'endroit courant du code.
+  Gere aussi les labels optionnels apres -END- (non standard, ignore).
+  -------------------------------------------------------------------------- }
+
+Procedure GenEndSentinel;
+Begin
+  EmitComment('Fin explicite du programme (-END-)');
+  EmitI('JMP  _SB_END_PROG');
+  EmitBlank;
+End;
+
+{ ============================================================================
+  TODO 10 - RUNTIME : GESTION DE LA MEMOIRE (HEAP)
+  ============================================================================
+
+  Le heap SNOBOL est une zone lineaire allouee en .DATA (_HEAP_BUF).
+  Trois mots de controle en .DATA :
+      _HEAP_BASE DW  <- offset du debut du heap dans DS
+      _HEAP_PTR  DW  <- offset du prochain octet libre
+      _HEAP_END  DW  <- offset du premier octet invalide
+
+  Convention des routines :
+    _SB_ALLOC  : CX = nb octets demandes -> BX = ptr alloue (ou 0 : OOM)
+    _SB_NEWSTR : CX = longueur souhaitee  -> DI = ptr descripteur alloue
+    _SB_COPYSTR: SI = src_desc, DI = dst_desc  (copie len + data)
+    _SB_CONCATSTR : DI = desc1, SI = desc2 -> DX = nouveau desc (joint)
+
+  Format d'un descripteur (4 octets) :
+      [ptr:WORD] [len:WORD]
+  Alloue toujours : 4 octets (descripteur) + len + 1 (garde-fou null).
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  _SB_ALLOC : allouer CX octets sur le heap -> BX = adresse
+  Si heap plein : afficher message et sauter vers _SB_END_PROG.
+  --------------------------------------------------------------------------
+
+  Code ASM emis :
+      _SB_ALLOC:
+          MOV  BX, [_HEAP_PTR]      ; BX = ptr courant
+          MOV  AX, BX
+          ADD  AX, CX               ; AX = ptr apres alloc
+          CMP  AX, [_HEAP_END]      ; depasse la fin ?
+          JBE  @@ok
+          ; OOM
+          MOV  DX, OFFSET _SB_HEAP_OOM_MSG
+          MOV  AH, 9
+          INT  21h
+          JMP  _SB_END_PROG
+      @@ok:
+          MOV  [_HEAP_PTR], AX      ; avancer le pointeur
+          RET
+  -------------------------------------------------------------------------- }
+
+Procedure GenAllocRoutine;
+Var lbl_ok : TString;
+Begin
+  EmitSep;
+  EmitComment('_SB_ALLOC : allouer CX octets sur le heap -> BX = adresse');
+  EmitSep;
+  EmitLabel('_SB_ALLOC');
+  lbl_ok := NewLabel;
+  EmitI('MOV  BX, [_HEAP_PTR]');
+  EmitI('MOV  AX, BX');
+  EmitI('ADD  AX, CX');
+  EmitI('CMP  AX, [_HEAP_END]');
+  EmitI('JBE  ' + lbl_ok);
+  EmitI('MOV  DX, OFFSET _SB_HEAP_OOM_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitLabel(lbl_ok);
+  EmitI('MOV  [_HEAP_PTR], AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _SB_NEWSTR : creer un nouveau descripteur de chaine de longueur CX.
+  Alloue 4 (desc) + CX + 1 (null) octets sur le heap.
+  -> DI = adresse du descripteur alloue (ptr pointe juste apres le desc).
+
+  Code ASM emis :
+      _SB_NEWSTR:
+          PUSH CX
+          ADD  CX, 5        ; 4 desc + 1 null
+          CALL _SB_ALLOC    ; BX = debut du bloc
+          POP  CX
+          ; Remplir le descripteur
+          MOV  DI, BX
+          MOV  AX, BX
+          ADD  AX, 4        ; AX = adresse des donnees (apres le desc)
+          MOV  [DI],   AX   ; ptr
+          MOV  [DI+2], CX   ; len
+          ; Mettre null apres les donnees
+          PUSH DI
+          MOV  DI, AX
+          ADD  DI, CX
+          MOV  BYTE PTR [DI], 0
+          POP  DI
+          RET
+  -------------------------------------------------------------------------- }
+
+Procedure GenNewStrRoutine;
+Begin
+  EmitSep;
+  EmitComment('_SB_NEWSTR : allouer un descripteur pour CX chars -> DI');
+  EmitSep;
+  EmitLabel('_SB_NEWSTR');
+  EmitI('PUSH CX');
+  EmitI('ADD  CX, 5');
+  EmitI('CALL _SB_ALLOC');
+  EmitI('POP  CX');
+  EmitI('MOV  DI, BX');
+  EmitI('MOV  AX, BX');
+  EmitI('ADD  AX, 4');
+  EmitI('MOV  [DI],   AX');
+  EmitI('MOV  [DI+2], CX');
+  EmitI('PUSH DI');
+  EmitI('MOV  DI, AX');
+  EmitI('ADD  DI, CX');
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('POP  DI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _SB_COPYSTR : copier le contenu du descripteur SI vers DI.
+  Alloue un nouveau buffer sur le heap si necessaire.
+
+  Entree  : SI = ptr descripteur source, DI = ptr descripteur destination
+  Logique :
+      1. Lire len du source (CX = [SI+2])
+      2. Appeler _SB_NEWSTR pour creer un nouveau desc -> DX = nouveau desc
+      3. Copier CX octets de [SI].ptr vers [DX].ptr
+      4. Mettre [DI] = [DX] (ecraser le descripteur dest)
+
+  Code ASM emis :
+      _SB_COPYSTR:
+          PUSH SI
+          PUSH DI
+          MOV  CX, [SI+2]    ; len source
+          PUSH CX
+          PUSH SI
+          CALL _SB_NEWSTR    ; DI = nouveau desc
+          MOV  DX, DI        ; DX = nouveau desc
+          POP  SI
+          POP  CX
+          ; Copier donnees
+          MOV  SI, [SI]      ; SI = ptr donnees source
+          MOV  DI, [DX]      ; DI = ptr donnees dest
+          REP  MOVSB          ; copier CX octets
+          ; Ecrire le nouveau desc dans la destination
+          POP  DI
+          MOV  AX, [DX]
+          MOV  [DI],   AX
+          MOV  AX, [DX+2]
+          MOV  [DI+2], AX
+          POP  SI
+          RET
+  -------------------------------------------------------------------------- }
+
+Procedure GenCopyStrRoutine;
+Begin
+  EmitSep;
+  EmitComment('_SB_COPYSTR : copier desc SI -> desc DI');
+  EmitSep;
+  EmitLabel('_SB_COPYSTR');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  EmitI('MOV  CX, [SI+2]');
+  EmitI('PUSH CX');
+  EmitI('PUSH SI');
+  EmitI('CALL _SB_NEWSTR');
+  EmitI('MOV  DX, DI');
+  EmitI('POP  SI');
+  EmitI('POP  CX');
+  EmitI('PUSH SI');
+  EmitI('MOV  SI, [SI]');
+  EmitI('MOV  DI, [DX]');
+  EmitI('REP  MOVSB');
+  EmitI('POP  SI');
+  EmitI('POP  DI');
+  EmitI('MOV  AX, [DX]');
+  EmitI('MOV  [DI],   AX');
+  EmitI('MOV  AX, [DX+2]');
+  EmitI('MOV  [DI+2], AX');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _SB_CONCATSTR : concatener desc DI et desc SI -> DX = nouveau desc.
+
+  Logique :
+      1. len_total = [DI+2] + [SI+2]
+      2. _SB_NEWSTR(len_total) -> DX = desc resultat
+      3. copier [DI+2] octets de [DI].ptr vers [DX].ptr
+      4. copier [SI+2] octets de [SI].ptr vers [DX].ptr + [DI+2]
+      5. mettre null final
+
+  Code ASM emis :
+      _SB_CONCATSTR:
+          PUSH SI
+          PUSH DI
+          MOV  AX, [DI+2]    ; len1
+          MOV  BX, [SI+2]    ; len2
+          MOV  CX, AX
+          ADD  CX, BX        ; len_total
+          PUSH AX
+          PUSH BX
+          PUSH SI
+          PUSH DI
+          CALL _SB_NEWSTR    ; DI = nouveau desc
+          MOV  DX, DI
+          POP  DI
+          POP  SI
+          POP  BX            ; len2
+          POP  AX            ; len1
+          ; Copier partie 1
+          PUSH SI
+          MOV  SI, [DI]      ; ptr src1
+          MOV  DI, [DX]      ; ptr dst
+          MOV  CX, AX
+          REP  MOVSB
+          ; Copier partie 2
+          POP  SI
+          MOV  SI, [SI]      ; ptr src2
+          MOV  CX, BX
+          REP  MOVSB
+          ; Null final
+          MOV  BYTE PTR [DI], 0
+          POP  DI
+          POP  SI
+          RET
+  -------------------------------------------------------------------------- }
+
+Procedure GenConcatStrRoutine;
+Begin
+  EmitSep;
+  EmitComment('_SB_CONCATSTR : DI||SI -> DX = nouveau desc');
+  EmitSep;
+  EmitLabel('_SB_CONCATSTR');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  EmitI('MOV  AX, [DI+2]');
+  EmitI('MOV  BX, [SI+2]');
+  EmitI('MOV  CX, AX');
+  EmitI('ADD  CX, BX');
+  EmitI('PUSH AX');
+  EmitI('PUSH BX');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  EmitI('CALL _SB_NEWSTR');
+  EmitI('MOV  DX, DI');
+  EmitI('POP  DI');
+  EmitI('POP  SI');
+  EmitI('POP  BX');
+  EmitI('POP  AX');
+  EmitI('PUSH SI');
+  EmitI('MOV  SI, [DI]');
+  EmitI('MOV  DI, [DX]');
+  EmitI('MOV  CX, AX');
+  EmitI('REP  MOVSB');
+  EmitI('POP  SI');
+  EmitI('MOV  SI, [SI]');
+  EmitI('MOV  CX, BX');
+  EmitI('REP  MOVSB');
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('POP  DI');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenHeapOomMsg : emettre le message OOM dans le .DATA.
+  (Appele depuis GenDataSegment, apres GenRuntimeBuffers.)
+  -------------------------------------------------------------------------- }
+
+Procedure GenHeapOomMsg;
+Begin
+  EmitComment('Message manque de memoire heap');
+  EmitI('_SB_HEAP_OOM_MSG:');
+  EmitI('  DB  ''SNOBOL86 : Heap plein (out of memory)'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenHeapRuntime : emettre toutes les routines de gestion heap dans .CODE.
+  Appele par Compile en passe 2 (TODO 25).
+  -------------------------------------------------------------------------- }
+
+Procedure GenHeapRuntime;
+Begin
+  EmitSep;
+  EmitComment('=== Runtime : gestion du heap dynamique ===');
+  EmitSep;
+  EmitBlank;
+  GenInitHeap(opt_heap_size);
+  GenAllocRoutine;
+  GenNewStrRoutine;
+  GenCopyStrRoutine;
+  GenConcatStrRoutine;
+End;
+
+{ ============================================================================
+  TODO 11 - RUNTIME : OPERATIONS SUR LES CHAINES
+  ============================================================================
+
+  Convention registres pour toutes les routines :
+    DI = descripteur destination (ptr:WORD + len:WORD a offset 0 et 2)
+    SI = descripteur source
+    CX = longueur / compteur
+    BX = tableau de traduction (pour _RT_REPLACE)
+    AX = position 1-based (_RT_SUBSTR) ou char de remplissage (_RT_LPAD/_RT_RPAD)
+
+  Prerequis : a l'entree du programme, ES doit etre initialise = DS
+  (pour MOVSB/STOSB). Emis dans GenCodeSegHeader (PUSH DS; POP ES).
+
+  Format descripteur (4 octets) :
+      offset 0 : WORD ptr  <- adresse des donnees dans DS
+      offset 2 : WORD len  <- longueur en octets
+
+  Liste :
+    _RT_STRLEN   : DI = desc -> CX = longueur
+    _RT_STRNCPY  : SI = src data, DI = dst data, CX = nb -> copie brute
+    _RT_STRCMP   : SI = desc1, DI = desc2 -> flags (ZF=egal, CF=SI<DI)
+    _RT_SUBSTR   : SI = src, AX = pos(1-based), CX = len -> DI = desc
+    _RT_DUPL     : SI = src, CX = count -> DI = desc
+    _RT_REPLACE  : SI = src, BX = table[256] -> DI = desc
+    _RT_TRIM     : SI = src -> DI = desc sans blancs en fin
+    _RT_LPAD     : SI = src, CX = width, AL = fill -> DI = desc cadre gauche
+    _RT_RPAD     : SI = src, CX = width, AL = fill -> DI = desc cadre droit
+    _RT_REVERSE  : SI = src -> DI = desc inverse
+    _RT_UPPER    : SI = src -> DI = desc en majuscules
+    _RT_LOWER    : SI = src -> DI = desc en minuscules
+  ============================================================================ }
+
+{ --- _RT_STRLEN --- }
+{ DI = descripteur -> CX = longueur de la chaine }
+Procedure GenRtStrLen;
+Begin
+  EmitSep;
+  EmitComment('_RT_STRLEN : CX <- longueur du descripteur DI');
+  EmitSep;
+  EmitLabel('_RT_STRLEN');
+  EmitI('MOV  CX, [DI+2]');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_STRNCPY --- }
+{ SI = ptr donnees source, DI = ptr donnees dest, CX = nb octets }
+Procedure GenRtStrNCpy;
+Var lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_STRNCPY : copier CX octets de DS:SI vers ES:DI (brut)');
+  EmitSep;
+  lbl_done := NewLabel;
+  EmitLabel('_RT_STRNCPY');
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_done);
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_STRCMP --- }
+{ SI = desc1, DI = desc2 -> flags : ZF si egal, CF si SI < DI (lexicographique) }
+Procedure GenRtStrCmp;
+Var lbl_after_cmp, lbl_done_cmp, lbl_use_min : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_STRCMP : comparer desc SI et desc DI -> flags CPU');
+  EmitComment('  ZF=1 si egal, CF=1 si SI < DI lexicographiquement');
+  EmitSep;
+  lbl_use_min  := NewLabel;
+  lbl_after_cmp := NewLabel;
+  lbl_done_cmp := NewLabel;
+  EmitLabel('_RT_STRCMP');
+  EmitI('PUSH SI');
+  EmitI('PUSH DI');
+  EmitI('PUSH BX');
+  EmitI('MOV  CX, [SI+2]         ; CX = len1');
+  EmitI('MOV  BX, [DI+2]         ; BX = len2');
+  EmitI('MOV  AX, CX             ; AX = len1 (sauvegarde pour comparer longueurs)');
+  EmitI('CMP  CX, BX');
+  EmitI('JBE  ' + lbl_use_min + '         ; utiliser min(len1,len2)');
+  EmitI('MOV  CX, BX');
+  EmitLabel(lbl_use_min);
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees1');
+  EmitI('MOV  DI, [DI]           ; DI = ptr donnees2');
+  EmitI('JCXZ ' + lbl_after_cmp);
+  EmitI('REPE CMPSB              ; comparer octet par octet');
+  EmitI('JNE  ' + lbl_done_cmp + '        ; difference trouvee -> flags deja positionnes');
+  EmitLabel(lbl_after_cmp);
+  EmitI('CMP  AX, BX             ; bytes egaux : comparer longueurs');
+  EmitLabel(lbl_done_cmp);
+  EmitI('POP  BX');
+  EmitI('POP  DI');
+  EmitI('POP  SI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_SUBSTR --- }
+{ SI = src_desc, AX = pos (1-based, >=1), CX = longueur voulue }
+{ -> DI = nouveau descripteur ; si hors-bornes -> afficher erreur + jmp _SB_END_PROG }
+Procedure GenRtSubStr;
+Var lbl_ok1, lbl_len_ok, lbl_skip_data : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_SUBSTR : extraire sous-chaine SI[AX..AX+CX-1] -> DI');
+  EmitComment('  AX = position 1-based, CX = longueur. Clamp si trop long.');
+  EmitSep;
+  lbl_ok1      := NewLabel;
+  lbl_len_ok   := NewLabel;
+  lbl_skip_data := NewLabel;
+  EmitLabel('_RT_SUBSTR');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  { Validation pos >= 1 }
+  EmitI('CMP  AX, 1');
+  EmitI('JAE  ' + lbl_ok1 + '            ; pos >= 1 ok');
+  EmitI('MOV  DX, OFFSET _RT_RANGE_ERR_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitLabel(lbl_ok1);
+  { Validation pos <= len }
+  EmitI('MOV  BX, [SI+2]         ; BX = src_len');
+  EmitI('CMP  AX, BX');
+  EmitI('JBE  ' + lbl_len_ok);
+  { Pos > len : retourner chaine vide plutot que crash (SNOBOL : FAIL) }
+  EmitI('XOR  CX, CX             ; longueur = 0');
+  EmitI('JMP  ' + lbl_skip_data);
+  EmitLabel(lbl_len_ok);
+  { Calculer chars disponibles depuis pos : dispo = src_len - (pos-1) }
+  EmitI('MOV  DX, AX');
+  EmitI('DEC  DX                 ; DX = pos - 1');
+  EmitI('MOV  BX, [SI+2]');
+  EmitI('SUB  BX, DX             ; BX = chars disponibles depuis pos');
+  EmitI('CMP  CX, BX');
+  EmitI('JBE  ' + lbl_skip_data + '      ; longueur ok');
+  EmitI('MOV  CX, BX             ; clamp');
+  EmitLabel(lbl_skip_data);
+  { Allouer nouveau descripteur de longueur CX }
+  EmitI('PUSH SI');
+  EmitI('PUSH AX                 ; sauvegarder pos');
+  EmitI('PUSH CX                 ; sauvegarder longueur');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('POP  CX                 ; longueur');
+  EmitI('POP  AX                 ; pos');
+  EmitI('POP  SI                 ; src_desc');
+  { Copier les donnees }
+  EmitI('PUSH DI                 ; sauvegarder desc resultat');
+  EmitI('MOV  DI, [DI]           ; DI = ptr buffer dest');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source');
+  EmitI('DEC  AX                 ; AX = pos - 1 (offset 0-based)');
+  EmitI('ADD  SI, AX             ; SI = source + offset');
+  EmitI('JCXZ ' + lbl_ok1 + '_end');
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_ok1 + '_end');
+  EmitI('MOV  BYTE PTR [DI], 0   ; null garde-fou');
+  EmitI('POP  DI                 ; DI = desc resultat');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_DUPL --- }
+{ SI = src_desc, CX = count (nb de repetitions) -> DI = nouveau desc }
+Procedure GenRtDupl;
+Var lbl_loop, lbl_skip, lbl_end : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_DUPL : SI repete CX fois -> DI = desc concatene');
+  EmitSep;
+  lbl_loop := NewLabel;
+  lbl_skip := NewLabel;
+  lbl_end  := NewLabel;
+  EmitLabel('_RT_DUPL');
+  EmitI('PUSH CX                 ; [1] sauvegarder count');
+  EmitI('MOV  AX, [SI+2]         ; AX = src_len');
+  EmitI('MUL  CX                 ; AX = src_len * count (16 bits, ignore overflow)');
+  EmitI('PUSH SI                 ; [2] sauvegarder src_desc');
+  EmitI('MOV  CX, AX             ; CX = longueur totale pour _SB_NEWSTR');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('MOV  BX, DI             ; BX = desc resultat (sauvegarder)');
+  EmitI('MOV  DI, [BX]           ; DI = ptr buffer dest courant');
+  EmitI('POP  SI                 ; [2] src_desc');
+  EmitI('MOV  DX, [SI+2]         ; DX = src_len (fixe pendant la boucle)');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source (fixe)');
+  EmitI('POP  CX                 ; [1] count');
+  EmitLabel(lbl_loop);
+  EmitI('JCXZ ' + lbl_end);
+  EmitI('PUSH SI');
+  EmitI('PUSH CX');
+  EmitI('MOV  CX, DX             ; CX = src_len pour MOVSB');
+  EmitI('JCXZ ' + lbl_skip);
+  EmitI('REP  MOVSB              ; copier src vers DI (DI avance)');
+  EmitLabel(lbl_skip);
+  EmitI('POP  CX');
+  EmitI('POP  SI');
+  EmitI('DEC  CX');
+  EmitI('JMP  ' + lbl_loop);
+  EmitLabel(lbl_end);
+  EmitI('MOV  BYTE PTR [DI], 0   ; null garde-fou');
+  EmitI('MOV  DI, BX             ; DI = desc resultat');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_REPLACE --- }
+{ SI = src_desc, BX = ptr table de traduction [256 octets] -> DI = desc traduit }
+{ Chaque caractere c de src est remplace par table[c] (XLAT). }
+Procedure GenRtReplace;
+Var lbl_loop, lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_REPLACE : transliterer SI via table[256] BX -> DI');
+  EmitSep;
+  lbl_loop := NewLabel;
+  lbl_done := NewLabel;
+  EmitLabel('_RT_REPLACE');
+  EmitI('PUSH BX');
+  EmitI('PUSH SI');
+  EmitI('MOV  CX, [SI+2]         ; CX = longueur');
+  EmitI('PUSH CX                 ; [1] sauvegarder longueur');
+  EmitI('PUSH BX                 ; [2] sauvegarder table');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('MOV  DX, DI             ; DX = desc resultat');
+  EmitI('MOV  DI, [DX]           ; DI = ptr buffer dest');
+  EmitI('POP  BX                 ; [2] table');
+  EmitI('POP  CX                 ; [1] longueur');
+  EmitI('POP  SI                 ; src_desc');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source');
+  EmitI('JCXZ ' + lbl_done);
+  EmitLabel(lbl_loop);
+  EmitI('MOV  AL, [SI]           ; lire char source');
+  EmitI('INC  SI');
+  EmitI('XLAT                    ; AL <- BX[AL] (transliteration)');
+  EmitI('MOV  [DI], AL           ; ecrire char traduit');
+  EmitI('INC  DI');
+  EmitI('LOOP ' + lbl_loop);
+  EmitLabel(lbl_done);
+  EmitI('MOV  BYTE PTR [DI], 0   ; null garde-fou');
+  EmitI('MOV  DI, DX             ; DI = desc resultat');
+  EmitI('POP  SI');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_TRIM --- }
+{ SI = src_desc -> DI = desc sans espaces en fin de chaine }
+Procedure GenRtTrim;
+Var lbl_loop, lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_TRIM : supprimer les blancs en fin de chaine SI -> DI');
+  EmitSep;
+  lbl_loop := NewLabel;
+  lbl_done := NewLabel;
+  EmitLabel('_RT_TRIM');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  EmitI('MOV  BX, [SI]           ; BX = ptr donnees');
+  EmitI('MOV  CX, [SI+2]         ; CX = longueur initiale');
+  { Reculer depuis la fin tant que char = 32 (espace) }
+  EmitI('JCXZ ' + lbl_done + '           ; chaine vide -> rien a faire');
+  EmitLabel(lbl_loop);
+  EmitI('MOV  DX, BX');
+  EmitI('ADD  DX, CX');
+  EmitI('DEC  DX                 ; DX = adresse du dernier char');
+  EmitI('CMP  BYTE PTR [DX], 32  ; est-ce un espace ?');
+  EmitI('JNE  ' + lbl_done);
+  EmitI('DEC  CX');
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('JMP  ' + lbl_loop);
+  EmitLabel(lbl_done);
+  { Allouer un nouveau descripteur de longueur CX }
+  EmitI('PUSH SI');
+  EmitI('PUSH CX                 ; [1] longueur trimee');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('POP  CX                 ; [1]');
+  EmitI('POP  SI                 ; src_desc');
+  EmitI('PUSH DI                 ; sauvegarder desc result');
+  EmitI('MOV  DI, [DI]           ; DI = buffer dest');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source');
+  EmitI('JCXZ ' + lbl_done + '_copy');
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_done + '_copy');
+  EmitI('MOV  BYTE PTR [DI], 0   ; null');
+  EmitI('POP  DI                 ; DI = desc resultat');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_LPAD --- }
+{ SI = src_desc, CX = width, AL = fill_char -> DI = desc cadre a gauche }
+{ Si len(src) >= width : copier tel quel. Sinon : (width-len) fois fill + src. }
+Procedure GenRtLPad;
+Var lbl_no_pad, lbl_done_pad, lbl_fill_loop : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_LPAD : cadrer SI a gauche sur CX chars (fill=AL) -> DI');
+  EmitSep;
+  lbl_no_pad    := NewLabel;
+  lbl_done_pad  := NewLabel;
+  lbl_fill_loop := NewLabel;
+  EmitLabel('_RT_LPAD');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  EmitI('MOV  BX, [SI+2]         ; BX = src_len');
+  EmitI('CMP  CX, BX');
+  EmitI('JBE  ' + lbl_no_pad + '         ; width <= len : pas de remplissage');
+  { Calculer nb de chars de remplissage }
+  EmitI('MOV  DX, CX');
+  EmitI('SUB  DX, BX             ; DX = width - src_len (nb fill chars)');
+  { Allouer desc de longueur CX (= width) }
+  EmitI('PUSH SI');
+  EmitI('PUSH AX                 ; [1] fill_char');
+  EmitI('PUSH BX                 ; [2] src_len');
+  EmitI('PUSH DX                 ; [3] nb fill chars');
+  EmitI('CALL _SB_NEWSTR         ; DI = desc de longueur width');
+  EmitI('MOV  BX, DI             ; BX = desc result');
+  EmitI('MOV  DI, [BX]           ; DI = ptr buffer');
+  EmitI('POP  DX                 ; [3] nb fill chars');
+  EmitI('POP  CX                 ; [2] src_len');
+  EmitI('POP  AX                 ; [1] fill_char (en AL)');
+  EmitI('POP  SI                 ; src_desc');
+  { Ecrire DX fois le fill_char }
+  EmitI('PUSH CX                 ; sauvegarder src_len');
+  EmitI('MOV  CX, DX');
+  EmitLabel(lbl_fill_loop);
+  EmitI('JCXZ ' + lbl_done_pad);
+  EmitI('MOV  [DI], AL');
+  EmitI('INC  DI');
+  EmitI('LOOP ' + lbl_fill_loop);
+  EmitLabel(lbl_done_pad);
+  { Copier les donnees source }
+  EmitI('POP  CX                 ; src_len');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source');
+  EmitI('JCXZ ' + lbl_no_pad + '_end');
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_no_pad + '_end');
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('MOV  DI, BX             ; DI = desc result');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitLabel(lbl_no_pad);
+  { width <= src_len : copier simplement (COPYSTR) }
+  EmitI('CALL _SB_COPYSTR');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_RPAD --- }
+{ SI = src_desc, CX = width, AL = fill_char -> DI = desc cadre a droite }
+{ Si len(src) >= width : copier tel quel. Sinon : src + (width-len) fois fill. }
+Procedure GenRtRPad;
+Var lbl_no_pad, lbl_fill_loop, lbl_skip_src : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_RPAD : cadrer SI a droite sur CX chars (fill=AL) -> DI');
+  EmitSep;
+  lbl_no_pad    := NewLabel;
+  lbl_fill_loop := NewLabel;
+  lbl_skip_src  := NewLabel;
+  EmitLabel('_RT_RPAD');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  EmitI('MOV  BX, [SI+2]         ; BX = src_len');
+  EmitI('CMP  CX, BX');
+  EmitI('JBE  ' + lbl_no_pad + '         ; pas de remplissage');
+  EmitI('MOV  DX, CX');
+  EmitI('SUB  DX, BX             ; DX = nb fill chars');
+  { Allouer desc de longueur CX (=width) }
+  EmitI('PUSH SI');
+  EmitI('PUSH AX                 ; [1] fill_char');
+  EmitI('PUSH BX                 ; [2] src_len');
+  EmitI('PUSH DX                 ; [3] nb fill');
+  EmitI('CALL _SB_NEWSTR         ; DI = desc width chars');
+  EmitI('MOV  BX, DI             ; BX = desc result');
+  EmitI('MOV  DI, [BX]           ; DI = ptr buffer');
+  EmitI('POP  DX                 ; [3] nb fill');
+  EmitI('POP  CX                 ; [2] src_len');
+  EmitI('POP  AX                 ; [1] fill_char');
+  EmitI('POP  SI                 ; src_desc');
+  { Copier les donnees source }
+  EmitI('PUSH DX                 ; sauvegarder nb fill');
+  EmitI('MOV  SI, [SI]');
+  EmitI('JCXZ ' + lbl_skip_src);
+  EmitI('REP  MOVSB');
+  EmitLabel(lbl_skip_src);
+  { Ecrire nb fill chars }
+  EmitI('POP  CX                 ; nb fill');
+  EmitLabel(lbl_fill_loop);
+  EmitI('JCXZ ' + lbl_no_pad + '_end');
+  EmitI('MOV  [DI], AL');
+  EmitI('INC  DI');
+  EmitI('LOOP ' + lbl_fill_loop);
+  EmitLabel(lbl_no_pad + '_end');
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('MOV  DI, BX');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitLabel(lbl_no_pad);
+  EmitI('CALL _SB_COPYSTR');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_REVERSE --- }
+{ SI = src_desc -> DI = desc avec les octets en ordre inverse }
+Procedure GenRtReverse;
+Var lbl_copy, lbl_rev_loop, lbl_skip : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_REVERSE : inverser les octets de SI -> DI');
+  EmitSep;
+  lbl_copy     := NewLabel;
+  lbl_rev_loop := NewLabel;
+  lbl_skip     := NewLabel;
+  EmitLabel('_RT_REVERSE');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  EmitI('MOV  CX, [SI+2]         ; CX = longueur');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX                 ; [1]');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('POP  CX                 ; [1]');
+  EmitI('POP  SI                 ; src_desc');
+  EmitI('PUSH DI                 ; sauvegarder desc result');
+  EmitI('MOV  BX, [DI]           ; BX = ptr buffer dest');
+  EmitI('MOV  DX, [SI]           ; DX = ptr donnees source');
+  EmitI('JCXZ ' + lbl_skip);
+  { Lire depuis la fin de la source et ecrire dans BX[0..CX-1] }
+  EmitI('ADD  DX, CX');
+  EmitI('DEC  DX                 ; DX pointe sur le dernier char source');
+  EmitI('MOV  DI, BX             ; DI = debut buffer dest');
+  EmitLabel(lbl_rev_loop);
+  EmitI('MOV  AL, [DX]           ; lire char depuis la fin');
+  EmitI('MOV  [DI], AL           ; ecrire au debut dest');
+  EmitI('INC  DI');
+  EmitI('DEC  DX');
+  EmitI('LOOP ' + lbl_rev_loop);
+  EmitLabel(lbl_skip);
+  EmitI('MOV  BYTE PTR [BX+CX], 0 ; null (CX=0 ici, correct)');
+  EmitI('POP  DI                 ; DI = desc resultat');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_UPPER --- }
+{ SI = src_desc -> DI = desc converti en majuscules }
+Procedure GenRtUpper;
+Var lbl_loop, lbl_not_lower, lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_UPPER : convertir SI en majuscules -> DI');
+  EmitSep;
+  lbl_loop      := NewLabel;
+  lbl_not_lower := NewLabel;
+  lbl_done      := NewLabel;
+  EmitLabel('_RT_UPPER');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  EmitI('MOV  CX, [SI+2]');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX                 ; [1]');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('MOV  DX, DI             ; DX = desc result');
+  EmitI('MOV  DI, [DX]           ; DI = buffer dest');
+  EmitI('POP  CX                 ; [1]');
+  EmitI('POP  SI                 ; src_desc');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source');
+  EmitI('JCXZ ' + lbl_done);
+  EmitLabel(lbl_loop);
+  EmitI('MOV  AL, [SI]');
+  EmitI('INC  SI');
+  EmitI('CMP  AL, 61h            ; ''a''');
+  EmitI('JB   ' + lbl_not_lower);
+  EmitI('CMP  AL, 7Ah            ; ''z''');
+  EmitI('JA   ' + lbl_not_lower);
+  EmitI('AND  AL, 0DFh           ; minuscule -> majuscule');
+  EmitLabel(lbl_not_lower);
+  EmitI('MOV  [DI], AL');
+  EmitI('INC  DI');
+  EmitI('LOOP ' + lbl_loop);
+  EmitLabel(lbl_done);
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('MOV  DI, DX             ; DI = desc resultat');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- _RT_LOWER --- }
+{ SI = src_desc -> DI = desc converti en minuscules }
+Procedure GenRtLower;
+Var lbl_loop, lbl_not_upper, lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_LOWER : convertir SI en minuscules -> DI');
+  EmitSep;
+  lbl_loop      := NewLabel;
+  lbl_not_upper := NewLabel;
+  lbl_done      := NewLabel;
+  EmitLabel('_RT_LOWER');
+  EmitI('PUSH BX');
+  EmitI('PUSH DX');
+  EmitI('MOV  CX, [SI+2]');
+  EmitI('PUSH SI');
+  EmitI('PUSH CX                 ; [1]');
+  EmitI('CALL _SB_NEWSTR         ; DI = nouveau desc');
+  EmitI('MOV  DX, DI             ; DX = desc result');
+  EmitI('MOV  DI, [DX]           ; DI = buffer dest');
+  EmitI('POP  CX                 ; [1]');
+  EmitI('POP  SI                 ; src_desc');
+  EmitI('MOV  SI, [SI]           ; SI = ptr donnees source');
+  EmitI('JCXZ ' + lbl_done);
+  EmitLabel(lbl_loop);
+  EmitI('MOV  AL, [SI]');
+  EmitI('INC  SI');
+  EmitI('CMP  AL, 41h            ; ''A''');
+  EmitI('JB   ' + lbl_not_upper);
+  EmitI('CMP  AL, 5Ah            ; ''Z''');
+  EmitI('JA   ' + lbl_not_upper);
+  EmitI('OR   AL, 20h            ; majuscule -> minuscule');
+  EmitLabel(lbl_not_upper);
+  EmitI('MOV  [DI], AL');
+  EmitI('INC  DI');
+  EmitI('LOOP ' + lbl_loop);
+  EmitLabel(lbl_done);
+  EmitI('MOV  BYTE PTR [DI], 0');
+  EmitI('MOV  DI, DX             ; DI = desc resultat');
+  EmitI('POP  DX');
+  EmitI('POP  BX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --- Message d'erreur hors-bornes pour SUBSTR --- }
+{ A emettre dans le segment .DATA (depuis GenDataSegment). }
+Procedure GenRangeErrMsg;
+Begin
+  EmitComment('Message erreur acces hors-bornes (SUBSTR/DUPL)');
+  EmitI('_RT_RANGE_ERR_MSG:');
+  EmitI('  DB  ''SNOBOL86 : acces hors-bornes de chaine'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStringRuntime : emettre toutes les routines de manipulation de chaines.
+  Appelee depuis l'orchestrateur de passe 2 (TODO 25).
+  -------------------------------------------------------------------------- }
+Procedure GenStringRuntime;
+Begin
+  EmitSep;
+  EmitComment('=== Runtime : operations sur les chaines ===');
+  EmitSep;
+  EmitBlank;
+  GenRtStrLen;
+  GenRtStrNCpy;
+  GenRtStrCmp;
+  GenRtSubStr;
+  GenRtDupl;
+  GenRtReplace;
+  GenRtTrim;
+  GenRtLPad;
+  GenRtRPad;
+  GenRtReverse;
+  GenRtUpper;
+  GenRtLower;
+End;
+
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
   sym_table   := Nil;
@@ -952,6 +3418,24 @@ Begin
   pat_table   := Nil;
   func_table  := Nil;
   fwd_table   := Nil;
+  cur_out     := @out_file;   { sortie par defaut : out_file }
+  { Options compilateur }
+  opt_list      := False;
+  opt_debug     := DBG_NONE;
+  opt_strict    := False;
+  opt_heap_size := HEAP_DEFAULT;
+  { Compteurs }
+  err_count    := 0;
+  warn_count   := 0;
+  src_line_num := 0;
+  instr_count  := 0;
+  { Fichiers }
+  lst_open     := False;
+  tmp_open     := False;
+  lbl_seq      := 0;
+  str_top      := 0;
+  main_proc_label := '';
+  first_instr_lbl := '';
   { Corps principal : sera rempli par TODO 25 (Procedure Compile) }
   WriteLn('SNOBOL86 v', SNOBOL86_VERSION, ' - compilateur SNOBOL 4 -> 8086 MASM');
   WriteLn('Usage : SNOBOL86 source.SBL [sortie.ASM]');

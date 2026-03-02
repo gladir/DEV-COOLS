@@ -1478,41 +1478,37 @@ Begin
 
   { Analyser le deuxiäme opÇrande }
   If current_symbol = SYM_STRING_LITERAL Then Begin
-   { Comparaison de cha√Æne litt√©rale: appel COMPARE_STR }
+   { Comparaison de chaåne littÇrale: appel COMPARE_STR }
    temp_token := current_token;
    string_label := 'CMP_STR' + IntToStr(next_label_id);
    Inc(next_label_id);
-   If not data_segment Then
-   Begin
+   If not data_segment Then Begin
     EmitLine('.DATA');
     data_segment := True;
    End;
    EmitLine(string_label + ' DB ' + IntToStr(Length(temp_token)) + ', ''' + temp_token + '''');
    If not code_segment Then BeginCodeSection;
-   Emit('mov di, OFFSET ' + string_label); { DI = cha√Æne droite }
-   Emit('call COMPARE_STR');               { AX = 0 si √©gal, 1 si diff√©rent }
-   Emit('cmp ax, 0');                      { Pr√©parer drapeaux pour saut conditionnel }
+   Emit('mov di, OFFSET ' + string_label); { DI = chaåne droite }
+   Emit('call COMPARE_STR');               { AX = 0 si Çgal, 1 si diffÇrent }
+   Emit('cmp ax, 0');                      { PrÇparer drapeaux pour saut conditionnel }
    NextToken;
   End
-  Else If current_symbol = SYM_UNKNOWN Then
-  Begin
+   Else
+  If current_symbol = SYM_UNKNOWN Then Begin
    temp_token := current_token;
-
-   { Nombre litt√©ral }
-   If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
-   Begin
+    { Nombre littÇral }
+   If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then Begin
     If left_operand = 'ax' Then
      Emit('cmp ax, ' + temp_token)
     Else
      Emit('cmp al, ' + temp_token);
     NextToken;
    End
-   Else If temp_token <> '' Then
-   Begin
+    Else
+   If temp_token <> '' Then Begin
     { Variable }
     sym_index := FindSymbol(temp_token);
-    If sym_index > 0 Then
-    Begin
+    If sym_index > 0 Then Begin
      Case symbol_table[sym_index]^.data_type of
       TYPE_INTEGER, TYPE_WORD:
        Begin
@@ -1544,11 +1540,10 @@ Begin
      End;
     End
     Else
-     Error('Variable non d√©clar√©e: ' + temp_token);
+     Error('Variable non dÇclarÇe: ' + temp_token);
     NextToken;
    End;
-
-   { G√©n√©rer le code conditionnel selon l'op√©rateur }
+   { GÇnÇrer le code conditionnel selon l'opÇrateur }
    Case comparison_op of
     SYM_EQUAL:
      Begin
@@ -1603,7 +1598,7 @@ Begin
  End;
 End;
 
-{ Parser une instruction d'affectation }
+ { Analyser une instruction d'affectation }
 Procedure ParseAssignment(var_name: String);
 Var
  sym_index: Integer;
@@ -1611,51 +1606,40 @@ Var
  is_string_assignment: Boolean;
 Begin
  sym_index := FindSymbol(var_name);
- If sym_index = 0 Then
- Begin
-  Error('Variable non d√©clar√©e: ' + var_name);
-  NextToken; { Consommer le token pour √©viter la boucle infinie }
+ If sym_index = 0 Then Begin
+  Error('Variable non dÇclarÇe: ' + var_name);
+  NextToken; { Consommer le token pour Çviter la boucle infinie }
   Exit;
  End;
-
- { Refuser l'affectation √† une constante }
- If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
- Begin
-  Error('Impossible d''affecter une valeur √† la constante: ' + var_name);
+  { Refuser l'affectation Ö une constante }
+ If symbol_table[sym_index]^.symbol_type = SYM_CONST Then Begin
+  Error('Impossible d''affecter une valeur Ö la constante: ' + var_name);
   NextToken;
   Exit;
  End;
-
- { Attendre := }
+  { Attendre := }
  NextToken; { Consommer l'identificateur de variable }
- If current_token = ':=' Then
- Begin
+ If current_token = ':=' Then Begin
   NextToken; { Consommer := }
-
-  { V√©rifier si c'est une affectation de cha√Æne litt√©rale }
+   { VÇrifier si c'est une affectation de chaåne littÇrale }
   is_string_assignment := False;
-  If (symbol_table[sym_index]^.data_type = TYPE_STRING) Then
-  Begin
-   { Pour une variable string, v√©rifier si on a une cha√Æne litt√©rale en cours }
+  If (symbol_table[sym_index]^.data_type = TYPE_STRING) Then Begin
+   { Pour une variable string, vÇrifier si on a une chaåne littÇrale en cours }
    string_temp := current_token;
-   { Consid√©rer que c'est une cha√Æne litt√©rale si ce n'est pas un nombre }
+   { ConsidÇrer que c'est une chaåne littÇrale si ce n'est pas un nombre }
    If (Length(string_temp) > 0) and
       not ((string_temp[1] >= '0') and (string_temp[1] <= '9')) Then
    Begin
     is_string_assignment := True;
    End;
   End;
-
-  If is_string_assignment Then
-  Begin
-   { Affectation de cha√Æne litt√©rale }
-   EmitComment('Affectation cha√Æne: ' + var_name + ' := ''' + string_temp + '''');
-
-   { Stocker la longueur d'abord (format Pascal) }
+  If is_string_assignment Then Begin
+    { Affectation de chaåne littÇrale }
+   EmitComment('Affectation chaåne: ' + var_name + ' := ''' + string_temp + '''');
+    { Entreposer la longueur d'abord (format Pascal) }
    Emit('mov al, ' + IntToStr(Length(string_temp)));
    Emit('mov ' + symbol_table[sym_index]^.name + ', al');
-
-   { Copier les caract√®res si la cha√Æne n'est pas vide }
+    { Copier les caractäres si la chaåne n'est pas vide }
    If Length(string_temp) > 0 Then
    Begin
     { G√©n√©rer la cha√Æne constante dans le segment de donn√©es }
