@@ -894,32 +894,44 @@ Function GetPrim(sym_idx: Integer): Integer;Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 - TABLE DES FONCTIONS DEFUN                    [COMPLET]            }
+{ TABLE DES FONCTIONS DEFUN                                                    }
 { ============================================================================ }
 
-Procedure InitFuncTable;
-Begin
+Procedure InitFuncTable;Begin
  func_count := 0;
  FillChar(func_table, SizeOf(func_table), 0);
 End;
 
 Function FindFunc(Const name: String): Integer;
-Var i: Integer; u: String;
+Var
+ i: Integer;
+ u: String;
 Begin
  u := UpCaseStr(name);
- For i := 1 to func_count do
-  If func_table[i]^.name = u Then Begin FindFunc := i; Exit; End;
+ For i := 1 to func_count do If func_table[i]^.name = u Then Begin
+  FindFunc := i;
+  Exit;
+ End;
  FindFunc := 0;
 End;
 
 Function AddFunc(Const name: String; nparams: Integer): Integer;
-Var p: PFuncEntry; u: String; existing: Integer;
+Var
+ p: PFuncEntry;
+ u: String;
+ existing: Integer;
 Begin
  u := UpCaseStr(name);
  existing := FindFunc(u);
- If existing > 0 Then Begin AddFunc := existing; Exit; End;
- If func_count >= MAX_FUNC Then
- Begin Error('Table des fonctions pleine'); AddFunc := 0; Exit; End;
+ If existing > 0 Then Begin
+  AddFunc := existing;
+  Exit;
+ End;
+ If func_count >= MAX_FUNC Then Begin
+  Error('Table des fonctions pleine');
+  AddFunc := 0;
+  Exit;
+ End;
  Inc(func_count);
  New(p);
  p^.name        := u;
@@ -930,8 +942,7 @@ Begin
  AddFunc := func_count;
 End;
 
-Function FuncAsmLabel(idx: Integer): String;
-Begin
+Function FuncAsmLabel(idx: Integer):String;Begin
  If (idx < 1) Or (idx > func_count) Then FuncAsmLabel := '_UNDEF_'
  Else FuncAsmLabel := func_table[idx]^.asm_label;
 End;
