@@ -1,4 +1,3 @@
-{$A-} {$I-}
 { ============================================================================ }
 {  ADA86.PAS  -  Compilateur Ada 83/95 (sous-ensemble) -> Assembleur 8086     }
 {  Cible : MASM/TASM, .MODEL SMALL, MS-DOS                                    }
@@ -444,6 +443,10 @@
 
 Program ADA86;
 
+{$A-}
+{$I-}
+{$N+}
+
 { ============================================================================ }
 { TODO 01 - Architecture de base : constantes, types internes, variables       }
 { ============================================================================ }
@@ -628,15 +631,15 @@ Const
   { ------------------------------------------------------------------ }
   { Limites des tables (dimensionnement)                                }
   { ------------------------------------------------------------------ }
-  MAX_SYM    = 512;     { Variables + constantes max                   }
-  MAX_SUB    = 128;     { Procedures + fonctions max                   }
-  MAX_TYPE   = 128;     { Types utilisateur max                        }
+  MAX_SYM    = {$IFDEF FPC}512{$ELSE}256{$ENDIF};     { Variables + constantes max                   }
+  MAX_SUB    = {$IFDEF FPC}128{$ELSE}48{$ENDIF};     { Procedures + fonctions max                   }
+  MAX_TYPE   = {$IFDEF FPC}128{$ELSE}16{$ENDIF};     { Types utilisateur max                        }
   MAX_PKG    = 32;      { Packages importes max                        }
   MAX_PARAM  = 20;      { Parametres max par sous-programme            }
-  MAX_FIELD  = 32;      { Champs max par record                        }
+  MAX_FIELD  = {$IFDEF FPC}32{$ELSE}16{$ENDIF};      { Champs max par record                        }
   MAX_ENUM   = 64;      { Litteraux max par type enumere               }
   MAX_DEPTH  = 24;      { Profondeur de scope max                      }
-  MAX_STR    = 512;     { Litteraux chaines max                        }
+  MAX_STR    = {$IFDEF FPC}512{$ELSE}128{$ENDIF};     { Litteraux chaines max                        }
   MAX_LABEL  = 9999;    { Limite compteur labels ASM                   }
 
 { ============================================================================ }
@@ -6272,7 +6275,8 @@ Begin
   If asiz = 1 Then
    Emit(lbl + '  DB ' + IntToStr(csz) + ' DUP(0)  ; String(' + IntToStr(sym_table^[i].char_len) + ')')
   Else
-   Emit(lbl + '  DB ' + IntToStr(csz * asiz) + ' DUP(0)  ; String(' + IntToStr(sym_table^[i].char_len) + ')[' + IntToStr(asiz) + ']');
+   Emit(lbl + '  DB ' + IntToStr(csz * asiz) + ' DUP(0)  ; String(' +
+       IntToStr(sym_table^[i].char_len) + ')[' + IntToStr(asiz) + ']');
  End
  Else
  Begin
@@ -6540,6 +6544,6 @@ End;
 { Programme principal                                           }
 { ============================================================= }
 
-Begin
+BEGIN
   Compile;
-End.
+END.
