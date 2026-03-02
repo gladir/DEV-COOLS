@@ -3130,189 +3130,140 @@ Begin
   End;
    { Configurer l'Çtat pour la procÇdure }
   current_function_name := UpperCase(proc_name);
-  current_function_type := TYPE_INTEGER; { Pas utilis√© }
-  in_function := True; { Utilise le m√™me flag pour les proc√©dures }
+  current_function_type := TYPE_INTEGER; { Pas utilisÇ }
+  in_function := True; { Utilise le màme drapeau pour les procÇdures }
 
-  { √âmettre l'en-t√™te de proc√©dure assembleur }
+  { êmettre l'entàte de procÇdure assembleur }
   StartCodeSection; { Assurer .CODE sans MAIN PROC }
   EmitLine('');
   EmitLine(UpperCase(proc_name) + ' PROC');
   EmitLine('    push bp');
   EmitLine('    mov bp, sp');
   EmitLine('');
-
-  { Ignorer toute d√©claration VAR locale }
-  While Accept(SYM_VAR) do
-  Begin
+   { Ignorer toute dÇclaration VAR locale }
+  While Accept(SYM_VAR) do Begin
    NextToken; { Consommer VAR }
-   { Ignorer jusqu'au prochain BEGIN }
+    { Ignorer jusqu'au prochain BEGIN }
    While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
     NextToken;
   End;
-
-  { Parser le corps de la proc√©dure - pour l'instant on l'ignore mais on compte les BEGIN/END }
+   { Analyser le corps de la procÇdure - pour l'instant on l'ignore mais on compte les BEGIN/END }
   { Note: CASE...OF...END et RECORD...END comptent aussi comme blocs ouvrants }
-  If Accept(SYM_BEGIN) Then
-  Begin
+  If Accept(SYM_BEGIN) Then Begin
    NextToken; { Consommer BEGIN }
-
    begin_count := 1;
-   While (begin_count > 0) and (current_char <> #0) do
-   Begin
+   While (begin_count > 0) and (current_char <> #0) do Begin
     If Accept(SYM_BEGIN) or Accept(SYM_CASE) or Accept(SYM_RECORD) Then
      Inc(begin_count)
     Else If Accept(SYM_END) Then
      Dec(begin_count);
-
     NextToken;
    End;
   End;
-
-  { Attendre le point-virgule final }
+   { Attendre le point-virgule final }
   If current_token = ';' Then
    NextToken;
-
-  { √âmettre l'√©pilogue de la proc√©dure }
+  { êmettre l'Çpilogue de la procÇdure }
   EmitLine('');
   EmitLine('    pop bp');
   EmitLine('    ret');
   EmitLine(UpperCase(proc_name) + ' ENDP');
-
-  { R√©initialiser l'√©tat }
+   { RÇinitialiser l'Çtat }
   current_function_name := '';
   in_function := False;
  End;
 End;
 
-{ Parser un bloc Pascal }
-Procedure ParseBlock;
-Begin
- { G√©rer les d√©clarations LABEL }
- If Accept(SYM_LABEL) Then
-  ParseLabelDeclarations;
-
- { G√©rer les d√©clarations CONST }
- If Accept(SYM_CONST) Then
-  ParseConstDeclarations;
-
- { G√©rer les d√©clarations TYPE }
+ { Analyser un bloc Pascal }
+Procedure ParseBlock;Begin
+ { GÇrer les dÇclarations LABEL }
+ If Accept(SYM_LABEL) Then ParseLabelDeclarations;
+  { GÇrer les dÇclarations CONST }
+ If Accept(SYM_CONST) Then ParseConstDeclarations;
+  { GÇrer les d√©clarations TYPE }
  If Accept(SYM_TYPE) Then
   ParseTypeDeclarations;
-
- { G√©rer les d√©clarations VAR }
- If Accept(SYM_VAR) Then
-  ParseVarDeclarations;
-
- { Premi√®re passe: g√©rer les d√©clarations FORWARD }
- While Accept(SYM_FUNCTION) or Accept(SYM_PROCEDURE) do
- Begin
-  If current_symbol = SYM_FUNCTION Then
-  Begin
+ { GÇrer les dÇclarations VAR }
+ If Accept(SYM_VAR) Then ParseVarDeclarations;
+  { Premiäre passe: gÇrer les dÇclarations FORWARD }
+ While Accept(SYM_FUNCTION) or Accept(SYM_PROCEDURE) do Begin
+  If current_symbol = SYM_FUNCTION Then Begin
    ParseFunctionDeclaration;
   End
-  Else If current_symbol = SYM_PROCEDURE Then
-  Begin
+   Else
+  If current_symbol = SYM_PROCEDURE Then Begin
    ParseProcedureDeclaration;
   End;
  End;
-
- { G√©rer le BEGIN principal }
- If Accept(SYM_BEGIN) Then
- Begin
+  { GÇrer le BEGIN principal }
+ If Accept(SYM_BEGIN) Then Begin
   BeginCodeSection;
   ParseStatement;
  End
- Else
-  Error('Attendu BEGIN');
+  Else
+ Error('Attendu BEGIN');
 End;
 
-{ Parser un programme ou une unit√© Pascal }
-Procedure ParseProgram;
-Begin
- { V√©rifier si c'est une UNIT }
- If Accept(SYM_UNIT) Then
- Begin
+ { Analyser un programme ou une unitÇ Pascal }
+Procedure ParseProgram;Begin
+  { VÇrifier si c'est une UNIT }
+ If Accept(SYM_UNIT) Then Begin
   ParseUnit;
   Exit;
  End;
-
- { Sinon, traiter comme un PROGRAM }
+  { Sinon, traiter comme un PROGRAM }
  ParseProgramMain;
 End;
 
-{ Parser un programme principal Pascal }
-Procedure ParseProgramMain;
-Begin
- { En-t√™te PROGRAM }
- If Accept(SYM_PROGRAM) Then
- Begin
+ { Analyser un programme principal Pascal }
+Procedure ParseProgramMain;Begin
+ { Entàte PROGRAM }
+ If Accept(SYM_PROGRAM) Then Begin
   NextToken; { Consommer PROGRAM }
-
-  If current_symbol = SYM_UNKNOWN Then
-  Begin
+  If current_symbol = SYM_UNKNOWN Then Begin
    program_name := current_token;
    EmitComment('Programme: ' + program_name);
    NextToken; { Consommer le nom }
-
-   { G√©rer les param√®tres optionnels du programme }
-   If current_token = '(' Then
-   Begin
+   { GÇrer les paramätres optionnels du programme }
+   If current_token = '(' Then Begin
     NextToken; { Consommer ( }
-    EmitComment('Param√®tres du programme:');
-
-    { Ignorer les param√®tres pour l'instant }
-    While (current_token <> ')') and (current_char <> #0) do
-    Begin
-     If current_symbol = SYM_UNKNOWN Then
-      EmitComment('  - ' + current_token);
+    EmitComment('Paramätres du programme:');
+     { Ignorer les param√®tres pour l'instant }
+    While (current_token <> ')') and (current_char <> #0) do Begin
+     If current_symbol = SYM_UNKNOWN Then EmitComment('  - ' + current_token);
      NextToken;
-
-     { G√©rer les virgules }
-     If current_token = ',' Then
-      NextToken;
+      { GÇrer les virgules }
+     If current_token = ',' Then NextToken;
     End;
-
-    If current_token = ')' Then
-     NextToken
-    Else
-     Error('Attendu ) apr√®s param√®tres du programme');
+    If current_token = ')' Then NextToken
+                           Else Error('Attendu ) apräs paramätres du programme');
    End;
-
-   If current_token = ';' Then
-    NextToken
-   Else
-    Error('Attendu ; apr√®s nom d''unit√©');
+   If current_token = ';' Then NextToken
+                          Else Error('Attendu ; apräs nom d''unitÇ');
   End
-  Else
-   Error('Attendu nom d''unit√©');
+   Else
+  Error('Attendu nom d''unitÇ');
  End
- Else
+  Else
  Begin
-  { Programme sans en-t√™te PROGRAM - accept√© mais avec avertissement }
-  Warning('Programme sans en-t√™te PROGRAM - assum√© programme principal');
+  { Programme sans entàte PROGRAM - acceptÇ mais avec avertissement }
+  Warning('Programme sans entàte PROGRAM - assumÇ programme principal');
   EmitComment('Programme: (sans nom)');
  End;
-
- { G√©rer la clause USES }
+  { GÇrer la clause USES }
  If Accept(SYM_USES) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'USES')) Then
   ParseUses;
-
  GenerateHeader;
-
- { Parser le bloc principal }
+ { Analyser le bloc principal }
  ParseBlock;
-
- { Attendre le point final }
- If current_symbol = SYM_DOT Then
-  NextToken
- Else
-  Error('Attendu . √† la fin du programme');
-
+  { Attendre le point final }
+ If current_symbol = SYM_DOT Then NextToken
+                             Else Error('Attendu . Ö la fin du programme');
  GenerateFooter;
 End;
 
 { ============================================================================ }
-{ PROC√âDURES D'INITIALISATION ET PRINCIPALE                                   }
+{ PROCêDURES D'INITIALISATION ET PRINCIPALE                                    }
 { ============================================================================ }
 
 { Initialiser le compilateur }
@@ -3320,13 +3271,10 @@ Procedure InitCompiler;
 Var
  i: Integer;
 Begin
- { Initialiser les tables de symboles et d'√©tiquettes }
- For i := 1 to MAX_SYMBOLS do
-  symbol_table[i] := nil;
- For i := 1 to MAX_LABEL_COUNT do
-  label_table[i] := nil;
-  label_table[i] := nil;
-
+  { Initialiser les tables de symboles et d'Çtiquettes }
+ For i := 1 to MAX_SYMBOLS do symbol_table[i] := nil;
+ For i := 1 to MAX_LABEL_COUNT do label_table[i] := nil;
+ label_table[i] := nil;
  symbol_count := 0;
  label_count := 0;
  next_label_id := 0;
@@ -3341,21 +3289,24 @@ Begin
  current_function_name := '';
  current_function_type := TYPE_INTEGER;
  in_function := False;
-
- { Initialiser les variables pour les unit√©s }
+  { Initialiser les variables pour les unitÇs }
  current_unit_name := '';
  in_unit := False;
  in_interface := False;
  in_implementation := False;
  unit_symbols_start := 0;
-
- { Pr√©-enregistrer TRUE et FALSE comme constantes bool√©ennes }
+  { PrÇ-enregistrer TRUE et FALSE comme constantes boolÇennes }
  i := AddSymbol('TRUE', SYM_CONST, TYPE_BOOLEAN, STORAGE_GLOBAL);
- If i > 0 Then Begin symbol_table[i]^.value := 1; symbol_table[i]^.defined := True; End;
+ If i > 0 Then Begin
+  symbol_table[i]^.value := 1;
+  symbol_table[i]^.defined := True;
+ End;
  i := AddSymbol('FALSE', SYM_CONST, TYPE_BOOLEAN, STORAGE_GLOBAL);
- If i > 0 Then Begin symbol_table[i]^.value := 0; symbol_table[i]^.defined := True; End;
-
- { Pr√©-enregistrer les fonctions et variables syst√®me courantes }
+ If i > 0 Then Begin
+  symbol_table[i]^.value := 0;
+  symbol_table[i]^.defined := True;
+ End;
+  { PrÇ-enregistrer les fonctions et variables systäme courantes }
  i := AddFunction('EOF',      TYPE_BOOLEAN); If i > 0 Then symbol_table[i]^.defined := True;
  i := AddFunction('EOLN',     TYPE_BOOLEAN); If i > 0 Then symbol_table[i]^.defined := True;
  i := AddFunction('POS',      TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
@@ -3368,11 +3319,10 @@ Begin
  i := AddFunction('SUCC',     TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
  i := AddFunction('PRED',     TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
  i := AddFunction('ABS',      TYPE_INTEGER); If i > 0 Then symbol_table[i]^.defined := True;
- { IORESULT = variable globale entier (0 apr√®s succ√®s) }
+  { IORESULT = variable globale entier (0 apräs succäs) }
  i := AddSymbol('IORESULT', SYM_VAR, TYPE_INTEGER, STORAGE_GLOBAL);
  If i > 0 Then symbol_table[i]^.defined := True;
-
- { Pr√©-enregistrer les proc√©dures syst√®me courantes }
+ { PrÇ-enregistrer les procÇdures systäme courantes }
  i := AddProcedure('ASSIGN');   If i > 0 Then symbol_table[i]^.defined := True;
  i := AddProcedure('RESET');    If i > 0 Then symbol_table[i]^.defined := True;
  i := AddProcedure('REWRITE');  If i > 0 Then symbol_table[i]^.defined := True;
@@ -3390,114 +3340,87 @@ Begin
  i := AddProcedure('INSERT');   If i > 0 Then symbol_table[i]^.defined := True;
 End;
 
-{ Lib√©rer la m√©moire allou√©e }
+ { LibÇrer la mÇmoire allouÇe }
 Procedure CleanupCompiler;
 Var
  i: Integer;
 Begin
- { Lib√©rer les symboles }
- For i := 1 to symbol_count do
-  If symbol_table[i] <> nil Then
-   Dispose(symbol_table[i]);
-
- { Lib√©rer les √©tiquettes }
- For i := 1 to label_count do
-  If label_table[i] <> nil Then
-   Dispose(label_table[i]);
+  { LibÇrer les symboles }
+ For i := 1 to symbol_count do If symbol_table[i] <> nil Then Dispose(symbol_table[i]);
+  { LibÇrer les Çtiquettes }
+ For i := 1 to label_count do If label_table[i] <> nil Then Dispose(label_table[i]);
 End;
 
-{ Parser une clause USES }
+ { Analyser une clause USES }
 Procedure ParseUses;
 Var
  unit_name: String;
 Begin
  NextToken; { Consommer USES }
-
- If not option_units_support and not option_crt_dos_support Then
- Begin
-  Warning('USES ignor√© - aucune option d''unit√© activ√©e (/2 ou /3)');
-  { Ignorer jusqu'au point-virgule }
-  While (current_token <> ';') and (current_char <> #0) do
-   NextToken;
-  If current_token = ';' Then
-   NextToken;
+ If not option_units_support and not option_crt_dos_support Then Begin
+  Warning('USES ignorÇ - aucune option d''unitÇ activÇe (/2 ou /3)');
+   { Ignorer jusqu'au point-virgule }
+  While (current_token <> ';') and (current_char <> #0) do NextToken;
+  If current_token = ';' Then NextToken;
   Exit;
  End;
-
- If option_crt_dos_support and not option_units_support Then
- Begin
+ If option_crt_dos_support and not option_units_support Then Begin
   { Mode option /2: Support partiel pour Uses Crt,DOS seulement }
   EmitComment('Clause USES (mode partiel Crt,DOS)');
-
   { Lire les noms d'unit√©s et v√©rifier qu'elles sont support√©es }
   Repeat
-   If current_symbol = SYM_UNKNOWN Then
-   Begin
+   If current_symbol = SYM_UNKNOWN Then Begin
     unit_name := UpperCase(current_token);
-    If (unit_name = 'CRT') or (unit_name = 'DOS') Then
-    Begin
-     EmitComment('  Unit√© interne support√©e: ' + unit_name);
+    If (unit_name = 'CRT') or (unit_name = 'DOS') Then Begin
+     EmitComment('  UnitÇ interne supportÇe: ' + unit_name);
     End
-    Else
+     Else
     Begin
-     Warning('Unit√© non support√©e en mode /2: ' + unit_name + ' (seuls Crt et DOS sont support√©s)');
+     Warning('UnitÇ non supportÇe en mode /2: ' + unit_name + ' (seuls Crt et DOS sont supportÇs)');
     End;
     NextToken;
    End
    Else
    Begin
-    Error('Attendu nom d''unit√© dans clause USES');
+    Error('Attendu nom d''unitÇ dans clause USES');
     Break;
    End;
-
-   { G√©rer les virgules }
-   If current_token = ',' Then
-    NextToken
-   Else
-    Break;
+    { GÇrer les virgules }
+   If current_token = ',' Then NextToken
+                          Else Break;
   Until False;
  End
- Else
+  Else
  Begin
-  { Mode option /3: Support complet des unit√©s }
-  EmitComment('Clause USES d√©tect√©e');
-
-  { Lire les noms d'unit√©s }
+   { Mode option /3: Support complet des unitÇs }
+  EmitComment('Clause USES dÇtectÇe');
+  { Lire les noms d'unitÇs }
   Repeat
-   If current_symbol = SYM_UNKNOWN Then
-   Begin
+   If current_symbol = SYM_UNKNOWN Then Begin
     unit_name := current_token;
-    EmitComment('  Unit√© requise: ' + unit_name);
+    EmitComment('  UnitÇ requise: ' + unit_name);
     NextToken;
    End
-   Else
+    Else
    Begin
-    Error('Attendu nom d''unit√© dans clause USES');
+    Error('Attendu nom d''unitÇ dans clause USES');
     Break;
    End;
-
-   { G√©rer les virgules }
-   If current_token = ',' Then
-    NextToken
-   Else
-    Break;
+    { GÇrer les virgules }
+   If current_token = ',' Then NextToken
+                          Else Break;
   Until False;
  End;
-
- { Attendre le point-virgule }
- If current_token = ';' Then
-  NextToken
- Else
-  Error('Attendu ; apr√®s clause USES');
+  { Attendre le point-virgule }
+ If current_token = ';' Then NextToken
+                        Else Error('Attendu ; apräs clause USES');
 End;
 
-{ Parser la section INTERFACE d'une UNIT }
-Procedure ParseInterface;
-Begin
+ { Analyser la section INTERFACE d'une UNIT }
+Procedure ParseInterface;Begin
  NextToken; { Consommer INTERFACE }
- Warning('Section INTERFACE d√©tect√©e - impl√©mentation basique');
-
- { Pour l'instant, ignorer jusqu'√† IMPLEMENTATION ou END (sans les consommer) }
+ Warning('Section INTERFACE dÇtectÇe - implÇmentation simple');
+ { Pour l'instant, ignorer jusqu'Ö IMPLEMENTATION ou END (sans les consommer) }
  While not ((current_symbol = SYM_UNKNOWN) and
           ((UpperCase(current_token) = 'IMPLEMENTATION') or
            (UpperCase(current_token) = 'END'))) and
@@ -3505,159 +3428,125 @@ Begin
   NextToken;
 End;
 
-{ Parser la section IMPLEMENTATION d'une UNIT }
-Procedure ParseImplementation;
-Begin
+ { Analyser la section IMPLEMENTATION d'une UNIT }
+Procedure ParseImplementation;Begin
  NextToken; { Consommer IMPLEMENTATION }
- Warning('Section IMPLEMENTATION d√©tect√©e - impl√©mentation basique');
-
- { Pour l'instant, ignorer jusqu'√† END (sans le consommer) }
+ Warning('Section IMPLEMENTATION dÇtectÇe - implÇmentation simple');
+  { Pour l'instant, ignorer jusqu'Ö END (sans le consommer) }
  While not ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) and
        (current_symbol <> SYM_END) and (current_char <> #0) do
   NextToken;
 End;
 
-{ Parser une UNIT compl√®te }
-Procedure ParseUnit;
-Begin
+ { Analyser une UNIT compläte }
+Procedure ParseUnit;Begin
  NextToken; { Consommer UNIT }
-
- { Lire le nom de l'unit√© }
- If current_symbol = SYM_UNKNOWN Then
- Begin
+  { Lire le nom de l'unitÇ }
+ If current_symbol = SYM_UNKNOWN Then Begin
   current_unit_name := current_token;
-  EmitComment('Unit√©: ' + current_unit_name);
+  EmitComment('UnitÇ: ' + current_unit_name);
   NextToken;
  End
- Else
+  Else
  Begin
-  Error('Attendu nom d''unit√©');
+  Error('Attendu nom d''unitÇ');
   current_unit_name := '';
  End;
-
- { Attendre le point-virgule }
- If current_token = ';' Then
-  NextToken
- Else
-  Error('Attendu ; apr√®s nom d''unit√©');
-
- { Parser l'interface (si pr√©sente) }
+  { Attendre le point-virgule }
+ If current_token = ';' Then NextToken
+                        Else Error('Attendu ; apräs nom d''unitÇ');
+  { Analyser l'interface (si prÇsente) }
  If Accept(SYM_INTERFACE) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'INTERFACE')) Then
   ParseInterface;
-
- { Parser l'impl√©mentation (si pr√©sente) }
+  { Parser l'implÇmentation (si prÇsente) }
  If Accept(SYM_IMPLEMENTATION) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'IMPLEMENTATION')) Then
   ParseImplementation;
-
- { Attendre END et le point final }
- If Accept(SYM_END) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) Then
- Begin
+  { Attendre END et le point final }
+ If Accept(SYM_END) or ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) Then Begin
   NextToken;
-  If current_token = '.' Then
-   NextToken
-  Else
-   Error('Attendu . apr√®s END d''unit√©');
+  If current_token = '.'Then NextToken
+                        Else Error('Attendu . apräs END d''unitÇ');
  End
- Else
-  Error('Attendu END √† la fin de l''unit√©');
-
- { R√©initialiser l'√©tat }
+  Else
+ Error('Attendu END Ö la fin de l''unitÇ');
+  { RÇinitialiser l'Çtat }
  current_unit_name := '';
 End;
 
-{ Parser les d√©clarations de labels }
+ { Analyser les dÇclarations de Çtiquettes }
 Procedure ParseLabelDeclarations;
 Var
  label_name: String;
  label_index: Integer;
 Begin
  NextToken; { Consommer LABEL }
-
- While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
- Begin
-  { Lire le nom de l'√©tiquette }
-  If current_symbol = SYM_UNKNOWN Then
-  Begin
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do Begin
+  { Lire le nom de l'Çtiquette }
+  If current_symbol = SYM_UNKNOWN Then Begin
    label_name := current_token;
-
-   { V√©rifier si l'√©tiquette existe d√©j√† }
+    { VÇrifier si l'Çtiquette existe dÇjÖ }
    If FindLabel(label_name) > 0 Then
-    Error('√âtiquette d√©j√† d√©clar√©e: ' + label_name)
+    Error('êtiquette dÇjÖ dÇclarÇe: ' + label_name)
    Else
    Begin
-    { Ajouter l'√©tiquette √† la table }
+    { Ajouter l'Çtiquette Ö la table }
     label_index := AddLabel(label_name);
-    If label_index > 0 Then
-     EmitComment('D√©claration √©tiquette: ' + label_name);
+    If label_index > 0 Then EmitComment('DÇclaration Çtiquette: ' + label_name);
    End;
-
    NextToken;
   End
-  Else
+   Else
   Begin
-   Error('Attendu nom d''√©tiquette');
+   Error('Attendu nom d''Çtiquette');
    Break;
   End;
-
-  { G√©rer les virgules }
-  If current_token = ',' Then
-   NextToken
-  Else
-   Break;
+   { GÇrer les virgules }
+  If current_token = ',' Then NextToken
+                         Else Break;
  End;
-
- { Attendre le point-virgule }
- If current_token = ';' Then
-  NextToken
- Else
-  Error('Attendu ; apr√®s d√©clarations de labels');
+  { Attendre le point-virgule }
+ If current_token = ';'Then NextToken
+                       Else Error('Attendu ; apräs dÇclarations de labels');
 End;
 
-{ Parser une instruction GOTO }
+ { Analyser une instruction GOTO }
 Procedure ParseGoto;
 Var
  label_name: String;
  label_index: Integer;
 Begin
  NextToken; { Consommer GOTO }
-
- { Lire le nom de l'√©tiquette }
- If current_symbol = SYM_UNKNOWN Then
- Begin
+  { Lire le nom de l'Çtiquette }
+ If current_symbol = SYM_UNKNOWN Then Begin
   label_name := current_token;
-
-  { V√©rifier si l'√©tiquette est d√©clar√©e }
+   { VÇrifier si l'Çtiquette est dÇclarÇe }
   label_index := FindLabel(label_name);
-  If label_index = 0 Then
-   Error('√âtiquette non d√©clar√©e: ' + label_name)
-  Else
+  If label_index = 0 Then Error('êtiquette non dÇclarÇe: ' + label_name)
+   Else
   Begin
-   { G√©n√©rer l'instruction de saut }
+   { GÇnÇrer l'instruction de saut }
    EmitComment('GOTO ' + label_name);
    Emit('jmp ' + UpperCase(label_name) + '_LABEL');
   End;
-
   NextToken;
  End
- Else
-  Error('Attendu nom d''√©tiquette apr√®s GOTO');
+  Else
+ Error('Attendu nom d''Çtiquette apräs GOTO');
 End;
 
-{ G√©n√©rer les proc√©dures d'aide (comme PRINT_NUM) }
-Procedure GenerateHelpProcedures;
-Begin
+ { GÇnÇrer les procÇdures d'aide (comme PRINT_NUM) }
+Procedure GenerateHelpProcedures;Begin
  EmitLine('');
- EmitComment('Proc√©dures d''aide pour l''affichage');
-
- { Proc√©dure pour afficher un nombre entier }
+ EmitComment('ProcÇdures d''aide pour l''affichage');
+  { ProcÇdure pour afficher un nombre entier }
  EmitLine('PRINT_NUM PROC');
- EmitComment('Affiche le nombre dans AX en d√©cimal');
+ EmitComment('Affiche le nombre dans AX en dÇcimal');
  EmitLine('    push ax');
  EmitLine('    push bx');
  EmitLine('    push cx');
  EmitLine('    push dx');
  EmitLine('');
- EmitComment('Traiter le signe n√©gatif');
+ EmitComment('Traiter le signe nÇgatif');
  EmitLine('    cmp ax, 0');
  EmitLine('    jge PRINT_POSITIVE');
  EmitLine('    mov dl, ''-''');
@@ -3666,7 +3555,7 @@ Begin
  EmitLine('    neg ax');
  EmitLine('');
  EmitLine('PRINT_POSITIVE:');
- EmitComment('Conversion en d√©cimal et affichage');
+ EmitComment('Conversion en dÇcimal et affichage');
  EmitLine('    mov cx, 0    ; Compteur de chiffres');
  EmitLine('    mov bx, 10   ; Diviseur');
  EmitLine('');
@@ -3675,12 +3564,12 @@ Begin
  EmitLine('    div bx       ; AX = AX / 10, DX = reste');
  EmitLine('    add dl, 48   ; Convertir en ASCII');
  EmitLine('    push dx      ; Empiler le chiffre');
- EmitLine('    inc cx       ; Incr√©menter compteur');
+ EmitLine('    inc cx       ; IncrÇmenter compteur');
  EmitLine('    cmp ax, 0');
  EmitLine('    jne PUSH_DIGITS');
  EmitLine('');
  EmitLine('POP_DIGITS:');
- EmitLine('    pop dx       ; D√©piler et afficher');
+ EmitLine('    pop dx       ; DÇpiler et afficher');
  EmitLine('    mov ah, 02h');
  EmitLine('    int 21h');
  EmitLine('    loop POP_DIGITS');
@@ -3691,13 +3580,11 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('PRINT_NUM ENDP');
-
  EmitLine('');
- EmitComment('Proc√©dures d''aide pour les cha√Ænes');
-
- { Proc√©dure de copie de cha√Ænes }
+ EmitComment('ProcÇdures d''aide pour les chaånes');
+  { ProcÇdure de copie de chaånes }
  EmitLine('COPY_STR PROC');
- EmitComment('Copie une cha√Æne de SI vers DI (format Pascal: longueur + caract√®res)');
+ EmitComment('Copie une chaåne de SI vers DI (format Pascal: longueur + caractäres)');
  EmitLine('    push ax');
  EmitLine('    push cx');
  EmitLine('    push si');
@@ -3706,11 +3593,11 @@ Begin
  EmitComment('Lire la longueur');
  EmitLine('    lodsb            ; Charger longueur depuis [SI]');
  EmitLine('    stosb            ; Stocker longueur vers [DI]');
- EmitLine('    mov cl, al       ; Nombre de caract√®res √† copier');
+ EmitLine('    mov cl, al       ; Nombre de caractäres Ö copier');
  EmitLine('    mov ch, 0');
  EmitLine('');
- EmitComment('Copier les caract√®res');
- EmitLine('    rep movsb        ; Copier CX caract√®res');
+ EmitComment('Copier les caractäres');
+ EmitLine('    rep movsb        ; Copier CX caractäres');
  EmitLine('');
  EmitLine('    pop di');
  EmitLine('    pop si');
@@ -3718,8 +3605,7 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('COPY_STR ENDP');
-
- { Proc√©dure de concat√©nation de cha√Ænes }
+  { ProcÇdure de concatÇnation de chaånes }
  EmitLine('');
  EmitLine('CONCAT_STR PROC');
  EmitComment('Concat√®ne deux cha√Ænes: SI (source1) + DI (source2) -> SI (r√©sultat)');

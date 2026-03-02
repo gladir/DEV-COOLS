@@ -1161,7 +1161,7 @@ End;
       _RT_STR_PTR : MOV BX, [DI]      ; BX <- ptr donnees
       _RT_STR_LEN : MOV CX, [DI+2]    ; CX <- longueur
   Ces sequences sont emises inline plutot que comme CALL pour minimiser
-  le surcoût sur 8086 (pas de MACRO MASM en ciblant TASM minimal).
+  le surco?t sur 8086 (pas de MACRO MASM en ciblant TASM minimal).
   -------------------------------------------------------------------------- }
 
 Procedure GenLoadStrPtr;
@@ -1291,7 +1291,7 @@ End;
     - Ligne dont le premier caractere est '*'  -> commentaire, ignorer.
     - Ligne dont le premier caractere est '+'
       ou '-' -> continuation de l'instruction precedente :
-      on retire le premier caractere et on concatène au buffer en cours.
+      on retire le premier caractere et on concat?ne au buffer en cours.
     - Ligne "-END-" (apres trim) -> fin de programme.
     - Ligne vide -> ignoree (ligne blanche).
   La fonction retourne True si une nouvelle instruction demarre,
@@ -1891,7 +1891,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  InitPredefined : appel groupé enregistrant builtins + sysvars.
+  InitPredefined : appel group? enregistrant builtins + sysvars.
   Appelee une seule fois au debut de Compile (TODO 25).
   -------------------------------------------------------------------------- }
 
@@ -3952,10 +3952,10 @@ Begin
   EmitI('POP  SI');
   EmitI('RET');
   EmitBlank;
-  { Note : implémentation simplifiee ci-dessus — remplacee par GenRtRMulFull }
+  { Note : impl?mentation simplifiee ci-dessus ? remplacee par GenRtRMulFull }
 End;
 
-{ Implémentation correcte de RMUL utilisant la pile pour sauvegarder }
+{ Impl?mentation correcte de RMUL utilisant la pile pour sauvegarder }
 Procedure GenRtRMulFull;
 Var lbl_done : TString;
 Begin
@@ -5461,6 +5461,75 @@ Begin
   End;
 End;
 
+{ ============================================================================
+  TODO 19 - CODEGEN : GOTO ET BRANCHEMENTS SUCCES/ECHEC
+  ============================================================================
+  GotoLabelToAsm  : nom SNOBOL -> label ASM
+  IsSpecialGotoLabel : END/RETURN/FRETURN/NRETURN -> True
+  EmitGotoJmp     : emettre JMP + enregistrer forward ref
+  ResolveForwardRefs : verifier toutes les forward refs post-compilation
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GotoLabelToAsm : traduire un nom de label SNOBOL en label ASM.
+  -------------------------------------------------------------------------- }
+Function GotoLabelToAsm(Const lbl : TString) : TString;
+Var u : TString;
+Begin
+  u := UpCaseStr(lbl);
+  If      u = 'END'     Then GotoLabelToAsm := '_SB_END_PROG'
+  Else If u = 'RETURN'  Then GotoLabelToAsm := '_SB_RETURN'
+  Else If u = 'FRETURN' Then GotoLabelToAsm := '_SB_FRETURN'
+  Else If u = 'NRETURN' Then GotoLabelToAsm := '_SB_NRETURN'
+  Else GotoLabelToAsm := SB_LBL_PFX + AsmSafeIdent(u);
+End;
+
+{ --------------------------------------------------------------------------
+  IsSpecialGotoLabel : True si lbl est un label special.
+  -------------------------------------------------------------------------- }
+Function IsSpecialGotoLabel(Const lbl : TString) : Boolean;
+Var u : TString;
+Begin
+  u := UpCaseStr(lbl);
+  IsSpecialGotoLabel := (u = 'END') Or (u = 'RETURN') Or
+                        (u = 'FRETURN') Or (u = 'NRETURN');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitGotoJmp : emettre un JMP vers un label SNOBOL.
+  Pour les labels utilisateur non speciaux, enregistre une forward ref.
+  -------------------------------------------------------------------------- }
+Procedure EmitGotoJmp(Const lbl : TString);
+Var asm_lbl : TString;
+    u       : TString;
+Begin
+  If lbl = '' Then Exit;
+  u       := UpCaseStr(lbl);
+  asm_lbl := GotoLabelToAsm(u);
+  EmitI('JMP  ' + asm_lbl);
+  If Not IsSpecialGotoLabel(u) Then
+  Begin
+    If FindLabel(u) = 0 Then
+      AddLabel(u);
+    AddFwdRef(u, src_line_num);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ResolveForwardRefs : verifier toutes les forward refs apres compilation.
+  Emet un Warning pour chaque label utilise mais non defini.
+  -------------------------------------------------------------------------- }
+Procedure ResolveForwardRefs;
+Var i   : Integer;
+    idx : Integer;
+Begin
+  For i := 1 To fwd_count Do
+  Begin
+    idx := FindLabel(fwd_table^[i].asm_label);
+    If (idx = 0) Or (Not label_table^[idx].defined) Then
+      Warning('Label non defini : ' + fwd_table^[i].asm_label);
+  End;
+End;
 { --------------------------------------------------------------------------
   EmitGotoSection : emettre le code de saut de la section goto.
   Conventions :
@@ -5476,14 +5545,10 @@ End;
 Procedure EmitGotoSection;
 Begin
   If inst_goto_u <> '' Then
-  Begin
-    EmitI('JMP  ' + AsmSafeIdent(UpCaseStr(inst_goto_u)));
-  End
+    EmitGotoJmp(inst_goto_u)
   Else If inst_goto_s <> '' Then
-  Begin
-    EmitI('JMP  ' + AsmSafeIdent(UpCaseStr(inst_goto_s)));
-  End;
-  { inst_goto_f : impossible pour affectation pure -> ignore }
+    EmitGotoJmp(inst_goto_s);
+  { inst_goto_f : impossible ici (affectation simple = toujours succes) }
 End;
 
 { --------------------------------------------------------------------------
@@ -5546,6 +5611,461 @@ Begin
   EmitBlank;
 End;
 
+
+{ ============================================================================
+  TODO 18 - CODEGEN : OPERATEURS DE PATRON (ALT, CONCAT, ASSIGN)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  PatTrimStr : retirer les espaces de debut/fin.
+  -------------------------------------------------------------------------- }
+Function PatTrimStr(Const s : TString) : TString;
+Var i, j : Integer;
+Begin
+  i := 1;
+  While (i <= Length(s)) And (s[i] In [' ', #9]) Do Inc(i);
+  j := Length(s);
+  While (j >= i) And (s[j] In [' ', #9]) Do Dec(j);
+  Result := Copy(s, i, j - i + 1);
+End;
+
+{ --------------------------------------------------------------------------
+  PatSplitOnAlt : decouper raw sur les '|' de niveau 0.
+  -------------------------------------------------------------------------- }
+Procedure PatSplitOnAlt(Const raw : TString;
+                        Var parts : Array of TString;
+                        Var count : Integer);
+Var i, depth : Integer;
+    cur      : TString;
+    c        : Char;
+    in_q     : Boolean;
+Begin
+  count := 0;  cur := '';  depth := 0;  in_q := False;
+  For i := 1 To Length(raw) Do
+  Begin
+    c := raw[i];
+    If in_q Then
+    Begin
+      cur := cur + c;
+      If c = '''' Then in_q := False;
+    End
+    Else If c = '''' Then Begin cur := cur + c; in_q := True; End
+    Else If c = '(' Then Begin Inc(depth); cur := cur + c; End
+    Else If c = ')' Then Begin If depth > 0 Then Dec(depth); cur := cur + c; End
+    Else If (c = '|') And (depth = 0) Then
+    Begin
+      cur := PatTrimStr(cur);
+      If (Length(cur) > 0) And (count <= High(parts)) Then
+      Begin parts[count] := cur; Inc(count); End;
+      cur := '';
+    End
+    Else cur := cur + c;
+  End;
+  cur := PatTrimStr(cur);
+  If (Length(cur) > 0) And (count <= High(parts)) Then
+  Begin parts[count] := cur; Inc(count); End;
+End;
+
+{ --------------------------------------------------------------------------
+  PatSplitConcat : decouper un segment en tokens primaires.
+  -------------------------------------------------------------------------- }
+Procedure PatSplitConcat(Const raw : TString;
+                         Var toks  : Array of TString;
+                         Var count : Integer);
+Var i, depth : Integer;
+    cur      : TString;
+    c        : Char;
+    in_q     : Boolean;
+Begin
+  count := 0;  cur := '';  depth := 0;  in_q := False;  i := 1;
+  While i <= Length(raw) Do
+  Begin
+    c := raw[i];
+    If in_q Then
+    Begin
+      cur := cur + c;
+      If c = '''' Then
+      Begin
+        If (i < Length(raw)) And (raw[i+1] = '''') Then
+        Begin cur := cur + ''''; Inc(i); End
+        Else in_q := False;
+      End;
+      Inc(i);
+    End
+    Else If c = '''' Then Begin cur := cur + c; in_q := True; Inc(i); End
+    Else If c = '(' Then Begin Inc(depth); cur := cur + c; Inc(i); End
+    Else If c = ')' Then Begin If depth > 0 Then Dec(depth); cur := cur + c; Inc(i); End
+    Else If (c In [' ', #9]) And (depth = 0) Then
+    Begin
+      cur := PatTrimStr(cur);
+      If (Length(cur) > 0) And (count <= High(toks)) Then
+      Begin toks[count] := cur; Inc(count); End;
+      cur := '';  Inc(i);
+    End
+    Else If ((c = '.') Or (c = '$')) And (depth = 0) Then
+    Begin
+      cur := PatTrimStr(cur);
+      If (Length(cur) > 0) And (count <= High(toks)) Then
+      Begin toks[count] := cur; Inc(count); End;
+      cur := '';
+      If count <= High(toks) Then Begin toks[count] := c; Inc(count); End;
+      Inc(i);
+    End
+    Else Begin cur := cur + c; Inc(i); End;
+  End;
+  cur := PatTrimStr(cur);
+  If (Length(cur) > 0) And (count <= High(toks)) Then
+  Begin toks[count] := cur; Inc(count); End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParsePatPrimary : creer un noeud TPatNode pour un token primaire brut.
+  -------------------------------------------------------------------------- }
+Function ParsePatPrimary(Const tok : TString) : Integer;
+Var fn, arg, lit : TString;
+    i, ival, ci  : Integer;
+    c            : Char;
+    ndx, idx     : Integer;
+Begin
+  Result := 0;
+  If tok = '' Then Exit;
+  If tok[1] = '''' Then
+  Begin
+    lit := '';  i := 2;
+    While i <= Length(tok) Do
+    Begin
+      c := tok[i];
+      If c = '''' Then
+      Begin
+        Inc(i);
+        If (i <= Length(tok)) And (tok[i] = '''') Then
+        Begin lit := lit + ''''; Inc(i); End
+        Else Break;
+      End
+      Else Begin lit := lit + c; Inc(i); End;
+    End;
+    idx := AddLiteral(lit);
+    ndx := AddPat(PK_LIT);
+    pat_table^[ndx].lit_idx := idx;
+    pat_table^[ndx].lit_len := Length(lit);
+    Result := ndx;  Exit;
+  End;
+  If HasFuncCall(tok) Then
+  Begin
+    fn  := ExtractFuncName(tok);
+    arg := PatTrimStr(ExtractFuncArgs(tok));
+    lit := arg;
+    If (Length(arg) >= 2) And (arg[1] = '''') And (arg[Length(arg)] = '''') Then
+      lit := Copy(arg, 2, Length(arg)-2);
+    If (fn='ANY') Or (fn='NOTANY') Or (fn='SPAN') Or (fn='BREAK') Or (fn='BREAKX') Then
+    Begin
+      idx := AddLiteral(lit);
+      If      fn='ANY'    Then ndx := AddPat(PK_ANY)
+      Else If fn='NOTANY' Then ndx := AddPat(PK_NOTANY)
+      Else If fn='SPAN'   Then ndx := AddPat(PK_SPAN)
+      Else                     ndx := AddPat(PK_BREAK);
+      pat_table^[ndx].set_idx := idx;
+      Result := ndx;  Exit;
+    End;
+    If (fn='LEN') Or (fn='POS') Or (fn='RPOS') Or (fn='TAB') Or (fn='RTAB') Then
+    Begin
+      Val(arg, ival, ci);  If ci <> 0 Then ival := 0;
+      If      fn='LEN'  Then ndx := AddPat(PK_LEN)
+      Else If fn='POS'  Then ndx := AddPat(PK_POS)
+      Else If fn='RPOS' Then ndx := AddPat(PK_RPOS)
+      Else If fn='TAB'  Then ndx := AddPat(PK_TAB)
+      Else                   ndx := AddPat(PK_RTAB);
+      pat_table^[ndx].int_val := ival;
+      Result := ndx;  Exit;
+    End;
+    If fn = 'ARBNO' Then Begin Result := AddPat(PK_ARB); Exit; End;
+    ndx := AddPat(PK_INDIRECT);  pat_table^[ndx].var_nm := fn;
+    Result := ndx;  Exit;
+  End;
+  fn := UpCaseStr(tok);
+  If fn='ARB'     Then Begin Result:=AddPat(PK_ARB);     Exit; End;
+  If fn='REM'     Then Begin Result:=AddPat(PK_REM);     Exit; End;
+  If fn='FAIL'    Then Begin Result:=AddPat(PK_FAIL);    Exit; End;
+  If fn='FENCE'   Then Begin Result:=AddPat(PK_FENCE);   Exit; End;
+  If fn='ABORT'   Then Begin Result:=AddPat(PK_ABORT);   Exit; End;
+  If fn='SUCCEED' Then Begin Result:=AddPat(PK_SUCCEED); Exit; End;
+  ndx := AddPat(PK_INDIRECT);  pat_table^[ndx].var_nm := tok;
+  Result := ndx;
+End;
+
+{ --------------------------------------------------------------------------
+  ParsePatStr : parser le patron brut -> arbre dans pat_table.
+  -------------------------------------------------------------------------- }
+Function ParsePatStr(Const raw : TString) : Integer;
+Var alt_parts   : Array[0..15] of TString;
+    concat_toks : Array[0..31] of TString;
+    alt_count, tok_count     : Integer;
+    root, left, right, node  : Integer;
+    i, j                     : Integer;
+    has_asgn                 : Boolean;
+    asgn_op                  : Char;
+    asgn_var, trimmed        : TString;
+Begin
+  Result := 0;
+  trimmed := PatTrimStr(raw);
+  If trimmed = '' Then Exit;
+  PatSplitOnAlt(trimmed, alt_parts, alt_count);
+  If alt_count = 0 Then Exit;
+  root := 0;
+  For i := 0 To alt_count - 1 Do
+  Begin
+    PatSplitConcat(alt_parts[i], concat_toks, tok_count);
+    If tok_count = 0 Then Continue;
+    has_asgn := False;  asgn_op := '.';  asgn_var := '';
+    If (tok_count >= 3) And
+       ((concat_toks[tok_count-2]='.') Or (concat_toks[tok_count-2]='$')) Then
+    Begin
+      has_asgn  := True;
+      asgn_op   := concat_toks[tok_count-2][1];
+      asgn_var  := concat_toks[tok_count-1];
+      tok_count := tok_count - 2;
+    End;
+    left := 0;
+    For j := 0 To tok_count - 1 Do
+    Begin
+      node := ParsePatPrimary(concat_toks[j]);
+      If node = 0 Then Continue;
+      If left = 0 Then left := node
+      Else
+      Begin
+        right := AddPat(PK_CONCAT);
+        pat_table^[right].left  := left;
+        pat_table^[right].right := node;
+        left := right;
+      End;
+    End;
+    If has_asgn And (left <> 0) Then
+    Begin
+      If asgn_op = '$' Then node := AddPat(PK_IMMED)
+      Else                   node := AddPat(PK_ASSIGN);
+      pat_table^[node].left   := left;
+      pat_table^[node].var_nm := asgn_var;
+      left := node;
+    End;
+    If left = 0 Then Continue;
+    If root = 0 Then root := left
+    Else
+    Begin
+      node := AddPat(PK_ALT);
+      pat_table^[node].left  := root;
+      pat_table^[node].right := left;
+      root := node;
+    End;
+  End;
+  Result := root;
+End;
+
+{ --------------------------------------------------------------------------
+  GenEmitPatNode : generer le code ASM pour un noeud du patron.
+  idx      = index dans pat_table (1-base)
+  fail_lbl = label ASM de saut sur echec
+  -------------------------------------------------------------------------- }
+Procedure GenEmitPatNode(idx : Integer; Const fail_lbl : TString);
+Var nd       : TPatNode;
+    alt_fl   : TString;
+    alt_done : TString;
+    asn_fl   : TString;
+    asn_done : TString;
+Begin
+  If (idx <= 0) Or (idx > pat_count) Then Exit;
+  nd := pat_table^[idx];
+  Case nd.kind Of
+    PK_LIT :
+    Begin
+      EmitI('LEA  DI, [' + LitDescLabel(nd.lit_idx) + ']');
+      EmitI('CALL _RT_MATCH_LIT');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_ANY :
+    Begin
+      EmitI('LEA  DI, [' + LitDescLabel(nd.set_idx) + ']');
+      EmitI('CALL _RT_MATCH_ANY');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_NOTANY :
+    Begin
+      EmitI('LEA  DI, [' + LitDescLabel(nd.set_idx) + ']');
+      EmitI('CALL _RT_MATCH_NOTANY');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_SPAN :
+    Begin
+      EmitI('LEA  DI, [' + LitDescLabel(nd.set_idx) + ']');
+      EmitI('CALL _RT_MATCH_SPAN');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_BREAK, PK_BREAKX :
+    Begin
+      EmitI('LEA  DI, [' + LitDescLabel(nd.set_idx) + ']');
+      EmitI('CALL _RT_MATCH_BREAK');
+    End;
+    PK_LEN :
+    Begin
+      EmitI('MOV  CX, ' + IntToStr(nd.int_val));
+      EmitI('CALL _RT_MATCH_LEN');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_POS :
+    Begin
+      EmitI('MOV  CX, ' + IntToStr(nd.int_val));
+      EmitI('CALL _RT_MATCH_POS');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_RPOS :
+    Begin
+      EmitI('MOV  CX, ' + IntToStr(nd.int_val));
+      EmitI('CALL _RT_MATCH_RPOS');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_TAB :
+    Begin
+      EmitI('MOV  CX, ' + IntToStr(nd.int_val));
+      EmitI('CALL _RT_MATCH_TAB');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_RTAB :
+    Begin
+      EmitI('MOV  CX, ' + IntToStr(nd.int_val));
+      EmitI('CALL _RT_MATCH_RTAB');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+    PK_REM :
+    Begin
+      EmitI('CALL _RT_MATCH_REM');
+    End;
+    PK_ARB, PK_ARBNO :
+    Begin
+      EmitI('CALL _RT_MATCH_ARB');
+    End;
+    PK_FAIL :
+    Begin
+      EmitI('JMP  ' + fail_lbl);
+    End;
+    PK_SUCCEED, PK_FENCE :
+    Begin
+      EmitComment('PK_SUCCEED/FENCE : succes immediat');
+    End;
+    PK_ABORT :
+    Begin
+      EmitI('JMP  _SB_END_PROG');
+    End;
+    PK_CONCAT :
+    Begin
+      GenEmitPatNode(nd.left,  fail_lbl);
+      GenEmitPatNode(nd.right, fail_lbl);
+    End;
+    PK_ALT :
+    Begin
+      alt_fl   := NewLabel;
+      alt_done := NewLabel;
+      EmitI('PUSH BX');
+      GenEmitPatNode(nd.left, alt_fl);
+      EmitI('ADD  SP, 2');
+      EmitI('JMP  ' + alt_done);
+      EmitLabel(alt_fl);
+      EmitI('POP  BX');
+      GenEmitPatNode(nd.right, fail_lbl);
+      EmitLabel(alt_done);
+    End;
+    PK_ASSIGN, PK_IMMED :
+    Begin
+      asn_fl   := NewLabel;
+      asn_done := NewLabel;
+      EmitI('PUSH BX');
+      GenEmitPatNode(nd.left, asn_fl);
+      EmitI('POP  AX');
+      EmitI('PUSH BX');
+      EmitI('PUSH SI');
+      EmitI('MOV  CX, BX');
+      EmitI('SUB  CX, AX');
+      EmitI('INC  AX');
+      EmitI('CALL _RT_SUBSTR');
+      EmitI('POP  SI');
+      EmitI('POP  BX');
+      EmitStoreVarDesc(nd.var_nm);
+      EmitI('JMP  ' + asn_done);
+      EmitLabel(asn_fl);
+      EmitI('POP  AX');
+      EmitI('JMP  ' + fail_lbl);
+      EmitLabel(asn_done);
+    End;
+    PK_INDIRECT :
+    Begin
+      EmitComment('PK_INDIRECT : ' + nd.var_nm);
+      EmitI('LEA  DI, [' + AsmVarDesc(nd.var_nm) + ']');
+      EmitI('CALL _RT_MATCH_LIT');
+      EmitI('CMP  AX, 1');
+      EmitI('JNE  ' + fail_lbl);
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenMatchInstruction : code complet d'une instruction de matching.
+  -------------------------------------------------------------------------- }
+Procedure GenMatchInstruction;
+Var pat_root       : Integer;
+    lbl_retry      : TString;
+    lbl_pat_fail   : TString;
+    lbl_match_fail : TString;
+    lbl_done       : TString;
+Begin
+  EmitComment('Matching : ' + inst_subject + ' ' + inst_pattern);
+  pat_root := ParsePatStr(inst_pattern);
+  If pat_root = 0 Then
+  Begin
+    EmitComment('  Patron vide : succes immediat');
+    If inst_goto_u <> '' Then EmitGotoJmp(inst_goto_u)
+    Else If inst_goto_s <> '' Then EmitGotoJmp(inst_goto_s);
+    EmitBlank;
+    Exit;
+  End;
+  lbl_retry      := NewLabel;
+  lbl_pat_fail   := NewLabel;
+  lbl_match_fail := NewLabel;
+  lbl_done       := NewLabel;
+  EmitI('LEA  SI, [' + AsmVarDesc(inst_subject) + ']');
+  EmitI('XOR  BX, BX');
+  EmitLabel(lbl_retry);
+  EmitI('PUSH BX');
+  GenEmitPatNode(pat_root, lbl_pat_fail);
+  EmitI('ADD  SP, 2');
+  If inst_has_eq Then
+  Begin
+    EmitComment('  Remplacement : ' + inst_subject + ' = ' + inst_repl);
+    EvalExpr(inst_repl);
+    EmitStoreVarDesc(inst_subject);
+  End;
+  If inst_goto_u <> '' Then EmitGotoJmp(inst_goto_u)
+  Else If inst_goto_s <> '' Then EmitGotoJmp(inst_goto_s);
+  EmitI('JMP  ' + lbl_done);
+  EmitLabel(lbl_pat_fail);
+  EmitI('POP  BX');
+  EmitI('CMP  WORD PTR [_SB_VAR_ANCHOR], 0');
+  EmitI('JNE  ' + lbl_match_fail);
+  EmitI('INC  BX');
+  EmitI('CMP  BX, [SI+2]');
+  EmitI('JBE  ' + lbl_retry);
+  EmitLabel(lbl_match_fail);
+  If inst_goto_u <> '' Then EmitGotoJmp(inst_goto_u)
+  Else If inst_goto_f <> '' Then EmitGotoJmp(inst_goto_f);
+  EmitLabel(lbl_done);
+  EmitBlank;
+End;
 { --------------------------------------------------------------------------
   GenSimpleAccess : generer le code d'un simple acces (sujet seul, sans patron
   ni remplacement). En SNOBOL4 : teste si la variable est definie (non-echec).
