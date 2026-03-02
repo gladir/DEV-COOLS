@@ -3417,16 +3417,431 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 11 - ParseObjectDecl : declarations d'objets                           }
+{ ============================================================================ }
+
+{ ---- GenVarData : emission .DATA pour une variable statique globale ----
+  Appele lors de la passe .DATA (TODO 24).  Ici on l'ecrit directement
+  dans output_file car les variables globales sont declarees avant BEGIN.     }
+
+Procedure GenVarData(sym_idx: Integer);
+Var ti   : Integer;
+    sz   : Integer;
+    i    : Integer;
+    n    : LongInt;
+Begin
+ ti := sym_table^[sym_idx].type_idx;
+ sz := GetSymSize(sym_idx);
+
+ { Label ASM }
+ Emit(sym_table^[sym_idx].asm_label + ':');
+
+ { Contenu selon le type }
+ If ti = TYPE_FLOAT Then
+ Begin
+  { 4 octets (DD) - valeur flottante non supportee en 16b, on emet 0 }
+  EmitI('DD 0');
+ End
+ Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
+ Begin
+  n := sym_table^[sym_idx].init_num;
+  EmitI('DW ' + IntToStr(n));  { word pour alignement }
+ End
+ Else If ti = TYPE_STR Then
+ Begin
+  { String(n) : DB longueur, DB n DUP(0) }
+  n := sym_table^[sym_idx].char_len;
+  If n <= 0 Then n := 1;
+  EmitI('DB ' + IntToStr(n));            { longueur }
+  EmitI('DB ' + IntToStr(n) + ' DUP(0)'); { contenu null }
+ End
+ Else If ti = TYPE_ARRAY Then
+ Begin
+  { Tableau : sz/2 mots a zero }
+  If sz > 0 Then
+   EmitI('DW ' + IntToStr(sz Div 2) + ' DUP(0)')
+  Else
+   EmitI('DW 0');
+ End
+ Else If ti = TYPE_RECORD Then
+ Begin
+  If sz > 0 Then
+   EmitI('DB ' + IntToStr(sz) + ' DUP(0)')
+  Else
+   EmitI('DW 0');
+ End
+ Else
+ Begin
+  { Scalaire entier / enum / range / pointeur : DW valeur_init }
+  n := sym_table^[sym_idx].init_num;
+  EmitI('DW ' + IntToStr(n));
+ End;
+End;
+
+{ ---- GenVarInit : code d'initialisation runtime pour variable locale ----
+  Suppose que l'expression a ete evaluee et que AX contient le resultat.
+  Stocke dans la variable via GenStoreVar.                                     }
+
+Procedure GenVarInit(sym_idx: Integer);
+Begin
+ GenStoreVar(sym_idx);
+End;
+
+{ ---- ParseConstExpr : evaluer une expression constante a la compilation ----
+  Essaie d'evaluer une expression simple (litteraux, pas d'appels).
+  Retourne True si l'evaluation a reussi, et la valeur dans val.
+  Sinon, genere le code de l'expression et laisse le resultat dans AX.        }
+
+Function ParseConstExpr(Var val: LongInt): Boolean;
+Begin
+ { Litteraux entiers simples }
+ If cur_tok_type = TOK_INTEGER Then
+ Begin
+  val := cur_tok_num;
+  Consume;
+  ParseConstExpr := True;
+  Exit;
+ End;
+ { Litteraux caracteres }
+ If cur_tok_type = TOK_CHAR Then
+ Begin
+  val := Ord(cur_tok_str[1]);
+  Consume;
+  ParseConstExpr := True;
+  Exit;
+ End;
+ { TRUE / FALSE }
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_TRUE) Then
+ Begin
+  val := 1; Consume;
+  ParseConstExpr := True;
+  Exit;
+ End;
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_FALSE) Then
+ Begin
+  val := 0; Consume;
+  ParseConstExpr := True;
+  Exit;
+ End;
+ { Expression generale : generer du code }
+ ParseExpr;
+ val := 0;
+ ParseConstExpr := False;  { valeur calculee au runtime dans AX }
+End;
+
+{ ---- ParseObjectDecl : nom [, nom2 ...] : [CONSTANT] type [:= expr] ;
+  Peut etre appele pour une ou plusieurs variables du meme type.
+  isSym_global = True si on emet dans .DATA, False si pile.                   }
+
+Procedure ParseObjectDecl;
+Var names     : Array[1..16] of String[48];
+    ncount    : Integer;
+    is_const  : Boolean;
+    ti        : Integer;
+    sc        : Integer;
+    sym_idx   : Integer;
+    has_init  : Boolean;
+    init_val  : LongInt;
+    got_const : Boolean;
+    i         : Integer;
+    sz        : Integer;
+Begin
+ { Lire la liste de noms }
+ ncount := 0;
+ Repeat
+  If cur_tok_type <> TOK_IDENT Then
+  Begin ErrorTok('Identifiant attendu'); Break; End;
+  Inc(ncount);
+  If ncount > 16 Then Begin Error('Trop de noms dans declaration'); ncount := 16; End;
+  names[ncount] := UpCaseStr(cur_tok_str);
+  Consume;
+  If cur_tok_type = TOK_COMMA Then Consume Else Break;
+ Until False;
+
+ Expect(TOK_COLON, '`:` attendu apres nom(s) de variable');
+
+ { CONSTANT optionnel }
+ is_const := False;
+ If TokIsKw(KW_CONSTANT) Then
+ Begin
+  is_const := True;
+  Consume;
+ End;
+
+ { Type }
+ ti := ParseTypeRef;
+
+ { Classe de stockage }
+ If is_const Then
+  sc := STORE_CONST
+ Else If scope_top = 0 Then
+  sc := STORE_STATIC
+ Else
+  sc := STORE_AUTO;
+
+ { Initialisation [:= expr] }
+ has_init  := False;
+ init_val  := 0;
+ got_const := False;
+ If cur_tok_type = TOK_COLONASSIGN Then
+ Begin
+  Consume;
+  has_init  := True;
+  got_const := ParseConstExpr(init_val);
+  { Si l'expression est runtime (got_const=False), AX contient le resultat }
+ End;
+
+ { Creer les symboles }
+ For i := 1 to ncount do
+ Begin
+  sym_idx := AddSym(names[i], ti, sc);
+  If sym_idx = 0 Then Continue;
+
+  If has_init Then
+  Begin
+   sym_table^[sym_idx].has_init  := True;
+   sym_table^[sym_idx].init_num  := init_val;
+  End;
+
+  { Ajuster la taille reelle si tableau / string }
+  sz := GetTypeSize(ti);
+  If ti = TYPE_ARRAY Then
+  Begin
+   sym_table^[sym_idx].array_size := sz;
+   FixSymBpOffset(sym_idx);
+  End
+  Else If ti = TYPE_STR Then
+  Begin
+   { Chercher la longueur dans type_table si c'est un sous-type STRING(n) }
+   sym_table^[sym_idx].char_len := sz;
+   FixSymBpOffset(sym_idx);
+  End;
+
+  { Emission selon classe de stockage }
+  If sc = STORE_STATIC Then
+  Begin
+   { Variable globale : emet en .DATA maintenant }
+   GenVarData(sym_idx);
+  End
+  Else If sc = STORE_AUTO Then
+  Begin
+   { Variable locale : espace deja alloue par AddSym.
+     Si init runtime (AX), stocker ; si init const, MOV + stocker.            }
+   If has_init Then
+   Begin
+    If got_const Then
+    Begin
+     { Constante connue : MOV AX, val }
+     EmitI('MOV AX, ' + IntToStr(init_val));
+    End
+    Else
+    Begin
+     { Cas multi-noms avec runtime : AX deja calcule pour le premier ;
+       les suivants doivent elu MOV AX (on reevalue).  Pour simplifier :
+       on ne reevalue que pour i=1, pour i>1 on recharge depuis BP.
+       Strategie : stocker AX en temp dans le premier, puis copier.           }
+     If i > 1 Then
+     Begin
+      { Recharger depuis le premier symbole si auto }
+      GenLoadVar(sym_idx - (i - 1));  { index premiere variable }
+     End;
+    End;
+    GenVarInit(sym_idx);
+   End;
+  End;
+  { STORE_CONST : rien a emettre, valeur dans init_num }
+ End;
+
+ Expect(TOK_SEMI, '`;` attendu en fin de declaration d''objet');
+End;
+
+{ ============================================================================ }
+{ TODO 12 - ParseProcedureSpec / ParseFunctionSpec : signatures               }
+{ ============================================================================ }
+
+{ ---- ParseParamList : ( nom [, nom2] : [IN|IN OUT|OUT] type [:= def] ; ...) }
+{ Remplit les champs param_names, param_types, param_modes, param_count du
+  sous-programme dont l'index est sub_idx.
+  Retourne le nombre total de parametres enregistres.                          }
+
+Procedure ParseParamList(sub_idx: Integer);
+Var names  : Array[1..MAX_PARAM] of String[48];
+    ncount : Integer;
+    mode   : Integer;
+    ti     : Integer;
+    pc     : Integer;   { param_count global }
+    i      : Integer;
+    dummy  : LongInt;
+Begin
+ { Parenthese ouvrante deja consommee par l'appelant }
+ pc := sub_table^[sub_idx].param_count;
+
+ While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do
+ Begin
+  { Lire noms du groupe }
+  ncount := 0;
+  Repeat
+   If cur_tok_type <> TOK_IDENT Then
+   Begin ErrorTok('Nom de parametre attendu'); Break; End;
+   Inc(ncount);
+   names[ncount] := UpCaseStr(cur_tok_str);
+   Consume;
+   If cur_tok_type = TOK_COMMA Then Consume Else Break;
+  Until False;
+
+  Expect(TOK_COLON, '`:` attendu apres nom de parametre');
+
+  { Mode : IN | OUT | IN OUT  (defaut = IN) }
+  mode := PARAM_IN;
+  If TokIsKw(KW_IN) Then
+  Begin
+   Consume;
+   If TokIsKw(KW_OUT) Or TokIsKw(KW_INOUT) Then
+   Begin
+    mode := PARAM_INOUT;
+    Consume;
+   End;
+  End
+  Else If TokIsKw(KW_OUT) Then
+  Begin
+   mode := PARAM_OUT;
+   Consume;
+  End;
+
+  { Type }
+  ti := ParseTypeRef;
+
+  { Valeur par defaut optionnelle [:= expr] — consommee, non stockee }
+  If cur_tok_type = TOK_COLONASSIGN Then
+  Begin
+   Consume;
+   ParseConstExpr(dummy);   { evalue ou consomme l'expression }
+  End;
+
+  { Enregistrer les parametres dans sub_table }
+  For i := 1 to ncount do
+  Begin
+   Inc(pc);
+   If pc > MAX_PARAM Then
+   Begin
+    Error('Trop de parametres (MAX_PARAM=' + IntToStr(MAX_PARAM) + ')');
+    Break;
+   End;
+   sub_table^[sub_idx].param_names[pc] := names[i];
+   sub_table^[sub_idx].param_types[pc] := ti;
+   sub_table^[sub_idx].param_modes[pc] := mode;
+  End;
+
+  { Separateur entre groupes : ';' }
+  If cur_tok_type = TOK_SEMI Then Consume
+  Else Break;
+ End;
+
+ sub_table^[sub_idx].param_count := pc;
+End;
+
+{ ---- ParseProcedureSpec : PROCEDURE nom [(params)] ;
+  Cree ou met a jour l'entree sub_table avec is_forward := True.
+  Retourne l'index dans sub_table.                                             }
+
+Function ParseProcedureSpec: Integer;
+Var nm  : String;
+    idx : Integer;
+Begin
+ Consume; { PROCEDURE }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de procedure attendu'); ParseProcedureSpec := 0; Exit; End;
+ nm  := UpCaseStr(cur_tok_str);
+ Consume;
+
+ { Verifier si deja declare (forward ou spec de package) }
+ idx := FindSub(nm);
+ If idx = 0 Then
+  idx := AddSub(nm, False, TYPE_VOID);
+ If idx = 0 Then Begin ParseProcedureSpec := 0; Exit; End;
+
+ sub_table^[idx].is_forward := True;
+
+ { Parametres optionnels }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  Consume;
+  ParseParamList(idx);
+  Expect(TOK_RPAREN, '`)` attendu apres parametres');
+ End;
+
+ ParseProcedureSpec := idx;
+End;
+
+{ ---- ParseFunctionSpec : FUNCTION nom [(params)] RETURN type ;
+  Retourne l'index dans sub_table.                                             }
+
+Function ParseFunctionSpec: Integer;
+Var nm     : String;
+    idx    : Integer;
+    ret_ti : Integer;
+Begin
+ Consume; { FUNCTION }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de fonction attendu'); ParseFunctionSpec := 0; Exit; End;
+ nm  := UpCaseStr(cur_tok_str);
+ Consume;
+
+ idx := FindSub(nm);
+ If idx = 0 Then
+  idx := AddSub(nm, True, TYPE_UNKNOWN);  { ret_type mis a jour plus bas }
+ If idx = 0 Then Begin ParseFunctionSpec := 0; Exit; End;
+
+ sub_table^[idx].is_forward  := True;
+ sub_table^[idx].is_function := True;
+
+ { Parametres optionnels }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  Consume;
+  ParseParamList(idx);
+  Expect(TOK_RPAREN, '`)` attendu apres parametres');
+ End;
+
+ { RETURN type }
+ ExpectKw(KW_RETURN, 'RETURN', '`RETURN` attendu dans specification de fonction');
+ ret_ti := ParseTypeRef;
+ sub_table^[idx].ret_type := ret_ti;
+
+ ParseFunctionSpec := idx;
+End;
+
+{ ---- VerifySubSignature : verifie coherence forward vs body ----
+  Appele depuis ParseProcedureBody / ParseFunctionBody quand la
+  procedure etait deja declaree comme forward.                                }
+
+Procedure VerifySubSignature(fwd_idx, body_idx: Integer);
+Var i : Integer;
+Begin
+ If fwd_idx = body_idx Then Exit;  { meme entree, rien a verifier }
+ { Comparer param_count }
+ If sub_table^[fwd_idx].param_count <> sub_table^[body_idx].param_count Then
+  Warning('Corps de ' + sub_table^[fwd_idx].name +
+          ' : nombre de parametres different de la spec forward');
+ { Comparer types de retour }
+ If sub_table^[fwd_idx].ret_type <> sub_table^[body_idx].ret_type Then
+  Warning('Corps de ' + sub_table^[fwd_idx].name +
+          ' : type de retour different de la spec forward');
+ { Comparer modes des parametres }
+ For i := 1 to sub_table^[fwd_idx].param_count do
+  If sub_table^[fwd_idx].param_modes[i] <> sub_table^[body_idx].param_modes[i] Then
+   Warning('Corps de ' + sub_table^[fwd_idx].name +
+           ' : mode du parametre ' + IntToStr(i) + ' different de la spec forward');
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 10 OK (declarations de types OK)');
-  WriteLn('  ParseTypeRef');
-  WriteLn('  ParseEnumType, ParseRangeBounds, ParseRangeType');
-  WriteLn('  ParseArrayType (contraint et non contraint)');
-  WriteLn('  ParseRecordType (champs alignes sur mot)');
-  WriteLn('  ParseTypeDecl (TYPE nom IS ...)');
-  WriteLn('  ParseSubtypeDecl (SUBTYPE nom IS base [RANGE lo..hi])');
-  WriteLn('  GenTypeData (stub .DATA)');
+  WriteLn('ADA86 V1.0 - TODO 12 OK (signatures de sous-programmes OK)');
+  WriteLn('  ParseParamList (IN / OUT / IN OUT, valeur defaut)');
+  WriteLn('  ParseProcedureSpec (PROCEDURE nom [(params)] ;)');
+  WriteLn('  ParseFunctionSpec  (FUNCTION  nom [(params)] RETURN type ;)');
+  WriteLn('  VerifySubSignature (coherence forward vs body)');
 End.
