@@ -15,7 +15,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
  		<tr>
 		    <td><b>8080Z80.PAS</b></td>
 		    <td>Cette commande permet de convertir un code source assembleur de microprocesseur 8080 en code source Z80.</td>
-		  </tr>	
+		</tr>	
+		<tr>
+			<td><b>ADA86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Ada 83/95 pour de l'assembleur du microprocesseur 8086.</td>
+		</tr>
 		<tr>
 			<td><b>ABAP86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur ABAP/4 pour de l'assembleur du microprocesseur 8086.</td>
