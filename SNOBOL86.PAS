@@ -30,7 +30,7 @@
     Definir les constantes globales (MAX_SYM, MAX_LABEL, MAX_PAT,
     MAX_STR, MAX_SUB, MAX_LIT, MAX_BUILTIN, niveaux de debug, etc.).
     Definir les options de compilation ($MODE, $LIST, $ERRORS).
-    Preparer le squelette {$A-}{$I-} et les directives FPC.
+    Preparer le squelette ($A-)($I-) et les directives FPC.
 
   TODO 02 - TYPES FONDAMENTAUX ET STRUCTURES DE DONNEES
     Definir les enumerations : TokType (TOK_IDENT, TOK_INTEGER,
@@ -266,9 +266,147 @@
 
   ============================================================================ }
 
+{ ============================================================================
+  TODO 01 - EN-TETE, CONSTANTES ET OPTIONS DU COMPILATEUR
+  ============================================================================ }
+
 Program SNOBOL86;
 
-{ A implementer selon les 25 TODOs ci-dessus. }
+{ --------------------------------------------------------------------------
+  Directives compilateur
+  -------------------------------------------------------------------------- }
+
+{$A-}           { Pas d'alignement memoire }
+{$I-}           { Pas de verification I/O inline (on gere manuellement) }
+{$B-}           { Evaluation booleenne court-circuit }
+{$Q-}           { Pas de verification overflow (acces tableaux explicites) }
+{$R-}           { Pas de verification range }
+
+{ Detection Free Pascal pour portabilite }
+{$IFDEF FPC}
+ {$MODE DELPHI}
+ {$CODEPAGE UTF8}
+{$ENDIF}
+
+{ --------------------------------------------------------------------------
+  Options de compilation (peuvent etre surchargees par $DEFINE)
+  -------------------------------------------------------------------------- }
+
+{ $DEFINE SB_LIST    -- Activer listing source annote  }
+{ $DEFINE SB_DEBUG   -- Tracage interne du compilateur }
+{ $DEFINE SB_STRICT  -- Erreurs fatales bloquantes     }
+
+{ --------------------------------------------------------------------------
+  Constantes dimensionnant les tables internes
+  -------------------------------------------------------------------------- }
+
+Const
+
+ { --- Limites des tables principales --- }
+ MAX_SYM      = 512;    { Symboles (variables, constantes, builtins)   }
+ MAX_LABEL    = 256;    { Etiquettes SNOBOL et labels ASM              }
+ MAX_PAT      = 512;    { Noeuds d'arbre de patrons                    }
+ MAX_STR      = 4096;   { Taille du pool de chaines litterales (bytes) }
+ MAX_LIT      = 256;    { Nombre max de litteraux de chaine distincts  }
+ MAX_SUB      = 64;     { Fonctions utilisateur (DEFINE)               }
+ MAX_BUILTIN  = 48;     { Fonctions integrees connues du compilateur   }
+ MAX_PARAM    = 16;     { Parametres max par fonction SNOBOL           }
+ MAX_LOCAL    = 16;     { Variables locales max par fonction SNOBOL    }
+ MAX_FWDREF   = 256;    { Forward references de labels a resoudre      }
+
+ { --- Limites du lexeur --- }
+ MAX_LINE     = 256;    { Longueur max d'une ligne source              }
+ MAX_TOKSTR   = 128;    { Longueur max d'un token chaine/ident         }
+ MAX_SRCLINES = 65535;  { Lignes source max (compteur 16 bits)         }
+
+ { --- Limites de la zone heap runtime emise en .DATA --- }
+ HEAP_DEFAULT = 8192;   { Taille du heap dynamique cible (bytes)       }
+ HEAP_MIN     = 2048;   { Taille minimale acceptable                   }
+ HEAP_MAX     = 32768;  { Taille maximale en .MODEL SMALL (32 Ko)      }
+
+ { --- Niveaux de debug interne --- }
+ DBG_NONE     = 0;      { Pas de trace                                 }
+ DBG_ERRORS   = 1;      { Erreurs seulement                            }
+ DBG_TOKENS   = 2;      { Trace lexeur                                 }
+ DBG_PARSE    = 3;      { Trace parseur                                }
+ DBG_CODEGEN  = 4;      { Trace generateur de code                     }
+ DBG_ALL      = 5;      { Tout tracer                                  }
+
+ { --- Version du compilateur --- }
+ SNOBOL86_VERSION = '1.0';
+ SNOBOL86_DATE    = '2026-03-02';
+
+ { --- Chaines speciales du langage SNOBOL 4 --- }
+ SB_END_SENTINEL = '-END-';         { Fin de programme source          }
+ SB_CONT_PLUS    = '+';             { Continuation ligne suivante      }
+ SB_CONT_MINUS   = '-';             { Continuation (variante)          }
+ SB_COMMENT_CHAR = '*';             { Ligne de commentaire (col 1)     }
+
+ { --- Labels ASM emis pour le runtime --- }
+ RT_PREFIX    = '_RT_';             { Prefixe routines runtime         }
+ SB_PREFIX    = '_SB_';             { Prefixe routines SNOBOL system   }
+ SB_VAR_PFX   = '_SBV_';           { Prefixe variables SNOBOL         }
+ SB_LBL_PFX  = '_SBL_';            { Prefixe etiquettes SNOBOL        }
+ SB_FUN_PFX  = '_SBF_';            { Prefixe fonctions SNOBOL         }
+ SB_LIT_PFX  = '_SBS_';            { Prefixe chaines litterales       }
+
+ { --- Codes de retour de matching (stockes dans registre BX) --- }
+ MATCH_FAIL    = 0;     { 0 = echec du patron                          }
+ MATCH_SUCCESS = 1;     { 1 = succes du patron                         }
+
+ { --- Taille d'un descripteur de chaine en memoire cible (bytes) --- }
+ DESC_SIZE    = 4;      { WORD ptr + WORD len                          }
+
+ { --- Codes d'erreur compilateur --- }
+ ERR_NONE     = 0;
+ ERR_SYNTAX   = 1;
+ ERR_SYMTAB   = 2;
+ ERR_PATTAB   = 3;
+ ERR_STRPOOL  = 4;
+ ERR_LABFWD   = 5;
+ ERR_FUNCDEF  = 6;
+ ERR_INTERNAL = 99;
+
+{ --------------------------------------------------------------------------
+  Type de base partage par tous les modules (utilise des TODO 02 a 25)
+  -------------------------------------------------------------------------- }
+
+Type
+ TString = String[MAX_TOKSTR];   { Chaine Pascal courte portable      }
+
+{ --------------------------------------------------------------------------
+  Variables globales de configuration (positionnees en debut de Compile)
+  -------------------------------------------------------------------------- }
+
+Var
+  { Options runtime du compilateur }
+  opt_list      : Boolean;   { Generer un listing annote (.LST)         }
+  opt_debug     : Integer;   { Niveau de debug (DBG_xxx)                }
+  opt_strict    : Boolean;   { Arret sur premiere erreur                }
+  opt_heap_size : Integer;   { Taille du heap cible (defaut HEAP_DEFAULT)}
+
+  { Compteurs globaux }
+  err_count     : Integer;   { Nombre d'erreurs detectees               }
+  warn_count    : Integer;   { Nombre d'avertissements emis             }
+  src_line_num  : Integer;   { Numero de la ligne source courante        }
+  instr_count   : Integer;   { Instructions SNOBOL compilees            }
+
+  { Noms de fichiers }
+  src_fname     : String;    { Fichier source (.SBL)                    }
+  out_fname     : String;    { Fichier sortie (.ASM)                    }
+  lst_fname     : String;    { Fichier listing (.LST)                   }
+  tmp_fname     : String;    { Fichier temporaire passe 1               }
+
+  { Fichiers }
+  src_file      : Text;      { Lecture source SNOBOL                    }
+  out_file      : Text;      { Ecriture ASM final                       }
+  lst_file      : Text;      { Ecriture listing optionnel               }
+  tmp_file      : Text;      { Code intermediaire passe 1               }
+  lst_open      : Boolean;   { lst_file est-il ouvert ?                 }
+  tmp_open      : Boolean;   { tmp_file est-il ouvert ?                 }
 
 Begin
+  { Corps principal : sera rempli par TODO 25 (Procedure Compile) }
+  WriteLn('SNOBOL86 v', SNOBOL86_VERSION, ' - compilateur SNOBOL 4 -> 8086 MASM');
+  WriteLn('Usage : SNOBOL86 source.SBL [sortie.ASM]');
 End.

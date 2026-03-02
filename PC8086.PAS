@@ -1288,10 +1288,9 @@ Begin
     (current_symbol = SYM_AND) or (current_symbol = SYM_OR) or (current_symbol = SYM_XOR) Do
  Begin
   comparison_op := current_symbol;
-  NextToken; { Consommer l'op√©rateur }
-
-  { Parser le deuxi√®me op√©rande }
-  { Expression group√©e entre parenth√®ses }
+  NextToken; { Consommer l'opÇrateur }
+  { Parser le deuxiäme opÇrande }
+  { Expression groupÇe entre parenthäses }
   If (current_symbol = SYM_UNKNOWN) and (current_token = '(') Then
   Begin
    Emit('push ax'); { Sauvegarder r√©sultat du premier op√©rande }
