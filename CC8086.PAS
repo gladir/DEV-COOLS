@@ -5713,7 +5713,7 @@ Function parse_compound_statement: Boolean;Begin
  safe_writeln('; Fin d''instruction compos‚e');
 End;
 
-{ Expression statement parsing }
+{ Analyse d'instruction d'expression }
 Function parse_expression_statement: Boolean;
 Var
  lval: TLVal;
@@ -5721,36 +5721,33 @@ Var
 Begin
  parse_expression_statement := False;
 
- { Vï¿½rifier une instruction vide (juste un point-virgule) }
+ { V‚rifier une instruction vide (juste un point-virgule) }
  If match(';') Then
  Begin
   parse_expression_statement := True;
-  safe_writeln('; Empty statement');
+  safe_writeln('; Instruction vide');
   Exit;
  End;
 
- { Vï¿½rifier s'il y a quelque chose qui ressemble ï¿½ une expression }
+ { V‚rifier s'il y a quelque chose qui ressemble … une expression }
  save_lptr := lptr;
- If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then
-  Exit;
-
- { Essayer d'analyser l'expression }
+ If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then Exit;
+  { Essayer d'analyser l'expression }
  expression_bool(lval);
  parse_expression_statement := True;
-
- { Expect semicolon }
+  { Point-virgule attendu }
  If not match(';') Then errrpt('Expected ; after expression');
  safe_writeln('; Expression statement');
 End;
 
-{ Analyser l'assignation aux Ã©lÃ©ments de tableau }
+ { Analyser l'assignation aux ‚l‚ments de tableau }
 Procedure parse_array_assignment(array_name: String);
 Var
  index_lval, right_lval: TLVal;
  array_symbol: PSymbol;
  element_size: Integer;
 Begin
- { Trouver le symbole du tableau }
+  { Trouver le symbole du tableau }
  array_symbol := find_symbol(array_name);
  If array_symbol = nil Then
  Begin
@@ -5759,14 +5756,12 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
    {$ENDIF}
-   Else errrpt('Tableau non trouvÃ©: ' + array_name);
+   Else errrpt('Tableau non trouv‚: ' + array_name);
   End;
   Exit;
  End;
-
- { VÃ©rifier que c'est bien un tableau }
- If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
- Begin
+  { V‚rifier que c'est bien un tableau }
+ If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then Begin
   Case Language of
    _English: errrpt('Variable is not an array: ' + array_name);
    {$IFDEF FPC}
@@ -5776,28 +5771,22 @@ Begin
   End;
   Exit;
  End;
-
- safe_writeln('; Assignation Ã  Ã©lÃ©ment de tableau ' + array_name);
-
- { Analyser l'expression d'index (le '[' a dÃ©jÃ  Ã©tÃ© consommÃ©) }
+ safe_writeln('; Assignation … ‚l‚ment de tableau ' + array_name);
+  { Analyser l'expression d'index (le '[' a d‚j… ‚t‚ consomm‚) }
  additive_expression(index_lval);
-
- { Consommer ']' }
- If not match(']') Then
- Begin
+  { Consommer ']' }
+ If not match(']') Then Begin
   Case Language of
    _English: errrpt('Expected ] after array index');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
    {$ENDIF}
-   Else errrpt('] attendu aprÃ¨s l''index du tableau');
+   Else errrpt('] attendu aprŠs l''index du tableau');
   End;
   Exit;
  End;
-
- { Consommer '=' }
- If not match('=') Then
- Begin
+  { Consommer '=' }
+ If not match('=') Then Begin
   Case Language of
    _English: errrpt('Expected = in array assignment');
    {$IFDEF FPC}
@@ -5807,27 +5796,20 @@ Begin
   End;
   Exit;
  End;
-
- { Sauvegarder l'index sur la pile }
+  { Sauvegarder l'index sur la pile }
  ol('PUSH AX      ; sauvegarder index sur pile');
-
- { Analyser l'expression du cÃ´tÃ© droit }
+  { Analyser l'expression du c“t‚ droit }
  expression(right_lval);
-
- { Sauvegarder la valeur Ã  assigner }
- ol('PUSH AX      ; sauvegarder valeur Ã  assigner');
-
- { RÃ©cupÃ©rer l'index }
- ol('POP  BX      ; rÃ©cupÃ©rer valeur dans BX');
- ol('POP  AX      ; rÃ©cupÃ©rer index dans AX');
-
- { Calculer la taille d'un Ã©lÃ©ment }
+  { Sauvegarder la valeur Ã  assigner }
+ ol('PUSH AX      ; sauvegarder valeur … assigner');
+  { R‚cup‚rer l'index }
+ ol('POP  BX      ; r‚cup‚rer valeur dans BX');
+ ol('POP  AX      ; r‚cup‚rer index dans AX');
+  { Calculer la taille d'un ‚l‚ment }
  element_size := get_type_size(array_symbol^.type_info.base_type);
-
- { Si la taille d'Ã©lÃ©ment n'est pas 1, multiplier l'index }
- If element_size > 1 Then
- Begin
-  safe_writeln('; Multiplier index par taille Ã©lÃ©ment');
+  { Si la taille d'‚l‚ment n'est pas 1, multiplier l'index }
+ If element_size > 1 Then Begin
+  safe_writeln('; Multiplier index par taille ‚l‚ment');
   Case element_size of
    2: ol('SHL  AX, 1    ; multiplier par 2');
    4: Begin
@@ -5841,7 +5823,7 @@ Begin
       End;
   Else
    Begin
-    { Multiplication gÃ©nÃ©rale }
+    { Multiplication g‚n‚rale }
     ot('MOV  AL, ');
     outdec(element_size);
     nl;
@@ -5849,23 +5831,21 @@ Begin
    End;
   End;
  End;
-
- { Ajouter l'adresse de base du tableau }
+  { Ajouter l'adresse de base du tableau }
  ot('addd #');
  outstr(array_name);
  nl;
-
- { Stocker la valeur Ã  l'adresse calculÃ©e }
+  { Entreposer la valeur … l'adresse calcul‚e }
  ol('tfr  d,y    ; adresse dans Y');
- ol('tfr  x,d    ; rÃ©cupÃ©rer valeur dans D');
+ ol('tfr  x,d    ; r‚cup‚rer valeur dans D');
  Case element_size of
-  1: ol('stb  ,y     ; stocker octet');
-  2: ol('MOV  [BP], AX     ; stocker mot');
+  1: ol('stb  ,y     ; entreposer octet');
+  2: ol('MOV  [BP], AX     ; entreposer mot');
  Else
-  ol('std  ,y     ; stocker mot par dÃ©faut');
+  ol('std  ,y     ; entreposer mot par d‚faut');
  End;
 
- safe_writeln('; Assignation Ã  ' + array_name + '[] terminÃ©e');
+ safe_writeln('; Assignation … ' + array_name + '[] termin‚e');
 End;
 
 { Analyseur d'instructions d'affectation }
