@@ -788,15 +788,650 @@ Var
   gen_enabled   : Boolean;     { False -> Emit() ne fait rien (erreur)  }
 
 { ============================================================================ }
-{ Point d'entree provisiore (sera remplace par Compile a TODO 24)             }
+{ TODO 02 - Lexeur : lecture source et tokenisation                            }
+{ ============================================================================ }
+
+{ ---------- Utilitaires chaines ---------- }
+
+Function UpCaseStr(Const s: String): String;
+Var i: Integer; r: String;
+Begin
+ r := s;
+ For i := 1 to Length(r) do
+  r[i] := UpCase(r[i]);
+ UpCaseStr := r;
+End;
+
+Function IntToStr(n: LongInt): String;
+Var s: String;
+Begin
+ Str(n, s);
+ IntToStr := s;
+End;
+
+Function StrToInt(Const s: String): LongInt;
+Var v: LongInt; code: Integer;
+Begin
+ Val(s, v, code);
+ If code <> 0 Then v := 0;
+ StrToInt := v;
+End;
+
+{ Normalise un nom en etiquette ASM valide (remplace - et . par _) }
+Function AsmIdent(Const prefix, name: String): String;
+Var i: Integer; r: String;
+Begin
+ r := prefix + name;
+ For i := 1 to Length(r) do
+  If r[i] In ['-', '.', ' '] Then r[i] := '_';
+ AsmIdent := r;
+End;
+
+{ ---------- Lecture source caractere par caractere ---------- }
+
+{ Lire un caractere depuis input_file ; gerer fin de ligne et fin de fichier.
+  Remplit src_line a chaque nouvelle ligne, incremente src_line_num.          }
+Procedure SrcRefillLine;
+Begin
+ If EOF(input_file) Then
+ Begin
+  src_eof := True;
+  src_line := '';
+  src_col  := 1;
+  Exit;
+ End;
+ ReadLn(input_file, src_line);
+ Inc(src_line_num);
+ src_col    := 1;
+ src_eof    := False;
+End;
+
+{ Retourne le prochain caractere source sans avancer (lookahead 1) }
+Function SrcPeek: Char;
+Begin
+ While (src_col > Length(src_line) + 1) Or
+       ((src_col > Length(src_line)) And (Not src_eof)) do
+ Begin
+  { arrivee en fin de ligne courante : passer a la suivante }
+  If EOF(input_file) Then
+  Begin src_eof := True; SrcPeek := #0; Exit; End;
+  SrcRefillLine;
+ End;
+ If src_eof Or (src_col > Length(src_line)) Then
+ Begin SrcPeek := #10; { LF synthetique fin de ligne } End
+ Else
+  SrcPeek := src_line[src_col];
+End;
+
+{ Consomme et retourne un caractere source }
+Function SrcGetChar: Char;
+Var ch: Char;
+Begin
+ { Initialisation : charger la premiere ligne si necessaire }
+ If (src_line_num = 0) And (Not src_eof) Then
+  SrcRefillLine;
+
+ If src_eof Then
+ Begin SrcGetChar := #0; Exit; End;
+
+ If src_col > Length(src_line) Then
+ Begin
+  { Fin de la ligne courante -> retourner LF puis passer a la suivante }
+  cur_column := src_col;
+  Inc(src_col);
+  If src_col > Length(src_line) + 1 Then
+  Begin
+   If Not EOF(input_file) Then SrcRefillLine
+   Else src_eof := True;
+  End;
+  SrcGetChar := #10;
+  Exit;
+ End;
+
+ ch := src_line[src_col];
+ cur_column := src_col;
+ Inc(src_col);
+ SrcGetChar := ch;
+End;
+
+{ Remet un caractere dans le flux (un seul niveau de retour en arriere) }
+Procedure SrcUnget;
+Begin
+ If src_col > 1 Then Dec(src_col);
+End;
+
+{ ---------- Gestion du lookahead (peek_char) ---------------  }
+
+Function GetChar: Char;
+Var ch: Char;
+Begin
+ If has_peek Then
+ Begin
+  ch       := peek_char;
+  has_peek := False;
+ End
+ Else
+  ch := SrcGetChar;
+ GetChar := ch;
+End;
+
+Procedure UngetChar(ch: Char);
+Begin
+ peek_char := ch;
+ has_peek  := True;
+End;
+
+Function PeekNextChar: Char;
+Var ch: Char;
+Begin
+ ch := GetChar;
+ UngetChar(ch);
+ PeekNextChar := ch;
+End;
+
+{ ---------- Ignorer espaces et commentaires Ada (--) ---------- }
+
+Procedure SkipWhitespaceAndComments;
+Var ch, ch2: Char;
+Begin
+ Repeat
+  ch := GetChar;
+  If ch = #0 Then Exit;
+  If ch In [' ', #9, #10, #13] Then
+   { espace / tabulation / fin de ligne : continuer }
+  Else If ch = '-' Then
+  Begin
+   { possible commentaire -- }
+   ch2 := PeekNextChar;
+   If ch2 = '-' Then
+   Begin
+    { commentaire : consommer jusqu'a fin de ligne }
+    GetChar; { consommer le deuxieme - }
+    Repeat
+     ch := GetChar;
+    Until (ch = #10) Or (ch = #0);
+   End
+   Else
+   Begin
+    { signe moins : remettre et sortir }
+    UngetChar(ch);
+    Exit;
+   End;
+  End
+  Else
+  Begin
+   { caractere significatif }
+   UngetChar(ch);
+   Exit;
+  End;
+ Until False;
+End;
+
+{ ---------- Table des mots-cles Ada ---------- }
+
+{ Retourne KW_xxx si l'identifiant (en majuscules) est un mot-cle,
+  sinon KW_NONE.  La table est triee alphabetiquement pour lisibilite. }
+Function LookupKeyword(Const u: String): Integer;
+Begin
+ LookupKeyword := KW_NONE;
+ Case Length(u) of
+  2: Begin
+      If      u = 'AT' Then LookupKeyword := KW_AT
+      Else If u = 'DO' Then LookupKeyword := KW_DO
+      Else If u = 'IF' Then LookupKeyword := KW_IF
+      Else If u = 'IN' Then LookupKeyword := KW_IN
+      Else If u = 'IS' Then LookupKeyword := KW_IS
+      Else If u = 'OF' Then LookupKeyword := KW_OF
+      Else If u = 'OR' Then LookupKeyword := KW_OR;
+     End;
+  3: Begin
+      If      u = 'ABS' Then LookupKeyword := KW_ABS
+      Else If u = 'ALL' Then LookupKeyword := KW_ALL
+      Else If u = 'AND' Then LookupKeyword := KW_AND
+      Else If u = 'END' Then LookupKeyword := KW_END
+      Else If u = 'FOR' Then LookupKeyword := KW_FOR
+      Else If u = 'MOD' Then LookupKeyword := KW_MOD
+      Else If u = 'NEW' Then LookupKeyword := KW_NEW
+      Else If u = 'NOT' Then LookupKeyword := KW_NOT
+      Else If u = 'OUT' Then LookupKeyword := KW_OUT
+      Else If u = 'REM' Then LookupKeyword := KW_REM
+      Else If u = 'USE' Then LookupKeyword := KW_USE
+      Else If u = 'XOR' Then LookupKeyword := KW_XOR;
+     End;
+  4: Begin
+      If      u = 'BODY' Then LookupKeyword := KW_BODY
+      Else If u = 'CASE' Then LookupKeyword := KW_CASE
+      Else If u = 'ELSE' Then LookupKeyword := KW_ELSE
+      Else If u = 'EXIT' Then LookupKeyword := KW_EXIT
+      Else If u = 'GOTO' Then LookupKeyword := KW_GOTO
+      Else If u = 'LOOP' Then LookupKeyword := KW_LOOP
+      Else If u = 'NULL' Then LookupKeyword := KW_NULL
+      Else If u = 'SOME' Then LookupKeyword := KW_SOME
+      Else If u = 'TASK' Then LookupKeyword := KW_TASK
+      Else If u = 'THEN' Then LookupKeyword := KW_THEN
+      Else If u = 'TRUE' Then LookupKeyword := KW_TRUE
+      Else If u = 'TYPE' Then LookupKeyword := KW_TYPE
+      Else If u = 'WHEN' Then LookupKeyword := KW_WHEN
+      Else If u = 'WITH' Then LookupKeyword := KW_WITH;
+     End;
+  5: Begin
+      If      u = 'ARRAY' Then LookupKeyword := KW_ARRAY
+      Else If u = 'BEGIN' Then LookupKeyword := KW_BEGIN
+      Else If u = 'DELAY' Then LookupKeyword := KW_DELAY
+      Else If u = 'DELTA' Then LookupKeyword := KW_DELTA
+      Else If u = 'ELSIF' Then LookupKeyword := KW_ELSIF
+      Else If u = 'ENTRY' Then LookupKeyword := KW_ENTRY
+      Else If u = 'FALSE' Then LookupKeyword := KW_FALSE
+      Else If u = 'INOUT' Then LookupKeyword := KW_INOUT
+      Else If u = 'RAISE' Then LookupKeyword := KW_RAISE
+      Else If u = 'RANGE' Then LookupKeyword := KW_RANGE
+      Else If u = 'UNTIL' Then LookupKeyword := KW_UNTIL
+      Else If u = 'WHILE' Then LookupKeyword := KW_WHILE;
+     End;
+  6: Begin
+      If      u = 'ACCEPT' Then LookupKeyword := KW_ACCEPT
+      Else If u = 'ACCESS' Then LookupKeyword := KW_ACCESS
+      Else If u = 'DIGITS' Then LookupKeyword := KW_DIGITS
+      Else If u = 'OTHERS' Then LookupKeyword := KW_OTHERS
+      Else If u = 'PRAGMA' Then LookupKeyword := KW_PRAGMA
+      Else If u = 'RECORD' Then LookupKeyword := KW_RECORD
+      Else If u = 'RETURN' Then LookupKeyword := KW_RETURN
+      Else If u = 'SELECT' Then LookupKeyword := KW_SELECT
+      Else If u = 'TAGGED' Then LookupKeyword := KW_TAGGED;
+     End;
+  7: Begin
+      If      u = 'DECLARE' Then LookupKeyword := KW_DECLARE
+      Else If u = 'GENERIC' Then LookupKeyword := KW_GENERIC
+      Else If u = 'LIMITED' Then LookupKeyword := KW_LIMITED
+      Else If u = 'PACKAGE' Then LookupKeyword := KW_PACKAGE
+      Else If u = 'PRIVATE' Then LookupKeyword := KW_PRIVATE
+      Else If u = 'RENAMES' Then LookupKeyword := KW_RENAMES
+      Else If u = 'REQUEUE' Then LookupKeyword := KW_REQUEUE
+      Else If u = 'REVERSE' Then LookupKeyword := KW_REVERSE
+      Else If u = 'SUBTYPE' Then LookupKeyword := KW_SUBTYPE;
+     End;
+  8: Begin
+      If      u = 'ABSTRACT' Then LookupKeyword := KW_ABSTRACT
+      Else If u = 'CONSTANT' Then LookupKeyword := KW_CONSTANT
+      Else If u = 'FUNCTION' Then LookupKeyword := KW_FUNCTION
+      Else If u = 'SEPARATE' Then LookupKeyword := KW_SEPARATE;
+     End;
+  9: Begin
+      If      u = 'EXCEPTION' Then LookupKeyword := KW_EXCEPTION
+      Else If u = 'INTERFACE' Then LookupKeyword := KW_INTERFACE
+      Else If u = 'PROCEDURE' Then LookupKeyword := KW_PROCEDURE
+      Else If u = 'PROTECTED' Then LookupKeyword := KW_PROTECTED
+      Else If u = 'TERMINATE' Then LookupKeyword := KW_TERMINATE;
+     End;
+  10: If u = 'OVERRIDING' Then LookupKeyword := KW_OVERRIDING;
+  12: If u = 'SYNCHRONIZED' Then LookupKeyword := KW_SYNCHRONIZED;
+ End;
+End;
+
+{ ---------- Lex : identifiant ou mot-cle ---------- }
+
+Procedure LexIdent;
+Var s: String; ch: Char;
+Begin
+ s := '';
+ Repeat
+  ch := GetChar;
+  If ch In ['A'..'Z', 'a'..'z', '0'..'9', '_'] Then
+   s := s + ch
+  Else
+  Begin
+   UngetChar(ch);
+   Break;
+  End;
+ Until Length(s) = 255;
+ { Ada autorise _ interieurs mais pas en debut/fin -> on ne valide pas ici }
+ s := UpCaseStr(s);
+ cur_tok_str  := s;
+ cur_tok_kw   := LookupKeyword(s);
+ cur_tok_type := TOK_IDENT;
+ { Pseudo-tokens booleans -> rester IDENT, le parser utilisera KW_TRUE/FALSE }
+End;
+
+{ ---------- Lex : litteraux numeriques ---------- }
+
+{ Convertit un chiffre dans une base donnee ; retourne -1 si invalide }
+Function DigitValue(ch: Char; base: Integer): Integer;
+Var v: Integer;
+Begin
+ ch := UpCase(ch);
+ If (ch >= '0') And (ch <= '9') Then v := Ord(ch) - Ord('0')
+ Else If (ch >= 'A') And (ch <= 'F') Then v := Ord(ch) - Ord('A') + 10
+ Else v := -1;
+ If v >= base Then v := -1;
+ DigitValue := v;
+End;
+
+Procedure LexNumber(firstCh: Char);
+Var s        : String;
+    intVal   : LongInt;
+    base     : Integer;
+    ch       : Char;
+    dv       : Integer;
+    isFloat  : Boolean;
+    fltStr   : String;
+Begin
+ s      := '' + firstCh;
+ isFloat:= False;
+ base   := 10;
+ intVal := Ord(firstCh) - Ord('0');
+
+ { Accumuler les chiffres decimaux initiaux }
+ Repeat
+  ch := GetChar;
+  If ch In ['0'..'9', '_'] Then
+  Begin
+   If ch <> '_' Then
+   Begin
+    s      := s + ch;
+    intVal := intVal * 10 + (Ord(ch) - Ord('0'));
+   End;
+  End
+  Else
+  Begin
+   UngetChar(ch);
+   Break;
+  End;
+ Until False;
+
+ ch := GetChar;
+
+ { Litteral en base n#valeur# }
+ If ch = '#' Then
+ Begin
+  base   := intVal;
+  intVal := 0;
+  s      := '';
+  Repeat
+   ch := GetChar;
+   If ch = '#' Then Break;
+   If ch = '_' Then Continue;
+   dv := DigitValue(ch, base);
+   If dv < 0 Then Break; { ignorer caractere invalide }
+   s      := s + ch;
+   intVal := intVal * base + dv;
+  Until False;
+  cur_tok_type := TOK_INTEGER;
+  cur_tok_num  := intVal;
+  cur_tok_str  := IntToStr(intVal);
+  Exit;
+ End;
+
+ { Flottant : partie decimale apres '.' }
+ If ch = '.' Then
+ Begin
+  ch := PeekNextChar;
+  If ch = '.' Then
+  Begin
+   { operateur '..' : remettre le '.' et sortir }
+   UngetChar('.');
+   cur_tok_type := TOK_INTEGER;
+   cur_tok_num  := intVal;
+   cur_tok_str  := s;
+   Exit;
+  End;
+  isFloat := True;
+  fltStr  := s + '.';
+  Repeat
+   ch := GetChar;
+   If ch In ['0'..'9', '_'] Then
+   Begin
+    If ch <> '_' Then fltStr := fltStr + ch;
+   End
+   Else
+   Begin
+    UngetChar(ch);
+    Break;
+   End;
+  Until False;
+  ch := GetChar;
+ End;
+
+ { Exposant E ou e }
+ If (ch = 'E') Or (ch = 'e') Then
+ Begin
+  isFloat := True;
+  If Not isFloat Then fltStr := s;
+  fltStr := fltStr + 'E';
+  ch := GetChar;
+  If ch In ['+', '-'] Then
+  Begin
+   fltStr := fltStr + ch;
+   ch     := GetChar;
+  End;
+  While ch In ['0'..'9'] do
+  Begin
+   fltStr := fltStr + ch;
+   ch     := GetChar;
+  End;
+  UngetChar(ch);
+ End
+ Else
+  UngetChar(ch);
+
+ If isFloat Then
+ Begin
+  cur_tok_type := TOK_FLOAT;
+  cur_tok_str  := fltStr;
+  Val(fltStr, cur_tok_flt, base { reutilise comme code });
+  cur_tok_num  := Round(cur_tok_flt);
+ End
+ Else
+ Begin
+  cur_tok_type := TOK_INTEGER;
+  cur_tok_num  := intVal;
+  cur_tok_str  := s;
+ End;
+End;
+
+{ ---------- Lex : litteral caractere 'c' ---------- }
+{ En Ada : 'c' est un Character literal.
+  '' n'existe pas en Ada (c'est toujours exactement un caractere).
+  Le tick ' devant un ident est l'attribut T'FIRST -> retourne TOK_TICK.     }
+
+Procedure LexCharOrTick;
+Var ch, ch2: Char;
+Begin
+ ch := GetChar;
+ If ch = #0 Then
+ Begin
+  cur_tok_type := TOK_TICK;
+  cur_tok_str  := '''';
+  Exit;
+ End;
+ ch2 := GetChar;
+ If ch2 = '''' Then
+ Begin
+  { 'c' -> litteral caractere }
+  cur_tok_type := TOK_CHAR;
+  cur_tok_str  := '' + ch;
+  cur_tok_num  := Ord(ch);
+ End
+ Else
+ Begin
+  { n'est pas 'c' -> c'est un tick d'attribut (T'FIRST, T'(expr))
+    On a consomme trop : remettre ch2 et ch }
+  UngetChar(ch2);
+  UngetChar(ch);
+  cur_tok_type := TOK_TICK;
+  cur_tok_str  := '''';
+ End;
+End;
+
+{ ---------- Lex : litteral chaine "..." ---------- }
+
+Procedure LexString;
+Var s: String; ch: Char;
+Begin
+ s := '';
+ Repeat
+  ch := GetChar;
+  If ch = '"' Then
+  Begin
+   { "" -> guillemet double inclu dans la chaine }
+   If PeekNextChar = '"' Then
+   Begin
+    GetChar;
+    s := s + '"';
+   End
+   Else
+    Break; { fin de la chaine }
+  End
+  Else If (ch = #10) Or (ch = #0) Then
+  Begin
+   { chaine non fermee }
+   Break;
+  End
+  Else
+   s := s + ch;
+ Until False;
+ cur_tok_type := TOK_STRING;
+ cur_tok_str  := s;
+End;
+
+{ ---------- Lex : symboles et operateurs ---------- }
+
+Procedure LexSymbol(firstCh: Char);
+Var ch2: Char;
+Begin
+ cur_tok_str := '' + firstCh;
+ Case firstCh of
+  ':': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '=' Then
+        Begin GetChar; cur_tok_type := TOK_COLONASSIGN; cur_tok_str := ':='; End
+        Else cur_tok_type := TOK_COLON;
+       End;
+  '/': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '=' Then
+        Begin GetChar; cur_tok_type := TOK_NEQ; cur_tok_str := '/='; End
+        Else cur_tok_type := TOK_SLASH;
+       End;
+  '>': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '=' Then
+        Begin GetChar; cur_tok_type := TOK_GE; cur_tok_str := '>='; End
+        Else cur_tok_type := TOK_GT;
+       End;
+  '<': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '=' Then
+        Begin GetChar; cur_tok_type := TOK_LE; cur_tok_str := '<='; End
+        Else cur_tok_type := TOK_LT;
+       End;
+  '=': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '>' Then
+        Begin GetChar; cur_tok_type := TOK_ARROW; cur_tok_str := '=>'; End
+        Else cur_tok_type := TOK_EQ;
+       End;
+  '.': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '.' Then
+        Begin GetChar; cur_tok_type := TOK_DOTDOT; cur_tok_str := '..'; End
+        Else cur_tok_type := TOK_DOT;
+       End;
+  '*': Begin
+        ch2 := PeekNextChar;
+        If ch2 = '*' Then
+        Begin GetChar; cur_tok_type := TOK_STARSTAR; cur_tok_str := '**'; End
+        Else cur_tok_type := TOK_STAR;
+       End;
+  '+': cur_tok_type := TOK_PLUS;
+  '-': cur_tok_type := TOK_MINUS;
+  '(': cur_tok_type := TOK_LPAREN;
+  ')': cur_tok_type := TOK_RPAREN;
+  ',': cur_tok_type := TOK_COMMA;
+  ';': cur_tok_type := TOK_SEMI;
+  '|': cur_tok_type := TOK_BAR;
+  '&': cur_tok_type := TOK_AMP;
+  '#': cur_tok_type := TOK_HASH;
+  Else cur_tok_type := TOK_UNKNOWN;
+ End;
+End;
+
+{ ---------- Tokeniseur principal ---------- }
+
+Procedure NextToken;
+Var ch: Char;
+Begin
+ SkipWhitespaceAndComments;
+
+ cur_tok_str  := '';
+ cur_tok_num  := 0;
+ cur_tok_flt  := 0.0;
+ cur_tok_kw   := KW_NONE;
+
+ ch := GetChar;
+
+ If ch = #0 Then
+ Begin
+  cur_tok_type := TOK_EOF;
+  cur_tok_str  := '';
+  Exit;
+ End;
+
+ If ch In ['A'..'Z', 'a'..'z', '_'] Then LexIdent
+ Else If ch In ['0'..'9'] Then LexNumber(ch)
+ Else If ch = '''' Then LexCharOrTick
+ Else If ch = '"' Then LexString
+ Else LexSymbol(ch);
+End;
+
+{ Avancer au prochain token }
+Procedure Consume;
+Begin
+ NextToken;
+End;
+
+{ ---------- Helpers de parsing ---------- }
+
+Function TokIsKw(kw: Integer): Boolean;
+Begin
+ TokIsKw := (cur_tok_type = TOK_IDENT) And (cur_tok_kw = kw);
+End;
+
+Function TokIsOp(tok: Integer): Boolean;
+Begin
+ TokIsOp := (cur_tok_type = tok);
+End;
+
+{ Verify that current token is of type tok ; consume it ; else error msg }
+Procedure Expect(tok: Integer; Const msg: String);
+Begin
+ If cur_tok_type <> tok Then
+ Begin
+  WriteLn('ERREUR (ligne ', src_line_num, ') : ', msg,
+          ' (recu : ''', cur_tok_str, ''')');
+  Inc(error_count);
+ End
+ Else
+  Consume;
+End;
+
+Procedure ExpectKw(kw: Integer; Const kwname, msg: String);
+Begin
+ If Not TokIsKw(kw) Then
+ Begin
+  WriteLn('ERREUR (ligne ', src_line_num, ') : ', msg,
+          ' (recu : ''', cur_tok_str, ''')');
+  Inc(error_count);
+ End
+ Else
+  Consume;
+End;
+
+{ ============================================================================ }
+{ Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 01 OK (architecture de base compilee)');
-  WriteLn('  TOK_xxx   : ', TOK_EOF,       ' tokens definis');
-  WriteLn('  KW_xxx    : ', KW_INOUT,      ' mots-cles definis');
-  WriteLn('  TYPE_xxx  : ', TYPE_VOID,     ' types predefinis');
-  WriteLn('  MAX_SYM   : ', MAX_SYM,       ' / MAX_SUB : ', MAX_SUB);
-  WriteLn('  MAX_TYPE  : ', MAX_TYPE,      ' / MAX_STR : ', MAX_STR);
-  WriteLn('  Tailles pointeurs : PSymTable PSubTable PTypeTable OK');
+  WriteLn('ADA86 V1.0 - TODO 02 OK (lexeur compile)');
+  WriteLn('  Fonctions disponibles : NextToken, Consume, TokIsKw, Expect');
+  WriteLn('  LexIdent, LexNumber, LexChar, LexString, LexSymbol, AsmIdent');
 End.
