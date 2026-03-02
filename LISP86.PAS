@@ -1257,7 +1257,7 @@ End;
 
 Procedure GenProgn(exprs: TLispVal);Begin
  { Compiler une sequence d'expressions }
- { Resultat de AX = dernier elemento }
+ { R‚sultat de AX = dernier ‚l‚ment }
  EmitComment('---- PROGN ----');
  If IsNilVal(exprs) Then Begin Emit('        XOR     AX, AX'); Exit; End;
  While Not IsNilVal(exprs) Do
@@ -1269,13 +1269,14 @@ Procedure GenProgn(exprs: TLispVal);Begin
 End;
 
 { ============================================================================ }
-{ TODO 17 - GENERATION : OPERATIONS ARITHMETIQUES        [COMPLET]            }
+{ GENERATION : OPERATIONS ARITHMETIQUES                                        }
 { ============================================================================ }
 
 Procedure GenArith(op: Integer; args: TLispVal);
-Var first: Boolean; lbl: String;
+Var
+ first: Boolean; lbl: String;
 Begin
- { TODO 17 : Generer +, -, *, / }
+ { G‚n‚rer +, -, *, / }
  EmitComment('---- ARITH ' + ItoSI(op) + ' ----');
  first := True;
  Case op Of
@@ -1295,7 +1296,10 @@ Begin
   End;
   PRIM_SUB:
   Begin
-   If IsNilVal(args) Then Begin Emit('        XOR     AX, AX'); Exit; End;
+   If IsNilVal(args) Then Begin
+    Emit('        XOR     AX, AX');
+    Exit;
+   End;
    GenExpr(CarOf(args));
    Emit('        AND     AX, 1FFFh');
    Emit('        MOV     BX, AX');
@@ -1324,8 +1328,7 @@ Begin
   PRIM_MUL:
   Begin
    Emit('        MOV     BX, 1  ; accumulateur *');
-   While Not IsNilVal(args) Do
-   Begin
+   While Not IsNilVal(args) Do Begin
     GenExpr(CarOf(args));
     Emit('        AND     AX, 1FFFh');
     Emit('        IMUL    BX');
@@ -1338,13 +1341,15 @@ Begin
   End;
   PRIM_DIV:
   Begin
-   If IsNilVal(args) Then Begin Emit('        XOR     AX, AX'); Exit; End;
+   If IsNilVal(args) Then Begin
+    Emit('        XOR     AX, AX');
+    Exit;
+   End;
    GenExpr(CarOf(args));
    Emit('        AND     AX, 1FFFh');
    Emit('        MOV     BX, AX');
    args := CdrOf(args);
-   While Not IsNilVal(args) Do
-   Begin
+   While Not IsNilVal(args) Do Begin
     Emit('        PUSH    BX');
     GenExpr(CarOf(args));
     Emit('        AND     AX, 1FFFh');
@@ -1364,7 +1369,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 18 - GENERATION : COMPARAISONS                    [COMPLET]            }
+{ GENERATION : COMPARAISONS                                                    }
 { ============================================================================ }
 
 Procedure GenCompare(op: Integer; args: TLispVal);

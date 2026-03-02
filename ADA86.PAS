@@ -1427,11 +1427,98 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 03 - Gestion des erreurs, avertissements et resynchronisation           }
+{ ============================================================================ }
+
+{ Affiche un message d'erreur non fatal et incremente error_count.
+  Le parsing continue pour detecter d'autres erreurs.                         }
+Procedure Error(Const msg: String);
+Begin
+ WriteLn('ERREUR (ligne ', src_line_num, ', col ', cur_column, ') : ', msg);
+ Inc(error_count);
+End;
+
+{ Affiche un message d'erreur avec le token courant en contexte }
+Procedure ErrorTok(Const msg: String);
+Begin
+ WriteLn('ERREUR (ligne ', src_line_num, ') : ', msg,
+         ' (token : ''', cur_tok_str, ''')');
+ Inc(error_count);
+End;
+
+{ Avertissement non bloquant }
+Procedure Warning(Const msg: String);
+Begin
+ WriteLn('ATTENTION (ligne ', src_line_num, ') : ', msg);
+ Inc(warn_count);
+End;
+
+{ Erreur fatale : affiche le message et arrete la compilation }
+Procedure FatalError(Const msg: String);
+Begin
+ WriteLn('ERREUR FATALE (ligne ', src_line_num, ') : ', msg);
+ Halt(1);
+End;
+
+{ Resynchronisation : consommer tous les tokens jusqu'au prochain ';'
+  (inclus) ou EOF. Utilise apres une erreur de syntaxe dans une instruction. }
+Procedure SkipToSemi;
+Begin
+ While (cur_tok_type <> TOK_SEMI) And (cur_tok_type <> TOK_EOF) do
+  Consume;
+ If cur_tok_type = TOK_SEMI Then Consume;
+End;
+
+{ Resynchronisation : consommer jusqu'a END correspondant (suivi de ';').
+  Gere les blocs imbrique en comptant BEGIN/END.
+  Utilise apres une erreur grave dans un bloc.                                }
+Procedure SkipToEnd;
+Var depth: Integer;
+Begin
+ depth := 1;
+ While (cur_tok_type <> TOK_EOF) And (depth > 0) do
+ Begin
+  If TokIsKw(KW_BEGIN) Or TokIsKw(KW_DECLARE) Or
+     TokIsKw(KW_LOOP)  Or TokIsKw(KW_RECORD)  Then
+   Inc(depth)
+  Else If TokIsKw(KW_END) Then
+   Dec(depth);
+  Consume;
+ End;
+ { Consommer le ';' apres END si present }
+ If cur_tok_type = TOK_SEMI Then Consume;
+End;
+
+{ Resynchronisation : sauter jusqu'a l'un des mots-cles de l'ensemble donne.
+  Exemple d'utilisation : SkipToKw(KW_THEN) apres une condition malformee.   }
+Procedure SkipToKw(kw: Integer);
+Begin
+ While (cur_tok_type <> TOK_EOF) And Not TokIsKw(kw) do
+  Consume;
+End;
+
+{ Bilan de compilation : affiche les statistiques sur stderr }
+Procedure BilanCompilation;
+Begin
+ WriteLn;
+ WriteLn('ADA86 - Compilation terminee');
+ WriteLn('  Source     : ', source_filename);
+ WriteLn('  Sortie     : ', output_filename);
+ WriteLn('  Symboles   : ', sym_count);
+ WriteLn('  Sous-progs : ', sub_count);
+ WriteLn('  Types user : ', type_count);
+ WriteLn('  Erreurs    : ', error_count);
+ WriteLn('  Attention  : ', warn_count);
+ If error_count > 0 Then
+  WriteLn('  *** COMPILATION AVEC ERREURS ***');
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 02 OK (lexeur compile)');
-  WriteLn('  Fonctions disponibles : NextToken, Consume, TokIsKw, Expect');
-  WriteLn('  LexIdent, LexNumber, LexChar, LexString, LexSymbol, AsmIdent');
+  WriteLn('ADA86 V1.0 - TODO 03 OK (gestion erreurs OK)');
+  WriteLn('  Error, ErrorTok, Warning, FatalError');
+  WriteLn('  SkipToSemi, SkipToEnd, SkipToKw, BilanCompilation');
 End.
