@@ -5570,7 +5570,7 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ) nach switch-Ausdruck');
    {$ENDIF}
-   Else errrpt(') attendu apr√®s expression switch');
+   Else errrpt(') attendu apräs expression switch');
   End;
   Exit;
  End;
@@ -5700,7 +5700,7 @@ Function parse_compound_statement: Boolean;Begin
     {$IFDEF FPC}
     _Germany: errrpt('Unerwartetes Dateiende in zusammengesetzter Anweisung');
     {$ENDIF}
-    Else errrpt('Fin de fichier inattendue dans l''instruction compos√©e');
+    Else errrpt('Fin de fichier inattendue dans l''instruction composÇe');
    End;
    Exit;
   End;
@@ -5710,8 +5710,7 @@ Function parse_compound_statement: Boolean;Begin
    lptr := 1;
   End;
  Until False;
-
- safe_writeln('; Compound statement end');
+ safe_writeln('; Fin d''instruction composÇe');
 End;
 
 { Expression statement parsing }

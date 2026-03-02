@@ -4082,6 +4082,338 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 17 - PARSEUR : CONCATENATE / SPLIT / SHIFT / REPLACE /                 }
+{           TRANSLATE / CONDENSE / FIND                  [COMPLET]             }
+{ ============================================================================ }
+
+{ Helper : charger une valeur de chaine (variable ou literal) -> AX = adresse }
+Procedure LoadStrArg;
+Var lbl : String;
+    si  : Integer;
+Begin
+ If cur_tok_type = TOK_STRING Then
+ Begin
+  lbl := AddStringLit(cur_tok_str + '$');
+  EmitI('LEA     AX, ' + lbl);
+  Consume;
+ End Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+ Begin
+  si := FindSym(cur_tok_str);
+  If si = 0 Then
+  Begin Warning('Chaine : variable inconnue ''' + cur_tok_str + ''''); EmitI('XOR     AX, AX'); End
+  Else GenLoadVar(si);
+  Consume;
+ End Else
+ Begin Warning('Chaine ou variable attendue'); EmitI('XOR     AX, AX'); End;
+End;
+
+{ Parse CONCATENATE s1 s2 ... INTO dest [SEPARATED BY sep].
+
+  Generation :
+    Pour chaque source si : LoadStrArg -> PUSH AX
+    PUSH n (nb de sources)
+    LoadStrArg(dest) -> PUSH AX
+    [si SEPARATED BY sep] LoadStrArg(sep) -> PUSH AX / PUSH 1
+    Else PUSH 0 (pas de separateur)
+    CALL _ABAP_STR_CONCAT
+    ADD SP, (n+3)*2
+}
+Procedure ParseConcatenate;
+Var n_src : Integer;
+Begin
+ Consume; { skip CONCATENATE }
+ EmitComment('CONCATENATE');
+ n_src := 0;
+ { Lire les sources (identifiants ou literals) jusqu'a INTO }
+ While Not TokIsKw(KW_INTO) And (cur_tok_type <> TOK_DOT) And
+       (cur_tok_type <> TOK_EOF) Do
+ Begin
+  LoadStrArg;
+  EmitI('PUSH    AX  ; src' + ItoSI(n_src + 1));
+  Inc(n_src);
+ End;
+ { INTO dest }
+ If Not TokIsKw(KW_INTO) Then
+ Begin Error('INTO attendu apres CONCATENATE sources'); SkipToDot; Exit; End;
+ Consume; { skip INTO }
+ LoadStrArg; { dest -> AX }
+ EmitI('PUSH    AX  ; dest');
+ EmitI('MOV     AX, ' + ItoSI(n_src));
+ EmitI('PUSH    AX  ; nb sources');
+ { SEPARATED BY sep optionnel }
+ If TokIsKw(KW_SEPARATED) Then
+ Begin
+  Consume; { skip SEPARATED }
+  If TokIsKw(KW_BY) Then Consume; { skip BY }
+  LoadStrArg; { separateur -> AX }
+  EmitI('PUSH    AX  ; separateur');
+  EmitI('PUSH    1   ; avec separateur');
+ End Else
+  EmitI('PUSH    0   ; sans separateur');
+ EmitI('CALL    _ABAP_STR_CONCAT');
+ EmitI('ADD     SP, ' + ItoSI((n_src + 4) * 2));
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres CONCATENATE');
+End;
+
+{ Parse SPLIT src AT sep INTO s1 s2 [...].
+
+  Generation :
+    PUSH @src, @sep, @s1, @s2, nb_dest -> CALL _ABAP_STR_SPLIT
+}
+Procedure ParseSplit;
+Var n_dst : Integer;
+Begin
+ Consume; { skip SPLIT }
+ EmitComment('SPLIT');
+ { source }
+ LoadStrArg; EmitI('PUSH    AX  ; src');
+ { AT sep }
+ If Not TokIsKw(KW_AT) Then
+ Begin Error('AT attendu apres SPLIT src'); SkipToDot; Exit; End;
+ Consume;
+ LoadStrArg; EmitI('PUSH    AX  ; separateur');
+ { INTO dest1 dest2 ... }
+ If Not TokIsKw(KW_INTO) Then
+ Begin Error('INTO attendu apres SPLIT src AT sep'); SkipToDot; Exit; End;
+ Consume;
+ n_dst := 0;
+ While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Do
+ Begin
+  LoadStrArg; EmitI('PUSH    AX  ; dest' + ItoSI(n_dst + 1));
+  Inc(n_dst);
+ End;
+ EmitI('MOV     AX, ' + ItoSI(n_dst));
+ EmitI('PUSH    AX  ; nb destinations');
+ EmitI('CALL    _ABAP_STR_SPLIT');
+ EmitI('ADD     SP, ' + ItoSI((n_dst + 3) * 2));
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres SPLIT');
+End;
+
+{ Parse SHIFT var [LEFT|RIGHT] [BY n PLACES | CIRCULAR].
+
+  Generation : PUSH @var, direction, n -> CALL _ABAP_STR_SHIFT
+    direction : 0 = LEFT (defaut), 1 = RIGHT, 2 = CIRCULAR
+}
+Procedure ParseShift;
+Var sym_idx  : Integer;
+    dir, n   : Integer;
+Begin
+ Consume; { skip SHIFT }
+ EmitComment('SHIFT');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres SHIFT'); SkipToDot; Exit; End;
+ sym_idx := ResolveIdent(cur_tok_str); Consume;
+ dir := 0; { LEFT par defaut }
+ n   := 1;
+ If TokIsKw(KW_LEFT)  Then Begin dir := 0; Consume; End
+ Else If TokIsKw(KW_RIGHT) Then Begin dir := 1; Consume; End;
+ If TokIsKw(KW_BY) Then
+ Begin
+  Consume; { skip BY }
+  ParseExpr; { n -> AX }
+  EmitI('MOV     BX, AX  ; n positions');
+  If TokIsKw(KW_PLACES)   Then Consume;
+  If TokIsKw(KW_CIRCULAR) Then Begin dir := 2; Consume; End;
+  n := -1; { valeur dynamique dans BX }
+ End Else If TokIsKw(KW_CIRCULAR) Then
+ Begin dir := 2; Consume; End;
+ { Generer }
+ If sym_idx > 0 Then GenLoadAddr(sym_idx)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX        ; @ var');
+ EmitI('MOV     AX, ' + ItoSI(dir));
+ EmitI('PUSH    AX        ; direction');
+ If n = -1 Then EmitI('PUSH    BX        ; n (dynamique)')
+ Else            EmitI('PUSH    ' + ItoSI(n) + '  ; n');
+ EmitI('CALL    _ABAP_STR_SHIFT');
+ EmitI('ADD     SP, 6');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres SHIFT');
+End;
+
+{ Parse REPLACE [ALL OCCURRENCES OF] old IN dest WITH new.
+
+  Generation : PUSH @old, @dest, @new, all_flag -> CALL _ABAP_STR_REPLACE
+}
+Procedure ParseReplace;
+Var all_flag : Integer;
+Begin
+ Consume; { skip REPLACE }
+ EmitComment('REPLACE');
+ all_flag := 0;
+ { ALL OCCURRENCES OF optionnel }
+ If TokIsKw(KW_ALL) Then
+ Begin
+  all_flag := 1; Consume;
+  If TokIsKw(KW_OCCURRENCES) Then Consume;
+  If TokIsKw(KW_OF)          Then Consume;
+ End Else If TokIsKw(KW_FIRST) Then
+ Begin
+  Consume;
+  If TokIsKw(KW_OCCURRENCE) Then Consume;
+  If TokIsKw(KW_OF)         Then Consume;
+ End;
+ { old }
+ LoadStrArg; EmitI('PUSH    AX  ; @old');
+ { IN dest }
+ If Not TokIsKw(KW_IN) Then
+ Begin Error('IN attendu apres REPLACE pattern'); SkipToDot; Exit; End;
+ Consume;
+ LoadStrArg; EmitI('PUSH    AX  ; @dest');
+ { WITH new }
+ If Not TokIsKw(KW_WITH) Then
+ Begin Error('WITH attendu apres REPLACE ... IN dest'); SkipToDot; Exit; End;
+ Consume;
+ LoadStrArg; EmitI('PUSH    AX  ; @new');
+ EmitI('MOV     AX, ' + ItoSI(all_flag));
+ EmitI('PUSH    AX  ; all_flag');
+ EmitI('CALL    _ABAP_STR_REPLACE');
+ EmitI('ADD     SP, 8');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres REPLACE');
+End;
+
+{ Parse TRANSLATE var TO UPPER CASE / TO LOWER CASE.
+
+  Generation : PUSH @var, direction -> CALL _ABAP_STR_TRANSLATE
+    UPPER CASE -> flag = 1, LOWER CASE -> flag = 0
+  Note : le lexer compose 'UPPER-CASE', 'LOWER-CASE' en token unique
+         OU les deux mots UPPER + CASE sont des tokens separes selon la casse.
+}
+Procedure ParseTranslate;
+Var sym_idx : Integer;
+    flag    : Integer;
+Begin
+ Consume; { skip TRANSLATE }
+ EmitComment('TRANSLATE');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres TRANSLATE'); SkipToDot; Exit; End;
+ sym_idx := ResolveIdent(cur_tok_str); Consume;
+ { TO }
+ If TokIsKw(KW_TO) Then Consume
+ Else Warning('TO attendu apres TRANSLATE var');
+ flag := 1; { UPPER par defaut }
+ { UPPER CASE ou LOWER CASE ou KW_CASE_UPPER / KW_CASE_LOWER composes }
+ If TokIsKw(KW_UPPER) Or (cur_tok_kw = KW_CASE_UPPER) Then
+ Begin
+  flag := 1; Consume;
+  If TokIsKw(KW_UPPER) Then Consume; { CASE apres UPPER }
+ End Else If TokIsKw(KW_LOWER) Or (cur_tok_kw = KW_CASE_LOWER) Then
+ Begin
+  flag := 0; Consume;
+  If TokIsKw(KW_LOWER) Then Consume;
+ End;
+ { Consommer CASE si encore present (token separe) }
+ If cur_tok_str = 'CASE' Then Consume;
+ { Generer }
+ If sym_idx > 0 Then GenLoadAddr(sym_idx)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX        ; @var');
+ EmitI('MOV     AX, ' + ItoSI(flag));
+ EmitI('PUSH    AX        ; 1=UPPER 0=LOWER');
+ EmitI('CALL    _ABAP_STR_TRANSLATE');
+ EmitI('ADD     SP, 4');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres TRANSLATE');
+End;
+
+{ Parse CONDENSE var [NO-GAPS].
+
+  Generation : PUSH @var, no_gaps_flag -> CALL _ABAP_STR_CONDENSE
+}
+Procedure ParseCondense;
+Var sym_idx, ng : Integer;
+Begin
+ Consume; { skip CONDENSE }
+ EmitComment('CONDENSE');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Variable attendue apres CONDENSE'); SkipToDot; Exit; End;
+ sym_idx := ResolveIdent(cur_tok_str); Consume;
+ ng := 0;
+ If TokIsKw(KW_NO_GAPS) Then Begin ng := 1; Consume; End;
+ If sym_idx > 0 Then GenLoadAddr(sym_idx)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX        ; @var');
+ EmitI('MOV     AX, ' + ItoSI(ng));
+ EmitI('PUSH    AX        ; no_gaps_flag');
+ EmitI('CALL    _ABAP_STR_CONDENSE');
+ EmitI('ADD     SP, 4');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres CONDENSE');
+End;
+
+{ Parse FIND [FIRST OCCURRENCE OF] pattern IN var
+             [MATCH OFFSET off] [MATCH LENGTH len].
+
+  Generation : PUSH @pattern, @var, @off, @len -> CALL _ABAP_STR_FIND
+    SY-SUBRC = 0 si trouve, 4 sinon (retourne dans AX)
+}
+Procedure ParseFind;
+Var sym_off, sym_len, sym_var : Integer;
+    sy_subrc                  : Integer;
+Begin
+ Consume; { skip FIND }
+ EmitComment('FIND');
+ { FIRST OCCURRENCE OF optionnel }
+ If TokIsKw(KW_FIRST) Then Consume;
+ If TokIsKw(KW_OCCURRENCE) Or TokIsKw(KW_OCCURRENCES) Then Consume;
+ If TokIsKw(KW_OF) Then Consume;
+ { pattern }
+ LoadStrArg; EmitI('PUSH    AX  ; @pattern');
+ { IN var }
+ If Not TokIsKw(KW_IN) Then
+ Begin Error('IN attendu apres FIND pattern'); SkipToDot; Exit; End;
+ Consume;
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+ Begin
+  sym_var := ResolveIdent(cur_tok_str); Consume;
+  If sym_var > 0 Then GenLoadAddr(sym_var)
+  Else            EmitI('XOR     AX, AX');
+ End Else EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX  ; @var');
+ { MATCH OFFSET off optionnel }
+ sym_off := 0;
+ If TokIsKw(KW_MATCH) Then
+ Begin
+  Consume;
+  If TokIsKw(KW_OFFSET) Then
+  Begin
+   Consume;
+   If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+   Begin sym_off := ResolveIdent(cur_tok_str); Consume; End;
+  End;
+ End;
+ { MATCH LENGTH len optionnel }
+ sym_len := 0;
+ If TokIsKw(KW_MATCH) Then
+ Begin
+  Consume;
+  If TokIsKw(KW_LENGTH) Then
+  Begin
+   Consume;
+   If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+   Begin sym_len := ResolveIdent(cur_tok_str); Consume; End;
+  End;
+ End;
+ { Pousser adresses off et len (0 si non fournis) }
+ If sym_off > 0 Then GenLoadAddr(sym_off)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX  ; @off');
+ If sym_len > 0 Then GenLoadAddr(sym_len)
+ Else            EmitI('XOR     AX, AX');
+ EmitI('PUSH    AX  ; @len');
+ EmitI('CALL    _ABAP_STR_FIND');
+ EmitI('ADD     SP, 8');
+ sy_subrc := FindSym('SY-SUBRC');
+ If sy_subrc > 0 Then
+  EmitI('MOV     [' + sym_table[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres FIND');
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
