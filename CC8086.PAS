@@ -5070,7 +5070,7 @@ Begin
       End;
   Else
    Begin
-    ot('mov  '); { Par dÔøΩfaut: mot }
+    ot('mov  '); { Par dÇfaut: mot }
     outstr(var_name);
     nl;
    End;
@@ -5078,7 +5078,7 @@ Begin
  End
   Else
  Begin
-  { VÇrifier si la variable const nÔøΩcessite une initialisation }
+  { VÇrifier si la variable const nÇcessite une initialisation }
   If type_info.is_const Then
   Begin
    Case Language of
@@ -5086,26 +5086,20 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
     {$ENDIF}
-    Else errrpt('la variable const ' + var_name + ' doit √™tre initialis√©e');
+    Else errrpt('la variable const ' + var_name + ' doit àtre initialisÇe');
    End;
   End;
  End;
-
- { GÔøΩrer les dÔøΩclarations de variables multiples }
- While match(',') do
- Begin
+  { GÇrer les dÇclarations de variables multiples }
+ While match(',') do Begin
   var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
-
   declare_variable(var_name, var_type, type_info, storage_class);
-
-  { VÔøΩrifier l'initialisation }
-  If match('=') Then
-  Begin
+  { VÇrifier l'initialisation }
+  If match('=') Then Begin
    safe_writeln('; Initialisation de la variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
    expression(lval);
-
-   { GÔøΩnÔøΩrer le code d'initialisation }
+    { GÇnÇrer le code d'initialisation }
    Case type_info.size of
     1: Begin
         ot('MOV  ');
@@ -5128,7 +5122,7 @@ Begin
   End
   Else
   Begin
-   { VÔøΩrifier si la variable const nÔøΩcessite une initialisation }
+    { VÇrifier si la variable const nÇcessite une initialisation }
    If type_info.is_const Then
    Begin
     Case Language of
@@ -5136,18 +5130,16 @@ Begin
      {$IFDEF FPC}
      _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
      {$ENDIF}
-     Else errrpt('la variable const ' + var_name + ' doit √™tre initialis√©e');
+     Else errrpt('la variable const ' + var_name + ' doit àtre initialisÇe');
     End;
    End;
   End;
  End;
-
- { Expect semicolon for variable declarations }
- If not match(';') Then
-  errrpt('Expected semicolon after declaration');
+  { Point-virgule attendu pour les dÇclarations de variable }
+ If not match(';') Then errrpt('Point-virgule attendue apräs la dÇclaration');
 End;
 
-{ Forward declarations for statement parsing }
+ { DÇclarations anticipÇes pour l'analyse des instructions }
 Function parse_statement: Boolean; forward;
 Function parse_compound_statement: Boolean; forward;
 Function parse_assignment_statement: Boolean; forward;
@@ -5159,93 +5151,72 @@ Function parse_case_statement: Boolean; forward;
 Function parse_default_statement: Boolean; forward;
 Function parse_for_statement: Boolean; forward;
 
-{ Control structure parsing }
+ { Analyse de structure de contrìle }
 Function parse_if_statement: Boolean;
 Var
  lval: TLVal;
  else_label, end_label: Integer;
 Begin
  parse_if_statement := False;
-
  If not match('if') Then Exit;
  parse_if_statement := True;
-
- { Attendre la parenthÔøΩse ouvrante }
+  { Attendre la parenthäse ouvrante }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- If not match('(') Then
- Begin
+ If not match('(') Then Begin
   errrpt('Expected ( after if');
   Exit;
  End;
-
- { Analyser la condition }
+  { Analyser la condition }
  safe_writeln('; IF condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
+  { Fermeture de parenthäse attendue }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- If not match(')') Then
- Begin
+ If not match(')') Then Begin
   errrpt('Expected ) after if condition');
   Exit;
  End;
-
- { GÔøΩnÔøΩrer le saut conditionnel }
+  { GÇnÇrer le saut conditionnel }
  else_label := getlabel;
  end_label := getlabel;
-
  ol('CMP  AX, 0');
  ot('JE   ');
  printlabel(else_label);
  nl;
-
- { Analyser l'instruction then (peut ÔøΩtre simple ou composÔøΩe) }
+  { Analyser l'instruction then (peut àtre simple ou composÇe) }
  safe_writeln('; IF then block');
-
- { VÔøΩrifier si on doit lire la ligne suivante pour l'instruction }
+  { VÇrifier si on doit lire la ligne suivante pour l'instruction }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
-
- If not parse_statement Then
- Begin
+ If not parse_statement Then Begin
   errrpt('Expected statement after if condition');
   Exit;
  End;
-
- { VÔøΩrifier la clause else - peut ÔøΩtre sur la ligne suivante }
+  { VÇrifier la clause else - peut àtre sur la ligne suivante }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
-
- If match('else') Then
- Begin
+ If match('else') Then Begin
   { Sauter le bloc else }
   ot('JMP  ');
   printlabel(end_label);
   nl;
-
-  { Bloc else }
+   { Bloc else }
   prelabel(else_label);
   safe_writeln('; ELSE block');
-
-  { VÔøΩrifier si on doit lire la ligne suivante pour l'instruction else }
+   { VÇrifier si on doit lire la ligne suivante pour l'instruction else }
   blanks;
   If (lptr > Length(line)) and (eof = 0) Then readinline;
-
-  If not parse_statement Then
-  Begin
+  If not parse_statement Then Begin
    errrpt('Expected statement after else');
    Exit;
   End;
-
   prelabel(end_label);
  End
- Else
+  Else
  Begin
   prelabel(else_label);
  End;
-
  safe_writeln('; End IF');
 End;
 
@@ -5255,56 +5226,42 @@ Var
  loop_label, end_label: Integer;
 Begin
  parse_while_statement := False;
-
  If not match('while') Then Exit;
  parse_while_statement := True;
-
- { GÔøΩnÔøΩrer les ÔøΩtiquettes de boucle }
+  { GÇnÇrer les Çtiquettes de boucle }
  loop_label := getlabel;
  end_label := getlabel;
-
- { Empiler le contexte de boucle pour break/continue }
+  { Empiler le contexte de boucle pour break/continue }
  push_loop_context(1, end_label, loop_label);
-
- { DÔøΩbut de boucle }
+  { DÇbut de boucle }
  prelabel(loop_label);
  safe_writeln('; WHILE loop start');
-
- { Attendre la parenthÔøΩse ouvrante }
- If not match('(') Then
- Begin
+  { Attendre la parenthäse ouvrante }
+ If not match('(') Then Begin
   errrpt('Expected ( after while');
   Exit;
  End;
-
- { Analyser la condition }
+  { Analyser la condition }
  safe_writeln('; WHILE condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
- If not match(')') Then
-  errrpt('Expected ) after while condition');
-
- { GÔøΩnÔøΩrer le saut conditionnel }
+  { Fermeture de parenthäse attendue }
+ If not match(')') Then errrpt('Expected ) after while condition');
+  { GÇnÇrer le saut conditionnel }
  ol('CMP  AX, 0');
  ot('JE   ');
  printlabel(end_label);
  nl;
-
- { Analyser le corps de la boucle }
+  { Analyser le corps de la boucle }
  safe_writeln('; WHILE body');
  parse_statement;
-
- { Retourner ÔøΩ la condition }
+  { Retourner Ö la condition }
  ot('JMP  ');
  printlabel(loop_label);
  nl;
-
- { ÔøΩtiquette de fin }
+  { êtiquette de fin }
  prelabel(end_label);
  safe_writeln('; End WHILE');
-
- { DÔøΩpiler le contexte de boucle }
+  { DÇpiler le contexte de boucle }
  pop_loop_context;
 End;
 
@@ -5316,131 +5273,104 @@ Var
  saved_lptr: Integer;
 Begin
  parse_for_statement := False;
-
  If not match('for') Then Exit;
  parse_for_statement := True;
-
- { GÔøΩnÔøΩrer les ÔøΩtiquettes de boucle }
+  { GÇnÇrer les Çtiquettes de boucle }
  condition_label := getlabel;
  increment_label := getlabel;
  end_label := getlabel;
-
- { Empiler le contexte de boucle pour break/continue }
+  { Empiler le contexte de boucle pour break/continue }
  push_loop_context(2, end_label, increment_label);
-
  safe_writeln('; FOR loop start');
-
- { Attendre la parenthÔøΩse ouvrante }
+  { Attendre la parenthäse ouvrante }
  If not match('(') Then
  Begin
   errrpt('Expected ( after for');
   Exit;
  End;
-
- { Analyser et ex√©cuter l'initialisation }
+  { Analyser et exÇcuter l'initialisation }
  safe_writeln('; FOR initialization');
  blanks;
- If ch <> ';' Then
- Begin
-  parse_assignment_statement;  { Analyser et exÔøΩcuter l'initialisation }
+ If ch <> ';' Then Begin
+  parse_assignment_statement;  { Analyser et exÇcuter l'initialisation }
  End;
- If not match(';') Then
- Begin
+ If not match(';') Then Begin
   errrpt('Expected ; after for initialization');
   Exit;
  End;
-
- { Sauvegarder la position pour l'analyse de la condition }
+  { Sauvegarder la position pour l'analyse de la condition }
  blanks;
  condition_start := lptr;
-
- { Ignorer la condition pour trouver sa fin }
+  { Ignorer la condition pour trouver sa fin }
  While (ch <> ';') and (ch <> #0) Do gch;
  condition_end := lptr;
- If not match(';') Then
- Begin
+ If not match(';') Then Begin
   errrpt('Expected ; after for condition');
   Exit;
  End;
-
- { Sauvegarder la position pour l'analyse de l'incrÔøΩment }
+  { Sauvegarder la position pour l'analyse de l'incrÇment }
  blanks;
  increment_start := lptr;
-
- { Ignorer l'incrÔøΩment pour trouver sa fin }
+  { Ignorer l'incrÇment pour trouver sa fin }
  While (ch <> ')') and (ch <> #0) Do gch;
  increment_end := lptr;
- If not match(')') Then
- Begin
+ If not match(')') Then Begin
   errrpt('Expected ) after for increment');
   Exit;
  End;
-
- { Sauter vers la vÔøΩrification de la condition }
+  { Sauter vers la vÇrification de la condition }
  ot('JMP  ');
  printlabel(condition_label);
  nl;
-
- { ÔøΩtiquette d'incrÔøΩment - oÔøΩ continue saute }
+  { êtiquette d'incrÇment - oó continue saute }
  prelabel(increment_label);
  safe_writeln('; FOR increment');
-
- { RÔøΩ-analyser et exÔøΩcuter l'incrÔøΩment depuis la position sauvegardÔøΩe }
+  { RÇanalyser et exÇcuter l'incrÇment depuis la position sauvegardÇe }
  saved_lptr := lptr;  { Sauvegarder la position actuelle }
- lptr := increment_start;  { DÔøΩfinir la position au dÔøΩbut de l'incrÔøΩment }
- gch;  { RafraÔøΩchir le caractÔøΩre courant }
- If increment_end > increment_start Then
- Begin
-  parse_assignment_statement;  { Analyser et exÔøΩcuter l'incrÔøΩment }
+ lptr := increment_start;  { DÇfinir la position au dÇbut de l'incrÇment }
+ gch;  { Rafraåchir le caractäre courant }
+ If increment_end > increment_start Then Begin
+  parse_assignment_statement;  { Analyser et exÇcuter l'incrÇment }
  End;
  lptr := saved_lptr;  { Restaurer la position }
- gch;  { RafraÔøΩchir le caractÔøΩre courant }
-
+ gch;  { Rafraåchir le caractäre courant }
  ot('JMP  ');
  printlabel(condition_label);
  nl;
-
- { ÔøΩtiquette de vÔøΩrification de la condition }
+  { êtiquette de vÇrification de la condition }
  prelabel(condition_label);
  safe_writeln('; FOR condition check');
-
- { RÔøΩ-analyser la condition depuis la position sauvegardÔøΩe }
+  { RÇanalyser la condition depuis la position sauvegardÇe }
  saved_lptr := lptr;  { Sauvegarder la position actuelle }
- lptr := condition_start;  { DÔøΩfinir la position au dÔøΩbut de la condition }
- gch;  { RafraÔøΩchir le caractÔøΩre courant }
- If condition_end > condition_start Then
- Begin
+ lptr := condition_start;  { DÇfinir la position au dÇbut de la condition }
+ gch;  { Rafraåchir le caractäre courant }
+ If condition_end > condition_start Then Begin
   expression_bool(lval);  { Analyser la condition }
  End
- Else
+  Else
  Begin
   { Pas de condition = boucle infinie }
   ot('MOV  AX, 1');
   nl;
  End;
  lptr := saved_lptr;  { Restaurer la position }
- gch;  { RafraÔøΩchir le caractÔøΩre courant }
-
- { GÔøΩnÔøΩrer le saut conditionnel vers la fin si faux }
+ gch;  { Rafraåchir le caractäre courant }
+  { GÇnÇrer le saut conditionnel vers la fin si faux }
  ol('CMP  AX, 0');
  ot('JE   ');
  printlabel(end_label);
  nl;
-
- { Analyser le corps de la boucle }
+  { Analyser le corps de la boucle }
  safe_writeln('; FOR body');
  parse_statement;
-
- { Sauter vers l'incrÔøΩment }
+  { Sauter vers l'incrÇment }
  ot('JMP  ');
  printlabel(increment_label);
  nl;
-
- { ÔøΩtiquette de fin - oÔøΩ break saute }
+  { êtiquette de fin - oó break saute }
  prelabel(end_label);
  safe_writeln('; End FOR');
-
- { DÔøΩpiler le contexte de boucle }
+  { DÇpiler le contexte de boucle }
  pop_loop_context;
 End;
 
@@ -5450,49 +5380,36 @@ Var
  loop_label, condition_label, end_label: Integer;
 Begin
  parse_do_while_statement := False;
-
  If not match('do') Then Exit;
  parse_do_while_statement := True;
-
- { GÔøΩnÔøΩrer les ÔøΩtiquettes de boucle }
+  { GÇnÇrer les Çtiquettes de boucle }
  loop_label := getlabel;
  condition_label := getlabel;
  end_label := getlabel;
-
- { Empiler le contexte de boucle pour break/continue }
- { push_loop_context(3, end_label, condition_label); }
-
- { DÔøΩbut de boucle }
+  { Empiler le contexte de boucle pour break/continue }
+  { push_loop_context(3, end_label, condition_label); }
+  { DÇbut de boucle }
  prelabel(loop_label);
  safe_writeln('; DO-WHILE loop start');
-
- { Analyser le corps de la boucle }
+  { Analyser le corps de la boucle }
  parse_statement;
-
- { Expect while }
- If not match('while') Then
- Begin
+  { while attendue }
+ If not match('while') Then Begin
   errrpt('Expected while after do body');
   Exit;
  End;
-
- { Attendre la parenthÔøΩse ouvrante }
- If not match('(') Then
- Begin
+  { Attendre la parenthäse ouvrante }
+ If not match('(') Then Begin
   errrpt('Expected ( after while');
   Exit;
  End;
-
- { Analyser la condition }
+  { Analyser la condition }
  prelabel(condition_label);
  safe_writeln('; DO-WHILE condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
- If not match(')') Then
-  errrpt('Expected ) after while condition');
-
- { Expect semicolon }
+  { Parenthäse fermer attendue }
+ If not match(')') Then errrpt('Expected ) after while condition');
+  { Expect semicolon }
  If not match(';') Then
   errrpt('Expected ; after do-while');
 
