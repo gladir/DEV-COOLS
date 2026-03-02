@@ -2562,65 +2562,54 @@ Begin
    array_elem_size := 2;
    If current_token = '[' Then Begin
     NextToken; { Consommer '[' }
-
-    { Borne inf√©rieure: nombre ou constante }
-    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
-    Begin
+     { Borne infÇrieure: nombre ou constante }
+    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
      array_low := current_value;
      NextToken;
     End
-    Else If current_symbol = SYM_UNKNOWN Then
-    Begin
+     Else
+    If current_symbol = SYM_UNKNOWN Then Begin
      const_idx := FindSymbol(current_token);
      If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
       array_low := symbol_table[const_idx]^.value
      Else
-      Error('Borne inf√©rieure invalide: ' + current_token);
+      Error('Borne infÇrieure invalide: ' + current_token);
      NextToken;
     End
     Else
-     Error('Attendu borne inf√©rieure du tableau');
-
-    { Consommer '..' (deux SYM_DOT cons√©cutifs) }
+     Error('Attendu borne infÇrieure du tableau');
+     { Consommer '..' (deux SYM_DOT consÇcutifs) }
     If current_symbol = SYM_DOT Then NextToken;
     If current_symbol = SYM_DOT Then NextToken;
-
-    { Borne sup√©rieure: nombre ou constante }
-    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
-    Begin
+     { Borne supÇrieure: nombre ou constante }
+    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
      array_high := current_value;
      NextToken;
     End
-    Else If current_symbol = SYM_UNKNOWN Then
-    Begin
+     Else
+    If current_symbol = SYM_UNKNOWN Then Begin
      const_idx := FindSymbol(current_token);
      If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
       array_high := symbol_table[const_idx]^.value
      Else
-      Error('Borne sup√©rieure invalide: ' + current_token);
+      Error('Borne supÇrieure invalide: ' + current_token);
      NextToken;
     End
-    Else
-     Error('Attendu borne sup√©rieure du tableau');
-
-    { Consommer ']' }
+     Else
+    Error('Attendu borne supÇrieure du tableau');
+     { Consommer ']' }
     If current_token = ']' Then
      NextToken
     Else
-     Error('Attendu ] apr√®s bornes du tableau');
+     Error('Attendu ] apräs bornes du tableau');
    End
-   Else
-    Error('Attendu [ apr√®s ARRAY');
-
-   { Consommer OF }
-   If Accept(SYM_OF) Then
-    NextToken
-   Else
-    Error('Attendu OF apr√®s Array[...]');
-
-   { Lire le type des √©l√©ments et d√©terminer sa taille }
-   If current_symbol = SYM_UNKNOWN Then
-   Begin
+    Else
+   Error('Attendu [ apräs ARRAY');
+    { Consommer OF }
+   If Accept(SYM_OF)Then NextToken
+                    Else Error('Attendu OF apräs Array[...]');
+    { Lire le type des ÇlÇments et dÇterminer sa taille }
+   If current_symbol = SYM_UNKNOWN Then Begin
     type_name := UpperCase(current_token);
     If (type_name = 'INTEGER') or (type_name = 'WORD') Then array_elem_size := 2
     Else If (type_name = 'BYTE') or (type_name = 'CHAR') or (type_name = 'BOOLEAN') Then array_elem_size := 1
@@ -2629,10 +2618,9 @@ Begin
     Else If (type_name = 'FILE') Then array_elem_size := 128
     Else
     Begin
-     { Pointeur ou type d√©fini par l'utilisateur = 2 octets sur 8086 }
+      { Pointeur ou type dÇfini par l'utilisateur = 2 octets sur 8086 }
      const_idx := FindSymbol(type_name);
-     If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_TYPE) Then
-     Begin
+     If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_TYPE) Then Begin
       Case symbol_table[const_idx]^.data_type of
        TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN: array_elem_size := 1;
        TYPE_TEXT: array_elem_size := 256;
@@ -2642,20 +2630,19 @@ Begin
       End;
      End
      Else
-      array_elem_size := 2; { Par d√©faut: mot 16 bits }
+      array_elem_size := 2; { Par dÇfaut: mot 16 bits }
     End;
     NextToken;
    End
-   Else
-    Error('Attendu type d''√©l√©ment apr√®s OF');
-
+    Else
+   Error('Attendu type d''ÇlÇment apräs OF');
    var_type := TYPE_ARRAY;
-   { string_size contient le nombre total d'octets du tableau }
+    { string_size contient le nombre total d'octets du tableau }
    string_size := (array_high - array_low + 1) * array_elem_size;
-   If string_size <= 0 Then string_size := 2; { S√©curit√© }
+   If string_size <= 0 Then string_size := 2; { SÇcuritÇ }
   End
-  Else If current_symbol = SYM_UNKNOWN Then
-  Begin
+   Else
+  If current_symbol = SYM_UNKNOWN Then Begin
    type_name := UpperCase(current_token);
    If type_name = 'INTEGER' Then var_type := TYPE_INTEGER
    Else If type_name = 'BYTE' Then var_type := TYPE_BYTE
@@ -2665,37 +2652,33 @@ Begin
    Else If type_name = 'BOOLEAN' Then var_type := TYPE_BOOLEAN
    Else If type_name = 'TEXT' Then var_type := TYPE_TEXT
    Else If type_name = 'FILE' Then var_type := TYPE_FILE
-   Else
+    Else
    Begin
-    { V√©rifier si c'est un type d√©fini par l'utilisateur }
+    { VÇrifier si c'est un type dÇfini par l'utilisateur }
     sym_index := FindSymbol(type_name);
-    If (sym_index > 0) and (symbol_table[sym_index]^.symbol_type = SYM_TYPE) Then
-    Begin
-     { C'est un type d√©fini par l'utilisateur }
+    If (sym_index > 0) and (symbol_table[sym_index]^.symbol_type = SYM_TYPE) Then Begin
+     { C'est un type dÇfini par l'utilisateur }
      var_type := symbol_table[sym_index]^.data_type;
     End
-    Else
+     Else
     Begin
      Error('Type inconnu: ' + type_name);
      var_type := TYPE_INTEGER;
     End;
    End;
    NextToken;
-
-   { Parser la taille optionnelle de STRING: String[255] ou String[MA_CONSTANTE] }
-   string_size := 255; { Taille par d√©faut }
-   If (var_type = TYPE_STRING) and (current_token = '[') Then
-   Begin
+    { Analyser la taille optionnelle de STRING: String[255] ou String[MA_CONSTANTE] }
+   string_size := 255; { Taille par dÇfaut }
+   If (var_type = TYPE_STRING) and (current_token = '[') Then Begin
     NextToken; { Consommer '[' }
-    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
-    Begin
-     { Taille num√©rique litt√©rale }
+    If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
+     { Taille numÇrique littÇrale }
      string_size := current_value;
      NextToken;
     End
-    Else If current_symbol = SYM_UNKNOWN Then
-    Begin
-     { Taille d√©finie par une constante }
+     Else
+    If current_symbol = SYM_UNKNOWN Then Begin
+     { Taille dÇfinie par une constante }
      const_idx := FindSymbol(current_token);
      If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
       string_size := symbol_table[const_idx]^.value
@@ -2703,37 +2686,30 @@ Begin
       Error('Taille de STRING invalide: ' + current_token);
      NextToken;
     End
-    Else
-     Error('Attendu taille num√©rique ou constante apr√®s String[');
-    If current_token = ']' Then
-     NextToken
-    Else
-     Error('Attendu ] apr√®s taille de STRING');
+     Else
+     Error('Attendu taille numÇrique ou constante apräs String[');
+    If current_token = ']' Then NextToken
+                           Else Error('Attendu ] apräs taille de STRING');
    End;
   End
-  Else
+   Else
   Begin
    Error('Attendu type de variable');
    var_type := TYPE_INTEGER;
   End;
-
-  { Ajouter les variables √† la table des symboles }
-  For i := 1 to var_count do
-  Begin
+   { Ajouter les variables Ö la table des symboles }
+  For i := 1 to var_count do Begin
    sym_index := AddSymbol(var_names[i], SYM_VAR, var_type, STORAGE_GLOBAL);
    If sym_index > 0 Then
     GenerateVariableDeclaration(var_names[i], var_type, string_size);
   End;
-
-  { Attendre le point-virgule }
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; apr√®s d√©claration de variable');
+   { Attendre le point-virgule }
+  If current_token = ';' Then NextToken
+                         Else Error('Attendu ; apräs dÇclaration de variable');
  End;
 End;
 
-{ Parser les d√©clarations de types }
+ { Analyser les dÇclarations de types }
 Procedure ParseTypeDeclarations;
 Var
  type_name: String;
@@ -2745,74 +2721,54 @@ Var
  type_name_field: String;
  i: Integer;
  current_offset: Integer;
- sym_index: Integer;  { Variable manquante ajout√©e }
+ sym_index: Integer;  { Variable manquante ajoutÇe }
  field_string_size: Integer; { Taille STRING du champ courant }
  const_idx: Integer;         { Index pour chercher une constante }
 Begin
  NextToken; { Consommer TYPE }
-
- While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
- Begin
-  { Lire le nom du type }
-  If current_symbol = SYM_UNKNOWN Then
-  Begin
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do Begin
+   { Lire le nom du type }
+  If current_symbol = SYM_UNKNOWN Then Begin
    type_name := current_token;
    NextToken;
   End
-  Else
+   Else
   Begin
    Error('Attendu nom de type');
    Break;
   End;
-
-  { Attendre le signe = }
-  If current_token = '=' Then
-   NextToken
-  Else
-   Error('Attendu = apr√®s nom de type');
-
-  { V√©rifier si c'est un RECORD }
-  If Accept(SYM_RECORD) Then
-  Begin
+   { Attendre le signe = }
+  If current_token = '=' Then NextToken
+                         Else Error('Attendu = apräs nom de type');
+   { VÇrifier si c'est un RECORD }
+  If Accept(SYM_RECORD) Then Begin
    NextToken; { Consommer RECORD }
-
-   { Cr√©er le type record dans la table des symboles }
-   record_index := AddRecord(type_name, 0); { Taille calcul√©e plus tard }
+    { CrÇer le type record dans la table des symboles }
+   record_index := AddRecord(type_name, 0); { Taille calculÇe plus tard }
    current_offset := 0;
-
-   { Lire les champs du record }
-   While not Accept(SYM_END) and (current_char <> #0) do
-   Begin
+    { Lire les champs du record }
+   While not Accept(SYM_END) and (current_char <> #0) do Begin
     { Lire les noms de champs }
     field_count := 0;
     Repeat
-     If current_symbol = SYM_UNKNOWN Then
-     Begin
+     If current_symbol = SYM_UNKNOWN Then Begin
       Inc(field_count);
       field_names[field_count] := current_token;
       NextToken;
      End
-     Else
+      Else
      Begin
       Error('Attendu nom de champ');
       Break;
      End;
-
-     If current_token = ',' Then
-      NextToken
-     Else
-      Break;
+     If current_token = ',' Then NextToken
+                            Else Break;
     Until False;
-
-    { Attendre le deux-points }
-    If current_token = ':' Then
-     NextToken
-    Else
-     Error('Attendu : apr√®s nom de champ');
-
-    { Lire le type du champ }
-    If current_symbol = SYM_UNKNOWN Then
-    Begin
+     { Attendre le deux-points }
+    If current_token = ':' Then NextToken
+                           Else Error('Attendu : apräs nom de champ');
+     { Lire le type du champ }
+    If current_symbol = SYM_UNKNOWN Then Begin
      type_name_field := UpperCase(current_token);
      If type_name_field = 'INTEGER' Then field_type := TYPE_INTEGER
      Else If type_name_field = 'BYTE' Then field_type := TYPE_BYTE
@@ -2822,25 +2778,22 @@ Begin
      Else If type_name_field = 'BOOLEAN' Then field_type := TYPE_BOOLEAN
      Else If type_name_field = 'TEXT' Then field_type := TYPE_TEXT
      Else If type_name_field = 'FILE' Then field_type := TYPE_FILE
-     Else
+      Else
      Begin
       Error('Type de champ inconnu: ' + type_name_field);
       field_type := TYPE_INTEGER;
      End;
      NextToken;
-
-     { Parser la taille optionnelle de STRING: String[255] ou String[MA_CONST] }
+      { Analyser la taille optionnelle de STRING: String[255] ou String[MA_CONST] }
      field_string_size := 255; { Taille par d√©faut }
-     If (field_type = TYPE_STRING) and (current_token = '[') Then
-     Begin
+     If (field_type = TYPE_STRING) and (current_token = '[') Then Begin
       NextToken; { Consommer '[' }
-      If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
-      Begin
+      If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
        field_string_size := current_value;
        NextToken;
       End
-      Else If current_symbol = SYM_UNKNOWN Then
-      Begin
+       Else
+      If current_symbol = SYM_UNKNOWN Then Begin
        const_idx := FindSymbol(current_token);
        If (const_idx > 0) and (symbol_table[const_idx]^.symbol_type = SYM_CONST) Then
         field_string_size := symbol_table[const_idx]^.value
@@ -2849,11 +2802,11 @@ Begin
        NextToken;
       End
       Else
-       Error('Attendu taille num√©rique ou constante apr√®s String[');
+       Error('Attendu taille numÇrique ou constante apräs String[');
       If current_token = ']' Then
        NextToken
       Else
-       Error('Attendu ] apr√®s taille de STRING');
+       Error('Attendu ] apräs taille de STRING');
      End;
     End
     Else
@@ -2861,13 +2814,10 @@ Begin
      Error('Attendu type de champ');
      field_type := TYPE_INTEGER;
     End;
-
-    { Ajouter les champs √† la table des symboles }
-    For i := 1 to field_count do
-    Begin
+     { Ajouter les champs Ö la table des symboles }
+    For i := 1 to field_count do Begin
      AddRecordField(field_names[i], field_type, record_index, current_offset);
-
-     { Calculer l'offset suivant }
+      { Calculer le dÇplacement suivant }
      Case field_type of
       TYPE_INTEGER, TYPE_WORD: Inc(current_offset, 2);
       TYPE_BYTE, TYPE_CHAR, TYPE_BOOLEAN: Inc(current_offset, 1);
@@ -2878,59 +2828,48 @@ Begin
       Inc(current_offset, 2);
      End;
     End;
-
-    { Attendre le point-virgule }
+     { Attendre le point-virgule }
     If current_token = ';' Then
      NextToken
     Else If not Accept(SYM_END) Then
-     Error('Attendu ; apr√®s d√©claration de champ');
+     Error('Attendu ; apräs dÇclaration de champ');
    End;
-
-   { Consommer END }
-   If Accept(SYM_END) Then
-    NextToken
-   Else
-    Error('Attendu END apr√®s d√©claration de RECORD');
-
-   { Mettre √† jour la taille du record }
-   If record_index > 0 Then
-    symbol_table[record_index]^.record_size := current_offset;
+    { Consommer END }
+   If Accept(SYM_END)Then NextToken
+                     Else Error('Attendu END apräs dÇclaration de RECORD');
+    { Mettre Ö jour la taille du record }
+   If record_index > 0 Then symbol_table[record_index]^.record_size := current_offset;
   End
-  { V√©rifier si c'est un type ARRAY }
-  Else If Accept(SYM_ARRAY) Then
-  Begin
+   { VÇrifier si c'est un type ARRAY }
+   Else
+  If Accept(SYM_ARRAY) Then Begin
    NextToken; { Consommer ARRAY }
-
-   { Pour l'instant, on traite les arrays comme des types simples }
-   { TODO: Impl√©menter le parsing complet des arrays }
-   While (current_token <> ';') and (current_char <> #0) do
-    NextToken;
-
-   { Cr√©er un type array basique }
+    { Pour l'instant, on traite les arrays comme des types simples }
+    { ImplÇmenter l'analyse complet des tableaux }
+   While (current_token <> ';') and (current_char <> #0) do NextToken;
+    { CrÇer un type array simple }
    AddSymbol(type_name, SYM_TYPE, TYPE_ARRAY, STORAGE_GLOBAL);
   End
-  { V√©rifier si c'est un type POINTEUR : PType = ^AutreType }
-  Else If current_token = '^' Then
-  Begin
+   { VÇrifier si c'est un type POINTEUR : PType = ^AutreType }
+   Else
+  If current_token = '^' Then Begin
    NextToken; { Consommer '^' }
-   { Lire le nom du type point√© }
-   If current_symbol = SYM_UNKNOWN Then
-   Begin
+   { Lire le nom du type pointÇ }
+   If current_symbol = SYM_UNKNOWN Then Begin
     { Enregistrer comme type pointeur - 2 octets sur 8086 }
     AddSymbol(type_name, SYM_TYPE, TYPE_POINTER, STORAGE_GLOBAL);
-    NextToken; { Consommer le nom du type point√© }
+    NextToken; { Consommer le nom du type pointÇ }
    End
-   Else
+    Else
    Begin
-    Error('Attendu nom de type apr√®s ^');
+    Error('Attendu nom de type apräs ^');
     AddSymbol(type_name, SYM_TYPE, TYPE_POINTER, STORAGE_GLOBAL);
    End;
   End
-  Else
+   Else
   Begin
-   { Type alias - r√©f√©rence √† un autre type }
-   If current_symbol = SYM_UNKNOWN Then
-   Begin
+    { Type alias - rÇfÇrence Ö un autre type }
+   If current_symbol = SYM_UNKNOWN Then Begin
     type_name_field := UpperCase(current_token);
     If type_name_field = 'INTEGER' Then
      AddTypeAlias(type_name, TYPE_INTEGER)
@@ -2950,36 +2889,32 @@ Begin
      AddTypeAlias(type_name, TYPE_FILE)
     Else
     Begin
-     { V√©rifier si c'est une r√©f√©rence √† un type d√©fini }
+     { VÇrifier si c'est une rÇfÇrence Ö un type dÇfini }
      sym_index := FindSymbol(type_name_field);
      If sym_index > 0 Then
       AddTypeAlias(type_name, symbol_table[sym_index]^.data_type)
-     Else
+      Else
      Begin
-      Error('Type de r√©f√©rence inconnu: ' + type_name_field);
+      Error('Type de rÇfÇrence inconnu: ' + type_name_field);
       AddTypeAlias(type_name, TYPE_INTEGER);
      End;
     End;
     NextToken;
    End
-   Else
+    Else
    Begin
-    { Types simples non support√©s pour l'instant }
-    Error('Type non support√©');
-    While (current_token <> ';') and (current_char <> #0) do
-     NextToken;
+    { Types simples non supportÇs pour l'instant }
+    Error('Type non supportÇ');
+    While (current_token <> ';') and (current_char <> #0) do NextToken;
    End;
   End;
-
-  { Attendre le point-virgule final }
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; apr√®s d√©claration de type');
+   { Attendre le point-virgule final }
+  If current_token = ';' Then NextToken
+                         Else Error('Attendu ; apräs dÇclaration de type');
  End;
 End;
 
-{ Parser une d√©claration de fonction }
+ { Analyser une dÇclaration de fonction }
 Procedure ParseFunctionDeclaration;
 Var
  func_name: String;
@@ -2989,38 +2924,27 @@ Var
  begin_count: Integer;
 Begin
  NextToken; { Consommer FUNCTION }
-
- { Lire le nom de la fonction }
- If current_symbol = SYM_UNKNOWN Then
- Begin
+  { Lire le nom de la fonction }
+ If current_symbol = SYM_UNKNOWN Then Begin
   func_name := current_token;
   NextToken;
  End
- Else
+  Else
  Begin
   Error('Attendu nom de fonction');
   Exit;
  End;
-
- { Ignorer les param√®tres pour l'instant }
- If current_token = '(' Then
- Begin
+  { Ignorer les paramätres pour l'instant }
+ If current_token = '(' Then Begin
   NextToken;
-  While (current_token <> ')') and (current_char <> #0) do
-   NextToken;
-  If current_token = ')' Then
-   NextToken;
+  While (current_token <> ')') and (current_char <> #0) do NextToken;
+  If current_token = ')' Then NextToken;
  End;
-
- { Attendre le deux-points pour le type de retour }
- If current_token = ':' Then
-  NextToken
- Else
-  Error('Attendu : apr√®s nom de fonction');
-
- { Lire le type de retour }
- If current_symbol = SYM_UNKNOWN Then
- Begin
+  { Attendre le deux-points pour le type de retour }
+ If current_token = ':' Then NextToken
+                        Else Error('Attendu : apräs nom de fonction');
+  { Lire le type de retour }
+ If current_symbol = SYM_UNKNOWN Then Begin
   type_name := UpperCase(current_token);
   If type_name = 'INTEGER' Then return_type := TYPE_INTEGER
   Else If type_name = 'BYTE' Then return_type := TYPE_BYTE
@@ -3040,120 +2964,93 @@ Begin
   Error('Attendu type de retour');
   return_type := TYPE_INTEGER;
  End;
-
- { Consommer le point-virgule apr√®s le type de retour }
- If current_token = ';' Then
-  NextToken
- Else
-  Error('Attendu ; apr√®s type de retour de fonction');
-
- { V√©rifier si c'est une d√©claration FORWARD }
- If current_symbol = SYM_FORWARD Then
- Begin
+  { Consommer le point-virgule apräs le type de retour }
+ If current_token = ';' Then NextToken
+                        Else Error('Attendu ; apräs type de retour de fonction');
+  { VÇrifier si c'est une dÇclaration FORWARD }
+ If current_symbol = SYM_FORWARD Then Begin
   NextToken; { Consommer FORWARD }
-
-  { Attendre le point-virgule final apr√®s FORWARD }
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; apr√®s FORWARD');
-
-  { Ajouter la fonction √† la table des symboles avec is_forward := True }
+   { Attendre le point-virgule final apräs FORWARD }
+  If current_token = ';' Then NextToken
+                         Else Error('Attendu ; apräs FORWARD');
+   { Ajouter la fonction Ö la table des symboles avec is_forward := True }
   sym_index := AddFunction(func_name, return_type);
-  If sym_index > 0 Then
-  Begin
+  If sym_index > 0 Then Begin
    symbol_table[sym_index]^.is_forward := True;
    symbol_table[sym_index]^.defined := False; { Corps absent jusqu'√† l'impl√©mentation }
   End;
-
-  { Pas de corps √† analyser pour FORWARD, terminer ici }
+   { Pas de corps Ö analyser pour FORWARD, terminer ici }
  End
- Else
+  Else
  Begin
-  { Traitement normal de la fonction - le ; est d√©j√† consomm√© }
-
-  { V√©rifier s'il y a une d√©claration FORWARD existante }
+  { Traitement normal de la fonction - le ; est dÇjÖ consommÇ }
+  { VÇrifier s'il y a une dÇclaration FORWARD existante }
   sym_index := FindSymbol(func_name);
-  If sym_index > 0 Then
-  Begin
-   { V√©rifier si c'est une d√©claration FORWARD }
+  If sym_index > 0 Then Begin
+   { VÇrifier si c'est une dÇclaration FORWARD }
    If symbol_table[sym_index]^.is_forward And
       (symbol_table[sym_index]^.symbol_type = SYM_FUNCTION) And
       (symbol_table[sym_index]^.data_type = return_type) Then
    Begin
-    { Marquer comme impl√©ment√©e }
+    { Marquer comme implÇmentÇe }
     symbol_table[sym_index]^.is_forward := False;
     symbol_table[sym_index]^.defined := True;
    End
    Else
    Begin
-    Error('Red√©finition de fonction: ' + func_name);
+    Error('RedÇfinition de fonction: ' + func_name);
     Exit;
    End;
   End
-  Else
+   Else
   Begin
-   { Ajouter la fonction √† la table des symboles }
+   { Ajouter la fonction Ö la table des symboles }
    sym_index := AddFunction(func_name, return_type);
   End;
-
-  { Configurer l'√©tat pour la fonction }
+   { Configurer l'Çtat pour la fonction }
   current_function_name := UpperCase(func_name);
   current_function_type := return_type;
   in_function := True;
-
-  { √âmettre l'en-t√™te de proc√©dure assembleur }
+   { êmettre l'entàte de procÇdure assembleur }
   StartCodeSection; { Assurer .CODE sans MAIN PROC }
   EmitLine('');
   EmitLine(UpperCase(func_name) + ' PROC');
   EmitLine('    push bp');
   EmitLine('    mov bp, sp');
   EmitLine('');
-
-  { Ignorer toute d√©claration VAR locale }
-  While Accept(SYM_VAR) do
-  Begin
+   { Ignorer toute dÇclaration VAR locale }
+  While Accept(SYM_VAR) do Begin
    NextToken; { Consommer VAR }
    { Ignorer jusqu'au prochain BEGIN }
-   While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do
-    NextToken;
+   While (current_symbol <> SYM_BEGIN) and (current_char <> #0) do NextToken;
   End;
-
-  { Parser le corps de la fonction - pour l'instant on l'ignore mais on compte les BEGIN/END }
-  { Note: CASE...OF...END et RECORD...END comptent aussi comme blocs ouvrants }
-  If Accept(SYM_BEGIN) Then
-  Begin
+   { Parser le corps de la fonction - pour l'instant on l'ignore mais on compte les BEGIN/END }
+   { Note: CASE...OF...END et RECORD...END comptent aussi comme blocs ouvrants }
+  If Accept(SYM_BEGIN) Then Begin
    NextToken; { Consommer BEGIN }
-
    begin_count := 1;
-   While (begin_count > 0) and (current_char <> #0) do
-   Begin
+   While (begin_count > 0) and (current_char <> #0) do Begin
     If Accept(SYM_BEGIN) or Accept(SYM_CASE) or Accept(SYM_RECORD) Then
      Inc(begin_count)
     Else If Accept(SYM_END) Then
      Dec(begin_count);
-
     NextToken;
    End;
   End;
-
-  { Attendre le point-virgule final }
-  If current_token = ';' Then
-   NextToken;
-
-  { √âmettre l'√©pilogue de la fonction }
+   { Attendre le point-virgule final }
+  If current_token = ';' Then NextToken;
+   { êmettre l'Çpilogue de la fonction }
   EmitLine('');
   EmitLine('    pop bp');
   EmitLine('    ret');
   EmitLine(UpperCase(func_name) + ' ENDP');
-
-  { R√©initialiser l'√©tat }
+   { RÇinitialiser l'Çtat }
   current_function_name := '';
   in_function := False;
  End;
 End;
 
-{ Parser une d√©claration de proc√©dure }
+ { Analyser une dÇclaration de procÇdure }
 Procedure ParseProcedureDeclaration;
 Var
  proc_name: String;
@@ -3163,100 +3060,75 @@ Var
 Begin
  NextToken; { Consommer PROCEDURE }
  is_interrupt := False;
-
- { Lire le nom de la proc√©dure }
- If current_symbol = SYM_UNKNOWN Then
- Begin
+  { Lire le nom de la procÇdure }
+ If current_symbol = SYM_UNKNOWN Then Begin
   proc_name := current_token;
   NextToken;
  End
- Else
+  Else
  Begin
-  Error('Attendu nom de proc√©dure');
+  Error('Attendu nom de procÇdure');
   Exit;
  End;
-
- { Ignorer les param√®tres pour l'instant }
- If current_token = '(' Then
- Begin
+  { Ignorer les paramätres pour l'instant }
+ If current_token = '(' Then Begin
   NextToken;
-  While (current_token <> ')') and (current_char <> #0) do
-   NextToken;
-  If current_token = ')' Then
-   NextToken;
+  While (current_token <> ')') and (current_char <> #0) do NextToken;
+  If current_token = ')' Then NextToken;
  End;
-
- { V√©rifier si c'est une proc√©dure d'interruption }
- If UpperCase(current_token) = 'INTERRUPT' Then
- Begin
+  { VÇrifier si c'est une procÇdure d'interruption }
+ If UpperCase(current_token) = 'INTERRUPT' Then Begin
   is_interrupt := True;
   NextToken; { Consommer INTERRUPT }
  End;
-
- { Consommer le point-virgule apr√®s la signature }
+  { Consommer le point-virgule apräs la signature }
  If current_token = ';' Then
   NextToken
  Else
   Error('Attendu ; apr√®s signature de proc√©dure');
-
- { V√©rifier si c'est une d√©claration FORWARD }
- If current_symbol = SYM_FORWARD Then
- Begin
+ { VÇrifier si c'est une dÇclaration FORWARD }
+ If current_symbol = SYM_FORWARD Then Begin
   NextToken; { Consommer FORWARD }
-
-  { Attendre le point-virgule final apr√®s FORWARD }
-  If current_token = ';' Then
-   NextToken
-  Else
-   Error('Attendu ; apr√®s FORWARD');
-
-  { Ajouter la proc√©dure √† la table des symboles avec is_forward := True }
-  If is_interrupt Then
-   sym_index := AddInterrupt(proc_name)
-  Else
-   sym_index := AddProcedure(proc_name);
-
-  If sym_index > 0 Then
-  Begin
+   { Attendre le point-virgule final apräs FORWARD }
+  If current_token = ';' Then NextToken
+                         Else Error('Attendu ; apräs FORWARD');
+   { Ajouter la procÇdure Ö la table des symboles avec is_forward := True }
+  If is_interrupt Then sym_index := AddInterrupt(proc_name)
+                  Else sym_index := AddProcedure(proc_name);
+  If sym_index > 0 Then Begin
    symbol_table[sym_index]^.is_forward := True;
-   symbol_table[sym_index]^.defined := False; { Corps absent jusqu'√† l'impl√©mentation }
+   symbol_table[sym_index]^.defined := False; { Corps absent jusqu'Ö l'implÇmentation }
   End;
-
-  { Pas de corps √† analyser pour FORWARD, terminer ici }
+   { Pas de corps Ö analyser pour FORWARD, terminer ici }
  End
- Else
+  Else
  Begin
-  { Traitement normal de la proc√©dure - le ; est d√©j√† consomm√© }
-
-  { V√©rifier s'il y a une d√©claration FORWARD existante }
+  { Traitement normal de la procÇdure - le ; est dÇjÖ consommÇ }
+  { VÇrifier s'il y a une dÇclaration FORWARD existante }
   sym_index := FindSymbol(proc_name);
-  If sym_index > 0 Then
-  Begin
-   { V√©rifier si c'est une d√©claration FORWARD }
+  If sym_index > 0 Then Begin
+   { VÇrifier si c'est une dÇclaration FORWARD }
    If symbol_table[sym_index]^.is_forward And
       ((symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE) Or
        (symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT)) Then
    Begin
-    { Marquer comme impl√©ment√©e }
+     { Marquer comme implÇmentÇe }
     symbol_table[sym_index]^.is_forward := False;
     symbol_table[sym_index]^.defined := True;
    End
-   Else
+    Else
    Begin
-    Error('Red√©finition de proc√©dure: ' + proc_name);
+    Error('RedÇfinition de procÇdure: ' + proc_name);
     Exit;
    End;
   End
-  Else
-  Begin
-   { Ajouter la proc√©dure √† la table des symboles }
-   If is_interrupt Then
-    sym_index := AddInterrupt(proc_name)
    Else
-    sym_index := AddProcedure(proc_name);
+  Begin
+   { Ajouter la procÇdure Ö la table des symboles }
+   If is_interrupt Then sym_index := AddInterrupt(proc_name)
+                   Else sym_index := AddProcedure(proc_name);
   End;
-
-  { Configurer l'√©tat pour la proc√©dure }
+   { Configurer l'Çtat pour la procÇdure }
   current_function_name := UpperCase(proc_name);
   current_function_type := TYPE_INTEGER; { Pas utilis√© }
   in_function := True; { Utilise le m√™me flag pour les proc√©dures }

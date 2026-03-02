@@ -4838,7 +4838,6 @@ Begin
     End
     Else If c = '<' Then
     Begin
-      { Subscript de tableau : inclure tout jusqu'au '>' correspondant }
       depth := 1;
       s := s + c;
       Inc(lex_pos);
