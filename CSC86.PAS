@@ -405,11 +405,11 @@ Const
   CSC86_DATE    = '2026-03-02';
 
   { --- Limites des tables principales --- }
-  MAX_SYM    = 512;    { Symboles (variables locales + globales + params)  }
-  MAX_FUNC   = 128;    { Methodes statiques                                }
-  MAX_LIT    = 256;    { Litteraux de chaine distincts                     }
-  MAX_PARAM  = 16;     { Parametres max par methode                        }
-  MAX_LOCAL  = 32;     { Variables locales max par methode                 }
+  MAX_SYM    = {$IFDEF FPC}512{$ELSE}128{$ENDIF};    { Symboles (variables locales + globales + params)  }
+  MAX_FUNC   = {$IFDEF FPC}128{$ELSE}16{$ENDIF};    { Methodes statiques                                }
+  MAX_LIT    = {$IFDEF FPC}256{$ELSE}128{$ENDIF};    { Litteraux de chaine distincts                     }
+  MAX_PARAM  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};     { Parametres max par methode                        }
+  MAX_LOCAL  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};     { Variables locales max par methode                 }
   MAX_FWDREF = 256;    { Forward references de labels a resoudre           }
 
   { --- Limites du lexeur --- }
@@ -1868,13 +1868,614 @@ Begin
 End;
 
 { ============================================================================
-  TODO 05 ... 25 : a implementer
+  TODO 05 - GENERATION DE L'EN-TETE ET DU SEGMENT .STACK
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenFileHeader : emettre l'en-tete de fichier ASM (commentaires + version).
+  -------------------------------------------------------------------------- }
+Procedure GenFileHeader;
+Begin
+  EmitComment('=========================================================');
+  EmitComment('Fichier genere par CSC86 v' + CSC86_VERSION);
+  EmitComment('Source : ' + src_fname);
+  EmitComment('=========================================================');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenModelDirectives : directives MASM modele memoire SMALL 16 bits.
+  -------------------------------------------------------------------------- }
+Procedure GenModelDirectives;
+Begin
+  Emit('        .8086');
+  Emit('        DOSSEG');
+  Emit('        .MODEL  SMALL');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStackSegment : segment STACK de 512 octets (256 DW ?).
+  -------------------------------------------------------------------------- }
+Procedure GenStackSegment;
+Begin
+  EmitComment('----- Segment STACK -----');
+  Emit('        .STACK  512');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenMacroDefs : emettre les macros MASM utiles (optionnel).
+  On definit PRINTLN et PRINT comme alias sur les routines runtime.
+  -------------------------------------------------------------------------- }
+Procedure GenMacroDefs;
+Begin
+  EmitComment('----- Macros -----');
+  { Macro EXIT_DOS : terminer le programme via INT 21h AH=4Ch }
+  Emit('EXIT_DOS        MACRO');
+  Emit('                MOV     AH, 4Ch');
+  Emit('                INT     21h');
+  Emit('                ENDM');
+  EmitBlank;
+  { Macro INIT_DS : initialiser DS au debut de Main }
+  Emit('INIT_DS         MACRO');
+  Emit('                MOV     AX, @DATA');
+  Emit('                MOV     DS, AX');
+  Emit('                ENDM');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenHeader : point d'entree de la phase 2 — emettre tout ce qui precede
+  les segments DATA et CODE.
+  Ordre MASM standard :
+    1. En-tete commentaires
+    2. .8086 / DOSSEG / .MODEL SMALL
+    3. Macros
+    4. .STACK
+  -------------------------------------------------------------------------- }
+Procedure GenHeader;
+Begin
+  GenFileHeader;
+  GenModelDirectives;
+  GenMacroDefs;
+  GenStackSegment;
+End;
+
+{ ============================================================================
+  TODO 06 - GENERATION DU SEGMENT .DATA
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  TypeSizeWords : nombre de DW alloues pour un type donne.
+  -------------------------------------------------------------------------- }
+Function TypeSizeWords(vt : TValueKind; arr_size : Integer) : Integer;
+Begin
+  Case vt Of
+    VK_ARRAY  : TypeSizeWords := arr_size;   { N DW pour arr[N] }
+    VK_STRING : TypeSizeWords := 2;          { ptr + len }
+  Else
+    TypeSizeWords := 1;                      { int / bool / char }
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenOneGlobalVar : emettre la reservation de donnees pour un symbole global.
+  -------------------------------------------------------------------------- }
+Procedure GenOneGlobalVar(i : Integer);
+Var lbl  : TString;
+    vt   : TValueKind;
+    n    : Integer;
+Begin
+  lbl := sym_table^[i].asm_label;
+  vt  := sym_table^[i].vtype;
+  n   := sym_table^[i].arr_size;
+  Case vt Of
+    VK_INT, VK_BOOL, VK_CHAR :
+      Begin
+        EmitDW(lbl, '0');
+      End;
+    VK_ARRAY :
+      Begin
+        If n <= 0 Then n := 1;
+        EmitDW(lbl, IntToStr(n) + ' DUP(0)');
+      End;
+    VK_STRING :
+      Begin
+        { descripteur vide : ptr=0, len=0 }
+        EmitDW(lbl, '0, 0');
+      End;
+  Else
+    EmitComment('(variable de type inconnu : ' + lbl + ')');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenGlobalVarsData : emettre toutes les variables globales SC_GLOBAL.
+  -------------------------------------------------------------------------- }
+Procedure GenGlobalVarsData;
+Var i : Integer;
+Begin
+  If sym_count = 0 Then Exit;
+  EmitComment('----- Variables globales -----');
+  For i := 1 To sym_count Do
+    If (sym_table^[i].scope = SC_GLOBAL) And
+       (sym_table^[i].kind  = SK_VAR) Then
+      GenOneGlobalVar(i);
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenLiteralsData : emettre les chaines litterales et leurs descripteurs.
+  Format :
+    _SL_n    DB   'texte', 0
+    _SLD_n   DW   OFFSET _SL_n, longueur
+  -------------------------------------------------------------------------- }
+Procedure GenLiteralsData;
+Var i : Integer;
+Begin
+  If lit_count = 0 Then Exit;
+  EmitComment('----- Litteraux de chaines -----');
+  For i := 1 To lit_count Do
+    EmitDBStr(lit_table^[i].asm_data, lit_table^[i].asm_desc,
+              lit_table^[i].val);
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenSystemVarsData : variables systeme utilisees par le runtime CSC86.
+
+  _CS86_CRLF    DB  0Dh, 0Ah        ; retour chariot + saut de ligne
+  _CS86_CRLFLEN DW  2                ; longueur du CRLF
+  _CS86_INBUF   DB  128 DUP(0)      ; buffer d'entree console (ReadLine)
+  _CS86_INLEN   DW  0               ; longueur effective apres ReadLine
+  _CS86_ITOA    DB  8 DUP(0)        ; buffer de conversion int -> string
+  _CS86_TRUES   DB  'True', 0       ; chaine statique 'True'
+  _CS86_TRUED   DW  OFFSET _CS86_TRUES, 4
+  _CS86_FALSES  DB  'False', 0      ; chaine statique 'False'
+  _CS86_FALSED  DW  OFFSET _CS86_FALSES, 5
+  _CS86_NULLS   DB  0               ; chaine vide (null)
+  _CS86_NULLD   DW  OFFSET _CS86_NULLS, 0
+  -------------------------------------------------------------------------- }
+Procedure GenSystemVarsData;
+Begin
+  EmitComment('----- Variables systeme CSC86 -----');
+
+  { CRLF }
+  EmitDB('_CS86_CRLF',    '0Dh, 0Ah');
+  EmitDW('_CS86_CRLFLEN', '2');
+  EmitBlank;
+
+  { Buffer de saisie console }
+  EmitDB('_CS86_INBUF',   '128 DUP(0)');
+  EmitDW('_CS86_INLEN',   '0');
+  EmitBlank;
+
+  { Buffer de conversion entier -> chaine }
+  EmitDB('_CS86_ITOA',    '8 DUP(0)');
+  EmitBlank;
+
+  { Chaine 'True' }
+  EmitDB('_CS86_TRUES',   '''True'', 0');
+  EmitDW('_CS86_TRUED',   'OFFSET _CS86_TRUES, 4');
+  EmitBlank;
+
+  { Chaine 'False' }
+  EmitDB('_CS86_FALSES',  '''False'', 0');
+  EmitDW('_CS86_FALSED',  'OFFSET _CS86_FALSES, 5');
+  EmitBlank;
+
+  { Chaine nulle (null / "") }
+  EmitDB('_CS86_NULLS',   '0');
+  EmitDW('_CS86_NULLD',   'OFFSET _CS86_NULLS, 0');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataSegment : emettre le segment .DATA complet (passe 2).
+  Ordre :
+    1. Directive .DATA
+    2. Variables globales utilisateur
+    3. Litteraux de chaines
+    4. Variables systeme
+  -------------------------------------------------------------------------- }
+Procedure GenDataSegment;
+Begin
+  EmitSep;
+  EmitComment('Segment de donnees');
+  EmitSep;
+  Emit('        .DATA');
+  EmitBlank;
+  GenGlobalVarsData;
+  GenLiteralsData;
+  GenSystemVarsData;
+  EmitBlank;
+End;
+
+{ ============================================================================
+  TODO 07 - PARSER : DECLARATIONS DE TYPES ET VARIABLES
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Utilitaires d'erreur / avertissement
+  -------------------------------------------------------------------------- }
+Procedure ParseError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn('Erreur (ligne ', lex_lineno, ') : ', msg);
+End;
+
+Procedure ParseWarn(Const msg : TString);
+Begin
+  Inc(warn_count);
+  WriteLn('Attention (ligne ', lex_lineno, ') : ', msg);
+End;
+
+{ --------------------------------------------------------------------------
+  IsTypeKeyword : vrai si le token est un mot-cle de type de base.
+  Reconnu : int  bool  char  string  void
+  -------------------------------------------------------------------------- }
+Function IsTypeKeyword(Const t : TToken) : Boolean;
+Begin
+  IsTypeKeyword := (t.kind = TK_KEYWORD) And
+    ( (t.val = 'int')    Or (t.val = 'bool') Or
+      (t.val = 'char')   Or (t.val = 'string') Or
+      (t.val = 'void') );
+End;
+
+{ --------------------------------------------------------------------------
+  KeywordToValueKind : convertir un mot-cle de type en TValueKind.
+  -------------------------------------------------------------------------- }
+Function KeywordToValueKind(Const kw : TString) : TValueKind;
+Begin
+  If      kw = 'int'    Then KeywordToValueKind := VK_INT
+  Else If kw = 'bool'   Then KeywordToValueKind := VK_BOOL
+  Else If kw = 'char'   Then KeywordToValueKind := VK_CHAR
+  Else If kw = 'string' Then KeywordToValueKind := VK_STRING
+  Else If kw = 'void'   Then KeywordToValueKind := VK_VOID
+  Else                       KeywordToValueKind := VK_UNDEF;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTypeSpec : lire un specif. de type et retourner vt + is_array.
+  Syntaxe : type_kw [ '[]' ]
+  Ex :  int          -> vt=VK_INT,  is_array=False
+        int[]        -> vt=VK_INT,  is_array=True
+        string[]     -> vt=VK_STRING, is_array=True
+  Retourne True si un type a ete reconnu, False sinon.
+  Consomme le token type (et '[]' si present).
+  -------------------------------------------------------------------------- }
+Function ParseTypeSpec(Var vt : TValueKind; Var is_array : Boolean) : Boolean;
+Var t  : TToken;
+    t2, t3 : TToken;
+Begin
+  t := LexPeek;
+  If Not IsTypeKeyword(t) Then
+  Begin
+    ParseTypeSpec := False;
+    vt       := VK_UNDEF;
+    is_array := False;
+    Exit;
+  End;
+  LexNext;                        { consommer le mot-cle }
+  vt       := KeywordToValueKind(t.val);
+  is_array := False;
+
+  { Detect '[]' : le lexeur emet '[' puis ']' comme deux tokens TK_PUNCT }
+  t2 := LexPeek;
+  If (t2.kind = TK_PUNCT) And (t2.val = '[') Then
+  Begin
+    t3 := LexPeek;  { on ne peut regarder qu'un token en avance avec LexPeek }
+    { On avance avec LexNext pour obtenir le token suivant le '[' }
+    LexNext;        { consommer '[' }
+    t3 := LexPeek;
+    If (t3.kind = TK_PUNCT) And (t3.val = ']') Then
+    Begin
+      LexNext;      { consommer ']' }
+      is_array := True;
+      If vt = VK_STRING Then vt := VK_ARRAY  { string[] non supporte pour l'instant }
+      Else                    vt := VK_ARRAY;
+    End
+    Else
+      ParseError('] attendu apres [ dans le type tableau');
+  End;
+  ParseTypeSpec := True;
+End;
+
+{ --------------------------------------------------------------------------
+  SkipToSemicolon : en cas d'erreur, avancer jusqu'au prochain ';' ou EOF.
+  -------------------------------------------------------------------------- }
+Procedure SkipToSemicolon;
+Var t : TToken;
+Begin
+  Repeat
+    t := LexNext;
+  Until (t.kind = TK_EOF) Or
+        ((t.kind = TK_PUNCT) And (t.val = ';'));
+End;
+
+{ --------------------------------------------------------------------------
+  ParseConstIntExpr : evaluer une expression constante entiere simple
+  au moment de la compilation. Formes supportees :
+    integer_literal | char_literal | ( expr ) | -expr | +expr
+    et operations binaires + - * / entre ceux-ci.
+  Retourne la valeur calculee ou 0 en cas d'erreur.
+  -------------------------------------------------------------------------- }
+Function ParseConstIntExpr : LongInt;
+Var t   : TToken;
+    v   : LongInt;
+    lhs : LongInt;
+    op  : TString;
+Begin
+  t := LexPeek;
+
+  { Parenthese }
+  If (t.kind = TK_PUNCT) And (t.val = '(') Then
+  Begin
+    LexNext;
+    v := ParseConstIntExpr;
+    LexExpect(')');
+    ParseConstIntExpr := v;
+    Exit;
+  End;
+
+  { Unaire - }
+  If (t.kind = TK_OP) And (t.val = '-') Then
+  Begin
+    LexNext;
+    ParseConstIntExpr := -ParseConstIntExpr;
+    Exit;
+  End;
+
+  { Unaire + }
+  If (t.kind = TK_OP) And (t.val = '+') Then
+  Begin
+    LexNext;
+    ParseConstIntExpr := ParseConstIntExpr;
+    Exit;
+  End;
+
+  { Literal entier }
+  If t.kind = TK_INT Then
+  Begin
+    LexNext;
+    lhs := t.int_val;
+    { Operateurs binaires }
+    t := LexPeek;
+    While (t.kind = TK_OP) And
+          ((t.val = '+') Or (t.val = '-') Or
+           (t.val = '*') Or (t.val = '/') Or (t.val = '%')) Do
+    Begin
+      op := t.val;
+      LexNext;
+      v := ParseConstIntExpr;
+      If op = '+' Then lhs := lhs + v
+      Else If op = '-' Then lhs := lhs - v
+      Else If op = '*' Then lhs := lhs * v
+      Else If op = '/' Then
+      Begin
+        If v <> 0 Then lhs := lhs Div v
+        Else begin ParseError('Division par zero dans expression constante'); lhs := 0; end;
+      End
+      Else If op = '%' Then
+      Begin
+        If v <> 0 Then lhs := lhs Mod v
+        Else begin ParseError('Modulo par zero dans expression constante'); lhs := 0; end;
+      End;
+      t := LexPeek;
+    End;
+    ParseConstIntExpr := lhs;
+    Exit;
+  End;
+
+  { Literal char -> valeur ordinale }
+  If t.kind = TK_CHAR Then
+  Begin
+    LexNext;
+    If Length(t.val) > 0 Then
+      ParseConstIntExpr := Ord(t.val[1])
+    Else
+      ParseConstIntExpr := 0;
+    Exit;
+  End;
+
+  { true / false }
+  If (t.kind = TK_KEYWORD) And (t.val = 'true')  Then begin LexNext; ParseConstIntExpr := 1; Exit; end;
+  If (t.kind = TK_KEYWORD) And (t.val = 'false') Then begin LexNext; ParseConstIntExpr := 0; Exit; end;
+
+  ParseError('Expression constante attendue, trouve : ' + t.val);
+  ParseConstIntExpr := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseConstDecl : 'const type ident = expr ;'
+  Ajoute le symbole SK_CONST dans la table avec sa valeur evaluee.
+  -------------------------------------------------------------------------- }
+Procedure ParseConstDecl(is_global : Boolean);
+Var vt       : TValueKind;
+    is_arr   : Boolean;
+    name     : TString;
+    cval     : LongInt;
+    sc       : TScope;
+    idx      : Integer;
+    t        : TToken;
+Begin
+  LexExpect('const');           { consommer 'const' }
+  If Not ParseTypeSpec(vt, is_arr) Then
+  Begin
+    ParseError('Type attendu apres ''const''');
+    SkipToSemicolon;
+    Exit;
+  End;
+  If is_arr Then
+  Begin
+    ParseError('Les tableaux constants ne sont pas supportes');
+    SkipToSemicolon;
+    Exit;
+  End;
+  t := LexExpectKind(TK_IDENT);
+  name := t.val;
+  LexExpect('=');
+  cval := ParseConstIntExpr;
+  LexExpect(';');
+
+  If is_global Then sc := SC_GLOBAL Else sc := SC_LOCAL;
+  idx := AddSym(name, SK_CONST, vt, sc);
+  If idx > 0 Then
+    sym_table^[idx].const_val := cval;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseVarDecl : 'type ident [= expr] ;'  ou  'type[] ident = new type[N] ;'
+
+  Formes supportees :
+    int x;
+    int x = 5;         (* initialisation par litterale, const ou -litterale *)
+    bool b = true;
+    string s = "...";
+    int[] arr = new int[10];
+    char[] buf = new char[32];
+
+  Consomme jusqu'au ';'.
+  -------------------------------------------------------------------------- }
+Procedure ParseVarDecl(is_global : Boolean);
+Var vt       : TValueKind;
+    vt2      : TValueKind;
+    is_arr   : Boolean;
+    isar2    : Boolean;
+    name     : TString;
+    sc       : TScope;
+    idx      : Integer;
+    arr_size : Integer;
+    t        : TToken;
+    init_val : LongInt;
+    has_init : Boolean;
+Begin
+  If Not ParseTypeSpec(vt, is_arr) Then
+  Begin
+    ParseError('Type attendu dans declaration de variable');
+    SkipToSemicolon;
+    Exit;
+  End;
+  t := LexExpectKind(TK_IDENT);
+  name := t.val;
+
+  arr_size := 0;
+  has_init := False;
+  init_val := 0;
+
+  { Verifier si un symbole de meme nom existe deja dans la portee }
+  If FindSym(name) > 0 Then
+    ParseWarn('Redeclaration de : ' + name);
+
+  t := LexPeek;
+  If (t.kind = TK_OP) And (t.val = '=') Then
+  Begin
+    LexNext;   { consommer '=' }
+    t := LexPeek;
+
+    If is_arr Then
+    Begin
+      { 'new type[N]' }
+      If (t.kind = TK_KEYWORD) And (t.val = 'new') Then
+      Begin
+        LexNext;   { 'new' }
+        { type de base du tableau }
+        If Not ParseTypeSpec(vt2, isar2) Then
+          ParseError('Type attendu apres ''new''');
+        LexExpect('[');
+        arr_size := ParseConstIntExpr;
+        LexExpect(']');
+        If arr_size <= 0 Then
+        Begin
+          ParseError('Taille de tableau invalide : ' + IntToStr(arr_size));
+          arr_size := 1;
+        End;
+      End
+      Else
+        ParseError('''new'' attendu dans l''initialisation de tableau');
+    End
+    Else
+    Begin
+      { Initialisation scalaire : expression constante simple }
+      has_init := True;
+      init_val := ParseConstIntExpr;
+    End;
+  End
+  Else If is_arr Then
+  Begin
+    ParseError('Les tableaux doivent etre initialises : ' + name);
+    SkipToSemicolon;
+    Exit;
+  End;
+
+  LexExpect(';');
+
+  { Enregistrer le symbole }
+  If is_global Then sc := SC_GLOBAL Else sc := SC_LOCAL;
+
+  If is_arr Then
+    idx := AddLocalVar(name, VK_ARRAY, arr_size)
+  Else If is_global Then
+    idx := AddGlobalVar(name, vt)
+  Else
+    idx := AddLocalVar(name, vt, 0);
+
+  If (idx > 0) And has_init And (Not is_arr) Then
+    sym_table^[idx].const_val := init_val;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseParamList : '( [ type id (* , type id *) ] )'
+  Enregistre les parametres dans func_table^[func_idx].
+  -------------------------------------------------------------------------- }
+Procedure ParseParamList(func_idx : Integer);
+Var vt     : TValueKind;
+    is_arr : Boolean;
+    name   : TString;
+    t      : TToken;
+    old    : Integer;
+Begin
+  old := cur_func_idx;
+  cur_func_idx := func_idx;
+
+  LexExpect('(');
+  t := LexPeek;
+  If (t.kind = TK_PUNCT) And (t.val = ')') Then
+  Begin
+    LexNext;   { liste vide }
+    cur_func_idx := old;
+    Exit;
+  End;
+
+  Repeat
+    If Not ParseTypeSpec(vt, is_arr) Then
+    Begin
+      ParseError('Type attendu dans la liste de parametres');
+      Break;
+    End;
+    t := LexExpectKind(TK_IDENT);
+    name := t.val;
+    AddParam(name, vt);
+    t := LexPeek;
+    If (t.kind = TK_PUNCT) And (t.val = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+
+  LexExpect(')');
+  cur_func_idx := old;
+End;
+
+{ ============================================================================
+  TODO 08 ... 25 : a implementer
   ============================================================================ }
 
 BEGIN
   InitTables;
   scope_level := 0;
   WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 05-25 non implementes)');
+  WriteLn('(TODO 08-25 non implementes)');
   FreeTables;
 END.

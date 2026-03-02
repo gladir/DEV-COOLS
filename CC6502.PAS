@@ -386,7 +386,7 @@ Var
  asmtype: Integer;
  use_stdout: Boolean;
 
-{ Dï¿½clarations anticipï¿½es }
+{ D‚clarations anticip‚es }
 Procedure init_type_info(var type_info: TTypeInfo); forward;
 Function parse_type_specifier: Integer; forward;
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
@@ -394,27 +394,27 @@ Function parse_storage_class_specifier: Integer; forward;
 Function parse_enum_type: Integer; forward;
 Function readinline: Boolean; forward;
 
-{ DÃ©clarations anticipÃ©es pour typedef }
+{ D‚clarations anticip‚es pour typedef }
 Function find_typedef(typedef_name: String): PSymbol; forward;
 Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol; forward;
 Function parse_typedef_declaration: Boolean; forward;
 Function resolve_typedef_type(typedef_name: String; var resolved_type: TTypeInfo): Boolean; forward;
 
-{ Fonctions hï¿½ritï¿½es - plus nï¿½cessaires avec la table de symboles basï¿½e sur la mï¿½moire de tas }
+{ Fonctions h‚rit‚es - plus n‚cessaires avec la table de symboles bas‚e sur la m‚moire de tas }
 Function startglb: Integer;Begin
- startglb := 1; { Commence ï¿½ 1 pour rï¿½server 0 comme valeur "non trouvï¿½" }
+ startglb := 1; { Commence … 1 pour r‚server 0 comme valeur "non trouv‚" }
 End;
 
 Function endglb: Integer;Begin
- endglb := 1000; { Valeur fictive pour la compatibilitï¿½ }
+ endglb := 1000; { Valeur fictive pour la compatibilit‚ }
 End;
 
 Function startloc: Integer;Begin
- startloc := 1000; { Valeur fictive pour la compatibilitï¿½ }
+ startloc := 1000; { Valeur fictive pour la compatibilit‚ }
 End;
 
 Function endloc: Integer;Begin
- endloc := 2000; { Valeur fictive pour la compatibilitï¿½ }
+ endloc := 2000; { Valeur fictive pour la compatibilit‚ }
 End;
 
  { Fonctions utilitaires }
@@ -441,12 +441,12 @@ Function numeric(ch: Char): Boolean;Begin
  numeric := ch in ['0'..'9'];
 End;
 
- { Utilitaires de chaine de caractï¿½res }
+ { Utilitaires de chaine de caractŠres }
 Function streq(s1, s2: String): Boolean;Begin
  streq := s1 = s2;
 End;
 
- { Fonctions d'entrï¿½e/sortie }
+ { Fonctions d'entr‚e/sortie }
 Function ch:Char;Begin
  If lptr <= Length(line) Then ch := line[lptr]
                          Else ch := #0;
@@ -465,14 +465,14 @@ Procedure kill;Begin
  lptr := Length(line) + 1;
 End;
 
-{ Fonctions d'ï¿½criture de fichier sï¿½curisï¿½es }
+ { Fonctions d'‚criture de fichier s‚curis‚es }
 Function is_output_ready: Boolean;Begin
- { Retourne toujours vrai car nous gï¿½rons la vï¿½rification de fichier ailleurs }
+ { Retourne toujours vrai car nous g‚rons la v‚rification de fichier ailleurs }
  is_output_ready := True;
 End;
 
 Procedure safe_write(s: String);Begin
- { Utilise toujours stdout pour l'instant pour ï¿½viter les problï¿½mes de fichier }
+ { Utilise toujours stdout pour l'instant pour ‚viter les problŠmes de fichier }
  Write(s);
 End;
 
@@ -489,22 +489,23 @@ Function convert_to_6502(instruction: String): String;
 Var
   result_str: String;
 Begin
- { Convertir les instructions 6809 vers 6502 }
+  { Convertir les instructions 6809 vers 6502 }
  result_str := instruction;
-
- { Instructions partielles communes }
- if instruction = 'ldd  #' then begin
+  { Instructions partielles communes }
+ If instruction = 'ldd  #' Then Begin
   result_str := 'lda #';  { Conversion simple : ldd # â†’ lda # }
- end
- else if instruction = 'std  ' then begin
-  result_str := 'sta ';   { Conversion simple : std â†’ sta }
- end
- else if instruction = 'rts' then begin
+ End
+  Else
+ If instruction = 'std  ' Then Begin
+  result_str := 'sta ';   { Conversion simple : std … sta }
+ End
+  Else
+ If instruction = 'rts' Then Begin
   result_str := 'rts';    { rts est identique sur 6502 }
- end
-
- { Instructions de pile complÃ¨tes }
- else if pos('pshs a', instruction) > 0 then begin
+ End
+  { Instructions de pile complŠtes }
+  Else
+ If pos('pshs a', instruction) > 0 then begin
   result_str := 'pha  ; pshs a';
  end
  else if pos('pshs b', instruction) > 0 then begin
