@@ -1530,5 +1530,296 @@ Begin
  IsKeyword := KW_NONE;
 End;
 
+{ ============================================================================ }
+{ TODO 04 - TABLE DES SYMBOLES ET DES FORMS              [COMPLET]            }
+{ ============================================================================ }
+
+{ Initialise toutes les tables (symboles, formes, chaines) }
+Procedure InitSymTable;
+Var i, j: Integer;
+Begin
+ sym_count  := 0;
+ form_count := 0;
+ str_count  := 0;
+ For i := 1 to MAX_SYM do
+ Begin
+  sym_table[i].name        := '';
+  sym_table[i].asm_label   := '';
+  sym_table[i].data_type   := TYPE_UNKNOWN;
+  sym_table[i].store_class := STORE_STATIC;
+  sym_table[i].bp_offset   := 0;
+  sym_table[i].array_size  := 0;
+  sym_table[i].char_len    := 1;
+  sym_table[i].dec_prec    := 0;
+  sym_table[i].dec_scale   := 0;
+  sym_table[i].is_param    := False;
+  sym_table[i].param_idx   := 0;
+  sym_table[i].param_kind  := PARAM_USING;
+  sym_table[i].init_str    := '';
+  sym_table[i].init_num    := 0;
+  sym_table[i].has_init    := False;
+  sym_table[i].is_const    := False;
+  sym_table[i].scope_lev   := 0;
+ End;
+ For i := 1 to MAX_FORM do
+ Begin
+  form_table[i].name           := '';
+  form_table[i].asm_label      := '';
+  form_table[i].param_count    := 0;
+  form_table[i].using_count    := 0;
+  form_table[i].changing_count := 0;
+  form_table[i].tables_count   := 0;
+  form_table[i].defined        := False;
+  form_table[i].is_function    := False;
+  For j := 1 to MAX_PARAM do
+  Begin
+   form_table[i].param_names[j] := '';
+   form_table[i].param_kinds[j] := PARAM_USING;
+   form_table[i].param_types[j] := TYPE_UNKNOWN;
+  End;
+ End;
+ For i := 1 to MAX_STR do
+ Begin
+  str_table[i].text      := '';
+  str_table[i].asm_label := '';
+ End;
+End;
+
+{ ---- Recherche dans la table des symboles ----
+  Cherche de la fin vers le debut pour respecter la portee la plus proche. }
+Function FindSym(Const name: String): Integer;
+Var i: Integer; u: String;
+Begin
+ u := UpCaseStr(name);
+ For i := sym_count DownTo 1 do
+  If sym_table[i].name = u Then Begin FindSym := i; Exit; End;
+ FindSym := 0;
+End;
+
+{ ---- Recherche uniquement dans le scope courant ---- }
+Function FindSymLocal(Const name: String): Integer;
+Var i: Integer; u: String; lev: Integer;
+Begin
+ u   := UpCaseStr(name);
+ lev := scope_top;
+ For i := sym_count DownTo 1 do
+  If (sym_table[i].name = u) And (sym_table[i].scope_lev = lev) Then
+  Begin FindSymLocal := i; Exit; End;
+ FindSymLocal := 0;
+End;
+
+{ ---- Ajout d'un symbole dans la table ----
+  Retourne l'index (1-base) du nouveau symbole, ou 0 si la table est pleine. }
+Function AddSym(Const name: String; dt, sc: Integer): Integer;
+Var u: String;
+Begin
+ u := UpCaseStr(name);
+ If sym_count >= MAX_SYM Then
+ Begin Error('Table des symboles pleine'); AddSym := 0; Exit; End;
+ Inc(sym_count);
+ sym_table[sym_count].name        := u;
+ sym_table[sym_count].asm_label   := AsmIdent('_VAR_', u);
+ sym_table[sym_count].data_type   := dt;
+ sym_table[sym_count].store_class := sc;
+ sym_table[sym_count].bp_offset   := 0;
+ sym_table[sym_count].array_size  := 0;
+ sym_table[sym_count].char_len    := 1;
+ sym_table[sym_count].dec_prec    := 0;
+ sym_table[sym_count].dec_scale   := 0;
+ sym_table[sym_count].is_param    := False;
+ sym_table[sym_count].param_idx   := 0;
+ sym_table[sym_count].param_kind  := PARAM_USING;
+ sym_table[sym_count].init_str    := '';
+ sym_table[sym_count].init_num    := 0;
+ sym_table[sym_count].has_init    := False;
+ sym_table[sym_count].is_const    := False;
+ sym_table[sym_count].scope_lev   := scope_top;
+ AddSym := sym_count;
+End;
+
+{ ---- Recherche dans la table des FORMs / FUNCTIONs ---- }
+Function FindForm(Const name: String): Integer;
+Var i: Integer; u: String;
+Begin
+ u := UpCaseStr(name);
+ For i := 1 to form_count do
+  If form_table[i].name = u Then Begin FindForm := i; Exit; End;
+ FindForm := 0;
+End;
+
+{ ---- Ajout d'une entree FORM / FUNCTION ----
+  Si la FORM existe deja (forward reference), retourne l'index existant. }
+Function AddForm(Const name: String): Integer;
+Var u: String; existing: Integer;
+Begin
+ u        := UpCaseStr(name);
+ existing := FindForm(u);
+ If existing > 0 Then Begin AddForm := existing; Exit; End;
+ If form_count >= MAX_FORM Then
+ Begin Error('Table des FORMs pleine'); AddForm := 0; Exit; End;
+ Inc(form_count);
+ form_table[form_count].name           := u;
+ form_table[form_count].asm_label      := AsmIdent('_ABAP_FORM_', u);
+ form_table[form_count].param_count    := 0;
+ form_table[form_count].using_count    := 0;
+ form_table[form_count].changing_count := 0;
+ form_table[form_count].tables_count   := 0;
+ form_table[form_count].defined        := False;
+ form_table[form_count].is_function    := False;
+ AddForm := form_count;
+End;
+
+{ ---- Declarer les variables systeme ABAP (SY-xxx) ----
+  Appellee au debut de la compilation, avant tout parsage.
+  Ces variables sont globales TYPE I (word) en .DATA.               }
+Procedure DeclSysVars;
+Var idx: Integer;
+
+ Procedure DeclSY(Const nm: String; dt: Integer);
+ Begin
+  idx := AddSym(nm, dt, STORE_STATIC);
+  If idx > 0 Then
+  Begin
+   sym_table[idx].asm_label := AsmIdent('_SY_', Copy(nm, 4, 255));
+   sym_table[idx].has_init  := True;
+   sym_table[idx].init_num  := 0;
+  End;
+ End;
+
+Begin
+ DeclSY('SY-SUBRC',  TYPE_I);   { code retour dernier SELECT/CALL }
+ DeclSY('SY-TABIX',  TYPE_I);   { index courant dans LOOP AT      }
+ DeclSY('SY-DBCNT',  TYPE_I);   { nb lignes SQL affectees         }
+ DeclSY('SY-INDEX',  TYPE_I);   { compteur DO TIMES               }
+ DeclSY('SY-LANGU',  TYPE_C);   { langue (stub = 'F')             }
+ DeclSY('SY-MANDT',  TYPE_C);   { mandant (stub = '000')          }
+ DeclSY('SY-DATUM',  TYPE_D);   { date systeme (stub)             }
+ DeclSY('SY-UZEIT',  TYPE_T);   { heure systeme (stub)            }
+ DeclSY('SY-UNAME',  TYPE_C);   { nom utilisateur (stub)          }
+End;
+
+{ ============================================================================ }
+{ TODO 05 - GESTION DES SCOPES                           [COMPLET]            }
+{ ============================================================================ }
+
+{ Initialise la pile de scopes : scope 0 = global REPORT }
+Procedure InitScopes;
+Begin
+ scope_top := 0;
+ scope_stack[0].kind      := SK_GLOBAL;
+ scope_stack[0].form_idx  := 0;
+ scope_stack[0].bp_top    := 0;
+ scope_stack[0].sym_start := 1;
+ scope_stack[0].sym_end   := 0;
+ scope_stack[0].lbl_exit  := '';
+ scope_stack[0].lbl_cont  := '';
+ scope_stack[0].lbl_end   := '';
+End;
+
+{ Empile un nouveau scope.
+  kind     : SK_GLOBAL / SK_FORM / SK_BLOCK / SK_LOOP / SK_EVENT
+  form_idx : index dans form_table si SK_FORM, sinon 0               }
+Procedure EnterScope(kind: Integer; form_idx: Integer);
+Begin
+ If scope_top >= MAX_DEPTH Then
+ Begin Error('Trop d''imbrications de scopes'); Exit; End;
+ Inc(scope_top);
+ scope_stack[scope_top].kind      := kind;
+ scope_stack[scope_top].form_idx  := form_idx;
+ scope_stack[scope_top].bp_top    := 0;           { repart a 0 en local }
+ scope_stack[scope_top].sym_start := sym_count + 1;
+ scope_stack[scope_top].sym_end   := sym_count;
+ scope_stack[scope_top].lbl_exit  := '';
+ scope_stack[scope_top].lbl_cont  := '';
+ scope_stack[scope_top].lbl_end   := '';
+End;
+
+{ Depile le scope courant.
+  Attention : ne depile jamais le scope global (niveau 0).            }
+Procedure LeaveScope;
+Begin
+ If scope_top = 0 Then Begin Error('LeaveScope hors scope'); Exit; End;
+ scope_stack[scope_top].sym_end := sym_count;
+ Dec(scope_top);
+End;
+
+{ Retourne la profondeur BP courante (valeur negative pour variables locales) }
+Function CurrentBpTop: Integer;
+Begin
+ CurrentBpTop := scope_stack[scope_top].bp_top;
+End;
+
+{ Reserve n octets sur la pile locale (decremente bp_top).
+  Retourne l'offset BP du nouvel emplacement (negatif).              }
+Function AllocLocalBp(bytes: Integer): Integer;
+Begin
+ Dec(scope_stack[scope_top].bp_top, bytes);
+ AllocLocalBp := scope_stack[scope_top].bp_top;
+End;
+
+{ ---- Setters / Getters de labels de scope ---- }
+
+{ Definit le label de sortie du scope courant (EXIT -> JMP lbl_exit) }
+Procedure SetExitLabel(Const lbl: String);
+Begin scope_stack[scope_top].lbl_exit := lbl; End;
+
+{ Definit le label de continuation (CONTINUE -> JMP lbl_cont) }
+Procedure SetContLabel(Const lbl: String);
+Begin scope_stack[scope_top].lbl_cont := lbl; End;
+
+{ Definit le label de fin de bloc (ENDLOOP/ENDDO/ENDWHILE) }
+Procedure SetEndLabel(Const lbl: String);
+Begin scope_stack[scope_top].lbl_end := lbl; End;
+
+{ Retourne le label EXIT du scope le plus proche qui en a un.
+  Remonte la pile jusqu'a trouver un lbl_exit non vide.               }
+Function CurrentExitLabel: String;
+Var i: Integer;
+Begin
+ For i := scope_top DownTo 0 do
+  If scope_stack[i].lbl_exit <> '' Then
+  Begin CurrentExitLabel := scope_stack[i].lbl_exit; Exit; End;
+ CurrentExitLabel := '';
+End;
+
+{ Retourne le label CONTINUE du scope de boucle le plus proche }
+Function CurrentContLabel: String;
+Var i: Integer;
+Begin
+ For i := scope_top DownTo 0 do
+  If scope_stack[i].lbl_cont <> '' Then
+  Begin CurrentContLabel := scope_stack[i].lbl_cont; Exit; End;
+ CurrentContLabel := '';
+End;
+
+{ Retourne le label END du scope de boucle le plus proche }
+Function CurrentEndLabel: String;
+Var i: Integer;
+Begin
+ For i := scope_top DownTo 0 do
+  If scope_stack[i].lbl_end <> '' Then
+  Begin CurrentEndLabel := scope_stack[i].lbl_end; Exit; End;
+ CurrentEndLabel := '';
+End;
+
+{ Vrai si on se trouve a l'interieur d'une FORM (SK_FORM quelque part) }
+Function InForm: Boolean;
+Var i: Integer;
+Begin
+ For i := scope_top DownTo 1 do
+  If scope_stack[i].kind = SK_FORM Then Begin InForm := True; Exit; End;
+ InForm := False;
+End;
+
+{ Retourne l'index de la FORM englobante, ou 0 si pas dans une FORM }
+Function CurrentFormIdx: Integer;
+Var i: Integer;
+Begin
+ For i := scope_top DownTo 1 do
+  If scope_stack[i].kind = SK_FORM Then
+  Begin CurrentFormIdx := scope_stack[i].form_idx; Exit; End;
+ CurrentFormIdx := 0;
+End;
+
 Begin
 End.
