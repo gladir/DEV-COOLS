@@ -189,6 +189,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>COBOL86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur COBOL pour 8086/8088.</td>
+		</tr>
+		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
