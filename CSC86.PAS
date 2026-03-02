@@ -5464,7 +5464,482 @@ Begin
 End;
 
 { ============================================================================
-  TODO 18 ... 25 : a implementer
+  TODO 18 - CODEGEN : FONCTIONS ET APPELS
+  ============================================================================
+  GenFunctionPrologue / GenFunctionEpilogue / GenInlineCall / ParseArgList
+  sont deja implantes (TODO 10 / 08). Ce TODO ajoute les helpers
+  complementaires : push d'arguments types, appels directs/indirects,
+  appel recursif, nettoyage de pile, resolution de reference forward.
+  Convention : near cdecl, caller cleanup.
+    int/bool/char -> AX
+    string        -> AX=ptr, DX=len
+    void          -> rien
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenPushArgInt : pousser un entier/bool/char (deja dans AX) sur la pile.
+  -------------------------------------------------------------------------- }
+Procedure GenPushArgInt;
+Begin
+  EmitI1('PUSH', 'AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenPushArgString : pousser un descripteur string (AX=ptr, DX=len).
+  Ordre sur pile (cdecl gauche->droite) : PUSH DX puis PUSH AX.
+  Le callee voit [BP+4]=ptr, [BP+6]=len (premier arg string).
+  -------------------------------------------------------------------------- }
+Procedure GenPushArgString;
+Begin
+  EmitI1('PUSH', 'DX');    { len en premier (adresse haute) }
+  EmitI1('PUSH', 'AX');    { ptr }
+End;
+
+{ --------------------------------------------------------------------------
+  GenPushArgByType : dispatcher selon le type de l'argument.
+  Retourne le nombre de mots pousses (1 pour scalaire, 2 pour string).
+  -------------------------------------------------------------------------- }
+Function GenPushArgByType(vt : TValueKind) : Integer;
+Begin
+  If vt = VK_STRING Then
+  Begin
+    GenPushArgString;
+    GenPushArgByType := 2;
+  End
+  Else
+  Begin
+    GenPushArgInt;
+    GenPushArgByType := 1;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCleanupArgs : nettoyage des arguments apres un appel (caller cleanup).
+  n_words = nombre total de mots (pas d'octets) empiles.
+  Si n_words=0 : rien a emettre.
+  -------------------------------------------------------------------------- }
+Procedure GenCleanupArgs(n_words : Integer);
+Begin
+  If n_words > 0 Then
+    EmitI1('ADD', 'SP, ' + IntToStr(n_words * 2));
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallDirect : CALL vers le label ASM d'une methode connue (fi>0).
+  N'emettre pas le nettoyage : appeler GenCleanupArgs ensuite.
+  -------------------------------------------------------------------------- }
+Procedure GenCallDirect(fi : Integer);
+Begin
+  EmitI1('CALL', func_table^[fi].asm_label);
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallAndCleanup : CALL + ADD SP, n_words*2.
+  Equivalent de GenInlineCall (deja implante) mais avec nom explicite.
+  -------------------------------------------------------------------------- }
+Procedure GenCallAndCleanup(fi : Integer; n_words : Integer);
+Begin
+  GenCallDirect(fi);
+  GenCleanupArgs(n_words);
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallByLabel : appeler une methode par son label brut (forward ou
+  externe). Pas de nettoyage integre.
+  -------------------------------------------------------------------------- }
+Procedure GenCallByLabel(Const func_lbl : TString);
+Begin
+  EmitI1('CALL', func_lbl);
+End;
+
+{ --------------------------------------------------------------------------
+  GenRecursiveCall : appel recursif a la methode courante (cur_func_idx).
+  Precondition : les arguments ont deja ete pousses.
+  Pas de nettoyage integre.
+  -------------------------------------------------------------------------- }
+Procedure GenRecursiveCall;
+Begin
+  If cur_func_idx > 0 Then
+    EmitI1('CALL', func_table^[cur_func_idx].asm_label)
+  Else
+    ParseError('GenRecursiveCall : aucune methode courante');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallFullExpr : evaluer une liste d'arguments et appeler une methode.
+  Sequence : pour chaque arg (gauche -> droite) : ParseExpr + GenPushArgByType
+             puis CALL label + ADD SP, total_words*2.
+  Retourne le type de retour de la methode.
+  fi = index dans func_table (doit etre > 0).
+  -------------------------------------------------------------------------- }
+Function GenCallFullExpr(fi : Integer) : TValueKind;
+Var n_words : Integer;
+    n_args  : Integer;
+    i       : Integer;
+    vt      : TValueKind;
+    t       : TToken;
+Begin
+  { On reevalue les arguments a partir du token courant '(' }
+  n_words := 0;
+  n_args  := func_table^[fi].param_count;
+  LexExpect('(');
+  t := LexPeek;
+  If Not ((t.kind = TK_PUNCT) And (t.val = ')')) Then
+  Begin
+    i := 0;
+    Repeat
+      vt := ParseExpr;
+      n_words := n_words + GenPushArgByType(vt);
+      Inc(i);
+      t := LexPeek;
+      If (t.kind = TK_PUNCT) And (t.val = ',') Then
+        LexNext
+      Else
+        Break;
+    Until (i >= n_args) Or (t.kind = TK_EOF);
+  End;
+  LexExpect(')');
+  GenCallDirect(fi);
+  GenCleanupArgs(n_words);
+  GenCallFullExpr := func_table^[fi].return_type;
+End;
+
+{ --------------------------------------------------------------------------
+  GenSaveReturnRegs : avant un PUSH dans le corps d'une expression qui
+  fait un appel intermediaire, sauver AX (et DX pour string) si necessaire.
+  Utile pour eviter que les registres de retour ne soient ecrases.
+  -------------------------------------------------------------------------- }
+Procedure GenSaveReturnInt;
+Begin
+  EmitI1('PUSH', 'AX');
+End;
+
+Procedure GenRestoreReturnInt;
+Begin
+  EmitI1('POP', 'AX');
+End;
+
+Procedure GenSaveReturnString;
+Begin
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'AX');
+End;
+
+Procedure GenRestoreReturnString;
+Begin
+  EmitI1('POP', 'AX');
+  EmitI1('POP', 'DX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCastReturnToBool : apres un appel qui retourne un entier,
+  normaliser en 0/1 : TEST AX,AX / SETNE AL (ou sequence equivalente).
+  -------------------------------------------------------------------------- }
+Procedure GenCastReturnToBool;
+Var lbl_t, lbl_e : TString;
+Begin
+  lbl_t := NewLabel;
+  lbl_e := NewLabel;
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  lbl_t);
+  EmitI1('MOV',  'AX, 0');
+  EmitI1('JMP',  lbl_e);
+  EmitLabel(lbl_t);
+  EmitI1('MOV',  'AX, 1');
+  EmitLabel(lbl_e);
+End;
+
+{ --------------------------------------------------------------------------
+  GenFunctionPublicLabel : emettre PUBLIC + label de la methode.
+  Appele avant de generer le corps d'une methode publique / statique.
+  -------------------------------------------------------------------------- }
+Procedure GenFunctionPublicLabel(fi : Integer);
+Begin
+  EmitPublic(func_table^[fi].asm_label);
+  EmitLabel(func_table^[fi].asm_label);
+End;
+
+{ --------------------------------------------------------------------------
+  GenFunctionExternDecl : emettre EXTRN pour une methode externe.
+  Permet d'appeler du code assembleur externe sans le definir.
+  -------------------------------------------------------------------------- }
+Procedure GenFunctionExternDecl(fi : Integer);
+Begin
+  EmitExtern(func_table^[fi].asm_label + ' : NEAR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullMethodBody : generer le corps complet d'une methode deja parsee.
+  Sequence :
+    PUBLIC label / label: / GenFunctionPrologue / corps / GenReturnLabel
+    puis GenFunctionEpilogue.
+  Ce dispatcher est appele par ParseMethodDecl (TODO 10).
+  -------------------------------------------------------------------------- }
+Procedure GenFullMethodOpen(fi : Integer);
+Begin
+  GenFunctionPublicLabel(fi);
+  GenFunctionPrologue(fi);
+End;
+
+Procedure GenFullMethodClose(fi : Integer);
+Begin
+  GenReturnLabel(fi);
+  GenFunctionEpilogue(fi);
+End;
+
+{ ============================================================================
+  TODO 19 - RUNTIME : ARITHMETIQUE ET CONVERSIONS
+  ============================================================================
+  Chaque procedure GenRt* emet une routine runtime 8086 dans le segment CODE.
+  Convention : near cdecl, caller cleanup ; BP frame pour acces aux params.
+  Registres preserves : BP, BX, CX, SI, DI (sauf pour les valeurs de retour).
+  Params : sur pile, [BP+4]=arg1, [BP+6]=arg2.
+  Retour  : AX (scalaire) ou AX=ptr / DX=len (string).
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenRtImul : _RT_IMUL - multiplication signee 16x16 -> 16 bits.
+  Params  : aucun - operandes dans AX et BX avant l'appel inline.
+  Usage   : GenArith emet directement IMUL BX; cette routine est un alias
+  visible en tant que label si besoin d'appel indirects.
+  AX = AX * BX (partie basse 16 bits) ; DX = partie haute (overflow).
+  -------------------------------------------------------------------------- }
+Procedure GenRtImul;
+Begin
+  EmitSep;
+  EmitComment('_RT_IMUL : AX * BX -> AX (signed 16x16, low 16 bits)');
+  EmitLabel(RT_PFX + 'IMUL');
+  EmitI0('IMUL BX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtIdiv : _RT_IDIV - division signee.
+  Params : AX=dividende, BX=diviseur (passes directement dans les registres).
+  Retour : AX=quotient, DX=reste.
+  -------------------------------------------------------------------------- }
+Procedure GenRtIdiv;
+Begin
+  EmitSep;
+  EmitComment('_RT_IDIV : AX / BX -> AX=quotient DX=reste (signed)');
+  EmitLabel(RT_PFX + 'IDIV');
+  EmitI0('CWD');
+  EmitI0('IDIV BX');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtImod : _RT_IMOD - modulo signe.
+  AX = AX mod BX. Resultat : AX = reste de la division entiere signee.
+  -------------------------------------------------------------------------- }
+Procedure GenRtImod;
+Begin
+  EmitSep;
+  EmitComment('_RT_IMOD : AX mod BX -> AX (signed)');
+  EmitLabel(RT_PFX + 'IMOD');
+  EmitI0('CWD');
+  EmitI0('IDIV BX');
+  EmitI('MOV', 'AX, DX', 'AX = reste');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtAbs : _RT_ABS - valeur absolue AX -> AX.
+  -------------------------------------------------------------------------- }
+Procedure GenRtAbs;
+Begin
+  EmitSep;
+  EmitComment('_RT_ABS : |AX| -> AX');
+  EmitLabel(RT_PFX + 'ABS');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNS',  RT_PFX + 'ABS_E');
+  EmitI0('NEG  AX');
+  EmitLabel(RT_PFX + 'ABS_E');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtBoundsErr : _RT_BOUNDS_ERR - erreur de debordement de tableau.
+  Affiche le code d'erreur system (AL=02h) et termine le programme.
+  Appele par les sequences de verification de bornes generees par
+  GenBoundsCheck.
+  -------------------------------------------------------------------------- }
+Procedure GenRtBoundsErr;
+Begin
+  EmitSep;
+  EmitComment('_RT_BOUNDS_ERR : fin programme avec code erreur 2');
+  EmitLabel(RT_PFX + 'BOUNDS_ERR');
+  EmitI1('MOV', 'AH, 4Ch');
+  EmitI1('MOV', 'AL, 02h');
+  EmitI0('INT  21h');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtInt2Str : _RT_INT2STR - conversion entier signe -> chaine decimale.
+  Param  : [BP+4] = entier signe 16 bits (empile avant CALL).
+  Retour : AX = pointeur dans _CS86_ITOA, DX = longueur.
+  Algorithme : extraction des chiffres de droite a gauche par divisions
+  successives par 10, insertion du signe '-' si negatif.
+  Cas special : -32768 -> NEG deborde, mais DIV non-signe donne 32768 ok.
+  Registres modifies : AX, DX (retour) ; BX, CX, SI, DI preserves.
+  -------------------------------------------------------------------------- }
+Procedure GenRtInt2Str;
+Begin
+  EmitSep;
+  EmitComment('_RT_INT2STR : [BP+4]=int16 -> AX=ptr DX=len (decimal)');
+  EmitLabel(RT_PFX + 'INT2STR');
+  EmitI0('PUSH BP');
+  EmitI('MOV',  'BP, SP',       'frame');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI('MOV',  'AX, [BP+4]',  'charger l''entier');
+  EmitI('XOR',  'SI, SI',       'SI=0 : positif');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JGE',  RT_PFX + 'I2S_P');
+  EmitI('MOV',  'SI, 1',        'SI=1 : negatif');
+  EmitI0('NEG  AX');
+  EmitLabel(RT_PFX + 'I2S_P');
+  EmitI('LEA',  'DI, [_CS86_ITOA+7]', 'pointer en fin de buffer');
+  EmitI('XOR',  'CX, CX',       'CX = nombre de chiffres');
+  EmitLabel(RT_PFX + 'I2S_L');
+  EmitI('XOR',  'DX, DX',       'etendre AX en DX:AX (unsigned)');
+  EmitI('MOV',  'BX, 10',       'diviseur');
+  EmitI0('DIV  BX');
+  EmitI('ADD',  'DL, 30h',      'DL = chiffre ASCII');
+  EmitI0('DEC  DI');
+  EmitI1('MOV', 'BYTE PTR [DI], DL');
+  EmitI0('INC  CX');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  RT_PFX + 'I2S_L');
+  EmitI1('TEST', 'SI, SI');
+  EmitI1('JZ',   RT_PFX + 'I2S_E');
+  EmitI0('DEC  DI');
+  EmitI('MOV',  'BYTE PTR [DI], 2Dh', 'tiret ASCII ''-''');
+  EmitI0('INC  CX');
+  EmitLabel(RT_PFX + 'I2S_E');
+  EmitI('MOV',  'AX, DI',       'AX = ptr vers premier char');
+  EmitI('MOV',  'DX, CX',       'DX = longueur');
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI1('POP', 'CX');
+  EmitI1('POP', 'BX');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtStr2Int : _RT_STR2INT - conversion chaine decimale -> entier signe.
+  Params empiles (ordre push) : DX=len d'abord, puis AX=ptr.
+  Apres PUSH DX / PUSH AX / CALL _RT_STR2INT / ADD SP,4 :
+    [BP+4] = ptr  (empile en dernier)
+    [BP+6] = len  (empile en premier)
+  Retour : AX = entier signe.
+  Analyse : signe optionnel '-', puis chiffres 0-9.
+  -------------------------------------------------------------------------- }
+Procedure GenRtStr2Int;
+Begin
+  EmitSep;
+  EmitComment('_RT_STR2INT : [BP+4]=ptr [BP+6]=len -> AX=int16');
+  EmitLabel(RT_PFX + 'STR2INT');
+  EmitI0('PUSH BP');
+  EmitI('MOV',  'BP, SP',       'frame');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI('MOV',  'SI, [BP+4]',   'ptr vers la chaine');
+  EmitI('MOV',  'CX, [BP+6]',   'longueur');
+  EmitI('XOR',  'AX, AX',       'accumulateur = 0');
+  EmitI('XOR',  'DI, DI',       'DI=0 : positif');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'S2I_D');
+  EmitI('MOV',  'BL, [SI]',     'premier caractere');
+  EmitI1('CMP', 'BL, 2Dh');
+  EmitI1('JNE', RT_PFX + 'S2I_L');
+  EmitI('MOV',  'DI, 1',        'marquer negatif');
+  EmitI0('INC  SI');
+  EmitI0('DEC  CX');
+  EmitLabel(RT_PFX + 'S2I_L');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'S2I_SGN');
+  EmitI('MOV',  'BL, [SI]',     'lire chiffre');
+  EmitI('SUB',  'BL, 30h',      'convertir ASCII -> valeur');
+  EmitI('XOR',  'BH, BH',       'etendre BL en BX');
+  EmitI1('PUSH', 'CX');
+  EmitI('MOV',  'CX, 10',       'multiplicateur');
+  EmitI0('IMUL CX');
+  EmitI1('POP', 'CX');
+  EmitI1('ADD', 'AX, BX');
+  EmitI0('INC  SI');
+  EmitI0('DEC  CX');
+  EmitI1('JMP', RT_PFX + 'S2I_L');
+  EmitLabel(RT_PFX + 'S2I_SGN');
+  EmitI1('TEST', 'DI, DI');
+  EmitI1('JZ',   RT_PFX + 'S2I_D');
+  EmitI0('NEG  AX');
+  EmitLabel(RT_PFX + 'S2I_D');
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI1('POP', 'CX');
+  EmitI1('POP', 'BX');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtBool2Str : _RT_BOOL2STR - conversion booleen -> chaine 'True'/'False'.
+  Param  : [BP+4] = bool (0=False, tout autre=True).
+  Retour : AX = ptr, DX = len.
+  Utilise les descripteurs statiques _CS86_TRUES et _CS86_FALSES.
+  -------------------------------------------------------------------------- }
+Procedure GenRtBool2Str;
+Begin
+  EmitSep;
+  EmitComment('_RT_BOOL2STR : [BP+4]=bool -> AX=ptr DX=len');
+  EmitLabel(RT_PFX + 'BOOL2STR');
+  EmitI0('PUSH BP');
+  EmitI('MOV',  'BP, SP',          'frame');
+  EmitI('MOV',  'AX, [BP+4]',      'charger le booleen');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   RT_PFX + 'B2S_F');
+  EmitI('MOV',  'AX, OFFSET _CS86_TRUES',  'ptr ''True''');
+  EmitI('MOV',  'DX, 4',           'len=4');
+  EmitI1('JMP',  RT_PFX + 'B2S_E');
+  EmitLabel(RT_PFX + 'B2S_F');
+  EmitI('MOV',  'AX, OFFSET _CS86_FALSES', 'ptr ''False''');
+  EmitI('MOV',  'DX, 5',           'len=5');
+  EmitLabel(RT_PFX + 'B2S_E');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRtArithmetic : emettre toutes les routines runtime d'arithmetique
+  et de conversion dans le segment CODE courant.
+  Appeler apres GenCodeSegmentHeader et avant les methodes utilisateur.
+  -------------------------------------------------------------------------- }
+Procedure GenRtArithmetic;
+Begin
+  EmitBlank;
+  EmitComment('=== RUNTIME : ARITHMETIQUE ET CONVERSIONS ===');
+  EmitBlank;
+  GenRtImul;
+  GenRtIdiv;
+  GenRtImod;
+  GenRtAbs;
+  GenRtBoundsErr;
+  GenRtInt2Str;
+  GenRtStr2Int;
+  GenRtBool2Str;
+  EmitBlank;
+  EmitComment('=== FIN RUNTIME ARITHMETIQUE ===');
+  EmitBlank;
+End;
+
+{ ============================================================================
+  TODO 20 ... 25 : a implementer
   ============================================================================ }
 
 BEGIN
@@ -5472,6 +5947,6 @@ BEGIN
   scope_level := 0;
   ns_open     := False;
   WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 18-25 non implementes)');
+  WriteLn('(TODO 20-25 non implementes)');
   FreeTables;
 END.

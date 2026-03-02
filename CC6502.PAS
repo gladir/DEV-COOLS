@@ -1366,7 +1366,7 @@ Begin
   { Ajouter les qualificateurs const/volatile }
  If type_info.is_const Then base_name := 'const ' + base_name;
  If type_info.is_volatile Then base_name := 'volatile ' + base_name;
-  { Ajouter des astï¿½ristiques de pointeur }
+  { Ajouter des ast‚ristiques de pointeur }
  For i := 1 to type_info.pointer_level do base_name := base_name + '*';
   { Ajouter la notation de tableau }
  If type_info.array_size > 0 Then Begin
@@ -1376,7 +1376,7 @@ Begin
  get_type_name := base_name;
 End;
 
- { Gï¿½nï¿½rer le code assembleur pour la conversion de type }
+ { G‚n‚rer le code assembleur pour la conversion de type }
 Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
  Case Language of
   _English:safe_writeln('; Type conversion from ' + get_type_name(from_type) + ' to ' + get_type_name(to_type));
@@ -1385,11 +1385,11 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
  { Gï¿½rer la conversion char en int }
  If (from_type.base_type = cchar) and (to_type.base_type = cint) Then Begin
   If from_type.is_unsigned Then Begin
-   ol('clra   ; extension zï¿½ro char non signï¿½');
+   ol('clra   ; extension z‚ro char non sign‚');
   End
    Else
   Begin
-   ol('sex    ; extension de signe char signÃ©');
+   ol('sex    ; extension de signe char sign‚');
   End;
  End
   { Gï¿½rer la conversion int vers char }
@@ -1409,7 +1409,7 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
   Begin
    ol('cmp #0      ; test du signe');
    ol('bpl  +      ; si positif, partie haute = 0');
-   ol('lda #$FF    ; si nÃ©gatif, partie haute = $FFFF');
+   ol('lda #$FF    ; si n‚gatif, partie haute = $FFFF');
    ol('ldx #$FF');
    ol('sta $01FF,x ; stocker partie haute sur pile (6502)');
    ol('dex');
@@ -1422,16 +1422,16 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
    ol('++');
   End;
  End
-  { Gï¿½rer la conversion long vers int }
+  { G‚rer la conversion long vers int }
  Else If (from_type.base_type = clong) and (to_type.base_type = cint) Then Begin
   ol('ldd  -2,s    ; charger partie basse du long');
-  ol('leas 2,s     ; ajuster pile (partie haute ignorï¿½e)');
+  ol('leas 2,s     ; ajuster pile (partie haute ignor‚e)');
  End
   { Gï¿½rer la conversion char vers long }
   Else
  If (from_type.base_type = cchar) and (to_type.base_type = clong)Then Begin
   If from_type.is_unsigned Then Begin
-   ol('lda #0      ; extension zÃ©ro char');
+   ol('lda #0      ; extension z‚ro char');
    ol('sta $01FF,x ; partie haute = 0');
    ol('dex');
    ol('sta $01FF,x');
@@ -1444,7 +1444,7 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
    ol('+ ldx #$00');
    ol('++ cmp #0   ; test du signe de la partie int');
    ol('bpl  +      ; si positif, partie haute = 0');
-   ol('lda #$FF    ; si nÃ©gatif, partie haute = $FFFF');
+   ol('lda #$FF    ; si n‚gatif, partie haute = $FFFF');
    ol('ldx #$FF');
    ol('sta $01FF,x ; entreposer partie haute sur pile');
    ol('dex');
@@ -1456,28 +1456,28 @@ Procedure generate_type_conversion(var from_type, to_type: TTypeInfo);Begin
    ol('++');
   End;
  End
-  { Gï¿½rer la conversion long vers char }
+  { G‚rer la conversion long vers char }
   Else
  If (from_type.base_type = clong) and (to_type.base_type = cchar) Then Begin
   ol('ldd  -2,s    ; charger partie basse du long');
   ol('tfr  b,a     ; ne garder que l''octet faible');
   ol('clrb');
-  ol('leas 4,s     ; ajuster pile (libï¿½rer long)');
+  ol('leas 4,s     ; ajuster pile (lib‚rer long)');
  End
- { Gï¿½rer les conversions enum (traitï¿½ comme int) }
+ { G‚rer les conversions enum (trait‚ comme int) }
   Else
  If (from_type.base_type = cenum) and (to_type.base_type <> cenum)Then Begin
    { Enum vers autre type - d'abord convertir enum vers int puis vers type cible }
   from_type.base_type := cint; { Traiter enum comme int }
-  generate_type_conversion(from_type, to_type); { Rï¿½cursion }
+  generate_type_conversion(from_type, to_type); { R‚cursion }
  End
   Else
  If (from_type.base_type <> cenum) and (to_type.base_type = cenum) Then Begin
   { Autre type vers enum - d'abord convertir vers int puis vers enum }
   to_type.base_type := cint; { Traiter enum comme int }
-  generate_type_conversion(from_type, to_type); { Rï¿½cursion }
+  generate_type_conversion(from_type, to_type); { R‚cursion }
  End;
-  { Ajouter des conversions supplÃ©mentaires si nÃ©cessaires }
+  { Ajouter des conversions suppl‚mentaires si n‚cessaires }
 End;
 
 { ============================================================================ }
@@ -1500,32 +1500,32 @@ Begin
  End;
 End;
 
- { Ajouter un nouveau typedef ï¿½ la table des symboles }
+ { Ajouter un nouveau typedef … la table des symboles }
 Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol;
 Var
  new_symbol: PSymbol;
 Begin
  add_typedef := nil;
-  { Vï¿½rifier si le typedef existe dï¿½jï¿½ }
+  { V‚rifier si le typedef existe d‚j… }
  If find_typedef(typedef_name) <> nil Then Begin
   Case Language of
    _English: errrpt('Typedef already defined: ' + typedef_name);
    {$IFDEF FPC}
    _Germany: errrpt('Typedef bereits definiert: ' + typedef_name);
    {$ENDIF}
-   Else errrpt('Typedef dï¿½jï¿½ dï¿½fini: ' + typedef_name);
+   Else errrpt('Typedef d‚j… d‚fini: ' + typedef_name);
   End;
   Exit;
  End;
-  { Allouer de la mï¿½moire sur le tas }
+  { Allouer de la m‚moire sur la m‚moire de tas }
  New(new_symbol);
  If new_symbol = nil Then Begin
   Case Language of
    _English: errrpt('Out of memory for typedef table');
    {$IFDEF FPC}
-   _Germany: errrpt('Kein Speicher fï¿½r Typedef-Tabelle');
+   _Germany: errrpt('Kein Speicher fr Typedef-Tabelle');
    {$ENDIF}
-   Else errrpt('MÃ©moire insuffisante pour la table typedef');
+   Else errrpt('M‚moire insuffisante pour la table typedef');
   End;
   Exit;
  End;
@@ -1535,20 +1535,20 @@ Begin
   name := typedef_name;
   ident := it_typedef_type;
   ctype := type_info.base_type;
-  storage := statik;  { Les typedef sont gï¿½nï¿½ralement statiques }
+  storage := statik;  { Les typedef sont g‚n‚ralement statiques }
   offset_value := 0;
   new_symbol^.type_info := type_info;  { Copier toutes les informations de type explicitement }
   new_symbol^.type_info.is_typedef := True;
   new_symbol^.type_info.typedef_name := typedef_name;
-  next := symbol_list;  { Insï¿½rer au dï¿½but de la liste }
+  next := symbol_list;  { Ins‚rer au d‚but de la liste }
  End;
-  { Mettre ï¿½ jour la tï¿½te de liste }
+  { Mettre … jour la tˆte de liste }
  symbol_list := new_symbol;
  Inc(symbol_count);
  add_typedef := new_symbol;
 End;
 
-{ Rï¿½soudre un typedef en son type rï¿½el }
+{ R‚soudre un typedef en son type r‚el }
 Function resolve_typedef_type(typedef_name: String; var resolved_type: TTypeInfo): Boolean;
 Var
  typedef_symbol: PSymbol;
@@ -1572,7 +1572,7 @@ Begin
  resolve_typedef_type := True;
 End;
 
- { Analyser une dï¿½claration typedef }
+ { Analyser une d‚claration typedef }
 Function parse_typedef_declaration: Boolean;
 Var
  base_type: Integer;
@@ -1581,8 +1581,8 @@ Var
  temp_str: String;
 Begin
  parse_typedef_declaration := False;
- safe_writeln('; Analyse la dï¿½claration typedef');
-  { Le mot clef typedef a dï¿½jï¿½ ï¿½tï¿½ consommï¿½ }
+ safe_writeln('; Analyse la d‚claration typedef');
+  { Le mot clef typedef a d‚j… ‚t‚ consomm‚ }
 
   { Analyser le type de base }
  base_type := parse_type_specifier_with_qualifiers(type_info);
@@ -1590,14 +1590,14 @@ Begin
   Case Language of
    _English: errrpt('Invalid type specifier in typedef');
    {$IFDEF FPC}
-   _Germany: errrpt('Ungï¿½ltiger Typ-Spezifizierer in typedef');
+   _Germany: errrpt('Ungltiger Typ-Spezifizierer in typedef');
    {$ENDIF}
-   Else errrpt('Spï¿½cificateur de type invalide dans typedef');
+   Else errrpt('Sp‚cificateur de type invalide dans typedef');
   End;
   Exit;
  End;
  Str(base_type, temp_str);
- safe_writeln('; Type analysï¿½: ' + temp_str);
+ safe_writeln('; Type analys‚: ' + temp_str);
   { Analyser le dï¿½clarateur (nom du typedef) }
  If not symname(typedef_name) Then Begin
   Case Language of
@@ -1616,13 +1616,13 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('; nach typedef-Deklaration erwartet');
    {$ENDIF}
-   Else errrpt('; attendu aprï¿½s dï¿½claration typedef');
+   Else errrpt('; attendu aprŠs d‚claration typedef');
   End;
   Exit;
  End;
   { Ajouter le typedef Ã  la table des symboles }
  If add_typedef(typedef_name, type_info) <> nil Then Begin
-  safe_writeln('; Typedef dï¿½fini: ' + typedef_name + ' = ' + get_type_name(type_info));
+  safe_writeln('; Typedef d‚fini: ' + typedef_name + ' = ' + get_type_name(type_info));
   parse_typedef_declaration := True;
  End;
 End;
