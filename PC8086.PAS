@@ -3608,7 +3608,7 @@ Procedure GenerateHelpProcedures;Begin
   { ProcÇdure de concatÇnation de chaånes }
  EmitLine('');
  EmitLine('CONCAT_STR PROC');
- EmitComment('Concat√®ne deux cha√Ænes: SI (source1) + DI (source2) -> SI (r√©sultat)');
+ EmitComment('Concatäne deux chaånes: SI (source1) + DI (source2) -> SI (rÇsultat)');
  EmitLine('    push ax');
  EmitLine('    push bx');
  EmitLine('    push cx');
@@ -3616,29 +3616,29 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    push di');
  EmitLine('');
  EmitComment('Calculer la longueur totale');
- EmitLine('    mov al, [si]     ; Longueur cha√Æne 1');
- EmitLine('    mov bl, [di]     ; Longueur cha√Æne 2');
+ EmitLine('    mov al, [si]     ; Longueur chaåne 1');
+ EmitLine('    mov bl, [di]     ; Longueur chaåne 2');
  EmitLine('    add al, bl       ; Longueur totale');
- EmitLine('    cmp al, 255      ; V√©rifier d√©passement');
+ EmitLine('    cmp al, 255      ; VÇrifier dÇpassement');
  EmitLine('    jbe CONCAT_OK');
- EmitLine('    mov al, 255      ; Limiter √† 255');
+ EmitLine('    mov al, 255      ; Limiter Ö 255');
  EmitLine('');
  EmitLine('CONCAT_OK:');
  EmitComment('Stocker nouvelle longueur');
  EmitLine('    mov [si], al');
  EmitLine('');
- EmitComment('Positionner pour copie de la deuxi√®me cha√Æne');
- EmitLine('    mov cl, [si]     ; Longueur cha√Æne 1 originale');
+ EmitComment('Positionner pour copie de la deuxiäme chaåne');
+ EmitLine('    mov cl, [si]     ; Longueur chaåne 1 originale');
  EmitLine('    mov ch, 0');
  EmitLine('    mov dx, si');
- EmitLine('    inc dx           ; Pointer apr√®s longueur');
- EmitLine('    add dx, cx       ; Pointer apr√®s cha√Æne 1');
+ EmitLine('    inc dx           ; Pointer apräs longueur');
+ EmitLine('    add dx, cx       ; Pointer apräs chaåne 1');
  EmitLine('');
- EmitComment('Copier la deuxi√®me cha√Æne');
- EmitLine('    mov cl, [di]     ; Longueur cha√Æne 2');
- EmitLine('    inc di           ; Pointer apr√®s longueur');
- EmitLine('    mov si, di       ; Source = cha√Æne 2');
- EmitLine('    mov di, dx       ; Destination = fin de cha√Æne 1');
+ EmitComment('Copier la deuxiäme chaåne');
+ EmitLine('    mov cl, [di]     ; Longueur chaåne 2');
+ EmitLine('    inc di           ; Pointer apräs longueur');
+ EmitLine('    mov si, di       ; Source = chaåne 2');
+ EmitLine('    mov di, dx       ; Destination = fin de chaåne 1');
  EmitLine('    rep movsb        ; Copier');
  EmitLine('');
  EmitLine('    pop di');
@@ -3648,11 +3648,10 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('CONCAT_STR ENDP');
-
- { Proc√©dure de comparaison de cha√Ænes }
+  { ProcÇdure de comparaison de chaånes }
  EmitLine('');
  EmitLine('COMPARE_STR PROC');
- EmitComment('Compare deux cha√Ænes SI et DI, r√©sultat dans AX (0=√©gal, 1=diff√©rent)');
+ EmitComment('Compare deux chaånes SI et DI, rÇsultat dans AX (0=Çgal, 1=diffÇrent)');
  EmitLine('    push bx');
  EmitLine('    push cx');
  EmitLine('    push dx');
@@ -3666,18 +3665,18 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    jcxz COMP_STR_END');
  EmitLine('');
  EmitLine('COMP_STR_LOOP:');
- EmitLine('    lodsb            ; Charger caract√®re');
- EmitLine('    mov dl, al       ; Caract√®re √† comparer');
+ EmitLine('    lodsb            ; Charger caractäre');
+ EmitLine('    mov dl, al       ; Caractäre Ö comparer');
  EmitLine('    cmp dl, [di]');
  EmitLine('    jne COMP_DIFF');
  EmitLine('    loop COMP_STR_LOOP');
  EmitLine('');
  EmitLine('COMP_DIFF:');
- EmitLine('    mov ax, 1        ; Diff√©rent');
+ EmitLine('    mov ax, 1        ; DiffÇrent');
  EmitLine('    jmp COMP_END');
  EmitLine('');
  EmitLine('COMP_EQUAL:');
- EmitLine('    mov ax, 0        ; √âgal');
+ EmitLine('    mov ax, 0        ; êgal');
  EmitLine('');
  EmitLine('COMP_END:');
  EmitLine('    pop di');
@@ -3687,11 +3686,10 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    pop bx');
  EmitLine('    ret');
  EmitLine('COMPARE_STR ENDP');
-
- { Proc√©dure d'affichage de cha√Ænes }
+  { ProcÇdure d'affichage de chaånes }
  EmitLine('');
  EmitLine('PRINT_STR PROC');
- EmitComment('Affiche une cha√Æne Pascal point√©e par SI');
+ EmitComment('Affiche une chaåne Pascal pointÇe par SI');
  EmitLine('    push ax');
  EmitLine('    push cx');
  EmitLine('    push dx');
@@ -3704,9 +3702,9 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    jcxz PRINT_STR_END');
  EmitLine('');
  EmitLine('PRINT_CHAR_LOOP:');
- EmitLine('    lodsb            ; Charger caract√®re');
- EmitLine('    mov dl, al       ; Caract√®re √† afficher');
- EmitLine('    mov ah, 02h      ; Fonction DOS affichage caract√®re');
+ EmitLine('    lodsb            ; Charger caractäre');
+ EmitLine('    mov dl, al       ; Caractäre Ö afficher');
+ EmitLine('    mov ah, 02h      ; Fonction DOS affichage caractäre');
  EmitLine('    int 21h');
  EmitLine('    loop PRINT_CHAR_LOOP');
  EmitLine('');
@@ -3717,12 +3715,11 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('PRINT_STR ENDP');
-
- { Routine PARAMCOUNT - compte les param√®tres de la ligne de commande DOS }
+  { Routine PARAMCOUNT - compte les paramätres de la ligne de commande DOS }
  EmitLine('');
- EmitComment('Routine PARAMCOUNT - compte les param√®tres de la ligne de commande');
+ EmitComment('Routine PARAMCOUNT - compte les paramätres de la ligne de commande');
  EmitLine('PARAMCOUNT PROC');
- EmitComment('R√©sultat dans AX = nombre de param√®tres');
+ EmitComment('RÇsultat dans AX = nombre de paramätres');
  EmitLine('    push bx');
  EmitLine('    push cx');
  EmitLine('    push dx');
@@ -3765,13 +3762,13 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('    ret');
  EmitLine('PARAMCOUNT ENDP');
 
- { Routine PARAMSTR - extrait le Ni√®me param√®tre de la ligne de commande DOS }
+ { Routine PARAMSTR - extrait le Niäme paramätre de la ligne de commande DOS }
  EmitLine('');
- EmitComment('Buffer pour PARAMSTR (format Pascal: longueur + contenu)');
+ EmitComment('Tampon pour PARAMSTR (format Pascal: longueur + contenu)');
  EmitLine('.DATA');
  EmitLine('PARAMSTR_BUF DB 256 DUP(0)');
  EmitLine('.CODE');
- EmitComment('Routine PARAMSTR - AX = index (base 1), r√©sultat SI = cha√Æne Pascal');
+ EmitComment('Routine PARAMSTR - AX = index (base 1), rÇsultat SI = chaåne Pascal');
  EmitLine('PARAMSTR PROC');
  EmitLine('    push bx');
  EmitLine('    push cx');
@@ -3854,14 +3851,14 @@ Procedure GenerateHelpProcedures;Begin
  EmitLine('PARAMSTR ENDP');
 End;
 
-{ V√©rifier les √©tiquettes non d√©finies }
+{ VÇrifier les Çtiquettes non dÇfinies }
 Procedure CheckUndefinedLabels;
 Var
  i: Integer;
 Begin
  For i := 1 to label_count do
   If (label_table[i] <> nil) and not label_table[i]^.defined Then
-   Error('√âtiquette d√©clar√©e mais non d√©finie: ' + label_table[i]^.name);
+   Error('êtiquette dÇclarÇe mais non dÇfinie: ' + label_table[i]^.name);
 End;
 
 BEGIN
@@ -3880,116 +3877,85 @@ BEGIN
   WriteLn('  [fichier.asm]  : Fichier assembleur de sortie (optionnel)');
   Halt;
  End;
-
- { Initialiser les options par d√©faut }
+  { Initialiser les options par dÇfaut }
  option_units_support := False;
  option_crt_dos_support := False;
-
- { Traiter les options }
- If (ParamCount >= 1) and (ParamStr(1) = '/2') Then
- Begin
+  { Traiter les options }
+ If (ParamCount >= 1) and (ParamStr(1) = '/2') Then Begin
   option_crt_dos_support := True;
-  WriteLn('Option 2 activ√©e: Support partiel interne Uses Crt,DOS');
+  WriteLn('Option 2 activÇe: Support partiel interne Uses Crt,DOS');
   source_filename := ParamStr(2);
-  If ParamCount >= 3 Then
-   output_filename := ParamStr(3)
-  Else
-   output_filename := '';
+  If ParamCount >= 3 Then output_filename := ParamStr(3)
+                     Else output_filename := '';
  End
- Else If (ParamCount >= 1) and (ParamStr(1) = '/3') Then
- Begin
+  Else
+ If (ParamCount >= 1) and (ParamStr(1) = '/3') Then Begin
   option_units_support := True;
-  WriteLn('Option 3 activ√©e: Support complet des unit√©s Pascal');
+  WriteLn('Option 3 activÇe: Support complet des unitÇs Pascal');
   source_filename := ParamStr(2);
-  If ParamCount >= 3 Then
-   output_filename := ParamStr(3)
-  Else
-   output_filename := '';
+  If ParamCount >= 3 Then output_filename := ParamStr(3)
+                     Else output_filename := '';
  End
- Else
+  Else
  Begin
   source_filename := ParamStr(1);
-  If ParamCount >= 2 Then
-   output_filename := ParamStr(2)
-  Else
-   output_filename := '';
+  If ParamCount >= 2 Then output_filename := ParamStr(2)
+                     Else output_filename := '';
  End;
  WriteLn('PC8086 - Compilateur Pascal vers Assembleur 8086 v1.0');
  WriteLn('======================================================');
  WriteLn('');
-
- { G√©n√©rer le nom de fichier de sortie si n√©cessaire }
- If output_filename = '' Then
- Begin
+  { GÇnÇrer le nom de fichier de sortie si nÇcessaire }
+ If output_filename = '' Then Begin
   output_filename := source_filename;
   { Changer l'extension .pas en .asm }
-  If Pos('.', output_filename) > 0 Then
-   output_filename := Copy(output_filename, 1, Pos('.', output_filename) - 1) + '.asm'
-  Else
-   output_filename := output_filename + '.asm';
+  If Pos('.', output_filename) > 0 Then output_filename := Copy(output_filename, 1, Pos('.', output_filename) - 1) + '.asm'
+                                   Else output_filename := output_filename + '.asm';
  End;
-
  WriteLn('Fichier source: ', source_filename);
  WriteLn('Fichier sortie: ', output_filename);
  WriteLn('');
-
- { Ouvrir les fichiers }
+  { Ouvrir les fichiers }
  Assign(input_file, source_filename);
  {$I-}
  Reset(input_file);
  {$I+}
- If IOResult <> 0 Then
- Begin
+ If IOResult <> 0 Then Begin
   WriteLn('ERREUR: Impossible d''ouvrir le fichier source: ', source_filename);
   Exit;
  End;
-
  Assign(output_file, output_filename);
  {$I-}
  Rewrite(output_file);
  {$I+}
- If IOResult <> 0 Then
- Begin
-  WriteLn('ERREUR: Impossible de cr√©er le fichier de sortie: ', output_filename);
+ If IOResult <> 0 Then Begin
+  WriteLn('ERREUR: Impossible de crÇer le fichier de sortie: ', output_filename);
   Close(input_file);
   Exit;
  End;
-
- { Initialiser le compilateur }
+  { Initialiser le compilateur }
  InitCompiler;
-
- { Lire la premi√®re ligne }
- If not Eof(input_file) Then
- Begin
+  { Lire la premiäre ligne }
+ If not Eof(input_file) Then Begin
   ReadLn(input_file, current_line);
   line_pos := 1;
  End;
-
- { Lire le premier caract√®re }
+ { Lire le premier caractäre }
  NextChar;
  NextToken;
-
- { Commencer la compilation }
+  { Commencer la compilation }
  ParseProgram;
-
- { G√©n√©rer les proc√©dures d'aide }
+  { GÇnÇrer les procÇdures d'aide }
  GenerateHelpProcedures;
-
- { V√©rifier les √©tiquettes }
+  { VÇrifier les Çtiquettes }
  CheckUndefinedLabels;
-
- { Fermer les fichiers }
+  { Fermer les fichiers }
  Close(input_file);
  Close(output_file);
-
- { Lib√©rer la m√©moire }
+  { LibÇrer la mÇmoire }
  CleanupCompiler;
-
- WriteLn('Compilation termin√©e.');
+ WriteLn('Compilation terminÇe.');
  WriteLn('Erreurs: ', error_count);
-
- If error_count = 0 Then
-  WriteLn('Assemblage recommand√©: MASM ', output_filename)
- Else
-  WriteLn('Veuillez corriger les erreurs avant l''assemblage.');
+ If error_count = 0 Then WriteLn('Assemblage recommandÇ: MASM ', output_filename)
+                    Else WriteLn('Veuillez corriger les erreurs avant l''assemblage.');
 END.

@@ -5288,6 +5288,226 @@ Begin
     Result := tok;
 End;
 
+{ ============================================================================
+  TODO 20 - CODEGEN : FONCTIONS PREDEFINIES (APPEND)
+  ============================================================================
+  SplitArgsComma  : decouper la liste d'args CSV en tableau de TString.
+  EvalArgAsDesc   : evaluer un arg -> SI = descripteur.
+  EvalArgAsInt    : evaluer un arg -> AX = entier.
+  GenBuiltinCall  : dispatcher pour SIZE, SUBSTR, DUPL, REPLACE, TRIM,
+                    CHAR, ORD, CONVERT, DATATYPE, DATE, TIME.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  SplitArgsComma : decouper raw sur les ',' de niveau 0.
+  Respecte les guillemets simples et les parentheses imbriquees.
+  -------------------------------------------------------------------------- }
+Procedure SplitArgsComma(Const raw : TString;
+                         Var parts : Array of TString;
+                         Var count : Integer);
+Var i, depth : Integer;
+    cur      : TString;
+    c        : Char;
+    in_q     : Boolean;
+Begin
+  count := 0;  cur := '';  depth := 0;  in_q := False;
+  For i := 1 To Length(raw) Do
+  Begin
+    c := raw[i];
+    If in_q Then
+    Begin
+      cur := cur + c;
+      If c = '''' Then in_q := False;
+    End
+    Else If c = '''' Then Begin cur := cur + c; in_q := True; End
+    Else If c = '(' Then Begin Inc(depth); cur := cur + c; End
+    Else If c = ')' Then Begin If depth > 0 Then Dec(depth); cur := cur + c; End
+    Else If (c = ',') And (depth = 0) Then
+    Begin
+      cur := PatTrimStr(cur);
+      If count <= High(parts) Then Begin parts[count] := cur; Inc(count); End;
+      cur := '';
+    End
+    Else cur := cur + c;
+  End;
+  cur := PatTrimStr(cur);
+  If (Length(cur) > 0) And (count <= High(parts)) Then
+  Begin parts[count] := cur; Inc(count); End;
+End;
+
+{ --------------------------------------------------------------------------
+  EvalArgAsDesc : evaluer l'expression arg, charger descripteur dans SI.
+  Post-condition : SI = adresse du descripteur string de arg.
+  -------------------------------------------------------------------------- }
+Procedure EvalArgAsDesc(Const arg : TString);
+Begin
+  EvalExprToken(arg);        { DI = desc }
+  EmitI('MOV  SI, DI');
+End;
+
+{ --------------------------------------------------------------------------
+  EvalArgAsInt : evaluer l'expression arg, produire entier dans AX.
+  Cas literal entier : MOV AX, imm.  Sinon : evalue -> DI -> SI -> _RT_STR2INT.
+  -------------------------------------------------------------------------- }
+Procedure EvalArgAsInt(Const arg : TString);
+Var iv   : LongInt;
+    ci   : Integer;
+    trim : TString;
+Begin
+  trim := PatTrimStr(arg);
+  If IsIntegerLiteral(trim) Then
+  Begin
+    Val(trim, iv, ci);
+    If ci = 0 Then EmitI('MOV  AX, ' + IntToStr(iv))
+    Else Begin
+      EmitI('MOV  AX, 0  ; conversion litterale echouee');
+    End;
+  End
+  Else
+  Begin
+    EvalExprToken(trim);
+    EmitI('MOV  SI, DI');
+    EmitI('CALL _RT_STR2INT    ; SI=desc -> AX=entier');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenBuiltinCall : emettre le code ASM pour un appel de fonction predefined.
+  fname = nom (casse quelconque), fargs = chaine CSV des arguments.
+  Resultat standard : DI = descripteur de la valeur retournee.
+  Exception : ORD -> resultat converti en chaine ; SIZE idem.
+  -------------------------------------------------------------------------- }
+Procedure GenBuiltinCall(Const fname : TString; Const fargs : TString);
+Var args  : Array[0..7] of TString;
+    nargs : Integer;
+    fn    : TString;
+Begin
+  fn    := UpCaseStr(fname);
+  SplitArgsComma(fargs, args, nargs);
+  EmitComment('Builtin ' + fn + '(' + fargs + ')');
+
+  { ---- SIZE(s) -> CX = longueur de s, retourne CX converti en chaine ---- }
+  If fn = 'SIZE' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('CALL _RT_STRLEN   ; SI=desc -> CX=longueur');
+    EmitI('MOV  AX, CX');
+    EmitI('CALL _RT_INT2STR  ; AX -> DI=descripteur entier');
+  End
+
+  { ---- SUBSTR(s,i,n) -> DI = sous-chaine de s a partir de i, longueur n ---- }
+  Else If fn = 'SUBSTR' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI');
+    If nargs >= 2 Then EvalArgAsInt(args[1])
+    Else EmitI('MOV  AX, 1');
+    EmitI('PUSH AX');
+    If nargs >= 3 Then EvalArgAsInt(args[2])
+    Else EmitI('MOV  AX, 0');
+    EmitI('MOV  CX, AX');
+    EmitI('POP  AX           ; AX = position (1-base)');
+    EmitI('POP  SI           ; SI = sujet desc');
+    EmitI('CALL _RT_SUBSTR   ; SI=sujet, AX=pos, CX=len -> DI');
+  End
+
+  { ---- DUPL(s,n) -> DI = s repete n fois ---- }
+  Else If fn = 'DUPL' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI');
+    If nargs >= 2 Then EvalArgAsInt(args[1])
+    Else EmitI('MOV  AX, 0');
+    EmitI('MOV  CX, AX');
+    EmitI('POP  SI           ; SI = desc source');
+    EmitI('CALL _RT_DUPL     ; SI=desc, CX=n -> DI');
+  End
+
+  { ---- REPLACE(s,t,u) -> DI = s avec table de traduction t->u ---- }
+  Else If fn = 'REPLACE' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI           ; [1] sujet');
+    If nargs >= 2 Then EvalArgAsDesc(args[1])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI           ; [2] table from');
+    If nargs >= 3 Then EvalArgAsDesc(args[2])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('MOV  BX, SI       ; BX = table to desc');
+    EmitI('POP  DI           ; DI = table from desc');
+    EmitI('POP  SI           ; SI = sujet desc');
+    EmitI('CALL _RT_REPLACE  ; SI=s, DI=from, BX=to -> DI');
+  End
+
+  { ---- TRIM(s) -> DI = s sans espaces finaux ---- }
+  Else If fn = 'TRIM' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('CALL _RT_TRIM     ; SI=desc -> DI=desc trimme');
+  End
+
+  { ---- CHAR(n) -> DI = chaine d'un caractere de code ASCII n ---- }
+  Else If fn = 'CHAR' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsInt(args[0])
+    Else EmitI('MOV  AX, 0');
+    EmitI('CALL _RT_CHAR     ; AX=code -> DI=desc 1 char');
+  End
+
+  { ---- ORD(s) -> DI = code ASCII du premier caractere de s ---- }
+  Else If fn = 'ORD' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('CALL _RT_ORD      ; SI=desc -> AX=code ASCII');
+    EmitI('CALL _RT_INT2STR  ; AX -> DI=descripteur entier');
+  End
+
+  { ---- CONVERT(v,t) -> DI = v converti en type t ---- }
+  Else If fn = 'CONVERT' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI           ; [1] valeur source');
+    If nargs >= 2 Then EvalArgAsDesc(args[1])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('MOV  DI, SI       ; DI = desc type cible');
+    EmitI('POP  SI           ; SI = valeur source');
+    EmitI('CALL _RT_CONVERT  ; SI=val, DI=type -> DI');
+  End
+
+  { ---- DATATYPE(v) -> DI = chaine du type ('STRING','INTEGER',...) ---- }
+  Else If fn = 'DATATYPE' Then
+  Begin
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('CALL _RT_DATATYPE ; SI=desc -> DI=type desc');
+  End
+
+  { ---- DATE -> DI = chaine de la date (INT 21h AH=2Ah) ---- }
+  Else If fn = 'DATE' Then
+  Begin
+    EmitI('CALL _RT_DATE     ; -> DI=desc date');
+  End
+
+  { ---- TIME -> DI = chaine de l'heure (INT 21h AH=2Ch) ---- }
+  Else If fn = 'TIME' Then
+  Begin
+    EmitI('CALL _RT_TIME     ; -> DI=desc heure');
+  End
+
+  { ---- Fonction inconnue ou utilisateur : stub (sera gere en TODO 21) ---- }
+  Else
+  Begin
+    EmitComment('  Appel utilisateur ' + fn + ' : stub TODO 21');
+    EmitI('LEA  DI, [_SB_EMPTY_DESC] ; stub : retourne chaine vide');
+  End;
+End;
 { --------------------------------------------------------------------------
   EvalExprToken : evaluer un token unique, mettre le descripteur resultat dans DI.
   Cas geres :
@@ -5302,7 +5522,6 @@ Var lit       : TString;
     idx       : Integer;
     fname     : TString;
     fargs     : TString;
-    sym       : Integer;
     int_val   : LongInt;
     code_i    : Integer;
 Begin
@@ -5343,14 +5562,10 @@ Begin
   End
   Else If HasFuncCall(tok) Then
   Begin
-    { --- Appel de fonction : stub v1 -> charger la variable du meme nom --- }
+    { --- Appel de fonction : GenBuiltinCall (TODO 20) --- }
     fname := ExtractFuncName(tok);
     fargs := ExtractFuncArgs(tok);
-    EmitComment('Appel ' + fname + '(' + fargs + ') -> stub v1');
-    sym := FindSym(UpCaseStr(fname));
-    If sym < 0 Then
-      sym := AddSym(UpCaseStr(fname), SK_VAR, VK_UNDEF);
-    EmitI('LEA  DI, [' + AsmVarDesc(fname) + ']');
+    GenBuiltinCall(fname, fargs);
   End
   Else
   Begin
