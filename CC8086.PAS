@@ -6053,115 +6053,97 @@ Begin
     process_if_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('ifdef ') Then
-   Begin
-    { Traiter la directive #ifdef }
+    Else
+   If match('ifdef ') Then Begin
+     { Traiter la directive #ifdef }
     blanks;
     process_ifdef_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('ifndef ') Then
-   Begin
+    Else
+   If match('ifndef ') Then Begin
     { Traiter la directive #ifndef }
     blanks;
     process_ifndef_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('elif ') Then
-   Begin
+    Else
+   If match('elif ') Then Begin
     { Traiter la directive #elif }
     blanks;
     process_elif_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('else') Then
-   Begin
+    Else
+   If match('else') Then Begin
     { Traiter la directive #else }
     process_else_directive;
     Continue;
    End
-   Else If match('endif') Then
-   Begin
+    Else
+   If match('endif') Then Begin
     { Traiter la directive #endif }
     process_endif_directive;
     Continue;
    End
-   Else
+    Else
    Begin
-    { Autres directives de prï¿½processeur - ignorer pour l'instant }
+    { Autres directives de pr‚processeur - ignorer pour l'instant }
     safe_writeln('; Skipping preprocessor directive: ' + line);
     Continue;
    End;
   End;
-
-  { Vï¿½rifier si on doit ignorer le code en raison de la compilation conditionnelle }
-  If should_skip_code Then
-  Begin
-   { Ignorer cette ligne complï¿½tement }
+   { V‚rifier si on doit ignorer le code en raison de la compilation conditionnelle }
+  If should_skip_code Then Begin
+   { Ignorer cette ligne compl‚tement }
    Continue;
   End;
-
-  { Appliquer l'expansion des macros ï¿½ la ligne APRï¿½S le traitement conditionnel }
+   { Appliquer l'expansion des macros … la ligne APRES le traitement conditionnel }
   expanded_line := expand_macros(line);
-  If expanded_line <> line Then
-  Begin
+  If expanded_line <> line Then Begin
    line := expanded_line;
    If use_stdout Then WriteLn('; Line after macro expansion: ', line)
                  Else safe_writeln('; Line after macro expansion: ' + line);
   End;
-
-  { Ignorer les lignes vides }
+   { Ignorer les lignes vides }
   blanks;
   If Length(line) = 0 Then Continue;
-
   safe_writeln('; Processing: ' + line);
-
-  { Rï¿½initialiser la position pour l'analyse }
+   { R‚initialiser la position pour l'analyse }
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
-
-  { Essayer d'analyser comme instruction (inclut les dï¿½clarations et les structures de contrï¿½le) }
-  If parse_statement Then
-  Begin
+   { Essayer d'analyser comme instruction (inclut les dï¿½clarations et les structures de contr“le) }
+  If parse_statement Then Begin
    safe_writeln('; Statement processed');
    Continue;
   End;
-
-  { Repli: Analyser les identifiants et les expressions pour la compatibilitï¿½ ascendante }
+   { Repli: Analyser les identifiants et les expressions pour la compatibilit‚ ascendante }
   lptr := 1;
-  If symname(sname) Then
-  Begin
+  If symname(sname) Then Begin
    safe_writeln('; Identifier: ' + sname);
-
-   { Vï¿½rifier l'affectation }
+    { V‚rifier l'affectation }
    blanks;
-   If match('=') Then
-   Begin
-    safe_writeln('; Affectation ï¿½ ' + sname);
+   If match('=') Then Begin
+    safe_writeln('; Affectation … ' + sname);
     blanks;
-
-    { Rechercher la variable dans la table de symboles }
-    If lookup_variable(sname, lval) Then
-    Begin
-     { Vï¿½rifier si la variable est constante et empï¿½cher l'affectation }
-     If lval.type_info.is_const Then
-     Begin
+     { Rechercher la variable dans la table de symboles }
+    If lookup_variable(sname, lval) Then Begin
+     { V‚rifier si la variable est constante et empˆcher l'affectation }
+     If lval.type_info.is_const Then Begin
       Case Language of
        _English: errrpt('Cannot assign to const variable: ' + sname);
        {$IFDEF FPC}
        _Germany: errrpt('Kann const Variable nicht zuweisen: ' + sname);
        {$ENDIF}
-       Else errrpt('Impossible d''assigner Ã  la variable const: ' + sname);
+       Else errrpt('Impossible d''assigner … la variable const: ' + sname);
       End;
      End
-     Else
+      Else
      Begin
-      safe_writeln('; Affectation ï¿½ la variable: ' + sname);
-
-      { Utiliser l'analyseur d'expressions pour le cï¿½tï¿½ droit }
+      safe_writeln('; Affectation … la variable: ' + sname);
+       { Utiliser l'analyseur d'expressions pour le c“t‚ droit }
       expression(right_lval);
-
-      { Stocker le rï¿½sultat dans la variable }
+       { Entreposer le r‚sultat dans la variable }
       ot('MOV  ');
       outstr(sname);
       outstr(', AX');
@@ -6169,11 +6151,10 @@ Begin
      End;
     End;
    End
-   Else
+    Else
    Begin
     { Charger la variable }
-    If lookup_variable(sname, lval) Then
-    Begin
+    If lookup_variable(sname, lval) Then Begin
      ot('MOV  AX, ');
      outstr(sname);
      nl;
@@ -6181,28 +6162,22 @@ Begin
    End;
    Continue;
   End;
-
-  { Essayer d'analyser comme expression }
+   { Essayer d'analyser comme expression }
   lptr := 1;
   blanks;
-  If (peek_char >= '0') and (peek_char <= '9') Then
-  Begin
-   safe_writeln('; Expression detected');
+  If (peek_char >= '0') and (peek_char <= '9') Then Begin
+   safe_writeln('; Expression detect‚');
    expression(lval);
    Continue;
   End;
-
-  { Repli pour la dï¿½tection simple de fonction }
-  If Pos('(', line) > 0 Then
-  Begin
+   { Repli pour la d‚tection simple de fonction }
+  If Pos('(', line) > 0 Then Begin
    safe_writeln('; Function found: ' + line);
    ol('nop ; placeholder for function');
   End;
-
   { Produire le contenu restant sous forme de commentaire }
-  If Length(line) > 0 Then
-  Begin
-   safe_writeln('; Unknown: ' + line);
+  If Length(line) > 0 Then Begin
+   safe_writeln('; Inconnu: ' + line);
   End;
  End;
 End;

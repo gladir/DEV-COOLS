@@ -4977,6 +4977,157 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE [COMPLET] }
+{ ============================================================================ }
+
+{ Parse CLEAR variable.
+  Generation :
+    TYPE I/N/F/P : MOV WORD PTR [lbl], 0
+    TYPE C(n)    : REP STOSB avec espace + terminateur '$'
+    TYPE TABLE   : stub -> mise a zero du mot de tete (count)               }
+Procedure ParseClear;
+Var varname : String;
+    sym_idx : Integer;
+Begin
+ Consume; { skip CLEAR }
+ EmitComment('CLEAR');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de variable attendu apres CLEAR'); SkipToDot; Exit; End;
+ varname := cur_tok_str;
+ sym_idx := FindSym(varname);
+ If sym_idx = 0 Then
+ Begin
+  Warning('CLEAR : variable inconnue ''' + varname + '''');
+  Consume;
+ End Else
+ Begin
+  Consume;
+  If sym_table[sym_idx].data_type = TYPE_TABLE Then
+  Begin
+   { Pour une table interne, remettre le mot de tete (count) a 0 }
+   EmitComment('CLEAR ITAB : reset compteur elements');
+   EmitI('MOV     WORD PTR [' + sym_table[sym_idx].asm_label + '], 0');
+  End Else
+   GenClearVar(sym_idx);
+ End;
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres CLEAR');
+End;
+
+{ Parse REFRESH itab.
+  REFRESH vide la table interne : on remet son mot de tete a 0 (stub).       }
+Procedure ParseRefresh;
+Var tname   : String;
+    sym_idx : Integer;
+    sy_ti   : Integer;
+Begin
+ Consume; { skip REFRESH }
+ EmitComment('REFRESH');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table attendu apres REFRESH'); SkipToDot; Exit; End;
+ tname   := cur_tok_str;
+ sym_idx := FindSym(tname);
+ If sym_idx = 0 Then
+  Warning('REFRESH : table inconnue ''' + tname + '''');
+ Consume;
+ If sym_idx > 0 Then
+ Begin
+  EmitComment('REFRESH ' + tname + ' : remise a zero du compteur (stub)');
+  EmitI('MOV     WORD PTR [' + sym_table[sym_idx].asm_label + '], 0');
+  { Remettre aussi SY-TABIX a 0 }
+  sy_ti := FindSym('SY-TABIX');
+  If sy_ti > 0 Then
+   EmitI('MOV     WORD PTR [' + sym_table[sy_ti].asm_label + '], 0');
+ End;
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres REFRESH');
+End;
+
+{ Parse FREE itab.
+  FREE libere la memoire de la table; ici stub identique a REFRESH.           }
+Procedure ParseFree;
+Var tname   : String;
+    sym_idx : Integer;
+Begin
+ Consume; { skip FREE }
+ EmitComment('FREE (stub = REFRESH)');
+ If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin Error('Nom de table attendu apres FREE'); SkipToDot; Exit; End;
+ tname   := cur_tok_str;
+ sym_idx := FindSym(tname);
+ If sym_idx = 0 Then
+  Warning('FREE : table inconnue ''' + tname + '''');
+ Consume;
+ If sym_idx > 0 Then
+ Begin
+  EmitComment('FREE ' + tname + ' : remise a zero (stub)');
+  EmitI('MOV     WORD PTR [' + sym_table[sym_idx].asm_label + '], 0');
+ End;
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres FREE');
+End;
+
+{ Parse CHECK condition.
+  Si la condition est fausse, saute au label de sortie courant (EXIT/ENDDO).
+  Identique a : IF NOT condition. EXIT. ENDIF.                                }
+Procedure ParseCheck;
+Var lbl_exit   : String;
+    is_local   : Boolean;
+Begin
+ Consume; { skip CHECK }
+ EmitComment('CHECK');
+ { Evaluer la condition -> resultat dans AX }
+ ParseExpr;
+ { Recuperer le label de sortie du scope le plus proche }
+ lbl_exit := CurrentExitLabel;
+ is_local := False;
+ If lbl_exit = '' Then
+ Begin
+  Warning('CHECK : aucun label de sortie dans le scope courant, CHECK devient no-op');
+  lbl_exit := NewLabel;
+  is_local := True;
+ End;
+ { Si AX = 0 (faux), sauter au label de sortie }
+ GenJmpIfFalse(lbl_exit);
+ { Si label local (aucun scope valide), le placer tout de suite apres }
+ If is_local Then EmitLabel(lbl_exit);
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres CHECK');
+End;
+
+{ Parse EXIT.
+  Saute au label de sortie du scope courant (fin de LOOP/DO/WHILE/FORM).      }
+Procedure ParseExit;
+Var lbl : String;
+Begin
+ Consume; { skip EXIT }
+ EmitComment('EXIT');
+ lbl := CurrentExitLabel;
+ If lbl <> '' Then
+  EmitI('JMP     ' + lbl)
+ Else
+  Warning('EXIT : aucun label de sortie dans le scope courant (ignore)');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres EXIT');
+End;
+
+{ Parse CONTINUE.
+  Saute au debut de la boucle courante (tete de DO/WHILE/LOOP AT).            }
+Procedure ParseContinue;
+Var lbl : String;
+Begin
+ Consume; { skip CONTINUE }
+ EmitComment('CONTINUE');
+ lbl := CurrentContLabel;
+ If lbl <> '' Then
+  EmitI('JMP     ' + lbl)
+ Else
+  Warning('CONTINUE : aucun label de continuation dans le scope courant (ignore)');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres CONTINUE');
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
