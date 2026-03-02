@@ -12,7 +12,9 @@
             Tags de valeurs LISP (LTAG_NIL, LTAG_T, LTAG_FIXNUM, LTAG_SYMBOL,
             LTAG_CONS, LTAG_STRING, LTAG_FUNC, LTAG_LAMBDA).
             Constantes d'erreur et limites (MAX_SYM, MAX_CONS, MAX_DEPTH...).
-            => FAIT (squelette ci-dessous)
+            Utilitaires : ItoS, ItoSI, UpCaseStr, AsmStr, SymToAsm,
+            FuncToAsm, Error, Warning.
+            => COMPLET
 
   TODO 02 - Tokeniseur LISP (Lexer)
             Procedure InitTokenizer : ouvrir source, init etat.
@@ -269,7 +271,7 @@
               (defun fact (n)
                 (if (= n 0)
                   1
-                  (* n (fact (- n 1)))))
+                  ( * n (fact (- n 1)))))
               (defun main ()
                 (setq x 10)
                 (print (fact x))
@@ -507,7 +509,7 @@ Var
 { TODO 12 : Procedure GenExpr      (forward) }
 
 { ============================================================================ }
-{ TODO 01 - Utilitaires de base                                                }
+{ TODO 01 - Architecture + utilitaires de base                [COMPLET]        }
 { ============================================================================ }
 
 Function ItoS(n: LongInt): String;
@@ -1472,7 +1474,7 @@ Begin
  EmitLabel(fp^.asm_label);
  Emit('        PUSH    BP');
  Emit('        MOV     BP, SP');
- { Reserver de l'espace pour les locaux (si LET/LET*) }
+ { Reserver de l'espace pour les locaux (si LET ou LET-STAR) }
  EmitComment('Parametres: ' + ItoSI(fp^.param_count));
  { Les parametres sont sur la pile : [BP+4] = 1er, [BP+6] = 2eme... }
  { (BP+0 = ancien BP, BP+2 = adresse retour) }
