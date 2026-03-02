@@ -5084,6 +5084,482 @@ Begin
   ParseGotoField;
 End;
 
+{ ============================================================================
+  TODO 16 - PARSER ET CODEGEN : AFFECTATION SIMPLE (SANS PATRON)
+  ============================================================================
+
+  Gere les instructions de la forme :   [label]  subject = expression  [:goto]
+
+  Expression droite : suite de tokens separes par des espaces, concatenes.
+  Chaque token peut etre :
+      'literal'          -> string literal (GenDescriptorFromLit)
+      entier 0..32767    -> converti par _RT_INT2STR -> DI
+      variable (IDENT)   -> LEA DI, [VAR_D] (descripteur existant)
+      FUNC(args)         -> appel stub (TODO 21) ; en v1 : variable simple
+
+  Concatenation :
+      Si plusieurs tokens : chaque token evalue -> DI ; puis CALL _SB_CONCATSTR
+      accumulant dans un descripteur resultat (DX devient DI suivant).
+
+  Affectation scalaire   X = expr :
+      EvalExpr(inst_repl) -> DI
+      EmitStoreVarDesc(sujet)
+
+  Affectation indexee    X<i> = expr :
+      EmitLoadVarDesc(base) -> BX (ptr array)
+      EvalExprToken(subscript) -> AX (index entier)
+      EvalExpr(inst_repl) -> SI (ptr val desc)
+      CALL _RT_ARRAY_SET
+
+  Section goto emise par EmitGotoSection (succes/echec/inconditionnel).
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  AsmVarDesc : nom du descripteur ASM d'une variable (label_D).
+  Identique a DescLabel deficit dans TODO 04.
+  -------------------------------------------------------------------------- }
+Function AsmVarDesc(Const varname : TString) : TString;
+Begin
+  Result := AsmSafeIdent(UpCaseStr(varname)) + '_D';
+End;
+
+{ --------------------------------------------------------------------------
+  AsmVarData : nom du buffer de donnees ASM (label_S).
+  -------------------------------------------------------------------------- }
+Function AsmVarData(Const varname : TString) : TString;
+Begin
+  Result := AsmSafeIdent(UpCaseStr(varname)) + '_S';
+End;
+
+{ --------------------------------------------------------------------------
+  EmitLoadVarDesc : charger l'adresse du descripteur d'une variable dans DI.
+  Emettre :  LEA  DI, [VAR_D]
+  Si la variable n'est pas encore dans la table des symboles, l'ajouter.
+  -------------------------------------------------------------------------- }
+Procedure EmitLoadVarDesc(Const varname : TString);
+Var sym : Integer;
+Begin
+  sym := FindSym(UpCaseStr(varname));
+  If sym < 0 Then
+    sym := AddSym(UpCaseStr(varname), SK_VAR, VK_UNDEF);
+  EmitI('LEA  DI, [' + AsmVarDesc(varname) + ']');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitLoadVarDescToBX : charger l'adresse du descripteur dans BX.
+  Utile pour les tableaux (BX = ptr tableau).
+  -------------------------------------------------------------------------- }
+Procedure EmitLoadVarDescToBX(Const varname : TString);
+Var sym : Integer;
+Begin
+  sym := FindSym(UpCaseStr(varname));
+  If sym < 0 Then
+    sym := AddSym(UpCaseStr(varname), SK_VAR, VK_UNDEF);
+  EmitI('LEA  BX, [' + AsmVarDesc(varname) + ']');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitStoreVarDesc : copier le descripteur DI vers le descripteur d'une var.
+  Emettre :
+      PUSH AX
+      MOV  AX, [DI]
+      MOV  [VAR_D],   AX      ; ptr
+      MOV  AX, [DI+2]
+      MOV  [VAR_D+2], AX      ; len
+      POP  AX
+  -------------------------------------------------------------------------- }
+Procedure EmitStoreVarDesc(Const varname : TString);
+Var lbl : TString;
+Begin
+  lbl := AsmVarDesc(varname);
+  EmitI('PUSH AX');
+  EmitI('MOV  AX, [DI]');
+  EmitI('MOV  [' + lbl + '],   AX     ; stocker ptr');
+  EmitI('MOV  AX, [DI+2]');
+  EmitI('MOV  [' + lbl + '+2], AX     ; stocker len');
+  EmitI('POP  AX');
+End;
+
+{ --------------------------------------------------------------------------
+  IsStringLiteral : True si tok commence et finit par un apostrophe.
+  -------------------------------------------------------------------------- }
+Function IsStringLiteral(Const tok : TString) : Boolean;
+Begin
+  Result := (Length(tok) >= 2) And (tok[1] = '''') And (tok[Length(tok)] = '''');
+End;
+
+{ --------------------------------------------------------------------------
+  IsIntegerLiteral : True si tok est compose uniquement de chiffres (eventuellement
+  precede d'un '-').
+  -------------------------------------------------------------------------- }
+Function IsIntegerLiteral(Const tok : TString) : Boolean;
+Var i : Integer;
+Begin
+  Result := False;
+  If Length(tok) = 0 Then Exit;
+  i := 1;
+  If tok[1] = '-' Then Inc(i);
+  If i > Length(tok) Then Exit;
+  While i <= Length(tok) Do
+  Begin
+    If Not (tok[i] In ['0'..'9']) Then Exit;
+    Inc(i);
+  End;
+  Result := True;
+End;
+
+{ --------------------------------------------------------------------------
+  IsRealLiteral : True si tok est un reel (chiffres + '.' + chiffres).
+  -------------------------------------------------------------------------- }
+Function IsRealLiteral(Const tok : TString) : Boolean;
+Var i : Integer;
+    dot : Boolean;
+Begin
+  Result := False;
+  dot := False;
+  If Length(tok) = 0 Then Exit;
+  i := 1;
+  If tok[1] = '-' Then Inc(i);
+  If i > Length(tok) Then Exit;
+  While i <= Length(tok) Do
+  Begin
+    If tok[i] = '.' Then
+    Begin
+      If dot Then Exit;
+      dot := True;
+    End
+    Else If Not (tok[i] In ['0'..'9']) Then Exit;
+    Inc(i);
+  End;
+  Result := dot;
+End;
+
+{ --------------------------------------------------------------------------
+  HasFuncCall : True si tok contient une parenthese ouvrante (appel de fonction).
+  -------------------------------------------------------------------------- }
+Function HasFuncCall(Const tok : TString) : Boolean;
+Var i : Integer;
+Begin
+  Result := False;
+  For i := 1 To Length(tok) Do
+    If tok[i] = '(' Then Begin Result := True; Exit; End;
+End;
+
+{ --------------------------------------------------------------------------
+  ExtractFuncName : extraire le nom de la fonction avant '('.
+  -------------------------------------------------------------------------- }
+Function ExtractFuncName(Const tok : TString) : TString;
+Var i : Integer;
+Begin
+  i := 1;
+  While (i <= Length(tok)) And (tok[i] <> '(') Do Inc(i);
+  Result := UpCaseStr(Copy(tok, 1, i - 1));
+End;
+
+{ --------------------------------------------------------------------------
+  ExtractFuncArgs : extraire la liste des arguments entre parentheses.
+  Retourne la chaine brute (non parsee) entre '(' et ')'.
+  -------------------------------------------------------------------------- }
+Function ExtractFuncArgs(Const tok : TString) : TString;
+Var i, depth : Integer;
+Begin
+  i := 1;
+  While (i <= Length(tok)) And (tok[i] <> '(') Do Inc(i);
+  Inc(i);   { sauter '(' }
+  depth := 1;
+  Result := '';
+  While (i <= Length(tok)) And (depth > 0) Do
+  Begin
+    If tok[i] = '(' Then Inc(depth)
+    Else If tok[i] = ')' Then Dec(depth);
+    If depth > 0 Then Result := Result + tok[i];
+    Inc(i);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  StripStringLiteral : retirer les guillemets englobants d'un literal.
+  Ex : '''hello''' -> 'hello'
+  -------------------------------------------------------------------------- }
+Function StripStringLiteral(Const tok : TString) : TString;
+Begin
+  If (Length(tok) >= 2) And (tok[1] = '''') And (tok[Length(tok)] = '''') Then
+    Result := Copy(tok, 2, Length(tok) - 2)
+  Else
+    Result := tok;
+End;
+
+{ --------------------------------------------------------------------------
+  EvalExprToken : evaluer un token unique, mettre le descripteur resultat dans DI.
+  Cas geres :
+    1. Chaine litterale ''...''  -> GenDescriptorFromLit + LEA DI, [desc]
+    2. Entier                    -> MOV AX, val + CALL _RT_INT2STR -> DI
+    3. Reel                      -> MOV AX/DX, val + CALL _RT_REAL2STR -> DI (approx)
+    4. Appel de fonction         -> stub : charger la variable de meme nom (v1)
+    5. Variable                  -> LEA DI, [VAR_D]
+  -------------------------------------------------------------------------- }
+Procedure EvalExprToken(Const tok : TString);
+Var lit       : TString;
+    idx       : Integer;
+    fname     : TString;
+    fargs     : TString;
+    sym       : Integer;
+    int_val   : LongInt;
+    code_i    : Integer;
+Begin
+  If tok = '' Then
+  Begin
+    { Chaine vide : descripteur vide }
+    EmitI('LEA  DI, [_SB_EMPTY_DESC]');
+    Exit;
+  End;
+
+  If IsStringLiteral(tok) Then
+  Begin
+    { --- Chaine litterale --- }
+    lit := StripStringLiteral(tok);
+    idx := AddLiteral(lit);
+    EmitI('LEA  DI, [' + LitDescLabel(idx) + ']');
+  End
+  Else If IsIntegerLiteral(tok) Then
+  Begin
+    { --- Entier --- }
+    Val(tok, int_val, code_i);
+    If code_i = 0 Then
+    Begin
+      EmitI('MOV  AX, ' + IntToStr(int_val));
+      EmitI('CALL _RT_INT2STR          ; AX -> DI descripteur chaine');
+    End
+    Else
+    Begin
+      { Erreur de conversion : traiter comme variable }
+      EmitLoadVarDesc(tok);
+    End;
+  End
+  Else If IsRealLiteral(tok) Then
+  Begin
+    { --- Reel : transformer en literal chaine (valeur brute) --- }
+    idx := AddLiteral(tok);
+    EmitI('LEA  DI, [' + LitDescLabel(idx) + ']');
+  End
+  Else If HasFuncCall(tok) Then
+  Begin
+    { --- Appel de fonction : stub v1 -> charger la variable du meme nom --- }
+    fname := ExtractFuncName(tok);
+    fargs := ExtractFuncArgs(tok);
+    EmitComment('Appel ' + fname + '(' + fargs + ') -> stub v1');
+    sym := FindSym(UpCaseStr(fname));
+    If sym < 0 Then
+      sym := AddSym(UpCaseStr(fname), SK_VAR, VK_UNDEF);
+    EmitI('LEA  DI, [' + AsmVarDesc(fname) + ']');
+  End
+  Else
+  Begin
+    { --- Variable scalaire --- }
+    EmitLoadVarDesc(tok);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  SplitTokens : decouper une expression en tokens sur les espaces.
+  Respecte les guillemets et les parentheses imbriquees.
+  Retourne les tokens dans un tableau toks (max 16), nb dans count.
+  -------------------------------------------------------------------------- }
+Procedure SplitTokens(Const expr : TString; Var toks : Array of TString; Var count : Integer);
+Var i    : Integer;
+    cur  : TString;
+    c    : Char;
+    depth : Integer;
+    inquote : Boolean;
+Begin
+  count   := 0;
+  cur     := '';
+  depth   := 0;
+  inquote := False;
+  For i := 1 To Length(expr) Do
+  Begin
+    c := expr[i];
+    If inquote Then
+    Begin
+      cur := cur + c;
+      If c = '''' Then inquote := False;
+    End
+    Else If c = '''' Then
+    Begin
+      inquote := True;
+      cur := cur + c;
+    End
+    Else If c = '(' Then
+    Begin
+      Inc(depth);
+      cur := cur + c;
+    End
+    Else If c = ')' Then
+    Begin
+      If depth > 0 Then Dec(depth);
+      cur := cur + c;
+    End
+    Else If (c In [' ', #9]) And (depth = 0) Then
+    Begin
+      If cur <> '' Then
+      Begin
+        If count <= High(toks) Then
+        Begin
+          toks[count] := cur;
+          Inc(count);
+        End;
+        cur := '';
+      End;
+    End
+    Else
+      cur := cur + c;
+  End;
+  If cur <> '' Then
+  Begin
+    If count <= High(toks) Then
+    Begin
+      toks[count] := cur;
+      Inc(count);
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  EvalExpr : evaluer une expression (concatenation de tokens) -> DI = desc.
+  Si expr est vide -> LEA DI, [_SB_EMPTY_DESC].
+  Si un token unique -> EvalExprToken.
+  Sinon : evaluer chaque token, concatener successivement via _SB_CONCATSTR.
+  -------------------------------------------------------------------------- }
+Procedure EvalExpr(Const expr : TString);
+Var toks  : Array[0..15] Of TString;
+    count : Integer;
+    i     : Integer;
+Begin
+  If expr = '' Then
+  Begin
+    EmitI('LEA  DI, [_SB_EMPTY_DESC]');
+    Exit;
+  End;
+  { Decoupe en tokens }
+  SplitTokens(expr, toks, count);
+  If count = 0 Then
+  Begin
+    EmitI('LEA  DI, [_SB_EMPTY_DESC]');
+    Exit;
+  End;
+  { Evaluer le premier token -> DI }
+  EvalExprToken(toks[0]);
+  { Concatener les tokens suivants }
+  For i := 1 To count - 1 Do
+  Begin
+    EmitComment('Concatenation token ' + IntToStr(i + 1));
+    EmitI('PUSH DI                    ; [1] sauvegarder gauche');
+    EvalExprToken(toks[i]);            { DI = droite }
+    EmitI('MOV  SI, DI               ; SI = droite');
+    EmitI('POP  DI                    ; [1] DI = gauche');
+    EmitI('CALL _SB_CONCATSTR         ; DX = resultat concat');
+    EmitI('MOV  DI, DX               ; DI = descripteur resultat');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  EmitGotoSection : emettre le code de saut de la section goto.
+  Conventions :
+      goto_u (inconditionnel) -> JMP lbl (toujours emis en premier)
+      goto_s (succes)         -> JMP lbl (utilise apres un test de succes)
+      goto_f (echec)          -> JMP lbl (utilise apres un test d'echec)
+  Pour une affectation simple (sans patron), le matching ne peut pas echouer :
+      succes = toujours; echec = jamais.
+  Donc :  si goto_u <> '' -> JMP goto_u
+          si goto_s <> '' -> JMP goto_s  (la branche succes)
+          si goto_f <> '' -> rien (echec impossible ici)
+  -------------------------------------------------------------------------- }
+Procedure EmitGotoSection;
+Begin
+  If inst_goto_u <> '' Then
+  Begin
+    EmitI('JMP  ' + AsmSafeIdent(UpCaseStr(inst_goto_u)));
+  End
+  Else If inst_goto_s <> '' Then
+  Begin
+    EmitI('JMP  ' + AsmSafeIdent(UpCaseStr(inst_goto_s)));
+  End;
+  { inst_goto_f : impossible pour affectation pure -> ignore }
+End;
+
+{ --------------------------------------------------------------------------
+  GenLabelDef : si inst_label est non vide, emettre l'etiquette ASM
+  et la definir dans la table des labels.
+  -------------------------------------------------------------------------- }
+Procedure GenLabelDef;
+Var lbl_idx : Integer;
+Begin
+  If inst_label = '' Then Exit;
+  lbl_idx := FindLabel(inst_label);
+  If lbl_idx = 0 Then
+    lbl_idx := AddLabel(inst_label);
+  DefineLabel(lbl_idx, 0);
+  EmitLabel(AsmSafeIdent(UpCaseStr(inst_label)));
+End;
+
+{ --------------------------------------------------------------------------
+  GenSimpleAssign : generer le code d'une affectation simple sans patron.
+  Cas 1 : scalaire   X = expr
+  Cas 2 : tableau    X<i> = expr
+  -------------------------------------------------------------------------- }
+Procedure GenSimpleAssign;
+Var base      : TString;
+    subscript : TString;
+Begin
+  EmitComment('Affectation : ' + inst_subject + ' = ' + inst_repl);
+  If HasSubjectArrayAccess(inst_subject) Then
+  Begin
+    { --- Cas 2 : affectation indexee X<i> = expr --- }
+    ParseArraySubscript(inst_subject, base, subscript);
+    EmitComment('  Tableau : ' + base + '[' + subscript + ']');
+    { Charger ptr du tableau dans BX }
+    EmitLoadVarDescToBX(base);
+    EmitI('MOV  BX, [BX]             ; BX = ptr donnees = ptr array header');
+    { Evaluer l'indice -> AX }
+    EmitComment('  Evaluer indice');
+    EvalExprToken(subscript);          { DI = desc indice (chaine) }
+    EmitI('CALL _RT_STR2INT           ; SI=DI -> AX = entier indice');
+    EmitI('PUSH AX                    ; [1] sauvegarder indice');
+    EmitI('PUSH BX                    ; [2] sauvegarder ptr array');
+    { Evaluer la valeur -> DI }
+    EmitComment('  Evaluer expression droite');
+    EvalExpr(inst_repl);               { DI = descripteur valeur }
+    EmitI('MOV  SI, DI               ; SI = val_desc');
+    EmitI('POP  BX                    ; [2] ptr array');
+    EmitI('POP  AX                    ; [1] indice');
+    EmitI('CALL _RT_ARRAY_SET         ; stocker SI dans BX[AX]');
+    EmitI('CMP  AX, 0');
+    EmitI('JE   _RT_ARRAY_OOB_ERR     ; hors-bornes -> erreur fatale');
+  End
+  Else
+  Begin
+    { --- Cas 1 : affectation scalaire X = expr --- }
+    EvalExpr(inst_repl);               { DI = descripteur valeur }
+    EmitStoreVarDesc(inst_subject);
+  End;
+  { Section goto }
+  EmitGotoSection;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenSimpleAccess : generer le code d'un simple acces (sujet seul, sans patron
+  ni remplacement). En SNOBOL4 : teste si la variable est definie (non-echec).
+  En v1 : simple no-op avec gestion goto.
+  -------------------------------------------------------------------------- }
+Procedure GenSimpleAccess;
+Begin
+  EmitComment('Acces : ' + inst_subject + ' (test existence)');
+  EmitComment('  v1 : non-implementee, traite comme succes');
+  EmitGotoSection;
+  EmitBlank;
+End;
+
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
   sym_table   := Nil;

@@ -2381,7 +2381,7 @@ Begin
  End;
 End;
 
-{ Parser les d√©clarations de constantes }
+ { Analyser les dÇclarations de constantes }
 Procedure ParseConstDeclarations;
 Var
  const_name: String;
@@ -2393,50 +2393,39 @@ Var
  code_val: Integer;
 Begin
  NextToken; { Consommer CONST }
-
- While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
- Begin
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do Begin
   const_name := current_token;
   NextToken; { Consommer le nom }
-
-  { Attendre le = }
-  If current_token <> '=' Then
-  Begin
-   Error('Attendu = apr√®s nom de constante: ' + const_name);
+   { Attendre le = }
+  If current_token <> '=' Then Begin
+   Error('Attendu = apräs nom de constante: ' + const_name);
    Break;
   End;
   NextToken; { Consommer = }
-
   { Lire la valeur }
   is_negative := False;
-  If current_token = '-' Then
-  Begin
+  If current_token = '-' Then Begin
    is_negative := True;
    NextToken; { Consommer le signe moins }
   End;
-
   const_val := 0;
   const_type := TYPE_INTEGER;
   const_val_str := '';
-
-  { V√©rifier d'abord si c'est une cha√Æne entre guillemets simples }
-  If current_symbol = SYM_STRING_LITERAL Then
-  Begin
+   { VÇrifier d'abord si c'est une chaåne entre guillemets simples }
+  If current_symbol = SYM_STRING_LITERAL Then Begin
    { Constante entre guillemets simples }
    const_val_str := current_token;
-   If Length(const_val_str) = 1 Then
-   Begin
-    { Caract√®re unique : TYPE_CHAR }
+   If Length(const_val_str) = 1 Then Begin
+    { Caractäre unique : TYPE_CHAR }
     const_val := Ord(const_val_str[1]);
     const_type := TYPE_CHAR;
    End
-   Else
-   Begin
-    { Cha√Æne de plusieurs caract√®res : √©mettre dans .DATA }
-    const_type := TYPE_STRING;
-    If data_segment Then
-     EmitLine(UpperCase(const_name) + '_STR DB ''' + const_val_str + ''', 0')
     Else
+   Begin
+    { Chaåne de plusieurs caractäres : êmettre dans .DATA }
+    const_type := TYPE_STRING;
+    If data_segment Then EmitLine(UpperCase(const_name) + '_STR DB ''' + const_val_str + ''', 0')
+     Else
     Begin
      EmitLine('.DATA');
      data_segment := True;
@@ -2446,96 +2435,91 @@ Begin
    End;
    NextToken;
   End
-  Else If UpperCase(current_token) = 'TRUE' Then
-  Begin
+   Else
+  If UpperCase(current_token) = 'TRUE' Then Begin
    const_val := 1;
    const_type := TYPE_BOOLEAN;
    NextToken;
   End
-  Else If UpperCase(current_token) = 'FALSE' Then
-  Begin
+   Else
+  If UpperCase(current_token) = 'FALSE' Then Begin
    const_val := 0;
    const_type := TYPE_BOOLEAN;
    NextToken;
   End
-  Else If (Length(current_token) = 1) and
-          ((current_token[1] >= '0') and (current_token[1] <= '9') or
-           (current_token[1] = '$')) Then
-  Begin
-   { Nombre d√©cimal ou hexad√©cimal }
+   Else
+  If (Length(current_token) = 1) and
+     ((current_token[1] >= '0') and (current_token[1] <= '9') or
+      (current_token[1] = '$')) Then Begin
+   { Nombre dÇcimal ou hexadÇcimal }
    Val(current_token, const_val, code_val);
-   If code_val <> 0 Then
-   Begin
-    Warning('Valeur num√©rique invalide pour la constante: ' + const_name + ', assum√© 0');
+   If code_val <> 0 Then Begin
+    Warning('Valeur numÇrique invalide pour la constante: ' + const_name + ', assumÇ 0');
     const_val := 0;
    End;
    If is_negative Then const_val := -const_val;
    const_type := TYPE_INTEGER;
    NextToken;
   End
-  Else If (Length(current_token) > 1) and
-          (current_token[1] >= '0') and (current_token[1] <= '9') Then
-  Begin
-   { Nombre √† plusieurs chiffres }
+   Else
+  If (Length(current_token) > 1) and
+     (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
+   { Nombre Ö plusieurs chiffres }
    Val(current_token, const_val, code_val);
-   If code_val <> 0 Then
-   Begin
-    Warning('Valeur num√©rique invalide pour la constante: ' + const_name + ', assum√© 0');
+   If code_val <> 0 Then Begin
+    Warning('Valeur numÇrique invalide pour la constante: ' + const_name + ', assumÇ 0');
     const_val := 0;
    End;
    If is_negative Then const_val := -const_val;
    const_type := TYPE_INTEGER;
    NextToken;
   End
-  Else
+   Else
   Begin
-   { R√©f√©rencer un autre symbole CONST ou expression inconnue }
+   { RÇfÇrencer un autre symbole CONST ou expression inconnue }
    sym_index := FindSymbol(current_token);
-   If (sym_index > 0) and (symbol_table[sym_index]^.symbol_type = SYM_CONST) Then
-   Begin
+   If (sym_index > 0) and (symbol_table[sym_index]^.symbol_type = SYM_CONST) Then Begin
     const_val := symbol_table[sym_index]^.value;
     const_type := symbol_table[sym_index]^.data_type;
    End
-   Else
+    Else
    Begin
-    Warning('Valeur de constante non reconnue: ' + current_token + ', assum√© 0');
+    Warning('Valeur de constante non reconnue: ' + current_token + ', assumÇ 0');
     const_val := 0;
     const_type := TYPE_INTEGER;
    End;
    NextToken;
   End;
-
-  { Ajouter la constante √† la table des symboles }
+   { Ajouter la constante Ö la table des symboles }
   sym_index := AddSymbol(const_name, SYM_CONST, const_type, STORAGE_GLOBAL);
-  If sym_index > 0 Then
-  Begin
+  If sym_index > 0 Then Begin
    symbol_table[sym_index]^.value := const_val;
-   { √âmettre un commentaire dans le .ASM pour documenter la constante }
+   { êmettre un commentaire dans le .ASM pour documenter la constante }
    If const_type = TYPE_STRING Then
     EmitComment('Constante: ' + UpperCase(const_name) + ' = ''' +
                 const_val_str + ''' (label: ' + UpperCase(const_name) + '_STR)')
-   Else If const_type = TYPE_BOOLEAN Then
-   Begin
+    Else
+   If const_type = TYPE_BOOLEAN Then Begin
     If const_val <> 0 Then
      EmitComment('Constante: ' + UpperCase(const_name) + ' = TRUE')
     Else
      EmitComment('Constante: ' + UpperCase(const_name) + ' = FALSE');
    End
-   Else If const_type = TYPE_CHAR Then
+    Else
+   If const_type = TYPE_CHAR Then
     EmitComment('Constante: ' + UpperCase(const_name) + ' = ''' + Chr(const_val) + '''')
    Else
     EmitComment('Constante: ' + UpperCase(const_name) + ' = ' + IntToStr(const_val));
   End;
-
   { Attendre ; }
   If current_token = ';' Then
    NextToken
   Else
-   Error('Attendu ; apr√®s d√©claration de constante');
+   Error('Attendu ; apräs dÇclaration de constante');
  End;
 End;
 
-{ Parser les d√©clarations de variables }
+ { Analyser les dÇclarations de variables }
 Procedure ParseVarDeclarations;
 Var
  var_names: Array[1..50] of String;
@@ -2545,12 +2529,10 @@ Var
  i, sym_index: Integer;
  string_size: Integer;   { Taille de STRING ou taille totale en octets (ARRAY) }
  const_idx: Integer;     { Index pour chercher une constante }
- array_low, array_high, array_elem_size: Integer; { Bornes et taille √©l√©ment du tableau }
+ array_low, array_high, array_elem_size: Integer; { Bornes et taille ÇlÇment du tableau }
 Begin
  NextToken; { Consommer VAR }
-
- While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do
- Begin
+ While (current_symbol = SYM_UNKNOWN) and (current_token <> '') do Begin
   { Lire les noms de variables }
   var_count := 0;
   Repeat
@@ -2560,35 +2542,25 @@ Begin
     var_names[var_count] := current_token;
     NextToken;
    End
-   Else
+    Else
    Begin
     Error('Attendu nom de variable');
     Break;
    End;
-
-   If current_token = ',' Then
-    NextToken
-   Else
-    Break;
+   If current_token = ',' Then NextToken
+                          Else Break;
   Until False;
-
-  { Attendre le deux-points }
-  If current_token = ':' Then
-   NextToken
-  Else
-   Error('Attendu : apr√®s nom de variable');
-
+   { Attendre le deux-points }
+  If current_token = ':' Then NextToken
+                         Else Error('Attendu : apräs nom de variable');
   { Lire le type }
-  If Accept(SYM_ARRAY) Then
-  Begin
-   { Syntaxe: Array[low..high] of ElementType }
+  If Accept(SYM_ARRAY) Then Begin
+    { Syntaxe: Array[low..high] of ElementType }
    NextToken; { Consommer ARRAY }
    array_low := 0;
    array_high := 0;
    array_elem_size := 2;
-
-   If current_token = '[' Then
-   Begin
+   If current_token = '[' Then Begin
     NextToken; { Consommer '[' }
 
     { Borne inf√©rieure: nombre ou constante }
