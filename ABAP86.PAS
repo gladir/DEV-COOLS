@@ -2396,10 +2396,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF         [COMPLET]            }
+{ ANALYSEUR : IF / ELSEIF / ELSE / ENDIF                                       }
 { ============================================================================ }
 
-{ Forward pour ParseStatement (defini au TODO 23) }
+{ Forward pour ParseStatement }
 Procedure ParseStatement; Forward;
 Procedure ParseEvent(ev_kind: Integer; Const ev_label, ev_name: String; is_stub: Boolean); Forward;
 Procedure ParseParameters; Forward;
@@ -2515,7 +2515,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 11 - PARSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE [COMPLET]           }
+{ ANALYSEUR : CASE / WHEN / WHEN OTHERS / ENDCASE                              }
 { ============================================================================ }
 
 { Parse CASE variable. WHEN val [OR val2]. ... [WHEN OTHERS. ...] ENDCASE.
@@ -2625,7 +2625,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 12 - PARSEUR : WHILE/ENDWHILE et DO [n TIMES]/ENDDO  [COMPLET]         }
+{ ANALYSEUR : WHILE/ENDWHILE et DO [n TIMES]/ENDDO                             }
 { ============================================================================ }
 
 { Parse WHILE condition. instructions. ENDWHILE.
@@ -2772,10 +2772,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - PARSEUR : PERFORM / FORM / ENDFORM           [COMPLET]            }
+{ ANALYSEUR : PERFORM / FORM / ENDFORM                                         }
 { ============================================================================ }
 
-{ Parse PERFORM nom [USING arg...] [CHANGING arg...] [TABLES arg...].
+{ Analyse PERFORM nom [USING arg...] [CHANGING arg...] [TABLES arg...].
 
   Convention d'appel 8086 (voir ParseForm) :
     Les arguments sont pousses de gauche a droite sur la pile.
@@ -2922,7 +2922,7 @@ Begin
  EmitBlank;
  EmitComment('FORM ' + form_table^[fi].name);
  EmitLabel(form_table^[fi].asm_label);
- GenPrologue(0);   { pas de locaux pour l'instant ; DATA locaux : TODO 18 }
+ GenPrologue(0);   { pas de locaux pour l'instant ; DATA locaux }
 
  { Corps de la FORM }
  ParseBlock(KW_ENDFORM, KW_NONE, KW_NONE);
@@ -2944,7 +2944,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE            [COMPLET]            }
+{ ANALYSEUR : WRITE / SKIP / NEW-LINE                                          }
 { ============================================================================ }
 
 { Emet un seul element WRITE : variable ou literal.
@@ -3112,7 +3112,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 15 - PARSEUR : MOVE / COMPUTE / ARITHMETIC        [COMPLET]            }
+{ ANALYSEUR : MOVE / COMPUTE / ARITHMETIC                                      }
 { ============================================================================ }
 
 { Aide : resoudre un identifiant -> sym_idx, avec warning si inconnu }
@@ -3214,7 +3214,7 @@ Begin
  Consume; { skip TO }
  { val2 / var : lire le nom pour check GIVING }
  If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
- Begin Error('Variable attendue apres ADD â€¦ TO'); SkipToDot; Exit; End;
+ Begin Error('Variable attendue apres ADD … TO'); SkipToDot; Exit; End;
  lbl_to  := cur_tok_str;
  sym_to  := ResolveIdent(lbl_to);
  Consume; { ident val2 / var }
@@ -3262,7 +3262,7 @@ Begin
  Begin Error('FROM attendu apres SUBTRACT val'); SkipToDot; Exit; End;
  Consume; { skip FROM }
  If (cur_tok_type <> TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
- Begin Error('Variable attendue apres SUBTRACT â€¦ FROM'); SkipToDot; Exit; End;
+ Begin Error('Variable attendue apres SUBTRACT … FROM'); SkipToDot; Exit; End;
  vname   := cur_tok_str;
  sym_var := ResolveIdent(vname); Consume;
  { var -> AX }
@@ -3329,7 +3329,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 16 - PARSEUR : LOOP AT / APPEND / READ / SORT / DELETE [COMPLET]       }
+{ ANALYSEUR : LOOP AT / APPEND / READ / SORT / DELETE [COMPLET]       }
 { ============================================================================ }
 
 { Consomme une clause WHERE ... jusqu'au point (skip les tokens)              }

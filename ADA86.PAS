@@ -4156,10 +4156,263 @@ Begin
  End;
 End;
 
-{ ---- ParseStatement : stub (sera complete au TODO 15) ---- }
-Procedure ParseStatement;
+{ ============================================================================ }
+{ TODO 15 - ParseStatement : dispatcher principal des instructions             }
+{ ============================================================================ }
+
+{ ---- Prototypes forward pour instructions complexes (TODOs 16-18) ---- }
+Procedure ParseAssignment;   Forward;
+Procedure ParseProcedureCall; Forward;
+Procedure ParseIf;           Forward;
+Procedure ParseCase;         Forward;
+Procedure ParseLoop;         Forward;
+Procedure ParseWhile;        Forward;
+Procedure ParseFor;          Forward;
+Procedure ParseReturn;       Forward;
+Procedure ParseRaise;        Forward;
+Procedure ParseBeginBlock;   Forward;
+
+{ ---- ParseNull : NULL ; ---- }
+Procedure ParseNull;
 Begin
- { Stub minimal : absorbe une instruction jusqu'au ';' }
+ Consume; { NULL }
+ Expect(TOK_SEMI, '`;` attendu apres NULL');
+End;
+
+{ ---- ParsePragma : PRAGMA ident [(args)] ; ---- }
+Procedure ParsePragma;
+Begin
+ Consume; { PRAGMA }
+ If cur_tok_type = TOK_IDENT Then Consume;  { nom du pragma }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  Consume;
+  While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+  Consume; { ) }
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres PRAGMA');
+End;
+
+{ ---- ParseExit : EXIT [WHEN expr] ; ---- }
+Procedure ParseExit;
+Var lbl_end  : String;
+    lbl_cont : String;
+Begin
+ Consume; { EXIT }
+ lbl_end := FindLoopEnd;
+ If TokIsKw(KW_WHEN) Then
+ Begin
+  Consume; { WHEN }
+  ParseExpr;           { AX = condition }
+  { Sauter si AX <> 0 (True) }
+  If lbl_end <> '' Then
+  Begin
+   EmitI('CMP  AX, 0');
+   EmitI('JNE  ' + lbl_end);
+  End
+  Else
+   Warning('EXIT WHEN sans boucle englobante');
+ End
+ Else
+ Begin
+  { EXIT inconditionnel }
+  If lbl_end <> '' Then
+   EmitI('JMP  ' + lbl_end)
+  Else
+   Warning('EXIT sans boucle englobante');
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres EXIT');
+End;
+
+{ ---- ParseGoto : GOTO label ; (stub minimal) ---- }
+Procedure ParseGoto;
+Var lbl : String;
+Begin
+ Consume; { GOTO }
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  lbl := UpCaseStr(cur_tok_str);
+  Consume;
+  EmitI('JMP  ' + AsmIdent('_LBL_', lbl));
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres GOTO');
+End;
+
+{ ---- ParseLabeledStatement : <<nom>> ---- }
+Procedure ParseLabeledStatement;
+Var lbl : String;
+Begin
+ { Deja consomme le premier '<' }
+ If cur_tok_type = TOK_LT Then
+ Begin
+  Consume; { second '<' }
+  If cur_tok_type = TOK_IDENT Then
+  Begin
+   lbl := UpCaseStr(cur_tok_str);
+   Consume;
+   EmitLabel(AsmIdent('_LBL_', lbl));
+   Expect(TOK_GT, '`>` attendu');
+   Expect(TOK_GT, '`>>` attendu');
+  End
+  Else
+   ErrorTok('Nom de label attendu apres <<');
+ End;
+End;
+
+{ ---- ParseBeginBlock : [DECLARE decls] BEGIN stmts [EXCEPTION] END ; ---- }
+Procedure ParseBeginBlock;
+Var frame  : Integer;
+    lbl_ex : String;
+    lbl_end: String;
+Begin
+ PushScope(SK_BLOCK, CurrentSubIdx);
+
+ If TokIsKw(KW_DECLARE) Then
+ Begin
+  Consume;
+  ParseDeclarativePart;
+ End;
+
+ { Allouer la frame du bloc si variables locales }
+ frame := -scope_stack^[scope_top].bp_top;
+ If frame > 0 Then
+ Begin
+  EmitI('SUB  SP, ' + IntToStr(frame));
+  EmitLocalInits(scope_stack^[scope_top].sym_start);
+ End;
+
+ ExpectKw(KW_BEGIN, 'BEGIN', '`BEGIN` attendu dans bloc');
+ ParseSequenceOfStatements;
+
+ If TokIsKw(KW_EXCEPTION) Then
+ Begin
+  lbl_end := NewLabel;
+  EmitI('JMP  ' + lbl_end);
+  lbl_ex  := NewLabel;
+  EmitLabel(lbl_ex);
+  Consume; { EXCEPTION }
+  ParseExceptionHandlers(lbl_end);
+  EmitLabel(lbl_end);
+ End;
+
+ If frame > 0 Then
+  EmitI('ADD  SP, ' + IntToStr(frame));
+
+ PopScope;
+
+ ExpectKw(KW_END, 'END', '`END` attendu apres bloc');
+ If cur_tok_type = TOK_IDENT Then Consume;  { nom optionnel }
+ Expect(TOK_SEMI, '`;` attendu apres END de bloc');
+End;
+
+{ ---- IsEndBoundary : teste si le token courant termine une sequence ---- }
+Function IsEndBoundary: Boolean;
+Begin
+ IsEndBoundary :=
+   (cur_tok_type = TOK_EOF)     Or
+   TokIsKw(KW_END)              Or
+   TokIsKw(KW_EXCEPTION)        Or
+   TokIsKw(KW_ELSIF)            Or
+   TokIsKw(KW_ELSE)             Or
+   TokIsKw(KW_WHEN);
+End;
+
+{ ---- ParseStatement : dispatcher principal ---- }
+Procedure ParseStatement;
+Var nm      : String;
+    sym     : Integer;
+    sub     : Integer;
+    is_call : Boolean;
+Begin
+ If IsEndBoundary Then Exit;
+
+ { === NULL === }
+ If TokIsKw(KW_NULL) Then Begin ParseNull; Exit; End;
+
+ { === PRAGMA === }
+ If TokIsKw(KW_PRAGMA) Then Begin ParsePragma; Exit; End;
+
+ { === EXIT === }
+ If TokIsKw(KW_EXIT) Then Begin ParseExit; Exit; End;
+
+ { === GOTO === }
+ If TokIsKw(KW_GOTO) Then Begin ParseGoto; Exit; End;
+
+ { === RETURN === }
+ If TokIsKw(KW_RETURN) Then Begin ParseReturn; Exit; End;
+
+ { === RAISE === }
+ If TokIsKw(KW_RAISE) Then Begin ParseRaise; Exit; End;
+
+ { === IF === }
+ If TokIsKw(KW_IF) Then Begin ParseIf; Exit; End;
+
+ { === CASE === }
+ If TokIsKw(KW_CASE) Then Begin ParseCase; Exit; End;
+
+ { === LOOP (boucle infinie) === }
+ If TokIsKw(KW_LOOP) Then Begin ParseLoop; Exit; End;
+
+ { === WHILE === }
+ If TokIsKw(KW_WHILE) Then Begin ParseWhile; Exit; End;
+
+ { === FOR === }
+ If TokIsKw(KW_FOR) Then Begin ParseFor; Exit; End;
+
+ { === DECLARE ... BEGIN ou BEGIN (bloc declare) === }
+ If TokIsKw(KW_DECLARE) Or TokIsKw(KW_BEGIN) Then
+ Begin ParseBeginBlock; Exit; End;
+
+ { === Label Ada : <<nom>> === }
+ If cur_tok_type = TOK_LT Then
+ Begin
+  Consume;
+  ParseLabeledStatement;
+  Exit;
+ End;
+
+ { === Identifiant : assignment, proc call, ou declaration d'objet === }
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  nm := UpCaseStr(cur_tok_str);
+
+  { Declaration d'objet detectable par ':' apres le nom }
+  { On utilise PeekNextChar pour voir si le suivant est ':' }
+  { Approche : on compare cur_tok_kw = KW_NONE et regarde si la variable
+    n'est pas dans sub_table (ce serait une proc call).
+    La distinction assignment vs proc call se fait DANS ParseAssignment /
+    ParseProcedureCall apres consommation du nom.                         }
+
+  { Procedure call detectee si : nom est connu dans sub_table OU
+    si le token apres est '(' sans ':=' -> traiter comme appel }
+  sub := FindSub(nm);
+  sym := FindSym(nm);
+
+  { Si le nom n'est ni un symbole ni un sous-programme -> possible decl }
+  If (sub = 0) And (sym = 0) And
+     (cur_tok_kw = KW_NONE) Then
+  Begin
+   { Pourrait etre une declaration d'objet si ':' suit }
+   { On parse comme declaration d'objet -> ParseObjectDecl }
+   { (ParseObjectDecl re-lira le nom depuis le cur_tok_type = IDENT) }
+   ParseObjectDecl;
+   Exit;
+  End;
+
+  { Si c'est une procedure connue -> ParseProcedureCall }
+  If sub > 0 Then
+  Begin
+   ParseProcedureCall;
+   Exit;
+  End;
+
+  { Sinon : assignment (variable := expr) }
+  ParseAssignment;
+  Exit;
+ End;
+
+ { Token inattendu }
+ ErrorTok('Instruction attendue');
  SkipToSemi;
 End;
 
@@ -4514,11 +4767,132 @@ End;
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
+{ --- Stubs des instructions complexes (implementees aux TODOs 16-18) --- }
+
+Procedure ParseAssignment;
 Begin
-  WriteLn('ADA86 V1.0 - TODO 14 OK (packages OK)');
-  WriteLn('  GenTextIO_Stubs (Put, Put_Line, New_Line, Get, Get_Line)');
-  WriteLn('  RegisterTextIO_Subs (enregistre Ada.Text_IO dans sub_table)');
-  WriteLn('  ParsePackageSpec (PACKAGE nom IS ... END ;)');
-  WriteLn('  ParsePackageBody (PACKAGE BODY nom IS ... [BEGIN] END ;)');
-  WriteLn('  ParsePackage (dispatcher PACKAGE / PACKAGE BODY)');
+ { stub : consomme ident := expr ; }
+ Consume;  { ident }
+ If cur_tok_type = TOK_COLONASSIGN Then Consume;
+ ParseExpr;
+ Expect(TOK_SEMI, '`;` attendu apres assignation');
+End;
+
+Procedure ParseProcedureCall;
+Begin
+ { stub : consomme ident [(args)] ; }
+ Consume;  { ident }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  Consume;
+  While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+  Consume;
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres appel de procedure');
+End;
+
+Procedure ParseIf;
+Begin
+ { stub }
+ Consume; { IF }
+ While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
+ Consume; { END }
+ If TokIsKw(KW_IF) Then Consume;
+ Expect(TOK_SEMI, '`;` attendu apres END IF');
+End;
+
+Procedure ParseCase;
+Begin
+ { stub }
+ Consume; { CASE }
+ While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
+ Consume; { END }
+ If TokIsKw(KW_CASE) Then Consume;
+ Expect(TOK_SEMI, '`;` attendu apres END CASE');
+End;
+
+Procedure ParseLoop;
+Begin
+ { stub }
+ Consume; { LOOP }
+ While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
+ Consume; { END }
+ If TokIsKw(KW_LOOP) Then Consume;
+ Expect(TOK_SEMI, '`;` attendu apres END LOOP');
+End;
+
+Procedure ParseWhile;
+Begin
+ { stub }
+ Consume; { WHILE }
+ While Not TokIsKw(KW_LOOP) And (cur_tok_type <> TOK_EOF) do Consume;
+ Consume; { LOOP }
+ While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
+ Consume; { END }
+ If TokIsKw(KW_LOOP) Then Consume;
+ Expect(TOK_SEMI, '`;` attendu apres END LOOP');
+End;
+
+Procedure ParseFor;
+Begin
+ { stub }
+ Consume; { FOR }
+ While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
+ Consume; { END }
+ If TokIsKw(KW_LOOP) Then Consume;
+ Expect(TOK_SEMI, '`;` attendu apres END LOOP');
+End;
+
+Procedure ParseReturn;
+Var lbl : String;
+Begin
+ Consume; { RETURN }
+ If Not TokIsOp(TOK_SEMI) Then
+ Begin
+  { Expression de retour pour FUNCTION }
+  ParseExpr;  { resultat dans AX }
+ End;
+ { JMP vers lbl_exit du scope courant }
+ lbl := FindExitLabel;
+ If lbl <> '' Then
+  EmitI('JMP  ' + lbl)
+ Else
+  Warning('RETURN sans sous-programme englobant');
+ Expect(TOK_SEMI, '`;` attendu apres RETURN');
+End;
+
+Procedure ParseRaise;
+Var nm     : String;
+    lbl_ex : String;
+Begin
+ Consume; { RAISE }
+ nm := '';
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  nm := UpCaseStr(cur_tok_str);
+  Consume;
+ End;
+ { Sauter vers le handler exception le plus proche }
+ lbl_ex := FindExceptLabel;
+ If lbl_ex <> '' Then
+  EmitI('JMP  ' + lbl_ex)
+ Else
+ Begin
+  { Pas de handler : terminer le programme }
+  EmitI('MOV  AX, 1');
+  EmitI('INT  21H');   { DOS exit }
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres RAISE');
+End;
+
+Begin
+  WriteLn('ADA86 V1.0 - TODO 15 OK (dispatcher ParseStatement OK)');
+  WriteLn('  ParseStatement (dispatcher complet)');
+  WriteLn('  IsEndBoundary (fin de sequence)');
+  WriteLn('  ParseNull, ParsePragma, ParseExit, ParseGoto');
+  WriteLn('  ParseLabeledStatement (<<nom>>)');
+  WriteLn('  ParseBeginBlock (DECLARE/BEGIN...END)');
+  WriteLn('  ParseReturn, ParseRaise (stubs fonctionnels)');
+  WriteLn('  ParseIf, ParseCase, ParseLoop, ParseWhile, ParseFor (stubs)');
+  WriteLn('  ParseAssignment, ParseProcedureCall (stubs)');
 End.
