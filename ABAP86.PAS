@@ -712,13 +712,13 @@ Const
  SK_EVENT   = 4;
 
  { ---- Limites ---- }
- MAX_SYM    = 512;    { Variables + labels max               }
- MAX_FORM   = 128;    { FORMs + FUNCTIONs max                }
+ MAX_SYM    = {$IFDEF FPC}512{$ELSE}256{$ENDIF}; { Variables + labels max               }
+ MAX_FORM   = {$IFDEF FPC}128{$ELSE}32{$ENDIF};    { FORMs + FUNCTIONs max                }
  MAX_LOCAL  = 64;     { Variables locales par scope          }
  MAX_PARAM  = 20;     { Parametres max par FORM              }
  MAX_DEPTH  = 24;     { Profondeur de scope max              }
  MAX_LABEL  = 9999;   { Limite compteur labels ASM           }
- MAX_STR    = 256;    { Litteraux chaines max                }
+ MAX_STR    = {$IFDEF FPC}256{$ELSE}128{$ENDIF};    { Litteraux chaines max                }
  MAX_FIELD  = 32;     { Champs max par structure             }
  MAX_EVTS   = 8;      { Evenements ABAP max                  }
 
