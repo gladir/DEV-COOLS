@@ -5157,34 +5157,160 @@ Begin
  Expect(TOK_SEMI, '`;` attendu apres END CASE');
 End;
 
+{ ============================================================================ }
+{ TODO 18 - ParseLoop / ParseWhile / ParseFor                                 }
+{ ============================================================================ }
+
+{ ---- ParseLoop : LOOP stmts END LOOP ;  (boucle infinie) ---- }
+
 Procedure ParseLoop;
+Var lbl_cont : String;
+    lbl_end  : String;
 Begin
- { stub }
  Consume; { LOOP }
- While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
- Consume; { END }
+ lbl_cont := NewLabel;
+ lbl_end  := NewLabel;
+ PushScope(SK_LOOP, EnclosingSubIdx);
+ EnterLoop(lbl_cont, lbl_end);
+ EmitLabel(lbl_cont);
+ ParseSequenceOfStatements;
+ EmitI('JMP  ' + lbl_cont);
+ EmitLabel(lbl_end);
+ PopScope;
+ ExpectKw(KW_END, 'END', '`END` attendu apres LOOP');
  If TokIsKw(KW_LOOP) Then Consume;
  Expect(TOK_SEMI, '`;` attendu apres END LOOP');
 End;
+
+{ ---- ParseWhile : WHILE cond LOOP stmts END LOOP ; ---- }
 
 Procedure ParseWhile;
+Var lbl_cont : String;
+    lbl_end  : String;
 Begin
- { stub }
  Consume; { WHILE }
- While Not TokIsKw(KW_LOOP) And (cur_tok_type <> TOK_EOF) do Consume;
- Consume; { LOOP }
- While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
- Consume; { END }
+ lbl_cont := NewLabel;
+ lbl_end  := NewLabel;
+ PushScope(SK_LOOP, EnclosingSubIdx);
+ EnterLoop(lbl_cont, lbl_end);
+ EmitLabel(lbl_cont);
+ ParseExpr;            { AX = condition }
+ EmitI('CMP  AX, 0');
+ EmitI('JE   ' + lbl_end);
+ ExpectKw(KW_LOOP, 'LOOP', '`LOOP` attendu apres condition WHILE');
+ ParseSequenceOfStatements;
+ EmitI('JMP  ' + lbl_cont);
+ EmitLabel(lbl_end);
+ PopScope;
+ ExpectKw(KW_END, 'END', '`END` attendu apres WHILE LOOP');
  If TokIsKw(KW_LOOP) Then Consume;
  Expect(TOK_SEMI, '`;` attendu apres END LOOP');
 End;
 
+{ ---- ParseFor : FOR ident IN [REVERSE] lo .. hi LOOP stmts END LOOP ;
+  Strategie : donnees du compteur et de la borne haute embarquees dans
+  le segment de code (saut JMP par-dessus), ce qui evite toute
+  collision avec la frame BP du sous-programme courant.
+
+  Code genere :
+      JMP  _LSTART_xxx
+  _FORI_xxx  DW  0        ; compteur courant (I)
+  _FORH_xxx  DW  0        ; borne haute (ou basse si REVERSE)
+  _LSTART_xxx:
+      MOV  AX, <lo>
+      MOV  [_FORI_xxx], AX
+      MOV  AX, <hi>
+      MOV  [_FORH_xxx], AX
+  _LCONT_xxx:
+      MOV  AX, [_FORI_xxx]
+      CMP  AX, [_FORH_xxx]
+      JG/JL _LEND_xxx      (selon REVERSE)
+      ...stmts...           (I lit [_FORI_xxx])
+      INC/DEC WORD PTR [_FORI_xxx]
+      JMP  _LCONT_xxx
+  _LEND_xxx:
+                                                                              }
+
 Procedure ParseFor;
+Var iter_nm   : String;    { nom Ada de la variable de boucle              }
+    lbl_iter  : String;    { label DW compteur                              }
+    lbl_hi    : String;    { label DW borne                                 }
+    lbl_start : String;    { label apres les DW                             }
+    lbl_cont  : String;
+    lbl_end   : String;
+    is_rev    : Boolean;
+    sym_iter  : Integer;   { index symbole de boucle (lecture seule)        }
 Begin
- { stub }
  Consume; { FOR }
- While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
- Consume; { END }
+ { Lire le nom de la variable de boucle }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Identifiant attendu apres FOR'); SkipToSemi; Exit; End;
+ iter_nm := UpCaseStr(cur_tok_str);
+ Consume;
+ ExpectKw(KW_IN, 'IN', '`IN` attendu apres identificateur FOR');
+ { REVERSE optionnel }
+ is_rev := False;
+ If TokIsKw(KW_REVERSE) Then Begin is_rev := True; Consume; End;
+ { Generer les labels uniques }
+ lbl_iter  := '_FORI' + NewLabel;
+ lbl_hi    := '_FORH' + NewLabel;
+ lbl_start := '_FORS' + NewLabel;
+ lbl_cont  := NewLabel;
+ lbl_end   := NewLabel;
+ { Evaluer borne basse (lo) }
+ ParseExpr;          { AX = lo }
+ EmitI('PUSH AX');   { sauvegarder lo }
+ Expect(TOK_DOTDOT, '`..` attendu dans intervalle FOR');
+ { Evaluer borne haute (hi) }
+ ParseExpr;          { AX = hi }
+ EmitI('PUSH AX');   { sauvegarder hi }
+ { Sauter par-dessus les DW embarques }
+ EmitI('JMP  ' + lbl_start);
+ EmitLabel(lbl_iter); EmitI('DW   0');
+ EmitLabel(lbl_hi);   EmitI('DW   0');
+ EmitLabel(lbl_start);
+ { Recuperer hi et lo depuis la pile, initialiser les cellules }
+ EmitI('POP  AX');   { hi }
+ If is_rev Then
+ Begin
+  EmitI('MOV  [' + lbl_iter + '], AX');  { iter = hi  (REVERSE part de hi) }
+  EmitI('POP  AX');                       { lo }
+  EmitI('MOV  [' + lbl_hi   + '], AX');  { hi_cell = lo (borne basse) }
+ End
+ Else
+ Begin
+  EmitI('MOV  [' + lbl_hi   + '], AX');  { hi_cell = hi }
+  EmitI('POP  AX');                       { lo }
+  EmitI('MOV  [' + lbl_iter + '], AX');  { iter = lo }
+ End;
+ { Enregistrer le symbole Ada de boucle (lecture seule, statique sur lbl_iter) }
+ PushScope(SK_LOOP, EnclosingSubIdx);
+ EnterLoop(lbl_cont, lbl_end);
+ sym_iter := AddSym(iter_nm, TYPE_INT, STORE_STATIC);
+ If sym_iter > 0 Then
+ Begin
+  sym_table^[sym_iter].asm_label := lbl_iter;
+  sym_table^[sym_iter].is_const  := True;  { lecture seule }
+ End;
+ { Label de continuation : test de la borne }
+ EmitLabel(lbl_cont);
+ EmitI('MOV  AX, [' + lbl_iter + ']');
+ EmitI('CMP  AX, [' + lbl_hi   + ']');
+ If is_rev Then
+  EmitI('JL   ' + lbl_end)   { iter < lo_bound -> sortir }
+ Else
+  EmitI('JG   ' + lbl_end);  { iter > hi_bound -> sortir }
+ ExpectKw(KW_LOOP, 'LOOP', '`LOOP` attendu dans FOR');
+ ParseSequenceOfStatements;
+ { Incrementer ou decrementer le compteur }
+ If is_rev Then
+  EmitI('DEC  WORD PTR [' + lbl_iter + ']')
+ Else
+  EmitI('INC  WORD PTR [' + lbl_iter + ']');
+ EmitI('JMP  ' + lbl_cont);
+ EmitLabel(lbl_end);
+ PopScope;
+ ExpectKw(KW_END, 'END', '`END` attendu apres FOR LOOP');
  If TokIsKw(KW_LOOP) Then Consume;
  Expect(TOK_SEMI, '`;` attendu apres END LOOP');
 End;
@@ -5232,9 +5358,9 @@ Begin
 End;
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 17 OK (ParseIf + ParseCase OK)');
-  WriteLn('  ParseIf  : IF/ELSIF/ELSE/END IF avec JE/JMP');
-  WriteLn('  GetCaseVal : lecture constante WHEN (int/char/bool/enum/cst)');
-  WriteLn('  ParseCase  : CASE/WHEN [|]/OTHERS/END CASE avec CMP/JE BX');
-  WriteLn('  ParseLoop, ParseWhile, ParseFor (stubs)');
+  WriteLn('ADA86 V1.0 - TODO 18 OK (ParseLoop + ParseWhile + ParseFor OK)');
+  WriteLn('  ParseLoop  : LOOP...END LOOP (boucle infinie, JMP)');
+  WriteLn('  ParseWhile : WHILE cond LOOP...END LOOP (CMP/JE)');
+  WriteLn('  ParseFor   : FOR I IN [REVERSE] lo..hi LOOP (DW embarque)');
+  WriteLn('  ParseExit  : EXIT [WHEN cond] ; (deja implemente TODO 15)');
 End.

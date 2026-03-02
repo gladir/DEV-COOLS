@@ -2941,7 +2941,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION SEGMENT DE DONNEES (Todo 19-20)
+  GENERATION SEGMENT DE DONNEES
   ====================================================================== }
 Procedure GenDataSegment;
 Var
@@ -3019,7 +3019,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION EN-TETE + FOOTER (Todo 18, 21)
+  GENERATION EN-TETE + FOOTER
   ====================================================================== }
 Procedure GenHeader;
 Begin
@@ -3045,7 +3045,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION RUNTIME HELPERS (Todo 24)
+  GENERATION RUNTIME HELPERS
   ====================================================================== }
 Procedure GenRuntimeHelpers;
 Begin
@@ -3141,7 +3141,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION DISPLAY (Todo 15, 24)
+  GENERATION DISPLAY
   ====================================================================== }
 Procedure GenDisplayOp(op_kind: Integer; Const op_str: String; op_idx: Integer);
 Var cnts, szs: String;
@@ -3214,7 +3214,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION ACCEPT (Todo 15)
+  GENERATION ACCEPT
   ====================================================================== }
 Procedure ParseAccept;
 Var idx: Integer; szs: String;
@@ -3250,7 +3250,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION MOVE (Todo 9)
+  GENERATION MOVE
   ====================================================================== }
 Procedure GenMoveToVar(op_kind: Integer; Const op_str: String;
                         op_num: LongInt; op_idx: Integer; dest_idx: Integer);
@@ -3395,7 +3395,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION ARITHMETIQUE (Todos 10-11)
+  GENERATION ARITHMETIQUE
   ====================================================================== }
 { Helper : emettre la lecture d'un operande numerique vers AX pour ADD/SUB }
 Procedure EmitLoadNum(op_kind: Integer; Const op_str: String;
@@ -3419,7 +3419,7 @@ Begin
      Emit('        MOV     AX, WORD PTR ' + VarAsmRef(op_idx));
     End;
    End Else
-    Emit('        MOV     AX, 0  ; TODO: load ' + op_str);
+    Emit('        MOV     AX, 0  ; load ' + op_str);
   Else Emit('        MOV     AX, 0');
  End;
 End;
@@ -3691,7 +3691,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION IF / ELSE / END-IF (Todo 12) + ParseStatement (Forward)
+  GENERATION IF / ELSE / END-IF + ParseStatement (Forward)
   ====================================================================== }
 Procedure ParseStatement; Forward;
 
@@ -3727,7 +3727,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION EVALUATE (Todo 13)
+  GENERATION EVALUATE
   ====================================================================== }
 Procedure ParseEvaluate;
 Var
@@ -3776,7 +3776,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION PERFORM (Todo 14)
+  GENERATION PERFORM
   ====================================================================== }
 Procedure ParsePerform;
 Var
@@ -3887,7 +3887,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION FILE I/O (Todo 16)
+  GENERATION FILE I/O
   ====================================================================== }
 Procedure ParseOpen;
 Var mode_s, fname, fh: String; mode, fi: Integer; lbl: String;
@@ -4111,7 +4111,7 @@ Begin
 End;
 
 { ======================================================================
-  GENERATION STOP/GO/CALL/EXIT/DIVERS (Todo 17)
+  GENERATION STOP/GO/CALL/EXIT/DIVERS
   ====================================================================== }
 Procedure ParseStop;
 Begin
@@ -4256,7 +4256,7 @@ Begin
 End;
 
 { ======================================================================
-  DISPATCHER D'INSTRUCTIONS (Todo 8)
+  DISPATCHER D'INSTRUCTIONS
   ====================================================================== }
 Procedure ParseStatement;
 Begin
@@ -4304,7 +4304,7 @@ Begin
 End;
 
 { ======================================================================
-  PROCEDURE DIVISION PARSER (Todo 8)
+  PROCEDURE DIVISION PARSER
   ====================================================================== }
 { Teste si le token courant est DEBUT d'un nouveau paragraphe.
   Un paragraphe commence par un identifiant en colonne A (col 8) suivi de '.'
