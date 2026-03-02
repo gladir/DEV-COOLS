@@ -1987,13 +1987,202 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 06 - Gestion des scopes et de la pile de scopes                        }
+{ ============================================================================ }
+
+{ ---- Initialisation de la pile de scopes ---- }
+
+Procedure InitScopeStack;
+Begin
+ If scope_stack = nil Then New(scope_stack);
+ scope_top := 0;
+ { Scope global (niveau 0) : toujours present }
+ scope_stack^[0].kind       := SK_GLOBAL;
+ scope_stack^[0].sub_idx    := 0;
+ scope_stack^[0].bp_top     := 0;
+ scope_stack^[0].sym_start  := 1;
+ scope_stack^[0].lbl_exit   := '';
+ scope_stack^[0].lbl_cont   := '';
+ scope_stack^[0].lbl_end    := '';
+ scope_stack^[0].has_except := False;
+ scope_stack^[0].lbl_except := '';
+End;
+
+{ ---- Accesseurs courants ---- }
+
+Function CurrentScopeKind: Integer;
+Begin
+ CurrentScopeKind := scope_stack^[scope_top].kind;
+End;
+
+Function CurrentSubIdx: Integer;
+Begin
+ CurrentSubIdx := scope_stack^[scope_top].sub_idx;
+End;
+
+{ Remonte la pile pour trouver l'index du sous-programme englobant
+  (ignore les scopes SK_BLOCK et SK_LOOP qui ne definissent pas de frame) }
+Function EnclosingSubIdx: Integer;
+Var lev : Integer;
+Begin
+ lev := scope_top;
+ While lev > 0 do
+ Begin
+  If scope_stack^[lev].kind In [SK_PROC, SK_FUNC, SK_PACKAGE] Then
+  Begin EnclosingSubIdx := scope_stack^[lev].sub_idx; Exit; End;
+  Dec(lev);
+ End;
+ EnclosingSubIdx := 0; { scope global }
+End;
+
+{ Taille totale de la frame locale du sous-programme courant (valeur absolue) }
+Function CurrentFrameSize: Integer;
+Var lev : Integer;
+Begin
+ lev := scope_top;
+ While lev > 0 do
+ Begin
+  If scope_stack^[lev].kind In [SK_PROC, SK_FUNC] Then
+  Begin CurrentFrameSize := -scope_stack^[lev].bp_top; Exit; End;
+  Dec(lev);
+ End;
+ CurrentFrameSize := 0;
+End;
+
+{ ---- PushScope ---- }
+
+Procedure PushScope(kind, sub_idx: Integer);
+Begin
+ If scope_top >= MAX_DEPTH Then
+ Begin
+  FatalError('Profondeur de scopes depassee (MAX_DEPTH=' +
+             IntToStr(MAX_DEPTH) + ')');
+ End;
+ Inc(scope_top);
+ scope_stack^[scope_top].kind       := kind;
+ scope_stack^[scope_top].sub_idx    := sub_idx;
+ scope_stack^[scope_top].bp_top     := 0;   { compte en negatif pour AUTO }
+ scope_stack^[scope_top].sym_start  := sym_count + 1;
+ scope_stack^[scope_top].lbl_exit   := '';
+ scope_stack^[scope_top].lbl_cont   := '';
+ scope_stack^[scope_top].lbl_end    := '';
+ scope_stack^[scope_top].has_except := False;
+ scope_stack^[scope_top].lbl_except := '';
+End;
+
+{ ---- PopScope ----
+  Libere les symboles locaux du scope courant (en decrementant sym_count).
+  Retourne la taille de frame allouee pour ce scope.                          }
+Function PopScope: Integer;
+Var frame : Integer;
+    st    : Integer;
+Begin
+ If scope_top <= 0 Then
+ Begin
+  Error('PopScope : pile de scopes deja vide');
+  PopScope := 0; Exit;
+ End;
+ frame := -scope_stack^[scope_top].bp_top;  { taille frame locale }
+ st    := scope_stack^[scope_top].sym_start;
+ { Retirer les symboles locaux de ce scope }
+ If st >= 1 Then
+  sym_count := st - 1;
+ Dec(scope_top);
+ PopScope := frame;
+End;
+
+{ ---- AllocLocal ----
+  Alloue 'size' octets (aligne sur mot) sur la pile du scope courant.
+  Retourne l'offset BP (negatif) ou 0 si scope global.                        }
+Function AllocLocal(size: Integer): Integer;
+Var aligned : Integer;
+Begin
+ If scope_top <= 0 Then Begin AllocLocal := 0; Exit; End;
+ aligned := AlignWord(size);
+ scope_stack^[scope_top].bp_top :=
+   scope_stack^[scope_top].bp_top - aligned;
+ AllocLocal := scope_stack^[scope_top].bp_top;
+End;
+
+{ ---- Gestion des labels de boucle et de sortie ---- }
+
+{ Enregistre les labels pour une boucle dans le scope courant }
+Procedure EnterLoop(Const lbl_cont, lbl_end: String);
+Begin
+ scope_stack^[scope_top].lbl_cont := lbl_cont;
+ scope_stack^[scope_top].lbl_end  := lbl_end;
+End;
+
+{ Retourne le label de continuation de la boucle englobante (ou '') }
+Function FindLoopCont: String;
+Var lev : Integer;
+Begin
+ For lev := scope_top DownTo 1 do
+  If scope_stack^[lev].lbl_cont <> '' Then
+  Begin FindLoopCont := scope_stack^[lev].lbl_cont; Exit; End;
+ FindLoopCont := '';
+End;
+
+{ Retourne le label de fin de la boucle englobante (pour EXIT) }
+Function FindLoopEnd: String;
+Var lev : Integer;
+Begin
+ For lev := scope_top DownTo 1 do
+  If scope_stack^[lev].lbl_end <> '' Then
+  Begin FindLoopEnd := scope_stack^[lev].lbl_end; Exit; End;
+ FindLoopEnd := '';
+End;
+
+{ Positionne le label de sortie (RETURN / procedure exit) }
+Procedure SetExitLabel(Const lbl: String);
+Begin
+ scope_stack^[scope_top].lbl_exit := lbl;
+End;
+
+{ Retourne le label de sortie du sous-programme courant }
+Function FindExitLabel: String;
+Var lev : Integer;
+Begin
+ For lev := scope_top DownTo 1 do
+  If scope_stack^[lev].lbl_exit <> '' Then
+  Begin FindExitLabel := scope_stack^[lev].lbl_exit; Exit; End;
+ FindExitLabel := '';
+End;
+
+{ ---- Gestion des exceptions ---- }
+
+Procedure SetExceptLabel(Const lbl: String);
+Begin
+ scope_stack^[scope_top].has_except := True;
+ scope_stack^[scope_top].lbl_except := lbl;
+End;
+
+{ Retourne le label du handler EXCEPTION le plus proche (ou '') }
+Function FindExceptLabel: String;
+Var lev : Integer;
+Begin
+ For lev := scope_top DownTo 1 do
+  If scope_stack^[lev].has_except Then
+  Begin FindExceptLabel := scope_stack^[lev].lbl_except; Exit; End;
+ FindExceptLabel := '';
+End;
+
+{ ---- Niveau de scope courant (pour sym_table.scope_lev) ---- }
+
+Function CurrentLevel: Integer;
+Begin
+ CurrentLevel := scope_top;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 05 OK (types, sous-programmes, packages OK)');
-  WriteLn('  InitTypeTable, AddType, FindType, GetTypeSize');
-  WriteLn('  RegisterPredefinedTypes (INTEGER/FLOAT/BOOLEAN/CHARACTER/STRING)');
-  WriteLn('  InitSubTable, AddSub, FindSub, SubParamBytes');
-  WriteLn('  InitPkgTable, AddPkg, FindPkg, TextIO_Active');
+  WriteLn('ADA86 V1.0 - TODO 06 OK (gestion scopes OK)');
+  WriteLn('  InitScopeStack, PushScope, PopScope, AllocLocal');
+  WriteLn('  EnterLoop, FindLoopCont, FindLoopEnd');
+  WriteLn('  SetExitLabel, FindExitLabel');
+  WriteLn('  SetExceptLabel, FindExceptLabel');
+  WriteLn('  CurrentScopeKind, CurrentSubIdx, EnclosingSubIdx, CurrentFrameSize');
 End.

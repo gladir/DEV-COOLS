@@ -1570,7 +1570,7 @@ Var
  n: Integer;
  tmp: TLispVal;
 Begin
- { TODO 21 : Generer un appel de DEFUN }
+ { G‚n‚rer un appel de DEFUN }
  fp := func_table[func_idx];
  EmitComment('CALL ' + fp^.name);
  { Empiler arguments de droite a gauche }
@@ -1579,8 +1579,7 @@ Begin
  While Not IsNilVal(tmp) Do Begin Inc(n); tmp := CdrOf(tmp); End;
  { Pousser de droite a gauche : reconstruire l'ordre }
  { Simplification : pousser de gauche a droite (ordre Pascal) }
- While Not IsNilVal(args) Do
- Begin
+ While Not IsNilVal(args) Do Begin
   GenExpr(CarOf(args));
   Emit('        PUSH    AX');
   args := CdrOf(args);
@@ -1589,19 +1588,19 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 22 - GENERATION : LET / LET*                      [COMPLET]            }
+{ GENERATION : LET / LET*                                                      }
 { ============================================================================ }
 
 Procedure GenLet(bindings, body: TLispVal);
-Var bind, var_e, val_e: TLispVal; n: Integer; sym_idx, loc_idx: Integer;
+Var
+ bind, var_e, val_e: TLispVal; n: Integer; sym_idx, loc_idx: Integer;
 Begin
- { TODO 22 : Generer LET (toutes les valeurs evaluees avant les liaisons) }
+ { Generer LET (toutes les valeurs evaluees avant les liaisons) }
  EmitComment('---- LET ----');
  n := 0;
- { Phase 1 : evaluer toutes les valeurs + pousser sur la pile }
+ { Phase 1 : ‚valuer toutes les valeurs + pousser sur la pile }
  bind := bindings;
- While Not IsNilVal(bind) Do
- Begin
+ While Not IsNilVal(bind) Do Begin
   var_e := CarOf(CarOf(bind));
   val_e := CarOf(CdrOf(CarOf(bind)));
   GenExpr(val_e);
@@ -1609,16 +1608,15 @@ Begin
   Inc(n);
   bind := CdrOf(bind);
  End;
- { Phase 2 : creer le frame (BP deja preserve par DEFUN englobant) }
+ { Phase 2 : cr‚er le frame (BP deja preserve par DEFUN englobant) }
  { Pour LET autonome : PUSH BP / MOV BP, SP }
  Emit('        PUSH    BP');
  Emit('        MOV     BP, SP');
  Emit('        ; Frame LET : ' + ItoSI(n) + ' liaisons');
  Emit('        SUB     SP, ' + ItoSI(n * 2));
- { Lier les variables (de droite a gauche car la pile est LIFO) }
+  { Lier les variables (de droite a gauche car la pile est LIFO) }
  bind := bindings;
- While Not IsNilVal(bind) Do
- Begin
+ While Not IsNilVal(bind) Do Begin
   var_e   := CarOf(CarOf(bind));
   sym_idx := PayOf(var_e);
   loc_idx := AddLocal(sym_table[sym_idx]^.name);
@@ -1631,15 +1629,16 @@ Begin
 End;
 
 Procedure GenLetStar(bindings, body: TLispVal);
-Var bind, var_e, val_e: TLispVal; sym_idx, loc_idx: Integer;
+Var
+ bind, var_e, val_e: TLispVal;
+ sym_idx, loc_idx: Integer;
 Begin
- { TODO 22 : LET* - cada binding voit les precedents }
+ { LET* - cada binding voit les precedents }
  EmitComment('---- LET* ----');
  Emit('        PUSH    BP');
  Emit('        MOV     BP, SP');
  bind := bindings;
- While Not IsNilVal(bind) Do
- Begin
+ While Not IsNilVal(bind) Do Begin
   var_e   := CarOf(CarOf(bind));
   val_e   := CarOf(CdrOf(CarOf(bind)));
   sym_idx := PayOf(var_e);
