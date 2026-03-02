@@ -48,16 +48,16 @@ Const
  cshort = 4;     { Entier court sign‚ 16 bits }
  cushort = 5;    { Entier court non sign‚ 16 bits }
  cint = 6;       { Entier sign‚ 16 bits }
- cuint = 7;      { Entier non signï¿½ 16 bits }
- clong = 8;      { Entier long signï¿½ 32 bits }
- culong = 9;     { Entier long non signï¿½ 32 bits }
- cfloat = 10;    { Nombre flottant simple prï¿½cision }
- cdouble = 11;   { Nombre flottant double prï¿½cision }
+ cuint = 7;      { Entier non sign‚ 16 bits }
+ clong = 8;      { Entier long sign‚ 32 bits }
+ culong = 9;     { Entier long non sign‚ 32 bits }
+ cfloat = 10;    { Nombre flottant simple pr‚cision }
+ cdouble = 11;   { Nombre flottant double pr‚cision }
  cpointer = 12;  { Pointeur vers un type }
- carray = 13;    { Tableau d'ï¿½lï¿½ments }
- cstruct = 14;   { Structure de donnï¿½es }
- cunion = 15;    { Union de donnï¿½es }
- cenum = 16;     { ï¿½numï¿½ration de valeurs }
+ carray = 13;    { Tableau d'‚l‚ments }
+ cstruct = 14;   { Structure de donn‚es }
+ cunion = 15;    { Union de donn‚es }
+ cenum = 16;     { num‚ration de valeurs }
 
   { Taille du type en octets }
  sizeof_void = 0;     { Taille du type void (aucune taille) }
@@ -71,10 +71,10 @@ Const
  sizeof_enum = 2;     { Taille du type enum (2 octets, comme int) }
 
   { Classes d'entreposage }
- statik = 1;      { Variable statique (durï¿½e de vie du programme) }
+ statik = 1;      { Variable statique (dur‚e de vie du programme) }
  stkloc = 2;      { Variable locale sur la pile }
- CEXTERNAL = 3;   { Variable externe dï¿½finie ailleurs }
- automatic = 4;   { Variable automatique (locale par dï¿½faut) }
+ CEXTERNAL = 3;   { Variable externe d‚finie ailleurs }
+ automatic = 4;   { Variable automatique (locale par d‚faut) }
 
   { Types d'instructions }
  streturn = 3;    { Instruction de retour de fonction }
@@ -86,99 +86,99 @@ Const
   { Niveau d'optimisations }
  OPT_NONE = 0;        { Aucune optimisation }
  OPT_BASIC = 1;       { Optimisations de base }
- OPT_ADVANCED = 2;    { Optimisations avancï¿½es }
- OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activï¿½es) }
+ OPT_ADVANCED = 2;    { Optimisations avanc‚es }
+ OPT_AGGRESSIVE = 3;  { Optimisations agressives (toutes activ‚es) }
 
  { Option d'optimisation }
  OPT_PEEPHOLE = 1;      { Optimisations pour analyse de code }
- OPT_DEAD_CODE = 2;     { ï¿½limination du code mort }
+ OPT_DEAD_CODE = 2;     { limination du code mort }
  OPT_CONSTANT_FOLD = 4; { Simplification des constantes }
- OPT_STRENGTH_RED = 8;  { Rï¿½duction de la complexitï¿½ }
+ OPT_STRENGTH_RED = 8;  { R‚duction de la complexit‚ }
  OPT_REGISTER = 16;     { Allocation de registres }
  OPT_JUMP = 32;         { Optimisations de sauts }
 
- { Ligne d'entrï¿½e }
- linesize = 80;            { Taille maximale d'une ligne d'entrï¿½e }
+  { Ligne d'entr‚e }
+ linesize = 80;            { Taille maximale d'une ligne d'entr‚e }
  linemax = linesize - 1;   { Index maximum valide dans une ligne }
 
 Type
- { TSymTab n'est plus nï¿½cessaire - utilisation d'une table de symboles basï¿½e sur le tas }
+ { TSymTab n'est plus n‚cessaire - utilisation d'une table de symboles bas‚e sur la m‚moire de tas }
  TLine = String[linesize];
 
- { Structure d'information de type }
+  { Structure d'information de type }
  PTypeInfo = ^TTypeInfo;
  TTypeInfo = Record
-  base_type: Integer;      { Type de donnï¿½es de base (cint, cchar,...) }
+  base_type: Integer;      { Type de donn‚es de base (cint, cchar,...) }
   pointer_level: Integer;  { Nombre de niveaux d'indirection }
   array_size: Integer;     { Taille du tableau (0 si ce n'est pas un tableau) }
-  is_unsigned: Boolean;    { Vrai pour les types non signï¿½s }
+  is_unsigned: Boolean;    { Vrai pour les types non sign‚s }
   is_const: Boolean;       { Vrai pour les types constants }
   is_volatile: Boolean;    { Vrai pour les types volatils }
   struct_id: Integer;      { Identifiant de struct/union }
-  typedef_name: String;    { Nom du typedef si c'est un type dï¿½fini }
+  typedef_name: String;    { Nom du typedef si c'est un type d‚fini }
   is_typedef: Boolean;     { Vrai si c'est un typedef }
   size: Integer;           { Taille totale en octets }
  End;
 
- { Structure de valeur d'expression }
+  { Structure de valeur d'expression }
  TLVal = Record
-  symbol: Integer;        { Pointeur vers l'entrï¿½e de la table de symboles }
+  symbol: Integer;        { Pointeur vers l'entr‚e de la table de symboles }
   indirect: Integer;      { 0=direct, 1=indirect }
-  typ: Integer;           { Type de donnï¿½es }
+  typ: Integer;           { Type de donn‚es }
   storage: Integer;       { Classe d'entreposage }
   constant: Boolean;      { Vrai si la valeur est constante }
-  value: Integer;         { Valeur constante, le cas ï¿½chï¿½ant }
-  type_info: TTypeInfo;   { Informations de type ï¿½tendues }
+  value: Integer;         { Valeur constante, le cas ‚ch‚ant }
+  type_info: TTypeInfo;   { Informations de type ‚tendues }
  End;
 
- { Structure d'instruction d'optimisation }
+  { Structure d'instruction d'optimisation }
  TOptInstruction = Record
-  opcode: String[10];     { Mnï¿½monique d'instruction }
-  operand: String[20];    { Opï¿½rande }
+  opcode: String[10];     { Mn‚monique d'instruction }
+  operand: String[20];    { Op‚rande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { Numï¿½ro de ligne source }
-  can_eliminate: Boolean; { Peut ï¿½tre supprimï¿½ lors de la suppression du code mort }
+  line_number: Integer;   { Num‚ro de ligne source }
+  can_eliminate: Boolean; { Peut ˆtre supprim‚ lors de la suppression du code mort }
  End;
 
- { Pointeur vers instruction d'optimisation }
+  { Pointeur vers instruction d'optimisation }
  POptInst = ^TOptInst;
 
- { Structure d'instruction d'optimisation dans le tas }
+ { Structure d'instruction d'optimisation dans la m‚moire de tas }
  TOptInst = Record
-  opcode: String[10];     { Mnï¿½monique d'instruction }
-  operand: String[20];    { Opï¿½rande }
+  opcode: String[10];     { Mn‚monique d'instruction }
+  operand: String[20];    { Op‚rande }
   comment: String[40];    { Commentaire }
-  line_number: Integer;   { Numï¿½ro de ligne source }
-  can_eliminate: Boolean; { Peut ï¿½tre supprimï¿½ lors de la suppression du code mort }
+  line_number: Integer;   { Num‚ro de ligne source }
+  can_eliminate: Boolean; { Peut ˆtre supprim‚ lors de la suppression du code mort }
   next: POptInst;         { Pointeur vers instruction suivante }
  End;
 
- { Optimisation de contexte }
+  { Optimisation de contexte }
  TOptContext = Record
   level: Integer;           { Niveau d'optimisation }
   flags: Integer;           { Drapeaux d'optimisation }
-  inst_list: POptInst;      { Liste chaï¿½nï¿½e d'instructions dans le tas }
+  inst_list: POptInst;      { Liste chaŒn‚e d'instructions dans la m‚moire de tas }
   inst_count: Integer;      { Nombre d'instructions }
-  last_result_reg: String;  { Dernier registre utilisï¿½ pour le rï¿½sultat }
+  last_result_reg: String;  { Dernier registre utilis‚ pour le r‚sultat }
  End;
 
- { Structure de paramï¿½tres de la fonction }
+  { Structure de paramŠtres de la fonction }
  TParameter = Record
-  name: String[20];      { Nom du paramï¿½tre }
-  typ: Integer;          { Type du paramï¿½tre }
-  type_info: TTypeInfo;  { Informations dï¿½taillï¿½es sur le type }
-  offset: Integer;       { Dï¿½placement de la pile }
+  name: String[20];      { Nom du paramŠtre }
+  typ: Integer;          { Type du paramŠtre }
+  type_info: TTypeInfo;  { Informations d‚taill‚es sur le type }
+  offset: Integer;       { D‚placement de la pile }
  End;
 
- { Structure d'informations de fonction }
+  { Structure d'informations de fonction }
  TFunction = Record
   name: String[20];                      { Nom de la fonction }
   return_type: Integer;                  { Type de retour }
-  return_type_info: TTypeInfo;           { Type de retour dï¿½taillï¿½ }
-  param_count: Integer;                  { Nombre de paramï¿½tres }
-  parameters: Array[0..9] of TParameter; { Liste des paramï¿½tres }
-  is_defined: Boolean;                   { Vrai si la fonction est dï¿½finie (possï¿½de un corps) }
-  is_declared: Boolean;                  { Vrai si la fonction est dï¿½clarï¿½e }
+  return_type_info: TTypeInfo;           { Type de retour d‚taill‚ }
+  param_count: Integer;                  { Nombre de paramŠtres }
+  parameters: Array[0..9] of TParameter; { Liste des paramŠtres }
+  is_defined: Boolean;                   { Vrai si la fonction est d‚finie (possŠde un corps) }
+  is_declared: Boolean;                  { Vrai si la fonction est d‚clar‚e }
   label_id: Integer;                     { Etiquette assembleur de la fonction }
   local_vars_size: Integer;              { Taille dees variables locales }
   is_main: Boolean;                      { Vrai s'il s'agit de la fonction principale }
@@ -186,33 +186,33 @@ Type
 
   { Structure de contexte de boucle pour le support break/continue }
  TLoopContext = Record
-  loop_type: Integer;     { 1=while, 2=for, 3=do-while }
-  break_label: Integer;   { ï¿½tiquette ï¿½ utiliser pour break }
-  continue_label: Integer; { ï¿½tiquette ï¿½ utiliser pour continue }
+  loop_type: Integer;      { 1=while, 2=for, 3=do-while }
+  break_label: Integer;    { tiquette … utiliser pour break }
+  continue_label: Integer; { tiquette … utiliser pour continue }
  End;
 
   { Membre d'une structure ou union }
  TStructMember = Record
   name: String[20];       { Nom du membre }
   member_type: Integer;   { Type de base du membre }
-  type_info: TTypeInfo;   { Informations dï¿½taillï¿½es du type }
+  type_info: TTypeInfo;   { Informations d‚taill‚es du type }
   offset: Integer;        { Offset du membre dans la structure }
   size: Integer;          { Taille du membre en octets }
  End;
 
- { DÃ©finition de structure ou union }
+ { D‚finition de structure ou union }
  PStructDef = ^TStructDef;
  TStructDef = Record
   name: String[20];                        { Nom de la structure/union }
   is_union: Boolean;                       { Vrai si c'est une union, faux si struct }
   member_count: Integer;                   { Nombre de membres }
-  members: Array[0..15] of TStructMember;  { Liste des membres (max 16) }
+  members: Array[0..15] of TStructMember;  { Liste des membres (maximum 16) }
   total_size: Integer;                     { Taille totale de la structure }
   struct_id: Integer;                      { ID unique de la structure }
   next: PStructDef;                        { Structure suivante dans la liste }
  End;
 
- { Gestion des fichiers d'inclusion }
+  { Gestion des fichiers d'inclusion }
  TIncludeFile = Record
   filename: String;
   saved_line: TLine;
@@ -220,22 +220,22 @@ Type
   saved_eof: Integer;
  End;
 
- { Table des fichiers dï¿½jï¿½ inclus pour ï¿½viter l'inclusion circulaire }
+  { Table des fichiers d‚j… inclus pour ‚viter l'inclusion circulaire }
  TIncludedFile = Record
   filename: String;
   is_included: Boolean;
  End;
 
- { Gestion des macros/Define - utilisation du tas au lieu de tableaux statiques }
+  { Gestion des macros/Define - utilisation du tas au lieu de tableaux statiques }
  PDefine = ^TDefine;
  TDefine = Record
   name: String;
   value: String;
   in_use: Boolean;
-  next: PDefine;        { Pointeur vers le prochain define dans la liste chaï¿½nï¿½e }
+  next: PDefine;        { Pointeur vers le prochain define dans la liste chaŒn‚e }
  End;
 
- { Gestion des directives de prï¿½processeur conditionnelles }
+  { Gestion des directives de pr‚processeur conditionnelles }
  TConditionType = (
   COND_IF,      { #if }
   COND_IFDEF,   { #ifdef }
@@ -245,88 +245,88 @@ Type
 
  TConditionState = Record
   condition_type: TConditionType; { Type de condition }
-  is_true: Boolean;               { ï¿½valuation actuelle de la condition }
-  has_true_branch: Boolean;       { Si une branche vraie a ï¿½tï¿½ trouvï¿½e }
+  is_true: Boolean;               { valuation actuelle de la condition }
+  has_true_branch: Boolean;       { Si une branche vraie a ‚t‚ trouv‚e }
   in_else: Boolean;               { Si nous sommes dans un bloc #else }
-  line_number: Integer;           { Numï¿½ro de ligne pour debug }
+  line_number: Integer;           { Num‚ro de ligne pour debug }
  End;
 
- { Pile de conditions pour directives imbriquï¿½es }
+  { Pile de conditions pour directives imbriqu‚es }
  TConditionStack = Array[0..31] of TConditionState;
 
- { Table de symboles utilisant la mï¿½moire de tas au lieu du segment de donnï¿½es }
+  { Table de symboles utilisant la m‚moire de tas au lieu du segment de donn‚es }
  PSymbol = ^TSymbol;
  TSymbol = Record
   name: String;
   ident: Integer;        { it_variable, it_function,... }
   ctype: Integer;        { Type de symbole }
   storage: Integer;      { Classe d'entreposage }
-  offset_value: Integer; { Dï¿½placement ou valeur }
-  type_info: TTypeInfo;  { Information de type Ã©tendue }
-  next: PSymbol;         { Symbole suivant dans la chaÃ®ne }
+  offset_value: Integer; { D‚placement ou valeur }
+  type_info: TTypeInfo;  { Information de type ‚tendue }
+  next: PSymbol;         { Symbole suivant dans la chaŒne }
  End;
 
-  { Pointeur vers fonction dans la mï¿½moire de tas }
+  { Pointeur vers fonction dans la m‚moire de tas }
  PFunction = ^TFunctionNode;
 
- { Noeud de fonction pour liste chaï¿½nï¿½e dans la mï¿½moire de tas }
+  { Noeud de fonction pour liste chaŒn‚e dans la m‚moire de tas }
  TFunctionNode = Record
-  func_data: TFunction;    { Donnï¿½es de la fonction }
+  func_data: TFunction;    { Donn‚es de la fonction }
   next: PFunction;         { Fonction suivante dans la liste }
  End;
 
-  { Structure pour gï¿½rer les ï¿½tiquettes goto }
+  { Structure pour g‚rer les ‚tiquettes goto }
  TGotoLabel = Record
-  name: String[20];       { Nom de l'ï¿½tiquette }
-  label_id: Integer;      { ID numï¿½rique de l'ï¿½tiquette }
-  is_defined: Boolean;    { Vrai si l'ï¿½tiquette a ï¿½tï¿½ dï¿½finie }
-  is_used: Boolean;       { Vrai si l'ï¿½tiquette a ï¿½tï¿½ rï¿½fï¿½rencï¿½e }
+  name: String[20];       { Nom de l'‚tiquette }
+  label_id: Integer;      { ID num‚rique de l'‚tiquette }
+  is_defined: Boolean;    { Vrai si l'‚tiquette a ‚t‚ d‚finie }
+  is_used: Boolean;       { Vrai si l'‚tiquette a ‚t‚ r‚f‚renc‚e }
  End;
 
- { Table des ï¿½tiquettes goto }
- TGotoTable = Array[0..31] of TGotoLabel; { Maximum 32 ï¿½tiquettes par fonction }
+  { Table des ‚tiquettes goto }
+ TGotoTable = Array[0..31] of TGotoLabel; { Maximum 32 ‚tiquettes par fonction }
 
- { Structure pour gï¿½rer les instructions switch/case }
+  { Structure pour g‚rer les instructions switch/case }
  TSwitchCase = Record
   value: Integer;         { Valeur du case }
-  label_id: Integer;      { ID de l'ï¿½tiquette pour ce case }
+  label_id: Integer;      { ID de l'‚tiquette pour ce case }
  End;
 
  TSwitchStatement = Record
   expression_type: Integer;           { Type de l'expression switch }
   case_count: Integer;                { Nombre de cases }
   cases: Array[0..31] of TSwitchCase; { Max 32 cases par switch }
-  default_label: Integer;             { ï¿½tiquette pour default (-1 si pas de default) }
-  end_label: Integer;                 { ï¿½tiquette de fin de switch }
+  default_label: Integer;             { tiquette pour default (-1 si pas de default) }
+  end_label: Integer;                 { tiquette de fin de switch }
   has_default: Boolean;               { Vrai s'il y a une clause default }
  End;
 
- { Table des switch imbriquï¿½s }
- TSwitchTable = Array[0..7] of TSwitchStatement; { Maximum 8 switch imbriquï¿½s }
+  { Table des switch imbriqu‚s }
+ TSwitchTable = Array[0..7] of TSwitchStatement; { Maximum 8 switch imbriqu‚s }
 
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  { Tables de symbole }
- { Variables hï¿½ritï¿½es - conservï¿½es pour la compatibilitï¿½ avec certains calculs }
+ { Variables h‚rit‚es - conserv‚es pour la compatibilit‚e avec certains calculs }
  glbptr, locptr: Integer;
 
- { Nouvelle table de symboles basï¿½e sur le tas }
- symbol_list: PSymbol;    { Tï¿½te de la liste de symboles }
+ { Nouvelle table de symboles bas‚e sur la m‚moire de tas }
+ symbol_list: PSymbol;    { Tˆte de la liste de symboles }
  symbol_count: Integer;   { Compteur pour les statistiques }
 
- { Gestion de fonction - liste chaï¿½nï¿½e basï¿½e sur le tas }
+ { Gestion de fonction - liste chaŒn‚e bas‚e sur la m‚moire de tas }
  function_list: PFunction;          { Tï¿½te de la liste de fonctions }
  function_count: Integer;           { Compteur pour les statistiques }
  current_function_node: PFunction;  { Noeud de la fonction en cours d'analyse }
- current_function: Integer;         { Index de fonction pour compatibilitï¿½ }
+ current_function: Integer;         { Index de fonction pour compatibilit‚ }
  call_stack_depth: Integer;         { Profondeur d'appel actuelle }
 
  { Contexte d'optimisation }
  opt_context: TOptContext;
 
- { Gestion des structures et unions - liste chaï¿½nï¿½e basï¿½e sur la mï¿½moire de tas }
- struct_list: PStructDef;     { Tï¿½te de la liste de structures/unions }
+ { Gestion des structures et unions - liste chaŒn‚e bas‚e sur la m‚moire de tas }
+ struct_list: PStructDef;     { Tˆte de la liste de structures/unions }
  struct_count: Integer;       { Compteur de structures/unions }
  next_struct_id: Integer;     { Prochain ID de structure disponible }
 
@@ -339,35 +339,35 @@ Var
  include_depth: Integer;
  current_filename: String;
 
-  { Table des fichiers inclus pour ï¿½viter l'inclusion circulaire }
- included_files: Array[0..49] of TIncludedFile; { Maximum 50 fichiers diffï¿½rents }
+  { Table des fichiers inclus pour ‚viter l'inclusion circulaire }
+ included_files: Array[0..49] of TIncludedFile; { Maximum 50 fichiers diff‚rents }
  included_count: Integer;
 
- { Gestion Define/Macro - utilisation du tas (liste chaï¿½nï¿½e) }
- define_list: PDefine;  { Tï¿½te de la liste chaï¿½nï¿½e des defines }
- define_count: Integer; { Nombre de dï¿½finitions actuellement en usage }
+  { Gestion Define/Macro - utilisation du tas (liste chaŒn‚e) }
+ define_list: PDefine;  { Tˆte de la liste chaŒn‚e des defines }
+ define_count: Integer; { Nombre de d‚finitions actuellement en usage }
 
- { Gestion des directives conditionnelles de prï¿½processeur }
+  { Gestion des directives conditionnelles de pr‚processeur }
  condition_stack: TConditionStack; { Pile de conditions }
  condition_depth: Integer;         { Profondeur actuelle de la pile }
  skip_code: Boolean;               { Vrai si on doit ignorer le code actuel }
 
- { Informations de type ï¿½tendues - maintenant entreposï¿½es directement dans les symboles }
+ { Informations de type ‚tendues - maintenant entrepos‚es directement dans les symboles }
   type_info_count: Integer;
 
- { Ligne d'entrï¿½e }
+ { Ligne d'entr‚e }
  line: TLine;
  lptr: Integer;
 
- { ï¿½tiquettes et compteurs }
+ { tiquettes et compteurs }
  nxtlab: Integer;
  nextlabel: Integer; { Pour l'analyseur d'expressions }
 
- { Table des ï¿½tiquettes goto }
+ { Table des ‚tiquettes goto }
  goto_table: TGotoTable;
  goto_count: Integer;
 
- { Table des switch imbriquï¿½s }
+ { Table des switch imbriqu‚s }
  switch_table: TSwitchTable;
  switch_depth: Integer;
 

@@ -646,12 +646,1235 @@ Begin
 End;
 
 { ============================================================================
-  TODO 02 ... 25 : a implementer
+  TODO 02 - LEXEUR (ANALYSE LEXICALE C#)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Constantes internes au lexeur
+  -------------------------------------------------------------------------- }
+Const
+  LEX_EOF_CHAR = #0;    { sentinelle fin de ligne / fin de fichier }
+
+{ --------------------------------------------------------------------------
+  LexIsAlpha : True si c est une lettre ou underscore (debut d'ident)
+  -------------------------------------------------------------------------- }
+Function LexIsAlpha(c : Char) : Boolean;
+Begin
+  LexIsAlpha := (c In ['a'..'z', 'A'..'Z', '_']);
+End;
+
+{ --------------------------------------------------------------------------
+  LexIsAlNum : True si c est une lettre, chiffre ou underscore
+  -------------------------------------------------------------------------- }
+Function LexIsAlNum(c : Char) : Boolean;
+Begin
+  LexIsAlNum := (c In ['a'..'z', 'A'..'Z', '0'..'9', '_']);
+End;
+
+{ --------------------------------------------------------------------------
+  LexIsDigit : True si c est un chiffre decimal
+  -------------------------------------------------------------------------- }
+Function LexIsDigit(c : Char) : Boolean;
+Begin
+  LexIsDigit := (c In ['0'..'9']);
+End;
+
+{ --------------------------------------------------------------------------
+  LexIsHexDigit : True si c est un chiffre hexadecimal
+  -------------------------------------------------------------------------- }
+Function LexIsHexDigit(c : Char) : Boolean;
+Begin
+  LexIsHexDigit := (c In ['0'..'9', 'a'..'f', 'A'..'F']);
+End;
+
+{ --------------------------------------------------------------------------
+  LexHexVal : valeur d'un chiffre hexadecimal
+  -------------------------------------------------------------------------- }
+Function LexHexVal(c : Char) : Integer;
+Begin
+  If c In ['0'..'9'] Then LexHexVal := Ord(c) - Ord('0')
+  Else If c In ['a'..'f'] Then LexHexVal := Ord(c) - Ord('a') + 10
+  Else LexHexVal := Ord(c) - Ord('A') + 10;
+End;
+
+{ --------------------------------------------------------------------------
+  LexIsKeyword : True si s est un mot-cle C# Lite reconnu
+  -------------------------------------------------------------------------- }
+Function LexIsKeyword(Const s : TString) : Boolean;
+Begin
+  LexIsKeyword :=
+    (s = 'int')       Or (s = 'bool')      Or (s = 'char')    Or
+    (s = 'string')    Or (s = 'void')      Or (s = 'static')  Or
+    (s = 'class')     Or (s = 'new')       Or (s = 'if')      Or
+    (s = 'else')      Or (s = 'while')     Or (s = 'for')     Or
+    (s = 'do')        Or (s = 'break')     Or (s = 'continue')Or
+    (s = 'return')    Or (s = 'true')      Or (s = 'false')   Or
+    (s = 'null')      Or (s = 'Console')   Or (s = 'using')   Or
+    (s = 'namespace') Or (s = 'public')    Or (s = 'private') Or
+    (s = 'readonly')  Or (s = 'const')     Or (s = 'out')     Or
+    (s = 'ref');
+End;
+
+{ --------------------------------------------------------------------------
+  LexInit : ouvrir le fichier source et initialiser l'etat du lexeur.
+  -------------------------------------------------------------------------- }
+Procedure LexInit(Const fname : String);
+Begin
+  Assign(src_file, fname);
+  Reset(src_file);
+  lex_line    := '';
+  lex_pos     := 1;
+  lex_lineno  := 0;
+  lex_colno   := 1;
+  lex_has_peek := False;
+  FillChar(lex_cur_tok, SizeOf(lex_cur_tok), 0);
+  FillChar(lex_peek_tok, SizeOf(lex_peek_tok), 0);
+End;
+
+{ --------------------------------------------------------------------------
+  LexCurChar : retourner le caractere courant dans lex_line (ou #0).
+  -------------------------------------------------------------------------- }
+Function LexCurChar : Char;
+Begin
+  If lex_pos <= Length(lex_line) Then
+    LexCurChar := lex_line[lex_pos]
+  Else
+    LexCurChar := LEX_EOF_CHAR;
+End;
+
+{ --------------------------------------------------------------------------
+  LexPeekChar : retourner le caractere a lex_pos + offset (sans avancer).
+  -------------------------------------------------------------------------- }
+Function LexPeekChar(offset : Integer) : Char;
+Var p : Integer;
+Begin
+  p := lex_pos + offset;
+  If (p >= 1) And (p <= Length(lex_line)) Then
+    LexPeekChar := lex_line[p]
+  Else
+    LexPeekChar := LEX_EOF_CHAR;
+End;
+
+{ --------------------------------------------------------------------------
+  LexAdvance : avancer d'un caractere dans la ligne courante.
+  -------------------------------------------------------------------------- }
+Procedure LexAdvance;
+Begin
+  If lex_pos <= Length(lex_line) Then
+  Begin
+    Inc(lex_pos);
+    Inc(lex_colno);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadLine : lire la prochaine ligne du source dans lex_line.
+  Retourne False si EOF.
+  -------------------------------------------------------------------------- }
+Function LexReadLine : Boolean;
+Begin
+  If EOF(src_file) Then
+  Begin
+    LexReadLine := False;
+    lex_line := '';
+    Exit;
+  End;
+  ReadLn(src_file, lex_line);
+  Inc(lex_lineno);
+  lex_pos    := 1;
+  lex_colno  := 1;
+  src_line_num := lex_lineno;
+  LexReadLine := True;
+End;
+
+{ --------------------------------------------------------------------------
+  LexRefill : avancer dans le flux jusqu'a trouver un caractere non-EOF.
+  Gere les fins de ligne et lit les nouvelles lignes si necessaire.
+  Retourne False si le source est completement epuise.
+  -------------------------------------------------------------------------- }
+Function LexRefill : Boolean;
+Begin
+  While LexCurChar = LEX_EOF_CHAR Do
+  Begin
+    If Not LexReadLine Then
+    Begin
+      LexRefill := False;
+      Exit;
+    End;
+  End;
+  LexRefill := True;
+End;
+
+{ --------------------------------------------------------------------------
+  LexSkipWS : sauter les espaces, tabulations, et commentaires C#.
+    // commentaire de ligne              -> sauter jusqu'a fin de ligne
+    /* commentaire multi-ligne */        -> sauter jusqu'a */
+  -------------------------------------------------------------------------- }
+Procedure LexSkipWS;
+Var in_block : Boolean;
+Begin
+  in_block := False;
+  Repeat
+    { Remplir la ligne si necessaire }
+    While LexCurChar = LEX_EOF_CHAR Do
+    Begin
+      If in_block Then
+      Begin
+        { Continuer a chercher */ sur la ligne suivante }
+        If Not LexReadLine Then Exit;
+      End
+      Else
+        Exit;
+    End;
+
+    If in_block Then
+    Begin
+      { Chercher la fin du commentaire bloc '*/' }
+      If (LexCurChar = '*') And (LexPeekChar(1) = '/') Then
+      Begin
+        LexAdvance; LexAdvance;   { sauter '*' et '/' }
+        in_block := False;
+      End
+      Else
+        LexAdvance;
+    End
+    Else If (LexCurChar = '/') And (LexPeekChar(1) = '/') Then
+    Begin
+      { Commentaire de ligne : sauter jusqu'a la fin }
+      lex_pos := Length(lex_line) + 1;
+    End
+    Else If (LexCurChar = '/') And (LexPeekChar(1) = '*') Then
+    Begin
+      { Debut de commentaire bloc }
+      LexAdvance; LexAdvance;
+      in_block := True;
+    End
+    Else If LexCurChar In [' ', #9, #13, #10] Then
+      LexAdvance
+    Else
+      Exit;
+  Until False;
+End;
+
+{ --------------------------------------------------------------------------
+  LexDecodeEscape : decoder une sequence d'echappement C# apres '\'.
+  Retourne le caractere decode ; avance lex_pos au-dela de la sequence.
+  -------------------------------------------------------------------------- }
+Function LexDecodeEscape : Char;
+Var c : Char;
+    h : Integer;
+Begin
+  c := LexCurChar;
+  LexAdvance;
+  Case c Of
+    'n'  : LexDecodeEscape := #10;
+    'r'  : LexDecodeEscape := #13;
+    't'  : LexDecodeEscape := #9;
+    '0'  : LexDecodeEscape := #0;
+    '\' : LexDecodeEscape := '\';
+    '"'  : LexDecodeEscape := '"';
+    ''''  : LexDecodeEscape := '''';
+    'x'  :
+    Begin
+      { \xHH : un ou deux chiffres hexa }
+      h := 0;
+      If LexIsHexDigit(LexCurChar) Then
+      Begin
+        h := LexHexVal(LexCurChar); LexAdvance;
+        If LexIsHexDigit(LexCurChar) Then
+        Begin
+          h := h * 16 + LexHexVal(LexCurChar); LexAdvance;
+        End;
+      End;
+      LexDecodeEscape := Chr(h);
+    End;
+  Else
+    LexDecodeEscape := c;   { sequence inconnue : garder le caractere }
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexMakeTok : construire un TToken a partir des elements courants.
+  -------------------------------------------------------------------------- }
+Function LexMakeTok(k : TTokenKind; Const v : TString) : TToken;
+Var t : TToken;
+Begin
+  t.kind    := k;
+  t.val     := v;
+  t.int_val := 0;
+  t.line    := lex_lineno;
+  t.col     := lex_colno;
+  LexMakeTok := t;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadIdent : lire un identifiant ou mot-cle a partir de lex_pos.
+  -------------------------------------------------------------------------- }
+Function LexReadIdent : TToken;
+Var s : TString;
+    k : TTokenKind;
+Begin
+  s := '';
+  While LexIsAlNum(LexCurChar) Do
+  Begin
+    s := s + LexCurChar;
+    LexAdvance;
+  End;
+  If LexIsKeyword(s) Then k := TK_KEYWORD
+  Else                     k := TK_IDENT;
+  LexReadIdent := LexMakeTok(k, s);
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadNumber : lire une constante entiere (decimale ou 0x...).
+  -------------------------------------------------------------------------- }
+Function LexReadNumber : TToken;
+Var s   : TString;
+    v   : LongInt;
+    t   : TToken;
+    hex : Boolean;
+Begin
+  s   := '';
+  v   := 0;
+  hex := False;
+  If (LexCurChar = '0') And (LexPeekChar(1) In ['x', 'X']) Then
+  Begin
+    { Hexadecimal 0x... }
+    LexAdvance; LexAdvance;   { sauter '0' et 'x' }
+    hex := True;
+    While LexIsHexDigit(LexCurChar) Do
+    Begin
+      v := v * 16 + LexHexVal(LexCurChar);
+      s := s + LexCurChar;
+      LexAdvance;
+    End;
+    s := '0x' + s;
+  End
+  Else
+  Begin
+    { Decimal }
+    While LexIsDigit(LexCurChar) Do
+    Begin
+      v := v * 10 + (Ord(LexCurChar) - Ord('0'));
+      s := s + LexCurChar;
+      LexAdvance;
+    End;
+  End;
+  { Sauter suffixes optionnels u / l / ul / lu }
+  While LexCurChar In ['u', 'U', 'l', 'L'] Do LexAdvance;
+  t         := LexMakeTok(TK_INT, s);
+  t.int_val := v;
+  LexReadNumber := t;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadString : lire une chaine litterale delimitee par ".
+  Les sequences \n \t \\ \" \xHH sont decodees.
+  -------------------------------------------------------------------------- }
+Function LexReadString : TToken;
+Var s : TString;
+    c : Char;
+Begin
+  s := '';
+  LexAdvance;   { sauter le '"' ouvrant }
+  While (LexCurChar <> LEX_EOF_CHAR) And (LexCurChar <> '"') Do
+  Begin
+    If LexCurChar = '\' Then
+    Begin
+      LexAdvance;   { sauter '\' }
+      c := LexDecodeEscape;
+    End
+    Else
+    Begin
+      c := LexCurChar;
+      LexAdvance;
+    End;
+    If Length(s) < MAX_TOKSTR Then s := s + c;
+  End;
+  If LexCurChar = '"' Then LexAdvance;   { sauter '"' fermant }
+  LexReadString := LexMakeTok(TK_STRING, s);
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadChar2 : lire un char litteral delimite par des apostrophes ' '.
+  -------------------------------------------------------------------------- }
+Function LexReadChar2 : TToken;
+Var s : TString;
+    c : Char;
+    t : TToken;
+Begin
+  LexAdvance;   { sauter "'" ouvrant }
+  If LexCurChar = '\' Then
+  Begin
+    LexAdvance;
+    c := LexDecodeEscape;
+  End
+  Else
+  Begin
+    c := LexCurChar;
+    LexAdvance;
+  End;
+  If LexCurChar = '''' Then LexAdvance;   { sauter "'" fermant }
+  s := c;
+  t         := LexMakeTok(TK_CHAR, s);
+  t.int_val := Ord(c);
+  LexReadChar2 := t;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadOp : lire un operateur ou signe de ponctuation.
+  Gere les operateurs a 2 caracteres : == != <= >= && || ++ -- += -= *= /= %=
+  -------------------------------------------------------------------------- }
+Function LexReadOp : TToken;
+Var c1, c2 : Char;
+    s       : TString;
+    k       : TTokenKind;
+Begin
+  c1 := LexCurChar;
+  c2 := LexPeekChar(1);
+  s  := c1;
+  k  := TK_OP;
+
+  { Operateurs deux caracteres }
+  If ((c1 = '=') And (c2 = '=')) Or
+     ((c1 = '!') And (c2 = '=')) Or
+     ((c1 = '<') And (c2 = '=')) Or
+     ((c1 = '>') And (c2 = '=')) Or
+     ((c1 = '&') And (c2 = '&')) Or
+     ((c1 = '|') And (c2 = '|')) Or
+     ((c1 = '+') And (c2 = '+')) Or
+     ((c1 = '-') And (c2 = '-')) Or
+     ((c1 = '+') And (c2 = '=')) Or
+     ((c1 = '-') And (c2 = '=')) Or
+     ((c1 = '*') And (c2 = '=')) Or
+     ((c1 = '/') And (c2 = '=')) Or
+     ((c1 = '%') And (c2 = '=')) Then
+  Begin
+    s := c1 + c2;
+    LexAdvance; LexAdvance;
+  End
+  Else
+  Begin
+    { Ponctuation a un caractere }
+    If c1 In ['{', '}', '(', ')', '[', ']', ';', ',', '.'] Then
+      k := TK_PUNCT;
+    LexAdvance;
+  End;
+  LexReadOp := LexMakeTok(k, s);
+End;
+
+{ --------------------------------------------------------------------------
+  LexNext : produire le prochain token depuis le flux source.
+  Met a jour lex_cur_tok et retourne le token.
+  -------------------------------------------------------------------------- }
+Function LexNext : TToken;
+Var t : TToken;
+Begin
+  { Si un token est en attente (peek), le consommer }
+  If lex_has_peek Then
+  Begin
+    lex_cur_tok  := lex_peek_tok;
+    lex_has_peek := False;
+    LexNext      := lex_cur_tok;
+    Exit;
+  End;
+
+  { Assurer qu'il y a des donnees a lire }
+  If Not LexRefill Then
+  Begin
+    t := LexMakeTok(TK_EOF, '');
+    lex_cur_tok := t;
+    LexNext     := t;
+    Exit;
+  End;
+
+  LexSkipWS;
+
+  If LexCurChar = LEX_EOF_CHAR Then
+  Begin
+    If Not LexRefill Then
+    Begin
+      t := LexMakeTok(TK_EOF, '');
+      lex_cur_tok := t;
+      LexNext := t;
+      Exit;
+    End;
+    LexSkipWS;
+  End;
+
+  If LexCurChar = LEX_EOF_CHAR Then
+  Begin
+    t := LexMakeTok(TK_EOF, '');
+    lex_cur_tok := t;
+    LexNext := t;
+    Exit;
+  End;
+
+  { Dispatcher selon le premier caractere }
+  If LexIsAlpha(LexCurChar) Then
+    t := LexReadIdent
+  Else If LexIsDigit(LexCurChar) Then
+    t := LexReadNumber
+  Else If LexCurChar = '"' Then
+    t := LexReadString
+  Else If LexCurChar = '''' Then
+    t := LexReadChar2
+  Else
+    t := LexReadOp;
+
+  lex_cur_tok := t;
+  LexNext := t;
+End;
+
+{ --------------------------------------------------------------------------
+  LexPeek : retourner le prochain token SANS le consommer.
+  -------------------------------------------------------------------------- }
+Function LexPeek : TToken;
+Begin
+  If Not lex_has_peek Then
+  Begin
+    lex_peek_tok := LexNext;
+    lex_has_peek := True;
+    { Remettre cur_tok a l'etat precedent n'est pas necessaire car
+      LexNext sera appele par LexPeek, on remet simplement le flag }
+  End;
+  LexPeek := lex_peek_tok;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExpect : consommer le prochain token en verifiant sa valeur.
+  Si le token ne correspond pas a val, emettre une erreur.
+  -------------------------------------------------------------------------- }
+Procedure LexExpect(Const expected_val : TString);
+Var t : TToken;
+Begin
+  t := LexNext;
+  If t.val <> expected_val Then
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur syntaxique ligne ', t.line, ' col ', t.col,
+            ' : attendu ''', expected_val, ''' mais lu ''', t.val, '''');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExpectKind : consommer le prochain token en verifiant son kind.
+  Retourne le token consomme.
+  -------------------------------------------------------------------------- }
+Function LexExpectKind(k : TTokenKind) : TToken;
+Var t     : TToken;
+    kname : TString;
+Begin
+  t := LexNext;
+  If t.kind <> k Then
+  Begin
+    Inc(err_count);
+    Case k Of
+      TK_IDENT   : kname := 'identificateur';
+      TK_INT     : kname := 'entier';
+      TK_STRING  : kname := 'chaine';
+      TK_KEYWORD : kname := 'mot-cle';
+    Else             kname := 'token';
+    End;
+    WriteLn('Erreur syntaxique ligne ', t.line, ' col ', t.col,
+            ' : attendu ', kname, ' mais lu ''', t.val, '''');
+  End;
+  LexExpectKind := t;
+End;
+
+{ --------------------------------------------------------------------------
+  LexClose : fermer le fichier source.
+  -------------------------------------------------------------------------- }
+Procedure LexClose;
+Begin
+  {$I-}
+  Close(src_file);
+  {$I+}
+End;
+
+{ ============================================================================
+  TODO 03 - TABLES DE SYMBOLES ET DE FONCTIONS
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  IntToStr : convertir un entier en chaine (Turbo Pascal / FPC)
+  -------------------------------------------------------------------------- }
+Function IntToStr(n : LongInt) : TString;
+Var s : TString;
+Begin
+  Str(n, s);
+  IntToStr := s;
+End;
+
+{ --------------------------------------------------------------------------
+  AsmSafeIdent : nettoyer un identifiant C# pour l'utiliser comme label ASM.
+  Remplace '.' et tout caractere non alphanum par '_'.
+  Ex : 'Console.WriteLine' -> 'Console_WriteLine'
+  -------------------------------------------------------------------------- }
+Function AsmSafeIdent(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+    c   : Char;
+Begin
+  res := '';
+  For i := 1 To Length(s) Do
+  Begin
+    c := s[i];
+    If c In ['a'..'z', 'A'..'Z', '0'..'9', '_'] Then
+      res := res + c
+    Else
+      res := res + '_';
+  End;
+  If res = '' Then res := '_';
+  AsmSafeIdent := res;
+End;
+
+{ --------------------------------------------------------------------------
+  NewLabel : generer un label ASM unique de la forme @@Lxxxx.
+  -------------------------------------------------------------------------- }
+Function NewLabel : TString;
+Begin
+  Inc(lbl_seq);
+  NewLabel := '@@L' + IntToStr(lbl_seq);
+End;
+
+{ --------------------------------------------------------------------------
+  GlbAsmLabel : label ASM d'une variable globale C#.
+  Ex : 'count' -> '_G_count'
+  -------------------------------------------------------------------------- }
+Function GlbAsmLabel(Const name : TString) : TString;
+Begin
+  GlbAsmLabel := CS_GLB_PFX + AsmSafeIdent(name);
+End;
+
+{ --------------------------------------------------------------------------
+  FuncAsmLabel : label ASM d'une methode statique.
+  Ex : 'Fact' -> '_CF_Fact'
+  -------------------------------------------------------------------------- }
+Function FuncAsmLabel(Const name : TString) : TString;
+Begin
+  FuncAsmLabel := CS_FUN_PFX + AsmSafeIdent(name);
+End;
+
+{ --------------------------------------------------------------------------
+  LitDataLabel : label ASM du buffer de donnees d'un litteral de chaine.
+  -------------------------------------------------------------------------- }
+Function LitDataLabel(idx : Integer) : TString;
+Begin
+  LitDataLabel := CS_LIT_PFX + IntToStr(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  LitDescLabel : label ASM du descripteur (ptr+len) d'un litteral.
+  -------------------------------------------------------------------------- }
+Function LitDescLabel(idx : Integer) : TString;
+Begin
+  LitDescLabel := CS_LITD_PFX + IntToStr(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  StrEq : comparaison de chaines insensible a la casse.
+  (Utile pour la recherche de noms en C# qui est case-sensitive ;
+   mais les noms ASM sont normalises en minuscules d'origine.)
+  En C# la casse EST significative, on compare donc directement.
+  -------------------------------------------------------------------------- }
+Function StrEq(Const a, b : TString) : Boolean;
+Begin
+  StrEq := (a = b);
+End;
+
+{ ==========================================================================
+  Gestion de la portee (scope)
+  ========================================================================== }
+
+Var
+  scope_level : Integer;   { 0 = global, 1 = methode, 2+ = blocs imbriques }
+
+Procedure ScopeEnter;
+Begin
+  Inc(scope_level);
+End;
+
+Procedure ScopeLeave;
+Begin
+  If scope_level > 0 Then Dec(scope_level);
+End;
+
+{ --------------------------------------------------------------------------
+  ResetLocals : reinitialiser le compteur de locaux pour une nouvelle methode.
+  L'entree func_table[cur_func_idx] est supposee deja creee.
+  -------------------------------------------------------------------------- }
+Procedure ResetLocals;
+Begin
+  If cur_func_idx > 0 Then
+  Begin
+    func_table^[cur_func_idx].local_count      := 0;
+    func_table^[cur_func_idx].local_frame_size := 0;
+    func_table^[cur_func_idx].param_count      := 0;
+    func_table^[cur_func_idx].param_bytes      := 0;
+  End;
+End;
+
+{ ==========================================================================
+  Table des symboles
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  FindSymInScope : chercher un symbole par nom dans la portee courante.
+  Retourne l'index (1-base) ou 0 si non trouve.
+  scope_filter = SC_LOCAL  -> locaux + params de la methode courante.
+  scope_filter = SC_GLOBAL -> variables globales uniquement.
+  -------------------------------------------------------------------------- }
+Function FindSymInScope(Const name : TString; scope_filter : TScope) : Integer;
+Var i : Integer;
+Begin
+  For i := sym_count DownTo 1 Do
+    If StrEq(sym_table^[i].name, name) And
+       (sym_table^[i].scope = scope_filter) Then
+    Begin
+      FindSymInScope := i;
+      Exit;
+    End;
+  FindSymInScope := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  FindSym : chercher un symbole par nom : d'abord local/param, puis global.
+  Retourne l'index (1-base) ou 0 si non trouve.
+  -------------------------------------------------------------------------- }
+Function FindSym(Const name : TString) : Integer;
+Var i : Integer;
+Begin
+  { Recherche des plus recents vers les plus anciens (portee interne gagne) }
+  For i := sym_count DownTo 1 Do
+    If StrEq(sym_table^[i].name, name) Then
+    Begin
+      FindSym := i;
+      Exit;
+    End;
+  FindSym := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  AddSym : ajouter un nouveau symbole dans la table.
+  Retourne l'index (1-base) ou 0 si table pleine.
+  -------------------------------------------------------------------------- }
+Function AddSym(Const name : TString; k : TSymKind;
+                vt : TValueKind; sc : TScope) : Integer;
+Begin
+  If sym_count >= MAX_SYM Then
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur interne : table des symboles pleine (MAX_SYM=', MAX_SYM, ')');
+    AddSym := 0;
+    Exit;
+  End;
+  Inc(sym_count);
+  FillChar(sym_table^[sym_count], SizeOf(TSymEntry), 0);
+  sym_table^[sym_count].name      := name;
+  sym_table^[sym_count].kind      := k;
+  sym_table^[sym_count].vtype     := vt;
+  sym_table^[sym_count].scope     := sc;
+  sym_table^[sym_count].is_static := (sc = SC_GLOBAL);
+  If sc = SC_GLOBAL Then
+    sym_table^[sym_count].asm_label := GlbAsmLabel(name)
+  Else
+    sym_table^[sym_count].asm_label := '';
+  AddSym := sym_count;
+End;
+
+{ --------------------------------------------------------------------------
+  AddGlobalVar : raccourci pour ajouter une variable globale statique.
+  -------------------------------------------------------------------------- }
+Function AddGlobalVar(Const name : TString; vt : TValueKind) : Integer;
+Begin
+  AddGlobalVar := AddSym(name, SK_VAR, vt, SC_GLOBAL);
+End;
+
+{ --------------------------------------------------------------------------
+  AddLocalVar : ajouter une variable locale a la methode courante.
+  Calcule l'offset BP negatif en tenant compte du type (VK_ARRAY = n*2 octets).
+  -------------------------------------------------------------------------- }
+Function AddLocalVar(Const name : TString; vt : TValueKind;
+                     arr_size : Integer) : Integer;
+Var idx     : Integer;
+    fi      : Integer;
+    sz      : Integer;
+    offset  : Integer;
+Begin
+  fi := cur_func_idx;
+  If fi = 0 Then
+  Begin
+    AddLocalVar := AddGlobalVar(name, vt);
+    Exit;
+  End;
+
+  { Calcul de la taille en octets }
+  If vt = VK_ARRAY Then
+    sz := arr_size * 2        { tableau de int/bool/char : 1 DW par element }
+  Else If vt = VK_STRING Then
+    sz := 4                   { descripteur : 2 DW (ptr + len) }
+  Else
+    sz := 2;                  { int / bool / char : 1 DW }
+
+  func_table^[fi].local_frame_size :=
+    func_table^[fi].local_frame_size + sz;
+  offset := func_table^[fi].local_frame_size;  { offset positif, acces [BP-offset] }
+
+  { Ajouter dans la table des locaux de la fonction }
+  If func_table^[fi].local_count < MAX_LOCAL Then
+  Begin
+    Inc(func_table^[fi].local_count);
+    func_table^[fi].locals[func_table^[fi].local_count].name      := name;
+    func_table^[fi].locals[func_table^[fi].local_count].vtype     := vt;
+    func_table^[fi].locals[func_table^[fi].local_count].bp_offset := offset;
+    func_table^[fi].locals[func_table^[fi].local_count].arr_size  := arr_size;
+  End;
+
+  idx := AddSym(name, SK_VAR, vt, SC_LOCAL);
+  If idx > 0 Then
+  Begin
+    sym_table^[idx].bp_offset := offset;
+    sym_table^[idx].arr_size  := arr_size;
+  End;
+  AddLocalVar := idx;
+End;
+
+{ --------------------------------------------------------------------------
+  AddParam : ajouter un parametre de methode.
+  Les parametres sont accedes via [BP + offset] (positif, convention cdecl).
+  Convention near cdecl : [BP+0]=old BP, [BP+2]=ret addr, [BP+4]=param1, ...
+  -------------------------------------------------------------------------- }
+Function AddParam(Const name : TString; vt : TValueKind) : Integer;
+Var idx    : Integer;
+    fi     : Integer;
+    offset : Integer;
+Begin
+  fi := cur_func_idx;
+  If fi = 0 Then
+  Begin
+    AddParam := 0;
+    Exit;
+  End;
+  { offset BP pour ce parametre }
+  offset := 4 + func_table^[fi].param_count * 2;
+
+  If func_table^[fi].param_count < MAX_PARAM Then
+  Begin
+    Inc(func_table^[fi].param_count);
+    func_table^[fi].param_bytes :=
+      func_table^[fi].param_bytes + 2;
+    func_table^[fi].params[func_table^[fi].param_count].name      := name;
+    func_table^[fi].params[func_table^[fi].param_count].vtype     := vt;
+    func_table^[fi].params[func_table^[fi].param_count].bp_offset := offset;
+  End;
+
+  idx := AddSym(name, SK_VAR, vt, SC_PARAM);
+  If idx > 0 Then
+    sym_table^[idx].bp_offset := offset;
+  AddParam := idx;
+End;
+
+{ ==========================================================================
+  Table des methodes (fonctions)
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  FindFunc : chercher une methode par nom.
+  Retourne l'index (1-base) ou 0 si non trouvee.
+  -------------------------------------------------------------------------- }
+Function FindFunc(Const name : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := 1 To func_count Do
+    If StrEq(func_table^[i].name, name) Then
+    Begin
+      FindFunc := i;
+      Exit;
+    End;
+  FindFunc := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  AddFunc : enregistrer une nouvelle methode dans la table.
+  Retourne l'index (1-base) ou 0 si table pleine.
+  -------------------------------------------------------------------------- }
+Function AddFunc(Const name : TString; rt : TValueKind) : Integer;
+Begin
+  If func_count >= MAX_FUNC Then
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur interne : table des methodes pleine (MAX_FUNC=', MAX_FUNC, ')');
+    AddFunc := 0;
+    Exit;
+  End;
+  Inc(func_count);
+  FillChar(func_table^[func_count], SizeOf(TFuncEntry), 0);
+  func_table^[func_count].name             := name;
+  func_table^[func_count].return_type      := rt;
+  func_table^[func_count].asm_label        := FuncAsmLabel(name);
+  func_table^[func_count].is_main          :=
+    (name = 'Main') Or (name = 'main');
+  AddFunc := func_count;
+End;
+
+{ ==========================================================================
+  Table des litteraux de chaine
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  FindLiteral : chercher un litteral de chaine par valeur.
+  Retourne l'index (1-base) ou 0 si non trouve.
+  -------------------------------------------------------------------------- }
+Function FindLiteral(Const val : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := 1 To lit_count Do
+    If lit_table^[i].val = val Then
+    Begin
+      FindLiteral := i;
+      Exit;
+    End;
+  FindLiteral := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  AddLiteral : enregistrer un litteral de chaine, ou retourner l'index
+  existant si la meme chaine a deja ete enregistree (deduplication).
+  Retourne l'index (1-base) ou 0 si table pleine.
+  -------------------------------------------------------------------------- }
+Function AddLiteral(Const val : TString) : Integer;
+Var idx : Integer;
+Begin
+  { deduplication }
+  idx := FindLiteral(val);
+  If idx > 0 Then
+  Begin
+    AddLiteral := idx;
+    Exit;
+  End;
+  If lit_count >= MAX_LIT Then
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur interne : table des litteraux pleine (MAX_LIT=', MAX_LIT, ')');
+    AddLiteral := 0;
+    Exit;
+  End;
+  Inc(lit_count);
+  lit_table^[lit_count].val      := val;
+  lit_table^[lit_count].len      := Length(val);
+  lit_table^[lit_count].asm_data := LitDataLabel(lit_count);
+  lit_table^[lit_count].asm_desc := LitDescLabel(lit_count);
+  AddLiteral := lit_count;
+End;
+
+{ ==========================================================================
+  Rapport de compilation (bilan final)
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  PrintReport : afficher les statistiques de compilation sur stdout.
+  -------------------------------------------------------------------------- }
+Procedure PrintReport;
+Begin
+  WriteLn;
+  WriteLn('CSC86 - Compilation terminee');
+  WriteLn('  Source     : ', src_fname);
+  WriteLn('  Sortie     : ', out_fname);
+  WriteLn('  Instructions :  ', instr_count);
+  WriteLn('  Symboles     :  ', sym_count);
+  WriteLn('  Methodes     :  ', func_count);
+  WriteLn('  Litteraux    :  ', lit_count);
+  WriteLn('  Erreurs      :  ', err_count);
+  WriteLn('  Attention    :  ', warn_count);
+  If err_count = 0 Then
+    WriteLn('  (compilation reussie)')
+  Else
+    WriteLn('  (compilation echouee)');
+End;
+
+{ ============================================================================
+  TODO 04 - INFRASTRUCTURE D'EMISSION ASM
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  InitOutput : ouvrir les fichiers de sortie.
+  out_file   = fichier ASM final (out_fname).
+  tmp_file   = fichier intermediaire (tmp_fname) pour la passe 1 (CODE).
+  cur_out    = pointeur vers la destination courante.
+  -------------------------------------------------------------------------- }
+Procedure InitOutput;
+Begin
+  Assign(out_file, out_fname);
+  Rewrite(out_file);
+  cur_out  := @out_file;
+  tmp_open := False;
+End;
+
+{ --------------------------------------------------------------------------
+  OpenTmpFile : creer / (re)ouvrir le fichier temporaire pour la passe CODE.
+  Apres cet appel, cur_out pointe sur tmp_file.
+  -------------------------------------------------------------------------- }
+Procedure OpenTmpFile;
+Begin
+  Assign(tmp_file, tmp_fname);
+  Rewrite(tmp_file);
+  tmp_open := True;
+  cur_out  := @tmp_file;
+End;
+
+{ --------------------------------------------------------------------------
+  CloseOutput : fermer le fichier principal de sortie.
+  -------------------------------------------------------------------------- }
+Procedure CloseOutput;
+Begin
+  Close(out_file);
+End;
+
+{ --------------------------------------------------------------------------
+  CloseTmpFile : fermer le fichier temporaire.
+  -------------------------------------------------------------------------- }
+Procedure CloseTmpFile;
+Begin
+  If tmp_open Then
+  Begin
+    Close(tmp_file);
+    tmp_open := False;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  SwitchToMain : rediriger cur_out vers out_file (passe DATA / epilogue).
+  -------------------------------------------------------------------------- }
+Procedure SwitchToMain;
+Begin
+  cur_out := @out_file;
+End;
+
+{ --------------------------------------------------------------------------
+  MergeTmpToMain : copier le contenu de tmp_file vers out_file.
+  Utilise apres la generation du segment CODE (passe 2).
+  -------------------------------------------------------------------------- }
+Procedure MergeTmpToMain;
+Var
+  tf  : Text;
+  line : String;
+Begin
+  If Not tmp_open Then Exit;
+  CloseTmpFile;
+  Assign(tf, tmp_fname);
+  Reset(tf);
+  While Not Eof(tf) Do
+  Begin
+    ReadLn(tf, line);
+    WriteLn(out_file, line);
+  End;
+  Close(tf);
+  { Supprimer le fichier temporaire }
+  Erase(tf);
+End;
+
+{ ==========================================================================
+  Primitives d'emission
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  Emit : ecrire une ligne brute dans le fichier courant.
+  -------------------------------------------------------------------------- }
+Procedure Emit(Const s : TString);
+Begin
+  WriteLn(cur_out^, s);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitBlank : ecrire une ligne vide.
+  -------------------------------------------------------------------------- }
+Procedure EmitBlank;
+Begin
+  WriteLn(cur_out^, '');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitSep : ligne de separation '; ---(72 tirets)'.
+  -------------------------------------------------------------------------- }
+Procedure EmitSep;
+Begin
+  WriteLn(cur_out^,
+    '; -----------------------------------------------------------------------');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitComment : ecrire un commentaire '; texte'.
+  -------------------------------------------------------------------------- }
+Procedure EmitComment(Const s : TString);
+Begin
+  WriteLn(cur_out^, '; ' + s);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitLabel : ecrire un label suivi de ':'
+  (sur sa propre ligne, pas d'indentation).
+  -------------------------------------------------------------------------- }
+Procedure EmitLabel(Const lbl : TString);
+Begin
+  WriteLn(cur_out^, lbl + ':');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitI : ecrire une instruction ASM indentee (8 espaces).
+  Format : '        MNEM  OPERANDES   ; commentaire'
+  Le commentaire est omis si c est vide.
+  -------------------------------------------------------------------------- }
+Procedure EmitI(Const mnem, ops, cmt : TString);
+Var line : String;
+Begin
+  line := '        ' + mnem;
+  If ops <> '' Then
+  Begin
+    While Length(line) < 16 Do line := line + ' ';
+    line := line + ops;
+  End;
+  If cmt <> '' Then
+  Begin
+    While Length(line) < 40 Do line := line + ' ';
+    line := line + '; ' + cmt;
+  End;
+  WriteLn(cur_out^, line);
+  Inc(instr_count);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitI1 : EmitI sans commentaire (raccourci frequent).
+  -------------------------------------------------------------------------- }
+Procedure EmitI1(Const mnem, ops : TString);
+Begin
+  EmitI(mnem, ops, '');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitI0 : EmitI sans operande ni commentaire (ex : PUSHF, RET, NOP).
+  -------------------------------------------------------------------------- }
+Procedure EmitI0(Const mnem : TString);
+Begin
+  EmitI(mnem, '', '');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitDB : ecrire une directive 'label  DB  data'.
+  -------------------------------------------------------------------------- }
+Procedure EmitDB(Const lbl, data : TString);
+Var line : String;
+Begin
+  line := lbl;
+  While Length(line) < 24 Do line := line + ' ';
+  line := line + 'DB      ' + data;
+  WriteLn(cur_out^, line);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitDW : ecrire une directive 'label  DW  data'.
+  -------------------------------------------------------------------------- }
+Procedure EmitDW(Const lbl, data : TString);
+Var line : String;
+Begin
+  line := lbl;
+  While Length(line) < 24 Do line := line + ' ';
+  line := line + 'DW      ' + data;
+  WriteLn(cur_out^, line);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitDWNoLbl : DW sans label (suite d'une directive).
+  -------------------------------------------------------------------------- }
+Procedure EmitDWNoLbl(Const data : TString);
+Begin
+  WriteLn(cur_out^, '                        DW      ' + data);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitDBStr : emettre la definition d'une chaine litterale en DB.
+  Genere :   labelData   DB   'texte', 0
+  Puis   :   labelDesc   DW   OFFSET labelData, len
+  -------------------------------------------------------------------------- }
+Procedure EmitDBStr(Const lbl_data, lbl_desc, val : TString);
+Var safe : String;
+    i    : Integer;
+    c    : Char;
+    inq  : Boolean;    { a l'interieur d'une paire de guillemets }
+    data : String;
+    nlen : Integer;
+Begin
+  { Construit la chaine DB en gerant les caracteres de controle }
+  data  := '';
+  inq   := False;
+  nlen  := 0;
+  For i := 1 To Length(val) Do
+  Begin
+    c := val[i];
+    If c < ' ' Then
+    Begin
+      If inq Then begin data := data + '''' + ','; inq := False; end;
+      data := data + IntToStr(Ord(c)) + ',';
+    End
+    Else
+    Begin
+      If Not inq Then begin data := data + ''''; inq := True; end;
+      data := data + c;
+    End;
+    Inc(nlen);
+  End;
+  If inq Then data := data + '''' + ',';
+  data := data + '0';   { terminateur nul }
+
+  EmitDB(lbl_data, data);
+  EmitDW(lbl_desc, 'OFFSET ' + lbl_data + ', ' + IntToStr(nlen));
+End;
+
+{ --------------------------------------------------------------------------
+  EmitEQU : ecrire 'name  EQU  valeur'.
+  -------------------------------------------------------------------------- }
+Procedure EmitEQU(Const name, valstr : TString);
+Var line : String;
+Begin
+  line := name;
+  While Length(line) < 24 Do line := line + ' ';
+  line := line + 'EQU     ' + valstr;
+  WriteLn(cur_out^, line);
+End;
+
+{ --------------------------------------------------------------------------
+  SetFirstInstrLabel : memoriser le label du premier point d'entree.
+  Utilise par GenHeader pour le 'jmp START'.
+  -------------------------------------------------------------------------- }
+Procedure SetFirstInstrLabel(Const lbl : TString);
+Begin
+  first_instr_lbl := lbl;
+End;
+
+{ --------------------------------------------------------------------------
+  EmitExtern : ecrire 'EXTRN name : NEAR'.
+  -------------------------------------------------------------------------- }
+Procedure EmitExtern(Const name : TString);
+Begin
+  WriteLn(cur_out^, '        EXTRN   ' + name + ':NEAR');
+End;
+
+{ --------------------------------------------------------------------------
+  EmitPublic : ecrire 'PUBLIC name'.
+  -------------------------------------------------------------------------- }
+Procedure EmitPublic(Const name : TString);
+Begin
+  WriteLn(cur_out^, '        PUBLIC  ' + name);
+End;
+
+{ ============================================================================
+  TODO 05 ... 25 : a implementer
   ============================================================================ }
 
 BEGIN
   InitTables;
+  scope_level := 0;
   WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 02-25 non implementes)');
+  WriteLn('(TODO 05-25 non implementes)');
   FreeTables;
 END.
