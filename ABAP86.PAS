@@ -1786,11 +1786,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 - PARSEUR : EXPRESSIONS ABAP                   [COMPLET]            }
+{ ANALYSEUR : EXPRESSIONS ABAP                                                 }
 { ============================================================================ }
 
 { --- Primitives de generation incluses ici car pre-requises par ParseExpr.
-  La section TODO 09 ci-dessous documente et complete l'infrastructure.  --- }
+  La section ci-dessous documente et complete l'infrastructure.  --- }
 
 { Charge une variable dans AX selon son type et sa classe de stockage }
 Procedure GenLoadVar(sym_idx: Integer);
@@ -2240,12 +2240,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - GENERATION DE CODE : INFRASTRUCTURE COMPLETE [COMPLET]            }
+{ GENERATION DE CODE : INFRASTRUCTURE COMPLETE                                 }
 { ============================================================================ }
 { Note : GenLoadVar, GenStoreVar, GenBinOp, GenCompare, GenBuiltIn sont        }
-{ places dans la section TODO 08 car pre-requis par ParseExpr.                }
-{ Ce TODO ajoute : GenLoadAddr, GenPrologue, GenEpilogue,                     }
-{                  GenModDiv, GenClearVar, GenWordToStr.                       }
+{ Cette partie ajoute : GenLoadAddr, GenPrologue, GenEpilogue,                 }
+{                       GenModDiv, GenClearVar, GenWordToStr.                  }
 
 { --- Charge l'ADRESSE d'une variable dans AX (pour CHANGING / LEA) ---
   Equivalent a LEA AX, var ; utile pour passer par reference dans PERFORM.   }

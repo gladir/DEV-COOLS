@@ -4164,16 +4164,361 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 14 - ParsePackageSpec / ParsePackageBody                               }
+{ ============================================================================ }
+
+{ ---- Helpers Text_IO : stubs Put / Put_Line / New_Line / Get / Get_Line ----
+  Ces stubs s'appuient sur des helpers runtime assembleur (TODO 22).
+  Convention : argument en AX (pointeur chaine ou valeur entiere).            }
+
+Procedure GenTextIO_Stubs;
+Begin
+ { ---- Put_Line(str) : affiche chaine + saut de ligne ---- }
+ EmitBlank;
+ EmitComment('Ada.Text_IO.Put_Line stub');
+ EmitLabel('_ADA_PROC_PUT_LINE');
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ EmitI('MOV  AX, [BP+4]');   { argument chaine (offset) }
+ EmitI('CALL _RT_PUTS');      { helper : affiche chaine pointee par AX }
+ EmitI('CALL _RT_NEWLINE');   { helper : emite CR LF }
+ EmitI('POP  BP');
+ EmitI('RET  2');
+ EmitBlank;
+
+ { ---- Put(str) : affiche chaine sans saut de ligne ---- }
+ EmitComment('Ada.Text_IO.Put stub');
+ EmitLabel('_ADA_PROC_PUT');
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ EmitI('MOV  AX, [BP+4]');
+ EmitI('CALL _RT_PUTS');
+ EmitI('POP  BP');
+ EmitI('RET  2');
+ EmitBlank;
+
+ { ---- New_Line : saut de ligne ---- }
+ EmitComment('Ada.Text_IO.New_Line stub');
+ EmitLabel('_ADA_PROC_NEW_LINE');
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ EmitI('CALL _RT_NEWLINE');
+ EmitI('POP  BP');
+ EmitI('RET');
+ EmitBlank;
+
+ { ---- Put_Integer / Put(int) ---- }
+ EmitComment('Ada.Integer_Text_IO.Put stub');
+ EmitLabel('_ADA_PROC_PUT_INTEGER');
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ EmitI('MOV  AX, [BP+4]');
+ EmitI('CALL _RT_PUTI');      { helper : affiche entier AX en decimal }
+ EmitI('POP  BP');
+ EmitI('RET  2');
+ EmitBlank;
+
+ { ---- Get_Line(str, last) : lecture ligne ---- }
+ EmitComment('Ada.Text_IO.Get_Line stub');
+ EmitLabel('_ADA_PROC_GET_LINE');
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ EmitI('MOV  AX, [BP+6]');   { 1er arg : buffer }
+ EmitI('CALL _RT_GETS');      { helper : lit ligne dans AX }
+ EmitI('POP  BP');
+ EmitI('RET  4');
+ EmitBlank;
+
+ { ---- Get(val) : lecture entier ---- }
+ EmitComment('Ada.Integer_Text_IO.Get stub');
+ EmitLabel('_ADA_PROC_GET');
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ EmitI('CALL _RT_GETI');      { retour entier dans AX }
+ EmitI('MOV  BX, [BP+4]');   { pointeur vers variable OUT }
+ EmitI('MOV  [BX], AX');
+ EmitI('POP  BP');
+ EmitI('RET  2');
+ EmitBlank;
+End;
+
+{ ---- RegisterTextIO_Subs : enregistre les sous-progs Text_IO dans sub_table -
+  Permet aux appels de procedure de retrouver Put_Line, Put, Get_Line, etc.   }
+
+Procedure RegisterTextIO_Subs;
+Var idx : Integer;
+Begin
+ { PUT_LINE(str : String) }
+ idx := FindSub('PUT_LINE');
+ If idx = 0 Then
+ Begin
+  idx := AddSub('PUT_LINE', False, TYPE_VOID);
+  If idx > 0 Then
+  Begin
+   sub_table^[idx].param_count    := 1;
+   sub_table^[idx].param_names[1] := 'ITEM';
+   sub_table^[idx].param_types[1] := TYPE_STR;
+   sub_table^[idx].param_modes[1] := PARAM_IN;
+  End;
+ End;
+
+ { PUT(str : String) }
+ idx := FindSub('PUT');
+ If idx = 0 Then
+ Begin
+  idx := AddSub('PUT', False, TYPE_VOID);
+  If idx > 0 Then
+  Begin
+   sub_table^[idx].param_count    := 1;
+   sub_table^[idx].param_names[1] := 'ITEM';
+   sub_table^[idx].param_types[1] := TYPE_STR;
+   sub_table^[idx].param_modes[1] := PARAM_IN;
+  End;
+ End;
+
+ { NEW_LINE }
+ idx := FindSub('NEW_LINE');
+ If idx = 0 Then
+  idx := AddSub('NEW_LINE', False, TYPE_VOID);
+
+ { GET_LINE(str, last) }
+ idx := FindSub('GET_LINE');
+ If idx = 0 Then
+ Begin
+  idx := AddSub('GET_LINE', False, TYPE_VOID);
+  If idx > 0 Then
+  Begin
+   sub_table^[idx].param_count    := 2;
+   sub_table^[idx].param_names[1] := 'ITEM';
+   sub_table^[idx].param_types[1] := TYPE_STR;
+   sub_table^[idx].param_modes[1] := PARAM_OUT;
+   sub_table^[idx].param_names[2] := 'LAST';
+   sub_table^[idx].param_types[2] := TYPE_INT;
+   sub_table^[idx].param_modes[2] := PARAM_OUT;
+  End;
+ End;
+
+ { GET(val) }
+ idx := FindSub('GET');
+ If idx = 0 Then
+ Begin
+  idx := AddSub('GET', False, TYPE_VOID);
+  If idx > 0 Then
+  Begin
+   sub_table^[idx].param_count    := 1;
+   sub_table^[idx].param_names[1] := 'ITEM';
+   sub_table^[idx].param_types[1] := TYPE_INT;
+   sub_table^[idx].param_modes[1] := PARAM_OUT;
+  End;
+ End;
+
+ { PUT_INTEGER alias pour Ada.Integer_Text_IO.Put }
+ idx := FindSub('PUT_INTEGER');
+ If idx = 0 Then
+ Begin
+  idx := AddSub('PUT_INTEGER', False, TYPE_VOID);
+  If idx > 0 Then
+  Begin
+   sub_table^[idx].param_count    := 1;
+   sub_table^[idx].param_names[1] := 'ITEM';
+   sub_table^[idx].param_types[1] := TYPE_INT;
+   sub_table^[idx].param_modes[1] := PARAM_IN;
+  End;
+ End;
+End;
+
+{ ---- ParsePackageSpec : PACKAGE nom IS [PRIVATE] decls END [nom] ; ----
+  Enregistre le package et ses exports (types, constantes, sous-progs)
+  dans les tables globales. Aucun code n'est genere pour la spec.             }
+
+Procedure ParsePackageSpec;
+Var nm       : String;
+    idx      : Integer;
+    spec_idx : Integer;
+    fspec_idx: Integer;
+Begin
+ Consume; { PACKAGE }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de package attendu'); Exit; End;
+ nm  := UpCaseStr(cur_tok_str);
+ Consume;
+
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres nom de package');
+
+ { Enregistrer le package }
+ idx := FindPkg(nm);
+ If idx = 0 Then
+  idx := AddPkg(nm, False);
+
+ PushScope(SK_PACKAGE, 0);
+
+ { Parser les declarations publiques }
+ While True do
+ Begin
+  If cur_tok_type = TOK_EOF   Then Break;
+  If TokIsKw(KW_END)          Then Break;
+  If TokIsKw(KW_PRIVATE) Then
+  Begin Consume; Continue; End;  { section privee : ignorer et continuer }
+
+  If TokIsKw(KW_TYPE)       Then ParseTypeDecl
+  Else If TokIsKw(KW_SUBTYPE)  Then ParseSubtypeDecl
+  Else If TokIsKw(KW_PROCEDURE) Then
+  Begin
+   spec_idx := ParseProcedureSpec;
+   Expect(TOK_SEMI, '`;` attendu apres spec de procedure');
+  End
+  Else If TokIsKw(KW_FUNCTION) Then
+  Begin
+   fspec_idx := ParseFunctionSpec;
+   Expect(TOK_SEMI, '`;` attendu apres spec de fonction');
+  End
+  Else If TokIsKw(KW_PRAGMA) Then
+  Begin
+   Consume;
+   If cur_tok_type = TOK_IDENT Then Consume;
+   If cur_tok_type = TOK_LPAREN Then
+   Begin
+    Consume;
+    While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+    Consume;
+   End;
+   Expect(TOK_SEMI, '`;` attendu apres PRAGMA');
+  End
+  Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+   ParseObjectDecl
+  Else
+  Begin ErrorTok('Element inattendu dans spec de package'); SkipToSemi; End;
+ End;
+
+ PopScope;
+
+ ExpectKw(KW_END, 'END', '`END` attendu en fin de package spec');
+ If cur_tok_type = TOK_IDENT Then Consume;  { nom optionnel }
+ Expect(TOK_SEMI, '`;` attendu apres END de package spec');
+End;
+
+{ ---- ParsePackageBody : PACKAGE BODY nom IS decls [BEGIN stmts END] ; ---- }
+
+Procedure ParsePackageBody;
+Var nm       : String;
+    idx      : Integer;
+    lbl_init : String;
+    is_textio: Boolean;
+    end_name : String;
+Begin
+ { BODY deja consomme par l'appelant (PACKAGE BODY) }
+ { ou appele apres que PACKAGE et BODY ont ete consommes }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de package body attendu'); Exit; End;
+ nm := UpCaseStr(cur_tok_str);
+ Consume;
+
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres nom de package body');
+
+ { Package Text_IO standard ? }
+ is_textio := (nm = 'ADA.TEXT_IO') Or (nm = 'TEXT_IO')
+           Or (nm = 'ADA.INTEGER_TEXT_IO') Or (nm = 'ADA.FLOAT_TEXT_IO');
+
+ { Enregistrer le package }
+ idx := FindPkg(nm);
+ If idx = 0 Then
+  idx := AddPkg(nm, is_textio);
+
+ PushScope(SK_PACKAGE, 0);
+
+ { Pour Ada.Text_IO : enregistrer les sous-programmes stubs }
+ If is_textio Then
+ Begin
+  RegisterTextIO_Subs;
+  { Consommer le corps du package sans generer de code utilisateur }
+  While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do
+  Begin
+   If TokIsKw(KW_BEGIN) Then Begin Consume; Break; End;
+   SkipToSemi;
+  End;
+  { Consommer jusqu'a END }
+  While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
+ End
+ Else
+ Begin
+  { Corps de package utilisateur : parser toutes les declarations }
+  While True do
+  Begin
+   If cur_tok_type = TOK_EOF   Then Break;
+   If TokIsKw(KW_END)          Then Break;
+   If TokIsKw(KW_BEGIN)        Then Break;
+   If TokIsKw(KW_PROCEDURE)    Then ParseProcedureBody
+   Else If TokIsKw(KW_FUNCTION) Then ParseFunctionBody
+   Else If TokIsKw(KW_TYPE)    Then ParseTypeDecl
+   Else If TokIsKw(KW_SUBTYPE) Then ParseSubtypeDecl
+   Else If TokIsKw(KW_PRAGMA) Then
+   Begin
+    Consume;
+    If cur_tok_type = TOK_IDENT Then Consume;
+    If cur_tok_type = TOK_LPAREN Then
+    Begin
+     Consume;
+     While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+     Consume;
+    End;
+    Expect(TOK_SEMI, '`;` attendu apres PRAGMA');
+   End
+   Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+    ParseObjectDecl
+   Else
+   Begin ErrorTok('Element inattendu dans corps de package'); SkipToSemi; End;
+  End;
+ End;
+
+ { Bloc d'initialisation BEGIN ... END optionnel }
+ If TokIsKw(KW_BEGIN) Then
+ Begin
+  Consume;
+  lbl_init := AsmIdent('_PKG_', nm) + '_INIT';
+  EmitBlank;
+  EmitComment('Package init : ' + nm);
+  EmitLabel(lbl_init);
+  EmitI('PUSH BP');
+  EmitI('MOV  BP, SP');
+  ParseSequenceOfStatements;
+  EmitI('POP  BP');
+  EmitI('RET');
+ End;
+
+ PopScope;
+
+ ExpectKw(KW_END, 'END', '`END` attendu en fin de package body');
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  end_name := UpCaseStr(cur_tok_str);
+  Consume;
+ End;
+ Expect(TOK_SEMI, '`;` attendu apres END de package body');
+End;
+
+{ ---- ParsePackage : PACKAGE [BODY] ... ---- }
+
+Procedure ParsePackage;
+Begin
+ Consume; { PACKAGE }
+ If TokIsKw(KW_BODY) Then
+ Begin
+  Consume; { BODY }
+  ParsePackageBody;
+ End
+ Else
+  ParsePackageSpec;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 13 OK (corps de sous-programmes OK)');
-  WriteLn('  ParseSequenceOfStatements (stub ParseStatement)');
-  WriteLn('  RegisterParamSymbols (offsets BP positifs pour params)');
-  WriteLn('  EmitLocalInits (init compile-time apres SUB SP)');
-  WriteLn('  ParseExceptionHandlers (WHEN ... =>)');
-  WriteLn('  ParseSubBody (label + prologue + decl + stmt + epilogue)');
-  WriteLn('  ParseProcedureBody, ParseFunctionBody');
-  WriteLn('  ParseDeclarativePart (types + objets + sous-progs)');
+  WriteLn('ADA86 V1.0 - TODO 14 OK (packages OK)');
+  WriteLn('  GenTextIO_Stubs (Put, Put_Line, New_Line, Get, Get_Line)');
+  WriteLn('  RegisterTextIO_Subs (enregistre Ada.Text_IO dans sub_table)');
+  WriteLn('  ParsePackageSpec (PACKAGE nom IS ... END ;)');
+  WriteLn('  ParsePackageBody (PACKAGE BODY nom IS ... [BEGIN] END ;)');
+  WriteLn('  ParsePackage (dispatcher PACKAGE / PACKAGE BODY)');
 End.
