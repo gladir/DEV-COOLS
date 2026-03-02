@@ -4428,30 +4428,30 @@ Begin
  need_ret       := False;
 End;
 
-Procedure ShowHelp;
-Begin
- WriteLn(VERSION, ' - Compilateur COBOL pour 8086/8088');
- WriteLn;
- WriteLn('Syntaxe: COBOL86 [options] <fichier.cbl> [fichier.asm]');
- WriteLn;
- WriteLn('Options:');
- WriteLn('  /T   Decharge des tokens (debug tokeniseur)');
- WriteLn('  /S   Decharge la table des symboles (debug parseur)');
- WriteLn('  /?   Afficher cette aide');
- WriteLn;
- WriteLn('Exemples:');
- WriteLn('  COBOL86 HELLO.CBL');
- WriteLn('  COBOL86 HELLO.CBL HELLO.ASM');
- WriteLn('  COBOL86 /T HELLO.CBL');
-End;
-
 Var
  i            : Integer;
  opt_dump_tok : Boolean;
  opt_dump_sym : Boolean;
  arg          : String;
 
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('COBOL86 - Cette commande permet de lancer le compilateur COBOL pour 8086/8088.');
+  WriteLn;
+  WriteLn('Syntaxe: COBOL86 [options] <fichier.cbl> [fichier.asm]');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  /T   Decharge des tokens (debug tokeniseur)');
+  WriteLn('  /S   Decharge la table des symboles (debug parseur)');
+  WriteLn('  /?   Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples:');
+  WriteLn('  COBOL86 HELLO.CBL');
+  WriteLn('  COBOL86 HELLO.CBL HELLO.ASM');
+  WriteLn('  COBOL86 /T HELLO.CBL');
+  Halt(0);
+ End;
  opt_dump_tok    := False;
  opt_dump_sym    := False;
  source_filename := '';
@@ -4460,12 +4460,7 @@ Begin
  For i := 1 to ParamCount do
  Begin
   arg := ParamStr(i);
-  If (arg = '/?') or (arg = '-h') or (arg = '--help') Then
-  Begin
-   ShowHelp;
-   Halt(0);
-  End
-  Else If (UpperStr(arg) = '/T') or (UpperStr(arg) = '-T') Then
+  If (UpperStr(arg) = '/T') or (UpperStr(arg) = '-T') Then
    opt_dump_tok := True
   Else If (UpperStr(arg) = '/S') or (UpperStr(arg) = '-S') Then
    opt_dump_sym := True
@@ -4475,9 +4470,8 @@ Begin
    output_filename := arg;
  End;
 
- If source_filename = '' Then
- Begin
-  ShowHelp;
+ If source_filename = '' Then Begin
+  WriteLn('Nom du fichier source attendue !');
   Halt(1);
  End;
 

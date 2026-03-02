@@ -5019,22 +5019,140 @@ Begin
  Expect(TOK_SEMI, '`;` attendu apres appel de procedure');
 End;
 
+{ ============================================================================ }
+{ TODO 17 - ParseIf / ParseCase                                               }
+{ ============================================================================ }
+
+{ ---- ParseIf : IF cond THEN stmts [ELSIF cond THEN stmts]* [ELSE stmts] END IF ; ---- }
+
 Procedure ParseIf;
+Var lbl_next : String;
+    lbl_end  : String;
 Begin
- { stub }
  Consume; { IF }
- While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
- Consume; { END }
+ lbl_end := NewLabel;
+ { Premiere condition }
+ ParseExpr;
+ EmitI('CMP  AX, 0');
+ lbl_next := NewLabel;
+ EmitI('JE   ' + lbl_next);
+ ExpectKw(KW_THEN, 'THEN', '`THEN` attendu apres condition IF');
+ ParseSequenceOfStatements;
+ EmitI('JMP  ' + lbl_end);
+ EmitLabel(lbl_next);
+ { Branches ELSIF }
+ While TokIsKw(KW_ELSIF) do
+ Begin
+  Consume; { ELSIF }
+  ParseExpr;
+  EmitI('CMP  AX, 0');
+  lbl_next := NewLabel;
+  EmitI('JE   ' + lbl_next);
+  ExpectKw(KW_THEN, 'THEN', '`THEN` attendu apres condition ELSIF');
+  ParseSequenceOfStatements;
+  EmitI('JMP  ' + lbl_end);
+  EmitLabel(lbl_next);
+ End;
+ { Branche ELSE optionnelle }
+ If TokIsKw(KW_ELSE) Then
+ Begin
+  Consume; { ELSE }
+  ParseSequenceOfStatements;
+ End;
+ ExpectKw(KW_END, 'END', '`END` attendu apres IF');
  If TokIsKw(KW_IF) Then Consume;
  Expect(TOK_SEMI, '`;` attendu apres END IF');
+ EmitLabel(lbl_end);
 End;
 
-Procedure ParseCase;
+{ ---- GetCaseVal : lit une valeur scalaire constante pour WHEN  ----
+  Retourne True si valeur constante obtenue dans v.
+  Handles : integer literals, char literals, TRUE/FALSE, enum literals,
+  symbolic constants.                                                          }
+
+Function GetCaseVal(Var v: LongInt): Boolean;
+Var nm : String;
+    ti : Integer;
+    j  : Integer;
+    si : Integer;
 Begin
- { stub }
+ GetCaseVal := False; v := 0;
+ If cur_tok_type = TOK_INTEGER Then
+ Begin v := cur_tok_num; Consume; GetCaseVal := True; Exit; End;
+ If cur_tok_type = TOK_CHAR Then
+ Begin v := Ord(cur_tok_str[1]); Consume; GetCaseVal := True; Exit; End;
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  nm := UpCaseStr(cur_tok_str);
+  If nm = 'TRUE'  Then Begin v := 1; Consume; GetCaseVal := True; Exit; End;
+  If nm = 'FALSE' Then Begin v := 0; Consume; GetCaseVal := True; Exit; End;
+  { Litteraux d'enumeres }
+  For ti := 1 to type_count do
+   If type_table^[ti].kind = TK_ENUM Then
+    For j := 1 to type_table^[ti].enum_count do
+     If type_table^[ti].enum_names[j] = nm Then
+     Begin
+      v := j - 1; Consume; GetCaseVal := True; Exit;
+     End;
+  { Constante symbolique }
+  si := FindSym(nm);
+  If (si > 0) And sym_table^[si].is_const Then
+  Begin
+   v := sym_table^[si].init_num; Consume; GetCaseVal := True; Exit;
+  End;
+  Warning('Valeur de WHEN inconnue : ' + nm);
+  Consume;
+ End;
+End;
+
+{ ---- ParseCase : CASE expr IS WHEN val [| val2 ...] => stmts ... END CASE ; ---- }
+
+Procedure ParseCase;
+Var lbl_body : String;
+    lbl_next : String;
+    lbl_end  : String;
+    v        : LongInt;
+Begin
  Consume; { CASE }
- While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do Consume;
- Consume; { END }
+ ParseExpr;            { AX = valeur du CASE }
+ EmitI('MOV  BX, AX'); { preserver dans BX pour les CMP successifs }
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres expression CASE');
+ lbl_end := NewLabel;
+ While TokIsKw(KW_WHEN) And (cur_tok_type <> TOK_EOF) do
+ Begin
+  Consume; { WHEN }
+  If TokIsKw(KW_OTHERS) Then
+  Begin
+   Consume; { OTHERS }
+   Expect(TOK_ARROW, '`=>` attendu apres OTHERS');
+   ParseSequenceOfStatements;
+   EmitI('JMP  ' + lbl_end);
+  End
+  Else
+  Begin
+   lbl_body := NewLabel;
+   lbl_next := NewLabel;
+   { Un ou plusieurs choix separes par | }
+   While True do
+   Begin
+    If GetCaseVal(v) Then
+    Begin
+     EmitI('CMP  BX, ' + IntToStr(v));
+     EmitI('JE   ' + lbl_body);
+    End;
+    If cur_tok_type = TOK_BAR Then Consume
+    Else Break;
+   End;
+   EmitI('JMP  ' + lbl_next);
+   EmitLabel(lbl_body);
+   Expect(TOK_ARROW, '`=>` attendu apres choix WHEN');
+   ParseSequenceOfStatements;
+   EmitI('JMP  ' + lbl_end);
+   EmitLabel(lbl_next);
+  End;
+ End;
+ EmitLabel(lbl_end);
+ ExpectKw(KW_END, 'END', '`END` attendu apres CASE');
  If TokIsKw(KW_CASE) Then Consume;
  Expect(TOK_SEMI, '`;` attendu apres END CASE');
 End;
@@ -5114,12 +5232,9 @@ Begin
 End;
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 16 OK (ParseAssignment + ParseProcedureCall OK)');
-  WriteLn('  GenLoadAddrBX, GenPushAddr : adresses OUT/IN OUT');
-  WriteLn('  ParseLhsInfo   : LHS avec .champ et (index)');
-  WriteLn('  GenStoreLhs    : stockage AX dans LHS');
-  WriteLn('  ParseAssignment: ident [.champ|(index)] := expr ;');
-  WriteLn('  ParseOneArg    : IN par valeur, OUT/INOUT par adresse');
-  WriteLn('  ParseProcedureCall : appel avec arguments positionnels/nommes');
-  WriteLn('  ParseIf, ParseCase, ParseLoop, ParseWhile, ParseFor (stubs)');
+  WriteLn('ADA86 V1.0 - TODO 17 OK (ParseIf + ParseCase OK)');
+  WriteLn('  ParseIf  : IF/ELSIF/ELSE/END IF avec JE/JMP');
+  WriteLn('  GetCaseVal : lecture constante WHEN (int/char/bool/enum/cst)');
+  WriteLn('  ParseCase  : CASE/WHEN [|]/OTHERS/END CASE avec CMP/JE BX');
+  WriteLn('  ParseLoop, ParseWhile, ParseFor (stubs)');
 End.
