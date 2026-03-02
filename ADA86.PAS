@@ -16,245 +16,6 @@
 {  5. Compile   : deux fichiers -> code_tmp puis assemblage final              }
 { ---------------------------------------------------------------------------- }
 
-{ TODO 11 - ParseObjectDecl : declarations d'objets
-  --------------------------------------------------
-  nom [, nom2 ...] : [CONSTANT] type [:= expr] ;
-  - Detecter CONSTANT -> is_const := True, STORE_CONST
-  - Variables globales (scope_lev = 0) -> STORE_STATIC, segment .DATA
-  - Variables locales (scope_lev > 0)  -> STORE_AUTO, pile BP
-  - Evaluer l'expression d'initialisation si presente (constante
-    a la compilation ou code d'init au runtime)
-  - Pour tableaux : emettre DUP(?) ou bloc d'initialisation
-  - Pour records  : emettre un champ par champ               }
-
-{ TODO 12 - ParseProcedureSpec / ParseFunctionSpec : signatures
-  -------------------------------------------------------------
-  PROCEDURE nom [(params)] ;          -> forward / spec de package
-  FUNCTION  nom [(params)] RETURN type ;
-  Forme des parametres :
-    nom [, nom2] : [IN | IN OUT | OUT] type [:= default]
-  - AddSub(nom, ...) avec is_forward := True
-  - Enregistrer param_names, param_types, param_modes
-  - Pour les OUT/IN OUT : passage par adresse (16 bits)            }
-
-{ TODO 13 - ParseProcedureBody / ParseFunctionBody : corps
-  ---------------------------------------------------------
-  PROCEDURE nom [(params)] IS
-    declarative_part
-  BEGIN
-    statements
-  [EXCEPTION
-    exception_handlers]
-  END [nom] ;
-  - PushScope(SK_PROC / SK_FUNC)
-  - ParseDeclarativePart : types, constantes, variables, sous-progs
-  - GenPrologue(frame_size)
-  - ParseSequenceOfStatements
-  - GenEpilogue
-  - PopScope
-  - Si is_forward : verifier coherence signature               }
-
-{ TODO 14 - ParsePackageSpec / ParsePackageBody
-  ----------------------------------------------
-  PACKAGE nom IS
-    [PRIVATE]
-    declarations publiques
-  END [nom] ;
-
-  PACKAGE BODY nom IS
-    declarations privees
-    [BEGIN init_statements END [nom] ;]
-  END [nom] ;
-  - PackageSpec : enregistrer exports dans sub_table / type_table
-  - PackageBody : generer les corps des sous-programmes
-  - Init body : generer une procedure _PKG_nompackage_INIT appelee
-    au demarrage si BEGIN present
-  - Packages Ada.Text_IO : generer stubs Put/Put_Line/Get/Get_Line
-    en appelant les helpers runtime                              }
-
-{ TODO 15 - ParseStatement : dispatcher principal des instructions
-  ---------------------------------------------------------------
-  - Reconnaissance et dispatch vers :
-    ParseAssignment, ParseProcedureCall, ParseIf, ParseCase,
-    ParseLoop, ParseWhile, ParseFor, ParseReturn, ParseRaise,
-    ParseNull, ParseExit, ParseBeginBlock, ParsePragma,
-    ParseObjectDecl (debut de declaration detecte par ':')
-  - Resynchronisation sur erreur : SkipToSemi
-  - Gestion du point-virgule terminateur apres chaque instruction
-  - ParseSequenceOfStatements : boucle Until IsEndBoundary          }
-
-{ TODO 16 - ParseAssignment et ParseProcedureCall
-  ------------------------------------------------
-  ParseAssignment :
-    ident [.field | (index)] := expr ;
-    - GenLoadAddr(lhs) pour obtenir adresse destination
-    - ParseExpr pour RHS
-    - GenStoreAddr(lhs)
-  ParseProcedureCall :
-    nom [(arg1, arg2, ...)] ;
-    - FindSub -> verifier argoments vs params
-    - Pousser arguments (IN par valeur, OUT/IN OUT par adresse)
-    - CALL _ABAP_SUB_nom
-    - ADD SP, param_bytes (callee-cleanup, mais emettre pour IN)
-  ParseNomQualified : ident.ident (pkg.proc, rec.field, etc.)      }
-
-{ TODO 17 - ParseIf / ParseCase
-  ------------------------------
-  ParseIf :
-    IF cond THEN stmts
-    [ELSIF cond THEN stmts]
-    [ELSE stmts]
-    END IF ;
-  - GenLabel pour chaque branche, JZ vers suivant, JMP vers END IF
-
-  ParseCase :
-    CASE expr IS
-      WHEN valeur [| valeur2 ...] => stmts
-      [WHEN OTHERS => stmts]
-    END CASE ;
-  - CMP + JE pour chaque WHEN
-  - ExprType doit etre entier ou enumere
-  - Optimisation : table de sauts si valeurs contiguës (optionnel)  }
-
-{ TODO 18 - ParseLoop / ParseWhile / ParseFor / ParseExit
-  --------------------------------------------------------
-  ParseLoop           : LOOP stmts END LOOP ;   (boucle infinie)
-  ParseWhile          : WHILE cond LOOP stmts END LOOP ;
-  ParseFor            :
-    FOR ident IN [REVERSE] lo .. hi LOOP stmts END LOOP ;
-    - Variable de boucle implicite (STORE_AUTO, lecture seule)
-    - REVERSE : decrementer de hi vers lo
-    - Utiliser CX ou variable locale comme compteur
-
-  ParseExit           :
-    EXIT [WHEN cond] ;
-    - JMP lbl_end (ou conditionnel)
-    - Respecter les boucles imbriquees (scope_stack)
-
-  ParseReturn         :
-    RETURN [expr] ;
-    - Pour FUNCTION : stocker resultat dans AX (ou DX:AX)
-    - JMP lbl_exit                                                  }
-
-{ TODO 19 - ParseExceptionDecl / ParseRaise / ParseExceptionHandler
-  -----------------------------------------------------------------
-  Declarations : nom : EXCEPTION ;
-  RAISE [nom] ;  ->  JMP lbl_except (ou sortie programme)
-
-  Bloc BEGIN ... EXCEPTION ... END :
-    - Generer lbl_try, lbl_except
-    - WHEN nom | WHEN OTHERS => stmts
-    - Mecanisme simple par table de sauts (pas de stack unwinding)
-    - Exceptions standard : CONSTRAINT_ERROR, PROGRAM_ERROR,
-      STORAGE_ERROR, TASKING_ERROR (stubs sans comportement)        }
-
-{ TODO 20 - ParseArrayOps : acces et affectation de tableaux
-  -----------------------------------------------------------
-  - Acces indexe : ident(index)  (Ada utilise () pas [])
-  - Calcul d'adresse : base + (index - lo_bound) * elem_size
-  - Pour tableaux 1D bornes fixes : LEA + IMUL + acces [BX+SI]
-  - Affectation d'un element : GenStoreElement
-  - Lecture d'un element : GenLoadElement
-  - Attributs : T'FIRST, T'LAST -> constantes compilateur
-                T'LENGTH -> hi - lo + 1
-  - Slices : T(a..b) -> stub (avertissement)                       }
-
-{ TODO 21 - ParseRecordOps : acces aux champs de records
-  -------------------------------------------------------
-  - Acces champ : var.champ -> adresse base + offset_champ
-  - Calcul de l'offset par sommation des tailles des champs anterieurs
-  - GenLoadField(sym_idx, field_idx) -> charger dans AX
-  - GenStoreField(sym_idx, field_idx) -> stocker depuis AX
-  - Affectation agregat : (champ => val, ...) -> sequence d'init
-  - Records imbrique : var.champ.sous_champ (recursif)
-  - Attributs record : T'SIZE -> somme des tailles (compile-time)  }
-
-{ TODO 22 - Stubs Ada.Text_IO : Put, Put_Line, Get, Get_Line, New_Line
-  --------------------------------------------------------------------
-  Generer des stubs helpers DOS pour les appels Text_IO :
-  - Put(item)       : afficher entier, flottant, char ou chaine
-  - Put_Line(item)  : Put + New_Line
-  - Get(var)        : lire entier, flottant ou char depuis stdin
-  - Get_Line(str, last) : lire chaine + retourner longueur
-  - New_Line [(n)]  : emettre n CR+LF (defaut 1)
-  - Set_Col(n)      : stub (avertissement "non implemente")
-  Appel via CALL _ADA_PUT_INT / _ADA_PUT_STR / _ADA_PUT_CHAR
-             CALL _ADA_GET_INT / _ADA_GET_STR / _ADA_GET_CHAR     }
-
-{ TODO 23 - GenDataSegment / GenCodeSegmentHeader / GenRuntimeHelpers
-  -------------------------------------------------------------------
-  GenHeader :
-    ; Generated by ADA86 ...
-    .MODEL SMALL / .STACK 256 / .DATA
-  GenDataSegment :
-    _VAR_xxx definitions (DW/DB/DUP)
-    _LS1 ... _LSn chaines litterales
-    Buffers internes : _ADA_CRLF_STR, _NUMBUF, _INPUTBUF
-    .CODE
-  GenCodeSegmentHeader :
-    START: / MOV AX,@DATA / MOV DS,AX / MOV ES,AX
-    Eventuels CALL _PKG_xxx_INIT pour les packages avec BEGIN
-    CALL _ADA_MAIN  (procedure principale Ada, nom identifie
-                     comme procedure de fond avec WITH/USE)
-    MOV AX,4C00h / INT 21h
-  GenRuntimeHelpers :
-    _ADA_CRLF, _ADA_PUT_STR, _ADA_PUT_CHAR, _ADA_PUT_INT,
-    _ADA_PUT_FLOAT (stub), _ADA_GET_INT, _ADA_GET_STR,
-    _ADA_STR_LEN, _ADA_STR_COPY, _ADA_STR_CONCAT,
-    _ADA_CHECK_RANGE (Constraint_Error si hors borne),
-    _ADA_ERROR (affiche msg + exit 1)
-  GenFooter : END START                                             }
-
-{ TODO 24 - Procedure Compile : programme principal deux fichiers
-  ---------------------------------------------------------------
-  Architecture deux passes (identical a ABAP86) :
-    1. Valider ParamStr(1) = source .ADB ou .ADS
-    2. Ouvrir source, creer output_file sur tmp_filename (.$$T)
-    3. InitAll (New() pour toutes les tables sur le tas)
-    4. Enregistrer types predefinis (TODO 05)
-    5. NextToken ; parseur principal :
-         ParseWithUse* -> ParseDeclarativePart -> ParseProcedureBody
-         (programme Ada = procedure de "library unit" avec Begin..End)
-    6. Close(output_file) [ferme tmp]
-    7. Ouvrir output_filename (final .ASM)
-    8. GenHeader ; GenDataSegment ; GenCodeSegmentHeader
-    9. AppendFileToOutput(tmp) [corps des proc/func]
-   10. GenRuntimeHelpers ; GenFooter
-   11. Close, Erase(tmp)
-   12. Dispose() toutes les tables, Bilan
-   Main : Begin Compile; End.                                       }
-
-{ TODO 25 - Programme de test ADA86 + corrections de bugs
-  --------------------------------------------------------
-  Creer TEST.ADB : programme Ada de test couvrant :
-    - WITH Ada.Text_IO ; USE Ada.Text_IO ;
-    - TYPE enumere (Couleur : (Rouge, Vert, Bleu))
-    - SUBTYPE plage (Petit : Integer RANGE 1..100)
-    - RECORD (Point : RECORD X, Y : Integer; END RECORD)
-    - ARRAY  (Vecteur : ARRAY (1..10) OF Integer)
-    - CONSTANT (Pi : CONSTANT Float := 3.14159)
-    - Variables, affectations :=
-    - IF / ELSIF / ELSE / END IF
-    - CASE / WHEN / OTHERS / END CASE
-    - LOOP / EXIT WHEN / END LOOP
-    - WHILE ... LOOP / END LOOP
-    - FOR i IN 1..10 LOOP / END LOOP
-    - PROCEDURE locale et appel
-    - FUNCTION locale avec RETURN
-    - RAISE Constraint_Error ; EXCEPTION handler
-    - Put_Line, Put(entier/chaine), New_Line
-
-  Compiler, corriger les bugs trouves, valider TEST.ASM :
-    - Structure .MODEL SMALL, .DATA, .CODE correcte
-    - Toutes les variables declarees
-    - Toutes les structures de controle generees
-    - Helpers runtime presents
-    - END START en derniere ligne                                    }
-
-{ ============================================================================ }
-{ FIN DES TODOs - CODE SOURCE                                                  }
-{ ============================================================================ }
-
 Program ADA86;
 
 {$A-}
@@ -262,7 +23,7 @@ Program ADA86;
 {$N+}
 
 { ============================================================================ }
-{ TODO 01 - Architecture de base : constantes, types internes, variables       }
+{ Architecture de base : constantes, types internes, variables                 }
 { ============================================================================ }
 
 Const
@@ -606,7 +367,7 @@ Var
   except_next_code : Integer;  { prochain code d'exception utilisateur  }
 
 { ============================================================================ }
-{ TODO 02 - Lexeur : lecture source et tokenisation                            }
+{ Lexeur : lecture source et tokenisation                                      }
 { ============================================================================ }
 
 { ---------- Utilitaires chaines ---------- }
@@ -1246,43 +1007,39 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 03 - Gestion des erreurs, avertissements et resynchronisation           }
+{ Gestion des erreurs, avertissements et resynchronisation                     }
 { ============================================================================ }
 
 { Affiche un message d'erreur non fatal et incremente error_count.
-  Le parsing continue pour detecter d'autres erreurs.                         }
-Procedure Error(Const msg: String);
-Begin
+  L'analyseur continue pour detecter d'autres erreurs. }
+
+Procedure Error(Const msg: String);Begin
  WriteLn('ERREUR (ligne ', src_line_num, ', col ', cur_column, ') : ', msg);
  Inc(error_count);
 End;
 
 { Affiche un message d'erreur avec le token courant en contexte }
-Procedure ErrorTok(Const msg: String);
-Begin
+Procedure ErrorTok(Const msg: String);Begin
  WriteLn('ERREUR (ligne ', src_line_num, ') : ', msg,
          ' (token : ''', cur_tok_str, ''')');
  Inc(error_count);
 End;
 
 { Avertissement non bloquant }
-Procedure Warning(Const msg: String);
-Begin
+Procedure Warning(Const msg: String);Begin
  WriteLn('ATTENTION (ligne ', src_line_num, ') : ', msg);
  Inc(warn_count);
 End;
 
 { Erreur fatale : affiche le message et arrete la compilation }
-Procedure FatalError(Const msg: String);
-Begin
+Procedure FatalError(Const msg: String);Begin
  WriteLn('ERREUR FATALE (ligne ', src_line_num, ') : ', msg);
  Halt(1);
 End;
 
 { Resynchronisation : consommer tous les tokens jusqu'au prochain ';'
   (inclus) ou EOF. Utilise apres une erreur de syntaxe dans une instruction. }
-Procedure SkipToSemi;
-Begin
+Procedure SkipToSemi;Begin
  While (cur_tok_type <> TOK_SEMI) And (cur_tok_type <> TOK_EOF) do
   Consume;
  If cur_tok_type = TOK_SEMI Then Consume;
@@ -1292,7 +1049,8 @@ End;
   Gere les blocs imbrique en comptant BEGIN/END.
   Utilise apres une erreur grave dans un bloc.                                }
 Procedure SkipToEnd;
-Var depth: Integer;
+Var
+ depth: Integer;
 Begin
  depth := 1;
  While (cur_tok_type <> TOK_EOF) And (depth > 0) do
@@ -1310,15 +1068,12 @@ End;
 
 { Resynchronisation : sauter jusqu'a l'un des mots-cles de l'ensemble donne.
   Exemple d'utilisation : SkipToKw(KW_THEN) apres une condition malformee.   }
-Procedure SkipToKw(kw: Integer);
-Begin
- While (cur_tok_type <> TOK_EOF) And Not TokIsKw(kw) do
-  Consume;
+Procedure SkipToKw(kw: Integer);Begin
+ While (cur_tok_type <> TOK_EOF) And Not TokIsKw(kw) do Consume;
 End;
 
-{ Bilan de compilation : affiche les statistiques sur stderr }
-Procedure BilanCompilation;
-Begin
+ { Bilan de compilation : affiche les statistiques sur stderr }
+Procedure BilanCompilation;Begin
  WriteLn;
  WriteLn('ADA86 - Compilation terminee');
  WriteLn('  Source     : ', source_filename);
@@ -1333,12 +1088,12 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 - Tables des symboles : CRUD + resolution de portee                 }
+{ Tables des symboles : CRUD + resolution de portee                            }
 { ============================================================================ }
 
 { Taille en octets d'un type primaire Ada (types predefinis uniquement).
   Pour les types utilisateur (type_idx >= 6), retourne 2 par defaut ;
-  GetTypeSize (TODO 05) affinera ce calcul.                                    }
+  GetTypeSize affinera ce calcul. }
 Function PrimTypeSize(type_idx: Integer): Integer;
 Begin
  Case type_idx of
@@ -1525,7 +1280,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 05 - Tables des types, sous-programmes et packages                     }
+{ Tables des types, sous-programmes et packages                                }
 { ============================================================================ }
 
 { ---- Table des types utilisateur ----------------------------------------- }
@@ -1807,7 +1562,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 06 - Gestion des scopes et de la pile de scopes                        }
+{ Gestion des scopes et de la pile de scopes                                   }
 { ============================================================================ }
 
 { ---- Initialisation de la pile de scopes ---- }
@@ -1995,7 +1750,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 - Generateur de code bas niveau : Emit, labels, helpers             }
+{ Generateur de code bas niveau : Emit, labels, helpers                        }
 { ============================================================================ }
 
 { ---- Initialisation des tables de litteraux chaines ---- }
@@ -2083,7 +1838,7 @@ Begin
 End;
 
 { Emet la section .DATA pour tous les litteraux chaines accumules
-  Appele par le generateur de code final (TODO 24)                }
+  Appele par le generateur de code final }
 Procedure EmitStringLiterals;
 Var i : Integer;
     s : String;
@@ -2299,7 +2054,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 - Parseur d'expressions et generateur d'operations                  }
+{ Analyseur d'expressions et generateur d'operations                           }
 { ============================================================================ }
 
 { ---- Prototypes forward ---- }
@@ -2405,7 +2160,7 @@ Begin
  EmitLabel(lbl_end);
 End;
 
-{ ---- Forward declarations pour helpers tableaux/records (definis en TODO 16/20/21) ---- }
+{ ---- Forward declarations pour helpers tableaux/records ---- }
 Procedure GenLoadAddrBX(sym_idx: Integer); Forward;
 Procedure GenElemOffset(sym_idx: Integer); Forward;
 Procedure GenLoadElement(sym_idx: Integer); Forward;
@@ -2843,7 +2598,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - ParseWithUse : WITH et USE                                         }
+{ ParseWithUse : WITH et USE                                                   }
 { ============================================================================ }
 
 { ---- Liste des packages standard reconnus (comparaison en majuscules) ---- }
@@ -2949,10 +2704,9 @@ Begin
 End;
 
 { ---- ParseWithUseSection : lit la section WITH/USE en tete d'unite ----
-  A appeler au debut de Compile (TODO 24), avant le corps PROCEDURE/PACKAGE. }
+  A appeler au debut de Compile, avant le corps PROCEDURE/PACKAGE. }
 
-Procedure ParseWithUseSection;
-Begin
+Procedure ParseWithUseSection;Begin
  While (cur_tok_type = TOK_IDENT) And
        ((cur_tok_kw = KW_WITH) Or (cur_tok_kw = KW_USE)) do
  Begin
@@ -2962,7 +2716,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 - ParseTypeDecl : declarations de types utilisateur                  }
+{ ParseTypeDecl : declarations de types utilisateur                            }
 { ============================================================================ }
 
 { ---- ParseTypeRef : lire un nom de type et retourner son index ----
@@ -3218,7 +2972,7 @@ End;
 { ---- GenTypeData : emission .DATA pour un type statique ----
   Pour les types simples (ENUM, RANGE, ACCESS) : rien a emettre.
   Appele lors de la generation du segment .DATA pour les variables
-  dont le type necessite un gabarit (reservé au TODO 24).                     }
+  dont le type necessite un gabarit . }
 
 Procedure GenTypeData(ti: Integer);
 Begin

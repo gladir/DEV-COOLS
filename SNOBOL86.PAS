@@ -5289,6 +5289,7 @@ Begin
     Result := tok;
 End;
 
+Procedure GenPredicateCall(Const fn : TString; nargs : Integer; Var args : Array of TString); Forward;
 Procedure GenUserFuncCall(Const fname : TString; Const fargs : TString); Forward;
 Procedure GenBuiltinCall(Const fname : TString; Const fargs : TString); Forward;
 
@@ -5839,6 +5840,12 @@ Begin
   Else If fn = 'TIME' Then
   Begin
     EmitI('CALL _RT_TIME     ; -> DI=desc heure');
+  End
+
+  { ---- Predicats : LT/LE/GT/GE/EQ/NE/IDENT/DIFFER/INTEGER/REAL/NUMERIC ---- }
+  Else If IsPredicateBuiltin(fn) Or (fn='INTEGER') Or (fn='REAL') Or (fn='NUMERIC') Then
+  Begin
+    GenPredicateCall(fn, nargs, args);
   End
 
   { ---- Fonction utilisateur : GenUserFuncCall (TODO 21) ---- }
@@ -6494,6 +6501,114 @@ Begin
   If nargs > 0 Then
     EmitI('ADD  SP, ' + IntToStr(nargs * 2) + '   ; caller cleanup');
   EmitComment('  AX=1->succes DI=desc  AX=0->echec');
+End;
+{ ============================================================================
+  TODO 22 - CODEGEN : PREDICATS ET OPERATEURS DE COMPARAISON
+  ============================================================================
+  GenPredicateCall : dispatcher pour LT/LE/GT/GE/EQ/NE (numeriques),
+                     IDENT/DIFFER (chaines) et INTEGER/REAL/NUMERIC (types).
+  Convention SNOBOL : predicat retourne son premier argument si vrai,
+                      provoque FAIL (goto_f) si faux.
+  _RT_ICOMPARE : CMP AX, BX (entiers signes) -> flags
+  _RT_STRCMP   : SI=desc1, DI=desc2 -> flags (ZF=egal, CF=SI<DI)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenPredicateCall : emettre le code d'un predicat SNOBOL.
+  fn    = nom du predicat en majuscules.
+  nargs = nombre d'arguments parsed.
+  args  = tableau des arg bruts (chaines, vars, exprs).
+  Resultat succes : DI = descripteur de args[0].
+  Resultat echec  : branchement vers inst_goto_f (ou inst_goto_u si vide).
+  -------------------------------------------------------------------------- }
+Procedure GenPredicateCall(Const fn : TString; nargs : Integer;
+                           Var args : Array of TString);
+Var lbl_fail : TString;
+    lbl_done : TString;
+    jmp_fail : TString;
+Begin
+  lbl_fail := NewLabel;
+  lbl_done := NewLabel;
+
+  { ---- Comparaisons numeriques : LT LE GT GE EQ NE ---- }
+  If (fn='LT') Or (fn='LE') Or (fn='GT') Or (fn='GE') Or
+     (fn='EQ') Or (fn='NE') Then
+  Begin
+    EmitComment('Predicat numerique ' + fn);
+    { Sauvegarder le descripteur de arg0 pour le retour succes }
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI                    ; [1] conserver desc arg0');
+    { AX = valeur entiere de arg0 }
+    If nargs >= 1 Then EvalArgAsInt(args[0])
+    Else EmitI('MOV  AX, 0');
+    EmitI('PUSH AX                    ; [2] AX arg0');
+    { BX = valeur entiere de arg1 }
+    If nargs >= 2 Then EvalArgAsInt(args[1])
+    Else EmitI('MOV  AX, 0');
+    EmitI('MOV  BX, AX');
+    EmitI('POP  AX                    ; [2] AX = arg0 int');
+    EmitI('CALL _RT_ICOMPARE          ; CMP AX, BX -> flags');
+    { Saut sur echec selon le predicat }
+    If      fn = 'LT' Then jmp_fail := 'JGE'
+    Else If fn = 'LE' Then jmp_fail := 'JG '
+    Else If fn = 'GT' Then jmp_fail := 'JLE'
+    Else If fn = 'GE' Then jmp_fail := 'JL '
+    Else If fn = 'EQ' Then jmp_fail := 'JNE'
+    Else                    jmp_fail := 'JE ';  { NE }
+    EmitI(jmp_fail + '  ' + lbl_fail + '   ; echec predicat ' + fn);
+    { Succes : DI = desc arg0 }
+    EmitI('POP  SI                    ; [1] SI = desc arg0');
+    EmitI('MOV  DI, SI');
+  End
+
+  { ---- Comparaisons de chaines : IDENT DIFFER ---- }
+  Else If (fn = 'IDENT') Or (fn = 'DIFFER') Then
+  Begin
+    EmitComment('Predicat chaine ' + fn);
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('PUSH SI                    ; [1] conserver desc arg0');
+    If nargs >= 2 Then EvalArgAsDesc(args[1])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('MOV  DI, SI                ; DI = desc arg1');
+    EmitI('POP  SI                    ; [1] SI = desc arg0');
+    EmitI('CALL _RT_STRCMP            ; SI=arg0, DI=arg1 -> flags (ZF=egal)');
+    If fn = 'IDENT' Then
+      EmitI('JNE  ' + lbl_fail + '   ; IDENT : echec si differents')
+    Else
+      EmitI('JE   ' + lbl_fail + '   ; DIFFER : echec si egaux');
+    { Succes : DI = desc arg0 }
+    EmitI('MOV  DI, SI                ; DI = arg0 (valeur retournee)');
+  End
+
+  { ---- Predicats de type : INTEGER REAL NUMERIC (stub v1 -> succes) ---- }
+  Else
+  Begin
+    EmitComment('Predicat type ' + fn + ' : stub v1 (succes si arg defini)');
+    If nargs >= 1 Then EvalArgAsDesc(args[0])
+    Else EmitI('LEA  SI, [_SB_EMPTY_DESC]');
+    EmitI('MOV  DI, SI                ; DI = arg0 (valeur retournee)');
+    EmitI('JMP  ' + lbl_done + '      ; type check stub : toujours succes');
+  End;
+
+  EmitI('JMP  ' + lbl_done);
+
+  { ---- Echec du predicat ---- }
+  EmitLabel(lbl_fail);
+  If fn = 'LT' Then EmitI('ADD  SP, 2   ; liberer desc arg0 sauvegarde')
+  Else If fn = 'LE' Then EmitI('ADD  SP, 2')
+  Else If fn = 'GT' Then EmitI('ADD  SP, 2')
+  Else If fn = 'GE' Then EmitI('ADD  SP, 2')
+  Else If fn = 'EQ' Then EmitI('ADD  SP, 2')
+  Else If fn = 'NE' Then EmitI('ADD  SP, 2');
+  EmitI('LEA  DI, [_SB_EMPTY_DESC]   ; predicat echec : DI = vide');
+  If inst_goto_f <> '' Then EmitGotoJmp(inst_goto_f)
+  Else If inst_goto_u <> '' Then EmitGotoJmp(inst_goto_u);
+
+  { ---- Done ---- }
+  EmitLabel(lbl_done);
+  EmitBlank;
 End;
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
