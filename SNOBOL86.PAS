@@ -1,8 +1,8 @@
 { ============================================================================
   SNOBOL86.PAS  -  Compilateur SNOBOL 4 -> Assembleur 8086 (MASM/TASM)
-  Langage hote : Turbo Pascal / Free Pascal
+  Langage hote : Turbo Pascal / Free Pascal (ne compile pas en Turbo Pascal, programme trop gros)
   Cible        : .MODEL SMALL, MS-DOS, INT 21h
-  Auteur       : (a completer)
+  Auteur       : Sylvain Maltais
   ============================================================================
 
   APERCU DU LANGAGE SNOBOL 4
@@ -303,14 +303,14 @@ Program SNOBOL86;
 Const
 
  { --- Limites des tables principales --- }
- MAX_SYM      = 512;    { Symboles (variables, constantes, builtins)   }
- MAX_LABEL    = 256;    { Etiquettes SNOBOL et labels ASM              }
- MAX_PAT      = 512;    { Noeuds d'arbre de patrons                    }
+ MAX_SYM      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};    { Symboles (variables, constantes, builtins)   }
+ MAX_LABEL    = {$IFDEF FPC}256{$ELSE}128{$ENDIF};    { Etiquettes SNOBOL et labels ASM              }
+ MAX_PAT      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};    { Noeuds d'arbre de patrons                    }
  MAX_STR      = 4096;   { Taille du pool de chaines litterales (bytes) }
  MAX_LIT      = 256;    { Nombre max de litteraux de chaine distincts  }
- MAX_SUB      = 64;     { Fonctions utilisateur (DEFINE)               }
+ MAX_SUB      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};     { Fonctions utilisateur (DEFINE)               }
  MAX_BUILTIN  = 48;     { Fonctions integrees connues du compilateur   }
- MAX_PARAM    = 16;     { Parametres max par fonction SNOBOL           }
+ MAX_PARAM    = {$IFDEF FPC}16{$ELSE}8{$ENDIF};     { Parametres max par fonction SNOBOL           }
  MAX_LOCAL    = 16;     { Variables locales max par fonction SNOBOL    }
  MAX_FWDREF   = 256;    { Forward references de labels a resoudre      }
 
@@ -698,6 +698,16 @@ Var
 
 { --- Helpers generaux --- }
 
+Function StringOfChar(c: Char; n: Integer): String;
+Var s : String;
+    i : Integer;
+Begin
+ s := '';
+ For i := 1 To n Do
+  s := s + c;
+ StringOfChar := s;
+End;
+
 Function UpCaseStr(Const s: String): String;
 Var i : Integer;
     r : String;
@@ -976,7 +986,9 @@ End;
 Var
   cur_out : ^Text;    { pointeur sur le fichier de sortie courant        }
 
-{$WARN 5036 OFF} { cur_out : pointeur global initialise dans Begin }
+{$IFDEF FPC}
+ {$WARN 5036 OFF} { cur_out : pointeur global initialise dans Begin }
+{$ENDIF}
 Procedure Emit(Const s: String);
 Begin
   WriteLn(cur_out^, s);
@@ -1210,7 +1222,9 @@ Begin
   EmitI('  DB  0                      ; buffer null');
   EmitBlank;
 End;
-{$WARN 5036 ON}
+{$IFDEF FPC}
+ {$WARN 5036 ON}
+{$ENDIF}
 
 { --------------------------------------------------------------------------
   GenCrlfData : emettre le descripteur CRLF (_SB_CRLF_DESC) dans .DATA.
@@ -1227,7 +1241,9 @@ Begin
   EmitI('  DB  0Dh, 0Ah, 0          ; CR LF null');
   EmitBlank;
 End;
+{$IFDEF FPC}
 {$WARN 5036 ON}
+{$ENDIF}
 
 { ============================================================================
   TODO 05 - LEXEUR : LECTURE SOURCE ET TOKENISATION
@@ -2004,8 +2020,8 @@ Begin
   WriteLn('Compilation abandonnee.');
   { Fermer les fichiers proprement avant de quitter }
   {$I-}
-  If lst_open Then CloseFile(lst_file);
-  If tmp_open Then CloseFile(tmp_file);
+  If lst_open Then Close(lst_file);
+  If tmp_open Then Close(tmp_file);
   {$I+}
   Halt(2);
 End;
@@ -5017,9 +5033,9 @@ End;
 Function HasSubjectArrayAccess(Const s : TString) : Boolean;
 Var i : Integer;
 Begin
-  Result := False;
+  HasSubjectArrayAccess := False;
   For i := 1 To Length(s) Do
-    If s[i] = '<' Then Begin Result := True; Exit; End;
+    If s[i] = '<' Then Begin HasSubjectArrayAccess := True; Exit; End;
 End;
 
 { --------------------------------------------------------------------------
@@ -5124,7 +5140,7 @@ Procedure GenIORuntime; Forward;
 
 Function AsmVarDesc(Const varname : TString) : TString;
 Begin
-  Result := AsmSafeIdent(UpCaseStr(varname)) + '_D';
+  AsmVarDesc := AsmSafeIdent(UpCaseStr(varname)) + '_D';
 End;
 
 { --------------------------------------------------------------------------
@@ -5132,7 +5148,7 @@ End;
   -------------------------------------------------------------------------- }
 Function AsmVarData(Const varname : TString) : TString;
 Begin
-  Result := AsmSafeIdent(UpCaseStr(varname)) + '_S';
+  AsmVarData := AsmSafeIdent(UpCaseStr(varname)) + '_S';
 End;
 
 { --------------------------------------------------------------------------
@@ -5199,7 +5215,7 @@ End;
   -------------------------------------------------------------------------- }
 Function IsStringLiteral(Const tok : TString) : Boolean;
 Begin
-  Result := (Length(tok) >= 2) And (tok[1] = '''') And (tok[Length(tok)] = '''');
+  IsStringLiteral := (Length(tok) >= 2) And (tok[1] = '''') And (tok[Length(tok)] = '''');
 End;
 
 { --------------------------------------------------------------------------
@@ -5209,7 +5225,7 @@ End;
 Function IsIntegerLiteral(Const tok : TString) : Boolean;
 Var i : Integer;
 Begin
-  Result := False;
+  IsIntegerLiteral := False;
   If Length(tok) = 0 Then Exit;
   i := 1;
   If tok[1] = '-' Then Inc(i);
@@ -5219,7 +5235,7 @@ Begin
     If Not (tok[i] In ['0'..'9']) Then Exit;
     Inc(i);
   End;
-  Result := True;
+  IsIntegerLiteral := True;
 End;
 
 { --------------------------------------------------------------------------
@@ -5229,7 +5245,7 @@ Function IsRealLiteral(Const tok : TString) : Boolean;
 Var i : Integer;
     dot : Boolean;
 Begin
-  Result := False;
+  IsRealLiteral := False;
   dot := False;
   If Length(tok) = 0 Then Exit;
   i := 1;
@@ -5245,7 +5261,7 @@ Begin
     Else If Not (tok[i] In ['0'..'9']) Then Exit;
     Inc(i);
   End;
-  Result := dot;
+  IsRealLiteral := dot;
 End;
 
 { --------------------------------------------------------------------------
@@ -5254,9 +5270,9 @@ End;
 Function HasFuncCall(Const tok : TString) : Boolean;
 Var i : Integer;
 Begin
-  Result := False;
+  HasFuncCall := False;
   For i := 1 To Length(tok) Do
-    If tok[i] = '(' Then Begin Result := True; Exit; End;
+    If tok[i] = '(' Then Begin HasFuncCall := True; Exit; End;
 End;
 
 { --------------------------------------------------------------------------
@@ -5267,7 +5283,7 @@ Var i : Integer;
 Begin
   i := 1;
   While (i <= Length(tok)) And (tok[i] <> '(') Do Inc(i);
-  Result := UpCaseStr(Copy(tok, 1, i - 1));
+  ExtractFuncName := UpCaseStr(Copy(tok, 1, i - 1));
 End;
 
 { --------------------------------------------------------------------------
@@ -5276,19 +5292,21 @@ End;
   -------------------------------------------------------------------------- }
 Function ExtractFuncArgs(Const tok : TString) : TString;
 Var i, depth : Integer;
+    res        : TString;
 Begin
   i := 1;
   While (i <= Length(tok)) And (tok[i] <> '(') Do Inc(i);
   Inc(i);   { sauter '(' }
   depth := 1;
-  Result := '';
+  res := '';
   While (i <= Length(tok)) And (depth > 0) Do
   Begin
     If tok[i] = '(' Then Inc(depth)
     Else If tok[i] = ')' Then Dec(depth);
-    If depth > 0 Then Result := Result + tok[i];
+    If depth > 0 Then res := res + tok[i];
     Inc(i);
   End;
+  ExtractFuncArgs := res;
 End;
 
 { --------------------------------------------------------------------------
@@ -5298,9 +5316,9 @@ End;
 Function StripStringLiteral(Const tok : TString) : TString;
 Begin
   If (Length(tok) >= 2) And (tok[1] = '''') And (tok[Length(tok)] = '''') Then
-    Result := Copy(tok, 2, Length(tok) - 2)
+    StripStringLiteral := Copy(tok, 2, Length(tok) - 2)
   Else
-    Result := tok;
+    StripStringLiteral := tok;
 End;
 
 Procedure GenPredicateCall(Const fn : TString; nargs : Integer; Var args : Array of TString); Forward;
@@ -5640,7 +5658,7 @@ Begin
   While (i <= Length(s)) And (s[i] In [' ', #9]) Do Inc(i);
   j := Length(s);
   While (j >= i) And (s[j] In [' ', #9]) Do Dec(j);
-  Result := Copy(s, i, j - i + 1);
+  PatTrimStr := Copy(s, i, j - i + 1);
 End;
 
 { ============================================================================
@@ -5966,7 +5984,7 @@ Var fn, arg, lit : TString;
     c            : Char;
     ndx, idx     : Integer;
 Begin
-  Result := 0;
+  ParsePatPrimary := 0;
   If tok = '' Then Exit;
   If tok[1] = '''' Then
   Begin
@@ -5987,7 +6005,7 @@ Begin
     ndx := AddPat(PK_LIT);
     pat_table^[ndx].lit_idx := idx;
     pat_table^[ndx].lit_len := Length(lit);
-    Result := ndx;  Exit;
+    ParsePatPrimary := ndx;  Exit;
   End;
   If HasFuncCall(tok) Then
   Begin
@@ -6004,7 +6022,7 @@ Begin
       Else If fn='SPAN'   Then ndx := AddPat(PK_SPAN)
       Else                     ndx := AddPat(PK_BREAK);
       pat_table^[ndx].set_idx := idx;
-      Result := ndx;  Exit;
+      ParsePatPrimary := ndx;  Exit;
     End;
     If (fn='LEN') Or (fn='POS') Or (fn='RPOS') Or (fn='TAB') Or (fn='RTAB') Then
     Begin
@@ -6015,21 +6033,21 @@ Begin
       Else If fn='TAB'  Then ndx := AddPat(PK_TAB)
       Else                   ndx := AddPat(PK_RTAB);
       pat_table^[ndx].int_val := ival;
-      Result := ndx;  Exit;
+      ParsePatPrimary := ndx;  Exit;
     End;
-    If fn = 'ARBNO' Then Begin Result := AddPat(PK_ARB); Exit; End;
+    If fn = 'ARBNO' Then Begin ParsePatPrimary := AddPat(PK_ARB); Exit; End;
     ndx := AddPat(PK_INDIRECT);  pat_table^[ndx].var_nm := fn;
-    Result := ndx;  Exit;
+    ParsePatPrimary := ndx;  Exit;
   End;
   fn := UpCaseStr(tok);
-  If fn='ARB'     Then Begin Result:=AddPat(PK_ARB);     Exit; End;
-  If fn='REM'     Then Begin Result:=AddPat(PK_REM);     Exit; End;
-  If fn='FAIL'    Then Begin Result:=AddPat(PK_FAIL);    Exit; End;
-  If fn='FENCE'   Then Begin Result:=AddPat(PK_FENCE);   Exit; End;
-  If fn='ABORT'   Then Begin Result:=AddPat(PK_ABORT);   Exit; End;
-  If fn='SUCCEED' Then Begin Result:=AddPat(PK_SUCCEED); Exit; End;
+  If fn='ARB'     Then Begin ParsePatPrimary:=AddPat(PK_ARB);     Exit; End;
+  If fn='REM'     Then Begin ParsePatPrimary:=AddPat(PK_REM);     Exit; End;
+  If fn='FAIL'    Then Begin ParsePatPrimary:=AddPat(PK_FAIL);    Exit; End;
+  If fn='FENCE'   Then Begin ParsePatPrimary:=AddPat(PK_FENCE);   Exit; End;
+  If fn='ABORT'   Then Begin ParsePatPrimary:=AddPat(PK_ABORT);   Exit; End;
+  If fn='SUCCEED' Then Begin ParsePatPrimary:=AddPat(PK_SUCCEED); Exit; End;
   ndx := AddPat(PK_INDIRECT);  pat_table^[ndx].var_nm := tok;
-  Result := ndx;
+  ParsePatPrimary := ndx;
 End;
 
 { --------------------------------------------------------------------------
@@ -6045,7 +6063,7 @@ Var alt_parts   : Array[0..15] of TString;
     asgn_op                  : Char;
     asgn_var, trimmed        : TString;
 Begin
-  Result := 0;
+  ParsePatStr := 0;
   trimmed := PatTrimStr(raw);
   If trimmed = '' Then Exit;
   PatSplitOnAlt(trimmed, alt_parts, alt_count);
@@ -6096,7 +6114,7 @@ Begin
       root := node;
     End;
   End;
-  Result := root;
+  ParsePatStr := root;
 End;
 
 { --------------------------------------------------------------------------
