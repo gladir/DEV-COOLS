@@ -553,17 +553,17 @@ Begin
                 'stx ' + copy(instruction, 5, length(instruction)) + '+1  ; std addr … sta/stx';
  End
 
- { Instructions arithmÃ©tiques }
+ { Instructions arithm‚tiques }
  else if pos('addd ', instruction) > 0 then begin
   result_str := 'clc' + #13#10 + #9 + 'adc ' + copy(instruction, 6, length(instruction)) + #13#10 + #9 +
-                'bcc +' + #13#10 + #9 + 'inx' + #13#10 + '+  ; addd â†’ adc avec carry';
+                'bcc +' + #13#10 + #9 + 'inx' + #13#10 + '+  ; addd … adc avec carry';
  end
  else if pos('subd ', instruction) > 0 then begin
   result_str := 'sec' + #13#10 + #9 + 'sbc ' + copy(instruction, 6, length(instruction)) + #13#10 + #9 +
-                'bcs +' + #13#10 + #9 + 'dex' + #13#10 + '+  ; subd â†’ sbc avec borrow';
+                'bcs +' + #13#10 + #9 + 'dex' + #13#10 + '+  ; subd … sbc avec borrow';
  end
  else if pos('cmpd ', instruction) > 0 then begin
-  result_str := 'cmp ' + copy(instruction, 6, length(instruction)) + '  ; cmpd â†’ cmp (partie basse)';
+  result_str := 'cmp ' + copy(instruction, 6, length(instruction)) + '  ; cmpd … cmp (partie basse)';
  end
 
  { Instructions de saut }
@@ -574,15 +574,15 @@ Begin
   result_str := 'beq ' + copy(instruction, 6, length(instruction));
  end
 
- { Instructions spÃ©cialisÃ©es 6809 â†’ 6502 }
+ { Instructions sp‚cialis‚es 6809 … 6502 }
  else if pos('tfr d,x', instruction) > 0 then begin
-  result_str := '  ; tfr d,x â†’ dÃ©jÃ  en A/X sur 6502';
+  result_str := '  ; tfr d,x … d‚j… en A/X sur 6502';
  end
  else if pos('tfr b,a', instruction) > 0 then begin
-  result_str := 'txa  ; tfr b,a â†’ x vers a';
+  result_str := 'txa  ; tfr b,a … x vers a';
  end
  else if pos('tfr a,b', instruction) > 0 then begin
-  result_str := 'tax  ; tfr a,b â†’ a vers x';
+  result_str := 'tax  ; tfr a,b … a vers x';
  end
  else if pos('clra', instruction) > 0 then begin
   result_str := 'lda #0  ; clra';
@@ -593,7 +593,7 @@ Begin
  else if pos('sex', instruction) > 0 then begin
   result_str := 'bpl +' + #13#10 + #9 + 'ldx #$FF' + #13#10 + #9 +
                 'bne ++' + #13#10 + '+  ldx #$00' + #13#10 +
-                '++  ; sex â†’ extension de signe';
+                '++  ; sex … extension de signe';
  end
  else if pos('tsta', instruction) > 0 then begin
   result_str := 'cmp #0  ; tsta';
@@ -604,12 +604,13 @@ Begin
   if pos(',s', instruction) > 0 then begin
    result_str := 'lda #0' + #13#10 + #9 + 'sta $01' +
                 copy(instruction, 5, pos(',s', instruction)-5) +
-                '  ; clr stack â†’ via $0100+S';
-  end else begin
+                '  ; clr stack … via $0100+S';
+  End
+   else
+  Begin
    result_str := 'lda #0' + #13#10 + #9 + 'sta ' + copy(instruction, 5, length(instruction)) + '  ; clr addr';
-  end;
- end;
-
+  End;
+ End;
  convert_to_6502 := result_str;
 End;
 
@@ -617,7 +618,7 @@ Procedure ol(s:String);Begin
  safe_writeln(#9 + convert_to_6502(s));
 End;
 
- { ï¿½crire la ligne dans la sortie avec routage conditionnel }
+ { crire la ligne dans la sortie avec routage conditionnel }
 Procedure outln(s: String);Begin
  safe_writeln(s);
 End;
@@ -634,7 +635,7 @@ Begin
  safe_write(temp);
 End;
 
- { Fonctions de gï¿½nï¿½ration d'ï¿½tiquettes }
+ { Fonctions de g‚n‚ration d'‚tiquettes }
 Function getlabel:Integer;Begin
  Inc(nextlabel);
  getlabel := nextlabel;
@@ -653,9 +654,9 @@ Begin
  safe_writeln('L' + temp + ':');
 End;
 
- { Gï¿½nï¿½ration de code }
+ { G‚n‚ration de code }
 Procedure ot(s: String);Begin
- safe_write(#9 + convert_to_6502(s) + ' '); { TAB puis chaï¿½ne de caractï¿½res avec espace }
+ safe_write(#9 + convert_to_6502(s) + ' '); { TAB puis chaï¿½ne de caractŠres avec espace }
 End;
 
  { Fonctions utilitaires d'analyse d'expressions }
@@ -704,7 +705,7 @@ Begin
  parse_number := result;
 End;
 
-Function parse_identifier: String;
+Function parse_identifier:String;
 Var
  result: String;
 Begin
@@ -717,28 +718,26 @@ Begin
  parse_identifier := result;
 End;
 
-{ Signalement des erreurs }
-Procedure errrpt(msg: String);Begin
+ { Signalement des erreurs }
+Procedure errrpt(msg:String);Begin
  Inc(errcnt);
  Case Language of
   _English: WriteLn('Error: ', msg, ' at line ', lptr);
-  Else WriteLn('Erreur: ', msg, ' Ã  la ligne ', lptr);
+  Else WriteLn('Erreur: ', msg, ' … la ligne ', lptr);
  End;
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DES ï¿½TIQUETTES GOTO                                     }
+{ FONCTIONS DE GESTION DES TIQUETTES GOTO                                     }
 { ============================================================================ }
 
-{ Initialiser la table des ï¿½tiquettes goto }
+{ Initialiser la table des tiquettes goto }
 Procedure init_goto_table;
 Var
  i: Integer;
 Begin
- For i := 0 to 31 do
- Begin
-  With goto_table[i] do
-  Begin
+ For i := 0 to 31 do Begin
+  With goto_table[i] do Begin
    name := '';
    label_id := 0;
    is_defined := False;
@@ -748,47 +747,44 @@ Begin
  goto_count := 0;
 End;
 
- { Trouver une ï¿½tiquette goto par nom }
+ { Trouver une ‚tiquette goto par nom }
 Function find_goto_label(label_name: String): Integer;
 Var
  i: Integer;
 Begin
  find_goto_label := -1;
- For i := 0 to goto_count - 1 do
- Begin
-  If goto_table[i].name = label_name Then
-  Begin
+ For i := 0 to goto_count - 1 do Begin
+  If goto_table[i].name = label_name Then Begin
    find_goto_label := i;
    Exit;
   End;
  End;
 End;
 
- { Ajouter ou rï¿½cupï¿½rer une ï¿½tiquette goto }
+ { Ajouter ou r‚cup‚rer une ‚tiquette goto }
 Function add_goto_label(label_name: String): Integer;
 Var
  index: Integer;
 Begin
  add_goto_label := -1;
-  { Vï¿½rifier si l'ï¿½tiquette existe dï¿½jï¿½ }
+  { V‚rifier si l'‚tiquette existe d‚j… }
  index := find_goto_label(label_name);
  If index <> -1 Then Begin
   add_goto_label := index;
   Exit;
  End;
-  { Vï¿½rifier s'il y a de la place }
- If goto_count >= 32 Then
- Begin
+  { V‚rifier s'il y a de la place }
+ If goto_count >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many goto labels (max 32)');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele Goto-Labels (max 32)');
    {$ENDIF}
-   Else errrpt('Trop d''ï¿½tiquettes goto (max 32)');
+   Else errrpt('Trop d''‚tiquettes goto (max 32)');
   End;
   Exit;
  End;
-  { Ajouter la nouvelle ï¿½tiquette }
+  { Ajouter la nouvelle ‚tiquette }
  index := goto_count;
  With goto_table[index] do Begin
   name := label_name;
@@ -800,32 +796,30 @@ Begin
  add_goto_label := index;
 End;
 
-{ Marquer une ï¿½tiquette comme dï¿½finie }
-Procedure define_goto_label(label_name: String);
+{ Marquer une ‚tiquette comme d‚finie }
+Procedure define_goto_label(label_name:String);
 Var
  index: Integer;
 Begin
  index := add_goto_label(label_name);
- If index <> -1 Then
- Begin
-  If goto_table[index].is_defined Then
-  Begin
+ If index <> -1 Then Begin
+  If goto_table[index].is_defined Then Begin
    Case Language of
     _English: errrpt('Label already defined: ' + label_name);
     {$IFDEF FPC}
     _Germany: errrpt('Label bereits definiert: ' + label_name);
     {$ENDIF}
-    Else errrpt('ï¿½tiquette dï¿½jï¿½ dï¿½finie: ' + label_name);
+    Else errrpt('tiquette d‚j… d‚finie: ' + label_name);
    End;
    Exit;
   End;
   goto_table[index].is_defined := True;
   prelabel(goto_table[index].label_id);
-  safe_writeln('; ï¿½tiquette dï¿½finie: ' + label_name);
+  safe_writeln('; tiquette d‚finie: ' + label_name);
  End;
 End;
 
-{ Marquer une ï¿½tiquette comme utilisï¿½e et gï¿½nï¿½rer le saut }
+ { Marquer une ‚½tiquette comme utilis‚e et g‚n‚rer le saut }
 Procedure use_goto_label(label_name: String);
 Var
  index: Integer;
@@ -840,15 +834,14 @@ Begin
  End;
 End;
 
- { Vï¿½rifier les ï¿½tiquettes non dï¿½finies ï¿½ la fin de fonction }
+ { V‚rifier les ‚tiquettes non d‚finies … la fin de fonction }
 Procedure check_goto_labels;
 Var
  i: Integer;
  has_errors: Boolean;
 Begin
  has_errors := False;
- For i := 0 to goto_count - 1 do
- Begin
+ For i := 0 to goto_count - 1 do Begin
   With goto_table[i] do Begin
    If is_used and not is_defined Then Begin
     Case Language of
@@ -856,14 +849,13 @@ Begin
      {$IFDEF FPC}
      _Germany: errrpt('Undefiniertes Label: ' + name);
      {$ENDIF}
-     Else errrpt('ï¿½tiquette non dï¿½finie: ' + name);
+     Else errrpt('tiquette non d‚finie: ' + name);
     End;
     has_errors := True;
    End;
   End;
  End;
- If not has_errors Then
-  safe_writeln('; Toutes les ï¿½tiquettes goto sont correctement dï¿½finies');
+ If not has_errors Then safe_writeln('; Toutes les ‚tiquettes goto sont correctement d‚finies');
 End;
 
 { ============================================================================ }
@@ -900,7 +892,7 @@ Function begin_switch_statement(expr_type:Integer):Boolean;Begin
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte Switch-Anweisungen (max 8)');
    {$ENDIF}
-   Else errrpt('Trop d''instructions switch imbriquÃ©es (max 8)');
+   Else errrpt('Trop d''instructions switch imbriqu‚es (max 8)');
   End;
   Exit;
  End;
@@ -927,7 +919,7 @@ Begin
   Case Language of
    _English: errrpt('case statement outside switch');
    {$IFDEF FPC}
-   _Germany: errrpt('case-Anweisung auï¿½erhalb von switch');
+   _Germany: errrpt('case-Anweisung auáerhalb von switch');
    {$ENDIF}
    Else errrpt('instruction case en dehors de switch');
   End;
@@ -943,7 +935,7 @@ Begin
      {$IFDEF FPC}
      _Germany: errrpt('Doppelter case-Wert: ' + case_str);
      {$ENDIF}
-     Else errrpt('Valeur case dupliquï¿½e: ' + case_str);
+     Else errrpt('Valeur case dupliqu‚e: ' + case_str);
     End;
     Exit;
    End;
@@ -954,7 +946,7 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('Zu viele case-Labels (max 32)');
     {$ENDIF}
-    Else errrpt('Trop d''ï¿½tiquettes case (max 32)');
+    Else errrpt('Trop d''‚tiquettes case (max 32)');
    End;
    Exit;
   End;
@@ -967,13 +959,13 @@ Begin
 End;
 
  { Ajouter une clause default au switch courant }
-Function add_switch_default: Integer;Begin
+Function add_switch_default:Integer;Begin
  add_switch_default := -1;
  If switch_depth = 0 Then Begin
   Case Language of
    _English: errrpt('default statement outside switch');
    {$IFDEF FPC}
-   _Germany: errrpt('default-Anweisung auï¿½erhalb von switch');
+   _Germany: errrpt('default-Anweisung auáerhalb von switch');
    {$ENDIF}
    Else errrpt('instruction default en dehors de switch');
   End;
@@ -987,7 +979,7 @@ Function add_switch_default: Integer;Begin
     {$IFDEF FPC}
     _Germany: errrpt('Mehrere default-Labels in switch');
     {$ENDIF}
-    Else errrpt('Plusieurs ï¿½tiquettes default dans switch');
+    Else errrpt('Plusieurs ‚tiquettes default dans switch');
    End;
    Exit;
   End;
@@ -997,7 +989,7 @@ Function add_switch_default: Integer;Begin
  End;
 End;
 
- { Gï¿½nï¿½rer le code de comparaison pour un switch }
+ { G‚n‚rer le code de comparaison pour un switch }
 Procedure generate_switch_comparisons;
 Var
  i: Integer;
@@ -1005,7 +997,7 @@ Var
 Begin
  If switch_depth = 0 Then Exit;
  With switch_table[switch_depth - 1] do Begin
-  safe_writeln('; Gï¿½nï¿½ration des comparaisons switch');
+  safe_writeln('; G‚n‚ration des comparaisons switch');
   For i := 0 to case_count - 1 do Begin
    Str(cases[i].value, case_str);
    safe_writeln('; Test case ' + case_str);
@@ -1046,12 +1038,12 @@ Function end_switch_statement:Integer;Begin
  End;
  Dec(switch_depth);
  end_switch_statement := switch_table[switch_depth].end_label;
-  { Gï¿½nï¿½rer l'ï¿½tiquette de fin }
+  { G‚n‚rer l'‚tiquette de fin }
  prelabel(switch_table[switch_depth].end_label);
  safe_writeln('; Fin du switch');
 End;
 
- { Obtenir l'ï¿½tiquette de fin du switch courant (pour break) }
+ { Obtenir l'‚tiquette de fin du switch courant (pour break) }
 Function get_current_switch_end:Integer;Begin
  get_current_switch_end := -1;
  If switch_depth > 0 Then
@@ -1066,11 +1058,11 @@ Procedure push_loop_context(loop_type:Integer;break_lbl,continue_lbl:Integer);Be
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte Schleifen');
    {$ENDIF}
-   Else errrpt('Trop de boucles imbriquï¿½es');
+   Else errrpt('Trop de boucles imbriqu‚es');
   End;
   Exit;
  End;
-  { Vï¿½rification dï¿½fensive - s'assurer que loop_depth est initialisï¿½ }
+  { V‚rification d‚fensive - s'assurer que loop_depth est initialis‚ }
  If loop_depth < 0 Then loop_depth := 0;
  loop_stack[loop_depth].loop_type := loop_type;
  loop_stack[loop_depth].break_label := break_lbl;
@@ -1084,12 +1076,12 @@ End;
 
 Function get_current_break_label:Integer;Begin
  get_current_break_label := -1;
-  { Vï¿½rifier d'abord s'il y a un switch actif }
+  { V‚rifier d'abord s'il y a un switch actif }
  If switch_depth > 0 Then Begin
   get_current_break_label := switch_table[switch_depth-1].end_label;
   Exit;
  End;
-  { Sinon, vï¿½rifier s'il y a une boucle active }
+  { Sinon, v‚rifier s'il y a une boucle active }
  If loop_depth > 0 Then get_current_break_label := loop_stack[loop_depth-1].break_label;
 End;
 
@@ -1099,7 +1091,7 @@ Function get_current_continue_label: Integer;Begin
 End;
 
 Procedure outbyte(b: Byte);Begin
- Write(Chr(b)); { Utilise toujours stdout pour la sï¿½curitï¿½ }
+ Write(Chr(b)); { Utilise toujours stdout pour la s‚curit‚ }
 End;
 
  { Analyse lexicale }
@@ -1186,16 +1178,16 @@ Begin
 End;
 
 { ============================================================================ }
-{ NOUVELLES FONCTIONS DE TABLE DE SYMBOLES BASï¿½E SUR LE TAS                    }
+{ NOUVELLES FONCTIONS DE TABLE DE SYMBOLES BASE SUR LE TAS                    }
 { ============================================================================ }
 
-{ Initialiser la table de symboles basï¿½e sur le tas }
+ { Initialiser la table de symboles bas‚e sur la m‚moire de tas }
 Procedure init_symbols;Begin
  symbol_list := nil;
  symbol_count := 0;
 End;
 
-{ Trouver un symbole dans la table de symboles basï¿½e sur la mï¿½moire de tas }
+ { Trouver un symbole dans la table de symboles bas‚e sur la m‚moire de tas }
 Function find_symbol(sname: String): PSymbol;
 Var
  current: PSymbol;
@@ -1211,13 +1203,13 @@ Begin
  End;
 End;
 
-{ Ajouter un symbole ï¿½ la table de symboles basï¿½e sur la mï¿½moire de tas }
+ { Ajouter un symbole … la table de symboles bas‚e sur la m‚moire de tas }
 Function add_symbol(sname: String; id_type: Integer; sym_type: Integer; stor_class: Integer; offset_val: Integer): PSymbol;
 Var
  new_symbol: PSymbol;
 Begin
  add_symbol := nil;
-  { Vï¿½rifier si le symbole existe dï¿½jï¿½ }
+  { V‚rifier si le symbole existe d‚j… }
  If find_symbol(sname) <> nil Then Begin
   { Le symbole existe dï¿½jï¿½ }
   Exit;
@@ -1225,7 +1217,7 @@ Begin
   { Allouer de la mï¿½moire sur la mï¿½moire de tas }
  New(new_symbol);
  If new_symbol = nil Then Begin
-  { Mï¿½moire insuffisante }
+  { M‚moire insuffisante }
   Exit;
  End;
   { Initialiser le nouveau symbole }
@@ -1237,25 +1229,25 @@ Begin
   offset_value := offset_val;
   init_type_info(type_info);
   type_info.base_type := sym_type;
-  next := symbol_list;  { Insï¿½rer au dï¿½but de la liste }
+  next := symbol_list;  { Ins‚rer au d‚but de la liste }
  End;
-  { Mettre ï¿½ jour la tï¿½te de liste }
+  { Mettre … jour la tˆte de liste }
  symbol_list := new_symbol;
  Inc(symbol_count);
  add_symbol := new_symbol;
 End;
 
- { Fonction addsym amï¿½liorï¿½e utilisant la mï¿½moire de tas }
+ { Fonction addsym am‚lior‚e utilisant la m‚moire de tas }
 Function addsym_heap(sname: String; typ: Integer; storage: Integer; offset_value: Integer):PSymbol;Begin
  addsym_heap := add_symbol(sname, it_variable, typ, storage, offset_value);
 End;
 
- { Fonction findsym amï¿½liorï¿½e utilisant le tas }
+ { Fonction findsym am‚lior‚e utilisant le tas }
 Function findsym_heap(sname: String):PSymbol;Begin
  findsym_heap := find_symbol(sname);
 End;
 
- { Libï¿½rer tous les symboles de la mï¿½moire de tas }
+ { Lib‚rer tous les symboles de la m‚moire de tas }
 Procedure free_symbols;
 Var
  current, next: PSymbol;
@@ -1318,21 +1310,21 @@ Begin
  calculate_type_size := result_size;
 End;
 
- { Vï¿½rifiez si deux types sont compatibles }
+ { V‚rifiez si deux types sont compatibles }
 Function types_compatible(var type1, type2: TTypeInfo): Boolean;Begin
  types_compatible := (type1.base_type = type2.base_type) and
                     (type1.pointer_level = type2.pointer_level) and
                     (type1.is_unsigned = type2.is_unsigned);
 End;
 
- { Vï¿½rifier si le type peut ï¿½tre converti en un autre }
+ { V‚rifier si le type peut ˆtre converti en un autre }
 Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
   { Les pointeurs peuvent ï¿½tre convertis en pointeurs }
  If (from_type.pointer_level > 0) and (to_type.pointer_level > 0) Then Begin
   can_convert_type := True;
   Exit;
  End;
-  { Les types numï¿½riques peuvent gï¿½nï¿½ralement ï¿½tre convertis }
+  { Les types num‚riques peuvent g‚n‚ralement ˆtre convertis }
  If (from_type.pointer_level = 0) and (to_type.pointer_level = 0) Then Begin
   Case from_type.base_type of
    cchar, cuchar, cshort, cushort, cint, cuint, clong, culong:
@@ -1349,7 +1341,7 @@ Function can_convert_type(var from_type, to_type: TTypeInfo):Boolean;Begin
  Else can_convert_type := False;
 End;
 
- { Rï¿½cupï¿½rer le nom du type sous forme de chaï¿½ne de caractï¿½res pour les messages de dï¿½bogage/d'erreur }
+ { R‚cup‚rer le nom du type sous forme de chaŒne de caractŠres pour les messages de d‚bogage/d'erreur }
 Function get_type_name(var type_info: TTypeInfo): String;
 Var
  base_name, temp_str: String;

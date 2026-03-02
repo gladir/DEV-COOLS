@@ -3222,13 +3222,2256 @@ Begin
 End;
 
 { ============================================================================
-  TODO 09 ... 25 : a implementer
+  TODO 09 - PARSER : INSTRUCTIONS SIMPLES
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Declaration anticipee de ParseStatement (recursion avec ParseBlock)
+  -------------------------------------------------------------------------- }
+Procedure ParseStatement; Forward;
+
+{ --------------------------------------------------------------------------
+  GenStoreVar : stocker AX (scalaire) ou AX+DX (string) dans une variable.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreVar(idx : Integer);
+Var lbl   : TString;
+    ofs   : Integer;
+    scope : TScope;
+    vt    : TValueKind;
+Begin
+  lbl   := sym_table^[idx].asm_label;
+  ofs   := sym_table^[idx].bp_offset;
+  scope := sym_table^[idx].scope;
+  vt    := sym_table^[idx].vtype;
+  Case scope Of
+    SC_GLOBAL :
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('MOV', '[' + lbl + '], AX');
+        EmitI1('MOV', '[' + lbl + '+2], DX');
+      End
+      Else
+        EmitI1('MOV', '[' + lbl + '], AX');
+    SC_LOCAL :
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('MOV', '[BP-' + IntToStr(ofs) + '], AX');
+        EmitI1('MOV', '[BP-' + IntToStr(ofs - 2) + '], DX');
+      End
+      Else
+        EmitI1('MOV', '[BP-' + IntToStr(ofs) + '], AX');
+    SC_PARAM :
+      If vt = VK_STRING Then
+      Begin
+        EmitI1('MOV', '[BP+' + IntToStr(ofs) + '], AX');
+        EmitI1('MOV', '[BP+' + IntToStr(ofs + 2) + '], DX');
+      End
+      Else
+        EmitI1('MOV', '[BP+' + IntToStr(ofs) + '], AX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreArrayElem : stocker AX dans arr[index].
+  Index est deja dans BX (non multiplie).
+  -------------------------------------------------------------------------- }
+Procedure GenStoreArrayElem(idx : Integer);
+Var lbl   : TString;
+    ofs   : Integer;
+    scope : TScope;
+Begin
+  lbl   := sym_table^[idx].asm_label;
+  ofs   := sym_table^[idx].bp_offset;
+  scope := sym_table^[idx].scope;
+  EmitI1('PUSH', 'AX');            { sauver valeur a stocker }
+  EmitI1('SHL', 'BX, 1');          { BX = index * 2 }
+  Case scope Of
+    SC_GLOBAL :
+      Begin
+        EmitI1('LEA', 'SI, [' + lbl + ']');
+        EmitI1('ADD', 'SI, BX');
+      End;
+    SC_LOCAL :
+      Begin
+        EmitI1('LEA', 'SI, [BP-' + IntToStr(ofs) + ']');
+        EmitI1('ADD', 'SI, BX');
+      End;
+    SC_PARAM :
+      Begin
+        EmitI1('LEA', 'SI, [BP+' + IntToStr(ofs) + ']');
+        EmitI1('ADD', 'SI, BX');
+      End;
+  End;
+  EmitI1('POP', 'AX');
+  EmitI1('MOV', '[SI], AX');
+End;
+
+{ --------------------------------------------------------------------------
+  PushLoopLabels : empiler les labels break/continue courants.
+  -------------------------------------------------------------------------- }
+Procedure PushLoopLabels(Const lbl_break, lbl_cont : TString);
+Begin
+  If loop_depth >= 8 Then
+  Begin
+    ParseError('Boucles trop imbriquees (max 8)');
+    Exit;
+  End;
+  Inc(loop_depth);
+  break_stack[loop_depth]    := lbl_break;
+  continue_stack[loop_depth] := lbl_cont;
+End;
+
+{ --------------------------------------------------------------------------
+  PopLoopLabels : depiler les labels de boucle.
+  -------------------------------------------------------------------------- }
+Procedure PopLoopLabels;
+Begin
+  If loop_depth > 0 Then Dec(loop_depth);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBlock : bloc C# avec accolades.
+  Gere la portee : ScopeEnter / ScopeLeave.
+  -------------------------------------------------------------------------- }
+Procedure ParseBlock;
+Var t : TToken;
+Begin
+  LexExpect('{');
+  ScopeEnter;
+  t := LexPeek;
+  While Not ((t.kind = TK_PUNCT) And (t.val = '}')) And
+        Not (t.kind = TK_EOF) Do
+  Begin
+    ParseStatement;
+    t := LexPeek;
+  End;
+  LexExpect('}');
+  ScopeLeave;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIf : 'if (expr) stmt [else stmt]'
+  -------------------------------------------------------------------------- }
+Procedure ParseIf;
+Var lbl_else : TString;
+    lbl_end  : TString;
+    t        : TToken;
+Begin
+  LexExpect('if');
+  LexExpect('(');
+  ParseExpr;
+  LexExpect(')');
+  lbl_else := NewLabel;
+  lbl_end  := NewLabel;
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   lbl_else);
+  ParseStatement;                     { branche then }
+  t := LexPeek;
+  If (t.kind = TK_KEYWORD) And (t.val = 'else') Then
+  Begin
+    EmitI1('JMP', lbl_end);
+    EmitLabel(lbl_else);
+    LexNext;                           { consommer 'else' }
+    ParseStatement;
+    EmitLabel(lbl_end);
+  End
+  Else
+    EmitLabel(lbl_else);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseWhile : 'while (expr) stmt'
+  -------------------------------------------------------------------------- }
+Procedure ParseWhile;
+Var lbl_top : TString;
+    lbl_end : TString;
+Begin
+  LexExpect('while');
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  PushLoopLabels(lbl_end, lbl_top);
+  EmitLabel(lbl_top);
+  LexExpect('(');
+  ParseExpr;
+  LexExpect(')');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   lbl_end);
+  ParseStatement;
+  EmitI1('JMP',  lbl_top);
+  EmitLabel(lbl_end);
+  PopLoopLabels;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDoWhile : 'do stmt while (expr) ;'
+  -------------------------------------------------------------------------- }
+Procedure ParseDoWhile;
+Var lbl_top  : TString;
+    lbl_end  : TString;
+    lbl_cond : TString;
+Begin
+  LexExpect('do');
+  lbl_top  := NewLabel;
+  lbl_end  := NewLabel;
+  lbl_cond := NewLabel;
+  PushLoopLabels(lbl_end, lbl_cond);
+  EmitLabel(lbl_top);
+  ParseStatement;
+  EmitLabel(lbl_cond);
+  LexExpect('while');
+  LexExpect('(');
+  ParseExpr;
+  LexExpect(')');
+  LexExpect(';');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  lbl_top);
+  EmitLabel(lbl_end);
+  PopLoopLabels;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseFor : 'for (init ; cond ; incr) stmt'
+  init  : decl de var ou expr ou vide
+  cond  : expr ou vide (=> boucle infinie)
+  incr  : expr ou vide
+  -------------------------------------------------------------------------- }
+Procedure ParseFor;
+Var lbl_top  : TString;
+    lbl_end  : TString;
+    lbl_incr : TString;
+    t        : TToken;
+    vt       : TValueKind;
+    is_arr   : Boolean;
+Begin
+  LexExpect('for');
+  LexExpect('(');
+
+  lbl_top  := NewLabel;
+  lbl_end  := NewLabel;
+  lbl_incr := NewLabel;
+
+  ScopeEnter;  { portee du for }
+
+  { --- Initialisation --- }
+  t := LexPeek;
+  If Not ((t.kind = TK_PUNCT) And (t.val = ';')) Then
+  Begin
+    If IsTypeKeyword(t) Then
+      ParseVarDecl(False)        { decl locale avec ';' inclus }
+    Else
+    Begin
+      ParseExpr;                 { expr d'initialisation }
+      LexExpect(';');
+    End;
+  End
+  Else
+    LexNext;                     { ';' vide }
+
+  EmitLabel(lbl_top);
+
+  { --- Condition --- }
+  t := LexPeek;
+  If Not ((t.kind = TK_PUNCT) And (t.val = ';')) Then
+  Begin
+    ParseExpr;
+    EmitI1('TEST', 'AX, AX');
+    EmitI1('JZ',   lbl_end);
+  End;
+  LexExpect(';');
+
+  { On saute l'incrementation pour aller au corps, puis on revient }
+  EmitI1('JMP', lbl_incr + '_body');  { label provisoire pour le corps }
+
+  EmitLabel(lbl_incr);
+
+  { --- Incrementation --- }
+  t := LexPeek;
+  If Not ((t.kind = TK_PUNCT) And (t.val = ')')) Then
+    ParseExpr;
+  LexExpect(')');
+
+  EmitI1('JMP', lbl_top);
+
+  EmitLabel(lbl_incr + '_body');
+
+  PushLoopLabels(lbl_end, lbl_incr);
+  ParseStatement;                     { corps de la boucle }
+  PopLoopLabels;
+
+  EmitI1('JMP', lbl_incr);
+  EmitLabel(lbl_end);
+
+  ScopeLeave;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBreak : 'break ;'
+  -------------------------------------------------------------------------- }
+Procedure ParseBreak;
+Begin
+  LexExpect('break');
+  LexExpect(';');
+  If loop_depth = 0 Then
+    ParseError('break en dehors d''une boucle')
+  Else
+    EmitI1('JMP', break_stack[loop_depth]);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseContinue : 'continue ;'
+  -------------------------------------------------------------------------- }
+Procedure ParseContinue;
+Begin
+  LexExpect('continue');
+  LexExpect(';');
+  If loop_depth = 0 Then
+    ParseError('continue en dehors d''une boucle')
+  Else
+    EmitI1('JMP', continue_stack[loop_depth]);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseReturn : 'return [expr] ;'
+  Charge la valeur dans AX (ou AX+DX pour string), puis epilogue + RET.
+  L'epilogue complet (MOV SP,BP / POP BP) sera genere par GenFunctionEpilogue
+  mais ici on saute au label de sortie de la methode courante.
+  -------------------------------------------------------------------------- }
+Procedure ParseReturn;
+Var t  : TToken;
+    vt : TValueKind;
+    fi : Integer;
+Begin
+  LexExpect('return');
+  fi := cur_func_idx;
+  t  := LexPeek;
+  If (t.kind = TK_PUNCT) And (t.val = ';') Then
+  Begin
+    LexNext;
+  End
+  Else
+  Begin
+    vt := ParseExpr;
+    LexExpect(';');
+  End;
+  { Sauter au label d'epilogue de la methode courante }
+  If fi > 0 Then
+    EmitI1('JMP', func_table^[fi].asm_label + '_ret')
+  Else
+    EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseAssignOrExprStmt : instruction d'expression.
+  Formes :
+    ident = expr ;
+    ident op= expr ;   (+=, -=, *=, /=, %=)
+    ident++ ;  ident-- ;
+    ident [ expr ] = expr ;
+    appel_de_methode ;
+  -------------------------------------------------------------------------- }
+Procedure ParseAssignOrExprStmt;
+Var t    : TToken;
+    t2   : TToken;
+    idx  : Integer;
+    vt   : TValueKind;
+    op   : TString;
+Begin
+  t := LexPeek;
+
+  { Tentative de detection d'une affectation : ident PUIS operateur }
+  If t.kind = TK_IDENT Then
+  Begin
+    idx := FindSym(t.val);
+    If idx > 0 Then
+    Begin
+      { Regarder le token suivant au-dela de l'ident }
+      LexNext;   { consommer l'ident }
+      t2 := LexPeek;
+
+      { --- Indexation : ident[expr] = expr --- }
+      If (t2.kind = TK_PUNCT) And (t2.val = '[') Then
+      Begin
+        LexNext;   { '[' }
+        ParseExpr;
+        EmitI1('MOV', 'BX, AX');  { index dans BX }
+        LexExpect(']');
+        LexExpect('=');
+        ParseExpr;                 { valeur dans AX }
+        GenStoreArrayElem(idx);
+        LexExpect(';');
+        Exit;
+      End;
+
+      { --- ident++ ; --- }
+      If (t2.kind = TK_OP) And (t2.val = '++') Then
+      Begin
+        LexNext;
+        GenLoadVar(idx);
+        EmitI0('INC  AX');
+        GenStoreVar(idx);
+        LexExpect(';');
+        Exit;
+      End;
+
+      { --- ident-- ; --- }
+      If (t2.kind = TK_OP) And (t2.val = '--') Then
+      Begin
+        LexNext;
+        GenLoadVar(idx);
+        EmitI0('DEC  AX');
+        GenStoreVar(idx);
+        LexExpect(';');
+        Exit;
+      End;
+
+      { --- ident = expr ; --- }
+      If (t2.kind = TK_OP) And (t2.val = '=') Then
+      Begin
+        LexNext;   { '=' }
+        ParseExpr;
+        GenStoreVar(idx);
+        LexExpect(';');
+        Exit;
+      End;
+
+      { --- ident op= expr ; --- }
+      If (t2.kind = TK_OP) And
+         ((t2.val = '+=') Or (t2.val = '-=') Or
+          (t2.val = '*=') Or (t2.val = '/=') Or (t2.val = '%=')) Then
+      Begin
+        op := t2.val;
+        LexNext;
+        GenLoadVar(idx);           { AX = valeur actuelle }
+        EmitI1('PUSH', 'AX');     { sauver }
+        ParseExpr;                 { AX = valeur droite }
+        EmitI1('MOV', 'BX, AX');
+        EmitI1('POP', 'AX');
+        If      op = '+=' Then EmitI1('ADD', 'AX, BX')
+        Else If op = '-=' Then EmitI1('SUB', 'AX, BX')
+        Else If op = '*=' Then EmitI1('CALL', RT_PFX + 'IMUL')
+        Else If op = '/=' Then EmitI1('CALL', RT_PFX + 'IDIV')
+        Else                  EmitI1('CALL', RT_PFX + 'IMOD');
+        GenStoreVar(idx);
+        LexExpect(';');
+        Exit;
+      End;
+
+      { Pas une affectation connue : remettre le lexer en etat
+        et traiter comme expression (appel de methode etc.)
+        On ne peut pas "remettre" un token, alors on gere l'ident
+        consomme en le traitant comme expression partielle. }
+      { On reconstruit : charger la variable et continuer comme expr }
+      If sym_table^[idx].kind = SK_CONST Then
+        GenLoadConst(idx)
+      Else
+        GenLoadVar(idx);
+      { Continuer le parsing d'expression depuis le niveau postfix }
+      vt := ParseExprPostfix;
+      { verifier qu'un ';' suit }
+      LexExpect(';');
+      Exit;
+    End;
+  End;
+
+  { Cas general : expression quelconque (appel Console.*, etc.) }
+  ParseExpr;
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStatement : dispatcher principal.
+  -------------------------------------------------------------------------- }
+Procedure ParseStatement;
+Var t     : TToken;
+Begin
+  t := LexPeek;
+
+  { Bloc }
+  If (t.kind = TK_PUNCT) And (t.val = '{') Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+
+  { if }
+  If (t.kind = TK_KEYWORD) And (t.val = 'if') Then
+  Begin
+    ParseIf;
+    Exit;
+  End;
+
+  { while }
+  If (t.kind = TK_KEYWORD) And (t.val = 'while') Then
+  Begin
+    ParseWhile;
+    Exit;
+  End;
+
+  { do }
+  If (t.kind = TK_KEYWORD) And (t.val = 'do') Then
+  Begin
+    ParseDoWhile;
+    Exit;
+  End;
+
+  { for }
+  If (t.kind = TK_KEYWORD) And (t.val = 'for') Then
+  Begin
+    ParseFor;
+    Exit;
+  End;
+
+  { break }
+  If (t.kind = TK_KEYWORD) And (t.val = 'break') Then
+  Begin
+    ParseBreak;
+    Exit;
+  End;
+
+  { continue }
+  If (t.kind = TK_KEYWORD) And (t.val = 'continue') Then
+  Begin
+    ParseContinue;
+    Exit;
+  End;
+
+  { return }
+  If (t.kind = TK_KEYWORD) And (t.val = 'return') Then
+  Begin
+    ParseReturn;
+    Exit;
+  End;
+
+  { instruction vide ';' }
+  If (t.kind = TK_PUNCT) And (t.val = ';') Then
+  Begin
+    LexNext;
+    Exit;
+  End;
+
+  { Declaration de variable locale : type ident ... }
+  If IsTypeKeyword(t) Then
+  Begin
+    ParseVarDecl(False);
+    Exit;
+  End;
+
+  { const locale }
+  If (t.kind = TK_KEYWORD) And (t.val = 'const') Then
+  Begin
+    ParseConstDecl(False);
+    Exit;
+  End;
+
+  { Affectation ou expression }
+  ParseAssignOrExprStmt;
+End;
+
+{ ============================================================================
+  TODO 10 - PARSER : METHODES ET CLASSES STATIQUES
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenFunctionPrologue : PUSH BP / MOV BP,SP / SUB SP, frame_size.
+  Appele apres avoir emis le label de la methode.
+  -------------------------------------------------------------------------- }
+Procedure GenFunctionPrologue(fi : Integer);
+Var fs : Integer;
+Begin
+  EmitI0('PUSH BP');
+  EmitI('MOV', 'BP, SP', 'sauver frame pointer');
+  fs := func_table^[fi].local_frame_size;
+  If fs > 0 Then
+    EmitI1('SUB', 'SP, ' + IntToStr(fs));
+End;
+
+{ --------------------------------------------------------------------------
+  GenFunctionEpilogue : label de retour + MOV SP,BP / POP BP / RET.
+  Genere le label '<func_asm>_ret' utilise par les 'return' internes.
+  -------------------------------------------------------------------------- }
+Procedure GenFunctionEpilogue(fi : Integer);
+Begin
+  EmitLabel(func_table^[fi].asm_label + '_ret');
+  EmitI('MOV', 'SP, BP', 'restaurer SP');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseUsings : consommer zero ou plusieurs 'using ident.ident... ;'
+  sans emettre de code.
+  -------------------------------------------------------------------------- }
+Procedure ParseUsings;
+Var t : TToken;
+Begin
+  t := LexPeek;
+  While (t.kind = TK_KEYWORD) And (t.val = 'using') Do
+  Begin
+    LexNext;   { 'using' }
+    { Consommer jusqu'au ';' }
+    Repeat
+      t := LexNext;
+    Until (t.kind = TK_PUNCT) And (t.val = ';') Or (t.kind = TK_EOF);
+    t := LexPeek;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseNamespace : consommer 'namespace Ident.Ident ...' suivi de l'accolade
+  ouvrante. On NE consomme PAS le contenu : c'est ParseClassDecl qui le fera.
+  Si pas de namespace : rien a faire.
+  -------------------------------------------------------------------------- }
+Procedure ParseNamespace;
+Var t : TToken;
+Begin
+  t := LexPeek;
+  If Not ((t.kind = TK_KEYWORD) And (t.val = 'namespace')) Then Exit;
+  LexNext;   { 'namespace' }
+  { Consommer le nom qualifie : Ident puis '.' Ident en boucle }
+  Repeat
+    t := LexNext;
+    t := LexPeek;
+  Until Not ((t.kind = TK_PUNCT) And (t.val = '.'));
+  LexExpect('{');
+End;
+
+{ --------------------------------------------------------------------------
+  parseNamespaceClose : consommer l'accolade fermante du namespace
+  si un namespace a ete ouvert.
+  -------------------------------------------------------------------------- }
+Var ns_open : Boolean;
+
+Procedure ParseNamespaceClose;
+Begin
+  If ns_open Then
+  Begin
+    LexExpect('}');
+    ns_open := False;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseMethodDecl : '[static] type Ident (params) block'
+  - Enregistre la methode dans func_table.
+  - Genere le prologue, le bloc d'instructions, l'epilogue.
+  -------------------------------------------------------------------------- }
+Procedure ParseMethodDecl(is_global_scope : Boolean);
+Var vt      : TValueKind;
+    is_arr  : Boolean;
+    name    : TString;
+    t       : TToken;
+    fi      : Integer;
+    old_fi  : Integer;
+Begin
+  { Optionnel : 'static' }
+  t := LexPeek;
+  If (t.kind = TK_KEYWORD) And (t.val = 'static') Then
+    LexNext;
+
+  { Optionnel : 'public' / 'private' }
+  t := LexPeek;
+  If (t.kind = TK_KEYWORD) And
+     ((t.val = 'public') Or (t.val = 'private')) Then
+    LexNext;
+
+  { Type de retour }
+  If Not ParseTypeSpec(vt, is_arr) Then
+  Begin
+    ParseError('Type de retour attendu dans declaration de methode');
+    SkipToSemicolon;
+    Exit;
+  End;
+
+  { Nom de la methode }
+  t    := LexExpectKind(TK_IDENT);
+  name := t.val;
+
+  { Enregistrer dans func_table }
+  fi := FindFunc(name);
+  If fi = 0 Then
+    fi := AddFunc(name, vt)
+  Else
+  Begin
+    ParseWarn('Methode deja declaree : ' + name);
+    { Mettre a jour le type de retour }
+    func_table^[fi].return_type := vt;
+  End;
+  If fi = 0 Then Exit;
+
+  { Parametres }
+  old_fi       := cur_func_idx;
+  cur_func_idx := fi;
+  ResetLocals;
+  ParseParamList(fi);
+
+  { Corps }
+  ScopeEnter;
+
+  { Emettre le label de la methode }
+  EmitBlank;
+  EmitSep;
+  EmitComment('Methode : ' + name);
+  EmitSep;
+  EmitLabel(func_table^[fi].asm_label);
+
+  { Si c'est Main : initialiser DS }
+  If func_table^[fi].is_main Then
+  Begin
+    EmitI('INIT_DS', '', 'initialiser le segment de donnees');
+  End;
+
+  GenFunctionPrologue(fi);
+
+  { Instructions }
+  If (LexPeek.kind = TK_PUNCT) And (LexPeek.val = '{') Then
+    ParseBlock
+  Else
+  Begin
+    ParseError('Accolade ouvrante attendue pour le corps de la methode');
+    SkipToSemicolon;
+  End;
+
+  GenFunctionEpilogue(fi);
+
+  If func_table^[fi].is_main Then
+  Begin
+    EmitBlank;
+    EmitI('EXIT_DOS', '', 'fin du programme DOS');
+  End;
+
+  ScopeLeave;
+  cur_func_idx := old_fi;
+End;
+
+{ --------------------------------------------------------------------------
+  DetectEntryPoint : apres le parsing, reperer la methode 'Main' ou 'main'
+  et memoriser son label dans first_instr_lbl si ce n'est pas deja fait.
+  -------------------------------------------------------------------------- }
+Procedure DetectEntryPoint;
+Var i : Integer;
+Begin
+  For i := 1 To func_count Do
+    If func_table^[i].is_main Then
+    Begin
+      first_instr_lbl := func_table^[i].asm_label;
+      Exit;
+    End;
+  If first_instr_lbl = '' Then
+    ParseWarn('Aucun point d''entree Main trouve');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseClassBody : membres d'une classe statique.
+  Membres reconnus : declarations de variables statiques + methodes.
+  -------------------------------------------------------------------------- }
+Procedure ParseClassBody;
+Var t      : TToken;
+    vt     : TValueKind;
+    peek2  : TToken;
+    fi2    : Integer;
+    old2   : Integer;
+    idx2   : Integer;
+    cval2  : LongInt;
+    is_arr : Boolean;
+Begin
+  t := LexPeek;
+  While Not ((t.kind = TK_PUNCT) And (t.val = '}')) And
+        Not (t.kind = TK_EOF) Do
+  Begin
+    { Mots-cles de visibilite / modificateurs seuls -> methode }
+    If (t.kind = TK_KEYWORD) And
+       ((t.val = 'public') Or (t.val = 'private') Or (t.val = 'static')) Then
+    Begin
+      ParseMethodDecl(True);
+    End
+    Else If IsTypeKeyword(t) Then
+    Begin
+      { Lire le type }
+      LexNext;
+      vt := KeywordToValueKind(t.val);
+      { Detecter [] }
+      peek2 := LexPeek;
+      If (peek2.kind = TK_PUNCT) And (peek2.val = '[') Then
+      Begin
+        LexNext;
+        LexExpect(']');
+        is_arr := True;
+        vt     := VK_ARRAY;
+      End
+      Else
+        is_arr := False;
+
+      peek2 := LexPeek;
+      If peek2.kind <> TK_IDENT Then
+      Begin
+        ParseError('Identifiant attendu apres le type');
+        SkipToSemicolon;
+      End
+      Else
+      Begin
+        LexNext;    { consommer l'ident }
+        t := LexPeek;
+
+        If (t.kind = TK_PUNCT) And (t.val = '(') Then
+        Begin
+          { Methode }
+          fi2 := FindFunc(peek2.val);
+          If fi2 = 0 Then fi2 := AddFunc(peek2.val, vt);
+          If fi2 > 0 Then
+          Begin
+            old2 := cur_func_idx;
+            cur_func_idx := fi2;
+            ResetLocals;
+            func_table^[fi2].return_type := vt;
+            If (peek2.val = 'Main') Or (peek2.val = 'main') Then
+              func_table^[fi2].is_main := True;
+            ParseParamList(fi2);
+            ScopeEnter;
+            EmitBlank;
+            EmitSep;
+            EmitComment('Methode : ' + peek2.val);
+            EmitSep;
+            EmitLabel(func_table^[fi2].asm_label);
+            If func_table^[fi2].is_main Then
+              EmitI('INIT_DS', '', 'initialiser le segment de donnees');
+            GenFunctionPrologue(fi2);
+            If (LexPeek.kind = TK_PUNCT) And (LexPeek.val = '{') Then
+              ParseBlock
+            Else
+            Begin
+              ParseError('Accolade ouvrante attendue');
+              SkipToSemicolon;
+            End;
+            GenFunctionEpilogue(fi2);
+            If func_table^[fi2].is_main Then
+            Begin
+              EmitBlank;
+              EmitI('EXIT_DOS', '', 'fin du programme DOS');
+            End;
+            ScopeLeave;
+            cur_func_idx := old2;
+          End;
+        End
+        Else
+        Begin
+          { Variable globale : type ident [= expr] ; }
+          idx2 := AddGlobalVar(peek2.val, vt);
+          If (t.kind = TK_OP) And (t.val = '=') Then
+          Begin
+            LexNext;
+            cval2 := ParseConstIntExpr;
+            If idx2 > 0 Then sym_table^[idx2].const_val := cval2;
+          End;
+          LexExpect(';');
+        End;
+      End;
+    End
+    Else If (t.kind = TK_KEYWORD) And (t.val = 'const') Then
+      ParseConstDecl(True)
+    Else
+    Begin
+      ParseError('Membre de classe inconnu : ' + t.val);
+      LexNext;
+    End;
+    t := LexPeek;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseClassDecl : 'class Ident' suivi du corps entre accolades.
+  -------------------------------------------------------------------------- }
+Procedure ParseClassDecl;
+Var t : TToken;
+Begin
+  LexExpect('class');
+  t := LexExpectKind(TK_IDENT);
+  EmitComment('Classe : ' + t.val);
+  { Optionnel : heritage (ignore) }
+  t := LexPeek;
+  If (t.kind = TK_PUNCT) And (t.val = ':') Then
+  Begin
+    LexNext;
+    LexNext;   { nom de la classe de base - ignore }
+  End;
+  LexExpect('{');
+  ParseClassBody;
+  LexExpect('}');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseProgram : point d'entree du parseur.
+  using* namespace? class+
+  -------------------------------------------------------------------------- }
+Procedure ParseProgram;
+Var t : TToken;
+Begin
+  ParseUsings;
+
+  t := LexPeek;
+  ns_open := False;
+  If (t.kind = TK_KEYWORD) And (t.val = 'namespace') Then
+  Begin
+    ParseNamespace;
+    ns_open := True;
+  End;
+
+  { Une ou plusieurs classes }
+  t := LexPeek;
+  While (t.kind = TK_KEYWORD) And (t.val = 'class') Do
+  Begin
+    ParseClassDecl;
+    t := LexPeek;
+    { Sauter d'eventuels mots-cles de visibilite hors classe }
+    If (t.kind = TK_KEYWORD) And
+       ((t.val = 'public') Or (t.val = 'internal') Or (t.val = 'static')) Then
+    Begin
+      LexNext;
+      t := LexPeek;
+    End;
+  End;
+
+  ParseNamespaceClose;
+  DetectEntryPoint;
+End;
+
+{ ============================================================================
+  TODO 11 - CODEGEN : EXPRESSIONS ENTIERS ET BOOLEENS
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenIntLiteral : emettre MOV AX, val (litteral entier immediat).
+  -------------------------------------------------------------------------- }
+Procedure GenIntLiteral(val : LongInt);
+Begin
+  EmitI1('MOV', 'AX, ' + IntToStr(val));
+End;
+
+{ --------------------------------------------------------------------------
+  GenBoolLiteral : emettre MOV AX, 1 (true) ou XOR AX,AX (false).
+  -------------------------------------------------------------------------- }
+Procedure GenBoolLiteral(val : Boolean);
+Begin
+  If val Then
+    EmitI1('MOV', 'AX, 1')
+  Else
+    EmitI0('XOR  AX, AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenNot : NOT logique ou arithmetique selon le type.
+  Si vtype = VK_BOOL -> XOR AX, 1  (inverse 0/1)
+  Sinon              -> NEG AX      (complement arithmetique)
+  AX est suppose deja charge.
+  -------------------------------------------------------------------------- }
+Procedure GenNot(vtype : TValueKind);
+Begin
+  If vtype = VK_BOOL Then
+    EmitI1('XOR', 'AX, 1')
+  Else
+    EmitI0('NEG  AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenArith : operation arithmetique binaire AX op BX -> AX.
+  op peut etre '+', '-', '*', '/', '%'.
+  AX = operande gauche, BX = operande droit (deja charges par l'appelant).
+  -------------------------------------------------------------------------- }
+Procedure GenArith(Const op : TString);
+Begin
+  If      op = '+' Then EmitI1('ADD', 'AX, BX')
+  Else If op = '-' Then EmitI1('SUB', 'AX, BX')
+  Else If op = '*' Then EmitI1('CALL', RT_PFX + 'IMUL')
+  Else If op = '/' Then EmitI1('CALL', RT_PFX + 'IDIV')
+  Else If op = '%' Then EmitI1('CALL', RT_PFX + 'IMOD')
+  Else ParseError('Operateur arithmetique inconnu : ' + op);
+End;
+
+{ --------------------------------------------------------------------------
+  GenCompare : comparaison AX op BX -> AX = 0 ou 1.
+  Emet CMP AX,BX + Jxx true_lbl + XOR AX,AX + JMP end_lbl + MOV AX,1.
+  -------------------------------------------------------------------------- }
+Procedure GenCompare(Const op : TString);
+Var lbl_t, lbl_f : TString;
+Begin
+  lbl_t := NewLabel;
+  lbl_f := NewLabel;
+  EmitI1('CMP', 'AX, BX');
+  If      op = '==' Then EmitI1('JE',  lbl_t)
+  Else If op = '!=' Then EmitI1('JNE', lbl_t)
+  Else If op = '<'  Then EmitI1('JL',  lbl_t)
+  Else If op = '<=' Then EmitI1('JLE', lbl_t)
+  Else If op = '>'  Then EmitI1('JG',  lbl_t)
+  Else If op = '>=' Then EmitI1('JGE', lbl_t)
+  Else ParseError('Operateur de comparaison inconnu : ' + op);
+  EmitI0('XOR  AX, AX');
+  EmitI1('JMP', lbl_f);
+  EmitLabel(lbl_t);
+  EmitI1('MOV', 'AX, 1');
+  EmitLabel(lbl_f);
+End;
+
+{ --------------------------------------------------------------------------
+  GenLogicalAnd : court-circuit && : si AX=0 -> sauter a lbl_false.
+  Utilise en sequence : evaluer gauche, TEST, JZ, evaluer droite, TEST, JZ,
+  puis MOV AX,1 / label_false.
+  Ici on fournit juste le test intermedaire : TEST AX,AX + JZ lbl.
+  -------------------------------------------------------------------------- }
+Procedure GenLogicalAndTest(Const lbl_false : TString);
+Begin
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   lbl_false);
+End;
+
+{ --------------------------------------------------------------------------
+  GenLogicalOrTest : court-circuit || : si AX<>0 -> sauter a lbl_true.
+  -------------------------------------------------------------------------- }
+Procedure GenLogicalOrTest(Const lbl_true : TString);
+Begin
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  lbl_true);
+End;
+
+{ --------------------------------------------------------------------------
+  EvalExprToAX : wrapper de haut niveau autour de ParseExpr.
+  Garantit que le resultat est dans AX (cast silencieux si necessaire).
+  Retourne le TValueKind produit.
+  -------------------------------------------------------------------------- }
+Function EvalExprToAX : TValueKind;
+Begin
+  EvalExprToAX := ParseExpr;
+End;
+
+{ --------------------------------------------------------------------------
+  EvalExprToDI : evaluer une expression de type string, resultat dans DI+CX.
+  Convention : DI = ptr, CX = len (pour passer a _RT_WRITESTR etc.)
+  -------------------------------------------------------------------------- }
+Function EvalExprToDI : TValueKind;
+Var vt : TValueKind;
+Begin
+  vt := ParseExpr;
+  { AX = ptr, DX = len apres ParseExpr pour les strings }
+  If vt = VK_STRING Then
+  Begin
+    EmitI('MOV', 'DI, AX', 'DI = ptr chaine');
+    EmitI('MOV', 'CX, DX', 'CX = len chaine');
+  End;
+  EvalExprToDI := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  EvalBoolExpr : evaluer une expression booleenne -> AX = 0 ou 1.
+  Normalise le resultat : si VK_BOOL, AX est deja 0/1.
+  Si int, emet TEST AX,AX / SETNZ (simule par JNZ).
+  -------------------------------------------------------------------------- }
+Function EvalBoolExpr : TValueKind;
+Var vt    : TValueKind;
+    lbl_t : TString;
+    lbl_f : TString;
+Begin
+  vt := ParseExpr;
+  If vt <> VK_BOOL Then
+  Begin
+    { Normaliser int -> bool : AX=0 reste 0, AX<>0 devient 1 }
+    lbl_t := NewLabel;
+    lbl_f := NewLabel;
+    EmitI1('TEST', 'AX, AX');
+    EmitI1('JNZ',  lbl_t);
+    EmitI0('XOR  AX, AX');
+    EmitI1('JMP',  lbl_f);
+    EmitLabel(lbl_t);
+    EmitI1('MOV', 'AX, 1');
+    EmitLabel(lbl_f);
+    vt := VK_BOOL;
+  End;
+  EvalBoolExpr := vt;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegmentHeader : emettre l'entete du segment CODE (passe 2).
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegmentHeader;
+Begin
+  EmitSep;
+  EmitComment('Segment de code');
+  EmitSep;
+  Emit('        .CODE');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegmentFooter : emettre la terminaison du fichier ASM.
+  END label_entree  ou  END  si pas de point d'entree connu.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegmentFooter;
+Begin
+  EmitBlank;
+  EmitSep;
+  EmitComment('Fin du module');
+  EmitSep;
+  If first_instr_lbl <> '' Then
+    Emit('        END     ' + first_instr_lbl)
+  Else
+    Emit('        END');
+End;
+
+{ ============================================================================
+  TODO 12 - CODEGEN : ACCES AUX VARIABLES (COMPLEMENT)
+  ============================================================================
+  GenLoadVar et GenStoreVar sont implementes en TODO 08/09.
+  Ce TODO ajoute : GenAddrOf, GenLoadArrayElem, GenStoreArray,
+  et les helpers de reference (adresse effective).
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenAddrOf : calculer et laisser dans SI l'adresse effective
+  d'une variable (scalaire ou premiere case de tableau).
+  Utile pour les passages par reference et les acces tableaux.
+  -------------------------------------------------------------------------- }
+Procedure GenAddrOf(idx : Integer);
+Var lbl   : TString;
+    ofs   : Integer;
+    scope : TScope;
+Begin
+  lbl   := sym_table^[idx].asm_label;
+  ofs   := sym_table^[idx].bp_offset;
+  scope := sym_table^[idx].scope;
+  Case scope Of
+    SC_GLOBAL :
+      EmitI1('LEA', 'SI, [' + lbl + ']');
+    SC_LOCAL :
+      EmitI1('LEA', 'SI, [BP-' + IntToStr(ofs) + ']');
+    SC_PARAM :
+      EmitI1('LEA', 'SI, [BP+' + IntToStr(ofs) + ']');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadArrayElem : charger arr[idx_reg] dans AX.
+  Precondition : index est dans BX (valeur non multipliee).
+  Utilise GenAddrOf pour obtenir SI, puis ajoute BX*2.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadArrayElem(sym_idx : Integer);
+Begin
+  GenAddrOf(sym_idx);          { SI = adresse de base du tableau }
+  EmitI1('SHL', 'BX, 1');     { BX = index * 2 (mots de 16 bits) }
+  EmitI1('ADD', 'SI, BX');
+  EmitI1('MOV', 'AX, [SI]');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreArray : stocker AX dans arr[index].
+  Precondition : index dans BX (valeur non multipliee),
+                 valeur a stocker dans AX.
+  Equivalent de GenStoreArrayElem (deja implem. TODO 09) mais via GenAddrOf.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreArray(sym_idx : Integer);
+Begin
+  EmitI1('PUSH', 'AX');         { sauver valeur }
+  GenAddrOf(sym_idx);            { SI = adresse de base }
+  EmitI1('SHL', 'BX, 1');
+  EmitI1('ADD', 'SI, BX');
+  EmitI1('POP', 'AX');
+  EmitI1('MOV', '[SI], AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadVarToReg : charger une variable scalaire dans un registre
+  (AX, BX, CX, DX, SI ou DI). Wrapper autour de GenLoadVar.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadVarToReg(idx : Integer; Const reg : TString);
+Begin
+  GenLoadVar(idx);              { resultat dans AX }
+  If reg <> 'AX' Then
+    EmitI1('MOV', reg + ', AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCopyDescriptor : copier le descripteur string d'une source vers dest.
+  src_lbl / dst_lbl : labels ASM de descripteurs (2 DW : ptr + len).
+  -------------------------------------------------------------------------- }
+Procedure GenCopyDescriptor(Const src_lbl, dst_lbl : TString);
+Begin
+  EmitI1('MOV', 'AX, WORD PTR [' + src_lbl + ']');
+  EmitI1('MOV', 'WORD PTR [' + dst_lbl + '], AX');
+  EmitI1('MOV', 'AX, WORD PTR [' + src_lbl + '+2]');
+  EmitI1('MOV', 'WORD PTR [' + dst_lbl + '+2], AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCopyDescriptorFromRegs : ecrire le descripteur string
+  AX=ptr / DX=len dans la variable de symbole idx.
+  -------------------------------------------------------------------------- }
+Procedure GenCopyDescriptorFromRegs(idx : Integer);
+Begin
+  { GenStoreVar gere deja ptr+len pour VK_STRING }
+  GenStoreVar(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadDescriptorToRegs : charger le descripteur string du symbole idx
+  dans AX=ptr / DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadDescriptorToRegs(idx : Integer);
+Begin
+  { GenLoadVar gere deja AX+DX pour VK_STRING }
+  GenLoadVar(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayLength : lire la longueur d'un tableau (statique).
+  Pour les tableaux de taille fixe, la longueur est une constante connue
+  a la compilation et stockee dans sym_table^[idx].arr_size.
+  On l'emet comme immediate dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayLength(idx : Integer);
+Begin
+  EmitI1('MOV', 'AX, ' + IntToStr(sym_table^[idx].arr_size));
+End;
+
+{ --------------------------------------------------------------------------
+  GenBoundsCheck : verifier 0 <= index(BX) < taille_tableau.
+  Emet un check conditionnel ; en cas d'echec saute a _RT_BOUNDS_ERR.
+  (Optionnel : actif seulement si la routine runtime existe.)
+  -------------------------------------------------------------------------- }
+Procedure GenBoundsCheck(idx : Integer);
+Var n : Integer;
+Begin
+  n := sym_table^[idx].arr_size;
+  If n <= 0 Then Exit;              { taille inconnue -> pas de check }
+  EmitI('CMP', 'BX, ' + IntToStr(n), 'verif borne superieure');
+  EmitI1('JAE', RT_PFX + 'BOUNDS_ERR');
+  EmitI1('TEST', 'BX, BX');
+  EmitI1('JS',   RT_PFX + 'BOUNDS_ERR');
+End;
+
+{ --------------------------------------------------------------------------
+  VarBPRef : retourne la reference BP d'un symbole local/param sous forme
+  de chaine '[BP+X]' ou '[BP-X]'.
+  -------------------------------------------------------------------------- }
+Function VarBPRef(idx : Integer) : TString;
+Var ofs   : Integer;
+    scope : TScope;
+Begin
+  ofs   := sym_table^[idx].bp_offset;
+  scope := sym_table^[idx].scope;
+  If scope = SC_LOCAL Then
+    VarBPRef := '[BP-' + IntToStr(ofs) + ']'
+  Else If scope = SC_PARAM Then
+    VarBPRef := '[BP+' + IntToStr(ofs) + ']'
+  Else
+    VarBPRef := '[' + sym_table^[idx].asm_label + ']';
+End;
+
+{ --------------------------------------------------------------------------
+  GenIncVar / GenDecVar : incrementer ou decrementer une variable IN PLACE.
+  Plus efficace que Load / INC / Store pour les scalaires simples.
+  -------------------------------------------------------------------------- }
+Procedure GenIncVar(idx : Integer);
+Var ref : TString;
+Begin
+  ref := VarBPRef(idx);
+  EmitI1('INC', 'WORD PTR ' + ref);
+End;
+
+Procedure GenDecVar(idx : Integer);
+Var ref : TString;
+Begin
+  ref := VarBPRef(idx);
+  EmitI1('DEC', 'WORD PTR ' + ref);
+End;
+
+{ ============================================================================
+  TODO 13 - CODEGEN : AFFECTATION ET AFFECTATION COMPOSEE
+  ============================================================================
+  Les helpers ParseAssignOrExprStmt (TODO 09) integrent deja la logique
+  inline. Ce TODO fournit des procedures autonomes reutilisables par le
+  generateur de code (passe 2) et par d'eventuels optimiseurs.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenAssign : x = <valeur deja dans AX/DX>.
+  Stocke AX (scalaire) ou AX+DX (string) dans le symbole idx.
+  La valeur doit etre deja dans AX (et DX pour les strings) a l'appel.
+  -------------------------------------------------------------------------- }
+Procedure GenAssign(idx : Integer);
+Begin
+  GenStoreVar(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenAssignFromExpr : evaluer expr et affecter le resultat a la variable idx.
+  Gere le cas scalaire (AX) et string (AX+DX).
+  -------------------------------------------------------------------------- }
+Procedure GenAssignFromExpr(idx : Integer);
+Var vt : TValueKind;
+Begin
+  vt := ParseExpr;            { evaluer la partie droite -> AX [/ DX] }
+  GenStoreVar(idx);           { stocker dans la variable }
+End;
+
+{ --------------------------------------------------------------------------
+  GenAssignOp : x op= expr.
+  op = '+=' '-=' '*=' '/=' '%='
+  Charge x dans AX, evalue expr dans BX, applique l'operation, stocke.
+  -------------------------------------------------------------------------- }
+Procedure GenAssignOp(idx : Integer; Const op : TString);
+Var base_op : TString;
+Begin
+  { Determiner l'operation de base }
+  If      op = '+=' Then base_op := '+'
+  Else If op = '-=' Then base_op := '-'
+  Else If op = '*=' Then base_op := '*'
+  Else If op = '/=' Then base_op := '/'
+  Else If op = '%=' Then base_op := '%'
+  Else
+  Begin
+    ParseError('Operateur compose inconnu : ' + op);
+    Exit;
+  End;
+
+  GenLoadVar(idx);             { AX = valeur actuelle }
+  EmitI1('PUSH', 'AX');
+  ParseExpr;                   { AX = valeur droite }
+  EmitI1('MOV', 'BX, AX');
+  EmitI1('POP', 'AX');
+  GenArith(base_op);           { AX = AX op BX }
+  GenStoreVar(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenIncDec : incrementation ou decrementation d'une variable.
+  prefix  = True  -> ++x / --x  : modifier puis retourner la nouvelle valeur.
+  prefix  = False -> x++ / x--  : retourner l'ancienne valeur, puis modifier.
+  inc     = True  -> incrementation, False = decrementation.
+  Le resultat est dans AX apres l'appel.
+  -------------------------------------------------------------------------- }
+Procedure GenIncDec(idx : Integer; inc : Boolean; prefix : Boolean);
+Var ref : TString;
+Begin
+  ref := VarBPRef(idx);
+  If prefix Then
+  Begin
+    { ++x / --x }
+    If inc Then
+      EmitI1('INC', 'WORD PTR ' + ref)
+    Else
+      EmitI1('DEC', 'WORD PTR ' + ref);
+    EmitI1('MOV', 'AX, WORD PTR ' + ref);   { retourner nouvelle valeur }
+  End
+  Else
+  Begin
+    { x++ / x-- }
+    EmitI1('MOV', 'AX, WORD PTR ' + ref);   { retourner ancienne valeur }
+    If inc Then
+      EmitI1('INC', 'WORD PTR ' + ref)
+    Else
+      EmitI1('DEC', 'WORD PTR ' + ref);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenAssignString : affecter un descripteur string (AX=ptr, DX=len)
+  dans la variable de symbole idx (de type VK_STRING).
+  Copie les 2 mots du descripteur.
+  -------------------------------------------------------------------------- }
+Procedure GenAssignString(idx : Integer);
+Begin
+  { AX=ptr, DX=len deja dans les registres apres ParseExpr }
+  GenStoreVar(idx);   { GenStoreVar gere ptr+len pour VK_STRING }
+End;
+
+{ --------------------------------------------------------------------------
+  GenAssignArrayElem : arr[index] = valeur.
+  Precondition :
+    - l'index a ete evalue et est dans BX (non multiplie)
+    - la valeur a stocker est dans AX
+  -------------------------------------------------------------------------- }
+Procedure GenAssignArrayElem(idx : Integer);
+Begin
+  GenStoreArray(idx);    { GenStoreArray : PUSH AX, GenAddrOf, SHL BX,1, POP AX, MOV [SI],AX }
+End;
+
+{ --------------------------------------------------------------------------
+  GenAssignArrayElemFromExpr : arr[index_expr] = value_expr.
+  Evalue d'abord l'index (-> BX), puis la valeur (-> AX), puis affecte.
+  -------------------------------------------------------------------------- }
+Procedure GenAssignArrayElemFromExpr(idx : Integer);
+Begin
+  { Evaluer l'index }
+  ParseExpr;
+  EmitI1('MOV', 'BX, AX');
+  LexExpect(']');
+  LexExpect('=');
+  { Evaluer la valeur }
+  ParseExpr;
+  { Stocker : AX = valeur, BX = index }
+  GenStoreArray(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenSimpleAssignOrOp : dispatcher pour 'ident op expr ;'
+  Appele par le parseur d'instructions quand on a deja consomme l'ident
+  et que le token suivant est un operateur d'affectation.
+  -------------------------------------------------------------------------- }
+Procedure GenSimpleAssignOrOp(idx : Integer; Const op : TString);
+Begin
+  If op = '=' Then
+    GenAssignFromExpr(idx)
+  Else
+    GenAssignOp(idx, op);
+End;
+
+{ --------------------------------------------------------------------------
+  TryGenStringConcat : si les deux operandes sont VK_STRING et l'op est '+',
+  appeler _RT_STRCAT. Retourne True si la concatenation a ete generee.
+  Precondition : lhs deja dans AX+DX (ptr+len).
+  -------------------------------------------------------------------------- }
+Function TryGenStringConcat(lhs_vt : TValueKind) : Boolean;
+Var rhs_vt : TValueKind;
+Begin
+  If lhs_vt <> VK_STRING Then
+  Begin
+    TryGenStringConcat := False;
+    Exit;
+  End;
+  EmitI1('PUSH', 'DX');          { len1 }
+  EmitI1('PUSH', 'AX');          { ptr1 }
+  rhs_vt := ParseExpr;           { AX=ptr2, DX=len2 }
+  EmitI1('PUSH', 'DX');          { len2 }
+  EmitI1('PUSH', 'AX');          { ptr2 }
+  EmitI1('CALL', RT_PFX + 'STRCAT');
+  EmitI1('ADD',  'SP, 8');
+  TryGenStringConcat := True;
+End;
+
+{ ============================================================================
+  TODO 14 - CODEGEN : INSTRUCTIONS DE CONTROLE
+  ============================================================================
+  Helpers purement codegen (pas de consommation de tokens).
+  Precondition commune : la condition est deja evaluee dans AX.
+  Utilises par les Parse* du TODO 09 et par un futur backend 2-passes.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenIfCondJump : apres evaluation de la condition dans AX,
+  emettre TEST + JZ vers le label de la branche else/fin.
+  -------------------------------------------------------------------------- }
+Procedure GenIfCondJump(Const lbl_else : TString);
+Begin
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   lbl_else);
+End;
+
+{ --------------------------------------------------------------------------
+  GenIfElsePart : entre les branches then et else :
+  emettre JMP vers lbl_end, puis poser le label lbl_else.
+  -------------------------------------------------------------------------- }
+Procedure GenIfElsePart(Const lbl_else, lbl_end : TString);
+Begin
+  EmitI1('JMP', lbl_end);
+  EmitLabel(lbl_else);
+End;
+
+{ --------------------------------------------------------------------------
+  GenIfEnd : poser le label de fin du if (lbl_else ou lbl_end).
+  -------------------------------------------------------------------------- }
+Procedure GenIfEnd(Const lbl : TString);
+Begin
+  EmitLabel(lbl);
+End;
+
+{ --------------------------------------------------------------------------
+  GenWhileTop : poser le label de debut de boucle while.
+  -------------------------------------------------------------------------- }
+Procedure GenWhileTop(Const lbl_top : TString);
+Begin
+  EmitLabel(lbl_top);
+End;
+
+{ --------------------------------------------------------------------------
+  GenWhileCondJump : tester AX et sauter a lbl_end si faux.
+  -------------------------------------------------------------------------- }
+Procedure GenWhileCondJump(Const lbl_end : TString);
+Begin
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   lbl_end);
+End;
+
+{ --------------------------------------------------------------------------
+  GenWhileEnd : fermer la boucle while : JMP lbl_top + label lbl_end.
+  -------------------------------------------------------------------------- }
+Procedure GenWhileEnd(Const lbl_top, lbl_end : TString);
+Begin
+  EmitI1('JMP', lbl_top);
+  EmitLabel(lbl_end);
+End;
+
+{ --------------------------------------------------------------------------
+  GenDoWhileTop : poser le label de debut du corps do-while.
+  -------------------------------------------------------------------------- }
+Procedure GenDoWhileTop(Const lbl_top : TString);
+Begin
+  EmitLabel(lbl_top);
+End;
+
+{ --------------------------------------------------------------------------
+  GenDoWhileCondLabel : poser le label de debut de la condition
+  (cible de continue) avant d'evaluer l'expression while.
+  -------------------------------------------------------------------------- }
+Procedure GenDoWhileCondLabel(Const lbl_cond : TString);
+Begin
+  EmitLabel(lbl_cond);
+End;
+
+{ --------------------------------------------------------------------------
+  GenDoWhileBack : apres evaluation de la condition dans AX,
+  emettre TEST + JNZ lbl_top, puis poser lbl_end.
+  -------------------------------------------------------------------------- }
+Procedure GenDoWhileBack(Const lbl_top, lbl_end : TString);
+Begin
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  lbl_top);
+  EmitLabel(lbl_end);
+End;
+
+{ --------------------------------------------------------------------------
+  GenForIncrJump : mecanique de saut du for :
+  - sauter par-dessus l'incrementation pour aller au corps :
+      JMP lbl_body
+  - puis poser le label d'incrementation :
+      lbl_incr:
+  Appeler apres la condition et avant d'emettre le code d'incrementation.
+  -------------------------------------------------------------------------- }
+Procedure GenForIncrJump(Const lbl_incr, lbl_body : TString);
+Begin
+  EmitI1('JMP', lbl_body);
+  EmitLabel(lbl_incr);
+End;
+
+{ --------------------------------------------------------------------------
+  GenForBody : apres le code d'incrementation, revenir au test :
+      JMP lbl_top
+  puis poser le label du corps :
+      lbl_body:
+  -------------------------------------------------------------------------- }
+Procedure GenForBody(Const lbl_top, lbl_body : TString);
+Begin
+  EmitI1('JMP', lbl_top);
+  EmitLabel(lbl_body);
+End;
+
+{ --------------------------------------------------------------------------
+  GenForEnd : fermer la boucle for : JMP lbl_incr + label lbl_end.
+  -------------------------------------------------------------------------- }
+Procedure GenForEnd(Const lbl_incr, lbl_end : TString);
+Begin
+  EmitI1('JMP', lbl_incr);
+  EmitLabel(lbl_end);
+End;
+
+{ --------------------------------------------------------------------------
+  GenBreak : emettre JMP vers le label break de la boucle courante.
+  -------------------------------------------------------------------------- }
+Procedure GenBreak;
+Begin
+  If loop_depth = 0 Then
+    ParseError('break en dehors d''une boucle')
+  Else
+    EmitI1('JMP', break_stack[loop_depth]);
+End;
+
+{ --------------------------------------------------------------------------
+  GenContinue : emettre JMP vers le label continue de la boucle courante.
+  -------------------------------------------------------------------------- }
+Procedure GenContinue;
+Begin
+  If loop_depth = 0 Then
+    ParseError('continue en dehors d''une boucle')
+  Else
+    EmitI1('JMP', continue_stack[loop_depth]);
+End;
+
+{ --------------------------------------------------------------------------
+  GenReturn : generer le retour d'une methode.
+  Si la methode a un label de sortie (_ret), sauter vers lui
+  pour que l'epilogue (MOV SP,BP / POP BP / RET) soit unique.
+  Sinon (fonction sans index valide), emettre RET directement.
+  La valeur de retour doit deja etre dans AX (ou AX+DX pour string)
+  avant l'appel.
+  -------------------------------------------------------------------------- }
+Procedure GenReturn;
+Begin
+  If cur_func_idx > 0 Then
+    EmitI1('JMP', func_table^[cur_func_idx].asm_label + '_ret')
+  Else
+    EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  GenReturnVoid : retour sans valeur (methode void).
+  -------------------------------------------------------------------------- }
+Procedure GenReturnVoid;
+Begin
+  GenReturn;
+End;
+
+{ --------------------------------------------------------------------------
+  GenReturnExpr : charger une valeur scalaire dans AX, puis retourner.
+  Precondition : l'expression est deja dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenReturnExpr;
+Begin
+  GenReturn;
+End;
+
+{ --------------------------------------------------------------------------
+  GenReturnString : retour d'une string (AX=ptr, DX=len deja charges).
+  -------------------------------------------------------------------------- }
+Procedure GenReturnString;
+Begin
+  GenReturn;
+End;
+
+{ --------------------------------------------------------------------------
+  GenReturnLabel : poser le label de sortie d'une methode.
+  A emettre juste avant GenFunctionEpilogue dans le code de la methode.
+  -------------------------------------------------------------------------- }
+Procedure GenReturnLabel(fi : Integer);
+Begin
+  If fi > 0 Then
+    EmitLabel(func_table^[fi].asm_label + '_ret');
+End;
+
+{ ============================================================================
+  TODO 15 - CODEGEN : ENTREES / SORTIES (Console.*)
+  ============================================================================
+  Helpers purement codegen : la valeur a afficher est deja dans AX (scalaire),
+  AX=ptr+DX=len (string) ou AL (char) a l'appel de chaque procedure.
+  ParseConsoleWrite (TODO 08) appelle ces helpers apres avoir evalue l'expr.
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenWriteInt : AX = entier signe -> convertir et ecrire.
+  Sequence : PUSH AX / CALL _RT_INT2STR / ADD SP,2 / MOV CX,DX /
+             MOV DX,AX / CALL _RT_WRITESTR
+  Convention _RT_INT2STR : param sur pile -> AX=ptr, DX=len.
+  Convention _RT_WRITESTR : DX=ptr, CX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteInt;
+Begin
+  EmitI1('PUSH', 'AX');
+  EmitI1('CALL', RT_PFX + 'INT2STR');
+  EmitI1('ADD',  'SP, 2');
+  EmitI('MOV', 'CX, DX',  'len de la chaine convertie');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteBool : AX = 0/1 -> afficher 'False' ou 'True'.
+  Convention _RT_BOOL2STR : param sur pile -> AX=ptr, DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteBool;
+Begin
+  EmitI1('PUSH', 'AX');
+  EmitI1('CALL', RT_PFX + 'BOOL2STR');
+  EmitI1('ADD',  'SP, 2');
+  EmitI('MOV', 'CX, DX', 'len de "True" ou "False"');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteChar : AL = code ASCII -> INT 21h fonction 02h.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteChar;
+Begin
+  EmitI1('MOV', 'DL, AL');
+  EmitI1('MOV', 'AH, 02h');
+  EmitI0('INT  21h');
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteString : AX=ptr, DX=len -> CALL _RT_WRITESTR.
+  Convention _RT_WRITESTR : DX=ptr, CX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteString;
+Begin
+  EmitI('MOV', 'CX, DX', 'len dans CX');
+  { AX=ptr -> DX=ptr }
+  EmitI1('MOV', 'DX, AX');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteCRLF : ecrire $0D $0A via _RT_WRITECRLF.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteCRLF;
+Begin
+  EmitI1('CALL', RT_PFX + 'WRITECRLF');
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteLnInt : ecrire entier + CRLF.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteLnInt;
+Begin
+  GenWriteInt;
+  GenWriteCRLF;
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteLnBool : ecrire bool + CRLF.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteLnBool;
+Begin
+  GenWriteBool;
+  GenWriteCRLF;
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteLnChar : ecrire char + CRLF.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteLnChar;
+Begin
+  GenWriteChar;
+  GenWriteCRLF;
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteLnString : ecrire string + CRLF.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteLnString;
+Begin
+  GenWriteString;
+  GenWriteCRLF;
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteByType : dispatcher selon le type value kind.
+  add_crlf = True -> Console.WriteLine, False -> Console.Write.
+  La valeur est deja dans AX (ou AL pour char, AX+DX pour string).
+  -------------------------------------------------------------------------- }
+Procedure GenWriteByType(vt : TValueKind; add_crlf : Boolean);
+Begin
+  Case vt Of
+    VK_INT    : GenWriteInt;
+    VK_BOOL   : GenWriteBool;
+    VK_CHAR   : GenWriteChar;
+    VK_STRING : GenWriteString;
+  Else
+    ParseError('GenWriteByType : type non supporté par Console.Write');
+  End;
+  If add_crlf Then GenWriteCRLF;
+End;
+
+{ --------------------------------------------------------------------------
+  GenReadLine : appeler _RT_READLINE.
+  Resultat : AX=ptr vers le buffer de saisie, DX=longueur effective.
+  Convention _RT_READLINE : lit dans _CS86_INBUF (INT 21h AH=0Ah),
+  supprime le CR final, retourne AX=ptr, DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenReadLine;
+Begin
+  EmitI1('CALL', RT_PFX + 'READLINE');
+  { AX=ptr, DX=len disponibles pour l'appelant }
+End;
+
+{ --------------------------------------------------------------------------
+  GenReadLineInt : lire une ligne et la convertir en entier.
+  ResultAt : AX = entier signe.
+  Sequence : CALL _RT_READLINE / PUSH DX / PUSH AX / CALL _RT_STR2INT /
+             ADD SP,4
+  Convention _RT_STR2INT : [SP] = ptr, [SP+2] = len -> AX = entier.
+  -------------------------------------------------------------------------- }
+Procedure GenReadLineInt;
+Begin
+  EmitI1('CALL', RT_PFX + 'READLINE');
+  EmitI('PUSH', 'DX', 'len sur pile pour _RT_STR2INT');
+  EmitI('PUSH', 'AX', 'ptr sur pile pour _RT_STR2INT');
+  EmitI1('CALL', RT_PFX + 'STR2INT');
+  EmitI1('ADD',  'SP, 4');
+  { AX = entier }
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteIntLit : ecrire un entier litteral constant (connu a la compile).
+  Charge la valeur dans AX puis appelle GenWriteInt.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteIntLit(val : Integer; add_crlf : Boolean);
+Begin
+  EmitI1('MOV', 'AX, ' + IntToStr(val));
+  GenWriteInt;
+  If add_crlf Then GenWriteCRLF;
+End;
+
+{ --------------------------------------------------------------------------
+  GenWriteStrLit : ecrire un litteral chaine indexe dans lit_table.
+  lit_idx = index dans lit_table (via FindLiteral / AddLiteral).
+  add_crlf = True -> ajouter CRLF.
+  -------------------------------------------------------------------------- }
+Procedure GenWriteStrLit(lit_idx : Integer; add_crlf : Boolean);
+Begin
+  EmitI('MOV', 'DX, OFFSET ' + LitDataLabel(lit_idx), 'ptr chaine');
+  EmitI('MOV', 'CX, ' + IntToStr(lit_table^[lit_idx].len), 'len chaine');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+  If add_crlf Then GenWriteCRLF;
+End;
+
+{ ============================================================================
+  TODO 16 - CODEGEN : GESTION DES CHAINES
+  ============================================================================
+  Modele de chaine : descripteur 2 DW [ ptr, len ] en DATA.
+  Convention registres : AX=ptr, DX=len apres chaque operation.
+  Conventions des routines runtime :
+    _RT_INT2STR  : [SP]=int16          -> AX=ptr, DX=len     (ADD SP,2)
+    _RT_STR2INT  : [SP]=ptr, [SP+2]=len -> AX=int16          (ADD SP,4)
+    _RT_STRCAT   : [SP]=ptr2,[SP+2]=len2,[SP+4]=ptr1,[SP+6]=len1
+                                        -> AX=ptr, DX=len    (ADD SP,8)
+    _RT_STRCMP   : SI=ptr1,CX=len1,DI=ptr2,BX=len2 -> ZF=egal, CF=lt
+    _RT_STRLEN   : SI=ptr,CX=len       -> CX=len (redondant mais fourni)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenStrLoadLit : charger le descripteur d'un litteral chaine dans AX+DX.
+  AX = ptr (offset du buffer), DX = longueur en octets.
+  -------------------------------------------------------------------------- }
+Procedure GenStrLoadLit(lit_idx : Integer);
+Begin
+  EmitI('MOV', 'AX, OFFSET ' + LitDataLabel(lit_idx), 'ptr litteral');
+  EmitI('MOV', 'DX, ' + IntToStr(lit_table^[lit_idx].len), 'len litteral');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrLoadVar : charger le descripteur string du symbole idx dans AX+DX.
+  Wrapper explicite sur GenLoadDescriptorToRegs pour la lisibilite.
+  -------------------------------------------------------------------------- }
+Procedure GenStrLoadVar(idx : Integer);
+Begin
+  GenLoadDescriptorToRegs(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrStoreVar : ecrire AX=ptr, DX=len dans le descripteur du symbole idx.
+  Wrapper explicite sur GenCopyDescriptorFromRegs.
+  -------------------------------------------------------------------------- }
+Procedure GenStrStoreVar(idx : Integer);
+Begin
+  GenCopyDescriptorFromRegs(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrAssignLit : affecter le litteral lit_idx a la variable sym_idx.
+  Charge le descripteur du litteral puis le stocke dans la variable.
+  -------------------------------------------------------------------------- }
+Procedure GenStrAssignLit(sym_idx, lit_idx : Integer);
+Begin
+  GenStrLoadLit(lit_idx);
+  GenStrStoreVar(sym_idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrLen : longueur de la chaine deja dans AX=ptr / DX=len.
+  La longueur est dans DX -> la copier dans AX pour usage scalaire.
+  (Si l'on veut appeler _RT_STRLEN : MOV SI,AX / MOV CX,DX / CALL ...)
+  -------------------------------------------------------------------------- }
+Procedure GenStrLen;
+Begin
+  EmitI('MOV', 'AX, DX', 'longueur chaine (DX=len) -> AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrLenVar : longueur du tableau/chaine du symbole idx -> AX.
+  Pour VK_STRING : charge DX depuis le descripteur.
+  Pour VK_ARRAY  : constante statique arr_size.
+  -------------------------------------------------------------------------- }
+Procedure GenStrLenVar(idx : Integer);
+Begin
+  If sym_table^[idx].vtype = VK_STRING Then
+  Begin
+    GenLoadDescriptorToRegs(idx);  { AX=ptr, DX=len }
+    EmitI('MOV', 'AX, DX', 'longueur -> AX');
+  End
+  Else
+    GenArrayLength(idx);           { constante arr_size -> AX }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrCat : concatenation de deux chaines.
+  Precondition : lhs deja dans AX=ptr1 / DX=len1 (sauvegardes sur pile
+  avant l'appel de ParseExpr pour rhs -> AX=ptr2 / DX=len2).
+  Appel complet (empiler les 4 parametres, appeler, nettoyer) :
+    PUSH len1 / PUSH ptr1 / PUSH len2 / PUSH ptr2
+    CALL _RT_STRCAT
+    ADD SP, 8
+  Resultat : AX=ptr concatene, DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenStrCat(ptr1_reg, len1_reg, ptr2_reg, len2_reg : TString);
+Begin
+  EmitI1('PUSH', len1_reg);
+  EmitI1('PUSH', ptr1_reg);
+  EmitI1('PUSH', len2_reg);
+  EmitI1('PUSH', ptr2_reg);
+  EmitI1('CALL', RT_PFX + 'STRCAT');
+  EmitI1('ADD',  'SP, 8');
+  { AX=ptr resultat, DX=len resultat }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrCatVars : concatener deux variables string.
+  Charge idx1 dans AX+DX, sauvegarde sur pile, charge idx2, appelle STRCAT.
+  -------------------------------------------------------------------------- }
+Procedure GenStrCatVars(idx1, idx2 : Integer);
+Begin
+  GenLoadDescriptorToRegs(idx1);   { AX=ptr1, DX=len1 }
+  EmitI1('PUSH', 'DX');            { PUSH len1 }
+  EmitI1('PUSH', 'AX');            { PUSH ptr1 }
+  GenLoadDescriptorToRegs(idx2);   { AX=ptr2, DX=len2 }
+  EmitI1('PUSH', 'DX');            { PUSH len2 }
+  EmitI1('PUSH', 'AX');            { PUSH ptr2 }
+  EmitI1('CALL', RT_PFX + 'STRCAT');
+  EmitI1('ADD',  'SP, 8');
+  { AX=ptr, DX=len }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrCmp : comparer deux chaines (AX=ptr1/DX=len1 et SI=ptr2/BX=len2).
+  Precondition : charger lhs dans AX+DX, puis rhs dans SI+BX.
+  Appelle _RT_STRCMP : SI=ptr1, CX=len1, DI=ptr2, BX=len2 -> ZF/CF.
+  Ici on adapte les registres avant l'appel.
+  -------------------------------------------------------------------------- }
+Procedure GenStrCmpRegs;
+Begin
+  { Precondition: AX=ptr1, DX=len1, SI=ptr2, BX=len2 }
+  EmitI('MOV', 'DI, SI', 'ptr2 -> DI');
+  EmitI('MOV', 'SI, AX', 'ptr1 -> SI');
+  EmitI('MOV', 'CX, DX', 'len1 -> CX');
+  { BX=len2 deja en place }
+  EmitI1('CALL', RT_PFX + 'STRCMP');
+  { ZF=1 si egales, CF=1 si lhs < rhs }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrCmpVars : comparer idx1 et idx2, laisser 1/0 dans AX.
+  Apres _RT_STRCMP : ZF=1 si egales.
+  -------------------------------------------------------------------------- }
+Procedure GenStrCmpVars(idx1, idx2 : Integer);
+Begin
+  GenLoadDescriptorToRegs(idx1);   { AX=ptr1, DX=len1 }
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'AX');
+  GenLoadDescriptorToRegs(idx2);   { AX=ptr2, DX=len2 }
+  EmitI('MOV', 'SI, AX', 'ptr2');
+  EmitI('MOV', 'BX, DX', 'len2');
+  EmitI1('POP',  'AX');            { ptr1 }
+  EmitI1('POP',  'DX');            { len1 }
+  GenStrCmpRegs;
+  { ZF reflete egalite }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrEqual : comparer deux strings (idx1 == idx2), resultat 0/1 dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenStrEqual(idx1, idx2 : Integer);
+Var lbl_t, lbl_f, lbl_e : TString;
+Begin
+  lbl_t := NewLabel;
+  lbl_f := NewLabel;
+  lbl_e := NewLabel;
+  GenStrCmpVars(idx1, idx2);
+  EmitI1('JZ',  lbl_t);
+  EmitLabel(lbl_f);
+  EmitI1('MOV', 'AX, 0');
+  EmitI1('JMP', lbl_e);
+  EmitLabel(lbl_t);
+  EmitI1('MOV', 'AX, 1');
+  EmitLabel(lbl_e);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrNotEqual : idx1 != idx2, resultat 0/1 dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenStrNotEqual(idx1, idx2 : Integer);
+Var lbl_t, lbl_f, lbl_e : TString;
+Begin
+  lbl_t := NewLabel;
+  lbl_f := NewLabel;
+  lbl_e := NewLabel;
+  GenStrCmpVars(idx1, idx2);
+  EmitI1('JNZ', lbl_t);
+  EmitLabel(lbl_f);
+  EmitI1('MOV', 'AX, 0');
+  EmitI1('JMP', lbl_e);
+  EmitLabel(lbl_t);
+  EmitI1('MOV', 'AX, 1');
+  EmitLabel(lbl_e);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStr2Int : convertir la chaine AX=ptr / DX=len en entier -> AX.
+  Convention _RT_STR2INT : PUSH len / PUSH ptr -> AX=entier / ADD SP,4.
+  -------------------------------------------------------------------------- }
+Procedure GenStr2Int;
+Begin
+  EmitI1('PUSH', 'DX');            { PUSH len }
+  EmitI1('PUSH', 'AX');            { PUSH ptr }
+  EmitI1('CALL', RT_PFX + 'STR2INT');
+  EmitI1('ADD',  'SP, 4');
+  { AX = entier signe }
+End;
+
+{ --------------------------------------------------------------------------
+  GenInt2Str : convertir l'entier AX en chaine -> AX=ptr / DX=len.
+  Convention _RT_INT2STR : PUSH AX -> AX=ptr, DX=len / ADD SP,2.
+  -------------------------------------------------------------------------- }
+Procedure GenInt2Str;
+Begin
+  EmitI1('PUSH', 'AX');
+  EmitI1('CALL', RT_PFX + 'INT2STR');
+  EmitI1('ADD',  'SP, 2');
+  { AX=ptr, DX=len }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrVarConcatLit : var_idx += litteral lit_idx.
+  Charge le var, concatene avec le litteral, stocke le resultat dans var.
+  -------------------------------------------------------------------------- }
+Procedure GenStrVarConcatLit(var_idx, lit_idx : Integer);
+Begin
+  GenLoadDescriptorToRegs(var_idx);  { AX=ptr1, DX=len1 }
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'AX');
+  GenStrLoadLit(lit_idx);            { AX=ptr2, DX=len2 }
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'AX');
+  EmitI1('CALL', RT_PFX + 'STRCAT');
+  EmitI1('ADD',  'SP, 8');
+  GenCopyDescriptorFromRegs(var_idx);{ stocker AX+DX dans var }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrVarConcatVar : var_dst = var_src1 + var_src2.
+  Charge src1, concatene avec src2, stocke dans dst.
+  -------------------------------------------------------------------------- }
+Procedure GenStrVarConcatVar(dst_idx, src1_idx, src2_idx : Integer);
+Begin
+  GenStrCatVars(src1_idx, src2_idx);  { AX=ptr, DX=len }
+  GenCopyDescriptorFromRegs(dst_idx);
+End;
+
+{ ============================================================================
+  TODO 17 - CODEGEN : TABLEAUX
+  ============================================================================
+  Les primitives de base GenAddrOf / GenLoadArrayElem / GenStoreArray /
+  GenBoundsCheck / GenArrayLength sont deja implantees au TODO 12.
+  Ce TODO ajoute :
+    - declarations DATA  (DUP(0) + DW de taille pour .Length)
+    - initialisation de tableaux locaux (REP STOSW)
+    - support char[] (elements stockes comme DB, mais accedes via BYTE PTR)
+    - orchestrateurs de haut niveau avec verification de bornes en option
+    - lecture de .Length depuis le DATA
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenArrayGlobalDecl : emettre dans le segment DATA la declaration d'un
+  tableau global de mots (int[], bool[]) :
+      _G_xxx     DW  N DUP(0)   ; N elements initialises a 0
+      _G_xxx_LEN DW  N           ; pour la propriete .Length
+  Appele depuis GenGlobalVarsData apres avoir ouvert le segment DATA.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayGlobalDecl(idx : Integer);
+Var n   : Integer;
+    lbl : TString;
+Begin
+  n   := sym_table^[idx].arr_size;
+  lbl := sym_table^[idx].asm_label;
+  If n <= 0 Then n := 1;
+  EmitDW(lbl, IntToStr(n) + ' DUP(0)');          { N DW 0 }
+  EmitDW(lbl + '_LEN', IntToStr(n));              { DW N (pour .Length) }
+End;
+
+{ --------------------------------------------------------------------------
+  GenCharArrayGlobalDecl : emettre dans le DATA un tableau de char (octet).
+      _G_xxx     DB  N DUP(0)
+      _G_xxx_LEN DW  N
+  Les elements sont des bytes ; l'acces se fait via BYTE PTR.
+  -------------------------------------------------------------------------- }
+Procedure GenCharArrayGlobalDecl(idx : Integer);
+Var n   : Integer;
+    lbl : TString;
+Begin
+  n   := sym_table^[idx].arr_size;
+  lbl := sym_table^[idx].asm_label;
+  If n <= 0 Then n := 1;
+  EmitDW(lbl + '_LEN', IntToStr(n));  { DW N }
+  EmitDB(lbl, IntToStr(n) + ' DUP(0)');  { N octets a 0 }
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayLocalInit : initialiser un tableau local a 0 au debut d'une
+  fonction (complement du prologue).
+  Utilise REP STOSW pour remplir les N mots a partir de [BP-ofs].
+  Precondition : ES=DS (modele SMALL), CX=N, DI pointe sur [BP-ofs].
+  -------------------------------------------------------------------------- }
+Procedure GenArrayLocalInit(idx : Integer);
+Var n   : Integer;
+    ref : TString;
+Begin
+  n   := sym_table^[idx].arr_size;
+  ref := VarBPRef(idx);
+  If n <= 0 Then Exit;
+  EmitI('MOV', 'CX, ' + IntToStr(n), 'nombre d''elements a initialiser');
+  EmitI1('LEA', 'DI, ' + ref);
+  EmitI1('XOR', 'AX, AX');
+  EmitI0('REP STOSW');           { remplir les N DW avec 0 }
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayLengthDW : lire la longueur du tableau depuis le DW _G_xxx_LEN
+  (global) ou depuis la constante statique arr_size (static).
+  Resultat dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayLengthDW(idx : Integer);
+Var lbl   : TString;
+    scope : TScope;
+Begin
+  scope := sym_table^[idx].scope;
+  lbl   := sym_table^[idx].asm_label;
+  If scope = SC_GLOBAL Then
+    EmitI1('MOV', 'AX, WORD PTR [' + lbl + '_LEN]')
+  Else
+    EmitI1('MOV', 'AX, ' + IntToStr(sym_table^[idx].arr_size));
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayReadWithCheck : lire arr[BX] dans AX avec verification de bornes.
+  si check=True -> GenBoundsCheck avant l'acces.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayReadWithCheck(idx : Integer; check : Boolean);
+Begin
+  If check Then GenBoundsCheck(idx);
+  GenLoadArrayElem(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayWriteWithCheck : stocker AX dans arr[BX] avec verification.
+  si check=True -> GenBoundsCheck avant l'acces.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayWriteWithCheck(idx : Integer; check : Boolean);
+Begin
+  If check Then GenBoundsCheck(idx);
+  GenStoreArray(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenCharArrayRead : lire arr[BX] depuis un tableau de char (DB).
+  Resultat dans AL (et AX zero-etendu).
+  -------------------------------------------------------------------------- }
+Procedure GenCharArrayRead(idx : Integer);
+Begin
+  GenAddrOf(idx);                  { SI = adresse base }
+  EmitI1('ADD', 'SI, BX');         { SI = base + index (pas de *2 : DB) }
+  EmitI1('XOR', 'AX, AX');
+  EmitI1('MOV', 'AL, BYTE PTR [SI]');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCharArrayWrite : stocker AL dans arr[BX] (tableau char DB).
+  Precondition : valeur char dans AL.
+  -------------------------------------------------------------------------- }
+Procedure GenCharArrayWrite(idx : Integer);
+Begin
+  EmitI1('PUSH', 'AX');
+  GenAddrOf(idx);                  { SI = adresse base }
+  EmitI1('ADD', 'SI, BX');
+  EmitI1('POP', 'AX');
+  EmitI1('MOV', 'BYTE PTR [SI], AL');
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayCopy : copier src_idx dans dst_idx (meme taille).
+  Utilise REP MOVSW. Precondition : tailles identiques.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayCopy(dst_idx, src_idx : Integer);
+Var n : Integer;
+Begin
+  n := sym_table^[dst_idx].arr_size;
+  If n <= 0 Then Exit;
+  GenAddrOf(src_idx);              { SI = source }
+  EmitI('PUSH', 'SI', 'sauver source');
+  GenAddrOf(dst_idx);              { SI = dest (on le mettra dans DI) }
+  EmitI1('MOV', 'DI, SI');
+  EmitI1('POP', 'SI');
+  EmitI1('MOV', 'CX, ' + IntToStr(n));
+  EmitI0('REP MOVSW');
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayFill : remplir arr avec la valeur imm (0 par defaut).
+  Utile pour : int[] a = new int[N] en local.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayFill(idx : Integer; imm : Integer);
+Var n   : Integer;
+    ref : TString;
+Begin
+  n   := sym_table^[idx].arr_size;
+  ref := VarBPRef(idx);
+  If n <= 0 Then Exit;
+  EmitI1('LEA', 'DI, ' + ref);
+  EmitI1('MOV', 'AX, ' + IntToStr(imm));
+  EmitI1('MOV', 'CX, ' + IntToStr(n));
+  EmitI0('REP STOSW');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCharArrayFromStrLit : copier un litteral string dans un char[].
+  Copie min(arr_size, lit_len) octets, puis remplit le reste avec 0.
+  -------------------------------------------------------------------------- }
+Procedure GenCharArrayFromStrLit(arr_idx, lit_idx : Integer);
+Var n   : Integer;
+    sz  : Integer;
+    ref : TString;
+Begin
+  n   := sym_table^[arr_idx].arr_size;
+  sz  := lit_table^[lit_idx].len;
+  ref := VarBPRef(arr_idx);
+  If n <= 0 Then Exit;
+  { copier les octets du litteral }
+  EmitI1('MOV', 'SI, OFFSET ' + LitDataLabel(lit_idx));
+  EmitI1('LEA', 'DI, ' + ref);
+  If sz < n Then
+    EmitI1('MOV', 'CX, ' + IntToStr(sz))
+  Else
+    EmitI1('MOV', 'CX, ' + IntToStr(n));
+  EmitI0('REP MOVSB');
+  { remplir le reste avec 0 si necessaire }
+  If sz < n Then
+  Begin
+    EmitI1('MOV', 'CX, ' + IntToStr(n - sz));
+    EmitI1('XOR', 'AL, AL');
+    EmitI0('REP STOSB');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayIndexExpr : evaluer une expression d'index (entre [...]) et
+  laisser le resultat dans BX (non multi, non verifie).
+  Consomme le ']' final.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayIndexExpr;
+Begin
+  ParseExpr;               { AX = valeur de l'index }
+  EmitI1('MOV', 'BX, AX');
+  LexExpect(']');
+End;
+
+{ ============================================================================
+  TODO 18 ... 25 : a implementer
   ============================================================================ }
 
 BEGIN
   InitTables;
   scope_level := 0;
+  ns_open     := False;
   WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 09-25 non implementes)');
+  WriteLn('(TODO 18-25 non implementes)');
   FreeTables;
 END.
