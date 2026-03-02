@@ -3210,21 +3210,62 @@ End;
 { Retourne via var lo et hi. Attend le token RANGE deja consomme ou
   directement les bornes (selon le contexte appelant).                        }
 
-Procedure ParseRangeBounds(Var lo, hi: LongInt);
+{ ParseRangeBoundsEx : resout les bornes entiere OU litteraux enumeres.
+  enum_ti > 0 : type enum de base dont on cherche les litteraux.
+  enum_ti = 0 : entiers uniquement (comportement original).               }
+Procedure ParseRangeBoundsEx(Var lo, hi: LongInt; enum_ti: Integer);
+Var lit_nm : String;
+    i      : Integer;
 Begin
- lo := cur_tok_num;
- If cur_tok_type = TOK_INTEGER Then Consume
+ { --- Borne inferieure --- }
+ If cur_tok_type = TOK_INTEGER Then
+ Begin lo := cur_tok_num; Consume; End
  Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_TRUE) Then
   Begin lo := 1; Consume; End
  Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_FALSE) Then
   Begin lo := 0; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) And (enum_ti > 0) And
+         (type_table^[enum_ti].kind = TK_ENUM) Then
+ Begin
+  lit_nm := UpCaseStr(cur_tok_str);
+  lo := -1;
+  For i := 1 To type_table^[enum_ti].enum_count Do
+   If type_table^[enum_ti].enum_names[i] = lit_nm Then
+   Begin lo := i - 1; Break; End;
+  If lo < 0 Then Begin ErrorTok('Litteral enumere inconnu : ' + lit_nm); lo := 0; End;
+  Consume;
+ End
  Else
  Begin ErrorTok('Borne inferieure entiere attendue'); lo := 0; Consume; End;
+
  Expect(TOK_DOTDOT, '`..` attendu dans contrainte RANGE');
- hi := cur_tok_num;
- If cur_tok_type = TOK_INTEGER Then Consume
+
+ { --- Borne superieure --- }
+ If cur_tok_type = TOK_INTEGER Then
+ Begin hi := cur_tok_num; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_TRUE) Then
+  Begin hi := 1; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_FALSE) Then
+  Begin hi := 0; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) And (enum_ti > 0) And
+         (type_table^[enum_ti].kind = TK_ENUM) Then
+ Begin
+  lit_nm := UpCaseStr(cur_tok_str);
+  hi := -1;
+  For i := 1 To type_table^[enum_ti].enum_count Do
+   If type_table^[enum_ti].enum_names[i] = lit_nm Then
+   Begin hi := i - 1; Break; End;
+  If hi < 0 Then Begin ErrorTok('Litteral enumere inconnu : ' + lit_nm); hi := lo; End;
+  Consume;
+ End
  Else
  Begin ErrorTok('Borne superieure entiere attendue'); hi := lo; Consume; End;
+End;
+
+{ Compatibilite : appelants sans base enum (entiers uniquement) }
+Procedure ParseRangeBounds(Var lo, hi: LongInt);
+Begin
+ ParseRangeBoundsEx(lo, hi, 0);
 End;
 
 { ---- ParseRangeType : RANGE lo .. hi ---- }
@@ -3459,7 +3500,7 @@ Begin
  If TokIsKw(KW_RANGE) Then
  Begin
   Consume; { RANGE }
-  ParseRangeBounds(lo, hi);
+  ParseRangeBoundsEx(lo, hi, base);   { support bornes entiere ET enum }
   idx := AddType(sname, TK_RANGE);
   type_table^[idx].base_type  := base;
   type_table^[idx].lo_bound   := lo;
@@ -4049,6 +4090,7 @@ Var frame_size  : Integer;
     param_bytes : Integer;
     lbl_exit    : String;
     lbl_except  : String;
+    lbl_body    : String;   { JMP over nested subprograms }
     has_except  : Boolean;
     sym_start   : Integer;
     end_name    : String;
@@ -4069,9 +4111,17 @@ Begin
  EmitI('PUSH BP');
  EmitI('MOV  BP, SP');
 
+ { Sauter au corps : les sous-programmes imbriques seront emis par
+   ParseDeclarativePart et ne doivent pas etre executes a l'entree }
+ lbl_body := NewLabel;
+ EmitI('JMP ' + lbl_body);
+
  { Parser les declarations (types, constantes, variables, sous-progs) }
  { Apres cet appel, bp_top contiendra l'espace local total }
  ParseDeclarativePart;
+
+ { Debut reel du corps : label de saut post nested-procs }
+ EmitLabel(lbl_body);
 
  { Maintenant on connait la taille de frame }
  frame_size := -scope_stack^[scope_top].bp_top;
