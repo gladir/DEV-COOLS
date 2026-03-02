@@ -5746,6 +5746,10 @@ Begin
  EmitComment('--- Runtime buffers (emis dans .DATA) ---');
  Emit('_NUMBUF    DB  7 DUP(0)  ; buffer conversion entier->chaine');
  Emit('_INPUTBUF  DB  128 DUP(0); buffer lecture DOS AH=0Ah');
+ { Chaine stub float : format Pascal len=7, "#FLOAT#", null }
+ Emit('_ADA_FLTMSG    DB  7, "#FLOAT#", 0  ; stub affichage Float');
+ { Chaine Constraint_Error : len=16, texte, null }
+ Emit('_ADA_RANGEMSG  DB  16, "Constraint_Error", 0  ; msg violation RANGE');
 End;
 
 { ------------- helpers ------------------------------------- }
@@ -5953,13 +5957,280 @@ Begin
  EmitI('CALL _RT_NEWLINE');
  EmitI('MOV  AX, 4C01h');
  EmitI('INT  21h');
+
+ { ==== TODO 23 : helpers publics _ADA_xxx ==== }
+ EmitBlank;
+ EmitComment('=== Helpers publics Ada (_ADA_xxx) ===');
+
+ { _ADA_CRLF }
+ EmitBlank;
+ EmitComment('_ADA_CRLF : emet CR+LF (alias _RT_NEWLINE)');
+ EmitLabel('_ADA_CRLF');
+ EmitI('CALL _RT_NEWLINE');
+ EmitI('RET');
+
+ { _ADA_PUT_STR }
+ EmitBlank;
+ EmitComment('_ADA_PUT_STR : AX=offset chaine Pascal -> affiche');
+ EmitLabel('_ADA_PUT_STR');
+ EmitI('CALL _RT_PUTS');
+ EmitI('RET');
+
+ { _ADA_PUT_CHAR }
+ EmitBlank;
+ EmitComment('_ADA_PUT_CHAR : AL=caractere ASCII -> affiche');
+ EmitLabel('_ADA_PUT_CHAR');
+ EmitI('CALL _RT_PUTCHAR');
+ EmitI('RET');
+
+ { _ADA_PUT_INT }
+ EmitBlank;
+ EmitComment('_ADA_PUT_INT : AX=entier signe 16b -> affiche decimal');
+ EmitLabel('_ADA_PUT_INT');
+ EmitI('CALL _RT_PUTI');
+ EmitI('RET');
+
+ { _ADA_PUT_FLOAT : stub }
+ EmitBlank;
+ EmitComment('_ADA_PUT_FLOAT : stub (affiche #FLOAT# en attendant FPU)');
+ EmitLabel('_ADA_PUT_FLOAT');
+ EmitI('PUSH AX');
+ EmitI('MOV  AX, OFFSET _ADA_FLTMSG');
+ EmitI('CALL _RT_PUTS');
+ EmitI('POP  AX');
+ EmitI('RET');
+
+ { _ADA_GET_INT }
+ EmitBlank;
+ EmitComment('_ADA_GET_INT : lit entier stdin -> AX');
+ EmitLabel('_ADA_GET_INT');
+ EmitI('CALL _RT_GETI');
+ EmitI('RET');
+
+ { _ADA_GET_STR }
+ EmitBlank;
+ EmitComment('_ADA_GET_STR : AX=dest Pascal string ; lit ligne stdin');
+ EmitLabel('_ADA_GET_STR');
+ EmitI('CALL _RT_GETS');
+ EmitI('RET');
+
+ { _ADA_STR_LEN }
+ EmitBlank;
+ EmitComment('_ADA_STR_LEN : AX=offset chaine Pascal -> AX=longueur');
+ EmitLabel('_ADA_STR_LEN');
+ EmitI('PUSH BX');
+ EmitI('MOV  BX, AX');
+ EmitI('XOR  AH, AH');
+ EmitI('MOV  AL, [BX]');
+ EmitI('POP  BX');
+ EmitI('RET');
+
+ { _ADA_STR_COPY }
+ EmitBlank;
+ EmitComment('_ADA_STR_COPY : AX=src, BX=dest ; copie Pascal string src vers dest');
+ EmitLabel('_ADA_STR_COPY');
+ EmitI('PUSH CX');
+ EmitI('PUSH SI');
+ EmitI('PUSH DI');
+ EmitI('MOV  SI, AX');
+ EmitI('MOV  DI, BX');
+ EmitI('XOR  CH, CH');
+ EmitI('MOV  CL, [SI]');
+ EmitI('MOV  [DI], CL');
+ EmitI('INC  SI');
+ EmitI('INC  DI');
+ EmitI('JCXZ _ADA_SCPY_END');
+ EmitLabel('_ADA_SCPY_LP');
+ EmitI('MOV  AL, [SI]');
+ EmitI('MOV  [DI], AL');
+ EmitI('INC  SI');
+ EmitI('INC  DI');
+ EmitI('LOOP _ADA_SCPY_LP');
+ EmitLabel('_ADA_SCPY_END');
+ EmitI('MOV  BYTE PTR [DI], 0');
+ EmitI('POP  DI');
+ EmitI('POP  SI');
+ EmitI('POP  CX');
+ EmitI('RET');
+
+ { _ADA_STR_CONCAT }
+ EmitBlank;
+ EmitComment('_ADA_STR_CONCAT : AX=dest, BX=src ; concatene src en fin de dest');
+ EmitLabel('_ADA_STR_CONCAT');
+ EmitI('PUSH BX');
+ EmitI('PUSH CX');
+ EmitI('PUSH DX');
+ EmitI('PUSH SI');
+ EmitI('PUSH DI');
+ EmitI('MOV  SI, BX');           { SI = src (stable) }
+ EmitI('MOV  BX, AX');           { BX = dest (stable tout au long) }
+ EmitI('XOR  CH, CH');
+ EmitI('MOV  CL, [SI]');         { CL = longueur src }
+ EmitI('JCXZ _ADA_SCAT_END');
+ EmitI('XOR  DH, DH');
+ EmitI('MOV  DL, [BX]');         { DL = longueur actuelle dest }
+ EmitI('ADD  DL, CL');           { DL = nouvelle longueur totale }
+ EmitI('XOR  AH, AH');
+ EmitI('MOV  AL, [BX]');         { AL = longueur actuelle dest }
+ EmitI('MOV  DI, BX');
+ EmitI('ADD  DI, AX');           { DI = fin du contenu dest }
+ EmitI('INC  DI');               { DI = premiere position libre }
+ EmitI('INC  SI');               { SI = premier char src }
+ EmitLabel('_ADA_SCAT_LP');
+ EmitI('MOV  AL, [SI]');
+ EmitI('MOV  [DI], AL');
+ EmitI('INC  SI');
+ EmitI('INC  DI');
+ EmitI('LOOP _ADA_SCAT_LP');
+ EmitI('MOV  BYTE PTR [DI], 0'); { null terminateur }
+ EmitI('MOV  [BX], DL');         { MAJ longueur dans dest[0] ; BX=dest stable }
+ EmitLabel('_ADA_SCAT_END');
+ EmitI('POP  DI');
+ EmitI('POP  SI');
+ EmitI('POP  DX');
+ EmitI('POP  CX');
+ EmitI('POP  BX');
+ EmitI('RET');
+
+ { _ADA_CHECK_RANGE }
+ EmitBlank;
+ EmitComment('_ADA_CHECK_RANGE : AX=valeur, BX=lo, CX=hi ; Constraint_Error si hors bornes');
+ EmitLabel('_ADA_CHECK_RANGE');
+ EmitI('CMP  AX, BX');
+ EmitI('JL   _ADA_CHK_ERR');
+ EmitI('CMP  AX, CX');
+ EmitI('JLE  _ADA_CHK_OK');
+ EmitLabel('_ADA_CHK_ERR');
+ EmitI('MOV  AX, OFFSET _ADA_RANGEMSG');
+ EmitI('JMP  _ADA_ERROR');
+ EmitLabel('_ADA_CHK_OK');
+ EmitI('RET');
+End;
+
+{ ============================================================= }
+{ TODO 23 — GenHeader / GenDataSegment / GenCodeSegmentHeader  }
+{           GenFooter / GenRuntimeHelpers etendu               }
+{ ============================================================= }
+
+{ Emet la declaration ASM d'une variable globale dans .DATA }
+Procedure GenVarDecl(i: Integer);
+Var lbl  : String;
+    ti   : Integer;
+    asiz : Integer;
+    csz  : Integer;
+Begin
+ lbl  := sym_table^[i].asm_label;
+ ti   := sym_table^[i].type_idx;
+ asiz := sym_table^[i].array_size;
+ If asiz < 1 Then asiz := 1;
+ If ti = TYPE_FLOAT Then
+ Begin
+  If asiz = 1 Then
+   Emit(lbl + '  DW 0, 0  ; Float 32 bits')
+  Else
+   Emit(lbl + '  DW ' + IntToStr(asiz * 2) + ' DUP(0)  ; Float[' + IntToStr(asiz) + ']');
+ End
+ Else If ti = TYPE_STR Then
+ Begin
+  csz := sym_table^[i].char_len + 1;
+  If asiz = 1 Then
+   Emit(lbl + '  DB ' + IntToStr(csz) + ' DUP(0)  ; String(' + IntToStr(sym_table^[i].char_len) + ')')
+  Else
+   Emit(lbl + '  DB ' + IntToStr(csz * asiz) + ' DUP(0)  ; String(' + IntToStr(sym_table^[i].char_len) + ')[' + IntToStr(asiz) + ']');
+ End
+ Else
+ Begin
+  If asiz = 1 Then
+   Emit(lbl + '  DW 0')
+  Else
+   Emit(lbl + '  DW ' + IntToStr(asiz) + ' DUP(0)');
+ End;
+End;
+
+{ Emet l'en-tete du fichier ASM : .MODEL / .STACK / .DATA }
+Procedure GenHeader;
+Begin
+ EmitComment('Generated by ADA86 v1.0 - Ada 83/95 -> 8086 MASM');
+ EmitBlank;
+ Emit('.MODEL SMALL');
+ Emit('.STACK 256');
+ EmitBlank;
+ Emit('.DATA');
+End;
+
+{ Emet le segment .DATA : variables globales + litteraux + buffers runtime }
+Procedure GenDataSegment;
+Var i : Integer;
+Begin
+ EmitBlank;
+ EmitComment('--- variables globales Ada ---');
+ For i := 1 to sym_count do
+ Begin
+  If sym_table^[i].store_class = STORE_STATIC Then
+  Begin
+   If sym_table^[i].is_const Then
+   Begin
+    { Constantes float seulement : besoin d''un emplacement .DATA }
+    If sym_table^[i].type_idx = TYPE_FLOAT Then
+     GenVarDecl(i);
+   End
+   Else
+    GenVarDecl(i);
+  End;
+ End;
+ EmitBlank;
+ { Chaine interne CR+LF (format Pascal : len=2, CR, LF, null) }
+ Emit('_ADA_CRLF_STR  DB  2, 0Dh, 0Ah, 0  ; CR+LF pour New_Line');
+ EmitBlank;
+ { Litteraux chaines Ada }
+ EmitStringLiterals;
+ EmitBlank;
+ { Buffers runtime : _NUMBUF, _INPUTBUF, _ADA_FLTMSG, _ADA_RANGEMSG }
+ GenRuntimeData;
+ EmitBlank;
+ Emit('.CODE');
+End;
+
+{ Emet le point d'entree START : initialise DS/ES, appelle proc principale, exit DOS }
+Procedure GenCodeSegmentHeader;
+Var main_label : String;
+Begin
+ EmitBlank;
+ EmitComment('=== Point d''entree du programme ===');
+ EmitLabel('START');
+ EmitI('MOV  AX, @DATA');
+ EmitI('MOV  DS, AX');
+ EmitI('MOV  ES, AX');
+ EmitBlank;
+ { Appel de la procedure principale Ada (programme = library unit) }
+ If prog_name <> '' Then
+  main_label := '_ADA_PROC_' + UpCaseStr(prog_name)
+ Else
+  main_label := '_ADA_PROC_MAIN';
+ EmitComment('Appel procedure principale Ada : ' + main_label);
+ EmitI('CALL ' + main_label);
+ EmitBlank;
+ EmitComment('Retour DOS - exit code 0');
+ EmitI('MOV  AX, 4C00h');
+ EmitI('INT  21h');
+End;
+
+{ Emet la derniere ligne du fichier ASM : END START }
+Procedure GenFooter;
+Begin
+ EmitBlank;
+ Emit('END START');
 End;
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 22 OK (Runtime helpers OK)');
-  WriteLn('  GenRuntimeData    : _NUMBUF (7B) + _INPUTBUF (128B) en .DATA');
-  WriteLn('  GenRuntimeHelpers : _RT_NEWLINE / _RT_PUTCHAR / _RT_PUTS');
-  WriteLn('                      _RT_PUTI / _RT_GETS / _RT_GETI');
-  WriteLn('                      _ADA_ERROR (PUT_STR + exit 1)');
-  WriteLn('  Appel via CALL depuis GenTextIO_Stubs (TODO 14)');
+  WriteLn('ADA86 V1.0 - TODO 23 OK (GenHeader / Segments / Footer OK)');
+  WriteLn('  GenVarDecl        : DB/DW/DD par type pour variables STORE_STATIC');
+  WriteLn('  GenHeader         : .MODEL SMALL / .STACK 256 / .DATA');
+  WriteLn('  GenDataSegment    : variables globales + _ADA_CRLF_STR + litteraux + buffers + .CODE');
+  WriteLn('  GenCodeSegmentHeader: START: / MOV DS,AX / CALL _ADA_PROC_xxx / exit 4C00h');
+  WriteLn('  GenFooter         : END START');
+  WriteLn('  GenRuntimeHelpers+: _ADA_CRLF / _ADA_PUT_STR / _ADA_PUT_CHAR / _ADA_PUT_INT');
+  WriteLn('                      _ADA_PUT_FLOAT(stub) / _ADA_GET_INT / _ADA_GET_STR');
+  WriteLn('                      _ADA_STR_LEN / _ADA_STR_COPY / _ADA_STR_CONCAT');
+  WriteLn('                      _ADA_CHECK_RANGE (Constraint_Error) / _ADA_ERROR');
 End.

@@ -355,51 +355,42 @@ Begin
   temp := temp + current_char;
   NextChar;
  End;
-
  Val(temp, current_value, code);
- If code <> 0 Then
- Begin
+ If code <> 0 Then Begin
   Error('Nombre invalide: ' + temp);
   current_value := 0;
  End;
-
  current_token := temp;
  current_symbol := SYM_UNKNOWN;
 End;
 
-{ Obtenir le prochain token }
-Procedure NextToken;
-Begin
+{ Obtenir le prochain jeton }
+Procedure NextToken;Begin
  SkipWhitespace;
-
  If current_char = #0 Then
  Begin
   current_token := '';
   current_symbol := SYM_UNKNOWN;
   Exit;
  End;
-
- { Cha√Æne de caract√®res }
- If current_char = '''' Then
- Begin
+ { Chaåne de caractäres }
+ If current_char = '''' Then Begin
   current_token := '';
   current_symbol := SYM_STRING_LITERAL;
   NextChar; { Ignorer le premier guillemet }
-
   While current_char <> #0 do
   Begin
    If current_char = '''' Then
    Begin
     NextChar; { Consommer l'apostrophe }
-    If current_char = '''' Then
-    Begin
-     { Double apostrophe = apostrophe litt√©rale dans la cha√Æne }
+    If current_char = '''' Then Begin
+     { Double apostrophe = apostrophe littÇrale dans la chaåne }
      current_token := current_token + '''';
      NextChar;
     End
     Else
     Begin
-     { Apostrophe simple = fin de cha√Æne (current_char est d√©j√† le suivant) }
+     { Apostrophe simple = fin de cha√Æne (current_char est dÇjÖ le suivant) }
      Break;
     End;
    End
@@ -409,9 +400,9 @@ Begin
     NextChar;
    End;
   End;
-  { Pas de NextChar suppl√©mentaire : la fin de cha√Æne est d√©j√† consomm√©e ci-dessus }
+  { Pas de NextChar supplÇmentaire : la fin de chaåne est dÇjÖ consommÇe ci-dessus }
  End
- { Op√©rateur d'affectation := }
+ { OpÇrateur d'affectation := }
  Else If current_char = ':' Then
  Begin
   NextChar;
@@ -427,7 +418,7 @@ Begin
    current_symbol := SYM_UNKNOWN;
   End;
  End
- { Op√©rateurs de comparaison }
+ { OpÇrateurs de comparaison }
  Else If current_char = '<' Then
  Begin
   NextChar;
@@ -495,7 +486,7 @@ Begin
   current_symbol := SYM_DIVIDE;
   NextChar;
  End
- { Identifier ou mot-cl√© }
+ { Identifier ou mot-clef }
  Else If ((current_char >= 'A') and (current_char <= 'Z')) or
     ((current_char >= 'a') and (current_char <= 'z')) or
     (current_char = '_') Then
@@ -503,7 +494,7 @@ Begin
  { Nombre }
  Else If (current_char >= '0') and (current_char <= '9') Then
   ReadNumber
- { Caract√®res sp√©ciaux }
+ { Caractäres spÇciaux }
  Else If current_char = '.' Then
  Begin
   current_token := '.';
@@ -537,23 +528,20 @@ Begin
  FindSymbol := 0;
 End;
 
-{ Ajouter un symbole √† la table }
+{ Ajouter un symbole Ö la table }
 Function AddSymbol(name: String; sym_type, data_type, storage: Integer): Integer;
 Var
  upper_name: String;
 Begin
- If symbol_count >= MAX_SYMBOLS Then
- Begin
+ If symbol_count >= MAX_SYMBOLS Then Begin
   Error('Table des symboles pleine');
   AddSymbol := 0;
   Exit;
  End;
-
  upper_name := UpperCase(name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;  { Utiliser la version en majuscules }
   symbol_type := sym_type;
   data_type := data_type;
@@ -567,29 +555,25 @@ Begin
   field_count := 0;
   is_forward := False;
  End;
-
  AddSymbol := symbol_count;
 End;
 
-{ Ajouter une fonction √† la table des symboles }
+{ Ajouter une fonction Ö la table des symboles }
 Function AddFunction(name: String; return_type: Integer): Integer;
 Var
  upper_name: String;
- rt: Integer; { Copie locale du param√®tre return_type (√©vite le masquage par le champ With) }
+ rt: Integer; { Copie locale du paramätre return_type (Çvite le masquage par le champ With) }
 Begin
- If symbol_count >= MAX_SYMBOLS Then
- Begin
+ If symbol_count >= MAX_SYMBOLS Then Begin
   Error('Table des symboles pleine');
   AddFunction := 0;
   Exit;
  End;
-
  upper_name := UpperCase(name);
  rt := return_type; { Sauvegarder avant le bloc With }
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;
   symbol_type := SYM_FUNCTION;
   data_type := rt;
@@ -603,95 +587,83 @@ Begin
   field_count := 0;
   is_forward := False;
  End;
-
  AddFunction := symbol_count;
 End;
 
-{ Ajouter une proc√©dure √† la table des symboles }
+{ Ajouter une procÇdure Ö la table des symboles }
 Function AddProcedure(name: String): Integer;
 Var
  upper_name: String;
 Begin
- If symbol_count >= MAX_SYMBOLS Then
- Begin
+ If symbol_count >= MAX_SYMBOLS Then Begin
   Error('Table des symboles pleine');
   AddProcedure := 0;
   Exit;
  End;
-
  upper_name := UpperCase(name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;
   symbol_type := SYM_PROCEDURE;
-  data_type := TYPE_INTEGER; { Pas utilis√© pour les proc√©dures }
+  data_type := TYPE_INTEGER; { Pas utilisÇ pour les procÇdures }
   storage_class := STORAGE_GLOBAL;
   offset := 0;
   value := 0;
   defined := True;
-  return_type := TYPE_INTEGER; { Pas utilis√© }
-  is_function := False; { Proc√©dure, pas fonction }
+  return_type := TYPE_INTEGER; { Pas utilisÇ }
+  is_function := False; { ProcÇdure, pas fonction }
   record_size := 0;
   field_count := 0;
   is_forward := False;
  End;
-
  AddProcedure := symbol_count;
 End;
 
-{ Ajouter une proc√©dure d'interruption √† la table des symboles }
+{ Ajouter une procÇdure d'interruption Ö la table des symboles }
 Function AddInterrupt(name: String): Integer;
 Var
  upper_name: String;
 Begin
- If symbol_count >= MAX_SYMBOLS Then
- Begin
+ If symbol_count >= MAX_SYMBOLS Then Begin
   Error('Table des symboles pleine');
   AddInterrupt := 0;
   Exit;
  End;
-
  upper_name := UpperCase(name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;
   symbol_type := SYM_INTERRUPT;
-  data_type := TYPE_INTEGER; { Pas utilis√© pour les interruptions }
+  data_type := TYPE_INTEGER; { Pas utilisÇ pour les interruptions }
   storage_class := STORAGE_GLOBAL;
   offset := 0;
   value := 0;
   defined := True;
-  return_type := TYPE_INTEGER; { Pas utilis√© }
-  is_function := False; { Proc√©dure d'interruption, pas fonction }
+  return_type := TYPE_INTEGER; { Pas utilisÇ }
+  is_function := False; { ProcÇdure d'interruption, pas fonction }
   record_size := 0;
   field_count := 0;
   is_forward := False;
  End;
-
  AddInterrupt := symbol_count;
 End;
 
-{ Ajouter un type RECORD √† la table des symboles }
+{ Ajouter un type RECORD Ö la table des symboles }
 Function AddRecord(name: String; size: Integer): Integer;
 Var
  upper_name: String;
 Begin
- If symbol_count >= MAX_SYMBOLS Then
- Begin
+ If symbol_count >= MAX_SYMBOLS Then Begin
   Error('Table des symboles pleine');
   AddRecord := 0;
   Exit;
  End;
-
  upper_name := UpperCase(name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;
   symbol_type := SYM_TYPE;
   data_type := TYPE_RECORD;
@@ -704,11 +676,10 @@ Begin
   record_size := size;
   field_count := 0;
  End;
-
  AddRecord := symbol_count;
 End;
 
-{ Ajouter un champ de RECORD √† la table des symboles }
+ { Ajouter un champ de RECORD Ö la table des symboles }
 Function AddRecordField(field_name: String; field_type: Integer; record_index: Integer; field_offset: Integer): Integer;
 Var
  upper_name: String;
@@ -719,16 +690,14 @@ Begin
   AddRecordField := 0;
   Exit;
  End;
-
  upper_name := UpperCase(field_name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;
-  symbol_type := SYM_VAR; { Les champs sont trait√©s comme des variables }
+  symbol_type := SYM_VAR; { Les champs sont traitÇs comme des variables }
   data_type := field_type;
-  storage_class := STORAGE_PARAMETER; { Utilis√© pour indiquer que c'est un champ }
+  storage_class := STORAGE_PARAMETER; { UtilisÇ pour indiquer que c'est un champ }
   offset := field_offset;
   value := record_index; { Index du record parent }
   defined := True;
@@ -737,15 +706,13 @@ Begin
   record_size := 0;
   field_count := 0;
  End;
-
- { Incr√©menter le nombre de champs du record parent }
+  { IncrÇmenter le nombre de champs du record parent }
  If (record_index > 0) and (record_index <= symbol_count) Then
   Inc(symbol_table[record_index]^.field_count);
-
  AddRecordField := symbol_count;
 End;
 
-{ Ajouter un type alias √† la table des symboles }
+ { Ajouter un type alias Ö la table des symboles }
 Function AddTypeAlias(type_name: String; base_type: Integer): Integer;
 Var
  upper_name: String;
@@ -756,12 +723,10 @@ Begin
   AddTypeAlias := 0;
   Exit;
  End;
-
  upper_name := UpperCase(type_name);
  Inc(symbol_count);
  New(symbol_table[symbol_count]);
- With symbol_table[symbol_count]^ do
- Begin
+ With symbol_table[symbol_count]^ do Begin
   name := upper_name;
   symbol_type := SYM_TYPE;
   data_type := base_type;
@@ -774,63 +739,54 @@ Begin
   record_size := 0;
   field_count := 0;
  End;
-
  AddTypeAlias := symbol_count;
 End;
 
 { ============================================================================ }
-{ G√âN√âRATION DE CODE ASSEMBLEUR 8086                                          }
+{ GêNêRATION DE CODE ASSEMBLEUR 8086                                           }
 { ============================================================================ }
 
-{ √âcrire une ligne dans le fichier de sortie }
-Procedure EmitLine(line: String);
-Begin
+{ êcrire une ligne dans le fichier de sortie }
+Procedure EmitLine(line: String);Begin
  WriteLn(output_file, line);
 End;
 
-{ G√©n√©rer une instruction assembleur }
-Procedure Emit(instruction: String);
-Begin
+{ GÇnÇrer une instruction assembleur }
+Procedure Emit(instruction: String);Begin
  EmitLine('    ' + instruction);
 End;
 
-{ G√©n√©rer une √©tiquette }
-Procedure EmitLabel(label_name: String);
-Begin
+{ GÇnÇrer une Çtiquette }
+Procedure EmitLabel(label_name: String);Begin
  EmitLine(label_name + ':');
 End;
 
-{ G√©n√©rer un commentaire }
+{ GÇnÇrer un commentaire }
 Procedure EmitComment(comment: String);
 Begin
  EmitLine('; ' + comment);
 End;
 
-{ G√©n√©rer l'en-t√™te du programme }
+{ GÇnÇrer l'entàte du programme }
 Procedure GenerateHeader;
 Var
  year, month, day, dayofweek: Word;
  hour, minute, second, sec100: Word;
  date_str, time_str, temp: String;
 Begin
- EmitComment('Compil√© par PC8086 - Compilateur Pascal vers 8086');
-
- { Obtenir la date syst√®me }
+ EmitComment('CompilÇ par PC8086 - Compilateur Pascal vers 8086');
+  { Obtenir la date systäme }
  GetDate(year, month, day, dayofweek);
-
- { Construire la cha√Æne de date manuellement }
+  { Construire la chaåne de date manuellement }
  Str(year, temp);
  date_str := temp + '-';
-
  If month < 10 Then date_str := date_str + '0';
  Str(month, temp);
  date_str := date_str + temp + '-';
-
  If day < 10 Then date_str := date_str + '0';
  Str(day, temp);
  date_str := date_str + temp;
-
- { Obtenir l'heure syst√®me }
+  { Obtenir l'heure systäme }
  GetTime(hour, minute, second, sec100);
 
  { Construire la cha√Æne d'heure }
