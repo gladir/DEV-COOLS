@@ -2965,15 +2965,132 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 09 - ParseWithUse : WITH et USE                                         }
+{ ============================================================================ }
+
+{ ---- Liste des packages standard reconnus (comparaison en majuscules) ---- }
+
+Function IsStandardPackage(Const u: String): Boolean;
+Begin
+ IsStandardPackage :=
+   (u = 'ADA.TEXT_IO')                        Or
+   (u = 'ADA.INTEGER_TEXT_IO')                Or
+   (u = 'ADA.FLOAT_TEXT_IO')                  Or
+   (u = 'ADA.NUMERICS')                       Or
+   (u = 'ADA.NUMERICS.ELEMENTARY_FUNCTIONS')  Or
+   (u = 'SYSTEM')                             Or
+   (u = 'TEXT_IO');    { ancien style TP-Ada }
+End;
+
+{ ---- ParsePackageName : lire un nom compose Ada.xxx.yyy ----
+  Le lexeur produit : IDENT (DOT IDENT)* car le point est TOK_DOT.
+  On reconnecte les segments en majuscules avec des points.                   }
+
+Function ParsePackageName: String;
+Var res : String;
+Begin
+ If cur_tok_type <> TOK_IDENT Then
+ Begin
+  ErrorTok('Nom de package attendu');
+  ParsePackageName := '';
+  Exit;
+ End;
+ res := UpCaseStr(cur_tok_str);
+ Consume;
+ { Tant qu'on voit '.', on continue a lire des segments }
+ While cur_tok_type = TOK_DOT do
+ Begin
+  Consume; { consomme '.' }
+  If cur_tok_type <> TOK_IDENT Then
+  Begin
+   ErrorTok('Identifiant attendu apres `.` dans nom de package');
+   Break;
+  End;
+  res := res + '.' + UpCaseStr(cur_tok_str);
+  Consume;
+ End;
+ ParsePackageName := res;
+End;
+
+{ ---- ParseWith : WITH pkg1 [, pkg2 ...] ; ---- }
+{ Enregistre chaque package dans pkg_table.
+  Les packages standards reçoivent is_standard=True.
+  Les autres : avertissement + enregistrement avec is_standard=False.         }
+
+Procedure ParseWith;
+Var nm  : String;
+    idx : Integer;
+Begin
+ Consume; { consomme WITH }
+ Repeat
+  nm := ParsePackageName;
+  If nm = '' Then Break;
+  If IsStandardPackage(nm) Then
+   idx := AddPkg(nm, True)
+  Else
+  Begin
+   Warning('Package non supporte, importe mais ignore a la generation : ' + nm);
+   idx := AddPkg(nm, False);
+  End;
+  If cur_tok_type = TOK_COMMA Then Consume
+  Else Break;
+ Until False;
+ Expect(TOK_SEMI, '`;` attendu en fin de clause WITH');
+End;
+
+{ ---- ParseUse : USE pkg1 [, pkg2 ...] ; ---- }
+{ Active use_active pour chaque package.
+  Si un package est USE sans WITH prealable, il est ajoute automatiquement.  }
+
+Procedure ParseUse;
+Var nm  : String;
+    idx : Integer;
+Begin
+ Consume; { consomme USE }
+ Repeat
+  nm := ParsePackageName;
+  If nm = '' Then Break;
+  idx := FindPkg(nm);
+  If idx = 0 Then
+  Begin
+   { USE sans WITH prealable : importer silencieusement si standard }
+   If IsStandardPackage(nm) Then
+    idx := AddPkg(nm, True)
+   Else
+   Begin
+    Warning('USE sur package non importe via WITH : ' + nm);
+    idx := AddPkg(nm, False);
+   End;
+  End;
+  If idx > 0 Then
+   pkg_table^[idx].use_active := True;
+  If cur_tok_type = TOK_COMMA Then Consume
+  Else Break;
+ Until False;
+ Expect(TOK_SEMI, '`;` attendu en fin de clause USE');
+End;
+
+{ ---- ParseWithUseSection : lit la section WITH/USE en tete d'unite ----
+  A appeler au debut de Compile (TODO 24), avant le corps PROCEDURE/PACKAGE. }
+
+Procedure ParseWithUseSection;
+Begin
+ While (cur_tok_type = TOK_IDENT) And
+       ((cur_tok_kw = KW_WITH) Or (cur_tok_kw = KW_USE)) do
+ Begin
+  If cur_tok_kw = KW_WITH Then ParseWith
+  Else ParseUse;
+ End;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 08 OK (parseur expressions OK)');
-  WriteLn('  GenBinaryOp (+ - * / MOD REM &)');
-  WriteLn('  GenRelOp (= /= < <= > >=)');
-  WriteLn('  ParsePrimary, ParseFactor (** ABS)');
-  WriteLn('  ParseTerm, ParseSimple, ParseRelation');
-  WriteLn('  ParseNot, ParseAnd, ParseOr');
-  WriteLn('  ParseAndThen, ParseOrElse, ParseExpr');
+  WriteLn('ADA86 V1.0 - TODO 09 OK (WITH / USE OK)');
+  WriteLn('  IsStandardPackage (ADA.TEXT_IO, ADA.NUMERICS, SYSTEM...)');
+  WriteLn('  ParsePackageName (noms composes Ada.xxx.yyy)');
+  WriteLn('  ParseWith, ParseUse');
+  WriteLn('  ParseWithUseSection');
 End.

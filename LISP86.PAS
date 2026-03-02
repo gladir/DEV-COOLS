@@ -2125,27 +2125,6 @@ End;
 { PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION                                  }
 { ============================================================================ }
 
-Procedure ShowHelp;Begin
- WriteLn('LISP86 - Cette commande permet de lancer le compilateur LISP pour de l''assembleur du ',
-                   'microprocesseur 8086/8088.');
- WriteLn;
- WriteLn('Syntaxe : LISP86 source.lsp [sortie.asm] [options]');
- WriteLn;
- WriteLn('Options:');
- WriteLn('  /T    Afficher tokens seulement');
- WriteLn('  /A    Afficher AST seulement');
- WriteLn('  /V    Mode verbeux');
- WriteLn;
- WriteLn('Formes speciales supportees:');
- WriteLn('  DEFUN IF COND SETQ PROGN LET LET* QUOTE AND OR NOT WHEN UNLESS');
- WriteLn;
- WriteLn('Primitives supportees:');
- WriteLn('  + - * /  = < > <= >=  /=  EQ EQUAL');
- WriteLn('  CAR CDR CONS LIST ATOM NULL NOT');
- WriteLn('  PRINT WRITE READ TERPRI LENGTH APPEND');
- Halt(0);
-End;
-
 { ---- Variables locales du bloc principal ---- }
 Var
  i_cmd : Integer;
@@ -2154,6 +2133,27 @@ Var
  top_expr: TLispVal;
 
 BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('LISP86 - Cette commande permet de lancer le compilateur LISP pour de l''assembleur du ',
+                    'microprocesseur 8086/8088.');
+  WriteLn;
+  WriteLn('Syntaxe : LISP86 source.lsp [sortie.asm] [options]');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  /T    Afficher tokens seulement');
+  WriteLn('  /A    Afficher AST seulement');
+  WriteLn('  /V    Mode verbeux');
+  WriteLn;
+  WriteLn('Formes speciales supportees:');
+  WriteLn('  DEFUN IF COND SETQ PROGN LET LET* QUOTE AND OR NOT WHEN UNLESS');
+  WriteLn;
+  WriteLn('Primitives supportees:');
+  WriteLn('  + - * /  = < > <= >=  /=  EQ EQUAL');
+  WriteLn('  CAR CDR CONS LIST ATOM NULL NOT');
+  WriteLn('  PRINT WRITE READ TERPRI LENGTH APPEND');
+  Halt(0);
+ End;
  { ---- Initialisation ---- }
  error_count    := 0;
  label_counter  := 0;
@@ -2181,7 +2181,6 @@ BEGIN
     'T': opt_dump_tok := True;
     'A': opt_dump_ast := True;
     'V': opt_verbose  := True;
-    'H','?': ShowHelp;
    End;
   End Else If source_filename = '' Then
    source_filename := arg_s
@@ -2189,7 +2188,10 @@ BEGIN
    output_filename := arg_s;
  End;
 
- If source_filename = '' Then ShowHelp;
+ If source_filename = '' Then Begin
+  WriteLn('Fichier source requis !');
+  Halt(1);
+ End;
 
  { ---- Nom de sortie par defaut ---- }
  If output_filename = '' Then
