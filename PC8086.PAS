@@ -2213,30 +2213,25 @@ Begin
   { Si aucun cas n'a de correspondance, aller au ELSE }
  Emit('jmp ' + else_label);
   { GÇrer ELSE ou OTHERWISE }
- If Accept(SYM_ELSE) or Accept(SYM_OTHERWISE) Then
- Begin
+ If Accept(SYM_ELSE) or Accept(SYM_OTHERWISE) Then Begin
   NextToken; { Consommer ELSE/OTHERWISE }
   EmitLabel(else_label);
   ParseStatement;
-
-  { Point-virgule optionnel apr√®s ELSE }
-  If current_token = ';' Then
-   NextToken;
+   { Point-virgule optionnel apräs ELSE }
+  If current_token = ';' Then NextToken;
  End
- Else
+  Else
  Begin
-  { Pas d'ELSE - juste une √©tiquette vide }
+   { Pas d'ELSE - juste une Çtiquette vide }
   EmitLabel(else_label);
  End;
-
- { Attendre END }
+  { Attendre END }
  Expect(SYM_END, 'Attendu END pour fermer CASE');
-
- { √âtiquette de fin }
+  { êtiquette de fin }
  EmitLabel(end_label);
 End;
 
-{ Parser une instruction }
+ { Analyser une instruction }
 Procedure ParseStatement;
 Var
  sym_idx: Integer;
@@ -2246,78 +2241,58 @@ Begin
   SYM_BEGIN:
    Begin
     NextToken; { Consommer BEGIN }
-
-    While not Accept(SYM_END) and (current_char <> #0) do
-    Begin
+    While not Accept(SYM_END) and (current_char <> #0) do Begin
      If current_symbol <> SYM_UNKNOWN Then
       ParseStatement
      Else
-      { Laisser ParseStatement g√©rer les tokens SYM_UNKNOWN pour les labels et affectations }
+      { Laisser ParseStatement gÇrer les tokens SYM_UNKNOWN pour les labels et affectations }
       ParseStatement;
-
-     { G√©rer les point-virgules optionnels }
-     If current_token = ';' Then
-      NextToken;
+     { GÇrer les point-virgules optionnels }
+     If current_token = ';' Then NextToken;
     End;
-
     If Accept(SYM_END) Then
      NextToken { Consommer END }
     Else
      Error('Attendu END');
    End;
-
   SYM_IF:
    ParseIf;
-
   SYM_WHILE:
    ParseWhile;
-
   SYM_FOR:
    ParseFor;
-
   SYM_CASE:
    ParseCase;
-
   SYM_REPEAT:
    ParseRepeat;
-
   SYM_WRITE:
    ParseWrite;
-
   SYM_WRITELN:
    ParseWriteln;
-
   SYM_GOTO:
    ParseGoto;
-
   SYM_READ:
    Begin
-    { READ: consomme les param√®tres, g√©n√®re lecture DOS 21h }
+    { READ: consomme les paramätres, gÇnäre lecture DOS 21h }
     NextToken; { Consommer READ }
-    If current_token = '(' Then
-    Begin
+    If current_token = '(' Then Begin
      NextToken; { Consommer ( }
-     While (current_token <> ')') and (current_char <> #0) do
-      NextToken;
+     While (current_token <> ')') and (current_char <> #0) do NextToken;
      If current_token = ')' Then NextToken;
     End;
    End;
-
   SYM_READLN:
    Begin
-    { READLN: consomme les param√®tres, g√©n√®re lecture avec retour chariot }
+    { READLN: consomme les paramätres, gÇnäre lecture avec retour chariot }
     NextToken; { Consommer READLN }
-    If current_token = '(' Then
-    Begin
+    If current_token = '(' Then Begin
      NextToken; { Consommer ( }
-     { Ignorer tous les param√®tres }
-     While (current_token <> ')') and (current_char <> #0) do
-      NextToken;
+      { Ignorer tous les paramätres }
+     While (current_token <> ')') and (current_char <> #0) do NextToken;
      If current_token = ')' Then NextToken;
     End;
-    { G√©n√®re un CRLF minimal (lecture ignor√©e c√¥t√© 8086) }
+    { GÇnäre un CRLF minimal (lecture ignorÇe cìtÇ 8086) }
    End;
-
   SYM_HALT:
    Begin
     NextToken; { Consommer HALT }
@@ -2333,94 +2308,76 @@ Begin
     Emit('mov ax, 4C00h');
     Emit('int 21h');
    End;
-
   SYM_UNKNOWN:
    Begin
-    If current_token <> '' Then
-    Begin
-     { V√©rifier d'abord si c'est un appel de proc√©dure }
+    If current_token <> '' Then Begin
+     { VÇrifier d'abord si c'est un appel de procÇdure }
      sym_idx := FindSymbol(current_token);
-     If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_PROCEDURE) Then
-     Begin
-      { Appel de proc√©dure }
-      EmitComment('Appel proc√©dure: ' + current_token);
-      NextToken; { Consommer le nom de la proc√©dure }
+     If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_PROCEDURE) Then Begin
+      { Appel de procÇdure }
+      EmitComment('Appel procÇdure: ' + current_token);
+      NextToken; { Consommer le nom de la procÇdure }
 
-      { G√©rer les param√®tres (pour l'instant, on ignore) }
-      If current_token = '(' Then
-      Begin
+      { GÇrer les paramätres (pour l'instant, on ignore) }
+      If current_token = '(' Then Begin
        NextToken;
        While (current_token <> ')') and (current_char <> #0) do
         NextToken;
        If current_token = ')' Then
         NextToken;
       End;
-
-      { G√©n√©rer l'appel }
+       { GÇnÇrer l'appel }
       Emit('call ' + symbol_table[sym_idx]^.name);
      End
-     Else If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_INTERRUPT) Then
-     Begin
+      Else
+     If (sym_idx > 0) and (symbol_table[sym_idx]^.symbol_type = SYM_INTERRUPT) Then Begin
       { Appel d'interruption }
       EmitComment('Appel interruption: ' + current_token);
       NextToken; { Consommer le nom de l'interruption }
-
-      { G√©rer les param√®tres (pour l'instant, on ignore) }
-      If current_token = '(' Then
-      Begin
+       { GÇrer les paramätres (pour l'instant, on ignore) }
+      If current_token = '(' Then Begin
        NextToken;
-       While (current_token <> ')') and (current_char <> #0) do
-        NextToken;
-       If current_token = ')' Then
-        NextToken;
+       While (current_token <> ')') and (current_char <> #0) do NextToken;
+       If current_token = ')' Then NextToken;
       End;
-
-      { G√©n√©rer l'appel }
+       { GÇnÇrer l'appel }
       Emit('call ' + symbol_table[sym_idx]^.name);
      End
-     { Peut-√™tre une affectation }
-     Else If sym_idx > 0 Then
-     Begin
-      ParseAssignment(current_token); { ParseAssignment g√©rera NextToken }
+      { Peut-àtre une affectation }
+      Else
+     If sym_idx > 0 Then Begin
+      ParseAssignment(current_token); { ParseAssignment gÇrera NextToken }
      End
-     { V√©rifier si c'est une √©tiquette suivie de ':' }
-     Else If current_token <> '' Then
-     Begin
-      { DEBUG: Information sur le token courant }
+     { VÇrifier si c'est une Çtiquette suivie de ':' }
+      Else
+     If current_token <> '' Then Begin
+       { DEBUG: Information sur le token courant }
       EmitComment('DEBUG: Token = [' + current_token + ']');
-
-      { Sauvegarder le nom potentiel de l'√©tiquette }
+      { Sauvegarder le nom potentiel de l'Çtiquette }
       label_name := current_token;
-      NextToken; { Lire le token suivant }
-
-      { DEBUG: Information sur le token suivant }
+      NextToken; { Lire le jeton suivant }
+      { DEBUG: Information sur le jeton suivant }
       EmitComment('DEBUG: Token suivant = [' + current_token + ']');
-
-      { Si le token suivant est ':', c'est une d√©finition d'√©tiquette }
-      If current_token = ':' Then
-      Begin
-       { C'est une d√©finition d'√©tiquette }
-       EmitComment('√âtiquette d√©finie: ' + label_name);
+       { Si le jeton suivant est ':', c'est une dÇfinition d'Çtiquette }
+      If current_token = ':' Then Begin
+       { C'est une dÇfinition d'Çtiquette }
+       EmitComment('êtiquette dÇfinie: ' + label_name);
        EmitLabel(UpperCase(label_name) + '_LABEL');
-
-       { Marquer l'√©tiquette comme d√©finie dans la table }
+        { Marquer l'Çtiquette comme dÇfinie dans la table }
        sym_idx := FindLabel(UpperCase(label_name));
-       If sym_idx > 0 Then
-        label_table[sym_idx]^.defined := True;
-
+       If sym_idx > 0 Then label_table[sym_idx]^.defined := True;
        NextToken; { Consommer ':' }
       End;
-      { Si ce n'est pas ':', on a d√©j√† consomm√© le token, continuer }
+      { Si ce n'est pas ':', on a dÇjÖ consommÇ le jeton, continuer }
      End
-     Else
-      NextToken;
-    End
-    Else
+      Else
      NextToken;
+    End
+     Else
+    NextToken;
    End;
-
-  Else
-   NextToken; { Ignorer les autres tokens }
+    Else
+   NextToken; { Ignorer les autres jetons }
  End;
 End;
 

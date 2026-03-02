@@ -4738,6 +4738,352 @@ Begin
   GenRtArrayOobErr;
 End;
 
+{ ============================================================================
+  TODO 15 - PARSER : STRUCTURE D'UNE INSTRUCTION SNOBOL
+  ============================================================================
+
+  Format d'une ligne source SNOBOL 4 :
+
+      [label]  subject  [pattern]  [=replacement]  [:goto]
+
+  Regles :
+    - Label   : commence en colonne 1 (pas d'espace initial) ; vide si ' '
+    - Subject : premier token apres le label (separateur = espace/tab)
+    - Pattern : tokens entre le sujet et le premier '=' ou ':' ou fin de ligne
+    - Replacement : tokens apres '=' jusqu'au premier ':' ou fin de ligne
+    - Goto    : section commencant par ':' ; peut contenir :S(..) :F(..) :(..);
+                deja analysee par LexExtractGotos (TODO 05)
+
+  Variables globales remplies :
+      inst_label   - etiquette (vide si absente)
+      inst_subject - sujet (vide si ligne vide ou commentaire)
+      inst_pattern - patron brut (vide si absent)
+      inst_has_eq  - True si remplacement present
+      inst_repl    - remplacement brut
+      inst_goto_s  - label succes (ou '')
+      inst_goto_f  - label echec (ou '')
+      inst_goto_u  - label inconditionnel (ou '')
+
+  Distinctions importantes :
+      inst_subject = ''  et inst_pattern = ''  => instruction vide / commentaire
+      inst_subject <> '' et inst_pattern = ''  et not inst_has_eq
+                                               => acces simple (test d'existence)
+      inst_subject <> '' et inst_has_eq        => affectation
+      inst_subject <> '' et inst_pattern <> '' => matching (avec eventuel remplacement)
+
+  Acces indexes :
+      Subject de la forme   VAR<expr>    -> tableau
+      Subject de la forme   VAR[expr]    -> reservee v2 (traite comme scalaire en v1)
+
+  Procedures exportees :
+      ParseInstruction : appelle dans l'ordre LexExtractLabel, ParseSubjectField,
+                         ParsePatternField, ParseReplField, ParseGotoField.
+      HasSubjectArrayAccess(s) : True si s contient '<'...'>'
+      ParseArraySubscript(s, base, subscript) : decomposer VAR<expr>
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  SkipWS : avancer lex_pos au-dela des espaces et tabulations.
+  -------------------------------------------------------------------------- }
+Procedure SkipWS;
+Begin
+  While (lex_pos <= Length(lex_line)) And
+        (lex_line[lex_pos] In [' ', #9]) Do
+    Inc(lex_pos);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseSubjectField : lire le champ sujet depuis la position courante.
+  Remplit inst_subject.
+  Le sujet se termine au premier espace/tab, '=', ':', fin de ligne.
+  Cas speciaux traites :
+    - guillemets ''...'' : lire jusqu'au guillemet fermant.
+    - '<' referme avec '>' sans tenir compte des espaces internes.
+  -------------------------------------------------------------------------- }
+Procedure ParseSubjectField;
+Var s     : TString;
+    c     : Char;
+    depth : Integer;
+Begin
+  inst_subject := '';
+  SkipWS;
+  If lex_pos > Length(lex_line) Then Exit;
+  s := '';
+  While lex_pos <= Length(lex_line) Do
+  Begin
+    c := lex_line[lex_pos];
+    { Fin du sujet sur espace libre, '=', ':', mais pas dans '<>' }
+    If c In [' ', #9, '=', ':'] Then Break;
+    If c = '''' Then
+    Begin
+      { Chaine litterale comme sujet (cas rare mais legal) }
+      Inc(lex_pos);
+      s := s + '''';
+      While lex_pos <= Length(lex_line) Do
+      Begin
+        c := lex_line[lex_pos];
+        Inc(lex_pos);
+        s := s + c;
+        If c = '''' Then
+        Begin
+          { Double quote = quote literale }
+          If (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = '''') Then
+          Begin
+            s := s + '''';
+            Inc(lex_pos);
+          End
+          Else Break;
+        End;
+      End;
+    End
+    Else If c = '<' Then
+    Begin
+      { Subscript de tableau : inclure tout jusqu'au '>' correspondant }
+      depth := 1;
+      s := s + c;
+      Inc(lex_pos);
+      While (lex_pos <= Length(lex_line)) And (depth > 0) Do
+      Begin
+        c := lex_line[lex_pos];
+        s := s + c;
+        Inc(lex_pos);
+        If c = '<' Then Inc(depth)
+        Else If c = '>' Then Dec(depth);
+      End;
+    End
+    Else
+    Begin
+      s := s + c;
+      Inc(lex_pos);
+    End;
+  End;
+  inst_subject := s;
+End;
+
+{ --------------------------------------------------------------------------
+  ParsePatternField : lire le champ patron.
+  Remplit inst_pattern (chaine brute, trimee).
+  S'arrete au premier '=' en dehors des guillemets/parentheses, ou ':'.
+  -------------------------------------------------------------------------- }
+Procedure ParsePatternField;
+Var s : TString;
+    c : Char;
+    depth : Integer;
+Begin
+  inst_pattern := '';
+  SkipWS;
+  If lex_pos > Length(lex_line) Then Exit;
+  { Si le char courant est deja '=' ou ':' -> pas de patron }
+  If lex_line[lex_pos] In ['=', ':'] Then Exit;
+  s     := '';
+  depth := 0;
+  While lex_pos <= Length(lex_line) Do
+  Begin
+    c := lex_line[lex_pos];
+    { '=' hors parentheses/guillemets = fin du patron }
+    If (c = '=') And (depth = 0) Then Break;
+    If (c = ':') And (depth = 0) Then Break;
+    If c = '(' Then
+    Begin
+      Inc(depth);
+      s := s + c;
+      Inc(lex_pos);
+    End
+    Else If c = ')' Then
+    Begin
+      If depth > 0 Then Dec(depth);
+      s := s + c;
+      Inc(lex_pos);
+    End
+    Else If c = '''' Then
+    Begin
+      { Lire chaine litterale }
+      s := s + c;
+      Inc(lex_pos);
+      While lex_pos <= Length(lex_line) Do
+      Begin
+        c := lex_line[lex_pos];
+        s := s + c;
+        Inc(lex_pos);
+        If c = '''' Then
+        Begin
+          If (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = '''') Then
+          Begin
+            s := s + '''';
+            Inc(lex_pos);
+          End
+          Else Break;
+        End;
+      End;
+    End
+    Else
+    Begin
+      s := s + c;
+      Inc(lex_pos);
+    End;
+  End;
+  { Supprimer les espaces en fin }
+  While (Length(s) > 0) And (s[Length(s)] In [' ', #9]) Do
+    Delete(s, Length(s), 1);
+  inst_pattern := s;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseReplField : lire le champ remplacement (apres '=').
+  Remplit inst_has_eq et inst_repl.
+  -------------------------------------------------------------------------- }
+Procedure ParseReplField;
+Var s : TString;
+    c : Char;
+    depth : Integer;
+Begin
+  inst_has_eq := False;
+  inst_repl   := '';
+  SkipWS;
+  If lex_pos > Length(lex_line) Then Exit;
+  If lex_line[lex_pos] <> '=' Then Exit;
+  inst_has_eq := True;
+  Inc(lex_pos);   { sauter le '=' }
+  SkipWS;
+  s     := '';
+  depth := 0;
+  While lex_pos <= Length(lex_line) Do
+  Begin
+    c := lex_line[lex_pos];
+    If (c = ':') And (depth = 0) Then Break;
+    If c = '(' Then
+    Begin
+      Inc(depth);
+      s := s + c;
+      Inc(lex_pos);
+    End
+    Else If c = ')' Then
+    Begin
+      If depth > 0 Then Dec(depth);
+      s := s + c;
+      Inc(lex_pos);
+    End
+    Else If c = '''' Then
+    Begin
+      s := s + c;
+      Inc(lex_pos);
+      While lex_pos <= Length(lex_line) Do
+      Begin
+        c := lex_line[lex_pos];
+        s := s + c;
+        Inc(lex_pos);
+        If c = '''' Then
+        Begin
+          If (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = '''') Then
+          Begin
+            s := s + '''';
+            Inc(lex_pos);
+          End
+          Else Break;
+        End;
+      End;
+    End
+    Else
+    Begin
+      s := s + c;
+      Inc(lex_pos);
+    End;
+  End;
+  { Trim final }
+  While (Length(s) > 0) And (s[Length(s)] In [' ', #9]) Do
+    Delete(s, Length(s), 1);
+  inst_repl := s;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseGotoField : lire la section goto (:S(..) :F(..) :(..) etc.)
+  Remplit inst_goto_s, inst_goto_f, inst_goto_u en appelant LexExtractGotos.
+  -------------------------------------------------------------------------- }
+Procedure ParseGotoField;
+Begin
+  inst_goto_s := '';
+  inst_goto_f := '';
+  inst_goto_u := '';
+  SkipWS;
+  If lex_pos > Length(lex_line) Then Exit;
+  If lex_line[lex_pos] <> ':' Then Exit;
+  { LexExtractGotos travaille sur lex_line a partir de lex_pos }
+  LexExtractGotos;
+End;
+
+{ --------------------------------------------------------------------------
+  HasSubjectArrayAccess : True si le sujet contient une notation '<...>'.
+  -------------------------------------------------------------------------- }
+Function HasSubjectArrayAccess(Const s : TString) : Boolean;
+Var i : Integer;
+Begin
+  Result := False;
+  For i := 1 To Length(s) Do
+    If s[i] = '<' Then Begin Result := True; Exit; End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseArraySubscript : decomposer 'VAR<expr>' en base et subscript.
+  Si aucun '<' trouve, base=s, subscript=''.
+  -------------------------------------------------------------------------- }
+Procedure ParseArraySubscript(Const s : TString; Var base, subscript : TString);
+Var i, depth : Integer;
+Begin
+  base      := '';
+  subscript := '';
+  i := 1;
+  While i <= Length(s) Do
+  Begin
+    If s[i] = '<' Then
+    Begin
+      { base = tout ce qui precede le '<' }
+      base := Copy(s, 1, i - 1);
+      { subscript = contenu entre '<' et '>' correspondant }
+      Inc(i);
+      depth := 1;
+      While (i <= Length(s)) And (depth > 0) Do
+      Begin
+        If s[i] = '<' Then Inc(depth)
+        Else If s[i] = '>' Then Dec(depth);
+        If depth > 0 Then subscript := subscript + s[i];
+        Inc(i);
+      End;
+      Exit;
+    End;
+    Inc(i);
+  End;
+  { Pas de '<' -> scalaire }
+  base := s;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseInstruction : analyser la ligne source courante.
+  Prereq : lex_line contient la ligne (deja lue par LexReadLine, TODO 05).
+  Remplit tous les champs inst_*.
+  -------------------------------------------------------------------------- }
+Procedure ParseInstruction;
+Begin
+  { Reinitialiser les champs }
+  inst_label   := '';
+  inst_subject := '';
+  inst_pattern := '';
+  inst_has_eq  := False;
+  inst_repl    := '';
+  inst_goto_s  := '';
+  inst_goto_f  := '';
+  inst_goto_u  := '';
+  { 1. Extraire le label eventuel (colonne 1) }
+  LexExtractLabel;
+  { 2. Sujet }
+  ParseSubjectField;
+  { 3. Patron eventuellement present }
+  ParsePatternField;
+  { 4. Remplacement (si '=' rencontre) }
+  ParseReplField;
+  { 5. Section goto }
+  ParseGotoField;
+End;
+
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
   sym_table   := Nil;
