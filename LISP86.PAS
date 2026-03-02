@@ -1373,14 +1373,17 @@ End;
 { ============================================================================ }
 
 Procedure GenCompare(op: Integer; args: TLispVal);
-Var lbl_false, lbl_end: String; a1, a2: TLispVal;
+Var
+ lbl_false, lbl_end: String; a1, a2: TLispVal;
 Begin
- { TODO 18 : Generer =, <, >, <=, >= }
+ { Generer =, <, >, <=, >= }
  lbl_false := NewLabel + 'CF';
  lbl_end   := NewLabel + 'CE';
  EmitComment('---- COMPARE ' + ItoSI(op) + ' ----');
- If IsNilVal(args) Or IsNilVal(CdrOf(args)) Then
- Begin Emit('        MOV     AX, ' + ItoSI(LVAL_T)); Exit; End;
+ If IsNilVal(args) Or IsNilVal(CdrOf(args)) Then Begin
+  Emit('        MOV     AX, ' + ItoSI(LVAL_T));
+  Exit;
+ End;
  a1 := CarOf(args); a2 := CarOf(CdrOf(args));
  GenExpr(a1);
  Emit('        AND     AX, 1FFFh');
@@ -1407,9 +1410,10 @@ Begin
 End;
 
 Procedure GenEq(a1, a2: TLispVal);
-Var lbl_false, lbl_end: String;
+Var
+ lbl_false, lbl_end: String;
 Begin
- { TODO 18 : EQ = identite de pointeur }
+ { EQ = identite de pointeur }
  lbl_false := NewLabel + 'EQF';
  lbl_end   := NewLabel + 'EQE';
  GenExpr(a1); Emit('        PUSH    AX');
@@ -1424,12 +1428,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 19 - GENERATION : OPERATIONS SUR LES LISTES       [COMPLET]            }
+{ GENERATION : OPERATIONS SUR LES LISTES                                       }
 { ============================================================================ }
 
-Procedure GenCar(arg: TLispVal);
-Begin
- { TODO 19 : Generer CAR }
+Procedure GenCar(arg: TLispVal);Begin
+ { Generer CAR }
  EmitComment('CAR');
  GenExpr(arg);
  Emit('        AND     AX, 1FFFh    ; extraire index cons');
@@ -1438,9 +1441,8 @@ Begin
  Emit('        MOV     AX, [_HEAP_CAR + SI]');
 End;
 
-Procedure GenCdr(arg: TLispVal);
-Begin
- { TODO 19 : Generer CDR }
+Procedure GenCdr(arg: TLispVal);Begin
+ { Generer CDR }
  EmitComment('CDR');
  GenExpr(arg);
  Emit('        AND     AX, 1FFFh');
@@ -1449,9 +1451,8 @@ Begin
  Emit('        MOV     AX, [_HEAP_CDR + SI]');
 End;
 
-Procedure GenCons(car_e, cdr_e: TLispVal);
-Begin
- { TODO 19 : Generer CONS }
+Procedure GenCons(car_e, cdr_e: TLispVal);Begin
+ { Generer CONS }
  EmitComment('CONS');
  GenExpr(cdr_e); Emit('        PUSH    AX');
  GenExpr(car_e); Emit('        PUSH    AX');
@@ -1460,9 +1461,10 @@ Begin
 End;
 
 Procedure GenNull(arg: TLispVal);
-Var lbl_f, lbl_e: String;
+Var
+ lbl_f, lbl_e: String;
 Begin
- { TODO 19 : Generer NULL -> T si NIL }
+ { Generer NULL -> T si NIL }
  lbl_f := NewLabel + 'NF'; lbl_e := NewLabel + 'NE';
  EmitComment('NULL');
  GenExpr(arg);
@@ -1476,9 +1478,10 @@ Begin
 End;
 
 Procedure GenAtom(arg: TLispVal);
-Var lbl_f, lbl_e: String;
+Var
+ lbl_f, lbl_e: String;
 Begin
- { TODO 19 : ATOM -> NIL ssi CONS }
+ { ATOM -> NIL ssi CONS }
  lbl_f := NewLabel + 'ATF'; lbl_e := NewLabel + 'ATE';
  EmitComment('ATOM');
  GenExpr(arg);
@@ -1494,7 +1497,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 20 - GENERATION : PRINT / READ / TERPRI           [COMPLET]            }
+{ GENERATION : PRINT / READ / TERPRI                                           }
 { ============================================================================ }
 
 Procedure GenPrint(arg: TLispVal);

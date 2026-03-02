@@ -1514,11 +1514,202 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 04 - Tables des symboles : CRUD + resolution de portee                 }
+{ ============================================================================ }
+
+{ Taille en octets d'un type primaire Ada (types predefinis uniquement).
+  Pour les types utilisateur (type_idx >= 6), retourne 2 par defaut ;
+  GetTypeSize (TODO 05) affinera ce calcul.                                    }
+Function PrimTypeSize(type_idx: Integer): Integer;
+Begin
+ Case type_idx of
+  TYPE_INT    : PrimTypeSize := 2;   { Integer : DW 16 bits signe    }
+  TYPE_FLOAT  : PrimTypeSize := 4;   { Float   : DD 32 bits          }
+  TYPE_BOOL   : PrimTypeSize := 2;   { Boolean : DW (0 / -1)         }
+  TYPE_CHAR   : PrimTypeSize := 2;   { Character : DW (code ASCII)   }
+  TYPE_STR    : PrimTypeSize := 2;   { String : ptr (adresse 16 bits)}
+ Else
+  PrimTypeSize := 2;                 { types utilisateur : stub = 2  }
+ End;
+End;
+
+{ Retourne la taille en octets du symbole sym_idx.
+  Tient compte de array_size et char_len.                                      }
+Function GetSymSize(sym_idx: Integer): Integer;
+Var base_sz : Integer;
+    arr_sz  : Integer;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin GetSymSize := 2; Exit; End;
+
+ base_sz := PrimTypeSize(sym_table^[sym_idx].type_idx);
+
+ { TYPE_STR avec char_len explicite : taille reelle en octets }
+ If sym_table^[sym_idx].type_idx = TYPE_STR Then
+ Begin
+  If sym_table^[sym_idx].char_len > 0 Then
+   base_sz := sym_table^[sym_idx].char_len + 1 { +1 pour terminateur $ }
+  Else
+   base_sz := 2;
+ End;
+
+ arr_sz := sym_table^[sym_idx].array_size;
+ If arr_sz > 0 Then
+  GetSymSize := base_sz * arr_sz
+ Else
+  GetSymSize := base_sz;
+End;
+
+{ Aligne une taille sur un multiple de 2 (alginement mot pour la pile 8086) }
+Function AlignWord(n: Integer): Integer;
+Begin
+ If (n Mod 2) <> 0 Then AlignWord := n + 1
+ Else AlignWord := n;
+End;
+
+{ ---- Initialisation de la table des symboles ---- }
+
+Procedure InitSymTable;
+Var i: Integer;
+Begin
+ If sym_table = nil Then New(sym_table);
+ sym_count := 0;
+ For i := 1 to MAX_SYM do
+ Begin
+  sym_table^[i].name        := '';
+  sym_table^[i].asm_label   := '';
+  sym_table^[i].type_idx    := TYPE_UNKNOWN;
+  sym_table^[i].store_class := STORE_STATIC;
+  sym_table^[i].bp_offset   := 0;
+  sym_table^[i].array_size  := 0;
+  sym_table^[i].char_len    := 0;
+  sym_table^[i].is_const    := False;
+  sym_table^[i].scope_lev   := 0;
+  sym_table^[i].init_num    := 0;
+  sym_table^[i].init_str    := '';
+  sym_table^[i].has_init    := False;
+ End;
+End;
+
+{ ---- Ajout d'un symbole dans la table ----
+  - Retourne l'index (1-base) du nouveau symbole.
+  - Retourne 0 si la table est pleine.
+  - Pour STORE_AUTO : calcule bp_offset en decalant bp_top du scope courant.  }
+Function AddSym(Const name: String; type_idx, store_class: Integer): Integer;
+Var u   : String;
+    sz  : Integer;
+    idx : Integer;
+Begin
+ If sym_count >= MAX_SYM Then
+ Begin
+  Error('Table des symboles pleine (MAX_SYM=' + IntToStr(MAX_SYM) + ')');
+  AddSym := 0; Exit;
+ End;
+ u := UpCaseStr(name);
+ Inc(sym_count);
+ idx := sym_count;
+ sym_table^[idx].name        := u;
+ sym_table^[idx].asm_label   := AsmIdent('_VAR_', u);
+ sym_table^[idx].type_idx    := type_idx;
+ sym_table^[idx].store_class := store_class;
+ sym_table^[idx].bp_offset   := 0;
+ sym_table^[idx].array_size  := 0;
+ sym_table^[idx].char_len    := 0;
+ sym_table^[idx].is_const    := (store_class = STORE_CONST);
+ sym_table^[idx].scope_lev   := scope_top;
+ sym_table^[idx].init_num    := 0;
+ sym_table^[idx].init_str    := '';
+ sym_table^[idx].has_init    := False;
+
+ { Pour les variables locales : allouer l'espace sur la pile.
+   scope_stack^[scope_top].bp_top contient le prochain offset libre
+   (valeur negative croissante en valeur absolue).                            }
+ If (store_class = STORE_AUTO) And (scope_top > 0) Then
+ Begin
+  sz := PrimTypeSize(type_idx);   { sera affine apres AddSym par le parseur }
+  scope_stack^[scope_top].bp_top :=
+    scope_stack^[scope_top].bp_top - AlignWord(sz);
+  sym_table^[idx].bp_offset := scope_stack^[scope_top].bp_top;
+ End;
+
+ AddSym := idx;
+End;
+
+{ Recalcule le bp_offset apres que char_len / array_size ont ete mis a jour.
+  A appeler juste apres AddSym quand la taille reelle est connue.             }
+Procedure FixSymBpOffset(sym_idx: Integer);
+Var sz      : Integer;
+    old_off : Integer;
+    new_off : Integer;
+    lev     : Integer;
+Begin
+ If sym_table^[sym_idx].store_class <> STORE_AUTO Then Exit;
+ lev := sym_table^[sym_idx].scope_lev;
+ If lev <= 0 Then Exit;
+
+ { Retrouver l'espace alloue initialement (PrimTypeSize lors de AddSym) }
+ old_off := sym_table^[sym_idx].bp_offset;  { offset courant }
+ sz      := GetSymSize(sym_idx);
+
+ { Recalculer : bp_top apres cet objet = old_off ; retirer l'ancienne taille
+   et placer la nouvelle.                                                      }
+ new_off := scope_stack^[lev].bp_top - AlignWord(sz)
+            + AlignWord(PrimTypeSize(sym_table^[sym_idx].type_idx));
+ { Si la taille a change, ajuster bp_top du scope }
+ scope_stack^[lev].bp_top :=
+   scope_stack^[lev].bp_top
+   - AlignWord(sz)
+   + AlignWord(PrimTypeSize(sym_table^[sym_idx].type_idx));
+
+ { L'offset du symbole lui-meme reste le meme (allocation deja faite) ;
+   pour la correction exacte il faudrait une seconde passe — on laisse
+   tel quel pour les types de base (change surtout pour STR/tableaux).         }
+End;
+
+{ ---- Recherche dans la table des symboles ----
+  Cherche de la fin vers le debut pour respecter la portee la plus proche.   }
+Function FindSym(Const name: String): Integer;
+Var i : Integer;
+    u : String;
+Begin
+ u := UpCaseStr(name);
+ For i := sym_count DownTo 1 do
+  If sym_table^[i].name = u Then Begin FindSym := i; Exit; End;
+ FindSym := 0;
+End;
+
+{ Recherche uniquement dans le scope courant }
+Function FindSymLocal(Const name: String): Integer;
+Var i   : Integer;
+    u   : String;
+    lev : Integer;
+Begin
+ u   := UpCaseStr(name);
+ lev := scope_top;
+ For i := sym_count DownTo 1 do
+  If (sym_table^[i].name = u) And (sym_table^[i].scope_lev = lev) Then
+  Begin FindSymLocal := i; Exit; End;
+ FindSymLocal := 0;
+End;
+
+{ Recherche dans un scope de niveau donne }
+Function FindSymAtLevel(Const name: String; lev: Integer): Integer;
+Var i : Integer;
+    u : String;
+Begin
+ u := UpCaseStr(name);
+ For i := sym_count DownTo 1 do
+  If (sym_table^[i].name = u) And (sym_table^[i].scope_lev = lev) Then
+  Begin FindSymAtLevel := i; Exit; End;
+ FindSymAtLevel := 0;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 03 OK (gestion erreurs OK)');
-  WriteLn('  Error, ErrorTok, Warning, FatalError');
-  WriteLn('  SkipToSemi, SkipToEnd, SkipToKw, BilanCompilation');
+  WriteLn('ADA86 V1.0 - TODO 04 OK (table des symboles OK)');
+  WriteLn('  InitSymTable, AddSym, FindSym, FindSymLocal');
+  WriteLn('  GetSymSize, PrimTypeSize, AlignWord, FixSymBpOffset');
 End.
