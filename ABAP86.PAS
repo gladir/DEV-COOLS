@@ -3329,7 +3329,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ ANALYSEUR : LOOP AT / APPEND / READ / SORT / DELETE [COMPLET]       }
+{ ANALYSEUR : LOOP AT / APPEND / READ / SORT / DELETE                          }
 { ============================================================================ }
 
 { Consomme une clause WHERE ... jusqu'au point (skip les tokens)              }
@@ -3652,11 +3652,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 17 - PARSEUR : CONCATENATE / SPLIT / SHIFT / REPLACE /                 }
-{           TRANSLATE / CONDENSE / FIND                  [COMPLET]             }
+{ ANALYSEUR : CONCATENATE / SPLIT / SHIFT / REPLACE /                          }
+{             TRANSLATE / CONDENSE / FIND                                      }
 { ============================================================================ }
 
-{ Helper : charger une valeur de chaine (variable ou literal) -> AX = adresse }
+{ Assistant : charger une valeur de chaine (variable ou literal) -> AX = adresse }
 Procedure LoadStrArg;
 Var lbl : String;
     si  : Integer;
@@ -3984,7 +3984,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 18 - GENERATION : EN-TETE + SEGMENT .DATA         [COMPLET]            }
+{ GENERATION : EN-TETE + SEGMENT .DATA                                         }
 { ============================================================================ }
 
 { Helper : echappe une chaine pour directive DB MASM.
@@ -4174,7 +4174,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 19 - GENERATION : POINT D'ENTREE + HELPERS RUNTIME [COMPLET]           }
+{ GENERATION : POINT D'ENTREE + HELPERS RUNTIME                                }
 { ============================================================================ }
 
 { Genere le point d'entree du programme dans le segment .CODE.
@@ -4547,7 +4547,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 20 - PARSEUR : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE [COMPLET] }
+{ ANALYSEUR  : CLEAR / REFRESH / FREE / CHECK / EXIT / CONTINUE                }
 { ============================================================================ }
 
 { Parse CLEAR variable.
@@ -4698,7 +4698,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - PARSEUR : SELECT / ENDSELECT (stub sans BD reelle) [COMPLET]      }
+{ ANALYSEUR : SELECT / ENDSELECT (stub sans BD reelle)                         }
 { ============================================================================ }
 
 { Parse SELECT [SINGLE] champs/* FROM table
@@ -4863,7 +4863,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION [COMPLET]        }
+{ ANALYSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION                           }
 { ============================================================================ }
 
 { Parse CALL FUNCTION 'NOM_FM'
@@ -4967,7 +4967,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 - PARSEUR : DISPATCHER ParseStatement [COMPLET]                     }
+{ PARSEUR : DISPATCHER ParseStatement [COMPLET]                                }
 { ============================================================================ }
 
 { L'instruction courante est reconnaissable par cur_tok_type + cur_tok_kw.
@@ -5068,8 +5068,8 @@ Begin
   If TokIsKw(KW_SELECT) Then Begin ParseSelect;        Exit; End;
   If TokIsKw(KW_CALL)   Then Begin ParseCallFunction;  Exit; End;
 
-  { --- Evenements ABAP (TODO 24 gere le corps) :
-        Pour TODO 23 : stub minimal -> emettre label + SkipToDot  }
+  { --- Evenements ABAP (gere le corps) :
+         stub minimal -> emettre label + SkipToDot  }
   If TokIsKw(KW_START_OF_SEL) Then
   Begin
    ParseEvent(EV_START_OF_SEL, '_ABAP_EV_START_OF_SEL',
@@ -5169,7 +5169,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 24 - PARSEUR : EVENEMENTS ABAP + ECRAN DE SELECTION [COMPLET]          }
+{ ANALYSEUR : EVENEMENTS ABAP + ECRAN DE SELECTION                             }
 { ============================================================================ }
 
 { Retourne True si le token courant marque le debut d'un evenement ABAP
@@ -5346,7 +5346,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 25 - PROGRAMME DE TEST + BOUCLE PRINCIPALE [COMPLET]                   }
+{ PROGRAMME DE TEST + BOUCLE PRINCIPALE                                        }
 { ============================================================================ }
 
 { Copie le fichier texte 'src' (deja ouvert en lecture) vers output_file
@@ -5355,8 +5355,7 @@ Procedure AppendFileToOutput(Var src: Text);
 Var line: String;
 Begin
  Reset(src); { rebobiner }
- While Not EOF(src) Do
- Begin
+ While Not EOF(src) Do Begin
   ReadLn(src, line);
   WriteLn(output_file, line);
  End;
