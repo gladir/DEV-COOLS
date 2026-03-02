@@ -1291,12 +1291,11 @@ Begin
   NextToken; { Consommer l'op‚rateur }
   { Parser le deuxiŠme op‚rande }
   { Expression group‚e entre parenthŠses }
-  If (current_symbol = SYM_UNKNOWN) and (current_token = '(') Then
-  Begin
-   Emit('push ax'); { Sauvegarder rÃ©sultat du premier opÃ©rande }
+  If (current_symbol = SYM_UNKNOWN) and (current_token = '(') Then Begin
+   Emit('push ax'); { Sauvegarder r‚sultat du premier op‚rande }
    NextToken; { Consommer ( }
-   ParseExpression; { Ã‰valuer expression interne â†’ AX }
-   Emit('pop bx'); { Premier opÃ©rande â†’ BX }
+   ParseExpression; { valuer expression interne … AX }
+   Emit('pop bx'); { Premier op‚rande … BX }
    Case comparison_op of
     SYM_AND: Emit('and bx, ax');
     SYM_OR:  Emit('or bx, ax');

@@ -374,6 +374,181 @@ Const
 Type
  TString = String[MAX_TOKSTR];   { Chaine Pascal courte portable      }
 
+{ ============================================================================
+  TODO 02 - TYPES FONDAMENTAUX ET STRUCTURES DE DONNEES
+  ============================================================================ }
+
+ { --------------------------------------------------------------------------
+   Tokens du lexeur SNOBOL 4
+   -------------------------------------------------------------------------- }
+
+ TTokType = (
+  { --- Fin de flux / erreur --- }
+  TOK_EOF,          { fin de fichier source                             }
+  TOK_EOL,          { fin de ligne (instruction terminee)               }
+  TOK_UNKNOWN,      { caractere non reconnu                             }
+
+  { --- Litteraux --- }
+  TOK_INTEGER,      { constante entiere  ex: 42                         }
+  TOK_REAL,         { constante reelle   ex: 3.14                       }
+  TOK_STRING,       { chaine delimitee   ex: 'hello' ou "hello"         }
+
+  { --- Identificateur / mot-cle --- }
+  TOK_IDENT,        { identificateur SNOBOL (var, label, fonction)      }
+
+  { --- Ponctuation et operateurs --- }
+  TOK_LPAREN,       { (                                                 }
+  TOK_RPAREN,       { )                                                 }
+  TOK_LANGLE,       { <   (acces indirect / tableau)                    }
+  TOK_RANGLE,       { >                                                 }
+  TOK_COMMA,        { ,   (separateur arguments)                        }
+  TOK_EQ,           { =   (affectation / remplacement patron)           }
+  TOK_DOT,          { .   (assignation conditionnelle en patron)        }
+  TOK_DOLLAR,       { $   (assignation immediate en patron / indir.)    }
+  TOK_AT,           { @   (curseur de position)                         }
+  TOK_BANG,         { !   (appel indirect de fonction)                  }
+  TOK_AMP,          { &   (prefixe variables systeme : &ANCHOR...)      }
+  TOK_PIPE,         { |   (alternative de patron)                       }
+  TOK_STAR,         { *   (operateur ARB ou multiplication)             }
+  TOK_HASH,         { #   (operateur ARBNO / repetition)                }
+  TOK_SLASH,        { /   (division)                                    }
+  TOK_PLUS,         { +   (addition / continuation ligne)               }
+  TOK_MINUS,        { -   (soustraction)                                }
+  TOK_TILDE,        { ~   (negation de pattern : NOT)                   }
+  TOK_CARET,        { ^   (debut de chaine en patron)                   }
+
+  { --- Goto --- }
+  TOK_COLON,        { :   (debut section goto)                          }
+  TOK_GOTO_S,       { :S( succes conditionnel                           }
+  TOK_GOTO_F,       { :F( echec  conditionnel                           }
+  TOK_GOTO_UNC      { :(  inconditionnel                                }
+ );
+
+ { --------------------------------------------------------------------------
+   Kinds de valeur runtime (type dynamique d'une variable SNOBOL)
+   -------------------------------------------------------------------------- }
+
+ TValueKind = (
+  VK_UNDEF,    { variable non initialisee (valeur = chaine vide "")    }
+  VK_STR,      { chaine de caracteres (STRING)                         }
+  VK_INT,      { entier signe 16 bits (INTEGER)                        }
+  VK_REAL,     { reel point fixe 16.16 (REAL)                          }
+  VK_PAT,      { patron compile (PATTERN)                              }
+  VK_TABLE,    { table associative (TABLE)                             }
+  VK_ARRAY,    { tableau indexe (ARRAY)                                }
+  VK_CODE,     { bloc de code (CODE) - non implem. en v1               }
+  VK_EXPR      { expression non evaluee (EXPRESSION) - non impl. v1    }
+ );
+
+ { --------------------------------------------------------------------------
+   Kinds de noeud dans l'arbre de patron (pattern tree node kind)
+   Chaque valeur correspond a une routine _RT_MATCH_xxx emise en ASM.
+   -------------------------------------------------------------------------- }
+
+ TPatKind = (
+  { --- Patrons terminaux --- }
+  PK_FAIL,     { FAIL      : echoue toujours (predicat d'echec)        }
+  PK_FENCE,    { FENCE     : succes mais bloque le backtrack            }
+  PK_ABORT,    { ABORT     : abandonne toute tentative de matching      }
+  PK_SUCCEED,  { SUCCEED   : reussit toujours                           }
+  PK_REM,      { REM       : consomme le reste du sujet                 }
+  PK_ARB,      { ARB       : consomme 0..n caracteres (non-det.)        }
+
+  { --- Patrons bases sur un ensemble de caracteres --- }
+  PK_ANY,      { ANY(s)    : un caractere appartenant a s               }
+  PK_NOTANY,   { NOTANY(s) : un caractere n'appartenant pas a s         }
+  PK_SPAN,     { SPAN(s)   : une ou plusieurs chars de s (greedy)       }
+  PK_BREAK,    { BREAK(s)  : chars jusqu'a (non inclu) un char de s     }
+  PK_BREAKX,   { BREAKX(s) : variante BREAK avec retry apres match      }
+
+  { --- Patrons bases sur une position --- }
+  PK_POS,      { POS(n)    : succes si curseur = n (0-base)             }
+  PK_RPOS,     { RPOS(n)   : succes si curseur = len-n                  }
+  PK_TAB,      { TAB(n)    : avancer jusqu'a position n                 }
+  PK_RTAB,     { RTAB(n)   : avancer jusqu'a len-n                      }
+
+  { --- Patrons bases sur une longueur --- }
+  PK_LEN,      { LEN(n)    : consommer exactement n caracteres          }
+
+  { --- Litteral --- }
+  PK_LIT,      { chaine litterale a matcher exactement                  }
+
+  { --- Patrons composites (noeuds internes de l'arbre) --- }
+  PK_CONCAT,   { p1 p2     : concatenation (p1 puis p2)                 }
+  PK_ALT,      { p1 | p2   : alternative   (p1 ou p2)                  }
+  PK_ARBNO,    { ARBNO(p)  : repetition 0..n fois du patron p           }
+
+  { --- Assignation en cours de matching --- }
+  PK_ASSIGN,   { p . var   : copier sous-chaine dans var apres matching }
+  PK_IMMED,    { p $ var   : copier sous-chaine dans var immediatement  }
+
+  { --- Patron indirect --- }
+  PK_INDIRECT  { *var / !var : evaluer var comme patron a l'execution   }
+ );
+
+ { --------------------------------------------------------------------------
+   Noeud d'arbre de patron (stocke dans pat_table)
+   -------------------------------------------------------------------------- }
+
+ TPatNode = Record
+  kind      : TPatKind;        { type du noeud                         }
+  { Operandes selon le kind }
+  lit_idx   : Integer;         { PK_LIT : index dans str_pool          }
+  lit_len   : Integer;         { PK_LIT : longueur du litteral         }
+  int_val   : Integer;         { PK_LEN/POS/RPOS/TAB/RTAB : valeur n  }
+  set_idx   : Integer;         { PK_ANY/NOTANY/SPAN/BREAK : index pool }
+  left      : Integer;         { PK_CONCAT/ALT/ASSIGN/IMMED : fils g.  }
+  right     : Integer;         { PK_CONCAT/ALT : fils droit            }
+  var_nm    : TString;         { PK_ASSIGN/IMMED/INDIRECT : nom var    }
+  asm_label : TString;         { label ASM genere pour ce noeud        }
+ End;
+
+ { --------------------------------------------------------------------------
+   Kinds de symbole dans la table des symboles
+   -------------------------------------------------------------------------- }
+
+ TSymKind = (
+  SK_UNDEF,      { non encore defini                                    }
+  SK_VAR,        { variable SNOBOL (descripteur en .DATA ou BP)         }
+  SK_CONST_STR,  { constante chaine (pool litteraux)                    }
+  SK_CONST_INT,  { constante entiere                                    }
+  SK_CONST_REAL, { constante reelle                                     }
+  SK_BUILTIN,    { fonction integree du langage                         }
+  SK_FUNC,       { fonction utilisateur (DEFINE)                        }
+  SK_SYSVAR      { variable systeme (&ANCHOR, &OUTPUT, etc.)            }
+ );
+
+ { --------------------------------------------------------------------------
+   Kinds de sous-programme (fonctions/procedures utilisateur)
+   -------------------------------------------------------------------------- }
+
+ TSubKind = (
+  SUB_FUNC,      { fonction definie par DEFINE (retourne une valeur)    }
+  SUB_BUILTIN    { fonction integree (emise comme stub ASM)             }
+ );
+
+ { --------------------------------------------------------------------------
+   Noeud de goto (branchement conditionnel d'une instruction SNOBOL)
+   -------------------------------------------------------------------------- }
+
+ TGotoKind = (
+  GT_NONE,       { pas de goto                                          }
+  GT_SUCCESS,    { :S(label)  - branchement si matching reussi          }
+  GT_FAIL,       { :F(label)  - branchement si matching echoue          }
+  GT_UNCOND,     { :(label)   - branchement inconditionnel              }
+  GT_END,        { END        - fin de programme                        }
+  GT_RETURN,     { RETURN     - retour de fonction (succes)             }
+  GT_FRETURN,    { FRETURN    - retour de fonction (echec)              }
+  GT_NRETURN     { NRETURN    - retour de fonction (pas de valeur)      }
+ );
+
+ { --------------------------------------------------------------------------
+   Forward declarations des procedures principales (remplies TODO 03+)
+   -------------------------------------------------------------------------- }
+
+ { Pointeurs de tableaux dynamiques (alloues en TODO 03) }
+ PPatNode = ^TPatNode;
+
 { --------------------------------------------------------------------------
   Variables globales de configuration (positionnees en debut de Compile)
   -------------------------------------------------------------------------- }
