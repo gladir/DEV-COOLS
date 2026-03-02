@@ -2175,14 +2175,308 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 07 - Generateur de code bas niveau : Emit, labels, helpers             }
+{ ============================================================================ }
+
+{ ---- Initialisation des tables de litteraux chaines ---- }
+
+Procedure InitStrTable;
+Begin
+ If str_table = nil Then New(str_table);
+ If lbl_table = nil Then New(lbl_table);
+ str_count   := 0;
+ lit_counter := 0;
+End;
+
+{ ---- Primitives d'emission ASM ---- }
+
+{ Emet une ligne brute dans le fichier de sortie (ou ne fait rien si !gen) }
+Procedure Emit(Const s: String);
+Begin
+ If Not gen_enabled Then Exit;
+ WriteLn(output_file, s);
+End;
+
+{ Emet une instruction indentee (tabulation) }
+Procedure EmitI(Const s: String);
+Begin
+ If Not gen_enabled Then Exit;
+ WriteLn(output_file, #9 + s);
+End;
+
+{ Emet un label suivi de ':' sans indentation }
+Procedure EmitLabel(Const lbl: String);
+Begin
+ If Not gen_enabled Then Exit;
+ WriteLn(output_file, lbl + ':');
+End;
+
+{ Emet un commentaire ASM (';' prefixe) }
+Procedure EmitComment(Const s: String);
+Begin
+ If Not gen_enabled Then Exit;
+ WriteLn(output_file, '; ' + s);
+End;
+
+{ Emet une ligne vide }
+Procedure EmitBlank;
+Begin
+ If Not gen_enabled Then Exit;
+ WriteLn(output_file, '');
+End;
+
+{ ---- Generateur de labels ---- }
+
+{ Retourne un nouveau label local unique de la forme @@L0001 }
+Function NewLabel: String;
+Var n : String;
+Begin
+ Inc(label_counter);
+ n := IntToStr(label_counter);
+ While Length(n) < 4 do n := '0' + n;
+ NewLabel := '@@L' + n;
+End;
+
+{ ---- Gestion des litteraux chaines ---- }
+
+{ Ajoute un litteral chaine dans str_table, retourne le label _LSn }
+Function AsmStrLit(Const s: String): String;
+Var i  : Integer;
+    lb : String;
+Begin
+ { Deduplication : cherche si deja present }
+ For i := 1 to str_count do
+  If str_table^[i] = s Then
+  Begin AsmStrLit := lbl_table^[i]; Exit; End;
+ { Ajout nouveau }
+ If str_count >= MAX_STR Then
+ Begin
+  FatalError('Table des litteraux chaines pleine (MAX_STR=' +
+             IntToStr(MAX_STR) + ')');
+ End;
+ Inc(str_count);
+ Inc(lit_counter);
+ lb := '_LS' + IntToStr(lit_counter);
+ str_table^[str_count] := s;
+ lbl_table^[str_count] := lb;
+ AsmStrLit := lb;
+End;
+
+{ Emet la section .DATA pour tous les litteraux chaines accumules
+  Appele par le generateur de code final (TODO 24)                }
+Procedure EmitStringLiterals;
+Var i : Integer;
+    s : String;
+    j : Integer;
+Begin
+ If str_count = 0 Then Exit;
+ EmitComment('--- litteraux chaines ---');
+ For i := 1 to str_count do
+ Begin
+  s := str_table^[i];
+  { Construit DB avec octets ASCII + 0 terminateur }
+  Emit(lbl_table^[i] + ' DB ' + IntToStr(Length(s)));
+  { Bytes du contenu }
+  If Length(s) > 0 Then
+  Begin
+   For j := 1 to Length(s) do
+    EmitI('DB ' + IntToStr(Ord(s[j])));
+  End;
+  EmitI('DB 0');   { terminateur null pour compatibilite }
+ End;
+End;
+
+{ ---- Normalisation des etiquettes ASM ---- }
+
+{ Transforme un nom Ada en etiquette ASM .DATA : _VAR_NOM }
+Function DataLbl(Const name: String): String;
+Begin
+ DataLbl := AsmIdent('_VAR_', UpCaseStr(name));
+End;
+
+{ ---- Helpers de chargement / stockage ---- }
+
+{ Retourne la taille en octets du type d'un symbole (2 ou 4) }
+Function SymTypeSize(sym_idx: Integer): Integer;
+Var ti : Integer;
+Begin
+ ti := sym_table^[sym_idx].type_idx;
+ If ti = TYPE_FLOAT Then SymTypeSize := 4
+ Else SymTypeSize := 2;
+End;
+
+{ Charge un symbole dans AX (ou DX:AX si float, AL si char/bool) }
+Procedure GenLoadVar(sym_idx: Integer);
+Var sc   : Integer;
+    off  : Integer;
+    lbl  : String;
+    ti   : Integer;
+    sz   : Integer;
+Begin
+ sc  := sym_table^[sym_idx].store_class;
+ off := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
+ ti  := sym_table^[sym_idx].type_idx;
+ sz  := SymTypeSize(sym_idx);
+
+ If sym_table^[sym_idx].is_const Then
+ Begin
+  { Constante : valeur immediate }
+  If ti = TYPE_FLOAT Then
+  Begin
+   EmitI('MOV AX, WORD PTR [' + lbl + ']');
+   EmitI('MOV DX, WORD PTR [' + lbl + '+2]');
+  End
+  Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
+   EmitI('MOV AL, BYTE PTR ' + IntToStr(sym_table^[sym_idx].init_num))
+  Else { INT, ENUM, RANGE ... }
+   EmitI('MOV AX, ' + IntToStr(sym_table^[sym_idx].init_num));
+  Exit;
+ End;
+
+ Case sc Of
+  STORE_STATIC :
+  Begin
+   If sz = 4 Then
+   Begin
+    EmitI('MOV AX, WORD PTR [' + lbl + ']');
+    EmitI('MOV DX, WORD PTR [' + lbl + '+2]');
+   End
+   Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
+    EmitI('MOV AL, BYTE PTR [' + lbl + '+1]')  { word high-byte=char }
+   Else
+    EmitI('MOV AX, [' + lbl + ']');
+  End;
+  STORE_AUTO :
+  Begin
+   If sz = 4 Then
+   Begin
+    EmitI('MOV AX, [BP' + IntToStr(off) + ']');
+    EmitI('MOV DX, [BP' + IntToStr(off + 2) + ']');
+   End
+   Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
+    EmitI('MOV AL, [BP' + IntToStr(off) + ']')
+   Else
+    EmitI('MOV AX, [BP' + IntToStr(off) + ']');
+  End;
+  STORE_CONST :
+   { Constante litterale : valeur directe }
+   EmitI('MOV AX, ' + IntToStr(sym_table^[sym_idx].init_num));
+ End; { Case }
+End;
+
+{ Stocke AX (ou DX:AX si float, AL si char/bool) dans un symbole }
+Procedure GenStoreVar(sym_idx: Integer);
+Var sc  : Integer;
+    off : Integer;
+    lbl : String;
+    ti  : Integer;
+    sz  : Integer;
+Begin
+ If sym_table^[sym_idx].is_const Then
+ Begin
+  Error('Tentative d''assignation a une constante : ' +
+        sym_table^[sym_idx].name);
+  Exit;
+ End;
+ sc  := sym_table^[sym_idx].store_class;
+ off := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
+ ti  := sym_table^[sym_idx].type_idx;
+ sz  := SymTypeSize(sym_idx);
+
+ Case sc Of
+  STORE_STATIC :
+  Begin
+   If sz = 4 Then
+   Begin
+    EmitI('MOV WORD PTR [' + lbl + '], AX');
+    EmitI('MOV WORD PTR [' + lbl + '+2], DX');
+   End
+   Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
+    EmitI('MOV BYTE PTR [' + lbl + '+1], AL')
+   Else
+    EmitI('MOV [' + lbl + '], AX');
+  End;
+  STORE_AUTO :
+  Begin
+   If sz = 4 Then
+   Begin
+    EmitI('MOV [BP' + IntToStr(off) + '], AX');
+    EmitI('MOV [BP' + IntToStr(off + 2) + '], DX');
+   End
+   Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
+    EmitI('MOV [BP' + IntToStr(off) + '], AL')
+   Else
+    EmitI('MOV [BP' + IntToStr(off) + '], AX');
+  End;
+ End; { Case }
+End;
+
+{ ---- Chargement de constante immediate ---- }
+
+{ MOV AX, val  (entier 16 bits) }
+Procedure GenLoadConst(val: LongInt);
+Begin
+ EmitI('MOV AX, ' + IntToStr(val));
+End;
+
+{ ---- Prologue / Epilogue de sous-programme ---- }
+
+{ PUSH BP / MOV BP,SP / SUB SP,frame_size }
+Procedure GenPrologue(frame_size: Integer);
+Begin
+ EmitI('PUSH BP');
+ EmitI('MOV  BP, SP');
+ If frame_size > 0 Then
+  EmitI('SUB  SP, ' + IntToStr(frame_size));
+End;
+
+{ MOV SP,BP / POP BP / RET param_bytes
+  Callee-cleanup : param_bytes = nombre d'octets pousses par l'appelant }
+Procedure GenEpilogue(frame_size: Integer; param_bytes: Integer);
+Begin
+ If frame_size > 0 Then
+  EmitI('MOV  SP, BP');
+ EmitI('POP  BP');
+ If param_bytes > 0 Then
+  EmitI('RET  ' + IntToStr(param_bytes))
+ Else
+  EmitI('RET');
+End;
+
+{ ---- Helpers PUSH / POP ---- }
+
+Procedure GenPushAX;
+Begin EmitI('PUSH AX'); End;
+
+Procedure GenPopAX;
+Begin EmitI('POP  AX'); End;
+
+{ Pour float DX:AX : pousse DX puis AX (AX en TOS) }
+Procedure GenPushDXAX;
+Begin
+ EmitI('PUSH DX');
+ EmitI('PUSH AX');
+End;
+
+{ Pour float DX:AX : depile AX puis DX }
+Procedure GenPopDXAX;
+Begin
+ EmitI('POP  AX');
+ EmitI('POP  DX');
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 06 OK (gestion scopes OK)');
-  WriteLn('  InitScopeStack, PushScope, PopScope, AllocLocal');
-  WriteLn('  EnterLoop, FindLoopCont, FindLoopEnd');
-  WriteLn('  SetExitLabel, FindExitLabel');
-  WriteLn('  SetExceptLabel, FindExceptLabel');
-  WriteLn('  CurrentScopeKind, CurrentSubIdx, EnclosingSubIdx, CurrentFrameSize');
+  WriteLn('ADA86 V1.0 - TODO 07 OK (generateur bas niveau OK)');
+  WriteLn('  InitStrTable, AsmStrLit, EmitStringLiterals');
+  WriteLn('  Emit, EmitI, EmitLabel, EmitComment, EmitBlank');
+  WriteLn('  NewLabel, DataLbl');
+  WriteLn('  GenLoadVar, GenStoreVar, GenLoadConst');
+  WriteLn('  GenPrologue, GenEpilogue');
+  WriteLn('  GenPushAX, GenPopAX, GenPushDXAX, GenPopDXAX');
 End.

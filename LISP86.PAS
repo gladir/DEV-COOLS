@@ -1654,20 +1654,22 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 - GENERATION : AND / OR / NOT                  [COMPLET]            }
+{ GENERATION : AND / OR / NOT                                                  }
 { ============================================================================ }
 
 Procedure GenAnd(args: TLispVal);
-Var lbl_false, lbl_end: String;
+Var
+ lbl_false, lbl_end: String;
 Begin
- { TODO 23 : AND avec court-circuit }
+ { AND avec court-circuit }
  lbl_false := NewLabel + 'AF';
  lbl_end   := NewLabel + 'AE';
  EmitComment('---- AND ----');
- If IsNilVal(args) Then
- Begin Emit('        MOV     AX, ' + ItoSI(LVAL_T)); Exit; End;
- While Not IsNilVal(args) Do
- Begin
+ If IsNilVal(args) Then Begin
+  Emit('        MOV     AX, ' + ItoSI(LVAL_T));
+  Exit;
+ End;
+ While Not IsNilVal(args) Do Begin
   GenExpr(CarOf(args));
   Emit('        TEST    AX, AX');
   Emit('        JZ      ' + lbl_false);
@@ -1680,16 +1682,18 @@ Begin
 End;
 
 Procedure GenOr(args: TLispVal);
-Var lbl_true, lbl_end: String;
+Var
+ lbl_true, lbl_end: String;
 Begin
- { TODO 23 : OR avec court-circuit }
+ { OR avec court-circuit }
  lbl_true := NewLabel + 'OT';
  lbl_end  := NewLabel + 'OE';
  EmitComment('---- OR ----');
- If IsNilVal(args) Then
- Begin Emit('        XOR     AX, AX  ; OR() = NIL'); Exit; End;
- While Not IsNilVal(args) Do
- Begin
+ If IsNilVal(args) Then Begin
+  Emit('        XOR     AX, AX  ; OR() = NIL');
+  Exit;
+ End;
+ While Not IsNilVal(args) Do Begin
   GenExpr(CarOf(args));
   Emit('        TEST    AX, AX');
   Emit('        JNZ     ' + lbl_true);
@@ -1703,10 +1707,12 @@ Begin
 End;
 
 Procedure GenNot(arg: TLispVal);
-Var lbl_t, lbl_e: String;
+Var
+ lbl_t, lbl_e: String;
 Begin
- { TODO 23 : NOT }
- lbl_t := NewLabel + 'NT'; lbl_e := NewLabel + 'NE';
+  { NOT }
+ lbl_t := NewLabel + 'NT';
+ lbl_e := NewLabel + 'NE';
  EmitComment('NOT');
  GenExpr(arg);
  Emit('        TEST    AX, AX');
@@ -1729,17 +1735,15 @@ Var
  func_idx: Integer;
 Begin
  { Atome direct }
- If TagOf(v) <> LTAG_CONS Then
- Begin
+ If TagOf(v) <> LTAG_CONS Then Begin
   GenEvalAtom(v);
   Exit;
  End;
  { C'est une liste : (head args...) }
  head := CarOf(v);
  args := CdrOf(v);
- { L'operateur doit etre un symbole }
- If TagOf(head) <> LTAG_SYM Then
- Begin
+  { L'operateur doit etre un symbole }
+ If TagOf(head) <> LTAG_SYM Then Begin
   EmitComment('GenExpr: tete non-symbole (TODO: lambda-call)');
   GenEvalAtom(head);
   Exit;
