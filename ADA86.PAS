@@ -6112,5 +6112,15 @@ End;
 { ============================================================= }
 
 BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('ADA86 - Cette commande permet de lancer le compilateur Ada 83/95 pour de l''assembleur du ',
+          'microprocesseur 8086.');
+  WriteLn;
+  WriteLn('Syntaxe: ADA86 source.adb [sortie.asm]');
+  WriteLn;
+  WriteLn('  dest.asm : par defaut = source avec extension .ASM');
+  Halt;
+ End;
  Compile;
 END.
