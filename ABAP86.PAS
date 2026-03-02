@@ -788,6 +788,19 @@ Type
   defined     : Boolean;
  End;
 
+ { ----- Aliases tableaux + pointeurs pour allocation sur le tas ----------- }
+ TSymTableArr  = Array[1..MAX_SYM]  of TSymEntry;
+ TFormTableArr = Array[1..MAX_FORM] of TFormEntry;
+ TStrTableArr  = Array[1..MAX_STR]  of TStrEntry;
+ TEvtTableArr  = Array[0..MAX_EVTS] of TEventEntry;
+ TScopeArr     = Array[0..MAX_DEPTH] of TScopeEntry;
+
+ PSymTable   = ^TSymTableArr;
+ PFormTable  = ^TFormTableArr;
+ PStrTable   = ^TStrTableArr;
+ PEvtTable   = ^TEvtTableArr;
+ PScopeArr   = ^TScopeArr;
+
 { ============================================================================ }
 { VARIABLES GLOBALES                                                           }
 { ============================================================================ }
@@ -819,18 +832,18 @@ Var
  { --- Nom du programme (REPORT / PROGRAM) --- }
  prog_name    : String;
 
- { --- Tables --- }
- sym_table    : Array[1..MAX_SYM]  of TSymEntry;
+ { --- Tables (allouees sur le tas via New/Dispose) --- }
+ sym_table    : PSymTable;   { ^TSymTableArr  sur le tas }
  sym_count    : Integer;
- form_table   : Array[1..MAX_FORM] of TFormEntry;
+ form_table   : PFormTable;  { ^TFormTableArr sur le tas }
  form_count   : Integer;
- str_table    : Array[1..MAX_STR]  of TStrEntry;
+ str_table    : PStrTable;   { ^TStrTableArr  sur le tas }
  str_count    : Integer;
- evt_table    : Array[0..MAX_EVTS] of TEventEntry;
+ evt_table    : PEvtTable;   { ^TEvtTableArr  sur le tas }
  evt_count    : Integer;
 
- { --- Scope --- }
- scope_stack  : Array[0..MAX_DEPTH] of TScopeEntry;
+ { --- Scope (alloue sur le tas) --- }
+ scope_stack  : PScopeArr;   { ^TScopeArr     sur le tas }
  scope_top    : Integer;
 
  { --- Generateur de code --- }
@@ -949,8 +962,8 @@ Begin
  Inc(str_count);
  Inc(lit_counter);
  lbl := '_LS' + ItoSI(lit_counter);
- str_table[str_count].text      := s;
- str_table[str_count].asm_label := lbl;
+ str_table^[str_count].text      := s;
+ str_table^[str_count].asm_label := lbl;
  AddStringLit := lbl;
 End;
 
@@ -958,6 +971,13 @@ End;
 Procedure InitAll;
 Var i: Integer;
 Begin
+ { Allocation sur le tas (une seule fois; nil = pas encore alloue) }
+ If sym_table   = nil Then New(sym_table);
+ If form_table  = nil Then New(form_table);
+ If str_table   = nil Then New(str_table);
+ If evt_table   = nil Then New(evt_table);
+ If scope_stack = nil Then New(scope_stack);
+
  sym_count    := 0;
  form_count   := 0;
  str_count    := 0;
@@ -982,20 +1002,20 @@ Begin
  cur_tok_num  := 0;
  cur_tok_kw   := KW_NONE;
  { Init scope global }
- scope_stack[0].kind      := SK_GLOBAL;
- scope_stack[0].form_idx  := 0;
- scope_stack[0].bp_top    := 0;
- scope_stack[0].sym_start := 1;
- scope_stack[0].sym_end   := 0;
- scope_stack[0].lbl_exit  := '';
- scope_stack[0].lbl_cont  := '';
- scope_stack[0].lbl_end   := '';
+ scope_stack^[0].kind      := SK_GLOBAL;
+ scope_stack^[0].form_idx  := 0;
+ scope_stack^[0].bp_top    := 0;
+ scope_stack^[0].sym_start := 1;
+ scope_stack^[0].sym_end   := 0;
+ scope_stack^[0].lbl_exit  := '';
+ scope_stack^[0].lbl_cont  := '';
+ scope_stack^[0].lbl_end   := '';
  { Init index evenements }
  For i := 0 to MAX_EVTS do
  Begin
-  evt_table[i].ev_kind   := i;
-  evt_table[i].defined   := False;
-  evt_table[i].asm_label := '';
+  evt_table^[i].ev_kind   := i;
+  evt_table^[i].defined   := False;
+  evt_table^[i].asm_label := '';
  End;
 End;
 
@@ -1543,45 +1563,45 @@ Begin
  str_count  := 0;
  For i := 1 to MAX_SYM do
  Begin
-  sym_table[i].name        := '';
-  sym_table[i].asm_label   := '';
-  sym_table[i].data_type   := TYPE_UNKNOWN;
-  sym_table[i].store_class := STORE_STATIC;
-  sym_table[i].bp_offset   := 0;
-  sym_table[i].array_size  := 0;
-  sym_table[i].char_len    := 1;
-  sym_table[i].dec_prec    := 0;
-  sym_table[i].dec_scale   := 0;
-  sym_table[i].is_param    := False;
-  sym_table[i].param_idx   := 0;
-  sym_table[i].param_kind  := PARAM_USING;
-  sym_table[i].init_str    := '';
-  sym_table[i].init_num    := 0;
-  sym_table[i].has_init    := False;
-  sym_table[i].is_const    := False;
-  sym_table[i].scope_lev   := 0;
+  sym_table^[i].name        := '';
+  sym_table^[i].asm_label   := '';
+  sym_table^[i].data_type   := TYPE_UNKNOWN;
+  sym_table^[i].store_class := STORE_STATIC;
+  sym_table^[i].bp_offset   := 0;
+  sym_table^[i].array_size  := 0;
+  sym_table^[i].char_len    := 1;
+  sym_table^[i].dec_prec    := 0;
+  sym_table^[i].dec_scale   := 0;
+  sym_table^[i].is_param    := False;
+  sym_table^[i].param_idx   := 0;
+  sym_table^[i].param_kind  := PARAM_USING;
+  sym_table^[i].init_str    := '';
+  sym_table^[i].init_num    := 0;
+  sym_table^[i].has_init    := False;
+  sym_table^[i].is_const    := False;
+  sym_table^[i].scope_lev   := 0;
  End;
  For i := 1 to MAX_FORM do
  Begin
-  form_table[i].name           := '';
-  form_table[i].asm_label      := '';
-  form_table[i].param_count    := 0;
-  form_table[i].using_count    := 0;
-  form_table[i].changing_count := 0;
-  form_table[i].tables_count   := 0;
-  form_table[i].defined        := False;
-  form_table[i].is_function    := False;
+  form_table^[i].name           := '';
+  form_table^[i].asm_label      := '';
+  form_table^[i].param_count    := 0;
+  form_table^[i].using_count    := 0;
+  form_table^[i].changing_count := 0;
+  form_table^[i].tables_count   := 0;
+  form_table^[i].defined        := False;
+  form_table^[i].is_function    := False;
   For j := 1 to MAX_PARAM do
   Begin
-   form_table[i].param_names[j] := '';
-   form_table[i].param_kinds[j] := PARAM_USING;
-   form_table[i].param_types[j] := TYPE_UNKNOWN;
+   form_table^[i].param_names[j] := '';
+   form_table^[i].param_kinds[j] := PARAM_USING;
+   form_table^[i].param_types[j] := TYPE_UNKNOWN;
   End;
  End;
  For i := 1 to MAX_STR do
  Begin
-  str_table[i].text      := '';
-  str_table[i].asm_label := '';
+  str_table^[i].text      := '';
+  str_table^[i].asm_label := '';
  End;
 End;
 
@@ -1592,7 +1612,7 @@ Var i: Integer; u: String;
 Begin
  u := UpCaseStr(name);
  For i := sym_count DownTo 1 do
-  If sym_table[i].name = u Then Begin FindSym := i; Exit; End;
+  If sym_table^[i].name = u Then Begin FindSym := i; Exit; End;
  FindSym := 0;
 End;
 
@@ -1603,7 +1623,7 @@ Begin
  u   := UpCaseStr(name);
  lev := scope_top;
  For i := sym_count DownTo 1 do
-  If (sym_table[i].name = u) And (sym_table[i].scope_lev = lev) Then
+  If (sym_table^[i].name = u) And (sym_table^[i].scope_lev = lev) Then
   Begin FindSymLocal := i; Exit; End;
  FindSymLocal := 0;
 End;
@@ -1617,23 +1637,23 @@ Begin
  If sym_count >= MAX_SYM Then
  Begin Error('Table des symboles pleine'); AddSym := 0; Exit; End;
  Inc(sym_count);
- sym_table[sym_count].name        := u;
- sym_table[sym_count].asm_label   := AsmIdent('_VAR_', u);
- sym_table[sym_count].data_type   := dt;
- sym_table[sym_count].store_class := sc;
- sym_table[sym_count].bp_offset   := 0;
- sym_table[sym_count].array_size  := 0;
- sym_table[sym_count].char_len    := 1;
- sym_table[sym_count].dec_prec    := 0;
- sym_table[sym_count].dec_scale   := 0;
- sym_table[sym_count].is_param    := False;
- sym_table[sym_count].param_idx   := 0;
- sym_table[sym_count].param_kind  := PARAM_USING;
- sym_table[sym_count].init_str    := '';
- sym_table[sym_count].init_num    := 0;
- sym_table[sym_count].has_init    := False;
- sym_table[sym_count].is_const    := False;
- sym_table[sym_count].scope_lev   := scope_top;
+ sym_table^[sym_count].name        := u;
+ sym_table^[sym_count].asm_label   := AsmIdent('_VAR_', u);
+ sym_table^[sym_count].data_type   := dt;
+ sym_table^[sym_count].store_class := sc;
+ sym_table^[sym_count].bp_offset   := 0;
+ sym_table^[sym_count].array_size  := 0;
+ sym_table^[sym_count].char_len    := 1;
+ sym_table^[sym_count].dec_prec    := 0;
+ sym_table^[sym_count].dec_scale   := 0;
+ sym_table^[sym_count].is_param    := False;
+ sym_table^[sym_count].param_idx   := 0;
+ sym_table^[sym_count].param_kind  := PARAM_USING;
+ sym_table^[sym_count].init_str    := '';
+ sym_table^[sym_count].init_num    := 0;
+ sym_table^[sym_count].has_init    := False;
+ sym_table^[sym_count].is_const    := False;
+ sym_table^[sym_count].scope_lev   := scope_top;
  AddSym := sym_count;
 End;
 
@@ -1643,7 +1663,7 @@ Var i: Integer; u: String;
 Begin
  u := UpCaseStr(name);
  For i := 1 to form_count do
-  If form_table[i].name = u Then Begin FindForm := i; Exit; End;
+  If form_table^[i].name = u Then Begin FindForm := i; Exit; End;
  FindForm := 0;
 End;
 
@@ -1658,14 +1678,14 @@ Begin
  If form_count >= MAX_FORM Then
  Begin Error('Table des FORMs pleine'); AddForm := 0; Exit; End;
  Inc(form_count);
- form_table[form_count].name           := u;
- form_table[form_count].asm_label      := AsmIdent('_ABAP_FORM_', u);
- form_table[form_count].param_count    := 0;
- form_table[form_count].using_count    := 0;
- form_table[form_count].changing_count := 0;
- form_table[form_count].tables_count   := 0;
- form_table[form_count].defined        := False;
- form_table[form_count].is_function    := False;
+ form_table^[form_count].name           := u;
+ form_table^[form_count].asm_label      := AsmIdent('_ABAP_FORM_', u);
+ form_table^[form_count].param_count    := 0;
+ form_table^[form_count].using_count    := 0;
+ form_table^[form_count].changing_count := 0;
+ form_table^[form_count].tables_count   := 0;
+ form_table^[form_count].defined        := False;
+ form_table^[form_count].is_function    := False;
  AddForm := form_count;
 End;
 
@@ -1680,9 +1700,9 @@ Var idx: Integer;
   idx := AddSym(nm, dt, STORE_STATIC);
   If idx > 0 Then
   Begin
-   sym_table[idx].asm_label := AsmIdent('_SY_', Copy(nm, 4, 255));
-   sym_table[idx].has_init  := True;
-   sym_table[idx].init_num  := 0;
+   sym_table^[idx].asm_label := AsmIdent('_SY_', Copy(nm, 4, 255));
+   sym_table^[idx].has_init  := True;
+   sym_table^[idx].init_num  := 0;
   End;
  End;
 
@@ -1706,14 +1726,14 @@ End;
 Procedure InitScopes;
 Begin
  scope_top := 0;
- scope_stack[0].kind      := SK_GLOBAL;
- scope_stack[0].form_idx  := 0;
- scope_stack[0].bp_top    := 0;
- scope_stack[0].sym_start := 1;
- scope_stack[0].sym_end   := 0;
- scope_stack[0].lbl_exit  := '';
- scope_stack[0].lbl_cont  := '';
- scope_stack[0].lbl_end   := '';
+ scope_stack^[0].kind      := SK_GLOBAL;
+ scope_stack^[0].form_idx  := 0;
+ scope_stack^[0].bp_top    := 0;
+ scope_stack^[0].sym_start := 1;
+ scope_stack^[0].sym_end   := 0;
+ scope_stack^[0].lbl_exit  := '';
+ scope_stack^[0].lbl_cont  := '';
+ scope_stack^[0].lbl_end   := '';
 End;
 
 { Empile un nouveau scope.
@@ -1724,14 +1744,14 @@ Begin
  If scope_top >= MAX_DEPTH Then
  Begin Error('Trop d''imbrications de scopes'); Exit; End;
  Inc(scope_top);
- scope_stack[scope_top].kind      := kind;
- scope_stack[scope_top].form_idx  := form_idx;
- scope_stack[scope_top].bp_top    := 0;           { repart a 0 en local }
- scope_stack[scope_top].sym_start := sym_count + 1;
- scope_stack[scope_top].sym_end   := sym_count;
- scope_stack[scope_top].lbl_exit  := '';
- scope_stack[scope_top].lbl_cont  := '';
- scope_stack[scope_top].lbl_end   := '';
+ scope_stack^[scope_top].kind      := kind;
+ scope_stack^[scope_top].form_idx  := form_idx;
+ scope_stack^[scope_top].bp_top    := 0;           { repart a 0 en local }
+ scope_stack^[scope_top].sym_start := sym_count + 1;
+ scope_stack^[scope_top].sym_end   := sym_count;
+ scope_stack^[scope_top].lbl_exit  := '';
+ scope_stack^[scope_top].lbl_cont  := '';
+ scope_stack^[scope_top].lbl_end   := '';
 End;
 
 { Depile le scope courant.
@@ -1739,37 +1759,37 @@ End;
 Procedure LeaveScope;
 Begin
  If scope_top = 0 Then Begin Error('LeaveScope hors scope'); Exit; End;
- scope_stack[scope_top].sym_end := sym_count;
+ scope_stack^[scope_top].sym_end := sym_count;
  Dec(scope_top);
 End;
 
 { Retourne la profondeur BP courante (valeur negative pour variables locales) }
 Function CurrentBpTop: Integer;
 Begin
- CurrentBpTop := scope_stack[scope_top].bp_top;
+ CurrentBpTop := scope_stack^[scope_top].bp_top;
 End;
 
 { Reserve n octets sur la pile locale (decremente bp_top).
   Retourne l'offset BP du nouvel emplacement (negatif).              }
 Function AllocLocalBp(bytes: Integer): Integer;
 Begin
- Dec(scope_stack[scope_top].bp_top, bytes);
- AllocLocalBp := scope_stack[scope_top].bp_top;
+ Dec(scope_stack^[scope_top].bp_top, bytes);
+ AllocLocalBp := scope_stack^[scope_top].bp_top;
 End;
 
 { ---- Setters / Getters de labels de scope ---- }
 
 { Definit le label de sortie du scope courant (EXIT -> JMP lbl_exit) }
 Procedure SetExitLabel(Const lbl: String);
-Begin scope_stack[scope_top].lbl_exit := lbl; End;
+Begin scope_stack^[scope_top].lbl_exit := lbl; End;
 
 { Definit le label de continuation (CONTINUE -> JMP lbl_cont) }
 Procedure SetContLabel(Const lbl: String);
-Begin scope_stack[scope_top].lbl_cont := lbl; End;
+Begin scope_stack^[scope_top].lbl_cont := lbl; End;
 
 { Definit le label de fin de bloc (ENDLOOP/ENDDO/ENDWHILE) }
 Procedure SetEndLabel(Const lbl: String);
-Begin scope_stack[scope_top].lbl_end := lbl; End;
+Begin scope_stack^[scope_top].lbl_end := lbl; End;
 
 { Retourne le label EXIT du scope le plus proche qui en a un.
   Remonte la pile jusqu'a trouver un lbl_exit non vide.               }
@@ -1777,8 +1797,8 @@ Function CurrentExitLabel: String;
 Var i: Integer;
 Begin
  For i := scope_top DownTo 0 do
-  If scope_stack[i].lbl_exit <> '' Then
-  Begin CurrentExitLabel := scope_stack[i].lbl_exit; Exit; End;
+  If scope_stack^[i].lbl_exit <> '' Then
+  Begin CurrentExitLabel := scope_stack^[i].lbl_exit; Exit; End;
  CurrentExitLabel := '';
 End;
 
@@ -1787,8 +1807,8 @@ Function CurrentContLabel: String;
 Var i: Integer;
 Begin
  For i := scope_top DownTo 0 do
-  If scope_stack[i].lbl_cont <> '' Then
-  Begin CurrentContLabel := scope_stack[i].lbl_cont; Exit; End;
+  If scope_stack^[i].lbl_cont <> '' Then
+  Begin CurrentContLabel := scope_stack^[i].lbl_cont; Exit; End;
  CurrentContLabel := '';
 End;
 
@@ -1797,8 +1817,8 @@ Function CurrentEndLabel: String;
 Var i: Integer;
 Begin
  For i := scope_top DownTo 0 do
-  If scope_stack[i].lbl_end <> '' Then
-  Begin CurrentEndLabel := scope_stack[i].lbl_end; Exit; End;
+  If scope_stack^[i].lbl_end <> '' Then
+  Begin CurrentEndLabel := scope_stack^[i].lbl_end; Exit; End;
  CurrentEndLabel := '';
 End;
 
@@ -1807,7 +1827,7 @@ Function InForm: Boolean;
 Var i: Integer;
 Begin
  For i := scope_top DownTo 1 do
-  If scope_stack[i].kind = SK_FORM Then Begin InForm := True; Exit; End;
+  If scope_stack^[i].kind = SK_FORM Then Begin InForm := True; Exit; End;
  InForm := False;
 End;
 
@@ -1816,8 +1836,8 @@ Function CurrentFormIdx: Integer;
 Var i: Integer;
 Begin
  For i := scope_top DownTo 1 do
-  If scope_stack[i].kind = SK_FORM Then
-  Begin CurrentFormIdx := scope_stack[i].form_idx; Exit; End;
+  If scope_stack^[i].kind = SK_FORM Then
+  Begin CurrentFormIdx := scope_stack^[i].form_idx; Exit; End;
  CurrentFormIdx := 0;
 End;
 
@@ -1880,8 +1900,8 @@ Begin
   If TokIsKw(KW_TABLE) Then
   Begin
    Consume; EatKw(KW_OF);
-   sym_table[sym_idx].data_type  := TYPE_TABLE;
-   sym_table[sym_idx].char_len   := 0;
+   sym_table^[sym_idx].data_type  := TYPE_TABLE;
+   sym_table^[sym_idx].char_len   := 0;
    If cur_tok_type = TOK_IDENT Then Consume;
    Exit;
   End;
@@ -1890,13 +1910,13 @@ Begin
   ref_idx := FindSym(refname);
   If ref_idx > 0 Then
   Begin
-   sym_table[sym_idx].data_type  := sym_table[ref_idx].data_type;
-   sym_table[sym_idx].char_len   := sym_table[ref_idx].char_len;
-   sym_table[sym_idx].dec_scale  := sym_table[ref_idx].dec_scale;
+   sym_table^[sym_idx].data_type  := sym_table^[ref_idx].data_type;
+   sym_table^[sym_idx].char_len   := sym_table^[ref_idx].char_len;
+   sym_table^[sym_idx].dec_scale  := sym_table^[ref_idx].dec_scale;
   End Else
   Begin
    Warning('LIKE: variable inconnue ' + refname + ', TYPE I suppose');
-   sym_table[sym_idx].data_type := TYPE_I;
+   sym_table^[sym_idx].data_type := TYPE_I;
   End;
   Exit;
  End;
@@ -1907,8 +1927,8 @@ Begin
  If TokIsKw(KW_TABLE) Then
  Begin
   Consume; EatKw(KW_OF);
-  sym_table[sym_idx].data_type := TYPE_TABLE;
-  sym_table[sym_idx].char_len  := 0;
+  sym_table^[sym_idx].data_type := TYPE_TABLE;
+  sym_table^[sym_idx].char_len  := 0;
   If cur_tok_type = TOK_IDENT Then Consume;
   Exit;
  End;
@@ -1916,7 +1936,7 @@ Begin
  If cur_tok_str = 'REF' Then
  Begin
   Consume; EatKw(KW_TO);
-  sym_table[sym_idx].data_type := TYPE_REF;
+  sym_table^[sym_idx].data_type := TYPE_REF;
   If cur_tok_type = TOK_IDENT Then Consume;
   Exit;
  End;
@@ -1925,58 +1945,58 @@ Begin
  Begin Warning('Type ABAP attendu'); Exit; End;
  If cur_tok_str = 'I' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_I;
-  sym_table[sym_idx].char_len  := 2;
+  sym_table^[sym_idx].data_type := TYPE_I;
+  sym_table^[sym_idx].char_len  := 2;
   Consume;
  End Else If cur_tok_str = 'F' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_F;
-  sym_table[sym_idx].char_len  := 8;
+  sym_table^[sym_idx].data_type := TYPE_F;
+  sym_table^[sym_idx].char_len  := 8;
   Consume;
  End Else If cur_tok_str = 'C' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_C;
-  sym_table[sym_idx].char_len  := 1;
+  sym_table^[sym_idx].data_type := TYPE_C;
+  sym_table^[sym_idx].char_len  := 1;
   Consume;
   { TYPE C(n) }
   If cur_tok_type = TOK_LPAREN Then
   Begin
    Consume;
-   sym_table[sym_idx].char_len := cur_tok_num;
+   sym_table^[sym_idx].char_len := cur_tok_num;
    If cur_tok_type = TOK_NUMBER Then Consume;
    If cur_tok_type = TOK_RPAREN Then Consume;
   End;
  End Else If cur_tok_str = 'N' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_N;
-  sym_table[sym_idx].char_len  := 1;
+  sym_table^[sym_idx].data_type := TYPE_N;
+  sym_table^[sym_idx].char_len  := 1;
   Consume;
   If cur_tok_type = TOK_LPAREN Then
   Begin
    Consume;
-   sym_table[sym_idx].char_len := cur_tok_num;
+   sym_table^[sym_idx].char_len := cur_tok_num;
    If cur_tok_type = TOK_NUMBER Then Consume;
    If cur_tok_type = TOK_RPAREN Then Consume;
   End;
  End Else If cur_tok_str = 'D' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_D;
-  sym_table[sym_idx].char_len  := 8;
+  sym_table^[sym_idx].data_type := TYPE_D;
+  sym_table^[sym_idx].char_len  := 8;
   Consume;
  End Else If cur_tok_str = 'T' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_T;
-  sym_table[sym_idx].char_len  := 6;
+  sym_table^[sym_idx].data_type := TYPE_T;
+  sym_table^[sym_idx].char_len  := 6;
   Consume;
  End Else If cur_tok_str = 'P' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_P;
-  sym_table[sym_idx].char_len  := 2;
+  sym_table^[sym_idx].data_type := TYPE_P;
+  sym_table^[sym_idx].char_len  := 2;
   Consume;
   If cur_tok_type = TOK_LPAREN Then
   Begin
    Consume;
-   sym_table[sym_idx].char_len := cur_tok_num;
+   sym_table^[sym_idx].char_len := cur_tok_num;
    If cur_tok_type = TOK_NUMBER Then Consume;
    If cur_tok_type = TOK_RPAREN Then Consume;
   End;
@@ -1984,24 +2004,24 @@ Begin
   If TokIsKw(KW_DECIMALS) Then
   Begin
    Consume;
-   sym_table[sym_idx].dec_scale := cur_tok_num;
+   sym_table^[sym_idx].dec_scale := cur_tok_num;
    If cur_tok_type = TOK_NUMBER Then Consume;
   End;
  End Else If cur_tok_str = 'STRING' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_STRING;
-  sym_table[sym_idx].char_len  := 255;
+  sym_table^[sym_idx].data_type := TYPE_STRING;
+  sym_table^[sym_idx].char_len  := 255;
   Consume;
  End Else If cur_tok_str = 'XSTRING' Then
  Begin
-  sym_table[sym_idx].data_type := TYPE_XSTRING;
-  sym_table[sym_idx].char_len  := 255;
+  sym_table^[sym_idx].data_type := TYPE_XSTRING;
+  sym_table^[sym_idx].char_len  := 255;
   Consume;
  End Else
  Begin
   { Type utilisateur (structure ou table definie par TYPES) : stub TYPE_STRUCT }
-  sym_table[sym_idx].data_type := TYPE_STRUCT;
-  sym_table[sym_idx].char_len  := 2;
+  sym_table^[sym_idx].data_type := TYPE_STRUCT;
+  sym_table^[sym_idx].char_len  := 2;
   Consume;
  End;
 End;
@@ -2010,8 +2030,8 @@ End;
 Function SymByteSize(sym_idx: Integer): Integer;
 Var dt, cl: Integer;
 Begin
- dt := sym_table[sym_idx].data_type;
- cl := sym_table[sym_idx].char_len;
+ dt := sym_table^[sym_idx].data_type;
+ cl := sym_table^[sym_idx].char_len;
  Case dt Of
   TYPE_I, TYPE_N : SymByteSize := 2;
   TYPE_F         : SymByteSize := 8;
@@ -2034,30 +2054,30 @@ Procedure ParseValue(sym_idx: Integer);
 Begin
  If Not TokIsKw(KW_VALUE) Then Exit;
  Consume;
- sym_table[sym_idx].has_init := True;
+ sym_table^[sym_idx].has_init := True;
  { VALUE IS INITIAL -> valeur zero }
  If TokIsKw(KW_IS) Then
  Begin
   Consume; EatKw(KW_INITIAL);
-  sym_table[sym_idx].init_num := 0;
-  sym_table[sym_idx].init_str := '';
+  sym_table^[sym_idx].init_num := 0;
+  sym_table^[sym_idx].init_str := '';
   Exit;
  End;
  If cur_tok_type = TOK_NUMBER Then
  Begin
-  sym_table[sym_idx].init_num := cur_tok_num;
-  Str(cur_tok_num, sym_table[sym_idx].init_str);
+  sym_table^[sym_idx].init_num := cur_tok_num;
+  Str(cur_tok_num, sym_table^[sym_idx].init_str);
   Consume;
  End Else If cur_tok_type = TOK_STRING Then
  Begin
-  sym_table[sym_idx].init_str := cur_tok_str;
-  sym_table[sym_idx].init_num := 0;
+  sym_table^[sym_idx].init_str := cur_tok_str;
+  sym_table^[sym_idx].init_num := 0;
   Consume;
  End Else If cur_tok_type = TOK_MINUS Then
  Begin
   Consume;
-  sym_table[sym_idx].init_num := -cur_tok_num;
-  sym_table[sym_idx].init_str := '-' + ItoS(cur_tok_num);
+  sym_table^[sym_idx].init_num := -cur_tok_num;
+  sym_table^[sym_idx].init_str := '-' + ItoS(cur_tok_num);
   If cur_tok_type = TOK_NUMBER Then Consume;
  End Else
   Warning('Valeur VALUE non reconnue dans declaration');
@@ -2087,8 +2107,8 @@ Begin
  If cur_tok_type = TOK_LPAREN Then
  Begin
   Consume;
-  sym_table[sym_idx].char_len  := cur_tok_num;
-  sym_table[sym_idx].data_type := TYPE_C;  { defaut si pas TYPE apres }
+  sym_table^[sym_idx].char_len  := cur_tok_num;
+  sym_table^[sym_idx].data_type := TYPE_C;  { defaut si pas TYPE apres }
   If cur_tok_type = TOK_NUMBER Then Consume;
   If cur_tok_type = TOK_RPAREN Then Consume;
  End;
@@ -2097,20 +2117,20 @@ Begin
  { VALUE ... }
  ParseValue(sym_idx);
  { Auto-ajuster char_len TYPE C si pas de (n) et VALUE fourni }
- If (sym_table[sym_idx].data_type = TYPE_C) Or
-    (sym_table[sym_idx].data_type = TYPE_N) Then
+ If (sym_table^[sym_idx].data_type = TYPE_C) Or
+    (sym_table^[sym_idx].data_type = TYPE_N) Then
  Begin
-  If (sym_table[sym_idx].char_len <= 1) And
-     sym_table[sym_idx].has_init And
-     (Length(sym_table[sym_idx].init_str) > 1) Then
-   sym_table[sym_idx].char_len := Length(sym_table[sym_idx].init_str);
+  If (sym_table^[sym_idx].char_len <= 1) And
+     sym_table^[sym_idx].has_init And
+     (Length(sym_table^[sym_idx].init_str) > 1) Then
+   sym_table^[sym_idx].char_len := Length(sym_table^[sym_idx].init_str);
  End;
  { ---- Allocation memoire / generation ASM ---- }
  If sc = STORE_CONSTANT Then
  Begin
   { CONSTANTS : pas de DW, valeur immediate utilisee a la compilation }
-  sym_table[sym_idx].is_const := True;
-  EmitComment('CONSTANTS ' + vname + ' = ' + sym_table[sym_idx].init_str);
+  sym_table^[sym_idx].is_const := True;
+  EmitComment('CONSTANTS ' + vname + ' = ' + sym_table^[sym_idx].init_str);
   Exit;
  End;
  bytes := SymByteSize(sym_idx);
@@ -2119,22 +2139,22 @@ Begin
   { Variable locale dans une FORM }
   If bytes < 2 Then bytes := 2;
   bpoff  := AllocLocalBp(bytes);
-  sym_table[sym_idx].bp_offset := bpoff;
+  sym_table^[sym_idx].bp_offset := bpoff;
   EmitI('SUB     SP, ' + ItoSI(bytes) + '   ; LOCAL ' + vname);
   { Initialisation si VALUE }
-  If sym_table[sym_idx].has_init Then
+  If sym_table^[sym_idx].has_init Then
   Begin
-   Case sym_table[sym_idx].data_type Of
+   Case sym_table^[sym_idx].data_type Of
     TYPE_I, TYPE_N, TYPE_P:
      EmitI('MOV     WORD PTR [BP' + ItoSI(bpoff) + '], ' +
-           ItoS(sym_table[sym_idx].init_num));
+           ItoS(sym_table^[sym_idx].init_num));
     TYPE_C, TYPE_STRING, TYPE_D, TYPE_T:
     Begin
-     If sym_table[sym_idx].init_str = '' Then
+     If sym_table^[sym_idx].init_str = '' Then
       EmitI('MOV     BYTE PTR [BP' + ItoSI(bpoff) + '], 32  ; espace')
      Else
      Begin
-      lblfx := AddStringLit(sym_table[sym_idx].init_str);
+      lblfx := AddStringLit(sym_table^[sym_idx].init_str);
       EmitI('LEA     SI, ' + lblfx);
       EmitI('LEA     DI, [BP' + ItoSI(bpoff) + ']');
       EmitI('CALL    _ABAP_STR_COPY');
@@ -2146,7 +2166,7 @@ Begin
  Begin
   { Variable globale → sera emise dans le DataSegment (GenDataSegment) }
   { Ici on emet juste un commentaire ; la definition DW/DB est differee }
-  EmitComment('DATA ' + vname + ' : ' + sym_table[sym_idx].asm_label + ' (global)');
+  EmitComment('DATA ' + vname + ' : ' + sym_table^[sym_idx].asm_label + ' (global)');
  End;
 End;
 
@@ -2239,14 +2259,14 @@ Var sc, dt, bp: Integer; lbl: String;
 Begin
  If (sym_idx < 1) Or (sym_idx > sym_count) Then
  Begin EmitComment('GenLoadVar: idx invalide'); Exit; End;
- sc  := sym_table[sym_idx].store_class;
- dt  := sym_table[sym_idx].data_type;
- bp  := sym_table[sym_idx].bp_offset;
- lbl := sym_table[sym_idx].asm_label;
+ sc  := sym_table^[sym_idx].store_class;
+ dt  := sym_table^[sym_idx].data_type;
+ bp  := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
  { CONSTANT : valeur immediate }
  If sc = STORE_CONSTANT Then
  Begin
-  EmitI('MOV     AX, ' + ItoS(sym_table[sym_idx].init_num));
+  EmitI('MOV     AX, ' + ItoS(sym_table^[sym_idx].init_num));
   Exit;
  End;
  Case dt Of
@@ -2275,10 +2295,10 @@ Var sc, dt, bp: Integer; lbl: String;
 Begin
  If (sym_idx < 1) Or (sym_idx > sym_count) Then
  Begin EmitComment('GenStoreVar: idx invalide'); Exit; End;
- sc  := sym_table[sym_idx].store_class;
- dt  := sym_table[sym_idx].data_type;
- bp  := sym_table[sym_idx].bp_offset;
- lbl := sym_table[sym_idx].asm_label;
+ sc  := sym_table^[sym_idx].store_class;
+ dt  := sym_table^[sym_idx].data_type;
+ bp  := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
  If sc = STORE_CONSTANT Then
  Begin Warning('Affectation a une CONSTANT ignoree'); Exit; End;
  Case dt Of
@@ -2487,7 +2507,7 @@ Begin
      If sym_idx > 0 Then
      Begin
       GenLoadVar(sym_idx);
-      ParsePrimaryExpr := sym_table[sym_idx].data_type;
+      ParsePrimaryExpr := sym_table^[sym_idx].data_type;
      End Else
      Begin
       EmitComment('Variable inconnue: ' + s + ' (suppose 0)');
@@ -2695,9 +2715,9 @@ Var sc, bp: Integer; lbl: String;
 Begin
  If (sym_idx < 1) Or (sym_idx > sym_count) Then
  Begin EmitComment('GenLoadAddr: idx invalide'); Exit; End;
- sc  := sym_table[sym_idx].store_class;
- bp  := sym_table[sym_idx].bp_offset;
- lbl := sym_table[sym_idx].asm_label;
+ sc  := sym_table^[sym_idx].store_class;
+ bp  := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
  If sc = STORE_AUTO Then
  Begin
   If bp >= 0 Then EmitI('LEA     AX, [BP+' + ItoSI(bp) + ']')
@@ -2759,12 +2779,12 @@ Var sc, dt, bp, cl: Integer; lbl: String;
 Begin
  If (sym_idx < 1) Or (sym_idx > sym_count) Then
  Begin EmitComment('GenClearVar: idx invalide'); Exit; End;
- sc  := sym_table[sym_idx].store_class;
- dt  := sym_table[sym_idx].data_type;
- bp  := sym_table[sym_idx].bp_offset;
- cl  := sym_table[sym_idx].char_len;
- lbl := sym_table[sym_idx].asm_label;
- EmitComment('CLEAR ' + sym_table[sym_idx].name);
+ sc  := sym_table^[sym_idx].store_class;
+ dt  := sym_table^[sym_idx].data_type;
+ bp  := sym_table^[sym_idx].bp_offset;
+ cl  := sym_table^[sym_idx].char_len;
+ lbl := sym_table^[sym_idx].asm_label;
+ EmitComment('CLEAR ' + sym_table^[sym_idx].name);
  Case dt Of
   TYPE_I, TYPE_P, TYPE_F:
   Begin
@@ -3238,7 +3258,7 @@ Begin
 
  fi := FindForm(fname);
  If fi = 0 Then fi := AddForm(fname); { forward reference : sera complete a FORM }
- EmitComment('PERFORM ' + form_table[fi].name);
+ EmitComment('PERFORM ' + form_table^[fi].name);
 
  { --- USING / CHANGING / TABLES : pousser les arguments --- }
  cur_kind := PARAM_USING;
@@ -3277,7 +3297,7 @@ Begin
  Else Warning('Point attendu apres PERFORM');
 
  { Appel : le callee fera RET n pour nettoyer la pile }
- EmitI('CALL    ' + form_table[fi].asm_label);
+ EmitI('CALL    ' + form_table^[fi].asm_label);
 End;
 
 { Parse FORM nom [USING p TYPE t ...] [CHANGING p TYPE t ...] [TABLES p ...].
@@ -3335,9 +3355,9 @@ Begin
    tmp_kind[n_params] := cur_kind;
    If sym_i > 0 Then
    Begin
-    sym_table[sym_i].is_param   := True;
-    sym_table[sym_i].param_idx  := n_params;
-    sym_table[sym_i].param_kind := cur_kind;
+    sym_table^[sym_i].is_param   := True;
+    sym_table^[sym_i].param_idx  := n_params;
+    sym_table^[sym_i].param_kind := cur_kind;
    End;
    Consume; { nom du parametre }
    { Clause TYPE / LIKE optionnelle sur ce parametre }
@@ -3346,15 +3366,15 @@ Begin
  End;
 
  { Mettre a jour form_table }
- form_table[fi].param_count := n_params;
- form_table[fi].defined     := True;
+ form_table^[fi].param_count := n_params;
+ form_table^[fi].defined     := True;
 
  { Fixer les offsets BP des parametres.
    La convention caller-push-L-to-R donne :
      param i  -> [BP + 4 + (N - i) * 2]                             }
  For i := 1 To n_params Do
   If tmp_idx[i] > 0 Then
-   sym_table[tmp_idx[i]].bp_offset := 4 + (n_params - i) * 2;
+   sym_table^[tmp_idx[i]].bp_offset := 4 + (n_params - i) * 2;
 
  { Point terminateur de la ligne FORM }
  If cur_tok_type = TOK_DOT Then Consume
@@ -3362,8 +3382,8 @@ Begin
 
  { Emmettre l'etiquette de procedure et le prologue }
  EmitBlank;
- EmitComment('FORM ' + form_table[fi].name);
- EmitLabel(form_table[fi].asm_label);
+ EmitComment('FORM ' + form_table^[fi].name);
+ EmitLabel(form_table^[fi].asm_label);
  GenPrologue(0);   { pas de locaux pour l'instant ; DATA locaux : TODO 18 }
 
  { Corps de la FORM }
@@ -3442,7 +3462,7 @@ Begin
    Warning('WRITE : variable inconnue ''' + cur_tok_str + '''');
    Consume; Exit;
   End;
-  dt := sym_table[sym_idx].data_type;
+  dt := sym_table^[sym_idx].data_type;
   Consume;
   GenLoadVar(sym_idx);
   { Options syntaxiques apres le nom de variable (ignorees en generation) }
@@ -3855,12 +3875,12 @@ Begin
  sy_tabix := FindSym('SY-TABIX');
  If sy_tabix > 0 Then
  Begin
-  EmitI('MOV     WORD PTR [' + sym_table[sy_tabix].asm_label + '], 0');
+  EmitI('MOV     WORD PTR [' + sym_table^[sy_tabix].asm_label + '], 0');
  End;
 
  { Adresse debut de la table -> SI (stub : table en .DATA) }
  If itab_idx > 0 Then
-  EmitI('LEA     SI, ' + sym_table[itab_idx].asm_label)
+  EmitI('LEA     SI, ' + sym_table^[itab_idx].asm_label)
  Else
   EmitI('XOR     SI, SI  ; table inconnue');
 
@@ -3868,7 +3888,7 @@ Begin
 
  { Incrementer SY-TABIX }
  If sy_tabix > 0 Then
-  EmitI('INC     WORD PTR [' + sym_table[sy_tabix].asm_label + ']');
+  EmitI('INC     WORD PTR [' + sym_table^[sy_tabix].asm_label + ']');
 
  { Copier element courant -> wa (stub : on suppose element = 2 octets = WORD) }
  If has_into And (wa_idx > 0) Then
@@ -3950,7 +3970,7 @@ Begin
  { SY-SUBRC = 0 }
  sy_subrc := FindSym('SY-SUBRC');
  If sy_subrc > 0 Then
-  EmitI('MOV     WORD PTR [' + sym_table[sy_subrc].asm_label + '], 0');
+  EmitI('MOV     WORD PTR [' + sym_table^[sy_subrc].asm_label + '], 0');
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres APPEND');
 End;
@@ -4017,7 +4037,7 @@ Begin
 
  sy_subrc := FindSym('SY-SUBRC');
  If sy_subrc > 0 Then
-  EmitI('MOV     [' + sym_table[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
+  EmitI('MOV     [' + sym_table^[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
 
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres READ TABLE');
@@ -4088,7 +4108,7 @@ Begin
  EmitI('ADD     SP, 2');
  sy_subrc := FindSym('SY-SUBRC');
  If sy_subrc > 0 Then
-  EmitI('MOV     [' + sym_table[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
+  EmitI('MOV     [' + sym_table^[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres DELETE');
 End;
@@ -4420,7 +4440,7 @@ Begin
  EmitI('ADD     SP, 8');
  sy_subrc := FindSym('SY-SUBRC');
  If sy_subrc > 0 Then
-  EmitI('MOV     [' + sym_table[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
+  EmitI('MOV     [' + sym_table^[sy_subrc].asm_label + '], AX  ; SY-SUBRC');
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres FIND');
 End;
@@ -4496,20 +4516,20 @@ Begin
 
  For i := 1 To sym_count Do
  Begin
-  If sym_table[i].store_class <> STORE_STATIC Then Continue;
-  If sym_table[i].is_const Then Continue; { constantes : pas de DATA }
+  If sym_table^[i].store_class <> STORE_STATIC Then Continue;
+  If sym_table^[i].is_const Then Continue; { constantes : pas de DATA }
 
-  lbl := sym_table[i].asm_label;
-  dt  := sym_table[i].data_type;
-  cl  := sym_table[i].char_len;
+  lbl := sym_table^[i].asm_label;
+  dt  := sym_table^[i].data_type;
+  cl  := sym_table^[i].char_len;
   If cl < 1 Then cl := 1;
 
   Case dt Of
 
    TYPE_I:
    Begin
-    If sym_table[i].has_init Then
-     iv := sym_table[i].init_num
+    If sym_table^[i].has_init Then
+     iv := sym_table^[i].init_num
     Else
      iv := 0;
     Emit(DataLbl(lbl) + 'DW      ' + ItoS(iv));
@@ -4534,9 +4554,9 @@ Begin
     { Cas TYPE C(n) ou N(n) : chaine longueur fixe }
     nb := cl;
     If nb < 1 Then nb := 1;
-    If sym_table[i].has_init And (sym_table[i].init_str <> '') Then
+    If sym_table^[i].has_init And (sym_table^[i].init_str <> '') Then
     Begin
-     pad := sym_table[i].init_str;
+     pad := sym_table^[i].init_str;
      { Completer avec des espaces jusqu'a nb chars }
      While Length(pad) < nb Do pad := pad + ' ';
      init := '''' + AsmStrLit(Copy(pad, 1, nb)) + ''', ''$''';
@@ -4550,8 +4570,8 @@ Begin
    TYPE_D:
    Begin
     { Date YYYYMMDD : 8 chars + '$' }
-    If sym_table[i].has_init And (sym_table[i].init_str <> '') Then
-     Emit(DataLbl(lbl) + 'DB      ''' + sym_table[i].init_str + ''', ''$''')
+    If sym_table^[i].has_init And (sym_table^[i].init_str <> '') Then
+     Emit(DataLbl(lbl) + 'DB      ''' + sym_table^[i].init_str + ''', ''$''')
     Else
      Emit(DataLbl(lbl) + 'DB      ''00000000'', ''$'' ; TYPE D');
    End;
@@ -4559,8 +4579,8 @@ Begin
    TYPE_T:
    Begin
     { Heure HHMMSS : 6 chars + '$' }
-    If sym_table[i].has_init And (sym_table[i].init_str <> '') Then
-     Emit(DataLbl(lbl) + 'DB      ''' + sym_table[i].init_str + ''', ''$''')
+    If sym_table^[i].has_init And (sym_table^[i].init_str <> '') Then
+     Emit(DataLbl(lbl) + 'DB      ''' + sym_table^[i].init_str + ''', ''$''')
     Else
      Emit(DataLbl(lbl) + 'DB      ''000000'', ''$'' ; TYPE T');
    End;
@@ -4603,8 +4623,8 @@ Begin
   EmitComment('--- Chaines litterales ---');
   For i := 1 To str_count Do
   Begin
-   lbl  := str_table[i].asm_label;
-   init := str_table[i].text;
+   lbl  := str_table^[i].asm_label;
+   init := str_table^[i].text;
    { Emet : label DB 'texte$' ou similaire }
    Emit(DataLbl(lbl) + 'DB      ''' + AsmStrLit(init) + '''');
   End;
@@ -5014,11 +5034,11 @@ Begin
  End Else
  Begin
   Consume;
-  If sym_table[sym_idx].data_type = TYPE_TABLE Then
+  If sym_table^[sym_idx].data_type = TYPE_TABLE Then
   Begin
    { Pour une table interne, remettre le mot de tete (count) a 0 }
    EmitComment('CLEAR ITAB : reset compteur elements');
-   EmitI('MOV     WORD PTR [' + sym_table[sym_idx].asm_label + '], 0');
+   EmitI('MOV     WORD PTR [' + sym_table^[sym_idx].asm_label + '], 0');
   End Else
    GenClearVar(sym_idx);
  End;
@@ -5045,11 +5065,11 @@ Begin
  If sym_idx > 0 Then
  Begin
   EmitComment('REFRESH ' + tname + ' : remise a zero du compteur (stub)');
-  EmitI('MOV     WORD PTR [' + sym_table[sym_idx].asm_label + '], 0');
+  EmitI('MOV     WORD PTR [' + sym_table^[sym_idx].asm_label + '], 0');
   { Remettre aussi SY-TABIX a 0 }
   sy_ti := FindSym('SY-TABIX');
   If sy_ti > 0 Then
-   EmitI('MOV     WORD PTR [' + sym_table[sy_ti].asm_label + '], 0');
+   EmitI('MOV     WORD PTR [' + sym_table^[sy_ti].asm_label + '], 0');
  End;
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres REFRESH');
@@ -5073,7 +5093,7 @@ Begin
  If sym_idx > 0 Then
  Begin
   EmitComment('FREE ' + tname + ' : remise a zero (stub)');
-  EmitI('MOV     WORD PTR [' + sym_table[sym_idx].asm_label + '], 0');
+  EmitI('MOV     WORD PTR [' + sym_table^[sym_idx].asm_label + '], 0');
  End;
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres FREE');
@@ -5267,11 +5287,11 @@ Begin
  { Generation stub : SY-SUBRC=4, SY-TABIX=0, SY-DBCNT=0 }
  EmitComment('SELECT stub : 0 resultats, SY-SUBRC=4');
  If sy_subrc_idx > 0 Then
-  EmitI('MOV     WORD PTR [' + sym_table[sy_subrc_idx].asm_label + '], 4');
+  EmitI('MOV     WORD PTR [' + sym_table^[sy_subrc_idx].asm_label + '], 4');
  If sy_tabix_idx > 0 Then
-  EmitI('MOV     WORD PTR [' + sym_table[sy_tabix_idx].asm_label + '], 0');
+  EmitI('MOV     WORD PTR [' + sym_table^[sy_tabix_idx].asm_label + '], 0');
  If sy_dbcnt > 0 Then
-  EmitI('MOV     WORD PTR [' + sym_table[sy_dbcnt].asm_label + '], 0');
+  EmitI('MOV     WORD PTR [' + sym_table^[sy_dbcnt].asm_label + '], 0');
 
  If is_single Then
  Begin
@@ -5348,7 +5368,7 @@ Begin
  { SY-SUBRC = 0 (stub : appel reussi) }
  sy_subrc := FindSym('SY-SUBRC');
  If sy_subrc > 0 Then
-  EmitI('MOV     WORD PTR [' + sym_table[sy_subrc].asm_label + '], 0  ; CALL FUNCTION stub');
+  EmitI('MOV     WORD PTR [' + sym_table^[sy_subrc].asm_label + '], 0  ; CALL FUNCTION stub');
 
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres CALL FUNCTION');
@@ -5652,8 +5672,8 @@ Begin
  { Enregistrer dans evt_table }
  If ev_kind <= MAX_EVTS Then
  Begin
-  evt_table[ev_kind].defined   := True;
-  evt_table[ev_kind].asm_label := ev_label;
+  evt_table^[ev_kind].defined   := True;
+  evt_table^[ev_kind].asm_label := ev_label;
  End;
 
  EmitBlank;
@@ -5694,31 +5714,31 @@ Begin
  EmitI('PUSH    BP');
  EmitI('MOV     BP, SP');
  EmitBlank;
- If evt_table[EV_START_OF_SEL].defined Then
-  EmitI('CALL    ' + evt_table[EV_START_OF_SEL].asm_label
+ If evt_table^[EV_START_OF_SEL].defined Then
+  EmitI('CALL    ' + evt_table^[EV_START_OF_SEL].asm_label
         + '  ; START-OF-SELECTION');
- If evt_table[EV_END_OF_SEL].defined Then
-  EmitI('CALL    ' + evt_table[EV_END_OF_SEL].asm_label
+ If evt_table^[EV_END_OF_SEL].defined Then
+  EmitI('CALL    ' + evt_table^[EV_END_OF_SEL].asm_label
         + '  ; END-OF-SELECTION');
- If evt_table[EV_TOP_OF_PAGE].defined Then
-  EmitI('CALL    ' + evt_table[EV_TOP_OF_PAGE].asm_label
+ If evt_table^[EV_TOP_OF_PAGE].defined Then
+  EmitI('CALL    ' + evt_table^[EV_TOP_OF_PAGE].asm_label
         + '  ; TOP-OF-PAGE');
- If evt_table[EV_END_OF_PAGE].defined Then
-  EmitI('CALL    ' + evt_table[EV_END_OF_PAGE].asm_label
+ If evt_table^[EV_END_OF_PAGE].defined Then
+  EmitI('CALL    ' + evt_table^[EV_END_OF_PAGE].asm_label
         + '  ; END-OF-PAGE');
- If evt_table[EV_LINE_SEL].defined Then
-  EmitI('CALL    ' + evt_table[EV_LINE_SEL].asm_label
+ If evt_table^[EV_LINE_SEL].defined Then
+  EmitI('CALL    ' + evt_table^[EV_LINE_SEL].asm_label
         + '  ; AT LINE-SELECTION');
- If evt_table[EV_USER_CMD].defined Then
-  EmitI('CALL    ' + evt_table[EV_USER_CMD].asm_label
+ If evt_table^[EV_USER_CMD].defined Then
+  EmitI('CALL    ' + evt_table^[EV_USER_CMD].asm_label
         + '  ; AT USER-COMMAND');
  { Si aucun evenement : REPORT vide -> NOP }
- If Not (evt_table[EV_START_OF_SEL].defined Or
-         evt_table[EV_END_OF_SEL].defined   Or
-         evt_table[EV_TOP_OF_PAGE].defined  Or
-         evt_table[EV_END_OF_PAGE].defined  Or
-         evt_table[EV_LINE_SEL].defined     Or
-         evt_table[EV_USER_CMD].defined) Then
+ If Not (evt_table^[EV_START_OF_SEL].defined Or
+         evt_table^[EV_END_OF_SEL].defined   Or
+         evt_table^[EV_TOP_OF_PAGE].defined  Or
+         evt_table^[EV_END_OF_PAGE].defined  Or
+         evt_table^[EV_LINE_SEL].defined     Or
+         evt_table^[EV_USER_CMD].defined) Then
   EmitComment('; REPORT vide (aucun evenement declare)');
  EmitBlank;
  EmitI('POP     BP');
@@ -5748,11 +5768,11 @@ Begin
   Consume;
   If cur_tok_type = TOK_STRING Then
   Begin
-   sym_table[sym_idx].init_str := cur_tok_str; Consume;
+   sym_table^[sym_idx].init_str := cur_tok_str; Consume;
   End Else If cur_tok_type = TOK_NUMBER Then
   Begin
-   sym_table[sym_idx].init_num := cur_tok_num;
-   Str(cur_tok_num, sym_table[sym_idx].init_str);
+   sym_table^[sym_idx].init_num := cur_tok_num;
+   Str(cur_tok_num, sym_table^[sym_idx].init_str);
    Consume;
   End Else Warning('PARAMETERS DEFAULT : valeur attendue');
  End;
@@ -5781,8 +5801,8 @@ Begin
  { Declarer les deux bornes comme TYPE_C(128) }
  sym_low  := AddSym(soname + '_LOW',  TYPE_C, STORE_STATIC);
  sym_high := AddSym(soname + '_HIGH', TYPE_C, STORE_STATIC);
- If sym_low  > 0 Then sym_table[sym_low].char_len  := 128;
- If sym_high > 0 Then sym_table[sym_high].char_len := 128;
+ If sym_low  > 0 Then sym_table^[sym_low].char_len  := 128;
+ If sym_high > 0 Then sym_table^[sym_high].char_len := 128;
  If cur_tok_type = TOK_DOT Then Consume
  Else Warning('Point attendu apres SELECT-OPTIONS ' + soname);
 End;
@@ -5932,6 +5952,13 @@ Begin
   WriteLn('  *** COMPILATION AVEC ERREURS ***');
   Halt(1);
  End;
+
+ { ----- 10. Liberation des tables du tas ----- }
+ Dispose(sym_table);   sym_table   := nil;
+ Dispose(form_table);  form_table  := nil;
+ Dispose(str_table);   str_table   := nil;
+ Dispose(evt_table);   evt_table   := nil;
+ Dispose(scope_stack); scope_stack := nil;
 End;
 
 Begin

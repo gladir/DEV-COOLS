@@ -670,7 +670,7 @@ End;
 { ============================================================================ }
 
 Procedure InitHeap;Begin
- { Initialiser la m‚moire de tas de cons cells }
+  { Initialiser la m‚moire de tas de cons cells }
  heap_free := 1;
  FillChar(heap_cons, SizeOf(heap_cons), 0);
 End;
@@ -683,23 +683,27 @@ Function MakeT: TLispVal;Begin
  MakeT := LVAL_T;
 End;
 
-Function MakeFix(n: Integer): TLispVal;
-Begin
- { TODO 04 : Encoder un entier en LTAG_FIXNUM }
- { LTAG_FIXNUM = 2 = 010 en binaire => shift left 13 = $4000             }
+Function MakeFix(n: Integer): TLispVal;Begin
+ { Encoder un entier en LTAG_FIXNUM }
+ { LTAG_FIXNUM = 2 = 010 en binaire => d‚calage vers la gauche 13 = $4000 }
  { payload = n AND $1FFF (13 bits, attention au signe)                    }
  MakeFix := ((LTAG_FIXNUM Shl LTAG_SHIFT) Or (n And LPAY_MASK));
 End;
 
-Function MakeSym(idx: Integer): TLispVal;
-Begin MakeSym := ((LTAG_SYM Shl LTAG_SHIFT) Or (idx And LPAY_MASK)); End;
+Function MakeSym(idx: Integer): TLispVal;Begin
+ MakeSym := ((LTAG_SYM Shl LTAG_SHIFT) Or (idx And LPAY_MASK));
+End;
 
 Function MakeCons(car_v, cdr_v: TLispVal): TLispVal;
-Var idx: Integer;
+Var
+ idx: Integer;
 Begin
- { TODO 04 : Allouer une cons cell dans heap_cons }
- If heap_free > MAX_CONS Then
- Begin Error('Tas LISP plein'); MakeCons := LVAL_NIL; Exit; End;
+ { Allouer une cons cell dans heap_cons }
+ If heap_free > MAX_CONS Then Begin
+  Error('Tas LISP plein');
+  MakeCons := LVAL_NIL;
+  Exit;
+ End;
  idx := heap_free;
  heap_cons[idx].car_val := car_v;
  heap_cons[idx].cdr_val := cdr_v;
@@ -708,11 +712,17 @@ Begin
 End;
 
 Function MakeStr(Const s: String): TLispVal;
-Var p: PStrEntry; lbl: String; idx: Integer;
+Var
+ p: PStrEntry;
+ lbl: String;
+ idx: Integer;
 Begin
- { TODO 04 : Enregistrer une chaine dans str_table }
- If str_count >= MAX_STR Then
- Begin Error('Trop de chaines'); MakeStr := LVAL_NIL; Exit; End;
+  { Enregistrer une chaine dans str_table }
+ If str_count >= MAX_STR Then Begin
+  Error('Trop de chaines');
+  MakeStr := LVAL_NIL;
+  Exit;
+ End;
  Inc(str_count);
  Inc(lit_counter);
  lbl := '_LS' + ItoSI(lit_counter);
@@ -723,52 +733,64 @@ Begin
  MakeStr := ((LTAG_STR Shl LTAG_SHIFT) Or (str_count And LPAY_MASK));
 End;
 
-Function TagOf(v: TLispVal): Byte;
-Begin TagOf := (v Shr LTAG_SHIFT) And 7; End;
+Function TagOf(v: TLispVal): Byte;Begin
+ TagOf := (v Shr LTAG_SHIFT) And 7;
+End;
 
 Function PayOf(v: TLispVal): Integer;
-Var p: Integer;
+Var
+ p: Integer;
 Begin
  p := v And LPAY_MASK;
- { Extension de signe sur 13 bits si FIXNUM }
- If (TagOf(v) = LTAG_FIXNUM) And (p And $1000 <> 0) Then
-  p := p Or (not LPAY_MASK);
+  { Extension de signe sur 13 bits si FIXNUM }
+ If (TagOf(v) = LTAG_FIXNUM) And (p And $1000 <> 0) Then p := p Or (not LPAY_MASK);
  PayOf := p;
 End;
 
-Function IsNilVal(v: TLispVal): Boolean;
-Begin IsNilVal := (v = LVAL_NIL); End;
-
-Function IsTVal(v: TLispVal): Boolean;
-Begin IsTVal := (TagOf(v) = LTAG_T); End;
-
-Function CarOf(v: TLispVal): TLispVal;
-Begin
- If TagOf(v) = LTAG_CONS Then CarOf := heap_cons[PayOf(v)].car_val
- Else Begin Error('CAR d''un non-cons'); CarOf := LVAL_NIL; End;
+Function IsNilVal(v: TLispVal): Boolean;Begin
+ IsNilVal := (v = LVAL_NIL);
 End;
 
-Function CdrOf(v: TLispVal): TLispVal;
-Begin
+Function IsTVal(v: TLispVal): Boolean;Begin
+ IsTVal := (TagOf(v) = LTAG_T);
+End;
+
+Function CarOf(v: TLispVal): TLispVal;Begin
+ If TagOf(v) = LTAG_CONS Then CarOf := heap_cons[PayOf(v)].car_val
+  Else
+ Begin
+  Error('CAR d''un non-cons');
+  CarOf := LVAL_NIL;
+ End;
+End;
+
+Function CdrOf(v: TLispVal): TLispVal;Begin
  If TagOf(v) = LTAG_CONS Then CdrOf := heap_cons[PayOf(v)].cdr_val
- Else Begin Error('CDR d''un non-cons'); CdrOf := LVAL_NIL; End;
+  Else
+ Begin
+  Error('CDR d''un non-cons');
+  CdrOf := LVAL_NIL;
+ End;
 End;
 
 { ============================================================================ }
-{ TODO 05 - LECTEUR DE S-EXPRESSIONS                     [COMPLET]             }
+{ LECTEUR DE S-EXPRESSIONS                                                     }
 { ============================================================================ }
 
 Function ReadExpr: TLispVal; Forward;
 
 Function ReadList: TLispVal;
-Var head_v, tail_v, elem_v, cell_v: TLispVal;
+Var
+ head_v, tail_v, elem_v, cell_v: TLispVal;
 Begin
- { Construction iterative de la liste, evite les problemes de recursion }
+  { Construction it‚rative de la liste, ‚vite les problŠmes de r‚cursion }
  head_v := LVAL_NIL;
  tail_v := LVAL_NIL;
  Repeat
-  If cur_tok_type = TOK_RPAREN Then
-  Begin Consume; Break; End;
+  If cur_tok_type = TOK_RPAREN Then Begin
+   Consume;
+   Break;
+  End;
   If cur_tok_type = TOK_EOF Then
   Begin Error('EOF inattendu dans la liste'); Break; End;
   elem_v := ReadExpr;
