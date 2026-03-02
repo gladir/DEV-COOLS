@@ -5433,19 +5433,16 @@ Begin
  parse_return_statement := True;
  safe_writeln('; RETURN statement');
   { V‚rifier s'il y a une valeur de retour }
- If not match(';') Then Begin
-  expression_bool(lval);
-  If not match(';') Then
-   errrpt('Expected ; after return value');
+ If not match(';') Then Begin expression_bool(lval);
+  If not match(';') Then errrpt('Expected ; after return value');
  End
- Else
+  Else
  Begin
   { Retour void - charger 0 }
   ot('MOV  AX, 0');
   nl;
  End;
-
- { Gï¿½nï¿½rer le code de retour }
+  { G‚n‚rer le code de retour }
  ol('ret');
 End;
 
@@ -5454,106 +5451,82 @@ Var
  break_label: Integer;
 Begin
  parse_break_statement := False;
-
  If not match('break') Then Exit;
  parse_break_statement := True;
-
  safe_writeln('; BREAK statement');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after break');
-
- { Obtenir l'ï¿½tiquette break courante du contexte de boucle }
+  { Point-virgule attendue }
+ If not match(';') Then errrpt('; attendu aprŠs break');
+  { Obtenir l'‚tiquette break courante du contexte de boucle }
  break_label := get_current_break_label;
- If break_label = -1 Then
- Begin
+ If break_label = -1 Then Begin
   errrpt('break statement not within a loop');
   Exit;
  End;
-
- { Sauter ï¿½ la fin de la boucle courante }
+  { Sauter … la fin de la boucle courante }
  ot('JMP  ');
  printlabel(break_label);
  nl;
 End;
 
-Function parse_continue_statement: Boolean;
+Function parse_continue_statement:Boolean;
 Var
  continue_label: Integer;
 Begin
  parse_continue_statement := False;
-
  If not match('continue') Then Exit;
  parse_continue_statement := True;
-
  safe_writeln('; CONTINUE statement');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after continue');
-
- { Obtenir l'ï¿½tiquette continue courante du contexte de boucle }
+  { Point-virgule attendu }
+ If not match(';') Then errrpt('Expected ; after continue');
+  { Obtenir l'‚tiquette continue courante du contexte de boucle }
  continue_label := get_current_continue_label;
- If continue_label = -1 Then
- Begin
+ If continue_label = -1 Then Begin
   errrpt('continue statement not within a loop');
   Exit;
  End;
-
- { Sauter ï¿½ la condition de boucle }
+  { Sauter … la condition de boucle }
  ot('JMP  ');
  printlabel(continue_label);
  nl;
 End;
 
-{ Analyser une instruction goto }
+ { Analyser une instruction goto }
 Function parse_goto_statement: Boolean;
 Var
  label_name: String;
 Begin
  parse_goto_statement := False;
-
  If not match('goto') Then Exit;
  parse_goto_statement := True;
-
  safe_writeln('; GOTO statement');
-
- { Obtenir le nom de l'Ã©tiquette }
- If not symname(label_name) Then
- Begin
+  { Obtenir le nom de l'‚tiquette }
+ If not symname(label_name) Then Begin
   Case Language of
    _English: errrpt('Expected label name after goto');
    {$IFDEF FPC}
    _Germany: errrpt('Label-Name nach goto erwartet');
    {$ENDIF}
-   Else errrpt('Nom d''Ã©tiquette attendu aprÃ¨s goto');
+   Else errrpt('Nom d''‚tiquette attendu aprÃ¨s goto');
   End;
   Exit;
  End;
-
- { Attendre point-virgule }
- If not match(';') Then
-  errrpt('Expected ; after goto statement');
-
- { GÃ©nÃ©rer le saut vers l'Ã©tiquette }
+  { Attendre point-virgule }
+ If not match(';') Then errrpt('; attendu aprŠs l''instruction goto');
+  { G‚n‚rer le saut vers l'‚tiquette }
  use_goto_label(label_name);
 End;
 
-{ Analyser une dÃ©finition d'Ã©tiquette (label:) }
+ { Analyser une d‚finition d'‚tiquette (label:) }
 Function parse_label_statement: Boolean;
 Var
  label_name: String;
  save_lptr: Integer;
 Begin
  parse_label_statement := False;
-
- { Sauvegarder la position pour pouvoir revenir en arriÃ¨re }
+  { Sauvegarder la position pour pouvoir revenir en arriŠre }
  save_lptr := lptr;
-
- { VÃ©rifier s'il y a un identificateur suivi de ':' }
- If symname(label_name) and match(':') Then
- Begin
+  { V‚rifier s'il y a un identificateur suivi de ':' }
+ If symname(label_name) and match(':') Then Begin
   parse_label_statement := True;
   safe_writeln('; DÃ©finition d''Ã©tiquette: ' + label_name);
   define_goto_label(label_name);

@@ -3374,6 +3374,174 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 14 - PARSEUR : WRITE / SKIP / NEW-LINE            [COMPLET]            }
+{ ============================================================================ }
+
+{ Emet un seul element WRITE : variable ou literal.
+
+  Gestion des types :
+    TYPE I / N / P / F  -> GenLoadVar(AX = valeur) -> GenPrintInt
+    TYPE C / STRING / D / T -> GenLoadVar(AX = adresse) -> GenPrintStr
+    Literal chaine ('...') -> AddStringLit -> LEA AX, lbl -> GenPrintStr
+    '/' separateur WRITE: -> CALL _ABAP_CRLF (nouvelle ligne)
+
+  Options syntaxiques qui suivent un element (ignorees en generation) :
+    LEFT-JUSTIFIED    -> consomme LEFT + JUSTIFIED
+    RIGHT-JUSTIFIED   -> consomme RIGHT + JUSTIFIED
+    NO-GAPS           -> consomme NO-GAPS
+    CENTERED          -> consomme CENTERED
+}
+Procedure WriteOneItem;
+Var sym_idx : Integer;
+    dt      : Integer;
+    lbl     : String;
+Begin
+ { '/' dans WRITE: liste -> saut de ligne }
+ If cur_tok_type = TOK_SLASH Then
+ Begin
+  Consume;
+  EmitI('CALL    _ABAP_CRLF');
+  Exit;
+ End;
+
+ { Literal chaine 'texte' }
+ If cur_tok_type = TOK_STRING Then
+ Begin
+  { AddStringLit ajoute deja le '$' terminateur }
+  lbl := AddStringLit(cur_tok_str + '$');
+  Consume;
+  EmitI('LEA     AX, ' + lbl);
+  GenPrintStr;
+  { Options optionnelles apres le literal (ignorees) :
+    LEFT-JUSTIFIED, RIGHT-JUSTIFIED, CENTERED = token compose unique.
+    LEFT, RIGHT, NO-GAPS = mots-cles simples.                             }
+  While TokIsKw(KW_LEFT) Or TokIsKw(KW_RIGHT) Or TokIsKw(KW_NO_GAPS) Or
+        (cur_tok_str = 'LEFT-JUSTIFIED') Or (cur_tok_str = 'RIGHT-JUSTIFIED') Or
+        (cur_tok_str = 'CENTERED') Do Consume;
+  Exit;
+ End;
+
+ { Variable ou expression }
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+ Begin
+  sym_idx := FindSym(cur_tok_str);
+  If sym_idx = 0 Then
+  Begin
+   Warning('WRITE : variable inconnue ''' + cur_tok_str + '''');
+   Consume; Exit;
+  End;
+  dt := sym_table[sym_idx].data_type;
+  Consume;
+  GenLoadVar(sym_idx);
+  { Options syntaxiques apres le nom de variable (ignorees en generation) }
+  While TokIsKw(KW_LEFT) Or TokIsKw(KW_RIGHT) Or TokIsKw(KW_NO_GAPS) Or
+        (cur_tok_str = 'LEFT-JUSTIFIED') Or (cur_tok_str = 'RIGHT-JUSTIFIED') Or
+        (cur_tok_str = 'CENTERED') Do Consume;
+  Case dt Of
+   TYPE_C, TYPE_STRING, TYPE_D, TYPE_T, TYPE_N, TYPE_XSTRING:
+    GenPrintStr;
+  Else
+   GenPrintInt;
+  End;
+  Exit;
+ End;
+
+ { Nombre literal }
+ If cur_tok_type = TOK_NUMBER Then
+ Begin
+  EmitI('MOV     AX, ' + ItoSI(cur_tok_num));
+  Consume;
+  GenPrintInt;
+  Exit;
+ End;
+
+ { Rien de reconnu : avancer pour eviter boucle infinie }
+ Warning('WRITE : element inattendu ''' + cur_tok_str + '''');
+ Consume;
+End;
+
+{ Parse WRITE [: item [, item ...] ].
+
+  Deux formes :
+    WRITE nom_var.               <- un seul element
+    WRITE: 'Texte', var, /.     <- liste apres ':'
+
+  La barre '/' dans une liste WRITE: emet une nouvelle ligne.
+  La barre '/' dans NEW-LINE ou SKIP : une autre instruction.
+}
+Procedure ParseWrite;
+Var list_mode : Boolean;
+Begin
+ Consume; { skip WRITE }
+ EmitComment('WRITE');
+
+ list_mode := (cur_tok_type = TOK_COLON);
+ If list_mode Then Consume; { skip ':' }
+
+ { Premier element (toujours present sauf WRITE: suivi direct du point) }
+ If cur_tok_type <> TOK_DOT Then
+  WriteOneItem;
+
+ If list_mode Then
+ Begin
+  { Elements supplementaires separes par des virgules }
+  While (cur_tok_type = TOK_COMMA) Or (cur_tok_type = TOK_SLASH) Do
+  Begin
+   If cur_tok_type = TOK_COMMA Then Consume; { skip ',' }
+   If cur_tok_type = TOK_DOT Then Break;
+   WriteOneItem;
+  End;
+ End;
+
+ { Point terminateur }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres WRITE');
+End;
+
+{ Parse SKIP [n].
+
+  SKIP       -> 1 CALL _ABAP_CRLF
+  SKIP 3     -> 3 CALL _ABAP_CRLF
+  SKIP TO n  -> ignore la position, emet 1 CRLF (stub)
+}
+Procedure ParseSkip;
+Var n, i : Integer;
+Begin
+ Consume; { skip SKIP }
+ EmitComment('SKIP');
+
+ n := 1;
+ If cur_tok_type = TOK_NUMBER Then
+ Begin n := cur_tok_num; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) And (cur_tok_str = 'TO') Then
+ Begin
+  { SKIP TO line (stub : ignore la position, emet juste un CRLF) }
+  Consume;
+  If cur_tok_type = TOK_NUMBER Then Consume;
+  n := 1;
+  Warning('SKIP TO : position ignoree (stub)');
+ End;
+
+ If n < 1 Then n := 1;
+ If n > 255 Then n := 255;
+ For i := 1 To n Do
+  EmitI('CALL    _ABAP_CRLF');
+
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres SKIP');
+End;
+
+{ Parse NEW-LINE. -> CALL _ABAP_CRLF }
+Procedure ParseNewLine;
+Begin
+ Consume; { skip NEW-LINE }
+ EmitComment('NEW-LINE');
+ EmitI('CALL    _ABAP_CRLF');
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres NEW-LINE');
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
