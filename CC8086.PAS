@@ -5412,35 +5412,28 @@ Begin
   { Expect semicolon }
  If not match(';') Then
   errrpt('Expected ; after do-while');
-
- { GÔøΩnÔøΩrer le saut conditionnel en retour }
+  { GÇnÇrer le saut conditionnel en retour }
  ol('CMP  AX, 0');
  ot('JNE  ');
  printlabel(loop_label);
  nl;
-
- { ÔøΩtiquette de fin }
+  { êtiquette de fin }
  prelabel(end_label);
  safe_writeln('; End DO-WHILE');
-
- { DÔøΩpiler le contexte de boucle }
+  { DÇpiler le contexte de boucle }
  { pop_loop_context; }
 End;
 
-Function parse_return_statement: Boolean;
+Function parse_return_statement:Boolean;
 Var
  lval: TLVal;
 Begin
  parse_return_statement := False;
-
  If not match('return') Then Exit;
  parse_return_statement := True;
-
  safe_writeln('; RETURN statement');
-
- { VÔøΩrifier s'il y a une valeur de retour }
- If not match(';') Then
- Begin
+  { VÇrifier s'il y a une valeur de retour }
+ If not match(';') Then Begin
   expression_bool(lval);
   If not match(';') Then
    errrpt('Expected ; after return value');

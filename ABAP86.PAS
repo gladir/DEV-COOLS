@@ -3055,6 +3055,325 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 12 - PARSEUR : WHILE/ENDWHILE et DO [n TIMES]/ENDDO  [COMPLET]         }
+{ ============================================================================ }
+
+{ Parse WHILE condition. instructions. ENDWHILE.
+
+  Generation :
+  lbl_top:
+    ParseExpr -> AX
+    TEST AX, AX
+    JZ  lbl_end
+    ... corps ...
+    JMP lbl_top
+  lbl_end:
+
+  CONTINUE -> JMP lbl_top   (re-evaluer la condition)
+  EXIT     -> JMP lbl_end   (sortir de la boucle)
+}
+Procedure ParseWhile;
+Var lbl_top, lbl_end : String;
+Begin
+ Consume; { skip WHILE }
+ EmitComment('---- WHILE ----');
+
+ lbl_top := NewLabel + 'WT';
+ lbl_end := NewLabel + 'WE';
+
+ EmitLabel(lbl_top);
+
+ { Evaluer la condition -> AX }
+ ParseExpr;
+
+ { Consommer le point apres la condition }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres condition WHILE');
+
+ { Saut si faux -> fin }
+ GenJmpIfFalse(lbl_end);
+
+ { Corps de la boucle }
+ EnterScope(SK_LOOP, 0);
+ SetExitLabel(lbl_end);
+ SetContLabel(lbl_top);
+ ParseBlock(KW_ENDWHILE, KW_NONE, KW_NONE);
+ LeaveScope;
+
+ { Retour au debut }
+ GenJmp(lbl_top);
+ EmitLabel(lbl_end);
+
+ { ENDWHILE. }
+ If TokIsKw(KW_ENDWHILE) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDWHILE');
+ End
+ Else Error('ENDWHILE attendu');
+End;
+
+{ Parse DO [n TIMES]. instructions. ENDDO.
+
+  Generation avec n TIMES (n = expression entiere -> CX) :
+    ParseExpr(n) -> AX ; MOV CX, AX
+  lbl_top:
+    JCXZ lbl_end
+    ... corps ...
+    LOOP lbl_top
+  lbl_end:
+
+  Generation infinie (DO sans n) :
+  lbl_top:
+    ... corps ...
+    JMP lbl_top
+  lbl_end:   <- EXIT sort ici
+
+  CONTINUE -> JMP lbl_top   (retour en haut)
+  EXIT     -> JMP lbl_end   (sortie)
+}
+Procedure ParseDo;
+Var lbl_top, lbl_end : String;
+    has_count        : Boolean;
+Begin
+ Consume; { skip DO }
+ EmitComment('---- DO ----');
+
+ lbl_top := NewLabel + 'DT';
+ lbl_end := NewLabel + 'DE';
+
+ { Detecter si un compteur est fourni (DO n TIMES) ou non (DO infini) }
+ has_count := Not (TokIsKw(KW_ENDDO) Or (cur_tok_type = TOK_DOT));
+
+ If has_count Then
+ Begin
+  { Evaluer n -> AX, puis CX }
+  ParseExpr;
+  EmitI('MOV     CX, AX');
+
+  { Consommer TIMES }
+  If TokIsKw(KW_TIMES) Then Consume
+  Else Warning('TIMES attendu apres compteur DO');
+
+  { Consommer le point }
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres DO n TIMES');
+
+  EmitLabel(lbl_top);
+  EmitI('JCXZ    ' + lbl_end);
+
+  { Corps }
+  EnterScope(SK_LOOP, 0);
+  SetExitLabel(lbl_end);
+  SetContLabel(lbl_top);
+  ParseBlock(KW_ENDDO, KW_NONE, KW_NONE);
+  LeaveScope;
+
+  EmitI('LOOP    ' + lbl_top);
+ End
+ Else
+ Begin
+  { DO sans compteur : boucle infinie, EXIT pour sortir }
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres DO');
+
+  EmitLabel(lbl_top);
+
+  EnterScope(SK_LOOP, 0);
+  SetExitLabel(lbl_end);
+  SetContLabel(lbl_top);
+  ParseBlock(KW_ENDDO, KW_NONE, KW_NONE);
+  LeaveScope;
+
+  GenJmp(lbl_top);
+ End;
+
+ EmitLabel(lbl_end);
+
+ { ENDDO. }
+ If TokIsKw(KW_ENDDO) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDDO');
+ End
+ Else Error('ENDDO attendu');
+End;
+
+{ ============================================================================ }
+{ TODO 13 - PARSEUR : PERFORM / FORM / ENDFORM           [COMPLET]            }
+{ ============================================================================ }
+
+{ Parse PERFORM nom [USING arg...] [CHANGING arg...] [TABLES arg...].
+
+  Convention d'appel 8086 (voir ParseForm) :
+    Les arguments sont pousses de gauche a droite sur la pile.
+    USING   : PUSH valeur (GenLoadVar → AX → PUSH AX).
+    CHANGING: PUSH adresse (GenLoadAddr → AX → PUSH AX).
+    TABLES  : PUSH adresse (idem CHANGING).
+    Le callee (FORM) nettoie la pile : RET n.
+}
+Procedure ParsePerform;
+Var fi, sym_idx   : Integer;
+    fname         : String;
+    cur_kind      : Integer;
+Begin
+ Consume; { skip PERFORM }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin Error('Nom de FORM attendu apres PERFORM'); SkipToDot; Exit; End;
+ fname := cur_tok_str; Consume;
+
+ fi := FindForm(fname);
+ If fi = 0 Then fi := AddForm(fname); { forward reference : sera complete a FORM }
+ EmitComment('PERFORM ' + form_table[fi].name);
+
+ { --- USING / CHANGING / TABLES : pousser les arguments --- }
+ cur_kind := PARAM_USING;
+ While TokIsKw(KW_USING) Or TokIsKw(KW_CHANGING) Or TokIsKw(KW_TABLES) Do
+ Begin
+  If TokIsKw(KW_USING)    Then cur_kind := PARAM_USING;
+  If TokIsKw(KW_CHANGING) Then cur_kind := PARAM_CHANGING;
+  If TokIsKw(KW_TABLES)   Then cur_kind := PARAM_TABLES;
+  Consume; { skip USING / CHANGING / TABLES }
+
+  { Lire les noms de variables jusqu'au prochain mot-cle ou point }
+  While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Do
+  Begin
+   sym_idx := FindSym(cur_tok_str);
+   If sym_idx = 0 Then
+    Warning('PERFORM: variable inconnue ''' + cur_tok_str + '''');
+   If cur_kind = PARAM_USING Then
+   Begin
+    { Passage par valeur : charger dans AX puis PUSH }
+    If sym_idx > 0 Then GenLoadVar(sym_idx)
+    Else EmitI('XOR     AX, AX  ; var inconnue');
+    EmitI('PUSH    AX');
+   End Else
+   Begin
+    { CHANGING / TABLES : passage par adresse -> LEA... PUSH AX }
+    If sym_idx > 0 Then GenLoadAddr(sym_idx)
+    Else EmitI('XOR     AX, AX  ; var inconnue');
+    EmitI('PUSH    AX');
+   End;
+   Consume; { nom de variable }
+  End;
+ End; { While USING / CHANGING / TABLES }
+
+ { Point terminateur }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres PERFORM');
+
+ { Appel : le callee fera RET n pour nettoyer la pile }
+ EmitI('CALL    ' + form_table[fi].asm_label);
+End;
+
+{ Parse FORM nom [USING p TYPE t ...] [CHANGING p TYPE t ...] [TABLES p ...].
+  instructions.
+  ENDFORM.
+
+  Convention d'appel 8086 (callee-cleanup, push gauche-a-droite) :
+    Caller : PUSH param1, PUSH param2, ..., PUSH paramN, CALL label
+    Callee : PUSH BP / MOV BP, SP
+      [BP+0] = ancien BP
+      [BP+2] = adresse de retour (2 octets)
+      [BP+4] = paramN (dernier pousse = sommet)
+      [BP+4+(N-1)*2] = param1 (premier pousse = plus profond)
+    => param i (1-base) : bp_offset = 4 + (N - i) * 2
+    Epilogue : MOV SP, BP / POP BP / RET N*2   (nettoie N mots sur la pile)
+}
+Procedure ParseForm;
+Const
+ MAX_TMP = 20;
+Var fi, i, n_params : Integer;
+    fname           : String;
+    tmp_idx         : Array[1..MAX_TMP] of Integer;  { indices sym_table }
+    tmp_kind        : Array[1..MAX_TMP] of Integer;  { PARAM_xxx         }
+    cur_kind        : Integer;
+    sym_i           : Integer;
+Begin
+ Consume; { skip FORM }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin Error('Nom de FORM attendu'); SkipToDot; Exit; End;
+ fname    := cur_tok_str; Consume;
+ fi       := AddForm(fname);        { cree ou retrouve l'entree FORM }
+ n_params := 0;
+
+ { Entrer dans le scope FORM avant de declarer les params :
+   ainsi les symboles param ont le bon scope_lev.               }
+ EnterScope(SK_FORM, fi);
+
+ { --- Analyser les clauses USING / CHANGING / TABLES --- }
+ cur_kind := PARAM_USING;
+ While TokIsKw(KW_USING) Or TokIsKw(KW_CHANGING) Or TokIsKw(KW_TABLES) Do
+ Begin
+  If TokIsKw(KW_USING)    Then cur_kind := PARAM_USING;
+  If TokIsKw(KW_CHANGING) Then cur_kind := PARAM_CHANGING;
+  If TokIsKw(KW_TABLES)   Then cur_kind := PARAM_TABLES;
+  Consume;
+
+  While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NONE) Do
+  Begin
+   If n_params >= MAX_TMP Then
+   Begin Error('FORM : trop de parametres (max ' + ItoSI(MAX_TMP) + ')'); Break; End;
+   Inc(n_params);
+   { Ajouter dans sym_table avec type provisoire TYPE_I }
+   sym_i := AddSym(cur_tok_str, TYPE_I, STORE_AUTO);
+   tmp_idx[n_params]  := sym_i;
+   tmp_kind[n_params] := cur_kind;
+   If sym_i > 0 Then
+   Begin
+    sym_table[sym_i].is_param   := True;
+    sym_table[sym_i].param_idx  := n_params;
+    sym_table[sym_i].param_kind := cur_kind;
+   End;
+   Consume; { nom du parametre }
+   { Clause TYPE / LIKE optionnelle sur ce parametre }
+   If sym_i > 0 Then ParseTypeSpec(sym_i);
+  End;
+ End;
+
+ { Mettre a jour form_table }
+ form_table[fi].param_count := n_params;
+ form_table[fi].defined     := True;
+
+ { Fixer les offsets BP des parametres.
+   La convention caller-push-L-to-R donne :
+     param i  -> [BP + 4 + (N - i) * 2]                             }
+ For i := 1 To n_params Do
+  If tmp_idx[i] > 0 Then
+   sym_table[tmp_idx[i]].bp_offset := 4 + (n_params - i) * 2;
+
+ { Point terminateur de la ligne FORM }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres entete FORM');
+
+ { Emmettre l'etiquette de procedure et le prologue }
+ EmitBlank;
+ EmitComment('FORM ' + form_table[fi].name);
+ EmitLabel(form_table[fi].asm_label);
+ GenPrologue(0);   { pas de locaux pour l'instant ; DATA locaux : TODO 18 }
+
+ { Corps de la FORM }
+ ParseBlock(KW_ENDFORM, KW_NONE, KW_NONE);
+
+ { Quitter le scope et generer l'epilogue }
+ LeaveScope;
+ GenEpilogue(n_params * 2);   { RET n*2 : callee nettoie n mots }
+
+ { ENDFORM. }
+ If TokIsKw(KW_ENDFORM) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDFORM');
+ End
+ Else Error('ENDFORM attendu');
+
+ EmitBlank;
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
