@@ -1751,7 +1751,7 @@ Begin
  sym_idx := PayOf(head);
  sf      := GetSpecialForm(sym_idx);
  prim_op := GetPrim(sym_idx);
- { ---- Formes speciales ---- }
+ { ---- Formes sp‚ciales ---- }
  Case sf Of
   SF_QUOTE:
   Begin
@@ -1875,7 +1875,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - TRAITEMENT DU NIVEAU SUPERIEUR               [COMPLET]            }
+{ TRAITEMENT DU NIVEAU SUPERIEUR                                               }
 { ============================================================================ }
 
 Procedure GenTopLevel(expr: TLispVal);
@@ -1884,8 +1884,7 @@ Var
  sym_idx, func_idx: Integer;
  fname: String; nparams: Integer; tmp: TLispVal;
 Begin
- If TagOf(expr) <> LTAG_CONS Then
- Begin
+ If TagOf(expr) <> LTAG_CONS Then Begin
   { Expression atomique au niveau superieur : evaluer }
   GenExpr(expr);
   Exit;
@@ -1895,23 +1894,26 @@ Begin
  If TagOf(head) = LTAG_SYM Then
  Begin
   sym_idx := PayOf(head);
-  If sym_table[sym_idx]^.special = SF_DEFUN Then
-  Begin
+  If sym_table[sym_idx]^.special = SF_DEFUN Then Begin
    { (DEFUN name (params) body...) }
    name_e   := CarOf(args);
    params_e := CarOf(CdrOf(args));
    body_e   := CdrOf(CdrOf(args));
-   If TagOf(name_e) <> LTAG_SYM Then
-   Begin Error('DEFUN : nom invalide'); Exit; End;
+   If TagOf(name_e) <> LTAG_SYM Then Begin
+    Error('DEFUN : nom invalide');
+    Exit;
+   End;
    fname  := sym_table[PayOf(name_e)]^.name;
-   { Compter les parametres }
+   { Compter les paramŠtres }
    nparams := 0; tmp := params_e;
-   While Not IsNilVal(tmp) Do Begin Inc(nparams); tmp := CdrOf(tmp); End;
+   While Not IsNilVal(tmp) Do Begin
+    Inc(nparams);
+    tmp := CdrOf(tmp);
+   End;
    func_idx := AddFunc(fname, nparams);
-   { Enregistrer noms des parametres }
+   { Enregistrer noms des paramŠtres }
    tmp := params_e; nparams := 0;
-   While Not IsNilVal(tmp) Do
-   Begin
+   While Not IsNilVal(tmp) Do Begin
     Inc(nparams);
     If TagOf(CarOf(tmp)) = LTAG_SYM Then
      func_table[func_idx]^.param_names[nparams] :=
@@ -1922,16 +1924,13 @@ Begin
    GenFuncBody(func_idx, body_e);
    Exit;
   End;
-  If sym_table[sym_idx]^.special = SF_DEFVAR Then
-  Begin
+  If sym_table[sym_idx]^.special = SF_DEFVAR Then Begin
    { (DEFVAR name [init]) }
    name_e := CarOf(args);
-   If TagOf(name_e) = LTAG_SYM Then
-   Begin
+   If TagOf(name_e) = LTAG_SYM Then Begin
     sym_idx := PayOf(name_e);
     EmitComment('DEFVAR ' + sym_table[sym_idx]^.name);
-    If Not IsNilVal(CdrOf(args)) Then
-    Begin
+    If Not IsNilVal(CdrOf(args)) Then Begin
      GenExpr(CarOf(CdrOf(args)));
      Emit('        MOV     [_GV_SYM' + ItoSI(sym_idx) + '], AX');
     End;
@@ -1939,20 +1938,21 @@ Begin
    Exit;
   End;
  End;
- { Autres formes au niveau superieur : evaluer normalement }
+  { Autres formes au niveau superieur : ‚valuer normalement }
  GenExpr(expr);
 End;
 
 { ============================================================================ }
-{ TODO 24 - GENERATION : HELPERS RUNTIME                 [COMPLET]            }
+{ GENERATION : ASSISANT RUNTIME                                                }
 { ============================================================================ }
 
 Procedure GenRuntimeHelpers;
-Var i: Integer;
+Var
+ i: Integer;
 Begin
  EmitBlank;
  Emit('; ----------------------------------------------------------------');
- Emit('; RUNTIME HELPERS LISP86');
+ Emit('; RUNTIME ASSISTANT LISP86');
  Emit('; ----------------------------------------------------------------');
  EmitBlank;
  { _CONS_ALLOC : [SP+2]=CAR, [SP+4]=CDR -> AX=cons tagged }
@@ -2122,14 +2122,14 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 25 - PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION  [COMPLET]            }
+{ PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION                                  }
 { ============================================================================ }
 
-Procedure ShowHelp;
-Begin
- WriteLn(VERSION, ' - Compilateur LISP pour 8086/8088');
+Procedure ShowHelp;Begin
+ WriteLn('LISP86 - Cette commande permet de lancer le compilateur LISP pour de l''assembleur du ',
+                   'microprocesseur 8086/8088.');
  WriteLn;
- WriteLn('Usage: LISP86 source.lsp [sortie.asm] [options]');
+ WriteLn('Syntaxe : LISP86 source.lsp [sortie.asm] [options]');
  WriteLn;
  WriteLn('Options:');
  WriteLn('  /T    Afficher tokens seulement');

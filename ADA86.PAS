@@ -2468,15 +2468,512 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 08 - Parseur d'expressions et generateur d'operations                  }
+{ ============================================================================ }
+
+{ ---- Prototypes forward ---- }
+{ (ParseExpr appelle ParseOrElse qui descend jusqu'a ParsePrimary,
+   mais ParsePrimary peut appeler ParseExpr pour les sous-expressions
+   entre parentheses -> declaration forward necessaire)               }
+
+Procedure ParseExpr; Forward;
+
+{ ---- GenBinaryOp : gen code pour operateurs binaires arithmetiques ---- }
+{ AX = operande gauche (deja sur pile), AX = operande droit apres ParseTerm
+  Resultat dans AX.  Pile : TOS = droite, TOS+2 = gauche.               }
+
+Procedure GenBinaryOp(op: Integer);
+{ op = TOK_PLUS / TOK_MINUS / TOK_STAR / TOK_SLASH / KW_MOD / KW_REM }
+Begin
+ Case op Of
+  TOK_PLUS  :
+  Begin
+   EmitI('POP  BX');
+   EmitI('ADD  AX, BX');
+  End;
+  TOK_MINUS :
+  Begin
+   { gauche est sous le droit -> POP BX = droite, puis SUB }
+   EmitI('MOV  BX, AX');   { BX = droite                  }
+   EmitI('POP  AX');       { AX = gauche                  }
+   EmitI('SUB  AX, BX');
+  End;
+  TOK_STAR  :
+  Begin
+   EmitI('POP  BX');
+   EmitI('IMUL BX');       { DX:AX = AX * BX              }
+   { On garde AX (16 bits, overflow ignore pour cibles 16b) }
+  End;
+  TOK_SLASH :
+  Begin
+   EmitI('MOV  BX, AX');   { BX = diviseur (droite)       }
+   EmitI('POP  AX');       { AX = dividende (gauche)      }
+   EmitI('CWD');           { signe-etend AX -> DX:AX      }
+   EmitI('IDIV BX');       { AX = quotient                }
+  End;
+  KW_MOD    :
+  Begin
+   EmitI('MOV  BX, AX');
+   EmitI('POP  AX');
+   EmitI('CWD');
+   EmitI('IDIV BX');       { AX = quotient, DX = reste    }
+   { Ada MOD : ajuste si signe different du diviseur }
+   EmitI('CMP  DX, 0');
+   EmitI('JE   @@MODOK_' + IntToStr(label_counter + 1));
+   EmitI('ADD  BX, 0');    { test signe diviseur BX xor reste DX }
+   EmitI('XOR  BX, DX');
+   EmitI('JS   @@MODADJ_' + IntToStr(label_counter + 1));
+   EmitI('JMP  @@MODOK_' + IntToStr(label_counter + 1));
+   EmitI('@@MODADJ_' + IntToStr(label_counter + 1) + ':');
+   EmitI('ADD  DX, BX');   { DX += diviseur pour corriger }
+   EmitI('@@MODOK_' + IntToStr(label_counter + 1) + ':');
+   Inc(label_counter);
+   EmitI('MOV  AX, DX');   { AX = MOD                    }
+  End;
+  KW_REM    :
+  Begin
+   EmitI('MOV  BX, AX');
+   EmitI('POP  AX');
+   EmitI('CWD');
+   EmitI('IDIV BX');       { Ada REM = reste C-like = DX  }
+   EmitI('MOV  AX, DX');
+  End;
+  TOK_AMP   :
+  Begin
+   { Concatenation de chaines : stub - genere appel helper _STR_CAT }
+   EmitI('POP  BX');
+   EmitI('CALL _STR_CAT');  { BX=gauche, AX=droite, AX->resultat }
+  End;
+ End; { Case }
+End;
+
+{ ---- GenRelOp : CMP + Jcc, resultat 0/1 dans AX ---- }
+{ A gauche : deja sur pile (PUSHed). AX = operande droit. }
+
+Procedure GenRelOp(op: Integer);
+{ op = TOK_EQ / TOK_NEQ / TOK_LT / TOK_LE / TOK_GT / TOK_GE }
+Var lbl_true, lbl_end : String;
+Begin
+ lbl_true := NewLabel;
+ lbl_end  := NewLabel;
+ EmitI('MOV  BX, AX');    { BX = droite              }
+ EmitI('POP  AX');        { AX = gauche              }
+ EmitI('CMP  AX, BX');
+ Case op Of
+  TOK_EQ  : EmitI('JE   ' + lbl_true);
+  TOK_NEQ : EmitI('JNE  ' + lbl_true);
+  TOK_LT  : EmitI('JL   ' + lbl_true);
+  TOK_LE  : EmitI('JLE  ' + lbl_true);
+  TOK_GT  : EmitI('JG   ' + lbl_true);
+  TOK_GE  : EmitI('JGE  ' + lbl_true);
+ End;
+ EmitI('XOR  AX, AX');    { False = 0                }
+ EmitI('JMP  ' + lbl_end);
+ EmitLabel(lbl_true);
+ EmitI('MOV  AX, 1');     { True = 1                 }
+ EmitLabel(lbl_end);
+End;
+
+{ ---- ParsePrimary : litteraux, idents, appels, (expr), attributs ---- }
+
+Procedure ParsePrimary;
+Var sym       : Integer;
+    sub       : Integer;
+    ti        : Integer;
+    nm        : String;
+    lbl       : String;
+    ai        : Integer;   { index attribut : 1=FIRST 2=LAST 3=LENGTH }
+    i         : Integer;
+    j         : Integer;
+    arg_count : Integer;
+Begin
+ { --- Litteral entier --- }
+ If cur_tok_type = TOK_INTEGER Then
+ Begin
+  EmitI('MOV AX, ' + IntToStr(cur_tok_num));
+  Consume;
+  Exit;
+ End;
+
+ { --- Litteral flottant (stub 16 bits) --- }
+ If cur_tok_type = TOK_FLOAT Then
+ Begin
+  { Charge 0 dans AX comme stub (float non pleinement supporte en 16b) }
+  EmitI('XOR AX, AX');
+  Consume;
+  Exit;
+ End;
+
+ { --- Litteral charactere --- }
+ If cur_tok_type = TOK_CHAR Then
+ Begin
+  EmitI('MOV AX, ' + IntToStr(Ord(cur_tok_str[1])));
+  Consume;
+  Exit;
+ End;
+
+ { --- Litteral chaine --- }
+ If cur_tok_type = TOK_STRING Then
+ Begin
+  lbl := AsmStrLit(cur_tok_str);
+  EmitI('MOV AX, OFFSET ' + lbl);
+  Consume;
+  Exit;
+ End;
+
+ { --- TRUE / FALSE --- }
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_TRUE) Then
+ Begin EmitI('MOV AX, 1'); Consume; Exit; End;
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_FALSE) Then
+ Begin EmitI('XOR AX, AX'); Consume; Exit; End;
+
+ { --- NULL --- }
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NULL) Then
+ Begin EmitI('XOR AX, AX'); Consume; Exit; End;
+
+ { --- Identifiant : variable, constante, ou appel de fonction --- }
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  nm := cur_tok_str;
+  Consume;
+
+  { Attribut : Nom' FIRST | LAST | LENGTH }
+  If cur_tok_type = TOK_TICK Then
+  Begin
+   Consume; { consomme ' }
+   ai := 0;
+   If cur_tok_type = TOK_IDENT Then
+   Begin
+    If cur_tok_str = 'FIRST'  Then ai := 1
+    Else If cur_tok_str = 'LAST'   Then ai := 2
+    Else If cur_tok_str = 'LENGTH' Then ai := 3
+    Else Warning('Attribut Ada inconnu : ' + cur_tok_str);
+    Consume;
+   End;
+   { Chercher le type ou la variable }
+   ti := FindType(nm);
+   If ti > 0 Then
+   Begin
+    Case ai Of
+     1 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].lo_bound));
+     2 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].hi_bound));
+     3 : EmitI('MOV AX, ' + IntToStr(
+               type_table^[ti].hi_bound - type_table^[ti].lo_bound + 1));
+    Else EmitI('XOR AX, AX');
+    End;
+   End
+   Else
+   Begin
+    sym := FindSym(nm);
+    If sym > 0 Then
+    Begin
+     ti := sym_table^[sym].type_idx;
+     Case ai Of
+      1 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].lo_bound));
+      2 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].hi_bound));
+      3 : EmitI('MOV AX, ' + IntToStr(
+                type_table^[ti].hi_bound - type_table^[ti].lo_bound + 1));
+     Else EmitI('XOR AX, AX');
+     End;
+    End
+    Else
+    Begin
+     Error('Nom inconnu pour attribut : ' + nm);
+     EmitI('XOR AX, AX');
+    End;
+   End;
+   Exit;
+  End; { TOK_TICK }
+
+  { Appel de fonction ou acces tableau : Nom( ... ) }
+  If cur_tok_type = TOK_LPAREN Then
+  Begin
+   sub := FindSub(nm);
+   If sub > 0 Then
+   Begin
+    { Appel de fonction }
+    Consume; { ( }
+    arg_count := 0;
+    While cur_tok_type <> TOK_RPAREN do
+    Begin
+     ParseExpr;
+     GenPushAX;
+     Inc(arg_count);
+     If cur_tok_type = TOK_COMMA Then Consume;
+    End;
+    Expect(TOK_RPAREN, '`)` attendu apres arguments');
+    EmitI('CALL ' + sub_table^[sub].asm_label);
+    { callee-cleanup : RET n dans la fonction -> pas de ADD SP ici }
+    { AX = valeur de retour }
+   End
+   Else
+   Begin
+    { Acces tableau : Nom(index) }
+    sym := FindSym(nm);
+    If sym <= 0 Then
+    Begin
+     Error('Identificateur inconnu : ' + nm);
+     Consume; { ( }
+     ParseExpr;
+     Expect(TOK_RPAREN, '`)` attendu');
+     EmitI('XOR AX, AX');
+     Exit;
+    End;
+    Consume; { ( }
+    ParseExpr;         { AX = index }
+    { Calcul adresse : base + (index - lo) * elem_size }
+    ti := FindType(sym_table^[sym].name);
+    { Simplifie : stride 2 (Word) par defaut }
+    EmitI('MOV BX, AX');          { BX = index }
+    EmitI('DEC BX');               { BX = index - 1 (hypothese lo=1) }
+    EmitI('SHL BX, 1');            { BX *= 2 (stride 2 octets) }
+    If sym_table^[sym].store_class = STORE_STATIC Then
+     EmitI('MOV AX, [' + sym_table^[sym].asm_label + ' + BX]')
+    Else
+     EmitI('MOV AX, [BP' + IntToStr(sym_table^[sym].bp_offset) + ' + BX]');
+    Expect(TOK_RPAREN, '`)` attendu apres index tableau');
+   End;
+   Exit;
+  End; { TOK_LPAREN apres ident }
+
+  { Variable ou constante simple }
+  sym := FindSym(nm);
+  If sym > 0 Then
+   GenLoadVar(sym)
+  Else
+  Begin
+   { Peut etre un litteral d'enumeration : chercher dans les types }
+   For i := 1 to type_count do
+    If type_table^[i].kind = TK_ENUM Then
+    Begin
+     For j := 1 to type_table^[i].enum_count do
+      If type_table^[i].enum_names[j] = nm Then
+      Begin EmitI('MOV AX, ' + IntToStr(j - 1)); Exit; End;
+    End;
+   Error('Identificateur inconnu : ' + nm);
+   EmitI('XOR AX, AX');
+  End;
+  Exit;
+ End; { TOK_IDENT }
+
+ { --- Sous-expression ( expr ) --- }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  Consume;
+  ParseExpr;
+  Expect(TOK_RPAREN, '`)` attendu en fin de sous-expression');
+  Exit;
+ End;
+
+ { Rien reconnu }
+ ErrorTok('Primaire d''expression attendu');
+ EmitI('XOR AX, AX');
+ Consume;
+End;
+
+{ ---- ParseFactor : ** et ABS ---- }
+
+Procedure ParseFactor;
+Var lbl1     : String;
+    lbl_loop : String;
+Begin
+ { ABS unaire }
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_ABS) Then
+ Begin
+  Consume;
+  ParseFactor;
+  lbl1 := NewLabel;
+  EmitI('CMP  AX, 0');
+  EmitI('JGE  ' + lbl1);
+  EmitI('NEG  AX');
+  EmitLabel(lbl1);
+  Exit;
+ End;
+ ParsePrimary;
+ { ** (puissance entiere iterative) }
+ While cur_tok_type = TOK_STARSTAR do
+ Begin
+  Consume;
+  ParsePrimary;                      { AX = exposant }
+  EmitI('MOV  CX, AX');             { CX = exposant }
+  EmitI('POP  BX');                  { BX = base (gauche) }
+  { Cas exposant = 0 : retourne 1 }
+  lbl1 := NewLabel;
+  EmitI('MOV  AX, 1');
+  EmitI('CMP  CX, 0');
+  EmitI('JE   ' + lbl1);
+  { Boucle : AX = BX^CX }
+  lbl_loop := NewLabel;
+  EmitLabel(lbl_loop);
+  EmitI('IMUL BX');
+  EmitI('LOOP ' + lbl_loop);
+  EmitLabel(lbl1);
+ End;
+End;
+
+{ ---- ParseTerm : * / mod rem ---- }
+
+Procedure ParseTerm;
+Var op : Integer;
+Begin
+ ParseFactor;
+ While (cur_tok_type = TOK_STAR) Or (cur_tok_type = TOK_SLASH)
+    Or ((cur_tok_type = TOK_IDENT) And
+        ((cur_tok_kw = KW_MOD) Or (cur_tok_kw = KW_REM))) do
+ Begin
+  GenPushAX;
+  If cur_tok_type = TOK_IDENT Then op := cur_tok_kw
+  Else op := cur_tok_type;
+  Consume;
+  ParseFactor;
+  GenBinaryOp(op);
+ End;
+End;
+
+{ ---- ParseSimple : + - & (unaire + ou - possible en tete) ---- }
+
+Procedure ParseSimple;
+Var op   : Integer;
+    uneg : Boolean;
+Begin
+ uneg := False;
+ If cur_tok_type = TOK_MINUS Then Begin uneg := True; Consume; End
+ Else If cur_tok_type = TOK_PLUS Then Consume;
+ ParseTerm;
+ If uneg Then EmitI('NEG  AX');
+ While (cur_tok_type = TOK_PLUS) Or (cur_tok_type = TOK_MINUS)
+    Or (cur_tok_type = TOK_AMP) do
+ Begin
+  GenPushAX;
+  op := cur_tok_type;
+  Consume;
+  ParseTerm;
+  GenBinaryOp(op);
+ End;
+End;
+
+{ ---- ParseRelation : = /= < <= > >= ---- }
+
+Procedure ParseRelation;
+Var op : Integer;
+Begin
+ ParseSimple;
+ If (cur_tok_type = TOK_EQ)  Or (cur_tok_type = TOK_NEQ) Or
+    (cur_tok_type = TOK_LT)  Or (cur_tok_type = TOK_LE)  Or
+    (cur_tok_type = TOK_GT)  Or (cur_tok_type = TOK_GE) Then
+ Begin
+  GenPushAX;
+  op := cur_tok_type;
+  Consume;
+  ParseSimple;
+  GenRelOp(op);
+ End;
+End;
+
+{ ---- ParseNot : NOT unaire logique ---- }
+
+Procedure ParseNot;
+Begin
+ If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_NOT) Then
+ Begin
+  Consume;
+  ParseRelation;
+  { NOT bool : AX XOR 1 }
+  EmitI('XOR  AX, 1');
+ End
+ Else
+  ParseRelation;
+End;
+
+{ ---- ParseAnd : AND (bit ou logique) ---- }
+
+Procedure ParseAnd;
+Begin
+ ParseNot;
+ While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_AND) do
+ Begin
+  GenPushAX;
+  Consume;
+  ParseNot;
+  EmitI('POP  BX');
+  EmitI('AND  AX, BX');
+ End;
+End;
+
+{ ---- ParseOr : OR et XOR (bit ou logique) ---- }
+
+Procedure ParseOr;
+Var is_xor : Boolean;
+Begin
+ ParseAnd;
+ While (cur_tok_type = TOK_IDENT) And
+       ((cur_tok_kw = KW_OR) Or (cur_tok_kw = KW_XOR)) do
+ Begin
+  GenPushAX;
+  is_xor := (cur_tok_kw = KW_XOR);
+  Consume;
+  ParseAnd;
+  EmitI('POP  BX');
+  If is_xor Then EmitI('XOR  AX, BX')
+  Else           EmitI('OR   AX, BX');
+ End;
+End;
+
+{ ---- ParseAndThen : AND THEN (court-circuit) ---- }
+
+Procedure ParseAndThen;
+Var lbl_false : String;
+Begin
+ ParseOr;
+ While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_ANDTHEN) do
+ Begin
+  lbl_false := NewLabel;
+  Consume;
+  { Si AX=0 (False) -> court-circuit }
+  EmitI('CMP  AX, 0');
+  EmitI('JE   ' + lbl_false);
+  ParseOr;
+  EmitI('AND  AX, AX');  { resultat dans AX }
+  EmitLabel(lbl_false);
+ End;
+End;
+
+{ ---- ParseOrElse : OR ELSE (court-circuit) ---- }
+
+Procedure ParseOrElse;
+Var lbl_true : String;
+Begin
+ ParseAndThen;
+ While (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_ORELSE) do
+ Begin
+  lbl_true := NewLabel;
+  Consume;
+  { Si AX<>0 (True) -> court-circuit }
+  EmitI('CMP  AX, 0');
+  EmitI('JNE  ' + lbl_true);
+  ParseAndThen;
+  EmitI('OR   AX, AX');  { resultat dans AX }
+  EmitLabel(lbl_true);
+ End;
+End;
+
+{ ---- ParseExpr : point d'entree principal des expressions ---- }
+
+Procedure ParseExpr;
+Begin
+ ParseOrElse;
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 07 OK (generateur bas niveau OK)');
-  WriteLn('  InitStrTable, AsmStrLit, EmitStringLiterals');
-  WriteLn('  Emit, EmitI, EmitLabel, EmitComment, EmitBlank');
-  WriteLn('  NewLabel, DataLbl');
-  WriteLn('  GenLoadVar, GenStoreVar, GenLoadConst');
-  WriteLn('  GenPrologue, GenEpilogue');
-  WriteLn('  GenPushAX, GenPopAX, GenPushDXAX, GenPopDXAX');
+  WriteLn('ADA86 V1.0 - TODO 08 OK (parseur expressions OK)');
+  WriteLn('  GenBinaryOp (+ - * / MOD REM &)');
+  WriteLn('  GenRelOp (= /= < <= > >=)');
+  WriteLn('  ParsePrimary, ParseFactor (** ABS)');
+  WriteLn('  ParseTerm, ParseSimple, ParseRelation');
+  WriteLn('  ParseNot, ParseAnd, ParseOr');
+  WriteLn('  ParseAndThen, ParseOrElse, ParseExpr');
 End.
