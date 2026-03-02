@@ -1099,38 +1099,32 @@ Begin
       If current_token = ')' Then
        NextToken;
      End;
-
-     { G√©n√©rer l'appel - les proc√©dures ne retournent pas de valeur }
+     { GÇnÇrer l'appel - les procÇdures ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
-     left_operand := 'ax'; { Valeur par d√©faut }
+     left_operand := 'ax'; { Valeur par dÇfaut }
      left_type := TYPE_INTEGER;
     End
-    { V√©rifier si c'est un appel d'interruption }
-    Else If symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT Then
-    Begin
+    { VÇrifier si c'est un appel d'interruption }
+     Else
+    If symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT Then Begin
      { Appel d'interruption }
      EmitComment('Appel interruption: ' + temp_token);
      NextToken; { Consommer le nom de l'interruption }
-
-     { G√©rer les param√®tres (pour l'instant, on ignore) }
-     If current_token = '(' Then
-     Begin
+     { GÇrer les paramätres (pour l'instant, on ignore) }
+     If current_token = '(' Then Begin
       NextToken;
-      While (current_token <> ')') and (current_char <> #0) do
-       NextToken;
-      If current_token = ')' Then
-       NextToken;
+      While (current_token <> ')') and (current_char <> #0) do NextToken;
+      If current_token = ')' Then NextToken;
      End;
-
-     { G√©n√©rer l'appel - les interruptions ne retournent pas de valeur }
+     { GÇnÇrer l'appel - les interruptions ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
-     left_operand := 'ax'; { Valeur par d√©faut }
+     left_operand := 'ax'; { Valeur par dÇfaut }
      left_type := TYPE_INTEGER;
     End
-    { V√©rifier si c'est une constante }
-    Else If symbol_table[sym_index]^.symbol_type = SYM_CONST Then
-    Begin
-     { Constante - √©mettre la valeur imm√©diate directement }
+    { VÇrifier si c'est une constante }
+     Else
+    If symbol_table[sym_index]^.symbol_type = SYM_CONST Then Begin
+     { Constante - Çmettre la valeur immÇdiate directement }
      Case symbol_table[sym_index]^.data_type of
       TYPE_STRING:
        Begin
@@ -1151,7 +1145,7 @@ Begin
      left_type := symbol_table[sym_index]^.data_type;
      NextToken;
     End
-    Else
+     Else
     Begin
      { Variable normale }
      Case symbol_table[sym_index]^.data_type of
@@ -1181,7 +1175,7 @@ Begin
    End
    Else
    Begin
-    Error('Variable non d√©clar√©e: ' + temp_token);
+    Error('Variable non dÇclarÇe: ' + temp_token);
     left_operand := 'ax';
     left_type := TYPE_INTEGER;
     NextToken;
@@ -1194,22 +1188,18 @@ Begin
    left_type := TYPE_INTEGER;
   End;
  End
- Else If current_symbol = SYM_NOT Then
- Begin
+  Else
+ If current_symbol = SYM_NOT Then Begin
   NextToken; { Consommer NOT }
-  { Parser le token suivant comme op√©rande de NOT }
-  If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
-  Begin
+  { Analyser le jeton suivant comme opÇrande de NOT }
+  If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then Begin
    temp_token := current_token;
    sym_index := FindSymbol(temp_token);
-   If sym_index > 0 Then
-   Begin
+   If sym_index > 0 Then Begin
     { Appel de fonction dans NOT }
-    If symbol_table[sym_index]^.is_function Then
-    Begin
+    If symbol_table[sym_index]^.is_function Then Begin
      NextToken; { Consommer nom de la fonction }
-     If current_token = '(' Then
-     Begin
+     If current_token = '(' Then Begin
       NextToken;
       While (current_token <> ')') and (current_char <> #0) do NextToken;
       If current_token = ')' Then NextToken;
@@ -1233,43 +1223,40 @@ Begin
    End
    Else
    Begin
-    Error('Variable non d√©clar√©e apr√®s NOT: ' + temp_token);
+    Error('Variable non dÇclarÇe apräs NOT: ' + temp_token);
     Emit('xor ax, 1');
     NextToken; { Avancer uniquement en cas d'erreur (identifiant inconnu) }
    End;
-   { Pas de NextToken ici : la branche fonction/variable a d√©j√† avanc√© }
+   { Pas de NextToken ici : la branche fonction/variable a dÇjÖ avancÇ }
   End
   Else
   Begin
-   { NOT appliqu√© √† une sous-expression d√©j√† dans AX }
+   { NOT appliquÇ Ö une sous-expression dÇjÖ dans AX }
    ParseExpression;
    Emit('xor ax, 1');
   End;
   left_operand := 'ax';
   left_type := TYPE_BOOLEAN;
  End
- Else If current_symbol = SYM_PARAMCOUNT Then
- Begin
-  Emit('call PARAMCOUNT'); { Nombre de param√®tres ‚Üí AX }
+  Else
+ If current_symbol = SYM_PARAMCOUNT Then Begin
+  Emit('call PARAMCOUNT'); { Nombre de paramätres Ö AX }
   left_operand := 'ax';
   left_type := TYPE_INTEGER;
   NextToken;
  End
- Else If current_symbol = SYM_PARAMSTR Then
- Begin
+  Else
+ If current_symbol = SYM_PARAMSTR Then Begin
   NextToken; { Consommer PARAMSTR }
-  If current_token = '(' Then
-  Begin
+  If current_token = '(' Then Begin
    NextToken; { Consommer ( }
-   { Parser l'index du param√®tre dans AX }
-   If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
-   Begin
-    If (current_token[1] >= '0') and (current_token[1] <= '9') Then
-    Begin
+   { Analyser l'index du paramätre dans AX }
+   If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then Begin
+    If (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
      Emit('mov ax, ' + current_token);
      NextToken;
     End
-    Else
+     Else
     Begin
      sym_index := FindSymbol(current_token);
      If sym_index > 0 Then
@@ -1289,14 +1276,13 @@ Begin
   left_operand := 'si';
   left_type := TYPE_STRING;
  End
- Else
+  Else
  Begin
   NextToken; { Symbole reconnu, continuer }
   left_operand := 'ax';
   left_type := TYPE_INTEGER;
  End;
-
- { Traiter toutes les op√©rations arithm√©tiques ou logiques (AND/OR/XOR en cha√Æne) }
+  { Traiter toutes les opÇrations arithmÇtiques ou logiques (AND/OR/XOR en chaåne) }
  While (current_symbol = SYM_PLUS) or (current_symbol = SYM_MINUS) or
     (current_symbol = SYM_MULTIPLY) or (current_symbol = SYM_DIVIDE) or
     (current_symbol = SYM_AND) or (current_symbol = SYM_OR) or (current_symbol = SYM_XOR) Do

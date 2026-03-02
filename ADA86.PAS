@@ -2308,6 +2308,17 @@ Begin
  Else SymTypeSize := 2;
 End;
 
+{ ---- BpOff : formate un offset BP en string (negatif: -n, positif: +n, zero: ) ----
+  Produit : -2 -> '-2'  -> '[BP-2]'
+            +4 -> '+4'  -> '[BP+4]'
+             0 -> ''    -> '[BP]'                                              }
+Function BpOff(off: Integer): String;
+Begin
+ If off < 0 Then BpOff := IntToStr(off)
+ Else If off > 0 Then BpOff := '+' + IntToStr(off)
+ Else BpOff := '';
+End;
+
 { Charge un symbole dans AX (ou DX:AX si float, AL si char/bool) }
 Procedure GenLoadVar(sym_idx: Integer);
 Var sc   : Integer;
@@ -2354,13 +2365,13 @@ Begin
   Begin
    If sz = 4 Then
    Begin
-    EmitI('MOV AX, [BP' + IntToStr(off) + ']');
-    EmitI('MOV DX, [BP' + IntToStr(off + 2) + ']');
+    EmitI('MOV AX, [BP' + BpOff(off) + ']');
+    EmitI('MOV DX, [BP' + BpOff(off + 2) + ']');
    End
    Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
-    EmitI('MOV AL, [BP' + IntToStr(off) + ']')
+    EmitI('MOV AL, [BP' + BpOff(off) + ']')
    Else
-    EmitI('MOV AX, [BP' + IntToStr(off) + ']');
+    EmitI('MOV AX, [BP' + BpOff(off) + ']');
   End;
   STORE_CONST :
    { Constante litterale : valeur directe }
@@ -2405,13 +2416,13 @@ Begin
   Begin
    If sz = 4 Then
    Begin
-    EmitI('MOV [BP' + IntToStr(off) + '], AX');
-    EmitI('MOV [BP' + IntToStr(off + 2) + '], DX');
+    EmitI('MOV [BP' + BpOff(off) + '], AX');
+    EmitI('MOV [BP' + BpOff(off + 2) + '], DX');
    End
    Else If (ti = TYPE_CHAR) Or (ti = TYPE_BOOL) Then
-    EmitI('MOV [BP' + IntToStr(off) + '], AL')
+    EmitI('MOV [BP' + BpOff(off) + '], AL')
    Else
-    EmitI('MOV [BP' + IntToStr(off) + '], AX');
+    EmitI('MOV [BP' + BpOff(off) + '], AX');
   End;
  End; { Case }
 End;
@@ -5268,6 +5279,11 @@ End;
 Procedure ParseOneArg(mode: Integer);
 Var nm      : String;
     lhs_sym : Integer;
+    sub_a   : Integer;
+    tot_off : Integer;
+    ti_a    : Integer;
+    fnm_a   : String;
+    fi_a    : Integer;
 Begin
  If (mode = PARAM_OUT) Or (mode = PARAM_INOUT) Then
  Begin
@@ -5306,10 +5322,79 @@ Begin
    End
    Else
    Begin
-    { nm est le debut de l'expression (variable seule, common case) }
+    { nm est le debut de l'expression (pas d'association nommee) }
     lhs_sym := FindSym(nm);
-    If lhs_sym > 0 Then GenLoadVar(lhs_sym)
-    Else EmitI('XOR  AX, AX');
+    sub_a   := FindSub(nm);
+    { Acces tableau ou appel de fonction : nm(index) / nm(args) }
+    If cur_tok_type = TOK_LPAREN Then
+    Begin
+     If sub_a > 0 Then
+     Begin
+      { Appel de fonction : evaluer et garder AX }
+      Consume; { ( }
+      While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do
+      Begin
+       ParseExpr;
+       EmitI('PUSH AX');
+       If cur_tok_type = TOK_COMMA Then Consume;
+      End;
+      Consume; { ) }
+      EmitI('CALL ' + sub_table^[sub_a].asm_label);
+      { AX = valeur de retour }
+     End
+     Else If lhs_sym > 0 Then
+     Begin
+      { Acces element de tableau }
+      Consume;
+      ParseExpr;
+      GenLoadElement(lhs_sym);
+      Expect(TOK_RPAREN, '`)` attendu apres index dans argument tableau');
+     End
+     Else
+     Begin
+      EmitI('XOR  AX, AX');
+      Consume;
+      While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do Consume;
+      Consume;
+     End;
+    End
+    { Acces champ de record : nm.champ[.sous_champ]* }
+    Else If cur_tok_type = TOK_DOT Then
+    Begin
+     If lhs_sym > 0 Then
+     Begin
+      tot_off := 0;
+      ti_a    := sym_table^[lhs_sym].type_idx;
+      While cur_tok_type = TOK_DOT do
+      Begin
+       Consume; { . }
+       If cur_tok_type <> TOK_IDENT Then Begin ErrorTok('Nom de champ attendu'); Break; End;
+       fnm_a := UpCaseStr(cur_tok_str); Consume;
+       If (ti_a > 0) And (type_table^[ti_a].kind = TK_RECORD) Then
+        For fi_a := 1 to type_table^[ti_a].field_count do
+         If type_table^[ti_a].field_names[fi_a] = fnm_a Then
+         Begin
+          Inc(tot_off, type_table^[ti_a].field_offs[fi_a]);
+          ti_a := type_table^[ti_a].field_types[fi_a];
+          Break;
+         End;
+      End;
+      GenLoadField(lhs_sym, tot_off);
+     End
+     Else
+     Begin
+      EmitI('XOR  AX, AX');
+      { Absorber les tokens du champ }
+      While cur_tok_type = TOK_DOT do
+      Begin Consume; If cur_tok_type = TOK_IDENT Then Consume; End;
+     End;
+    End
+    { Variable ou constante scalaire simple }
+    Else
+    Begin
+     If lhs_sym > 0 Then GenLoadVar(lhs_sym)
+     Else EmitI('XOR  AX, AX');
+    End;
     EmitI('PUSH AX');
    End;
   End
@@ -6292,6 +6377,7 @@ Begin
  RegisterPredefinedTypes;
  InitSubTable;
  RegisterTextIO_Subs;   { enregistre PUT_LINE, PUT, NEW_LINE, etc. }
+ RegisterStdExceptions; { enregistre CONSTRAINT_ERROR, PROGRAM_ERROR, etc. }
  InitPkgTable;
  InitScopeStack;
  InitStrTable;
