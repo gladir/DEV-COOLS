@@ -4512,6 +4512,232 @@ Begin
   GenRtTableDel;
 End;
 
+{ ============================================================================
+  TODO 14 - RUNTIME : TABLEAUX (ARRAYS)
+  ============================================================================
+
+  Layout memoire (alloue sur le heap) :
+
+      BX -> [ lb:W | ub:W | size:W | desc[0] ... desc[size-1] ]
+               +0     +2     +4      +6
+
+      Header  = 6 octets
+      lb      = borne inferieure (1-based par convention SNOBOL)
+      ub      = borne superieure
+      size    = ub - lb + 1 (nb elements)
+      desc[i] = descripteur 4 octets (ptr:W + len:W), initialise a zero
+
+  Support tableau 1D uniquement en v1.
+
+  Conventions des routines :
+      _RT_ARRAY_NEW : CX=lb, DX=ub -> BX=ptr array
+      _RT_ARRAY_GET : BX=array, AX=index -> DI=ptr descripteur element
+                      AX=1 si index valide, AX=0 si hors-bornes
+      _RT_ARRAY_SET : BX=array, AX=index, SI=ptr val_desc
+                      AX=1 si ok, AX=0 si hors-bornes
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  _RT_ARRAY_NEW : creer un tableau 1D [lb..ub].
+  Entree : CX = borne inferieure (lb), DX = borne superieure (ub)
+  Sortie : BX = ptr tableau (header + descripteurs zero-initialises)
+  -------------------------------------------------------------------------- }
+Procedure GenRtArrayNew;
+Var lbl_done : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_ARRAY_NEW : creer tableau 1D [CX..DX] -> BX');
+  EmitSep;
+  lbl_done := NewLabel;
+  EmitLabel('_RT_ARRAY_NEW');
+  EmitI('PUSH AX');
+  EmitI('PUSH CX');
+  EmitI('PUSH DX');
+  EmitI('PUSH DI');
+  EmitI('PUSH SI');
+  { Calculer size = ub - lb + 1 }
+  EmitI('MOV  AX, DX               ; AX = ub');
+  EmitI('SUB  AX, CX               ; AX = ub - lb');
+  EmitI('INC  AX                    ; AX = size');
+  { Allouer 6 + size*4 octets }
+  EmitI('PUSH AX                    ; [1] sauvegarder size');
+  EmitI('PUSH CX                    ; [2] sauvegarder lb');
+  EmitI('PUSH DX                    ; [3] sauvegarder ub');
+  EmitI('MOV  SI, AX               ; SI = size');
+  EmitI('ADD  AX, AX                ; *2');
+  EmitI('ADD  AX, AX                ; *4 = size*4');
+  EmitI('ADD  AX, 6                 ; + header');
+  EmitI('MOV  CX, AX');
+  EmitI('CALL _SB_ALLOC             ; BX = ptr debut');
+  EmitI('POP  DX                    ; [3] ub');
+  EmitI('POP  CX                    ; [2] lb');
+  EmitI('POP  AX                    ; [1] size');
+  { Remplir le header }
+  EmitI('MOV  [BX],   CX            ; [BX+0] = lb');
+  EmitI('MOV  [BX+2], DX            ; [BX+2] = ub');
+  EmitI('MOV  [BX+4], AX            ; [BX+4] = size');
+  { Zero-initialiser les descripteurs (size*4 octets) }
+  EmitI('MOV  DI, BX');
+  EmitI('ADD  DI, 6                 ; DI = debut des descripteurs');
+  EmitI('MOV  CX, AX');
+  EmitI('ADD  CX, CX');
+  EmitI('ADD  CX, CX                ; CX = size*4');
+  EmitI('XOR  AL, AL');
+  EmitI('JCXZ ' + lbl_done);
+  EmitI('REP  STOSB                  ; remplir a zero');
+  EmitLabel(lbl_done);
+  EmitI('POP  SI');
+  EmitI('POP  DI');
+  EmitI('POP  DX');
+  EmitI('POP  CX');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_ARRAY_IDX (interne) : calculer le ptr vers le descripteur d'indice AX.
+  Entree : BX=array, AX=index (1-based, ou lb-based selon convention)
+  Sortie : DI = ptr descripteur (= BX + 6 + (AX-lb)*4)
+           CF=0 si valide, CF=1 si hors-bornes
+  -------------------------------------------------------------------------- }
+Procedure GenRtArrayIdx;
+Var lbl_ok, lbl_oob : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_ARRAY_IDX : valider AX et calculer ptr desc -> DI (interne)');
+  EmitSep;
+  lbl_ok  := NewLabel;
+  lbl_oob := NewLabel;
+  EmitLabel('_RT_ARRAY_IDX');
+  EmitI('PUSH AX');
+  EmitI('PUSH CX');
+  { Verifier lb <= AX <= ub }
+  EmitI('CMP  AX, [BX]              ; AX < lb ?');
+  EmitI('JB   ' + lbl_oob);
+  EmitI('CMP  AX, [BX+2]            ; AX > ub ?');
+  EmitI('JA   ' + lbl_oob);
+  { Calculer offset = (AX - lb) * 4 }
+  EmitI('SUB  AX, [BX]             ; AX = AX - lb (offset 0-based)');
+  EmitI('ADD  AX, AX                ; *2');
+  EmitI('ADD  AX, AX                ; *4');
+  EmitI('MOV  DI, BX');
+  EmitI('ADD  DI, 6                 ; sauter le header');
+  EmitI('ADD  DI, AX                ; DI = ptr descripteur');
+  EmitI('CLC                        ; CF=0 : valide');
+  EmitI('POP  CX');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitLabel(lbl_oob);
+  EmitI('STC                        ; CF=1 : hors-bornes');
+  EmitI('POP  CX');
+  EmitI('POP  AX');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_ARRAY_GET : lire l'element d'indice AX.
+  Entree : BX=array, AX=index
+  Sortie : DI=ptr descripteur element, AX=1 si ok / AX=0 si hors-bornes.
+  -------------------------------------------------------------------------- }
+Procedure GenRtArrayGet;
+Var lbl_ok, lbl_oob : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_ARRAY_GET : lire element[AX] de tableau BX -> DI, AX=1/0');
+  EmitSep;
+  lbl_ok  := NewLabel;
+  lbl_oob := NewLabel;
+  EmitLabel('_RT_ARRAY_GET');
+  EmitI('CALL _RT_ARRAY_IDX         ; DI=ptr desc, CF=hors-bornes');
+  EmitI('JC   ' + lbl_oob);
+  EmitI('MOV  AX, 1                 ; AX=1 : valide');
+  EmitI('RET');
+  EmitLabel(lbl_oob);
+  EmitI('XOR  AX, AX                ; AX=0 : hors-bornes');
+  EmitI('XOR  DI, DI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_ARRAY_SET : ecrire val_desc SI dans l'element d'indice AX.
+  Entree : BX=array, AX=index, SI=ptr val_desc
+  Sortie : AX=1 si ok / AX=0 si hors-bornes (la valeur n'est pas ecrite).
+  -------------------------------------------------------------------------- }
+Procedure GenRtArraySet;
+Var lbl_ok, lbl_oob : TString;
+Begin
+  EmitSep;
+  EmitComment('_RT_ARRAY_SET : ecrire SI dans element[AX] du tableau BX -> AX=1/0');
+  EmitSep;
+  lbl_ok  := NewLabel;
+  lbl_oob := NewLabel;
+  EmitLabel('_RT_ARRAY_SET');
+  EmitI('PUSH DI');
+  EmitI('PUSH CX');
+  EmitI('CALL _RT_ARRAY_IDX         ; DI=ptr desc, CF=hors-bornes');
+  EmitI('JC   ' + lbl_oob);
+  { Copier les 4 octets du descripteur SI -> [DI] }
+  EmitI('MOV  CX, [SI]');
+  EmitI('MOV  [DI],   CX            ; ptr');
+  EmitI('MOV  CX, [SI+2]');
+  EmitI('MOV  [DI+2], CX            ; len');
+  EmitI('MOV  AX, 1                 ; AX=1 : ok');
+  EmitI('POP  CX');
+  EmitI('POP  DI');
+  EmitI('RET');
+  EmitLabel(lbl_oob);
+  EmitI('XOR  AX, AX                ; AX=0 : hors-bornes');
+  EmitI('POP  CX');
+  EmitI('POP  DI');
+  EmitI('RET');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  _RT_ARRAY_OOB_ERR : erreur fatale si acces hors-bornes demande.
+  Appelee par le code compile quand il veut un arret sur OOB.
+  -------------------------------------------------------------------------- }
+Procedure GenRtArrayOobErr;
+Begin
+  EmitSep;
+  EmitComment('_RT_ARRAY_OOB_ERR : acces hors-bornes tableau -> arret');
+  EmitSep;
+  EmitLabel('_RT_ARRAY_OOB_ERR');
+  EmitI('MOV  DX, OFFSET _RT_ARRAY_OOB_MSG');
+  EmitI('MOV  AH, 9');
+  EmitI('INT  21h');
+  EmitI('JMP  _SB_END_PROG');
+  EmitBlank;
+End;
+
+{ --- Message acces hors-bornes tableau --- }
+Procedure GenArrayOobMsg;
+Begin
+  EmitComment('Message acces hors-bornes tableau');
+  EmitI('_RT_ARRAY_OOB_MSG:');
+  EmitI('  DB  ''SNOBOL86 : acces hors-bornes de tableau'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayRuntime : emettre toutes les routines de gestion des tableaux.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayRuntime;
+Begin
+  EmitSep;
+  EmitComment('=== Runtime : tableaux 1D ===');
+  EmitSep;
+  EmitBlank;
+  GenRtArrayNew;
+  GenRtArrayIdx;
+  GenRtArrayGet;
+  GenRtArraySet;
+  GenRtArrayOobErr;
+End;
+
 Begin
   { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
   sym_table   := Nil;

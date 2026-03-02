@@ -2091,14 +2091,12 @@ Begin
  Expect(SYM_DO, 'Attendu DO apr√®s WHILE');
  Emit('cmp ax, 0');
  Emit('je ' + end_label);
-
  ParseStatement;
-
  Emit('jmp ' + start_label);
  EmitLabel(end_label);
 End;
 
-{ Parser une boucle FOR }
+ { Analyser une boucle FOR }
 Procedure ParseFor;
 Var
  start_label, end_label, increment_label: String;
@@ -2107,151 +2105,114 @@ Var
  sym_idx: Integer;
 Begin
  NextToken; { Consommer FOR }
-
- { Lire la variable de contr√¥le }
- If current_symbol = SYM_UNKNOWN Then
- Begin
+  { Lire la variable de contrìle }
+ If current_symbol = SYM_UNKNOWN Then Begin
   var_name := current_token;
   sym_idx := FindSymbol(var_name);
   If sym_idx <= 0 Then
-   Error('Variable de contr√¥le non d√©clar√©e: ' + var_name);
+   Error('Variable de contrìle non dÇclarÇe: ' + var_name);
   NextToken;
  End
- Else
-  Error('Attendu nom de variable apr√®s FOR');
-
- { Attendre := }
- If current_token = ':=' Then
-  NextToken
- Else
-  Error('Attendu := apr√®s nom de variable');
-
- { Analyser l'expression de d√©part }
+  Else
+ Error('Attendu nom de variable apr√®s FOR');
+  { Attendre := }
+ If current_token = ':=' Then NextToken
+                         Else Error('Attendu := apräs nom de variable');
+  { Analyser l'expression de dÇpart }
  ParseExpression;
- Emit('mov [' + var_name + '], ax'); { Stocker valeur initiale }
-
- { V√©rifier TO ou DOWNTO }
- If current_symbol = SYM_TO Then
- Begin
+ Emit('mov [' + var_name + '], ax'); { Entreposer valeur initiale }
+  { VÇrifier TO ou DOWNTO }
+ If current_symbol = SYM_TO Then Begin
   is_downto := False;
   NextToken;
  End
- Else If current_symbol = SYM_DOWNTO Then
- Begin
+  Else
+ If current_symbol = SYM_DOWNTO Then Begin
   is_downto := True;
   NextToken;
  End
- Else
-  Error('Attendu TO ou DOWNTO dans boucle FOR');
-
- { Analyser l'expression de fin }
+  Else
+ Error('Attendu TO ou DOWNTO dans boucle FOR');
+  { Analyser l'expression de fin }
  ParseExpression;
- Emit('mov bx, ax'); { Stocker valeur finale dans BX }
-
- { Attendre DO }
- Expect(SYM_DO, 'Attendu DO apr√®s expression finale');
-
- { G√©n√©rer les √©tiquettes }
+ Emit('mov bx, ax'); { Entreposer valeur finale dans BX }
+  { Attendre DO }
+ Expect(SYM_DO, 'Attendu DO apräs expression finale');
+  { GÇnÇrer les Çtiquettes }
  start_label := NewLabel;
  increment_label := NewLabel;
  end_label := NewLabel;
-
- { D√©but de la boucle }
+  { DÇbut de la boucle }
  EmitLabel(start_label);
-
- { Comparer la variable de contr√¥le avec la valeur finale }
+  { Comparer la variable de contrìle avec la valeur finale }
  Emit('mov ax, [' + var_name + ']');
  Emit('cmp ax, bx');
-
- If is_downto Then
-  Emit('jl ' + end_label) { Si var < limite_finale, sortir }
- Else
-  Emit('jg ' + end_label); { Si var > limite_finale, sortir }
-
- { Ex√©cuter le corps de la boucle }
+ If is_downto Then Emit('jl ' + end_label) { Si var < limite_finale, sortir }
+              Else Emit('jg ' + end_label); { Si var > limite_finale, sortir }
+  { ExÇcuter le corps de la boucle }
  ParseStatement;
-
- { Incr√©menter ou d√©cr√©menter la variable de contr√¥le }
+ { IncrÇmenter ou dÇcrÇmenter la variable de contrìle }
  EmitLabel(increment_label);
  Emit('mov ax, [' + var_name + ']');
- If is_downto Then
-  Emit('dec ax')
- Else
-  Emit('inc ax');
+ If is_downto Then Emit('dec ax')
+              Else Emit('inc ax');
  Emit('mov [' + var_name + '], ax');
-
- { Retourner au d√©but }
+  { Retourner au dÇbut }
  Emit('jmp ' + start_label);
  EmitLabel(end_label);
 End;
 
-{ Parser une instruction CASE }
+ { Analyser une instruction CASE }
 Procedure ParseCase;
 Var
  end_label, else_label, case_label: String;
  case_value: Integer;
 Begin
  NextToken; { Consommer CASE }
-
- { Analyser l'expression de s√©lection }
+  { Analyser l'expression de sÇlection }
  ParseExpression;
- Emit('mov bx, ax'); { Stocker la valeur du case dans BX }
-
- { Attendre OF }
- Expect(SYM_OF, 'Attendu OF apr√®s expression CASE');
-
- { G√©n√©rer les √©tiquettes }
+ Emit('mov bx, ax'); { Entreposer la valeur du case dans BX }
+  { Attendre OF }
+ Expect(SYM_OF, 'Attendu OF apräs expression CASE');
+  { GÇnÇrer les Çtiquettes }
  end_label := NewLabel;
  else_label := NewLabel;
-
- { Parser chaque cas }
+  { Analyser chaque cas }
  While (current_symbol <> SYM_END) and (current_symbol <> SYM_ELSE) and
-       (current_symbol <> SYM_OTHERWISE) and (current_char <> #0) do
- Begin
-  { Lire la valeur du cas - c'est un nombre }
-  If current_symbol = SYM_UNKNOWN Then
-  Begin
-   { V√©rifier si c'est un nombre }
-   If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then
-   Begin
+       (current_symbol <> SYM_OTHERWISE) and (current_char <> #0) do Begin
+   { Lire la valeur du cas - c'est un nombre }
+  If current_symbol = SYM_UNKNOWN Then Begin
+   { VÇrifier si c'est un nombre }
+   If (current_token <> '') and (current_token[1] >= '0') and (current_token[1] <= '9') Then Begin
     case_value := current_value;
     NextToken;
-
-    { Attendre : }
+     { Attendre : }
     If current_token = ':' Then
      NextToken
     Else
-     Error('Attendu : apr√®s valeur de cas');
-
-    { G√©n√©rer l'√©tiquette pour ce cas }
+     Error('Attendu : apräs valeur de cas');
+     { GÇnÇrer l'Çtiquette pour ce cas }
     case_label := NewLabel;
-
-    { Tester la valeur }
+     { Tester la valeur }
     Emit('cmp bx, ' + IntToStr(case_value));
     Emit('je ' + case_label);
-
-    { Parser l'instruction }
+     { Analyser l'instruction }
     EmitLabel(case_label);
     ParseStatement;
-
-    { Saut vers la fin apr√®s ex√©cution du cas }
+     { Saut vers la fin apräs exÇcution du cas }
     Emit('jmp ' + end_label);
-
-    { Point-virgule optionnel }
-    If current_token = ';' Then
-     NextToken;
+     { Point-virgule optionnel }
+    If current_token = ';' Then NextToken;
    End
    Else
-    NextToken; { Ignorer token non-num√©rique }
+    NextToken; { Ignorer token non-numÇrique }
   End
-  Else
-   NextToken; { Ignorer autres symboles }
+   Else
+  NextToken; { Ignorer autres symboles }
  End;
-
- { Si aucun cas n'a match√©, aller au ELSE }
+  { Si aucun cas n'a de correspondance, aller au ELSE }
  Emit('jmp ' + else_label);
-
- { G√©rer ELSE ou OTHERWISE }
+  { GÇrer ELSE ou OTHERWISE }
  If Accept(SYM_ELSE) or Accept(SYM_OTHERWISE) Then
  Begin
   NextToken; { Consommer ELSE/OTHERWISE }
