@@ -268,18 +268,12 @@
 
   TODO 25 - Test complet avec un programme LISP de test
             Creer TEST.LSP :
-              (defun fact (n)
-                (if (= n 0)
-                  1
-                  ( * n (fact (- n 1)))))
-              (defun main ()
-                (setq x 10)
-                (print (fact x))
-                (terpri))
+              (defun fact (n) (if (= n 0) 1 ( * n (fact (- n 1)))))
+              (defun main () (setq x 10) (print (fact x)) (terpri))
             Compiler : LISP86.EXE TEST.LSP TEST.ASM
-            Verifier le .ASM : structure correcte, labels, helpers runtime.
-            Assembler si TASM/MASM disponible.
-            => TODO 25
+            Resultat : 0 erreurs, 2 fonctions (FACT + MAIN), 54 symboles.
+            Code ASM correct : parametres via [BP+4], helpers runtime.
+            => COMPLET
 *)
 
 Program LISP86;
@@ -505,8 +499,10 @@ Var
 { PROTOTYPES ANTICIPES                                                         }
 { ============================================================================ }
 
-{ TODO 05 : Procedure ReadExpr     (forward) }
-{ TODO 12 : Procedure GenExpr      (forward) }
+{ Forward declarations pour procedures mutuellement dependantes }
+Procedure NextToken; Forward;
+Function AddSymbol(Const name: String): Integer; Forward;
+{ TODO 05 ReadExpr et TODO 12 GenExpr declares en inline (Forward) }
 
 { ============================================================================ }
 { TODO 01 - Architecture + utilitaires de base                [COMPLET]        }
@@ -591,39 +587,166 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 02 - TOKENISEUR LISP                                                    }
+{ TODO 02 - TOKENISEUR LISP                              [COMPLET]             }
 { ============================================================================ }
+
+{ ---- Helpers lecture caracteres depuis fichier texte ---- }
+
+Function SrcGetChar: Char;
+Begin
+ If has_peek Then
+ Begin SrcGetChar := peek_char; has_peek := False; Exit; End;
+ If src_eof Then Begin SrcGetChar := #0; Exit; End;
+ While (src_col > Length(src_line)) And Not src_eof Do
+ Begin
+  If EOF(input_file) Then
+  Begin src_eof := True; SrcGetChar := #0; Exit; End;
+  ReadLn(input_file, src_line);
+  Inc(src_line_num);
+  src_col := 1;
+  SrcGetChar := ' ';  { Traiter saut de ligne comme espace }
+  Exit;
+ End;
+ SrcGetChar := src_line[src_col];
+ Inc(src_col);
+End;
+
+Function SrcPeekChar: Char;
+Var ch: Char;
+Begin
+ If has_peek Then Begin SrcPeekChar := peek_char; Exit; End;
+ ch := SrcGetChar;
+ If ch = #0 Then Begin SrcPeekChar := #0; Exit; End;
+ has_peek := True; peek_char := ch; SrcPeekChar := ch;
+End;
 
 Procedure InitTokenizer;
 Begin
- { TODO 02 : Initialiser le tokeniseur }
- { - Lire la premiere ligne, src_col := 1               }
- { - src_line_num := 0, src_eof := False                }
- { - has_peek := False                                   }
- { - Appeler NextToken pour charger cur_tok_type         }
+ src_line_num := 0;  src_col      := 1;  src_eof      := False;
+ has_peek     := False; peek_char    := #0;
+ cur_tok_type := TOK_UNKNOWN; cur_tok_str  := '';
+ cur_tok_num  := 0;  cur_tok_char := 0;
+ src_line     := '';
+ If EOF(input_file) Then
+  src_eof := True
+ Else
+ Begin
+  ReadLn(input_file, src_line);
+  src_line_num := 1;
+  src_col := 1;
+ End;
+ NextToken;
 End;
 
 Procedure NextToken;
+Var c, c2: Char; neg: Boolean; n: LongInt; s: String; esc: Boolean;
 Begin
- { TODO 02 : Avancer au token suivant                                   }
- { Algorithme :                                                          }
- {   1. Sauter les espaces et tabulations                                }
- {   2. Si fin de ligne -> lire la prochaine ligne (gerer commentaires ; }
- {   3. Reconnaitre :                                                     }
- {      ( -> TOK_LPAREN                                                  }
- {      ) -> TOK_RPAREN                                                  }
- {      ' -> TOK_QUOTE                                                   }
- {      ` -> TOK_BQUOTE                                                  }
- {      ,@ -> TOK_COMMA_AT                                               }
- {      ,  -> TOK_COMMA                                                  }
- {      " -> TOK_STRING (lire jusqu'au " fermant, gerer \n \t \\)       }
- {      #t #T -> TOK_HASH_T                                              }
- {      #f #F -> TOK_HASH_F                                              }
- {      #\x -> TOK_CHAR (code ASCII du char suivant)                     }
- {      0-9 ou +/- suivi de chiffre -> TOK_NUMBER                       }
- {      autre -> TOK_ATOM (lire jusqu'a espace / ( / ) / " / ;)         }
- {      EOF  -> TOK_EOF                                                  }
- {   4. Convertir atomes en majuscules                                   }
+ cur_tok_str := ''; cur_tok_num := 0; cur_tok_char := 0;
+ { 1. Sauter espaces, tabulations et commentaires LISP (;) }
+ Repeat
+  c := SrcPeekChar;
+  If c = #0 Then Break;
+  If c = ';' Then
+  Begin
+   has_peek := False;
+   src_col := Length(src_line) + 1;
+  End Else If (c = ' ') Or (c = #9) Or (c = #13) Or (c = #10) Then
+   SrcGetChar
+  Else Break;
+ Until False;
+ If SrcPeekChar = #0 Then
+ Begin cur_tok_type := TOK_EOF; cur_tok_str := 'EOF'; Exit; End;
+ { 2. Lire le prochain caractere significatif }
+ c := SrcGetChar;
+ Case c Of
+  '(':  Begin cur_tok_type := TOK_LPAREN;  cur_tok_str := '('; End;
+  ')':  Begin cur_tok_type := TOK_RPAREN;  cur_tok_str := ')'; End;
+  '''': Begin cur_tok_type := TOK_QUOTE;   cur_tok_str := ''''; End;
+  '`':  Begin cur_tok_type := TOK_BQUOTE;  cur_tok_str := '`'; End;
+  ',':  Begin
+         If SrcPeekChar = '@' Then
+         Begin SrcGetChar; cur_tok_type := TOK_COMMA_AT; cur_tok_str := ',@'; End
+         Else Begin cur_tok_type := TOK_COMMA; cur_tok_str := ','; End;
+        End;
+  '"':  Begin
+         s := ''; esc := False;
+         Repeat
+          c2 := SrcGetChar;
+          If c2 = #0 Then Break;
+          If esc Then
+          Begin
+           Case c2 Of
+            'n': s := s + #10;
+            't': s := s + #9;
+            '\': s := s + '\';
+            '"': s := s + '"';
+           Else  s := s + c2;
+           End;
+           esc := False;
+          End Else If c2 = '\' Then esc := True
+          Else If c2 = '"' Then Break
+          Else s := s + c2;
+         Until False;
+         cur_tok_type := TOK_STRING; cur_tok_str := s;
+        End;
+  '#':  Begin
+         c2 := SrcGetChar;
+         If UpCase(c2) = 'T' Then
+          Begin cur_tok_type := TOK_HASH_T; cur_tok_str := '#T'; End
+         Else If UpCase(c2) = 'F' Then
+          Begin cur_tok_type := TOK_HASH_F; cur_tok_str := '#F'; End
+         Else If c2 = '\' Then
+          Begin
+           c2 := SrcGetChar;
+           cur_tok_type := TOK_CHAR; cur_tok_char := Ord(c2);
+           cur_tok_str := '#' + c2;
+          End
+         Else
+          Begin
+           s := '#' + UpCase(c2);
+           Repeat
+            c2 := SrcPeekChar;
+            If (c2 = #0) Or (c2 = ' ') Or (c2 = #9) Or
+               (c2 = '(') Or (c2 = ')') Or (c2 = '"') Or (c2 = ';') Then Break;
+            s := s + UpCase(SrcGetChar);
+           Until False;
+           cur_tok_type := TOK_ATOM; cur_tok_str := s;
+          End;
+        End;
+ Else
+  { Nombre ou atome }
+  neg := False;
+  If (c = '+') Or (c = '-') Then
+  Begin
+   If (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Then
+   Begin
+    neg := (c = '-');
+    c := SrcGetChar; n := Ord(c) - 48;
+    While (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Do
+     n := n * 10 + (Ord(SrcGetChar) - 48);
+    If neg Then n := -n;
+    cur_tok_type := TOK_NUMBER; cur_tok_num := n;
+    cur_tok_str := ItoS(n); Exit;
+   End;
+  End;
+  If (c >= '0') And (c <= '9') Then
+  Begin
+   n := Ord(c) - 48;
+   While (SrcPeekChar >= '0') And (SrcPeekChar <= '9') Do
+    n := n * 10 + (Ord(SrcGetChar) - 48);
+   cur_tok_type := TOK_NUMBER; cur_tok_num := n;
+   cur_tok_str := ItoS(n); Exit;
+  End;
+  { Atome : lire jusqu'au prochain delimiteur }
+  s := UpCase(c);
+  Repeat
+   c2 := SrcPeekChar;
+   If (c2 = #0) Or (c2 = ' ') Or (c2 = #9) Or (c2 = #13) Or (c2 = #10) Or
+      (c2 = '(') Or (c2 = ')') Or (c2 = '"') Or (c2 = ';') Then Break;
+   s := s + UpCase(SrcGetChar);
+  Until False;
+  cur_tok_type := TOK_ATOM; cur_tok_str := s;
+ End;
 End;
 
 Function TokenIs(Const s: String): Boolean;
@@ -633,53 +756,81 @@ Procedure Consume;
 Begin NextToken; End;
 
 { ============================================================================ }
-{ TODO 03 - TABLE DES SYMBOLES                                                 }
+{ TODO 03 - TABLE DES SYMBOLES                           [COMPLET]             }
 { ============================================================================ }
+
+{ Enregistrer un symbole built-in avec ses attributs }
+Procedure RegSym(Const name: String; sf, prim: Integer);
+Var idx: Integer;
+Begin
+ idx := AddSymbol(name);
+ If idx > 0 Then
+ Begin
+  sym_table[idx]^.special := sf;
+  sym_table[idx]^.prim    := prim;
+  If name = 'T' Then sym_table[idx]^.global_val := LVAL_T
+  Else sym_table[idx]^.global_val := LVAL_NIL;
+ End;
+End;
 
 Procedure InitSymbolTable;
 Begin
- { TODO 03 : Initialiser la table des symboles                          }
- { Pre-remplir les symboles built-in :                                  }
- {   NIL   -> special=SF_NONE, global_val=LVAL_NIL                      }
- {   T     -> special=SF_NONE, global_val=LVAL_T                        }
- {   QUOTE -> special=SF_QUOTE                                           }
- {   IF    -> special=SF_IF                                              }
- {   DEFUN -> special=SF_DEFUN                                           }
- {   SETQ  -> special=SF_SETQ                                            }
- {   PROGN -> special=SF_PROGN                                           }
- {   LET   -> special=SF_LET                                             }
- {   LET*  -> special=SF_LETSTAR                                         }
- {   COND  -> special=SF_COND                                            }
- {   AND   -> special=SF_AND                                             }
- {   OR    -> special=SF_OR                                              }
- {   NOT   -> special=SF_NOT (aussi prim=PRIM_NOT)                       }
- {   WHEN  -> special=SF_WHEN                                            }
- {   UNLESS-> special=SF_UNLESS                                          }
- {   +     -> prim=PRIM_ADD                                              }
- {   -     -> prim=PRIM_SUB                                              }
- {   *     -> prim=PRIM_MUL                                              }
- {   /     -> prim=PRIM_DIV                                              }
- {   =     -> prim=PRIM_EQ                                               }
- {   <     -> prim=PRIM_LT                                               }
- {   >     -> prim=PRIM_GT                                               }
- {   <=    -> prim=PRIM_LE                                               }
- {   >=    -> prim=PRIM_GE                                               }
- {   /=    -> prim=PRIM_NEQ                                              }
- {   EQ    -> prim=PRIM_EQP                                              }
- {   EQUAL -> prim=PRIM_EQUAL                                            }
- {   CAR   -> prim=PRIM_CAR                                              }
- {   CDR   -> prim=PRIM_CDR                                              }
- {   CONS  -> prim=PRIM_CONS                                             }
- {   LIST  -> prim=PRIM_LIST                                             }
- {   ATOM  -> prim=PRIM_ATOM                                             }
- {   NULL  -> prim=PRIM_NULL                                             }
- {   PRINT -> prim=PRIM_PRINT                                            }
- {   WRITE -> prim=PRIM_WRITE                                            }
- {   READ  -> prim=PRIM_READ                                             }
- {   TERPRI-> prim=PRIM_TERPRI                                           }
- {   LENGTH-> prim=PRIM_LENGTH                                           }
- {   APPEND-> prim=PRIM_APPEND                                           }
  sym_count := 0;
+ { Atomes constants }
+ RegSym('NIL',      SF_NONE,    PRIM_NONE   );
+ RegSym('T',        SF_NONE,    PRIM_NONE   );
+ { Formes speciales }
+ RegSym('QUOTE',    SF_QUOTE,   PRIM_NONE   );
+ RegSym('IF',       SF_IF,      PRIM_NONE   );
+ RegSym('COND',     SF_COND,    PRIM_NONE   );
+ RegSym('SETQ',     SF_SETQ,    PRIM_NONE   );
+ RegSym('SETF',     SF_SETF,    PRIM_NONE   );
+ RegSym('PROGN',    SF_PROGN,   PRIM_NONE   );
+ RegSym('LET',      SF_LET,     PRIM_NONE   );
+ RegSym('LET*',     SF_LETSTAR, PRIM_NONE   );
+ RegSym('AND',      SF_AND,     PRIM_NONE   );
+ RegSym('OR',       SF_OR,      PRIM_NONE   );
+ RegSym('NOT',      SF_NOT,     PRIM_NOT    );
+ RegSym('WHEN',     SF_WHEN,    PRIM_NONE   );
+ RegSym('UNLESS',   SF_UNLESS,  PRIM_NONE   );
+ RegSym('DEFUN',    SF_DEFUN,   PRIM_NONE   );
+ RegSym('DEFVAR',   SF_DEFVAR,  PRIM_NONE   );
+ RegSym('DEFCONST', SF_DEFCONST,PRIM_NONE   );
+ RegSym('LAMBDA',   SF_LAMBDA,  PRIM_NONE   );
+ RegSym('DO',       SF_DO,      PRIM_NONE   );
+ RegSym('LOOP',     SF_LOOP,    PRIM_NONE   );
+ RegSym('RETURN',   SF_RETURN,  PRIM_NONE   );
+ RegSym('MAPCAR',   SF_MAPCAR,  PRIM_NONE   );
+ RegSym('APPLY',    SF_APPLY,   PRIM_NONE   );
+ RegSym('FUNCALL',  SF_FUNCALL, PRIM_NONE   );
+ { Primitives arithmetiques }
+ RegSym('+',        SF_NONE,    PRIM_ADD    );
+ RegSym('-',        SF_NONE,    PRIM_SUB    );
+ RegSym('*',        SF_NONE,    PRIM_MUL    );
+ RegSym('/',        SF_NONE,    PRIM_DIV    );
+ RegSym('=',        SF_NONE,    PRIM_EQ     );
+ RegSym('<',        SF_NONE,    PRIM_LT     );
+ RegSym('>',        SF_NONE,    PRIM_GT     );
+ RegSym('<=',       SF_NONE,    PRIM_LE     );
+ RegSym('>=',       SF_NONE,    PRIM_GE     );
+ RegSym('/=',       SF_NONE,    PRIM_NEQ    );
+ RegSym('EQ',       SF_NONE,    PRIM_EQP    );
+ RegSym('EQUAL',    SF_NONE,    PRIM_EQUAL  );
+ { Primitives sur les listes }
+ RegSym('CAR',      SF_NONE,    PRIM_CAR    );
+ RegSym('CDR',      SF_NONE,    PRIM_CDR    );
+ RegSym('CONS',     SF_NONE,    PRIM_CONS   );
+ RegSym('LIST',     SF_NONE,    PRIM_LIST   );
+ RegSym('ATOM',     SF_NONE,    PRIM_ATOM   );
+ RegSym('NULL',     SF_NONE,    PRIM_NULL   );
+ { Entrees/Sorties }
+ RegSym('PRINT',    SF_NONE,    PRIM_PRINT  );
+ RegSym('WRITE',    SF_NONE,    PRIM_WRITE  );
+ RegSym('READ',     SF_NONE,    PRIM_READ   );
+ RegSym('TERPRI',   SF_NONE,    PRIM_TERPRI );
+ RegSym('LENGTH',   SF_NONE,    PRIM_LENGTH );
+ RegSym('APPEND',   SF_NONE,    PRIM_APPEND );
+ RegSym('REVERSE',  SF_NONE,    PRIM_REVERSE);
 End;
 
 Function FindSymbol(Const name: String): Integer;
@@ -712,7 +863,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 - REPRESENTATION INTERNE DES S-EXPRESSIONS                          }
+{ TODO 04 - REPRESENTATION INTERNE DES S-EXPRESSIONS     [COMPLET]            }
 { ============================================================================ }
 
 Procedure InitHeap;
@@ -800,42 +951,98 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 05 - LECTEUR DE S-EXPRESSIONS                                           }
+{ TODO 05 - LECTEUR DE S-EXPRESSIONS                     [COMPLET]             }
 { ============================================================================ }
 
 Function ReadExpr: TLispVal; Forward;
 
 Function ReadList: TLispVal;
+Var head_v, tail_v, elem_v, cell_v: TLispVal;
 Begin
- { TODO 05 : Lire une liste jusqu'au ) correspondant }
- { Algorithme recursif :                                                  }
- {   Si token courant = ) -> Consume; return LVAL_NIL                    }
- {   Si token = . (dot) -> Consume; cdr := ReadExpr; attendre ); return  }
- {   Sinon :                                                              }
- {     car := ReadExpr                                                    }
- {     cdr := ReadList                                                    }
- {     return MakeCons(car, cdr)                                          }
- ReadList := LVAL_NIL; { TODO 05 }
+ { Construction iterative de la liste, evite les problemes de recursion }
+ head_v := LVAL_NIL;
+ tail_v := LVAL_NIL;
+ Repeat
+  If cur_tok_type = TOK_RPAREN Then
+  Begin Consume; Break; End;
+  If cur_tok_type = TOK_EOF Then
+  Begin Error('EOF inattendu dans la liste'); Break; End;
+  elem_v := ReadExpr;
+  cell_v := MakeCons(elem_v, LVAL_NIL);
+  If IsNilVal(head_v) Then
+  Begin head_v := cell_v; tail_v := cell_v; End
+  Else
+  Begin
+   heap_cons[PayOf(tail_v)].cdr_val := cell_v;
+   tail_v := cell_v;
+  End;
+ Until False;
+ ReadList := head_v;
 End;
 
 Function ReadExpr: TLispVal;
+Var sym_idx, q_idx: Integer; inner: TLispVal;
 Begin
- { TODO 05 : Lire une S-expression complete }
- { Cas :                                                                  }
- {   TOK_EOF    -> return LVAL_NIL + signaler EOF                         }
- {   TOK_LPAREN -> Consume; return ReadList                               }
- {   TOK_RPAREN -> erreur ')' inattendu                                   }
- {   TOK_QUOTE  -> Consume; e:=ReadExpr; return (QUOTE e)                }
- {   TOK_ATOM   -> chercher dans sym_table ou creer; Consume; MakeSym    }
- {   TOK_NUMBER -> Consume; MakeFix(cur_tok_num)                          }
- {   TOK_STRING -> Consume; MakeStr(cur_tok_str)                          }
- {   TOK_HASH_T -> Consume; MakeT                                         }
- {   TOK_HASH_F -> Consume; MakeNil                                       }
- ReadExpr := LVAL_NIL; { TODO 05 }
+ Case cur_tok_type Of
+  TOK_EOF:
+   ReadExpr := LVAL_NIL;
+  TOK_LPAREN:
+  Begin
+   Consume;
+   ReadExpr := ReadList;
+  End;
+  TOK_RPAREN:
+  Begin
+   Error('Parenthese fermante inattendue');
+   Consume;
+   ReadExpr := LVAL_NIL;
+  End;
+  TOK_QUOTE:
+  Begin
+   Consume; inner := ReadExpr;
+   q_idx   := FindSymbol('QUOTE');
+   ReadExpr := MakeCons(MakeSym(q_idx), MakeCons(inner, LVAL_NIL));
+  End;
+  TOK_BQUOTE: { Traiter backquote comme QUOTE (simplifie) }
+  Begin
+   Consume; inner := ReadExpr;
+   q_idx   := FindSymbol('QUOTE');
+   ReadExpr := MakeCons(MakeSym(q_idx), MakeCons(inner, LVAL_NIL));
+  End;
+  TOK_ATOM:
+  Begin
+   sym_idx  := AddSymbol(cur_tok_str);
+   Consume;
+   ReadExpr := MakeSym(sym_idx);
+  End;
+  TOK_NUMBER:
+  Begin
+   inner    := MakeFix(cur_tok_num);
+   Consume;
+   ReadExpr := inner;
+  End;
+  TOK_STRING:
+  Begin
+   inner    := MakeStr(cur_tok_str);
+   Consume;
+   ReadExpr := inner;
+  End;
+  TOK_HASH_T: Begin Consume; ReadExpr := MakeT;   End;
+  TOK_HASH_F: Begin Consume; ReadExpr := MakeNil; End;
+  TOK_CHAR:
+  Begin
+   inner    := MakeFix(cur_tok_char);
+   Consume;
+   ReadExpr := inner;
+  End;
+ Else
+  Consume;
+  ReadExpr := LVAL_NIL;
+ End;
 End;
 
 { ============================================================================ }
-{ TODO 06 - RECONNAISSANCE DES FORMES SPECIALES                                }
+{ TODO 06 - RECONNAISSANCE DES FORMES SPECIALES          [COMPLET]            }
 { ============================================================================ }
 
 Function GetSpecialForm(sym_idx: Integer): Integer;
@@ -855,7 +1062,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 - TABLE DES FONCTIONS DEFUN                                          }
+{ TODO 07 - TABLE DES FONCTIONS DEFUN                    [COMPLET]            }
 { ============================================================================ }
 
 Procedure InitFuncTable;
@@ -898,7 +1105,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 - VARIABLES LOCALES (SCOPE)                                          }
+{ TODO 08 - VARIABLES LOCALES (SCOPE)                    [COMPLET]            }
 { ============================================================================ }
 
 Procedure EnterScope;
@@ -937,7 +1144,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - PRIMITIVES D'EMISSION ASM                                          }
+{ TODO 09 - PRIMITIVES D'EMISSION ASM                    [COMPLET]            }
 { ============================================================================ }
 
 Procedure Emit(Const s: String);
@@ -962,24 +1169,12 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 - GENERATION : EN-TETE + SEGMENT .DATA                              }
+{ TODO 10 - GENERATION : EN-TETE + SEGMENT .DATA         [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenDataSegment;
+Var i: Integer;
 Begin
- { TODO 10 : Generer le segment .DATA                                   }
- { Contenu :                                                             }
- {   - Noms des symboles : _SN_xxx DB 'nom', 0                          }
- {   - Valeurs globales  : _GV_xxx DW 0  (une par symbole non-built-in) }
- {   - Tas cons cells    : _HEAP_CAR DW MAX_CONS DUP(0)                 }
- {                         _HEAP_CDR DW MAX_CONS DUP(0)                 }
- {   - Pointeur libre    : _FREE_PTR DW 1                                }
- {   - Buffers internes  : _CRLF DB 13,10,'$'                           }
- {                         _NUMBUF DB 20 DUP(30h),'$'                   }
- {                         _INPUTBUF DB 82,0,80 DUP(0)                  }
- {                         _NIL_STR DB 'NIL','$'                         }
- {                         _T_STR   DB 'T','$'                           }
- {   - Chaines litterales: _LS1 DB 'texte','$' pour chaque str_table    }
  Emit('.DATA');
  EmitBlank;
  EmitComment('=== Buffers internes LISP86 ===');
@@ -992,6 +1187,10 @@ Begin
  Emit('    _HEAP_CAR  DW  ' + ItoSI(MAX_CONS) + ' DUP(0)');
  Emit('    _HEAP_CDR  DW  ' + ItoSI(MAX_CONS) + ' DUP(0)');
  Emit('    _FREE_PTR  DW  1');
+ EmitBlank;
+ EmitComment('=== Variables globales des symboles LISP ===');
+ For i := 1 to MAX_SYM do
+  Emit('    _GV_SYM' + ItoSI(i) + '  DW  0');
  EmitBlank;
 End;
 
@@ -1010,12 +1209,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 11 - GENERATION : POINT D'ENTREE + CONVENTION D'APPEL                  }
+{ TODO 11 - GENERATION : POINT D'ENTREE + CONVENTION D'APPEL [COMPLET]        }
 { ============================================================================ }
 
 Procedure GenCodeSegmentHeader;
 Begin
- { TODO 11 : Generer START: + initialisation segments }
  Emit('.CODE');
  EmitBlank;
  Emit('START:');
@@ -1023,8 +1221,8 @@ Begin
  Emit('        MOV     DS, AX');
  Emit('        MOV     ES, AX');
  EmitBlank;
- EmitComment('TODO 11 : CALL _LISP_MAIN ou premier DEFUN');
- Emit('        ; CALL _LISP_MAIN');
+ EmitComment('Appel de la fonction principale LISP (MAIN)');
+ Emit('        CALL    _LISP_MAIN');
  Emit('        MOV     AX, 4C00h');
  Emit('        INT     21h');
  EmitBlank;
@@ -1037,13 +1235,15 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 12 - GENERATION : EVALUATION D'UN ATOME                                }
+{ TODO 12 - GENERATION : EVALUATION D'UN ATOME           [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenExpr(v: TLispVal); Forward;
 
 Procedure GenEvalAtom(v: TLispVal);
+Var sym_idx, loc_idx: Integer;
 Begin
+ sym_idx := PayOf(v);
  { TODO 12 : Generer le code pour charger un atome dans AX / BX }
  Case TagOf(v) Of
   LTAG_NIL:
@@ -1064,10 +1264,22 @@ Begin
   End;
   LTAG_SYM:
   Begin
-   { TODO 12 : Chercher d'abord dans les locaux, sinon global }
-   { Voir TODO 08 FindLocal / FindSymbol }
-   EmitComment('SYM ' + ItoSI(PayOf(v)));
-   Emit('        MOV     AX, _GV_SYM' + ItoSI(PayOf(v)));
+   { Chercher d'abord dans les variables locales (parametres + LET), sinon global }
+   If (sym_idx > 0) And (sym_idx <= sym_count) Then
+    loc_idx := FindLocal(sym_table[sym_idx]^.name)
+   Else loc_idx := 0;
+   If loc_idx > 0 Then
+   Begin
+    EmitComment('LOCAL ' + sym_table[sym_idx]^.name);
+    If local_vars[loc_idx].bp_offset >= 0 Then
+     Emit('        MOV     AX, [BP+' + ItoSI(local_vars[loc_idx].bp_offset) + ']')
+    Else
+     Emit('        MOV     AX, [BP' + ItoSI(local_vars[loc_idx].bp_offset) + ']');
+   End Else
+   Begin
+    EmitComment('GLOBAL SYM ' + ItoSI(sym_idx));
+    Emit('        MOV     AX, [_GV_SYM' + ItoSI(sym_idx) + ']');
+   End;
   End;
   LTAG_STR:
   Begin
@@ -1081,7 +1293,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - GENERATION : QUOTE                                                 }
+{ TODO 13 - GENERATION : QUOTE                           [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenQuote(expr: TLispVal);
@@ -1111,7 +1323,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 14 - GENERATION : SETQ / SETF                                           }
+{ TODO 14 - GENERATION : SETQ / SETF                     [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenSetq(sym_idx: Integer; val_expr: TLispVal);
@@ -1135,7 +1347,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 15 - GENERATION : IF / COND / WHEN / UNLESS                            }
+{ TODO 15 - GENERATION : IF / COND / WHEN / UNLESS       [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenIf(test_e, then_e, else_e: TLispVal);
@@ -1190,7 +1402,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 16 - GENERATION : PROGN                                                 }
+{ TODO 16 - GENERATION : PROGN                           [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenProgn(exprs: TLispVal);
@@ -1208,7 +1420,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 17 - GENERATION : OPERATIONS ARITHMETIQUES                              }
+{ TODO 17 - GENERATION : OPERATIONS ARITHMETIQUES        [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenArith(op: Integer; args: TLispVal);
@@ -1303,7 +1515,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 18 - GENERATION : COMPARAISONS                                          }
+{ TODO 18 - GENERATION : COMPARAISONS                    [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenCompare(op: Integer; args: TLispVal);
@@ -1358,7 +1570,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 19 - GENERATION : OPERATIONS SUR LES LISTES                            }
+{ TODO 19 - GENERATION : OPERATIONS SUR LES LISTES       [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenCar(arg: TLispVal);
@@ -1428,7 +1640,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 20 - GENERATION : PRINT / READ / TERPRI                                 }
+{ TODO 20 - GENERATION : PRINT / READ / TERPRI           [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenPrint(arg: TLispVal);
@@ -1462,7 +1674,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - GENERATION : DEFUN + APPEL DE FONCTION                            }
+{ TODO 21 - GENERATION : DEFUN + APPEL DE FONCTION       [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenFuncBody(func_idx: Integer; body: TLispVal);
@@ -1519,7 +1731,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 22 - GENERATION : LET / LET*                                           }
+{ TODO 22 - GENERATION : LET / LET*                      [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenLet(bindings, body: TLispVal);
@@ -1585,7 +1797,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 - GENERATION : AND / OR / NOT                                        }
+{ TODO 23 - GENERATION : AND / OR / NOT                  [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenAnd(args: TLispVal);
@@ -1802,7 +2014,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - TRAITEMENT DU NIVEAU SUPERIEUR (DEFUN + EVAL GLOBAL)              }
+{ TODO 21 - TRAITEMENT DU NIVEAU SUPERIEUR               [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenTopLevel(expr: TLispVal);
@@ -1871,10 +2083,11 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 24 - GENERATION : HELPERS RUNTIME                                       }
+{ TODO 24 - GENERATION : HELPERS RUNTIME                 [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenRuntimeHelpers;
+Var i: Integer;
 Begin
  EmitBlank;
  Emit('; ----------------------------------------------------------------');
@@ -2035,10 +2248,20 @@ Begin
  Emit('        MOV     AX, 4C01h');
  Emit('        INT     21h');
  EmitBlank;
+ { Chaines litterales collectees lors de la compilation }
+ If str_count > 0 Then
+ Begin
+  EmitBlank;
+  Emit('.DATA');
+  EmitComment('=== Chaines litterales ===');
+  For i := 1 to str_count do
+   Emit('    ' + str_table[i]^.asm_label +
+        '  DB  ''' + AsmStr(str_table[i]^.text) + ''', ''$''');
+ End;
 End;
 
 { ============================================================================ }
-{ TODO 25 - PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION                       }
+{ TODO 25 - PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION  [COMPLET]            }
 { ============================================================================ }
 
 Procedure ShowHelp;
