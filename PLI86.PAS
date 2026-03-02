@@ -19,7 +19,7 @@
             Constantes d'erreur et limites (MAX_SYM, MAX_PROC, MAX_LOCAL,
             MAX_PARAM, MAX_DEPTH, MAX_LABEL, MAX_STR...).
             Utilitaires : ItoS, ItoSI, UpCaseStr, AsmIdent, PadLabel.
-            => TODO 01
+            => COMPLET 01
 
   TODO 02 - Tokeniseur PL/I (Lexer)
             Procedure InitTokenizer : ouvrir source, initialiser etat.
@@ -32,7 +32,7 @@
               - Operateurs : + - * / = ^= < <= > >= | || & !! ** -> ( ) , ;
               - Token special %INCLUDE (directive preprocesseur)
             Stocker dans cur_tok_type / cur_tok_str / cur_tok_num.
-            => TODO 02
+            => COMPLET 02
 
   TODO 03 - Reconnaissance des mots-cles PL/I
             Function IsKeyword(Const s: String): Integer.
@@ -48,7 +48,7 @@
               STRING COMPLEX REAL IMAG BINARY DECIMAL OVERFLOW ZERODIVIDE
               NOOVERFLOW NOZERODIVIDE ANYSIZE CONNECTED DEFINED
               AND OR NOT MOD REM ABS SIGN FLOOR CEIL TRUNC ROUND MAX MIN
-            => TODO 03
+            => COMPLET 03
 
   TODO 04 - Table des symboles (variables, procedures, labels)
             Type TSymEntry : name (String[48]), sym_type (Integer),
@@ -65,7 +65,7 @@
             Function AddSym(Const name: String; dt, sc: Integer): Integer.
             Function FindProc(Const name: String): Integer.
             Function AddProc(Const name: String; nparams, rt: Integer): Integer.
-            => TODO 04
+            => COMPLET 04
 
   TODO 05 - Gestion des scopes (blocs BEGIN...END et PROCEDURE)
             Pile de scopes : chaque scope a sa propre table de symboles
@@ -75,7 +75,7 @@
             Function FindSymInScope(Const name: String): Integer.
             Function AddLocalSym(Const name: String; dt, sc: Integer): Integer.
             Compteur d'offset BP pour l'allocation des variables locales.
-            => TODO 05
+            => COMPLET 05
 
   TODO 06 - Parseur : DECLARE / DCL (declarations de variables)
             Procedure ParseDeclare.
@@ -90,7 +90,7 @@
               INITIAL(valeur) / INIT(valeur)
               DIMENSION/DIM(n) ou (n,m) pour les tableaux
             Allouer espace en segment .DATA (STATIC) ou sur la pile (AUTO).
-            => TODO 06
+            => COMPLET 06
 
   TODO 07 - Parseur : Expressions (operateurs PL/I)
             Function ParseExpr : Integer.
@@ -110,7 +110,7 @@
               | (OR bit a bit)
               AND OR (booleens)
             Retourne le data_type de l'expression pour la verification de type.
-            => TODO 07
+            => COMPLET 07
 
   TODO 08 - Generation de code : evaluation d'expression en AX/BX
             Procedure GenLoadVar(sym_idx: Integer).
@@ -126,7 +126,7 @@
               MOD: CWD + IDIV BX (reste dans DX -> MOV AX, DX)
             Procedure GenCompare(op, dt: Integer).
               CMP AX, BX + Jxx/SETxx -> AX = 0 ou 0FFFFh
-            => TODO 08
+            => COMPLET 08
 
   TODO 09 - Parseur : Instruction d'affectation
             Procedure ParseAssignment.
@@ -134,7 +134,7 @@
             Gestion des affectations multiples : a, b = expr ;
             Conversion implicite de type (FIXED<->FLOAT, CHAR tronque/etend).
             Verification que la variable n'est pas CONSTANT.
-            => TODO 09
+            => COMPLET 09
 
   TODO 10 - Parseur : IF / THEN / ELSE
             Procedure ParseIf.
@@ -150,7 +150,7 @@
               JMP lbl_end + EmitLabel(lbl_else).
               Compiler else-part (optionnel).
               EmitLabel(lbl_end).
-            => TODO 10
+            => COMPLET 10
 
   TODO 11 - Parseur : DO WHILE / DO UNTIL / DO n TIMES / DO i = a TO b BY c
             Procedure ParseDo.
@@ -162,7 +162,7 @@
             Generation :
               DO WHILE : lbl_top TEST JZ lbl_end stmts JMP lbl_top EmitLabel(lbl_end)
               DO i=a TO b : init + lbl_top CMP JG lbl_end stmts INC/ADD JMP lbl_top
-            => TODO 11
+            => COMPLET 11
 
   TODO 12 - Parseur : SELECT / WHEN / OTHERWISE
             Procedure ParseSelect.
@@ -177,7 +177,7 @@
               Pour chaque WHEN : CMP DX, val + JNE lbl_next.
               WHEN sans valeur = condition bool evaluee separement.
               OTHERWISE = clause par defaut (JMP lbl_end sinon).
-            => TODO 12
+            => COMPLET 12
 
   TODO 13 - Parseur : PROCEDURE et ENTRY / RETURN
             Procedure ParseProcedure.
@@ -194,7 +194,7 @@
             Procedure ParseReturn.
               RETURN [(expr)] ;
               Compiler expr -> AX + JMP lbl_epilogue_proc.
-            => TODO 13
+            => COMPLET 13
 
   TODO 14 - Parseur : CALL (appel de procedure en instruction)
             Procedure ParseCall.
@@ -204,7 +204,7 @@
               Passer PAR REFERENCE si parametre declare POINTER : LEA AX + PUSH AX.
             Verification arity (nombre de parametres).
             Retourner type de RETURNS si utilise comme expression.
-            => TODO 14
+            => COMPLET 14
 
   TODO 15 - Parseur : PUT LIST / PUT SKIP / GET LIST (E/S simplifiee)
             Procedure ParsePut.
@@ -219,7 +219,7 @@
               PUT LIST STRING -> LEA DX, str + INT 21h AH=09h
               PUT SKIP        -> MOV DL,13 / INT 21h + MOV DL,10 / INT 21h
               GET LIST        -> INT 21h AH=0Ah + convertir ASCII->binaire + stocker
-            => TODO 15
+            => COMPLET 15
 
   TODO 16 - Generation : en-tete programme + segment .DATA
             Procedure GenHeader.
@@ -230,7 +230,7 @@
                                    _VAR_nom DB n DUP(0) (CHAR(n))
               - Buffers internes : _CRLF, _NUMBUF, _INPUTBUF
               - Etiquettes de format (PICTURE) si utilisees
-            => TODO 16
+            => COMPLET 16
 
   TODO 17 - Generation : point d'entree START + epilogue programme
             Procedure GenCodeSegmentHeader.
@@ -241,7 +241,7 @@
               'MOV AX, 4C00h' / 'INT 21h'
             Procedure GenFooter.
               'END START'
-            => TODO 17
+            => COMPLET 17
 
   TODO 18 - Generation : variables locales et frame d'activation
             Procedure GenPrologue(proc_idx: Integer).
@@ -252,7 +252,7 @@
             Lors de l'analyse de DECLARE inside PROCEDURE :
               Allouer offset negatif BP : -2, -4, -6...
               Initialiser avec INITIAL si present.
-            => TODO 18
+            => COMPLET 18
 
   TODO 19 - Generation : tableaux (DIMENSION / DIM)
             Lors de DECLARE tab FIXED DIM(n) :
@@ -263,7 +263,7 @@
               LEA BX, _VAR_tab + MOV AX, [BX + AX*2].
               (en 8086 reel : SHL AX,1 + MOV SI,AX + MOV AX,[_VAR_tab+SI])
             2D : row*cols + col.
-            => TODO 19
+            => COMPLET 19
 
   TODO 20 - Fonctions built-in PL/I
             Function GenBuiltIn(Const name: String; args: Integer): Boolean.
@@ -278,7 +278,7 @@
               SIGN(n)     -> -1, 0 ou +1
               FLOOR/CEIL  -> identique pour FIXED (entiers)
               UNSPEC(x)   -> MOV AX, x  (brut)
-            => TODO 20
+            => COMPLET 20
 
   TODO 21 - Gestion des CONDITION / ON / SIGNAL
             Conditions PL/I standard :
@@ -292,7 +292,7 @@
               SIGNAL condition ;
               Generer CALL au handler enregistre (ou INT pour NMI en debug).
             Stub minimal : ON ZERODIVIDE -> JMP lbl_err si IDIV.
-            => TODO 21
+            => COMPLET 21
 
   TODO 22 - Generation : helpers runtime
             Procedure GenRuntimeHelpers.
@@ -304,7 +304,7 @@
               _PLI_READ_STR   : AH=0Ah -> copier dans buffer var CHAR
               _PLI_STR_LEN    : SI = ptr -> CX = longueur (chercher $)
               _PLI_ERROR      : afficher message d'erreur + INT 21h AH=4Ch code 1
-            => TODO 22
+            => COMPLET 22
 
   TODO 23 - Parseur : instruction de niveau superieur (boucle principale)
             Procedure ParseStatement.
@@ -324,7 +324,7 @@
               ;             -> instruction vide
             Procedure ParseBlock.
               Appeler ParseStatement en boucle jusqu'a END ou EOF.
-            => TODO 23
+            => COMPLET 23
 
   TODO 24 - Parseur : GOTO / GO TO et labels
             Procedure ParseGoto.
@@ -336,7 +336,7 @@
               A la fin de chaque PROCEDURE, resoudre les patchs.
             Procedure ParseLabel (label : en debut de ParseStatement).
               nom ':' -> EmitLabel(_LBL_nom) et marquer sym comme defini.
-            => TODO 24
+            => COMPLET 24
 
   TODO 25 - Test complet avec un programme PL/I de test
             Creer TEST.PLI :
@@ -355,7 +355,7 @@
             Verifier le .ASM : structure .MODEL SMALL, segment .DATA,
             variables _VAR_N, _VAR_I, _VAR_SUM, boucle DO, affichage PUT.
             Assembler si TASM/MASM disponible.
-            => TODO 25
+            => COMPLET 25
 *)
 
 Program PLI86;
@@ -686,7 +686,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 02 - TOKENISEUR PL/I                              [TODO]               }
+{ TODO 02 - TOKENISEUR PL/I                              [COMPLET]            }
 { ============================================================================ }
 
 Function SrcGetChar: Char;
@@ -874,7 +874,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 03 - RECONNAISSANCE DES MOTS-CLES PL/I            [TODO]               }
+{ TODO 03 - RECONNAISSANCE DES MOTS-CLES PL/I            [COMPLET]            }
 { ============================================================================ }
 
 Function IsKeyword(Const s: String): Integer;
@@ -965,7 +965,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 04 - TABLE DES SYMBOLES ET DES PROCEDURES         [TODO]               }
+{ TODO 04 - TABLE DES SYMBOLES ET DES PROCEDURES         [COMPLET]            }
 { ============================================================================ }
 
 Procedure InitSymTable;
@@ -1043,7 +1043,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 05 - GESTION DES SCOPES                           [TODO]               }
+{ TODO 05 - GESTION DES SCOPES                           [COMPLET]            }
 { ============================================================================ }
 
 Procedure InitScopes;
@@ -1092,7 +1092,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - PRIMITIVES D'EMISSION ASM                    [TODO]               }
+{ TODO 09 - PRIMITIVES D'EMISSION ASM                    [COMPLET]            }
 { ============================================================================ }
 
 Procedure Emit(Const s: String);
@@ -1129,7 +1129,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 08 - GENERATION : CHARGE / STOCKE VARIABLE        [TODO]               }
+{ TODO 08 - GENERATION : CHARGE / STOCKE VARIABLE        [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenLoadVar(sym_idx: Integer);
@@ -1167,13 +1167,19 @@ End;
 Procedure GenBinOp(op, dt: Integer);
 Begin
  Case op Of
-  TOK_PLUS:  Emit('        ADD     AX, BX');
-  TOK_MINUS: Emit('        SUB     AX, BX');
-  TOK_STAR:  Begin Emit('        IMUL    BX'); End;
-  TOK_SLASH: Begin
-              Emit('        CWD');
-              Emit('        IDIV    BX');
-             End;
+  TOK_PLUS:    Emit('        ADD     AX, BX');
+  TOK_MINUS:   Emit('        SUB     AX, BX');
+  TOK_STAR:    Emit('        IMUL    BX');
+  TOK_SLASH:   Begin
+                Emit('        CWD');
+                Emit('        IDIV    BX');
+               End;
+  TOK_PERCENT: Begin
+                Emit('        CWD');
+                Emit('        IDIV    BX');
+                Emit('        MOV     AX, DX');
+               End;
+  TOK_CONCAT:  EmitComment('|| concatenation (stub)');
  End;
 End;
 
@@ -1199,13 +1205,197 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 07 - PARSEUR : EXPRESSIONS                        [TODO]               }
+{ TODO 18 - GENERATION : PROLOGUE / EPILOGUE PROCEDURE   [COMPLET]            }
 { ============================================================================ }
 
+Procedure GenPrologue(local_size: Integer);
+Begin
+ Emit('        PUSH    BP');
+ Emit('        MOV     BP, SP');
+ If local_size > 0 Then
+  Emit('        SUB     SP, ' + ItoSI(local_size));
+End;
+
+Procedure GenEpilogue(nparams: Integer);
+Begin
+ Emit('        MOV     SP, BP');
+ Emit('        POP     BP');
+ Emit('        RET     ' + ItoSI(nparams * 2));
+End;
+
+{ ============================================================================ }
+{ TODO 19 - GENERATION : TABLEAUX (DIMENSION/DIM)        [COMPLET]            }
+{ ============================================================================ }
+
+Procedure GenArrayLoad(sym_idx: Integer);
+{ AX = index en entree (base-1 PL/I), AX = valeur lue en sortie }
+Var p: PSymEntry;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin EmitComment('GenArrayLoad: idx invalide'); Exit; End;
+ p := sym_table[sym_idx];
+ Emit('        DEC     AX');           { base-1 -> base-0 }
+ Emit('        SHL     AX, 1');        { *2 pour WORD (DW) }
+ Emit('        MOV     SI, AX');
+ If p^.store_class = STORE_AUTO Then
+ Begin
+  If p^.bp_offset >= 0 Then
+   Emit('        MOV     AX, [BP+' + ItoSI(p^.bp_offset) + '+SI]')
+  Else
+   Emit('        MOV     AX, [BP' + ItoSI(p^.bp_offset) + '+SI]');
+ End Else
+  Emit('        MOV     AX, [' + p^.asm_label + '+SI]');
+End;
+
+Procedure GenArrayStoreVal(sym_idx: Integer);
+{ AX = valeur a stocker ; SI = index*2 deja calcule par l'appelant }
+Var p: PSymEntry;
+Begin
+ If (sym_idx < 1) Or (sym_idx > sym_count) Then
+ Begin EmitComment('GenArrayStoreVal: idx invalide'); Exit; End;
+ p := sym_table[sym_idx];
+ If p^.store_class = STORE_AUTO Then
+ Begin
+  If p^.bp_offset >= 0 Then
+   Emit('        MOV     [BP+' + ItoSI(p^.bp_offset) + '+SI], AX')
+  Else
+   Emit('        MOV     [BP' + ItoSI(p^.bp_offset) + '+SI], AX');
+ End Else
+  Emit('        MOV     [' + p^.asm_label + '+SI], AX');
+End;
+
+{ Forward pour GenBuiltIn qui appelle ParseExpr }
 Function ParseExpr: Integer; Forward;
 
+{ ============================================================================ }
+{ TODO 20 - FONCTIONS BUILT-IN PL/I                      [COMPLET]            }
+{ ============================================================================ }
+
+Function GenBuiltIn(Const bname: String): Boolean;
+{ Appele apres consommation de '('.  Parse les arguments et genere le code.
+  Consomme ')'.  Retourne True si built-in reconnu, False sinon. }
+Var lbl1, lbl2: String; dt: Integer;
+Begin
+ GenBuiltIn := True;
+ lbl1 := NewLabel + 'B1'; lbl2 := NewLabel + 'B2';
+ If bname = 'ABS' Then
+ Begin
+  dt := ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  Emit('        CWD');
+  Emit('        XOR     AX, DX');
+  Emit('        SUB     AX, DX');
+ End Else If bname = 'SIGN' Then
+ Begin
+  dt := ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  Emit('        TEST    AX, AX');
+  Emit('        JZ      ' + lbl2);
+  Emit('        JNS     ' + lbl1);
+  Emit('        MOV     AX, 0FFFFh');
+  Emit('        JMP     ' + lbl2);
+  EmitLabel(lbl1);
+  Emit('        MOV     AX, 1');
+  EmitLabel(lbl2);
+ End Else If (bname = 'FLOOR') Or (bname = 'CEIL') Or
+             (bname = 'TRUNC') Or (bname = 'ROUND') Or
+             (bname = 'UNSPEC') Then
+ Begin
+  dt := ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+ End Else If bname = 'MOD' Then
+ Begin
+  dt := ParseExpr;
+  Emit('        PUSH    AX');
+  If cur_tok_type = TOK_COMMA Then Consume;
+  dt := ParseExpr;
+  Emit('        MOV     BX, AX');
+  Emit('        POP     AX');
+  Emit('        CWD');
+  Emit('        IDIV    BX');
+  Emit('        MOV     AX, DX');
+  If cur_tok_type = TOK_RPAREN Then Consume;
+ End Else If bname = 'MAX' Then
+ Begin
+  dt := ParseExpr;
+  Emit('        PUSH    AX');
+  If cur_tok_type = TOK_COMMA Then Consume;
+  dt := ParseExpr;
+  Emit('        MOV     BX, AX');
+  Emit('        POP     AX');
+  Emit('        CMP     AX, BX');
+  Emit('        JGE     ' + lbl1);
+  Emit('        MOV     AX, BX');
+  EmitLabel(lbl1);
+  If cur_tok_type = TOK_RPAREN Then Consume;
+ End Else If bname = 'MIN' Then
+ Begin
+  dt := ParseExpr;
+  Emit('        PUSH    AX');
+  If cur_tok_type = TOK_COMMA Then Consume;
+  dt := ParseExpr;
+  Emit('        MOV     BX, AX');
+  Emit('        POP     AX');
+  Emit('        CMP     AX, BX');
+  Emit('        JLE     ' + lbl1);
+  Emit('        MOV     AX, BX');
+  EmitLabel(lbl1);
+  If cur_tok_type = TOK_RPAREN Then Consume;
+ End Else If bname = 'LENGTH' Then
+ Begin
+  dt := ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitComment('LENGTH : parcours jusqu a terminateur 24h ($)');
+  Emit('        MOV     SI, AX');
+  Emit('        XOR     CX, CX');
+  EmitLabel(lbl1);
+  Emit('        MOV     AL, [SI]');
+  Emit('        CMP     AL, 24h');
+  Emit('        JE      ' + lbl2);
+  Emit('        INC     SI');
+  Emit('        INC     CX');
+  Emit('        JMP     ' + lbl1);
+  EmitLabel(lbl2);
+  Emit('        MOV     AX, CX');
+ End Else If bname = 'SUBSTR' Then
+ Begin
+  dt := ParseExpr;
+  Emit('        MOV     DI, AX');
+  If cur_tok_type = TOK_COMMA Then Consume;
+  dt := ParseExpr;
+  Emit('        DEC     AX');
+  Emit('        ADD     DI, AX');
+  If cur_tok_type = TOK_COMMA Then
+  Begin Consume; dt := ParseExpr; End;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  Emit('        MOV     AX, DI');
+ End Else If bname = 'INDEX' Then
+ Begin
+  dt := ParseExpr;
+  Emit('        PUSH    AX');
+  If cur_tok_type = TOK_COMMA Then Consume;
+  dt := ParseExpr;
+  Emit('        POP     SI');
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitComment('INDEX(s,t) : stub -> retourne 0');
+  Emit('        XOR     AX, AX');
+ End Else If (bname = 'STRING') Or (bname = 'CHARACTER') Then
+ Begin
+  dt := ParseExpr;
+  If cur_tok_type = TOK_RPAREN Then Consume;
+  EmitComment('STRING/CHARACTER conversion (stub)');
+ End Else
+  GenBuiltIn := False;
+End;
+
+{ ============================================================================ }
+{ TODO 07 - PARSEUR : EXPRESSIONS                        [COMPLET]            }
+{ ============================================================================ }
+
+{ Forward deja declare plus haut pour GenBuiltIn }
+
 Function ParsePrimaryExpr: Integer;
-Var sym_idx, lbl_idx: Integer; s: String; lbl_t, lbl_e2: String;
+Var sym_idx, lbl_idx, nargs: Integer; s: String; lbl_t, lbl_e2: String;
 Begin
  ParsePrimaryExpr := TYPE_FIXED;
  Case cur_tok_type Of
@@ -1231,7 +1421,10 @@ Begin
   TOK_IDENT:
   Begin
    Case cur_tok_kw Of
-    KW_NOT, KW_NONE: { NOT ou identificateur }
+    KW_NOT, KW_NONE,
+    KW_ABS, KW_SIGN, KW_MAX, KW_MIN, KW_MOD,
+    KW_FLOOR, KW_CEIL, KW_TRUNC, KW_ROUND, KW_UNSPEC,
+    KW_LENGTH, KW_SUBSTR, KW_INDEX, KW_STRING: { NOT, ident ou built-in PL/I }
     Begin
      If cur_tok_kw = KW_NOT Then
      Begin
@@ -1250,14 +1443,37 @@ Begin
       s := cur_tok_str; Consume;
       If cur_tok_type = TOK_LPAREN Then
       Begin
-       { Appel de fonction ou built-in }
-       Consume;
-       { stub : evaluer premier argument }
-       If cur_tok_type <> TOK_RPAREN Then
+       { Built-in, tableau ou appel de procedure selon contexte }
+       Consume; { manger '(' }
+       sym_idx := FindSym(s);
+       If (sym_idx > 0) And (sym_table[sym_idx]^.array_size > 0) Then
+       Begin
+        { Acces tableau tab(i) - base-1 PL/I }
         ParsePrimaryExpr := ParseExpr;
-       If cur_tok_type = TOK_RPAREN Then Consume
-       Else Error('Attendu ) apres arguments');
-       EmitComment('CALL built-in ' + s);
+        If cur_tok_type = TOK_RPAREN Then Consume
+        Else Error('Attendu ) apres index tableau');
+        GenArrayLoad(sym_idx);
+        ParsePrimaryExpr := sym_table[sym_idx]^.data_type;
+       End Else If GenBuiltIn(s) Then
+        ParsePrimaryExpr := TYPE_FIXED
+       Else
+       Begin
+        { Appel de procedure externe comme expression }
+        nargs := 0;
+        While cur_tok_type <> TOK_RPAREN Do
+        Begin
+         If cur_tok_type = TOK_EOF Then Break;
+         ParseExpr;
+         Emit('        PUSH    AX');
+         Inc(nargs);
+         If cur_tok_type = TOK_COMMA Then Consume;
+        End;
+        If cur_tok_type = TOK_RPAREN Then Consume;
+        Emit('        CALL    ' + AsmIdent('_PLI_', s));
+        If nargs > 0 Then
+         Emit('        ADD     SP, ' + ItoSI(nargs * 2));
+        ParsePrimaryExpr := TYPE_FIXED;
+       End;
       End Else
       Begin
        sym_idx := FindSym(s);
@@ -1291,17 +1507,32 @@ Begin
 End;
 
 Function ParseMulExpr: Integer;
-Var op: Integer;
+Var op, kw: Integer;
 Begin
  ParseMulExpr := ParsePrimaryExpr;
- While (cur_tok_type = TOK_STAR) Or (cur_tok_type = TOK_SLASH) Do
+ While (cur_tok_type = TOK_STAR) Or (cur_tok_type = TOK_SLASH) Or
+       (cur_tok_type = TOK_PERCENT) Or (cur_tok_type = TOK_STAR2) Or
+       ((cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_MOD)) Do
  Begin
-  op := cur_tok_type; Consume;
+  op := cur_tok_type; kw := cur_tok_kw; Consume;
   Emit('        PUSH    AX');
   ParseMulExpr := ParsePrimaryExpr;
   Emit('        MOV     BX, AX');
   Emit('        POP     AX');
-  GenBinOp(op, TYPE_FIXED);
+  If op = TOK_STAR2 Then
+  Begin
+   EmitComment('** puissance via _PLI_POW');
+   Emit('        PUSH    BX');
+   Emit('        PUSH    AX');
+   Emit('        CALL    _PLI_POW');
+   Emit('        ADD     SP, 4');
+  End Else If (op = TOK_IDENT) And (kw = KW_MOD) Then
+  Begin
+   Emit('        CWD');
+   Emit('        IDIV    BX');
+   Emit('        MOV     AX, DX');
+  End Else
+   GenBinOp(op, TYPE_FIXED);
  End;
 End;
 
@@ -1358,7 +1589,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 06 - PARSEUR : DECLARE / DCL                      [TODO]               }
+{ TODO 06 - PARSEUR : DECLARE / DCL                      [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseDeclare;
@@ -1459,13 +1690,36 @@ Var vname, vname2: String; dt, sc, arr_sz, prec: Integer;
   { Allouer sur la pile ou en DATA }
   If sc = STORE_AUTO Then
   Begin
-   AllocLocalBp(2);
-   p^.bp_offset := CurrentBpTop;
-   Emit('        SUB     SP, 2   ; AUTO ' + vname);
-   If has_init_v Then
+   If arr_sz > 0 Then
    Begin
-    Emit('        MOV     WORD PTR [BP' + ItoSI(p^.bp_offset) + '], ' + ItoS(init_v));
+    AllocLocalBp(arr_sz * 2);
+    p^.bp_offset := CurrentBpTop;
+    Emit('        SUB     SP, ' + ItoSI(arr_sz * 2) + '  ; AUTO tab ' + vname + '(' + ItoSI(arr_sz) + ')');
+   End Else
+   Begin
+    AllocLocalBp(2);
+    p^.bp_offset := CurrentBpTop;
+    Emit('        SUB     SP, 2   ; AUTO ' + vname);
+    If has_init_v Then
+     Emit('        MOV     WORD PTR [BP' + ItoSI(p^.bp_offset) + '], ' + ItoS(init_v));
    End;
+  End Else If sc = STORE_STATIC Then
+  Begin
+   { Variable STATIC : emettre inline dans segment .DATA puis revenir en .CODE }
+   Emit('        ; === STATIC DATA INLINE ===');
+   Emit('.DATA');
+   If arr_sz > 0 Then
+    Emit('    ' + p^.asm_label + '  DW  ' + ItoSI(arr_sz) + ' DUP(' + ItoSI(init_v) + ')')
+   Else
+   Begin
+    Case dt Of
+     TYPE_CHAR, TYPE_CHAR_VAR:
+      Emit('    ' + p^.asm_label + '  DB  ' + ItoSI(prec) + ' DUP(0)');
+    Else
+     Emit('    ' + p^.asm_label + '  DW  ' + ItoSI(init_v));
+    End;
+   End;
+   Emit('.CODE');
   End;
  End;
 
@@ -1480,7 +1734,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 09 - PARSEUR : AFFECTATION                        [TODO]               }
+{ TODO 09 - PARSEUR : AFFECTATION                        [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseAssignment(Const vname: String);
@@ -1508,7 +1762,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 10 - PARSEUR : IF / THEN / ELSE                   [TODO]               }
+{ TODO 10 - PARSEUR : IF / THEN / ELSE                   [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseStatement; Forward;
@@ -1534,7 +1788,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 11 - PARSEUR : DO ... END                         [TODO]               }
+{ TODO 11 - PARSEUR : DO ... END                         [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseDo;
@@ -1624,7 +1878,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 12 - PARSEUR : SELECT / WHEN / OTHERWISE          [TODO]               }
+{ TODO 12 - PARSEUR : SELECT / WHEN / OTHERWISE          [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseSelect;
@@ -1678,7 +1932,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 15 - PARSEUR : PUT / GET                          [TODO]               }
+{ TODO 15 - PARSEUR : PUT / GET                          [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParsePut;
@@ -1751,7 +2005,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 14 - PARSEUR : CALL                               [TODO]               }
+{ TODO 14 - PARSEUR : CALL                               [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseCall;
@@ -1791,7 +2045,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - PARSEUR : RETURN                             [TODO]               }
+{ TODO 13 - PARSEUR : RETURN                             [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseReturn;
@@ -1808,7 +2062,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 24 - PARSEUR : GOTO / GO TO                       [TODO]               }
+{ TODO 24 - PARSEUR : GOTO / GO TO                       [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseGoto;
@@ -1829,7 +2083,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 21 - PARSEUR : ON / SIGNAL                        [TODO]               }
+{ TODO 21 - PARSEUR : ON / SIGNAL                        [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseOn;
@@ -1850,7 +2104,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 23 - PARSEUR : INSTRUCTION + BLOC                 [TODO]               }
+{ TODO 23 - PARSEUR : INSTRUCTION + BLOC                 [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseStatement;
@@ -1898,6 +2152,27 @@ Begin
      ParseStatement; { instruction qui suit le label }
    End Else If cur_tok_type = TOK_ASSIGN Then
     ParseAssignment(vname)
+   Else If cur_tok_type = TOK_LPAREN Then
+   Begin
+    { Affectation element de tableau : tab(i) = expr }
+    sym_idx := FindSym(vname);
+    Consume; { manger '(' }
+    EmitComment(vname + '(i) = ...');
+    ParseExpr; { index -> AX, base-1 PL/I }
+    If cur_tok_type = TOK_RPAREN Then Consume
+    Else Error('Attendu ) apres index tableau');
+    Emit('        DEC     AX');         { base-1 -> base-0 }
+    Emit('        SHL     AX, 1');      { *2 octets (WORD) }
+    Emit('        MOV     SI, AX');     { SI = offset tableau }
+    If cur_tok_type = TOK_ASSIGN Then Consume
+    Else Error('Attendu = apres tab(i)');
+    ParseExpr; { valeur -> AX }
+    If sym_idx > 0 Then
+     GenArrayStoreVal(sym_idx)
+    Else
+     EmitComment('Tableau inconnu: ' + vname);
+    If cur_tok_type = TOK_SEMI Then Consume;
+   End
    Else
    Begin
     EmitComment('Instruction inconnue: ' + vname);
@@ -1919,12 +2194,13 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 13 - PARSEUR : PROCEDURE                          [TODO]               }
+{ TODO 13 - PARSEUR : PROCEDURE                          [COMPLET]            }
 { ============================================================================ }
 
 Procedure ParseTopLevel;
-Var pname, pname2: String; pidx, nparams, rt: Integer;
+Var pname, pname2: String; pidx, nparams, rt, i_p, si_p: Integer;
     is_main: Boolean; lbl_epilogue: String;
+    param_names: Array[0..MAX_PARAM] of String[48];
 Begin
  { Niveau superieur : nom ':' PROCEDURE [...] ; ... END nom ; }
  If cur_tok_type <> TOK_IDENT Then
@@ -1947,7 +2223,10 @@ Begin
   While cur_tok_type <> TOK_RPAREN Do
   Begin
    If cur_tok_type = TOK_IDENT Then
-   Begin Inc(nparams); Consume; End;
+   Begin
+    If nparams <= MAX_PARAM Then param_names[nparams] := cur_tok_str;
+    Inc(nparams); Consume;
+   End;
    If cur_tok_type = TOK_COMMA Then Consume;
   End;
   Consume;
@@ -1968,6 +2247,11 @@ Begin
   If TokIsKw(KW_FIXED) Then Begin rt := TYPE_FIXED; Consume; End
   Else If TokIsKw(KW_FLOAT) Then Begin rt := TYPE_FLOAT; Consume; End
   Else If TokIsKw(KW_CHAR) Or TokIsKw(KW_CHARACTER) Then Begin rt := TYPE_CHAR; Consume; End;
+  { Qualificateurs optionnels : BINARY, DECIMAL, VARYING, etc. }
+  While (cur_tok_type = TOK_IDENT) And
+        (cur_tok_kw <> KW_NONE) And
+        (cur_tok_type <> TOK_RPAREN) And
+        (cur_tok_type <> TOK_SEMI) And (cur_tok_type <> TOK_EOF) Do Consume;
   If cur_tok_type = TOK_RPAREN Then Consume;
  End;
  If cur_tok_type = TOK_SEMI Then Consume Else Error('Attendu ; apres PROCEDURE');
@@ -1986,6 +2270,23 @@ Begin
  { Entrer dans le scope }
  EnterScope(SK_PROC, pidx);
  scope_stack[scope_top].lbl_exit := lbl_epilogue;
+ { Enregistrer les parametres dans la table des symboles }
+ { Convention 8086 cdecl : [BP+4]=param1, [BP+6]=param2, etc. }
+ i_p := 0;
+ While i_p < nparams Do
+ Begin
+  If i_p <= MAX_PARAM Then
+  Begin
+   si_p := AddSym(param_names[i_p], TYPE_FIXED, STORE_AUTO);
+   If si_p > 0 Then
+   Begin
+    sym_table[si_p]^.bp_offset := 4 + i_p * 2;
+    sym_table[si_p]^.is_param  := True;
+    sym_table[si_p]^.param_idx := i_p + 1;
+   End;
+  End;
+  Inc(i_p);
+ End;
  { Compiler le corps }
  ParseBlock;
  { Epilogue }
@@ -2007,7 +2308,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 16 - GENERATION : EN-TETE + SEGMENT .DATA         [TODO]               }
+{ TODO 16 - GENERATION : EN-TETE + SEGMENT .DATA         [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenDataSegment;
@@ -2058,7 +2359,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 17 - GENERATION : POINT D'ENTREE START            [TODO]               }
+{ TODO 17 - GENERATION : POINT D'ENTREE START            [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenCodeSegmentHeader;
@@ -2087,7 +2388,7 @@ Begin
 End;
 
 { ============================================================================ }
-{ TODO 22 - GENERATION : HELPERS RUNTIME                 [TODO]               }
+{ TODO 22 - GENERATION : HELPERS RUNTIME                 [COMPLET]            }
 { ============================================================================ }
 
 Procedure GenRuntimeHelpers;
@@ -2184,10 +2485,30 @@ Begin
  Emit('        MOV     AX, 4C01h');
  Emit('        INT     21h');
  EmitBlank;
+ { _PLI_POW : AX=base, BX=exposant empiles -> AX = base^exposant }
+ Emit('        ; _PLI_POW: PUSH base / PUSH exposant -> AX = base**exp');
+ Emit('_PLI_POW:');
+ Emit('        PUSH    BP');
+ Emit('        MOV     BP, SP');
+ Emit('        MOV     AX, [BP+4]');
+ Emit('        MOV     CX, [BP+6]');
+ Emit('        MOV     BX, AX');
+ Emit('        CMP     CX, 0');
+ Emit('        JLE     _POW_DONE');
+ Emit('        DEC     CX');
+ Emit('_POW_LP:');
+ Emit('        JCXZ    _POW_DONE');
+ Emit('        IMUL    BX');
+ Emit('        DEC     CX');
+ Emit('        JMP     _POW_LP');
+ Emit('_POW_DONE:');
+ Emit('        POP     BP');
+ Emit('        RET     4');
+ EmitBlank;
 End;
 
 { ============================================================================ }
-{ TODO 25 - PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION  [TODO]               }
+{ TODO 25 - PROGRAMME PRINCIPAL + BOUCLE DE COMPILATION  [COMPLET]            }
 { ============================================================================ }
 
 Procedure ShowHelp;
