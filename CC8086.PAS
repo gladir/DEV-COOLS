@@ -6288,31 +6288,25 @@ BEGIN
  Assign(input, ParamStr(1));
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
-  WriteLn('Error: Cannot open input file: ', ParamStr(1));
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur: Impossible d''ouvrir le fichier : ', ParamStr(1));
   Halt(1);
  End;
  {$I+}
-
- current_filename := ParamStr(1); { Dï¿½finir le nom de fichier initial pour le systï¿½me d'inclusion }
+ current_filename := ParamStr(1); { D‚finir le nom de fichier initial pour le systŠme d'inclusion }
  WriteLn('Compilation du fichier source: ', ParamStr(1));
-
- { Initialiser les variables globales }
+  { Initialiser les variables globales }
  eof := 0;
  errcnt := 0;
  lptr := 1;
  line := '';
  nextlabel := 0;
- use_stdout := True; { Initialiser tï¿½t - peut ï¿½tre modifiï¿½ plus tard }
-
- { Initialiser la table de symboles basï¿½e sur le tas }
+ use_stdout := True; { Initialiser la sortie standard - peut ˆtre modifi‚ plus tard }
+  { Initialiser la table de symboles bas‚e sur la m‚moire de tas }
  init_symbols;
-
- { Initialiser la table de dï¿½finitions }
+  { Initialiser la table de d‚finitions }
  init_defines;
-
- { Initialiser le systï¿½me d'inclusion }
+  { Initialiser le systï¿½me d'inclusion }
  init_inclusion_system;
 
  { Initialiser le systï¿½me de conditions }

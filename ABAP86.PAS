@@ -5293,6 +5293,110 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 22 - PARSEUR : CALL FUNCTION / FUNCTION / ENDFUNCTION [COMPLET]        }
+{ ============================================================================ }
+
+{ Parse CALL FUNCTION 'NOM_FM'
+             EXPORTING param = val ...
+             IMPORTING param = var ...
+             TABLES    tab   = itab  ...
+             EXCEPTIONS exc  = n    ...
+  (stub)
+  Generation :
+    Emettre '; CALL FUNCTION NOM_FM (stub)'
+    MOV WORD PTR [_SY_SUBRC], 0                                              }
+Procedure ParseCallFunction;
+Var fm_name     : String;
+    sy_subrc    : Integer;
+Begin
+ Consume; { skip CALL }
+
+ { FUNCTION attendu }
+ If Not TokIsKw(KW_FUNCTION) Then
+ Begin Error('FUNCTION attendu apres CALL'); SkipToDot; Exit; End;
+ Consume; { skip FUNCTION }
+
+ { Nom du function module : literal chaine ou ident }
+ fm_name := '';
+ If cur_tok_type = TOK_STRING Then
+ Begin fm_name := cur_tok_str; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+ Begin fm_name := cur_tok_str; Consume; End
+ Else Warning('CALL FUNCTION : nom de module attendu');
+
+ EmitBlank;
+ EmitComment('; CALL FUNCTION ' + fm_name + ' (stub)');
+
+ { Consommer toutes les clauses EXPORTING/IMPORTING/TABLES/EXCEPTIONS
+   et leurs paires param = valeur jusqu'au point final.
+   On skippe simplement tout jusqu'a '.'.                                    }
+ While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF) Do
+  Consume;
+
+ { SY-SUBRC = 0 (stub : appel reussi) }
+ sy_subrc := FindSym('SY-SUBRC');
+ If sy_subrc > 0 Then
+  EmitI('MOV     WORD PTR [' + sym_table[sy_subrc].asm_label + '], 0  ; CALL FUNCTION stub');
+
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres CALL FUNCTION');
+ EmitBlank;
+End;
+
+{ Parse FUNCTION nom.
+    instructions.
+  ENDFUNCTION.
+
+  Generation identique a FORM :
+    Label : _ABAP_FM_ + AsmIdent(nom)
+    Prologue/Epilogue standard (pas de params declares dans l'entete)        }
+Procedure ParseFunction;
+Var fm_name, fm_lbl : String;
+Begin
+ Consume; { skip FUNCTION }
+
+ { Nom du function module }
+ If (cur_tok_type <> TOK_IDENT) And (cur_tok_kw = KW_NONE) Then
+ Begin Error('Nom de function module attendu apres FUNCTION'); SkipToDot; Exit; End;
+ fm_name := cur_tok_str;
+ Consume;
+
+ { Point terminateur de la ligne FUNCTION }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres nom FUNCTION');
+
+ { Construire le label assembleur }
+ fm_lbl := AsmIdent('_ABAP_FM_', fm_name);
+
+ { Entrer dans un scope FORM (reutilise SK_FORM pour les locaux) }
+ EnterScope(SK_FORM, 0);
+
+ { Emettre le label et le prologue }
+ EmitBlank;
+ EmitComment('FUNCTION ' + fm_name);
+ EmitLabel(fm_lbl);
+ GenPrologue(0);
+
+ { Corps du function module }
+ ParseBlock(KW_ENDFUNCTION, KW_NONE, KW_NONE);
+
+ { Quitter le scope et epilogue (0 params dans l'entete stub) }
+ LeaveScope;
+ GenEpilogue(0);
+
+ { ENDFUNCTION. }
+ If TokIsKw(KW_ENDFUNCTION) Then
+ Begin
+  Consume;
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDFUNCTION');
+ End
+ Else Error('ENDFUNCTION attendu');
+
+ EmitBlank;
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
