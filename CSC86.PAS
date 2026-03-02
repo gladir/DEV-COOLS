@@ -709,7 +709,7 @@ Begin
     (s = 'else')      Or (s = 'while')     Or (s = 'for')     Or
     (s = 'do')        Or (s = 'break')     Or (s = 'continue')Or
     (s = 'return')    Or (s = 'true')      Or (s = 'false')   Or
-    (s = 'null')      Or (s = 'Console')   Or (s = 'using')   Or
+    (s = 'null')      Or (s = 'using')     Or
     (s = 'namespace') Or (s = 'public')    Or (s = 'private') Or
     (s = 'readonly')  Or (s = 'const')     Or (s = 'out')     Or
     (s = 'ref');
@@ -2380,8 +2380,11 @@ Begin
       If (t.kind = TK_KEYWORD) And (t.val = 'new') Then
       Begin
         LexNext;   { 'new' }
-        { type de base du tableau }
-        If Not ParseTypeSpec(vt2, isar2) Then
+        { Consommer uniquement le mot-cle de type de base (sans tenter '[]]') }
+        t := LexPeek;
+        If IsTypeKeyword(t) Then
+          LexNext
+        Else
           ParseError('Type attendu apres ''new''');
         LexExpect('[');
         arr_size := ParseConstIntExpr;
@@ -3227,8 +3230,10 @@ End;
 
 { --------------------------------------------------------------------------
   Declaration anticipee de ParseStatement (recursion avec ParseBlock)
+  et de ParseAssignOrExprStmt (utilisee par ParseFor init).
   -------------------------------------------------------------------------- }
 Procedure ParseStatement; Forward;
+Procedure ParseAssignOrExprStmt; Forward;
 
 { --------------------------------------------------------------------------
   GenStoreVar : stocker AX (scalaire) ou AX+DX (string) dans une variable.
@@ -3459,10 +3464,7 @@ Begin
     If IsTypeKeyword(t) Then
       ParseVarDecl(False)        { decl locale avec ';' inclus }
     Else
-    Begin
-      ParseExpr;                 { expr d'initialisation }
-      LexExpect(';');
-    End;
+      ParseAssignOrExprStmt;     { affectation ou appel + ';' inclus }
   End
   Else
     LexNext;                     { ';' vide }
@@ -6757,14 +6759,101 @@ Begin
 End;
 
 { ============================================================================
-  TODO 24 ... 25 : a implementer
+  TODO 24 - PROCEDURE COMPILE : ORCHESTRATEUR DE COMPILATION
+  ============================================================================
+  Compile orchestre la compilation complete en une seule passe :
+    1. Ouvrir les fichiers de sortie (out_file + tmp_file pour le CODE).
+    2. Emettre l'en-tete ASM (MODEL + STACK) dans out_file via GenHeader.
+    3. Rediriger cur_out vers tmp_file pour le CODE des methodes.
+    4. LexInit + ParseProgram : parse et emet methodes dans tmp_file,
+       collecte globaux/litteraux dans les tables, puis DetectEntryPoint.
+    5. LexClose.
+    6. SwitchToMain : cur_out revient sur out_file.
+    7. GenDataSegment : .DATA + globaux + litteraux + vars systeme.
+    8. GenCodeSegmentHeader : .CODE dans out_file.
+    9. MergeTmpToMain : fusionner le CODE tmp dans out_file.
+   10. GenRtArithmetic + GenRtIO si pas opt_no_rt.
+   11. GenCodeSegmentFooter : END START (ou END).
+   12. CloseOutput.
+   13. AssertNoErrors + PrintFinalReport.
+  ============================================================================ }
+
+Procedure Compile;
+Begin
+  { Ouverture du fichier de sortie principal }
+  InitOutput;
+  { cur_out = out_file }
+
+  { En-tete ASM : commentaires de fichier + .MODEL SMALL + .STACK }
+  GenHeader;
+
+  { Rediriger cur_out vers le fichier temporaire :
+    tout le CODE des methodes y sera accumule pendant ParseProgram }
+  OpenTmpFile;
+  { cur_out = tmp_file }
+
+  { Lexer + passe unique : parse + codegen entrelaces }
+  LexInit(src_fname);
+  ParseProgram;
+  { ParseProgram appelle DetectEntryPoint en interne (fin d'analyse) }
+  LexClose;
+
+  { Revenir sur out_file pour la suite de l'emission }
+  SwitchToMain;
+  { cur_out = out_file }
+
+  { Segment DATA : variables globales + litteraux + vars systeme }
+  GenDataSegment;
+
+  { Entete segment CODE dans out_file }
+  GenCodeSegmentHeader;
+
+  { Fusionner le CODE des methodes (depuis tmp_file) dans out_file }
+  MergeTmpToMain;
+
+  { Routines runtime assembleur (arithmetique + I/O), sauf si -ns }
+  If Not opt_no_rt Then
+  Begin
+    GenRtArithmetic;
+    GenRtIO;
+  End;
+
+  { Fermeture du segment CODE + directive END START }
+  GenCodeSegmentFooter;
+
+  { Fermer le fichier de sortie }
+  CloseOutput;
+
+  { Verifier qu'aucune erreur n'est en suspens }
+  AssertNoErrors;
+
+  { Rapport final si mode verbose }
+  PrintFinalReport;
+End;
+
+{ ============================================================================
+  TODO 25 - PROGRAMME PRINCIPAL
+  ============================================================================
+  Sequence :
+    1. InitTables : initialiser sym_table, func_table, lit_table, etc.
+    2. PrintBanner : afficher la ligne de version.
+    3. ParseCommandLine : remplir src_fname/out_fname/opt_*. Si False
+       (aide ou erreur d'arguments) on libere les tables et on quitte.
+    4. Compile : effectuer la compilation complete.
+    5. FreeTables : liberer la memoire.
+    6. Si err_count > 0 -> Halt(1) (code de retour non-zero pour make).
   ============================================================================ }
 
 BEGIN
   InitTables;
-  scope_level := 0;
-  ns_open     := False;
-  WriteLn('CSC86 v' + CSC86_VERSION + ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('(TODO 24-25 non implementes)');
+  PrintBanner;
+  If Not ParseCommandLine Then
+  Begin
+    FreeTables;
+    Halt(0);
+  End;
+  Compile;
   FreeTables;
+  If err_count > 0 Then
+    Halt(1);
 END.
