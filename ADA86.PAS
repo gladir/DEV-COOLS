@@ -3084,13 +3084,349 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 10 - ParseTypeDecl : declarations de types utilisateur                  }
+{ ============================================================================ }
+
+{ ---- ParseTypeRef : lire un nom de type et retourner son index ----
+  Cherche d'abord les predefinis (INTEGER, FLOAT...) puis les types
+  utilisateur. Retourne TYPE_UNKNOWN si non trouve.                            }
+
+Function ParseTypeRef: Integer;
+Var nm : String;
+    ti : Integer;
+Begin
+ If cur_tok_type <> TOK_IDENT Then
+ Begin
+  ErrorTok('Nom de type attendu');
+  ParseTypeRef := TYPE_UNKNOWN; Exit;
+ End;
+ nm := UpCaseStr(cur_tok_str);
+ Consume;
+ { Types predefinis par mot-cle ou nom }
+ If nm = 'INTEGER'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+ If nm = 'FLOAT'     Then Begin ParseTypeRef := TYPE_FLOAT; Exit; End;
+ If nm = 'BOOLEAN'   Then Begin ParseTypeRef := TYPE_BOOL;  Exit; End;
+ If nm = 'CHARACTER' Then Begin ParseTypeRef := TYPE_CHAR;  Exit; End;
+ If nm = 'STRING'    Then Begin ParseTypeRef := TYPE_STR;   Exit; End;
+ If nm = 'NATURAL'   Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+ If nm = 'POSITIVE'  Then Begin ParseTypeRef := TYPE_INT;   Exit; End;
+ { Type utilisateur }
+ ti := FindType(nm);
+ If ti > 0 Then Begin ParseTypeRef := ti; Exit; End;
+ Error('Type inconnu : ' + nm);
+ ParseTypeRef := TYPE_UNKNOWN;
+End;
+
+{ ---- ParseEnumType : ( lit1, lit2, ... ) ---- }
+
+Function ParseEnumType(Const tname: String): Integer;
+Var idx : Integer;
+    cnt : Integer;
+Begin
+ idx := AddType(tname, TK_ENUM);
+ type_table^[idx].enum_count := 0;
+ Consume; { ( }
+ cnt := 0;
+ Repeat
+  If cur_tok_type <> TOK_IDENT Then
+  Begin ErrorTok('Litteral d''enumeration attendu'); Break; End;
+  Inc(cnt);
+  If cnt > MAX_ENUM Then
+  Begin Error('Trop de litteraux dans enumeration'); Break; End;
+  type_table^[idx].enum_names[cnt] := UpCaseStr(cur_tok_str);
+  Consume;
+  If cur_tok_type = TOK_COMMA Then Consume Else Break;
+ Until False;
+ Expect(TOK_RPAREN, '`)` attendu en fin d''enumeration');
+ type_table^[idx].enum_count := cnt;
+ type_table^[idx].lo_bound   := 0;
+ type_table^[idx].hi_bound   := cnt - 1;
+ type_table^[idx].total_size := 2;  { Word - indice 16 bits }
+ ParseEnumType := idx;
+End;
+
+{ ---- ParseRangeConstraint : lire lo .. hi ---- }
+{ Retourne via var lo et hi. Attend le token RANGE deja consomme ou
+  directement les bornes (selon le contexte appelant).                        }
+
+Procedure ParseRangeBounds(Var lo, hi: LongInt);
+Begin
+ lo := cur_tok_num;
+ If cur_tok_type = TOK_INTEGER Then Consume
+ Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_TRUE) Then
+  Begin lo := 1; Consume; End
+ Else If (cur_tok_type = TOK_IDENT) And (cur_tok_kw = KW_FALSE) Then
+  Begin lo := 0; Consume; End
+ Else
+ Begin ErrorTok('Borne inferieure entiere attendue'); lo := 0; Consume; End;
+ Expect(TOK_DOTDOT, '`..` attendu dans contrainte RANGE');
+ hi := cur_tok_num;
+ If cur_tok_type = TOK_INTEGER Then Consume
+ Else
+ Begin ErrorTok('Borne superieure entiere attendue'); hi := lo; Consume; End;
+End;
+
+{ ---- ParseRangeType : RANGE lo .. hi ---- }
+
+Function ParseRangeType(Const tname: String; base_ti: Integer): Integer;
+Var idx    : Integer;
+    lo, hi : LongInt;
+Begin
+ { RANGE deja consomme par l'appelant si besoin }
+ ParseRangeBounds(lo, hi);
+ idx := AddType(tname, TK_RANGE);
+ type_table^[idx].base_type  := base_ti;
+ type_table^[idx].lo_bound   := lo;
+ type_table^[idx].hi_bound   := hi;
+ type_table^[idx].total_size := 2;
+ ParseRangeType := idx;
+End;
+
+{ ---- ParseArrayType : ARRAY ( lo .. hi ) OF type
+  ou ARRAY ( TypeName RANGE <> ) OF type (non contraint -> stub)              }
+
+Function ParseArrayType(Const tname: String): Integer;
+Var idx           : Integer;
+    lo, hi        : LongInt;
+    elem_ti       : Integer;
+    esz           : Integer;
+    unconstrained : Boolean;
+    peek_name     : String;
+Begin
+ Expect(TOK_LPAREN, '`(` attendu apres ARRAY');
+ unconstrained := False;
+ { Tester si non-contraint : TypeName RANGE <> }
+ If cur_tok_type = TOK_IDENT Then
+ Begin
+  { Lire potentiel nom de type suivi de RANGE }
+  peek_name := UpCaseStr(cur_tok_str);
+  Consume;
+  If TokIsKw(KW_RANGE) Then
+  Begin
+   Consume; { RANGE }
+   { Attendre <> : TOK_LT puis TOK_GT }
+   If cur_tok_type = TOK_LT Then
+   Begin
+    Consume;
+    If cur_tok_type = TOK_GT Then Consume
+    Else ErrorTok('`>` attendu dans ARRAY non contraint');
+   End
+   Else ErrorTok('`<>` attendu dans ARRAY non contraint');
+   unconstrained := True;
+   lo := 1; hi := 0;  { signifie : taille inconnue }
+  End
+  Else
+  Begin
+   { c'etait le debut d'une expression lo..hi precedee d'un ident entier }
+   { ex: ARRAY(1..10) mais on a consomme '1' comme ident -> erreur rare }
+   { Reconstruire en supposant que c'etait un entier : fallback }
+   lo := 0;
+   If TokIsKw(KW_RANGE) Then Consume;
+   ParseRangeBounds(lo, hi);
+  End;
+ End
+ Else
+ Begin
+  lo := 0; hi := 0;
+  ParseRangeBounds(lo, hi);
+ End;
+ Expect(TOK_RPAREN, '`)` attendu apres indices ARRAY');
+ ExpectKw(KW_OF, 'OF', '`OF` attendu apres indices ARRAY');
+ elem_ti := ParseTypeRef;
+ esz     := GetTypeSize(elem_ti);
+ If esz <= 0 Then esz := 2;
+ idx := AddType(tname, TK_ARRAY);
+ type_table^[idx].lo_bound   := lo;
+ type_table^[idx].hi_bound   := hi;
+ type_table^[idx].elem_type  := elem_ti;
+ type_table^[idx].elem_size  := esz;
+ If unconstrained Then
+  type_table^[idx].total_size := 0  { taille inconnue }
+ Else
+  type_table^[idx].total_size := (hi - lo + 1) * esz;
+ ParseArrayType := idx;
+End;
+
+{ ---- ParseRecordType : RECORD champ : type [; ...] END RECORD ---- }
+
+Function ParseRecordType(Const tname: String): Integer;
+Var idx    : Integer;
+    fi     : Integer;     { index champ courant }
+    fti    : Integer;     { type du champ }
+    off    : Integer;     { offset courant en octets }
+    fsz    : Integer;
+    fname  : String;
+Begin
+ { RECORD deja consomme par l'appelant }
+ idx := AddType(tname, TK_RECORD);
+ fi  := 0;
+ off := 0;
+ While Not TokIsKw(KW_END) And (cur_tok_type <> TOK_EOF) do
+ Begin
+  { NULL record : NULL ; }
+  If TokIsKw(KW_NULL) Then
+  Begin Consume; Expect(TOK_SEMI, '`;` attendu apres NULL'); Continue; End;
+  { Nom(s) de champ }
+  Repeat
+   If cur_tok_type <> TOK_IDENT Then
+   Begin ErrorTok('Nom de champ attendu'); Break; End;
+   fname := UpCaseStr(cur_tok_str);
+   Consume;
+   Expect(TOK_COLON, '`:` attendu apres nom de champ');
+   fti := ParseTypeRef;
+   fsz := GetTypeSize(fti);
+   If fsz <= 0 Then fsz := 2;
+   fsz := AlignWord(fsz);
+   Inc(fi);
+   If fi > MAX_FIELD Then
+   Begin Error('Trop de champs dans RECORD'); fi := MAX_FIELD; End;
+   type_table^[idx].field_names[fi] := fname;
+   type_table^[idx].field_types[fi] := fti;
+   type_table^[idx].field_offs[fi]  := off;
+   Inc(off, fsz);
+   { Plusieurs champs du meme type separes par ',' }
+   If cur_tok_type = TOK_COMMA Then Consume Else Break;
+  Until False;
+  Expect(TOK_SEMI, '`;` attendu apres declaration de champ');
+ End;
+ type_table^[idx].field_count := fi;
+ type_table^[idx].total_size  := AlignWord(off);
+ ExpectKw(KW_END,    'END',    '`END` attendu en fin de RECORD');
+ ExpectKw(KW_RECORD, 'RECORD', '`RECORD` attendu apres END');
+ ParseRecordType := idx;
+End;
+
+{ ---- GenTypeData : emission .DATA pour un type statique ----
+  Pour les types simples (ENUM, RANGE, ACCESS) : rien a emettre.
+  Appele lors de la generation du segment .DATA pour les variables
+  dont le type necessite un gabarit (reservé au TODO 24).                     }
+
+Procedure GenTypeData(ti: Integer);
+Begin
+ { Pour l'instant : stub —  les variables elles-memes emettent leurs DW/DB }
+ { Les tableaux et records emettent via GenVarData dans ParseObjectDecl     }
+End;
+
+{ ---- ParseTypeDecl : TYPE nom IS definition ; ---- }
+
+Procedure ParseTypeDecl;
+Var tname  : String;
+    idx    : Integer;
+    base   : Integer;
+    lo, hi : LongInt;
+Begin
+ Consume; { TYPE }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de type attendu apres TYPE'); Exit; End;
+ tname := UpCaseStr(cur_tok_str);
+ Consume;
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres nom de type');
+
+ { Enumeration : ( lit1, lit2, ... ) }
+ If cur_tok_type = TOK_LPAREN Then
+ Begin
+  idx := ParseEnumType(tname);
+ End
+
+ { RANGE lo .. hi }
+ Else If TokIsKw(KW_RANGE) Then
+ Begin
+  Consume; { RANGE }
+  idx := ParseRangeType(tname, TYPE_INT);
+ End
+
+ { ARRAY ( ... ) OF type }
+ Else If TokIsKw(KW_ARRAY) Then
+ Begin
+  Consume; { ARRAY }
+  idx := ParseArrayType(tname);
+ End
+
+ { RECORD ... END RECORD }
+ Else If TokIsKw(KW_RECORD) Then
+ Begin
+  Consume; { RECORD }
+  idx := ParseRecordType(tname);
+ End
+
+ { NEW basetype }
+ Else If TokIsKw(KW_NEW) Then
+ Begin
+  Consume; { NEW }
+  base := ParseTypeRef;
+  idx  := AddType(tname, TK_DERIVED);
+  type_table^[idx].base_type  := base;
+  type_table^[idx].total_size := GetTypeSize(base);
+ End
+
+ { ACCESS basetype }
+ Else If TokIsKw(KW_ACCESS) Then
+ Begin
+  Consume; { ACCESS }
+  base := ParseTypeRef;
+  idx  := AddType(tname, TK_ACCESS);
+  type_table^[idx].base_type  := base;
+  type_table^[idx].total_size := 2;  { adresse 16 bits }
+ End
+
+ Else
+ Begin
+  ErrorTok('Definition de type inconnue apres IS');
+  idx := 0;
+ End;
+
+ Expect(TOK_SEMI, '`;` attendu en fin de declaration de type');
+End;
+
+{ ---- ParseSubtypeDecl : SUBTYPE nom IS basetype [RANGE lo .. hi] ; ---- }
+
+Procedure ParseSubtypeDecl;
+Var sname  : String;
+    base   : Integer;
+    idx    : Integer;
+    lo, hi : LongInt;
+Begin
+ Consume; { SUBTYPE }
+ If cur_tok_type <> TOK_IDENT Then
+ Begin ErrorTok('Nom de sous-type attendu apres SUBTYPE'); Exit; End;
+ sname := UpCaseStr(cur_tok_str);
+ Consume;
+ ExpectKw(KW_IS, 'IS', '`IS` attendu apres nom de sous-type');
+ base := ParseTypeRef;
+
+ { Contrainte RANGE optionnelle }
+ If TokIsKw(KW_RANGE) Then
+ Begin
+  Consume; { RANGE }
+  ParseRangeBounds(lo, hi);
+  idx := AddType(sname, TK_RANGE);
+  type_table^[idx].base_type  := base;
+  type_table^[idx].lo_bound   := lo;
+  type_table^[idx].hi_bound   := hi;
+  type_table^[idx].total_size := 2;
+ End
+ Else
+ Begin
+  { Simple alias du type de base }
+  idx := AddType(sname, TK_DERIVED);
+  type_table^[idx].base_type  := base;
+  type_table^[idx].total_size := GetTypeSize(base);
+ End;
+
+ Expect(TOK_SEMI, '`;` attendu en fin de declaration de sous-type');
+End;
+
+{ ============================================================================ }
 { Point d'entree (sera remplace par Compile a TODO 24)                        }
 { ============================================================================ }
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 09 OK (WITH / USE OK)');
-  WriteLn('  IsStandardPackage (ADA.TEXT_IO, ADA.NUMERICS, SYSTEM...)');
-  WriteLn('  ParsePackageName (noms composes Ada.xxx.yyy)');
-  WriteLn('  ParseWith, ParseUse');
-  WriteLn('  ParseWithUseSection');
+  WriteLn('ADA86 V1.0 - TODO 10 OK (declarations de types OK)');
+  WriteLn('  ParseTypeRef');
+  WriteLn('  ParseEnumType, ParseRangeBounds, ParseRangeType');
+  WriteLn('  ParseArrayType (contraint et non contraint)');
+  WriteLn('  ParseRecordType (champs alignes sur mot)');
+  WriteLn('  ParseTypeDecl (TYPE nom IS ...)');
+  WriteLn('  ParseSubtypeDecl (SUBTYPE nom IS base [RANGE lo..hi])');
+  WriteLn('  GenTypeData (stub .DATA)');
 End.

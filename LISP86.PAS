@@ -2170,10 +2170,8 @@ BEGIN
  opt_dump_tok   := False;
  opt_dump_ast   := False;
  opt_verbose    := False;
-
- { ---- Analyser la ligne de commande ---- }
- For i_cmd := 1 to ParamCount do
- Begin
+  { ---- Analyser la ligne de commande ---- }
+ For i_cmd := 1 to ParamCount do Begin
   arg_s := ParamStr(i_cmd);
   If (arg_s[1] = '/') Or (arg_s[1] = '-') Then
   Begin
@@ -2182,20 +2180,17 @@ BEGIN
     'A': opt_dump_ast := True;
     'V': opt_verbose  := True;
    End;
-  End Else If source_filename = '' Then
-   source_filename := arg_s
-  Else
-   output_filename := arg_s;
+  End
+   Else
+  If source_filename = '' Then source_filename := arg_s
+                          Else output_filename := arg_s;
  End;
-
  If source_filename = '' Then Begin
   WriteLn('Fichier source requis !');
   Halt(1);
  End;
-
- { ---- Nom de sortie par defaut ---- }
- If output_filename = '' Then
- Begin
+  { ---- Nom de sortie par defaut ---- }
+ If output_filename = '' Then Begin
   output_filename := source_filename;
   j_ext := Length(output_filename);
   While (j_ext > 0) And (output_filename[j_ext] <> '.') And
@@ -2205,77 +2200,61 @@ BEGIN
   Else
    output_filename := output_filename + '.ASM';
  End;
-
- { ---- Ouvrir le fichier source ---- }
+  { ---- Ouvrir le fichier source ---- }
  Assign(input_file, source_filename);
  Reset(input_file);
- If IOResult <> 0 Then
- Begin
+ If IOResult <> 0 Then Begin
   WriteLn('ERREUR: Impossible d''ouvrir: ', source_filename);
   Halt(1);
  End;
-
  WriteLn(VERSION, ' - Compilation de: ', source_filename);
-
- { ---- Initialiser les tables ---- }
- InitSymbolTable;   { TODO 03 }
- InitFuncTable;     { TODO 07 }
- InitHeap;          { TODO 04 }
- InitTokenizer;     { TODO 02 }
-
- { ---- Mode dump tokens ---- }
- If opt_dump_tok Then
- Begin
-  { TODO 02 : Afficher tous les tokens }
+  { ---- Initialiser les tables ---- }
+ InitSymbolTable;
+ InitFuncTable;
+ InitHeap;
+ InitTokenizer;
+  { ---- Mode dump tokens ---- }
+ If opt_dump_tok Then Begin
+  { Afficher tous les tokens }
   WriteLn('=== TOKENS ===');
-  While cur_tok_type <> TOK_EOF Do
-  Begin
+  While cur_tok_type <> TOK_EOF Do Begin
    WriteLn('TOK=', cur_tok_type, ' "', cur_tok_str, '"');
    NextToken;
   End;
   Close(input_file);
   Halt(0);
  End;
-
- { ---- Ouvrir la sortie ASM ---- }
+  { ---- Ouvrir la sortie ASM ---- }
  Assign(output_file, output_filename);
  Rewrite(output_file);
- If IOResult <> 0 Then
- Begin
+ If IOResult <> 0 Then Begin
   WriteLn('ERREUR: Impossible de creer: ', output_filename);
   Halt(1);
  End;
  gen_enabled := True;
-
- { ---- Generer l'en-tete + DATA ---- }
- GenHeader;         { TODO 10 }
- GenCodeSegmentHeader; { TODO 11 }
-
- { ---- Boucle de lecture + compilation des formes de haut niveau ---- }
- { TODO 25 : Lire toutes les S-expressions et compiler chacune          }
- While cur_tok_type <> TOK_EOF Do
- Begin
-  top_expr := ReadExpr;    { TODO 05 }
+  { ---- G‚n‚rer l'entˆte + DATA ---- }
+ GenHeader;
+ GenCodeSegmentHeader;
+  { ---- Boucle de lecture + compilation des formes de haut niveau ---- }
+  { Lire toutes les S-expressions et compiler chacune          }
+ While cur_tok_type <> TOK_EOF Do Begin
+  top_expr := ReadExpr;
   If opt_dump_ast Then
   Begin
-   { TODO A : Afficher l'AST (dump pascal) }
+   { Afficher l'AST (dump pascal) }
    WriteLn('AST tag=', TagOf(top_expr), ' pay=', PayOf(top_expr));
   End;
-  GenTopLevel(top_expr);   { TODO 21 }
+  GenTopLevel(top_expr);
  End;
-
- { ---- Generer les helpers runtime ---- }
- GenRuntimeHelpers; { TODO 24 }
-
+ { ---- G‚n‚rer les helpers runtime ---- }
+ GenRuntimeHelpers;
  { ---- Footer ASM ---- }
  GenFooter;
-
  { ---- Fermer les fichiers ---- }
  Close(output_file);
  Close(input_file);
-
- WriteLn('ASM genere: ', output_filename);
- WriteLn('Termine. Erreurs: ', error_count, '  Fonctions: ', func_count,
+ WriteLn('ASM g‚n‚r‚: ', output_filename);
+ WriteLn('Termin‚. Erreurs: ', error_count, '  Fonctions: ', func_count,
          '  Symboles: ', sym_count);
  If error_count > 0 Then Halt(1);
 END.
