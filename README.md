@@ -181,6 +181,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 6809.</td>
 		</tr>
 		<tr>
+			<td><b>CC8086.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>COM2EXE.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier «.COM» en fichier «.EXE»</td>
 		</tr>
