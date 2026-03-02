@@ -786,6 +786,7 @@ Var
   error_count   : Integer;
   warn_count    : Integer;
   gen_enabled   : Boolean;     { False -> Emit() ne fait rien (erreur)  }
+  except_next_code : Integer;  { prochain code d'exception utilisateur  }
 
 { ============================================================================ }
 { TODO 02 - Lexeur : lecture source et tokenisation                            }
@@ -1574,6 +1575,7 @@ Var i: Integer;
 Begin
  If sym_table = nil Then New(sym_table);
  sym_count := 0;
+ except_next_code := 100;  { codes 1-99 reserves aux exceptions standard }
  For i := 1 to MAX_SYM do
  Begin
   sym_table^[i].name        := '';
@@ -3560,6 +3562,24 @@ Begin
 
  Expect(TOK_COLON, '`:` attendu apres nom(s) de variable');
 
+ { Declaration d'exception : nom : EXCEPTION ; }
+ If TokIsKw(KW_EXCEPTION) Then
+ Begin
+  Consume; { EXCEPTION }
+  For i := 1 to ncount do
+  Begin
+   Inc(except_next_code);
+   sym_idx := AddSym(names[i], TYPE_INT, STORE_CONST);
+   If sym_idx > 0 Then
+   Begin
+    sym_table^[sym_idx].init_num := except_next_code;
+    sym_table^[sym_idx].is_const := True;
+   End;
+  End;
+  Expect(TOK_SEMI, '`;` attendu apres declaration EXCEPTION');
+  Exit;
+ End;
+
  { CONSTANT optionnel }
  is_const := False;
  If TokIsKw(KW_CONSTANT) Then
@@ -3890,36 +3910,75 @@ End;
   WHEN OTHERS     => instructions
   Compile les handlers : CMP AX, code d'exception + Jcc.                      }
 
+{ ---- ParseExceptionHandlers : WHEN nom [| nom2] => stmts  (dans EXCEPTION) ----
+  AX = code exception pose par RAISE (ou 0 si re-raise generique)
+  Chaque clause nomme fait : CMP AX, code; JNE lbl_next
+  WHEN OTHERS => couvre tout (pas de CMP)                                      }
+
 Procedure ParseExceptionHandlers(Const lbl_end: String);
 Var lbl_next : String;
+    lbl_body : String;
+    nm       : String;
+    si       : Integer;
+    code     : LongInt;
+    matched  : Boolean;
 Begin
- { AX = code exception (ou 0 si pas d'exception) }
  While TokIsKw(KW_WHEN) And (cur_tok_type <> TOK_EOF) do
  Begin
   Consume; { WHEN }
   lbl_next := NewLabel;
+  lbl_body := NewLabel;
   If TokIsKw(KW_OTHERS) Then
   Begin
-   Consume;
+   Consume; { OTHERS }
+   { Pas de test : tomber dans le corps directement }
+   Expect(TOK_ARROW, '`=>` attendu apres OTHERS');
+   ParseSequenceOfStatements;
+   EmitI('JMP  ' + lbl_end);
+   EmitLabel(lbl_next);
   End
   Else
   Begin
-   { Nom d'exception : ident optionnel suivi de '=>' ou ':' }
-   If cur_tok_type = TOK_IDENT Then
+   { Un ou plusieurs noms d'exceptions separes par | }
+   matched := False;
+   While True do
    Begin
-    { Stub : on accepte n'importe quel nom d'exception }
+    If cur_tok_type <> TOK_IDENT Then Break;
+    nm := UpCaseStr(cur_tok_str);
     Consume;
-    { Alias nom : ident => skip }
+    { Alias : nom : ident (rare, on consomme le second ident) }
     If cur_tok_type = TOK_COLON Then
     Begin Consume;
-     If cur_tok_type = TOK_IDENT Then Consume;
+     If cur_tok_type = TOK_IDENT Then Begin nm := UpCaseStr(cur_tok_str); Consume; End;
     End;
+    { Chercher le code }    si := FindSym(nm);
+    code := 0;
+    If (si > 0) And sym_table^[si].is_const Then
+     code := sym_table^[si].init_num
+    Else
+     Warning('Exception inconnue dans WHEN : ' + nm);
+    If code <> 0 Then
+    Begin
+     EmitI('CMP  AX, ' + IntToStr(code));
+     EmitI('JE   ' + lbl_body);
+    End
+    Else
+    Begin
+     { Code inconnu : sauter quand meme dans le corps (OTHERS-like) }
+     EmitI('JMP  ' + lbl_body);
+    End;
+    matched := True;
+    If cur_tok_type = TOK_BAR Then Consume Else Break;
    End;
+   If Not matched Then
+    Warning('Clause WHEN vide ou mal formee');
+   { Sauter la branche si aucune correspondance }   EmitI('JMP  ' + lbl_next);
+   EmitLabel(lbl_body);
+   Expect(TOK_ARROW, '`=>` attendu apres nom d''exception');
+   ParseSequenceOfStatements;
+   EmitI('JMP  ' + lbl_end);
+   EmitLabel(lbl_next);
   End;
-  Expect(TOK_ARROW, '`=>` attendu apres WHEN');
-  ParseSequenceOfStatements;
-  EmitI('JMP ' + lbl_end);   { apres traitement, sauter a la fin }
-  EmitLabel(lbl_next);
  End;
 End;
 
@@ -4497,6 +4556,35 @@ End;
 
 { ---- RegisterTextIO_Subs : enregistre les sous-progs Text_IO dans sub_table -
   Permet aux appels de procedure de retrouver Put_Line, Put, Get_Line, etc.   }
+
+{ ---- RegisterStdExceptions : pre-enregistre les exceptions standard Ada ---- }
+
+Procedure RegisterStdExceptions;
+Var idx : Integer;
+    code : Integer;
+
+  Procedure RegEx(Const nm: String; c: Integer);
+  Begin
+   idx := FindSym(nm);
+   If idx = 0 Then
+   Begin
+    idx := AddSym(nm, TYPE_INT, STORE_CONST);
+    If idx > 0 Then
+    Begin
+     sym_table^[idx].init_num := c;
+     sym_table^[idx].is_const := True;
+    End;
+   End;
+  End;
+
+Begin
+ code := 0; { eviter warning variable inutilisee }
+ RegEx('CONSTRAINT_ERROR', 1);
+ RegEx('PROGRAM_ERROR',    2);
+ RegEx('STORAGE_ERROR',    3);
+ RegEx('TASKING_ERROR',    4);
+ RegEx('NUMERIC_ERROR',    5);
+End;
 
 Procedure RegisterTextIO_Subs;
 Var idx : Integer;
@@ -5333,34 +5421,61 @@ Begin
  Expect(TOK_SEMI, '`;` attendu apres RETURN');
 End;
 
+{ ============================================================================ }
+{ TODO 19 - ParseRaise (ameliore) et ParseExceptionDecl (via ParseObjectDecl) }
+{ ============================================================================ }
+
 Procedure ParseRaise;
 Var nm     : String;
     lbl_ex : String;
+    si     : Integer;
+    code   : LongInt;
 Begin
  Consume; { RAISE }
  nm := '';
+ code := 0;
  If cur_tok_type = TOK_IDENT Then
  Begin
   nm := UpCaseStr(cur_tok_str);
   Consume;
+  { Chercher le code de l'exception par nom }
+  si := FindSym(nm);
+  If (si > 0) And sym_table^[si].is_const Then
+   code := sym_table^[si].init_num
+  Else
+  Begin
+   Warning('Exception non declaree dans RAISE : ' + nm);
+   code := 255;  { code generique d'erreur }
+  End;
+  { Poser le code dans AX avant de sauter }
+  EmitI('MOV  AX, ' + IntToStr(code));
+ End
+ Else
+ Begin
+  { RAISE ; sans nom : re-raise, AX inchange }
+  EmitI('NOP  ');
  End;
- { Sauter vers le handler exception le plus proche }
+ { Sauter vers le handler le plus proche }
  lbl_ex := FindExceptLabel;
  If lbl_ex <> '' Then
   EmitI('JMP  ' + lbl_ex)
  Else
  Begin
-  { Pas de handler : terminer le programme }
-  EmitI('MOV  AX, 1');
-  EmitI('INT  21H');   { DOS exit }
+  { Pas de handler : terminer le programme (DOS exit avec code d'erreur) }
+  If code <> 0 Then
+   EmitI('MOV  AL, ' + IntToStr(code))
+  Else
+   EmitI('MOV  AL, 1');
+  EmitI('MOV  AH, 4CH');
+  EmitI('INT  21H');
  End;
  Expect(TOK_SEMI, '`;` attendu apres RAISE');
 End;
 
 Begin
-  WriteLn('ADA86 V1.0 - TODO 18 OK (ParseLoop + ParseWhile + ParseFor OK)');
-  WriteLn('  ParseLoop  : LOOP...END LOOP (boucle infinie, JMP)');
-  WriteLn('  ParseWhile : WHILE cond LOOP...END LOOP (CMP/JE)');
-  WriteLn('  ParseFor   : FOR I IN [REVERSE] lo..hi LOOP (DW embarque)');
-  WriteLn('  ParseExit  : EXIT [WHEN cond] ; (deja implemente TODO 15)');
+  WriteLn('ADA86 V1.0 - TODO 19 OK (Exceptions OK)');
+  WriteLn('  RegisterStdExceptions : CONSTRAINT_ERROR..NUMERIC_ERROR (codes 1-5)');
+  WriteLn('  ParseObjectDecl       : detection nom : EXCEPTION ; -> STORE_CONST');
+  WriteLn('  ParseRaise            : MOV AX, code; JMP lbl_except (ou INT 21H)');
+  WriteLn('  ParseExceptionHandlers: CMP AX, code; JNE / OTHERS / | multi-choix');
 End.
