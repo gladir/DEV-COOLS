@@ -59,13 +59,13 @@ Const
  SYM_LABEL = 33;
  SYM_GOTO = 34;
  SYM_FORWARD = 35;
- SYM_STRING_LITERAL = 50; { Chaîne littérale entre guillemets simples }
- SYM_NOT        = 51; { Opérateur NOT }
- SYM_HALT       = 52; { Procédure HALT }
+ SYM_STRING_LITERAL = 50; { Cha�ne litt�rale entre guillemets simples }
+ SYM_NOT        = 51; { Op�rateur NOT }
+ SYM_HALT       = 52; { Proc�dure HALT }
  SYM_PARAMCOUNT = 53; { Fonction ParamCount }
  SYM_PARAMSTR   = 54; { Fonction ParamStr }
 
- { Opérateurs de comparaison }
+ { Op�rateurs de comparaison }
  SYM_EQUAL = 36;      { = }
  SYM_NOTEQUAL = 37;   { <> }
  SYM_LESS = 38;       { < }
@@ -73,21 +73,21 @@ Const
  SYM_LESSEQ = 40;     { <= }
  SYM_GREATEREQ = 41;  { >= }
 
- { Opérateurs arithmétiques }
+ { Op�rateurs arithm�tiques }
  SYM_PLUS = 42;       { + }
  SYM_MINUS = 43;      { - }
  SYM_MULTIPLY = 44;   { * }
  SYM_DIVIDE = 45;     { / }
 
- { Opérateurs logiques }
+ { Op�rateurs logiques }
  SYM_AND = 46;        { AND }
  SYM_OR = 47;         { OR }
  SYM_XOR = 48;        { XOR }
 
- { Caractères spéciaux }
+ { Caract�res sp�ciaux }
  SYM_DOT = 49;        { . }
 
- { Types de données Pascal }
+ { Types de donn�es Pascal }
  TYPE_INTEGER = 1;
  TYPE_BYTE = 2;
  TYPE_WORD = 3;
@@ -99,15 +99,15 @@ Const
  TYPE_ARRAY = 9;
  TYPE_POINTER = 10;
  TYPE_TEXT = 11;   { Fichier texte (TextRec: 256 octets) }
- TYPE_FILE = 12;   { Fichier binaire générique (FileRec: 128 octets) }
+ TYPE_FILE = 12;   { Fichier binaire g�n�rique (FileRec: 128 octets) }
 
- { Classes de stockage }
+  { Classes d'entreposage }
  STORAGE_GLOBAL = 1;
  STORAGE_LOCAL = 2;
  STORAGE_PARAMETER = 3;
  STORAGE_FUNCTION_RESULT = 4;
- STORAGE_UNIT_INTERFACE = 5;   { Symbole défini dans l'interface d'une unité }
- STORAGE_UNIT_IMPLEMENTATION = 6; { Symbole défini dans l'implémentation d'une unité }
+ STORAGE_UNIT_INTERFACE = 5;   { Symbole d�fini dans l'interface d'une unit� }
+ STORAGE_UNIT_IMPLEMENTATION = 6; { Symbole d�fini dans l'impl�mentation d'une unit� }
 
 Type
  { Structure pour les symboles }
@@ -120,26 +120,26 @@ Type
   value: Integer;
   defined: Boolean;
   return_type: Integer;      { Type de retour pour les fonctions }
-  is_function: Boolean;      { Indicateur fonction vs procédure }
+  is_function: Boolean;      { Indicateur fonction vs proc�dure }
   record_size: Integer;      { Taille totale du record }
   field_count: Integer;      { Nombre de champs dans le record }
-  unit_name: String[MAX_SYMBOL_NAME]; { Nom de l'unité d'origine }
-  is_external: Boolean;      { Symbole défini dans une autre unité }
-  is_forward: Boolean;       { Déclaration anticipée (forward) }
+  unit_name: String[MAX_SYMBOL_NAME]; { Nom de l'unit� d'origine }
+  is_external: Boolean;      { Symbole d�fini dans une autre unit� }
+  is_forward: Boolean;       { D�claration anticip�e (forward) }
  End;
- 
+
  { Pointeur vers un symbole }
  PSymbol = ^TSymbol;
 
- { Structure pour les étiquettes }
+ { Structure pour les �tiquettes }
  TLabel = Record
   name: String[MAX_SYMBOL_NAME];
   label_id: Integer;
   defined: Boolean;
   address: Integer;
  End;
- 
- { Pointeur vers une étiquette }
+
+ { Pointeur vers une �tiquette }
  PLabel = ^TLabel;
 
 Var
@@ -155,20 +155,20 @@ Var
  symbol_table: Array[1..MAX_SYMBOLS] of PSymbol;
  symbol_count: Integer;
 
- { Table des étiquettes }
+ { Table des �tiquettes }
  label_table: Array[1..MAX_LABEL_COUNT] of PLabel;
  label_count: Integer;
  next_label_id: Integer;
 
- { État du compilateur }
+ { �tat du compilateur }
  current_token: String;
  current_symbol: Integer;
  current_value: Integer;
  error_count: Integer;
 
- { Variables de génération de code }
- code_segment: Boolean;  { True si MAIN PROC a été émis }
- code_header: Boolean;   { True si .CODE a été émis (début de section, avant MAIN PROC) }
+ { Variables de g�n�ration de code }
+ code_segment: Boolean;  { True si MAIN PROC a �t� �mis }
+ code_header: Boolean;   { True si .CODE a �t� �mis (d�but de section, avant MAIN PROC) }
  data_segment: Boolean;
  stack_offset: Integer;
 
@@ -182,12 +182,12 @@ Var
  current_function_type: Integer;
  in_function: Boolean;
 
- { Variables pour les unités }
+ { Variables pour les unit�s }
  current_unit_name: String;
  in_unit: Boolean;
  in_interface: Boolean;
  in_implementation: Boolean;
- unit_symbols_start: Integer; { Index du premier symbole de l'unité courante }
+ unit_symbols_start: Integer; { Index du premier symbole de l'unit� courante }
 
  { Options du compilateur }
  option_units_support: Boolean; { Option 3: Support complet des UNIT/INTERFACE/IMPLEMENTATION/USES }
@@ -198,19 +198,17 @@ Var
 { ============================================================================ }
 
 { Afficher un message d'erreur }
-Procedure Error(msg: String);
-Begin
+Procedure Error(msg: String);Begin
  WriteLn('ERREUR ligne ', line_number, ': ', msg);
  Inc(error_count);
 End;
 
 { Afficher un avertissement }
-Procedure Warning(msg: String);
-Begin
+Procedure Warning(msg: String);Begin
  WriteLn('ATTENTION ligne ', line_number, ': ', msg);
 End;
 
-{ Convertir une chaîne en majuscules }
+{ Convertir une cha�ne en majuscules }
 Function UpperCase(s: String): String;
 Var
  i: Integer;
@@ -227,11 +225,9 @@ End;
 { GESTION DES FICHIERS ET LECTURE                                             }
 { ============================================================================ }
 
-{ Lire le caractère suivant }
-Procedure NextChar;
-Begin
- If line_pos > Length(current_line) Then
- Begin
+{ Lire le caract�re suivant }
+Procedure NextChar;Begin
+ If line_pos > Length(current_line) Then Begin
   If not Eof(input_file) Then
   Begin
    ReadLn(input_file, current_line);
@@ -249,26 +245,22 @@ Begin
    Exit;
   End;
  End;
-
- If line_pos <= Length(current_line) Then
- Begin
+ If line_pos <= Length(current_line) Then Begin
   current_char := current_line[line_pos];
   Inc(line_pos);
  End
- Else
+  Else
  Begin
   current_char := ' '; { Fin de ligne = espace }
-  Inc(line_pos); { Pour déclencher la lecture de la ligne suivante }
+  Inc(line_pos); { Pour d�clencher la lecture de la ligne suivante }
  End;
 End;
 
 { Ignorer les espaces et commentaires }
-Procedure SkipWhitespace;
-Begin
+Procedure SkipWhitespace;Begin
  While (current_char = ' ') or (current_char = #9) or (current_char = #13) or (current_char = #10) do
   NextChar;
-
- { Gérer les commentaires Pascal délimités par accolades }
+ { G�rer les commentaires Pascal d�limit�s par accolades }
  If current_char = '{' Then
  Begin
   NextChar;
@@ -276,21 +268,18 @@ Begin
    NextChar;
   If current_char = '}' Then
    NextChar;
-  SkipWhitespace; { Récursion pour ignorer les espaces après commentaire }
+  SkipWhitespace; { R�cursion pour ignorer les espaces apr�s commentaire }
  End;
-
- { Gérer les commentaires Pascal (* *) }
- If (current_char = '(') and (line_pos <= Length(current_line)) and (current_line[line_pos] = '*') Then
- Begin
+ { G�rer les commentaires Pascal (* *) }
+ If (current_char = '(') and (line_pos <= Length(current_line)) and (current_line[line_pos] = '*') Then Begin
   NextChar; NextChar; { Ignorer (* }
   While not ((current_char = '*') and (line_pos <= Length(current_line))
          and (current_line[line_pos] = ')')) and (current_char <> #0) do
    NextChar;
-  If current_char = '*' Then
-  Begin
+  If current_char = '*' Then Begin
    NextChar; NextChar; { Ignorer *) }
   End;
-  SkipWhitespace; { Récursion }
+  SkipWhitespace; { R�cursion }
  End;
 End;
 
@@ -298,9 +287,8 @@ End;
 { ANALYSEUR LEXICAL                                                           }
 { ============================================================================ }
 
-{ Lire un identificateur ou mot-clé }
-Procedure ReadIdentifier;
-Begin
+{ Lire un identificateur ou mot-clef }
+Procedure ReadIdentifier;Begin
  current_token := '';
  While ((current_char >= 'A') and (current_char <= 'Z')) or
        ((current_char >= 'a') and (current_char <= 'z')) or
@@ -310,10 +298,8 @@ Begin
   current_token := current_token + current_char;
   NextChar;
  End;
-
- { Identifier le type de symbole }
+  { Identifier le type de symbole }
  current_token := UpperCase(current_token);
-
  If current_token = 'PROGRAM' Then current_symbol := SYM_PROGRAM
  Else If current_token = 'UNIT' Then current_symbol := SYM_UNIT
  Else If current_token = 'USES' Then current_symbol := SYM_USES
@@ -365,8 +351,7 @@ Var
  code: Integer;
 Begin
  temp := '';
- While (current_char >= '0') and (current_char <= '9') do
- Begin
+ While (current_char >= '0') and (current_char <= '9') do Begin
   temp := temp + current_char;
   NextChar;
  End;
@@ -829,51 +814,51 @@ Var
  date_str, time_str, temp: String;
 Begin
  EmitComment('Compilé par PC8086 - Compilateur Pascal vers 8086');
- 
+
  { Obtenir la date système }
  GetDate(year, month, day, dayofweek);
- 
+
  { Construire la chaîne de date manuellement }
  Str(year, temp);
  date_str := temp + '-';
- 
+
  If month < 10 Then date_str := date_str + '0';
  Str(month, temp);
  date_str := date_str + temp + '-';
- 
+
  If day < 10 Then date_str := date_str + '0';
  Str(day, temp);
  date_str := date_str + temp;
- 
+
  { Obtenir l'heure système }
  GetTime(hour, minute, second, sec100);
- 
+
  { Construire la chaîne d'heure }
  time_str := '';
  If hour < 10 Then time_str := time_str + '0';
  Str(hour, temp);
  time_str := time_str + temp + ':';
- 
+
  If minute < 10 Then time_str := time_str + '0';
  Str(minute, temp);
  time_str := time_str + temp + ':';
- 
+
  If second < 10 Then time_str := time_str + '0';
  Str(second, temp);
  time_str := time_str + temp;
- 
+
  EmitComment('Date: ' + date_str + ' ' + time_str);
  EmitLine('');
  EmitLine('.MODEL SMALL');
  EmitLine('.STACK 100h');
  EmitLine('');
  EmitLine('.DATA');
- 
+
  { Définir les chaînes constantes pour les booléens }
  EmitLine('TRUE_STR  DB ''TRUE$''');
  EmitLine('FALSE_STR DB ''FALSE$''');
  EmitLine('');
- 
+
  data_segment := True;
 End;
 
@@ -901,7 +886,7 @@ Begin
     EmitLine(var_name + ' DB ' + IntToStr(string_size + 1) + ' DUP(?)')
    End;
   TYPE_BOOLEAN: EmitLine(var_name + ' DB ?');
-  TYPE_RECORD: 
+  TYPE_RECORD:
    Begin
     { Chercher la taille du record dans la table des symboles }
     type_index := FindSymbol(var_name); { Ceci ne fonctionnera pas, il faudrait passer le type }
@@ -1102,7 +1087,7 @@ Var
 Begin
  left_type := TYPE_INTEGER; { Type par défaut }
  is_string_literal := False;
- 
+
  { Parser le premier opérande }
  { Chaîne littérale entre guillemets simples }
  If current_symbol = SYM_STRING_LITERAL Then
@@ -1150,14 +1135,14 @@ Begin
    If sym_index > 0 Then
    Begin
     left_type := symbol_table[sym_index]^.data_type;
-    
+
     { Vérifier si c'est un appel de fonction }
     If symbol_table[sym_index]^.is_function Then
     Begin
      { Appel de fonction }
      EmitComment('Appel fonction: ' + temp_token);
      NextToken; { Consommer le nom de la fonction }
-     
+
      { Gérer les paramètres (pour l'instant, on ignore) }
      If current_token = '(' Then
      Begin
@@ -1167,10 +1152,10 @@ Begin
       If current_token = ')' Then
        NextToken;
      End;
-     
+
      { Générer l'appel }
      Emit('call ' + symbol_table[sym_index]^.name);
-     
+
      { Le résultat est dans AX ou AL selon le type de retour }
      Case symbol_table[sym_index]^.return_type of
       TYPE_INTEGER, TYPE_WORD: left_operand := 'ax';
@@ -1187,7 +1172,7 @@ Begin
      { Appel de procédure }
      EmitComment('Appel procédure: ' + temp_token);
      NextToken; { Consommer le nom de la procédure }
-     
+
      { Gérer les paramètres (pour l'instant, on ignore) }
      If current_token = '(' Then
      Begin
@@ -1197,7 +1182,7 @@ Begin
       If current_token = ')' Then
        NextToken;
      End;
-     
+
      { Générer l'appel - les procédures ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
      left_operand := 'ax'; { Valeur par défaut }
@@ -1209,7 +1194,7 @@ Begin
      { Appel d'interruption }
      EmitComment('Appel interruption: ' + temp_token);
      NextToken; { Consommer le nom de l'interruption }
-     
+
      { Gérer les paramètres (pour l'instant, on ignore) }
      If current_token = '(' Then
      Begin
@@ -1219,7 +1204,7 @@ Begin
       If current_token = ')' Then
        NextToken;
      End;
-     
+
      { Générer l'appel - les interruptions ne retournent pas de valeur }
      Emit('call ' + symbol_table[sym_index]^.name);
      left_operand := 'ax'; { Valeur par défaut }
@@ -1253,12 +1238,12 @@ Begin
     Begin
      { Variable normale }
      Case symbol_table[sym_index]^.data_type of
-      TYPE_INTEGER, TYPE_WORD: 
+      TYPE_INTEGER, TYPE_WORD:
        Begin
         Emit('mov ax, ' + symbol_table[sym_index]^.name);
         left_operand := 'ax';
        End;
-      TYPE_BYTE, TYPE_CHAR: 
+      TYPE_BYTE, TYPE_CHAR:
        Begin
         Emit('mov al, ' + symbol_table[sym_index]^.name);
         left_operand := 'al';
@@ -1393,7 +1378,7 @@ Begin
   left_operand := 'ax';
   left_type := TYPE_INTEGER;
  End;
- 
+
  { Traiter toutes les opérations arithmétiques ou logiques (AND/OR/XOR en chaîne) }
  While (current_symbol = SYM_PLUS) or (current_symbol = SYM_MINUS) or
     (current_symbol = SYM_MULTIPLY) or (current_symbol = SYM_DIVIDE) or
@@ -1401,7 +1386,7 @@ Begin
  Begin
   comparison_op := current_symbol;
   NextToken; { Consommer l'opérateur }
-  
+
   { Parser le deuxième opérande }
   { Expression groupée entre parenthèses }
   If (current_symbol = SYM_UNKNOWN) and (current_token = '(') Then
@@ -1424,7 +1409,7 @@ Begin
   Else If current_symbol = SYM_UNKNOWN Then
   Begin
    temp_token := current_token;
-   
+
    { Nombre littéral }
    If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
    Begin
@@ -1582,19 +1567,19 @@ Begin
      Error('Variable non déclarée: ' + temp_token);
     NextToken;
    End;
-   
+
    left_operand := 'ax'; { Le résultat est toujours dans AX }
   End;
  End;
- 
+
  { Vérifier s'il y a un opérateur de comparaison }
  comparison_op := current_symbol;
- If (comparison_op = SYM_EQUAL) or (comparison_op = SYM_NOTEQUAL) or 
+ If (comparison_op = SYM_EQUAL) or (comparison_op = SYM_NOTEQUAL) or
     (comparison_op = SYM_LESS) or (comparison_op = SYM_GREATER) or
     (comparison_op = SYM_LESSEQ) or (comparison_op = SYM_GREATEREQ) Then
  Begin
   NextToken; { Consommer l'opérateur }
-  
+
   { Parser le deuxième opérande }
   If current_symbol = SYM_STRING_LITERAL Then
   Begin
@@ -1617,7 +1602,7 @@ Begin
   Else If current_symbol = SYM_UNKNOWN Then
   Begin
    temp_token := current_token;
-   
+
    { Nombre littéral }
    If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
    Begin
@@ -1667,10 +1652,10 @@ Begin
      Error('Variable non déclarée: ' + temp_token);
     NextToken;
    End;
-   
+
    { Générer le code conditionnel selon l'opérateur }
    Case comparison_op of
-    SYM_EQUAL: 
+    SYM_EQUAL:
      Begin
       Emit('mov ax, 1');
       Emit('je COMP_TRUE_' + IntToStr(next_label_id));
@@ -1751,7 +1736,7 @@ Begin
  If current_token = ':=' Then
  Begin
   NextToken; { Consommer := }
-  
+
   { Vérifier si c'est une affectation de chaîne littérale }
   is_string_assignment := False;
   If (symbol_table[sym_index]^.data_type = TYPE_STRING) Then
@@ -1759,22 +1744,22 @@ Begin
    { Pour une variable string, vérifier si on a une chaîne littérale en cours }
    string_temp := current_token;
    { Considérer que c'est une chaîne littérale si ce n'est pas un nombre }
-   If (Length(string_temp) > 0) and 
+   If (Length(string_temp) > 0) and
       not ((string_temp[1] >= '0') and (string_temp[1] <= '9')) Then
    Begin
     is_string_assignment := True;
    End;
   End;
-  
+
   If is_string_assignment Then
   Begin
    { Affectation de chaîne littérale }
    EmitComment('Affectation chaîne: ' + var_name + ' := ''' + string_temp + '''');
-   
+
    { Stocker la longueur d'abord (format Pascal) }
    Emit('mov al, ' + IntToStr(Length(string_temp)));
    Emit('mov ' + symbol_table[sym_index]^.name + ', al');
-   
+
    { Copier les caractères si la chaîne n'est pas vide }
    If Length(string_temp) > 0 Then
    Begin
@@ -1784,22 +1769,22 @@ Begin
      EmitLine('.DATA');
      data_segment := True;
     End;
-    
+
     EmitLine('STR_CONST' + IntToStr(next_label_id) + ' DB ''' + string_temp + '''');
-    
+
     { Retour au segment de code }
     If not code_segment Then
      BeginCodeSection;
-    
+
     { Copier les caractères }
     Emit('mov si, OFFSET STR_CONST' + IntToStr(next_label_id));
     Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name + '+1');
     Emit('mov cx, ' + IntToStr(Length(string_temp)));
     Emit('rep movsb');
-    
+
     Inc(next_label_id);
    End;
-   
+
    NextToken; { Consommer la chaîne }
   End
   Else
@@ -1812,11 +1797,11 @@ Begin
     { Affectation au résultat de la fonction }
     EmitComment('Affectation résultat fonction: ' + var_name);
     Case symbol_table[sym_index]^.return_type of
-     TYPE_INTEGER, TYPE_WORD: 
+     TYPE_INTEGER, TYPE_WORD:
       Begin
        Emit('mov [bp-2], ax');  { Stocker le résultat dans l'espace local }
       End;
-     TYPE_BYTE, TYPE_CHAR: 
+     TYPE_BYTE, TYPE_CHAR:
       Begin
        Emit('mov [bp-2], al');
       End;
@@ -1838,7 +1823,7 @@ Begin
     Case symbol_table[sym_index]^.data_type of
      TYPE_INTEGER, TYPE_WORD: Emit('mov ' + symbol_table[sym_index]^.name + ', ax');
      TYPE_BYTE, TYPE_CHAR: Emit('mov ' + symbol_table[sym_index]^.name + ', al');
-     TYPE_STRING: 
+     TYPE_STRING:
       Begin
        EmitComment('Copie de chaîne');
        Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name);
@@ -1873,16 +1858,16 @@ Begin
   { Traitement des paramètres multiples séparés par des virgules }
   Repeat
    is_string := False;
-   
+
    { Vérifier si c'est une chaîne littérale (entre guillemets) }
    If (current_symbol = SYM_STRING_LITERAL) or
-      ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
+      ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and
        (Pos('''', current_line) > 0)) Then
    Begin
     { Chaîne littérale }
     is_string := True;
     EmitComment('Affichage chaîne (Write): ' + current_token);
-    
+
     { Optimisation: utiliser l'interruption DOS 09h pour les chaînes }
     If Length(current_token) > 0 Then
     Begin
@@ -1892,20 +1877,20 @@ Begin
       EmitLine('.DATA');
       data_segment := True;
      End;
-     
+
      EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
-     
+
      { Retour au segment de code }
      If not code_segment Then
       BeginCodeSection;
-      
+
      { Afficher la chaîne avec DOS function 09h }
      Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
      Emit('mov ah, 09h');
      Emit('int 21h');
      Inc(next_label_id);
     End;
-    
+
     NextToken;
    End
    Else If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
@@ -2005,10 +1990,10 @@ Begin
       Error('Variable non déclarée: ' + var_name);
      End;
     End;
-    
+
     NextToken;
    End;
-   
+
    { Vérifier s'il y a d'autres paramètres }
    If current_token = ',' Then
    Begin
@@ -2017,7 +2002,7 @@ Begin
    End
    Else
     Break; { Fin des paramètres }
-    
+
   Until False;
 
   If current_token = ')' Then
@@ -2025,7 +2010,7 @@ Begin
   Else
    Error('Attendu ) après les paramètres de Write');
  End;
- 
+
  { Pas de saut de ligne pour WRITE (contrairement à WRITELN) }
 End;
 
@@ -2045,17 +2030,17 @@ Begin
   { Traitement des paramètres multiples séparés par des virgules }
   Repeat
    is_string := False;
-   
+
    { Vérifier si c'est une chaîne littérale - détection améliorée }
    If (current_symbol = SYM_STRING_LITERAL) or
-      ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and 
-       (Length(current_line) > 0) and (line_pos > 1) and 
+      ((current_symbol = SYM_UNKNOWN) and (Length(current_token) > 0) and
+       (Length(current_line) > 0) and (line_pos > 1) and
        (current_line[line_pos-Length(current_token)-1] = '''')) Then
    Begin
     { Chaîne littérale }
     is_string := True;
     EmitComment('Affichage chaîne: ' + current_token);
-    
+
     { Optimisation: utiliser l'interruption DOS 09h pour les chaînes }
     If Length(current_token) > 0 Then
     Begin
@@ -2065,20 +2050,20 @@ Begin
       EmitLine('.DATA');
       data_segment := True;
      End;
-     
+
      EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
-     
+
      { Retour au segment de code }
      If not code_segment Then
       BeginCodeSection;
-      
+
      { Afficher la chaîne avec DOS function 09h }
      Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
      Emit('mov ah, 09h');
      Emit('int 21h');
      Inc(next_label_id);
     End;
-    
+
     NextToken;
    End
    Else If (current_symbol = SYM_UNKNOWN) and (current_token <> '') Then
@@ -2182,22 +2167,22 @@ Begin
        EmitLine('.DATA');
        data_segment := True;
       End;
-      
+
       EmitLine('STR' + IntToStr(next_label_id) + ' DB ''' + current_token + '$''');
-      
+
       If not code_segment Then
        BeginCodeSection;
-       
+
       Emit('mov dx, OFFSET STR' + IntToStr(next_label_id));
       Emit('mov ah, 09h');
       Emit('int 21h');
       Inc(next_label_id);
      End;
     End;
-    
+
     NextToken;
    End;
-   
+
    { Vérifier s'il y a d'autres paramètres }
    If current_token = ',' Then
    Begin
@@ -2206,7 +2191,7 @@ Begin
    End
    Else
     Break; { Fin des paramètres }
-    
+
   Until False;
 
   If current_token = ')' Then
@@ -2270,7 +2255,7 @@ Begin
  While not Accept(SYM_UNTIL) and (current_char <> #0) do
  Begin
   ParseStatement;
-  
+
   { Gérer les point-virgules optionnels }
   If current_token = ';' Then
    NextToken;
@@ -2281,7 +2266,7 @@ Begin
  Begin
   NextToken; { Consommer UNTIL }
   ParseExpression;
-  
+
   { Générer le code de test - condition inversée par rapport à WHILE }
   Emit('cmp ax, 0');
   Emit('je ' + start_label); { Sauter au début si condition FAUSSE }
@@ -2323,7 +2308,7 @@ Var
  sym_idx: Integer;
 Begin
  NextToken; { Consommer FOR }
- 
+
  { Lire la variable de contrôle }
  If current_symbol = SYM_UNKNOWN Then
  Begin
@@ -2335,17 +2320,17 @@ Begin
  End
  Else
   Error('Attendu nom de variable après FOR');
-  
+
  { Attendre := }
  If current_token = ':=' Then
   NextToken
  Else
   Error('Attendu := après nom de variable');
-  
+
  { Analyser l'expression de départ }
  ParseExpression;
  Emit('mov [' + var_name + '], ax'); { Stocker valeur initiale }
- 
+
  { Vérifier TO ou DOWNTO }
  If current_symbol = SYM_TO Then
  Begin
@@ -2359,34 +2344,34 @@ Begin
  End
  Else
   Error('Attendu TO ou DOWNTO dans boucle FOR');
-  
+
  { Analyser l'expression de fin }
  ParseExpression;
  Emit('mov bx, ax'); { Stocker valeur finale dans BX }
- 
+
  { Attendre DO }
  Expect(SYM_DO, 'Attendu DO après expression finale');
- 
+
  { Générer les étiquettes }
  start_label := NewLabel;
  increment_label := NewLabel;
  end_label := NewLabel;
- 
+
  { Début de la boucle }
  EmitLabel(start_label);
- 
+
  { Comparer la variable de contrôle avec la valeur finale }
  Emit('mov ax, [' + var_name + ']');
  Emit('cmp ax, bx');
- 
+
  If is_downto Then
   Emit('jl ' + end_label) { Si var < limite_finale, sortir }
- Else  
+ Else
   Emit('jg ' + end_label); { Si var > limite_finale, sortir }
- 
+
  { Exécuter le corps de la boucle }
  ParseStatement;
- 
+
  { Incrémenter ou décrémenter la variable de contrôle }
  EmitLabel(increment_label);
  Emit('mov ax, [' + var_name + ']');
@@ -2395,7 +2380,7 @@ Begin
  Else
   Emit('inc ax');
  Emit('mov [' + var_name + '], ax');
- 
+
  { Retourner au début }
  Emit('jmp ' + start_label);
  EmitLabel(end_label);
@@ -2408,20 +2393,20 @@ Var
  case_value: Integer;
 Begin
  NextToken; { Consommer CASE }
- 
+
  { Analyser l'expression de sélection }
  ParseExpression;
  Emit('mov bx, ax'); { Stocker la valeur du case dans BX }
- 
+
  { Attendre OF }
  Expect(SYM_OF, 'Attendu OF après expression CASE');
- 
+
  { Générer les étiquettes }
  end_label := NewLabel;
  else_label := NewLabel;
- 
+
  { Parser chaque cas }
- While (current_symbol <> SYM_END) and (current_symbol <> SYM_ELSE) and 
+ While (current_symbol <> SYM_END) and (current_symbol <> SYM_ELSE) and
        (current_symbol <> SYM_OTHERWISE) and (current_char <> #0) do
  Begin
   { Lire la valeur du cas - c'est un nombre }
@@ -2432,27 +2417,27 @@ Begin
    Begin
     case_value := current_value;
     NextToken;
-    
+
     { Attendre : }
     If current_token = ':' Then
      NextToken
     Else
      Error('Attendu : après valeur de cas');
-    
+
     { Générer l'étiquette pour ce cas }
     case_label := NewLabel;
-    
+
     { Tester la valeur }
     Emit('cmp bx, ' + IntToStr(case_value));
     Emit('je ' + case_label);
-    
+
     { Parser l'instruction }
     EmitLabel(case_label);
     ParseStatement;
-    
+
     { Saut vers la fin après exécution du cas }
     Emit('jmp ' + end_label);
-    
+
     { Point-virgule optionnel }
     If current_token = ';' Then
      NextToken;
@@ -2463,17 +2448,17 @@ Begin
   Else
    NextToken; { Ignorer autres symboles }
  End;
- 
+
  { Si aucun cas n'a matché, aller au ELSE }
  Emit('jmp ' + else_label);
- 
+
  { Gérer ELSE ou OTHERWISE }
  If Accept(SYM_ELSE) or Accept(SYM_OTHERWISE) Then
  Begin
   NextToken; { Consommer ELSE/OTHERWISE }
   EmitLabel(else_label);
   ParseStatement;
-  
+
   { Point-virgule optionnel après ELSE }
   If current_token = ';' Then
    NextToken;
@@ -2483,10 +2468,10 @@ Begin
   { Pas d'ELSE - juste une étiquette vide }
   EmitLabel(else_label);
  End;
- 
+
  { Attendre END }
  Expect(SYM_END, 'Attendu END pour fermer CASE');
- 
+
  { Étiquette de fin }
  EmitLabel(end_label);
 End;
@@ -2541,7 +2526,7 @@ Begin
 
   SYM_WRITELN:
    ParseWriteln;
-  
+
   SYM_GOTO:
    ParseGoto;
 
@@ -2600,7 +2585,7 @@ Begin
       { Appel de procédure }
       EmitComment('Appel procédure: ' + current_token);
       NextToken; { Consommer le nom de la procédure }
-      
+
       { Gérer les paramètres (pour l'instant, on ignore) }
       If current_token = '(' Then
       Begin
@@ -2610,7 +2595,7 @@ Begin
        If current_token = ')' Then
         NextToken;
       End;
-      
+
       { Générer l'appel }
       Emit('call ' + symbol_table[sym_idx]^.name);
      End
@@ -2619,7 +2604,7 @@ Begin
       { Appel d'interruption }
       EmitComment('Appel interruption: ' + current_token);
       NextToken; { Consommer le nom de l'interruption }
-      
+
       { Gérer les paramètres (pour l'instant, on ignore) }
       If current_token = '(' Then
       Begin
@@ -2629,7 +2614,7 @@ Begin
        If current_token = ')' Then
         NextToken;
       End;
-      
+
       { Générer l'appel }
       Emit('call ' + symbol_table[sym_idx]^.name);
      End
@@ -2643,26 +2628,26 @@ Begin
      Begin
       { DEBUG: Information sur le token courant }
       EmitComment('DEBUG: Token = [' + current_token + ']');
-      
+
       { Sauvegarder le nom potentiel de l'étiquette }
       label_name := current_token;
       NextToken; { Lire le token suivant }
-      
+
       { DEBUG: Information sur le token suivant }
       EmitComment('DEBUG: Token suivant = [' + current_token + ']');
-      
+
       { Si le token suivant est ':', c'est une définition d'étiquette }
       If current_token = ':' Then
       Begin
        { C'est une définition d'étiquette }
        EmitComment('Étiquette définie: ' + label_name);
        EmitLabel(UpperCase(label_name) + '_LABEL');
-       
+
        { Marquer l'étiquette comme définie dans la table }
        sym_idx := FindLabel(UpperCase(label_name));
        If sym_idx > 0 Then
         label_table[sym_idx]^.defined := True;
-       
+
        NextToken; { Consommer ':' }
       End;
       { Si ce n'est pas ':', on a déjà consommé le token, continuer }
@@ -3101,7 +3086,7 @@ Begin
   If Accept(SYM_RECORD) Then
   Begin
    NextToken; { Consommer RECORD }
-   
+
    { Créer le type record dans la table des symboles }
    record_index := AddRecord(type_name, 0); { Taille calculée plus tard }
    current_offset := 0;
@@ -3226,12 +3211,12 @@ Begin
   Else If Accept(SYM_ARRAY) Then
   Begin
    NextToken; { Consommer ARRAY }
-   
+
    { Pour l'instant, on traite les arrays comme des types simples }
    { TODO: Implémenter le parsing complet des arrays }
    While (current_token <> ';') and (current_char <> #0) do
     NextToken;
-    
+
    { Créer un type array basique }
    AddSymbol(type_name, SYM_TYPE, TYPE_ARRAY, STORAGE_GLOBAL);
   End
@@ -3349,7 +3334,7 @@ Begin
  Begin
   type_name := UpperCase(current_token);
   If type_name = 'INTEGER' Then return_type := TYPE_INTEGER
-  Else If type_name = 'BYTE' Then return_type := TYPE_BYTE  
+  Else If type_name = 'BYTE' Then return_type := TYPE_BYTE
   Else If type_name = 'WORD' Then return_type := TYPE_WORD
   Else If type_name = 'STRING' Then return_type := TYPE_STRING
   Else If type_name = 'CHAR' Then return_type := TYPE_CHAR
@@ -3377,7 +3362,7 @@ Begin
  If current_symbol = SYM_FORWARD Then
  Begin
   NextToken; { Consommer FORWARD }
-  
+
   { Attendre le point-virgule final après FORWARD }
   If current_token = ';' Then
    NextToken
@@ -3391,7 +3376,7 @@ Begin
    symbol_table[sym_index]^.is_forward := True;
    symbol_table[sym_index]^.defined := False; { Corps absent jusqu'à l'implémentation }
   End;
-   
+
   { Pas de corps à analyser pour FORWARD, terminer ici }
  End
  Else
@@ -3403,7 +3388,7 @@ Begin
   If sym_index > 0 Then
   Begin
    { Vérifier si c'est une déclaration FORWARD }
-   If symbol_table[sym_index]^.is_forward And 
+   If symbol_table[sym_index]^.is_forward And
       (symbol_table[sym_index]^.symbol_type = SYM_FUNCTION) And
       (symbol_table[sym_index]^.data_type = return_type) Then
    Begin
@@ -3422,7 +3407,7 @@ Begin
    { Ajouter la fonction à la table des symboles }
    sym_index := AddFunction(func_name, return_type);
   End;
- 
+
   { Configurer l'état pour la fonction }
   current_function_name := UpperCase(func_name);
   current_function_type := return_type;
@@ -3450,7 +3435,7 @@ Begin
   If Accept(SYM_BEGIN) Then
   Begin
    NextToken; { Consommer BEGIN }
-  
+
    begin_count := 1;
    While (begin_count > 0) and (current_char <> #0) do
    Begin
@@ -3458,7 +3443,7 @@ Begin
      Inc(begin_count)
     Else If Accept(SYM_END) Then
      Dec(begin_count);
-   
+
     NextToken;
    End;
   End;
@@ -3529,7 +3514,7 @@ Begin
  If current_symbol = SYM_FORWARD Then
  Begin
   NextToken; { Consommer FORWARD }
-  
+
   { Attendre le point-virgule final après FORWARD }
   If current_token = ';' Then
    NextToken
@@ -3541,13 +3526,13 @@ Begin
    sym_index := AddInterrupt(proc_name)
   Else
    sym_index := AddProcedure(proc_name);
-   
+
   If sym_index > 0 Then
   Begin
    symbol_table[sym_index]^.is_forward := True;
    symbol_table[sym_index]^.defined := False; { Corps absent jusqu'à l'implémentation }
   End;
-   
+
   { Pas de corps à analyser pour FORWARD, terminer ici }
  End
  Else
@@ -3559,7 +3544,7 @@ Begin
   If sym_index > 0 Then
   Begin
    { Vérifier si c'est une déclaration FORWARD }
-   If symbol_table[sym_index]^.is_forward And 
+   If symbol_table[sym_index]^.is_forward And
       ((symbol_table[sym_index]^.symbol_type = SYM_PROCEDURE) Or
        (symbol_table[sym_index]^.symbol_type = SYM_INTERRUPT)) Then
    Begin
@@ -3581,7 +3566,7 @@ Begin
    Else
     sym_index := AddProcedure(proc_name);
   End;
- 
+
   { Configurer l'état pour la procédure }
   current_function_name := UpperCase(proc_name);
   current_function_type := TYPE_INTEGER; { Pas utilisé }
@@ -3609,7 +3594,7 @@ Begin
   If Accept(SYM_BEGIN) Then
   Begin
    NextToken; { Consommer BEGIN }
-  
+
    begin_count := 1;
    While (begin_count > 0) and (current_char <> #0) do
    Begin
@@ -3617,7 +3602,7 @@ Begin
      Inc(begin_count)
     Else If Accept(SYM_END) Then
      Dec(begin_count);
-   
+
     NextToken;
    End;
   End;
@@ -3689,7 +3674,7 @@ Begin
   ParseUnit;
   Exit;
  End;
- 
+
  { Sinon, traiter comme un PROGRAM }
  ParseProgramMain;
 End;
@@ -3701,37 +3686,37 @@ Begin
  If Accept(SYM_PROGRAM) Then
  Begin
   NextToken; { Consommer PROGRAM }
-  
+
   If current_symbol = SYM_UNKNOWN Then
   Begin
    program_name := current_token;
    EmitComment('Programme: ' + program_name);
    NextToken; { Consommer le nom }
-   
+
    { Gérer les paramètres optionnels du programme }
    If current_token = '(' Then
    Begin
     NextToken; { Consommer ( }
     EmitComment('Paramètres du programme:');
-    
+
     { Ignorer les paramètres pour l'instant }
     While (current_token <> ')') and (current_char <> #0) do
     Begin
      If current_symbol = SYM_UNKNOWN Then
       EmitComment('  - ' + current_token);
      NextToken;
-     
+
      { Gérer les virgules }
      If current_token = ',' Then
       NextToken;
     End;
-    
+
     If current_token = ')' Then
      NextToken
     Else
      Error('Attendu ) après paramètres du programme');
    End;
-   
+
    If current_token = ';' Then
     NextToken
    Else
@@ -3780,7 +3765,7 @@ Begin
  For i := 1 to MAX_LABEL_COUNT do
   label_table[i] := nil;
   label_table[i] := nil;
-  
+
  symbol_count := 0;
  label_count := 0;
  next_label_id := 0;
@@ -3795,7 +3780,7 @@ Begin
  current_function_name := '';
  current_function_type := TYPE_INTEGER;
  in_function := False;
- 
+
  { Initialiser les variables pour les unités }
  current_unit_name := '';
  in_unit := False;
@@ -3853,7 +3838,7 @@ Begin
  For i := 1 to symbol_count do
   If symbol_table[i] <> nil Then
    Dispose(symbol_table[i]);
-   
+
  { Libérer les étiquettes }
  For i := 1 to label_count do
   If label_table[i] <> nil Then
@@ -3866,7 +3851,7 @@ Var
  unit_name: String;
 Begin
  NextToken; { Consommer USES }
- 
+
  If not option_units_support and not option_crt_dos_support Then
  Begin
   Warning('USES ignoré - aucune option d''unité activée (/2 ou /3)');
@@ -3882,7 +3867,7 @@ Begin
  Begin
   { Mode option /2: Support partiel pour Uses Crt,DOS seulement }
   EmitComment('Clause USES (mode partiel Crt,DOS)');
-  
+
   { Lire les noms d'unités et vérifier qu'elles sont supportées }
   Repeat
    If current_symbol = SYM_UNKNOWN Then
@@ -3903,7 +3888,7 @@ Begin
     Error('Attendu nom d''unité dans clause USES');
     Break;
    End;
-   
+
    { Gérer les virgules }
    If current_token = ',' Then
     NextToken
@@ -3915,7 +3900,7 @@ Begin
  Begin
   { Mode option /3: Support complet des unités }
   EmitComment('Clause USES détectée');
-  
+
   { Lire les noms d'unités }
   Repeat
    If current_symbol = SYM_UNKNOWN Then
@@ -3929,7 +3914,7 @@ Begin
     Error('Attendu nom d''unité dans clause USES');
     Break;
    End;
-   
+
    { Gérer les virgules }
    If current_token = ',' Then
     NextToken
@@ -3937,7 +3922,7 @@ Begin
     Break;
   Until False;
  End;
- 
+
  { Attendre le point-virgule }
  If current_token = ';' Then
   NextToken
@@ -3950,11 +3935,11 @@ Procedure ParseInterface;
 Begin
  NextToken; { Consommer INTERFACE }
  Warning('Section INTERFACE détectée - implémentation basique');
- 
+
  { Pour l'instant, ignorer jusqu'à IMPLEMENTATION ou END (sans les consommer) }
- While not ((current_symbol = SYM_UNKNOWN) and 
-          ((UpperCase(current_token) = 'IMPLEMENTATION') or 
-           (UpperCase(current_token) = 'END'))) and 
+ While not ((current_symbol = SYM_UNKNOWN) and
+          ((UpperCase(current_token) = 'IMPLEMENTATION') or
+           (UpperCase(current_token) = 'END'))) and
        (current_symbol <> SYM_END) and (current_char <> #0) do
   NextToken;
 End;
@@ -3964,9 +3949,9 @@ Procedure ParseImplementation;
 Begin
  NextToken; { Consommer IMPLEMENTATION }
  Warning('Section IMPLEMENTATION détectée - implémentation basique');
- 
+
  { Pour l'instant, ignorer jusqu'à END (sans le consommer) }
- While not ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) and 
+ While not ((current_symbol = SYM_UNKNOWN) and (UpperCase(current_token) = 'END')) and
        (current_symbol <> SYM_END) and (current_char <> #0) do
   NextToken;
 End;
@@ -4033,7 +4018,7 @@ Begin
   If current_symbol = SYM_UNKNOWN Then
   Begin
    label_name := current_token;
-   
+
    { Vérifier si l'étiquette existe déjà }
    If FindLabel(label_name) > 0 Then
     Error('Étiquette déjà déclarée: ' + label_name)
@@ -4044,7 +4029,7 @@ Begin
     If label_index > 0 Then
      EmitComment('Déclaration étiquette: ' + label_name);
    End;
-   
+
    NextToken;
   End
   Else
@@ -4079,7 +4064,7 @@ Begin
  If current_symbol = SYM_UNKNOWN Then
  Begin
   label_name := current_token;
-  
+
   { Vérifier si l'étiquette est déclarée }
   label_index := FindLabel(label_name);
   If label_index = 0 Then
@@ -4090,7 +4075,7 @@ Begin
    EmitComment('GOTO ' + label_name);
    Emit('jmp ' + UpperCase(label_name) + '_LABEL');
   End;
-  
+
   NextToken;
  End
  Else
@@ -4102,13 +4087,13 @@ Procedure GenerateHelpProcedures;
 Begin
  EmitLine('');
  EmitComment('Procédures d''aide pour l''affichage');
- 
+
  { Procédure pour afficher un nombre entier }
  EmitLine('PRINT_NUM PROC');
  EmitComment('Affiche le nombre dans AX en décimal');
  EmitLine('    push ax');
  EmitLine('    push bx');
- EmitLine('    push cx'); 
+ EmitLine('    push cx');
  EmitLine('    push dx');
  EmitLine('');
  EmitComment('Traiter le signe négatif');
@@ -4145,10 +4130,10 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('PRINT_NUM ENDP');
- 
+
  EmitLine('');
  EmitComment('Procédures d''aide pour les chaînes');
- 
+
  { Procédure de copie de chaînes }
  EmitLine('COPY_STR PROC');
  EmitComment('Copie une chaîne de SI vers DI (format Pascal: longueur + caractères)');
@@ -4172,7 +4157,7 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('COPY_STR ENDP');
- 
+
  { Procédure de concaténation de chaînes }
  EmitLine('');
  EmitLine('CONCAT_STR PROC');
@@ -4216,7 +4201,7 @@ Begin
  EmitLine('    pop ax');
  EmitLine('    ret');
  EmitLine('CONCAT_STR ENDP');
- 
+
  { Procédure de comparaison de chaînes }
  EmitLine('');
  EmitLine('COMPARE_STR PROC');
@@ -4255,7 +4240,7 @@ Begin
  EmitLine('    pop bx');
  EmitLine('    ret');
  EmitLine('COMPARE_STR ENDP');
- 
+
  { Procédure d'affichage de chaînes }
  EmitLine('');
  EmitLine('PRINT_STR PROC');
@@ -4549,7 +4534,7 @@ BEGIN
  { Fermer les fichiers }
  Close(input_file);
  Close(output_file);
- 
+
  { Libérer la mémoire }
  CleanupCompiler;
 

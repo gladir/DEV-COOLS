@@ -2576,10 +2576,12 @@ Begin
  EmitLabel(lbl_end);
 End;
 
-{ ---- Forward declarations pour helpers tableaux (definis en TODO 16/20) ---- }
+{ ---- Forward declarations pour helpers tableaux/records (definis en TODO 16/20/21) ---- }
 Procedure GenLoadAddrBX(sym_idx: Integer); Forward;
 Procedure GenElemOffset(sym_idx: Integer); Forward;
 Procedure GenLoadElement(sym_idx: Integer); Forward;
+Procedure GenLoadField(sym_idx, field_off: Integer); Forward;
+Procedure GenStoreField(sym_idx, field_off: Integer); Forward;
 
 { ---- ParsePrimary : litteraux, idents, appels, (expr), attributs ---- }
 
@@ -2589,10 +2591,12 @@ Var sym       : Integer;
     ti        : Integer;
     nm        : String;
     lbl       : String;
-    ai        : Integer;   { index attribut : 1=FIRST 2=LAST 3=LENGTH }
+    ai        : Integer;   { index attribut : 1=FIRST 2=LAST 3=LENGTH 4=SIZE }
     i         : Integer;
     j         : Integer;
     arg_count : Integer;
+    field_off : Integer;   { offset champ de record courrant                 }
+    total_off : Integer;   { offset cumule pour champs imbriques             }
 Begin
  { --- Litteral entier --- }
  If cur_tok_type = TOK_INTEGER Then
@@ -2654,6 +2658,7 @@ Begin
     If cur_tok_str = 'FIRST'  Then ai := 1
     Else If cur_tok_str = 'LAST'   Then ai := 2
     Else If cur_tok_str = 'LENGTH' Then ai := 3
+    Else If cur_tok_str = 'SIZE'   Then ai := 4
     Else Warning('Attribut Ada inconnu : ' + cur_tok_str);
     Consume;
    End;
@@ -2666,6 +2671,7 @@ Begin
      2 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].hi_bound));
      3 : EmitI('MOV AX, ' + IntToStr(
                type_table^[ti].hi_bound - type_table^[ti].lo_bound + 1));
+     4 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].total_size));  { T'SIZE en octets }
     Else EmitI('XOR AX, AX');
     End;
    End
@@ -2680,6 +2686,7 @@ Begin
       2 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].hi_bound));
       3 : EmitI('MOV AX, ' + IntToStr(
                 type_table^[ti].hi_bound - type_table^[ti].lo_bound + 1));
+      4 : EmitI('MOV AX, ' + IntToStr(type_table^[ti].total_size));  { T'SIZE en octets }
      Else EmitI('XOR AX, AX');
      End;
     End
@@ -2744,6 +2751,39 @@ Begin
    End;
    Exit;
   End; { TOK_LPAREN apres ident }
+
+  { Acces champ de record en lecture : var.champ [.sous_champ]* }
+  If cur_tok_type = TOK_DOT Then
+  Begin
+   sym := FindSym(nm);
+   If sym <= 0 Then
+   Begin Error('Variable inconnue avant `.` : ' + nm); EmitI('XOR AX, AX'); Exit; End;
+   total_off := 0;
+   ti := sym_table^[sym].type_idx;
+   While cur_tok_type = TOK_DOT do
+   Begin
+    Consume; { . }
+    If cur_tok_type <> TOK_IDENT Then
+    Begin ErrorTok('Nom de champ attendu apres `.`'); Break; End;
+    nm := UpCaseStr(cur_tok_str);
+    Consume;
+    field_off := 0;
+    If (ti > 0) And (type_table^[ti].kind = TK_RECORD) Then
+    Begin
+     For i := 1 to type_table^[ti].field_count do
+      If type_table^[ti].field_names[i] = nm Then
+      Begin
+       field_off := type_table^[ti].field_offs[i];
+       ti := type_table^[ti].field_types[i];   { type du sous-champ }
+       Break;
+      End;
+    End
+    Else Warning('Acces `.champ` sur type non-RECORD : ' + nm);
+    total_off := total_off + field_off;
+   End;
+   GenLoadField(sym, total_off);
+   Exit;
+  End; { TOK_DOT }
 
   { Variable ou constante simple }
   sym := FindSym(nm);
@@ -5048,16 +5088,173 @@ Begin
  EmitI('MOV  [BX], AX');
 End;
 
+{ ============================================================================ }
+{ TODO 21 - Acces records : GenLoadField, GenStoreField, agregats             }
+{ ============================================================================ }
+
+{ ---- GenLoadField : charge le champ a field_off octets de sym dans AX ---- }
+
+Procedure GenLoadField(sym_idx, field_off: Integer);
+Var sc  : Integer;
+    off : Integer;
+    lbl : String;
+Begin
+ sc  := sym_table^[sym_idx].store_class;
+ off := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
+ If sc = STORE_STATIC Then
+ Begin
+  If field_off > 0 Then
+   EmitI('MOV  AX, WORD PTR [' + lbl + '+' + IntToStr(field_off) + ']')
+  Else
+   EmitI('MOV  AX, [' + lbl + ']');
+ End
+ Else
+ Begin
+  off := off + field_off;
+  If off < 0 Then
+   EmitI('MOV  AX, [BP' + IntToStr(off) + ']')
+  Else If off > 0 Then
+   EmitI('MOV  AX, [BP+' + IntToStr(off) + ']')
+  Else
+   EmitI('MOV  AX, [BP]');
+ End;
+End;
+
+{ ---- GenStoreField : stocke AX dans le champ a field_off octets de sym ---- }
+
+Procedure GenStoreField(sym_idx, field_off: Integer);
+Var sc  : Integer;
+    off : Integer;
+    lbl : String;
+Begin
+ sc  := sym_table^[sym_idx].store_class;
+ off := sym_table^[sym_idx].bp_offset;
+ lbl := sym_table^[sym_idx].asm_label;
+ If sc = STORE_STATIC Then
+ Begin
+  If field_off > 0 Then
+   EmitI('MOV  WORD PTR [' + lbl + '+' + IntToStr(field_off) + '], AX')
+  Else
+   EmitI('MOV  [' + lbl + '], AX');
+ End
+ Else
+ Begin
+  off := off + field_off;
+  If off < 0 Then
+   EmitI('MOV  [BP' + IntToStr(off) + '], AX')
+  Else If off > 0 Then
+   EmitI('MOV  [BP+' + IntToStr(off) + '], AX')
+  Else
+   EmitI('MOV  [BP], AX');
+ End;
+End;
+
+{ ---- ParseRecordAggregate : ( champ => val [, champ2 => val2 ...] ) ----
+  Precondition : cur_tok est sur `(`, appelant a determine que c'est un
+  agregat de record pour sym_idx.                                              }
+
+Procedure ParseRecordAggregate(sym_idx: Integer);
+Var ti        : Integer;
+    nm        : String;
+    fi        : Integer;
+    foff      : Integer;
+    fcount    : Integer;
+    i         : Integer;
+    fsym      : Integer;
+Begin
+ Consume; { ( }
+ ti := sym_table^[sym_idx].type_idx;
+ fcount := 0;
+ { OTHERS => val : initialiser tous les champs avec la meme valeur }
+ If TokIsKw(KW_OTHERS) Then
+ Begin
+  Consume;
+  Expect(TOK_ARROW, '`=>` attendu apres OTHERS');
+  ParseExpr;  { AX = valeur }
+  If (ti > 0) And (type_table^[ti].kind = TK_RECORD) Then
+   For i := 1 to type_table^[ti].field_count do
+    GenStoreField(sym_idx, type_table^[ti].field_offs[i]);
+ End
+ Else
+ Begin
+  While (cur_tok_type <> TOK_RPAREN) And (cur_tok_type <> TOK_EOF) do
+  Begin
+   Inc(fcount);
+   foff := -1;
+   { Accepter : champ => val (association nominale) OU val positionnelle }
+   If cur_tok_type = TOK_IDENT Then
+   Begin
+    nm := UpCaseStr(cur_tok_str);
+    Consume;
+    If cur_tok_type = TOK_ARROW Then
+    Begin
+     Consume; { => }
+     { Chercher l'offset du champ par nom }
+     If (ti > 0) And (type_table^[ti].kind = TK_RECORD) Then
+      For i := 1 to type_table^[ti].field_count do
+       If type_table^[ti].field_names[i] = nm Then
+       Begin foff := type_table^[ti].field_offs[i]; Break; End;
+     If foff < 0 Then
+     Begin Warning('Champ inconnu dans agregat : ' + nm); foff := 0; End;
+     ParseExpr;
+     GenStoreField(sym_idx, foff);
+    End
+    Else
+    Begin
+     { Positionnelle : nm est un ident debut d'expression }
+     { Retrouver l'offset positionnel }
+     If (ti > 0) And (type_table^[ti].kind = TK_RECORD)
+        And (fcount <= type_table^[ti].field_count) Then
+      foff := type_table^[ti].field_offs[fcount]
+     Else foff := 0;
+     { nm est deja consume, continuer l'expression }
+     { la valeur simple nm : chercher dans symboles/enums, puis AX }
+     fsym := FindSym(nm);
+     If fsym > 0 Then GenLoadVar(fsym) Else EmitI('XOR AX, AX');
+     GenStoreField(sym_idx, foff);
+    End;
+   End
+   Else
+   Begin
+    { Valeur positionnelle directement }
+    If (ti > 0) And (type_table^[ti].kind = TK_RECORD)
+       And (fcount <= type_table^[ti].field_count) Then
+     foff := type_table^[ti].field_offs[fcount]
+    Else foff := 0;
+    ParseExpr;
+    GenStoreField(sym_idx, foff);
+   End;
+   If cur_tok_type = TOK_COMMA Then Consume;
+  End;
+ End;
+ Expect(TOK_RPAREN, '`)` attendu en fin d''agregat de record');
+End;
+
 { ---- ParseAssignment : ident [.champ | (index)] := expr ; ---- }
 
 Procedure ParseAssignment;
 Var sym_idx   : Integer;
     field_off : Integer;
     has_index : Boolean;
+    saved_type : Integer;
 Begin
  If Not ParseLhsInfo(sym_idx, field_off, has_index) Then
  Begin SkipToSemi; Exit; End;
  Expect(TOK_COLONASSIGN, '`:=` attendu dans assignation');
+ { Agregat de record : ( champ => val, ... ) }
+ If (cur_tok_type = TOK_LPAREN) And
+    Not has_index And (field_off = 0) Then
+ Begin
+  { Verifier si c'est un agregat (premier token interieur est ident => ou OTHERS) }
+  saved_type := sym_table^[sym_idx].type_idx;
+  If (saved_type > 0) And (type_table^[saved_type].kind = TK_RECORD) Then
+  Begin
+   ParseRecordAggregate(sym_idx);
+   Expect(TOK_SEMI, '`;` attendu apres assignation agregat');
+   Exit;
+  End;
+ End;
  ParseExpr;
  GenStoreLhs(sym_idx, field_off, has_index);
  Expect(TOK_SEMI, '`;` attendu apres assignation');
@@ -5534,11 +5731,235 @@ Begin
  Expect(TOK_SEMI, '`;` attendu apres RAISE');
 End;
 
+{ ============================================================= }
+{ TODO 22 — GenRuntimeData + GenRuntimeHelpers                  }
+{ GenRuntimeData  : declare _NUMBUF + _INPUTBUF dans .DATA      }
+{ GenRuntimeHelpers : emets les helpers runtime 8086/DOS        }
+{   _RT_NEWLINE   _RT_PUTCHAR  _RT_PUTS                         }
+{   _RT_PUTI      _RT_GETS     _RT_GETI    _ADA_ERROR           }
+{ ============================================================= }
+
+{ ------------- buffers ------------------------------------- }
+Procedure GenRuntimeData;
 Begin
-  WriteLn('ADA86 V1.0 - TODO 20 OK (Acces tableaux OK)');
-  WriteLn('  GenElemOffset   : AX=index -> SI=(AX-lo)*esz (lo_bound+elem_size reels)');
-  WriteLn('  GenLoadElement  : AX=index -> AX=tab[index] via BX+SI');
-  WriteLn('  GenStoreElement : AX=valeur, SI=offset -> tab[SI] := AX');
-  WriteLn('  ParsePrimary    : acces lecture tableau corrige + detection slice');
-  WriteLn('  ParseLhsInfo    : acces ecriture tableau refactorise (GenElemOffset)');
+ EmitBlank;
+ EmitComment('--- Runtime buffers (emis dans .DATA) ---');
+ Emit('_NUMBUF    DB  7 DUP(0)  ; buffer conversion entier->chaine');
+ Emit('_INPUTBUF  DB  128 DUP(0); buffer lecture DOS AH=0Ah');
+End;
+
+{ ------------- helpers ------------------------------------- }
+Procedure GenRuntimeHelpers;
+Begin
+ EmitBlank;
+ EmitComment('=== Runtime helpers ADA86 (MS-DOS INT 21h) ===');
+
+ { ------ _RT_NEWLINE : emet CR + LF ---------------------- }
+ EmitBlank;
+ EmitComment('_RT_NEWLINE : emet CR (0Dh) puis LF (0Ah)');
+ EmitLabel('_RT_NEWLINE');
+ EmitI('PUSH AX');
+ EmitI('PUSH DX');
+ EmitI('MOV  AH, 02h');
+ EmitI('MOV  DL, 0Dh');
+ EmitI('INT  21h');
+ EmitI('MOV  DL, 0Ah');
+ EmitI('INT  21h');
+ EmitI('POP  DX');
+ EmitI('POP  AX');
+ EmitI('RET');
+
+ { ------ _RT_PUTCHAR : affiche le caractere dans AL ------- }
+ EmitBlank;
+ EmitComment('_RT_PUTCHAR : affiche le caractere dans AL via AH=02h');
+ EmitLabel('_RT_PUTCHAR');
+ EmitI('PUSH AX');
+ EmitI('PUSH DX');
+ EmitI('MOV  AH, 02h');
+ EmitI('MOV  DL, AL');
+ EmitI('INT  21h');
+ EmitI('POP  DX');
+ EmitI('POP  AX');
+ EmitI('RET');
+
+ { ------ _RT_PUTS : AX = offset chaine Pascal ------------- }
+ { format : [BX+0]=longueur, [BX+1..n]=octets, [BX+n+1]=0  }
+ EmitBlank;
+ EmitComment('_RT_PUTS : AX=offset chaine Pascal; imprime via AH=02h');
+ EmitLabel('_RT_PUTS');
+ EmitI('PUSH AX');
+ EmitI('PUSH BX');
+ EmitI('PUSH CX');
+ EmitI('PUSH DX');
+ EmitI('MOV  BX, AX');
+ EmitI('XOR  CH, CH');
+ EmitI('MOV  CL, [BX]');
+ EmitI('JCXZ _RT_PUTS_END');
+ EmitI('INC  BX');
+ EmitLabel('_RT_PUTS_LP');
+ EmitI('MOV  DL, [BX]');
+ EmitI('MOV  AH, 02h');
+ EmitI('INT  21h');
+ EmitI('INC  BX');
+ EmitI('LOOP _RT_PUTS_LP');
+ EmitLabel('_RT_PUTS_END');
+ EmitI('POP  DX');
+ EmitI('POP  CX');
+ EmitI('POP  BX');
+ EmitI('POP  AX');
+ EmitI('RET');
+
+ { ------ _RT_PUTI : AX = entier signe 16b -> decimal ------ }
+ EmitBlank;
+ EmitComment('_RT_PUTI : AX=entier signe -> affiche decimal via _NUMBUF');
+ EmitLabel('_RT_PUTI');
+ EmitI('PUSH BX');
+ EmitI('PUSH CX');
+ EmitI('PUSH DX');
+ EmitI('PUSH SI');
+ EmitI('CMP  AX, 0');
+ EmitI('JGE  _RT_PUTI_POS');
+ EmitI('PUSH AX');
+ EmitI('MOV  AH, 02h');
+ EmitI('MOV  DL, 2Dh');  { '-' = 0x2D }
+ EmitI('INT  21h');
+ EmitI('POP  AX');
+ EmitI('NEG  AX');
+ EmitLabel('_RT_PUTI_POS');
+ { Construire les chiffres a rebours dans _NUMBUF }
+ EmitI('MOV  SI, OFFSET _NUMBUF');
+ EmitI('ADD  SI, 6');   { pointer a la fin du buffer de 7 octets }
+ EmitI('MOV  BX, 10');
+ EmitI('XOR  CX, CX');
+ EmitLabel('_RT_PUTI_DIG');
+ EmitI('XOR  DX, DX');
+ EmitI('DIV  BX');      { DX = chiffre, AX = quotient }
+ EmitI('ADD  DL, 30h'); { '0'+chiffre }
+ EmitI('DEC  SI');
+ EmitI('MOV  [SI], DL');
+ EmitI('INC  CX');
+ EmitI('CMP  AX, 0');
+ EmitI('JNE  _RT_PUTI_DIG');
+ { Imprimer CX chiffres depuis SI }
+ EmitI('MOV  AH, 02h');
+ EmitLabel('_RT_PUTI_PR');
+ EmitI('MOV  DL, [SI]');
+ EmitI('INT  21h');
+ EmitI('INC  SI');
+ EmitI('LOOP _RT_PUTI_PR');
+ EmitI('POP  SI');
+ EmitI('POP  DX');
+ EmitI('POP  CX');
+ EmitI('POP  BX');
+ EmitI('RET');
+
+ { ------ _RT_GETS : AX = adr dest Pascal string ----------- }
+ { lit une ligne via AH=0Ah; stocke dans dest: [0]=len,[1..n]=octets,[n+1]=0 }
+ EmitBlank;
+ EmitComment('_RT_GETS : AX=dest; lit ligne stdin via AH=0Ah -> Pascal string');
+ EmitLabel('_RT_GETS');
+ EmitI('PUSH BX');
+ EmitI('PUSH CX');
+ EmitI('PUSH DX');
+ EmitI('PUSH SI');
+ EmitI('MOV  BX, AX');
+ EmitI('MOV  BYTE PTR [_INPUTBUF], 126');
+ EmitI('MOV  BYTE PTR [_INPUTBUF+1], 0');
+ EmitI('MOV  AH, 0Ah');
+ EmitI('MOV  DX, OFFSET _INPUTBUF');
+ EmitI('INT  21h');
+ EmitI('MOV  AH, 02h');  { emet LF pour avancer la ligne }
+ EmitI('MOV  DL, 0Ah');
+ EmitI('INT  21h');
+ EmitI('XOR  CH, CH');
+ EmitI('MOV  CL, [_INPUTBUF+1]');
+ EmitI('MOV  [BX], CL'); { stocker longueur dans dest[0] }
+ EmitI('JCXZ _RT_GETS_END');
+ EmitI('MOV  SI, OFFSET _INPUTBUF');
+ EmitI('ADD  SI, 2');     { debut des chars dans _INPUTBUF }
+ EmitI('INC  BX');        { dest[1] }
+ EmitLabel('_RT_GETS_CP');
+ EmitI('MOV  AL, [SI]');
+ EmitI('MOV  [BX], AL');
+ EmitI('INC  SI');
+ EmitI('INC  BX');
+ EmitI('LOOP _RT_GETS_CP');
+ EmitI('MOV  BYTE PTR [BX], 0'); { terminateur null }
+ EmitLabel('_RT_GETS_END');
+ EmitI('POP  SI');
+ EmitI('POP  DX');
+ EmitI('POP  CX');
+ EmitI('POP  BX');
+ EmitI('RET');
+
+ { ------ _RT_GETI : lit entier stdin -> AX ---------------- }
+ EmitBlank;
+ EmitComment('_RT_GETI : lit entier signe desde stdin -> AX');
+ EmitLabel('_RT_GETI');
+ EmitI('PUSH BX');
+ EmitI('PUSH CX');
+ EmitI('PUSH DX');
+ EmitI('PUSH SI');
+ EmitI('MOV  BYTE PTR [_INPUTBUF], 10');
+ EmitI('MOV  BYTE PTR [_INPUTBUF+1], 0');
+ EmitI('MOV  AH, 0Ah');
+ EmitI('MOV  DX, OFFSET _INPUTBUF');
+ EmitI('INT  21h');
+ EmitI('MOV  AH, 02h');  { LF apres saisie }
+ EmitI('MOV  DL, 0Ah');
+ EmitI('INT  21h');
+ EmitI('XOR  CH, CH');
+ EmitI('MOV  CL, [_INPUTBUF+1]');
+ EmitI('MOV  SI, OFFSET _INPUTBUF');
+ EmitI('ADD  SI, 2');
+ EmitI('XOR  AX, AX');
+ EmitI('MOV  BL, 0');     { BL = flag signe }
+ EmitI('JCXZ _RT_GETI_DONE');
+ EmitI('MOV  DL, [SI]');
+ EmitI('CMP  DL, 2Dh');  { '-' }
+ EmitI('JNE  _RT_GETI_DIG');
+ EmitI('MOV  BL, 1');
+ EmitI('INC  SI');
+ EmitI('DEC  CX');
+ EmitLabel('_RT_GETI_DIG');
+ EmitI('JCXZ _RT_GETI_SGN');
+ EmitI('MOV  DL, [SI]');
+ EmitI('SUB  DL, 30h');
+ EmitI('PUSH CX');
+ EmitI('MOV  CX, 10');
+ EmitI('MUL  CX');        { AX = AX * 10 }
+ EmitI('POP  CX');
+ EmitI('MOV  DH, 0');
+ EmitI('ADD  AX, DX');
+ EmitI('INC  SI');
+ EmitI('DEC  CX');
+ EmitI('JMP  _RT_GETI_DIG');
+ EmitLabel('_RT_GETI_SGN');
+ EmitI('CMP  BL, 0');
+ EmitI('JE   _RT_GETI_DONE');
+ EmitI('NEG  AX');
+ EmitLabel('_RT_GETI_DONE');
+ EmitI('POP  SI');
+ EmitI('POP  DX');
+ EmitI('POP  CX');
+ EmitI('POP  BX');
+ EmitI('RET');
+
+ { ------ _ADA_ERROR : AX=offset msg -> affiche + exit(1) -- }
+ EmitBlank;
+ EmitComment('_ADA_ERROR : AX=offset msg; CALL _RT_PUTS + exit code 1');
+ EmitLabel('_ADA_ERROR');
+ EmitI('CALL _RT_PUTS');
+ EmitI('CALL _RT_NEWLINE');
+ EmitI('MOV  AX, 4C01h');
+ EmitI('INT  21h');
+End;
+
+Begin
+  WriteLn('ADA86 V1.0 - TODO 22 OK (Runtime helpers OK)');
+  WriteLn('  GenRuntimeData    : _NUMBUF (7B) + _INPUTBUF (128B) en .DATA');
+  WriteLn('  GenRuntimeHelpers : _RT_NEWLINE / _RT_PUTCHAR / _RT_PUTS');
+  WriteLn('                      _RT_PUTI / _RT_GETS / _RT_GETI');
+  WriteLn('                      _ADA_ERROR (PUT_STR + exit 1)');
+  WriteLn('  Appel via CALL depuis GenTextIO_Stubs (TODO 14)');
 End.
