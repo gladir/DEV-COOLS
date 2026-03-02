@@ -6223,7 +6223,7 @@ BEGIN
    End;
    {$IFDEF FPC}
    _Germany:Begin
-    WriteLn('CC8086 - Dieser Befehl ermÃ¶glicht es, den C-Compiler fÃ¼r ',
+    WriteLn('CC8086 - Dieser Befehl erm”glicht es, den C-Compiler fr ',
             'den 8086-Mikroprozessor zu starten.');
     WriteLn;
     WriteLn('Syntax: CC8086 infile.c [outfile] [-optionen]');
@@ -6231,7 +6231,7 @@ BEGIN
     WriteLn('Optionen:');
     WriteLn('  -O0    Keine Optimierung (Standard)');
     WriteLn('  -O1    Grundlegende Optimierungen (Guckloch, Konstantenfaltung)');
-    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, SprÃ¼nge)');
+    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, Sprnge)');
     WriteLn('  -O3    Aggressive Optimierungen (alle)');
    End;
    {$ENDIF}
@@ -6242,16 +6242,16 @@ BEGIN
     WriteLn('Syntaxe : CC8086 infile.c [outfile] [-options]');
     WriteLn;
     WriteLn('Options :');
-    WriteLn('  -O0    Pas d''optimisation (valeur par dï¿½faut)');
+    WriteLn('  -O0    Pas d''optimisation (valeur par d‚faut)');
     WriteLn('  -O1    Optimisations de base (oeilleon, pliage constant)');
-    WriteLn('  -O2    Optimisations avancï¿½es (code mort, sauts)');
+    WriteLn('  -O2    Optimisations avanc‚es (code mort, sauts)');
     WriteLn('  -O3    Optimisations aggressives (toutes)');
    End;
   End;
   Halt(1);
  End;
-  { Initialiser les variables - symtab plus nï¿½cessaire }
- { FillChar(symtab, SizeOf(symtab), 0); -- Ancienne table de symboles supprimï¿½e }
+  { Initialiser les variables - symtab plus n‚cessaire }
+ { FillChar(symtab, SizeOf(symtab), 0); -- Ancienne table de symboles supprim‚e }
  glbptr := startglb;
  locptr := startloc;
  stkp := 0;
@@ -6262,12 +6262,12 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
- { Initialiser le systï¿½me de fichiers d'inclusion }
+ { Initialiser le systŠme de fichiers d'inclusion }
  include_depth := 0;
  current_filename := '';
- { Initialiser le systï¿½me de dï¿½finition }
+ { Initialiser le systŠme de d‚finition }
  init_defines;
- { Initialiser la table de symboles basï¿½e sur le tas }
+ { Initialiser la table de symboles bas‚e sur la m‚moire de tas }
  init_symbols;
   { Corps principal du compilateur }
  nxtlab := 0;
@@ -6284,8 +6284,7 @@ BEGIN
   Else If param = '-O2' Then optimize := OPT_ADVANCED
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
-
- { Ouvrir le fichier d'entrï¿½e avec vï¿½rification d'erreur }
+  { Ouvrir le fichier d'entr‚e avec v‚rification d'erreur }
  Assign(input, ParamStr(1));
  {$I-}
  Reset(input);

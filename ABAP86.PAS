@@ -5128,6 +5128,171 @@ Begin
 End;
 
 { ============================================================================ }
+{ TODO 21 - PARSEUR : SELECT / ENDSELECT (stub sans BD reelle) [COMPLET]      }
+{ ============================================================================ }
+
+{ Parse SELECT [SINGLE] champs/* FROM table
+               INTO [CORRESPONDING FIELDS OF] var / TABLE itab
+               [WHERE cond] [ORDER BY champs] [UP TO n ROWS].
+  [instructions.]
+  ENDSELECT.
+
+  Stub de generation (sans base de donnees reelle) :
+    - Emet un commentaire '; SELECT ... (stub)'
+    - Pour SELECT SINGLE : SY-SUBRC=4, SY-DBCNT=0, pas de ENDSELECT
+    - Pour SELECT normal  : label _top (corps vide) + JMP _top (-> boucle
+      protegee par EXIT grace au label de sortie), puis ENDSELECT clot.
+    - Dans les deux cas : SY-SUBRC=4, SY-TABIX=0, SY-DBCNT=0 (0 ligne)     }
+Procedure ParseSelect;
+Var is_single               : Boolean;
+    from_name, into_name    : String;
+    into_idx, sy_subrc_idx  : Integer;
+    sy_tabix_idx, sy_dbcnt  : Integer;
+    lbl_top, lbl_end        : String;
+    buf                     : String;
+Begin
+ Consume; { skip SELECT }
+ EmitBlank;
+ EmitComment('--- SELECT (stub sans BD) ---');
+
+ { SINGLE optionnel }
+ is_single := False;
+ If TokIsKw(KW_SINGLE) Then
+ Begin is_single := True; Consume; End;
+
+ { Consommer liste des champs jusqu'a FROM }
+ buf := '';
+ While (cur_tok_type <> TOK_EOF) And (cur_tok_type <> TOK_DOT)
+       And Not TokIsKw(KW_FROM) Do
+ Begin
+  If buf <> '' Then buf := buf + ' ';
+  buf := buf + cur_tok_str;
+  Consume;
+ End;
+
+ { FROM table }
+ from_name := '';
+ If TokIsKw(KW_FROM) Then
+ Begin
+  Consume; { skip FROM }
+  If (cur_tok_type = TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+  Begin from_name := cur_tok_str; Consume; End
+  Else Warning('SELECT : nom de table attendu apres FROM');
+ End Else Warning('SELECT : FROM attendu');
+
+ If is_single Then
+  EmitComment('; SELECT SINGLE ' + buf + ' FROM ' + from_name + ' (stub)')
+ Else
+  EmitComment('; SELECT ' + buf + ' FROM ' + from_name + ' (stub)');
+
+ { INTO [CORRESPONDING FIELDS OF] var / TABLE itab }
+ into_name := ''; into_idx := 0;
+ If TokIsKw(KW_INTO) Then
+ Begin
+  Consume; { skip INTO }
+  { CORRESPONDING FIELDS OF (optionnel) }
+  If TokIsKw(KW_CORRESPONDING) Then
+  Begin
+   Consume; { skip CORRESPONDING }
+   If TokIsKw(KW_FIELDS) Then Consume; { skip FIELDS }
+   If TokIsKw(KW_OF)     Then Consume; { skip OF    }
+  End;
+  { TABLE itab ? }
+  If TokIsKw(KW_TABLE) Then Consume; { skip TABLE }
+  If (cur_tok_type = TOK_IDENT) Or (cur_tok_kw <> KW_NONE) Then
+  Begin
+   into_name := cur_tok_str;
+   into_idx  := FindSym(into_name);
+   If into_idx = 0 Then
+    Warning('SELECT INTO : variable ''' + into_name + ''' inconnue');
+   Consume;
+  End Else Warning('SELECT : variable/itab attendue apres INTO');
+ End;
+
+ { WHERE clause (skip) }
+ If TokIsKw(KW_WHERE) Then
+ Begin
+  Consume; { skip WHERE }
+  Warning('SELECT WHERE : condition ignoree (stub)');
+  { Skip jusqu'a INTO, ORDER, UP (ident), ou '.' ou ENDSELECT stop keyword }
+  While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF)
+        And Not TokIsKw(KW_ORDER) And Not TokIsKw(KW_ENDSELECT)
+        And Not (cur_tok_str = 'UP') Do
+   Consume;
+ End;
+
+ { ORDER BY (skip) }
+ If TokIsKw(KW_ORDER) Then
+ Begin
+  Consume; { skip ORDER }
+  If TokIsKw(KW_BY) Then Consume; { skip BY }
+  Warning('SELECT ORDER BY : ignoré (stub)');
+  While (cur_tok_type <> TOK_DOT) And (cur_tok_type <> TOK_EOF)
+        And Not TokIsKw(KW_ENDSELECT)
+        And Not (cur_tok_str = 'UP') Do
+   Consume;
+ End;
+
+ { UP TO n ROWS (skip) }
+ If cur_tok_str = 'UP' Then
+ Begin
+  Consume; { skip UP }
+  If cur_tok_str = 'TO' Then Consume; { skip TO }
+  If cur_tok_type = TOK_NUMBER Then Consume; { skip n }
+  If TokIsKw(KW_ROWS) Then Consume;  { skip ROWS }
+  Warning('SELECT UP TO : ignoré (stub)');
+ End;
+
+ { Consommer le point final }
+ If cur_tok_type = TOK_DOT Then Consume
+ Else Warning('Point attendu apres en-tete SELECT');
+
+ { Recuperer les variables systeme }
+ sy_subrc_idx := FindSym('SY-SUBRC');
+ sy_tabix_idx := FindSym('SY-TABIX');
+ sy_dbcnt     := FindSym('SY-DBCNT');
+
+ { Generation stub : SY-SUBRC=4, SY-TABIX=0, SY-DBCNT=0 }
+ EmitComment('SELECT stub : 0 resultats, SY-SUBRC=4');
+ If sy_subrc_idx > 0 Then
+  EmitI('MOV     WORD PTR [' + sym_table[sy_subrc_idx].asm_label + '], 4');
+ If sy_tabix_idx > 0 Then
+  EmitI('MOV     WORD PTR [' + sym_table[sy_tabix_idx].asm_label + '], 0');
+ If sy_dbcnt > 0 Then
+  EmitI('MOV     WORD PTR [' + sym_table[sy_dbcnt].asm_label + '], 0');
+
+ If is_single Then
+ Begin
+  { SELECT SINGLE : pas de corps, pas de ENDSELECT a traiter }
+  EmitComment('SELECT SINGLE : fin (stub, aucune ligne)');
+ End Else
+ Begin
+  { SELECT normal : corps vide avec boucle, protege par EXIT }
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  { La boucle saute directement a lbl_end (boucle vide -> 0 iterations) }
+  EmitI('JMP     ' + lbl_end + '  ; boucle vide (stub)');
+  EmitLabel(lbl_top);
+  { Mettre lbl_end comme ExitLabel pour que EXIT/CHECK fonctionnent }
+  EnterScope(SK_LOOP, 0);
+  SetExitLabel(lbl_end);
+  SetContLabel(lbl_top);
+  { Parser le corps jusqu'a ENDSELECT }
+  While (cur_tok_type <> TOK_EOF) And Not TokIsKw(KW_ENDSELECT) Do
+   ParseStatement;
+  LeaveScope;
+  { ENDSELECT }
+  If TokIsKw(KW_ENDSELECT) Then Consume
+  Else Warning('ENDSELECT attendu');
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDSELECT');
+  EmitLabel(lbl_end);
+  EmitComment('--- fin SELECT ---');
+ End;
+ EmitBlank;
+End;
+
+{ ============================================================================ }
 { TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
 { ============================================================================ }
 
