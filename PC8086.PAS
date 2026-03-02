@@ -3864,7 +3864,7 @@ End;
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('PC8086 - Cette commande permet de lancer une compilateur Pascal gï¿½nï¿½rant du code pour le ',
+  WriteLn('PC8086 - Cette commande permet de lancer une compilateur Pascal g‚n‚rant du code pour le ',
           'microprocesseur 8086 ou 8088.');
   WriteLn;
   WriteLn('Syntaxe: PC8086 [options] <fichier.pas> [fichier.asm]');
