@@ -549,6 +549,95 @@ Type
  { Pointeurs de tableaux dynamiques (alloues en TODO 03) }
  PPatNode = ^TPatNode;
 
+{ ============================================================================
+  TODO 03 - TABLES : SYMBOLES, LABELS, PATTERNS, FONCTIONS
+  ============================================================================ }
+
+ { --------------------------------------------------------------------------
+   Table des symboles (variables, constantes, builtins, fonctions user)
+   -------------------------------------------------------------------------- }
+
+ TSymEntry = Record
+  name      : TString;      { nom SNOBOL en majuscules                  }
+  kind      : TSymKind;     { SK_VAR / SK_CONST_STR / SK_BUILTIN ...     }
+  val_kind  : TValueKind;   { type runtime courant de la variable        }
+  asm_label : TString;      { label ASM pour le descripteur en .DATA     }
+  init_str  : TString;      { valeur initiale (chaine)                   }
+  init_num  : LongInt;      { valeur initiale (entier ou reel 16.16)     }
+  str_idx   : Integer;      { index dans str_pool si SK_CONST_STR        }
+  str_len   : Integer;      { longueur dans str_pool                     }
+  is_local  : Boolean;      { variable locale d'une fonction (sur BP)    }
+  bp_offset : Integer;      { offset BP si variable locale               }
+  param_idx : Integer;      { rang dans la liste des params (0 = non)    }
+ End;
+
+ PSymTable = ^TSymTableArr;
+ TSymTableArr = Array[1..MAX_SYM] of TSymEntry;
+
+ { --------------------------------------------------------------------------
+   Table des labels SNOBOL (etiquettes source et forward references)
+   -------------------------------------------------------------------------- }
+
+ TLabelEntry = Record
+  name      : TString;      { etiquette SNOBOL en majuscules             }
+  asm_label : TString;      { label ASM genere (_SBL_xxx)                }
+  defined   : Boolean;      { True si label rencontre dans le source     }
+  line_def  : Integer;      { ligne source ou le label est defini        }
+ End;
+
+ PLabelTable = ^TLabelTableArr;
+ TLabelTableArr = Array[1..MAX_LABEL] of TLabelEntry;
+
+ { --------------------------------------------------------------------------
+   Table des patrons (noeuds d'arbre de matching)
+   Deja declare : TPatNode / PPatNode -> tableau dynamique pat_table
+   -------------------------------------------------------------------------- }
+
+ PPatTable = ^TPatTableArr;
+ TPatTableArr = Array[1..MAX_PAT] of TPatNode;
+
+ { --------------------------------------------------------------------------
+   Table des fonctions utilisateur (definies par DEFINE)
+   -------------------------------------------------------------------------- }
+
+ TParamEntry = Record
+  name      : TString;      { nom du parametre                          }
+  bp_offset : Integer;      { offset BP positif (arg passe par pile)    }
+ End;
+
+ TLocalEntry = Record
+  name      : TString;      { nom de la variable locale                 }
+  bp_offset : Integer;      { offset BP negatif                         }
+ End;
+
+ TFuncEntry = Record
+  name        : TString;        { nom de la fonction en majuscules       }
+  kind        : TSubKind;       { SUB_FUNC ou SUB_BUILTIN                }
+  asm_label   : TString;        { label ASM du point d'entree            }
+  entry_label : TString;        { etiquette SNOBOL du point d'entree     }
+  param_count : Integer;        { nombre de parametres                   }
+  local_count : Integer;        { nombre de variables locales            }
+  params      : Array[1..MAX_PARAM] of TParamEntry;
+  locals      : Array[1..MAX_LOCAL]  of TLocalEntry;
+  frame_size  : Integer;        { total octets de frame locale           }
+  param_bytes : Integer;        { octets a depiler (RET n)               }
+ End;
+
+ PFuncTable = ^TFuncTableArr;
+ TFuncTableArr = Array[1..MAX_SUB] of TFuncEntry;
+
+ { --------------------------------------------------------------------------
+   Forward references de labels (resolution passe 2)
+   -------------------------------------------------------------------------- }
+
+ TFwdRef = Record
+  asm_label : TString;      { label ASM reference mais pas encore defini }
+  src_line  : Integer;      { ligne source pour le message d'erreur      }
+ End;
+
+ PFwdRefTable = ^TFwdRefArr;
+ TFwdRefArr = Array[1..MAX_FWDREF] of TFwdRef;
+
 { --------------------------------------------------------------------------
   Variables globales de configuration (positionnees en debut de Compile)
   -------------------------------------------------------------------------- }
@@ -580,7 +669,289 @@ Var
   lst_open      : Boolean;   { lst_file est-il ouvert ?                 }
   tmp_open      : Boolean;   { tmp_file est-il ouvert ?                 }
 
+  { --- Tables principales (allouees par InitXxxTable) --- }
+  sym_table     : PSymTable;   { table des symboles                      }
+  sym_count     : Integer;     { nb entrees utilisees                    }
+
+  label_table   : PLabelTable; { table des labels SNOBOL                 }
+  label_count   : Integer;
+
+  pat_table     : PPatTable;   { table des noeuds de patrons             }
+  pat_count     : Integer;
+
+  func_table    : PFuncTable;  { table des fonctions utilisateur         }
+  func_count    : Integer;
+
+  fwd_table     : PFwdRefTable;{ forward references de labels            }
+  fwd_count     : Integer;
+
+  { --- Pool de chaines litterales (bytes bruts concatenes) --- }
+  str_pool      : Array[0..MAX_STR-1] of Char;
+  str_top       : Integer;     { prochain octet libre dans str_pool      }
+
+  { --- Compteur de labels ASM generes (unique par compilation) --- }
+  lbl_seq       : Integer;     { sequence pour NewLabel -> @@Lxxxx       }
+
+{ ============================================================================
+  TODO 03 (suite) - PROCEDURES D'INITIALISATION ET D'ACCES AUX TABLES
+  ============================================================================ }
+
+{ --- Helpers generaux --- }
+
+Function UpCaseStr(Const s: String): String;
+Var i : Integer;
+    r : String;
 Begin
+ r := s;
+ For i := 1 To Length(r) Do
+  r[i] := UpCase(r[i]);
+ UpCaseStr := r;
+End;
+
+Function IntToStr(n: LongInt): String;
+Var s : String;
+Begin
+ Str(n, s);
+ IntToStr := s;
+End;
+
+Function NewLabel: String;
+Begin
+ Inc(lbl_seq);
+ NewLabel := '@@L' + IntToStr(lbl_seq);
+End;
+
+Function AsmSafeIdent(Const s: TString): TString;
+{ Remplace les caracteres non alphanumeriques par '_' pour les labels ASM }
+Var i   : Integer;
+    res : TString;
+Begin
+ res := s;
+ For i := 1 To Length(res) Do
+  If Not (res[i] In ['A'..'Z','a'..'z','0'..'9','_']) Then
+   res[i] := '_';
+ AsmSafeIdent := res;
+End;
+
+{ --------------------------------------------------------------------------
+  InitSymTable / FindSym / AddSym
+  -------------------------------------------------------------------------- }
+
+Procedure InitSymTable;
+Begin
+ New(sym_table);
+ sym_count := 0;
+End;
+
+Function FindSym(Const nm: TString): Integer;
+Var i   : Integer;
+    u   : TString;
+Begin
+ u := UpCaseStr(nm);
+ For i := 1 To sym_count Do
+  If sym_table^[i].name = u Then Begin FindSym := i; Exit; End;
+ FindSym := 0;
+End;
+
+Function AddSym(Const nm: TString; k: TSymKind; vk: TValueKind): Integer;
+Var u : TString;
+Begin
+ If sym_count >= MAX_SYM Then Begin AddSym := 0; Exit; End;
+ u := UpCaseStr(nm);
+ Inc(sym_count);
+ FillChar(sym_table^[sym_count], SizeOf(TSymEntry), 0);
+ sym_table^[sym_count].name      := u;
+ sym_table^[sym_count].kind      := k;
+ sym_table^[sym_count].val_kind  := vk;
+ sym_table^[sym_count].asm_label := SB_VAR_PFX + AsmSafeIdent(u);
+ sym_table^[sym_count].init_num  := 0;
+ sym_table^[sym_count].is_local  := False;
+ sym_table^[sym_count].bp_offset := 0;
+ sym_table^[sym_count].param_idx := 0;
+ AddSym := sym_count;
+End;
+
+{ --------------------------------------------------------------------------
+  InitLabelTable / FindLabel / AddLabel
+  -------------------------------------------------------------------------- }
+
+Procedure InitLabelTable;
+Begin
+ New(label_table);
+ label_count := 0;
+End;
+
+Function FindLabel(Const nm: TString): Integer;
+Var i : Integer;
+    u : TString;
+Begin
+ u := UpCaseStr(nm);
+ For i := 1 To label_count Do
+  If label_table^[i].name = u Then Begin FindLabel := i; Exit; End;
+ FindLabel := 0;
+End;
+
+Function AddLabel(Const nm: TString): Integer;
+Var u : TString;
+Begin
+ If label_count >= MAX_LABEL Then Begin AddLabel := 0; Exit; End;
+ u := UpCaseStr(nm);
+ Inc(label_count);
+ FillChar(label_table^[label_count], SizeOf(TLabelEntry), 0);
+ label_table^[label_count].name      := u;
+ label_table^[label_count].asm_label := SB_LBL_PFX + AsmSafeIdent(u);
+ label_table^[label_count].defined   := False;
+ label_table^[label_count].line_def  := 0;
+ AddLabel := label_count;
+End;
+
+Procedure DefineLabel(idx: Integer; line_num: Integer);
+Begin
+ label_table^[idx].defined  := True;
+ label_table^[idx].line_def := line_num;
+End;
+
+{ --------------------------------------------------------------------------
+  InitPatTable / AddPat
+  -------------------------------------------------------------------------- }
+
+Procedure InitPatTable;
+Begin
+ New(pat_table);
+ pat_count := 0;
+End;
+
+Function AddPat(k: TPatKind): Integer;
+Begin
+ If pat_count >= MAX_PAT Then Begin AddPat := 0; Exit; End;
+ Inc(pat_count);
+ FillChar(pat_table^[pat_count], SizeOf(TPatNode), 0);
+ pat_table^[pat_count].kind      := k;
+ pat_table^[pat_count].lit_idx   := 0;
+ pat_table^[pat_count].lit_len   := 0;
+ pat_table^[pat_count].int_val   := 0;
+ pat_table^[pat_count].set_idx   := 0;
+ pat_table^[pat_count].left      := 0;
+ pat_table^[pat_count].right     := 0;
+ pat_table^[pat_count].var_nm    := '';
+ pat_table^[pat_count].asm_label := NewLabel;
+ AddPat := pat_count;
+End;
+
+{ --------------------------------------------------------------------------
+  InitFuncTable / FindFunc / AddFunc
+  -------------------------------------------------------------------------- }
+
+Procedure InitFuncTable;
+Begin
+ New(func_table);
+ func_count := 0;
+End;
+
+Function FindFunc(Const nm: TString): Integer;
+Var i : Integer;
+    u : TString;
+Begin
+ u := UpCaseStr(nm);
+ For i := 1 To func_count Do
+  If func_table^[i].name = u Then Begin FindFunc := i; Exit; End;
+ FindFunc := 0;
+End;
+
+Function AddFunc(Const nm: TString; k: TSubKind): Integer;
+Var u : TString;
+Begin
+ If func_count >= MAX_SUB Then Begin AddFunc := 0; Exit; End;
+ u := UpCaseStr(nm);
+ Inc(func_count);
+ FillChar(func_table^[func_count], SizeOf(TFuncEntry), 0);
+ func_table^[func_count].name        := u;
+ func_table^[func_count].kind        := k;
+ func_table^[func_count].asm_label   := SB_FUN_PFX + AsmSafeIdent(u);
+ func_table^[func_count].entry_label := '';
+ func_table^[func_count].param_count := 0;
+ func_table^[func_count].local_count := 0;
+ func_table^[func_count].frame_size  := 0;
+ func_table^[func_count].param_bytes := 0;
+ AddFunc := func_count;
+End;
+
+{ --------------------------------------------------------------------------
+  InitFwdTable / AddFwdRef
+  -------------------------------------------------------------------------- }
+
+Procedure InitFwdTable;
+Begin
+ New(fwd_table);
+ fwd_count := 0;
+End;
+
+Procedure AddFwdRef(Const lbl: TString; line_num: Integer);
+Begin
+ If fwd_count >= MAX_FWDREF Then Exit;
+ Inc(fwd_count);
+ fwd_table^[fwd_count].asm_label := lbl;
+ fwd_table^[fwd_count].src_line  := line_num;
+End;
+
+{ --------------------------------------------------------------------------
+  Pool de chaines litterales (str_pool) : StrPoolAdd / StrPoolGet
+  -------------------------------------------------------------------------- }
+
+Procedure InitStrPool;
+Begin
+ str_top := 0;
+ FillChar(str_pool, SizeOf(str_pool), 0);
+End;
+
+Function StrPoolAdd(Const s: TString): Integer;
+{ Ajoute s dans str_pool, retourne l'index de debut (0-base). }
+Var i   : Integer;
+    idx : Integer;
+Begin
+ idx := str_top;
+ For i := 1 To Length(s) Do
+ Begin
+  If str_top >= MAX_STR Then Begin StrPoolAdd := -1; Exit; End;
+  str_pool[str_top] := s[i];
+  Inc(str_top);
+ End;
+ If str_top < MAX_STR Then Begin str_pool[str_top] := #0; Inc(str_top); End;
+ StrPoolAdd := idx;
+End;
+
+Function StrPoolGet(idx, len: Integer): TString;
+{ Relit une chaine depuis str_pool a partir de l'index idx sur len chars. }
+Var i   : Integer;
+    res : TString;
+Begin
+ res := '';
+ For i := 0 To len - 1 Do
+  If (idx + i < MAX_STR) And (str_pool[idx+i] <> #0) Then
+   res := res + str_pool[idx+i];
+ StrPoolGet := res;
+End;
+
+{ --------------------------------------------------------------------------
+  DisposeAllTables : liberer la memoire des tables en fin de compilation
+  -------------------------------------------------------------------------- }
+
+Procedure DisposeAllTables;
+Begin
+ If sym_table   <> Nil Then Begin Dispose(sym_table);   sym_table   := Nil; End;
+ If label_table <> Nil Then Begin Dispose(label_table); label_table := Nil; End;
+ If pat_table   <> Nil Then Begin Dispose(pat_table);   pat_table   := Nil; End;
+ If func_table  <> Nil Then Begin Dispose(func_table);  func_table  := Nil; End;
+ If fwd_table   <> Nil Then Begin Dispose(fwd_table);   fwd_table   := Nil; End;
+End;
+
+Begin
+  { Initialiser les pointeurs a Nil pour securiser DisposeAllTables }
+  sym_table   := Nil;
+  label_table := Nil;
+  pat_table   := Nil;
+  func_table  := Nil;
+  fwd_table   := Nil;
   { Corps principal : sera rempli par TODO 25 (Procedure Compile) }
   WriteLn('SNOBOL86 v', SNOBOL86_VERSION, ' - compilateur SNOBOL 4 -> 8086 MASM');
   WriteLn('Usage : SNOBOL86 source.SBL [sortie.ASM]');

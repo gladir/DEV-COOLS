@@ -1307,22 +1307,19 @@ Begin
    left_operand := 'ax';
    If current_token = ')' Then NextToken;
   End
-  Else If current_symbol = SYM_UNKNOWN Then
-  Begin
+   Else
+  If current_symbol = SYM_UNKNOWN Then Begin
    temp_token := current_token;
-
-   { Nombre litt√©ral }
-   If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then
-   Begin
-    { G√©n√©rer l'op√©ration }
+    { Nombre littÇral }
+   If (temp_token <> '') and (temp_token[1] >= '0') and (temp_token[1] <= '9') Then Begin
+    { GÇnÇrer l'opÇration }
     Case comparison_op of
      SYM_PLUS:
       Begin
-       { V√©rifier si c'est une concat√©nation de cha√Ænes }
-       If left_type = TYPE_STRING Then
-       Begin
-        { Concat√©nation de cha√Ænes - pour l'instant on g√©n√®re un appel de fonction }
-        EmitComment('Concat√©nation de cha√Ænes');
+       { VÇrifier si c'est une concatÇnation de chaånes }
+       If left_type = TYPE_STRING Then Begin
+        { ConcatÇnation de chaånes - pour l'instant on gÇnäre un appel de fonction }
+        EmitComment('ConcatÇnation de chaånes');
         Emit('call CONCAT_STR');
        End
        Else If left_operand = 'ax' Then
@@ -1387,8 +1384,8 @@ Begin
     End;
     NextToken;
    End
-   Else If temp_token <> '' Then
-   Begin
+    Else
+   If temp_token <> '' Then Begin
     { Variable - chercher dans la table des symboles }
     sym_index := FindSymbol(temp_token);
     If sym_index > 0 Then
@@ -1396,12 +1393,12 @@ Begin
      Case comparison_op of
       SYM_PLUS:
        Begin
-        { V√©rifier si c'est une concat√©nation de cha√Ænes }
+        { VÇrifier si c'est une concatÇnation de chaånes }
         If (left_type = TYPE_STRING) and (symbol_table[sym_index]^.data_type = TYPE_STRING) Then
         Begin
-         EmitComment('Concat√©nation de cha√Ænes');
+         EmitComment('ConcatÇnation de chaånes');
          Emit('mov di, OFFSET ' + symbol_table[sym_index]^.name);
-         Emit('call CONCAT_STR'); { Appel de fonction de concat√©nation }
+         Emit('call CONCAT_STR'); { Appel de fonction de concatÇnation }
         End
         Else If left_operand = 'ax' Then
          Emit('add ax, ' + symbol_table[sym_index]^.name)
@@ -1465,25 +1462,22 @@ Begin
      End;
     End
     Else
-     Error('Variable non d√©clar√©e: ' + temp_token);
+     Error('Variable non dÇclarÇe: ' + temp_token);
     NextToken;
    End;
-
-   left_operand := 'ax'; { Le r√©sultat est toujours dans AX }
+   left_operand := 'ax'; { Le rÇsultat est toujours dans AX }
   End;
  End;
-
- { V√©rifier s'il y a un op√©rateur de comparaison }
+  { VÇrifier s'il y a un opÇrateur de comparaison }
  comparison_op := current_symbol;
  If (comparison_op = SYM_EQUAL) or (comparison_op = SYM_NOTEQUAL) or
     (comparison_op = SYM_LESS) or (comparison_op = SYM_GREATER) or
     (comparison_op = SYM_LESSEQ) or (comparison_op = SYM_GREATEREQ) Then
  Begin
-  NextToken; { Consommer l'op√©rateur }
+  NextToken; { Consommer l'opÇrateur }
 
-  { Parser le deuxi√®me op√©rande }
-  If current_symbol = SYM_STRING_LITERAL Then
-  Begin
+  { Analyser le deuxiäme opÇrande }
+  If current_symbol = SYM_STRING_LITERAL Then Begin
    { Comparaison de cha√Æne litt√©rale: appel COMPARE_STR }
    temp_token := current_token;
    string_label := 'CMP_STR' + IntToStr(next_label_id);
