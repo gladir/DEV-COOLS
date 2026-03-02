@@ -2828,5 +2828,129 @@ Begin
  EmitI('JMP     ' + lbl);
 End;
 
+{ ============================================================================ }
+{ TODO 10 - PARSEUR : IF / ELSEIF / ELSE / ENDIF         [COMPLET]            }
+{ ============================================================================ }
+
+{ Forward pour ParseStatement (defini au TODO 23) }
+Procedure ParseStatement; Forward;
+
+{ Parse un bloc d'instructions jusqu'a l'un des trois mots-cles d'arret.
+  Passe KW_NONE (=0) pour un emplacement inutilise.                           }
+Procedure ParseBlock(stop1, stop2, stop3: Integer);
+Begin
+ While (cur_tok_type <> TOK_EOF) Do
+ Begin
+  If TokIsKw(stop1) Or TokIsKw(stop2) Or TokIsKw(stop3) Then Break;
+  ParseStatement;
+ End;
+End;
+
+{ Parse IF / ELSEIF / ELSE / ENDIF avec generation de code 8086.
+
+  Syntaxe ABAP :
+    IF condition.                  <- point apres la condition
+      instructions.
+    ELSEIF condition.             <- point apres la condition
+      instructions.
+    ELSE.                         <- point apres ELSE
+      instructions.
+    ENDIF.                        <- point apres ENDIF
+
+  Generation :
+    ParseExpr         -> AX = resultat booleen
+    TEST AX, AX
+    JZ  lbl_next      <- saute si faux
+    ... corps ...
+    JMP lbl_end
+  lbl_next:
+    (repeter pour chaque ELSEIF)
+    (ELSE : corps direct sans test)
+  lbl_end:
+}
+Procedure ParseIf;
+Var lbl_next, lbl_end : String;
+    first_branch      : Boolean;
+Begin
+ Consume; { skip IF }
+ lbl_end      := NewLabel + 'EN';
+ first_branch := True;
+
+ { --- Boucle IF / ELSEIF --- }
+ Repeat
+  If first_branch Then EmitComment('---- IF ----')
+  Else             EmitComment('---- ELSEIF ----');
+  first_branch := False;
+
+  lbl_next := NewLabel + 'NX';
+
+  { Evaluer la condition -> AX }
+  ParseExpr;
+
+  { Consommer le point terminateur apres la condition }
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres condition IF/ELSEIF');
+
+  { Saut conditionnel si faux }
+  GenJmpIfFalse(lbl_next);
+
+  { Corps de la branche }
+  EnterScope(SK_BLOCK, 0);
+  ParseBlock(KW_ELSEIF, KW_ELSE, KW_ENDIF);
+  LeaveScope;
+
+  { Saut vers la fin apres le corps }
+  GenJmp(lbl_end);
+
+  { Etiquette du prochain ELSEIF ou de la fin de branche }
+  EmitLabel(lbl_next);
+
+  { Continuer la boucle si ELSEIF }
+  If TokIsKw(KW_ELSEIF) Then
+  Begin
+   Consume; { skip ELSEIF }
+   Continue;
+  End;
+
+  Break; { pas de ELSEIF : sortir }
+ Until False;
+
+ { --- Branche ELSE optionnelle --- }
+ If TokIsKw(KW_ELSE) Then
+ Begin
+  Consume; { skip ELSE }
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ELSE');
+  EmitComment('---- ELSE ----');
+  EnterScope(SK_BLOCK, 0);
+  ParseBlock(KW_ENDIF, KW_NONE, KW_NONE);
+  LeaveScope;
+ End;
+
+ { --- ENDIF. --- }
+ If TokIsKw(KW_ENDIF) Then
+ Begin
+  Consume; { skip ENDIF }
+  If cur_tok_type = TOK_DOT Then Consume
+  Else Warning('Point attendu apres ENDIF');
+ End
+ Else Error('ENDIF attendu');
+
+ { Etiquette de fin commune a toutes les branches }
+ EmitLabel(lbl_end);
+End;
+
+{ ============================================================================ }
+{ TODO 23 (stub) - ParseStatement : sera complete au TODO 23                   }
+{ ============================================================================ }
+
+Procedure ParseStatement;
+Begin
+ { Stub requis pour resoudre le Forward de ParseBlock/ParseIf. }
+ { TODO 23 : dispatcher complet sur cur_tok_type / cur_kw. }
+ Error('ParseStatement : non encore implemente (stub TODO 23)');
+ Consume;
+End;
+
 Begin
 End.
