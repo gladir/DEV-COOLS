@@ -1,4 +1,4 @@
-﻿(* OBERON86.PAS - Compilateur Oberon vers assembleur 8086
+(* OBERON86.PAS - Compilateur Oberon vers assembleur 8086
   Turbo Pascal / Free Pascal
   ================================================================
 
@@ -202,16 +202,16 @@ Const
   OBERON86_VERSION = '1.0';
   OBERON86_DATE    = '2026-03-03';
 
-  MAX_SYM    = 1024;   { entrees dans la table des symboles       }
-  MAX_PROC   = 128;    { procedures / fonctions                   }
-  MAX_PARAM  = 16;     { parametres par procedure                 }
+  MAX_SYM    = {$IFDEF FPC}1024{$ELSE}100{$ENDIF};   { entrees dans la table des symboles       }
+  MAX_PROC   = {$IFDEF FPC}128{$ELSE}50{$ENDIF};    { procedures / fonctions                   }
+  MAX_PARAM  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};     { parametres par procedure                 }
   MAX_FIELD  = 64;     { champs par RECORD                        }
   MAX_CONST  = 256;    { constantes nommees (CONST)               }
   MAX_TYPE   = 256;    { descripteurs de type                     }
   MAX_LABEL  = 1024;   { labels internes (IF/WHILE/FOR...)        }
   MAX_SCOPE  = 32;     { profondeur maximale de portee            }
   MAX_ERRORS = 30;     { arret apres N erreurs                    }
-  MAX_STR    = 128;    { longueur maximale d'une TString          }
+  MAX_STR    = {$IFDEF FPC}128{$ELSE}80{$ENDIF};    { longueur maximale d'une TString          }
   MAX_IMPORT = 16;     { modules importes par compilation         }
   STACK_SIZE = 512;    { taille segment pile en octets            }
 
@@ -353,6 +353,9 @@ Type
     alias    : TString;       { alias local si IMPORT Out := Output    }
   End;
 
+  { Pointeur sur fichier texte - nomme pour eviter incompatibilite TP }
+  TTextPtr = ^Text;
+
 { --- Variables globales du compilateur --- }
 Var
   { Tables allouees dynamiquement }
@@ -366,7 +369,7 @@ Var
   out_file     : Text;
   tmp_file     : Text;
   str_file     : Text;             { chaînes litterales differees (TODO 25) }
-  cur_out      : ^Text;        { pointe sur out_file ou tmp_file       }
+  cur_out      : TTextPtr;   { pointe sur out_file ou tmp_file       }
   src_fname    : TString;
   out_fname    : TString;
   tmp_fname    : TString;
@@ -2580,7 +2583,7 @@ Var lbl      : TString;
     i        : Integer;
     out_s    : TString;
     c        : Char;
-    save_out : ^Text;
+    save_out : TTextPtr;
     in_quote : Boolean;
     tmp_n    : TString;
 Begin
