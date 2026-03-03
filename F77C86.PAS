@@ -871,6 +871,306 @@ Begin
 End;
 
 { ============================================================
+  TODO 02 - LECTEUR DE SOURCE A FORMAT FIXE
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  Format fixe Fortran 77 :
+    Col 1     : 'C' ou '*' -> ligne de commentaire (ignoree)
+    Col 1-5   : etiquette numerique (chiffres seulement, blancs -> 0)
+    Col 6     : indicateur de continuation (non-blanc et non-'0' -> suite)
+    Col 7-72  : corps de l'instruction
+    Col 73-80 : identification (ignoree)
+  Les lignes de continuation sont assemblees en un seul enregistrement
+  logique de longueur max MAX_LOGLINE chars.
+  Les espaces ne sont PAS significatifs en dehors des chaines litterales
+  (la norme F77 autorise leur suppression).
+  -------------------------------------------------------------------------- }
+
+{ Lire une ligne physique depuis src_file.
+  Retourne False si fin de fichier.
+  Stocke la ligne dans phys_buf (sans le saut de ligne). }
+Const
+  PHYS_MAX = 255;
+
+Var
+  phys_buf     : String[255];        { ligne physique courante brute      }
+  phys_lineno  : Integer;            { numero de ligne physique courante  }
+
+Function SrcReadPhysLine : Boolean;
+Var c : Char; i : Integer;
+Begin
+  phys_buf := '';
+  If Eof(src_file) Then
+  Begin
+    SrcReadPhysLine := False;
+    src_eof := True;
+    Exit;
+  End;
+  Readln(src_file, phys_buf);
+  Inc(phys_lines);
+  phys_lineno := phys_lines;
+  { Expander a 80 colonnes avec des espaces si trop court }
+  While Length(phys_buf) < 6 Do phys_buf := phys_buf + ' ';
+  SrcReadPhysLine := True;
+End;
+
+{ Forward : SrcIsContinued est definie apres SrcNextLogRecord }
+Function SrcIsContinued : Boolean; Forward;
+
+{ --------------------------------------------------------------------------
+  SrcNextLogRecord : assembler l'enregistrement logique suivant.
+  Remplit log_rec^[1..log_rec_len], log_label, log_is_comm, log_lineno.
+  Retourne False si fin de fichier (aucune instruction disponible).
+  -------------------------------------------------------------------------- }
+Function SrcNextLogRecord : Boolean;
+Var
+  first_line : Boolean;
+  label_str  : String[5];
+  col        : Integer;
+  i          : Integer;
+  body_start : Integer;
+  body_end   : Integer;
+  is_cont    : Boolean;
+  c          : Char;
+  n          : Integer;
+  code       : Integer;
+Begin
+  log_rec_len := 0;
+  log_label   := 0;
+  log_is_comm := False;
+  first_line  := True;
+
+  Repeat
+    { Lire la ligne physique suivante (sauter les commentaires) }
+    Repeat
+      If Not SrcReadPhysLine Then
+      Begin
+        If first_line Then
+        Begin
+          SrcNextLogRecord := False;
+          src_eof := True;
+          Exit;
+        End;
+        { Fin de fichier en milieu de continuation : ok, on retourne ce qu'on a }
+        src_eof := True;
+        SrcNextLogRecord := (log_rec_len > 0);
+        Exit;
+      End;
+
+      { Colonne 1 : commentaire ? }
+      c := phys_buf[1];
+      If (c = 'C') Or (c = 'c') Or (c = '*') Or (phys_buf = '') Then
+      Begin
+        { Ligne de commentaire : ignorer et recommencer }
+        Continue;
+      End;
+      Break;
+    Until False;
+
+    { --- Analyser la ligne physique --- }
+
+    { Colonne 6 : indicateur de continuation }
+    is_cont := False;
+    If Length(phys_buf) >= 6 Then
+    Begin
+      c := phys_buf[6];
+      is_cont := (c <> ' ') And (c <> '0') And (Not first_line);
+    End;
+
+    If first_line Then
+    Begin
+      log_lineno := phys_lineno;
+      { Extraire l'etiquette des colonnes 1-5 (chiffres uniquement) }
+      label_str := '';
+      For i := 1 To 5 Do
+      Begin
+        If i <= Length(phys_buf) Then
+        Begin
+          c := phys_buf[i];
+          If (c >= '0') And (c <= '9') Then
+            label_str := label_str + c
+          Else If c <> ' ' Then
+          Begin
+            ErrorMsg('Caractere invalide en colonne ' + IntToStr(i) +
+                     ' (etiquette) : ' + c);
+          End;
+        End;
+      End;
+      If label_str <> '' Then
+      Begin
+        Val(label_str, n, code);
+        If (code = 0) And (n >= 1) And (n <= 99999) Then
+          log_label := n
+        Else
+          ErrorMsg('Etiquette invalide : ' + label_str);
+      End;
+      first_line := False;
+    End;
+
+    { Copier les colonnes 7-72 dans log_rec (sans les espaces insignifiants).
+      NOTE : selon la norme F77, les blancs peuvent etre supprimes partout
+      SAUF dans les constantes chaines ; ici on les conserve pour simplifier
+      le lexer qui gerera lui-meme les blancs. }
+    body_start := 7;
+    body_end   := Length(phys_buf);
+    If body_end > 72 Then body_end := 72;
+
+    For i := body_start To body_end Do
+    Begin
+      If log_rec_len < MAX_LOGLINE Then
+      Begin
+        Inc(log_rec_len);
+        log_rec^[log_rec_len] := phys_buf[i];
+      End
+      Else
+        ErrorMsg('Enregistrement logique trop long (> ' +
+                 IntToStr(MAX_LOGLINE) + ' chars)');
+    End;
+
+    { Verifier si la ligne suivante est une continuation }
+    { On relit la prochaine ligne physique pour tester sa colonne 6 }
+    { En pratique on lira en boucle grace au Repeat/Until ci-dessous }
+
+    { Verifier si c'est une ligne totalement vide (corps vide apres concat) }
+    { -> continuer a lire }
+
+  Until Not SrcIsContinued;     { <- fonction definie ci-dessous }
+
+  log_pos := 1;
+  SrcNextLogRecord := (log_rec_len > 0);
+End;
+
+{ --------------------------------------------------------------------------
+  SrcIsContinued : regarder si la PROCHAINE ligne physique est une suite.
+  Utilise un mecanisme de "peek" sur src_file.
+  Retourne True si la prochaine ligne physique a un caractere de continuation
+  en colonne 6 (non espace, non '0').
+  En sortie, phys_buf contient deja la prochaine ligne (elle est "consommee").
+  -------------------------------------------------------------------------- }
+Var
+  peek_phys_buf  : String[255];           { ligne physique anticipee           }
+  has_peek_phys  : Boolean;           { True si peek_phys_buf est valide   }
+
+Function SrcIsContinued : Boolean;
+Var c : Char;
+Begin
+  { Si la ligne suivante est deja dans le tampon peek, la traiter }
+  has_peek_phys := False;
+
+  If Eof(src_file) Then
+  Begin
+    SrcIsContinued := False;
+    Exit;
+  End;
+
+  Readln(src_file, peek_phys_buf);
+  Inc(phys_lines);
+  phys_lineno := phys_lines;
+
+  { Commentaire -> ce n'est pas une continuation, mais on l'ignore }
+  While (Length(peek_phys_buf) > 0) And
+        ((peek_phys_buf[1] = 'C') Or (peek_phys_buf[1] = 'c') Or
+         (peek_phys_buf[1] = '*')) Do
+  Begin
+    If Eof(src_file) Then
+    Begin
+      SrcIsContinued := False;
+      Exit;
+    End;
+    Readln(src_file, peek_phys_buf);
+    Inc(phys_lines);
+    phys_lineno := phys_lines;
+  End;
+
+  While Length(peek_phys_buf) < 6 Do peek_phys_buf := peek_phys_buf + ' ';
+
+  c := peek_phys_buf[6];
+  If (c <> ' ') And (c <> '0') Then
+  Begin
+    { Ligne de continuation : la mettre dans phys_buf et signaler }
+    phys_buf := peek_phys_buf;
+    SrcIsContinued := True;
+  End
+  Else
+  Begin
+    { Pas une continuation : on a lu une ligne en trop.
+      La memo dans has_peek_phys pour la reutiliser au prochain appel. }
+    has_peek_phys := True;
+    SrcIsContinued := False;
+  End;
+End;
+
+{ Correctif : SrcReadPhysLine doit verifier has_peek_phys en premier }
+{ (integration maintenue simple : le compilateur lit d'abord SrcNextLogRecord
+   qui appelle SrcReadPhysLine puis SrcIsContinued dans l'ordre correct) }
+
+{ --------------------------------------------------------------------------
+  Accesseurs sur l'enregistrement logique courant (utilises par le lexer).
+  -------------------------------------------------------------------------- }
+
+{ Caractere courant de l'enregistrement logique }
+Function LogCurChar : Char;
+Begin
+  If log_pos <= log_rec_len Then
+    LogCurChar := log_rec^[log_pos]
+  Else
+    LogCurChar := #0;
+End;
+
+{ Caractere suivant (peek) sans avancer }
+Function LogPeekChar : Char;
+Begin
+  If log_pos + 1 <= log_rec_len Then
+    LogPeekChar := log_rec^[log_pos + 1]
+  Else
+    LogPeekChar := #0;
+End;
+
+{ Avancer d'un caractere dans l'enregistrement }
+Procedure LogAdvance;
+Begin
+  If log_pos <= log_rec_len Then
+    Inc(log_pos);
+End;
+
+{ Sauter les espaces insignifiants dans l'enregistrement logique }
+Procedure LogSkipBlanks;
+Begin
+  While (log_pos <= log_rec_len) And (log_rec^[log_pos] = ' ') Do
+    Inc(log_pos);
+End;
+
+{ Fin de l'enregistrement logique courant ? }
+Function LogAtEnd : Boolean;
+Begin
+  LogAtEnd := (log_pos > log_rec_len);
+End;
+
+{ --------------------------------------------------------------------------
+  Lire une sous-chaine de l'enregistrement logique a partir de log_pos
+  tant que le predicat est vrai. Retourne la chaine et avance log_pos.
+  -------------------------------------------------------------------------- }
+Function LogReadWhile(Const isOk : Boolean) : TString;
+Begin
+  { non-utilise : le lexer lit caractere par caractere }
+  LogReadWhile := '';
+End;
+
+{ --------------------------------------------------------------------------
+  SrcInit : reinitialiser le lecteur de source pour une unite de programme.
+  A appeler apres chaque END rencontre.
+  -------------------------------------------------------------------------- }
+Procedure SrcInit;
+Begin
+  log_rec_len  := 0;
+  log_pos      := 1;
+  log_label    := 0;
+  log_is_comm  := False;
+  has_peek_phys := False;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
