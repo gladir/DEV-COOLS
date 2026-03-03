@@ -209,6 +209,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de convertir un fichier de code source Pascal en minuscule, majuscule ou capitale. Cette commande est inspiré de la commande CONVERT du Pascal pour FLEX.</td>
 		</tr>
 		<tr>
+			<td><b>CSC86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur C# (C Sharp) pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>CSV2SQL.PAS</b></td>
 			<td>Cette commande permet de convertir un fichier .CSV en format SQL.</td>
 		</tr>	
