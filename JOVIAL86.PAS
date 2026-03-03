@@ -4102,7 +4102,7 @@ Begin
     EmitI2('MOV', 'SI', 'BX');
     LexExpect(')');
   End;
-  { acces membre TABLE : ident '.' membre }  
+  { acces membre TABLE : ident '.' membre }
   If cur_tok.val = '.' Then
   Begin
     LexNext;
@@ -6116,6 +6116,9 @@ End;
   -------------------------------------------------------------------------- }
 Procedure PrintHelp;
 Begin
+  WriteLn('JOVIAL86 - Cette commande permet de lancer le compilateur Jovial 73 pour l''assembleur ',
+          'du microprocesseur 8086.');
+  WriteLn;
   WriteLn('Usage : JOVIAL86 <source.jov> [<sortie.asm>] [options]');
   WriteLn('Options :');
   WriteLn('  -v      Mode verbeux (statistiques apres compilation)');
@@ -6307,7 +6310,12 @@ End;
 { --------------------------------------------------------------------------
   Programme principal
   -------------------------------------------------------------------------- }
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  PrintHelp;
+  Halt(0);
+ End;
   InitTables;
   PrintBanner;
   If Not ParseCommandLine Then
@@ -6319,4 +6327,4 @@ Begin
   FreeTables;
   If err_count > 0 Then
     Halt(1);
-End.
+END.

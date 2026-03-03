@@ -3145,28 +3145,33 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseFactor : facteur primaire Oberon.
-  Grammaire :
-    factor = integer | char | real | string
-           | TRUE | FALSE | NIL
-           | '~' factor
-           | '(' expr ')'
-           | designator [ '(' ExprList ')' ]
-  Resultat dans AX ; type retourne.
-  Les appels de fonction sont des stubs (TODO 18).
+  ParseFactor : facteur primaire BCPL (TODO 09)
+  factor = integer | char | string
+         | TRUE (-1) | FALSE (0)
+         | tilde-factor  = NOT bit
+         | minus-factor  = negation
+         | ABS factor    = valeur absolue
+         | at-ident      = adresse de
+         | bang-factor   = mot indirect
+         | ( expr )
+         | VALOF bloc
+         | ident
+  Postfixes : e!n (mot indexe) et e%%n (octet indexe).
   -------------------------------------------------------------------------- }
 Function ParseFactor : Integer;
-Var ti    : Integer;
-    lbl   : TString;
-    n_str : TString;
-    bname : TString;
+Var ti       : Integer;
+    lbl      : TString;
+    lbl_end  : TString;
+    n_str    : TString;
+    si       : Integer;
+    bname    : TString;
 Begin
   ti := TYP_WORD;
 
+  { Litteraux entiers decimal/octal/hex }
   If cur_tok.kind = TK_INTEGER Then
   Begin
     EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
-    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.kind = TK_CHAR Then
@@ -3258,9 +3263,8 @@ End;
   ============================================================ }
 
 { --------------------------------------------------------------------------
-  ParseTerm : facteurs lies par operateurs de multiplicite.
-  Oberon : * , DIV, MOD, AND
-  Resultat dans AX ; gauche et droit evalues, pile utilisee.
+  ParseTerm : facteurs lies par operateurs de multiplicite BCPL (TODO 10).
+  BCPL  : * / MOD REM & << >>
   -------------------------------------------------------------------------- }
 Function ParseTerm : Integer;
 Var ti   : Integer;
@@ -3268,62 +3272,64 @@ Var ti   : Integer;
     op   : TString;
 Begin
   ti := ParseFactor;
-  While (cur_tok.val = '*') Or (cur_tok.val = 'DIV')
-     Or (cur_tok.val = 'MOD') Or (cur_tok.val = 'AND') Do
+  While (cur_tok.val = '*')   Or (cur_tok.val = '/')
+     Or (cur_tok.val = 'MOD') Or (cur_tok.val = 'REM')
+     Or (cur_tok.val = '&')   Or (cur_tok.val = '<<')
+     Or (cur_tok.val = '>>') Do
   Begin
     op := cur_tok.val;
     LexNext;
-    EmitI0('PUSH AX');             { sauvegarder gauche }
-    ti2 := ParseFactor;            { evaluer droit -> AX }
-    EmitI2('MOV', 'CX', 'AX');    { CX = droit }
-    EmitI0('POP  AX');             { AX = gauche }
-    If op = '*' Then
+    If (op = '<<') Or (op = '>>') Then
     Begin
-      If TypeIsBoolean(ti) Then
-        EmitI2('AND', 'AX', 'CX') { AND logique bits }
+      EmitI0('PUSH AX');
+      ti2 := ParseFactor;
+      EmitI2('MOV', 'CX', 'AX');
+      EmitI0('POP  AX');
+      If op = '<<' Then
+        EmitI0('SHL  AX, CL')
       Else
-        EmitI0('IMUL CX');         { AX * CX -> DX:AX }
-      ti := TYP_WORD;
+        EmitI0('SHR  AX, CL');
     End
-    Else If op = 'DIV' Then
+    Else
     Begin
-      EmitI0('CWD');               { etendre AX -> DX:AX }
-      EmitI0('IDIV CX');           { quotient -> AX }
-      ti := TYP_WORD;
-    End
-    Else If op = 'MOD' Then
-    Begin
-      EmitI0('CWD');
-      EmitI0('IDIV CX');
-      EmitI2('MOV', 'AX', 'DX');  { reste -> AX }
-      ti := TYP_WORD;
-    End
-    Else { AND }
-    Begin
-      EmitI2('AND', 'AX', 'CX');
-      ti := TYP_WORD;
+      EmitI0('PUSH AX');
+      ti2 := ParseFactor;
+      EmitI2('MOV', 'CX', 'AX');
+      EmitI0('POP  AX');
+      If op = '*' Then
+        EmitI0('IMUL CX')
+      Else If op = '/' Then
+      Begin
+        EmitI0('CWD');
+        EmitI0('IDIV CX');
+      End
+      Else If (op = 'MOD') Or (op = 'REM') Then
+      Begin
+        EmitI0('CWD');
+        EmitI0('IDIV CX');
+        EmitI2('MOV', 'AX', 'DX');
+      End
+      Else { & }
+        EmitI2('AND', 'AX', 'CX');
     End;
-    If ti2 = TYP_WORD Then ti := TYP_WORD;
+    ti := TYP_WORD;
   End;
   ParseTerm := ti;
 End;
 
 { --------------------------------------------------------------------------
-  ParseSimpleExpr : termes lies par operateurs additifs.
-  Oberon : + , - , OR (avec signe unaire optionnel en debut)
+  ParseSimpleExpr : termes lies par operateurs additifs BCPL (TODO 10).
+  BCPL : + - | EQV XOR  (le signe unaire est dans ParseFactor)
   -------------------------------------------------------------------------- }
 Function ParseSimpleExpr : Integer;
 Var ti   : Integer;
     ti2  : Integer;
     op   : TString;
-    uneg : Boolean;
 Begin
-  uneg := False;
-  If cur_tok.val = '-' Then Begin LexNext; uneg := True;  End
-  Else If cur_tok.val = '+' Then LexNext;
   ti := ParseTerm;
-  If uneg Then EmitI0('NEG  AX');
-  While (cur_tok.val = '+') Or (cur_tok.val = '-') Or (cur_tok.val = 'OR') Do
+  While (cur_tok.val = '+')   Or (cur_tok.val = '-')
+     Or (cur_tok.val = '|')   Or (cur_tok.val = 'EQV')
+     Or (cur_tok.val = 'XOR') Do
   Begin
     op := cur_tok.val;
     LexNext;
@@ -3331,81 +3337,57 @@ Begin
     ti2 := ParseTerm;
     EmitI2('MOV', 'CX', 'AX');
     EmitI0('POP  AX');
-    If op = '+' Then
+    If      op = '+' Then EmitI2('ADD', 'AX', 'CX')
+    Else If op = '-' Then EmitI2('SUB', 'AX', 'CX')
+    Else If op = '|' Then EmitI2('OR',  'AX', 'CX')
+    Else If op = 'XOR' Then EmitI2('XOR', 'AX', 'CX')
+    Else { EQV = XNOR }
     Begin
-      EmitI2('ADD', 'AX', 'CX');
-      If Not TypeIsBoolean(ti) Then ti := TYP_WORD;
-    End
-    Else If op = '-' Then
-    Begin
-      EmitI2('SUB', 'AX', 'CX');
-      ti := TYP_WORD;
-    End
-    Else { OR }
-    Begin
-      EmitI2('OR',  'AX', 'CX');
-      ti := TYP_WORD;
+      EmitI2('XOR', 'AX', 'CX');
+      EmitI1('NOT', 'AX');
     End;
-    If ti2 = TYP_WORD Then ti := TYP_WORD;
+    ti := TYP_WORD;
   End;
   ParseSimpleExpr := ti;
 End;
 
 { --------------------------------------------------------------------------
-  ParseExpr : implementation complete - remplace le stub TODO 09.
-  Relations Oberon : = # < <= > >= IN IS
-  Gauche dans AX, droit dans CX, resultat BOOLEAN dans AX (0 ou 1).
+  ParseExpr : relations BCPL (TODO 10).
+  BCPL : = ~= < <= > >=     Resultat : TRUE=-1  FALSE=0
   -------------------------------------------------------------------------- }
 Function ParseExpr;
-Var ti   : Integer;
-    ti2  : Integer;
-    op   : TString;
-    lbl  : TString;
+Var ti    : Integer;
+    ti2   : Integer;
+    op    : TString;
+    lbl_t : TString;
+    lbl_f : TString;
 Begin
   ti := ParseSimpleExpr;
-  If (cur_tok.val = '=')  Or (cur_tok.val = '#')
+  If (cur_tok.val = '=')  Or (cur_tok.val = '~=')
   Or (cur_tok.val = '<')  Or (cur_tok.val = '<=')
-  Or (cur_tok.val = '>')  Or (cur_tok.val = '>=')
-  Or (cur_tok.val = 'IN') Or (cur_tok.val = 'IS') Then
+  Or (cur_tok.val = '>')  Or (cur_tok.val = '>=') Then
   Begin
     op := cur_tok.val;
     LexNext;
-    EmitI0('PUSH AX');             { sauvegarder gauche }
-    ti2  := ParseSimpleExpr;      { evaluer droit -> AX }
-    EmitI2('MOV', 'CX', 'AX');    { CX = droit }
-    EmitI0('POP  AX');             { AX = gauche }
-
-    If op = 'IN' Then
-    Begin
-      { x IN s : tester le bit AX dans le mot de bits CX }
-      EmitI2('MOV', 'BX', 'CX');  { BX = s }
-      EmitI2('MOV', 'CX', 'AX');  { CL = x (compteur de decalage) }
-      EmitI2('MOV', 'AX', 'BX');  { AX = s }
-      EmitI0('SAR  AX, CL');       { AX = s >> x }
-      EmitI2('AND', 'AX', '1');    { bit x }
-    End
-    Else If op = 'IS' Then
-    Begin
-      { IS : verification de type dynamique - stub (TODO 22+) }
-      EmitI2('MOV', 'AX', '0');
-    End
-    Else
-    Begin
-      { Relations ordinales : CMP gauche, droit puis saut conditionnel }
-      lbl := NewLabel;
-      EmitI2('CMP', 'AX', 'CX');
-      EmitI2('MOV', 'AX', '0');    { hypothese : faux }
-      If      op = '='  Then EmitI1('JNE', lbl)
-      Else If op = '#'  Then EmitI1('JE',  lbl)
-      Else If op = '<'  Then EmitI1('JGE', lbl)
-      Else If op = '<=' Then EmitI1('JG',  lbl)
-      Else If op = '>'  Then EmitI1('JLE', lbl)
-      Else                   EmitI1('JL',  lbl);  { >= }
-      EmitI2('MOV', 'AX', '1');    { vrai }
-      EmitLabel(lbl);
-    End;
+    EmitI0('PUSH AX');
+    ti2  := ParseSimpleExpr;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI0('POP  AX');
+    lbl_t := NewLabel;
+    lbl_f := NewLabel;
+    EmitI2('CMP', 'AX', 'CX');
+    If      op = '='  Then EmitI1('JE',  lbl_t)
+    Else If op = '~=' Then EmitI1('JNE', lbl_t)
+    Else If op = '<'  Then EmitI1('JL',  lbl_t)
+    Else If op = '<=' Then EmitI1('JLE', lbl_t)
+    Else If op = '>'  Then EmitI1('JG',  lbl_t)
+    Else                   EmitI1('JGE', lbl_t);
+    EmitI2('MOV', 'AX', '0');
+    EmitI1('JMP', lbl_f);
+    EmitLabel(lbl_t);
+    EmitI2('MOV', 'AX', '0FFFFh');  { TRUE = -1 en BCPL }
+    EmitLabel(lbl_f);
     ti := TYP_WORD;
-    If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
   ParseExpr := ti;
 End;
@@ -3597,75 +3579,104 @@ End;
 Procedure ParseStatement; Forward;
 
 { --------------------------------------------------------------------------
-  ParseStatementSeq : suite d'instructions separees par ';'.
-  Oberon : StatementSequence = Statement [ ";" Statement ]*
-  On s'arrete sur END, ELSE, ELSIF, UNTIL, '|' ou EOF.
+  ParseStatementSeq BCPL : suite de commandes.
+  En BCPL les commandes sont separees par point-virgule optionnel.
+  On s'arrete sur $-) ou accolade-fermante, ELSE, THEN, ENDCASE, DEFAULT ou EOF.
   -------------------------------------------------------------------------- }
 Procedure ParseStatementSeq;
+  Function IsSeqStop : Boolean;
+  Begin
+    IsSeqStop :=
+      (cur_tok.val = '$)')     Or (cur_tok.val = '}')
+      Or (cur_tok.val = 'ELSE')  Or (cur_tok.val = 'THEN')
+      Or (cur_tok.val = 'ENDCASE') Or (cur_tok.val = 'DEFAULT')
+      Or (cur_tok.kind = TK_EOF);
+  End;
 Begin
-  ParseStatement;
+  If Not IsSeqStop Then
+    ParseStatement;
   While cur_tok.val = ';' Do
   Begin
     LexNext;
-    { Ne pas essayer de parser une instruction apres le dernier ';' }
-    If (cur_tok.val = 'END')   Or (cur_tok.val = 'ELSE')
-    Or (cur_tok.val = 'ELSIF') Or (cur_tok.val = 'UNTIL')
-    Or (cur_tok.val = '|')     Or (cur_tok.kind = TK_EOF) Then
-      Exit;
+    If IsSeqStop Then Exit;
     ParseStatement;
   End;
 End;
 
 { --------------------------------------------------------------------------
-  ParseIfStmt : IF expr THEN seq [ELSIF expr THEN seq]* [ELSE seq] END
-  Strategie de labels :
-    lbl_end   = label de sortie global (apres tout le bloc IF)
-    lbl_next  = label du prochain ELSIF/ELSE (mis a jour a chaque branche)
+  ParseIfStmt BCPL : IF cond DO cmd [ELSE cmd]
+  En BCPL : IF expr DO commande   (pas de THEN, pas de END)
+  La condition est vraie si expression <> 0.
   -------------------------------------------------------------------------- }
 Procedure ParseIfStmt;
-Var lbl_end  : TString;
-    lbl_next : TString;
+Var lbl_else : TString;
+    lbl_end  : TString;
     ti       : Integer;
 Begin
-  lbl_end := NewLabel;
   LexExpect('IF');
-
-  { --- branche principale IF --- }
-  lbl_next := NewLabel;
+  lbl_else := NewLabel;
+  lbl_end  := NewLabel;
   ti := ParseExpr;
-  If Not TypeIsBoolean(ti) Then
-    ErrorMsg('Condition IF doit etre de type BOOLEAN');
   EmitI2('CMP', 'AX', '0');
-  EmitI1('JE',  lbl_next);          { si faux, sauter vers ELSIF/ELSE }
-  LexExpect('THEN');
-  ParseStatementSeq;
-  EmitI1('JMP', lbl_end);            { sortir du bloc IF complet }
-  EmitLabel(lbl_next);
-
-  { --- branches ELSIF --- }
-  While cur_tok.val = 'ELSIF' Do
-  Begin
-    LexNext;
-    lbl_next := NewLabel;
-    ti := ParseExpr;
-    If Not TypeIsBoolean(ti) Then
-      ErrorMsg('Condition ELSIF doit etre de type BOOLEAN');
-    EmitI2('CMP', 'AX', '0');
-    EmitI1('JE',  lbl_next);
-    LexExpect('THEN');
-    ParseStatementSeq;
-    EmitI1('JMP', lbl_end);
-    EmitLabel(lbl_next);
-  End;
-
-  { --- branche ELSE facultative --- }
+  EmitI1('JE',  lbl_else);
+  LexExpect('DO');
+  ParseStatement;
+  EmitI1('JMP', lbl_end);
+  EmitLabel(lbl_else);
   If cur_tok.val = 'ELSE' Then
   Begin
     LexNext;
-    ParseStatementSeq;
+    ParseStatement;
   End;
+  EmitLabel(lbl_end);
+End;
 
-  LexExpect('END');
+{ --------------------------------------------------------------------------
+  ParseUnlessStmt BCPL : UNLESS cond DO cmd [ELSE cmd]  (= IF NOT cond DO ...)
+  -------------------------------------------------------------------------- }
+Procedure ParseUnlessStmt;
+Var lbl_else : TString;
+    lbl_end  : TString;
+    ti       : Integer;
+Begin
+  LexExpect('UNLESS');
+  lbl_else := NewLabel;
+  lbl_end  := NewLabel;
+  ti := ParseExpr;
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JNE', lbl_else);  { sauter si VRAI (= condition UNLESS verifiee) }
+  LexExpect('DO');
+  ParseStatement;
+  EmitI1('JMP', lbl_end);
+  EmitLabel(lbl_else);
+  If cur_tok.val = 'ELSE' Then
+  Begin
+    LexNext;
+    ParseStatement;
+  End;
+  EmitLabel(lbl_end);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTestStmt BCPL : TEST cond THEN cmd ELSE cmd
+  -------------------------------------------------------------------------- }
+Procedure ParseTestStmt;
+Var lbl_else : TString;
+    lbl_end  : TString;
+    ti       : Integer;
+Begin
+  LexExpect('TEST');
+  lbl_else := NewLabel;
+  lbl_end  := NewLabel;
+  ti := ParseExpr;
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JE',  lbl_else);
+  LexExpect('THEN');
+  ParseStatement;
+  EmitI1('JMP', lbl_end);
+  EmitLabel(lbl_else);
+  LexExpect('ELSE');
+  ParseStatement;
   EmitLabel(lbl_end);
 End;
 
@@ -3674,7 +3685,7 @@ End;
   ============================================================ }
 
 { --------------------------------------------------------------------------
-  ParseWhileStmt : WHILE expr DO StatementSeq END
+  ParseWhileStmt BCPL : WHILE cond DO cmd
   -------------------------------------------------------------------------- }
 Procedure ParseWhileStmt;
 Var lbl_top  : TString;
@@ -3687,20 +3698,44 @@ Begin
   PushLoopLabels(lbl_end, lbl_top);
   EmitLabel(lbl_top);
   ti := ParseExpr;
-  If Not TypeIsBoolean(ti) Then
-    ErrorMsg('Condition WHILE doit etre de type BOOLEAN');
   EmitI2('CMP', 'AX', '0');
   EmitI1('JE',  lbl_end);
   LexExpect('DO');
-  ParseStatementSeq;
+  ParseStatement;
   EmitI1('JMP', lbl_top);
   EmitLabel(lbl_end);
-  LexExpect('END');
   PopLoopLabels;
 End;
 
 { --------------------------------------------------------------------------
-  ParseRepeatStmt : REPEAT StatementSeq UNTIL expr
+  ParseUntilStmt BCPL : UNTIL cond DO cmd  (= WHILE NOT cond DO ...)
+  -------------------------------------------------------------------------- }
+Procedure ParseUntilStmt;
+Var lbl_top  : TString;
+    lbl_end  : TString;
+    ti       : Integer;
+Begin
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  LexExpect('UNTIL');
+  PushLoopLabels(lbl_end, lbl_top);
+  EmitLabel(lbl_top);
+  ti := ParseExpr;
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JNE', lbl_end);   { sortir si condition vraie }
+  LexExpect('DO');
+  ParseStatement;
+  EmitI1('JMP', lbl_top);
+  EmitLabel(lbl_end);
+  PopLoopLabels;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRepeatStmt BCPL : REPEAT cmd [REPEATWHILE cond | REPEATUNTIL cond]
+  Formes :
+    REPEAT              : boucle infinie
+    REPEAT cmd REPEATWHILE cond : repeter tant que cond vraie
+    REPEAT cmd REPEATUNTIL cond : repeter jusqu'a ce que cond vraie
   -------------------------------------------------------------------------- }
 Procedure ParseRepeatStmt;
 Var lbl_top : TString;
@@ -3712,20 +3747,32 @@ Begin
   LexExpect('REPEAT');
   PushLoopLabels(lbl_end, lbl_top);
   EmitLabel(lbl_top);
-  ParseStatementSeq;
-  LexExpect('UNTIL');
-  ti := ParseExpr;
-  If Not TypeIsBoolean(ti) Then
-    ErrorMsg('Condition UNTIL doit etre de type BOOLEAN');
-  EmitI2('CMP', 'AX', '0');
-  EmitI1('JE',  lbl_top);   { si encore faux, reboucler }
+  ParseStatement;
+  If cur_tok.val = 'REPEATWHILE' Then
+  Begin
+    LexNext;
+    ti := ParseExpr;
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JNE', lbl_top);   { continuer si vrai }
+  End
+  Else If cur_tok.val = 'REPEATUNTIL' Then
+  Begin
+    LexNext;
+    ti := ParseExpr;
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JE',  lbl_top);   { continuer si faux }
+  End
+  Else
+  Begin
+    { REPEAT seul = boucle infinie }
+    EmitI1('JMP', lbl_top);
+  End;
   EmitLabel(lbl_end);
   PopLoopLabels;
 End;
 
 { --------------------------------------------------------------------------
-  ParseLoopStmt : LOOP StatementSeq END
-  Boucle infinie ; EXIT genere un JMP vers lbl_end.
+  ParseLoopStmt BCPL : LOOP cmd    (boucle infinie - BREAK en sort)
   -------------------------------------------------------------------------- }
 Procedure ParseLoopStmt;
 Var lbl_top : TString;
@@ -3736,10 +3783,9 @@ Begin
   LexExpect('LOOP');
   PushLoopLabels(lbl_end, lbl_top);
   EmitLabel(lbl_top);
-  ParseStatementSeq;
+  ParseStatement;
   EmitI1('JMP', lbl_top);
   EmitLabel(lbl_end);
-  LexExpect('END');
   PopLoopLabels;
 End;
 
@@ -3772,9 +3818,9 @@ Begin
   If si_var = 0 Then
     ErrorMsg('Variable de boucle inconnue : ' + vname)
   Else If sym_table^[si_var].kind <> SK_LOCAL Then
-    ErrorMsg('La variable de boucle doit etre une variable : ' + vname);
+    ErrorMsg('La variable de boucle doit etre une variable locale : ' + vname);
 
-  LexExpect(':=');
+  LexExpect('=');
   { Evaluer debut -> AX, stocker dans v }
   ti := ParseExpr;
   If Not TypeIsOrdinal(ti) Then
@@ -3816,7 +3862,7 @@ Begin
   Else
     EmitI1('JL', lbl_end);     { v < end -> sortir }
 
-  ParseStatementSeq;
+  ParseStatement;
 
   { Incrementer/decrementer v }
   If si_var > 0 Then GenLoad(si_var);
@@ -3832,16 +3878,15 @@ Begin
 
   EmitI1('JMP', lbl_top);
   EmitLabel(lbl_end);
-  LexExpect('END');
   PopLoopLabels;
 End;
 
 { ============================================================
-  TODO 15 - INSTRUCTION CASE
+  TODO 14 - COMMANDE SWITCHON BCPL
   ============================================================ }
 
 { --------------------------------------------------------------------------
-  ParseCaseStmt : CASE expr OF arm [| arm]* [ELSE seq] END
+  ParseSwitchonStmt : SWITCHON expr INTO $( CASE val: cmds ENDCASE ... DEFAULT: $)
 
   CaseLabelList = label [.. label] [, label [.. label]]*
   Labels = constantes entieres ou caracteres.
@@ -3862,7 +3907,7 @@ End;
       JMP lbl_else
   lbl_end:
   -------------------------------------------------------------------------- }
-Procedure ParseCaseStmt;
+Procedure ParseSwitchonStmt;
 Const
   MAX_ARM = 16;
   MAX_LBL = 8;
@@ -3881,24 +3926,23 @@ Var
   ti          : Integer;
   a, l        : Integer;
 Begin
-  LexExpect('CASE');
+  { SWITCHON expr INTO $( CASE v: cmds ENDCASE ... DEFAULT: cmds $) }
+  LexExpect('SWITCHON');
   ti := ParseExpr;
-  If Not TypeIsOrdinal(ti) Then
-    WarnMsg('Expression CASE doit etre de type ordinal');
-  EmitI2('MOV', 'CX', 'AX');      { CX = valeur de controle }
+  EmitI2('MOV', 'CX', 'AX');
   lbl_end  := NewLabel;
   lbl_else := NewLabel;
   lbl_disp := NewLabel;
-  EmitI1('JMP', lbl_disp);        { saut vers le bloc de tests }
-  LexExpect('OF');
+  EmitI1('JMP', lbl_disp);
+  LexExpect('INTO');
+  OpenBlock;
   arm_cnt := 0;
 
-  { Boucle sur les bras }
-  While (cur_tok.val <> 'ELSE') And (cur_tok.val <> 'END')
-     And (cur_tok.kind <> TK_EOF) Do
+  While (cur_tok.val <> 'DEFAULT') And (cur_tok.val <> '$)')
+     And (cur_tok.val <> '}') And (cur_tok.kind <> TK_EOF) Do
   Begin
-    If cur_tok.val = '|' Then LexNext;
-    If (cur_tok.val = 'ELSE') Or (cur_tok.val = 'END') Then Break;
+    If (cur_tok.val = 'DEFAULT') Or (cur_tok.val = '$)') Or
+       (cur_tok.val = '}') Then Break;
     If arm_cnt >= MAX_ARM Then
     Begin
       ErrorMsg('Trop de bras dans CASE (max 16)');
@@ -3908,43 +3952,29 @@ Begin
     arm_lbl[arm_cnt]     := NewLabel;
     arm_lbl_cnt[arm_cnt] := 0;
 
-    { Collecter les labels du bras }
+    { CASE val: cmds ENDCASE }
+    LexExpect('CASE');
     lo := ParseConstExprInt;
     hi := lo;
-    If cur_tok.val = '..' Then Begin LexNext; hi := ParseConstExprInt; End;
     Inc(arm_lbl_cnt[arm_cnt]);
     l := arm_lbl_cnt[arm_cnt];
     lbl_lo[arm_cnt, l]  := lo;
     lbl_hi[arm_cnt, l]  := hi;
-    lbl_rng[arm_cnt, l] := (hi <> lo);
-
-    While cur_tok.val = ',' Do
-    Begin
-      LexNext;
-      lo := ParseConstExprInt;
-      hi := lo;
-      If cur_tok.val = '..' Then Begin LexNext; hi := ParseConstExprInt; End;
-      If arm_lbl_cnt[arm_cnt] < MAX_LBL Then
-      Begin
-        Inc(arm_lbl_cnt[arm_cnt]);
-        l := arm_lbl_cnt[arm_cnt];
-        lbl_lo[arm_cnt, l]  := lo;
-        lbl_hi[arm_cnt, l]  := hi;
-        lbl_rng[arm_cnt, l] := (hi <> lo);
-      End;
-    End;
+    lbl_rng[arm_cnt, l] := False;
 
     LexExpect(':');
-    EmitLabel(arm_lbl[arm_cnt]);   { point d'entree du corps }
+    EmitLabel(arm_lbl[arm_cnt]);
     ParseStatementSeq;
-    EmitI1('JMP', lbl_end);        { sortir du CASE apres le corps }
+    If cur_tok.val = 'ENDCASE' Then LexNext;
+    EmitI1('JMP', lbl_end);
   End;
 
-  { Corps ELSE }
+  { Corps DEFAULT }
   EmitLabel(lbl_else);
-  If cur_tok.val = 'ELSE' Then
+  If cur_tok.val = 'DEFAULT' Then
   Begin
     LexNext;
+    LexExpect(':');
     ParseStatementSeq;
   End;
   EmitI1('JMP', lbl_end);
@@ -3969,13 +3999,13 @@ Begin
         EmitI1('JE',  arm_lbl[a]);
       End;
     End;
-  EmitI1('JMP', lbl_else);         { aucun label ne correspond }
+  EmitI1('JMP', lbl_else);
   EmitLabel(lbl_end);
-  LexExpect('END');
+  CloseBlock;
 End;
 
 { ============================================================
-  TODO 16 - INSTRUCTION WITH (GARDE DE TYPE)
+  TODO 15 - BLOCS BCPL (deja traites via OpenBlock/CloseBlock)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4079,6 +4109,11 @@ End;
   Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, CASE, WITH, affectation / appel.
   Les TODOs suivants (17-19) ajouteront PROCEDURE, RETURN, stdlib, etc.
   -------------------------------------------------------------------------- }
+{ --------------------------------------------------------------------------
+  ParseStatement BCPL (TODO 11-17).
+  Commandes BCPL : IF UNLESS TEST WHILE UNTIL FOR LOOP REPEAT
+    SWITCHON BREAK LOOP RETURN RESULTIS FINISH $( bloc $) ou affectation.
+  -------------------------------------------------------------------------- }
 Procedure ParseStatement;
 Var brk      : TString;
     bname    : TString;
@@ -4088,66 +4123,89 @@ Var brk      : TString;
 Begin
   If cur_tok.val = 'IF' Then
     ParseIfStmt
+  Else If cur_tok.val = 'UNLESS' Then
+    ParseUnlessStmt
+  Else If cur_tok.val = 'TEST' Then
+    ParseTestStmt
   Else If cur_tok.val = 'WHILE' Then
     ParseWhileStmt
+  Else If cur_tok.val = 'UNTIL' Then
+    ParseUntilStmt
   Else If cur_tok.val = 'REPEAT' Then
     ParseRepeatStmt
   Else If cur_tok.val = 'LOOP' Then
     ParseLoopStmt
   Else If cur_tok.val = 'FOR' Then
     ParseForStmt
-  Else If cur_tok.val = 'CASE' Then
-    ParseCaseStmt
-  Else If cur_tok.val = 'WITH' Then
-    ParseWithStmt
-  Else If cur_tok.val = 'EXIT' Then
+  Else If cur_tok.val = 'SWITCHON' Then
+    ParseSwitchonStmt
+  { Bloc : $( cmds $) }
+  Else If (cur_tok.val = '$(') Or (cur_tok.val = '{') Then
+  Begin
+    OpenBlock;
+    ParseStatementSeq;
+    CloseBlock;
+  End
+  { BREAK : sortir de la boucle courante (LOOP/WHILE/FOR) }
+  Else If cur_tok.val = 'BREAK' Then
   Begin
     LexNext;
     brk := TopBreakLabel;
     If brk = '' Then
-      ErrorMsg('EXIT en dehors d''une boucle LOOP')
+      ErrorMsg('BREAK en dehors d''une boucle')
     Else
       EmitI1('JMP', brk);
   End
-  Else If cur_tok.val = 'RETURN' Then
+  { LOOP : passer a l'iteration suivante (= LOOP continue) }
+  { En BCPL LOOP = continuer l'iteration = JMP vers le debut }
+  { Pas de LexNext ici, c'est dans le dispatch du FOR/WHILE }
+  { RETURN : retour de routine, resultat 0 }
+  Else If (cur_tok.val = 'RETURN') Or (cur_tok.val = 'FINISH') Then
+  Begin
+    If cur_tok.val = 'FINISH' Then
+    Begin
+      LexNext;
+      EmitI2('MOV', 'AX', '4C00h');
+      EmitI0('INT  21h');
+    End
+    Else
+    Begin
+      LexNext;
+      EmitI2('XOR', 'AX', 'AX');
+      If cur_ret_lbl <> '' Then
+        EmitI1('JMP', cur_ret_lbl)
+      Else
+        EmitI0('RET');
+    End;
+  End
+  { RESULTIS expr : retour de valeur depuis VALOF }
+  Else If cur_tok.val = 'RESULTIS' Then
   Begin
     LexNext;
-    { Si la procedure retourne une valeur, evaluer l'expression -> AX }
-    If (cur_proc_idx > 0) And
-       (proc_table^[cur_proc_idx].ret_type_idx > 0) And
-       (cur_tok.kind <> TK_EOF) And
-       (cur_tok.val <> ';') And
-       (cur_tok.val <> 'END') Then
-      ParseExpr;
-    If cur_ret_lbl <> '' Then
-      EmitI1('JMP', cur_ret_lbl)
+    ParseExpr;
+    If valof_lbl <> '' Then
+      EmitI1('JMP', valof_lbl)
     Else
-      EmitI0('RET');
+      ErrorMsg('RESULTIS en dehors d''un VALOF');
   End
+  { LET : declaration locale dans un bloc }
+  Else If cur_tok.val = 'LET' Then
+    ParseLetDecl
   Else If cur_tok.kind = TK_IDENT Then
   Begin
-    If IsStdModuleIdent(cur_tok.val) Then
-    Begin
-      LexPeek;
-      If peek_tok.val = '.' Then
-        ParseStdModuleCall
-      Else
-        ParseAssignment;         { fallback si Out/In utilise comme ident simple }
-    End
-    Else If IsBuiltinProc(cur_tok.val) Then
+    If IsBuiltinProc(cur_tok.val) Then
     Begin
       bname := cur_tok.val;
-      LexNext;                { consommer le nom de la procedure integree }
+      LexNext;
       ParseBuiltinProc(bname);
     End
     Else
     Begin
-      { Distinguer appel de procedure utilisateur (SK_PROC) et affectation (:=) }
       call_si := SymFind(cur_tok.val);
       If (call_si > 0) And (sym_table^[call_si].kind = SK_PROC) Then
       Begin
         call_pi := sym_table^[call_si].proc_idx;
-        LexNext;              { consommer l'identificateur }
+        LexNext;
         call_na := 0;
         If cur_tok.val = '(' Then
           call_na := ParseProcCallArgs(call_pi);
@@ -4159,7 +4217,6 @@ Begin
         ParseAssignment;
     End;
   End;
-  { Builtins, stdlib -> TODOs 19-20 (dispatche ci-dessus) }
 End;
 
 { ============================================================
@@ -4227,11 +4284,12 @@ End;
   -------------------------------------------------------------------------- }
 Function IsBuiltinProc(Const name : TString) : Boolean;
 Begin
+  { Procedures BCPL integrees }
   IsBuiltinProc :=
-    (name = 'INC')     Or (name = 'DEC')     Or
-    (name = 'INCL')    Or (name = 'EXCL')    Or
-    (name = 'NEW')     Or (name = 'DISPOSE') Or
-    (name = 'HALT')    Or (name = 'ASSERT');
+    (name = 'WRITES')    Or (name = 'WRITEF')  Or
+    (name = 'WRITEN')    Or (name = 'WRITECH') Or
+    (name = 'NEWLINE')   Or (name = 'STOP')    Or
+    (name = 'HALT');
 End;
 
 { --------------------------------------------------------------------------
@@ -4239,22 +4297,16 @@ End;
   -------------------------------------------------------------------------- }
 Function IsBuiltinFunc(Const name : TString) : Boolean;
 Begin
+  { Fonctions BCPL integrees }
   IsBuiltinFunc :=
-    (name = 'ABS')      Or (name = 'ODD')      Or
-    (name = 'CAP')      Or (name = 'ORD')      Or
-    (name = 'CHR')      Or (name = 'LEN')      Or
-    (name = 'HIGH')     Or
-    (name = 'SHORT')    Or (name = 'LONG')     Or
-    (name = 'ENTIER')   Or (name = 'SIZE')     Or
-    (name = 'TSIZE')    Or
-    (name = 'MIN')      Or (name = 'MAX')      Or
-    (name = 'FLOAT')    Or (name = 'TRUNC')    Or
-    (name = 'VAL')      Or (name = 'CARDINAL');
+    (name = 'ABS')    Or (name = 'READCH')  Or
+    (name = 'READN')  Or (name = 'READS')   Or
+    (name = 'GETBYTE') Or (name = 'PUTBYTE');
 End;
 
 { --------------------------------------------------------------------------
-  ParseBuiltinProc : code pour INC DEC INCL EXCL NEW DISPOSE HALT ASSERT.
-  Le nom de la procedure a deja ete consomme par l'appelant.
+  ParseBuiltinProc BCPL : WRITES WRITEF WRITEN WRITECH NEWLINE STOP HALT.
+  Le nom a deja ete consomme par l'appelant.
   -------------------------------------------------------------------------- }
 Procedure ParseBuiltinProc(Const fname : TString);
 Var ti1       : Integer;
@@ -4264,9 +4316,7 @@ Var ti1       : Integer;
     v_str     : TString;
     exit_code : Integer;
 Begin
-  LexExpect('(');
-
-  If (fname = 'INC') Or (fname = 'DEC') Then
+  If (fname = 'WRITES') Then
   Begin
     { INC/DEC(v [, n]) : ajouter/soustraire n (defaut 1) a v }
     v_str := cur_tok.val;
@@ -4417,10 +4467,9 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseBuiltinFunc : code pour ABS ODD CAP ORD CHR LEN HIGH SHORT LONG
-    SIZE TSIZE MIN MAX FLOAT TRUNC VAL CARDINAL.
+  ParseBuiltinFunc BCPL : ABS READCH READN READS GETBYTE PUTBYTE.
   Le nom de la fonction a deja ete consomme par l'appelant.
-  Resultat dans AX ; retourne le type_idx.
+  Resultat dans AX.
   -------------------------------------------------------------------------- }
 Function ParseBuiltinFunc(Const fname : TString) : Integer;
 Var ti1      : Integer;
@@ -4436,194 +4485,75 @@ Begin
 
   If fname = 'ABS' Then
   Begin
-    { ABS(x) : valeur absolue de x }
     lbl_skip := NewLabel;
     ti1      := ParseExpr;
     EmitI2('OR',  'AX', 'AX');
     EmitI1('JNS', lbl_skip);
     EmitI1('NEG', 'AX');
     EmitLabel(lbl_skip);
-    ti_res := ti1;
   End
 
-  Else If fname = 'ODD' Then
+  Else If fname = 'READCH' Then
   Begin
-    { ODD(x) : vrai si x est impair }
+    { READCH() : lire un caractere -> AX }
+    LexExpect(')');
+    EmitI1('CALL', '_BRT_READCH');
+    ParseBuiltinFunc := TYP_WORD;
+    Exit;
+  End
+
+  Else If fname = 'READN' Then
+  Begin
+    { READN() : lire un entier -> AX }
+    LexExpect(')');
+    EmitI1('CALL', '_BRT_READN');
+    ParseBuiltinFunc := TYP_WORD;
+    Exit;
+  End
+
+  Else If fname = 'READS' Then
+  Begin
+    { READS(buf) : lire une chaine BCPL dans buf, retourner longueur }
     ti1 := ParseExpr;
-    EmitI2('AND', 'AX', '1');
-    ti_res := TYP_WORD;
+    EmitI2('MOV', 'BX', 'AX');
+    EmitI1('CALL', '_BRT_READS');
   End
 
-  Else If fname = 'CAP' Then
+  Else If fname = 'GETBYTE' Then
   Begin
-    { CAP(c) : majuscule du caractere c }
+    { GETBYTE(s, i) : octet i de la chaine s }
     ti1 := ParseExpr;
-    EmitI2('AND', 'AX', '0DFh');
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'ORD' Then
-  Begin
-    { ORD(x) : valeur ordinale de x (CHAR/BOOLEAN -> INTEGER) }
-    ti1 := ParseExpr;
-    EmitI2('AND', 'AX', '0FFh');
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'CHR' Then
-  Begin
-    { CHR(n) : convertir un entier en CHAR }
-    ti1 := ParseExpr;
-    EmitI2('AND', 'AX', '0FFh');
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'LEN' Then
-  Begin
-    { LEN(a [, d]) : nombre d'elements du tableau a (dimension d ignoree) }
-    v_str := cur_tok.val;
-    si1   := SymFind(v_str);
-    LexExpectKind(TK_IDENT);
-    If cur_tok.val = ',' Then
-    Begin
-      LexNext;
-      ti1 := ParseExpr;            { dimension optionnelle ignoree }
-    End;
-    If (si1 > 0) And TypeIsArray(sym_table^[si1].type_idx) Then
-      EmitI2('MOV', 'AX',
-             IntToStr(type_table^[sym_table^[si1].type_idx].arr_len))
-    Else
-    Begin
-      ErrorMsg('LEN : argument doit etre un tableau');
-      EmitI2('MOV', 'AX', '0');
-    End;
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'HIGH' Then
-  Begin
-    { HIGH(a) : index maximal du tableau a (arr_len - 1) }
-    v_str := cur_tok.val;
-    si1   := SymFind(v_str);
-    LexExpectKind(TK_IDENT);
-    If (si1 > 0) And TypeIsArray(sym_table^[si1].type_idx) Then
-      EmitI2('MOV', 'AX',
-             IntToStr(type_table^[sym_table^[si1].type_idx].arr_len - 1))
-    Else
-    Begin
-      ErrorMsg('HIGH : argument doit etre un tableau');
-      EmitI2('MOV', 'AX', '0');
-    End;
-    ti_res := TYP_WORD;
-  End
-
-  Else If (fname = 'FLOAT') Or (fname = 'REAL') Then
-  Begin
-    { FLOAT(i) : convertir entier en reel (stub : resultat entier dans AX) }
-    ti1    := ParseExpr;
-    EmitComment(' FLOAT : conversion entier->reel (stub sans FPU)');
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'TRUNC' Then
-  Begin
-    { TRUNC(r) : convertir reel en entier par troncature (stub) }
-    ti1    := ParseExpr;
-    EmitComment(' TRUNC : conversion reel->entier (stub sans FPU)');
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'TSIZE' Then
-  Begin
-    { TSIZE(T) : synonyme de SIZE en Modula-2 }
-    t_name  := cur_tok.val;
-    si_type := SymFind(t_name);
-    LexExpectKind(TK_IDENT);
-    { Ignorer les arguments supplementaires optionnels }
-    While cur_tok.val = ',' Do
-    Begin
-      LexNext;
-      ti1 := ParseExpr;
-    End;
-    If (si_type > 0) And (sym_table^[si_type].kind = SK_MANIFEST) Then
-      EmitI2('MOV', 'AX', IntToStr(TypeByteSize(sym_table^[si_type].type_idx)))
-    Else
-    Begin
-      ErrorMsg('TSIZE : type inconnu : ' + t_name);
-      EmitI2('MOV', 'AX', '0');
-    End;
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'VAL' Then
-  Begin
-    { VAL(T, x) : convertir x vers le type T (coercition) }
-    t_name  := cur_tok.val;
-    si_type := SymFind(t_name);
-    LexExpectKind(TK_IDENT);
     LexExpect(',');
-    ti1    := ParseExpr;             { x -> AX }
-    { La valeur reste dans AX, on assure juste la taille }
-    If (si_type > 0) And (sym_table^[si_type].kind = SK_MANIFEST) Then
-      ti_res := sym_table^[si_type].type_idx
-    Else
-      ti_res := TYP_WORD;
-    EmitComment(' VAL : coercition de type');
+    EmitI1('PUSH', 'AX');
+    ParseExpr;
+    EmitI0('POP  BX');
+    EmitI2('ADD', 'BX', 'AX');
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('MOV', 'AL', '[BX]');
   End
 
-  Else If fname = 'CARDINAL' Then
+  Else If fname = 'PUTBYTE' Then
   Begin
-    { CARDINAL(x) : etendre sur 16 bits non signes }
-    ti1    := ParseExpr;             { x -> AX }
-    EmitI2('AND', 'AX', '0FFFFh');  { masque 16 bits }
-    ti_res := TYP_WORD;
-  End
-
-  Else If (fname = 'SHORT') Or (fname = 'LONG') Or (fname = 'ENTIER') Then
-  Begin
-    { SHORT/LONG/ENTIER : conversions numeriques, resultat dans AX }
-    ti1    := ParseExpr;
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'SIZE' Then
-  Begin
-    { SIZE(T) : taille en octets du type T }
-    t_name  := cur_tok.val;
-    si_type := SymFind(t_name);
-    LexExpectKind(TK_IDENT);
-    If (si_type > 0) And (sym_table^[si_type].kind = SK_MANIFEST) Then
-      EmitI2('MOV', 'AX', IntToStr(TypeByteSize(sym_table^[si_type].type_idx)))
-    Else
-    Begin
-      ErrorMsg('SIZE : type inconnu : ' + t_name);
-      EmitI2('MOV', 'AX', '0');
-    End;
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'MIN' Then
-  Begin
-    { MIN(T) : valeur minimale du type T (stub : 8000h pour INTEGER) }
-    t_name := cur_tok.val;
-    LexExpectKind(TK_IDENT);
-    EmitI2('MOV', 'AX', '8000h');
-    ti_res := TYP_WORD;
-  End
-
-  Else If fname = 'MAX' Then
-  Begin
-    { MAX(T) : valeur maximale du type T (stub : 7FFFh pour INTEGER) }
-    t_name := cur_tok.val;
-    LexExpectKind(TK_IDENT);
-    EmitI2('MOV', 'AX', '7FFFh');
-    ti_res := TYP_WORD;
+    { PUTBYTE(s, i, c) : stocker l'octet c a la position i de s }
+    ti1 := ParseExpr;
+    LexExpect(',');
+    EmitI1('PUSH', 'AX');
+    ParseExpr;
+    LexExpect(',');
+    EmitI1('PUSH', 'AX');
+    ParseExpr;
+    EmitI2('MOV', 'CL', 'AL');   { c -> CL }
+    EmitI0('POP  AX');            { i }
+    EmitI0('POP  BX');            { base }
+    EmitI2('ADD', 'BX', 'AX');
+    EmitI2('MOV', '[BX]', 'CL');
+    EmitI2('XOR', 'AX', 'AX');
   End
 
   Else
   Begin
-    ErrorMsg('Fonction integree inconnue : ' + fname);
-    EmitI2('MOV', 'AX', '0');
+    ErrorMsg('Fonction BCPL integree inconnue : ' + fname);
+    EmitI2('XOR', 'AX', 'AX');
   End;
 
   LexExpect(')');
@@ -4656,17 +4586,227 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  GenOutInRuntime : emettre les procedures runtime Out/In dans tmp_file.
-  Appelee une fois depuis le programme principal, avant MergeTmpToMain.
+  GenBcplRuntime : emettre le runtime BCPL (_BRT_xxx) dans tmp_file (TODO 20).
+  _BRT_WRITES : SI = chaine BCPL (octet 0 = longueur)
+  _BRT_WRITEN : AX = entier signe -> decimal sur stdout
+  _BRT_WRITEF : simple formateur %S %N %C
+  _BRT_NEWLINE : CR LF
+  _BRT_READCH : AL = caractere lu
+  _BRT_READN  : AX = entier lu
+  _BRT_READS  : BX = ptr tampon BCPL ; retourne longueur dans AX
+  _BRT_STOP   : exit AX
   -------------------------------------------------------------------------- }
-Procedure GenOutInRuntime;
+Procedure GenBcplRuntime;
 Begin
   SwitchToTmp;
   EmitSep;
-  EmitComment(' ====== RUNTIME InOut / Terminal - MODII86 TODO 20 ====== ');
+  EmitComment(' ====== RUNTIME BCPL (BRT) - BCPL86 TODO 20 ====== ');
   EmitBlank;
 
-  { _ORT_WRITESTR : SI = pointeur vers chaine null-terminee, imprime char par char }
+  { _BRT_WRITES : SI pointe vers chaine BCPL (octet 0 = longueur) }
+  EmitLabel('_BRT_WRITES');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI2('MOV',  'AL', '[SI]');   { AL = longueur }
+  EmitI2('MOV',  'CX', 'AX');    { CX = compteur }
+  EmitI1('INC',  'SI');           { SI -> 1er caractere }
+  EmitLabel('_BRT_WS_LOOP');
+  EmitI2('OR',   'CX', 'CX');
+  EmitI1('JZ',   '_BRT_WS_END');
+  EmitI2('MOV',  'DL', '[SI]');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI1('INC',  'SI');
+  EmitI1('DEC',  'CX');
+  EmitI1('JMP',  '_BRT_WS_LOOP');
+  EmitLabel('_BRT_WS_END');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI1('POP',  'AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_NEWLINE : emettre CR LF }
+  EmitLabel('_BRT_NEWLINE');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'DX');
+  EmitI2('MOV',  'DL', '0Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Ah');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_WRITEN : AX = entier signe 16 bits -> affichage decimal }
+  EmitLabel('_BRT_WRITEN');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'SI');
+  EmitI2('XOR',  'SI', 'SI');
+  EmitI2('OR',   'AX', 'AX');
+  EmitI1('JNS',  '_BRT_WN_POS');
+  EmitI1('NEG',  'AX');
+  EmitI1('PUSH', 'AX');
+  EmitI2('MOV',  'DL', '2Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI0('POP  AX');
+  EmitLabel('_BRT_WN_POS');
+  EmitI2('MOV',  'BX', '10');
+  EmitLabel('_BRT_WN_LOOP');
+  EmitI2('XOR',  'DX', 'DX');
+  EmitI1('DIV',  'BX');
+  EmitI0('PUSH DX');
+  EmitI1('INC',  'SI');
+  EmitI2('OR',   'AX', 'AX');
+  EmitI1('JNZ',  '_BRT_WN_LOOP');
+  EmitLabel('_BRT_WN_PRINT');
+  EmitI0('POP  DX');
+  EmitI2('ADD',  'DL', '30h');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI1('DEC',  'SI');
+  EmitI1('JNZ',  '_BRT_WN_PRINT');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_READCH : lire un caractere dans AL (avec echo) }
+  EmitLabel('_BRT_READCH');
+  EmitI2('MOV',  'AH', '1');
+  EmitI0('INT  21h');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_READN : lire un entier signe depuis stdin -> AX }
+  EmitLabel('_BRT_READN');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'SI');
+  EmitI2('MOV',  'Byte Ptr [_BV_INBUF]', '126');
+  EmitI2('LEA',  'DX', '[_BV_INBUF]');
+  EmitI2('MOV',  'AH', '0Ah');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Ah');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('LEA',  'SI', '[_BV_INBUF+2]');
+  EmitI2('XOR',  'BX', 'BX');
+  EmitI2('XOR',  'DX', 'DX');
+  EmitI2('CMP',  'Byte Ptr [SI]', '2Dh');
+  EmitI1('JNE',  '_BRT_RN_LOOP');
+  EmitI2('MOV',  'DX', '1');
+  EmitI1('INC',  'SI');
+  EmitLabel('_BRT_RN_LOOP');
+  EmitI2('MOV',  'AL', '[SI]');
+  EmitI2('CMP',  'AL', '30h');
+  EmitI1('JB',   '_BRT_RN_DONE');
+  EmitI2('CMP',  'AL', '39h');
+  EmitI1('JA',   '_BRT_RN_DONE');
+  EmitI2('SUB',  'AL', '30h');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI0('PUSH AX');
+  EmitI2('MOV',  'AX', 'BX');
+  EmitI2('MOV',  'CX', '10');
+  EmitI0('MUL  CX');
+  EmitI0('POP  CX');
+  EmitI2('ADD',  'AX', 'CX');
+  EmitI2('MOV',  'BX', 'AX');
+  EmitI1('INC',  'SI');
+  EmitI1('JMP',  '_BRT_RN_LOOP');
+  EmitLabel('_BRT_RN_DONE');
+  EmitI2('MOV',  'AX', 'BX');
+  EmitI2('OR',   'DX', 'DX');
+  EmitI1('JZ',   '_BRT_RN_OK');
+  EmitI1('NEG',  'AX');
+  EmitLabel('_BRT_RN_OK');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_READS : lire une ligne dans tampon BCPL pointe par BX }
+  { Format BCPL : octet 0 = longueur, octets 1..n = chars }
+  EmitLabel('_BRT_READS');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI2('MOV',  'DI', 'BX');
+  EmitI2('MOV',  'Byte Ptr [_BV_INBUF]', '126');
+  EmitI2('LEA',  'DX', '[_BV_INBUF]');
+  EmitI2('MOV',  'AH', '0Ah');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Ah');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('LEA',  'SI', '[_BV_INBUF+2]');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI2('MOV',  'AL', '[_BV_INBUF+1]');
+  EmitI2('MOV',  'CX', 'AX');
+  { Stocker longueur a l'octet 0 du tampon BCPL }
+  EmitI2('MOV',  '[DI]', 'AL');
+  EmitI1('INC',  'DI');
+  EmitLabel('_BRT_RS_COPY');
+  EmitI2('OR',   'CX', 'CX');
+  EmitI1('JZ',   '_BRT_RS_DONE');
+  EmitI2('MOV',  'AL', '[SI]');
+  EmitI2('MOV',  '[DI]', 'AL');
+  EmitI1('INC',  'SI');
+  EmitI1('INC',  'DI');
+  EmitI1('DEC',  'CX');
+  EmitI1('JMP',  '_BRT_RS_COPY');
+  EmitLabel('_BRT_RS_DONE');
+  EmitI1('POP',  'DI');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_WRITEF : formateur simple BCPL  %S %N %C %I }
+  { Convention : SI = format, CX = nb args, stack = args (deja empiles) }
+  EmitLabel('_BRT_WRITEF');
+  EmitComment(' _BRT_WRITEF : formateur stub - imprime le format brut en TODO 19');
+  EmitI1('PUSH', 'BX');
+  EmitI2('MOV',  'AX', 'SI');
+  EmitI2('MOV',  'SI', 'AX');
+  EmitI1('CALL', '_BRT_WRITES');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _BRT_STOP : exit avec code AX }
+  EmitLabel('_BRT_STOP');
+  EmitI2('MOV',  'AH', '4Ch');
+  EmitI0('INT  21h');
+  EmitBlank;
+
+  { _ORT_WRITESTR : alias pour compatibilite }
   EmitLabel('_ORT_WRITESTR');
   EmitI1('PUSH', 'AX');
   EmitI1('PUSH', 'DX');
@@ -5516,7 +5656,146 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - INTEGRATION FINALE : ParseModule
+  TODO 16 - DECLARATIONS LET BCPL  (ParseLetDecl)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseLetDecl : LET nom [(params)] BE cmd  ou  LET nom [(params)] = expr
+  Et aussi : LET v = VEC n  (vecteur local)
+  Formes multiples : LET f ... AND g ...
+  -------------------------------------------------------------------------- }
+Procedure ParseLetDecl;
+Var pname     : TString;
+    is_func   : Boolean;
+    pi        : Integer;
+    ret_ti    : Integer;
+    local_off : Integer;
+    save_ret  : TString;
+    save_pidx : Integer;
+    si_var    : Integer;
+    is_vec    : Boolean;
+    vec_size  : Integer;
+    si_n      : Integer;
+Begin
+  LexExpect('LET');
+  pname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+
+  { Forme : LET v = expr  ou  LET v = VEC n  (variable locale) }
+  If cur_tok.val = '=' Then
+  Begin
+    LexNext;
+    If cur_tok.val = 'VEC' Then
+    Begin
+      { LET v = VEC n : allouer n+1 mots sur la pile, stocker adresse dans v }
+      LexNext;
+      vec_size := ParseConstExprInt;
+      local_off := cur_local_off;
+      Inc(cur_local_off, (vec_size + 1) * 2);
+      si_var := SymEnter(pname, SK_VEC, SC_LOCAL, TYP_WORD);
+      If si_var > 0 Then
+      Begin
+        sym_table^[si_var].bp_offset  := -(local_off + (vec_size + 1) * 2);
+        sym_table^[si_var].const_ival := vec_size;
+        sym_table^[si_var].asm_label  := '';
+        EmitI2('SUB', 'SP', IntToStr((vec_size + 1) * 2));
+        EmitI2('LEA', 'AX', '[BP-' + IntToStr(local_off + (vec_size + 1) * 2) + ']');
+        GenStore(si_var);
+      End;
+    End
+    Else
+    Begin
+      { LET v = expr : variable locale scalaire }
+      Inc(cur_local_off, 2);
+      si_var := SymEnter(pname, SK_LOCAL, SC_LOCAL, TYP_WORD);
+      If si_var > 0 Then
+        sym_table^[si_var].bp_offset := -cur_local_off;
+      ParseExpr;
+      If si_var > 0 Then GenStore(si_var);
+    End;
+    { AND : declarations multiples liees }
+    While cur_tok.val = 'AND' Do
+    Begin
+      LexNext;
+      ParseLetDecl;
+    End;
+    Exit;
+  End;
+
+  { Forme routine : LET nom [(params)] BE cmd  ou  = expr }
+  is_func := False;
+  pi := ProcEnter(pname, 0, True);
+  If pi = 0 Then Exit;
+
+  ScopeEnter;
+
+  { Parametres formels BCPL }
+  If cur_tok.val = '(' Then
+  Begin
+    LexNext;
+    While cur_tok.val <> ')' Do
+    Begin
+      si_n := ProcAddParam(pi, cur_tok.val, TYP_WORD, False);
+      LexExpectKind(TK_IDENT);
+      If cur_tok.val = ',' Then LexNext
+      Else If cur_tok.val <> ')' Then Break;
+    End;
+    LexExpect(')');
+    { Ajuster offsets BP : les args sont en [BP+4], [BP+6], ... }
+    Var k, n_par, ofs_fix, si_fix : Integer;
+    n_par := proc_table^[pi].param_count;
+    For k := 1 To n_par Do
+    Begin
+      ofs_fix := 4 + (k - 1) * 2;
+      proc_table^[pi].params[k].bp_offset := ofs_fix;
+      si_fix := SymFind(proc_table^[pi].params[k].name);
+      If si_fix > 0 Then
+        sym_table^[si_fix].bp_offset := ofs_fix;
+    End;
+  End;
+
+  { Corps : BE commande  ou  = expression (fonction VALOF implicite) }
+  save_pidx    := cur_proc_idx;
+  cur_proc_idx := pi;
+  save_ret     := cur_ret_lbl;
+  cur_ret_lbl  := BP_PFX + AsmIdent(pname) + '_RET';
+
+  SwitchToTmp;
+  GenProcPrologue(pi);
+
+  If cur_tok.val = 'BE' Then
+  Begin
+    LexNext;
+    ParseStatement;
+  End
+  Else If cur_tok.val = '=' Then
+  Begin
+    LexNext;
+    ParseExpr;
+    { resultat dans AX : c'est le retour de valeur }
+  End
+  Else
+    ErrorMsg('BE ou = attendu apres LET ' + pname);
+
+  { Epilogue }
+  EmitLabel(cur_ret_lbl);
+  GenProcEpilogue(pi);
+  SwitchToMain;
+
+  cur_proc_idx := save_pidx;
+  cur_ret_lbl  := save_ret;
+  ScopeLeave;
+
+  { AND : routines mutuellement recursives }
+  While cur_tok.val = 'AND' Do
+  Begin
+    LexNext;
+    ParseLetDecl;
+  End;
+End;
+
+{ ============================================================
+  TODO 25 - INTEGRATION FINALE : ParseProgram + ParseModule
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -5554,109 +5833,85 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseModule : parser un module Modula-2 complet.
-  Syntaxe : DEFINITION|IMPLEMENTATION MODULE name ;
-            IMPORT|FROM..IMPORT EXPORT CONST TYPE VAR (Proc)* BEGIN corps END name .
-  Gere : en-tetes ASM, emissions DATA/CODE, runtime, corps principal.
+  ParseProgram BCPL : parser le source BCPL complet (TODO 25).
+  Structure BCPL (pas de MODULE) :
+    [GET "fichier"] [SECTION "nom"]
+    [MANIFEST $( ... $)] [GLOBAL $( ... $)] [STATIC $( ... $)]
+    LET nom(params) BE commande [AND nom2 ...]
+    ...
+  Le point d'entree est G!1 (la routine affectee au slot 1 dans GLOBAL).
   -------------------------------------------------------------------------- }
-Procedure ParseModule;
-Var dummy_off : Integer;
-    mname_end : TString;
-    is_def    : Boolean;    { DEFINITION MODULE }
-    is_impl   : Boolean;    { IMPLEMENTATION MODULE }
+Procedure ParseProgram;
 Begin
-  is_def  := False;
-  is_impl := False;
+  module_name := ChangeExtension(src_fname, '');
+  If module_name = '' Then module_name := 'BCPROG';
 
-  { --- En-tete Modula-2 --- }
-  If cur_tok.val = 'DEFINITION' Then
-  Begin
-    is_def := True;
-    LexNext;                { consommer DEFINITION }
-  End
-  Else If cur_tok.val = 'IMPLEMENTATION' Then
-  Begin
-    is_impl := True;
-    LexNext;                { consommer IMPLEMENTATION }
-  End;
-  LexExpect('MODULE');
-  module_name := cur_tok.val;
-  LexExpectKind(TK_IDENT);
-  LexExpect(';');
-
-  { --- Prologue ASM : commentaire + modele memoire + pile --- }
+  { --- Prologue ASM --- }
   GenFileHeader;
   GenModelDirectives;
   GenStackSegment;
-
-  { --- Segment DATA : variables systeme puis declarations utilisateur --- }
   GenDataHeader;
   GenSystemVarsData;
-
-  { --- Clauses IMPORT / FROM ... IMPORT (repetees) --- }
-  While (cur_tok.val = 'IMPORT') Or (cur_tok.val = 'FROM') Do
-    ParseImportSection;
-
-  { --- Clause EXPORT (DEFINITION MODULE) --- }
-  If cur_tok.val = 'EXPORT' Then
-    ParseExportSection;
-
-  { --- Sections CONST / TYPE (pas de donnees en DATA) --- }
-  While cur_tok.val = 'CONST' Do ParseManifestSection;
-  While cur_tok.val = 'TYPE'  Do ParseTypeSection;
-
-  { --- Section VAR globale : emise en DATA --- }
-  dummy_off := 0;
-  If cur_tok.val = 'VAR' Then
-    ParseVarSection(False, dummy_off);
-
-  { --- Fermer DATA, ouvrir CODE --- }
   GenDataFooter;
   GenCodeHeader;
   GenStartEntry;
 
-  { --- Routines runtime I/O dans tmp_file --- }
-  GenOutInRuntime;
+  { --- Runtime BCPL dans tmp_file --- }
+  GenBcplRuntime;
 
-  { --- Ouvrir le fichier de chaines litterales differees --- }
+  { --- Fichier de chaines litterales differees --- }
   str_fname := ChangeExtension(src_fname, '.str');
   Assign(str_file, str_fname);
   Rewrite(str_file);
 
-  { --- Declarations de procedures (corps -> tmp_file) --- }
-  While cur_tok.val = 'PROCEDURE' Do
-    ParseProcDecl;
-
-  { --- Corps du module : BEGIN StatementSeq --- }
-  LexExpect('BEGIN');
-  ParseStatementSeq;
-
-  { --- Epilogue du point d'entree --- }
-  GenStartExit;
-
-  { --- Fusionner les procedures A L'INTERIEUR du segment CODE --- }
-  MergeTmpToMain;
-
-  { --- Fermer CODE --- }
-  GenCodeFooter;
-
-  { --- Injecter les chaines litterales dans un _DATA rouvert --- }
-  FlushStringLiterals;
-
-  { --- END START --- }
-  GenEndDirective;
-
-  { --- Verifier le nom de fin : END name . --- }
-  LexExpect('END');
-  mname_end := cur_tok.val;
-  If cur_tok.kind = TK_IDENT Then
+  { --- Sections top-level BCPL repetes --- }
+  While cur_tok.kind <> TK_EOF Do
   Begin
-    If mname_end <> module_name Then
-      ErrorMsg('Fin de module incorrecte : attendu ' + module_name
-               + ', lu ' + mname_end);
-    LexNext;
+    If cur_tok.val = 'GET' Then
+    Begin
+      LexNext;
+      { GET "fichier" : ignorer pour l'instant (TODO 21) }
+      If cur_tok.kind = TK_STRING Then LexNext;
+    End
+    Else If cur_tok.val = 'SECTION' Then
+    Begin
+      LexNext;
+      If cur_tok.kind = TK_STRING Then
+      Begin
+        EmitComment(' SECTION ' + cur_tok.val);
+        LexNext;
+      End;
+    End
+    Else If cur_tok.val = 'MANIFEST' Then
+      ParseManifestSection
+    Else If cur_tok.val = 'GLOBAL' Then
+      ParseGlobalSection
+    Else If cur_tok.val = 'STATIC' Then
+      ParseStaticSection
+    Else If cur_tok.val = 'LET' Then
+      ParseLetDecl
+    Else
+    Begin
+      { instruction corps de module (rare en BCPL) }
+      ErrorMsg('Directive BCPL inattendue en niveau module : ' + cur_tok.val);
+      LexNext;
+    End;
   End;
-  LexExpect('.');
+
+  { --- Fin du corps du module (inline dans START) --- }
+  GenStartExit;
+  MergeTmpToMain;
+  GenCodeFooter;
+  FlushStringLiterals;
+  GenEndDirective;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseModule : alias pour ParseProgram (compatibilite interne).
+  -------------------------------------------------------------------------- }
+Procedure ParseModule;
+Begin
+  ParseProgram;
 End;
 
 { ============================================================
