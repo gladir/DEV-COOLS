@@ -1,0 +1,20 @@
+MODULE Arith;
+IMPORT Out;
+
+VAR
+  a, b, c : INTEGER;
+
+BEGIN
+  a := 10;
+  b := 3;
+  c := a + b;
+  Out.String("10 + 3 = "); Out.Int(c, 0); Out.Ln;
+  c := a - b;
+  Out.String("10 - 3 = "); Out.Int(c, 0); Out.Ln;
+  c := a * b;
+  Out.String("10 * 3 = "); Out.Int(c, 0); Out.Ln;
+  c := a DIV b;
+  Out.String("10 DIV 3 = "); Out.Int(c, 0); Out.Ln;
+  c := a MOD b;
+  Out.String("10 MOD 3 = "); Out.Int(c, 0); Out.Ln
+END Arith.
