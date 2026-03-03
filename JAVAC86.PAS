@@ -6282,13 +6282,654 @@ Begin
 End;
 
 { ============================================================================
-  TODO 20 ... 25 : a implementer
+  TODO 20 - RUNTIME ASSEMBLEUR : ENTREES / SORTIES
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenRtIO : emettre les routines runtime E/S dans le segment CODE courant.
+  GenRtArithmetic a deja ouvert _CODE ; on continue ici sans le refermer.
+  -------------------------------------------------------------------------- }
+Procedure GenRtIO;
+Begin
+  EmitSep;
+  EmitComment('TODO 20 - RUNTIME : ENTREES / SORTIES');
+  EmitSep;
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_WRITESTR : AX=ptr, CX=len -> afficher CX caracteres (AH=02h) }
+  { ------------------------------------------------------------------ }
+  EmitComment('WRITESTR : AX=ptr CX=len -> stdout (boucle INT 21h AH=02h)');
+  EmitLabel(RT_PFX + 'WRITESTR');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'CX');
+  EmitI2('MOV',  'SI', 'AX');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'WS_DONE');
+  EmitLabel(RT_PFX + 'WS_LP');
+  EmitI1('MOV',  'DL, [SI]');
+  EmitI1('MOV',  'AH, 02h');
+  EmitI0('INT  21h');
+  EmitI0('INC  SI');
+  EmitI1('LOOP', RT_PFX + 'WS_LP');
+  EmitLabel(RT_PFX + 'WS_DONE');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'SI');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_WRITECRLF : afficher CR (0Dh) puis LF (0Ah)                  }
+  { ------------------------------------------------------------------ }
+  EmitComment('WRITECRLF : afficher CR LF');
+  EmitLabel(RT_PFX + 'WRITECRLF');
+  EmitI1('MOV',  'DL, 0Dh');
+  EmitI1('MOV',  'AH, 02h');
+  EmitI0('INT  21h');
+  EmitI1('MOV',  'DL, 0Ah');
+  EmitI1('MOV',  'AH, 02h');
+  EmitI0('INT  21h');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_WRITECHR : AL = code char -> INT 21h AH=02h                  }
+  { ------------------------------------------------------------------ }
+  EmitComment('WRITECHR : AL (code char) -> stdout');
+  EmitLabel(RT_PFX + 'WRITECHR');
+  EmitI2('MOV',  'DL', 'AL');
+  EmitI1('MOV',  'AH, 02h');
+  EmitI0('INT  21h');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_WRITEINT : [BP+2] = entier signe -> INT2STR + WRITESTR       }
+  { Convention appelant : PUSH AX / CALL / ADD SP,2                    }
+  { ------------------------------------------------------------------ }
+  EmitComment('WRITEINT : param [BP+2] (int) -> INT2STR + WRITESTR');
+  EmitLabel(RT_PFX + 'WRITEINT');
+  EmitI0('PUSH BP');
+  EmitI('MOV', 'BP, SP', '');
+  EmitI1('MOV',  'AX, [BP+4]');
+  EmitI1('CALL', RT_PFX + 'INT2STR');
+  EmitI2('MOV',  'CX', 'DX');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_WRITEBOOL : [BP+2] = bool (0/1) -> BOOL2STR + WRITESTR      }
+  { Convention appelant : PUSH AX / CALL / ADD SP,2                    }
+  { ------------------------------------------------------------------ }
+  EmitComment('WRITEBOOL : param [BP+4] (bool) -> BOOL2STR + WRITESTR');
+  EmitLabel(RT_PFX + 'WRITEBOOL');
+  EmitI0('PUSH BP');
+  EmitI('MOV', 'BP, SP', '');
+  EmitI1('MOV',  'AX, [BP+4]');
+  EmitI1('CALL', RT_PFX + 'BOOL2STR');
+  EmitI2('MOV',  'CX', 'DX');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_READLINE : lire une ligne depuis stdin -> AX=ptr DX=len      }
+  { Convention : INT 21h AH=0Ah (buffered) sur _J_INBUF               }
+  { Layout _J_INBUF : byte[0]=maxlen byte[1]=actlen byte[2..]=data     }
+  { ------------------------------------------------------------------ }
+  EmitComment('READLINE : stdin -> AX=ptr(_J_INBUF+2) DX=len');
+  EmitLabel(RT_PFX + 'READLINE');
+  EmitI1('PUSH', 'BX');
+  EmitI1('MOV',  'BYTE PTR [_J_INBUF], 126');
+  EmitI1('MOV',  'BYTE PTR [_J_INBUF+1], 0');
+  EmitI1('MOV',  'AH, 0Ah');
+  EmitI1('MOV',  'DX, OFFSET _J_INBUF');
+  EmitI0('INT  21h');
+  EmitI1('CALL', RT_PFX + 'WRITECRLF');
+  EmitI0('XOR  BX, BX');
+  EmitI1('MOV',  'BL, [_J_INBUF+1]');
+  EmitI1('MOV',  'AX, OFFSET _J_INBUF + 2');
+  EmitI2('MOV',  'DX', 'BX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_READINT : stdin -> AX (entier signe) via READLINE + STR2INT  }
+  { ------------------------------------------------------------------ }
+  EmitComment('READINT : stdin -> AX (entier)');
+  EmitLabel(RT_PFX + 'READINT');
+  EmitI1('CALL', RT_PFX + 'READLINE');
+  EmitI1('CALL', RT_PFX + 'STR2INT');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_ERRMSG : AX=ptr (chaine terminee par $) -> affiche + Halt(1) }
+  { ------------------------------------------------------------------ }
+  EmitComment('ERRMSG : AX=ptr (chaine $-terminee) -> affiche + Halt 1');
+  EmitLabel(RT_PFX + 'ERRMSG');
+  EmitI2('MOV',  'DX', 'AX');
+  EmitI1('MOV',  'AH, 09h');
+  EmitI0('INT  21h');
+  EmitI1('MOV',  'AX, 4C01h');
+  EmitI0('INT  21h');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_EXIT0 : terminer proprement (code retour 0)                   }
+  { ------------------------------------------------------------------ }
+  EmitComment('EXIT0 : MOV AX,4C00h / INT 21h');
+  EmitLabel(RT_PFX + 'EXIT0');
+  EmitI1('MOV',  'AX, 4C00h');
+  EmitI0('INT  21h');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_STRCAT : [BP+6]=ptr1 [BP+8]=len1 [BP+2]=ptr2 [BP+4]=len2    }
+  { -> copier s1 puis s2 dans _J_OUTBUF -> AX=ptr DX=len total        }
+  { Convention appelant : PUSH DX/PUSH AX (s1), PUSH DX/PUSH AX (s2) }
+  {                        CALL / ADD SP,8                             }
+  { ------------------------------------------------------------------ }
+  EmitComment('STRCAT : 4 mots sur pile -> _J_OUTBUF; AX=ptr DX=len');
+  EmitLabel(RT_PFX + 'STRCAT');
+  EmitI0('PUSH BP');
+  EmitI('MOV', 'BP, SP', '');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI1('PUSH', 'BX');
+  EmitI1('MOV',  'DI, OFFSET _J_OUTBUF');
+  EmitI1('MOV',  'SI, [BP+8]');
+  EmitI1('MOV',  'CX, [BP+10]');
+  EmitI2('MOV',  'BX', 'CX');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'SC_S2');
+  EmitLabel(RT_PFX + 'SC_L1');
+  EmitI1('MOV',  'AL, [SI]');
+  EmitI1('MOV',  '[DI], AL');
+  EmitI0('INC  SI');
+  EmitI0('INC  DI');
+  EmitI1('LOOP', RT_PFX + 'SC_L1');
+  EmitLabel(RT_PFX + 'SC_S2');
+  EmitI1('MOV',  'SI, [BP+4]');
+  EmitI1('MOV',  'CX, [BP+6]');
+  EmitI2('ADD',  'BX', 'CX');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'SC_DONE');
+  EmitLabel(RT_PFX + 'SC_L2');
+  EmitI1('MOV',  'AL, [SI]');
+  EmitI1('MOV',  '[DI], AL');
+  EmitI0('INC  SI');
+  EmitI0('INC  DI');
+  EmitI1('LOOP', RT_PFX + 'SC_L2');
+  EmitLabel(RT_PFX + 'SC_DONE');
+  EmitI0('MOV  BYTE PTR [DI], 0');
+  EmitI1('MOV',  'AX, OFFSET _J_OUTBUF');
+  EmitI2('MOV',  'DX', 'BX');
+  EmitI1('POP',  'BX');
+  EmitI1('POP',  'DI');
+  EmitI1('POP',  'SI');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_STRCMP : meme convention que STRCAT (4 mots sur pile)         }
+  { Retourne AX=0 si egales, AX=1 si s1>s2, AX=-1 si s1<s2           }
+  { Comparison lexicographique puis par longueur                        }
+  { ------------------------------------------------------------------ }
+  EmitComment('STRCMP : 4 mots sur pile -> AX=0 egal, AX=-1 s1<s2, AX=1 s1>s2');
+  EmitLabel(RT_PFX + 'STRCMP');
+  EmitI0('PUSH BP');
+  EmitI('MOV', 'BP, SP', '');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('MOV',  'SI, [BP+8]');
+  EmitI1('MOV',  'BX, [BP+10]');
+  EmitI1('MOV',  'DI, [BP+4]');
+  EmitI1('MOV',  'CX, [BP+6]');
+  EmitI2('CMP',  'CX', 'BX');
+  EmitI1('JBE',  RT_PFX + 'SCMP_LP');
+  EmitI2('MOV',  'CX', 'BX');
+  EmitLabel(RT_PFX + 'SCMP_LP');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'SCMP_LEN');
+  EmitI1('MOV',  'AL, [SI]');
+  EmitI1('MOV',  'DL, [DI]');
+  EmitI0('INC  SI');
+  EmitI0('INC  DI');
+  EmitI0('DEC  CX');
+  EmitI1('CMP',  'AL, DL');
+  EmitI1('JB',   RT_PFX + 'SCMP_LT');
+  EmitI1('JA',   RT_PFX + 'SCMP_GT');
+  EmitI1('JMP',  RT_PFX + 'SCMP_LP');
+  EmitLabel(RT_PFX + 'SCMP_LEN');
+  EmitI1('MOV',  'AX, [BP+10]');
+  EmitI1('CMP',  'AX, [BP+6]');
+  EmitI1('JB',   RT_PFX + 'SCMP_LT');
+  EmitI1('JA',   RT_PFX + 'SCMP_GT');
+  EmitI0('XOR  AX, AX');
+  EmitI1('JMP',  RT_PFX + 'SCMP_RET');
+  EmitLabel(RT_PFX + 'SCMP_LT');
+  EmitI1('MOV',  'AX, 0FFFFh');
+  EmitI1('JMP',  RT_PFX + 'SCMP_RET');
+  EmitLabel(RT_PFX + 'SCMP_GT');
+  EmitI1('MOV',  'AX, 1');
+  EmitLabel(RT_PFX + 'SCMP_RET');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI1('POP',  'DI');
+  EmitI1('POP',  'SI');
+  EmitI0('POP  BP');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_PRINTF : stub minimal (format en AX=ptr CX=len, arg sur pile }
+  { Pour le sous-ensemble %d %s %c ; appele rarement (printf inline)   }
+  { ------------------------------------------------------------------ }
+  EmitComment('PRINTF : format AX=ptr CX=len -> WRITESTR (stub)');
+  EmitLabel(RT_PFX + 'PRINTF');
+  EmitI1('CALL', RT_PFX + 'WRITESTR');
+  EmitI0('RET');
+  EmitBlank;
+End;
+
+{ ============================================================================
+  TODO 21 - STRUCTURE DU FICHIER ASM (HEADER, SEGMENTS, FOOT)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenCodeSegOpen : ouvrir le segment CODE explicite MASM.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegOpen;
+Begin
+  EmitComment('----- Segment CODE -----');
+  Emit('_CODE           SEGMENT WORD PUBLIC ''CODE''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegClose : fermer le segment CODE.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegClose;
+Begin
+  EmitBlank;
+  Emit('_CODE           ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStartupBlock : emettre le bloc d'initialisation du programme.
+  Label START: + init DS/SS/SP + CALL main + CALL _JRT_EXIT0.
+  Met a jour first_instr_lbl pour que END pointe ici.
+  -------------------------------------------------------------------------- }
+Procedure GenStartupBlock;
+Begin
+  EmitComment('--- Point d''entree programme ---');
+  EmitI1('ASSUME', 'CS:_CODE, DS:_DATA, SS:_STACK');
+  EmitBlank;
+  EmitLabel('START');
+  EmitI('MOV', 'AX, _DATA',           'initialiser DS');
+  EmitI('MOV', 'DS, AX',              '');
+  EmitI('MOV', 'AX, _STACK',          'initialiser SS');
+  EmitI('MOV', 'SS, AX',              '');
+  EmitI('MOV', 'SP, OFFSET _STACK + ' + IntToStr(STACK_SIZE),
+        'sommet de pile');
+  If first_instr_lbl <> '' Then
+    EmitI('CALL', first_instr_lbl,    'appel methode main');
+  EmitI('CALL', RT_PFX + 'EXIT0',     'fin normale');
+  EmitBlank;
+  SetFirstInstrLabel('START');
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullAssemblyHeader : emettre tout ce qui precede le segment DATA.
+  GenFileHeader + GenModelDirectives + GenMacroDefs + GenStack + GenDataHeader.
+  -------------------------------------------------------------------------- }
+Procedure GenFullAssemblyHeader;
+Begin
+  GenFileHeader;
+  GenModelDirectives;
+  GenMacroDefs;
+  GenStackHeader;
+  GenStackFooter;
+  GenDataHeader;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullAssemblyFooter : fermer le segment CODE et emettre END label.
+  -------------------------------------------------------------------------- }
+Procedure GenFullAssemblyFooter;
+Begin
+  GenCodeSegClose;
+  GenEndDirective;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullCodeOpen : ouvrir _CODE + bloc d'initialisation.
+  -------------------------------------------------------------------------- }
+Procedure GenFullCodeOpen;
+Begin
+  GenCodeSegOpen;
+  GenStartupBlock;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegmentHeader : appele a l'etape 9 du Compile.
+  Ouvre _CODE, emet ASSUME et le bloc bootstrap START:.
+  Laisse le segment OUVERT (les methodes sont fusionnees ensuite).
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegmentHeader;
+Begin
+  GenCodeSegOpen;
+  GenStartupBlock;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegmentFooter : appele a l'etape 12 du Compile.
+  Ferme _CODE et emet la directive END first_instr_lbl.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegmentFooter;
+Begin
+  GenCodeSegClose;
+  GenEndDirective;
+End;
+
+{ ============================================================================
+  TODO 22 - GESTION DES ERREURS ET DIAGNOSTIC
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  ErrPrefix : construire le prefixe contextuel de message.
+  Format : 'src_fname(ligne,col) [categorie]'
+  -------------------------------------------------------------------------- }
+Function ErrPrefix(Const cat : TString) : TString;
+Begin
+  ErrPrefix := src_fname + '(' + IntToStr(lex_lineno) + ',' +
+               IntToStr(lex_colno) + ') [' + cat + ']';
+End;
+
+{ --------------------------------------------------------------------------
+  ErrorMsg : afficher une erreur et incrementer err_count.
+  -------------------------------------------------------------------------- }
+Procedure ErrorMsg(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(ErrPrefix('erreur') + ' ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  WarnMsg : afficher un avertissement et incrementer warn_count.
+  -------------------------------------------------------------------------- }
+Procedure WarnMsg(Const msg : TString);
+Begin
+  Inc(warn_count);
+  WriteLn(ErrPrefix('attention') + ' ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  FatalError : afficher une erreur fatale, liberer les tables, terminer.
+  -------------------------------------------------------------------------- }
+Procedure FatalError(Const msg : TString);
+Begin
+  WriteLn(ErrPrefix('fatal') + ' ' + msg);
+  FreeTables;
+  Halt(1);
+End;
+
+{ --------------------------------------------------------------------------
+  LexError : erreur detectee par l'analyseur lexical.
+  -------------------------------------------------------------------------- }
+Procedure LexError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(ErrPrefix('lexical') + ' ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  SemError : erreur semantique (type, variable non declaree, portee, etc.).
+  -------------------------------------------------------------------------- }
+Procedure SemError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(ErrPrefix('semantique') + ' ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  SynError : erreur syntaxique (token inattendu, etc.).
+  -------------------------------------------------------------------------- }
+Procedure SynError(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn(ErrPrefix('syntaxe') + ' ' + msg);
+End;
+
+{ --------------------------------------------------------------------------
+  TableOverflow : saturation d'une table interne -> FatalError.
+  -------------------------------------------------------------------------- }
+Procedure TableOverflow(Const name : TString);
+Begin
+  FatalError('Table interne saturee : ' + name);
+End;
+
+{ --------------------------------------------------------------------------
+  LogVerbose : afficher un message si le mode verbeux est actif.
+  -------------------------------------------------------------------------- }
+Procedure LogVerbose(Const msg : TString);
+Begin
+  If opt_verbose Then WriteLn(msg);
+End;
+
+{ --------------------------------------------------------------------------
+  LogDebugAsm : emettre un commentaire ASM supplementaire si mode debug.
+  -------------------------------------------------------------------------- }
+Procedure LogDebugAsm(Const cmt : TString);
+Begin
+  If opt_debug Then EmitComment('[DBG] ' + cmt);
+End;
+
+{ --------------------------------------------------------------------------
+  PrintSummary : afficher le bilan de compilation.
+  -------------------------------------------------------------------------- }
+Procedure PrintSummary;
+Begin
+  WriteLn('--- Bilan JAVAC86 ---');
+  WriteLn('Source      : ', src_fname);
+  WriteLn('Symboles    : ', sym_count);
+  WriteLn('Methodes    : ', func_count);
+  WriteLn('Litteraux   : ', lit_count);
+  WriteLn('Labels ASM  : ', lbl_seq);
+  WriteLn('Instructions: ', instr_count);
+  WriteLn('Erreurs     : ', err_count);
+  WriteLn('Attention   : ', warn_count);
+End;
+
+{ --------------------------------------------------------------------------
+  CheckErrLimit : stopper si err_count depasse le seuil (50).
+  -------------------------------------------------------------------------- }
+Procedure CheckErrLimit;
+Begin
+  If err_count > 50 Then
+    FatalError('Trop d''erreurs (' + IntToStr(err_count) +
+               '), compilation interrompue');
+End;
+
+{ --------------------------------------------------------------------------
+  AssertNoErrors : echouer si des erreurs ont ete detectees.
+  -------------------------------------------------------------------------- }
+Procedure AssertNoErrors;
+Begin
+  If err_count > 0 Then
+    FatalError(IntToStr(err_count) + ' erreur(s) detectee(s), arret');
+End;
+
+{ ============================================================================
+  TODO 23 - INTERFACE LIGNE DE COMMANDE
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  StrUpper : convertir une chaine en majuscules.
+  -------------------------------------------------------------------------- }
+Function StrUpper(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+    c   : Char;
+Begin
+  res := s;
+  For i := 1 To Length(res) Do
+  Begin
+    c := res[i];
+    If (c >= 'a') And (c <= 'z') Then
+      res[i] := Chr(Ord(c) - 32);
+  End;
+  StrUpper := res;
+End;
+
+{ --------------------------------------------------------------------------
+  StrLower : convertir une chaine en minuscules.
+  -------------------------------------------------------------------------- }
+Function StrLower(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+    c   : Char;
+Begin
+  res := s;
+  For i := 1 To Length(res) Do
+  Begin
+    c := res[i];
+    If (c >= 'A') And (c <= 'Z') Then
+      res[i] := Chr(Ord(c) + 32);
+  End;
+  StrLower := res;
+End;
+
+{ --------------------------------------------------------------------------
+  PrintBanner : afficher la banniere du compilateur.
+  -------------------------------------------------------------------------- }
+Procedure PrintBanner;
+Begin
+  WriteLn('JAVAC86 v', JAVAC86_VERSION, ' - compilateur Java Lite -> MASM 8086');
+  WriteLn('(c) ', JAVAC86_DATE, '  cible : MASM 8086 modele SMALL');
+  WriteLn;
+End;
+
+{ --------------------------------------------------------------------------
+  PrintHelp : afficher l'aide en ligne de commande.
+  -------------------------------------------------------------------------- }
+Procedure PrintHelp;
+Begin
+  WriteLn('Usage : JAVAC86 <source.java> [<sortie.asm>] [options]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v    Mode verbeux (statistiques apres compilation)');
+  WriteLn('  -d    Mode debug   (commentaires supplem. dans l''ASM)');
+  WriteLn('  -ns   Ne pas emettre le runtime inline');
+  WriteLn('  -h    Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  JAVAC86 Hello.java');
+  WriteLn('  JAVAC86 Hello.java Hello.asm -v');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCommandLine : analyser les arguments de la ligne de commande.
+  Retourne True si le compilateur peut continuer, False si on doit sortir.
+  -------------------------------------------------------------------------- }
+Function ParseCommandLine : Boolean;
+Var i    : Integer;
+    arg  : TString;
+Begin
+  ParseCommandLine := False;
+  src_fname := '';
+  out_fname := '';
+  tmp_fname := '';
+  opt_verbose := False;
+  opt_debug   := False;
+  opt_no_rt   := False;
+
+  If ParamCount = 0 Then
+  Begin
+    PrintHelp;
+    Exit;
+  End;
+
+  For i := 1 To ParamCount Do
+  Begin
+    arg := ParamStr(i);
+    If (arg = '-h') Or (arg = '-H') Or (arg = '/?') Then
+    Begin
+      PrintHelp;
+      Exit;
+    End
+    Else If (arg = '-v') Or (arg = '-V') Then
+      opt_verbose := True
+    Else If (arg = '-d') Or (arg = '-D') Then
+      opt_debug := True
+    Else If (StrLower(arg) = '-ns') Then
+      opt_no_rt := True
+    Else If (Length(arg) > 0) And (arg[1] <> '-') Then
+    Begin
+      If src_fname = '' Then
+        src_fname := arg
+      Else If out_fname = '' Then
+        out_fname := arg
+      Else
+      Begin
+        WriteLn('Argument inattendu : ', arg);
+        Exit;
+      End;
+    End
+    Else
+    Begin
+      WriteLn('Option inconnue : ', arg);
+      Exit;
+    End;
+  End;
+
+  If src_fname = '' Then
+  Begin
+    WriteLn('Erreur : aucun fichier source specifie.');
+    WriteLn;
+    PrintHelp;
+    Exit;
+  End;
+
+  If StrLower(FileExtension(src_fname)) <> '.java' Then
+  Begin
+    WriteLn('Erreur : le fichier source doit avoir l''extension .java');
+    Exit;
+  End;
+
+  If out_fname = '' Then
+    out_fname := ChangeExtension(src_fname, '.asm');
+
+  tmp_fname := ChangeExtension(src_fname, '.tmp');
+
+  ParseCommandLine := True;
+End;
+
+{ --------------------------------------------------------------------------
+  PrintFinalReport : afficher PrintSummary si le mode verbeux est actif.
+  -------------------------------------------------------------------------- }
+Procedure PrintFinalReport;
+Begin
+  If opt_verbose Then PrintSummary;
+End;
+
+{ ============================================================================
+  TODO 24 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   InitTables;
   scope_sp := 0;
   WriteLn('JAVAC86 v', JAVAC86_VERSION, ' - compilateur Java Lite -> MASM 8086');
-  WriteLn('(TODO 20-25 non implementes)');
+  WriteLn('(TODO 24-25 non implementes)');
   FreeTables;
 End.
