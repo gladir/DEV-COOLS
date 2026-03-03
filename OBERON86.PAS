@@ -2056,6 +2056,7 @@ Begin
   EmitDB ('_OV_NULLSTR', '0');
   EmitDB ('_OV_TRUE',  '''TRUE'', 0');
   EmitDB ('_OV_FALSE', '''FALSE'', 0');
+  EmitDW ('_OV_IN_DONE', '1');        { In.Done : True apres lecture reussie }
   EmitBlank;
 End;
 
@@ -2984,6 +2985,19 @@ Function ParseExpr : Integer; Forward;
 { Forward : ParseProcCallArgs defini en TODO 18 ; ParseDesignator l'appelle. }
 Function ParseProcCallArgs(pi : Integer) : Integer; Forward;
 
+{ Forward : ParseBuiltinFunc defini en TODO 19 ; ParseFactor l'appelle. }
+Function ParseBuiltinFunc(Const fname : TString) : Integer; Forward;
+
+{ Forwards supplementaires TODO 19 utilises dans ParseFactor et ParseStatement. }
+Function IsBuiltinProc(Const name : TString) : Boolean; Forward;
+Function IsBuiltinFunc(Const name : TString) : Boolean; Forward;
+Procedure ParseBuiltinProc(Const fname : TString); Forward;
+
+{ Forwards TODO 20 - modules standard Out / In. }
+Function  IsStdModuleIdent(Const name : TString) : Boolean; Forward;
+Function  ParseStdModuleExpr : Integer; Forward;
+Procedure ParseStdModuleCall; Forward;
+
 { --------------------------------------------------------------------------
   GenLoadConst : charger une valeur immediate dans AX (ou DX:AX si 32 bits).
   -------------------------------------------------------------------------- }
@@ -3161,6 +3175,7 @@ Function ParseFactor : Integer;
 Var ti    : Integer;
     lbl   : TString;
     n_str : TString;
+    bname : TString;
 Begin
   ti := TYP_UNDEF;
 
@@ -3228,8 +3243,22 @@ Begin
   End
   Else If cur_tok.kind = TK_IDENT Then
   Begin
-    { ParseDesignator gere desormais les appels de fonction (TODO 18) }
-    ti := ParseDesignator;
+    If IsStdModuleIdent(cur_tok.val) Then
+    Begin
+      LexPeek;
+      If peek_tok.val = '.' Then
+        ti := ParseStdModuleExpr
+      Else
+        ti := ParseDesignator;
+    End
+    Else If IsBuiltinFunc(cur_tok.val) Then
+    Begin
+      bname := cur_tok.val;
+      LexNext;
+      ti := ParseBuiltinFunc(bname);
+    End
+    Else
+      ti := ParseDesignator;
   End
   Else
   Begin
@@ -4028,6 +4057,7 @@ End;
   -------------------------------------------------------------------------- }
 Procedure ParseStatement;
 Var brk      : TString;
+    bname    : TString;
     call_si  : Integer;
     call_pi  : Integer;
     call_na  : Integer;
@@ -4072,24 +4102,40 @@ Begin
   End
   Else If cur_tok.kind = TK_IDENT Then
   Begin
-    { Distinguer appel de procedure (SK_PROC) et affectation (:=) }
-    call_si := SymFind(cur_tok.val);
-    If (call_si > 0) And (sym_table^[call_si].kind = SK_PROC) Then
+    If IsStdModuleIdent(cur_tok.val) Then
     Begin
-      call_pi := sym_table^[call_si].proc_idx;
-      LexNext;   { consommer l'identificateur }
-      call_na := 0;
-      If cur_tok.val = '(' Then
-        call_na := ParseProcCallArgs(call_pi);
-      EmitI1('CALL', sym_table^[call_si].asm_label);
-      If call_na > 0 Then
-        EmitI2('ADD', 'SP', IntToStr(call_na * 2));
-      { resultat dans AX, non utilise pour un appel en position instruction }
+      LexPeek;
+      If peek_tok.val = '.' Then
+        ParseStdModuleCall
+      Else
+        ParseAssignment;         { fallback si Out/In utilise comme ident simple }
+    End
+    Else If IsBuiltinProc(cur_tok.val) Then
+    Begin
+      bname := cur_tok.val;
+      LexNext;                { consommer le nom de la procedure integree }
+      ParseBuiltinProc(bname);
     End
     Else
-      ParseAssignment;
+    Begin
+      { Distinguer appel de procedure utilisateur (SK_PROC) et affectation (:=) }
+      call_si := SymFind(cur_tok.val);
+      If (call_si > 0) And (sym_table^[call_si].kind = SK_PROC) Then
+      Begin
+        call_pi := sym_table^[call_si].proc_idx;
+        LexNext;              { consommer l'identificateur }
+        call_na := 0;
+        If cur_tok.val = '(' Then
+          call_na := ParseProcCallArgs(call_pi);
+        EmitI1('CALL', sym_table^[call_si].asm_label);
+        If call_na > 0 Then
+          EmitI2('ADD', 'SP', IntToStr(call_na * 2));
+      End
+      Else
+        ParseAssignment;
+    End;
   End;
-  { WITH, appels stdlib -> TODOs 16,18-19 (deja dispatche ci-dessus) }
+  { Builtins, stdlib -> TODOs 19-20 (dispatche ci-dessus) }
 End;
 
 { ============================================================
@@ -4146,6 +4192,672 @@ Begin
   Until False;
   LexExpect(')');
   ParseProcCallArgs := n_args;
+End;
+
+{ ============================================================
+  TODO 19 - PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  IsBuiltinProc : vrai si nom est une procedure standard Oberon.
+  -------------------------------------------------------------------------- }
+Function IsBuiltinProc(Const name : TString) : Boolean;
+Begin
+  IsBuiltinProc :=
+    (name = 'INC')     Or (name = 'DEC')     Or
+    (name = 'INCL')    Or (name = 'EXCL')    Or
+    (name = 'NEW')     Or (name = 'DISPOSE') Or
+    (name = 'HALT')    Or (name = 'ASSERT');
+End;
+
+{ --------------------------------------------------------------------------
+  IsBuiltinFunc : vrai si nom est une fonction standard Oberon.
+  -------------------------------------------------------------------------- }
+Function IsBuiltinFunc(Const name : TString) : Boolean;
+Begin
+  IsBuiltinFunc :=
+    (name = 'ABS')    Or (name = 'ODD')    Or
+    (name = 'CAP')    Or (name = 'ORD')    Or
+    (name = 'CHR')    Or (name = 'LEN')    Or
+    (name = 'SHORT')  Or (name = 'LONG')   Or
+    (name = 'ENTIER') Or (name = 'SIZE')   Or
+    (name = 'MIN')    Or (name = 'MAX');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBuiltinProc : code pour INC DEC INCL EXCL NEW DISPOSE HALT ASSERT.
+  Le nom de la procedure a deja ete consomme par l'appelant.
+  -------------------------------------------------------------------------- }
+Procedure ParseBuiltinProc(Const fname : TString);
+Var ti1       : Integer;
+    ti2       : Integer;
+    si1       : Integer;
+    lbl_skip  : TString;
+    v_str     : TString;
+    exit_code : Integer;
+Begin
+  LexExpect('(');
+
+  If (fname = 'INC') Or (fname = 'DEC') Then
+  Begin
+    { INC/DEC(v [, n]) : ajouter/soustraire n (defaut 1) a v }
+    v_str := cur_tok.val;
+    si1   := SymFind(v_str);
+    LexExpectKind(TK_IDENT);
+    If si1 = 0 Then
+      ErrorMsg('INC/DEC : identificateur inconnu : ' + v_str)
+    Else
+      GenLoadAddr(si1);              { BX = adresse de v }
+    If cur_tok.val = ',' Then
+    Begin
+      LexNext;
+      ti1 := ParseExpr;             { n -> AX }
+      If fname = 'INC' Then
+        EmitI2('ADD', 'Word Ptr [BX]', 'AX')
+      Else
+        EmitI2('SUB', 'Word Ptr [BX]', 'AX');
+    End
+    Else
+    Begin
+      If fname = 'INC' Then
+        EmitI1('INC', 'Word Ptr [BX]')
+      Else
+        EmitI1('DEC', 'Word Ptr [BX]');
+    End;
+  End
+
+  Else If (fname = 'INCL') Or (fname = 'EXCL') Then
+  Begin
+    { INCL(s, e) : ajouter e au SET s  ;  EXCL(s, e) : retirer e du SET s }
+    v_str := cur_tok.val;
+    si1   := SymFind(v_str);
+    LexExpectKind(TK_IDENT);
+    If si1 = 0 Then
+      ErrorMsg('INCL/EXCL : identificateur inconnu : ' + v_str)
+    Else
+      GenLoadAddr(si1);              { BX = adresse du SET }
+    LexExpect(',');
+    ti1 := ParseExpr;               { e -> AX }
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI2('MOV', 'AX', '1');
+    EmitI0('SHL  AX, CL');          { AX = masque de bit e }
+    If fname = 'INCL' Then
+      EmitI2('OR',  'Word Ptr [BX]', 'AX')
+    Else
+    Begin
+      EmitI1('NOT', 'AX');
+      EmitI2('AND', 'Word Ptr [BX]', 'AX');
+    End;
+  End
+
+  Else If fname = 'NEW' Then
+  Begin
+    { NEW(p) : allouer TypeByteSize(p^) octets (DOS AH=48h, en paragraphes) }
+    v_str := cur_tok.val;
+    si1   := SymFind(v_str);
+    LexExpectKind(TK_IDENT);
+    If si1 > 0 Then
+    Begin
+      ti1 := sym_table^[si1].type_idx;
+      EmitI2('MOV', 'BX',
+             IntToStr((TypeByteSize(type_table^[ti1].base_idx) + 15) Div 16));
+      EmitI2('MOV', 'AH', '48h');
+      EmitI0('INT  21h');
+      EmitI0('PUSH AX');
+      GenLoadAddr(si1);              { BX = adresse de p }
+      EmitI0('POP  AX');
+      EmitI2('MOV', 'Word Ptr [BX]', 'AX');
+    End
+    Else
+      ErrorMsg('NEW : pointeur inconnu : ' + v_str);
+  End
+
+  Else If fname = 'DISPOSE' Then
+  Begin
+    { DISPOSE(p) : liberer bloc heap (DOS AH=49h) et mettre p a NIL }
+    v_str := cur_tok.val;
+    si1   := SymFind(v_str);
+    LexExpectKind(TK_IDENT);
+    If si1 > 0 Then
+    Begin
+      GenLoad(si1);                  { AX = segment du bloc }
+      EmitI2('MOV', 'ES', 'AX');
+      EmitI2('MOV', 'AH', '49h');
+      EmitI0('INT  21h');
+      GenLoadAddr(si1);
+      EmitI2('MOV', 'Word Ptr [BX]', '0');
+    End
+    Else
+      ErrorMsg('DISPOSE : pointeur inconnu : ' + v_str);
+  End
+
+  Else If fname = 'HALT' Then
+  Begin
+    { HALT(n) : terminer le programme avec code de sortie n }
+    ti1 := ParseExpr;               { n -> AX (AL = code de sortie) }
+    EmitI2('MOV', 'AH', '4Ch');
+    EmitI0('INT  21h');
+  End
+
+  Else If fname = 'ASSERT' Then
+  Begin
+    { ASSERT(b [, n]) : si b = FALSE alors HALT avec code n (defaut 1) }
+    lbl_skip  := NewLabel;
+    exit_code := 1;
+    ti1 := ParseExpr;               { b -> AX }
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JNE', lbl_skip);
+    If cur_tok.val = ',' Then
+    Begin
+      LexNext;
+      If cur_tok.kind = TK_INTEGER Then
+      Begin
+        exit_code := cur_tok.int_val;
+        LexNext;
+      End
+      Else
+      Begin
+        ti2 := ParseExpr;           { code -> AX, ignore }
+        exit_code := 1;
+      End;
+    End;
+    EmitI2('MOV', 'AX', IntToStr($4C00 + exit_code));
+    EmitI0('INT  21h');
+    EmitLabel(lbl_skip);
+  End
+
+  Else
+    ErrorMsg('Procedure integree inconnue : ' + fname);
+
+  LexExpect(')');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBuiltinFunc : code pour ABS ODD CAP ORD CHR LEN SHORT LONG ENTIER SIZE MIN MAX.
+  Le nom de la fonction a deja ete consomme par l'appelant.
+  Resultat dans AX ; retourne le type_idx.
+  -------------------------------------------------------------------------- }
+Function ParseBuiltinFunc(Const fname : TString) : Integer;
+Var ti1      : Integer;
+    si1      : Integer;
+    lbl_skip : TString;
+    v_str    : TString;
+    t_name   : TString;
+    si_type  : Integer;
+    ti_res   : Integer;
+Begin
+  ti_res := TYP_INTEGER;
+  LexExpect('(');
+
+  If fname = 'ABS' Then
+  Begin
+    { ABS(x) : valeur absolue de x }
+    lbl_skip := NewLabel;
+    ti1      := ParseExpr;
+    EmitI2('OR',  'AX', 'AX');
+    EmitI1('JNS', lbl_skip);
+    EmitI1('NEG', 'AX');
+    EmitLabel(lbl_skip);
+    ti_res := ti1;
+  End
+
+  Else If fname = 'ODD' Then
+  Begin
+    { ODD(x) : vrai si x est impair }
+    ti1 := ParseExpr;
+    EmitI2('AND', 'AX', '1');
+    ti_res := TYP_BOOLEAN;
+  End
+
+  Else If fname = 'CAP' Then
+  Begin
+    { CAP(c) : majuscule du caractere c }
+    ti1 := ParseExpr;
+    EmitI2('AND', 'AX', '0DFh');
+    ti_res := TYP_CHAR;
+  End
+
+  Else If fname = 'ORD' Then
+  Begin
+    { ORD(x) : valeur ordinale de x (CHAR/BOOLEAN -> INTEGER) }
+    ti1 := ParseExpr;
+    EmitI2('AND', 'AX', '0FFh');
+    ti_res := TYP_INTEGER;
+  End
+
+  Else If fname = 'CHR' Then
+  Begin
+    { CHR(n) : convertir un entier en CHAR }
+    ti1 := ParseExpr;
+    EmitI2('AND', 'AX', '0FFh');
+    ti_res := TYP_CHAR;
+  End
+
+  Else If fname = 'LEN' Then
+  Begin
+    { LEN(a [, d]) : nombre d'elements du tableau a (dimension d ignoree) }
+    v_str := cur_tok.val;
+    si1   := SymFind(v_str);
+    LexExpectKind(TK_IDENT);
+    If cur_tok.val = ',' Then
+    Begin
+      LexNext;
+      ti1 := ParseExpr;            { dimension optionnelle ignoree }
+    End;
+    If (si1 > 0) And TypeIsArray(sym_table^[si1].type_idx) Then
+      EmitI2('MOV', 'AX',
+             IntToStr(type_table^[sym_table^[si1].type_idx].arr_len))
+    Else
+    Begin
+      ErrorMsg('LEN : argument doit etre un tableau');
+      EmitI2('MOV', 'AX', '0');
+    End;
+    ti_res := TYP_INTEGER;
+  End
+
+  Else If (fname = 'SHORT') Or (fname = 'LONG') Or (fname = 'ENTIER') Then
+  Begin
+    { SHORT/LONG/ENTIER : conversions numeriques, resultat dans AX }
+    ti1    := ParseExpr;
+    ti_res := TYP_INTEGER;
+  End
+
+  Else If fname = 'SIZE' Then
+  Begin
+    { SIZE(T) : taille en octets du type T }
+    t_name  := cur_tok.val;
+    si_type := SymFind(t_name);
+    LexExpectKind(TK_IDENT);
+    If (si_type > 0) And (sym_table^[si_type].kind = SK_TYPE) Then
+      EmitI2('MOV', 'AX', IntToStr(TypeByteSize(sym_table^[si_type].type_idx)))
+    Else
+    Begin
+      ErrorMsg('SIZE : type inconnu : ' + t_name);
+      EmitI2('MOV', 'AX', '0');
+    End;
+    ti_res := TYP_INTEGER;
+  End
+
+  Else If fname = 'MIN' Then
+  Begin
+    { MIN(T) : valeur minimale du type T (stub : 8000h pour INTEGER) }
+    t_name := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    EmitI2('MOV', 'AX', '8000h');
+    ti_res := TYP_INTEGER;
+  End
+
+  Else If fname = 'MAX' Then
+  Begin
+    { MAX(T) : valeur maximale du type T (stub : 7FFFh pour INTEGER) }
+    t_name := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    EmitI2('MOV', 'AX', '7FFFh');
+    ti_res := TYP_INTEGER;
+  End
+
+  Else
+  Begin
+    ErrorMsg('Fonction integree inconnue : ' + fname);
+    EmitI2('MOV', 'AX', '0');
+  End;
+
+  LexExpect(')');
+  ParseBuiltinFunc := ti_res;
+End;
+
+{ ============================================================
+  TODO 20 - MODULE D'ENTREE/SORTIE (Out / In)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  IsStdModuleIdent : vrai si name est un module standard Out ou In.
+  -------------------------------------------------------------------------- }
+Function IsStdModuleIdent(Const name : TString) : Boolean;
+Begin
+  IsStdModuleIdent := (name = 'Out') Or (name = 'In');
+End;
+
+{ --------------------------------------------------------------------------
+  GenOutInRuntime : emettre les procedures runtime Out/In dans tmp_file.
+  Appelee une fois depuis le programme principal, avant MergeTmpToMain.
+  -------------------------------------------------------------------------- }
+Procedure GenOutInRuntime;
+Begin
+  SwitchToTmp;
+  EmitSep;
+  EmitComment(' ====== RUNTIME Out / In - OBERON86 TODO 20 ====== ');
+  EmitBlank;
+
+  { _ORT_WRITESTR : SI = pointeur vers chaine null-terminee, imprime char par char }
+  EmitLabel('_ORT_WRITESTR');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'DX');
+  EmitLabel('_ORT_WS_LOOP');
+  EmitI2('MOV',  'DL', '[SI]');
+  EmitI2('CMP',  'DL', '0');
+  EmitI1('JE',   '_ORT_WS_END');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI1('INC',  'SI');
+  EmitI1('JMP',  '_ORT_WS_LOOP');
+  EmitLabel('_ORT_WS_END');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _ORT_WRITELN : imprimer CR LF }
+  EmitLabel('_ORT_WRITELN');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'DX');
+  EmitI2('MOV',  'DL', '0Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Ah');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _ORT_WRITEINT : AX = entier signe 16 bits -> affichage decimal }
+  EmitLabel('_ORT_WRITEINT');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'SI');
+  EmitI2('XOR',  'SI', 'SI');           { SI = compteur de chiffres empiles }
+  EmitI2('OR',   'AX', 'AX');
+  EmitI1('JNS',  '_ORT_WI_POS');
+  { Negatif : imprimer '-' puis NEG AX }
+  EmitI1('NEG',  'AX');
+  EmitI1('PUSH', 'AX');
+  EmitI2('MOV',  'DL', '2Dh');          { ASCII '-' }
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI0('POP  AX');
+  EmitLabel('_ORT_WI_POS');
+  EmitI2('MOV',  'BX', '10');
+  EmitLabel('_ORT_WI_LOOP');
+  EmitI2('XOR',  'DX', 'DX');
+  EmitI1('DIV',  'BX');                 { AX = quotient, DX = chiffre }
+  EmitI0('PUSH DX');
+  EmitI1('INC',  'SI');
+  EmitI2('OR',   'AX', 'AX');
+  EmitI1('JNZ',  '_ORT_WI_LOOP');
+  EmitLabel('_ORT_WI_PRINT');
+  EmitI0('POP  DX');
+  EmitI2('ADD',  'DL', '30h');          { '0' + chiffre }
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI1('DEC',  'SI');
+  EmitI1('JNZ',  '_ORT_WI_PRINT');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _ORT_READCHAR : lire un caractere avec echo dans AL }
+  EmitLabel('_ORT_READCHAR');
+  EmitI2('MOV',  'AH', '1');
+  EmitI0('INT  21h');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _ORT_READINT : lire une ligne, la convertir en entier signe -> AX }
+  { Utilise _OV_INBUF comme tampon DOS AH=0Ah. }
+  EmitLabel('_ORT_READINT');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'SI');
+  EmitI2('MOV',  'Byte Ptr [_OV_INBUF]', '126');
+  EmitI2('LEA',  'DX', '[_OV_INBUF]');
+  EmitI2('MOV',  'AH', '0Ah');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Ah');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('LEA',  'SI', '[_OV_INBUF+2]');
+  EmitI2('XOR',  'BX', 'BX');          { BX = accumulateur }
+  EmitI2('XOR',  'DX', 'DX');          { DX = signe (0=positif) }
+  EmitI2('CMP',  'Byte Ptr [SI]', '2Dh');  { ''-'' }
+  EmitI1('JNE',  '_ORT_RI_LOOP');
+  EmitI2('MOV',  'DX', '1');
+  EmitI1('INC',  'SI');
+  EmitLabel('_ORT_RI_LOOP');
+  EmitI2('MOV',  'AL', '[SI]');
+  EmitI2('CMP',  'AL', '30h');          { ''0'' }
+  EmitI1('JB',   '_ORT_RI_DONE');
+  EmitI2('CMP',  'AL', '39h');          { ''9'' }
+  EmitI1('JA',   '_ORT_RI_DONE');
+  EmitI2('SUB',  'AL', '30h');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI0('PUSH AX');
+  EmitI2('MOV',  'AX', 'BX');
+  EmitI2('MOV',  'CX', '10');
+  EmitI0('MUL  CX');
+  EmitI0('POP  CX');
+  EmitI2('ADD',  'AX', 'CX');
+  EmitI2('MOV',  'BX', 'AX');
+  EmitI1('INC',  'SI');
+  EmitI1('JMP',  '_ORT_RI_LOOP');
+  EmitLabel('_ORT_RI_DONE');
+  EmitI2('MOV',  'AX', 'BX');
+  EmitI2('OR',   'DX', 'DX');
+  EmitI1('JZ',   '_ORT_RI_OK');
+  EmitI1('NEG',  'AX');
+  EmitLabel('_ORT_RI_OK');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _ORT_READSTR : lire une ligne dans le tampon pointe par BX (null-termine) }
+  { Lit via DOS AH=0Ah dans _OV_INBUF, copie ensuite dans [BX]. }
+  EmitLabel('_ORT_READSTR');
+  EmitI1('PUSH', 'AX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI2('MOV',  'DI', 'BX');           { DI = destination }
+  EmitI2('MOV',  'Byte Ptr [_OV_INBUF]', '126');
+  EmitI2('LEA',  'DX', '[_OV_INBUF]');
+  EmitI2('MOV',  'AH', '0Ah');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Dh');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('MOV',  'DL', '0Ah');
+  EmitI2('MOV',  'AH', '2');
+  EmitI0('INT  21h');
+  EmitI2('LEA',  'SI', '[_OV_INBUF+2]');
+  EmitI2('XOR',  'AH', 'AH');
+  EmitI2('MOV',  'AL', '[_OV_INBUF+1]');
+  EmitI2('MOV',  'CX', 'AX');           { CX = nb de chars lus }
+  EmitLabel('_ORT_RS_COPY');
+  EmitI2('OR',   'CX', 'CX');
+  EmitI1('JZ',   '_ORT_RS_DONE');
+  EmitI2('MOV',  'AL', '[SI]');
+  EmitI2('MOV',  '[DI]', 'AL');
+  EmitI1('INC',  'SI');
+  EmitI1('INC',  'DI');
+  EmitI1('DEC',  'CX');
+  EmitI1('JMP',  '_ORT_RS_COPY');
+  EmitLabel('_ORT_RS_DONE');
+  EmitI2('MOV',  'Byte Ptr [DI]', '0');  { null-terminate }
+  EmitI1('POP',  'DI');
+  EmitI1('POP',  'SI');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  SwitchToMain;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStdModuleExpr : module.membre utilise dans un contexte d'expression.
+  Gere uniquement In.Done (BOOLEAN).
+  Le jeton courant est le nom du module.
+  -------------------------------------------------------------------------- }
+Function ParseStdModuleExpr : Integer;
+Var modname  : TString;
+    methname : TString;
+Begin
+  modname := cur_tok.val;
+  LexNext;
+  LexExpect('.');
+  methname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  ParseStdModuleExpr := TYP_UNDEF;
+  If (modname = 'In') And (methname = 'Done') Then
+  Begin
+    EmitI2('MOV', 'AX', '[_OV_IN_DONE]');
+    ParseStdModuleExpr := TYP_BOOLEAN;
+  End
+  Else
+    ErrorMsg(modname + '.' + methname + ' : inutilisable dans une expression');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStdModuleCall : Out.xxx(...) ou In.xxx(...) en position instruction.
+  Le jeton courant est le nom du module (Out ou In).
+  -------------------------------------------------------------------------- }
+Procedure ParseStdModuleCall;
+Var modname  : TString;
+    methname : TString;
+    si_var   : Integer;
+    vname    : TString;
+    bs       : Integer;
+Begin
+  modname := cur_tok.val;
+  LexNext;                        { consommer 'Out' ou 'In' }
+  LexExpect('.');
+  methname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+
+  If modname = 'Out' Then
+  Begin
+    If methname = 'Ln' Then
+    Begin
+      EmitI1('CALL', '_ORT_WRITELN');
+    End
+    Else If methname = 'Open' Then
+    Begin
+      { Out.Open : rien a faire en DOS (stdout toujours disponible) }
+    End
+    Else If methname = 'Char' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;                    { c -> AX }
+      LexExpect(')');
+      EmitI2('MOV', 'DL', 'AL');
+      EmitI2('MOV', 'AH', '2');
+      EmitI0('INT  21h');
+    End
+    Else If methname = 'String' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;                    { s -> AX (pointeur null-termine) }
+      LexExpect(')');
+      EmitI2('MOV', 'SI', 'AX');
+      EmitI1('CALL', '_ORT_WRITESTR');
+    End
+    Else If methname = 'Int' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;                    { n -> AX }
+      EmitI0('PUSH AX');            { sauvegarder n }
+      LexExpect(',');
+      ParseExpr;                    { w -> AX (largeur, ignoree) }
+      EmitI0('POP  AX');            { restaurer n }
+      LexExpect(')');
+      EmitI1('CALL', '_ORT_WRITEINT');
+    End
+    Else If methname = 'Real' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;                    { r -> stub }
+      LexExpect(',');
+      ParseExpr;                    { w -> stub }
+      LexExpect(')');
+      EmitComment(' Out.Real : emulation REAL non implementee (TODO 21+)');
+    End
+    Else
+      ErrorMsg('Out : methode inconnue : ' + methname);
+  End
+
+  Else If modname = 'In' Then
+  Begin
+    If methname = 'Open' Then
+    Begin
+      EmitI2('MOV', 'Word Ptr [_OV_IN_DONE]', '1');
+    End
+    Else If methname = 'Char' Then
+    Begin
+      LexExpect('(');
+      vname  := cur_tok.val;
+      si_var := SymFind(vname);
+      LexExpectKind(TK_IDENT);
+      LexExpect(')');
+      EmitI1('CALL', '_ORT_READCHAR');
+      EmitI2('XOR',  'AH', 'AH');
+      If si_var > 0 Then
+        GenStore(si_var)
+      Else
+        ErrorMsg('In.Char : variable inconnue : ' + vname);
+      EmitI2('MOV', 'Word Ptr [_OV_IN_DONE]', '1');
+    End
+    Else If methname = 'Int' Then
+    Begin
+      LexExpect('(');
+      vname  := cur_tok.val;
+      si_var := SymFind(vname);
+      LexExpectKind(TK_IDENT);
+      LexExpect(')');
+      EmitI1('CALL', '_ORT_READINT');
+      If si_var > 0 Then
+        GenStore(si_var)
+      Else
+        ErrorMsg('In.Int : variable inconnue : ' + vname);
+      EmitI2('MOV', 'Word Ptr [_OV_IN_DONE]', '1');
+    End
+    Else If methname = 'String' Then
+    Begin
+      LexExpect('(');
+      vname  := cur_tok.val;
+      si_var := SymFind(vname);
+      LexExpectKind(TK_IDENT);
+      LexExpect(')');
+      If si_var > 0 Then
+      Begin
+        bs := TypeByteSize(sym_table^[si_var].type_idx);
+        If bs < 2 Then bs := 128;
+        GenLoadAddr(si_var);         { BX = adresse de la variable chaine }
+        EmitI1('CALL', '_ORT_READSTR');
+      End
+      Else
+        ErrorMsg('In.String : variable inconnue : ' + vname);
+      EmitI2('MOV', 'Word Ptr [_OV_IN_DONE]', '1');
+    End
+    Else
+      ErrorMsg('In : methode inconnue : ' + methname);
+  End
+  Else
+    ErrorMsg('Module inconnu : ' + modname);
 End;
 
 { ============================================================
@@ -4368,6 +5080,7 @@ Begin
   GenDataFooter;
   GenCodeHeader;
   GenStartEntry;
+  GenOutInRuntime;               { emettre les routines runtime In/Out dans tmp_file }
 
   { ParseModule; }
 

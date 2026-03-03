@@ -5740,92 +5740,76 @@ Function parse_compound_statement:Boolean;Begin
  Repeat
   { V‚rifie si on a besoin de lire une nouvelle ligne }
   blanks;
-  If (lptr > Length(line)) or (Length(line) = 0) Then
-  Begin
+  If (lptr > Length(line)) or (Length(line) = 0) Then Begin
    If not readinline Then Break;
    lptr := 1;
   End;
-
-  { Check for closing brace }
+   { V‚rifer pour la fermeture d'accolade }
   If match('}') Then Break;
-
-  If eof <> 0 Then
-  Begin
+  If eof <> 0 Then Begin
    Case Language of
     _English: errrpt('Unexpected end of file in compound statement');
     {$IFDEF FPC}
     _Germany: errrpt('Unerwartetes Dateiende in zusammengesetzter Anweisung');
     {$ENDIF}
-    Else errrpt('Fin de fichier inattendue dans l''instruction composÃ©e');
+    Else errrpt('Fin de fichier inattendue dans l''instruction compos‚e');
    End;
    Exit;
   End;
-
-  If not parse_statement Then
-  Begin
-   { Skip to next line to avoid infinite loops }
+  If not parse_statement Then Begin
+   { Passe … la prochaine ligne pour ‚viter les boucles infinies }
    If not readinline Then Break;
    lptr := 1;
   End;
  Until False;
-
  safe_writeln('; Compound statement end');
 End;
 
-{ Expression statement parsing }
+ { Analyse d'instruction d'expression }
 Function parse_expression_statement: Boolean;
 Var
  lval: TLVal;
  save_lptr: Integer;
 Begin
  parse_expression_statement := False;
-
- { Check for empty statement (just semicolon) }
- If match(';') Then
- Begin
+  { V‚rifie l'instruction vide (simplement une point-virgule) }
+ If match(';') Then Begin
   parse_expression_statement := True;
   safe_writeln('; Empty statement');
   Exit;
  End;
-
- { Check if there's something that looks like an expression }
+  { V‚rifiez s'il y a quelque chose ressemblant … une expression }
  save_lptr := lptr;
- If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then
-  Exit;
-
- { Try to parse expression }
+ If not (is_digit(peek_char) or is_alpha(peek_char) or (peek_char = '(')) Then Exit;
+  { Essaie d'analyser l'expression }
  expression_bool(lval);
  parse_expression_statement := True;
-
- { Expect semicolon }
+  { Point-virgule attendue }
  If not match(';') Then errrpt('Expected ; after expression');
  safe_writeln('; Expression statement');
 End;
 
-{ Analyser l'assignation aux Ã©lÃ©ments de tableau }
+ { Analyser l'assignation aux ‚l‚ments de tableau }
 Procedure parse_array_assignment(array_name: String);
 Var
  index_lval, right_lval: TLVal;
  array_symbol: PSymbol;
  element_size: Integer;
 Begin
- { Trouver le symbole du tableau }
+  { Trouver le symbole du tableau }
  array_symbol := find_symbol(array_name);
- If array_symbol = nil Then
- Begin
+ If array_symbol = nil Then Begin
   Case Language of
    _English: errrpt('Array not found: ' + array_name);
    {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
    {$ENDIF}
-   Else errrpt('Tableau non trouvÃ©: ' + array_name);
+   Else errrpt('Tableau non trouv‚: ' + array_name);
   End;
   Exit;
  End;
-
- { VÃ©rifier que c'est bien un tableau }
- If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
- Begin
+  { V‚rifier que c'est bien un tableau }
+ If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then Begin
   Case Language of
    _English: errrpt('Variable is not an array: ' + array_name);
    {$IFDEF FPC}
@@ -5835,28 +5819,22 @@ Begin
   End;
   Exit;
  End;
-
- safe_writeln('; Assignation Ã  Ã©lÃ©ment de tableau ' + array_name);
-
- { Analyser l'expression d'index (le '[' a dÃ©jÃ  Ã©tÃ© consommÃ©) }
+ safe_writeln('; Assignation … ‚l‚ment de tableau ' + array_name);
+  { Analyser l'expression d'index (le '[' a d‚j… ‚t‚ consomm‚) }
  additive_expression(index_lval);
-
- { Consommer ']' }
- If not match(']') Then
- Begin
+  { Consommer ']' }
+ If not match(']') Then Begin
   Case Language of
    _English: errrpt('Expected ] after array index');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
    {$ENDIF}
-   Else errrpt('] attendu aprÃ¨s l''index du tableau');
+   Else errrpt('] attendu aprŠs l''index du tableau');
   End;
   Exit;
  End;
-
- { Consommer '=' }
- If not match('=') Then
- Begin
+  { Consommer '=' }
+ If not match('=')Then Begin
   Case Language of
    _English: errrpt('Expected = in array assignment');
    {$IFDEF FPC}
@@ -5866,27 +5844,20 @@ Begin
   End;
   Exit;
  End;
-
- { Sauvegarder l'index sur la pile }
+  { Sauvegarder l'index sur la pile }
  ol('pshs d      ; sauvegarder index sur pile');
-
- { Analyser l'expression du cÃ´tÃ© droit }
+  { Analyser l'expression du c“t‚ droit }
  expression(right_lval);
-
- { Sauvegarder la valeur Ã  assigner }
- ol('pshs d      ; sauvegarder valeur Ã  assigner');
-
- { RÃ©cupÃ©rer l'index }
- ol('puls x      ; rÃ©cupÃ©rer valeur dans X');
- ol('puls d      ; rÃ©cupÃ©rer index dans D');
-
- { Calculer la taille d'un Ã©lÃ©ment }
+  { Sauvegarder la valeur … assigner }
+ ol('pshs d      ; sauvegarder valeur … assigner');
+  { R‚cup‚rer l'index }
+ ol('puls x      ; r‚cup‚rer valeur dans X');
+ ol('puls d      ; r‚cup‚rer index dans D');
+  { Calculer la taille d'un ‚l‚ment }
  element_size := get_type_size(array_symbol^.type_info.base_type);
-
- { Si la taille d'Ã©lÃ©ment n'est pas 1, multiplier l'index }
- If element_size > 1 Then
- Begin
-  safe_writeln('; Multiplier index par taille Ã©lÃ©ment');
+  { Si la taille d'‚l‚ment n'est pas 1, multiplier l'index }
+ If element_size > 1 Then Begin
+  safe_writeln('; Multiplier index par taille ‚l‚ment');
   Case element_size of
    2: ol('lsld    ; multiplier par 2');
    4: Begin
@@ -5900,7 +5871,7 @@ Begin
       End;
   Else
    Begin
-    { Multiplication gÃ©nÃ©rale }
+    { Multiplication g‚n‚rale }
     ot('ldb  #');
     outdec(element_size);
     nl;
@@ -5908,26 +5879,23 @@ Begin
    End;
   End;
  End;
-
- { Ajouter l'adresse de base du tableau }
+  { Ajouter l'adresse de base du tableau }
  ot('addd #');
  outstr(array_name);
  nl;
-
- { Stocker la valeur Ã  l'adresse calculÃ©e }
+  { Entreposer la valeur … l'adresse calcul‚e }
  ol('tfr  d,y    ; adresse dans Y');
- ol('tfr  x,d    ; rÃ©cupÃ©rer valeur dans D');
+ ol('tfr  x,d    ; r‚cup‚rer valeur dans D');
  Case element_size of
   1: ol('stb  ,y     ; stocker octet');
   2: ol('std  ,y     ; stocker mot');
  Else
-  ol('std  ,y     ; stocker mot par dÃ©faut');
+  ol('std  ,y     ; stocker mot par d‚faut');
  End;
-
- safe_writeln('; Assignation Ã  ' + array_name + '[] terminÃ©e');
+ safe_writeln('; Assignation … ' + array_name + '[] termin‚e');
 End;
 
-{ Assignment statement parser }
+ { Analyser l'instruction d'affectation }
 Function parse_assignment_statement: Boolean;
 Var
  var_name: String;
@@ -5936,28 +5904,22 @@ Var
 Begin
  parse_assignment_statement := False;
  save_lptr := lptr;
-
- { Try to parse identifier }
- If symname(var_name) Then
- Begin
+  { Essaie d'analyser l'identificateur }
+ If symname(var_name) Then Begin
   blanks;
-
-  { Check if this is an array access }
-  If match('[') Then
-  Begin
+   { V‚rifie si c'est un tableau d'accŠs }
+  If match('[') Then Begin
    { Array element assignment: array[index] = value }
    parse_array_assignment(var_name);
    parse_assignment_statement := True;
   End
-  Else If match('=') Then
-  Begin
-   { This is a simple variable assignment }
+   Else
+  If match('=') Then Begin
+    { C'est une simple affectation de variable }
    blanks;
-
-   { Look up variable }
-   If lookup_variable(var_name, lval) Then
-   Begin
-    { Check if variable is const }
+    { Recherche de variable }
+   If lookup_variable(var_name, lval) Then Begin
+    { V‚rifie si la variable est const }
     If lval.type_info.is_const Then
     Begin
      Case Language of
@@ -5965,45 +5927,38 @@ Begin
       {$IFDEF FPC}
       _Germany: errrpt('Kann const Variable nicht zuweisen: ' + var_name);
       {$ENDIF}
-      Else errrpt('Impossible d''assigner Ã  la variable const: ' + var_name);
+      Else errrpt('Impossible d''assigner … la variable const: ' + var_name);
      End;
      Exit;
     End;
-
-    { Parse right side expression }
+     { Analyse le c“t‚ droit de l'expression }
     expression(right_lval);
-
-    { Generate assignment code }
+     { G‚nŠre le code d'affectation }
     ot('std  ');
     outstr(var_name);
     nl;
-
     safe_writeln('; Assignment to variable: ' + var_name);
     parse_assignment_statement := True;
    End;
   End
-  Else
+   Else
   Begin
-   { Not an assignment, restore position }
+   { Pas d'affectation, restaure la position }
    lptr := save_lptr;
   End;
  End;
 End;
 
-{ Main statement parser }
-Function parse_statement: Boolean;
-Begin
+ { Analyse l'instrucion Main }
+Function parse_statement:Boolean;Begin
  parse_statement := False;
-
- { Skip empty lines and comments }
+  { Saute les lignes vides et les commentaires }
  blanks;
- If Length(line) = 0 Then
- Begin
+ If Length(line) = 0 Then Begin
   parse_statement := True;
   Exit;
  End;
-
- { Try different statement types }
+  { Essai diff‚rent types d'instructions }
  If parse_label_statement Then
   parse_statement := True
  Else If parse_case_statement Then
@@ -6040,29 +5995,23 @@ Begin
   parse_statement := True;
 End;
 
-Procedure header;
-Begin
- If use_stdout Then
-  WriteLn('; ', VERSION)
- Else
-  safe_writeln('; ' + VERSION);
+Procedure header;Begin
+ If use_stdout Then WriteLn('; ', VERSION)
+               Else safe_writeln('; ' + VERSION);
 End;
 
 Procedure trailer;Begin
- { Apply optimizations if enabled }
- If optimize > OPT_NONE Then
- Begin
+ { Applique les optimisations si activ‚ }
+ If optimize > OPT_NONE Then Begin
   optimize_code;
   output_optimized_instructions;
-  free_opt_instructions; { LibÃ©rer la mÃ©moire des instructions d'optimisation }
+  free_opt_instructions; { Lib‚rer la m‚moire des instructions d'optimisation }
  End;
-
- If use_stdout Then
- Begin
+ If use_stdout Then Begin
   If asmtype = AS6809 Then WriteLn(';    .end')
                       Else WriteLn('  END');
  End
- Else
+  Else
  Begin
   If asmtype = AS6809 Then safe_writeln(';    .end')
                       Else safe_writeln('  END');
@@ -6078,7 +6027,7 @@ Procedure errrptsummary;Begin
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
 
-{ Enhanced parsing with variable declarations, control structures and expression parser }
+ { Analyse syntaxique am‚lior‚e avec d‚clarations de variables, structures de contr“le et analyseur d'expressions }
 Procedure parse;
 Var
  lval: TLVal;
@@ -6090,44 +6039,36 @@ Begin
  While eof = 0 do Begin
   {$I-}
   If not readinline Then Break;
-  If IOResult <> 0 Then
-  Begin
+  If IOResult <> 0 Then Begin
    eof := 1;
    Break;
   End;
   {$I+}
-
-  { Simple comment processing }
-  If match('/*') Then
-  Begin
+   { Traitement de simple commentaire }
+  If match('/*') Then Begin
    While (not match('*/')) and (eof = 0) do
     readinline;
    Continue;
   End;
-
-  { Process preprocessor directives BEFORE macro expansion }
-  If match('#') Then
-  Begin
-   If match('include') Then
-   Begin
-    { Process #include directive }
-    If not should_skip_code Then
-    Begin
-     If process_include_directive(line) Then
-     Begin
-      { Include successful - reset line pointer and continue with included file }
-      lptr := Length(line) + 1; { Force readinline to be called for new file }
+   { Traitement de directive de pr‚processeur AVANT les macro ‚tendues }
+  If match('#') Then Begin
+   If match('include') Then Begin
+    { Traite la directive #include }
+    If not should_skip_code Then Begin
+     If process_include_directive(line) Then Begin
+      { SuccŠs d'include - r‚initialise le pointeur de ligne et continuer avec le fichier inclus }
+      lptr := Length(line) + 1; { Force readinline a ˆtre appel‚ pour un nouveau fichier }
       Continue;
      End
-     Else
+      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d‚j… signal‚e, ignorez cette ligne }
       Continue;
      End;
     End
     Else
     Begin
-     { Skip include in conditional block }
+     { Saute l'include dans le bloc conditionnel }
      Continue;
     End;
    End
@@ -6137,7 +6078,7 @@ Begin
     If not should_skip_code Then
     Begin
      If process_define_directive(line) Then
-      Continue  { Continue with next line }
+      Continue  { Continue avec la prochaine ligne }
      Else
      Begin
       { Error already reported, skip this line }
