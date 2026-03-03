@@ -2493,7 +2493,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseConstSection : parser la section CONST ident = expr ;
+  ParseManifestSection : parser la section CONST ident = expr ;
   -------------------------------------------------------------------------- }
 { ============================================================
   TODO 06 - DECLARATIONS MANIFEST ET CONSTANTES BCPL
@@ -2522,9 +2522,7 @@ End;
 { --------------------------------------------------------------------------
   ParseManifestSection : MANIFEST $( name = expr [;] ... $)
   Les constantes MANIFEST sont evaluees au compile-time (entiers uniquement).
-
   En BCPL : MANIFEST $( name = expr ; name = expr ; ... $)
-             ou        { name = expr ; ... }
   -------------------------------------------------------------------------- }
 Procedure ParseManifestSection;
 Var name : TString;
@@ -2665,7 +2663,7 @@ End;
 
 { --------------------------------------------------------------------------
   ParseRecordType : RECORD ident-list : typeRef ; ... END
-  Chaque champ est inscrit dans sym_table comme SK_FIELD avec son offset.
+  Chaque champ est inscrit dans sym_table comme SK_LOCAL avec son offset.
   -------------------------------------------------------------------------- }
 Function ParseRecordType : Integer;
 Var first_fld : Integer;
@@ -2702,7 +2700,7 @@ Begin
     { Inscrire chaque champ dans sym_table }
     For k := 1 To nnames Do
     Begin
-      si := SymEnter(names[k], SK_FIELD, SC_GLOBAL, fti);
+      si := SymEnter(names[k], SK_LOCAL, SC_GLOBAL, fti);
       If si > 0 Then
       Begin
         sym_table^[si].fld_offset := off;
@@ -2768,7 +2766,7 @@ End;
 { --------------------------------------------------------------------------
   ParseTypeRef : parser une designation de type Oberon.
   Retourne l'index dans type_table.
-    ident              -> alias de type (SK_TYPE dans sym_table)
+    ident              -> alias de type (SK_MANIFEST dans sym_table)
     ARRAY  n OF T      -> ParseArrayType
     RECORD ... END     -> ParseRecordType
     POINTER TO T       -> ParsePointerType
@@ -2791,7 +2789,7 @@ Begin
   Begin
     LexNext;   { consommer le nom }
     si := SymFind(tok);
-    If (si > 0) And (sym_table^[si].kind = SK_TYPE) Then
+    If (si > 0) And (sym_table^[si].kind = SK_MANIFEST) Then
       ParseTypeRef := sym_table^[si].type_idx
     Else
     Begin
@@ -2809,7 +2807,7 @@ End;
 
 { --------------------------------------------------------------------------
   ParseTypeDecl : ident = typeRef ;
-  Cree un alias de type et l'inscrit comme SK_TYPE dans sym_table.
+  Cree un alias de type et l'inscrit comme SK_MANIFEST dans sym_table.
   -------------------------------------------------------------------------- }
 Procedure ParseTypeDecl;
 Var tname : TString;
@@ -2822,7 +2820,7 @@ Begin
   ti := ParseTypeRef;
   If SymFindLocal(tname) > 0 Then
     WarnMsg('Type deja declare dans cette portee : ' + tname);
-  si := SymEnter(tname, SK_TYPE, SC_GLOBAL, ti);
+  si := SymEnter(tname, SK_MANIFEST, SC_GLOBAL, ti);
   If si > 0 Then
     sym_table^[si].asm_label := '';   { les types n'ont pas de label ASM }
   LexExpect(';');
@@ -2905,7 +2903,6 @@ Begin
         (cur_tok.val <> 'LET') And (cur_tok.val <> 'MANIFEST') And
         (cur_tok.val <> 'GLOBAL') Do
     LexNext;
-End;
 End;
 
 { ============================================================
@@ -3004,8 +3001,6 @@ Begin
   Case sym_table^[si].kind Of
     SK_MANIFEST :
       GenLoadConst(sym_table^[si].const_ival, ti);
-    SK_TYPE :
-      ErrorMsg('Nom de type non valide dans une expression : ' + name);
     SK_PROC :
       Begin
         { Appel de procedure/fonction (TODO 18) }
@@ -3028,7 +3023,7 @@ Begin
           ti := 0;
       End;
   Else
-    { SK_VAR, SK_PARAM, SK_FIELD }
+    { SK_LOCAL, SK_PARAM, SK_LOCAL }
     { Pour les agregats (ARRAY, RECORD), charger l'adresse dans BX }
     If TypeIsArray(ti) Or TypeIsRecord(ti) Then
     Begin
@@ -3045,7 +3040,7 @@ Begin
     If cur_tok.val = '.' Then
     Begin
       LexNext;
-      If (ti < 1) Or (type_table^[ti].kind <> TYK_RECORD) Then
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_WORD) Then
         ErrorMsg('Selection de champ sur un type non RECORD');
       If Not addr_in_bx Then
       Begin
@@ -3081,8 +3076,8 @@ Begin
     Else If cur_tok.val = '[' Then
     Begin
       LexNext;
-      If (ti < 1) Or ((type_table^[ti].kind <> TYK_ARRAY) And
-                      (type_table^[ti].kind <> TYK_OPENARRAY)) Then
+      If (ti < 1) Or ((type_table^[ti].kind <> TYK_WORD) And
+                      (type_table^[ti].kind <> TYK_WORD)) Then
         ErrorMsg('Acces indexe sur un type non ARRAY');
       el_ti   := type_table^[ti].base_idx;
       el_size := TypeByteSize(el_ti);
@@ -3093,7 +3088,7 @@ Begin
       EmitI0('PUSH BX');              { sauvegarder adresse de base }
       ParseExpr;                       { index -> AX }
       { Verification de bornes (0 <= i < len) pour tableaux de taille connue }
-      If (type_table^[ti].kind = TYK_ARRAY) And
+      If (type_table^[ti].kind = TYK_WORD) And
          (type_table^[ti].arr_len > 0) Then
       Begin
         EmitI2('CMP', 'AX', IntToStr(type_table^[ti].arr_len));
@@ -3122,7 +3117,7 @@ Begin
     Else
     Begin
       LexNext;
-      If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_WORD) Then
         ErrorMsg('Dereferencement sur un type non POINTER');
       { Obtenir la valeur du pointeur dans BX }
       If addr_in_bx Then
@@ -3171,13 +3166,13 @@ Begin
   If cur_tok.kind = TK_INTEGER Then
   Begin
     EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
-    ti := TYP_INTEGER;
+    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.kind = TK_CHAR Then
   Begin
     EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
-    ti := TYP_CHAR;
+    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.kind = TK_REAL Then
@@ -3188,32 +3183,32 @@ Begin
     lbl := BK_PFX + 'R' + n_str;
     EmitDD(lbl, cur_tok.val);
     EmitI2('LEA', 'AX', '[' + lbl + ']');
-    ti := TYP_REAL;
+    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.kind = TK_STRING Then
   Begin
     lbl := GenStringLitData(cur_tok.val);
     EmitI2('LEA', 'AX', '[' + lbl + ']');
-    ti := TypeNewArray(TYP_CHAR, Length(cur_tok.val) + 1);
+    ti := TypeNewArray(TYP_WORD, Length(cur_tok.val) + 1);
     LexNext;
   End
   Else If cur_tok.val = 'TRUE' Then
   Begin
     EmitI2('MOV', 'AX', '1');
-    ti := TYP_BOOLEAN;
+    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.val = 'FALSE' Then
   Begin
     EmitI2('MOV', 'AX', '0');
-    ti := TYP_BOOLEAN;
+    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.val = 'NIL' Then
   Begin
     EmitI2('MOV', 'AX', '0');
-    ti := TYP_NIL;
+    ti := TYP_WORD;
     LexNext;
   End
   Else If cur_tok.val = '~' Then
@@ -3288,25 +3283,25 @@ Begin
         EmitI2('AND', 'AX', 'CX') { AND logique bits }
       Else
         EmitI0('IMUL CX');         { AX * CX -> DX:AX }
-      ti := TYP_INTEGER;
+      ti := TYP_WORD;
     End
     Else If op = 'DIV' Then
     Begin
       EmitI0('CWD');               { etendre AX -> DX:AX }
       EmitI0('IDIV CX');           { quotient -> AX }
-      ti := TYP_INTEGER;
+      ti := TYP_WORD;
     End
     Else If op = 'MOD' Then
     Begin
       EmitI0('CWD');
       EmitI0('IDIV CX');
       EmitI2('MOV', 'AX', 'DX');  { reste -> AX }
-      ti := TYP_INTEGER;
+      ti := TYP_WORD;
     End
     Else { AND }
     Begin
       EmitI2('AND', 'AX', 'CX');
-      ti := TYP_BOOLEAN;
+      ti := TYP_WORD;
     End;
     If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
@@ -3339,17 +3334,17 @@ Begin
     If op = '+' Then
     Begin
       EmitI2('ADD', 'AX', 'CX');
-      If Not TypeIsBoolean(ti) Then ti := TYP_INTEGER;
+      If Not TypeIsBoolean(ti) Then ti := TYP_WORD;
     End
     Else If op = '-' Then
     Begin
       EmitI2('SUB', 'AX', 'CX');
-      ti := TYP_INTEGER;
+      ti := TYP_WORD;
     End
     Else { OR }
     Begin
       EmitI2('OR',  'AX', 'CX');
-      ti := TYP_BOOLEAN;
+      ti := TYP_WORD;
     End;
     If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
@@ -3409,7 +3404,7 @@ Begin
       EmitI2('MOV', 'AX', '1');    { vrai }
       EmitLabel(lbl);
     End;
-    ti := TYP_BOOLEAN;
+    ti := TYP_WORD;
     If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
   ParseExpr := ti;
@@ -3439,7 +3434,7 @@ Begin
     If cur_tok.val = '.' Then
     Begin
       LexNext;
-      If (ti < 1) Or (type_table^[ti].kind <> TYK_RECORD) Then
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_WORD) Then
         ErrorMsg('Selection de champ sur un type non RECORD');
       fname    := cur_tok.val;
       LexExpectKind(TK_IDENT);
@@ -3463,8 +3458,8 @@ Begin
     Else If cur_tok.val = '[' Then
     Begin
       LexNext;
-      If (ti < 1) Or ((type_table^[ti].kind <> TYK_ARRAY) And
-                      (type_table^[ti].kind <> TYK_OPENARRAY)) Then
+      If (ti < 1) Or ((type_table^[ti].kind <> TYK_WORD) And
+                      (type_table^[ti].kind <> TYK_WORD)) Then
         ErrorMsg('Acces indexe sur un type non ARRAY');
       el_ti   := type_table^[ti].base_idx;
       el_size := TypeByteSize(el_ti);
@@ -3472,7 +3467,7 @@ Begin
       EmitI0('PUSH BX');              { sauvegarder adresse de base }
       ParseExpr;                       { index -> AX }
       { Verification de bornes }
-      If (type_table^[ti].kind = TYK_ARRAY) And
+      If (type_table^[ti].kind = TYK_WORD) And
          (type_table^[ti].arr_len > 0) Then
       Begin
         EmitI2('CMP', 'AX', IntToStr(type_table^[ti].arr_len));
@@ -3493,7 +3488,7 @@ Begin
     Else
     Begin
       LexNext;                         { consommer '^' }
-      If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_WORD) Then
         ErrorMsg('Dereferencement sur un type non POINTER');
       EmitI2('MOV', 'BX', '[BX]');    { deref }
       { Verification NIL a l'execution (TODO 22) }
@@ -3756,7 +3751,7 @@ End;
   ParseForStmt : FOR v := start TO end [BY step] DO StatementSeq END
   Strategie 8086 :
     - SI    = valeur limite (end), calculee une seule fois avant la boucle
-    - [v]   = variable de controle (SK_VAR ordinal)
+    - [v]   = variable de controle (SK_LOCAL ordinal)
     - step  = constante entiere evaluee au compile-time (defaut +1)
   Le prologue de procedure sauvegarde deja SI (TODO 17) ; au niveau module
   SI est libre apres GenStartEntry (qui ne fait que MOV DS).
@@ -3776,7 +3771,7 @@ Begin
   si_var := SymFind(vname);
   If si_var = 0 Then
     ErrorMsg('Variable de boucle inconnue : ' + vname)
-  Else If sym_table^[si_var].kind <> SK_VAR Then
+  Else If sym_table^[si_var].kind <> SK_LOCAL Then
     ErrorMsg('La variable de boucle doit etre une variable : ' + vname);
 
   LexExpect(':=');
@@ -4032,7 +4027,7 @@ Begin
 
     { Verifier que T est un type connu }
     si_t := SymFind(tname);
-    If (si_t = 0) Or (sym_table^[si_t].kind <> SK_TYPE) Then
+    If (si_t = 0) Or (sym_table^[si_t].kind <> SK_MANIFEST) Then
     Begin
       ErrorMsg('Type inconnu dans WITH : ' + tname);
       ti_T := TYP_WORD;
@@ -4051,7 +4046,7 @@ Begin
     ScopeEnter;
 
     { Ajouter un alias de v avec le type T }
-    si_alias := SymEnter(vname, SK_VAR,
+    si_alias := SymEnter(vname, SK_LOCAL,
                          sym_table^[si_v].scope, ti_T);
     If si_alias > 0 Then
     Begin
@@ -4335,7 +4330,7 @@ Begin
       ti1 := sym_table^[si1].type_idx;
       { Calcul de la taille : sizeof(pointee type) }
       If (ti1 >= 1) And (ti1 <= type_count) And
-         (type_table^[ti1].kind = TYK_POINTER) Then
+         (type_table^[ti1].kind = TYK_WORD) Then
         EmitI2('MOV', 'BX', IntToStr(TypeByteSize(type_table^[ti1].base_idx)))
       Else
         EmitI2('MOV', 'BX', '2');        { fallback : 2 octets }
@@ -4436,7 +4431,7 @@ Var ti1      : Integer;
     si_type  : Integer;
     ti_res   : Integer;
 Begin
-  ti_res := TYP_INTEGER;
+  ti_res := TYP_WORD;
   LexExpect('(');
 
   If fname = 'ABS' Then
@@ -4456,7 +4451,7 @@ Begin
     { ODD(x) : vrai si x est impair }
     ti1 := ParseExpr;
     EmitI2('AND', 'AX', '1');
-    ti_res := TYP_BOOLEAN;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'CAP' Then
@@ -4464,7 +4459,7 @@ Begin
     { CAP(c) : majuscule du caractere c }
     ti1 := ParseExpr;
     EmitI2('AND', 'AX', '0DFh');
-    ti_res := TYP_CHAR;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'ORD' Then
@@ -4472,7 +4467,7 @@ Begin
     { ORD(x) : valeur ordinale de x (CHAR/BOOLEAN -> INTEGER) }
     ti1 := ParseExpr;
     EmitI2('AND', 'AX', '0FFh');
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'CHR' Then
@@ -4480,7 +4475,7 @@ Begin
     { CHR(n) : convertir un entier en CHAR }
     ti1 := ParseExpr;
     EmitI2('AND', 'AX', '0FFh');
-    ti_res := TYP_CHAR;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'LEN' Then
@@ -4502,7 +4497,7 @@ Begin
       ErrorMsg('LEN : argument doit etre un tableau');
       EmitI2('MOV', 'AX', '0');
     End;
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'HIGH' Then
@@ -4519,7 +4514,7 @@ Begin
       ErrorMsg('HIGH : argument doit etre un tableau');
       EmitI2('MOV', 'AX', '0');
     End;
-    ti_res := TYP_CARDINAL;
+    ti_res := TYP_WORD;
   End
 
   Else If (fname = 'FLOAT') Or (fname = 'REAL') Then
@@ -4527,7 +4522,7 @@ Begin
     { FLOAT(i) : convertir entier en reel (stub : resultat entier dans AX) }
     ti1    := ParseExpr;
     EmitComment(' FLOAT : conversion entier->reel (stub sans FPU)');
-    ti_res := TYP_REAL;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'TRUNC' Then
@@ -4535,7 +4530,7 @@ Begin
     { TRUNC(r) : convertir reel en entier par troncature (stub) }
     ti1    := ParseExpr;
     EmitComment(' TRUNC : conversion reel->entier (stub sans FPU)');
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'TSIZE' Then
@@ -4550,14 +4545,14 @@ Begin
       LexNext;
       ti1 := ParseExpr;
     End;
-    If (si_type > 0) And (sym_table^[si_type].kind = SK_TYPE) Then
+    If (si_type > 0) And (sym_table^[si_type].kind = SK_MANIFEST) Then
       EmitI2('MOV', 'AX', IntToStr(TypeByteSize(sym_table^[si_type].type_idx)))
     Else
     Begin
       ErrorMsg('TSIZE : type inconnu : ' + t_name);
       EmitI2('MOV', 'AX', '0');
     End;
-    ti_res := TYP_CARDINAL;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'VAL' Then
@@ -4569,10 +4564,10 @@ Begin
     LexExpect(',');
     ti1    := ParseExpr;             { x -> AX }
     { La valeur reste dans AX, on assure juste la taille }
-    If (si_type > 0) And (sym_table^[si_type].kind = SK_TYPE) Then
+    If (si_type > 0) And (sym_table^[si_type].kind = SK_MANIFEST) Then
       ti_res := sym_table^[si_type].type_idx
     Else
-      ti_res := TYP_INTEGER;
+      ti_res := TYP_WORD;
     EmitComment(' VAL : coercition de type');
   End
 
@@ -4581,14 +4576,14 @@ Begin
     { CARDINAL(x) : etendre sur 16 bits non signes }
     ti1    := ParseExpr;             { x -> AX }
     EmitI2('AND', 'AX', '0FFFFh');  { masque 16 bits }
-    ti_res := TYP_CARDINAL;
+    ti_res := TYP_WORD;
   End
 
   Else If (fname = 'SHORT') Or (fname = 'LONG') Or (fname = 'ENTIER') Then
   Begin
     { SHORT/LONG/ENTIER : conversions numeriques, resultat dans AX }
     ti1    := ParseExpr;
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'SIZE' Then
@@ -4597,14 +4592,14 @@ Begin
     t_name  := cur_tok.val;
     si_type := SymFind(t_name);
     LexExpectKind(TK_IDENT);
-    If (si_type > 0) And (sym_table^[si_type].kind = SK_TYPE) Then
+    If (si_type > 0) And (sym_table^[si_type].kind = SK_MANIFEST) Then
       EmitI2('MOV', 'AX', IntToStr(TypeByteSize(sym_table^[si_type].type_idx)))
     Else
     Begin
       ErrorMsg('SIZE : type inconnu : ' + t_name);
       EmitI2('MOV', 'AX', '0');
     End;
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'MIN' Then
@@ -4613,7 +4608,7 @@ Begin
     t_name := cur_tok.val;
     LexExpectKind(TK_IDENT);
     EmitI2('MOV', 'AX', '8000h');
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else If fname = 'MAX' Then
@@ -4622,7 +4617,7 @@ Begin
     t_name := cur_tok.val;
     LexExpectKind(TK_IDENT);
     EmitI2('MOV', 'AX', '7FFFh');
-    ti_res := TYP_INTEGER;
+    ti_res := TYP_WORD;
   End
 
   Else
@@ -4914,7 +4909,7 @@ Begin
   If (modname = 'In') And (methname = 'Done') Then
   Begin
     EmitI2('MOV', 'AX', '[_OV_IN_DONE]');
-    ParseStdModuleExpr := TYP_BOOLEAN;
+    ParseStdModuleExpr := TYP_WORD;
   End
 
   { ---- TODO 23 : Math.xxx -> stub FPU ---- }
@@ -4936,7 +4931,7 @@ Begin
       LexExpect(')');
     End;
     EmitI2('XOR', 'AX', 'AX');
-    ParseStdModuleExpr := TYP_REAL;
+    ParseStdModuleExpr := TYP_WORD;
   End
 
   { ---- TODO 23 : SYSTEM.ADR / SYSTEM.VAL / SYSTEM.BIT ---- }
@@ -4948,7 +4943,7 @@ Begin
       ParseExpr;
       LexExpect(')');
       EmitComment(' SYSTEM.ADR : adresse en AX (approximation via valeur)');
-      ParseStdModuleExpr := TYP_INTEGER;
+      ParseStdModuleExpr := TYP_WORD;
     End
     Else If methname = 'VAL' Then
     Begin
@@ -4958,7 +4953,7 @@ Begin
       ParseExpr;
       LexExpect(')');
       EmitComment(' SYSTEM.VAL : transtypage - valeur dans AX');
-      ParseStdModuleExpr := TYP_INTEGER;
+      ParseStdModuleExpr := TYP_WORD;
     End
     Else If methname = 'BIT' Then
     Begin
@@ -4972,7 +4967,7 @@ Begin
       EmitI2('SHR',  'AX', 'CL');
       EmitI2('AND',  'AX', '1');
       LexExpect(')');
-      ParseStdModuleExpr := TYP_BOOLEAN;
+      ParseStdModuleExpr := TYP_WORD;
     End
     Else
     Begin
@@ -4992,7 +4987,7 @@ Begin
         LexExpect(')');
       End;
       EmitI2('XOR', 'AX', 'AX');
-      ParseStdModuleExpr := TYP_INTEGER;
+      ParseStdModuleExpr := TYP_WORD;
     End;
   End
 
@@ -5274,13 +5269,13 @@ Begin
       import_table[import_count].mod_name := modname;
       import_table[import_count].alias    := modname;
     End;
-    dummy := SymEnter(modname, SK_MODULE, SC_GLOBAL, 0);
+    dummy := SymEnter(modname, SK_PROC, SC_GLOBAL, 0);
     { Enregistrer chaque identificateur importe directement }
     Repeat
       ident := cur_tok.val;
       LexExpectKind(TK_IDENT);
       { L'ident est enregistre comme alias direct dans la portee courante }
-      dummy := SymEnter(ident, SK_MODULE, SC_GLOBAL, 0);
+      dummy := SymEnter(ident, SK_PROC, SC_GLOBAL, 0);
       If cur_tok.val = ',' Then
         LexNext
       Else
@@ -5311,7 +5306,7 @@ Begin
       End
       Else
         ErrorMsg('Table des imports saturee');
-      dummy := SymEnter(alias, SK_MODULE, SC_GLOBAL, 0);
+      dummy := SymEnter(alias, SK_PROC, SC_GLOBAL, 0);
       If cur_tok.val = ',' Then
         LexNext
       Else
@@ -5477,7 +5472,7 @@ Begin
 
   { Declarations locales (CONST TYPE VAR), dans l'ordre }
   local_off := 0;
-  If cur_tok.val = 'CONST' Then ParseConstSection;
+  If cur_tok.val = 'CONST' Then ParseManifestSection;
   If cur_tok.val = 'TYPE'  Then ParseTypeSection;
   If cur_tok.val = 'VAR'   Then ParseVarSection(True, local_off);
   { Support des procedures imbriquees : boucle sur PROCEDURE }
@@ -5488,7 +5483,7 @@ Begin
   save_pidx   := cur_proc_idx;
   cur_proc_idx := pi;
   save_ret    := cur_ret_lbl;
-  cur_ret_lbl := OP_PFX + AsmIdent(module_name) + '_' + AsmIdent(pname) + '_RET';
+  cur_ret_lbl := BP_PFX + AsmIdent(module_name) + '_' + AsmIdent(pname) + '_RET';
 
   SwitchToTmp;
   GenProcPrologue(pi);
@@ -5607,7 +5602,7 @@ Begin
     ParseExportSection;
 
   { --- Sections CONST / TYPE (pas de donnees en DATA) --- }
-  While cur_tok.val = 'CONST' Do ParseConstSection;
+  While cur_tok.val = 'CONST' Do ParseManifestSection;
   While cur_tok.val = 'TYPE'  Do ParseTypeSection;
 
   { --- Section VAR globale : emise en DATA --- }
@@ -5674,7 +5669,7 @@ Begin
 
   { --- Initialisation --- }
   InitTables;
-  InitBuiltinTypes;
+  InitBcplSystem;
 
   { --- Ouverture du source et lancement du lexer --- }
   LexInit(src_fname);  { ouvre src_file, charge le premier token }

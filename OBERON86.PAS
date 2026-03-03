@@ -1,193 +1,10 @@
-(* OBERON86.PAS - Compilateur Oberon vers assembleur 8086
-  Turbo Pascal / Free Pascal
-  ================================================================
-
-  LISTE DES TRAVAUX A REALISER (25 TODOS)
-  ========================================
-
-  TODO 01 - INFRASTRUCTURE DE BASE
-    Definir les constantes globales (VERSION, MAX_SYM, MAX_SCOPE,
-    MAX_LABELS, MAX_ERRORS, MAX_STR, etc.) et les types fondamentaux
-    (TString, TToken, TTokenKind, etc.). Mettre en place le cadre
-    principal du programme (lecture des arguments, ouverture des
-    fichiers source .OBN et sortie .ASM, boucle principale).
-
-  TODO 02 - ANALYSEUR LEXICAL (LEXER)
-    Implementer le lecteur de caracteres (LexChar, LexPeek),
-    la gestion des lignes/colonnes pour les messages d'erreur,
-    et la reconnaissance de tous les tokens Oberon : mots-cles
-    (MODULE, IMPORT, CONST, TYPE, VAR, PROCEDURE, BEGIN, END,
-    IF, THEN, ELSIF, ELSE, WHILE, DO, REPEAT, UNTIL, FOR, TO,
-    BY, LOOP, EXIT, CASE, OF, WITH, RETURN, DIV, MOD, IN, IS,
-    OR, AND, NOT, NIL, TRUE, FALSE), identificateurs, entiers,
-    reels, caracteres ('x'), chaines ("abc"), operateurs et
-    delimiteurs. LexNext avance au token suivant.
-
-  TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
-    Implementer la table des symboles (SymEnter, SymFind,
-    SymFindLocal). Gerer les portees imbriquees (ScopeEnter /
-    ScopeLeave) pour le module, les procedures et les blocs.
-    Definir les categories de symboles : SK_CONST, SK_TYPE,
-    SK_VAR, SK_PARAM, SK_PROC, SK_MODULE, SK_FIELD.
-
-  TODO 04 - SYSTEME DE TYPES
-    Implementer la representation interne des types Oberon :
-    types de base INTEGER, BOOLEAN, CHAR, BYTE, SET, REAL ;
-    types structures ARRAY, RECORD, POINTER, PROCEDURE ;
-    chaines (ARRAY OF CHAR). Fonctions de compatibilite de
-    types (TypeCompat, TypeAssignCompat) et de taille
-    (TypeBitSize, TypeByteSize).
-
-  TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
-    Implementer le moteur d'emission assembleur 8086 :
-    EmitLabel, EmitI0, EmitI1, EmitI2, EmitComment,
-    EmitDB, EmitDW, EmitDD. Gerer le compteur d'instructions,
-    le segment de code (.CODE), le segment de donnees (.DATA)
-    et le segment de pile. Produire un fichier .ASM compatible
-    MASM/TASM.
-
-  TODO 06 - DECLARATIONS DE CONSTANTES (CONST)
-    Parser la section CONST d'un module ou d'une procedure.
-    Evaluer les expressions constantes au moment de la
-    compilation (entiers, booleens, caracteres, chaines,
-    expressions arithmetiques et booleennes sur constantes).
-    Stocker dans la table des symboles avec SK_CONST.
-
-  TODO 07 - DECLARATIONS DE TYPES (TYPE)
-    Parser la section TYPE. Gerer les alias de types,
-    les types tableaux (ARRAY n OF T), les types enregistrement
-    (RECORD ... END) avec leurs champs, les types pointeur
-    (POINTER TO T) et les types procedure (PROCEDURE (params) : T).
-    Construire les descripteurs de types internes.
-
-  TODO 08 - DECLARATIONS DE VARIABLES (VAR)
-    Parser la section VAR au niveau module (variables globales,
-    emises en .DATA) et au niveau procedure (variables locales,
-    allouees sur la pile via BP). Calculer les offsets,
-    generer les reserves memoire (DW ?, DB ?, etc.).
-
-  TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
-    Parser les facteurs Oberon : litteraux entiers, booleens,
-    caracteres, chaines, NIL, identificateurs (variables,
-    constantes, appels de fonctions), acces indexes (a[i]),
-    selection de champ (r.f), dereferencement (p^),
-    sous-expressions entre parentheses. Generer le code 8086
-    correspondant (resultat dans AX ou AX:DX pour 32 bits).
-
-  TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
-    ImplÃ©menter la hierarchie complete des operateurs Oberon :
-    unaires (-, +, NOT) ; termes (*, /, DIV, MOD, AND) ;
-    expressions simples (+, -, OR) ; relations (=, #, <, <=,
-    >, >=, IN, IS). Verifier la compatibilite de types a chaque
-    niveau et produire le code 8086 (MUL, IMUL, IDIV, AND, OR,
-    XOR, NEG, CMP, Jcc, SETcc).
-
-  TODO 11 - INSTRUCTION D'AFFECTATION (:=)
-    Parser et generer le code pour l'affectation Oberon.
-    Gerer les cas : variable simple, element de tableau,
-    champ d'enregistrement, dereferencement de pointeur.
-    Verifier la compatibilite de type assignation.
-    Cas particulier : affectation de chaines.
-
-  TODO 12 - INSTRUCTION IF / ELSIF / ELSE
-    Parser IF expr THEN seq {ELSIF expr THEN seq} [ELSE seq] END.
-    Generer les sauts conditionnels 8086 avec gestion correcte
-    des etiquettes (label_else_i, label_end). Verifier que
-    l'expression est de type BOOLEAN.
-
-  TODO 13 - INSTRUCTION WHILE / REPEAT / LOOP / EXIT
-    Parser WHILE expr DO seq END, REPEAT seq UNTIL expr,
-    LOOP seq END avec EXIT. Generer les boucles 8086 :
-    etiquettes de debut/fin, sauts conditionnels, traitement
-    de EXIT (JMP vers label_end de la boucle englobante).
-
-  TODO 14 - INSTRUCTION FOR
-    Parser FOR v := debut TO fin [BY pas] DO seq END.
-    Evaluer et stocker debut, fin, pas (constante obligatoire
-    en Oberon). Generer l'initialisation, le test de borne
-    et l'incrementation en 8086 (MOV, CMP, Jcc, ADD/SUB).
-
-  TODO 15 - INSTRUCTION CASE
-    Parser CASE expr OF {val {| val} : seq} [ELSE seq] END.
-    Gerer les etiquettes entieres et caracteres. Generer
-    la table de sauts ou la cascade de comparaisons 8086
-    selon la densite des valeurs (table si dense, chaine
-    CMP/JE si sparse).
-
-  TODO 16 - INSTRUCTION WITH (GARDE DE TYPE)
-    Parser WITH v : T DO seq END. Implementer la verification
-    de type dynamique (IS) et le transtypage local de v vers T
-    pour la duree du bloc. Generer le code de test de type
-    a l'execution si necessaire.
-
-  TODO 17 - DECLARATIONS DE PROCEDURES
-    Parser PROCEDURE [*] nom [(params)] [: typeRetour] ;
-    [corps] END nom. Gerer le prologue 8086 (PUSH BP /
-    MOV BP, SP / SUB SP, taille_locales), l'epilogue
-    (MOV SP, BP / POP BP / RET n), les parametres passes
-    par valeur et par reference (VAR), le type retour
-    (resultat dans AX).
-
-  TODO 18 - APPELS DE PROCEDURES ET DE FONCTIONS
-    Parser et generer les appels de procedures/fonctions :
-    empilement des arguments dans l'ordre correct, gestion
-    du type VAR (passage d'adresse via LEA), recuperation
-    du resultat (AX). Gerer la recursion. Verifier l'arite
-    et les types des arguments.
-
-  TODO 19 - PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
-    Implementer les procedures/fonctions standard Oberon :
-    INC(v[,n]), DEC(v[,n]), INCL(s,e), EXCL(s,e),
-    NEW(p), DISPOSE(p), HALT(n), ASSERT(b[,n]),
-    ABS(x), ODD(x), CAP(c), ORD(x), CHR(x),
-    LEN(a[,d]), SHORT(x), LONG(x), ENTIER(x), SIZE(T).
-    Generer le code 8086 inline ou appel runtime.
-
-  TODO 20 - MODULE D'ENTREE/SORTIE (Out / In)
-    Implementer le support des modules standard Oberon :
-    Out.Int(n, w), Out.Real(r, w), Out.Char(c),
-    Out.String(s), Out.Ln ; In.Int(n), In.Char(c),
-    In.String(s). Generer les appels au runtime 8086
-    (_JRT_WRITEINT, _JRT_WRITESTR, etc. adaptes Oberon).
-
-  TODO 21 - GESTION DES TABLEAUX ET ENREGISTREMENTS
-    Generer le code 8086 pour : acces indexe (calcul d'offset
-    = base + i * taille_element, verification de borne
-    optionnelle), acces champ (base + offset_champ),
-    copie de structure (MOV par blocs), passage de tableau
-    ouvert (ARRAY OF T) avec longueur implicite.
-
-  TODO 22 - GESTION DES POINTEURS ET ALLOCATIONS
-    Implementer NEW(p) : appel a un allocateur heap en 8086
-    (runtime malloc simplifie). DISPOSE(p). Generer le
-    dereferencement (p^ â†’ [BX]). Gerer NIL (valeur 0000h).
-    Optionnel : verifier le pointeur NIL a l'execution.
-
-  TODO 23 - IMPORTATION DE MODULES (IMPORT)
-    Parser la clause IMPORT et gerer la qualification
-    M.x dans les expressions et instructions. Implementer
-    une table des modules importes. Pour la phase 1 :
-    supporter au moins In, Out, Math, SYSTEM comme modules
-    connus avec leur interface predeclaree.
-
-  TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
-    Implementer les messages d'erreur situes (fichier, ligne,
-    colonne), le comptage des erreurs et avertissements,
-    l'arret apres un seuil d'erreurs (MAX_ERRORS). Ajouter
-    un mode verbeux (-v) affichant les symboles, les types
-    et les statistiques de compilation (lignes, tokens,
-    instructions generees).
-
-  TODO 25 - INTEGRATION FINALE ET TESTS
-    Assembler toutes les phases dans la boucle principale.
-    Generer le prologue .ASM complet (modele memoire SMALL,
-    directives DOSSEG, .MODEL, .STACK, .DATA, .CODE, END START).
-    Creer une suite de programmes de test Oberon couvrant :
-    HelloWorld, arithmetique, boucles, tableaux, enregistrements,
-    pointeurs, procedures recursives. Valider la compilation
-    de bout en bout avec TASM/MASM et execution sous DOSBox.
-
-  ================================================================ *)
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur Oberon vers assembleur 8086
+}
 
 Program OBERON86;
 
@@ -368,7 +185,7 @@ Var
   src_file     : Text;
   out_file     : Text;
   tmp_file     : Text;
-  str_file     : Text;             { chaînes litterales differees (TODO 25) }
+  str_file     : Text;             { cha�nes litterales differees (TODO 25) }
   cur_out      : TTextPtr;   { pointe sur out_file ou tmp_file       }
   src_fname    : TString;
   out_fname    : TString;
@@ -580,7 +397,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexSkipOberonComment : sauter un commentaire  (* ... *)  avec imbrication.
+  LexSkipOberonComment : sauter un commentaire  ( * ... * )  avec imbrication.
   On est positionne sur le '(' au moment de l'appel.
   -------------------------------------------------------------------------- }
 Procedure LexSkipOberonComment;
@@ -613,7 +430,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexSkipWS : sauter les blancs et les commentaires (* ... *).
+  LexSkipWS : sauter les blancs et les commentaires ( * ... * ).
   -------------------------------------------------------------------------- }
 Procedure LexSkipWS;
 Begin
@@ -629,7 +446,7 @@ Begin
       Continue;
     End;
 
-    { Commentaire Oberon  (* ... *)  eventuellement imbrique }
+    { Commentaire Oberon  ( * ... * )  eventuellement imbrique }
     If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
     Begin
       LexSkipOberonComment;
@@ -2867,7 +2684,7 @@ End;
     POINTER TO T       -> ParsePointerType
     PROCEDURE [(.)] :T -> ParseProcType
   -------------------------------------------------------------------------- }
-Function ParseTypeRef;
+Function ParseTypeRef:Integer;
 Var tok : TString;
     si  : Integer;
 Begin
@@ -3503,7 +3320,7 @@ End;
   Relations Oberon : = # < <= > >= IN IS
   Gauche dans AX, droit dans CX, resultat BOOLEAN dans AX (0 ou 1).
   -------------------------------------------------------------------------- }
-Function ParseExpr;
+Function ParseExpr:Integer;
 Var ti   : Integer;
     ti2  : Integer;
     op   : TString;
@@ -4159,7 +3976,7 @@ Begin
   lbl_end  := NewLabel;
   lbl_else := NewLabel;
 
-  { Boucle sur les gardes v : T }  
+  { Boucle sur les gardes v : T }
   Repeat
     vname := cur_tok.val;
     LexExpectKind(TK_IDENT);
@@ -5579,7 +5396,7 @@ End;
   Programme principal
   ============================================================ }
 
-Begin
+BEGIN
   { --- Arguments --- }
   ParseArgs;
 
@@ -5653,4 +5470,4 @@ Begin
     If opt_verbose Then
       WriteLn('Compilation reussie -> ', out_fname);
   End;
-End.
+END.
