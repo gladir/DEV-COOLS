@@ -1,4 +1,4 @@
-(* OBERON86.PAS - Compilateur Oberon vers assembleur 8086
+﻿(* OBERON86.PAS - Compilateur Oberon vers assembleur 8086
   Turbo Pascal / Free Pascal
   ================================================================
 
@@ -75,7 +75,7 @@
     correspondant (resultat dans AX ou AX:DX pour 32 bits).
 
   TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
-    Implémenter la hierarchie complete des operateurs Oberon :
+    ImplÃ©menter la hierarchie complete des operateurs Oberon :
     unaires (-, +, NOT) ; termes (*, /, DIV, MOD, AND) ;
     expressions simples (+, -, OR) ; relations (=, #, <, <=,
     >, >=, IN, IS). Verifier la compatibilite de types a chaque
@@ -160,7 +160,7 @@
   TODO 22 - GESTION DES POINTEURS ET ALLOCATIONS
     Implementer NEW(p) : appel a un allocateur heap en 8086
     (runtime malloc simplifie). DISPOSE(p). Generer le
-    dereferencement (p^ → [BX]). Gerer NIL (valeur 0000h).
+    dereferencement (p^ â†’ [BX]). Gerer NIL (valeur 0000h).
     Optionnel : verifier le pointeur NIL a l'execution.
 
   TODO 23 - IMPORTATION DE MODULES (IMPORT)
@@ -1602,7 +1602,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  TypeCompat : compatibilite d'expression (Oberon Report §9.1).
+  TypeCompat : compatibilite d'expression (Oberon Report Â§9.1).
   Regles :
     1. Meme type (meme index).
     2. t2 = NIL et t1 est POINTER.
@@ -1645,7 +1645,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  TypeAssignCompat : compatibilite d'affectation (Oberon Report §9.2).
+  TypeAssignCompat : compatibilite d'affectation (Oberon Report Â§9.2).
   En plus des regles de TypeCompat :
     - t2 peut etre une chaine litterale (type_idx = TYP_CHAR, len=1) vers
       ARRAY OF CHAR (gere par le parser avant d'appeler ici).
@@ -3774,10 +3774,148 @@ Begin
   PopLoopLabels;
 End;
 
+{ ============================================================
+  TODO 15 - INSTRUCTION CASE
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseCaseStmt : CASE expr OF arm [| arm]* [ELSE seq] END
+
+  CaseLabelList = label [.. label] [, label [.. label]]*
+  Labels = constantes entieres ou caracteres.
+
+  Schema ASM emis (forward-jump monopasse) :
+      MOV CX, AX          ; expr dans CX
+      JMP lbl_disp         ; vers le bloc de tests
+  lbl_arm1:
+      corps1 ... JMP lbl_end
+  lbl_arm2:
+      corps2 ... JMP lbl_end
+  lbl_else:
+      corps_else ... JMP lbl_end
+  lbl_disp:
+      CMP CX, v1 / JE lbl_arm1
+      CMP CX, lo / JL skip / CMP CX, hi / JLE lbl_arm2 / skip:
+      ...
+      JMP lbl_else
+  lbl_end:
+  -------------------------------------------------------------------------- }
+Procedure ParseCaseStmt;
+Const
+  MAX_ARM = 16;
+  MAX_LBL = 8;
+Var
+  arm_lbl     : Array[1..MAX_ARM] of TString;
+  arm_lbl_cnt : Array[1..MAX_ARM] of Integer;
+  lbl_lo      : Array[1..MAX_ARM, 1..MAX_LBL] of LongInt;
+  lbl_hi      : Array[1..MAX_ARM, 1..MAX_LBL] of LongInt;
+  lbl_rng     : Array[1..MAX_ARM, 1..MAX_LBL] of Boolean;
+  arm_cnt     : Integer;
+  lbl_end     : TString;
+  lbl_else    : TString;
+  lbl_disp    : TString;
+  lbl_skip    : TString;
+  lo, hi      : LongInt;
+  ti          : Integer;
+  a, l        : Integer;
+Begin
+  LexExpect('CASE');
+  ti := ParseExpr;
+  If Not TypeIsOrdinal(ti) Then
+    WarnMsg('Expression CASE doit etre de type ordinal');
+  EmitI2('MOV', 'CX', 'AX');      { CX = valeur de controle }
+  lbl_end  := NewLabel;
+  lbl_else := NewLabel;
+  lbl_disp := NewLabel;
+  EmitI1('JMP', lbl_disp);        { saut vers le bloc de tests }
+  LexExpect('OF');
+  arm_cnt := 0;
+
+  { Boucle sur les bras }
+  While (cur_tok.val <> 'ELSE') And (cur_tok.val <> 'END')
+     And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If cur_tok.val = '|' Then LexNext;
+    If (cur_tok.val = 'ELSE') Or (cur_tok.val = 'END') Then Break;
+    If arm_cnt >= MAX_ARM Then
+    Begin
+      ErrorMsg('Trop de bras dans CASE (max 16)');
+      Break;
+    End;
+    Inc(arm_cnt);
+    arm_lbl[arm_cnt]     := NewLabel;
+    arm_lbl_cnt[arm_cnt] := 0;
+
+    { Collecter les labels du bras }
+    lo := ParseConstExprInt;
+    hi := lo;
+    If cur_tok.val = '..' Then Begin LexNext; hi := ParseConstExprInt; End;
+    Inc(arm_lbl_cnt[arm_cnt]);
+    l := arm_lbl_cnt[arm_cnt];
+    lbl_lo[arm_cnt, l]  := lo;
+    lbl_hi[arm_cnt, l]  := hi;
+    lbl_rng[arm_cnt, l] := (hi <> lo);
+
+    While cur_tok.val = ',' Do
+    Begin
+      LexNext;
+      lo := ParseConstExprInt;
+      hi := lo;
+      If cur_tok.val = '..' Then Begin LexNext; hi := ParseConstExprInt; End;
+      If arm_lbl_cnt[arm_cnt] < MAX_LBL Then
+      Begin
+        Inc(arm_lbl_cnt[arm_cnt]);
+        l := arm_lbl_cnt[arm_cnt];
+        lbl_lo[arm_cnt, l]  := lo;
+        lbl_hi[arm_cnt, l]  := hi;
+        lbl_rng[arm_cnt, l] := (hi <> lo);
+      End;
+    End;
+
+    LexExpect(':');
+    EmitLabel(arm_lbl[arm_cnt]);   { point d'entree du corps }
+    ParseStatementSeq;
+    EmitI1('JMP', lbl_end);        { sortir du CASE apres le corps }
+  End;
+
+  { Corps ELSE }
+  EmitLabel(lbl_else);
+  If cur_tok.val = 'ELSE' Then
+  Begin
+    LexNext;
+    ParseStatementSeq;
+  End;
+  EmitI1('JMP', lbl_end);
+
+  { Bloc de dispatch (atteint par le JMP lbl_disp initial) }
+  EmitLabel(lbl_disp);
+  For a := 1 To arm_cnt Do
+    For l := 1 To arm_lbl_cnt[a] Do
+    Begin
+      If lbl_rng[a, l] Then
+      Begin
+        lbl_skip := NewLabel;
+        EmitI2('CMP', 'CX', IntToStr(lbl_lo[a, l] And $FFFF));
+        EmitI1('JL',  lbl_skip);
+        EmitI2('CMP', 'CX', IntToStr(lbl_hi[a, l] And $FFFF));
+        EmitI1('JLE', arm_lbl[a]);
+        EmitLabel(lbl_skip);
+      End
+      Else
+      Begin
+        EmitI2('CMP', 'CX', IntToStr(lbl_lo[a, l] And $FFFF));
+        EmitI1('JE',  arm_lbl[a]);
+      End;
+    End;
+  EmitI1('JMP', lbl_else);         { aucun label ne correspond }
+  EmitLabel(lbl_end);
+  LexExpect('END');
+End;
+
 { --------------------------------------------------------------------------
   ParseStatement : dispatch complet.
-  Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, affectation / appel.
-  Les TODOs suivants (15-19) ajouteront CASE, WITH, PROCEDURE, etc.
+  Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, CASE, affectation / appel.
+  Les TODOs suivants (16-19) ajouteront WITH, PROCEDURE, stdlib, etc.
   -------------------------------------------------------------------------- }
 Procedure ParseStatement;
 Var brk : TString;
@@ -3792,6 +3930,8 @@ Begin
     ParseLoopStmt
   Else If cur_tok.val = 'FOR' Then
     ParseForStmt
+  Else If cur_tok.val = 'CASE' Then
+    ParseCaseStmt
   Else If cur_tok.val = 'EXIT' Then
   Begin
     LexNext;
@@ -3803,8 +3943,7 @@ Begin
   End
   Else If cur_tok.kind = TK_IDENT Then
     ParseAssignment;
-  { Les autres mots-cles (CASE, WITH, RETURN, appels stdlib...)
-    seront dispatches dans les TODOs 15-19. }
+  { WITH, RETURN, appels stdlib -> TODOs 16-19 }
 End;
 
 { ============================================================

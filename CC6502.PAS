@@ -5381,53 +5381,44 @@ Begin
   parse_assignment_statement;  { Analyse et exÇcute l'incrÇmentation }
  End;
  lptr := saved_lptr;  { Restaure la position }
- gch;  { Refresh current character }
-
+ gch;  { Rafraichit le caractäre courant }
  ot('lbra ');
  printlabel(condition_label);
  nl;
-
- { Condition check label }
+  { VÇrifie la condition d'Çtiquette }
  prelabel(condition_label);
  safe_writeln('; FOR condition check');
-
- { Re-parse condition from saved position }
- saved_lptr := lptr;  { Save current position }
- lptr := condition_start;  { Set to condition start }
- gch;  { Refresh current character }
- If condition_end > condition_start Then
- Begin
-  expression_bool(lval);  { Parse condition }
+  { Re-analyser la condition de position sauvegardÇ }
+ saved_lptr := lptr;       { Sauvegarde la position courante }
+ lptr := condition_start;  { Fixe au dÇbut de la condition }
+ gch;                      { Rafraichissement de caractäres courant }
+ If condition_end > condition_start Then Begin
+  expression_bool(lval);  { Analyse de condition }
  End
- Else
+  Else
  Begin
-  { No condition = infinite loop }
+  { Pas de condition = boucle infini }
   ot('ldd  #1');
   nl;
  End;
- lptr := saved_lptr;  { Restore position }
- gch;  { Refresh current character }
-
- { Generate conditional jump to end if false }
+ lptr := saved_lptr;  { Restaure la position }
+ gch;  { Rafraichis le caratcäre courant }
+  { GÇnäre un saut conditionnel vers la fin si false }
  ol('tstd');
  ot('lbeq ');
  printlabel(end_label);
  nl;
-
- { Parse loop body }
+  { Analyse le corps de la boucle }
  safe_writeln('; FOR body');
  parse_statement;
-
- { Jump to increment }
+  { Saut vers l'incrÇmentation }
  ot('lbra ');
  printlabel(increment_label);
  nl;
-
- { End label - where break jumps to }
+  { Fin de l'Çtiquette - oó break faut le saut }
  prelabel(end_label);
  safe_writeln('; End FOR');
-
- { Pop loop context }
+  { DÇpile le contexte de boucle }
  pop_loop_context;
 End;
 
@@ -5437,11 +5428,9 @@ Var
  loop_label, condition_label, end_label: Integer;
 Begin
  parse_do_while_statement := False;
-
  If not match('do') Then Exit;
  parse_do_while_statement := True;
-
- { Generate loop labels }
+ { GÇnäre les Çtiquetes de boucle }
  loop_label := getlabel;
  condition_label := getlabel;
  end_label := getlabel;
