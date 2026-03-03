@@ -2663,6 +2663,8 @@ Procedure ParseIf;            Forward;
 Procedure ParseFor;           Forward;
 Procedure ParseWhile;         Forward;
 Procedure ParseDoUntil;       Forward;
+Procedure ParseOutput;        Forward;
+Procedure ParseInput;         Forward;
 
 { --------------------------------------------------------------------------
   ParseConstExpr : evaluer une expression constante au compile-time.
@@ -4016,12 +4018,10 @@ Begin
   Else If (cur_tok.val = 'FOR') Then ParseFor
   Else If (cur_tok.val = 'WHILE') Then ParseWhile
   Else If (cur_tok.val = 'DO') Then ParseDoUntil
-  Else If (cur_tok.val = 'INPUT') Or (cur_tok.val = 'OUTPUT') Then
-  Begin
-    { TODO 18 : stub - consommer jusqu'au ';' }
-    While (cur_tok.val <> ';') And (cur_tok.kind <> TK_EOF) Do LexNext;
-    If cur_tok.val = ';' Then LexNext;
-  End
+  Else If cur_tok.val = 'OUTPUT' Then
+    ParseOutput
+  Else If cur_tok.val = 'INPUT' Then
+    ParseInput
   Else If cur_tok.kind = TK_IDENT Then
   Begin
     iname := cur_tok.val;
@@ -4287,11 +4287,786 @@ Begin
 End;
 
 { ============================================================================
-  TODO 13 ... 25 : a implementer
+  TODO 13 - CODEGEN : ENTIERS (ITEM TYPE I)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenLoadItemInt : charger ITEM entier dans AX (ou DX:AX si 32 bits).
+  Specialisation de GenLoadVar pour les types entiers.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadItemInt(i : Integer);
+Begin
+  GenLoadVar(i);    { GenLoadVar gere 8/16/32 bits + global/local/param }
+  If sym_table^[i].bit_size = 8 Then
+    EmitI0('CBW');  { extension de signe 8->16 bits }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreItemInt : stocker AX (ou DX:AX) dans ITEM entier.
+  Specialisation de GenStoreVar pour les types entiers.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreItemInt(i : Integer);
+Begin
+  GenStoreVar(i);   { GenStoreVar gere 8/16/32 bits + global/local/param }
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadImm : charger une valeur immediate dans AX (ou DX:AX si 32 bits).
+  -------------------------------------------------------------------------- }
+Procedure GenLoadImm(n : LongInt; bits : Integer);
+Begin
+  EmitI2('MOV', 'AX', IntToStr(n And $FFFF));
+  If bits = 32 Then
+    EmitI2('MOV', 'DX', IntToStr((n Shr 16) And $FFFF));
+End;
+
+{ --------------------------------------------------------------------------
+  Operations arithmetiques entier 16 bits.
+  Convention d'appel : gauche a ete PUSH AX avant l'operande droite,
+  droite est dans AX. Chaque Gen* fait POP BX pour recuperer la gauche.
+  -------------------------------------------------------------------------- }
+
+Procedure GenIntAdd;
+Begin
+  EmitI0('POP   BX');
+  EmitI2('ADD', 'AX', 'BX');
+End;
+
+Procedure GenIntSub;
+Begin
+  EmitI0('POP   BX');
+  EmitI2('XCHG', 'AX', 'BX');   { AX = gauche, BX = droite }
+  EmitI2('SUB', 'AX', 'BX');    { AX = gauche - droite }
+End;
+
+{ GenIntMul : IMUL 16x16->32 bits, on conserve AX (troncature 16 bits). }
+Procedure GenIntMul;
+Begin
+  EmitI0('POP   BX');
+  EmitI1('IMUL', 'BX');          { DX:AX = AX * BX }
+End;
+
+{ GenIntDiv : division signee, quotient dans AX. }
+Procedure GenIntDiv;
+Begin
+  EmitI0('POP   BX');            { BX = droite (diviseur) }
+  EmitI2('XCHG', 'AX', 'BX');   { AX = gauche, BX = droite }
+  EmitI0('CWD');
+  EmitI1('IDIV', 'BX');          { AX = quotient, DX = reste }
+End;
+
+{ GenIntMod : modulo, resultat dans DX -> deplace dans AX. }
+Procedure GenIntMod;
+Begin
+  EmitI0('POP   BX');
+  EmitI2('XCHG', 'AX', 'BX');
+  EmitI0('CWD');
+  EmitI1('IDIV', 'BX');
+  EmitI2('MOV', 'AX', 'DX');    { AX = reste = modulo }
+End;
+
+Procedure GenIntNeg;
+Begin
+  EmitI0('NEG   AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenIntPow : exposant entier.
+  Convention : base dans BX, exposant dans CX.
+  Appelle la routine runtime _JRT_IPOW.
+  (En TODO 09, ** pousse la base et met l'exposant dans CX.)
+  -------------------------------------------------------------------------- }
+Procedure GenIntPow;
+Begin
+  EmitI0('POP   BX');            { BX = base }
+  EmitI2('MOV', 'CX', 'AX');    { CX = exposant }
+  EmitI2('MOV', 'AX', 'BX');
+  EmitI1('CALL', JRT_PFX + 'IPOW');
+End;
+
+{ --------------------------------------------------------------------------
+  Comparaisons entieres : resultat 0FFFFh (vrai) ou 0 (faux) dans AX.
+  Convention : gauche pousse avant droite, droite dans AX.
+  Chaque Gen* fait POP BX et appelle GenRelOp.
+  -------------------------------------------------------------------------- }
+
+Procedure GenIntCmpBody(Const op : TString);
+Begin
+  EmitI0('POP   BX');    { BX = gauche, AX = droite }
+  GenRelOp(op);           { GenRelOp : CMP BX,AX + Jcc -> 0FFFFh ou 0 }
+End;
+
+Procedure GenIntCmpEQ;  Begin GenIntCmpBody('=');  End;
+Procedure GenIntCmpNEQ; Begin GenIntCmpBody('/='); End;
+Procedure GenIntCmpLSS; Begin GenIntCmpBody('<');  End;
+Procedure GenIntCmpLEQ; Begin GenIntCmpBody('<='); End;
+Procedure GenIntCmpGTR; Begin GenIntCmpBody('>');  End;
+Procedure GenIntCmpGEQ; Begin GenIntCmpBody('>='); End;
+
+{ ============================================================================
+  TODO 14 - CODEGEN : STATUT ET BITS (ITEM TYPE S ET B)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  BitMaskStr : retourne le masque n bits sous forme hexadecimale MASM.
+  ex. n=4 -> '000Fh', n=8 -> '00FFh', n=16 -> '0FFFFh'
+  -------------------------------------------------------------------------- }
+Function BitMaskStr(n : Integer) : TString;
+Var
+  mask : LongInt;
+  hex  : TString;
+  k    : Integer;
+  c    : Char;
+  d    : Integer;
+Begin
+  If n >= 16 Then
+    mask := $FFFF
+  Else
+    mask := (1 Shl n) - 1;
+  { conversion en hex 4 chiffres }
+  hex := '0000';
+  For k := 4 DownTo 1 Do
+  Begin
+    d := mask And $F;
+    If d < 10 Then c := Chr(Ord('0') + d)
+    Else           c := Chr(Ord('A') + d - 10);
+    hex[k] := c;
+    mask   := mask Shr 4;
+  End;
+  BitMaskStr := hex + 'h';
+End;
+
+{ --------------------------------------------------------------------------
+  STATUS : stockage identique a un entier 16 bits.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadStatus(i : Integer);
+Begin
+  GenLoadVar(i);         { MOV AX, [_JV_xxx] ou [BP+n] }
+End;
+
+Procedure GenStoreStatus(i : Integer);
+Begin
+  GenStoreVar(i);        { MOV [_JV_xxx], AX }
+End;
+
+{ --------------------------------------------------------------------------
+  BITS : chargement avec masque (garantit que seuls n bits sont visibles).
+  -------------------------------------------------------------------------- }
+Procedure GenLoadBits(i : Integer);
+Begin
+  GenLoadVar(i);
+  If sym_table^[i].bit_size < 16 Then
+    EmitI2('AND', 'AX', BitMaskStr(sym_table^[i].bit_size));
+End;
+
+Procedure GenStoreBits(i : Integer);
+Begin
+  { masquer avant de stocker }
+  If sym_table^[i].bit_size < 16 Then
+    EmitI2('AND', 'AX', BitMaskStr(sym_table^[i].bit_size));
+  GenStoreVar(i);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStatusCmpEQ : comparer AX avec une valeur nommee de statut.
+  Valeur : _JK_<STATUSNAME>_<VALNAME>
+  Resultat dans AX : 0FFFFh si egal, 0 sinon.
+  -------------------------------------------------------------------------- }
+Procedure GenStatusCmpEQ(i : Integer; Const val_name : TString);
+Var
+  equ_lbl : TString;
+  lbl_t   : TString;
+  lbl_e   : TString;
+Begin
+  equ_lbl := JK_PFX + sym_table^[i].name + '_' + StrUpper(val_name);
+  lbl_t   := NewLabel;
+  lbl_e   := NewLabel;
+  EmitI2('CMP', 'AX', equ_lbl);
+  EmitI1('JE ', lbl_t);
+  EmitI2('XOR', 'AX', 'AX');
+  EmitI1('JMP', lbl_e);
+  EmitLocalLabel(lbl_t);
+  EmitI2('MOV', 'AX', '0FFFFh');
+  EmitLocalLabel(lbl_e);
+End;
+
+{ --------------------------------------------------------------------------
+  Operations sur champs de bits.
+  Convention : gauche PUSH AX avant droite, droite dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenBitAnd;
+Begin
+  EmitI0('POP   BX');
+  EmitI2('AND', 'AX', 'BX');
+End;
+
+Procedure GenBitOr;
+Begin
+  EmitI0('POP   BX');
+  EmitI2('OR', 'AX', 'BX');
+End;
+
+Procedure GenBitXor;
+Begin
+  EmitI0('POP   BX');
+  EmitI2('XOR', 'AX', 'BX');
+End;
+
+{ GenBitNot(n) : NOT logique sur n bits (masquer apres NOT). }
+Procedure GenBitNot(n : Integer);
+Begin
+  EmitI0('NOT   AX');
+  If n < 16 Then
+    EmitI2('AND', 'AX', BitMaskStr(n));
+End;
+
+{ GenBitShift : decalage logique via runtime _JRT_SHIFT.
+  CX = nombre de positions (positif = gauche, negatif = droite).
+  AX = valeur a decaler (deja dans AX). }
+Procedure GenBitShift;
+Begin
+  EmitI0('POP   CX');            { CX = decalage (gauche PUSH avant droite) }
+  EmitI2('XCHG', 'AX', 'CX');   { AX = valeur, CX = decalage }
+  EmitI1('CALL', JRT_PFX + 'SHIFT');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStatusEqu(si) : emettre les EQU des valeurs nommees d'un STATUS.
+  Produit dans le segment DATA :
+    _JK_<STATUS>_<VAL>  EQU  k
+  (complementaire de GenStatusConsts du TODO 06 qui travaille sur DATA)
+  Cette version est appelee depuis le CODE pour les statuts locaux.
+  -------------------------------------------------------------------------- }
+Procedure GenStatusEqu(si : Integer);
+Var k : Integer;
+Begin
+  For k := 0 To sym_table^[si].enum_count - 1 Do
+  Begin
+    WriteLn(cur_out^,
+      PadLabel(JK_PFX + sym_table^[si].name
+               + '_' + sym_table^[si].enum_vals[k]),
+      'EQU     ', IntToStr(k));
+  End;
+End;
+
+{ ============================================================================
+  TODO 15 - CODEGEN : REELS (ITEM TYPE F - EMULATION LOGICIELLE)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenLoadReal : charger un ITEM reel dans DX:AX.
+  Delegue a GenLoadVar qui gere les 32 bits (DX = high, AX = low).
+  -------------------------------------------------------------------------- }
+Procedure GenLoadReal(i : Integer);
+Begin
+  GenLoadVar(i);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreReal : stocker DX:AX dans un ITEM reel.
+  Delegue a GenStoreVar.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreReal(i : Integer);
+Begin
+  GenStoreVar(i);
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadRealLit : convertir le litteral reel s en bits IEEE 754 32 bits
+  au compile-time.  Emettre MOV AX, lo / MOV DX, hi (chargement immediat).
+  Utilise 'Val' de Pascal pour la conversion -> Single -> Move vers LongInt.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadRealLit(Const s : TString);
+Var
+  rval  : Single;
+  bits  : LongInt;
+  code  : Integer;
+  lo    : Word;
+  hi    : Word;
+Begin
+  Val(s, rval, code);
+  If code <> 0 Then
+  Begin
+    WriteLn('  Attention : litteral reel invalide ''', s, '''');
+    rval := 0.0;
+  End;
+  Move(rval, bits, 4);
+  lo := Word(bits And $FFFF);
+  hi := Word((bits Shr 16) And $FFFF);
+  EmitI2('MOV', 'AX', IntToStr(lo));    { mot de poids faible }
+  EmitI2('MOV', 'DX', IntToStr(hi));    { mot de poids fort }
+End;
+
+{ --------------------------------------------------------------------------
+  Operations reelles : chaque operation pousse gauche (DX:AX) sur la pile
+  avant d'evaluer l'operande droite, puis appelle la routine runtime.
+  Convention :   PUSH DX_gauche / PUSH AX_gauche (emis par l'appelant)
+                 DX:AX = operande droite
+                 CALL _JRT_FXxx
+                 Resultat dans DX:AX.
+  -------------------------------------------------------------------------- }
+
+{ Helpers : pousser/restaurer DX:AX autour des operations binaires. }
+
+Procedure GenRealAdd;
+Begin
+  EmitI1('CALL', JRT_PFX + 'FADD');
+End;
+
+Procedure GenRealSub;
+Begin
+  EmitI1('CALL', JRT_PFX + 'FSUB');
+End;
+
+Procedure GenRealMul;
+Begin
+  EmitI1('CALL', JRT_PFX + 'FMUL');
+End;
+
+Procedure GenRealDiv;
+Begin
+  EmitI1('CALL', JRT_PFX + 'FDIV');
+End;
+
+Procedure GenRealNeg;
+Begin
+  EmitI1('CALL', JRT_PFX + 'FNEG');
+End;
+
+{ GenRealPow : DX:AX = base (deja pousse), CX = exposant entier, droite = DX:AX. }
+Procedure GenRealPow;
+Begin
+  EmitI1('CALL', JRT_PFX + 'FPOW');
+End;
+
+{ --------------------------------------------------------------------------
+  GenRealCmp : comparaison de deux reels.
+  Convention : gauche pousse (DX, AX), droite dans DX:AX.
+  Appelle _JRT_FCMP.
+  Resultat dans AX : 0FFFFh (vrai) ou 0 (faux).
+  op : '=' '/=' '<' '<=' '>' '>='
+  Le code de l'operateur est passe dans CX (0=EQ 1=NEQ 2=LT 3=LEQ 4=GT 5=GEQ).
+  -------------------------------------------------------------------------- }
+Procedure GenRealCmp(Const op : TString);
+Var code : Integer;
+Begin
+  If      op = '='  Then code := 0
+  Else If op = '/=' Then code := 1
+  Else If op = '<'  Then code := 2
+  Else If op = '<=' Then code := 3
+  Else If op = '>'  Then code := 4
+  Else                   code := 5;
+  EmitI2('MOV', 'CX', IntToStr(code));
+  EmitI1('CALL', JRT_PFX + 'FCMP');
+End;
+
+{ --------------------------------------------------------------------------
+  GenInt2Real : convertir AX (entier 16 bits) en reel DX:AX.
+  Appelle _JRT_I2F.
+  -------------------------------------------------------------------------- }
+Procedure GenInt2Real;
+Begin
+  EmitI1('CALL', JRT_PFX + 'I2F');
+End;
+
+{ --------------------------------------------------------------------------
+  GenReal2Int : convertir DX:AX (reel 32 bits) en entier AX (troncature).
+  Appelle _JRT_F2I.
+  -------------------------------------------------------------------------- }
+Procedure GenReal2Int;
+Begin
+  EmitI1('CALL', JRT_PFX + 'F2I');
+End;
+
+{ ============================================================================
+  TODO 16 - CODEGEN : TABLE (TABLEAUX ET AGREGATS)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenBoundsCheck(ti) : verifier que BX < arr_count.
+  Saute vers _JRT_ERRBOUND si hors borne (JAE = unsigned >=).
+  -------------------------------------------------------------------------- }
+Procedure GenBoundsCheck(ti : Integer);
+Begin
+  EmitI2('CMP', 'BX', IntToStr(sym_table^[ti].arr_count));
+  EmitI1('JAE', JRT_PFX + 'ERRBOUND');
+End;
+
+{ --------------------------------------------------------------------------
+  ElemSizeShift : nombre de shifts SHL pour convertir un index en octet-offset.
+  bits=8  -> 0 (1 octet, pas de shift)
+  bits=16 -> 1 (2 octets, SHL 1)
+  bits=32 -> 2 (4 octets, SHL 2)
+  -------------------------------------------------------------------------- }
+Function ElemSizeShift(bits : Integer) : Integer;
+Begin
+  If      bits = 8  Then ElemSizeShift := 0
+  Else If bits = 32 Then ElemSizeShift := 2
+  Else                   ElemSizeShift := 1;
+End;
+
+{ --------------------------------------------------------------------------
+  GenTableElemLoad(ti) : charger l'element d'une TABLE uniforme.
+  Entree : index 0-base dans AX.
+  Sortie : valeur dans AX (ou DX:AX si 32 bits).
+  BX utilise pour le calcul d'adresse ; SI = octet-offset.
+  -------------------------------------------------------------------------- }
+Procedure GenTableElemLoad(ti : Integer);
+Var
+  bits  : Integer;
+  sh    : Integer;
+  lbl   : TString;
+Begin
+  bits := sym_table^[ti].bit_size;
+  sh   := ElemSizeShift(bits);
+  lbl  := sym_table^[ti].asm_label;
+  EmitI2('MOV', 'BX', 'AX');        { BX = index 0-base }
+  GenBoundsCheck(ti);
+  If sh > 0 Then
+    EmitI2('SHL', 'BX', IntToStr(sh));
+  EmitI2('MOV', 'SI', 'BX');        { SI = octet-offset }
+  Case bits Of
+    8  : Begin
+           EmitI2('XOR', 'AX', 'AX');
+           EmitI2('MOV', 'AL', 'BYTE PTR [' + lbl + '+SI]');
+           EmitI0('CBW');
+         End;
+    32 : Begin
+           EmitI2('MOV', 'AX', 'WORD PTR [' + lbl + '+SI]');
+           EmitI2('MOV', 'DX', 'WORD PTR [' + lbl + '+SI+2]');
+         End;
+  Else
+    EmitI2('MOV', 'AX', 'WORD PTR [' + lbl + '+SI]');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenTableElemStore(ti) : stocker AX (ou DX:AX) dans une TABLE uniforme.
+  Entree : index 0-base dans BX (pre-calcule par l'appelant, shift inclus),
+           valeur dans AX (ou DX:AX).
+  -------------------------------------------------------------------------- }
+Procedure GenTableElemStore(ti : Integer);
+Var
+  bits : Integer;
+  lbl  : TString;
+Begin
+  bits := sym_table^[ti].bit_size;
+  lbl  := sym_table^[ti].asm_label;
+  Case bits Of
+    8  : EmitI2('MOV', 'BYTE PTR [' + lbl + '+SI]', 'AL');
+    32 : Begin
+           EmitI2('MOV', 'WORD PTR [' + lbl + '+SI]',   'AX');
+           EmitI2('MOV', 'WORD PTR [' + lbl + '+SI+2]', 'DX');
+         End;
+  Else
+    EmitI2('MOV', 'WORD PTR [' + lbl + '+SI]', 'AX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFieldLoad(ti, fi) : charger un champ d'une TABLE agregat dans AX.
+  Le champ fi a son propre asm_label = _JV_<TABLE>_<FIELD>.
+  -------------------------------------------------------------------------- }
+Procedure GenFieldLoad(ti : Integer; fi : Integer);
+Begin
+  GenLoadVar(fi);
+End;
+
+{ --------------------------------------------------------------------------
+  GenFieldStore(ti, fi) : stocker AX dans un champ d'une TABLE agregat.
+  -------------------------------------------------------------------------- }
+Procedure GenFieldStore(ti : Integer; fi : Integer);
+Begin
+  GenStoreVar(fi);
+End;
+
+{ --------------------------------------------------------------------------
+  GenTableClear(ti) : initialiser toute la TABLE a zero.
+  Technique : REP STOSW  (efface mot par mot).
+  CX = nb de mots = (arr_count * elem_size_bytes) / 2  (arrondi superieur).
+  DI = OFFSET de la TABLE.
+  AX = 0.
+  Necessite ES = DS (modele SMALL : ok).
+  -------------------------------------------------------------------------- }
+Procedure GenTableClear(ti : Integer);
+Var
+  bits      : Integer;
+  elem_size : Integer;
+  total_b   : Integer;
+  word_cnt  : Integer;
+Begin
+  bits := sym_table^[ti].bit_size;
+  Case bits Of
+    8  : elem_size := 1;
+    32 : elem_size := 4;
+  Else
+    elem_size := 2;
+  End;
+  total_b  := sym_table^[ti].arr_count * elem_size;
+  word_cnt := (total_b + 1) Div 2;   { arrondi superieur au mot }
+  EmitI2('MOV', 'CX', IntToStr(word_cnt));
+  EmitI2('MOV', 'DI', 'OFFSET ' + sym_table^[ti].asm_label);
+  EmitI2('XOR', 'AX', 'AX');
+  EmitI0('REP   STOSW');
+End;
+
+{ ============================================================================
+  TODO 17 - CODEGEN : APPELS DE PROCEDURE ET FUNCTION
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenPushArg : pousser la valeur courante (AX ou DX:AX) sur la pile
+  selon le type et la taille du parametre formel.
+  -------------------------------------------------------------------------- }
+Procedure GenPushArg(itype : TItemType; bits : Integer);
+Begin
+  If (itype = IT_REAL) Or (bits = 32) Then
+  Begin
+    EmitI0('PUSH  DX');    { mot de poids fort en premier }
+    EmitI0('PUSH  AX');    { mot de poids faible }
+  End
+  Else
+    EmitI0('PUSH  AX');    { entier 16 bits, statut, bits }
+End;
+
+{ --------------------------------------------------------------------------
+  StackWordsForProc : calculer le nombre de mots 16 bits empiles pour
+  les arguments d'un sous-programme.
+  Entiers 32 bits et reels occupent 2 mots, les autres 1 mot.
+  -------------------------------------------------------------------------- }
+Function StackWordsForProc(pi : Integer) : Integer;
+Var k, w : Integer;
+Begin
+  w := 0;
+  For k := 1 To proc_table^[pi].param_count Do
+  Begin
+    If (proc_table^[pi].params[k].itype = IT_REAL)
+    Or (proc_table^[pi].params[k].bit_size = 32) Then
+      Inc(w, 2)
+    Else
+      Inc(w, 1);
+  End;
+  StackWordsForProc := w;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallProc(pi) : emettre CALL + nettoyage de pile (caller cleans).
+  Les arguments ont deja ete pousses par ParseArgList ou GenPushArg.
+  -------------------------------------------------------------------------- }
+Procedure GenCallProc(pi : Integer);
+Var words : Integer;
+Begin
+  EmitI1('CALL', proc_table^[pi].asm_label);
+  words := StackWordsForProc(pi);
+  If words > 0 Then
+    EmitI2('ADD', 'SP', IntToStr(words * 2));
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallFunc(pi) : meme sequence que GenCallProc.
+  Le resultat est dans AX (16 bits) ou DX:AX (reel / 32 bits) apres RET.
+  -------------------------------------------------------------------------- }
+Procedure GenCallFunc(pi : Integer);
+Begin
+  GenCallProc(pi);
+End;
+
+{ --------------------------------------------------------------------------
+  GenRecursiveCall(pi) : appel recursif vers le meme label de procedure.
+  Semantiquement identique a GenCallProc ; distingue pour la lisibilite.
+  -------------------------------------------------------------------------- }
+Procedure GenRecursiveCall(pi : Integer);
+Begin
+  EmitComment(' appel recursif');
+  GenCallProc(pi);
+End;
+
+{ ============================================================================
+  TODO 18 - CODEGEN : INPUT ET OUTPUT
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  EmitFmtSegment : creer un litteral de segment de format dans const_table
+  et emettre MOV DX, OFFSET + CALL _JRT_WRITESTR.
+  -------------------------------------------------------------------------- }
+Procedure EmitFmtSegment(Const seg : TString);
+Var lbl : TString;
+Begin
+  If seg = '' Then Exit;
+  lbl := 'FMT' + IntToStr(const_count + 1);
+  AddConst(lbl, seg, 0);
+  EmitI2('MOV', 'DX', 'OFFSET ' + JK_PFX + lbl);
+  EmitI0('CALL  _JRT_WRITESTR');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseOutput : emettre le code pour OUTPUT (fmt, expr, ...) ;
+  Analyse la chaine de format a la compilation et pour chaque $X
+  consomme l expression suivante et appelle le bon runtime.
+  -------------------------------------------------------------------------- }
+Procedure ParseOutput;
+Var
+  fmt   : TString;
+  ci    : Integer;
+  p     : Integer;
+  ch    : Char;
+  nch   : Char;
+  seg   : TString;
+  etype : TItemType;
+  ebits : Integer;
+Begin
+  LexExpect('OUTPUT');
+  LexExpect('(');
+  { recuperer la chaine de format : litteral ou DEFINE }
+  If cur_tok.kind = TK_STRING Then
+  Begin
+    fmt := cur_tok.val;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    ci := FindConst(cur_tok.val);
+    If ci <= 0 Then
+    Begin
+      WriteLn('  Erreur ligne ', lex_lineno,
+              ': OUTPUT : format inconnu : ''', cur_tok.val, '''');
+      fmt := '';
+    End
+    Else
+      fmt := const_table^[ci].val_str;
+    LexNext;
+  End
+  Else
+  Begin
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': OUTPUT : chaine de format attendue');
+    fmt := '';
+  End;
+  EmitComment(' OUTPUT format : ' + fmt);
+  { analyse de la chaine de format }
+  seg := '';
+  p   := 1;
+  While p <= Length(fmt) Do
+  Begin
+    ch := fmt[p];
+    Inc(p);
+    If ch = '$' Then
+    Begin
+      If p > Length(fmt) Then Break;
+      nch := fmt[p];
+      Inc(p);
+      Case nch Of
+        '$' :
+          seg := seg + '$';
+        'D' :
+        Begin
+          EmitFmtSegment(seg);
+          seg := '';
+          LexExpect(',');
+          ParseExpr(etype, ebits);
+          EmitI0('CALL  _JRT_WRITEINT');
+        End;
+        'F' :
+        Begin
+          EmitFmtSegment(seg);
+          seg := '';
+          LexExpect(',');
+          ParseExpr(etype, ebits);
+          EmitI0('CALL  _JRT_WRITEFLOAT');
+        End;
+        'S' :
+        Begin
+          EmitFmtSegment(seg);
+          seg := '';
+          LexExpect(',');
+          ParseExpr(etype, ebits);
+          EmitI0('CALL  _JRT_WRITESTATUS');
+        End;
+        'B' :
+        Begin
+          EmitFmtSegment(seg);
+          seg := '';
+          LexExpect(',');
+          ParseExpr(etype, ebits);
+          EmitI0('CALL  _JRT_WRITEHEX');
+        End;
+        Else
+          WriteLn('  Attention ligne ', lex_lineno,
+                  ': OUTPUT : code de format inconnu : $', nch);
+      End;
+    End
+    Else
+      seg := seg + ch;
+  End;
+  { dernier segment fixe restant }
+  EmitFmtSegment(seg);
+  EmitI0('CALL  _JRT_WRITECRLF');
+  LexExpect(')');
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseInput : emettre le code pour INPUT (var1, var2, ...) ;
+  Pour chaque variable : appel runtime de lecture puis stockage.
+  -------------------------------------------------------------------------- }
+Procedure ParseInput;
+Var
+  vname : TString;
+  si    : Integer;
+Begin
+  LexExpect('INPUT');
+  LexExpect('(');
+  Repeat
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      WriteLn('  Erreur ligne ', lex_lineno,
+              ': INPUT : identifiant de variable attendu, lu : ''',
+              cur_tok.val, '''');
+      Break;
+    End;
+    vname := cur_tok.val;
+    LexNext;
+    si := FindSym(vname);
+    If si = 0 Then
+      WriteLn('  Erreur ligne ', lex_lineno,
+              ': INPUT : variable inconnue : ''', vname, '''')
+    Else
+    Begin
+      EmitComment(' INPUT : lire ' + vname);
+      Case sym_table^[si].itype Of
+        IT_INTEGER :
+        Begin
+          EmitI0('CALL  _JRT_READINT');
+          GenStoreVar(si);
+        End;
+        IT_REAL :
+        Begin
+          EmitI0('CALL  _JRT_READFLOAT');
+          GenStoreVar(si);
+        End;
+        IT_STATUS :
+        Begin
+          EmitI0('CALL  _JRT_READSTATUS');
+          GenStoreVar(si);
+        End;
+        Else
+          WriteLn('  Attention ligne ', lex_lineno,
+                  ': INPUT : type non supporte pour ''', vname, '''');
+      End;
+    End;
+    If cur_tok.val = ',' Then LexNext
+    Else Break;
+  Until cur_tok.val = ')';
+  LexExpect(')');
+  LexExpect(';');
+End;
+
+{ ============================================================================
+  TODO 19 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 13-25 non implementes)');
+  WriteLn('(TODO 19-25 non implementes)');
 End.

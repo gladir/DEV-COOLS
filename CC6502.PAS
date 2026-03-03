@@ -3459,31 +3459,27 @@ Begin
  End;
 End;
 
-{ Mark a file as included }
+ { Marquer un fichier Ö inclure }
 Procedure mark_file_included(filename: String);
 Var
  i: Integer;
 Begin
- { Check if already in table }
- For i := 0 to included_count - 1 do
- Begin
-  If included_files[i].filename = filename Then
-  Begin
+ { VÇrifie s'il est dÇjÖ dans la table }
+ For i := 0 to included_count - 1 do Begin
+  If included_files[i].filename = filename Then Begin
    included_files[i].is_included := True;
    Exit;
   End;
  End;
-
- { Add new entry if space available }
- If included_count < 50 Then
- Begin
+  { Ajout une nouvelle entrÇe si l'espace est disponible }
+ If included_count < 50 Then Begin
   included_files[included_count].filename := filename;
   included_files[included_count].is_included := True;
   Inc(included_count);
  End;
 End;
 
-{ Unmark a file when leaving its scope }
+ { DÇsactivez le marquage d'un fichier lorsque vous quittez son pÇrimätre }
 Procedure unmark_file_included(filename: String);
 Var
  i: Integer;
@@ -3497,33 +3493,27 @@ Begin
   End;
  End;
 End;
+
 Function extract_filename(include_line: String): String;
 Var
  start_pos, end_pos: Integer;
  filename: String;
 Begin
  filename := '';
-
- { Skip #include and whitespace }
+ { Saute le #include et les espaces blancs }
  start_pos := Pos('#include', include_line);
- If start_pos > 0 Then
- Begin
-  start_pos := start_pos + 8; { Length of '#include' }
-
-  { Skip whitespace }
+ If start_pos > 0 Then Begin
+  start_pos := start_pos + 8; { Longueur de '#include' }
+   { Saute les espaces blancs }
   While (start_pos <= Length(include_line)) and
         ((include_line[start_pos] = ' ') or (include_line[start_pos] = #9)) do
    Inc(start_pos);
-
-  { Check for quotes or angle brackets }
-  If start_pos <= Length(include_line) Then
-  Begin
-   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then
-   Begin
-    Inc(start_pos); { Skip opening quote/bracket }
+   { VÇrifier si les guillemets ou le plus symbole plus petit }
+  If start_pos <= Length(include_line) Then Begin
+   If (include_line[start_pos] = '"') or (include_line[start_pos] = '<') Then Begin
+    Inc(start_pos); { Saute ouverture du guillemet ou du symbole plus petit }
     end_pos := start_pos;
-
-    { Find closing quote or bracket }
+     { Recherche la fermeture de guillemet ou du symbole plus grand }
     While (end_pos <= Length(include_line)) and
           (include_line[end_pos] <> '"') and
           (include_line[end_pos] <> '>') do
@@ -3534,30 +3524,24 @@ Begin
    End;
   End;
  End;
-
  extract_filename := filename;
 End;
 
-Function push_include_file(include_filename: String): Boolean;
-Begin
+Function push_include_file(include_filename:String):Boolean;Begin
  push_include_file := False;
-
- { Check for circular inclusion }
- If is_file_included(include_filename) Then
- Begin
+  { VÇrifier pour l'inclusion circulaire }
+ If is_file_included(include_filename) Then Begin
   Case Language of
    _English: errrpt('Circular inclusion detected: ' + include_filename);
    {$IFDEF FPC}
-   _Germany: errrpt('Zirkul√§re Einbindung erkannt: ' + include_filename);
+   _Germany: errrpt('ZirkulÑre Einbindung erkannt: ' + include_filename);
    {$ENDIF}
-   Else errrpt('Inclusion circulaire d√©tect√©e: ' + include_filename);
+   Else errrpt('Inclusion circulaire dÇtectÇe: ' + include_filename);
   End;
   Exit;
  End;
-
- { Check for maximum include depth }
- If include_depth >= 10 Then
- Begin
+  { VÇrifier pour la profonduer maximum d'inclusion }
+ If include_depth >= 10 Then Begin
   Case Language of
    _English: errrpt('Include depth too deep (max 10): ' + include_filename);
    {$IFDEF FPC}
@@ -3567,49 +3551,40 @@ Begin
   End;
   Exit;
  End;
-
- { Save current file state }
- With include_stack[include_depth] do
- Begin
+  { Sauvegarde l'Çtat du fichier courant }
+ With include_stack[include_depth] do Begin
   filename := current_filename;
   saved_line := line;
   saved_lptr := lptr;
   saved_eof := eof;
  End;
-
- { Try to open the include file }
+  { Essai d'ouvrir le ficiher d'inclusion }
  Assign(input, include_filename);
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
-  { Restore previous file by reopening it }
-  If include_depth > 0 Then
-  Begin
+ If IOResult <> 0 Then Begin
+  { Restaure le fichier prÇcÇdent par rÇouverture de celui-ci }
+  If include_depth > 0 Then Begin
    Assign(input, include_stack[include_depth].filename);
    Reset(input);
   End;
-
   Case Language of
    _English: errrpt('Cannot open include file: ' + include_filename);
    {$IFDEF FPC}
-   _Germany: errrpt('Kann Include-Datei nicht √∂ffnen: ' + include_filename);
+   _Germany: errrpt('Kann Include-Datei nicht îffnen: ' + include_filename);
    {$ENDIF}
    Else errrpt('Impossible d''ouvrir le fichier d''inclusion: ' + include_filename);
   End;
   Exit;
  End;
  {$I+}
-
- { Mark file as included to prevent circular inclusion }
+ { Marquer le fichier comme inclus pour Çviter l'inclusion circulaire }
  mark_file_included(include_filename);
-
- { Update state }
+  { Mise Ö jour de l'Çtat }
  Inc(include_depth);
  current_filename := include_filename;
  eof := 0;
- lptr := 1; { Reset line pointer for new file }
-
+ lptr := 1; { RÇinitialiser le pointeur de ligne pour le nouveau fichier }
  safe_writeln('; Including file: ' + include_filename);
  push_include_file := True;
 End;
@@ -3619,48 +3594,41 @@ Var
  filename: String;
 Begin
  process_include_directive := False;
-
  filename := extract_filename(include_line);
  If filename = '' Then
  Begin
   Case Language of
    _English: errrpt('Invalid #include directive syntax');
    {$IFDEF FPC}
-   _Germany: errrpt('Ung√ºltige #include-Direktiven-Syntax');
+   _Germany: errrpt('UngÅltige #include-Direktiven-Syntax');
    {$ENDIF}
    Else errrpt('Syntaxe de directive #include invalide');
   End;
   Exit;
  End;
-
- If push_include_file(filename) Then
-  process_include_directive := True;
+ If push_include_file(filename) Then process_include_directive := True;
 End;
 
 { ============================================================================ }
-{ DEFINE/MACRO MANAGEMENT FUNCTIONS                                           }
+{ FONCTIONS DE GESTION DE DEFINE/MACRO                                         }
 { ============================================================================ }
 
-{ Initialize define system }
-Procedure init_defines;
-Begin
- define_list := nil;     { Initialiser la liste cha√Æn√©e comme vide }
+{ Initialise le systäme define }
+Procedure init_defines;Begin
+ define_list := nil;     { Initialiser la liste chaånÇe comme vide }
  define_count := 0;
- { Don't write to output here as it may not be initialized yet }
+ { N'Çcrivez pas dans le champ de sortie car il n'est peut-àtre pas encore initialisÇ }
 End;
 
-{ Find a #define constant by name - returns pointer }
+{ Recherche une constante #define par nom - retourne un pointeur }
 Function find_define(def_name: String): PDefine;
 Var
  current: PDefine;
 Begin
  find_define := nil;
  current := define_list;
-
- While current <> nil do
- Begin
-  If current^.in_use and (current^.name = def_name) Then
-  Begin
+ While current <> nil do Begin
+  If current^.in_use and (current^.name = def_name) Then Begin
    find_define := current;
    Exit;
   End;
@@ -3668,7 +3636,7 @@ Begin
  End;
 End;
 
-{ Remove a #define constant }
+ { Enläve une constante #define }
 Function remove_define(def_name: String): Boolean;
 Var
  current, prev: PDefine;
@@ -3676,17 +3644,11 @@ Begin
  remove_define := False;
  current := define_list;
  prev := nil;
-
- While current <> nil do
- Begin
-  If current^.in_use and (current^.name = def_name) Then
-  Begin
-   { Found it - remove from list }
-   If prev = nil Then
-    define_list := current^.next  { First in list }
-   Else
-    prev^.next := current^.next;  { Not first in list }
-
+ While current <> nil do Begin
+  If current^.in_use and (current^.name = def_name) Then Begin
+   { Trouver - enläve de la liste }
+   If prev = nil Then define_list := current^.next  { Premier dans la liste }
+                 Else prev^.next := current^.next;  { Pas le premier dans la liste }
    Dispose(current);
    Dec(define_count);
    remove_define := True;
@@ -3697,16 +3659,14 @@ Begin
  End;
 End;
 
-{ Add a new #define constant }
+{ Ajout une nouvelle constante #define }
 Function add_define(def_name, def_value: String): Boolean;
 Var
  new_define: PDefine;
 Begin
  add_define := False;
-
- { Check if already defined and allow redefinition with warning }
- If find_define(def_name) <> nil Then
- Begin
+  { VÇrifier si il est dÇjÖ dÇfini et permet la redÇfinition avec un message de warning }
+ If find_define(def_name) <> nil Then Begin
   Case Language of
    _English:Begin
      WriteLn('; Warning: Macro ' + def_name + ' redefined (previous definition ignored)');
@@ -3721,45 +3681,39 @@ Begin
     {$ENDIF}
    Else
     Begin
-     WriteLn('; Avertissement: Macro ' + def_name + ' red√©fini (d√©finition pr√©c√©dente ignor√©e)');
+     WriteLn('; Avertissement: Macro ' + def_name + ' redÇfini (dÇfinition prÇcÇdente ignorÇe)');
      remove_define(def_name);
     End;
   End;
  End;
-
- { Allocate new define in heap }
+  { Alloue un nouveau define dans la mÇmoire de tas }
  New(new_define);
- If new_define = nil Then
- Begin
+ If new_define = nil Then Begin
   Case Language of
    _English: errrpt('Out of memory for #define constants');
    {$IFDEF FPC}
-   _Germany: errrpt('Kein Speicher f√ºr #define-Konstanten');
+   _Germany: errrpt('Kein Speicher fÅr #define-Konstanten');
    {$ENDIF}
-   Else errrpt('M√©moire insuffisante pour les constantes #define');
+   Else errrpt('MÇmoire insuffisante pour les constantes #define');
   End;
   Exit;
  End;
-
- { Initialize new define }
- With new_define^ do
- Begin
+  { Initialise un nouveau define }
+ With new_define^ do Begin
   name := def_name;
   value := def_value;
   in_use := True;
   next := define_list;  { Insert at beginning of list }
  End;
-
- { Update list head }
+  { Mise Ö jour de la tàte de liste }
  define_list := new_define;
  Inc(define_count);
-
  If use_stdout Then WriteLn('; Defined macro: ', def_name, ' = ', def_value)
                Else safe_writeln('; Defined macro: ' + def_name + ' = ' + def_value);
  add_define := True;
 End;
 
-{ Get the value of a #define constant }
+{ Demande la valeur de la constante #define }
 Function get_define_value(def_name: String): String;
 Var
  define_ptr: PDefine;
@@ -3770,7 +3724,7 @@ Begin
   get_define_value := define_ptr^.value;
 End;
 
-{ Process #define directive }
+ { Traite la directive #define }
 Function process_define_directive(define_line: String): Boolean;
 Var
  line_pos, start_pos, end_pos: Integer;
@@ -3779,19 +3733,15 @@ Begin
  process_define_directive := False;
  def_name := '';
  def_value := '';
-
- { Skip #define and whitespace }
+  { Saute #define et les espaces blancs }
  line_pos := Pos('#define', define_line);
  If line_pos <= 0 Then Exit;
-
- line_pos := line_pos + 7; { Length of '#define' }
-
- { Skip whitespace }
+ line_pos := line_pos + 7; { Longueur de '#define' }
+ { Saute l'espace blanc }
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
-
- { Extract macro name }
+  { Extraire le nom de la macro }
  start_pos := line_pos;
  While (line_pos <= Length(define_line)) and
        (((define_line[line_pos] >= 'A') and (define_line[line_pos] <= 'Z')) or
@@ -3799,32 +3749,27 @@ Begin
         ((define_line[line_pos] >= '0') and (define_line[line_pos] <= '9')) or
         (define_line[line_pos] = '_')) do
   Inc(line_pos);
-
- If line_pos > start_pos Then
-  def_name := Copy(define_line, start_pos, line_pos - start_pos)
- Else
+ If line_pos > start_pos Then def_name := Copy(define_line, start_pos, line_pos - start_pos)
+  Else
  Begin
   Case Language of
    _English: errrpt('Invalid #define directive: missing name');
    {$IFDEF FPC}
-   _Germany: errrpt('Ung√ºltige #define-Direktive: Name fehlt');
+   _Germany: errrpt('UngÅltige #define-Direktive: Name fehlt');
    {$ENDIF}
    Else errrpt('Directive #define invalide: nom manquant');
   End;
   Exit;
  End;
-
- { Skip whitespace before value }
+  { Saute les espaces blancs apräs la valeur }
  While (line_pos <= Length(define_line)) and
        ((define_line[line_pos] = ' ') or (define_line[line_pos] = #9)) do
   Inc(line_pos);
-
- { Extract value (rest of line) }
+ { Extraire la valeur (le reste de la ligne) }
  If line_pos <= Length(define_line) Then
   def_value := Copy(define_line, line_pos, Length(define_line) - line_pos + 1)
  Else
-  def_value := '1'; { Default value for macros without explicit value }
-
+  def_value := '1'; { Valeur par dÇfaut pour les macros sans valeur explicite }
  { Remove trailing whitespace from value }
  While (Length(def_value) > 0) and
        ((def_value[Length(def_value)] = ' ') or (def_value[Length(def_value)] = #9)) do
