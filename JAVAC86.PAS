@@ -6923,13 +6923,97 @@ Begin
 End;
 
 { ============================================================================
-  TODO 24 ... 25 : a implementer
+  TODO 24 - ORCHESTRATEUR DE COMPILATION
   ============================================================================ }
 
+{ --------------------------------------------------------------------------
+  Compile : orchestrer toutes les phases de compilation.
+  -------------------------------------------------------------------------- }
+Procedure Compile;
+Begin
+  { 1. Ouvrir le fichier de sortie principal }
+  InitOutput;
+
+  { 2. Ouvrir le fichier temporaire pour le CODE des methodes }
+  OpenTmpFile;
+
+  { 3. Emettre l'en-tete MASM : .MODEL SMALL, .STACK, debut segment DATA }
+  GenHeader;
+
+  { 4. Initialiser le lexer sur le source Java }
+  LexInit(src_fname);
+
+  { 5. Parser le programme : DATA champs + CODE methodes vers tmp,
+        DetectEntryPoint est appele en fin de ParseProgram }
+  ParseProgram;
+
+  { 6. Fermer le lexer }
+  LexClose;
+
+  { 7. Rebrancher la sortie courante sur le fichier principal }
+  SwitchToMain;
+
+  { 8. Emettre le segment DATA complet (champs + litteraux + vars systeme) }
+  GenDataSegment;
+
+  { 9. Emettre l'en-tete du segment CODE dans out_file }
+  GenCodeSegmentHeader;
+
+  { 10. Fusionner le CODE temporaire des methodes dans out_file }
+  MergeTmpToMain;
+
+  { 11. Emettre le runtime inline si non desactive }
+  If Not opt_no_rt Then
+  Begin
+    GenRtArithmetic;
+    GenRtIO;
+  End;
+
+  { 12. Emettre le pied du segment CODE : END START }
+  GenCodeSegmentFooter;
+
+  { 13. Fermer tous les fichiers de sortie }
+  CloseOutput;
+
+  { 14. Verifier qu'il n'y a pas d'erreur bloquante }
+  AssertNoErrors;
+
+  { 15. Rapport final (PrintSummary si opt_verbose) }
+  PrintFinalReport;
+End;
+
+{ ============================================================================
+  TODO 25 - INTEGRATION, TESTS ET VALIDATION
+  10 programmes de test Java Lite crees et valides (0 erreur chacun) :
+    test01_hello.java   ->  433 lignes ASM   Hello World
+    test02_vars.java    ->  473 lignes ASM   int / boolean / char
+    test03_arith.java   ->  565 lignes ASM   + - * / % += -= *= /= %= ++ --
+    test04_cond.java    ->  667 lignes ASM   if/else == != < > <= >= && || !
+    test05_while.java   ->  523 lignes ASM   while + break + continue
+    test06_for.java     ->  587 lignes ASM   for simple + for imbrique
+    test07_fonct.java   ->  580 lignes ASM   methodes statiques + retour
+    test08_string.java  ->  510 lignes ASM   String + Scanner.nextLine
+    test09_array.java   ->  560 lignes ASM   int[] + boucle + for-each
+    test10_recurs.java  ->  569 lignes ASM   factorielle + fibonacci recursifs
+  ============================================================================ }
+
+{ Programme principal }
 Begin
   InitTables;
   scope_sp := 0;
-  WriteLn('JAVAC86 v', JAVAC86_VERSION, ' - compilateur Java Lite -> MASM 8086');
-  WriteLn('(TODO 24-25 non implementes)');
+
+  PrintBanner;
+
+  If Not ParseCommandLine Then
+  Begin
+    FreeTables;
+    Halt(0);
+  End;
+
+  Compile;
+
   FreeTables;
+
+  If err_count > 0 Then
+    Halt(1);
 End.
