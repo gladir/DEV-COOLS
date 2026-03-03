@@ -1755,8 +1755,11 @@ End;
 Procedure LexExpect(Const val : TString);
 Begin
   If cur_tok.val <> val Then
-    WriteLn('Erreur syntaxique ligne ', lex_lineno, ' col ', lex_colno,
-            ' : attendu ''', val, ''' mais lu ''', cur_tok.val, '''');
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur : (syntaxe) ', src_fname, '(', lex_lineno, ',', lex_colno, ') ',
+            'attendu ''', val, ''' mais lu ''', cur_tok.val, '''');
+  End;
   LexNext;
 End;
 
@@ -1766,8 +1769,11 @@ End;
 Procedure LexExpectKind(k : TTokenKind);
 Begin
   If cur_tok.kind <> k Then
-    WriteLn('Erreur syntaxique ligne ', lex_lineno, ' col ', lex_colno,
-            ' : type de token inattendu (lu : ''', cur_tok.val, ''')');
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur : (syntaxe) ', src_fname, '(', lex_lineno, ',', lex_colno, ') ',
+            'type de token inattendu (lu : ''', cur_tok.val, ''')');
+  End;
   LexNext;
 End;
 
@@ -1910,7 +1916,9 @@ Procedure ScopeLeave;
 Begin
   If scope_sp > 0 Then
   Begin
-    sym_count := scope_base[scope_sp];
+    { scope_sp = 1 : portee module (globaux) -> ne pas effacer sym_count }
+    If scope_sp > 1 Then
+      sym_count := scope_base[scope_sp];
     Dec(scope_sp);
     scope_level := scope_sp;
   End;
@@ -2665,6 +2673,7 @@ Procedure ParseWhile;         Forward;
 Procedure ParseDoUntil;       Forward;
 Procedure ParseOutput;        Forward;
 Procedure ParseInput;         Forward;
+Procedure ParseTypeSpec(Var itype : TItemType; Var bits : Integer); Forward;
 
 { --------------------------------------------------------------------------
   ParseConstExpr : evaluer une expression constante au compile-time.
@@ -2846,11 +2855,13 @@ End;
   -------------------------------------------------------------------------- }
 Procedure ParseTableDecl;
 Var
-  tname : TString;
-  ti    : Integer;
-  cnt   : Integer;
-  is_u  : Boolean;
-  fbase : TString;
+  tname  : TString;
+  ti     : Integer;
+  cnt    : Integer;
+  is_u   : Boolean;
+  fbase  : TString;
+  itype  : TItemType;
+  ibits  : Integer;
 Begin
   LexExpect('TABLE');
   tname := cur_tok.val;
@@ -2868,27 +2879,41 @@ Begin
   End;
   ti    := AddTableSym(tname, is_u, cnt);
   fbase := sym_table^[ti].asm_label;
-  LexExpect(';');
-  { champs : ITEM declarations jusqu'a END }
-  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+  { TABLE T(n) typespec ;  ->  tableau uniforme (tout sur une ligne) }
+  If is_u And (cur_tok.val <> ';') Then
   Begin
-    If cur_tok.val = 'ITEM' Then
+    ParseTypeSpec(itype, ibits);
+    sym_table^[ti].itype    := itype;
+    sym_table^[ti].bit_size := ibits;
+    LexExpect(';');
+  End
+  Else
+  Begin
+    LexExpect(';');
+    { champs : ITEM declarations jusqu'a END }
+    While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
     Begin
-      ParseItemDecl(SC_GLOBAL);
-      { reajuster le label ASM : _JV_<TABLE>_<CHAMP> }
-      sym_table^[sym_count].asm_label :=
-        fbase + '_' + AsmIdent(sym_table^[sym_count].name);
-    End
-    Else
-    Begin
-      WriteLn('  Attention ligne ', lex_lineno,
-              ': token inattendu dans TABLE ''', tname,
-              ''' : ''', cur_tok.val, '''');
-      LexNext;
+      If cur_tok.val = 'ITEM' Then
+      Begin
+        ParseItemDecl(SC_GLOBAL);
+        { mettre a jour bit_size de la TABLE depuis le premier champ }
+        If sym_table^[ti].bit_size = 16 Then
+          sym_table^[ti].bit_size := sym_table^[sym_count].bit_size;
+        { reajuster le label ASM : _JV_<TABLE>_<CHAMP> }
+        sym_table^[sym_count].asm_label :=
+          fbase + '_' + AsmIdent(sym_table^[sym_count].name);
+      End
+      Else
+      Begin
+        WriteLn('  Attention ligne ', lex_lineno,
+                ': token inattendu dans TABLE ''', tname,
+                ''' : ''', cur_tok.val, '''');
+        LexNext;
+      End;
     End;
+    LexExpect('END');
+    LexExpect(';');
   End;
-  LexExpect('END');
-  LexExpect(';');
 End;
 
 { --------------------------------------------------------------------------
@@ -2968,7 +2993,14 @@ Begin
     Else If cur_tok.val = 'PROCEDURE' Then ParseProcedureDecl
     Else If cur_tok.val = 'FUNCTION'  Then ParseFunctionDecl
     Else
-      ParseStatement;
+    Begin
+      { token inattendu au niveau module (ex: residus 'MODULE ident ;' apres
+        ParseProcedureDecl) : ignorer silencieusement plutot que d'emettre
+        du code dans le segment DATA. }
+      WriteLn('Attention ligne ', lex_lineno,
+              ': element inattendu au niveau module : ''', cur_tok.val, '''');
+      LexNext;
+    End;
   End;
 End;
 
@@ -3449,7 +3481,8 @@ Begin
         si := FindSym(vname);
         If si > 0 Then
         Begin
-          If (sym_table^[si].kind = SK_ITEM) Then
+          If (sym_table^[si].kind = SK_ITEM) Or
+             (sym_table^[si].kind = SK_TABLE) Then
           Begin
             etype := sym_table^[si].itype;
             ebits := sym_table^[si].bit_size;
@@ -3481,8 +3514,9 @@ Begin
               EmitI2('MOV', 'AX',
                      'WORD PTR [' + sym_table^[si].asm_label + '+SI]');
             End
-            Else
+            Else If sym_table^[si].kind = SK_ITEM Then
               GenLoadVar(si);
+            { SK_TABLE sans index : pas de valeur scalaire directe }
           End
           Else
           Begin
@@ -4029,7 +4063,18 @@ Begin
     { identifier l'instruction selon le token suivant }
     If cur_tok.val = '=' Then
       ParseAssignment(iname)
-    Else If (cur_tok.val = '(') Or (cur_tok.val = ';') Then
+    Else If cur_tok.val = '(' Then
+    Begin
+      { TABLE(idx) = val  OU  PROC(args) ;
+        Si iname est un symbole TABLE -> ParseAssignment,
+        sinon -> ParseCallStmt (appel de procedure). }
+      If (FindSym(iname) > 0) And
+         (sym_table^[FindSym(iname)].kind = SK_TABLE) Then
+        ParseAssignment(iname)
+      Else
+        ParseCallStmt(iname)
+    End
+    Else If cur_tok.val = ';' Then
       ParseCallStmt(iname)
     Else If cur_tok.val = '.' Then
       ParseAssignment(iname)

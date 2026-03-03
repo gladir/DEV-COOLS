@@ -4735,168 +4735,151 @@ Begin
      ol('jsr  mult16'); { Appel la routine de multiplication }
     End;
    '/': Begin
-     ol('tfr  d,x');    { Op‚rande de gauche vers X }
+     ol('tfr  d,x');    { Op‚rande de droite vers X }
      ol('puls d');      { Op‚rande de gauche vers D }
      ol('jsr  div16');  { Appel une routinme de division }
     End;
-
    '%': Begin
-     ol('tfr  d,x'); { right operand to X }
-     ol('puls d'); { left operand to D }
-     ol('jsr  mod16'); { call modulo routine }
+     ol('tfr  d,x');    { Op‚rande de droite vers X }
+     ol('puls d');      { Op‚rande de gauche vers D }
+     ol('jsr  mod16');  { Appel de la routine modulo }
     End;
   End;
  End;
 End;
 
-{ Additive expression parser }
+ { Analyseur d'expression d'addition }
 Procedure additive_expression(var lval: TLVal);
 Var
  op: Char;
 Begin
  multiplicative_expression(lval);
-
- While (peek_char = '+') or (peek_char = '-') do
- Begin
+ While (peek_char = '+') or (peek_char = '-') do Begin
   op := next_char;
-  ol('pshs d'); { push left operand }
-
+  ol('pshs d'); { Empile l'op‚rande de gauche }
   multiplicative_expression(lval);
-
   Case op of
    '+': Begin
-     ol('addd ,s++'); { add and clean stack }
+     ol('addd ,s++'); { Ajout et efface la pile }
     End;
-
    '-': Begin
-     ol('tfr  d,x'); { right operand to X }
-     ol('puls d'); { left operand to D }
-     ol('subd ,x'); { subtract }
+     ol('tfr  d,x');  { Op‚rande de droite vers X }
+     ol('puls d');    { Op‚rande de gauche vers D }
+     ol('subd ,x');   { Soustraction }
     End;
   End;
  End;
 End;
 
-{ Relational expression parser - handles >, <, >=, <=, ==, != }
-Procedure relational_expression(var lval: TLVal);
-Begin
+ { Analyse d'expression relationnel - Gestion de >, <, >=, <=, ==, != }
+Procedure relational_expression(var lval: TLVal);Begin
  additive_expression(lval);
-
- While True do
- Begin
-  If match('>') Then
-  Begin
-   If match('=') Then
-   Begin
+ While True do Begin
+  If match('>') Then Begin
+   If match('=') Then Begin
     { >= operator }
-    safe_writeln('; OpÃ©rateur >=');
-    ol('pshs d');    { Push left operand }
+    safe_writeln('; Op‚rateur >=');
+    ol('pshs d');    { Empile l'op‚rande de gauche }
     additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('bge *+5');   { Branch if greater or equal }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
+    ol('puls x');    { Op‚rande de gauche vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('bge *+5');   { Branchement si sup‚rieur ou ‚gale }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { Saute au r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
    End
-   Else
+    Else
    Begin
-    { > operator }
-    safe_writeln('; OpÃ©rateur >');
-    ol('pshs d');    { Push left operand }
+    { Op‚rateur > }
+    safe_writeln('; Op‚rateur >');
+    ol('pshs d');    { Empile l'op‚rande de gauche }
     additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('bgt *+5');   { Branch if greater }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
+    ol('puls x');    { Empile l'op‚rande de gacuhe vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('bgt *+5');   { Branchement si sup‚rieur }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { Saute le r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
    End;
   End
-  Else If match('<') Then
-  Begin
-   If match('=') Then
-   Begin
-    { <= operator }
-    safe_writeln('; OpÃ©rateur <=');
-    ol('pshs d');    { Push left operand }
-    additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('ble *+5');   { Branch if less or equal }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
-   End
    Else
-   Begin
-    { < operator }
-    safe_writeln('; OpÃ©rateur <');
-    ol('pshs d');    { Push left operand }
+  If match('<') Then Begin
+   If match('=') Then Begin
+    { Op‚rateur <= }
+    safe_writeln('; Op‚rateur <=');
+    ol('pshs d');    { Empile l'op‚rande de gauche }
     additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('blt *+5');   { Branch if less }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
+    ol('puls x');    { Op‚rande de gauche vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('ble *+5');   { Branchement si inf‚rieur ou ‚gale }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { Saute le r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
+   End
+    Else
+   Begin
+    { Op‚rateur < }
+    safe_writeln('; Op‚rateur <');
+    ol('pshs d');    { Empile d'op‚rande de gauche }
+    additive_expression(lval);
+    ol('puls x');    { Op‚rande de gauche vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('blt *+5');   { Branchement si inf‚rieur }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { SAute r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
    End;
   End
-  Else If match('=') and match('=') Then
-  Begin
-   { == operator }
-   safe_writeln('; OpÃ©rateur ==');
-   ol('pshs d');    { Push left operand }
+   Else
+  If match('=') and match('=') Then Begin
+   { Op‚rateur == }
+   safe_writeln('; Op‚rateur ==');
+   ol('pshs d');    { Empile l'op‚rande de gauche }
    additive_expression(lval);
-   ol('puls x');    { Left operand to X }
-   ol('cmpx d');    { Compare X with D }
-   ol('beq *+5');   { Branch if equal }
-   ol('ldd #0');    { False result }
-   ol('bra *+3');   { Skip true result }
-   ol('ldd #1');    { True result }
+   ol('puls x');    { Op‚rande de gauche vers X }
+   ol('cmpx d');    { Compare X avec D }
+   ol('beq *+5');   { Branchement si ‚gale }
+   ol('ldd #0');    { R‚sultat False }
+   ol('bra *+3');   { Saute le r‚sultat true }
+   ol('ldd #1');    { R‚sultat True }
   End
-  Else If match('!') and match('=') Then
-  Begin
-   { != operator }
-   safe_writeln('; OpÃ©rateur !=');
-   ol('pshs d');    { Push left operand }
+   Else
+  If match('!') and match('=') Then Begin
+   { Op‚rateur != }
+   safe_writeln('; Op‚rateur !=');
+   ol('pshs d');    { Empile l'op‚rande gauche }
    additive_expression(lval);
-   ol('puls x');    { Left operand to X }
-   ol('cmpx d');    { Compare X with D }
-   ol('bne *+5');   { Branch if not equal }
-   ol('ldd #0');    { False result }
-   ol('bra *+3');   { Skip true result }
-   ol('ldd #1');    { True result }
+   ol('puls x');    { Empile l'op‚rande de gauche vers X }
+   ol('cmpx d');    { Compare X avec D }
+   ol('bne *+5');   { Branchement si pas ‚gale }
+   ol('ldd #0');    { R‚sultat False }
+   ol('bra *+3');   { Saute le r‚sultat true }
+   ol('ldd #1');    { R‚sultat True }
   End
   Else
-   Break; { No more relational operators }
+   Break; { Pas plus d'op‚rateur relationnel }
  End;
 End;
 
-{ Bitwise AND expression parser - handles & }
-Procedure bitwise_and_expression(var lval: TLVal);
-Begin
+{ Analyse l'expression binaire AND - gestion de & }
+Procedure bitwise_and_expression(var lval: TLVal);Begin
  relational_expression(lval);
-
- While match('&') do
- Begin
-  { VÃ©rifier que ce n'est pas && }
-  If peek_char = '&' Then
-  Begin
-   { Reculer car c'est && qui sera traitÃ© par logical_and }
+ While match('&') do Begin
+  { V‚rifier que ce n'est pas && }
+  If peek_char = '&' Then Begin
+   { Reculer car c'est && qui sera trait‚ par logical_and }
    Dec(lptr);
    Break;
   End;
-
-  safe_writeln('; OpÃ©rateur & (ET binaire)');
-  ol('pshs d');    { Push left operand }
+  safe_writeln('; Op‚rateur & (ET binaire)');
+  ol('pshs d');    { Empile l'op‚rateur de gauche }
   relational_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('anda 1,x');  { AND low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
+  ol('tfr  d,x');  { Op‚rande de droite vers X }
+  ol('puls d');    { Op‚rande de gauche vers D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B vers A pour l'octet bas }
+  ol('anda 1,x');  { Octet bas AND }
+  ol('tfr  a,b');  { R‚sultat de l'octet bas vers B }
   ol('tfr  u,a');  { Restore high byte from U }
   ol('anda 0,x');  { AND high bytes }
  End;
