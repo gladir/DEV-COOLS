@@ -2427,8 +2427,11 @@ Begin
   Str(str_lit_count, lbl);
   lbl := BK_PFX + lbl;
 
-  { Construire la valeur DB : blocs 'texte' + octets decimaux + terminateur 0 }
-  out_s    := '';
+  { Construire la valeur DB :
+    Format BCPL : octet 0 = longueur, puis les octets de la chaine.
+    PAS de terminateur nul (contrairement aux chaines C). }
+  Str(Length(s), tmp_n);
+  out_s    := tmp_n;          { premier octet = longueur }
   in_quote := False;
   For i := 1 To Length(s) Do
   Begin
@@ -2438,8 +2441,7 @@ Begin
       { Caractere imprimable (hors apostrophe) : ouvrir bloc si necessaire }
       If Not in_quote Then
       Begin
-        If out_s <> '' Then out_s := out_s + ', ';
-        out_s    := out_s + '''';
+        out_s    := out_s + ', ''';
         in_quote := True;
       End;
       out_s := out_s + c;
@@ -2452,18 +2454,14 @@ Begin
         out_s    := out_s + '''';
         in_quote := False;
       End;
-      If out_s <> '' Then out_s := out_s + ', ';
+      out_s := out_s + ', ';
       Str(Ord(c), tmp_n);
       out_s := out_s + tmp_n + 'd';
     End;
   End;
-  { Fermer le bloc ouvert et ajouter terminateur nul }
+  { Fermer le bloc ouvert -- PAS de 0 final (format BCPL avec longueur) }
   If in_quote Then
     out_s := out_s + '''';
-  If out_s = '' Then
-    out_s := '0'
-  Else
-    out_s := out_s + ', 0';
 
   { Emettre dans str_file (fusionne dans _DATA apres le CODE) }
   save_out := cur_out;
@@ -2932,6 +2930,11 @@ Procedure ParseStdModuleCall; Forward;
 { Forwards TODO 23 - clause IMPORT et modules Math / SYSTEM. }
 Procedure ParseImportSection; Forward;
 
+{ Forward : ParseStatementSeq / ParseStatement / ParseLetDecl utilises dans VALOF (ParseFactor). }
+Procedure ParseStatementSeq; Forward;
+Procedure ParseStatement; Forward;
+Procedure ParseLetDecl; Forward;
+
 { --------------------------------------------------------------------------
   GenLoadConst : charger une valeur immediate dans AX (ou DX:AX si 32 bits).
   -------------------------------------------------------------------------- }
@@ -3220,15 +3223,39 @@ Begin
   Begin
     LexNext;
     ti := ParseFactor;
-    If Not TypeIsBoolean(ti) Then
-      ErrorMsg('NOT applicable uniquement sur BOOLEAN');
-    EmitI2('XOR', 'AX', '1');
+    EmitI1('NOT', 'AX');         { BCPL ~ = bitwise NOT (NOT AX) }
+  End
+  Else If cur_tok.val = '-' Then
+  Begin
+    { Moins unaire BCPL }
+    LexNext;
+    ti := ParseFactor;
+    EmitI1('NEG', 'AX');
+  End
+  Else If cur_tok.val = '+' Then
+  Begin
+    { Plus unaire BCPL (identite) }
+    LexNext;
+    ti := ParseFactor;
   End
   Else If cur_tok.val = '(' Then
   Begin
     LexNext;
     ti := ParseExpr;
     LexExpect(')');
+  End
+  { VALOF $( ... RESULTIS expr $) : bloc expression }
+  Else If cur_tok.val = 'VALOF' Then
+  Begin
+    LexNext;
+    lbl_end := NewLabel;
+    valof_lbl := lbl_end;
+    OpenBlock;
+    ParseStatementSeq;
+    CloseBlock;
+    EmitLabel(lbl_end);
+    valof_lbl := '';
+    ti := TYP_WORD;
   End
   Else If cur_tok.kind = TK_IDENT Then
   Begin
@@ -3361,6 +3388,7 @@ Var ti    : Integer;
     op    : TString;
     lbl_t : TString;
     lbl_f : TString;
+    lbl_e : TString;
 Begin
   ti := ParseSimpleExpr;
   If (cur_tok.val = '=')  Or (cur_tok.val = '~=')
@@ -3387,6 +3415,30 @@ Begin
     EmitLabel(lbl_t);
     EmitI2('MOV', 'AX', '0FFFFh');  { TRUE = -1 en BCPL }
     EmitLabel(lbl_f);
+    ti := TYP_WORD;
+  End;
+  { Expression conditionnelle BCPL : cond -> val_vrai, val_faux }
+  If cur_tok.val = '->' Then
+  Begin
+    LexNext;
+    lbl_t := NewLabel;   { label branche vraie }
+    lbl_e := NewLabel;   { label fin }
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JNE', lbl_t);
+    { Ici on doit evaluer val_faux mais on a besoin de sauter val_vrai }
+    { Schema : cmp->jne lbl_t ; sauter val_vrai }
+    { L'ordre BCPL est : -> val_vrai , val_faux }
+    { On evalue d'abord val_vrai (si vrai suit immediatement la condition) }
+    { => on doit inverser : si faux, sauter a lbl_else }
+    lbl_f := NewLabel;   { label branche fausse }
+    EmitI1('JMP', lbl_f);
+    EmitLabel(lbl_t);
+    ti2 := ParseExpr;    { val_vrai -> AX }
+    EmitI1('JMP', lbl_e);
+    EmitLabel(lbl_f);
+    LexExpect(',');
+    ti2 := ParseExpr;    { val_faux -> AX }
+    EmitLabel(lbl_e);
     ti := TYP_WORD;
   End;
   ParseExpr := ti;
@@ -3574,9 +3626,8 @@ End;
   TODO 12 - INSTRUCTION IF / ELSIF / ELSE
   ============================================================ }
 
-{ Forwards : ParseStatement et ParseLetDecl necessaires avant leur usage. }
-Procedure ParseStatement; Forward;
-Procedure ParseLetDecl; Forward;
+{ Forwards : ParseStatement et ParseLetDecl necessaires avant leur usage.
+  (Deja declares plus haut - conservation du commentaire uniquement) }
 
 { --------------------------------------------------------------------------
   ParseStatementSeq BCPL : suite de commandes.
@@ -3590,16 +3641,16 @@ Procedure ParseStatementSeq;
       (cur_tok.val = '$)')     Or (cur_tok.val = '}')
       Or (cur_tok.val = 'ELSE')  Or (cur_tok.val = 'THEN')
       Or (cur_tok.val = 'ENDCASE') Or (cur_tok.val = 'DEFAULT')
+      Or (cur_tok.val = 'CASE')                              { evite boucle infinie si CASE inattendu }
       Or (cur_tok.kind = TK_EOF);
   End;
 Begin
-  If Not IsSeqStop Then
-    ParseStatement;
-  While cur_tok.val = ';' Do
+  { En BCPL le ';' entre commandes est optionnel.
+    On boucle tant qu'on n'est pas sur un token d'arret. }
+  While Not IsSeqStop Do
   Begin
-    LexNext;
-    If IsSeqStop Then Exit;
     ParseStatement;
+    If cur_tok.val = ';' Then LexNext;  { separateur optionnel }
   End;
 End;
 
@@ -3952,17 +4003,25 @@ Begin
     arm_lbl[arm_cnt]     := NewLabel;
     arm_lbl_cnt[arm_cnt] := 0;
 
-    { CASE val: cmds ENDCASE }
-    LexExpect('CASE');
-    lo := ParseConstExprInt;
-    hi := lo;
-    Inc(arm_lbl_cnt[arm_cnt]);
-    l := arm_lbl_cnt[arm_cnt];
-    lbl_lo[arm_cnt, l]  := lo;
-    lbl_hi[arm_cnt, l]  := hi;
-    lbl_rng[arm_cnt, l] := False;
+    { CASE val: [CASE val2:] ... cmds ENDCASE
+      Support des CASE labels multiples (fall-through BCPL) }
+    Repeat
+      LexExpect('CASE');
+      lo := ParseConstExprInt;
+      hi := lo;
+      Inc(arm_lbl_cnt[arm_cnt]);
+      If arm_lbl_cnt[arm_cnt] > MAX_LBL Then
+      Begin
+        ErrorMsg('Trop de valeurs CASE pour un bras (max 8)');
+        arm_lbl_cnt[arm_cnt] := MAX_LBL;
+      End;
+      l := arm_lbl_cnt[arm_cnt];
+      lbl_lo[arm_cnt, l]  := lo;
+      lbl_hi[arm_cnt, l]  := hi;
+      lbl_rng[arm_cnt, l] := False;
+      LexExpect(':');
+    Until cur_tok.val <> 'CASE';  { plusieurs CASE -> meme bras }
 
-    LexExpect(':');
     EmitLabel(arm_lbl[arm_cnt]);
     ParseStatementSeq;
     If cur_tok.val = 'ENDCASE' Then LexNext;
@@ -4178,15 +4237,17 @@ Begin
         EmitI0('RET');
     End;
   End
-  { RESULTIS expr : retour de valeur depuis VALOF }
+  { RESULTIS expr : retour de valeur depuis VALOF ou corps de fonction }
   Else If cur_tok.val = 'RESULTIS' Then
   Begin
     LexNext;
     ParseExpr;
     If valof_lbl <> '' Then
       EmitI1('JMP', valof_lbl)
+    Else If cur_ret_lbl <> '' Then
+      EmitI1('JMP', cur_ret_lbl)    { dans un corps BE, RESULTIS = RETURN avec valeur }
     Else
-      ErrorMsg('RESULTIS en dehors d''un VALOF');
+      ErrorMsg('RESULTIS en dehors d''un VALOF ou d''une fonction');
   End
   { LET : declaration locale dans un bloc }
   Else If cur_tok.val = 'LET' Then
@@ -4216,6 +4277,12 @@ Begin
       Else
         ParseAssignment;
     End;
+  End
+  Else If cur_tok.kind <> TK_EOF Then
+  Begin
+    { Token non reconnu comme commande : eviter boucle infinie }
+    ErrorMsg('Commande BCPL inattendue : ' + cur_tok.val);
+    LexNext;
   End;
 End;
 
@@ -4311,123 +4378,85 @@ End;
 Procedure ParseBuiltinProc(Const fname : TString);
 Var ti1       : Integer;
     ti2       : Integer;
-    si1       : Integer;
     lbl_skip  : TString;
-    v_str     : TString;
     exit_code : Integer;
+    n_args    : Integer;
 Begin
+  { Consommer la parenthese ouvrante -- toutes les proc. BCPL utilisent () }
+  LexExpect('(');
+
   If (fname = 'WRITES') Then
   Begin
-    { INC/DEC(v [, n]) : ajouter/soustraire n (defaut 1) a v }
-    v_str := cur_tok.val;
-    si1   := SymFind(v_str);
-    LexExpectKind(TK_IDENT);
-    If si1 = 0 Then
-      ErrorMsg('INC/DEC : identificateur inconnu : ' + v_str)
-    Else
-      GenLoadAddr(si1);              { BX = adresse de v }
-    If cur_tok.val = ',' Then
+    { WRITES(str) : afficher la chaine BCPL pointee par AX -> SI }
+    ti1 := ParseExpr;                  { adresse chaine -> AX }
+    EmitI2('MOV', 'SI', 'AX');
+    EmitI1('CALL', '_BRT_WRITES');
+  End
+
+  Else If fname = 'WRITEN' Then
+  Begin
+    { WRITEN(n) : afficher l'entier n }
+    ti1 := ParseExpr;                  { entier -> AX }
+    EmitI1('CALL', '_BRT_WRITEN');
+  End
+
+  Else If fname = 'WRITECH' Then
+  Begin
+    { WRITECH(c) : afficher le caractere c (code ASCII dans AX) }
+    ti1 := ParseExpr;                  { code char -> AX }
+    EmitI1('PUSH', 'AX');
+    EmitI1('PUSH', 'DX');
+    EmitI2('MOV',  'DL', 'AL');
+    EmitI2('MOV',  'AH', '2');
+    EmitI0('INT  21h');
+    EmitI1('POP',  'DX');
+    EmitI1('POP',  'AX');
+  End
+
+  Else If fname = 'NEWLINE' Then
+  Begin
+    { NEWLINE() : emettre CR LF }
+    EmitI1('CALL', '_BRT_NEWLINE');
+  End
+
+  Else If fname = 'WRITEF' Then
+  Begin
+    { WRITEF(fmt [, arg1, arg2, ...]) : formateur BCPL (stub) }
+    ti1 := ParseExpr;                  { format -> AX }
+    n_args := 0;
+    While cur_tok.val = ',' Do
     Begin
       LexNext;
-      ti1 := ParseExpr;             { n -> AX }
-      If fname = 'INC' Then
-        EmitI2('ADD', 'Word Ptr [BX]', 'AX')
-      Else
-        EmitI2('SUB', 'Word Ptr [BX]', 'AX');
-    End
-    Else
-    Begin
-      If fname = 'INC' Then
-        EmitI1('INC', 'Word Ptr [BX]')
-      Else
-        EmitI1('DEC', 'Word Ptr [BX]');
-    End;
-  End
-
-  Else If (fname = 'INCL') Or (fname = 'EXCL') Then
-  Begin
-    { INCL(s, e) : ajouter e au SET s  ;  EXCL(s, e) : retirer e du SET s }
-    v_str := cur_tok.val;
-    si1   := SymFind(v_str);
-    LexExpectKind(TK_IDENT);
-    If si1 = 0 Then
-      ErrorMsg('INCL/EXCL : identificateur inconnu : ' + v_str)
-    Else
-      GenLoadAddr(si1);              { BX = adresse du SET }
-    LexExpect(',');
-    ti1 := ParseExpr;               { e -> AX }
-    EmitI2('MOV', 'CX', 'AX');
-    EmitI2('MOV', 'AX', '1');
-    EmitI0('SHL  AX, CL');          { AX = masque de bit e }
-    If fname = 'INCL' Then
-      EmitI2('OR',  'Word Ptr [BX]', 'AX')
-    Else
-    Begin
-      EmitI1('NOT', 'AX');
-      EmitI2('AND', 'Word Ptr [BX]', 'AX');
-    End;
-  End
-
-  Else If fname = 'NEW' Then
-  Begin
-    { NEW(p) : allouer sizeof(p^) octets dans le heap interne.              }
-    { Appelle _ORT_HEAP_ALLOC(BX = taille) -> AX = near ptr, 0 si echec.  }
-    v_str := cur_tok.val;
-    si1   := SymFind(v_str);
-    LexExpectKind(TK_IDENT);
-    If si1 > 0 Then
-    Begin
-      ti1 := sym_table^[si1].type_idx;
-      { Calcul de la taille : sizeof(pointee type) }
-      If (ti1 >= 1) And (ti1 <= type_count) And
-         (type_table^[ti1].kind = TYK_WORD) Then
-        EmitI2('MOV', 'BX', IntToStr(TypeByteSize(type_table^[ti1].base_idx)))
-      Else
-        EmitI2('MOV', 'BX', '2');        { fallback : 2 octets }
-      EmitI1('CALL', '_ORT_HEAP_ALLOC');
-      { Verifier echec (AX = 0) }
-      EmitI2('OR',  'AX', 'AX');
-      EmitI1('JZ',  '_ORT_NIL_ERR');     { heap sature = erreur fatale }
-      { Stocker le near ptr dans p }
+      EmitI1('PUSH', 'AX');            { sauver format si premier arg }
+      ti2 := ParseExpr;               { arg -> AX }
       EmitI0('PUSH AX');
-      GenLoadAddr(si1);                  { BX = adresse de p }
-      EmitI0('POP  AX');
-      EmitI2('MOV', 'Word Ptr [BX]', 'AX');
-    End
-    Else
-      ErrorMsg('NEW : pointeur inconnu : ' + v_str);
+      Inc(n_args);
+    End;
+    { Pour l'instant : juste afficher la chaine de format (stub) }
+    If n_args > 0 Then
+    Begin
+      EmitI2('ADD', 'SP', IntToStr(n_args * 2));
+      EmitI1('POP', 'AX');
+    End;
+    EmitI2('MOV', 'SI', 'AX');
+    EmitI1('CALL', '_BRT_WRITES');
   End
 
-  Else If fname = 'DISPOSE' Then
+  Else If fname = 'STOP' Then
   Begin
-    { DISPOSE(p) : liberer le bloc heap et mettre p a NIL. }
-    v_str := cur_tok.val;
-    si1   := SymFind(v_str);
-    LexExpectKind(TK_IDENT);
-    If si1 > 0 Then
-    Begin
-      GenLoad(si1);                      { AX = valeur du pointeur }
-      EmitI1('CALL', '_ORT_HEAP_FREE'); { stub bump-allocator }
-      GenLoadAddr(si1);                  { BX = adresse de p }
-      EmitI2('MOV', 'Word Ptr [BX]', '0');  { p := NIL }
-    End
-    Else
-      ErrorMsg('DISPOSE : pointeur inconnu : ' + v_str);
+    { STOP(n) : terminer le programme avec code n }
+    ti1 := ParseExpr;                  { code -> AX }
+    EmitI1('CALL', '_BRT_STOP');
   End
 
   Else If fname = 'HALT' Then
   Begin
-    { HALT[(n)] : terminer le programme
-      Modula-2 : HALT sans argument -> code 0
-      Oberon   : HALT(n) avec code n }
+    { HALT() ou HALT(n) : terminer }
     If cur_tok.val = ')' Then
-    Begin
-      { HALT() sans code -> exit 0 }
-      EmitI2('MOV', 'AX', '4C00h');
-    End
+      EmitI2('MOV', 'AX', '4C00h')
     Else
     Begin
-      ti1 := ParseExpr;               { n -> AX }
+      ti1 := ParseExpr;
       EmitI2('MOV', 'AH', '4Ch');
     End;
     EmitI0('INT  21h');
@@ -4435,10 +4464,10 @@ Begin
 
   Else If fname = 'ASSERT' Then
   Begin
-    { ASSERT(b [, n]) : si b = FALSE alors HALT avec code n (defaut 1) }
+    { ASSERT(b [, n]) : si b = FALSE alors exit avec code n }
     lbl_skip  := NewLabel;
     exit_code := 1;
-    ti1 := ParseExpr;               { b -> AX }
+    ti1 := ParseExpr;
     EmitI2('CMP', 'AX', '0');
     EmitI1('JNE', lbl_skip);
     If cur_tok.val = ',' Then
@@ -4451,7 +4480,7 @@ Begin
       End
       Else
       Begin
-        ti2 := ParseExpr;           { code -> AX, ignore }
+        ti2 := ParseExpr;
         exit_code := 1;
       End;
     End;
@@ -4461,7 +4490,7 @@ Begin
   End
 
   Else
-    ErrorMsg('Procedure integree inconnue : ' + fname);
+    ErrorMsg('Procedure integree BCPL inconnue : ' + fname);
 
   LexExpect(')');
 End;

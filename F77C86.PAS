@@ -1659,6 +1659,922 @@ Begin
 End;
 
 { ============================================================
+  TODO 04 - TABLE DES SYMBOLES ET PORTEE
+  ============================================================
+  En Fortran 77 il n'y a qu'une seule portee par unite de programme
+  (PROGRAM / SUBROUTINE / FUNCTION / BLOCK DATA).  Pas de portees
+  imbriquees.  Les blocs COMMON et les noms de procedures sont
+  "globaux" (scope_unit = 0).
+
+  Fonctions exposees :
+    SymFind(name)             -- cherche dans portee courante + globale
+    SymFindLocal(name)        -- cherche uniquement dans l'unite courante
+    SymEnter(name,kind,dtype) -- cree un nouveau symbole
+    SymReset                  -- purge les symboles de l'unite courante
+
+    LabelFind(num)            -- cherche une etiquette par numero
+    LabelEnter(num)           -- cree si necessaire, retourne index
+    LabelMarkDefined(num,ln)  -- marque l'etiquette comme vue dans source
+    LabelCheckAll             -- verifie les ref. non definies apres END
+    LabelReset                -- purge la table pour une nouvelle unite
+
+    CommonFind(name)          -- cherche un bloc COMMON par nom
+    CommonEnter(name)         -- cree si necessaire, retourne index
+
+    FmtFind(lbl_num)          -- cherche un FORMAT par etiquette
+    FmtEnter(lbl_num, text)   -- enregistre un FORMAT
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  SymFindLocal : chercher un symbole dans l'unite de programme courante
+  seulement. Ne remonte pas aux globaux (scope_unit = 0).
+  Retourne l'index (1..sym_count) ou 0 si non trouve.
+  -------------------------------------------------------------------------- }
+Function SymFindLocal(Const aname : TString) : Integer;
+Var i : Integer;
+Begin
+  SymFindLocal := 0;
+  For i := 1 To sym_count Do
+    If (sym_table^[i].name = aname) And
+       (sym_table^[i].scope_unit = cur_proc_idx) Then
+    Begin
+      SymFindLocal := i;
+      Exit;
+    End;
+End;
+
+{ --------------------------------------------------------------------------
+  SymFind : chercher un symbole d'abord dans la portee courante,
+  puis parmi les globaux (scope_unit = 0 : procedures, INTRINSIC…).
+  Retourne l'index (1..sym_count) ou 0 si non trouve.
+  -------------------------------------------------------------------------- }
+Function SymFind(Const aname : TString) : Integer;
+Var i : Integer;
+Begin
+  SymFind := 0;
+  { 1. Unite courante }
+  For i := 1 To sym_count Do
+    If (sym_table^[i].name = aname) And
+       (sym_table^[i].scope_unit = cur_proc_idx) Then
+    Begin
+      SymFind := i;
+      Exit;
+    End;
+  { 2. Globaux }
+  For i := 1 To sym_count Do
+    If (sym_table^[i].name = aname) And
+       (sym_table^[i].scope_unit = 0) Then
+    Begin
+      SymFind := i;
+      Exit;
+    End;
+End;
+
+{ --------------------------------------------------------------------------
+  SymEnter : ajouter un nouveau symbole dans la table.
+  Le nom est tronque a 6 chars avec avertissement si necessaire.
+  Signale une erreur si le symbole existe deja dans l'unite courante.
+  Retourne l'index cree (ou l'index existant en cas de doublon).
+  -------------------------------------------------------------------------- }
+Function SymEnter(Const aname : TString; akind : TSymKind;
+                  adtype : TDataType) : Integer;
+Var
+  idx   : Integer;
+  sname : TString;
+  d     : Integer;
+Begin
+  SymEnter := 0;
+  sname := aname;
+  If Length(sname) > 6 Then
+  Begin
+    WarnMsg('Identifiant tronque a 6 chars : ' + sname);
+    sname := Copy(sname, 1, 6);
+  End;
+  { Doublon dans la portee courante ? }
+  idx := SymFindLocal(sname);
+  If idx > 0 Then
+  Begin
+    ErrorMsg('Symbole deja declare dans cette unite : ' + sname);
+    SymEnter := idx;
+    Exit;
+  End;
+  { Place disponible ? }
+  If sym_count >= MAX_SYM Then
+  Begin
+    ErrorMsg('Table symboles saturee (MAX=' + IntToStr(MAX_SYM) + ')');
+    Exit;
+  End;
+  Inc(sym_count);
+  idx := sym_count;
+  With sym_table^[idx] Do
+  Begin
+    name       := sname;
+    kind       := akind;
+    dtype      := adtype;
+    char_len   := 1;
+    type_size  := DataTypeSize(adtype, 1);
+    ndim       := 0;
+    For d := 1 To MAX_DIM Do
+    Begin
+      dims[d].lb := 1;
+      dims[d].ub := 0;
+    End;
+    asm_label  := 'FV_' + sname;
+    bp_offset  := 0;
+    is_save    := False;
+    is_dummy   := False;
+    is_defined := False;
+    common_blk := 0;
+    common_off := 0;
+    equiv_grp  := 0;
+    equiv_off  := 0;
+    const_ival := 0;
+    const_rval := 0;
+    const_sval := '';
+    proc_idx   := 0;
+    scope_unit := cur_proc_idx;
+  End;
+  SymEnter := idx;
+End;
+
+{ --------------------------------------------------------------------------
+  SymReset : supprimer tous les symboles appartenant a l'unite courante
+  (scope_unit = cur_proc_idx).  Les symboles globaux (scope_unit = 0)
+  sont conserves.  A appeler apres la generation de code d'une unite.
+  -------------------------------------------------------------------------- }
+Procedure SymReset;
+Var i, j : Integer;
+Begin
+  j := 0;
+  For i := 1 To sym_count Do
+    If sym_table^[i].scope_unit <> cur_proc_idx Then
+    Begin
+      Inc(j);
+      sym_table^[j] := sym_table^[i];
+    End;
+  sym_count := j;
+End;
+
+{ ==========================================================================
+  Table des etiquettes numeriques (FORMAT, GOTO, DO …)
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  LabelFind : chercher une etiquette par son numero.
+  Retourne l'index (1..lbl_count) ou 0 si non trouvee.
+  -------------------------------------------------------------------------- }
+Function LabelFind(anum : Integer) : Integer;
+Var i : Integer;
+Begin
+  LabelFind := 0;
+  For i := 1 To lbl_count Do
+    If lbl_table^[i].num = anum Then
+    Begin
+      LabelFind := i;
+      Exit;
+    End;
+End;
+
+{ --------------------------------------------------------------------------
+  LabelEnter : creer une entree pour l'etiquette anum si elle n'existe pas.
+  Retourne l'index existant ou nouvellement cree (0 si table saturee).
+  -------------------------------------------------------------------------- }
+Function LabelEnter(anum : Integer) : Integer;
+Var idx : Integer;
+Begin
+  idx := LabelFind(anum);
+  If idx > 0 Then
+  Begin
+    LabelEnter := idx;
+    Exit;
+  End;
+  If lbl_count >= MAX_LABELS Then
+  Begin
+    ErrorMsg('Table etiquettes saturee (MAX=' + IntToStr(MAX_LABELS) + ')');
+    LabelEnter := 0;
+    Exit;
+  End;
+  Inc(lbl_count);
+  idx := lbl_count;
+  With lbl_table^[idx] Do
+  Begin
+    num        := anum;
+    asm_label  := 'FL_' + IntToStr(anum);
+    defined    := False;
+    referenced := False;
+    do_end     := False;
+    line       := 0;
+  End;
+  LabelEnter := idx;
+End;
+
+{ --------------------------------------------------------------------------
+  LabelMarkDefined : marquer une etiquette comme definie (vue en cols 1-5).
+  Signale une erreur si elle est redeclare avec un numero deja defini.
+  -------------------------------------------------------------------------- }
+Procedure LabelMarkDefined(anum : Integer; aline : Integer);
+Var idx : Integer;
+Begin
+  idx := LabelEnter(anum);
+  If idx = 0 Then Exit;
+  With lbl_table^[idx] Do
+  Begin
+    If defined Then
+      ErrorMsg('Etiquette ' + IntToStr(anum) +
+               ' deja definie (premiere a la ligne ' + IntToStr(line) + ')')
+    Else
+    Begin
+      defined := True;
+      line    := aline;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LabelCheckAll : controler en fin d'unite qu'il n'y a pas d'etiquettes
+  referencees (GOTO/DO) mais jamais definies dans le source.
+  -------------------------------------------------------------------------- }
+Procedure LabelCheckAll;
+Var i : Integer;
+Begin
+  For i := 1 To lbl_count Do
+    With lbl_table^[i] Do
+      If referenced And Not defined Then
+        ErrorMsg('Etiquette ' + IntToStr(num) +
+                 ' referencee mais jamais definie');
+End;
+
+{ --------------------------------------------------------------------------
+  LabelReset : reinitialiser la table des etiquettes pour une nouvelle
+  unite de programme.
+  -------------------------------------------------------------------------- }
+Procedure LabelReset;
+Begin
+  lbl_count := 0;
+End;
+
+{ ==========================================================================
+  Table des blocs COMMON
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  CommonFind : chercher un bloc COMMON par son nom.
+  '' = BLANK COMMON. Retourne l'index (1..common_count) ou 0.
+  -------------------------------------------------------------------------- }
+Function CommonFind(Const aname : TString) : Integer;
+Var i : Integer;
+Begin
+  CommonFind := 0;
+  For i := 1 To common_count Do
+    If common_table^[i].name = aname Then
+    Begin
+      CommonFind := i;
+      Exit;
+    End;
+End;
+
+{ --------------------------------------------------------------------------
+  CommonEnter : creer un bloc COMMON s'il n'existe pas encore.
+  Retourne l'index existant ou nouvellement cree (0 si table saturee).
+  -------------------------------------------------------------------------- }
+Function CommonEnter(Const aname : TString) : Integer;
+Var idx : Integer;
+Begin
+  idx := CommonFind(aname);
+  If idx > 0 Then
+  Begin
+    CommonEnter := idx;
+    Exit;
+  End;
+  If common_count >= MAX_COMMON Then
+  Begin
+    ErrorMsg('Table COMMON saturee (MAX=' + IntToStr(MAX_COMMON) + ')');
+    CommonEnter := 0;
+    Exit;
+  End;
+  Inc(common_count);
+  idx := common_count;
+  With common_table^[idx] Do
+  Begin
+    name       := aname;
+    If aname = '' Then asm_label := '_FC_BLANK_'
+    Else             asm_label := '_FC_' + aname + '_';
+    total_size := 0;
+  End;
+  CommonEnter := idx;
+End;
+
+{ ==========================================================================
+  Table des enonces FORMAT
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  FmtFind : chercher un FORMAT par son numero d'etiquette.
+  Retourne l'index (1..fmt_count) ou 0 si non trouve.
+  -------------------------------------------------------------------------- }
+Function FmtFind(anum : Integer) : Integer;
+Var i : Integer;
+Begin
+  FmtFind := 0;
+  For i := 1 To fmt_count Do
+    If fmt_table^[i].lbl_num = anum Then
+    Begin
+      FmtFind := i;
+      Exit;
+    End;
+End;
+
+{ --------------------------------------------------------------------------
+  FmtEnter : enregistrer un enonce FORMAT.
+  Si le numero existe deja, le texte est remplace avec avertissement.
+  Retourne l'index (0 si table saturee).
+  -------------------------------------------------------------------------- }
+Function FmtEnter(anum : Integer; Const atext : TString) : Integer;
+Var idx : Integer;
+Begin
+  idx := FmtFind(anum);
+  If idx > 0 Then
+  Begin
+    WarnMsg('FORMAT ' + IntToStr(anum) + ' redefini');
+    fmt_table^[idx].text := atext;
+    FmtEnter := idx;
+    Exit;
+  End;
+  If fmt_count >= MAX_FORMAT Then
+  Begin
+    ErrorMsg('Table FORMAT saturee (MAX=' + IntToStr(MAX_FORMAT) + ')');
+    FmtEnter := 0;
+    Exit;
+  End;
+  Inc(fmt_count);
+  idx := fmt_count;
+  With fmt_table^[idx] Do
+  Begin
+    lbl_num   := anum;
+    text      := atext;
+    asm_label := 'FK_FMT_' + IntToStr(anum);
+  End;
+  FmtEnter := idx;
+End;
+
+{ ============================================================
+  TODO 05 - TYPAGE IMPLICITE ET DECLARATIONS DE TYPE
+  ============================================================
+  Regle F77 par defaut : I J K L M N -> INTEGER, reste -> REAL.
+  IMPLICIT NONE interdit tout type implicite.
+  IMPLICIT type(ranges) modifie les regles pour des plages de lettres.
+  Declarations explicites : INTEGER/REAL/DOUBLEPRECISION/COMPLEX/
+  LOGICAL/CHARACTER [*n] var [*m] , var ...
+
+  Fonctions exposees :
+    ImplicitReset           -- reinit regles par defaut (entre unites)
+    ApplyImplicit(name)     -- type implicite par 1ere lettre du nom
+    SymGetOrCreate(name)    -- trouve ou cree un symbole avec type implicite
+    ParseStarSize(default)  -- consomme [*n] ; retourne n ou default
+    ParseImplicit           -- parse enonce IMPLICIT (cur_tok apres kw)
+    ParseTypeDecl(dt)       -- parse liste de variables typees
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ImplicitReset : reinitialiser les regles implicites pour une nouvelle
+  unite de programme.  I-N -> INTEGER, reste -> REAL (norme F77 par defaut).
+  -------------------------------------------------------------------------- }
+Procedure ImplicitReset;
+Var c : Char;
+Begin
+  impl_none := False;
+  For c := 'A' To 'Z' Do
+    impl_type[c] := DT_REAL;
+  For c := 'I' To 'N' Do
+    impl_type[c] := DT_INTEGER;
+End;
+
+{ --------------------------------------------------------------------------
+  ApplyImplicit : retourner le type implicite d'une variable d'apres
+  la premiere lettre de son nom.
+  -------------------------------------------------------------------------- }
+Function ApplyImplicit(Const aname : TString) : TDataType;
+Var c : Char;
+Begin
+  If Length(aname) = 0 Then
+  Begin
+    ApplyImplicit := DT_INTEGER;
+    Exit;
+  End;
+  c := aname[1];
+  If (c >= 'a') And (c <= 'z') Then c := Chr(Ord(c) - 32);
+  If (c >= 'A') And (c <= 'Z') Then
+    ApplyImplicit := impl_type[c]
+  Else
+    ApplyImplicit := DT_INTEGER;
+End;
+
+{ --------------------------------------------------------------------------
+  SymGetOrCreate : trouver un symbole dans la portee courante, ou en creer
+  un nouveau avec son type implicite.  Si IMPLICIT NONE est actif et que
+  le symbole n'existe pas, signale une erreur.
+  Retourne l'index dans sym_table (0 = erreur).
+  -------------------------------------------------------------------------- }
+Function SymGetOrCreate(Const aname : TString) : Integer;
+Var
+  idx : Integer;
+  dt  : TDataType;
+Begin
+  idx := SymFind(aname);
+  If idx > 0 Then
+  Begin
+    SymGetOrCreate := idx;
+    Exit;
+  End;
+  If impl_none Then
+  Begin
+    ErrorMsg('Variable non declaree (IMPLICIT NONE actif) : ' + aname);
+    SymGetOrCreate := 0;
+    Exit;
+  End;
+  dt  := ApplyImplicit(aname);
+  idx := SymEnter(aname, SK_VAR, dt);
+  If idx > 0 Then
+  Begin
+    sym_table^[idx].type_size := DataTypeSize(dt, 1);
+    sym_table^[idx].char_len  := 1;
+  End;
+  SymGetOrCreate := idx;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStarSize : consommer un specificateur de taille optionnel [*n].
+  Si absent, retourne default_sz.  Valeur -1 = taille ajustable (*).
+  cur_tok doit etre positionne sur le token courant.
+  -------------------------------------------------------------------------- }
+Function ParseStarSize(default_sz : Integer) : Integer;
+Begin
+  ParseStarSize := default_sz;
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+  Begin
+    LexNext;
+    { CHARACTER*(*) : taille ajustable pour parametres formels }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      LexNext;
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then LexNext
+      Else ErrorMsg('Attendu * dans CHARACTER*(*)');
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext
+      Else ErrorMsg('Attendu ) dans CHARACTER*(*)');
+      ParseStarSize := -1;   { -1 = ajustable }
+    End
+    Else If cur_tok.kind = TK_INTEGER Then
+    Begin
+      ParseStarSize := cur_tok.int_val;
+      LexNext;
+    End
+    Else
+      ErrorMsg('Taille numerique attendue apres * dans declaration de type');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseImplicit : parser un enonce IMPLICIT.
+  Appele avec cur_tok sur le premier token APRES le mot-cle IMPLICIT.
+  Syntaxe :
+    IMPLICIT NONE
+    IMPLICIT type[*n](lettre[-lettre] [, ...]) [, type[*n](...)] ...
+  -------------------------------------------------------------------------- }
+Procedure ParseImplicit;
+Var
+  dt       : TDataType;
+  sz       : Integer;
+  c1, c2   : Char;
+  c        : Char;
+Begin
+  { IMPLICIT NONE }
+  If (cur_tok.kind = TK_IDENT) And (cur_tok.val = 'NONE') Then
+  Begin
+    impl_none := True;
+    For c := 'A' To 'Z' Do impl_type[c] := DT_NONE;
+    LexNext;
+    Exit;
+  End;
+
+  { IMPLICIT type[*n](ranges) [, type[*n](ranges)] ... }
+  While cur_tok.kind = TK_KEYWORD Do
+  Begin
+    { Identifier le type }
+    dt := DT_NONE;
+    If      cur_tok.val = 'INTEGER'         Then dt := DT_INTEGER
+    Else If cur_tok.val = 'REAL'            Then dt := DT_REAL
+    Else If cur_tok.val = 'DOUBLEPRECISION' Then dt := DT_DOUBLE
+    Else If cur_tok.val = 'COMPLEX'         Then dt := DT_COMPLEX
+    Else If cur_tok.val = 'LOGICAL'         Then dt := DT_LOGICAL
+    Else If cur_tok.val = 'CHARACTER'       Then dt := DT_CHARACTER
+    Else
+    Begin
+      ErrorMsg('Type inconnu dans IMPLICIT : ' + cur_tok.val);
+      Exit;
+    End;
+    LexNext;
+
+    { Taille optionnelle *n }
+    sz := ParseStarSize(DataTypeSize(dt, 1));
+
+    { '(' liste de plages ')' }
+    If (cur_tok.kind <> TK_PUNCT) Or (cur_tok.val <> '(') Then
+    Begin
+      ErrorMsg('Attendu ( apres le type dans IMPLICIT');
+      Exit;
+    End;
+    LexNext;  { consommer '(' }
+
+    Repeat
+      { Premiere lettre de la plage }
+      If (cur_tok.kind <> TK_IDENT) Or (Length(cur_tok.val) <> 1) Then
+      Begin
+        ErrorMsg('Lettre unique attendue dans plage IMPLICIT');
+        Exit;
+      End;
+      c1 := cur_tok.val[1];
+      c2 := c1;
+      LexNext;
+
+      { Plage c1-c2 ? }
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '-') Then
+      Begin
+        LexNext;
+        If (cur_tok.kind = TK_IDENT) And (Length(cur_tok.val) = 1) Then
+        Begin
+          c2 := cur_tok.val[1];
+          LexNext;
+        End
+        Else
+          ErrorMsg('Lettre de fin de plage attendue dans IMPLICIT');
+      End;
+
+      { Appliquer le type a toutes les lettres de la plage }
+      If c2 >= c1 Then
+        For c := c1 To c2 Do impl_type[c] := dt
+      Else
+        ErrorMsg('Plage IMPLICIT invalide : ' + c1 + '-' + c2);
+
+      { Virgule : autre plage dans les memes parentheses }
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+        LexNext
+      Else
+        Break;
+    Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
+
+    { ')' fermant }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+      LexNext
+    Else
+      ErrorMsg('Attendu ) a la fin de la plage IMPLICIT');
+
+    { Virgule : autre type-spec }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext
+    Else
+      Break;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTypeDecl : parser un enonce de declaration de type.
+  Appele avec dt = le type de base, cur_tok sur le premier token apres
+  le mot-cle de type (et apres l'eventuel *n global).
+  Syntaxe :
+    INTEGER [*sz] var1 [*n] [(dim)] , var2 [*n] , ...
+  Pour chaque variable :
+    - si elle existe deja, son type est mis a jour
+    - sinon, elle est creee avec SK_VAR et le type declare
+  Les dimensions entre parentheses dans une declaration de type (extensions)
+  sont simplement ignorees ici (traitees par TODO 06 via DIMENSION).
+  -------------------------------------------------------------------------- }
+Procedure ParseTypeDecl(dt : TDataType);
+Var
+  def_sz  : Integer;   { taille par defaut du type }
+  var_sz  : Integer;   { taille pour cette variable }
+  vname   : TString;
+  idx     : Integer;
+Begin
+  def_sz := DataTypeSize(dt, 1);
+  { Taille globale optionnelle apres le type : INTEGER*2 var1, var2 }
+  def_sz := ParseStarSize(def_sz);
+
+  { Liste de variables }
+  Repeat
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('Identificateur attendu dans declaration de type');
+      Exit;
+    End;
+    vname := cur_tok.val;
+    LexNext;
+
+    { Taille specifique a cette variable : var*n }
+    var_sz := ParseStarSize(def_sz);
+
+    { Trouver ou creer le symbole }
+    idx := SymFindLocal(vname);
+    If idx = 0 Then
+    Begin
+      { Nouveau symbole : creer avec SK_VAR }
+      idx := SymEnter(vname, SK_VAR, dt);
+    End
+    Else
+    Begin
+      { Symbole existant (ex. DIMENSION deja vu) : mettre a jour le type }
+      sym_table^[idx].dtype := dt;
+    End;
+
+    If idx > 0 Then
+    Begin
+      sym_table^[idx].dtype     := dt;
+      sym_table^[idx].type_size := var_sz;
+      If dt = DT_CHARACTER Then
+        sym_table^[idx].char_len := var_sz
+      Else
+        sym_table^[idx].char_len := 1;
+    End;
+
+    { Ignorer les dimensions eventuellement presentes ici :
+      ex. INTEGER A(10) dans une declaration de type (extension F77).
+      Elles seront traitees par le parseur DIMENSION (TODO 06). }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      LexNext;
+      While (cur_tok.kind <> TK_PUNCT) Or (cur_tok.val <> ')') Do
+      Begin
+        If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then
+        Begin
+          ErrorMsg('Parenthese non fermee dans declaration de type');
+          Exit;
+        End;
+        LexNext;
+      End;
+      LexNext; { consommer ')' }
+    End;
+
+    { Separateur de variables }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext
+    Else
+      Break;
+  Until (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF);
+End;
+
+{ ============================================================
+  TODO 06 - DECLARATIONS DIMENSION ET TABLEAUX
+  ============================================================
+  DIMENSION var(borne[,borne]...) avec 1 a 7 dimensions (norme F77).
+  Borne simple n  -> lb=1, ub=n
+  Borne double m:n -> lb=m, ub=n
+  Borne ajustable * -> ub=-1 (dummy arrays de taille inconnue)
+
+  Fonctions exposees :
+    DimExtent(idx,d)        -- etendue de la dimension d (ub-lb+1)
+    ArrayTotalElems(idx)    -- produit de toutes les etendues
+    ArrayTotalSize(idx)     -- ArrayTotalElems * type_size (octets)
+    ArrayStride(idx,d)      -- pas d'adressage pour la dim d (col-major)
+    ParseBoundExpr(v,adj)   -- lire une borne (entier ou *)
+    ParseDimSpec(idx)       -- parse (dims) et remplit sym_table^[idx]
+    ParseDimension          -- parse enonce DIMENSION complet
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  DimExtent : etendue de la dimension d (ub - lb + 1).
+  Les dimensions ajustables (ub = -1) retournent 0.
+  -------------------------------------------------------------------------- }
+Function DimExtent(idx, d : Integer) : Integer;
+Var lb, ub : Integer;
+Begin
+  DimExtent := 0;
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  If (d < 1) Or (d > sym_table^[idx].ndim) Then Exit;
+  lb := sym_table^[idx].dims[d].lb;
+  ub := sym_table^[idx].dims[d].ub;
+  If ub = -1 Then DimExtent := 0   { ajustable -> etendue inconnue }
+  Else            DimExtent := ub - lb + 1;
+End;
+
+{ --------------------------------------------------------------------------
+  ArrayTotalElems : produit des etendues de toutes les dimensions.
+  Retourne 0 si au moins une dimension est ajustable.
+  -------------------------------------------------------------------------- }
+Function ArrayTotalElems(idx : Integer) : Integer;
+Var i, prod, ext : Integer;
+Begin
+  ArrayTotalElems := 0;
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  If sym_table^[idx].ndim = 0 Then
+  Begin
+    ArrayTotalElems := 1;
+    Exit;
+  End;
+  prod := 1;
+  For i := 1 To sym_table^[idx].ndim Do
+  Begin
+    ext := DimExtent(idx, i);
+    If ext = 0 Then Exit;   { dimension ajustable -> total inconnu }
+    prod := prod * ext;
+  End;
+  ArrayTotalElems := prod;
+End;
+
+{ --------------------------------------------------------------------------
+  ArrayTotalSize : taille totale en octets = total_elems * type_size.
+  -------------------------------------------------------------------------- }
+Function ArrayTotalSize(idx : Integer) : Integer;
+Begin
+  ArrayTotalSize := ArrayTotalElems(idx) * sym_table^[idx].type_size;
+End;
+
+{ --------------------------------------------------------------------------
+  ArrayStride : pas (stride) de la dimension d en ordre column-major.
+  stride(1) = 1
+  stride(d) = etendue(1) * etendue(2) * ... * etendue(d-1)
+  Retourne 0 si une dimension precedente est ajustable.
+  -------------------------------------------------------------------------- }
+Function ArrayStride(idx, d : Integer) : Integer;
+Var i, s, ext : Integer;
+Begin
+  ArrayStride := 0;
+  If d < 1 Then Exit;
+  s := 1;
+  For i := 1 To d - 1 Do
+  Begin
+    ext := DimExtent(idx, i);
+    If ext = 0 Then Exit;
+    s := s * ext;
+  End;
+  ArrayStride := s;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBoundExpr : lire une expression de borne (entier signé ou *).
+  out_val     = valeur numerique (0 si ajustable)
+  out_adj     = True si la borne est ajustable (*)
+  Supporte uniquement les constantes entieres simples (et + / - unaire).
+  -------------------------------------------------------------------------- }
+Procedure ParseBoundExpr(Var out_val : Integer; Var out_adj : Boolean);
+Var sign : Integer;
+Begin
+  out_val := 0;
+  out_adj := False;
+
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+  Begin
+    out_adj := True;
+    LexNext;
+    Exit;
+  End;
+
+  sign := 1;
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '-') Then
+  Begin
+    sign := -1;
+    LexNext;
+  End
+  Else If (cur_tok.kind = TK_OP) And (cur_tok.val = '+') Then
+    LexNext;
+
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    out_val := sign * Integer(cur_tok.int_val);
+    LexNext;
+  End
+  Else
+    ErrorMsg('Borne de dimension attendue (entier ou *), obtenu : ' +
+             cur_tok.val);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDimSpec : parser la liste de dimensions d'un tableau.
+  cur_tok doit etre sur '(' a l'entree.
+  Remplit sym_table^[idx].dims[1..ndim] et sym_table^[idx].ndim.
+  Met a jour sym_table^[idx].kind := SK_ARRAY.
+  -------------------------------------------------------------------------- }
+Procedure ParseDimSpec(idx : Integer);
+Var
+  d        : Integer;
+  lb, ub   : Integer;
+  v1, v2   : Integer;
+  adj1,adj2: Boolean;
+Begin
+  If (cur_tok.kind <> TK_PUNCT) Or (cur_tok.val <> '(') Then
+  Begin
+    ErrorMsg('Attendu ( pour la liste de dimensions');
+    Exit;
+  End;
+  LexNext;  { consommer '(' }
+
+  d := 0;
+  Repeat
+    If d >= MAX_DIM Then
+    Begin
+      ErrorMsg('Trop de dimensions (max ' + IntToStr(MAX_DIM) + ')');
+      { avancer jusqu'a ')' }
+      While (cur_tok.kind <> TK_PUNCT) Or (cur_tok.val <> ')') Do
+      Begin
+        If (cur_tok.kind = TK_EOF) Or (cur_tok.kind = TK_NEWLINE) Then Break;
+        LexNext;
+      End;
+      Break;
+    End;
+
+    Inc(d);
+
+    { Lire premiere valeur }
+    ParseBoundExpr(v1, adj1);
+
+    { Deux-points ? -> lb:ub }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ':') Then
+    Begin
+      LexNext;
+      lb := v1;
+      ParseBoundExpr(v2, adj2);
+      If adj2 Then ub := -1
+      Else         ub := v2;
+    End
+    Else
+    Begin
+      { Borne simple : lb=1, ub=v1 (ou -1 si ajustable) }
+      lb := 1;
+      If adj1 Then ub := -1
+      Else         ub := v1;
+    End;
+
+    If (ub <> -1) And (ub < lb) Then
+      ErrorMsg('Borne superieure < borne inferieure dans DIMENSION');
+
+    sym_table^[idx].dims[d].lb := lb;
+    sym_table^[idx].dims[d].ub := ub;
+
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext
+    Else
+      Break;
+  Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
+
+  { Fermer ')' }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+    LexNext
+  Else
+    ErrorMsg('Attendu ) pour fermer la liste de dimensions');
+
+  sym_table^[idx].ndim := d;
+  sym_table^[idx].kind := SK_ARRAY;
+
+  { Mettre a jour la taille totale si toutes dimensions connues }
+  sym_table^[idx].type_size := DataTypeSize(sym_table^[idx].dtype,
+                                             sym_table^[idx].char_len);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDimension : parser un enonce DIMENSION complet.
+  Appele avec cur_tok sur le premier token apres le mot-cle DIMENSION.
+  Syntaxe :
+    DIMENSION var(dim_spec) [, var(dim_spec)] ...
+  -------------------------------------------------------------------------- }
+Procedure ParseDimension;
+Var
+  vname : TString;
+  idx   : Integer;
+Begin
+  Repeat
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('Identificateur attendu dans DIMENSION');
+      Exit;
+    End;
+    vname := cur_tok.val;
+    LexNext;
+
+    { Trouver ou creer le symbole (avec type implicite si nouveau) }
+    idx := SymFindLocal(vname);
+    If idx = 0 Then
+      idx := SymGetOrCreate(vname);
+
+    If idx = 0 Then Exit;
+
+    { Parser le specificateur de dimensions }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      ParseDimSpec(idx);
+    End
+    Else
+    Begin
+      ErrorMsg('Liste de dimensions attendue apres ' + vname +
+               ' dans DIMENSION');
+      Exit;
+    End;
+
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext
+    Else
+      Break;
+  Until (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF);
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -1669,7 +2585,7 @@ Begin
 
   Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
 
-  { TODOs 04-25 : implementation a venir }
+  { TODOs 07-25 : implementation a venir }
 
   CloseFiles;
 
