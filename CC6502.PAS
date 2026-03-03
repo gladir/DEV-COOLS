@@ -6349,23 +6349,18 @@ BEGIN
  lptr := 1;
  line := '';
  nextlabel := 0;
- use_stdout := True; { Initialize early - may be changed later }
- { Initialize heap-based symbol table }
+ use_stdout := True; { Initialise t“t - peut ˆtre modifi‚ ult‚rieurement }
+  { Initialise la table des symboles bas‚e sur la m‚moire de tas }
  init_symbols;
-
- { Initialize defines table }
+  { Initialise la table defines }
  init_defines;
-
- { Initialize inclusion system }
+  { Initialise le systŠme d'inclusion }
  init_inclusion_system;
-
- { Initialize conditions system }
+  { Initialise le systŠme de conditions }
  init_conditions;
-
- { Initialize control flow tables }
+  { Initialise les tables de flux de contr“le }
  init_goto_table;
  init_switch_table;
-
  If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
@@ -6373,19 +6368,18 @@ BEGIN
    Assign(output, param);
    {$I-}
    Rewrite(output);
-   If IOResult <> 0 Then
-   Begin
-    WriteLn('Error: Cannot create output file: ', param);
+   If IOResult <> 0 Then Begin
+    WriteLn('Erreur: Impossible de cr‚er le fichier de sortie : ', param);
     Halt(1);
    End;
    {$I+}
-   { Message supprimÃ© temporairement }
-   { WriteLn('Generating asm file: ', param); }
+   { Message supprim‚ temporairement }
+   { WriteLn('G‚n‚rer le fichier asm: ', param); }
    use_stdout := False;
   End
    Else
   Begin
-   { Ne pas assigner de sortie ï¿½ la sortie; utiliser plutï¿½t un drapeau }
+   { Ne pas assigner de sortie … la sortie; utiliser plut“t un drapeau }
    Case Language of
     _English:WriteLn('Using console screen for output.');
     Else WriteLn('Affichage de la sortie sur la console.');
@@ -6395,33 +6389,33 @@ BEGIN
  End
   Else
  Begin
-   { Ne pas assigner de sortie ï¿½ la sortie; utiliser plutï¿½t un drapeau }
+   { Ne pas assigner de sortie … la sortie; utiliser plut“t un drapeau }
   Case Language of
    _English:WriteLn('Using console screen for output.');
    Else WriteLn('Affichage de la sortie sur la console.');
   End;
   use_stdout := True;
  End;
-  { Initialisation du systÃ¨me d'optimisation }
+  { Initialisation du systŠme d'optimisation }
  init_optimization;
- { Initialize loop context stack }
+ { Initialise le contexte de boucle de la pile }
  loop_depth := 0;
- { Initialize type info table }
+ { Initialise les informations de type de table }
  type_info_count := 0;
-  { Initialisaton du systï¿½me de gestion des fonctions }
+  { Initialisaton du systŠme de gestion des fonctions }
  init_functions;
-  { Initialisation du systÃ¨me de gestion des structures }
+  { Initialisation du systŠme de gestion des structures }
  init_structs;
- { Initialisation de la table des Ã©tiquettes goto }
+ { Initialisation de la table des ‚tiquettes goto }
  init_goto_table;
  asmtype := AS6809;
- header;        { Code d''introduction }
- parse;         { Analyse toutes les entrï¿½e }
- trailer;       { Code de suivi }
- free_defines;  { Free define memory from heap }
- free_conditions; { Free conditions system }
- free_symbols;  { Free symbol table from heap }
- free_structs;  { Free struct definitions from heap }
- closeout;      { Fermer la sortie }
- errrptsummary; { Rï¿½sumer les erreurs }
+ header;          { Code d'introduction }
+ parse;           { Analyse toutes les entr‚e }
+ trailer;         { Code de suivi }
+ free_defines;    { LibŠre les define de la m‚moire de tas }
+ free_conditions; { LibŠre le systŠme de conditions }
+ free_symbols;    { LibŠre la table de symboel de la m‚moire de tas }
+ free_structs;    { LibŠre les d‚finitions de struct de la m‚moire de tas }
+ closeout;        { Fermer la sortie }
+ errrptsummary;   { R‚sumer les erreurs }
 END.
