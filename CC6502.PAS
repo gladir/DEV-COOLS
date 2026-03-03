@@ -5210,53 +5210,40 @@ Begin
   { Ouverture de parenthŠse ouverte }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- If not match('(') Then
- Begin
+ If not match('(') Then Begin
   errrpt('Expected ( after if');
   Exit;
  End;
-
- { Parse condition }
+  { Analyse la condition }
  safe_writeln('; IF condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
+  { Fermeture de parenthŠse attendue }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
- If not match(')') Then
- Begin
+ If not match(')') Then Begin
   errrpt('Expected ) after if condition');
   Exit;
  End;
-
- { Generate conditional jump }
+  { G‚n‚rer le saut conditionnel }
  else_label := getlabel;
  end_label := getlabel;
-
  ol('tstd');
  ot('lbeq ');
  printlabel(else_label);
  nl;
-
- { Parse then statement (can be single statement or compound) }
+  { Analyse alors l'instruction (peut ˆtre une simple instruction ou une instruction compos‚) }
  safe_writeln('; IF then block');
-
- { Check if we need to read next line for the statement }
+  { V‚rifie s'il est n‚cessaire de lire la prochaine ligne de l'instruction }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
-
- If not parse_statement Then
- Begin
+ If not parse_statement Then Begin
   errrpt('Expected statement after if condition');
   Exit;
  End;
-
- { Check for else clause - may be on next line }
+  { V‚rifie pour la clause else - peut ˆtre la prochaine ligne }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
-
- If match('else') Then
- Begin
+ If match('else') Then Begin
   { Jump over else block }
   ot('lbra ');
   printlabel(end_label);

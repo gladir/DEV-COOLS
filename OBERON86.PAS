@@ -2971,6 +2971,276 @@ Begin
 End;
 
 { ============================================================
+  TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
+  ============================================================ }
+
+{ Forward : ParseExpr est defini en TODO 10 ; ParseFactor l'appelle
+  pour les sous-expressions entre parentheses et les index de tableau. }
+Function ParseExpr : Integer; Forward;
+
+{ --------------------------------------------------------------------------
+  GenLoadConst : charger une valeur immediate dans AX (ou DX:AX si 32 bits).
+  -------------------------------------------------------------------------- }
+Procedure GenLoadConst(v : LongInt; ti : Integer);
+Begin
+  If (ti >= 1) And (ti <= type_count) And (TypeBitSize(ti) = 32) Then
+  Begin
+    EmitI2('MOV', 'AX', IntToStr(v And $FFFF));
+    EmitI2('MOV', 'DX', IntToStr((v Shr 16) And $FFFF));
+    Exit;
+  End;
+  EmitI2('MOV', 'AX', IntToStr(v And $FFFF));
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadAddr : charger l'adresse (near ptr) d'un symbole dans BX.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadAddr(si : Integer);
+Var ofs : Integer;
+Begin
+  If sym_table^[si].scope = SC_GLOBAL Then
+    EmitI2('LEA', 'BX', '[' + sym_table^[si].asm_label + ']')
+  Else
+  Begin
+    ofs := sym_table^[si].bp_offset;
+    If ofs >= 0 Then
+      EmitI2('LEA', 'BX', '[BP+' + IntToStr(ofs) + ']')
+    Else
+      EmitI2('LEA', 'BX', '[BP-' + IntToStr(-ofs) + ']');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDesignator : ident postfix*
+    postfix = '.' ident          (champ de RECORD)
+            | '[' expr ']'       (element de tableau)
+            | '^'                (dereferencement de pointeur)
+  Charge la valeur finale dans AX (ou BX pour les aggregats).
+  Retourne le type_idx resultant.
+  -------------------------------------------------------------------------- }
+Function ParseDesignator : Integer;
+Var name    : TString;
+    si      : Integer;
+    ti      : Integer;
+    el_ti   : Integer;
+    el_size : Integer;
+    fld_idx : Integer;
+    k       : Integer;
+Begin
+  name := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  si := SymFind(name);
+  If si = 0 Then
+  Begin
+    ErrorMsg('Identifiant inconnu : ' + name);
+    ParseDesignator := TYP_UNDEF;
+    Exit;
+  End;
+
+  ti := sym_table^[si].type_idx;
+
+  { Charger la valeur ou l'adresse de base selon la nature du symbole }
+  Case sym_table^[si].kind Of
+    SK_CONST :
+      GenLoadConst(sym_table^[si].const_ival, ti);
+    SK_TYPE :
+      ErrorMsg('Nom de type non valide dans une expression : ' + name);
+    SK_PROC :
+      Begin
+        { Appel sans arguments a completer en TODO 18 - on met AX=0 }
+        EmitI2('MOV', 'AX', '0');
+      End;
+  Else
+    { SK_VAR, SK_PARAM, SK_FIELD }
+    GenLoad(si);
+  End;
+
+  { Post-fixes }
+  While (cur_tok.val = '.') Or (cur_tok.val = '[') Or (cur_tok.val = '^') Do
+  Begin
+    If cur_tok.val = '.' Then
+    Begin
+      LexNext;
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_RECORD) Then
+        ErrorMsg('Selection de champ sur un type non RECORD');
+      name := cur_tok.val;
+      LexExpectKind(TK_IDENT);
+      fld_idx := 0;
+      For k := type_table^[ti].rec_sym To
+               type_table^[ti].rec_sym + type_table^[ti].rec_nfld - 1 Do
+        If (k >= 1) And (k <= sym_count) And (sym_table^[k].name = name) Then
+        Begin
+          fld_idx := k;
+          Break;
+        End;
+      If fld_idx = 0 Then
+        ErrorMsg('Champ inconnu : ' + name)
+      Else
+      Begin
+        { On suppose BX = adresse de base du record }
+        EmitI2('ADD', 'BX', IntToStr(sym_table^[fld_idx].fld_offset));
+        EmitI2('MOV', 'AX', '[BX]');
+        ti := sym_table^[fld_idx].type_idx;
+      End;
+    End
+    Else If cur_tok.val = '[' Then
+    Begin
+      LexNext;
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_ARRAY) Then
+        ErrorMsg('Acces indexe sur un type non ARRAY');
+      el_ti   := type_table^[ti].base_idx;
+      el_size := TypeByteSize(el_ti);
+      If el_size < 1 Then el_size := 1;
+      { Sauvegarder l'adresse de base (AX) dans BX }
+      EmitI2('MOV', 'BX', 'AX');
+      { Evaluer l'index -> AX }
+      ParseExpr;
+      { Calculer l'offset : AX * el_size }
+      If el_size = 2 Then
+        EmitI0('SHL  AX, 1')
+      Else If el_size > 2 Then
+      Begin
+        EmitI2('MOV', 'CX', IntToStr(el_size));
+        EmitI0('MUL  CX');
+      End;
+      EmitI2('ADD', 'BX', 'AX');
+      EmitI2('MOV', 'AX', '[BX]');
+      ti := el_ti;
+      LexExpect(']');
+    End
+    Else
+    Begin
+      LexNext;
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
+        ErrorMsg('Dereferencement sur un type non POINTER');
+      EmitI2('MOV', 'BX', 'AX');
+      EmitI2('MOV', 'AX', '[BX]');
+      ti := type_table^[ti].base_idx;
+    End;
+  End;
+
+  ParseDesignator := ti;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseFactor : facteur primaire Oberon.
+  Grammaire :
+    factor = integer | char | real | string
+           | TRUE | FALSE | NIL
+           | '~' factor
+           | '(' expr ')'
+           | designator [ '(' ExprList ')' ]
+  Resultat dans AX ; type retourne.
+  Les appels de fonction sont des stubs (TODO 18).
+  -------------------------------------------------------------------------- }
+Function ParseFactor : Integer;
+Var ti    : Integer;
+    lbl   : TString;
+    n_str : TString;
+Begin
+  ti := TYP_UNDEF;
+
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
+    ti := TYP_INTEGER;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_CHAR Then
+  Begin
+    EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
+    ti := TYP_CHAR;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_REAL Then
+  Begin
+    { Constante reelle : emettre une reserve DD dans DATA et charger l'adresse }
+    Inc(str_lit_count);
+    Str(str_lit_count, n_str);
+    lbl := OK_PFX + 'R' + n_str;
+    EmitDD(lbl, cur_tok.val);
+    EmitI2('LEA', 'AX', '[' + lbl + ']');
+    ti := TYP_REAL;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_STRING Then
+  Begin
+    lbl := GenStringLitData(cur_tok.val);
+    EmitI2('LEA', 'AX', '[' + lbl + ']');
+    ti := TypeNewArray(TYP_CHAR, Length(cur_tok.val) + 1);
+    LexNext;
+  End
+  Else If cur_tok.val = 'TRUE' Then
+  Begin
+    EmitI2('MOV', 'AX', '1');
+    ti := TYP_BOOLEAN;
+    LexNext;
+  End
+  Else If cur_tok.val = 'FALSE' Then
+  Begin
+    EmitI2('MOV', 'AX', '0');
+    ti := TYP_BOOLEAN;
+    LexNext;
+  End
+  Else If cur_tok.val = 'NIL' Then
+  Begin
+    EmitI2('MOV', 'AX', '0');
+    ti := TYP_NIL;
+    LexNext;
+  End
+  Else If cur_tok.val = '~' Then
+  Begin
+    LexNext;
+    ti := ParseFactor;
+    If Not TypeIsBoolean(ti) Then
+      ErrorMsg('NOT applicable uniquement sur BOOLEAN');
+    EmitI2('XOR', 'AX', '1');
+  End
+  Else If cur_tok.val = '(' Then
+  Begin
+    LexNext;
+    ti := ParseExpr;
+    LexExpect(')');
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    ti := ParseDesignator;
+    { Appel de procedure/fonction : '(' suit le designateur -- stub TODO 18 }
+    If cur_tok.val = '(' Then
+    Begin
+      LexNext;
+      If cur_tok.val <> ')' Then
+      Begin
+        ParseExpr;
+        While cur_tok.val = ',' Do
+        Begin
+          LexNext;
+          ParseExpr;
+        End;
+      End;
+      LexExpect(')');
+      EmitI2('MOV', 'AX', '0');
+    End;
+  End
+  Else
+  Begin
+    ErrorMsg('Facteur attendu, obtenu : ' + cur_tok.val);
+    LexNext;
+  End;
+
+  ParseFactor := ti;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExpr : stub minimal - sera remplace en TODO 10 (hierarchie complete).
+  Pour l'instant, delègue a ParseFactor pour permettre la compilation.
+  -------------------------------------------------------------------------- }
+Function ParseExpr;
+Begin
+  ParseExpr := ParseFactor;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
