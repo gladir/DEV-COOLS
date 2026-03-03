@@ -5087,54 +5087,47 @@ Begin
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
   { V‚rifi‚ si c'est une fonction de d‚claration ou de d‚finition }
- If match('(') Then
- Begin
-  { This is a function - restore position and parse as function }
+ If match('(') Then Begin
+  { C'est une fonction - restaur‚ la position et analyse la fonction }
   lptr := save_lptr;
   If parse_function_declaration(base_type) Then
    parse_declaration := True;
   Exit;
  End;
-
- { This is a variable declaration - pass storage class }
+  { C'est une d‚claration de variable - passage d'entreposage de classe }
  declare_variable(var_name, var_type, type_info, storage_class);
  parse_declaration := True;
-
- { Check for initialization }
- If match('=') Then
- Begin
+  { V‚rifie pour l'initialisation }
+ If match('=') Then Begin
   safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
   expression(lval);
-
-  { Type checking for initialization }
-  If type_info.is_const Then
-  Begin
+   { V‚rifie le type pour l'initialisation }
+  If type_info.is_const Then Begin
    safe_writeln('; const variable initialized');
   End;
-
-  { Generate type-appropriate initialization code }
+   { G‚nŠre le code d'initilisation du type appropri‚ }
   Case type_info.size of
    1: Begin
-       ot('stb  '); { Store byte for char }
+       ot('stb  '); { Entrepose l'octet pour char }
        outstr(var_name);
        nl;
       End;
    2: Begin
-       ot('std  '); { Store word for int/short/pointers }
+       ot('std  '); { Entrepose le word pour int/short/pointers }
        outstr(var_name);
        nl;
       End;
   Else
    Begin
-    ot('std  '); { Default to word }
+    ot('std  '); { Par d‚faut un word }
     outstr(var_name);
     nl;
    End;
   End;
  End
- Else
+  Else
  Begin
-  { Check if const variable needs initialization }
+  { V‚rifie si la variable const n‚cessite l'initialisation }
   If type_info.is_const Then
   Begin
    Case Language of
@@ -5142,26 +5135,20 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
     {$ENDIF}
-    Else errrpt('la variable const ' + var_name + ' doit Ãªtre initialisÃ©e');
+    Else errrpt('la variable const ' + var_name + ' doit ˆtre initialis‚e');
    End;
   End;
  End;
-
- { Handle multiple variable declarations }
- While match(',') do
- Begin
+  { Gestion de d‚clarations multiple de variable }
+ While match(',') do Begin
   var_type := parse_declarator(var_name, base_type, type_info);
   If var_type = 0 Then Exit;
-
   declare_variable(var_name, var_type, type_info, storage_class);
-
-  { Check for initialization }
-  If match('=') Then
-  Begin
-   safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
+   { V‚rifie pour l'initialisation }
+  If match('=') Then Begin
+   safe_writeln('; Initialise la variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
    expression(lval);
-
-   { Generate initialization code }
+    { G‚n&re le code d'initialisation }
    Case type_info.size of
     1: Begin
         ot('stb  ');
@@ -5181,28 +5168,25 @@ Begin
     End;
    End;
   End
-  Else
+   Else
   Begin
-   { Check if const variable needs initialization }
-   If type_info.is_const Then
-   Begin
+   { V‚rifie si la variable const n‚cessite l'initialisation }
+   If type_info.is_const Then Begin
     Case Language of
      _English: errrpt('const variable ' + var_name + ' must be initialized');
      {$IFDEF FPC}
      _Germany: errrpt('const Variable ' + var_name + ' muss initialisiert werden');
      {$ENDIF}
-     Else errrpt('la variable const ' + var_name + ' doit Ãªtre initialisÃ©e');
+     Else errrpt('la variable const ' + var_name + ' doit ˆtre initialis‚e');
     End;
    End;
   End;
  End;
-
- { Expect semicolon for variable declarations }
- If not match(';') Then
-  errrpt('Expected semicolon after declaration');
+  { Point-virgule attendue pour les d‚clarations de variable }
+ If not match(';') Then errrpt('Expected semicolon after declaration');
 End;
 
-{ Forward declarations for statement parsing }
+ { D‚clarations anticip‚es pour l'analyse des instructions }
 Function parse_statement: Boolean; forward;
 Function parse_compound_statement: Boolean; forward;
 Function parse_assignment_statement: Boolean; forward;
@@ -5214,18 +5198,16 @@ Function parse_case_statement: Boolean; forward;
 Function parse_default_statement: Boolean; forward;
 Function parse_for_statement: Boolean; forward;
 
-{ Control structure parsing }
+ { Analyse la structure de contr“le }
 Function parse_if_statement: Boolean;
 Var
  lval: TLVal;
  else_label, end_label: Integer;
 Begin
  parse_if_statement := False;
-
  If not match('if') Then Exit;
  parse_if_statement := True;
-
- { Expect opening parenthesis }
+  { Ouverture de parenthŠse ouverte }
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
  If not match('(') Then

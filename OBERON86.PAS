@@ -2655,6 +2655,322 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 - DECLARATIONS DE TYPES (TYPE)
+  ============================================================ }
+
+{ Forward : ParseArrayType / ParseRecordType / ParsePointerType / ParseProcType
+  appellent tous ParseTypeRef, qui est defini plus loin. }
+Function ParseTypeRef : Integer; Forward;
+
+{ --------------------------------------------------------------------------
+  ParseArrayType : ARRAY constExpr OF typeRef
+  -------------------------------------------------------------------------- }
+Function ParseArrayType : Integer;
+Var len : LongInt;
+    base: Integer;
+Begin
+  LexExpect('ARRAY');
+  len  := ParseConstExprInt;
+  LexExpect('OF');
+  base := ParseTypeRef;
+  ParseArrayType := TypeNewArray(base, len);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRecordType : RECORD ident-list : typeRef ; ... END
+  Chaque champ est inscrit dans sym_table comme SK_FIELD avec son offset.
+  -------------------------------------------------------------------------- }
+Function ParseRecordType : Integer;
+Var first_fld : Integer;
+    nfld      : Integer;
+    off       : Integer;
+    fti       : Integer;
+    si        : Integer;
+    names     : Array[1..MAX_FIELD] of TString;
+    nnames    : Integer;
+    k         : Integer;
+Begin
+  LexExpect('RECORD');
+  first_fld := sym_count + 1;
+  nfld      := 0;
+  off       := 0;
+  While (cur_tok.kind = TK_IDENT) Do
+  Begin
+    { Collecter les noms de champs : ident, ident, ... }
+    nnames      := 1;
+    names[1]    := cur_tok.val;
+    LexNext;
+    While cur_tok.val = ',' Do
+    Begin
+      LexNext;
+      If nnames < MAX_FIELD Then
+      Begin
+        Inc(nnames);
+        names[nnames] := cur_tok.val;
+      End;
+      LexExpectKind(TK_IDENT);
+    End;
+    LexExpect(':');
+    fti := ParseTypeRef;
+    { Inscrire chaque champ dans sym_table }
+    For k := 1 To nnames Do
+    Begin
+      si := SymEnter(names[k], SK_FIELD, SC_GLOBAL, fti);
+      If si > 0 Then
+      Begin
+        sym_table^[si].fld_offset := off;
+        Inc(off, TypeByteSize(fti));
+        Inc(nfld);
+      End;
+    End;
+    { Separateur ; optionnel entre groupes de champs }
+    If cur_tok.val = ';' Then
+      LexNext
+    Else If cur_tok.val <> 'END' Then
+      ErrorMsg('Point-virgule ou END attendu dans RECORD');
+  End;
+  LexExpect('END');
+  ParseRecordType := TypeNewRecord(first_fld, nfld);
+End;
+
+{ --------------------------------------------------------------------------
+  ParsePointerType : POINTER TO typeRef
+  -------------------------------------------------------------------------- }
+Function ParsePointerType : Integer;
+Var base : Integer;
+Begin
+  LexExpect('POINTER');
+  LexExpect('TO');
+  base := ParseTypeRef;
+  ParsePointerType := TypeNewPointer(base);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseProcType : PROCEDURE [ ( params ) ] [ : typeRef ]
+  Simplifie : on capture le type de retour ; le detail des parametres
+  formels sera gere en TODO 17 (on saute les parentheses ici).
+  -------------------------------------------------------------------------- }
+Function ParseProcType : Integer;
+Var ret_ti : Integer;
+    depth  : Integer;
+Begin
+  LexExpect('PROCEDURE');
+  ret_ti := 0;
+  { Sauter les parametres entre parentheses - sera traite en TODO 17 }
+  If cur_tok.val = '(' Then
+  Begin
+    depth := 1;
+    LexNext;   { consomme '(' }
+    While (depth > 0) And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      If cur_tok.val = '(' Then Inc(depth)
+      Else If cur_tok.val = ')' Then Dec(depth);
+      LexNext;
+    End;
+    { apres la boucle, '(' final vient d'etre consomme par le dernier LexNext }
+  End;
+  { Type de retour facultatif }
+  If cur_tok.val = ':' Then
+  Begin
+    LexNext;
+    ret_ti := ParseTypeRef;
+  End;
+  ParseProcType := TypeNewProc(ret_ti);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTypeRef : parser une designation de type Oberon.
+  Retourne l'index dans type_table.
+    ident              -> alias de type (SK_TYPE dans sym_table)
+    ARRAY  n OF T      -> ParseArrayType
+    RECORD ... END     -> ParseRecordType
+    POINTER TO T       -> ParsePointerType
+    PROCEDURE [(.)] :T -> ParseProcType
+  -------------------------------------------------------------------------- }
+Function ParseTypeRef;
+Var tok : TString;
+    si  : Integer;
+Begin
+  tok := cur_tok.val;
+  If tok = 'ARRAY' Then
+    ParseTypeRef := ParseArrayType
+  Else If tok = 'RECORD' Then
+    ParseTypeRef := ParseRecordType
+  Else If tok = 'POINTER' Then
+    ParseTypeRef := ParsePointerType
+  Else If tok = 'PROCEDURE' Then
+    ParseTypeRef := ParseProcType
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    LexNext;   { consommer le nom }
+    si := SymFind(tok);
+    If (si > 0) And (sym_table^[si].kind = SK_TYPE) Then
+      ParseTypeRef := sym_table^[si].type_idx
+    Else
+    Begin
+      ErrorMsg('Type inconnu : ' + tok);
+      ParseTypeRef := TYP_UNDEF;
+    End;
+  End
+  Else
+  Begin
+    ErrorMsg('Designation de type attendue, obtenu : ' + cur_tok.val);
+    LexNext;
+    ParseTypeRef := TYP_UNDEF;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTypeDecl : ident = typeRef ;
+  Cree un alias de type et l'inscrit comme SK_TYPE dans sym_table.
+  -------------------------------------------------------------------------- }
+Procedure ParseTypeDecl;
+Var tname : TString;
+    ti    : Integer;
+    si    : Integer;
+Begin
+  tname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  LexExpect('=');
+  ti := ParseTypeRef;
+  If SymFindLocal(tname) > 0 Then
+    WarnMsg('Type deja declare dans cette portee : ' + tname);
+  si := SymEnter(tname, SK_TYPE, SC_GLOBAL, ti);
+  If si > 0 Then
+    sym_table^[si].asm_label := '';   { les types n'ont pas de label ASM }
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTypeSection : TYPE ident = typeRef ; ...
+  -------------------------------------------------------------------------- }
+Procedure ParseTypeSection;
+Begin
+  LexExpect('TYPE');
+  While (cur_tok.kind = TK_IDENT) Do
+    ParseTypeDecl;
+End;
+
+{ ============================================================
+  TODO 08 - DECLARATIONS DE VARIABLES (VAR)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  GenGlobalVarData : emettre la reserve DATA pour une variable globale.
+  Le cur_out doit pointer vers out_file (segment DATA).
+  -------------------------------------------------------------------------- }
+Procedure GenGlobalVarData(si : Integer);
+Var lbl : TString;
+    ti  : Integer;
+    nb  : Integer;
+Begin
+  lbl := sym_table^[si].asm_label;
+  ti  := sym_table^[si].type_idx;
+  If (ti < 1) Or (ti > type_count) Then
+  Begin
+    EmitDW(lbl, '0');
+    Exit;
+  End;
+  nb := TypeByteSize(ti);
+  If nb < 1 Then nb := 2;
+  Case type_table^[ti].kind Of
+    TYK_BOOLEAN,
+    TYK_CHAR,
+    TYK_BYTE    : EmitDB(lbl, '0');
+    TYK_SET,
+    TYK_INTEGER,
+    TYK_POINTER : EmitDW(lbl, '0');
+    TYK_REAL    : EmitDD(lbl, '0');
+    TYK_PROC    : EmitDW(lbl, '0');
+    TYK_ARRAY,
+    TYK_RECORD  : EmitDup(lbl, nb, '0', 1);   { nb DB 0 }
+  Else
+    EmitDW(lbl, '0');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseVarDecl : parser un groupe de declarations de variables.
+    IdentList : TypeRef ;
+  is_local    = False -> variables globales (symbol SC_GLOBAL + DATA)
+  is_local    = True  -> variables locales (symbol SC_LOCAL, BP negatif)
+  local_off   = offset courant (negatif) sur la pile, mis a jour en sortie.
+  -------------------------------------------------------------------------- }
+Procedure ParseVarDecl(is_local : Boolean; Var local_off : Integer);
+Var names  : Array[1..MAX_FIELD] of TString;
+    nnames : Integer;
+    ti     : Integer;
+    k      : Integer;
+    nb     : Integer;
+    si     : Integer;
+Begin
+  { Collecter la liste des identificateurs }
+  nnames   := 1;
+  names[1] := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  While cur_tok.val = ',' Do
+  Begin
+    LexNext;
+    If nnames < MAX_FIELD Then
+    Begin
+      Inc(nnames);
+      names[nnames] := cur_tok.val;
+    End;
+    LexExpectKind(TK_IDENT);
+  End;
+  LexExpect(':');
+  ti := ParseTypeRef;
+  nb := TypeByteSize(ti);
+  If nb < 1 Then nb := 2;
+  { Inscrire chaque variable dans sym_table et generer sa reserve }
+  For k := 1 To nnames Do
+  Begin
+    If SymFindLocal(names[k]) > 0 Then
+      ErrorMsg('Variable deja declaree : ' + names[k]);
+    If is_local Then
+    Begin
+      { Variable locale : reserve sur la pile }
+      Dec(local_off, nb);                          { BP - nb }
+      si := SymEnter(names[k], SK_VAR, SC_LOCAL, ti);
+      If si > 0 Then
+      Begin
+        sym_table^[si].bp_offset := local_off;
+        sym_table^[si].asm_label := '';             { pas de label DATA }
+        { Mettre a jour local_size de la procedure courante }
+        If cur_proc_idx > 0 Then
+        Begin
+          If (-local_off) > proc_table^[cur_proc_idx].local_size Then
+            proc_table^[cur_proc_idx].local_size := -local_off;
+        End;
+      End;
+    End
+    Else
+    Begin
+      { Variable globale : reserve dans le segment DATA }
+      si := SymEnter(names[k], SK_VAR, SC_GLOBAL, ti);
+      If si > 0 Then
+      Begin
+        sym_table^[si].asm_label := OV_PFX + AsmIdent(names[k]);
+        GenGlobalVarData(si);
+      End;
+    End;
+  End;
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseVarSection : VAR IdentList : TypeRef ; ...
+  is_local  : True si on est dans une procedure (variables locales).
+  local_off : offset BP courant (negatif), mis a jour par ParseVarDecl.
+  -------------------------------------------------------------------------- }
+Procedure ParseVarSection(is_local : Boolean; Var local_off : Integer);
+Begin
+  LexExpect('VAR');
+  While (cur_tok.kind = TK_IDENT) Do
+    ParseVarDecl(is_local, local_off);
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
