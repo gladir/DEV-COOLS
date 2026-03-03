@@ -3607,26 +3607,204 @@ Begin
   EmitLabel(lbl_end);
 End;
 
+{ ============================================================
+  TODO 13 - INSTRUCTION WHILE / REPEAT / LOOP / EXIT
+  ============================================================ }
+
 { --------------------------------------------------------------------------
-  ParseStatement : stub appele par ParseStatementSeq.
-  Gere : IF, affectation (:=), et ignore silencieusement les instructions
-  non encore implementees (TODO 13-19).
-  Les TODOs suivants remplaceront ce stub progressivement.
+  ParseWhileStmt : WHILE expr DO StatementSeq END
+  -------------------------------------------------------------------------- }
+Procedure ParseWhileStmt;
+Var lbl_top  : TString;
+    lbl_end  : TString;
+    ti       : Integer;
+Begin
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  LexExpect('WHILE');
+  PushLoopLabels(lbl_end, lbl_top);
+  EmitLabel(lbl_top);
+  ti := ParseExpr;
+  If Not TypeIsBoolean(ti) Then
+    ErrorMsg('Condition WHILE doit etre de type BOOLEAN');
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JE',  lbl_end);
+  LexExpect('DO');
+  ParseStatementSeq;
+  EmitI1('JMP', lbl_top);
+  EmitLabel(lbl_end);
+  LexExpect('END');
+  PopLoopLabels;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRepeatStmt : REPEAT StatementSeq UNTIL expr
+  -------------------------------------------------------------------------- }
+Procedure ParseRepeatStmt;
+Var lbl_top : TString;
+    lbl_end : TString;
+    ti      : Integer;
+Begin
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  LexExpect('REPEAT');
+  PushLoopLabels(lbl_end, lbl_top);
+  EmitLabel(lbl_top);
+  ParseStatementSeq;
+  LexExpect('UNTIL');
+  ti := ParseExpr;
+  If Not TypeIsBoolean(ti) Then
+    ErrorMsg('Condition UNTIL doit etre de type BOOLEAN');
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JE',  lbl_top);   { si encore faux, reboucler }
+  EmitLabel(lbl_end);
+  PopLoopLabels;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLoopStmt : LOOP StatementSeq END
+  Boucle infinie ; EXIT genere un JMP vers lbl_end.
+  -------------------------------------------------------------------------- }
+Procedure ParseLoopStmt;
+Var lbl_top : TString;
+    lbl_end : TString;
+Begin
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  LexExpect('LOOP');
+  PushLoopLabels(lbl_end, lbl_top);
+  EmitLabel(lbl_top);
+  ParseStatementSeq;
+  EmitI1('JMP', lbl_top);
+  EmitLabel(lbl_end);
+  LexExpect('END');
+  PopLoopLabels;
+End;
+
+{ ============================================================
+  TODO 14 - INSTRUCTION FOR
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseForStmt : FOR v := start TO end [BY step] DO StatementSeq END
+  Strategie 8086 :
+    - SI    = valeur limite (end), calculee une seule fois avant la boucle
+    - [v]   = variable de controle (SK_VAR ordinal)
+    - step  = constante entiere evaluee au compile-time (defaut +1)
+  Le prologue de procedure sauvegarde deja SI (TODO 17) ; au niveau module
+  SI est libre apres GenStartEntry (qui ne fait que MOV DS).
+  -------------------------------------------------------------------------- }
+Procedure ParseForStmt;
+Var vname   : TString;
+    si_var  : Integer;
+    step    : LongInt;
+    lbl_top : TString;
+    lbl_end : TString;
+    ti      : Integer;
+    neg     : Boolean;
+Begin
+  LexExpect('FOR');
+  vname  := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  si_var := SymFind(vname);
+  If si_var = 0 Then
+    ErrorMsg('Variable de boucle inconnue : ' + vname)
+  Else If sym_table^[si_var].kind <> SK_VAR Then
+    ErrorMsg('La variable de boucle doit etre une variable : ' + vname);
+
+  LexExpect(':=');
+  { Evaluer debut -> AX, stocker dans v }
+  ti := ParseExpr;
+  If Not TypeIsOrdinal(ti) Then
+    WarnMsg('Variable de boucle doit etre ordinale');
+  If si_var > 0 Then GenStore(si_var);
+
+  LexExpect('TO');
+  { Evaluer fin -> AX, charger dans SI }
+  ParseExpr;
+  EmitI2('MOV', 'SI', 'AX');
+
+  { Optionnel : BY constante }
+  step := 1;
+  neg  := False;
+  If cur_tok.val = 'BY' Then
+  Begin
+    LexNext;
+    If cur_tok.val = '-' Then
+    Begin
+      neg := True;
+      LexNext;
+    End;
+    step := ParseConstExprInt;
+    If neg Then step := -step;
+  End;
+
+  LexExpect('DO');
+  lbl_top := NewLabel;
+  lbl_end := NewLabel;
+  PushLoopLabels(lbl_end, lbl_top);
+
+  EmitLabel(lbl_top);
+  { Test de borne : charger v, comparer avec SI }
+  If si_var > 0 Then GenLoad(si_var)
+  Else EmitI2('MOV', 'AX', '0');
+  EmitI2('CMP', 'AX', 'SI');
+  If step >= 0 Then
+    EmitI1('JG', lbl_end)      { v > end -> sortir }
+  Else
+    EmitI1('JL', lbl_end);     { v < end -> sortir }
+
+  ParseStatementSeq;
+
+  { Incrementer/decrementer v }
+  If si_var > 0 Then GenLoad(si_var);
+  If step = 1 Then
+    EmitI0('INC  AX')
+  Else If step = -1 Then
+    EmitI0('DEC  AX')
+  Else If step >= 0 Then
+    EmitI2('ADD', 'AX', IntToStr(step And $FFFF))
+  Else
+    EmitI2('SUB', 'AX', IntToStr((-step) And $FFFF));
+  If si_var > 0 Then GenStore(si_var);
+
+  EmitI1('JMP', lbl_top);
+  EmitLabel(lbl_end);
+  LexExpect('END');
+  PopLoopLabels;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStatement : dispatch complet.
+  Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, affectation / appel.
+  Les TODOs suivants (15-19) ajouteront CASE, WITH, PROCEDURE, etc.
   -------------------------------------------------------------------------- }
 Procedure ParseStatement;
+Var brk : TString;
 Begin
   If cur_tok.val = 'IF' Then
     ParseIfStmt
-  Else If cur_tok.kind = TK_IDENT Then
+  Else If cur_tok.val = 'WHILE' Then
+    ParseWhileStmt
+  Else If cur_tok.val = 'REPEAT' Then
+    ParseRepeatStmt
+  Else If cur_tok.val = 'LOOP' Then
+    ParseLoopStmt
+  Else If cur_tok.val = 'FOR' Then
+    ParseForStmt
+  Else If cur_tok.val = 'EXIT' Then
   Begin
-    { Peut etre une affectation ou un appel de procedure }
-    If cur_tok.kind = TK_IDENT Then
-    Begin
-      { Lookahead : si ':=' suit (eventuellement apres des postfixes), c'est une affectation }
-      ParseAssignment;
-    End;
-  End;
-  { Toute autre instruction est ignoree silencieusement jusqu'a TODO 13+ }
+    LexNext;
+    brk := TopBreakLabel;
+    If brk = '' Then
+      ErrorMsg('EXIT en dehors d''une boucle LOOP')
+    Else
+      EmitI1('JMP', brk);
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+    ParseAssignment;
+  { Les autres mots-cles (CASE, WITH, RETURN, appels stdlib...)
+    seront dispatches dans les TODOs 15-19. }
 End;
 
 { ============================================================

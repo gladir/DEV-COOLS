@@ -5356,37 +5356,31 @@ Begin
   errrpt('Expected ; after for condition');
   Exit;
  End;
- { Save position for increment parsing }
+ { Sauvegarde la position pour l'analyse incr‚mental }
  blanks;
  increment_start := lptr;
-
- { Skip over increment to find its end }
+  { Saute par dessus l'incr‚mentation vers la fin de celui-ci }
  While (ch <> ')') and (ch <> #0) Do gch;
  increment_end := lptr;
- If not match(')') Then
- Begin
+ If not match(')') Then Begin
   errrpt('Expected ) after for increment');
   Exit;
  End;
-
- { Jump to condition check }
+  { Saut … la v‚rification de condition }
  ot('lbra ');
  printlabel(condition_label);
  nl;
-
- { Increment label - where continue jumps to }
+ { tiquette d'incr‚mentation - o— continue au saut vers }
  prelabel(increment_label);
  safe_writeln('; FOR increment');
-
- { Re-parse and execute increment from saved position }
- saved_lptr := lptr;  { Save current position }
- lptr := increment_start;  { Set to increment start }
- gch;  { Refresh current character }
- If increment_end > increment_start Then
- Begin
-  parse_assignment_statement;  { Parse and execute increment }
+ { R‚analiser et ex‚cuter l'incr‚mentation de position de sauvegarde }
+ saved_lptr := lptr;  { Sauvegarde la position courante }
+ lptr := increment_start;  { Fixe le d‚but de l'incr‚mentation }
+ gch;  { Rafraichis le caractŠre courant }
+ If increment_end > increment_start Then Begin
+  parse_assignment_statement;  { Analyse et ex‚cute l'incr‚mentation }
  End;
- lptr := saved_lptr;  { Restore position }
+ lptr := saved_lptr;  { Restaure la position }
  gch;  { Refresh current character }
 
  ot('lbra ');
