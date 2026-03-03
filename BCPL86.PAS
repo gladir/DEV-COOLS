@@ -2772,7 +2772,7 @@ End;
     POINTER TO T       -> ParsePointerType
     PROCEDURE [(.)] :T -> ParseProcType
   -------------------------------------------------------------------------- }
-Function ParseTypeRef;
+Function ParseTypeRef:Integer;
 Var tok : TString;
     si  : Integer;
 Begin
@@ -3355,7 +3355,7 @@ End;
   ParseExpr : relations BCPL (TODO 10).
   BCPL : = ~= < <= > >=     Resultat : TRUE=-1  FALSE=0
   -------------------------------------------------------------------------- }
-Function ParseExpr;
+Function ParseExpr:Integer;
 Var ti    : Integer;
     ti2   : Integer;
     op    : TString;
@@ -4042,7 +4042,7 @@ Begin
   lbl_end  := NewLabel;
   lbl_else := NewLabel;
 
-  { Boucle sur les gardes v : T }  
+  { Boucle sur les gardes v : T }
   Repeat
     vname := cur_tok.val;
     LexExpectKind(TK_IDENT);
