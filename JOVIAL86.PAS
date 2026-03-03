@@ -1430,7 +1430,8 @@ Begin
     (s = 'ITEM')      Or (s = 'TABLE')     Or (s = 'STATUS')   Or
     (s = 'COMPOOL')   Or (s = 'DEFINE')    Or (s = 'MODULE')   Or
     (s = 'BEGIN')     Or (s = 'END')       Or
-    (s = 'PROCEDURE') Or (s = 'FUNCTION')  Or (s = 'RETURN')   Or
+    (s = 'PROCEDURE') Or (s = 'PROC')      Or
+    (s = 'FUNCTION')  Or (s = 'RETURN')   Or
     (s = 'CALL')      Or
     (s = 'INTEGER')   Or (s = 'REAL')      Or (s = 'FLOAT')    Or
     (s = 'BITS')      Or
@@ -2990,7 +2991,8 @@ Begin
     Else If cur_tok.val = 'STATUS'    Then ParseStatusDecl
     Else If cur_tok.val = 'DEFINE'    Then ParseDefine
     Else If cur_tok.val = 'COMPOOL'   Then ParseCompool
-    Else If cur_tok.val = 'PROCEDURE' Then ParseProcedureDecl
+    Else If (cur_tok.val = 'PROCEDURE') Or
+             (cur_tok.val = 'PROC')      Then ParseProcedureDecl
     Else If cur_tok.val = 'FUNCTION'  Then ParseFunctionDecl
     Else
     Begin
@@ -3182,7 +3184,11 @@ Var
   pname : TString;
   pi    : Integer;
 Begin
-  LexExpect('PROCEDURE');
+  { accepter PROCEDURE ou PROC (alias) }
+  If (cur_tok.val = 'PROCEDURE') Or (cur_tok.val = 'PROC') Then
+    LexNext
+  Else
+    LexExpect('PROCEDURE');
   pname := cur_tok.val;
   LexExpectKind(TK_IDENT);
   pi := AddProc(pname, False, IT_UNDEF, 0);
