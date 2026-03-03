@@ -189,6 +189,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 6809.</td>
 		</tr>
 		<tr>
+			<td><b>CC6502.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 6502.</td>
+		</tr>
+		<tr>
 			<td><b>CC8086.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur C pour le microprocesseur 8086.</td>
 		</tr>
