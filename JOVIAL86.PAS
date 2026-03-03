@@ -1799,11 +1799,1225 @@ Begin
 End;
 
 { ============================================================================
-  TODO 03 ... 25 : a implementer
+  TODO 03 - TABLES DES SYMBOLES, PROCEDURES ET CONSTANTES
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Utilitaires generaux
+  -------------------------------------------------------------------------- }
+Function IntToStr(n : LongInt) : TString;
+Var s : TString;
+Begin
+  Str(n, s);
+  IntToStr := s;
+End;
+
+Function StrToInt(Const s : TString) : LongInt;
+Var n : LongInt;
+    e : Integer;
+Begin
+  Val(s, n, e);
+  If e <> 0 Then n := 0;
+  StrToInt := n;
+End;
+
+Function StrUpper(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+Begin
+  res := s;
+  For i := 1 To Length(res) Do
+    res[i] := UpChr(res[i]);
+  StrUpper := res;
+End;
+
+Function StrLower(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+    c   : Char;
+Begin
+  res := s;
+  For i := 1 To Length(res) Do
+  Begin
+    c := res[i];
+    If (c >= 'A') And (c <= 'Z') Then
+      res[i] := Chr(Ord(c) + 32);
+  End;
+  StrLower := res;
+End;
+
+{ AsmIdent : remplacer les caracteres non autorises par '_' }
+Function AsmIdent(Const s : TString) : TString;
+Var i   : Integer;
+    res : TString;
+    c   : Char;
+Begin
+  res := '';
+  For i := 1 To Length(s) Do
+  Begin
+    c := s[i];
+    If LexIsAlNum(c) Or (c = '_') Then
+      res := res + c
+    Else
+      res := res + '_';
+  End;
+  AsmIdent := res;
+End;
+
+Function FileExtension(Const fn : TString) : TString;
+Var i : Integer;
+Begin
+  i := Length(fn);
+  While (i > 0) And (fn[i] <> '.') And (fn[i] <> '\') And (fn[i] <> '/') Do
+    Dec(i);
+  If (i > 0) And (fn[i] = '.') Then
+    FileExtension := Copy(fn, i, Length(fn) - i + 1)
+  Else
+    FileExtension := '';
+End;
+
+Function ChangeExtension(Const fn, ext : TString) : TString;
+Var i : Integer;
+Begin
+  i := Length(fn);
+  While (i > 0) And (fn[i] <> '.') And (fn[i] <> '\') And (fn[i] <> '/') Do
+    Dec(i);
+  If (i > 0) And (fn[i] = '.') Then
+    ChangeExtension := Copy(fn, 1, i - 1) + ext
+  Else
+    ChangeExtension := fn + ext;
+End;
+
+{ --------------------------------------------------------------------------
+  Gestion de portee : pile des bases de symboles locaux
+  scope_sp = profondeur courante (0 = global)
+  scope_base[k] = valeur de sym_count au moment de ScopeEnter niveau k
+  -------------------------------------------------------------------------- }
+Var
+  scope_base : Array[0..32] Of Integer;
+
+Procedure ScopeEnter;
+Begin
+  If scope_sp < 32 Then
+  Begin
+    Inc(scope_sp);
+    scope_level := scope_sp;
+    scope_base[scope_sp] := sym_count;
+  End;
+End;
+
+Procedure ScopeLeave;
+Begin
+  If scope_sp > 0 Then
+  Begin
+    sym_count := scope_base[scope_sp];
+    Dec(scope_sp);
+    scope_level := scope_sp;
+  End;
+End;
+
+{ ClearLocalSymbols : supprimer les symboles ajoutes depuis ScopeEnter
+  (sans dechanger scope_sp - utile en fin de procedure avant FreeTables) }
+Procedure ClearLocalSymbols;
+Begin
+  If scope_sp > 0 Then
+    sym_count := scope_base[scope_sp];
+End;
+
+{ --------------------------------------------------------------------------
+  InitTables / FreeTables
+  -------------------------------------------------------------------------- }
+Procedure InitTables;
+Begin
+  New(sym_table);
+  New(proc_table);
+  New(const_table);
+  sym_count   := 0;
+  proc_count  := 0;
+  const_count := 0;
+  label_count := 0;
+  err_count   := 0;
+  warn_count  := 0;
+  instr_count := 0;
+  scope_sp    := 0;
+  scope_level := 0;
+  loop_depth  := 0;
+  cur_proc_idx    := -1;
+  module_name     := '';
+  cur_module_pfx  := '';
+  entry_proc_lbl  := '';
+End;
+
+Procedure FreeTables;
+Begin
+  Dispose(sym_table);
+  Dispose(proc_table);
+  Dispose(const_table);
+End;
+
+{ --------------------------------------------------------------------------
+  Table des symboles
+  -------------------------------------------------------------------------- }
+Function AddSym(Const name : TString; kind : TSymKind;
+                itype : TItemType; scope : TScope) : Integer;
+Var i : Integer;
+Begin
+  If sym_count >= MAX_SYM Then
+  Begin
+    WriteLn('Erreur fatale : table des symboles pleine (MAX_SYM=', MAX_SYM, ')');
+    Halt(1);
+  End;
+  Inc(sym_count);
+  i := sym_count;
+  sym_table^[i].name       := StrUpper(name);
+  sym_table^[i].kind       := kind;
+  sym_table^[i].itype      := itype;
+  sym_table^[i].scope      := scope;
+  sym_table^[i].bit_size   := 16;
+  sym_table^[i].asm_label  := '';
+  sym_table^[i].bp_offset  := 0;
+  sym_table^[i].is_array   := False;
+  sym_table^[i].arr_count  := 0;
+  sym_table^[i].enum_count := 0;
+  AddSym := i;
+End;
+
+{ Ajouter un ITEM global (niveau MODULE / COMPOOL) }
+Function AddGlobalItem(Const name : TString; itype : TItemType;
+                       bits : Integer) : Integer;
+Var i : Integer;
+Begin
+  i := AddSym(name, SK_ITEM, itype, SC_GLOBAL);
+  sym_table^[i].bit_size  := bits;
+  sym_table^[i].asm_label := JV_PFX + AsmIdent(StrUpper(name));
+  AddGlobalItem := i;
+End;
+
+{ Ajouter un ITEM local (dans une PROCEDURE / FUNCTION) }
+Function AddLocalItem(Const name : TString; itype : TItemType;
+                      bits : Integer; bp_off : Integer) : Integer;
+Var i : Integer;
+Begin
+  i := AddSym(name, SK_ITEM, itype, SC_LOCAL);
+  sym_table^[i].bit_size  := bits;
+  sym_table^[i].bp_offset := bp_off;
+  sym_table^[i].asm_label := '';
+  AddLocalItem := i;
+End;
+
+{ Ajouter un parametre formel }
+Function AddParam(Const name : TString; itype : TItemType;
+                  bits : Integer; bp_off : Integer) : Integer;
+Var i : Integer;
+Begin
+  i := AddSym(name, SK_ITEM, itype, SC_PARAM);
+  sym_table^[i].bit_size  := bits;
+  sym_table^[i].bp_offset := bp_off;
+  sym_table^[i].asm_label := '';
+  AddParam := i;
+End;
+
+{ Ajouter une TABLE (agregat ou tableau uniforme) }
+Function AddTableSym(Const name : TString; is_arr : Boolean;
+                     count : Integer) : Integer;
+Var i : Integer;
+Begin
+  i := AddSym(name, SK_TABLE, IT_TABLE, SC_GLOBAL);
+  sym_table^[i].asm_label := JV_PFX + AsmIdent(StrUpper(name));
+  sym_table^[i].is_array  := is_arr;
+  sym_table^[i].arr_count := count;
+  AddTableSym := i;
+End;
+
+{ Ajouter une etiquette de GOTO }
+Function AddLabel(Const name : TString) : Integer;
+Var i : Integer;
+Begin
+  i := AddSym(name, SK_LABEL, IT_UNDEF, SC_GLOBAL);
+  sym_table^[i].asm_label := JL_PFX + AsmIdent(StrUpper(name));
+  AddLabel := i;
+End;
+
+{ Rechercher un symbole (du plus recent au plus ancien) }
+Function FindSym(Const name : TString) : Integer;
+Var i    : Integer;
+    uname: TString;
+Begin
+  uname := StrUpper(name);
+  For i := sym_count DownTo 1 Do
+    If sym_table^[i].name = uname Then
+    Begin
+      FindSym := i;
+      Exit;
+    End;
+  FindSym := 0;
+End;
+
+{ Rechercher uniquement dans les symboles globaux }
+Function FindGlobal(Const name : TString) : Integer;
+Var i     : Integer;
+    uname : TString;
+Begin
+  uname := StrUpper(name);
+  For i := sym_count DownTo 1 Do
+    If (sym_table^[i].name = uname) And
+       (sym_table^[i].scope = SC_GLOBAL) Then
+    Begin
+      FindGlobal := i;
+      Exit;
+    End;
+  FindGlobal := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  Table des constantes (DEFINE et valeurs STATUS)
+  -------------------------------------------------------------------------- }
+Function AddConst(Const name, val_str : TString; int_val : LongInt) : Integer;
+Var i : Integer;
+Begin
+  If const_count >= MAX_CONST Then
+  Begin
+    WriteLn('Erreur fatale : table des constantes pleine (MAX_CONST=', MAX_CONST, ')');
+    Halt(1);
+  End;
+  Inc(const_count);
+  i := const_count;
+  const_table^[i].name    := StrUpper(name);
+  const_table^[i].val_str := val_str;
+  const_table^[i].int_val := int_val;
+  AddConst := i;
+End;
+
+Function FindConst(Const name : TString) : Integer;
+Var i     : Integer;
+    uname : TString;
+Begin
+  uname := StrUpper(name);
+  For i := const_count DownTo 1 Do
+    If const_table^[i].name = uname Then
+    Begin
+      FindConst := i;
+      Exit;
+    End;
+  FindConst := 0;
+End;
+
+Function EvalConst(Const name : TString) : LongInt;
+Var i : Integer;
+Begin
+  i := FindConst(name);
+  If i > 0 Then
+    EvalConst := const_table^[i].int_val
+  Else
+    EvalConst := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  Table des procedures et fonctions
+  -------------------------------------------------------------------------- }
+Function AddProc(Const name : TString; is_func : Boolean;
+                 ret_type : TItemType; ret_bits : Integer) : Integer;
+Var i : Integer;
+Begin
+  If proc_count >= MAX_PROC Then
+  Begin
+    WriteLn('Erreur fatale : table des procedures pleine (MAX_PROC=', MAX_PROC, ')');
+    Halt(1);
+  End;
+  Inc(proc_count);
+  i := proc_count;
+  proc_table^[i].name         := StrUpper(name);
+  proc_table^[i].asm_label    := '';
+  proc_table^[i].return_itype := ret_type;
+  proc_table^[i].return_bits  := ret_bits;
+  proc_table^[i].param_count  := 0;
+  proc_table^[i].local_size   := 0;
+  proc_table^[i].is_function  := is_func;
+  AddProc := i;
+End;
+
+Function FindProc(Const name : TString) : Integer;
+Var i     : Integer;
+    uname : TString;
+Begin
+  uname := StrUpper(name);
+  For i := proc_count DownTo 1 Do
+    If proc_table^[i].name = uname Then
+    Begin
+      FindProc := i;
+      Exit;
+    End;
+  FindProc := 0;
+End;
+
+{ SetProcLabel : construire le label ASM  _JP_<module>_<nom> }
+Procedure SetProcLabel(pi : Integer);
+Var pfx : TString;
+Begin
+  If module_name <> '' Then
+    pfx := JP_PFX + AsmIdent(StrUpper(module_name)) + '_'
+  Else
+    pfx := JP_PFX;
+  proc_table^[pi].asm_label := pfx + AsmIdent(proc_table^[pi].name);
+End;
+
+{ --------------------------------------------------------------------------
+  Generateur de labels uniques
+  -------------------------------------------------------------------------- }
+Function NewLabel : TString;
+Begin
+  Inc(label_count);
+  NewLabel := JL_PFX + IntToStr(label_count);
+End;
+
+{ --------------------------------------------------------------------------
+  Pile des labels de boucle  (break / continue implicites via GOTO)
+  -------------------------------------------------------------------------- }
+Procedure PushLoopLabels(Const lbl_break, lbl_cont : TString);
+Begin
+  If loop_depth < 32 Then
+  Begin
+    Inc(loop_depth);
+    break_stack[loop_depth]    := lbl_break;
+    continue_stack[loop_depth] := lbl_cont;
+  End;
+End;
+
+Procedure PopLoopLabels;
+Begin
+  If loop_depth > 0 Then
+    Dec(loop_depth);
+End;
+
+Function TopBreakLabel : TString;
+Begin
+  If loop_depth > 0 Then
+    TopBreakLabel := break_stack[loop_depth]
+  Else
+    TopBreakLabel := '';
+End;
+
+Function TopContLabel : TString;
+Begin
+  If loop_depth > 0 Then
+    TopContLabel := continue_stack[loop_depth]
+  Else
+    TopContLabel := '';
+End;
+
+{ ============================================================================
+  TODO 04 - PRIMITIVES D'EMISSION ASSEMBLEUR
+  ============================================================================ }
+
+Const
+  ASM_INDENT = '        ';   { 8 espaces d'indentation }
+  SEP_LINE   = '; ------------------------------------------------------------';
+
+{ --------------------------------------------------------------------------
+  Gestion des fichiers de sortie
+  -------------------------------------------------------------------------- }
+Procedure InitOutput;
+Begin
+  Assign(out_file, out_fname);
+  Rewrite(out_file);
+  cur_out  := @out_file;
+  tmp_open := False;
+End;
+
+Procedure OpenTmpFile;
+Begin
+  Assign(tmp_file, tmp_fname);
+  Rewrite(tmp_file);
+  tmp_open := True;
+  { cur_out reste sur out_file : le DATA va dans out_file }
+End;
+
+Procedure SwitchToTmp;
+Begin
+  If tmp_open Then
+    cur_out := @tmp_file;
+End;
+
+Procedure SwitchToMain;
+Begin
+  cur_out := @out_file;
+End;
+
+Procedure MergeTmpToMain;
+Var line : String;
+Begin
+  If Not tmp_open Then Exit;
+  { Refermer tmp_file pour pouvoir le lire }
+  Close(tmp_file);
+  tmp_open := False;
+  { Rouvrir tmp_file en lecture }
+  Assign(tmp_file, tmp_fname);
+  Reset(tmp_file);
+  { Copier ligne par ligne dans out_file }
+  While Not Eof(tmp_file) Do
+  Begin
+    ReadLn(tmp_file, line);
+    WriteLn(out_file, line);
+  End;
+  Close(tmp_file);
+  { Supprimer le fichier temporaire }
+  Assign(tmp_file, tmp_fname);
+  Erase(tmp_file);
+End;
+
+Procedure CloseOutput;
+Begin
+  If tmp_open Then
+  Begin
+    Close(tmp_file);
+    tmp_open := False;
+  End;
+  Close(out_file);
+End;
+
+{ --------------------------------------------------------------------------
+  Primitives brutes d'emission dans cur_out
+  -------------------------------------------------------------------------- }
+Procedure Emit(Const s : TString);
+Begin
+  WriteLn(cur_out^, s);
+End;
+
+Procedure EmitBlank;
+Begin
+  WriteLn(cur_out^);
+End;
+
+Procedure EmitComment(Const s : TString);
+Begin
+  WriteLn(cur_out^, '; ', s);
+End;
+
+Procedure EmitSep;
+Begin
+  WriteLn(cur_out^, SEP_LINE);
+End;
+
+Procedure EmitLabel(Const lbl : TString);
+Begin
+  WriteLn(cur_out^, lbl, ':');
+End;
+
+Procedure EmitLocalLabel(Const lbl : TString);
+Begin
+  WriteLn(cur_out^, lbl, ':');
+End;
+
+{ --------------------------------------------------------------------------
+  Emission d'instructions ASM (8 espaces d'indentation)
+  -------------------------------------------------------------------------- }
+Procedure EmitI0(Const op : TString);
+Begin
+  WriteLn(cur_out^, ASM_INDENT, op);
+End;
+
+Procedure EmitI1(Const op, a : TString);
+Begin
+  WriteLn(cur_out^, ASM_INDENT, op, '  ', a);
+End;
+
+Procedure EmitI2(Const op, a, b : TString);
+Begin
+  WriteLn(cur_out^, ASM_INDENT, op, '  ', a, ', ', b);
+End;
+
+Procedure EmitI(Const op, a, b, cmt : TString);
+Begin
+  If cmt = '' Then
+    WriteLn(cur_out^, ASM_INDENT, op, '  ', a, ', ', b)
+  Else
+    WriteLn(cur_out^, ASM_INDENT, op, '  ', a, ', ', b, '  ; ', cmt);
+End;
+
+{ --------------------------------------------------------------------------
+  Emission de donnees dans le segment DATA
+  Alignement : les labels sont paddes a 24 caracteres pour la lisibilite.
+  -------------------------------------------------------------------------- }
+Function PadLabel(Const lbl : TString) : TString;
+Var s : TString;
+    i : Integer;
+Begin
+  s := lbl;
+  For i := Length(s) To 23 Do
+    s := s + ' ';
+  PadLabel := s;
+End;
+
+Procedure EmitDB(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'DB      ', v);
+End;
+
+Procedure EmitDW(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'DW      ', v);
+End;
+
+Procedure EmitDD(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'DD      ', v);
+End;
+
+{ EmitDup : emettre  lbl  DB/DW/DD  n DUP(init)
+  sz = 1 -> DB, sz = 2 -> DW, sz = 4 -> DD }
+Procedure EmitDup(Const lbl : TString; n : Integer;
+                  Const init : TString; sz : Integer);
+Var dir : TString;
+Begin
+  Case sz Of
+    1 : dir := 'DB';
+    4 : dir := 'DD';
+  Else
+    dir := 'DW';
+  End;
+  WriteLn(cur_out^, PadLabel(lbl), dir, '      ',
+          IntToStr(n), ' DUP(', init, ')');
+End;
+
+{ ============================================================================
+  TODO 05 - STRUCTURE ASM : SEGMENTS STACK ET EN-TETE DATA
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenFileHeader : bloc de commentaires d'en-tete du fichier ASM genere.
+  -------------------------------------------------------------------------- }
+Procedure GenFileHeader;
+Begin
+  EmitSep;
+  EmitComment(' Fichier genere par JOVIAL86 v' + JOVIAL86_VERSION);
+  EmitComment(' Date    : ' + JOVIAL86_DATE);
+  EmitComment(' Source  : ' + src_fname);
+  EmitComment(' Module  : ' + module_name);
+  EmitComment(' Cible   : MASM 8086, modele SMALL');
+  EmitSep;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenModelDirectives : directive de modele memoire et de processeur cible.
+  -------------------------------------------------------------------------- }
+Procedure GenModelDirectives;
+Begin
+  Emit('        .MODEL  SMALL');
+  Emit('        .8086');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStackSegment : segment de pile  _STACK SEGMENT ... _STACK ENDS
+  -------------------------------------------------------------------------- }
+Procedure GenStackSegment;
+Begin
+  EmitComment(' ----- Segment STACK -----');
+  Emit('_STACK          SEGMENT PARA STACK ''STACK''');
+  Emit('                DB      ' + IntToStr(STACK_SIZE) + ' DUP (?)');
+  Emit('_STACK          ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataHeader : ouvrir le segment de donnees _DATA.
+  -------------------------------------------------------------------------- }
+Procedure GenDataHeader;
+Begin
+  EmitComment(' ----- Segment DATA -----');
+  Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataFooter : fermer le segment de donnees _DATA.
+  -------------------------------------------------------------------------- }
+Procedure GenDataFooter;
+Begin
+  EmitBlank;
+  Emit('_DATA           ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenSystemVarsData : variables systeme JOVIAL86 dans le segment DATA.
+  Emises au debut de _DATA avant les ITEMs utilisateur.
+  -------------------------------------------------------------------------- }
+Procedure GenSystemVarsData;
+Begin
+  EmitComment(' ----- Variables systeme JOVIAL86 -----');
+  { Buffer de sortie (OUTPUT) }
+  EmitDup('_JV_OUTBUF', 256, '0', 1);
+  { Buffer d'entree (INPUT) }
+  EmitDup('_JV_INBUF', 128, '0', 1);
+  { Buffer de conversion entier -> chaine }
+  EmitDup('_JV_INTBUF', 12, '0', 1);
+  { Fin de ligne DOS CRLF + '$' pour INT 21h fonction 09h }
+  EmitDB('_JV_CRLF', '0Dh, 0Ah, ''$''');
+  { Chaine nulle }
+  EmitDB('_JV_NULLSTR', '0');
+  { Litteraux booleens pour OUTPUT $S sur STATUS BOOLEAN }
+  EmitDB('_JV_TRUE', '''TRUE'', 0');
+  EmitDB('_JV_FALSE', '''FALSE'', 0');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullAssemblyHeader : en-tete complet du fichier ASM.
+  Appele en debut de compilation, avant GenDataHeader.
+  -------------------------------------------------------------------------- }
+Procedure GenFullAssemblyHeader;
+Begin
+  GenFileHeader;
+  GenModelDirectives;
+  GenStackSegment;
+End;
+
+{ ============================================================================
+  TODO 06 - GENERATION DU SEGMENT DATA (CORPS : ITEMS ET TABLES)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenOneItemData : emet la definition ASM d'un ITEM global.
+  Dispatche selon itype et bit_size.
+  -------------------------------------------------------------------------- }
+Procedure GenOneItemData(i : Integer);
+Var
+  lbl : TString;
+Begin
+  lbl := sym_table^[i].asm_label;
+  Case sym_table^[i].itype Of
+    IT_INTEGER :
+      Begin
+        Case sym_table^[i].bit_size Of
+          8  : EmitDB(lbl, '0');
+          32 : EmitDD(lbl, '0');
+        Else
+          EmitDW(lbl, '0');      { 16 bits par defaut }
+        End;
+      End;
+    IT_BITS :
+      EmitDW(lbl, '0      ; ' + IntToStr(sym_table^[i].bit_size) + ' bits');
+    IT_STATUS :
+      EmitDW(lbl, '0');        { valeur 0 = premier statut }
+    IT_REAL :
+      EmitDD(lbl, '0');        { 4 octets, reel emule }
+  Else
+    EmitDW(lbl, '0');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStatusConsts : emet les EQU pour les valeurs nommees d'un STATUS.
+  Produit : _JK_<STATUS>_<VAL>  EQU  n
+  -------------------------------------------------------------------------- }
+Procedure GenStatusConsts(i : Integer);
+Var
+  k   : Integer;
+  lbl : TString;
+Begin
+  For k := 0 To sym_table^[i].enum_count - 1 Do
+  Begin
+    lbl := JK_PFX + sym_table^[i].name
+         + '_' + sym_table^[i].enum_vals[k];
+    WriteLn(cur_out^, PadLabel(lbl), 'EQU     ', IntToStr(k));
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenTableData : emet une TABLE uniforme comme N DUP(0).
+  -------------------------------------------------------------------------- }
+Procedure GenTableData(i : Integer);
+Var
+  sz : Integer;
+Begin
+  Case sym_table^[i].bit_size Of
+    8  : sz := 1;
+    32 : sz := 4;
+  Else
+    sz := 2;
+  End;
+  EmitDup(sym_table^[i].asm_label, sym_table^[i].arr_count, '0', sz);
+End;
+
+{ --------------------------------------------------------------------------
+  GenAggregatData : emet les champs d'une TABLE agregat.
+  Les champs sont les SK_ITEM suivants dont asm_label commence par
+  _JV_<TABLE>_ (convention adoptee a l'ajout des champs).
+  -------------------------------------------------------------------------- }
+Procedure GenAggregatData(i : Integer);
+Var
+  j    : Integer;
+  base : TString;
+Begin
+  base := sym_table^[i].asm_label + '_';
+  For j := i + 1 To sym_count Do
+  Begin
+    If sym_table^[j].kind <> SK_ITEM Then Break;
+    If Copy(sym_table^[j].asm_label, 1, Length(base)) <> base Then Break;
+    Case sym_table^[j].bit_size Of
+      8  : EmitDB(sym_table^[j].asm_label, '0');
+      32 : EmitDD(sym_table^[j].asm_label, '0');
+    Else
+      EmitDW(sym_table^[j].asm_label, '0');
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenAllItemsData : parcourt sym_table et emet tous les SK_ITEM
+  et SK_TABLE de portee SC_GLOBAL.
+  -------------------------------------------------------------------------- }
+Procedure GenAllItemsData;
+Var
+  i : Integer;
+Begin
+  EmitComment('Variables ITEM et TABLE globales');
+  For i := 1 To sym_count Do
+  Begin
+    If sym_table^[i].scope = SC_GLOBAL Then
+    Begin
+      If sym_table^[i].kind = SK_ITEM Then
+      Begin
+        GenOneItemData(i);
+        If sym_table^[i].itype = IT_STATUS Then
+          GenStatusConsts(i);
+      End
+      Else If sym_table^[i].kind = SK_TABLE Then
+      Begin
+        If sym_table^[i].is_array Then
+          GenTableData(i)
+        Else
+          GenAggregatData(i);
+      End;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenOneStringLit : emet un litteral de chaine depuis const_table.
+  val_str contient le texte brut (apostrophes internes doublees).
+  Produit : _JK_xxx  DB  'texte', 0
+  -------------------------------------------------------------------------- }
+Procedure GenOneStringLit(i : Integer);
+Begin
+  EmitDB(JK_PFX + const_table^[i].name,
+         '''' + const_table^[i].val_str + ''', 0');
+End;
+
+{ --------------------------------------------------------------------------
+  GenAllStringLits : boucle sur const_table, emet les litteraux string.
+  Un litteral est reconnu si val_str[1] = apostrophe.
+  -------------------------------------------------------------------------- }
+Procedure GenAllStringLits;
+Var
+  i   : Integer;
+  any : Boolean;
+Begin
+  any := False;
+  For i := 1 To const_count Do
+  Begin
+    If (Length(const_table^[i].val_str) > 0) And
+       (const_table^[i].val_str[1] = '''') Then
+    Begin
+      If Not any Then
+      Begin
+        EmitBlank;
+        EmitComment('Litteraux de chaines');
+        any := True;
+      End;
+      GenOneStringLit(i);
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataSegment : emet le segment DATA complet.
+  GenDataHeader + GenSystemVarsData + GenAllItemsData
+  + GenAllStringLits + GenDataFooter
+  -------------------------------------------------------------------------- }
+Procedure GenDataSegment;
+Begin
+  GenDataHeader;
+  GenSystemVarsData;
+  EmitBlank;
+  GenAllItemsData;
+  GenAllStringLits;
+  EmitBlank;
+  GenDataFooter;
+End;
+
+{ ============================================================================
+  TODO 07 - PARSER : DECLARATIONS MODULE ET COMPOOL
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Forward declarations pour TODO 08 (procedures et fonctions)
+  -------------------------------------------------------------------------- }
+Procedure ParseProcedureDecl; Forward;
+Procedure ParseFunctionDecl;  Forward;
+
+{ --------------------------------------------------------------------------
+  ParseConstExpr : evaluer une expression constante au compile-time.
+  Grammaire : terme ('+' | '-' | '*') terme ...
+  terme : entier | ident (DEFINE/constante)
+  -------------------------------------------------------------------------- }
+Function ParseConstExpr : LongInt;
+Var
+  v    : LongInt;
+  op   : TString;
+  rval : LongInt;
+Begin
+  { terme primaire }
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    v := StrToInt(cur_tok.val);
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    v := EvalConst(cur_tok.val);
+    LexNext;
+  End
+  Else
+  Begin
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': expression constante attendue, lu ''', cur_tok.val, '''');
+    v := 0;
+    LexNext;
+  End;
+  { operateurs binaires simples }
+  While (cur_tok.val = '+') Or (cur_tok.val = '-') Or (cur_tok.val = '*') Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    If cur_tok.kind = TK_INTEGER Then
+    Begin
+      rval := StrToInt(cur_tok.val);
+      LexNext;
+    End
+    Else
+    Begin
+      rval := EvalConst(cur_tok.val);
+      LexNext;
+    End;
+    If op = '+' Then       v := v + rval
+    Else If op = '-' Then  v := v - rval
+    Else                   v := v * rval;
+  End;
+  ParseConstExpr := v;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseItemDecl : 'ITEM' ident type_spec ['=' const_expr] ';'
+  type_spec : 'I' bits | 'S' bits '(' val,... ')' | 'B' bits | 'F'
+  scope : SC_GLOBAL ou SC_LOCAL
+  -------------------------------------------------------------------------- }
+Procedure ParseItemDecl(scope : TScope);
+Var
+  iname : TString;
+  itype : TItemType;
+  bits  : Integer;
+  si    : Integer;
+  vc    : Integer;
+  vname : TString;
+Begin
+  LexExpect('ITEM');
+  iname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  { type_spec : premier token = lettre de type }
+  If cur_tok.val = 'I' Then
+  Begin
+    itype := IT_INTEGER;
+    LexNext;
+    bits := StrToInt(cur_tok.val);
+    LexExpectKind(TK_INTEGER);
+  End
+  Else If cur_tok.val = 'S' Then
+  Begin
+    itype := IT_STATUS;
+    LexNext;
+    bits := StrToInt(cur_tok.val);
+    LexExpectKind(TK_INTEGER);
+  End
+  Else If cur_tok.val = 'B' Then
+  Begin
+    itype := IT_BITS;
+    LexNext;
+    bits := StrToInt(cur_tok.val);
+    LexExpectKind(TK_INTEGER);
+  End
+  Else If cur_tok.val = 'F' Then
+  Begin
+    itype := IT_REAL;
+    bits  := 32;
+    LexNext;
+  End
+  Else
+  Begin
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': type_spec ITEM inconnu: ''', cur_tok.val, '''');
+    itype := IT_INTEGER;
+    bits  := 16;
+  End;
+  { enregistrement dans la table des symboles }
+  If scope = SC_GLOBAL Then
+    si := AddGlobalItem(iname, itype, bits)
+  Else
+    si := AddLocalItem(iname, itype, bits, 0);
+  { valeurs STATUS : '(' val1 ',' val2 ... ')' }
+  If itype = IT_STATUS Then
+  Begin
+    LexExpect('(');
+    vc := 0;
+    While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      vname := cur_tok.val;
+      LexExpectKind(TK_IDENT);
+      If vc < 16 Then
+      Begin
+        sym_table^[si].enum_vals[vc] := StrUpper(vname);
+        Inc(vc);
+      End;
+      AddConst(sym_table^[si].name + '_' + StrUpper(vname),
+               IntToStr(vc - 1), vc - 1);
+      If cur_tok.val = ',' Then LexNext;
+    End;
+    sym_table^[si].enum_count := vc;
+    LexExpect(')');
+  End;
+  { valeur initiale optionnelle : '=' const_expr }
+  If cur_tok.val = '=' Then
+  Begin
+    LexNext;
+    ParseConstExpr;    { valeur ignoree : le DATA emet 0 ; sera ameliore }
+  End;
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStatusDecl : 'STATUS' ident '(' val1 ',' val2 ... ')' ';'
+  Declaration autonome d'un type statut (enregistre comme ITEM IT_STATUS).
+  -------------------------------------------------------------------------- }
+Procedure ParseStatusDecl;
+Var
+  iname : TString;
+  si    : Integer;
+  vc    : Integer;
+  vname : TString;
+Begin
+  LexExpect('STATUS');
+  iname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  si := AddGlobalItem(iname, IT_STATUS, 16);
+  LexExpect('(');
+  vc := 0;
+  While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    vname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    If vc < 16 Then
+    Begin
+      sym_table^[si].enum_vals[vc] := StrUpper(vname);
+      Inc(vc);
+    End;
+    AddConst(sym_table^[si].name + '_' + StrUpper(vname),
+             IntToStr(vc - 1), vc - 1);
+    If cur_tok.val = ',' Then LexNext;
+  End;
+  sym_table^[si].enum_count := vc;
+  LexExpect(')');
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseTableDecl : 'TABLE' ident ['(' count ')'] ';' item_decls 'END' ';'
+  Si '(count)' present : tableau uniforme.
+  Sinon : agregat de champs ITEM heterogenes.
+  -------------------------------------------------------------------------- }
+Procedure ParseTableDecl;
+Var
+  tname : TString;
+  ti    : Integer;
+  cnt   : Integer;
+  is_u  : Boolean;
+  fbase : TString;
+Begin
+  LexExpect('TABLE');
+  tname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  { count optionnel }
+  is_u := False;
+  cnt  := 1;
+  If cur_tok.val = '(' Then
+  Begin
+    is_u := True;
+    LexNext;
+    cnt := StrToInt(cur_tok.val);
+    LexExpectKind(TK_INTEGER);
+    LexExpect(')');
+  End;
+  ti    := AddTableSym(tname, is_u, cnt);
+  fbase := sym_table^[ti].asm_label;
+  LexExpect(';');
+  { champs : ITEM declarations jusqu'a END }
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If cur_tok.val = 'ITEM' Then
+    Begin
+      ParseItemDecl(SC_GLOBAL);
+      { reajuster le label ASM : _JV_<TABLE>_<CHAMP> }
+      sym_table^[sym_count].asm_label :=
+        fbase + '_' + AsmIdent(sym_table^[sym_count].name);
+    End
+    Else
+    Begin
+      WriteLn('  Attention ligne ', lex_lineno,
+              ': token inattendu dans TABLE ''', tname,
+              ''' : ''', cur_tok.val, '''');
+      LexNext;
+    End;
+  End;
+  LexExpect('END');
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDefine : 'DEFINE' ident '=' const_expr ';'
+  Enregistre dans la table des constantes (substitution compile-time).
+  -------------------------------------------------------------------------- }
+Procedure ParseDefine;
+Var
+  dname : TString;
+  dval  : LongInt;
+Begin
+  LexExpect('DEFINE');
+  dname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  LexExpect('=');
+  dval := ParseConstExpr;
+  AddConst(dname, IntToStr(dval), dval);
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCompoolBody : declarations dans un COMPOOL
+  -------------------------------------------------------------------------- }
+Procedure ParseCompoolBody;
+Begin
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If      cur_tok.val = 'ITEM'   Then ParseItemDecl(SC_GLOBAL)
+    Else If cur_tok.val = 'TABLE'  Then ParseTableDecl
+    Else If cur_tok.val = 'STATUS' Then ParseStatusDecl
+    Else If cur_tok.val = 'DEFINE' Then ParseDefine
+    Else
+    Begin
+      WriteLn('  Attention ligne ', lex_lineno,
+              ': token inattendu dans COMPOOL: ''', cur_tok.val, '''');
+      LexNext;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCompool : 'COMPOOL' ident ';' body 'END' 'COMPOOL' ident ';'
+  Les declarations sont traitees comme globales.
+  -------------------------------------------------------------------------- }
+Procedure ParseCompool;
+Var
+  cpname : TString;
+Begin
+  LexExpect('COMPOOL');
+  cpname := StrUpper(cur_tok.val);
+  LexExpectKind(TK_IDENT);
+  LexExpect(';');
+  EmitComment(' COMPOOL ' + cpname);
+  ScopeEnter;
+  ParseCompoolBody;
+  ScopeLeave;
+  LexExpect('END');
+  LexExpect('COMPOOL');
+  If cur_tok.kind = TK_IDENT Then LexNext;    { ident de fermeture optionnel }
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseModuleBody : declarations et code au sein d'un MODULE
+  PROCEDURE et FUNCTION seront traitees a TODO 08.
+  Instructions executables seront traitees a TODO 09-12.
+  -------------------------------------------------------------------------- }
+Procedure ParseModuleBody;
+Begin
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If      cur_tok.val = 'ITEM'      Then ParseItemDecl(SC_GLOBAL)
+    Else If cur_tok.val = 'TABLE'     Then ParseTableDecl
+    Else If cur_tok.val = 'STATUS'    Then ParseStatusDecl
+    Else If cur_tok.val = 'DEFINE'    Then ParseDefine
+    Else If cur_tok.val = 'COMPOOL'   Then ParseCompool
+    Else If cur_tok.val = 'PROCEDURE' Then ParseProcedureDecl
+    Else If cur_tok.val = 'FUNCTION'  Then ParseFunctionDecl
+    Else
+    Begin
+      { instructions executables : placeholder jusqu'a TODO 09-12 }
+      LexNext;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseModule : 'MODULE' ident ';' body 'END' 'MODULE' [ident] [';']
+  Remplit module_name et cur_module_pfx.
+  -------------------------------------------------------------------------- }
+Procedure ParseModule;
+Var
+  mname : TString;
+Begin
+  LexExpect('MODULE');
+  mname          := StrUpper(cur_tok.val);
+  module_name    := mname;
+  cur_module_pfx := mname;
+  LexExpectKind(TK_IDENT);
+  LexExpect(';');
+  EmitComment(' MODULE ' + module_name);
+  ScopeEnter;
+  ParseModuleBody;
+  ScopeLeave;
+  LexExpect('END');
+  LexExpect('MODULE');
+  If cur_tok.kind = TK_IDENT Then LexNext;    { ident de fermeture optionnel }
+  If cur_tok.val  = ';'      Then LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  Stubs vides de TODO 08 (eviter les erreurs de link sur Forward)
+  -------------------------------------------------------------------------- }
+Procedure ParseProcedureDecl;
+Begin
+  { TODO 08 : sera implemente }
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    LexNext;
+  If cur_tok.val = 'END' Then LexNext;
+  LexExpect(';');
+End;
+
+Procedure ParseFunctionDecl;
+Begin
+  { TODO 08 : sera implemente }
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    LexNext;
+  If cur_tok.val = 'END' Then LexNext;
+  LexExpect(';');
+End;
+
+{ ============================================================================
+  TODO 08 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 03-25 non implementes)');
+  WriteLn('(TODO 08-25 non implementes)');
 End.
