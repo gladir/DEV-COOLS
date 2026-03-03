@@ -3042,10 +3042,8 @@ Begin
   If match('const') Then type_info.is_const := True;
   If match('volatile') Then type_info.is_volatile := True;
  End;
-
- { Analyser le nom de variable }
- If not symname(var_name) Then
- Begin
+  { Analyser le nom de variable }
+ If not symname(var_name) Then Begin
   Case Language of
    _English: errrpt('Expected variable name');
    {$IFDEF FPC}
@@ -3056,41 +3054,33 @@ Begin
   parse_declarator := 0;
   Exit;
  End;
-
- { G√©rer les d√©clarations de tableau }
- If match('[') Then
- Begin
-  If number(array_size) Then
-  Begin
+  { GÇrer les dÇclarations de tableau }
+ If match('[') Then Begin
+  If number(array_size) Then Begin
    type_info.array_size := array_size;
-   safe_writeln('; Taille de tableau d√©tect√©e');
+   safe_writeln('; Taille de tableau dÇtectÇe');
   End
-  Else
+   Else
   Begin
    type_info.array_size := 1; { Tableau de taille inconnue }
   End;
-
-  If not match(']') Then
-  Begin
+  If not match(']') Then Begin
    Case Language of
     _English: errrpt('Expected closing bracket');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete schlie√üende Klammer');
+    _Germany: errrpt('Erwartete schlie·ende Klammer');
     {$ENDIF}
     Else errrpt('Crochet fermant attendu');
    End;
   End;
-
   result_type := carray;
  End;
-
- { Calculer la taille finale }
+  { Calculer la taille finale }
  calculate_type_size(type_info);
-
  parse_declarator := result_type;
 End;
 
-{ Analyser la d√©claration/d√©finition de fonction }
+ { Analyser la dÇclaration/dÇfinition de fonction }
 Function parse_function_declaration(return_type: Integer): Boolean;
 Var
  func_name, param_name: String;
@@ -3100,8 +3090,7 @@ Var
  has_body: Boolean;
 Begin
  parse_function_declaration := False;
-
- { Obtenir le nom de fonction }
+  { Obtenir le nom de fonction }
  If not symname(func_name) Then
  Begin
   Case Language of
@@ -3113,59 +3102,46 @@ Begin
   End;
   Exit;
  End;
-
- safe_writeln('; D√©claration de fonction: ' + func_name + ' (type: ' + get_type_name_from_id(return_type) + ')');
-
- { Attendre parenth√®se ouvrante }
- If not match('(') Then
- Begin
+ safe_writeln('; DÇclaration de fonction: ' + func_name + ' (type: ' + get_type_name_from_id(return_type) + ')');
+  { Attendre parenthäse ouvrante }
+ If not match('(') Then Begin
   Case Language of
    _English: errrpt('Expected ( after function name');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach Funktionsname');
    {$ENDIF}
-   Else errrpt('( attendu apr√®s le nom de fonction');
+   Else errrpt('( attendu apräs le nom de fonction');
   End;
   Exit;
  End;
-
- { Ignorer les param√®tres pour l'instant - aller jusqu'√† la parenth√®se fermante }
- While (ch <> ')') and (ch <> #0) Do
-  gch;
-
- If ch = ')' Then gch; { Consommer la parenth√®se fermante }
-
- { V√©rifier s'il y a un corps de fonction }
+  { Ignorer les paramätres pour l'instant - aller jusqu'Ö la parenthäse fermante }
+ While (ch <> ')') and (ch <> #0) Do gch;
+ If ch = ')' Then gch; { Consommer la parenthäse fermante }
+  { VÇrifier s'il y a un corps de fonction }
  blanks;
  has_body := (ch = '{');
-
- If has_body Then
- Begin
-  { Ajouter la fonction √† la table des symboles }
+ If has_body Then Begin
+  { Ajouter la fonction Ö la table des symboles }
   func_index := add_function(func_name, return_type);
-
-  { G√©n√©rer l'√©tiquette de fonction }
+   { GÇnÇrer l'Çtiquette de fonction }
   safe_writeln(func_name + ':');
-
-  { Traiter le corps de fonction }
-  If match('{') Then
-  Begin
+   { Traiter le corps de fonction }
+  If match('{') Then Begin
    safe_writeln('; Corps de fonction ' + func_name);
-   { Parser simplifi√© - ignorer le contenu pour l'instant }
-   While (ch <> #0) and (ch <> '}') Do
-   Begin
+   { Analyse simplifiÇ - ignorer le contenu pour l'instant }
+   While (ch <> #0) and (ch <> '}') Do Begin
     gch;
    End;
    If ch = '}' Then gch; { Consommer l'accolade fermante }
    safe_writeln('; Fin du corps de fonction ' + func_name);
-   { V√©rifier que toutes les √©tiquettes goto sont d√©finies }
+   { VÇrifier que toutes les Çtiquettes goto sont dÇfinies }
    check_goto_labels;
-   { R√©initialiser la table goto pour la prochaine fonction }
+   { RÇinitialiser la table goto pour la prochaine fonction }
    init_goto_table;
-   { R√©initialiser la table switch pour la prochaine fonction }
+   { RÇinitialiser la table switch pour la prochaine fonction }
    init_switch_table;
   End
-  Else
+   Else
   Begin
    Case Language of
     _English: errrpt('Expected { to begin function body');
@@ -3177,23 +3153,21 @@ Begin
    Exit;
   End;
  End
- Else
+  Else
  Begin
-  { D√©claration de fonction sans corps - juste ajouter √† la table }
+  { DÇclaration de fonction sans corps - juste ajouter Ö la table }
   func_index := add_function(func_name, return_type);
-  If not match(';') Then
-  Begin
+  If not match(';') Then Begin
    Case Language of
     _English: errrpt('Expected ; after function declaration');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete ; nach Funktionsdeklaration');
     {$ENDIF}
-    Else errrpt('; attendu apr√®s d√©claration de fonction');
+    Else errrpt('; attendu apräs dÇclaration de fonction');
    End;
    Exit;
   End;
  End;
-
  parse_function_declaration := True;
 End;
 
@@ -3206,21 +3180,16 @@ Var
  func_node: PFunction;
 Begin
  parse_function_call := False;
-
- { Trouver la fonction }
+  { Trouver la fonction }
  func_index := find_function(func_name);
- If func_index = -1 Then
- Begin
-  safe_writeln('; Attention: Fonction non d√©clar√©e ' + func_name);
+ If func_index = -1 Then Begin
+  safe_writeln('; Attention: Fonction non dÇclarÇe ' + func_name);
   { Traiter comme fonction non d√©clar√©e retournant int }
   func_index := add_function(func_name, cint);
  End;
-
  safe_writeln('; Appel de fonction: ' + func_name);
-
- { Attendre parenth√®se ouvrante }
- If not match('(') Then
- Begin
+  { Attendre parenthäse ouvrante }
+ If not match('(') Then Begin
   Case Language of
    _English: errrpt('Expected ( in function call');
    {$IFDEF FPC}
@@ -3230,82 +3199,62 @@ Begin
   End;
   Exit;
  End;
-
  arg_count := 0;
-
- { Analyser les arguments }
- If not match(')') Then
- Begin
+  { Analyser les arguments }
+ If not match(')') Then Begin
   Repeat
    safe_writeln('; Argument (suivant)');
-
-   { Analyser l'expression d'argument }
+    { Analyser l'expression d'argument }
    expression_bool(arg_lval);
-
-   { Pousser l'argument sur la pile }
+    { Pousser l'argument sur la pile }
    ol('pshs d  ; pousser argument');
    Inc(arg_count);
-
   Until not match(',');
-
-  { Attendre parenth√®se fermante }
-  If not match(')') Then
-  Begin
+   { Attendre parenthäse fermante }
+  If not match(')') Then Begin
    Case Language of
     _English: errrpt('Expected ) after function arguments');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach Funktionsargumenten');
     {$ENDIF}
-    Else errrpt(') attendu apr√®s les arguments de fonction');
+    Else errrpt(') attendu apräs les arguments de fonction');
    End;
   End;
  End;
-
- { G√©n√©rer l'appel de fonction }
+  { GÇnÇrer l'appel de fonction }
  generate_function_call(func_index, arg_count);
-
- { Configurer la valeur de retour }
+  { Configurer la valeur de retour }
  FillChar(lval, SizeOf(lval), 0);
-
- { Obtenir le type de retour depuis la liste cha√Æn√©e }
+  { Obtenir le type de retour depuis la liste chaånÇe }
  func_node := get_function_node(func_index);
- If func_node <> nil Then
-  lval.typ := func_node^.func_data.return_type
- Else
-  lval.typ := cint; { Type par d√©faut en cas d'erreur }
-
+ If func_node <> nil Then lval.typ := func_node^.func_data.return_type
+                     Else lval.typ := cint; { Type par dÇfaut en cas d'erreur }
  lval.constant := False;
-
  parse_function_call := True;
 End;
 
-{ D√©claration de variable am√©lior√©e avec table de symboles bas√©e sur le tas }
+ { DÇclaration de variable amÇliorÇe avec table de symboles basÇe sur la mÇmoire de tas }
 Procedure declare_variable(var_name: String; var_type: Integer; var type_info: TTypeInfo; storage_class: Integer);
 Var
  sym_ptr: PSymbol;
  type_size: Integer;
 Begin
- { V√©rifier si d√©j√† d√©clar√©e en utilisant la nouvelle table de tas }
- If find_symbol(var_name) <> nil Then
- Begin
+  { VÇrifier si dÇjÖ dÇclarÇe en utilisant la nouvelle table de la mÇmoire de tas }
+ If find_symbol(var_name) <> nil Then Begin
   Case Language of
    _English: errrpt('Variable ' + var_name + ' already declared');
    {$IFDEF FPC}
    _Germany: errrpt('Variable ' + var_name + ' bereits deklariert');
    {$ENDIF}
-   Else errrpt('Variable ' + var_name + ' d√©j√† d√©clar√©e');
+   Else errrpt('Variable ' + var_name + ' dÇjÖ dÇclarÇe');
   End;
   Exit;
  End;
-
- { Ajouter √† la table de symboles bas√©e sur le tas }
- If type_info.array_size > 0 Then
-  sym_ptr := add_symbol(var_name, it_array, var_type, storage_class, 0)
- Else
-  sym_ptr := add_symbol(var_name, it_variable, var_type, storage_class, 0);
- If sym_ptr <> nil Then
- Begin
-  { Stocker les informations de type directement dans le symbole }
+  { Ajouter Ö la table de symboles basÇe sur la mÇmoire de tas }
+ If type_info.array_size > 0 Then sym_ptr := add_symbol(var_name, it_array, var_type, storage_class, 0)
+                             Else sym_ptr := add_symbol(var_name, it_variable, var_type, storage_class, 0);
+ If sym_ptr <> nil Then Begin
+  { Entreposer les informations de type directement dans le symbole }
   sym_ptr^.type_info := type_info;
 
   If use_stdout Then WriteLn('; Variable d√©clar√©e: ', var_name, ' (', get_type_name(type_info), ')')

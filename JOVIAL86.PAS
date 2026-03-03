@@ -2659,6 +2659,7 @@ End;
 Procedure ParseProcedureDecl; Forward;
 Procedure ParseFunctionDecl;  Forward;
 Procedure ParseStatement;     Forward;
+Procedure ParseIf;            Forward;
 
 { --------------------------------------------------------------------------
   ParseConstExpr : evaluer une expression constante au compile-time.
@@ -3853,25 +3854,63 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseGoto : 'GOTO' ident ';' ou 'GO' 'TO' ident ';'
+  ParseGoto : 'GOTO' ident ';' | 'GO' 'TO' ident ';'
+              | 'GOTO' '(' lbl1, lbl2, ... ')' ',' expr ';'  (GOTO calcule)
   -------------------------------------------------------------------------- }
 Procedure ParseGoto;
-Var lbl : TString;
-    si  : Integer;
+Var
+  lbl     : TString;
+  si      : Integer;
+  tbl_lbl : TString;
+  lbls    : Array[1..32] Of TString;
+  lc      : Integer;
+  et      : TItemType;
+  eb      : Integer;
+  k       : Integer;
 Begin
   If cur_tok.val = 'GO' Then
   Begin
-    LexNext;  { consommer GO }
+    LexNext;
     LexExpect('TO');
   End
   Else
     LexExpect('GOTO');
+  { GOTO calcule : GOTO '(' lbl1, lbl2, ... ')' ',' expr ';' }
+  If cur_tok.val = '(' Then
+  Begin
+    tbl_lbl := NewLabel;
+    LexNext;  { consommer '(' }
+    lc := 0;
+    While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      If lc < 32 Then
+      Begin
+        Inc(lc);
+        lbls[lc] := StrUpper(cur_tok.val);
+        If FindSym(lbls[lc]) = 0 Then AddLabel(lbls[lc]);
+      End;
+      LexExpectKind(TK_IDENT);
+      If cur_tok.val = ',' Then LexNext;
+    End;
+    LexExpect(')');
+    LexExpect(',');
+    ParseExpr(et, eb);          { index -> AX (1-base en JOVIAL 73) }
+    EmitI1('DEC', 'AX');        { convertir en 0-base }
+    EmitI2('MOV', 'BX', 'AX');
+    EmitI2('SHL', 'BX', '1');   { offset en octets = index * 2 }
+    { JMP WORD PTR CS:[BX + OFFSET tbl] : saut indirect dans table code }
+    Emit(ASM_INDENT + 'JMP  WORD PTR CS:[BX+OFFSET ' + tbl_lbl + ']');
+    EmitLocalLabel(tbl_lbl);
+    For k := 1 To lc Do
+      Emit(ASM_INDENT + 'DW      OFFSET ' + JL_PFX + AsmIdent(lbls[k]));
+    LexExpect(';');
+    Exit;
+  End;
+  { GOTO simple }
   lbl := StrUpper(cur_tok.val);
   LexExpectKind(TK_IDENT);
-  { ajouter le label a la table s'il est inconnu (resolution en avant) }
   si := FindSym(lbl);
-  If si = 0 Then
-    AddLabel(lbl);
+  If si = 0 Then AddLabel(lbl);
   EmitI1('JMP', JL_PFX + AsmIdent(lbl));
   LexExpect(';');
 End;
@@ -3970,12 +4009,7 @@ Begin
   Else If cur_tok.val = 'ITEM' Then
     ParseItemDecl(SC_LOCAL)
   Else If cur_tok.val = 'IF' Then
-  Begin
-    { TODO 11 : stub }
-    While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do LexNext;
-    If cur_tok.val = 'END' Then LexNext;
-    If cur_tok.val = ';'   Then LexNext;
-  End
+    ParseIf
   Else If (cur_tok.val = 'FOR') Or (cur_tok.val = 'WHILE')
        Or (cur_tok.val = 'DO') Then
   Begin
@@ -4017,11 +4051,63 @@ Begin
 End;
 
 { ============================================================================
-  TODO 11 ... 25 : a implementer
+  TODO 11 - PARSER : STRUCTURES DE CONTROLE (IF, GOTO MULTI-CIBLE)
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseIf : 'IF' cond 'THEN' stmts ['ELSE' stmts] 'END' [';']
+  Genere :
+    TEST AX,AX / JZ lbl_else
+    corps THEN
+    JMP lbl_end        (seulement si ELSE present)
+  lbl_else:
+    corps ELSE
+  lbl_end:
+  -------------------------------------------------------------------------- }
+Procedure ParseIf;
+Var
+  et       : TItemType;
+  eb       : Integer;
+  lbl_else : TString;
+  lbl_end  : TString;
+Begin
+  LexExpect('IF');
+  lbl_else := NewLabel;
+  lbl_end  := NewLabel;
+  { evaluation de la condition -> AX }
+  ParseExpr(et, eb);
+  EmitI2('TEST', 'AX', 'AX');
+  EmitI1('JZ  ', lbl_else);
+  LexExpect('THEN');
+  { corps THEN : instructions jusqu'a ELSE ou END }
+  While (cur_tok.val <> 'ELSE') And (cur_tok.val <> 'END')
+     And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  If cur_tok.val = 'ELSE' Then
+  Begin
+    LexNext;
+    EmitI1('JMP', lbl_end);
+    EmitLocalLabel(lbl_else);
+    { corps ELSE : instructions jusqu'a END }
+    While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+      ParseStatement;
+    LexExpect('END');
+    EmitLocalLabel(lbl_end);
+  End
+  Else
+  Begin
+    LexExpect('END');
+    EmitLocalLabel(lbl_else);   { pas d'ELSE : JZ saute directement ici }
+  End;
+  If cur_tok.val = ';' Then LexNext;
+End;
+
+{ ============================================================================
+  TODO 12 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 11-25 non implementes)');
+  WriteLn('(TODO 12-25 non implementes)');
 End.
