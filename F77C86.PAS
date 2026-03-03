@@ -1171,6 +1171,494 @@ Begin
 End;
 
 { ============================================================
+  TODO 03 - ANALYSEUR LEXICAL (LEXER)
+  ============================================================
+  Lit les tokens Fortran 77 depuis l'enregistrement logique courant
+  (log_rec^ via LogCurChar / LogAdvance / LogAtEnd).
+  En F77 les espaces sont non-significatifs en dehors des chaines
+  litterales : LogSkipBlanks est appele systematiquement.
+
+  Organisation :
+    LexDoRead(var tok)  -- lecture effective (interne)
+    LexNext             -- avance cur_tok (utilise has_peek si disponible)
+    LexPeekTok          -- consulte le token suivant sans consommer
+    LexExpect(val)      -- assertion sur cur_tok.val + avance
+    LexExpectKind(k)    -- assertion sur cur_tok.kind + avance
+    LexInit             -- initialise le lexer, lit le 1er enregistrement
+
+  Table des mots-cles statique (typed const Turbo Pascal).
+  ============================================================ }
+
+Const
+  LEX_KW_COUNT = 44;
+
+Type
+  TKeyword = String[20];
+
+Const
+  LEX_KW : Array[1..LEX_KW_COUNT] of TKeyword = (
+    { Instructions }
+    'PROGRAM','SUBROUTINE','FUNCTION','BLOCKDATA','END',
+    'STOP','PAUSE','RETURN','CALL',
+    'COMMON','EQUIVALENCE','DIMENSION','IMPLICIT',
+    'EXTERNAL','INTRINSIC','SAVE','PARAMETER',
+    'DATA','FORMAT','INCLUDE',
+    'IF','THEN','ELSE','ELSEIF','ENDIF',
+    'DO','CONTINUE','GOTO','ASSIGN',
+    'READ','WRITE','PRINT',
+    'OPEN','CLOSE','REWIND','BACKSPACE','ENDFILE','INQUIRE',
+    { Types }
+    'INTEGER','REAL','DOUBLEPRECISION','COMPLEX',
+    'LOGICAL','CHARACTER'
+  );
+
+{ Verifie si s est un mot-cle F77. }
+Function LexIsKeyword(Const s : TString) : Boolean;
+Var i : Integer;
+Begin
+  LexIsKeyword := False;
+  For i := 1 To LEX_KW_COUNT Do
+    If s = LEX_KW[i] Then
+    Begin
+      LexIsKeyword := True;
+      Exit;
+    End;
+End;
+
+{ ---- Lecture de la partie alphabetique dans log_rec (skip blancs). ---- }
+Function LexReadLetters : TString;
+Var s : TString; c : Char;
+Begin
+  s := '';
+  LogSkipBlanks;
+  While (Not LogAtEnd) And (LogCurChar In ['A'..'Z','a'..'z']) Do
+  Begin
+    c := LogCurChar;
+    If (c >= 'a') And (c <= 'z') Then c := Chr(Ord(c) - 32);
+    If Length(s) < MAX_STR Then s := s + c;
+    LogAdvance;
+    LogSkipBlanks;
+  End;
+  LexReadLetters := s;
+End;
+
+{ ---- Lecture de lettres + chiffres (suite d'un identifiant). ---- }
+Function LexReadAlphaNum : TString;
+Var s : TString; c : Char;
+Begin
+  s := '';
+  LogSkipBlanks;
+  While (Not LogAtEnd) And (LogCurChar In ['A'..'Z','a'..'z','0'..'9']) Do
+  Begin
+    c := LogCurChar;
+    If (c >= 'a') And (c <= 'z') Then c := Chr(Ord(c) - 32);
+    If Length(s) < MAX_STR Then s := s + c;
+    LogAdvance;
+    LogSkipBlanks;
+  End;
+  LexReadAlphaNum := s;
+End;
+
+{ ---- Lecture de chiffres decimaux depuis log_rec. ---- }
+Function LexReadDigits : TString;
+Var s : TString;
+Begin
+  s := '';
+  While (Not LogAtEnd) And (LogCurChar In ['0'..'9']) Do
+  Begin
+    If Length(s) < MAX_STR Then s := s + LogCurChar;
+    LogAdvance;
+  End;
+  LexReadDigits := s;
+End;
+
+{ --------------------------------------------------------------------------
+  LexDoRead : lecture effective d un token dans tok.
+  Appele par LexNext et LexPeekTok.
+  Quand l enregistrement logique est epuise, retourne TK_NEWLINE
+  et charge automatiquement le suivant (ou TK_EOF si fin de fichier).
+  -------------------------------------------------------------------------- }
+Procedure LexDoRead(Var tok : TToken);
+Var
+  c      : Char;
+  s, t   : TString;
+  n      : Integer;
+  code   : Integer;
+  hlen   : Integer;
+  i      : Integer;
+  is_dbl : Boolean;
+Begin
+  LogSkipBlanks;
+
+  { Fin de l enregistrement logique courant -> TK_NEWLINE }
+  If LogAtEnd Then
+  Begin
+    tok.kind    := TK_NEWLINE;
+    tok.val     := '';
+    tok.lbl_num := log_label;
+    tok.line    := log_lineno;
+    tok.col     := 0;
+    { Pre-charger le prochain enregistrement pour le prochain appel }
+    If Not SrcNextLogRecord Then
+    Begin
+      tok.kind := TK_EOF;  { Fin de fichier immediate }
+    End;
+    Exit;
+  End;
+
+  c := LogCurChar;
+  tok.line := log_lineno;
+  tok.col  := log_pos;
+  tok.val  := '';
+  tok.int_val  := 0;
+  tok.real_val := 0;
+  tok.lbl_num  := 0;
+
+  { ---- Chaine litterale Fortran : 'abc' (apostrophe doublee = '') ---- }
+  If c = '''' Then
+  Begin
+    LogAdvance;
+    s := '';
+    Repeat
+      If LogAtEnd Then
+      Begin
+        ErrorMsg('Chaine litterale non fermee en fin d enregistrement');
+        Break;
+      End;
+      If LogCurChar = '''' Then
+      Begin
+        LogAdvance;
+        If (Not LogAtEnd) And (LogCurChar = '''') Then
+        Begin
+          s := s + '''';
+          LogAdvance;
+        End
+        Else
+          Break;
+      End
+      Else
+      Begin
+        s := s + LogCurChar;
+        LogAdvance;
+      End;
+    Until False;
+    tok.kind := TK_STRING;
+    tok.val  := s;
+    Exit;
+  End;
+
+  { ---- Entier ou reel commencant par un chiffre ---- }
+  If c In ['0'..'9'] Then
+  Begin
+    s := LexReadDigits;
+
+    { Hollerith : nHccc... }
+    If (Not LogAtEnd) And (LogCurChar In ['H','h']) Then
+    Begin
+      Val(s, hlen, code);
+      If (code = 0) And (hlen > 0) Then
+      Begin
+        LogAdvance;  { consommer 'H' }
+        t := '';
+        For i := 1 To hlen Do
+        Begin
+          If LogAtEnd Then Break;
+          t := t + LogCurChar;
+          LogAdvance;
+        End;
+        tok.kind    := TK_HOLLERITH;
+        tok.val     := t;
+        tok.int_val := hlen;
+        Exit;
+      End;
+    End;
+
+    { Reel : n.m  ou  n.mE+p  ou  n.mD+p }
+    If (Not LogAtEnd) And (LogCurChar = '.') Then
+    Begin
+      s := s + '.'; LogAdvance;
+      s := s + LexReadDigits;
+      is_dbl := False;
+      If Not LogAtEnd Then
+      Begin
+        If LogCurChar In ['E','e'] Then
+        Begin
+          s := s + 'E'; LogAdvance;
+          If (Not LogAtEnd) And (LogCurChar In ['+','-']) Then
+          Begin s := s + LogCurChar; LogAdvance; End;
+          s := s + LexReadDigits;
+        End
+        Else If LogCurChar In ['D','d'] Then
+        Begin
+          s := s + 'D'; LogAdvance; is_dbl := True;
+          If (Not LogAtEnd) And (LogCurChar In ['+','-']) Then
+          Begin s := s + LogCurChar; LogAdvance; End;
+          s := s + LexReadDigits;
+        End;
+      End;
+      tok.val := s;
+      If is_dbl Then tok.kind := TK_DOUBLE Else tok.kind := TK_REAL;
+      Exit;
+    End;
+
+    { Exposant direct sur entier : 1E3  ou  1D3 }
+    If Not LogAtEnd Then
+    Begin
+      If LogCurChar In ['E','e'] Then
+      Begin
+        s := s + 'E'; LogAdvance;
+        If (Not LogAtEnd) And (LogCurChar In ['+','-']) Then
+        Begin s := s + LogCurChar; LogAdvance; End;
+        s := s + LexReadDigits;
+        tok.kind := TK_REAL; tok.val := s;
+        Exit;
+      End
+      Else If LogCurChar In ['D','d'] Then
+      Begin
+        s := s + 'D'; LogAdvance;
+        If (Not LogAtEnd) And (LogCurChar In ['+','-']) Then
+        Begin s := s + LogCurChar; LogAdvance; End;
+        s := s + LexReadDigits;
+        tok.kind := TK_DOUBLE; tok.val := s;
+        Exit;
+      End;
+    End;
+
+    { Entier simple }
+    Val(s, n, code);
+    tok.kind    := TK_INTEGER;
+    tok.val     := s;
+    tok.int_val := n;
+    Exit;
+  End;
+
+  { ---- Operateurs ponctuels : .EQ. .AND. .TRUE. .5 ---- }
+  If c = '.' Then
+  Begin
+    LogAdvance;
+    LogSkipBlanks;
+
+    { Reel commencant par un point : .5E3 }
+    If (Not LogAtEnd) And (LogCurChar In ['0'..'9']) Then
+    Begin
+      s := '.' + LexReadDigits;
+      is_dbl := False;
+      If Not LogAtEnd Then
+      Begin
+        If LogCurChar In ['E','e'] Then
+        Begin
+          s := s + 'E'; LogAdvance;
+          If (Not LogAtEnd) And (LogCurChar In ['+','-']) Then
+          Begin s := s + LogCurChar; LogAdvance; End;
+          s := s + LexReadDigits;
+        End
+        Else If LogCurChar In ['D','d'] Then
+        Begin
+          s := s + 'D'; LogAdvance; is_dbl := True;
+          If (Not LogAtEnd) And (LogCurChar In ['+','-']) Then
+          Begin s := s + LogCurChar; LogAdvance; End;
+          s := s + LexReadDigits;
+        End;
+      End;
+      tok.val := s;
+      If is_dbl Then tok.kind := TK_DOUBLE Else tok.kind := TK_REAL;
+      Exit;
+    End;
+
+    { Mot entre points : .TRUE. .FALSE. .EQ. .AND. etc. }
+    s := LexReadLetters;
+    { Consommer le '.' fermant }
+    If (Not LogAtEnd) And (LogCurChar = '.') Then LogAdvance;
+
+    If (s = 'TRUE') Or (s = 'FALSE') Then
+    Begin
+      tok.kind    := TK_LOGICAL;
+      tok.val     := s;
+      tok.int_val := Ord(s = 'TRUE');
+      Exit;
+    End;
+    If (s = 'EQ') Or (s = 'NE') Or (s = 'LT') Or
+       (s = 'LE') Or (s = 'GT') Or (s = 'GE') Then
+    Begin
+      tok.kind := TK_RELOP; tok.val := s; Exit;
+    End;
+    If (s = 'AND') Or (s = 'OR') Or (s = 'NOT') Or
+       (s = 'EQV') Or (s = 'NEQV') Then
+    Begin
+      tok.kind := TK_LOGOP; tok.val := s; Exit;
+    End;
+
+    If s = '' Then
+      ErrorMsg('Point decimal isole inattendu')
+    Else
+      ErrorMsg('Operateur point inconnu : .' + s + '.');
+    tok.kind := TK_OP;
+    tok.val  := '.' + s + '.';
+    Exit;
+  End;
+
+  { ---- ** et * ---- }
+  If c = '*' Then
+  Begin
+    LogAdvance;
+    If (Not LogAtEnd) And (LogCurChar = '*') Then
+    Begin LogAdvance; tok.kind := TK_OP; tok.val := '**'; End
+    Else
+    Begin tok.kind := TK_OP; tok.val := '*'; End;
+    Exit;
+  End;
+
+  { ---- // et / ---- }
+  If c = '/' Then
+  Begin
+    LogAdvance;
+    If (Not LogAtEnd) And (LogCurChar = '/') Then
+    Begin LogAdvance; tok.kind := TK_OP; tok.val := '//'; End
+    Else
+    Begin tok.kind := TK_OP; tok.val := '/'; End;
+    Exit;
+  End;
+
+  { ---- Operateurs et ponctuation simples ---- }
+  If c = '+' Then Begin LogAdvance; tok.kind := TK_OP;    tok.val := '+'; Exit; End;
+  If c = '-' Then Begin LogAdvance; tok.kind := TK_OP;    tok.val := '-'; Exit; End;
+  If c = '=' Then Begin LogAdvance; tok.kind := TK_PUNCT; tok.val := '='; Exit; End;
+  If c = '(' Then Begin LogAdvance; tok.kind := TK_PUNCT; tok.val := '('; Exit; End;
+  If c = ')' Then Begin LogAdvance; tok.kind := TK_PUNCT; tok.val := ')'; Exit; End;
+  If c = ',' Then Begin LogAdvance; tok.kind := TK_PUNCT; tok.val := ','; Exit; End;
+  If c = ':' Then Begin LogAdvance; tok.kind := TK_PUNCT; tok.val := ':'; Exit; End;
+
+  { ---- Identifiant ou mot-cle ---- }
+  If c In ['A'..'Z','a'..'z'] Then
+  Begin
+    { Lire partie alphabetique seulement (les blancs sont sautes) }
+    s := LexReadLetters;
+
+    { Cas DOUBLE + PRECISION (deux mots separes ou colles) }
+    If s = 'DOUBLE' Then
+    Begin
+      LogSkipBlanks;
+      If Not LogAtEnd Then
+      Begin
+        t := LexReadLetters;
+        If t = 'PRECISION' Then s := 'DOUBLEPRECISION'
+        Else
+        Begin
+          { 't' consomme mais pas reconnu -> on le perd ; signaler }
+          WarnMsg('Attendu PRECISION apres DOUBLE, obtenu : ' + t);
+        End;
+      End;
+    End;
+
+    { Mot-cle reconnu : retourner TK_KEYWORD }
+    If LexIsKeyword(s) Then
+    Begin
+      tok.kind := TK_KEYWORD;
+      tok.val  := s;
+      Exit;
+    End;
+
+    { Sinon : lire la suite alphanumerique de l identifiant }
+    t := LexReadAlphaNum;
+    s := s + t;
+    If Length(s) > 6 Then
+    Begin
+      WarnMsg('Identifiant trop long (max 6 car. en F77) : ' + s);
+      s := Copy(s, 1, 6);
+    End;
+    tok.kind := TK_IDENT;
+    tok.val  := s;
+    Exit;
+  End;
+
+  { ---- Caractere inconnu : signaler et avancer ---- }
+  ErrorMsg('Caractere inattendu : ' + c);
+  LogAdvance;
+  tok.kind := TK_OP;
+  tok.val  := c;
+End;
+
+{ --------------------------------------------------------------------------
+  LexNext : avance cur_tok vers le token suivant.
+  Si un token a ete pre-lu par LexPeekTok (has_peek=True),
+  le retourne directement sans relire la source.
+  -------------------------------------------------------------------------- }
+Procedure LexNext;
+Begin
+  If has_peek Then
+  Begin
+    cur_tok  := peek_tok;
+    has_peek := False;
+    Exit;
+  End;
+  LexDoRead(cur_tok);
+End;
+
+{ --------------------------------------------------------------------------
+  LexPeekTok : retourne le prochain token sans consommer cur_tok.
+  Le resultat est mis en cache dans peek_tok / has_peek.
+  -------------------------------------------------------------------------- }
+Function LexPeekTok : TToken;
+Begin
+  If Not has_peek Then
+  Begin
+    LexDoRead(peek_tok);
+    has_peek := True;
+  End;
+  LexPeekTok := peek_tok;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExpect : verifie cur_tok.val = val puis avance. Sinon erreur.
+  -------------------------------------------------------------------------- }
+Procedure LexExpect(Const val : TString);
+Begin
+  If cur_tok.val <> val Then
+    ErrorMsg('Attendu ''' + val + ''', obtenu ''' + cur_tok.val + '''');
+  LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExpectKind : verifie cur_tok.kind = k puis avance. Sinon erreur.
+  -------------------------------------------------------------------------- }
+Procedure LexExpectKind(k : TTokenKind);
+Const
+  TK_NAME : Array[TK_IDENT..TK_EOF] of String[12] = (
+    'IDENT','INTEGER','REAL','DOUBLE','STRING','LOGICAL',
+    'HOLLERITH','KEYWORD','RELOP','LOGOP','OP','PUNCT',
+    'LABEL','NEWLINE','EOF'
+  );
+Begin
+  If cur_tok.kind <> k Then
+    ErrorMsg('Token attendu : ' + TK_NAME[k] +
+             ', obtenu : ' + TK_NAME[cur_tok.kind] +
+             ' (''' + cur_tok.val + ''')');
+  LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  LexInit : initialise le lexer pour le debut de la compilation.
+  Lit le premier enregistrement logique et remplit cur_tok.
+  -------------------------------------------------------------------------- }
+Procedure LexInit;
+Begin
+  has_peek        := False;
+  cur_tok.kind    := TK_NEWLINE;
+  cur_tok.val     := '';
+  cur_tok.lbl_num := 0;
+  cur_tok.line    := 0;
+  cur_tok.col     := 0;
+  SrcInit;
+  If SrcNextLogRecord Then
+    LexNext
+  Else
+  Begin
+    cur_tok.kind := TK_EOF;
+    cur_tok.val  := '';
+  End;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -1181,7 +1669,7 @@ Begin
 
   Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
 
-  { TODOs 02-25 : implementation a venir }
+  { TODOs 04-25 : implementation a venir }
 
   CloseFiles;
 
