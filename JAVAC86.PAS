@@ -5786,13 +5786,509 @@ Begin
 End;
 
 { ============================================================================
-  TODO 17 ... 25 : a implementer
+  TODO 17 - CODEGEN : TABLEAUX JAVA
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenArrayFieldDecl : emettre la declaration d'un tableau dans le segment
+  DATA sous la forme :
+      lbl          DW  N DUP(0)
+      lbl_len      DW  N
+  -------------------------------------------------------------------------- }
+Procedure GenArrayFieldDecl(idx : Integer);
+Var lbl : TString;
+    n   : Integer;
+Begin
+  lbl := sym_table^[idx].asm_label;
+  n   := sym_table^[idx].arr_size;
+  If n <= 0 Then n := 1;
+  EmitDW(lbl,           IntToStr(n) + ' DUP(0)');
+  EmitDW(lbl + '_len',  IntToStr(n));
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayLocalInit : initialiser a zero le tableau local idx deja alloue
+  dans le cadre de pile.  Emet une boucle CX/SI qui efface N mots.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayLocalInit(idx : Integer; n : Integer);
+Var ofs    : Integer;
+    lbl_lp : TString;
+Begin
+  If n <= 0 Then Exit;
+  ofs    := sym_table^[idx].bp_offset;
+  lbl_lp := NewLabel;
+  EmitI('LEA', 'SI, [BP' + IntToStr(ofs) + ']', 'base tableau local');
+  EmitI1('MOV', 'CX, ' + IntToStr(n));
+  EmitLabel(lbl_lp);
+  EmitI0('MOV  WORD PTR [SI], 0');
+  EmitI0('INC  SI');
+  EmitI0('INC  SI');
+  EmitI1('LOOP', lbl_lp);
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayLengthLoad : charger la longueur du tableau idx dans AX.
+  Pour un champ statique : MOV AX, [lbl_len].
+  Pour une variable locale ou parametre : MOV AX, N (compile-time).
+  -------------------------------------------------------------------------- }
+Procedure GenArrayLengthLoad(idx : Integer);
+Var lbl : TString;
+    n   : Integer;
+    sc  : TScope;
+Begin
+  lbl := sym_table^[idx].asm_label;
+  n   := sym_table^[idx].arr_size;
+  sc  := sym_table^[idx].scope;
+  If (sc = SC_GLOBAL) Or (sc = SC_FIELD) Then
+    EmitI('MOV', 'AX, [' + lbl + '_len]', 'longueur tableau champ')
+  Else
+    EmitI('MOV', 'AX, ' + IntToStr(n), 'longueur tableau local/param');
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayElemLoad : charger arr[BX] dans AX.  BX = index entier.
+  Alias de GenLoadArrayElem (deja implementee en TODO 08).
+  -------------------------------------------------------------------------- }
+Procedure GenArrayElemLoad(idx : Integer);
+Begin
+  GenLoadArrayElem(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayElemStore : stocker AX dans arr[BX].  BX = index entier.
+  Alias de GenStoreArrayElem (deja implementee en TODO 08).
+  -------------------------------------------------------------------------- }
+Procedure GenArrayElemStore(idx : Integer);
+Begin
+  GenStoreArrayElem(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenArrayFill : remplir le tableau idx avec la valeur init_val.
+  Utile pour initialiser les tableaux statiques ou locaux a une valeur
+  non nulle.  Emet une boucle SI/CX qui ecrit N mots.
+  -------------------------------------------------------------------------- }
+Procedure GenArrayFill(idx : Integer; init_val : Integer);
+Var lbl    : TString;
+    ofs    : Integer;
+    n      : Integer;
+    sc     : TScope;
+    lbl_lp : TString;
+Begin
+  n   := sym_table^[idx].arr_size;
+  lbl := sym_table^[idx].asm_label;
+  ofs := sym_table^[idx].bp_offset;
+  sc  := sym_table^[idx].scope;
+  If n <= 0 Then Exit;
+  If (sc = SC_GLOBAL) Or (sc = SC_FIELD) Then
+    EmitI1('LEA', 'SI, [' + lbl + ']')
+  Else If sc = SC_PARAM Then
+    EmitI('LEA', 'SI, [BP+' + IntToStr(ofs) + ']', 'base tableau param')
+  Else
+    EmitI('LEA', 'SI, [BP' + IntToStr(ofs) + ']', 'base tableau local');
+  EmitI1('MOV', 'CX, ' + IntToStr(n));
+  EmitI1('MOV', 'AX, ' + IntToStr(init_val));
+  lbl_lp := NewLabel;
+  EmitLabel(lbl_lp);
+  EmitI0('MOV  [SI], AX');
+  EmitI0('INC  SI');
+  EmitI0('INC  SI');
+  EmitI1('LOOP', lbl_lp);
+End;
+
+{ --------------------------------------------------------------------------
+  GenForEachArray : emettre l'en-tete de boucle for-each sur un tableau.
+  BX est utilise comme compteur (0..n-1).
+  Charge arr[BX] dans var_idx a chaque iteration.
+  Le corps et GenForEachStep sont emis par l'appelant.
+  -------------------------------------------------------------------------- }
+Procedure GenForEachArray(arr_idx, var_idx : Integer;
+                          Const lbl_top, lbl_end : TString);
+Var lbl : TString;
+    ofs : Integer;
+    sc  : TScope;
+    n   : Integer;
+Begin
+  n   := sym_table^[arr_idx].arr_size;
+  lbl := sym_table^[arr_idx].asm_label;
+  ofs := sym_table^[arr_idx].bp_offset;
+  sc  := sym_table^[arr_idx].scope;
+  EmitI0('XOR  BX, BX');
+  EmitLabel(lbl_top);
+  EmitI1('CMP', 'BX, ' + IntToStr(n));
+  EmitI1('JGE', lbl_end);
+  { Calculer l'adresse base du tableau dans SI }
+  If (sc = SC_GLOBAL) Or (sc = SC_FIELD) Then
+    EmitI('LEA', 'SI, [' + lbl + ']', 'base tableau champ')
+  Else If sc = SC_PARAM Then
+    EmitI('LEA', 'SI, [BP+' + IntToStr(ofs) + ']', 'base tableau param')
+  Else
+    EmitI('LEA', 'SI, [BP' + IntToStr(ofs) + ']', 'base tableau local');
+  { Charger arr[BX] dans AX et stocker dans la variable d'iteration }
+  EmitI1('PUSH', 'BX');
+  EmitI1('SHL',  'BX, 1');
+  EmitI1('MOV',  'AX, [SI+BX]');
+  EmitI1('POP',  'BX');
+  GenStoreVar(var_idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenBoundsError : appeler la routine runtime d'erreur de debordement.
+  -------------------------------------------------------------------------- }
+Procedure GenBoundsError;
+Begin
+  EmitI1('CALL', RT_PFX + 'ERRBOUND');
+End;
+
+{ ============================================================================
+  TODO 18 - CODEGEN : APPELS DE METHODES JAVA
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenPushArg : empiler un argument sur la pile avant un CALL.
+  String : PUSH DX (len) puis PUSH AX (ptr) -> 2 mots.
+  Scalaire (int / bool / char) : PUSH AX -> 1 mot.
+  -------------------------------------------------------------------------- }
+Procedure GenPushArg(vt : TValueKind);
+Begin
+  If vt = VK_STRING Then
+  Begin
+    EmitI1('PUSH', 'DX');
+    EmitI1('PUSH', 'AX');
+  End
+  Else
+    EmitI1('PUSH', 'AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallDirect : emettre CALL label.
+  -------------------------------------------------------------------------- }
+Procedure GenCallDirect(Const name_asm : TString);
+Begin
+  EmitI1('CALL', name_asm);
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallAndCleanup : appeler une methode et nettoyer la pile.
+  Utilise func_table^[fi].asm_label et param_bytes (octets d'args).
+  -------------------------------------------------------------------------- }
+Procedure GenCallAndCleanup(fi : Integer; argc : Integer);
+Var nb : Integer;
+Begin
+  EmitI1('CALL', func_table^[fi].asm_label);
+  nb := func_table^[fi].param_bytes;
+  If nb <= 0 Then nb := argc * 2;
+  If nb > 0 Then
+    EmitI1('ADD', 'SP, ' + IntToStr(nb));
+End;
+
+{ --------------------------------------------------------------------------
+  GenRecursiveCall : appel recursif direct (meme fonction).
+  Convention identique a GenCallAndCleanup mais sans nettoyage de pile,
+  car le prologue/epilogue gere le cadre.
+  -------------------------------------------------------------------------- }
+Procedure GenRecursiveCall(fi : Integer);
+Begin
+  EmitI1('CALL', func_table^[fi].asm_label);
+End;
+
+{ --------------------------------------------------------------------------
+  GenMethodPrologue : alias de GenFunctionPrologue.
+  PUSH BP / MOV BP, SP / SUB SP, frame_size.
+  -------------------------------------------------------------------------- }
+Procedure GenMethodPrologue(fi : Integer);
+Begin
+  GenFunctionPrologue(fi);
+End;
+
+{ --------------------------------------------------------------------------
+  GenMethodEpilogue : alias de GenFunctionEpilogue.
+  EmitLabel(<asm_label>_ret) / MOV SP, BP / POP BP / RET.
+  -------------------------------------------------------------------------- }
+Procedure GenMethodEpilogue(fi : Integer);
+Begin
+  GenFunctionEpilogue(fi);
+End;
+
+{ --------------------------------------------------------------------------
+  GenSystemOutCall : orchestrer l'affichage selon le type de la valeur.
+  Valeur de type vt deja dans AX (et DX si String).
+  is_println = True pour System.out.println (ajoute CRLF).
+  -------------------------------------------------------------------------- }
+Procedure GenSystemOutCall(is_println : Boolean; vt : TValueKind);
+Begin
+  Case vt Of
+    VK_INT :
+      Begin
+        EmitI1('PUSH', 'AX');
+        EmitI1('CALL', RT_PFX + 'WRITEINT');
+        EmitI1('ADD',  'SP, 2');
+      End;
+    VK_BOOL :
+      Begin
+        EmitI1('PUSH', 'AX');
+        EmitI1('CALL', RT_PFX + 'WRITEBOOL');
+        EmitI1('ADD',  'SP, 2');
+      End;
+    VK_CHAR :
+      Begin
+        EmitI('MOV',  'DL, AL', 'char a imprimer');
+        EmitI1('MOV', 'AH, 02h');
+        EmitI0('INT  21h');
+      End;
+    VK_STRING :
+      Begin
+        EmitI('MOV',  'CX, DX', 'len -> CX');
+        EmitI1('CALL', RT_PFX + 'WRITESTR');
+      End;
+  Else
+    If is_println Then ; { println() sans argument -> juste CRLF }
+  End;
+  If is_println Then
+    EmitI1('CALL', RT_PFX + 'WRITECRLF');
+End;
+
+{ --------------------------------------------------------------------------
+  GenScannerCall : orchestrer la lecture depuis stdin.
+  is_int = True  -> appeler _JRT_READINT  -> AX (entier).
+  is_int = False -> appeler _JRT_READLINE -> AX=ptr, DX=len (String).
+  -------------------------------------------------------------------------- }
+Procedure GenScannerCall(is_int : Boolean);
+Begin
+  If is_int Then
+    EmitI1('CALL', RT_PFX + 'READINT')
+  Else
+    EmitI1('CALL', RT_PFX + 'READLINE');
+End;
+
+{ ============================================================================
+  TODO 19 - RUNTIME ASSEMBLEUR : ARITHMETIQUE
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenRtArithmetic : emettre les routines runtime arithmetiques.
+  Appelee apres MergeTmpToMain, alors que cur_out est dans _CODE.
+  On rouvre brievement _DATA pour y ajouter les constantes runtime,
+  puis on rouvre _CODE et on emet les routines.
+  -------------------------------------------------------------------------- }
+Procedure GenRtArithmetic;
+Begin
+  { --- Rouvrir _DATA pour les constantes runtime --- }
+  EmitBlank;
+  Emit('_CODE           ENDS');
+  EmitBlank;
+  Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlank;
+  EmitComment('Constantes runtime (BOOL2STR, CHAR2STR, ERRBOUND)');
+  EmitDB('_J_BOOL_F',  '''false'', 0');
+  EmitDB('_J_BOOL_T',  '''true'',  0');
+  EmitDB('_J_CHARBUF', '0');
+  EmitDB('_J_OOBE',    '''ArrayIndexOutOfBounds'', 0Dh, 0Ah, ''$''');
+  EmitBlank;
+  Emit('_DATA           ENDS');
+  EmitBlank;
+
+  { --- Rouvrir _CODE pour les routines runtime --- }
+  Emit('_CODE           SEGMENT WORD PUBLIC ''CODE''');
+  EmitI1('ASSUME', 'CS:_CODE, DS:_DATA, SS:_STACK');
+  EmitBlank;
+  EmitSep;
+  EmitComment('TODO 19 - RUNTIME : ARITHMETIQUE');
+  EmitSep;
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_IMUL : AX * BX -> AX  (multiplication signee 16 bits)        }
+  { ------------------------------------------------------------------ }
+  EmitLabel(RT_PFX + 'IMUL');
+  EmitI0('IMUL BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_IDIV : AX / BX (signe) -> AX, reste -> CX                   }
+  { ------------------------------------------------------------------ }
+  EmitLabel(RT_PFX + 'IDIV');
+  EmitI0('CWD');
+  EmitI1('IDIV', 'BX');
+  EmitI2('MOV',  'CX', 'DX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_IMOD : AX % BX -> AX                                         }
+  { ------------------------------------------------------------------ }
+  EmitLabel(RT_PFX + 'IMOD');
+  EmitI0('CWD');
+  EmitI1('IDIV', 'BX');
+  EmitI2('MOV',  'AX', 'DX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_INEG : NEG AX                                                 }
+  { ------------------------------------------------------------------ }
+  EmitLabel(RT_PFX + 'INEG');
+  EmitI0('NEG  AX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_ABS : AX <- ABS(AX)                                          }
+  { ------------------------------------------------------------------ }
+  EmitLabel(RT_PFX + 'ABS');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JGE',  RT_PFX + 'ABS_R');
+  EmitI0('NEG  AX');
+  EmitLabel(RT_PFX + 'ABS_R');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_INT2STR : AX (entier signe) -> AX=ptr(_J_INTBUF), DX=len    }
+  {   Algorithme : extraire les chiffres en divisant par 10,           }
+  {   les empiler puis les depiler pour les stocker en ordre.           }
+  { ------------------------------------------------------------------ }
+  EmitComment('INT2STR : entier AX -> chaine ASCII  AX=ptr DX=len');
+  EmitLabel(RT_PFX + 'INT2STR');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('MOV',  'DI, OFFSET _J_INTBUF');
+  EmitI2('MOV',  'SI', 'DI');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JGE',  RT_PFX + 'I2S_POS');
+  EmitI0('NEG  AX');
+  EmitI0('MOV  BYTE PTR [SI], ''-''');
+  EmitI0('INC  SI');
+  EmitLabel(RT_PFX + 'I2S_POS');
+  EmitI1('MOV',  'BX, 10');
+  EmitI0('XOR  CX, CX');
+  EmitLabel(RT_PFX + 'I2S_LP');
+  EmitI0('XOR  DX, DX');
+  EmitI0('DIV  BX');
+  EmitI1('PUSH', 'DX');
+  EmitI0('INC  CX');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  RT_PFX + 'I2S_LP');
+  EmitLabel(RT_PFX + 'I2S_ST');
+  EmitI1('POP',  'DX');
+  EmitI0('ADD  DL, ''0''');
+  EmitI1('MOV',  '[SI], DL');
+  EmitI0('INC  SI');
+  EmitI1('LOOP', RT_PFX + 'I2S_ST');
+  EmitI0('MOV  BYTE PTR [SI], 0');
+  EmitI2('MOV',  'AX', 'DI');
+  EmitI2('MOV',  'DX', 'SI');
+  EmitI2('SUB',  'DX', 'DI');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI1('POP',  'DI');
+  EmitI1('POP',  'SI');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_STR2INT : AX=ptr DX=len -> AX (entier signe)                 }
+  { ------------------------------------------------------------------ }
+  EmitComment('STR2INT : AX=ptr DX=len -> AX (entier)');
+  EmitLabel(RT_PFX + 'STR2INT');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'CX');
+  EmitI1('PUSH', 'DI');
+  EmitI2('MOV',  'SI', 'AX');
+  EmitI2('MOV',  'CX', 'DX');
+  EmitI0('XOR  BX, BX');
+  EmitI0('XOR  DI, DI');
+  EmitI1('TEST', 'CX, CX');
+  EmitI1('JZ',   RT_PFX + 'S2I_DONE');
+  EmitI1('MOV',  'AL, [SI]');
+  EmitI0('CMP  AL, ''-''');
+  EmitI1('JNE',  RT_PFX + 'S2I_LP');
+  EmitI1('MOV',  'DI, 1');
+  EmitI0('INC  SI');
+  EmitI0('DEC  CX');
+  EmitI1('JZ',   RT_PFX + 'S2I_DONE');
+  EmitLabel(RT_PFX + 'S2I_LP');
+  EmitI1('MOV',  'AL, [SI]');
+  EmitI0('SUB  AL, ''0''');
+  EmitI1('JB',   RT_PFX + 'S2I_DONE');
+  EmitI0('CMP  AL, 9');
+  EmitI1('JA',   RT_PFX + 'S2I_DONE');
+  EmitI0('CBW');
+  EmitI1('PUSH', 'AX');
+  EmitI2('MOV',  'AX', 'BX');
+  EmitI1('MOV',  'BX, 10');
+  EmitI0('MUL  BX');
+  EmitI1('POP',  'BX');
+  EmitI2('ADD',  'AX', 'BX');
+  EmitI2('MOV',  'BX', 'AX');
+  EmitI0('INC  SI');
+  EmitI1('LOOP', RT_PFX + 'S2I_LP');
+  EmitLabel(RT_PFX + 'S2I_DONE');
+  EmitI2('MOV',  'AX', 'BX');
+  EmitI1('TEST', 'DI, DI');
+  EmitI1('JZ',   RT_PFX + 'S2I_RET');
+  EmitI0('NEG  AX');
+  EmitLabel(RT_PFX + 'S2I_RET');
+  EmitI1('POP',  'DI');
+  EmitI1('POP',  'CX');
+  EmitI1('POP',  'BX');
+  EmitI1('POP',  'SI');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_BOOL2STR : AX (0=false, autre=true) -> AX=ptr DX=len         }
+  { ------------------------------------------------------------------ }
+  EmitComment('BOOL2STR : AX=0/1 -> AX=ptr DX=len (false = 5, true = 4)');
+  EmitLabel(RT_PFX + 'BOOL2STR');
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JNZ',  RT_PFX + 'B2S_T');
+  EmitI1('MOV',  'AX, OFFSET _J_BOOL_F');
+  EmitI1('MOV',  'DX, 5');
+  EmitI0('RET');
+  EmitLabel(RT_PFX + 'B2S_T');
+  EmitI1('MOV',  'AX, OFFSET _J_BOOL_T');
+  EmitI1('MOV',  'DX, 4');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_CHAR2STR : AX (code ASCII) -> AX=ptr(_J_CHARBUF) DX=1       }
+  { ------------------------------------------------------------------ }
+  EmitComment('CHAR2STR : AL (code char) -> AX=ptr DX=1');
+  EmitLabel(RT_PFX + 'CHAR2STR');
+  EmitI1('MOV',  '[_J_CHARBUF], AL');
+  EmitI1('MOV',  'AX, OFFSET _J_CHARBUF');
+  EmitI1('MOV',  'DX, 1');
+  EmitI0('RET');
+  EmitBlank;
+
+  { ------------------------------------------------------------------ }
+  { _JRT_ERRBOUND / _JRT_BOUNDS_ERR : IndexOutOfBounds -> halt(1)     }
+  { ------------------------------------------------------------------ }
+  EmitComment('ERRBOUND : ArrayIndexOutOfBounds + INT 21h 4C01h');
+  EmitLabel(RT_PFX + 'ERRBOUND');
+  EmitLabel(RT_PFX + 'BOUNDS_ERR');
+  EmitI1('MOV',  'AH, 09h');
+  EmitI1('MOV',  'DX, OFFSET _J_OOBE');
+  EmitI0('INT  21h');
+  EmitI1('MOV',  'AX, 4C01h');
+  EmitI0('INT  21h');
+  EmitBlank;
+End;
+
+{ ============================================================================
+  TODO 20 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   InitTables;
   scope_sp := 0;
   WriteLn('JAVAC86 v', JAVAC86_VERSION, ' - compilateur Java Lite -> MASM 8086');
-  WriteLn('(TODO 17-25 non implementes)');
+  WriteLn('(TODO 20-25 non implementes)');
   FreeTables;
 End.
