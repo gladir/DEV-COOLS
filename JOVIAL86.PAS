@@ -2660,6 +2660,9 @@ Procedure ParseProcedureDecl; Forward;
 Procedure ParseFunctionDecl;  Forward;
 Procedure ParseStatement;     Forward;
 Procedure ParseIf;            Forward;
+Procedure ParseFor;           Forward;
+Procedure ParseWhile;         Forward;
+Procedure ParseDoUntil;       Forward;
 
 { --------------------------------------------------------------------------
   ParseConstExpr : evaluer une expression constante au compile-time.
@@ -4010,14 +4013,9 @@ Begin
     ParseItemDecl(SC_LOCAL)
   Else If cur_tok.val = 'IF' Then
     ParseIf
-  Else If (cur_tok.val = 'FOR') Or (cur_tok.val = 'WHILE')
-       Or (cur_tok.val = 'DO') Then
-  Begin
-    { TODO 12 : stub }
-    While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do LexNext;
-    If cur_tok.val = 'END' Then LexNext;
-    If cur_tok.val = ';'   Then LexNext;
-  End
+  Else If (cur_tok.val = 'FOR') Then ParseFor
+  Else If (cur_tok.val = 'WHILE') Then ParseWhile
+  Else If (cur_tok.val = 'DO') Then ParseDoUntil
   Else If (cur_tok.val = 'INPUT') Or (cur_tok.val = 'OUTPUT') Then
   Begin
     { TODO 18 : stub - consommer jusqu'au ';' }
@@ -4103,11 +4101,197 @@ Begin
 End;
 
 { ============================================================================
-  TODO 12 ... 25 : a implementer
+  TODO 12 - PARSER : BOUCLES FOR, WHILE, DO/UNTIL
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseFor :
+    FOR ident = start [STEP step] (TO limit | ST cond) DO body END [;]
+
+  Code emis (forme TO) :
+      MOV [var], start
+      MOV DI, step          (DI = pas, preservee pendant la boucle)
+      MOV SI, limit         (SI = borne, pre-evaluee une fois)
+  lbl_top:
+      MOV AX, [var]
+      CMP AX, SI
+      JG  lbl_end
+      ...body...
+  lbl_cont:
+      MOV AX, [var] / ADD AX,DI / MOV [var],AX
+      JMP lbl_top
+  lbl_end:
+
+  Note : variante ST pre-evalue la condition (limitation connue).
+  -------------------------------------------------------------------------- }
+Procedure ParseFor;
+Var
+  vname    : TString;
+  vi       : Integer;
+  lbl_top  : TString;
+  lbl_cont : TString;
+  lbl_end  : TString;
+  et       : TItemType;
+  eb       : Integer;
+  is_st    : Boolean;
+Begin
+  LexExpect('FOR');
+  vname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  vi := FindSym(vname);
+  LexExpect('=');
+  { evaluer start -> AX, stocker dans la variable de boucle }
+  ParseExpr(et, eb);
+  If vi > 0 Then GenStoreVar(vi);
+  { STEP optionnel -> DI (pas implicite = 1) }
+  If cur_tok.val = 'STEP' Then
+  Begin
+    LexNext;
+    ParseExpr(et, eb);
+    EmitI2('MOV', 'DI', 'AX');
+  End
+  Else
+    EmitI2('MOV', 'DI', '1');
+  { TO : borne pre-evaluee dans SI / ST : condition bool pre-evaluee dans SI }
+  is_st := False;
+  If cur_tok.val = 'ST' Then
+  Begin
+    is_st := True;
+    LexNext;
+    ParseExpr(et, eb);
+    EmitComment(' Variante ST : condition pre-evaluee dans SI');
+    EmitI2('MOV', 'SI', 'AX');
+  End
+  Else
+  Begin
+    LexExpect('TO');
+    ParseExpr(et, eb);
+    EmitI2('MOV', 'SI', 'AX');
+  End;
+  LexExpect('DO');
+  lbl_top  := NewLabel;
+  lbl_cont := NewLabel;
+  lbl_end  := NewLabel;
+  PushLoopLabels(lbl_end, lbl_cont);
+  EmitLocalLabel(lbl_top);
+  { test de sortie de boucle }
+  If is_st Then
+  Begin
+    EmitI2('TEST', 'SI', 'SI');
+    EmitI1('JZ  ', lbl_end);
+  End
+  Else If vi > 0 Then
+  Begin
+    GenLoadVar(vi);
+    EmitI2('CMP', 'AX', 'SI');
+    EmitI1('JG  ', lbl_end);    { quitter si var > borne }
+  End;
+  { corps de la boucle }
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  { increment }
+  EmitLocalLabel(lbl_cont);
+  If vi > 0 Then
+  Begin
+    GenLoadVar(vi);
+    EmitI2('ADD', 'AX', 'DI');
+    GenStoreVar(vi);
+  End;
+  EmitI1('JMP', lbl_top);
+  EmitLocalLabel(lbl_end);
+  PopLoopLabels;
+  LexExpect('END');
+  If cur_tok.val = ';' Then LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseWhile : WHILE cond DO body END [;]
+
+  Code emis :
+  lbl_top:
+      ...cond eval... -> AX
+      TEST AX, AX
+      JZ   lbl_end
+      ...body...
+      JMP  lbl_top
+  lbl_end:
+  -------------------------------------------------------------------------- }
+Procedure ParseWhile;
+Var
+  lbl_top  : TString;
+  lbl_cont : TString;
+  lbl_end  : TString;
+  et       : TItemType;
+  eb       : Integer;
+Begin
+  LexExpect('WHILE');
+  lbl_top  := NewLabel;
+  lbl_cont := NewLabel;
+  lbl_end  := NewLabel;
+  PushLoopLabels(lbl_end, lbl_cont);
+  EmitLocalLabel(lbl_top);
+  { evaluer la condition : tokens avant DO -> emission naturelle }
+  ParseExpr(et, eb);
+  EmitI2('TEST', 'AX', 'AX');
+  EmitI1('JZ  ', lbl_end);
+  LexExpect('DO');
+  { corps }
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  EmitLocalLabel(lbl_cont);
+  EmitI1('JMP', lbl_top);
+  EmitLocalLabel(lbl_end);
+  PopLoopLabels;
+  LexExpect('END');
+  If cur_tok.val = ';' Then LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDoUntil : DO body UNTIL cond ';'
+
+  Code emis :
+  lbl_top:
+      ...body...
+  lbl_cont:
+      ...cond eval... -> AX
+      TEST AX, AX
+      JZ   lbl_top    (recommencer si condition encore fausse)
+  lbl_end:            (sortie si condition vraie)
+  -------------------------------------------------------------------------- }
+Procedure ParseDoUntil;
+Var
+  lbl_top  : TString;
+  lbl_cont : TString;
+  lbl_end  : TString;
+  et       : TItemType;
+  eb       : Integer;
+Begin
+  LexExpect('DO');
+  lbl_top  := NewLabel;
+  lbl_cont := NewLabel;
+  lbl_end  := NewLabel;
+  PushLoopLabels(lbl_end, lbl_cont);
+  EmitLocalLabel(lbl_top);
+  { corps : jusqu'au token UNTIL }
+  While (cur_tok.val <> 'UNTIL') And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  EmitLocalLabel(lbl_cont);
+  LexExpect('UNTIL');
+  { evaluer la condition }
+  ParseExpr(et, eb);
+  EmitI2('TEST', 'AX', 'AX');
+  EmitI1('JZ  ', lbl_top);    { boucler si condition fausse }
+  EmitLocalLabel(lbl_end);
+  PopLoopLabels;
+  LexExpect(';');
+End;
+
+{ ============================================================================
+  TODO 13 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 12-25 non implementes)');
+  WriteLn('(TODO 13-25 non implementes)');
 End.

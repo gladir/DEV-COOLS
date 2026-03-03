@@ -3256,43 +3256,39 @@ Begin
  If sym_ptr <> nil Then Begin
   { Entreposer les informations de type directement dans le symbole }
   sym_ptr^.type_info := type_info;
-
-  If use_stdout Then WriteLn('; Variable dÃ©clarÃ©e: ', var_name, ' (', get_type_name(type_info), ')')
-                Else safe_writeln('; Variable dÃ©clarÃ©e: ' + var_name);
-
-  { GÃ©nÃ©rer l'allocation de stockage basÃ©e sur la classe de stockage }
+  If use_stdout Then WriteLn('; Variable d‚clar‚e: ', var_name, ' (', get_type_name(type_info), ')')
+                Else safe_writeln('; Variable d‚clar‚e: ' + var_name);
+   { G‚n‚rer l'allocation de stockage bas‚e sur la classe d'entreposage }
   Case storage_class of
    CEXTERNAL:
    Begin
-    { Variable externe - ne pas gÃ©nÃ©rer d'allocation, juste rÃ©fÃ©rencer }
+    { Variable externe - ne pas g‚n‚rer d'allocation, juste r‚f‚rencer }
     safe_writeln('; Variable externe: ' + var_name + ' (dÃ©finie ailleurs)');
    End;
    statik:
    Begin
-    { Variable statique - gÃ©nÃ©rer allocation dans section donnÃ©es }
+    { Variable statique - g‚n‚rer allocation dans section donn‚es }
     If use_stdout Then Write(var_name)
                   Else outstr(var_name);
     type_size := type_info.size;
-    If type_size = 1 Then
-    Begin
+    If type_size = 1 Then Begin
      If use_stdout Then WriteLn(': rmb 1')
                    Else safe_writeln(': rmb 1');
     End
-    Else
+     Else
     Begin
      If use_stdout Then WriteLn(': rmb ', type_size)
                    Else safe_writeln(': rmb (taille)');
     End;
     safe_writeln('; Variable statique: ' + var_name);
    End;
-   Else
+    Else
    Begin
     { Variable automatique - allocation normale }
     If use_stdout Then Write(var_name)
                   Else outstr(var_name);
     type_size := type_info.size;
-    If type_size = 1 Then
-    Begin
+    If type_size = 1 Then Begin
      If use_stdout Then WriteLn(': rmb 1')
                    Else safe_writeln(': rmb 1');
     End
@@ -3308,50 +3304,43 @@ Begin
  End;
 End;
 
-{ Recherche d'identificateur amÃ©liorÃ©e avec table de symboles basÃ©e sur le tas }
+ { Recherche d'identificateur am‚lior‚e avec table de symboles bas‚e sur la m‚moire de tas }
 Function lookup_variable(var_name: String; var lval: TLVal): Boolean;
 Var
  sym_ptr: PSymbol;
 Begin
  lookup_variable := False;
  FillChar(lval, SizeOf(lval), 0);
-
- { TEMPORAIRE: Simuler la recherche d'une variable const pour test }
- If var_name = 'consttest' Then
- Begin
+  { TEMPORAIRE: Simuler la recherche d'une variable const pour test }
+ If var_name = 'consttest' Then Begin
   lookup_variable := True;
   lval.symbol := 1;
   lval.typ := cint;
   lval.storage := automatic;
   lval.indirect := 0;
   lval.constant := False;
-
-  { Initialiser les infos de type comme const }
+   { Initialiser les infos de type comme const }
   init_type_info(lval.type_info);
   lval.type_info.base_type := cint;
   lval.type_info.is_const := True;  { Rendre const pour test }
   Exit;
  End;
-
  sym_ptr := find_symbol(var_name);
-
- If sym_ptr <> nil Then
- Begin
+ If sym_ptr <> nil Then Begin
   lookup_variable := True;
-  lval.symbol := Integer(sym_ptr); { Stocker le pointeur comme entier pour compatibilitÃ© }
+  lval.symbol := Integer(sym_ptr); { Entrepooser le pointeur comme entier pour compatibilit‚ }
   lval.typ := sym_ptr^.ctype;
   lval.storage := sym_ptr^.storage;
   lval.indirect := 0;
   lval.constant := False;
-
-  { Les informations de type sont stockÃ©es directement dans le symbole }
+   { Les informations de type sont entrepos‚es directement dans le symbole }
   lval.type_info := sym_ptr^.type_info;
  End
- Else
+  Else
  Begin
-  { Variable non trouvÃ©e - traiter comme nouvelle variable pour l'instant }
-  If use_stdout Then WriteLn('; Attention: Variable non dÃ©clarÃ©e ', var_name)
-                Else safe_writeln('; Attention: Variable non dÃ©clarÃ©e ' + var_name);
+  { Variable non trouv‚e - traiter comme nouvelle variable pour l'instant }
+  If use_stdout Then WriteLn('; Attention: Variable non d‚clar‚e ', var_name)
+                Else safe_writeln('; Attention: Variable non d‚clar‚e ' + var_name);
   lval.symbol := 0;
   lval.typ := cint;
   lval.constant := False;
@@ -3361,89 +3350,75 @@ Begin
  End;
 End;
 
-Function pop_include_file: Boolean;
-Begin
+Function pop_include_file:Boolean;Begin
  pop_include_file := False;
-
  If include_depth <= 0 Then Exit;
-
- { Unmark current file as no longer being processed }
- { unmark_file_included(current_filename); } { Commented out for now }
-
- { Fermer le fichier d'inclusion actuel en toute sÃ©curitÃ© }
+  { D‚sactiver le marquage de fichier en cours comme ‚tant plus en cours de traitement }
+  { unmark_file_included(current_filename); } { Comment‚ pour le moment }
+ { Fermer le fichier d'inclusion actuel en toute s‚curit‚ }
  {$I-}
  System.Close(input);
  {$I+}
-
- { Restaurer l'Ã©tat du fichier prÃ©cÃ©dent }
+  { Restaurer l'‚tat du fichier pr‚c‚dent }
  Dec(include_depth);
- With include_stack[include_depth] do
- Begin
+ With include_stack[include_depth] do Begin
   current_filename := filename;
   System.Assign(input, filename);
   {$I-}
   System.Reset(input);
-  If IOResult <> 0 Then
-  Begin
+  If IOResult <> 0 Then Begin
    { Erreur de restauration du fichier }
    eof := 1;
    Exit;
   End;
   {$I+}
-
-  { Restore line state properly }
+  { R‚tablir correctement l'‚tat de la ligne }
   line := saved_line;
   lptr := saved_lptr;
   eof := saved_eof;
  End;
-
  safe_writeln('; Returned from include file to: ' + current_filename);
  pop_include_file := True;
 End;
 
-{ OpÃ©rations sur les fichiers }
-Function readinline: Boolean;
-Begin
+ { Op‚rations sur les fichiers }
+Function readinline: Boolean;Begin
  readinline := False;
-
  Repeat
-  { VÃ©rifier si le fichier d'entrÃ©e est correctement initialisÃ© }
+  { V‚rifier si le fichier d'entr‚e est correctement initialis‚ }
   {$I-}
-  If not System.Eof(input) Then
-  Begin
+  If not System.Eof(input) Then Begin
    ReadLn(input, line);
-   If IOResult = 0 Then
-   Begin
+   If IOResult = 0 Then Begin
     lptr := 1;
     readinline := True;
     Exit;
    End
-   Else
+    Else
    Begin
-    { Erreur de lecture de fichier }
+     { Erreur de lecture de fichier }
     eof := 1;
     readinline := False;
     Exit;
    End;
   End
   {$I+}
-  Else
+   Else
   Begin
-   { Le fichier actuel est Ã  la fin }
-   If include_depth > 0 Then
-   Begin
-    { Nous sommes dans un fichier d'inclusion, retourner au fichier prÃ©cÃ©dent }
+    { Le fichier actuel est … la fin }
+   If include_depth > 0 Then Begin
+     { Nous sommes dans un fichier d'inclusion, retourner au fichier pr‚c‚dent }
     If not pop_include_file Then
     Begin
      eof := 1;
      readinline := False;
      Exit;
     End;
-    { Continuer la boucle pour essayer de lire depuis le fichier restaurÃ© }
+    { Continuer la boucle pour essayer de lire depuis le fichier restaur‚ }
    End
-   Else
+    Else
    Begin
-    { Le fichier principal est Ã  la fin }
+    { Le fichier principal est … la fin }
     eof := 1;
     readinline := False;
     Exit;
@@ -3452,25 +3427,23 @@ Begin
  Until False;
 End;
 
-{ Include file management functions }
+ { Fonctions de gestion des ficihers include }
 
-{ Initialize inclusion system }
+{ Initialise le systŠme d'inclusion }
 Procedure init_inclusion_system;
 Var
  i: Integer;
 Begin
  include_depth := 0;
  included_count := 0;
- current_filename := 'main.c'; { Default main file }
-
- For i := 0 to 49 do
- Begin
+ current_filename := 'main.c'; { Fichier par d‚faut main }
+ For i := 0 to 49 do Begin
   included_files[i].filename := '';
   included_files[i].is_included := False;
  End;
 End;
 
-{ Check if a file is already included }
+ { V‚rifier si un fichier est d‚j… inclus }
 Function is_file_included(filename: String): Boolean;
 Var
  i: Integer;
