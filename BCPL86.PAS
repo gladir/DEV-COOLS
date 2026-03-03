@@ -3574,9 +3574,9 @@ End;
   TODO 12 - INSTRUCTION IF / ELSIF / ELSE
   ============================================================ }
 
-{ Forward : ParseStatement est complete en TODO 13+ ;
-  ParseStatementSeq l'appelle pour les corps de IF/WHILE/etc. }
+{ Forwards : ParseStatement et ParseLetDecl necessaires avant leur usage. }
 Procedure ParseStatement; Forward;
+Procedure ParseLetDecl; Forward;
 
 { --------------------------------------------------------------------------
   ParseStatementSeq BCPL : suite de commandes.
@@ -5675,7 +5675,10 @@ Var pname     : TString;
     si_var    : Integer;
     is_vec    : Boolean;
     vec_size  : Integer;
-    si_n      : Integer;
+    k         : Integer;
+    n_par     : Integer;
+    ofs_fix   : Integer;
+    si_fix    : Integer;
 Begin
   LexExpect('LET');
   pname := cur_tok.val;
@@ -5735,14 +5738,13 @@ Begin
     LexNext;
     While cur_tok.val <> ')' Do
     Begin
-      si_n := ProcAddParam(pi, cur_tok.val, TYP_WORD, False);
+      ProcAddParam(pi, cur_tok.val, TYP_WORD, False);
       LexExpectKind(TK_IDENT);
       If cur_tok.val = ',' Then LexNext
       Else If cur_tok.val <> ')' Then Break;
     End;
     LexExpect(')');
     { Ajuster offsets BP : les args sont en [BP+4], [BP+6], ... }
-    Var k, n_par, ofs_fix, si_fix : Integer;
     n_par := proc_table^[pi].param_count;
     For k := 1 To n_par Do
     Begin
