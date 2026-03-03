@@ -1,0 +1,19 @@
+MODULE Fib;
+IMPORT Out;
+
+VAR
+  i, a, b, c : INTEGER;
+
+BEGIN
+  Out.String("Suite de Fibonacci :"); Out.Ln;
+  a := 0;
+  b := 1;
+  Out.Int(a, 0); Out.String(" ");
+  FOR i := 1 TO 12 DO
+    Out.Int(b, 0); Out.String(" ");
+    c := a + b;
+    a := b;
+    b := c
+  END;
+  Out.Ln
+END Fib.

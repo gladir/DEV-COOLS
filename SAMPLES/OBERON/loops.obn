@@ -1,0 +1,31 @@
+MODULE Loops;
+IMPORT Out;
+
+VAR
+  i, s : INTEGER;
+
+BEGIN
+  Out.String("Somme de 1 a 10 :"); Out.Ln;
+  s := 0;
+  i := 1;
+  WHILE i <= 10 DO
+    s := s + i;
+    INC(i)
+  END;
+  Out.String("  Resultat = "); Out.Int(s, 0); Out.Ln;
+
+  Out.String("Factorielle 7 :"); Out.Ln;
+  s := 1;
+  FOR i := 2 TO 7 DO
+    s := s * i
+  END;
+  Out.String("  7! = "); Out.Int(s, 0); Out.Ln;
+
+  Out.String("Compte a rebours :"); Out.Ln;
+  i := 5;
+  REPEAT
+    Out.Int(i, 0); Out.String(" ");
+    DEC(i)
+  UNTIL i = 0;
+  Out.Ln
+END Loops.
