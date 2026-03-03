@@ -2654,9 +2654,11 @@ End;
 
 { --------------------------------------------------------------------------
   Forward declarations pour TODO 08 (procedures et fonctions)
+  et TODO 10 (instructions)
   -------------------------------------------------------------------------- }
 Procedure ParseProcedureDecl; Forward;
 Procedure ParseFunctionDecl;  Forward;
+Procedure ParseStatement;     Forward;
 
 { --------------------------------------------------------------------------
   ParseConstExpr : evaluer une expression constante au compile-time.
@@ -2960,10 +2962,7 @@ Begin
     Else If cur_tok.val = 'PROCEDURE' Then ParseProcedureDecl
     Else If cur_tok.val = 'FUNCTION'  Then ParseFunctionDecl
     Else
-    Begin
-      { instructions executables : placeholder jusqu'a TODO 09-12 }
-      LexNext;
-    End;
+      ParseStatement;
   End;
 End;
 
@@ -2991,33 +2990,1038 @@ Begin
   If cur_tok.val  = ';'      Then LexNext;
 End;
 
+{ ============================================================================
+  TODO 08 - PARSER : PROCEDURE ET FUNCTION
+  ============================================================================ }
+
 { --------------------------------------------------------------------------
-  Stubs vides de TODO 08 (eviter les erreurs de link sur Forward)
+  ParseTypeSpec : analyse 'I' n | 'S' n | 'B' n | 'F'
+  Remplit itype et bits par reference.
   -------------------------------------------------------------------------- }
-Procedure ParseProcedureDecl;
+Procedure ParseTypeSpec(Var itype : TItemType; Var bits : Integer);
 Begin
-  { TODO 08 : sera implemente }
-  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
-    LexNext;
-  If cur_tok.val = 'END' Then LexNext;
-  LexExpect(';');
+  If cur_tok.val = 'I' Then
+  Begin
+    itype := IT_INTEGER; LexNext;
+    bits  := StrToInt(cur_tok.val); LexExpectKind(TK_INTEGER);
+  End
+  Else If cur_tok.val = 'S' Then
+  Begin
+    itype := IT_STATUS; LexNext;
+    bits  := StrToInt(cur_tok.val); LexExpectKind(TK_INTEGER);
+  End
+  Else If cur_tok.val = 'B' Then
+  Begin
+    itype := IT_BITS; LexNext;
+    bits  := StrToInt(cur_tok.val); LexExpectKind(TK_INTEGER);
+  End
+  Else If cur_tok.val = 'F' Then
+  Begin
+    itype := IT_REAL; bits := 32; LexNext;
+  End
+  Else
+  Begin
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': type_spec attendu, lu ''', cur_tok.val, '''');
+    itype := IT_INTEGER; bits := 16;
+  End;
 End;
 
-Procedure ParseFunctionDecl;
+{ --------------------------------------------------------------------------
+  ParseParamList(pi) : '(' type_spec ident (',' type_spec ident)* ')'
+  Enregistre chaque parametre dans proc_table^[pi].params et sym_table.
+  Convention 8086 near cdecl :
+    BP+0 = ancien BP   BP+2 = adresse retour (near 2 octets)
+    Premier param : BP+4, suivant BP+6 ou BP+8 (selon taille)
+  -------------------------------------------------------------------------- }
+Procedure ParseParamList(pi : Integer);
+Var
+  itype   : TItemType;
+  bits    : Integer;
+  pname   : TString;
+  bp_off  : Integer;
+  pc      : Integer;
+  psz     : Integer;
+  si      : Integer;
 Begin
-  { TODO 08 : sera implemente }
-  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
-    LexNext;
-  If cur_tok.val = 'END' Then LexNext;
+  bp_off := 4;   { premier parametre apres BP+2 (ret addr near) }
+  pc     := 0;
+  LexExpect('(');
+  While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    ParseTypeSpec(itype, bits);
+    pname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    { taille sur la pile : 32 bits -> 4 octets, sinon 2 octets }
+    If bits > 16 Then psz := 4 Else psz := 2;
+    si := AddParam(pname, itype, bits, bp_off);
+    If pc < MAX_PARAM Then
+    Begin
+      Inc(pc);
+      proc_table^[pi].params[pc].name      := sym_table^[si].name;
+      proc_table^[pi].params[pc].itype     := itype;
+      proc_table^[pi].params[pc].bit_size  := bits;
+      proc_table^[pi].params[pc].bp_offset := bp_off;
+      proc_table^[pi].params[pc].is_array  := False;
+      proc_table^[pi].params[pc].arr_count := 0;
+    End;
+    Inc(bp_off, psz);
+    If cur_tok.val = ',' Then LexNext;
+  End;
+  proc_table^[pi].param_count := pc;
+  LexExpect(')');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLocalDecls(pi) : zero ou plusieurs 'ITEM' locaux au debut du corps.
+  bp_offset negatif : BP-2, BP-4, ...
+  Renseigne proc_table^[pi].local_size.
+  -------------------------------------------------------------------------- }
+Procedure ParseLocalDecls(pi : Integer);
+Var
+  itype  : TItemType;
+  bits   : Integer;
+  lname  : TString;
+  bp_off : Integer;
+  lsz    : Integer;
+Begin
+  bp_off := -2;
+  While cur_tok.val = 'ITEM' Do
+  Begin
+    LexExpect('ITEM');
+    lname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    ParseTypeSpec(itype, bits);
+    If bits > 16 Then lsz := 4 Else lsz := 2;
+    AddLocalItem(lname, itype, bits, bp_off);
+    Dec(bp_off, lsz);
+    { valeur initiale optionnelle }
+    If cur_tok.val = '=' Then Begin LexNext; ParseConstExpr; End;
+    LexExpect(';');
+  End;
+  { local_size = octets a allouer sur la pile (valeur positive) }
+  proc_table^[pi].local_size := -(bp_off + 2);
+End;
+
+{ --------------------------------------------------------------------------
+  GenProcPrologue(pi) : emet le prologue standard 8086.
+  label:  PUSH BP / MOV BP,SP / SUB SP,n / PUSH SI / PUSH DI / PUSH BX
+  -------------------------------------------------------------------------- }
+Procedure GenProcPrologue(pi : Integer);
+Begin
+  EmitLabel(proc_table^[pi].asm_label);
+  EmitI0('PUSH  BP');
+  EmitI2('MOV', 'BP', 'SP');
+  If proc_table^[pi].local_size > 0 Then
+    EmitI2('SUB', 'SP', IntToStr(proc_table^[pi].local_size));
+  EmitI0('PUSH  SI');
+  EmitI0('PUSH  DI');
+  EmitI0('PUSH  BX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenProcEpilogue(pi) : emet l'epilogue standard 8086.
+  POP BX / POP DI / POP SI / MOV SP,BP / POP BP / RET
+  -------------------------------------------------------------------------- }
+Procedure GenProcEpilogue(pi : Integer);
+Begin
+  EmitI0('POP   BX');
+  EmitI0('POP   DI');
+  EmitI0('POP   SI');
+  EmitI2('MOV', 'SP', 'BP');
+  EmitI0('POP   BP');
+  EmitI0('RET');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseProcedureDecl : 'PROCEDURE' ident ['(' ParamList ')'] ';'
+    [local_items]
+    bloc_instructions
+  'END' [';']
+  -------------------------------------------------------------------------- }
+Procedure ParseProcedureDecl;
+Var
+  pname : TString;
+  pi    : Integer;
+Begin
+  LexExpect('PROCEDURE');
+  pname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  pi := AddProc(pname, False, IT_UNDEF, 0);
+  SetProcLabel(pi);
+  ScopeEnter;
+  If cur_tok.val = '(' Then ParseParamList(pi);
   LexExpect(';');
+  { declarations locales }
+  ParseLocalDecls(pi);
+  { emission dans tmp_file (corps de procedure) }
+  SwitchToTmp;
+  EmitSep;
+  EmitComment(' PROCEDURE ' + proc_table^[pi].name);
+  GenProcPrologue(pi);
+  cur_proc_idx := pi;
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  GenProcEpilogue(pi);
+  cur_proc_idx := 0;
+  SwitchToMain;
+  ScopeLeave;
+  LexExpect('END');
+  If cur_tok.val = ';' Then LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseFunctionDecl : 'FUNCTION' ident ['(' ParamList ')'] type_spec ';'
+    [local_items]
+    bloc_instructions
+  'END' [';']
+  Le resultat est retourne dans AX (16 bits) ou DX:AX (32 bits).
+  -------------------------------------------------------------------------- }
+Procedure ParseFunctionDecl;
+Var
+  pname    : TString;
+  pi       : Integer;
+  ret_type : TItemType;
+  ret_bits : Integer;
+Begin
+  LexExpect('FUNCTION');
+  pname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  pi := AddProc(pname, True, IT_UNDEF, 0);
+  SetProcLabel(pi);
+  ScopeEnter;
+  If cur_tok.val = '(' Then ParseParamList(pi);
+  { type de retour }
+  ParseTypeSpec(ret_type, ret_bits);
+  proc_table^[pi].return_itype := ret_type;
+  proc_table^[pi].return_bits  := ret_bits;
+  LexExpect(';');
+  { declarations locales }
+  ParseLocalDecls(pi);
+  { emission dans tmp_file }
+  SwitchToTmp;
+  EmitSep;
+  EmitComment(' FUNCTION ' + proc_table^[pi].name);
+  GenProcPrologue(pi);
+  cur_proc_idx := pi;
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  GenProcEpilogue(pi);
+  cur_proc_idx := 0;
+  SwitchToMain;
+  ScopeLeave;
+  LexExpect('END');
+  If cur_tok.val = ';' Then LexNext;
 End;
 
 { ============================================================================
-  TODO 08 ... 25 : a implementer
+  TODO 09 - PARSER : EXPRESSIONS JOVIAL 73
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Forward : ParseExpr est appele depuis ParseExprPrimary (parens + appels).
+  -------------------------------------------------------------------------- }
+Procedure ParseExpr(Var etype : TItemType; Var ebits : Integer); Forward;
+
+{ --------------------------------------------------------------------------
+  Helpers predicats operateurs
+  -------------------------------------------------------------------------- }
+Function IsRelOp(Const v : TString) : Boolean;
+Begin
+  IsRelOp := (v = '=')  Or (v = '/=') Or (v = '<') Or
+             (v = '<=') Or (v = '>')  Or (v = '>=');
+End;
+
+Function IsAddOp(Const v : TString) : Boolean;
+Begin
+  IsAddOp := (v = '+') Or (v = '-');
+End;
+
+Function IsMulOp(Const v : TString) : Boolean;
+Begin
+  IsMulOp := (v = '*') Or (v = '/');
+End;
+
+Function IsLogOp(Const v : TString) : Boolean;
+Begin
+  IsLogOp := (v = 'AND') Or (v = 'OR') Or
+             (v = 'XOR') Or (v = 'EQV');
+End;
+
+{ --------------------------------------------------------------------------
+  BpRef : construit '[BP+n]' ou '[BP-n]' selon signe de offset.
+  -------------------------------------------------------------------------- }
+Function BpRef(off : Integer) : TString;
+Begin
+  If off >= 0 Then
+    BpRef := '[BP+' + IntToStr(off) + ']'
+  Else
+    BpRef := '[BP-' + IntToStr(-off) + ']';
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadVar : charger la valeur d'un ITEM dans AX (ou DX:AX si 32 bits).
+  -------------------------------------------------------------------------- }
+Procedure GenLoadVar(si : Integer);
+Var lbl : TString;
+    off : Integer;
+Begin
+  With sym_table^[si] Do
+  Begin
+    lbl := asm_label;
+    off := bp_offset;
+    If scope = SC_GLOBAL Then
+    Begin
+      Case bit_size Of
+        8  : Begin
+               EmitI2('XOR', 'AX', 'AX');
+               EmitI2('MOV', 'AL', 'BYTE PTR [' + lbl + ']');
+             End;
+        32 : Begin
+               EmitI2('MOV', 'AX', 'WORD PTR [' + lbl + ']');
+               EmitI2('MOV', 'DX', 'WORD PTR [' + lbl + '+2]');
+             End;
+      Else
+        EmitI2('MOV', 'AX', '[' + lbl + ']');
+      End;
+    End
+    Else
+    Begin
+      Case bit_size Of
+        8  : Begin
+               EmitI2('XOR', 'AX', 'AX');
+               EmitI2('MOV', 'AL', 'BYTE PTR ' + BpRef(off));
+             End;
+        32 : Begin
+               EmitI2('MOV', 'AX', 'WORD PTR ' + BpRef(off));
+               EmitI2('MOV', 'DX', 'WORD PTR ' + BpRef(off + 2));
+             End;
+      Else
+        EmitI2('MOV', 'AX', BpRef(off));
+      End;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenRelOp : emettre comparaison signee 8086.
+  A l'entree : BX = operande gauche, AX = operande droit.
+  Resultat : AX = 0FFFFh (vrai) ou 0 (faux).
+  -------------------------------------------------------------------------- }
+Procedure GenRelOp(Const op : TString);
+Var lbl_t, lbl_e : TString;
+Begin
+  lbl_t := NewLabel;
+  lbl_e := NewLabel;
+  EmitI2('CMP', 'BX', 'AX');
+  If      op = '='  Then EmitI1('JE ', lbl_t)
+  Else If op = '/=' Then EmitI1('JNE', lbl_t)
+  Else If op = '<'  Then EmitI1('JL ', lbl_t)
+  Else If op = '<=' Then EmitI1('JLE', lbl_t)
+  Else If op = '>'  Then EmitI1('JG ', lbl_t)
+  Else                   EmitI1('JGE', lbl_t);
+  EmitI2('XOR', 'AX', 'AX');
+  EmitI1('JMP', lbl_e);
+  EmitLocalLabel(lbl_t);
+  EmitI2('MOV', 'AX', '0FFFFh');
+  EmitLocalLabel(lbl_e);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseArgList : '(' [expr (',' expr)*] ')'
+  Pousse chaque argument sur la pile (cdecl, gauche en premier).
+  Retourne le nombre d'arguments pousses.
+  -------------------------------------------------------------------------- }
+Function ParseArgList(pi : Integer) : Integer;
+Var et  : TItemType;
+    eb  : Integer;
+    ac  : Integer;
+Begin
+  LexExpect('(');
+  ac := 0;
+  While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    ParseExpr(et, eb);
+    If eb = 32 Then EmitI0('PUSH  DX');
+    EmitI0('PUSH  AX');
+    Inc(ac);
+    If cur_tok.val = ',' Then LexNext;
+  End;
+  LexExpect(')');
+  ParseArgList := ac;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprPrimary : element de base de la hierarchie.
+  Laisse le resultat dans AX (ou DX:AX si 32 bits).
+  -------------------------------------------------------------------------- }
+Procedure ParseExprPrimary(Var etype : TItemType; Var ebits : Integer);
+Var
+  si    : Integer;
+  pi    : Integer;
+  vname : TString;
+  ci    : Integer;
+  ac    : Integer;
+  lbl   : TString;
+  tbase : TString;
+  fsym  : Integer;
+  idx_t : TItemType;
+  idx_b : Integer;
+Begin
+  etype := IT_INTEGER;
+  ebits := 16;
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    EmitI2('MOV', 'AX', cur_tok.val);
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_REAL Then
+  Begin
+    etype := IT_REAL; ebits := 32;
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('XOR', 'DX', 'DX');
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_STRING Then
+  Begin
+    { stocker le litteral dans const_table avec label unique }
+    lbl := 'STR' + IntToStr(const_count + 1);
+    AddConst(lbl, cur_tok.val, 0);
+    EmitI2('MOV', 'AX', 'OFFSET ' + JK_PFX + lbl);
+    etype := IT_UNDEF; ebits := 16;
+    LexNext;
+  End
+  Else If cur_tok.val = 'TRUE' Then
+  Begin
+    EmitI2('MOV', 'AX', '0FFFFh');
+    LexNext;
+  End
+  Else If cur_tok.val = 'FALSE' Then
+  Begin
+    EmitI2('XOR', 'AX', 'AX');
+    LexNext;
+  End
+  Else If cur_tok.val = '(' Then
+  Begin
+    LexNext;
+    ParseExpr(etype, ebits);
+    LexExpect(')');
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    vname := cur_tok.val;
+    { verifier d'abord si c'est une constante DEFINE }
+    ci := FindConst(vname);
+    If ci > 0 Then
+    Begin
+      EmitI2('MOV', 'AX', IntToStr(const_table^[ci].int_val));
+      LexNext;
+    End
+    Else
+    Begin
+      LexNext;
+      { acces membre TABLE : IDENT '.' ident }
+      If cur_tok.val = '.' Then
+      Begin
+        LexNext;
+        { chercher _JV_<TABLE>_<MEMBRE> }
+        tbase := JV_PFX + AsmIdent(StrUpper(vname))
+                + '_' + AsmIdent(StrUpper(cur_tok.val));
+        fsym := FindSym(cur_tok.val);
+        LexNext;
+        { charger via label derive ou asm_label du champ }
+        EmitI2('MOV', 'AX', '[' + tbase + ']');
+        etype := IT_INTEGER; ebits := 16;
+        If fsym > 0 Then
+        Begin
+          etype := sym_table^[fsym].itype;
+          ebits := sym_table^[fsym].bit_size;
+        End;
+      End
+      Else
+      Begin
+        si := FindSym(vname);
+        If si > 0 Then
+        Begin
+          If (sym_table^[si].kind = SK_ITEM) Then
+          Begin
+            etype := sym_table^[si].itype;
+            ebits := sym_table^[si].bit_size;
+            { acces element de TABLE uniforme : TABLE_IDENT '(' idx ')' }
+            If cur_tok.val = '(' Then
+            Begin
+              LexNext;
+              ParseExpr(idx_t, idx_b);
+              LexExpect(')');
+              { EA = base + AX * (bit_size div 8) }
+              If ebits = 8 Then
+              Begin
+                EmitI2('MOV', 'BX', 'AX');
+                EmitI2('MOV', 'SI', 'BX');
+              End
+              Else If ebits = 32 Then
+              Begin
+                EmitI2('MOV', 'BX', 'AX');
+                EmitI2('SHL', 'BX', '1');
+                EmitI2('SHL', 'BX', '1');
+                EmitI2('MOV', 'SI', 'BX');
+              End
+              Else
+              Begin
+                EmitI2('MOV', 'BX', 'AX');
+                EmitI2('SHL', 'BX', '1');
+                EmitI2('MOV', 'SI', 'BX');
+              End;
+              EmitI2('MOV', 'AX',
+                     'WORD PTR [' + sym_table^[si].asm_label + '+SI]');
+            End
+            Else
+              GenLoadVar(si);
+          End
+          Else
+          Begin
+            { appel de FUNCTION }
+            pi := FindProc(vname);
+            If pi > 0 Then
+            Begin
+              etype := proc_table^[pi].return_itype;
+              ebits := proc_table^[pi].return_bits;
+              ac := 0;
+              If cur_tok.val = '(' Then
+                ac := ParseArgList(pi);
+              EmitI1('CALL', proc_table^[pi].asm_label);
+              { nettoyer la pile : 2 octets par parametre }
+              If ac > 0 Then
+                EmitI2('ADD', 'SP', IntToStr(ac * 2));
+            End
+            Else
+            Begin
+              WriteLn('  Erreur ligne ', lex_lineno,
+                      ': symbole ''', vname, ''' non resolu');
+            End;
+          End;
+        End
+        Else
+        Begin
+          WriteLn('  Erreur ligne ', lex_lineno,
+                  ': symbole inconnu ''', vname, '''');
+        End;
+      End;
+    End;
+  End
+  Else
+  Begin
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': expression attendue, lu ''', cur_tok.val, '''');
+    LexNext;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprUnary : '-' expr | 'NOT' expr | primary
+  -------------------------------------------------------------------------- }
+Procedure ParseExprUnary(Var etype : TItemType; Var ebits : Integer);
+Begin
+  If cur_tok.val = '-' Then
+  Begin
+    LexNext;
+    ParseExprPrimary(etype, ebits);
+    EmitI0('NEG   AX');
+    If ebits = 32 Then EmitI0('NEG   DX');
+  End
+  Else If cur_tok.val = 'NOT' Then
+  Begin
+    LexNext;
+    ParseExprPrimary(etype, ebits);
+    EmitI0('NOT   AX');
+    If ebits = 32 Then EmitI0('NOT   DX');
+  End
+  Else
+    ParseExprPrimary(etype, ebits);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprPow : unary ['**' unary]
+  Appelle le runtime _JRT_IPOW (entier seulement).
+  -------------------------------------------------------------------------- }
+Procedure ParseExprPow(Var etype : TItemType; Var ebits : Integer);
+Var re : TItemType; rb : Integer;
+Begin
+  ParseExprUnary(etype, ebits);
+  If cur_tok.val = '**' Then
+  Begin
+    LexNext;
+    EmitI0('PUSH  AX');           { sauver la base }
+    ParseExprUnary(re, rb);
+    EmitI2('MOV', 'CX', 'AX');   { exposant dans CX }
+    EmitI0('POP   BX');           { base dans BX }
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI1('CALL', JRT_PFX + 'IPOW');  { resultat dans AX }
+    etype := IT_INTEGER; ebits := 16;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprMul : pow (('*' | '/') pow)*
+  -------------------------------------------------------------------------- }
+Procedure ParseExprMul(Var etype : TItemType; Var ebits : Integer);
+Var op : TString; re : TItemType; rb : Integer;
+Begin
+  ParseExprPow(etype, ebits);
+  While IsMulOp(cur_tok.val) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH  AX');
+    ParseExprPow(re, rb);
+    EmitI2('MOV', 'CX', 'AX');   { CX = droite }
+    EmitI0('POP   AX');           { AX = gauche }
+    If op = '*' Then
+    Begin
+      EmitI1('IMUL', 'CX');
+      { DX:AX -> on garde AX (16 bits) }
+    End
+    Else
+    Begin
+      EmitI0('CWD');
+      EmitI1('IDIV', 'CX');       { AX = quotient }
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprAdd : mul (('+' | '-') mul)*
+  -------------------------------------------------------------------------- }
+Procedure ParseExprAdd(Var etype : TItemType; Var ebits : Integer);
+Var op : TString; re : TItemType; rb : Integer;
+Begin
+  ParseExprMul(etype, ebits);
+  While IsAddOp(cur_tok.val) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH  AX');
+    ParseExprMul(re, rb);
+    EmitI0('POP   BX');           { BX = gauche, AX = droite }
+    If op = '+' Then
+      EmitI2('ADD', 'AX', 'BX')
+    Else
+    Begin
+      EmitI2('XCHG', 'AX', 'BX');
+      EmitI2('SUB', 'AX', 'BX');  { AX = gauche - droite }
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprRel : add (relop add)?
+  -------------------------------------------------------------------------- }
+Procedure ParseExprRel(Var etype : TItemType; Var ebits : Integer);
+Var op : TString; re : TItemType; rb : Integer;
+Begin
+  ParseExprAdd(etype, ebits);
+  If IsRelOp(cur_tok.val) Then
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH  AX');
+    ParseExprAdd(re, rb);
+    EmitI0('POP   BX');           { BX = gauche, AX = droite }
+    GenRelOp(op);
+    etype := IT_INTEGER; ebits := 16;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprLogNot : 'NOT' rel | rel
+  -------------------------------------------------------------------------- }
+Procedure ParseExprLogNot(Var etype : TItemType; Var ebits : Integer);
+Begin
+  If cur_tok.val = 'NOT' Then
+  Begin
+    LexNext;
+    ParseExprRel(etype, ebits);
+    EmitI0('NOT   AX');
+    etype := IT_INTEGER; ebits := 16;
+  End
+  Else
+    ParseExprRel(etype, ebits);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprLogAnd : lognot ('AND' lognot)*
+  -------------------------------------------------------------------------- }
+Procedure ParseExprLogAnd(Var etype : TItemType; Var ebits : Integer);
+Var re : TItemType; rb : Integer;
+Begin
+  ParseExprLogNot(etype, ebits);
+  While cur_tok.val = 'AND' Do
+  Begin
+    LexNext;
+    EmitI0('PUSH  AX');
+    ParseExprLogNot(re, rb);
+    EmitI0('POP   BX');
+    EmitI2('AND', 'AX', 'BX');
+    etype := IT_INTEGER; ebits := 16;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExprLogOr : logand (('OR' | 'EQV' | 'XOR') logand)*
+  -------------------------------------------------------------------------- }
+Procedure ParseExprLogOr(Var etype : TItemType; Var ebits : Integer);
+Var op : TString; re : TItemType; rb : Integer;
+Begin
+  ParseExprLogAnd(etype, ebits);
+  While (cur_tok.val = 'OR') Or (cur_tok.val = 'EQV')
+     Or (cur_tok.val = 'XOR') Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH  AX');
+    ParseExprLogAnd(re, rb);
+    EmitI0('POP   BX');
+    If op = 'OR' Then
+      EmitI2('OR', 'AX', 'BX')
+    Else If op = 'XOR' Then
+      EmitI2('XOR', 'AX', 'BX')
+    Else
+    Begin
+      EmitI2('XOR', 'AX', 'BX');  { EQV = NOT XOR }
+      EmitI0('NOT   AX');
+    End;
+    etype := IT_INTEGER; ebits := 16;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExpr : point d'entree public de la hierarchie.
+  -------------------------------------------------------------------------- }
+Procedure ParseExpr(Var etype : TItemType; Var ebits : Integer);
+Begin
+  ParseExprLogOr(etype, ebits);
+End;
+
+{ ============================================================================
+  TODO 10 - PARSER : INSTRUCTIONS SIMPLES
+  ============================================================================ }
+
+{ ParseStatement est declare Forward avant ParseModuleBody (TODO 07). }
+
+{ --------------------------------------------------------------------------
+  GenStoreVar : stocker AX (ou DX:AX si 32 bits) dans un ITEM.
+  Symetrique de GenLoadVar.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreVar(si : Integer);
+Var lbl : TString;
+    off : Integer;
+Begin
+  With sym_table^[si] Do
+  Begin
+    lbl := asm_label;
+    off := bp_offset;
+    If scope = SC_GLOBAL Then
+    Begin
+      Case bit_size Of
+        8  : EmitI2('MOV', 'BYTE PTR [' + lbl + ']', 'AL');
+        32 : Begin
+               EmitI2('MOV', 'WORD PTR [' + lbl + ']',    'AX');
+               EmitI2('MOV', 'WORD PTR [' + lbl + '+2]',  'DX');
+             End;
+      Else
+        EmitI2('MOV', '[' + lbl + ']', 'AX');
+      End;
+    End
+    Else
+    Begin
+      Case bit_size Of
+        8  : EmitI2('MOV', 'BYTE PTR ' + BpRef(off), 'AL');
+        32 : Begin
+               EmitI2('MOV', 'WORD PTR ' + BpRef(off),     'AX');
+               EmitI2('MOV', 'WORD PTR ' + BpRef(off + 2), 'DX');
+             End;
+      Else
+        EmitI2('MOV', BpRef(off), 'AX');
+      End;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseAssignment : iname deja lu, cur_tok = '(' | '.' | '='
+  ident ['(' idx ')'] ['.' membre] '=' expr ';'
+  -------------------------------------------------------------------------- }
+Procedure ParseAssignment(Const iname : TString);
+Var
+  si     : Integer;
+  idx_t  : TItemType;
+  idx_b  : Integer;
+  et     : TItemType;
+  eb     : Integer;
+  mbname : TString;
+  tbase  : TString;
+  szsh   : Integer;
+  is_idx : Boolean;
+Begin
+  si     := FindSym(iname);
+  is_idx := False;
+  { acces indexe TABLE : ident '(' idx ')' }
+  If cur_tok.val = '(' Then
+  Begin
+    is_idx := True;
+    LexNext;
+    ParseExpr(idx_t, idx_b);
+    { calcul de SI = AX * (bit_size div 8) }
+    If (si > 0) And (sym_table^[si].bit_size = 8) Then
+      szsh := 0
+    Else If (si > 0) And (sym_table^[si].bit_size = 32) Then
+      szsh := 2
+    Else
+      szsh := 1;
+    EmitI2('MOV', 'BX', 'AX');
+    If szsh >= 1 Then EmitI2('SHL', 'BX', IntToStr(szsh));
+    EmitI2('MOV', 'SI', 'BX');
+    LexExpect(')');
+  End;
+  { acces membre TABLE : ident '.' membre }  
+  If cur_tok.val = '.' Then
+  Begin
+    LexNext;
+    mbname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    LexExpect('=');
+    ParseExpr(et, eb);
+    tbase := JV_PFX + AsmIdent(StrUpper(iname))
+            + '_' + AsmIdent(StrUpper(mbname));
+    EmitI2('MOV', '[' + tbase + ']', 'AX');
+    LexExpect(';');
+    Exit;
+  End;
+  LexExpect('=');
+  ParseExpr(et, eb);
+  If is_idx And (si > 0) Then
+  Begin
+    { stocker via l'index calcule dans SI }
+    If sym_table^[si].bit_size = 8 Then
+      EmitI2('MOV',
+             'BYTE PTR [' + sym_table^[si].asm_label + '+SI]', 'AL')
+    Else If sym_table^[si].bit_size = 32 Then
+    Begin
+      EmitI2('MOV',
+             'WORD PTR [' + sym_table^[si].asm_label + '+SI]',   'AX');
+      EmitI2('MOV',
+             'WORD PTR [' + sym_table^[si].asm_label + '+SI+2]', 'DX');
+    End
+    Else
+      EmitI2('MOV',
+             'WORD PTR [' + sym_table^[si].asm_label + '+SI]', 'AX');
+  End
+  Else If si > 0 Then
+    GenStoreVar(si)
+  Else
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': variable inconnue ''', iname, '''');
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCallStmt : iname deja lu (ou appel depuis CALL).
+  ident '(' [args] ')' ';'
+  -------------------------------------------------------------------------- }
+Procedure ParseCallStmt(Const iname : TString);
+Var
+  pi : Integer;
+  ac : Integer;
+Begin
+  pi := FindProc(iname);
+  If pi = 0 Then
+  Begin
+    WriteLn('  Erreur ligne ', lex_lineno,
+            ': procedure inconnue ''', iname, '''');
+    { consommer jusqu'au ';' }
+    While (cur_tok.val <> ';') And (cur_tok.kind <> TK_EOF) Do LexNext;
+    LexNext;
+    Exit;
+  End;
+  ac := 0;
+  If cur_tok.val = '(' Then
+    ac := ParseArgList(pi);
+  EmitI1('CALL', proc_table^[pi].asm_label);
+  If ac > 0 Then
+    EmitI2('ADD', 'SP', IntToStr(ac * 2));
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseGoto : 'GOTO' ident ';' ou 'GO' 'TO' ident ';'
+  -------------------------------------------------------------------------- }
+Procedure ParseGoto;
+Var lbl : TString;
+    si  : Integer;
+Begin
+  If cur_tok.val = 'GO' Then
+  Begin
+    LexNext;  { consommer GO }
+    LexExpect('TO');
+  End
+  Else
+    LexExpect('GOTO');
+  lbl := StrUpper(cur_tok.val);
+  LexExpectKind(TK_IDENT);
+  { ajouter le label a la table s'il est inconnu (resolution en avant) }
+  si := FindSym(lbl);
+  If si = 0 Then
+    AddLabel(lbl);
+  EmitI1('JMP', JL_PFX + AsmIdent(lbl));
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStop : 'STOP' ';'  ->  CALL _JRT_EXIT0
+  -------------------------------------------------------------------------- }
+Procedure ParseStop;
+Begin
+  LexExpect('STOP');
+  EmitI1('CALL', JRT_PFX + 'EXIT0');
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseReturn : 'RETURN' [expr] ';'
+  Si FUNCTION : expr -> AX, puis epilogue + RET.
+  Si PROCEDURE : epilogue + RET.
+  -------------------------------------------------------------------------- }
+Procedure ParseReturn;
+Var
+  et : TItemType;
+  eb : Integer;
+  pi : Integer;
+Begin
+  LexExpect('RETURN');
+  pi := cur_proc_idx;
+  If (pi > 0) And proc_table^[pi].is_function
+     And (cur_tok.val <> ';') Then
+  Begin
+    ParseExpr(et, eb);  { resultat dans AX (ou DX:AX) }
+  End;
+  { epilogue inline avant RET }
+  EmitI0('POP   BX');
+  EmitI0('POP   DI');
+  EmitI0('POP   SI');
+  EmitI2('MOV', 'SP', 'BP');
+  EmitI0('POP   BP');
+  EmitI0('RET');
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBlock : 'BEGIN' stmt... 'END'
+  -------------------------------------------------------------------------- }
+Procedure ParseBlock;
+Begin
+  LexExpect('BEGIN');
+  ScopeEnter;
+  While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do
+    ParseStatement;
+  ScopeLeave;
+  LexExpect('END');
+  { ';' optionnel apres END de bloc }
+  If cur_tok.val = ';' Then LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStatement : dispatcher principal
+  -------------------------------------------------------------------------- }
+Procedure ParseStatement;
+Var
+  iname : TString;
+Begin
+  { etiquette JOVIAL : ident ':' }
+  If (cur_tok.kind = TK_IDENT) Then
+  Begin
+    LexPeek;
+    If peek_tok.val = ':' Then
+    Begin
+      iname := StrUpper(cur_tok.val);
+      LexNext;  { consommer l'ident }
+      LexNext;  { consommer ':' }
+      AddLabel(iname);
+      EmitLabel(JL_PFX + AsmIdent(iname));
+      Exit;
+    End;
+  End;
+  If cur_tok.val = 'BEGIN' Then
+    ParseBlock
+  Else If cur_tok.val = 'GOTO' Then
+    ParseGoto
+  Else If cur_tok.val = 'GO' Then
+    ParseGoto
+  Else If cur_tok.val = 'STOP' Then
+    ParseStop
+  Else If cur_tok.val = 'RETURN' Then
+    ParseReturn
+  Else If cur_tok.val = 'CALL' Then
+  Begin
+    LexNext;  { consommer CALL }
+    iname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    ParseCallStmt(iname);
+  End
+  Else If cur_tok.val = 'ITEM' Then
+    ParseItemDecl(SC_LOCAL)
+  Else If cur_tok.val = 'IF' Then
+  Begin
+    { TODO 11 : stub }
+    While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do LexNext;
+    If cur_tok.val = 'END' Then LexNext;
+    If cur_tok.val = ';'   Then LexNext;
+  End
+  Else If (cur_tok.val = 'FOR') Or (cur_tok.val = 'WHILE')
+       Or (cur_tok.val = 'DO') Then
+  Begin
+    { TODO 12 : stub }
+    While (cur_tok.val <> 'END') And (cur_tok.kind <> TK_EOF) Do LexNext;
+    If cur_tok.val = 'END' Then LexNext;
+    If cur_tok.val = ';'   Then LexNext;
+  End
+  Else If (cur_tok.val = 'INPUT') Or (cur_tok.val = 'OUTPUT') Then
+  Begin
+    { TODO 18 : stub - consommer jusqu'au ';' }
+    While (cur_tok.val <> ';') And (cur_tok.kind <> TK_EOF) Do LexNext;
+    If cur_tok.val = ';' Then LexNext;
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    iname := cur_tok.val;
+    LexNext;
+    { identifier l'instruction selon le token suivant }
+    If cur_tok.val = '=' Then
+      ParseAssignment(iname)
+    Else If (cur_tok.val = '(') Or (cur_tok.val = ';') Then
+      ParseCallStmt(iname)
+    Else If cur_tok.val = '.' Then
+      ParseAssignment(iname)
+    Else
+    Begin
+      WriteLn('  Attention ligne ', lex_lineno,
+              ': instruction inconnue apres ''', iname, '''');
+      While (cur_tok.val <> ';') And (cur_tok.kind <> TK_EOF) Do LexNext;
+      If cur_tok.val = ';' Then LexNext;
+    End;
+  End
+  Else
+  Begin
+    { token inattendu : ignorer }
+    LexNext;
+  End;
+End;
+
+{ ============================================================================
+  TODO 11 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 08-25 non implementes)');
+  WriteLn('(TODO 11-25 non implementes)');
 End.

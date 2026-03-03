@@ -2509,7 +2509,7 @@ Begin
  struct_count := 0;
 End;
 
- { Analyser une dï¿½claration de structure ou union }
+ { Analyser une d‚claration de structure ou union }
 Function parse_struct_declaration(is_union: Boolean): Integer;
 Var
  struct_name, member_name: String;
@@ -2520,26 +2520,26 @@ Begin
  parse_struct_declaration := -1;
   { Obtenir le nom de la structure/union (optionnel) }
  If symname(struct_name) Then Begin
-  { Structure nommï¿½e }
-  If is_union Then safe_writeln('; Dï¿½claration union: ' + struct_name)
-              Else safe_writeln('; Dï¿½claration struct: ' + struct_name);
+  { Structure nomm‚e }
+  If is_union Then safe_writeln('; D‚claration union: ' + struct_name)
+              Else safe_writeln('; D‚claration struct: ' + struct_name);
  End
   Else
  Begin
-  { Structure anonyme - gï¿½nï¿½rer un nom unique }
+  { Structure anonyme - g‚n‚rer un nom unique }
   Str(next_struct_id, struct_name);
   struct_name := '_anon_struct_' + struct_name;
  End;
-  { Vï¿½rifier s'il y a une dï¿½finition de corps }
+  { V‚rifier s'il y a une d‚finition de corps }
  If match('{') Then Begin
-   { Crï¿½er la nouvelle structure }
+   { Cr‚er la nouvelle structure }
   struct_def := create_struct(struct_name, is_union);
   If struct_def = nil Then Exit;
    { Analyser les membres }
   safe_writeln('; Dï¿½but parsing membres struct');
-  blanks; { S'assurer qu'on ignore les espaces au dï¿½but }
+  blanks; { S'assurer qu'on ignore les espaces au d‚but }
   Repeat
-   { Vï¿½rifier si nous avons atteint la fin de la ligne }
+   { V‚rifier si nous avons atteint la fin de la ligne }
    If lptr > Length(line) Then Begin
     safe_writeln('; Lecture nouvelle ligne pour struct...');
     If not readinline Then Begin
@@ -2554,10 +2554,9 @@ Begin
     End;
    End;
    blanks; { Ignorer les espaces }
-    { Vï¿½rifier si c'est la fin de la struct }
+    { V‚rifier si c'est la fin de la struct }
    If peek_char = '}' Then Break;
-
-   safe_writeln('; Dans boucle parsing - membre dï¿½tectï¿½');
+   safe_writeln('; Dans boucle parsing - membre d‚tect‚');
    safe_writeln('; Parsing membre...');
    blanks; { S'assurer qu'on ignore les espaces }
    { Analyser le type du membre }
@@ -2565,9 +2564,8 @@ Begin
    init_type_info(member_type_info);
    member_type_info.base_type := member_type;
    calculate_type_size(member_type_info);
-   safe_writeln('; Type membre analysï¿½: ' + IntToStr(member_type));
-   If member_type = -1 Then
-   Begin
+   safe_writeln('; Type membre analys‚: ' + IntToStr(member_type));
+   If member_type = -1 Then Begin
     Case Language of
      _English: errrpt('Expected member type in struct/union');
      {$IFDEF FPC}
@@ -2591,7 +2589,7 @@ Begin
     Exit;
    End;
    safe_writeln('; Nom de membre lu: ' + member_name);
-    { Ajouter le membre ï¿½ la structure }
+    { Ajouter le membre … la structure }
    If not add_struct_member(struct_def, member_name, member_type, member_type_info) Then Exit;
     { Consommer le point-virgule }
    If not match(';') Then Begin
@@ -2600,33 +2598,30 @@ Begin
      {$IFDEF FPC}
      _Germany: errrpt('Erwartete ; nach Struct-Mitglied');
      {$ENDIF}
-     Else errrpt('; attendu aprï¿½s membre de structure');
+     Else errrpt('; attendu aprŠs membre de structure');
     End;
     Exit;
    End;
-   safe_writeln('; Membre ajoutï¿½: ' + member_name);
+   safe_writeln('; Membre ajout‚: ' + member_name);
   Until False; { La boucle se termine par les Break }
    { Consommer l'accolade de fermeture }
-  If not match('}') Then
-  Begin
+  If not match('}') Then Begin
    Case Language of
     _English: errrpt('Expected } to close struct/union');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete } zum Schlieï¿½en der Struct/Union');
+    _Germany: errrpt('Erwartete } zum Schlieáen der Struct/Union');
     {$ENDIF}
     Else errrpt('} attendu pour fermer struct/union');
    End;
    Exit;
   End;
-
-  { Afficher les informations de la structure }
+   { Afficher les informations de la structure }
   With struct_def^ do Begin
    If is_union Then
-    safe_writeln('; Union ' + name + ' dï¿½finie, taille: ' + IntToStr(total_size) + ' octets')
+    safe_writeln('; Union ' + name + ' d‚finie, taille: ' + IntToStr(total_size) + ' octets')
    Else
-    safe_writeln('; Structure ' + name + ' dï¿½finie, taille: ' + IntToStr(total_size) + ' octets');
+    safe_writeln('; Structure ' + name + ' d‚finie, taille: ' + IntToStr(total_size) + ' octets');
   End;
-
   parse_struct_declaration := struct_def^.struct_id;
  End
   Else
@@ -2640,7 +2635,7 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('Undefinierte Struct/Union: ' + struct_name);
     {$ENDIF}
-    Else errrpt('Structure/Union non dÃ©finie: ' + struct_name);
+    Else errrpt('Structure/Union non d‚finie: ' + struct_name);
    End;
    Exit;
   End;
@@ -2648,7 +2643,7 @@ Begin
  End;
 End;
 
-{ Dï¿½clarations anticipï¿½es pour l'analyse d'expression et les fonctions d'analyse }
+{ D‚clarations anticip‚es pour l'analyse d'expression et les fonctions d'analyse }
 Function expression_bool(var lval: TLVal): Boolean; forward;
 Procedure primary_expression(var lval: TLVal); forward;
 Procedure unary_expression(var lval: TLVal); forward;
@@ -2672,28 +2667,28 @@ function get_type_name_from_id(type_id: Integer): String;begin
     cvoid: get_type_name_from_id := 'void';
     cchar: get_type_name_from_id := 'char';
     cint: get_type_name_from_id := 'int';
-    else get_type_name_from_id := 'int'; { Par dï¿½faut }
+    else get_type_name_from_id := 'int'; { Par d‚faut }
   end;
 end;
 
-{ Obtenir le nom d'un symbole depuis son pointeur entreposï¿½ comme entier }
-function get_symbol_name(symbol_ptr_as_int: Integer): String;
-var
+{ Obtenir le nom d'un symbole depuis son pointeur entrepos‚ comme entier }
+Function get_symbol_name(symbol_ptr_as_int: Integer): String;
+Var
   sym_ptr: PSymbol;
-begin
- if symbol_ptr_as_int = 0 then begin
+Begin
+ If symbol_ptr_as_int = 0 Then Begin
   get_symbol_name := 'unknown';
-  exit;
- end;
+  Exit;
+ End;
  sym_ptr := PSymbol(symbol_ptr_as_int);
- if sym_ptr = nil then begin
+ If sym_ptr = nil Then Begin
   get_symbol_name := 'invalid';
   exit;
- end;
+ End;
  get_symbol_name := sym_ptr^.name;
-end;
+End;
 
- { Analyse amï¿½liorï¿½e des spï¿½cificateurs de type avec support complet des types C }
+ { Analyse am‚lior‚e des sp‚cificateurs de type avec support complet des types C }
 Function parse_type_specifier: Integer;
 Var
  is_unsigned, is_signed: Boolean;
@@ -2702,7 +2697,7 @@ Begin
  is_unsigned := False;
  is_signed := False;
  base_type := cint; { Par dï¿½faut }
-  { Analyser les qualificateurs et spï¿½cificateurs de type }
+  { Analyser les qualificateurs et sp‚cificateurs de type }
  Repeat
   If match('unsigned') Then Begin
    is_unsigned := True;
@@ -2715,70 +2710,69 @@ Begin
   End
    Else
   If match('const') Then Begin
-   { Le qualificateur const est gï¿½rï¿½ dans parse_declarator }
-   safe_writeln('; qualificateur const dï¿½tectï¿½');
+   { Le qualificateur const est g‚r‚ dans parse_declarator }
+   safe_writeln('; qualificateur const d‚tect‚');
    Continue;
   End
    Else
   If match('volatile') Then Begin
-   { Le qualificateur volatile est gï¿½rï¿½ dans parse_declarator }
-   safe_writeln('; qualificateur volatile dï¿½tectï¿½');
+   { Le qualificateur volatile est g‚r‚ dans parse_declarator }
+   safe_writeln('; qualificateur volatile d‚tect‚');
    Continue;
   End
-  Else If match('void') Then
-  Begin
+   Else
+  If match('void') Then Begin
    base_type := cvoid;
    Break;
   End
-  Else If match('char') Then
-  Begin
+   Else
+  If match('char') Then Begin
    If is_unsigned Then base_type := cuchar
    Else base_type := cchar;
    Break;
   End
-  Else If match('short') Then
-  Begin
+   Else
+  If match('short') Then Begin
    If match('int') Then; { optional }
    If is_unsigned Then base_type := cushort
    Else base_type := cshort;
    Break;
   End
-  Else If match('long') Then
-  Begin
+   Else
+  If match('long') Then Begin
    If match('int') Then; { optional }
    If is_unsigned Then base_type := culong
    Else base_type := clong;
    Break;
   End
-  Else If match('int') Then
-  Begin
+   Else
+  If match('int') Then Begin
    If is_unsigned Then base_type := cuint
    Else base_type := cint;
    Break;
   End
-  Else If match('float') Then
-  Begin
+   Else
+  If match('float') Then Begin
    base_type := cfloat;
    Break;
   End
-  Else If match('double') Then
-  Begin
+   Else
+  If match('double') Then Begin
    base_type := cdouble;
    Break;
   End
-  Else If match('enum') Then
-  Begin
+   Else
+  If match('enum') Then Begin
    base_type := parse_enum_type;
    Break;
   End
-  Else
-   Break; { Plus de spÃ©cificateurs de type }
+   Else
+  Break; { Plus de sp‚cificateurs de type }
  Until False;
-
  parse_type_specifier := base_type;
 End;
 
-{ Analyse amÃ©liorÃ©e des spÃ©cificateurs de type avec qualificateurs }
+{ Analyse am‚lior‚e des sp‚cificateurs de type avec qualificateurs }
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer;
 Var
  is_unsigned, is_signed, is_const, is_volatile: Boolean;
@@ -2794,50 +2788,47 @@ Begin
  is_volatile := False;
  base_type := -1; { Aucun type initialement }
  type_found := False;
-
- { Initialiser type_info }
+  { Initialiser type_info }
  init_type_info(type_info);
-
- { Analyser les qualificateurs et spÃ©cificateurs de type }
+  { Analyser les qualificateurs et sp‚cificateurs de type }
  Repeat
-  If match('const') Then
-  Begin
+  If match('const') Then Begin
    is_const := True;
-   safe_writeln('; qualificateur const dÃ©tectÃ©');
+   safe_writeln('; qualificateur const d‚tect‚');
    Continue;
   End
-  Else If match('volatile') Then
-  Begin
+   Else
+  If match('volatile') Then Begin
    is_volatile := True;
-   safe_writeln('; qualificateur volatile dÃ©tectÃ©');
+   safe_writeln('; qualificateur volatile d‚tect‚');
    Continue;
   End
-  Else If match('unsigned') Then
-  Begin
+   Else
+  If match('unsigned') Then Begin
    is_unsigned := True;
    Continue;
   End
-  Else If match('signed') Then
-  Begin
+   Else
+  If match('signed') Then Begin
    is_signed := True;
    Continue;
   End
-  Else If match('void') Then
-  Begin
+   Else
+  If match('void') Then Begin
    base_type := cvoid;
    type_found := True;
    Break;
   End
-  Else If match('char') Then
-  Begin
+   Else
+  If match('char') Then Begin
    If is_unsigned Then base_type := cuchar
    Else base_type := cchar;
    type_found := True;
    Break;
   End
-  Else If match('short') Then
-  Begin
-   If match('int') Then; { optional }
+   Else
+  If match('short') Then Begin
+   If match('int') Then; { optionnel }
    If is_unsigned Then base_type := cushort
    Else base_type := cshort;
    type_found := True;
@@ -2845,34 +2836,34 @@ Begin
   End
   Else If match('long') Then
   Begin
-   If match('int') Then; { optional }
+   If match('int') Then; { optionnel }
    If is_unsigned Then base_type := culong
    Else base_type := clong;
    type_found := True;
    Break;
   End
-  Else If match('int') Then
-  Begin
+   Else
+  If match('int') Then Begin
    If is_unsigned Then base_type := cuint
    Else base_type := cint;
    type_found := True;
    Break;
   End
-  Else If match('float') Then
-  Begin
+   Else
+  If match('float') Then Begin
    base_type := cfloat;
    type_found := True;
    Break;
   End
-  Else If match('double') Then
-  Begin
+   Else
+  If match('double') Then Begin
    base_type := cdouble;
    type_found := True;
    Break;
   End
-  Else If match('struct') Then
-  Begin
-   { Analyser la dÃ©claration de structure complÃ¨te }
+   Else
+  If match('struct') Then Begin
+   { Analyser la d‚claration de structure complŠte }
    base_type := parse_struct_declaration(False); { False = struct, pas union }
    If base_type = -1 Then
    Begin
@@ -2885,9 +2876,9 @@ Begin
    type_found := True;
    Break;
   End
-  Else If match('union') Then
-  Begin
-   { Analyser la dÃ©claration d'union complÃ¨te }
+   Else
+  If match('union') Then Begin
+   { Analyser la d‚claration d'union complŠte }
    base_type := parse_struct_declaration(True); { True = union }
    If base_type = -1 Then
    Begin
@@ -2900,59 +2891,49 @@ Begin
    type_found := True;
    Break;
   End
-  Else
+   Else
   Begin
-   { VÃ©rifier si c'est un typedef }
+   { V‚rifier si c'est un typedef }
    saved_lptr := lptr; { Sauvegarder la position actuelle }
-
-   If symname(potential_typedef) Then
-   Begin
-    If resolve_typedef_type(potential_typedef, typedef_type_info) Then
-    Begin
-     { C'est un typedef valide - utiliser ses informations de type }
+   If symname(potential_typedef) Then Begin
+    If resolve_typedef_type(potential_typedef, typedef_type_info) Then Begin
+      { C'est un typedef valide - utiliser ses informations de type }
      type_info := typedef_type_info;
      base_type := typedef_type_info.base_type;
      type_found := True;
      safe_writeln('; Typedef rÃ©solu: ' + potential_typedef + ' = ' + get_type_name(typedef_type_info));
      Break;
     End
-    Else
+     Else
     Begin
      { Ce n'est pas un typedef - restaurer la position }
      lptr := saved_lptr;
     End;
    End;
-
-   Break; { Plus de spÃ©cificateurs de type }
+   Break; { Plus de sp‚cificateurs de type }
   End
  Until False;
-
- { Si aucun type explicite mais unsigned/signed spÃ©cifiÃ©, int par dÃ©faut }
- If not type_found and (is_unsigned or is_signed) Then
- Begin
+  { Si aucun type explicite mais unsigned/signed sp‚cifi‚, int par d‚faut }
+ If not type_found and (is_unsigned or is_signed) Then Begin
   If is_unsigned Then base_type := cuint
-  Else base_type := cint;
+                 Else base_type := cint;
   type_found := True;
  End;
-
- { Retourner -1 si aucun type trouvÃ© }
- If not type_found Then
- Begin
+  { Retourner -1 si aucun type trouv‚ }
+ If not type_found Then Begin
   parse_type_specifier_with_qualifiers := -1;
   Exit;
  End;
-
- { DÃ©finir les informations de type }
+  { D‚finir les informations de type }
  type_info.base_type := base_type;
  type_info.is_unsigned := is_unsigned;
  type_info.is_const := is_const;
  type_info.is_volatile := is_volatile;
  calculate_type_size(type_info);
-
  parse_type_specifier_with_qualifiers := base_type;
 End;
 
-{ Parser une dÃ©claration enum }
+ { Analyser une d‚claration enum }
 Function parse_enum_type: Integer;
 Var
  enum_name: String;
@@ -2961,37 +2942,29 @@ Var
  value_str: String;
  temp_value: Integer;
 Begin
- enum_value := 0; { Valeur par dÃ©faut de la premiÃ¨re constante enum }
+ enum_value := 0; { Valeur par d‚faut de la premiŠre constante enum }
  parse_enum_type := cenum;
-
- { VÃ©rifier s'il y a un nom d'enum optionnel }
- If symname(enum_name) Then
- Begin
-  safe_writeln('; Enum nommÃ©: ' + enum_name);
+  { V‚rifier s'il y a un nom d'enum optionnel }
+ If symname(enum_name) Then Begin
+  safe_writeln('; Enum nomm‚: ' + enum_name);
  End
- Else
+  Else
  Begin
   safe_writeln('; Enum anonyme');
  End;
-
- If not match('{') Then
- Begin
-  safe_writeln('; RÃ©fÃ©rence Ã  enum: ' + enum_name);
+ If not match('{') Then Begin
+  safe_writeln('; R‚f‚rence … enum: ' + enum_name);
   Exit;
  End;
-
- { Parser la liste des identifiants enum }
+  { Analyser la liste des identifiants enum }
  Repeat
   If not symname(identifier) Then Break;
-
-  { VÃ©rifier s'il y a une valeur explicite }
-  If match('=') Then
-  Begin
-   If number(temp_value) Then
-   Begin
+   { V‚rifier s'il y a une valeur explicite }
+  If match('=') Then Begin
+   If number(temp_value) Then Begin
     enum_value := temp_value;
    End
-   Else
+    Else
    Begin
     Case Language of
      _English: errrpt('Expected number in enum initializer');
@@ -3002,19 +2975,15 @@ Begin
     End;
    End;
   End;
-
-  { Ajouter la constante enum Ã  la table des symboles }
+   { Ajouter la constante enum … la table des symboles }
   Str(enum_value, value_str);
   safe_writeln(identifier + ' equ ' + value_str);
-  Inc(enum_value); { Prochaine valeur par dÃ©faut }
-
-  { Continuer avec les autres identifiants si virgule }
+  Inc(enum_value); { Prochaine valeur par d‚faut }
+   { Continuer avec les autres identifiants si virgule }
   If not match(',') Then Break;
  Until False;
-
- { Attendre la fermeture de accolade }
- If not match('}') Then
- Begin
+  { Attendre la fermeture de accolade }
+ If not match('}') Then Begin
   Case Language of
    _English: errrpt('Expected closing brace in enum');
    {$IFDEF FPC}
@@ -3025,57 +2994,51 @@ Begin
  End;
 End;
 
-{ Parser les spÃ©cificateurs de classe de stockage }
+ { Analyser les sp‚cificateurs de classe d'entreposage }
 Function parse_storage_class_specifier: Integer;
 Begin
- parse_storage_class_specifier := automatic; { Par dÃ©faut }
-
- If match('typedef') Then
- Begin
-  safe_writeln('; SpÃ©cificateur de classe de stockage: typedef');
+ parse_storage_class_specifier := automatic; { Par d‚faut }
+ If match('typedef') Then Begin
+  safe_writeln('; Sp‚cificateur de classe de stockage: typedef');
   parse_storage_class_specifier := it_typedef_type;
  End
- Else If match('extern') Then
- Begin
-  safe_writeln('; SpÃ©cificateur de classe de stockage: extern');
+  Else
+ If match('extern') Then Begin
+  safe_writeln('; Sp‚cificateur de classe de stockage: extern');
   parse_storage_class_specifier := CEXTERNAL;
  End
- Else If match('static') Then
- Begin
-  safe_writeln('; SpÃ©cificateur de classe de stockage: static');
+  Else
+ If match('static') Then Begin
+  safe_writeln('; Sp‚cificateur de classe de stockage: static');
   parse_storage_class_specifier := statik;
  End
- Else If match('auto') Then
- Begin
-  safe_writeln('; SpÃ©cificateur de classe de stockage: auto');
+  Else
+ If match('auto') Then Begin
+  safe_writeln('; Sp‚cificateur de classe de stockage: auto');
   parse_storage_class_specifier := automatic;
  End
- Else If match('register') Then
- Begin
-  safe_writeln('; SpÃ©cificateur de classe de stockage: register (traitÃ© comme auto)');
+  Else
+ If match('register') Then Begin
+  safe_writeln('; Sp‚cificateur de classe de stockage: register (trait‚ comme auto)');
   parse_storage_class_specifier := automatic;
  End;
 End;
 
-{ Analyse amÃ©liorÃ©e du dÃ©clarateur avec informations de type }
+ { Analyse am‚lior‚e du d‚clarateur avec informations de type }
 Function parse_declarator(var var_name: String; base_type: Integer; var type_info: TTypeInfo): Integer;
 Var
  result_type: Integer;
  array_size: Integer;
 Begin
- { Ne pas rÃ©initialiser type_info car il peut dÃ©jÃ  contenir des qualificateurs }
- { Mettre Ã  jour seulement le type de base s'il n'est pas dÃ©jÃ  dÃ©fini }
- If type_info.base_type = 0 Then
-  type_info.base_type := base_type;
+ { Ne pas r‚initialiser type_info car il peut d‚j… contenir des qualificateurs }
+ { Mettre … jour seulement le type de base s'il n'est pas d‚j… d‚fini }
+ If type_info.base_type = 0 Then type_info.base_type := base_type;
  result_type := base_type;
-
- { GÃ©rer les dÃ©clarations de pointeur }
- While match('*') do
- Begin
+  { G‚rer les d‚clarations de pointeur }
+ While match('*') do Begin
   Inc(type_info.pointer_level);
   result_type := cpointer;
-
-  { GÃ©rer const/volatile aprÃ¨s * }
+   { G‚rer const/volatile aprŠs * }
   If match('const') Then type_info.is_const := True;
   If match('volatile') Then type_info.is_volatile := True;
  End;
