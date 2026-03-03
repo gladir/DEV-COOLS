@@ -4893,100 +4893,84 @@ Procedure bitwise_xor_expression(var lval: TLVal);Begin
   ol('pshs d');    { Empile l'opÇrande de gauche }
   bitwise_and_expression(lval);
   ol('tfr  d,x');  { OpÇrande de droite vers X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('eora 1,x');  { XOR low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('eora 0,x');  { XOR high bytes }
+  ol('puls d');    { OpÇrande de gauche vers D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B vers A pour l'octet bas }
+  ol('eora 1,x');  { Octet bas XOR }
+  ol('tfr  a,b');  { RÇsultat de l'octet bas vers B }
+  ol('tfr  u,a');  { Restaure le haut octet de U }
+  ol('eora 0,x');  { L'octet haut de XOR }
  End;
 End;
 
-{ Bitwise OR expression parser - handles | }
-Procedure bitwise_or_expression(var lval: TLVal);
-Begin
+{ Analyse l'expression binaire OR - GÇrer le | }
+Procedure bitwise_or_expression(var lval: TLVal);Begin
  bitwise_xor_expression(lval);
-
- While match('|') do
- Begin
-  { V√©rifier que ce n'est pas || }
-  If peek_char = '|' Then
-  Begin
-   { Reculer car c'est || qui sera trait√© par logical_or }
+ While match('|') do Begin
+  { VÇrifier que ce n'est pas || }
+  If peek_char = '|' Then Begin
+   { Reculer car c'est || qui sera traitÇ par logical_or }
    Dec(lptr);
    Break;
   End;
-
-  safe_writeln('; Op√©rateur | (OU binaire)');
-  ol('pshs d');    { Push left operand }
+  safe_writeln('; OpÇrateur | (OU binaire)');
+  ol('pshs d');    { Empile l'opÇrande de gauche }
   bitwise_xor_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('ora  1,x');  { OR low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('ora  0,x');  { OR high bytes }
+  ol('tfr  d,x');  { OpÇrande de droite vers X }
+  ol('puls d');    { OpÇrande de gauche vers D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B vers A pour l'octet bas }
+  ol('ora  1,x');  { Octet bas OR }
+  ol('tfr  a,b');  { RÇsultat de l'octet bas vers B }
+  ol('tfr  u,a');  { Restaure l'ocet haut de U }
+  ol('ora  0,x');  { Octets haut de OR }
  End;
 End;
 
-{ Logical AND expression parser - handles && }
+{ Analyse de l'expression logique AND - GÇrer le && }
 Procedure logical_and_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
 Begin
  bitwise_or_expression(lval);
-
- While match('&') and match('&') do
- Begin
-  safe_writeln('; Op√©rateur && (ET logique)');
-
-  { G√©n√©rer les √©tiquettes }
+ While match('&') and match('&') do Begin
+  safe_writeln('; OpÇrateur && (ET logique)');
+   { GÇnÇrer les Çtiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premi√®re expression }
+   { Tester la premiäre expression }
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-
-  { √âvaluer la deuxi√®me expression }
+  { êvaluer la deuxiäme expression }
   bitwise_or_expression(lval);
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-
-  { Les deux sont vraies - r√©sultat = 1 }
+  { Les deux sont vraies - rÇsultat = 1 }
   ol('ldd #1');
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est fausse - r√©sultat = 0 }
+  { Au moins une est fausse - rÇsultat = 0 }
   prelabel(false_label);
   ol('ldd #0');
-
   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Logical OR expression parser - handles || }
+{ Analyse l'expression logique OR - GÇrer le || }
 Procedure logical_or_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
 Begin
  logical_and_expression(lval);
-
- While match('|') and match('|') do
- Begin
+ While match('|') and match('|') do Begin
   safe_writeln('; Op√©rateur || (OU logique)');
-
-  { G√©n√©rer les √©tiquettes }
+  { GÇnÇrer les Çtiquettes }
   true_label := getlabel;
   end_label := getlabel;
 

@@ -990,6 +990,748 @@ Begin
 End;
 
 { ============================================================
+  TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ErrorMsg : afficher un message d'erreur situe et incrementer err_count.
+  -------------------------------------------------------------------------- }
+Procedure ErrorMsg(Const msg : TString);
+Begin
+  Inc(err_count);
+  WriteLn('Erreur (', lex_lineno, ',', lex_colno, ') : ', msg);
+  If err_count >= MAX_ERRORS Then
+  Begin
+    WriteLn('Trop d''erreurs (', MAX_ERRORS, ') - compilation abandonnee.');
+    Halt(1);
+  End;
+End;
+
+Procedure WarnMsg(Const msg : TString);
+Begin
+  Inc(warn_count);
+  WriteLn('Avertissement (', lex_lineno, ',', lex_colno, ') : ', msg);
+End;
+
+{ --------------------------------------------------------------------------
+  AsmIdent : convertir un identifiant Oberon en label ASM valide.
+  Les caracteres non autorises en MASM sont remplaces par '_'.
+  -------------------------------------------------------------------------- }
+Function AsmIdent(Const s : TString) : TString;
+Var i   : Integer;
+    r   : TString;
+    c   : Char;
+Begin
+  r := '';
+  For i := 1 To Length(s) Do
+  Begin
+    c := s[i];
+    If LexIsAlNum(c) Or (c = '_') Then
+      r := r + c
+    Else
+      r := r + '_';
+  End;
+  AsmIdent := r;
+End;
+
+{ --------------------------------------------------------------------------
+  NewLabel : generer un label de controle unique  _OL_nnn.
+  -------------------------------------------------------------------------- }
+Function NewLabel : TString;
+Var s : TString;
+Begin
+  Inc(label_count);
+  Str(label_count, s);
+  NewLabel := OL_PFX + s;
+End;
+
+{ --------------------------------------------------------------------------
+  Pile de labels de boucle (WHILE / REPEAT / LOOP).
+  -------------------------------------------------------------------------- }
+Procedure PushLoopLabels(Const lbl_break, lbl_cont : TString);
+Begin
+  If loop_depth >= MAX_SCOPE Then
+  Begin
+    ErrorMsg('Imbrication de boucles trop profonde');
+    Exit;
+  End;
+  Inc(loop_depth);
+  loop_break_stk[loop_depth] := lbl_break;
+  loop_cont_stk[loop_depth]  := lbl_cont;
+End;
+
+Procedure PopLoopLabels;
+Begin
+  If loop_depth > 0 Then
+    Dec(loop_depth);
+End;
+
+Function TopBreakLabel : TString;
+Begin
+  If loop_depth > 0 Then
+    TopBreakLabel := loop_break_stk[loop_depth]
+  Else
+    TopBreakLabel := '';
+End;
+
+Function TopContLabel : TString;
+Begin
+  If loop_depth > 0 Then
+    TopContLabel := loop_cont_stk[loop_depth]
+  Else
+    TopContLabel := '';
+End;
+
+{ --------------------------------------------------------------------------
+  ScopeEnter : ouvrir un nouveau niveau de portee.
+  On memorise l'indice de sym_count courant dans scope_base.
+  -------------------------------------------------------------------------- }
+Procedure ScopeEnter;
+Begin
+  If scope_sp >= MAX_SCOPE Then
+  Begin
+    ErrorMsg('Portee trop imbriquee');
+    Exit;
+  End;
+  Inc(scope_sp);
+  scope_base[scope_sp] := sym_count;
+End;
+
+{ --------------------------------------------------------------------------
+  ScopeLeave : fermer le niveau de portee courant.
+  Les symboles declares dans cette portee restent en table (acces lecture)
+  mais scope_sp recule ; les futures recherches ne remonteront plus ici.
+  Pour liberer les entrees locales : ClearLocalSymbols.
+  -------------------------------------------------------------------------- }
+Procedure ScopeLeave;
+Begin
+  If scope_sp > 1 Then
+  Begin
+    { Marquer les symboles locaux comme hors portee }
+    sym_count := scope_base[scope_sp];
+    Dec(scope_sp);
+  End
+  Else If scope_sp = 1 Then
+    Dec(scope_sp);
+End;
+
+{ --------------------------------------------------------------------------
+  SymEnter : ajouter un symbole dans la table.
+  Retourne l'index 1-base ou 0 si la table est pleine.
+  -------------------------------------------------------------------------- }
+Function SymEnter(Const name : TString; kind : TSymKind;
+                  scope : TScope; type_idx : Integer) : Integer;
+Begin
+  If sym_count >= MAX_SYM Then
+  Begin
+    ErrorMsg('Table des symboles saturee');
+    SymEnter := 0;
+    Exit;
+  End;
+  Inc(sym_count);
+  sym_table^[sym_count].name        := name;
+  sym_table^[sym_count].kind        := kind;
+  sym_table^[sym_count].scope       := scope;
+  sym_table^[sym_count].type_idx    := type_idx;
+  sym_table^[sym_count].asm_label   := OV_PFX + AsmIdent(name);
+  sym_table^[sym_count].bp_offset   := 0;
+  sym_table^[sym_count].is_var_par  := False;
+  sym_table^[sym_count].const_ival  := 0;
+  sym_table^[sym_count].const_sval  := '';
+  sym_table^[sym_count].proc_idx    := 0;
+  sym_table^[sym_count].fld_offset  := 0;
+  sym_table^[sym_count].scope_level := scope_sp;
+  SymEnter := sym_count;
+End;
+
+{ --------------------------------------------------------------------------
+  SymFind : chercher un symbole par son nom (casse significative en Oberon).
+  Parcourt la table de sym_count vers 1 (dernier declare en premier).
+  Retourne l'index ou 0 si non trouve.
+  -------------------------------------------------------------------------- }
+Function SymFind(Const name : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := sym_count DownTo 1 Do
+    If sym_table^[i].name = name Then
+    Begin
+      SymFind := i;
+      Exit;
+    End;
+  SymFind := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  SymFindLocal : chercher uniquement dans la portee courante.
+  La portee courante commence a scope_base[scope_sp]+1.
+  -------------------------------------------------------------------------- }
+Function SymFindLocal(Const name : TString) : Integer;
+Var i    : Integer;
+    base : Integer;
+Begin
+  If scope_sp > 0 Then
+    base := scope_base[scope_sp]
+  Else
+    base := 0;
+  For i := sym_count DownTo base + 1 Do
+    If sym_table^[i].name = name Then
+    Begin
+      SymFindLocal := i;
+      Exit;
+    End;
+  SymFindLocal := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  SymFindInScope : chercher dans une portee donnee (par son niveau 0-based).
+  -------------------------------------------------------------------------- }
+Function SymFindInScope(Const name : TString; level : Integer) : Integer;
+Var i : Integer;
+Begin
+  For i := sym_count DownTo 1 Do
+    If (sym_table^[i].name = name) And (sym_table^[i].scope_level = level) Then
+    Begin
+      SymFindInScope := i;
+      Exit;
+    End;
+  SymFindInScope := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  ProcEnter : enregistrer une procedure / fonction dans proc_table.
+  Retourne l'index 1-base ou 0 si la table est pleine.
+  -------------------------------------------------------------------------- }
+Function ProcEnter(Const name : TString; ret_type_idx : Integer;
+                   is_export : Boolean) : Integer;
+Var pi  : Integer;
+    si  : Integer;
+Begin
+  If proc_count >= MAX_PROC Then
+  Begin
+    ErrorMsg('Trop de procedures');
+    ProcEnter := 0;
+    Exit;
+  End;
+  Inc(proc_count);
+  pi := proc_count;
+  proc_table^[pi].name         := name;
+  proc_table^[pi].ret_type_idx := ret_type_idx;
+  proc_table^[pi].param_count  := 0;
+  proc_table^[pi].local_size   := 0;
+  proc_table^[pi].is_export    := is_export;
+  { Construire le label ASM : _OP_<module>_<name> }
+  proc_table^[pi].asm_label := OP_PFX + AsmIdent(module_name) + '_' + AsmIdent(name);
+
+  { Enregistrer aussi dans sym_table comme SK_PROC }
+  si := SymEnter(name, SK_PROC, SC_GLOBAL, ret_type_idx);
+  If si > 0 Then
+  Begin
+    sym_table^[si].proc_idx  := pi;
+    sym_table^[si].asm_label := proc_table^[pi].asm_label;
+  End;
+  ProcEnter := pi;
+End;
+
+{ --------------------------------------------------------------------------
+  ProcFind : chercher une procedure par son nom.
+  Retourne l'index dans proc_table ou 0.
+  -------------------------------------------------------------------------- }
+Function ProcFind(Const name : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := proc_count DownTo 1 Do
+    If proc_table^[i].name = name Then
+    Begin
+      ProcFind := i;
+      Exit;
+    End;
+  ProcFind := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  ProcAddParam : ajouter un parametre formel a la procedure courante.
+  L'offset BP est calcule automatiquement (convention near cdecl) :
+    BP+4 = premier parametre, BP+6 = deuxieme, etc.
+  -------------------------------------------------------------------------- }
+Procedure ProcAddParam(pi : Integer; Const pname : TString;
+                       type_idx : Integer; is_var : Boolean);
+Var pp  : Integer;
+    si  : Integer;
+    ofs : Integer;
+Begin
+  If proc_table^[pi].param_count >= MAX_PARAM Then
+  Begin
+    ErrorMsg('Trop de parametres pour ' + proc_table^[pi].name);
+    Exit;
+  End;
+  Inc(proc_table^[pi].param_count);
+  pp := proc_table^[pi].param_count;
+  proc_table^[pi].params[pp].name       := pname;
+  proc_table^[pi].params[pp].type_idx   := type_idx;
+  proc_table^[pi].params[pp].is_var_par := is_var;
+  { Offset BP : BP+4 pour le premier, +2 par parametre supplementaire }
+  ofs := 4 + (pp - 1) * 2;
+  proc_table^[pi].params[pp].bp_offset  := ofs;
+
+  { Ajouter aussi dans sym_table pour la portee locale }
+  si := SymEnter(pname, SK_PARAM, SC_PARAM, type_idx);
+  If si > 0 Then
+  Begin
+    sym_table^[si].bp_offset  := ofs;
+    sym_table^[si].is_var_par := is_var;
+    sym_table^[si].asm_label  := '';
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ProcAddLocal : allouer une variable locale dans le cadre de pile courant.
+  L'offset BP negatif est calcule et mis a jour dans proc_table^[pi].local_size.
+  -------------------------------------------------------------------------- }
+Function ProcAddLocal(pi : Integer; Const vname : TString;
+                      type_idx : Integer; byte_size : Integer) : Integer;
+Var si  : Integer;
+    ofs : Integer;
+Begin
+  { Aligner sur 2 octets }
+  If byte_size Mod 2 <> 0 Then Inc(byte_size);
+  proc_table^[pi].local_size := proc_table^[pi].local_size + byte_size;
+  ofs := -proc_table^[pi].local_size;
+
+  si := SymEnter(vname, SK_VAR, SC_LOCAL, type_idx);
+  If si > 0 Then
+  Begin
+    sym_table^[si].bp_offset  := ofs;
+    sym_table^[si].asm_label  := '';
+  End;
+  ProcAddLocal := si;
+End;
+
+{ --------------------------------------------------------------------------
+  ConstEnter : ajouter une constante nommee dans const_table.
+  Retourne l'index ou 0 si plein.
+  -------------------------------------------------------------------------- }
+Function ConstEnter(Const name : TString; type_idx : Integer;
+                    ival : LongInt; Const sval : TString;
+                    is_real : Boolean; rval : Real) : Integer;
+Var ci : Integer;
+    si : Integer;
+Begin
+  If const_count >= MAX_CONST Then
+  Begin
+    ErrorMsg('Table des constantes saturee');
+    ConstEnter := 0;
+    Exit;
+  End;
+  Inc(const_count);
+  ci := const_count;
+  const_table^[ci].name     := name;
+  const_table^[ci].type_idx := type_idx;
+  const_table^[ci].ival     := ival;
+  const_table^[ci].sval     := sval;
+  const_table^[ci].is_real  := is_real;
+  const_table^[ci].rval     := rval;
+
+  { Enregistrer aussi dans sym_table }
+  si := SymEnter(name, SK_CONST, SC_CONST, type_idx);
+  If si > 0 Then
+  Begin
+    sym_table^[si].const_ival := ival;
+    sym_table^[si].const_sval := sval;
+  End;
+  ConstEnter := ci;
+End;
+
+{ --------------------------------------------------------------------------
+  ConstFind : chercher une constante par son nom.
+  Retourne l'index dans const_table ou 0.
+  -------------------------------------------------------------------------- }
+Function ConstFind(Const name : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := const_count DownTo 1 Do
+    If const_table^[i].name = name Then
+    Begin
+      ConstFind := i;
+      Exit;
+    End;
+  ConstFind := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  SymDumpVerbose : afficher la table des symboles (mode -v -d).
+  -------------------------------------------------------------------------- }
+Procedure SymDumpVerbose;
+Const
+  KNames : Array[TSymKind] of String[8] =
+    ('NONE', 'CONST', 'TYPE', 'VAR', 'PARAM', 'PROC', 'FIELD', 'MODULE');
+Var i : Integer;
+Begin
+  WriteLn('--- Table des symboles (', sym_count, ' entrees) ---');
+  For i := 1 To sym_count Do
+  Begin
+    Write('  [', i:3, '] ', sym_table^[i].name:-20, ' ',
+          KNames[sym_table^[i].kind], '  lv=', sym_table^[i].scope_level);
+    If sym_table^[i].asm_label <> '' Then
+      Write('  asm=', sym_table^[i].asm_label);
+    If sym_table^[i].bp_offset <> 0 Then
+      Write('  bp+', sym_table^[i].bp_offset);
+    WriteLn;
+  End;
+End;
+
+{ ============================================================
+  TODO 04 - SYSTEME DE TYPES
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  Constructeurs de types : allouer un descripteur dans type_table.
+  -------------------------------------------------------------------------- }
+
+Function TypeNew(k : TTypeKind; bits : Integer) : Integer;
+Begin
+  If type_count >= MAX_TYPE Then
+  Begin
+    WriteLn('FATAL : table des types saturee');
+    Halt(1);
+  End;
+  Inc(type_count);
+  type_table^[type_count].kind     := k;
+  type_table^[type_count].bit_size := bits;
+  type_table^[type_count].base_idx := 0;
+  type_table^[type_count].arr_len  := 0;
+  type_table^[type_count].rec_sym  := 0;
+  type_table^[type_count].rec_nfld := 0;
+  TypeNew := type_count;
+End;
+
+{ Array fixe : ARRAY len OF base_idx }
+Function TypeNewArray(base_idx, len : Integer) : Integer;
+Var ti : Integer;
+Begin
+  ti := TypeNew(TYK_ARRAY, 0);  { bit_size calcule au besoin }
+  type_table^[ti].base_idx := base_idx;
+  type_table^[ti].arr_len  := len;
+  { bit_size = len * bit_size(base) - calcule a la demande via TypeBitSize }
+  TypeNewArray := ti;
+End;
+
+{ Open array : ARRAY OF base_idx (longueur inconnue a la compilation) }
+Function TypeNewOpenArray(base_idx : Integer) : Integer;
+Var ti : Integer;
+Begin
+  ti := TypeNew(TYK_OPENARRAY, 0);
+  type_table^[ti].base_idx := base_idx;
+  type_table^[ti].arr_len  := 0;
+  TypeNewOpenArray := ti;
+End;
+
+{ Record : les champs seront ajoutes dans sym_table a partir de first_field }
+Function TypeNewRecord(first_field, nfld : Integer) : Integer;
+Var ti : Integer;
+Begin
+  ti := TypeNew(TYK_RECORD, 0);
+  type_table^[ti].rec_sym  := first_field;
+  type_table^[ti].rec_nfld := nfld;
+  TypeNewRecord := ti;
+End;
+
+{ Pointer TO base_idx }
+Function TypeNewPointer(base_idx : Integer) : Integer;
+Var ti : Integer;
+Begin
+  ti := TypeNew(TYK_POINTER, 16);  { toujours 16 bits en modele SMALL }
+  type_table^[ti].base_idx := base_idx;
+  TypeNewPointer := ti;
+End;
+
+{ Type procedure / fonction (ret_idx = 0 si pas de retour) }
+Function TypeNewProc(ret_idx : Integer) : Integer;
+Var ti : Integer;
+Begin
+  ti := TypeNew(TYK_PROC, 16);
+  type_table^[ti].base_idx := ret_idx;
+  TypeNewProc := ti;
+End;
+
+{ --------------------------------------------------------------------------
+  TypeBitSize : retourner la taille en bits du type designe par type_idx.
+  Pour les tableaux, la taille est len * taille_element.
+  Pour les records, elle est la somme des champs (calcul simplifie ici).
+  -------------------------------------------------------------------------- }
+Function TypeBitSize(ti : Integer) : Integer;
+Var base_bits : Integer;
+Begin
+  If (ti < 1) Or (ti > type_count) Then
+  Begin
+    TypeBitSize := 16;
+    Exit;
+  End;
+  Case type_table^[ti].kind Of
+    TYK_ARRAY :
+      Begin
+        base_bits := TypeBitSize(type_table^[ti].base_idx);
+        TypeBitSize := type_table^[ti].arr_len * base_bits;
+      End;
+    TYK_OPENARRAY :
+      TypeBitSize := 16;  { on ne connait pas la taille a la compilation }
+    TYK_RECORD :
+      { La taille exacte est stockee dans bit_size apres analyse }
+      TypeBitSize := type_table^[ti].bit_size;
+    TYK_POINTER :
+      TypeBitSize := 16;
+    TYK_PROC :
+      TypeBitSize := 16;
+    TYK_NIL :
+      TypeBitSize := 16;
+    TYK_NONE :
+      TypeBitSize := 0;
+  Else
+    TypeBitSize := type_table^[ti].bit_size;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  TypeByteSize : arrondi a l'octet superieur (minimum 1).
+  -------------------------------------------------------------------------- }
+Function TypeByteSize(ti : Integer) : Integer;
+Var b : Integer;
+Begin
+  b := TypeBitSize(ti);
+  If b <= 0 Then
+    TypeByteSize := 1
+  Else
+    TypeByteSize := (b + 7) Div 8;
+End;
+
+{ --------------------------------------------------------------------------
+  Predicats de categorie.
+  -------------------------------------------------------------------------- }
+
+Function TypeIsInteger(ti : Integer) : Boolean;
+Begin
+  TypeIsInteger := (ti >= 1) And (ti <= type_count)
+    And (type_table^[ti].kind = TYK_INTEGER);
+End;
+
+Function TypeIsBoolean(ti : Integer) : Boolean;
+Begin
+  TypeIsBoolean := (ti >= 1) And (ti <= type_count)
+    And (type_table^[ti].kind = TYK_BOOLEAN);
+End;
+
+Function TypeIsChar(ti : Integer) : Boolean;
+Begin
+  TypeIsChar := (ti >= 1) And (ti <= type_count)
+    And (type_table^[ti].kind = TYK_CHAR);
+End;
+
+Function TypeIsReal(ti : Integer) : Boolean;
+Begin
+  TypeIsReal := (ti >= 1) And (ti <= type_count)
+    And (type_table^[ti].kind = TYK_REAL);
+End;
+
+Function TypeIsSet(ti : Integer) : Boolean;
+Begin
+  TypeIsSet := (ti >= 1) And (ti <= type_count)
+    And (type_table^[ti].kind = TYK_SET);
+End;
+
+Function TypeIsPointer(ti : Integer) : Boolean;
+Begin
+  TypeIsPointer := (ti >= 1) And (ti <= type_count)
+    And ((type_table^[ti].kind = TYK_POINTER)
+      Or (type_table^[ti].kind = TYK_NIL));
+End;
+
+Function TypeIsRecord(ti : Integer) : Boolean;
+Begin
+  TypeIsRecord := (ti >= 1) And (ti <= type_count)
+    And (type_table^[ti].kind = TYK_RECORD);
+End;
+
+Function TypeIsArray(ti : Integer) : Boolean;
+Begin
+  TypeIsArray := (ti >= 1) And (ti <= type_count)
+    And ((type_table^[ti].kind = TYK_ARRAY)
+      Or (type_table^[ti].kind = TYK_OPENARRAY));
+End;
+
+{ Ordinal = INTEGER, BOOLEAN, CHAR, BYTE, SET }
+Function TypeIsOrdinal(ti : Integer) : Boolean;
+Var k : TTypeKind;
+Begin
+  If (ti < 1) Or (ti > type_count) Then
+  Begin
+    TypeIsOrdinal := False;
+    Exit;
+  End;
+  k := type_table^[ti].kind;
+  TypeIsOrdinal := (k = TYK_INTEGER) Or (k = TYK_BOOLEAN)
+               Or (k = TYK_CHAR)    Or (k = TYK_BYTE)
+               Or (k = TYK_SET);
+End;
+
+{ Numerique = INTEGER, BYTE, REAL }
+Function TypeIsNumeric(ti : Integer) : Boolean;
+Var k : TTypeKind;
+Begin
+  If (ti < 1) Or (ti > type_count) Then
+  Begin
+    TypeIsNumeric := False;
+    Exit;
+  End;
+  k := type_table^[ti].kind;
+  TypeIsNumeric := (k = TYK_INTEGER) Or (k = TYK_BYTE) Or (k = TYK_REAL);
+End;
+
+{ Chaine = ARRAY OF CHAR ou ARRAY n OF CHAR }
+Function TypeIsString(ti : Integer) : Boolean;
+Begin
+  If (ti < 1) Or (ti > type_count) Then
+  Begin
+    TypeIsString := False;
+    Exit;
+  End;
+  If Not TypeIsArray(ti) Then
+  Begin
+    TypeIsString := False;
+    Exit;
+  End;
+  TypeIsString := TypeIsChar(type_table^[ti].base_idx);
+End;
+
+{ --------------------------------------------------------------------------
+  TypeCompat : compatibilite d'expression (Oberon Report §9.1).
+  Regles :
+    1. Meme type (meme index).
+    2. t2 = NIL et t1 est POINTER.
+    3. t1 et t2 sont des types numeriques (INTEGER/BYTE/REAL).
+    4. t1 = CHAR et t2 = STRING d'un seul caractere (gere par le parser).
+    5. t1 et t2 sont des ARRAY OF CHAR (chaines de longueurs differentes).
+  -------------------------------------------------------------------------- }
+Function TypeCompat(t1, t2 : Integer) : Boolean;
+Begin
+  { Identique }
+  If t1 = t2 Then
+  Begin
+    TypeCompat := True;
+    Exit;
+  End;
+  { NIL compatible avec tout pointeur }
+  If (type_table^[t2].kind = TYK_NIL) And TypeIsPointer(t1) Then
+  Begin
+    TypeCompat := True;
+    Exit;
+  End;
+  If (type_table^[t1].kind = TYK_NIL) And TypeIsPointer(t2) Then
+  Begin
+    TypeCompat := True;
+    Exit;
+  End;
+  { Numeriques entre eux }
+  If TypeIsNumeric(t1) And TypeIsNumeric(t2) Then
+  Begin
+    TypeCompat := True;
+    Exit;
+  End;
+  { Chaines (ARRAY OF CHAR) }
+  If TypeIsString(t1) And TypeIsString(t2) Then
+  Begin
+    TypeCompat := True;
+    Exit;
+  End;
+  TypeCompat := False;
+End;
+
+{ --------------------------------------------------------------------------
+  TypeAssignCompat : compatibilite d'affectation (Oberon Report §9.2).
+  En plus des regles de TypeCompat :
+    - t2 peut etre une chaine litterale (type_idx = TYP_CHAR, len=1) vers
+      ARRAY OF CHAR (gere par le parser avant d'appeler ici).
+    - Les entiers de differentes tailles sont assignables entre eux.
+  -------------------------------------------------------------------------- }
+Function TypeAssignCompat(t1, t2 : Integer) : Boolean;
+Begin
+  { Si TypeCompat passe, l'affectation est aussi compatible }
+  If TypeCompat(t1, t2) Then
+  Begin
+    TypeAssignCompat := True;
+    Exit;
+  End;
+  { CHAR -> ARRAY OF CHAR d'au moins 1 element }
+  If TypeIsChar(t2) And TypeIsString(t1) Then
+  Begin
+    TypeAssignCompat := True;
+    Exit;
+  End;
+  TypeAssignCompat := False;
+End;
+
+{ --------------------------------------------------------------------------
+  TypeName : retourner une representation lisible du type (debug/erreurs).
+  -------------------------------------------------------------------------- }
+Function TypeName(ti : Integer) : TString;
+Const
+  KStr : Array[TTypeKind] of String[10] =
+    ('NONE', 'INTEGER', 'BOOLEAN', 'CHAR', 'BYTE', 'SET', 'REAL',
+     'ARRAY', 'OPENARRAY', 'RECORD', 'POINTER', 'PROC', 'NIL');
+Begin
+  If (ti < 1) Or (ti > type_count) Then
+  Begin
+    TypeName := '?';
+    Exit;
+  End;
+  Case type_table^[ti].kind Of
+    TYK_ARRAY :
+      TypeName := 'ARRAY[' + IntToStr(type_table^[ti].arr_len) + '] OF '
+                + TypeName(type_table^[ti].base_idx);
+    TYK_OPENARRAY :
+      TypeName := 'ARRAY OF ' + TypeName(type_table^[ti].base_idx);
+    TYK_POINTER :
+      TypeName := 'POINTER TO ' + TypeName(type_table^[ti].base_idx);
+    TYK_PROC :
+      If type_table^[ti].base_idx = 0 Then
+        TypeName := 'PROCEDURE'
+      Else
+        TypeName := 'PROCEDURE:' + TypeName(type_table^[ti].base_idx);
+  Else
+    TypeName := KStr[type_table^[ti].kind];
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  TypeCheckCompat : verifier la compatibilite et signaler une erreur si non.
+  -------------------------------------------------------------------------- }
+Procedure TypeCheckCompat(t1, t2 : Integer; Const ctx : TString);
+Begin
+  If Not TypeCompat(t1, t2) Then
+    ErrorMsg('Types incompatibles dans ' + ctx
+             + ' (' + TypeName(t1) + ' vs ' + TypeName(t2) + ')');
+End;
+
+Procedure TypeCheckAssign(t1, t2 : Integer);
+Begin
+  If Not TypeAssignCompat(t1, t2) Then
+    ErrorMsg('Affectation incompatible : ' + TypeName(t2)
+             + ' vers ' + TypeName(t1));
+End;
+
+{ --------------------------------------------------------------------------
+  TypeDump : afficher tous les descripteurs de type (mode -v -d).
+  -------------------------------------------------------------------------- }
+Procedure TypeDump;
+Var i : Integer;
+Begin
+  WriteLn('--- Table des types (', type_count, ' entrees) ---');
+  For i := 1 To type_count Do
+  Begin
+    WriteLn('  [', i:3, '] ', TypeName(i):30,
+            '  bits=', TypeBitSize(i));
+  End;
+End;
+
+{ ============================================================
   Initialisation et liberation des tables
   ============================================================ }
 
@@ -1014,6 +1756,7 @@ Begin
   loop_depth   := 0;
   has_peek     := False;
   lex_eof      := False;
+  module_name  := 'MODULE';  { sera ecrase a la lecture du nom reel }
 End;
 
 Procedure FreeTables;
@@ -1024,30 +1767,17 @@ Begin
   Dispose(const_table);
 End;
 
-{ Types primitifs predefinis }
+{ Types primitifs predefinis - utilise TypeNew (TODO 04) }
 Procedure InitBuiltinTypes;
-
-  Function NewType(k : TTypeKind; bits : Integer) : Integer;
-  Begin
-    Inc(type_count);
-    type_table^[type_count].kind     := k;
-    type_table^[type_count].bit_size := bits;
-    type_table^[type_count].base_idx := 0;
-    type_table^[type_count].arr_len  := 0;
-    type_table^[type_count].rec_sym  := 0;
-    type_table^[type_count].rec_nfld := 0;
-    NewType := type_count;
-  End;
-
 Begin
-  TYP_UNDEF   := NewType(TYK_NONE,    0);
-  TYP_INTEGER := NewType(TYK_INTEGER, 16);
-  TYP_BOOLEAN := NewType(TYK_BOOLEAN,  8);
-  TYP_CHAR    := NewType(TYK_CHAR,     8);
-  TYP_BYTE    := NewType(TYK_BYTE,     8);
-  TYP_SET     := NewType(TYK_SET,     16);
-  TYP_REAL    := NewType(TYK_REAL,    32);
-  TYP_NIL     := NewType(TYK_NIL,     16);
+  TYP_UNDEF   := TypeNew(TYK_NONE,    0);
+  TYP_INTEGER := TypeNew(TYK_INTEGER, 16);
+  TYP_BOOLEAN := TypeNew(TYK_BOOLEAN,  8);
+  TYP_CHAR    := TypeNew(TYK_CHAR,     8);
+  TYP_BYTE    := TypeNew(TYK_BYTE,     8);
+  TYP_SET     := TypeNew(TYK_SET,     16);
+  TYP_REAL    := TypeNew(TYK_REAL,    32);
+  TYP_NIL     := TypeNew(TYK_NIL,     16);
 End;
 
 { ============================================================
@@ -1121,6 +1851,10 @@ Begin
   InitBuiltinTypes;
 
   { --- Ouverture du source et lancement du lexer --- }
+  LexInit(src_fname);  { ouvre src_file, charge le premier token }
+
+  { --- Portee module (niveau 1) --- }
+  ScopeEnter;
 
   { --- Ouverture de la sortie --- }
   Assign(out_file, out_fname);
@@ -1137,22 +1871,18 @@ Begin
   Assign(tmp_file, tmp_fname);
   Rewrite(tmp_file);
 
-  LexInit(src_fname);
-
+  { --- Compilation principale (TODO 04 -> 24) --- }
   WriteLn(cur_out^, '; Genere par OBERON86 v', OBERON86_VERSION,
           ' le ', OBERON86_DATE);
   WriteLn(cur_out^, '; Source : ', src_fname);
   WriteLn(cur_out^);
-
-  { --- Compilation principale (TODO 02 -> 24) --- }
   { ParseModule; }
 
   { --- Fermeture --- }
-  Close(src_file);
+  ScopeLeave;  { fermer la portee module }
+  LexClose;
   Close(tmp_file);
   Close(out_file);
-
-  FreeTables;
 
   { --- Rapport final --- }
   If opt_verbose Then
@@ -1163,7 +1893,14 @@ Begin
     WriteLn('Erreurs    : ', err_count);
     WriteLn('Avertissements : ', warn_count);
     WriteLn('Instructions   : ', instr_count);
+    If opt_debug Then
+    Begin
+      TypeDump;
+      SymDumpVerbose;
+    End;
   End;
+
+  FreeTables;
 
   If err_count > 0 Then
   Begin
