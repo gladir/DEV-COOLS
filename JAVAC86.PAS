@@ -5662,13 +5662,137 @@ Begin
 End;
 
 { ============================================================================
-  TODO 16 ... 25 : a implementer
+  TODO 16 - CODEGEN : CHAINES ET CONCATENATION
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenStrLoadLit : charger un litteral de chaine : AX = OFFSET lbl, DX = len.
+  -------------------------------------------------------------------------- }
+Procedure GenStrLoadLit(Const lbl : TString; len : Integer);
+Begin
+  EmitI1('MOV', 'AX, OFFSET ' + lbl);
+  EmitI1('MOV', 'DX, ' + IntToStr(len));
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrLoadVar : charger une variable String dans AX=ptr, DX=len.
+  Simple alias de GenLoadVar (qui gere deja VK_STRING).
+  -------------------------------------------------------------------------- }
+Procedure GenStrLoadVar(idx : Integer);
+Begin
+  GenLoadVar(idx);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrCat : appeler _JRT_STRCAT.
+  Pre-condition : les 4 mots (PUSH DX / PUSH AX pour chaque chaine) sont
+  deja sur la pile.  Resultat : AX=ptr, DX=len du resultat concatene.
+  -------------------------------------------------------------------------- }
+Procedure GenStrCat;
+Begin
+  EmitI1('CALL', RT_PFX + 'STRCAT');
+  EmitI1('ADD',  'SP, 8');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrCmp : appeler _JRT_STRCMP.
+  Pre-condition : 4 mots sur la pile.  Resultat : AX = 0 si egales.
+  -------------------------------------------------------------------------- }
+Procedure GenStrCmp;
+Begin
+  EmitI1('CALL', RT_PFX + 'STRCMP');
+  EmitI1('ADD',  'SP, 8');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrEqual : comparer deux chaines et produire AX = 1 si egales, 0 sinon.
+  Pre-condition : 4 mots sur la pile.
+  -------------------------------------------------------------------------- }
+Procedure GenStrEqual;
+Var lbl_t, lbl_f : TString;
+Begin
+  GenStrCmp;
+  lbl_t := NewLabel;
+  lbl_f := NewLabel;
+  EmitI1('TEST', 'AX, AX');
+  EmitI1('JZ',   lbl_t);
+  EmitI0('XOR  AX, AX');
+  EmitI1('JMP',  lbl_f);
+  EmitLabel(lbl_t);
+  EmitI1('MOV', 'AX, 1');
+  EmitLabel(lbl_f);
+End;
+
+{ --------------------------------------------------------------------------
+  GenStr2Int : convertir la chaine (AX=ptr, DX=len) en entier -> AX.
+  -------------------------------------------------------------------------- }
+Procedure GenStr2Int;
+Begin
+  EmitI1('CALL', RT_PFX + 'STR2INT');
+End;
+
+{ --------------------------------------------------------------------------
+  GenInt2Str : convertir l'entier AX en chaine -> AX=ptr, DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenInt2Str;
+Begin
+  EmitI1('CALL', RT_PFX + 'INT2STR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenBool2Str : convertir le booleen AX (0/1) en chaine -> AX=ptr, DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenBool2Str;
+Begin
+  EmitI1('CALL', RT_PFX + 'BOOL2STR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenChar2Str : convertir le code char AX en chaine 1 car -> AX=ptr, DX=len.
+  -------------------------------------------------------------------------- }
+Procedure GenChar2Str;
+Begin
+  EmitI1('CALL', RT_PFX + 'CHAR2STR');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrLength : longueur de la chaine courante (DX) dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenStrLength;
+Begin
+  EmitI2('MOV', 'AX', 'DX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStringConcatChain : concatener n chaines successives.
+  Pre-condition : les n descripteurs ont ete empiles (PUSH DX / PUSH AX).
+  Effectue n-1 appels a STRCAT ; le resultat intermediaire est re-empile
+  entre chaque appel pour alimenter l'iteration suivante.
+  -------------------------------------------------------------------------- }
+Procedure GenStringConcatChain(n : Integer);
+Var i : Integer;
+Begin
+  If n < 2 Then Exit;
+  For i := 1 To n - 1 Do
+  Begin
+    EmitI1('CALL', RT_PFX + 'STRCAT');
+    EmitI1('ADD',  'SP, 8');
+    If i < n - 1 Then
+    Begin
+      EmitI1('PUSH', 'DX');
+      EmitI1('PUSH', 'AX');
+    End;
+  End;
+End;
+
+{ ============================================================================
+  TODO 17 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   InitTables;
   scope_sp := 0;
   WriteLn('JAVAC86 v', JAVAC86_VERSION, ' - compilateur Java Lite -> MASM 8086');
-  WriteLn('(TODO 16-25 non implementes)');
+  WriteLn('(TODO 17-25 non implementes)');
   FreeTables;
 End.
