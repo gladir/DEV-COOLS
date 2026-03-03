@@ -110,7 +110,7 @@
 
    TODO 14 - COMMANDE SWITCHON
      SWITCHON expr INTO $( CASE val: cmds ENDCASE ... DEFAULT: $).
-     Etiquettes entières. ENDCASE explicite (pas de fall-through).
+     Etiquettes entiÃ¨res. ENDCASE explicite (pas de fall-through).
      Table de sauts (dense) ou cascade CMP/JE (sparse). DEFAULT.
      MAX_SWITCH = 128 cases par SWITCHON.
 
@@ -188,197 +188,6 @@
      definitions mutuelles LET/AND. TASM/MASM + DOSBox.
 
    ================================================================ *)
-  ================================================================
-
-  LISTE DES TRAVAUX A REALISER (25 TODOS)
-  ========================================
-
-  TODO 01 - INFRASTRUCTURE DE BASE
-    Definir les constantes globales (VERSION, MAX_SYM, MAX_SCOPE,
-    MAX_LABELS, MAX_ERRORS, MAX_STR, etc.) et les types fondamentaux
-    (TString, TToken, TTokenKind, etc.). Mettre en place le cadre
-    principal du programme (lecture des arguments, ouverture des
-    fichiers source .MOD et sortie .ASM, boucle principale).
-
-  TODO 02 - ANALYSEUR LEXICAL (LEXER)
-    Implementer le lecteur de caracteres (LexChar, LexPeek),
-    la gestion des lignes/colonnes pour les messages d'erreur,
-    et la reconnaissance de tous les tokens Oberon : mots-cles
-    (MODULE, IMPORT, CONST, TYPE, VAR, PROCEDURE, BEGIN, END,
-    IF, THEN, ELSIF, ELSE, WHILE, DO, REPEAT, UNTIL, FOR, TO,
-    BY, LOOP, EXIT, CASE, OF, WITH, RETURN, DIV, MOD, IN,
-    OR, AND, NOT, NIL, TRUE, FALSE, DEFINITION, IMPLEMENTATION,
-    FROM, EXPORT, QUALIFIED), identificateurs, entiers,
-    reels, caracteres ('x' ou nC), chaines ('abc' ou "abc"), operateurs et
-    delimiteurs. LexNext avance au token suivant.
-
-  TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
-    Implementer la table des symboles (SymEnter, SymFind,
-    SymFindLocal). Gerer les portees imbriquees (ScopeEnter /
-    ScopeLeave) pour le module, les procedures et les blocs.
-    Definir les categories de symboles : SK_CONST, SK_TYPE,
-    SK_VAR, SK_PARAM, SK_PROC, SK_MODULE, SK_FIELD.
-
-  TODO 04 - SYSTEME DE TYPES
-    Implementer la representation interne des types Modula-2 :
-    types de base INTEGER, CARDINAL, BOOLEAN, CHAR, BYTE, BITSET, REAL ;
-    types structures ARRAY [lo..hi] OF T, RECORD, POINTER, PROCEDURE ;
-    chaines (ARRAY OF CHAR), sous-intervalles et enumeres.
-    Fonctions de compatibilite de
-    types (TypeCompat, TypeAssignCompat) et de taille
-    (TypeBitSize, TypeByteSize).
-
-  TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
-    Implementer le moteur d'emission assembleur 8086 :
-    EmitLabel, EmitI0, EmitI1, EmitI2, EmitComment,
-    EmitDB, EmitDW, EmitDD. Gerer le compteur d'instructions,
-    le segment de code (.CODE), le segment de donnees (.DATA)
-    et le segment de pile. Produire un fichier .ASM compatible
-    MASM/TASM.
-
-  TODO 06 - DECLARATIONS DE CONSTANTES (CONST)
-    Parser la section CONST d'un module ou d'une procedure.
-    Evaluer les expressions constantes au moment de la
-    compilation (entiers, booleens, caracteres, chaines,
-    expressions arithmetiques et booleennes sur constantes).
-    Stocker dans la table des symboles avec SK_CONST.
-
-  TODO 07 - DECLARATIONS DE TYPES (TYPE)
-    Parser la section TYPE. Gerer les alias de types,
-    les types tableaux (ARRAY n OF T), les types enregistrement
-    (RECORD ... END) avec leurs champs, les types pointeur
-    (POINTER TO T) et les types procedure (PROCEDURE (params) : T).
-    Construire les descripteurs de types internes.
-
-  TODO 08 - DECLARATIONS DE VARIABLES (VAR)
-    Parser la section VAR au niveau module (variables globales,
-    emises en .DATA) et au niveau procedure (variables locales,
-    allouees sur la pile via BP). Calculer les offsets,
-    generer les reserves memoire (DW ?, DB ?, etc.).
-
-  TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
-    Parser les facteurs Oberon : litteraux entiers, booleens,
-    caracteres, chaines, NIL, identificateurs (variables,
-    constantes, appels de fonctions), acces indexes (a[i]),
-    selection de champ (r.f), dereferencement (p^),
-    sous-expressions entre parentheses. Generer le code 8086
-    correspondant (resultat dans AX ou AX:DX pour 32 bits).
-
-  TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
-    ImplÃ©menter la hierarchie complete des operateurs Oberon :
-    unaires (-, +, NOT) ; termes (*, /, DIV, MOD, AND) ;
-    expressions simples (+, -, OR) ; relations (=, #, <, <=,
-    >, >=, IN, IS). Verifier la compatibilite de types a chaque
-    niveau et produire le code 8086 (MUL, IMUL, IDIV, AND, OR,
-    XOR, NEG, CMP, Jcc, SETcc).
-
-  TODO 11 - INSTRUCTION D'AFFECTATION (:=)
-    Parser et generer le code pour l'affectation Oberon.
-    Gerer les cas : variable simple, element de tableau,
-    champ d'enregistrement, dereferencement de pointeur.
-    Verifier la compatibilite de type assignation.
-    Cas particulier : affectation de chaines.
-
-  TODO 12 - INSTRUCTION IF / ELSIF / ELSE
-    Parser IF expr THEN seq {ELSIF expr THEN seq} [ELSE seq] END.
-    Generer les sauts conditionnels 8086 avec gestion correcte
-    des etiquettes (label_else_i, label_end). Verifier que
-    l'expression est de type BOOLEAN.
-
-  TODO 13 - INSTRUCTION WHILE / REPEAT / LOOP / EXIT
-    Parser WHILE expr DO seq END, REPEAT seq UNTIL expr,
-    LOOP seq END avec EXIT. Generer les boucles 8086 :
-    etiquettes de debut/fin, sauts conditionnels, traitement
-    de EXIT (JMP vers label_end de la boucle englobante).
-
-  TODO 14 - INSTRUCTION FOR
-    Parser FOR v := debut TO fin [BY pas] DO seq END.
-    Evaluer et stocker debut, fin, pas (constante obligatoire
-    en Oberon). Generer l'initialisation, le test de borne
-    et l'incrementation en 8086 (MOV, CMP, Jcc, ADD/SUB).
-
-  TODO 15 - INSTRUCTION CASE
-    Parser CASE expr OF {val {| val} : seq} [ELSE seq] END.
-    Gerer les etiquettes entieres et caracteres. Generer
-    la table de sauts ou la cascade de comparaisons 8086
-    selon la densite des valeurs (table si dense, chaine
-    CMP/JE si sparse).
-
-  TODO 16 - INSTRUCTION WITH (GARDE DE TYPE)
-    Parser WITH v : T DO seq END. Implementer la verification
-    de type dynamique (IS) et le transtypage local de v vers T
-    pour la duree du bloc. Generer le code de test de type
-    a l'execution si necessaire.
-
-  TODO 17 - DECLARATIONS DE PROCEDURES
-    Parser PROCEDURE [*] nom [(params)] [: typeRetour] ;
-    [corps] END nom. Gerer le prologue 8086 (PUSH BP /
-    MOV BP, SP / SUB SP, taille_locales), l'epilogue
-    (MOV SP, BP / POP BP / RET n), les parametres passes
-    par valeur et par reference (VAR), le type retour
-    (resultat dans AX).
-
-  TODO 18 - APPELS DE PROCEDURES ET DE FONCTIONS
-    Parser et generer les appels de procedures/fonctions :
-    empilement des arguments dans l'ordre correct, gestion
-    du type VAR (passage d'adresse via LEA), recuperation
-    du resultat (AX). Gerer la recursion. Verifier l'arite
-    et les types des arguments.
-
-  TODO 19 - PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
-    Implementer les procedures/fonctions standard Oberon :
-    INC(v[,n]), DEC(v[,n]), INCL(s,e), EXCL(s,e),
-    NEW(p), DISPOSE(p), HALT(n), ASSERT(b[,n]),
-    ABS(x), ODD(x), CAP(c), ORD(x), CHR(x),
-    LEN(a[,d]), SHORT(x), LONG(x), ENTIER(x), SIZE(T).
-    Generer le code 8086 inline ou appel runtime.
-
-  TODO 20 - MODULE D'ENTREE/SORTIE (Out / In)
-    Implementer le support des modules standard Oberon :
-    Out.Int(n, w), Out.Real(r, w), Out.Char(c),
-    Out.String(s), Out.Ln ; In.Int(n), In.Char(c),
-    In.String(s). Generer les appels au runtime 8086
-    (_JRT_WRITEINT, _JRT_WRITESTR, etc. adaptes Oberon).
-
-  TODO 21 - GESTION DES TABLEAUX ET ENREGISTREMENTS
-    Generer le code 8086 pour : acces indexe (calcul d'offset
-    = base + i * taille_element, verification de borne
-    optionnelle), acces champ (base + offset_champ),
-    copie de structure (MOV par blocs), passage de tableau
-    ouvert (ARRAY OF T) avec longueur implicite.
-
-  TODO 22 - GESTION DES POINTEURS ET ALLOCATIONS
-    Implementer NEW(p) : appel a un allocateur heap en 8086
-    (runtime malloc simplifie). DISPOSE(p). Generer le
-    dereferencement (p^ â†’ [BX]). Gerer NIL (valeur 0000h).
-    Optionnel : verifier le pointeur NIL a l'execution.
-
-  TODO 23 - IMPORTATION DE MODULES (IMPORT)
-    Parser la clause IMPORT et gerer la qualification
-    M.x dans les expressions et instructions. Implementer
-    une table des modules importes. Pour la phase 1 :
-    supporter au moins In, Out, Math, SYSTEM comme modules
-    connus avec leur interface predeclaree.
-
-  TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
-    Implementer les messages d'erreur situes (fichier, ligne,
-    colonne), le comptage des erreurs et avertissements,
-    l'arret apres un seuil d'erreurs (MAX_ERRORS). Ajouter
-    un mode verbeux (-v) affichant les symboles, les types
-    et les statistiques de compilation (lignes, tokens,
-    instructions generees).
-
-  TODO 25 - INTEGRATION FINALE ET TESTS
-    Assembler toutes les phases dans la boucle principale.
-    Generer le prologue .ASM complet (modele memoire SMALL,
-    directives DOSSEG, .MODEL, .STACK, .DATA, .CODE, END START).
-    Creer une suite de programmes de test Oberon couvrant :
-    HelloWorld, arithmetique, boucles, tableaux, enregistrements,
-    pointeurs, procedures recursives. Valider la compilation
-    de bout en bout avec TASM/MASM et execution sous DOSBox.
-
-  ================================================================ *)
-
 Program BCPL86;
 
 {$I-}   { desactiver les IO-check pour gerer nous-memes les erreurs }
@@ -426,7 +235,7 @@ Type
     TK_REAL,      { litteral reel                                 }
     TK_CHAR,      { litteral caractere  0X ou 'X'                 }
     TK_STRING,    { litteral chaine  'abc' ou "abc"              }
-    TK_KEYWORD,   { mot-cle Modula-2 reserve                      }
+    TK_KEYWORD,   { mot-cle BCPL reserve                          }
     TK_OP,        { operateur symbolique                          }
     TK_PUNCT,     { ponctuation  : ; . , ( ) [ ] ^ &             }
     TK_EOF        { fin de fichier source                         }
@@ -441,48 +250,33 @@ Type
     col      : Integer;       { colonne dans le source            }
   End;
 
-  { ---- Kinds de type Modula-2 ---- }
+  { ---- Types BCPL : tout est un mot 16 bits non type ---- }
   TTypeKind = (
-    TYK_NONE,     { non encore resolu                             }
-    TYK_INTEGER,  { INTEGER  (16 bits signe sur 8086)              }
-    TYK_CARDINAL, { CARDINAL (16 bits non signe)                   }
-    TYK_BOOLEAN,  { BOOLEAN  (8 bits, 0=FALSE 1=TRUE)              }
-    TYK_CHAR,     { CHAR     (8 bits)                              }
-    TYK_BYTE,     { BYTE     (8 bits non signe)                    }
-    TYK_BITSET,   { BITSET   (16 bits, ensemble 0..15)             }
-    TYK_SET,      { SET OF T (16 bits, un bit par element)         }
-    TYK_REAL,     { REAL     (32 bits IEEE 754, emulation software) }
-    TYK_LONGINT,  { LONGINT  (32 bits signe)                       }
-    TYK_WORD,     { WORD     (16 bits sans type)                   }
-    TYK_ADDRESS,  { ADDRESS  (16 bits, pointeur generique)         }
-    TYK_ARRAY,    { ARRAY [lo..hi] OF T                           }
-    TYK_OPENARRAY,{ ARRAY OF T  (longueur implicite)              }
-    TYK_RECORD,   { RECORD ... END                                }
-    TYK_POINTER,  { POINTER TO T                                  }
-    TYK_PROC,     { type procedure  PROCEDURE(params):T           }
-    TYK_NIL       { type de NIL (compatible POINTER uniquement)   }
+    TYK_WORD,     { mot 16 bits - type unique de BCPL             }
+    TYK_STRING    { adresse d'une chaine au format BCPL            }
   );
 
-  { ---- Descripteur de type ---- }
+  { ---- Descripteur de type (minimal pour BCPL) ---- }
   TTypeRec = Record
     kind     : TTypeKind;
-    bit_size : Integer;       { taille en bits                    }
-    base_idx : Integer;       { type de base (ARRAY/POINTER/OPEN) }
-    arr_len  : Integer;       { nombre d'elements si TYK_ARRAY    }
-    rec_sym  : Integer;       { premier champ dans sym_table      }
-    rec_nfld : Integer;       { nombre de champs du RECORD        }
+    bit_size : Integer;       { 16 pour WORD, 8 pour STRING/byte  }
+    base_idx : Integer;       { non utilise en BCPL               }
+    arr_len  : Integer;       { non utilise en BCPL               }
+    rec_sym  : Integer;       { non utilise en BCPL               }
+    rec_nfld : Integer;       { non utilise en BCPL               }
   End;
 
-  { ---- Categories de symboles ---- }
+  { ---- Categories de symboles BCPL ---- }
   TSymKind = (
     SK_NONE,      { entree non utilisee                           }
-    SK_CONST,     { constante CONST                               }
-    SK_TYPE,      { declaration TYPE                              }
-    SK_VAR,       { variable (globale ou locale)                  }
-    SK_PARAM,     { parametre formel (VAR ou valeur)              }
-    SK_PROC,      { procedure ou fonction                         }
-    SK_FIELD,     { champ de RECORD                               }
-    SK_MODULE     { module importe                                }
+    SK_MANIFEST,  { constante entiere MANIFEST (compile-time)     }
+    SK_GLOBAL,    { variable dans le vecteur global G!slot        }
+    SK_STATIC,    { variable statique initialisee (.DATA)         }
+    SK_LOCAL,     { variable locale sur la pile (BP-n)            }
+    SK_PARAM,     { parametre de routine (BP+n)                   }
+    SK_PROC,      { routine BCPL (LET name(...) BE ...)           }
+    SK_VEC,       { vecteur local (VEC n) = adresse BP-n          }
+    SK_LABEL      { etiquette de SWITCHON/CASE                    }
   );
 
   { ---- Portee d'un symbole ---- }
@@ -493,19 +287,20 @@ Type
     SC_CONST      { constante evaluee au compile-time             }
   );
 
-  { ---- Entree de la table des symboles ---- }
+  { ---- Entree de la table des symboles BCPL ---- }
   TSymbol = Record
     name       : TString;     { nom tel que declare (casse conservee)  }
     kind       : TSymKind;
     scope      : TScope;
-    type_idx   : Integer;     { index dans type_table                  }
-    asm_label  : TString;     { label ASM : _OV_<nom>  ou  _OP_<nom>  }
+    type_idx   : Integer;     { index dans type_table (toujours TYP_WORD) }
+    asm_label  : TString;     { label ASM                              }
     bp_offset  : Integer;     { offset BP pour variables locales/param }
-    is_var_par : Boolean;     { parametre passe par reference (VAR)    }
-    const_ival : LongInt;     { valeur si SK_CONST entier/char/bool    }
-    const_sval : TString;     { valeur si SK_CONST chaine              }
+    is_var_par : Boolean;     { non utilise en BCPL (pas de VAR param) }
+    const_ival : LongInt;     { valeur si SK_MANIFEST                  }
+    const_sval : TString;     { non utilise en BCPL                    }
     proc_idx   : Integer;     { si SK_PROC : index dans proc_table     }
-    fld_offset : Integer;     { si SK_FIELD : offset dans le RECORD    }
+    fld_offset : Integer;     { non utilise en BCPL                    }
+    glob_slot  : Integer;     { si SK_GLOBAL : numero de slot G!n      }
     scope_level: Integer;     { niveau de portee lors de la declaration}
   End;
 
@@ -545,10 +340,10 @@ Type
 
   TConstTable = Array[1..MAX_CONST] of TConstRec;
 
-  { ---- Module importe ---- }
+  { ---- Fichier inclus (directive GET) ---- }
   TImportRec = Record
-    mod_name : TString;       { nom d'origine (ex : Out)               }
-    alias    : TString;       { alias local si IMPORT Out := Output    }
+    mod_name : TString;       { nom du fichier inclus (GET "file")     }
+    alias    : TString;       { section associee si SECTION            }
   End;
 
   { Pointeur sur fichier texte - nomme pour eviter incompatibilite TP }
@@ -566,7 +361,7 @@ Var
   src_file     : Text;
   out_file     : Text;
   tmp_file     : Text;
-  str_file     : Text;             { chaînes litterales differees (TODO 25) }
+  str_file     : Text;             { chaÃ®nes litterales differees (TODO 25) }
   cur_out      : TTextPtr;   { pointe sur out_file ou tmp_file       }
   src_fname    : TString;
   out_fname    : TString;
@@ -618,20 +413,20 @@ Var
   { Label de retour de la procedure courante (RETURN -> JMP cur_ret_lbl) }
   cur_ret_lbl      : TString;
 
-  { Types primitifs predefinis (indexes dans type_table) }
-  TYP_INTEGER  : Integer;
-  TYP_CARDINAL : Integer;
-  TYP_BOOLEAN  : Integer;
-  TYP_CHAR     : Integer;
-  TYP_BYTE     : Integer;
-  TYP_BITSET   : Integer;
-  TYP_SET      : Integer;
-  TYP_REAL     : Integer;
-  TYP_LONGINT  : Integer;
-  TYP_WORD     : Integer;
-  TYP_ADDRESS  : Integer;
-  TYP_NIL      : Integer;
-  TYP_UNDEF    : Integer;
+  { Type BCPL unique (index dans type_table) }
+  TYP_WORD     : Integer;     { type unique : mot 16 bits             }
+  TYP_STRING   : Integer;     { adresse chaine BCPL                   }
+
+  { Vecteur global BCPL : G!slot }
+  glob_vec_size : Integer;    { plus grand slot G! utilise            }
+  glob_slots    : Array[0..MAX_GLOBAL-1] of Integer; { slot -> sym idx }
+  glob_routine  : Array[0..MAX_GLOBAL-1] of TString; { slot -> label proc }
+
+  { Generation de code BCPL }
+  cur_local_off  : Integer;   { offset BP courant pour LET locaux     }
+  valof_lbl      : TString;   { label RESULTIS courant                }
+  valof_depth    : Integer;   { profondeur VALOF imbriques            }
+  cur_switch_lbl : TString;   { label fin SWITCHON courant            }
 
 { ============================================================
   Utilitaires generaux (stubs - implementation dans TODO 02+)
@@ -783,32 +578,33 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexSkipOberonComment : sauter un commentaire  (* ... *)  avec imbrication.
-  On est positionne sur le '(' au moment de l'appel.
+  LexSkipLineComment : sauter un commentaire de ligne  // ...
+  On est positionne sur le premier '/' au moment de l'appel.
   -------------------------------------------------------------------------- }
-Procedure LexSkipOberonComment;
-Var depth : Integer;
+Procedure LexSkipLineComment;
 Begin
-  depth := 1;
-  LexAdvance;  { sauter '(' }
+  { Avancer jusqu'a la fin de la ligne }
+  While (Not lex_eof) And (LexCurChar <> #0) Do
+    LexAdvance;
+End;
+
+{ --------------------------------------------------------------------------
+  LexSkipBlockComment : sauter un commentaire bloc  /* ... */  (non imbrique).
+  On est positionne sur le premier '/' au moment de l'appel.
+  -------------------------------------------------------------------------- }
+Procedure LexSkipBlockComment;
+Begin
+  LexAdvance;  { sauter '/' }
   LexAdvance;  { sauter '*' }
-  While (Not lex_eof) And (depth > 0) Do
+  While Not lex_eof Do
   Begin
     If LexCurChar = #0 Then
+      LexRefill
+    Else If (LexCurChar = '*') And (LexPeekChar(1) = '/') Then
     Begin
-      LexRefill;
-    End
-    Else If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
-    Begin
-      Inc(depth);
-      LexAdvance;
-      LexAdvance;
-    End
-    Else If (LexCurChar = '*') And (LexPeekChar(1) = ')') Then
-    Begin
-      Dec(depth);
-      LexAdvance;
-      LexAdvance;
+      LexAdvance;  { sauter '*' }
+      LexAdvance;  { sauter '/' }
+      Break;
     End
     Else
       LexAdvance;
@@ -816,7 +612,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexSkipWS : sauter les blancs et les commentaires (* ... *).
+  LexSkipWS : sauter les blancs et les commentaires BCPL // et /* ... */.
   -------------------------------------------------------------------------- }
 Procedure LexSkipWS;
 Begin
@@ -832,10 +628,17 @@ Begin
       Continue;
     End;
 
-    { Commentaire Modula-2  (* ... *)  eventuellement imbrique }
-    If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
+    { Commentaire de ligne  // ... fin-de-ligne }
+    If (LexCurChar = '/') And (LexPeekChar(1) = '/') Then
     Begin
-      LexSkipOberonComment;
+      LexSkipLineComment;
+      Continue;
+    End;
+
+    { Commentaire bloc  /* ... */ }
+    If (LexCurChar = '/') And (LexPeekChar(1) = '*') Then
+    Begin
+      LexSkipBlockComment;
       Continue;
     End;
 
@@ -844,33 +647,34 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexIsKeyword : verifier si s est un mot-cle Oberon (en majuscules).
-  En Oberon les mots-cles sont en majuscules ; les identificateurs sont
-  sensibles a la casse. On compare donc la version majuscule du lexeme.
+  LexIsKeyword : verifier si s est un mot-cle BCPL (en majuscules).
+  BCPL est insensible a la casse ; tous les mots-cles sont compares
+  apres conversion en majuscules.
   -------------------------------------------------------------------------- }
 Function LexIsKeyword(Const s : TString) : Boolean;
 Begin
   LexIsKeyword :=
-    (s = 'MODULE')        Or (s = 'DEFINITION')    Or (s = 'IMPLEMENTATION') Or
-    (s = 'FROM')          Or (s = 'IMPORT')         Or (s = 'EXPORT')       Or
-    (s = 'QUALIFIED')     Or
-    (s = 'CONST')         Or (s = 'TYPE')           Or (s = 'VAR')          Or
-    (s = 'PROCEDURE')     Or
-    (s = 'BEGIN')         Or (s = 'END')            Or
-    (s = 'IF')            Or (s = 'THEN')           Or (s = 'ELSIF')        Or
-    (s = 'ELSE')          Or
-    (s = 'WHILE')         Or (s = 'DO')             Or
-    (s = 'REPEAT')        Or (s = 'UNTIL')          Or
-    (s = 'FOR')           Or (s = 'TO')             Or (s = 'BY')           Or
-    (s = 'LOOP')          Or (s = 'EXIT')           Or
-    (s = 'CASE')          Or (s = 'OF')             Or
-    (s = 'WITH')          Or
-    (s = 'RETURN')        Or
-    (s = 'ARRAY')         Or (s = 'RECORD')         Or (s = 'POINTER')      Or
-    (s = 'DIV')           Or (s = 'MOD')            Or
-    (s = 'IN')            Or
-    (s = 'OR')            Or (s = 'AND')            Or (s = 'NOT')          Or
-    (s = 'NIL')           Or (s = 'TRUE')           Or (s = 'FALSE');
+    (s = 'LET')         Or (s = 'AND')          Or (s = 'BE')           Or
+    (s = 'IS')          Or (s = 'INTO')          Or
+    (s = 'TO')          Or (s = 'BY')            Or (s = 'DO')           Or
+    (s = 'IF')          Or (s = 'UNLESS')        Or
+    (s = 'TEST')        Or (s = 'THEN')          Or (s = 'ELSE')         Or
+    (s = 'OR')          Or
+    (s = 'WHILE')       Or (s = 'UNTIL')         Or
+    (s = 'FOR')         Or (s = 'LOOP')          Or
+    (s = 'BREAK')       Or (s = 'RETURN')        Or (s = 'RESULTIS')     Or
+    (s = 'SWITCHON')    Or (s = 'CASE')          Or (s = 'ENDCASE')      Or
+    (s = 'DEFAULT')     Or
+    (s = 'VALOF')       Or (s = 'VEC')           Or
+    (s = 'TRUE')        Or (s = 'FALSE')         Or
+    (s = 'MANIFEST')    Or (s = 'STATIC')        Or (s = 'GLOBAL')       Or
+    (s = 'SECTION')     Or (s = 'GET')           Or (s = 'TABLE')        Or
+    (s = 'NEEDS')       Or
+    (s = 'FINISH')      Or
+    (s = 'REPEAT')      Or (s = 'REPEATWHILE')   Or (s = 'REPEATUNTIL')  Or
+    (s = 'MOD')         Or (s = 'REM')           Or (s = 'ABS')          Or
+    (s = 'EQV')         Or (s = 'XOR')           Or
+    (s = 'SLCT')        Or (s = 'NOT');
 End;
 
 { --------------------------------------------------------------------------
@@ -887,10 +691,10 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexReadIdent : lire un identifiant ou un mot-cle Modula-2.
-  Modula-2 est sensible a la casse pour les identifiants ; les mots-cles sont
-  en majuscules dans le source standard.  On compare la version majuscule
-  pour la detection du mot-cle mais on conserve la casse originale dans val.
+  LexReadIdent : lire un identifiant ou un mot-cle BCPL.
+  BCPL est insensible a la casse ; on compare la version majuscule
+  pour la detection du mot-cle, mais on stocke la version majuscule
+  comme identifiant (BCPL conventionnellement en majuscules).
   -------------------------------------------------------------------------- }
 Procedure LexReadIdent(Var t : TToken);
 Var s  : TString;
@@ -898,7 +702,7 @@ Var s  : TString;
 Begin
   s  := '';
   su := '';
-  While (Not lex_eof) And LexIsAlNum(LexCurChar) Do
+  While (Not lex_eof) And (LexIsAlNum(LexCurChar) Or (LexCurChar = '_')) Do
   Begin
     If Length(s) < MAX_STR Then
     Begin
@@ -910,168 +714,108 @@ Begin
   If LexIsKeyword(su) Then
     LexMakeTok(t, TK_KEYWORD, su)   { mots-cles toujours en majuscules }
   Else
-    LexMakeTok(t, TK_IDENT, s);     { identifiants : casse conservee   }
+    LexMakeTok(t, TK_IDENT, su);    { identifiants en majuscules aussi  }
 End;
 
 { --------------------------------------------------------------------------
-  LexReadNumber : lire un entier decimal, un reel, un entier hexadecimal
-  (suffixe H) ou un caractere Modula-2 (suffixe C).
-  Formes reconnues :
-    ddddd          entier decimal
-    dddddH         entier hexadecimal (digits 0-9 A-F)
-    dddddC         code de caractere Modula-2 (decimal devant C)
-    ddddd.ddddd    reel
-    ddddd.dddddE[+-]nn  reel avec exposant
+  LexReadNumber : lire un entier decimal seulement (# est gere dans LexNext).
+  Le prefixe # (octal ou hex) est traite directement dans LexNext.
   -------------------------------------------------------------------------- }
 Procedure LexReadNumber(Var t : TToken);
-Var s      : TString;
-    n      : LongInt;
-    r      : Real;
-    err    : Integer;
-    is_hex : Boolean;
-    i      : Integer;
+Var s   : TString;
+    n   : LongInt;
+    i   : Integer;
 Begin
-  s      := '';
-  n      := 0;
-  is_hex := False;
+  s := '';
+  n := 0;
 
-  { Accumuler les chiffres (hex ou decimal) }
-  While (Not lex_eof) And LexIsHexDigit(LexCurChar) Do
+  While (Not lex_eof) And LexIsDigit(LexCurChar) Do
   Begin
     If Length(s) < MAX_STR Then s := s + LexCurChar;
-    If (LexCurChar >= 'A') And (LexCurChar <= 'F') Then is_hex := True;
-    If (LexCurChar >= 'a') And (LexCurChar <= 'f') Then is_hex := True;
     LexAdvance;
   End;
 
-  { Suffixe H -> hexadecimal }
-  If (LexCurChar = 'H') Or (LexCurChar = 'h') Then
-  Begin
-    n := 0;
-    For i := 1 To Length(s) Do
-      n := n * 16 + HexVal(s[i]);
-    LexAdvance;
-    LexMakeTok(t, TK_INTEGER, s + 'H');
-    t.int_val := n;
-    Exit;
-  End;
-
-  { Suffixe X -> caractere Oberon  nnnX (compatibilite) }
-  If (LexCurChar = 'X') Or (LexCurChar = 'x') Then
-  Begin
-    n := 0;
-    For i := 1 To Length(s) Do
-      n := n * 16 + HexVal(s[i]);
-    LexAdvance;
-    LexMakeTok(t, TK_CHAR, s + 'X');
-    t.int_val := n;
-    Exit;
-  End;
-
-  { Suffixe C -> caractere Modula-2  nnnC (valeur decimale) }
-  If (LexCurChar = 'C') And Not LexIsAlpha(LexPeekChar(1)) Then
-  Begin
-    n := 0;
-    For i := 1 To Length(s) Do
-      n := n * 10 + (Ord(s[i]) - Ord('0'));
-    LexAdvance;
-    LexMakeTok(t, TK_CHAR, s + 'C');
-    t.int_val := n;
-    Exit;
-  End;
-
-  { Point decimal -> reel (le '..' ne doit pas etre consomme) }
-  If (LexCurChar = '.') And (LexPeekChar(1) <> '.') Then
-  Begin
-    { Reconvertir s en decimal pour la partie entiere du reel }
-    If Length(s) < MAX_STR Then s := s + '.';
-    LexAdvance;
-    While (Not lex_eof) And LexIsDigit(LexCurChar) Do
-    Begin
-      If Length(s) < MAX_STR Then s := s + LexCurChar;
-      LexAdvance;
-    End;
-    { Exposant E }
-    If (LexCurChar = 'E') Or (LexCurChar = 'e') Then
-    Begin
-      If Length(s) < MAX_STR Then s := s + 'E';
-      LexAdvance;
-      If (LexCurChar = '+') Or (LexCurChar = '-') Then
-      Begin
-        If Length(s) < MAX_STR Then s := s + LexCurChar;
-        LexAdvance;
-      End;
-      While (Not lex_eof) And LexIsDigit(LexCurChar) Do
-      Begin
-        If Length(s) < MAX_STR Then s := s + LexCurChar;
-        LexAdvance;
-      End;
-    End;
-    LexMakeTok(t, TK_REAL, s);
-    Val(s, r, err);
-    If err = 0 Then t.real_val := r;
-    Exit;
-  End;
-
-  { Entier pur }
+  { Entier decimal pur }
   n := 0;
   For i := 1 To Length(s) Do
-  Begin
-    If is_hex Then
-      n := n * 16 + HexVal(s[i])
-    Else
-      n := n * 10 + (Ord(s[i]) - Ord('0'));
-  End;
+    n := n * 10 + (Ord(s[i]) - Ord('0'));
   LexMakeTok(t, TK_INTEGER, s);
   t.int_val := n;
 End;
 
 { --------------------------------------------------------------------------
-  LexReadString : lire une chaine entre guillemets doubles  "texte".
+  LexReadBcplNumber : lire un entier BCPL prefixe par '#'.
+  Formes : #NNN (octal)  #xHHH ou #XHHH (hexadecimal).
+  On est positionne sur '#' au moment de l'appel.
+  -------------------------------------------------------------------------- }
+Procedure LexReadBcplNumber(Var t : TToken);
+Var s   : TString;
+    n   : LongInt;
+    i   : Integer;
+Begin
+  LexAdvance;  { sauter '#' }
+  n := 0;
+  s := '';
+
+  { Hexadecimal : #x ou #X }
+  If (LexCurChar = 'x') Or (LexCurChar = 'X') Then
+  Begin
+    LexAdvance;  { sauter 'x' }
+    While (Not lex_eof) And LexIsHexDigit(LexCurChar) Do
+    Begin
+      If Length(s) < MAX_STR Then s := s + LexCurChar;
+      LexAdvance;
+    End;
+    n := 0;
+    For i := 1 To Length(s) Do
+      n := n * 16 + HexVal(s[i]);
+    LexMakeTok(t, TK_INTEGER, '#x' + s);
+    t.int_val := n;
+  End
+  Else
+  Begin
+    { Octal : digits 0-7 seulement }
+    While (Not lex_eof) And (LexCurChar >= '0') And (LexCurChar <= '7') Do
+    Begin
+      If Length(s) < MAX_STR Then s := s + LexCurChar;
+      LexAdvance;
+    End;
+    n := 0;
+    For i := 1 To Length(s) Do
+      n := n * 8 + (Ord(s[i]) - Ord('0'));
+    LexMakeTok(t, TK_INTEGER, '#' + s);
+    t.int_val := n;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadString : lire une chaine BCPL entre guillemets doubles "texte".
+  Support des sequences etoile : *N *T *S *P *C ** *'
   -------------------------------------------------------------------------- }
 Procedure LexReadString(Var t : TToken);
 Var s : TString;
+    c : Char;
 Begin
   s := '';
   LexAdvance;  { sauter '"' ouvrant }
   While (Not lex_eof) And (LexCurChar <> '"') And (LexCurChar <> #0) Do
   Begin
-    If Length(s) < MAX_STR Then s := s + LexCurChar;
-    LexAdvance;
-  End;
-  If LexCurChar = '"' Then
-    LexAdvance;  { sauter '"' fermant }
-  LexMakeTok(t, TK_STRING, s);
-  { Chaine d'un seul caractere -> aussi interpretable comme TK_CHAR }
-  If Length(s) = 1 Then
-    t.int_val := Ord(s[1]);
-End;
-
-{ --------------------------------------------------------------------------
-  LexReadStringSQ : lire une chaine entre apostrophes  'texte' (Modula-2).
-  Deux apostrophes consecutives '' representent une apostrophe litterale.
-  -------------------------------------------------------------------------- }
-Procedure LexReadStringSQ(Var t : TToken);
-Var s : TString;
-Begin
-  s := '';
-  LexAdvance;  { sauter apostrophe ouvrante }
-  While (Not lex_eof) And (LexCurChar <> #0) Do
-  Begin
-    If LexCurChar = '''' Then
+    If LexCurChar = '*' Then
     Begin
-      { Deux apostrophes consecutives = une apostrophe dans la chaine }
-      If LexPeekChar(1) = '''' Then
-      Begin
-        If Length(s) < MAX_STR Then s := s + '''';
-        LexAdvance;  { sauter premiere apostrophe }
-        LexAdvance;  { sauter deuxieme apostrophe }
-      End
-      Else
-      Begin
-        LexAdvance;  { sauter apostrophe fermante }
-        Break;
+      LexAdvance;  { sauter '*' }
+      Case UpChr(LexCurChar) Of
+        'N' : c := #10;   { newline    }
+        'T' : c := #9;    { tabulation }
+        'S' : c := ' ';   { espace     }
+        'P' : c := #12;   { form-feed  }
+        'C' : c := #13;   { CR         }
+        '*' : c := '*';
+        '''' : c := '''';
+        '"' : c := '"';
+        Else  c := LexCurChar;
       End;
+      If Length(s) < MAX_STR Then s := s + c;
+      LexAdvance;
     End
     Else
     Begin
@@ -1079,15 +823,55 @@ Begin
       LexAdvance;
     End;
   End;
+  If LexCurChar = '"' Then
+    LexAdvance;  { sauter '"' fermant }
   LexMakeTok(t, TK_STRING, s);
   If Length(s) = 1 Then
     t.int_val := Ord(s[1]);
 End;
 
 { --------------------------------------------------------------------------
-  LexReadOp : lire un operateur ou signe de ponctuation Modula-2.
-  Operateurs :  := = # <> < <= > >= .. + - * / & ~ |
-  Ponctuation : ( ) [ ] ^ ; , . :
+  LexReadCharLit : lire un caractere BCPL entre apostrophes  'c'  ou '*X'.
+  Sequences etoile : *N *T *S *P *C ** *'
+  -------------------------------------------------------------------------- }
+Procedure LexReadCharLit(Var t : TToken);
+Var c    : Char;
+    cval : Integer;
+Begin
+  LexAdvance;  { sauter apostrophe ouvrante }
+  cval := 0;
+  If LexCurChar = '*' Then
+  Begin
+    LexAdvance;  { sauter '*' }
+    Case UpChr(LexCurChar) Of
+      'N' : cval := 10;
+      'T' : cval := 9;
+      'S' : cval := 32;
+      'P' : cval := 12;
+      'C' : cval := 13;
+      '*' : cval := Ord('*');
+      '''' : cval := Ord('''');
+    Else
+      cval := Ord(LexCurChar);
+    End;
+    LexAdvance;
+  End
+  Else
+  Begin
+    cval := Ord(LexCurChar);
+    LexAdvance;
+  End;
+  { Sauter apostrophe fermante si presente }
+  If LexCurChar = '''' Then LexAdvance;
+  c := Chr(Byte(cval));
+  LexMakeTok(t, TK_CHAR, c);
+  t.int_val := cval;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadOp : lire un operateur ou signe de ponctuation BCPL.
+  Operateurs BCPL : := = ~= < <= > >= + - * / << >> & | ~ ! % @ ->
+  Delimiteurs bloc : $( et $) ou accolades
   -------------------------------------------------------------------------- }
 Procedure LexReadOp(Var t : TToken);
 Var s : TString;
@@ -1103,32 +887,52 @@ Begin
             s := ':=';
             LexAdvance;
           End;
+    '~' : If LexCurChar = '=' Then
+          Begin
+            s := '~=';
+            LexAdvance;
+          End;
     '<' : If LexCurChar = '=' Then
           Begin
             s := '<=';
             LexAdvance;
           End
-          Else If LexCurChar = '>' Then
+          Else If LexCurChar = '<' Then
           Begin
-            s := '<>';
+            s := '<<';
             LexAdvance;
           End;
     '>' : If LexCurChar = '=' Then
           Begin
             s := '>=';
             LexAdvance;
-          End;
-    '.' : If LexCurChar = '.' Then
+          End
+          Else If LexCurChar = '>' Then
           Begin
-            s := '..';
+            s := '>>';
+            LexAdvance;
+          End;
+    '-' : If LexCurChar = '>' Then
+          Begin
+            s := '->';
+            LexAdvance;
+          End;
+    '$' : If LexCurChar = '(' Then
+          Begin
+            s := '$(';
+            LexAdvance;
+          End
+          Else If LexCurChar = ')' Then
+          Begin
+            s := '$)';
             LexAdvance;
           End;
   End;
 
   { Classement en ponctuation ou en operateur }
   If (s = '(') Or (s = ')') Or (s = '[') Or (s = ']') Or
-     (s = '^') Or (s = ';') Or (s = ',') Or (s = '.') Or
-     (s = ':') Then
+     (s = ';') Or (s = ',') Or (s = '.') Or
+     (s = ':') Or (s = '{') Or (s = '}') Then
     LexMakeTok(t, TK_PUNCT, s)
   Else
     LexMakeTok(t, TK_OP, s);
@@ -1157,17 +961,24 @@ Begin
     Exit;
   End;
 
-  { Identifiant ou mot-cle }
-  If LexIsAlpha(LexCurChar) Then
+  { Identifiant ou mot-cle : commence par une lettre ou '_' }
+  If LexIsAlpha(LexCurChar) Or (LexCurChar = '_') Then
   Begin
     LexReadIdent(cur_tok);
     Exit;
   End;
 
-  { Litteraux numeriques : entier decimal/hex, reel, char (nX) }
+  { Litteraux numeriques : entiers decimaux }
   If LexIsDigit(LexCurChar) Then
   Begin
     LexReadNumber(cur_tok);
+    Exit;
+  End;
+
+  { Nombre BCPL prefixe # : octal ou hexadecimal }
+  If LexCurChar = '#' Then
+  Begin
+    LexReadBcplNumber(cur_tok);
     Exit;
   End;
 
@@ -1178,22 +989,14 @@ Begin
     Exit;
   End;
 
-  { Litteraux chaine apostrophe  '...'  (Modula-2) }
+  { Litteraux caractere BCPL  'c'  ou  '*X' }
   If LexCurChar = '''' Then
   Begin
-    LexReadStringSQ(cur_tok);
+    LexReadCharLit(cur_tok);
     Exit;
   End;
 
-  { & est un alias de AND en Modula-2 }
-  If LexCurChar = '&' Then
-  Begin
-    LexAdvance;
-    LexMakeTok(cur_tok, TK_KEYWORD, 'AND');
-    Exit;
-  End;
-
-  { Operateurs et ponctuation }
+  { Operateurs et ponctuation BCPL }
   LexReadOp(cur_tok);
 End;
 
@@ -1326,7 +1129,7 @@ Var s : TString;
 Begin
   Inc(label_count);
   Str(label_count, s);
-  NewLabel := OL_PFX + s;
+  NewLabel := BL_PFX + s;
 End;
 
 { --------------------------------------------------------------------------
@@ -1417,13 +1220,14 @@ Begin
   sym_table^[sym_count].kind        := kind;
   sym_table^[sym_count].scope       := scope;
   sym_table^[sym_count].type_idx    := type_idx;
-  sym_table^[sym_count].asm_label   := OV_PFX + AsmIdent(name);
+  sym_table^[sym_count].asm_label   := BV_PFX + AsmIdent(name);
   sym_table^[sym_count].bp_offset   := 0;
   sym_table^[sym_count].is_var_par  := False;
   sym_table^[sym_count].const_ival  := 0;
   sym_table^[sym_count].const_sval  := '';
   sym_table^[sym_count].proc_idx    := 0;
   sym_table^[sym_count].fld_offset  := 0;
+  sym_table^[sym_count].glob_slot   := -1;
   sym_table^[sym_count].scope_level := scope_sp;
   SymEnter := sym_count;
 End;
@@ -1503,8 +1307,8 @@ Begin
   proc_table^[pi].param_count  := 0;
   proc_table^[pi].local_size   := 0;
   proc_table^[pi].is_export    := is_export;
-  { Construire le label ASM : _OP_<module>_<name> }
-  proc_table^[pi].asm_label := OP_PFX + AsmIdent(module_name) + '_' + AsmIdent(name);
+  { Construire le label ASM : _BP_<module>_<name> }
+  proc_table^[pi].asm_label := BP_PFX + AsmIdent(module_name) + '_' + AsmIdent(name);
 
   { Enregistrer aussi dans sym_table comme SK_PROC }
   si := SymEnter(name, SK_PROC, SC_GLOBAL, ret_type_idx);
@@ -1512,12 +1316,13 @@ Begin
   Begin
     sym_table^[si].proc_idx  := pi;
     sym_table^[si].asm_label := proc_table^[pi].asm_label;
+    sym_table^[si].glob_slot := -1;
   End;
   ProcEnter := pi;
 End;
 
 { --------------------------------------------------------------------------
-  ProcFind : chercher une procedure par son nom.
+  ProcFind : chercher une routine BCPL par son nom.
   Retourne l'index dans proc_table ou 0.
   -------------------------------------------------------------------------- }
 Function ProcFind(Const name : TString) : Integer;
@@ -1533,8 +1338,8 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ProcAddParam : ajouter un parametre formel a la procedure courante.
-  L'offset BP est calcule automatiquement (convention near cdecl) :
+  ProcAddParam : ajouter un parametre formel a la routine BCPL.
+  L'offset BP est calcule (convention near) :
     BP+4 = premier parametre, BP+6 = deuxieme, etc.
   -------------------------------------------------------------------------- }
 Procedure ProcAddParam(pi : Integer; Const pname : TString;
@@ -1557,7 +1362,7 @@ Begin
   ofs := 4 + (pp - 1) * 2;
   proc_table^[pi].params[pp].bp_offset  := ofs;
 
-  { Ajouter aussi dans sym_table pour la portee locale }
+  { Ajouter le parametre aussi dans sym_table (portee locale) }
   si := SymEnter(pname, SK_PARAM, SC_PARAM, type_idx);
   If si > 0 Then
   Begin
@@ -1581,7 +1386,7 @@ Begin
   proc_table^[pi].local_size := proc_table^[pi].local_size + byte_size;
   ofs := -proc_table^[pi].local_size;
 
-  si := SymEnter(vname, SK_VAR, SC_LOCAL, type_idx);
+  si := SymEnter(vname, SK_LOCAL, SC_LOCAL, type_idx);
   If si > 0 Then
   Begin
     sym_table^[si].bp_offset  := ofs;
@@ -1616,7 +1421,7 @@ Begin
   const_table^[ci].rval     := rval;
 
   { Enregistrer aussi dans sym_table }
-  si := SymEnter(name, SK_CONST, SC_CONST, type_idx);
+  si := SymEnter(name, SK_MANIFEST, SC_CONST, type_idx);
   If si > 0 Then
   Begin
     sym_table^[si].const_ival := ival;
@@ -1649,8 +1454,8 @@ Function TypeName(ti : Integer) : TString; Forward;
   -------------------------------------------------------------------------- }
 Procedure SymDumpVerbose;
 Const
-  KNames : Array[TSymKind] of String[8] =
-    ('NONE', 'CONST', 'TYPE', 'VAR', 'PARAM', 'PROC', 'FIELD', 'MODULE');
+  KNames : Array[TSymKind] of String[10] =
+    ('NONE', 'MANIFEST', 'GLOBAL', 'STATIC', 'LOCAL', 'PARAM', 'PROC', 'VEC', 'LABEL');
 Var i   : Integer;
     ti  : Integer;
 Begin
@@ -1659,20 +1464,15 @@ Begin
   Begin
     ti := sym_table^[i].type_idx;
     Write('  [', i:3, '] ', sym_table^[i].name:-20, ' ',
-          KNames[sym_table^[i].kind]:7, '  lv=', sym_table^[i].scope_level);
-    If ti > 0 Then
-      Write('  t=', TypeName(ti));
+          KNames[sym_table^[i].kind]:9, '  lv=', sym_table^[i].scope_level);
     If sym_table^[i].asm_label <> '' Then
       Write('  asm=', sym_table^[i].asm_label);
     If sym_table^[i].bp_offset <> 0 Then
       Write('  bp+', sym_table^[i].bp_offset);
-    If sym_table^[i].kind = SK_CONST Then
-    Begin
-      If sym_table^[i].const_sval <> '' Then
-        Write('  val=''', sym_table^[i].const_sval, '''')
-      Else
-        Write('  val=', sym_table^[i].const_ival);
-    End;
+    If sym_table^[i].kind = SK_MANIFEST Then
+      Write('  val=', sym_table^[i].const_ival);
+    If sym_table^[i].kind = SK_GLOBAL Then
+      Write('  slot=', sym_table^[i].glob_slot);
     If (sym_table^[i].kind = SK_PROC) And (sym_table^[i].proc_idx > 0) Then
       Write('  proc=', sym_table^[i].proc_idx);
     WriteLn;
@@ -1704,301 +1504,62 @@ Begin
   TypeNew := type_count;
 End;
 
-{ Array fixe : ARRAY len OF base_idx }
+{ Constructeurs de types BCPL (tout renvoie TYP_WORD, BCPL n'a qu'un type) }
 Function TypeNewArray(base_idx, len : Integer) : Integer;
-Var ti : Integer;
-Begin
-  ti := TypeNew(TYK_ARRAY, 0);  { bit_size calcule au besoin }
-  type_table^[ti].base_idx := base_idx;
-  type_table^[ti].arr_len  := len;
-  { bit_size = len * bit_size(base) - calcule a la demande via TypeBitSize }
-  TypeNewArray := ti;
-End;
+Begin TypeNewArray := TYP_WORD; End;
 
-{ Open array : ARRAY OF base_idx (longueur inconnue a la compilation) }
 Function TypeNewOpenArray(base_idx : Integer) : Integer;
-Var ti : Integer;
-Begin
-  ti := TypeNew(TYK_OPENARRAY, 0);
-  type_table^[ti].base_idx := base_idx;
-  type_table^[ti].arr_len  := 0;
-  TypeNewOpenArray := ti;
-End;
+Begin TypeNewOpenArray := TYP_WORD; End;
 
-{ Record : les champs seront ajoutes dans sym_table a partir de first_field }
 Function TypeNewRecord(first_field, nfld : Integer) : Integer;
-Var ti : Integer;
-Begin
-  ti := TypeNew(TYK_RECORD, 0);
-  type_table^[ti].rec_sym  := first_field;
-  type_table^[ti].rec_nfld := nfld;
-  TypeNewRecord := ti;
-End;
+Begin TypeNewRecord := TYP_WORD; End;
 
-{ Pointer TO base_idx }
 Function TypeNewPointer(base_idx : Integer) : Integer;
-Var ti : Integer;
-Begin
-  ti := TypeNew(TYK_POINTER, 16);  { toujours 16 bits en modele SMALL }
-  type_table^[ti].base_idx := base_idx;
-  TypeNewPointer := ti;
-End;
+Begin TypeNewPointer := TYP_WORD; End;
 
-{ Type procedure / fonction (ret_idx = 0 si pas de retour) }
 Function TypeNewProc(ret_idx : Integer) : Integer;
-Var ti : Integer;
-Begin
-  ti := TypeNew(TYK_PROC, 16);
-  type_table^[ti].base_idx := ret_idx;
-  TypeNewProc := ti;
-End;
+Begin TypeNewProc := TYP_WORD; End;
 
-{ --------------------------------------------------------------------------
-  TypeBitSize : retourner la taille en bits du type designe par type_idx.
-  Pour les tableaux, la taille est len * taille_element.
-  Pour les records, elle est la somme des champs (calcul simplifie ici).
-  -------------------------------------------------------------------------- }
+{ En BCPL tout est un mot 16 bits - taille toujours 16 bits / 2 octets }
 Function TypeBitSize(ti : Integer) : Integer;
-Var base_bits : Integer;
-Begin
-  If (ti < 1) Or (ti > type_count) Then
-  Begin
-    TypeBitSize := 16;
-    Exit;
-  End;
-  Case type_table^[ti].kind Of
-    TYK_ARRAY :
-      Begin
-        base_bits := TypeBitSize(type_table^[ti].base_idx);
-        TypeBitSize := type_table^[ti].arr_len * base_bits;
-      End;
-    TYK_OPENARRAY :
-      TypeBitSize := 16;  { on ne connait pas la taille a la compilation }
-    TYK_RECORD :
-      { La taille exacte est stockee dans bit_size apres analyse }
-      TypeBitSize := type_table^[ti].bit_size;
-    TYK_POINTER :
-      TypeBitSize := 16;
-    TYK_PROC :
-      TypeBitSize := 16;
-    TYK_NIL :
-      TypeBitSize := 16;
-    TYK_NONE :
-      TypeBitSize := 0;
-  Else
-    TypeBitSize := type_table^[ti].bit_size;
-  End;
-End;
+Begin TypeBitSize := 16; End;
 
-{ --------------------------------------------------------------------------
-  TypeByteSize : arrondi a l'octet superieur (minimum 1).
-  -------------------------------------------------------------------------- }
 Function TypeByteSize(ti : Integer) : Integer;
-Var b : Integer;
-Begin
-  b := TypeBitSize(ti);
-  If b <= 0 Then
-    TypeByteSize := 1
-  Else
-    TypeByteSize := (b + 7) Div 8;
-End;
+Begin TypeByteSize := 2; End;
 
-{ --------------------------------------------------------------------------
-  Predicats de categorie.
-  -------------------------------------------------------------------------- }
+{ Predicats de type : en BCPL tout est WORD donc toujours "numerique" }
+Function TypeIsInteger (ti : Integer) : Boolean; Begin TypeIsInteger  := True; End;
+Function TypeIsBoolean (ti : Integer) : Boolean; Begin TypeIsBoolean  := False; End;
+Function TypeIsChar    (ti : Integer) : Boolean; Begin TypeIsChar     := False; End;
+Function TypeIsReal    (ti : Integer) : Boolean; Begin TypeIsReal     := False; End;
+Function TypeIsSet     (ti : Integer) : Boolean; Begin TypeIsSet      := False; End;
+Function TypeIsPointer (ti : Integer) : Boolean; Begin TypeIsPointer  := False; End;
+Function TypeIsRecord  (ti : Integer) : Boolean; Begin TypeIsRecord   := False; End;
+Function TypeIsArray   (ti : Integer) : Boolean; Begin TypeIsArray    := False; End;
+Function TypeIsOrdinal (ti : Integer) : Boolean; Begin TypeIsOrdinal  := True;  End;
+Function TypeIsNumeric (ti : Integer) : Boolean; Begin TypeIsNumeric  := True;  End;
+Function TypeIsString  (ti : Integer) : Boolean; Begin TypeIsString   := False; End;
 
-Function TypeIsInteger(ti : Integer) : Boolean;
-Begin
-  TypeIsInteger := (ti >= 1) And (ti <= type_count)
-    And (type_table^[ti].kind = TYK_INTEGER);
-End;
-
-Function TypeIsBoolean(ti : Integer) : Boolean;
-Begin
-  TypeIsBoolean := (ti >= 1) And (ti <= type_count)
-    And (type_table^[ti].kind = TYK_BOOLEAN);
-End;
-
-Function TypeIsChar(ti : Integer) : Boolean;
-Begin
-  TypeIsChar := (ti >= 1) And (ti <= type_count)
-    And (type_table^[ti].kind = TYK_CHAR);
-End;
-
-Function TypeIsReal(ti : Integer) : Boolean;
-Begin
-  TypeIsReal := (ti >= 1) And (ti <= type_count)
-    And (type_table^[ti].kind = TYK_REAL);
-End;
-
-Function TypeIsSet(ti : Integer) : Boolean;
-Begin
-  TypeIsSet := (ti >= 1) And (ti <= type_count)
-    And (type_table^[ti].kind = TYK_SET);
-End;
-
-Function TypeIsPointer(ti : Integer) : Boolean;
-Begin
-  TypeIsPointer := (ti >= 1) And (ti <= type_count)
-    And ((type_table^[ti].kind = TYK_POINTER)
-      Or (type_table^[ti].kind = TYK_NIL));
-End;
-
-Function TypeIsRecord(ti : Integer) : Boolean;
-Begin
-  TypeIsRecord := (ti >= 1) And (ti <= type_count)
-    And (type_table^[ti].kind = TYK_RECORD);
-End;
-
-Function TypeIsArray(ti : Integer) : Boolean;
-Begin
-  TypeIsArray := (ti >= 1) And (ti <= type_count)
-    And ((type_table^[ti].kind = TYK_ARRAY)
-      Or (type_table^[ti].kind = TYK_OPENARRAY));
-End;
-
-{ Ordinal = INTEGER, BOOLEAN, CHAR, BYTE, SET }
-Function TypeIsOrdinal(ti : Integer) : Boolean;
-Var k : TTypeKind;
-Begin
-  If (ti < 1) Or (ti > type_count) Then
-  Begin
-    TypeIsOrdinal := False;
-    Exit;
-  End;
-  k := type_table^[ti].kind;
-  TypeIsOrdinal := (k = TYK_INTEGER) Or (k = TYK_BOOLEAN)
-               Or (k = TYK_CHAR)    Or (k = TYK_BYTE)
-               Or (k = TYK_SET);
-End;
-
-{ Numerique = INTEGER, BYTE, REAL }
-Function TypeIsNumeric(ti : Integer) : Boolean;
-Var k : TTypeKind;
-Begin
-  If (ti < 1) Or (ti > type_count) Then
-  Begin
-    TypeIsNumeric := False;
-    Exit;
-  End;
-  k := type_table^[ti].kind;
-  TypeIsNumeric := (k = TYK_INTEGER) Or (k = TYK_BYTE) Or (k = TYK_REAL);
-End;
-
-{ Chaine = ARRAY OF CHAR ou ARRAY n OF CHAR }
-Function TypeIsString(ti : Integer) : Boolean;
-Begin
-  If (ti < 1) Or (ti > type_count) Then
-  Begin
-    TypeIsString := False;
-    Exit;
-  End;
-  If Not TypeIsArray(ti) Then
-  Begin
-    TypeIsString := False;
-    Exit;
-  End;
-  TypeIsString := TypeIsChar(type_table^[ti].base_idx);
-End;
-
-{ --------------------------------------------------------------------------
-  TypeCompat : compatibilite d'expression (Oberon Report Â§9.1).
-  Regles :
-    1. Meme type (meme index).
-    2. t2 = NIL et t1 est POINTER.
-    3. t1 et t2 sont des types numeriques (INTEGER/BYTE/REAL).
-    4. t1 = CHAR et t2 = STRING d'un seul caractere (gere par le parser).
-    5. t1 et t2 sont des ARRAY OF CHAR (chaines de longueurs differentes).
-  -------------------------------------------------------------------------- }
+{ En BCPL tout est compatible avec tout }
 Function TypeCompat(t1, t2 : Integer) : Boolean;
-Begin
-  { Identique }
-  If t1 = t2 Then
-  Begin
-    TypeCompat := True;
-    Exit;
-  End;
-  { NIL compatible avec tout pointeur }
-  If (type_table^[t2].kind = TYK_NIL) And TypeIsPointer(t1) Then
-  Begin
-    TypeCompat := True;
-    Exit;
-  End;
-  If (type_table^[t1].kind = TYK_NIL) And TypeIsPointer(t2) Then
-  Begin
-    TypeCompat := True;
-    Exit;
-  End;
-  { Numeriques entre eux }
-  If TypeIsNumeric(t1) And TypeIsNumeric(t2) Then
-  Begin
-    TypeCompat := True;
-    Exit;
-  End;
-  { Chaines (ARRAY OF CHAR) }
-  If TypeIsString(t1) And TypeIsString(t2) Then
-  Begin
-    TypeCompat := True;
-    Exit;
-  End;
-  TypeCompat := False;
-End;
+Begin TypeCompat := True; End;
 
-{ --------------------------------------------------------------------------
-  TypeAssignCompat : compatibilite d'affectation (Oberon Report Â§9.2).
-  En plus des regles de TypeCompat :
-    - t2 peut etre une chaine litterale (type_idx = TYP_CHAR, len=1) vers
-      ARRAY OF CHAR (gere par le parser avant d'appeler ici).
-    - Les entiers de differentes tailles sont assignables entre eux.
-  -------------------------------------------------------------------------- }
 Function TypeAssignCompat(t1, t2 : Integer) : Boolean;
-Begin
-  { Si TypeCompat passe, l'affectation est aussi compatible }
-  If TypeCompat(t1, t2) Then
-  Begin
-    TypeAssignCompat := True;
-    Exit;
-  End;
-  { CHAR -> ARRAY OF CHAR d'au moins 1 element }
-  If TypeIsChar(t2) And TypeIsString(t1) Then
-  Begin
-    TypeAssignCompat := True;
-    Exit;
-  End;
-  TypeAssignCompat := False;
-End;
-
+Begin TypeAssignCompat := True; End;
 { --------------------------------------------------------------------------
   TypeName : retourner une representation lisible du type (debug/erreurs).
+  En BCPL il n'y a que deux types : WORD et STRING.
   -------------------------------------------------------------------------- }
 Function TypeName(ti : Integer) : TString;
 Const
-  KStr : Array[TTypeKind] of String[10] =
-    ('NONE', 'INTEGER', 'CARDINAL', 'BOOLEAN', 'CHAR', 'BYTE',
-     'BITSET', 'SET', 'REAL', 'LONGINT', 'WORD', 'ADDRESS',
-     'ARRAY', 'OPENARRAY', 'RECORD', 'POINTER', 'PROC', 'NIL');
+  KStr : Array[TTypeKind] of String[10] = ('WORD', 'STRING');
 Begin
   If (ti < 1) Or (ti > type_count) Then
   Begin
-    TypeName := '?';
+    TypeName := 'WORD';  { par defaut en BCPL }
     Exit;
   End;
-  Case type_table^[ti].kind Of
-    TYK_ARRAY :
-      TypeName := 'ARRAY[' + IntToStr(type_table^[ti].arr_len) + '] OF '
-                + TypeName(type_table^[ti].base_idx);
-    TYK_OPENARRAY :
-      TypeName := 'ARRAY OF ' + TypeName(type_table^[ti].base_idx);
-    TYK_POINTER :
-      TypeName := 'POINTER TO ' + TypeName(type_table^[ti].base_idx);
-    TYK_PROC :
-      If type_table^[ti].base_idx = 0 Then
-        TypeName := 'PROCEDURE'
-      Else
-        TypeName := 'PROCEDURE:' + TypeName(type_table^[ti].base_idx);
-  Else
-    TypeName := KStr[type_table^[ti].kind];
-  End;
+  TypeName := KStr[type_table^[ti].kind];
 End;
 
 { --------------------------------------------------------------------------
@@ -2056,9 +1617,12 @@ Begin
   cur_proc_idx := 0;
   import_count := 0;
   loop_depth   := 0;
+  glob_vec_size := 0;
+  cur_local_off  := 0;
+  valof_depth    := 0;
   has_peek     := False;
   lex_eof      := False;
-  module_name  := 'MODULE';  { sera ecrase a la lecture du nom reel }
+  module_name  := 'PROGRAM';  { sera ecrase a la lecture de SECTION "nom" }
 End;
 
 Procedure FreeTables;
@@ -2069,37 +1633,29 @@ Begin
   Dispose(const_table);
 End;
 
-{ Types primitifs predefinis - utilise TypeNew (TODO 04) }
-Procedure InitBuiltinTypes;
+{ Types primitifs BCPL - tout est un mot 16 bits }
+Procedure InitBcplSystem;
+Var si : Integer;
 Begin
-  { Creer les descripteurs internes de types }
-  TYP_UNDEF    := TypeNew(TYK_NONE,     0);
-  TYP_INTEGER  := TypeNew(TYK_INTEGER, 16);
-  TYP_CARDINAL := TypeNew(TYK_CARDINAL,16);
-  TYP_BOOLEAN  := TypeNew(TYK_BOOLEAN,  8);
-  TYP_CHAR     := TypeNew(TYK_CHAR,     8);
-  TYP_BYTE     := TypeNew(TYK_BYTE,     8);
-  TYP_BITSET   := TypeNew(TYK_BITSET,  16);
-  TYP_SET      := TypeNew(TYK_SET,     16);
-  TYP_REAL     := TypeNew(TYK_REAL,    32);
-  TYP_LONGINT  := TypeNew(TYK_LONGINT, 32);
-  TYP_WORD     := TypeNew(TYK_WORD,    16);
-  TYP_ADDRESS  := TypeNew(TYK_ADDRESS, 16);
-  TYP_NIL      := TypeNew(TYK_NIL,     16);
+  { Un seul type reel en BCPL : le mot 16 bits }
+  TYP_WORD   := TypeNew(TYK_WORD,   16);
+  TYP_STRING := TypeNew(TYK_STRING,  8);
 
-  { Inscrire les noms Modula-2 dans sym_table (SK_TYPE, portee 0 = predeclaree) }
-  { Permet a ParseTypeRef de resoudre INTEGER, CARDINAL, BOOLEAN, etc.          }
-  SymEnter('INTEGER',  SK_TYPE, SC_GLOBAL, TYP_INTEGER);
-  SymEnter('CARDINAL', SK_TYPE, SC_GLOBAL, TYP_CARDINAL);
-  SymEnter('BOOLEAN',  SK_TYPE, SC_GLOBAL, TYP_BOOLEAN);
-  SymEnter('CHAR',     SK_TYPE, SC_GLOBAL, TYP_CHAR);
-  SymEnter('BYTE',     SK_TYPE, SC_GLOBAL, TYP_BYTE);
-  SymEnter('BITSET',   SK_TYPE, SC_GLOBAL, TYP_BITSET);
-  SymEnter('SET',      SK_TYPE, SC_GLOBAL, TYP_SET);
-  SymEnter('REAL',     SK_TYPE, SC_GLOBAL, TYP_REAL);
-  SymEnter('LONGINT',  SK_TYPE, SC_GLOBAL, TYP_LONGINT);
-  SymEnter('WORD',     SK_TYPE, SC_GLOBAL, TYP_WORD);
-  SymEnter('ADDRESS',  SK_TYPE, SC_GLOBAL, TYP_ADDRESS);
+  { Initialiser le vecteur global }
+  glob_vec_size := 0;
+  FillChar(glob_slots,   SizeOf(glob_slots),   0);
+  FillChar(glob_routine, SizeOf(glob_routine),  0);
+
+  { TRUE = -1, FALSE = 0 en BCPL }
+  si := SymEnter('TRUE',  SK_MANIFEST, SC_CONST, TYP_WORD);
+  sym_table^[si].const_ival := -1;
+  si := SymEnter('FALSE', SK_MANIFEST, SC_CONST, TYP_WORD);
+  sym_table^[si].const_ival := 0;
+
+  cur_local_off  := 0;
+  valof_lbl      := '';
+  valof_depth    := 0;
+  cur_switch_lbl := '';
 End;
 
 { ============================================================
@@ -2108,8 +1664,8 @@ End;
 
 Procedure PrintUsage;
 Begin
-  WriteLn('MODII86 v', MODII86_VERSION, ' - Compilateur Modula-2 -> MASM 8086');
-  WriteLn('Usage : MODII86 source.mod [sortie.asm] [options]');
+  WriteLn('BCPL86 v', BCPL86_VERSION, ' - Compilateur BCPL -> MASM 8086');
+  WriteLn('Usage : BCPL86 source.b [sortie.asm] [options]');
   WriteLn('Options :');
   WriteLn('  -v   mode verbeux (statistiques et symboles)');
   WriteLn('  -d   mode debug   (trace de parsing)');
@@ -2158,6 +1714,7 @@ Begin
     out_fname := ChangeExtension(src_fname, '.asm');
 
   tmp_fname := ChangeExtension(src_fname, '.tmp');
+  str_fname := ChangeExtension(src_fname, '.str');
 End;
 
 { ============================================================
@@ -2321,11 +1878,11 @@ End;
 Procedure GenFileHeader;
 Begin
   EmitSep;
-  EmitComment(' Fichier genere par MODII86 v' + MODII86_VERSION);
-  EmitComment(' Date   : ' + MODII86_DATE);
+  EmitComment(' Fichier genere par BCPL86 v' + BCPL86_VERSION);
+  EmitComment(' Date   : ' + BCPL86_DATE);
   EmitComment(' Source : ' + src_fname);
-  EmitComment(' Module : ' + module_name);
-  EmitComment(' Cible  : MASM 8086, modele SMALL, near cdecl');
+  EmitComment(' Section: ' + module_name);
+  EmitComment(' Cible  : MASM 8086, modele SMALL, convention BCPL');
   EmitSep;
   EmitBlank;
 End;
@@ -2367,17 +1924,12 @@ End;
 { Variables systeme emises avant les variables utilisateur. }
 Procedure GenSystemVarsData;
 Begin
-  EmitComment(' ----- Variables systeme MODII86 -----');
-  EmitDup('_OV_OUTBUF',  256, '0', 1);  { buffer sortie Out.String }
-  EmitDup('_OV_INBUF',   128, '0', 1);  { buffer entree In.String  }
-  EmitDup('_OV_INTBUF',   12, '0', 1);  { buffer conversion entier }
-  EmitDB ('_OV_CRLF',  '0Dh, 0Ah, ''$''');
-  EmitDB ('_OV_NULLSTR', '0');
-  EmitDB ('_OV_TRUE',  '''TRUE'', 0');
-  EmitDB ('_OV_FALSE', '''FALSE'', 0');
-  EmitDW ('_OV_IN_DONE', '1');        { In.Done : True apres lecture reussie }
-  EmitDW ('_OV_HEAP_PTR', '0');       { pointeur courant dans le heap interne }
-  EmitDup('_OV_HEAP_BUF', 4096, '0', 1);  { 4 Ko de heap interne }
+  EmitComment(' ----- Variables systeme BCPL86 -----');
+  EmitDup('_BV_OUTBUF',  256, '0', 1);  { buffer sortie WRITES/WRITEF     }
+  EmitDup('_BV_INBUF',   128, '0', 1);  { buffer entree READN/READS       }
+  EmitDup('_BV_INTBUF',   12, '0', 1);  { buffer conversion entier        }
+  EmitDB ('_BV_CRLF',  '0Dh, 0Ah, ''$''');
+  EmitDB ('_BV_TMPCH', '0, 0');          { stockage temporaire caractere   }
   EmitBlank;
 End;
 
@@ -2401,15 +1953,15 @@ Begin
   EmitBlank;
 End;
 
-{ Prologue du point d'entree START (appele avant ParseModule). }
+{ Prologue du point d'entree BCPL START : init DS, BX = base vecteur global. }
 Procedure GenStartEntry;
 Begin
+  EmitComment(' Point d''entree BCPL : init DS, vecteur global, appel G!1 (main)');
   EmitLabel('START');
   EmitI2('MOV', 'AX', '_DATA');
   EmitI2('MOV', 'DS', 'AX');
-  { Initialiser le pointeur de heap interne }
-  EmitI2('MOV', 'AX', 'OFFSET _OV_HEAP_BUF');
-  EmitI2('MOV', '[_OV_HEAP_PTR]', 'AX');
+  { BX = adresse du vecteur global _BG_ (preservee dans toutes les routines) }
+  EmitI2('LEA', 'BX', '[' + BG_NAME + ']');
   EmitBlank;
 End;
 
@@ -2729,7 +2281,7 @@ Begin
     Begin
       { Chercher dans sym_table }
       si := SymFind(cur_tok.val);
-      If (si > 0) And (sym_table^[si].kind = SK_CONST) Then
+      If (si > 0) And (sym_table^[si].kind = SK_MANIFEST) Then
         v := sym_table^[si].const_ival
       Else
       Begin
@@ -2873,7 +2425,7 @@ Var lbl      : TString;
 Begin
   Inc(str_lit_count);
   Str(str_lit_count, lbl);
-  lbl := OK_PFX + lbl;
+  lbl := BK_PFX + lbl;
 
   { Construire la valeur DB : blocs 'texte' + octets decimaux + terminateur 0 }
   out_s    := '';
@@ -2922,108 +2474,179 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseConstDecl : parser une declaration  ident '=' constExpr  ';'.
-  Supporte : entiers, booleens, caracteres, reels, chaines, expressions.
+  ParseConstDecl : en BCPL ce n'est pas utilise directement (use ParseManifestSection).
+  Stub maintenu pour compatibilite avec les appels restants.
   -------------------------------------------------------------------------- }
 Procedure ParseConstDecl;
 Var
-  cname  : TString;
-  ival   : LongInt;
-  rval   : Real;
-  sval   : TString;
-  ti     : Integer;
-  is_real: Boolean;
-  err    : Integer;
-  slbl   : TString;
-  op     : TString;
-  rv2    : Real;
+  cname : TString;
+  ival  : LongInt;
 Begin
   cname := cur_tok.val;
   LexExpectKind(TK_IDENT);
   LexExpect('=');
-
-  is_real := False;
-  ival    := 0;
-  rval    := 0.0;
-  sval    := '';
-  ti      := TYP_INTEGER;
-
-  { Detecter le type par le token de valeur }
-  If cur_tok.kind = TK_STRING Then
-  Begin
-    { Constante chaine }
-    sval := cur_tok.val;
-    ti   := TYP_CHAR;   { ARRAY OF CHAR sera cree si besoin en TODO 07 }
-    ival := 0;
-    LexNext;
-  End
-  Else If cur_tok.val = 'TRUE' Then
-  Begin
-    ival := 1; ti := TYP_BOOLEAN; LexNext;
-  End
-  Else If cur_tok.val = 'FALSE' Then
-  Begin
-    ival := 0; ti := TYP_BOOLEAN; LexNext;
-  End
-  Else If cur_tok.val = 'NIL' Then
-  Begin
-    ival := 0; ti := TYP_NIL; LexNext;
-  End
-  Else If cur_tok.kind = TK_CHAR Then
-  Begin
-    ival := cur_tok.int_val; ti := TYP_CHAR; LexNext;
-  End
-  Else If cur_tok.kind = TK_REAL Then
-  Begin
-    Val(cur_tok.val, rval, err);
-    If err <> 0 Then rval := 0.0;
-    is_real := True;
-    ti      := TYP_REAL;
-    LexNext;
-    { Operateurs sur reels }
-    While (cur_tok.val = '+') Or (cur_tok.val = '-') Or (cur_tok.val = '*') Do
-    Begin
-      op := cur_tok.val; LexNext;
-      rv2 := ParseConstExprReal;
-      If op = '+' Then rval := rval + rv2
-      Else If op = '-' Then rval := rval - rv2
-      Else rval := rval * rv2;
-    End;
-    ival := Round(rval);
-  End
-  Else
-  Begin
-    { Expression constante entiere (peut referencer d'autres constantes) }
-    ival := ParseConstExprInt;
-    ti   := TYP_INTEGER;
-  End;
-
-  { Verifier que le nom n'est pas deja declare dans cette portee }
+  ival := ParseConstExprInt;
   If SymFindLocal(cname) > 0 Then
-    ErrorMsg('Constante deja declaree : ' + cname);
-
-  { Enregistrer dans const_table et sym_table }
-  ConstEnter(cname, ti, ival, sval, is_real, rval);
-
+    ErrorMsg('Manifest deja declare : ' + cname);
+  ConstEnter(cname, TYP_WORD, ival, '', False, 0.0);
   LexExpect(';');
 End;
 
 { --------------------------------------------------------------------------
   ParseConstSection : parser la section CONST ident = expr ;
   -------------------------------------------------------------------------- }
-Procedure ParseConstSection;
+{ ============================================================
+  TODO 06 - DECLARATIONS MANIFEST ET CONSTANTES BCPL
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  OpenBlock / CloseBlock : consommer $( et $) (delimiteurs de blocs BCPL)
+  En BCPL les blocs sont delimites par  $( ... $)
+  -------------------------------------------------------------------------- }
+Procedure OpenBlock;
 Begin
-  LexExpect('CONST');
-  While (cur_tok.kind = TK_IDENT) Do
-    ParseConstDecl;
+  If (cur_tok.val = '$(') Or (cur_tok.val = '{') Then
+    LexNext
+  Else
+    ErrorMsg('Debut de bloc BCPL (''$('') attendu, lu : ' + cur_tok.val);
+End;
+
+Procedure CloseBlock;
+Begin
+  If (cur_tok.val = '$)') Or (cur_tok.val = '}') Then
+    LexNext
+  Else
+    ErrorMsg('Fin de bloc BCPL (''$)'') attendue, lu : ' + cur_tok.val);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseManifestSection : MANIFEST $( name = expr [;] ... $)
+  Les constantes MANIFEST sont evaluees au compile-time (entiers uniquement).
+
+  En BCPL : MANIFEST $( name = expr ; name = expr ; ... $)
+             ou        { name = expr ; ... }
+  -------------------------------------------------------------------------- }
+Procedure ParseManifestSection;
+Var name : TString;
+    val  : LongInt;
+    si   : Integer;
+Begin
+  LexExpect('MANIFEST');
+  OpenBlock;
+  While (cur_tok.val <> '$)') And (cur_tok.val <> '}') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('Identifiant attendu dans MANIFEST, lu : ' + cur_tok.val);
+      LexNext;
+      Break;
+    End;
+    name := cur_tok.val;  LexNext;
+    LexExpect('=');
+    val := ParseConstExprInt;
+    If SymFindLocal(name) > 0 Then
+      WarnMsg('MANIFEST deja declare dans cette portee : ' + name);
+    si := SymEnter(name, SK_MANIFEST, SC_CONST, TYP_WORD);
+    If si > 0 Then
+      sym_table^[si].const_ival := val;
+    If opt_debug Then
+      WriteLn('MANIFEST ', name, ' = ', val);
+    If cur_tok.val = ';' Then LexNext;
+  End;
+  CloseBlock;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseGlobalSection : GLOBAL $( name : slot [;] ... $)
+  Associe chaque nom a un slot dans le vecteur global  G!slot.
+  L'acces a l'execution : [BX + slot*2]  (BX pointe sur _BG_).
+  -------------------------------------------------------------------------- }
+Procedure ParseGlobalSection;
+Var name : TString;
+    slot : LongInt;
+    si   : Integer;
+Begin
+  LexExpect('GLOBAL');
+  OpenBlock;
+  While (cur_tok.val <> '$)') And (cur_tok.val <> '}') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('Identifiant attendu dans GLOBAL, lu : ' + cur_tok.val);
+      LexNext;
+      Break;
+    End;
+    name := cur_tok.val;  LexNext;
+    LexExpect(':');
+    slot := ParseConstExprInt;
+    If slot < 0 Then slot := 0;
+    If slot >= MAX_GLOBAL Then
+    Begin
+      ErrorMsg('Slot global trop grand (max ' + IntToStr(MAX_GLOBAL-1) + ')');
+      slot := MAX_GLOBAL - 1;
+    End;
+    si := SymEnter(name, SK_GLOBAL, SC_GLOBAL, TYP_WORD);
+    If si > 0 Then
+    Begin
+      sym_table^[si].glob_slot  := slot;
+      sym_table^[si].asm_label  := BG_NAME;   { acces via [BX+2*slot] }
+      glob_slots[slot] := si;
+      If slot > glob_vec_size Then glob_vec_size := slot;
+    End;
+    If opt_debug Then
+      WriteLn('GLOBAL ', name, ' : slot ', slot);
+    If cur_tok.val = ';' Then LexNext;
+  End;
+  CloseBlock;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStaticSection : STATIC $( name = valeur [;] ... $)
+  Variables statiques initialisees emises dans le segment DATA.
+  -------------------------------------------------------------------------- }
+Procedure ParseStaticSection;
+Var name : TString;
+    val  : LongInt;
+    si   : Integer;
+    lbl  : TString;
+Begin
+  LexExpect('STATIC');
+  OpenBlock;
+  While (cur_tok.val <> '$)') And (cur_tok.val <> '}') And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('Identifiant attendu dans STATIC, lu : ' + cur_tok.val);
+      LexNext;
+      Break;
+    End;
+    name := cur_tok.val;  LexNext;
+    LexExpect('=');
+    val  := ParseConstExprInt;
+    lbl  := BV_PFX + AsmIdent(name);
+    si := SymEnter(name, SK_STATIC, SC_GLOBAL, TYP_WORD);
+    If si > 0 Then
+    Begin
+      sym_table^[si].asm_label  := lbl;
+      sym_table^[si].const_ival := val;
+    End;
+    { Emettre dans le segment DATA (cur_out doit pointer sur DATA ou tmp a fusionner) }
+    EmitDW(lbl, IntToStr(val));
+    If opt_debug Then
+      WriteLn('STATIC ', name, ' = ', val);
+    If cur_tok.val = ';' Then LexNext;
+  End;
+  CloseBlock;
 End;
 
 { ============================================================
-  TODO 07 - DECLARATIONS DE TYPES (TYPE)
+  TODO 07 - DECLARATIONS LET ET TYPES (BCPL N'A PAS DE TYPES)
+  *** La section TYPE de Modula-2 n'existe pas en BCPL ***
+  *** Les declarations LET sont traitees dans TODO 16.  ***
   ============================================================ }
 
-{ Forward : ParseArrayType / ParseRecordType / ParsePointerType / ParseProcType
-  appellent tous ParseTypeRef, qui est defini plus loin. }
+{ ParseTypeSection n'existe pas en BCPL.                         }
+{ Placeholder vide pour compatibilite avec les appels existants. }
 Function ParseTypeRef : Integer; Forward;
 
 { --------------------------------------------------------------------------
@@ -3173,14 +2796,14 @@ Begin
     Else
     Begin
       ErrorMsg('Type inconnu : ' + tok);
-      ParseTypeRef := TYP_UNDEF;
+      ParseTypeRef := TYP_WORD;
     End;
   End
   Else
   Begin
     ErrorMsg('Designation de type attendue, obtenu : ' + cur_tok.val);
     LexNext;
-    ParseTypeRef := TYP_UNDEF;
+    ParseTypeRef := TYP_WORD;
   End;
 End;
 
@@ -3216,122 +2839,73 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - DECLARATIONS DE VARIABLES (VAR)
+  TODO 08 - VARIABLES LOCALES LET (BCPL)
   ============================================================ }
 
 { --------------------------------------------------------------------------
-  GenGlobalVarData : emettre la reserve DATA pour une variable globale.
-  Le cur_out doit pointer vers out_file (segment DATA).
+  GenGlobalVarData : emettre la reserve DATA pour une variable statique BCPL.
   -------------------------------------------------------------------------- }
 Procedure GenGlobalVarData(si : Integer);
 Var lbl : TString;
-    ti  : Integer;
-    nb  : Integer;
 Begin
   lbl := sym_table^[si].asm_label;
-  ti  := sym_table^[si].type_idx;
-  If (ti < 1) Or (ti > type_count) Then
-  Begin
-    EmitDW(lbl, '0');
-    Exit;
-  End;
-  nb := TypeByteSize(ti);
-  If nb < 1 Then nb := 2;
-  Case type_table^[ti].kind Of
-    TYK_BOOLEAN,
-    TYK_CHAR,
-    TYK_BYTE    : EmitDB(lbl, '0');
-    TYK_SET,
-    TYK_INTEGER,
-    TYK_POINTER : EmitDW(lbl, '0');
-    TYK_REAL    : EmitDD(lbl, '0');
-    TYK_PROC    : EmitDW(lbl, '0');
-    TYK_ARRAY,
-    TYK_RECORD  : EmitDup(lbl, nb, '0', 1);   { nb DB 0 }
-  Else
-    EmitDW(lbl, '0');
-  End;
+  { En BCPL tout est un mot 16 bits }
+  EmitDW(lbl, '0');
 End;
 
 { --------------------------------------------------------------------------
-  ParseVarDecl : parser un groupe de declarations de variables.
-    IdentList : TypeRef ;
-  is_local    = False -> variables globales (symbol SC_GLOBAL + DATA)
-  is_local    = True  -> variables locales (symbol SC_LOCAL, BP negatif)
-  local_off   = offset courant (negatif) sur la pile, mis a jour en sortie.
+  ParseVarDecl : en BCPL les variables locales sont declarees avec LET.
+  Cette procedure adapte ParseVarDecl pour LET name = expr (TODO 16).
+  is_local=True -> variable locale (BP-n) ; is_local=False -> STATIC (.DATA)
   -------------------------------------------------------------------------- }
 Procedure ParseVarDecl(is_local : Boolean; Var local_off : Integer);
-Var names  : Array[1..MAX_FIELD] of TString;
-    nnames : Integer;
-    ti     : Integer;
-    k      : Integer;
-    nb     : Integer;
-    si     : Integer;
+Var vname : TString;
+    si    : Integer;
 Begin
-  { Collecter la liste des identificateurs }
-  nnames   := 1;
-  names[1] := cur_tok.val;
+  { BCPL : LET name = expr (syntaxe: on arrive apres avoir lu le nom) }
+  vname := cur_tok.val;
   LexExpectKind(TK_IDENT);
-  While cur_tok.val = ',' Do
+  { Allouer sur la pile ou en DATA }
+  If is_local Then
   Begin
-    LexNext;
-    If nnames < MAX_FIELD Then
+    Dec(local_off, 2);   { mot 16 bits }
+    si := SymEnter(vname, SK_LOCAL, SC_LOCAL, TYP_WORD);
+    If si > 0 Then
     Begin
-      Inc(nnames);
-      names[nnames] := cur_tok.val;
+      sym_table^[si].bp_offset := local_off;
+      sym_table^[si].asm_label := '';
     End;
-    LexExpectKind(TK_IDENT);
-  End;
-  LexExpect(':');
-  ti := ParseTypeRef;
-  nb := TypeByteSize(ti);
-  If nb < 1 Then nb := 2;
-  { Inscrire chaque variable dans sym_table et generer sa reserve }
-  For k := 1 To nnames Do
+    { Initialiser la variable : =  expr }
+    If cur_tok.val = '=' Then
+    Begin
+      LexNext;
+      { code genere par ParseLetDecl }
+    End;
+  End
+  Else
   Begin
-    If SymFindLocal(names[k]) > 0 Then
-      ErrorMsg('Variable deja declaree : ' + names[k]);
-    If is_local Then
+    si := SymEnter(vname, SK_STATIC, SC_GLOBAL, TYP_WORD);
+    If si > 0 Then
     Begin
-      { Variable locale : reserve sur la pile }
-      Dec(local_off, nb);                          { BP - nb }
-      si := SymEnter(names[k], SK_VAR, SC_LOCAL, ti);
-      If si > 0 Then
-      Begin
-        sym_table^[si].bp_offset := local_off;
-        sym_table^[si].asm_label := '';             { pas de label DATA }
-        { Mettre a jour local_size de la procedure courante }
-        If cur_proc_idx > 0 Then
-        Begin
-          If (-local_off) > proc_table^[cur_proc_idx].local_size Then
-            proc_table^[cur_proc_idx].local_size := -local_off;
-        End;
-      End;
-    End
-    Else
-    Begin
-      { Variable globale : reserve dans le segment DATA }
-      si := SymEnter(names[k], SK_VAR, SC_GLOBAL, ti);
-      If si > 0 Then
-      Begin
-        sym_table^[si].asm_label := OV_PFX + AsmIdent(names[k]);
-        GenGlobalVarData(si);
-      End;
+      sym_table^[si].asm_label := BV_PFX + AsmIdent(vname);
+      EmitDW(sym_table^[si].asm_label, '0');
     End;
   End;
-  LexExpect(';');
 End;
 
 { --------------------------------------------------------------------------
-  ParseVarSection : VAR IdentList : TypeRef ; ...
-  is_local  : True si on est dans une procedure (variables locales).
-  local_off : offset BP courant (negatif), mis a jour par ParseVarDecl.
+  ParseVarSection : en BCPL, cette section est remplacee par LET declarations.
+  Appele par compatibilite - ne doit pas etre rencontre dans un source BCPL.
   -------------------------------------------------------------------------- }
 Procedure ParseVarSection(is_local : Boolean; Var local_off : Integer);
 Begin
-  LexExpect('VAR');
-  While (cur_tok.kind = TK_IDENT) Do
-    ParseVarDecl(is_local, local_off);
+  ErrorMsg('VAR n''existe pas en BCPL ; utilisez LET ou GLOBAL');
+  { Sauter jusqu''a la prochaine section connue }
+  While (cur_tok.kind <> TK_EOF) And
+        (cur_tok.val <> 'LET') And (cur_tok.val <> 'MANIFEST') And
+        (cur_tok.val <> 'GLOBAL') Do
+    LexNext;
+End;
 End;
 
 { ============================================================
@@ -3419,7 +2993,7 @@ Begin
   If si = 0 Then
   Begin
     ErrorMsg('Identifiant inconnu : ' + name);
-    ParseDesignator := TYP_UNDEF;
+    ParseDesignator := TYP_WORD;
     Exit;
   End;
 
@@ -3428,7 +3002,7 @@ Begin
 
   { Charger la valeur ou l'adresse de base selon la nature du symbole }
   Case sym_table^[si].kind Of
-    SK_CONST :
+    SK_MANIFEST :
       GenLoadConst(sym_table^[si].const_ival, ti);
     SK_TYPE :
       ErrorMsg('Nom de type non valide dans une expression : ' + name);
@@ -3592,7 +3166,7 @@ Var ti    : Integer;
     n_str : TString;
     bname : TString;
 Begin
-  ti := TYP_UNDEF;
+  ti := TYP_WORD;
 
   If cur_tok.kind = TK_INTEGER Then
   Begin
@@ -3611,7 +3185,7 @@ Begin
     { Constante reelle : emettre une reserve DD dans DATA et charger l'adresse }
     Inc(str_lit_count);
     Str(str_lit_count, n_str);
-    lbl := OK_PFX + 'R' + n_str;
+    lbl := BK_PFX + 'R' + n_str;
     EmitDD(lbl, cur_tok.val);
     EmitI2('LEA', 'AX', '[' + lbl + ']');
     ti := TYP_REAL;
@@ -3734,7 +3308,7 @@ Begin
       EmitI2('AND', 'AX', 'CX');
       ti := TYP_BOOLEAN;
     End;
-    If ti2 = TYP_UNDEF Then ti := TYP_UNDEF;
+    If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
   ParseTerm := ti;
 End;
@@ -3777,7 +3351,7 @@ Begin
       EmitI2('OR',  'AX', 'CX');
       ti := TYP_BOOLEAN;
     End;
-    If ti2 = TYP_UNDEF Then ti := TYP_UNDEF;
+    If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
   ParseSimpleExpr := ti;
 End;
@@ -3836,7 +3410,7 @@ Begin
       EmitLabel(lbl);
     End;
     ti := TYP_BOOLEAN;
-    If ti2 = TYP_UNDEF Then ti := TYP_UNDEF;
+    If ti2 = TYP_WORD Then ti := TYP_WORD;
   End;
   ParseExpr := ti;
 End;
@@ -3954,7 +3528,7 @@ Begin
     ParseExpr;
     Exit;
   End;
-  If sym_table^[si].kind = SK_CONST Then
+  If sym_table^[si].kind = SK_MANIFEST Then
   Begin
     ErrorMsg('Impossible d''affecter a une constante : ' + vname);
     LexExpect(':=');
@@ -4461,7 +4035,7 @@ Begin
     If (si_t = 0) Or (sym_table^[si_t].kind <> SK_TYPE) Then
     Begin
       ErrorMsg('Type inconnu dans WITH : ' + tname);
-      ti_T := TYP_UNDEF;
+      ti_T := TYP_WORD;
     End
     Else
       ti_T := sym_table^[si_t].type_idx;
@@ -5336,7 +4910,7 @@ Begin
   LexExpect('.');
   methname := cur_tok.val;
   LexExpectKind(TK_IDENT);
-  ParseStdModuleExpr := TYP_UNDEF;
+  ParseStdModuleExpr := TYP_WORD;
   If (modname = 'In') And (methname = 'Done') Then
   Begin
     EmitI2('MOV', 'AX', '[_OV_IN_DONE]');

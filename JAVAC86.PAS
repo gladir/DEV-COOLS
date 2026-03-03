@@ -3995,7 +3995,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 10 - PARSER : METHODES ET CLASSES JAVA
+  ANALYSER : METHODES ET CLASSES JAVA
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4346,7 +4346,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 11 - CODEGEN : EXPRESSIONS ENTIERES, BOOLEENNES ET CHAR
+  CODEGEN : EXPRESSIONS ENTIERES, BOOLEENNES ET CHAR
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4535,7 +4535,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 12 - CODEGEN : ACCES AUX VARIABLES JAVA (COMPLEMENT)
+  CODEGEN : ACCES AUX VARIABLES JAVA (COMPLEMENT)
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4607,7 +4607,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 13 - CODEGEN : AFFECTATION ET INCREMENTATION/DECREMENTATION
+  CODEGEN : AFFECTATION ET INCREMENTATION/DECREMENTATION
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4682,7 +4682,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 14 - CODEGEN : STRUCTURES DE CONTROLE
+  CODEGEN : STRUCTURES DE CONTROLE
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4871,7 +4871,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 15 - CODEGEN : ENTREES / SORTIES (System.out / Scanner)
+  CODEGEN : ENTREES / SORTIES (System.out / Scanner)
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4961,7 +4961,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 16 - CODEGEN : CHAINES ET CONCATENATION
+  CODEGEN : CHAINES ET CONCATENATION
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5085,7 +5085,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 17 - CODEGEN : TABLEAUX JAVA
+  CODEGEN : TABLEAUX JAVA
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5146,7 +5146,7 @@ End;
 
 { --------------------------------------------------------------------------
   GenArrayElemLoad : charger arr[BX] dans AX.  BX = index entier.
-  Alias de GenLoadArrayElem (deja implementee en TODO 08).
+  Alias de GenLoadArrayElem.
   -------------------------------------------------------------------------- }
 Procedure GenArrayElemLoad(idx : Integer);
 Begin
@@ -5155,7 +5155,7 @@ End;
 
 { --------------------------------------------------------------------------
   GenArrayElemStore : stocker AX dans arr[BX].  BX = index entier.
-  Alias de GenStoreArrayElem (deja implementee en TODO 08).
+  Alias de GenStoreArrayElem.
   -------------------------------------------------------------------------- }
 Procedure GenArrayElemStore(idx : Integer);
 Begin
@@ -5240,7 +5240,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 18 - CODEGEN : APPELS DE METHODES JAVA
+  CODEGEN : APPELS DE METHODES JAVA
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5361,7 +5361,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 19 - RUNTIME ASSEMBLEUR : ARITHMETIQUE
+  RUNTIME ASSEMBLEUR : ARITHMETIQUE
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5392,7 +5392,7 @@ Begin
   EmitI1('ASSUME', 'CS:_CODE, DS:_DATA, SS:_STACK');
   EmitBlank;
   EmitSep;
-  EmitComment('TODO 19 - RUNTIME : ARITHMETIQUE');
+  EmitComment('RUNTIME : ARITHMETIQUE');
   EmitSep;
   EmitBlank;
 
@@ -5581,7 +5581,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 20 - RUNTIME ASSEMBLEUR : ENTREES / SORTIES
+  RUNTIME ASSEMBLEUR : ENTREES / SORTIES
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5591,7 +5591,7 @@ End;
 Procedure GenRtIO;
 Begin
   EmitSep;
-  EmitComment('TODO 20 - RUNTIME : ENTREES / SORTIES');
+  EmitComment('RUNTIME : ENTREES / SORTIES');
   EmitSep;
   EmitBlank;
 
@@ -5840,7 +5840,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 21 - STRUCTURE DU FICHIER ASM (HEADER, SEGMENTS, FOOT)
+  STRUCTURE DU FICHIER ASM (HEADER, SEGMENTS, FOOT)
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5941,7 +5941,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 22 - GESTION DES ERREURS ET DIAGNOSTIC
+  GESTION DES ERREURS ET DIAGNOSTIC
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -6069,7 +6069,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 23 - INTERFACE LIGNE DE COMMANDE
+  INTERFACE LIGNE DE COMMANDE
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -6119,24 +6119,6 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  PrintHelp : afficher l'aide en ligne de commande.
-  -------------------------------------------------------------------------- }
-Procedure PrintHelp;
-Begin
-  WriteLn('Usage : JAVAC86 <source.java> [<sortie.asm>] [options]');
-  WriteLn;
-  WriteLn('Options :');
-  WriteLn('  -v    Mode verbeux (statistiques apres compilation)');
-  WriteLn('  -d    Mode debug   (commentaires supplem. dans l''ASM)');
-  WriteLn('  -ns   Ne pas emettre le runtime inline');
-  WriteLn('  -h    Afficher cette aide');
-  WriteLn;
-  WriteLn('Exemples :');
-  WriteLn('  JAVAC86 Hello.java');
-  WriteLn('  JAVAC86 Hello.java Hello.asm -v');
-End;
-
-{ --------------------------------------------------------------------------
   ParseCommandLine : analyser les arguments de la ligne de commande.
   Retourne True si le compilateur peut continuer, False si on doit sortir.
   -------------------------------------------------------------------------- }
@@ -6151,22 +6133,13 @@ Begin
   opt_verbose := False;
   opt_debug   := False;
   opt_no_rt   := False;
-
-  If ParamCount = 0 Then
-  Begin
-    PrintHelp;
-    Exit;
+  If ParamCount = 0 Then Begin
+   WriteLn('Parametre attendue !');
+   Halt(1);
   End;
-
-  For i := 1 To ParamCount Do
-  Begin
+  For i := 1 To ParamCount Do Begin
     arg := ParamStr(i);
-    If (arg = '-h') Or (arg = '-H') Or (arg = '/?') Then
-    Begin
-      PrintHelp;
-      Exit;
-    End
-    Else If (arg = '-v') Or (arg = '-V') Then
+    If (arg = '-v') Or (arg = '-V') Then
       opt_verbose := True
     Else If (arg = '-d') Or (arg = '-D') Then
       opt_debug := True
@@ -6194,8 +6167,6 @@ Begin
   If src_fname = '' Then
   Begin
     WriteLn('Erreur : aucun fichier source specifie.');
-    WriteLn;
-    PrintHelp;
     Exit;
   End;
 
@@ -6216,20 +6187,18 @@ End;
 { --------------------------------------------------------------------------
   PrintFinalReport : afficher PrintSummary si le mode verbeux est actif.
   -------------------------------------------------------------------------- }
-Procedure PrintFinalReport;
-Begin
+Procedure PrintFinalReport;Begin
   If opt_verbose Then PrintSummary;
 End;
 
 { ============================================================================
-  TODO 24 - ORCHESTRATEUR DE COMPILATION
+  ORCHESTRATEUR DE COMPILATION
   ============================================================================ }
 
 { --------------------------------------------------------------------------
   Compile : orchestrer toutes les phases de compilation.
   -------------------------------------------------------------------------- }
-Procedure Compile;
-Begin
+Procedure Compile;Begin
   { 1. Ouvrir le fichier de sortie principal }
   InitOutput;
 
@@ -6282,7 +6251,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 25 - INTEGRATION, TESTS ET VALIDATION
+  INTEGRATION, TESTS ET VALIDATION
   10 programmes de test Java Lite crees et valides (0 erreur chacun) :
     test01_hello.java   ->  433 lignes ASM   Hello World
     test02_vars.java    ->  473 lignes ASM   int / boolean / char
@@ -6297,22 +6266,33 @@ End;
   ============================================================================ }
 
 { Programme principal }
-Begin
-  InitTables;
-  scope_sp := 0;
-
-  PrintBanner;
-
-  If Not ParseCommandLine Then
-  Begin
-    FreeTables;
-    Halt(0);
-  End;
-
-  Compile;
-
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('JAVAC86 - Cette commande permet de lancer le compilateur Java (Java-Lite) pour l''assembleur ',
+          'du microprocesseur 8086.');
+  WriteLn;
+  WriteLn('Syntaxe : JAVAC86 <source.java> [<sortie.asm>] [options]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v    Mode verbeux (statistiques apres compilation)');
+  WriteLn('  -d    Mode debug   (commentaires supplem. dans l''ASM)');
+  WriteLn('  -ns   Ne pas emettre le runtime inline');
+  WriteLn('  -h    Afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  JAVAC86 Hello.java');
+  WriteLn('  JAVAC86 Hello.java Hello.asm -v');
+  Halt;
+ End;
+ InitTables;
+ scope_sp := 0;
+ If(opt_Verbose)Then PrintBanner;
+ If Not ParseCommandLine Then Begin
   FreeTables;
-
-  If err_count > 0 Then
-    Halt(1);
-End.
+  Halt(0);
+ End;
+ Compile;
+ FreeTables;
+ If err_count > 0 Then Halt(1);
+END.
