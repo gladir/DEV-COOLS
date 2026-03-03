@@ -776,7 +776,7 @@ Const
   JAVAC86_DATE    = '2026-03-02';
 
   { --- Limites des tables principales --- }
-  MAX_SYM    = {$IFDEF FPC}512{$ELSE}128{$ENDIF};   { Symboles (vars + champs + params)              }
+  MAX_SYM    = {$IFDEF FPC}512{$ELSE}120{$ENDIF};   { Symboles (vars + champs + params)              }
   MAX_FUNC   = {$IFDEF FPC}128{$ELSE}16{$ENDIF};    { Methodes statiques                             }
   MAX_LIT    = {$IFDEF FPC}256{$ELSE}128{$ENDIF};   { Litteraux de chaine distincts                  }
   MAX_PARAM  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};      { Parametres max par methode                     }
