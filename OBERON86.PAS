@@ -411,6 +411,9 @@ Var
   loop_break_stk   : Array[1..MAX_SCOPE] of TString;
   loop_cont_stk    : Array[1..MAX_SCOPE] of TString;
 
+  { Label de retour de la procedure courante (RETURN -> JMP cur_ret_lbl) }
+  cur_ret_lbl      : TString;
+
   { Types primitifs predefinis (indexes dans type_table) }
   TYP_INTEGER  : Integer;
   TYP_BOOLEAN  : Integer;
@@ -2978,6 +2981,9 @@ End;
   pour les sous-expressions entre parentheses et les index de tableau. }
 Function ParseExpr : Integer; Forward;
 
+{ Forward : ParseProcCallArgs defini en TODO 18 ; ParseDesignator l'appelle. }
+Function ParseProcCallArgs(pi : Integer) : Integer; Forward;
+
 { --------------------------------------------------------------------------
   GenLoadConst : charger une valeur immediate dans AX (ou DX:AX si 32 bits).
   -------------------------------------------------------------------------- }
@@ -3026,6 +3032,8 @@ Var name    : TString;
     el_size : Integer;
     fld_idx : Integer;
     k       : Integer;
+    pi2     : Integer;
+    n_a     : Integer;
 Begin
   name := cur_tok.val;
   LexExpectKind(TK_IDENT);
@@ -3047,8 +3055,24 @@ Begin
       ErrorMsg('Nom de type non valide dans une expression : ' + name);
     SK_PROC :
       Begin
-        { Appel sans arguments a completer en TODO 18 - on met AX=0 }
-        EmitI2('MOV', 'AX', '0');
+        { Appel de procedure/fonction (TODO 18) }
+        pi2 := sym_table^[si].proc_idx;
+        If cur_tok.val = '(' Then
+        Begin
+          n_a := ParseProcCallArgs(pi2);
+          EmitI1('CALL', sym_table^[si].asm_label);
+          If n_a > 0 Then
+            EmitI2('ADD', 'SP', IntToStr(n_a * 2));
+        End
+        Else
+        Begin
+          { Appel sans parentheses (procedure sans parametres) }
+          EmitI1('CALL', sym_table^[si].asm_label);
+        End;
+        If (pi2 > 0) And (pi2 <= proc_count) Then
+          ti := proc_table^[pi2].ret_type_idx
+        Else
+          ti := 0;
       End;
   Else
     { SK_VAR, SK_PARAM, SK_FIELD }
@@ -3204,23 +3228,8 @@ Begin
   End
   Else If cur_tok.kind = TK_IDENT Then
   Begin
+    { ParseDesignator gere desormais les appels de fonction (TODO 18) }
     ti := ParseDesignator;
-    { Appel de procedure/fonction : '(' suit le designateur -- stub TODO 18 }
-    If cur_tok.val = '(' Then
-    Begin
-      LexNext;
-      If cur_tok.val <> ')' Then
-      Begin
-        ParseExpr;
-        While cur_tok.val = ',' Do
-        Begin
-          LexNext;
-          ParseExpr;
-        End;
-      End;
-      LexExpect(')');
-      EmitI2('MOV', 'AX', '0');
-    End;
   End
   Else
   Begin
@@ -3912,13 +3921,116 @@ Begin
   LexExpect('END');
 End;
 
+{ ============================================================
+  TODO 16 - INSTRUCTION WITH (GARDE DE TYPE)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseWithStmt : WITH v : T DO StatementSeq END
+
+  Semantique Oberon :
+    v doit etre un pointeur ou un enregistrement.
+    T est un type etendu de celui de v (sous-type).
+    Dans le corps, v est vu comme ayant le type T (transtypage de portee).
+    Le test de type dynamique (IS) est emis comme commentaire/stub ici
+    et sera complete en TODO 22 quand le RTTI sera implemente.
+
+  Implementation :
+    1. Rechercher v dans sym_table -> si_v
+    2. Rechercher T dans sym_table -> ti_T
+    3. Emettre un commentaire de garde (stub runtime)
+    4. Ouvrir une nouvelle portee
+    5. Ajouter un alias de v avec type_idx = ti_T dans cette portee
+    6. Parser le corps
+    7. Fermer la portee
+    8. Supports plusieurs gardes : WITH v1:T1 DO | v2:T2 DO seq END
+  -------------------------------------------------------------------------- }
+Procedure ParseWithStmt;
+Var vname  : TString;
+    tname  : TString;
+    si_v   : Integer;
+    si_t   : Integer;
+    ti_T   : Integer;
+    si_alias : Integer;
+    lbl_end  : TString;
+    lbl_else : TString;
+Begin
+  LexExpect('WITH');
+  lbl_end  := NewLabel;
+  lbl_else := NewLabel;
+
+  { Boucle sur les gardes v : T }  
+  Repeat
+    vname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    LexExpect(':');
+    tname := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+
+    { Verifier que v existe }
+    si_v := SymFind(vname);
+    If si_v = 0 Then
+      ErrorMsg('Variable inconnue dans WITH : ' + vname);
+
+    { Verifier que T est un type connu }
+    si_t := SymFind(tname);
+    If (si_t = 0) Or (sym_table^[si_t].kind <> SK_TYPE) Then
+    Begin
+      ErrorMsg('Type inconnu dans WITH : ' + tname);
+      ti_T := TYP_UNDEF;
+    End
+    Else
+      ti_T := sym_table^[si_t].type_idx;
+
+    { Emettre la garde de type - stub (RTTI complet en TODO 22) }
+    EmitComment(' WITH ' + vname + ' : ' + tname + ' (type guard stub)');
+    If si_v > 0 Then
+      GenLoad(si_v);             { charger v dans AX }
+    EmitI2('CMP', 'AX', '0');   { test basique NIL }
+    EmitI1('JE',  lbl_else);    { si NIL, sauter vers ELSE }
+
+    { Ouvrir une portee pour l'alias retypee }
+    ScopeEnter;
+
+    { Ajouter un alias de v avec le type T }
+    si_alias := SymEnter(vname, SK_VAR,
+                         sym_table^[si_v].scope, ti_T);
+    If si_alias > 0 Then
+    Begin
+      sym_table^[si_alias].asm_label  := sym_table^[si_v].asm_label;
+      sym_table^[si_alias].bp_offset  := sym_table^[si_v].bp_offset;
+      sym_table^[si_alias].is_var_par := sym_table^[si_v].is_var_par;
+    End;
+
+    LexExpect('DO');
+    ParseStatementSeq;
+
+    EmitI1('JMP', lbl_end);
+    EmitLabel(lbl_else);
+    lbl_else := NewLabel;        { nouveau lbl_else pour la prochaine garde }
+
+    ScopeLeave;
+
+  Until cur_tok.val <> '|';     { plusieurs gardes separees par '|' }
+
+  { Corps ELSE implicite (quand aucune garde ne correspond)
+    On atterrit ici si le dernier JE lbl_else a saute }
+  { pas de corps ELSE en Oberon-2 WITH - on emet juste le label }
+
+  LexExpect('END');
+  EmitLabel(lbl_end);
+End;
+
 { --------------------------------------------------------------------------
   ParseStatement : dispatch complet.
-  Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, CASE, affectation / appel.
-  Les TODOs suivants (16-19) ajouteront WITH, PROCEDURE, stdlib, etc.
+  Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, CASE, WITH, affectation / appel.
+  Les TODOs suivants (17-19) ajouteront PROCEDURE, RETURN, stdlib, etc.
   -------------------------------------------------------------------------- }
 Procedure ParseStatement;
-Var brk : TString;
+Var brk      : TString;
+    call_si  : Integer;
+    call_pi  : Integer;
+    call_na  : Integer;
 Begin
   If cur_tok.val = 'IF' Then
     ParseIfStmt
@@ -3932,6 +4044,8 @@ Begin
     ParseForStmt
   Else If cur_tok.val = 'CASE' Then
     ParseCaseStmt
+  Else If cur_tok.val = 'WITH' Then
+    ParseWithStmt
   Else If cur_tok.val = 'EXIT' Then
   Begin
     LexNext;
@@ -3941,9 +4055,273 @@ Begin
     Else
       EmitI1('JMP', brk);
   End
+  Else If cur_tok.val = 'RETURN' Then
+  Begin
+    LexNext;
+    { Si la procedure retourne une valeur, evaluer l'expression -> AX }
+    If (cur_proc_idx > 0) And
+       (proc_table^[cur_proc_idx].ret_type_idx > 0) And
+       (cur_tok.kind <> TK_EOF) And
+       (cur_tok.val <> ';') And
+       (cur_tok.val <> 'END') Then
+      ParseExpr;
+    If cur_ret_lbl <> '' Then
+      EmitI1('JMP', cur_ret_lbl)
+    Else
+      EmitI0('RET');
+  End
   Else If cur_tok.kind = TK_IDENT Then
-    ParseAssignment;
-  { WITH, RETURN, appels stdlib -> TODOs 16-19 }
+  Begin
+    { Distinguer appel de procedure (SK_PROC) et affectation (:=) }
+    call_si := SymFind(cur_tok.val);
+    If (call_si > 0) And (sym_table^[call_si].kind = SK_PROC) Then
+    Begin
+      call_pi := sym_table^[call_si].proc_idx;
+      LexNext;   { consommer l'identificateur }
+      call_na := 0;
+      If cur_tok.val = '(' Then
+        call_na := ParseProcCallArgs(call_pi);
+      EmitI1('CALL', sym_table^[call_si].asm_label);
+      If call_na > 0 Then
+        EmitI2('ADD', 'SP', IntToStr(call_na * 2));
+      { resultat dans AX, non utilise pour un appel en position instruction }
+    End
+    Else
+      ParseAssignment;
+  End;
+  { WITH, appels stdlib -> TODOs 16,18-19 (deja dispatche ci-dessus) }
+End;
+
+{ ============================================================
+  TODO 18 - APPELS DE PROCEDURES ET DE FONCTIONS
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseProcCallArgs : parser la liste d'arguments '(' expr (, expr) ')'.
+  Convention near cdecl, push gauche -> droite :
+    - parametre valeur : evalue -> AX, PUSH AX
+    - parametre VAR    : adresse -> BX via LEA, PUSH BX
+  Le site appelant nettoie la pile apres le CALL (ADD SP, n*2).
+  Retourne le nombre d'arguments pousses.
+  -------------------------------------------------------------------------- }
+Function ParseProcCallArgs(pi : Integer) : Integer;
+Var n_args : Integer;
+    is_var : Boolean;
+    aname  : TString;
+    asi    : Integer;
+Begin
+  n_args := 0;
+  LexExpect('(');
+  If cur_tok.val <> ')' Then
+  Repeat
+    Inc(n_args);
+    is_var := False;
+    If (pi > 0) And (pi <= proc_count) And
+       (n_args <= proc_table^[pi].param_count) Then
+      is_var := proc_table^[pi].params[n_args].is_var_par;
+    If is_var Then
+    Begin
+      { Parametre VAR : passer l'adresse de la variable (LEA -> PUSH BX) }
+      If cur_tok.kind <> TK_IDENT Then
+        ErrorMsg('Parametre VAR : identificateur attendu')
+      Else
+      Begin
+        aname := cur_tok.val;
+        LexExpectKind(TK_IDENT);
+        asi := SymFind(aname);
+        If asi > 0 Then
+          GenLoadAddr(asi)   { LEA BX, [addr] }
+        Else
+          ErrorMsg('Symbole inconnu pour parametre VAR : ' + aname);
+        EmitI0('PUSH BX');
+      End;
+    End
+    Else
+    Begin
+      { Parametre valeur : evaluer l''expression -> AX, puis empiler }
+      ParseExpr;
+      EmitI0('PUSH AX');
+    End;
+    If cur_tok.val = ',' Then LexNext Else Break;
+  Until False;
+  LexExpect(')');
+  ParseProcCallArgs := n_args;
+End;
+
+{ ============================================================
+  TODO 17 - DECLARATIONS DE PROCEDURES
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseFormalParams : parser la liste de parametres formels.
+  FormalParams = '(' [ [VAR] IdentList ':' T (; [VAR] IdentList ':' T) ] ')'
+  Les parametres sont inscrits dans proc_table et sym_table.
+  Convention near cdecl : BP+4 = 1er param, BP+6 = 2e, etc.
+  -------------------------------------------------------------------------- }
+Procedure ParseFormalParams(pi : Integer);
+Var is_var  : Boolean;
+    names   : Array[1..MAX_PARAM] of TString;
+    nnames  : Integer;
+    ti      : Integer;
+    k       : Integer;
+    n_par   : Integer;
+    ofs_fix : Integer;
+    si_fix  : Integer;
+Begin
+  LexExpect('(');
+  While cur_tok.val <> ')' Do
+  Begin
+    is_var := False;
+    If cur_tok.val = 'VAR' Then
+    Begin
+      is_var := True;
+      LexNext;
+    End;
+    { Collecter la liste d'identificateurs }
+    nnames   := 1;
+    names[1] := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    While cur_tok.val = ',' Do
+    Begin
+      LexNext;
+      If nnames < MAX_PARAM Then
+      Begin
+        Inc(nnames);
+        names[nnames] := cur_tok.val;
+      End;
+      LexExpectKind(TK_IDENT);
+    End;
+    LexExpect(':');
+    ti := ParseTypeRef;
+    For k := 1 To nnames Do
+      ProcAddParam(pi, names[k], ti, is_var);
+    { Separateur ';' entre groupes de parametres }
+    If cur_tok.val = ';' Then
+      LexNext
+    Else If cur_tok.val <> ')' Then
+      Break;
+  End;
+  LexExpect(')');
+
+  { Fixup des offsets BP : convention push gauche->droite.                }
+  { Les args sont pousses L->R ; le 1er arg termine a l'offset le plus    }
+  { eleve (BP + 4 + (n-1)*2), le dernier arg a BP+4.                       }
+  { param[k].bp_offset := 4 + (n_par - k) * 2                             }
+  n_par := proc_table^[pi].param_count;
+  For k := 1 To n_par Do
+  Begin
+    ofs_fix := 4 + (n_par - k) * 2;
+    proc_table^[pi].params[k].bp_offset := ofs_fix;
+    { Mettre a jour l'entree sym_table correspondante }
+    si_fix := SymFind(proc_table^[pi].params[k].name);
+    If si_fix > 0 Then
+      sym_table^[si_fix].bp_offset := ofs_fix;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseProcDecl : parser une declaration de procedure / fonction complete.
+  PROCEDURE [*] name [(params)] [: T] ;
+  [ CONST ... ] [ TYPE ... ] [ VAR ... ]
+  BEGIN StatementSeq END name ;
+  Le corps de la procedure est emis dans tmp_file.
+  -------------------------------------------------------------------------- }
+Procedure ParseProcDecl;
+Var pname     : TString;
+    is_export : Boolean;
+    pi        : Integer;
+    ret_ti    : Integer;
+    local_off : Integer;
+    save_ret  : TString;
+    save_pidx : Integer;
+    end_name  : TString;
+    si_p      : Integer;
+Begin
+  LexExpect('PROCEDURE');
+
+  { Export marker '*' }
+  is_export := False;
+  If cur_tok.val = '*' Then
+  Begin
+    is_export := True;
+    LexNext;
+  End;
+
+  pname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+
+  { Enregistrer dans proc_table + sym_table }
+  ret_ti := 0;
+  pi     := ProcEnter(pname, 0, is_export);
+  If pi = 0 Then Exit;
+
+  { Ouvrir une portee pour les parametres et locals }
+  ScopeEnter;
+
+  { Parametres formels }
+  If cur_tok.val = '(' Then
+    ParseFormalParams(pi);
+
+  { Type de retour facultatif }
+  If cur_tok.val = ':' Then
+  Begin
+    LexNext;
+    ret_ti := ParseTypeRef;
+    proc_table^[pi].ret_type_idx := ret_ti;
+    { Mettre a jour le symbole dans sym_table }
+    If pi > 0 Then
+    Begin
+      si_p := SymFind(pname);
+      If si_p > 0 Then
+        sym_table^[si_p].type_idx := ret_ti;
+    End;
+  End;
+
+  LexExpect(';');
+
+  { Declarations locales (CONST TYPE VAR), dans l'ordre }
+  local_off := 0;
+  If cur_tok.val = 'CONST' Then ParseConstSection;
+  If cur_tok.val = 'TYPE'  Then ParseTypeSection;
+  If cur_tok.val = 'VAR'   Then ParseVarSection(True, local_off);
+  { Support des procedures imbriquees : boucle sur PROCEDURE }
+  While cur_tok.val = 'PROCEDURE' Do
+    ParseProcDecl;
+
+  { Ici local_size est connu -> emettre le prologue dans tmp_file }
+  save_pidx   := cur_proc_idx;
+  cur_proc_idx := pi;
+  save_ret    := cur_ret_lbl;
+  cur_ret_lbl := OP_PFX + AsmIdent(module_name) + '_' + AsmIdent(pname) + '_RET';
+
+  SwitchToTmp;
+  GenProcPrologue(pi);
+
+  { Corps }
+  LexExpect('BEGIN');
+  ParseStatementSeq;
+
+  { Epilogue : label de retour }
+  EmitLabel(cur_ret_lbl);
+  GenProcEpilogue(pi);
+  SwitchToMain;
+
+  { Fermer la portee }
+  cur_proc_idx := save_pidx;
+  cur_ret_lbl  := save_ret;
+  ScopeLeave;
+
+  { END name ; }
+  LexExpect('END');
+  end_name := cur_tok.val;
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    If end_name <> pname Then
+      ErrorMsg('Nom de fin de procedure incorrect : ' + end_name +
+               ' (attendu : ' + pname + ')');
+    LexNext;
+  End;
+  LexExpect(';');
 End;
 
 { ============================================================
@@ -3995,7 +4373,7 @@ Begin
 
   GenStartExit;
   GenCodeFooter;
-  { MergeTmpToMain; }    { fusionner les procedures (TODO 17) }
+  MergeTmpToMain;              { fusionner les procedures (actif depuis TODO 17) }
   GenEndDirective;
 
   { --- Fermeture --- }

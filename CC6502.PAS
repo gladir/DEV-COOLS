@@ -5434,54 +5434,40 @@ Begin
  loop_label := getlabel;
  condition_label := getlabel;
  end_label := getlabel;
-
- { Push loop context for break/continue }
- { push_loop_context(3, end_label, condition_label); }
-
- { Loop start }
+  { Empile la boucle de contexte pour break/continue }
+  { push_loop_context(3, end_label, condition_label); }
+  { DÇbut de la boucle }
  prelabel(loop_label);
  safe_writeln('; DO-WHILE loop start');
-
- { Parse loop body }
+  { Analyse le corps de la boucle }
  parse_statement;
-
- { Expect while }
- If not match('while') Then
- Begin
+  { while attendue }
+ If not match('while') Then Begin
   errrpt('Expected while after do body');
   Exit;
  End;
-
- { Expect opening parenthesis }
- If not match('(') Then
- Begin
+  { Ouverture de parenthäse attendue }
+ If not match('(') Then Begin
   errrpt('Expected ( after while');
   Exit;
  End;
-
- { Parse condition }
+  { Analyse la condition }
  prelabel(condition_label);
  safe_writeln('; DO-WHILE condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
+  { Fermeture de la parenthäse attendue }
  If not match(')') Then
   errrpt('Expected ) after while condition');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after do-while');
-
- { Generate conditional jump back }
+ { Point-virgule attendue }
+ If not match(';') Then errrpt('Expected ; after do-while');
+ { GÇnäre le saut conditionnel arriäre }
  ol('tstd');
  ot('lbne ');
  printlabel(loop_label);
  nl;
-
- { End label }
+ { Fin d'Çtiquette }
  prelabel(end_label);
  safe_writeln('; End DO-WHILE');
-
  { Pop loop context }
  { pop_loop_context; }
 End;
@@ -5491,27 +5477,22 @@ Var
  lval: TLVal;
 Begin
  parse_return_statement := False;
-
  If not match('return') Then Exit;
  parse_return_statement := True;
-
  safe_writeln('; RETURN statement');
-
- { Check for return value }
- If not match(';') Then
- Begin
+  { VÇrifie pour la valeur de retour }
+ If not match(';') Then Begin
   expression_bool(lval);
   If not match(';') Then
    errrpt('Expected ; after return value');
  End
- Else
+  Else
  Begin
   { Return void - load 0 }
   ot('ldd  #0');
   nl;
  End;
-
- { Generate return code }
+  { GÇnäre le code de retour }
  ol('rts');
 End;
 
@@ -5520,131 +5501,104 @@ Var
  break_label: Integer;
 Begin
  parse_break_statement := False;
-
  If not match('break') Then Exit;
  parse_break_statement := True;
-
  safe_writeln('; BREAK statement');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after break');
-
- { Get current break label from loop context }
+ { Point-virgule attendue }
+ If not match(';') Then errrpt('Expected ; after break');
+  { Demande l'Çtiquette de break pour le contexte de boucle }
  break_label := get_current_break_label;
- If break_label = -1 Then
- Begin
+ If break_label = -1 Then Begin
   errrpt('break statement not within a loop');
   Exit;
  End;
-
- { Jump to end of current loop }
+  { Saute vers la fin de la boucle courante }
  ot('lbra ');
  printlabel(break_label);
  nl;
 End;
 
-Function parse_continue_statement: Boolean;
+Function parse_continue_statement:Boolean;
 Var
  continue_label: Integer;
 Begin
  parse_continue_statement := False;
-
  If not match('continue') Then Exit;
  parse_continue_statement := True;
-
  safe_writeln('; CONTINUE statement');
-
- { Expect semicolon }
- If not match(';') Then
-  errrpt('Expected ; after continue');
-
- { Get current continue label from loop context }
+  { Point-virgule attendue }
+ If not match(';') Then errrpt('Expected ; after continue');
+  { Demande l'Çtiquette continue courant pour le contexte de la boucle }
  continue_label := get_current_continue_label;
- If continue_label = -1 Then
- Begin
+ If continue_label = -1 Then Begin
   errrpt('continue statement not within a loop');
   Exit;
  End;
-
- { Jump to loop condition }
+  { Saut vers la condition de la boucle }
  ot('lbra ');
  printlabel(continue_label);
  nl;
 End;
 
-{ Analyser une instruction goto }
+ { Analyser une instruction goto }
 Function parse_goto_statement: Boolean;
 Var
  label_name: String;
 Begin
  parse_goto_statement := False;
-
  If not match('goto') Then Exit;
  parse_goto_statement := True;
-
  safe_writeln('; GOTO statement');
-
- { Obtenir le nom de l'√©tiquette }
- If not symname(label_name) Then
- Begin
+ { Obtenir le nom de l'Çtiquette }
+ If not symname(label_name) Then Begin
   Case Language of
    _English: errrpt('Expected label name after goto');
    {$IFDEF FPC}
    _Germany: errrpt('Label-Name nach goto erwartet');
    {$ENDIF}
-   Else errrpt('Nom d''√©tiquette attendu apr√®s goto');
+   Else errrpt('Nom d''Çtiquette attendu apräs goto');
   End;
   Exit;
  End;
-
- { Attendre point-virgule }
- If not match(';') Then
-  errrpt('Expected ; after goto statement');
-
- { G√©n√©rer le saut vers l'√©tiquette }
+  { Attendre point-virgule }
+ If not match(';') Then errrpt('Expected ; after goto statement');
+  { GÇnÇrer le saut vers l'Çtiquette }
  use_goto_label(label_name);
 End;
 
-{ Analyser une d√©finition d'√©tiquette (label:) }
+ { Analyser une dÇfinition d'Çtiquette (label:) }
 Function parse_label_statement: Boolean;
 Var
  label_name: String;
  save_lptr: Integer;
 Begin
  parse_label_statement := False;
-
- { Sauvegarder la position pour pouvoir revenir en arri√®re }
+  { Sauvegarder la position pour pouvoir revenir en arriäre }
  save_lptr := lptr;
-
- { V√©rifier s'il y a un identificateur suivi de ':' }
- If symname(label_name) and match(':') Then
- Begin
+  { VÇrifier s'il y a un identificateur suivi de ':' }
+ If symname(label_name) and match(':') Then Begin
   parse_label_statement := True;
-  safe_writeln('; D√©finition d''√©tiquette: ' + label_name);
+  safe_writeln('; DÇfinition d''Çtiquette: ' + label_name);
   define_goto_label(label_name);
  End
- Else
+  Else
  Begin
-  { Ce n'est pas une √©tiquette, revenir en arri√®re }
+   { Ce n'est pas une Çtiquette, revenir en arriäre }
   lptr := save_lptr;
  End;
 End;
 
-{ Analyser une instruction switch }
+ { Analyser une instruction switch }
 Function parse_switch_statement: Boolean;
 Var
  lval: TLVal;
  switch_expr_type: Integer;
 Begin
  parse_switch_statement := False;
-
  If not match('switch') Then Exit;
  parse_switch_statement := True;
-
  safe_writeln('; SWITCH statement');
-
- { Attendre parenth√®se ouvrante }
+  { Attendre parenthäse ouvrante }
  If not match('(') Then
  Begin
   Case Language of
@@ -5652,17 +5606,15 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach switch');
    {$ENDIF}
-   Else errrpt('( attendu apr√®s switch');
+   Else errrpt('( attendu apräs switch');
   End;
   Exit;
  End;
-
- { Analyser l'expression switch }
+  { Analyser l'expression switch }
  safe_writeln('; Expression switch');
  expression_bool(lval);
  switch_expr_type := lval.typ;
-
- { Attendre parenth√®se fermante }
+  { Attendre parenthäse fermante }
  If not match(')') Then
  Begin
   Case Language of
@@ -5670,54 +5622,43 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ) nach switch-Ausdruck');
    {$ENDIF}
-   Else errrpt(') attendu apr√®s expression switch');
+   Else errrpt(') attendu apräs expression switch');
   End;
   Exit;
  End;
-
- { Commencer le switch }
+  { Commencer le switch }
  If not begin_switch_statement(switch_expr_type) Then Exit;
-
- { Sauvegarder la valeur de l'expression pour comparaison }
+  { Sauvegarder la valeur de l'expression pour comparaison }
  ol('std  switch_temp ; sauver valeur switch');
-
- { G√©n√©rer les comparaisons }
+  { GÇnÇrer les comparaisons }
  generate_switch_comparisons;
-
- { Analyser le corps du switch }
- If not match('{') Then
- Begin
+  { Analyser le corps du switch }
+ If not match('{') Then Begin
   Case Language of
    _English: errrpt('Expected { after switch statement');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete { nach switch-Anweisung');
    {$ENDIF}
-   Else errrpt('{ attendu apr√®s instruction switch');
+   Else errrpt('{ attendu apräs instruction switch');
   End;
   Exit;
  End;
-
  safe_writeln('; Corps du switch');
- While (ch <> '}') and (ch <> #0) Do
- Begin
-  If not parse_statement Then
-  Begin
+ While (ch <> '}') and (ch <> #0) Do Begin
+  If not parse_statement Then Begin
    If ch <> #0 Then gch;
   End;
  End;
-
- If not match('}') Then
- Begin
+ If not match('}') Then Begin
   Case Language of
    _English: errrpt('Expected } to close switch');
    {$IFDEF FPC}
-   _Germany: errrpt('Erwartete } zum Schlie√üen von switch');
+   _Germany: errrpt('Erwartete } zum Schlie·en von switch');
    {$ENDIF}
    Else errrpt('} attendu pour fermer switch');
   End;
  End;
-
- { Terminer le switch }
+  { Terminer le switch }
  end_switch_statement;
 End;
 
@@ -5728,44 +5669,36 @@ Var
  case_label: Integer;
 Begin
  parse_case_statement := False;
-
  If not match('case') Then Exit;
  parse_case_statement := True;
-
  safe_writeln('; CASE statement');
-
  { Obtenir la valeur du case }
- If not number(case_value) Then
- Begin
+ If not number(case_value) Then Begin
   Case Language of
    _English: errrpt('Expected constant after case');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete Konstante nach case');
    {$ENDIF}
-   Else errrpt('Constante attendue apr√®s case');
+   Else errrpt('Constante attendue apräs case');
   End;
   Exit;
  End;
-
- { Attendre deux-points }
- If not match(':') Then
- Begin
+  { Attendre deux-points }
+ If not match(':') Then Begin
   Case Language of
    _English: errrpt('Expected : after case value');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach case-Wert');
    {$ENDIF}
-   Else errrpt(': attendu apr√®s valeur case');
+   Else errrpt(': attendu apräs valeur case');
   End;
   Exit;
  End;
-
- { Ajouter le case au switch courant }
+  { Ajouter le case au switch courant }
  case_label := add_switch_case(case_value);
- If case_label <> -1 Then
- Begin
+ If case_label <> -1 Then Begin
   prelabel(case_label);
-  safe_writeln('; Case ' + IntToStr(case_value) + ' d√©fini');
+  safe_writeln('; Case ' + IntToStr(case_value) + ' dÇfini');
  End;
 End;
 
@@ -5775,47 +5708,37 @@ Var
  default_label: Integer;
 Begin
  parse_default_statement := False;
-
  If not match('default') Then Exit;
  parse_default_statement := True;
-
  safe_writeln('; DEFAULT statement');
-
  { Attendre deux-points }
- If not match(':') Then
- Begin
+ If not match(':') Then Begin
   Case Language of
    _English: errrpt('Expected : after default');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete : nach default');
    {$ENDIF}
-   Else errrpt(': attendu apr√®s default');
+   Else errrpt(': attendu apräs default');
   End;
   Exit;
  End;
-
- { Ajouter le default au switch courant }
+  { Ajouter le default au switch courant }
  default_label := add_switch_default;
- If default_label <> -1 Then
- Begin
+ If default_label <> -1 Then Begin
   prelabel(default_label);
-  safe_writeln('; Default d√©fini');
+  safe_writeln('; Default dÇfini');
  End;
 End;
 
-{ Compound statement parsing }
-Function parse_compound_statement: Boolean;
-Begin
+ { Analyse l'instruction composÇ }
+Function parse_compound_statement:Boolean;Begin
  parse_compound_statement := False;
-
  If not match('{') Then Exit;
  parse_compound_statement := True;
-
  safe_writeln('; Compound statement start');
-
- { Parse statements until closing brace }
+  { Analyse les instructions jusqu'Ö rencontre une accolade de fermeture }
  Repeat
-  { Check if we need to read a new line }
+  { VÇrifie si on a besoin de lire une nouvelle ligne }
   blanks;
   If (lptr > Length(line)) or (Length(line) = 0) Then
   Begin
