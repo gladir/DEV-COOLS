@@ -3268,6 +3268,8 @@ End;
   Forward : ParseExpr est appele depuis ParseExprPrimary (parens + appels).
   -------------------------------------------------------------------------- }
 Procedure ParseExpr(Var etype : TItemType; Var ebits : Integer); Forward;
+Procedure ParseBuiltinFunc(Const fname : TString;
+                           Var etype : TItemType; Var ebits : Integer); Forward;
 
 { --------------------------------------------------------------------------
   Helpers predicats operateurs
@@ -3292,6 +3294,21 @@ Function IsLogOp(Const v : TString) : Boolean;
 Begin
   IsLogOp := (v = 'AND') Or (v = 'OR') Or
              (v = 'XOR') Or (v = 'EQV');
+End;
+
+{ --------------------------------------------------------------------------
+  IsBuiltinFunc : vrai si v correspond a une fonction integree JOVIAL 73.
+  -------------------------------------------------------------------------- }
+Function IsBuiltinFunc(Const v : TString) : Boolean;
+Begin
+  IsBuiltinFunc :=
+    (v = 'LOC')     Or (v = 'NEXT')     Or
+    (v = 'BIT')     Or (v = 'BYTE')     Or
+    (v = 'SHIFTL')  Or (v = 'SHIFTR')   Or
+    (v = 'ABS')     Or (v = 'SGN')      Or
+    (v = 'BITSIZE') Or (v = 'BYTESIZE') Or (v = 'WORDSIZE') Or
+    (v = 'LBOUND')  Or (v = 'UBOUND')   Or
+    (v = 'NWSDEN')  Or (v = 'FIRST')    Or (v = 'LAST');
 End;
 
 { --------------------------------------------------------------------------
@@ -3398,6 +3415,253 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
+  ParseBuiltinFunc : emettre le code 8086 pour une fonction integree JOVIAL 73.
+  fname est deja consomme. La parenthese ouvrante '(' est encore dans cur_tok.
+  -------------------------------------------------------------------------- }
+Procedure ParseBuiltinFunc(Const fname : TString;
+                           Var etype : TItemType; Var ebits : Integer);
+Var
+  et    : TItemType;
+  eb    : Integer;
+  si    : Integer;
+  vname : TString;
+  lbl1  : TString;
+  lbl2  : TString;
+  bsize : Integer;
+Begin
+  etype := IT_INTEGER; ebits := 16;
+  LexExpect('(');
+
+  { ABS(x) : valeur absolue de x -> CWD ; XOR AX,DX ; SUB AX,DX }
+  If fname = 'ABS' Then
+  Begin
+    ParseExpr(et, eb);
+    EmitI0('CWD');
+    EmitI2('XOR', 'AX', 'DX');
+    EmitI2('SUB', 'AX', 'DX');
+  End
+
+  { SGN(x) : -1, 0 ou +1 selon signe de x }
+  Else If fname = 'SGN' Then
+  Begin
+    lbl1 := NewLabel;
+    lbl2 := NewLabel;
+    ParseExpr(et, eb);
+    EmitI2('MOV', 'BX', 'AX');
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('TEST', 'BX', 'BX');
+    EmitI1('JE ', lbl1);             { zero -> AX=0 }
+    EmitI1('JS ', lbl2);             { negatif }
+    EmitI2('MOV', 'AX', '1');        { positif }
+    EmitI1('JMP', lbl1);
+    EmitLocalLabel(lbl2);
+    EmitI2('MOV', 'AX', '0FFFFh');   { -1 en complement a 2 }
+    EmitLocalLabel(lbl1);
+  End
+
+  { SHIFTL(b,n) : b decale a gauche de n bits }
+  Else If fname = 'SHIFTL' Then
+  Begin
+    ParseExpr(et, eb);               { b -> AX }
+    EmitI0('PUSH  AX');
+    LexExpect(',');
+    ParseExpr(et, eb);               { n -> AX }
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI0('POP   AX');
+    EmitI2('SHL', 'AX', 'CL');
+  End
+
+  { SHIFTR(b,n) : b decale a droite de n bits }
+  Else If fname = 'SHIFTR' Then
+  Begin
+    ParseExpr(et, eb);               { b -> AX }
+    EmitI0('PUSH  AX');
+    LexExpect(',');
+    ParseExpr(et, eb);               { n -> AX }
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI0('POP   AX');
+    EmitI2('SHR', 'AX', 'CL');
+  End
+
+  { LOC(r) : adresse de la variable r -> MOV AX, OFFSET _JV_r }
+  Else If fname = 'LOC' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    If si > 0 Then
+      EmitI2('MOV', 'AX', 'OFFSET ' + sym_table^[si].asm_label)
+    Else
+    Begin
+      Inc(err_count);
+      WriteLn('Erreur ligne ', lex_lineno,
+              ': LOC : symbole inconnu ''', vname, '''');
+      EmitI2('XOR', 'AX', 'AX');
+    End;
+  End
+
+  { BIT(b,i,n) : n bits a partir du bit i de b -> (b>>i) AND ((1<<n)-1) }
+  Else If fname = 'BIT' Then
+  Begin
+    ParseExpr(et, eb);               { b -> AX }
+    EmitI0('PUSH  AX');
+    LexExpect(',');
+    ParseExpr(et, eb);               { i -> AX }
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI0('POP   AX');
+    EmitI2('SHR', 'AX', 'CL');       { b >> i }
+    EmitI0('PUSH  AX');
+    LexExpect(',');
+    ParseExpr(et, eb);               { n -> AX }
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI2('MOV', 'BX', '1');
+    EmitI2('SHL', 'BX', 'CL');       { 1 << n }
+    EmitI0('DEC   BX');              { masque = (1<<n)-1 }
+    EmitI0('POP   AX');
+    EmitI2('AND', 'AX', 'BX');
+  End
+
+  { BYTE(c,i,n) : n octets a partir de la position i de c (retourne 1 octet) }
+  Else If fname = 'BYTE' Then
+  Begin
+    ParseExpr(et, eb);               { adresse de c -> AX }
+    EmitI2('MOV', 'BX', 'AX');
+    LexExpect(',');
+    ParseExpr(et, eb);               { i -> AX }
+    EmitI2('ADD', 'BX', 'AX');       { BX = &c[i] }
+    LexExpect(',');
+    ParseExpr(et, eb);               { n -> ignore (retourne 1 octet) }
+    EmitI2('MOV', 'AL', 'BYTE PTR [BX]');
+    EmitI2('XOR', 'AH', 'AH');
+  End
+
+  { BITSIZE(x) : taille logique de x en bits (constante de compilation) }
+  Else If fname = 'BITSIZE' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    If si > 0 Then
+      EmitI2('MOV', 'AX', IntToStr(sym_table^[si].bit_size))
+    Else
+      EmitI2('MOV', 'AX', '16');
+  End
+
+  { BYTESIZE(x) : taille logique de x en octets }
+  Else If fname = 'BYTESIZE' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    bsize := 2;
+    If si > 0 Then
+    Begin
+      bsize := sym_table^[si].bit_size Div 8;
+      If bsize < 1 Then bsize := 1;
+    End;
+    EmitI2('MOV', 'AX', IntToStr(bsize));
+  End
+
+  { WORDSIZE(x) : taille logique de x en mots de 16 bits }
+  Else If fname = 'WORDSIZE' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    bsize := 1;
+    If si > 0 Then
+      bsize := (sym_table^[si].bit_size + 15) Div 16;
+    EmitI2('MOV', 'AX', IntToStr(bsize));
+  End
+
+  { LBOUND(t,d) : borne inferieure (toujours 0 en JOVIAL, indexation 0-based) }
+  Else If fname = 'LBOUND' Then
+  Begin
+    LexExpectKind(TK_IDENT);         { consommer le nom de la table }
+    If cur_tok.val = ',' Then
+    Begin
+      LexNext;
+      ParseExpr(et, eb);             { d -> ignore }
+    End;
+    EmitI2('XOR', 'AX', 'AX');
+  End
+
+  { UBOUND(t,d) : borne superieure = arr_count - 1 }
+  Else If fname = 'UBOUND' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    If cur_tok.val = ',' Then
+    Begin
+      LexNext;
+      ParseExpr(et, eb);             { d -> ignore (1 dimension) }
+    End;
+    If (si > 0) And sym_table^[si].is_array Then
+      EmitI2('MOV', 'AX', IntToStr(sym_table^[si].arr_count - 1))
+    Else
+      EmitI2('XOR', 'AX', 'AX');
+  End
+
+  { NWSDEN(t) : octets alloues par entree de la table t }
+  Else If fname = 'NWSDEN' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    bsize := 2;
+    If si > 0 Then
+    Begin
+      bsize := sym_table^[si].bit_size Div 8;
+      If bsize < 1 Then bsize := 1;
+    End;
+    EmitI2('MOV', 'AX', IntToStr(bsize));
+  End
+
+  { FIRST(s) : premiere valeur d'etat (index 0) }
+  Else If fname = 'FIRST' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    EmitI2('XOR', 'AX', 'AX');
+  End
+
+  { LAST(s) : derniere valeur d'etat (enum_count - 1) }
+  Else If fname = 'LAST' Then
+  Begin
+    vname := cur_tok.val;
+    si    := FindSym(vname);
+    LexExpectKind(TK_IDENT);
+    If (si > 0) And (sym_table^[si].itype = IT_STATUS) Then
+      EmitI2('MOV', 'AX', IntToStr(sym_table^[si].enum_count - 1))
+    Else
+      EmitI2('XOR', 'AX', 'AX');
+  End
+
+  { NEXT(p,i) : pointeur vers le i-eme element apres p }
+  Else If fname = 'NEXT' Then
+  Begin
+    ParseExpr(et, eb);               { p -> AX }
+    EmitI0('PUSH  AX');
+    LexExpect(',');
+    ParseExpr(et, eb);               { i -> AX }
+    EmitI2('MOV', 'BX', 'AX');
+    EmitI0('POP   AX');
+    EmitI2('ADD', 'AX', 'BX');       { p + i (sans scale) }
+  End
+
+  Else
+  Begin
+    { fonction non reconnue : absorber les arguments }
+    While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+    EmitI2('XOR', 'AX', 'AX');
+  End;
+
+  LexExpect(')');
+End;
+
+{ --------------------------------------------------------------------------
   ParseExprPrimary : element de base de la hierarchie.
   Laisse le resultat dans AX (ou DX:AX si 32 bits).
   -------------------------------------------------------------------------- }
@@ -3456,6 +3720,13 @@ Begin
   Else If cur_tok.kind = TK_IDENT Then
   Begin
     vname := cur_tok.val;
+    { fonctions integrees JOVIAL 73 }
+    If IsBuiltinFunc(vname) Then
+    Begin
+      LexNext;
+      ParseBuiltinFunc(vname, etype, ebits);
+      Exit;
+    End;
     { verifier d'abord si c'est une constante DEFINE }
     ci := FindConst(vname);
     If ci > 0 Then
