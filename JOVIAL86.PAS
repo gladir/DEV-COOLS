@@ -5062,11 +5062,519 @@ Begin
 End;
 
 { ============================================================================
-  TODO 19 ... 25 : a implementer
+  TODO 19 - RUNTIME ARITHMETIQUE 8086
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenRuntimeArith : emettre dans le fichier ASM courant toutes les routines
+  runtime arithmetiques.  Appelee depuis GenCodeSegment (TODO 21) apres
+  le code utilisateur, dans le meme segment _CODE.
+
+  Conventions :
+    - near call, registre AX = retour 16 bits, DX:AX = 32 bits / reel.
+    - args sur pile : appelant empile, callee nettoie via RET n.
+    - float binaire : gauche = PUSH DX_g / PUSH AX_g avant le CALL;
+      droite = DX:AX au moment du CALL.  Callee fait RET 4.
+    - _JRT_IPOW / _JRT_SHIFT : args dans AX et CX, pas de stack cleanup.
+  -------------------------------------------------------------------------- }
+Procedure GenRuntimeArith;
+Begin
+  EmitSep;
+  EmitComment(' ============================================================');
+  EmitComment(' RUNTIME ARITHMETIQUE - genere par JOVIAL86 v' + JOVIAL86_VERSION);
+  EmitComment(' ============================================================');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_EXIT0 : terminer le programme (DOS INT 21h fct 4Ch, code 0)');
+  EmitLabel('_JRT_EXIT0');
+  Emit('        MOV  AH, 4Ch');
+  Emit('        XOR  AL, AL');
+  Emit('        INT  21h');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_INEG : neger AX (NEG AX)');
+  EmitLabel('_JRT_INEG');
+  Emit('        NEG  AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_IABS : valeur absolue de AX');
+  EmitLabel('_JRT_IABS');
+  Emit('        TEST AX, AX');
+  Emit('        JNS  _JRT_IABS_RET');
+  Emit('        NEG  AX');
+  EmitLabel('_JRT_IABS_RET');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_IPOW : AX=base, CX=exposant (>=0) -> AX=base**exp (entier)');
+  EmitLabel('_JRT_IPOW');
+  Emit('        PUSH BX');
+  Emit('        PUSH CX');
+  Emit('        MOV  BX, AX');
+  Emit('        MOV  AX, 1');
+  Emit('        TEST CX, CX');
+  Emit('        JZ   _JRT_IPOW_DONE');
+  EmitLabel('_JRT_IPOW_LOOP');
+  Emit('        IMUL BX');
+  Emit('        LOOP _JRT_IPOW_LOOP');
+  EmitLabel('_JRT_IPOW_DONE');
+  Emit('        POP  CX');
+  Emit('        POP  BX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_SHIFT : AX=valeur, CX=decalage (>0=gauche, <0=droite) -> AX');
+  EmitLabel('_JRT_SHIFT');
+  Emit('        TEST CX, CX');
+  Emit('        JZ   _JRT_SHIFT_DONE');
+  Emit('        JNS  _JRT_SHIFT_LEFT');
+  Emit('        NEG  CX');
+  EmitLabel('_JRT_SHIFT_RIGHT_LP');
+  Emit('        SHR  AX, 1');
+  Emit('        LOOP _JRT_SHIFT_RIGHT_LP');
+  Emit('        JMP  _JRT_SHIFT_DONE');
+  EmitLabel('_JRT_SHIFT_LEFT');
+  EmitLabel('_JRT_SHIFT_LEFT_LP');
+  Emit('        SHL  AX, 1');
+  Emit('        LOOP _JRT_SHIFT_LEFT_LP');
+  EmitLabel('_JRT_SHIFT_DONE');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_LMUL / _JRT_LDIV / _JRT_LMOD : routines 32 bits (stubs)');
+  EmitLabel('_JRT_LMUL');
+  EmitLabel('_JRT_LDIV');
+  EmitLabel('_JRT_LMOD');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' ------------------------------------------------------------');
+  EmitComment(' Routines virgule flottante (IEEE 754 simple precision - stubs)');
+  EmitComment(' Convention binaire : PUSH DX_g / PUSH AX_g puis DX:AX=droite');
+  EmitComment(' -------  resultat dans DX:AX, callee nettoie 4 octets  ------');
+
+  EmitBlank;
+  EmitComment(' _JRT_FADD : DX:AX + [SP+4/6] -> DX:AX');
+  EmitLabel('_JRT_FADD');
+  Emit('        PUSH BP');
+  Emit('        MOV  BP, SP');
+  Emit('        PUSH AX');
+  Emit('        PUSH DX');
+  Emit('        MOV  AX, [BP+4]');
+  Emit('        MOV  DX, [BP+6]');
+  Emit('        ADD  AX, WORD PTR [BP-2]');
+  Emit('        ADC  DX, WORD PTR [BP-4]');
+  Emit('        MOV  SP, BP');
+  Emit('        POP  BP');
+  Emit('        RET  4');
+
+  EmitBlank;
+  EmitComment(' _JRT_FSUB : [SP+4/6] - DX:AX -> DX:AX');
+  EmitLabel('_JRT_FSUB');
+  Emit('        PUSH BP');
+  Emit('        MOV  BP, SP');
+  Emit('        PUSH AX');
+  Emit('        PUSH DX');
+  Emit('        MOV  AX, [BP+4]');
+  Emit('        MOV  DX, [BP+6]');
+  Emit('        SUB  AX, WORD PTR [BP-2]');
+  Emit('        SBB  DX, WORD PTR [BP-4]');
+  Emit('        MOV  SP, BP');
+  Emit('        POP  BP');
+  Emit('        RET  4');
+
+  EmitBlank;
+  EmitComment(' _JRT_FMUL / _JRT_FDIV / _JRT_FPOW : stubs -> retourne 0');
+  EmitLabel('_JRT_FMUL');
+  EmitLabel('_JRT_FDIV');
+  EmitLabel('_JRT_FPOW');
+  Emit('        XOR  AX, AX');
+  Emit('        XOR  DX, DX');
+  Emit('        RET  4');
+
+  EmitBlank;
+  EmitComment(' _JRT_FNEG : neger DX:AX (XOR bit de signe)');
+  EmitLabel('_JRT_FNEG');
+  Emit('        XOR  DX, 8000h');
+  Emit('        RET');
+
+  EmitBlank;
+  EmitComment(' _JRT_FABS : valeur absolue DX:AX (masque bit de signe)');
+  EmitLabel('_JRT_FABS');
+  Emit('        AND  DX, 7FFFh');
+  Emit('        RET');
+
+  EmitBlank;
+  EmitComment(' _JRT_FCMP : CX=code (0=EQ 1/=NEQ 2=LT 3=LEQ 4=GT 5=GEQ)');
+  EmitComment('             [SP+2/4]=gauche, DX:AX=droite -> AX=0FFFFh/0');
+  EmitLabel('_JRT_FCMP');
+  Emit('        XOR  AX, AX');
+  Emit('        RET  4');
+
+  EmitBlank;
+  EmitComment(' _JRT_I2F : AX=entier 16 bits -> DX:AX=reel (conversion brute)');
+  EmitLabel('_JRT_I2F');
+  Emit('        CWD');
+  Emit('        RET');
+
+  EmitBlank;
+  EmitComment(' _JRT_F2I : DX:AX=reel -> AX=entier (troncature brute)');
+  EmitLabel('_JRT_F2I');
+  Emit('        RET');
+
+  EmitBlank;
+  EmitComment(' _JRT_FSTR : DX:AX=reel -> ASCII null-termine dans _JV_OUTBUF');
+  EmitLabel('_JRT_FSTR');
+  Emit('        PUSH SI');
+  Emit('        MOV  SI, OFFSET _JV_OUTBUF');
+  Emit('        MOV  BYTE PTR [SI],     ''?''');
+  Emit('        MOV  BYTE PTR [SI + 1], 0');
+  Emit('        POP  SI');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' -------  Conversion entier <-> chaine  -------');
+
+  EmitBlank;
+  EmitComment(' _JRT_INT2STR : AX=entier signe -> chaine ASCII null-terminee');
+  EmitComment('                dans _JV_INTBUF (au moins 7 octets)');
+  EmitLabel('_JRT_INT2STR');
+  Emit('        PUSH BX');
+  Emit('        PUSH CX');
+  Emit('        PUSH DX');
+  Emit('        PUSH DI');
+  Emit('        MOV  DI, OFFSET _JV_INTBUF');
+  { cas zero }
+  Emit('        TEST AX, AX');
+  Emit('        JNZ  _JRT_I2S_NEG');
+  Emit('        MOV  BYTE PTR [DI],     ''0''');
+  Emit('        MOV  BYTE PTR [DI + 1], 0');
+  Emit('        JMP  _JRT_I2S_END');
+  EmitLabel('_JRT_I2S_NEG');
+  { signe negatif }
+  Emit('        JNS  _JRT_I2S_POS');
+  Emit('        MOV  BYTE PTR [DI], ''-''');
+  Emit('        INC  DI');
+  Emit('        NEG  AX');
+  EmitLabel('_JRT_I2S_POS');
+  Emit('        MOV  BX, 10');
+  Emit('        XOR  CX, CX');
+  { diviser par 10 en boucle, pousser les chiffres }
+  EmitLabel('_JRT_I2S_LOOP');
+  Emit('        XOR  DX, DX');
+  Emit('        DIV  BX');
+  Emit('        ADD  DL, ''0''');
+  Emit('        PUSH DX');
+  Emit('        INC  CX');
+  Emit('        TEST AX, AX');
+  Emit('        JNZ  _JRT_I2S_LOOP');
+  { depiler les chiffres dans l ordre }
+  EmitLabel('_JRT_I2S_POP');
+  Emit('        POP  DX');
+  Emit('        MOV  BYTE PTR [DI], DL');
+  Emit('        INC  DI');
+  Emit('        LOOP _JRT_I2S_POP');
+  Emit('        MOV  BYTE PTR [DI], 0');
+  EmitLabel('_JRT_I2S_END');
+  Emit('        POP  DI');
+  Emit('        POP  DX');
+  Emit('        POP  CX');
+  Emit('        POP  BX');
+  Emit('        RET');
+
+  EmitBlank;
+  EmitComment(' _JRT_STR2INT : DS:SI = chaine ASCII -> AX = entier signe');
+  EmitLabel('_JRT_STR2INT');
+  Emit('        PUSH BX');
+  Emit('        PUSH CX');
+  Emit('        PUSH DX');
+  Emit('        XOR  AX, AX');
+  Emit('        XOR  BX, BX');           { BX = flag signe }
+  Emit('        CMP  BYTE PTR [SI], ''-''');
+  Emit('        JNE  _JRT_S2I_LOOP');
+  Emit('        MOV  BX, 1');
+  Emit('        INC  SI');
+  EmitLabel('_JRT_S2I_LOOP');
+  Emit('        MOV  CL, BYTE PTR [SI]');
+  Emit('        CMP  CL, ''0''');
+  Emit('        JB   _JRT_S2I_DONE');
+  Emit('        CMP  CL, ''9''');
+  Emit('        JA   _JRT_S2I_DONE');
+  Emit('        SUB  CL, ''0''');
+  Emit('        MOV  DX, 10');
+  Emit('        IMUL DX');
+  Emit('        XOR  DH, DH');
+  Emit('        MOV  DL, CL');
+  Emit('        ADD  AX, DX');
+  Emit('        INC  SI');
+  Emit('        JMP  _JRT_S2I_LOOP');
+  EmitLabel('_JRT_S2I_DONE');
+  Emit('        TEST BX, BX');
+  Emit('        JZ   _JRT_S2I_RET');
+  Emit('        NEG  AX');
+  EmitLabel('_JRT_S2I_RET');
+  Emit('        POP  DX');
+  Emit('        POP  CX');
+  Emit('        POP  BX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' -------  Gestion d erreurs  -------');
+
+  EmitBlank;
+  EmitComment(' _JRT_ERRBOUND : debordement de tableau');
+  Emit('        JMP  _JRT_ERRBOUND_CODE');
+  Emit('_MSG_ERR_BOUND  DB  ''ERREUR: debordement de tableau'', 13, 10, ''$''');
+  EmitLabel('_JRT_ERRBOUND_CODE');
+  EmitLabel('_JRT_ERRBOUND');
+  Emit('        MOV  DX, OFFSET _MSG_ERR_BOUND');
+  Emit('        MOV  AH, 09h');
+  Emit('        INT  21h');
+  Emit('        MOV  AH, 4Ch');
+  Emit('        MOV  AL, 1');
+  Emit('        INT  21h');
+
+  EmitBlank;
+  EmitComment(' _JRT_ERRDIV0 : division par zero');
+  Emit('        JMP  _JRT_ERRDIV0_CODE');
+  Emit('_MSG_ERR_DIV0   DB  ''ERREUR: division par zero'', 13, 10, ''$''');
+  EmitLabel('_JRT_ERRDIV0_CODE');
+  EmitLabel('_JRT_ERRDIV0');
+  Emit('        MOV  DX, OFFSET _MSG_ERR_DIV0');
+  Emit('        MOV  AH, 09h');
+  Emit('        INT  21h');
+  Emit('        MOV  AH, 4Ch');
+  Emit('        MOV  AL, 1');
+  Emit('        INT  21h');
+
+  EmitBlank;
+  EmitComment(' _JRT_ERRSTACK : debordement de pile');
+  Emit('        JMP  _JRT_ERRSTACK_CODE');
+  Emit('_MSG_ERR_STACK  DB  ''ERREUR: debordement de pile'', 13, 10, ''$''');
+  EmitLabel('_JRT_ERRSTACK_CODE');
+  EmitLabel('_JRT_ERRSTACK');
+  Emit('        MOV  DX, OFFSET _MSG_ERR_STACK');
+  Emit('        MOV  AH, 09h');
+  Emit('        INT  21h');
+  Emit('        MOV  AH, 4Ch');
+  Emit('        MOV  AL, 1');
+  Emit('        INT  21h');
+End;
+
+{ ============================================================================
+  TODO 20 - RUNTIME INPUT/OUTPUT 8086
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  GenRuntimeIO : emettre toutes les routines runtime I/O dans _CODE.
+  Conventions chaînes : null-terminated (octet 0 = fin).
+  Affichage caractere : INT 21h fct 02h (DL = char).
+  Lecture ligne      : INT 21h fct 0Ah (buffer @ _JV_INBUF).
+  -------------------------------------------------------------------------- }
+Procedure GenRuntimeIO;
+Begin
+  EmitSep;
+  EmitComment(' ============================================================');
+  EmitComment(' RUNTIME INPUT/OUTPUT - genere par JOVIAL86 v' + JOVIAL86_VERSION);
+  EmitComment(' ============================================================');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITECHR : ecrire le caractere dans AL sur stdout');
+  EmitComment('                 (INT 21h fct 02h, DL = caractere)');
+  EmitLabel('_JRT_WRITECHR');
+  Emit('        PUSH AX');
+  Emit('        MOV  DL, AL');
+  Emit('        MOV  AH, 02h');
+  Emit('        INT  21h');
+  Emit('        POP  AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITESTR : afficher chaine null-terminee @ DS:DX');
+  EmitComment('                 boucle sur INT 21h fct 02h char par char');
+  EmitLabel('_JRT_WRITESTR');
+  Emit('        PUSH AX');
+  Emit('        PUSH BX');
+  Emit('        PUSH SI');
+  Emit('        MOV  SI, DX');
+  EmitLabel('_JRT_WS_LOOP');
+  Emit('        MOV  AL, BYTE PTR [SI]');
+  Emit('        TEST AL, AL');
+  Emit('        JZ   _JRT_WS_DONE');
+  Emit('        MOV  DL, AL');
+  Emit('        MOV  AH, 02h');
+  Emit('        INT  21h');
+  Emit('        INC  SI');
+  Emit('        JMP  _JRT_WS_LOOP');
+  EmitLabel('_JRT_WS_DONE');
+  Emit('        POP  SI');
+  Emit('        POP  BX');
+  Emit('        POP  AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITECRLF : ecrire CR + LF sur stdout');
+  EmitLabel('_JRT_WRITECRLF');
+  Emit('        PUSH AX');
+  Emit('        PUSH DX');
+  Emit('        MOV  DL, 0Dh');
+  Emit('        MOV  AH, 02h');
+  Emit('        INT  21h');
+  Emit('        MOV  DL, 0Ah');
+  Emit('        MOV  AH, 02h');
+  Emit('        INT  21h');
+  Emit('        POP  DX');
+  Emit('        POP  AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITEINT : AX=entier signe -> afficher en decimal');
+  EmitComment('                 convertit via _JRT_INT2STR puis WRITESTR');
+  EmitLabel('_JRT_WRITEINT');
+  Emit('        PUSH DX');
+  Emit('        CALL _JRT_INT2STR');
+  Emit('        MOV  DX, OFFSET _JV_INTBUF');
+  Emit('        CALL _JRT_WRITESTR');
+  Emit('        POP  DX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITEFLOAT : DX:AX=reel -> afficher via _JRT_FSTR');
+  EmitLabel('_JRT_WRITEFLOAT');
+  Emit('        PUSH DX');
+  Emit('        CALL _JRT_FSTR');
+  Emit('        MOV  DX, OFFSET _JV_OUTBUF');
+  Emit('        CALL _JRT_WRITESTR');
+  Emit('        POP  DX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITESTATUS : AX=indice de statut -> afficher le nom');
+  EmitComment('                    (stub : affiche l indice en decimal)');
+  EmitLabel('_JRT_WRITESTATUS');
+  Emit('        PUSH DX');
+  Emit('        CALL _JRT_INT2STR');
+  Emit('        MOV  DX, OFFSET _JV_INTBUF');
+  Emit('        CALL _JRT_WRITESTR');
+  Emit('        POP  DX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_WRITEHEX : AX -> 4 chiffres hexadecimaux sur stdout');
+  EmitLabel('_JRT_WRITEHEX');
+  Emit('        PUSH AX');
+  Emit('        PUSH BX');
+  Emit('        PUSH CX');
+  Emit('        PUSH DX');
+  Emit('        MOV  BX, AX');
+  Emit('        MOV  CX, 4');
+  EmitLabel('_JRT_WH_LOOP');
+  Emit('        ROL  BX, 1');
+  Emit('        ROL  BX, 1');
+  Emit('        ROL  BX, 1');
+  Emit('        ROL  BX, 1');
+  Emit('        MOV  DL, BL');
+  Emit('        AND  DL, 0Fh');
+  Emit('        CMP  DL, 9');
+  Emit('        JBE  _JRT_WH_DIG');
+  Emit('        ADD  DL, 7');       { A-F : ''0''+10+7 = ''A'' }
+  EmitLabel('_JRT_WH_DIG');
+  Emit('        ADD  DL, ''0''');
+  Emit('        MOV  AH, 02h');
+  Emit('        INT  21h');
+  Emit('        LOOP _JRT_WH_LOOP');
+  Emit('        POP  DX');
+  Emit('        POP  CX');
+  Emit('        POP  BX');
+  Emit('        POP  AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_READLINE : lire une ligne stdin -> _JV_INBUF+2');
+  EmitComment('                 INT 21h fct 0Ah (buffered keyboard input)');
+  EmitComment('                 _JV_INBUF[0]=maxlen(126), [1]=count, [2+]=data');
+  EmitLabel('_JRT_READLINE');
+  Emit('        PUSH AX');
+  Emit('        PUSH BX');
+  Emit('        PUSH DX');
+  Emit('        MOV  BYTE PTR [_JV_INBUF],     126');  { max chars }
+  Emit('        MOV  BYTE PTR [_JV_INBUF + 1], 0');
+  Emit('        MOV  DX, OFFSET _JV_INBUF');
+  Emit('        MOV  AH, 0Ah');
+  Emit('        INT  21h');
+  { null-terminer la chaine apres les caracteres lus }
+  Emit('        XOR  BX, BX');
+  Emit('        MOV  BL, BYTE PTR [_JV_INBUF + 1]');
+  Emit('        MOV  BYTE PTR [_JV_INBUF + 2 + BX], 0');
+  { avancer newline : emettre CRLF en echo (DOS le fait normalement) }
+  Emit('        POP  DX');
+  Emit('        POP  BX');
+  Emit('        POP  AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_READINT : lire un entier depuis stdin -> AX');
+  EmitLabel('_JRT_READINT');
+  Emit('        PUSH SI');
+  Emit('        CALL _JRT_READLINE');
+  Emit('        MOV  SI, OFFSET _JV_INBUF + 2');
+  Emit('        CALL _JRT_STR2INT');
+  Emit('        POP  SI');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_READFLOAT : lire un reel depuis stdin -> DX:AX (stub)');
+  EmitLabel('_JRT_READFLOAT');
+  Emit('        CALL _JRT_READLINE');
+  Emit('        XOR  AX, AX');
+  Emit('        XOR  DX, DX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_READSTATUS : lire un nom de statut -> AX=indice (stub)');
+  EmitLabel('_JRT_READSTATUS');
+  Emit('        CALL _JRT_READLINE');
+  Emit('        XOR  AX, AX');
+  Emit('        RET');
+
+  { ---------------------------------------------------------------------- }
+  EmitBlank;
+  EmitComment(' _JRT_ERRMSG : afficher message @ DX + CRLF puis exit code 1');
+  EmitLabel('_JRT_ERRMSG');
+  Emit('        CALL _JRT_WRITESTR');
+  Emit('        CALL _JRT_WRITECRLF');
+  Emit('        MOV  AH, 4Ch');
+  Emit('        MOV  AL, 1');
+  Emit('        INT  21h');
+End;
+
+{ ============================================================================
+  TODO 21 ... 25 : a implementer
   ============================================================================ }
 
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 19-25 non implementes)');
+  WriteLn('(TODO 21-25 non implementes)');
 End.

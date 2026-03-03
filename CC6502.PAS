@@ -3770,17 +3770,16 @@ Begin
   def_value := Copy(define_line, line_pos, Length(define_line) - line_pos + 1)
  Else
   def_value := '1'; { Valeur par d‚faut pour les macros sans valeur explicite }
- { Remove trailing whitespace from value }
+ { Supprimer les espaces blancs de fin de valeur }
  While (Length(def_value) > 0) and
        ((def_value[Length(def_value)] = ' ') or (def_value[Length(def_value)] = #9)) do
   Delete(def_value, Length(def_value), 1);
-
- { Add the define }
+ { Ajout du define }
  If add_define(def_name, def_value) Then
   process_define_directive := True;
 End;
 
-{ Expand macros in a line of code }
+{ D‚velopper les macros dans une ligne de code }
 Function expand_macros(input_line: String): String;
 Var
  result_line: String;
@@ -3790,20 +3789,17 @@ Var
  changed: Boolean;
 Begin
  result_line := input_line;
-
- { Multiple passes to handle nested expansions }
+ { Plusieurs passes pour g‚rer les expansions imbriqu‚s }
  Repeat
   changed := False;
   line_pos := 1;
-
-  While line_pos <= Length(result_line) do
-  Begin
-   { Check if we're at the start of an identifier }
+  While line_pos <= Length(result_line) do Begin
+   { V‚rifiez si nous sommes au d‚but d'un identifiant }
    If ((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
       ((result_line[line_pos] >= 'a') and (result_line[line_pos] <= 'z')) or
       (result_line[line_pos] = '_') Then
    Begin
-    { Extract identifier }
+    { Extraire l'identificateur }
     start_pos := line_pos;
     While (line_pos <= Length(result_line)) and
           (((result_line[line_pos] >= 'A') and (result_line[line_pos] <= 'Z')) or
@@ -3811,14 +3807,11 @@ Begin
            ((result_line[line_pos] >= '0') and (result_line[line_pos] <= '9')) or
            (result_line[line_pos] = '_')) do
      Inc(line_pos);
-
     token := Copy(result_line, start_pos, line_pos - start_pos);
-
-    { Check if this token is a defined macro }
+    { V‚rifie si ce jeton est une macro d‚finie }
     define_ptr := find_define(token);
-    If define_ptr <> nil Then
-    Begin
-     { Replace the token with its value }
+    If define_ptr <> nil Then Begin
+     { Remplace le jeton avec cette valeur }
      Delete(result_line, start_pos, Length(token));
      Insert(define_ptr^.value, result_line, start_pos);
      line_pos := start_pos + Length(define_ptr^.value);
@@ -3831,23 +3824,20 @@ Begin
     Inc(line_pos);
   End;
  Until not changed;
-
  expand_macros := result_line;
 End;
 
-{ Clear all defines from heap }
+ { Efface tous les defines de la m‚moire de tas }
 Procedure free_defines;
 Var
  current, next: PDefine;
 Begin
  current := define_list;
- While current <> nil do
- Begin
+ While current <> nil do Begin
   next := current^.next;
   Dispose(current);
   current := next;
  End;
-
  define_list := nil;
  If use_stdout Then WriteLn('; Cleared ', define_count, ' macro definitions from heap')
                Else safe_writeln('; Cleared macro definitions from heap');
@@ -3859,13 +3849,12 @@ End;
 { ============================================================================ }
 
 { Initialiser la pile de conditions }
-Procedure init_conditions;
-Begin
+Procedure init_conditions;Begin
  condition_depth := 0;
  skip_code := False;
 End;
 
-{ Ã‰valuer une expression constante simple pour #if }
+{ valuer une expression constante simple pour #if }
 Function evaluate_constant_expression(expr: String): Integer;
 Var
  result: Integer;
@@ -3876,45 +3865,36 @@ Var
 Begin
  result := 0;
  temp_str := expr;
-
- { Supprimer les espaces au dÃ©but et Ã  la fin }
- While (Length(temp_str) > 0) and (temp_str[1] = ' ') do
-  Delete(temp_str, 1, 1);
- While (Length(temp_str) > 0) and (temp_str[Length(temp_str)] = ' ') do
-  Delete(temp_str, Length(temp_str), 1);
-
- { VÃ©rifier si c'est un nombre }
- If (Length(temp_str) > 0) and (temp_str[1] in ['0'..'9']) Then
- Begin
+  { Supprimer les espaces au d‚but et … la fin }
+ While (Length(temp_str) > 0) and (temp_str[1] = ' ') do Delete(temp_str, 1, 1);
+ While (Length(temp_str) > 0) and (temp_str[Length(temp_str)] = ' ') do Delete(temp_str, Length(temp_str), 1);
+  { V‚rifier si c'est un nombre }
+ If (Length(temp_str) > 0) and (temp_str[1] in ['0'..'9']) Then Begin
   Val(temp_str, result, error_code);
   If error_code <> 0 Then result := 0; { Si erreur, retourner 0 }
  End
- { VÃ©rifier si c'est un define }
- Else If temp_str <> '' Then
- Begin
+  { V‚rifier si c'est un define }
+  Else
+ If temp_str <> '' Then Begin
   define_ptr := find_define(temp_str);
-  If define_ptr <> nil Then
-  Begin
-   { Ã‰valuer rÃ©cursivement la valeur du define }
+  If define_ptr <> nil Then Begin
+   { valuer r‚cursivement la valeur du define }
    result := evaluate_constant_expression(define_ptr^.value);
   End
-  Else
-   result := 0; { Define non trouvÃ© = 0 }
+   Else
+  result := 0; { Define non trouv‚ = 0 }
  End;
-
  evaluate_constant_expression := result;
 End;
 
-{ VÃ©rifier si on doit ignorer le code actuel }
+{ V‚rifier si on doit ignorer le code actuel }
 Function should_skip_code: Boolean;
 Var
  i: Integer;
 Begin
  should_skip_code := False;
-
- { Parcourir la pile de conditions }
- For i := 0 to condition_depth - 1 do
- Begin
+  { Parcourir la pile de conditions }
+ For i := 0 to condition_depth - 1 do Begin
   With condition_stack[i] do
   Begin
    { Si une condition est fausse et qu'on n'est pas dans un else vrai }
@@ -3927,156 +3907,128 @@ Begin
  End;
 End;
 
-{ Traiter la directive #if }
+ { Traiter la directive #if }
 Function process_if_directive(condition: String): Boolean;
 Var
  condition_value: Integer;
  temp_condition: String;
 Begin
  process_if_directive := False;
-
- { Nettoyer la condition (supprimer espaces et retour chariot) }
+  { Nettoyer la condition (supprimer espaces et retour chariot) }
  temp_condition := condition;
  While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
   Delete(temp_condition, 1, 1);
  While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
   Delete(temp_condition, Length(temp_condition), 1);
-
- If condition_depth >= 32 Then
- Begin
+ If condition_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested #if directives (max 32)');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #if-Direktiven (max 32)');
    {$ENDIF}
-   Else errrpt('Trop de directives #if imbriquÃ©es (max 32)');
+   Else errrpt('Trop de directives #if imbriqu‚es (max 32)');
   End;
   Exit;
  End;
-
  condition_value := evaluate_constant_expression(temp_condition);
-
- With condition_stack[condition_depth] do
- Begin
+ With condition_stack[condition_depth] do Begin
   condition_type := COND_IF;
   is_true := (condition_value <> 0);
   has_true_branch := is_true;
   in_else := False;
   line_number := 0; { Ã€ implÃ©menter si nÃ©cessaire }
  End;
-
  Inc(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #if ', temp_condition, ' = ', condition_value)
                Else safe_writeln('; #if ' + temp_condition + ' = ' + IntToStr(condition_value));
-
  process_if_directive := True;
 End;
 
-{ Traiter la directive #ifdef }
+ { Traiter la directive #ifdef }
 Function process_ifdef_directive(define_name: String): Boolean;
 Var
  define_exists: Boolean;
  temp_name: String;
 Begin
  process_ifdef_directive := False;
-
  { Nettoyer le nom (supprimer espaces et retour chariot) }
  temp_name := define_name;
  While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
   Delete(temp_name, 1, 1);
  While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
   Delete(temp_name, Length(temp_name), 1);
-
- If condition_depth >= 32 Then
- Begin
+ If condition_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested #ifdef directives (max 32)');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #ifdef-Direktiven (max 32)');
    {$ENDIF}
-   Else errrpt('Trop de directives #ifdef imbriquÃ©es (max 32)');
+   Else errrpt('Trop de directives #ifdef imbriqu‚es (max 32)');
   End;
   Exit;
  End;
-
  define_exists := (find_define(temp_name) <> nil);
-
- With condition_stack[condition_depth] do
- Begin
+ With condition_stack[condition_depth] do Begin
   condition_type := COND_IFDEF;
   is_true := define_exists;
   has_true_branch := is_true;
   in_else := False;
   line_number := 0;
  End;
-
  Inc(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #ifdef ', temp_name, ' = ', define_exists)
                Else safe_writeln('; #ifdef ' + temp_name + ' = ' + IntToStr(Ord(define_exists)));
-
  process_ifdef_directive := True;
 End;
 
-{ Traiter la directive #ifndef }
+ { Traiter la directive #ifndef }
 Function process_ifndef_directive(define_name: String): Boolean;
 Var
  define_exists: Boolean;
  temp_name: String;
 Begin
  process_ifndef_directive := False;
-
- { Nettoyer le nom (supprimer espaces et retour chariot) }
+  { Nettoyer le nom (supprimer espaces et retour chariot) }
  temp_name := define_name;
  While (Length(temp_name) > 0) and (temp_name[1] = ' ') do
   Delete(temp_name, 1, 1);
  While (Length(temp_name) > 0) and (temp_name[Length(temp_name)] in [' ', #13, #10]) do
   Delete(temp_name, Length(temp_name), 1);
-
- If condition_depth >= 32 Then
- Begin
+ If condition_depth >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many nested #ifndef directives (max 32)');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte #ifndef-Direktiven (max 32)');
    {$ENDIF}
-   Else errrpt('Trop de directives #ifndef imbriquÃ©es (max 32)');
+   Else errrpt('Trop de directives #ifndef imbriqu‚es (max 32)');
   End;
   Exit;
  End;
-
  define_exists := (find_define(temp_name) <> nil);
-
- With condition_stack[condition_depth] do
- Begin
+ With condition_stack[condition_depth] do Begin
   condition_type := COND_IFNDEF;
   is_true := not define_exists;
   has_true_branch := is_true;
   in_else := False;
   line_number := 0;
  End;
-
  Inc(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #ifndef ', temp_name, ' = ', not define_exists)
                Else safe_writeln('; #ifndef ' + temp_name + ' = ' + IntToStr(Ord(not define_exists)));
-
  process_ifndef_directive := True;
 End;
 
-{ Traiter la directive #elif }
+ { Traiter la directive #elif }
 Function process_elif_directive(condition: String): Boolean;
 Var
  condition_value: Integer;
  temp_condition: String;
 Begin
  process_elif_directive := False;
-
- { Nettoyer la condition (supprimer espaces et retour chariot) }
+  { Nettoyer la condition (supprimer espaces et retour chariot) }
  temp_condition := condition;
  While (Length(temp_condition) > 0) and (temp_condition[1] = ' ') do
   Delete(temp_condition, 1, 1);
