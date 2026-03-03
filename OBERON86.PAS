@@ -3231,13 +3231,402 @@ Begin
   ParseFactor := ti;
 End;
 
+{ ============================================================
+  TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
+  ============================================================ }
+
 { --------------------------------------------------------------------------
-  ParseExpr : stub minimal - sera remplace en TODO 10 (hierarchie complete).
-  Pour l'instant, delègue a ParseFactor pour permettre la compilation.
+  ParseTerm : facteurs lies par operateurs de multiplicite.
+  Oberon : * , DIV, MOD, AND
+  Resultat dans AX ; gauche et droit evalues, pile utilisee.
+  -------------------------------------------------------------------------- }
+Function ParseTerm : Integer;
+Var ti   : Integer;
+    ti2  : Integer;
+    op   : TString;
+Begin
+  ti := ParseFactor;
+  While (cur_tok.val = '*') Or (cur_tok.val = 'DIV')
+     Or (cur_tok.val = 'MOD') Or (cur_tok.val = 'AND') Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH AX');             { sauvegarder gauche }
+    ti2 := ParseFactor;            { evaluer droit -> AX }
+    EmitI2('MOV', 'CX', 'AX');    { CX = droit }
+    EmitI0('POP  AX');             { AX = gauche }
+    If op = '*' Then
+    Begin
+      If TypeIsBoolean(ti) Then
+        EmitI2('AND', 'AX', 'CX') { AND logique bits }
+      Else
+        EmitI0('IMUL CX');         { AX * CX -> DX:AX }
+      ti := TYP_INTEGER;
+    End
+    Else If op = 'DIV' Then
+    Begin
+      EmitI0('CWD');               { etendre AX -> DX:AX }
+      EmitI0('IDIV CX');           { quotient -> AX }
+      ti := TYP_INTEGER;
+    End
+    Else If op = 'MOD' Then
+    Begin
+      EmitI0('CWD');
+      EmitI0('IDIV CX');
+      EmitI2('MOV', 'AX', 'DX');  { reste -> AX }
+      ti := TYP_INTEGER;
+    End
+    Else { AND }
+    Begin
+      EmitI2('AND', 'AX', 'CX');
+      ti := TYP_BOOLEAN;
+    End;
+    If ti2 = TYP_UNDEF Then ti := TYP_UNDEF;
+  End;
+  ParseTerm := ti;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseSimpleExpr : termes lies par operateurs additifs.
+  Oberon : + , - , OR (avec signe unaire optionnel en debut)
+  -------------------------------------------------------------------------- }
+Function ParseSimpleExpr : Integer;
+Var ti   : Integer;
+    ti2  : Integer;
+    op   : TString;
+    uneg : Boolean;
+Begin
+  uneg := False;
+  If cur_tok.val = '-' Then Begin LexNext; uneg := True;  End
+  Else If cur_tok.val = '+' Then LexNext;
+  ti := ParseTerm;
+  If uneg Then EmitI0('NEG  AX');
+  While (cur_tok.val = '+') Or (cur_tok.val = '-') Or (cur_tok.val = 'OR') Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH AX');
+    ti2 := ParseTerm;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI0('POP  AX');
+    If op = '+' Then
+    Begin
+      EmitI2('ADD', 'AX', 'CX');
+      If Not TypeIsBoolean(ti) Then ti := TYP_INTEGER;
+    End
+    Else If op = '-' Then
+    Begin
+      EmitI2('SUB', 'AX', 'CX');
+      ti := TYP_INTEGER;
+    End
+    Else { OR }
+    Begin
+      EmitI2('OR',  'AX', 'CX');
+      ti := TYP_BOOLEAN;
+    End;
+    If ti2 = TYP_UNDEF Then ti := TYP_UNDEF;
+  End;
+  ParseSimpleExpr := ti;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseExpr : implementation complete - remplace le stub TODO 09.
+  Relations Oberon : = # < <= > >= IN IS
+  Gauche dans AX, droit dans CX, resultat BOOLEAN dans AX (0 ou 1).
   -------------------------------------------------------------------------- }
 Function ParseExpr;
+Var ti   : Integer;
+    ti2  : Integer;
+    op   : TString;
+    lbl  : TString;
 Begin
-  ParseExpr := ParseFactor;
+  ti := ParseSimpleExpr;
+  If (cur_tok.val = '=')  Or (cur_tok.val = '#')
+  Or (cur_tok.val = '<')  Or (cur_tok.val = '<=')
+  Or (cur_tok.val = '>')  Or (cur_tok.val = '>=')
+  Or (cur_tok.val = 'IN') Or (cur_tok.val = 'IS') Then
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI0('PUSH AX');             { sauvegarder gauche }
+    ti2  := ParseSimpleExpr;      { evaluer droit -> AX }
+    EmitI2('MOV', 'CX', 'AX');    { CX = droit }
+    EmitI0('POP  AX');             { AX = gauche }
+
+    If op = 'IN' Then
+    Begin
+      { x IN s : tester le bit AX dans le mot de bits CX }
+      EmitI2('MOV', 'BX', 'CX');  { BX = s }
+      EmitI2('MOV', 'CX', 'AX');  { CL = x (compteur de decalage) }
+      EmitI2('MOV', 'AX', 'BX');  { AX = s }
+      EmitI0('SAR  AX, CL');       { AX = s >> x }
+      EmitI2('AND', 'AX', '1');    { bit x }
+    End
+    Else If op = 'IS' Then
+    Begin
+      { IS : verification de type dynamique - stub (TODO 22+) }
+      EmitI2('MOV', 'AX', '0');
+    End
+    Else
+    Begin
+      { Relations ordinales : CMP gauche, droit puis saut conditionnel }
+      lbl := NewLabel;
+      EmitI2('CMP', 'AX', 'CX');
+      EmitI2('MOV', 'AX', '0');    { hypothese : faux }
+      If      op = '='  Then EmitI1('JNE', lbl)
+      Else If op = '#'  Then EmitI1('JE',  lbl)
+      Else If op = '<'  Then EmitI1('JGE', lbl)
+      Else If op = '<=' Then EmitI1('JG',  lbl)
+      Else If op = '>'  Then EmitI1('JLE', lbl)
+      Else                   EmitI1('JL',  lbl);  { >= }
+      EmitI2('MOV', 'AX', '1');    { vrai }
+      EmitLabel(lbl);
+    End;
+    ti := TYP_BOOLEAN;
+    If ti2 = TYP_UNDEF Then ti := TYP_UNDEF;
+  End;
+  ParseExpr := ti;
+End;
+
+{ ============================================================
+  TODO 11 - INSTRUCTION D'AFFECTATION (:=)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  GenLValueAddr : calculer l'adresse de la cible dans BX.
+  Le symbole de base si est connu ; les postfixes (. [ ^) sont consommes.
+  Retourne le type_idx de la cible finale.
+  -------------------------------------------------------------------------- }
+Function GenLValueAddr(si : Integer) : Integer;
+Var ti      : Integer;
+    el_ti   : Integer;
+    el_size : Integer;
+    fld_idx : Integer;
+    fname   : TString;
+    k       : Integer;
+Begin
+  ti := sym_table^[si].type_idx;
+  GenLoadAddr(si);                     { BX = adresse de base }
+  While (cur_tok.val = '.') Or (cur_tok.val = '[') Or (cur_tok.val = '^') Do
+  Begin
+    If cur_tok.val = '.' Then
+    Begin
+      LexNext;
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_RECORD) Then
+        ErrorMsg('Selection de champ sur un type non RECORD');
+      fname    := cur_tok.val;
+      LexExpectKind(TK_IDENT);
+      fld_idx := 0;
+      For k := type_table^[ti].rec_sym To
+               type_table^[ti].rec_sym + type_table^[ti].rec_nfld - 1 Do
+        If (k >= 1) And (k <= sym_count) And (sym_table^[k].name = fname) Then
+        Begin
+          fld_idx := k;
+          Break;
+        End;
+      If fld_idx = 0 Then
+        ErrorMsg('Champ inconnu : ' + fname)
+      Else
+      Begin
+        EmitI2('ADD', 'BX', IntToStr(sym_table^[fld_idx].fld_offset));
+        ti := sym_table^[fld_idx].type_idx;
+      End;
+    End
+    Else If cur_tok.val = '[' Then
+    Begin
+      LexNext;
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_ARRAY) Then
+        ErrorMsg('Acces indexe sur un type non ARRAY');
+      el_ti   := type_table^[ti].base_idx;
+      el_size := TypeByteSize(el_ti);
+      If el_size < 1 Then el_size := 1;
+      EmitI0('PUSH BX');              { sauvegarder adresse de base }
+      ParseExpr;                       { index -> AX }
+      If el_size = 2 Then
+        EmitI0('SHL  AX, 1')
+      Else If el_size > 2 Then
+      Begin
+        EmitI2('MOV', 'CX', IntToStr(el_size));
+        EmitI0('MUL  CX');
+      End;
+      EmitI0('POP  BX');
+      EmitI2('ADD', 'BX', 'AX');
+      ti := el_ti;
+      LexExpect(']');
+    End
+    Else
+    Begin
+      LexNext;                         { consommer '^' }
+      If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
+        ErrorMsg('Dereferencement sur un type non POINTER');
+      EmitI2('MOV', 'BX', '[BX]');    { deref }
+      ti := type_table^[ti].base_idx;
+    End;
+  End;
+  GenLValueAddr := ti;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseAssignment : designateur := expression
+  Gere : variable simple, element de tableau, champ de RECORD, deref ptr.
+  -------------------------------------------------------------------------- }
+Procedure ParseAssignment;
+Var vname  : TString;
+    si     : Integer;
+    ti_lhs : Integer;
+    ti_rhs : Integer;
+    simple : Boolean;
+    bits   : Integer;
+Begin
+  vname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  si := SymFind(vname);
+  If si = 0 Then
+  Begin
+    ErrorMsg('Identifiant inconnu : ' + vname);
+    LexExpect(':=');
+    ParseExpr;
+    Exit;
+  End;
+  If sym_table^[si].kind = SK_CONST Then
+  Begin
+    ErrorMsg('Impossible d''affecter a une constante : ' + vname);
+    LexExpect(':=');
+    ParseExpr;
+    Exit;
+  End;
+
+  { Detecter la presence de postfixes }
+  simple := (cur_tok.val <> '.') And (cur_tok.val <> '[') And (cur_tok.val <> '^');
+
+  If simple Then
+    ti_lhs := sym_table^[si].type_idx
+  Else
+    ti_lhs := GenLValueAddr(si);   { BX = adresse de la cible }
+
+  LexExpect(':=');
+  ti_rhs := ParseExpr;             { resultat dans AX (ou AX+BX pour chaine) }
+
+  TypeCheckAssign(ti_lhs, ti_rhs);
+
+  If simple Then
+    GenStore(si)                   { MOV [label]/[BP+ofs], AX }
+  Else
+  Begin
+    bits := TypeBitSize(ti_lhs);
+    Case bits Of
+       8 : EmitI2('MOV', '[BX]', 'AL');
+      32 : Begin
+             EmitI2('MOV', '[BX]',   'AX');
+             EmitI2('MOV', '[BX+2]', 'DX');
+           End;
+    Else
+      EmitI2('MOV', '[BX]', 'AX');
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 12 - INSTRUCTION IF / ELSIF / ELSE
+  ============================================================ }
+
+{ Forward : ParseStatement est complete en TODO 13+ ;
+  ParseStatementSeq l'appelle pour les corps de IF/WHILE/etc. }
+Procedure ParseStatement; Forward;
+
+{ --------------------------------------------------------------------------
+  ParseStatementSeq : suite d'instructions separees par ';'.
+  Oberon : StatementSequence = Statement [ ";" Statement ]*
+  On s'arrete sur END, ELSE, ELSIF, UNTIL, '|' ou EOF.
+  -------------------------------------------------------------------------- }
+Procedure ParseStatementSeq;
+Begin
+  ParseStatement;
+  While cur_tok.val = ';' Do
+  Begin
+    LexNext;
+    { Ne pas essayer de parser une instruction apres le dernier ';' }
+    If (cur_tok.val = 'END')   Or (cur_tok.val = 'ELSE')
+    Or (cur_tok.val = 'ELSIF') Or (cur_tok.val = 'UNTIL')
+    Or (cur_tok.val = '|')     Or (cur_tok.kind = TK_EOF) Then
+      Exit;
+    ParseStatement;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIfStmt : IF expr THEN seq [ELSIF expr THEN seq]* [ELSE seq] END
+  Strategie de labels :
+    lbl_end   = label de sortie global (apres tout le bloc IF)
+    lbl_next  = label du prochain ELSIF/ELSE (mis a jour a chaque branche)
+  -------------------------------------------------------------------------- }
+Procedure ParseIfStmt;
+Var lbl_end  : TString;
+    lbl_next : TString;
+    ti       : Integer;
+Begin
+  lbl_end := NewLabel;
+  LexExpect('IF');
+
+  { --- branche principale IF --- }
+  lbl_next := NewLabel;
+  ti := ParseExpr;
+  If Not TypeIsBoolean(ti) Then
+    ErrorMsg('Condition IF doit etre de type BOOLEAN');
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JE',  lbl_next);          { si faux, sauter vers ELSIF/ELSE }
+  LexExpect('THEN');
+  ParseStatementSeq;
+  EmitI1('JMP', lbl_end);            { sortir du bloc IF complet }
+  EmitLabel(lbl_next);
+
+  { --- branches ELSIF --- }
+  While cur_tok.val = 'ELSIF' Do
+  Begin
+    LexNext;
+    lbl_next := NewLabel;
+    ti := ParseExpr;
+    If Not TypeIsBoolean(ti) Then
+      ErrorMsg('Condition ELSIF doit etre de type BOOLEAN');
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JE',  lbl_next);
+    LexExpect('THEN');
+    ParseStatementSeq;
+    EmitI1('JMP', lbl_end);
+    EmitLabel(lbl_next);
+  End;
+
+  { --- branche ELSE facultative --- }
+  If cur_tok.val = 'ELSE' Then
+  Begin
+    LexNext;
+    ParseStatementSeq;
+  End;
+
+  LexExpect('END');
+  EmitLabel(lbl_end);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStatement : stub appele par ParseStatementSeq.
+  Gere : IF, affectation (:=), et ignore silencieusement les instructions
+  non encore implementees (TODO 13-19).
+  Les TODOs suivants remplaceront ce stub progressivement.
+  -------------------------------------------------------------------------- }
+Procedure ParseStatement;
+Begin
+  If cur_tok.val = 'IF' Then
+    ParseIfStmt
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    { Peut etre une affectation ou un appel de procedure }
+    If cur_tok.kind = TK_IDENT Then
+    Begin
+      { Lookahead : si ':=' suit (eventuellement apres des postfixes), c'est une affectation }
+      ParseAssignment;
+    End;
+  End;
+  { Toute autre instruction est ignoree silencieusement jusqu'a TODO 13+ }
 End;
 
 { ============================================================

@@ -5244,32 +5244,26 @@ Begin
  blanks;
  If (lptr > Length(line)) and (eof = 0) Then readinline;
  If match('else') Then Begin
-  { Jump over else block }
+  { Saute par dessus le bloc else }
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Else block }
+  { Bloc Else }
   prelabel(else_label);
   safe_writeln('; ELSE block');
-
-  { Check if we need to read next line for the else statement }
+   { VÇrifie s'il est nÇcessaire de lire la prochaine ligne pour l'instruction else }
   blanks;
   If (lptr > Length(line)) and (eof = 0) Then readinline;
-
-  If not parse_statement Then
-  Begin
+  If not parse_statement Then Begin
    errrpt('Expected statement after else');
    Exit;
   End;
-
   prelabel(end_label);
  End
- Else
+  Else
  Begin
   prelabel(else_label);
  End;
-
  safe_writeln('; End IF');
 End;
 
@@ -5279,56 +5273,43 @@ Var
  loop_label, end_label: Integer;
 Begin
  parse_while_statement := False;
-
  If not match('while') Then Exit;
  parse_while_statement := True;
-
- { Generate loop labels }
+  { GÇnäre des Çtiquettes de boucle }
  loop_label := getlabel;
  end_label := getlabel;
-
- { Push loop context for break/continue }
+  { Empile le contexte de la boucle pour break/continue }
  push_loop_context(1, end_label, loop_label);
-
- { Loop start }
+  { DÇbut de la boucle  }
  prelabel(loop_label);
  safe_writeln('; WHILE loop start');
-
- { Expect opening parenthesis }
- If not match('(') Then
- Begin
+  { Ouverture de parenthäse attendue }
+ If not match('(') Then Begin
   errrpt('Expected ( after while');
   Exit;
  End;
-
- { Parse condition }
+  { Analyse la condition }
  safe_writeln('; WHILE condition');
  expression_bool(lval);
-
- { Expect closing parenthesis }
+  { Fermeture de parenthäse attendue }
  If not match(')') Then
   errrpt('Expected ) after while condition');
-
- { Generate conditional jump }
+  { GÇnäre le saut conditionnel }
  ol('tstd');
  ot('lbeq ');
  printlabel(end_label);
  nl;
-
- { Parse loop body }
+ { Analyse le corps de la boucle }
  safe_writeln('; WHILE body');
  parse_statement;
-
- { Jump back to condition }
+ { Saut arriäre vers la condition }
  ot('lbra ');
  printlabel(loop_label);
  nl;
-
- { End label }
+ { Fin de l'Çtiquette }
  prelabel(end_label);
  safe_writeln('; End WHILE');
-
- { Pop loop context }
+ { DÇpile le contexte de la boucle }
  pop_loop_context;
 End;
 
@@ -5340,45 +5321,34 @@ Var
  saved_lptr: Integer;
 Begin
  parse_for_statement := False;
-
  If not match('for') Then Exit;
  parse_for_statement := True;
-
- { Generate loop labels }
+  { GÇnäre les Çtiquettes de boucle }
  condition_label := getlabel;
  increment_label := getlabel;
  end_label := getlabel;
-
- { Push loop context for break/continue }
+  { Empile le contexte de boucle pour break/continue }
  push_loop_context(2, end_label, increment_label);
-
  safe_writeln('; FOR loop start');
-
- { Expect opening parenthesis }
- If not match('(') Then
- Begin
+  { Ouverture de parenthäse attendue }
+ If not match('(') Then Begin
   errrpt('Expected ( after for');
   Exit;
  End;
-
- { Parse and execute initialization }
+  { Analyse et initialise l'exÇuction }
  safe_writeln('; FOR initialization');
  blanks;
- If ch <> ';' Then
- Begin
-  parse_assignment_statement;  { Parse and execute initialization }
+ If ch <> ';' Then Begin
+  parse_assignment_statement;  { Analyse initialise l'exÇcution }
  End;
- If not match(';') Then
- Begin
+ If not match(';') Then Begin
   errrpt('Expected ; after for initialization');
   Exit;
  End;
-
- { Save position for condition parsing }
+  { Sauvegarde la position pour l'analyse de condition }
  blanks;
  condition_start := lptr;
-
- { Skip over condition to find its end }
+  { Saute par dessus la condition pour trouver la fin de celui-ci }
  While (ch <> ';') and (ch <> #0) Do gch;
  condition_end := lptr;
  If not match(';') Then
@@ -5386,7 +5356,6 @@ Begin
   errrpt('Expected ; after for condition');
   Exit;
  End;
-
  { Save position for increment parsing }
  blanks;
  increment_start := lptr;
