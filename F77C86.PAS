@@ -445,6 +445,10 @@ Type
 
   TCommonTable = Array[1..MAX_COMMON] of TCommonRec;
 
+  { Alias pratiques pour les variables locales dans le generateur de code }
+  TSymRef    = TSymRec;
+  TCommonRef = TCommonRec;
+
   { ---- Enonce FORMAT memorise ---- }
   TFormatRec = Record
     lbl_num    : Integer;     { numero de l'etiquette              }
@@ -520,10 +524,13 @@ Var
   lbl_count    : Integer;
   common_count : Integer;
   fmt_count    : Integer;
+  equiv_count  : Integer;     { groupes EQUIVALENCE distincts      }
   err_count    : Integer;
   warn_count   : Integer;
   instr_count  : Integer;
   str_lit_count: Integer;
+  branch_lbl_count : Integer;   { compteur labels branches internes _FB_  }
+  data_lbl_count   : Integer;   { compteur labels constantes DATA _FK_     }
   phys_lines   : Integer;         { lignes physiques lues          }
 
   { Lecteur de source format fixe (TODO 02) }
@@ -709,10 +716,13 @@ Begin
   lbl_count    := 0;
   common_count := 0;
   fmt_count    := 0;
+  equiv_count  := 0;
   err_count    := 0;
   warn_count   := 0;
   instr_count  := 0;
   str_lit_count:= 0;
+  branch_lbl_count := 0;
+  data_lbl_count   := 0;
   phys_lines   := 0;
 
   src_eof      := False;
@@ -2575,6 +2585,1412 @@ Begin
 End;
 
 { ============================================================
+  TODO 07 - DECLARATIONS COMMON, EQUIVALENCE ET SAVE
+  ============================================================
+  Fonctions exposees :
+    ParseCommonVarIntoBlock(ci, vname) -- attacher une variable au bloc ci
+    ParseCommon                        -- parser un enonce COMMON complet
+    ParseEquivalence                   -- parser un enonce EQUIVALENCE
+    ParseSave                          -- parser un enonce SAVE
+  Architecture memoire :
+    sym_table^[i].common_blk = index du bloc COMMON (1..common_count)
+    sym_table^[i].common_off = offset en octets dans le bloc
+    sym_table^[i].asm_label  = '_FC_NOM_' ou '_FC_NOM_+off'
+    sym_table^[i].equiv_grp  = numero du groupe EQUIVALENCE (1..equiv_count)
+    sym_table^[i].equiv_off  = offset dans le groupe (0 sans indice)
+    sym_table^[i].is_save    = True si SAVE applique
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseCommonVarIntoBlock : attacher la variable vname au bloc COMMON ci.
+  Met a jour sym_table^[idx].common_blk, common_off et total_size du bloc.
+  Si le token courant est '(' apres vname, une liste de dimensions est
+  parsee (declaration implicite de tableau a l'interieur de COMMON).
+  -------------------------------------------------------------------------- }
+Procedure ParseCommonVarIntoBlock(ci : Integer; Const vname : TString);
+Var
+  idx : Integer;
+  vsz : Integer;
+  off : Integer;
+Begin
+  idx := SymGetOrCreate(vname);
+  If idx = 0 Then Exit;
+
+  { Dimensions optionnelles dans COMMON : COMMON /B/ A(10,3) }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    ParseDimSpec(idx);
+
+  { Verifier que la variable n'est pas deja dans un autre bloc COMMON }
+  If sym_table^[idx].common_blk <> 0 Then
+  Begin
+    If sym_table^[idx].common_blk <> ci Then
+      ErrorMsg('Variable ' + vname + ' deja dans un autre bloc COMMON')
+    Else
+      WarnMsg('Variable ' + vname + ' apparait deux fois dans le meme COMMON');
+    Exit;
+  End;
+
+  { Taille a allouer dans le bloc }
+  If sym_table^[idx].ndim > 0 Then
+    vsz := ArrayTotalSize(idx)
+  Else
+  Begin
+    vsz := sym_table^[idx].type_size;
+    If vsz <= 0 Then
+      vsz := DataTypeSize(sym_table^[idx].dtype, sym_table^[idx].char_len);
+  End;
+  If vsz <= 0 Then vsz := 2;    { securite : INTEGER par defaut }
+
+  { Offset = fin courante du bloc, puis etendre le bloc }
+  off := common_table^[ci].total_size;
+  sym_table^[idx].common_blk := ci;
+  sym_table^[idx].common_off := off;
+  common_table^[ci].total_size := off + vsz;
+
+  { Label ASM : base du bloc [+ offset] }
+  If off = 0 Then
+    sym_table^[idx].asm_label := common_table^[ci].asm_label
+  Else
+    sym_table^[idx].asm_label := common_table^[ci].asm_label
+                                  + '+' + IntToStr(off);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCommon : parser un enonce COMMON complet.
+  Syntaxe F77 :
+    COMMON [/nom/] v1 [, v2 ...] [/nom2/ v3 ...]
+    COMMON // v1, v2 ...   -> BLANK COMMON (slashes doubles)
+  Le mot-cle COMMON est deja consomme avant l'appel.
+  -------------------------------------------------------------------------- }
+Procedure ParseCommon;
+Var
+  block_name : TString;
+  ci         : Integer;
+  vname      : TString;
+  more_segs  : Boolean;
+Begin
+  more_segs := True;
+  While more_segs
+    And (cur_tok.kind <> TK_NEWLINE)
+    And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    { --- Detecter le nom du segment : /nom/ ou // --- }
+    If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+    Begin
+      LexNext;
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+      Begin
+        { // = BLANK COMMON }
+        block_name := '';
+        LexNext;
+      End
+      Else If cur_tok.kind = TK_IDENT Then
+      Begin
+        block_name := cur_tok.val;
+        LexNext;
+        { Consommer '/' fermant }
+        If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+          LexNext
+        Else
+          ErrorMsg('Attendu / fermant apres le nom du bloc COMMON');
+      End
+      Else
+      Begin
+        ErrorMsg('Nom de bloc COMMON invalide apres /');
+        block_name := '';
+        If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then LexNext;
+      End;
+    End
+    Else
+      { Pas de / : BLANK COMMON implicite (seul segment sans modifier) }
+      block_name := '';
+
+    { Obtenir ou creer le bloc COMMON }
+    ci := CommonEnter(block_name);
+    If ci = 0 Then Exit;
+
+    { --- Liste de variables separees par des virgules --- }
+    Repeat
+      If cur_tok.kind <> TK_IDENT Then
+      Begin
+        ErrorMsg('Identificateur attendu dans la liste COMMON');
+        Break;
+      End;
+      vname := cur_tok.val;
+      LexNext;
+      ParseCommonVarIntoBlock(ci, vname);
+
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      Begin
+        LexNext;
+        { Nouveau segment si on a '/' apres la virgule }
+        If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+          Break;   { sortir de la boucle vars -> traiter le segment suivant }
+      End
+      Else
+      Begin
+        more_segs := False;  { pas de ',' -> fin du COMMON }
+        Break;
+      End;
+    Until (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseEquivalence : parser un enonce EQUIVALENCE.
+  Syntaxe F77 :
+    EQUIVALENCE (v1, v2 [, v3, ...]) [, (v4, v5, ...) ...]
+  Le mot-cle EQUIVALENCE est deja consomme avant l'appel.
+  Chaque groupe recoit un index equiv_grp unique (1..equiv_count).
+  Les sous-elements de tableau (v(i)) sont reconnus mais l'offset n'est
+  pas calcule ici (necessiterait le generateur d'expressions TODO 10).
+  Une equivalence entre deux blocs COMMON distincts est une erreur F77.
+  -------------------------------------------------------------------------- }
+Procedure ParseEquivalence;
+Var
+  vname    : TString;
+  idx      : Integer;
+  base_idx : Integer;
+  grp      : Integer;
+Begin
+  Repeat
+    LexExpect('(');
+    grp      := 0;
+    base_idx := 0;
+
+    { --- Lire la liste de variables du groupe --- }
+    Repeat
+      If cur_tok.kind <> TK_IDENT Then
+      Begin
+        ErrorMsg('Identificateur attendu dans EQUIVALENCE');
+        Break;
+      End;
+      vname := cur_tok.val;
+      LexNext;
+
+      { Sous-element de tableau optionnel : (v(i)) -> ignorer l'indice }
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+      Begin
+        WarnMsg('Sous-element de tableau dans EQUIVALENCE non supporte : ' + vname);
+        LexNext;
+        While Not ((cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')' ))
+              And (cur_tok.kind <> TK_NEWLINE)
+              And (cur_tok.kind <> TK_EOF) Do
+          LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+      End;
+
+      idx := SymGetOrCreate(vname);
+      If idx > 0 Then
+      Begin
+        If base_idx = 0 Then
+        Begin
+          { Premier element du groupe : variable de reference (offset=0) }
+          Inc(equiv_count);
+          grp      := equiv_count;
+          base_idx := idx;
+          sym_table^[idx].equiv_grp := grp;
+          sym_table^[idx].equiv_off := 0;
+        End
+        Else
+        Begin
+          { Verifier coherence inter-COMMON }
+          If (sym_table^[idx].common_blk <> 0)
+          And (sym_table^[base_idx].common_blk <> 0)
+          And (sym_table^[idx].common_blk <> sym_table^[base_idx].common_blk) Then
+            ErrorMsg('EQUIVALENCE illegale entre deux blocs COMMON distincts : '
+                     + vname)
+          Else
+          Begin
+            sym_table^[idx].equiv_grp := grp;
+            sym_table^[idx].equiv_off := 0;   { offset a affiner en TODO 10 }
+          End;
+        End;
+      End;
+
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+        LexNext
+      Else
+        Break;
+    Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
+
+    { Fermer la parenthese du groupe }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+      LexNext
+    Else
+      ErrorMsg('Attendu ) pour fermer un groupe EQUIVALENCE');
+
+    { Groupe suivant ? }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext
+    Else
+      Break;
+  Until (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseSave : parser un enonce SAVE.
+  Syntaxe F77 :
+    SAVE              -> toutes les variables locales sont preservees
+    SAVE v1, v2, ...  -> uniquement les variables listees
+    SAVE /COMMON/ ... -> ignore (COMMON est toujours statique en F77)
+  Le mot-cle SAVE est deja consomme avant l'appel.
+  -------------------------------------------------------------------------- }
+Procedure ParseSave;
+Var
+  vname : TString;
+  idx   : Integer;
+  i     : Integer;
+Begin
+  If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then
+  Begin
+    { SAVE sans liste : marquer toutes les variables locales scalaires }
+    For i := 1 To sym_count Do
+      If (sym_table^[i].kind = SK_VAR)
+      And (sym_table^[i].common_blk = 0) Then
+        sym_table^[i].is_save := True;
+    NoteMsg('SAVE sans liste : toutes les variables locales preservees');
+  End
+  Else
+  Begin
+    { SAVE avec liste explicite }
+    Repeat
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+      Begin
+        { SAVE /nom/ : COMMON est toujours statique en F77, rien a faire }
+        LexNext;
+        If cur_tok.kind = TK_IDENT Then
+        Begin
+          vname := cur_tok.val;
+          LexNext;
+          WarnMsg('SAVE /COMMON/ superflu (COMMON toujours statique) : /'
+                  + vname + '/');
+        End;
+        If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then LexNext;
+      End
+      Else If cur_tok.kind = TK_IDENT Then
+      Begin
+        vname := cur_tok.val;
+        LexNext;
+        idx := SymGetOrCreate(vname);
+        If idx > 0 Then
+          sym_table^[idx].is_save := True;
+      End
+      Else
+      Begin
+        ErrorMsg('Identificateur ou /COMMON/ attendu dans SAVE');
+        Break;
+      End;
+
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+        LexNext
+      Else
+        Break;
+    Until (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF);
+  End;
+End;
+
+{ ============================================================
+  TODO 08 - DECLARATION DATA ET CONSTANTES NOMMEES (PARAMETER)
+  ============================================================
+  Fonctions exposees :
+    ParseDataConst(out_dt, out_ival, out_rval, out_sval)
+        -- lire une constante litterale Fortran 77 (toujours avec signe)
+    ParseData
+        -- parser un enonce DATA complet
+    ParseParameter
+        -- parser un enonce PARAMETER (constantes symboliques)
+  Architecture :
+    DATA scalaire  -> sym_table^[idx].const_ival/rval/sval + is_defined
+    PARAMETER      -> sym_table^[idx].kind = SK_PARAM_CONST + const_*
+    Emission DATA  -> deferred au TODO 09 (generateur de code 8086)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseDataConst : lire une constante litterale Fortran 77 avec signe.
+  Reconnus : entier, reel, double, logique .TRUE./.FALSE., chaine,
+             hollerith, complexe (re,im), reference a un PARAMETER.
+  Retourne le type et les trois champs de valeur.
+  -------------------------------------------------------------------------- }
+Procedure ParseDataConst(Var out_dt   : TDataType;
+                         Var out_ival : LongInt;
+                         Var out_rval : Real;
+                         Var out_sval : TString);
+Var
+  neg     : Boolean;
+  pi      : Integer;
+  im_dt   : TDataType;
+  im_ival : LongInt;
+  im_rval : Real;
+  im_sval : TString;
+Begin
+  out_dt   := DT_INTEGER;
+  out_ival := 0;
+  out_rval := 0.0;
+  out_sval := '';
+  im_dt    := DT_REAL;
+  im_ival  := 0;
+  im_rval  := 0.0;
+  im_sval  := '';
+
+  { Signe unaire optionnel }
+  neg := False;
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '-') Then
+  Begin
+    neg := True;
+    LexNext;
+  End
+  Else If (cur_tok.kind = TK_OP) And (cur_tok.val = '+') Then
+    LexNext;
+
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    out_dt   := DT_INTEGER;
+    out_ival := cur_tok.int_val;
+    If neg Then out_ival := -out_ival;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_REAL Then
+  Begin
+    out_dt   := DT_REAL;
+    out_rval := cur_tok.real_val;
+    If neg Then out_rval := -out_rval;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_DOUBLE Then
+  Begin
+    out_dt   := DT_DOUBLE;
+    out_rval := cur_tok.real_val;
+    If neg Then out_rval := -out_rval;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_LOGICAL Then
+  Begin
+    out_dt := DT_LOGICAL;
+    If cur_tok.val = '.TRUE.' Then out_ival := -1 Else out_ival := 0;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_STRING Then
+  Begin
+    out_dt   := DT_CHARACTER;
+    out_sval := cur_tok.val;
+    LexNext;
+  End
+  Else If cur_tok.kind = TK_HOLLERITH Then
+  Begin
+    out_dt   := DT_CHARACTER;
+    out_sval := cur_tok.val;
+    LexNext;
+  End
+  Else If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    { Constante COMPLEX : (partie_reelle, partie_imaginaire) }
+    LexNext;
+    ParseDataConst(out_dt, out_ival, out_rval, out_sval);
+    out_dt := DT_COMPLEX;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+    Begin
+      LexNext;
+      ParseDataConst(im_dt, im_ival, im_rval, im_sval);
+      { Partie imaginaire stockee dans out_ival (ecrasement approx.) }
+      { Emission complete en TODO 09 }
+    End
+    Else
+      WarnMsg('Constante COMPLEX : virgule manquante entre re et im');
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+      LexNext
+    Else
+      ErrorMsg('Attendu ) apres la partie imaginaire de la constante COMPLEX');
+  End
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    { Reference a une constante PARAMETER deja declaree }
+    pi := SymFind(cur_tok.val);
+    If (pi > 0) And (sym_table^[pi].kind = SK_PARAM_CONST) Then
+    Begin
+      out_dt   := sym_table^[pi].dtype;
+      out_ival := sym_table^[pi].const_ival;
+      out_rval := sym_table^[pi].const_rval;
+      out_sval := sym_table^[pi].const_sval;
+      If neg Then
+      Begin
+        out_ival := -out_ival;
+        out_rval := -out_rval;
+      End;
+    End
+    Else
+      ErrorMsg('Constante symbolique inconnue dans DATA/PARAMETER : ' + cur_tok.val);
+    LexNext;
+  End
+  Else
+  Begin
+    ErrorMsg('Constante litterale attendue, lu : ' + cur_tok.val);
+    LexNext;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseDataApply : appliquer la valeur (dt/ival/rval/sval) au symbole idx.
+  Met a jour les champs const_* et is_defined.
+  -------------------------------------------------------------------------- }
+Procedure ParseDataApply(idx : Integer; dt : TDataType;
+                         ival : LongInt; rval : Real;
+                         Const sval : TString);
+Begin
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  sym_table^[idx].const_ival := ival;
+  sym_table^[idx].const_rval := rval;
+  sym_table^[idx].const_sval := sval;
+  sym_table^[idx].is_defined := True;
+  { Verification de coherence de type (avertissement seulement) }
+  If (sym_table^[idx].dtype <> DT_NONE)
+  And (sym_table^[idx].dtype <> dt)
+  And Not ((sym_table^[idx].dtype = DT_REAL) And (dt = DT_INTEGER)) Then
+    WarnMsg('Type de constante DATA (' + DataTypeName(dt) + ') different du type'
+            + ' de la variable (' + DataTypeName(sym_table^[idx].dtype) + ')');
+  If opt_debug Then
+    NoteMsg('DATA ' + sym_table^[idx].name + ' = ' + IntToStr(ival));
+End;
+
+{ --------------------------------------------------------------------------
+  ParseData : parser un enonce DATA complet.
+  Syntaxe F77 :
+    DATA varlist / vallist / [, varlist / vallist /  ...]
+  Elements de varlist autorises :
+    var           -> scalaire entier
+    var(e)        -> element de tableau (indice ignore, TODO 10)
+    var(ib:ie)    -> sous-chaine CHARACTER (ignore pour l'instant)
+    (var(i),i=l,u[,s]) -> DO implicite (liste partielle supportee)
+  Elements de vallist :
+    constante      -> une valeur
+    n * constante  -> n repetitions de la meme valeur (n entier > 0)
+  Le mot-cle DATA est deja consomme avant l'appel.
+  -------------------------------------------------------------------------- }
+Procedure ParseData;
+Var
+  { --- cote variables --- }
+  vname   : TString;
+  idx     : Integer;
+  { --- cote valeurs --- }
+  val_dt  : TDataType;
+  val_iv  : LongInt;
+  val_rv  : Real;
+  val_sv  : TString;
+  rep     : LongInt;     { compteur de repetition egal a n dans n*val }
+  more    : Boolean;
+  skip_i  : Integer;     { compteur de ) a consommer pour DO implicite }
+Var
+  { Buffer de variables (liste du groupe courant) }
+  var_list   : Array[1..256] of Integer;  { indices sym_table }
+  var_count  : Integer;                   { nombre de variables dans var_list }
+  v          : Integer;                   { index courant dans var_list }
+Begin
+  Repeat   { boucle sur les groupes varlist / vallist / }
+
+    { ===== COTE GAUCHE : varlist ===== }
+    var_count := 0;
+    more := True;
+    While more
+      And (cur_tok.kind <> TK_EOF)
+      And (cur_tok.kind <> TK_NEWLINE) Do
+    Begin
+      { Test : on a atteint le '/' ? }
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then Break;
+
+      { DO implicite : ( ident(...), ident = lb, ub [,step] ) }
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+      Begin
+        WarnMsg('DO implicite dans DATA partiellement supporte');
+        skip_i := 1;
+        LexNext;
+        { Parser les variables interieures jusqu'a la , de controle }
+        While (skip_i > 0)
+          And (cur_tok.kind <> TK_EOF)
+          And (cur_tok.kind <> TK_NEWLINE) Do
+        Begin
+          If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+            Inc(skip_i)
+          Else If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+          Begin
+            Dec(skip_i);
+            If skip_i = 0 Then Break;
+          End
+          Else If (cur_tok.kind = TK_IDENT) And (skip_i = 1) Then
+          Begin
+            vname := cur_tok.val;
+            { Regarder si c'est une variable de data ou la var de controle }
+            { Heuristique : si prochain token est '(' ou ',' on est dans les vars }
+            If var_count < 256 Then
+            Begin
+              Inc(var_count);
+              var_list[var_count] := SymGetOrCreate(vname);
+            End;
+          End;
+          LexNext;
+        End;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+      End
+      Else If cur_tok.kind = TK_IDENT Then
+      Begin
+        vname := cur_tok.val;
+        LexNext;
+        idx := SymGetOrCreate(vname);
+
+        { Sous-element / sous-chaine optionnel(le) : var(e) ou var(ib:ie) }
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+        Begin
+          LexNext;
+          { Consommer jusqu'a la ) correspondante }
+          skip_i := 1;
+          While (skip_i > 0)
+            And (cur_tok.kind <> TK_EOF)
+            And (cur_tok.kind <> TK_NEWLINE) Do
+          Begin
+            If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+              Inc(skip_i)
+            Else If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+              Dec(skip_i);
+            If skip_i > 0 Then LexNext Else LexNext;
+          End;
+          { Pour un tableau, on inscrit l'index mais sans calculer l'offset }
+        End;
+
+        If var_count < 256 Then
+        Begin
+          Inc(var_count);
+          var_list[var_count] := idx;
+        End;
+      End
+      Else
+      Begin
+        ErrorMsg('Element de liste DATA invalide : ' + cur_tok.val);
+        LexNext;
+      End;
+
+      { Separateur entre elements de la varlist }
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      Begin
+        LexNext;
+        { Si apres la virgule on a '/', c'est la fin de la varlist }
+        If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+          more := False;
+      End
+      Else
+        more := False;
+    End;
+
+    { Consommer le '/' separateur gauche }
+    If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+      LexNext
+    Else
+    Begin
+      ErrorMsg('Attendu / avant la liste de valeurs DATA');
+      Exit;
+    End;
+
+    { ===== COTE DROIT : vallist ===== }
+    v    := 1;
+    more := True;
+    While more
+      And Not ((cur_tok.kind = TK_OP) And (cur_tok.val = '/'))
+      And (cur_tok.kind <> TK_EOF)
+      And (cur_tok.kind <> TK_NEWLINE) Do
+    Begin
+      { Detecter la repetition : n*val }
+      rep := 1;
+      If cur_tok.kind = TK_INTEGER Then
+      Begin
+        { Peut etre n* ou juste un entier }
+        rep := cur_tok.int_val;
+        LexNext;
+        If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+        Begin
+          LexNext;   { consommer '*', rep deja dans rep }
+        End
+        Else
+        Begin
+          { N'etait pas n*, c'etait la valeur elle-meme : emettre }
+          val_dt  := DT_INTEGER;
+          val_iv  := rep;
+          val_rv  := 0.0;
+          val_sv  := '';
+          rep := 1;
+          { Appliquer directement sans relire de constante }
+          If v <= var_count Then
+          Begin
+            If var_list[v] > 0 Then
+              ParseDataApply(var_list[v], val_dt, val_iv, val_rv, val_sv);
+            Inc(v);
+          End;
+          { Separateur }
+          If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+            LexNext;
+          Continue;
+        End;
+      End;
+
+      { Lire la valeur reelle }
+      ParseDataConst(val_dt, val_iv, val_rv, val_sv);
+
+      { Appliquer rep fois }
+      While rep > 0 Do
+      Begin
+        If v <= var_count Then
+        Begin
+          If var_list[v] > 0 Then
+            ParseDataApply(var_list[v], val_dt, val_iv, val_rv, val_sv);
+          Inc(v);
+        End;
+        Dec(rep);
+      End;
+
+      { Separateur ou fin }
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+        LexNext
+      Else
+        more := False;
+    End;
+
+    { Verification : nombre de valeurs coherent ? }
+    If v - 1 < var_count Then
+      WarnMsg('DATA : moins de valeurs que de variables dans le groupe');
+    If v - 1 > var_count Then
+      WarnMsg('DATA : plus de valeurs que de variables dans le groupe');
+
+    { Consommer le '/' fermant }
+    If (cur_tok.kind = TK_OP) And (cur_tok.val = '/') Then
+      LexNext
+    Else
+    Begin
+      ErrorMsg('Attendu / apres la liste de valeurs DATA');
+      Exit;
+    End;
+
+    { Groupe suivant ? Virgule optionnelle avant la prochaine varlist }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext;
+
+  Until (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseParamConstExpr : evaluer une expression constante simple pour PARAMETER.
+  Gere : litteraux signes, references a d'autres PARAMETER, et les
+  operations  + - * /  entre constantes entieres ou reelles.
+  Retourne le type et la valeur evaluee via des var-params.
+  -------------------------------------------------------------------------- }
+Procedure ParseParamConstExpr(Var out_dt   : TDataType;
+                               Var out_ival : LongInt;
+                               Var out_rval : Real;
+                               Var out_sval : TString);
+Var
+  rdt : TDataType;
+  riv : LongInt;
+  rrv : Real;
+  rsv : TString;
+  op  : TString;
+Begin
+  { Terme gauche }
+  ParseDataConst(out_dt, out_ival, out_rval, out_sval);
+
+  { Operateurs * / + - binaires (precedence simplifiee : gauche-droite) }
+  While (cur_tok.kind = TK_OP)
+    And ((cur_tok.val = '+') Or (cur_tok.val = '-')
+      Or (cur_tok.val = '*') Or (cur_tok.val = '/')) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    ParseDataConst(rdt, riv, rrv, rsv);
+
+    { Harmoniser les types : si un des deux est REAL/DOUBLE, resultat REAL }
+    If (out_dt = DT_INTEGER) And (rdt = DT_INTEGER) Then
+    Begin
+      If op = '+' Then out_ival := out_ival + riv
+      Else If op = '-' Then out_ival := out_ival - riv
+      Else If op = '*' Then out_ival := out_ival * riv
+      Else If op = '/' Then
+      Begin
+        If riv = 0 Then ErrorMsg('Division par zero dans PARAMETER')
+        Else out_ival := out_ival Div riv;
+      End;
+    End
+    Else
+    Begin
+      { Promouvoir en reel }
+      If out_dt = DT_INTEGER Then
+      Begin
+        out_rval := out_ival;
+        out_dt   := DT_REAL;
+      End;
+      If rdt = DT_INTEGER Then rrv := riv;
+      If op = '+' Then out_rval := out_rval + rrv
+      Else If op = '-' Then out_rval := out_rval - rrv
+      Else If op = '*' Then out_rval := out_rval * rrv
+      Else If op = '/' Then
+      Begin
+        If rrv = 0.0 Then ErrorMsg('Division par zero dans PARAMETER')
+        Else out_rval := out_rval / rrv;
+      End;
+      If rdt = DT_DOUBLE Then out_dt := DT_DOUBLE;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseParameter : parser un enonce PARAMETER.
+  Syntaxe F77 :
+    PARAMETER (nom = expr_const [, nom = expr_const ...])
+  Le mot-cle PARAMETER est deja consomme avant l'appel.
+  Chaque constante est creee dans la table des symboles avec
+  kind = SK_PARAM_CONST et les champs const_ival / const_rval / const_sval.
+  -------------------------------------------------------------------------- }
+Procedure ParseParameter;
+Var
+  pname  : TString;
+  idx    : Integer;
+  p_dt   : TDataType;
+  p_ival : LongInt;
+  p_rval : Real;
+  p_sval : TString;
+Begin
+  LexExpect('(');
+
+  Repeat
+    { Nom de la constante symbolique }
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('Identificateur attendu dans PARAMETER');
+      Break;
+    End;
+    pname := cur_tok.val;
+    LexNext;
+
+    LexExpect('=');
+
+    { Expression constante }
+    ParseParamConstExpr(p_dt, p_ival, p_rval, p_sval);
+
+    { Inscrire la constante dans la table des symboles }
+    idx := SymFindLocal(pname);
+    If idx = 0 Then
+    Begin
+      { Creer une nouvelle entree }
+      idx := SymEnter(pname, SK_PARAM_CONST, p_dt);
+    End
+    Else If sym_table^[idx].kind = SK_PARAM_CONST Then
+    Begin
+      WarnMsg('PARAMETER ' + pname + ' redefini');
+    End
+    Else
+    Begin
+      { La variable existait deja (ex: declaree INTEGER avant PARAMETER) }
+      sym_table^[idx].kind := SK_PARAM_CONST;
+    End;
+
+    If idx > 0 Then
+    Begin
+      sym_table^[idx].dtype      := p_dt;
+      sym_table^[idx].const_ival := p_ival;
+      sym_table^[idx].const_rval := p_rval;
+      sym_table^[idx].const_sval := p_sval;
+      sym_table^[idx].is_defined := True;
+      If opt_debug Then
+        NoteMsg('PARAMETER ' + pname + ' = ' + IntToStr(p_ival));
+    End;
+
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+      LexNext
+    Else
+      Break;
+  Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
+
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+    LexNext
+  Else
+    ErrorMsg('Attendu ) pour fermer l''enonce PARAMETER');
+End;
+
+{ ============================================================
+  TODO 09 - GENERATEUR DE CODE 8086 - PRIMITIVES
+  ============================================================
+  Fonctions exposees :
+    EmitLabel(lbl)            -- emettre un label MASM (col 0)
+    EmitI0(mn)                -- instruction sans operande
+    EmitI1(mn, op)            -- instruction un operande
+    EmitI2(mn, dst, src)      -- instruction deux operandes
+    EmitDB(val)               -- directive DB octet
+    EmitDBs(val, n)           -- directive DB n DUP(val)
+    EmitDW(val)               -- directive DW mot 16 bits
+    EmitDWi(n)                -- directive DW valeur entiere
+    EmitDD(val)               -- directive DD double mot 32 bits
+    EmitDQ(val)               -- directive DQ quad mot 64 bits
+    EmitDup(sz, val)          -- directive DUP(val) avec taille sz
+    EmitStr(s)                -- directive DB avec chaine Fortran
+    EmitComment(s)            -- ligne commentaire ';'
+    EmitSep                   -- ligne separatrice '; ---'
+    EmitBlank                 -- ligne vide
+    GenBranchLabel            -- generer un label interne unique _FB_nnn
+    GenDataLabel              -- generer un label donnee unique _FK_nnn
+    GenProgramHeader          -- entete du fichier ASM (.MODEL SMALL)
+    GenDataSegBegin/End       -- .DATA begin/end
+    GenCodeSegBegin/End       -- .CODE begin/end
+    GenProcBegin(nm,nparams)  -- PROC FAR/NEAR + prologue BP
+    GenProcEnd(nm)            -- epilogue + ENDP
+    GenProgramEpilogue        -- MOV AX,4C00h / INT 21h
+    GenProgramEntry           -- point d'entree START
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  Helpers d'ecriture dans cur_out
+  -------------------------------------------------------------------------- }
+
+{ Ecrire une ligne brute dans la sortie courante }
+Procedure EmitRaw(Const s : TString);
+Begin
+  Writeln(cur_out^, s);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitLabel : emettre un label MASM sans indentation (col 0).
+  Ajoute ':' uniquement si pas deja present.
+  -------------------------------------------------------------------------- }
+Procedure EmitLabel(Const lbl : TString);
+Var s : TString;
+Begin
+  s := lbl;
+  If (Length(s) > 0) And (s[Length(s)] <> ':') Then s := s + ':';
+  EmitRaw(s);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitI0 : instruction sans operande (ex: NOP, RET, PUSHF).
+  -------------------------------------------------------------------------- }
+Procedure EmitI0(Const mn : TString);
+Begin
+  EmitRaw('        ' + mn);
+  Inc(instr_count);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitI1 : instruction un operande (ex: INC AX, PUSH BX).
+  -------------------------------------------------------------------------- }
+Procedure EmitI1(Const mn, op : TString);
+Begin
+  EmitRaw('        ' + mn + ' ' + op);
+  Inc(instr_count);
+End;
+
+{ --------------------------------------------------------------------------
+  EmitI2 : instruction deux operandes (ex: MOV AX, BX).
+  -------------------------------------------------------------------------- }
+Procedure EmitI2(Const mn, dst, src : TString);
+Begin
+  EmitRaw('        ' + mn + ' ' + dst + ', ' + src);
+  Inc(instr_count);
+End;
+
+{ --------------------------------------------------------------------------
+  Directives de donnees
+  -------------------------------------------------------------------------- }
+
+Procedure EmitDB(Const val : TString);
+Begin
+  EmitRaw('        DB ' + val);
+End;
+
+Procedure EmitDBi(n : Integer);
+Begin
+  EmitRaw('        DB ' + IntToStr(n));
+End;
+
+Procedure EmitDBs(Const val : TString; n : Integer);
+{ DB n DUP(val) }
+Begin
+  If n = 1 Then
+    EmitDB(val)
+  Else
+    EmitRaw('        DB ' + IntToStr(n) + ' DUP(' + val + ')');
+End;
+
+{ emit une chaine CHARACTER Fortran : DB len, 'chars...' }
+{ Format Fortran : longueur fixe, pas null-terminated, blank-padded }
+Procedure EmitDBStr(Const s : TString);
+Var i   : Integer;
+    res : TString;
+    c   : Char;
+    inq : Boolean;  { dans un segment de chaine }
+Begin
+  If Length(s) = 0 Then
+  Begin
+    EmitRaw('        DB 0');
+    Exit;
+  End;
+  { Decomposer en segments String + bytes hex pour les caracteres speciaux }
+  res  := '        DB ';
+  inq  := False;
+  For i := 1 To Length(s) Do
+  Begin
+    c := s[i];
+    If (Ord(c) >= 32) And (Ord(c) < 127) And (c <> '''') Then
+    Begin
+      If Not inq Then
+      Begin
+        If i > 1 Then res := res + ', ';
+        res := res + '''';
+        inq := True;
+      End;
+      res := res + c;
+    End
+    Else
+    Begin
+      If inq Then
+      Begin
+        res := res + '''';
+        inq := False;
+      End;
+      If Length(res) > 8 Then res := res + ', ';
+      res := res + IntToStr(Ord(c));
+    End;
+  End;
+  If inq Then res := res + '''';
+  EmitRaw(res);
+End;
+
+Procedure EmitDW(Const val : TString);
+Begin
+  EmitRaw('        DW ' + val);
+End;
+
+Procedure EmitDWi(n : LongInt);
+Begin
+  EmitRaw('        DW ' + IntToStr(n));
+End;
+
+Procedure EmitDD(Const val : TString);
+Begin
+  EmitRaw('        DD ' + val);
+End;
+
+Procedure EmitDDi(n : LongInt);
+Begin
+  EmitRaw('        DD ' + IntToStr(n));
+End;
+
+Procedure EmitDQ(Const val : TString);
+Begin
+  EmitRaw('        DQ ' + val);
+End;
+
+{ DB/DW/DD selon DataType et valeur en TString }
+Procedure EmitDataValue(dt : TDataType; Const val : TString);
+Begin
+  Case dt Of
+    DT_INTEGER   : EmitDW(val);
+    DT_REAL      : EmitDD(val);    { valeur reelle = DD (4 octets) }
+    DT_DOUBLE    : EmitDQ(val);    { double = DQ (8 octets) }
+    DT_COMPLEX   : Begin EmitDD(val); EmitDD('0'); End; { re + im }
+    DT_LOGICAL   : EmitDW(val);
+    DT_CHARACTER : EmitDBStr(val);
+  Else
+    EmitDW(val);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  EmitComment, EmitSep, EmitBlank : decoration
+  -------------------------------------------------------------------------- }
+
+Procedure EmitComment(Const s : TString);
+Begin
+  EmitRaw('; ' + s);
+End;
+
+Procedure EmitSep;
+Begin
+  EmitRaw('; ' + '------------------------------------------------------------');
+End;
+
+Procedure EmitBlank;
+Begin
+  EmitRaw('');
+End;
+
+{ --------------------------------------------------------------------------
+  GenBranchLabel : generer un nouveau label interne FB (branche)
+  -------------------------------------------------------------------------- }
+Function GenBranchLabel : TString;
+Begin
+  Inc(branch_lbl_count);
+  GenBranchLabel := FB_PFX + IntToStr(branch_lbl_count);
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataLabel : generer un nouveau label de constante FK
+  -------------------------------------------------------------------------- }
+Function GenDataLabel : TString;
+Begin
+  Inc(data_lbl_count);
+  GenDataLabel := FK_PFX + IntToStr(data_lbl_count);
+End;
+
+{ --------------------------------------------------------------------------
+  GenProgramHeader : emettre l'entete du fichier ASM.
+  Modele memoire SMALL (code < 64 Ko, data < 64 Ko) comme BCPL86.
+  -------------------------------------------------------------------------- }
+Procedure GenProgramHeader;
+Begin
+  EmitComment('Genere par F77C86 v' + F77_VERSION + ' - ' + F77_DATE);
+  EmitComment('Source : ' + src_fname);
+  EmitBlank;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenDataSegBegin / GenDataSegEnd
+  -------------------------------------------------------------------------- }
+Procedure GenDataSegBegin;
+Begin
+  EmitBlank;
+  EmitRaw('        .DATA');
+  EmitBlank;
+End;
+
+Procedure GenDataSegEnd;
+Begin
+  EmitBlank;
+  EmitComment('--- Fin segment .DATA ---');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegBegin / GenCodeSegEnd
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegBegin;
+Begin
+  EmitBlank;
+  EmitRaw('        .CODE');
+  EmitBlank;
+End;
+
+Procedure GenCodeSegEnd;
+Begin
+  EmitBlank;
+  EmitComment('--- Fin segment .CODE ---');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenProcBegin : emettre le prologue d'un sous-programme Fortran.
+  Convention Fortran 77 :
+    - PROC NEAR (modele SMALL)
+    - Prologue standard : PUSH BP / MOV BP, SP
+    - Arguments passes PAR REFERENCE (pointeurs 16 bits sur pile)
+    - Acces arg i : MOV BX, [BP + 4 + (i-1)*2] (depuis la droite: dernier arg en premier)
+      (BP+0 = ancien BP, BP+2 = adresse retour, BP+4 = 1er arg)
+    - Registres preserves : SI, DI, DS (convention standard 86)
+  -------------------------------------------------------------------------- }
+Procedure GenProcBegin(Const nm : TString; nparams : Integer);
+Begin
+  EmitBlank;
+  EmitSep;
+  EmitComment('PROCEDURE/FUNCTION : ' + nm
+              + ' (' + IntToStr(nparams) + ' parametre(s))');
+  EmitSep;
+  EmitLabel(FP_PFX + nm);
+  EmitRaw(FP_PFX + nm + '  PROC NEAR');
+  EmitI1('PUSH', 'BP');
+  EmitI2('MOV',  'BP', 'SP');
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenProcEnd : emettre l'epilogue d'un sous-programme.
+  Depiler les parametres (convention appelant = non - F77 = callee clean).
+  Norme F77 : les arg sont empiles par l'appelant, nettoyes par l'appelant.
+  Ici on utilise RET simple (l'appelant fait ADD SP, nparams*2 apres le CALL).
+  -------------------------------------------------------------------------- }
+Procedure GenProcEnd(Const nm : TString);
+Begin
+  EmitBlank;
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI1('POP', 'BP');
+  EmitI0('RET');
+  EmitRaw(FP_PFX + nm + '  ENDP');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenInitSeg : emettre les instructions d'initialisation des registres de
+  segment DS au point d'entree (START).
+  -------------------------------------------------------------------------- }
+Procedure GenInitSeg;
+Begin
+  EmitI2('MOV', 'AX', '@DATA');
+  EmitI2('MOV', 'DS', 'AX');
+End;
+
+{ --------------------------------------------------------------------------
+  GenProgramEntry : emettre le point d'entree START.
+  -------------------------------------------------------------------------- }
+Procedure GenProgramEntry;
+Begin
+  EmitBlank;
+  EmitSep;
+  EmitComment('Point d''entree du programme');
+  EmitSep;
+  EmitLabel('START');
+  GenInitSeg;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenProgramEpilogue : emettre la sortie propre via DOS INT 21h.
+  AX = 4C00h -> exit code 0.
+  -------------------------------------------------------------------------- }
+Procedure GenProgramEpilogue;
+Begin
+  EmitBlank;
+  EmitComment('Fin du programme principal');
+  EmitI2('MOV', 'AX', '4C00h');
+  EmitI0('INT 21h');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenFileEnd : emettre la directive END de fin de fichier ASM.
+  -------------------------------------------------------------------------- }
+Procedure GenFileEnd(Const entry_label : TString);
+Begin
+  EmitBlank;
+  If entry_label <> '' Then
+    EmitRaw('        END ' + entry_label)
+  Else
+    EmitRaw('        END');
+End;
+
+{ --------------------------------------------------------------------------
+  GenPushArg : pousser l'adresse d'un argument (convention by-reference).
+  Pour les variables locales (BP-offset) : LEA AX, [BP-offset] ; PUSH AX
+  Pour les variables statiques (label) : MOV AX, OFFSET label ; PUSH AX
+  -------------------------------------------------------------------------- }
+Procedure GenPushArgByRef(idx : Integer);
+Var s : TSymRef;
+Begin
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  s := sym_table^[idx];
+  If s.common_blk > 0 Then
+  Begin
+    { Variable de COMMON : adresse directe }
+    EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label);
+    EmitI1('PUSH', 'AX');
+  End
+  Else If s.bp_offset < 0 Then
+  Begin
+    { Variable locale ou parametre : [BP + offset] }
+    EmitI2('LEA', 'AX', '[BP' + IntToStr(s.bp_offset) + ']');
+    EmitI1('PUSH', 'AX');
+  End
+  Else If s.asm_label <> '' Then
+  Begin
+    { Variable statique ou SAVE : adresse directe }
+    EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label);
+    EmitI1('PUSH', 'AX');
+  End
+  Else
+  Begin
+    WarnMsg('GenPushArgByRef : symbole sans adresse - ' + s.name);
+    EmitI2('MOV', 'AX', '0');
+    EmitI1('PUSH', 'AX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadInt : charger un entier 16 bits dans AX.
+  Selon la nature du symbole : constante PARAMETER, var locale ou statique.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadInt(idx : Integer);
+Var s : TSymRef;
+Begin
+  If (idx < 1) Or (idx > sym_count) Then
+  Begin
+    EmitI2('MOV', 'AX', '0');
+    Exit;
+  End;
+  s := sym_table^[idx];
+  If s.kind = SK_PARAM_CONST Then
+  Begin
+    EmitI2('MOV', 'AX', IntToStr(s.const_ival));
+  End
+  Else If s.bp_offset < 0 Then
+  Begin
+    EmitI2('MOV', 'AX', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']');
+  End
+  Else If s.asm_label <> '' Then
+  Begin
+    EmitI2('MOV', 'AX', 'WORD PTR [' + s.asm_label + ']');
+  End
+  Else
+    EmitI2('MOV', 'AX', '0');
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreInt : stocker AX dans une variable entiere.
+  -------------------------------------------------------------------------- }
+Procedure GenStoreInt(idx : Integer);
+Var s : TSymRef;
+Begin
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  s := sym_table^[idx];
+  If s.bp_offset < 0 Then
+    EmitI2('MOV', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']', 'AX')
+  Else If s.asm_label <> '' Then
+    EmitI2('MOV', 'WORD PTR [' + s.asm_label + ']', 'AX')
+  Else
+    WarnMsg('GenStoreInt : symbole sans adresse - ' + s.name);
+End;
+
+{ --------------------------------------------------------------------------
+  GenVarDecl : emettre la declaration d'espace pour une variable en .DATA.
+  Utilise les champs dtype, char_len, type_size, ndim, dims de TSymRec.
+  Variables DATA-initialisees : emit la valeur; sinon : DW/DD/DQ 0.
+  -------------------------------------------------------------------------- }
+Procedure GenVarDecl(idx : Integer);
+Var s  : TSymRef;
+    sz : Integer;
+    di : Integer;
+    ne : LongInt;  { nombre d'elements total pour les tableaux }
+Begin
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  s := sym_table^[idx];
+  If s.kind = SK_PARAM_CONST Then Exit;  { pas de DATA pour les PARAMETER }
+  If s.common_blk > 0 Then Exit;         { COMMON gere separement          }
+  If s.asm_label = '' Then Exit;         { symbole sans label (parametre)  }
+  If s.kind = SK_SUBR Then Exit;
+  If s.kind = SK_FUNC Then Exit;
+
+  sz := DataTypeSize(s.dtype, s.char_len);
+
+  { Calculer le nombre d'elements pour les tableaux }
+  ne := 1;
+  If s.ndim > 0 Then
+  Begin
+    For di := 1 To s.ndim Do
+      ne := ne * (s.dims[di].ub - s.dims[di].lb + 1);
+  End;
+
+  EmitComment('VAR ' + s.name + ' (' + DataTypeName(s.dtype) + ')');
+  EmitLabel(s.asm_label);
+
+  If s.is_defined Then
+  Begin
+    { Variable initialisee par DATA }
+    Case s.dtype Of
+      DT_INTEGER   : EmitDWi(s.const_ival);
+      DT_LOGICAL   : EmitDWi(s.const_ival);
+      DT_REAL      : EmitRaw('        DD 0    ; reel init TODO 11');
+      DT_DOUBLE    : EmitRaw('        DQ 0    ; double init TODO 11');
+      DT_COMPLEX   : EmitRaw('        DD 0, 0 ; complexe init TODO 11');
+      DT_CHARACTER :
+      Begin
+        EmitDBStr(s.const_sval);
+        { Completer par des espaces si necessaire }
+        If s.char_len > Length(s.const_sval) Then
+          EmitDBs('''  ''', s.char_len - Length(s.const_sval));
+      End;
+    Else
+      EmitDBs('0', sz);
+    End;
+  End
+  Else
+  Begin
+    { Variable non initialisee : allouer de l'espace avec zero }
+    If ne > 1 Then
+    Begin
+      Case sz Of
+        1 : EmitDBs('0', ne);
+        2 : EmitRaw('        DW ' + IntToStr(ne) + ' DUP(0)');
+        4 : EmitRaw('        DD ' + IntToStr(ne) + ' DUP(0)');
+        8 : EmitRaw('        DQ ' + IntToStr(ne) + ' DUP(0)');
+      Else
+        EmitRaw('        DB ' + IntToStr(ne * sz) + ' DUP(0)');
+      End;
+    End
+    Else
+    Begin
+      Case sz Of
+        1 : EmitDB('0');
+        2 : EmitDW('0');
+        4 : EmitDD('0');
+        8 : EmitDQ('0');
+      Else
+        EmitDBs('0', sz);
+      End;
+    End;
+  End;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCommonBlockDecl : emettre la declaration d'un bloc COMMON en .DATA.
+  Alloue common_table^[ci].total_size octets avec le label _FC_nom_.
+  -------------------------------------------------------------------------- }
+Procedure GenCommonBlockDecl(ci : Integer);
+Var cb : TCommonRef;
+Begin
+  If (ci < 1) Or (ci > common_count) Then Exit;
+  cb := common_table^[ci];
+  EmitComment('COMMON /' + cb.name + '/ (' + IntToStr(cb.total_size) + ' octets)');
+  EmitLabel(FC_PFX + cb.name + '_');
+  If cb.total_size > 0 Then
+    EmitRaw('        DB ' + IntToStr(cb.total_size) + ' DUP(0)')
+  Else
+    EmitRaw('        DB 1 DUP(0)   ; COMMON vide');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenAllVarDecls : emettre toutes les declarations de variables du proc.
+  Appele au debut du segment .DATA apres GenDataSegBegin.
+  -------------------------------------------------------------------------- }
+Procedure GenAllVarDecls(proc_idx : Integer);
+Var i : Integer;
+Begin
+  { Blocs COMMON en premier }
+  For i := 1 To common_count Do
+    GenCommonBlockDecl(i);
+  { Puis toutes les variables du proc courant }
+  For i := 1 To sym_count Do
+    If sym_table^[i].scope_unit = proc_idx Then
+      GenVarDecl(i);
+End;
+
+{ --------------------------------------------------------------------------
+  GenCallSub : generer un CALL a un sous-programme Fortran.
+  Empile OFFSET des args de droite a gauche, puis CALL, puis ADD SP.
+  Les args sont des indices dans sym_table.
+  arg_idx est un tableau d'indices sym_table, nargs le nombre d'args.
+  -------------------------------------------------------------------------- }
+Procedure GenCallSub(Const sub_label : TString;
+                     Var arg_idx : Array of Integer;
+                     nargs : Integer);
+Var i : Integer;
+Begin
+  EmitComment('CALL ' + sub_label);
+  { Empiler de droite a gauche (dernier arg en premier sur pile) }
+  For i := nargs - 1 DownTo 0 Do
+    GenPushArgByRef(arg_idx[i]);
+  EmitRaw('        CALL ' + sub_label);
+  If nargs > 0 Then
+    EmitI2('ADD', 'SP', IntToStr(nargs * 2));
+  EmitBlank;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -2585,7 +4001,8 @@ Begin
 
   Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
 
-  { TODOs 07-25 : implementation a venir }
+  { TODOs 10-25 : implementation a venir }
+
 
   CloseFiles;
 
