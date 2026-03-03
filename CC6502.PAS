@@ -4034,9 +4034,7 @@ Begin
   Delete(temp_condition, 1, 1);
  While (Length(temp_condition) > 0) and (temp_condition[Length(temp_condition)] in [' ', #13, #10]) do
   Delete(temp_condition, Length(temp_condition), 1);
-
- If condition_depth = 0 Then
- Begin
+ If condition_depth = 0 Then Begin
   Case Language of
    _English: errrpt('#elif without matching #if');
    {$IFDEF FPC}
@@ -4046,47 +4044,36 @@ Begin
   End;
   Exit;
  End;
-
- With condition_stack[condition_depth - 1] do
- Begin
-  If in_else Then
-  Begin
+ With condition_stack[condition_depth - 1] do Begin
+  If in_else Then Begin
    Case Language of
     _English: errrpt('#elif after #else');
     {$IFDEF FPC}
     _Germany: errrpt('#elif nach #else');
     {$ENDIF}
-    Else errrpt('#elif apr√®s #else');
+    Else errrpt('#elif apräs #else');
    End;
    Exit;
   End;
-
-  { √âvaluer seulement si aucune branche pr√©c√©dente n'√©tait vraie }
-  If not has_true_branch Then
-  Begin
+   { êvaluer seulement si aucune branche prÇcÇdente n'Çtait vraie }
+  If not has_true_branch Then Begin
    condition_value := evaluate_constant_expression(temp_condition);
    is_true := (condition_value <> 0);
    If is_true Then has_true_branch := True;
   End
-  Else
-   is_true := False; { Une branche pr√©c√©dente √©tait vraie }
+   Else
+  is_true := False; { Une branche prÇcÇdente Çtait vraie }
  End;
-
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #elif ', temp_condition)
                Else safe_writeln('; #elif ' + temp_condition);
-
  process_elif_directive := True;
 End;
 
-{ Traiter la directive #else }
-Function process_else_directive: Boolean;
-Begin
+ { Traiter la directive #else }
+Function process_else_directive:Boolean;Begin
  process_else_directive := False;
-
- If condition_depth = 0 Then
- Begin
+ If condition_depth = 0 Then Begin
   Case Language of
    _English: errrpt('#else without matching #if');
    {$IFDEF FPC}
@@ -4096,11 +4083,8 @@ Begin
   End;
   Exit;
  End;
-
- With condition_stack[condition_depth - 1] do
- Begin
-  If in_else Then
-  Begin
+ With condition_stack[condition_depth - 1] do Begin
+  If in_else Then Begin
    Case Language of
     _English: errrpt('Multiple #else in same #if block');
     {$IFDEF FPC}
@@ -4110,27 +4094,20 @@ Begin
    End;
    Exit;
   End;
-
   in_else := True;
-  { #else est vrai seulement si aucune branche pr√©c√©dente n'√©tait vraie }
+  { #else est vrai seulement si aucune branche prÇcÇdente n'Çtait vraie }
   is_true := not has_true_branch;
  End;
-
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #else')
                Else safe_writeln('; #else');
-
  process_else_directive := True;
 End;
 
-{ Traiter la directive #endif }
-Function process_endif_directive: Boolean;
-Begin
+ { Traiter la directive #endif }
+Function process_endif_directive:Boolean;Begin
  process_endif_directive := False;
-
- If condition_depth = 0 Then
- Begin
+ If condition_depth = 0 Then Begin
   Case Language of
    _English: errrpt('#endif without matching #if');
    {$IFDEF FPC}
@@ -4140,49 +4117,42 @@ Begin
   End;
   Exit;
  End;
-
  Dec(condition_depth);
  skip_code := should_skip_code;
-
  If use_stdout Then WriteLn('; #endif')
                Else safe_writeln('; #endif');
-
  process_endif_directive := True;
 End;
 
-{ Lib√©rer les ressources des conditions }
-Procedure free_conditions;
-Begin
+ { LibÇrer les ressources des conditions }
+Procedure free_conditions;Begin
  condition_depth := 0;
  skip_code := False;
  If use_stdout Then WriteLn('; Conditional compilation context cleared')
                Else safe_writeln('; Contexte de compilation conditionnelle effac√©');
 End;
 
-{ Analyser l'acc√®s aux tableaux avec indexation }
+ { Analyser l'accäs aux tableaux avec indexation }
 Procedure parse_array_access(array_name: String; var lval: TLVal);
 Var
  index_lval: TLVal;
  array_symbol: PSymbol;
  element_size: Integer;
 Begin
- { Trouver le symbole du tableau }
+  { Trouver le symbole du tableau }
  array_symbol := find_symbol(array_name);
- If array_symbol = nil Then
- Begin
+ If array_symbol = nil Then Begin
   Case Language of
    _English: errrpt('Array not found: ' + array_name);
    {$IFDEF FPC}
    _Germany: errrpt('Array nicht gefunden: ' + array_name);
    {$ENDIF}
-   Else errrpt('Tableau non trouv√©: ' + array_name);
+   Else errrpt('Tableau non trouvÇ: ' + array_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien un tableau }
- If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then
- Begin
+  { VÇrifier que c'est bien un tableau }
+ If (array_symbol^.ident <> it_array) and (array_symbol^.type_info.array_size = 0) Then Begin
   Case Language of
    _English: errrpt('Variable is not an array: ' + array_name);
    {$IFDEF FPC}
@@ -4192,26 +4162,21 @@ Begin
   End;
   Exit;
  End;
-
- { Consommer '[' }
- If not match('[') Then
- Begin
+  { Consommer '[' }
+ If not match('[') Then Begin
   Case Language of
    _English: errrpt('Expected [ for array index');
    {$IFDEF FPC}
-   _Germany: errrpt('Erwartete [ f√ºr Array-Index');
+   _Germany: errrpt('Erwartete [ fÅr Array-Index');
    {$ENDIF}
    Else errrpt('[ attendu pour l''index du tableau');
   End;
   Exit;
  End;
-
  safe_writeln('; Calcul de l''index du tableau ' + array_name);
-
- { Analyser l'expression d'index }
+  { Analyser l'expression d'index }
  additive_expression(index_lval);
-
- { Consommer ']' }
+  { Consommer ']' }
  If not match(']') Then
  Begin
   Case Language of
@@ -4219,29 +4184,27 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ] nach Array-Index');
    {$ENDIF}
-   Else errrpt('] attendu apr√®s l''index du tableau');
+   Else errrpt('] attendu apräs l''index du tableau');
   End;
   Exit;
  End;
-
- { Charger la valeur √† l'adresse calcul√©e }
+  { Charger la valeur Ö l'adresse calculÇe }
  ol('tfr  d,x    ; adresse dans X');
  Case element_size of
   1: ol('ldb  ,x     ; charger octet');
   2: ol('ldd  ,x     ; charger mot');
  Else
-  ol('ldd  ,x     ; charger mot par d√©faut');
+  ol('ldd  ,x     ; charger mot par dÇfaut');
  End;
-
- { Configurer lval pour le r√©sultat }
+  { Configurer lval pour le rÇsultat }
  lval.typ := array_symbol^.type_info.base_type;
- lval.indirect := 1; { Valeur charg√©e indirectement }
+ lval.indirect := 1; { Valeur chargÇe indirectement }
  lval.constant := False;
  lval.type_info := array_symbol^.type_info;
- lval.type_info.array_size := 0; { Ce n'est plus un tableau mais un √©l√©ment }
+ lval.type_info.array_size := 0; { Ce n'est plus un tableau mais un ÇlÇment }
 End;
 
-{ Analyser l'acc√®s aux membres de structure }
+ { Analyser l'accäs aux membres de structure }
 Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_pointer: Boolean);
 Var
  member_name: String;
@@ -4259,12 +4222,11 @@ Begin
    {$IFDEF FPC}
    _Germany: errrpt('Struct-Variable nicht gefunden: ' + struct_name);
    {$ENDIF}
-   Else errrpt('Variable de structure non trouv√©e: ' + struct_name);
+   Else errrpt('Variable de structure non trouvÇe: ' + struct_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien une structure }
+  { VÇrifier que c'est bien une structure }
  If (struct_symbol^.type_info.base_type <> cstruct) and
     (struct_symbol^.type_info.base_type <> cunion) Then
  Begin
@@ -4277,26 +4239,22 @@ Begin
   End;
   Exit;
  End;
-
- { Consommer '.' ou '->' }
- If is_pointer Then
- Begin
-  If not (match('-') and match('>')) Then
-  Begin
+  { Consommer '.' ou '->' }
+ If is_pointer Then Begin
+  If not (match('-') and match('>')) Then Begin
    Case Language of
     _English: errrpt('Expected -> for pointer member access');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete -> f√ºr Pointer-Mitgliedszugriff');
+    _Germany: errrpt('Erwartete -> fÅr Pointer-Mitgliedszugriff');
     {$ENDIF}
-    Else errrpt('-> attendu pour l''acc√®s aux membres de pointeur');
+    Else errrpt('-> attendu pour l''accäs aux membres de pointeur');
    End;
    Exit;
   End;
  End
- Else
+  Else
  Begin
-  If not match('.') Then
-  Begin
+  If not match('.') Then Begin
    Case Language of
     _English: errrpt('Expected . for struct member access');
     {$IFDEF FPC}
@@ -4307,68 +4265,57 @@ Begin
    Exit;
   End;
  End;
-
- { Obtenir le nom du membre }
- If not symname(member_name) Then
- Begin
+  { Obtenir le nom du membre }
+ If not symname(member_name) Then Begin
   Case Language of
    _English: errrpt('Expected member name after .');
    {$IFDEF FPC}
    _Germany: errrpt('Erwarteter Mitgliedsname nach .');
    {$ENDIF}
-   Else errrpt('Nom de membre attendu apr√®s .');
+   Else errrpt('Nom de membre attendu apräs .');
   End;
   Exit;
  End;
-
- { Trouver la d√©finition de la structure }
+  { Trouver la dÇfinition de la structure }
  struct_def := find_struct_by_id(struct_symbol^.type_info.struct_id);
- If struct_def = nil Then
- Begin
+ If struct_def = nil Then Begin
   Case Language of
    _English: errrpt('Struct definition not found');
    {$IFDEF FPC}
    _Germany: errrpt('Struct-Definition nicht gefunden');
    {$ENDIF}
-   Else errrpt('D√©finition de structure non trouv√©e');
+   Else errrpt('DÇfinition de structure non trouvÇe');
   End;
   Exit;
  End;
-
- { Trouver le membre dans la structure }
+  { Trouver le membre dans la structure }
  member_index := find_struct_member(struct_def, member_name);
- If member_index = -1 Then
- Begin
+ If member_index = -1 Then Begin
   Case Language of
    _English: errrpt('Member not found in struct: ' + member_name);
    {$IFDEF FPC}
    _Germany: errrpt('Mitglied nicht in Struct gefunden: ' + member_name);
    {$ENDIF}
-   Else errrpt('Membre non trouv√© dans la structure: ' + member_name);
+   Else errrpt('Membre non trouvÇ dans la structure: ' + member_name);
   End;
   Exit;
  End;
-
- { Obtenir les informations du membre }
- With struct_def^.members[member_index] do
- Begin
+  { Obtenir les informations du membre }
+ With struct_def^.members[member_index] do Begin
   member_offset := offset;
   member_size := size;
  End;
-
- safe_writeln('; Acc√®s au membre ' + member_name + ' (offset: ' + IntToStr(member_offset) + ')');
-
- { G√©n√©rer le code pour calculer l'adresse du membre }
- If member_offset = 0 Then
- Begin
-  { Le membre est au d√©but de la structure }
+ safe_writeln('; Accäs au membre ' + member_name + ' (offset: ' + IntToStr(member_offset) + ')');
+  { GÇnÇrer le code pour calculer l'adresse du membre }
+ If member_offset = 0 Then Begin
+  { Le membre est au dÇbut de la structure }
   ot('ldd  #');
   outstr(struct_name);
   nl;
  End
- Else
+  Else
  Begin
-  { Ajouter l'offset du membre }
+  { Ajouter le dÇplacement du membre }
   ot('ldd  #');
   outstr(struct_name);
   nl;
@@ -4376,19 +4323,16 @@ Begin
   outdec(member_offset);
   nl;
  End;
-
- { Charger la valeur du membre }
+  { Charger la valeur du membre }
  ol('tfr  d,x    ; adresse du membre dans X');
  Case member_size of
   1: ol('ldb  ,x     ; charger octet');
   2: ol('ldd  ,x     ; charger mot');
  Else
-  ol('ldd  ,x     ; charger mot par d√©faut');
+  ol('ldd  ,x     ; charger mot par dÇfaut');
  End;
-
- { Configurer lval pour le r√©sultat }
- With struct_def^.members[member_index] do
- Begin
+  { Configurer lval pour le rÇsultat }
+ With struct_def^.members[member_index] do Begin
   lval.typ := member_type;
   lval.indirect := 1;
   lval.constant := False;
@@ -4396,7 +4340,7 @@ Begin
  End;
 End;
 
-{ Primary expression parser with function call support }
+ { Analyseur d'expressions primaire avec prise en charge des appels de fonction }
 Procedure primary_expression(var lval: TLVal);
 Var
  id: String;
@@ -4404,7 +4348,6 @@ Var
  save_lptr: Integer;
 Begin
  FillChar(lval, SizeOf(lval), 0);
-
  Case peek_char of
   '0'..'9': Begin
     num := parse_number;
@@ -4415,49 +4358,45 @@ Begin
     outdec(num);
     nl;
    End;
-
   'A'..'Z', 'a'..'z', '_': Begin
     id := parse_identifier;
-
-    { Check if this is a function call }
+     { VÇrifiez s'il s'agit d'un appel de fonction }
     If peek_char = '(' Then
     Begin
-     { This is a function call }
+     { Il s'agit d'un appel de fonction }
      If parse_function_call(id, lval) Then
      Begin
-      { Function call result is already in D register }
+      { Le rÇsultat de l'appel de la fonction est dÇjÖ dans le registre D }
       safe_writeln('; Function ' + id + ' returned in D');
      End
-     Else
+      Else
      Begin
       Case Language of
        _English: errrpt('Invalid function call: ' + id);
        {$IFDEF FPC}
-       _Germany: errrpt('Ung√ºltiger Funktionsaufruf: ' + id);
+       _Germany: errrpt('UngÅltiger Funktionsaufruf: ' + id);
        {$ENDIF}
        Else errrpt('Appel de fonction invalide: ' + id);
       End;
      End;
     End
-    Else
+     Else
     Begin
-     { This is a variable reference }
-     If lookup_variable(id, lval) Then
-     Begin
-      { Check if this is an array access }
-      If peek_char = '[' Then
-      Begin
-       { Array indexing }
+     { C'est une rÇfÇrence de variable }
+     If lookup_variable(id, lval) Then Begin
+      { VÇrifier si c'est un accäs tableau }
+      If peek_char = '[' Then Begin
+       { Tableau indexÇ }
        parse_array_access(id, lval);
       End
-      Else If peek_char = '.' Then
-      Begin
-       { Structure member access }
+       Else
+      If peek_char = '.' Then Begin
+       { Accäs au membre de la structure }
        parse_struct_member_access(id, lval, False);
       End
-      Else
+       Else
       Begin
-       { Simple variable access }
+       { Accäs aux variable simple }
        ot('ldd  ');
        outstr(id);
        nl;
@@ -4465,7 +4404,7 @@ Begin
      End
      Else
      Begin
-      { Undeclared variable }
+      { Variable non-dÇclarÇ }
       lval.symbol := 0;
       lval.typ := cint;
       lval.constant := False;
@@ -4475,9 +4414,8 @@ Begin
      End;
     End;
    End;
-
   '(': Begin
-    next_char; { consume '(' }
+    next_char; { consomme '(' }
     additive_expression(lval);
     If peek_char = ')' Then
      next_char { consume ')' }
@@ -4497,44 +4435,39 @@ Begin
    Case Language of
     _English: errrpt('Invalid primary expression');
     {$IFDEF FPC}
-    _Germany: errrpt('Ung√ºltiger prim√§rer Ausdruck');
+    _Germany: errrpt('UngÅltiger primÑrer Ausdruck');
     {$ENDIF}
     Else errrpt('Expression primaire invalide');
    End;
  End;
 End;
 
-{ Unary expression parser }
+{ Analyseur d'expressions unaires }
 Procedure unary_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
  save_lptr: Integer;
  id: String;
 Begin
- { V√©rifier d'abord si c'est le mot-cl√© sizeof }
+ { VÇrifier d'abord si c'est le mot-clef sizeof }
  save_lptr := lptr;
  blanks;
- If is_alpha(peek_char) Then
- Begin
+ If is_alpha(peek_char) Then Begin
   id := parse_identifier;
-  If id = 'sizeof' Then
-  Begin
+  If id = 'sizeof' Then Begin
    { C'est sizeof - restaurer la position et l'analyser }
    lptr := save_lptr;
    parse_sizeof_expression(lval);
    Exit;
   End;
  End;
-
- { Restaurer la position pour l'analyse normale }
+  { Restaurer la position pour l'analyse normale }
  lptr := save_lptr;
-
  Case peek_char of
   '+': Begin
     next_char;
     unary_expression(lval);
    End;
-
   '-': Begin
     next_char;
     unary_expression(lval);
@@ -4542,159 +4475,136 @@ Begin
     ol('negb');
     ol('sbca #0');
    End;
-
   '!': Begin
     next_char;
-    safe_writeln('; Op√©rateur ! (NOT logique)');
+    safe_writeln('; OpÇrateur ! (NOT logique)');
     unary_expression(lval);
-    { Convertir en bool√©en: 0 si non-z√©ro, 1 si z√©ro }
+    { Convertir en boolÇen: 0 si non-zÇro, 1 si zÇro }
     true_label := getlabel;
     end_label := getlabel;
-
-    ol('tstd');      { Tester D (le r√©sultat de l''expression) }
-    ol('beq  L' + IntToStr(true_label)); { Si z√©ro, c''est vrai (!0 = 1) }
-    ol('ldd  #0');   { Sinon c''est faux (!non_z√©ro = 0) }
+    ol('tstd');      { Tester D (le rÇsultat de l''expression) }
+    ol('beq  L' + IntToStr(true_label)); { Si zÇro, c''est vrai (!0 = 1) }
+    ol('ldd  #0');   { Sinon c''est faux (!non_zÇro = 0) }
     ol('bra  L' + IntToStr(end_label));
     prelabel(true_label);
-    ol('ldd  #1');   { R√©sultat vrai }
+    ol('ldd  #1');   { RÇsultat vrai }
     prelabel(end_label);
    End;
-
   '~': Begin
     next_char;
     unary_expression(lval);
     ol('coma');
     ol('comb');
    End;
-
   '*': Begin
-    { Op√©rateur de d√©r√©f√©rencement }
+    { OpÇrateur de dÇrÇfÇrencement }
     next_char;
     unary_expression(lval);
     parse_dereference(lval);
    End;
-
   '&': Begin
-    { Op√©rateur d'adresse }
+    { OpÇrateur d'adresse }
     next_char;
     parse_address_of(lval);
    End;
-
   Else
    primary_expression(lval);
  End;
 End;
 
-{ Op√©rateur de d√©r√©f√©rencement (*ptr) }
+ { OpÇrateur de dÇrÇfÇrencement (*ptr) }
 Procedure parse_dereference(var lval: TLVal);
 var
-  ptr_name: String;
+ ptr_name: String;
 Begin
- safe_writeln('; D√©r√©f√©rencement de pointeur');
-
- { V√©rifier que c'est bien un pointeur }
- If lval.type_info.pointer_level = 0 Then
- Begin
+ safe_writeln('; DÇrÇfÇrencement de pointeur');
+ { VÇrifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
    {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
    {$ENDIF}
-   Else errrpt('Impossible de d√©r√©f√©rencer un type non-pointeur');
+   Else errrpt('Impossible de dÇrÇfÇrencer un type non-pointeur');
   End;
   Exit;
  End;
-
- { G√©n√©rer le code de d√©r√©f√©rencement }
- If lval.symbol > 0 Then
- Begin
+  { GÇnÇrer le code de dÇrÇfÇrencement }
+ If lval.symbol > 0 Then Begin
   ptr_name := get_symbol_name(lval.symbol);
-  safe_writeln('; D√©r√©f√©rencement de: ' + ptr_name);
+  safe_writeln('; DÇrÇfÇrencement de: ' + ptr_name);
   ol('ldx  ' + ptr_name);  { Charger l'adresse stock√©e dans le pointeur }
   ol('ldd  ,x');           { Charger la valeur point√©e }
  End
- Else
+  Else
  Begin
-  safe_writeln('; D√©r√©f√©rencement indirect');
-  ol('ldx  ,s++');         { R√©cup√©rer l'adresse depuis la pile }
-  ol('ldd  ,x');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement indirect');
+  ol('ldx  ,s++');         { RÇcupÇrer l'adresse depuis la pile }
+  ol('ldd  ,x');           { Charger la valeur pointÇe }
  End;
-
- { V√©rifier que c'est bien un pointeur }
- If lval.type_info.pointer_level = 0 Then
- Begin
+  { VÇrifier que c'est bien un pointeur }
+ If lval.type_info.pointer_level = 0 Then Begin
   Case Language of
    _English: errrpt('Cannot dereference non-pointer type');
    {$IFDEF FPC}
    _Germany: errrpt('Kann Nicht-Zeiger-Typ nicht dereferenzieren');
    {$ENDIF}
-   Else errrpt('Impossible de d√©r√©f√©rencer un type non-pointeur');
+   Else errrpt('Impossible de dÇrÇfÇrencer un type non-pointeur');
   End;
   Exit;
  End;
-
- { G√©n√©rer le code de d√©r√©f√©rencement }
- If lval.symbol > 0 Then
- Begin
+  { GÇnÇrer le code de dÇrÇfÇrencement }
+ If lval.symbol > 0 Then Begin
   ptr_name := get_symbol_name(lval.symbol);
-  safe_writeln('; D√©r√©f√©rencement de: ' + ptr_name);
-  ol('ldx  ' + ptr_name);  { Charger l'adresse stock√©e dans le pointeur }
-  ol('ldd  ,x');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement de: ' + ptr_name);
+  ol('ldx  ' + ptr_name);  { Charger l'adresse stockÇe dans le pointeur }
+  ol('ldd  ,x');           { Charger la valeur pointÇe }
  End
- Else
+  Else
  Begin
-  safe_writeln('; D√©r√©f√©rencement indirect');
-  ol('ldx  ,s++');         { R√©cup√©rer l'adresse depuis la pile }
-  ol('ldd  ,x');           { Charger la valeur point√©e }
+  safe_writeln('; DÇrÇfÇrencement indirect');
+  ol('ldx  ,s++');         { RÇcupÇrer l'adresse depuis la pile }
+  ol('ldd  ,x');           { Charger la valeur pointÇe }
  End;
-
- { D√©cr√©menter le niveau de pointeur }
+  { DÇcrÇmenter le niveau de pointeur }
  Dec(lval.type_info.pointer_level);
-
- { Le r√©sultat est maintenant une valeur }
+  { Le rÇsultat est maintenant une valeur }
  lval.indirect := 0;
-
- safe_writeln('; Pointeur d√©r√©f√©renc√©, nouveau niveau: ' + IntToStr(lval.type_info.pointer_level));
+ safe_writeln('; Pointeur dÇrÇfÇrencÇ, nouveau niveau: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
-{ Op√©rateur d'adresse (&var) }
+ { OpÇrateur d'adresse (&var) }
 Procedure parse_address_of(var lval: TLVal);
 Var
-  var_name: String;
-  sym_ptr: PSymbol;
+ var_name: String;
+ sym_ptr: PSymbol;
 Begin
  safe_writeln('; Prise d''adresse de variable');
-
- { Lire le nom de la variable directement }
- If not symname(var_name) Then
- Begin
+  { Lire le nom de la variable directement }
+ If not symname(var_name) Then Begin
   Case Language of
    _English: errrpt('Expected variable name after &');
    {$IFDEF FPC}
    _Germany: errrpt('Variablenname nach & erwartet');
    {$ENDIF}
-   Else errrpt('Nom de variable attendu apr√®s &');
+   Else errrpt('Nom de variable attendu apräs &');
   End;
   Exit;
  End;
-
- { Chercher la variable dans la table des symboles }
+  { Chercher la variable dans la table des symboles }
  sym_ptr := find_symbol(var_name);
- If sym_ptr = nil Then
- Begin
+ If sym_ptr = nil Then Begin
   Case Language of
    _English: errrpt('Undefined variable: ' + var_name);
    {$IFDEF FPC}
    _Germany: errrpt('Undefinierte Variable: ' + var_name);
    {$ENDIF}
-   Else errrpt('Variable non d√©finie: ' + var_name);
+   Else errrpt('Variable non dÇfinie: ' + var_name);
   End;
   Exit;
  End;
-
- { V√©rifier que c'est bien une variable (pas une constante) }
- If sym_ptr^.ident <> it_variable Then
- Begin
+  { VÇrifier que c'est bien une variable (pas une constante) }
+ If sym_ptr^.ident <> it_variable Then Begin
   Case Language of
    _English: errrpt('Cannot take address of non-variable');
    {$IFDEF FPC}
@@ -4704,27 +4614,23 @@ Begin
   End;
   Exit;
  End;
-
- { G√©n√©rer le code pour obtenir l'adresse }
+  { GÇnÇrer le code pour obtenir l'adresse }
  ol('leax ' + var_name);
  ol('pshs x'); { Empiler l'adresse }
-
- { Configurer lval pour le r√©sultat }
+  { Configurer lval pour le rÇsultat }
  lval.symbol := Integer(sym_ptr);
- lval.indirect := 1; { R√©sultat sur la pile }
+ lval.indirect := 1; { RÇsultat sur la pile }
  lval.typ := cpointer;
  lval.storage := sym_ptr^.storage;
  lval.constant := False;
  lval.value := 0;
-
- { Copier les informations de type et incr√©menter le niveau de pointeur }
+  { Copier les informations de type et incrÇmenter le niveau de pointeur }
  lval.type_info := sym_ptr^.type_info;
  Inc(lval.type_info.pointer_level);
-
  safe_writeln('; Adresse de ' + var_name + ' prise, niveau pointeur: ' + IntToStr(lval.type_info.pointer_level));
 End;
 
-{ Op√©rateur sizeof - calcule la taille d'un type ou d'une expression }
+{ OpÇrateur sizeof - calcule la taille d'un type ou d'une expression }
 Procedure parse_sizeof_expression(var lval: TLVal);
 Var
  type_name: String;
@@ -4733,48 +4639,39 @@ Var
  size_value: Integer;
  expr_lval: TLVal;
 Begin
- safe_writeln('; Op√©rateur sizeof');
-
- { Consommer le mot-cl√© 'sizeof' }
- If not match('sizeof') Then
- Begin
+ safe_writeln('; OpÇrateur sizeof');
+  { Consommer le mot-clef 'sizeof' }
+ If not match('sizeof') Then Begin
   Case Language of
    _English: errrpt('Expected sizeof keyword');
    {$IFDEF FPC}
-   _Germany: errrpt('Erwartetes sizeof-Schl√ºsselwort');
+   _Germany: errrpt('Erwartetes sizeof-SchlÅsselwort');
    {$ENDIF}
-   Else errrpt('Mot-cl√© sizeof attendu');
+   Else errrpt('Mot-clef sizeof attendu');
   End;
   Exit;
  End;
-
- { Attendre parenth√®se ouvrante }
- If not match('(') Then
- Begin
+  { Attendre parenthäse ouvrante }
+ If not match('(') Then Begin
   Case Language of
    _English: errrpt('Expected ( after sizeof');
    {$IFDEF FPC}
    _Germany: errrpt('Erwartete ( nach sizeof');
    {$ENDIF}
-   Else errrpt('( attendu apr√®s sizeof');
+   Else errrpt('( attendu apräs sizeof');
   End;
   Exit;
  End;
-
- { Analyser le contenu - peut √™tre un type ou une expression }
- { Sauvegarder la position pour pouvoir revenir en arri√®re }
+  { Analyser le contenu - peut àtre un type ou une expression }
+  { Sauvegarder la position pour pouvoir revenir en arriäre }
  blanks;
-
- { Essayer d'analyser comme un type d'abord }
+  { Essayer d'analyser comme un type d'abord }
  type_id := parse_type_specifier_with_qualifiers(type_info);
-
- If type_id <> -1 Then
- Begin
+ If type_id <> -1 Then Begin
   { C'est un type - calculer sa taille }
   safe_writeln('; sizeof sur type: ' + get_type_name(type_info));
   size_value := calculate_type_size(type_info);
-
-  { Attendre la parenth√®se fermante }
+  { Attendre la parenthäse fermante }
   If not match(')') Then
   Begin
    Case Language of
@@ -4782,42 +4679,36 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach sizeof-Typ');
     {$ENDIF}
-    Else errrpt(') attendu apr√®s le type sizeof');
+    Else errrpt(') attendu apräs le type sizeof');
    End;
    Exit;
   End;
  End
  Else
  Begin
-  { Ce n'est pas un type - essayer comme expression }
+   { Ce n'est pas un type - essayer comme expression }
   safe_writeln('; sizeof sur expression');
-
-  { Analyser l'expression }
+   { Analyser l'expression }
   unary_expression(expr_lval);
-
-  { Calculer la taille bas√©e sur le type de l'expression }
+   { Calculer la taille basÇe sur le type de l'expression }
   size_value := calculate_type_size(expr_lval.type_info);
-
-  { Attendre la parenth√®se fermante }
-  If not match(')') Then
-  Begin
+   { Attendre la parenthäse fermante }
+  If not match(')') Then Begin
    Case Language of
     _English: errrpt('Expected ) after sizeof expression');
     {$IFDEF FPC}
     _Germany: errrpt('Erwartete ) nach sizeof-Ausdruck');
     {$ENDIF}
-    Else errrpt(') attendu apr√®s l''expression sizeof');
+    Else errrpt(') attendu apräs l''expression sizeof');
    End;
    Exit;
   End;
  End;
-
- { G√©n√©rer le code pour charger la taille comme constante }
+  { GÇnÇrer le code pour charger la taille comme constante }
  ot('ldd  #');
  outdec(size_value);
  nl;
-
- { Configurer lval pour le r√©sultat }
+  { Configurer lval pour le rÇsultat }
  FillChar(lval, SizeOf(lval), 0);
  lval.typ := cint;
  lval.constant := True;
@@ -4825,34 +4716,28 @@ Begin
  init_type_info(lval.type_info);
  lval.type_info.base_type := cint;
  lval.type_info.size := sizeof_int;
-
- safe_writeln('; sizeof r√©sultat: ' + IntToStr(size_value) + ' octets');
+ safe_writeln('; sizeof rÇsultat: ' + IntToStr(size_value) + ' octets');
 End;
 
-{ Multiplicative expression parser }
+ { Analyseur d'expression multiplicative }
 Procedure multiplicative_expression(var lval: TLVal);
 Var
  op: Char;
 Begin
  unary_expression(lval);
-
- While (peek_char = '*') or (peek_char = '/') or (peek_char = '%') do
- Begin
+ While (peek_char = '*') or (peek_char = '/') or (peek_char = '%') do Begin
   op := next_char;
-  ol('pshs d'); { push left operand }
-
+  ol('pshs d'); { Empile l'opÇrande de gauche }
   unary_expression(lval);
-
   Case op of
    '*': Begin
-     ol('puls x'); { pop left operand to X }
-     ol('jsr  mult16'); { call multiply routine }
+     ol('puls x');      { Empile l'opÇrande de gauche vers X }
+     ol('jsr  mult16'); { Appel la routine de multiplication }
     End;
-
    '/': Begin
-     ol('tfr  d,x'); { right operand to X }
-     ol('puls d'); { left operand to D }
-     ol('jsr  div16'); { call divide routine }
+     ol('tfr  d,x');    { OpÇrande de gauche vers X }
+     ol('puls d');      { OpÇrande de gauche vers D }
+     ol('jsr  div16');  { Appel une routinme de division }
     End;
 
    '%': Begin

@@ -5570,11 +5570,429 @@ Begin
 End;
 
 { ============================================================================
-  TODO 21 ... 25 : a implementer
+  TODO 21 - STRUCTURE ASM : SEGMENT CODE (EN-TETE, CORPS, PIED)
   ============================================================================ }
 
+{ --------------------------------------------------------------------------
+  DetectEntryPoint : rechercher la PROCEDURE dont le nom correspond
+  au MODULE principal et enregistrer son asm_label dans entry_proc_lbl.
+  Convention : la procedure dont le nom == module_name est le point
+  d'entree. Si aucune ne correspond, construire un label par defaut.
+  -------------------------------------------------------------------------- }
+Procedure DetectEntryPoint;
+Var
+  i    : Integer;
+  modu : TString;
+Begin
+  modu := StrUpper(module_name);
+  entry_proc_lbl := '';
+  For i := 1 To proc_count Do
+    If proc_table^[i].name = modu Then
+    Begin
+      entry_proc_lbl := proc_table^[i].asm_label;
+      Break;
+    End;
+  { Fallback : construire le label selon la convention JP_PFX + module + _ + module }
+  If entry_proc_lbl = '' Then
+  Begin
+    If modu <> '' Then
+      entry_proc_lbl := JP_PFX + AsmIdent(modu) + '_' + AsmIdent(modu)
+    Else
+      entry_proc_lbl := JP_PFX + 'MAIN';
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegmentHeader : emettre l'en-tete du segment CODE.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegmentHeader;
+Begin
+  EmitComment(' ----- Segment CODE -----');
+  Emit('_CODE           SEGMENT WORD PUBLIC ''CODE''');
+  Emit('                ASSUME  CS:_CODE, DS:_DATA, SS:_STACK');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStartupBlock : emettre le bloc de demarrage DOS.
+  Initialise DS et SS, puis appelle le point d'entree principal.
+  -------------------------------------------------------------------------- }
+Procedure GenStartupBlock;
+Begin
+  EmitComment(' ----- Point d''entree DOS -----');
+  EmitLabel('START');
+  { initialiser DS }
+  Emit('        MOV  AX, _DATA');
+  Emit('        MOV  DS, AX');
+  { initialiser SS et SP }
+  Emit('        MOV  AX, _STACK');
+  Emit('        MOV  SS, AX');
+  Emit('        MOV  SP, ' + IntToStr(STACK_SIZE));
+  { appeler le programme principal }
+  EmitComment(' appel du programme principal');
+  Emit('        CALL ' + entry_proc_lbl);
+  { retour DOS }
+  Emit('        CALL _JRT_EXIT0');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenCodeSegmentFooter : fermer le segment CODE et pointer END sur START.
+  -------------------------------------------------------------------------- }
+Procedure GenCodeSegmentFooter;
+Begin
+  EmitBlank;
+  Emit('_CODE           ENDS');
+  EmitBlank;
+  Emit('                END  START');
+End;
+
+{ --------------------------------------------------------------------------
+  GenFullAssemblyFooter : pied de fichier ASM (apres le CODE).
+  -------------------------------------------------------------------------- }
+Procedure GenFullAssemblyFooter;
+Begin
+  GenCodeSegmentFooter;
+End;
+
+{ ============================================================================
+  TODO 22 - GESTION DES ERREURS ET RAPPORT
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  ErrPrefix : prefixe de localisation pour les messages d'erreur.
+  Format : 'fichier(ligne,col) '
+  -------------------------------------------------------------------------- }
+Function ErrPrefix : TString;
+Begin
+  ErrPrefix := src_fname + '(' + IntToStr(lex_lineno)
+               + ',' + IntToStr(lex_colno) + ') ';
+End;
+
+{ --------------------------------------------------------------------------
+  LogVerbose : afficher un message seulement si -v active.
+  -------------------------------------------------------------------------- }
+Procedure LogVerbose(Const s : TString);
+Begin
+  If opt_verbose Then
+    WriteLn(s);
+End;
+
+{ --------------------------------------------------------------------------
+  LogDebugAsm : emettre un commentaire dans le fichier ASM si -d active.
+  -------------------------------------------------------------------------- }
+Procedure LogDebugAsm(Const s : TString);
+Begin
+  If opt_debug Then
+    EmitComment(' [DEBUG] ' + s);
+End;
+
+{ --------------------------------------------------------------------------
+  WarnMsg : avertissement non bloquant.
+  -------------------------------------------------------------------------- }
+Procedure WarnMsg(Const s : TString);
+Begin
+  Inc(warn_count);
+  WriteLn('Attention : ', ErrPrefix, s);
+End;
+
+{ --------------------------------------------------------------------------
+  ErrorMsg : erreur de compilation (on continue).
+  -------------------------------------------------------------------------- }
+Procedure ErrorMsg(Const s : TString);
+Begin
+  Inc(err_count);
+  WriteLn('Erreur : ', ErrPrefix, s);
+End;
+
+{ --------------------------------------------------------------------------
+  FatalError : erreur fatale -> afficher et arreter immediatement.
+  -------------------------------------------------------------------------- }
+Procedure FatalError(Const s : TString);
+Begin
+  WriteLn('Erreur fatale : ', ErrPrefix, s);
+  Halt(1);
+End;
+
+{ --------------------------------------------------------------------------
+  SemError : erreur semantique (type incompatible, symbole inconnu...).
+  -------------------------------------------------------------------------- }
+Procedure SemError(Const s : TString);
+Begin
+  ErrorMsg('(semantique) ' + s);
+End;
+
+{ --------------------------------------------------------------------------
+  SynError : erreur syntaxique (token inattendu, parenthese manquante...).
+  -------------------------------------------------------------------------- }
+Procedure SynError(Const s : TString);
+Begin
+  ErrorMsg('(syntaxe) ' + s);
+End;
+
+{ --------------------------------------------------------------------------
+  LexError : erreur lexicale (caractere illegal, fin de fichier inattendue).
+  -------------------------------------------------------------------------- }
+Procedure LexError(Const s : TString);
+Begin
+  ErrorMsg('(lexique) ' + s);
+End;
+
+{ --------------------------------------------------------------------------
+  CheckErrLimit : forcer l'arret si trop d'erreurs accumulees.
+  -------------------------------------------------------------------------- }
+Procedure CheckErrLimit;
+Begin
+  If err_count > MAX_ERRORS Then
+    FatalError('trop d''erreurs (' + IntToStr(err_count)
+               + ' > ' + IntToStr(MAX_ERRORS) + '), compilation interrompue');
+End;
+
+{ --------------------------------------------------------------------------
+  PrintSummary : rapport final detaille (utilise si -v ou systematiquement).
+  -------------------------------------------------------------------------- }
+Procedure PrintSummary;
+Begin
+  WriteLn('--------------------------------------------------');
+  WriteLn('Compilation terminee.');
+  WriteLn('Erreurs          : ', err_count);
+  WriteLn('Avertissements   : ', warn_count);
+  WriteLn('Symboles         : ', sym_count);
+  WriteLn('Procedures       : ', proc_count);
+  WriteLn('Instructions     : ', instr_count);
+  WriteLn('Fichier ASM      : ', out_fname);
+  WriteLn('--------------------------------------------------');
+End;
+
+{ --------------------------------------------------------------------------
+  AssertNoErrors : terminer avec code 1 si au moins une erreur.
+  -------------------------------------------------------------------------- }
+Procedure AssertNoErrors;
+Begin
+  If err_count > 0 Then
+    FatalError(IntToStr(err_count) + ' erreur(s) detectee(s), fichier ASM invalide');
+End;
+
+{ ============================================================================
+  TODO 23 - INTERFACE LIGNE DE COMMANDE
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  PrintBanner : afficher la banniere du compilateur.
+  -------------------------------------------------------------------------- }
+Procedure PrintBanner;
 Begin
   WriteLn('JOVIAL86 v', JOVIAL86_VERSION,
           ' - compilateur JOVIAL 73 -> MASM 8086');
-  WriteLn('(TODO 21-25 non implementes)');
+  WriteLn('Copyright (c) 2026');
+End;
+
+{ --------------------------------------------------------------------------
+  PrintHelp : afficher l'aide en ligne de commande.
+  -------------------------------------------------------------------------- }
+Procedure PrintHelp;
+Begin
+  WriteLn('Usage : JOVIAL86 <source.jov> [<sortie.asm>] [options]');
+  WriteLn('Options :');
+  WriteLn('  -v      Mode verbeux (statistiques apres compilation)');
+  WriteLn('  -d      Mode debug   (commentaires supplementaires dans l''ASM)');
+  WriteLn('  -ns     Ne pas emettre le runtime inline');
+  WriteLn('  -nbc    Desactiver les verifications de borne de TABLE');
+  WriteLn('  -h      Afficher cette aide');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCommandLine : analyser ParamStr / ParamCount.
+  Remplit src_fname, out_fname, tmp_fname et les options.
+  Retourne True si on peut compiler, False si aide demandee ou erreur.
+  -------------------------------------------------------------------------- }
+Function ParseCommandLine : Boolean;
+Var
+  i    : Integer;
+  arg  : TString;
+  ext  : TString;
+  ok   : Boolean;
+Begin
+  { valeurs par defaut }
+  src_fname   := '';
+  out_fname   := '';
+  tmp_fname   := '';
+  opt_verbose := False;
+  opt_debug   := False;
+  opt_no_rt   := False;
+  opt_no_bc   := False;
+  ok          := True;
+
+  i := 1;
+  While i <= ParamCount Do
+  Begin
+    arg := ParamStr(i);
+    If (arg = '-h') Or (arg = '-H') Or (arg = '/?') Then
+    Begin
+      PrintHelp;
+      ok := False;
+    End
+    Else If (arg = '-v') Or (arg = '-V') Then
+      opt_verbose := True
+    Else If (arg = '-d') Or (arg = '-D') Then
+      opt_debug := True
+    Else If StrUpper(arg) = '-NS' Then
+      opt_no_rt := True
+    Else If StrUpper(arg) = '-NBC' Then
+      opt_no_bc := True
+    Else If arg[1] = '-' Then
+    Begin
+      WriteLn('Option inconnue : ', arg);
+      ok := False;
+    End
+    Else If src_fname = '' Then
+      src_fname := arg
+    Else If out_fname = '' Then
+      out_fname := arg
+    Else
+    Begin
+      WriteLn('Argument inattendu : ', arg);
+      ok := False;
+    End;
+    Inc(i);
+  End;
+
+  If ok And (src_fname = '') Then
+  Begin
+    WriteLn('Erreur : fichier source manquant.');
+    PrintHelp;
+    ok := False;
+  End;
+
+  If ok Then
+  Begin
+    { verifier extension .jov }
+    ext := StrUpper(FileExtension(src_fname));
+    If (ext <> '.JOV') And (ext <> '') Then
+      WriteLn('Attention : extension inhabituelle (attendu .jov) : ', src_fname);
+
+    { deduire les noms de fichiers de sortie }
+    If out_fname = '' Then
+      out_fname := ChangeExtension(src_fname, '.asm');
+    tmp_fname := ChangeExtension(src_fname, '.tmp');
+  End;
+
+  ParseCommandLine := ok;
+End;
+
+{ --------------------------------------------------------------------------
+  PrintFinalReport : afficher le rapport si -v.
+  -------------------------------------------------------------------------- }
+Procedure PrintFinalReport;
+Begin
+  If opt_verbose Then
+    PrintSummary
+  Else
+  Begin
+    If err_count > 0 Then
+      WriteLn(IntToStr(err_count), ' erreur(s), ',
+              IntToStr(warn_count), ' avertissement(s).')
+    Else
+      WriteLn('Compilation reussie -> ', out_fname);
+  End;
+End;
+
+{ ============================================================================
+  TODO 24 - ORCHESTRATEUR DE COMPILATION
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Compile : orchestrer la compilation complète d'un source JOVIAL 73.
+  -------------------------------------------------------------------------- }
+Procedure Compile;
+Begin
+  { 1. Ouvrir le fichier de sortie principal (DATA + entete) }
+  InitOutput;
+
+  { 2. Ouvrir le fichier temporaire (CODE des procedures) }
+  OpenTmpFile;
+
+  { 3. En-tete complet : .MODEL SMALL / .8086 / _STACK }
+  GenFullAssemblyHeader;
+
+  { 4. Debut segment _DATA }
+  GenDataHeader;
+
+  { 5. Variables systeme JOVIAL86 (_JV_OUTBUF, _JV_INBUF, ...) }
+  GenSystemVarsData;
+
+  { 6. Ouvrir et initialiser le lexer sur le fichier source }
+  LexInit(src_fname);
+
+  { 7. Analyser le MODULE complet :
+       - declarations globales (DEFINE, ITEM, TABLE, STATUS) -> DATA
+       - PROCEDURE / FUNCTION -> CODE dans tmp_file via SwitchToTmp
+       - DetectEntryPoint }
+  SwitchToMain;
+  ParseModule;
+  DetectEntryPoint;
+
+  { 8. Fermer le source }
+  LexClose;
+
+  { 9. Emettre les ITEMs globaux dans DATA }
+  SwitchToMain;
+  EmitBlank;
+  GenAllItemsData;
+
+  { 10. Emettre les litteraux de chaine dans DATA }
+  GenAllStringLits;
+
+  { 11. Fermer le segment _DATA }
+  EmitBlank;
+  GenDataFooter;
+  EmitBlank;
+
+  { 12. Revenir au fichier de sortie principal (au cas ou) }
+  SwitchToMain;
+
+  { 13. En-tete du segment CODE + ASSUME }
+  GenCodeSegmentHeader;
+
+  { 14. Bloc de demarrage DOS (START:, init DS/SS/SP, CALL main) }
+  GenStartupBlock;
+
+  { 15. Fusionner le CODE temporaire des procedures dans out_file }
+  MergeTmpToMain;
+
+  { 16. Emettre les routines runtime (si non desactive par -ns) }
+  If Not opt_no_rt Then
+  Begin
+    GenRuntimeArith;
+    GenRuntimeIO;
+  End;
+
+  { 17. Pied du segment CODE + END START }
+  GenFullAssemblyFooter;
+
+  { 18. Fermer le fichier de sortie }
+  CloseOutput;
+
+  { 19. Echouer si des erreurs ont ete detectees }
+  AssertNoErrors;
+
+  { 20. Rapport de compilation }
+  PrintFinalReport;
+End;
+
+{ --------------------------------------------------------------------------
+  Programme principal
+  -------------------------------------------------------------------------- }
+Begin
+  InitTables;
+  PrintBanner;
+  If Not ParseCommandLine Then
+  Begin
+    FreeTables;
+    Halt(0);
+  End;
+  Compile;
+  FreeTables;
+  If err_count > 0 Then
+    Halt(1);
 End.
