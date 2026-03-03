@@ -4969,115 +4969,97 @@ Var
 Begin
  logical_and_expression(lval);
  While match('|') and match('|') do Begin
-  safe_writeln('; Op√©rateur || (OU logique)');
+  safe_writeln('; OpÇrateur || (OU logique)');
   { GÇnÇrer les Çtiquettes }
   true_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premi√®re expression }
+   { Tester la premiäre expression }
   ol('tstd');
   ot('lbne ');
   printlabel(true_label);
   nl;
-
-  { √âvaluer la deuxi√®me expression }
+  { êvaluer la deuxiäme expression }
   logical_and_expression(lval);
   ol('tstd');
   ot('lbne ');
   printlabel(true_label);
   nl;
-
-  { Les deux sont fausses - r√©sultat = 0 }
+  { Les deux sont fausses - rÇsultat = 0 }
   ol('ldd #0');
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est vraie - r√©sultat = 1 }
+  { Au moins une est vraie - rÇsultat = 1 }
   prelabel(true_label);
   ol('ldd #1');
-
   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Conditional expression parser - handles ?: (ternary operator) }
+{ Analyse d'expression conditionnel - GÇrer le ?: (opÇrateur ternaire) }
 Procedure conditional_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
  true_lval, false_lval: TLVal;
 Begin
  logical_or_expression(lval);
-
- If match('?') Then
- Begin
-  safe_writeln('; Op√©rateur ternaire ? : (expression conditionnelle)');
-
-  { G√©n√©rer les √©tiquettes }
+ If match('?') Then Begin
+  safe_writeln('; OpÇrateur ternaire ? : (expression conditionnelle)');
+   { GÇnÇrer les Çtiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la condition }
-  ol('tstd');         { Tester le r√©sultat de la condition }
-  ot('lbeq ');        { Si faux, aller √† l''expression fausse }
+   { Tester la condition }
+  ol('tstd');         { Tester le rÇsultat de la condition }
+  ot('lbeq ');        { Si faux, aller Ö l''expression fausse }
   printlabel(false_label);
   nl;
-
-  { Analyser l'expression vraie }
+   { Analyser l'expression vraie }
   safe_writeln('; Expression vraie du ternaire');
   logical_or_expression(true_lval);
-
-  { Sauter l'expression fausse }
+   { Sauter l'expression fausse }
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Attendre ':' }
-  If not match(':') Then
-  Begin
+   { Attendre ':' }
+  If not match(':') Then Begin
    Case Language of
     _English: errrpt('Expected : in ternary operator');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete : im tern√§ren Operator');
+    _Germany: errrpt('Erwartete : im ternÑren Operator');
     {$ENDIF}
-    Else errrpt(': attendu dans l''op√©rateur ternaire');
+    Else errrpt(': attendu dans l''opÇrateur ternaire');
    End;
    Exit;
   End;
-
-  { √âtiquette pour l'expression fausse }
+   { êtiquette pour l'expression fausse }
   prelabel(false_label);
-
-  { Analyser l'expression fausse }
+   { Analyser l'expression fausse }
   safe_writeln('; Expression fausse du ternaire');
   logical_or_expression(false_lval);
-
-  { √âtiquette de fin }
+   { êtiquette de fin }
   prelabel(end_label);
-
-  { Le r√©sultat est dans D - copier les informations de type appropri√©es }
-  { Pour simplifier, utiliser le type de l'expression vraie }
+   { Le rÇsultat est dans D - copier les informations de type appropriÇes }
+   { Pour simplifier, utiliser le type de l'expression vraie }
   lval := true_lval;
-  safe_writeln('; Fin op√©rateur ternaire');
+  safe_writeln('; Fin opÇrateur ternaire');
  End;
 End;
 
-{ Main expression parser }
+ { Analyse l'expression Main }
 Function expression_bool(var lval: TLVal): Boolean;
 Begin
  conditional_expression(lval);
  expression_bool := True;
 End;
 
-{ Wrapper procedure for backward compatibility }
-Procedure expression(var lval: TLVal);
-Begin
+{ Enveloppe de procÇdure pour la compatibilitÇ ascendante }
+Procedure expression(var lval: TLVal);Begin
  expression_bool(lval);
 End;
 
-{ Variable declaration parsing functions - moved after expression }
-{ Enhanced declaration parsing with full type support }
+ { Analyse les fonctions de dÇclaration de variable - dÇplace apräs expression }
+ { Analyse la dÇclaration Çtendue avec le support de type plein }
 Function parse_declaration: Boolean;
 Var
  base_type, var_type, storage_class: Integer;
@@ -5087,31 +5069,24 @@ Var
  save_lptr: Integer;
 Begin
  parse_declaration := False;
-
- { Parse storage class specifier first }
+  { Analyse l'entreposage de classe spÇcifiÇ en premier }
  storage_class := parse_storage_class_specifier;
-
- { Check if this is a typedef declaration }
- If storage_class = it_typedef_type Then
- Begin
-  { Handle typedef declaration }
+  { VÇrifie si c'est une dÇclaration typedef }
+ If storage_class = it_typedef_type Then Begin
+  { Gäre la dÇclaration typedef }
   If parse_typedef_declaration Then
    parse_declaration := True;
   Exit;
  End;
-
- { Parse type specifier with qualifiers }
+  { Analyse le type spÇcifiÇ avec les qualificateurs }
  base_type := parse_type_specifier_with_qualifiers(type_info);
- If base_type = -1 Then Exit; { No valid type found }
-
- { Save position to check for function vs variable }
+ If base_type = -1 Then Exit; { Pas de type valide trouvÇ }
+  { Sauvegarde la position Ö vÇrifier pour la fonction vs variable }
  save_lptr := lptr;
-
- { Try to parse as declarator to get the name }
+  { Essai d'analyser un dÇclarateur en demandant son nom }
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
-
- { Check if this is a function declaration/definition }
+  { VÇrifiÇ si c'est une fonction de dÇclaration ou de dÇfinition }
  If match('(') Then
  Begin
   { This is a function - restore position and parse as function }

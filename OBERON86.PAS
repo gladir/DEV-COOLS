@@ -1839,6 +1839,822 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
+  ============================================================ }
+
+Const
+  ASM_INDENT = '        ';    { 8 espaces avant les mnemoniques }
+  SEP_LINE   = '; ' + '------------------------------------------------------------';
+
+{ --------------------------------------------------------------------------
+  Routines de base d'emission vers cur_out.
+  -------------------------------------------------------------------------- }
+
+Procedure Emit(Const s : TString);
+Begin
+  WriteLn(cur_out^, s);
+End;
+
+Procedure EmitBlank;
+Begin
+  WriteLn(cur_out^);
+End;
+
+Procedure EmitComment(Const s : TString);
+Begin
+  WriteLn(cur_out^, '; ', s);
+End;
+
+Procedure EmitSep;
+Begin
+  WriteLn(cur_out^, SEP_LINE);
+End;
+
+Procedure EmitLabel(Const lbl : TString);
+Begin
+  WriteLn(cur_out^, lbl, ':');
+  Inc(instr_count);
+End;
+
+{ --------------------------------------------------------------------------
+  Instructions ASM (8 espaces d'indentation).
+  -------------------------------------------------------------------------- }
+
+Procedure EmitI0(Const op : TString);
+Begin
+  WriteLn(cur_out^, ASM_INDENT, op);
+  Inc(instr_count);
+End;
+
+Procedure EmitI1(Const op, a : TString);
+Begin
+  WriteLn(cur_out^, ASM_INDENT, op, '  ', a);
+  Inc(instr_count);
+End;
+
+Procedure EmitI2(Const op, a, b : TString);
+Begin
+  WriteLn(cur_out^, ASM_INDENT, op, '  ', a, ', ', b);
+  Inc(instr_count);
+End;
+
+{ Instruction avec commentaire fin de ligne }
+Procedure EmitIC(Const op, a, b, cmt : TString);
+Begin
+  If cmt = '' Then
+    WriteLn(cur_out^, ASM_INDENT, op, '  ', a, ', ', b)
+  Else
+    WriteLn(cur_out^, ASM_INDENT, op, '  ', a, ', ', b, '  ; ', cmt);
+  Inc(instr_count);
+End;
+
+{ --------------------------------------------------------------------------
+  Helpers de formatage de labels DATA.
+  -------------------------------------------------------------------------- }
+
+Function PadLabel(Const lbl : TString) : TString;
+Var s : TString;
+    i : Integer;
+Begin
+  s := lbl;
+  For i := Length(s) To 23 Do
+    s := s + ' ';
+  PadLabel := s;
+End;
+
+{ --------------------------------------------------------------------------
+  Emission de donnees dans le segment DATA.
+  -------------------------------------------------------------------------- }
+
+Procedure EmitDB(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'DB      ', v);
+End;
+
+Procedure EmitDW(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'DW      ', v);
+End;
+
+Procedure EmitDD(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'DD      ', v);
+End;
+
+{ EmitDup : lbl  DB/DW/DD  n DUP(init)    sz=1->DB  sz=2->DW  sz=4->DD }
+Procedure EmitDup(Const lbl : TString; n : Integer;
+                  Const init : TString; sz : Integer);
+Var dir : TString;
+Begin
+  Case sz Of
+    1 : dir := 'DB';
+    4 : dir := 'DD';
+  Else
+    dir := 'DW';
+  End;
+  WriteLn(cur_out^, PadLabel(lbl), dir, '      ',
+          IntToStr(n), ' DUP(', init, ')');
+End;
+
+Procedure EmitEqu(Const lbl, v : TString);
+Begin
+  WriteLn(cur_out^, PadLabel(lbl), 'EQU     ', v);
+End;
+
+{ --------------------------------------------------------------------------
+  Gestion des fichiers de sortie (code principal <-> temporaire procedures).
+  -------------------------------------------------------------------------- }
+
+Procedure SwitchToTmp;
+Begin
+  cur_out := @tmp_file;
+End;
+
+Procedure SwitchToMain;
+Begin
+  cur_out := @out_file;
+End;
+
+{ Copier tmp_file ligne par ligne dans out_file, puis effacer tmp_file. }
+Procedure MergeTmpToMain;
+Var line : String[255];
+Begin
+  SwitchToMain;
+  Close(tmp_file);
+  Assign(tmp_file, tmp_fname);
+  Reset(tmp_file);
+  While Not Eof(tmp_file) Do
+  Begin
+    ReadLn(tmp_file, line);
+    WriteLn(out_file, line);
+  End;
+  Close(tmp_file);
+  Erase(tmp_file);
+End;
+
+{ --------------------------------------------------------------------------
+  En-tete du fichier ASM genere (commentaire, modele, pile).
+  -------------------------------------------------------------------------- }
+
+Procedure GenFileHeader;
+Begin
+  EmitSep;
+  EmitComment(' Fichier genere par OBERON86 v' + OBERON86_VERSION);
+  EmitComment(' Date   : ' + OBERON86_DATE);
+  EmitComment(' Source : ' + src_fname);
+  EmitComment(' Module : ' + module_name);
+  EmitComment(' Cible  : MASM 8086, modele SMALL, near cdecl');
+  EmitSep;
+  EmitBlank;
+End;
+
+Procedure GenModelDirectives;
+Begin
+  Emit('        .MODEL  SMALL');
+  Emit('        .8086');
+  EmitBlank;
+End;
+
+Procedure GenStackSegment;
+Begin
+  EmitComment(' ----- Segment STACK -----');
+  Emit('_STACK          SEGMENT PARA STACK ''STACK''');
+  Emit('                DB      ' + IntToStr(STACK_SIZE) + ' DUP (?)');
+  Emit('_STACK          ENDS');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  Segments DATA : ouverture, variables systeme Oberon, fermeture.
+  -------------------------------------------------------------------------- }
+
+Procedure GenDataHeader;
+Begin
+  EmitComment(' ----- Segment DATA -----');
+  Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlank;
+End;
+
+Procedure GenDataFooter;
+Begin
+  EmitBlank;
+  Emit('_DATA           ENDS');
+  EmitBlank;
+End;
+
+{ Variables systeme emises avant les variables utilisateur. }
+Procedure GenSystemVarsData;
+Begin
+  EmitComment(' ----- Variables systeme OBERON86 -----');
+  EmitDup('_OV_OUTBUF',  256, '0', 1);  { buffer sortie Out.String }
+  EmitDup('_OV_INBUF',   128, '0', 1);  { buffer entree In.String  }
+  EmitDup('_OV_INTBUF',   12, '0', 1);  { buffer conversion entier }
+  EmitDB ('_OV_CRLF',  '0Dh, 0Ah, ''$''');
+  EmitDB ('_OV_NULLSTR', '0');
+  EmitDB ('_OV_TRUE',  '''TRUE'', 0');
+  EmitDB ('_OV_FALSE', '''FALSE'', 0');
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  Segment CODE : ouverture, point d'entree START, fermeture.
+  -------------------------------------------------------------------------- }
+
+Procedure GenCodeHeader;
+Begin
+  EmitComment(' ----- Segment CODE -----');
+  Emit('_CODE           SEGMENT WORD PUBLIC ''CODE''');
+  EmitBlank;
+  Emit('                ASSUME CS:_CODE, DS:_DATA, SS:_STACK');
+  EmitBlank;
+End;
+
+Procedure GenCodeFooter;
+Begin
+  EmitBlank;
+  Emit('_CODE           ENDS');
+  EmitBlank;
+End;
+
+{ Prologue du point d'entree START (appele avant ParseModule). }
+Procedure GenStartEntry;
+Begin
+  EmitLabel('START');
+  EmitI2('MOV', 'AX', '_DATA');
+  EmitI2('MOV', 'DS', 'AX');
+  EmitBlank;
+End;
+
+{ Epilogue du point d'entree START (appele apres la derniere instruction). }
+Procedure GenStartExit;
+Begin
+  EmitBlank;
+  EmitComment(' Fin normale du programme');
+  EmitI2('MOV', 'AX', '4C00h');
+  EmitI0('INT  21h');
+  EmitBlank;
+End;
+
+{ Directive END avec point d'entree. }
+Procedure GenEndDirective;
+Begin
+  Emit('                END     START');
+End;
+
+{ --------------------------------------------------------------------------
+  Prologue / epilogue de procedure (near, convention cdecl).
+  -------------------------------------------------------------------------- }
+
+{ Prologue : PUSH BP / MOV BP,SP / SUB SP,local_size / PUSH SI DI BX }
+Procedure GenProcPrologue(pi : Integer);
+Begin
+  EmitLabel(proc_table^[pi].asm_label);
+  EmitI1('PUSH', 'BP');
+  EmitI2('MOV',  'BP', 'SP');
+  If proc_table^[pi].local_size > 0 Then
+    EmitI2('SUB', 'SP', IntToStr(proc_table^[pi].local_size));
+  EmitI1('PUSH', 'SI');
+  EmitI1('PUSH', 'DI');
+  EmitI1('PUSH', 'BX');
+  EmitBlank;
+End;
+
+{ Epilogue : POP BX DI SI / MOV SP,BP / POP BP / RET }
+Procedure GenProcEpilogue(pi : Integer);
+Begin
+  EmitBlank;
+  EmitI1('POP', 'BX');
+  EmitI1('POP', 'DI');
+  EmitI1('POP', 'SI');
+  EmitI2('MOV', 'SP', 'BP');
+  EmitI1('POP', 'BP');
+  EmitI0('RET');
+  EmitBlank;
+  { Marque de fin de procedure }
+  EmitComment(' END ' + proc_table^[pi].name);
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  Chargement / stockage de variables dans AX selon leur portee.
+  Ces helpers seront appeles par les parseurs d'expression (TODO 09+).
+  -------------------------------------------------------------------------- }
+
+{ Charger une variable globale (sym_table[si]) dans AX (ou DX:AX si 32 bits). }
+Procedure GenLoadVar(si : Integer);
+Var lbl  : TString;
+    bits : Integer;
+Begin
+  lbl  := sym_table^[si].asm_label;
+  bits := TypeBitSize(sym_table^[si].type_idx);
+  Case bits Of
+     8 : Begin EmitI2('MOV', 'AL', '[' + lbl + ']'); EmitI0('CBW'); End;
+    32 : Begin
+           EmitI2('MOV', 'AX', '[' + lbl + ']');
+           EmitI2('MOV', 'DX', '[' + lbl + '+2]');
+         End;
+  Else
+    EmitI2('MOV', 'AX', '[' + lbl + ']');
+  End;
+End;
+
+{ Charger une variable locale / parametre (offset BP) dans AX. }
+Procedure GenLoadLocal(si : Integer);
+Var ofs  : Integer;
+    bits : Integer;
+    ref  : TString;
+Begin
+  ofs  := sym_table^[si].bp_offset;
+  bits := TypeBitSize(sym_table^[si].type_idx);
+  If ofs >= 0 Then
+    ref := '[BP+' + IntToStr(ofs) + ']'
+  Else
+    ref := '[BP-' + IntToStr(-ofs) + ']';
+
+  If sym_table^[si].is_var_par Then
+  Begin
+    { Parametre VAR : charger l'adresse puis deref }
+    EmitI2('MOV', 'BX', ref);
+    Case bits Of
+       8 : Begin EmitI2('MOV', 'AL', '[BX]'); EmitI0('CBW'); End;
+      32 : Begin EmitI2('MOV', 'AX', '[BX]'); EmitI2('MOV', 'DX', '[BX+2]'); End;
+    Else
+      EmitI2('MOV', 'AX', '[BX]');
+    End;
+  End
+  Else
+  Begin
+    Case bits Of
+       8 : Begin EmitI2('MOV', 'AL', ref); EmitI0('CBW'); End;
+      32 : Begin
+             EmitI2('MOV', 'AX', ref);
+             If ofs >= 0 Then
+               EmitI2('MOV', 'DX', '[BP+' + IntToStr(ofs + 2) + ']')
+             Else
+               EmitI2('MOV', 'DX', '[BP-' + IntToStr(-(ofs + 2)) + ']');
+           End;
+    Else
+      EmitI2('MOV', 'AX', ref);
+    End;
+  End;
+End;
+
+{ Stocker AX dans une variable globale. }
+Procedure GenStoreVar(si : Integer);
+Var lbl  : TString;
+    bits : Integer;
+Begin
+  lbl  := sym_table^[si].asm_label;
+  bits := TypeBitSize(sym_table^[si].type_idx);
+  Case bits Of
+     8 : EmitI2('MOV', '[' + lbl + ']', 'AL');
+    32 : Begin
+           EmitI2('MOV', '[' + lbl + ']',     'AX');
+           EmitI2('MOV', '[' + lbl + '+2]',   'DX');
+         End;
+  Else
+    EmitI2('MOV', '[' + lbl + ']', 'AX');
+  End;
+End;
+
+{ Stocker AX dans une variable locale / parametre. }
+Procedure GenStoreLocal(si : Integer);
+Var ofs  : Integer;
+    bits : Integer;
+    ref  : TString;
+Begin
+  ofs  := sym_table^[si].bp_offset;
+  bits := TypeBitSize(sym_table^[si].type_idx);
+  If ofs >= 0 Then
+    ref := '[BP+' + IntToStr(ofs) + ']'
+  Else
+    ref := '[BP-' + IntToStr(-ofs) + ']';
+
+  If sym_table^[si].is_var_par Then
+  Begin
+    EmitI2('MOV', 'BX', ref);
+    Case bits Of
+       8 : EmitI2('MOV', '[BX]', 'AL');
+      32 : Begin EmitI2('MOV', '[BX]', 'AX'); EmitI2('MOV', '[BX+2]', 'DX'); End;
+    Else
+      EmitI2('MOV', '[BX]', 'AX');
+    End;
+  End
+  Else
+  Begin
+    Case bits Of
+       8 : EmitI2('MOV', ref, 'AL');
+      32 : Begin
+             EmitI2('MOV', ref, 'AX');
+             If ofs >= 0 Then
+               EmitI2('MOV', '[BP+' + IntToStr(ofs + 2) + ']', 'DX')
+             Else
+               EmitI2('MOV', '[BP-' + IntToStr(-(ofs + 2)) + ']', 'DX');
+           End;
+    Else
+      EmitI2('MOV', ref, 'AX');
+    End;
+  End;
+End;
+
+{ Dispatcher : charger / stocker selon la portee du symbole. }
+Procedure GenLoad(si : Integer);
+Begin
+  If sym_table^[si].scope = SC_GLOBAL Then
+    GenLoadVar(si)
+  Else
+    GenLoadLocal(si);
+End;
+
+Procedure GenStore(si : Integer);
+Begin
+  If sym_table^[si].scope = SC_GLOBAL Then
+    GenStoreVar(si)
+  Else
+    GenStoreLocal(si);
+End;
+
+{ ============================================================
+  TODO 06 - DECLARATIONS DE CONSTANTES (CONST)
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseConstExprInt : evaluer une expression constante entiere/booleenne
+  au compile-time.
+  Grammaire simplifiee :
+    expr  = signe? terme ( op_add terme )*
+    terme = fac ( op_mul fac )*
+    fac   = entier | ident_const | TRUE | FALSE | '(' expr ')'
+  Retourne la valeur entiere. Pour les booleens : 0=FALSE, 1=TRUE.
+  -------------------------------------------------------------------------- }
+Function ParseConstExprInt : LongInt; Forward;
+
+Function ParseConstExprPrimary : LongInt;
+Var ci : Integer;
+    v  : LongInt;
+    si : Integer;
+Begin
+  { Signe unaire }
+  If cur_tok.val = '-' Then
+  Begin
+    LexNext;
+    ParseConstExprPrimary := -ParseConstExprPrimary;
+    Exit;
+  End;
+  If cur_tok.val = '+' Then
+  Begin
+    LexNext;
+    ParseConstExprPrimary := ParseConstExprPrimary;
+    Exit;
+  End;
+  If cur_tok.val = 'NOT' Then
+  Begin
+    LexNext;
+    v := ParseConstExprPrimary;
+    If v = 0 Then ParseConstExprPrimary := 1
+    Else           ParseConstExprPrimary := 0;
+    Exit;
+  End;
+
+  { Parentheses }
+  If cur_tok.val = '(' Then
+  Begin
+    LexNext;
+    v := ParseConstExprInt;
+    LexExpect(')');
+    ParseConstExprPrimary := v;
+    Exit;
+  End;
+
+  { Litteral entier }
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    v := cur_tok.int_val;
+    LexNext;
+    ParseConstExprPrimary := v;
+    Exit;
+  End;
+
+  { Litteral caractere  nnnX }
+  If cur_tok.kind = TK_CHAR Then
+  Begin
+    v := cur_tok.int_val;
+    LexNext;
+    ParseConstExprPrimary := v;
+    Exit;
+  End;
+
+  { Litteraux booleens }
+  If cur_tok.val = 'TRUE' Then
+  Begin
+    LexNext;
+    ParseConstExprPrimary := 1;
+    Exit;
+  End;
+  If cur_tok.val = 'FALSE' Then
+  Begin
+    LexNext;
+    ParseConstExprPrimary := 0;
+    Exit;
+  End;
+
+  { NIL -> 0 }
+  If cur_tok.val = 'NIL' Then
+  Begin
+    LexNext;
+    ParseConstExprPrimary := 0;
+    Exit;
+  End;
+
+  { Identificateur = constante nommee }
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    ci := ConstFind(cur_tok.val);
+    If ci > 0 Then
+      v := const_table^[ci].ival
+    Else
+    Begin
+      { Chercher dans sym_table }
+      si := SymFind(cur_tok.val);
+      If (si > 0) And (sym_table^[si].kind = SK_CONST) Then
+        v := sym_table^[si].const_ival
+      Else
+      Begin
+        ErrorMsg('Constante inconnue : ' + cur_tok.val);
+        v := 0;
+      End;
+    End;
+    LexNext;
+    ParseConstExprPrimary := v;
+    Exit;
+  End;
+
+  ErrorMsg('Expression constante attendue, lu : ' + cur_tok.val);
+  LexNext;
+  ParseConstExprPrimary := 0;
+End;
+
+Function ParseConstExprFactor : LongInt;
+Var v, r : LongInt;
+Begin
+  v := ParseConstExprPrimary;
+  While (cur_tok.val = '*') Or (cur_tok.val = 'DIV')
+     Or (cur_tok.val = 'MOD') Or (cur_tok.val = 'AND') Do
+  Begin
+    If cur_tok.val = '*' Then
+    Begin
+      LexNext; r := ParseConstExprPrimary; v := v * r;
+    End
+    Else If cur_tok.val = 'DIV' Then
+    Begin
+      LexNext; r := ParseConstExprPrimary;
+      If r <> 0 Then v := v Div r Else Begin ErrorMsg('Division par zero'); v := 0; End;
+    End
+    Else If cur_tok.val = 'MOD' Then
+    Begin
+      LexNext; r := ParseConstExprPrimary;
+      If r <> 0 Then v := v Mod r Else Begin ErrorMsg('Modulo par zero'); v := 0; End;
+    End
+    Else { AND }
+    Begin
+      LexNext; r := ParseConstExprPrimary;
+      v := v And r;
+    End;
+  End;
+  ParseConstExprFactor := v;
+End;
+
+Function ParseConstExprInt : LongInt;
+Var v, r : LongInt;
+Begin
+  v := ParseConstExprFactor;
+  While (cur_tok.val = '+') Or (cur_tok.val = '-') Or (cur_tok.val = 'OR') Do
+  Begin
+    If cur_tok.val = '+' Then
+    Begin
+      LexNext; r := ParseConstExprFactor; v := v + r;
+    End
+    Else If cur_tok.val = '-' Then
+    Begin
+      LexNext; r := ParseConstExprFactor; v := v - r;
+    End
+    Else { OR }
+    Begin
+      LexNext; r := ParseConstExprFactor; v := v Or r;
+    End;
+  End;
+  ParseConstExprInt := v;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseConstExprReal : evaluer une expression constante reelle.
+  Retourne un Real. Si l'expression est entiere, la convertit.
+  -------------------------------------------------------------------------- }
+Function ParseConstExprReal : Real;
+Var r  : Real;
+    ci : Integer;
+    err: Integer;
+Begin
+  { Signe unaire }
+  If cur_tok.val = '-' Then
+  Begin
+    LexNext;
+    ParseConstExprReal := -ParseConstExprReal;
+    Exit;
+  End;
+  If cur_tok.val = '+' Then
+  Begin
+    LexNext;
+    ParseConstExprReal := ParseConstExprReal;
+    Exit;
+  End;
+
+  If cur_tok.kind = TK_REAL Then
+  Begin
+    Val(cur_tok.val, r, err);
+    If err <> 0 Then r := 0.0;
+    LexNext;
+    ParseConstExprReal := r;
+    Exit;
+  End;
+
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    r := cur_tok.int_val;
+    LexNext;
+    ParseConstExprReal := r;
+    Exit;
+  End;
+
+  { Constante nommee reelle }
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    ci := ConstFind(cur_tok.val);
+    If (ci > 0) And const_table^[ci].is_real Then
+    Begin
+      r := const_table^[ci].rval;
+      LexNext;
+      ParseConstExprReal := r;
+      Exit;
+    End;
+    { Retomber sur l'entier }
+    ParseConstExprReal := ParseConstExprInt;
+    Exit;
+  End;
+
+  ParseConstExprReal := ParseConstExprInt;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStringLitData : emettre un litteral de chaine en DATA.
+  Retourne le label ASM genere (_OK_nnn).
+  -------------------------------------------------------------------------- }
+Function GenStringLitData(Const s : TString) : TString;
+Var lbl : TString;
+    i   : Integer;
+    out_s : TString;
+    c     : Char;
+Begin
+  Inc(str_lit_count);
+  Str(str_lit_count, lbl);
+  lbl := OK_PFX + lbl;
+
+  { Construire la valeur DB : caracteres entre apostrophes + 0 terminateur }
+  out_s := '';
+  For i := 1 To Length(s) Do
+  Begin
+    c := s[i];
+    If (Ord(c) >= 32) And (c <> '''') Then
+    Begin
+      If out_s = '' Then out_s := ''''
+      Else If out_s[Length(out_s)] <> '''' Then
+        out_s := out_s + ', ''';
+      out_s := out_s + c;
+    End
+    Else
+    Begin
+      If (out_s <> '') And (out_s[Length(out_s)] = '''') Then
+        out_s := out_s + '''';
+      If out_s <> '' Then out_s := out_s + ', ';
+      Str(Ord(c), lbl);
+      out_s := out_s + lbl + 'd';
+      lbl := OK_PFX;
+      Str(str_lit_count, lbl);
+      lbl := OK_PFX + lbl;
+    End;
+  End;
+  { Fermer l'apostrophe si necessaire et ajouter terminateur 0 }
+  If (out_s <> '') And (out_s[Length(out_s)] <> 'd') Then
+    out_s := out_s + '''';
+  If out_s = '' Then
+    out_s := '0'
+  Else
+    out_s := out_s + ', 0';
+
+  { Emettre dans le DATA courant (avant GenDataFooter) }
+  { Note : on emet dans out_file directement via SwitchToMain si besoin }
+  EmitDB(lbl, out_s);
+  GenStringLitData := lbl;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseConstDecl : parser une declaration  ident '=' constExpr  ';'.
+  Supporte : entiers, booleens, caracteres, reels, chaines, expressions.
+  -------------------------------------------------------------------------- }
+Procedure ParseConstDecl;
+Var
+  cname  : TString;
+  ival   : LongInt;
+  rval   : Real;
+  sval   : TString;
+  ti     : Integer;
+  is_real: Boolean;
+  err    : Integer;
+  slbl   : TString;
+  op     : TString;
+  rv2    : Real;
+Begin
+  cname := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  LexExpect('=');
+
+  is_real := False;
+  ival    := 0;
+  rval    := 0.0;
+  sval    := '';
+  ti      := TYP_INTEGER;
+
+  { Detecter le type par le token de valeur }
+  If cur_tok.kind = TK_STRING Then
+  Begin
+    { Constante chaine }
+    sval := cur_tok.val;
+    ti   := TYP_CHAR;   { ARRAY OF CHAR sera cree si besoin en TODO 07 }
+    ival := 0;
+    LexNext;
+  End
+  Else If cur_tok.val = 'TRUE' Then
+  Begin
+    ival := 1; ti := TYP_BOOLEAN; LexNext;
+  End
+  Else If cur_tok.val = 'FALSE' Then
+  Begin
+    ival := 0; ti := TYP_BOOLEAN; LexNext;
+  End
+  Else If cur_tok.val = 'NIL' Then
+  Begin
+    ival := 0; ti := TYP_NIL; LexNext;
+  End
+  Else If cur_tok.kind = TK_CHAR Then
+  Begin
+    ival := cur_tok.int_val; ti := TYP_CHAR; LexNext;
+  End
+  Else If cur_tok.kind = TK_REAL Then
+  Begin
+    Val(cur_tok.val, rval, err);
+    If err <> 0 Then rval := 0.0;
+    is_real := True;
+    ti      := TYP_REAL;
+    LexNext;
+    { Operateurs sur reels }
+    While (cur_tok.val = '+') Or (cur_tok.val = '-') Or (cur_tok.val = '*') Do
+    Begin
+      op := cur_tok.val; LexNext;
+      rv2 := ParseConstExprReal;
+      If op = '+' Then rval := rval + rv2
+      Else If op = '-' Then rval := rval - rv2
+      Else rval := rval * rv2;
+    End;
+    ival := Round(rval);
+  End
+  Else
+  Begin
+    { Expression constante entiere (peut referencer d'autres constantes) }
+    ival := ParseConstExprInt;
+    ti   := TYP_INTEGER;
+  End;
+
+  { Verifier que le nom n'est pas deja declare dans cette portee }
+  If SymFindLocal(cname) > 0 Then
+    ErrorMsg('Constante deja declaree : ' + cname);
+
+  { Enregistrer dans const_table et sym_table }
+  ConstEnter(cname, ti, ival, sval, is_real, rval);
+
+  LexExpect(';');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseConstSection : parser la section CONST ident = expr ;
+  -------------------------------------------------------------------------- }
+Procedure ParseConstSection;
+Begin
+  LexExpect('CONST');
+  While (cur_tok.kind = TK_IDENT) Do
+    ParseConstDecl;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -1872,11 +2688,23 @@ Begin
   Rewrite(tmp_file);
 
   { --- Compilation principale (TODO 04 -> 24) --- }
-  WriteLn(cur_out^, '; Genere par OBERON86 v', OBERON86_VERSION,
-          ' le ', OBERON86_DATE);
-  WriteLn(cur_out^, '; Source : ', src_fname);
-  WriteLn(cur_out^);
+  { En-tete complet du fichier ASM }
+  GenFileHeader;
+  GenModelDirectives;
+  GenStackSegment;
+  GenDataHeader;
+  GenSystemVarsData;
+  { Les variables globales seront ajoutees ici (TODO 08) }
+  GenDataFooter;
+  GenCodeHeader;
+  GenStartEntry;
+
   { ParseModule; }
+
+  GenStartExit;
+  GenCodeFooter;
+  { MergeTmpToMain; }    { fusionner les procedures (TODO 17) }
+  GenEndDirective;
 
   { --- Fermeture --- }
   ScopeLeave;  { fermer la portee module }
