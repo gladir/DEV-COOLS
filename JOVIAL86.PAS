@@ -1032,6 +1032,8 @@
 
 Program JOVIAL86;
 
+{$N+}
+
 { ============================================================================
   TODO 01 - TYPES DE BASE, CONSTANTES ET VARIABLES GLOBALES
   ============================================================================ }
@@ -1040,7 +1042,7 @@ Program JOVIAL86;
   Types de base
   -------------------------------------------------------------------------- }
 Type
-  TString  = String[128];
+  TString  = String[{$IFDEF FPC}128{$ELSE}80{$ENDIF}];
   TCharSet = Set Of Char;
 
 { --------------------------------------------------------------------------
@@ -1165,8 +1167,8 @@ Type
   Types tableaux pour allocation dynamique
   -------------------------------------------------------------------------- }
 Const
-  MAX_SYM   = 512;
-  MAX_PROC  = 128;
+  MAX_SYM   = {$IFDEF FPC}512{$ELSE}90{$ENDIF};
+  MAX_PROC  = {$IFDEF FPC}128{$ELSE}40{$ENDIF};
   MAX_CONST = 256;
   MAX_PARAM = 16;
   MAX_LABEL = 512;
