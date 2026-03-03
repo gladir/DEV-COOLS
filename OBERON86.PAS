@@ -1,0 +1,1178 @@
+(* OBERON86.PAS - Compilateur Oberon vers assembleur 8086
+  Turbo Pascal / Free Pascal
+  ================================================================
+
+  LISTE DES TRAVAUX A REALISER (25 TODOS)
+  ========================================
+
+  TODO 01 - INFRASTRUCTURE DE BASE
+    Definir les constantes globales (VERSION, MAX_SYM, MAX_SCOPE,
+    MAX_LABELS, MAX_ERRORS, MAX_STR, etc.) et les types fondamentaux
+    (TString, TToken, TTokenKind, etc.). Mettre en place le cadre
+    principal du programme (lecture des arguments, ouverture des
+    fichiers source .OBN et sortie .ASM, boucle principale).
+
+  TODO 02 - ANALYSEUR LEXICAL (LEXER)
+    Implementer le lecteur de caracteres (LexChar, LexPeek),
+    la gestion des lignes/colonnes pour les messages d'erreur,
+    et la reconnaissance de tous les tokens Oberon : mots-cles
+    (MODULE, IMPORT, CONST, TYPE, VAR, PROCEDURE, BEGIN, END,
+    IF, THEN, ELSIF, ELSE, WHILE, DO, REPEAT, UNTIL, FOR, TO,
+    BY, LOOP, EXIT, CASE, OF, WITH, RETURN, DIV, MOD, IN, IS,
+    OR, AND, NOT, NIL, TRUE, FALSE), identificateurs, entiers,
+    reels, caracteres ('x'), chaines ("abc"), operateurs et
+    delimiteurs. LexNext avance au token suivant.
+
+  TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
+    Implementer la table des symboles (SymEnter, SymFind,
+    SymFindLocal). Gerer les portees imbriquees (ScopeEnter /
+    ScopeLeave) pour le module, les procedures et les blocs.
+    Definir les categories de symboles : SK_CONST, SK_TYPE,
+    SK_VAR, SK_PARAM, SK_PROC, SK_MODULE, SK_FIELD.
+
+  TODO 04 - SYSTEME DE TYPES
+    Implementer la representation interne des types Oberon :
+    types de base INTEGER, BOOLEAN, CHAR, BYTE, SET, REAL ;
+    types structures ARRAY, RECORD, POINTER, PROCEDURE ;
+    chaines (ARRAY OF CHAR). Fonctions de compatibilite de
+    types (TypeCompat, TypeAssignCompat) et de taille
+    (TypeBitSize, TypeByteSize).
+
+  TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
+    Implementer le moteur d'emission assembleur 8086 :
+    EmitLabel, EmitI0, EmitI1, EmitI2, EmitComment,
+    EmitDB, EmitDW, EmitDD. Gerer le compteur d'instructions,
+    le segment de code (.CODE), le segment de donnees (.DATA)
+    et le segment de pile. Produire un fichier .ASM compatible
+    MASM/TASM.
+
+  TODO 06 - DECLARATIONS DE CONSTANTES (CONST)
+    Parser la section CONST d'un module ou d'une procedure.
+    Evaluer les expressions constantes au moment de la
+    compilation (entiers, booleens, caracteres, chaines,
+    expressions arithmetiques et booleennes sur constantes).
+    Stocker dans la table des symboles avec SK_CONST.
+
+  TODO 07 - DECLARATIONS DE TYPES (TYPE)
+    Parser la section TYPE. Gerer les alias de types,
+    les types tableaux (ARRAY n OF T), les types enregistrement
+    (RECORD ... END) avec leurs champs, les types pointeur
+    (POINTER TO T) et les types procedure (PROCEDURE (params) : T).
+    Construire les descripteurs de types internes.
+
+  TODO 08 - DECLARATIONS DE VARIABLES (VAR)
+    Parser la section VAR au niveau module (variables globales,
+    emises en .DATA) et au niveau procedure (variables locales,
+    allouees sur la pile via BP). Calculer les offsets,
+    generer les reserves memoire (DW ?, DB ?, etc.).
+
+  TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
+    Parser les facteurs Oberon : litteraux entiers, booleens,
+    caracteres, chaines, NIL, identificateurs (variables,
+    constantes, appels de fonctions), acces indexes (a[i]),
+    selection de champ (r.f), dereferencement (p^),
+    sous-expressions entre parentheses. Generer le code 8086
+    correspondant (resultat dans AX ou AX:DX pour 32 bits).
+
+  TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
+    Implémenter la hierarchie complete des operateurs Oberon :
+    unaires (-, +, NOT) ; termes (*, /, DIV, MOD, AND) ;
+    expressions simples (+, -, OR) ; relations (=, #, <, <=,
+    >, >=, IN, IS). Verifier la compatibilite de types a chaque
+    niveau et produire le code 8086 (MUL, IMUL, IDIV, AND, OR,
+    XOR, NEG, CMP, Jcc, SETcc).
+
+  TODO 11 - INSTRUCTION D'AFFECTATION (:=)
+    Parser et generer le code pour l'affectation Oberon.
+    Gerer les cas : variable simple, element de tableau,
+    champ d'enregistrement, dereferencement de pointeur.
+    Verifier la compatibilite de type assignation.
+    Cas particulier : affectation de chaines.
+
+  TODO 12 - INSTRUCTION IF / ELSIF / ELSE
+    Parser IF expr THEN seq {ELSIF expr THEN seq} [ELSE seq] END.
+    Generer les sauts conditionnels 8086 avec gestion correcte
+    des etiquettes (label_else_i, label_end). Verifier que
+    l'expression est de type BOOLEAN.
+
+  TODO 13 - INSTRUCTION WHILE / REPEAT / LOOP / EXIT
+    Parser WHILE expr DO seq END, REPEAT seq UNTIL expr,
+    LOOP seq END avec EXIT. Generer les boucles 8086 :
+    etiquettes de debut/fin, sauts conditionnels, traitement
+    de EXIT (JMP vers label_end de la boucle englobante).
+
+  TODO 14 - INSTRUCTION FOR
+    Parser FOR v := debut TO fin [BY pas] DO seq END.
+    Evaluer et stocker debut, fin, pas (constante obligatoire
+    en Oberon). Generer l'initialisation, le test de borne
+    et l'incrementation en 8086 (MOV, CMP, Jcc, ADD/SUB).
+
+  TODO 15 - INSTRUCTION CASE
+    Parser CASE expr OF {val {| val} : seq} [ELSE seq] END.
+    Gerer les etiquettes entieres et caracteres. Generer
+    la table de sauts ou la cascade de comparaisons 8086
+    selon la densite des valeurs (table si dense, chaine
+    CMP/JE si sparse).
+
+  TODO 16 - INSTRUCTION WITH (GARDE DE TYPE)
+    Parser WITH v : T DO seq END. Implementer la verification
+    de type dynamique (IS) et le transtypage local de v vers T
+    pour la duree du bloc. Generer le code de test de type
+    a l'execution si necessaire.
+
+  TODO 17 - DECLARATIONS DE PROCEDURES
+    Parser PROCEDURE [*] nom [(params)] [: typeRetour] ;
+    [corps] END nom. Gerer le prologue 8086 (PUSH BP /
+    MOV BP, SP / SUB SP, taille_locales), l'epilogue
+    (MOV SP, BP / POP BP / RET n), les parametres passes
+    par valeur et par reference (VAR), le type retour
+    (resultat dans AX).
+
+  TODO 18 - APPELS DE PROCEDURES ET DE FONCTIONS
+    Parser et generer les appels de procedures/fonctions :
+    empilement des arguments dans l'ordre correct, gestion
+    du type VAR (passage d'adresse via LEA), recuperation
+    du resultat (AX). Gerer la recursion. Verifier l'arite
+    et les types des arguments.
+
+  TODO 19 - PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
+    Implementer les procedures/fonctions standard Oberon :
+    INC(v[,n]), DEC(v[,n]), INCL(s,e), EXCL(s,e),
+    NEW(p), DISPOSE(p), HALT(n), ASSERT(b[,n]),
+    ABS(x), ODD(x), CAP(c), ORD(x), CHR(x),
+    LEN(a[,d]), SHORT(x), LONG(x), ENTIER(x), SIZE(T).
+    Generer le code 8086 inline ou appel runtime.
+
+  TODO 20 - MODULE D'ENTREE/SORTIE (Out / In)
+    Implementer le support des modules standard Oberon :
+    Out.Int(n, w), Out.Real(r, w), Out.Char(c),
+    Out.String(s), Out.Ln ; In.Int(n), In.Char(c),
+    In.String(s). Generer les appels au runtime 8086
+    (_JRT_WRITEINT, _JRT_WRITESTR, etc. adaptes Oberon).
+
+  TODO 21 - GESTION DES TABLEAUX ET ENREGISTREMENTS
+    Generer le code 8086 pour : acces indexe (calcul d'offset
+    = base + i * taille_element, verification de borne
+    optionnelle), acces champ (base + offset_champ),
+    copie de structure (MOV par blocs), passage de tableau
+    ouvert (ARRAY OF T) avec longueur implicite.
+
+  TODO 22 - GESTION DES POINTEURS ET ALLOCATIONS
+    Implementer NEW(p) : appel a un allocateur heap en 8086
+    (runtime malloc simplifie). DISPOSE(p). Generer le
+    dereferencement (p^ → [BX]). Gerer NIL (valeur 0000h).
+    Optionnel : verifier le pointeur NIL a l'execution.
+
+  TODO 23 - IMPORTATION DE MODULES (IMPORT)
+    Parser la clause IMPORT et gerer la qualification
+    M.x dans les expressions et instructions. Implementer
+    une table des modules importes. Pour la phase 1 :
+    supporter au moins In, Out, Math, SYSTEM comme modules
+    connus avec leur interface predeclaree.
+
+  TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
+    Implementer les messages d'erreur situes (fichier, ligne,
+    colonne), le comptage des erreurs et avertissements,
+    l'arret apres un seuil d'erreurs (MAX_ERRORS). Ajouter
+    un mode verbeux (-v) affichant les symboles, les types
+    et les statistiques de compilation (lignes, tokens,
+    instructions generees).
+
+  TODO 25 - INTEGRATION FINALE ET TESTS
+    Assembler toutes les phases dans la boucle principale.
+    Generer le prologue .ASM complet (modele memoire SMALL,
+    directives DOSSEG, .MODEL, .STACK, .DATA, .CODE, END START).
+    Creer une suite de programmes de test Oberon couvrant :
+    HelloWorld, arithmetique, boucles, tableaux, enregistrements,
+    pointeurs, procedures recursives. Valider la compilation
+    de bout en bout avec TASM/MASM et execution sous DOSBox.
+
+  ================================================================ *)
+
+Program OBERON86;
+
+{$I-}   { desactiver les IO-check pour gerer nous-memes les erreurs }
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE DE BASE
+  ============================================================ }
+
+{ --- Constantes de dimensionnement --- }
+Const
+  OBERON86_VERSION = '1.0';
+  OBERON86_DATE    = '2026-03-03';
+
+  MAX_SYM    = 1024;   { entrees dans la table des symboles       }
+  MAX_PROC   = 128;    { procedures / fonctions                   }
+  MAX_PARAM  = 16;     { parametres par procedure                 }
+  MAX_FIELD  = 64;     { champs par RECORD                        }
+  MAX_CONST  = 256;    { constantes nommees (CONST)               }
+  MAX_TYPE   = 256;    { descripteurs de type                     }
+  MAX_LABEL  = 1024;   { labels internes (IF/WHILE/FOR...)        }
+  MAX_SCOPE  = 32;     { profondeur maximale de portee            }
+  MAX_ERRORS = 30;     { arret apres N erreurs                    }
+  MAX_STR    = 128;    { longueur maximale d'une TString          }
+  MAX_IMPORT = 16;     { modules importes par compilation         }
+  STACK_SIZE = 512;    { taille segment pile en octets            }
+
+  { Prefixes des labels assembleur 8086 }
+  OV_PFX  = '_OV_';   { variables globales (.DATA)               }
+  OP_PFX  = '_OP_';   { procedures et modules                    }
+  OL_PFX  = '_OL_';   { etiquettes de controle (IF/WHILE/FOR)   }
+  ORT_PFX = '_ORT_';  { routines runtime                         }
+  OK_PFX  = '_OK_';   { constantes de chaines litterales         }
+
+{ --- Types fondamentaux --- }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Tokens ---- }
+  TTokenKind = (
+    TK_IDENT,     { identificateur                                }
+    TK_INTEGER,   { litteral entier                               }
+    TK_REAL,      { litteral reel                                 }
+    TK_CHAR,      { litteral caractere  0X ou 'X'                 }
+    TK_STRING,    { litteral chaine  "abc"                        }
+    TK_KEYWORD,   { mot-cle Oberon reserve                        }
+    TK_OP,        { operateur symbolique                          }
+    TK_PUNCT,     { ponctuation  : ; . , ( ) [ ] ^ &             }
+    TK_EOF        { fin de fichier source                         }
+  );
+
+  TToken = Record
+    kind     : TTokenKind;
+    val      : TString;       { representation brute              }
+    int_val  : LongInt;       { si TK_INTEGER ou TK_CHAR          }
+    real_val : Real;          { si TK_REAL                        }
+    line     : Integer;       { ligne dans le source              }
+    col      : Integer;       { colonne dans le source            }
+  End;
+
+  { ---- Kinds de type Oberon ---- }
+  TTypeKind = (
+    TYK_NONE,     { non encore resolu                             }
+    TYK_INTEGER,  { INTEGER (16 bits signe sur 8086)              }
+    TYK_BOOLEAN,  { BOOLEAN (8 bits, 0=FALSE 1=TRUE)              }
+    TYK_CHAR,     { CHAR    (8 bits)                              }
+    TYK_BYTE,     { BYTE    (8 bits non signe)                    }
+    TYK_SET,      { SET OF [0..15]  (16 bits, un bit par element) }
+    TYK_REAL,     { REAL   (32 bits IEEE 754, emulation software) }
+    TYK_ARRAY,    { ARRAY n OF T                                  }
+    TYK_OPENARRAY,{ ARRAY OF T  (longueur implicite)              }
+    TYK_RECORD,   { RECORD ... END                                }
+    TYK_POINTER,  { POINTER TO T                                  }
+    TYK_PROC,     { type procedure  PROCEDURE(params):T           }
+    TYK_NIL       { type de NIL (compatible POINTER uniquement)   }
+  );
+
+  { ---- Descripteur de type ---- }
+  TTypeRec = Record
+    kind     : TTypeKind;
+    bit_size : Integer;       { taille en bits                    }
+    base_idx : Integer;       { type de base (ARRAY/POINTER/OPEN) }
+    arr_len  : Integer;       { nombre d'elements si TYK_ARRAY    }
+    rec_sym  : Integer;       { premier champ dans sym_table      }
+    rec_nfld : Integer;       { nombre de champs du RECORD        }
+  End;
+
+  { ---- Categories de symboles ---- }
+  TSymKind = (
+    SK_NONE,      { entree non utilisee                           }
+    SK_CONST,     { constante CONST                               }
+    SK_TYPE,      { declaration TYPE                              }
+    SK_VAR,       { variable (globale ou locale)                  }
+    SK_PARAM,     { parametre formel (VAR ou valeur)              }
+    SK_PROC,      { procedure ou fonction                         }
+    SK_FIELD,     { champ de RECORD                               }
+    SK_MODULE     { module importe                                }
+  );
+
+  { ---- Portee d'un symbole ---- }
+  TScope = (
+    SC_GLOBAL,    { niveau module (segment DATA / registre)       }
+    SC_LOCAL,     { niveau procedure (pile BP)                    }
+    SC_PARAM,     { parametre (pile BP, offset positif)           }
+    SC_CONST      { constante evaluee au compile-time             }
+  );
+
+  { ---- Entree de la table des symboles ---- }
+  TSymbol = Record
+    name       : TString;     { nom tel que declare (casse conservee)  }
+    kind       : TSymKind;
+    scope      : TScope;
+    type_idx   : Integer;     { index dans type_table                  }
+    asm_label  : TString;     { label ASM : _OV_<nom>  ou  _OP_<nom>  }
+    bp_offset  : Integer;     { offset BP pour variables locales/param }
+    is_var_par : Boolean;     { parametre passe par reference (VAR)    }
+    const_ival : LongInt;     { valeur si SK_CONST entier/char/bool    }
+    const_sval : TString;     { valeur si SK_CONST chaine              }
+    proc_idx   : Integer;     { si SK_PROC : index dans proc_table     }
+    fld_offset : Integer;     { si SK_FIELD : offset dans le RECORD    }
+    scope_level: Integer;     { niveau de portee lors de la declaration}
+  End;
+
+  TSymbolTable = Array[1..MAX_SYM]  of TSymbol;
+  TTypeTable   = Array[1..MAX_TYPE] of TTypeRec;
+
+  { ---- Parametre formel de procedure ---- }
+  TParamRec = Record
+    name       : TString;
+    type_idx   : Integer;
+    is_var_par : Boolean;     { VAR param -> passe par adresse         }
+    bp_offset  : Integer;
+  End;
+
+  { ---- Entree de procedure / fonction ---- }
+  TProcRec = Record
+    name         : TString;
+    asm_label    : TString;   { ex : _OP_<module>_<nom>               }
+    ret_type_idx : Integer;   { 0 si procedure sans retour             }
+    param_count  : Integer;
+    params       : Array[1..MAX_PARAM] of TParamRec;
+    local_size   : Integer;   { octets du cadre local sur la pile      }
+    is_export    : Boolean;   { PROCEDURE* (export pour liaison)       }
+  End;
+
+  TProcTable = Array[1..MAX_PROC] of TProcRec;
+
+  { ---- Constante nommee (section CONST) ---- }
+  TConstRec = Record
+    name     : TString;
+    type_idx : Integer;
+    ival     : LongInt;       { valeur entiere / booleen / char        }
+    sval     : TString;       { valeur chaine                          }
+    is_real  : Boolean;
+    rval     : Real;
+  End;
+
+  TConstTable = Array[1..MAX_CONST] of TConstRec;
+
+  { ---- Module importe ---- }
+  TImportRec = Record
+    mod_name : TString;       { nom d'origine (ex : Out)               }
+    alias    : TString;       { alias local si IMPORT Out := Output    }
+  End;
+
+{ --- Variables globales du compilateur --- }
+Var
+  { Tables allouees dynamiquement }
+  sym_table   : ^TSymbolTable;
+  type_table  : ^TTypeTable;
+  proc_table  : ^TProcTable;
+  const_table : ^TConstTable;
+
+  { Fichiers }
+  src_file     : Text;
+  out_file     : Text;
+  tmp_file     : Text;
+  cur_out      : ^Text;        { pointe sur out_file ou tmp_file       }
+  src_fname    : TString;
+  out_fname    : TString;
+  tmp_fname    : TString;
+
+  { Compteurs }
+  sym_count    : Integer;
+  type_count   : Integer;
+  proc_count   : Integer;
+  const_count  : Integer;
+  label_count  : Integer;
+  err_count    : Integer;
+  warn_count   : Integer;
+  instr_count  : Integer;
+  str_lit_count: Integer;
+
+  { Etat lexer }
+  lex_lineno   : Integer;
+  lex_colno    : Integer;
+  lex_line     : String[255];
+  lex_pos      : Integer;
+  cur_tok      : TToken;
+  peek_tok     : TToken;
+  has_peek     : Boolean;
+  lex_eof      : Boolean;       { vrai quand le source est epuise         }
+
+  { Contexte de compilation }
+  module_name  : TString;
+  cur_proc_idx : Integer;      { 0 = niveau module                     }
+  scope_sp     : Integer;      { pointeur de pile de portee            }
+  scope_base   : Array[0..MAX_SCOPE] of Integer;  { base sym par portee }
+
+  { Options }
+  opt_verbose  : Boolean;
+  opt_debug    : Boolean;
+  opt_no_rt    : Boolean;
+
+  { Modules importes }
+  import_count : Integer;
+  import_table : Array[1..MAX_IMPORT] of TImportRec;
+
+  { Pile de labels boucle (WHILE/REPEAT/LOOP) }
+  loop_depth       : Integer;
+  loop_break_stk   : Array[1..MAX_SCOPE] of TString;
+  loop_cont_stk    : Array[1..MAX_SCOPE] of TString;
+
+  { Types primitifs predefinis (indexes dans type_table) }
+  TYP_INTEGER  : Integer;
+  TYP_BOOLEAN  : Integer;
+  TYP_CHAR     : Integer;
+  TYP_BYTE     : Integer;
+  TYP_SET      : Integer;
+  TYP_REAL     : Integer;
+  TYP_NIL      : Integer;
+  TYP_UNDEF    : Integer;
+
+{ ============================================================
+  Utilitaires generaux (stubs - implementation dans TODO 02+)
+  ============================================================ }
+
+Function IntToStr(n : LongInt) : TString;
+Var s : TString;
+Begin
+  Str(n, s);
+  IntToStr := s;
+End;
+
+Function StrToInt(Const s : TString) : LongInt;
+Var n : LongInt; code : Integer;
+Begin
+  Val(s, n, code);
+  StrToInt := n;
+End;
+
+Function StrUpper(Const s : TString) : TString;
+Var i : Integer; r : TString;
+Begin
+  r := s;
+  For i := 1 To Length(r) Do
+    If (r[i] >= 'a') And (r[i] <= 'z') Then
+      r[i] := Chr(Ord(r[i]) - 32);
+  StrUpper := r;
+End;
+
+Function ChangeExtension(Const fn, ext : TString) : TString;
+Var i : Integer; base : TString;
+Begin
+  base := fn;
+  i    := Length(base);
+  While (i > 0) And (base[i] <> '.') And (base[i] <> '\') And (base[i] <> '/') Do
+    Dec(i);
+  If (i > 0) And (base[i] = '.') Then
+    base := Copy(base, 1, i - 1);
+  ChangeExtension := base + ext;
+End;
+
+{ ============================================================
+  TODO 02 - ANALYSEUR LEXICAL (LEXER)
+  ============================================================ }
+
+{ --- Predicats de caracteres --- }
+
+Function LexIsAlpha(c : Char) : Boolean;
+Begin
+  LexIsAlpha := ((c >= 'A') And (c <= 'Z')) Or ((c >= 'a') And (c <= 'z')) Or (c = '_');
+End;
+
+Function LexIsDigit(c : Char) : Boolean;
+Begin
+  LexIsDigit := (c >= '0') And (c <= '9');
+End;
+
+Function LexIsHexDigit(c : Char) : Boolean;
+Begin
+  LexIsHexDigit := ((c >= '0') And (c <= '9'))
+    Or ((c >= 'A') And (c <= 'F'))
+    Or ((c >= 'a') And (c <= 'f'));
+End;
+
+Function LexIsAlNum(c : Char) : Boolean;
+Begin
+  LexIsAlNum := LexIsAlpha(c) Or LexIsDigit(c);
+End;
+
+Function LexIsWS(c : Char) : Boolean;
+Begin
+  LexIsWS := (c = ' ') Or (c = #9) Or (c = #13);
+End;
+
+Function UpChr(c : Char) : Char;
+Begin
+  If (c >= 'a') And (c <= 'z') Then
+    UpChr := Chr(Ord(c) - 32)
+  Else
+    UpChr := c;
+End;
+
+Function HexVal(c : Char) : Integer;
+Begin
+  If (c >= '0') And (c <= '9') Then HexVal := Ord(c) - Ord('0')
+  Else If (c >= 'A') And (c <= 'F') Then HexVal := Ord(c) - Ord('A') + 10
+  Else HexVal := Ord(c) - Ord('a') + 10;
+End;
+
+{ --------------------------------------------------------------------------
+  LexRefill : lire la prochaine ligne du fichier source dans lex_line.
+  Met lex_eof a True quand le fichier est epuise.
+  -------------------------------------------------------------------------- }
+Procedure LexRefill;
+Begin
+  If Eof(src_file) Then
+  Begin
+    lex_eof  := True;
+    lex_line := '';
+    lex_pos  := 1;
+  End
+  Else
+  Begin
+    ReadLn(src_file, lex_line);
+    Inc(lex_lineno);
+    lex_pos   := 1;
+    lex_colno := 1;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexCurChar : retourner le caractere courant ou #0 si fin de ligne/fichier.
+  -------------------------------------------------------------------------- }
+Function LexCurChar : Char;
+Begin
+  If lex_eof Then
+    LexCurChar := #0
+  Else If lex_pos > Length(lex_line) Then
+    LexCurChar := #0
+  Else
+    LexCurChar := lex_line[lex_pos];
+End;
+
+{ --------------------------------------------------------------------------
+  LexPeekChar : regarder en avance de n positions sans consommer.
+  -------------------------------------------------------------------------- }
+Function LexPeekChar(n : Integer) : Char;
+Var p : Integer;
+Begin
+  p := lex_pos + n;
+  If lex_eof Or (p < 1) Or (p > Length(lex_line)) Then
+    LexPeekChar := #0
+  Else
+    LexPeekChar := lex_line[p];
+End;
+
+{ --------------------------------------------------------------------------
+  LexAdvance : avancer d'un caractere ; passer a la ligne suivante si besoin.
+  -------------------------------------------------------------------------- }
+Procedure LexAdvance;
+Begin
+  If Not lex_eof Then
+  Begin
+    Inc(lex_pos);
+    Inc(lex_colno);
+    If lex_pos > Length(lex_line) + 1 Then
+      LexRefill;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexSkipOberonComment : sauter un commentaire  (* ... *)  avec imbrication.
+  On est positionne sur le '(' au moment de l'appel.
+  -------------------------------------------------------------------------- }
+Procedure LexSkipOberonComment;
+Var depth : Integer;
+Begin
+  depth := 1;
+  LexAdvance;  { sauter '(' }
+  LexAdvance;  { sauter '*' }
+  While (Not lex_eof) And (depth > 0) Do
+  Begin
+    If LexCurChar = #0 Then
+    Begin
+      LexRefill;
+    End
+    Else If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
+    Begin
+      Inc(depth);
+      LexAdvance;
+      LexAdvance;
+    End
+    Else If (LexCurChar = '*') And (LexPeekChar(1) = ')') Then
+    Begin
+      Dec(depth);
+      LexAdvance;
+      LexAdvance;
+    End
+    Else
+      LexAdvance;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexSkipWS : sauter les blancs et les commentaires (* ... *).
+  -------------------------------------------------------------------------- }
+Procedure LexSkipWS;
+Begin
+  Repeat
+    { Sauter espaces et tabulations }
+    While (Not lex_eof) And (LexCurChar <> #0) And LexIsWS(LexCurChar) Do
+      LexAdvance;
+
+    { Fin de ligne -> ligne suivante }
+    If (Not lex_eof) And (LexCurChar = #0) Then
+    Begin
+      LexRefill;
+      Continue;
+    End;
+
+    { Commentaire Oberon  (* ... *)  eventuellement imbrique }
+    If (LexCurChar = '(') And (LexPeekChar(1) = '*') Then
+    Begin
+      LexSkipOberonComment;
+      Continue;
+    End;
+
+    Break;
+  Until False;
+End;
+
+{ --------------------------------------------------------------------------
+  LexIsKeyword : verifier si s est un mot-cle Oberon (en majuscules).
+  En Oberon les mots-cles sont en majuscules ; les identificateurs sont
+  sensibles a la casse. On compare donc la version majuscule du lexeme.
+  -------------------------------------------------------------------------- }
+Function LexIsKeyword(Const s : TString) : Boolean;
+Begin
+  LexIsKeyword :=
+    (s = 'MODULE')    Or (s = 'IMPORT')    Or (s = 'CONST')     Or
+    (s = 'TYPE')      Or (s = 'VAR')       Or (s = 'PROCEDURE') Or
+    (s = 'BEGIN')     Or (s = 'END')       Or
+    (s = 'IF')        Or (s = 'THEN')      Or (s = 'ELSIF')     Or
+    (s = 'ELSE')      Or
+    (s = 'WHILE')     Or (s = 'DO')        Or
+    (s = 'REPEAT')    Or (s = 'UNTIL')     Or
+    (s = 'FOR')       Or (s = 'TO')        Or (s = 'BY')        Or
+    (s = 'LOOP')      Or (s = 'EXIT')      Or
+    (s = 'CASE')      Or (s = 'OF')        Or
+    (s = 'WITH')      Or
+    (s = 'RETURN')    Or
+    (s = 'ARRAY')     Or (s = 'RECORD')    Or (s = 'POINTER')   Or
+    (s = 'DIV')       Or (s = 'MOD')       Or
+    (s = 'IN')        Or (s = 'IS')        Or
+    (s = 'OR')        Or (s = 'AND')       Or (s = 'NOT')       Or
+    (s = 'NIL')       Or (s = 'TRUE')      Or (s = 'FALSE');
+End;
+
+{ --------------------------------------------------------------------------
+  LexMakeTok : construire un TToken passe par reference.
+  -------------------------------------------------------------------------- }
+Procedure LexMakeTok(Var t : TToken; k : TTokenKind; Const v : TString);
+Begin
+  t.kind     := k;
+  t.val      := v;
+  t.int_val  := 0;
+  t.real_val := 0.0;
+  t.line     := lex_lineno;
+  t.col      := lex_colno;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadIdent : lire un identifiant ou un mot-cle Oberon.
+  Oberon est sensible a la casse pour les identifiants ; les mots-cles sont
+  en majuscules dans le source standard.  On compare la version majuscule
+  pour la detection du mot-cle mais on conserve la casse originale dans val.
+  -------------------------------------------------------------------------- }
+Procedure LexReadIdent(Var t : TToken);
+Var s  : TString;
+    su : TString;
+Begin
+  s  := '';
+  su := '';
+  While (Not lex_eof) And LexIsAlNum(LexCurChar) Do
+  Begin
+    If Length(s) < MAX_STR Then
+    Begin
+      s  := s  + LexCurChar;
+      su := su + UpChr(LexCurChar);
+    End;
+    LexAdvance;
+  End;
+  If LexIsKeyword(su) Then
+    LexMakeTok(t, TK_KEYWORD, su)   { mots-cles toujours en majuscules }
+  Else
+    LexMakeTok(t, TK_IDENT, s);     { identifiants : casse conservee   }
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadNumber : lire un entier decimal, un reel, un entier hexadecimal
+  (suffixe H) ou un caractere Oberon (suffixe X).
+  Formes reconnues :
+    ddddd          entier decimal
+    dddddH         entier hexadecimal (digits 0-9 A-F)
+    dddddX         code de caractere (Oberon char literal)
+    ddddd.ddddd    reel
+    ddddd.dddddE[+-]nn  reel avec exposant
+  -------------------------------------------------------------------------- }
+Procedure LexReadNumber(Var t : TToken);
+Var s      : TString;
+    n      : LongInt;
+    r      : Real;
+    err    : Integer;
+    is_hex : Boolean;
+    i      : Integer;
+Begin
+  s      := '';
+  n      := 0;
+  is_hex := False;
+
+  { Accumuler les chiffres (hex ou decimal) }
+  While (Not lex_eof) And LexIsHexDigit(LexCurChar) Do
+  Begin
+    If Length(s) < MAX_STR Then s := s + LexCurChar;
+    If (LexCurChar >= 'A') And (LexCurChar <= 'F') Then is_hex := True;
+    If (LexCurChar >= 'a') And (LexCurChar <= 'f') Then is_hex := True;
+    LexAdvance;
+  End;
+
+  { Suffixe H -> hexadecimal }
+  If (LexCurChar = 'H') Or (LexCurChar = 'h') Then
+  Begin
+    n := 0;
+    For i := 1 To Length(s) Do
+      n := n * 16 + HexVal(s[i]);
+    LexAdvance;
+    LexMakeTok(t, TK_INTEGER, s + 'H');
+    t.int_val := n;
+    Exit;
+  End;
+
+  { Suffixe X -> caractere Oberon  nnnX }
+  If (LexCurChar = 'X') Or (LexCurChar = 'x') Then
+  Begin
+    n := 0;
+    For i := 1 To Length(s) Do
+      n := n * 16 + HexVal(s[i]);
+    LexAdvance;
+    LexMakeTok(t, TK_CHAR, s + 'X');
+    t.int_val := n;
+    Exit;
+  End;
+
+  { Point decimal -> reel (le '..' ne doit pas etre consomme) }
+  If (LexCurChar = '.') And (LexPeekChar(1) <> '.') Then
+  Begin
+    { Reconvertir s en decimal pour la partie entiere du reel }
+    If Length(s) < MAX_STR Then s := s + '.';
+    LexAdvance;
+    While (Not lex_eof) And LexIsDigit(LexCurChar) Do
+    Begin
+      If Length(s) < MAX_STR Then s := s + LexCurChar;
+      LexAdvance;
+    End;
+    { Exposant E }
+    If (LexCurChar = 'E') Or (LexCurChar = 'e') Then
+    Begin
+      If Length(s) < MAX_STR Then s := s + 'E';
+      LexAdvance;
+      If (LexCurChar = '+') Or (LexCurChar = '-') Then
+      Begin
+        If Length(s) < MAX_STR Then s := s + LexCurChar;
+        LexAdvance;
+      End;
+      While (Not lex_eof) And LexIsDigit(LexCurChar) Do
+      Begin
+        If Length(s) < MAX_STR Then s := s + LexCurChar;
+        LexAdvance;
+      End;
+    End;
+    LexMakeTok(t, TK_REAL, s);
+    Val(s, r, err);
+    If err = 0 Then t.real_val := r;
+    Exit;
+  End;
+
+  { Entier pur }
+  n := 0;
+  For i := 1 To Length(s) Do
+  Begin
+    If is_hex Then
+      n := n * 16 + HexVal(s[i])
+    Else
+      n := n * 10 + (Ord(s[i]) - Ord('0'));
+  End;
+  LexMakeTok(t, TK_INTEGER, s);
+  t.int_val := n;
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadString : lire une chaine entre guillemets doubles  "texte".
+  Il n'y a pas d'echappement en Oberon : un guillemet double ne peut pas
+  apparaitre dans la chaine.
+  -------------------------------------------------------------------------- }
+Procedure LexReadString(Var t : TToken);
+Var s : TString;
+Begin
+  s := '';
+  LexAdvance;  { sauter '"' ouvrant }
+  While (Not lex_eof) And (LexCurChar <> '"') And (LexCurChar <> #0) Do
+  Begin
+    If Length(s) < MAX_STR Then s := s + LexCurChar;
+    LexAdvance;
+  End;
+  If LexCurChar = '"' Then
+    LexAdvance;  { sauter '"' fermant }
+  LexMakeTok(t, TK_STRING, s);
+  { Chaine d'un seul caractere -> aussi interpretable comme TK_CHAR }
+  If Length(s) = 1 Then
+    t.int_val := Ord(s[1]);
+End;
+
+{ --------------------------------------------------------------------------
+  LexReadOp : lire un operateur ou signe de ponctuation Oberon.
+  Operateurs :  := = # < <= > >= .. + - * / & ~ |
+  Ponctuation : ( ) [ ] ^ ; , . :
+  -------------------------------------------------------------------------- }
+Procedure LexReadOp(Var t : TToken);
+Var s : TString;
+    c : Char;
+Begin
+  c := LexCurChar;
+  LexAdvance;
+  s := c;
+
+  Case c Of
+    ':' : If LexCurChar = '=' Then
+          Begin
+            s := ':=';
+            LexAdvance;
+          End;
+    '<' : If LexCurChar = '=' Then
+          Begin
+            s := '<=';
+            LexAdvance;
+          End;
+    '>' : If LexCurChar = '=' Then
+          Begin
+            s := '>=';
+            LexAdvance;
+          End;
+    '.' : If LexCurChar = '.' Then
+          Begin
+            s := '..';
+            LexAdvance;
+          End;
+  End;
+
+  { Classement en ponctuation ou en operateur }
+  If (s = '(') Or (s = ')') Or (s = '[') Or (s = ']') Or
+     (s = '^') Or (s = ';') Or (s = ',') Or (s = '.') Or
+     (s = ':') Then
+    LexMakeTok(t, TK_PUNCT, s)
+  Else
+    LexMakeTok(t, TK_OP, s);
+End;
+
+{ --------------------------------------------------------------------------
+  LexNext : produire le token suivant dans cur_tok.
+  -------------------------------------------------------------------------- }
+Procedure LexNext;
+Begin
+  { Consommer le token anticipe si disponible }
+  If has_peek Then
+  Begin
+    cur_tok  := peek_tok;
+    has_peek := False;
+    Exit;
+  End;
+
+  LexSkipWS;
+  lex_colno := lex_pos;
+
+  If lex_eof Or (LexCurChar = #0) Then
+  Begin
+    LexMakeTok(cur_tok, TK_EOF, '');
+    Exit;
+  End;
+
+  { Identifiant ou mot-cle }
+  If LexIsAlpha(LexCurChar) Then
+  Begin
+    LexReadIdent(cur_tok);
+    Exit;
+  End;
+
+  { Litteraux numeriques : entier decimal/hex, reel, char (nX) }
+  If LexIsDigit(LexCurChar) Then
+  Begin
+    LexReadNumber(cur_tok);
+    Exit;
+  End;
+
+  { Litteraux chaine  "..." }
+  If LexCurChar = '"' Then
+  Begin
+    LexReadString(cur_tok);
+    Exit;
+  End;
+
+  { Operateurs et ponctuation }
+  LexReadOp(cur_tok);
+End;
+
+{ --------------------------------------------------------------------------
+  LexPeek : anticiper le token suivant sans consommer cur_tok.
+  -------------------------------------------------------------------------- }
+Procedure LexPeek;
+Var saved : TToken;
+Begin
+  If Not has_peek Then
+  Begin
+    saved    := cur_tok;
+    LexNext;
+    peek_tok := cur_tok;
+    cur_tok  := saved;
+    has_peek := True;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExpect : consommer cur_tok en verifiant que sa valeur est 'val'.
+  -------------------------------------------------------------------------- }
+Procedure LexExpect(Const val : TString);
+Begin
+  If cur_tok.val <> val Then
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur ligne ', lex_lineno, ' col ', lex_colno,
+            ' : attendu ''', val, ''' mais lu ''', cur_tok.val, '''');
+  End;
+  LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  LexExpectKind : consommer cur_tok en verifiant son TTokenKind.
+  -------------------------------------------------------------------------- }
+Procedure LexExpectKind(k : TTokenKind);
+Begin
+  If cur_tok.kind <> k Then
+  Begin
+    Inc(err_count);
+    WriteLn('Erreur ligne ', lex_lineno, ' col ', lex_colno,
+            ' : type de token inattendu (lu : ''', cur_tok.val, ''')');
+  End;
+  LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  LexInit : ouvrir le fichier source et charger le premier token.
+  -------------------------------------------------------------------------- }
+Procedure LexInit(Const fname : TString);
+Begin
+  Assign(src_file, fname);
+  Reset(src_file);
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('Erreur : impossible d''ouvrir ', fname);
+    Halt(1);
+  End;
+  lex_line    := '';
+  lex_pos     := 1;
+  lex_lineno  := 0;
+  lex_colno   := 1;
+  lex_eof     := False;
+  has_peek    := False;
+  LexRefill;
+  LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  LexClose : fermer le fichier source.
+  -------------------------------------------------------------------------- }
+Procedure LexClose;
+Begin
+  If Not lex_eof Then
+    Close(src_file);
+End;
+
+{ ============================================================
+  Initialisation et liberation des tables
+  ============================================================ }
+
+Procedure InitTables;
+Begin
+  New(sym_table);
+  New(type_table);
+  New(proc_table);
+  New(const_table);
+  sym_count    := 0;
+  type_count   := 0;
+  proc_count   := 0;
+  const_count  := 0;
+  label_count  := 0;
+  err_count    := 0;
+  warn_count   := 0;
+  instr_count  := 0;
+  str_lit_count := 0;
+  scope_sp     := 0;
+  cur_proc_idx := 0;
+  import_count := 0;
+  loop_depth   := 0;
+  has_peek     := False;
+  lex_eof      := False;
+End;
+
+Procedure FreeTables;
+Begin
+  Dispose(sym_table);
+  Dispose(type_table);
+  Dispose(proc_table);
+  Dispose(const_table);
+End;
+
+{ Types primitifs predefinis }
+Procedure InitBuiltinTypes;
+
+  Function NewType(k : TTypeKind; bits : Integer) : Integer;
+  Begin
+    Inc(type_count);
+    type_table^[type_count].kind     := k;
+    type_table^[type_count].bit_size := bits;
+    type_table^[type_count].base_idx := 0;
+    type_table^[type_count].arr_len  := 0;
+    type_table^[type_count].rec_sym  := 0;
+    type_table^[type_count].rec_nfld := 0;
+    NewType := type_count;
+  End;
+
+Begin
+  TYP_UNDEF   := NewType(TYK_NONE,    0);
+  TYP_INTEGER := NewType(TYK_INTEGER, 16);
+  TYP_BOOLEAN := NewType(TYK_BOOLEAN,  8);
+  TYP_CHAR    := NewType(TYK_CHAR,     8);
+  TYP_BYTE    := NewType(TYK_BYTE,     8);
+  TYP_SET     := NewType(TYK_SET,     16);
+  TYP_REAL    := NewType(TYK_REAL,    32);
+  TYP_NIL     := NewType(TYK_NIL,     16);
+End;
+
+{ ============================================================
+  Impression de l'usage
+  ============================================================ }
+
+Procedure PrintUsage;
+Begin
+  WriteLn('OBERON86 v', OBERON86_VERSION, ' - Compilateur Oberon -> MASM 8086');
+  WriteLn('Usage : OBERON86 source.obn [sortie.asm] [options]');
+  WriteLn('Options :');
+  WriteLn('  -v   mode verbeux (statistiques et symboles)');
+  WriteLn('  -d   mode debug   (trace de parsing)');
+  WriteLn('  -nr  pas de liaison avec le runtime');
+  Halt(1);
+End;
+
+{ ============================================================
+  Lecture des arguments de la ligne de commande
+  ============================================================ }
+
+Procedure ParseArgs;
+Var
+  i   : Integer;
+  arg : TString;
+Begin
+  src_fname    := '';
+  out_fname    := '';
+  opt_verbose  := False;
+  opt_debug    := False;
+  opt_no_rt    := False;
+
+  For i := 1 To ParamCount Do
+  Begin
+    arg := ParamStr(i);
+    If arg = '-v'  Then opt_verbose := True
+    Else If arg = '-d'  Then opt_debug   := True
+    Else If arg = '-nr' Then opt_no_rt   := True
+    Else If arg[1] = '-' Then
+    Begin
+      WriteLn('Option inconnue : ', arg);
+      PrintUsage;
+    End
+    Else If src_fname = '' Then src_fname := arg
+    Else If out_fname = '' Then out_fname := arg
+    Else
+    Begin
+      WriteLn('Argument inattendu : ', arg);
+      PrintUsage;
+    End;
+  End;
+
+  If src_fname = '' Then PrintUsage;
+
+  If out_fname = '' Then
+    out_fname := ChangeExtension(src_fname, '.asm');
+
+  tmp_fname := ChangeExtension(src_fname, '.tmp');
+End;
+
+{ ============================================================
+  Programme principal
+  ============================================================ }
+
+Begin
+  { --- Arguments --- }
+  ParseArgs;
+
+  { --- Initialisation --- }
+  InitTables;
+  InitBuiltinTypes;
+
+  { --- Ouverture du source et lancement du lexer --- }
+
+  { --- Ouverture de la sortie --- }
+  Assign(out_file, out_fname);
+  Rewrite(out_file);
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('Erreur : impossible de creer ', out_fname);
+    Close(src_file);
+    Halt(1);
+  End;
+  cur_out := @out_file;
+
+  { --- Ouverture du fichier temporaire (code des procedures) --- }
+  Assign(tmp_file, tmp_fname);
+  Rewrite(tmp_file);
+
+  LexInit(src_fname);
+
+  WriteLn(cur_out^, '; Genere par OBERON86 v', OBERON86_VERSION,
+          ' le ', OBERON86_DATE);
+  WriteLn(cur_out^, '; Source : ', src_fname);
+  WriteLn(cur_out^);
+
+  { --- Compilation principale (TODO 02 -> 24) --- }
+  { ParseModule; }
+
+  { --- Fermeture --- }
+  Close(src_file);
+  Close(tmp_file);
+  Close(out_file);
+
+  FreeTables;
+
+  { --- Rapport final --- }
+  If opt_verbose Then
+  Begin
+    WriteLn('Symboles   : ', sym_count);
+    WriteLn('Procedures : ', proc_count);
+    WriteLn('Types      : ', type_count);
+    WriteLn('Erreurs    : ', err_count);
+    WriteLn('Avertissements : ', warn_count);
+    WriteLn('Instructions   : ', instr_count);
+  End;
+
+  If err_count > 0 Then
+  Begin
+    WriteLn(err_count, ' erreur(s) - compilation echouee.');
+    Halt(1);
+  End
+  Else
+  Begin
+    If opt_verbose Then
+      WriteLn('Compilation reussie -> ', out_fname);
+  End;
+End.

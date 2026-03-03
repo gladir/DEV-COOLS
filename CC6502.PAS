@@ -4885,17 +4885,14 @@ Procedure bitwise_and_expression(var lval: TLVal);Begin
  End;
 End;
 
-{ Bitwise XOR expression parser - handles ^ }
-Procedure bitwise_xor_expression(var lval: TLVal);
-Begin
+{ Analyse l'expression binaire XOR - G‚rer le ^ }
+Procedure bitwise_xor_expression(var lval: TLVal);Begin
  bitwise_and_expression(lval);
-
- While match('^') do
- Begin
-  safe_writeln('; OpÃ©rateur ^ (XOR binaire)');
-  ol('pshs d');    { Push left operand }
+ While match('^') do Begin
+  safe_writeln('; Op‚rateur ^ (XOR binaire)');
+  ol('pshs d');    { Empile l'op‚rande de gauche }
   bitwise_and_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
+  ol('tfr  d,x');  { Op‚rande de droite vers X }
   ol('puls d');    { Left operand to D }
   ol('tfr  a,u');  { Save A in U }
   ol('tfr  b,a');  { B to A for low byte }
