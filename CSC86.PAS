@@ -1,8 +1,12 @@
-{ ============================================================================
-  CSC86.PAS - Compilateur C# (sous-ensemble) -> Assembleur MASM 8086
-  Version 1.0  -  Free Pascal / Turbo Pascal compatible
-  ============================================================================
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur C# (sous-ensemble)-> Assembleur MASM 8086
+}
 
+{
   DESCRIPTION
   -----------
   CSC86 traduit un sous-ensemble de C# en assembleur MASM 8086 (16 bits).
@@ -33,363 +37,22 @@
 
   MODELE MEMOIRE : SMALL (DS=SS, CS separe)
   Entree du programme : label START dans le segment _CODE
-
-  ============================================================================
-
-  PLAN DE DEVELOPPEMENT - 25 TODOS
-  =================================
-
-  TODO 01 - TYPES DE BASE, CONSTANTES ET VARIABLES GLOBALES DU COMPILATEUR
-  --------------------------------------------------------------------------
-  Definir les types Pascal fondamentaux :
-    TString     = String[255]
-    TSymKind    = (SK_VAR, SK_PARAM, SK_FUNC, SK_CLASS, SK_CONST, SK_TYPE)
-    TValueKind  = (VK_INT, VK_BOOL, VK_CHAR, VK_STRING, VK_VOID, VK_ARRAY)
-    TScope      = (SC_GLOBAL, SC_LOCAL, SC_PARAM)
-    TTokenKind  = (TK_IDENT, TK_INT, TK_STRING, TK_CHAR, TK_KEYWORD,
-                   TK_OP, TK_PUNCT, TK_EOF, TK_UNKNOWN)
-    TToken      = record kind, val, line, col
-    TSymEntry   = record name, kind, vtype, scope, bp_offset, asm_label,
-                         array_size, is_static
-    TFuncEntry  = record name, return_type, param_count, params[],
-                         local_frame_size, asm_label
-    TLitEntry   = record val, asm_label (pour chaines)
-  Constantes : MAX_SYM, MAX_FUNC, MAX_LIT, MAX_LOCAL, SB_DATA_PFX, etc.
-  Variables globales : sym_table, func_table, lit_table, sym_count,
-                       func_count, lit_count, lbl_seq, cur_func_idx.
-  Infrastructure fichiers (in_file, out_file, tmp_file).
-
-  TODO 02 - LEXEUR (ANALYSE LEXICALE C#)
-  ----------------------------------------
-  Implementer l'analyseur lexical C# :
-    LexInit       : ouvrir le fichier source, initialiser l'etat.
-    LexReadChar   : lecture d'un caractere, gestion LF/CR, compteur lignes.
-    LexSkipWS     : espaces, tabulations, commentaires // et /* ... */.
-    LexReadIdent  : identifiant ou mot-cle [a-zA-Z_][a-zA-Z0-9_]*.
-    LexReadNumber : entier decimal (et hex 0x...), suffixes u/l/ul.
-    LexReadString : chaine "" avec sequences d'echappement \n \t \\ \".
-    LexReadChar2  : char litteral '' avec sequences d'echappement.
-    LexReadOp     : operateurs mono/bicaracteres (++, --, +=, ==, !=, <=, ...).
-    LexNext       : produire le prochain token (TToken).
-    LexPeek       : consulter le prochain token sans le consommer.
-    LexExpect     : consommer un token attendu, erreur sinon.
-  Mots-cles reconnus : int bool char string void static class new if else
-                       while for do break continue return true false null
-                       Console using namespace public private.
-
-  TODO 03 - TABLES DE SYMBOLES ET DE FONCTIONS
-  -----------------------------------------------
-  Gestion des tables de compilation :
-    FindSym    : rechercher une variable par nom dans la portee courante
-                 puis globale.
-    AddSym     : ajouter un symbole (variable/parametre/constante).
-    FindFunc   : rechercher une fonction par nom.
-    AddFunc    : enregistrer une entree de fonction.
-    AddLiteral : enregistrer une chaine litterale, retourner son index.
-    LitAsmLabel: generer l'etiquette DATA d'un litteral.
-    NewLabel   : generateur de labels auto @@Lxx.
-    AsmSafeIdent: nettoyer un identifiant C# pour ASM (points -> underscores).
-    ScopeEnter / ScopeLeave : empiler/depiler le niveau de portee.
-    ResetLocals : reinitialiser les locaux d'une nouvelle fonction.
-
-  TODO 04 - INFRASTRUCTURE D'EMISSION ASM
-  -----------------------------------------
-  Procedures d'ecriture dans le fichier de sortie :
-    Emit        : ecrire une ligne brute.
-    EmitI       : ecrire une instruction ASM indentee.
-    EmitLabel   : ecrire un label suivi de ':'.
-    EmitComment : ecrire un commentaire '; ...'.
-    EmitSep     : ecrire une ligne de separation '; ---...'.
-    EmitBlank   : ecrire une ligne vide.
-    EmitDB      : ecrire une directive DB (donnees octets).
-    EmitDW      : ecrire une directive DW (donnees mots).
-    EmitEQU     : ecrire une directive EQU.
-    SetFirstInstrLabel / first_instr_lbl : gestion du label d'entree.
-
-  TODO 05 - GENERATION DE L'EN-TETE ET DU SEGMENT .STACK
-  ---------------------------------------------------------
-  GenHeader : emettre l'en-tete MASM 8086 :
-    .8086 / DOSSEG / MODEL SMALL / STACK 512
-    Inclure les macro-definitions necessaires.
-    Emettre le segment _STACK avec DW 256 DUP(?).
-  GenStackSegment : reserve 512 octets de pile (256 DW ?).
-
-  TODO 06 - GENERATION DU SEGMENT .DATA (VARIABLES GLOBALES)
-  ------------------------------------------------------------
-  GenDataSegment (passe 2) :
-    - Pour chaque symbole SK_VAR SC_GLOBAL : emettre label_D DW 0 / DB / ARRAY.
-    - Pour chaque litteral string : emettre _SL_xx DB 'texte', 0 + _SLD_xx DW.
-    - Variables systeme : _CS86_CRLF_BUF, _CS86_INPUTBUF (128 octets),
-      _CS86_ITOA_BUF (8 octets), _CS86_TRUE_STR, _CS86_FALSE_STR.
-    - Descripteurs de chaines (ptr + len, 2 DW chacun).
-    - Tableaux statiques.
-
-  TODO 07 - PARSER : DECLARATIONS DE TYPES ET VARIABLES
-  -------------------------------------------------------
-  ParseTypeSpec    : reconnaitre int / bool / char / string / void
-                     et les tableaux type[] (allocation taille fixe en C# Lite).
-  ParseVarDecl     : 'type ident [= expr] ;'
-                     Gerer : int x; int x = 5; int[] arr = new int[10];
-                     Appeler AddSym, calculer bp_offset pour les locaux.
-  ParseConstDecl   : 'const type ident = expr ;'
-                     Evaluer l'expression en temps de compilation (entier).
-  ParseParamList   : lire '(type id, type id, ...)' et remplir func params.
-  IsTypeKeyword    : True si le token courant est int/bool/char/string/void.
-
-  TODO 08 - PARSER : EXPRESSIONS (PRECEDENCE COMPLETE)
-  -----------------------------------------------------
-  Implementer un parseur descendant recursif pour les expressions C# :
-    ParseExpr        : niveau OR '||'
-    ParseExprAnd     : niveau AND '&&'
-    ParseExprEq      : == !=
-    ParseExprRel     : < <= > >=
-    ParseExprAdd     : + -
-    ParseExprMul     : * / %
-    ParseExprUnary   : ! - (cast) ++ -- (prefix)
-    ParseExprPostfix : appel de fonction, indexation [], ++/-- postfix
-    ParseExprPrimary : litteral int/bool/char/string, identifiant,
-                       '(' expr ')', new type[n]
-  Chaque noeud produit un code intermediaire vers DI/AX.
-
-  TODO 09 - PARSER : INSTRUCTIONS SIMPLES
-  -----------------------------------------
-  ParseStatement : dispatcher principal :
-    ParseBlock       : '(* stmt* *)'  -- bloc C#
-    ParseIf          : 'if (expr) stmt [else stmt]'
-    ParseWhile       : 'while (expr) stmt'
-    ParseFor         : 'for (init; cond; incr) stmt'
-    ParseDoWhile     : 'do stmt while (expr) ;'
-    ParseBreak       : 'break ;' -> JMP label_break
-    ParseContinue    : 'continue ;' -> JMP label_continue
-    ParseReturn      : 'return [expr] ;'
-    ParseExprStmt    : expression seule (affectation, appel) + ';'
-  Gestion de boucles imbriquees : pile de labels break/continue.
-
-  TODO 10 - PARSER : METHODES ET CLASSES STATIQUES
-  --------------------------------------------------
-  ParseClassDecl    : 'class Ident ( member* )'  -- membres statiques
-                      ReconnaÃ®tre uniquement les classes avec membres statiques.
-  ParseMethodDecl   : '[static] type Ident (params) block'
-                      Enregistrer dans func_table, calculer la taille du frame.
-  ParseProgram      : point d'entree du parseur :
-                      ParseUsings -> ParseNamespace -> ParseClassDecl.
-  ParseUsings       : consommer 'using ...' sans generer de code.
-  ParseNamespace    : consommer 'namespace ...' sans generer de code.
-  DetectEntryPoint  : identifier la methode 'static void Main(...)'.
-
-  TODO 11 - CODEGEN : EXPRESSIONS ENTIERS ET BOOLEENS
-  -----------------------------------------------------
-  EvalExprToAX   : generer le code ASM pour une expression entiere -> AX.
-  EvalExprToDI   : idem mais resultat dans DI (pour les chaines).
-  EvalBoolExpr   : generer code pour bool -> AX (0 ou 1).
-  GenCompare     : emettre CMP + Jxx -> AX = 0 ou 1 selon operateur.
-  GenArith       : +/-: ADD/SUB AX,BX ; *: CALL _RT_IMUL ; /:%: CALL _RT_IDIV.
-  GenLogical     : && -> code court-circuit (JZ), || -> code court-circuit (JNZ).
-  GenNot         : XOR AX, 1 (bool) ou NEG AX (entier).
-  GenIntLiteral  : MOV AX, val.
-  GenBoolLiteral : MOV AX, 1 / XOR AX, AX.
-
-  TODO 12 - CODEGEN : ACCES AUX VARIABLES
-  -----------------------------------------
-  GenLoadVar    : charger la valeur d'une variable dans AX (int/bool/char)
-                  ou DI (string).
-                  Globale  -> MOV AX, [_G_NOM]
-                  Locale   -> MOV AX, [BP - offset]
-                  Parametre-> MOV AX, [BP + offset]
-  GenStoreVar   : stocker AX / DI dans une variable.
-  GenLoadArray  : LEA SI, [base] ; ajouter index*2 ; MOV AX, [SI].
-  GenStoreArray : calculer adresse ; MOV [SI], AX.
-  GenAddrOf     : calculer l'adresse effective (pour tableaux).
-
-  TODO 13 - CODEGEN : AFFECTATION ET AFFECTATION COMPOSEE
-  ---------------------------------------------------------
-  GenAssign      : x = expr -> EvalExprToAX + GenStoreVar.
-  GenAssignOp   : x += expr, x -= expr, x *= expr, x /= expr, x %= expr.
-  GenIncDec     : x++ / x-- / ++x / --x  -> INC/DEC [var].
-  Gestion des affectations de chaines : copie de descripteur (ptr + len).
-  Affectation d'element de tableau : arr[i] = expr.
-
-  TODO 14 - CODEGEN : INSTRUCTIONS DE CONTROLE
-  ----------------------------------------------
-  GenIf         : evaluer condition -> JZ/JNZ + labels then/else/endif.
-  GenWhile      : label_top -> cond -> JZ label_end -> body -> JMP label_top.
-  GenFor        : init -> label_top -> cond -> JZ end -> body -> incr -> JMP top.
-  GenDoWhile    : label_top -> body -> cond -> JNZ label_top.
-  GenBreak      : JMP label_break courant.
-  GenContinue   : JMP label_continue courant.
-  GenReturn     : [charger valeur dans AX/DX:AX] + epilogue + RET.
-  Pile de contexte de boucle : break_stack, continue_stack.
-
-  TODO 15 - CODEGEN : ENTREES / SORTIES (Console.*)
-  ---------------------------------------------------
-  Generer les appels a Console.Write et Console.WriteLine :
-    Console.Write(int)     -> _RT_INT2STR + _RT_WRITESTR (pas de CRLF)
-    Console.Write(bool)    -> AX -> 'True'/'False' -> _RT_WRITESTR
-    Console.Write(char)    -> INT 21h AH=02h
-    Console.Write(string)  -> _RT_WRITESTR (ptr + len dans DS)
-    Console.WriteLine(...)  -> idem + CRLF (_RT_WRITECRLF)
-    Console.ReadLine()     -> _RT_READLINE -> DX:AX (ptr + len)
-    Console.ReadLine (int) -> _RT_READLINE + _RT_STR2INT -> AX
-  Patterns de detection pendant le parsing : 'Console' '.' 'Write[Line]' '('.
-
-  TODO 16 - CODEGEN : GESTION DES CHAINES
-  -----------------------------------------
-  Modele de chaine : descripteur 2 DW [ ptr, len ].
-  _RT_STRLEN    : SI = ptr, CX = len -> CX.
-  _RT_STRCAT    : DI + SI -> ds:dx descripteur chaine concatenee.
-  _RT_STRCMP    : SI + DI -> flags (ZF = egal).
-  _RT_STR2INT   : SI, CX -> AX (entier signe).
-  _RT_INT2STR   : AX -> DX:AX (ptr + len dans buf temporaire).
-  _RT_WRITESTR  : DX = ptr, CX = len -> INT 21h AH=40h handle 1.
-  _RT_WRITECRLF : ecrire $0D $0A.
-  _RT_READLINE  : INT 21h AH=0Ah -> DX:AX (ptr + len dans _CS86_INPUTBUF).
-  Concatenation '+' entre chaines : CALL _RT_STRCAT.
-  Comparaison == entre chaines : CALL _RT_STRCMP + flags.
-
-  TODO 17 - CODEGEN : TABLEAUX
-  ------------------------------
-  Allocation statique des tableaux en .DATA :
-    int[] arr = new int[N] -> _G_ARR DW N DUP(0).
-  Acces en lecture  : arr[i] -> LEA BX,[base] + AX=[BX+SI*2].
-  Acces en ecriture : arr[i] = v -> [BX+SI*2] = AX.
-  Verification de bornes (optionnel v1 : desactivee par defaut).
-  Chaines de tableaux de char (char[]).
-  Propriete .Length -> stocker la taille dans un DW supplementaire.
-
-  TODO 18 - CODEGEN : FONCTIONS ET APPELS
-  -----------------------------------------
-  GenFunctionPrologue : PUSH BP / MOV BP,SP / SUB SP, frame_size.
-  GenFunctionEpilogue : MOV SP,BP / POP BP / RET (caller cleanup).
-  GenFunctionCall     : PUSH args (droite -> gauche) + CALL label
-                        + ADD SP, n*2 (caller cleanup).
-  GenReturn           : charger AX [+ DX pour ptr] + epilogue + RET.
-  Convention de retour par valeur :
-    int/bool/char -> AX
-    string        -> DX = ptr, AX = len
-    void          -> rien
-  Recursivite : supporter les appels recursifs (frame independant).
-  Predeclaration obligatoire (pas de forward implicite en C# Lite).
-
-  TODO 19 - RUNTIME : ARITHMETIQUE ET CONVERSIONS
-  -------------------------------------------------
-  Emettre dans le segment .CODE les routines runtime :
-    _RT_IMUL  : AX * BX -> AX (IMUL BX, clamp 16 bits).
-    _RT_IDIV  : AX / BX -> AX, AX mod BX -> DX (IDIV BX).
-    _RT_IMOD  : AX % BX -> AX (via IDIV, copier DX -> AX).
-    _RT_ABS   : AX -> |AX|.
-    _RT_INT2STR : AX -> DX:AX (chaine decimale signee, buf interne).
-    _RT_STR2INT : DX:AX (ptr,len) -> AX (entier signe).
-    _RT_BOOL2STR: AX (0/1) -> DX:AX 'False'/'True'.
-    _RT_ITOA_BUF: buffer de 8 octets pour la conversion.
-
-  TODO 20 - RUNTIME : ENTREES/SORTIES ET GESTION PROGRAMME
-  ----------------------------------------------------------
-  Emettre les routines I/O dans le segment .CODE :
-    _RT_WRITESTR  : DX=ptr, CX=len -> INT 21h AH=40h handle 1.
-    _RT_WRITECRLF : ecrire 0Dh 0Ah sur stdout.
-    _RT_WRITECHR  : AL -> INT 21h AH=02h.
-    _RT_READLINE  : saisie tamponnee INT 21h AH=0Ah -> DX:AX.
-    _RT_ERREXIT   : afficher message d'erreur + INT 21h AH=4Ch AL=1.
-    _RT_EXIT0     : INT 21h AH=4Ch AL=0 (fin normale).
-  GenFooter : emettre le label de fin + appel _RT_EXIT0.
-  GenHeader _CODE : emettre START: + initialisation DS/SS.
-
-  TODO 21 - CODEGEN : INITIALISATION ET PIED DE PAGE
-  ----------------------------------------------------
-  GenCodeHeader  : emettre le prologue du segment .CODE :
-                   ASSUME CS:_CODE, DS:_DATA, SS:_STACK
-                   START: MOV AX, _DATA / MOV DS, AX / MOV SS, AX
-                          MOV SP, OFFSET _STACK_TOP
-                          CALL _G_MAIN  (point d'entree C#)
-                          CALL _RT_EXIT0
-  GenCodeFooter  : emettre le pied de page du segment .CODE :
-                   END START
-  GenDataHeader  : emettre '_DATA SEGMENT WORD PUBLIC ''DATA'''
-  GenDataFooter  : emettre '_DATA ENDS'
-  GenStackHeader : emettre '_STACK SEGMENT STACK ''STACK'''
-                   DW 256 DUP(?) / _STACK_TOP LABEL WORD
-  GenStackFooter : emettre '_STACK ENDS'
-
-  TODO 22 - GESTION DES ERREURS ET DIAGNOSTIC
-  ---------------------------------------------
-  ErrorMsg   : afficher un message d'erreur avec fichier + ligne + colonne.
-  WarnMsg    : afficher un avertissement (continue la compilation).
-  ErrorCount / WarnCount : compteurs pour le bilan final.
-  FatalError : afficher l'erreur + arreter la compilation proprement.
-  Types d'erreurs geres :
-    - Erreur lexicale (caractere inattendu, chaine non fermee).
-    - Erreur syntaxique (token inattendu).
-    - Erreur semantique (variable non declaree, type incompatible).
-    - Erreur de debordement de tables (> MAX_SYM, > MAX_FUNC, etc.).
-  Mode verbose : option -v pour afficher les instructions parsees.
-
-  TODO 23 - GESTION DES OPTIONS ET INTERFACE LIGNE DE COMMANDE
-  -------------------------------------------------------------
-  ParseCommandLine : lire ParamStr(1..ParamCount).
-  Options reconnues :
-    fichier.cs      -> source C# a compiler (obligatoire)
-    fichier.asm     -> fichier ASM de sortie (defaut : meme nom + .asm)
-    -v              -> mode verbose (afficher statistiques)
-    -d              -> mode debug (commentaires supplementaires dans ASM)
-    -ns             -> ne pas emettre le runtime (fichier externe)
-    -h / --help     -> afficher l'aide
-  Afficher la banniere 'CSC86 v1.0 - compilateur C# Lite -> MASM 8086'.
-  Afficher le bilan final : instructions, symboles, fonctions, erreurs.
-
-  TODO 24 - PROCEDURE COMPILE (ORCHESTRATEUR DEUX PASSES)
-  --------------------------------------------------------
-  Procedure Compile : orchestrer la compilation complete.
-    Passe 1 :
-      LexInit(source_file)
-      ParseProgram -> remplir sym_table, func_table, lit_table
-      Verifier que Main() existe
-    Passe 2 :
-      Ouvrir tmp_file (code) et out_file (sortie finale)
-      GenStackSegment
-      GenDataSegment (DATA + litteraux + variables globales)
-      GenCodeHeader  (START: + init DS/SS)
-      Pour chaque methode dans l'ordre de declaration :
-        GenFunctionPrologue
-        Re-parser le corps de la methode (passe 2) -> GenInstruction
-        GenFunctionEpilogue
-      GenRuntime (arithmetique + I/O)
-      GenCodeFooter
-      CopyTmpToOut
-    Rapport final.
-
-  TODO 25 - INTEGRATION, TESTS ET VALIDATION
-  --------------------------------------------
-  Creer les programmes de test progressifs :
-    test01_hello.cs     : Console.WriteLine("Hello, World!");
-    test02_vars.cs      : int/bool/char, affectations, cout.
-    test03_arith.cs     : +,-,*,/,%, operateurs composes, ++/--.
-    test04_cond.cs      : if/else, operateurs de comparaison et logiques.
-    test05_while.cs     : boucle while + break/continue.
-    test06_for.cs       : boucle for + boucle for imbriquee.
-    test07_fonct.cs     : methodes statiques, passage de parametres, return.
-    test08_string.cs    : chaines, concatenation, Console.ReadLine.
-    test09_array.cs     : tableaux int[], acces et boucle.
-    test10_recurs.cs    : factorielle recursive.
-  Valider chaque test : 0 erreur de compilation + sortie ASM correcte.
-  Verifier les labels coherents, les conventions d'appel, les gotos corrects.
-  Mesurer : instructions parsees, symboles, litteraux, fonctions, erreurs.
-
-  ============================================================================ }
+}
 
 Program CSC86;
 
 { ============================================================================
-  TODO 01 - TYPES DE BASE, CONSTANTES ET VARIABLES GLOBALES DU COMPILATEUR
+  TYPES DE BASE, CONSTANTES ET VARIABLES GLOBALES DU COMPILATEUR
   ============================================================================ }
 
 { --------------------------------------------------------------------------
   Directives compilateur (Turbo Pascal / Free Pascal)
   -------------------------------------------------------------------------- }
-{$A-}   { Pas d'alignement memoire                                          }
-{$I-}   { Pas de verification I/O automatique (gestion manuelle)            }
-{$B-}   { Evaluation booleenne court-circuit                                }
-{$Q-}   { Pas de verification overflow                                      }
-{$R-}   { Pas de verification de range                                      }
+{$A-}   { Pas d'alignement memoire                                           }
+{$I-}   { Pas de verification d'entr‚e/sortie automatique (gestion manuelle) }
+{$B-}   { Evaluation booleenne court-circuit                                 }
+{$Q-}   { Pas de verification de d‚bordement                                 }
+{$R-}   { Pas de verification de range                                       }
 
 {$IFDEF FPC}
  {$MODE DELPHI}
@@ -598,7 +261,7 @@ Var
   fwd_table     : PFwdRefArr;
   fwd_count     : Integer;
 
-  { --- Contexte lexeur (rempli par TODO 02) --- }
+  { --- Contexte lexeur --- }
   lex_line      : String;      { ligne source courante                    }
   lex_pos       : Integer;     { position dans lex_line                   }
   lex_lineno    : Integer;     { numero de ligne                          }
@@ -637,8 +300,7 @@ End;
 { --------------------------------------------------------------------------
   Procedure de liberation des tables.
   -------------------------------------------------------------------------- }
-Procedure FreeTables;
-Begin
+Procedure FreeTables;Begin
   If sym_table  <> Nil Then Dispose(sym_table);
   If func_table <> Nil Then Dispose(func_table);
   If lit_table  <> Nil Then Dispose(lit_table);
@@ -646,7 +308,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 02 - LEXEUR (ANALYSE LEXICALE C#)
+  LEXEUR (ANALYSE LEXICALE C#)
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -1167,15 +829,14 @@ End;
 { --------------------------------------------------------------------------
   LexClose : fermer le fichier source.
   -------------------------------------------------------------------------- }
-Procedure LexClose;
-Begin
+Procedure LexClose;Begin
   {$I-}
   Close(src_file);
   {$I+}
 End;
 
 { ============================================================================
-  TODO 03 - TABLES DE SYMBOLES ET DE FONCTIONS
+  TABLES DE SYMBOLES ET DE FONCTIONS
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -1576,7 +1237,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 04 - INFRASTRUCTURE D'EMISSION ASM
+  INFRASTRUCTURE D'EMISSION ASM
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -1850,7 +1511,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 05 - GENERATION DE L'EN-TETE ET DU SEGMENT .STACK
+  GENERATION DE L'EN-TETE ET DU SEGMENT .STACK
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -1925,7 +1586,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 06 - GENERATION DU SEGMENT .DATA
+  GENERATION DU SEGMENT .DATA
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -2075,7 +1736,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 07 - PARSER : DECLARATIONS DE TYPES ET VARIABLES
+  ANALYSEUR : DECLARATIONS DE TYPES ET VARIABLES
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -2454,7 +2115,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 08 - PARSER : EXPRESSIONS (PRECEDENCE COMPLETE)
+  ANALYSEUR : EXPRESSIONS (PRECEDENCE COMPLETE)
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -3211,7 +2872,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 09 - PARSER : INSTRUCTIONS SIMPLES
+  ANALYSEUR : INSTRUCTIONS SIMPLES
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -3756,7 +3417,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 10 - PARSER : METHODES ET CLASSES STATIQUES
+  ANALYSEUR : METHODES ET CLASSES STATIQUES
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4125,7 +3786,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 11 - CODEGEN : EXPRESSIONS ENTIERS ET BOOLEENS
+  ANALYSEUR - CODEGEN : EXPRESSIONS ENTIERS ET BOOLEENS
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4305,11 +3966,11 @@ Begin
 End;
 
 { ============================================================================
-  TODO 12 - CODEGEN : ACCES AUX VARIABLES (COMPLEMENT)
+  ANALYSEUR - CODEGEN : ACCES AUX VARIABLES (COMPLEMENT)
   ============================================================================
-  GenLoadVar et GenStoreVar sont implementes en TODO 08/09.
-  Ce TODO ajoute : GenAddrOf, GenLoadArrayElem, GenStoreArray,
-  et les helpers de reference (adresse effective).
+  GenLoadVar et GenStoreVar sont implementes.
+  Ajoute : GenAddrOf, GenLoadArrayElem, GenStoreArray,
+  et les assisants de reference (adresse effective).
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4352,7 +4013,7 @@ End;
   GenStoreArray : stocker AX dans arr[index].
   Precondition : index dans BX (valeur non multipliee),
                  valeur a stocker dans AX.
-  Equivalent de GenStoreArrayElem (deja implem. TODO 09) mais via GenAddrOf.
+  Equivalent de GenStoreArrayElem mais via GenAddrOf.
   -------------------------------------------------------------------------- }
 Procedure GenStoreArray(sym_idx : Integer);
 Begin
@@ -4471,10 +4132,10 @@ Begin
 End;
 
 { ============================================================================
-  TODO 13 - CODEGEN : AFFECTATION ET AFFECTATION COMPOSEE
+  CODEGEN : AFFECTATION ET AFFECTATION COMPOSEE
   ============================================================================
-  Les helpers ParseAssignOrExprStmt (TODO 09) integrent deja la logique
-  inline. Ce TODO fournit des procedures autonomes reutilisables par le
+  Les assistants ParseAssignOrExprStmt integrent deja la logique
+  inline. Cette partie fournit des procedures autonomes reutilisables par le
   generateur de code (passe 2) et par d'eventuels optimiseurs.
   ============================================================================ }
 
@@ -4635,11 +4296,11 @@ Begin
 End;
 
 { ============================================================================
-  TODO 14 - CODEGEN : INSTRUCTIONS DE CONTROLE
+  CODEGEN : INSTRUCTIONS DE CONTROLE
   ============================================================================
   Helpers purement codegen (pas de consommation de tokens).
   Precondition commune : la condition est deja evaluee dans AX.
-  Utilises par les Parse* du TODO 09 et par un futur backend 2-passes.
+  Utilises par les Parse* et par un futur backend 2-passes.
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -4833,11 +4494,11 @@ Begin
 End;
 
 { ============================================================================
-  TODO 15 - CODEGEN : ENTREES / SORTIES (Console.*)
+  CODEGEN : ENTREES / SORTIES (Console.*)
   ============================================================================
   Helpers purement codegen : la valeur a afficher est deja dans AX (scalaire),
   AX=ptr+DX=len (string) ou AL (char) a l'appel de chaque procedure.
-  ParseConsoleWrite (TODO 08) appelle ces helpers apres avoir evalue l'expr.
+  ParseConsoleWrite appelle ces helpers apres avoir evalue l'expr.
   ============================================================================ }
 
 { --------------------------------------------------------------------------
@@ -5007,7 +4668,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 16 - CODEGEN : GESTION DES CHAINES
+  CODEGEN : GESTION DES CHAINES
   ============================================================================
   Modele de chaine : descripteur 2 DW [ ptr, len ] en DATA.
   Convention registres : AX=ptr, DX=len apres chaque operation.
@@ -5241,18 +4902,17 @@ End;
   GenStrVarConcatVar : var_dst = var_src1 + var_src2.
   Charge src1, concatene avec src2, stocke dans dst.
   -------------------------------------------------------------------------- }
-Procedure GenStrVarConcatVar(dst_idx, src1_idx, src2_idx : Integer);
-Begin
+Procedure GenStrVarConcatVar(dst_idx, src1_idx, src2_idx : Integer);Begin
   GenStrCatVars(src1_idx, src2_idx);  { AX=ptr, DX=len }
   GenCopyDescriptorFromRegs(dst_idx);
 End;
 
 { ============================================================================
-  TODO 17 - CODEGEN : TABLEAUX
+  CODEGEN : TABLEAUX
   ============================================================================
   Les primitives de base GenAddrOf / GenLoadArrayElem / GenStoreArray /
-  GenBoundsCheck / GenArrayLength sont deja implantees au TODO 12.
-  Ce TODO ajoute :
+  GenBoundsCheck / GenArrayLength sont deja implantees.
+  Cette partie ajoute :
     - declarations DATA  (DUP(0) + DW de taille pour .Length)
     - initialisation de tableaux locaux (REP STOSW)
     - support char[] (elements stockes comme DB, mais accedes via BYTE PTR)
@@ -5454,10 +5114,10 @@ Begin
 End;
 
 { ============================================================================
-  TODO 18 - CODEGEN : FONCTIONS ET APPELS
+  CODEGEN : FONCTIONS ET APPELS
   ============================================================================
   GenFunctionPrologue / GenFunctionEpilogue / GenInlineCall / ParseArgList
-  sont deja implantes (TODO 10 / 08). Ce TODO ajoute les helpers
+  sont deja implantes. Cette partie ajoute les assistants
   complementaires : push d'arguments types, appels directs/indirects,
   appel recursif, nettoyage de pile, resolution de reference forward.
   Convention : near cdecl, caller cleanup.
@@ -5663,7 +5323,7 @@ End;
   Sequence :
     PUBLIC label / label: / GenFunctionPrologue / corps / GenReturnLabel
     puis GenFunctionEpilogue.
-  Ce dispatcher est appele par ParseMethodDecl (TODO 10).
+  Ce dispatcher est appele par ParseMethodDecl.
   -------------------------------------------------------------------------- }
 Procedure GenFullMethodOpen(fi : Integer);
 Begin
@@ -5678,7 +5338,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 19 - RUNTIME : ARITHMETIQUE ET CONVERSIONS
+  RUNTIME : ARITHMETIQUE ET CONVERSIONS
   ============================================================================
   Chaque procedure GenRt* emet une routine runtime 8086 dans le segment CODE.
   Convention : near cdecl, caller cleanup ; BP frame pour acces aux params.
@@ -5929,7 +5589,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 20 - RUNTIME : ENTREES/SORTIES ET GESTION PROGRAMME
+  RUNTIME : ENTREES/SORTIES ET GESTION PROGRAMME
   ============================================================================
   Ces procedures Pascal emettent les routines runtime I/O dans le segment
   CODE. Toutes les routines utilisent des parametres en REGISTRES sauf
@@ -6206,11 +5866,11 @@ Begin
 End;
 
 { ============================================================================
-  TODO 21 - CODEGEN : INITIALISATION ET PIED DE PAGE (SEGMENTS EXPLICITES)
+  CODEGEN : INITIALISATION ET PIED DE PAGE (SEGMENTS EXPLICITES)
   ============================================================================
   Les helpers GenCodeSegmentHeader/Footer, GenStackSegment, GenDataSegment
-  (TODO 05/11) utilisent le modele simplifie (.MODEL SMALL / .CODE / .DATA).
-  Ce TODO ajoute les variantes a segments nommes explicites :
+  utilisent le modele simplifie (.MODEL SMALL / .CODE / .DATA).
+  Cette partie ajoute les variantes a segments nommes explicites :
     _CODE SEGMENT BYTE PUBLIC 'CODE'
     _DATA SEGMENT WORD PUBLIC 'DATA'
     _STACK SEGMENT STACK 'STACK'
@@ -6374,9 +6034,9 @@ Begin
 End;
 
 { ============================================================================
-  TODO 22 - GESTION DES ERREURS ET DIAGNOSTIC
+  GESTION DES ERREURS ET DIAGNOSTIC
   ============================================================================
-  ParseError et ParseWarn (TODO 07) affichent ligne simple; ce TODO ajoute :
+  ParseError et ParseWarn affichent ligne simple; cette partie ajoute :
     - ErrorMsg  : fichier + ligne + colonne + categorie
     - WarnMsg   : idem pour avertissements
     - FatalError : afficher + Halt(1)
@@ -6541,7 +6201,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 23 - GESTION DES OPTIONS ET INTERFACE LIGNE DE COMMANDE
+  GESTION DES OPTIONS ET INTERFACE LIGNE DE COMMANDE
   ============================================================================
   ParseCommandLine : lire ParamStr(1..ParamCount) et remplir les globales :
     src_fname, out_fname, opt_verbose, opt_debug, opt_no_rt.
@@ -6616,40 +6276,6 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  PrintBanner : afficher la banniere du compilateur.
-  -------------------------------------------------------------------------- }
-Procedure PrintBanner;
-Begin
-  WriteLn('CSC86 v', CSC86_VERSION, ' - compilateur C# Lite -> MASM 8086');
-  WriteLn('Copyright (c) 2026 - Turbo Pascal / Free Pascal');
-  WriteLn;
-End;
-
-{ --------------------------------------------------------------------------
-  PrintHelp : afficher l'aide en ligne de commande.
-  -------------------------------------------------------------------------- }
-Procedure PrintHelp;
-Begin
-  PrintBanner;
-  WriteLn('Usage : CSC86 <source.cs> [<sortie.asm>] [options]');
-  WriteLn;
-  WriteLn('Arguments :');
-  WriteLn('  source.cs      Fichier source C# Lite a compiler (obligatoire)');
-  WriteLn('  sortie.asm     Fichier ASM MASM de sortie (defaut: source.asm)');
-  WriteLn;
-  WriteLn('Options :');
-  WriteLn('  -v             Mode verbose : statistiques apres compilation');
-  WriteLn('  -d             Mode debug   : commentaires supplementaires dans ASM');
-  WriteLn('  -ns            Ne pas emettre le runtime inline (fichier externe)');
-  WriteLn('  -h, --help     Afficher cette aide et quitter');
-  WriteLn;
-  WriteLn('Exemples :');
-  WriteLn('  CSC86 hello.cs');
-  WriteLn('  CSC86 hello.cs hello.asm -v');
-  WriteLn('  CSC86 prog.cs prog.asm -d -ns');
-End;
-
-{ --------------------------------------------------------------------------
   ParseCommandLine : analyser les arguments de la ligne de commande.
   Remplit : src_fname, out_fname, opt_verbose, opt_debug, opt_no_rt.
   Retourne False si la compilation ne doit pas continuer (aide, erreur).
@@ -6664,46 +6290,32 @@ Begin
   ParseCommandLine := True;
   found_src := False;
   found_out := False;
-
-  If ParamCount = 0 Then
-  Begin
-    PrintHelp;
-    ParseCommandLine := False;
+  If ParamCount = 0 Then Begin
+    WriteLn('Parametre attendue !');
+    Halt(1);
     Exit;
   End;
 
-  For i := 1 To ParamCount Do
-  Begin
-    arg := ParamStr(i);
-
+  For i := 1 To ParamCount Do Begin
+   arg := ParamStr(i);
     { Options }
-    If arg = '-v' Then
-      opt_verbose := True
-    Else If arg = '-d' Then
-      opt_debug := True
-    Else If arg = '-ns' Then
-      opt_no_rt := True
-    Else If (arg = '-h') Or (arg = '--help') Then
-    Begin
-      PrintHelp;
-      ParseCommandLine := False;
-      Exit;
-    End
-    Else If (Length(arg) > 0) And (arg[1] = '-') Then
-    Begin
-      WriteLn( 'Option inconnue : ', arg);
-    End
+   If arg = '-v' Then opt_verbose := True Else
+   If arg = '-d' Then opt_debug := True Else
+   If arg = '-ns' Then opt_no_rt := True
     Else
-    Begin
-      { Argument fichier }
-      ext := StrLower(FileExtension(arg));
-      If Not found_src And ((ext = '.cs') Or (ext = '')) Then
-      Begin
-        src_fname := arg;
-        found_src := True;
-      End
-      Else If Not found_out And (ext = '.asm') Then
-      Begin
+   If (Length(arg) > 0)And(arg[1] = '-')Then Begin
+    WriteLn( 'Option inconnue : ', arg);
+   End
+    Else
+   Begin
+     { Argument fichier }
+    ext := StrLower(FileExtension(arg));
+    If Not found_src And ((ext = '.cs') Or (ext = '')) Then Begin
+    src_fname := arg;
+    found_src := True;
+    End
+     Else
+    If Not found_out And (ext = '.asm') Then Begin
         out_fname := arg;
         found_out := True;
       End
@@ -6747,7 +6359,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 24 - PROCEDURE COMPILE : ORCHESTRATEUR DE COMPILATION
+  PROCEDURE COMPILE : ORCHESTRATEUR DE COMPILATION
   ============================================================================
   Compile orchestre la compilation complete en une seule passe :
     1. Ouvrir les fichiers de sortie (out_file + tmp_file pour le CODE).
@@ -6766,8 +6378,7 @@ End;
    13. AssertNoErrors + PrintFinalReport.
   ============================================================================ }
 
-Procedure Compile;
-Begin
+Procedure Compile;Begin
   { Ouverture du fichier de sortie principal }
   InitOutput;
   { cur_out = out_file }
@@ -6820,7 +6431,7 @@ Begin
 End;
 
 { ============================================================================
-  TODO 25 - PROGRAMME PRINCIPAL
+  PROGRAMME PRINCIPAL
   ============================================================================
   Sequence :
     1. InitTables : initialiser sym_table, func_table, lit_table, etc.
@@ -6833,15 +6444,36 @@ End;
   ============================================================================ }
 
 BEGIN
-  InitTables;
-  PrintBanner;
-  If Not ParseCommandLine Then
-  Begin
-    FreeTables;
-    Halt(0);
-  End;
-  Compile;
-  FreeTables;
-  If err_count > 0 Then
-    Halt(1);
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('CSC86 - Cette commande permet de lancer le compilateur C# (C Sharp) pour l''assembleur ',
+          'du microprocesseur 8086.');
+  WriteLn;
+  WriteLn('Syntaxe : CSC86 <source.cs> [<sortie.asm>] [options]');
+  WriteLn;
+  WriteLn('Arguments :');
+  WriteLn('  source.cs      Fichier source C# Lite a compiler (obligatoire)');
+  WriteLn('  sortie.asm     Fichier ASM MASM de sortie (defaut: source.asm)');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v             Mode verbose : statistiques apres compilation');
+  WriteLn('  -d             Mode debug   : commentaires supplementaires dans ASM');
+  WriteLn('  -ns            Ne pas emettre le runtime inline (fichier externe)');
+  WriteLn('  -h, --help     Afficher cette aide et quitter');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  CSC86 hello.cs');
+  WriteLn('  CSC86 hello.cs hello.asm -v');
+  WriteLn('  CSC86 prog.cs prog.asm -d -ns');
+  Halt(0);
+ End;
+ InitTables;
+ If Not ParseCommandLine Then Begin
+   FreeTables;
+   Halt(0);
+ End;
+ If(opt_Verbose)Then WriteLn('CSC86 v', CSC86_VERSION, ' - compilateur C# Lite -> MASM 8086');
+ Compile;
+ FreeTables;
+ If err_count > 0 Then Halt(1);
 END.
