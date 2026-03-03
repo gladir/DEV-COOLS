@@ -1,0 +1,21 @@
+* Test 05b - Types, comparaisons, fonctions
+*
+        A = '42'
+        B = '58'
+        &OUTPUT = 'A = ' A
+        &OUTPUT = 'B = ' B
+        &OUTPUT = 'SIZE(A) = ' SIZE(A)
+*
+* Test IDENT sans espace dans les args
+        IDENT(A,'42') :S(A_EST_42)
+        &OUTPUT = 'A DIFFERENT DE 42'
+        :(SUITE)
+A_EST_42 &OUTPUT = 'A VAUT BIEN 42'
+SUITE
+* Test pattern matching pour tester le contenu
+        A '4' :S(A_CONTIENT_4)
+        &OUTPUT = 'A NE CONTIENT PAS 4'
+        :(FIN)
+A_CONTIENT_4 &OUTPUT = 'A CONTIENT LE CHIFFRE 4'
+FIN
+-END-

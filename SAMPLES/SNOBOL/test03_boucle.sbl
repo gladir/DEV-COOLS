@@ -1,0 +1,8 @@
+* Test 03 - Boucle : imprimer des lignes repetees par concatenation
+*
+        LIGNE = '='
+BOUCLE  &OUTPUT = LIGNE
+        LIGNE = LIGNE '='
+        IDENT(LIGNE,'==========') :F(BOUCLE)
+        &OUTPUT = 'BOUCLE TERMINEE'
+-END-

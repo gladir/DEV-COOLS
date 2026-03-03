@@ -1,0 +1,4 @@
+PROGRAM Test;
+BEGIN
+ WRITELN('Test');
+END.

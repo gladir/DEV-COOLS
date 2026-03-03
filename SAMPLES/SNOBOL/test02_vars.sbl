@@ -1,0 +1,8 @@
+* Test 02 - Variables et affichage
+*
+        NOM = 'ALICE'
+        AGE = '30'
+        &OUTPUT = 'NOM    : ' NOM
+        &OUTPUT = 'AGE    : ' AGE
+        &OUTPUT = 'DETAIL : ' NOM ' (' AGE ' ANS)'
+-END-

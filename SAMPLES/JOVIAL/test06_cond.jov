@@ -1,0 +1,26 @@
+MODULE CONDTEST;
+
+  ITEM X I 16;
+  ITEM Y I 16;
+
+  PROCEDURE CONDTEST;
+    X = 7;
+    Y = 7;
+    IF X = Y THEN
+      OUTPUT ('X EGAL Y');
+    ELSE
+      OUTPUT ('X DIFFERENT Y');
+    END;
+    X = 5;
+    IF X < 10 THEN
+      OUTPUT ('X < 10 : VRAI');
+    END;
+    IF X > 10 THEN
+      OUTPUT ('JAMAIS AFFICHE');
+    ELSE
+      OUTPUT ('X NON SUPERIEUR A 10');
+    END;
+    STOP;
+  END;
+
+END MODULE CONDTEST;

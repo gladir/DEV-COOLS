@@ -1,0 +1,27 @@
+MODULE TBLTEST;
+
+  TABLE T(5) I 16;
+  ITEM  I    I 16;
+  ITEM  S    I 16;
+
+  PROCEDURE TBLTEST;
+    T(0) = 10;
+    T(1) = 20;
+    T(2) = 30;
+    T(3) = 40;
+    T(4) = 50;
+    I = T(0);
+    OUTPUT ('T(0) = $D', I);
+    I = T(2);
+    OUTPUT ('T(2) = $D', I);
+    I = T(4);
+    OUTPUT ('T(4) = $D', I);
+    S = 0;
+    FOR I = 0 TO 4 DO
+      S = S + T(I);
+    END;
+    OUTPUT ('SOMME T = $D', S);
+    STOP;
+  END;
+
+END MODULE TBLTEST;

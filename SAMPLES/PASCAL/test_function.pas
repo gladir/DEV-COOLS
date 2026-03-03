@@ -1,0 +1,26 @@
+program TestFunction;
+
+function Square(x: Integer): Integer;
+var
+  result: Integer;
+begin
+  Square := x * x;
+end;
+
+function Add5(n: Integer): Integer;
+begin
+  Add5 := n + 5;
+end;
+
+var
+  a, b: Integer;
+
+begin
+  a := 10;
+  b := Square(a);
+  WriteLn('Square de ', a, ' = ', b);
+  
+  a := 7;
+  b := Add5(a);
+  WriteLn('Add5 de ', a, ' = ', b);
+end.

@@ -1,0 +1,25 @@
+MODULE LOOPTEST;
+
+  ITEM I I 16;
+  ITEM S I 16;
+
+  PROCEDURE LOOPTEST;
+    S = 0;
+    FOR I = 1 TO 5 DO
+      S = S + I;
+    END;
+    OUTPUT ('SOMME 1..5 = $D', S);
+    I = 3;
+    WHILE I > 0 DO
+      I = I - 1;
+    END;
+    OUTPUT ('WHILE DECOMPTE = $D', I);
+    I = 0;
+    DO
+      I = I + 1;
+    UNTIL I = 5;
+    OUTPUT ('DO UNTIL = $D', I);
+    STOP;
+  END;
+
+END MODULE LOOPTEST;

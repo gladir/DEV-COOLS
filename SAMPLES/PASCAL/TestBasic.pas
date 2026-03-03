@@ -1,0 +1,6 @@
+PROGRAM TestBasic;
+VAR
+  X: INTEGER;
+BEGIN
+  X := 42;
+END.

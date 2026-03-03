@@ -1,0 +1,42 @@
+* Test 07 - Arithmetique (v1 : predicats et SIZE)
+* En SNOBOL86 v1, les operateurs +/-/*/÷ ne sont pas encore dans EvalExpr.
+* L'arithmetique est disponible via :
+*   - LT / LE / GT / GE / EQ / NE  (predicats numeriques)
+*   - SIZE(var)                      (longueur -> entier)
+*   - Valeurs entieres en litteraux  (stockees comme chaines)
+        &OUTPUT = '=== Test arithmetique SNOBOL86 v1 ==='
+* --- Affectation de valeurs entieres ---
+        A = '100'
+        B = '42'
+        &OUTPUT = 'A = ' A
+        &OUTPUT = 'B = ' B
+* --- Longueur de chaine via SIZE ---
+        MOT = 'SNOBOL'
+        &OUTPUT = 'MOT = ' MOT
+        &OUTPUT = 'SIZE(MOT) = ' SIZE(MOT)
+* --- Predicat EQ : egalite ---
+        EQ(SIZE(MOT),6) :S(TAILLE_OK)
+        &OUTPUT = 'ERREUR : taille MOT incorrecte'
+        :(SUITE1)
+TAILLE_OK &OUTPUT = 'SIZE(SNOBOL) = 6  OK'
+SUITE1
+* --- Predicat LT : inferieur strict ---
+        LT(B,A) :S(B_PETIT)
+        &OUTPUT = 'B >= A (inattendu)'
+        :(SUITE2)
+B_PETIT &OUTPUT = 'B < A  OK'
+SUITE2
+* --- Predicat GT : superieur strict ---
+        GT(A,B) :S(A_GRAND)
+        &OUTPUT = 'A <= B (inattendu)'
+        :(SUITE3)
+A_GRAND &OUTPUT = 'A > B  OK'
+SUITE3
+* --- Predicat NE : different ---
+        NE(A,B) :S(DIFF_OK)
+        &OUTPUT = 'A = B (inattendu)'
+        :(FIN)
+DIFF_OK &OUTPUT = 'A <> B  OK'
+        &OUTPUT = '--- Fin test arithmetique ---'
+FIN
+-END-

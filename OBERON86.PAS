@@ -365,10 +365,12 @@ Var
   src_file     : Text;
   out_file     : Text;
   tmp_file     : Text;
+  str_file     : Text;             { chaînes litterales differees (TODO 25) }
   cur_out      : ^Text;        { pointe sur out_file ou tmp_file       }
   src_fname    : TString;
   out_fname    : TString;
   tmp_fname    : TString;
+  str_fname    : TString;          { nom du fichier de chaines litterales }
 
   { Compteurs }
   sym_count    : Integer;
@@ -380,6 +382,7 @@ Var
   warn_count   : Integer;
   instr_count  : Integer;
   str_lit_count: Integer;
+  tok_count    : Integer;   { TODO 24 : tokens lus depuis la source }
 
   { Etat lexer }
   lex_lineno   : Integer;
@@ -883,6 +886,7 @@ Begin
     Exit;
   End;
 
+  Inc(tok_count);   { TODO 24 : compter les tokens fraichement scans }
   LexSkipWS;
   lex_colno := lex_pos;
 
@@ -933,17 +937,16 @@ Begin
   End;
 End;
 
+{ Forward TODO 24 : ErrorMsg est utilise par LexExpect / LexExpectKind }
+Procedure ErrorMsg(Const msg : TString); Forward;
+
 { --------------------------------------------------------------------------
   LexExpect : consommer cur_tok en verifiant que sa valeur est 'val'.
   -------------------------------------------------------------------------- }
 Procedure LexExpect(Const val : TString);
 Begin
   If cur_tok.val <> val Then
-  Begin
-    Inc(err_count);
-    WriteLn('Erreur ligne ', lex_lineno, ' col ', lex_colno,
-            ' : attendu ''', val, ''' mais lu ''', cur_tok.val, '''');
-  End;
+    ErrorMsg('attendu ''' + val + ''' mais lu ''' + cur_tok.val + '''');
   LexNext;
 End;
 
@@ -953,11 +956,7 @@ End;
 Procedure LexExpectKind(k : TTokenKind);
 Begin
   If cur_tok.kind <> k Then
-  Begin
-    Inc(err_count);
-    WriteLn('Erreur ligne ', lex_lineno, ' col ', lex_colno,
-            ' : type de token inattendu (lu : ''', cur_tok.val, ''')');
-  End;
+    ErrorMsg('identifiant attentu, lu : ''' + cur_tok.val + '''');
   LexNext;
 End;
 
@@ -996,16 +995,22 @@ End;
   TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
   ============================================================ }
 
+{ ============================================================
+  TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
+  ============================================================ }
+
 { --------------------------------------------------------------------------
-  ErrorMsg : afficher un message d'erreur situe et incrementer err_count.
+  ErrorMsg : afficher un message d'erreur situe, incrementer err_count.
+  Stoppe la compilation apres MAX_ERRORS.
   -------------------------------------------------------------------------- }
 Procedure ErrorMsg(Const msg : TString);
 Begin
   Inc(err_count);
-  WriteLn('Erreur (', lex_lineno, ',', lex_colno, ') : ', msg);
+  WriteLn(src_fname, '(', lex_lineno, ',', lex_colno, ') Erreur : ', msg);
   If err_count >= MAX_ERRORS Then
   Begin
-    WriteLn('Trop d''erreurs (', MAX_ERRORS, ') - compilation abandonnee.');
+    WriteLn(src_fname, ' : trop d''erreurs (', MAX_ERRORS,
+            ') - compilation abandonnee.');
     Halt(1);
   End;
 End;
@@ -1013,7 +1018,7 @@ End;
 Procedure WarnMsg(Const msg : TString);
 Begin
   Inc(warn_count);
-  WriteLn('Avertissement (', lex_lineno, ',', lex_colno, ') : ', msg);
+  WriteLn(src_fname, '(', lex_lineno, ',', lex_colno, ') Avertissement : ', msg);
 End;
 
 { --------------------------------------------------------------------------
@@ -1360,6 +1365,9 @@ Begin
   ConstFind := 0;
 End;
 
+{ Forward TODO 24 : TypeName est utilise par SymDumpVerbose }
+Function TypeName(ti : Integer) : TString; Forward;
+
 { --------------------------------------------------------------------------
   SymDumpVerbose : afficher la table des symboles (mode -v -d).
   -------------------------------------------------------------------------- }
@@ -1367,17 +1375,30 @@ Procedure SymDumpVerbose;
 Const
   KNames : Array[TSymKind] of String[8] =
     ('NONE', 'CONST', 'TYPE', 'VAR', 'PARAM', 'PROC', 'FIELD', 'MODULE');
-Var i : Integer;
+Var i   : Integer;
+    ti  : Integer;
 Begin
   WriteLn('--- Table des symboles (', sym_count, ' entrees) ---');
   For i := 1 To sym_count Do
   Begin
+    ti := sym_table^[i].type_idx;
     Write('  [', i:3, '] ', sym_table^[i].name:-20, ' ',
-          KNames[sym_table^[i].kind], '  lv=', sym_table^[i].scope_level);
+          KNames[sym_table^[i].kind]:7, '  lv=', sym_table^[i].scope_level);
+    If ti > 0 Then
+      Write('  t=', TypeName(ti));
     If sym_table^[i].asm_label <> '' Then
       Write('  asm=', sym_table^[i].asm_label);
     If sym_table^[i].bp_offset <> 0 Then
       Write('  bp+', sym_table^[i].bp_offset);
+    If sym_table^[i].kind = SK_CONST Then
+    Begin
+      If sym_table^[i].const_sval <> '' Then
+        Write('  val=''', sym_table^[i].const_sval, '''')
+      Else
+        Write('  val=', sym_table^[i].const_ival);
+    End;
+    If (sym_table^[i].kind = SK_PROC) And (sym_table^[i].proc_idx > 0) Then
+      Write('  proc=', sym_table^[i].proc_idx);
     WriteLn;
   End;
 End;
@@ -1753,6 +1774,7 @@ Begin
   warn_count   := 0;
   instr_count  := 0;
   str_lit_count := 0;
+  tok_count    := 0;
   scope_sp     := 0;
   cur_proc_idx := 0;
   import_count := 0;
@@ -1773,6 +1795,7 @@ End;
 { Types primitifs predefinis - utilise TypeNew (TODO 04) }
 Procedure InitBuiltinTypes;
 Begin
+  { Creer les descripteurs internes de types }
   TYP_UNDEF   := TypeNew(TYK_NONE,    0);
   TYP_INTEGER := TypeNew(TYK_INTEGER, 16);
   TYP_BOOLEAN := TypeNew(TYK_BOOLEAN,  8);
@@ -1781,6 +1804,15 @@ Begin
   TYP_SET     := TypeNew(TYK_SET,     16);
   TYP_REAL    := TypeNew(TYK_REAL,    32);
   TYP_NIL     := TypeNew(TYK_NIL,     16);
+
+  { Inscrire les noms Oberon dans sym_table (SK_TYPE, portee 0 = predeclaree) }
+  { Permet a ParseTypeRef de resoudre INTEGER, BOOLEAN, etc. par SymFind.    }
+  SymEnter('INTEGER', SK_TYPE, SC_GLOBAL, TYP_INTEGER);
+  SymEnter('BOOLEAN', SK_TYPE, SC_GLOBAL, TYP_BOOLEAN);
+  SymEnter('CHAR',    SK_TYPE, SC_GLOBAL, TYP_CHAR);
+  SymEnter('BYTE',    SK_TYPE, SC_GLOBAL, TYP_BYTE);
+  SymEnter('SET',     SK_TYPE, SC_GLOBAL, TYP_SET);
+  SymEnter('REAL',    SK_TYPE, SC_GLOBAL, TYP_REAL);
 End;
 
 { ============================================================
@@ -2057,6 +2089,8 @@ Begin
   EmitDB ('_OV_TRUE',  '''TRUE'', 0');
   EmitDB ('_OV_FALSE', '''FALSE'', 0');
   EmitDW ('_OV_IN_DONE', '1');        { In.Done : True apres lecture reussie }
+  EmitDW ('_OV_HEAP_PTR', '0');       { pointeur courant dans le heap interne }
+  EmitDup('_OV_HEAP_BUF', 4096, '0', 1);  { 4 Ko de heap interne }
   EmitBlank;
 End;
 
@@ -2086,6 +2120,9 @@ Begin
   EmitLabel('START');
   EmitI2('MOV', 'AX', '_DATA');
   EmitI2('MOV', 'DS', 'AX');
+  { Initialiser le pointeur de heap interne }
+  EmitI2('MOV', 'AX', 'OFFSET _OV_HEAP_BUF');
+  EmitI2('MOV', '[_OV_HEAP_PTR]', 'AX');
   EmitBlank;
 End;
 
@@ -2276,6 +2313,31 @@ Begin
     GenStoreVar(si)
   Else
     GenStoreLocal(si);
+End;
+
+{ ==========================================================================
+  TODO 21 - TABLEAUX ET ENREGISTREMENTS
+  ========================================================================== }
+
+{ --------------------------------------------------------------------------
+  GenStructCopy : copier n_bytes octets de SI (source) vers DI (dest).
+  Utilise REP MOVSW, puis MOVSB si le compte est impair.
+  SI et DI doivent etre charges par l'appelant avant cet appel.
+  -------------------------------------------------------------------------- }
+Procedure GenStructCopy(n_bytes : Integer);
+Var w : Integer;
+    r : Integer;
+Begin
+  If n_bytes <= 0 Then Exit;
+  w := n_bytes Div 2;
+  r := n_bytes Mod 2;
+  If w > 0 Then
+  Begin
+    EmitI2('MOV', 'CX', IntToStr(w));
+    EmitI0('REP  MOVSW');
+  End;
+  If r = 1 Then
+    EmitI0('MOVSB');
 End;
 
 { ============================================================
@@ -2514,50 +2576,61 @@ End;
   Retourne le label ASM genere (_OK_nnn).
   -------------------------------------------------------------------------- }
 Function GenStringLitData(Const s : TString) : TString;
-Var lbl : TString;
-    i   : Integer;
-    out_s : TString;
-    c     : Char;
+Var lbl      : TString;
+    i        : Integer;
+    out_s    : TString;
+    c        : Char;
+    save_out : ^Text;
+    in_quote : Boolean;
+    tmp_n    : TString;
 Begin
   Inc(str_lit_count);
   Str(str_lit_count, lbl);
   lbl := OK_PFX + lbl;
 
-  { Construire la valeur DB : caracteres entre apostrophes + 0 terminateur }
-  out_s := '';
+  { Construire la valeur DB : blocs 'texte' + octets decimaux + terminateur 0 }
+  out_s    := '';
+  in_quote := False;
   For i := 1 To Length(s) Do
   Begin
     c := s[i];
     If (Ord(c) >= 32) And (c <> '''') Then
     Begin
-      If out_s = '' Then out_s := ''''
-      Else If out_s[Length(out_s)] <> '''' Then
-        out_s := out_s + ', ''';
+      { Caractere imprimable (hors apostrophe) : ouvrir bloc si necessaire }
+      If Not in_quote Then
+      Begin
+        If out_s <> '' Then out_s := out_s + ', ';
+        out_s    := out_s + '''';
+        in_quote := True;
+      End;
       out_s := out_s + c;
     End
     Else
     Begin
-      If (out_s <> '') And (out_s[Length(out_s)] = '''') Then
-        out_s := out_s + '''';
+      { Caractere special ou apostrophe : fermer bloc et emettre en decimal }
+      If in_quote Then
+      Begin
+        out_s    := out_s + '''';
+        in_quote := False;
+      End;
       If out_s <> '' Then out_s := out_s + ', ';
-      Str(Ord(c), lbl);
-      out_s := out_s + lbl + 'd';
-      lbl := OK_PFX;
-      Str(str_lit_count, lbl);
-      lbl := OK_PFX + lbl;
+      Str(Ord(c), tmp_n);
+      out_s := out_s + tmp_n + 'd';
     End;
   End;
-  { Fermer l'apostrophe si necessaire et ajouter terminateur 0 }
-  If (out_s <> '') And (out_s[Length(out_s)] <> 'd') Then
+  { Fermer le bloc ouvert et ajouter terminateur nul }
+  If in_quote Then
     out_s := out_s + '''';
   If out_s = '' Then
     out_s := '0'
   Else
     out_s := out_s + ', 0';
 
-  { Emettre dans le DATA courant (avant GenDataFooter) }
-  { Note : on emet dans out_file directement via SwitchToMain si besoin }
+  { Emettre dans str_file (fusionne dans _DATA apres le CODE) }
+  save_out := cur_out;
+  cur_out  := @str_file;
   EmitDB(lbl, out_s);
+  cur_out  := save_out;
   GenStringLitData := lbl;
 End;
 
@@ -2998,6 +3071,9 @@ Function  IsStdModuleIdent(Const name : TString) : Boolean; Forward;
 Function  ParseStdModuleExpr : Integer; Forward;
 Procedure ParseStdModuleCall; Forward;
 
+{ Forwards TODO 23 - clause IMPORT et modules Math / SYSTEM. }
+Procedure ParseImportSection; Forward;
+
 { --------------------------------------------------------------------------
   GenLoadConst : charger une valeur immediate dans AX (ou DX:AX si 32 bits).
   -------------------------------------------------------------------------- }
@@ -3039,15 +3115,16 @@ End;
   Retourne le type_idx resultant.
   -------------------------------------------------------------------------- }
 Function ParseDesignator : Integer;
-Var name    : TString;
-    si      : Integer;
-    ti      : Integer;
-    el_ti   : Integer;
-    el_size : Integer;
-    fld_idx : Integer;
-    k       : Integer;
-    pi2     : Integer;
-    n_a     : Integer;
+Var name       : TString;
+    si         : Integer;
+    ti         : Integer;
+    el_ti      : Integer;
+    el_size    : Integer;
+    fld_idx    : Integer;
+    k          : Integer;
+    pi2        : Integer;
+    n_a        : Integer;
+    addr_in_bx : Boolean;   { True si la valeur courante est une adresse dans BX }
 Begin
   name := cur_tok.val;
   LexExpectKind(TK_IDENT);
@@ -3060,6 +3137,7 @@ Begin
   End;
 
   ti := sym_table^[si].type_idx;
+  addr_in_bx := False;
 
   { Charger la valeur ou l'adresse de base selon la nature du symbole }
   Case sym_table^[si].kind Of
@@ -3090,7 +3168,14 @@ Begin
       End;
   Else
     { SK_VAR, SK_PARAM, SK_FIELD }
-    GenLoad(si);
+    { Pour les agregats (ARRAY, RECORD), charger l'adresse dans BX }
+    If TypeIsArray(ti) Or TypeIsRecord(ti) Then
+    Begin
+      GenLoadAddr(si);     { BX = adresse de base de l'agregat }
+      addr_in_bx := True;
+    End
+    Else
+      GenLoad(si);         { AX = valeur scalaire }
   End;
 
   { Post-fixes }
@@ -3101,6 +3186,11 @@ Begin
       LexNext;
       If (ti < 1) Or (type_table^[ti].kind <> TYK_RECORD) Then
         ErrorMsg('Selection de champ sur un type non RECORD');
+      If Not addr_in_bx Then
+      Begin
+        { On avait un pointeur vers RECORD dans AX }
+        EmitI2('MOV', 'BX', 'AX');
+      End;
       name := cur_tok.val;
       LexExpectKind(TK_IDENT);
       fld_idx := 0;
@@ -3115,25 +3205,40 @@ Begin
         ErrorMsg('Champ inconnu : ' + name)
       Else
       Begin
-        { On suppose BX = adresse de base du record }
-        EmitI2('ADD', 'BX', IntToStr(sym_table^[fld_idx].fld_offset));
-        EmitI2('MOV', 'AX', '[BX]');
+        If sym_table^[fld_idx].fld_offset > 0 Then
+          EmitI2('ADD', 'BX', IntToStr(sym_table^[fld_idx].fld_offset));
         ti := sym_table^[fld_idx].type_idx;
+        If TypeIsArray(ti) Or TypeIsRecord(ti) Then
+          addr_in_bx := True
+        Else
+        Begin
+          EmitI2('MOV', 'AX', '[BX]');
+          addr_in_bx := False;
+        End;
       End;
     End
     Else If cur_tok.val = '[' Then
     Begin
       LexNext;
-      If (ti < 1) Or (type_table^[ti].kind <> TYK_ARRAY) Then
+      If (ti < 1) Or ((type_table^[ti].kind <> TYK_ARRAY) And
+                      (type_table^[ti].kind <> TYK_OPENARRAY)) Then
         ErrorMsg('Acces indexe sur un type non ARRAY');
       el_ti   := type_table^[ti].base_idx;
       el_size := TypeByteSize(el_ti);
       If el_size < 1 Then el_size := 1;
-      { Sauvegarder l'adresse de base (AX) dans BX }
-      EmitI2('MOV', 'BX', 'AX');
-      { Evaluer l'index -> AX }
-      ParseExpr;
-      { Calculer l'offset : AX * el_size }
+      { Si la base n'est pas encore dans BX, la placer }
+      If Not addr_in_bx Then
+        EmitI2('MOV', 'BX', 'AX');
+      EmitI0('PUSH BX');              { sauvegarder adresse de base }
+      ParseExpr;                       { index -> AX }
+      { Verification de bornes (0 <= i < len) pour tableaux de taille connue }
+      If (type_table^[ti].kind = TYK_ARRAY) And
+         (type_table^[ti].arr_len > 0) Then
+      Begin
+        EmitI2('CMP', 'AX', IntToStr(type_table^[ti].arr_len));
+        EmitI1('JAE', '_ORT_BOUNDS_ERR');  { non signe : capte < 0 et >= len }
+      End;
+      { Calculer l'offset : AX = index * el_size }
       If el_size = 2 Then
         EmitI0('SHL  AX, 1')
       Else If el_size > 2 Then
@@ -3141,9 +3246,16 @@ Begin
         EmitI2('MOV', 'CX', IntToStr(el_size));
         EmitI0('MUL  CX');
       End;
+      EmitI0('POP  BX');
       EmitI2('ADD', 'BX', 'AX');
-      EmitI2('MOV', 'AX', '[BX]');
       ti := el_ti;
+      If TypeIsArray(ti) Or TypeIsRecord(ti) Then
+        addr_in_bx := True
+      Else
+      Begin
+        EmitI2('MOV', 'AX', '[BX]');
+        addr_in_bx := False;
+      End;
       LexExpect(']');
     End
     Else
@@ -3151,12 +3263,28 @@ Begin
       LexNext;
       If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
         ErrorMsg('Dereferencement sur un type non POINTER');
-      EmitI2('MOV', 'BX', 'AX');
-      EmitI2('MOV', 'AX', '[BX]');
+      { Obtenir la valeur du pointeur dans BX }
+      If addr_in_bx Then
+        EmitI2('MOV', 'BX', '[BX]')  { deref adresse en BX }
+      Else
+        EmitI2('MOV', 'BX', 'AX');   { pointer etait dans AX }
+      { Verification NIL a l'execution (TODO 22) }
+      EmitI2('OR',  'BX', 'BX');
+      EmitI1('JZ',  '_ORT_NIL_ERR');
       ti := type_table^[ti].base_idx;
+      If TypeIsArray(ti) Or TypeIsRecord(ti) Then
+        addr_in_bx := True
+      Else
+      Begin
+        EmitI2('MOV', 'AX', '[BX]');
+        addr_in_bx := False;
+      End;
     End;
   End;
 
+  { Si on termine en mode adresse (agregat), mettre l'adresse dans AX aussi }
+  If addr_in_bx Then
+    EmitI2('MOV', 'AX', 'BX');
   ParseDesignator := ti;
 End;
 
@@ -3466,20 +3594,29 @@ Begin
         ErrorMsg('Champ inconnu : ' + fname)
       Else
       Begin
-        EmitI2('ADD', 'BX', IntToStr(sym_table^[fld_idx].fld_offset));
+        If sym_table^[fld_idx].fld_offset > 0 Then
+          EmitI2('ADD', 'BX', IntToStr(sym_table^[fld_idx].fld_offset));
         ti := sym_table^[fld_idx].type_idx;
       End;
     End
     Else If cur_tok.val = '[' Then
     Begin
       LexNext;
-      If (ti < 1) Or (type_table^[ti].kind <> TYK_ARRAY) Then
+      If (ti < 1) Or ((type_table^[ti].kind <> TYK_ARRAY) And
+                      (type_table^[ti].kind <> TYK_OPENARRAY)) Then
         ErrorMsg('Acces indexe sur un type non ARRAY');
       el_ti   := type_table^[ti].base_idx;
       el_size := TypeByteSize(el_ti);
       If el_size < 1 Then el_size := 1;
       EmitI0('PUSH BX');              { sauvegarder adresse de base }
       ParseExpr;                       { index -> AX }
+      { Verification de bornes }
+      If (type_table^[ti].kind = TYK_ARRAY) And
+         (type_table^[ti].arr_len > 0) Then
+      Begin
+        EmitI2('CMP', 'AX', IntToStr(type_table^[ti].arr_len));
+        EmitI1('JAE', '_ORT_BOUNDS_ERR');
+      End;
       If el_size = 2 Then
         EmitI0('SHL  AX, 1')
       Else If el_size > 2 Then
@@ -3498,6 +3635,9 @@ Begin
       If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
         ErrorMsg('Dereferencement sur un type non POINTER');
       EmitI2('MOV', 'BX', '[BX]');    { deref }
+      { Verification NIL a l'execution (TODO 22) }
+      EmitI2('OR',  'BX', 'BX');
+      EmitI1('JZ',  '_ORT_NIL_ERR');
       ti := type_table^[ti].base_idx;
     End;
   End;
@@ -3509,12 +3649,13 @@ End;
   Gere : variable simple, element de tableau, champ de RECORD, deref ptr.
   -------------------------------------------------------------------------- }
 Procedure ParseAssignment;
-Var vname  : TString;
-    si     : Integer;
-    ti_lhs : Integer;
-    ti_rhs : Integer;
-    simple : Boolean;
-    bits   : Integer;
+Var vname   : TString;
+    si      : Integer;
+    ti_lhs  : Integer;
+    ti_rhs  : Integer;
+    simple  : Boolean;
+    bits    : Integer;
+    nb      : Integer;
 Begin
   vname := cur_tok.val;
   LexExpectKind(TK_IDENT);
@@ -3538,28 +3679,55 @@ Begin
   simple := (cur_tok.val <> '.') And (cur_tok.val <> '[') And (cur_tok.val <> '^');
 
   If simple Then
-    ti_lhs := sym_table^[si].type_idx
-  Else
-    ti_lhs := GenLValueAddr(si);   { BX = adresse de la cible }
-
-  LexExpect(':=');
-  ti_rhs := ParseExpr;             { resultat dans AX (ou AX+BX pour chaine) }
-
-  TypeCheckAssign(ti_lhs, ti_rhs);
-
-  If simple Then
-    GenStore(si)                   { MOV [label]/[BP+ofs], AX }
+  Begin
+    ti_lhs := sym_table^[si].type_idx;
+    { Affectation de structure : RECORD ou ARRAY -> copie bloc }
+    If TypeIsRecord(ti_lhs) Or TypeIsArray(ti_lhs) Then
+    Begin
+      GenLoadAddr(si);             { BX = adresse de la destination }
+      EmitI2('MOV', 'DI', 'BX');  { DI = destination }
+      LexExpect(':=');
+      ti_rhs := ParseExpr;        { ParseDesignator met l'adresse source dans AX }
+      EmitI2('MOV', 'SI', 'AX');  { SI = source }
+      TypeCheckAssign(ti_lhs, ti_rhs);
+      nb := TypeByteSize(ti_lhs);
+      GenStructCopy(nb);
+    End
+    Else
+    Begin
+      LexExpect(':=');
+      ti_rhs := ParseExpr;
+      TypeCheckAssign(ti_lhs, ti_rhs);
+      GenStore(si);
+    End;
+  End
   Else
   Begin
-    bits := TypeBitSize(ti_lhs);
-    Case bits Of
-       8 : EmitI2('MOV', '[BX]', 'AL');
-      32 : Begin
-             EmitI2('MOV', '[BX]',   'AX');
-             EmitI2('MOV', '[BX+2]', 'DX');
-           End;
+    ti_lhs := GenLValueAddr(si);   { BX = adresse de la cible }
+    LexExpect(':=');
+    ti_rhs := ParseExpr;           { resultat dans AX }
+    TypeCheckAssign(ti_lhs, ti_rhs);
+    { Affectation de structure vers adresse calculee }
+    If TypeIsRecord(ti_lhs) Or TypeIsArray(ti_lhs) Then
+    Begin
+      EmitI0('PUSH BX');
+      EmitI2('MOV', 'SI', 'AX');   { SI = source (adresse en AX) }
+      EmitI0('POP  DI');           { DI = destination }
+      nb := TypeByteSize(ti_lhs);
+      GenStructCopy(nb);
+    End
     Else
-      EmitI2('MOV', '[BX]', 'AX');
+    Begin
+      bits := TypeBitSize(ti_lhs);
+      Case bits Of
+         8 : EmitI2('MOV', '[BX]', 'AL');
+        32 : Begin
+               EmitI2('MOV', '[BX]',   'AX');
+               EmitI2('MOV', '[BX+2]', 'DX');
+             End;
+      Else
+        EmitI2('MOV', '[BX]', 'AX');
+      End;
     End;
   End;
 End;
@@ -4292,19 +4460,27 @@ Begin
 
   Else If fname = 'NEW' Then
   Begin
-    { NEW(p) : allouer TypeByteSize(p^) octets (DOS AH=48h, en paragraphes) }
+    { NEW(p) : allouer sizeof(p^) octets dans le heap interne.              }
+    { Appelle _ORT_HEAP_ALLOC(BX = taille) -> AX = near ptr, 0 si echec.  }
     v_str := cur_tok.val;
     si1   := SymFind(v_str);
     LexExpectKind(TK_IDENT);
     If si1 > 0 Then
     Begin
       ti1 := sym_table^[si1].type_idx;
-      EmitI2('MOV', 'BX',
-             IntToStr((TypeByteSize(type_table^[ti1].base_idx) + 15) Div 16));
-      EmitI2('MOV', 'AH', '48h');
-      EmitI0('INT  21h');
+      { Calcul de la taille : sizeof(pointee type) }
+      If (ti1 >= 1) And (ti1 <= type_count) And
+         (type_table^[ti1].kind = TYK_POINTER) Then
+        EmitI2('MOV', 'BX', IntToStr(TypeByteSize(type_table^[ti1].base_idx)))
+      Else
+        EmitI2('MOV', 'BX', '2');        { fallback : 2 octets }
+      EmitI1('CALL', '_ORT_HEAP_ALLOC');
+      { Verifier echec (AX = 0) }
+      EmitI2('OR',  'AX', 'AX');
+      EmitI1('JZ',  '_ORT_NIL_ERR');     { heap sature = erreur fatale }
+      { Stocker le near ptr dans p }
       EmitI0('PUSH AX');
-      GenLoadAddr(si1);              { BX = adresse de p }
+      GenLoadAddr(si1);                  { BX = adresse de p }
       EmitI0('POP  AX');
       EmitI2('MOV', 'Word Ptr [BX]', 'AX');
     End
@@ -4314,18 +4490,16 @@ Begin
 
   Else If fname = 'DISPOSE' Then
   Begin
-    { DISPOSE(p) : liberer bloc heap (DOS AH=49h) et mettre p a NIL }
+    { DISPOSE(p) : liberer le bloc heap et mettre p a NIL. }
     v_str := cur_tok.val;
     si1   := SymFind(v_str);
     LexExpectKind(TK_IDENT);
     If si1 > 0 Then
     Begin
-      GenLoad(si1);                  { AX = segment du bloc }
-      EmitI2('MOV', 'ES', 'AX');
-      EmitI2('MOV', 'AH', '49h');
-      EmitI0('INT  21h');
-      GenLoadAddr(si1);
-      EmitI2('MOV', 'Word Ptr [BX]', '0');
+      GenLoad(si1);                      { AX = valeur du pointeur }
+      EmitI1('CALL', '_ORT_HEAP_FREE'); { stub bump-allocator }
+      GenLoadAddr(si1);                  { BX = adresse de p }
+      EmitI2('MOV', 'Word Ptr [BX]', '0');  { p := NIL }
     End
     Else
       ErrorMsg('DISPOSE : pointeur inconnu : ' + v_str);
@@ -4514,8 +4688,20 @@ End;
   IsStdModuleIdent : vrai si name est un module standard Out ou In.
   -------------------------------------------------------------------------- }
 Function IsStdModuleIdent(Const name : TString) : Boolean;
+Var i : Integer;
 Begin
-  IsStdModuleIdent := (name = 'Out') Or (name = 'In');
+  If (name = 'Out') Or (name = 'In') Or (name = 'Math') Or (name = 'SYSTEM') Then
+  Begin
+    IsStdModuleIdent := True;
+    Exit;
+  End;
+  For i := 1 To import_count Do
+    If (import_table[i].alias = name) Or (import_table[i].mod_name = name) Then
+    Begin
+      IsStdModuleIdent := True;
+      Exit;
+    End;
+  IsStdModuleIdent := False;
 End;
 
 { --------------------------------------------------------------------------
@@ -4705,6 +4891,52 @@ Begin
   EmitI0('RET');
   EmitBlank;
 
+  { _ORT_BOUNDS_ERR : sortie avec code 2 (debordement tableau) }
+  EmitLabel('_ORT_BOUNDS_ERR');
+  EmitI2('MOV',  'AX', '4C02h');
+  EmitI0('INT  21h');
+  EmitBlank;
+
+  { _ORT_NIL_ERR : acces par un pointeur NIL -> exit code 3 }
+  EmitLabel('_ORT_NIL_ERR');
+  EmitI2('MOV',  'AX', '4C03h');
+  EmitI0('INT  21h');
+  EmitBlank;
+
+  { _ORT_HEAP_ALLOC : allouer BX octets dans le heap interne (bump allocator).  }
+  { Entree  : BX = nombre d'octets a allouer (aligne sur 2 par la routine).     }
+  { Sortie  : AX = near ptr vers le bloc alloue, ou 0 si heap sature.           }
+  EmitLabel('_ORT_HEAP_ALLOC');
+  EmitI1('PUSH', 'BX');
+  EmitI1('PUSH', 'DX');
+  { Aligner BX sur 2 }
+  EmitI2('ADD',  'BX', '1');
+  EmitI2('AND',  'BX', '0FFFEh');
+  { AX = ptr courant }
+  EmitI2('MOV',  'AX', '[_OV_HEAP_PTR]');
+  { DX = AX + BX (nouvelle position) }
+  EmitI2('MOV',  'DX', 'AX');
+  EmitI2('ADD',  'DX', 'BX');
+  { Verifier debordement : DX > OFFSET _OV_HEAP_BUF + 4096 }
+  EmitI2('CMP',  'DX', 'OFFSET _OV_HEAP_BUF + 4096');
+  EmitI1('JA',   '_ORT_HA_OOM');
+  { Mettre a jour le pointeur }
+  EmitI2('MOV',  '[_OV_HEAP_PTR]', 'DX');
+  EmitI1('JMP',  '_ORT_HA_OK');
+  EmitLabel('_ORT_HA_OOM');
+  EmitI2('XOR',  'AX', 'AX');          { retourner 0 = echec }
+  EmitLabel('_ORT_HA_OK');
+  EmitI1('POP',  'DX');
+  EmitI1('POP',  'BX');
+  EmitI0('RET');
+  EmitBlank;
+
+  { _ORT_HEAP_FREE : stub - liberer bloc pointe par AX (bump = on ne libere pas) }
+  { L'appelant est charge de mettre le pointeur a NIL apres l'appel.             }
+  EmitLabel('_ORT_HEAP_FREE');
+  EmitI0('RET');
+  EmitBlank;
+
   SwitchToMain;
 End;
 
@@ -4728,6 +4960,86 @@ Begin
     EmitI2('MOV', 'AX', '[_OV_IN_DONE]');
     ParseStdModuleExpr := TYP_BOOLEAN;
   End
+
+  { ---- TODO 23 : Math.xxx -> stub FPU ---- }
+  Else If (modname = 'Math') Then
+  Begin
+    EmitComment(' Math.' + methname + '(x) : stub - FPU non supporte - retourne 0');
+    If cur_tok.val = '(' Then
+    Begin
+      LexNext;
+      If cur_tok.val <> ')' Then
+      Begin
+        ParseExpr;
+        While cur_tok.val = ',' Do
+        Begin
+          LexNext;
+          ParseExpr;
+        End;
+      End;
+      LexExpect(')');
+    End;
+    EmitI2('XOR', 'AX', 'AX');
+    ParseStdModuleExpr := TYP_REAL;
+  End
+
+  { ---- TODO 23 : SYSTEM.ADR / SYSTEM.VAL / SYSTEM.BIT ---- }
+  Else If modname = 'SYSTEM' Then
+  Begin
+    If methname = 'ADR' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;
+      LexExpect(')');
+      EmitComment(' SYSTEM.ADR : adresse en AX (approximation via valeur)');
+      ParseStdModuleExpr := TYP_INTEGER;
+    End
+    Else If methname = 'VAL' Then
+    Begin
+      LexExpect('(');
+      ParseTypeRef;
+      LexExpect(',');
+      ParseExpr;
+      LexExpect(')');
+      EmitComment(' SYSTEM.VAL : transtypage - valeur dans AX');
+      ParseStdModuleExpr := TYP_INTEGER;
+    End
+    Else If methname = 'BIT' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;
+      EmitI1('PUSH', 'AX');
+      LexExpect(',');
+      ParseExpr;
+      EmitI2('MOV', 'CX', 'AX');
+      EmitI1('POP',  'AX');
+      EmitI2('SHR',  'AX', 'CL');
+      EmitI2('AND',  'AX', '1');
+      LexExpect(')');
+      ParseStdModuleExpr := TYP_BOOLEAN;
+    End
+    Else
+    Begin
+      EmitComment(' SYSTEM.' + methname + ' : stub expression');
+      If cur_tok.val = '(' Then
+      Begin
+        LexNext;
+        If cur_tok.val <> ')' Then
+        Begin
+          ParseExpr;
+          While cur_tok.val = ',' Do
+          Begin
+            LexNext;
+            ParseExpr;
+          End;
+        End;
+        LexExpect(')');
+      End;
+      EmitI2('XOR', 'AX', 'AX');
+      ParseStdModuleExpr := TYP_INTEGER;
+    End;
+  End
+
   Else
     ErrorMsg(modname + '.' + methname + ' : inutilisable dans une expression');
 End;
@@ -4856,13 +5168,113 @@ Begin
     Else
       ErrorMsg('In : methode inconnue : ' + methname);
   End
+
+  { ---- TODO 23 : Math.xxx(...) en position instruction : stub FPU ---- }
+  Else If modname = 'Math' Then
+  Begin
+    EmitComment(' Math.' + methname + '() : stub instruction - FPU non supporte');
+    If cur_tok.val = '(' Then
+    Begin
+      LexNext;
+      If cur_tok.val <> ')' Then
+      Begin
+        ParseExpr;
+        While cur_tok.val = ',' Do
+        Begin
+          LexNext;
+          ParseExpr;
+        End;
+      End;
+      LexExpect(')');
+    End;
+  End
+
+  { ---- TODO 23 : SYSTEM.MOVE / SYSTEM.xxx en position instruction ---- }
+  Else If modname = 'SYSTEM' Then
+  Begin
+    If methname = 'MOVE' Then
+    Begin
+      LexExpect('(');
+      ParseExpr;
+      EmitI2('MOV', 'SI', 'AX');
+      LexExpect(',');
+      ParseExpr;
+      EmitI2('MOV', 'DI', 'AX');
+      LexExpect(',');
+      ParseExpr;
+      EmitI2('MOV', 'CX', 'AX');
+      LexExpect(')');
+      EmitI1('PUSH', 'DS');
+      EmitI0('POP  ES');
+      EmitI0('REP  MOVSB');
+    End
+    Else
+    Begin
+      EmitComment(' SYSTEM.' + methname + ' : stub instruction');
+      If cur_tok.val = '(' Then
+      Begin
+        LexNext;
+        If cur_tok.val <> ')' Then
+        Begin
+          ParseExpr;
+          While cur_tok.val = ',' Do
+          Begin
+            LexNext;
+            ParseExpr;
+          End;
+        End;
+        LexExpect(')');
+      End;
+    End;
+  End
+
   Else
     ErrorMsg('Module inconnu : ' + modname);
 End;
 
 { ============================================================
-  TODO 17 - DECLARATIONS DE PROCEDURES
+  TODO 23 - CLAUSE IMPORT
   ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseImportSection : parser la clause IMPORT du module Oberon.
+  Syntaxe : IMPORT [alias :=] ModName ( , [alias :=] ModName )* ;
+  Chaque module est enregistre dans import_table et dans sym_table (SK_MODULE).
+  -------------------------------------------------------------------------- }
+Procedure ParseImportSection;
+Var alias   : TString;
+    modname : TString;
+    dummy   : Integer;
+Begin
+  LexExpect('IMPORT');
+  Repeat
+    alias   := cur_tok.val;
+    LexExpectKind(TK_IDENT);
+    If cur_tok.val = ':=' Then
+    Begin
+      LexNext;
+      modname := cur_tok.val;
+      LexExpectKind(TK_IDENT);
+    End
+    Else
+      modname := alias;
+    If import_count < MAX_IMPORT Then
+    Begin
+      Inc(import_count);
+      import_table[import_count].mod_name := modname;
+      import_table[import_count].alias    := alias;
+    End
+    Else
+      ErrorMsg('Table des imports saturee');
+    dummy := SymEnter(alias, SK_MODULE, SC_GLOBAL, 0);
+    If cur_tok.val = ',' Then
+      LexNext
+    Else
+      Break;
+  Until False;
+  LexExpect(';');
+End;
+
 
 { --------------------------------------------------------------------------
   ParseFormalParams : parser la liste de parametres formels.
@@ -5037,6 +5449,130 @@ Begin
 End;
 
 { ============================================================
+  TODO 25 - INTEGRATION FINALE : ParseModule
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  FlushStringLiterals : rouvrir le segment _DATA apres le code et y injecter
+  toutes les chaines litterales accumulees dans str_file.
+  Appele depuis ParseModule apres GenCodeFooter, avant GenEndDirective.
+  -------------------------------------------------------------------------- }
+Procedure FlushStringLiterals;
+Var line : String[255];
+Begin
+  Close(str_file);
+  Assign(str_file, str_fname);
+  Reset(str_file);
+  If Eof(str_file) Then
+  Begin
+    Close(str_file);
+    Erase(str_file);
+    Exit;
+  End;
+  SwitchToMain;
+  EmitBlank;
+  EmitComment(' ----- Chaines litterales differees (TODO 25) -----');
+  Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlank;
+  While Not Eof(str_file) Do
+  Begin
+    ReadLn(str_file, line);
+    WriteLn(out_file, line);
+  End;
+  EmitBlank;
+  Emit('_DATA           ENDS');
+  EmitBlank;
+  Close(str_file);
+  Erase(str_file);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseModule : parser un module Oberon complet.
+  Syntaxe : MODULE name ; [IMPORT] [CONST] [TYPE] [VAR] (Proc)* BEGIN corps END name .
+  Gere : en-tetes ASM, emissions DATA/CODE, runtime, corps principal.
+  -------------------------------------------------------------------------- }
+Procedure ParseModule;
+Var dummy_off : Integer;
+    mname_end : TString;
+Begin
+  { --- En-tete Oberon : MODULE name ; --- }
+  LexExpect('MODULE');
+  module_name := cur_tok.val;
+  LexExpectKind(TK_IDENT);
+  LexExpect(';');
+
+  { --- Prologue ASM : commentaire + modele memoire + pile --- }
+  GenFileHeader;
+  GenModelDirectives;
+  GenStackSegment;
+
+  { --- Segment DATA : variables systeme puis declarations utilisateur --- }
+  GenDataHeader;
+  GenSystemVarsData;
+
+  { --- Clause IMPORT (optionnelle) --- }
+  If cur_tok.val = 'IMPORT' Then
+    ParseImportSection;
+
+  { --- Sections CONST / TYPE (pas de donnees en DATA) --- }
+  While cur_tok.val = 'CONST' Do ParseConstSection;
+  While cur_tok.val = 'TYPE'  Do ParseTypeSection;
+
+  { --- Section VAR globale : emise en DATA --- }
+  dummy_off := 0;
+  If cur_tok.val = 'VAR' Then
+    ParseVarSection(False, dummy_off);
+
+  { --- Fermer DATA, ouvrir CODE --- }
+  GenDataFooter;
+  GenCodeHeader;
+  GenStartEntry;
+
+  { --- Routines runtime I/O dans tmp_file --- }
+  GenOutInRuntime;
+
+  { --- Ouvrir le fichier de chaines litterales differees --- }
+  str_fname := ChangeExtension(src_fname, '.str');
+  Assign(str_file, str_fname);
+  Rewrite(str_file);
+
+  { --- Declarations de procedures (corps -> tmp_file) --- }
+  While cur_tok.val = 'PROCEDURE' Do
+    ParseProcDecl;
+
+  { --- Corps du module : BEGIN StatementSeq --- }
+  LexExpect('BEGIN');
+  ParseStatementSeq;
+
+  { --- Epilogue du point d'entree --- }
+  GenStartExit;
+
+  { --- Fusionner les procedures A L'INTERIEUR du segment CODE --- }
+  MergeTmpToMain;
+
+  { --- Fermer CODE --- }
+  GenCodeFooter;
+
+  { --- Injecter les chaines litterales dans un _DATA rouvert --- }
+  FlushStringLiterals;
+
+  { --- END START --- }
+  GenEndDirective;
+
+  { --- Verifier le nom de fin : END name . --- }
+  LexExpect('END');
+  mname_end := cur_tok.val;
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    If mname_end <> module_name Then
+      ErrorMsg('Fin de module incorrecte : attendu ' + module_name
+               + ', lu ' + mname_end);
+    LexNext;
+  End;
+  LexExpect('.');
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -5069,44 +5605,35 @@ Begin
   Assign(tmp_file, tmp_fname);
   Rewrite(tmp_file);
 
-  { --- Compilation principale (TODO 04 -> 24) --- }
-  { En-tete complet du fichier ASM }
-  GenFileHeader;
-  GenModelDirectives;
-  GenStackSegment;
-  GenDataHeader;
-  GenSystemVarsData;
-  { Les variables globales seront ajoutees ici (TODO 08) }
-  GenDataFooter;
-  GenCodeHeader;
-  GenStartEntry;
-  GenOutInRuntime;               { emettre les routines runtime In/Out dans tmp_file }
-
-  { ParseModule; }
-
-  GenStartExit;
-  GenCodeFooter;
-  MergeTmpToMain;              { fusionner les procedures (actif depuis TODO 17) }
-  GenEndDirective;
+  { --- Compilation complete : ParseModule gere toute l'emission ASM --- }
+  ParseModule;
 
   { --- Fermeture --- }
   ScopeLeave;  { fermer la portee module }
   LexClose;
-  Close(tmp_file);
   Close(out_file);
 
-  { --- Rapport final --- }
+  { --- Rapport final (TODO 24) --- }
   If opt_verbose Then
   Begin
-    WriteLn('Symboles   : ', sym_count);
-    WriteLn('Procedures : ', proc_count);
-    WriteLn('Types      : ', type_count);
-    WriteLn('Erreurs    : ', err_count);
-    WriteLn('Avertissements : ', warn_count);
-    WriteLn('Instructions   : ', instr_count);
+    WriteLn;
+    WriteLn('=== RAPPORT DE COMPILATION : ', src_fname, ' ===');
+    WriteLn('  Lignes     : ', lex_lineno);
+    WriteLn('  Tokens     : ', tok_count);
+    WriteLn('  Symboles   : ', sym_count);
+    WriteLn('  Procedures : ', proc_count);
+    WriteLn('  Types      : ', type_count);
+    WriteLn('  Constantes : ', const_count);
+    WriteLn('  Modules imp: ', import_count);
+    WriteLn('  Instructions ASM : ', instr_count);
+    WriteLn('  Erreurs    : ', err_count);
+    WriteLn('  Avertissements   : ', warn_count);
+    WriteLn('  Sortie     : ', out_fname);
     If opt_debug Then
     Begin
+      WriteLn;
       TypeDump;
+      WriteLn;
       SymDumpVerbose;
     End;
   End;

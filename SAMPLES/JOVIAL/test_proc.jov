@@ -1,0 +1,15 @@
+MODULE PROCTEST;
+
+  ITEM X I 16;
+
+  PROC INIT;
+    X = 99;
+  END;
+
+  PROC PROCTEST;
+    CALL INIT;
+    OUTPUT ('X = $D', X);
+    STOP;
+  END;
+
+END MODULE PROCTEST;

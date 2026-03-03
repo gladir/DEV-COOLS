@@ -1,0 +1,29 @@
+MODULE TWOPROCS;
+
+  ITEM X I 16;
+  ITEM Y I 16;
+
+  PROCEDURE DOUBLE;
+    X = X + X;
+  END;
+
+  PROCEDURE ADDXY;
+    Y = X + Y;
+  END;
+
+  PROCEDURE TWOPROCS;
+    X = 5;
+    Y = 3;
+    CALL DOUBLE;
+    OUTPUT ('X DOUBLE = $D', X);
+    CALL ADDXY;
+    OUTPUT ('X+Y = $D', Y);
+    X = 1;
+    FOR Y = 1 TO 4 DO
+      CALL DOUBLE;
+    END;
+    OUTPUT ('1*2^4 = $D', X);
+    STOP;
+  END;
+
+END MODULE TWOPROCS;

@@ -1,0 +1,61 @@
+/* TEST2.PLI - Programme de test avance PLI86
+   Teste : tableaux, built-ins (ABS MAX MIN MOD), SELECT, GOTO, functions
+*/
+
+/* Procedure utilitaire : valeur absolue via built-in */
+ABSVAL: PROCEDURE (X) RETURNS (FIXED BINARY) ;
+ RETURN (ABS(X)) ;
+END ABSVAL ;
+
+/* Procedure principale */
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE TAB (10) FIXED BINARY STATIC ;
+ DECLARE I     FIXED BINARY ;
+ DECLARE J     FIXED BINARY ;
+ DECLARE SOMME FIXED BINARY INITIAL(0) ;
+ DECLARE M     FIXED BINARY ;
+ DECLARE R     FIXED BINARY ;
+
+ /* Remplir le tableau avec des valeurs */
+ DO I = 1 TO 10 ;
+  TAB(I) = I * I ;
+ END ;
+
+ /* Afficher les 5 premiers elements */
+ DO I = 1 TO 5 ;
+  PUT LIST (TAB(I)) ;
+  PUT SKIP ;
+ END ;
+
+ /* Calculer la somme avec MAX et MIN */
+ SOMME = 0 ;
+ DO I = 1 TO 10 ;
+  SOMME = SOMME + TAB(I) ;
+ END ;
+
+ M   = MAX(SOMME, 1000) ;
+ R   = MOD(SOMME, 7) ;
+
+ PUT LIST (M) ;
+ PUT SKIP ;
+ PUT LIST (R) ;
+ PUT SKIP ;
+
+ /* Test SELECT */
+ J = 2 ;
+ SELECT (J) ;
+  WHEN (1) PUT LIST (1) ;
+  WHEN (2) PUT LIST (2) ;
+  OTHERWISE PUT LIST (0) ;
+ END ;
+ PUT SKIP ;
+
+ /* Test GOTO */
+ GOTO FIN ;
+ PUT LIST (9999) ;
+
+FIN:
+ PUT LIST (0) ;
+ PUT SKIP ;
+
+END MAIN ;

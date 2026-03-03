@@ -6081,143 +6081,125 @@ Begin
       Continue  { Continue avec la prochaine ligne }
      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur dÇjÖ rapportÇ, cette ligne est sautÇ }
       Continue;
      End;
     End
-    Else
+     Else
     Begin
-     { Skip define in conditional block }
+     { Saute define dans le bloc conditionnel }
      Continue;
     End;
    End
-   Else If match('if ') Then
-   Begin
-    { Process #if directive }
+    Else
+   If match('if ') Then Begin
+    { Traite la directive #if }
     blanks;
     process_if_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('ifdef ') Then
-   Begin
-    { Process #ifdef directive }
+    Else
+   If match('ifdef ') Then Begin
+    { Traite la directive #ifdef }
     blanks;
     process_ifdef_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('ifndef ') Then
-   Begin
-    { Process #ifndef directive }
+    Else
+   If match('ifndef ') Then Begin
+    { Traite la directive #ifndef }
     blanks;
     process_ifndef_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('elif ') Then
-   Begin
-    { Process #elif directive }
+    Else
+   If match('elif ') Then Begin
+    { Traite la directive #elif }
     blanks;
     process_elif_directive(Copy(line, lptr, 255));
     Continue;
    End
-   Else If match('else') Then
-   Begin
-    { Process #else directive }
+    Else
+   If match('else') Then Begin
+    { Traite la directive #else }
     process_else_directive;
     Continue;
    End
-   Else If match('endif') Then
-   Begin
-    { Process #endif directive }
+    Else
+   If match('endif') Then Begin
+    { Traite la directive #endif }
     process_endif_directive;
     Continue;
    End
-   Else
+    Else
    Begin
-    { Other preprocessor directives - skip for now }
+    { Autres directives prÇprocesseur - saute pour maintenant }
     safe_writeln('; Skipping preprocessor directive: ' + line);
     Continue;
    End;
   End;
-
-  { Check if we should skip code due to conditional compilation }
-  If should_skip_code Then
-  Begin
-   { Skip this line completely }
+   { VÇrifier si nous devons ignorer du code en raison d'une compilation conditionnelle }
+  If should_skip_code Then Begin
+   { Ignorez complätement cete ligne }
    Continue;
   End;
 
-  { Apply macro expansion to the line AFTER conditional processing }
+  { Appliquer l'expansion de macro Ö la ligne APRES le traitement conditionnel }
   expanded_line := expand_macros(line);
-  If expanded_line <> line Then
-  Begin
+  If expanded_line <> line Then Begin
    line := expanded_line;
    If use_stdout Then WriteLn('; Line after macro expansion: ', line)
                  Else safe_writeln('; Line after macro expansion: ' + line);
   End;
-
-  { Skip empty lines }
+   { Saute les lignes vides }
   blanks;
   If Length(line) = 0 Then Continue;
-
   safe_writeln('; Processing: ' + line);
-
-  { Reset position for parsing }
+   { RÇinitialise la position pour l'analyse }
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
-
-  { Try to parse as statement (includes declarations and control structures) }
-  If parse_statement Then
-  Begin
+   { Essayez d'analyser comme une instruction (incluant les dÇclarations et les structures donnÇes) }
+  If parse_statement Then Begin
    safe_writeln('; Statement processed');
    Continue;
   End;
-
-  { Fallback: Parse identifiers and expressions for backward compatibility }
+   { Solution de repli : analyser les identifiants et les expressions pour assurer la rÇtrocompatibilitÇ }
   lptr := 1;
-  If symname(sname) Then
-  Begin
+  If symname(sname) Then Begin
    safe_writeln('; Identifier: ' + sname);
-
-   { Check for assignment }
+    { VÇrifie l'affectation }
    blanks;
-   If match('=') Then
-   Begin
+   If match('=') Then Begin
     safe_writeln('; Assignment to ' + sname);
     blanks;
-
-    { Look up variable in symbol table }
-    If lookup_variable(sname, lval) Then
-    Begin
-     { Check if variable is const and prevent assignment }
-     If lval.type_info.is_const Then
-     Begin
+     { Recherche la variable dans la table de symbole }
+    If lookup_variable(sname, lval) Then Begin
+     { VÇrifie si la variable est const et prÇvient de son affectation }
+     If lval.type_info.is_const Then Begin
       Case Language of
        _English: errrpt('Cannot assign to const variable: ' + sname);
        {$IFDEF FPC}
        _Germany: errrpt('Kann const Variable nicht zuweisen: ' + sname);
        {$ENDIF}
-       Else errrpt('Impossible d''assigner √† la variable const: ' + sname);
+       Else errrpt('Impossible d''assigner Ö la variable const: ' + sname);
       End;
      End
-     Else
+      Else
      Begin
       safe_writeln('; Assignment to variable: ' + sname);
-
-      { Use expression parser for right side }
+       { Utilise l'analyseur d'expression pour le cìtÇ droite }
       expression(right_lval);
-
-      { Store result in variable }
+       { Entrepose le rÇsultat dans la variable }
       ot('std  ');
       outstr(sname);
       nl;
      End;
     End;
    End
-   Else
+    Else
    Begin
-    { Load variable }
-    If lookup_variable(sname, lval) Then
-    Begin
+    { Charge la variable }
+    If lookup_variable(sname,lval)Then Begin
      ot('ldd  ');
      outstr(sname);
      nl;
@@ -6225,27 +6207,21 @@ Begin
    End;
    Continue;
   End;
-
-  { Try to parse as expression }
+   { Essai d'analyser une expression }
   lptr := 1;
   blanks;
-  If (peek_char >= '0') and (peek_char <= '9') Then
-  Begin
+  If (peek_char >= '0') and (peek_char <= '9') Then Begin
    safe_writeln('; Expression detected');
    expression(lval);
    Continue;
   End;
-
-  { Simple function detection fallback }
-  If Pos('(', line) > 0 Then
-  Begin
+   { Simple dÇtection de fonction de repli }
+  If Pos('(', line) > 0 Then Begin
    safe_writeln('; Function found: ' + line);
    ol('nop ; placeholder for function');
   End;
-
-  { Output any remaining content as comment }
-  If Length(line) > 0 Then
-  Begin
+   { Afficher le contenu restant sous forme de commentaire }
+  If Length(line) > 0 Then Begin
    safe_writeln('; Unknown: ' + line);
   End;
  End;
@@ -6279,10 +6255,10 @@ BEGIN
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
   Case Language of
    _English:Begin
-    WriteLn('CC09 - This command allows you to launch the C compiler for ',
-            'the 6809 microprocessor.');
+    WriteLn('CC6502 - This command allows you to launch the C compiler for ',
+            'the 6502 microprocessor.');
     WriteLn;
-    WriteLn('usage: cc09 infile.c [outfile] [-options]');
+    WriteLn('usage: CC6502 infile.c [outfile] [-options]');
     WriteLn;
     WriteLn('Options:');
     WriteLn('  -O0    No optimization (default)');
@@ -6292,34 +6268,34 @@ BEGIN
    End;
    {$IFDEF FPC}
    _Germany:Begin
-    WriteLn('CC09 - Dieser Befehl erm√∂glicht es, den C-Compiler f√ºr ',
-            'den 6809-Mikroprozessor zu starten.');
+    WriteLn('CC6502 - Dieser Befehl ermîglicht es, den C-Compiler fÅr ',
+            'den 6502-Mikroprozessor zu starten.');
     WriteLn;
-    WriteLn('Syntax: cc09 infile.c [outfile] [-optionen]');
+    WriteLn('Syntax: CC6502 infile.c [outfile] [-optionen]');
     WriteLn;
     WriteLn('Optionen:');
     WriteLn('  -O0    Keine Optimierung (Standard)');
     WriteLn('  -O1    Grundlegende Optimierungen (Guckloch, Konstantenfaltung)');
-    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, Spr√ºnge)');
+    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, SprÅnge)');
     WriteLn('  -O3    Aggressive Optimierungen (alle)');
    End;
    {$ENDIF}
    Else Begin
-    WriteLn('CC09 - Cette commande permet de lancer le compilateur C pour ',
-            'le microprocesseur 6809.');
+    WriteLn('CC6502 - Cette commande permet de lancer le compilateur C pour ',
+            'le microprocesseur 6502.');
     WriteLn;
-    WriteLn('Syntaxe : cc09 infile.c [outfile] [-options]');
+    WriteLn('Syntaxe : CC6502 infile.c [outfile] [-options]');
     WriteLn;
     WriteLn('Options :');
-    WriteLn('  -O0    Pas d''optimisation (valeur par dÔøΩfaut)');
+    WriteLn('  -O0    Pas d''optimisation (valeur par dÇfaut)');
     WriteLn('  -O1    Optimisations de base (oeilleon, pliage constant)');
-    WriteLn('  -O2    Optimisations avancÔøΩes (code mort, sauts)');
+    WriteLn('  -O2    Optimisations avancÇes (code mort, sauts)');
     WriteLn('  -O3    Optimisations aggressives (toutes)');
    End;
   End;
   Halt(1);
  End;
-  { Initialize variables - symtab no longer needed }
+  { Initialise les variables - symtab n'est plus nÇcessaire }
  { FillChar(symtab, SizeOf(symtab), 0); -- Old symbol table removed }
  glbptr := startglb;
  locptr := startloc;
@@ -6331,26 +6307,24 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
-
- { Initialisation des variables 6502 }
+  { Initialisation des variables 6502 }
  in_ldd_instruction := false;
  in_std_instruction := false;
-
- { Initialize include file system }
+  { Initialise le systäme de fichier include }
  include_depth := 0;
  current_filename := '';
- { Initialize define system }
+ { Initialise les systäme define }
  init_defines;
- { Initialize heap-based symbol table }
+ { Initialise la table de symbole basÇ sur la mÇmoire de tas }
  init_symbols;
-  { Compiler main body }
+  { Compile le corps du main }
  nxtlab := 0;
  kill;
- WriteLn('CC09 - Compilateur C pour 6809 V1.01');
+ WriteLn('CC6502 - Compilateur C pour 6502 V1.01');
  WriteLn;
  optimize := OPT_NONE;
  ctext := NO;
- { Parse command line arguments }
+ { Paramätres de ligne de commande }
  For i := 1 to ParamCount do Begin
   param := ParamStr(i);
   If param = '-O0' Then optimize := OPT_NONE
@@ -6358,29 +6332,24 @@ BEGIN
   Else If param = '-O2' Then optimize := OPT_ADVANCED
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
-
- { Open input file with error checking }
+  { Ouvrir le fichier d'entrÇe avec une vÇrification d'erreur }
  Assign(input, ParamStr(1));
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
-  WriteLn('Error: Cannot open input file: ', ParamStr(1));
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur: Impossible d''ouvrir le fichier d''entrÇe: ', ParamStr(1));
   Halt(1);
  End;
  {$I+}
-
- current_filename := ParamStr(1); { Set initial filename for include system }
- WriteLn('Compiling Source file: ', ParamStr(1));
-
- { Initialize global variables }
+ current_filename := ParamStr(1); { Fixe le nom de fichier initiale pour le systäme include }
+ WriteLn('Compile le fichier Source : ', ParamStr(1));
+  { Initialise global variables }
  eof := 0;
  errcnt := 0;
  lptr := 1;
  line := '';
  nextlabel := 0;
  use_stdout := True; { Initialize early - may be changed later }
-
  { Initialize heap-based symbol table }
  init_symbols;
 

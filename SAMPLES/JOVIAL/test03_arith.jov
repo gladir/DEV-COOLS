@@ -1,0 +1,21 @@
+MODULE ARITH;
+
+  ITEM X I 16;
+  ITEM Y I 16;
+  ITEM Z I 16;
+
+  PROCEDURE ARITH;
+    X = 10;
+    Y = 3;
+    Z = X + Y;
+    OUTPUT ('X+Y = $D', Z);
+    Z = X - Y;
+    OUTPUT ('X-Y = $D', Z);
+    Z = X * Y;
+    OUTPUT ('X*Y = $D', Z);
+    Z = X / Y;
+    OUTPUT ('X/Y = $D', Z);
+    STOP;
+  END;
+
+END MODULE ARITH;

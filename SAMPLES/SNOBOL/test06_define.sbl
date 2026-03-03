@@ -1,0 +1,12 @@
+* Test 06 - Fonctions utilisateur
+*
+        DEFINE('DOUBLE(X)')
+        &OUTPUT = 'TEST DOUBLE'
+        RESULTAT = DOUBLE('BONJOUR')
+        &OUTPUT = RESULTAT
+        :(FIN)
+* Definition de la fonction DOUBLE
+DOUBLE  DOUBLE = X X
+        RETURN
+FIN     &OUTPUT = 'FIN'
+-END-

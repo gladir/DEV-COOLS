@@ -1,0 +1,17 @@
+MODULE ITEMS;
+
+  ITEM A I 16;
+  ITEM B I 16;
+  ITEM SCORE I 8;
+
+  PROCEDURE ITEMS;
+    A = 100;
+    B = 200;
+    SCORE = 42;
+    OUTPUT ('A = $D', A);
+    OUTPUT ('B = $D', B);
+    OUTPUT ('SCORE = $D', SCORE);
+    STOP;
+  END;
+
+END MODULE ITEMS;

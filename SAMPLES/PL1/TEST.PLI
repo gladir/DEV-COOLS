@@ -1,0 +1,20 @@
+/* TEST.PLI - Programme de test PLI86
+   Calcule la somme de 1 a N puis l'affiche.
+*/
+
+MAIN: PROCEDURE OPTIONS(MAIN) ;
+ DECLARE N   FIXED BINARY ;
+ DECLARE I   FIXED BINARY ;
+ DECLARE SUM FIXED BINARY INITIAL(0) ;
+
+ N = 10 ;
+ SUM = 0 ;
+
+ DO I = 1 TO N ;
+  SUM = SUM + I ;
+ END ;
+
+ PUT LIST (SUM) ;
+ PUT SKIP ;
+
+END MAIN ;

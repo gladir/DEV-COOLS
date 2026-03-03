@@ -1,0 +1,17 @@
+* Test 05 - Types et conversions
+*
+        A = '42'
+        B = '58'
+        &OUTPUT = 'A = ' A
+        &OUTPUT = 'B = ' B
+        LT(A, B) :S(A_PLUS_PETIT)
+        &OUTPUT = 'A >= B'
+        :(SUITE)
+A_PLUS_PETIT &OUTPUT = 'A EST PLUS PETIT QUE B'
+SUITE   &OUTPUT = 'SIZE(A) = ' SIZE(A)
+        IDENT(A,'42') :S(EGAL) :F(DIFF)
+EGAL    &OUTPUT = 'A EST BIEN EGAL A 42'
+        :(FIN)
+DIFF    &OUTPUT = 'A DIFFERENT DE 42'
+FIN
+-END-

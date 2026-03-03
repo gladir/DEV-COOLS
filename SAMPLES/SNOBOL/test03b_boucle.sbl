@@ -1,0 +1,10 @@
+* Test 03b - Boucle par pattern matching
+* On accumule des '=' et on teste si le pattern '==========' est dans la chaine
+*
+        LIGNE = '='
+BOUCLE  &OUTPUT = LIGNE
+        LIGNE = LIGNE '='
+        LIGNE '==========' :S(FIN)
+        :(BOUCLE)
+FIN     &OUTPUT = 'BOUCLE TERMINEE - 10 LIGNES'
+-END-

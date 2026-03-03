@@ -1,0 +1,4 @@
+* Test 01 - Hello World
+*
+        &OUTPUT = 'BONJOUR MONDE'
+-END-
