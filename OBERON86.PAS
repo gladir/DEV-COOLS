@@ -1635,20 +1635,6 @@ Begin
   SymEnter('REAL',    SK_TYPE, SC_GLOBAL, TYP_REAL);
 End;
 
-{ ============================================================
-  Impression de l'usage
-  ============================================================ }
-
-Procedure PrintUsage;
-Begin
-  WriteLn('OBERON86 v', OBERON86_VERSION, ' - Compilateur Oberon -> MASM 8086');
-  WriteLn('Usage : OBERON86 source.obn [sortie.asm] [options]');
-  WriteLn('Options :');
-  WriteLn('  -v   mode verbeux (statistiques et symboles)');
-  WriteLn('  -d   mode debug   (trace de parsing)');
-  WriteLn('  -nr  pas de liaison avec le runtime');
-  Halt(1);
-End;
 
 { ============================================================
   Lecture des arguments de la ligne de commande
@@ -1674,18 +1660,21 @@ Begin
     Else If arg[1] = '-' Then
     Begin
       WriteLn('Option inconnue : ', arg);
-      PrintUsage;
+      Halt(1);
     End
     Else If src_fname = '' Then src_fname := arg
     Else If out_fname = '' Then out_fname := arg
     Else
     Begin
       WriteLn('Argument inattendu : ', arg);
-      PrintUsage;
+      Halt(1);
     End;
   End;
 
-  If src_fname = '' Then PrintUsage;
+  If src_fname = '' Then Begin
+   WriteLn('Paramätre attendue');
+   Halt(1);
+  End;
 
   If out_fname = '' Then
     out_fname := ChangeExtension(src_fname, '.asm');
@@ -5397,6 +5386,19 @@ End;
   ============================================================ }
 
 BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('OBERON86 - Cette commande permet de lancer le compilateur Oberon pour l''assembleur de ',
+          'microprocesseur 8086');
+  WriteLn;
+  WriteLn('Syntaxe : OBERON86 source.obn [sortie.asm] [options]');
+  WriteLN;
+  WriteLn('Options :');
+  WriteLn('  -v   mode verbeux (statistiques et symboles)');
+  WriteLn('  -d   mode debug   (trace de parsing)');
+  WriteLn('  -nr  pas de liaison avec le runtime');
+  Halt(1);
+ End;
   { --- Arguments --- }
   ParseArgs;
 
