@@ -6573,7 +6573,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - MACROS (MACRO ENDM LOCAL EXITM PURGE REPT IRP IRPC)
+  MACROS (MACRO ENDM LOCAL EXITM PURGE REPT IRP IRPC)
   ============================================================ }
 
 Const
@@ -7322,7 +7322,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 18 - ASSEMBLAGE CONDITIONNEL (IF / IFDEF / ELSE / ENDIF)
+  ASSEMBLAGE CONDITIONNEL (IF / IFDEF / ELSE / ENDIF)
   ============================================================ }
 
 Type
@@ -7771,7 +7771,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 19 - PROCEDURES ET CONVENTIONS D APPEL (PROC ENDP)
+  PROCEDURES ET CONVENTIONS D APPEL (PROC ENDP)
   ============================================================ }
 
 Const
@@ -8179,7 +8179,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 21 - FICHIER DE LISTING (.LST) - IMPLEMENTE
+  FICHIER DE LISTING (.LST) - IMPLEMENTE
   ============================================================ }
 
 { ------------------------------------------------------------ }
@@ -8417,7 +8417,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 20 - DEUX PASSES D ASSEMBLAGE ET GESTION DES FIXUPS
+  DEUX PASSES D ASSEMBLAGE ET GESTION DES FIXUPS
   ============================================================ }
 
 { ---- Table des directives attendant un nom pour IsNameDirective ---- }
@@ -8485,7 +8485,6 @@ Const
 
 { ============================================================
   AssembleLine : analyser et assembler une ligne source.
-  Appelle tous les encodeurs des TODOs 09-19.
   ============================================================ }
 Const AL_REP_COUNT = 5;
       AL_REP_NAMES: Array[1..5] Of String[5] = ('REP','REPE','REPZ','REPNE','REPNZ');
@@ -9086,7 +9085,7 @@ Begin
   End;
 
   { ---------------------------------------------------------------- }
-  { Rapport final (TODO 25)                                           }
+  { Rapport final                                                    }
   GetTime(t2h, t2m, t2s, t2c);
   elapsed_cs := LongInt(t2h)*360000 + LongInt(t2m)*6000
               + LongInt(t2s)*100    + LongInt(t2c)
@@ -9106,7 +9105,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 24 - TRAITEMENT DE LA LIGNE DE COMMANDE ET OPTIONS
+  TRAITEMENT DE LA LIGNE DE COMMANDE ET OPTIONS
   ============================================================ }
 
 { ChangeExt : remplace (ou ajoute) l extension d un nom de fichier }
@@ -9352,31 +9351,31 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 01-25 implementes)
+  Programme principal
   ============================================================ }
-Begin
-  InitTables;
-  ObjInit;
-  FixupInit;
-  ModelInit;
-  VisInit;
-  StructInit;
-  MacroInit;
-  IfInit;
-  ProcInit;
-  SrcInit;
-  LexInit;
-  SymInit;
-  local_unique_id := 0;
-  no_emit         := False;
+BEGIN
+ InitTables;
+ ObjInit;
+ FixupInit;
+ ModelInit;
+ VisInit;
+ StructInit;
+ MacroInit;
+ IfInit;
+ ProcInit;
+ SrcInit;
+ LexInit;
+ SymInit;
+ local_unique_id := 0;
+ no_emit         := False;
   { Analyser la ligne de commande (TODO 24) }
-  ParseArgs;
-  {$IFDEF FPC}
-  If Not silent_mode Then
-    Writeln('Macro Assembler Version ', VERSION, ' compatible MASM 5.x');
-  {$ENDIF}
+ ParseArgs;
+ {$IFDEF FPC}
+ If Not silent_mode Then
+   Writeln('Macro Assembler Version ', VERSION, ' compatible MASM 5.x');
+ {$ENDIF}
   { Assembler }
-  Assemble(src_fname, obj_fname);
-  If err_count > 0 Then Halt(1)
-  Else Halt(0);
-End.
+ Assemble(src_fname, obj_fname);
+ If err_count > 0 Then Halt(1)
+                  Else Halt(0);
+END.
