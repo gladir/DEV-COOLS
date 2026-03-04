@@ -8933,6 +8933,9 @@ End;
   AssembleLine : analyser et assembler une ligne source.
   Appelle tous les encodeurs des TODOs 09-19.
   ============================================================ }
+Const AL_REP_COUNT = 5;
+      AL_REP_NAMES: Array[1..5] Of String[5] = ('REP','REPE','REPZ','REPNE','REPNZ');
+
 Procedure AssembleLine;
 Var
   tok1       : TString;     { premier token (label ou mnemonic) }
@@ -8954,6 +8957,7 @@ Var
   si         : Integer;     { index de structure }
   p_entry    : PSymbol;     { point d entree (directive END label) }
   dir_idx    : Integer;     { index MN_* du dispatcher directives }
+  i          : Integer;     { index boucle tableaux }
 Begin
   { substituer les macros texte (@DATE, @TIME, @FILENAME, TEXTEQU) }
   cur_line := TextEquSubstLine(cur_line);
@@ -8975,41 +8979,30 @@ Begin
   tok1 := lex_tok.val;
 
   { --- traitement des directives conditionnelles (toujours, meme si !IfAssembling) --- }
-  If (lex_tok.kind = TK_IDENT) And
-     ((tok1 = 'IF')     Or (tok1 = 'IFE')    Or (tok1 = 'IFDEF') Or
-      (tok1 = 'IFNDEF') Or (tok1 = 'IFB')    Or (tok1 = 'IFNB')  Or
-      (tok1 = 'IFIDN')  Or (tok1 = 'IFIDNI') Or (tok1 = 'IFDIF') Or
-      (tok1 = 'IFDIFI') Or (tok1 = 'IF1')    Or (tok1 = 'IF2')   Or
-      (tok1 = 'ELSE')   Or (tok1 = 'ELSEIF') Or (tok1 = 'ELSEIFDEF') Or
-      (tok1 = 'ELSEIFNDEF') Or (tok1 = 'ENDIF')) Then
+  If lex_tok.kind = TK_IDENT Then
   Begin
-    ParseConditional(tok1);
-    Exit;
+    i := 1;
+    While (i <= PC_ENDIF) And (PC_NAMES[i] <> tok1) Do Inc(i);
+    If i <= PC_ENDIF Then Begin ParseConditional(tok1); Exit; End;
   End;
 
   { --- si on n assemble pas ce bloc, skipper --- }
   If Not IfAssembling Then Exit;
 
   { --- directives d erreur conditionnelle (seulement si actif) --- }
-  If (lex_tok.kind = TK_IDENT) And
-     ((tok1 = '.ERR')   Or (tok1 = '.ERR1')  Or (tok1 = '.ERR2')  Or
-      (tok1 = '.ERRDEF') Or (tok1 = '.ERRNDEF') Or
-      (tok1 = '.ERRB')  Or (tok1 = '.ERRNB') Or
-      (tok1 = '.ERRIDN') Or (tok1 = '.ERRDIF') Or
-      (tok1 = '.ERRE')  Or (tok1 = '.ERRNZ') Or
-      (tok1 = '.ERRGE') Or (tok1 = '.ERRLT') Or
-      (tok1 = '.ERRLE') Or (tok1 = '.ERRGT')) Then
+  If lex_tok.kind = TK_IDENT Then
   Begin
-    ParseConditional(tok1);
-    Exit;
+    i := PC_ENDIF + 1;
+    While (i <= PC_COUNT) And (PC_NAMES[i] <> tok1) Do Inc(i);
+    If i <= PC_COUNT Then Begin ParseConditional(tok1); Exit; End;
   End;
 
   { --- directives REP/REPE/REPZ/REPNE/REPNZ (prefixes + instruction chaine) --- }
-  If (lex_tok.kind = TK_IDENT) And
-     ((tok1 = 'REP')   Or (tok1 = 'REPE')  Or (tok1 = 'REPZ') Or
-      (tok1 = 'REPNE') Or (tok1 = 'REPNZ')) Then
+  If lex_tok.kind = TK_IDENT Then
   Begin
-    If ParseInstr(tok1) Then Exit;
+    i := 1;
+    While (i <= AL_REP_COUNT) And (AL_REP_NAMES[i] <> tok1) Do Inc(i);
+    If (i <= AL_REP_COUNT) And ParseInstr(tok1) Then Exit;
   End;
 
   { --- determiner si premier token est un label ou un mnemonic --- }
@@ -9054,8 +9047,9 @@ Begin
   mnem := tok1;
 
   { directives DB/DW/DD/DQ/DT }
-  If (mnem = 'DB') Or (mnem = 'DW') Or (mnem = 'DD') Or
-     (mnem = 'DQ') Or (mnem = 'DT') Then
+  i := 1;
+  While (i <= DD_COUNT) And (DD_NAMES[i] <> mnem) Do Inc(i);
+  If i <= DD_COUNT Then
   Begin
     If Not has_label Then
       SymDefineLabel(label_name, cur_seg, lc, 0); { pas de label avant data }
