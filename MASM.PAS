@@ -1484,14 +1484,661 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 04 a 25 a implementer)
+  TODO 04 - TABLE DES SYMBOLES - IMPLEMENTE
+  ============================================================
+
+  Organisation : hash table HASH_SIZE buckets de listes chainees.
+  Chaque noeud est un PSymbol alloue sur le tas (New).
+  "Index" = pointeur PSymbol (Nil = non trouve).
+
+  Symboles predefinis inseres par SymInit :
+    TRUE (-1), FALSE (0), @WORDSIZE (2), @MODEL (0=non defini),
+    @CURSEG (0), @DATA (0), @CODE (0), @STACK (0), @FILENAME.
+
+  Flags dans TSymbol.flags :
+    bit 0 = is_public   (declare PUBLIC)
+    bit 1 = is_extern   (declare EXTRN)
+    bit 2 = is_defined  (valeur connue)
+    bit 3 = is_redefin  (EQU redefinissable via =)
+  ============================================================ }
+
+{ ============================================================
+  SymFind : chercher un symbole par nom (uppercase).
+  Retourne un PSymbol ou Nil si absent.
+  ============================================================ }
+Function SymFind(Const name : TSymString) : PSymbol;
+Var
+  h : Integer;
+  p : PSymbol;
+Begin
+  h := HashName(name);
+  p := hash_table[h];
+  While p <> Nil Do
+  Begin
+    If p^.name = name Then
+    Begin
+      SymFind := p;
+      Exit;
+    End;
+    p := p^.next;
+  End;
+  SymFind := Nil;
+End;
+
+{ ============================================================
+  SymEnter : ajouter un nouveau symbole (sans verifier doublon).
+  Retourne le PSymbol cree.
+  Pour les doublons, appeler SymFind d abord.
+  ============================================================ }
+Function SymEnter(Const name : TSymString;
+                  kind    : TSymKind;
+                  seg_idx : Integer;
+                  offset  : TWord;
+                  size    : TWord) : PSymbol;
+Var
+  h : Integer;
+  p : PSymbol;
+Begin
+  New(p);
+  p^.name    := name;
+  p^.kind    := kind;
+  p^.seg_idx := seg_idx;
+  p^.offset  := offset;
+  p^.value   := 0;
+  p^.size    := size;
+  p^.flags   := 4; { bit 2 = is_defined par defaut }
+  { inserer en tete de la chaine de hachage }
+  h          := HashName(name);
+  p^.next    := hash_table[h];
+  hash_table[h] := p;
+  Inc(sym_count);
+  SymEnter := p;
+End;
+
+{ ============================================================
+  SymSetValue : fixer la valeur absolue d un symbole
+  ============================================================ }
+Procedure SymSetValue(p : PSymbol; val : TLong);
+Begin
+  If p = Nil Then Exit;
+  p^.value  := val;
+  p^.offset := TWord(val And $FFFF);
+  p^.flags  := p^.flags Or 4; { marquer is_defined }
+End;
+
+{ ============================================================
+  SymSetPublic : marquer un symbole comme PUBLIC
+  ============================================================ }
+Procedure SymSetPublic(p : PSymbol);
+Begin
+  If p = Nil Then Exit;
+  p^.flags := p^.flags Or 1;
+  p^.kind  := SK_PUBLIC;
+End;
+
+{ ============================================================
+  SymSetExtern : marquer un symbole comme EXTRN
+  ============================================================ }
+Procedure SymSetExtern(p : PSymbol);
+Begin
+  If p = Nil Then Exit;
+  p^.flags := p^.flags Or 2;
+  p^.kind  := SK_EXTERN;
+End;
+
+{ ============================================================
+  SymLookupOrEnter : retourner le symbole existant ou en creer
+  un nouveau de kind SK_UNDEF (reference avant).
+  ============================================================ }
+Function SymLookupOrEnter(Const name : TSymString) : PSymbol;
+Var
+  p : PSymbol;
+Begin
+  p := SymFind(name);
+  If p = Nil Then
+  Begin
+    p := SymEnter(name, SK_UNDEF, 0, 0, 0);
+    p^.flags := 0; { SK_UNDEF : pas encore defini }
+  End;
+  SymLookupOrEnter := p;
+End;
+
+{ ============================================================
+  SymDefineLabel : definir un label a la position courante.
+  En passe 1 : creer ou mettre a jour.
+  En passe 2 : verifier coherence (phase error si offset change).
+  ============================================================ }
+Procedure SymDefineLabel(Const name : TSymString; seg_i : Integer;
+                         off : TWord; sz : TWord);
+Var
+  p : PSymbol;
+Begin
+  p := SymFind(name);
+  If p = Nil Then
+  Begin
+    p := SymEnter(name, SK_LABEL, seg_i, off, sz);
+  End
+  Else
+  Begin
+    If (p^.kind <> SK_UNDEF) And (p^.kind <> SK_LABEL) Then
+    Begin
+      ErrorMsg('Redefinition de symbole : ' + name);
+      Exit;
+    End;
+    If (pass_num = 2) And (p^.offset <> off) Then
+      WarnMsg('Erreur de phase pour : ' + name);
+    p^.kind    := SK_LABEL;
+    p^.seg_idx := seg_i;
+    p^.offset  := off;
+    p^.size    := sz;
+    p^.flags   := p^.flags Or 4;
+  End;
+End;
+
+{ ============================================================
+  SymCheckUndefined : en passe 2, signaler les SK_UNDEF restants
+  ============================================================ }
+Procedure SymCheckUndefined;
+Var
+  i : Integer;
+  p : PSymbol;
+Begin
+  For i := 0 To HASH_SIZE-1 Do
+  Begin
+    p := hash_table[i];
+    While p <> Nil Do
+    Begin
+      If p^.kind = SK_UNDEF Then
+        ErrorMsg('Symbole non defini : ' + p^.name);
+      p := p^.next;
+    End;
+  End;
+End;
+
+{ ============================================================
+  SymAddPredef : ajouter un symbole predefini (EQU absolu)
+  ============================================================ }
+Procedure SymAddPredef(Const name : TSymString; val : TLong);
+Var
+  p : PSymbol;
+Begin
+  p := SymEnter(name, SK_EQU, 0, 0, 2);
+  SymSetValue(p, val);
+  p^.flags := p^.flags And Not 8; { non redefinissable }
+End;
+
+{ ============================================================
+  SymInit : inserer les symboles predefinis MASM
+  ============================================================ }
+Procedure SymInit;
+Var
+  p : PSymbol;
+Begin
+  { constantes booleennes MASM }
+  SymAddPredef('TRUE',      -1);
+  SymAddPredef('FALSE',      0);
+  { informations de modele (mises a jour par .MODEL) }
+  SymAddPredef('@MODEL',     0); { 0 = non encore fixe }
+  SymAddPredef('@WORDSIZE',  2); { 16-bit par defaut }
+  { bases de segments (mises a jour lors de la definition des segments) }
+  SymAddPredef('@DATA',      0);
+  SymAddPredef('@CODE',      0);
+  SymAddPredef('@STACK',     0);
+  { symbole de segment courant (mis a jour dynamiquement) }
+  p := SymEnter('@CURSEG', SK_EQU, 0, 0, 0);
+  p^.value := 0;
+  { nom du fichier source : sera mis a jour apres ParseArgs }
+  p := SymEnter('@FILENAME', SK_EQU, 0, 0, 0);
+  p^.value := 0;
+  { @VERSION : numero de version de l assembleur }
+  SymAddPredef('@VERSION', 100); { 1.00 encode en entier }
+End;
+
+{ ============================================================
+  SymDump : afficher la table des symboles (debug / listing)
+  ============================================================ }
+Procedure SymDump;
+Var
+  i   : Integer;
+  p   : PSymbol;
+  kn  : TString;
+Begin
+  Writeln('--- Table des symboles (', sym_count, ' entrees) ---');
+  For i := 0 To HASH_SIZE-1 Do
+  Begin
+    p := hash_table[i];
+    While p <> Nil Do
+    Begin
+      Case p^.kind Of
+        SK_UNDEF  : kn := 'UNDEF ';
+        SK_LABEL  : kn := 'LABEL ';
+        SK_PUBLIC : kn := 'PUBLIC';
+        SK_EXTERN : kn := 'EXTERN';
+        SK_EQU    : kn := 'EQU   ';
+        SK_GROUP  : kn := 'GROUP ';
+        SK_SEG    : kn := 'SEG   ';
+        SK_MACRO  : kn := 'MACRO ';
+        SK_STRUCT : kn := 'STRUCT';
+        Else        kn := '???   ';
+      End;
+      Writeln('  ', kn, '  seg=', p^.seg_idx:2,
+              '  off=', p^.offset:5,
+              '  val=', p^.value:8,
+              '  ', p^.name);
+      p := p^.next;
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 05 - FORMAT .OBJ INTEL OMF (RECORDS DE BASE) - IMPLEMENTE
+  ============================================================
+
+  Structure d un record OMF :
+    Octet 0   : type du record (ex : 80h = THEADR)
+    Octets 1-2: longueur du reste (data + checksum), little-endian
+    Octets 3..: donnees
+    Dernier   : checksum = 256 - (sum de tous les octets) mod 256
+
+  On construit chaque record dans obj_rec_buf puis on
+  l ecrit dans obj_f via ObjEndRecord.
+
+  Table LNAMES : noms de segments/groupes accumules avant
+  ecriture du bloc LNAMES, index 1-base.
+  ============================================================ }
+
+{ ---- Constantes des types de records OMF ---- }
+Const
+  OMF_THEADR  = $80; { nom du module source }
+  OMF_COMENT  = $88; { commentaire }
+  OMF_MODEND  = $8A; { fin du module }
+  OMF_EXTDEF  = $8C; { symboles externes }
+  OMF_PUBDEF  = $90; { symboles publics }
+  OMF_LNAMES  = $96; { liste de noms (segments/groupes) }
+  OMF_SEGDEF  = $98; { definition de segment }
+  OMF_GRPDEF  = $9A; { definition de groupe }
+  OMF_FIXUPP  = $9C; { corrections d adresse }
+  OMF_LEDATA  = $A0; { donnees locales }
+  OMF_LIDATA  = $A2; { donnees iterees (blocs repetes) }
+  OMF_COMDEF  = $B0; { variables communes }
+
+  OBJ_REC_MAX = 1024; { taille max des donnees d un record }
+  LNAMES_MAX  = 128;  { max de noms dans la table LNAMES }
+
+{ ---- Variables OBJ ---- }
+Var
+  obj_f        : File;          { fichier .OBJ en sortie }
+  obj_is_open  : Boolean;       { True si obj_f est ouvert }
+  obj_rec_buf  : Array[0..OBJ_REC_MAX-1] Of Byte; { buffer record courant }
+  obj_rec_type : Byte;          { type du record en cours }
+  obj_rec_pos  : Integer;       { position courante dans obj_rec_buf }
+
+  { Table LNAMES - noms de segments et de groupes }
+  lnames_table : Array[1..LNAMES_MAX] Of TSymString;
+  lnames_count : Integer; { nombre de noms enregistres (index 1-base) }
+
+{ ============================================================
+  ObjWriteByte : ecrire un octet directement dans obj_f
+  ============================================================ }
+Procedure ObjWriteByte(b : Byte);
+Begin
+  If Not obj_is_open Then Exit;
+  BlockWrite(obj_f, b, 1);
+End;
+
+{ ============================================================
+  ObjBeginRecord : commencer un nouveau record OMF
+  ============================================================ }
+Procedure ObjBeginRecord(rtype : Byte);
+Begin
+  obj_rec_type := rtype;
+  obj_rec_pos  := 0;
+End;
+
+{ ============================================================
+  ObjPutByte : ajouter un octet au buffer du record courant
+  ============================================================ }
+Procedure ObjPutByte(b : Byte);
+Begin
+  If obj_rec_pos < OBJ_REC_MAX Then
+  Begin
+    obj_rec_buf[obj_rec_pos] := b;
+    Inc(obj_rec_pos);
+  End
+  Else
+    ErrorMsg('Record OMF trop grand (max 1024 octets de donnees)');
+End;
+
+{ ============================================================
+  ObjPutWord : ajouter un mot 16 bits (little-endian)
+  ============================================================ }
+Procedure ObjPutWord(w : TWord);
+Begin
+  ObjPutByte(Byte(w And $FF));
+  ObjPutByte(Byte((w Shr 8) And $FF));
+End;
+
+{ ============================================================
+  ObjPutDWord : ajouter un double-mot 32 bits (little-endian)
+  ============================================================ }
+Procedure ObjPutDWord(d : TLong);
+Begin
+  ObjPutByte(Byte(d And $FF));
+  ObjPutByte(Byte((d Shr 8) And $FF));
+  ObjPutByte(Byte((d Shr 16) And $FF));
+  ObjPutByte(Byte((d Shr 24) And $FF));
+End;
+
+{ ============================================================
+  ObjPutStr : ajouter une chaine pascal (longueur + octets)
+  ============================================================ }
+Procedure ObjPutStr(Const s : TString);
+Var
+  i : Integer;
+Begin
+  ObjPutByte(Length(s));
+  For i := 1 To Length(s) Do
+    ObjPutByte(Ord(s[i]));
+End;
+
+{ ============================================================
+  ObjPutIndex : encoder un index OMF (1 ou 2 octets)
+    index < 128  -> 1 octet
+    index >= 128 -> 2 octets (bit 7 du premier = 1)
+  ============================================================ }
+Procedure ObjPutIndex(idx : Integer);
+Begin
+  If idx < 128 Then
+    ObjPutByte(Byte(idx))
+  Else
+  Begin
+    ObjPutByte(Byte($80 Or ((idx Shr 8) And $7F)));
+    ObjPutByte(Byte(idx And $FF));
+  End;
+End;
+
+{ ============================================================
+  ObjEndRecord : finaliser et ecrire le record dans obj_f
+  Calcule la longueur et le checksum, puis ecrit tout.
+  ============================================================ }
+Procedure ObjEndRecord;
+Var
+  len    : Integer; { longueur des donnees + 1 (checksum) }
+  sum    : Integer;
+  i      : Integer;
+  lo, hi : Byte;
+  cksum  : Byte;
+Begin
+  If Not obj_is_open Then Exit;
+  len := obj_rec_pos + 1; { +1 pour l octet de checksum }
+  lo  := Byte(len And $FF);
+  hi  := Byte((len Shr 8) And $FF);
+  { calcul du checksum : somme de tous les octets du record }
+  sum := obj_rec_type + lo + hi;
+  For i := 0 To obj_rec_pos - 1 Do
+    sum := sum + obj_rec_buf[i];
+  cksum := Byte((256 - (sum And $FF)) And $FF);
+  { ecriture : type + longueur + donnees + checksum }
+  ObjWriteByte(obj_rec_type);
+  ObjWriteByte(lo);
+  ObjWriteByte(hi);
+  For i := 0 To obj_rec_pos - 1 Do
+    ObjWriteByte(obj_rec_buf[i]);
+  ObjWriteByte(cksum);
+End;
+
+{ ============================================================
+  ObjOpen : ouvrir le fichier .OBJ en sortie
+  ============================================================ }
+Procedure ObjOpen(Const fname : TString);
+Begin
+  Assign(obj_f, fname);
+  {$I-}
+  Rewrite(obj_f, 1);
+  {$I+}
+  If IoResult <> 0 Then
+  Begin
+    ErrorMsg('Impossible de creer le fichier OBJ : ' + fname);
+    obj_is_open := False;
+    Exit;
+  End;
+  obj_is_open := True;
+  lnames_count := 0;
+End;
+
+{ ============================================================
+  ObjClose : fermer le fichier .OBJ
+  ============================================================ }
+Procedure ObjClose;
+Begin
+  If obj_is_open Then
+  Begin
+    Close(obj_f);
+    obj_is_open := False;
+  End;
+End;
+
+{ ============================================================
+  ObjInit : initialiser les variables OBJ
+  ============================================================ }
+Procedure ObjInit;
+Begin
+  obj_is_open  := False;
+  obj_rec_type := 0;
+  obj_rec_pos  := 0;
+  lnames_count := 0;
+End;
+
+{ --- Records OMF de haut niveau --- }
+
+{ ============================================================
+  ObjTHEADR : ecrire le record THEADR (nom de module)
+  ============================================================ }
+Procedure ObjTHEADR(Const module_name : TString);
+Begin
+  ObjBeginRecord(OMF_THEADR);
+  ObjPutStr(module_name);
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  ObjCOMENT : ecrire un record COMENT
+    attr      : attribut (80h = non-listable non-purgeable)
+    com_class : classe de commentaire (0 = texte general)
+    text      : texte du commentaire
+  ============================================================ }
+Procedure ObjCOMENT(attr : Byte; com_class : Byte; Const text : TString);
+Var
+  i : Integer;
+Begin
+  ObjBeginRecord(OMF_COMENT);
+  ObjPutByte(attr);
+  ObjPutByte(com_class);
+  For i := 1 To Length(text) Do
+    ObjPutByte(Ord(text[i]));
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  ObjMODEND : ecrire le record MODEND
+    is_main   : True si ce module contient le point d entree
+    seg_idx   : index SEGDEF du segment de depart (0 si aucun)
+    start_off : offset du point d entree dans le segment
+  ============================================================ }
+Procedure ObjMODEND(is_main : Boolean; seg_idx : Integer; start_off : TWord);
+Begin
+  ObjBeginRecord(OMF_MODEND);
+  If is_main And (seg_idx > 0) Then
+  Begin
+    ObjPutByte($C1);          { bit 7 = main module, bit 6 = entry present }
+    ObjPutByte($00);          { FRAME: segment (00h) }
+    ObjPutIndex(seg_idx);     { index SEGDEF cible }
+    ObjPutByte($00);          { TARGET: segment (00h) }
+    ObjPutIndex(seg_idx);
+    ObjPutWord(start_off);
+  End
+  Else If is_main Then
+  Begin
+    ObjPutByte($80);          { main module, pas d entry explicite }
+  End
+  Else
+  Begin
+    ObjPutByte($00);          { module secondaire }
+  End;
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  LNamesRegister : enregistrer un nom dans la table LNAMES
+  et retourner son index 1-base. Si deja present, retourner
+  l index existant.
+  ============================================================ }
+Function LNamesRegister(Const name : TSymString) : Integer;
+Var
+  i : Integer;
+Begin
+  { chercher si deja enregistre }
+  For i := 1 To lnames_count Do
+    If lnames_table[i] = name Then
+    Begin
+      LNamesRegister := i;
+      Exit;
+    End;
+  { ajouter }
+  If lnames_count < LNAMES_MAX Then
+  Begin
+    Inc(lnames_count);
+    lnames_table[lnames_count] := name;
+    LNamesRegister := lnames_count;
+  End
+  Else
+  Begin
+    ErrorMsg('Table LNAMES pleine (max ' +
+             Chr(Ord('0') + LNAMES_MAX Div 100) +
+             Chr(Ord('0') + (LNAMES_MAX Div 10) Mod 10) +
+             Chr(Ord('0') + LNAMES_MAX Mod 10) + ' noms)');
+    LNamesRegister := 1;
+  End;
+End;
+
+{ ============================================================
+  ObjLNAMES : ecrire le record LNAMES avec tous les noms
+  accumules dans lnames_table[1..lnames_count].
+  Un seul record suffit en general pour les petits modules.
+  ============================================================ }
+Procedure ObjLNAMES;
+Var
+  i : Integer;
+Begin
+  If lnames_count = 0 Then Exit;
+  ObjBeginRecord(OMF_LNAMES);
+  For i := 1 To lnames_count Do
+    ObjPutStr(lnames_table[i]);
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  ObjSEGDEF : ecrire un record SEGDEF pour un segment.
+    align_byte : 0=abs,1=byte,2=word,3=para,4=page,5=dword
+    combine    : 0=private,2=public,5=stack,6=common
+    seg_size   : taille en octets du segment
+    seg_name_i : index LNAMES du nom de segment
+    cls_name_i : index LNAMES de la classe
+    ovl_name_i : index LNAMES du nom du groupe d overlay (0)
+  ============================================================ }
+Procedure ObjSEGDEF(align_byte : Byte; combine : Byte;
+                    seg_size : TWord;
+                    seg_name_i : Integer; cls_name_i : Integer;
+                    ovl_name_i : Integer);
+Var
+  acbp : Byte;
+Begin
+  ObjBeginRecord(OMF_SEGDEF);
+  { ACBP : A(3bits) C(3bits) B(1bit) P(1bit) }
+  { A = alignment : 1=byte 2=word 3=para 4=page 5=dword }
+  { C = combine   : 0=private 2=public 5=stack 6=common }
+  { B = big (seg_size=0 means 64K) }
+  { P = USE16 (0) / USE32 (1) }
+  acbp := ((align_byte And $07) Shl 5) Or
+          ((combine    And $07) Shl 2) Or
+          $00; { B=0, P=0 = USE16 }
+  ObjPutByte(acbp);
+  ObjPutWord(seg_size);    { taille du segment }
+  ObjPutIndex(seg_name_i); { nom du segment }
+  ObjPutIndex(cls_name_i); { classe }
+  ObjPutIndex(ovl_name_i); { overlay name (0 = none) }
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  ObjGRPDEF : ecrire un record GRPDEF
+    grp_name_i : index LNAMES du nom de groupe (ex: DGROUP)
+    seg_indices: tableau d indices SEGDEF des membres
+    seg_count  : nombre de membres
+  ============================================================ }
+Procedure ObjGRPDEF(grp_name_i : Integer;
+                    Var seg_indices : Array Of Integer;
+                    seg_cnt : Integer);
+Var
+  i : Integer;
+Begin
+  ObjBeginRecord(OMF_GRPDEF);
+  ObjPutIndex(grp_name_i);
+  For i := 0 To seg_cnt - 1 Do
+  Begin
+    ObjPutByte($FF);               { composant = segment }
+    ObjPutIndex(seg_indices[i]);   { index SEGDEF }
+  End;
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  ObjEXTDEF : ecrire un record EXTDEF pour un symbole externe
+    ext_name : nom du symbole externe
+    type_idx : index de type (0 = non specifie)
+  ============================================================ }
+Procedure ObjEXTDEF(Const ext_name : TString; type_idx : Integer);
+Begin
+  ObjBeginRecord(OMF_EXTDEF);
+  ObjPutStr(ext_name);
+  ObjPutIndex(type_idx);
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  ObjPUBDEF : ecrire un record PUBDEF pour un symbole public
+    base_grp_i : index GRPDEF de base (0 si aucun)
+    base_seg_i : index SEGDEF du segment contenant le symbole
+    pub_name   : nom du symbole public
+    pub_offset : offset dans le segment
+    type_idx   : index de type (0 = non specifie)
+  ============================================================ }
+Procedure ObjPUBDEF(base_grp_i : Integer; base_seg_i : Integer;
+                    Const pub_name : TString;
+                    pub_offset : TWord; type_idx : Integer);
+Begin
+  ObjBeginRecord(OMF_PUBDEF);
+  ObjPutIndex(base_grp_i); { groupe de base (0 si aucun) }
+  ObjPutIndex(base_seg_i); { segment de base }
+  If base_seg_i = 0 Then
+    ObjPutWord(0);          { base frame (segment absolu seulement) }
+  ObjPutStr(pub_name);
+  ObjPutWord(pub_offset);
+  ObjPutIndex(type_idx);
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  Programme principal (TODOs 06 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
           ' (MASM.PAS - compatible MASM 5.x)');
   InitTables;
+  ObjInit;
   SrcInit;
   LexInit;
-  Writeln('Infrastructure + source + lexer initialises (TODOs 01-03 complets).');
-  Writeln('TODOs 04 a 25 a implementer.');
+  SymInit;
+  Writeln('TODOs 01-05 complets (infra + source + lexer + symboles + OMF de base).');
+  Writeln('TODOs 06 a 25 a implementer.');
 End.

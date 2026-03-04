@@ -1,199 +1,17 @@
-(* BCPL86.PAS - Compilateur BCPL vers assembleur 8086
-   Turbo Pascal / Free Pascal (-Mtp)
-   ================================================================
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur BCPL vers assembleur 8086
+}
 
-   LISTE DES TRAVAUX A REALISER (25 TODOS)
-   ========================================
-
-   TODO 01 - INFRASTRUCTURE DE BASE
-     Constantes globales (VERSION, MAX_SYM, MAX_SCOPE, MAX_GLOBAL,
-     MAX_LABELS, MAX_ERRORS, MAX_STR, MAX_PARAM, MAX_PROC, MAX_VEC,
-     MAX_SWITCH, STACK_SIZE). Types fondamentaux (TString, TToken,
-     TTokenKind, TSymKind, TSymRec). Cadre principal : arguments en
-     ligne de commande (source .B ou .BCL, sortie .ASM, options -v -d
-     -nr), ouverture des fichiers, prefixes labels ASM BL_ BK_ BV_
-     BRT_. En BCPL tout est un mot machine 16 bits (WORD).
-
-   TODO 02 - ANALYSEUR LEXICAL (LEXER)
-     LexChar, LexPeek, LexAdvance, lignes/colonnes. Tokens BCPL :
-     mots-cles LET AND BE IS INTO TO BY DO IF UNLESS TEST THEN ELSE
-     OR WHILE UNTIL FOR LOOP BREAK RETURN RESULTIS SWITCHON CASE
-     ENDCASE DEFAULT VALOF VEC TRUE FALSE MANIFEST STATIC GLOBAL
-     SECTION GET TABLE NEEDS FINISH REPEAT REPEATWHILE REPEATUNTIL.
-     Entiers decimaux, octaux (#NNN), hexadecimaux (#xHHH).
-     Chars 'c' et sequences etoile *N *T *S ** *'. Chaines "abc"
-     (octet 0 = longueur). Commentaires // et /* ... */.
-     Operateurs := = ~= < <= > >= + - * / MOD REM ABS
-     << >> & | ~ ! % @ SLCT EQV XOR.
-     Delimiteurs $(  $)  {  }  ( ) , ; : ->.
-
-   TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
-     SymEnter, SymFind, SymFindLocal. Portees imbriquees (ScopeEnter
-     / ScopeLeave) pour routines et blocs. Categories :
-     SK_MANIFEST (constante entiere resolue au compile-time),
-     SK_GLOBAL (slot numerote dans le vecteur global G!n),
-     SK_STATIC (variable DATA initialisee), SK_LOCAL (pile BP),
-     SK_PARAM (parametre pile BP positif), SK_PROC (routine LET),
-     SK_VEC (vecteur local : LET v = VEC n), SK_LABEL.
-     Le vecteur global G! est un tableau de mots en DATA, BX pointe
-     sur sa base ; acces : lecture [BX+2*slot], ecriture idem.
-
-   TODO 04 - GESTION DU VECTEUR GLOBAL ET DES SEGMENTS
-     Table des slots globaux (GLOBAL $( F : 12 $)) -> slot_table.
-     Adresse slot n : [_BG_ + 2*n]. Initialisation BX = _BG_ au
-     demarrage. Routine principale = G!1 (slot 1). STATIC : emettre
-     chaque variable en DATA avec valeur initiale (DW). MANIFEST :
-     synonyme de constante entiere, aucune emission DATA.
-
-   TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
-     EmitLabel, EmitI0..EmitI2, EmitComment, EmitDB, EmitDW, EmitDup.
-     Compteur instr_count. Basculement out_file / tmp_file via
-     SwitchToMain / SwitchToTmp. Fichier .ASM MASM/TASM, modele SMALL.
-     Convention appel BCPL : args empiles gauche->droite, resultat AX,
-     caller nettoie. Registre BX = base vecteur global (preserve).
-
-   TODO 06 - DECLARATIONS MANIFEST ET CONSTANTES
-     Sections MANIFEST $( name = expr ; ... $) et formes { }.
-     Evaluer expressions constantes : entiers, TRUE (-1), FALSE (0),
-     operations arithmetiques et logiques. Stocker SK_MANIFEST.
-     MANIFEST remplace les identificateurs partout sans generer
-     de code ni de donnee (comme #define C sans parametre).
-
-   TODO 07 - DECLARATIONS LET SIMPLES (VARIABLES ET ALIASES)
-     LET name = expr (variable locale sur la pile, offset -BP).
-     LET name1 = e1 AND name2 = e2 (declarations multiples liees).
-     VEC n dans un LET : allouer n+1 mots sur la pile, stocker
-     l'adresse de base (LEA). Supporter les TABLE val1, val2, ...
-     (constante vecteur en DATA). Portees imbriquees dans les blocs.
-
-   TODO 08 - VARIABLES GLOBALES ET STATIQUES (GLOBAL / STATIC)
-     GLOBAL $( name : numero $) : associer nom a slot dans vecteur.
-     Generer acces : lecture MOV AX,[BX+2*slot], ecriture inverse.
-     STATIC $( name = valeur $) : emettre DW en DATA. Initialiser
-     BX = adresse _BG_ au START. MAX_GLOBAL = 256 slots.
-
-   TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
-     Litteraux entiers (decimal, octal #NNN, hex #xHHH), TRUE (-1),
-     FALSE (0). Chars 'c' et *N *T *S. Chaines "abc" : adresse DATA.
-     Identificateurs : MANIFEST -> immediate, LOCAL -> [BP-n],
-     GLOBAL -> [BX+2*slot], PARAM -> [BP+n].
-     Operateur @ (LEA adresse-de). Operateur ! (indirect / indexe) :
-     !x = [x], x!n = [x+2*n]. Operateur % (octet) : x%n=[x+n] (AL).
-     Parentheses. VALOF $( ... RESULTIS expr $).
-
-   TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
-     Unaires : - (NEG), ~ (NOT bit), ABS (valeur absolue), @ (LEA).
-     Termes : * (IMUL), / (IDIV), MOD (modulo positif) ou REM,
-     << (SAL/SHL), >> (SHR logique).
-     Additifs : + (ADD), - (SUB), SLCT n:p:x (champ de bits).
-     Logiques : & (AND), | (OR), EQV (NOT XOR), XOR.
-     Relations : = ~= < <= > >= -> TRUE=-1 ou FALSE=0.
-     Priorites BCPL (differentes du C).
-
-   TODO 11 - INSTRUCTION D'AFFECTATION (:=)
-     Lvalue : nom simple, !expr (indirect), expr!n (indexe mot),
-     expr%n (indexe octet). Rvalue : expression. Affectations
-     multiples : lv1, lv2 := rv1, rv2. Pas de copie implicite
-     de chaine (BCPL = types non distincts, tout est un mot).
-
-   TODO 12 - COMMANDES CONDITIONNELLES (IF / UNLESS / TEST)
-     IF cond DO cmd [ELSE cmd]. UNLESS cond DO cmd (= IF NOT cond).
-     TEST cond THEN cmd ELSE cmd (ternaire commande).
-     Sauts conditionnels 8086 avec etiquettes. La condition BCPL :
-     zero = FALSE, non-zero = TRUE (convention inverse du C).
-
-   TODO 13 - BOUCLES (WHILE / UNTIL / FOR / REPEAT)
-     WHILE cond DO cmd. UNTIL cond DO cmd (inverse). REPEAT (infini).
-     REPEATWHILE cond. REPEATUNTIL cond. FOR v=d TO f [BY p] DO cmd.
-     LOOP (continuer iteration courante). BREAK (sortir boucle).
-     Pile de break-labels et continue-labels (loop_break_stk).
-
-   TODO 14 - COMMANDE SWITCHON
-     SWITCHON expr INTO $( CASE val: cmds ENDCASE ... DEFAULT: $).
-     Etiquettes entiÃ¨res. ENDCASE explicite (pas de fall-through).
-     Table de sauts (dense) ou cascade CMP/JE (sparse). DEFAULT.
-     MAX_SWITCH = 128 cases par SWITCHON.
-
-   TODO 15 - BLOCS DE COMMANDES ET PORTEE
-     Blocs $( cmd1; cmd2; ... $) ou {  }. Declarations LET
-     imbriquees : variables locales supplementaires. A l'entree :
-     noter SP ou compteur locaux, a la sortie restaurer. Forme
-     VALOF $( ... RESULTIS expr $) comme expression bloc.
-
-   TODO 16 - DECLARATIONS DE ROUTINES (LET ... BE / = VALOF)
-     LET name(p1,..) BE cmd : procedure, retourne 0. LET name(p1,..)=
-     expr : fonction. Prologue (PUSH BP/MOV BP,SP/SUB SP,locaux),
-     epilogue (MOV SP,BP/POP BP/RET). RESULTIS expr -> MOV AX,val +
-     JMP epilogue. Corps dans tmp_file, fusion MergeTmpToMain.
-     LET f...AND g... : definitions mutuellement recursives.
-
-   TODO 17 - APPELS DE ROUTINES ET VALOF
-     Appels directs et indirects ((!vect)(args)). Empilement args
-     gauche->droite. Resultat dans AX. VALOF $( RESULTIS expr $)
-     en position expression. RETURN (retour, resultat=0). FINISH
-     (HALT, exit code 0, INT 21h AH=4Ch AL=0).
-
-   TODO 18 - TABLE ET VECTEUR (TABLE, VEC, acces ! et %)
-     VEC n : allouer n+1 mots pile, stocker adresse base dans var.
-     ARRAYS 0-indexes : v!0..v!n. TABLE v1,v2... : constante en DATA.
-     v!i -> [base+2*i]. v%i -> [base+i] (byte, zero-extend).
-     Optimiser les offset constants. Passage par adresse de vecteur.
-
-   TODO 19 - GESTION DES CHAINES BCPL
-     Format : octet 0 = longueur, octets 1..n = chars. Litteraux
-     en DATA (DB n, 'a','b',..., 0). WRITEF "%S %N %C %I".
-     WRITES, WRITEN, WRITECH, NEWLINE, READS, READN, READCH.
-     COPYSTRING(s,d), COMPSTRING(s1,s2). PACKSTRING / UNPACKSTRING.
-
-   TODO 20 - ROUTINES RUNTIME 8086 (BRT_xxx)
-     BRT_WRITES : [SI]=chaine BCPL -> DOS. BRT_WRITEN : AX->decimal.
-     BRT_WRITECH : AL->DOS INT 21h. BRT_NEWLINE : CR LF.
-     BRT_READCH : AL=char. BRT_READN : ligne -> AX entier.
-     BRT_READS : ligne -> tampon BCPL [BX]. BRT_STOP : exit AX.
-     BRT_GLOBE : BX = _BG_. Entree START : init DS BX, copier
-     adresses routines globales dans _BG_, sauter G!1 (main).
-
-   TODO 21 - DIRECTIVE GET ET MULTI-FICHIERS
-     GET "fichier" : inclure source (pile contextes lexicaux).
-     Profondeur max d'inclusion. SECTION "nom" : commentaire ASM.
-     NEEDS "module" : note dependance (non resolue en phase 1).
-     Option -I pour chemin de recherche des fichiers inclus.
-
-   TODO 22 - OPERATEURS AVANCES : SLCT, EQV, XOR, >>
-     SLCT n:p:x : SHR AX,p puis AND AX,((1<<n)-1). EQV : XOR+NOT.
-     XOR : XOR AX,BX. >> : SHR (logique, non signe).
-     ABS : NEG+JNS. MOD vs REM : modulo toujours positif vs reste.
-     IMUL 16x16 en BCPL (resultat tronque a 16 bits).
-
-   TODO 23 - LET ... AND (DEFINITIONS MUTUELLES)
-     Passe de collecte : scanner tous les noms du groupe LET/AND
-     avant de compiler les corps. LET f AND g : inscrit f et g dans
-     sym_table, puis compile les corps. LET v1=e1 AND v2=e2 pour
-     multi-declarations. Coherence des portees entre membres AND.
-
-   TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
-     Messages situes (fichier(ligne,col) : msg). Comptage erreurs/
-     avertissements, continuation en mode recuperation, arret apres
-     MAX_ERRORS. Mode -v : statistiques (lignes, tokens, symboles,
-     slots globaux, routines, instructions, fichiers inclus, erreurs).
-     Mode -d : dump table des symboles (SymDumpVerbose).
-
-   TODO 25 - INTEGRATION FINALE ET TESTS
-     ParseProgram : BCPL top-level. Prologue .ASM (SMALL, DOSSEG,
-     .MODEL, .STACK 512, .DATA avec _BG_ DW MAXGLOB DUP(?), .CODE,
-     END START). START : MOV AX,_DATA ; MOV DS,AX ; LEA BX,[_BG_] ;
-     copier adresses routines globales ; CALL WORD PTR [BX+2].
-     Tests : HelloWorld, arithmetique+boucles, vecteurs+tri, chaines
-     WRITEF, routines recursives (factorielle, Hanoi), SWITCHON,
-     definitions mutuelles LET/AND. TASM/MASM + DOSBox.
-
-   ================================================================ *)
 Program BCPL86;
 
-{$I-}   { desactiver les IO-check pour gerer nous-memes les erreurs }
+{$I-}   { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE DE BASE
+  INFRASTRUCTURE DE BASE
   ============================================================ }
 
 { --- Constantes de dimensionnement --- }
@@ -361,7 +179,7 @@ Var
   src_file     : Text;
   out_file     : Text;
   tmp_file     : Text;
-  str_file     : Text;             { chaÃ®nes litterales differees (TODO 25) }
+  str_file     : Text;                { cha�nes litterales differees }
   cur_out      : TTextPtr;   { pointe sur out_file ou tmp_file       }
   src_fname    : TString;
   out_fname    : TString;
@@ -378,7 +196,7 @@ Var
   warn_count   : Integer;
   instr_count  : Integer;
   str_lit_count: Integer;
-  tok_count    : Integer;   { TODO 24 : tokens lus depuis la source }
+  tok_count    : Integer;   { jetons lus depuis la source }
 
   { Etat lexer }
   lex_lineno   : Integer;
@@ -429,7 +247,7 @@ Var
   cur_switch_lbl : TString;   { label fin SWITCHON courant            }
 
 { ============================================================
-  Utilitaires generaux (stubs - implementation dans TODO 02+)
+  Utilitaires generaux (stubs)
   ============================================================ }
 
 Function IntToStr(n : LongInt) : TString;
@@ -469,7 +287,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - ANALYSEUR LEXICAL (LEXER)
+  ANALYSEUR LEXICAL (LEXER)
   ============================================================ }
 
 { --- Predicats de caracteres --- }
@@ -951,7 +769,7 @@ Begin
     Exit;
   End;
 
-  Inc(tok_count);   { TODO 24 : compter les tokens fraichement scans }
+  Inc(tok_count);   { compter les tokens fraichement scans }
   LexSkipWS;
   lex_colno := lex_pos;
 
@@ -1016,7 +834,7 @@ Begin
   End;
 End;
 
-{ Forward TODO 24 : ErrorMsg est utilise par LexExpect / LexExpectKind }
+{ Forward : ErrorMsg est utilise par LexExpect / LexExpectKind }
 Procedure ErrorMsg(Const msg : TString); Forward;
 
 { --------------------------------------------------------------------------
@@ -1071,11 +889,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
+  TABLE DES SYMBOLES ET GESTION DE LA PORTEE
   ============================================================ }
 
 { ============================================================
-  TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
+  GESTION DES ERREURS ET MODE VERBEUX
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -1446,7 +1264,7 @@ Begin
   ConstFind := 0;
 End;
 
-{ Forward TODO 24 : TypeName est utilise par SymDumpVerbose }
+{ Forward : TypeName est utilise par SymDumpVerbose }
 Function TypeName(ti : Integer) : TString; Forward;
 
 { --------------------------------------------------------------------------
@@ -1480,7 +1298,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - SYSTEME DE TYPES
+  SYSTEME DE TYPES
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -1718,7 +1536,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
+  GENERATEUR DE CODE 8086 - PRIMITIVES
   ============================================================ }
 
 Const
@@ -2017,7 +1835,7 @@ End;
 
 { --------------------------------------------------------------------------
   Chargement / stockage de variables dans AX selon leur portee.
-  Ces helpers seront appeles par les parseurs d'expression (TODO 09+).
+  Ces helpers seront appeles par les parseurs d'expression.
   -------------------------------------------------------------------------- }
 
 { Charger une variable globale (sym_table[si]) dans AX (ou DX:AX si 32 bits). }
