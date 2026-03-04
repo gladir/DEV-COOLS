@@ -8292,6 +8292,11 @@ Begin
   EmitByte(Byte($58 Or ridx));
 End;
 
+Const PL_COUNT = 5;
+      PL_NAMES: Array[1..5] Of String[7] = (
+        'C','PASCAL','FORTRAN','SYSCALL','STDCALL'
+      );
+
 { ============================================================
   ParseProc : nom PROC [NEAR|FAR] [LANG:C|PASCAL|...] 
               [USES reg1 reg2 ...] [param1:TYPE, ...]
@@ -8333,11 +8338,9 @@ Begin
     Begin
       LexNext;
       tok := lex_tok.val;
-      If      tok = 'C'        Then pi.lang := LANG_C
-      Else If tok = 'PASCAL'   Then pi.lang := LANG_PASCAL
-      Else If tok = 'FORTRAN'  Then pi.lang := LANG_FORTRAN
-      Else If tok = 'SYSCALL'  Then pi.lang := LANG_SYSCALL
-      Else If tok = 'STDCALL'  Then pi.lang := LANG_STDCALL
+      i := 1;
+      While (i <= PL_COUNT) And (PL_NAMES[i] <> tok) Do Inc(i);
+      If i <= PL_COUNT Then pi.lang := i
       Else WarnMsg('Convention d appel inconnue : ' + tok);
     End;
   End;
@@ -8916,25 +8919,19 @@ Const
     'INVOKE'
   );
 
-{ Retourne l index MN_* du mnemonique directive, ou 0 si inconnu. }
-Function FindDir(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  FindDir := 0;
-  For i := 1 To DIR_COUNT Do
-    If DIR_NAMES[i] = s Then
-    Begin
-      FindDir := i;
-      Exit;
-    End;
-End;
-
 { ============================================================
   AssembleLine : analyser et assembler une ligne source.
   Appelle tous les encodeurs des TODOs 09-19.
   ============================================================ }
 Const AL_REP_COUNT = 5;
       AL_REP_NAMES: Array[1..5] Of String[5] = ('REP','REPE','REPZ','REPNE','REPNZ');
+      SS_BYTE=1; SS_WORD=2; SS_DWORD=3; SS_PARA=4; SS_PAGE=5;
+      SS_PUBLIC=6; SS_COMMON=7; SS_STACK=8; SS_MEMORY=9; SS_AT=10;
+      SS_COUNT=10;
+      SS_NAMES: Array[1..10] Of String[6] = (
+        'BYTE','WORD','DWORD','PARA','PAGE',
+        'PUBLIC','COMMON','STACK','MEMORY','AT'
+      );
 
 Procedure AssembleLine;
 Var
@@ -9058,7 +9055,9 @@ Begin
   End;
 
   { --- dispatcher directives par index --- }
-  dir_idx := FindDir(mnem);
+  dir_idx := 0;
+  For i := 1 To DIR_COUNT Do
+    If DIR_NAMES[i] = mnem Then Begin dir_idx := i; Break; End;
   Case dir_idx Of
 
     MN_EQU : Begin
@@ -9134,18 +9133,19 @@ Begin
       Begin
         LexNext;
         tok2 := lex_tok.val;
-        If      (tok2 = 'BYTE')   Then seg_aln  := sa_byte
-        Else If (tok2 = 'WORD')   Then seg_aln  := sa_word
-        Else If (tok2 = 'DWORD')  Then seg_aln  := sa_dword
-        Else If (tok2 = 'PARA')   Then seg_aln  := sa_para
-        Else If (tok2 = 'PAGE')   Then seg_aln  := sa_page
-        Else If (tok2 = 'PUBLIC') Then seg_comb := sc_public
-        Else If (tok2 = 'COMMON') Then seg_comb := sc_common
-        Else If (tok2 = 'STACK')  Then seg_comb := sc_stack
-        Else If (tok2 = 'MEMORY') Then seg_comb := sc_common
-        Else If (tok2 = 'AT')     Then
-        Begin
-          If LexPeekKind = TK_NUMBER Then LexNext; { adresse AT }
+        i := 1;
+        While (i <= SS_COUNT) And (SS_NAMES[i] <> tok2) Do Inc(i);
+        Case i Of
+          SS_BYTE   : seg_aln  := sa_byte;
+          SS_WORD   : seg_aln  := sa_word;
+          SS_DWORD  : seg_aln  := sa_dword;
+          SS_PARA   : seg_aln  := sa_para;
+          SS_PAGE   : seg_aln  := sa_page;
+          SS_PUBLIC : seg_comb := sc_public;
+          SS_COMMON : seg_comb := sc_common;
+          SS_STACK  : seg_comb := sc_stack;
+          SS_MEMORY : seg_comb := sc_common;
+          SS_AT     : If LexPeekKind = TK_NUMBER Then LexNext; { adresse AT }
         End;
       End;
       { classe entre apostrophes }
@@ -9582,28 +9582,27 @@ Begin
 End;
 
 { ShowUsage : afficher l aide et terminer }
-Procedure ShowUsage;
-Begin
-  Writeln('Usage  : MASM [options] source[.ASM] [obj[.OBJ] [lst[.LST] [crf[.CRF]]]]');
+Procedure ShowUsage;Begin
+  Writeln('Syntaxe: MASM [options] source[.ASM] [obj[.OBJ] [lst[.LST] [crf[.CRF]]]]');
   Writeln('Options:');
-  Writeln('  /A        Trier segments alphabetiquement');
-  Writeln('  /B n      Taille buffer source (ignore)');
-  Writeln('  /C        Generer .CRF cross-reference (non implemente)');
-  Writeln('  /D        Double-passe (toujours actif, rien a faire)');
-  Writeln('  /L        Generer fichier listing .LST');
-  Writeln('  /ML       Labels sensibles a la casse');
-  Writeln('  /MU       Convertir labels en majuscules (defaut)');
-  Writeln('  /MX       Publics/externes sensibles a la casse');
-  Writeln('  /N        Omettre tables de symboles du listing');
-  Writeln('  /S        Segments en ordre de definition (defaut)');
-  Writeln('  /T        Mode silencieux');
-  Writeln('  /W0 /W1 /W2  Niveau d''avertissement (0=aucun, 2=tout)');
-  Writeln('  /X        Lister blocs conditionnels inactifs');
-  Writeln('  /Z        Afficher la ligne source avec chaque erreur');
-  Writeln('  /Zi /Zd   Infos debug CodeView (non implemente)');
-  Writeln('  /I chem   Ajouter repertoire de recherche INCLUDE');
-  Writeln('  /Dsym[=val]  Definir un symbole sur la ligne de commande');
-  Writeln('  /?        Afficher cette aide');
+  Writeln(' /A        Trier segments alphabetiquement');
+  Writeln(' /B n      Taille buffer source (ignore)');
+  Writeln(' /C        Generer .CRF cross-reference (non implemente)');
+  Writeln(' /D        Double-passe (toujours actif, rien a faire)');
+  Writeln(' /L        Generer fichier listing .LST');
+  Writeln(' /ML       Labels sensibles a la casse');
+  Writeln(' /MU       Convertir labels en majuscules (defaut)');
+  Writeln(' /MX       Publics/externes sensibles a la casse');
+  Writeln(' /N        Omettre tables de symboles du listing');
+  Writeln(' /S        Segments en ordre de definition (defaut)');
+  Writeln(' /T        Mode silencieux');
+  Writeln(' /W0 /W1 /W2  Niveau d''avertissement (0=aucun, 2=tout)');
+  Writeln(' /X        Lister blocs conditionnels inactifs');
+  Writeln(' /Z        Afficher la ligne source avec chaque erreur');
+  Writeln(' /Zi /Zd   Infos debug CodeView (non implemente)');
+  Writeln(' /I chem   Ajouter repertoire de recherche INCLUDE');
+  Writeln(' /Dsym[=val]  Definir un symbole sur la ligne de commande');
+  Writeln(' /?        Afficher cette aide');
   Halt(1);
 End;
 
@@ -9772,8 +9771,7 @@ Begin
   { Source obligatoire }
   If src_fname = '' Then
   Begin
-    Writeln('Microsoft Macro Assembler Version ', VERSION,
-            ' compatible MASM 5.x');
+    Writeln('Macro Assembler Version ', VERSION, ' compatible MASM 5.x');
     ShowUsage;
     Exit;
   End;
@@ -9808,8 +9806,7 @@ Begin
   { Analyser la ligne de commande (TODO 24) }
   ParseArgs;
   If Not silent_mode Then
-    Writeln('Microsoft Macro Assembler Version ', VERSION,
-            ' compatible MASM 5.x');
+    Writeln('Macro Assembler Version ', VERSION, ' compatible MASM 5.x');            
   { Assembler }
   Assemble(src_fname, obj_fname);
   If err_count > 0 Then Halt(1)
