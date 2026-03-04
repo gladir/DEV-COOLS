@@ -313,6 +313,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer l'interpréteur de commande du langage de programmation LOGO. Il supporte aussi la tortue.</td>
 		</tr>
 		<tr>
+			<td><b>MASM.PAS</b></td>
+			<td>Cette commande permet de lancer le Macro Assembler (compilateur assembleur 8086 créant des fichiers .OBJ).</td>
+		</tr>
+		<tr>
 			<td><b>MODII86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Modula-2 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
