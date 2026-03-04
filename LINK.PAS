@@ -2078,7 +2078,742 @@ Begin
 
        { Le reste du record est opaque et ignore pour compatibilite }
       End;
-        $A8..$AF, $B1, $B9..$BF, $C0, $C1, $CF..$FF:Begin
+      $CF:Begin
+       { CFh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D0:Begin
+       { D0h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D1:Begin
+       { D1h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D2:Begin
+       { D2h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D3:Begin
+       { D3h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D4:Begin
+       { D4h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D5:Begin
+       { D5h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D6:Begin
+       { D6h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D7:Begin
+       { D7h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D8:Begin
+       { D8h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $D9:Begin
+       { D9h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $DA:Begin
+       { DAh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $DB:Begin
+       { DBh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $DC:Begin
+       { DCh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $DD:Begin
+       { DDh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $DE:Begin
+       { DEh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $DF:Begin
+       { DFh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E0:Begin
+       { E0h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E1:Begin
+       { E1h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E2:Begin
+       { E2h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E3:Begin
+       { E3h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E4:Begin
+       { E4h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E5:Begin
+       { E5h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E6:Begin
+       { E6h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E7:Begin
+       { E7h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E8:Begin
+       { E8h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $E9:Begin
+       { E9h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $EA:Begin
+       { EAh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $EB:Begin
+       { EBh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $EC:Begin
+       { ECh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $ED:Begin
+       { EDh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $EE:Begin
+       { EEh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $EF:Begin
+       { EFh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F0:Begin
+       { F0h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F1:Begin
+       { F1h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F2:Begin
+       { F2h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F3:Begin
+       { F3h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F4:Begin
+       { F4h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F5:Begin
+       { F5h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F6:Begin
+       { F6h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F7:Begin
+       { F7h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F8:Begin
+       { F8h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $F9:Begin
+       { F9h : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $FA:Begin
+       { FAh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $FB:Begin
+       { FBh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $FC:Begin
+       { FCh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $FD:Begin
+       { FDh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $FE:Begin
+       { FEh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+      $FF:Begin
+       { FFh : extension/reserve OMF (format non standardise) }
+       { Strategie prudente : charge utile opaque, ignoree en compatibilite }
+       GroupPos:=0;
+       GroupLimit:=RecLen-1; { sans checksum }
+       If GroupLimit<=0 Then Continue;
+
+       { Eventuel sous-type octet en tete (si present), non exploite }
+       If GroupPos<GroupLimit Then Begin
+        BakLocType:=Buffer[GroupPos];
+        Inc(GroupPos);
+       End;
+
+       { Le reste est considere opaque }
+      End;
+        $A8..$AF, $B1, $B9..$BF, $C0, $C1:Begin
        { Codes OMF etendus/reserves non pris en charge : ignorer }
       End;
   End;
