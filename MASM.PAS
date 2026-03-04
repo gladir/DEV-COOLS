@@ -3677,45 +3677,38 @@ Begin
     EvalAdd(e);
 End;
 
+{ ---- Table des operateurs pour EvalBitwise ---- }
+Const EB_AND=1; EB_OR=2; EB_XOR=3; EB_COUNT=3;
+      EB_NAMES: Array[1..3] Of String[3] = ('AND','OR','XOR');
+
 { ============================================================
   EvalBitwise : AND OR XOR (logiques bitwise)
   ============================================================ }
 Procedure EvalBitwise(Var e : TExpr);
 Var
-  op : TString;
-  r  : TExpr;
+  op    : TString;
+  r     : TExpr;
+  eb_idx : Integer;
+  i     : Integer;
 Begin
   EvalNot(e);
   Repeat
     If LexPeekKind = TK_IDENT Then
     Begin
       op := LexPeekVal;
-      If op = 'AND' Then
-      Begin
-        LexNext;
-        EvalNot(r);
-        e.val      := e.val And r.val;
-        e.is_reloc := False;
-        If r.is_undef Then e.is_undef := True;
-      End
-      Else If op = 'OR' Then
-      Begin
-        LexNext;
-        EvalNot(r);
-        e.val      := e.val Or r.val;
-        e.is_reloc := False;
-        If r.is_undef Then e.is_undef := True;
-      End
-      Else If op = 'XOR' Then
-      Begin
-        LexNext;
-        EvalNot(r);
-        e.val      := e.val Xor r.val;
-        e.is_reloc := False;
-        If r.is_undef Then e.is_undef := True;
-      End
-      Else
-        Break;
+      eb_idx := 0;
+      For i := 1 To EB_COUNT Do
+        If EB_NAMES[i] = op Then Begin eb_idx := i; Break; End;
+      If eb_idx = 0 Then Break;
+      LexNext;
+      EvalNot(r);
+      Case eb_idx Of
+        EB_AND : e.val := e.val And r.val;
+        EB_OR  : e.val := e.val Or  r.val;
+        EB_XOR : e.val := e.val Xor r.val;
+      End;
+      e.is_reloc := False;
+      If r.is_undef Then e.is_undef := True;
     End
     Else
       Break;
