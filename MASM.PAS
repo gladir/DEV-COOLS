@@ -1703,69 +1703,66 @@ Begin
   LexPeekVal := lex_peek_tok.val;
 End;
 
+{ ---- Table des directives pour LexIsDirective ---- }
+Const
+  LD_COUNT = 117;
+  LD_NAMES : Array[1..117] Of String[10] = (
+    'ASSUME',  'ALIGN',    'BYTE',    'CODE',     'COMM',
+    'COMMENT', 'CONST',    'DATA',    'DB',       'DD',
+    'DF',      'DQ',       'DT',      'DW',       'DWORD',
+    'ELSE',    'ELSEIF',   'END',     'ENDIF',    'ENDM',
+    'ENDP',    'ENDS',     'EQU',     'EVEN',     'EXITM',
+    'EXTERN',  'EXTRN',    'FAR',     'FWORD',    'GLOBAL',
+    'GROUP',   'IF',       'IF1',     'IF2',      'IFB',
+    'IFDEF',   'IFDIF',    'IFIDNI',  'IFIDN',    'IFNB',
+    'IFNDEF',  'IFE',      'INCLUDE', 'INCLUDELIB','IRP',
+    'IRPC',    'LABEL',    'LENGTH',  'LOCAL',    'MACRO',
+    'MOD',     'MODEL',    'NAME',    'NEAR',     'NOT',
+    'OFFSET',  'OPTION',   'ORG',     'PAGE',     'PARA',
+    'PROC',    'PTR',      'PUBLIC',  'PURGE',    'QWORD',
+    'RECORD',  'REPT',     'SBYTE',   'SEG',      'SEGMENT',
+    'SHORT',   'SIZE',     'SIZEOF',  'SIZESTR',  'STACK',
+    'STRUC',   'STRUCT',   'SUBTTL',  'TBYTE',    'TEXTEQU',
+    'TITLE',   'TYPE',     'TYPEDEF', 'UNION',    'USES',
+    'WORD',    '.CODE',    '.DATA',   '.MODEL',   '.STACK',
+    '.CONST',  '.STARTUP', '.EXIT',   '.LIST',    '.NOLIST',
+    '.XLIST',  '.LISTALL', '.RADIX',  '.286',     '.286P',
+    '.186',    '.8086',    '.ERR',    '.ERRNZ',   '.ERRE',
+    'AND',     'OR',       'XOR',     'SHL',      'SHR',
+    'HIGH',    'LOW',      'THIS',    'WIDTH',    'MASK',
+    'INVOKE',  'PROTO'
+  );
+
 { ============================================================
   LexIsDirective : True si s est une directive MASM connue
   ============================================================ }
 Function LexIsDirective(Const s : TString) : Boolean;
+Var i : Integer;
 Begin
-  LexIsDirective :=
-    (s = 'ASSUME')    Or (s = 'ALIGN')     Or (s = 'BYTE')     Or
-    (s = 'CODE')      Or (s = 'COMM')      Or (s = 'COMMENT')  Or
-    (s = 'CONST')     Or (s = 'DATA')      Or (s = 'DB')       Or
-    (s = 'DD')        Or (s = 'DF')        Or (s = 'DQ')       Or
-    (s = 'DT')        Or (s = 'DW')        Or (s = 'DWORD')    Or
-    (s = 'ELSE')      Or (s = 'ELSEIF')    Or (s = 'END')      Or
-    (s = 'ENDIF')     Or (s = 'ENDM')      Or (s = 'ENDP')     Or
-    (s = 'ENDS')      Or (s = 'EQU')       Or (s = 'EVEN')     Or
-    (s = 'EXITM')     Or (s = 'EXTERN')    Or (s = 'EXTRN')    Or
-    (s = 'FAR')       Or (s = 'FWORD')     Or (s = 'GLOBAL')   Or
-    (s = 'GROUP')     Or (s = 'IF')        Or (s = 'IF1')      Or
-    (s = 'IF2')       Or (s = 'IFB')       Or (s = 'IFDEF')    Or
-    (s = 'IFDIF')     Or (s = 'IFIDNI')    Or (s = 'IFIDN')    Or
-    (s = 'IFNB')      Or (s = 'IFNDEF')    Or (s = 'IFE')      Or
-    (s = 'INCLUDE')   Or (s = 'INCLUDELIB')Or (s = 'IRP')      Or
-    (s = 'IRPC')      Or (s = 'LABEL')     Or (s = 'LENGTH')   Or
-    (s = 'LOCAL')     Or (s = 'MACRO')     Or (s = 'MOD')      Or
-    (s = 'MODEL')     Or (s = 'NAME')      Or (s = 'NEAR')     Or
-    (s = 'NOT')       Or (s = 'OFFSET')    Or (s = 'OPTION')   Or
-    (s = 'ORG')       Or (s = 'PAGE')      Or (s = 'PARA')     Or
-    (s = 'PROC')      Or (s = 'PTR')       Or (s = 'PUBLIC')   Or
-    (s = 'PURGE')     Or (s = 'QWORD')     Or (s = 'RECORD')   Or
-    (s = 'REPT')      Or (s = 'SBYTE')     Or (s = 'SEG')      Or
-    (s = 'SEGMENT')   Or (s = 'SHORT')     Or (s = 'SIZE')     Or
-    (s = 'SIZEOF')    Or (s = 'SIZESTR')   Or (s = 'STACK')    Or
-    (s = 'STRUC')     Or (s = 'STRUCT')    Or (s = 'SUBTTL')   Or
-    (s = 'TBYTE')     Or (s = 'TEXTEQU')   Or (s = 'TITLE')    Or
-    (s = 'TYPE')      Or (s = 'TYPEDEF')   Or (s = 'UNION')    Or
-    (s = 'USES')      Or (s = 'WORD')      Or (s = '.CODE')    Or
-    (s = '.DATA')     Or (s = '.MODEL')    Or (s = '.STACK')   Or
-    (s = '.CONST')    Or (s = '.STARTUP')  Or (s = '.EXIT')    Or
-    (s = '.LIST')     Or (s = '.NOLIST')   Or (s = '.XLIST')   Or
-    (s = '.LISTALL')  Or (s = '.RADIX')    Or (s = '.286')     Or
-    (s = '.286P')     Or (s = '.186')      Or (s = '.8086')    Or
-    (s = '.ERR')      Or (s = '.ERRNZ')    Or (s = '.ERRE')    Or
-    (s = 'AND')       Or (s = 'OR')        Or (s = 'XOR')      Or
-    (s = 'SHL')       Or (s = 'SHR')       Or (s = 'HIGH')     Or
-    (s = 'LOW')       Or (s = 'THIS')      Or (s = 'WIDTH')    Or
-    (s = 'MASK')      Or (s = 'INVOKE')    Or (s = 'PROTO');
+  For i := 1 To LD_COUNT Do
+    If LD_NAMES[i] = s Then Begin LexIsDirective := True; Exit; End;
+  LexIsDirective := False;
 End;
+
+{ ---- Table des registres pour LexIsRegister ---- }
+Const
+  LR_COUNT = 23;
+  LR_NAMES : Array[1..23] Of String[5] = (
+    { 16 bits } 'AX','BX','CX','DX','SI','DI','SP','BP',
+    {  8 bits } 'AL','AH','BL','BH','CL','CH','DL','DH',
+    { segment } 'CS','DS','ES','SS',
+    { speciaux } 'IP','FLAGS','ST'
+  );
 
 { ============================================================
   LexIsRegister : True si s est un nom de registre 8086
   ============================================================ }
 Function LexIsRegister(Const s : TString) : Boolean;
+Var i : Integer;
 Begin
-  LexIsRegister :=
-    { registres 16 bits }
-    (s = 'AX') Or (s = 'BX') Or (s = 'CX') Or (s = 'DX') Or
-    (s = 'SI') Or (s = 'DI') Or (s = 'SP') Or (s = 'BP') Or
-    { registres 8 bits }
-    (s = 'AL') Or (s = 'AH') Or (s = 'BL') Or (s = 'BH') Or
-    (s = 'CL') Or (s = 'CH') Or (s = 'DL') Or (s = 'DH') Or
-    { registres de segment }
-    (s = 'CS') Or (s = 'DS') Or (s = 'ES') Or (s = 'SS') Or
-    { registres speciaux / 80386+ }
-    (s = 'IP') Or (s = 'FLAGS') Or (s = 'ST');
+  For i := 1 To LR_COUNT Do
+    If LR_NAMES[i] = s Then Begin LexIsRegister := True; Exit; End;
+  LexIsRegister := False;
 End;
 
 { ============================================================
