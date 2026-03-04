@@ -6260,19 +6260,23 @@ Begin
   EmitModRM(grp, op);
 End;
 
+{ ---- Table des mnemoniques de shift pour ShiftGrp ---- }
+Const
+  SG_COUNT = 8;
+  SG_NAMES : Array[1..8] Of String[3] = (
+    'ROL','ROR','RCL','RCR','SHL','SAL','SHR','SAR'
+  );
+  SG_GRPS : Array[1..8] Of ShortInt = (0, 1, 2, 3, 4, 4, 5, 7);
+
 { ============================================================
   ShiftGrp : numero de groupe pour ROL/ROR/RCL/RCR/SHL/SHR/SAR
   ============================================================ }
 Function ShiftGrp(Const mnem : TString) : Integer;
+Var i : Integer;
 Begin
-  If      mnem = 'ROL' Then ShiftGrp := 0
-  Else If mnem = 'ROR' Then ShiftGrp := 1
-  Else If mnem = 'RCL' Then ShiftGrp := 2
-  Else If mnem = 'RCR' Then ShiftGrp := 3
-  Else If (mnem = 'SHL') Or (mnem = 'SAL') Then ShiftGrp := 4
-  Else If mnem = 'SHR' Then ShiftGrp := 5
-  Else If mnem = 'SAR' Then ShiftGrp := 7
-  Else ShiftGrp := -1;
+  For i := 1 To SG_COUNT Do
+    If SG_NAMES[i] = mnem Then Begin ShiftGrp := SG_GRPS[i]; Exit; End;
+  ShiftGrp := -1;
 End;
 
 { ============================================================
