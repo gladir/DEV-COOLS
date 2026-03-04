@@ -5653,31 +5653,62 @@ Begin
 End;
 
 { ============================================================
+  Table des instructions TODO 12
+  ============================================================ }
+Const
+  I12_MOV   =  1;  I12_ADD   =  2;  I12_OR    =  3;  I12_ADC   =  4;
+  I12_SBB   =  5;  I12_AND   =  6;  I12_SUB   =  7;  I12_XOR   =  8;
+  I12_CMP   =  9;  I12_INC   = 10;  I12_DEC   = 11;  I12_NOT   = 12;
+  I12_NEG   = 13;  I12_XCHG  = 14;  I12_LEA   = 15;  I12_LDS   = 16;
+  I12_LES   = 17;  I12_TEST  = 18;
+  I12_COUNT = 18;
+  I12_NAMES : Array[1..I12_COUNT] Of String[4] = (
+    'MOV',  'ADD',  'OR',   'ADC',  'SBB',  'AND',  'SUB',  'XOR',
+    'CMP',  'INC',  'DEC',  'NOT',  'NEG',  'XCHG', 'LEA',  'LDS',
+    'LES',  'TEST'
+  );
+
+Function FindInstr12(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  FindInstr12 := 0;
+  For i := 1 To I12_COUNT Do
+    If I12_NAMES[i] = s Then
+    Begin FindInstr12 := i; Exit; End;
+End;
+
+{ ============================================================
   ParseInstr12 : dispatcher pour les instructions TODO 12
   Retourne True si l instruction a ete reconnue et encodee.
   ============================================================ }
 Function ParseInstr12(Const mnem : TString) : Boolean;
+Var
+  instr_idx : Integer;
 Begin
   ParseInstr12 := True;
-  If      mnem = 'MOV'  Then EncodeMOV
-  Else If mnem = 'ADD'  Then EncodeArith(0)
-  Else If mnem = 'OR'   Then EncodeArith(1)
-  Else If mnem = 'ADC'  Then EncodeArith(2)
-  Else If mnem = 'SBB'  Then EncodeArith(3)
-  Else If mnem = 'AND'  Then EncodeArith(4)
-  Else If mnem = 'SUB'  Then EncodeArith(5)
-  Else If mnem = 'XOR'  Then EncodeArith(6)
-  Else If mnem = 'CMP'  Then EncodeArith(7)
-  Else If mnem = 'INC'  Then EncodeIncDec(False)
-  Else If mnem = 'DEC'  Then EncodeIncDec(True)
-  Else If mnem = 'NOT'  Then EncodeNotNeg(False)
-  Else If mnem = 'NEG'  Then EncodeNotNeg(True)
-  Else If mnem = 'XCHG' Then EncodeXCHG
-  Else If mnem = 'LEA'  Then EncodeLEA_LxS($8D)
-  Else If mnem = 'LDS'  Then EncodeLEA_LxS($C5)
-  Else If mnem = 'LES'  Then EncodeLEA_LxS($C4)
-  Else If mnem = 'TEST' Then EncodeTEST
-  Else ParseInstr12 := False;
+  instr_idx := FindInstr12(mnem);
+  Case instr_idx Of
+    I12_MOV  : EncodeMOV;
+    I12_ADD  : EncodeArith(0);
+    I12_OR   : EncodeArith(1);
+    I12_ADC  : EncodeArith(2);
+    I12_SBB  : EncodeArith(3);
+    I12_AND  : EncodeArith(4);
+    I12_SUB  : EncodeArith(5);
+    I12_XOR  : EncodeArith(6);
+    I12_CMP  : EncodeArith(7);
+    I12_INC  : EncodeIncDec(False);
+    I12_DEC  : EncodeIncDec(True);
+    I12_NOT  : EncodeNotNeg(False);
+    I12_NEG  : EncodeNotNeg(True);
+    I12_XCHG : EncodeXCHG;
+    I12_LEA  : EncodeLEA_LxS($8D);
+    I12_LDS  : EncodeLEA_LxS($C5);
+    I12_LES  : EncodeLEA_LxS($C4);
+    I12_TEST : EncodeTEST;
+  Else
+    ParseInstr12 := False;
+  End; { Case instr_idx }
 End;
 
 { ============================================================
@@ -6123,29 +6154,87 @@ Begin
 End;
 
 { ============================================================
+  Table des instructions TODO 13
+  ============================================================ }
+Const
+  I13_JMP    =  1;  I13_CALL   =  2;  I13_RET    =  3;
+  I13_RETF   =  4;  I13_RETN   =  5;  I13_JCXZ   =  6;
+  I13_LOOP   =  7;  I13_LOOPE  =  8;  I13_LOOPZ  =  9;
+  I13_LOOPNE = 10;  I13_LOOPNZ = 11;
+  I13_JO     = 12;  I13_JNO    = 13;
+  I13_JB     = 14;  I13_JNAE   = 15;  I13_JC     = 16;
+  I13_JNB    = 17;  I13_JAE    = 18;  I13_JNC    = 19;
+  I13_JE     = 20;  I13_JZ     = 21;
+  I13_JNE    = 22;  I13_JNZ    = 23;
+  I13_JBE    = 24;  I13_JNA    = 25;
+  I13_JNBE   = 26;  I13_JA     = 27;
+  I13_JS     = 28;  I13_JNS    = 29;
+  I13_JP     = 30;  I13_JPE    = 31;
+  I13_JNP    = 32;  I13_JPO    = 33;
+  I13_JL     = 34;  I13_JNGE   = 35;
+  I13_JNL    = 36;  I13_JGE    = 37;
+  I13_JLE    = 38;  I13_JNG    = 39;
+  I13_JNLE   = 40;  I13_JG     = 41;
+  I13_COUNT  = 41;
+  I13_NAMES : Array[1..I13_COUNT] Of String[6] = (
+    'JMP',    'CALL',   'RET',    'RETF',   'RETN',   'JCXZ',
+    'LOOP',   'LOOPE',  'LOOPZ',  'LOOPNE', 'LOOPNZ',
+    'JO',     'JNO',    'JB',     'JNAE',   'JC',
+    'JNB',    'JAE',    'JNC',    'JE',     'JZ',
+    'JNE',    'JNZ',    'JBE',    'JNA',
+    'JNBE',   'JA',     'JS',     'JNS',
+    'JP',     'JPE',    'JNP',    'JPO',
+    'JL',     'JNGE',   'JNL',    'JGE',
+    'JLE',    'JNG',    'JNLE',   'JG'
+  );
+
+Function FindInstr13(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  FindInstr13 := 0;
+  For i := 1 To I13_COUNT Do
+    If I13_NAMES[i] = s Then
+    Begin FindInstr13 := i; Exit; End;
+End;
+
+{ ============================================================
   ParseInstr13 : dispatcher TODO 13
   ============================================================ }
 Function ParseInstr13(Const mnem : TString) : Boolean;
 Var
-  jcc_opc : Byte;
+  instr_idx : Integer;
 Begin
   ParseInstr13 := True;
-  If      mnem = 'JMP'    Then EncodeJMP
-  Else If mnem = 'CALL'   Then EncodeCALL
-  Else If mnem = 'RET'    Then EncodeRET(False)
-  Else If (mnem = 'RETF') Or (mnem = 'RETN') Then EncodeRET(True)
-  Else If mnem = 'JCXZ'   Then EncodeJCXZ
-  Else If mnem = 'LOOP'   Then EncodeLoop($E2)
-  Else If (mnem = 'LOOPE')  Or (mnem = 'LOOPZ')  Then EncodeLoop($E1)
-  Else If (mnem = 'LOOPNE') Or (mnem = 'LOOPNZ') Then EncodeLoop($E0)
+  instr_idx := FindInstr13(mnem);
+  Case instr_idx Of
+    I13_JMP               : EncodeJMP;
+    I13_CALL              : EncodeCALL;
+    I13_RET               : EncodeRET(False);
+    I13_RETF, I13_RETN    : EncodeRET(True);
+    I13_JCXZ              : EncodeJCXZ;
+    I13_LOOP              : EncodeLoop($E2);
+    I13_LOOPE,  I13_LOOPZ : EncodeLoop($E1);
+    I13_LOOPNE,
+    I13_LOOPNZ            : EncodeLoop($E0);
+    I13_JO                        : EncodeJcc($70);
+    I13_JNO                       : EncodeJcc($71);
+    I13_JB,  I13_JNAE, I13_JC     : EncodeJcc($72);
+    I13_JNB, I13_JAE,  I13_JNC    : EncodeJcc($73);
+    I13_JE,  I13_JZ               : EncodeJcc($74);
+    I13_JNE, I13_JNZ              : EncodeJcc($75);
+    I13_JBE, I13_JNA              : EncodeJcc($76);
+    I13_JNBE,I13_JA               : EncodeJcc($77);
+    I13_JS                        : EncodeJcc($78);
+    I13_JNS                       : EncodeJcc($79);
+    I13_JP,  I13_JPE              : EncodeJcc($7A);
+    I13_JNP, I13_JPO              : EncodeJcc($7B);
+    I13_JL,  I13_JNGE             : EncodeJcc($7C);
+    I13_JNL, I13_JGE              : EncodeJcc($7D);
+    I13_JLE, I13_JNG              : EncodeJcc($7E);
+    I13_JNLE,I13_JG               : EncodeJcc($7F);
   Else
-  Begin
-    jcc_opc := JccOpcode(mnem);
-    If jcc_opc > 0 Then
-      EncodeJcc(jcc_opc)
-    Else
-      ParseInstr13 := False;
-  End;
+    ParseInstr13 := False;
+  End; { Case instr_idx }
 End;
 
 { ============================================================
