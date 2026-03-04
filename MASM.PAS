@@ -3422,87 +3422,85 @@ Begin
   ExprMakeNum(e, 0);
 End;
 
+{ ---- Table des mots-cles unaires pour EvalUnary ---- }
+Const
+  EU_OFFSET = 1;   EU_SEG    = 2;   EU_TYPE   = 3;
+  EU_SIZE   = 4;   EU_LENGTH = 5;   EU_SHORT  = 6;
+  EU_BYTE   = 7;   EU_WORD   = 8;   EU_DWORD  = 9;
+  EU_QWORD  = 10;  EU_TBYTE  = 11;  EU_NEAR   = 12;
+  EU_FAR    = 13;
+  EU_COUNT  = 13;
+  EU_NAMES  : Array[1..13] Of String[6] = (
+    'OFFSET','SEG','TYPE','SIZE','LENGTH','SHORT',
+    'BYTE','WORD','DWORD','QWORD','TBYTE','NEAR','FAR'
+  );
+
+Function FindEvalUnary(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := 1 To EU_COUNT Do
+    If EU_NAMES[i] = s Then Begin FindEvalUnary := i; Exit; End;
+  FindEvalUnary := 0;
+End;
+
 { ============================================================
   EvalUnary : unaires OFFSET SEG TYPE SIZE LENGTH SHORT, - +
   et BYTE/WORD/DWORD PTR (quand pas suivi de PTR : valeur taille)
   ============================================================ }
 Procedure EvalUnary(Var e : TExpr);
 Var
-  tok : TString;
-  sz  : Integer;
+  tok   : TString;
+  sz    : Integer;
+  u_idx : Integer;
 Begin
-  { ----- keywords unaires (OFFSET SEG TYPE SIZE LENGTH SHORT) ----- }
+  { ----- keywords unaires ----- }
   If LexPeekKind = TK_IDENT Then
   Begin
-    tok := LexPeekVal;
+    tok   := LexPeekVal;
+    sz    := 0;
+    u_idx := FindEvalUnary(tok);
+    Case u_idx Of
+      EU_OFFSET :
+        Begin
+          LexNext; EvalPrimary(e); e.is_reloc := False; Exit;
+        End;
+      EU_SEG :
+        Begin
+          LexNext; EvalPrimary(e);
+          If e.is_reloc Then ExprMakeNum(e, e.seg_idx)
+          Else             ExprMakeNum(e, 0);
+          Exit;
+        End;
+      EU_TYPE :
+        Begin
+          LexNext; EvalPrimary(e); ExprMakeNum(e, e.ptr_size); Exit;
+        End;
+      EU_SIZE :
+        Begin
+          LexNext; EvalPrimary(e);
+          ExprMakeNum(e, e.ptr_size); { simplification : taille = TYPE ici }
+          Exit;
+        End;
+      EU_LENGTH :
+        Begin
+          LexNext; EvalPrimary(e);
+          ExprMakeNum(e, 1); { par defaut 1 element sauf labels de tableaux }
+          Exit;
+        End;
+      EU_SHORT :
+        Begin
+          LexNext; EvalPrimary(e); e.ptr_size := 1; Exit;
+        End;
+      EU_BYTE  : sz := 1;
+      EU_WORD  : sz := 2;
+      EU_DWORD : sz := 4;
+      EU_QWORD : sz := 8;
+      EU_TBYTE : sz := 10;
+      EU_NEAR  : sz := 2;
+      EU_FAR   : sz := 4;
+    End; { Case u_idx }
 
-    { --- OFFSET expr : retourne juste le deplacement, pas relocalisable --- }
-    If tok = 'OFFSET' Then
-    Begin
-      LexNext;
-      EvalPrimary(e);
-      e.is_reloc := False;
-      Exit;
-    End;
-
-    { --- SEG expr : retourne l index de segment --- }
-    If tok = 'SEG' Then
-    Begin
-      LexNext;
-      EvalPrimary(e);
-      If e.is_reloc Then
-        ExprMakeNum(e, e.seg_idx)
-      Else
-        ExprMakeNum(e, 0);
-      Exit;
-    End;
-
-    { --- TYPE expr : retourne la taille en octets du type --- }
-    If tok = 'TYPE' Then
-    Begin
-      LexNext;
-      EvalPrimary(e);
-      ExprMakeNum(e, e.ptr_size);
-      Exit;
-    End;
-
-    { --- SIZE expr : taille totale (LENGTH * TYPE) --- }
-    If tok = 'SIZE' Then
-    Begin
-      LexNext;
-      EvalPrimary(e);
-      ExprMakeNum(e, e.ptr_size); { simplification : taille = TYPE ici }
-      Exit;
-    End;
-
-    { --- LENGTH expr : nombre d elements alloues --- }
-    If tok = 'LENGTH' Then
-    Begin
-      LexNext;
-      EvalPrimary(e);
-      ExprMakeNum(e, 1); { par defaut 1 element sauf labels de tableaux }
-      Exit;
-    End;
-
-    { --- SHORT expr : force un deplacement court (8 bits) --- }
-    If tok = 'SHORT' Then
-    Begin
-      LexNext;
-      EvalPrimary(e);
-      e.ptr_size := 1;
-      Exit;
-    End;
-
-    { --- BYTE/WORD/DWORD/QWORD/NEAR/FAR : taille de type ou PTR --- }
-    sz := 0;
-    If      tok = 'BYTE'  Then sz := 1
-    Else If tok = 'WORD'  Then sz := 2
-    Else If tok = 'DWORD' Then sz := 4
-    Else If tok = 'QWORD' Then sz := 8
-    Else If tok = 'TBYTE' Then sz := 10
-    Else If tok = 'NEAR'  Then sz := 2
-    Else If tok = 'FAR'   Then sz := 4;
-
+    { --- BYTE/WORD/DWORD/QWORD/TBYTE/NEAR/FAR : taille de type ou PTR --- }
     If sz > 0 Then
     Begin
       LexNext; { consommer BYTE/WORD/etc. }
