@@ -615,6 +615,22 @@ Var
   { Controle d emission (passe 1 = True => avancer LC sans ecrire) }
   no_emit    : Boolean;
 
+  { Fichier de listing .LST }
+  lst_file         : Text;           { fichier de listing ouvert }
+  lst_is_open      : Boolean;        { True si lst_file est ouvert }
+  lst_active       : Boolean;        { True si .LIST actif (pas .NOLIST) }
+  lst_sym_table    : Boolean;        { True = inclure table symboles (/N=False) }
+  lst_page_lines   : Integer;        { nb de lignes par page (defaut 60) }
+  lst_page_cols    : Integer;        { nb de colonnes par page (defaut 80) }
+  lst_page_num     : Integer;        { numero de page courant }
+  lst_line_on_page : Integer;        { ligne courante sur la page }
+  lst_title        : TString;        { titre courant (TITLE) }
+  lst_subttl       : TString;        { sous-titre courant (SUBTTL) }
+  lst_line_start_lc  : TWord;        { LC en debut de ligne (pour hex) }
+  lst_line_start_seg : Integer;      { segment en debut de ligne }
+  lst_nbytes       : Integer;        { nb d octets emis sur la ligne courante }
+  lst_bytes        : Array[0..255] Of Byte;  { octets emis sur la ligne courante }
+
 { ============================================================
   Fonction de hachage djb2 adaptee (retourne 0..HASH_SIZE-1)
   ============================================================ }
@@ -683,6 +699,19 @@ Begin
   obj_fname  := '';
   lst_fname  := '';
   cur_line   := '';
+  { listing }
+  lst_is_open      := False;
+  lst_active       := False;
+  lst_sym_table    := True;
+  lst_page_lines   := 60;
+  lst_page_cols    := 80;
+  lst_page_num     := 0;
+  lst_line_on_page := 0;
+  lst_title        := '';
+  lst_subttl       := '';
+  lst_line_start_lc  := 0;
+  lst_line_start_seg := 0;
+  lst_nbytes       := 0;
 End;
 
 { ============================================================
@@ -2300,6 +2329,12 @@ Begin
         seg_table[cur_seg].size := seg_table[cur_seg].cur_lc;
     End;
     Exit;
+  End;
+  { Collecte pour le listing (passe 2 uniquement) }
+  If do_listing And lst_active And (lst_nbytes < 256) Then
+  Begin
+    lst_bytes[lst_nbytes] := b;
+    Inc(lst_nbytes);
   End;
   If ledata_buf_len >= LEDATA_BUF_MAX Then
     FlushLEDATA;
@@ -8105,6 +8140,239 @@ Begin
 End;
 
 { ============================================================
+  TODO 21 - FICHIER DE LISTING (.LST) - IMPLEMENTE
+  ============================================================ }
+
+{ ------------------------------------------------------------ }
+Function LstHex2(b : Byte) : TString;
+Const
+  hx : Array[0..15] Of Char = '0123456789ABCDEF';
+Begin
+  LstHex2 := hx[b Shr 4] + hx[b And $0F];
+End;
+
+Function LstHex4(w : TWord) : TString;
+Begin
+  LstHex4 := LstHex2(Hi(w)) + LstHex2(Lo(w));
+End;
+
+Function LstPad(Const s : TString; n : Integer) : TString;
+Var r : TString;
+Begin
+  r := s;
+  While Length(r) < n Do r := r + ' ';
+  LstPad := r;
+End;
+
+Function LstNumStr(n : Integer; width : Integer) : TString;
+Var s : TString;
+Begin
+  Str(n, s);
+  While Length(s) < width Do s := ' ' + s;
+  LstNumStr := s;
+End;
+
+{ ============================================================
+  LstWriteRaw : ecrire une ligne brute + saut de page auto.
+  ============================================================ }
+Procedure LstWriteRaw(Const s : TString);
+Begin
+  If Not lst_is_open Then Exit;
+  Writeln(lst_file, s);
+  Inc(lst_line_on_page);
+  If (lst_page_lines > 0) And (lst_line_on_page >= lst_page_lines) Then
+  Begin
+    Writeln(lst_file, #12);
+    Inc(lst_page_num);
+    lst_line_on_page := 0;
+    If lst_title  <> '' Then Begin Writeln(lst_file, lst_title);  Inc(lst_line_on_page); End;
+    If lst_subttl <> '' Then Begin Writeln(lst_file, lst_subttl); Inc(lst_line_on_page); End;
+  End;
+End;
+
+{ ============================================================
+  LstOpen : ouvrir le fichier listing.
+  ============================================================ }
+Procedure LstOpen(Const fname : TString);
+Begin
+  If lst_is_open Then Exit;
+  Assign(lst_file, fname);
+  {$I-}
+  Rewrite(lst_file);
+  {$I+}
+  If IoResult <> 0 Then
+  Begin
+    WarnMsg('Impossible de creer le fichier listing : ' + fname);
+    do_listing := False;
+    Exit;
+  End;
+  lst_is_open      := True;
+  lst_active       := True;
+  lst_page_num     := 1;
+  lst_line_on_page := 0;
+  If lst_title  <> '' Then Begin Writeln(lst_file, lst_title);  Inc(lst_line_on_page); End;
+  If lst_subttl <> '' Then Begin Writeln(lst_file, lst_subttl); Inc(lst_line_on_page); End;
+End;
+
+{ ============================================================
+  LstEmitLine : ecrire une ligne assemblee dans le listing.
+  Format MASM 5.x :
+    NNNNN  OOOO  BB BB BB BB BB BB BB BB  source
+  Si nbytes > 8 : lignes de continuation.
+  ============================================================ }
+Procedure LstEmitLine(lineno : Integer; lc_start : TWord;
+                      seg_idx : Integer;
+                      nbytes  : Integer; Const src : TString);
+Var
+  hex_part : TString;
+  col      : TString;
+  ofs_str  : TString;
+  i        : Integer;
+  blk      : Integer;
+  byte_pos : Integer;
+Begin
+  If Not lst_is_open Then Exit;
+  If Not lst_active  Then Exit;
+
+  If seg_idx > 0 Then
+    ofs_str := LstHex4(lc_start)
+  Else
+    ofs_str := '    ';
+
+  byte_pos := 0;
+
+  If nbytes = 0 Then
+  Begin
+    { ligne sans octet emis }
+    col := LstNumStr(lineno, 5) + '  ' + ofs_str
+         + '                           ' + src;
+    LstWriteRaw(col);
+  End
+  Else
+  Begin
+    blk := nbytes;
+    If blk > 8 Then blk := 8;
+    hex_part := '';
+    For i := 0 To blk-1 Do
+      hex_part := hex_part + LstHex2(lst_bytes[byte_pos+i]) + ' ';
+    While Length(hex_part) < 25 Do hex_part := hex_part + ' ';
+    col := LstNumStr(lineno, 5) + '  ' + ofs_str + '  ' + hex_part + src;
+    LstWriteRaw(col);
+    Inc(byte_pos, blk);
+
+    { lignes de continuation (plus de 8 octets) }
+    While byte_pos < nbytes Do
+    Begin
+      blk := nbytes - byte_pos;
+      If blk > 8 Then blk := 8;
+      hex_part := '';
+      For i := 0 To blk-1 Do
+        hex_part := hex_part + LstHex2(lst_bytes[byte_pos+i]) + ' ';
+      While Length(hex_part) < 25 Do hex_part := hex_part + ' ';
+      col := '       ' + LstHex4(TWord(lc_start + byte_pos)) + '  ' + hex_part;
+      LstWriteRaw(col);
+      Inc(byte_pos, blk);
+    End;
+  End;
+End;
+
+{ ============================================================
+  LstEmitSymTable : section symboles et segments du listing.
+  ============================================================ }
+Procedure LstEmitSymTable;
+Var
+  i  : Integer;
+  p  : PSymbol;
+  kn : TString;
+  sn : TString;
+Begin
+  If Not lst_is_open Then Exit;
+  LstWriteRaw('');
+  LstWriteRaw('Segments and Groups:');
+  LstWriteRaw('');
+  LstWriteRaw('                   N a m e                 Length  Align   Combine Class');
+  For i := 1 To seg_count Do
+    With seg_table[i] Do
+      LstWriteRaw(LstPad(name, 32) + LstPad(LstHex4(size), 10)
+        + LstPad('PARA', 8) + LstPad('PUBLIC', 10) + class_name);
+  LstWriteRaw('');
+  LstWriteRaw('Symbols:');
+  LstWriteRaw('');
+  LstWriteRaw('                   N a m e           Type    Value    Attr');
+  For i := 0 To HASH_SIZE-1 Do
+  Begin
+    p := hash_table[i];
+    While p <> Nil Do
+    Begin
+      Case p^.kind Of
+        SK_LABEL, SK_PUBLIC : kn := 'L NEAR ';
+        SK_EXTERN           : kn := 'EXTRN  ';
+        SK_EQU              : kn := 'Number ';
+        SK_STRUCT           : kn := 'STRUCT ';
+        SK_MACRO            : kn := 'MACRO  ';
+        Else                  kn := '???    ';
+      End;
+      If (p^.seg_idx >= 1) And (p^.seg_idx <= seg_count) Then
+        sn := seg_table[p^.seg_idx].name
+      Else
+        sn := '';
+      Case p^.kind Of
+        SK_LABEL, SK_PUBLIC, SK_EXTERN :
+          LstWriteRaw(LstPad(p^.name, 32) + LstPad(kn, 10)
+            + LstPad(LstHex4(p^.offset), 9) + sn);
+        SK_EQU :
+          LstWriteRaw(LstPad(p^.name, 32) + LstPad(kn, 10)
+            + LstNumStr(p^.value, 8));
+        Else
+          LstWriteRaw(LstPad(p^.name, 32) + kn);
+      End;
+      p := p^.next;
+    End;
+  End;
+End;
+
+{ ============================================================
+  LstEmitMacroTable : section macros du listing.
+  ============================================================ }
+Procedure LstEmitMacroTable;
+Var i : Integer;
+Begin
+  If (Not lst_is_open) Or (macro_count = 0) Then Exit;
+  LstWriteRaw('');
+  LstWriteRaw('Macros:');
+  LstWriteRaw('');
+  LstWriteRaw('                   N a m e                 Params   Lines');
+  For i := 1 To macro_count Do
+    If Not macro_table[i].purged Then
+      LstWriteRaw(LstPad(macro_table[i].mname, 32)
+        + LstPad(LstNumStr(macro_table[i].param_cnt, 4), 9)
+        + LstNumStr(macro_table[i].body_cnt, 5));
+End;
+
+{ ============================================================
+  LstEmitStats : statistiques finales du listing.
+  ============================================================ }
+Procedure LstEmitStats(n_lines : Integer);
+Begin
+  If Not lst_is_open Then Exit;
+  LstWriteRaw('');
+  LstWriteRaw(LstNumStr(n_lines, 6)    + ' Source  Line(s)');
+  LstWriteRaw(LstNumStr(err_count, 6)  + ' Warning Error(s)');
+  LstWriteRaw(LstNumStr(warn_count, 6) + ' Severe  Error(s)');
+End;
+
+{ ============================================================
+  LstClose : fermer le fichier listing.
+  ============================================================ }
+Procedure LstClose;
+Begin
+  If Not lst_is_open Then Exit;
+  Writeln(lst_file, '');
+  Close(lst_file);
+  lst_is_open := False;
+End;
+
+{ ============================================================
   TODO 20 - DEUX PASSES D ASSEMBLAGE ET GESTION DES FIXUPS
   ============================================================ }
 
@@ -8491,15 +8759,61 @@ Begin
   If mnem = 'ALIGN' Then Begin ParseAlign; Exit; End;
   If mnem = 'EVEN'  Then Begin ParseEven;  Exit; End;
 
-  { Directives de listing (ignorer silencieusement) }
-  If (mnem = '.LIST')  Or (mnem = '.NOLIST') Or (mnem = '.LISTALL') Or
-     (mnem = '.XLIST') Or (mnem = 'PAGE')    Or (mnem = 'TITLE')    Or
-     (mnem = 'SUBTTL') Or (mnem = '.8086')   Or (mnem = '.8087')    Or
-     (mnem = '.286')   Or (mnem = '.386')    Or (mnem = '.286C')    Or
-     (mnem = '.286P')  Or (mnem = '.386P')   Or (mnem = '.DOSSEG')  Or
+  { Directives de listing }
+  If mnem = '.LIST' Then Begin lst_active := True;  Exit; End;
+  If (mnem = '.NOLIST') Or (mnem = '.XLIST') Then Begin lst_active := False; Exit; End;
+  If mnem = '.LISTALL' Then Begin lst_active := True;  Exit; End;
+
+  If mnem = 'PAGE' Then
+  Begin
+    { PAGE [lines[,cols]] }
+    If LexPeekKind = TK_NUMBER Then
+    Begin
+      LexNext; lst_page_lines := lex_tok.num_val;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      Begin
+        LexNext;
+        If LexPeekKind = TK_NUMBER Then
+        Begin LexNext; lst_page_cols := lex_tok.num_val; End;
+      End;
+    End
+    Else
+    Begin
+      { PAGE sans argument = saut de page }
+      If lst_is_open And lst_active Then
+      Begin
+        Writeln(lst_file, #12);
+        Inc(lst_page_num);
+        lst_line_on_page := 0;
+      End;
+    End;
+    Exit;
+  End;
+
+  If mnem = 'TITLE' Then
+  Begin
+    lst_title := '';
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
+    While lex_pos <= Length(lex_line) Do
+    Begin lst_title := lst_title + lex_line[lex_pos]; Inc(lex_pos); End;
+    Exit;
+  End;
+
+  If mnem = 'SUBTTL' Then
+  Begin
+    lst_subttl := '';
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
+    While lex_pos <= Length(lex_line) Do
+    Begin lst_subttl := lst_subttl + lex_line[lex_pos]; Inc(lex_pos); End;
+    Exit;
+  End;
+
+  { Autres directives de contexte (CPU target, DOSSEG, OPTION) -- ignorer }
+  If (mnem = '.8086')  Or (mnem = '.8087')  Or (mnem = '.186')   Or
+     (mnem = '.286')   Or (mnem = '.286C')  Or (mnem = '.286P')  Or
+     (mnem = '.386')   Or (mnem = '.386P')  Or (mnem = '.DOSSEG') Or
      (mnem = 'OPTION') Then
   Begin
-    { consommer le reste de la ligne }
     While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do LexNext;
     Exit;
   End;
@@ -8583,7 +8897,20 @@ Begin
   { lire et assembler chaque ligne }
   While GetNextLine Do
   Begin
+    { sauvegarder LC et segment avant l assemblage (pour le listing) }
+    If do_listing And lst_active And (pass = 2) Then
+    Begin
+      lst_line_start_lc  := lc;
+      lst_line_start_seg := cur_seg;
+      lst_nbytes         := 0;
+    End;
+
     AssembleLine;
+
+    { ecrire la ligne dans le listing (passe 2 uniquement) }
+    If do_listing And lst_active And (pass = 2) And lst_is_open Then
+      LstEmitLine(cur_lineno, lst_line_start_lc,
+                  lst_line_start_seg, lst_nbytes, cur_line);
   End;
 
   { fermer tout segment ouvert }
@@ -8613,7 +8940,6 @@ Begin
     Exit;
   End;
   RunPass(1);
-  { SrcPop deja fait par GetNextLine quand EOF }
 
   If err_count > 0 Then
   Begin
@@ -8621,9 +8947,14 @@ Begin
     Exit;
   End;
 
-  { === PASSE 2 : emission du code === }
+  { === PASSE 2 : emission du code + listing === }
   Writeln('Passe 2...');
   ResetPassState;
+
+  { ouvrir le listing avant RunPass pour capturer toutes les lignes }
+  If do_listing And (lst_fname <> '') Then
+    LstOpen(lst_fname);
+
   ObjOpen(out_name);
   ObjTHEADR(fname);
   WriteAllSegments;
@@ -8631,12 +8962,23 @@ Begin
 
   SrcPush(fname);
   RunPass(2);
-  { SrcPop deja fait par GetNextLine quand EOF }
 
   FlushLEDATA;
   EmitAllPubDefs;
   ObjMODEND(False, 0, 0);
   ObjClose;
+
+  { sections de fin de listing }
+  If do_listing And lst_is_open Then
+  Begin
+    If lst_sym_table Then
+    Begin
+      LstEmitSymTable;
+      LstEmitMacroTable;
+    End;
+    LstEmitStats(cur_lineno);
+    LstClose;
+  End;
 
   { afficher les statistiques }
   Writeln(cur_lineno, ' lignes compilees, ',
@@ -8664,6 +9006,16 @@ Begin
   SymInit;
   local_unique_id := 0;
   no_emit         := False;
-  Writeln('TODOs 01-20 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc+passes).');
-  Writeln('TODOs 21 a 25 a implementer.');
+  lst_is_open     := False;
+  lst_active      := False;
+  lst_sym_table   := True;
+  lst_page_lines  := 60;
+  lst_page_cols   := 80;
+  lst_page_num    := 0;
+  lst_line_on_page := 0;
+  lst_title       := '';
+  lst_subttl      := '';
+  lst_nbytes      := 0;
+  Writeln('TODOs 01-21 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc+passes+listing).');
+  Writeln('TODOs 22 a 25 a implementer.');
 End.
