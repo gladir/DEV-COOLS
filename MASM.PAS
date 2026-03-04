@@ -8853,19 +8853,25 @@ End;
   TODO 20 - DEUX PASSES D ASSEMBLAGE ET GESTION DES FIXUPS
   ============================================================ }
 
+{ ---- Table des directives attendant un nom pour IsNameDirective ---- }
+Const
+  ND_COUNT = 17;
+  ND_NAMES : Array[1..17] Of String[7] = (
+    'DB','DW','DD','DQ','DT',
+    'EQU','MACRO','PROC','ENDP','SEGMENT','ENDS',
+    'STRUC','LABEL','RECORD','GROUP','COMM','TEXTEQU'
+  );
+
 { ============================================================
   IsNameDirective : True si le mot est une directive qui
   attend un nom comme premier argument (syntaxe MASM).
   ============================================================ }
 Function IsNameDirective(Const tok : TString) : Boolean;
+Var i : Integer;
 Begin
-  IsNameDirective :=
-    (tok = 'DB')    Or (tok = 'DW')    Or (tok = 'DD')    Or
-    (tok = 'DQ')    Or (tok = 'DT')    Or
-    (tok = 'EQU')   Or (tok = 'MACRO') Or (tok = 'PROC')  Or
-    (tok = 'ENDP')  Or (tok = 'SEGMENT') Or (tok = 'ENDS') Or
-    (tok = 'STRUC') Or (tok = 'LABEL') Or (tok = 'RECORD') Or
-    (tok = 'GROUP') Or (tok = 'COMM')  Or (tok = 'TEXTEQU');
+  For i := 1 To ND_COUNT Do
+    If ND_NAMES[i] = tok Then Begin IsNameDirective := True; Exit; End;
+  IsNameDirective := False;
 End;
 
 { ============================================================
