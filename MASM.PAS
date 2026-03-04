@@ -702,12 +702,796 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 02 a 25 a implementer)
+  TODO 02 - LECTEUR DE SOURCE ET GESTIONNAIRE D INCLUSION
+  ============================================================
+
+  Principe :
+    - Pile de max INC_DEPTH contextes de fichier (SrcPush/SrcPop).
+    - SrcReadLine retourne la prochaine ligne logique (avec
+      expansion des tabulations et suppression du commentaire ;).
+    - La continuation de ligne est detectee si le dernier
+      caractere non-espace est une barre oblique inverse \ ;
+      dans ce cas les lignes suivantes sont concatenees jusqu a
+      ce qu il n y en ait plus.
+    - phys_lineno est incrementee a chaque ligne physique lue.
+  ============================================================ }
+
+{ ---- Types de la pile d inclusion ---- }
+Type
+  TSrcContext = Record
+    f        : Text;         { fichier Pascal ouvert }
+    fname    : TString;      { nom du fichier }
+    lineno   : Integer;      { dernier numero de ligne physique lu }
+    is_open  : Boolean;      { True si le fichier est ouvert }
+  End;
+
+{ ---- Variables du lecteur de source ---- }
+Var
+  src_stack  : Array[0..INC_DEPTH-1] Of TSrcContext; { pile d inclusion }
+  src_top    : Integer;  { indice du contexte courant (-1 = vide) }
+  phys_lineno: Integer;  { compteur de lignes physiques global }
+
+  { Repertoires de recherche INCLUDE (/I sur la ligne de commande) }
+  inc_dirs   : Array[0..15] Of TString;
+  inc_dir_cnt: Integer;
+
+{ ============================================================
+  SrcInit : initialiser la pile d inclusion
+  ============================================================ }
+Procedure SrcInit;
+Var
+  i : Integer;
+Begin
+  src_top     := -1;
+  phys_lineno := 0;
+  inc_dir_cnt := 0;
+  For i := 0 To INC_DEPTH-1 Do
+  Begin
+    src_stack[i].fname   := '';
+    src_stack[i].lineno  := 0;
+    src_stack[i].is_open := False;
+  End;
+  For i := 0 To 15 Do
+    inc_dirs[i] := '';
+End;
+
+{ ============================================================
+  SrcAtEnd : True si la pile est vide (plus rien a lire)
+  ============================================================ }
+Function SrcAtEnd : Boolean;
+Begin
+  SrcAtEnd := (src_top < 0);
+End;
+
+{ ============================================================
+  SrcFindFile : chercher fname dans le repertoire courant puis
+  dans inc_dirs ; retourne le chemin complet trouve ou fname
+  si non trouve.
+  ============================================================ }
+Function SrcFindFile(Const fname : TString) : TString;
+Var
+  i    : Integer;
+  path : TString;
+  tmp  : Text;
+Begin
+  { 1. tel quel (absolu ou relatif au CWD) }
+  Assign(tmp, fname);
+  {$I-}
+  Reset(tmp);
+  {$I+}
+  If IoResult = 0 Then
+  Begin
+    Close(tmp);
+    SrcFindFile := fname;
+    Exit;
+  End;
+  { 2. dans les repertoires /I }
+  For i := 0 To inc_dir_cnt-1 Do
+  Begin
+    path := inc_dirs[i];
+    If (Length(path) > 0) And (path[Length(path)] <> '\') Then
+      path := path + '\';
+    path := path + fname;
+    Assign(tmp, path);
+    {$I-}
+    Reset(tmp);
+    {$I+}
+    If IoResult = 0 Then
+    Begin
+      Close(tmp);
+      SrcFindFile := path;
+      Exit;
+    End;
+  End;
+  SrcFindFile := fname; { non trouve, retourner tel quel }
+End;
+
+{ ============================================================
+  SrcPush : ouvrir un fichier et l empiler
+  ============================================================ }
+Procedure SrcPush(Const fn : TString);
+Var
+  rpath : TString;
+Begin
+  If src_top >= INC_DEPTH-1 Then
+  Begin
+    ErrorMsg('INCLUDE trop profond (max ' +
+             Chr(Ord('0') + INC_DEPTH) + ' niveaux)');
+    Exit;
+  End;
+  rpath := SrcFindFile(fn);
+  Inc(src_top);
+  With src_stack[src_top] Do
+  Begin
+    fname   := rpath;
+    lineno  := 0;
+    is_open     := False;
+    Assign(f, rpath);
+    {$I-}
+    Reset(f);
+    {$I+}
+    If IoResult <> 0 Then
+    Begin
+      Dec(src_top);
+      ErrorMsg('Impossible d ouvrir le fichier : ' + rpath);
+      Exit;
+    End;
+    is_open := True;
+  End;
+  { mettre a jour src_fname avec le fichier courant }
+  src_fname := src_stack[src_top].fname;
+End;
+
+{ ============================================================
+  SrcPop : fermer le fichier courant et depiler
+  ============================================================ }
+Procedure SrcPop;
+Begin
+  If src_top < 0 Then Exit;
+  With src_stack[src_top] Do
+    If is_open Then
+    Begin
+      Close(f);
+      is_open := False;
+    End;
+  Dec(src_top);
+  If src_top >= 0 Then
+    src_fname := src_stack[src_top].fname
+  Else
+    src_fname := '';
+End;
+
+{ ============================================================
+  SrcStripComment : supprimer le commentaire (;) d une ligne,
+  en respectant les chaines entre guillemets simples ou doubles.
+  ============================================================ }
+Function SrcStripComment(Const line : TString) : TString;
+Var
+  i      : Integer;
+  in_sq  : Boolean; { dans une chaine simple quote }
+  in_dq  : Boolean; { dans une chaine double quote }
+  c      : Char;
+  result : TString;
+Begin
+  in_sq  := False;
+  in_dq  := False;
+  result := '';
+  For i := 1 To Length(line) Do
+  Begin
+    c := line[i];
+    If (c = '''') And Not in_dq Then in_sq := Not in_sq
+    Else If (c = '"') And Not in_sq Then in_dq := Not in_dq
+    Else If (c = ';') And Not in_sq And Not in_dq Then
+      Break; { debut du commentaire }
+    result := result + c;
+  End;
+  { supprimer les espaces de fin }
+  While (Length(result) > 0) And (result[Length(result)] = ' ') Do
+    Delete(result, Length(result), 1);
+  SrcStripComment := result;
+End;
+
+{ ============================================================
+  SrcExpandTabs : remplacer les tabulations par des espaces
+  (tabstop = 8).
+  ============================================================ }
+Function SrcExpandTabs(Const line : TString) : TString;
+Var
+  i      : Integer;
+  col    : Integer;
+  result : TString;
+  spaces : Integer;
+  j      : Integer;
+Begin
+  result := '';
+  col    := 1;
+  For i := 1 To Length(line) Do
+  Begin
+    If line[i] = #9 Then
+    Begin
+      spaces := 8 - ((col-1) Mod 8);
+      For j := 1 To spaces Do
+      Begin
+        result := result + ' ';
+        Inc(col);
+      End;
+    End
+    Else
+    Begin
+      result := result + line[i];
+      Inc(col);
+    End;
+  End;
+  SrcExpandTabs := result;
+End;
+
+{ ============================================================
+  SrcIsContinued : True si la ligne se termine par \ (continuation)
+  Retire le \ de la fin de la chaine.
+  ============================================================ }
+Function SrcIsContinued(Var line : TString) : Boolean;
+Var
+  trimmed : TString;
+  len     : Integer;
+Begin
+  trimmed := line;
+  { retirer les espaces de fin }
+  While (Length(trimmed) > 0) And (trimmed[Length(trimmed)] = ' ') Do
+    Delete(trimmed, Length(trimmed), 1);
+  len := Length(trimmed);
+  If (len > 0) And (trimmed[len] = '\') Then
+  Begin
+    Delete(trimmed, len, 1);
+    { retirer les espaces avant le \ }
+    While (Length(trimmed) > 0) And (trimmed[Length(trimmed)] = ' ') Do
+      Delete(trimmed, Length(trimmed), 1);
+    line := trimmed;
+    SrcIsContinued := True;
+  End
+  Else
+  Begin
+    line := trimmed;
+    SrcIsContinued := False;
+  End;
+End;
+
+{ ============================================================
+  SrcReadLine : lire la prochaine ligne logique du fichier
+  courant (avec continuation et pre-traitement).
+  Retourne True si une ligne a ete lue, False si fin de fichier.
+  La ligne resultante est stockee dans cur_line et cur_lineno.
+  ============================================================ }
+Function SrcReadLine : Boolean;
+Var
+  raw     : TString;
+  logical : TString;
+  cont    : Boolean;
+Begin
+  SrcReadLine := False;
+  If SrcAtEnd Then Exit;
+
+  logical := '';
+  Repeat
+    { si le fichier courant est epuise, depiler }
+    While (src_top >= 0) And Eof(src_stack[src_top].f) Do
+      SrcPop;
+    If SrcAtEnd Then
+    Begin
+      { fin reelle de tous les fichiers }
+      If logical <> '' Then
+        Break; { retourner la ligne deja accumulee }
+      Exit;
+    End;
+
+    { lire une ligne physique }
+    ReadLn(src_stack[src_top].f, raw);
+    Inc(src_stack[src_top].lineno);
+    Inc(phys_lineno);
+
+    { expansion des tabulations }
+    raw := SrcExpandTabs(raw);
+
+    { suppression du commentaire (;) }
+    raw := SrcStripComment(raw);
+
+    { gestion de la continuation }
+    cont := SrcIsContinued(raw);
+    If logical <> '' Then
+      logical := logical + ' ' + raw
+    Else
+      logical := raw;
+  Until Not cont;
+
+  cur_lineno := src_stack[src_top].lineno;
+  cur_line   := logical;
+  SrcReadLine := True;
+End;
+
+{ ============================================================
+  TODO 03 - LEXER (ANALYSEUR LEXICAL) - IMPLEMENTE
+  ============================================================
+
+  Le lexer travaille sur la ligne logique courante (lex_line).
+  Quand la ligne est epuisee, il appelle SrcReadLine pour en
+  obtenir une nouvelle et retourne TK_NEWLINE en separateur.
+  Tous les identificateurs sont convertis en majuscules.
+  ============================================================ }
+
+{ ---- Variables du lexer ---- }
+Var
+  lex_line     : TString;  { copie de la ligne en cours de tokenisation }
+  lex_pos      : Integer;  { position courante dans lex_line (1-based) }
+  lex_tok      : TToken;   { token courant (rempli par LexNext) }
+  lex_peek_tok : TToken;   { token de look-ahead }
+  lex_has_peek : Boolean;  { True si lex_peek_tok est valide }
+  lex_at_eol   : Boolean;  { True si on doit retourner TK_NEWLINE }
+
+{ ============================================================
+  LexUpperCase : convertir une TString en majuscules
+  ============================================================ }
+Function LexUpperCase(Const s : TString) : TString;
+Var
+  i   : Integer;
+  res : TString;
+  c   : Char;
+Begin
+  res := '';
+  For i := 1 To Length(s) Do
+  Begin
+    c := s[i];
+    If (c >= 'a') And (c <= 'z') Then
+      res := res + Chr(Ord(c) - 32)
+    Else
+      res := res + c;
+  End;
+  LexUpperCase := res;
+End;
+
+{ ============================================================
+  LexIsAlpha : True si c est une lettre
+  ============================================================ }
+Function LexIsAlpha(c : Char) : Boolean;
+Begin
+  LexIsAlpha := ((c >= 'A') And (c <= 'Z')) Or
+                ((c >= 'a') And (c <= 'z'));
+End;
+
+{ ============================================================
+  LexIsDigit : True si c est un chiffre decimal
+  ============================================================ }
+Function LexIsDigit(c : Char) : Boolean;
+Begin
+  LexIsDigit := (c >= '0') And (c <= '9');
+End;
+
+{ ============================================================
+  LexIsHexDigit : True si c est un chiffre hexadecimal
+  ============================================================ }
+Function LexIsHexDigit(c : Char) : Boolean;
+Begin
+  LexIsHexDigit := ((c >= '0') And (c <= '9')) Or
+                   ((c >= 'A') And (c <= 'F')) Or
+                   ((c >= 'a') And (c <= 'f'));
+End;
+
+{ ============================================================
+  LexIsAlNum : True si c est alphanumerique ou _ ou $
+  ============================================================ }
+Function LexIsAlNum(c : Char) : Boolean;
+Begin
+  LexIsAlNum := LexIsAlpha(c) Or LexIsDigit(c) Or
+                (c = '_') Or (c = '$') Or (c = '@') Or (c = '?');
+End;
+
+{ ============================================================
+  LexHexVal : valeur numerique d un chiffre hex (0..15)
+  ============================================================ }
+Function LexHexVal(c : Char) : Integer;
+Begin
+  If (c >= '0') And (c <= '9') Then LexHexVal := Ord(c) - Ord('0')
+  Else If (c >= 'a') And (c <= 'f') Then LexHexVal := Ord(c) - Ord('a') + 10
+  Else LexHexVal := Ord(c) - Ord('A') + 10;
+End;
+
+{ ============================================================
+  LexInit : initialiser le lexer
+  ============================================================ }
+Procedure LexInit;
+Begin
+  lex_line         := '';
+  lex_pos          := 1;
+  lex_has_peek     := False;
+  lex_at_eol       := True; { forcer lecture de la 1ere ligne }
+  lex_tok.kind     := TK_EOF;
+  lex_tok.val      := '';
+  lex_tok.num_val  := 0;
+  lex_tok.line_num := 0;
+  lex_peek_tok     := lex_tok;
+End;
+
+{ ============================================================
+  LexSkipSpaces : sauter les espaces dans lex_line
+  ============================================================ }
+Procedure LexSkipSpaces;
+Begin
+  While (lex_pos <= Length(lex_line)) And
+        (lex_line[lex_pos] = ' ') Do
+    Inc(lex_pos);
+End;
+
+{ ============================================================
+  LexReadNumber : lire un token numerique depuis lex_pos.
+  Supporte : 0FFh (hex), 0x1AF (hex), 1010b (binaire),
+             777q/777o (octal), 1234 (decimal).
+  ============================================================ }
+Procedure LexReadNumber(Var tok : TToken);
+Var
+  raw  : TString;
+  suf  : Char;
+  v    : TLong;
+  i    : Integer;
+  c    : Char;
+  ok   : Boolean;
+Begin
+  raw := '';
+  { cas 0x... (prefixe hexadecimal style C) }
+  If (lex_pos + 1 <= Length(lex_line)) And
+     (lex_line[lex_pos] = '0') And
+     ((lex_line[lex_pos+1] = 'x') Or (lex_line[lex_pos+1] = 'X')) Then
+  Begin
+    Inc(lex_pos, 2); { sauter 0x }
+    While (lex_pos <= Length(lex_line)) And
+          LexIsHexDigit(lex_line[lex_pos]) Do
+    Begin
+      raw := raw + lex_line[lex_pos];
+      Inc(lex_pos);
+    End;
+    v := 0;
+    For i := 1 To Length(raw) Do
+      v := v * 16 + LexHexVal(raw[i]);
+    tok.kind    := TK_NUMBER;
+    tok.val     := '0X' + LexUpperCase(raw);
+    tok.num_val := v;
+    Exit;
+  End;
+
+  { lire tous les alphanumeriques }
+  While (lex_pos <= Length(lex_line)) And
+        (LexIsHexDigit(lex_line[lex_pos]) Or
+         (lex_line[lex_pos] = '_')) Do
+  Begin
+    raw := raw + lex_line[lex_pos];
+    Inc(lex_pos);
+  End;
+  { lire suffixe eventuel (H B O Q D) }
+  suf := ' ';
+  If lex_pos <= Length(lex_line) Then
+  Begin
+    c := lex_line[lex_pos];
+    If (c = 'h') Or (c = 'H') Then Begin suf := 'H'; Inc(lex_pos); End
+    Else If (c = 'b') Or (c = 'B') Then Begin suf := 'B'; Inc(lex_pos); End
+    Else If (c = 'o') Or (c = 'O') Then Begin suf := 'O'; Inc(lex_pos); End
+    Else If (c = 'q') Or (c = 'Q') Then Begin suf := 'Q'; Inc(lex_pos); End
+    Else If (c = 'd') Or (c = 'D') Then Begin suf := 'D'; Inc(lex_pos); End;
+    { si le suffixe est suivi d un car alphanumerique, ce n est pas un nombre }
+    If (suf <> ' ') And (lex_pos <= Length(lex_line)) And
+       LexIsAlNum(lex_line[lex_pos]) Then
+    Begin
+      { reculer le suffixe - c etait en fait un identificateur }
+      Dec(lex_pos);
+      suf := ' ';
+    End;
+  End;
+
+  v  := 0;
+  ok := True;
+  Case suf Of
+    'H' : Begin
+            For i := 1 To Length(raw) Do
+            Begin
+              If Not LexIsHexDigit(raw[i]) Then Begin ok := False; Break; End;
+              v := v * 16 + LexHexVal(raw[i]);
+            End;
+          End;
+    'B' : Begin
+            For i := 1 To Length(raw) Do
+            Begin
+              If (raw[i] <> '0') And (raw[i] <> '1') Then
+                Begin ok := False; Break; End;
+              v := v * 2 + (Ord(raw[i]) - Ord('0'));
+            End;
+          End;
+    'O','Q' : Begin
+            For i := 1 To Length(raw) Do
+            Begin
+              If (raw[i] < '0') Or (raw[i] > '7') Then
+                Begin ok := False; Break; End;
+              v := v * 8 + (Ord(raw[i]) - Ord('0'));
+            End;
+          End;
+    Else { decimal (y compris 'D') }
+          Begin
+            For i := 1 To Length(raw) Do
+            Begin
+              If Not LexIsDigit(raw[i]) Then
+              Begin
+                { contient des lettres -> probablement hex sans suffixe ou erreur }
+                ok := False;
+                Break;
+              End;
+              v := v * 10 + (Ord(raw[i]) - Ord('0'));
+            End;
+          End;
+  End;
+  If Not ok Then
+  Begin
+    WarnMsg('Litteral numerique invalide : ' + raw);
+    v := 0;
+  End;
+  tok.kind    := TK_NUMBER;
+  tok.val     := raw + suf;
+  tok.num_val := v;
+End;
+
+{ ============================================================
+  LexReadString : lire une chaine litterale (delimiteur = q)
+  ============================================================ }
+Procedure LexReadString(Var tok : TToken; q : Char);
+Var
+  s : TString;
+Begin
+  s := '';
+  Inc(lex_pos); { sauter le guillemet ouvrant }
+  While lex_pos <= Length(lex_line) Do
+  Begin
+    If lex_line[lex_pos] = q Then
+    Begin
+      Inc(lex_pos); { sauter le guillemet fermant }
+      Break;
+    End;
+    s := s + lex_line[lex_pos];
+    Inc(lex_pos);
+  End;
+  tok.kind    := TK_STRING;
+  tok.val     := s;
+  tok.num_val := 0;
+End;
+
+{ ============================================================
+  LexReadIdent : lire un identificateur ou mot-cle.
+  Retourne en MAJUSCULES.
+  ============================================================ }
+Procedure LexReadIdent(Var tok : TToken);
+Var
+  s : TString;
+Begin
+  s := '';
+  While (lex_pos <= Length(lex_line)) And
+        LexIsAlNum(lex_line[lex_pos]) Do
+  Begin
+    s := s + lex_line[lex_pos];
+    Inc(lex_pos);
+  End;
+  tok.kind    := TK_IDENT;
+  tok.val     := LexUpperCase(s);
+  tok.num_val := 0;
+End;
+
+{ ============================================================
+  LexNextRaw : lire le prochain token depuis lex_line
+  (sans gestion du lookahead ni des nouvelles lignes)
+  ============================================================ }
+Procedure LexNextRaw(Var tok : TToken);
+Var
+  c : Char;
+Begin
+  tok.line_num := cur_lineno;
+  tok.num_val  := 0;
+
+  LexSkipSpaces;
+
+  If lex_pos > Length(lex_line) Then
+  Begin
+    tok.kind := TK_NEWLINE;
+    tok.val  := '';
+    Exit;
+  End;
+
+  c := lex_line[lex_pos];
+
+  { --- Nombre --- }
+  If LexIsDigit(c) Then
+  Begin
+    LexReadNumber(tok);
+    Exit;
+  End;
+
+  { --- Chaine litterale --- }
+  If (c = '''') Or (c = '"') Then
+  Begin
+    LexReadString(tok, c);
+    Exit;
+  End;
+
+  { --- Identificateur / mot-cle --- }
+  If LexIsAlpha(c) Or (c = '_') Or (c = '$') Or (c = '@') Or (c = '?') Then
+  Begin
+    { un identif peut commencer par une lettre qui ressemble a un hex }
+    { SAUF s il commence par un chiffre -> traite ci-dessus }
+    LexReadIdent(tok);
+    Exit;
+  End;
+
+  { --- Ponctuation et operateurs a 2 caracteres --- }
+  Inc(lex_pos);
+  tok.kind := TK_PUNCT;
+  tok.val  := c;
+  { operateurs a deux caracteres }
+  If lex_pos <= Length(lex_line) Then
+  Begin
+    If (c = '<') And (lex_line[lex_pos] = '<') Then
+      Begin tok.val := '<<'; Inc(lex_pos); End
+    Else If (c = '>') And (lex_line[lex_pos] = '>') Then
+      Begin tok.val := '>>'; Inc(lex_pos); End
+    Else If (c = '<') And (lex_line[lex_pos] = '>') Then
+      Begin tok.val := '<>'; Inc(lex_pos); End
+    Else If (c = '=') And (lex_line[lex_pos] = '=') Then
+      Begin tok.val := '=='; Inc(lex_pos); End;
+  End;
+End;
+
+{ ============================================================
+  LexNext : avancer d un token (remplir lex_tok).
+  Gere les transitions de ligne (TK_NEWLINE) et la fin
+  de fichier (TK_EOF).
+  ============================================================ }
+Procedure LexNext;
+Begin
+  { consommer le peek s il existe }
+  If lex_has_peek Then
+  Begin
+    lex_tok      := lex_peek_tok;
+    lex_has_peek := False;
+    Exit;
+  End;
+
+  { si on etait a la fin de la ligne logique precedente }
+  If lex_at_eol Then
+  Begin
+    lex_at_eol := False;
+    { charger la prochaine ligne logique }
+    If Not SrcReadLine Then
+    Begin
+      lex_tok.kind     := TK_EOF;
+      lex_tok.val      := '';
+      lex_tok.num_val  := 0;
+      lex_tok.line_num := cur_lineno;
+      Exit;
+    End;
+    lex_line := cur_line;
+    lex_pos  := 1;
+    { retourner un NEWLINE comme separateur entre lignes }
+    lex_tok.kind     := TK_NEWLINE;
+    lex_tok.val      := '';
+    lex_tok.num_val  := 0;
+    lex_tok.line_num := cur_lineno;
+    Exit;
+  End;
+
+  LexNextRaw(lex_tok);
+
+  { si on vient d atteindre la fin de la ligne }
+  If lex_tok.kind = TK_NEWLINE Then
+    lex_at_eol := True;
+End;
+
+{ ============================================================
+  LexEnsurePeek : remplir lex_peek_tok si pas encore fait
+  ============================================================ }
+Procedure LexEnsurePeek;
+Var
+  saved_tok : TToken;
+Begin
+  If lex_has_peek Then Exit;
+  saved_tok    := lex_tok;
+  LexNext;
+  lex_peek_tok := lex_tok;
+  lex_tok      := saved_tok;
+  lex_has_peek := True;
+End;
+
+{ ============================================================
+  LexPeekKind : type du prochain token (sans le consommer)
+  ============================================================ }
+Function LexPeekKind : TTokenKind;
+Begin
+  LexEnsurePeek;
+  LexPeekKind := lex_peek_tok.kind;
+End;
+
+{ ============================================================
+  LexPeekVal : valeur textuelle du prochain token
+  ============================================================ }
+Function LexPeekVal : TString;
+Begin
+  LexEnsurePeek;
+  LexPeekVal := lex_peek_tok.val;
+End;
+
+{ ============================================================
+  LexIsDirective : True si s est une directive MASM connue
+  ============================================================ }
+Function LexIsDirective(Const s : TString) : Boolean;
+Begin
+  LexIsDirective :=
+    (s = 'ASSUME')    Or (s = 'ALIGN')     Or (s = 'BYTE')     Or
+    (s = 'CODE')      Or (s = 'COMM')      Or (s = 'COMMENT')  Or
+    (s = 'CONST')     Or (s = 'DATA')      Or (s = 'DB')       Or
+    (s = 'DD')        Or (s = 'DF')        Or (s = 'DQ')       Or
+    (s = 'DT')        Or (s = 'DW')        Or (s = 'DWORD')    Or
+    (s = 'ELSE')      Or (s = 'ELSEIF')    Or (s = 'END')      Or
+    (s = 'ENDIF')     Or (s = 'ENDM')      Or (s = 'ENDP')     Or
+    (s = 'ENDS')      Or (s = 'EQU')       Or (s = 'EVEN')     Or
+    (s = 'EXITM')     Or (s = 'EXTERN')    Or (s = 'EXTRN')    Or
+    (s = 'FAR')       Or (s = 'FWORD')     Or (s = 'GLOBAL')   Or
+    (s = 'GROUP')     Or (s = 'IF')        Or (s = 'IF1')      Or
+    (s = 'IF2')       Or (s = 'IFB')       Or (s = 'IFDEF')    Or
+    (s = 'IFDIF')     Or (s = 'IFIDNI')    Or (s = 'IFIDN')    Or
+    (s = 'IFNB')      Or (s = 'IFNDEF')    Or (s = 'IFE')      Or
+    (s = 'INCLUDE')   Or (s = 'INCLUDELIB')Or (s = 'IRP')      Or
+    (s = 'IRPC')      Or (s = 'LABEL')     Or (s = 'LENGTH')   Or
+    (s = 'LOCAL')     Or (s = 'MACRO')     Or (s = 'MOD')      Or
+    (s = 'MODEL')     Or (s = 'NAME')      Or (s = 'NEAR')     Or
+    (s = 'NOT')       Or (s = 'OFFSET')    Or (s = 'OPTION')   Or
+    (s = 'ORG')       Or (s = 'PAGE')      Or (s = 'PARA')     Or
+    (s = 'PROC')      Or (s = 'PTR')       Or (s = 'PUBLIC')   Or
+    (s = 'PURGE')     Or (s = 'QWORD')     Or (s = 'RECORD')   Or
+    (s = 'REPT')      Or (s = 'SBYTE')     Or (s = 'SEG')      Or
+    (s = 'SEGMENT')   Or (s = 'SHORT')     Or (s = 'SIZE')     Or
+    (s = 'SIZEOF')    Or (s = 'SIZESTR')   Or (s = 'STACK')    Or
+    (s = 'STRUC')     Or (s = 'STRUCT')    Or (s = 'SUBTTL')   Or
+    (s = 'TBYTE')     Or (s = 'TEXTEQU')   Or (s = 'TITLE')    Or
+    (s = 'TYPE')      Or (s = 'TYPEDEF')   Or (s = 'UNION')    Or
+    (s = 'USES')      Or (s = 'WORD')      Or (s = '.CODE')    Or
+    (s = '.DATA')     Or (s = '.MODEL')    Or (s = '.STACK')   Or
+    (s = '.CONST')    Or (s = '.STARTUP')  Or (s = '.EXIT')    Or
+    (s = '.LIST')     Or (s = '.NOLIST')   Or (s = '.XLIST')   Or
+    (s = '.LISTALL')  Or (s = '.RADIX')    Or (s = '.286')     Or
+    (s = '.286P')     Or (s = '.186')      Or (s = '.8086')    Or
+    (s = '.ERR')      Or (s = '.ERRNZ')    Or (s = '.ERRE')    Or
+    (s = 'AND')       Or (s = 'OR')        Or (s = 'XOR')      Or
+    (s = 'SHL')       Or (s = 'SHR')       Or (s = 'HIGH')     Or
+    (s = 'LOW')       Or (s = 'THIS')      Or (s = 'WIDTH')    Or
+    (s = 'MASK')      Or (s = 'INVOKE')    Or (s = 'PROTO');
+End;
+
+{ ============================================================
+  LexIsRegister : True si s est un nom de registre 8086
+  ============================================================ }
+Function LexIsRegister(Const s : TString) : Boolean;
+Begin
+  LexIsRegister :=
+    { registres 16 bits }
+    (s = 'AX') Or (s = 'BX') Or (s = 'CX') Or (s = 'DX') Or
+    (s = 'SI') Or (s = 'DI') Or (s = 'SP') Or (s = 'BP') Or
+    { registres 8 bits }
+    (s = 'AL') Or (s = 'AH') Or (s = 'BL') Or (s = 'BH') Or
+    (s = 'CL') Or (s = 'CH') Or (s = 'DL') Or (s = 'DH') Or
+    { registres de segment }
+    (s = 'CS') Or (s = 'DS') Or (s = 'ES') Or (s = 'SS') Or
+    { registres speciaux / 80386+ }
+    (s = 'IP') Or (s = 'FLAGS') Or (s = 'ST');
+End;
+
+{ ============================================================
+  Programme principal (TODOs 04 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
           ' (MASM.PAS - compatible MASM 5.x)');
   InitTables;
-  Writeln('Infrastructure initialisee (TODO 01 complet).');
-  Writeln('TODOs 02 a 25 a implementer.');
+  SrcInit;
+  LexInit;
+  Writeln('Infrastructure + source + lexer initialises (TODOs 01-03 complets).');
+  Writeln('TODOs 04 a 25 a implementer.');
 End.
