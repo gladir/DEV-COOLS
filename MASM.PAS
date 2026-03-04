@@ -7912,6 +7912,34 @@ Begin
   IfReadAngle := s;
 End;
 
+{ ---- Table des directives conditionnelles pour ParseConditional ---- }
+Const
+  PC_IF         =  1; PC_IFE        =  2; PC_IF1        =  3; PC_IF2        =  4;
+  PC_IFDEF      =  5; PC_IFNDEF     =  6; PC_IFB        =  7; PC_IFNB       =  8;
+  PC_IFIDN      =  9; PC_IFIDNI     = 10; PC_IFDIF      = 11; PC_IFDIFI     = 12;
+  PC_ELSE       = 13; PC_ELSEIF     = 14; PC_ELSEIFDEF  = 15; PC_ELSEIFNDEF = 16;
+  PC_ENDIF      = 17;
+  PC_ERR        = 18; PC_ERR1       = 19; PC_ERR2       = 20;
+  PC_ERRDEF     = 21; PC_ERRNDEF    = 22;
+  PC_ERRB       = 23; PC_ERRNB      = 24;
+  PC_ERRIDN     = 25; PC_ERRDIF     = 26;
+  PC_ERRE       = 27; PC_ERRNZ      = 28;
+  PC_ERRGE      = 29; PC_ERRLT      = 30; PC_ERRLE      = 31; PC_ERRGT      = 32;
+  PC_COUNT      = 32;
+  PC_NAMES : Array[1..32] Of String[10] = (
+    'IF','IFE','IF1','IF2',
+    'IFDEF','IFNDEF','IFB','IFNB',
+    'IFIDN','IFIDNI','IFDIF','IFDIFI',
+    'ELSE','ELSEIF','ELSEIFDEF','ELSEIFNDEF',
+    'ENDIF',
+    '.ERR','.ERR1','.ERR2',
+    '.ERRDEF','.ERRNDEF',
+    '.ERRB','.ERRNB',
+    '.ERRIDN','.ERRDIF',
+    '.ERRE','.ERRNZ',
+    '.ERRGE','.ERRLT','.ERRLE','.ERRGT'
+  );
+
 { ============================================================
   ParseConditional : dispatcher pour toutes les directives
   conditionnelles (IF/IFDEF/ELSE/ENDIF/...).
@@ -7930,321 +7958,257 @@ Var
   a_upper  : TString;
   b_upper  : TString;
   i        : Integer;
+  pc_idx   : Integer;
 Begin
   ParseConditional := True;
+  pc_idx := 0;
+  For i := 1 To PC_COUNT Do
+    If PC_NAMES[i] = dir Then Begin pc_idx := i; Break; End;
 
-  { ---- IF expr ---- }
-  If dir = 'IF' Then
-  Begin
-    ExprMakeNum(e, 0);
-    If IfAssembling Then EvalExpr(e) Else e.val := 0;
-    IfPushCond(e.val <> 0);
-    Exit;
-  End;
+  Case pc_idx Of
 
-  { ---- IFE expr ---- }
-  If dir = 'IFE' Then
-  Begin
-    ExprMakeNum(e, 0);
-    If IfAssembling Then EvalExpr(e) Else e.val := 1;
-    IfPushCond(e.val = 0);
-    Exit;
-  End;
-
-  { ---- IF1 / IF2 ---- }
-  If dir = 'IF1' Then Begin IfPushCond(pass_num <= 1); Exit; End;
-  If dir = 'IF2' Then Begin IfPushCond(pass_num = 2);  Exit; End;
-
-  { ---- IFDEF nom ---- }
-  If dir = 'IFDEF' Then
-  Begin
-    cond := False;
-    If LexPeekKind = TK_IDENT Then
+    PC_IF:
     Begin
-      LexNext;
-      tok := lex_tok.val;
-      p   := SymFind(tok);
-      cond := (p <> Nil) And (p^.kind <> SK_UNDEF);
-    End;
-    IfPushCond(cond);
-    Exit;
-  End;
-
-  { ---- IFNDEF nom ---- }
-  If dir = 'IFNDEF' Then
-  Begin
-    cond := True;
-    If LexPeekKind = TK_IDENT Then
-    Begin
-      LexNext;
-      tok := lex_tok.val;
-      p   := SymFind(tok);
-      cond := (p = Nil) Or (p^.kind = SK_UNDEF);
-    End;
-    IfPushCond(cond);
-    Exit;
-  End;
-
-  { ---- IFB <arg> : vrai si argument vide ---- }
-  If dir = 'IFB' Then
-  Begin
-    a_text := '';
-    If IfAssembling Then a_text := IfReadAngle;
-    IfPushCond(a_text = '');
-    Exit;
-  End;
-
-  { ---- IFNB <arg> : vrai si argument non vide ---- }
-  If dir = 'IFNB' Then
-  Begin
-    a_text := '';
-    If IfAssembling Then a_text := IfReadAngle;
-    IfPushCond(a_text <> '');
-    Exit;
-  End;
-
-  { ---- IFIDN <a>, <b> (sensible a la casse) ---- }
-  If dir = 'IFIDN' Then
-  Begin
-    a_text := '';
-    b_text := '';
-    If IfAssembling Then
-    Begin
-      a_text := IfReadAngle;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
-      b_text := IfReadAngle;
-    End;
-    IfPushCond(a_text = b_text);
-    Exit;
-  End;
-
-  { ---- IFIDNI <a>, <b> (insensible a la casse) ---- }
-  If dir = 'IFIDNI' Then
-  Begin
-    a_text  := '';
-    b_text  := '';
-    a_upper := '';
-    b_upper := '';
-    If IfAssembling Then
-    Begin
-      a_text := IfReadAngle;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
-      b_text := IfReadAngle;
-    End;
-    For i := 1 To Length(a_text) Do a_upper := a_upper + UpCase(a_text[i]);
-    For i := 1 To Length(b_text) Do b_upper := b_upper + UpCase(b_text[i]);
-    IfPushCond(a_upper = b_upper);
-    Exit;
-  End;
-
-  { ---- IFDIF <a>, <b> (sensible a la casse) ---- }
-  If dir = 'IFDIF' Then
-  Begin
-    a_text := '';
-    b_text := '';
-    If IfAssembling Then
-    Begin
-      a_text := IfReadAngle;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
-      b_text := IfReadAngle;
-    End;
-    IfPushCond(a_text <> b_text);
-    Exit;
-  End;
-
-  { ---- IFDIFI <a>, <b> (insensible a la casse) ---- }
-  If dir = 'IFDIFI' Then
-  Begin
-    a_text  := '';
-    b_text  := '';
-    a_upper := '';
-    b_upper := '';
-    If IfAssembling Then
-    Begin
-      a_text := IfReadAngle;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
-      b_text := IfReadAngle;
-    End;
-    For i := 1 To Length(a_text) Do a_upper := a_upper + UpCase(a_text[i]);
-    For i := 1 To Length(b_text) Do b_upper := b_upper + UpCase(b_text[i]);
-    IfPushCond(a_upper <> b_upper);
-    Exit;
-  End;
-
-  { ---- ELSE ---- }
-  If dir = 'ELSE' Then
-  Begin
-    IfHandleElse;
-    Exit;
-  End;
-
-  { ---- ELSEIF expr ---- }
-  If dir = 'ELSEIF' Then
-  Begin
-    ExprMakeNum(e, 0);
-    If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
-    Begin
+      ExprMakeNum(e, 0);
       If IfAssembling Then EvalExpr(e) Else e.val := 0;
-      cond := (e.val <> 0);
-    End
-    Else
-      cond := False;
-    IfHandleElseIf(cond);
-    Exit;
-  End;
+      IfPushCond(e.val <> 0);
+    End;
 
-  { ---- ELSEIFDEF nom ---- }
-  If dir = 'ELSEIFDEF' Then
-  Begin
-    cond := False;
-    If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+    PC_IFE:
     Begin
+      ExprMakeNum(e, 0);
+      If IfAssembling Then EvalExpr(e) Else e.val := 1;
+      IfPushCond(e.val = 0);
+    End;
+
+    PC_IF1: IfPushCond(pass_num <= 1);
+    PC_IF2: IfPushCond(pass_num = 2);
+
+    PC_IFDEF:
+    Begin
+      cond := False;
       If LexPeekKind = TK_IDENT Then
       Begin
-        LexNext;
-        tok  := lex_tok.val;
-        p    := SymFind(tok);
+        LexNext; tok := lex_tok.val; p := SymFind(tok);
         cond := (p <> Nil) And (p^.kind <> SK_UNDEF);
       End;
+      IfPushCond(cond);
     End;
-    IfHandleElseIf(cond);
-    Exit;
-  End;
 
-  { ---- ELSEIFNDEF nom ---- }
-  If dir = 'ELSEIFNDEF' Then
-  Begin
-    cond := True;
-    If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+    PC_IFNDEF:
+    Begin
+      cond := True;
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext; tok := lex_tok.val; p := SymFind(tok);
+        cond := (p = Nil) Or (p^.kind = SK_UNDEF);
+      End;
+      IfPushCond(cond);
+    End;
+
+    PC_IFB:
+    Begin
+      a_text := '';
+      If IfAssembling Then a_text := IfReadAngle;
+      IfPushCond(a_text = '');
+    End;
+
+    PC_IFNB:
+    Begin
+      a_text := '';
+      If IfAssembling Then a_text := IfReadAngle;
+      IfPushCond(a_text <> '');
+    End;
+
+    PC_IFIDN:
+    Begin
+      a_text := ''; b_text := '';
+      If IfAssembling Then
+      Begin
+        a_text := IfReadAngle;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+        b_text := IfReadAngle;
+      End;
+      IfPushCond(a_text = b_text);
+    End;
+
+    PC_IFIDNI:
+    Begin
+      a_text := ''; b_text := ''; a_upper := ''; b_upper := '';
+      If IfAssembling Then
+      Begin
+        a_text := IfReadAngle;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+        b_text := IfReadAngle;
+      End;
+      For i := 1 To Length(a_text) Do a_upper := a_upper + UpCase(a_text[i]);
+      For i := 1 To Length(b_text) Do b_upper := b_upper + UpCase(b_text[i]);
+      IfPushCond(a_upper = b_upper);
+    End;
+
+    PC_IFDIF:
+    Begin
+      a_text := ''; b_text := '';
+      If IfAssembling Then
+      Begin
+        a_text := IfReadAngle;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+        b_text := IfReadAngle;
+      End;
+      IfPushCond(a_text <> b_text);
+    End;
+
+    PC_IFDIFI:
+    Begin
+      a_text := ''; b_text := ''; a_upper := ''; b_upper := '';
+      If IfAssembling Then
+      Begin
+        a_text := IfReadAngle;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+        b_text := IfReadAngle;
+      End;
+      For i := 1 To Length(a_text) Do a_upper := a_upper + UpCase(a_text[i]);
+      For i := 1 To Length(b_text) Do b_upper := b_upper + UpCase(b_text[i]);
+      IfPushCond(a_upper <> b_upper);
+    End;
+
+    PC_ELSE:     IfHandleElse;
+
+    PC_ELSEIF:
+    Begin
+      ExprMakeNum(e, 0);
+      If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+      Begin
+        If IfAssembling Then EvalExpr(e) Else e.val := 0;
+        cond := (e.val <> 0);
+      End
+      Else cond := False;
+      IfHandleElseIf(cond);
+    End;
+
+    PC_ELSEIFDEF:
+    Begin
+      cond := False;
+      If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+        If LexPeekKind = TK_IDENT Then
+        Begin
+          LexNext; tok := lex_tok.val; p := SymFind(tok);
+          cond := (p <> Nil) And (p^.kind <> SK_UNDEF);
+        End;
+      IfHandleElseIf(cond);
+    End;
+
+    PC_ELSEIFNDEF:
+    Begin
+      cond := True;
+      If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+        If LexPeekKind = TK_IDENT Then
+        Begin
+          LexNext; tok := lex_tok.val; p := SymFind(tok);
+          cond := (p = Nil) Or (p^.kind = SK_UNDEF);
+        End;
+      IfHandleElseIf(cond);
+    End;
+
+    PC_ENDIF: IfHandleEndif;
+
+    PC_ERR:  If IfAssembling Then ErrorMsg('.ERR : erreur forcee');
+    PC_ERR1: If IfAssembling And (pass_num <= 1) Then ErrorMsg('.ERR1 : erreur passe 1');
+    PC_ERR2: If IfAssembling And (pass_num = 2)  Then ErrorMsg('.ERR2 : erreur passe 2');
+
+    PC_ERRDEF:
     Begin
       If LexPeekKind = TK_IDENT Then
       Begin
-        LexNext;
-        tok  := lex_tok.val;
-        p    := SymFind(tok);
-        cond := (p = Nil) Or (p^.kind = SK_UNDEF);
+        LexNext; tok := lex_tok.val; p := SymFind(tok);
+        If IfAssembling And (p <> Nil) And (p^.kind <> SK_UNDEF) Then
+          ErrorMsg('.ERRDEF : symbole defini : ' + tok);
       End;
     End;
-    IfHandleElseIf(cond);
-    Exit;
-  End;
 
-  { ---- ENDIF ---- }
-  If dir = 'ENDIF' Then
-  Begin
-    IfHandleEndif;
-    Exit;
-  End;
+    PC_ERRNDEF:
+    Begin
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext; tok := lex_tok.val; p := SymFind(tok);
+        If IfAssembling And ((p = Nil) Or (p^.kind = SK_UNDEF)) Then
+          ErrorMsg('.ERRNDEF : symbole non defini : ' + tok);
+      End;
+    End;
 
-  { ---- Directives d erreur conditionnelle ---- }
-  If dir = '.ERR' Then
-  Begin
-    If IfAssembling Then ErrorMsg('.ERR : erreur forcee');
-    Exit;
-  End;
-  If dir = '.ERR1' Then
-  Begin
-    If IfAssembling And (pass_num <= 1) Then ErrorMsg('.ERR1 : erreur passe 1');
-    Exit;
-  End;
-  If dir = '.ERR2' Then
-  Begin
-    If IfAssembling And (pass_num = 2) Then ErrorMsg('.ERR2 : erreur passe 2');
-    Exit;
-  End;
-  If dir = '.ERRDEF' Then
-  Begin
-    If LexPeekKind = TK_IDENT Then
+    PC_ERRB:
     Begin
-      LexNext; tok := lex_tok.val;
-      p := SymFind(tok);
-      If IfAssembling And (p <> Nil) And (p^.kind <> SK_UNDEF) Then
-        ErrorMsg('.ERRDEF : symbole defini : ' + tok);
+      a_text := '';
+      If IfAssembling Then a_text := IfReadAngle;
+      If IfAssembling And (a_text = '') Then ErrorMsg('.ERRB : argument vide');
     End;
-    Exit;
-  End;
-  If dir = '.ERRNDEF' Then
-  Begin
-    If LexPeekKind = TK_IDENT Then
+
+    PC_ERRNB:
     Begin
-      LexNext; tok := lex_tok.val;
-      p := SymFind(tok);
-      If IfAssembling And ((p = Nil) Or (p^.kind = SK_UNDEF)) Then
-        ErrorMsg('.ERRNDEF : symbole non defini : ' + tok);
+      a_text := '';
+      If IfAssembling Then a_text := IfReadAngle;
+      If IfAssembling And (a_text <> '') Then ErrorMsg('.ERRNB : argument non vide');
     End;
-    Exit;
-  End;
-  If dir = '.ERRB' Then
-  Begin
-    a_text := '';
-    If IfAssembling Then a_text := IfReadAngle;
-    If IfAssembling And (a_text = '') Then ErrorMsg('.ERRB : argument vide');
-    Exit;
-  End;
-  If dir = '.ERRNB' Then
-  Begin
-    a_text := '';
-    If IfAssembling Then a_text := IfReadAngle;
-    If IfAssembling And (a_text <> '') Then ErrorMsg('.ERRNB : argument non vide');
-    Exit;
-  End;
-  If dir = '.ERRIDN' Then
-  Begin
-    a_text := ''; b_text := '';
-    If IfAssembling Then
+
+    PC_ERRIDN:
     Begin
-      a_text := IfReadAngle;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
-      b_text := IfReadAngle;
+      a_text := ''; b_text := '';
+      If IfAssembling Then
+      Begin
+        a_text := IfReadAngle;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+        b_text := IfReadAngle;
+      End;
+      If IfAssembling And (a_text = b_text) Then
+        ErrorMsg('.ERRIDN : arguments identiques');
     End;
-    If IfAssembling And (a_text = b_text) Then
-      ErrorMsg('.ERRIDN : arguments identiques');
-    Exit;
-  End;
-  If dir = '.ERRDIF' Then
-  Begin
-    a_text := ''; b_text := '';
-    If IfAssembling Then
+
+    PC_ERRDIF:
     Begin
-      a_text := IfReadAngle;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
-      b_text := IfReadAngle;
+      a_text := ''; b_text := '';
+      If IfAssembling Then
+      Begin
+        a_text := IfReadAngle;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+        b_text := IfReadAngle;
+      End;
+      If IfAssembling And (a_text <> b_text) Then
+        ErrorMsg('.ERRDIF : arguments differents');
     End;
-    If IfAssembling And (a_text <> b_text) Then
-      ErrorMsg('.ERRDIF : arguments differents');
-    Exit;
-  End;
-  If (dir = '.ERRE') Or (dir = '.ERRNZ') Then
-  Begin
-    ExprMakeNum(e, 0);
-    If IfAssembling Then EvalExpr(e) Else e.val := 0;
-    If dir = '.ERRE' Then
+
+    PC_ERRE:
     Begin
+      ExprMakeNum(e, 0);
+      If IfAssembling Then EvalExpr(e) Else e.val := 0;
       If IfAssembling And (e.val = 0) Then
         ErrorMsg('.ERRE : expression evaluee a 0');
-    End
-    Else
+    End;
+
+    PC_ERRNZ:
     Begin
+      ExprMakeNum(e, 0);
+      If IfAssembling Then EvalExpr(e) Else e.val := 0;
       If IfAssembling And (e.val <> 0) Then
         ErrorMsg('.ERRNZ : expression evaluee a non-zero');
     End;
-    Exit;
-  End;
-  If (dir = '.ERRGE') Or (dir = '.ERRLT') Or
-     (dir = '.ERRLE') Or (dir = '.ERRGT') Then
-  Begin
-    ExprMakeNum(e, 0);
-    If IfAssembling Then EvalExpr(e) Else e.val := 0;
-    If dir = '.ERRGE' Then cond := (e.val >= 0)
-    Else If dir = '.ERRLT' Then cond := (e.val < 0)
-    Else If dir = '.ERRLE' Then cond := (e.val <= 0)
-    Else cond := (e.val > 0);
-    If IfAssembling And cond Then
-      ErrorMsg(dir + ' : condition verifiee');
-    Exit;
-  End;
 
-  ParseConditional := False;
+    PC_ERRGE, PC_ERRLT, PC_ERRLE, PC_ERRGT:
+    Begin
+      ExprMakeNum(e, 0);
+      If IfAssembling Then EvalExpr(e) Else e.val := 0;
+      Case pc_idx Of
+        PC_ERRGE: cond := (e.val >= 0);
+        PC_ERRLT: cond := (e.val <  0);
+        PC_ERRLE: cond := (e.val <= 0);
+      Else        cond := (e.val >  0);
+      End;
+      If IfAssembling And cond Then
+        ErrorMsg(dir + ' : condition verifiee');
+    End;
+
+  Else
+    ParseConditional := False;
+  End; { Case }
 End;
 
 { ============================================================
