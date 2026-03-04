@@ -5773,29 +5773,52 @@ End;
   LOOPNE label: E0 cb
   ============================================================ }
 
+{ ---- Table des Jcc pour JccOpcode ---- }
+Const
+  JCC_COUNT = 30;
+  JCC_NAMES : Array[1..30] Of String[4] = (
+    'JO',  'JNO',
+    'JB',  'JNAE','JC',
+    'JNB', 'JAE', 'JNC',
+    'JE',  'JZ',
+    'JNE', 'JNZ',
+    'JBE', 'JNA',
+    'JNBE','JA',
+    'JS',  'JNS',
+    'JP',  'JPE',
+    'JNP', 'JPO',
+    'JL',  'JNGE',
+    'JNL', 'JGE',
+    'JLE', 'JNG',
+    'JNLE','JG'
+  );
+  JCC_OPC : Array[1..30] Of Byte = (
+    $70, $71,
+    $72, $72, $72,
+    $73, $73, $73,
+    $74, $74,
+    $75, $75,
+    $76, $76,
+    $77, $77,
+    $78, $79,
+    $7A, $7A,
+    $7B, $7B,
+    $7C, $7C,
+    $7D, $7D,
+    $7E, $7E,
+    $7F, $7F
+  );
+
 { ============================================================
   JccOpcode : retourner l opcode court (70h-7Fh) d un Jcc,
   ou 0 si non reconnu.
   ============================================================ }
 Function JccOpcode(Const mnem : TString) : Byte;
+Var i : Integer;
 Begin
-  If      mnem = 'JO'    Then JccOpcode := $70
-  Else If mnem = 'JNO'   Then JccOpcode := $71
-  Else If (mnem = 'JB')  Or (mnem = 'JNAE') Or (mnem = 'JC')  Then JccOpcode := $72
-  Else If (mnem = 'JNB') Or (mnem = 'JAE')  Or (mnem = 'JNC') Then JccOpcode := $73
-  Else If (mnem = 'JE')  Or (mnem = 'JZ')   Then JccOpcode := $74
-  Else If (mnem = 'JNE') Or (mnem = 'JNZ')  Then JccOpcode := $75
-  Else If (mnem = 'JBE') Or (mnem = 'JNA')  Then JccOpcode := $76
-  Else If (mnem = 'JNBE') Or (mnem = 'JA')  Then JccOpcode := $77
-  Else If mnem = 'JS'    Then JccOpcode := $78
-  Else If mnem = 'JNS'   Then JccOpcode := $79
-  Else If (mnem = 'JP')  Or (mnem = 'JPE')  Then JccOpcode := $7A
-  Else If (mnem = 'JNP') Or (mnem = 'JPO')  Then JccOpcode := $7B
-  Else If (mnem = 'JL')  Or (mnem = 'JNGE') Then JccOpcode := $7C
-  Else If (mnem = 'JNL') Or (mnem = 'JGE')  Then JccOpcode := $7D
-  Else If (mnem = 'JLE') Or (mnem = 'JNG')  Then JccOpcode := $7E
-  Else If (mnem = 'JNLE') Or (mnem = 'JG')  Then JccOpcode := $7F
-  Else JccOpcode := 0;
+  For i := 1 To JCC_COUNT Do
+    If JCC_NAMES[i] = mnem Then Begin JccOpcode := JCC_OPC[i]; Exit; End;
+  JccOpcode := 0;
 End;
 
 { ============================================================
