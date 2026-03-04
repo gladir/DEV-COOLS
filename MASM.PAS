@@ -469,9 +469,9 @@ Const
   MAX_SYM      = 4096; { max symboles (heap, compte seulement) }
   MAX_SEG      = 16;   { max segments definis }
   MAX_GRP      = 8;    { max groupes definis }
-  MAX_FIXUP    = 8192; { max fixups internes par passe }
+  MAX_FIXUP    = {$IFDEF FPC}8192{$ELSE}2048{$ENDIF}; { max fixups internes par passe }
   MAX_MACRO    = 256;  { max macros definies }
-  MAX_STRUCT   = 64;   { max structures STRUC }
+  MAX_STRUCT   = {$IFDEF FPC}64{$ELSE}8{$ENDIF};   { max structures STRUC }
   MAX_IF_DEPTH = 32;   { profondeur max des blocs IF imbriques }
   HASH_SIZE    = 256;  { buckets de la table de hachage symboles }
   INC_DEPTH    = 8;    { max niveaux d inclusion INCLUDE }
@@ -4426,7 +4426,7 @@ End;
 
 Const
   MAX_EXTDEF = 256;
-  MAX_PUBDEF = 512;
+  MAX_PUBDEF = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
 
 Var
   extdef_names : Array[1..MAX_EXTDEF] Of TSymString;
@@ -6591,7 +6591,7 @@ End;
   ============================================================ }
 
 Const
-  MAX_STRUCT_FIELDS = 64;
+  MAX_STRUCT_FIELDS = {$IFDEF FPC}64{$ELSE}8{$ENDIF};
 
 Type
   TStructField = Record
@@ -6609,16 +6609,20 @@ Type
     fields     : Array[1..MAX_STRUCT_FIELDS] Of TStructField;
   End;
 
+  PStructDef = ^TStructDef;
+
 Var
-  struct_table : Array[1..MAX_STRUCT] Of TStructDef;
+  struct_table : Array[1..MAX_STRUCT] Of PStructDef;
   struct_count : Integer;
 
 { ============================================================
   StructInit : initialiser la table des structures
   ============================================================ }
 Procedure StructInit;
+Var i : Integer;
 Begin
   struct_count := 0;
+  For i := 1 To MAX_STRUCT Do struct_table[i] := Nil;
 End;
 
 { ============================================================
@@ -6672,9 +6676,10 @@ Begin
   End;
   Inc(struct_count);
   si := struct_count;
-  struct_table[si].sname      := struc_name;
-  struct_table[si].total_size := 0;
-  struct_table[si].field_cnt  := 0;
+  New(struct_table[si]);
+  struct_table[si]^.sname      := struc_name;
+  struct_table[si]^.total_size := 0;
+  struct_table[si]^.field_cnt  := 0;
   cur_off := 0;
 
   { enregistrer le symbole (taille inconnue pour l instant) }
@@ -6766,7 +6771,7 @@ Begin
     End;
 
     { enregistrer le champ }
-    With struct_table[si] Do
+    With struct_table[si]^ Do
     Begin
       If field_cnt < MAX_STRUCT_FIELDS Then
       Begin
@@ -6795,7 +6800,7 @@ Begin
   End;
 
   { finaliser }
-  struct_table[si].total_size := cur_off;
+  struct_table[si]^.total_size := cur_off;
   p^.size  := cur_off;
   p^.value := si;
 End;
@@ -6818,7 +6823,7 @@ Var
   vals     : Array[1..MAX_STRUCT_FIELDS] Of TLong;
   has_v    : Array[1..MAX_STRUCT_FIELDS] Of Boolean;
 Begin
-  nf := struct_table[si_idx].field_cnt;
+  nf := struct_table[si_idx]^.field_cnt;
 
   { definir le label de la variable si nom fourni }
   If var_name <> '' Then
@@ -6826,19 +6831,19 @@ Begin
     p := SymFind(var_name);
     If p = Nil Then
       p := SymEnter(var_name, SK_LABEL, cur_seg, lc,
-                    struct_table[si_idx].total_size);
+                    struct_table[si_idx]^.total_size);
     p^.kind    := SK_LABEL;
     p^.seg_idx := cur_seg;
     p^.offset  := lc;
-    p^.size    := struct_table[si_idx].total_size;
+    p^.size    := struct_table[si_idx]^.total_size;
     p^.flags   := p^.flags Or 4;  { is_defined }
   End;
 
   { charger les valeurs par defaut }
   For i := 1 To nf Do
   Begin
-    vals[i]  := struct_table[si_idx].fields[i].def_val;
-    has_v[i] := struct_table[si_idx].fields[i].has_def;
+    vals[i]  := struct_table[si_idx]^.fields[i].def_val;
+    has_v[i] := struct_table[si_idx]^.fields[i].has_def;
   End;
 
   { parser < val1, val2, ... > si present }
@@ -6877,13 +6882,13 @@ Begin
   For i := 1 To nf Do
   Begin
     { rembourrage entre champs si necessaire }
-    pad := Integer(struct_table[si_idx].fields[i].foffset) -
+    pad := Integer(struct_table[si_idx]^.fields[i].foffset) -
            Integer(inst_off);
     For j := 1 To pad Do EmitByte(0);
     inst_off := inst_off + TWord(pad);
 
     { emettre selon la taille du champ }
-    Case struct_table[si_idx].fields[i].fsize Of
+    Case struct_table[si_idx]^.fields[i].fsize Of
       1 : EmitByte(Byte(vals[i]));
       2 : EmitWord(Word(vals[i]));
       4 : Begin
@@ -6895,15 +6900,15 @@ Begin
         { taille > 4 : emettre DWORD bas, puis zeros }
         EmitWord(Word(vals[i]));
         EmitWord(Word(vals[i] Shr 16));
-        For j := 5 To Integer(struct_table[si_idx].fields[i].fsize) Do
+        For j := 5 To Integer(struct_table[si_idx]^.fields[i].fsize) Do
           EmitByte(0);
       End;
     End;
-    inst_off := inst_off + struct_table[si_idx].fields[i].fsize;
+    inst_off := inst_off + struct_table[si_idx]^.fields[i].fsize;
   End;
 
   { rembourrage final }
-  pad := Integer(struct_table[si_idx].total_size) - Integer(inst_off);
+  pad := Integer(struct_table[si_idx]^.total_size) - Integer(inst_off);
   For j := 1 To pad Do EmitByte(0);
 End;
 
@@ -6918,6 +6923,8 @@ Const
   MACRO_EXP_BUF    = 256;   { lignes max dans un niveau d expansion }
 
 Type
+  PMacroDef = ^TMacroDef;
+
   TMacroDef = Record
     mname     : TSymString;
     param_cnt : Integer;
@@ -6925,6 +6932,7 @@ Type
     body_start: Integer;   { 1-base dans macro_line_pool }
     body_cnt  : Integer;
     purged    : Boolean;
+    next      : PMacroDef; { liste chainee }
   End;
 
   TMacroExpCtx = Record
@@ -6932,11 +6940,11 @@ Type
     line_cnt : Integer;
     cur_pos  : Integer;
     do_exitm : Boolean;
-    mi       : Integer;   { index macro (0 = REPT/IRP/IRPC) }
+    mi       : PMacroDef; { pointeur macro (Nil = REPT/IRP/IRPC) }
   End;
 
 Var
-  macro_table     : Array[1..MAX_MACRO]      Of TMacroDef;
+  macro_list_head : PMacroDef;
   macro_count     : Integer;
   macro_line_pool : Array[1..MAX_MACRO_POOL] Of TString;
   macro_pool_used : Integer;
@@ -6948,6 +6956,7 @@ Var
   ============================================================ }
 Procedure MacroInit;
 Begin
+  macro_list_head := Nil;
   macro_count     := 0;
   macro_pool_used := 0;
   macro_exp_top   := -1;
@@ -6957,17 +6966,21 @@ End;
   MacroFind : chercher une macro non purgee par son nom.
   Retourne l index 1-base dans macro_table, ou 0 si absente.
   ============================================================ }
-Function MacroFind(Const mname : TSymString) : Integer;
+Function MacroFind(Const mname : TSymString) : PMacroDef;
 Var
-  i : Integer;
+  p : PMacroDef;
 Begin
-  MacroFind := 0;
-  For i := 1 To macro_count Do
-    If (Not macro_table[i].purged) And (macro_table[i].mname = mname) Then
+  MacroFind := Nil;
+  p := macro_list_head;
+  While p <> Nil Do
+  Begin
+    If (Not p^.purged) And (p^.mname = mname) Then
     Begin
-      MacroFind := i;
+      MacroFind := p;
       Exit;
     End;
+    p := p^.next;
+  End;
 End;
 
 { ============================================================
@@ -7188,26 +7201,23 @@ End;
   ============================================================ }
 Procedure ParseMacroDef(Const mname : TSymString);
 Var
-  mi       : Integer;
+  mi       : PMacroDef;
   pcnt     : Integer;
   body_cnt : Integer;
   start    : Integer;
   p        : PSymbol;
 Begin
   mi := MacroFind(mname);
-  If mi = 0 Then
+  If mi = Nil Then
   Begin
-    If macro_count >= MAX_MACRO Then
-    Begin
-      ErrorMsg('Trop de macros : ' + mname);
-      Exit;
-    End;
+    New(mi);
+    mi^.next      := macro_list_head;
+    macro_list_head := mi;
     Inc(macro_count);
-    mi := macro_count;
   End;
-  macro_table[mi].mname     := mname;
-  macro_table[mi].purged    := False;
-  macro_table[mi].param_cnt := 0;
+  mi^.mname     := mname;
+  mi^.purged    := False;
+  mi^.param_cnt := 0;
 
   { lire les parametres formels }
   pcnt := 0;
@@ -7217,30 +7227,29 @@ Begin
     If pcnt < MAX_MACRO_PARAMS Then
     Begin
       Inc(pcnt);
-      macro_table[mi].params[pcnt] := lex_tok.val;
+      mi^.params[pcnt] := lex_tok.val;
     End;
     If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
       LexNext
     Else
       Break;
   End;
-  macro_table[mi].param_cnt := pcnt;
+  mi^.param_cnt := pcnt;
 
   { collecter le corps jusqu a ENDM }
   start := CollectBlock(body_cnt);
-  macro_table[mi].body_start := start;
-  macro_table[mi].body_cnt   := body_cnt;
+  mi^.body_start := start;
+  mi^.body_cnt   := body_cnt;
 
   { enregistrer le symbole SK_MACRO }
   p := SymFind(mname);
   If p = Nil Then
-    p := SymEnter(mname, SK_MACRO, 0, 0, mi)
+    p := SymEnter(mname, SK_MACRO, 0, 0, TLong(mi))
   Else
   Begin
     p^.kind  := SK_MACRO;
-    p^.value := mi;
+    p^.value := TLong(mi);
   End;
-  SymSetValue(p, mi);
 End;
 
 { ============================================================
@@ -7248,7 +7257,7 @@ End;
   fournis dans arg_line (reste de la ligne apres le nom).
   Pousse un contexte sur macro_exp_stk.
   ============================================================ }
-Procedure ExpandMacro(mi : Integer; Const arg_line : TString);
+Procedure ExpandMacro(mi : PMacroDef; Const arg_line : TString);
 Var
   pcnt        : Integer;
   i, j, k     : Integer;
@@ -7279,7 +7288,7 @@ Begin
   macro_exp_stk[expidx].do_exitm := False;
   macro_exp_stk[expidx].mi       := mi;
 
-  pcnt := macro_table[mi].param_cnt;
+  pcnt := mi^.param_cnt;
   For i := 1 To MAX_MACRO_PARAMS Do args[i] := '';
 
   { ----- parser les arguments depuis arg_line ----- }
@@ -7306,9 +7315,9 @@ Begin
 
   { ----- detecter les declarations LOCAL dans le corps ----- }
   local_cnt := 0;
-  For k := 1 To macro_table[mi].body_cnt Do
+  For k := 1 To mi^.body_cnt Do
   Begin
-    raw := macro_line_pool[macro_table[mi].body_start + k - 1];
+    raw := macro_line_pool[mi^.body_start + k - 1];
     j   := 1;
     While (j <= Length(raw)) And (raw[j] = ' ') Do Inc(j);
     tok := '';
@@ -7342,9 +7351,9 @@ Begin
   End;
 
   { ----- construire les lignes d expansion substituees ----- }
-  For k := 1 To macro_table[mi].body_cnt Do
+  For k := 1 To mi^.body_cnt Do
   Begin
-    raw := macro_line_pool[macro_table[mi].body_start + k - 1];
+    raw := macro_line_pool[mi^.body_start + k - 1];
 
     { detecter les lignes LOCAL (a sauter) }
     j   := 1;
@@ -7361,7 +7370,7 @@ Begin
     { substituer les parametres }
     subst := raw;
     For j := 1 To pcnt Do
-      subst := SubstOneParam(subst, macro_table[mi].params[j], args[j]);
+      subst := SubstOneParam(subst, mi^.params[j], args[j]);
 
     { substituer les labels LOCAL }
     For j := 1 To local_cnt Do
@@ -7408,7 +7417,7 @@ Begin
   macro_exp_stk[expidx].line_cnt := 0;
   macro_exp_stk[expidx].cur_pos  := 1;
   macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := 0;
+  macro_exp_stk[expidx].mi       := Nil;
 
   For i := 1 To count Do
     For j := 1 To body_cnt Do
@@ -7491,7 +7500,7 @@ Begin
   macro_exp_stk[expidx].line_cnt := 0;
   macro_exp_stk[expidx].cur_pos  := 1;
   macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := 0;
+  macro_exp_stk[expidx].mi       := Nil;
 
   For i := 0 To arg_cnt - 1 Do
     For j := 1 To body_cnt Do
@@ -7565,7 +7574,7 @@ Begin
   macro_exp_stk[expidx].line_cnt := 0;
   macro_exp_stk[expidx].cur_pos  := 1;
   macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := 0;
+  macro_exp_stk[expidx].mi       := Nil;
 
   For i := 1 To Length(str_val) Do
   Begin
@@ -7599,7 +7608,7 @@ End;
   ============================================================ }
 Procedure ParsePurge;
 Var
-  mi  : Integer;
+  mi  : PMacroDef;
   tok : TSymString;
 Begin
   Repeat
@@ -7607,8 +7616,8 @@ Begin
     LexNext;
     tok := lex_tok.val;
     mi  := MacroFind(tok);
-    If mi > 0 Then
-      macro_table[mi].purged := True
+    If mi <> Nil Then
+      mi^.purged := True
     Else
       WarnMsg('PURGE : macro inconnue : ' + tok);
     If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
@@ -8694,18 +8703,23 @@ End;
   LstEmitMacroTable : section macros du listing.
   ============================================================ }
 Procedure LstEmitMacroTable;
-Var i : Integer;
+Var
+  p : PMacroDef;
 Begin
   If (Not lst_is_open) Or (macro_count = 0) Then Exit;
   LstWriteRaw('');
   LstWriteRaw('Macros:');
   LstWriteRaw('');
   LstWriteRaw('                   N a m e                 Params   Lines');
-  For i := 1 To macro_count Do
-    If Not macro_table[i].purged Then
-      LstWriteRaw(LstPad(macro_table[i].mname, 32)
-        + LstPad(LstNumStr(macro_table[i].param_cnt, 4), 9)
-        + LstNumStr(macro_table[i].body_cnt, 5));
+  p := macro_list_head;
+  While p <> Nil Do
+  Begin
+    If Not p^.purged Then
+      LstWriteRaw(LstPad(p^.mname, 32)
+        + LstPad(LstNumStr(p^.param_cnt, 4), 9)
+        + LstNumStr(p^.body_cnt, 5));
+    p := p^.next;
+  End;
 End;
 
 { ============================================================
@@ -8761,7 +8775,7 @@ Var
   label_name : TSymString;
   has_label  : Boolean;
   mnem       : TString;
-  mi         : Integer;
+  mi         : PMacroDef;
   rest       : TString;
   rn         : TString;     { registre pour ASSUME }
   sn         : TString;     { segment pour ASSUME }
@@ -9209,7 +9223,7 @@ Begin
 
   { --- expansion macro --- }
   mi := MacroFind(mnem);
-  If mi > 0 Then
+  If mi <> Nil Then
   Begin
     { le reste de la ligne = arguments }
     rest := '';
