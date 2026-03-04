@@ -648,6 +648,7 @@ Begin
  While(Not Eof(ObjFile))and(Not ModuleEnded)do Begin
   BlockRead(ObjFile,RecType,1);
   If Eof(ObjFile) Then Break;
+    If RecType<$80 Then RecType:=RecType Or $80;
   BlockRead(ObjFile,RecLen,2);
   If RecLen>SizeOf(Buffer)Then Begin
    WriteLn('Erreur : RecLen sup�rieur � la taille du tampon');
@@ -656,7 +657,7 @@ Begin
   BlockRead(ObjFile,Buffer,RecLen);
   Case RecType of
     $00..$7F:Begin
-     { Codes invalides/reserves dans OMF Intel 16-bit : ignorer proprement }
+     { Codes bas : normalement convertis en forme haute ci-dessus }
     End;
     $80, $82:Begin
       ObjModuleName:='';
@@ -1396,6 +1397,7 @@ Begin
    While Not Eof(ObjFile) do Begin
     BlockRead(ObjFile,RecType,1);
     If Eof(ObjFile) Then Break;
+      If RecType<$80 Then RecType:=RecType Or $80;
     BlockRead(ObjFile,RecLen,2);
     If RecLen>SizeOf(ObjBuf) Then Begin
      WriteLn('Erreur : RecLen sup�rieur � la taille du tampon LEDATA');
