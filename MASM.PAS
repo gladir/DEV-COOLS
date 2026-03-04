@@ -6923,14 +6923,20 @@ Const
   MACRO_EXP_BUF    = 256;   { lignes max dans un niveau d expansion }
 
 Type
+  PLineNode = ^TLineNode;
+
+  TLineNode = Record
+    line : TString;
+    next : PLineNode;
+  End;
+
   PMacroDef = ^TMacroDef;
 
   TMacroDef = Record
     mname     : TSymString;
     param_cnt : Integer;
     params    : Array[1..MAX_MACRO_PARAMS] Of TSymString;
-    body_start: Integer;   { 1-base dans macro_line_pool }
-    body_cnt  : Integer;
+    body_first : PLineNode; { premier noeud du corps (liste chainee) }    body_cnt  : Integer;
     purged    : Boolean;
     next      : PMacroDef; { liste chainee }
   End;
@@ -6946,8 +6952,6 @@ Type
 Var
   macro_list_head : PMacroDef;
   macro_count     : Integer;
-  macro_line_pool : Array[1..MAX_MACRO_POOL] Of TString;
-  macro_pool_used : Integer;
   macro_exp_stk   : Array[0..MACRO_EXP_DEPTH-1] Of TMacroExpCtx;
   macro_exp_top   : Integer;   { -1 si aucune expansion active }
 
@@ -6958,7 +6962,6 @@ Procedure MacroInit;
 Begin
   macro_list_head := Nil;
   macro_count     := 0;
-  macro_pool_used := 0;
   macro_exp_top   := -1;
 End;
 
@@ -7096,17 +7099,20 @@ Function GetNextLine : Boolean; Forward;
   Stocke dans macro_line_pool ; retourne l index de debut et
   body_cnt = nb de lignes collectees.
   ============================================================ }
-Function CollectBlock(Var body_cnt : Integer) : Integer;
+Function CollectBlock(Var body_cnt : Integer) : PLineNode;
 Var
   depth    : Integer;
   raw      : TString;
   tok      : TString;
-  start    : Integer;
+  head     : PLineNode;
+  tail     : PLineNode;
+  nd       : PLineNode;
   i        : Integer;
   kw1      : TString;
   kw2      : TString;
 Begin
-  start    := macro_pool_used + 1;
+  head     := Nil;
+  tail     := Nil;
   body_cnt := 0;
   depth    := 1;
 
@@ -7154,18 +7160,19 @@ Begin
       If depth = 0 Then Break;   { ENDM du bloc courant }
     End;
 
-    { stocker la ligne dans le pool }
-    If macro_pool_used < MAX_MACRO_POOL Then
-    Begin
-      Inc(macro_pool_used);
-      macro_line_pool[macro_pool_used] := raw;
-      Inc(body_cnt);
-    End
+    { stocker la ligne dans la liste chainee }
+    New(nd);
+    nd^.line := raw;
+    nd^.next := Nil;
+    If tail = Nil Then
+      head := nd
     Else
-      WarnMsg('Pool de corps de macro plein');
+      tail^.next := nd;
+    tail := nd;
+    Inc(body_cnt);
   End;
 
-  CollectBlock := start;
+  CollectBlock := head;
 End;
 
 { GetNextLine : implementation reelle }
@@ -7204,7 +7211,6 @@ Var
   mi       : PMacroDef;
   pcnt     : Integer;
   body_cnt : Integer;
-  start    : Integer;
   p        : PSymbol;
 Begin
   mi := MacroFind(mname);
@@ -7237,8 +7243,7 @@ Begin
   mi^.param_cnt := pcnt;
 
   { collecter le corps jusqu a ENDM }
-  start := CollectBlock(body_cnt);
-  mi^.body_start := start;
+  mi^.body_first := CollectBlock(body_cnt);
   mi^.body_cnt   := body_cnt;
 
   { enregistrer le symbole SK_MACRO }
@@ -7274,6 +7279,7 @@ Var
   tok         : TString;
   expidx      : Integer;
   is_loc_line : Boolean;
+  nd          : PLineNode;
 Begin
   If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
   Begin
@@ -7315,9 +7321,11 @@ Begin
 
   { ----- detecter les declarations LOCAL dans le corps ----- }
   local_cnt := 0;
+  nd := mi^.body_first;
   For k := 1 To mi^.body_cnt Do
   Begin
-    raw := macro_line_pool[mi^.body_start + k - 1];
+    raw := nd^.line;
+    nd  := nd^.next;
     j   := 1;
     While (j <= Length(raw)) And (raw[j] = ' ') Do Inc(j);
     tok := '';
@@ -7351,9 +7359,11 @@ Begin
   End;
 
   { ----- construire les lignes d expansion substituees ----- }
+  nd := mi^.body_first;
   For k := 1 To mi^.body_cnt Do
   Begin
-    raw := macro_line_pool[mi^.body_start + k - 1];
+    raw := nd^.line;
+    nd  := nd^.next;
 
     { detecter les lignes LOCAL (a sauter) }
     j   := 1;
@@ -7394,9 +7404,10 @@ Procedure ParseRept;
 Var
   count      : Integer;
   body_cnt   : Integer;
-  body_start : Integer;
+  body_first : PLineNode;
   i, j       : Integer;
   expidx     : Integer;
+  nd         : PLineNode;
   e          : TExpr;
 Begin
   ExprMakeNum(e, 0);
@@ -7404,7 +7415,7 @@ Begin
   count := Integer(e.val);
   If count < 0 Then count := 0;
 
-  body_start := CollectBlock(body_cnt);
+  body_first := CollectBlock(body_cnt);
   If (count = 0) Or (body_cnt = 0) Then Exit;
 
   If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
@@ -7420,15 +7431,18 @@ Begin
   macro_exp_stk[expidx].mi       := Nil;
 
   For i := 1 To count Do
+  Begin
+    nd := body_first;
     For j := 1 To body_cnt Do
     Begin
       If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
       Begin
         Inc(macro_exp_stk[expidx].line_cnt);
-        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] :=
-          macro_line_pool[body_start + j - 1];
+        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := nd^.line;
       End;
+      nd := nd^.next;
     End;
+  End;
 End;
 
 { ============================================================
@@ -7438,13 +7452,14 @@ Procedure ParseIrp;
 Var
   pname      : TSymString;
   body_cnt   : Integer;
-  body_start : Integer;
+  body_first : PLineNode;
   i, j       : Integer;
   expidx     : Integer;
   arg        : TString;
   subst      : TString;
   args       : Array[0..63] Of TString;
   arg_cnt    : Integer;
+  nd         : PLineNode;
 Begin
   pname := '';
   If LexPeekKind = TK_IDENT Then
@@ -7487,7 +7502,7 @@ Begin
     End;
   End;
 
-  body_start := CollectBlock(body_cnt);
+  body_first := CollectBlock(body_cnt);
   If (arg_cnt = 0) Or (body_cnt = 0) Then Exit;
 
   If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
@@ -7503,16 +7518,19 @@ Begin
   macro_exp_stk[expidx].mi       := Nil;
 
   For i := 0 To arg_cnt - 1 Do
+  Begin
+    nd := body_first;
     For j := 1 To body_cnt Do
     Begin
-      subst := SubstOneParam(macro_line_pool[body_start + j - 1],
-                             pname, args[i]);
+      subst := SubstOneParam(nd^.line, pname, args[i]);
       If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
       Begin
         Inc(macro_exp_stk[expidx].line_cnt);
         macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
       End;
+      nd := nd^.next;
     End;
+  End;
 End;
 
 { ============================================================
@@ -7523,12 +7541,13 @@ Procedure ParseIrpc;
 Var
   pname      : TSymString;
   body_cnt   : Integer;
-  body_start : Integer;
+  body_first : PLineNode;
   i, j       : Integer;
   expidx     : Integer;
   str_val    : TString;
   subst      : TString;
   char_str   : TString;
+  nd         : PLineNode;
 Begin
   pname := '';
   If LexPeekKind = TK_IDENT Then
@@ -7561,7 +7580,7 @@ Begin
     str_val := lex_tok.val;
   End;
 
-  body_start := CollectBlock(body_cnt);
+  body_first := CollectBlock(body_cnt);
   If (Length(str_val) = 0) Or (body_cnt = 0) Then Exit;
 
   If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
@@ -7579,15 +7598,16 @@ Begin
   For i := 1 To Length(str_val) Do
   Begin
     char_str := str_val[i];
+    nd := body_first;
     For j := 1 To body_cnt Do
     Begin
-      subst := SubstOneParam(macro_line_pool[body_start + j - 1],
-                             pname, char_str);
+      subst := SubstOneParam(nd^.line, pname, char_str);
       If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
       Begin
         Inc(macro_exp_stk[expidx].line_cnt);
         macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
       End;
+      nd := nd^.next;
     End;
   End;
 End;
