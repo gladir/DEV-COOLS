@@ -517,6 +517,13 @@ Var
   out_fname    : TString;
   tmp_fname    : TString;
   str_fname    : TString;
+  prog_epilogue_done : Boolean;   { True si GenProgramEpilogue deja emis }
+  in_block_data    : Boolean;       { True durant le parsing d'un BLOCK DATA  }
+  block_data_name  : TString;       { nom du BLOCK DATA courant ('' = sans nom) }
+  called_list_cnt  : Integer;       { nombre d'appels externes enregistres     }
+  called_list      : Array[1..128] of TString; { noms appeles via CALL          }
+  pre_ident        : TString; { partie ident collee au mot-cle (F77 blank-strip) }
+  tmp_file_open    : Boolean; { True tant que tmp_file n'est pas encore ferme    }
 
   { Compteurs }
   sym_count    : Integer;
@@ -541,11 +548,14 @@ Var
   log_label    : Integer;             { etiquette cols 1-5 (0=aucune)  }
   log_is_comm  : Boolean;             { ligne commentaire              }
   log_lineno   : Integer;             { numero de ligne physique debut }
+  peek_phys_buf : String[255];          { ligne physique anticipee (SrcIsContinued) }
+  has_peek_phys : Boolean;              { True si peek_phys_buf est valide          }
 
   { Lecteur lexical (TODO 03) }
   cur_tok      : TToken;
   peek_tok     : TToken;
   has_peek     : Boolean;
+  pending_id   : TString; { identifiant mis en attente apres split kw+id }
 
   { Contexte de compilation }
   prog_name    : TString;             { nom de PROGRAM/SUBROUTINE/FUNCTION }
@@ -741,6 +751,8 @@ Begin
   log_label    := 0;
   log_is_comm  := False;
   log_lineno   := 0;
+  has_peek_phys := False;
+  peek_phys_buf := '';
 
   has_peek     := False;
 
@@ -765,6 +777,12 @@ Begin
   cur_subr_name := '';
   cur_func_result_si := 0;
   cur_func_ret_type  := DT_NONE;
+  prog_epilogue_done := False;
+  in_block_data   := False;
+  block_data_name := '';
+  called_list_cnt := 0;
+  pre_ident       := '';
+  tmp_file_open   := False;
 
   opt_verbose := False;
   opt_debug   := False;
@@ -866,6 +884,7 @@ Begin
     Writeln('Impossible de creer : ', tmp_fname);
     Halt(1);
   End;
+  tmp_file_open := True;
 
   cur_out := @out_file;
 
@@ -879,8 +898,46 @@ End;
 Procedure CloseFiles;
 Begin
   Close(src_file);
-  Close(out_file);
-  Close(tmp_file);
+  {$I-} Close(out_file); {$I+}
+  If tmp_file_open Then
+  Begin
+    {$I-} Close(tmp_file); {$I+}
+    tmp_file_open := False;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  AppendTmpToOut : fermer tmp_file, le relire, et appender a out_file.
+  Appele apres GenRuntimeRoutines et avant GenFileEnd.
+  -------------------------------------------------------------------------- }
+Procedure AppendTmpToOut;
+Var
+  rd : Text;
+  ln : TString;
+Begin
+  { Fermer la sortie principale et la reuvrir en mode append }
+  {$I-} Close(out_file); {$I+}
+  Assign(out_file, out_fname);
+  {$I-} Append(out_file); {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('AppendTmpToOut : impossible de rouvrir ' + out_fname);
+    Exit;
+  End;
+
+  { Fermer tmp_file et le relire depuis le debut }
+  {$I-} Close(tmp_file); {$I+}
+  tmp_file_open := False;
+  Assign(rd, tmp_fname);
+  {$I-} Reset(rd); {$I+}
+  If IOResult <> 0 Then Exit;  { tmp vide ou absent, OK }
+
+  While Not Eof(rd) Do
+  Begin
+    Readln(rd, ln);
+    Writeln(out_file, ln);
+  End;
+  Close(rd);
 End;
 
 Procedure SwitchToMain;
@@ -924,6 +981,14 @@ Function SrcReadPhysLine : Boolean;
 Var c : Char; i : Integer;
 Begin
   phys_buf := '';
+  { Utiliser la ligne pre-lue par SrcIsContinued si disponible }
+  If has_peek_phys Then
+  Begin
+    phys_buf      := peek_phys_buf;
+    has_peek_phys := False;
+    SrcReadPhysLine := True;
+    Exit;
+  End;
   If Eof(src_file) Then
   Begin
     SrcReadPhysLine := False;
@@ -1071,10 +1136,6 @@ End;
   en colonne 6 (non espace, non '0').
   En sortie, phys_buf contient deja la prochaine ligne (elle est "consommee").
   -------------------------------------------------------------------------- }
-Var
-  peek_phys_buf  : String[255];           { ligne physique anticipee           }
-  has_peek_phys  : Boolean;           { True si peek_phys_buf est valide   }
-
 Function SrcIsContinued : Boolean;
 Var c : Char;
 Begin
@@ -1123,10 +1184,6 @@ Begin
     SrcIsContinued := False;
   End;
 End;
-
-{ Correctif : SrcReadPhysLine doit verifier has_peek_phys en premier }
-{ (integration maintenue simple : le compilateur lit d'abord SrcNextLogRecord
-   qui appelle SrcReadPhysLine puis SrcIsContinued dans l'ordre correct) }
 
 { --------------------------------------------------------------------------
   Accesseurs sur l'enregistrement logique courant (utilises par le lexer).
@@ -1248,6 +1305,91 @@ Begin
     End;
 End;
 
+{ --------------------------------------------------------------------------
+  KwSplitAt : teste si token commence par prefix, retourne le suffixe.
+  Utilise pour separer mot-cle et identifiant colles (F77 blank-stripping).
+  -------------------------------------------------------------------------- }
+Function KwSplitAt(Const token, prefix : TString; Var suffix : TString) : Boolean;
+Var plen : Integer;
+Begin
+  plen := Length(prefix);
+  If (Length(token) >= plen) And (Copy(token, 1, plen) = prefix) Then
+  Begin
+    suffix := Copy(token, plen + 1, 255);
+    KwSplitAt := True;
+  End
+  Else
+  Begin
+    suffix := '';
+    KwSplitAt := False;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  LexSplitKw : si s commence par un mot-cle reconnu suivi d'un identifiant,
+  retourne True, s := le mot-cle, pending_id := le suffixe.
+  Appele apres LexReadLetters pour gerer le blank-stripping F77.
+  -------------------------------------------------------------------------- }
+Function LexSplitKw(Var s : TString) : Boolean;
+Var rest : TString;
+Begin
+  LexSplitKw := False;
+  rest := '';
+  { Tester du plus long au plus court }
+  If      KwSplitAt(s, 'DOUBLEPRECISION', rest) And LexIsKeyword('DOUBLEPRECISION') Then
+    Begin s := 'DOUBLEPRECISION'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'SUBROUTINE', rest) And LexIsKeyword('SUBROUTINE') Then
+    Begin s := 'SUBROUTINE'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'BLOCKDATA', rest) And LexIsKeyword('BLOCKDATA') Then
+    Begin s := 'BLOCKDATA'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'FUNCTION', rest) And LexIsKeyword('FUNCTION') And (rest <> '') Then
+    Begin s := 'FUNCTION'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'INTEGER', rest) And LexIsKeyword('INTEGER') And (rest <> '') Then
+    Begin s := 'INTEGER'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'REAL', rest) And LexIsKeyword('REAL') And (rest <> '') Then
+    Begin s := 'REAL'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'LOGICAL', rest) And LexIsKeyword('LOGICAL') And (rest <> '') Then
+    Begin s := 'LOGICAL'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'CHARACTER', rest) And LexIsKeyword('CHARACTER') And (rest <> '') Then
+    Begin s := 'CHARACTER'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'COMPLEX', rest) And LexIsKeyword('COMPLEX') And (rest <> '') Then
+    Begin s := 'COMPLEX'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'CALL', rest) And LexIsKeyword('CALL') And (rest <> '') Then
+    Begin s := 'CALL'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'PROGRAM', rest) And LexIsKeyword('PROGRAM') And (rest <> '') Then
+    Begin s := 'PROGRAM'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'DIMENSION', rest) And LexIsKeyword('DIMENSION') And (rest <> '') Then
+    Begin s := 'DIMENSION'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'EQUIVALENCE', rest) And LexIsKeyword('EQUIVALENCE') And (rest <> '') Then
+    Begin s := 'EQUIVALENCE'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'PARAMETER', rest) And LexIsKeyword('PARAMETER') And (rest <> '') Then
+    Begin s := 'PARAMETER'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'EXTERNAL', rest) And LexIsKeyword('EXTERNAL') And (rest <> '') Then
+    Begin s := 'EXTERNAL'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'INTRINSIC', rest) And LexIsKeyword('INTRINSIC') And (rest <> '') Then
+    Begin s := 'INTRINSIC'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'IMPLICIT', rest) And LexIsKeyword('IMPLICIT') And (rest <> '') Then
+    Begin s := 'IMPLICIT'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'COMMON', rest) And LexIsKeyword('COMMON') And (rest <> '') Then
+    Begin s := 'COMMON'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'DATA', rest) And LexIsKeyword('DATA') And (rest <> '') Then
+    Begin s := 'DATA'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'SAVE', rest) And LexIsKeyword('SAVE') And (rest <> '') Then
+    Begin s := 'SAVE'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'PRINT', rest) And LexIsKeyword('PRINT') And (rest <> '') Then
+    Begin s := 'PRINT'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'WRITE', rest) And LexIsKeyword('WRITE') And (rest <> '') Then
+    Begin s := 'WRITE'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'READ', rest) And LexIsKeyword('READ') And (rest <> '') Then
+    Begin s := 'READ'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'FORMAT', rest) And LexIsKeyword('FORMAT') And (rest <> '') Then
+    Begin s := 'FORMAT'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'GOTO', rest) And LexIsKeyword('GOTO') And (rest <> '') Then
+    Begin s := 'GOTO'; pending_id := rest; LexSplitKw := True; Exit; End
+  Else If KwSplitAt(s, 'RETURN', rest) And LexIsKeyword('RETURN') And (rest <> '') Then
+    Begin s := 'RETURN'; pending_id := rest; LexSplitKw := True; Exit; End;
+End;
+
 { ---- Lecture de la partie alphabetique dans log_rec (skip blancs). ---- }
 Function LexReadLetters : TString;
 Var s : TString; c : Char;
@@ -1311,6 +1453,36 @@ Var
   i      : Integer;
   is_dbl : Boolean;
 Begin
+  { Identifiant mis en attente par un split de mot-cle precedent }
+  If pending_id <> '' Then
+  Begin
+    s          := pending_id;
+    pending_id := '';
+    tok.line   := log_lineno;
+    tok.col    := log_pos;
+    tok.val    := '';
+    tok.int_val  := 0;
+    tok.real_val := 0;
+    tok.lbl_num  := 0;
+    If LexIsKeyword(s) Then
+    Begin
+      tok.kind := TK_KEYWORD;
+      tok.val  := s;
+    End
+    Else If LexSplitKw(s) Then
+    Begin
+      tok.kind := TK_KEYWORD;
+      tok.val  := s;
+    End
+    Else
+    Begin
+      If Length(s) > 6 Then s := Copy(s, 1, 6);
+      tok.kind := TK_IDENT;
+      tok.val  := s;
+    End;
+    Exit;
+  End;
+
   LogSkipBlanks;
 
   { Fin de l enregistrement logique courant -> TK_NEWLINE }
@@ -1581,6 +1753,14 @@ Begin
       Exit;
     End;
 
+    { Keyword colle a un identifiant (F77 blank-strip) : separer }
+    If LexSplitKw(s) Then
+    Begin
+      tok.kind := TK_KEYWORD;
+      tok.val  := s;
+      Exit;  { pending_id contient le suffixe }
+    End;
+
     { Sinon : lire la suite alphanumerique de l identifiant }
     t := LexReadAlphaNum;
     s := s + t;
@@ -1666,6 +1846,7 @@ End;
 Procedure LexInit;
 Begin
   has_peek        := False;
+  pending_id      := '';
   cur_tok.kind    := TK_NEWLINE;
   cur_tok.val     := '';
   cur_tok.lbl_num := 0;
@@ -4033,6 +4214,7 @@ End;
 
 { Declarations Forward pour la recursivite mutuelle }
 Procedure ParseIntExpr; Forward;
+Procedure ParseCharExpr; Forward;  { definie apres ParseRealFactor }
 
 { --------------------------------------------------------------------------
   GenIntrinsicInt1 : emettre le code pour une fonction intrinsèque entiere
@@ -4054,7 +4236,7 @@ Begin
     { Argument reel : stub - supposer que AX contient deja la partie entiere }
     EmitComment('Conversion ' + fname + ' : stub (TODO 11)');
   End
-  Else If fname = 'NOT' Then
+  Else If (fname = 'NOT') Or (fname = 'LNOT') Then
   Begin
     { NOT logique Fortran : NOT AX }
     EmitI1('NOT', 'AX');
@@ -4132,6 +4314,60 @@ Begin
     EmitI1('NEG', 'AX');           { si b<0, neger }
     EmitLabel(lbl2);
   End
+  Else If fname = 'IAND' Then
+  Begin
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('AND', 'AX', 'CX');
+  End
+  Else If fname = 'IOR' Then
+  Begin
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('OR',  'AX', 'CX');
+  End
+  Else If fname = 'IEOR' Then
+  Begin
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('XOR', 'AX', 'CX');
+  End
+  Else If (fname = 'ISHFT') Or (fname = 'ISHFTC') Then
+  Begin
+    { BX=valeur, CX=nombre de positions (>0=gauche, <0=droite) }
+    lbl1 := GenBranchLabel;
+    lbl2 := GenBranchLabel;
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('TEST', 'CX', 'CX');
+    EmitI1('JL', lbl1);
+    EmitRaw('        SHL AX,CL');   { decalage gauche }
+    EmitI1('JMP', lbl2);
+    EmitLabel(lbl1);
+    EmitI1('NEG', 'CX');
+    EmitRaw('        SHR AX,CL');   { decalage droit logique }
+    EmitLabel(lbl2);
+  End
+  Else If fname = 'IBCLR' Then
+  Begin
+    { IBCLR(a,b) = a AND NOT(1 << b) ; BX=a, CX=b }
+    EmitI2('MOV', 'DX', '1');
+    EmitRaw('        SHL DX,CL');
+    EmitI1('NOT', 'DX');
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('AND', 'AX', 'DX');
+  End
+  Else If fname = 'IBSET' Then
+  Begin
+    { IBSET(a,b) = a OR (1 << b) ; BX=a, CX=b }
+    EmitI2('MOV', 'DX', '1');
+    EmitRaw('        SHL DX,CL');
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('OR',  'AX', 'DX');
+  End
+  Else If fname = 'BTEST' Then
+  Begin
+    { BTEST(a,b) = (a >> b) AND 1 ; BX=a, CX=b }
+    EmitI2('MOV', 'AX', 'BX');
+    EmitRaw('        SHR AX,CL');
+    EmitI2('AND', 'AX', '1');
+  End
   Else
   Begin
     WarnMsg('Fonction intrinsèque entiere 2-args non supportee : ' + fname);
@@ -4182,72 +4418,106 @@ Begin
       LexNext;
       nargs := 0;
 
-      { Analyser les arguments (au plus MAX_PARAM) }
-      If Not ((cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')')) Then
-      Repeat
-        { Pour chaque arg : evaluer et pousser par ref (si variable simple) }
-        If (cur_tok.kind = TK_IDENT)
-        And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ','))
-        Or ((cur_tok.kind = TK_IDENT)
-            And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ')')))
-        Then
-        Begin
-          { Argument = variable simple : passage par reference }
-          ai[nargs] := SymFind(cur_tok.val);
-          If ai[nargs] = 0 Then ai[nargs] := SymGetOrCreate(cur_tok.val);
-          LexNext;
-          Inc(nargs);
-        End
-        Else
-        Begin
-          { Argument = expression : evaluer dans AX, stocker en temp }
-          { Stub : pour l'instant on evalue mais on ne cree pas de temp }
-          ParseIntExpr;
-          ai[nargs] := 0;    { 0 = argument expression (non par ref) }
-          Inc(nargs);
-        End;
-
-        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
-          LexNext
-        Else
-          Break;
-      Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
-
-      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
-
-      { Determiner si c'est une fonction intrinsèque ou user-defined }
-      If (nargs = 1) And ((vname = 'ABS') Or (vname = 'IABS')
-        Or (vname = 'INT') Or (vname = 'IFIX') Or (vname = 'IDINT')) Then
+      { ---- Fonctions a arguments CHARACTER ---- }
+      If vname = 'LEN' Then
       Begin
-        { Charger arg dans AX (si variable simple) }
-        If ai[0] > 0 Then GenLoadInt(ai[0]);
-        GenIntrinsicInt1(vname);
+        ParseCharExpr;              { AX=ptr, CX=longueur }
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+        EmitI2('MOV', 'AX', 'CX'); { retourner la longueur }
       End
-      Else If (nargs = 2) And ((vname = 'MOD') Or (vname = 'MIN0')
-        Or (vname = 'MAX0') Or (vname = 'MIN') Or (vname = 'MAX')
-        Or (vname = 'IMAX0') Or (vname = 'IMIN0') Or (vname = 'DIM')
-        Or (vname = 'IDIM') Or (vname = 'SIGN') Or (vname = 'ISIGN')) Then
+      Else If vname = 'ICHAR' Then
       Begin
-        { Charger arg1 dans BX, arg2 dans CX }
-        If ai[0] > 0 Then GenLoadInt(ai[0]) Else EmitComment('arg1 = expr');
+        ParseCharExpr;              { AX=ptr, CX=longueur }
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
         EmitI2('MOV', 'BX', 'AX');
-        If ai[1] > 0 Then GenLoadInt(ai[1]) Else EmitComment('arg2 = expr');
-        EmitI2('MOV', 'CX', 'AX');
-        GenIntrinsicInt2(vname);
+        EmitRaw('        MOV AL,BYTE PTR [BX]');
+        EmitI2('XOR', 'AH', 'AH'); { AX = code ASCII du premier caractere }
+      End
+      Else If (vname = 'LNBLNK') Or (vname = 'LEN_TRIM') Then
+      Begin
+        ParseCharExpr;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+        EmitI1('PUSH', 'CX');
+        EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'LNBLNK');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If vname = 'INDEX' Then
+      Begin
+        ParseCharExpr;
+        EmitI1('PUSH', 'CX'); EmitI1('PUSH', 'AX');
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseCharExpr;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+        EmitI1('PUSH', 'CX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'INDEX');
+        EmitI2('ADD', 'SP', '8');
       End
       Else
       Begin
-        { Fonction utilisateur : passer les args par reference }
-        EmitComment('CALL ' + vname + ' (' + IntToStr(nargs) + ' arg(s))');
-        { Empiler de droite a gauche }
-        For j := nargs - 1 DownTo 0 Do
-          If ai[j] > 0 Then GenPushArgByRef(ai[j])
-          Else EmitComment('arg[' + IntToStr(j) + '] = expr (stub)');
-        EmitRaw('        CALL ' + FP_PFX + vname);
-        If nargs > 0 Then
-          EmitI2('ADD', 'SP', IntToStr(nargs * 2));
-        { Resultat dans AX }
-      End;
+        { ---- Boucle generique pour args entiers ---- }
+        If Not ((cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')')) Then
+        Repeat
+          If (cur_tok.kind = TK_IDENT)
+          And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ','))
+          Or ((cur_tok.kind = TK_IDENT)
+              And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ')')))
+          Then
+          Begin
+            ai[nargs] := SymFind(cur_tok.val);
+            If ai[nargs] = 0 Then ai[nargs] := SymGetOrCreate(cur_tok.val);
+            LexNext;
+            Inc(nargs);
+          End
+          Else
+          Begin
+            ParseIntExpr;
+            ai[nargs] := 0;
+            Inc(nargs);
+          End;
+          If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+            LexNext
+          Else
+            Break;
+        Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
+
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+
+        { ---- Dispatch intrinsèques entiers ---- }
+        If (nargs = 1) And ((vname = 'ABS') Or (vname = 'IABS')
+          Or (vname = 'INT') Or (vname = 'IFIX') Or (vname = 'IDINT')
+          Or (vname = 'NOT') Or (vname = 'LNOT')) Then
+        Begin
+          If ai[0] > 0 Then GenLoadInt(ai[0]);
+          GenIntrinsicInt1(vname);
+        End
+        Else If (nargs = 2) And ((vname = 'MOD') Or (vname = 'MIN0')
+          Or (vname = 'MAX0') Or (vname = 'MIN') Or (vname = 'MAX')
+          Or (vname = 'IMAX0') Or (vname = 'IMIN0') Or (vname = 'DIM')
+          Or (vname = 'IDIM') Or (vname = 'SIGN') Or (vname = 'ISIGN')
+          Or (vname = 'IAND') Or (vname = 'IOR') Or (vname = 'IEOR')
+          Or (vname = 'ISHFT') Or (vname = 'ISHFTC')
+          Or (vname = 'IBCLR') Or (vname = 'IBSET') Or (vname = 'BTEST')) Then
+        Begin
+          If ai[0] > 0 Then GenLoadInt(ai[0]) Else EmitComment('arg1 = expr');
+          EmitI2('MOV', 'BX', 'AX');
+          If ai[1] > 0 Then GenLoadInt(ai[1]) Else EmitComment('arg2 = expr');
+          EmitI2('MOV', 'CX', 'AX');
+          GenIntrinsicInt2(vname);
+        End
+        Else
+        Begin
+          { Fonction utilisateur : passer les args par reference }
+          EmitComment('CALL ' + vname + ' (' + IntToStr(nargs) + ' arg(s))');
+          For j := nargs - 1 DownTo 0 Do
+            If ai[j] > 0 Then GenPushArgByRef(ai[j])
+            Else EmitComment('arg[' + IntToStr(j) + '] = expr (stub)');
+          EmitRaw('        CALL ' + FP_PFX + vname);
+          If nargs > 0 Then
+            EmitI2('ADD', 'SP', IntToStr(nargs * 2));
+          { Resultat dans AX }
+        End;
+      End;  { Else non-CHARACTER }
     End  { Appel de fonction }
 
     Else
@@ -4600,98 +4870,172 @@ Begin
     If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
     Begin
       LexNext;
-      { Evaluer premier argument dans DX:AX }
-      ParseRealExpr;
-      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
-        LexNext;
-      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
-        LexNext;
 
-      { Fonctions intrinsèques reelles a 1 arg }
-      If (vname = 'ABS') Or (vname = 'DABS') Or (vname = 'CABS') Then
+      { ---- Fonctions a 2 arguments reels ---- }
+      If (vname = 'ATAN2') Or (vname = 'DATAN2') Or
+         (vname = 'SIGN')  Or (vname = 'DSIGN') Or
+         (vname = 'MOD')   Or (vname = 'AMOD')  Or (vname = 'DMOD') Or
+         (vname = 'DIM')   Or (vname = 'DDIM') Then
       Begin
-        { ABS(x) : si signe negatif (bit 31 de DX), effacer le signe }
-        EmitI2('AND', 'DH', '7Fh');   { effacer le bit signe IEEE }
+        ParseRealExpr;                              { arg1 -> DX:AX }
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX'); { sauver arg1 }
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseRealExpr;                              { arg2 -> DX:AX }
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX'); { arg2 }
+        If (vname = 'ATAN2') Or (vname = 'DATAN2') Then
+        Begin
+          EmitRaw('        CALL ' + FRT_PFX + 'ATAN2');
+          EmitI2('ADD', 'SP', '8');
+        End
+        Else If (vname = 'SIGN') Or (vname = 'DSIGN') Then
+        Begin
+          EmitRaw('        CALL ' + FRT_PFX + 'FSIGN');
+          EmitI2('ADD', 'SP', '8');
+        End
+        Else If (vname = 'MOD') Or (vname = 'AMOD') Or (vname = 'DMOD') Then
+        Begin
+          EmitRaw('        CALL ' + FRT_PFX + 'FMOD');
+          EmitI2('ADD', 'SP', '8');
+        End
+        Else
+        Begin  { DIM, DDIM }
+          EmitRaw('        CALL ' + FRT_PFX + 'FDIM');
+          EmitI2('ADD', 'SP', '8');
+        End;
       End
-      Else If (vname = 'SQRT') Or (vname = 'DSQRT') Then
+
+      { ---- AMIN1, AMAX1, DMIN1, DMAX1 : N >= 2 args (reduction pairwise) ---- }
+      Else If (vname = 'AMIN1') Or (vname = 'DMIN1') Or
+              (vname = 'AMAX1') Or (vname = 'DMAX1') Then
       Begin
-        EmitComment('Sqrt via _FRT_SQRT (stub)');
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'SQRT');
-        EmitI2('ADD', 'SP', '4');
+        ParseRealExpr;   { accumulateur initial dans DX:AX }
+        While (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Do
+        Begin
+          LexNext;
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          ParseRealExpr;
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          If (vname = 'AMIN1') Or (vname = 'DMIN1') Then
+          Begin
+            EmitRaw('        CALL ' + FRT_PFX + 'FMIN');
+            EmitI2('ADD', 'SP', '8');
+          End
+          Else
+          Begin
+            EmitRaw('        CALL ' + FRT_PFX + 'FMAX');
+            EmitI2('ADD', 'SP', '8');
+          End;
+        End;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
       End
-      Else If (vname = 'EXP') Or (vname = 'DEXP') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'EXP');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'LOG') Or (vname = 'ALOG') Or (vname = 'DLOG') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'LOG');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'LOG10') Or (vname = 'ALOG10') Or (vname = 'DLOG10') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'LOG10');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'SIN') Or (vname = 'DSIN') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'SIN');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'COS') Or (vname = 'DCOS') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'COS');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'TAN') Or (vname = 'DTAN') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'TAN');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'ATAN') Or (vname = 'DATAN') Then
-      Begin
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + 'ATAN');
-        EmitI2('ADD', 'SP', '4');
-      End
-      Else If (vname = 'FLOAT') Or (vname = 'REAL') Or (vname = 'SNGL')
-           Or (vname = 'DBLE') Then
-      Begin
-        { FLOAT(i) : l'argument est deja reel ou sera converti }
-        EmitComment(vname + ' : conversion vers reel (stub)');
-      End
-      Else If (vname = 'IFIX') Or (vname = 'INT') Or (vname = 'IDINT') Then
-      Begin
-        { Convertir reel -> entier, puis entier -> reel serait inutile }
-        { Ici, retourner AX comme reel apres troncature }
-        GenRealToInt;  { AX = entier }
-        GenIntToReal;  { DX:AX = reel }
-      End
-      Else If (vname = 'SIGN') Or (vname = 'DSIGN') Or (vname = 'AMIN1')
-           Or (vname = 'AMAX1') Or (vname = 'DMIN1') Or (vname = 'DMAX1') Then
-      Begin
-        EmitComment('Fonction reelle 2-args ' + vname + ' (stub)');
-        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FRT_PFX + vname);
-        EmitI2('ADD', 'SP', '4');
-      End
+
+      { ---- Fonctions a 1 argument reel ---- }
       Else
       Begin
-        { Fonction utilisateur reelle : stub }
-        EmitComment('CALL reel ' + vname + ' (stub)');
-        EmitI1('PUSH', 'DX');
-        EmitI1('PUSH', 'AX');
-        EmitRaw('        CALL ' + FP_PFX + vname);
-        EmitI2('ADD', 'SP', '4');
-      End;
+        ParseRealExpr;   { arg1 -> DX:AX }
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+
+        If (vname = 'ABS') Or (vname = 'DABS') Or (vname = 'CABS') Then
+        Begin
+          EmitI2('AND', 'DH', '7Fh');
+        End
+        Else If (vname = 'FLOAT') Or (vname = 'REAL') Or (vname = 'SNGL')
+             Or (vname = 'DBLE') Then
+        Begin
+          EmitComment(vname + ' : conversion vers reel');
+        End
+        Else If (vname = 'IFIX') Or (vname = 'INT') Or (vname = 'IDINT') Then
+        Begin
+          GenRealToInt;
+          GenIntToReal;
+        End
+        Else If (vname = 'SQRT') Or (vname = 'DSQRT') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'SQRT');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'EXP') Or (vname = 'DEXP') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'EXP');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'LOG') Or (vname = 'ALOG') Or (vname = 'DLOG') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'LOG');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'LOG10') Or (vname = 'ALOG10') Or (vname = 'DLOG10') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'LOG10');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'SIN') Or (vname = 'DSIN') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'SIN');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'COS') Or (vname = 'DCOS') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'COS');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'TAN') Or (vname = 'DTAN') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'TAN');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'ATAN') Or (vname = 'DATAN') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'ATAN');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'ASIN') Or (vname = 'DASIN') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'ASIN');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'ACOS') Or (vname = 'DACOS') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'ACOS');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'SINH') Or (vname = 'DSINH') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'SINH');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'COSH') Or (vname = 'DCOSH') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'COSH');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else If (vname = 'TANH') Or (vname = 'DTANH') Then
+        Begin
+          EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+          EmitRaw('        CALL ' + FRT_PFX + 'TANH');
+          EmitI2('ADD', 'SP', '4');
+        End
+        Else
+        Begin
+          { Fonction utilisateur reelle : resultat dans DX:AX }
+          EmitComment('CALL reel ' + vname);
+          EmitRaw('        CALL ' + FP_PFX + vname);
+        End;
+      End;  { 1-arg }
     End  { appel de fonction }
 
     Else
@@ -6017,6 +6361,9 @@ Procedure ParseEnd; Forward;
 { Forward pour FUNCTION (implementee en TODO 21) }
 Procedure ParseFunctionDecl(ret_dtype : TDataType); Forward;
 
+{ Forward pour BLOCK DATA (implementee en TODO 24) }
+Procedure ParseBlockData; Forward;
+
 { --------------------------------------------------------------------------
   ParseIfArith : IF (expr) n1, n2, n3
   Le mot-cle IF et la ( sont deja consommes.
@@ -6543,6 +6890,7 @@ Var
   kw      : TString;
   is_star : Boolean;
   tmp_int : Integer;
+  tmp_i   : Integer;
   fstr    : TString;
   rfstr   : TString;
   wfstr   : TString;
@@ -6566,6 +6914,35 @@ Begin
   End;
 
   kw := cur_tok.val;
+
+  { ---- F77 fixed-format : le lexer colle kw+identifiant en un seul token. ----
+    ---- KwSplitAt separe le prefixe mot-cle du nom colle (ne consomme pas). ---- }
+  pre_ident := '';
+  If Not LexIsKeyword(kw) Then
+  Begin
+    { Tester du plus long au plus court pour eviter les fausses correspondances }
+    If      KwSplitAt(kw, 'DOUBLEPRECISION', pre_ident) Then kw := 'DOUBLEPRECISION'
+    Else If KwSplitAt(kw, 'INTEGERFUNCTION', pre_ident) Then
+      Begin kw := 'INTEGER'; pre_ident := 'FUNCTION' + pre_ident; End
+    Else If KwSplitAt(kw, 'REALFUNCTION', pre_ident) Then
+      Begin kw := 'REAL';    pre_ident := 'FUNCTION' + pre_ident; End
+    Else If KwSplitAt(kw, 'LOGICALFUNCTION', pre_ident) Then
+      Begin kw := 'LOGICAL'; pre_ident := 'FUNCTION' + pre_ident; End
+    Else If KwSplitAt(kw, 'CHARACTERFUNCTION', pre_ident) Then
+      Begin kw := 'CHARACTER'; pre_ident := 'FUNCTION' + pre_ident; End
+    Else If KwSplitAt(kw, 'COMPLEXFUNCTION', pre_ident) Then
+      Begin kw := 'COMPLEX'; pre_ident := 'FUNCTION' + pre_ident; End
+    Else If KwSplitAt(kw, 'INTEGER', pre_ident)    And (pre_ident <> '') Then kw := 'INTEGER'
+    Else If KwSplitAt(kw, 'REAL', pre_ident)       And (pre_ident <> '') Then kw := 'REAL'
+    Else If KwSplitAt(kw, 'LOGICAL', pre_ident)    And (pre_ident <> '') Then kw := 'LOGICAL'
+    Else If KwSplitAt(kw, 'CHARACTER', pre_ident)  And (pre_ident <> '') Then kw := 'CHARACTER'
+    Else If KwSplitAt(kw, 'SUBROUTINE', pre_ident) Then kw := 'SUBROUTINE'
+    Else If KwSplitAt(kw, 'BLOCKDATA', pre_ident)  Then kw := 'BLOCKDATA'
+    Else If KwSplitAt(kw, 'FUNCTION', pre_ident)   And (pre_ident <> '') Then kw := 'FUNCTION'
+    Else If KwSplitAt(kw, 'CALL', pre_ident)       And (pre_ident <> '') Then kw := 'CALL'
+    Else If KwSplitAt(kw, 'PROGRAM', pre_ident)    And (pre_ident <> '') Then kw := 'PROGRAM'
+    Else pre_ident := '';
+  End;
 
   { ---- Mots-cles deja implementes ---- }
   If kw = 'IF'       Then Begin LexNext; ParseIf;       Exit; End;
@@ -6753,10 +7130,11 @@ Begin
   If kw = 'ENDFILE'   Then Begin LexNext; ParseSimpleIo('ENDFILE');   Exit; End;
   If kw = 'INQUIRE'   Then Begin LexNext; ParseInquire;            Exit; End;
 
-  If kw = 'CALL'       Then Begin LexNext; ParseCallStmt;       Exit; End;
-  If kw = 'SUBROUTINE' Then Begin LexNext; ParseSubroutineDecl; Exit; End;
-  If kw = 'FUNCTION'   Then Begin LexNext; ParseFunctionDecl(DT_NONE); Exit; End;
-  If kw = 'END'        Then Begin LexNext; ParseEnd;            Exit; End;
+  If kw = 'BLOCKDATA'  Then Begin LexNext; ParseBlockData;              Exit; End;
+  If kw = 'CALL'       Then Begin LexNext; ParseCallStmt;               Exit; End;
+  If kw = 'SUBROUTINE' Then Begin LexNext; ParseSubroutineDecl;         Exit; End;
+  If kw = 'FUNCTION'   Then Begin LexNext; ParseFunctionDecl(DT_NONE);  Exit; End;
+  If kw = 'END'        Then Begin LexNext; ParseEnd;                    Exit; End;
 
   { ---- FORMAT label : capturer et emettre la spec en .DATA ---- }
   If kw = 'FORMAT' Then
@@ -6773,30 +7151,78 @@ Begin
     Exit;
   End;
 
-  { ---- Enonces de declaration : ignorer ou intercepter FUNCTION ---- }
+  { ---- Enonces de declaration : dispatcher ou intercepter FUNCTION ---- }
   If (kw = 'INTEGER') Or (kw = 'REAL') Or (kw = 'DOUBLE') Or
-     (kw = 'LOGICAL') Or (kw = 'CHARACTER') Or (kw = 'COMPLEX') Or
-     (kw = 'IMPLICIT') Or (kw = 'DIMENSION') Or (kw = 'COMMON') Or
-     (kw = 'EQUIVALENCE') Or (kw = 'EXTERNAL') Or (kw = 'INTRINSIC') Or
-     (kw = 'SAVE') Or (kw = 'DATA') Or (kw = 'PARAMETER') Then
+     (kw = 'DOUBLEPRECISION') Or
+     (kw = 'LOGICAL') Or (kw = 'CHARACTER') Or (kw = 'COMPLEX') Then
   Begin
     LexNext;  { consommer le mot-cle de type }
-    { INTEGER FUNCTION / REAL FUNCTION / etc. }
-    If cur_tok.val = 'FUNCTION' Then
+    { INTEGER FUNCTION / REAL FUNCTION / etc. (prefixe colle ou token suivant) }
+    If Copy(pre_ident, 1, 8) = 'FUNCTION' Then
+    Begin
+      pre_ident := Copy(pre_ident, 9, 255);
+      If      kw = 'INTEGER'           Then ParseFunctionDecl(DT_INTEGER)
+      Else If kw = 'REAL'              Then ParseFunctionDecl(DT_REAL)
+      Else If kw = 'LOGICAL'           Then ParseFunctionDecl(DT_LOGICAL)
+      Else If (kw = 'DOUBLE') Or
+              (kw = 'DOUBLEPRECISION') Then ParseFunctionDecl(DT_DOUBLE)
+      Else If kw = 'CHARACTER'         Then ParseFunctionDecl(DT_CHARACTER)
+      Else                                  ParseFunctionDecl(DT_NONE);
+    End
+    Else If cur_tok.val = 'FUNCTION' Then
     Begin
       LexNext;  { consommer FUNCTION }
-      If      kw = 'INTEGER'   Then ParseFunctionDecl(DT_INTEGER)
-      Else If kw = 'REAL'      Then ParseFunctionDecl(DT_REAL)
-      Else If kw = 'LOGICAL'   Then ParseFunctionDecl(DT_LOGICAL)
-      Else If kw = 'DOUBLE'    Then ParseFunctionDecl(DT_DOUBLE)
-      Else If kw = 'CHARACTER' Then ParseFunctionDecl(DT_CHARACTER)
-      Else                          ParseFunctionDecl(DT_NONE);
+      If      kw = 'INTEGER'           Then ParseFunctionDecl(DT_INTEGER)
+      Else If kw = 'REAL'              Then ParseFunctionDecl(DT_REAL)
+      Else If kw = 'LOGICAL'           Then ParseFunctionDecl(DT_LOGICAL)
+      Else If (kw = 'DOUBLE') Or
+              (kw = 'DOUBLEPRECISION') Then ParseFunctionDecl(DT_DOUBLE)
+      Else If kw = 'CHARACTER'         Then ParseFunctionDecl(DT_CHARACTER)
+      Else                                  ParseFunctionDecl(DT_NONE);
     End
     Else
     Begin
-      { Declaration de variable/dimension/etc. : ignorer silencieusement }
+      { Declaration de type simple (INTEGER X, REAL Y...) : ignorer les noms de var }
+      pre_ident := '';
       While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
     End;
+    Exit;
+  End;
+
+  { Declarations F77 avec semantique propre }
+  If kw = 'COMMON'      Then Begin LexNext; pre_ident := ''; ParseCommon;      Exit; End;
+  If kw = 'DATA'        Then Begin LexNext; pre_ident := ''; ParseData;        Exit; End;
+  If kw = 'DIMENSION'   Then Begin LexNext; pre_ident := ''; ParseDimension;   Exit; End;
+  If kw = 'EQUIVALENCE' Then Begin LexNext; pre_ident := ''; ParseEquivalence; Exit; End;
+  If kw = 'SAVE'        Then Begin LexNext; pre_ident := ''; ParseSave;        Exit; End;
+  If kw = 'IMPLICIT'    Then Begin LexNext; pre_ident := ''; ParseImplicit;    Exit; End;
+  If kw = 'EXTERNAL' Then
+  Begin
+    LexNext; pre_ident := '';
+    { Marquer les noms comme SK_EXTERNAL dans la sym_table }
+    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      If cur_tok.kind = TK_IDENT Then
+      Begin
+        tmp_i := SymGetOrCreate(cur_tok.val);
+        If tmp_i > 0 Then sym_table^[tmp_i].kind := SK_EXTERNAL;
+      End;
+      LexNext;
+    End;
+    Exit;
+  End;
+  If kw = 'INTRINSIC' Then
+  Begin
+    { Fonctions intrinseques : ignorer (traitees a l'appel) }
+    LexNext; pre_ident := '';
+    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+    Exit;
+  End;
+  If kw = 'PARAMETER' Then
+  Begin
+    { TODO: evaluer expressions constantes - ignorer pour l'instant }
+    LexNext; pre_ident := '';
+    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
     Exit;
   End;
 
@@ -7526,17 +7952,38 @@ Var
   nm        : TString;
   ok        : Boolean;
   ai        : Integer;
+  j         : Integer;
+  found     : Boolean;
   arg_names : Array[0..31] of TString;
 Begin
-  If cur_tok.kind <> TK_IDENT Then
+  { Nom depuis pre_ident (F77 kw colle) ou token suivant }
+  If pre_ident <> '' Then
   Begin
-    ErrorMsg('CALL : identifiant attendu');
-    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
-    Exit;
+    sub_name  := pre_ident;
+    pre_ident := '';
+  End
+  Else
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('CALL : identifiant attendu');
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+      Exit;
+    End;
+    sub_name := cur_tok.val;
+    LexNext;
   End;
-  sub_name := cur_tok.val;
-  LexNext;
   nargs := 0;
+
+  { Enregistrer le nom pour emission EXTRN eventuelle (TODO 24) }
+  found := False;
+  For j := 1 To called_list_cnt Do
+    If called_list[j] = sub_name Then Begin found := True; Break; End;
+  If Not found And (called_list_cnt < 128) Then
+  Begin
+    Inc(called_list_cnt);
+    called_list[called_list_cnt] := sub_name;
+  End;
 
   EmitComment('CALL ' + sub_name);
 
@@ -7594,14 +8041,23 @@ Var
   pname      : TString;
   pidx       : Integer;
 Begin
-  If cur_tok.kind <> TK_IDENT Then
+  { Nom depuis pre_ident (F77 kw colle) ou token suivant }
+  If pre_ident <> '' Then
   Begin
-    ErrorMsg('SUBROUTINE : identifiant attendu');
-    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
-    Exit;
+    subr_name := pre_ident;
+    pre_ident := '';
+  End
+  Else
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('SUBROUTINE : identifiant attendu');
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+      Exit;
+    End;
+    subr_name := cur_tok.val;
+    LexNext;
   End;
-  subr_name := cur_tok.val;
-  LexNext;
 
   { Enregistrer dans proc_table }
   If proc_count < MAX_PROC Then
@@ -7690,11 +8146,12 @@ Begin
     cur_func_result_si := 0;
     cur_func_ret_type  := DT_NONE;
   End
-  Else
+  Else If Not prog_epilogue_done Then
   Begin
-    { Fin du programme principal }
+    { Fin du programme principal : epilogue seul. GenFileEnd est appele
+      APRES les routines runtime, depuis le programme principal. }
     GenProgramEpilogue;
-    GenFileEnd('START');
+    prog_epilogue_done := True;
   End;
 End;
 
@@ -7724,14 +8181,23 @@ Var
   pname      : TString;
   si_p       : Integer;
 Begin
-  If cur_tok.kind <> TK_IDENT Then
+  { Nom depuis pre_ident (F77 kw colle) ou token suivant }
+  If pre_ident <> '' Then
   Begin
-    ErrorMsg('FUNCTION : identifiant attendu');
-    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
-    Exit;
+    fn_name   := pre_ident;
+    pre_ident := '';
+  End
+  Else
+  Begin
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      ErrorMsg('FUNCTION : identifiant attendu');
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+      Exit;
+    End;
+    fn_name := cur_tok.val;
+    LexNext;
   End;
-  fn_name := cur_tok.val;
-  LexNext;
 
   { Type de retour implicite si non specifie }
   If ret_dtype = DT_NONE Then
@@ -7817,6 +8283,990 @@ Begin
 End;
 
 { ============================================================
+  TODO 24 - BLOCK DATA ET UNITES DE COMPILATION MULTIPLES
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  GenPublicDecls : emettre les directives PUBLIC pour tous les sous-programmes
+  definis dans cette unite et pour tous les blocs COMMON.
+  Appele depuis GenRuntimeRoutines (dans la section .CODE du tmp_file).
+  -------------------------------------------------------------------------- }
+Procedure GenPublicDecls;
+Var i : Integer;
+Begin
+  If (proc_count = 0) And (common_count = 0) Then Exit;
+  EmitRaw('; --- Symboles exportes (PUBLIC) ---');
+  For i := 1 To proc_count Do
+    EmitRaw('        PUBLIC ' + proc_table^[i].asm_label);
+  For i := 1 To common_count Do
+    EmitRaw('        PUBLIC ' + common_table^[i].asm_label);
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  GenExtrnDecls : emettre les directives EXTRN pour les sous-programmes
+  externes. Sources :
+    - SK_EXTERNAL dans sym_table (declarees via EXTERNAL xxx)
+    - Appels CALL a des sous-programmes non definis localement (dans
+      proc_table) enregistres dans called_list durant le parsing.
+  -------------------------------------------------------------------------- }
+Procedure GenExtrnDecls;
+Var i, j  : Integer;
+    lbl   : TString;
+    found : Boolean;
+Begin
+  { Symboles declares EXTERNAL by the user }
+  For i := 1 To sym_count Do
+    If sym_table^[i].kind = SK_EXTERNAL Then
+    Begin
+      lbl := FP_PFX + sym_table^[i].name;
+      EmitRaw('        EXTRN ' + lbl + ':NEAR');
+    End;
+  { Appels a des sous-programmes non definis dans proc_table }
+  For i := 1 To called_list_cnt Do
+  Begin
+    found := False;
+    For j := 1 To proc_count Do
+      If proc_table^[j].name = called_list[i] Then
+      Begin found := True; Break; End;
+    If Not found Then
+    Begin
+      { Verifier aussi qu il n est pas deja emis par SK_EXTERNAL }
+      found := False;
+      For j := 1 To sym_count Do
+        If (sym_table^[j].kind = SK_EXTERNAL) And
+           (sym_table^[j].name = called_list[i]) Then
+        Begin found := True; Break; End;
+      If Not found Then
+        EmitRaw('        EXTRN ' + FP_PFX + called_list[i] + ':NEAR');
+    End;
+  End;
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseBlockData : parser une unite BLOCK DATA [nom] ... END.
+  En Fortran 77, une unite BLOCK DATA initialise les blocs COMMON nommes.
+  Seules les declarations et enonces DATA sont autorises.
+  -------------------------------------------------------------------------- }
+Procedure ParseBlockData;
+Var bd_name : TString;
+Begin
+  bd_name := '';
+  { Nom depuis pre_ident (F77 kw colle) ou token suivant }
+  If pre_ident <> '' Then
+  Begin
+    bd_name   := pre_ident;
+    pre_ident := '';
+  End
+  Else
+  Begin
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+    If (cur_tok.kind = TK_IDENT) And (cur_tok.val <> 'END') Then
+    Begin
+      bd_name := cur_tok.val;
+      LexNext;
+    End;
+  End;
+  block_data_name := bd_name;
+  in_block_data   := True;
+  { Mettre un marqueur dans cur_subr_name pour que ParseEnd ne
+    declenche pas GenProgramEpilogue }
+  cur_subr_name := '$BD_' + bd_name;
+  cur_ret_lbl   := '';
+  If bd_name <> '' Then
+    EmitComment('BLOCK DATA ' + bd_name + ' (initialisation COMMON)')
+  Else
+    EmitComment('BLOCK DATA (initialisation BLANK COMMON)');
+  { Boucle de parsing : seuls declarations + DATA autorises }
+  While cur_tok.kind <> TK_EOF Do
+  Begin
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+    If cur_tok.kind = TK_EOF Then Break;
+    If cur_tok.val = 'END' Then
+    Begin
+      LexNext;  { consommer END }
+      Break;
+    End;
+    { Reconnaitre les declarations valides dans BLOCK DATA (TK_KEYWORD) }
+    If cur_tok.val = 'COMMON' Then
+    Begin
+      LexNext;
+      If pending_id <> '' Then
+      Begin
+        { COMMON colle a un nom : rare, pousser le pending_id }
+        { ParseCommon attend le premier / ou nom directement -> le re-injecter }
+        pending_id := '';  { ignorer - COMMON seuls sont valides ici }
+      End;
+      ParseCommon;
+    End
+    Else If cur_tok.val = 'DATA' Then
+    Begin LexNext; If pending_id <> '' Then pending_id := ''; ParseData; End
+    Else If cur_tok.val = 'DIMENSION' Then
+    Begin LexNext; If pending_id <> '' Then pending_id := ''; ParseDimension; End
+    Else If cur_tok.val = 'IMPLICIT' Then
+    Begin LexNext; If pending_id <> '' Then pending_id := ''; ParseImplicit; End
+    Else If cur_tok.val = 'EQUIVALENCE' Then
+    Begin LexNext; If pending_id <> '' Then pending_id := ''; ParseEquivalence; End
+    Else If cur_tok.val = 'SAVE' Then
+    Begin LexNext; If pending_id <> '' Then pending_id := ''; ParseSave; End
+    Else If (cur_tok.val = 'INTEGER') Or (cur_tok.val = 'REAL') Or
+            (cur_tok.val = 'LOGICAL') Or (cur_tok.val = 'DOUBLE') Or
+            (cur_tok.val = 'DOUBLEPRECISION') Or
+            (cur_tok.val = 'CHARACTER') Or (cur_tok.val = 'COMPLEX') Or
+            (cur_tok.val = 'EXTERNAL') Or (cur_tok.val = 'INTRINSIC') Then
+    Begin
+      LexNext;
+      pending_id := '';
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do
+        LexNext;
+    End
+    Else If cur_tok.val = 'PARAMETER' Then
+    Begin
+      LexNext;
+      pending_id := '';
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do
+        LexNext;
+    End
+    Else
+    Begin
+      WarnMsg('Enonce non autorise dans BLOCK DATA : ' + cur_tok.val);
+      pending_id := '';
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do
+        LexNext;
+    End;
+    { Avancer sur la ligne suivante }
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+  End;
+  { Reinitialiser le contexte }
+  in_block_data   := False;
+  block_data_name := '';
+  cur_subr_name   := '';
+  cur_ret_lbl     := '';
+End;
+
+{ ============================================================
+  TODO 23 - RUNTIME FORTRAN 77 (_FRT_xxx)
+  ============================================================
+  Toutes les routines sont emises dans tmp_file (via SwitchToTmp).
+  AppendTmpToOut les recopie dans out_file avant GenFileEnd.
+
+  Conventions d'appel (toutes NEAR, appelant nettoie la pile) :
+    _FRT_IPOW   : AX=base, CX=exp -> AX=resultat (pas de passe-par-pile)
+    _FRT_PRINT_I : AX=entier signe -> affiche en decimal
+    _FRT_PRINT_NL : () -> emet CR+LF
+    _FRT_PRINT_S : AX=ptr, CX=len -> affiche CX caracteres
+    _FRT_PRINT_L : AX=0->.FALSE. sinon .TRUE.
+    _FRT_READ_I : () -> AX=entier lu depuis stdin
+    _FRT_READ_NL : () -> vide le tampon jusqu'au retour chariot
+    _FRT_SCOPY : [SP+4]=dst_addr, [SP+6]=dst_len, [SP+8]=src_addr, [SP+10]=src_len
+    _FRT_SCMP  : [SP+4]=ptr1, [SP+6]=len1, [SP+8]=ptr2, [SP+10]=len2 -> AX=-1/0/1
+    _FRT_SCAT  : [SP+4]=addr_g, [SP+6]=len_g, [SP+8]=addr_d, [SP+10]=len_d
+                 -> AX=ptr result, CX=len combinee
+    _FRT_STOP_0 : terminer avec code 0
+    _FRT_STOP_N : AX=code -> afficher et terminer
+    _FRT_PAUSE  : AX=code -> afficher et attendre touche
+    _FRT_ITOF  : [SP+4]=entier 16 bits -> DX:AX=float IEEE 754
+    _FRT_FTOI  : [SP+4]=AX_lo, [SP+6]=DX_hi (float) -> AX=entier tronque
+    _FRT_FADD/_FRT_FSUB/_FRT_FMUL/_FRT_FDIV : stubs float (retournent 0)
+    _FRT_FCMP  : stub comparaison float -> AX=0
+    _FRT_LNBLNK : AX=ptr, CX=len -> AX=longueur sans blancs finaux
+    _FRT_INDEX  : pile -> AX=position (1-base) ou 0
+  ============================================================ }
+
+{ Emettre une procedure runtime (helper interne) }
+Procedure GenRuntimeRoutines;
+
+  { Raccourcis internes }
+  Procedure R(Const s : TString);
+  Begin EmitRaw(s); End;
+
+  Procedure P(Const nm : TString);
+  Begin
+    R('');
+    R('; ' + StringOfChar('-', 60));
+    R('; ' + nm);
+    R('; ' + StringOfChar('-', 60));
+    R(FRT_PFX + nm + '  PROC NEAR');
+    R('        PUSH BP');
+    R('        MOV  BP, SP');
+    R('        PUSH BX');
+    R('        PUSH CX');
+    R('        PUSH DX');
+    R('        PUSH SI');
+    R('        PUSH DI');
+    R('');
+  End;
+
+  Procedure EP(Const nm : TString);
+  Begin
+    R('');
+    R('        POP  DI');
+    R('        POP  SI');
+    R('        POP  DX');
+    R('        POP  CX');
+    R('        POP  BX');
+    R('        POP  BP');
+    R('        RET');
+    R(FRT_PFX + nm + '  ENDP');
+    R('');
+  End;
+
+Begin
+  SwitchToTmp;
+
+  R('');
+  R('; ============================================================');
+  R('; F77C86 Runtime Library (_FRT_xxx) - 8086 NEAR mode');
+  R('; ============================================================');
+  R('        .CODE');
+  R('');
+
+  { ---- Donnees internes du runtime (inline .DATA) ---- }
+  R('        .DATA');
+  R(FRT_PFX + 'SCAT_BUF  DB  256 DUP(20h)  ; buffer interne SCAT (espaces)');
+  R(FRT_PFX + 'MSG_TRUE  DB  ''.TRUE.''');
+  R(FRT_PFX + 'MSG_FALSE DB  ''.FALSE.''');
+  R(FRT_PFX + 'MSG_PAUSE DB  ''PAUSE'', 0Dh, 0Ah, ''$''');
+
+  { Blocs COMMON, variables statiques et subroutines du programme (TODO 24) }
+  GenAllVarDecls(0);
+  R('        .CODE');
+  R('');
+
+  { Directives PUBLIC et EXTRN (TODO 24) }
+  GenPublicDecls;
+  GenExtrnDecls;
+
+  { ============================================================ }
+  { _FRT_IPOW : AX=base, CX=exp -> AX=base**exp (entier, CX modifie) }
+  { ============================================================ }
+  R('; --- _FRT_IPOW : AX=base, CX=exp -> AX=resultat ---');
+  R(FRT_PFX + 'IPOW  PROC NEAR');
+  R('        PUSH BX');
+  R('        TEST CX, CX');
+  R('        JG   _IPOW_pos');
+  R('        MOV  AX, 1          ; exp<=0 -> return 1');
+  R('        POP  BX');
+  R('        RET');
+  R('_IPOW_pos:');
+  R('        MOV  BX, AX         ; BX = base');
+  R('        MOV  AX, 1          ; AX = accumulator');
+  R('_IPOW_loop:');
+  R('        IMUL BX              ; DX:AX = AX * BX');
+  R('        LOOP _IPOW_loop');
+  R('        POP  BX');
+  R('        RET');
+  R(FRT_PFX + 'IPOW  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_PRINT_NL : emet CR+LF sur stdout (AH=02h) }
+  { ============================================================ }
+  R('; --- _FRT_PRINT_NL : CR+LF ---');
+  R(FRT_PFX + 'PRINT_NL  PROC NEAR');
+  R('        PUSH DX');
+  R('        MOV  AH, 02h');
+  R('        MOV  DL, 0Dh');
+  R('        INT  21h');
+  R('        MOV  DL, 0Ah');
+  R('        INT  21h');
+  R('        POP  DX');
+  R('        RET');
+  R(FRT_PFX + 'PRINT_NL  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_PRINT_I : AX=entier signe -> afficher en decimal }
+  { ============================================================ }
+  R('; --- _FRT_PRINT_I : AX=entier -> decimal ---');
+  R(FRT_PFX + 'PRINT_I  PROC NEAR');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        TEST AX, AX');
+  R('        JGE  _PRI_pos');
+  R('        PUSH AX');
+  R('        MOV  AH, 02h');
+  R('        MOV  DL, 2Dh         ; ''-''');
+  R('        INT  21h');
+  R('        POP  AX');
+  R('        NEG  AX');
+  R('_PRI_pos:');
+  R('        MOV  BX, 10');
+  R('        MOV  CX, 0           ; compteur de chiffres');
+  R('_PRI_divl:');
+  R('        XOR  DX, DX');
+  R('        DIV  BX              ; AX=quot, DX=reste');
+  R('        PUSH DX              ; empiler le chiffre');
+  R('        INC  CX');
+  R('        TEST AX, AX');
+  R('        JNZ  _PRI_divl');
+  R('_PRI_prtl:');
+  R('        POP  DX');
+  R('        ADD  DL, 30h         ; ''0''+chiffre');
+  R('        MOV  AH, 02h');
+  R('        INT  21h');
+  R('        LOOP _PRI_prtl');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        RET');
+  R(FRT_PFX + 'PRINT_I  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_PRINT_S : AX=ptr, CX=len -> afficher CX caracteres }
+  { ============================================================ }
+  R('; --- _FRT_PRINT_S : AX=ptr, CX=len -> afficher la chaine ---');
+  R(FRT_PFX + 'PRINT_S  PROC NEAR');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        PUSH SI');
+  R('        MOV  SI, AX');
+  R('        TEST CX, CX');
+  R('        JZ   _PRS_done');
+  R('_PRS_loop:');
+  R('        MOV  DL, [SI]');
+  R('        INC  SI');
+  R('        MOV  AH, 02h');
+  R('        INT  21h');
+  R('        LOOP _PRS_loop');
+  R('_PRS_done:');
+  R('        POP  SI');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        RET');
+  R(FRT_PFX + 'PRINT_S  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_PRINT_L : AX=0->'.FALSE.' sinon '.TRUE.' }
+  { ============================================================ }
+  R('; --- _FRT_PRINT_L : AX=0->.FALSE. sinon .TRUE. ---');
+  R(FRT_PFX + 'PRINT_L  PROC NEAR');
+  R('        PUSH DX');
+  R('        TEST AX, AX');
+  R('        JZ   _PRL_false');
+  R('        ; Afficher .TRUE.');
+  R('        MOV  AH, 02h');
+  R('        MOV  DL, 2Eh  ; ''.'''); R('        INT  21h');
+  R('        MOV  DL, 54h  ; T');   R('        INT  21h');
+  R('        MOV  DL, 52h  ; R');   R('        INT  21h');
+  R('        MOV  DL, 55h  ; U');   R('        INT  21h');
+  R('        MOV  DL, 45h  ; E');   R('        INT  21h');
+  R('        MOV  DL, 2Eh  ; ''.'''); R('        INT  21h');
+  R('        JMP  _PRL_done');
+  R('_PRL_false:');
+  R('        MOV  AH, 02h');
+  R('        MOV  DL, 2Eh  ; ''.'''); R('        INT  21h');
+  R('        MOV  DL, 46h  ; F');   R('        INT  21h');
+  R('        MOV  DL, 41h  ; A');   R('        INT  21h');
+  R('        MOV  DL, 4Ch  ; L');   R('        INT  21h');
+  R('        MOV  DL, 53h  ; S');   R('        INT  21h');
+  R('        MOV  DL, 45h  ; E');   R('        INT  21h');
+  R('        MOV  DL, 2Eh  ; ''.'''); R('        INT  21h');
+  R('_PRL_done:');
+  R('        POP  DX');
+  R('        RET');
+  R(FRT_PFX + 'PRINT_L  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_READ_I : lire un entier depuis stdin -> AX }
+  { ============================================================ }
+  R('; --- _FRT_READ_I : lire un entier -> AX ---');
+  R(FRT_PFX + 'READ_I  PROC NEAR');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        XOR  AX, AX          ; accumulateur');
+  R('        MOV  BX, 1           ; signe +');
+  R('; Ignorer espaces initiaux');
+  R('_RDI_sp:');
+  R('        MOV  AH, 08h         ; lire sans echo');
+  R('        INT  21h');
+  R('        MOV  DL, AL          ; echo manuel');
+  R('        MOV  AH, 02h');
+  R('        INT  21h');
+  R('        CMP  AL, 20h');
+  R('        JE   _RDI_sp');
+  R('        CMP  AL, 09h         ; TAB');
+  R('        JE   _RDI_sp');
+  R('; Signe ?');
+  R('        CMP  AL, 2Dh         ; ''-''');
+  R('        JNE  _RDI_nsg');
+  R('        MOV  BX, -1');
+  R('        MOV  AH, 08h');
+  R('        INT  21h');
+  R('        MOV  DL, AL');
+  R('        MOV  AH, 02h');
+  R('        INT  21h');
+  R('_RDI_nsg:');
+  R('; Lire les chiffres');
+  R('        XOR  AX, AX');
+  R('        MOV  CX, 10');
+  R('_RDI_dg:');
+  R('        CMP  AL, 30h');
+  R('        JB   _RDI_dn');
+  R('        CMP  AL, 39h');
+  R('        JA   _RDI_dn');
+  R('        SUB  AL, 30h');
+  R('        XCHG AX, DX          ; DX = AX (ancien), AX = chiffre');
+  R('        PUSH AX');
+  R('        MOV  AX, DX');
+  R('        IMUL CX              ; DX:AX = ancien*10');
+  R('        POP  DX              ; DX = chiffre');
+  R('        ADD  AX, DX');
+  R('        MOV  AH, 08h');
+  R('        INT  21h');
+  R('        MOV  DL, AL');
+  R('        PUSH AX');
+  R('        MOV  AH, 02h');
+  R('        INT  21h');
+  R('        POP  AX');
+  R('        JMP  _RDI_dg');
+  R('_RDI_dn:');
+  R('        IMUL BX              ; appliquer le signe');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        RET');
+  R(FRT_PFX + 'READ_I  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_READ_NL : vider l'entree jusqu'au prochain CR }
+  { ============================================================ }
+  R('; --- _FRT_READ_NL : vider tampon -> CR ---');
+  R(FRT_PFX + 'READ_NL  PROC NEAR');
+  R('        PUSH AX');
+  R('        PUSH DX');
+  R('_RNLI_loop:');
+  R('        MOV  AH, 08h');
+  R('        INT  21h');
+  R('        CMP  AL, 0Dh');
+  R('        JNE  _RNLI_loop');
+  R('        POP  DX');
+  R('        POP  AX');
+  R('        RET');
+  R(FRT_PFX + 'READ_NL  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_SCOPY : copier src dans dst avec troncature/blanc-remplissage }
+  { Convention pile (NEAR, BP-relative) :                          }
+  {   [BP+4]=dst_addr, [BP+6]=dst_len, [BP+8]=src_addr, [BP+10]=src_len }
+  { ============================================================ }
+  R('; --- _FRT_SCOPY(dst_addr,dst_len,src_addr,src_len) ---');
+  R(FRT_PFX + 'SCOPY  PROC NEAR');
+  R('        PUSH BP');
+  R('        MOV  BP, SP');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        PUSH SI');
+  R('        PUSH DI');
+  R('        MOV  DI, WORD PTR [BP+4]  ; dst_addr');
+  R('        MOV  CX, WORD PTR [BP+6]  ; dst_len');
+  R('        MOV  SI, WORD PTR [BP+8]  ; src_addr');
+  R('        MOV  BX, WORD PTR [BP+10] ; src_len');
+  R('        TEST CX, CX');
+  R('        JZ   _SCPY_done');
+  R('_SCPY_loop:');
+  R('        TEST BX, BX');
+  R('        JZ   _SCPY_pad');
+  R('        MOV  AL, [SI]');
+  R('        INC  SI');
+  R('        DEC  BX');
+  R('        JMP  _SCPY_wr');
+  R('_SCPY_pad:');
+  R('        MOV  AL, 20h           ; espace');
+  R('_SCPY_wr:');
+  R('        MOV  [DI], AL');
+  R('        INC  DI');
+  R('        LOOP _SCPY_loop');
+  R('_SCPY_done:');
+  R('        POP  DI');
+  R('        POP  SI');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  BP');
+  R('        RET');
+  R(FRT_PFX + 'SCOPY  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_SCMP : comparer deux chaines Fortran -> AX=-1/0/+1       }
+  { [BP+4]=ptr1,[BP+6]=len1,[BP+8]=ptr2,[BP+10]=len2              }
+  { ============================================================ }
+  R('; --- _FRT_SCMP(ptr1,len1,ptr2,len2) -> AX ---');
+  R(FRT_PFX + 'SCMP  PROC NEAR');
+  R('        PUSH BP');
+  R('        MOV  BP, SP');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        PUSH SI');
+  R('        PUSH DI');
+  R('        MOV  SI, WORD PTR [BP+4]   ; ptr1');
+  R('        MOV  CX, WORD PTR [BP+6]   ; len1');
+  R('        MOV  DI, WORD PTR [BP+8]   ; ptr2');
+  R('        MOV  DX, WORD PTR [BP+10]  ; len2');
+  R('; Comparer min(len1,len2) caracteres');
+  R('        MOV  BX, CX');
+  R('        CMP  BX, DX');
+  R('        JBE  _SCM_mc');
+  R('        MOV  BX, DX');
+  R('_SCM_mc:');
+  R('        TEST BX, BX');
+  R('        JZ   _SCM_rest');
+  R('_SCM_loop:');
+  R('        MOV  AL, [SI]');
+  R('        MOV  AH, [DI]');
+  R('        INC  SI');
+  R('        INC  DI');
+  R('        CMP  AL, AH');
+  R('        JB   _SCM_lt');
+  R('        JA   _SCM_gt');
+  R('        DEC  BX');
+  R('        JNZ  _SCM_loop');
+  R('_SCM_rest:');
+  R('; Chaines egales sur min(len) : comparer les longueurs');
+  R('        CMP  CX, DX');
+  R('        JB   _SCM_lt');
+  R('        JA   _SCM_gt');
+  R('        XOR  AX, AX');
+  R('        JMP  _SCM_done');
+  R('_SCM_lt:');
+  R('        MOV  AX, -1');
+  R('        JMP  _SCM_done');
+  R('_SCM_gt:');
+  R('        MOV  AX, 1');
+  R('_SCM_done:');
+  R('        POP  DI');
+  R('        POP  SI');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  BP');
+  R('        RET');
+  R(FRT_PFX + 'SCMP  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_SCAT : concatener deux chaines dans un buffer interne     }
+  { [BP+4]=addr_g,[BP+6]=len_g,[BP+8]=addr_d,[BP+10]=len_d        }
+  { -> AX=_FRT_SCAT_BUF, CX=len_g+len_d                           }
+  { ============================================================ }
+  R('; --- _FRT_SCAT(addr_g,len_g,addr_d,len_d) -> AX=buf,CX=len ---');
+  R(FRT_PFX + 'SCAT  PROC NEAR');
+  R('        PUSH BP');
+  R('        MOV  BP, SP');
+  R('        PUSH BX');
+  R('        PUSH DX');
+  R('        PUSH SI');
+  R('        PUSH DI');
+  R('        MOV  DI, OFFSET ' + FRT_PFX + 'SCAT_BUF');
+  R('        MOV  SI, WORD PTR [BP+4]   ; addr_g');
+  R('        MOV  CX, WORD PTR [BP+6]   ; len_g');
+  R('        MOV  BX, WORD PTR [BP+8]   ; addr_d');
+  R('        MOV  DX, WORD PTR [BP+10]  ; len_d');
+  R('; Copier gauche');
+  R('        PUSH CX');
+  R('        TEST CX, CX');
+  R('        JZ   _SCAT_d');
+  R('_SCAT_gl:');
+  R('        MOV  AL, [SI]');
+  R('        MOV  [DI], AL');
+  R('        INC  SI');
+  R('        INC  DI');
+  R('        LOOP _SCAT_gl');
+  R('_SCAT_d:');
+  R('; Copier droite');
+  R('        MOV  SI, BX');
+  R('        MOV  CX, DX');
+  R('        TEST CX, CX');
+  R('        JZ   _SCAT_fin');
+  R('_SCAT_dr:');
+  R('        MOV  AL, [SI]');
+  R('        MOV  [DI], AL');
+  R('        INC  SI');
+  R('        INC  DI');
+  R('        LOOP _SCAT_dr');
+  R('_SCAT_fin:');
+  R('        POP  CX              ; CX = len_g');
+  R('        ADD  CX, DX          ; CX = len_g + len_d');
+  R('        MOV  AX, OFFSET ' + FRT_PFX + 'SCAT_BUF');
+  R('        POP  DI');
+  R('        POP  SI');
+  R('        POP  DX');
+  R('        POP  BX');
+  R('        POP  BP');
+  R('        RET');
+  R(FRT_PFX + 'SCAT  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_STOP_0 : arreter le programme (exit code 0) }
+  { ============================================================ }
+  R('; --- _FRT_STOP_0 : exit code 0 ---');
+  R(FRT_PFX + 'STOP_0  PROC NEAR');
+  R('        MOV  AX, 4C00h');
+  R('        INT  21h');
+  R(FRT_PFX + 'STOP_0  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_STOP_N : AX=code -> afficher puis sortir }
+  { ============================================================ }
+  R('; --- _FRT_STOP_N : AX=n, afficher puis exit ---');
+  R(FRT_PFX + 'STOP_N  PROC NEAR');
+  R('        PUSH AX');
+  R('        CALL ' + FRT_PFX + 'PRINT_I');
+  R('        CALL ' + FRT_PFX + 'PRINT_NL');
+  R('        POP  AX');
+  R('        MOV  AH, 4Ch');
+  R('        INT  21h');
+  R(FRT_PFX + 'STOP_N  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_PAUSE : AX=code -> afficher ''PAUSE'', attendre touche }
+  { ============================================================ }
+  R('; --- _FRT_PAUSE : AX=code, afficher et attendre ---');
+  R(FRT_PFX + 'PAUSE  PROC NEAR');
+  R('        PUSH DX');
+  R('        TEST AX, AX');
+  R('        JZ   _PAUSE_nn');
+  R('        PUSH AX');
+  R('        CALL ' + FRT_PFX + 'PRINT_I');
+  R('        CALL ' + FRT_PFX + 'PRINT_NL');
+  R('        POP  AX');
+  R('_PAUSE_nn:');
+  R('        MOV  AH, 09h');
+  R('        MOV  DX, OFFSET ' + FRT_PFX + 'MSG_PAUSE');
+  R('        INT  21h            ; afficher PAUSE');
+  R('        MOV  AH, 08h');
+  R('        INT  21h            ; attendre touche');
+  R('        POP  DX');
+  R('        RET');
+  R(FRT_PFX + 'PAUSE  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_ITOF : [SP+4]=entier 16 bits -> DX:AX = float IEEE 754  }
+  { ============================================================ }
+  R('; --- _FRT_ITOF : [SP+4]=int16 -> DX:AX=float32 ---');
+  R(FRT_PFX + 'ITOF  PROC NEAR');
+  R('        PUSH BP');
+  R('        MOV  BP, SP');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH SI');
+  R('        MOV  AX, WORD PTR [BP+4]   ; AX = entier');
+  R('        XOR  SI, SI');
+  R('        TEST AX, AX');
+  R('        JNZ  _ITOF_nz');
+  R('        XOR  DX, DX           ; return 0.0');
+  R('        JMP  _ITOF_done');
+  R('_ITOF_nz:');
+  R('        JGE  _ITOF_pos');
+  R('        MOV  SI, 8000h        ; bit signe negatif');
+  R('        NEG  AX');
+  R('_ITOF_pos:');
+  R('; Normaliser : decaler gauche jusqu''a bit 15 = 1');
+  R('        MOV  CX, 0');
+  R('_ITOF_norm:');
+  R('        TEST AX, 8000h');
+  R('        JNZ  _ITOF_normed');
+  R('        SHL  AX, 1');
+  R('        INC  CX');
+  R('        JMP  _ITOF_norm');
+  R('_ITOF_normed:');
+  R('; AX=norme, CX=nb decalages, exp=142-CX');
+  R('        PUSH AX              ; sauver valeur normalisee');
+  R('        MOV  DX, 142');
+  R('        SUB  DX, CX          ; DX = exposant');
+  R('        MOV  BX, 7');
+  R('        MOV  CL, BL          ; CL = 7');
+  R('        SHL  DX, CL          ; DX = exp << 7 (bits [14:7])');
+  R('        POP  AX              ; AX = valeur normalisee');
+  R('        PUSH AX');
+  R('        MOV  BX, AX');
+  R('        MOV  CL, 8');
+  R('        SHR  BX, CL          ; BX = AX >> 8 = N[15:8]');
+  R('        AND  BX, 007Fh       ; BX = N[14:8] (7 bits mantisse haute)');
+  R('        OR   DX, BX          ; DX |= mantisse haute');
+  R('        OR   DX, SI          ; DX |= bit signe');
+  R('; AX = (N[7:0]) << 8');
+  R('        POP  AX');
+  R('        AND  AX, 00FFh       ; AX = N[7:0]');
+  R('        MOV  AH, AL          ; AH = N[7:0]');
+  R('        XOR  AL, AL          ; AL = 0');
+  R('_ITOF_done:');
+  R('        POP  SI');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  BP');
+  R('        RET');
+  R(FRT_PFX + 'ITOF  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_FTOI : [SP+4]=AX_lo,[SP+6]=DX_hi -> AX = entier tronque }
+  { ============================================================ }
+  R('; --- _FRT_FTOI : [SP+4]=lo,[SP+6]=hi -> AX=int16 ---');
+  R(FRT_PFX + 'FTOI  PROC NEAR');
+  R('        PUSH BP');
+  R('        MOV  BP, SP');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        PUSH SI');
+  R('        MOV  DX, WORD PTR [BP+6]   ; DX = mot haut du float');
+  R('        MOV  AX, WORD PTR [BP+4]   ; AX = mot bas');
+  R('        MOV  SI, DX');
+  R('        AND  SI, 8000h             ; SI = bit signe');
+  R('; Extraire exposant : DX[14:7]');
+  R('        MOV  BX, DX');
+  R('        AND  BX, 7F80h');
+  R('        MOV  CL, 7');
+  R('        SHR  BX, CL                ; BX = exposant biais');
+  R('        CMP  BX, 127');
+  R('        JB   _FTOI_zero            ; |val| < 1 -> 0');
+  R('        CMP  BX, 142');
+  R('        JA   _FTOI_ovfl            ; > 32767 -> saturer');
+  R('; Reconstituer la mantisse avec bit implicite');
+  R('        AND  DX, 007Fh');
+  R('        OR   DX, 0080h             ; DX[7:0] = mantisse[23:16] avec bit implicite');
+  R('        SUB  BX, 127               ; BX = exposant reel (0..15)');
+  R('; Construire {DX[7:0],AX[15:8]} dans CX');
+  R('        PUSH BX');
+  R('        MOV  CL, 8');
+  R('        SHL  DX, CL                ; DX = DX[7:0] << 8');
+  R('        SHR  AX, CL                ; AX = AX[15:8]');
+  R('        OR   DX, AX                ; DX = {mantisse[23:16],mantisse[15:8]}');
+  R('; Decaler droite de (15-exp) positions');
+  R('        POP  BX');
+  R('        MOV  CX, 15');
+  R('        SUB  CX, BX                ; CX = 15-exp');
+  R('        JZ   _FTOI_ns');
+  R('        MOV  CL, CL');
+  R('_FTOI_shr:');
+  R('        SHR  DX, 1');
+  R('        LOOP _FTOI_shr');
+  R('_FTOI_ns:');
+  R('        MOV  AX, DX');
+  R('        TEST SI, SI');
+  R('        JZ   _FTOI_done');
+  R('        NEG  AX');
+  R('        JMP  _FTOI_done');
+  R('_FTOI_zero:');
+  R('        XOR  AX, AX');
+  R('        JMP  _FTOI_done');
+  R('_FTOI_ovfl:');
+  R('        TEST SI, SI');
+  R('        JZ   _FTOI_op');
+  R('        MOV  AX, 8000h');
+  R('        JMP  _FTOI_done');
+  R('_FTOI_op:');
+  R('        MOV  AX, 7FFFh');
+  R('_FTOI_done:');
+  R('        POP  SI');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  BP');
+  R('        RET');
+  R(FRT_PFX + 'FTOI  ENDP');
+  R('');
+
+  { ============================================================ }
+  { Operations float - STUBS (retournent 0 ou AX) }
+  { Convention : gauche=[SP+4..6], droite=[SP+8..10] -> DX:AX }
+  { ============================================================ }
+  R('; --- _FRT_FADD / FSUB / FMUL / FDIV / FCMP : stubs ---');
+  R(FRT_PFX + 'FADD  PROC NEAR');
+  R('        MOV  AX, WORD PTR [SP+4]');
+  R('        MOV  DX, WORD PTR [SP+6]');
+  R('        RET');
+  R(FRT_PFX + 'FADD  ENDP');
+  R('');
+  R(FRT_PFX + 'FSUB  PROC NEAR');
+  R('        MOV  AX, WORD PTR [SP+4]');
+  R('        MOV  DX, WORD PTR [SP+6]');
+  R('        RET');
+  R(FRT_PFX + 'FSUB  ENDP');
+  R('');
+  R(FRT_PFX + 'FMUL  PROC NEAR');
+  R('        XOR  AX, AX');
+  R('        XOR  DX, DX');
+  R('        RET');
+  R(FRT_PFX + 'FMUL  ENDP');
+  R('');
+  R(FRT_PFX + 'FDIV  PROC NEAR');
+  R('        XOR  AX, AX');
+  R('        XOR  DX, DX');
+  R('        RET');
+  R(FRT_PFX + 'FDIV  ENDP');
+  R('');
+  R(FRT_PFX + 'FCMP  PROC NEAR');
+  R('        XOR  AX, AX');
+  R('        RET');
+  R(FRT_PFX + 'FCMP  ENDP');
+  R('');
+  R(FRT_PFX + 'FMOD  PROC NEAR');
+  R('        XOR  AX, AX');
+  R('        XOR  DX, DX');
+  R('        RET');
+  R(FRT_PFX + 'FMOD  ENDP');
+  R('');
+  R(FRT_PFX + 'FDIM  PROC NEAR');
+  R('        XOR  AX, AX');
+  R('        XOR  DX, DX');
+  R('        RET');
+  R(FRT_PFX + 'FDIM  ENDP');
+  R('');
+  R(FRT_PFX + 'FSIGN PROC NEAR');
+  R('        MOV  AX, WORD PTR [SP+4]');
+  R('        MOV  DX, WORD PTR [SP+6]');
+  R('        RET');
+  R(FRT_PFX + 'FSIGN ENDP');
+  R('');
+  R(FRT_PFX + 'FMIN  PROC NEAR');
+  R('        MOV  AX, WORD PTR [SP+4]');
+  R('        MOV  DX, WORD PTR [SP+6]');
+  R('        RET');
+  R(FRT_PFX + 'FMIN  ENDP');
+  R('');
+  R(FRT_PFX + 'FMAX  PROC NEAR');
+  R('        MOV  AX, WORD PTR [SP+4]');
+  R('        MOV  DX, WORD PTR [SP+6]');
+  R('        RET');
+  R(FRT_PFX + 'FMAX  ENDP');
+  R('');
+  { Stubs trig/transcendantales -> 0 }
+  R(FRT_PFX + 'SQRT  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'SQRT  ENDP'); R('');
+  R(FRT_PFX + 'EXP   PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'EXP   ENDP'); R('');
+  R(FRT_PFX + 'LOG   PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'LOG   ENDP'); R('');
+  R(FRT_PFX + 'LOG10 PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'LOG10 ENDP'); R('');
+  R(FRT_PFX + 'SIN   PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'SIN   ENDP'); R('');
+  R(FRT_PFX + 'COS   PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'COS   ENDP'); R('');
+  R(FRT_PFX + 'TAN   PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'TAN   ENDP'); R('');
+  R(FRT_PFX + 'ASIN  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'ASIN  ENDP'); R('');
+  R(FRT_PFX + 'ACOS  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'ACOS  ENDP'); R('');
+  R(FRT_PFX + 'ATAN  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'ATAN  ENDP'); R('');
+  R(FRT_PFX + 'ATAN2 PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'ATAN2 ENDP'); R('');
+  R(FRT_PFX + 'SINH  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'SINH  ENDP'); R('');
+  R(FRT_PFX + 'COSH  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'COSH  ENDP'); R('');
+  R(FRT_PFX + 'TANH  PROC NEAR'); R('        XOR AX,AX'); R('        XOR DX,DX'); R('        RET'); R(FRT_PFX + 'TANH  ENDP'); R('');
+
+  { ============================================================ }
+  { _FRT_LNBLNK : AX=ptr, CX=len -> AX=longueur sans blancs finaux }
+  { ============================================================ }
+  R('; --- _FRT_LNBLNK : AX=ptr, CX=len -> AX=longueur effective ---');
+  R(FRT_PFX + 'LNBLNK  PROC NEAR');
+  R('        PUSH BX');
+  R('        PUSH SI');
+  R('        MOV  SI, AX');
+  R('        ADD  SI, CX          ; SI = ptr + len (apres la fin)');
+  R('        DEC  SI              ; SI = ptr + len - 1 (dernier char)');
+  R('        MOV  BX, CX          ; BX = longueur courante');
+  R('_LNB_loop:');
+  R('        TEST BX, BX');
+  R('        JZ   _LNB_done');
+  R('        CMP  BYTE PTR [SI], 20h');
+  R('        JNE  _LNB_done');
+  R('        DEC  SI');
+  R('        DEC  BX');
+  R('        JMP  _LNB_loop');
+  R('_LNB_done:');
+  R('        MOV  AX, BX');
+  R('        POP  SI');
+  R('        POP  BX');
+  R('        RET');
+  R(FRT_PFX + 'LNBLNK  ENDP');
+  R('');
+
+  { ============================================================ }
+  { _FRT_INDEX : [SP+4]=ptr_s,[SP+6]=len_s,[SP+8]=ptr_p,[SP+10]=len_p -> AX }
+  { ============================================================ }
+  R('; --- _FRT_INDEX(s,ls,p,lp) -> AX=position (1-base) ou 0 ---');
+  R(FRT_PFX + 'INDEX  PROC NEAR');
+  R('        PUSH BP');
+  R('        MOV  BP, SP');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        PUSH DX');
+  R('        PUSH SI');
+  R('        PUSH DI');
+  R('        MOV  SI, WORD PTR [BP+4]   ; ptr_s');
+  R('        MOV  CX, WORD PTR [BP+6]   ; len_s');
+  R('        MOV  DI, WORD PTR [BP+8]   ; ptr_p');
+  R('        MOV  DX, WORD PTR [BP+10]  ; len_p');
+  R('        XOR  AX, AX               ; resultat = 0 (non trouve)');
+  R('        TEST DX, DX');
+  R('        JZ   _IDX_done             ; pattern vide -> 0');
+  R('        MOV  BX, 0                 ; position courante (0-base)');
+  R('_IDX_outer:');
+  R('        MOV  AX, CX');
+  R('        SUB  AX, BX');
+  R('        CMP  AX, DX');
+  R('        JB   _IDX_nf              ; plus assez de chars');
+  R('        PUSH SI');
+  R('        PUSH DI');
+  R('        PUSH BX');
+  R('        PUSH CX');
+  R('        MOV  SI, WORD PTR [BP+4]');
+  R('        ADD  SI, BX               ; SI = ptr_s + pos');
+  R('        MOV  DI, WORD PTR [BP+8]');
+  R('        MOV  CX, DX');
+  R('_IDX_inner:');
+  R('        MOV  AL, [SI]');
+  R('        CMP  AL, [DI]');
+  R('        JNE  _IDX_mism');
+  R('        INC  SI');
+  R('        INC  DI');
+  R('        LOOP _IDX_inner');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  DI');
+  R('        POP  SI');
+  R('        MOV  AX, BX');
+  R('        INC  AX                   ; convertir en 1-base');
+  R('        JMP  _IDX_done');
+  R('_IDX_mism:');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  DI');
+  R('        POP  SI');
+  R('        INC  BX');
+  R('        JMP  _IDX_outer');
+  R('_IDX_nf:');
+  R('        XOR  AX, AX');
+  R('_IDX_done:');
+  R('        POP  DI');
+  R('        POP  SI');
+  R('        POP  DX');
+  R('        POP  CX');
+  R('        POP  BX');
+  R('        POP  BP');
+  R('        RET');
+  R(FRT_PFX + 'INDEX  ENDP');
+  R('');
+
+  R('; ============================================================');
+  R('; Fin du runtime F77C86');
+  R('; ============================================================');
+
+  SwitchToMain;
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -7827,8 +9277,33 @@ Begin
 
   Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
 
-  { TODOs 16-25 : implementation a venir }
+  { Phase 1 : Entete ASM + segments vides }
+  GenProgramHeader;
+  GenDataSegBegin;
+  GenDataSegEnd;
+  GenCodeSegBegin;
+  GenProgramEntry;
 
+  { Phase 2 : Parser le source F77 }
+  LexInit;
+  Repeat
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+    If cur_tok.kind = TK_EOF Then Break;
+    ParseStatement;
+  Until cur_tok.kind = TK_EOF;
+
+  { Si le source n'avait pas d'enonce END pour le programme principal }
+  If Not prog_epilogue_done Then
+    GenProgramEpilogue;
+
+  { Phase 3 : Emettre les routines runtime dans tmp_file }
+  GenRuntimeRoutines;
+
+  { Phase 4 : Fusionner tmp_file dans out_file (subroutines + runtime) }
+  AppendTmpToOut;
+
+  { Phase 5 : Directive de fin de fichier ASM }
+  GenFileEnd('START');
 
   CloseFiles;
 
