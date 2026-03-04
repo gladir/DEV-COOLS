@@ -4037,25 +4037,33 @@ Begin
   End;
 End;
 
+{ ---- Table des directives de donnees pour ParseDataDir ---- }
+Const
+  DD_DB = 1; DD_DW = 2; DD_DD = 3; DD_DQ = 4; DD_DT = 5;
+  DD_COUNT = 5;
+  DD_NAMES : Array[1..5] Of String[2] = ('DB','DW','DD','DQ','DT');
+  DD_SIZES : Array[1..5] Of Byte      = (1, 2, 4, 8, 10);
+
 { ============================================================
   ParseDataDir : directive [label] DB/DW/DD/DQ/DT liste
   label_name = '' si absent
   ============================================================ }
 Procedure ParseDataDir(Const directive : TString; Const label_name : TString);
 Var
-  size : Integer;
-  p    : PSymbol;
+  size   : Integer;
+  p      : PSymbol;
+  dd_idx : Integer;
+  i      : Integer;
 Begin
-  If      directive = 'DB' Then size := 1
-  Else If directive = 'DW' Then size := 2
-  Else If directive = 'DD' Then size := 4
-  Else If directive = 'DQ' Then size := 8
-  Else If directive = 'DT' Then size := 10
-  Else
+  dd_idx := 0;
+  For i := 1 To DD_COUNT Do
+    If DD_NAMES[i] = directive Then Begin dd_idx := i; Break; End;
+  If dd_idx = 0 Then
   Begin
     ErrorMsg('Directive de donnees inconnue : ' + directive);
     Exit;
   End;
+  size := DD_SIZES[dd_idx];
 
   { definir le label courant si present }
   If label_name <> '' Then
