@@ -8266,17 +8266,17 @@ End;
   0..7 (AX=0 CX=1 DX=2 BX=3 SP=4 BP=5 SI=6 DI=7).
   Retourne -1 si non reconnu.
   ============================================================ }
+Const RN16_COUNT = 8;
+      RN16_NAMES: Array[1..8] Of String[2] = (
+        'AX','CX','DX','BX','SP','BP','SI','DI'
+      );
+
 Function RegNameToIdx(Const rname : TString) : Integer;
+Var i : Integer;
 Begin
-  If      rname = 'AX' Then RegNameToIdx := 0
-  Else If rname = 'CX' Then RegNameToIdx := 1
-  Else If rname = 'DX' Then RegNameToIdx := 2
-  Else If rname = 'BX' Then RegNameToIdx := 3
-  Else If rname = 'SP' Then RegNameToIdx := 4
-  Else If rname = 'BP' Then RegNameToIdx := 5
-  Else If rname = 'SI' Then RegNameToIdx := 6
-  Else If rname = 'DI' Then RegNameToIdx := 7
-  Else                       RegNameToIdx := -1;
+  For i := 1 To RN16_COUNT Do
+    If RN16_NAMES[i] = rname Then Begin RegNameToIdx := i - 1; Exit; End;
+  RegNameToIdx := -1;
 End;
 
 { ============================================================
@@ -8295,6 +8295,10 @@ End;
 Const PL_COUNT = 5;
       PL_NAMES: Array[1..5] Of String[7] = (
         'C','PASCAL','FORTRAN','SYSCALL','STDCALL'
+      );
+      PP_KW_COUNT = 5;
+      PP_KW_NAMES: Array[1..5] Of String[6] = (
+        'USES','LANG','NEAR','FAR','INVOKE'
       );
 
 { ============================================================
@@ -8404,8 +8408,9 @@ Begin
     LexNext;
     tok := lex_tok.val;
     { verifier que c est pas un mot-cle de fin }
-    If (tok = 'USES') Or (tok = 'LANG') Or (tok = 'NEAR') Or
-       (tok = 'FAR') Or (tok = 'INVOKE') Then Break;
+    i := 1;
+    While (i <= PP_KW_COUNT) And (PP_KW_NAMES[i] <> tok) Do Inc(i);
+    If i <= PP_KW_COUNT Then Break;
     Inc(pi.param_cnt);
     pi.params[pi.param_cnt].pname := tok;
     pi.params[pi.param_cnt].ptype := 'WORD';
