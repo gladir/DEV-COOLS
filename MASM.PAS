@@ -4196,6 +4196,14 @@ Begin
   p^.flags := p^.flags Or 8; { bit3=1 : reassignable }
 End;
 
+{ ---- Table des types pour ParseLabelDir ---- }
+Const
+  LL_COUNT = 8;
+  LL_NAMES : Array[1..8] Of String[5] = (
+    'BYTE','WORD','DWORD','QWORD','TBYTE','NEAR','PROC','FAR'
+  );
+  LL_SIZES : Array[1..8] Of Byte = (1, 2, 4, 8, 10, 2, 2, 4);
+
 { ============================================================
   ParseLabelDir : nom LABEL type
   type = BYTE WORD DWORD NEAR FAR PROC
@@ -4203,24 +4211,22 @@ End;
   ============================================================ }
 Procedure ParseLabelDir(Const name : TSymString);
 Var
-  p    : PSymbol;
-  tok  : TString;
-  sz   : TWord;
+  p      : PSymbol;
+  tok    : TString;
+  sz     : TWord;
+  ll_idx : Integer;
+  i      : Integer;
 Begin
   sz := 0;
   If LexPeekKind = TK_IDENT Then
   Begin
     LexNext;
     tok := lex_tok.val;
-    If      tok = 'BYTE'  Then sz := 1
-    Else If tok = 'WORD'  Then sz := 2
-    Else If tok = 'DWORD' Then sz := 4
-    Else If tok = 'QWORD' Then sz := 8
-    Else If tok = 'TBYTE' Then sz := 10
-    Else If (tok = 'NEAR') Or (tok = 'PROC') Then sz := 2
-    Else If tok = 'FAR'   Then sz := 4
-    Else
-      WarnMsg('Type de LABEL inconnu : ' + tok);
+    ll_idx := 0;
+    For i := 1 To LL_COUNT Do
+      If LL_NAMES[i] = tok Then Begin ll_idx := i; Break; End;
+    If ll_idx > 0 Then sz := LL_SIZES[ll_idx]
+    Else WarnMsg('Type de LABEL inconnu : ' + tok);
   End
   Else
     WarnMsg('Type attendu apres LABEL');
@@ -4508,26 +4514,26 @@ Begin
   pubdef_syms[pubdef_count] := p;
 End;
 
+{ ---- Table des types pour TypeNameToSize ---- }
+Const
+  TN_COUNT = 10;
+  TN_NAMES : Array[1..10] Of String[5] = (
+    'BYTE','WORD','DWORD','QWORD','TBYTE','NEAR','FAR','FWORD','PROC','ABS'
+  );
+  TN_SIZES : Array[1..10] Of Byte = (1, 2, 4, 8, 10, 2, 4, 4, 0, 0);
+
 { ============================================================
   TypeNameToSize : convertir un nom de type MASM en octets
     BYTE=1 WORD=2 DWORD=4 QWORD=8 TBYTE=10
     NEAR=2 FAR=4 PROC=2 ABS=0
   ============================================================ }
 Function TypeNameToSize(Const tname : TString) : Integer;
+Var i : Integer;
 Begin
-  If      tname = 'BYTE'  Then TypeNameToSize := 1
-  Else If tname = 'WORD'  Then TypeNameToSize := 2
-  Else If tname = 'DWORD' Then TypeNameToSize := 4
-  Else If tname = 'QWORD' Then TypeNameToSize := 8
-  Else If tname = 'TBYTE' Then TypeNameToSize := 10
-  Else If tname = 'NEAR'  Then TypeNameToSize := 2
-  Else If (tname = 'FAR') Or (tname = 'FWORD') Then TypeNameToSize := 4
-  Else If (tname = 'PROC') Or (tname = 'ABS')  Then TypeNameToSize := 0
-  Else
-  Begin
-    WarnMsg('Type inconnu dans EXTRN/GLOBAL/COMM : ' + tname);
-    TypeNameToSize := 0;
-  End;
+  For i := 1 To TN_COUNT Do
+    If TN_NAMES[i] = tname Then Begin TypeNameToSize := TN_SIZES[i]; Exit; End;
+  WarnMsg('Type inconnu dans EXTRN/GLOBAL/COMM : ' + tname);
+  TypeNameToSize := 0;
 End;
 
 { ============================================================
