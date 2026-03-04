@@ -4894,14 +4894,6 @@ Const
     'ES','CS','SS','DS'                         { 17-20: segment }
   );
 
-Function FindReg(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  For i := 1 To RI_COUNT Do
-    If RI_NAMES[i] = s Then Begin FindReg := i; Exit; End;
-  FindReg := 0;
-End;
-
 { ============================================================
   RegIndex : convertir un nom de registre en indice 0-7.
   Retourne -1 si pas un registre general ou segment.
@@ -4912,12 +4904,14 @@ Procedure RegIndex(Const name : TString;
                    Var idx      : Integer;
                    Var is_word  : Boolean;
                    Var is_seg   : Boolean);
-Var r : Integer;
+Var r, i : Integer;
 Begin
   is_seg  := False;
   is_word := False;
   idx     := -1;
-  r := FindReg(name);
+  r := 0;
+  For i := 1 To RI_COUNT Do
+    If RI_NAMES[i] = name Then Begin r := i; Break; End;
   Case r Of
     1..8  : Begin idx := r - 1;  is_word := True; End;
     9..16 : idx := r - 9;
