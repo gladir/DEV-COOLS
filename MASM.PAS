@@ -3459,7 +3459,238 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 08 a 25 a implementer)
+  TODO 09 - DIRECTIVES DE DONNEES (DB DW DD DQ DT ALIGN EVEN)
+  ============================================================
+
+  Tailles par directive :
+    DB = 1, DW = 2, DD = 4, DQ = 8, DT = 10
+  Syntaxe d un element :
+    expr | ? | 'chaine' (DB seult) | N DUP(liste)
+  Liste = elements separes par des virgules.
+  DUP imbriques supportes jusqu a DUP_DEPTH_MAX niveaux.
+  Le premier bloc DUP est emis normalement ; les blocs
+  suivants sont copies depuis le buffer LEDATA si possible,
+  sinon remplis avec des zeros (cas d un flush intermediaire).
+  ALIGN n : aligner le LC sur un multiple de n.
+  EVEN    : alias pour ALIGN 2.
+  ============================================================ }
+
+Const
+  DUP_DEPTH_MAX = 8;  { niveaux max de DUP imbriques }
+  DUP_BLK_MAX   = 1020; { taille max d un bloc DUP copiable (= LEDATA_BUF_MAX) }
+
+{ ---- declarations forward mutuelles ---- }
+Procedure ParseDataList(size : Integer; depth : Integer); Forward;
+Procedure ParseOneDataItem(size : Integer; depth : Integer); Forward;
+
+{ ============================================================
+  EmitDataVal : emettre 'val' sur 'size' octets
+  ============================================================ }
+Procedure EmitDataVal(val : TLong; size : Integer);
+Var
+  i : Integer;
+Begin
+  Case size Of
+    1  : EmitByte(Lo(Word(val)));
+    2  : EmitWord(Word(val));
+    4  : EmitDWord(val);
+    8  : Begin
+           EmitDWord(val);   { lo 32 bits }
+           EmitDWord(0);     { hi 32 bits : extension a zero }
+         End;
+    10 : Begin
+           EmitDWord(val);
+           EmitDWord(0);
+           EmitWord(0);      { 10 octets en tout (DT, 80 bits) }
+         End;
+  Else
+    For i := 1 To size Do EmitByte(0); { securite }
+  End;
+End;
+
+{ ============================================================
+  ParseDupBlock : parse la liste interieure d un DUP, l emet
+  'count' fois, en copiant le bloc depuis ledata_buf quand
+  c est possible.
+  ============================================================ }
+Procedure ParseDupBlock(count : TLong; size : Integer; depth : Integer);
+Var
+  pre_start  : TWord;     { ledata_start avant le 1er bloc }
+  pre_len    : Integer;   { ledata_buf_len avant le 1er bloc }
+  blk_len    : Integer;   { nb d octets emis dans le 1er bloc }
+  blk_buf    : Array[0..DUP_BLK_MAX-1] Of Byte;
+  can_copy   : Boolean;
+  i          : Integer;
+  j          : TLong;
+Begin
+  If count <= 0 Then
+  Begin
+    { consommer la liste sans emettre }
+    ParseDataList(size, depth);
+    Exit;
+  End;
+
+  pre_start := ledata_start;
+  pre_len   := ledata_buf_len;
+
+  { emettre le premier bloc }
+  ParseDataList(size, depth);
+
+  blk_len  := Integer(lc - (pre_start + TWord(pre_len)));
+  { re-calculer : apres emission, si pas de flush, blk_len = diff ledata_buf_len }
+  blk_len  := ledata_buf_len - pre_len;
+
+  { verifier qu aucun flush n a eu lieu pendant le 1er bloc }
+  can_copy := (ledata_start = pre_start) And
+              (blk_len > 0) And
+              (blk_len <= DUP_BLK_MAX);
+
+  If can_copy Then
+  Begin
+    { copier les octets du bloc depuis ledata_buf }
+    For i := 0 To blk_len - 1 Do
+      blk_buf[i] := ledata_buf[pre_len + i];
+    { repeter count-1 fois }
+    For j := 2 To count Do
+      For i := 0 To blk_len - 1 Do
+        EmitByte(blk_buf[i]);
+  End
+  Else
+  Begin
+    { flush intermediaire ou bloc trop grand : remplir avec zeros }
+    If blk_len < 0 Then blk_len := 0;
+    For j := 2 To count Do
+      EmitZeros(blk_len);
+  End;
+End;
+
+{ ============================================================
+  ParseOneDataItem : un element de la liste de donnees
+  ============================================================ }
+Procedure ParseOneDataItem(size : Integer; depth : Integer);
+Var
+  e    : TExpr;
+  s    : TString;
+  i    : Integer;
+  cnt  : TLong;
+Begin
+  { ? = espace non initialise -> zeros }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '?') Then
+  Begin
+    LexNext;
+    EmitZeros(size);
+    Exit;
+  End;
+
+  { litterale chaine : seulement pour DB, un EmitByte par caractere }
+  If (size = 1) And (LexPeekKind = TK_STRING) Then
+  Begin
+    LexNext;
+    s := lex_tok.val;
+    For i := 1 To Length(s) Do
+      EmitByte(Byte(Ord(s[i])));
+    Exit;
+  End;
+
+  { expression puis verification DUP }
+  EvalExpr(e);
+
+  { N DUP(liste) }
+  If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'DUP') Then
+  Begin
+    LexNext; { consommer DUP }
+    If depth >= DUP_DEPTH_MAX Then
+    Begin
+      ErrorMsg('DUP trop profondement imbrique');
+      Exit;
+    End;
+    cnt := e.val;
+    { consommer ( }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '(') Then
+      LexNext
+    Else
+      WarnMsg('( attendu apres DUP');
+    ParseDupBlock(cnt, size, depth + 1);
+    { consommer ) }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ')') Then
+      LexNext
+    Else
+      WarnMsg(') attendu apres le contenu de DUP');
+    Exit;
+  End;
+
+  { valeur numerique simple }
+  If e.is_undef And (pass_num = 2) Then
+    ErrorMsg('Symbole indefini dans directive de donnees');
+  EmitDataVal(e.val, size);
+End;
+
+{ ============================================================
+  ParseDataList : liste d elements separes par des virgules
+  ============================================================ }
+Procedure ParseDataList(size : Integer; depth : Integer);
+Begin
+  ParseOneDataItem(size, depth);
+  While (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Do
+  Begin
+    LexNext; { , }
+    ParseOneDataItem(size, depth);
+  End;
+End;
+
+{ ============================================================
+  ParseDataDir : directive [label] DB/DW/DD/DQ/DT liste
+  label_name = '' si absent
+  ============================================================ }
+Procedure ParseDataDir(Const directive : TString; Const label_name : TString);
+Var
+  size : Integer;
+  p    : PSymbol;
+Begin
+  If      directive = 'DB' Then size := 1
+  Else If directive = 'DW' Then size := 2
+  Else If directive = 'DD' Then size := 4
+  Else If directive = 'DQ' Then size := 8
+  Else If directive = 'DT' Then size := 10
+  Else
+  Begin
+    ErrorMsg('Directive de donnees inconnue : ' + directive);
+    Exit;
+  End;
+
+  { definir le label courant si present }
+  If label_name <> '' Then
+  Begin
+    SymDefineLabel(label_name, cur_seg, lc, size);
+    p := SymFind(label_name);
+    If p <> Nil Then p^.size := size;
+  End;
+
+  ParseDataList(size, 0);
+End;
+
+{ ============================================================
+  ParseAlign : ALIGN n -> aligner le LC
+  ============================================================ }
+Procedure ParseAlign;
+Var
+  n : TLong;
+Begin
+  n := EvalConstExpr;
+  If n < 1 Then n := 1;
+  EmitAlignPad(Integer(n));
+End;
+
+{ ============================================================
+  ParseEven : EVEN -> ALIGN 2
+  ============================================================ }
+Procedure ParseEven;
+Begin
+  EmitAlignPad(2);
+End;
+
+{ ============================================================
+  Programme principal (TODOs 09 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -3471,6 +3702,6 @@ Begin
   SrcInit;
   LexInit;
   SymInit;
-  Writeln('TODOs 01-08 complets (infra+src+lex+sym+OMF+LEDATA+segments+eval).');
-  Writeln('TODOs 09 a 25 a implementer.');
+  Writeln('TODOs 01-09 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data).');
+  Writeln('TODOs 10 a 25 a implementer.');
 End.
