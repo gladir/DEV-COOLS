@@ -2493,6 +2493,8 @@ Type
     displacement  : TWord;    { deplacement ajoute a la cible }
     is_seg_rel    : Boolean;  { True = relatif au segment (SELFREL=0), False = non }
   End;
+  TFixupTable = Array[0..MAX_FIXUP-1] Of TFixupRec;
+  PFixupTable  = ^TFixupTable;
 
 Var
   { Buffer LEDATA courant }
@@ -2501,8 +2503,8 @@ Var
   ledata_seg_idx : Integer;    { index SEGDEF du segment courant dans le buffer }
   ledata_start   : TWord;      { offset de debut du buffer dans le segment }
 
-  { Table de fixups internes }
-  fixup_table    : Array[0..MAX_FIXUP-1] Of TFixupRec;
+  { Table de fixups internes (allouee sur le tas via FixupInit) }
+  fixup_table    : PFixupTable;
   fixup_count    : Integer;
 
 { ============================================================
@@ -2510,6 +2512,7 @@ Var
   ============================================================ }
 Procedure FixupInit;
 Begin
+  If fixup_table = Nil Then New(fixup_table);
   fixup_count    := 0;
   ledata_buf_len := 0;
   ledata_seg_idx := 0;
@@ -2532,7 +2535,7 @@ Begin
   ObjBeginRecord(OMF_FIXUPP);
   For i := 0 To fixup_count - 1 Do
   Begin
-    fr := fixup_table[i];
+    fr := fixup_table^[i];
     { LOCAT word :
         bit 15     = 1 (c est un Fixup, pas un Thread)
         bit 14     = 1 si SEGREL, 0 si SELFREL
@@ -2691,7 +2694,7 @@ Begin
   fr.target_idx    := target_idx;
   fr.displacement  := disp;
   fr.is_seg_rel    := seg_rel;
-  fixup_table[fixup_count] := fr;
+  fixup_table^[fixup_count] := fr;
   Inc(fixup_count);
 End;
 
@@ -3544,13 +3547,19 @@ Begin
     Si un PTR orphelin se retrouve ici, on l ignore silencieusement. }
 End;
 
+{ ---- Table des operateurs IDENT pour EvalMul ---- }
+Const EM_MOD=1; EM_SHL=2; EM_SHR=3; EM_COUNT=3;
+      EM_NAMES: Array[1..3] Of String[3] = ('MOD','SHL','SHR');
+
 { ============================================================
   EvalMul : * / MOD SHL SHR
   ============================================================ }
 Procedure EvalMul(Var e : TExpr);
 Var
-  op  : TString;
-  r   : TExpr;
+  op     : TString;
+  r      : TExpr;
+  em_idx : Integer;
+  i      : Integer;
 Begin
   EvalPTR(e);
   Repeat
@@ -3561,17 +3570,15 @@ Begin
       Begin
         LexNext;
         EvalPTR(r);
-        If op = '*' Then
-          e.val := e.val * r.val
-        Else
-        Begin
-          If r.val = 0 Then
-          Begin
-            ErrorMsg('Division par zero dans expression');
-            e.val := 0;
-          End
-          Else
-            e.val := e.val Div r.val;
+        Case op[1] Of
+          '*': e.val := e.val * r.val;
+          '/': If r.val = 0 Then
+               Begin
+                 ErrorMsg('Division par zero dans expression');
+                 e.val := 0;
+               End
+               Else
+                 e.val := e.val Div r.val;
         End;
         e.is_reloc := False;
       End
@@ -3581,32 +3588,19 @@ Begin
     Else If LexPeekKind = TK_IDENT Then
     Begin
       op := LexPeekVal;
-      If op = 'MOD' Then
-      Begin
-        LexNext;
-        EvalPTR(r);
-        If r.val = 0 Then
-          e.val := 0
-        Else
-          e.val := e.val Mod r.val;
-        e.is_reloc := False;
-      End
-      Else If op = 'SHL' Then
-      Begin
-        LexNext;
-        EvalPTR(r);
-        e.val := e.val Shl r.val;
-        e.is_reloc := False;
-      End
-      Else If op = 'SHR' Then
-      Begin
-        LexNext;
-        EvalPTR(r);
-        e.val := e.val Shr r.val;
-        e.is_reloc := False;
-      End
-      Else
-        Break;
+      em_idx := 0;
+      For i := 1 To EM_COUNT Do
+        If EM_NAMES[i] = op Then Begin em_idx := i; Break; End;
+      If em_idx = 0 Then Break;
+      LexNext;
+      EvalPTR(r);
+      Case em_idx Of
+        EM_MOD : If r.val = 0 Then e.val := 0
+                 Else e.val := e.val Mod r.val;
+        EM_SHL : e.val := e.val Shl r.val;
+        EM_SHR : e.val := e.val Shr r.val;
+      End;
+      e.is_reloc := False;
     End
     Else
       Break;
@@ -9585,6 +9579,7 @@ End;
 { ShowUsage : afficher l aide et terminer }
 Procedure ShowUsage;Begin
   Writeln('Syntaxe: MASM [options] source[.ASM] [obj[.OBJ] [lst[.LST] [crf[.CRF]]]]');
+  {$IFDEF FPC}
   Writeln('Options:');
   Writeln(' /A        Trier segments alphabetiquement');
   Writeln(' /B n      Taille buffer source (ignore)');
@@ -9604,6 +9599,7 @@ Procedure ShowUsage;Begin
   Writeln(' /I chem   Ajouter repertoire de recherche INCLUDE');
   Writeln(' /Dsym[=val]  Definir un symbole sur la ligne de commande');
   Writeln(' /?        Afficher cette aide');
+  {$ENDIF}
   Halt(1);
 End;
 
@@ -9806,8 +9802,10 @@ Begin
   no_emit         := False;
   { Analyser la ligne de commande (TODO 24) }
   ParseArgs;
+  {$IFDEF FPC}
   If Not silent_mode Then
-    Writeln('Macro Assembler Version ', VERSION, ' compatible MASM 5.x');            
+    Writeln('Macro Assembler Version ', VERSION, ' compatible MASM 5.x');
+  {$ENDIF}
   { Assembler }
   Assemble(src_fname, obj_fname);
   If err_count > 0 Then Halt(1)
