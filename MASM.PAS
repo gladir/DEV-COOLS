@@ -9608,9 +9608,19 @@ Begin
 End;
 
 { ParseArgs : analyser ParamStr(1..ParamCount) }
+Const PA_QM=1; PA_H=2; PA_HELP=3; PA_A=4; PA_B=5; PA_C=6; PA_D=7; PA_L=8;
+      PA_ML=9; PA_MU=10; PA_MX=11; PA_N=12; PA_S=13; PA_T=14;
+      PA_W0=15; PA_W1=16; PA_W2=17; PA_X=18; PA_Z=19; PA_ZI=20; PA_ZD=21;
+      PA_COUNT=21;
+      PA_NAMES: Array[1..21] Of String[5] = (
+        '?','H','HELP','A','B','C','D','L',
+        'ML','MU','MX','N','S','T',
+        'W0','W1','W2','X','Z','ZI','ZD'
+      );
+
 Procedure ParseArgs;
 Var
-  i, eq, code, nval : Integer;
+  i, j, eq, code, nval, pa_idx : Integer;
   arg, uopt, sym, val, dirpath : TString;
   pos_count : Integer;
   si : PSymbol;
@@ -9624,34 +9634,39 @@ Begin
     If (arg[1] = '/') Or (arg[1] = '-') Then
     Begin
       uopt := UpStrCLI(Copy(arg, 2, 255));
-      { --- aide --- }
-      If (uopt = '?') Or (uopt = 'H') Or (uopt = 'HELP') Then
-        ShowUsage
-      { --- /A : segments alphabetiques --- }
-      Else If uopt = 'A' Then
-        seg_alpha := True
-      { --- /B [n] : taille buffer, ignore --- }
-      Else If (uopt = 'B') Or ((Length(uopt) >= 2) And (uopt[1] = 'B')
-               And (uopt[2] >= '0') And (uopt[2] <= '9')) Then
+      { --- lookup exact dans PA_NAMES --- }
+      pa_idx := 0;
+      For j := 1 To PA_COUNT Do
+        If PA_NAMES[j] = uopt Then Begin pa_idx := j; Break; End;
+      If pa_idx > 0 Then
       Begin
-        If uopt = 'B' Then
-        Begin
-          { /B n : le nombre est dans le parametre suivant }
-          If i < ParamCount Then
-          Begin
-            val := ParamStr(i+1);
-            If (Length(val) > 0) And (val[1] >= '0') And (val[1] <= '9') Then
-              Inc(i);
-          End;
+        Case pa_idx Of
+          PA_QM, PA_H, PA_HELP : ShowUsage;
+          PA_A  : seg_alpha := True;
+          PA_B  : { /B n : le nombre est dans le parametre suivant }
+                  If i < ParamCount Then
+                  Begin
+                    val := ParamStr(i+1);
+                    If (Length(val) > 0) And (val[1] >= '0') And (val[1] <= '9') Then
+                      Inc(i);
+                  End;
+          PA_C  : do_crf := True;
+          PA_D  : ;{ /D seul : double-pass, rien a faire }
+          PA_L  : do_listing := True;
+          PA_ML : case_sensitive := True;
+          PA_MU : case_sensitive := False;
+          PA_MX : case_public_ext := True;
+          PA_N  : lst_sym_table := False;
+          PA_S  : seg_alpha := False;
+          PA_T  : silent_mode := True;
+          PA_W0 : warn_level := 0;
+          PA_W1 : warn_level := 1;
+          PA_W2 : warn_level := 2;
+          PA_X  : list_cond := True;
+          PA_Z  : show_err_lines := True;
+          PA_ZI, PA_ZD : ;{ /Zi /Zd : CodeView debug, ignore }
         End;
-        { /Bn : ignorer le chiffre colle }
       End
-      { --- /C : generer .CRF --- }
-      Else If uopt = 'C' Then
-        do_crf := True
-      { --- /D : double-pass (toujours actif) --- }
-      Else If uopt = 'D' Then
-        { rien a faire }
       { --- /Dsym[=val] : definir un symbole --- }
       Else If (Length(uopt) >= 2) And (uopt[1] = 'D') Then
       Begin
@@ -9682,40 +9697,10 @@ Begin
           Else             si^.value := 1;
         End;
       End
-      { --- /L : generer le listing --- }
-      Else If uopt = 'L' Then
-        do_listing := True
-      { --- /ML : casse des labels --- }
-      Else If uopt = 'ML' Then
-        case_sensitive := True
-      { --- /MU : majuscules (defaut) --- }
-      Else If uopt = 'MU' Then
-        case_sensitive := False
-      { --- /MX : casse publics/extern --- }
-      Else If uopt = 'MX' Then
-        case_public_ext := True
-      { --- /N : pas de table de symboles --- }
-      Else If uopt = 'N' Then
-        lst_sym_table := False
-      { --- /S : segments en ordre de definition (defaut) --- }
-      Else If uopt = 'S' Then
-        seg_alpha := False
-      { --- /T : silencieux --- }
-      Else If uopt = 'T' Then
-        silent_mode := True
-      { --- /W0 /W1 /W2 : niveau d avertissement --- }
-      Else If uopt = 'W0' Then warn_level := 0
-      Else If uopt = 'W1' Then warn_level := 1
-      Else If uopt = 'W2' Then warn_level := 2
-      { --- /X : lister blocs conditionnels inactifs --- }
-      Else If uopt = 'X' Then
-        list_cond := True
-      { --- /Z : afficher ligne source avec erreur --- }
-      Else If uopt = 'Z' Then
-        show_err_lines := True
-      { --- /Zi /Zd : CodeView debug (non implemente) --- }
-      Else If (uopt = 'ZI') Or (uopt = 'ZD') Then
-        { ignore }
+      { --- /Bn : taille buffer avec chiffre colle, ignore --- }
+      Else If (Length(uopt) >= 2) And (uopt[1] = 'B') And
+              (uopt[2] >= '0') And (uopt[2] <= '9') Then
+        { /Bn : ignorer le chiffre colle }
       { --- /I[chem] ou /I chem : repertoire INCLUDE --- }
       Else If (Length(uopt) >= 1) And (uopt[1] = 'I') Then
       Begin
