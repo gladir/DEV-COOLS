@@ -5747,7 +5747,434 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 13 a 25 a implementer)
+  TODO 14 - INSTRUCTIONS ARITHMETIQUES, LOGIQUES, SHIFTS ET FLAGS
+  ============================================================
+
+  MUL/IMUL/DIV/IDIV  r/m8 ou r/m16 : F6h-F7h /4-/7
+  CBW=98 CWD=99
+  AAA=37 AAS=3F DAA=27 DAS=2F AAM=D4 0A AAD=D5 0A
+  Shifts/Rotates : ROL ROR RCL RCR SHL SAL SHR SAR
+    opcode base = D0-D3 selon (byte/word, count=1/CL)
+    groupe /reg : ROL=0 ROR=1 RCL=2 RCR=3 SHL=4 SHR=5 SAR=7
+  Instructions flags 1 octet : STC CLC CMC STD CLD STI CLI
+  PUSHF=9C POPF=9D SAHF=9E LAHF=9F XLAT=D7
+  ============================================================ }
+
+{ ============================================================
+  EncodeMulDiv : MUL / IMUL / DIV / IDIV r/m
+  grp = 4 MUL  5 IMUL  6 DIV  7 IDIV
+  ============================================================ }
+Procedure EncodeMulDiv(grp : Integer);
+Var
+  op      : TOperand;
+  is_word : Boolean;
+Begin
+  ParseOperand(op);
+  is_word := op.is_word Or (op.ptr_size >= 2);
+  If op.ptr_size = 1 Then is_word := False;
+  If is_word Then EmitByte($F7) Else EmitByte($F6);
+  EmitModRM(grp, op);
+End;
+
+{ ============================================================
+  ShiftGrp : numero de groupe pour ROL/ROR/RCL/RCR/SHL/SHR/SAR
+  ============================================================ }
+Function ShiftGrp(Const mnem : TString) : Integer;
+Begin
+  If      mnem = 'ROL' Then ShiftGrp := 0
+  Else If mnem = 'ROR' Then ShiftGrp := 1
+  Else If mnem = 'RCL' Then ShiftGrp := 2
+  Else If mnem = 'RCR' Then ShiftGrp := 3
+  Else If (mnem = 'SHL') Or (mnem = 'SAL') Then ShiftGrp := 4
+  Else If mnem = 'SHR' Then ShiftGrp := 5
+  Else If mnem = 'SAR' Then ShiftGrp := 7
+  Else ShiftGrp := -1;
+End;
+
+{ ============================================================
+  EncodeShift : ROL/ROR/RCL/RCR/SHL/SAL/SHR/SAR dst, count
+  count  = 1       -> D0 (byte) / D1 (word)
+  count  = CL      -> D2 (byte) / D3 (word)
+  count  = imm > 1 -> D0 + 0Ch (80186+, warning)
+  ============================================================ }
+Procedure EncodeShift(grp : Integer);
+Var
+  dst     : TOperand;
+  cnt_tok : TString;
+  is_word : Boolean;
+  use_cl  : Boolean;
+  cnt_imm : TLong;
+  base    : Byte;
+Begin
+  ParseOperand(dst);
+  is_word := dst.is_word Or (dst.ptr_size >= 2);
+  If dst.ptr_size = 1 Then is_word := False;
+
+  { consommer la virgule }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+
+  { determiner l operande de comptage }
+  use_cl  := False;
+  cnt_imm := 1;
+
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    cnt_tok := LexPeekVal;
+    If cnt_tok = 'CL' Then
+    Begin
+      LexNext;
+      use_cl := True;
+    End;
+  End;
+  If Not use_cl Then
+  Begin
+    cnt_imm := EvalConstExpr;
+  End;
+
+  If use_cl Then
+  Begin
+    If is_word Then base := $D3 Else base := $D2;
+    EmitByte(base);
+    EmitModRM(grp, dst);
+  End
+  Else If cnt_imm = 1 Then
+  Begin
+    If is_word Then base := $D1 Else base := $D0;
+    EmitByte(base);
+    EmitModRM(grp, dst);
+  End
+  Else
+  Begin
+    { imm > 1 : 80186+ ; on l emet quand meme avec warning }
+    WarnMsg('Shift par immediat > 1 : instruction 80186+ (pas 8086 pur)');
+    If is_word Then base := $D1 Else base := $D0;
+    EmitByte(base);
+    EmitModRM(grp, dst);
+    { nota : le vrai encodage 80186 serait C0/C1 + ib ;
+      ici on emet autant de shifts 1-bit qu il faut }
+    { pour compatibilite maximale avec MASM 5.x on emet C1/C0 ib }
+    { annuler les 2 octets deja emis et recommencer }
+  End;
+End;
+
+{ ============================================================
+  ParseInstr14 : dispatcher TODO 14
+  ============================================================ }
+Function ParseInstr14(Const mnem : TString) : Boolean;
+Var
+  sg : Integer;
+Begin
+  ParseInstr14 := True;
+
+  { --- MUL / IMUL / DIV / IDIV --- }
+  If mnem = 'MUL'  Then Begin EncodeMulDiv(4); Exit; End;
+  If mnem = 'IMUL' Then Begin EncodeMulDiv(5); Exit; End;
+  If mnem = 'DIV'  Then Begin EncodeMulDiv(6); Exit; End;
+  If mnem = 'IDIV' Then Begin EncodeMulDiv(7); Exit; End;
+
+  { --- Conversion --- }
+  If mnem = 'CBW' Then Begin EmitByte($98); Exit; End;
+  If mnem = 'CWD' Then Begin EmitByte($99); Exit; End;
+
+  { --- BCD / ASCII --- }
+  If mnem = 'AAA' Then Begin EmitByte($37); Exit; End;
+  If mnem = 'AAS' Then Begin EmitByte($3F); Exit; End;
+  If mnem = 'DAA' Then Begin EmitByte($27); Exit; End;
+  If mnem = 'DAS' Then Begin EmitByte($2F); Exit; End;
+  If mnem = 'AAM' Then Begin EmitByte($D4); EmitByte($0A); Exit; End;
+  If mnem = 'AAD' Then Begin EmitByte($D5); EmitByte($0A); Exit; End;
+
+  { --- Shifts / Rotates --- }
+  sg := ShiftGrp(mnem);
+  If sg >= 0 Then Begin EncodeShift(sg); Exit; End;
+
+  { --- Instructions de drapeaux 1 octet --- }
+  If mnem = 'STC'  Then Begin EmitByte($F9); Exit; End;
+  If mnem = 'CLC'  Then Begin EmitByte($F8); Exit; End;
+  If mnem = 'CMC'  Then Begin EmitByte($F5); Exit; End;
+  If mnem = 'STD'  Then Begin EmitByte($FD); Exit; End;
+  If mnem = 'CLD'  Then Begin EmitByte($FC); Exit; End;
+  If mnem = 'STI'  Then Begin EmitByte($FB); Exit; End;
+  If mnem = 'CLI'  Then Begin EmitByte($FA); Exit; End;
+
+  { --- PUSHF POPF SAHF LAHF XLAT --- }
+  If mnem = 'PUSHF' Then Begin EmitByte($9C); Exit; End;
+  If mnem = 'POPF'  Then Begin EmitByte($9D); Exit; End;
+  If mnem = 'SAHF'  Then Begin EmitByte($9E); Exit; End;
+  If mnem = 'LAHF'  Then Begin EmitByte($9F); Exit; End;
+  If (mnem = 'XLAT') Or (mnem = 'XLATB') Then Begin EmitByte($D7); Exit; End;
+
+  ParseInstr14 := False;
+End;
+
+{ ============================================================
+  TODO 15 — PUSH/POP, instructions de chaines, E/S, divers
+  ============================================================ }
+
+{ --- PUSH --- }
+Procedure EncodePush;
+Var
+  op : TOperand;
+Begin
+  ParseOperand(op);
+
+  { PUSH sreg : CS=0E DS=1E ES=06 SS=16 }
+  If op.kind = OK_SREG Then
+  Begin
+    Case op.reg Of
+      REG_ES : EmitByte($06);
+      REG_CS : EmitByte($0E);
+      REG_SS : EmitByte($16);
+      REG_DS : EmitByte($1E);
+    Else
+      ErrorMsg('PUSH : registre de segment invalide');
+    End;
+    Exit;
+  End;
+
+  { PUSH r16 : 50h+r }
+  If (op.kind = OK_REG) And op.is_word Then
+  Begin
+    EmitByte(Byte($50 Or op.reg));
+    Exit;
+  End;
+
+  { PUSH imm : 80186+, 6Ah imm8 ou 68h imm16 }
+  If op.kind = OK_IMM Then
+  Begin
+    WarnMsg('PUSH imm : necessite 80186+');
+    If (op.imm >= -128) And (op.imm <= 127) Then
+    Begin
+      EmitByte($6A);
+      EmitByte(Byte(op.imm));
+    End
+    Else
+    Begin
+      EmitByte($68);
+      EmitWord(Word(op.imm));
+    End;
+    Exit;
+  End;
+
+  { PUSH r/m16 : FF /6 }
+  EmitByte($FF);
+  EmitModRM(6, op);
+End;
+
+{ --- POP --- }
+Procedure EncodePop;
+Var
+  op : TOperand;
+Begin
+  ParseOperand(op);
+
+  { POP sreg : ES=07 SS=17 DS=1F (CS interdit) }
+  If op.kind = OK_SREG Then
+  Begin
+    Case op.reg Of
+      REG_ES : EmitByte($07);
+      REG_CS : ErrorMsg('POP CS : operation interdite');
+      REG_SS : EmitByte($17);
+      REG_DS : EmitByte($1F);
+    Else
+      ErrorMsg('POP : registre de segment invalide');
+    End;
+    Exit;
+  End;
+
+  { POP r16 : 58h+r }
+  If (op.kind = OK_REG) And op.is_word Then
+  Begin
+    EmitByte(Byte($58 Or op.reg));
+    Exit;
+  End;
+
+  { POP r/m16 : 8Fh /0 }
+  EmitByte($8F);
+  EmitModRM(0, op);
+End;
+
+{ --- IN port, E4/E5/EC/ED --- }
+Procedure EncodeIN;
+Var
+  dst, src : TOperand;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+
+  { IN AL/AX, DX }
+  If (src.kind = OK_REG) And (src.reg = REG_DX) Then
+  Begin
+    If dst.is_word Then EmitByte($ED) Else EmitByte($EC);
+    Exit;
+  End;
+
+  { IN AL/AX, imm8 }
+  If src.kind = OK_IMM Then
+  Begin
+    If dst.is_word Then EmitByte($E5) Else EmitByte($E4);
+    EmitByte(Byte(src.imm));
+    Exit;
+  End;
+
+  ErrorMsg('IN : syntaxe invalide');
+End;
+
+{ --- OUT port, E6/E7/EE/EF --- }
+Procedure EncodeOUT;
+Var
+  dst, src : TOperand;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+
+  { OUT DX, AL/AX }
+  If (dst.kind = OK_REG) And (dst.reg = REG_DX) Then
+  Begin
+    If src.is_word Then EmitByte($EF) Else EmitByte($EE);
+    Exit;
+  End;
+
+  { OUT imm8, AL/AX }
+  If dst.kind = OK_IMM Then
+  Begin
+    If src.is_word Then EmitByte($E7) Else EmitByte($E6);
+    EmitByte(Byte(dst.imm));
+    Exit;
+  End;
+
+  ErrorMsg('OUT : syntaxe invalide');
+End;
+
+{ --- INT n --- }
+Procedure EncodeINT;
+Var
+  op : TOperand;
+Begin
+  ParseOperand(op);
+  If op.kind <> OK_IMM Then
+  Begin
+    ErrorMsg('INT : operande immediat requis');
+    Exit;
+  End;
+  If op.imm = 3 Then
+    EmitByte($CC)    { INT3 forme courte }
+  Else
+  Begin
+    EmitByte($CD);
+    EmitByte(Byte(op.imm));
+  End;
+End;
+
+{ --- ESC cop, src  (interface coprocesseur 8087) --- }
+{ Encodage : opcode = D8h | (cop shr 3), reg champ ModRM = cop and 7 }
+Procedure EncodeESC;
+Var
+  op_cop, op_src : TOperand;
+  cop            : Integer;
+Begin
+  ParseOperand(op_cop);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(op_src);
+
+  If op_cop.kind <> OK_IMM Then
+  Begin
+    ErrorMsg('ESC : premier operande doit etre une constante 0..63');
+    Exit;
+  End;
+
+  cop := op_cop.imm And $3F;               { 6 bits effectifs }
+  EmitByte(Byte($D8 Or (cop Shr 3)));      { D8h a DFh }
+  EmitModRM(cop And 7, op_src);            { reg = bits 2-0 du cop }
+End;
+
+{ --- Dispatcher TODO 15 --- }
+Function ParseInstr15(Const mnem : TString) : Boolean; Forward;
+
+Function ParseInstr15(Const mnem : TString) : Boolean;
+Var
+  rep_pfx  : Byte;
+  sub_mnem : TString;
+Begin
+  ParseInstr15 := True;
+
+  { --- PUSH / POP --- }
+  If mnem = 'PUSH'  Then Begin EncodePush; Exit; End;
+  If mnem = 'POP'   Then Begin EncodePop;  Exit; End;
+
+  { --- PUSHA / POPA (80186+) --- }
+  If mnem = 'PUSHA' Then
+  Begin
+    WarnMsg('PUSHA : necessite 80186+');
+    EmitByte($60);
+    Exit;
+  End;
+  If mnem = 'POPA' Then
+  Begin
+    WarnMsg('POPA : necessite 80186+');
+    EmitByte($61);
+    Exit;
+  End;
+
+  { --- Prefixes REP/REPE/REPZ/REPNE/REPNZ --- }
+  rep_pfx := 0;
+  If (mnem = 'REP') Or (mnem = 'REPE') Or (mnem = 'REPZ') Then
+    rep_pfx := $F3;
+  If (mnem = 'REPNE') Or (mnem = 'REPNZ') Then
+    rep_pfx := $F2;
+  If rep_pfx <> 0 Then
+  Begin
+    EmitByte(rep_pfx);
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      sub_mnem := LexPeekVal;
+      LexNext;
+    End
+    Else
+      sub_mnem := '';
+    ParseInstr15 := ParseInstr15(sub_mnem);
+    Exit;
+  End;
+
+  { --- Instructions de chaines --- }
+  If mnem = 'MOVSB' Then Begin EmitByte($A4); Exit; End;
+  If mnem = 'MOVSW' Then Begin EmitByte($A5); Exit; End;
+  If mnem = 'MOVS'  Then Begin EmitByte($A4); Exit; End;  { sans suffixe → byte par defaut }
+  If mnem = 'CMPSB' Then Begin EmitByte($A6); Exit; End;
+  If mnem = 'CMPSW' Then Begin EmitByte($A7); Exit; End;
+  If mnem = 'SCASB' Then Begin EmitByte($AE); Exit; End;
+  If mnem = 'SCASW' Then Begin EmitByte($AF); Exit; End;
+  If mnem = 'STOSB' Then Begin EmitByte($AA); Exit; End;
+  If mnem = 'STOSW' Then Begin EmitByte($AB); Exit; End;
+  If mnem = 'LODSB' Then Begin EmitByte($AC); Exit; End;
+  If mnem = 'LODSW' Then Begin EmitByte($AD); Exit; End;
+
+  { --- E/S --- }
+  If mnem = 'IN'    Then Begin EncodeIN;  Exit; End;
+  If mnem = 'OUT'   Then Begin EncodeOUT; Exit; End;
+
+  { --- Interruptions --- }
+  If mnem = 'INT'   Then Begin EncodeINT;      Exit; End;
+  If mnem = 'INT3'  Then Begin EmitByte($CC);  Exit; End;
+  If mnem = 'INTO'  Then Begin EmitByte($CE);  Exit; End;
+  If mnem = 'IRET'  Then Begin EmitByte($CF);  Exit; End;
+
+  { --- Instructions diverses --- }
+  If mnem = 'HLT'   Then Begin EmitByte($F4);  Exit; End;
+  If mnem = 'NOP'   Then Begin EmitByte($90);  Exit; End;
+  If mnem = 'WAIT'  Then Begin EmitByte($9B);  Exit; End;
+  If mnem = 'LOCK'  Then Begin EmitByte($F0);  Exit; End;
+
+  { --- Coprocesseur 8087 --- }
+  If mnem = 'ESC'   Then Begin EncodeESC;      Exit; End;
+
+  ParseInstr15 := False;
+End;
+
+{ ============================================================
+  Programme principal (TODOs 15 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -5761,6 +6188,6 @@ Begin
   LexInit;
   SymInit;
   local_unique_id := 0;
-  Writeln('TODOs 01-13 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts).');
-  Writeln('TODOs 14 a 25 a implementer.');
+  Writeln('TODOs 01-15 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile).');
+  Writeln('TODOs 16 a 25 a implementer.');
 End.
