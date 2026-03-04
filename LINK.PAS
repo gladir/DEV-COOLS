@@ -442,12 +442,15 @@ Var
  GroupNameIdx,GroupMemberIdx:Word;
  GroupItemType:Byte;
  NamePos,NameLimit:Integer;
+ PubPos,PubLimit:Integer;
  LinePos,LineLimit:Integer;
  BaseGroupIdx,BaseSegIdx:Word;
+ PubTypeIdx:Word;
  SegNameIdx,SegClassIdx,SegOverlayIdx:Word;
  ParsedName:String[64];
  ParsedClass:String[64];
  ParsedNameLen:Byte;
+ PubOfs:LongInt;
  LineNum,LineOfs:LongInt;
  k:Integer;
 
@@ -537,7 +540,64 @@ Begin
       AddSymbol(SymRec);
     End;
     $92, $93:Begin
-     { LPUBDEF/LPUBDEF32 : def publique locale, ignore pour instant }
+     { LPUBDEF/LPUBDEF32 : definition publique locale }
+     PubPos:=0;
+     PubLimit:=RecLen-1; { sans checksum }
+     If PubLimit<=0 Then Continue;
+     If Not ReadOmfIndex(PubPos,PubLimit,BaseGroupIdx) Then Continue;
+     If Not ReadOmfIndex(PubPos,PubLimit,BaseSegIdx) Then Continue;
+
+     { Cas special OMF : BaseSeg=0 => frame explicite }
+     If BaseSegIdx=0 Then Begin
+      If RecType=$93 Then Begin
+       If PubPos+3<PubLimit Then Inc(PubPos,4)
+                           Else Continue;
+      End Else Begin
+       If PubPos+1<PubLimit Then Inc(PubPos,2)
+                           Else Continue;
+      End;
+     End;
+
+     While PubPos<PubLimit do Begin
+      ParsedNameLen:=Buffer[PubPos];
+      Inc(PubPos);
+      If PubPos>PubLimit Then Break;
+      If PubPos+ParsedNameLen>PubLimit Then ParsedNameLen:=PubLimit-PubPos;
+
+      ParsedName:='';
+      For k:=1 to ParsedNameLen do Begin
+       ParsedName:=ParsedName+Chr(Buffer[PubPos]);
+       Inc(PubPos);
+      End;
+
+      If RecType=$93 Then Begin
+       If PubPos+3>=PubLimit Then Break;
+       PubOfs:=LongInt(Buffer[PubPos])
+             + LongInt(Buffer[PubPos+1]) * 256
+             + LongInt(Buffer[PubPos+2]) * 65536
+             + LongInt(Buffer[PubPos+3]) * 16777216;
+       Inc(PubPos,4);
+      End Else Begin
+       If PubPos+1>=PubLimit Then Break;
+       PubOfs:=Buffer[PubPos]+LongInt(Buffer[PubPos+1])*256;
+       Inc(PubPos,2);
+      End;
+
+      If Not ReadOmfIndex(PubPos,PubLimit,PubTypeIdx) Then Break;
+
+      If SymbolCount>=MAX_SYMBOLS Then Begin
+       WriteLn('Erreur : Trop de symboles publics locaux');
+       Halt(12);
+      End;
+
+      SymRec.Name:=Copy(ParsedName,1,32);
+      SymRec.Segment:=BaseSegIdx;
+      If PubOfs<0 Then SymRec.Offset:=0
+      Else If PubOfs>$FFFF Then SymRec.Offset:=$FFFF
+      Else SymRec.Offset:=PubOfs;
+      SymRec.IsExternal:=False;
+      AddSymbol(SymRec);
+     End;
     End;
     $94, $95:Begin
      { LINNUM/LINNUM32 : information de lignes source }
