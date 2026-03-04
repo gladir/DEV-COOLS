@@ -612,6 +612,9 @@ Var
   cur_line   : TString;  { contenu de la ligne en cours d analyse }
   cur_lineno : Integer;  { numero de ligne logique (apres continuation) }
 
+  { Controle d emission (passe 1 = True => avancer LC sans ecrire) }
+  no_emit    : Boolean;
+
 { ============================================================
   Fonction de hachage djb2 adaptee (retourne 0..HASH_SIZE-1)
   ============================================================ }
@@ -2286,6 +2289,18 @@ End;
   ============================================================ }
 Procedure EmitByte(b : Byte);
 Begin
+  { En passe 1, avancer uniquement le LC sans ecrire dans le buffer }
+  If no_emit Then
+  Begin
+    Inc(lc);
+    If (cur_seg >= 1) And (cur_seg <= MAX_SEG) Then
+    Begin
+      Inc(seg_table[cur_seg].cur_lc);
+      If seg_table[cur_seg].cur_lc > seg_table[cur_seg].size Then
+        seg_table[cur_seg].size := seg_table[cur_seg].cur_lc;
+    End;
+    Exit;
+  End;
   If ledata_buf_len >= LEDATA_BUF_MAX Then
     FlushLEDATA;
   ledata_buf[ledata_buf_len] := b;
@@ -8090,7 +8105,547 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 19 a 25 a implementer)
+  TODO 20 - DEUX PASSES D ASSEMBLAGE ET GESTION DES FIXUPS
+  ============================================================ }
+
+{ ============================================================
+  IsNameDirective : True si le mot est une directive qui
+  attend un nom comme premier argument (syntaxe MASM).
+  ============================================================ }
+Function IsNameDirective(Const tok : TString) : Boolean;
+Begin
+  IsNameDirective :=
+    (tok = 'DB')    Or (tok = 'DW')    Or (tok = 'DD')    Or
+    (tok = 'DQ')    Or (tok = 'DT')    Or
+    (tok = 'EQU')   Or (tok = 'MACRO') Or (tok = 'PROC')  Or
+    (tok = 'ENDP')  Or (tok = 'SEGMENT') Or (tok = 'ENDS') Or
+    (tok = 'STRUC') Or (tok = 'LABEL') Or (tok = 'RECORD') Or
+    (tok = 'GROUP') Or (tok = 'COMM')  Or (tok = 'TEXTEQU');
+End;
+
+{ ============================================================
+  AssembleLine : analyser et assembler une ligne source.
+  Appelle tous les encodeurs des TODOs 09-19.
+  ============================================================ }
+Procedure AssembleLine;
+Var
+  tok1       : TString;     { premier token (label ou mnemonic) }
+  tok2       : TString;     { deuxieme token (directive ou :) }
+  label_name : TSymString;
+  has_label  : Boolean;
+  mnem       : TString;
+  mi         : Integer;
+  rest       : TString;
+  rn         : TString;     { registre pour ASSUME }
+  sn         : TString;     { segment pour ASSUME }
+  inc_name   : TString;     { nom de fichier pour INCLUDE }
+  lib_name   : TString;     { nom de librairie pour INCLUDELIB }
+  seg_nm     : TString;     { nom de segment pour .CODE }
+  stk_sz     : TLong;       { taille de stack pour .STACK }
+  seg_aln    : TSegAlign;   { alignement pour SEGMENT }
+  seg_comb   : TSegCombine; { combinaison pour SEGMENT }
+  seg_cls    : TString;     { classe pour SEGMENT }
+  si         : Integer;     { index de structure }
+Begin
+  { reinitialiser le lexer sur la ligne courante }
+  lex_line     := cur_line;
+  lex_pos      := 1;
+  lex_has_peek := False;
+  lex_at_eol   := False;
+
+  { ligne vide }
+  If (LexPeekKind = TK_NEWLINE) Or (LexPeekKind = TK_EOF) Then Exit;
+
+  { --- lire le premier token --- }
+  LexNext;
+  tok1 := lex_tok.val;
+
+  { --- traitement des directives conditionnelles (toujours, meme si !IfAssembling) --- }
+  If (lex_tok.kind = TK_IDENT) And
+     ((tok1 = 'IF')     Or (tok1 = 'IFE')    Or (tok1 = 'IFDEF') Or
+      (tok1 = 'IFNDEF') Or (tok1 = 'IFB')    Or (tok1 = 'IFNB')  Or
+      (tok1 = 'IFIDN')  Or (tok1 = 'IFIDNI') Or (tok1 = 'IFDIF') Or
+      (tok1 = 'IFDIFI') Or (tok1 = 'IF1')    Or (tok1 = 'IF2')   Or
+      (tok1 = 'ELSE')   Or (tok1 = 'ELSEIF') Or (tok1 = 'ELSEIFDEF') Or
+      (tok1 = 'ELSEIFNDEF') Or (tok1 = 'ENDIF')) Then
+  Begin
+    ParseConditional(tok1);
+    Exit;
+  End;
+
+  { --- si on n assemble pas ce bloc, skipper --- }
+  If Not IfAssembling Then Exit;
+
+  { --- directives d erreur conditionnelle (seulement si actif) --- }
+  If (lex_tok.kind = TK_IDENT) And
+     ((tok1 = '.ERR')   Or (tok1 = '.ERR1')  Or (tok1 = '.ERR2')  Or
+      (tok1 = '.ERRDEF') Or (tok1 = '.ERRNDEF') Or
+      (tok1 = '.ERRB')  Or (tok1 = '.ERRNB') Or
+      (tok1 = '.ERRIDN') Or (tok1 = '.ERRDIF') Or
+      (tok1 = '.ERRE')  Or (tok1 = '.ERRNZ') Or
+      (tok1 = '.ERRGE') Or (tok1 = '.ERRLT') Or
+      (tok1 = '.ERRLE') Or (tok1 = '.ERRGT')) Then
+  Begin
+    ParseConditional(tok1);
+    Exit;
+  End;
+
+  { --- directives REP/REPE/REPZ/REPNE/REPNZ (prefixes + instruction chaine) --- }
+  If (lex_tok.kind = TK_IDENT) And
+     ((tok1 = 'REP')   Or (tok1 = 'REPE')  Or (tok1 = 'REPZ') Or
+      (tok1 = 'REPNE') Or (tok1 = 'REPNZ')) Then
+  Begin
+    If ParseInstr15(tok1) Then Exit;
+  End;
+
+  { --- determiner si premier token est un label ou un mnemonic --- }
+  label_name := '';
+  has_label  := False;
+
+  If lex_tok.kind = TK_IDENT Then
+  Begin
+    { regarder le deuxieme token }
+    tok2 := LexPeekVal;
+    If (LexPeekKind = TK_PUNCT) And (tok2 = ':') Then
+    Begin
+      { label avec colon : definir le label }
+      has_label  := True;
+      label_name := tok1;
+      LexNext;  { consommer ':' }
+      SymDefineLabel(label_name, cur_seg, lc, 2);
+      { lire le mnemonic suivant }
+      If (LexPeekKind = TK_NEWLINE) Or (LexPeekKind = TK_EOF) Then Exit;
+      LexNext;
+      tok1 := lex_tok.val;
+    End
+    Else If (LexPeekKind = TK_PUNCT) And (tok2 = '=') Then
+    Begin
+      { nom = expr }  
+      label_name := tok1;
+      LexNext;  { consommer '=' }
+      ParseEquAssign(label_name);
+      Exit;
+    End
+    Else If (LexPeekKind = TK_IDENT) And IsNameDirective(LexPeekVal) Then
+    Begin
+      { label (sans colon) suivi d une directive }
+      has_label  := True;
+      label_name := tok1;
+      LexNext;
+      tok1 := lex_tok.val;  { la directive devient le mnemonic }
+    End;
+  End;
+
+  { --- dispatcher sur le mnemonic / directive --- }
+  mnem := tok1;
+
+  { directives DB/DW/DD/DQ/DT }
+  If (mnem = 'DB') Or (mnem = 'DW') Or (mnem = 'DD') Or
+     (mnem = 'DQ') Or (mnem = 'DT') Then
+  Begin
+    If Not has_label Then
+      SymDefineLabel(label_name, cur_seg, lc, 0); { pas de label avant data }
+    ParseDataDir(mnem, label_name);
+    Exit;
+  End;
+
+  { EQU }
+  If mnem = 'EQU' Then
+  Begin
+    If label_name <> '' Then ParseEqu(label_name)
+    Else ErrorMsg('EQU sans nom');
+    Exit;
+  End;
+
+  { LABEL }
+  If mnem = 'LABEL' Then
+  Begin
+    If label_name <> '' Then ParseLabelDir(label_name)
+    Else ErrorMsg('LABEL sans nom');
+    Exit;
+  End;
+
+  { MACRO : definition }
+  If mnem = 'MACRO' Then
+  Begin
+    If label_name <> '' Then ParseMacroDef(label_name)
+    Else ErrorMsg('MACRO sans nom');
+    Exit;
+  End;
+
+  { ENDM : ENDM isole (hors CollectBlock) }
+  If mnem = 'ENDM' Then
+  Begin
+    { bloc RepT/Irp/Irpc non ouvert : ignorer }
+    Exit;
+  End;
+
+  { PURGE }
+  If mnem = 'PURGE' Then Begin ParsePurge; Exit; End;
+
+  { EXITM }
+  If mnem = 'EXITM' Then Begin MacroExitm; Exit; End;
+
+  { LOCAL (dans corps de macro) }
+  If mnem = 'LOCAL' Then Begin ParseLocal; Exit; End;
+
+  { REPT }
+  If mnem = 'REPT' Then Begin ParseRept; Exit; End;
+
+  { IRP / IRPC }
+  If mnem = 'IRP'  Then Begin ParseIrp;  Exit; End;
+  If mnem = 'IRPC' Then Begin ParseIrpc; Exit; End;
+
+  { PROC }
+  If mnem = 'PROC' Then
+  Begin
+    If label_name <> '' Then ParseProc(label_name)
+    Else ErrorMsg('PROC sans nom');
+    Exit;
+  End;
+
+  { ENDP }
+  If mnem = 'ENDP' Then
+  Begin
+    ParseEndp(label_name);
+    Exit;
+  End;
+
+  { STRUC }
+  If mnem = 'STRUC' Then
+  Begin
+    If label_name <> '' Then ParseStruc(label_name)
+    Else ErrorMsg('STRUC sans nom');
+    Exit;
+  End;
+
+  { ENDS (segment ou structure) }
+  If mnem = 'ENDS' Then
+  Begin
+    ParseEnds(label_name);
+    Exit;
+  End;
+
+  { RECORD }
+  If mnem = 'RECORD' Then
+  Begin
+    If label_name <> '' Then ParseRecord(label_name)
+    Else ErrorMsg('RECORD sans nom');
+    Exit;
+  End;
+
+  { SEGMENT : parser les attributs optionnels }
+  If mnem = 'SEGMENT' Then
+  Begin
+    seg_aln  := sa_para;
+    seg_comb := SC_PRIVATE;
+    seg_cls  := '';
+    While LexPeekKind = TK_IDENT Do
+    Begin
+      LexNext;
+      tok2 := lex_tok.val;
+      If (tok2 = 'BYTE')   Then seg_aln  := sa_byte
+      Else If (tok2 = 'WORD')   Then seg_aln  := sa_word
+      Else If (tok2 = 'DWORD')  Then seg_aln  := sa_dword
+      Else If (tok2 = 'PARA')   Then seg_aln  := sa_para
+      Else If (tok2 = 'PAGE')   Then seg_aln  := sa_page
+      Else If (tok2 = 'PUBLIC') Then seg_comb := sc_public
+      Else If (tok2 = 'COMMON') Then seg_comb := sc_common
+      Else If (tok2 = 'STACK')  Then seg_comb := sc_stack
+      Else If (tok2 = 'MEMORY') Then seg_comb := sc_common
+      Else If (tok2 = 'AT')     Then
+      Begin
+        If LexPeekKind = TK_NUMBER Then LexNext; { adresse AT }
+      End;
+    End;
+    { classe entre apostrophes }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '''') Then
+    Begin
+      LexNext;
+      If LexPeekKind = TK_IDENT Then Begin LexNext; seg_cls := lex_tok.val; End;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '''') Then LexNext;
+    End
+    Else If LexPeekKind = TK_STRING Then
+    Begin
+      LexNext; seg_cls := lex_tok.val;
+    End;
+    ParseSegment(label_name, seg_aln, seg_comb, seg_cls);
+    Exit;
+  End;
+
+  { GROUP }
+  If mnem = 'GROUP' Then
+  Begin
+    { GrpEnter + GrpAddSeg : parse la liste des segments }
+    { deja inclus dans WriteAllSegments }
+    Exit;
+  End;
+
+  { ASSUME }
+  If mnem = 'ASSUME' Then
+  Begin
+    While LexPeekKind = TK_IDENT Do
+    Begin
+      LexNext; rn := lex_tok.val;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then LexNext;
+      If LexPeekKind = TK_IDENT Then Begin LexNext; sn := lex_tok.val; End
+      Else sn := '';
+      ParseAssume(rn, sn);
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext
+      Else Break;
+    End;
+    Exit;
+  End;
+
+  { INCLUDE }
+  If mnem = 'INCLUDE' Then
+  Begin
+    { lire le nom de fichier : tout le reste de la ligne }
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do
+      Inc(lex_pos);
+    inc_name := '';
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] <> ' ') Do
+    Begin
+      inc_name := inc_name + lex_line[lex_pos];
+      Inc(lex_pos);
+    End;
+    If inc_name <> '' Then SrcPush(inc_name);
+    Exit;
+  End;
+
+  { INCLUDELIB }
+  If mnem = 'INCLUDELIB' Then
+  Begin
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do
+      Inc(lex_pos);
+    lib_name := '';
+    lib_name := '';
+    While lex_pos <= Length(lex_line) Do
+    Begin
+      lib_name := lib_name + lex_line[lex_pos];
+      Inc(lex_pos);
+    End;
+    { Emit COMENT $A3 (library specifier) }
+    If (lib_name <> '') And obj_is_open Then
+      ObjCOMENT($80, $A3, lib_name);
+    Exit;
+  End;
+
+  { NAME }
+  If mnem = 'NAME' Then
+  Begin
+    If LexPeekKind = TK_IDENT Then Begin LexNext; { ignore } End;
+    Exit;
+  End;
+
+  { .MODEL }
+  If mnem = '.MODEL' Then
+  Begin
+    If LexPeekKind = TK_IDENT Then Begin LexNext; ParseModel(lex_tok.val); End;
+    Exit;
+  End;
+
+  { .CODE }
+  If mnem = '.CODE' Then
+  Begin
+    seg_nm := '';
+    If LexPeekKind = TK_IDENT Then Begin LexNext; seg_nm := lex_tok.val; End;
+    ParseDotCode(seg_nm);
+    Exit;
+  End;
+
+  { .DATA / .DATA? / .CONST }
+  If (mnem = '.DATA') Or (mnem = '.DATA?') Or (mnem = '.CONST') Then
+  Begin
+    ParseDotData(mnem);
+    Exit;
+  End;
+
+  { .STACK }
+  If mnem = '.STACK' Then
+  Begin
+    stk_sz := 512;
+    If LexPeekKind = TK_NUMBER Then Begin LexNext; stk_sz := lex_tok.num_val; End;
+    ParseDotStack(TWord(stk_sz));
+    Exit;
+  End;
+
+  { .RADIX }
+  If mnem = '.RADIX' Then
+  Begin
+    { pour l instant ignorer : lex_radix non implemente }
+    If LexPeekKind = TK_NUMBER Then LexNext;
+    Exit;
+  End;
+
+  { PUBLIC / EXTRN / EXTERN / GLOBAL / COMM }
+  If mnem = 'PUBLIC'  Then Begin ParsePublic; Exit; End;
+  If (mnem = 'EXTRN') Or (mnem = 'EXTERN') Then Begin ParseExtrn; Exit; End;
+  If mnem = 'GLOBAL'  Then Begin ParseGlobal;Exit; End;
+  If mnem = 'COMM'    Then Begin ParseComm;  Exit; End;
+
+  { ORG }
+  If mnem = 'ORG' Then Begin ParseOrg; Exit; End;
+
+  { ALIGN / EVEN }
+  If mnem = 'ALIGN' Then Begin ParseAlign; Exit; End;
+  If mnem = 'EVEN'  Then Begin ParseEven;  Exit; End;
+
+  { Directives de listing (ignorer silencieusement) }
+  If (mnem = '.LIST')  Or (mnem = '.NOLIST') Or (mnem = '.LISTALL') Or
+     (mnem = '.XLIST') Or (mnem = 'PAGE')    Or (mnem = 'TITLE')    Or
+     (mnem = 'SUBTTL') Or (mnem = '.8086')   Or (mnem = '.8087')    Or
+     (mnem = '.286')   Or (mnem = '.386')    Or (mnem = '.286C')    Or
+     (mnem = '.286P')  Or (mnem = '.386P')   Or (mnem = '.DOSSEG')  Or
+     (mnem = 'OPTION') Then
+  Begin
+    { consommer le reste de la ligne }
+    While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do LexNext;
+    Exit;
+  End;
+
+  { ENTER / LEAVE }
+  If mnem = 'ENTER' Then Begin ParseEnter; Exit; End;
+  If mnem = 'LEAVE' Then Begin ParseLeave; Exit; End;
+
+  { INVOKE }
+  If mnem = 'INVOKE' Then Begin ParseInvoke; Exit; End;
+
+  { --- instructions machine : passer aux encodeurs --- }
+  If ParseInstr15(mnem) Then Exit;
+  If ParseInstr14(mnem) Then Exit;
+  If ParseInstr13(mnem) Then Exit;
+  If ParseInstr12(mnem) Then Exit;
+
+  { --- expansion macro --- }
+  mi := MacroFind(mnem);
+  If mi > 0 Then
+  Begin
+    { le reste de la ligne = arguments }
+    rest := '';
+    If lex_pos <= Length(lex_line) Then
+      rest := Copy(lex_line, lex_pos, Length(lex_line) - lex_pos + 1);
+    ExpandMacro(mi, rest);
+    Exit;
+  End;
+
+  { --- verification structure comme instanciation --- }
+  si := StructFind(mnem);
+  If si > 0 Then
+  Begin
+    ParseStructInstance(si, label_name);
+    Exit;
+  End;
+
+  { instruction inconnue }
+  If pass_num = 2 Then
+    WarnMsg('Directive ou mnemonic inconnu : ' + mnem);
+End;
+
+{ ============================================================
+  ResetPassState : remettre a zero les LCs et l etat
+  d emission entre les deux passes.
+  ============================================================ }
+Procedure ResetPassState;
+Var
+  i : Integer;
+Begin
+  lc      := 0;
+  cur_seg := 0;
+  { remettre les LC de chaque segment a 0 }
+  For i := 1 To seg_count Do
+  Begin
+    seg_table[i].cur_lc := 0;
+    seg_table[i].size   := 0;
+  End;
+  { vider le buffer LEDATA }
+  ledata_buf_len := 0;
+  ledata_start   := 0;
+  { reinitialiser les piles conditionnelles et proc }
+  IfInit;
+  ProcInit;
+  { reinitialiser l expansion macro }
+  macro_exp_top := -1;
+End;
+
+{ ============================================================
+  RunPass : executer une passe complete d assemblage.
+  En passe 1 : no_emit = True (avance LC sans ecrire).
+  En passe 2 : no_emit = False (emet les octets).
+  ============================================================ }
+Procedure RunPass(pass : Integer);
+Begin
+  pass_num     := pass;
+  no_emit      := (pass = 1);
+  ledata_start := 0;
+  cur_lineno   := 0;
+
+  { lire et assembler chaque ligne }
+  While GetNextLine Do
+  Begin
+    AssembleLine;
+  End;
+
+  { fermer tout segment ouvert }
+  If cur_seg > 0 Then
+  Begin
+    FlushLEDATA;
+    cur_seg := 0;
+  End;
+End;
+
+{ ============================================================
+  Assemble : orchestrer les deux passes et ecrire le .OBJ.
+  fname    = nom du fichier source
+  out_name = nom du fichier .OBJ cible
+  ============================================================ }
+Procedure Assemble(Const fname : TString; Const out_name : TString);
+Begin
+  Writeln('Assemblage: ', fname);
+
+  { === PASSE 1 : construction de la table des symboles === }
+  Writeln('Passe 1...');
+  ResetPassState;
+  SrcPush(fname);
+  If SrcAtEnd Then
+  Begin
+    ErrorMsg('Impossible d ouvrir le source : ' + fname);
+    Exit;
+  End;
+  RunPass(1);
+  { SrcPop deja fait par GetNextLine quand EOF }
+
+  If err_count > 0 Then
+  Begin
+    Writeln(err_count, ' erreur(s) en passe 1 - arret.');
+    Exit;
+  End;
+
+  { === PASSE 2 : emission du code === }
+  Writeln('Passe 2...');
+  ResetPassState;
+  ObjOpen(out_name);
+  ObjTHEADR(fname);
+  WriteAllSegments;
+  EmitAllExtDefs;
+
+  SrcPush(fname);
+  RunPass(2);
+  { SrcPop deja fait par GetNextLine quand EOF }
+
+  FlushLEDATA;
+  EmitAllPubDefs;
+  ObjMODEND(False, 0, 0);
+  ObjClose;
+
+  { afficher les statistiques }
+  Writeln(cur_lineno, ' lignes compilees, ',
+          err_count, ' erreur(s), ',
+          warn_count, ' avertissement(s).');
+End;
+
+{ ============================================================
+  Programme principal (TODOs 20 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -8108,6 +8663,7 @@ Begin
   LexInit;
   SymInit;
   local_unique_id := 0;
-  Writeln('TODOs 01-19 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc).');
-  Writeln('TODOs 20 a 25 a implementer.');
+  no_emit         := False;
+  Writeln('TODOs 01-20 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc+passes).');
+  Writeln('TODOs 21 a 25 a implementer.');
 End.
