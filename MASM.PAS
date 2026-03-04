@@ -5763,15 +5763,6 @@ Const
     'HLT',   'NOP',    'WAIT',   'LOCK',   'ESC'
   );
 
-Function FindInstr(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  FindInstr := 0;
-  For i := 1 To IN_COUNT Do
-    If IN_NAMES[i] = s Then
-    Begin FindInstr := i; Exit; End;
-End;
-
 { ============================================================
   TODO 13 - ENCODAGE DES SAUTS ET APPELS (JMP CALL RET Jcc LOOP)
   ============================================================
@@ -6543,10 +6534,13 @@ Var
   instr_idx : Integer;
   rep_pfx   : Byte;
   sub_mnem  : TString;
+  i         : Integer;
 Begin
   ParseInstr := True;
   rep_pfx   := 0;
-  instr_idx := FindInstr(mnem);
+  instr_idx := 0;
+  For i := 1 To IN_COUNT Do
+    If IN_NAMES[i] = mnem Then Begin instr_idx := i; Break; End;
   Case instr_idx Of
 
     { --- Groupe 12 : MOV, arithmetique, logique --- }
