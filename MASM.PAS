@@ -4012,7 +4012,1742 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 10 a 25 a implementer)
+  TODO 11 - DIRECTIVES DE VISIBILITE (PUBLIC EXTRN GLOBAL COMM)
+  ============================================================
+
+  Tables de suivi :
+    extdef_names[1..MAX_EXTDEF] : noms des symboles EXTRN dans
+      l ordre de declaration ; l index (1-base) est l indice
+      EXTDEF utilise dans les records FIXUPP.
+    extdef_types[1..MAX_EXTDEF] : taille en octets du type.
+    pubdef_syms[1..MAX_PUBDEF]  : pointeurs vers les PSymbol
+      marques PUBLIC (pour emetre les PUBDEF a la fin).
+
+  Emission OMF :
+    EmitAllExtDefs -> un record EXTDEF par symbole externe.
+    EmitAllPubDefs -> un record PUBDEF par symbole public
+      (groupe par segment pour minimiser les records).
+    EmitComDef     -> record COMDEF pour variables communes.
+  ============================================================ }
+
+Const
+  MAX_EXTDEF = 256;
+  MAX_PUBDEF = 512;
+
+Var
+  extdef_names : Array[1..MAX_EXTDEF] Of TSymString;
+  extdef_types : Array[1..MAX_EXTDEF] Of Integer;
+  extdef_count : Integer;
+
+  pubdef_syms  : Array[1..MAX_PUBDEF] Of PSymbol;
+  pubdef_count : Integer;
+
+{ ============================================================
+  VisInit : initialiser les tables PUBLIC/EXTRN
+  ============================================================ }
+Procedure VisInit;
+Begin
+  extdef_count := 0;
+  pubdef_count := 0;
+End;
+
+{ ============================================================
+  ExtdefRegister : enregistrer un symbole EXTRN dans la table.
+  Retourne l index EXTDEF 1-base (utilise dans FIXUPP).
+  Si deja present, retourne l index existant.
+  ============================================================ }
+Function ExtdefRegister(Const name : TSymString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := 1 To extdef_count Do
+    If extdef_names[i] = name Then
+    Begin
+      ExtdefRegister := i;
+      Exit;
+    End;
+  If extdef_count >= MAX_EXTDEF Then
+  Begin
+    ErrorMsg('Trop de symboles EXTRN (max ' +
+             Chr(Ord('0') + MAX_EXTDEF Div 100) +
+             Chr(Ord('0') + (MAX_EXTDEF Div 10) Mod 10) +
+             Chr(Ord('0') + MAX_EXTDEF Mod 10) + ')');
+    ExtdefRegister := 1;
+    Exit;
+  End;
+  Inc(extdef_count);
+  extdef_names[extdef_count] := name;
+  extdef_types[extdef_count] := 0;
+  ExtdefRegister := extdef_count;
+End;
+
+{ ============================================================
+  PubdefRegister : ajouter un PSymbol a la liste des PUBDEF.
+  Ignore si deja present.
+  ============================================================ }
+Procedure PubdefRegister(p : PSymbol);
+Var
+  i : Integer;
+Begin
+  If p = Nil Then Exit;
+  For i := 1 To pubdef_count Do
+    If pubdef_syms[i] = p Then Exit;
+  If pubdef_count >= MAX_PUBDEF Then
+  Begin
+    WarnMsg('Trop de symboles PUBLIC (max 512), excess ignore');
+    Exit;
+  End;
+  Inc(pubdef_count);
+  pubdef_syms[pubdef_count] := p;
+End;
+
+{ ============================================================
+  TypeNameToSize : convertir un nom de type MASM en octets
+    BYTE=1 WORD=2 DWORD=4 QWORD=8 TBYTE=10
+    NEAR=2 FAR=4 PROC=2 ABS=0
+  ============================================================ }
+Function TypeNameToSize(Const tname : TString) : Integer;
+Begin
+  If      tname = 'BYTE'  Then TypeNameToSize := 1
+  Else If tname = 'WORD'  Then TypeNameToSize := 2
+  Else If tname = 'DWORD' Then TypeNameToSize := 4
+  Else If tname = 'QWORD' Then TypeNameToSize := 8
+  Else If tname = 'TBYTE' Then TypeNameToSize := 10
+  Else If tname = 'NEAR'  Then TypeNameToSize := 2
+  Else If (tname = 'FAR') Or (tname = 'FWORD') Then TypeNameToSize := 4
+  Else If (tname = 'PROC') Or (tname = 'ABS')  Then TypeNameToSize := 0
+  Else
+  Begin
+    WarnMsg('Type inconnu dans EXTRN/GLOBAL/COMM : ' + tname);
+    TypeNameToSize := 0;
+  End;
+End;
+
+{ ============================================================
+  ParsePublic : PUBLIC nom [, nom ...]
+  Marque les symboles comme PUBLIC et les ajoute a la liste
+  PUBDEF. Cree le symbole en SK_UNDEF si inconnu (reference avant).
+  ============================================================ }
+Procedure ParsePublic;
+Var
+  tok : TSymString;
+  p   : PSymbol;
+Begin
+  Repeat
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    p := SymLookupOrEnter(tok);
+    SymSetPublic(p);
+    PubdefRegister(p);
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  ParseExtrn : EXTRN nom:type [, nom:type ...]
+  Cree le symbole comme SK_EXTERN, enregistre dans extdef_table.
+  La valeur du symbole = index EXTDEF (pour GenFixup).
+  ============================================================ }
+Procedure ParseExtrn;
+Var
+  tok  : TSymString;
+  tnam : TString;
+  sz   : Integer;
+  idx  : Integer;
+  p    : PSymbol;
+Begin
+  Repeat
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    sz  := 0;
+    { consommer :type }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+    Begin
+      LexNext;
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        tnam := lex_tok.val;
+        sz   := TypeNameToSize(tnam);
+      End
+      Else
+        WarnMsg('Type attendu apres : dans EXTRN');
+    End
+    Else
+      WarnMsg(': manquant dans EXTRN pour ' + tok);
+
+    { enregistrer dans extdef_table }
+    idx := ExtdefRegister(tok);
+    extdef_types[idx] := sz;
+
+    { creer ou mettre a jour le symbole }
+    p := SymFind(tok);
+    If p = Nil Then
+      p := SymEnter(tok, SK_EXTERN, 0, 0, sz)
+    Else
+    Begin
+      If p^.kind = SK_LABEL Then
+        WarnMsg('EXTRN redefinit un label local : ' + tok)
+      Else
+      Begin
+        p^.kind := SK_EXTERN;
+        p^.size := sz;
+      End;
+    End;
+    SymSetExtern(p);
+    SymSetValue(p, idx); { valeur = index EXTDEF pour GenFixup }
+
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  ParseGlobal : GLOBAL nom:type [, nom:type ...]
+  PUBLIC si le symbole est defini localement, EXTRN sinon.
+  ============================================================ }
+Procedure ParseGlobal;
+Var
+  tok  : TSymString;
+  tnam : TString;
+  sz   : Integer;
+  p    : PSymbol;
+  idx  : Integer;
+Begin
+  Repeat
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    sz  := 0;
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+    Begin
+      LexNext;
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        tnam := lex_tok.val;
+        sz   := TypeNameToSize(tnam);
+      End;
+    End;
+
+    p := SymFind(tok);
+    If (p <> Nil) And (p^.kind = SK_LABEL) Then
+    Begin
+      { defini localement -> PUBLIC }
+      SymSetPublic(p);
+      PubdefRegister(p);
+    End
+    Else
+    Begin
+      { pas encore defini -> EXTRN }
+      idx := ExtdefRegister(tok);
+      extdef_types[idx] := sz;
+      If p = Nil Then
+        p := SymEnter(tok, SK_EXTERN, 0, 0, sz)
+      Else
+      Begin
+        p^.kind := SK_EXTERN;
+        p^.size := sz;
+      End;
+      SymSetExtern(p);
+      SymSetValue(p, idx);
+    End;
+
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  ObjComdefPutLen : ecrire un entier en format variable COMDEF
+    1..127       : 1 octet
+    128..65535   : 81h + 2 octets LE
+    >= 65536     : 84h + 4 octets LE (extension 32 bits)
+  ============================================================ }
+Procedure ObjComdefPutLen(n : LongInt);
+Begin
+  If n < 128 Then
+    ObjPutByte(Byte(n))
+  Else If n < 65536 Then
+  Begin
+    ObjPutByte($81);
+    ObjPutWord(Word(n));
+  End
+  Else
+  Begin
+    ObjPutByte($84);
+    ObjPutDWord(n);
+  End;
+End;
+
+{ ============================================================
+  ParseComm : COMM [NEAR|FAR] nom:type[:count] [, ...]
+  Emet un record COMDEF (B0h).
+  type = taille en octets d un element.
+  count = nombre d elements (1 par defaut), optionnel.
+  ============================================================ }
+Procedure ParseComm;
+Var
+  tok    : TSymString;
+  tnam   : TString;
+  sz     : Integer;
+  cnt    : LongInt;
+  is_far : Boolean;
+  p      : PSymbol;
+Begin
+  Repeat
+    is_far := False;
+    { NEAR ou FAR optionnel }
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      If LexPeekVal = 'FAR'  Then Begin LexNext; is_far := True; End
+      Else If LexPeekVal = 'NEAR' Then LexNext;
+    End;
+
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    sz  := 2; { WORD par defaut }
+    cnt := 1;
+
+    { :type }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+    Begin
+      LexNext;
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        tnam := lex_tok.val;
+        sz   := TypeNameToSize(tnam);
+        If sz = 0 Then sz := 2;
+      End
+      Else If LexPeekKind = TK_NUMBER Then
+      Begin
+        LexNext;
+        sz := Integer(lex_tok.num_val);
+      End;
+    End;
+
+    { :count optionnel }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+    Begin
+      LexNext;
+      cnt := EvalConstExpr;
+    End;
+
+    { creer le symbole comme SK_EXTERN }
+    p := SymFind(tok);
+    If p = Nil Then
+      p := SymEnter(tok, SK_EXTERN, 0, 0, sz);
+    SymSetExtern(p);
+
+    { ecrire le record COMDEF }
+    ObjBeginRecord(OMF_COMDEF);
+    ObjPutStr(tok);      { nom }
+    ObjPutIndex(0);      { type index = 0 }
+    If is_far Then
+      ObjPutByte($62)    { far BSS }
+    Else
+      ObjPutByte($61);   { near BSS }
+    { near BSS : un seul champ = taille totale = sz * cnt }
+    ObjComdefPutLen(LongInt(sz) * cnt);
+    If is_far Then
+      ObjComdefPutLen(sz); { element size pour far }
+    ObjEndRecord;
+
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  EmitAllExtDefs : emettre un record EXTDEF par symbole EXTRN.
+  Appele au debut de la generation du .OBJ (avant LEDATA).
+  ============================================================ }
+Procedure EmitAllExtDefs;
+Var
+  i : Integer;
+Begin
+  For i := 1 To extdef_count Do
+    ObjEXTDEF(extdef_names[i], 0);
+End;
+
+{ ============================================================
+  EmitAllPubDefs : emettre les records PUBDEF pour tous les
+  symboles marques PUBLIC. Groupe par segment pour minimiser
+  le nombre de records.
+  ============================================================ }
+Procedure EmitAllPubDefs;
+Var
+  i    : Integer;
+  p    : PSymbol;
+  seg  : Integer;
+  grp  : Integer;
+  sidx : Integer;
+Begin
+  { pour chaque segment, emettre les PUBDEF des symboles de ce seg }
+  For seg := 0 To seg_count Do  { seg=0 = absolu }
+  Begin
+    For i := 1 To pubdef_count Do
+    Begin
+      p := pubdef_syms[i];
+      If p = Nil Then Continue;
+      If p^.kind = SK_UNDEF Then Continue; { forward non resolu }
+      sidx := p^.seg_idx;
+      If sidx <> seg Then Continue;
+
+      { chercher le groupe de base (DGROUP si DS pointe dessus) }
+      grp := 0;
+      If (sidx = seg_idx_data) Or (sidx = seg_idx_bss) Or
+         (sidx = seg_idx_const) Or (sidx = seg_idx_stack) Then
+        grp := grp_idx_dgroup;
+
+      ObjPUBDEF(grp, sidx, p^.name, p^.offset, 0);
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 12 - ENCODAGE DES INSTRUCTIONS 8086 (MOV ADD SUB etc.)
+  ============================================================
+
+  Types d operandes :
+    OK_REG   : registre general (r8 ou r16)
+    OK_SREG  : registre de segment (ES CS SS DS)
+    OK_MEM   : adresse memoire ([BX+SI+disp] etc.)
+    OK_IMM   : immediat
+    OK_NONE  : absent / non parse
+
+  Octet ModRM : bits 7-6 = mod, bits 5-3 = reg, bits 2-0 = r/m
+  Table EA 8086 r/m :
+    0=[BX+SI]  1=[BX+DI]  2=[BP+SI]  3=[BP+DI]
+    4=[SI]     5=[DI]     6=[disp16] 7=[BX]
+  mod=00 -> [r/m]  (r/m=6 -> disp16 direct)
+  mod=01 -> [r/m + disp8]
+  mod=10 -> [r/m + disp16]
+  mod=11 -> registre
+  ============================================================ }
+
+{ ---- Type operande ---- }
+Type
+  TOpKind = (OK_NONE, OK_REG, OK_SREG, OK_MEM, OK_IMM);
+
+  TOperand = Record
+    kind       : TOpKind;
+    is_word    : Boolean;  { True = 16 bits (r16 ou m16 ou imm16) }
+    reg        : Integer;  { OK_REG/OK_SREG : indice 0-7 }
+    { memoire }
+    rm         : Integer;  { r/m field 0-7 }
+    mod_bits   : Integer;  { mod 0-3 }
+    disp       : TLong;    { deplacement }
+    disp_size  : Integer;  { 0=aucun, 1=byte, 2=word }
+    seg_ovr    : Integer;  { 0=aucun, $26,$2E,$36,$3E = prefixe }
+    is_reloc   : Boolean;  { adresse relocalisable }
+    reloc_seg  : Integer;  { index segment }
+    { immediat }
+    imm        : TLong;
+    imm_reloc  : Boolean;
+    imm_rseg   : Integer;
+    { taille forcee par PTR }
+    ptr_size   : Integer;  { 0=non force, 1, 2, 4 }
+  End;
+
+{ ---- Registres ---- }
+Const
+  REG_AX = 0; REG_CX = 1; REG_DX = 2; REG_BX = 3;
+  REG_SP = 4; REG_BP = 5; REG_SI = 6; REG_DI = 7;
+  REG_AL = 0; REG_CL = 1; REG_DL = 2; REG_BL = 3;
+  REG_AH = 4; REG_CH = 5; REG_DH = 6; REG_BH = 7;
+  REG_ES = 0; REG_CS = 1; REG_SS = 2; REG_DS = 3;
+
+{ ---- helper : reset d un operande ---- }
+Procedure ClearOp(Var op : TOperand);
+Begin
+  op.kind      := OK_NONE;
+  op.is_word   := False;
+  op.reg       := -1;
+  op.rm        := 0;
+  op.mod_bits  := 0;
+  op.disp      := 0;
+  op.disp_size := 0;
+  op.seg_ovr   := 0;
+  op.is_reloc  := False;
+  op.reloc_seg := 0;
+  op.imm       := 0;
+  op.imm_reloc := False;
+  op.imm_rseg  := 0;
+  op.ptr_size  := 0;
+End;
+
+{ ============================================================
+  RegIndex : convertir un nom de registre en indice 0-7.
+  Retourne -1 si pas un registre general ou segment.
+  is_word_out : True si c est un registre 16 bits.
+  is_seg_out  : True si c est un registre de segment.
+  ============================================================ }
+Procedure RegIndex(Const name : TString;
+                   Var idx      : Integer;
+                   Var is_word  : Boolean;
+                   Var is_seg   : Boolean);
+Begin
+  is_seg  := False;
+  is_word := False;
+  idx     := -1;
+  If      name = 'AX' Then Begin idx := 0; is_word := True; End
+  Else If name = 'CX' Then Begin idx := 1; is_word := True; End
+  Else If name = 'DX' Then Begin idx := 2; is_word := True; End
+  Else If name = 'BX' Then Begin idx := 3; is_word := True; End
+  Else If name = 'SP' Then Begin idx := 4; is_word := True; End
+  Else If name = 'BP' Then Begin idx := 5; is_word := True; End
+  Else If name = 'SI' Then Begin idx := 6; is_word := True; End
+  Else If name = 'DI' Then Begin idx := 7; is_word := True; End
+  Else If name = 'AL' Then idx := 0
+  Else If name = 'CL' Then idx := 1
+  Else If name = 'DL' Then idx := 2
+  Else If name = 'BL' Then idx := 3
+  Else If name = 'AH' Then idx := 4
+  Else If name = 'CH' Then idx := 5
+  Else If name = 'DH' Then idx := 6
+  Else If name = 'BH' Then idx := 7
+  Else If name = 'ES' Then Begin idx := 0; is_seg := True; End
+  Else If name = 'CS' Then Begin idx := 1; is_seg := True; End
+  Else If name = 'SS' Then Begin idx := 2; is_seg := True; End
+  Else If name = 'DS' Then Begin idx := 3; is_seg := True; End;
+End;
+
+{ ============================================================
+  SegrOverridePrefix : retourner le prefixe de segment ou 0
+  ============================================================ }
+Function SegOvrByte(Const seg_name : TString) : Integer;
+Begin
+  If      seg_name = 'ES' Then SegOvrByte := $26
+  Else If seg_name = 'CS' Then SegOvrByte := $2E
+  Else If seg_name = 'SS' Then SegOvrByte := $36
+  Else If seg_name = 'DS' Then SegOvrByte := $3E
+  Else                          SegOvrByte := 0;
+End;
+
+{ ============================================================
+  CalcModRM : calculer mod, rm a partir de BX/BP/SI/DI +
+  deplacement. Retourne False si la combinaison est invalide.
+  Parametres : has_bx,has_bp,has_si,has_di,disp,disp_sz
+  ============================================================ }
+Function CalcModRM(has_bx, has_bp, has_si, has_di : Boolean;
+                   disp : TLong; disp_sz : Integer;
+                   Var rm : Integer; Var mod_out : Integer;
+                   Var disp_out : TLong; Var dsz_out : Integer) : Boolean;
+Begin
+  disp_out := disp;
+  dsz_out  := disp_sz;
+  CalcModRM := True;
+
+  { BX+SI=0, BX+DI=1, BP+SI=2, BP+DI=3, SI=4, DI=5, BP=6, BX=7 }
+  If      has_bx And has_si Then rm := 0
+  Else If has_bx And has_di Then rm := 1
+  Else If has_bp And has_si Then rm := 2
+  Else If has_bp And has_di Then rm := 3
+  Else If (Not has_bx) And (Not has_bp) And has_si And (Not has_di) Then rm := 4
+  Else If (Not has_bx) And (Not has_bp) And (Not has_si) And has_di Then rm := 5
+  Else If has_bp And (Not has_si) And (Not has_di) Then rm := 6
+  Else If has_bx And (Not has_si) And (Not has_di) Then rm := 7
+  Else
+  Begin
+    CalcModRM := False;
+    Exit;
+  End;
+
+  { calcul du mod selon le deplacement }
+  If (disp_sz = 0) And (rm <> 6) Then
+    mod_out := 0
+  Else If rm = 6 Then
+  Begin
+    { [BP] sans disp -> disp=0, mod=01 }
+    If disp_sz = 0 Then
+    Begin
+      dsz_out := 1;
+      disp_out := 0;
+    End;
+    If dsz_out = 1 Then mod_out := 1
+    Else               mod_out := 2;
+  End
+  Else If disp_sz = 1 Then
+    mod_out := 1
+  Else
+    mod_out := 2;
+End;
+
+{ ============================================================
+  ParseEA : parser un mode d adressage memoire entre [ ]
+  (le [ a deja ete consomme par l appelant).
+  Remplit les champs rm, mod_bits, disp, disp_size, seg_ovr.
+  ============================================================ }
+Procedure ParseEA(Var op : TOperand);
+Var
+  has_bx, has_bp, has_si, has_di : Boolean;
+  sign    : Integer;
+  disp    : TLong;
+  disp_sz : Integer;
+  tok     : TString;
+  ridx    : Integer;
+  rword   : Boolean;
+  rseg    : Boolean;
+  e       : TExpr;
+  ok      : Boolean;
+Begin
+  has_bx := False; has_bp := False;
+  has_si := False; has_di := False;
+  disp   := 0;
+  disp_sz := 0;
+  sign   := 1;
+  op.seg_ovr := 0;
+
+  { consommer les composantes jusqu au ] }
+  While True Do
+  Begin
+    { signe + ou - }
+    If LexPeekKind = TK_PUNCT Then
+    Begin
+      If LexPeekVal = '+' Then Begin LexNext; sign :=  1; End
+      Else If LexPeekVal = '-' Then Begin LexNext; sign := -1; End
+      Else If LexPeekVal = ']' Then Break
+      Else Break;
+    End;
+
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      tok := LexPeekVal;
+      { prefixe de segment seg: }
+      If SegOvrByte(tok) > 0 Then
+      Begin
+        LexNext;
+        op.seg_ovr := SegOvrByte(tok);
+        { consommer le : }
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+          LexNext;
+        sign := 1;
+        Continue;
+      End;
+      { registre de base/index }
+      RegIndex(tok, ridx, rword, rseg);
+      If ridx >= 0 Then
+      Begin
+        LexNext;
+        Case ridx Of
+          REG_BX : has_bx := True;
+          REG_BP : has_bp := True;
+          REG_SI : has_si := True;
+          REG_DI : has_di := True;
+        Else
+          WarnMsg('Registre invalide dans EA : ' + tok);
+        End;
+        sign := 1;
+        Continue;
+      End;
+    End;
+
+    { expression numerique (deplacement) }
+    If LexPeekKind <> TK_PUNCT Then
+    Begin
+      EvalExpr(e);
+      disp    := disp + sign * e.val;
+      disp_sz := 2;
+      If e.is_reloc Then
+      Begin
+        op.is_reloc  := True;
+        op.reloc_seg := e.seg_idx;
+      End;
+      sign := 1;
+      Continue;
+    End;
+
+    Break;
+  End;
+
+  { consommer ] }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ']') Then
+    LexNext
+  Else
+    WarnMsg('] manquant dans adressage memoire');
+
+  { calculer disp_sz si pas encore determine }
+  If (disp_sz = 0) And (disp <> 0) Then
+  Begin
+    If (disp >= -128) And (disp <= 127) Then disp_sz := 1
+    Else disp_sz := 2;
+  End
+  Else If disp_sz = 2 Then
+  Begin
+    { si aucun registre de base/index, c est une adresse directe }
+    If (Not has_bx) And (Not has_bp) And (Not has_si) And (Not has_di) Then
+    Begin
+      { mod=00, rm=6 : [disp16] }
+      op.mod_bits  := 0;
+      op.rm        := 6;
+      op.disp      := disp;
+      op.disp_size := 2;
+      Exit;
+    End;
+  End;
+
+  { adresse directe sans registre et disp = 0 -> [0000] = [disp16] avec disp=0 }
+  If (Not has_bx) And (Not has_bp) And (Not has_si) And (Not has_di) Then
+  Begin
+    op.mod_bits  := 0;
+    op.rm        := 6;
+    op.disp      := disp;
+    op.disp_size := 2;
+    Exit;
+  End;
+
+  ok := CalcModRM(has_bx, has_bp, has_si, has_di,
+                  disp, disp_sz,
+                  op.rm, op.mod_bits, op.disp, op.disp_size);
+  If Not ok Then
+  Begin
+    ErrorMsg('Combinaison de registres EA invalide');
+    op.rm        := 7; { [BX] par defaut }
+    op.mod_bits  := 0;
+    op.disp      := 0;
+    op.disp_size := 0;
+  End;
+End;
+
+{ ============================================================
+  ParseOperand : parser un operande global
+  ============================================================ }
+Procedure ParseOperand(Var op : TOperand);
+Var
+  tok     : TString;
+  ridx    : Integer;
+  rword   : Boolean;
+  rseg    : Boolean;
+  ovr     : Integer;
+  e       : TExpr;
+  sz_hint : Integer;
+Begin
+  ClearOp(op);
+  sz_hint := 0;
+
+  If LexPeekKind = TK_EOF Then Exit;
+
+  { prefixe de taille BYTE PTR / WORD PTR / DWORD PTR }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    tok := LexPeekVal;
+    If (tok = 'BYTE') Or (tok = 'WORD') Or (tok = 'DWORD') Or
+       (tok = 'NEAR') Or (tok = 'FAR') Then
+    Begin
+      LexNext;
+      If      lex_tok.val = 'BYTE'  Then sz_hint := 1
+      Else If lex_tok.val = 'WORD'  Then sz_hint := 2
+      Else If lex_tok.val = 'DWORD' Then sz_hint := 4
+      Else If lex_tok.val = 'NEAR'  Then sz_hint := 2
+      Else If lex_tok.val = 'FAR'   Then sz_hint := 4;
+      If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then
+        LexNext;
+    End;
+  End;
+
+  { prefixe de segment seg: expr_or_[ }
+  ovr := 0;
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    tok := LexPeekVal;
+    ovr := SegOvrByte(tok);
+    If ovr > 0 Then
+    Begin
+      LexNext;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+        LexNext
+      Else
+        ovr := 0;
+    End
+    Else
+      ovr := 0;
+  End;
+
+  { registre ou mot-cle }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    tok := LexPeekVal;
+    RegIndex(tok, ridx, rword, rseg);
+    If ridx >= 0 Then
+    Begin
+      LexNext;
+      If rseg Then
+      Begin
+        op.kind    := OK_SREG;
+        op.reg     := ridx;
+        op.is_word := True;
+      End
+      Else
+      Begin
+        op.kind    := OK_REG;
+        op.reg     := ridx;
+        op.is_word := rword;
+      End;
+      If sz_hint > 0 Then op.ptr_size := sz_hint;
+      op.seg_ovr := ovr;
+      Exit;
+    End;
+  End;
+
+  { [ -> adressage memoire }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '[') Then
+  Begin
+    LexNext; { consommer [ }
+    op.kind    := OK_MEM;
+    op.seg_ovr := ovr;
+    If sz_hint > 0 Then
+    Begin
+      op.ptr_size := sz_hint;
+      op.is_word  := (sz_hint >= 2);
+    End;
+    ParseEA(op);
+    Exit;
+  End;
+
+  { expression -> immediat ou adresse directe }
+  EvalExpr(e);
+  If e.is_reloc And (sz_hint = 0) Then
+  Begin
+    { adresse de label sans [] -> OK_MEM direct }
+    op.kind      := OK_MEM;
+    op.mod_bits  := 0;
+    op.rm        := 6;
+    op.disp      := e.val;
+    op.disp_size := 2;
+    op.is_reloc  := True;
+    op.reloc_seg := e.seg_idx;
+    op.seg_ovr   := ovr;
+    If sz_hint > 0 Then op.is_word := (sz_hint >= 2);
+  End
+  Else
+  Begin
+    op.kind      := OK_IMM;
+    op.imm       := e.val;
+    op.imm_reloc := e.is_reloc;
+    op.imm_rseg  := e.seg_idx;
+    op.ptr_size  := sz_hint;
+  End;
+End;
+
+{ ============================================================
+  EmitModRM : emettre prefixe de segment + octet ModRM +
+  deplacement pour l operande memoire/registre.
+  reg_fld = bits 5-3 de ModRM (code registre ou opcode etendu).
+  ============================================================ }
+Procedure EmitModRM(reg_fld : Integer; Const op : TOperand);
+Var
+  modrm : Byte;
+Begin
+  { prefixe de segment }
+  If op.seg_ovr > 0 Then
+    EmitByte(op.seg_ovr);
+
+  If op.kind = OK_REG Then
+  Begin
+    modrm := Byte($C0 Or (reg_fld Shl 3) Or op.reg);
+    EmitByte(modrm);
+  End
+  Else { OK_MEM }
+  Begin
+    modrm := Byte((op.mod_bits Shl 6) Or (reg_fld Shl 3) Or op.rm);
+    EmitByte(modrm);
+    { deplacement }
+    If op.disp_size = 1 Then
+      EmitByte(Byte(op.disp And $FF))
+    Else If op.disp_size = 2 Then
+    Begin
+      If op.is_reloc Then
+        GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, op.reloc_seg,
+                 Word(op.disp), True);
+      EmitWord(Word(op.disp));
+    End;
+  End;
+End;
+
+{ ============================================================
+  NeedWordSz : determiner si on travaille en 16 bits selon
+  les deux operandes. Signale une erreur si incoherent.
+  ============================================================ }
+Function NeedWordSz(Const op1, op2 : TOperand) : Boolean;
+Var
+  w1, w2 : Boolean;
+Begin
+  w1 := False; w2 := False;
+  If op1.kind = OK_REG Then w1 := op1.is_word;
+  If op2.kind = OK_REG Then w2 := op2.is_word;
+  If op1.ptr_size > 0 Then w1 := (op1.ptr_size >= 2);
+  If op2.ptr_size > 0 Then w2 := (op2.ptr_size >= 2);
+
+  { si l un est connu et l autre inconnu (IMM ou MEM sans PTR) }
+  If op1.kind = OK_IMM Then
+  Begin
+    NeedWordSz := w2;
+    Exit;
+  End;
+  If op2.kind = OK_IMM Then
+  Begin
+    NeedWordSz := w1;
+    Exit;
+  End;
+  If op1.kind = OK_MEM Then
+  Begin
+    NeedWordSz := w2;
+    Exit;
+  End;
+  If op2.kind = OK_MEM Then
+  Begin
+    NeedWordSz := w1;
+    Exit;
+  End;
+  NeedWordSz := w1; { par defaut }
+End;
+
+{ ============================================================
+  EncodeArith : encodage groupe ADD/OR/ADC/SBB/AND/SUB/XOR/CMP
+  op_grp = 0=ADD 1=OR 2=ADC 3=SBB 4=AND 5=SUB 6=XOR 7=CMP
+  Syntaxe : OP dst, src
+  ============================================================ }
+Procedure EncodeArith(op_grp : Integer);
+Var
+  dst, src : TOperand;
+  is_word  : Boolean;
+  imm8sign : Boolean;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+
+  is_word := NeedWordSz(dst, src);
+
+  { immediat : choisir forme courte (83) si imm8 signee en 16 bits }
+  If src.kind = OK_IMM Then
+  Begin
+    imm8sign := is_word And (src.imm >= -128) And (src.imm <= 127);
+    { forme accumulateur court }
+    If (dst.kind = OK_REG) And (dst.reg = 0) And (Not imm8sign) Then
+    Begin
+      If is_word Then
+      Begin
+        EmitByte(Byte((op_grp Shl 3) Or $05)); { OP AX, imm16 }
+        EmitWord(Word(src.imm));
+      End
+      Else
+      Begin
+        EmitByte(Byte((op_grp Shl 3) Or $04)); { OP AL, imm8 }
+        EmitByte(Byte(src.imm));
+      End;
+      Exit;
+    End;
+    { forme generale }
+    If imm8sign Then
+    Begin
+      EmitByte($83); { OP r/m16, imm8 sign-extend }
+      EmitModRM(op_grp, dst);
+      EmitByte(Byte(src.imm And $FF));
+    End
+    Else If is_word Then
+    Begin
+      EmitByte($81); { OP r/m16, imm16 }
+      EmitModRM(op_grp, dst);
+      EmitWord(Word(src.imm));
+    End
+    Else
+    Begin
+      EmitByte($80); { OP r/m8, imm8 }
+      EmitModRM(op_grp, dst);
+      EmitByte(Byte(src.imm));
+    End;
+    Exit;
+  End;
+
+  { registre -> memoire/registre }
+  If src.kind = OK_REG Then
+  Begin
+    If is_word Then
+      EmitByte(Byte((op_grp Shl 3) Or $01)) { OP r/m16, r16 }
+    Else
+      EmitByte(Byte((op_grp Shl 3) Or $00)); { OP r/m8, r8 }
+    EmitModRM(src.reg, dst);
+    Exit;
+  End;
+
+  { memoire -> registre }
+  If src.kind = OK_MEM Then
+  Begin
+    If is_word Then
+      EmitByte(Byte((op_grp Shl 3) Or $03)) { OP r16, r/m16 }
+    Else
+      EmitByte(Byte((op_grp Shl 3) Or $02)); { OP r8, r/m8 }
+    EmitModRM(dst.reg, src);
+    Exit;
+  End;
+
+  ErrorMsg('Operandes invalides pour instruction arithmetique');
+End;
+
+{ ============================================================
+  EncodeMOV : encodage MOV dst, src
+  ============================================================ }
+Procedure EncodeMOV;
+Var
+  dst, src : TOperand;
+  is_word  : Boolean;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+
+  is_word := NeedWordSz(dst, src);
+
+  { MOV r, imm }
+  If (dst.kind = OK_REG) And (src.kind = OK_IMM) Then
+  Begin
+    If is_word Then
+    Begin
+      EmitByte(Byte($B8 Or dst.reg));
+      If src.imm_reloc Then
+        GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, src.imm_rseg,
+                 Word(src.imm), True);
+      EmitWord(Word(src.imm));
+    End
+    Else
+    Begin
+      EmitByte(Byte($B0 Or dst.reg));
+      EmitByte(Byte(src.imm));
+    End;
+    Exit;
+  End;
+
+  { MOV r/m, imm }
+  If (dst.kind = OK_MEM) And (src.kind = OK_IMM) Then
+  Begin
+    If is_word Then
+    Begin
+      EmitByte($C7);
+      EmitModRM(0, dst);
+      If src.imm_reloc Then
+        GenFixup(FIXUP_OFFSET, FIXUP_TARGET_SEG, src.imm_rseg,
+                 Word(src.imm), True);
+      EmitWord(Word(src.imm));
+    End
+    Else
+    Begin
+      EmitByte($C6);
+      EmitModRM(0, dst);
+      EmitByte(Byte(src.imm));
+    End;
+    Exit;
+  End;
+
+  { MOV r/m, sreg }
+  If src.kind = OK_SREG Then
+  Begin
+    EmitByte($8C);
+    EmitModRM(src.reg, dst);
+    Exit;
+  End;
+
+  { MOV sreg, r/m }
+  If dst.kind = OK_SREG Then
+  Begin
+    EmitByte($8E);
+    EmitModRM(dst.reg, src);
+    Exit;
+  End;
+
+  { MOV r/m16, r16 ou r16, r/m16 }
+  If src.kind = OK_REG Then
+  Begin
+    If is_word Then EmitByte($89) Else EmitByte($88);
+    EmitModRM(src.reg, dst);
+    Exit;
+  End;
+  If src.kind = OK_MEM Then
+  Begin
+    If is_word Then EmitByte($8B) Else EmitByte($8A);
+    EmitModRM(dst.reg, src);
+    Exit;
+  End;
+  If dst.kind = OK_REG Then
+  Begin
+    If is_word Then EmitByte($8B) Else EmitByte($8A);
+    EmitModRM(dst.reg, src);
+    Exit;
+  End;
+
+  ErrorMsg('Operandes invalides pour MOV');
+End;
+
+{ ============================================================
+  EncodeIncDec : INC ou DEC
+  ============================================================ }
+Procedure EncodeIncDec(is_dec : Boolean);
+Var
+  op      : TOperand;
+  is_word : Boolean;
+  grp     : Integer;
+Begin
+  ParseOperand(op);
+  is_word := op.is_word Or (op.ptr_size >= 2);
+  If op.ptr_size = 1 Then is_word := False;
+  If is_dec Then grp := 1 Else grp := 0;
+
+  { registre 16 bits : forme courte }
+  If (op.kind = OK_REG) And is_word Then
+  Begin
+    If is_dec Then EmitByte(Byte($48 Or op.reg))
+    Else           EmitByte(Byte($40 Or op.reg));
+    Exit;
+  End;
+
+  { r/m8 ou r/m16 }
+  If is_word Then EmitByte($FF) Else EmitByte($FE);
+  EmitModRM(grp, op);
+End;
+
+{ ============================================================
+  EncodeNotNeg : NOT ou NEG
+  ============================================================ }
+Procedure EncodeNotNeg(is_neg : Boolean);
+Var
+  op      : TOperand;
+  is_word : Boolean;
+  grp     : Integer;
+Begin
+  ParseOperand(op);
+  is_word := op.is_word Or (op.ptr_size >= 2);
+  If op.ptr_size = 1 Then is_word := False;
+  If is_neg Then grp := 3 Else grp := 2;
+  If is_word Then EmitByte($F7) Else EmitByte($F6);
+  EmitModRM(grp, op);
+End;
+
+{ ============================================================
+  EncodeXCHG : XCHG dst, src
+  ============================================================ }
+Procedure EncodeXCHG;
+Var
+  dst, src : TOperand;
+  is_word  : Boolean;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+  is_word := NeedWordSz(dst, src);
+
+  { forme courte AX,r16 ou r16,AX }
+  If is_word Then
+  Begin
+    If (dst.kind = OK_REG) And (dst.reg = 0) And (src.kind = OK_REG) Then
+    Begin
+      EmitByte(Byte($90 Or src.reg));
+      Exit;
+    End;
+    If (src.kind = OK_REG) And (src.reg = 0) And (dst.kind = OK_REG) Then
+    Begin
+      EmitByte(Byte($90 Or dst.reg));
+      Exit;
+    End;
+  End;
+
+  If src.kind = OK_REG Then
+  Begin
+    If is_word Then EmitByte($87) Else EmitByte($86);
+    EmitModRM(src.reg, dst);
+  End
+  Else If dst.kind = OK_REG Then
+  Begin
+    If is_word Then EmitByte($87) Else EmitByte($86);
+    EmitModRM(dst.reg, src);
+  End
+  Else
+    ErrorMsg('XCHG : un operande doit etre un registre');
+End;
+
+{ ============================================================
+  EncodeLEA_LxS : LEA / LDS / LES r16, mem
+  ============================================================ }
+Procedure EncodeLEA_LxS(opcode : Byte);
+Var
+  dst, src : TOperand;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+  If dst.kind <> OK_REG Then
+    ErrorMsg('LEA/LDS/LES : premier operande doit etre un registre');
+  EmitByte(opcode);
+  EmitModRM(dst.reg, src);
+End;
+
+{ ============================================================
+  EncodeTEST : TEST dst, src
+  ============================================================ }
+Procedure EncodeTEST;
+Var
+  dst, src : TOperand;
+  is_word  : Boolean;
+Begin
+  ParseOperand(dst);
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ParseOperand(src);
+  is_word := NeedWordSz(dst, src);
+
+  If src.kind = OK_IMM Then
+  Begin
+    { TEST avec accumulateur }
+    If (dst.kind = OK_REG) And (dst.reg = 0) Then
+    Begin
+      If is_word Then
+      Begin
+        EmitByte($A9);
+        EmitWord(Word(src.imm));
+      End
+      Else
+      Begin
+        EmitByte($A8);
+        EmitByte(Byte(src.imm));
+      End;
+    End
+    Else
+    Begin
+      If is_word Then EmitByte($F7) Else EmitByte($F6);
+      EmitModRM(0, dst);
+      If is_word Then EmitWord(Word(src.imm))
+      Else            EmitByte(Byte(src.imm));
+    End;
+    Exit;
+  End;
+
+  If src.kind = OK_REG Then
+  Begin
+    If is_word Then EmitByte($85) Else EmitByte($84);
+    EmitModRM(src.reg, dst);
+    Exit;
+  End;
+
+  If dst.kind = OK_REG Then
+  Begin
+    If is_word Then EmitByte($85) Else EmitByte($84);
+    EmitModRM(dst.reg, src);
+    Exit;
+  End;
+
+  ErrorMsg('TEST : operandes invalides');
+End;
+
+{ ============================================================
+  ParseInstr12 : dispatcher pour les instructions TODO 12
+  Retourne True si l instruction a ete reconnue et encodee.
+  ============================================================ }
+Function ParseInstr12(Const mnem : TString) : Boolean;
+Begin
+  ParseInstr12 := True;
+  If      mnem = 'MOV'  Then EncodeMOV
+  Else If mnem = 'ADD'  Then EncodeArith(0)
+  Else If mnem = 'OR'   Then EncodeArith(1)
+  Else If mnem = 'ADC'  Then EncodeArith(2)
+  Else If mnem = 'SBB'  Then EncodeArith(3)
+  Else If mnem = 'AND'  Then EncodeArith(4)
+  Else If mnem = 'SUB'  Then EncodeArith(5)
+  Else If mnem = 'XOR'  Then EncodeArith(6)
+  Else If mnem = 'CMP'  Then EncodeArith(7)
+  Else If mnem = 'INC'  Then EncodeIncDec(False)
+  Else If mnem = 'DEC'  Then EncodeIncDec(True)
+  Else If mnem = 'NOT'  Then EncodeNotNeg(False)
+  Else If mnem = 'NEG'  Then EncodeNotNeg(True)
+  Else If mnem = 'XCHG' Then EncodeXCHG
+  Else If mnem = 'LEA'  Then EncodeLEA_LxS($8D)
+  Else If mnem = 'LDS'  Then EncodeLEA_LxS($C5)
+  Else If mnem = 'LES'  Then EncodeLEA_LxS($C4)
+  Else If mnem = 'TEST' Then EncodeTEST
+  Else ParseInstr12 := False;
+End;
+
+{ ============================================================
+  TODO 13 - ENCODAGE DES SAUTS ET APPELS (JMP CALL RET Jcc LOOP)
+  ============================================================
+
+  Strategie pour les references avant (forward labels) :
+    Pass 1 : emettre des octets de remplissage de la bonne taille
+             (0) pour conserver un LC exact. Les labels seront
+             definis lors du second passage de la ligne.
+    Pass 2 : les offsets de labels sont connus ; calculer le
+             deplacement relatif = target_off - (lc_apres_instr).
+
+  JMP SHORT label : EB cb (2 octets)
+  JMP [NEAR PTR] label : E9 cw (3 octets) - saut relatif
+  JMP FAR PTR off:seg  : EA cw cw (5 octets) - absolu
+  JMP r/m16            : FF /4 (2+ octets)
+  CALL [NEAR PTR] label: E8 cw (3 octets)
+  CALL FAR PTR off:seg : 9A cw cw (5 octets)
+  CALL r/m16           : FF /2
+  RET  [imm16] : C3 / C2 iw
+  RETF [imm16] : CB / CA iw
+  Jcc SHORT label : opcode cb (2 octets)
+  Jcc label (auto SHORT / inversion pour NEAR) : voir ci-dessous
+  JCXZ label  : E3 cb
+  LOOP  label : E2 cb
+  LOOPE label : E1 cb
+  LOOPNE label: E0 cb
+  ============================================================ }
+
+{ ============================================================
+  JccOpcode : retourner l opcode court (70h-7Fh) d un Jcc,
+  ou 0 si non reconnu.
+  ============================================================ }
+Function JccOpcode(Const mnem : TString) : Byte;
+Begin
+  If      mnem = 'JO'    Then JccOpcode := $70
+  Else If mnem = 'JNO'   Then JccOpcode := $71
+  Else If (mnem = 'JB')  Or (mnem = 'JNAE') Or (mnem = 'JC')  Then JccOpcode := $72
+  Else If (mnem = 'JNB') Or (mnem = 'JAE')  Or (mnem = 'JNC') Then JccOpcode := $73
+  Else If (mnem = 'JE')  Or (mnem = 'JZ')   Then JccOpcode := $74
+  Else If (mnem = 'JNE') Or (mnem = 'JNZ')  Then JccOpcode := $75
+  Else If (mnem = 'JBE') Or (mnem = 'JNA')  Then JccOpcode := $76
+  Else If (mnem = 'JNBE') Or (mnem = 'JA')  Then JccOpcode := $77
+  Else If mnem = 'JS'    Then JccOpcode := $78
+  Else If mnem = 'JNS'   Then JccOpcode := $79
+  Else If (mnem = 'JP')  Or (mnem = 'JPE')  Then JccOpcode := $7A
+  Else If (mnem = 'JNP') Or (mnem = 'JPO')  Then JccOpcode := $7B
+  Else If (mnem = 'JL')  Or (mnem = 'JNGE') Then JccOpcode := $7C
+  Else If (mnem = 'JNL') Or (mnem = 'JGE')  Then JccOpcode := $7D
+  Else If (mnem = 'JLE') Or (mnem = 'JNG')  Then JccOpcode := $7E
+  Else If (mnem = 'JNLE') Or (mnem = 'JG')  Then JccOpcode := $7F
+  Else JccOpcode := 0;
+End;
+
+{ ============================================================
+  JccInvert : retourner l opcode inverse d un Jcc (pour forme
+  NEAR : Jcc_inv +5 ; JMP NEAR target)
+  ============================================================ }
+Function JccInvert(opc : Byte) : Byte;
+Begin
+  { xor le bit 0 du low nibble pour inverser }
+  JccInvert := opc Xor 1;
+End;
+
+{ ============================================================
+  ResolveRelTarget : resoudre un label en deplacement relatif
+  par rapport a la position courante du LC (apres l instruction).
+  instr_end : offset juste apres l instruction complète.
+  Retourne le deplacement (negatif possible).
+  ============================================================ }
+Function ResolveRelTarget(Const label_name : TString;
+                          instr_end : TWord) : TLong;
+Var
+  p : PSymbol;
+Begin
+  p := SymFind(label_name);
+  If p = Nil Then
+  Begin
+    If pass_num = 2 Then
+      ErrorMsg('Label indefini dans saut : ' + label_name);
+    ResolveRelTarget := 0;
+    Exit;
+  End;
+  If (p^.kind = SK_UNDEF) And (pass_num = 1) Then
+  Begin
+    ResolveRelTarget := 0;
+    Exit;
+  End;
+  ResolveRelTarget := TLong(p^.offset) - TLong(instr_end);
+End;
+
+{ ============================================================
+  EmitRelJmp : helper - emettre un saut relatif avec cb ou cw.
+  emit_near = True -> E9 + cw ; False -> EB + cb.
+  ============================================================ }
+Procedure EmitRelJmp(opcode : Byte; disp : TLong; is_word : Boolean);
+Begin
+  EmitByte(opcode);
+  If is_word Then
+    EmitWord(Word(disp))
+  Else
+  Begin
+    If pass_num = 2 Then
+    Begin
+      If (disp < -128) Or (disp > 127) Then
+        ErrorMsg('Deplacement trop grand pour saut court (SHORT)');
+    End;
+    EmitByte(Byte(disp And $FF));
+  End;
+End;
+
+{ ============================================================
+  EncodeJMP : JMP [SHORT|NEAR PTR|FAR PTR] cible
+             ou JMP r/m16
+  ============================================================ }
+Procedure EncodeJMP;
+Var
+  is_short  : Boolean;
+  is_far    : Boolean;
+  is_near   : Boolean;
+  op        : TOperand;
+  disp      : TLong;
+  lbl       : TString;
+  far_off   : TWord;
+  far_seg   : TWord;
+  e         : TExpr;
+  ridx      : Integer;
+  rw        : Boolean;
+  rs        : Boolean;
+Begin
+  is_short := False;
+  is_far   := False;
+  is_near  := False;
+
+  { qualifier SHORT / NEAR PTR / FAR PTR }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    If LexPeekVal = 'SHORT' Then
+    Begin
+      LexNext; is_short := True;
+    End
+    Else If LexPeekVal = 'NEAR' Then
+    Begin
+      LexNext;
+      If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then LexNext;
+      is_near := True;
+    End
+    Else If LexPeekVal = 'FAR' Then
+    Begin
+      LexNext;
+      If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then LexNext;
+      is_far := True;
+    End;
+  End;
+
+  { JMP FAR PTR off:seg (EA cw cw) }
+  If is_far Then
+  Begin
+    EvalExpr(e);
+    far_off := Word(e.val);
+    { consommer : }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then LexNext;
+    EvalExpr(e);
+    far_seg := Word(e.val);
+    EmitByte($EA);
+    EmitWord(far_off);
+    EmitWord(far_seg);
+    Exit;
+  End;
+
+  { JMP r/m16 : si l operande est un registre ou [mem] et pas un label }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '[') Then
+  Begin
+    ParseOperand(op);
+    EmitByte($FF);
+    EmitModRM(4, op);
+    Exit;
+  End;
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    lbl := LexPeekVal;
+    { si c est un nom de registre, JMP r/m16 }
+    RegIndex(lbl, ridx, rw, rs);
+    If (ridx >= 0) And (Not rs) Then
+    Begin
+      LexNext;
+      op.kind    := OK_REG;
+      op.reg     := ridx;
+      op.is_word := True;
+      EmitByte($FF);
+      EmitModRM(4, op);
+      Exit;
+    End;
+    { sinon c est un label }
+    LexNext;
+    If is_short Then    Begin
+      { EB cb }
+      EmitByte($EB);
+      disp := ResolveRelTarget(lbl, lc + 1);
+      EmitByte(Byte(disp And $FF));
+    End
+    Else
+    Begin
+      { E9 cw (NEAR par defaut, meme si is_near=False) }
+      EmitByte($E9);
+      disp := ResolveRelTarget(lbl, lc + 2);
+      EmitWord(Word(disp));
+    End;
+    Exit;
+  End;
+  { expression numerique : JMP NEAR }
+  EvalExpr(e);
+  EmitByte($E9);
+  disp := TLong(e.val) - TLong(lc + 2);
+  EmitWord(Word(disp));
+End;
+
+{ ============================================================
+  EncodeCALL : CALL [NEAR PTR|FAR PTR] cible
+              ou CALL r/m16
+  ============================================================ }
+Procedure EncodeCALL;
+Var
+  is_far  : Boolean;
+  op      : TOperand;
+  disp    : TLong;
+  lbl     : TString;
+  far_off : TWord;
+  far_seg : TWord;
+  e       : TExpr;
+  ridx    : Integer;
+  rw, rs  : Boolean;
+Begin
+  is_far := False;
+
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    If LexPeekVal = 'NEAR' Then
+    Begin
+      LexNext;
+      If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then LexNext;
+    End
+    Else If LexPeekVal = 'FAR' Then
+    Begin
+      LexNext;
+      If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then LexNext;
+      is_far := True;
+    End;
+  End;
+
+  { CALL FAR PTR off:seg (9A cw cw) }
+  If is_far Then
+  Begin
+    EvalExpr(e);
+    far_off := Word(e.val);
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then LexNext;
+    EvalExpr(e);
+    far_seg := Word(e.val);
+    EmitByte($9A);
+    EmitWord(far_off);
+    EmitWord(far_seg);
+    Exit;
+  End;
+
+  { CALL r/m16 memoire }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '[') Then
+  Begin
+    ParseOperand(op);
+    EmitByte($FF);
+    EmitModRM(2, op);
+    Exit;
+  End;
+
+  { CALL label ou CALL registre }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    lbl := LexPeekVal;
+    RegIndex(lbl, ridx, rw, rs);
+    If (ridx >= 0) And (Not rs) Then
+    Begin
+      LexNext;
+      op.kind    := OK_REG;
+      op.reg     := ridx;
+      op.is_word := True;
+      EmitByte($FF);
+      EmitModRM(2, op);
+      Exit;
+    End;
+    LexNext;
+    EmitByte($E8);
+    disp := ResolveRelTarget(lbl, lc + 2);
+    EmitWord(Word(disp));
+    Exit;
+  End;
+
+  { expression }
+  EvalExpr(e);
+  EmitByte($E8);
+  disp := TLong(e.val) - TLong(lc + 2);
+  EmitWord(Word(disp));
+End;
+
+{ ============================================================
+  EncodeRET : RET [n] / RETF [n]
+  ============================================================ }
+Procedure EncodeRET(is_far : Boolean);
+Var
+  e       : TExpr;
+  has_imm : Boolean;
+Begin
+  has_imm := (LexPeekKind = TK_NUMBER) Or
+             ((LexPeekKind = TK_PUNCT) And
+              ((LexPeekVal = '+') Or (LexPeekVal = '-')));
+
+  If (LexPeekKind = TK_IDENT) And (LexPeekVal <> '') Then
+    { aucun immediat si c est un label ou directive }
+    has_imm := False;
+
+  If has_imm Then
+  Begin
+    EvalExpr(e);
+    If is_far Then EmitByte($CA) Else EmitByte($C2);
+    EmitWord(Word(e.val));
+  End
+  Else
+  Begin
+    If is_far Then EmitByte($CB) Else EmitByte($C3);
+  End;
+End;
+
+{ ============================================================
+  EncodeJcc : sauts conditionnels
+  Si SHORT explicite -> 2 octets seulement.
+  Si label sans qualificateur : tenter SHORT ; si disp hors
+  plage en passe 2, emettre la forme inversee (Jcc_inv +5,
+  JMP NEAR label) pour franchir la limite 8 bits.
+  En passe 1 on reserve toujours 2 octets (forme SHORT).
+  ============================================================ }
+Procedure EncodeJcc(opc : Byte);
+Var
+  is_short  : Boolean;
+  lbl       : TString;
+  disp      : TLong;
+  lbl_off   : TWord;
+  p         : PSymbol;
+  inv_opc   : Byte;
+Begin
+  is_short := False;
+  lbl      := '';
+
+  If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'SHORT') Then
+  Begin
+    LexNext; is_short := True;
+  End;
+
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    LexNext;
+    lbl := lex_tok.val;
+  End
+  Else
+  Begin
+    ErrorMsg('Label attendu pour saut conditionnel');
+    Exit;
+  End;
+
+  { En passe 1 : reserve 2 octets (SHORT) }
+  If pass_num = 1 Then
+  Begin
+    EmitByte(opc);
+    EmitByte(0);
+    Exit;
+  End;
+
+  { En passe 2 : calculer le deplacement SHORT (disp apres les 2 octets) }
+  p := SymFind(lbl);
+  If p = Nil Then
+  Begin
+    ErrorMsg('Label indefini dans saut conditionnel : ' + lbl);
+    EmitByte(opc);
+    EmitByte(0);
+    Exit;
+  End;
+  lbl_off := p^.offset;
+  disp := TLong(lbl_off) - TLong(lc + 2);
+
+  If is_short Or ((disp >= -128) And (disp <= 127)) Then
+  Begin
+    { forme SHORT : opcode + cb }
+    If (disp < -128) Or (disp > 127) Then
+      ErrorMsg('Deplacement trop grand pour saut court');
+    EmitByte(opc);
+    EmitByte(Byte(disp And $FF));
+  End
+  Else
+  Begin
+    { forme NEAR : Jcc_inv +5 ; E9 cw }
+    inv_opc := JccInvert(opc);
+    EmitByte(inv_opc);
+    EmitByte(3);      { sauter les 3 octets du JMP NEAR suivant }
+    EmitByte($E9);
+    { le JMP NEAR se termine 2 octets apres son opcode }
+    disp := TLong(lbl_off) - TLong(lc + 2);
+    EmitWord(Word(disp));
+  End;
+End;
+
+{ ============================================================
+  EncodeJCXZ : JCXZ label (E3 cb)
+  EncodeLoop : LOOP/LOOPE/LOOPNE label
+  ============================================================ }
+Procedure EncodeJCXZ;
+Var
+  lbl  : TString;
+  disp : TLong;
+Begin
+  If LexPeekKind = TK_IDENT Then LexNext
+  Else Begin ErrorMsg('Label attendu pour JCXZ'); Exit; End;
+  lbl := lex_tok.val;
+  EmitByte($E3);
+  disp := ResolveRelTarget(lbl, lc + 1);
+  If pass_num = 2 Then
+    If (disp < -128) Or (disp > 127) Then
+      ErrorMsg('JCXZ : deplacement hors plage');
+  EmitByte(Byte(disp And $FF));
+End;
+
+Procedure EncodeLoop(opc : Byte);
+Var
+  lbl  : TString;
+  disp : TLong;
+Begin
+  If LexPeekKind = TK_IDENT Then LexNext
+  Else Begin ErrorMsg('Label attendu pour LOOP'); Exit; End;
+  lbl := lex_tok.val;
+  EmitByte(opc);
+  disp := ResolveRelTarget(lbl, lc + 1);
+  If pass_num = 2 Then
+    If (disp < -128) Or (disp > 127) Then
+      ErrorMsg('LOOP : deplacement hors plage');
+  EmitByte(Byte(disp And $FF));
+End;
+
+{ ============================================================
+  ParseInstr13 : dispatcher TODO 13
+  ============================================================ }
+Function ParseInstr13(Const mnem : TString) : Boolean;
+Var
+  jcc_opc : Byte;
+Begin
+  ParseInstr13 := True;
+  If      mnem = 'JMP'    Then EncodeJMP
+  Else If mnem = 'CALL'   Then EncodeCALL
+  Else If mnem = 'RET'    Then EncodeRET(False)
+  Else If (mnem = 'RETF') Or (mnem = 'RETN') Then EncodeRET(True)
+  Else If mnem = 'JCXZ'   Then EncodeJCXZ
+  Else If mnem = 'LOOP'   Then EncodeLoop($E2)
+  Else If (mnem = 'LOOPE')  Or (mnem = 'LOOPZ')  Then EncodeLoop($E1)
+  Else If (mnem = 'LOOPNE') Or (mnem = 'LOOPNZ') Then EncodeLoop($E0)
+  Else
+  Begin
+    jcc_opc := JccOpcode(mnem);
+    If jcc_opc > 0 Then
+      EncodeJcc(jcc_opc)
+    Else
+      ParseInstr13 := False;
+  End;
+End;
+
+{ ============================================================
+  Programme principal (TODOs 13 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -4021,10 +5756,11 @@ Begin
   ObjInit;
   FixupInit;
   ModelInit;
+  VisInit;
   SrcInit;
   LexInit;
   SymInit;
   local_unique_id := 0;
-  Writeln('TODOs 01-10 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2).');
-  Writeln('TODOs 11 a 25 a implementer.');
+  Writeln('TODOs 01-13 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts).');
+  Writeln('TODOs 14 a 25 a implementer.');
 End.

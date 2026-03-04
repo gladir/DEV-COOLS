@@ -1727,21 +1727,6 @@ Begin
 End;
 
 { ============================================================
-  Impression de l'usage
-  ============================================================ }
-
-Procedure PrintUsage;
-Begin
-  WriteLn('MODII86 v', MODII86_VERSION, ' - Compilateur Modula-2 -> MASM 8086');
-  WriteLn('Usage : MODII86 source.mod [sortie.asm] [options]');
-  WriteLn('Options :');
-  WriteLn('  -v   mode verbeux (statistiques et symboles)');
-  WriteLn('  -d   mode debug   (trace de parsing)');
-  WriteLn('  -nr  pas de liaison avec le runtime');
-  Halt(1);
-End;
-
-{ ============================================================
   Lecture des arguments de la ligne de commande
   ============================================================ }
 
@@ -1765,18 +1750,21 @@ Begin
     Else If arg[1] = '-' Then
     Begin
       WriteLn('Option inconnue : ', arg);
-      PrintUsage;
+      Halt(1);
     End
     Else If src_fname = '' Then src_fname := arg
     Else If out_fname = '' Then out_fname := arg
     Else
     Begin
       WriteLn('Argument inattendu : ', arg);
-      PrintUsage;
+      Halt(2);
     End;
   End;
 
-  If src_fname = '' Then PrintUsage;
+  If src_fname = '' Then Begin
+   WriteLn('Source attendue !');
+   Halt(3)
+  End;
 
   If out_fname = '' Then
     out_fname := ChangeExtension(src_fname, '.asm');
@@ -3646,7 +3634,7 @@ End;
   INSTRUCTION IF / ELSIF / ELSE
   ============================================================ }
 
-{ Forward : ParseStatement est complete en TODO 13+ ;
+{ Forward : ParseStatement est complete;
   ParseStatementSeq l'appelle pour les corps de IF/WHILE/etc. }
 Procedure ParseStatement; Forward;
 
@@ -3724,7 +3712,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - INSTRUCTION WHILE / REPEAT / LOOP / EXIT
+  INSTRUCTION WHILE / REPEAT / LOOP / EXIT
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3798,7 +3786,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - INSTRUCTION FOR
+  INSTRUCTION FOR
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3807,7 +3795,7 @@ End;
     - SI    = valeur limite (end), calculee une seule fois avant la boucle
     - [v]   = variable de controle (SK_VAR ordinal)
     - step  = constante entiere evaluee au compile-time (defaut +1)
-  Le prologue de procedure sauvegarde deja SI (TODO 17) ; au niveau module
+  Le prologue de procedure sauvegarde deja SI ; au niveau module
   SI est libre apres GenStartEntry (qui ne fait que MOV DS).
   -------------------------------------------------------------------------- }
 Procedure ParseForStmt;
@@ -3891,7 +3879,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - INSTRUCTION CASE
+  INSTRUCTION CASE
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4029,7 +4017,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - INSTRUCTION WITH (GARDE DE TYPE)
+  INSTRUCTION WITH (GARDE DE TYPE)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4040,7 +4028,7 @@ End;
     T est un type etendu de celui de v (sous-type).
     Dans le corps, v est vu comme ayant le type T (transtypage de portee).
     Le test de type dynamique (IS) est emis comme commentaire/stub ici
-    et sera complete en TODO 22 quand le RTTI sera implemente.
+    et sera complete quand le RTTI sera implemente.
 
   Implementation :
     1. Rechercher v dans sym_table -> si_v
@@ -4089,7 +4077,7 @@ Begin
     Else
       ti_T := sym_table^[si_t].type_idx;
 
-    { Emettre la garde de type - stub (RTTI complet en TODO 22) }
+    { Emettre la garde de type - stub (RTTI complet) }
     EmitComment(' WITH ' + vname + ' : ' + tname + ' (type guard stub)');
     If si_v > 0 Then
       GenLoad(si_v);             { charger v dans AX }
@@ -4131,7 +4119,6 @@ End;
 { --------------------------------------------------------------------------
   ParseStatement : dispatch complet.
   Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, CASE, WITH, affectation / appel.
-  Les TODOs suivants (17-19) ajouteront PROCEDURE, RETURN, stdlib, etc.
   -------------------------------------------------------------------------- }
 Procedure ParseStatement;
 Var brk      : TString;
@@ -4213,11 +4200,11 @@ Begin
         ParseAssignment;
     End;
   End;
-  { Builtins, stdlib -> TODOs 19-20 (dispatche ci-dessus) }
+  { Builtins, stdlib -> dispatche ci-dessus }
 End;
 
 { ============================================================
-  TODO 18 - APPELS DE PROCEDURES ET DE FONCTIONS
+  APPELS DE PROCEDURES ET DE FONCTIONS
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4273,7 +4260,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 19 - PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
+  PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4685,7 +4672,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 20 - MODULE D'ENTREE/SORTIE (InOut / Terminal / STORAGE)
+  MODULE D'ENTREE/SORTIE (InOut / Terminal / STORAGE)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4717,7 +4704,7 @@ Procedure GenOutInRuntime;
 Begin
   SwitchToTmp;
   EmitSep;
-  EmitComment(' ====== RUNTIME InOut / Terminal - MODII86 TODO 20 ====== ');
+  EmitComment(' ====== RUNTIME InOut / Terminal - MODII86 ====== ');
   EmitBlank;
 
   { _ORT_WRITESTR : SI = pointeur vers chaine null-terminee, imprime char par char }
@@ -4966,7 +4953,7 @@ Begin
     ParseStdModuleExpr := TYP_BOOLEAN;
   End
 
-  { ---- TODO 23 : Math.xxx -> stub FPU ---- }
+  { ---- Math.xxx -> stub FPU ---- }
   Else If (modname = 'Math') Then
   Begin
     EmitComment(' Math.' + methname + '(x) : stub - FPU non supporte - retourne 0');
@@ -4988,7 +4975,7 @@ Begin
     ParseStdModuleExpr := TYP_REAL;
   End
 
-  { ---- TODO 23 : SYSTEM.ADR / SYSTEM.VAL / SYSTEM.BIT ---- }
+  { ---- SYSTEM.ADR / SYSTEM.VAL / SYSTEM.BIT ---- }
   Else If modname = 'SYSTEM' Then
   Begin
     If methname = 'ADR' Then
@@ -5100,7 +5087,7 @@ Begin
       LexExpect(',');
       ParseExpr;                    { w -> stub }
       LexExpect(')');
-      EmitComment(' Out.Real : emulation REAL non implementee (TODO 21+)');
+      EmitComment(' Out.Real : emulation REAL non implementee');
     End
     Else
       ErrorMsg('InOut/Out : methode inconnue : ' + methname);
@@ -5230,7 +5217,7 @@ Begin
       ErrorMsg('InOut/In : methode inconnue : ' + methname);
   End
 
-  { ---- TODO 23 : Math.xxx(...) en position instruction : stub FPU ---- }
+  { ---- Math.xxx(...) en position instruction : stub FPU ---- }
   Else If modname = 'Math' Then
   Begin
     EmitComment(' Math.' + methname + '() : stub instruction - FPU non supporte');
@@ -5250,7 +5237,7 @@ Begin
     End;
   End
 
-  { ---- TODO 23 : SYSTEM.MOVE / SYSTEM.xxx en position instruction ---- }
+  { ---- SYSTEM.MOVE / SYSTEM.xxx en position instruction ---- }
   Else If modname = 'SYSTEM' Then
   Begin
     If methname = 'MOVE' Then
@@ -5294,7 +5281,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 - CLAUSE IMPORT
+  CLAUSE IMPORT
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -5387,7 +5374,7 @@ Begin
   Repeat
     ident := cur_tok.val;
     LexExpectKind(TK_IDENT);
-    { TODO : marquer le symbole comme exporte }  { is_qual -> acces qualifie }
+    { marquer le symbole comme exporte }  { is_qual -> acces qualifie }
     If cur_tok.val = ',' Then
       LexNext
     Else
@@ -5570,7 +5557,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - INTEGRATION FINALE : ParseModule
+  INTEGRATION FINALE : ParseModule
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -5579,32 +5566,31 @@ End;
   Appele depuis ParseModule apres GenCodeFooter, avant GenEndDirective.
   -------------------------------------------------------------------------- }
 Procedure FlushStringLiterals;
-Var line : String[255];
+Var
+ line : String[255];
 Begin
-  Close(str_file);
-  Assign(str_file, str_fname);
-  Reset(str_file);
-  If Eof(str_file) Then
-  Begin
-    Close(str_file);
-    Erase(str_file);
-    Exit;
-  End;
-  SwitchToMain;
-  EmitBlank;
-  EmitComment(' ----- Chaines litterales differees (TODO 25) -----');
-  Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
-  EmitBlank;
-  While Not Eof(str_file) Do
-  Begin
-    ReadLn(str_file, line);
-    WriteLn(out_file, line);
-  End;
-  EmitBlank;
-  Emit('_DATA           ENDS');
-  EmitBlank;
+ Close(str_file);
+ Assign(str_file, str_fname);
+ Reset(str_file);
+ If Eof(str_file) Then Begin
   Close(str_file);
   Erase(str_file);
+  Exit;
+ End;
+ SwitchToMain;
+ EmitBlank;
+ EmitComment(' ----- Chaines litterales differees -----');
+ Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
+ EmitBlank;
+ While Not Eof(str_file) Do Begin
+  ReadLn(str_file, line);
+  WriteLn(out_file, line);
+ End;
+ EmitBlank;
+ Emit('_DATA           ENDS');
+ EmitBlank;
+ Close(str_file);
+ Erase(str_file);
 End;
 
 { --------------------------------------------------------------------------
@@ -5614,181 +5600,156 @@ End;
   Gere : en-tetes ASM, emissions DATA/CODE, runtime, corps principal.
   -------------------------------------------------------------------------- }
 Procedure ParseModule;
-Var dummy_off : Integer;
-    mname_end : TString;
-    is_def    : Boolean;    { DEFINITION MODULE }
-    is_impl   : Boolean;    { IMPLEMENTATION MODULE }
+Var
+ dummy_off : Integer;
+ mname_end : TString;
+ is_def    : Boolean;    { DEFINITION MODULE }
+ is_impl   : Boolean;    { IMPLEMENTATION MODULE }
 Begin
-  is_def  := False;
-  is_impl := False;
-
+ is_def  := False;
+ is_impl := False;
   { --- En-tete Modula-2 --- }
-  If cur_tok.val = 'DEFINITION' Then
-  Begin
-    is_def := True;
-    LexNext;                { consommer DEFINITION }
-  End
-  Else If cur_tok.val = 'IMPLEMENTATION' Then
-  Begin
-    is_impl := True;
-    LexNext;                { consommer IMPLEMENTATION }
-  End;
-  LexExpect('MODULE');
-  module_name := cur_tok.val;
-  LexExpectKind(TK_IDENT);
-  LexExpect(';');
-
+ If cur_tok.val = 'DEFINITION' Then Begin
+  is_def := True;
+  LexNext;                { consommer DEFINITION }
+ End
+  Else
+ If cur_tok.val = 'IMPLEMENTATION' Then Begin
+  is_impl := True;
+  LexNext;                { consommer IMPLEMENTATION }
+ End;
+ LexExpect('MODULE');
+ module_name := cur_tok.val;
+ LexExpectKind(TK_IDENT);
+ LexExpect(';');
   { --- Prologue ASM : commentaire + modele memoire + pile --- }
-  GenFileHeader;
-  GenModelDirectives;
-  GenStackSegment;
-
+ GenFileHeader;
+ GenModelDirectives;
+ GenStackSegment;
   { --- Segment DATA : variables systeme puis declarations utilisateur --- }
-  GenDataHeader;
-  GenSystemVarsData;
-
+ GenDataHeader;
+ GenSystemVarsData;
   { --- Clauses IMPORT / FROM ... IMPORT (repetees) --- }
-  While (cur_tok.val = 'IMPORT') Or (cur_tok.val = 'FROM') Do
-    ParseImportSection;
-
+ While (cur_tok.val = 'IMPORT') Or (cur_tok.val = 'FROM') Do ParseImportSection;
   { --- Clause EXPORT (DEFINITION MODULE) --- }
-  If cur_tok.val = 'EXPORT' Then
-    ParseExportSection;
-
+ If cur_tok.val = 'EXPORT' Then ParseExportSection;
   { --- Sections CONST / TYPE (pas de donnees en DATA) --- }
-  While cur_tok.val = 'CONST' Do ParseConstSection;
-  While cur_tok.val = 'TYPE'  Do ParseTypeSection;
-
+ While cur_tok.val = 'CONST' Do ParseConstSection;
+ While cur_tok.val = 'TYPE'  Do ParseTypeSection;
   { --- Section VAR globale : emise en DATA --- }
-  dummy_off := 0;
-  If cur_tok.val = 'VAR' Then
-    ParseVarSection(False, dummy_off);
-
+ dummy_off := 0;
+ If cur_tok.val = 'VAR' Then ParseVarSection(False, dummy_off);
   { --- Fermer DATA, ouvrir CODE --- }
-  GenDataFooter;
-  GenCodeHeader;
-  GenStartEntry;
-
+ GenDataFooter;
+ GenCodeHeader;
+ GenStartEntry;
   { --- Routines runtime I/O dans tmp_file --- }
-  GenOutInRuntime;
-
+ GenOutInRuntime;
   { --- Ouvrir le fichier de chaines litterales differees --- }
-  str_fname := ChangeExtension(src_fname, '.str');
-  Assign(str_file, str_fname);
-  Rewrite(str_file);
-
+ str_fname := ChangeExtension(src_fname, '.str');
+ Assign(str_file, str_fname);
+ Rewrite(str_file);
   { --- Declarations de procedures (corps -> tmp_file) --- }
-  While cur_tok.val = 'PROCEDURE' Do
-    ParseProcDecl;
-
+ While cur_tok.val = 'PROCEDURE' Do ParseProcDecl;
   { --- Corps du module : BEGIN StatementSeq --- }
-  LexExpect('BEGIN');
-  ParseStatementSeq;
-
+ LexExpect('BEGIN');
+ ParseStatementSeq;
   { --- Epilogue du point d'entree --- }
-  GenStartExit;
-
+ GenStartExit;
   { --- Fusionner les procedures A L'INTERIEUR du segment CODE --- }
-  MergeTmpToMain;
-
+ MergeTmpToMain;
   { --- Fermer CODE --- }
-  GenCodeFooter;
-
+ GenCodeFooter;
   { --- Injecter les chaines litterales dans un _DATA rouvert --- }
-  FlushStringLiterals;
-
+ FlushStringLiterals;
   { --- END START --- }
-  GenEndDirective;
-
+ GenEndDirective;
   { --- Verifier le nom de fin : END name . --- }
-  LexExpect('END');
-  mname_end := cur_tok.val;
-  If cur_tok.kind = TK_IDENT Then
-  Begin
-    If mname_end <> module_name Then
+ LexExpect('END');
+ mname_end := cur_tok.val;
+ If cur_tok.kind = TK_IDENT Then Begin
+  If mname_end <> module_name Then
       ErrorMsg('Fin de module incorrecte : attendu ' + module_name
                + ', lu ' + mname_end);
-    LexNext;
-  End;
-  LexExpect('.');
+   LexNext;
+ End;
+ LexExpect('.');
 End;
 
 { ============================================================
   Programme principal
   ============================================================ }
 
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('MODII86 - Cette commande permet de lancer le compilateur Modula-2 pour l''assembleur ',
+          'du microprocesseur 8086.');
+  WriteLn;
+  WriteLn('Syntaxe : MODII86 source.mod [sortie.asm] [options]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v   mode verbeux (statistiques et symboles)');
+  WriteLn('  -d   mode debug   (trace de parsing)');
+  WriteLn('  -nr  pas de liaison avec le runtime');
+  Halt(0);
+ End;
   { --- Arguments --- }
-  ParseArgs;
-
+ ParseArgs;
   { --- Initialisation --- }
-  InitTables;
-  InitBuiltinTypes;
-
+ InitTables;
+ InitBuiltinTypes;
   { --- Ouverture du source et lancement du lexer --- }
-  LexInit(src_fname);  { ouvre src_file, charge le premier token }
-
+ LexInit(src_fname);  { ouvre src_file, charge le premier token }
   { --- Portee module (niveau 1) --- }
-  ScopeEnter;
-
+ ScopeEnter;
   { --- Ouverture de la sortie --- }
-  Assign(out_file, out_fname);
-  Rewrite(out_file);
-  If IOResult <> 0 Then
-  Begin
-    WriteLn('Erreur : impossible de creer ', out_fname);
-    Close(src_file);
-    Halt(1);
-  End;
-  cur_out := @out_file;
-
+ Assign(out_file, out_fname);
+ Rewrite(out_file);
+ If IOResult <> 0 Then Begin
+  WriteLn('Erreur : impossible de creer ', out_fname);
+  Close(src_file);
+  Halt(1);
+ End;
+ cur_out := @out_file;
   { --- Ouverture du fichier temporaire (code des procedures) --- }
-  Assign(tmp_file, tmp_fname);
-  Rewrite(tmp_file);
-
+ Assign(tmp_file, tmp_fname);
+ Rewrite(tmp_file);
   { --- Compilation complete : ParseModule gere toute l'emission ASM --- }
-  ParseModule;
-
+ ParseModule;
   { --- Fermeture --- }
-  ScopeLeave;  { fermer la portee module }
-  LexClose;
-  Close(out_file);
-
-  { --- Rapport final (TODO 24) --- }
-  If opt_verbose Then
-  Begin
-    WriteLn;
-    WriteLn('=== RAPPORT DE COMPILATION : ', src_fname, ' ===');
-    WriteLn('  Lignes     : ', lex_lineno);
-    WriteLn('  Tokens     : ', tok_count);
-    WriteLn('  Symboles   : ', sym_count);
-    WriteLn('  Procedures : ', proc_count);
-    WriteLn('  Types      : ', type_count);
-    WriteLn('  Constantes : ', const_count);
-    WriteLn('  Modules imp: ', import_count);
-    WriteLn('  Instructions ASM : ', instr_count);
-    WriteLn('  Erreurs    : ', err_count);
-    WriteLn('  Avertissements   : ', warn_count);
-    WriteLn('  Sortie     : ', out_fname);
-    If opt_debug Then
-    Begin
-      WriteLn;
-      TypeDump;
-      WriteLn;
-      SymDumpVerbose;
-    End;
+ ScopeLeave;  { fermer la portee module }
+ LexClose;
+ Close(out_file);
+  { --- Rapport final --- }
+ If opt_verbose Then Begin
+  WriteLn;
+  WriteLn('=== RAPPORT DE COMPILATION : ', src_fname, ' ===');
+  WriteLn('  Lignes     : ', lex_lineno);
+  WriteLn('  Tokens     : ', tok_count);
+  WriteLn('  Symboles   : ', sym_count);
+  WriteLn('  Procedures : ', proc_count);
+  WriteLn('  Types      : ', type_count);
+  WriteLn('  Constantes : ', const_count);
+  WriteLn('  Modules imp: ', import_count);
+  WriteLn('  Instructions ASM : ', instr_count);
+  WriteLn('  Erreurs    : ', err_count);
+  WriteLn('  Avertissements   : ', warn_count);
+  WriteLn('  Sortie     : ', out_fname);
+  If opt_debug Then Begin
+   WriteLn;
+   TypeDump;
+   WriteLn;
+   SymDumpVerbose;
   End;
-
-  FreeTables;
-
-  If err_count > 0 Then
-  Begin
-    WriteLn(err_count, ' erreur(s) - compilation echouee.');
-    Halt(1);
-  End
+ End;
+ FreeTables;
+ If err_count > 0 Then Begin
+  WriteLn(err_count, ' erreur(s) - compilation echouee.');
+  Halt(1);
+ End
   Else
-  Begin
-    If opt_verbose Then
-      WriteLn('Compilation reussie -> ', out_fname);
-  End;
-End.
+ Begin
+  If opt_verbose Then WriteLn('Compilation reussie -> ', out_fname);
+ End;
+END.
