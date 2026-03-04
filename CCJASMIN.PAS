@@ -244,87 +244,87 @@ Type
  TConditionState = Record
   condition_type: TConditionType; { Type de condition }
   is_true: Boolean;               { valuation actuelle de la condition }
-  has_true_branch: Boolean;       { Si une branche vraie a ‚t‚ trouvï¿½e }
+  has_true_branch: Boolean;       { Si une branche vraie a ‚t‚ trouv‚e }
   in_else: Boolean;               { Si nous sommes dans un bloc #else }
-  line_number: Integer;           { Numï¿½ro de ligne pour debug }
+  line_number: Integer;           { Num‚ro de ligne pour debug }
  End;
 
- { Pile de conditions pour directives imbriquï¿½es }
+ { Pile de conditions pour directives imbriqu‚es }
  TConditionStack = Array[0..31] of TConditionState;
 
- { Table de symboles utilisant la mï¿½moire de tas au lieu du segment de donnï¿½es }
+ { Table de symboles utilisant la mï¿½moire de tas au lieu du segment de donn‚es }
  PSymbol = ^TSymbol;
  TSymbol = Record
   name: String;
   ident: Integer;        { it_variable, it_function,... }
   ctype: Integer;        { Type de symbole }
   storage: Integer;      { Classe d'entreposage }
-  offset_value: Integer; { Dï¿½placement ou valeur }
-  type_info: TTypeInfo;  { Information de type Ã©tendue }
-  next: PSymbol;         { Symbole suivant dans la chaÃ®ne }
+  offset_value: Integer; { D‚placement ou valeur }
+  type_info: TTypeInfo;  { Information de type ‚tendue }
+  next: PSymbol;         { Symbole suivant dans la chaŒne }
  End;
 
-  { Pointeur vers fonction dans la mï¿½moire de tas }
+  { Pointeur vers fonction dans la m‚moire de tas }
  PFunction = ^TFunctionNode;
 
- { Noeud de fonction pour liste chaï¿½nï¿½e dans la mï¿½moire de tas }
+ { Noeud de fonction pour liste chaŒn‚e dans la m‚moire de tas }
  TFunctionNode = Record
-  func_data: TFunction;    { Donnï¿½es de la fonction }
+  func_data: TFunction;    { Donn‚es de la fonction }
   next: PFunction;         { Fonction suivante dans la liste }
  End;
 
-  { Structure pour gï¿½rer les ï¿½tiquettes goto }
+  { Structure pour g‚rer les ‚tiquettes goto }
  TGotoLabel = Record
-  name: String[20];       { Nom de l'ï¿½tiquette }
-  label_id: Integer;      { ID numï¿½rique de l'ï¿½tiquette }
-  is_defined: Boolean;    { Vrai si l'ï¿½tiquette a ï¿½tï¿½ dï¿½finie }
-  is_used: Boolean;       { Vrai si l'ï¿½tiquette a ï¿½tï¿½ rï¿½fï¿½rencï¿½e }
+  name: String[20];       { Nom de l'‚tiquette }
+  label_id: Integer;      { ID num‚rique de l'‚tiquette }
+  is_defined: Boolean;    { Vrai si l'‚tiquette a ‚t‚ d‚finie }
+  is_used: Boolean;       { Vrai si l'‚tiquette a ‚t‚ r‚f‚renc‚e }
  End;
 
- { Table des ï¿½tiquettes goto }
- TGotoTable = Array[0..31] of TGotoLabel; { Maximum 32 ï¿½tiquettes par fonction }
+ { Table des ‚tiquettes goto }
+ TGotoTable = Array[0..31] of TGotoLabel; { Maximum 32 ‚tiquettes par fonction }
 
- { Structure pour gï¿½rer les instructions switch/case }
+ { Structure pour g‚rer les instructions switch/case }
  TSwitchCase = Record
   value: Integer;         { Valeur du case }
-  label_id: Integer;      { ID de l'ï¿½tiquette pour ce case }
+  label_id: Integer;      { ID de l'‚tiquette pour ce case }
  End;
 
  TSwitchStatement = Record
   expression_type: Integer;           { Type de l'expression switch }
   case_count: Integer;                { Nombre de cases }
   cases: Array[0..31] of TSwitchCase; { Max 32 cases par switch }
-  default_label: Integer;             { ï¿½tiquette pour default (-1 si pas de default) }
-  end_label: Integer;                 { ï¿½tiquette de fin de switch }
+  default_label: Integer;             { tiquette pour default (-1 si pas de default) }
+  end_label: Integer;                 { tiquette de fin de switch }
   has_default: Boolean;               { Vrai s'il y a une clause default }
  End;
 
- { Table des switch imbriquï¿½s }
- TSwitchTable = Array[0..7] of TSwitchStatement; { Maximum 8 switch imbriquï¿½s }
+  { Table des switch imbriqu‚s }
+ TSwitchTable = Array[0..7] of TSwitchStatement; { Maximum 8 switch imbriqu‚s }
 
 Var
  Language:(_French,_English,_Germany,_Italian,_Spain,_Albanian,_Portuguese,_Swedish,_Danish,_Japanese);
  TmpLanguage:String;
  { Tables de symbole }
- { Variables hï¿½ritï¿½es - conservï¿½es pour la compatibilitï¿½ avec certains calculs }
+ { Variables h‚rit‚es - conserv‚es pour la compatibilit‚ avec certains calculs }
  glbptr, locptr: Integer;
 
- { Nouvelle table de symboles basï¿½e sur le tas }
- symbol_list: PSymbol;    { Tï¿½te de la liste de symboles }
+ { Nouvelle table de symboles bas‚e sur la m‚moire de tas }
+ symbol_list: PSymbol;    { Tˆte de la liste de symboles }
  symbol_count: Integer;   { Compteur pour les statistiques }
 
- { Gestion de fonction - liste chaï¿½nï¿½e basï¿½e sur le tas }
- function_list: PFunction;          { Tï¿½te de la liste de fonctions }
+ { Gestion de fonction - liste chaŒn‚e bas‚e sur la m‚moire de tas }
+ function_list: PFunction;          { Tˆte de la liste de fonctions }
  function_count: Integer;           { Compteur pour les statistiques }
  current_function_node: PFunction;  { Noeud de la fonction en cours d'analyse }
- current_function: Integer;         { Index de fonction pour compatibilitï¿½ }
+ current_function: Integer;         { Index de fonction pour compatibilit‚ }
  call_stack_depth: Integer;         { Profondeur d'appel actuelle }
 
- { Contexte d'optimisation }
+  { Contexte d'optimisation }
  opt_context: TOptContext;
 
- { Gestion des structures et unions - liste chaï¿½nï¿½e basï¿½e sur la mï¿½moire de tas }
- struct_list: PStructDef;     { Tï¿½te de la liste de structures/unions }
+ { Gestion des structures et unions - liste chaŒn‚e bas‚e sur la m‚moire de tas }
+ struct_list: PStructDef;     { Tˆte de la liste de structures/unions }
  struct_count: Integer;       { Compteur de structures/unions }
  next_struct_id: Integer;     { Prochain ID de structure disponible }
 
@@ -337,50 +337,50 @@ Var
  include_depth: Integer;
  current_filename: String;
 
-  { Table des fichiers inclus pour ï¿½viter l'inclusion circulaire }
- included_files: Array[0..49] of TIncludedFile; { Maximum 50 fichiers diffï¿½rents }
+  { Table des fichiers inclus pour ‚viter l'inclusion circulaire }
+ included_files: Array[0..49] of TIncludedFile; { Maximum 50 fichiers diff‚rents }
  included_count: Integer;
 
- { Gestion Define/Macro - utilisation du tas (liste chaï¿½nï¿½e) }
- define_list: PDefine;  { Tï¿½te de la liste chaï¿½nï¿½e des defines }
- define_count: Integer; { Nombre de dï¿½finitions actuellement en usage }
+  { Gestion Define/Macro - utilisation du tas (liste chaŒn‚e) }
+ define_list: PDefine;  { Tˆte de la liste chaŒn‚e des defines }
+ define_count: Integer; { Nombre de d‚finitions actuellement en usage }
 
- { Gestion des directives conditionnelles de prï¿½processeur }
+ { Gestion des directives conditionnelles de pr‚processeur }
  condition_stack: TConditionStack; { Pile de conditions }
  condition_depth: Integer;         { Profondeur actuelle de la pile }
  skip_code: Boolean;               { Vrai si on doit ignorer le code actuel }
 
- { Informations de type ï¿½tendues - maintenant entreposï¿½es directement dans les symboles }
+ { Informations de type ‚tendues - maintenant entrepos‚es directement dans les symboles }
   type_info_count: Integer;
 
- { Ligne d'entrï¿½e }
+ { Ligne d'entr‚e }
  line: TLine;
  lptr: Integer;
 
- { ï¿½tiquettes et compteurs }
+ { tiquettes et compteurs }
  nxtlab: Integer;
  nextlabel: Integer; { Pour l'analyseur d'expressions }
 
- { Table des ï¿½tiquettes goto }
+  { Table des ‚tiquettes goto }
  goto_table: TGotoTable;
  goto_count: Integer;
 
- { Table des switch imbriquï¿½s }
+  { Table des switch imbriqu‚s }
  switch_table: TSwitchTable;
  switch_depth: Integer;
 
- { Drapeaux et options }
+  { Drapeaux et options }
  first_func, declared: Boolean;
  stkp: Integer;
  errcnt, eof: Integer;
  optimize, ctext, cmode, lastst: Integer;
 
- { Gestionnaires de fichiers }
+  { Gestionnaires de fichiers }
  input, output: Text;
  asmtype: Integer;
  use_stdout: Boolean;
 
-{ Dï¿½clarations anticipï¿½es }
+ { D‚clarations anticip‚es }
 Procedure init_type_info(var type_info: TTypeInfo); forward;
 Function parse_type_specifier: Integer; forward;
 Function parse_type_specifier_with_qualifiers(var type_info: TTypeInfo): Integer; forward;
@@ -388,27 +388,27 @@ Function parse_storage_class_specifier: Integer; forward;
 Function parse_enum_type: Integer; forward;
 Function readinline: Boolean; forward;
 
-{ DÃ©clarations anticipÃ©es pour typedef }
+{ D‚clarations anticip‚es pour typedef }
 Function find_typedef(typedef_name: String): PSymbol; forward;
 Function add_typedef(typedef_name: String; var type_info: TTypeInfo): PSymbol; forward;
 Function parse_typedef_declaration: Boolean; forward;
 Function resolve_typedef_type(typedef_name: String; var resolved_type: TTypeInfo): Boolean; forward;
 
-{ Fonctions hï¿½ritï¿½es - plus nï¿½cessaires avec la table de symboles basï¿½e sur la mï¿½moire de tas }
+{ Fonctions h‚rit‚es - plus n‚cessaires avec la table de symboles bas‚e sur la m‚moire de tas }
 Function startglb: Integer;Begin
- startglb := 1; { Commence ï¿½ 1 pour rï¿½server 0 comme valeur "non trouvï¿½" }
+ startglb := 1; { Commence … 1 pour r‚server 0 comme valeur "non trouv‚" }
 End;
 
 Function endglb: Integer;Begin
- endglb := 1000; { Valeur fictive pour la compatibilitï¿½ }
+ endglb := 1000; { Valeur fictive pour la compatibilit‚ }
 End;
 
 Function startloc: Integer;Begin
- startloc := 1000; { Valeur fictive pour la compatibilitï¿½ }
+ startloc := 1000; { Valeur fictive pour la compatibilit‚ }
 End;
 
 Function endloc: Integer;Begin
- endloc := 2000; { Valeur fictive pour la compatibilitï¿½ }
+ endloc := 2000; { Valeur fictive pour la compatibilit‚ }
 End;
 
  { Fonctions utilitaires }
@@ -435,12 +435,12 @@ Function numeric(ch: Char): Boolean;Begin
  numeric := ch in ['0'..'9'];
 End;
 
- { Utilitaires de chaine de caractï¿½res }
+ { Utilitaires de chaine de caractŠres }
 Function streq(s1, s2: String): Boolean;Begin
  streq := s1 = s2;
 End;
 
- { Fonctions d'entrï¿½e/sortie }
+ { Fonctions d'entr‚e/sortie }
 Function ch:Char;Begin
  If lptr <= Length(line) Then ch := line[lptr]
                          Else ch := #0;
@@ -459,7 +459,7 @@ Procedure kill;Begin
  lptr := Length(line) + 1;
 End;
 
-{ Fonctions d'ï¿½criture de fichier sï¿½curisï¿½es }
+{ Fonctions d'‚criture de fichier s‚curis‚es }
 Function is_output_ready: Boolean;Begin
  { Retourne toujours vrai car nous gï¿½rons la vï¿½rification de fichier ailleurs }
  is_output_ready := True;

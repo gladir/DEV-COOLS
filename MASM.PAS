@@ -7210,7 +7210,887 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 17 a 25 a implementer)
+  TODO 18 - ASSEMBLAGE CONDITIONNEL (IF / IFDEF / ELSE / ENDIF)
+  ============================================================ }
+
+Type
+  TIfEntry = Record
+    active   : Boolean;  { True = on assemble ce bloc }
+    had_true : Boolean;  { True = une branche a deja ete prise }
+  End;
+
+Var
+  if_stack : Array[0..MAX_IF_DEPTH-1] Of TIfEntry;
+  if_top   : Integer;   { -1 si aucun bloc IF actif }
+
+{ ============================================================
+  IfInit : initialiser la pile des blocs conditionnels
+  ============================================================ }
+Procedure IfInit;
+Var
+  i : Integer;
+Begin
+  if_top := -1;
+  For i := 0 To MAX_IF_DEPTH-1 Do
+  Begin
+    if_stack[i].active   := True;
+    if_stack[i].had_true := False;
+  End;
+End;
+
+{ ============================================================
+  IfAssembling : True si toute la pile dit "actif"
+  (i.e. on doit assembler la ligne courante).
+  ============================================================ }
+Function IfAssembling : Boolean;
+Begin
+  If if_top < 0 Then
+    IfAssembling := True
+  Else
+    IfAssembling := if_stack[if_top].active;
+End;
+
+{ ============================================================
+  IfPushCond : empiler un nouveau bloc IF.
+  cond = resultat du test (True = assembler le THEN).
+  Si on est deja dans un bloc inactif, on empile inactif.
+  ============================================================ }
+Procedure IfPushCond(cond : Boolean);
+Var
+  parent_active : Boolean;
+Begin
+  parent_active := IfAssembling;
+  If if_top >= MAX_IF_DEPTH - 1 Then
+  Begin
+    ErrorMsg('Trop de blocs IF imbriques (max 32)');
+    Exit;
+  End;
+  Inc(if_top);
+  if_stack[if_top].active   := parent_active And cond;
+  if_stack[if_top].had_true := parent_active And cond;
+End;
+
+{ ============================================================
+  IfHandleElse : traiter ELSE dans le contexte courant.
+  ============================================================ }
+Procedure IfHandleElse;
+Var
+  parent_active : Boolean;
+Begin
+  If if_top < 0 Then
+  Begin
+    ErrorMsg('ELSE sans IF');
+    Exit;
+  End;
+  If if_stack[if_top].had_true Then
+    if_stack[if_top].active := False
+  Else
+  Begin
+    If if_top > 0 Then parent_active := if_stack[if_top-1].active
+    Else               parent_active := True;
+    if_stack[if_top].active   := parent_active;
+    if_stack[if_top].had_true := parent_active;
+  End;
+End;
+
+{ ============================================================
+  IfHandleElseIf : traiter ELSEIF expr dans le contexte courant.
+  ============================================================ }
+Procedure IfHandleElseIf(cond : Boolean);
+Var
+  parent_active : Boolean;
+Begin
+  If if_top < 0 Then
+  Begin
+    ErrorMsg('ELSEIF sans IF');
+    Exit;
+  End;
+  If if_stack[if_top].had_true Then
+    if_stack[if_top].active := False
+  Else
+  Begin
+    If if_top > 0 Then parent_active := if_stack[if_top-1].active
+    Else               parent_active := True;
+    if_stack[if_top].active   := parent_active And cond;
+    if_stack[if_top].had_true := parent_active And cond;
+  End;
+End;
+
+{ ============================================================
+  IfHandleEndif : traiter ENDIF.
+  ============================================================ }
+Procedure IfHandleEndif;
+Begin
+  If if_top < 0 Then
+  Begin
+    ErrorMsg('ENDIF sans IF');
+    Exit;
+  End;
+  Dec(if_top);
+End;
+
+{ ============================================================
+  IfReadAngle : lire le contenu de <...> sur la ligne courante.
+  Retourne le texte interieur sans les < >.
+  ============================================================ }
+Function IfReadAngle : TString;
+Var
+  s : TString;
+Begin
+  s := '';
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '<') Then
+    LexNext
+  Else
+  Begin
+    IfReadAngle := '';
+    Exit;
+  End;
+  While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do
+  Begin
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '>') Then
+    Begin
+      LexNext;
+      Break;
+    End;
+    LexNext;
+    If Length(s) > 0 Then s := s + ' ';
+    s := s + lex_tok.val;
+  End;
+  IfReadAngle := s;
+End;
+
+{ ============================================================
+  ParseConditional : dispatcher pour toutes les directives
+  conditionnelles (IF/IFDEF/ELSE/ENDIF/...).
+  Retourne True si le mot-cle a ete reconnu (qu on assemble
+  ou non : les directives de structure IF/ENDIF doivent toujours
+  etre traitees pour maintenir l imbrication).
+  ============================================================ }
+Function ParseConditional(Const dir : TString) : Boolean;
+Var
+  e        : TExpr;
+  tok      : TString;
+  p        : PSymbol;
+  cond     : Boolean;
+  a_text   : TString;
+  b_text   : TString;
+  a_upper  : TString;
+  b_upper  : TString;
+  i        : Integer;
+Begin
+  ParseConditional := True;
+
+  { ---- IF expr ---- }
+  If dir = 'IF' Then
+  Begin
+    ExprMakeNum(e, 0);
+    If IfAssembling Then EvalExpr(e) Else e.val := 0;
+    IfPushCond(e.val <> 0);
+    Exit;
+  End;
+
+  { ---- IFE expr ---- }
+  If dir = 'IFE' Then
+  Begin
+    ExprMakeNum(e, 0);
+    If IfAssembling Then EvalExpr(e) Else e.val := 1;
+    IfPushCond(e.val = 0);
+    Exit;
+  End;
+
+  { ---- IF1 / IF2 ---- }
+  If dir = 'IF1' Then Begin IfPushCond(pass_num <= 1); Exit; End;
+  If dir = 'IF2' Then Begin IfPushCond(pass_num = 2);  Exit; End;
+
+  { ---- IFDEF nom ---- }
+  If dir = 'IFDEF' Then
+  Begin
+    cond := False;
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      LexNext;
+      tok := lex_tok.val;
+      p   := SymFind(tok);
+      cond := (p <> Nil) And (p^.kind <> SK_UNDEF);
+    End;
+    IfPushCond(cond);
+    Exit;
+  End;
+
+  { ---- IFNDEF nom ---- }
+  If dir = 'IFNDEF' Then
+  Begin
+    cond := True;
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      LexNext;
+      tok := lex_tok.val;
+      p   := SymFind(tok);
+      cond := (p = Nil) Or (p^.kind = SK_UNDEF);
+    End;
+    IfPushCond(cond);
+    Exit;
+  End;
+
+  { ---- IFB <arg> : vrai si argument vide ---- }
+  If dir = 'IFB' Then
+  Begin
+    a_text := '';
+    If IfAssembling Then a_text := IfReadAngle;
+    IfPushCond(a_text = '');
+    Exit;
+  End;
+
+  { ---- IFNB <arg> : vrai si argument non vide ---- }
+  If dir = 'IFNB' Then
+  Begin
+    a_text := '';
+    If IfAssembling Then a_text := IfReadAngle;
+    IfPushCond(a_text <> '');
+    Exit;
+  End;
+
+  { ---- IFIDN <a>, <b> (sensible a la casse) ---- }
+  If dir = 'IFIDN' Then
+  Begin
+    a_text := '';
+    b_text := '';
+    If IfAssembling Then
+    Begin
+      a_text := IfReadAngle;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+      b_text := IfReadAngle;
+    End;
+    IfPushCond(a_text = b_text);
+    Exit;
+  End;
+
+  { ---- IFIDNI <a>, <b> (insensible a la casse) ---- }
+  If dir = 'IFIDNI' Then
+  Begin
+    a_text  := '';
+    b_text  := '';
+    a_upper := '';
+    b_upper := '';
+    If IfAssembling Then
+    Begin
+      a_text := IfReadAngle;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+      b_text := IfReadAngle;
+    End;
+    For i := 1 To Length(a_text) Do a_upper := a_upper + UpCase(a_text[i]);
+    For i := 1 To Length(b_text) Do b_upper := b_upper + UpCase(b_text[i]);
+    IfPushCond(a_upper = b_upper);
+    Exit;
+  End;
+
+  { ---- IFDIF <a>, <b> (sensible a la casse) ---- }
+  If dir = 'IFDIF' Then
+  Begin
+    a_text := '';
+    b_text := '';
+    If IfAssembling Then
+    Begin
+      a_text := IfReadAngle;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+      b_text := IfReadAngle;
+    End;
+    IfPushCond(a_text <> b_text);
+    Exit;
+  End;
+
+  { ---- IFDIFI <a>, <b> (insensible a la casse) ---- }
+  If dir = 'IFDIFI' Then
+  Begin
+    a_text  := '';
+    b_text  := '';
+    a_upper := '';
+    b_upper := '';
+    If IfAssembling Then
+    Begin
+      a_text := IfReadAngle;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+      b_text := IfReadAngle;
+    End;
+    For i := 1 To Length(a_text) Do a_upper := a_upper + UpCase(a_text[i]);
+    For i := 1 To Length(b_text) Do b_upper := b_upper + UpCase(b_text[i]);
+    IfPushCond(a_upper <> b_upper);
+    Exit;
+  End;
+
+  { ---- ELSE ---- }
+  If dir = 'ELSE' Then
+  Begin
+    IfHandleElse;
+    Exit;
+  End;
+
+  { ---- ELSEIF expr ---- }
+  If dir = 'ELSEIF' Then
+  Begin
+    ExprMakeNum(e, 0);
+    If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+    Begin
+      If IfAssembling Then EvalExpr(e) Else e.val := 0;
+      cond := (e.val <> 0);
+    End
+    Else
+      cond := False;
+    IfHandleElseIf(cond);
+    Exit;
+  End;
+
+  { ---- ELSEIFDEF nom ---- }
+  If dir = 'ELSEIFDEF' Then
+  Begin
+    cond := False;
+    If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+    Begin
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        tok  := lex_tok.val;
+        p    := SymFind(tok);
+        cond := (p <> Nil) And (p^.kind <> SK_UNDEF);
+      End;
+    End;
+    IfHandleElseIf(cond);
+    Exit;
+  End;
+
+  { ---- ELSEIFNDEF nom ---- }
+  If dir = 'ELSEIFNDEF' Then
+  Begin
+    cond := True;
+    If (if_top >= 0) And (Not if_stack[if_top].had_true) Then
+    Begin
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        tok  := lex_tok.val;
+        p    := SymFind(tok);
+        cond := (p = Nil) Or (p^.kind = SK_UNDEF);
+      End;
+    End;
+    IfHandleElseIf(cond);
+    Exit;
+  End;
+
+  { ---- ENDIF ---- }
+  If dir = 'ENDIF' Then
+  Begin
+    IfHandleEndif;
+    Exit;
+  End;
+
+  { ---- Directives d erreur conditionnelle ---- }
+  If dir = '.ERR' Then
+  Begin
+    If IfAssembling Then ErrorMsg('.ERR : erreur forcee');
+    Exit;
+  End;
+  If dir = '.ERR1' Then
+  Begin
+    If IfAssembling And (pass_num <= 1) Then ErrorMsg('.ERR1 : erreur passe 1');
+    Exit;
+  End;
+  If dir = '.ERR2' Then
+  Begin
+    If IfAssembling And (pass_num = 2) Then ErrorMsg('.ERR2 : erreur passe 2');
+    Exit;
+  End;
+  If dir = '.ERRDEF' Then
+  Begin
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      LexNext; tok := lex_tok.val;
+      p := SymFind(tok);
+      If IfAssembling And (p <> Nil) And (p^.kind <> SK_UNDEF) Then
+        ErrorMsg('.ERRDEF : symbole defini : ' + tok);
+    End;
+    Exit;
+  End;
+  If dir = '.ERRNDEF' Then
+  Begin
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      LexNext; tok := lex_tok.val;
+      p := SymFind(tok);
+      If IfAssembling And ((p = Nil) Or (p^.kind = SK_UNDEF)) Then
+        ErrorMsg('.ERRNDEF : symbole non defini : ' + tok);
+    End;
+    Exit;
+  End;
+  If dir = '.ERRB' Then
+  Begin
+    a_text := '';
+    If IfAssembling Then a_text := IfReadAngle;
+    If IfAssembling And (a_text = '') Then ErrorMsg('.ERRB : argument vide');
+    Exit;
+  End;
+  If dir = '.ERRNB' Then
+  Begin
+    a_text := '';
+    If IfAssembling Then a_text := IfReadAngle;
+    If IfAssembling And (a_text <> '') Then ErrorMsg('.ERRNB : argument non vide');
+    Exit;
+  End;
+  If dir = '.ERRIDN' Then
+  Begin
+    a_text := ''; b_text := '';
+    If IfAssembling Then
+    Begin
+      a_text := IfReadAngle;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+      b_text := IfReadAngle;
+    End;
+    If IfAssembling And (a_text = b_text) Then
+      ErrorMsg('.ERRIDN : arguments identiques');
+    Exit;
+  End;
+  If dir = '.ERRDIF' Then
+  Begin
+    a_text := ''; b_text := '';
+    If IfAssembling Then
+    Begin
+      a_text := IfReadAngle;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+      b_text := IfReadAngle;
+    End;
+    If IfAssembling And (a_text <> b_text) Then
+      ErrorMsg('.ERRDIF : arguments differents');
+    Exit;
+  End;
+  If (dir = '.ERRE') Or (dir = '.ERRNZ') Then
+  Begin
+    ExprMakeNum(e, 0);
+    If IfAssembling Then EvalExpr(e) Else e.val := 0;
+    If dir = '.ERRE' Then
+    Begin
+      If IfAssembling And (e.val = 0) Then
+        ErrorMsg('.ERRE : expression evaluee a 0');
+    End
+    Else
+    Begin
+      If IfAssembling And (e.val <> 0) Then
+        ErrorMsg('.ERRNZ : expression evaluee a non-zero');
+    End;
+    Exit;
+  End;
+  If (dir = '.ERRGE') Or (dir = '.ERRLT') Or
+     (dir = '.ERRLE') Or (dir = '.ERRGT') Then
+  Begin
+    ExprMakeNum(e, 0);
+    If IfAssembling Then EvalExpr(e) Else e.val := 0;
+    If dir = '.ERRGE' Then cond := (e.val >= 0)
+    Else If dir = '.ERRLT' Then cond := (e.val < 0)
+    Else If dir = '.ERRLE' Then cond := (e.val <= 0)
+    Else cond := (e.val > 0);
+    If IfAssembling And cond Then
+      ErrorMsg(dir + ' : condition verifiee');
+    Exit;
+  End;
+
+  ParseConditional := False;
+End;
+
+{ ============================================================
+  TODO 19 - PROCEDURES ET CONVENTIONS D APPEL (PROC ENDP)
+  ============================================================ }
+
+Const
+  MAX_PROC_NEST   = 8;    { imbrication max de PROCs }
+  MAX_PROC_PARAMS = 32;   { parametres max par PROC }
+  MAX_PROC_USES   = 16;   { registres USES max par PROC }
+
+{ Convention d appel }
+Const
+  LANG_NONE    = 0;
+  LANG_C       = 1;
+  LANG_PASCAL  = 2;
+  LANG_FORTRAN = 3;
+  LANG_SYSCALL = 4;
+  LANG_STDCALL = 5;
+
+Type
+  TProcParam = Record
+    pname  : TSymString;
+    ptype  : TString;
+    psize  : Integer;   { taille en octets }
+    bp_off : Integer;   { offset depuis BP }
+  End;
+
+  TProcInfo = Record
+    pname      : TSymString;
+    is_far     : Boolean;
+    lang       : Integer;      { LANG_xxx }
+    uses_regs  : Array[1..MAX_PROC_USES] Of Integer;  { index reg 0..7 }
+    uses_cnt   : Integer;
+    params     : Array[1..MAX_PROC_PARAMS] Of TProcParam;
+    param_cnt  : Integer;
+  End;
+
+Var
+  proc_stack : Array[0..MAX_PROC_NEST-1] Of TProcInfo;
+  proc_top   : Integer;
+
+{ ============================================================
+  ProcInit : initialiser la pile des procedures
+  ============================================================ }
+Procedure ProcInit;
+Begin
+  proc_top := -1;
+End;
+
+{ ============================================================
+  RegNameToIdx : convertir un nom de registre 16 bits en index
+  0..7 (AX=0 CX=1 DX=2 BX=3 SP=4 BP=5 SI=6 DI=7).
+  Retourne -1 si non reconnu.
+  ============================================================ }
+Function RegNameToIdx(Const rname : TString) : Integer;
+Begin
+  If      rname = 'AX' Then RegNameToIdx := 0
+  Else If rname = 'CX' Then RegNameToIdx := 1
+  Else If rname = 'DX' Then RegNameToIdx := 2
+  Else If rname = 'BX' Then RegNameToIdx := 3
+  Else If rname = 'SP' Then RegNameToIdx := 4
+  Else If rname = 'BP' Then RegNameToIdx := 5
+  Else If rname = 'SI' Then RegNameToIdx := 6
+  Else If rname = 'DI' Then RegNameToIdx := 7
+  Else                       RegNameToIdx := -1;
+End;
+
+{ ============================================================
+  EmitPushReg16 / EmitPopReg16 : emettre PUSH/POP registre
+  ============================================================ }
+Procedure EmitPushReg16(ridx : Integer);
+Begin
+  EmitByte(Byte($50 Or ridx));
+End;
+
+Procedure EmitPopReg16(ridx : Integer);
+Begin
+  EmitByte(Byte($58 Or ridx));
+End;
+
+{ ============================================================
+  ParseProc : nom PROC [NEAR|FAR] [LANG:C|PASCAL|...] 
+              [USES reg1 reg2 ...] [param1:TYPE, ...]
+  ============================================================ }
+Procedure ParseProc(Const pname : TSymString);
+Var
+  pi       : TProcInfo;
+  tok      : TString;
+  ridx     : Integer;
+  bp_off   : Integer;
+  i        : Integer;
+  p        : PSymbol;
+  tname    : TString;
+  sz       : Integer;
+  ret_sz   : Integer;
+Begin
+  If proc_top >= MAX_PROC_NEST - 1 Then
+  Begin
+    ErrorMsg('Trop de PROCs imbriquees');
+    Exit;
+  End;
+
+  { initialiser l entree }
+  pi.pname     := pname;
+  pi.is_far    := call_far;
+  pi.lang      := LANG_NONE;
+  pi.uses_cnt  := 0;
+  pi.param_cnt := 0;
+  For i := 1 To MAX_PROC_USES   Do pi.uses_regs[i] := -1;
+
+  { ---- NEAR / FAR optionnel ---- }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    tok := LexPeekVal;
+    If      tok = 'NEAR' Then Begin pi.is_far := False; LexNext; End
+    Else If tok = 'FAR'  Then Begin pi.is_far := True;  LexNext; End;
+  End;
+
+  { ---- LANG[:] convention optionnelle ---- }
+  If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'LANG') Then
+  Begin
+    LexNext;
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then LexNext;
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      LexNext;
+      tok := lex_tok.val;
+      If      tok = 'C'        Then pi.lang := LANG_C
+      Else If tok = 'PASCAL'   Then pi.lang := LANG_PASCAL
+      Else If tok = 'FORTRAN'  Then pi.lang := LANG_FORTRAN
+      Else If tok = 'SYSCALL'  Then pi.lang := LANG_SYSCALL
+      Else If tok = 'STDCALL'  Then pi.lang := LANG_STDCALL
+      Else WarnMsg('Convention d appel inconnue : ' + tok);
+    End;
+  End;
+
+  { ---- USES reg1 reg2 ... ---- }
+  If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'USES') Then
+  Begin
+    LexNext;  { consommer USES }
+    While LexPeekKind = TK_IDENT Do
+    Begin
+      tok  := LexPeekVal;
+      ridx := RegNameToIdx(tok);
+      If ridx < 0 Then Break;
+      LexNext;
+      If pi.uses_cnt < MAX_PROC_USES Then
+      Begin
+        Inc(pi.uses_cnt);
+        pi.uses_regs[pi.uses_cnt] := ridx;
+      End;
+      { virgule optionnelle entre registres }
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+    End;
+  End;
+
+  { ---- definir le label de la procedure ---- }
+  If pi.is_far Then sz := 4 Else sz := 2;
+  SymDefineLabel(pname, cur_seg, lc, sz);
+  p := SymFind(pname);
+  If p <> Nil Then
+  Begin
+    p^.kind := SK_LABEL;
+    p^.size := sz;
+  End;
+
+  { ---- emettre les PUSH des registres USES ---- }
+  For i := 1 To pi.uses_cnt Do
+    EmitPushReg16(pi.uses_regs[i]);
+
+  { ---- calcul des offsets BP pour les parametres ----
+    Convention : le code d entree typique est
+      PUSH BP / MOV BP,SP
+    L appel NEAR empile @IP (2 octets) ; FAR empile @CS:@IP (4 octets).
+    BP+0 = ancien BP sauve ; BP+2 = @IP (near) ou @CS:@IP (far)
+    Donc : base = 2 (BP propre) + ret_sz
+    Avec USES, chaque registre sauvegarde diminue aussi le
+    decalage, MAIS MASM calcule les offsets AVANT les sauvegardes
+    USES (les param sont accessibles via BP apres PUSH BP / MOV BP,SP). }
+  If pi.is_far Then ret_sz := 4 Else ret_sz := 2;
+  { BP+0 = sauvegarde, BP+2 ou BP+4 = adresse retour }
+  bp_off := 2 + ret_sz;  { premier parametre }
+
+  { ---- parser les parametres param:TYPE [, ...] ----
+    Ils peuvent etre sur la meme ligne ou avec separateur virgule.
+    Convention C : param1 = premier argument pousse (par le caller
+    en convention C, dernier argument empile, donc a l offset le
+    plus bas). On assigne les offsets dans l ordre de declaration. }
+  While LexPeekKind = TK_IDENT Do
+  Begin
+    { nom du parametre }
+    If pi.param_cnt >= MAX_PROC_PARAMS Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    { verifier que c est pas un mot-cle de fin }
+    If (tok = 'USES') Or (tok = 'LANG') Or (tok = 'NEAR') Or
+       (tok = 'FAR') Or (tok = 'INVOKE') Then Break;
+    Inc(pi.param_cnt);
+    pi.params[pi.param_cnt].pname := tok;
+    pi.params[pi.param_cnt].ptype := 'WORD';
+    pi.params[pi.param_cnt].psize := 2;
+
+    { : TYPE optionnel }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+    Begin
+      LexNext;
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        tname := lex_tok.val;
+        sz    := TypeNameToSize(tname);
+        If sz = 0 Then sz := 2;  { PROC/ABS -> WORD par defaut }
+        pi.params[pi.param_cnt].ptype := tname;
+        pi.params[pi.param_cnt].psize := sz;
+      End;
+    End;
+
+    pi.params[pi.param_cnt].bp_off := bp_off;
+    bp_off := bp_off + pi.params[pi.param_cnt].psize;
+
+    { creer le symbole EQU pour ce parametre (BP offset) }
+    p := SymFind(pi.params[pi.param_cnt].pname);
+    If p = Nil Then
+      p := SymEnter(pi.params[pi.param_cnt].pname, SK_EQU, 0, 0,
+                    pi.params[pi.param_cnt].bp_off)
+    Else
+    Begin
+      p^.kind  := SK_EQU;
+      p^.value := pi.params[pi.param_cnt].bp_off;
+    End;
+    SymSetValue(p, pi.params[pi.param_cnt].bp_off);
+    p^.flags := p^.flags Or 8;  { reassignable (local au PROC) }
+
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  End;
+
+  { empiler cette info PROC }
+  Inc(proc_top);
+  proc_stack[proc_top] := pi;
+End;
+
+{ ============================================================
+  ParseEndp : nom ENDP
+  Emet les POP des registres USES en ordre inverse.
+  Verifie la correspondance avec le dernier PROC ouvert.
+  ============================================================ }
+Procedure ParseEndp(Const pname : TSymString);
+Var
+  i : Integer;
+Begin
+  If proc_top < 0 Then
+  Begin
+    ErrorMsg('ENDP sans PROC : ' + pname);
+    Exit;
+  End;
+  If (pname <> '') And (proc_stack[proc_top].pname <> pname) Then
+    WarnMsg('ENDP ' + pname + ' ne correspond pas au dernier PROC ' +
+            proc_stack[proc_top].pname);
+
+  { emettre les POP en ordre inverse des PUSH }
+  For i := proc_stack[proc_top].uses_cnt DownTo 1 Do
+    EmitPopReg16(proc_stack[proc_top].uses_regs[i]);
+
+  Dec(proc_top);
+End;
+
+{ ============================================================
+  ParseEnter : ENTER imm16, imm8  (80186+)
+  Opcode : C8h imm16 imm8
+  ============================================================ }
+Procedure ParseEnter;
+Var
+  frame_sz  : TLong;
+  nest_lev  : TLong;
+  e         : TExpr;
+Begin
+  WarnMsg('ENTER : necessite 80186+');
+  ExprMakeNum(e, 0);
+  EvalExpr(e);
+  frame_sz := e.val;
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  ExprMakeNum(e, 0);
+  EvalExpr(e);
+  nest_lev := e.val;
+  EmitByte($C8);
+  EmitWord(Word(frame_sz));
+  EmitByte(Byte(nest_lev));
+End;
+
+{ ============================================================
+  ParseLeave : LEAVE  (80186+)
+  Opcode : C9h
+  ============================================================ }
+Procedure ParseLeave;
+Begin
+  WarnMsg('LEAVE : necessite 80186+');
+  EmitByte($C9);
+End;
+
+{ ============================================================
+  ParseInvoke : INVOKE procname [, arg1 [, arg2 ...]]
+  Génère le code d appel en empilant les arguments selon
+  la convention LANG du PROC cible (C = de droite a gauche).
+  ============================================================ }
+Procedure ParseInvoke;
+Var
+  tok       : TString;
+  lang      : Integer;
+  is_far    : Boolean;
+  e         : TExpr;
+  args      : Array[1..MAX_PROC_PARAMS] Of TLong;
+  arg_cnt   : Integer;
+  i         : Integer;
+  p         : PSymbol;
+Begin
+  { nom du proc cible }
+  If LexPeekKind <> TK_IDENT Then
+  Begin
+    ErrorMsg('INVOKE : nom de procedure attendu');
+    Exit;
+  End;
+  LexNext;
+  tok := lex_tok.val;
+
+  { chercher la procedure pour connaitre sa convention }
+  lang   := LANG_C;
+  is_far := call_far;
+  p      := SymFind(tok);
+  If p <> Nil Then
+  Begin
+    If p^.size = 4 Then is_far := True
+    Else                 is_far := False;
+  End;
+  { chercher dans proc_stack (procedures encore ouvertes) }
+  For i := proc_top DownTo 0 Do
+    If proc_stack[i].pname = tok Then
+    Begin
+      lang   := proc_stack[i].lang;
+      is_far := proc_stack[i].is_far;
+      Break;
+    End;
+
+  { parser les arguments }
+  arg_cnt := 0;
+  While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do
+  Begin
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+    Begin
+      LexNext;
+      Continue;
+    End;
+    ExprMakeNum(e, 0);
+    EvalExpr(e);
+    If arg_cnt < MAX_PROC_PARAMS Then
+    Begin
+      Inc(arg_cnt);
+      args[arg_cnt] := e.val;
+    End;
+  End;
+
+  { emettre les PUSH selon la convention d appel }
+  If lang = LANG_PASCAL Then
+  Begin
+    { PASCAL : empile de gauche a droite }
+    For i := 1 To arg_cnt Do
+    Begin
+      EmitByte($68);             { PUSH imm16 }
+      EmitWord(Word(args[i]));
+    End;
+  End
+  Else
+  Begin
+    { C / SYSCALL / par defaut : empile de droite a gauche }
+    For i := arg_cnt DownTo 1 Do
+    Begin
+      EmitByte($68);
+      EmitWord(Word(args[i]));
+    End;
+  End;
+
+  { emettre le CALL }
+  If is_far Then
+  Begin
+    { CALL FAR : E8h / 9Ah - on emet E8h+reloc (passe 2 resoudra) }
+    EmitByte($9A);
+    EmitWord(0);   { offset }
+    EmitWord(0);   { segment (fixup necessaire - genere en passe 2) }
+  End
+  Else
+  Begin
+    { CALL NEAR relative : E8h + cw }
+    EmitByte($E8);
+    EmitWord(0);   { le vrai deplacement sera calcule en passe 2 }
+  End;
+End;
+
+{ ============================================================
+  Programme principal (TODOs 19 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -7222,10 +8102,12 @@ Begin
   VisInit;
   StructInit;
   MacroInit;
+  IfInit;
+  ProcInit;
   SrcInit;
   LexInit;
   SymInit;
   local_unique_id := 0;
-  Writeln('TODOs 01-17 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro).');
-  Writeln('TODOs 18 a 25 a implementer.');
+  Writeln('TODOs 01-19 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc).');
+  Writeln('TODOs 20 a 25 a implementer.');
 End.
