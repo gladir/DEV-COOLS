@@ -7197,6 +7197,11 @@ End;
   ============================================================ }
 Function GetNextLine : Boolean; Forward;
 
+{ ---- Table des mots-cles ouvrants pour CollectBlock ---- }
+Const
+  CB_OPEN_COUNT = 4;
+  CB_OPEN_NAMES : Array[1..4] Of String[5] = ('MACRO','REPT','IRP','IRPC');
+
 { ============================================================
   CollectBlock : accumule les lignes depuis le flux courant
   jusqu au ENDM correspondant (gere l imbrication).
@@ -7243,20 +7248,16 @@ Begin
     End;
 
     { tok = le mot-cle pertinent pour la profondeur }
-    If (kw1 = 'MACRO') Or (kw1 = 'REPT') Or
-       (kw1 = 'IRP')   Or (kw1 = 'IRPC') Then
-      tok := kw1
-    Else If (kw2 = 'MACRO') Or (kw2 = 'REPT') Or
-            (kw2 = 'IRP')   Or (kw2 = 'IRPC') Then
-      tok := kw2
-    Else If kw1 = 'ENDM' Then
-      tok := 'ENDM'
-    Else
-      tok := '';
+    tok := '';
+    For i := 1 To CB_OPEN_COUNT Do
+      If CB_OPEN_NAMES[i] = kw1 Then Begin tok := kw1; Break; End;
+    If tok = '' Then
+      For i := 1 To CB_OPEN_COUNT Do
+        If CB_OPEN_NAMES[i] = kw2 Then Begin tok := kw2; Break; End;
+    If (tok = '') And (kw1 = 'ENDM') Then tok := 'ENDM';
 
-    If (tok = 'MACRO') Or (tok = 'REPT') Or
-       (tok = 'IRP')   Or (tok = 'IRPC') Then
-      Inc(depth);
+    For i := 1 To CB_OPEN_COUNT Do
+      If CB_OPEN_NAMES[i] = tok Then Begin Inc(depth); Break; End;
 
     If tok = 'ENDM' Then
     Begin
