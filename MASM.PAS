@@ -6260,53 +6260,95 @@ Begin
 End;
 
 { ============================================================
+  Table des instructions TODO 14
+  ============================================================ }
+Const
+  I14_MUL   =  1;  I14_IMUL  =  2;  I14_DIV   =  3;  I14_IDIV  =  4;
+  I14_CBW   =  5;  I14_CWD   =  6;
+  I14_AAA   =  7;  I14_AAS   =  8;  I14_DAA   =  9;  I14_DAS   = 10;
+  I14_AAM   = 11;  I14_AAD   = 12;
+  I14_ROL   = 13;  I14_ROR   = 14;  I14_RCL   = 15;  I14_RCR   = 16;
+  I14_SHL   = 17;  I14_SAL   = 18;  I14_SHR   = 19;  I14_SAR   = 20;
+  I14_STC   = 21;  I14_CLC   = 22;  I14_CMC   = 23;
+  I14_STD   = 24;  I14_CLD   = 25;  I14_STI   = 26;  I14_CLI   = 27;
+  I14_PUSHF = 28;  I14_POPF  = 29;  I14_SAHF  = 30;  I14_LAHF  = 31;
+  I14_XLAT  = 32;  I14_XLATB = 33;
+  I14_COUNT = 33;
+  I14_NAMES : Array[1..I14_COUNT] Of String[5] = (
+    'MUL',  'IMUL', 'DIV',  'IDIV',
+    'CBW',  'CWD',
+    'AAA',  'AAS',  'DAA',  'DAS',  'AAM',  'AAD',
+    'ROL',  'ROR',  'RCL',  'RCR',  'SHL',  'SAL',  'SHR',  'SAR',
+    'STC',  'CLC',  'CMC',  'STD',  'CLD',  'STI',  'CLI',
+    'PUSHF','POPF', 'SAHF', 'LAHF', 'XLAT', 'XLATB'
+  );
+
+Function FindInstr14(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  FindInstr14 := 0;
+  For i := 1 To I14_COUNT Do
+    If I14_NAMES[i] = s Then
+    Begin FindInstr14 := i; Exit; End;
+End;
+
+{ ============================================================
   ParseInstr14 : dispatcher TODO 14
   ============================================================ }
 Function ParseInstr14(Const mnem : TString) : Boolean;
 Var
-  sg : Integer;
+  instr_idx : Integer;
 Begin
   ParseInstr14 := True;
+  instr_idx := FindInstr14(mnem);
+  Case instr_idx Of
 
-  { --- MUL / IMUL / DIV / IDIV --- }
-  If mnem = 'MUL'  Then Begin EncodeMulDiv(4); Exit; End;
-  If mnem = 'IMUL' Then Begin EncodeMulDiv(5); Exit; End;
-  If mnem = 'DIV'  Then Begin EncodeMulDiv(6); Exit; End;
-  If mnem = 'IDIV' Then Begin EncodeMulDiv(7); Exit; End;
+    { --- MUL / IMUL / DIV / IDIV --- }
+    I14_MUL  : Begin EncodeMulDiv(4); Exit; End;
+    I14_IMUL : Begin EncodeMulDiv(5); Exit; End;
+    I14_DIV  : Begin EncodeMulDiv(6); Exit; End;
+    I14_IDIV : Begin EncodeMulDiv(7); Exit; End;
 
-  { --- Conversion --- }
-  If mnem = 'CBW' Then Begin EmitByte($98); Exit; End;
-  If mnem = 'CWD' Then Begin EmitByte($99); Exit; End;
+    { --- Conversion --- }
+    I14_CBW  : Begin EmitByte($98); Exit; End;
+    I14_CWD  : Begin EmitByte($99); Exit; End;
 
-  { --- BCD / ASCII --- }
-  If mnem = 'AAA' Then Begin EmitByte($37); Exit; End;
-  If mnem = 'AAS' Then Begin EmitByte($3F); Exit; End;
-  If mnem = 'DAA' Then Begin EmitByte($27); Exit; End;
-  If mnem = 'DAS' Then Begin EmitByte($2F); Exit; End;
-  If mnem = 'AAM' Then Begin EmitByte($D4); EmitByte($0A); Exit; End;
-  If mnem = 'AAD' Then Begin EmitByte($D5); EmitByte($0A); Exit; End;
+    { --- BCD / ASCII --- }
+    I14_AAA  : Begin EmitByte($37); Exit; End;
+    I14_AAS  : Begin EmitByte($3F); Exit; End;
+    I14_DAA  : Begin EmitByte($27); Exit; End;
+    I14_DAS  : Begin EmitByte($2F); Exit; End;
+    I14_AAM  : Begin EmitByte($D4); EmitByte($0A); Exit; End;
+    I14_AAD  : Begin EmitByte($D5); EmitByte($0A); Exit; End;
 
-  { --- Shifts / Rotates --- }
-  sg := ShiftGrp(mnem);
-  If sg >= 0 Then Begin EncodeShift(sg); Exit; End;
+    { --- Shifts / Rotates --- }
+    I14_ROL          : Begin EncodeShift(0); Exit; End;
+    I14_ROR          : Begin EncodeShift(1); Exit; End;
+    I14_RCL          : Begin EncodeShift(2); Exit; End;
+    I14_RCR          : Begin EncodeShift(3); Exit; End;
+    I14_SHL, I14_SAL : Begin EncodeShift(4); Exit; End;
+    I14_SHR          : Begin EncodeShift(5); Exit; End;
+    I14_SAR          : Begin EncodeShift(7); Exit; End;
 
-  { --- Instructions de drapeaux 1 octet --- }
-  If mnem = 'STC'  Then Begin EmitByte($F9); Exit; End;
-  If mnem = 'CLC'  Then Begin EmitByte($F8); Exit; End;
-  If mnem = 'CMC'  Then Begin EmitByte($F5); Exit; End;
-  If mnem = 'STD'  Then Begin EmitByte($FD); Exit; End;
-  If mnem = 'CLD'  Then Begin EmitByte($FC); Exit; End;
-  If mnem = 'STI'  Then Begin EmitByte($FB); Exit; End;
-  If mnem = 'CLI'  Then Begin EmitByte($FA); Exit; End;
+    { --- Instructions de drapeaux --- }
+    I14_STC  : Begin EmitByte($F9); Exit; End;
+    I14_CLC  : Begin EmitByte($F8); Exit; End;
+    I14_CMC  : Begin EmitByte($F5); Exit; End;
+    I14_STD  : Begin EmitByte($FD); Exit; End;
+    I14_CLD  : Begin EmitByte($FC); Exit; End;
+    I14_STI  : Begin EmitByte($FB); Exit; End;
+    I14_CLI  : Begin EmitByte($FA); Exit; End;
 
-  { --- PUSHF POPF SAHF LAHF XLAT --- }
-  If mnem = 'PUSHF' Then Begin EmitByte($9C); Exit; End;
-  If mnem = 'POPF'  Then Begin EmitByte($9D); Exit; End;
-  If mnem = 'SAHF'  Then Begin EmitByte($9E); Exit; End;
-  If mnem = 'LAHF'  Then Begin EmitByte($9F); Exit; End;
-  If (mnem = 'XLAT') Or (mnem = 'XLATB') Then Begin EmitByte($D7); Exit; End;
+    { --- PUSHF POPF SAHF LAHF XLAT --- }
+    I14_PUSHF          : Begin EmitByte($9C); Exit; End;
+    I14_POPF           : Begin EmitByte($9D); Exit; End;
+    I14_SAHF           : Begin EmitByte($9E); Exit; End;
+    I14_LAHF           : Begin EmitByte($9F); Exit; End;
+    I14_XLAT, I14_XLATB: Begin EmitByte($D7); Exit; End;
 
-  ParseInstr14 := False;
+  Else
+    ParseInstr14 := False;
+  End; { Case instr_idx }
 End;
 
 { ============================================================
@@ -6493,86 +6535,111 @@ Begin
 End;
 
 { --- Dispatcher TODO 15 --- }
+Const
+  I15_PUSH  =  1;  I15_POP   =  2;  I15_PUSHA =  3;  I15_POPA  =  4;
+  I15_REP   =  5;  I15_REPE  =  6;  I15_REPZ  =  7;
+  I15_REPNE =  8;  I15_REPNZ =  9;
+  I15_MOVSB = 10;  I15_MOVSW = 11;  I15_MOVS  = 12;
+  I15_CMPSB = 13;  I15_CMPSW = 14;
+  I15_SCASB = 15;  I15_SCASW = 16;
+  I15_STOSB = 17;  I15_STOSW = 18;
+  I15_LODSB = 19;  I15_LODSW = 20;
+  I15_IN    = 21;  I15_OUT   = 22;
+  I15_INT   = 23;  I15_INT3  = 24;  I15_INTO  = 25;  I15_IRET  = 26;
+  I15_HLT   = 27;  I15_NOP   = 28;  I15_WAIT  = 29;
+  I15_LOCK  = 30;  I15_ESC   = 31;
+  I15_COUNT = 31;
+  I15_NAMES : Array[1..I15_COUNT] Of String[8] = (
+    'PUSH',  'POP',   'PUSHA', 'POPA',
+    'REP',   'REPE',  'REPZ',  'REPNE', 'REPNZ',
+    'MOVSB', 'MOVSW', 'MOVS',  'CMPSB', 'CMPSW',
+    'SCASB', 'SCASW', 'STOSB', 'STOSW', 'LODSB', 'LODSW',
+    'IN',    'OUT',   'INT',   'INT3',  'INTO',  'IRET',
+    'HLT',   'NOP',   'WAIT',  'LOCK',  'ESC'
+  );
+
+Function FindInstr15(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  FindInstr15 := 0;
+  For i := 1 To I15_COUNT Do
+    If I15_NAMES[i] = s Then
+    Begin FindInstr15 := i; Exit; End;
+End;
+
 Function ParseInstr15(Const mnem : TString) : Boolean; Forward;
 
 Function ParseInstr15(Const mnem : TString) : Boolean;
 Var
-  rep_pfx  : Byte;
-  sub_mnem : TString;
+  rep_pfx   : Byte;
+  sub_mnem  : TString;
+  instr_idx : Integer;
 Begin
   ParseInstr15 := True;
+  rep_pfx   := 0;
+  instr_idx := FindInstr15(mnem);
+  Case instr_idx Of
 
-  { --- PUSH / POP --- }
-  If mnem = 'PUSH'  Then Begin EncodePush; Exit; End;
-  If mnem = 'POP'   Then Begin EncodePop;  Exit; End;
+    { --- PUSH / POP --- }
+    I15_PUSH  : Begin EncodePush; Exit; End;
+    I15_POP   : Begin EncodePop;  Exit; End;
 
-  { --- PUSHA / POPA (80186+) --- }
-  If mnem = 'PUSHA' Then
-  Begin
-    WarnMsg('PUSHA : necessite 80186+');
-    EmitByte($60);
+    { --- PUSHA / POPA (80186+) --- }
+    I15_PUSHA : Begin WarnMsg('PUSHA : necessite 80186+'); EmitByte($60); Exit; End;
+    I15_POPA  : Begin WarnMsg('POPA : necessite 80186+');  EmitByte($61); Exit; End;
+
+    { --- Prefixes REP : juste stocker le code, pas d Exit --- }
+    I15_REP, I15_REPE, I15_REPZ  : rep_pfx := $F3;
+    I15_REPNE, I15_REPNZ          : rep_pfx := $F2;
+
+    { --- Instructions de chaines --- }
+    I15_MOVSB : Begin EmitByte($A4); Exit; End;
+    I15_MOVSW : Begin EmitByte($A5); Exit; End;
+    I15_MOVS  : Begin EmitByte($A4); Exit; End;  { sans suffixe = byte par defaut }
+    I15_CMPSB : Begin EmitByte($A6); Exit; End;
+    I15_CMPSW : Begin EmitByte($A7); Exit; End;
+    I15_SCASB : Begin EmitByte($AE); Exit; End;
+    I15_SCASW : Begin EmitByte($AF); Exit; End;
+    I15_STOSB : Begin EmitByte($AA); Exit; End;
+    I15_STOSW : Begin EmitByte($AB); Exit; End;
+    I15_LODSB : Begin EmitByte($AC); Exit; End;
+    I15_LODSW : Begin EmitByte($AD); Exit; End;
+
+    { --- E/S --- }
+    I15_IN  : Begin EncodeIN;  Exit; End;
+    I15_OUT : Begin EncodeOUT; Exit; End;
+
+    { --- Interruptions --- }
+    I15_INT  : Begin EncodeINT;     Exit; End;
+    I15_INT3 : Begin EmitByte($CC); Exit; End;
+    I15_INTO : Begin EmitByte($CE); Exit; End;
+    I15_IRET : Begin EmitByte($CF); Exit; End;
+
+    { --- Instructions diverses --- }
+    I15_HLT  : Begin EmitByte($F4); Exit; End;
+    I15_NOP  : Begin EmitByte($90); Exit; End;
+    I15_WAIT : Begin EmitByte($9B); Exit; End;
+    I15_LOCK : Begin EmitByte($F0); Exit; End;
+
+    { --- Coprocesseur 8087 --- }
+    I15_ESC : Begin EncodeESC; Exit; End;
+
+  Else
+    { mnemonique inconnu dans ce groupe }
+    ParseInstr15 := False;
     Exit;
-  End;
-  If mnem = 'POPA' Then
+  End; { Case instr_idx }
+
+  { Si on arrive ici : c etait un prefixe REP* -- emettre + dispatcher sous-mnemonique }
+  EmitByte(rep_pfx);
+  If LexPeekKind = TK_IDENT Then
   Begin
-    WarnMsg('POPA : necessite 80186+');
-    EmitByte($61);
-    Exit;
-  End;
-
-  { --- Prefixes REP/REPE/REPZ/REPNE/REPNZ --- }
-  rep_pfx := 0;
-  If (mnem = 'REP') Or (mnem = 'REPE') Or (mnem = 'REPZ') Then
-    rep_pfx := $F3;
-  If (mnem = 'REPNE') Or (mnem = 'REPNZ') Then
-    rep_pfx := $F2;
-  If rep_pfx <> 0 Then
-  Begin
-    EmitByte(rep_pfx);
-    If LexPeekKind = TK_IDENT Then
-    Begin
-      sub_mnem := LexPeekVal;
-      LexNext;
-    End
-    Else
-      sub_mnem := '';
-    ParseInstr15 := ParseInstr15(sub_mnem);
-    Exit;
-  End;
-
-  { --- Instructions de chaines --- }
-  If mnem = 'MOVSB' Then Begin EmitByte($A4); Exit; End;
-  If mnem = 'MOVSW' Then Begin EmitByte($A5); Exit; End;
-  If mnem = 'MOVS'  Then Begin EmitByte($A4); Exit; End;  { sans suffixe → byte par defaut }
-  If mnem = 'CMPSB' Then Begin EmitByte($A6); Exit; End;
-  If mnem = 'CMPSW' Then Begin EmitByte($A7); Exit; End;
-  If mnem = 'SCASB' Then Begin EmitByte($AE); Exit; End;
-  If mnem = 'SCASW' Then Begin EmitByte($AF); Exit; End;
-  If mnem = 'STOSB' Then Begin EmitByte($AA); Exit; End;
-  If mnem = 'STOSW' Then Begin EmitByte($AB); Exit; End;
-  If mnem = 'LODSB' Then Begin EmitByte($AC); Exit; End;
-  If mnem = 'LODSW' Then Begin EmitByte($AD); Exit; End;
-
-  { --- E/S --- }
-  If mnem = 'IN'    Then Begin EncodeIN;  Exit; End;
-  If mnem = 'OUT'   Then Begin EncodeOUT; Exit; End;
-
-  { --- Interruptions --- }
-  If mnem = 'INT'   Then Begin EncodeINT;      Exit; End;
-  If mnem = 'INT3'  Then Begin EmitByte($CC);  Exit; End;
-  If mnem = 'INTO'  Then Begin EmitByte($CE);  Exit; End;
-  If mnem = 'IRET'  Then Begin EmitByte($CF);  Exit; End;
-
-  { --- Instructions diverses --- }
-  If mnem = 'HLT'   Then Begin EmitByte($F4);  Exit; End;
-  If mnem = 'NOP'   Then Begin EmitByte($90);  Exit; End;
-  If mnem = 'WAIT'  Then Begin EmitByte($9B);  Exit; End;
-  If mnem = 'LOCK'  Then Begin EmitByte($F0);  Exit; End;
-
-  { --- Coprocesseur 8087 --- }
-  If mnem = 'ESC'   Then Begin EncodeESC;      Exit; End;
-
-  ParseInstr15 := False;
+    sub_mnem := LexPeekVal;
+    LexNext;
+  End
+  Else
+    sub_mnem := '';
+  ParseInstr15 := ParseInstr15(sub_mnem);
 End;
 
 { ============================================================
@@ -8171,6 +8238,8 @@ Type
     bp_off : Integer;   { offset depuis BP }
   End;
 
+  PProcInfo = ^TProcInfo;
+
   TProcInfo = Record
     pname      : TSymString;
     is_far     : Boolean;
@@ -8179,18 +8248,18 @@ Type
     uses_cnt   : Integer;
     params     : Array[1..MAX_PROC_PARAMS] Of TProcParam;
     param_cnt  : Integer;
+    prev       : PProcInfo;   { maillon precedent (pile) }
   End;
 
 Var
-  proc_stack : Array[0..MAX_PROC_NEST-1] Of TProcInfo;
-  proc_top   : Integer;
+  proc_stack_top : PProcInfo;
 
 { ============================================================
   ProcInit : initialiser la pile des procedures
   ============================================================ }
 Procedure ProcInit;
 Begin
-  proc_top := -1;
+  proc_stack_top := Nil;
 End;
 
 { ============================================================
@@ -8240,12 +8309,6 @@ Var
   sz       : Integer;
   ret_sz   : Integer;
 Begin
-  If proc_top >= MAX_PROC_NEST - 1 Then
-  Begin
-    ErrorMsg('Trop de PROCs imbriquees');
-    Exit;
-  End;
-
   { initialiser l entree }
   pi.pname     := pname;
   pi.is_far    := call_far;
@@ -8381,8 +8444,9 @@ Begin
   End;
 
   { empiler cette info PROC }
-  Inc(proc_top);
-  proc_stack[proc_top] := pi;
+  pi.prev := proc_stack_top;
+  New(proc_stack_top);
+  proc_stack_top^ := pi;
 End;
 
 { ============================================================
@@ -8392,22 +8456,25 @@ End;
   ============================================================ }
 Procedure ParseEndp(Const pname : TSymString);
 Var
-  i : Integer;
+  i         : Integer;
+  prev_proc : PProcInfo;
 Begin
-  If proc_top < 0 Then
+  If proc_stack_top = Nil Then
   Begin
     ErrorMsg('ENDP sans PROC : ' + pname);
     Exit;
   End;
-  If (pname <> '') And (proc_stack[proc_top].pname <> pname) Then
+  If (pname <> '') And (proc_stack_top^.pname <> pname) Then
     WarnMsg('ENDP ' + pname + ' ne correspond pas au dernier PROC ' +
-            proc_stack[proc_top].pname);
+            proc_stack_top^.pname);
 
   { emettre les POP en ordre inverse des PUSH }
-  For i := proc_stack[proc_top].uses_cnt DownTo 1 Do
-    EmitPopReg16(proc_stack[proc_top].uses_regs[i]);
+  For i := proc_stack_top^.uses_cnt DownTo 1 Do
+    EmitPopReg16(proc_stack_top^.uses_regs[i]);
 
-  Dec(proc_top);
+  prev_proc      := proc_stack_top^.prev;
+  Dispose(proc_stack_top);
+  proc_stack_top := prev_proc;
 End;
 
 { ============================================================
@@ -8458,6 +8525,7 @@ Var
   arg_cnt   : Integer;
   i         : Integer;
   p         : PSymbol;
+  pc        : PProcInfo;
 Begin
   { nom du proc cible }
   If LexPeekKind <> TK_IDENT Then
@@ -8478,13 +8546,17 @@ Begin
     Else                 is_far := False;
   End;
   { chercher dans proc_stack (procedures encore ouvertes) }
-  For i := proc_top DownTo 0 Do
-    If proc_stack[i].pname = tok Then
+  pc := proc_stack_top;
+  While pc <> Nil Do
+  Begin
+    If pc^.pname = tok Then
     Begin
-      lang   := proc_stack[i].lang;
-      is_far := proc_stack[i].is_far;
+      lang   := pc^.lang;
+      is_far := pc^.is_far;
       Break;
     End;
+    pc := pc^.prev;
+  End;
 
   { parser les arguments }
   arg_cnt := 0;
@@ -8798,6 +8870,61 @@ Begin
 End;
 
 { ============================================================
+  Table des directives -- dispatcher par index entier
+  ============================================================ }
+Const
+  MN_EQU        =  1;  MN_TEXTEQU    =  2;  MN_LABEL      =  3;
+  MN_MACRO      =  4;  MN_ENDM       =  5;  MN_PURGE      =  6;
+  MN_EXITM      =  7;  MN_LOCAL      =  8;  MN_REPT       =  9;
+  MN_IRP        = 10;  MN_IRPC       = 11;  MN_PROC       = 12;
+  MN_ENDP       = 13;  MN_STRUC      = 14;  MN_ENDS       = 15;
+  MN_RECORD     = 16;  MN_SEGMENT    = 17;  MN_GROUP      = 18;
+  MN_ASSUME     = 19;  MN_INCLUDE    = 20;  MN_INCLUDELIB = 21;
+  MN_NAME       = 22;  MN_DOTMODEL   = 23;  MN_DOTCODE    = 24;
+  MN_DOTDATA    = 25;  MN_DOTDATAQ   = 26;  MN_DOTCONST   = 27;
+  MN_DOTSTACK   = 28;  MN_DOTRADIX   = 29;  MN_PUBLIC     = 30;
+  MN_EXTRN      = 31;  MN_EXTERN     = 32;  MN_GLOBAL     = 33;
+  MN_COMM       = 34;  MN_ORG        = 35;  MN_ALIGN      = 36;
+  MN_EVEN       = 37;  MN_LIST       = 38;  MN_NOLIST     = 39;
+  MN_XLIST      = 40;  MN_LISTALL    = 41;  MN_PAGE       = 42;
+  MN_TITLE      = 43;  MN_SUBTTL     = 44;  MN_DOT8086    = 45;
+  MN_DOT8087    = 46;  MN_DOT186     = 47;  MN_DOT286     = 48;
+  MN_DOT286C    = 49;  MN_DOT286P    = 50;  MN_DOT386     = 51;
+  MN_DOT386P    = 52;  MN_DOTDOSSEG  = 53;  MN_OPTION     = 54;
+  MN_ENTER      = 55;  MN_LEAVE      = 56;  MN_INVOKE     = 57;
+  DIR_COUNT     = 57;
+  DIR_NAMES : Array[1..DIR_COUNT] Of String[12] = (
+    'EQU',       'TEXTEQU',    'LABEL',      'MACRO',
+    'ENDM',      'PURGE',      'EXITM',      'LOCAL',
+    'REPT',      'IRP',        'IRPC',       'PROC',
+    'ENDP',      'STRUC',      'ENDS',       'RECORD',
+    'SEGMENT',   'GROUP',      'ASSUME',     'INCLUDE',
+    'INCLUDELIB','NAME',       '.MODEL',     '.CODE',
+    '.DATA',     '.DATA?',     '.CONST',     '.STACK',
+    '.RADIX',    'PUBLIC',     'EXTRN',      'EXTERN',
+    'GLOBAL',    'COMM',       'ORG',        'ALIGN',
+    'EVEN',      '.LIST',      '.NOLIST',    '.XLIST',
+    '.LISTALL',  'PAGE',       'TITLE',      'SUBTTL',
+    '.8086',     '.8087',      '.186',       '.286',
+    '.286C',     '.286P',      '.386',       '.386P',
+    '.DOSSEG',   'OPTION',     'ENTER',      'LEAVE',
+    'INVOKE'
+  );
+
+{ Retourne l index MN_* du mnemonique directive, ou 0 si inconnu. }
+Function FindDir(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  FindDir := 0;
+  For i := 1 To DIR_COUNT Do
+    If DIR_NAMES[i] = s Then
+    Begin
+      FindDir := i;
+      Exit;
+    End;
+End;
+
+{ ============================================================
   AssembleLine : analyser et assembler une ligne source.
   Appelle tous les encodeurs des TODOs 09-19.
   ============================================================ }
@@ -8821,6 +8948,7 @@ Var
   seg_cls    : TString;     { classe pour SEGMENT }
   si         : Integer;     { index de structure }
   p_entry    : PSymbol;     { point d entree (directive END label) }
+  dir_idx    : Integer;     { index MN_* du dispatcher directives }
 Begin
   { substituer les macros texte (@DATE, @TIME, @FILENAME, TEXTEQU) }
   cur_line := TextEquSubstLine(cur_line);
@@ -8930,323 +9058,265 @@ Begin
     Exit;
   End;
 
-  { EQU }
-  If mnem = 'EQU' Then
-  Begin
-    If label_name <> '' Then ParseEqu(label_name)
-    Else ErrorMsg('EQU sans nom');
-    Exit;
-  End;
+  { --- dispatcher directives par index --- }
+  dir_idx := FindDir(mnem);
+  Case dir_idx Of
 
-  { TEXTEQU }
-  If mnem = 'TEXTEQU' Then
-  Begin
-    If label_name <> '' Then ParseTextequ(label_name)
-    Else ErrorMsg('TEXTEQU sans nom');
-    Exit;
-  End;
-
-  { LABEL }
-  If mnem = 'LABEL' Then
-  Begin
-    If label_name <> '' Then ParseLabelDir(label_name)
-    Else ErrorMsg('LABEL sans nom');
-    Exit;
-  End;
-
-  { MACRO : definition }
-  If mnem = 'MACRO' Then
-  Begin
-    If label_name <> '' Then ParseMacroDef(label_name)
-    Else ErrorMsg('MACRO sans nom');
-    Exit;
-  End;
-
-  { ENDM : ENDM isole (hors CollectBlock) }
-  If mnem = 'ENDM' Then
-  Begin
-    { bloc RepT/Irp/Irpc non ouvert : ignorer }
-    Exit;
-  End;
-
-  { PURGE }
-  If mnem = 'PURGE' Then Begin ParsePurge; Exit; End;
-
-  { EXITM }
-  If mnem = 'EXITM' Then Begin MacroExitm; Exit; End;
-
-  { LOCAL (dans corps de macro) }
-  If mnem = 'LOCAL' Then Begin ParseLocal; Exit; End;
-
-  { REPT }
-  If mnem = 'REPT' Then Begin ParseRept; Exit; End;
-
-  { IRP / IRPC }
-  If mnem = 'IRP'  Then Begin ParseIrp;  Exit; End;
-  If mnem = 'IRPC' Then Begin ParseIrpc; Exit; End;
-
-  { PROC }
-  If mnem = 'PROC' Then
-  Begin
-    If label_name <> '' Then ParseProc(label_name)
-    Else ErrorMsg('PROC sans nom');
-    Exit;
-  End;
-
-  { ENDP }
-  If mnem = 'ENDP' Then
-  Begin
-    ParseEndp(label_name);
-    Exit;
-  End;
-
-  { STRUC }
-  If mnem = 'STRUC' Then
-  Begin
-    If label_name <> '' Then ParseStruc(label_name)
-    Else ErrorMsg('STRUC sans nom');
-    Exit;
-  End;
-
-  { ENDS (segment ou structure) }
-  If mnem = 'ENDS' Then
-  Begin
-    ParseEnds(label_name);
-    Exit;
-  End;
-
-  { RECORD }
-  If mnem = 'RECORD' Then
-  Begin
-    If label_name <> '' Then ParseRecord(label_name)
-    Else ErrorMsg('RECORD sans nom');
-    Exit;
-  End;
-
-  { SEGMENT : parser les attributs optionnels }
-  If mnem = 'SEGMENT' Then
-  Begin
-    seg_aln  := sa_para;
-    seg_comb := SC_PRIVATE;
-    seg_cls  := '';
-    While LexPeekKind = TK_IDENT Do
-    Begin
-      LexNext;
-      tok2 := lex_tok.val;
-      If (tok2 = 'BYTE')   Then seg_aln  := sa_byte
-      Else If (tok2 = 'WORD')   Then seg_aln  := sa_word
-      Else If (tok2 = 'DWORD')  Then seg_aln  := sa_dword
-      Else If (tok2 = 'PARA')   Then seg_aln  := sa_para
-      Else If (tok2 = 'PAGE')   Then seg_aln  := sa_page
-      Else If (tok2 = 'PUBLIC') Then seg_comb := sc_public
-      Else If (tok2 = 'COMMON') Then seg_comb := sc_common
-      Else If (tok2 = 'STACK')  Then seg_comb := sc_stack
-      Else If (tok2 = 'MEMORY') Then seg_comb := sc_common
-      Else If (tok2 = 'AT')     Then
-      Begin
-        If LexPeekKind = TK_NUMBER Then LexNext; { adresse AT }
-      End;
+    MN_EQU : Begin
+      If label_name <> '' Then ParseEqu(label_name)
+      Else ErrorMsg('EQU sans nom');
+      Exit;
     End;
-    { classe entre apostrophes }
-    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '''') Then
-    Begin
-      LexNext;
-      If LexPeekKind = TK_IDENT Then Begin LexNext; seg_cls := lex_tok.val; End;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '''') Then LexNext;
-    End
-    Else If LexPeekKind = TK_STRING Then
-    Begin
-      LexNext; seg_cls := lex_tok.val;
+
+    MN_TEXTEQU : Begin
+      If label_name <> '' Then ParseTextequ(label_name)
+      Else ErrorMsg('TEXTEQU sans nom');
+      Exit;
     End;
-    ParseSegment(label_name, seg_aln, seg_comb, seg_cls);
-    Exit;
-  End;
 
-  { GROUP }
-  If mnem = 'GROUP' Then
-  Begin
-    If label_name <> '' Then
-      ParseGroup(label_name)
-    Else
-      ErrorMsg('GROUP sans nom de groupe');
-    Exit;
-  End;
-
-  { ASSUME }
-  If mnem = 'ASSUME' Then
-  Begin
-    While LexPeekKind = TK_IDENT Do
-    Begin
-      LexNext; rn := lex_tok.val;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then LexNext;
-      If LexPeekKind = TK_IDENT Then Begin LexNext; sn := lex_tok.val; End
-      Else sn := '';
-      ParseAssume(rn, sn);
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext
-      Else Break;
+    MN_LABEL : Begin
+      If label_name <> '' Then ParseLabelDir(label_name)
+      Else ErrorMsg('LABEL sans nom');
+      Exit;
     End;
-    Exit;
-  End;
 
-  { INCLUDE }
-  If mnem = 'INCLUDE' Then
-  Begin
-    { lire le nom de fichier : tout le reste de la ligne }
-    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do
-      Inc(lex_pos);
-    inc_name := '';
-    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] <> ' ') Do
-    Begin
-      inc_name := inc_name + lex_line[lex_pos];
-      Inc(lex_pos);
+    MN_MACRO : Begin
+      If label_name <> '' Then ParseMacroDef(label_name)
+      Else ErrorMsg('MACRO sans nom');
+      Exit;
     End;
-    If inc_name <> '' Then SrcPush(inc_name);
-    Exit;
-  End;
 
-  { INCLUDELIB }
-  If mnem = 'INCLUDELIB' Then
-  Begin
-    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do
-      Inc(lex_pos);
-    lib_name := '';
-    lib_name := '';
-    While lex_pos <= Length(lex_line) Do
-    Begin
-      lib_name := lib_name + lex_line[lex_pos];
-      Inc(lex_pos);
+    MN_ENDM : Begin
+      { ENDM isole (hors CollectBlock) : ignorer }
+      Exit;
     End;
-    { Emit COMENT $A3 (library specifier) }
-    If (lib_name <> '') And obj_is_open Then
-      ObjCOMENT($80, $A3, lib_name);
-    Exit;
-  End;
 
-  { NAME }
-  If mnem = 'NAME' Then
-  Begin
-    If LexPeekKind = TK_IDENT Then Begin LexNext; { ignore } End;
-    Exit;
-  End;
+    MN_PURGE    : Begin ParsePurge;   Exit; End;
+    MN_EXITM    : Begin MacroExitm;   Exit; End;
+    MN_LOCAL    : Begin ParseLocal;   Exit; End;
+    MN_REPT     : Begin ParseRept;    Exit; End;
+    MN_IRP      : Begin ParseIrp;     Exit; End;
+    MN_IRPC     : Begin ParseIrpc;    Exit; End;
 
-  { .MODEL }
-  If mnem = '.MODEL' Then
-  Begin
-    If LexPeekKind = TK_IDENT Then Begin LexNext; ParseModel(lex_tok.val); End;
-    Exit;
-  End;
+    MN_PROC : Begin
+      If label_name <> '' Then ParseProc(label_name)
+      Else ErrorMsg('PROC sans nom');
+      Exit;
+    End;
 
-  { .CODE }
-  If mnem = '.CODE' Then
-  Begin
-    seg_nm := '';
-    If LexPeekKind = TK_IDENT Then Begin LexNext; seg_nm := lex_tok.val; End;
-    ParseDotCode(seg_nm);
-    Exit;
-  End;
+    MN_ENDP : Begin
+      ParseEndp(label_name);
+      Exit;
+    End;
 
-  { .DATA / .DATA? / .CONST }
-  If (mnem = '.DATA') Or (mnem = '.DATA?') Or (mnem = '.CONST') Then
-  Begin
-    ParseDotData(mnem);
-    Exit;
-  End;
+    MN_STRUC : Begin
+      If label_name <> '' Then ParseStruc(label_name)
+      Else ErrorMsg('STRUC sans nom');
+      Exit;
+    End;
 
-  { .STACK }
-  If mnem = '.STACK' Then
-  Begin
-    stk_sz := 512;
-    If LexPeekKind = TK_NUMBER Then Begin LexNext; stk_sz := lex_tok.num_val; End;
-    ParseDotStack(TWord(stk_sz));
-    Exit;
-  End;
+    MN_ENDS : Begin
+      ParseEnds(label_name);
+      Exit;
+    End;
 
-  { .RADIX }
-  If mnem = '.RADIX' Then
-  Begin
-    { pour l instant ignorer : lex_radix non implemente }
-    If LexPeekKind = TK_NUMBER Then LexNext;
-    Exit;
-  End;
+    MN_RECORD : Begin
+      If label_name <> '' Then ParseRecord(label_name)
+      Else ErrorMsg('RECORD sans nom');
+      Exit;
+    End;
 
-  { PUBLIC / EXTRN / EXTERN / GLOBAL / COMM }
-  If mnem = 'PUBLIC'  Then Begin ParsePublic; Exit; End;
-  If (mnem = 'EXTRN') Or (mnem = 'EXTERN') Then Begin ParseExtrn; Exit; End;
-  If mnem = 'GLOBAL'  Then Begin ParseGlobal;Exit; End;
-  If mnem = 'COMM'    Then Begin ParseComm;  Exit; End;
-
-  { ORG }
-  If mnem = 'ORG' Then Begin ParseOrg; Exit; End;
-
-  { ALIGN / EVEN }
-  If mnem = 'ALIGN' Then Begin ParseAlign; Exit; End;
-  If mnem = 'EVEN'  Then Begin ParseEven;  Exit; End;
-
-  { Directives de listing }
-  If mnem = '.LIST' Then Begin lst_active := True;  Exit; End;
-  If (mnem = '.NOLIST') Or (mnem = '.XLIST') Then Begin lst_active := False; Exit; End;
-  If mnem = '.LISTALL' Then Begin lst_active := True;  Exit; End;
-
-  If mnem = 'PAGE' Then
-  Begin
-    { PAGE [lines[,cols]] }
-    If LexPeekKind = TK_NUMBER Then
-    Begin
-      LexNext; lst_page_lines := lex_tok.num_val;
-      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+    MN_SEGMENT : Begin
+      { parser les attributs optionnels }
+      seg_aln  := sa_para;
+      seg_comb := SC_PRIVATE;
+      seg_cls  := '';
+      While LexPeekKind = TK_IDENT Do
       Begin
         LexNext;
-        If LexPeekKind = TK_NUMBER Then
-        Begin LexNext; lst_page_cols := lex_tok.num_val; End;
+        tok2 := lex_tok.val;
+        If      (tok2 = 'BYTE')   Then seg_aln  := sa_byte
+        Else If (tok2 = 'WORD')   Then seg_aln  := sa_word
+        Else If (tok2 = 'DWORD')  Then seg_aln  := sa_dword
+        Else If (tok2 = 'PARA')   Then seg_aln  := sa_para
+        Else If (tok2 = 'PAGE')   Then seg_aln  := sa_page
+        Else If (tok2 = 'PUBLIC') Then seg_comb := sc_public
+        Else If (tok2 = 'COMMON') Then seg_comb := sc_common
+        Else If (tok2 = 'STACK')  Then seg_comb := sc_stack
+        Else If (tok2 = 'MEMORY') Then seg_comb := sc_common
+        Else If (tok2 = 'AT')     Then
+        Begin
+          If LexPeekKind = TK_NUMBER Then LexNext; { adresse AT }
+        End;
       End;
-    End
-    Else
-    Begin
-      { PAGE sans argument = saut de page }
-      If lst_is_open And lst_active Then
+      { classe entre apostrophes }
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '''') Then
       Begin
-        Writeln(lst_file, #12);
-        Inc(lst_page_num);
-        lst_line_on_page := 0;
+        LexNext;
+        If LexPeekKind = TK_IDENT Then Begin LexNext; seg_cls := lex_tok.val; End;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '''') Then LexNext;
+      End
+      Else If LexPeekKind = TK_STRING Then
+      Begin
+        LexNext; seg_cls := lex_tok.val;
       End;
+      ParseSegment(label_name, seg_aln, seg_comb, seg_cls);
+      Exit;
     End;
-    Exit;
-  End;
 
-  If mnem = 'TITLE' Then
-  Begin
-    lst_title := '';
-    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
-    While lex_pos <= Length(lex_line) Do
-    Begin lst_title := lst_title + lex_line[lex_pos]; Inc(lex_pos); End;
-    Exit;
-  End;
+    MN_GROUP : Begin
+      If label_name <> '' Then ParseGroup(label_name)
+      Else ErrorMsg('GROUP sans nom de groupe');
+      Exit;
+    End;
 
-  If mnem = 'SUBTTL' Then
-  Begin
-    lst_subttl := '';
-    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
-    While lex_pos <= Length(lex_line) Do
-    Begin lst_subttl := lst_subttl + lex_line[lex_pos]; Inc(lex_pos); End;
-    Exit;
-  End;
+    MN_ASSUME : Begin
+      While LexPeekKind = TK_IDENT Do
+      Begin
+        LexNext; rn := lex_tok.val;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then LexNext;
+        If LexPeekKind = TK_IDENT Then Begin LexNext; sn := lex_tok.val; End
+        Else sn := '';
+        ParseAssume(rn, sn);
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext
+        Else Break;
+      End;
+      Exit;
+    End;
 
-  { Autres directives de contexte (CPU target, DOSSEG, OPTION) -- ignorer }
-  If (mnem = '.8086')  Or (mnem = '.8087')  Or (mnem = '.186')   Or
-     (mnem = '.286')   Or (mnem = '.286C')  Or (mnem = '.286P')  Or
-     (mnem = '.386')   Or (mnem = '.386P')  Or (mnem = '.DOSSEG') Or
-     (mnem = 'OPTION') Then
-  Begin
-    While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do LexNext;
-    Exit;
-  End;
+    MN_INCLUDE : Begin
+      { lire le nom de fichier : tout le reste de la ligne }
+      While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do
+        Inc(lex_pos);
+      inc_name := '';
+      While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] <> ' ') Do
+      Begin
+        inc_name := inc_name + lex_line[lex_pos];
+        Inc(lex_pos);
+      End;
+      If inc_name <> '' Then SrcPush(inc_name);
+      Exit;
+    End;
 
-  { ENTER / LEAVE }
-  If mnem = 'ENTER' Then Begin ParseEnter; Exit; End;
-  If mnem = 'LEAVE' Then Begin ParseLeave; Exit; End;
+    MN_INCLUDELIB : Begin
+      While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do
+        Inc(lex_pos);
+      lib_name := '';
+      While lex_pos <= Length(lex_line) Do
+      Begin
+        lib_name := lib_name + lex_line[lex_pos];
+        Inc(lex_pos);
+      End;
+      { Emit COMENT $A3 (library specifier) }
+      If (lib_name <> '') And obj_is_open Then
+        ObjCOMENT($80, $A3, lib_name);
+      Exit;
+    End;
 
-  { INVOKE }
-  If mnem = 'INVOKE' Then Begin ParseInvoke; Exit; End;
+    MN_NAME : Begin
+      If LexPeekKind = TK_IDENT Then Begin LexNext; { ignore } End;
+      Exit;
+    End;
+
+    MN_DOTMODEL : Begin
+      If LexPeekKind = TK_IDENT Then Begin LexNext; ParseModel(lex_tok.val); End;
+      Exit;
+    End;
+
+    MN_DOTCODE : Begin
+      seg_nm := '';
+      If LexPeekKind = TK_IDENT Then Begin LexNext; seg_nm := lex_tok.val; End;
+      ParseDotCode(seg_nm);
+      Exit;
+    End;
+
+    MN_DOTDATA, MN_DOTDATAQ, MN_DOTCONST : Begin
+      ParseDotData(mnem);
+      Exit;
+    End;
+
+    MN_DOTSTACK : Begin
+      stk_sz := 512;
+      If LexPeekKind = TK_NUMBER Then Begin LexNext; stk_sz := lex_tok.num_val; End;
+      ParseDotStack(TWord(stk_sz));
+      Exit;
+    End;
+
+    MN_DOTRADIX : Begin
+      { pour l instant ignorer : lex_radix non implemente }
+      If LexPeekKind = TK_NUMBER Then LexNext;
+      Exit;
+    End;
+
+    MN_PUBLIC   : Begin ParsePublic;  Exit; End;
+    MN_EXTRN,
+    MN_EXTERN   : Begin ParseExtrn;   Exit; End;
+    MN_GLOBAL   : Begin ParseGlobal;  Exit; End;
+    MN_COMM     : Begin ParseComm;    Exit; End;
+    MN_ORG      : Begin ParseOrg;     Exit; End;
+    MN_ALIGN    : Begin ParseAlign;   Exit; End;
+    MN_EVEN     : Begin ParseEven;    Exit; End;
+
+    MN_LIST,
+    MN_LISTALL  : Begin lst_active := True;  Exit; End;
+    MN_NOLIST,
+    MN_XLIST    : Begin lst_active := False; Exit; End;
+
+    MN_PAGE : Begin
+      { PAGE [lines[,cols]] }
+      If LexPeekKind = TK_NUMBER Then
+      Begin
+        LexNext; lst_page_lines := lex_tok.num_val;
+        If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+        Begin
+          LexNext;
+          If LexPeekKind = TK_NUMBER Then
+          Begin LexNext; lst_page_cols := lex_tok.num_val; End;
+        End;
+      End
+      Else
+      Begin
+        { PAGE sans argument = saut de page }
+        If lst_is_open And lst_active Then
+        Begin
+          Writeln(lst_file, #12);
+          Inc(lst_page_num);
+          lst_line_on_page := 0;
+        End;
+      End;
+      Exit;
+    End;
+
+    MN_TITLE : Begin
+      lst_title := '';
+      While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
+      While lex_pos <= Length(lex_line) Do
+      Begin lst_title := lst_title + lex_line[lex_pos]; Inc(lex_pos); End;
+      Exit;
+    End;
+
+    MN_SUBTTL : Begin
+      lst_subttl := '';
+      While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
+      While lex_pos <= Length(lex_line) Do
+      Begin lst_subttl := lst_subttl + lex_line[lex_pos]; Inc(lex_pos); End;
+      Exit;
+    End;
+
+    { CPU target, DOSSEG, OPTION -- ignorer le reste de la ligne }
+    MN_DOT8086, MN_DOT8087,  MN_DOT186,
+    MN_DOT286,  MN_DOT286C,  MN_DOT286P,
+    MN_DOT386,  MN_DOT386P,  MN_DOTDOSSEG,
+    MN_OPTION : Begin
+      While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do LexNext;
+      Exit;
+    End;
+
+    MN_ENTER    : Begin ParseEnter;   Exit; End;
+    MN_LEAVE    : Begin ParseLeave;   Exit; End;
+    MN_INVOKE   : Begin ParseInvoke;  Exit; End;
+
+  End; { Case dir_idx }
 
   { --- instructions machine : passer aux encodeurs --- }
   If ParseInstr15(mnem) Then Exit;
