@@ -4882,6 +4882,26 @@ Begin
   op.ptr_size  := 0;
 End;
 
+{ ---- Table des registres pour RegIndex ---- }
+Const
+  { 1..8  : registres 16 bits  (is_word=True)  idx = r-1  }
+  { 9..16 : registres 8 bits                   idx = r-9  }
+  { 17..20: registres de segment (is_seg=True)  idx = r-17 }
+  RI_COUNT = 20;
+  RI_NAMES : Array[1..20] Of String[2] = (
+    'AX','CX','DX','BX','SP','BP','SI','DI',   { 1-8  : 16 bits }
+    'AL','CL','DL','BL','AH','CH','DH','BH',   { 9-16 :  8 bits }
+    'ES','CS','SS','DS'                         { 17-20: segment }
+  );
+
+Function FindReg(Const s : TString) : Integer;
+Var i : Integer;
+Begin
+  For i := 1 To RI_COUNT Do
+    If RI_NAMES[i] = s Then Begin FindReg := i; Exit; End;
+  FindReg := 0;
+End;
+
 { ============================================================
   RegIndex : convertir un nom de registre en indice 0-7.
   Retourne -1 si pas un registre general ou segment.
@@ -4892,30 +4912,17 @@ Procedure RegIndex(Const name : TString;
                    Var idx      : Integer;
                    Var is_word  : Boolean;
                    Var is_seg   : Boolean);
+Var r : Integer;
 Begin
   is_seg  := False;
   is_word := False;
   idx     := -1;
-  If      name = 'AX' Then Begin idx := 0; is_word := True; End
-  Else If name = 'CX' Then Begin idx := 1; is_word := True; End
-  Else If name = 'DX' Then Begin idx := 2; is_word := True; End
-  Else If name = 'BX' Then Begin idx := 3; is_word := True; End
-  Else If name = 'SP' Then Begin idx := 4; is_word := True; End
-  Else If name = 'BP' Then Begin idx := 5; is_word := True; End
-  Else If name = 'SI' Then Begin idx := 6; is_word := True; End
-  Else If name = 'DI' Then Begin idx := 7; is_word := True; End
-  Else If name = 'AL' Then idx := 0
-  Else If name = 'CL' Then idx := 1
-  Else If name = 'DL' Then idx := 2
-  Else If name = 'BL' Then idx := 3
-  Else If name = 'AH' Then idx := 4
-  Else If name = 'CH' Then idx := 5
-  Else If name = 'DH' Then idx := 6
-  Else If name = 'BH' Then idx := 7
-  Else If name = 'ES' Then Begin idx := 0; is_seg := True; End
-  Else If name = 'CS' Then Begin idx := 1; is_seg := True; End
-  Else If name = 'SS' Then Begin idx := 2; is_seg := True; End
-  Else If name = 'DS' Then Begin idx := 3; is_seg := True; End;
+  r := FindReg(name);
+  Case r Of
+    1..8  : Begin idx := r - 1;  is_word := True; End;
+    9..16 : idx := r - 9;
+    17..20: Begin idx := r - 17; is_seg  := True; End;
+  End;
 End;
 
 { ============================================================
