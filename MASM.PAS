@@ -457,7 +457,257 @@
 
 Program MASM;
 
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE DE BASE - IMPLEMENTE
+  ============================================================ }
+
+{ ---- Constantes generales ---- }
+Const
+  VERSION      = '1.0';
+  MAX_SYM      = 4096; { max symboles (heap, compte seulement) }
+  MAX_SEG      = 16;   { max segments definis }
+  MAX_GRP      = 8;    { max groupes definis }
+  MAX_FIXUP    = 8192; { max fixups internes par passe }
+  MAX_MACRO    = 256;  { max macros definies }
+  MAX_STRUCT   = 64;   { max structures STRUC }
+  MAX_IF_DEPTH = 32;   { profondeur max des blocs IF imbriques }
+  HASH_SIZE    = 256;  { buckets de la table de hachage symboles }
+  INC_DEPTH    = 8;    { max niveaux d inclusion INCLUDE }
+
+{ ---- Types de base ---- }
+Type
+  TString    = String[127]; { chaine generale (lignes source, noms) }
+  TSymString = String[32];  { nom de symbole/segment (uppercase) }
+  TByte      = Byte;
+  TWord      = Word;
+  TLong      = LongInt;
+
+  { Genres de tokens produits par le lexer }
+  TTokenKind = (
+    TK_IDENT,    { identificateur ou mot-cle / directive / mnemonic }
+    TK_NUMBER,   { literal numerique (dec/hex/oct/bin) }
+    TK_STRING,   { chaine litterale delimitee par ' ou " }
+    TK_PUNCT,    { operateur ou ponctuation ( ) [ ] + - * / . : , = }
+    TK_NEWLINE,  { fin de ligne logique (separateur d instruction) }
+    TK_EOF       { fin de fichier source }
+  );
+
+  { Genre d un symbole dans la table des symboles }
+  TSymKind = (
+    SK_UNDEF,    { reference avant non encore resolue }
+    SK_LABEL,    { etiquette de code ou de donnee }
+    SK_PUBLIC,   { symbole exporte (PUBLIC) }
+    SK_EXTERN,   { symbole importe (EXTRN) }
+    SK_EQU,      { constante EQU (non reassignable) ou = (reassignable) }
+    SK_GROUP,    { nom de groupe (GROUP) }
+    SK_SEG,      { nom de segment (SEGMENT) }
+    SK_MACRO,    { macro (MACRO/ENDM) }
+    SK_STRUCT    { structure de donnees (STRUC/ENDS) }
+  );
+
+  { Taille d un operande de donnee }
+  TDataSize = (
+    DS_BYTE,     { 1 octet  - DB }
+    DS_WORD,     { 2 octets - DW }
+    DS_DWORD,    { 4 octets - DD }
+    DS_QWORD,    { 8 octets - DQ }
+    DS_TBYTE,    { 10 octets - DT }
+    DS_UNKNOWN   { taille non specifiee / non applicable }
+  );
+
+  { Token produit par le lexer }
+  TToken = Record
+    kind     : TTokenKind; { type de token }
+    val      : TString;    { valeur textuelle (toujours en majuscules) }
+    num_val  : TLong;      { valeur numerique (valide si TK_NUMBER) }
+    line_num : Integer;    { numero de ligne source logique }
+  End;
+
+  { ------- Table des symboles (allocation dynamique sur le heap) ------- }
+  PSymbol = ^TSymbol;
+  TSymbol = Record
+    name    : TSymString; { nom du symbole (uppercase) }
+    kind    : TSymKind;   { genre du symbole }
+    seg_idx : Integer;    { index dans seg_table (0 = absolu / externe) }
+    offset  : TWord;      { offset dans le segment au moment de la def. }
+    value   : TLong;      { valeur absolue (SK_EQU, SK_EXTERN, etc.) }
+    size    : TWord;      { taille en octets (labels donnee, STRUC) }
+    flags   : TByte;      { bit 0=is_public, bit 1=is_extern, bit 2=is_defined }
+    next    : PSymbol;    { maillon suivant dans la chaine de hachage }
+  End;
+
+  { ------- Segments ------- }
+  TSegCombine = (
+    SC_PRIVATE, { segment prive (non fusionne par LINK) }
+    SC_PUBLIC,  { fusionner avec segments de meme nom/classe }
+    SC_COMMON,  { superposer (taille = max des tailles) }
+    SC_STACK,   { pile (fusionner, combine = STACK) }
+    SC_MEMORY,  { alias de SC_PUBLIC pour compatibilite }
+    SC_AT       { segment absolu (AT valeur) }
+  );
+  TSegAlign = (
+    SA_BYTE,    { aligner a l octet }
+    SA_WORD,    { aligner au mot (2 octets) }
+    SA_PARA,    { aligner au paragraphe (16 octets) }
+    SA_PAGE,    { aligner a la page (256 octets) }
+    SA_DWORD    { aligner au double-mot (4 octets) }
+  );
+
+  TSegInfo = Record
+    name       : TSymString;  { nom du segment }
+    class_name : TSymString;  { classe OMF (ex: 'CODE','DATA','STACK') }
+    combine    : TSegCombine; { type de combinaison LINK }
+    align      : TSegAlign;   { alignement OMF }
+    size       : TWord;       { taille totale accumulee (octets) }
+    cur_lc     : TWord;       { location counter courant dans ce segment }
+    lnames_idx : Integer;     { index 1-base dans le record LNAMES OMF }
+    defined    : Boolean;     { True si segment declare par SEGMENT ou .MODEL }
+  End;
+
+  { ------- Groupes ------- }
+  TGrpInfo = Record
+    name      : TSymString;              { nom du groupe (ex: DGROUP) }
+    seg_count : Integer;                 { nb de segments appartenant au groupe }
+    segs      : Array[1..MAX_SEG] Of Integer; { indices 1-base dans seg_table }
+    defined   : Boolean;                 { True si groupe declare }
+  End;
+
+{ ---- Variables globales ---- }
+Var
+  { Tables de la chaine de hachage (symboles sur le heap) }
+  hash_table : Array[0..HASH_SIZE-1] Of PSymbol;
+
+  { Tables fixes (seg_table et grp_table sont petites, sur la pile globale) }
+  seg_table  : Array[1..MAX_SEG] Of TSegInfo;
+  grp_table  : Array[1..MAX_GRP] Of TGrpInfo;
+
+  { Compteurs de tables }
+  sym_count  : Integer;  { nb de PSymbol alloues sur le heap }
+  seg_count  : Integer;  { nb de segments definis }
+  grp_count  : Integer;  { nb de groupes definis }
+
+  { Etat de l assemblage }
+  pass_num   : Integer;  { passe courante : 1 ou 2 }
+  err_count  : Integer;  { nb d erreurs detectees }
+  warn_count : Integer;  { nb d avertissements }
+  lc         : TWord;    { location counter courant (dans cur_seg) }
+  cur_seg    : Integer;  { index segment courant dans seg_table (0=hors segment) }
+
+  { Fichiers }
+  src_fname  : TString;  { nom du fichier source .ASM }
+  obj_fname  : TString;  { nom du fichier objet  .OBJ }
+  lst_fname  : TString;  { nom du fichier listing .LST }
+  do_listing : Boolean;  { True = generer le fichier .LST }
+
+  { Ligne de source courante (pour messages d erreur) }
+  cur_line   : TString;  { contenu de la ligne en cours d analyse }
+  cur_lineno : Integer;  { numero de ligne logique (apres continuation) }
+
+{ ============================================================
+  Fonction de hachage djb2 adaptee (retourne 0..HASH_SIZE-1)
+  ============================================================ }
+Function HashName(Const s : TSymString) : Integer;
+Var
+  i : Integer;
+  h : LongInt;
 Begin
-  Writeln('MASM.PAS - Macro Assembleur 8086 -> .OBJ Intel OMF');
-  Writeln('A implementer selon les TODOs 01 a 25.');
+  h := 5381;
+  For i := 1 To Length(s) Do
+    h := ((h Shl 5) + h) Xor LongInt(Ord(s[i]));
+  If h < 0 Then h := -h;
+  HashName := Integer(h Mod HASH_SIZE);
+End;
+
+{ ============================================================
+  InitTables : remettre toutes les tables a zero / nil / False
+  ============================================================ }
+Procedure InitTables;
+Var
+  i, j : Integer;
+Begin
+  { vider la table de hachage }
+  For i := 0 To HASH_SIZE-1 Do
+    hash_table[i] := Nil;
+
+  { initialiser les segments }
+  For i := 1 To MAX_SEG Do
+  Begin
+    With seg_table[i] Do
+    Begin
+      name       := '';
+      class_name := '';
+      combine    := SC_PRIVATE;
+      align      := SA_PARA;
+      size       := 0;
+      cur_lc     := 0;
+      lnames_idx := 0;
+      defined    := False;
+    End;
+  End;
+
+  { initialiser les groupes }
+  For i := 1 To MAX_GRP Do
+  Begin
+    With grp_table[i] Do
+    Begin
+      name      := '';
+      seg_count := 0;
+      defined   := False;
+      For j := 1 To MAX_SEG Do segs[j] := 0;
+    End;
+  End;
+
+  sym_count  := 0;
+  seg_count  := 0;
+  grp_count  := 0;
+  pass_num   := 0;
+  err_count  := 0;
+  warn_count := 0;
+  lc         := 0;
+  cur_seg    := 0;
+  cur_lineno := 0;
+  do_listing := False;
+  src_fname  := '';
+  obj_fname  := '';
+  lst_fname  := '';
+  cur_line   := '';
+End;
+
+{ ============================================================
+  ErrorMsg : afficher un message d erreur (style MASM A2xxx)
+  ============================================================ }
+Procedure ErrorMsg(Const msg : TString);
+Begin
+  Inc(err_count);
+  If src_fname <> '' Then
+    Writeln(src_fname, '(', cur_lineno, ') : error A2',
+            err_count:3, ': ', msg)
+  Else
+    Writeln('error A2', err_count:3, ': ', msg);
+  If cur_line <> '' Then
+    Writeln('  ', cur_line);
+End;
+
+{ ============================================================
+  WarnMsg : afficher un avertissement (style MASM A4xxx)
+  ============================================================ }
+Procedure WarnMsg(Const msg : TString);
+Begin
+  Inc(warn_count);
+  If src_fname <> '' Then
+    Writeln(src_fname, '(', cur_lineno, ') : warning A4',
+            warn_count:3, ': ', msg)
+  Else
+    Writeln('warning A4', warn_count:3, ': ', msg);
+End;
+
+{ ============================================================
+  Programme principal (TODOs 02 a 25 a implementer)
+  ============================================================ }
+Begin
+  Writeln('Microsoft Macro Assembler Version ', VERSION,
+          ' (MASM.PAS - compatible MASM 5.x)');
+  InitTables;
+  Writeln('Infrastructure initialisee (TODO 01 complet).');
+  Writeln('TODOs 02 a 25 a implementer.');
 End.
