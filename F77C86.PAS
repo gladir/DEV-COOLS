@@ -563,12 +563,21 @@ Var
 
   { Pile de boucles DO (TODO 16) }
   do_depth     : Integer;
+  do_top_lbl   : Array[1..MAX_SCOPE] of TString;  { label haut DO    }
   do_end_lbl   : Array[1..MAX_SCOPE] of TString;  { label fin DO     }
   do_var_si    : Array[1..MAX_SCOPE] of Integer;   { sym index var DO }
   do_lbl_num   : Array[1..MAX_SCOPE] of Integer;   { etiquette num    }
 
   { Label de retour sous-programme courant }
-  cur_ret_lbl  : TString;
+  cur_ret_lbl   : TString;
+  cur_subr_name : TString;  { nom du sous-programme courant (vide=prog. principal) }
+
+  { Fonction courante (TODO 21) }
+  cur_func_result_si : Integer;   { index sym variable-resultat (0=SUBROUTINE) }
+  cur_func_ret_type  : TDataType; { type de retour FUNCTION courant }
+
+  { Dernier label d'enonce courant (pour FORMAT, TODO 18) }
+  last_stmt_lbl : Integer;
 
   { Options de compilation }
   opt_verbose  : Boolean;
@@ -751,7 +760,11 @@ Begin
 
   if_depth  := 0;
   do_depth  := 0;
-  cur_ret_lbl := '';
+  last_stmt_lbl := 0;
+  cur_ret_lbl   := '';
+  cur_subr_name := '';
+  cur_func_result_si := 0;
+  cur_func_ret_type  := DT_NONE;
 
   opt_verbose := False;
   opt_debug   := False;
@@ -3826,6 +3839,12 @@ Begin
   Begin
     EmitI2('MOV', 'AX', IntToStr(s.const_ival));
   End
+  Else If s.is_dummy And (s.bp_offset > 0) Then
+  Begin
+    { Parametre by-reference : deref [BP+n] }
+    EmitI2('MOV', 'BX', 'WORD PTR [BP+' + IntToStr(s.bp_offset) + ']');
+    EmitI2('MOV', 'AX', 'WORD PTR [BX]');
+  End
   Else If s.bp_offset < 0 Then
   Begin
     EmitI2('MOV', 'AX', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']');
@@ -3846,7 +3865,13 @@ Var s : TSymRef;
 Begin
   If (idx < 1) Or (idx > sym_count) Then Exit;
   s := sym_table^[idx];
-  If s.bp_offset < 0 Then
+  If s.is_dummy And (s.bp_offset > 0) Then
+  Begin
+    { Parametre by-reference : deref [BP+n] }
+    EmitI2('MOV', 'BX', 'WORD PTR [BP+' + IntToStr(s.bp_offset) + ']');
+    EmitI2('MOV', 'WORD PTR [BX]', 'AX');
+  End
+  Else If s.bp_offset < 0 Then
     EmitI2('MOV', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']', 'AX')
   Else If s.asm_label <> '' Then
     EmitI2('MOV', 'WORD PTR [' + s.asm_label + ']', 'AX')
@@ -3991,6 +4016,3807 @@ Begin
 End;
 
 { ============================================================
+  TODO 10 - EXPRESSIONS ARITHMETIQUES ENTIERES
+  ============================================================
+  Architecture :
+    ParseIntFactor   -- primaire : literal, var, PARAMETER, (expr),
+                        appel de fonction entiere
+    ParseIntPower    -- ** (puissance, droit-associatif) via _FRT_IPOW
+    ParseIntUnary    -- signe unaire + - avant ParseIntPower
+    ParseIntTerm     -- * / IMUL IDIV (gauche-associatif)
+    ParseIntExpr     -- + - ADD SUB (gauche-associatif)
+  Convention : le resultat est toujours dans AX.
+  Binaire : PUSH AX (gauche), eval droite -> AX,
+            MOV CX,AX ; POP AX ; op AX,CX.
+  Divisions Fortran 77 = troncature vers zero : CWD + IDIV AX.
+  ============================================================ }
+
+{ Declarations Forward pour la recursivite mutuelle }
+Procedure ParseIntExpr; Forward;
+
+{ --------------------------------------------------------------------------
+  GenIntrinsicInt1 : emettre le code pour une fonction intrinsèque entiere
+  a 1 argument (expression deja evaluee dans AX).
+  -------------------------------------------------------------------------- }
+Procedure GenIntrinsicInt1(Const fname : TString);
+Var lbl : TString;
+Begin
+  If (fname = 'ABS') Or (fname = 'IABS') Then
+  Begin
+    lbl := GenBranchLabel;
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JGE', lbl);
+    EmitI1('NEG', 'AX');
+    EmitLabel(lbl);
+  End
+  Else If (fname = 'INT') Or (fname = 'IFIX') Or (fname = 'IDINT') Then
+  Begin
+    { Argument reel : stub - supposer que AX contient deja la partie entiere }
+    EmitComment('Conversion ' + fname + ' : stub (TODO 11)');
+  End
+  Else If fname = 'NOT' Then
+  Begin
+    { NOT logique Fortran : NOT AX }
+    EmitI1('NOT', 'AX');
+  End
+  Else
+  Begin
+    WarnMsg('Fonction intrinsèque entiere non supportee : ' + fname);
+    EmitComment('Stub non implemente : ' + fname);
+    EmitI2('MOV', 'AX', '0');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenIntrinsicInt2 : emettre le code pour une fonction intrinsèque entiere
+  a 2 arguments. arg1 dans BX, arg2 dans CX a l'entree.
+  Resultat dans AX.
+  -------------------------------------------------------------------------- }
+Procedure GenIntrinsicInt2(Const fname : TString);
+Var lbl1, lbl2 : TString;
+Begin
+  { A l'entree : BX = arg1, CX = arg2 }
+  If (fname = 'MOD') Or (fname = 'AMOD') Or (fname = 'DMOD')
+  Or (fname = 'MODULO') Then
+  Begin
+    { MOD(a,b) = reste : AX := a ; CX := b ; CWD ; IDIV CX -> DX=reste }
+    EmitI2('MOV', 'AX', 'BX');
+    EmitComment('MOD : ' + fname);
+    EmitI0('CWD');
+    EmitI1('IDIV', 'CX');
+    EmitI2('MOV', 'AX', 'DX');    { reste dans DX }
+  End
+  Else If (fname = 'MIN') Or (fname = 'MIN0') Or (fname = 'IMIN0')
+       Or (fname = 'AMIN0') Or (fname = 'AMIN1') Or (fname = 'DMIN1') Then
+  Begin
+    lbl1 := GenBranchLabel;
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('CMP', 'BX', 'CX');
+    EmitI1('JLE', lbl1);           { si BX <= CX, BX est le min }
+    EmitI2('MOV', 'AX', 'CX');    { sinon CX est le min }
+    EmitLabel(lbl1);
+  End
+  Else If (fname = 'MAX') Or (fname = 'MAX0') Or (fname = 'IMAX0')
+       Or (fname = 'AMAX0') Or (fname = 'AMAX1') Or (fname = 'DMAX1') Then
+  Begin
+    lbl1 := GenBranchLabel;
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('CMP', 'BX', 'CX');
+    EmitI1('JGE', lbl1);           { si BX >= CX, BX est le max }
+    EmitI2('MOV', 'AX', 'CX');    { sinon CX est le max }
+    EmitLabel(lbl1);
+  End
+  Else If (fname = 'DIM') Or (fname = 'IDIM') Or (fname = 'DDIM') Then
+  Begin
+    { DIM(a,b) = max(a-b, 0) }
+    lbl1 := GenBranchLabel;
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('SUB', 'AX', 'CX');       { AX = a - b }
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JG', lbl1);
+    EmitI2('MOV', 'AX', '0');
+    EmitLabel(lbl1);
+  End
+  Else If (fname = 'SIGN') Or (fname = 'ISIGN') Or (fname = 'DSIGN') Then
+  Begin
+    { SIGN(a,b) = |a| * sign(b) }
+    lbl1 := GenBranchLabel;
+    lbl2 := GenBranchLabel;
+    EmitI2('MOV', 'AX', 'BX');
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JGE', lbl1);
+    EmitI1('NEG', 'AX');           { AX = |a| }
+    EmitLabel(lbl1);
+    EmitI2('CMP', 'CX', '0');
+    EmitI1('JGE', lbl2);
+    EmitI1('NEG', 'AX');           { si b<0, neger }
+    EmitLabel(lbl2);
+  End
+  Else
+  Begin
+    WarnMsg('Fonction intrinsèque entiere 2-args non supportee : ' + fname);
+    EmitI2('MOV', 'AX', '0');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIntFactor : parser un primaire entier.
+  Resultats dans AX.
+  -------------------------------------------------------------------------- }
+Procedure ParseIntFactor;
+Var
+  vname  : TString;
+  idx    : Integer;
+  ai     : Array[0..MAX_PARAM] of Integer;  { indices arg pour appel }
+  nargs  : Integer;
+  j      : Integer;  { boucle empilage args }
+Begin
+  { Entier litteral }
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
+    LexNext;
+  End
+
+  { Parenthese }
+  Else If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;
+    ParseIntExpr;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+      LexNext
+    Else
+      ErrorMsg('Attendu ) apres expression entre parentheses');
+  End
+
+  { Identificateur : PARAMETER, variable, ou appel de fonction }
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    vname := cur_tok.val;
+    LexNext;
+    idx := SymFind(vname);
+
+    { Appel de fonction : IDENT ( }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      LexNext;
+      nargs := 0;
+
+      { Analyser les arguments (au plus MAX_PARAM) }
+      If Not ((cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')')) Then
+      Repeat
+        { Pour chaque arg : evaluer et pousser par ref (si variable simple) }
+        If (cur_tok.kind = TK_IDENT)
+        And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ','))
+        Or ((cur_tok.kind = TK_IDENT)
+            And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ')')))
+        Then
+        Begin
+          { Argument = variable simple : passage par reference }
+          ai[nargs] := SymFind(cur_tok.val);
+          If ai[nargs] = 0 Then ai[nargs] := SymGetOrCreate(cur_tok.val);
+          LexNext;
+          Inc(nargs);
+        End
+        Else
+        Begin
+          { Argument = expression : evaluer dans AX, stocker en temp }
+          { Stub : pour l'instant on evalue mais on ne cree pas de temp }
+          ParseIntExpr;
+          ai[nargs] := 0;    { 0 = argument expression (non par ref) }
+          Inc(nargs);
+        End;
+
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+          LexNext
+        Else
+          Break;
+      Until (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')');
+
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+
+      { Determiner si c'est une fonction intrinsèque ou user-defined }
+      If (nargs = 1) And ((vname = 'ABS') Or (vname = 'IABS')
+        Or (vname = 'INT') Or (vname = 'IFIX') Or (vname = 'IDINT')) Then
+      Begin
+        { Charger arg dans AX (si variable simple) }
+        If ai[0] > 0 Then GenLoadInt(ai[0]);
+        GenIntrinsicInt1(vname);
+      End
+      Else If (nargs = 2) And ((vname = 'MOD') Or (vname = 'MIN0')
+        Or (vname = 'MAX0') Or (vname = 'MIN') Or (vname = 'MAX')
+        Or (vname = 'IMAX0') Or (vname = 'IMIN0') Or (vname = 'DIM')
+        Or (vname = 'IDIM') Or (vname = 'SIGN') Or (vname = 'ISIGN')) Then
+      Begin
+        { Charger arg1 dans BX, arg2 dans CX }
+        If ai[0] > 0 Then GenLoadInt(ai[0]) Else EmitComment('arg1 = expr');
+        EmitI2('MOV', 'BX', 'AX');
+        If ai[1] > 0 Then GenLoadInt(ai[1]) Else EmitComment('arg2 = expr');
+        EmitI2('MOV', 'CX', 'AX');
+        GenIntrinsicInt2(vname);
+      End
+      Else
+      Begin
+        { Fonction utilisateur : passer les args par reference }
+        EmitComment('CALL ' + vname + ' (' + IntToStr(nargs) + ' arg(s))');
+        { Empiler de droite a gauche }
+        For j := nargs - 1 DownTo 0 Do
+          If ai[j] > 0 Then GenPushArgByRef(ai[j])
+          Else EmitComment('arg[' + IntToStr(j) + '] = expr (stub)');
+        EmitRaw('        CALL ' + FP_PFX + vname);
+        If nargs > 0 Then
+          EmitI2('ADD', 'SP', IntToStr(nargs * 2));
+        { Resultat dans AX }
+      End;
+    End  { Appel de fonction }
+
+    Else
+    Begin
+      { Variable scalaire ou PARAMETER }
+      If idx = 0 Then idx := SymGetOrCreate(vname);
+      GenLoadInt(idx);
+    End;
+  End  { TK_IDENT }
+
+  Else
+  Begin
+    ErrorMsg('Facteur entier attendu, obtenu : ' + cur_tok.val);
+    EmitI2('MOV', 'AX', '0');
+    LexNext;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIntPower : parser l'operateur ** (exposant entier, droit-assoc).
+  base ** exp -> CALL _FRT_IPOW (AX=base, CX=exp -> AX=resultat)
+  -------------------------------------------------------------------------- }
+Procedure ParseIntPower;
+Begin
+  ParseIntFactor;
+
+  { ** est droit-associatif : si on voit '**', on recurse sur ParseIntPower }
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '**') Then
+  Begin
+    LexNext;
+    EmitComment('** : puissance entiere via _FRT_IPOW');
+    EmitI1('PUSH', 'AX');    { sauvegarder la base }
+    ParseIntPower;            { recursion droite: exposant dans AX }
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI1('POP', 'AX');     { restaurer la base }
+    EmitRaw('        CALL ' + FRT_PFX + 'IPOW');
+    { _FRT_IPOW : AX=base, CX=exposant -> AX=resultat }
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIntUnary : signe unaire optionnel + - avant ParseIntPower.
+  -------------------------------------------------------------------------- }
+Procedure ParseIntUnary;
+Var neg : Boolean;
+Begin
+  neg := False;
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '-') Then
+  Begin neg := True;  LexNext; End
+  Else If (cur_tok.kind = TK_OP) And (cur_tok.val = '+') Then
+    LexNext;
+
+  ParseIntPower;
+
+  If neg Then EmitI1('NEG', 'AX');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIntTerm : * / (gauche-associatif).
+  -------------------------------------------------------------------------- }
+Procedure ParseIntTerm;
+Var op : TString;
+Begin
+  ParseIntUnary;
+
+  While (cur_tok.kind = TK_OP)
+    And ((cur_tok.val = '*') Or (cur_tok.val = '/')) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI1('PUSH', 'AX');
+    ParseIntUnary;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI1('POP', 'AX');
+    If op = '*' Then
+    Begin
+      EmitI1('IMUL', 'CX');
+      { IMUL : DX:AX = AX * CX. On garde AX (16 bits). }
+    End
+    Else
+    Begin
+      { Division Fortran 77 : troncature vers zero (CWD + IDIV) }
+      EmitI0('CWD');          { etendre AX -> DX:AX (signe) }
+      EmitI1('IDIV', 'CX');  { AX = quotient, DX = reste }
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIntExpr : + - (gauche-associatif). Point d'entree principal.
+  -------------------------------------------------------------------------- }
+Procedure ParseIntExpr;
+Var op : TString;
+Begin
+  ParseIntTerm;
+
+  While (cur_tok.kind = TK_OP)
+    And ((cur_tok.val = '+') Or (cur_tok.val = '-')) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI1('PUSH', 'AX');
+    ParseIntTerm;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI1('POP', 'AX');
+    If op = '+' Then
+      EmitI2('ADD', 'AX', 'CX')
+    Else
+      EmitI2('SUB', 'AX', 'CX');
+  End;
+End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS ARITHMETIQUES REELLES ET DOUBLE PRECISION
+  ============================================================
+  Convention registres :
+    REAL (4 octets IEEE 754) : DX = mot haut, AX = mot bas.
+    DOUBLE (8 octets)        : traite comme REAL (stub reduit).
+  Sauvegarde gauche : PUSH DX ; PUSH AX  (AX au sommet).
+  Appel binaire _FRT_Fxxx :
+    PUSH DX_gauche ; PUSH AX_gauche    (4 octets, deja sur pile)
+    eval droite → DX:AX
+    PUSH DX ; PUSH AX                  (4 octets droite)
+    CALL _FRT_Fxxx  (voir TODO 23 pour les corps)
+    ADD SP, 8                          (nettoyer 4 mots = 8 octets)
+    Resultat dans DX:AX.
+  Constantes reelles : label FK_nnn en .DATA inline (DD) chargé
+    par deux MOV WORD PTR. IEEE 754 encode par FPC au compile-time.
+  Conversions :
+    INTEGER -> REAL : GenIntToReal  (CALL _FRT_ITOF)
+    REAL -> INTEGER : GenRealToInt  (CALL _FRT_FTOI)
+  ============================================================ }
+
+Procedure ParseRealExpr; Forward;
+
+{ --------------------------------------------------------------------------
+  WordLoHi : decomposer un LongInt 32 bits en bas et haut 16 bits.
+  -------------------------------------------------------------------------- }
+Procedure WordLoHi(n : LongInt; Var lo, hi : Word);
+Begin
+  lo := Word(n And $FFFF);
+  hi := Word((n Shr 16) And $FFFF);
+End;
+
+{ --------------------------------------------------------------------------
+  RealToLong : convertir un Real Pascal en LongInt 32 bits (IEEE 754 single).
+  Utilise le bloc de 4 octets memoire de la variable FPC.
+  NOTE : FPC stocke Real (6 octets extended ou 4 octets single selon config).
+  On utilise Single (4 octets) pour le format IEEE 754.
+  -------------------------------------------------------------------------- }
+Function RealToIEEE32(r : Real) : LongInt;
+Var s : Single;
+    n : LongInt;
+Begin
+  s := r;
+  Move(s, n, 4);
+  RealToIEEE32 := n;
+End;
+
+{ --------------------------------------------------------------------------
+  GenRealConst : charger une constante reelle dans DX:AX.
+  Pour 0.0 : XOR/XOR.
+  Pour les autres : creer un label FK_nnn en .DATA (inline segment switch),
+  puis charger via deux MOV WORD PTR.
+  -------------------------------------------------------------------------- }
+Procedure GenRealConst(r : Real; dt : TDataType);
+Var lbl    : TString;
+    ieee32 : LongInt;
+    lo, hi : Word;
+Begin
+  If r = 0.0 Then
+  Begin
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('XOR', 'DX', 'DX');
+    Exit;
+  End;
+
+  lbl    := GenDataLabel;
+  ieee32 := RealToIEEE32(r);
+  WordLoHi(ieee32, lo, hi);
+
+  { Emettre la constante dans la section .DATA (switch inline MASM) }
+  EmitRaw('        .DATA');
+  EmitLabel(lbl);
+  If dt = DT_DOUBLE Then
+    EmitRaw('        DQ 0' + IntToStr(lo) + 'h, 0' + IntToStr(hi) + 'h  ; double ~' + IntToStr(Round(r)))
+  Else
+    EmitRaw('        DW 0' + IntToStr(lo) + 'h, 0' + IntToStr(hi) + 'h  ; real ~' + IntToStr(Round(r)));
+  EmitRaw('        .CODE');
+
+  { Charger dans DX:AX }
+  EmitI2('MOV', 'AX', 'WORD PTR [' + lbl + ']');
+  EmitI2('MOV', 'DX', 'WORD PTR [' + lbl + '+2]');
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadReal : charger une variable REAL (ou DOUBLE) dans DX:AX.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadReal(idx : Integer);
+Var s : TSymRef;
+Begin
+  If (idx < 1) Or (idx > sym_count) Then
+  Begin
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('XOR', 'DX', 'DX');
+    Exit;
+  End;
+  s := sym_table^[idx];
+  If s.kind = SK_PARAM_CONST Then
+  Begin
+    GenRealConst(s.const_rval, s.dtype);
+  End
+  Else If s.bp_offset < 0 Then
+  Begin
+    EmitI2('MOV', 'AX', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']');
+    EmitI2('MOV', 'DX', 'WORD PTR [BP' + IntToStr(s.bp_offset + 2) + ']');
+  End
+  Else If s.asm_label <> '' Then
+  Begin
+    EmitI2('MOV', 'AX', 'WORD PTR [' + s.asm_label + ']');
+    EmitI2('MOV', 'DX', 'WORD PTR [' + s.asm_label + '+2]');
+  End
+  Else
+  Begin
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('XOR', 'DX', 'DX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenStoreReal : stocker DX:AX dans une variable REAL (ou DOUBLE).
+  -------------------------------------------------------------------------- }
+Procedure GenStoreReal(idx : Integer);
+Var s : TSymRef;
+Begin
+  If (idx < 1) Or (idx > sym_count) Then Exit;
+  s := sym_table^[idx];
+  If s.is_dummy And (s.bp_offset > 0) Then
+  Begin
+    EmitI2('MOV', 'BX', 'WORD PTR [BP+' + IntToStr(s.bp_offset) + ']');
+    EmitI2('MOV', 'WORD PTR [BX]', 'AX');
+    EmitI2('MOV', 'WORD PTR [BX+2]', 'DX');
+  End
+  Else If s.bp_offset < 0 Then
+  Begin
+    EmitI2('MOV', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']', 'AX');
+    EmitI2('MOV', 'WORD PTR [BP' + IntToStr(s.bp_offset + 2) + ']', 'DX');
+  End
+  Else If s.asm_label <> '' Then
+  Begin
+    EmitI2('MOV', 'WORD PTR [' + s.asm_label + ']', 'AX');
+    EmitI2('MOV', 'WORD PTR [' + s.asm_label + '+2]', 'DX');
+  End
+  Else
+    WarnMsg('GenStoreReal : symbole sans adresse - ' + s.name);
+End;
+
+{ --------------------------------------------------------------------------
+  GenIntToReal : convertir AX (entier 16 bits signe) en DX:AX (REAL).
+  Appel : PUSH AX (argument) ; CALL _FRT_ITOF ; ADD SP,2.
+  -------------------------------------------------------------------------- }
+Procedure GenIntToReal;
+Begin
+  EmitComment('Conversion INTEGER -> REAL (_FRT_ITOF)');
+  EmitI1('PUSH', 'AX');
+  EmitRaw('        CALL ' + FRT_PFX + 'ITOF');
+  EmitI2('ADD', 'SP', '2');
+  { Resultat dans DX:AX }
+End;
+
+{ --------------------------------------------------------------------------
+  GenRealToInt : convertir DX:AX (REAL) en AX (entier, troncature vers 0).
+  Appel : PUSH DX ; PUSH AX ; CALL _FRT_FTOI ; ADD SP,4.
+  -------------------------------------------------------------------------- }
+Procedure GenRealToInt;
+Begin
+  EmitComment('Conversion REAL -> INTEGER (_FRT_FTOI)');
+  EmitI1('PUSH', 'DX');
+  EmitI1('PUSH', 'AX');
+  EmitRaw('        CALL ' + FRT_PFX + 'FTOI');
+  EmitI2('ADD', 'SP', '4');
+  { Resultat dans AX }
+End;
+
+{ --------------------------------------------------------------------------
+  GenRealBinOp : emettre un appel a _FRT_Fxxx pour une operation binaire.
+  Avant l'appel : gauche deja sauvee sur pile (PUSH DX_g ; PUSH AX_g).
+  Droite dans DX:AX. On empile droite, puis appelle, puis nettoie.
+  Convention pile (apres les 4 PUSH, croissant-vers-haut) :
+    [SP+0]=AX_droit  [SP+2]=DX_droit
+    [SP+4]=AX_gauche [SP+6]=DX_gauche
+  -------------------------------------------------------------------------- }
+Procedure GenRealBinOp(Const frt_name : TString);
+Begin
+  EmitI1('PUSH', 'DX');        { droite hi }
+  EmitI1('PUSH', 'AX');        { droite lo }
+  EmitRaw('        CALL ' + FRT_PFX + frt_name);
+  EmitI2('ADD', 'SP', '8');   { nettoyer 4 mots (gauche + droite) }
+  { Resultat dans DX:AX }
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRealFactor : parser un primaire reel. Resultat dans DX:AX.
+  -------------------------------------------------------------------------- }
+Procedure ParseRealFactor;
+Var
+  vname : TString;
+  idx   : Integer;
+Begin
+  { Entier litteral : promouvoir en reel }
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    EmitI2('MOV', 'AX', IntToStr(cur_tok.int_val));
+    LexNext;
+    GenIntToReal;
+  End
+
+  { Reel litteral }
+  Else If cur_tok.kind = TK_REAL Then
+  Begin
+    GenRealConst(cur_tok.real_val, DT_REAL);
+    LexNext;
+  End
+
+  { Double litteral }
+  Else If cur_tok.kind = TK_DOUBLE Then
+  Begin
+    GenRealConst(cur_tok.real_val, DT_DOUBLE);
+    LexNext;
+  End
+
+  { Parenthese }
+  Else If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;
+    ParseRealExpr;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+      LexNext
+    Else
+      ErrorMsg('Attendu ) apres expression reelle entre parentheses');
+  End
+
+  { Identificateur : PARAMETER, variable reelle, conversion }
+  Else If cur_tok.kind = TK_IDENT Then
+  Begin
+    vname := cur_tok.val;
+    LexNext;
+
+    { Appel de fonction : IDENT( }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      LexNext;
+      { Evaluer premier argument dans DX:AX }
+      ParseRealExpr;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+        LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+        LexNext;
+
+      { Fonctions intrinsèques reelles a 1 arg }
+      If (vname = 'ABS') Or (vname = 'DABS') Or (vname = 'CABS') Then
+      Begin
+        { ABS(x) : si signe negatif (bit 31 de DX), effacer le signe }
+        EmitI2('AND', 'DH', '7Fh');   { effacer le bit signe IEEE }
+      End
+      Else If (vname = 'SQRT') Or (vname = 'DSQRT') Then
+      Begin
+        EmitComment('Sqrt via _FRT_SQRT (stub)');
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'SQRT');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'EXP') Or (vname = 'DEXP') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'EXP');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'LOG') Or (vname = 'ALOG') Or (vname = 'DLOG') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'LOG');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'LOG10') Or (vname = 'ALOG10') Or (vname = 'DLOG10') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'LOG10');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'SIN') Or (vname = 'DSIN') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'SIN');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'COS') Or (vname = 'DCOS') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'COS');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'TAN') Or (vname = 'DTAN') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'TAN');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'ATAN') Or (vname = 'DATAN') Then
+      Begin
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + 'ATAN');
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else If (vname = 'FLOAT') Or (vname = 'REAL') Or (vname = 'SNGL')
+           Or (vname = 'DBLE') Then
+      Begin
+        { FLOAT(i) : l'argument est deja reel ou sera converti }
+        EmitComment(vname + ' : conversion vers reel (stub)');
+      End
+      Else If (vname = 'IFIX') Or (vname = 'INT') Or (vname = 'IDINT') Then
+      Begin
+        { Convertir reel -> entier, puis entier -> reel serait inutile }
+        { Ici, retourner AX comme reel apres troncature }
+        GenRealToInt;  { AX = entier }
+        GenIntToReal;  { DX:AX = reel }
+      End
+      Else If (vname = 'SIGN') Or (vname = 'DSIGN') Or (vname = 'AMIN1')
+           Or (vname = 'AMAX1') Or (vname = 'DMIN1') Or (vname = 'DMAX1') Then
+      Begin
+        EmitComment('Fonction reelle 2-args ' + vname + ' (stub)');
+        EmitI1('PUSH', 'DX'); EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FRT_PFX + vname);
+        EmitI2('ADD', 'SP', '4');
+      End
+      Else
+      Begin
+        { Fonction utilisateur reelle : stub }
+        EmitComment('CALL reel ' + vname + ' (stub)');
+        EmitI1('PUSH', 'DX');
+        EmitI1('PUSH', 'AX');
+        EmitRaw('        CALL ' + FP_PFX + vname);
+        EmitI2('ADD', 'SP', '4');
+      End;
+    End  { appel de fonction }
+
+    Else
+    Begin
+      { Variable scalaire ou PARAMETER reel }
+      idx := SymFind(vname);
+      If idx = 0 Then idx := SymGetOrCreate(vname);
+      If sym_table^[idx].dtype = DT_INTEGER Then
+      Begin
+        { Variable entiere dans un contexte reel : promouvoir }
+        GenLoadInt(idx);
+        GenIntToReal;
+      End
+      Else
+        GenLoadReal(idx);
+    End;
+  End  { TK_IDENT }
+
+  Else
+  Begin
+    ErrorMsg('Facteur reel attendu, obtenu : ' + cur_tok.val);
+    EmitI2('XOR', 'AX', 'AX');
+    EmitI2('XOR', 'DX', 'DX');
+    LexNext;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRealPower : ** (droit-associatif, via _FRT_FPOW).
+  -------------------------------------------------------------------------- }
+Procedure ParseRealPower;
+Begin
+  ParseRealFactor;
+
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '**') Then
+  Begin
+    LexNext;
+    EmitComment('** reel via _FRT_FPOW');
+    EmitI1('PUSH', 'DX');     { sauvegarder base hi }
+    EmitI1('PUSH', 'AX');     { sauvegarder base lo }
+    ParseRealPower;            { recursion droite : exposant dans DX:AX }
+    GenRealBinOp('FPOW');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRealUnary : signe unaire + - avant ParseRealPower.
+  -------------------------------------------------------------------------- }
+Procedure ParseRealUnary;
+Var neg : Boolean;
+Begin
+  neg := False;
+  If (cur_tok.kind = TK_OP) And (cur_tok.val = '-') Then
+  Begin neg := True; LexNext; End
+  Else If (cur_tok.kind = TK_OP) And (cur_tok.val = '+') Then
+    LexNext;
+
+  ParseRealPower;
+
+  If neg Then
+  Begin
+    EmitComment('NEG reel (_FRT_FNEG)');
+    EmitI1('PUSH', 'DX');
+    EmitI1('PUSH', 'AX');
+    EmitRaw('        CALL ' + FRT_PFX + 'FNEG');
+    EmitI2('ADD', 'SP', '4');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRealTerm : * / (gauche-associatif, via _FRT_FMUL / _FRT_FDIV).
+  -------------------------------------------------------------------------- }
+Procedure ParseRealTerm;
+Var op : TString;
+Begin
+  ParseRealUnary;
+
+  While (cur_tok.kind = TK_OP)
+    And ((cur_tok.val = '*') Or (cur_tok.val = '/')) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI1('PUSH', 'DX');    { sauvegarder gauche hi }
+    EmitI1('PUSH', 'AX');    { sauvegarder gauche lo }
+    ParseRealUnary;
+    If op = '*' Then
+      GenRealBinOp('FMUL')
+    Else
+      GenRealBinOp('FDIV');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRealExpr : + - (gauche-associatif, via _FRT_FADD / _FRT_FSUB).
+  Point d'entree principal pour les expressions reelles.
+  -------------------------------------------------------------------------- }
+Procedure ParseRealExpr;
+Var op : TString;
+Begin
+  ParseRealTerm;
+
+  While (cur_tok.kind = TK_OP)
+    And ((cur_tok.val = '+') Or (cur_tok.val = '-')) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI1('PUSH', 'DX');    { sauvegarder gauche hi }
+    EmitI1('PUSH', 'AX');    { sauvegarder gauche lo }
+    ParseRealTerm;
+    If op = '+' Then
+      GenRealBinOp('FADD')
+    Else
+      GenRealBinOp('FSUB');
+  End;
+End;
+
+{ ============================================================
+  TODO 12 - EXPRESSIONS LOGIQUES ET RELATIONNELLES
+  ============================================================
+  Priorite F77 (du plus fort au plus faible) :
+    expressions arithmetiques (TODO 10/11)
+    .NOT.
+    .AND.
+    .OR.
+    .EQV. / .NEQV.
+  Convention : .TRUE. = -1 (0FFFFh), .FALSE. = 0 (meme que BCPL86).
+  Relations entre entiers : CMP AX,CX + Jxx inline.
+  Relations entre reels : CALL _FRT_FCMP (stub TODO 23).
+  Operateurs logiques : NOT/AND/OR/XOR/XNOR directs sur 16 bits.
+  ============================================================ }
+
+Procedure ParseLogExpr; Forward;
+
+{ --------------------------------------------------------------------------
+  GenCmpIntRelop : apres CMP AX,CX, emettre le code qui met AX := -1 ou 0
+  selon l'operateur relop (EQ NE LT LE GT GE).
+  Technique : un saut conditionnel vers un label "vrai", AX:=0, JMP done,
+  label_vrai: AX:=-1, label_done:.
+  -------------------------------------------------------------------------- }
+Procedure GenCmpIntRelop(Const relop : TString);
+Var lbl_true, lbl_done : TString;
+Begin
+  lbl_true := GenBranchLabel;
+  lbl_done := GenBranchLabel;
+
+  { Le CMP AX,CX est deja emis par l'appelant }
+  If relop = 'EQ' Then      EmitI1('JE',  lbl_true)
+  Else If relop = 'NE' Then EmitI1('JNE', lbl_true)
+  Else If relop = 'LT' Then EmitI1('JL',  lbl_true)
+  Else If relop = 'LE' Then EmitI1('JLE', lbl_true)
+  Else If relop = 'GT' Then EmitI1('JG',  lbl_true)
+  Else If relop = 'GE' Then EmitI1('JGE', lbl_true)
+  Else
+  Begin
+    WarnMsg('GenCmpIntRelop : relop inconnu ' + relop);
+    EmitI1('JE', lbl_true);
+  End;
+
+  { Branche FALSE }
+  EmitI2('MOV', 'AX', '0');
+  EmitI1('JMP', lbl_done);
+
+  { Branche TRUE }
+  EmitLabel(lbl_true);
+  EmitI2('MOV', 'AX', '0FFFFh');   { -1 en complement a deux }
+
+  EmitLabel(lbl_done);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseRelExpr : expression avec operateurs relationnels.
+  Syntaxe : arith_expr [relop arith_expr]
+  Resultat dans AX : -1 (.TRUE.) ou 0 (.FALSE.).
+  Pour les reels, on appelle _FRT_FCMP puis on interprete AX comme signe.
+  -------------------------------------------------------------------------- }
+Procedure ParseRelExpr;
+Var
+  relop  : TString;
+  ldt    : TDataType;   { type detecte a gauche }
+  lbl_t, lbl_d : TString;
+  li     : Integer;     { index symbole gauche pour detection de type }
+Begin
+  { Evaluer le cote gauche }
+  { Heuristique de type : si le token courant est TK_REAL ou TK_DOUBLE,
+    ou si c'est un ident avec dtype REAL/DOUBLE -> ParseRealExpr.
+    Sinon ParseIntExpr. On fait une detection simple ici. }
+  ldt := DT_INTEGER;
+  If (cur_tok.kind = TK_REAL) Or (cur_tok.kind = TK_DOUBLE) Then
+    ldt := DT_REAL
+  Else If (cur_tok.kind = TK_IDENT) Then
+  Begin
+    li := SymFind(cur_tok.val);
+    If li > 0 Then
+      If (sym_table^[li].dtype = DT_REAL) Or (sym_table^[li].dtype = DT_DOUBLE)
+      Then ldt := DT_REAL;
+  End;
+
+  If ldt = DT_REAL Then
+    ParseRealExpr
+  Else
+    ParseIntExpr;
+
+  { Relop optionnel }
+  If cur_tok.kind <> TK_RELOP Then Exit;   { expression logique simple }
+
+  relop := cur_tok.val;
+  LexNext;
+
+  { Evaluer cote droit }
+  If ldt = DT_REAL Then
+  Begin
+    { Sauvegarder gauche (DX:AX) sur pile }
+    EmitI1('PUSH', 'DX');
+    EmitI1('PUSH', 'AX');
+    ParseRealExpr;
+    { droite dans DX:AX, empiler pour _FRT_FCMP }
+    EmitI1('PUSH', 'DX');
+    EmitI1('PUSH', 'AX');
+    EmitComment('Comparaison reelle _FRT_FCMP .' + relop + '.');
+    EmitRaw('        CALL ' + FRT_PFX + 'FCMP');
+    EmitI2('ADD', 'SP', '8');   { nettoyer 4 mots (gauche + droite) }
+    { _FRT_FCMP retourne dans AX : -1 si g<d, 0 si g=d, +1 si g>d }
+    { Interpreter selon relop -> generer -1/0 dans AX }
+    EmitI2('CMP', 'AX', '0');
+    lbl_t := GenBranchLabel;
+    lbl_d := GenBranchLabel;
+    If relop = 'EQ' Then      EmitI1('JE',  lbl_t)
+    Else If relop = 'NE' Then EmitI1('JNE', lbl_t)
+    Else If relop = 'LT' Then EmitI1('JL',  lbl_t)
+    Else If relop = 'LE' Then EmitI1('JLE', lbl_t)
+    Else If relop = 'GT' Then EmitI1('JG',  lbl_t)
+    Else If relop = 'GE' Then EmitI1('JGE', lbl_t)
+    Else EmitI1('JE', lbl_t);
+    EmitI2('MOV', 'AX', '0');
+    EmitI1('JMP', lbl_d);
+    EmitLabel(lbl_t);
+    EmitI2('MOV', 'AX', '0FFFFh');
+    EmitLabel(lbl_d);
+  End
+  Else
+  Begin
+    { Entiers : sauvegarder gauche dans CX }
+    EmitI2('MOV', 'CX', 'AX');
+    ParseIntExpr;
+    { droite dans AX, echanger : on veut gauche dans AX, droite dans CX }
+    EmitI2('XCHG', 'AX', 'CX');
+    EmitComment('Comparaison entiere .' + relop + '.');
+    EmitI2('CMP', 'AX', 'CX');
+    GenCmpIntRelop(relop);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLogPrimary : primaire logique.
+  Reconnu : .TRUE./.FALSE., variable LOGICAL, (expr_logique),
+            ou expression relationnelle.
+  -------------------------------------------------------------------------- }
+Procedure ParseLogPrimary;
+Var idx : Integer;
+Begin
+  { .TRUE. ou .FALSE. }
+  If cur_tok.kind = TK_LOGICAL Then
+  Begin
+    If cur_tok.val = 'TRUE' Then
+      EmitI2('MOV', 'AX', '0FFFFh')
+    Else
+      EmitI2('MOV', 'AX', '0');
+    LexNext;
+    Exit;
+  End;
+
+  { Parenthese : sous-expression logique }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;
+    ParseLogExpr;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+      LexNext
+    Else
+      ErrorMsg('Attendu ) apres expression logique');
+    Exit;
+  End;
+
+  { Variable LOGICAL ou expression relationnelle }
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    idx := SymFind(cur_tok.val);
+    If (idx > 0) And (sym_table^[idx].dtype = DT_LOGICAL)
+    And (LexPeekTok.kind <> TK_RELOP)
+    And Not ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = '('))
+    Then
+    Begin
+      { Charger la variable logique directement }
+      GenLoadInt(idx);
+      LexNext;
+      Exit;
+    End;
+  End;
+
+  { Sinon : expression relationnelle (arithmetique + relop optionnel) }
+  ParseRelExpr;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLogNot : .NOT. expr (unaire, droit-associatif).
+  -------------------------------------------------------------------------- }
+Procedure ParseLogNot;
+Var has_not : Boolean;
+Begin
+  has_not := False;
+  If (cur_tok.kind = TK_LOGOP) And (cur_tok.val = 'NOT') Then
+  Begin
+    has_not := True;
+    LexNext;
+  End;
+
+  ParseLogPrimary;
+
+  If has_not Then
+  Begin
+    EmitComment('.NOT.');
+    EmitI1('NOT', 'AX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLogAnd : expr .AND. expr (gauche-associatif).
+  -------------------------------------------------------------------------- }
+Procedure ParseLogAnd;
+Begin
+  ParseLogNot;
+
+  While (cur_tok.kind = TK_LOGOP) And (cur_tok.val = 'AND') Do
+  Begin
+    LexNext;
+    EmitI1('PUSH', 'AX');
+    ParseLogNot;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI1('POP', 'AX');
+    EmitComment('.AND.');
+    EmitI2('AND', 'AX', 'CX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLogOr : expr .OR. expr (gauche-associatif).
+  -------------------------------------------------------------------------- }
+Procedure ParseLogOr;
+Begin
+  ParseLogAnd;
+
+  While (cur_tok.kind = TK_LOGOP) And (cur_tok.val = 'OR') Do
+  Begin
+    LexNext;
+    EmitI1('PUSH', 'AX');
+    ParseLogAnd;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI1('POP', 'AX');
+    EmitComment('.OR.');
+    EmitI2('OR', 'AX', 'CX');
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseLogExpr : expr .EQV./.NEQV. expr (gauche-associatif).
+  .EQV.  = XNOR = NOT XOR : AX := NOT (AX XOR CX)
+  .NEQV. = XOR             : AX := AX XOR CX
+  Point d'entree principal pour les expressions logiques.
+  -------------------------------------------------------------------------- }
+Procedure ParseLogExpr;
+Var op : TString;
+Begin
+  ParseLogOr;
+
+  While (cur_tok.kind = TK_LOGOP)
+    And ((cur_tok.val = 'EQV') Or (cur_tok.val = 'NEQV')) Do
+  Begin
+    op := cur_tok.val;
+    LexNext;
+    EmitI1('PUSH', 'AX');
+    ParseLogOr;
+    EmitI2('MOV', 'CX', 'AX');
+    EmitI1('POP', 'AX');
+    EmitI2('XOR', 'AX', 'CX');
+    If op = 'EQV' Then
+    Begin
+      EmitComment('.EQV. (XNOR)');
+      EmitI1('NOT', 'AX');
+    End
+    Else
+      EmitComment('.NEQV. (XOR)');
+  End;
+End;
+
+{ ============================================================
+  TODO 13 - EXPRESSIONS CARACTERES (CHARACTER)
+  ============================================================
+  Convention registres pour les expressions CHARACTER :
+    AX = adresse (offset near) de la chaine dans DS
+    CX = longueur en octets
+  Format Fortran 77 : blank-padded, longueur fixe, non null-terminated.
+  Litteraux de chaine : label FK_nnn cree en .DATA inline.
+
+  Primitives emises :
+    GenStrLiteral(s,n)         -- label FK_nnn + DB + charge AX,CX
+    GenLoadStrAddr(idx)        -- AX=offset, CX=char_len pour variable
+    GenSubstrAddr(idx,lo,hi)   -- AX=offset+lo-1, CX=hi-lo+1
+    GenStrConcat(...)          -- CALL _FRT_SCAT
+    GenStrAssign(dst_idx)      -- CALL _FRT_SCOPY
+  Fonctions intrinsèques :
+    LEN(s)   -> MOV AX, char_len
+    INDEX(s1,s2) -> CALL _FRT_INDEX -> AX=position (1-based, 0=absent)
+    CHAR(i)  -> CALL _FRT_CHAR  -> AX=adresse d'un octet temp
+    ICHAR(s) -> CALL _FRT_ICHAR -> AX=code ASCII premier caractere
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  GenStrLiteral : emettre une constante chaine en .DATA, charger AX + CX.
+  AX = offset de la chaine, CX = longueur.
+  -------------------------------------------------------------------------- }
+Procedure GenStrLiteral(Const s : TString);
+Var lbl : TString;
+    n   : Integer;
+Begin
+  n   := Length(s);
+  lbl := GenDataLabel;
+
+  { Emettre la chaine dans .DATA }
+  EmitRaw('        .DATA');
+  EmitLabel(lbl);
+  If n = 0 Then
+    EmitRaw('        DB 1 DUP('' '')')  { chaine vide = 1 espace }
+  Else
+    EmitDBStr(s);
+  EmitRaw('        .CODE');
+
+  { Charger adresse et longueur }
+  EmitI2('MOV', 'AX', 'OFFSET ' + lbl);
+  EmitI2('MOV', 'CX', IntToStr(n));
+End;
+
+{ --------------------------------------------------------------------------
+  GenLoadStrAddr : charger l'adresse et la longueur d'une variable CHARACTER.
+  AX = offset, CX = char_len.
+  -------------------------------------------------------------------------- }
+Procedure GenLoadStrAddr(idx : Integer);
+Var s : TSymRef;
+Begin
+  If (idx < 1) Or (idx > sym_count) Then
+  Begin
+    EmitI2('MOV', 'AX', '0');
+    EmitI2('MOV', 'CX', '0');
+    Exit;
+  End;
+  s := sym_table^[idx];
+  EmitI2('MOV', 'CX', IntToStr(s.char_len));
+  If s.bp_offset < 0 Then
+    EmitI2('LEA', 'AX', '[BP' + IntToStr(s.bp_offset) + ']')
+  Else If s.asm_label <> '' Then
+    EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label)
+  Else
+    EmitI2('MOV', 'AX', '0');
+End;
+
+{ --------------------------------------------------------------------------
+  GenSubstrAddr : sous-chaine var(lo:hi).
+  AX = adresse + lo - 1, CX = hi - lo + 1.
+  lo et hi sont des valeurs connues a la compilation (constantes simples).
+  Si lo ou hi = 0 -> valeurs par defaut (1 ou char_len).
+  -------------------------------------------------------------------------- }
+Procedure GenSubstrAddr(idx : Integer; lo_val, hi_val : Integer);
+Var s   : TSymRef;
+    eff : Integer;   { longueur effective }
+Begin
+  If (idx < 1) Or (idx > sym_count) Then
+  Begin
+    EmitI2('MOV', 'AX', '0');
+    EmitI2('MOV', 'CX', '1');
+    Exit;
+  End;
+  s := sym_table^[idx];
+
+  { Valeurs par defaut }
+  If lo_val < 1 Then lo_val := 1;
+  If (hi_val < 1) Or (hi_val > s.char_len) Then hi_val := s.char_len;
+  eff := hi_val - lo_val + 1;
+  If eff < 0 Then eff := 0;
+
+  EmitI2('MOV', 'CX', IntToStr(eff));
+  If s.bp_offset < 0 Then
+    EmitI2('LEA', 'AX', '[BP' + IntToStr(s.bp_offset + lo_val - 1) + ']')
+  Else If s.asm_label <> '' Then
+  Begin
+    EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label);
+    If lo_val > 1 Then
+      EmitI2('ADD', 'AX', IntToStr(lo_val - 1));
+  End
+  Else
+    EmitI2('MOV', 'AX', '0');
+End;
+
+{ --------------------------------------------------------------------------
+  SaveStrOnStack : sauvegarder AX+CX sur la pile avant d'evaluer
+  le membre droit d'une concatenation.
+  Retour : PUSH AX (adresse) puis PUSH CX (longueur).
+  Apres l'eval du membre droit, la pile contient :
+    [SP+0]=CX_g [SP+2]=AX_g  [SP+4]=CX_d [SP+6]=AX_d
+  -------------------------------------------------------------------------- }
+Procedure SaveStrOnStack;
+Begin
+  EmitI1('PUSH', 'AX');   { adresse gauche }
+  EmitI1('PUSH', 'CX');   { longueur gauche }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrConcat : concatenation //.
+  Avant l'appel :
+    AX=addr_gauche CX=len_gauche (sauves sur pile par SaveStrOnStack)
+    AX=addr_droit  CX=len_droit  (dans registres)
+  Genere un buffer temporaire dans la pile puis appelle _FRT_SCAT.
+  Convention _FRT_SCAT (4 args par ref) :
+    PUSH WORD len_droit
+    PUSH WORD addr_droit
+    PUSH WORD len_gauche
+    PUSH WORD addr_gauche
+    CALL _FRT_SCAT
+    ADD SP, 8
+  Resultat dans AX (adresse du buffer interne), CX = len_gauche + len_droit.
+  -------------------------------------------------------------------------- }
+Procedure GenStrConcat;
+Begin
+  { La pile contient : [SP] = len_g, [SP+2] = addr_g }
+  { AX = addr_d, CX = len_d }
+  EmitComment('Concatenation // via _FRT_SCAT');
+  EmitI1('PUSH', 'CX');   { len_droit }
+  EmitI1('PUSH', 'AX');   { addr_droit }
+  { Recuperer gauche depuis pile : [SP+4]=len_g, [SP+6]=addr_g }
+  EmitI2('MOV', 'BX', 'SP');
+  EmitRaw('        PUSH WORD PTR [BX+6]');   { addr_gauche }
+  EmitRaw('        PUSH WORD PTR [BX+4]');   { len_gauche  }
+  EmitRaw('        CALL ' + FRT_PFX + 'SCAT');
+  EmitI2('ADD', 'SP', '8');
+  { Nettoyer les 2 mots gauche restes sur pile }
+  EmitI2('ADD', 'SP', '4');
+  { AX = adresse resultat, CX = longueur totale (retournee dans _FRT_SCAT) }
+End;
+
+{ --------------------------------------------------------------------------
+  GenStrAssign : affectation d'une expression CHARACTER dans une variable.
+  AX = addr_src, CX = len_src (dans registres).
+  Genere CALL _FRT_SCOPY(dst_addr, dst_len, src_addr, src_len).
+  _FRT_SCOPY gere la troncature et le remplissage par espaces.
+  -------------------------------------------------------------------------- }
+Procedure GenStrAssign(dst_idx : Integer);
+Var s : TSymRef;
+Begin
+  If (dst_idx < 1) Or (dst_idx > sym_count) Then Exit;
+  s := sym_table^[dst_idx];
+
+  EmitComment('Affectation CHARACTER -> ' + s.name + ' via _FRT_SCOPY');
+  EmitI1('PUSH', 'CX');                           { src_len }
+  EmitI1('PUSH', 'AX');                           { src_addr }
+  EmitI2('MOV', 'BX', IntToStr(s.char_len));
+  EmitI1('PUSH', 'BX');                           { dst_len }
+  If s.bp_offset < 0 Then
+  Begin
+    EmitI2('LEA', 'BX', '[BP' + IntToStr(s.bp_offset) + ']');
+    EmitI1('PUSH', 'BX');
+  End
+  Else
+  Begin
+    EmitI2('MOV', 'BX', 'OFFSET ' + s.asm_label);
+    EmitI1('PUSH', 'BX');
+  End;
+  EmitRaw('        CALL ' + FRT_PFX + 'SCOPY');
+  EmitI2('ADD', 'SP', '8');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCharPrimary : parser un primaire CHARACTER.
+  Reconnu :
+    - Litterale 'texte'
+    - Variable CHARACTER (scalaire ou element de tableau)
+    - Variable(lo:hi) = sous-chaine
+    - Fonctions LEN, INDEX, CHAR, ICHAR (resultat entier ou adresse)
+  Resultat : AX = adresse, CX = longueur.
+  -------------------------------------------------------------------------- }
+Procedure ParseCharPrimary;
+Var
+  vname  : TString;
+  idx    : Integer;
+  lo_val : Integer;
+  hi_val : Integer;
+  pt     : TToken;
+Begin
+  { Litterale de chaine }
+  If (cur_tok.kind = TK_STRING) Or (cur_tok.kind = TK_HOLLERITH) Then
+  Begin
+    GenStrLiteral(cur_tok.val);
+    LexNext;
+    Exit;
+  End;
+
+  { Parenthese }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;
+    ParseCharPrimary;   { recursion (pas de concatenation dans les parens) }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+    Exit;
+  End;
+
+  { Identificateur }
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ErrorMsg('Expression CHARACTER attendue, obtenu : ' + cur_tok.val);
+    EmitI2('MOV', 'AX', '0'); EmitI2('MOV', 'CX', '0');
+    LexNext;
+    Exit;
+  End;
+
+  vname := cur_tok.val;
+  LexNext;
+
+  { Fonctions intrinsèques CHARACTER }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;
+
+    If vname = 'LEN' Then
+    Begin
+      { LEN(str) -> AX = char_len de la variable }
+      If cur_tok.kind = TK_IDENT Then
+      Begin
+        idx := SymFind(cur_tok.val);
+        If idx > 0 Then
+          EmitI2('MOV', 'AX', IntToStr(sym_table^[idx].char_len))
+        Else
+          EmitI2('MOV', 'AX', '0');
+        LexNext;
+      End
+      Else
+      Begin
+        ParseCharPrimary;   { AX = addr, CX = longueur }
+        EmitI2('MOV', 'AX', 'CX');
+      End;
+      EmitI2('MOV', 'CX', '2');   { resultat = entier 2 octets }
+    End
+
+    Else If vname = 'INDEX' Then
+    Begin
+      { INDEX(str, substr) -> CALL _FRT_INDEX -> AX = position (1-based ou 0) }
+      ParseCharPrimary;              { AX=addr_str, CX=len_str }
+      EmitI1('PUSH', 'CX');
+      EmitI1('PUSH', 'AX');
+      LexExpect(',');
+      ParseCharPrimary;              { AX=addr_substr, CX=len_substr }
+      EmitI1('PUSH', 'CX');
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'INDEX');
+      EmitI2('ADD', 'SP', '8');
+      { AX = position }
+      EmitI2('MOV', 'CX', '2');
+    End
+
+    Else If vname = 'CHAR' Then
+    Begin
+      { CHAR(i) -> CALL _FRT_CHAR -> AX = adresse d'un octet temporaire }
+      ParseIntExpr;          { AX = code ASCII }
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'CHAR');
+      EmitI2('ADD', 'SP', '2');
+      EmitI2('MOV', 'CX', '1');
+    End
+
+    Else If vname = 'ICHAR' Then
+    Begin
+      { ICHAR(str) -> code ASCII du premier caractere }
+      ParseCharPrimary;
+      EmitI1('PUSH', 'CX');
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'ICHAR');
+      EmitI2('ADD', 'SP', '4');
+      EmitI2('MOV', 'CX', '2');
+    End
+
+    Else If vname = 'LNBLNK' Then
+    Begin
+      { LNBLNK(str) = longueur sans espaces finaux }
+      ParseCharPrimary;
+      EmitI1('PUSH', 'CX');
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'LNBLNK');
+      EmitI2('ADD', 'SP', '4');
+      EmitI2('MOV', 'CX', '2');
+    End
+
+    Else
+    Begin
+      { Appel de fonction CHARACTER utilisateur / non reconnu }
+      EmitComment('Appel fonction CHARACTER ' + vname);
+      ParseCharPrimary;
+      EmitI1('PUSH', 'CX');
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FP_PFX + vname);
+      EmitI2('ADD', 'SP', '4');
+    End;
+
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+    Exit;
+  End;
+
+  { Variable scalaire CHARACTER ou sous-chaine }
+  idx := SymFind(vname);
+  If idx = 0 Then idx := SymGetOrCreate(vname);
+
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    { Peut etre tableau(idx) ou sous-chaine(lo:hi) }
+    LexNext;
+    lo_val := 1; hi_val := 0;
+
+    { Detecter si c'est une sous-chaine : on regarde apres l'entier }
+    If cur_tok.kind = TK_INTEGER Then
+    Begin
+      lo_val := cur_tok.int_val;
+      LexNext;
+    End;
+
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ':') Then
+    Begin
+      { Sous-chaine : var(lo:hi) }
+      LexNext;
+      If cur_tok.kind = TK_INTEGER Then
+      Begin
+        hi_val := cur_tok.int_val;
+        LexNext;
+      End;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+      GenSubstrAddr(idx, lo_val, hi_val);
+    End
+    Else
+    Begin
+      { Acces tableau : ignorer l'indice pour l'instant (stub) }
+      EmitComment('Acces tableau CHARACTER ' + vname + '(' + IntToStr(lo_val) + ') stub');
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+      GenLoadStrAddr(idx);
+    End;
+  End
+  Else
+  Begin
+    { Variable scalaire ordinaire }
+    GenLoadStrAddr(idx);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCharExpr : expression CHARACTER avec concatenation //.
+  // est gauche-associatif.
+  Resultat : AX = adresse, CX = longueur.
+  -------------------------------------------------------------------------- }
+Procedure ParseCharExpr;
+Begin
+  ParseCharPrimary;
+
+  While (cur_tok.kind = TK_OP) And (cur_tok.val = '//') Do
+  Begin
+    LexNext;
+    SaveStrOnStack;
+    ParseCharPrimary;
+    GenStrConcat;
+  End;
+End;
+
+{ ============================================================
+  TODO 14 - TABLE DES LABELS ET INSTRUCTIONS DE BRANCHEMENT SIMPLES
+  ============================================================
+  La table des labels (lbl_table) et ses fonctions primitives
+  (LabelFind, LabelEnter, LabelMarkDefined, LabelCheckAll) sont deja
+  implementees dans TODO 04.
+  Ce TODO ajoute la generation de code :
+
+    GenNumLabel(anum)       -- emettre le label ASM FL_nnnnn:
+    GenGotoSimple(anum)     -- JMP FL_nnnnn
+    GenGotoComputed(...)    -- GOTO (n1,n2,...), i (table de sauts)
+    GenAssignedGoto(idx)    -- GOTO var (saut assigne via pointeur)
+    ParseGoto               -- parser GOTO simple, calcule, assigne
+    ParseAssign             -- parser ASSIGN n TO var
+    ParseContinue           -- instruction CONTINUE (label vide)
+    ParseStop               -- STOP [n]
+    ParsePause              -- PAUSE [n]
+
+  Backpatching : a la fin de chaque unite de programme, appeler
+  LabelCheckAll pour verifier que tous les labels references sont definis.
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  LabelGetAsm : retourner le nom ASM d'un label numerique Fortran.
+  Cree l'entree si elle n'existe pas, marque referenced = True.
+  -------------------------------------------------------------------------- }
+Function LabelGetAsm(anum : Integer) : TString;
+Var idx : Integer;
+Begin
+  idx := LabelEnter(anum);
+  If idx > 0 Then
+  Begin
+    lbl_table^[idx].referenced := True;
+    LabelGetAsm := lbl_table^[idx].asm_label;
+  End
+  Else
+    LabelGetAsm := 'FL_' + IntToStr(anum);
+End;
+
+{ --------------------------------------------------------------------------
+  GenNumLabel : emettre un label Fortran numerique (FL_nnnnn:).
+  Marque le label comme defini dans lbl_table.
+  -------------------------------------------------------------------------- }
+{ --------------------------------------------------------------------------
+  CloseDo : emettre le code de fermeture de la boucle DO au niveau 'depth'.
+  Pile en entree : [SP]=step, [SP+2]=niter.
+  1. Incrementer la variable de boucle de step.
+  2. Decrementer niter ; si > 0, retourner en haut de boucle.
+  3. Depiler step+niter ; emettre label de fin.
+  -------------------------------------------------------------------------- }
+Procedure CloseDo(depth : Integer);
+Var vname : TString;
+Begin
+  vname := sym_table^[do_var_si[depth]].name;
+  EmitComment('DO: fin iteration ' + vname);
+  { Incrementer la variable de boucle par step }
+  EmitI2('MOV', 'BX', 'WORD PTR [SP]');       { BX = step }
+  GenLoadInt(do_var_si[depth]);                { AX = var }
+  EmitI2('ADD', 'AX', 'BX');                  { AX = var + step }
+  GenStoreInt(do_var_si[depth]);               { var = AX }
+  { Decrementer le compteur d'iterations }    
+  EmitRaw('        DEC WORD PTR [SP+2]');      { niter-- }
+  EmitI1('JNZ', do_top_lbl[depth]);           { niter > 0 : reboucler }
+  EmitI2('ADD', 'SP', '4');                   { depiler niter + step }
+  EmitLabel(do_end_lbl[depth]);               { label de fin de boucle }
+  Dec(do_depth);
+End;
+
+Procedure GenNumLabel(anum : Integer);
+Var di : Integer;
+Begin
+  { Verifier si ce label ferme un ou plusieurs DO imbrique(s) }
+  While (do_depth > 0) And (do_lbl_num[do_depth] = anum) Do
+    CloseDo(do_depth);
+  LabelMarkDefined(anum, log_lineno);
+  EmitLabel(LabelGetAsm(anum));
+End;
+
+{ --------------------------------------------------------------------------
+  GenGotoSimple : emettre JMP FL_nnnnn.
+  -------------------------------------------------------------------------- }
+Procedure GenGotoSimple(anum : Integer);
+Begin
+  EmitComment('GOTO ' + IntToStr(anum));
+  EmitI1('JMP', LabelGetAsm(anum));
+End;
+
+{ --------------------------------------------------------------------------
+  GenGotoComputed : GOTO (n1, n2, ..., nk), i
+  Algorithme :
+    1. Charger i dans AX (1-based)
+    2. DEC AX ; CMP AX, k ; JAE lbl_done (hors bornes : pas de saut)
+    3. Multiplier l'index par 2 (chaque pointeur de table = 1 DW = 2 octets)
+    4. En fait on utilise une table de DW d'adresses patchees
+    5. MOV BX, AX ; SHL BX, 1 (×2 si on mettrrait des NEAR ptr)
+       mais MASM ne permet pas de table JMP inline facilement.
+    Strategie utilisee ici : serie de CMP AX, k / JE FL_nk.
+    Avantage : ne requiert pas de segment special, fonctionne en SMALL.
+  -------------------------------------------------------------------------- }
+Procedure GenGotoComputed(Var nums : Array of Integer; count : Integer;
+                          var_idx : Integer);
+Var
+  i      : Integer;
+  lbl_done : TString;
+Begin
+  lbl_done := GenBranchLabel;
+  EmitComment('GOTO calcule (' + IntToStr(count) + ' cibles)');
+
+  { Charger l'indice dans AX }
+  GenLoadInt(var_idx);
+
+  { Pour chaque cible, CMP AX, i ; JE FL_ni }
+  For i := 0 To count - 1 Do
+  Begin
+    EmitI2('CMP', 'AX', IntToStr(i + 1));
+    EmitI1('JE', LabelGetAsm(nums[i]));
+  End;
+  { Cas hors bornes : tomber en avance }
+  EmitLabel(lbl_done);
+End;
+
+{ --------------------------------------------------------------------------
+  GenAssignedGoto : GOTO var  (saut assigne via ASSIGN prealable).
+  La variable contient l'offset 16 bits du label ASM (stocke par ASSIGN).
+  Technique : JMP [var]  (indirect via memoire).
+  -------------------------------------------------------------------------- }
+Procedure GenAssignedGoto(var_idx : Integer);
+Var s : TSymRef;
+Begin
+  EmitComment('GOTO assigne (ASSIGN ... TO var)');
+  If (var_idx < 1) Or (var_idx > sym_count) Then
+  Begin
+    WarnMsg('GenAssignedGoto : variable inconnue');
+    Exit;
+  End;
+  s := sym_table^[var_idx];
+  If s.bp_offset < 0 Then
+    EmitRaw('        JMP WORD PTR [BP' + IntToStr(s.bp_offset) + ']')
+  Else If s.asm_label <> '' Then
+    EmitRaw('        JMP WORD PTR [' + s.asm_label + ']')
+  Else
+    WarnMsg('GenAssignedGoto : variable sans adresse ' + s.name);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseGoto : parser et generer un enonce GOTO.
+  Formes F77 :
+    GOTO n                       -- saut simple
+    GOTO (n1, n2, ..., nk), i   -- saut calcule
+    GOTO v                       -- saut assigne (v est une variable entiere)
+    GOTO v, (n1, ..., nk)        -- saut assigne avec liste (variante)
+  Le mot-cle GOTO est deja consomme avant l'appel.
+  -------------------------------------------------------------------------- }
+Procedure ParseGoto;
+Var
+  nums     : Array[0..255] of Integer;
+  count    : Integer;
+  anum     : Integer;
+  var_idx  : Integer;
+  vname    : TString;
+Begin
+  { Saut calcule : GOTO (n1, ...), i }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;
+    count := 0;
+    While (cur_tok.kind = TK_INTEGER) Or
+          ((cur_tok.kind = TK_LABEL) And (count < 256)) Do
+    Begin
+      If cur_tok.kind = TK_INTEGER Then nums[count] := cur_tok.int_val
+      Else nums[count] := cur_tok.lbl_num;
+      Inc(count);
+      LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    End;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+    { virgule optionnelle }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    { variable d'indice }
+    If cur_tok.kind = TK_IDENT Then
+    Begin
+      var_idx := SymFind(cur_tok.val);
+      If var_idx = 0 Then var_idx := SymGetOrCreate(cur_tok.val);
+      LexNext;
+    End
+    Else
+    Begin
+      ErrorMsg('Variable d''index attendue dans GOTO calcule');
+      var_idx := 0;
+      If cur_tok.kind = TK_INTEGER Then
+      Begin
+        var_idx := 0;
+        LexNext;
+      End;
+    End;
+    GenGotoComputed(nums, count, var_idx);
+    Exit;
+  End;
+
+  { Saut assigne : GOTO var ou GOTO var, (liste) }
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    vname   := cur_tok.val;
+    var_idx := SymFind(vname);
+    If var_idx = 0 Then var_idx := SymGetOrCreate(vname);
+    LexNext;
+    { Eventuellement une liste optionnelle (ignoree dans la norme) }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+    Begin
+      LexNext;  { consommer , }
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+      Begin
+        LexNext;
+        While Not ((cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')'))
+          And (cur_tok.kind <> TK_NEWLINE)
+          And (cur_tok.kind <> TK_EOF) Do
+          LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+      End;
+    End;
+    GenAssignedGoto(var_idx);
+    Exit;
+  End;
+
+  { Saut simple : GOTO n }
+  If cur_tok.kind = TK_INTEGER Then
+    anum := cur_tok.int_val
+  Else If cur_tok.kind = TK_LABEL Then
+    anum := cur_tok.lbl_num
+  Else
+  Begin
+    ErrorMsg('Numero d''etiquette attendu apres GOTO, obtenu : ' + cur_tok.val);
+    anum := 0;
+  End;
+  LexNext;
+  If anum > 0 Then GenGotoSimple(anum);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseAssign : ASSIGN n TO var.
+  Stocke l'offset du label FL_n dans la variable entiere var.
+  ASSIGN n TO v == MOV WORD PTR [v], OFFSET FL_n
+  -------------------------------------------------------------------------- }
+Procedure ParseAssign;
+Var
+  anum    : Integer;
+  var_idx : Integer;
+  s       : TSymRef;
+Begin
+  { Lire le numero de label }
+  If cur_tok.kind = TK_INTEGER Then
+    anum := cur_tok.int_val
+  Else If cur_tok.kind = TK_LABEL Then
+    anum := cur_tok.lbl_num
+  Else
+  Begin
+    ErrorMsg('Numero d''etiquette attendu dans ASSIGN');
+    anum := 0;
+  End;
+  LexNext;
+
+  { Consommer TO }
+  If (cur_tok.kind = TK_IDENT) And (cur_tok.val = 'TO') Then
+    LexNext
+  Else
+    ErrorMsg('Attendu TO dans ASSIGN n TO var');
+
+  { Lire la variable }
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ErrorMsg('Variable attendue dans ASSIGN ... TO var');
+    Exit;
+  End;
+  var_idx := SymFind(cur_tok.val);
+  If var_idx = 0 Then var_idx := SymGetOrCreate(cur_tok.val);
+  LexNext;
+
+  If (anum > 0) And (var_idx > 0) Then
+  Begin
+    EmitComment('ASSIGN ' + IntToStr(anum) + ' TO ' + sym_table^[var_idx].name);
+    s := sym_table^[var_idx];
+    If s.bp_offset < 0 Then
+      EmitI2('MOV', 'WORD PTR [BP' + IntToStr(s.bp_offset) + ']',
+             'OFFSET ' + LabelGetAsm(anum))
+    Else If s.asm_label <> '' Then
+      EmitI2('MOV', 'WORD PTR [' + s.asm_label + ']',
+             'OFFSET ' + LabelGetAsm(anum))
+    Else
+      WarnMsg('ASSIGN : variable sans adresse ' + s.name);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseContinue : instruction vide.
+  Le label eventuel a deja ete emis par le dispatcher principal.
+  On ne gene aucune instruction.
+  -------------------------------------------------------------------------- }
+Procedure ParseContinue;
+Begin
+  EmitComment('CONTINUE');
+  { Aucune instruction : juste un point d'ancrage pour l'etiquette }
+  EmitI0('NOP');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseStop : STOP [chaine | entier].
+  STOP         -> CALL _FRT_STOP_0
+  STOP n       -> MOV AX, n ; PUSH AX ; CALL _FRT_STOP_N ; ADD SP, 2
+  STOP 'msg'   -> afficher msg puis exit
+  -------------------------------------------------------------------------- }
+Procedure ParseStop;
+Var n : Integer;
+Begin
+  If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then
+  Begin
+    EmitComment('STOP');
+    EmitRaw('        CALL ' + FRT_PFX + 'STOP_0');
+    Exit;
+  End;
+
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    n := cur_tok.int_val;
+    LexNext;
+    EmitComment('STOP ' + IntToStr(n));
+    EmitI2('MOV', 'AX', IntToStr(n));
+    EmitI1('PUSH', 'AX');
+    EmitRaw('        CALL ' + FRT_PFX + 'STOP_N');
+    EmitI2('ADD', 'SP', '2');
+    Exit;
+  End;
+
+  If cur_tok.kind = TK_STRING Then
+  Begin
+    EmitComment('STOP ''' + cur_tok.val + '''');
+    GenStrLiteral(cur_tok.val);   { AX=addr, CX=len }
+    EmitI1('PUSH', 'CX');
+    EmitI1('PUSH', 'AX');
+    EmitRaw('        CALL ' + FRT_PFX + 'STOP_S');
+    EmitI2('ADD', 'SP', '4');
+    LexNext;
+    Exit;
+  End;
+
+  { Ignorer les autres formes }
+  EmitRaw('        CALL ' + FRT_PFX + 'STOP_0');
+  LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  ParsePause : PAUSE [chaine | entier].
+  Affiche un message et attend une touche (DOS INT 21h 08h).
+  -------------------------------------------------------------------------- }
+Procedure ParsePause;
+Var n : Integer;
+Begin
+  If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then
+  Begin
+    EmitComment('PAUSE');
+    EmitRaw('        CALL ' + FRT_PFX + 'PAUSE');
+    Exit;
+  End;
+
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    n := cur_tok.int_val;
+    LexNext;
+    EmitComment('PAUSE ' + IntToStr(n));
+    EmitI2('MOV', 'AX', IntToStr(n));
+    EmitI1('PUSH', 'AX');
+    EmitRaw('        CALL ' + FRT_PFX + 'PAUSE_N');
+    EmitI2('ADD', 'SP', '2');
+    Exit;
+  End;
+
+  If cur_tok.kind = TK_STRING Then
+  Begin
+    EmitComment('PAUSE ''' + cur_tok.val + '''');
+    GenStrLiteral(cur_tok.val);
+    EmitI1('PUSH', 'CX');
+    EmitI1('PUSH', 'AX');
+    EmitRaw('        CALL ' + FRT_PFX + 'PAUSE_S');
+    EmitI2('ADD', 'SP', '4');
+    LexNext;
+    Exit;
+  End;
+
+  EmitRaw('        CALL ' + FRT_PFX + 'PAUSE');
+  LexNext;
+End;
+
+{ ============================================================
+  TODO 16 - BOUCLE DO
+  ============================================================
+  Syntaxe F77 :
+    DO label var = debut, fin [, pas]
+      corps
+  label [CONTINUE ou autre instruction]
+
+  Convention pile durant le corps de la boucle :
+    [SP]    = pas  (word signe)
+    [SP+2]  = niter (word signe, decremente a chaque iteration)
+  niter = MAX( INT((fin - debut + pas) / pas), 0 )
+  Si niter <= 0 : sauter directement a lbl_end (boucle vide).
+  ============================================================ }
+
+Procedure ParseDo;
+Var
+  lbl_num  : Integer;    { etiquette F77 de fin de boucle    }
+  lbl_top  : TString;   { label ASM en haut de boucle       }
+  lbl_end  : TString;   { label ASM de fin de boucle        }
+  var_idx  : Integer;   { index sym de la variable de ctrl  }
+  var_name : TString;
+Begin
+  { Verifier la profondeur d'imbrication }
+  If do_depth >= MAX_SCOPE Then
+  Begin
+    ErrorMsg('DO trop profondement imbrique (max ' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+
+  { Lire l'etiquette numerique F77 }
+  If cur_tok.kind <> TK_INTEGER Then
+  Begin
+    ErrorMsg('DO : etiquette numerique attendue');
+    Exit;
+  End;
+  lbl_num := cur_tok.int_val;
+  LexNext;
+
+  { Virgule optionnelle entre etiquette et variable (extension commune) }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+
+  { Lire la variable de controle }
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ErrorMsg('DO : identifiant attendu pour la variable de controle');
+    Exit;
+  End;
+  var_name := cur_tok.val;
+  LexNext;
+  var_idx := SymGetOrCreate(var_name);
+  If sym_table^[var_idx].dtype = DT_NONE Then
+    sym_table^[var_idx].dtype := DT_INTEGER;
+
+  LexExpect('=');
+
+  { Evaluer la valeur initiale et initialiser la variable }
+  EmitComment('DO: init variable ' + var_name);
+  ParseIntExpr;              { AX = debut }
+  GenStoreInt(var_idx);      { var = debut }
+
+  LexExpect(',');
+
+  { Evaluer la borne superieure et la pousser temporairement }
+  ParseIntExpr;              { AX = fin }
+  EmitI1('PUSH', 'AX');     { [SP] = fin }
+
+  { Evaluer le pas (ou 1 par defaut) }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then
+  Begin
+    LexNext;
+    ParseIntExpr;            { AX = pas }
+  End
+  Else
+    EmitI2('MOV', 'AX', '1');
+  EmitI1('PUSH', 'AX');     { [SP]=pas, [SP+2]=fin }
+
+  { Calcul de niter = MAX(INT((fin-debut+pas)/pas), 0) }
+  EmitComment('DO: calcul niter = (fin-debut+pas)/pas');
+  EmitI2('MOV', 'BX', 'WORD PTR [SP]');    { BX = pas }
+  GenLoadInt(var_idx);                      { AX = var (= debut) }
+  EmitI2('MOV', 'CX', 'AX');               { CX = debut }
+  EmitI2('MOV', 'AX', 'WORD PTR [SP+2]'); { AX = fin }
+  EmitI2('SUB', 'AX', 'CX');               { AX = fin - debut }
+  EmitI2('ADD', 'AX', 'BX');               { AX = fin - debut + pas }
+  EmitRaw('        CWD');
+  EmitI1('IDIV', 'BX');                    { AX = niter }
+
+  { Preparer les labels }
+  lbl_end := GenBranchLabel;
+  lbl_top := GenBranchLabel;
+
+  { Si niter <= 0 : boucle vide, sauter a la fin }
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JLE', lbl_end);
+
+  { Remplacer fin sur la pile par niter : [SP+2]=niter, [SP]=pas }
+  EmitI2('MOV', 'WORD PTR [SP+2]', 'AX'); { niter }
+
+  { Enregistrer le contexte dans la pile DO }
+  Inc(do_depth);
+  do_top_lbl[do_depth] := lbl_top;
+  do_end_lbl[do_depth] := lbl_end;
+  do_var_si[do_depth]  := var_idx;
+  do_lbl_num[do_depth] := lbl_num;
+
+  { Marquer l'etiquette comme DO_END dans la table des labels }
+  LabelGetAsm(lbl_num);   { s'assurer qu'elle est enregistree }
+
+  { Emettre le label en haut de boucle }
+  EmitLabel(lbl_top);
+End;
+
+{ ============================================================
+  TODO 15 - INSTRUCTION IF ARITHMETIQUE ET IF LOGIQUE
+  ============================================================
+  Trois formes F77 :
+    IF arithmetique  : IF (expr_arith) n1, n2, n3
+    IF logique       : IF (expr_log) instruction_simple
+    IF bloc          : IF (expr_log) THEN
+                         ...
+                       [ELSEIF (expr_log) THEN
+                         ...]...
+                       [ELSE
+                         ...]
+                       ENDIF
+
+  Convention :
+    .TRUE./-1/non-zero -> branche prise
+    .FALSE./0 -> branche non prise
+  Pile de blocs IF :
+    if_depth                -- niveau d'imbrication courant (1..MAX_SCOPE)
+    if_else_lbl[1..depth]  -- label du ELSE courant
+    if_end_lbl [1..depth]  -- label du ENDIF courant
+  ============================================================ }
+
+{ Forward pour ParseStatement (implementee en TODO 17) }
+Procedure ParseStatement; Forward;
+
+{ Forward pour ParseFmtIoList (implementee en TODO 18) }
+Procedure ParseFmtIoList(is_write : Boolean; unit_num : Integer;
+                          fmt_anum : Integer; Const fmt_str : TString); Forward;
+
+{ Forward pour ParseFormatStmt (implementee en TODO 18) }
+Procedure ParseFormatStmt(fmt_lbl : Integer); Forward;
+
+{ Forwards pour les E/S fichiers (implementees en TODO 19) }
+Procedure ParseOpen; Forward;
+Procedure ParseClose; Forward;
+Procedure ParseSimpleIo(Const frt_suffix : TString); Forward;
+Procedure ParseInquire; Forward;
+
+{ Forwards pour SUBROUTINE/CALL/END (implementees en TODO 20) }
+Procedure ParseSubroutineDecl; Forward;
+Procedure ParseCallStmt; Forward;
+Procedure ParseEnd; Forward;
+
+{ Forward pour FUNCTION (implementee en TODO 21) }
+Procedure ParseFunctionDecl(ret_dtype : TDataType); Forward;
+
+{ --------------------------------------------------------------------------
+  ParseIfArith : IF (expr) n1, n2, n3
+  Le mot-cle IF et la ( sont deja consommes.
+  expr est evaluee, resultat dans AX.
+  CMP AX, 0 : JL -> n1, JE -> n2, JG -> n3.
+  -------------------------------------------------------------------------- }
+Procedure ParseIfArith(n1, n2, n3 : Integer);
+Begin
+  EmitComment('IF arithmetique -> n1=' + IntToStr(n1)
+              + ' n2=' + IntToStr(n2) + ' n3=' + IntToStr(n3));
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JL',  LabelGetAsm(n1));
+  EmitI1('JE',  LabelGetAsm(n2));
+  EmitI1('JG',  LabelGetAsm(n3)); { ou JMP n3 -> meme chose si AX>0 }
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIfLogic : IF (cond) instruction_simple
+  cond dans AX. Test: CMP AX, 0 ; JE lbl_skip ; instruction ; lbl_skip:.
+  -------------------------------------------------------------------------- }
+Procedure ParseIfLogic;
+Var lbl_skip : TString;
+Begin
+  lbl_skip := GenBranchLabel;
+  EmitComment('IF logique');
+  EmitI2('CMP', 'AX', '0');
+  EmitI1('JE', lbl_skip);
+  { Instruction inline (une seule) }
+  ParseStatement;
+  EmitLabel(lbl_skip);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIfBlock : traiter le corps d'un IF bloc depuis THEN jusqu'a ENDIF.
+  La condition est deja evaluee et testee (JE lbl_else).
+  Strategy : on parse les statements du corps jusqu'a trouver ELSE,
+  ELSEIF ou ENDIF en debut de ligne logique.
+  -------------------------------------------------------------------------- }
+Procedure ParseIfBlock;
+Var
+  lbl_else : TString;
+  lbl_end  : TString;
+  kw       : TString;
+Begin
+  If if_depth >= MAX_SCOPE Then
+  Begin
+    ErrorMsg('IF trop profondement imbrique (max ' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+
+  lbl_else := GenBranchLabel;   { label du ELSE ou ENDIF si pas de ELSE }
+  lbl_end  := GenBranchLabel;   { label du ENDIF }
+
+  Inc(if_depth);
+  if_else_lbl[if_depth] := lbl_else;
+  if_end_lbl[if_depth]  := lbl_end;
+
+  { Sauter vers ELSE si la condition est fausse (le JE a ete emis par ParseIf) }
+  { Le JE est sur lbl_else }
+
+  { Parser les statements du corps THEN...ELSE/ELSEIF/ENDIF }
+  While (cur_tok.kind <> TK_EOF) Do
+  Begin
+    { Avancer jusqu'au prochain token significatif en debut de ligne }
+    While (cur_tok.kind = TK_NEWLINE) Do LexNext;
+    If cur_tok.kind = TK_EOF Then Break;
+
+    kw := cur_tok.val;
+
+    If kw = 'ELSEIF' Then
+    Begin
+      { Fermer le bloc precedent }
+      EmitI1('JMP', lbl_end);
+      EmitLabel(lbl_else);
+      { Nouveau label else }
+      lbl_else := GenBranchLabel;
+      if_else_lbl[if_depth] := lbl_else;
+
+      LexNext;  { consommer ELSEIF }
+      LexExpect('(');
+      ParseLogExpr;      { condition dans AX }
+      LexExpect(')');
+      { Consommer THEN }
+      If cur_tok.val = 'THEN' Then LexNext;
+      EmitI2('CMP', 'AX', '0');
+      EmitI1('JE', lbl_else);
+      Continue;
+    End;
+
+    If kw = 'ELSE' Then
+    Begin
+      EmitI1('JMP', lbl_end);
+      EmitLabel(lbl_else);
+      lbl_else := lbl_end;  { il n'y a pas de ELSE apres le ELSE }
+      if_else_lbl[if_depth] := lbl_end;
+      LexNext;  { consommer ELSE }
+      Continue;
+    End;
+
+    If kw = 'ENDIF' Then
+    Begin
+      EmitLabel(lbl_else);  { au cas ou pas de ELSE }
+      EmitLabel(lbl_end);
+      Dec(if_depth);
+      LexNext;  { consommer ENDIF }
+      Break;
+    End;
+
+    { Statement ordinaire du corps du IF }
+    ParseStatement;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseIf : dispatcher principal pour l'enonce IF.
+  Le mot-cle IF est deja consomme.
+  Syntaxe commune : IF ( expr ) ...
+  Apres la ), la suite determine la forme :
+    - entier, entier, entier         -> IF arithmetique
+    - THEN (fin de ligne)            -> IF bloc
+    - autre                          -> IF logique (instruction inline)
+  -------------------------------------------------------------------------- }
+Procedure ParseIf;
+Var
+  lbl_else : TString;
+  n1, n2, n3 : Integer;
+Begin
+  LexExpect('(');
+  { Tenter d'abord une expression logique/arithmetique }
+  ParseLogExpr;   { resultat dans AX - gere entier ET logique }
+  LexExpect(')');
+
+  { Regarder la suite }
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    { IF arithmetique : 3 labels }
+    n1 := cur_tok.int_val; LexNext;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    n2 := cur_tok.int_val; LexNext;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    n3 := cur_tok.int_val; LexNext;
+    ParseIfArith(n1, n2, n3);
+    Exit;
+  End;
+
+  If cur_tok.val = 'THEN' Then
+  Begin
+    { IF bloc : condition dans AX, evaluer vers lbl_else }
+    lbl_else := '';
+    LexNext;  { consommer THEN }
+    { Consommer la fin de ligne }
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+    { Emettre le saut conditionnel vers le ELSE/ENDIF }
+    lbl_else := GenBranchLabel;
+    if_depth := if_depth;  { sera incremente dans ParseIfBlock }
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JE', lbl_else);
+    { Pousser les labels dans la pile avant d'appeler ParseIfBlock }
+    If if_depth < MAX_SCOPE Then
+    Begin
+      Inc(if_depth);
+      if_else_lbl[if_depth] := lbl_else;
+      if_end_lbl[if_depth]  := GenBranchLabel;
+    End;
+
+    { Parser le corps du IF bloc en boucle }
+    While (cur_tok.kind <> TK_EOF) Do
+    Begin
+      While cur_tok.kind = TK_NEWLINE Do LexNext;
+      If cur_tok.kind = TK_EOF Then Break;
+
+      If cur_tok.val = 'ELSE' Then
+      Begin
+        EmitI1('JMP', if_end_lbl[if_depth]);
+        EmitLabel(if_else_lbl[if_depth]);
+        LexNext;  { consommer ELSE }
+        { ELSE IF ou ELSE tout court ? }
+        If cur_tok.val = 'IF' Then
+        Begin
+          LexNext;  { consommer IF }
+          LexExpect('(');
+          ParseLogExpr;
+          LexExpect(')');
+          If cur_tok.val = 'THEN' Then LexNext;
+          { Nouveau label else }
+          if_else_lbl[if_depth] := GenBranchLabel;
+          EmitI2('CMP', 'AX', '0');
+          EmitI1('JE', if_else_lbl[if_depth]);
+          Continue;
+        End;
+        { ELSE seul : nothing to do, fall through }
+        Continue;
+      End;
+
+      If (cur_tok.val = 'ELSEIF') Then
+      Begin
+        EmitI1('JMP', if_end_lbl[if_depth]);
+        EmitLabel(if_else_lbl[if_depth]);
+        LexNext;  { consommer ELSEIF }
+        LexExpect('(');
+        ParseLogExpr;
+        LexExpect(')');
+        If cur_tok.val = 'THEN' Then LexNext;
+        if_else_lbl[if_depth] := GenBranchLabel;
+        EmitI2('CMP', 'AX', '0');
+        EmitI1('JE', if_else_lbl[if_depth]);
+        Continue;
+      End;
+
+      If (cur_tok.val = 'ENDIF') Then
+      Begin
+        EmitLabel(if_else_lbl[if_depth]);  { label ELSE non utilise si pas de ELSE }
+        EmitLabel(if_end_lbl[if_depth]);
+        Dec(if_depth);
+        LexNext;  { consommer ENDIF }
+        Break;
+      End;
+
+      ParseStatement;
+    End;
+    Exit;
+  End;
+
+  { IF logique : instruction inline }
+  ParseIfLogic;
+End;
+
+{ ============================================================
+  TODO 17 - AFFECTATION ET E/S SIMPLES
+  ============================================================
+  Affectation scalaire et tableaux (calcul d'adresse colonne-major F77).
+  PRINT *, liste  ->  _FRT_PRINT_I / _FRT_PRINT_R / _FRT_PRINT_L /
+                      _FRT_PRINT_S / _FRT_PRINT_NL
+  READ  *, liste  ->  _FRT_READ_I  / _FRT_READ_R
+  WRITE(6,*) liste  : equivalent PRINT *
+  READ (5,*) liste  : equivalent READ *
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  PeekExprType : heuristique de type a partir du token courant.
+  -------------------------------------------------------------------------- }
+Function PeekExprType : TDataType;
+Var si : Integer;
+Begin
+  PeekExprType := DT_INTEGER;
+  Case cur_tok.kind Of
+    TK_REAL    : PeekExprType := DT_REAL;
+    TK_STRING  : PeekExprType := DT_CHARACTER;
+    TK_LOGICAL : PeekExprType := DT_LOGICAL;
+    TK_IDENT :
+    Begin
+      si := SymFind(cur_tok.val);
+      If si > 0 Then PeekExprType := sym_table^[si].dtype;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  GenPrintItem : evaluer une expression et emettre l appel _FRT_PRINT_x.
+  -------------------------------------------------------------------------- }
+Procedure GenPrintItem;
+Var dt : TDataType;
+Begin
+  dt := PeekExprType;
+  Case dt Of
+    DT_REAL, DT_DOUBLE :
+    Begin
+      ParseRealExpr;
+      EmitI1('PUSH', 'DX');
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'PRINT_R');
+      EmitI2('ADD', 'SP', '4');
+    End;
+    DT_LOGICAL :
+    Begin
+      ParseLogExpr;
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'PRINT_L');
+      EmitI2('ADD', 'SP', '2');
+    End;
+    DT_CHARACTER :
+    Begin
+      ParseCharExpr;            { AX=ptr, CX=len }
+      EmitI1('PUSH', 'CX');
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'PRINT_S');
+      EmitI2('ADD', 'SP', '4');
+    End;
+    Else
+    Begin
+      ParseIntExpr;
+      EmitI1('PUSH', 'AX');
+      EmitRaw('        CALL ' + FRT_PFX + 'PRINT_I');
+      EmitI2('ADD', 'SP', '2');
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParsePrintStar : emettre la liste d une instruction PRINT * / WRITE(6,*).
+  Appelant : a deja consomme le format (* ou num) et la virgule.
+  -------------------------------------------------------------------------- }
+Procedure ParsePrintStar;
+Begin
+  EmitComment('PRINT *');
+  If (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Then
+  Begin
+    GenPrintItem;
+    While (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Do
+    Begin
+      LexNext;
+      If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then Break;
+      GenPrintItem;
+    End;
+  End;
+  EmitRaw('        CALL ' + FRT_PFX + 'PRINT_NL');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseReadItem : lire une valeur dans une variable scalaire depuis stdin.
+  -------------------------------------------------------------------------- }
+Procedure ParseReadItem;
+Var si : Integer;
+    nm : TString;
+    s  : TSymRef;
+Begin
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    WarnMsg('READ * : identifiant attendu, ' + cur_tok.val + ' trouve');
+    LexNext;
+    Exit;
+  End;
+  nm := cur_tok.val;
+  LexNext;
+  si := SymGetOrCreate(nm);
+  If sym_table^[si].dtype = DT_NONE Then
+    sym_table^[si].dtype := DT_INTEGER;
+  s := sym_table^[si];
+  { Pousser l adresse de la variable }
+  If s.bp_offset < 0 Then
+    EmitRaw('        LEA AX, [BP' + IntToStr(s.bp_offset) + ']')
+  Else If s.asm_label <> '' Then
+    EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label)
+  Else
+  Begin
+    WarnMsg('READ * : variable sans adresse - ' + nm);
+    Exit;
+  End;
+  EmitI1('PUSH', 'AX');
+  Case s.dtype Of
+    DT_REAL, DT_DOUBLE :
+    Begin
+      EmitRaw('        CALL ' + FRT_PFX + 'READ_R');
+      EmitI2('ADD', 'SP', '2');
+    End;
+    Else
+    Begin
+      EmitRaw('        CALL ' + FRT_PFX + 'READ_I');
+      EmitI2('ADD', 'SP', '2');
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseReadStar : traiter la liste d une READ * / READ(5,*).
+  Appelant : a deja consomme le format et la virgule.
+  -------------------------------------------------------------------------- }
+Procedure ParseReadStar;
+Begin
+  EmitComment('READ *');
+  If (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Then
+  Begin
+    ParseReadItem;
+    While (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Do
+    Begin
+      LexNext;
+      If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then Break;
+      ParseReadItem;
+    End;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseAssignStmt : var [(indices)] = expr
+  cur_tok doit etre sur l identificateur de la lvalue.
+  -------------------------------------------------------------------------- }
+Procedure ParseAssignStmt;
+Var
+  nm     : TString;
+  si     : Integer;
+  s      : TSymRef;
+  lhs_dt : TDataType;
+  rhs_dt : TDataType;
+  is_arr : Boolean;
+  stride : Integer;
+  di     : Integer;
+Begin
+  nm := cur_tok.val;
+  LexNext;       { consommer le nom }
+
+  si := SymGetOrCreate(nm);
+  If sym_table^[si].dtype = DT_NONE Then
+    sym_table^[si].dtype := DT_INTEGER;
+  s      := sym_table^[si];
+  lhs_dt := s.dtype;
+  is_arr := False;
+
+  { Tableau : parser les indices, calculer l offset colonne-major dans BX }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    is_arr := True;
+    LexNext;        { consommer ( }
+    EmitComment('Adresse tableau ' + nm);
+    EmitI2('MOV', 'BX', '0');
+    stride := 1;
+    For di := 1 To s.ndim Do
+    Begin
+      ParseIntExpr;                                          { AX = indice }
+      EmitI2('SUB', 'AX', IntToStr(s.dims[di].lb));         { AX -= lb    }
+      If stride > 1 Then
+      Begin
+        EmitI2('MOV', 'CX', IntToStr(stride));
+        EmitRaw('        IMUL CX');
+      End;
+      EmitI2('ADD', 'BX', 'AX');
+      stride := stride * (s.dims[di].ub - s.dims[di].lb + 1);
+      If di < s.ndim Then
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    End;
+    { BX = index element. Multiplier par type_size. }
+    If s.type_size = 2 Then
+      EmitI2('SHL', 'BX', '1')
+    Else If s.type_size = 4 Then
+    Begin
+      EmitI2('SHL', 'BX', '1');
+      EmitI2('SHL', 'BX', '1');
+    End
+    Else If s.type_size > 2 Then
+    Begin
+      EmitI2('MOV', 'CX', IntToStr(s.type_size));
+      EmitRaw('        XCHG AX, BX');
+      EmitRaw('        IMUL CX');
+      EmitRaw('        XCHG AX, BX');
+    End;
+    LexExpect(')');
+    EmitI1('PUSH', 'BX');   { sauvegarder l offset en octets }
+  End;
+
+  LexExpect('=');
+
+  { Evaluer le RHS avec conversion de type si necessaire }
+  rhs_dt := PeekExprType;
+  Case lhs_dt Of
+    DT_REAL, DT_DOUBLE :
+    Begin
+      If rhs_dt In [DT_REAL, DT_DOUBLE] Then
+        ParseRealExpr           { DX:AX }
+      Else
+      Begin
+        ParseIntExpr;           { AX }
+        GenIntToReal;           { DX:AX }
+      End;
+    End;
+    DT_LOGICAL : ParseLogExpr;  { AX }
+    DT_CHARACTER :
+    Begin
+      If Not is_arr Then
+      Begin
+        ParseCharExpr;          { AX=ptr, CX=len }
+        GenStrAssign(si);
+      End
+      Else
+        WarnMsg('Affectation tableau CHARACTER non supportee');
+      Exit;
+    End;
+    Else { DT_INTEGER }
+    Begin
+      If rhs_dt In [DT_REAL, DT_DOUBLE] Then
+      Begin
+        ParseRealExpr;          { DX:AX }
+        GenRealToInt;           { AX }
+      End
+      Else
+        ParseIntExpr;           { AX }
+    End;
+  End;
+
+  { Stocker le resultat }
+  If is_arr Then
+  Begin
+    EmitI1('POP', 'BX');    { BX = offset en octets }
+    If s.asm_label <> '' Then
+    Begin
+      Case lhs_dt Of
+        DT_REAL, DT_DOUBLE :
+        Begin
+          EmitI2('MOV', 'WORD PTR [' + s.asm_label + '+BX]', 'AX');
+          EmitI2('ADD', 'BX', '2');
+          EmitI2('MOV', 'WORD PTR [' + s.asm_label + '+BX]', 'DX');
+        End;
+        Else
+          EmitI2('MOV', 'WORD PTR [' + s.asm_label + '+BX]', 'AX');
+      End;
+    End
+    Else
+      WarnMsg('Tableau argument formel : affectation indirecte non supportee');
+  End
+  Else
+  Begin
+    Case lhs_dt Of
+      DT_REAL, DT_DOUBLE : GenStoreReal(si);
+      Else                  GenStoreInt(si);
+    End;
+  End;
+End;
+
+{ ============================================================
+  ParseStatement - implementation complete (remplace le stub TODO 15)
+  Dispatcher principal de tous les enonces F77.
+  ============================================================ }
+Procedure ParseStatement;
+Var
+  anum    : Integer;
+  kw      : TString;
+  is_star : Boolean;
+  tmp_int : Integer;
+  fstr    : TString;
+  rfstr   : TString;
+  wfstr   : TString;
+  rfmt    : Integer;
+  wfmt    : Integer;
+Begin
+  { Ignorer les lignes vides }
+  While cur_tok.kind = TK_NEWLINE Do LexNext;
+  If cur_tok.kind = TK_EOF Then Exit;
+
+  { Etiquette numerique en debut d enonce (ex : 10 CONTINUE) }
+  last_stmt_lbl := 0;
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    anum := cur_tok.int_val;
+    last_stmt_lbl := anum;
+    LexNext;
+    GenNumLabel(anum);
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+    If (cur_tok.kind = TK_EOF) Or (cur_tok.kind = TK_NEWLINE) Then Exit;
+  End;
+
+  kw := cur_tok.val;
+
+  { ---- Mots-cles deja implementes ---- }
+  If kw = 'IF'       Then Begin LexNext; ParseIf;       Exit; End;
+  If kw = 'GOTO'     Then Begin LexNext; ParseGoto;     Exit; End;
+  If kw = 'ASSIGN'   Then Begin LexNext; ParseAssign;   Exit; End;
+  If kw = 'CONTINUE' Then Begin LexNext; ParseContinue; Exit; End;
+  If kw = 'STOP'     Then Begin LexNext; ParseStop;     Exit; End;
+  If kw = 'PAUSE'    Then Begin LexNext; ParsePause;    Exit; End;
+  If kw = 'DO'       Then Begin LexNext; ParseDo;       Exit; End;
+
+  { ---- RETURN ---- }
+  If kw = 'RETURN' Then
+  Begin
+    LexNext;
+    EmitComment('RETURN');
+    { Si on est dans une FUNCTION : charger la valeur de retour }
+    If cur_func_result_si > 0 Then
+    Begin
+      If cur_func_ret_type = DT_REAL Then
+        GenLoadReal(cur_func_result_si)
+      Else
+        GenLoadInt(cur_func_result_si);
+    End;
+    If cur_ret_lbl <> '' Then
+      EmitI1('JMP', cur_ret_lbl)
+    Else
+      EmitRaw('        RET');
+    Exit;
+  End;
+
+  { ---- PRINT * ou PRINT fmt, liste ---- }
+  If kw = 'PRINT' Then
+  Begin
+    LexNext;
+    is_star := False;
+    tmp_int := 0;
+    If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+    Begin
+      is_star := True; LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParsePrintStar;
+    End
+    Else If cur_tok.kind = TK_INTEGER Then
+    Begin
+      tmp_int := cur_tok.int_val; LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParseFmtIoList(True, 6, tmp_int, '');
+    End
+    Else If cur_tok.kind = TK_STRING Then
+    Begin
+      is_star := False;
+      fstr := cur_tok.val; LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParseFmtIoList(True, 6, 0, fstr);
+    End
+    Else
+    Begin
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParsePrintStar;
+    End;
+    Exit;
+  End;
+
+  { ---- READ *, liste ou READ(unit, fmt) liste ---- }
+  If kw = 'READ' Then
+  Begin
+    LexNext;
+    is_star := False;
+    tmp_int := 0;
+    If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+    Begin
+      is_star := True; LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParseReadStar;
+    End
+    Else If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      LexNext;  { ( }
+      { lire le numero d'unite }
+      If cur_tok.kind = TK_INTEGER Then Begin tmp_int := cur_tok.int_val; LexNext; End
+      Else If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+        Begin tmp_int := 5; LexNext; End
+      Else
+        Begin tmp_int := 5; LexNext; End;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      { lire le format }
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+      Begin
+        is_star := True; LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseReadStar;
+      End
+      Else If cur_tok.kind = TK_INTEGER Then
+      Begin
+        rfmt := cur_tok.int_val; LexNext;
+        While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+        If cur_tok.val = ')' Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseFmtIoList(False, tmp_int, rfmt, '');
+      End
+      Else If cur_tok.kind = TK_STRING Then
+      Begin
+        rfstr := cur_tok.val; LexNext;
+        While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+        If cur_tok.val = ')' Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseFmtIoList(False, tmp_int, 0, rfstr);
+      End
+      Else
+      Begin
+        While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+        If cur_tok.val = ')' Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseReadStar;
+      End;
+    End
+    Else
+    Begin
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParseReadStar;
+    End;
+    Exit;
+  End;
+
+  { ---- WRITE(unit, fmt) liste ---- }
+  If kw = 'WRITE' Then
+  Begin
+    LexNext;
+    is_star := False;
+    tmp_int := 6;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      LexNext;  { ( }
+      If cur_tok.kind = TK_INTEGER Then Begin tmp_int := cur_tok.int_val; LexNext; End
+      Else If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+        Begin tmp_int := 6; LexNext; End
+      Else
+        LexNext;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      If (cur_tok.kind = TK_OP) And (cur_tok.val = '*') Then
+      Begin
+        is_star := True; LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParsePrintStar;
+      End
+      Else If cur_tok.kind = TK_INTEGER Then
+      Begin
+        wfmt := cur_tok.int_val; LexNext;
+        While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+        If cur_tok.val = ')' Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseFmtIoList(True, tmp_int, wfmt, '');
+      End
+      Else If cur_tok.kind = TK_STRING Then
+      Begin
+        wfstr := cur_tok.val; LexNext;
+        While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+        If cur_tok.val = ')' Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParseFmtIoList(True, tmp_int, 0, wfstr);
+      End
+      Else
+      Begin
+        While (cur_tok.val <> ')') And (cur_tok.kind <> TK_EOF) Do LexNext;
+        If cur_tok.val = ')' Then LexNext;
+        If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+        ParsePrintStar;
+      End;
+    End
+    Else
+    Begin
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+      ParsePrintStar;
+    End;
+    Exit;
+  End;
+
+  { ---- OPEN / CLOSE / REWIND / BACKSPACE / ENDFILE / INQUIRE ---- }
+  If kw = 'OPEN'      Then Begin LexNext; ParseOpen;               Exit; End;
+  If kw = 'CLOSE'     Then Begin LexNext; ParseClose;              Exit; End;
+  If kw = 'REWIND'    Then Begin LexNext; ParseSimpleIo('REWIND');    Exit; End;
+  If kw = 'BACKSPACE' Then Begin LexNext; ParseSimpleIo('BACKSPACE'); Exit; End;
+  If kw = 'ENDFILE'   Then Begin LexNext; ParseSimpleIo('ENDFILE');   Exit; End;
+  If kw = 'INQUIRE'   Then Begin LexNext; ParseInquire;            Exit; End;
+
+  If kw = 'CALL'       Then Begin LexNext; ParseCallStmt;       Exit; End;
+  If kw = 'SUBROUTINE' Then Begin LexNext; ParseSubroutineDecl; Exit; End;
+  If kw = 'FUNCTION'   Then Begin LexNext; ParseFunctionDecl(DT_NONE); Exit; End;
+  If kw = 'END'        Then Begin LexNext; ParseEnd;            Exit; End;
+
+  { ---- FORMAT label : capturer et emettre la spec en .DATA ---- }
+  If kw = 'FORMAT' Then
+  Begin
+    LexNext;  { consommer FORMAT }
+    { cur_tok doit etre sur '(' }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+      ParseFormatStmt(last_stmt_lbl)
+    Else
+    Begin
+      WarnMsg('FORMAT ( attendu');
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+    End;
+    Exit;
+  End;
+
+  { ---- Enonces de declaration : ignorer ou intercepter FUNCTION ---- }
+  If (kw = 'INTEGER') Or (kw = 'REAL') Or (kw = 'DOUBLE') Or
+     (kw = 'LOGICAL') Or (kw = 'CHARACTER') Or (kw = 'COMPLEX') Or
+     (kw = 'IMPLICIT') Or (kw = 'DIMENSION') Or (kw = 'COMMON') Or
+     (kw = 'EQUIVALENCE') Or (kw = 'EXTERNAL') Or (kw = 'INTRINSIC') Or
+     (kw = 'SAVE') Or (kw = 'DATA') Or (kw = 'PARAMETER') Then
+  Begin
+    LexNext;  { consommer le mot-cle de type }
+    { INTEGER FUNCTION / REAL FUNCTION / etc. }
+    If cur_tok.val = 'FUNCTION' Then
+    Begin
+      LexNext;  { consommer FUNCTION }
+      If      kw = 'INTEGER'   Then ParseFunctionDecl(DT_INTEGER)
+      Else If kw = 'REAL'      Then ParseFunctionDecl(DT_REAL)
+      Else If kw = 'LOGICAL'   Then ParseFunctionDecl(DT_LOGICAL)
+      Else If kw = 'DOUBLE'    Then ParseFunctionDecl(DT_DOUBLE)
+      Else If kw = 'CHARACTER' Then ParseFunctionDecl(DT_CHARACTER)
+      Else                          ParseFunctionDecl(DT_NONE);
+    End
+    Else
+    Begin
+      { Declaration de variable/dimension/etc. : ignorer silencieusement }
+      While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+    End;
+    Exit;
+  End;
+
+  { ---- Affectation : IDENT [(indices)] = expr ---- }
+  If cur_tok.kind = TK_IDENT Then
+  Begin
+    ParseAssignStmt;
+    Exit;
+  End;
+
+  { Instruction non reconnue : sauter a la fin de ligne }
+  WarnMsg('Instruction non reconnue : ' + kw);
+  While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+End;
+
+{ ============================================================
+  TODO 18 - READ / WRITE AVEC FORMAT
+  ============================================================
+  Format spec : stockee comme chaine 0-terminee en .DATA sous
+  le label _FF_nnnnn (independant du label code _FL_nnnnn).
+  Convention runtime :
+    PUSH unit_num
+    PUSH OFFSET _FF_nnnnn  (ou AX pour chaine litterale)
+    pour chaque arg (gauche -> droite) :
+      PUSH type_code  (0=INTEGER, 1=REAL, 2=CHARACTER, 3=LOGICAL)
+      PUSH valeur (ou DX+AX pour REAL, AX+CX pour CHARACTER)
+    PUSH arg_count
+    CALL _FRT_FMT_WRITE  ou  _FRT_FMT_READ
+    ADD SP, octets_depiles
+  ============================================================ }
+
+{ Retourne le label ASM d une spec FORMAT pour le numero F77 anum. }
+Function FmtGetAsmLabel(anum : Integer) : TString;
+Begin
+  FmtGetAsmLabel := 'FK_FMT_' + IntToStr(anum);
+End;
+
+{ --------------------------------------------------------------------------
+  FmtTokStr : convertit le token courant en fragment de chaine format.
+  -------------------------------------------------------------------------- }
+Function FmtTokStr : TString;
+Var s : TString;
+Begin
+  Case cur_tok.kind Of
+    TK_STRING : FmtTokStr := '''' + cur_tok.val + '''';
+    TK_INTEGER : FmtTokStr := IntToStr(cur_tok.int_val);
+    Else FmtTokStr := cur_tok.val;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseFormatStmt : capturer la spec FORMAT(...)  comme chaine brute,
+  emettre dans .DATA sous _FF_nnnnn: DB '...', 0.
+  cur_tok doit etre sur '(' au moment de l'appel.
+  -------------------------------------------------------------------------- }
+Procedure ParseFormatStmt(fmt_lbl : Integer);
+Var
+  raw   : TString;
+  depth : Integer;
+  lbl   : TString;
+Begin
+  raw   := '';
+  depth := 0;
+  lbl   := FmtGetAsmLabel(fmt_lbl);
+
+  { Collecter tous les tokens jusqu'a la parenthese fermante de niveau 0 }
+  While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+    Begin
+      Inc(depth);
+      If depth > 1 Then raw := raw + '(';
+      LexNext;
+      Continue;
+    End;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then
+    Begin
+      Dec(depth);
+      If depth <= 0 Then Begin LexNext; Break; End;
+      raw := raw + ')';
+      LexNext;
+      Continue;
+    End;
+    raw := raw + FmtTokStr;
+    LexNext;
+  End;
+
+  { Enregistrer dans la table FORMAT (utilise FmtEnter existant) }
+  FmtEnter(fmt_lbl, raw);
+
+  { Emettre la chaine en .DATA }
+  EmitRaw('        .DATA');
+  EmitLabel(lbl);
+  If Length(raw) = 0 Then
+    EmitRaw('        DB 0')
+  Else
+    EmitRaw('        DB ' + '''' + raw + '''' + ', 0');
+  EmitRaw('        .CODE');
+End;
+
+{ --------------------------------------------------------------------------
+  ParseFmtArgPush : evaluer et pousser un item de liste I/O sur la pile.
+  Retourne le nombre de words pousses (pour calcul ADD SP).
+  -------------------------------------------------------------------------- }
+Function ParseFmtArgPush(is_write : Boolean) : Integer;
+Var
+  dt  : TDataType;
+  si  : Integer;
+  nm  : TString;
+  s   : TSymRef;
+Begin
+  ParseFmtArgPush := 0;
+  dt := PeekExprType;
+
+  If is_write Then
+  Begin
+    Case dt Of
+      DT_REAL, DT_DOUBLE :
+      Begin
+        ParseRealExpr;           { DX:AX }
+        EmitI1('PUSH', 'DX');
+        EmitI1('PUSH', 'AX');
+        EmitI2('MOV', 'AX', '1');
+        EmitI1('PUSH', 'AX');    { type code = 1 (REAL) }
+        ParseFmtArgPush := 3;
+      End;
+      DT_CHARACTER :
+      Begin
+        ParseCharExpr;           { AX=ptr, CX=len }
+        EmitI1('PUSH', 'CX');
+        EmitI1('PUSH', 'AX');
+        EmitI2('MOV', 'AX', '2');
+        EmitI1('PUSH', 'AX');    { type code = 2 (STR) }
+        ParseFmtArgPush := 3;
+      End;
+      DT_LOGICAL :
+      Begin
+        ParseLogExpr;            { AX }
+        EmitI1('PUSH', 'AX');
+        EmitI2('MOV', 'AX', '3');
+        EmitI1('PUSH', 'AX');    { type code = 3 (LOGICAL) }
+        ParseFmtArgPush := 2;
+      End;
+      Else
+      Begin
+        ParseIntExpr;            { AX }
+        EmitI1('PUSH', 'AX');
+        EmitI2('MOV', 'AX', '0');
+        EmitI1('PUSH', 'AX');    { type code = 0 (INTEGER) }
+        ParseFmtArgPush := 2;
+      End;
+    End;
+  End
+  Else
+  Begin
+    { READ : pousser l'adresse de la variable + type }
+    If cur_tok.kind <> TK_IDENT Then
+    Begin
+      WarnMsg('READ format : identifiant attendu');
+      LexNext;
+      Exit;
+    End;
+    nm := cur_tok.val;
+    LexNext;
+    si := SymGetOrCreate(nm);
+    If sym_table^[si].dtype = DT_NONE Then sym_table^[si].dtype := DT_INTEGER;
+    s  := sym_table^[si];
+    If s.bp_offset < 0 Then
+      EmitRaw('        LEA AX, [BP' + IntToStr(s.bp_offset) + ']')
+    Else If s.asm_label <> '' Then
+      EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label)
+    Else
+    Begin
+      WarnMsg('READ format : variable sans adresse - ' + nm);
+      Exit;
+    End;
+    EmitI1('PUSH', 'AX');
+    Case s.dtype Of
+      DT_REAL, DT_DOUBLE :
+      Begin
+        EmitI2('MOV', 'AX', '1'); EmitI1('PUSH', 'AX');
+      End;
+      DT_CHARACTER :
+      Begin
+        EmitI2('MOV', 'AX', '2'); EmitI1('PUSH', 'AX');
+        EmitI1('PUSH', IntToStr(s.char_len));  { longueur max }
+        ParseFmtArgPush := 3;
+        Exit;
+      End;
+      DT_LOGICAL :
+      Begin
+        EmitI2('MOV', 'AX', '3'); EmitI1('PUSH', 'AX');
+      End;
+      Else
+      Begin
+        EmitI2('MOV', 'AX', '0'); EmitI1('PUSH', 'AX');
+      End;
+    End;
+    ParseFmtArgPush := 2;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseFmtIoList : emettre le code WRITE/READ formate.
+  fmt_anum = 0 si format =  chaine litterale (fmt_str utilise a la place).
+  -------------------------------------------------------------------------- }
+Procedure ParseFmtIoList(is_write : Boolean; unit_num : Integer;
+                          fmt_anum : Integer; Const fmt_str : TString);
+Var
+  nargs      : Integer;
+  stack_words: Integer;
+  frt_name   : TString;
+  lbl        : TString;
+Begin
+  nargs := 0;
+  stack_words := 0;
+
+  If is_write Then frt_name := 'FMT_WRITE' Else frt_name := 'FMT_READ';
+  EmitComment(frt_name + ' unit=' + IntToStr(unit_num));
+
+  { Pousser les arguments de la liste (gauche -> droite) }
+  While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do
+  Begin
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then Break;
+    Inc(nargs);
+    Inc(stack_words, ParseFmtArgPush(is_write));
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+  End;
+
+  { Pousser le nombre d'arguments }
+  EmitI2('MOV', 'AX', IntToStr(nargs));
+  EmitI1('PUSH', 'AX');
+  Inc(stack_words);
+
+  { Pousser l'adresse de la spec format }
+  If fmt_anum > 0 Then
+  Begin
+    EmitI2('MOV', 'AX', 'OFFSET ' + FmtGetAsmLabel(fmt_anum));
+    EmitI1('PUSH', 'AX');
+  End
+  Else If fmt_str <> '' Then
+  Begin
+    { Chaine litterale : emettre en .DATA }
+    lbl := GenDataLabel;
+    EmitRaw('        .DATA');
+    EmitLabel(lbl);
+    EmitRaw('        DB ' + '''' + fmt_str + '''' + ', 0');
+    EmitRaw('        .CODE');
+    EmitI2('MOV', 'AX', 'OFFSET ' + lbl);
+    EmitI1('PUSH', 'AX');
+  End
+  Else
+  Begin
+    { Format libre * : pousser 0 pour signifier format libre }
+    EmitI2('MOV', 'AX', '0');
+    EmitI1('PUSH', 'AX');
+  End;
+  Inc(stack_words);
+
+  { Pousser le numero d'unite logique }
+  EmitI2('MOV', 'AX', IntToStr(unit_num));
+  EmitI1('PUSH', 'AX');
+  Inc(stack_words);
+
+  { Appel runtime }
+  EmitRaw('        CALL ' + FRT_PFX + frt_name);
+  EmitI2('ADD', 'SP', IntToStr(stack_words * 2));
+End;
+
+{ ============================================================
+  TODO 19 - INSTRUCTIONS D'E/S FICHIERS
+  ============================================================
+  OPEN(unit [,FILE=str] [,STATUS=str] [,ACCESS=str] [,FORM=str]
+            [,RECL=n] [,IOSTAT=var] [,ERR=lbl])
+  CLOSE(unit [,STATUS=str] [,IOSTAT=var] [,ERR=lbl])
+  REWIND(unit [,IOSTAT=var] [,ERR=lbl])
+  BACKSPACE(unit [,IOSTAT=var] [,ERR=lbl])
+  ENDFILE(unit [,IOSTAT=var] [,ERR=lbl])
+  INQUIRE(unit|FILE=str, ...) -- simplifie : warning
+
+  Convention appel runtime :
+    OPEN        : PUSH unit ; PUSH OFFSET filename (0=aucun) ;
+                  PUSH status_code ; CALL _FRT_OPEN ; ADD SP,6
+    CLOSE       : PUSH unit ; PUSH status_code ; CALL _FRT_CLOSE ; ADD SP,4
+    REWIND      : PUSH unit ; CALL _FRT_REWIND ; ADD SP,2
+    BACKSPACE   : PUSH unit ; CALL _FRT_BACKSPACE ; ADD SP,2
+    ENDFILE     : PUSH unit ; CALL _FRT_ENDFILE ; ADD SP,2
+    Apres chaque appel :
+      Si IOSTAT=var : MOV [var], AX
+      Si ERR=lbl   : CMP AX,0 ; JNZ FL_lbl
+  Codes STATUS pour OPEN : 0=inconnu 1=OLD 2=NEW 3=REPLACE 4=SCRATCH
+  Codes STATUS pour CLOSE: 0=KEEP 1=DELETE
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  IoCvtStatusOpen : convertit une chaine STATUS en code entier pour OPEN.
+  -------------------------------------------------------------------------- }
+Function IoCvtStatusOpen(Const s : TString) : Integer;
+Begin
+  If      s = 'OLD'     Then IoCvtStatusOpen := 1
+  Else If s = 'NEW'     Then IoCvtStatusOpen := 2
+  Else If s = 'REPLACE' Then IoCvtStatusOpen := 3
+  Else If s = 'SCRATCH' Then IoCvtStatusOpen := 4
+  Else                       IoCvtStatusOpen := 0;
+End;
+
+{ --------------------------------------------------------------------------
+  IoCvtStatusClose : convertit une chaine STATUS en code entier pour CLOSE.
+  -------------------------------------------------------------------------- }
+Function IoCvtStatusClose(Const s : TString) : Integer;
+Begin
+  If s = 'DELETE' Then IoCvtStatusClose := 1
+  Else                 IoCvtStatusClose := 0;  { KEEP par defaut }
+End;
+
+{ --------------------------------------------------------------------------
+  IoEmitIostatErr : emettre le code IOSTAT/ERR apres un appel runtime.
+  AX = code de retour (0 = OK).
+  -------------------------------------------------------------------------- }
+Procedure IoEmitIostatErr(iostat_si : Integer; err_lnum : Integer);
+Var lbl_ok : TString;
+Begin
+  If iostat_si > 0 Then
+    GenStoreInt(iostat_si);   { MOV [var], AX }
+  If err_lnum > 0 Then
+  Begin
+    lbl_ok := GenBranchLabel;
+    EmitI2('CMP', 'AX', '0');
+    EmitI1('JE',  lbl_ok);
+    EmitI1('JMP', LabelGetAsm(err_lnum));
+    EmitLabel(lbl_ok);
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  IoSkipToClose : avancer jusqu'a ')' (fin de liste de controle).
+  -------------------------------------------------------------------------- }
+Procedure IoSkipToClose;
+Begin
+  While (cur_tok.val <> ')') And (cur_tok.kind <> TK_NEWLINE)
+        And (cur_tok.kind <> TK_EOF) Do LexNext;
+  If cur_tok.val = ')' Then LexNext;
+End;
+
+{ --------------------------------------------------------------------------
+  IoParseUnit : lire le numero d'unite apres '('.
+  Supporte UNIT=n et n positionnels.
+  -------------------------------------------------------------------------- }
+Function IoParseUnit : Integer;
+Var u : Integer;
+Begin
+  u := 0;
+  { UNIT=n }
+  If (cur_tok.kind = TK_IDENT) And (cur_tok.val = 'UNIT') Then
+  Begin
+    LexNext;  { consommer UNIT }
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '=') Then LexNext;
+  End;
+  If cur_tok.kind = TK_INTEGER Then
+  Begin
+    u := cur_tok.int_val;
+    LexNext;
+  End
+  Else
+  Begin
+    WarnMsg('IO : numero d''unite entier attendu');
+    LexNext;
+  End;
+  IoParseUnit := u;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseOpen : OPEN(unit [,kv-pairs...])
+  -------------------------------------------------------------------------- }
+Procedure ParseOpen;
+Var
+  unit_num    : Integer;
+  status_code : Integer;
+  iostat_si   : Integer;
+  err_lnum    : Integer;
+  file_lbl    : TString;      { label ASM de la chaine filename }
+  kw          : TString;
+  sval        : TString;
+  has_file    : Boolean;
+Begin
+  unit_num    := 0;
+  status_code := 0;
+  iostat_si   := 0;
+  err_lnum    := 0;
+  file_lbl    := '';
+  has_file    := False;
+
+  { Lire les parametres entre parentheses }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then LexNext;
+
+  unit_num := IoParseUnit;
+
+  { Parcourir les paires mot-cle=valeur }
+  While (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Do
+  Begin
+    LexNext;  { , }
+    If cur_tok.kind <> TK_IDENT Then Begin IoSkipToClose; Break; End;
+    kw := cur_tok.val; LexNext;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '=') Then LexNext;
+
+    If kw = 'FILE' Then
+    Begin
+      has_file := True;
+      If cur_tok.kind = TK_STRING Then
+      Begin
+        sval := cur_tok.val; LexNext;
+        { Emettre la chaine en .DATA }
+        file_lbl := GenDataLabel;
+        EmitRaw('        .DATA');
+        EmitLabel(file_lbl);
+        EmitRaw('        DB ' + '''' + sval + '''' + ', 0');
+        EmitRaw('        .CODE');
+      End
+      Else
+      Begin
+        { Variable CHARACTER : charger adresse }
+        ParseCharExpr;            { AX = ptr }
+        file_lbl := '';           { signifier "adresse dans AX" }
+      End;
+    End
+    Else If kw = 'STATUS' Then
+    Begin
+      If cur_tok.kind = TK_STRING Then
+      Begin
+        status_code := IoCvtStatusOpen(cur_tok.val);
+        LexNext;
+      End
+      Else
+      Begin
+        { expression : ignorer, garder 0 }
+        While (cur_tok.kind <> TK_PUNCT) Or
+              ((cur_tok.val <> ',') And (cur_tok.val <> ')')) Do
+          LexNext;
+      End;
+    End
+    Else If kw = 'IOSTAT' Then
+    Begin
+      If cur_tok.kind = TK_IDENT Then
+      Begin
+        iostat_si := SymGetOrCreate(cur_tok.val);
+        If sym_table^[iostat_si].dtype = DT_NONE Then
+          sym_table^[iostat_si].dtype := DT_INTEGER;
+        LexNext;
+      End
+      Else LexNext;
+    End
+    Else If kw = 'ERR' Then
+    Begin
+      If cur_tok.kind = TK_INTEGER Then
+      Begin
+        err_lnum := cur_tok.int_val;
+        LexNext;
+      End
+      Else LexNext;
+    End
+    Else
+    Begin
+      { Param non reconnu (ACCESS, FORM, RECL, BLANK...) : ignorer valeur }
+      While (cur_tok.kind <> TK_PUNCT) Or
+            ((cur_tok.val <> ',') And (cur_tok.val <> ')')) Do
+      Begin
+        If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then Break;
+        LexNext;
+      End;
+    End;
+  End;
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+
+  { Generer le code }
+  EmitComment('OPEN unit=' + IntToStr(unit_num));
+  EmitI2('MOV', 'AX', IntToStr(status_code));
+  EmitI1('PUSH', 'AX');                            { status }
+  If has_file And (file_lbl <> '') Then
+    EmitI2('MOV', 'AX', 'OFFSET ' + file_lbl)
+  Else If Not has_file Then
+    EmitI2('MOV', 'AX', '0')
+  { sinon : AX deja charge par ParseCharExpr } ;
+  EmitI1('PUSH', 'AX');                            { filename ptr }
+  EmitI2('MOV', 'AX', IntToStr(unit_num));
+  EmitI1('PUSH', 'AX');                            { unit }
+  EmitRaw('        CALL ' + FRT_PFX + 'OPEN');
+  EmitI2('ADD', 'SP', '6');
+  IoEmitIostatErr(iostat_si, err_lnum);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseClose : CLOSE(unit [,STATUS=str] [,IOSTAT=var] [,ERR=lbl])
+  -------------------------------------------------------------------------- }
+Procedure ParseClose;
+Var
+  unit_num    : Integer;
+  status_code : Integer;
+  iostat_si   : Integer;
+  err_lnum    : Integer;
+  kw          : TString;
+Begin
+  unit_num    := 0;
+  status_code := 0;
+  iostat_si   := 0;
+  err_lnum    := 0;
+
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then LexNext;
+  unit_num := IoParseUnit;
+
+  While (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Do
+  Begin
+    LexNext;
+    If cur_tok.kind <> TK_IDENT Then Begin IoSkipToClose; Break; End;
+    kw := cur_tok.val; LexNext;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '=') Then LexNext;
+    If kw = 'STATUS' Then
+    Begin
+      If cur_tok.kind = TK_STRING Then
+      Begin
+        status_code := IoCvtStatusClose(cur_tok.val);
+        LexNext;
+      End
+      Else LexNext;
+    End
+    Else If kw = 'IOSTAT' Then
+    Begin
+      If cur_tok.kind = TK_IDENT Then
+      Begin
+        iostat_si := SymGetOrCreate(cur_tok.val);
+        If sym_table^[iostat_si].dtype = DT_NONE Then
+          sym_table^[iostat_si].dtype := DT_INTEGER;
+        LexNext;
+      End
+      Else LexNext;
+    End
+    Else If kw = 'ERR' Then
+    Begin
+      If cur_tok.kind = TK_INTEGER Then
+        Begin err_lnum := cur_tok.int_val; LexNext; End
+      Else LexNext;
+    End
+    Else
+    Begin
+      While (cur_tok.kind <> TK_PUNCT) Or
+            ((cur_tok.val <> ',') And (cur_tok.val <> ')')) Do
+      Begin
+        If (cur_tok.kind = TK_NEWLINE) Or (cur_tok.kind = TK_EOF) Then Break;
+        LexNext;
+      End;
+    End;
+  End;
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+
+  EmitComment('CLOSE unit=' + IntToStr(unit_num));
+  EmitI2('MOV', 'AX', IntToStr(status_code));
+  EmitI1('PUSH', 'AX');
+  EmitI2('MOV', 'AX', IntToStr(unit_num));
+  EmitI1('PUSH', 'AX');
+  EmitRaw('        CALL ' + FRT_PFX + 'CLOSE');
+  EmitI2('ADD', 'SP', '4');
+  IoEmitIostatErr(iostat_si, err_lnum);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseSimpleIo : REWIND / BACKSPACE / ENDFILE (unit [,IOSTAT=var] [,ERR=lbl])
+  frt_suffix = 'REWIND', 'BACKSPACE' ou 'ENDFILE'.
+  -------------------------------------------------------------------------- }
+Procedure ParseSimpleIo(Const frt_suffix : TString);
+Var
+  unit_num  : Integer;
+  iostat_si : Integer;
+  err_lnum  : Integer;
+  kw        : TString;
+Begin
+  unit_num  := 0;
+  iostat_si := 0;
+  err_lnum  := 0;
+
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then LexNext;
+  unit_num := IoParseUnit;
+
+  While (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Do
+  Begin
+    LexNext;
+    If cur_tok.kind <> TK_IDENT Then Begin IoSkipToClose; Break; End;
+    kw := cur_tok.val; LexNext;
+    If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '=') Then LexNext;
+    If kw = 'IOSTAT' Then
+    Begin
+      If cur_tok.kind = TK_IDENT Then
+      Begin
+        iostat_si := SymGetOrCreate(cur_tok.val);
+        If sym_table^[iostat_si].dtype = DT_NONE Then
+          sym_table^[iostat_si].dtype := DT_INTEGER;
+        LexNext;
+      End
+      Else LexNext;
+    End
+    Else If kw = 'ERR' Then
+    Begin
+      If cur_tok.kind = TK_INTEGER Then
+        Begin err_lnum := cur_tok.int_val; LexNext; End
+      Else LexNext;
+    End
+    Else LexNext;
+  End;
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')') Then LexNext;
+
+  EmitComment(frt_suffix + ' unit=' + IntToStr(unit_num));
+  EmitI2('MOV', 'AX', IntToStr(unit_num));
+  EmitI1('PUSH', 'AX');
+  EmitRaw('        CALL ' + FRT_PFX + frt_suffix);
+  EmitI2('ADD', 'SP', '2');
+  IoEmitIostatErr(iostat_si, err_lnum);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseInquire : INQUIRE(unit|FILE=str [,...]) -- implementation simplifiee.
+  Emet CALL _FRT_INQUIRE(unit) et ignore les parametres de sortie.
+  -------------------------------------------------------------------------- }
+Procedure ParseInquire;
+Var unit_num : Integer;
+Begin
+  unit_num := 0;
+  WarnMsg('INQUIRE : implementation simplifiee (TODO 19)');
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then LexNext;
+  { Chercher UNIT= ou numero positionnel }
+  If (cur_tok.kind = TK_IDENT) And (cur_tok.val = 'FILE') Then
+  Begin
+    { INQUIRE(FILE=str,...) -> pas de numero d'unite }
+    IoSkipToClose;
+  End
+  Else
+  Begin
+    unit_num := IoParseUnit;
+    IoSkipToClose;
+    EmitComment('INQUIRE unit=' + IntToStr(unit_num));
+    EmitI2('MOV', 'AX', IntToStr(unit_num));
+    EmitI1('PUSH', 'AX');
+    EmitRaw('        CALL ' + FRT_PFX + 'INQUIRE');
+    EmitI2('ADD', 'SP', '2');
+  End;
+End;
+
+{ ============================================================
+  TODO 20 - SUBROUTINE ET CALL
+  ============================================================
+  Convention 8086 by-reference (.MODEL SMALL, NEAR calls) :
+    - L'appelant pousse les ADRESSES de chaque argument (PUSH OFFSET var
+      ou LEA AX,[BP+n] / PUSH AX pour dummy local).
+    - Le sous-programme accede a l'argument via indirection :
+      MOV BX, [BP+4+i*2] ; MOV AX, [BX]  (load)
+      MOV BX, [BP+4+i*2] ; MOV [BX], AX  (store)
+    - Cadre de pile :
+        [BP+4]           = adresse arg 0 (premier argument)
+        [BP+6]           = adresse arg 1, ...
+        [BP+2]           = adresse retour
+        [BP+0]           = ancien BP
+  Nettoyage pile : a la charge de l'APPELANT (ADD SP, nargs*2).
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ImplicitType : retourner le type implicite F77 pour une lettre initiale.
+  I..N -> INTEGER, reste -> REAL (sauf IMPLICIT NONE -> DT_NONE).
+  -------------------------------------------------------------------------- }
+Function ImplicitType(c : Char) : TDataType;
+Begin
+  If impl_none Then
+    ImplicitType := DT_NONE
+  Else
+    ImplicitType := impl_type[c];
+End;
+
+{ --------------------------------------------------------------------------
+  GenPushArgAddr : pousser l'adresse d'un argument effectif sur la pile.
+  Si l'argument est un identifiant connu : LEA/OFFSET.
+  Sinon : evaluer en entier, sauver dans temp anonyme, pousser adresse.
+  Retourne True si OK, False si skip.
+  -------------------------------------------------------------------------- }
+Function GenPushArgAddr(Const nm : TString) : Boolean;
+Var
+  si  : Integer;
+  s   : TSymRef;
+  tmp : TString;
+Begin
+  GenPushArgAddr := True;
+  si := SymFind(nm);
+  If si < 1 Then si := SymGetOrCreate(nm);
+  If si < 1 Then
+  Begin
+    WarnMsg('CALL : argument inconnu - ' + nm);
+    GenPushArgAddr := False;
+    Exit;
+  End;
+  s := sym_table^[si];
+  If s.is_dummy And (s.bp_offset > 0) Then
+  Begin
+    { Repasser l''adresse reelle du dummy : MOV AX,[BP+n] ; PUSH AX }
+    EmitI2('MOV', 'AX', 'WORD PTR [BP+' + IntToStr(s.bp_offset) + ']');
+    EmitI1('PUSH', 'AX');
+  End
+  Else If s.bp_offset < 0 Then
+  Begin
+    EmitRaw('        LEA AX, [BP' + IntToStr(s.bp_offset) + ']');
+    EmitI1('PUSH', 'AX');
+  End
+  Else If s.asm_label <> '' Then
+  Begin
+    EmitI2('MOV', 'AX', 'OFFSET ' + s.asm_label);
+    EmitI1('PUSH', 'AX');
+  End
+  Else
+  Begin
+    WarnMsg('CALL : argument sans adresse - ' + nm);
+    GenPushArgAddr := False;
+  End;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseCallStmt : CALL nom [(arg1, arg2, ...)]
+  Le mot-cle CALL est deja consomme.
+  -------------------------------------------------------------------------- }
+Procedure ParseCallStmt;
+Var
+  sub_name  : TString;
+  nargs     : Integer;
+  nm        : TString;
+  ok        : Boolean;
+  ai        : Integer;
+  arg_names : Array[0..31] of TString;
+Begin
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ErrorMsg('CALL : identifiant attendu');
+    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+    Exit;
+  End;
+  sub_name := cur_tok.val;
+  LexNext;
+  nargs := 0;
+
+  EmitComment('CALL ' + sub_name);
+
+  { Collecter et pousser les arguments (adresses, droite->gauche) }
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;  { ( }
+    nargs := 0;
+    While (cur_tok.val <> ')') And (cur_tok.kind <> TK_NEWLINE)
+          And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      If cur_tok.kind = TK_IDENT Then
+      Begin
+        arg_names[nargs] := cur_tok.val;
+        Inc(nargs);
+        LexNext;
+      End
+      Else
+      Begin
+        WarnMsg('CALL ' + sub_name + ' : argument non-ident ignore');
+        LexNext;
+      End;
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    End;
+    If cur_tok.val = ')' Then LexNext;
+
+    { Pousser de droite a gauche }
+    For ai := nargs - 1 DownTo 0 Do
+    Begin
+      ok := GenPushArgAddr(arg_names[ai]);
+      If Not ok Then
+      Begin
+        EmitI2('MOV', 'AX', '0');
+        EmitI1('PUSH', 'AX');
+      End;
+    End;
+  End;
+
+  EmitRaw('        CALL ' + FP_PFX + sub_name);
+  If nargs > 0 Then
+    EmitI2('ADD', 'SP', IntToStr(nargs * 2));
+  EmitBlank;
+End;
+
+{ --------------------------------------------------------------------------
+  ParseSubroutineDecl : SUBROUTINE nom [(p1,p2,...)]
+  Emet le prologue et enregistre les parametres formels.
+  -------------------------------------------------------------------------- }
+Procedure ParseSubroutineDecl;
+Var
+  subr_name  : TString;
+  pi         : Integer;
+  si         : Integer;
+  bp_off     : Integer;
+  pname      : TString;
+  pidx       : Integer;
+Begin
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ErrorMsg('SUBROUTINE : identifiant attendu');
+    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+    Exit;
+  End;
+  subr_name := cur_tok.val;
+  LexNext;
+
+  { Enregistrer dans proc_table }
+  If proc_count < MAX_PROC Then
+  Begin
+    Inc(proc_count);
+    pidx := proc_count;
+    proc_table^[pidx].name        := subr_name;
+    proc_table^[pidx].asm_label   := FP_PFX + subr_name;
+    proc_table^[pidx].is_function := False;
+    proc_table^[pidx].ret_type    := DT_NONE;
+    proc_table^[pidx].param_count := 0;
+    cur_proc_idx := pidx;
+  End
+  Else
+  Begin
+    ErrorMsg('Table proc saturee');
+    Exit;
+  End;
+
+  cur_subr_name := subr_name;
+  cur_ret_lbl   := GenBranchLabel;
+
+  { Compter et enregistrer les parametres formels }
+  pi := 0;
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;  { ( }
+    While (cur_tok.val <> ')') And (cur_tok.kind <> TK_NEWLINE)
+          And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      If cur_tok.kind <> TK_IDENT Then Begin LexNext; Continue; End;
+      pname  := cur_tok.val;
+      bp_off := 4 + pi * 2;  { [BP+4] = arg0, [BP+6] = arg1, ... }
+      LexNext;
+
+      { Entrer dans sym_table }
+      si := SymGetOrCreate(pname);
+      sym_table^[si].dtype      := ImplicitType(pname[1]);
+      sym_table^[si].is_dummy   := True;
+      sym_table^[si].bp_offset  := bp_off;
+      sym_table^[si].asm_label  := '';  { acces par indirection BP }
+      sym_table^[si].scope_unit := cur_proc_idx;
+
+      { Enregistrer dans proc_table }
+      If pi < MAX_PARAM Then
+      Begin
+        proc_table^[pidx].params[pi + 1].name      := pname;
+        proc_table^[pidx].params[pi + 1].dtype     := sym_table^[si].dtype;
+        proc_table^[pidx].params[pi + 1].bp_offset := bp_off;
+        proc_table^[pidx].params[pi + 1].is_array  := False;
+      End;
+      Inc(pi);
+
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    End;
+    If cur_tok.val = ')' Then LexNext;
+  End;
+  proc_table^[pidx].param_count := pi;
+
+  { Emettre le prologue }
+  GenProcBegin(subr_name, pi);
+End;
+
+{ --------------------------------------------------------------------------
+  ParseEnd : enonce END - ferme le sous-programme courant ou le programme.
+  -------------------------------------------------------------------------- }
+Procedure ParseEnd;
+Begin
+  If cur_subr_name <> '' Then
+  Begin
+    { Emettre le label de retour et l'epilogue }
+    EmitLabel(cur_ret_lbl);
+    { Pour une FUNCTION : charger le resultat dans AX ou DX:AX avant le RET }
+    If cur_func_result_si > 0 Then
+    Begin
+      EmitComment('Charger la valeur de retour de la FUNCTION');
+      If cur_func_ret_type = DT_REAL Then
+        GenLoadReal(cur_func_result_si)
+      Else
+        GenLoadInt(cur_func_result_si);
+    End;
+    GenProcEnd(cur_subr_name);
+    cur_subr_name      := '';
+    cur_ret_lbl        := '';
+    cur_proc_idx       := 0;
+    cur_func_result_si := 0;
+    cur_func_ret_type  := DT_NONE;
+  End
+  Else
+  Begin
+    { Fin du programme principal }
+    GenProgramEpilogue;
+    GenFileEnd('START');
+  End;
+End;
+
+{ ============================================================
+  TODO 21 - DECLARATION ET APPEL DE FONCTION (FUNCTION)
+  ============================================================
+  FUNCTION nom [(params)] ... nom = expr ... RETURN ... END
+  Convention : la valeur de retour est stockee dans une variable
+  statique _FV_<nom>_RES (accessible depuis toute l'unite).  
+  L'appelant recupere la valeur dans AX (INTEGER/LOGICAL) ou
+  DX:AX (REAL).
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseFunctionDecl : traiter la declaration FUNCTION.
+  ret_dtype : type deduit du prefixe (INTEGER, REAL, LOGICAL, DOUBLE)
+              ou DT_NONE pour type implicite.
+  Le mot-cle FUNCTION a deja ete consomme.
+  -------------------------------------------------------------------------- }
+Procedure ParseFunctionDecl(ret_dtype : TDataType);
+Var
+  fn_name    : TString;
+  res_label  : TString;
+  pi, si     : Integer;
+  bp_off     : Integer;
+  pk         : Integer;
+  pname      : TString;
+  si_p       : Integer;
+Begin
+  If cur_tok.kind <> TK_IDENT Then
+  Begin
+    ErrorMsg('FUNCTION : identifiant attendu');
+    While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
+    Exit;
+  End;
+  fn_name := cur_tok.val;
+  LexNext;
+
+  { Type de retour implicite si non specifie }
+  If ret_dtype = DT_NONE Then
+    ret_dtype := ImplicitType(fn_name[1]);
+
+  { Enregistrer dans proc_table }
+  If proc_count >= MAX_PROC Then
+  Begin
+    ErrorMsg('Table proc saturee');
+    Exit;
+  End;
+  Inc(proc_count);
+  pi := proc_count;
+  proc_table^[pi].name        := fn_name;
+  proc_table^[pi].asm_label   := FP_PFX + fn_name;
+  proc_table^[pi].is_function := True;
+  proc_table^[pi].ret_type    := ret_dtype;
+  proc_table^[pi].param_count := 0;
+  proc_table^[pi].local_size  := DataTypeSize(ret_dtype, 0);
+  cur_proc_idx      := pi;
+  cur_subr_name     := fn_name;
+  cur_func_ret_type := ret_dtype;
+
+  { Allouer la variable resultat en .DATA (switch inline) }
+  res_label := FV_PFX + fn_name + '_RES';
+  EmitRaw('        .DATA');
+  EmitRaw(res_label + ':');
+  If ret_dtype = DT_REAL Then
+    EmitRaw('        DD 0    ; resultat FUNCTION ' + fn_name)
+  Else
+    EmitRaw('        DW 0    ; resultat FUNCTION ' + fn_name);
+  EmitRaw('        .CODE');
+
+  { Entrer le nom de la fonction dans sym_table -> variable resultat }
+  si := SymGetOrCreate(fn_name);
+  sym_table^[si].dtype      := ret_dtype;
+  sym_table^[si].asm_label  := res_label;
+  sym_table^[si].bp_offset  := 0;   { acces par asm_label, pas par BP }
+  sym_table^[si].is_dummy   := False;
+  sym_table^[si].scope_unit := pi;
+  cur_func_result_si := si;
+
+  { Parser les parametres formels }
+  pk := 0;
+  If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
+  Begin
+    LexNext;  { ( }
+    While (cur_tok.val <> ')') And (cur_tok.kind <> TK_NEWLINE)
+          And (cur_tok.kind <> TK_EOF) Do
+    Begin
+      If cur_tok.kind <> TK_IDENT Then Begin LexNext; Continue; End;
+      pname  := cur_tok.val;
+      bp_off := 4 + pk * 2;  { [BP+4]=arg0, [BP+6]=arg1, ... }
+      LexNext;
+
+      si_p := SymGetOrCreate(pname);
+      sym_table^[si_p].dtype      := ImplicitType(pname[1]);
+      sym_table^[si_p].is_dummy   := True;
+      sym_table^[si_p].bp_offset  := bp_off;
+      sym_table^[si_p].asm_label  := '';
+      sym_table^[si_p].scope_unit := pi;
+
+      If pk < MAX_PARAM Then
+      Begin
+        proc_table^[pi].params[pk + 1].name      := pname;
+        proc_table^[pi].params[pk + 1].dtype     := sym_table^[si_p].dtype;
+        proc_table^[pi].params[pk + 1].bp_offset := bp_off;
+        proc_table^[pi].params[pk + 1].is_array  := False;
+      End;
+      Inc(pk);
+
+      If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = ',') Then LexNext;
+    End;
+    If cur_tok.val = ')' Then LexNext;
+  End;
+  proc_table^[pi].param_count := pk;
+
+  { Label de retour }
+  cur_ret_lbl := GenBranchLabel;
+
+  { Prologue }
+  GenProcBegin(fn_name, pk);
+End;
+
+{ ============================================================
   Programme principal
   ============================================================ }
 
@@ -4001,7 +7827,7 @@ Begin
 
   Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
 
-  { TODOs 10-25 : implementation a venir }
+  { TODOs 16-25 : implementation a venir }
 
 
   CloseFiles;
