@@ -14,6 +14,9 @@ Const
  MAX_SEGMENTS=128;      { Nombre maximal de segments suivis pendant l'edition de liens }
  MAX_SYMBOLS=1024;      { Nombre maximal de symboles (publics + externes) }
  MAX_RELOCATIONS=2048;  { Nombre maximal d'entrees de relocation en memoire }
+ MAX_GROUPS=128;        { Nombre maximal de groupes OMF (GRPDEF) }
+ MAX_LNAMES=2048;       { Nombre maximal de noms logiques LNAMES }
+ MAX_LINENUMS=4096;     { Nombre maximal d'entrees de debug LINNUM }
 
 Type
  { En-tete DOS MZ du fichier executable genere }
@@ -79,6 +82,37 @@ Type
   Next:PRelocationItem;
  End;
 
+ PGroupMemberItem=^TGroupMemberItem;
+ TGroupMemberItem=Record
+  SegIndex:Word;
+  Next:PGroupMemberItem;
+ End;
+
+ PGroupItem=^TGroupItem;
+ TGroupItem=Record
+  NameIndex:Word;
+  Is32Bit:Boolean;
+  MemberHead,MemberTail:PGroupMemberItem;
+  MemberCount:Integer;
+  Next:PGroupItem;
+ End;
+
+ PLNameItem=^TLNameItem;
+ TLNameItem=Record
+  Value:String[64];
+  Next:PLNameItem;
+ End;
+
+ PLineInfoItem=^TLineInfoItem;
+ TLineInfoItem=Record
+  GroupIndex:Word;
+  SegIndex:Word;
+  LineNo:LongInt;
+  CodeOffset:LongInt;
+  Is32Bit:Boolean;
+  Next:PLineInfoItem;
+ End;
+
  { Liste chainee des corrections OFFSET }
  POffsetPatchItem=^TOffsetPatchItem;
  TOffsetPatchItem=Record
@@ -93,8 +127,13 @@ Var
  SegmentHead,SegmentTail:PSegmentItem;
  SymbolHead,SymbolTail:PSymbolItem;
  RelocationHead,RelocationTail:PRelocationItem;
+ GroupHead,GroupTail:PGroupItem;
+ LNameHead,LNameTail:PLNameItem;
+ LineInfoHead,LineInfoTail:PLineInfoItem;
  OffsetPatchHead,OffsetPatchTail:POffsetPatchItem;
  SegmentCount,SymbolCount,RelocationCount:Integer;
+ GroupCount:Integer;
+ LNameCount,LineInfoCount:Integer;
  OffsetPatchCount:Integer;
  StackSize:Word;
  ObjModuleName:String[64];
@@ -149,9 +188,18 @@ Begin
  SymbolTail:=Nil;
  RelocationHead:=Nil;
  RelocationTail:=Nil;
+ GroupHead:=Nil;
+ GroupTail:=Nil;
+ LNameHead:=Nil;
+ LNameTail:=Nil;
+ LineInfoHead:=Nil;
+ LineInfoTail:=Nil;
  SegmentCount:=0;
  SymbolCount:=0;
  RelocationCount:=0;
+ GroupCount:=0;
+ LNameCount:=0;
+ LineInfoCount:=0;
 End;
 
 Procedure FreeMainLists;
@@ -159,6 +207,10 @@ Var
  segItem,nextSeg:PSegmentItem;
  symItem,nextSym:PSymbolItem;
  relItem,nextRel:PRelocationItem;
+ grpItem,nextGrp:PGroupItem;
+ memItem,nextMem:PGroupMemberItem;
+ nameItem,nextName:PLNameItem;
+ lineItem,nextLine:PLineInfoItem;
 Begin
  segItem:=SegmentHead;
  While segItem<>Nil do Begin
@@ -177,6 +229,33 @@ Begin
   nextRel:=relItem^.Next;
   Dispose(relItem);
   relItem:=nextRel;
+ End;
+
+ grpItem:=GroupHead;
+ While grpItem<>Nil do Begin
+  memItem:=grpItem^.MemberHead;
+  While memItem<>Nil do Begin
+   nextMem:=memItem^.Next;
+   Dispose(memItem);
+   memItem:=nextMem;
+  End;
+  nextGrp:=grpItem^.Next;
+  Dispose(grpItem);
+  grpItem:=nextGrp;
+ End;
+
+ nameItem:=LNameHead;
+ While nameItem<>Nil do Begin
+  nextName:=nameItem^.Next;
+  Dispose(nameItem);
+  nameItem:=nextName;
+ End;
+
+ lineItem:=LineInfoHead;
+ While lineItem<>Nil do Begin
+  nextLine:=lineItem^.Next;
+  Dispose(lineItem);
+  lineItem:=nextLine;
  End;
  InitMainLists;
 End;
@@ -208,6 +287,89 @@ Begin
                    Else SymbolTail^.Next:=item;
  SymbolTail:=item;
  Inc(SymbolCount);
+End;
+
+Function AddGroup(Const NameIdx:Word; Is32Rec:Boolean):PGroupItem;
+Var item:PGroupItem;
+Begin
+ If GroupCount>=MAX_GROUPS Then Begin
+  WriteLn('Erreur : Trop de groupes OMF');
+  Halt(16);
+ End;
+ New(item);
+ item^.NameIndex:=NameIdx;
+ item^.Is32Bit:=Is32Rec;
+ item^.MemberHead:=Nil;
+ item^.MemberTail:=Nil;
+ item^.MemberCount:=0;
+ item^.Next:=Nil;
+ If GroupHead=Nil Then GroupHead:=item
+                   Else GroupTail^.Next:=item;
+ GroupTail:=item;
+ Inc(GroupCount);
+ AddGroup:=item;
+End;
+
+Procedure AddGroupMember(GroupItem:PGroupItem; SegIdx:Word);
+Var mem:PGroupMemberItem;
+Begin
+ If GroupItem=Nil Then Exit;
+ New(mem);
+ mem^.SegIndex:=SegIdx;
+ mem^.Next:=Nil;
+ If GroupItem^.MemberHead=Nil Then GroupItem^.MemberHead:=mem
+                            Else GroupItem^.MemberTail^.Next:=mem;
+ GroupItem^.MemberTail:=mem;
+ Inc(GroupItem^.MemberCount);
+End;
+
+Procedure AddLName(Const Nm:String);
+Var item:PLNameItem;
+Begin
+ If LNameCount>=MAX_LNAMES Then Begin
+  WriteLn('Erreur : Trop de noms LNAMES');
+  Halt(17);
+ End;
+ New(item);
+ item^.Value:=Copy(Nm,1,64);
+ item^.Next:=Nil;
+ If LNameHead=Nil Then LNameHead:=item
+                   Else LNameTail^.Next:=item;
+ LNameTail:=item;
+ Inc(LNameCount);
+End;
+
+Function GetLName(Index:Word):String;
+Var
+ item:PLNameItem;
+ n:Word;
+Begin
+ GetLName:='';
+ If (Index=0)Or(Index>LNameCount) Then Exit;
+ item:=LNameHead;
+ n:=1;
+ While(item<>Nil)And(n<Index)do Begin
+  item:=item^.Next;
+  Inc(n);
+ End;
+ If item<>Nil Then GetLName:=item^.Value;
+End;
+
+Procedure AddLineInfo(Const GrpIdx,SegIdx:Word; Const LineNum,CodeOfs:LongInt; Is32Rec:Boolean);
+Var item:PLineInfoItem;
+Begin
+ If LineInfoCount>=MAX_LINENUMS Then Exit;
+ New(item);
+ item^.GroupIndex:=GrpIdx;
+ item^.SegIndex:=SegIdx;
+ item^.LineNo:=LineNum;
+ item^.CodeOffset:=CodeOfs;
+ item^.Is32Bit:=Is32Rec;
+ item^.Next:=Nil;
+ If LineInfoHead=Nil Then LineInfoHead:=item
+                      Else LineInfoTail^.Next:=item;
+ LineInfoTail:=item;
+ Inc(LineInfoCount);
 End;
 
 Function GetSegmentPtr(Index:Integer):PSegment;
@@ -271,9 +433,39 @@ Var
  LocIsSelfRel:Boolean;
  FrameMethod,TargetMethod:Byte;
  RelocLinearPos,RelocDataPos:LongInt;
+ SegSize32:LongInt;
  SymRec:TSymbol;
  SegRec:TSegment;
  SegPtr,PrevSegPtr:PSegment;
+ GroupPtr:PGroupItem;
+ GroupPos,GroupLimit:Integer;
+ GroupNameIdx,GroupMemberIdx:Word;
+ GroupItemType:Byte;
+ NamePos,NameLimit:Integer;
+ LinePos,LineLimit:Integer;
+ BaseGroupIdx,BaseSegIdx:Word;
+ SegNameIdx,SegClassIdx,SegOverlayIdx:Word;
+ ParsedName:String[64];
+ ParsedClass:String[64];
+ ParsedNameLen:Byte;
+ LineNum,LineOfs:LongInt;
+ k:Integer;
+
+ Function ReadOmfIndex(Var Pos:Integer; Limit:Integer; Var Idx:Word):Boolean;
+ Var b:Byte;
+ Begin
+  ReadOmfIndex:=False;
+  If Pos>=Limit Then Exit;
+  b:=Buffer[Pos];
+  Inc(Pos);
+  If (b And $80)<>0 Then Begin
+   If Pos>=Limit Then Exit;
+   Idx:=((Word(b And $7F) Shl 8) Or Buffer[Pos]);
+   Inc(Pos);
+  End Else Idx:=b;
+  ReadOmfIndex:=True;
+ End;
+
 Begin
  ReadObjFile:=False;
  FreeMainLists;
@@ -348,16 +540,113 @@ Begin
      { LPUBDEF/LPUBDEF32 : def publique locale, ignore pour instant }
     End;
     $94, $95:Begin
-     { LINNUM/LINNUM32 : info de debug lignes source }
+     { LINNUM/LINNUM32 : information de lignes source }
+     LinePos:=0;
+     LineLimit:=RecLen-1; { sans checksum }
+     If LineLimit<=0 Then Continue;
+     If Not ReadOmfIndex(LinePos,LineLimit,BaseGroupIdx) Then Continue;
+     If Not ReadOmfIndex(LinePos,LineLimit,BaseSegIdx) Then Continue;
+
+     While LinePos<LineLimit do Begin
+      If LinePos+1>=LineLimit Then Break;
+      LineNum:=Buffer[LinePos]+LongInt(Buffer[LinePos+1])*256;
+      Inc(LinePos,2);
+
+      If RecType=$95 Then Begin
+       If LinePos+3>=LineLimit Then Break;
+       LineOfs:=LongInt(Buffer[LinePos])
+              + LongInt(Buffer[LinePos+1]) * 256
+              + LongInt(Buffer[LinePos+2]) * 65536
+              + LongInt(Buffer[LinePos+3]) * 16777216;
+       Inc(LinePos,4);
+      End Else Begin
+       If LinePos+1>=LineLimit Then Break;
+       LineOfs:=Buffer[LinePos]+LongInt(Buffer[LinePos+1])*256;
+       Inc(LinePos,2);
+      End;
+
+      AddLineInfo(BaseGroupIdx,BaseSegIdx,LineNum,LineOfs,RecType=$95);
+     End;
     End;
     $96, $97:Begin
-     { LNAMES/LLNAMES : index de noms (segments/classes), non exploite ici }
+     { LNAMES/LLNAMES : table de noms logiques (segments/classes/overlays) }
+     NamePos:=0;
+     NameLimit:=RecLen-1; { sans checksum }
+     While NamePos<NameLimit do Begin
+      ParsedNameLen:=Buffer[NamePos];
+      Inc(NamePos);
+      If NamePos>NameLimit Then Break;
+      If NamePos+ParsedNameLen>NameLimit Then ParsedNameLen:=NameLimit-NamePos;
+
+      ParsedName:='';
+      For k:=1 to ParsedNameLen do Begin
+       ParsedName:=ParsedName+Chr(Buffer[NamePos]);
+       Inc(NamePos);
+      End;
+      AddLName(ParsedName);
+     End;
     End;
     $99:Begin
-     { SEGDEF32 / variante etendue : non exploite par ce linker 16-bit }
+     { SEGDEF32 : definition de segment avec taille 32 bits }
+      SegRec.Name:='';
+      SegRec.Class:='CODE';
+      SegSize32:=0;
+      If RecLen>=6 Then
+       SegSize32:=LongInt(Buffer[1])
+                 + LongInt(Buffer[2]) * 256
+                 + LongInt(Buffer[3]) * 65536
+                 + LongInt(Buffer[4]) * 16777216;
+      If SegSize32>$FFFF Then SegRec.Size:=$FFFF
+                          Else SegRec.Size:=SegSize32;
+      SegRec.Address:=0;
+
+      { tentative de resolution des index de noms via LNAMES }
+      GroupPos:=0;
+      GroupLimit:=RecLen-1;
+      If GroupLimit>0 Then Begin
+       Inc(GroupPos);      { ACBP }
+       Inc(GroupPos,4);    { longueur 32 bits }
+       If ReadOmfIndex(GroupPos,GroupLimit,SegNameIdx) Then Begin
+        If ReadOmfIndex(GroupPos,GroupLimit,SegClassIdx) Then Begin
+         ReadOmfIndex(GroupPos,GroupLimit,SegOverlayIdx);
+         ParsedName:=GetLName(SegNameIdx);
+         ParsedClass:=GetLName(SegClassIdx);
+         If ParsedName<>'' Then SegRec.Name:=Copy(ParsedName,1,16);
+         If ParsedClass<>'' Then SegRec.Class:=Copy(ParsedClass,1,8);
+        End;
+       End;
+      End;
+
+      AddSegment(SegRec);
     End;
     $9A, $9B:Begin
-     { GRPDEF / GRPDEF32 : definition de groupes de segments, ignore }
+      { GRPDEF / GRPDEF32 : definition de groupes de segments }
+      GroupPos:=0;
+      GroupLimit:=RecLen-1;  { sans checksum OMF }
+      If GroupLimit<=0 Then Continue;
+      If Not ReadOmfIndex(GroupPos,GroupLimit,GroupNameIdx) Then Continue;
+
+      GroupPtr:=AddGroup(GroupNameIdx, RecType=$9B);
+
+      While GroupPos<GroupLimit do Begin
+       GroupItemType:=Buffer[GroupPos];
+       Inc(GroupPos);
+       Case GroupItemType of
+        $FF:Begin { composant segment }
+         If Not ReadOmfIndex(GroupPos,GroupLimit,GroupMemberIdx) Then Break;
+         AddGroupMember(GroupPtr,GroupMemberIdx);
+        End;
+        $FE, $FD:Begin
+         { composant externe/groupe : consommer l'index, non resolu ici }
+         If Not ReadOmfIndex(GroupPos,GroupLimit,GroupMemberIdx) Then Break;
+        End;
+       Else
+        { Tolerance format : tentative index direct }
+        Dec(GroupPos);
+        If Not ReadOmfIndex(GroupPos,GroupLimit,GroupMemberIdx) Then Break;
+        AddGroupMember(GroupPtr,GroupMemberIdx);
+       End;
+      End;
     End;
     $9C, $9D:Begin
       { FIXUPP / FIXUPP32 : extraction des relocations chargeur MZ }
@@ -457,10 +746,28 @@ Begin
     End;
    $98:Begin { SEGDEF : D�finition de segment OMF }
       SegRec.Name:='';
+      SegRec.Class:='CODE';
       If RecLen>=4 Then Move(Buffer[1], SegRec.Size, 2)
             Else SegRec.Size:=0;
       SegRec.Address:=0;
-      SegRec.Class:='CODE';
+
+      { tentative de resolution des index de noms via LNAMES }
+      GroupPos:=0;
+      GroupLimit:=RecLen-1;
+      If GroupLimit>0 Then Begin
+       Inc(GroupPos);      { ACBP }
+       Inc(GroupPos,2);    { longueur 16 bits }
+       If ReadOmfIndex(GroupPos,GroupLimit,SegNameIdx) Then Begin
+        If ReadOmfIndex(GroupPos,GroupLimit,SegClassIdx) Then Begin
+         ReadOmfIndex(GroupPos,GroupLimit,SegOverlayIdx);
+         ParsedName:=GetLName(SegNameIdx);
+         ParsedClass:=GetLName(SegClassIdx);
+         If ParsedName<>'' Then SegRec.Name:=Copy(ParsedName,1,16);
+         If ParsedClass<>'' Then SegRec.Class:=Copy(ParsedClass,1,8);
+        End;
+       End;
+      End;
+
       AddSegment(SegRec);
    End;
    $A0:Begin { LEDATA : Donn�es de segment }
