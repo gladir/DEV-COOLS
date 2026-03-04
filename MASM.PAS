@@ -6506,7 +6506,711 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 16 a 25 a implementer)
+  TODO 17 - MACROS (MACRO ENDM LOCAL EXITM PURGE REPT IRP IRPC)
+  ============================================================ }
+
+Const
+  MAX_MACRO_PARAMS = 16;    { parametres formels max par macro }
+  MAX_MACRO_POOL   = 2048;  { pool global de lignes de corps de macro }
+  MACRO_EXP_DEPTH  = 8;     { niveaux d imbrication max d expansion }
+  MACRO_EXP_BUF    = 256;   { lignes max dans un niveau d expansion }
+
+Type
+  TMacroDef = Record
+    mname     : TSymString;
+    param_cnt : Integer;
+    params    : Array[1..MAX_MACRO_PARAMS] Of TSymString;
+    body_start: Integer;   { 1-base dans macro_line_pool }
+    body_cnt  : Integer;
+    purged    : Boolean;
+  End;
+
+  TMacroExpCtx = Record
+    lines    : Array[1..MACRO_EXP_BUF] Of TString;
+    line_cnt : Integer;
+    cur_pos  : Integer;
+    do_exitm : Boolean;
+    mi       : Integer;   { index macro (0 = REPT/IRP/IRPC) }
+  End;
+
+Var
+  macro_table     : Array[1..MAX_MACRO]      Of TMacroDef;
+  macro_count     : Integer;
+  macro_line_pool : Array[1..MAX_MACRO_POOL] Of TString;
+  macro_pool_used : Integer;
+  macro_exp_stk   : Array[0..MACRO_EXP_DEPTH-1] Of TMacroExpCtx;
+  macro_exp_top   : Integer;   { -1 si aucune expansion active }
+
+{ ============================================================
+  MacroInit : (re)initialiser les tables macro
+  ============================================================ }
+Procedure MacroInit;
+Begin
+  macro_count     := 0;
+  macro_pool_used := 0;
+  macro_exp_top   := -1;
+End;
+
+{ ============================================================
+  MacroFind : chercher une macro non purgee par son nom.
+  Retourne l index 1-base dans macro_table, ou 0 si absente.
+  ============================================================ }
+Function MacroFind(Const mname : TSymString) : Integer;
+Var
+  i : Integer;
+Begin
+  MacroFind := 0;
+  For i := 1 To macro_count Do
+    If (Not macro_table[i].purged) And (macro_table[i].mname = mname) Then
+    Begin
+      MacroFind := i;
+      Exit;
+    End;
+End;
+
+{ ============================================================
+  SubstOneParam : remplace &PNAME par arg dans line.
+  ! echappe le caractere suivant (il passe tel quel).
+  ============================================================ }
+Function SubstOneParam(Const line  : TString;
+                       Const pname : TSymString;
+                       Const arg   : TString) : TString;
+Var
+  res   : TString;
+  i     : Integer;
+  ident : TString;
+  c     : Char;
+Begin
+  res := '';
+  i   := 1;
+  While i <= Length(line) Do
+  Begin
+    c := line[i];
+    If c = '!' Then
+    Begin
+      Inc(i);
+      If i <= Length(line) Then
+      Begin
+        res := res + line[i];
+        Inc(i);
+      End;
+    End
+    Else If c = '&' Then
+    Begin
+      Inc(i);
+      ident := '';
+      While (i <= Length(line)) And LexIsAlNum(line[i]) Do
+      Begin
+        ident := ident + UpCase(line[i]);
+        Inc(i);
+      End;
+      If ident = pname Then
+        res := res + arg
+      Else
+        res := res + '&' + ident;
+    End
+    Else
+    Begin
+      res := res + c;
+      Inc(i);
+    End;
+  End;
+  SubstOneParam := res;
+End;
+
+{ ============================================================
+  SubstWholeWord : remplace le mot entier wfrom par wto.
+  Utilise pour la substitution des labels LOCAL.
+  ============================================================ }
+Function SubstWholeWord(Const line  : TString;
+                        Const wfrom : TString;
+                        Const wto   : TString) : TString;
+Var
+  res  : TString;
+  i    : Integer;
+  wlen : Integer;
+  ok   : Boolean;
+  bc   : Char;
+  ac   : Char;
+Begin
+  res  := '';
+  i    := 1;
+  wlen := Length(wfrom);
+  While i <= Length(line) Do
+  Begin
+    If (wlen > 0) And
+       (i + wlen - 1 <= Length(line)) And
+       (Copy(line, i, wlen) = wfrom) Then
+    Begin
+      bc := ' ';
+      ac := ' ';
+      If i > 1 Then bc := line[i - 1];
+      If i + wlen <= Length(line) Then ac := line[i + wlen];
+      ok := (Not LexIsAlNum(bc)) And (Not LexIsAlNum(ac));
+      If ok Then
+      Begin
+        res := res + wto;
+        i   := i + wlen;
+      End
+      Else
+      Begin
+        res := res + line[i];
+        Inc(i);
+      End;
+    End
+    Else
+    Begin
+      res := res + line[i];
+      Inc(i);
+    End;
+  End;
+  SubstWholeWord := res;
+End;
+
+{ ============================================================
+  GetNextLine : retourne la prochaine ligne depuis le flux actif.
+  Si une expansion macro est en cours, sert depuis la pile
+  d expansion ; sinon appelle SrcReadLine.
+  EXITM : marque do_exitm => le niveau courant est clos.
+  ============================================================ }
+Function GetNextLine : Boolean; Forward;
+
+{ ============================================================
+  CollectBlock : accumule les lignes depuis le flux courant
+  jusqu au ENDM correspondant (gere l imbrication).
+  Stocke dans macro_line_pool ; retourne l index de debut et
+  body_cnt = nb de lignes collectees.
+  ============================================================ }
+Function CollectBlock(Var body_cnt : Integer) : Integer;
+Var
+  depth    : Integer;
+  raw      : TString;
+  tok      : TString;
+  start    : Integer;
+  i        : Integer;
+  kw1      : TString;
+  kw2      : TString;
+Begin
+  start    := macro_pool_used + 1;
+  body_cnt := 0;
+  depth    := 1;
+
+  While GetNextLine Do
+  Begin
+    raw := cur_line;
+
+    { extraire le premier et second identificateur de la ligne
+      pour detecter ENDM / MACRO / REPT / IRP / IRPC }
+    i    := 1;
+    While (i <= Length(raw)) And (raw[i] = ' ') Do Inc(i);
+    kw1 := '';
+    While (i <= Length(raw)) And LexIsAlNum(raw[i]) Do
+    Begin
+      kw1 := kw1 + UpCase(raw[i]);
+      Inc(i);
+    End;
+    While (i <= Length(raw)) And (raw[i] = ' ') Do Inc(i);
+    kw2 := '';
+    While (i <= Length(raw)) And LexIsAlNum(raw[i]) Do
+    Begin
+      kw2 := kw2 + UpCase(raw[i]);
+      Inc(i);
+    End;
+
+    { tok = le mot-cle pertinent pour la profondeur }
+    If (kw1 = 'MACRO') Or (kw1 = 'REPT') Or
+       (kw1 = 'IRP')   Or (kw1 = 'IRPC') Then
+      tok := kw1
+    Else If (kw2 = 'MACRO') Or (kw2 = 'REPT') Or
+            (kw2 = 'IRP')   Or (kw2 = 'IRPC') Then
+      tok := kw2
+    Else If kw1 = 'ENDM' Then
+      tok := 'ENDM'
+    Else
+      tok := '';
+
+    If (tok = 'MACRO') Or (tok = 'REPT') Or
+       (tok = 'IRP')   Or (tok = 'IRPC') Then
+      Inc(depth);
+
+    If tok = 'ENDM' Then
+    Begin
+      Dec(depth);
+      If depth = 0 Then Break;   { ENDM du bloc courant }
+    End;
+
+    { stocker la ligne dans le pool }
+    If macro_pool_used < MAX_MACRO_POOL Then
+    Begin
+      Inc(macro_pool_used);
+      macro_line_pool[macro_pool_used] := raw;
+      Inc(body_cnt);
+    End
+    Else
+      WarnMsg('Pool de corps de macro plein');
+  End;
+
+  CollectBlock := start;
+End;
+
+{ GetNextLine : implementation reelle }
+Function GetNextLine : Boolean;
+Begin
+  While macro_exp_top >= 0 Do
+  Begin
+    If macro_exp_stk[macro_exp_top].do_exitm Or
+       (macro_exp_stk[macro_exp_top].cur_pos >
+        macro_exp_stk[macro_exp_top].line_cnt) Then
+    Begin
+      Dec(macro_exp_top);
+      Continue;
+    End;
+    cur_line := macro_exp_stk[macro_exp_top].lines[
+                  macro_exp_stk[macro_exp_top].cur_pos];
+    Inc(macro_exp_stk[macro_exp_top].cur_pos);
+    GetNextLine := True;
+    Exit;
+  End;
+  GetNextLine := SrcReadLine;
+End;
+
+{ ============================================================
+  ParseMacroDef : nom MACRO [p1, p2, ...] / body / ENDM
+  ============================================================ }
+Procedure ParseMacroDef(Const mname : TSymString);
+Var
+  mi       : Integer;
+  pcnt     : Integer;
+  body_cnt : Integer;
+  start    : Integer;
+  p        : PSymbol;
+Begin
+  mi := MacroFind(mname);
+  If mi = 0 Then
+  Begin
+    If macro_count >= MAX_MACRO Then
+    Begin
+      ErrorMsg('Trop de macros : ' + mname);
+      Exit;
+    End;
+    Inc(macro_count);
+    mi := macro_count;
+  End;
+  macro_table[mi].mname     := mname;
+  macro_table[mi].purged    := False;
+  macro_table[mi].param_cnt := 0;
+
+  { lire les parametres formels }
+  pcnt := 0;
+  While LexPeekKind = TK_IDENT Do
+  Begin
+    LexNext;
+    If pcnt < MAX_MACRO_PARAMS Then
+    Begin
+      Inc(pcnt);
+      macro_table[mi].params[pcnt] := lex_tok.val;
+    End;
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  End;
+  macro_table[mi].param_cnt := pcnt;
+
+  { collecter le corps jusqu a ENDM }
+  start := CollectBlock(body_cnt);
+  macro_table[mi].body_start := start;
+  macro_table[mi].body_cnt   := body_cnt;
+
+  { enregistrer le symbole SK_MACRO }
+  p := SymFind(mname);
+  If p = Nil Then
+    p := SymEnter(mname, SK_MACRO, 0, 0, mi)
+  Else
+  Begin
+    p^.kind  := SK_MACRO;
+    p^.value := mi;
+  End;
+  SymSetValue(p, mi);
+End;
+
+{ ============================================================
+  ExpandMacro : instancier la macro mi avec les arguments
+  fournis dans arg_line (reste de la ligne apres le nom).
+  Pousse un contexte sur macro_exp_stk.
+  ============================================================ }
+Procedure ExpandMacro(mi : Integer; Const arg_line : TString);
+Var
+  pcnt        : Integer;
+  i, j, k     : Integer;
+  p           : Integer;
+  c           : Char;
+  arg         : TString;
+  subst       : TString;
+  in_angle    : Boolean;
+  args        : Array[1..MAX_MACRO_PARAMS] Of TString;
+  local_from  : Array[1..MAX_MACRO_PARAMS] Of TSymString;
+  local_to    : Array[1..MAX_MACRO_PARAMS] Of TSymString;
+  local_cnt   : Integer;
+  raw         : TString;
+  tok         : TString;
+  expidx      : Integer;
+  is_loc_line : Boolean;
+Begin
+  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
+  Begin
+    ErrorMsg('Expansion de macro trop profonde');
+    Exit;
+  End;
+  Inc(macro_exp_top);
+  expidx := macro_exp_top;
+
+  macro_exp_stk[expidx].line_cnt := 0;
+  macro_exp_stk[expidx].cur_pos  := 1;
+  macro_exp_stk[expidx].do_exitm := False;
+  macro_exp_stk[expidx].mi       := mi;
+
+  pcnt := macro_table[mi].param_cnt;
+  For i := 1 To MAX_MACRO_PARAMS Do args[i] := '';
+
+  { ----- parser les arguments depuis arg_line ----- }
+  p := 1;
+  While (p <= Length(arg_line)) And (arg_line[p] = ' ') Do Inc(p);
+  For i := 1 To pcnt Do
+  Begin
+    arg      := '';
+    in_angle := False;
+    While p <= Length(arg_line) Do
+    Begin
+      c := arg_line[p];
+      If (c = '<') And Not in_angle Then Begin in_angle := True; Inc(p); Continue; End;
+      If (c = '>') And in_angle      Then Begin in_angle := False; Inc(p); Continue; End;
+      If (c = ',') And Not in_angle  Then Begin Inc(p); Break; End;
+      arg := arg + c;
+      Inc(p);
+    End;
+    While (Length(arg) > 0) And (arg[1] = ' ')           Do Delete(arg, 1, 1);
+    While (Length(arg) > 0) And (arg[Length(arg)] = ' ') Do Delete(arg, Length(arg), 1);
+    args[i] := arg;
+    While (p <= Length(arg_line)) And (arg_line[p] = ' ') Do Inc(p);
+  End;
+
+  { ----- detecter les declarations LOCAL dans le corps ----- }
+  local_cnt := 0;
+  For k := 1 To macro_table[mi].body_cnt Do
+  Begin
+    raw := macro_line_pool[macro_table[mi].body_start + k - 1];
+    j   := 1;
+    While (j <= Length(raw)) And (raw[j] = ' ') Do Inc(j);
+    tok := '';
+    While (j <= Length(raw)) And LexIsAlpha(raw[j]) Do
+    Begin
+      tok := tok + UpCase(raw[j]);
+      Inc(j);
+    End;
+    If tok = 'LOCAL' Then
+    Begin
+      While j <= Length(raw) Do
+      Begin
+        While (j <= Length(raw)) And (raw[j] = ' ') Do Inc(j);
+        If j > Length(raw) Then Break;
+        tok := '';
+        While (j <= Length(raw)) And LexIsAlNum(raw[j]) Do
+        Begin
+          tok := tok + UpCase(raw[j]);
+          Inc(j);
+        End;
+        If (Length(tok) > 0) And (local_cnt < MAX_MACRO_PARAMS) Then
+        Begin
+          Inc(local_cnt);
+          local_from[local_cnt] := tok;
+          local_to[local_cnt]   := LocalNextName;
+        End;
+        While (j <= Length(raw)) And (raw[j] = ' ')  Do Inc(j);
+        If (j <= Length(raw)) And (raw[j] = ',') Then Inc(j);
+      End;
+    End;
+  End;
+
+  { ----- construire les lignes d expansion substituees ----- }
+  For k := 1 To macro_table[mi].body_cnt Do
+  Begin
+    raw := macro_line_pool[macro_table[mi].body_start + k - 1];
+
+    { detecter les lignes LOCAL (a sauter) }
+    j   := 1;
+    While (j <= Length(raw)) And (raw[j] = ' ') Do Inc(j);
+    tok := '';
+    While (j <= Length(raw)) And LexIsAlpha(raw[j]) Do
+    Begin
+      tok := tok + UpCase(raw[j]);
+      Inc(j);
+    End;
+    is_loc_line := (tok = 'LOCAL');
+    If is_loc_line Then Continue;
+
+    { substituer les parametres }
+    subst := raw;
+    For j := 1 To pcnt Do
+      subst := SubstOneParam(subst, macro_table[mi].params[j], args[j]);
+
+    { substituer les labels LOCAL }
+    For j := 1 To local_cnt Do
+      subst := SubstWholeWord(subst, local_from[j], local_to[j]);
+
+    { ajouter au buffer d expansion }
+    If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
+    Begin
+      Inc(macro_exp_stk[expidx].line_cnt);
+      macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
+    End
+    Else
+      WarnMsg('Buffer d expansion de macro plein');
+  End;
+End;
+
+{ ============================================================
+  ParseRept : REPT n ... ENDM  (repeter n fois le corps)
+  ============================================================ }
+Procedure ParseRept;
+Var
+  count      : Integer;
+  body_cnt   : Integer;
+  body_start : Integer;
+  i, j       : Integer;
+  expidx     : Integer;
+  e          : TExpr;
+Begin
+  ExprMakeNum(e, 0);
+  EvalExpr(e);
+  count := Integer(e.val);
+  If count < 0 Then count := 0;
+
+  body_start := CollectBlock(body_cnt);
+  If (count = 0) Or (body_cnt = 0) Then Exit;
+
+  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
+  Begin
+    ErrorMsg('Expansion REPT trop profonde');
+    Exit;
+  End;
+  Inc(macro_exp_top);
+  expidx := macro_exp_top;
+  macro_exp_stk[expidx].line_cnt := 0;
+  macro_exp_stk[expidx].cur_pos  := 1;
+  macro_exp_stk[expidx].do_exitm := False;
+  macro_exp_stk[expidx].mi       := 0;
+
+  For i := 1 To count Do
+    For j := 1 To body_cnt Do
+    Begin
+      If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
+      Begin
+        Inc(macro_exp_stk[expidx].line_cnt);
+        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] :=
+          macro_line_pool[body_start + j - 1];
+      End;
+    End;
+End;
+
+{ ============================================================
+  ParseIrp : IRP param, <item1, item2, ...> ... ENDM
+  ============================================================ }
+Procedure ParseIrp;
+Var
+  pname      : TSymString;
+  body_cnt   : Integer;
+  body_start : Integer;
+  i, j       : Integer;
+  expidx     : Integer;
+  arg        : TString;
+  subst      : TString;
+  args       : Array[0..63] Of TString;
+  arg_cnt    : Integer;
+Begin
+  pname := '';
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    LexNext;
+    pname := lex_tok.val;
+  End;
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+
+  { parser la liste < item, item, ... > token par token }
+  arg_cnt := 0;
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '<') Then
+  Begin
+    LexNext;
+    While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do
+    Begin
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '>') Then
+      Begin
+        LexNext;
+        Break;
+      End;
+      { accumuler les tokens d un item jusqu a , ou > }
+      arg := '';
+      While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do
+      Begin
+        If (LexPeekKind = TK_PUNCT) And
+           ((LexPeekVal = ',') Or (LexPeekVal = '>')) Then Break;
+        LexNext;
+        If Length(arg) > 0 Then arg := arg + ' ';
+        arg := arg + lex_tok.val;
+      End;
+      While (Length(arg) > 0) And (arg[1] = ' ')           Do Delete(arg, 1, 1);
+      While (Length(arg) > 0) And (arg[Length(arg)] = ' ') Do Delete(arg, Length(arg), 1);
+      If arg_cnt < 64 Then
+      Begin
+        args[arg_cnt] := arg;
+        Inc(arg_cnt);
+      End;
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+    End;
+  End;
+
+  body_start := CollectBlock(body_cnt);
+  If (arg_cnt = 0) Or (body_cnt = 0) Then Exit;
+
+  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
+  Begin
+    ErrorMsg('Expansion IRP trop profonde');
+    Exit;
+  End;
+  Inc(macro_exp_top);
+  expidx := macro_exp_top;
+  macro_exp_stk[expidx].line_cnt := 0;
+  macro_exp_stk[expidx].cur_pos  := 1;
+  macro_exp_stk[expidx].do_exitm := False;
+  macro_exp_stk[expidx].mi       := 0;
+
+  For i := 0 To arg_cnt - 1 Do
+    For j := 1 To body_cnt Do
+    Begin
+      subst := SubstOneParam(macro_line_pool[body_start + j - 1],
+                             pname, args[i]);
+      If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
+      Begin
+        Inc(macro_exp_stk[expidx].line_cnt);
+        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
+      End;
+    End;
+End;
+
+{ ============================================================
+  ParseIrpc : IRPC param, chaine ... ENDM
+  Itere sur chaque caractere de la chaine.
+  ============================================================ }
+Procedure ParseIrpc;
+Var
+  pname      : TSymString;
+  body_cnt   : Integer;
+  body_start : Integer;
+  i, j       : Integer;
+  expidx     : Integer;
+  str_val    : TString;
+  subst      : TString;
+  char_str   : TString;
+Begin
+  pname := '';
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    LexNext;
+    pname := lex_tok.val;
+  End;
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+
+  { lire la chaine : <xxxx> ou 'xxxx' ou identificateur }
+  str_val := '';
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '<') Then
+  Begin
+    LexNext;
+    While (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Do
+    Begin
+      LexNext;
+      If (lex_tok.kind = TK_PUNCT) And (lex_tok.val = '>') Then Break;
+      str_val := str_val + lex_tok.val;
+    End;
+  End
+  Else If LexPeekKind = TK_STRING Then
+  Begin
+    LexNext;
+    str_val := lex_tok.val;
+  End
+  Else If LexPeekKind = TK_IDENT Then
+  Begin
+    LexNext;
+    str_val := lex_tok.val;
+  End;
+
+  body_start := CollectBlock(body_cnt);
+  If (Length(str_val) = 0) Or (body_cnt = 0) Then Exit;
+
+  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
+  Begin
+    ErrorMsg('Expansion IRPC trop profonde');
+    Exit;
+  End;
+  Inc(macro_exp_top);
+  expidx := macro_exp_top;
+  macro_exp_stk[expidx].line_cnt := 0;
+  macro_exp_stk[expidx].cur_pos  := 1;
+  macro_exp_stk[expidx].do_exitm := False;
+  macro_exp_stk[expidx].mi       := 0;
+
+  For i := 1 To Length(str_val) Do
+  Begin
+    char_str := str_val[i];
+    For j := 1 To body_cnt Do
+    Begin
+      subst := SubstOneParam(macro_line_pool[body_start + j - 1],
+                             pname, char_str);
+      If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
+      Begin
+        Inc(macro_exp_stk[expidx].line_cnt);
+        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
+      End;
+    End;
+  End;
+End;
+
+{ ============================================================
+  MacroExitm : signaler EXITM depuis le corps d une macro.
+  Marque do_exitm sur le niveau courant d expansion.
+  ============================================================ }
+Procedure MacroExitm;
+Begin
+  If macro_exp_top >= 0 Then
+    macro_exp_stk[macro_exp_top].do_exitm := True;
+End;
+
+{ ============================================================
+  ParsePurge : PURGE nom [, nom ...]
+  Marque une ou plusieurs macros comme purgees.
+  ============================================================ }
+Procedure ParsePurge;
+Var
+  mi  : Integer;
+  tok : TSymString;
+Begin
+  Repeat
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    mi  := MacroFind(tok);
+    If mi > 0 Then
+      macro_table[mi].purged := True
+    Else
+      WarnMsg('PURGE : macro inconnue : ' + tok);
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  Programme principal (TODOs 17 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -6517,10 +7221,11 @@ Begin
   ModelInit;
   VisInit;
   StructInit;
+  MacroInit;
   SrcInit;
   LexInit;
   SymInit;
   local_unique_id := 0;
-  Writeln('TODOs 01-16 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc).');
-  Writeln('TODOs 17 a 25 a implementer.');
+  Writeln('TODOs 01-17 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro).');
+  Writeln('TODOs 18 a 25 a implementer.');
 End.
