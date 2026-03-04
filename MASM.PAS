@@ -5653,62 +5653,97 @@ Begin
 End;
 
 { ============================================================
-  Table des instructions TODO 12
+  Table unifiee des instructions machine (groupes 12-15)
   ============================================================ }
 Const
-  I12_MOV   =  1;  I12_ADD   =  2;  I12_OR    =  3;  I12_ADC   =  4;
-  I12_SBB   =  5;  I12_AND   =  6;  I12_SUB   =  7;  I12_XOR   =  8;
-  I12_CMP   =  9;  I12_INC   = 10;  I12_DEC   = 11;  I12_NOT   = 12;
-  I12_NEG   = 13;  I12_XCHG  = 14;  I12_LEA   = 15;  I12_LDS   = 16;
-  I12_LES   = 17;  I12_TEST  = 18;
-  I12_COUNT = 18;
-  I12_NAMES : Array[1..I12_COUNT] Of String[4] = (
-    'MOV',  'ADD',  'OR',   'ADC',  'SBB',  'AND',  'SUB',  'XOR',
-    'CMP',  'INC',  'DEC',  'NOT',  'NEG',  'XCHG', 'LEA',  'LDS',
-    'LES',  'TEST'
+  { --- Groupe 12 : MOV, arithmetique, logique --- }
+  IN_MOV   =  1;  IN_ADD   =  2;  IN_OR    =  3;  IN_ADC   =  4;
+  IN_SBB   =  5;  IN_AND   =  6;  IN_SUB   =  7;  IN_XOR   =  8;
+  IN_CMP   =  9;  IN_INC   = 10;  IN_DEC   = 11;  IN_NOT   = 12;
+  IN_NEG   = 13;  IN_XCHG  = 14;  IN_LEA   = 15;  IN_LDS   = 16;
+  IN_LES   = 17;  IN_TEST  = 18;
+  { --- Groupe 13 : sauts, appels, Jcc --- }
+  IN_JMP    = 19;  IN_CALL   = 20;  IN_RET    = 21;
+  IN_RETF   = 22;  IN_RETN   = 23;  IN_JCXZ   = 24;
+  IN_LOOP   = 25;  IN_LOOPE  = 26;  IN_LOOPZ  = 27;
+  IN_LOOPNE = 28;  IN_LOOPNZ = 29;
+  IN_JO     = 30;  IN_JNO    = 31;
+  IN_JB     = 32;  IN_JNAE   = 33;  IN_JC     = 34;
+  IN_JNB    = 35;  IN_JAE    = 36;  IN_JNC    = 37;
+  IN_JE     = 38;  IN_JZ     = 39;
+  IN_JNE    = 40;  IN_JNZ    = 41;
+  IN_JBE    = 42;  IN_JNA    = 43;
+  IN_JNBE   = 44;  IN_JA     = 45;
+  IN_JS     = 46;  IN_JNS    = 47;
+  IN_JP     = 48;  IN_JPE    = 49;
+  IN_JNP    = 50;  IN_JPO    = 51;
+  IN_JL     = 52;  IN_JNGE   = 53;
+  IN_JNL    = 54;  IN_JGE    = 55;
+  IN_JLE    = 56;  IN_JNG    = 57;
+  IN_JNLE   = 58;  IN_JG     = 59;
+  { --- Groupe 14 : arithmetique etendue, shifts, flags --- }
+  IN_MUL   = 60;  IN_IMUL  = 61;  IN_DIV   = 62;  IN_IDIV  = 63;
+  IN_CBW   = 64;  IN_CWD   = 65;
+  IN_AAA   = 66;  IN_AAS   = 67;  IN_DAA   = 68;  IN_DAS   = 69;
+  IN_AAM   = 70;  IN_AAD   = 71;
+  IN_ROL   = 72;  IN_ROR   = 73;  IN_RCL   = 74;  IN_RCR   = 75;
+  IN_SHL   = 76;  IN_SAL   = 77;  IN_SHR   = 78;  IN_SAR   = 79;
+  IN_STC   = 80;  IN_CLC   = 81;  IN_CMC   = 82;
+  IN_STD   = 83;  IN_CLD   = 84;  IN_STI   = 85;  IN_CLI   = 86;
+  IN_PUSHF = 87;  IN_POPF  = 88;  IN_SAHF  = 89;  IN_LAHF  = 90;
+  IN_XLAT  = 91;  IN_XLATB = 92;
+  { --- Groupe 15 : PUSH/POP, chaines, E/S, divers --- }
+  IN_PUSH  =  93;  IN_POP   =  94;  IN_PUSHA =  95;  IN_POPA  =  96;
+  IN_REP   =  97;  IN_REPE  =  98;  IN_REPZ  =  99;
+  IN_REPNE = 100;  IN_REPNZ = 101;
+  IN_MOVSB = 102;  IN_MOVSW = 103;  IN_MOVS  = 104;
+  IN_CMPSB = 105;  IN_CMPSW = 106;
+  IN_SCASB = 107;  IN_SCASW = 108;
+  IN_STOSB = 109;  IN_STOSW = 110;
+  IN_LODSB = 111;  IN_LODSW = 112;
+  IN_IN    = 113;  IN_OUT   = 114;
+  IN_INT   = 115;  IN_INT3  = 116;  IN_INTO  = 117;  IN_IRET  = 118;
+  IN_HLT   = 119;  IN_NOP   = 120;  IN_WAIT  = 121;
+  IN_LOCK  = 122;  IN_ESC   = 123;
+  IN_COUNT = 123;
+  IN_NAMES : Array[1..IN_COUNT] Of String[6] = (
+    { 1-18 : groupe 12 }
+    'MOV',   'ADD',    'OR',     'ADC',    'SBB',    'AND',
+    'SUB',   'XOR',    'CMP',    'INC',    'DEC',    'NOT',
+    'NEG',   'XCHG',   'LEA',    'LDS',    'LES',    'TEST',
+    { 19-59 : groupe 13 }
+    'JMP',   'CALL',   'RET',    'RETF',   'RETN',   'JCXZ',
+    'LOOP',  'LOOPE',  'LOOPZ',  'LOOPNE', 'LOOPNZ',
+    'JO',    'JNO',    'JB',     'JNAE',   'JC',
+    'JNB',   'JAE',    'JNC',    'JE',     'JZ',
+    'JNE',   'JNZ',    'JBE',    'JNA',
+    'JNBE',  'JA',     'JS',     'JNS',
+    'JP',    'JPE',    'JNP',    'JPO',
+    'JL',    'JNGE',   'JNL',    'JGE',
+    'JLE',   'JNG',    'JNLE',   'JG',
+    { 60-92 : groupe 14 }
+    'MUL',   'IMUL',   'DIV',    'IDIV',
+    'CBW',   'CWD',
+    'AAA',   'AAS',    'DAA',    'DAS',    'AAM',    'AAD',
+    'ROL',   'ROR',    'RCL',    'RCR',    'SHL',    'SAL',    'SHR',  'SAR',
+    'STC',   'CLC',    'CMC',    'STD',    'CLD',    'STI',    'CLI',
+    'PUSHF', 'POPF',   'SAHF',   'LAHF',   'XLAT',   'XLATB',
+    { 93-123 : groupe 15 }
+    'PUSH',  'POP',    'PUSHA',  'POPA',
+    'REP',   'REPE',   'REPZ',   'REPNE',  'REPNZ',
+    'MOVSB', 'MOVSW',  'MOVS',   'CMPSB',  'CMPSW',
+    'SCASB', 'SCASW',  'STOSB',  'STOSW',  'LODSB',  'LODSW',
+    'IN',    'OUT',    'INT',    'INT3',   'INTO',   'IRET',
+    'HLT',   'NOP',    'WAIT',   'LOCK',   'ESC'
   );
 
-Function FindInstr12(Const s : TString) : Integer;
+Function FindInstr(Const s : TString) : Integer;
 Var i : Integer;
 Begin
-  FindInstr12 := 0;
-  For i := 1 To I12_COUNT Do
-    If I12_NAMES[i] = s Then
-    Begin FindInstr12 := i; Exit; End;
-End;
-
-{ ============================================================
-  ParseInstr12 : dispatcher pour les instructions TODO 12
-  Retourne True si l instruction a ete reconnue et encodee.
-  ============================================================ }
-Function ParseInstr12(Const mnem : TString) : Boolean;
-Var
-  instr_idx : Integer;
-Begin
-  ParseInstr12 := True;
-  instr_idx := FindInstr12(mnem);
-  Case instr_idx Of
-    I12_MOV  : EncodeMOV;
-    I12_ADD  : EncodeArith(0);
-    I12_OR   : EncodeArith(1);
-    I12_ADC  : EncodeArith(2);
-    I12_SBB  : EncodeArith(3);
-    I12_AND  : EncodeArith(4);
-    I12_SUB  : EncodeArith(5);
-    I12_XOR  : EncodeArith(6);
-    I12_CMP  : EncodeArith(7);
-    I12_INC  : EncodeIncDec(False);
-    I12_DEC  : EncodeIncDec(True);
-    I12_NOT  : EncodeNotNeg(False);
-    I12_NEG  : EncodeNotNeg(True);
-    I12_XCHG : EncodeXCHG;
-    I12_LEA  : EncodeLEA_LxS($8D);
-    I12_LDS  : EncodeLEA_LxS($C5);
-    I12_LES  : EncodeLEA_LxS($C4);
-    I12_TEST : EncodeTEST;
-  Else
-    ParseInstr12 := False;
-  End; { Case instr_idx }
+  FindInstr := 0;
+  For i := 1 To IN_COUNT Do
+    If IN_NAMES[i] = s Then
+    Begin FindInstr := i; Exit; End;
 End;
 
 { ============================================================
@@ -6153,89 +6188,7 @@ Begin
   EmitByte(Byte(disp And $FF));
 End;
 
-{ ============================================================
-  Table des instructions TODO 13
-  ============================================================ }
-Const
-  I13_JMP    =  1;  I13_CALL   =  2;  I13_RET    =  3;
-  I13_RETF   =  4;  I13_RETN   =  5;  I13_JCXZ   =  6;
-  I13_LOOP   =  7;  I13_LOOPE  =  8;  I13_LOOPZ  =  9;
-  I13_LOOPNE = 10;  I13_LOOPNZ = 11;
-  I13_JO     = 12;  I13_JNO    = 13;
-  I13_JB     = 14;  I13_JNAE   = 15;  I13_JC     = 16;
-  I13_JNB    = 17;  I13_JAE    = 18;  I13_JNC    = 19;
-  I13_JE     = 20;  I13_JZ     = 21;
-  I13_JNE    = 22;  I13_JNZ    = 23;
-  I13_JBE    = 24;  I13_JNA    = 25;
-  I13_JNBE   = 26;  I13_JA     = 27;
-  I13_JS     = 28;  I13_JNS    = 29;
-  I13_JP     = 30;  I13_JPE    = 31;
-  I13_JNP    = 32;  I13_JPO    = 33;
-  I13_JL     = 34;  I13_JNGE   = 35;
-  I13_JNL    = 36;  I13_JGE    = 37;
-  I13_JLE    = 38;  I13_JNG    = 39;
-  I13_JNLE   = 40;  I13_JG     = 41;
-  I13_COUNT  = 41;
-  I13_NAMES : Array[1..I13_COUNT] Of String[6] = (
-    'JMP',    'CALL',   'RET',    'RETF',   'RETN',   'JCXZ',
-    'LOOP',   'LOOPE',  'LOOPZ',  'LOOPNE', 'LOOPNZ',
-    'JO',     'JNO',    'JB',     'JNAE',   'JC',
-    'JNB',    'JAE',    'JNC',    'JE',     'JZ',
-    'JNE',    'JNZ',    'JBE',    'JNA',
-    'JNBE',   'JA',     'JS',     'JNS',
-    'JP',     'JPE',    'JNP',    'JPO',
-    'JL',     'JNGE',   'JNL',    'JGE',
-    'JLE',    'JNG',    'JNLE',   'JG'
-  );
 
-Function FindInstr13(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  FindInstr13 := 0;
-  For i := 1 To I13_COUNT Do
-    If I13_NAMES[i] = s Then
-    Begin FindInstr13 := i; Exit; End;
-End;
-
-{ ============================================================
-  ParseInstr13 : dispatcher TODO 13
-  ============================================================ }
-Function ParseInstr13(Const mnem : TString) : Boolean;
-Var
-  instr_idx : Integer;
-Begin
-  ParseInstr13 := True;
-  instr_idx := FindInstr13(mnem);
-  Case instr_idx Of
-    I13_JMP               : EncodeJMP;
-    I13_CALL              : EncodeCALL;
-    I13_RET               : EncodeRET(False);
-    I13_RETF, I13_RETN    : EncodeRET(True);
-    I13_JCXZ              : EncodeJCXZ;
-    I13_LOOP              : EncodeLoop($E2);
-    I13_LOOPE,  I13_LOOPZ : EncodeLoop($E1);
-    I13_LOOPNE,
-    I13_LOOPNZ            : EncodeLoop($E0);
-    I13_JO                        : EncodeJcc($70);
-    I13_JNO                       : EncodeJcc($71);
-    I13_JB,  I13_JNAE, I13_JC     : EncodeJcc($72);
-    I13_JNB, I13_JAE,  I13_JNC    : EncodeJcc($73);
-    I13_JE,  I13_JZ               : EncodeJcc($74);
-    I13_JNE, I13_JNZ              : EncodeJcc($75);
-    I13_JBE, I13_JNA              : EncodeJcc($76);
-    I13_JNBE,I13_JA               : EncodeJcc($77);
-    I13_JS                        : EncodeJcc($78);
-    I13_JNS                       : EncodeJcc($79);
-    I13_JP,  I13_JPE              : EncodeJcc($7A);
-    I13_JNP, I13_JPO              : EncodeJcc($7B);
-    I13_JL,  I13_JNGE             : EncodeJcc($7C);
-    I13_JNL, I13_JGE              : EncodeJcc($7D);
-    I13_JLE, I13_JNG              : EncodeJcc($7E);
-    I13_JNLE,I13_JG               : EncodeJcc($7F);
-  Else
-    ParseInstr13 := False;
-  End; { Case instr_idx }
-End;
 
 { ============================================================
   TODO 14 - INSTRUCTIONS ARITHMETIQUES, LOGIQUES, SHIFTS ET FLAGS
@@ -6348,97 +6301,7 @@ Begin
   End;
 End;
 
-{ ============================================================
-  Table des instructions TODO 14
-  ============================================================ }
-Const
-  I14_MUL   =  1;  I14_IMUL  =  2;  I14_DIV   =  3;  I14_IDIV  =  4;
-  I14_CBW   =  5;  I14_CWD   =  6;
-  I14_AAA   =  7;  I14_AAS   =  8;  I14_DAA   =  9;  I14_DAS   = 10;
-  I14_AAM   = 11;  I14_AAD   = 12;
-  I14_ROL   = 13;  I14_ROR   = 14;  I14_RCL   = 15;  I14_RCR   = 16;
-  I14_SHL   = 17;  I14_SAL   = 18;  I14_SHR   = 19;  I14_SAR   = 20;
-  I14_STC   = 21;  I14_CLC   = 22;  I14_CMC   = 23;
-  I14_STD   = 24;  I14_CLD   = 25;  I14_STI   = 26;  I14_CLI   = 27;
-  I14_PUSHF = 28;  I14_POPF  = 29;  I14_SAHF  = 30;  I14_LAHF  = 31;
-  I14_XLAT  = 32;  I14_XLATB = 33;
-  I14_COUNT = 33;
-  I14_NAMES : Array[1..I14_COUNT] Of String[5] = (
-    'MUL',  'IMUL', 'DIV',  'IDIV',
-    'CBW',  'CWD',
-    'AAA',  'AAS',  'DAA',  'DAS',  'AAM',  'AAD',
-    'ROL',  'ROR',  'RCL',  'RCR',  'SHL',  'SAL',  'SHR',  'SAR',
-    'STC',  'CLC',  'CMC',  'STD',  'CLD',  'STI',  'CLI',
-    'PUSHF','POPF', 'SAHF', 'LAHF', 'XLAT', 'XLATB'
-  );
 
-Function FindInstr14(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  FindInstr14 := 0;
-  For i := 1 To I14_COUNT Do
-    If I14_NAMES[i] = s Then
-    Begin FindInstr14 := i; Exit; End;
-End;
-
-{ ============================================================
-  ParseInstr14 : dispatcher TODO 14
-  ============================================================ }
-Function ParseInstr14(Const mnem : TString) : Boolean;
-Var
-  instr_idx : Integer;
-Begin
-  ParseInstr14 := True;
-  instr_idx := FindInstr14(mnem);
-  Case instr_idx Of
-
-    { --- MUL / IMUL / DIV / IDIV --- }
-    I14_MUL  : Begin EncodeMulDiv(4); Exit; End;
-    I14_IMUL : Begin EncodeMulDiv(5); Exit; End;
-    I14_DIV  : Begin EncodeMulDiv(6); Exit; End;
-    I14_IDIV : Begin EncodeMulDiv(7); Exit; End;
-
-    { --- Conversion --- }
-    I14_CBW  : Begin EmitByte($98); Exit; End;
-    I14_CWD  : Begin EmitByte($99); Exit; End;
-
-    { --- BCD / ASCII --- }
-    I14_AAA  : Begin EmitByte($37); Exit; End;
-    I14_AAS  : Begin EmitByte($3F); Exit; End;
-    I14_DAA  : Begin EmitByte($27); Exit; End;
-    I14_DAS  : Begin EmitByte($2F); Exit; End;
-    I14_AAM  : Begin EmitByte($D4); EmitByte($0A); Exit; End;
-    I14_AAD  : Begin EmitByte($D5); EmitByte($0A); Exit; End;
-
-    { --- Shifts / Rotates --- }
-    I14_ROL          : Begin EncodeShift(0); Exit; End;
-    I14_ROR          : Begin EncodeShift(1); Exit; End;
-    I14_RCL          : Begin EncodeShift(2); Exit; End;
-    I14_RCR          : Begin EncodeShift(3); Exit; End;
-    I14_SHL, I14_SAL : Begin EncodeShift(4); Exit; End;
-    I14_SHR          : Begin EncodeShift(5); Exit; End;
-    I14_SAR          : Begin EncodeShift(7); Exit; End;
-
-    { --- Instructions de drapeaux --- }
-    I14_STC  : Begin EmitByte($F9); Exit; End;
-    I14_CLC  : Begin EmitByte($F8); Exit; End;
-    I14_CMC  : Begin EmitByte($F5); Exit; End;
-    I14_STD  : Begin EmitByte($FD); Exit; End;
-    I14_CLD  : Begin EmitByte($FC); Exit; End;
-    I14_STI  : Begin EmitByte($FB); Exit; End;
-    I14_CLI  : Begin EmitByte($FA); Exit; End;
-
-    { --- PUSHF POPF SAHF LAHF XLAT --- }
-    I14_PUSHF          : Begin EmitByte($9C); Exit; End;
-    I14_POPF           : Begin EmitByte($9D); Exit; End;
-    I14_SAHF           : Begin EmitByte($9E); Exit; End;
-    I14_LAHF           : Begin EmitByte($9F); Exit; End;
-    I14_XLAT, I14_XLATB: Begin EmitByte($D7); Exit; End;
-
-  Else
-    ParseInstr14 := False;
-  End; { Case instr_idx }
-End;
 
 { ============================================================
   TODO 15 — PUSH/POP, instructions de chaines, E/S, divers
@@ -6623,112 +6486,144 @@ Begin
   EmitModRM(cop And 7, op_src);            { reg = bits 2-0 du cop }
 End;
 
-{ --- Dispatcher TODO 15 --- }
-Const
-  I15_PUSH  =  1;  I15_POP   =  2;  I15_PUSHA =  3;  I15_POPA  =  4;
-  I15_REP   =  5;  I15_REPE  =  6;  I15_REPZ  =  7;
-  I15_REPNE =  8;  I15_REPNZ =  9;
-  I15_MOVSB = 10;  I15_MOVSW = 11;  I15_MOVS  = 12;
-  I15_CMPSB = 13;  I15_CMPSW = 14;
-  I15_SCASB = 15;  I15_SCASW = 16;
-  I15_STOSB = 17;  I15_STOSW = 18;
-  I15_LODSB = 19;  I15_LODSW = 20;
-  I15_IN    = 21;  I15_OUT   = 22;
-  I15_INT   = 23;  I15_INT3  = 24;  I15_INTO  = 25;  I15_IRET  = 26;
-  I15_HLT   = 27;  I15_NOP   = 28;  I15_WAIT  = 29;
-  I15_LOCK  = 30;  I15_ESC   = 31;
-  I15_COUNT = 31;
-  I15_NAMES : Array[1..I15_COUNT] Of String[8] = (
-    'PUSH',  'POP',   'PUSHA', 'POPA',
-    'REP',   'REPE',  'REPZ',  'REPNE', 'REPNZ',
-    'MOVSB', 'MOVSW', 'MOVS',  'CMPSB', 'CMPSW',
-    'SCASB', 'SCASW', 'STOSB', 'STOSW', 'LODSB', 'LODSW',
-    'IN',    'OUT',   'INT',   'INT3',  'INTO',  'IRET',
-    'HLT',   'NOP',   'WAIT',  'LOCK',  'ESC'
-  );
+{ --- Dispatcher unifie instructions machine (groupes 12-15) --- }
+Function ParseInstr(Const mnem : TString) : Boolean; Forward;
 
-Function FindInstr15(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  FindInstr15 := 0;
-  For i := 1 To I15_COUNT Do
-    If I15_NAMES[i] = s Then
-    Begin FindInstr15 := i; Exit; End;
-End;
-
-Function ParseInstr15(Const mnem : TString) : Boolean; Forward;
-
-Function ParseInstr15(Const mnem : TString) : Boolean;
+Function ParseInstr(Const mnem : TString) : Boolean;
 Var
+  instr_idx : Integer;
   rep_pfx   : Byte;
   sub_mnem  : TString;
-  instr_idx : Integer;
 Begin
-  ParseInstr15 := True;
+  ParseInstr := True;
   rep_pfx   := 0;
-  instr_idx := FindInstr15(mnem);
+  instr_idx := FindInstr(mnem);
   Case instr_idx Of
 
-    { --- PUSH / POP --- }
-    I15_PUSH  : Begin EncodePush; Exit; End;
-    I15_POP   : Begin EncodePop;  Exit; End;
+    { --- Groupe 12 : MOV, arithmetique, logique --- }
+    IN_MOV  : EncodeMOV;
+    IN_ADD  : EncodeArith(0);
+    IN_OR   : EncodeArith(1);
+    IN_ADC  : EncodeArith(2);
+    IN_SBB  : EncodeArith(3);
+    IN_AND  : EncodeArith(4);
+    IN_SUB  : EncodeArith(5);
+    IN_XOR  : EncodeArith(6);
+    IN_CMP  : EncodeArith(7);
+    IN_INC  : EncodeIncDec(False);
+    IN_DEC  : EncodeIncDec(True);
+    IN_NOT  : EncodeNotNeg(False);
+    IN_NEG  : EncodeNotNeg(True);
+    IN_XCHG : EncodeXCHG;
+    IN_LEA  : EncodeLEA_LxS($8D);
+    IN_LDS  : EncodeLEA_LxS($C5);
+    IN_LES  : EncodeLEA_LxS($C4);
+    IN_TEST : EncodeTEST;
 
-    { --- PUSHA / POPA (80186+) --- }
-    I15_PUSHA : Begin WarnMsg('PUSHA : necessite 80186+'); EmitByte($60); Exit; End;
-    I15_POPA  : Begin WarnMsg('POPA : necessite 80186+');  EmitByte($61); Exit; End;
+    { --- Groupe 13 : sauts, appels, Jcc --- }
+    IN_JMP               : EncodeJMP;
+    IN_CALL              : EncodeCALL;
+    IN_RET               : EncodeRET(False);
+    IN_RETF, IN_RETN     : EncodeRET(True);
+    IN_JCXZ              : EncodeJCXZ;
+    IN_LOOP              : EncodeLoop($E2);
+    IN_LOOPE,  IN_LOOPZ  : EncodeLoop($E1);
+    IN_LOOPNE, IN_LOOPNZ : EncodeLoop($E0);
+    IN_JO                          : EncodeJcc($70);
+    IN_JNO                         : EncodeJcc($71);
+    IN_JB,  IN_JNAE, IN_JC         : EncodeJcc($72);
+    IN_JNB, IN_JAE,  IN_JNC        : EncodeJcc($73);
+    IN_JE,  IN_JZ                  : EncodeJcc($74);
+    IN_JNE, IN_JNZ                 : EncodeJcc($75);
+    IN_JBE, IN_JNA                 : EncodeJcc($76);
+    IN_JNBE,IN_JA                  : EncodeJcc($77);
+    IN_JS                          : EncodeJcc($78);
+    IN_JNS                         : EncodeJcc($79);
+    IN_JP,  IN_JPE                 : EncodeJcc($7A);
+    IN_JNP, IN_JPO                 : EncodeJcc($7B);
+    IN_JL,  IN_JNGE                : EncodeJcc($7C);
+    IN_JNL, IN_JGE                 : EncodeJcc($7D);
+    IN_JLE, IN_JNG                 : EncodeJcc($7E);
+    IN_JNLE,IN_JG                  : EncodeJcc($7F);
 
-    { --- Prefixes REP : juste stocker le code, pas d Exit --- }
-    I15_REP, I15_REPE, I15_REPZ  : rep_pfx := $F3;
-    I15_REPNE, I15_REPNZ          : rep_pfx := $F2;
+    { --- Groupe 14 : arithmetique etendue, shifts, flags --- }
+    IN_MUL  : EncodeMulDiv(4);
+    IN_IMUL : EncodeMulDiv(5);
+    IN_DIV  : EncodeMulDiv(6);
+    IN_IDIV : EncodeMulDiv(7);
+    IN_CBW  : EmitByte($98);
+    IN_CWD  : EmitByte($99);
+    IN_AAA  : EmitByte($37);
+    IN_AAS  : EmitByte($3F);
+    IN_DAA  : EmitByte($27);
+    IN_DAS  : EmitByte($2F);
+    IN_AAM  : Begin EmitByte($D4); EmitByte($0A); End;
+    IN_AAD  : Begin EmitByte($D5); EmitByte($0A); End;
+    IN_ROL           : EncodeShift(0);
+    IN_ROR           : EncodeShift(1);
+    IN_RCL           : EncodeShift(2);
+    IN_RCR           : EncodeShift(3);
+    IN_SHL, IN_SAL   : EncodeShift(4);
+    IN_SHR           : EncodeShift(5);
+    IN_SAR           : EncodeShift(7);
+    IN_STC  : EmitByte($F9);
+    IN_CLC  : EmitByte($F8);
+    IN_CMC  : EmitByte($F5);
+    IN_STD  : EmitByte($FD);
+    IN_CLD  : EmitByte($FC);
+    IN_STI  : EmitByte($FB);
+    IN_CLI  : EmitByte($FA);
+    IN_PUSHF           : EmitByte($9C);
+    IN_POPF            : EmitByte($9D);
+    IN_SAHF            : EmitByte($9E);
+    IN_LAHF            : EmitByte($9F);
+    IN_XLAT, IN_XLATB  : EmitByte($D7);
 
-    { --- Instructions de chaines --- }
-    I15_MOVSB : Begin EmitByte($A4); Exit; End;
-    I15_MOVSW : Begin EmitByte($A5); Exit; End;
-    I15_MOVS  : Begin EmitByte($A4); Exit; End;  { sans suffixe = byte par defaut }
-    I15_CMPSB : Begin EmitByte($A6); Exit; End;
-    I15_CMPSW : Begin EmitByte($A7); Exit; End;
-    I15_SCASB : Begin EmitByte($AE); Exit; End;
-    I15_SCASW : Begin EmitByte($AF); Exit; End;
-    I15_STOSB : Begin EmitByte($AA); Exit; End;
-    I15_STOSW : Begin EmitByte($AB); Exit; End;
-    I15_LODSB : Begin EmitByte($AC); Exit; End;
-    I15_LODSW : Begin EmitByte($AD); Exit; End;
-
-    { --- E/S --- }
-    I15_IN  : Begin EncodeIN;  Exit; End;
-    I15_OUT : Begin EncodeOUT; Exit; End;
-
-    { --- Interruptions --- }
-    I15_INT  : Begin EncodeINT;     Exit; End;
-    I15_INT3 : Begin EmitByte($CC); Exit; End;
-    I15_INTO : Begin EmitByte($CE); Exit; End;
-    I15_IRET : Begin EmitByte($CF); Exit; End;
-
-    { --- Instructions diverses --- }
-    I15_HLT  : Begin EmitByte($F4); Exit; End;
-    I15_NOP  : Begin EmitByte($90); Exit; End;
-    I15_WAIT : Begin EmitByte($9B); Exit; End;
-    I15_LOCK : Begin EmitByte($F0); Exit; End;
-
-    { --- Coprocesseur 8087 --- }
-    I15_ESC : Begin EncodeESC; Exit; End;
+    { --- Groupe 15 : PUSH/POP, chaines, E/S, divers --- }
+    IN_PUSH  : EncodePush;
+    IN_POP   : EncodePop;
+    IN_PUSHA : Begin WarnMsg('PUSHA : necessite 80186+'); EmitByte($60); End;
+    IN_POPA  : Begin WarnMsg('POPA : necessite 80186+');  EmitByte($61); End;
+    { REP* : stocker le prefixe, traite apres le Case }
+    IN_REP, IN_REPE, IN_REPZ  : rep_pfx := $F3;
+    IN_REPNE, IN_REPNZ         : rep_pfx := $F2;
+    IN_MOVSB : EmitByte($A4);
+    IN_MOVSW : EmitByte($A5);
+    IN_MOVS  : EmitByte($A4);  { sans suffixe = byte par defaut }
+    IN_CMPSB : EmitByte($A6);
+    IN_CMPSW : EmitByte($A7);
+    IN_SCASB : EmitByte($AE);
+    IN_SCASW : EmitByte($AF);
+    IN_STOSB : EmitByte($AA);
+    IN_STOSW : EmitByte($AB);
+    IN_LODSB : EmitByte($AC);
+    IN_LODSW : EmitByte($AD);
+    IN_IN    : EncodeIN;
+    IN_OUT   : EncodeOUT;
+    IN_INT   : EncodeINT;
+    IN_INT3  : EmitByte($CC);
+    IN_INTO  : EmitByte($CE);
+    IN_IRET  : EmitByte($CF);
+    IN_HLT   : EmitByte($F4);
+    IN_NOP   : EmitByte($90);
+    IN_WAIT  : EmitByte($9B);
+    IN_LOCK  : EmitByte($F0);
+    IN_ESC   : EncodeESC;
 
   Else
-    { mnemonique inconnu dans ce groupe }
-    ParseInstr15 := False;
+    ParseInstr := False;
     Exit;
   End; { Case instr_idx }
 
-  { Si on arrive ici : c etait un prefixe REP* -- emettre + dispatcher sous-mnemonique }
-  EmitByte(rep_pfx);
-  If LexPeekKind = TK_IDENT Then
+  { Prefixe REP* : emettre + dispatcher l instruction chaine suivante }
+  If rep_pfx <> 0 Then
   Begin
-    sub_mnem := LexPeekVal;
-    LexNext;
-  End
-  Else
-    sub_mnem := '';
-  ParseInstr15 := ParseInstr15(sub_mnem);
+    EmitByte(rep_pfx);
+    If LexPeekKind = TK_IDENT Then
+    Begin sub_mnem := LexPeekVal; LexNext; End
+    Else sub_mnem := '';
+    ParseInstr := ParseInstr(sub_mnem);
+  End;
 End;
 
 { ============================================================
@@ -9093,7 +8988,7 @@ Begin
      ((tok1 = 'REP')   Or (tok1 = 'REPE')  Or (tok1 = 'REPZ') Or
       (tok1 = 'REPNE') Or (tok1 = 'REPNZ')) Then
   Begin
-    If ParseInstr15(tok1) Then Exit;
+    If ParseInstr(tok1) Then Exit;
   End;
 
   { --- determiner si premier token est un label ou un mnemonic --- }
@@ -9408,10 +9303,7 @@ Begin
   End; { Case dir_idx }
 
   { --- instructions machine : passer aux encodeurs --- }
-  If ParseInstr15(mnem) Then Exit;
-  If ParseInstr14(mnem) Then Exit;
-  If ParseInstr13(mnem) Then Exit;
-  If ParseInstr12(mnem) Then Exit;
+  If ParseInstr(mnem) Then Exit;
 
   { --- expansion macro --- }
   mi := MacroFind(mnem);
