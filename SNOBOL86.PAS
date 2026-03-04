@@ -1801,23 +1801,22 @@ End;
   &TRIM      -> entier 0/1 : trim auto de l'entree (defaut 0)
   -------------------------------------------------------------------------- }
 
+Const
+  SV_LAST = 14;
+  builtinCommandArray : Array[0..14] Of String[10] = (
+    'ALPHABET','ANCHOR','DUMP','FAIL','FENCE','FNCODE','FULLSCAN','INPUT',
+    'OUTPUT','STCOUNT','STFAIL','STLIMIT','SUBJECT','SUCCESS','TRIM');
+  SV_INITS : Array[0..14] Of LongInt = (
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 50000, 0, 0, 0);
+  SV_KINDS : Array[0..14] Of TValueKind = (
+    VK_STR, VK_INT, VK_INT, VK_PAT, VK_PAT, VK_INT, VK_INT, VK_STR,
+    VK_STR, VK_INT, VK_INT, VK_INT, VK_STR, VK_PAT, VK_INT);
+
 Procedure RegisterSysVars;
+Var i : Integer;
 Begin
-  RegisterSysVar('ALPHABET', 0,     VK_STR);   { init par GenPredefinedData }
-  RegisterSysVar('ANCHOR',   0,     VK_INT);
-  RegisterSysVar('DUMP',     0,     VK_INT);
-  RegisterSysVar('FAIL',     0,     VK_PAT);   { patron FAIL }
-  RegisterSysVar('FENCE',    0,     VK_PAT);   { patron FENCE }
-  RegisterSysVar('FNCODE',   0,     VK_INT);
-  RegisterSysVar('FULLSCAN', 0,     VK_INT);
-  RegisterSysVar('INPUT',    0,     VK_STR);   { lecture stdin }
-  RegisterSysVar('OUTPUT',   0,     VK_STR);   { ecriture stdout }
-  RegisterSysVar('STCOUNT',  0,     VK_INT);
-  RegisterSysVar('STFAIL',   0,     VK_INT);
-  RegisterSysVar('STLIMIT',  50000, VK_INT);
-  RegisterSysVar('SUBJECT',  0,     VK_STR);
-  RegisterSysVar('SUCCESS',  0,     VK_PAT);   { patron SUCCEED }
-  RegisterSysVar('TRIM',     0,     VK_INT);
+  For i := 0 To SV_LAST Do
+    RegisterSysVar(builtinCommandArray[i], SV_INITS[i], SV_KINDS[i]);
 End;
 
 { --------------------------------------------------------------------------

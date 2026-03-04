@@ -70,7 +70,13 @@ Function ReadObjFile(Const FileName:String):Boolean;
 Var
  RecType:Byte;
  RecLen:Word;
- Buffer:Array[0..1023] of Byte;
+ Buffer:Array[0..8191] of Byte;
+ i:Integer;
+ SegIndex:Word;
+ SegOffset:Word;
+ DataLen:Word;
+ EndPos:LongInt;
+ IdxSize:Integer;
 Begin
  ReadObjFile:=False;
  {$I-}Assign(ObjFile,FileName);
@@ -78,32 +84,47 @@ Begin
  If IOResult<>0 Then Exit;
  While Not Eof(ObjFile) do Begin
   BlockRead(ObjFile,RecType,1);
+  If Eof(ObjFile) Then Break;
   BlockRead(ObjFile,RecLen,2);
   If RecLen>SizeOf(Buffer)Then Begin
-   WriteLn('Erreur : RecLen sup‚rieur … la taille du tampon');
+   WriteLn('Erreur : RecLen supï¿½rieur ï¿½ la taille du tampon');
    Halt(10);
   End;
   BlockRead(ObjFile,Buffer,RecLen);
   Case RecType of
-   $80:Begin { D‚finition de segment }
+   $98:Begin { SEGDEF : Dï¿½finition de segment OMF }
     Inc(SegmentCount);
+    If SegmentCount>MAX_SEGMENTS Then Begin
+     WriteLn('Erreur : Trop de segments dans le fichier objet');
+     Halt(11);
+    End;
     With Segments[SegmentCount] do Begin
      Name:='';
-     Move(Buffer[0], Size, 2);
+     If RecLen>=4 Then Move(Buffer[1], Size, 2)
+                 Else Size:=0;
+     Address:=0;
      Class:='CODE';
     End;
    End;
-   $90:Begin { D‚finition publique }
+   $90:Begin { Dï¿½finition publique }
     Inc(SymbolCount);
+    If SymbolCount>MAX_SYMBOLS Then Begin
+     WriteLn('Erreur : Trop de symboles publics');
+     Halt(12);
+    End;
     With Symbols[SymbolCount] do Begin
      Name:='';
-     Move(Buffer[0],Segment,2);
-     Move(Buffer[2],Offset,2);
+     Segment:=0;
+     Offset:=0;
      IsExternal:=False;
     End;
    End;
-   $9C:Begin { R‚f‚rence externe }
+   $8C:Begin { EXTDEF : Rï¿½fï¿½rence externe }
     Inc(SymbolCount);
+    If SymbolCount>MAX_SYMBOLS Then Begin
+     WriteLn('Erreur : Trop de symboles externes');
+     Halt(13);
+    End;
     With Symbols[SymbolCount] do Begin
      Name:='';
      Segment:=0;
@@ -111,52 +132,134 @@ Begin
      IsExternal:=True;
     End;
    End;
+   $A0:Begin { LEDATA : Donnï¿½es de segment }
+    If RecLen>=5 Then Begin
+     IdxSize:=1;
+     SegIndex:=Buffer[0];
+     If (SegIndex And $80)<>0 Then Begin
+      If RecLen<6 Then Continue;
+      SegIndex:=((SegIndex And $7F) Shl 8) Or Buffer[1];
+      IdxSize:=2;
+     End;
+     Move(Buffer[IdxSize],SegOffset,2);
+     DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
+     If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+      EndPos:=LongInt(SegOffset)+LongInt(DataLen);
+      If EndPos>$FFFF Then EndPos:=$FFFF;
+      If EndPos>Segments[SegIndex].Size Then Segments[SegIndex].Size:=EndPos;
+     End;
+    End;
+   End;
   End;
  End;
  Close(ObjFile);
+  { Adresse relative de chaque segment dans l'image liï¿½e }
+ For i:=1 to SegmentCount do Begin
+  If i=1 Then Segments[i].Address:=0
+         Else Segments[i].Address:=Segments[i-1].Address+Segments[i-1].Size;
+ End;
  ReadObjFile:=True;
 End;
 
 Procedure GenerateExe(Const FileName:String);
 Var
  i:Integer;
- CodeSize:LongInt;
- Buffer:Array[0..1023] of Byte;
+ CodeSize,HeaderBytes,DataStart:LongInt;
+ Remaining,ChunkSize:Word;
+ RecType:Byte;
+ RecLen:Word;
+ ObjBuf:Array[0..8191] of Byte;
+ SegIndex:Word;
+ SegOffset:Word;
+ DataLen:Word;
+ IdxSize:Integer;
+ WritePos:LongInt;
 Begin
-  { Initialise l'entˆte EXE }
+  { Initialise l'entï¿½te EXE }
  FillChar(ExeHeader, SizeOf(ExeHeader), 0);
  With ExeHeader do Begin
   Signature:=$5A4D;  { 'MZ' }
-  HeaderSize:=2;     { Dans les paragraphes de 16 octets }
   MinAlloc:=0;
   MaxAlloc:=$FFFF;
   InitSS:=0;
   InitSP:=StackSize;
   InitCS:=0;
   InitIP:=0;
-  RelocOffset:=$1E;
+  RelocOffset:=SizeOf(TExeHeader);
  End;
 
   { Calcul du taille du code }
  CodeSize:=0;
  For i:=1 to SegmentCount do Inc(CodeSize,Segments[i].Size);
- ExeHeader.LastPageBytes:=CodeSize mod 512;
- ExeHeader.PageCount:=(CodeSize + 511) div 512;
  ExeHeader.RelocCount:=RelocationCount;
+
+ HeaderBytes:=SizeOf(TExeHeader)+LongInt(RelocationCount)*4;
+ ExeHeader.HeaderSize:=(HeaderBytes+15) div 16;   { en paragraphes }
+ If ExeHeader.HeaderSize<2 Then ExeHeader.HeaderSize:=2;
+ DataStart:=LongInt(ExeHeader.HeaderSize)*16;
+ ExeHeader.LastPageBytes:=(DataStart+CodeSize) mod 512;
+ ExeHeader.PageCount:=(DataStart+CodeSize+511) div 512;
 
   { Ecrit un fichier EXE }
  Assign(ExeFile,FileName);
  Rewrite(ExeFile,1);
  BlockWrite(ExeFile,ExeHeader,SizeOf(ExeHeader));
 
-  { crire la relocations }
+  { ï¿½crire la relocations }
  For i:=1 to RelocationCount do BlockWrite(ExeFile,Relocations[i],4);
-  { Ecrit les segments de code }
+
+    { Remplit le padding d'entï¿½te jusqu'ï¿½ DataStart }
+   FillChar(Buffer,SizeOf(Buffer),0);
+   While FilePos(ExeFile)<DataStart do Begin
+    ChunkSize:=SizeOf(Buffer);
+    If FilePos(ExeFile)+ChunkSize>DataStart Then ChunkSize:=DataStart-FilePos(ExeFile);
+    BlockWrite(ExeFile,Buffer,ChunkSize);
+   End;
+
+    { Rï¿½serve les segments de code (zï¿½ro) }
  For i:=1 to SegmentCount do Begin
-  { crit le segments de donn‚es - simplifi‚ }
-  FillChar(Buffer, Segments[i].Size, 0);
-  BlockWrite(ExeFile, Buffer, Segments[i].Size);
+    Remaining:=Segments[i].Size;
+    While Remaining>0 do Begin
+     If Remaining>SizeOf(Buffer) Then ChunkSize:=SizeOf(Buffer)
+                               Else ChunkSize:=Remaining;
+     BlockWrite(ExeFile,Buffer,ChunkSize);
+     Dec(Remaining,ChunkSize);
+    End;
  End;
+
+    { Copie les octets rï¿½els depuis LEDATA du fichier OBJ }
+   Assign(ObjFile,ObjFileName);
+   Reset(ObjFile,1);
+   While Not Eof(ObjFile) do Begin
+    BlockRead(ObjFile,RecType,1);
+    If Eof(ObjFile) Then Break;
+    BlockRead(ObjFile,RecLen,2);
+    If RecLen>SizeOf(ObjBuf) Then Begin
+     WriteLn('Erreur : RecLen supï¿½rieur ï¿½ la taille du tampon LEDATA');
+     Close(ObjFile);
+     Close(ExeFile);
+     Exit;
+    End;
+    BlockRead(ObjFile,ObjBuf,RecLen);
+    If RecType=$A0 Then Begin
+     If RecLen<5 Then Continue;
+     IdxSize:=1;
+     SegIndex:=ObjBuf[0];
+     If (SegIndex And $80)<>0 Then Begin
+      If RecLen<6 Then Continue;
+      SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[1];
+      IdxSize:=2;
+     End;
+     Move(ObjBuf[IdxSize],SegOffset,2);
+     DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
+     If (DataLen>0)And(SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+      WritePos:=DataStart+Segments[SegIndex].Address+SegOffset;
+      Seek(ExeFile,WritePos);
+      BlockWrite(ExeFile,ObjBuf[IdxSize+2],DataLen);
+     End;
+    End;
+   End;
+   Close(ObjFile);
  Close(ExeFile);
 End;
 
@@ -183,7 +286,7 @@ Begin
  Negative:=False;
   { Saute les espaces blancs }
  While(i<=Length(S))and(S[i] = ' ')do Inc(i);
-  { V‚rifie pour les signes }
+  { Vï¿½rifie pour les signes }
  If(i<=Length(S))Then Begin
   If S[i]='-'Then Begin
    Negative:=True;
@@ -210,14 +313,14 @@ BEGIN
   WriteLn;
   WriteLn('  /CP:n    - Fixe le maximum de paragraphes');
   WriteLn('  /STACK:n - Fixe la taille de la pile');
-  WriteLn('  /MAP     - G‚n‚rer un fichier de cartographie (MAP)');
+  WriteLn('  /MAP     - Gï¿½nï¿½rer un fichier de cartographie (MAP)');
   Halt;
  End;
   { Initialise }
  SegmentCount:=0;
  SymbolCount:=0;
  RelocationCount:=0;
- StackSize:=2048;  { Taille de la pile par d‚faut }
+ StackSize:=2048;  { Taille de la pile par dï¿½faut }
   { Analyse de la ligne de commande }
  ObjFileName:=ParamStr(1);
  If ParamCount>1 Then ExeFileName:=ParamStr(2)
@@ -234,7 +337,7 @@ BEGIN
   { Processus de liaison }
  If ReadObjFile(ObjFileName)Then Begin
   GenerateExe(ExeFileName);
-  WriteLn('Liaison compl‚t‚');
+  WriteLn('Liaison complï¿½tï¿½');
  End
   Else
  WriteLn('Erreur de lecture de fichier objet');
