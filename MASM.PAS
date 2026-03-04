@@ -5137,6 +5137,12 @@ Begin
   End;
 End;
 
+{ ---- Table des prefixes de taille pour ParseOperand ---- }
+Const
+  PO_COUNT = 5;
+  PO_NAMES : Array[1..5] Of String[5] = ('BYTE','WORD','DWORD','NEAR','FAR');
+  PO_SIZES : Array[1..5] Of Byte      = (1, 2, 4, 2, 4);
+
 { ============================================================
   ParseOperand : parser un operande global
   ============================================================ }
@@ -5149,6 +5155,8 @@ Var
   ovr     : Integer;
   e       : TExpr;
   sz_hint : Integer;
+  po_idx  : Integer;
+  i       : Integer;
 Begin
   ClearOp(op);
   sz_hint := 0;
@@ -5159,15 +5167,13 @@ Begin
   If LexPeekKind = TK_IDENT Then
   Begin
     tok := LexPeekVal;
-    If (tok = 'BYTE') Or (tok = 'WORD') Or (tok = 'DWORD') Or
-       (tok = 'NEAR') Or (tok = 'FAR') Then
+    po_idx := 0;
+    For i := 1 To PO_COUNT Do
+      If PO_NAMES[i] = tok Then Begin po_idx := i; Break; End;
+    If po_idx > 0 Then
     Begin
       LexNext;
-      If      lex_tok.val = 'BYTE'  Then sz_hint := 1
-      Else If lex_tok.val = 'WORD'  Then sz_hint := 2
-      Else If lex_tok.val = 'DWORD' Then sz_hint := 4
-      Else If lex_tok.val = 'NEAR'  Then sz_hint := 2
-      Else If lex_tok.val = 'FAR'   Then sz_hint := 4;
+      sz_hint := PO_SIZES[po_idx];
       If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then
         LexNext;
     End;
