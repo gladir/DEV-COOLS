@@ -462,6 +462,8 @@ Program MASM;
   ============================================================ }
 
 { ---- Constantes generales ---- }
+Uses Dos;
+
 Const
   VERSION      = '1.0';
   MAX_SYM      = 4096; { max symboles (heap, compte seulement) }
@@ -473,6 +475,7 @@ Const
   MAX_IF_DEPTH = 32;   { profondeur max des blocs IF imbriques }
   HASH_SIZE    = 256;  { buckets de la table de hachage symboles }
   INC_DEPTH    = 8;    { max niveaux d inclusion INCLUDE }
+  MAX_TEXTEQU  = 128;  { max macros texte (TEXTEQU) }
 
 { ---- Types de base ---- }
 Type
@@ -776,6 +779,15 @@ Var
   inc_dirs   : Array[0..15] Of TString;
   inc_dir_cnt: Integer;
 
+  { Table TEXTEQU (macros texte) et predefined strings }
+  textequ_names : Array[1..MAX_TEXTEQU] Of TSymString;
+  textequ_vals  : Array[1..MAX_TEXTEQU] Of TString;
+  textequ_count : Integer;
+
+  { Predefined string values (mises a jour en cours d assemblage) }
+  predef_date : TString;  { date assemblage 'MM/DD/YY' }
+  predef_time : TString;  { heure assemblage 'HH:MM:SS' }
+
 { ============================================================
   SrcInit : initialiser la pile d inclusion
   ============================================================ }
@@ -786,6 +798,9 @@ Begin
   src_top     := -1;
   phys_lineno := 0;
   inc_dir_cnt := 0;
+  textequ_count := 0;
+  predef_date := '';
+  predef_time := '';
   For i := 0 To INC_DEPTH-1 Do
   Begin
     src_stack[i].fname   := '';
@@ -814,6 +829,10 @@ Var
   i    : Integer;
   path : TString;
   tmp  : Text;
+  env  : TString;
+  ep   : Integer;
+  es   : Integer;
+  edr  : TString;
 Begin
   { 1. tel quel (absolu ou relatif au CWD) }
   Assign(tmp, fname);
@@ -842,6 +861,34 @@ Begin
       Close(tmp);
       SrcFindFile := path;
       Exit;
+    End;
+  End;
+  { 3. dans la variable d environnement INCLUDE (separateur ;) }
+  env := GetEnv('INCLUDE');
+  If env <> '' Then
+  Begin
+    ep := 1;
+    While ep <= Length(env) Do
+    Begin
+      es := ep;
+      While (ep <= Length(env)) And (env[ep] <> ';') Do Inc(ep);
+      edr := Copy(env, es, ep - es);
+      Inc(ep); { sauter le ; }
+      If edr <> '' Then
+      Begin
+        If edr[Length(edr)] <> '\' Then edr := edr + '\';
+        path := edr + fname;
+        Assign(tmp, path);
+        {$I-}
+        Reset(tmp);
+        {$I+}
+        If IoResult = 0 Then
+        Begin
+          Close(tmp);
+          SrcFindFile := path;
+          Exit;
+        End;
+      End;
     End;
   End;
   SrcFindFile := fname; { non trouve, retourner tel quel }
@@ -1046,6 +1093,158 @@ Begin
   cur_lineno := src_stack[src_top].lineno;
   cur_line   := logical;
   SrcReadLine := True;
+End;
+
+{ ============================================================
+  TODO 23 - TEXTEQU / SYMBOLES PREDEFINIS - IMPLEMENTE
+  ============================================================ }
+
+{ ============================================================
+  TextEquFind : chercher une macro texte par nom (major).
+  Retourne l index 1-base dans textequ_names, ou 0.
+  ============================================================ }
+Function TextEquFind(Const name : TSymString) : Integer;
+Var i : Integer;
+Begin
+  TextEquFind := 0;
+  For i := 1 To textequ_count Do
+    If textequ_names[i] = name Then
+    Begin
+      TextEquFind := i;
+      Exit;
+    End;
+End;
+
+{ ============================================================
+  TextEquSet : creer ou mettre a jour une macro texte.
+  ============================================================ }
+Procedure TextEquSet(Const name : TSymString; Const val : TString);
+Var i : Integer;
+Begin
+  i := TextEquFind(name);
+  If i = 0 Then
+  Begin
+    If textequ_count >= MAX_TEXTEQU Then Exit;
+    Inc(textequ_count);
+    i := textequ_count;
+  End;
+  textequ_names[i] := name;
+  textequ_vals[i]  := val;
+End;
+
+{ ============================================================
+  TextEquGet : retourner la valeur d une macro texte ou ''.
+  ============================================================ }
+Function TextEquGet(Const name : TSymString) : TString;
+Var i : Integer;
+Begin
+  i := TextEquFind(name);
+  If i > 0 Then TextEquGet := textequ_vals[i]
+  Else           TextEquGet := '';
+End;
+
+{ ============================================================
+  TextEquSubstLine : substituer les macros texte dans une ligne
+  source. Parcourt caractere par caractere ; quand un identif.
+  correspond a une TEXTEQU, il est remplace par sa valeur.
+  Respecte les chaines entre ' et ".
+  ============================================================ }
+Function TextEquSubstLine(Const s : TString) : TString;
+Var
+  i      : Integer;
+  c      : Char;
+  in_sq  : Boolean; { dans une chaine ' }
+  in_dq  : Boolean; { dans une chaine " }
+  id_st  : Integer; { debut de l identifiant courant }
+  id     : TSymString;
+  uname  : TSymString;
+  val    : TString;
+  res    : TString;
+Begin
+  res   := '';
+  in_sq := False;
+  in_dq := False;
+  i     := 1;
+  While i <= Length(s) Do
+  Begin
+    c := s[i];
+    { gestion chaines }
+    If (c = '''') And Not in_dq Then Begin in_sq := Not in_sq; res := res + c; Inc(i); Continue; End;
+    If (c = '"')  And Not in_sq Then Begin in_dq := Not in_dq; res := res + c; Inc(i); Continue; End;
+    If in_sq Or in_dq Then Begin res := res + c; Inc(i); Continue; End;
+
+    { debut d identifiant : lettre, _ ou @ }
+    If (c = '@') Or (c = '_') Or ((c >= 'A') And (c <= 'Z'))
+                               Or ((c >= 'a') And (c <= 'z')) Then
+    Begin
+      id_st := i;
+      id := '';
+      While (i <= Length(s)) And
+            ((s[i] = '@') Or (s[i] = '_') Or
+             ((s[i] >= 'A') And (s[i] <= 'Z')) Or
+             ((s[i] >= 'a') And (s[i] <= 'z')) Or
+             ((s[i] >= '0') And (s[i] <= '9'))) Do
+      Begin
+        If Length(id) < 32 Then
+        Begin
+          c := s[i];
+          If (c >= 'a') And (c <= 'z') Then c := Chr(Ord(c) - 32);
+          id := id + c;
+        End;
+        Inc(i);
+      End;
+      uname := id;
+      val   := TextEquGet(uname);
+      If val <> '' Then
+        res := res + val
+      Else
+        res := res + Copy(s, id_st, i - id_st);
+    End
+    Else
+    Begin
+      res := res + c;
+      Inc(i);
+    End;
+  End;
+  TextEquSubstLine := res;
+End;
+
+{ ============================================================
+  Pad2 : formater n sur 2 chiffres avec zero devant.
+  ============================================================ }
+Function Pad2(n : Word) : TString;
+Var s : TString;
+Begin
+  Str(n Mod 100, s);
+  If Length(s) < 2 Then s := '0' + s;
+  Pad2 := s;
+End;
+
+{ ============================================================
+  InitPredefDateTimeFilename : calculer @DATE, @TIME, @FILENAME
+  et les enregistrer dans la table TEXTEQU.
+  ============================================================ }
+Procedure InitPredefDateTimeFilename(Const fname : TString);
+Var
+  yr, mo, dy, dow : Word;
+  hr, mn, sc, sc2 : Word;
+  fi : Integer;
+  fn : TString;
+Begin
+  GetDate(yr, mo, dy, dow);
+  GetTime(hr, mn, sc, sc2);
+  predef_date := Pad2(mo) + '/' + Pad2(dy) + '/' + Pad2(yr Mod 100);
+  predef_time := Pad2(hr) + ':' + Pad2(mn) + ':' + Pad2(sc);
+  TextEquSet('@DATE',     predef_date);
+  TextEquSet('@TIME',     predef_time);
+  { @FILENAME = nom de base sans extension }
+  fi := Length(fname);
+  While (fi > 0) And (fname[fi] <> '\') And (fname[fi] <> '/') Do Dec(fi);
+  fn := Copy(fname, fi+1, Length(fname)-fi);
+  fi := Length(fn);
+  While (fi > 0) And (fn[fi] <> '.') Do Dec(fi);
+  If fi > 0 Then fn := Copy(fn, 1, fi-1);
+  TextEquSet('@FILENAME', fn);
 End;
 
 { ============================================================
@@ -1525,6 +1724,44 @@ Begin
 End;
 
 { ============================================================
+  ParseTextequ : name TEXTEQU <text> | expr | reste de ligne
+  Stocker la valeur dans la table TEXTEQU.
+  Placee ici apres le lexer pour acceder a LexPeekKind etc.
+  ============================================================ }
+Procedure ParseTextequ(Const name : TSymString);
+Var
+  val : TString;
+Begin
+  val := '';
+  { format <text> }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '<') Then
+  Begin
+    LexNext; { consommer '<' }
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] <> '>') Do
+    Begin
+      val := val + lex_line[lex_pos];
+      Inc(lex_pos);
+    End;
+    If lex_pos <= Length(lex_line) Then Inc(lex_pos); { consommer '>' }
+  End
+  Else If LexPeekKind = TK_STRING Then
+  Begin
+    LexNext; val := lex_tok.val;
+  End
+  Else
+  Begin
+    { lire le reste de la ligne comme valeur brute }
+    While (lex_pos <= Length(lex_line)) And (lex_line[lex_pos] = ' ') Do Inc(lex_pos);
+    While lex_pos <= Length(lex_line) Do
+    Begin
+      val := val + lex_line[lex_pos];
+      Inc(lex_pos);
+    End;
+  End;
+  TextEquSet(name, val);
+End;
+
+{ ============================================================
   TODO 04 - TABLE DES SYMBOLES - IMPLEMENTE
   ============================================================
 
@@ -1721,6 +1958,7 @@ Begin
   { informations de modele (mises a jour par .MODEL) }
   SymAddPredef('@MODEL',     0); { 0 = non encore fixe }
   SymAddPredef('@WORDSIZE',  2); { 16-bit par defaut }
+  SymAddPredef('@CUR_LINE',  0); { mis a jour ligne par ligne }
   { bases de segments (mises a jour lors de la definition des segments) }
   SymAddPredef('@DATA',      0);
   SymAddPredef('@CODE',      0);
@@ -2503,10 +2741,14 @@ Var
   grp_idx_dgroup: Integer; { index dans grp_table du groupe DGROUP }
 
   { ASSUME : association registre/segment (index seg_table, 0=NOTHING) }
-  assume_cs : Integer;
-  assume_ds : Integer;
-  assume_ss : Integer;
-  assume_es : Integer;
+  assume_cs      : Integer;  { index seg_table ou grp_table }
+  assume_ds      : Integer;
+  assume_ss      : Integer;
+  assume_es      : Integer;
+  assume_cs_is_grp : Boolean; { True si assume_cs pointe dans grp_table }
+  assume_ds_is_grp : Boolean;
+  assume_ss_is_grp : Boolean;
+  assume_es_is_grp : Boolean;
 
   { Pile SEGMENT/ENDS ouverts }
   seg_open_stack : Array[0..8] Of Integer; { indices seg_table }
@@ -2634,6 +2876,55 @@ Begin
 End;
 
 { ============================================================
+  SegGetGroup : retourner l index de groupe (1-base dans grp_table)
+  qui contient le segment seg_i, ou 0 si aucun.
+  ============================================================ }
+Function SegGetGroup(seg_i : Integer) : Integer;
+Var
+  gi : Integer;
+  gj : Integer;
+Begin
+  SegGetGroup := 0;
+  If seg_i <= 0 Then Exit;
+  For gi := 1 To grp_count Do
+    For gj := 1 To grp_table[gi].seg_count Do
+      If grp_table[gi].segs[gj] = seg_i Then
+      Begin
+        SegGetGroup := gi;
+        Exit;
+      End;
+End;
+
+{ ============================================================
+  ParseGroup : nom GROUP seg1 [, seg2 ...]
+  Directive GROUP : regrouper plusieurs segments.
+  name = nom du groupe (deja lu comme label_name avant GROUP).
+  ============================================================ }
+Procedure ParseGroup(Const name : TString);
+Var
+  gi   : Integer;
+  sn   : TString;
+  si   : Integer;
+Begin
+  gi := GrpEnter(LexUpperCase(name));
+  { lire la liste des segments : seg1 [, seg2 ...] }
+  While LexPeekKind = TK_IDENT Do
+  Begin
+    LexNext;
+    sn := LexUpperCase(lex_tok.val);
+    si := SegFind(sn);
+    If si = 0 Then
+    Begin
+      { segment pas encore defini : le creer (sera rempli plus tard) }
+      si := SegEnter(sn, '', SC_PUBLIC, SA_PARA);
+    End;
+    GrpAddSeg(gi, si);
+    { consommer la virgule optionnelle }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then LexNext;
+  End;
+End;
+
+{ ============================================================
   ModelInit : initialiser les variables de modele
   ============================================================ }
 Procedure ModelInit;
@@ -2648,10 +2939,14 @@ Begin
   seg_idx_stack  := 0;
   seg_idx_const  := 0;
   grp_idx_dgroup := 0;
-  assume_cs      := 0;
-  assume_ds      := 0;
-  assume_ss      := 0;
-  assume_es      := 0;
+  assume_cs        := 0;
+  assume_ds        := 0;
+  assume_ss        := 0;
+  assume_es        := 0;
+  assume_cs_is_grp := False;
+  assume_ds_is_grp := False;
+  assume_ss_is_grp := False;
+  assume_es_is_grp := False;
   seg_open_top   := -1;
 End;
 
@@ -2693,10 +2988,15 @@ Begin
   GrpAddSeg(grp_idx_dgroup, seg_idx_stack);
 
   { ASSUME par defaut }
-  assume_cs := seg_idx_text;
-  assume_ds := grp_idx_dgroup; { DS -> DGROUP }
-  assume_ss := grp_idx_dgroup;
-  assume_es := 0;
+  assume_cs        := seg_idx_text;   assume_cs_is_grp := False;
+  assume_ds        := grp_idx_dgroup; assume_ds_is_grp := True;  { DS -> DGROUP }
+  assume_ss        := grp_idx_dgroup; assume_ss_is_grp := True;
+  assume_es        := 0;              assume_es_is_grp := False;
+
+  { symboles predefinis @DATA @CODE @STACK }
+  SymSetValue(SymFind('@DATA'),  seg_idx_data);
+  SymSetValue(SymFind('@CODE'),  seg_idx_text);
+  SymSetValue(SymFind('@STACK'), seg_idx_stack);
 
   { mettre a jour le symbole @MODEL }
   SymSetValue(SymFind('@MODEL'), mem_model);
@@ -2817,42 +3117,39 @@ Begin
 End;
 
 { ============================================================
-  ParseAssume : ASSUME reg:seg [, reg:seg ...]
-  Syntaxe simplifiee : reg et seg deja identifies par l appelant.
-  reg_name = 'CS'|'DS'|'SS'|'ES', seg_name = nom de segment ou groupe
+  ParseAssume : ASSUME reg:seg|grp|NOTHING
   ============================================================ }
 Procedure ParseAssume(Const reg_name : TString; Const seg_name : TString);
 Var
-  sidx  : Integer;
-  gi    : Integer;
-  gi2   : Integer;
-  useg  : TSymString;
+  sidx   : Integer;
+  is_grp : Boolean;
+  gi2    : Integer;
+  useg   : TSymString;
 Begin
-  useg := LexUpperCase(seg_name);
-  If useg = 'NOTHING' Then
-    sidx := 0
-  Else
+  useg   := LexUpperCase(seg_name);
+  sidx   := 0;
+  is_grp := False;
+  If (useg <> 'NOTHING') And (useg <> '') Then
   Begin
     sidx := SegFind(useg);
     If sidx = 0 Then
     Begin
       { chercher dans les groupes }
-      gi := 0;
       For gi2 := 1 To grp_count Do
         If grp_table[gi2].name = useg Then
         Begin
-          gi := gi2;
+          sidx   := gi2;
+          is_grp := True;
           Break;
         End;
-      If gi > 0 Then sidx := gi
-      Else
+      If sidx = 0 Then
         WarnMsg('ASSUME : segment ou groupe inconnu : ' + seg_name);
     End;
   End;
-  If reg_name = 'CS' Then assume_cs := sidx
-  Else If reg_name = 'DS' Then assume_ds := sidx
-  Else If reg_name = 'SS' Then assume_ss := sidx
-  Else If reg_name = 'ES' Then assume_es := sidx
+  If reg_name = 'CS' Then Begin assume_cs := sidx; assume_cs_is_grp := is_grp; End
+  Else If reg_name = 'DS' Then Begin assume_ds := sidx; assume_ds_is_grp := is_grp; End
+  Else If reg_name = 'SS' Then Begin assume_ss := sidx; assume_ss_is_grp := is_grp; End
+  Else If reg_name = 'ES' Then Begin assume_es := sidx; assume_es_is_grp := is_grp; End
   Else
     WarnMsg('ASSUME : registre de segment inconnu : ' + reg_name);
 End;
@@ -4457,11 +4754,11 @@ Begin
       sidx := p^.seg_idx;
       If sidx <> seg Then Continue;
 
-      { chercher le groupe de base (DGROUP si DS pointe dessus) }
-      grp := 0;
-      If (sidx = seg_idx_data) Or (sidx = seg_idx_bss) Or
-         (sidx = seg_idx_const) Or (sidx = seg_idx_stack) Then
-        grp := grp_idx_dgroup;
+      { chercher le groupe contenant ce segment }
+      If sidx > 0 Then
+        grp := SegGetGroup(sidx)
+      Else
+        grp := 0;
 
       ObjPUBDEF(grp, sidx, p^.name, p^.offset, 0);
     End;
@@ -6821,7 +7118,14 @@ Begin
     GetNextLine := True;
     Exit;
   End;
-  GetNextLine := SrcReadLine;
+  { SrcReadLine : mettre a jour @CUR_LINE }
+  If SrcReadLine Then
+  Begin
+    SymSetValue(SymFind('@CUR_LINE'), cur_lineno);
+    GetNextLine := True;
+  End
+  Else
+    GetNextLine := False;
 End;
 
 { ============================================================
@@ -8415,6 +8719,12 @@ Var
   seg_cls    : TString;     { classe pour SEGMENT }
   si         : Integer;     { index de structure }
 Begin
+  { substituer les macros texte (@DATE, @TIME, @FILENAME, TEXTEQU) }
+  cur_line := TextEquSubstLine(cur_line);
+
+  { mettre a jour @CUR_LINE dans la table des symboles }
+  SymSetValue(SymFind('@CUR_LINE'), cur_lineno);
+
   { reinitialiser le lexer sur la ligne courante }
   lex_line     := cur_line;
   lex_pos      := 1;
@@ -8522,6 +8832,14 @@ Begin
   Begin
     If label_name <> '' Then ParseEqu(label_name)
     Else ErrorMsg('EQU sans nom');
+    Exit;
+  End;
+
+  { TEXTEQU }
+  If mnem = 'TEXTEQU' Then
+  Begin
+    If label_name <> '' Then ParseTextequ(label_name)
+    Else ErrorMsg('TEXTEQU sans nom');
     Exit;
   End;
 
@@ -8644,8 +8962,10 @@ Begin
   { GROUP }
   If mnem = 'GROUP' Then
   Begin
-    { GrpEnter + GrpAddSeg : parse la liste des segments }
-    { deja inclus dans WriteAllSegments }
+    If label_name <> '' Then
+      ParseGroup(label_name)
+    Else
+      ErrorMsg('GROUP sans nom de groupe');
     Exit;
   End;
 
@@ -8932,6 +9252,9 @@ Begin
 
   { === PASSE 1 : construction de la table des symboles === }
   Writeln('Passe 1...');
+  { initialiser @DATE, @TIME, @FILENAME avant la passe 1 }
+  textequ_count := 0;
+  InitPredefDateTimeFilename(fname);
   ResetPassState;
   SrcPush(fname);
   If SrcAtEnd Then
@@ -9016,6 +9339,6 @@ Begin
   lst_title       := '';
   lst_subttl      := '';
   lst_nbytes      := 0;
-  Writeln('TODOs 01-21 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc+passes+listing).');
-  Writeln('TODOs 22 a 25 a implementer.');
+  Writeln('TODOs 01-23 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc+passes+listing+group+include+textequ).');
+  Writeln('TODOs 24 et 25 a implementer.');
 End.

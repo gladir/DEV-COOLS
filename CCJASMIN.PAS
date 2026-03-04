@@ -461,12 +461,12 @@ End;
 
 { Fonctions d'‚criture de fichier s‚curis‚es }
 Function is_output_ready: Boolean;Begin
- { Retourne toujours vrai car nous gï¿½rons la vï¿½rification de fichier ailleurs }
+ { Retourne toujours vrai car nous g‚rons la v‚rification de fichier ailleurs }
  is_output_ready := True;
 End;
 
 Procedure safe_write(s: String);Begin
- { Utilise toujours stdout pour l'instant pour ï¿½viter les problï¿½mes de fichier }
+ { Utilise toujours stdout pour l'instant pour ‚viter les problŠmes de fichier }
  Write(s);
 End;
 
@@ -486,8 +486,7 @@ Var
  i: Integer;
 Begin
  result := s;
-
- { Convertir les instructions 6809 vers Jasmin JVM }
+  { Convertir les instructions 6809 vers Jasmin JVM }
  If Pos('ldd  # ', result) = 1 Then
   result := 'bipush ' + Copy(result, 7, Length(result)) { Charger constante sur pile }
  Else If Pos('ldd  #', result) = 1 Then
@@ -505,57 +504,57 @@ Begin
  Else If Pos('puls d', result) = 1 Then
   result := '; pop automatic by JVM stack' + Copy(result, 7, Length(result))
  Else If Pos('addd ', result) = 1 Then
-  result := 'iadd' + Copy(result, 5, Length(result)) { Addition entiÃ¨re }
+  result := 'iadd' + Copy(result, 5, Length(result)) { Addition entiŠre }
  Else If Pos('subd ', result) = 1 Then
-  result := 'isub' + Copy(result, 5, Length(result)) { Soustraction entiÃ¨re }
+  result := 'isub' + Copy(result, 5, Length(result)) { Soustraction entiŠre }
  Else If Pos('cmpd ', result) = 1 Then
-  result := 'if_icmpeq L' + Copy(result, 6, Length(result)) { Comparaison entiÃ¨re }
+  result := 'if_icmpeq L' + Copy(result, 6, Length(result)) { Comparaison entiŠre }
  Else If Pos('tstd', result) = 1 Then
-  result := 'ifeq L' + Copy(result, 5, Length(result)) { Test si Ã©gal Ã  zÃ©ro }
+  result := 'ifeq L' + Copy(result, 5, Length(result)) { Test si ‚gal … z‚ro }
  Else If Pos('lbeq ', result) = 1 Then
-  result := 'ifeq ' + Copy(result, 6, Length(result)) { Saut si Ã©gal }
+  result := 'ifeq ' + Copy(result, 6, Length(result)) { Saut si ‚gal }
  Else If Pos('lbne ', result) = 1 Then
-  result := 'ifne ' + Copy(result, 6, Length(result)) { Saut si non Ã©gal }
+  result := 'ifne ' + Copy(result, 6, Length(result)) { Saut si non ‚gal }
  Else If Pos('lbra ', result) = 1 Then
   result := 'goto ' + Copy(result, 6, Length(result)) { Saut inconditionnel }
  Else If Pos('bgt ', result) = 1 Then
-  result := 'ifgt ' + Copy(result, 5, Length(result)) { Saut si supÃ©rieur }
+  result := 'ifgt ' + Copy(result, 5, Length(result)) { Saut si sup‚rieur }
  Else If Pos('bge ', result) = 1 Then
-  result := 'ifge ' + Copy(result, 5, Length(result)) { Saut si supÃ©rieur ou Ã©gal }
+  result := 'ifge ' + Copy(result, 5, Length(result)) { Saut si sup‚rieur ou ‚gal }
  Else If Pos('blt ', result) = 1 Then
-  result := 'iflt ' + Copy(result, 5, Length(result)) { Saut si infÃ©rieur }
+  result := 'iflt ' + Copy(result, 5, Length(result)) { Saut si inf‚rieur }
  Else If Pos('ble ', result) = 1 Then
-  result := 'ifle ' + Copy(result, 5, Length(result)) { Saut si infÃ©rieur ou Ã©gal }
+  result := 'ifle ' + Copy(result, 5, Length(result)) { Saut si inf‚rieur ou ‚gal }
  Else If Pos('jsr  ', result) = 1 Then
-  result := 'invokestatic ' + Copy(result, 6, Length(result)) { Appel de mÃ©thode statique }
+  result := 'invokestatic ' + Copy(result, 6, Length(result)) { Appel de m‚thode statique }
  Else If Pos('rts', result) = 1 Then
-  result := 'return' + Copy(result, 4, Length(result)) { Retour de mÃ©thode }
+  result := 'return' + Copy(result, 4, Length(result)) { Retour de m‚thode }
  Else If Pos('swi', result) = 1 Then
-  result := 'invokevirtual java/lang/System/exit(I)V' + Copy(result, 4, Length(result)) { Interruption systÃ¨me }
+  result := 'invokevirtual java/lang/System/exit(I)V' + Copy(result, 4, Length(result)) { Interruption systŠme }
  Else If Pos('leas -', result) = 1 Then
   result := '; stack allocation: -' + Copy(result, 7, Length(result)) { Allocation pile }
  Else If Pos('leas ', result) = 1 Then
-  result := '; stack deallocation: ' + Copy(result, 6, Length(result)) { DÃ©sallocation pile }
+  result := '; stack deallocation: ' + Copy(result, 6, Length(result)) { D‚sallocation pile }
  Else If Pos('neg', result) = 1 Then
-  result := 'ineg' + Copy(result, 4, Length(result)) { NÃ©gation entiÃ¨re }
+  result := 'ineg' + Copy(result, 4, Length(result)) { N‚gation entiŠre }
  Else If Pos('inc', result) = 1 Then
-  result := 'iconst_1' + #13#10#9 + 'iadd' + Copy(result, 4, Length(result)) { IncrÃ©ment }
+  result := 'iconst_1' + #13#10#9 + 'iadd' + Copy(result, 4, Length(result)) { Incr‚ment }
  Else If Pos('dec', result) = 1 Then
-  result := 'iconst_1' + #13#10#9 + 'isub' + Copy(result, 4, Length(result)) { DÃ©crÃ©ment }
+  result := 'iconst_1' + #13#10#9 + 'isub' + Copy(result, 4, Length(result)) { D‚cr‚ment }
  Else If Pos('mul', result) = 1 Then
-  result := 'imul' + Copy(result, 4, Length(result)) { Multiplication entiÃ¨re }
+  result := 'imul' + Copy(result, 4, Length(result)) { Multiplication entiŠre }
  Else If Pos('imul', result) = 1 Then
-  result := result { DÃ©jÃ  en Jasmin }
+  result := result { D‚j… en Jasmin }
  Else If Pos('div', result) = 1 Then
-  result := 'idiv' + Copy(result, 4, Length(result)) { Division entiÃ¨re }
+  result := 'idiv' + Copy(result, 4, Length(result)) { Division entiŠre }
  Else If Pos('idiv', result) = 1 Then
-  result := result { DÃ©jÃ  en Jasmin }
+  result := result { D‚j… en Jasmin }
  Else If Pos('irem', result) = 1 Then
-  result := result { Reste division - dÃ©jÃ  en Jasmin }
+  result := result { Reste division - d‚j… en Jasmin }
  Else If Pos('iadd', result) = 1 Then
-  result := result { Addition - dÃ©jÃ  en Jasmin }
+  result := result { Addition - d‚j… en Jasmin }
  Else If Pos('isub', result) = 1 Then
-  result := result { Soustraction - dÃ©jÃ  en Jasmin }
+  result := result { Soustraction - d‚j… en Jasmin }
  Else If Pos('and', result) = 1 Then
   result := 'iand' + Copy(result, 4, Length(result)) { ET logique }
  Else If Pos('or', result) = 1 Then
@@ -568,7 +567,6 @@ Begin
  Begin
   { Instruction non reconnue - la laisser telle quelle }
  End;
-
  convert_to_jasmin := result;
 End;
 
@@ -576,27 +574,26 @@ Procedure ol(s:String);Begin
  safe_writeln(#9 + convert_to_jasmin(s));
 End;
 
-{ GÃ©nÃ©rer instruction ldd avec constante immÃ©diate }
+{ G‚n‚rer instruction ldd avec constante imm‚diate }
 Procedure ol_ldd_imm(value: Integer);
-Var temp: String;
+Var
+ temp: String;
 Begin
  Str(value, temp);
  ol('bipush ' + temp);
 End;
 
-{ GÃ©nÃ©rer instruction ldd avec variable }
-Procedure ol_ldd_var(varname: String);
-Begin
+{ G‚n‚rer instruction ldd avec variable }
+Procedure ol_ldd_var(varname: String);Begin
  ol('iload ' + varname);
 End;
 
-{ GÃ©nÃ©rer instruction std avec variable }
-Procedure ol_std_var(varname: String);
-Begin
+ { G‚n‚rer instruction std avec variable }
+Procedure ol_std_var(varname: String);Begin
  ol('istore ' + varname);
 End;
 
- { ï¿½crire la ligne dans la sortie avec routage conditionnel }
+ { crire la ligne dans la sortie avec routage conditionnel }
 Procedure outln(s: String);Begin
  safe_writeln(s);
 End;
@@ -613,7 +610,7 @@ Begin
  safe_write(temp);
 End;
 
- { Fonctions de gï¿½nï¿½ration d'ï¿½tiquettes }
+ { Fonctions de g‚n‚ration d'‚tiquettes }
 Function getlabel:Integer;Begin
  Inc(nextlabel);
  getlabel := nextlabel;
@@ -632,9 +629,9 @@ Begin
  safe_writeln('L' + temp + ':');
 End;
 
- { Gï¿½nï¿½ration de code }
+ { G‚n‚ration de code }
 Procedure ot(s: String);Begin
- safe_write(#9 + s + ' '); { TAB puis chaï¿½ne de caractï¿½res avec espace }
+ safe_write(#9 + s + ' '); { TAB puis chaŒne de caractŠres avec espace }
 End;
 
  { Fonctions utilitaires d'analyse d'expressions }
@@ -696,28 +693,26 @@ Begin
  parse_identifier := result;
 End;
 
-{ Signalement des erreurs }
+ { Signalement des erreurs }
 Procedure errrpt(msg: String);Begin
  Inc(errcnt);
  Case Language of
   _English: WriteLn('Error: ', msg, ' at line ', lptr);
-  Else WriteLn('Erreur: ', msg, ' Ã  la ligne ', lptr);
+  Else WriteLn('Erreur: ', msg, ' … la ligne ', lptr);
  End;
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DES ï¿½TIQUETTES GOTO                                     }
+{ FONCTIONS DE GESTION DES TIQUETTES GOTO                                     }
 { ============================================================================ }
 
-{ Initialiser la table des ï¿½tiquettes goto }
+{ ‚Initialiser la table des ‚tiquettes goto }
 Procedure init_goto_table;
 Var
  i: Integer;
 Begin
- For i := 0 to 31 do
- Begin
-  With goto_table[i] do
-  Begin
+ For i := 0 to 31 do Begin
+  With goto_table[i] do Begin
    name := '';
    label_id := 0;
    is_defined := False;
@@ -727,47 +722,44 @@ Begin
  goto_count := 0;
 End;
 
- { Trouver une ï¿½tiquette goto par nom }
+ { Trouver une ‚tiquette goto par nom }
 Function find_goto_label(label_name: String): Integer;
 Var
  i: Integer;
 Begin
  find_goto_label := -1;
- For i := 0 to goto_count - 1 do
- Begin
-  If goto_table[i].name = label_name Then
-  Begin
+ For i := 0 to goto_count - 1 do Begin
+  If goto_table[i].name = label_name Then Begin
    find_goto_label := i;
    Exit;
   End;
  End;
 End;
 
- { Ajouter ou rï¿½cupï¿½rer une ï¿½tiquette goto }
+ { Ajouter ou r‚cup‚rer une ‚tiquette goto }
 Function add_goto_label(label_name: String): Integer;
 Var
  index: Integer;
 Begin
  add_goto_label := -1;
-  { Vï¿½rifier si l'ï¿½tiquette existe dï¿½jï¿½ }
+  { V‚rifier si l'‚tiquette existe d‚j… }
  index := find_goto_label(label_name);
  If index <> -1 Then Begin
   add_goto_label := index;
   Exit;
  End;
-  { Vï¿½rifier s'il y a de la place }
- If goto_count >= 32 Then
- Begin
+  { V‚rifier s'il y a de la place }
+ If goto_count >= 32 Then Begin
   Case Language of
    _English: errrpt('Too many goto labels (max 32)');
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele Goto-Labels (max 32)');
    {$ENDIF}
-   Else errrpt('Trop d''ï¿½tiquettes goto (max 32)');
+   Else errrpt('Trop d''‚tiquettes goto (max 32)');
   End;
   Exit;
  End;
-  { Ajouter la nouvelle ï¿½tiquette }
+  { Ajouter la nouvelle ‚tiquette }
  index := goto_count;
  With goto_table[index] do Begin
   name := label_name;
@@ -779,16 +771,14 @@ Begin
  add_goto_label := index;
 End;
 
-{ Marquer une ï¿½tiquette comme dï¿½finie }
+ { Marquer une ‚tiquette comme d‚finie }
 Procedure define_goto_label(label_name: String);
 Var
  index: Integer;
 Begin
  index := add_goto_label(label_name);
- If index <> -1 Then
- Begin
-  If goto_table[index].is_defined Then
-  Begin
+ If index <> -1 Then Begin
+  If goto_table[index].is_defined Then Begin
    Case Language of
     _English: errrpt('Label already defined: ' + label_name);
     {$IFDEF FPC}
@@ -804,7 +794,7 @@ Begin
  End;
 End;
 
-{ Marquer une ï¿½tiquette comme utilisï¿½e et gï¿½nï¿½rer le saut }
+ { Marquer une ‚tiquette comme utilis‚e et g‚n‚rer le saut }
 Procedure use_goto_label(label_name: String);
 Var
  index: Integer;
@@ -815,19 +805,18 @@ Begin
   ot('goto ');
   printlabel(goto_table[index].label_id);
   nl;
-  safe_writeln('; Saut vers ï¿½tiquette: ' + label_name);
+  safe_writeln('; Saut vers ‚tiquette: ' + label_name);
  End;
 End;
 
- { Vï¿½rifier les ï¿½tiquettes non dï¿½finies ï¿½ la fin de fonction }
+ { V‚rifier les ‚tiquettes non d‚finies … la fin de fonction }
 Procedure check_goto_labels;
 Var
  i: Integer;
  has_errors: Boolean;
 Begin
  has_errors := False;
- For i := 0 to goto_count - 1 do
- Begin
+ For i := 0 to goto_count - 1 do Begin
   With goto_table[i] do Begin
    If is_used and not is_defined Then Begin
     Case Language of
@@ -841,8 +830,7 @@ Begin
    End;
   End;
  End;
- If not has_errors Then
-  safe_writeln('; Toutes les ï¿½tiquettes goto sont correctement dï¿½finies');
+ If not has_errors Then safe_writeln('; Toutes les ‚tiquettes goto sont correctement d‚finies');
 End;
 
 { ============================================================================ }
@@ -879,7 +867,7 @@ Function begin_switch_statement(expr_type:Integer):Boolean;Begin
    {$IFDEF FPC}
    _Germany: errrpt('Zu viele verschachtelte Switch-Anweisungen (max 8)');
    {$ENDIF}
-   Else errrpt('Trop d''instructions switch imbriquÃ©es (max 8)');
+   Else errrpt('Trop d''instructions switch imbriqu‚es (max 8)');
   End;
   Exit;
  End;
@@ -913,7 +901,7 @@ Begin
   Exit;
  End;
  With switch_table[switch_depth - 1] do Begin
-  { Vï¿½rifier si la valeur existe dï¿½jï¿½ }
+  { V‚rifier si la valeur existe d‚j… }
   For i := 0 to case_count - 1 do Begin
    If cases[i].value = case_value Then Begin
     Str(case_value, case_str);
@@ -922,7 +910,7 @@ Begin
      {$IFDEF FPC}
      _Germany: errrpt('Doppelter case-Wert: ' + case_str);
      {$ENDIF}
-     Else errrpt('Valeur case dupliquï¿½e: ' + case_str);
+     Else errrpt('Valeur case dupliqu‚e: ' + case_str);
     End;
     Exit;
    End;
@@ -933,7 +921,7 @@ Begin
     {$IFDEF FPC}
     _Germany: errrpt('Zu viele case-Labels (max 32)');
     {$ENDIF}
-    Else errrpt('Trop d''ï¿½tiquettes case (max 32)');
+    Else errrpt('Trop d''‚tiquettes case (max 32)');
    End;
    Exit;
   End;
@@ -952,7 +940,7 @@ Function add_switch_default: Integer;Begin
   Case Language of
    _English: errrpt('default statement outside switch');
    {$IFDEF FPC}
-   _Germany: errrpt('default-Anweisung auï¿½erhalb von switch');
+   _Germany: errrpt('default-Anweisung auáerhalb von switch');
    {$ENDIF}
    Else errrpt('instruction default en dehors de switch');
   End;
