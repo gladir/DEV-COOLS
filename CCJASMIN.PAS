@@ -1588,10 +1588,10 @@ Begin
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DE LA LISTE D'INSTRUCTIONS D'OPTIMISATION              }
+{ FONCTIONS DE GESTION DE LA LISTE D'INSTRUCTIONS D'OPTIMISATION               }
 { ============================================================================ }
 
- { Ajouter une instruction √† la liste cha√Æn√©e }
+ { Ajouter une instruction Ö la liste chaånÇe }
 Function add_opt_instruction(opcode, operand, comment: String): POptInst;
 Var
  new_inst: POptInst;
@@ -1608,7 +1608,7 @@ Begin
  add_opt_instruction := new_inst;
 End;
 
- { Obtenir l'instruction √† l'index donn√© (pour compatibilit√©) }
+ { Obtenir l'instruction Ö l'index donnÇ (pour compatibilitÇ) }
 Function get_opt_instruction(index: Integer): POptInst;
 Var
  current: POptInst;
@@ -1621,7 +1621,7 @@ Begin
  get_opt_instruction := current;
 End;
 
- { Lib√©rer toute la liste d'instructions }
+ { LibÇrer toute la liste d'instructions }
 Procedure free_opt_instructions;
 Var
  current, temp: POptInst;
@@ -1673,20 +1673,19 @@ Begin
   current := opt_context.inst_list;
   While (current <> nil) and (current^.next <> nil) do Begin
    next_inst := current^.next;
-
-   { Enl√®ve LDD #0 suivi par STD }
+    { Enläve LDD #0 suivi par STD }
    If(current^.opcode = 'ldd')and(current^.operand = '#0')Then Begin
     If (next_inst^.opcode = 'std') Then Begin
      { Remplace avec CLR }
      current^.opcode := 'clr';
      current^.operand := next_inst^.operand;
-     current^.comment := current^.comment + ' ; optimis√© de ldd #0, std';
+     current^.comment := current^.comment + ' ; optimisÇ de ldd #0, std';
      { Marquer la prochaine instruction pour le retrait }
      next_inst^.can_eliminate := True;
      changed := True;
     End;
    End
-   { Enl√®ve STD suivi par LDD dans le m√™me emplacement }
+    { Enläve STD suivi par LDD dans le màme emplacement }
    Else If (current^.opcode = 'std') Then Begin
     If (next_inst^.opcode = 'ldd') and
        (next_inst^.operand = current^.operand) Then
@@ -1698,8 +1697,8 @@ Begin
     End;
    End
    { Optimise PSHS D suivi par PULS D }
-   Else If (current^.opcode = 'pshs') and (current^.operand = 'd') Then
-   Begin
+    Else
+   If (current^.opcode = 'pshs') and (current^.operand = 'd') Then Begin
     If (next_inst^.opcode = 'puls') and
        (next_inst^.operand = 'd') Then
     Begin
@@ -1709,24 +1708,22 @@ Begin
      changed := True;
     End;
    End;
-
    current := current^.next;
   End;
-
-  { Enl√®ve les instructions marqu√©es }
+   { Enläve les instructions marquÇes }
   current := opt_context.inst_list;
   opt_context.inst_list := nil;
   opt_context.inst_count := 0;
-
   While current <> nil do Begin
    temp := current;
    current := current^.next;
-
    If not temp^.can_eliminate Then Begin
     temp^.next := opt_context.inst_list;
     opt_context.inst_list := temp;
     Inc(opt_context.inst_count);
-   End Else Begin
+   End
+    Else
+   Begin
     Dispose(temp);
    End;
   End;
@@ -1743,32 +1740,29 @@ Begin
  While (current <> nil) and (current^.next <> nil) and (current^.next^.next <> nil) do Begin
   next1 := current^.next;
   next2 := current^.next^.next;
-
-  { Optimise LDD #1 suivi par NEGA/NEGB √† LDD #-1 }
+   { Optimise LDD #1 suivi par NEGA/NEGB Ö LDD #-1 }
   If (current^.opcode = 'ldd') and (current^.operand = '#1') Then Begin
-   If (next1^.opcode = 'nega') and (next2^.opcode = 'negb') Then
-   Begin
+   If (next1^.opcode = 'nega') and (next2^.opcode = 'negb') Then Begin
     current^.operand := '#-1';
-    current^.comment := current^.comment + ' ; constante pli√©e';
+    current^.comment := current^.comment + ' ; constante pliÇe';
     next1^.can_eliminate := True;
     next2^.can_eliminate := True;
    End;
   End
-  { Optimise la multiplication par la puissance de 2 }
-  Else If (current^.opcode = 'jsr') and (current^.operand = 'mult16') Then
-  Begin
-   { Il faudrait plus de contexte pour d√©terminer s'il s'agit d'une multiplication par une constante }
+   { Optimise la multiplication par la puissance de 2 }
+   Else
+  If (current^.opcode = 'jsr') and (current^.operand = 'mult16') Then Begin
+   { Il faudrait plus de contexte pour dÇterminer s'il s'agit d'une multiplication par une constante }
    Case Language of
     _English: current^.comment := current^.comment + ' ; could optimize if power of 2';
-    Else current^.comment:= current^.comment + ' ; pourrait √™tre optimis√© si c''est une puissance de 2';
+    Else current^.comment:= current^.comment + ' ; pourrait àtre optimisÇ si c''est une puissance de 2';
    End;
   End;
-
   current := current^.next;
  End;
 End;
 
- { √âlimination des codes morts }
+ { êlimination des codes morts }
 Procedure dead_code_eliminate;
 Var
  current: POptInst;
@@ -1776,7 +1770,7 @@ Begin
  If (opt_context.flags and OPT_DEAD_CODE) = 0 Then Exit;
  current := opt_context.inst_list;
  While current <> nil do Begin
-  { Instructions d'√©limination de Mark NOP }
+  { Instructions d'Çlimination de Mark NOP }
   If current^.opcode = 'nop' Then Begin
    current^.can_eliminate := True;
   End;
@@ -1790,92 +1784,74 @@ Var
  current: POptInst;
 Begin
  If (opt_context.flags and OPT_JUMP) = 0 Then Exit;
-
  current := opt_context.inst_list;
- While current <> nil do
- Begin
-  { Supprimer les sauts vers l'instruction suivante }
-  If (current^.opcode = 'lbra') or (current^.opcode = 'bra') Then
-  Begin
-   { Cela n√©cessiterait une analyse d'√©tiquettes pour √™tre enti√®rement impl√©ment√© }
-   current^.comment := current^.comment + ' ; candidat √† l''optimisation de saut';
+ While current <> nil do Begin
+   { Supprimer les sauts vers l'instruction suivante }
+  If (current^.opcode = 'lbra') or (current^.opcode = 'bra') Then Begin
+   { Cela nÇcessiterait une analyse d'Çtiquettes pour àtre entiärement implÇmentÇ }
+   current^.comment := current^.comment + ' ; candidat Ö l''optimisation de saut';
   End;
   current := current^.next;
  End;
 End;
 
-{ Appliquer toutes les optimisations }
-Procedure optimize_code;
-Begin
+ { Appliquer toutes les optimisations }
+Procedure optimize_code;Begin
  If optimize = OPT_NONE Then Exit;
-
  safe_writeln('; Application des optimisations');
-
- { Appliquer les optimisations dans l'ordre }
+  { Appliquer les optimisations dans l'ordre }
  constant_fold_optimize;
  peephole_optimize;
  dead_code_eliminate;
  jump_optimize;
-
- safe_writeln('; Optimisation termin√©e');
+ safe_writeln('; Optimisation terminÇe');
 End;
 
-{ Sortie des instructions optimis√©es }
+ { Sortie des instructions optimisÇes }
 Procedure output_optimized_instructions;
 Var
  current: POptInst;
 Begin
  current := opt_context.inst_list;
- While current <> nil do
- Begin
-  With current^ do
-  Begin
-   If not can_eliminate Then
-   Begin
-    If Length(comment) > 0 Then
-     safe_writeln(#9 + opcode + ' ' + operand + ' ; ' + comment)
-    Else
-     safe_writeln(#9 + opcode + ' ' + operand);
+ While current <> nil do Begin
+  With current^ do Begin
+   If not can_eliminate Then Begin
+    If Length(comment) > 0 Then safe_writeln(#9 + opcode + ' ' + operand + ' ; ' + comment)
+                           Else safe_writeln(#9 + opcode + ' ' + operand);
    End;
   End;
   current := current^.next;
  End;
 End;
 
-{ Emballage de g√©n√©ration de code optimis√© }
-Procedure optimized_ol(s: String);
-Begin
- If optimize > OPT_NONE Then
-  add_instruction(s, '', '')
- Else
-  ol(s);
+ { Emballage de gÇnÇration de code optimisÇ }
+Procedure optimized_ol(s: String);Begin
+ If optimize > OPT_NONE Then add_instruction(s, '', '')
+                        Else ol(s);
 End;
 
-Procedure optimized_ot(op, operand: String);
-Begin
- If optimize > OPT_NONE Then
-  add_instruction(op, operand, '')
- Else
+Procedure optimized_ot(op,operand:String);Begin
+ If optimize > OPT_NONE Then add_instruction(op, operand, '')
+  Else
  Begin
   ot(op + ' ' + operand);
   nl;
  End;
 End;
 
-{ Fonctions d'optimisation sp√©cialis√©es }
+ { Fonctions d'optimisation spÇcialisÇes }
 
-{ Chargement de constante optimis√© }
+{ Chargement de constante optimisÇ }
 Procedure opt_load_constant(value: Integer);
 Var
  temp: String;
 Begin
- If optimize > OPT_NONE Then
- Begin
+ If optimize > OPT_NONE Then Begin
   { Optimiser les constantes communes }
   Case value of
-   0: add_instruction('iconst_0', '', 'chargement z√©ro optimis√© JVM');
-   1: add_instruction('iconst_1', '', 'chargement un optimis√© JVM');
-   -1: add_instruction('iconst_m1', '', 'chargement -1 optimis√© JVM');
+   0: add_instruction('iconst_0', '', 'chargement zÇro optimisÇ JVM');
+   1: add_instruction('iconst_1', '', 'chargement un optimisÇ JVM');
+   -1: add_instruction('iconst_m1', '', 'chargement -1 optimisÇ JVM');
   Else
    Begin
     Str(value, temp);
@@ -1889,7 +1865,7 @@ Begin
  End;
 End;
 
-{ Affectation de variable optimis√©e }
+ { Affectation de variable optimisÇe }
 Procedure opt_store_variable(var_name: String; size: Integer);
 Begin
  If optimize > OPT_NONE Then
@@ -1898,7 +1874,7 @@ Begin
    1: add_instruction('istore', var_name, 'stocker byte JVM');
    2: add_instruction('istore', var_name, 'stocker int JVM');
   Else
-   add_instruction('istore', var_name, 'stocker par d√©faut JVM');
+   add_instruction('istore', var_name, 'stocker par dÇfaut JVM');
   End;
  End
  Else
@@ -1918,17 +1894,16 @@ Begin
  End;
 End;
 
-{ Op√©rations arithm√©tiques optimis√©es }
+ { OpÇrations arithmÇtiques optimisÇes }
 Procedure opt_add_constant(value: Integer);
 Var
  temp: String;
 Begin
- If optimize > OPT_NONE Then
- Begin
+ If optimize > OPT_NONE Then Begin
   Case value of
-   0: { Ne rien faire - ajouter z√©ro };
-   1: add_instruction('inc', 'd', '+1 optimis√©');
-   -1: add_instruction('dec', 'd', '-1 optimis√©');
+   0: { Ne rien faire - ajouter zÇro };
+   1: add_instruction('inc', 'd', '+1 optimisÇ');
+   -1: add_instruction('dec', 'd', '-1 optimisÇ');
   Else
    Begin
     Str(value, temp);
@@ -1936,10 +1911,9 @@ Begin
    End;
   End;
  End
- Else
+  Else
  Begin
-  If value <> 0 Then
-  Begin
+  If value <> 0 Then Begin
    ot('addd #');
    outdec(value);
    nl;
@@ -1947,33 +1921,31 @@ Begin
  End;
 End;
 
-{ Multiplication optimis√©e }
-Procedure opt_multiply(value: Integer);
-Begin
- If optimize > OPT_NONE Then
- Begin
-  { Optimiser la multiplication par des puissances de 2 }
+{ Multiplication optimisÇe }
+Procedure opt_multiply(value:Integer);Begin
+ If optimize > OPT_NONE Then Begin
+   { Optimiser la multiplication par des puissances de 2 }
   Case value of
    0: add_instruction('iconst_0', '', 'multiplier par 0 JVM');
    1: { Ne rien faire - multiplier par 1 };
    2: Begin
-       add_instruction('iconst_1', '', 'd√©calage pour *2 JVM');
-       add_instruction('ishl', '', 'd√©calage gauche JVM');
+       add_instruction('iconst_1', '', 'dÇcalage pour *2 JVM');
+       add_instruction('ishl', '', 'dÇcalage gauche JVM');
       End;
    4: Begin
-       add_instruction('iconst_2', '', 'd√©calage pour *4 JVM');
-       add_instruction('ishl', '', 'd√©calage gauche JVM');
+       add_instruction('iconst_2', '', 'dÇcalage pour *4 JVM');
+       add_instruction('ishl', '', 'dÇcalage gauche JVM');
       End;
    8: Begin
-       add_instruction('iconst_3', '', 'd√©calage pour *8 JVM');
-       add_instruction('ishl', '', 'd√©calage gauche JVM');
+       add_instruction('iconst_3', '', 'dÇcalage pour *8 JVM');
+       add_instruction('ishl', '', 'dÇcalage gauche JVM');
       End;
   Else
-   add_instruction('imul', '', 'multiplication g√©n√©rale JVM');
+   add_instruction('imul', '', 'multiplication gÇnÇrale JVM');
   End;
  End
- Else
-  ol('imul      ; multiplication JVM');
+  Else
+ ol('imul      ; multiplication JVM');
 End;
 
 { Corriger la fonction IntToStr - remplacer par Str }
@@ -1986,60 +1958,55 @@ Begin
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE SUPPORT POUR LES OP√âRATIONS LONG (32 BITS) SUR 6809            }
+{ FONCTIONS DE SUPPORT POUR LES OPêRATIONS LONG (32 BITS) SUR 6809             }
 { ============================================================================ }
 
-{ G√©n√©rer une routine d'addition long (32 bits) }
-Procedure generate_long_add;
-Begin
+ { GÇnÇrer une routine d'addition long (32 bits) }
+Procedure generate_long_add;Begin
  safe_writeln('; Addition long 32 bits - Jasmin JVM');
  safe_writeln('long_add:');
- ol('; Addition long : JVM g√®re nativement les longs 64-bit');
+ ol('; Addition long : JVM gäre nativement les longs 64-bit');
  ol('ladd        ; addition long JVM (64-bit)');
  ol('return      ; retour JVM');
 End;
 
-{ G√©n√©rer une routine de soustraction long (32 bits) }
-Procedure generate_long_sub;
-Begin
+ { GÇnÇrer une routine de soustraction long (32 bits) }
+Procedure generate_long_sub;Begin
  safe_writeln('; Soustraction long 32 bits - Jasmin JVM');
  safe_writeln('long_sub:');
- ol('; Soustraction long : JVM g√®re nativement les longs 64-bit');
+ ol('; Soustraction long : JVM gäre nativement les longs 64-bit');
  ol('lsub        ; soustraction long JVM (64-bit)');
  ol('return      ; retour JVM');
 End;
 
-{ G√©n√©rer une routine de multiplication long (32 bits) }
-Procedure generate_long_mul;
-Begin
+ { GÇnÇrer une routine de multiplication long (32 bits) }
+Procedure generate_long_mul;Begin
  safe_writeln('; Multiplication long 32 bits - Jasmin JVM');
  safe_writeln('long_mul:');
- ol('; Multiplication long : JVM g√®re nativement les longs 64-bit');
+ ol('; Multiplication long : JVM gäre nativement les longs 64-bit');
  ol('lmul        ; multiplication long JVM (64-bit)');
  ol('return      ; retour JVM');
 End;
 
-{ G√©n√©rer une routine de division long (32 bits) - version simplifi√©e }
-Procedure generate_long_div;
-Begin
+{ GÇnÇrer une routine de division long (32 bits) - version simplifiÇe }
+Procedure generate_long_div;Begin
  safe_writeln('; Division long 32 bits - Jasmin JVM');
  safe_writeln('long_div:');
- ol('; Division long : JVM g√®re nativement les longs 64-bit');
+ ol('; Division long : JVM gäre nativement les longs 64-bit');
  ol('ldiv        ; division long JVM (64-bit)');
  ol('return      ; retour JVM');
 End;
 
-{ G√©n√©rer les routines de comparaison long }
-Procedure generate_long_compare;
-Begin
+ { GÇnÇrer les routines de comparaison long }
+Procedure generate_long_compare;Begin
  safe_writeln('; Comparaison long 32 bits - Jasmin JVM');
  safe_writeln('long_cmp:');
- ol('; Comparaison long : JVM g√®re nativement les longs 64-bit');
+ ol('; Comparaison long : JVM gäre nativement les longs 64-bit');
  ol('lcmp        ; comparaison long JVM (64-bit)');
  ol('return      ; retour JVM');
 End;
 
-{ Charger une constante long sur la pile }
+ { Charger une constante long sur la pile }
 Procedure load_long_constant(value: LongInt);
 Var
  temp_str: String;
@@ -2049,27 +2016,24 @@ Begin
  ol('ldc2_w ' + temp_str + 'L  ; charger constante long JVM');
 End;
 
-{ Charger une variable long depuis la m√©moire }
-Procedure load_long_variable(var_name: String);
-Begin
+ { Charger une variable long depuis la mÇmoire }
+Procedure load_long_variable(var_name: String);Begin
  safe_writeln('; Charger variable long: ' + var_name);
  ol('lload ' + var_name + '     ; charger variable long JVM');
 End;
 
-{ Stocker un long de la pile vers une variable }
-Procedure store_long_variable(var_name: String);
-Begin
+ { Entreposer un long de la pile vers une variable }
+Procedure store_long_variable(var_name: String);Begin
  safe_writeln('; Stocker variable long: ' + var_name);
  ol('lstore ' + var_name + '    ; stocker variable long JVM');
 End;
 
 { ============================================================================ }
-{ FONCTIONS DE GESTION DES FONCTIONS                                          }
+{ FONCTIONS DE GESTION DES FONCTIONS                                           }
 { ============================================================================ }
 
-{ Initialiser le syst√®me de gestion des fonctions bas√© sur le tas }
-Procedure init_functions;
-Begin
+ { Initialiser le systäme de gestion des fonctions basÇ sur la mÇmoire de tas }
+Procedure init_functions;Begin
  function_list := nil;
  function_count := 0;
  current_function_node := nil;
@@ -2084,11 +2048,8 @@ Var
 Begin
  find_function_node := nil;
  current := function_list;
-
- While current <> nil do
- Begin
-  If current^.func_data.name = func_name Then
-  Begin
+ While current <> nil do Begin
+  If current^.func_data.name = func_name Then Begin
    find_function_node := current;
    Exit;
   End;
@@ -2096,7 +2057,7 @@ Begin
  End;
 End;
 
-{ Trouver une fonction par nom - retourne l'index pour compatibilit√© }
+ { Trouver une fonction par nom - retourne l'index pour compatibilitÇ }
 Function find_function(func_name: String): Integer;
 Var
  current: PFunction;
@@ -2105,11 +2066,8 @@ Begin
  find_function := -1;
  current := function_list;
  index := 0;
-
- While current <> nil do
- Begin
-  If current^.func_data.name = func_name Then
-  Begin
+ While current <> nil do Begin
+  If current^.func_data.name = func_name Then Begin
    find_function := index;
    Exit;
   End;
@@ -2118,39 +2076,33 @@ Begin
  End;
 End;
 
-{ Ajouter une nouvelle fonction √† la liste cha√Æn√©e }
-Function add_function(func_name: String; return_type: Integer): Integer;
+ { Ajouter une nouvelle fonction Ö la liste chaånÇe }
+Function add_function(func_name:String;return_type:Integer):Integer;
 Var
  func_node: PFunction;
  func_index: Integer;
 Begin
  add_function := -1;
-
- { V√©rifier si la fonction existe d√©j√† }
+ { VÇrifier si la fonction existe dÇjÖ }
  func_index := find_function(func_name);
- If func_index <> -1 Then
- Begin
+ If func_index <> -1 Then Begin
   add_function := func_index;
   Exit;
  End;
-
- { Allouer m√©moire pour nouvelle fonction dans le tas }
+  { Allouer mÇmoire pour nouvelle fonction dans la mÇmoire de tas }
  New(func_node);
- If func_node = nil Then
- Begin
+ If func_node = nil Then Begin
   Case Language of
    _English: errrpt('Out of memory for function table');
    {$IFDEF FPC}
-   _Germany: errrpt('Kein Speicher f√ºr Funktionstabelle');
+   _Germany: errrpt('Kein Speicher fÅr Funktionstabelle');
    {$ENDIF}
-   Else errrpt('M√©moire insuffisante pour la table de fonctions');
+   Else errrpt('MÇmoire insuffisante pour la table de fonctions');
   End;
   Exit;
  End;
-
- { Initialiser les donn√©es de la fonction }
- With func_node^.func_data do
- Begin
+  { Initialiser les donnÇes de la fonction }
+ With func_node^.func_data do Begin
   name := func_name;
   return_type := return_type;
   init_type_info(return_type_info);
@@ -2163,32 +2115,26 @@ Begin
   local_vars_size := 0;
   is_main := (func_name = 'main');
  End;
-
- { Ins√©rer au d√©but de la liste }
+  { InsÇrer au dÇbut de la liste }
  func_node^.next := function_list;
  function_list := func_node;
-
  func_index := function_count;
  Inc(function_count);
  add_function := func_index;
 End;
 
-{ Obtenir le noeud de fonction par index pour compatibilit√© }
+ { Obtenir le noeud de fonction par index pour compatibilitÇ }
 Function get_function_node(func_index: Integer): PFunction;
 Var
  current: PFunction;
  i: Integer;
 Begin
  get_function_node := nil;
-
  If (func_index < 0) or (func_index >= function_count) Then Exit;
-
  current := function_list;
- For i := 0 to func_index do
- Begin
+ For i := 0 to func_index do Begin
   If current = nil Then Exit;
-  If i = func_index Then
-  Begin
+  If i = func_index Then Begin
    get_function_node := current;
    Exit;
   End;
@@ -2196,90 +2142,75 @@ Begin
  End;
 End;
 
-{ Ajouter un param√®tre √† la fonction }
+ { Ajouter un paramätre Ö la fonction }
 Function add_parameter(func_index: Integer; param_name: String; param_type: Integer): Boolean;
 Var
  func_node: PFunction;
 Begin
  add_parameter := False;
-
  func_node := get_function_node(func_index);
  If func_node = nil Then Exit;
-
- With func_node^.func_data do
- Begin
-  If param_count >= 10 Then
-  Begin
+ With func_node^.func_data do Begin
+  If param_count >= 10 Then Begin
    Case Language of
     _English: errrpt('Too many parameters for function ' + name);
     {$IFDEF FPC}
-    _Germany: errrpt('Zu viele Parameter f√ºr Funktion ' + name);
+    _Germany: errrpt('Zu viele Parameter fÅr Funktion ' + name);
     {$ENDIF}
     Else errrpt('Trop de param√®tres pour la fonction ' + name);
    End;
    Exit;
   End;
-
-  With parameters[param_count] do
-  Begin
+  With parameters[param_count] do Begin
    name := param_name;
    typ := param_type;
    init_type_info(type_info);
    type_info.base_type := param_type;
    calculate_type_size(type_info);
-   offset := param_count * 2; { 2 octets par param√®tre sur la pile 6809 }
+   offset := param_count * 2; { 2 octets par paramätre sur la pile }
   End;
-
   Inc(param_count);
   add_parameter := True;
  End;
 End;
 
-{ G√©n√©rer le prologue de fonction }
+ { GÇnÇrer le prologue de fonction }
 Procedure generate_function_prologue(func_index: Integer);
 Var
  func_node: PFunction;
 Begin
  func_node := get_function_node(func_index);
  If func_node = nil Then Exit;
-
- With func_node^.func_data do
- Begin
+ With func_node^.func_data do Begin
   safe_writeln('; Fonction: ' + name);
   safe_writeln(name + ':');
-
-  { Prologue standard Jasmin JVM }
-  If not is_main Then
-  Begin
+   { Prologue standard Jasmin JVM }
+  If not is_main Then Begin
    safe_writeln('; Prologue fonction JVM - gestion automatique');
-   safe_writeln('; Variables locales allou√©es automatiquement par JVM');
+   safe_writeln('; Variables locales allouÇes automatiquement par JVM');
   End
-  Else
+   Else
   Begin
-   safe_writeln('; Point d''entr√©e de la fonction principale JVM');
+   safe_writeln('; Point d''entrÇe de la fonction principale JVM');
   End;
  End;
 End;
 
-{ G√©n√©rer l'√©pilogue de fonction }
+ { GÇnÇrer l'Çpilogue de fonction }
 Procedure generate_function_epilogue(func_index: Integer);
 Var
  func_node: PFunction;
 Begin
  func_node := get_function_node(func_index);
  If func_node = nil Then Exit;
-
- With func_node^.func_data do
- Begin
+ With func_node^.func_data do Begin
   safe_writeln('; Fin de fonction: ' + name);
-
-  If not is_main Then
-  Begin
-   { √âpilogue standard Jasmin JVM }
-   safe_writeln('; D√©sallocation automatique JVM');
-   ol('return    ; retourner √† l''appelant JVM');
+  If not is_main Then Begin
+   { êpilogue standard Jasmin JVM }
+   safe_writeln('; DÇsallocation automatique JVM');
+   ol('return    ; retourner Ö l''appelant JVM');
   End
-  Else
+   Else
   Begin
    safe_writeln('; Sortie de fonction principale');
    ol('return    ; fin de programme JVM');
@@ -2287,53 +2218,44 @@ Begin
  End;
 End;
 
-{ G√©n√©rer un appel de fonction }
+ { GÇnÇrer un appel de fonction }
 Procedure generate_function_call(func_index: Integer; arg_count: Integer);
 Var
  func_node: PFunction;
 Begin
  func_node := get_function_node(func_index);
  If func_node = nil Then Exit;
-
- With func_node^.func_data do
- Begin
+ With func_node^.func_data do Begin
   safe_writeln('; Appel de fonction: ' + name);
-
-  { V√©rifier le nombre de param√®tres }
+   { VÇrifier le nombre de paramätres }
   If arg_count <> param_count Then
    safe_writeln('; Attention: Nombre d''arguments ne correspond pas');
-
-  { G√©n√©rer l'instruction d'appel }
+   { GÇnÇrer l'instruction d'appel }
   ot('invokestatic ');
   outstr(name);
   ol('()V');
-
-  { Nettoyer la pile - gestion automatique JVM }
-  If param_count > 0 Then
-  Begin
-   safe_writeln('; Param√®tres g√©r√©s automatiquement par JVM');
+   { Nettoyer la pile - gestion automatique JVM }
+  If param_count > 0 Then Begin
+   safe_writeln('; Paramätres gÇrÇs automatiquement par JVM');
   End;
-
   Inc(call_stack_depth);
  End;
 End;
 
-{ Lib√©rer toute la liste de fonctions du tas }
+ { LibÇrer toute la liste de fonctions de la mÇmoire de tas }
 Procedure free_functions;
 Var
  current, next: PFunction;
 Begin
  current := function_list;
- While current <> nil do
- Begin
+ While current <> nil do Begin
   next := current^.next;
   Dispose(current);
   current := next;
  End;
-
  function_list := nil;
- If use_stdout Then WriteLn('; Lib√©r√© ', function_count, ' fonctions du tas')
-               Else safe_writeln('; Lib√©r√© fonctions du tas');
+ If use_stdout Then WriteLn('; LibÇrÇ ', function_count, ' fonctions de la mÇmoire de tas')
+               Else safe_writeln('; LibÇrÇ fonctions du tas');
  function_count := 0;
 End;
 
@@ -2341,26 +2263,22 @@ End;
 { FONCTIONS DE GESTION DES STRUCTURES ET UNIONS                               }
 { ============================================================================ }
 
-{ Initialiser le syst√®me de gestion des structures }
-Procedure init_structs;
-Begin
+ { Initialiser le systäme de gestion des structures }
+Procedure init_structs;Begin
  struct_list := nil;
  struct_count := 0;
  next_struct_id := 1;
 End;
 
 { Trouver une structure par nom }
-Function find_struct(struct_name: String): PStructDef;
+Function find_struct(struct_name:String):PStructDef;
 Var
  current: PStructDef;
 Begin
  find_struct := nil;
  current := struct_list;
-
- While current <> nil do
- Begin
-  If current^.name = struct_name Then
-  Begin
+ While current <> nil do Begin
+  If current^.name = struct_name Then Begin
    find_struct := current;
    Exit;
   End;
@@ -2368,18 +2286,15 @@ Begin
  End;
 End;
 
-{ Trouver une structure par ID }
-Function find_struct_by_id(struct_id: Integer): PStructDef;
+ { Trouver une structure par ID }
+Function find_struct_by_id(struct_id:Integer):PStructDef;
 Var
  current: PStructDef;
 Begin
  find_struct_by_id := nil;
  current := struct_list;
-
- While current <> nil do
- Begin
-  If current^.struct_id = struct_id Then
-  Begin
+ While current <> nil do Begin
+  If current^.struct_id = struct_id Then Begin
    find_struct_by_id := current;
    Exit;
   End;
@@ -2387,43 +2302,37 @@ Begin
  End;
 End;
 
-{ Cr√©er une nouvelle structure/union }
-Function create_struct(struct_name: String; is_union: Boolean): PStructDef;
+ { CrÇer une nouvelle structure/union }
+Function create_struct(struct_name:String;is_union:Boolean):PStructDef;
 Var
  new_struct: PStructDef;
 Begin
  create_struct := nil;
-
- { V√©rifier si la structure existe d√©j√† }
- If find_struct(struct_name) <> nil Then
- Begin
+  { VÇrifier si la structure existe dÇjÖ }
+ If find_struct(struct_name) <> nil Then Begin
   Case Language of
    _English: errrpt('Struct/Union already defined: ' + struct_name);
    {$IFDEF FPC}
    _Germany: errrpt('Struct/Union bereits definiert: ' + struct_name);
    {$ENDIF}
-   Else errrpt('Structure/Union d√©j√† d√©finie: ' + struct_name);
+   Else errrpt('Structure/Union dÇjÖ dÇfinie: ' + struct_name);
   End;
   Exit;
  End;
-
- { Allouer m√©moire pour la nouvelle structure }
+  { Allouer mÇmoire pour la nouvelle structure }
  New(new_struct);
- If new_struct = nil Then
- Begin
+ If new_struct = nil Then Begin
   Case Language of
    _English: errrpt('Out of memory for struct definition');
    {$IFDEF FPC}
-   _Germany: errrpt('Kein Speicher f√ºr Struct-Definition');
+   _Germany: errrpt('Kein Speicher fÅr Struct-Definition');
    {$ENDIF}
-   Else errrpt('M√©moire insuffisante pour la d√©finition de structure');
+   Else errrpt('MÇmoire insuffisante pour la dÇfinition de structure');
   End;
   Exit;
  End;
-
- { Initialiser la structure }
- With new_struct^ do
- Begin
+  { Initialiser la structure }
+ With new_struct^ do Begin
   name := struct_name;
   is_union := is_union;
   member_count := 0;
@@ -2432,28 +2341,22 @@ Begin
   Inc(next_struct_id);
   next := struct_list;
  End;
-
- { Ajouter au d√©but de la liste }
+  { Ajouter au dÇbut de la liste }
  struct_list := new_struct;
  Inc(struct_count);
-
  create_struct := new_struct;
 End;
 
-{ Ajouter un membre √† une structure }
+ { Ajouter un membre Ö une structure }
 Function add_struct_member(struct_def: PStructDef; member_name: String;
                           member_type: Integer; var type_info: TTypeInfo): Boolean;
 Var
  member_size: Integer;
 Begin
  add_struct_member := False;
-
  If struct_def = nil Then Exit;
-
- With struct_def^ do
- Begin
-  If member_count >= 16 Then
-  Begin
+ With struct_def^ do Begin
+  If member_count >= 16 Then Begin
    Case Language of
     _English: errrpt('Too many members in struct: ' + name);
     {$IFDEF FPC}
@@ -2463,59 +2366,49 @@ Begin
    End;
    Exit;
   End;
-
-  { Calculer la taille du membre }
+   { Calculer la taille du membre }
   member_size := calculate_type_size(type_info);
-
-  { Initialiser le membre }
-  With members[member_count] do
-  Begin
+   { Initialiser le membre }
+  With members[member_count] do Begin
    name := member_name;
    member_type := member_type;
    type_info := type_info;
    size := member_size;
-
-   If is_union Then
-   Begin
-    { Dans une union, tous les membres ont offset 0 }
+   If is_union Then Begin
+     { Dans une union, tous les membres ont offset 0 }
     offset := 0;
-    { La taille de l'union est la taille du plus grand membre }
+     { La taille de l'union est la taille du plus grand membre }
     If member_size > total_size Then
      total_size := member_size;
    End
-   Else
+    Else
    Begin
     { Dans une structure, les membres sont align√©s s√©quentiellement }
     offset := total_size;
     total_size := total_size + member_size;
    End;
   End;
-
   Inc(member_count);
   add_struct_member := True;
  End;
 End;
 
-{ Trouver un membre dans une structure }
-Function find_struct_member(struct_def: PStructDef; member_name: String): Integer;
+ { Trouver un membre dans une structure }
+Function find_struct_member(struct_def:PStructDef;member_name:String):Integer;
 Var
  i: Integer;
 Begin
  find_struct_member := -1;
-
  If struct_def = nil Then Exit;
-
- For i := 0 to struct_def^.member_count - 1 do
- Begin
-  If struct_def^.members[i].name = member_name Then
-  Begin
+ For i := 0 to struct_def^.member_count - 1 do Begin
+  If struct_def^.members[i].name = member_name Then Begin
    find_struct_member := i;
    Exit;
   End;
  End;
 End;
 
-{ Lib√©rer toutes les structures de la m√©moire de tas }
+{ LibÇrer toutes les structures de la mÇmoire de tas }
 Procedure free_structs;
 Var
  current, next: PStructDef;
@@ -2527,14 +2420,13 @@ Begin
   Dispose(current);
   current := next;
  End;
-
  struct_list := nil;
- If use_stdout Then WriteLn('; Lib√©r√© ', struct_count, ' structures du tas')
-               Else safe_writeln('; Lib√©r√© structures du tas');
+ If use_stdout Then WriteLn('; LibÇrÇ ', struct_count, ' structures du tas')
+               Else safe_writeln('; LibÇrÇ structures du tas');
  struct_count := 0;
 End;
 
-{ Analyser une d√©claration de structure ou union }
+{ Analyser une dÇclaration de structure ou union }
 Function parse_struct_declaration(is_union: Boolean): Integer;
 Var
  struct_name, member_name: String;
@@ -2543,41 +2435,33 @@ Var
  member_type_info: TTypeInfo;
 Begin
  parse_struct_declaration := -1;
-
- { Obtenir le nom de la structure/union (optionnel) }
- If symname(struct_name) Then
- Begin
-  { Structure nomm√©e }
+  { Obtenir le nom de la structure/union (optionnel) }
+ If symname(struct_name) Then Begin
+  { Structure nommÇe }
   If is_union Then
-   safe_writeln('; D√©claration union: ' + struct_name)
+   safe_writeln('; DÇclaration union: ' + struct_name)
   Else
-   safe_writeln('; D√©claration struct: ' + struct_name);
+   safe_writeln('; DÇclaration struct: ' + struct_name);
  End
- Else
+  Else
  Begin
-  { Structure anonyme - g√©n√©rer un nom unique }
+  { Structure anonyme - gÇnÇrer un nom unique }
   Str(next_struct_id, struct_name);
   struct_name := '_anon_struct_' + struct_name;
  End;
-
- { V√©rifier s'il y a une d√©finition de corps }
- If match('{') Then
- Begin
-  { Cr√©er la nouvelle structure }
+  { VÇrifier s'il y a une dÇfinition de corps }
+ If match('{') Then Begin
+  { CrÇer la nouvelle structure }
   struct_def := create_struct(struct_name, is_union);
   If struct_def = nil Then Exit;
-
-  { Analyser les membres }
-  safe_writeln('; D√©but parsing membres struct');
-  blanks; { S'assurer qu'on ignore les espaces au d√©but }
-
+   { Analyser les membres }
+  safe_writeln('; DÇbut parsing membres struct');
+  blanks; { S'assurer qu'on ignore les espaces au dÇbut }
   Repeat
-   { V√©rifier si nous avons atteint la fin de la ligne }
-   If lptr > Length(line) Then
-   Begin
+   { VÇrifier si nous avons atteint la fin de la ligne }
+   If lptr > Length(line) Then Begin
     safe_writeln('; Lecture nouvelle ligne pour struct...');
-    If not readinline Then
-    Begin
+    If not readinline Then Begin
      Case Language of
       _English: errrpt('Unexpected end of file in struct/union');
       {$IFDEF FPC}
@@ -2588,21 +2472,18 @@ Begin
      Exit;
     End;
    End;
-
    blanks; { Ignorer les espaces }
-
-   { V√©rifier si c'est la fin de la struct }
+    { VÇrifier si c'est la fin de la struct }
    If peek_char = '}' Then Break;
-
-   safe_writeln('; Dans boucle parsing - membre d√©tect√©');
-   safe_writeln('; Parsing membre...');
+   safe_writeln('; Dans boucle parsing - membre dÇtectÇ');
+   safe_writeln('; Analyse le membre...');
    blanks; { S'assurer qu'on ignore les espaces }
    { Analyser le type du membre }
    member_type := parse_type_specifier;
    init_type_info(member_type_info);
    member_type_info.base_type := member_type;
    calculate_type_size(member_type_info);
-   safe_writeln('; Type membre analys√©: ' + IntToStr(member_type));
+   safe_writeln('; Type membre analysÇ: ' + IntToStr(member_type));
    If member_type = -1 Then
    Begin
     Case Language of
@@ -2614,8 +2495,7 @@ Begin
     End;
     Exit;
    End;
-
-   { Analyser le nom du membre }
+    { Analyser le nom du membre }
    safe_writeln('; Tentative lecture nom membre...');
    If not symname(member_name) Then
    Begin
@@ -2628,74 +2508,61 @@ Begin
     End;
     Exit;
    End;
-
    safe_writeln('; Nom de membre lu: ' + member_name);
-
-   { Ajouter le membre √† la structure }
-   If not add_struct_member(struct_def, member_name, member_type, member_type_info) Then
-    Exit;
-
-   { Consommer le point-virgule }
-   If not match(';') Then
-   Begin
+   { Ajouter le membre Ö la structure }
+   If not add_struct_member(struct_def, member_name, member_type, member_type_info) Then Exit;
+    { Consommer le point-virgule }
+   If not match(';') Then Begin
     Case Language of
      _English: errrpt('Expected ; after struct member');
      {$IFDEF FPC}
      _Germany: errrpt('Erwartete ; nach Struct-Mitglied');
      {$ENDIF}
-     Else errrpt('; attendu apr√®s membre de structure');
+     Else errrpt('; attendu apräs membre de structure');
     End;
     Exit;
    End;
-
-   safe_writeln('; Membre ajout√©: ' + member_name);
+   safe_writeln('; Membre ajoutÇ: ' + member_name);
   Until False; { La boucle se termine par les Break }
-
-  { Consommer l'accolade de fermeture }
-  If not match('}') Then
-  Begin
+   { Consommer l'accolade de fermeture }
+  If not match('}') Then Begin
    Case Language of
     _English: errrpt('Expected } to close struct/union');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete } zum Schlie√üen der Struct/Union');
+    _Germany: errrpt('Erwartete } zum Schlie·en der Struct/Union');
     {$ENDIF}
     Else errrpt('} attendu pour fermer struct/union');
    End;
    Exit;
   End;
-
-  { Afficher les informations de la structure }
-  With struct_def^ do
-  Begin
+   { Afficher les informations de la structure }
+  With struct_def^ do Begin
    If is_union Then
-    safe_writeln('; Union ' + name + ' d√©finie, taille: ' + IntToStr(total_size) + ' octets')
+    safe_writeln('; Union ' + name + ' dÇfinie, taille: ' + IntToStr(total_size) + ' octets')
    Else
-    safe_writeln('; Structure ' + name + ' d√©finie, taille: ' + IntToStr(total_size) + ' octets');
+    safe_writeln('; Structure ' + name + ' dÇfinie, taille: ' + IntToStr(total_size) + ' octets');
   End;
-
   parse_struct_declaration := struct_def^.struct_id;
  End
  Else
  Begin
-  { R√©f√©rence √† une structure existante }
+  { RÇfÇrence Ö une structure existante }
   struct_def := find_struct(struct_name);
-  If struct_def = nil Then
-  Begin
+  If struct_def = nil Then Begin
    Case Language of
     _English: errrpt('Undefined struct/union: ' + struct_name);
     {$IFDEF FPC}
     _Germany: errrpt('Undefinierte Struct/Union: ' + struct_name);
     {$ENDIF}
-    Else errrpt('Structure/Union non d√©finie: ' + struct_name);
+    Else errrpt('Structure/Union non dÇfinie: ' + struct_name);
    End;
    Exit;
   End;
-
   parse_struct_declaration := struct_def^.struct_id;
  End;
 End;
 
-{ D√©clarations anticip√©es pour l'analyse d'expression et les fonctions d'analyse }
+ { DÇclarations anticipÇes pour l'analyse d'expression et les fonctions d'analyse }
 Function expression_bool(var lval: TLVal): Boolean; forward;
 Procedure primary_expression(var lval: TLVal); forward;
 Procedure unary_expression(var lval: TLVal); forward;
@@ -2713,9 +2580,8 @@ Procedure parse_struct_member_access(struct_name: String; var lval: TLVal; is_po
 Procedure parse_dereference(var lval: TLVal); forward;
 Procedure parse_address_of(var lval: TLVal); forward;
 
-{ Convertir un type entier en nom de type string }
-function get_type_name_from_id(type_id: Integer): String;
-begin
+ { Convertir un type entier en nom de type string }
+Function get_type_name_from_id(type_id: Integer):String;begin
   case type_id of
     cvoid: get_type_name_from_id := 'void';
     cchar: get_type_name_from_id := 'char';
@@ -2724,26 +2590,22 @@ begin
   end;
 end;
 
-{ Obtenir le nom d'un symbole depuis son pointeur stock√© comme entier }
-function get_symbol_name(symbol_ptr_as_int: Integer): String;
-var
+ { Obtenir le nom d'un symbole depuis son pointeur entreposÇ comme entier }
+Function get_symbol_name(symbol_ptr_as_int: Integer): String;
+Var
   sym_ptr: PSymbol;
-begin
-  if symbol_ptr_as_int = 0 then
-  begin
-    get_symbol_name := 'unknown';
-    exit;
-  end;
-
-  sym_ptr := PSymbol(symbol_ptr_as_int);
-  if sym_ptr = nil then
-  begin
-    get_symbol_name := 'invalid';
-    exit;
-  end;
-
-  get_symbol_name := sym_ptr^.name;
-end;
+Begin
+ If symbol_ptr_as_int = 0 then Begin
+  get_symbol_name := 'unknown';
+  exit;
+ End;
+ sym_ptr := PSymbol(symbol_ptr_as_int);
+ If sym_ptr = nil Then Begin
+  get_symbol_name := 'invalid';
+  exit;
+ End;
+ get_symbol_name := sym_ptr^.name;
+End;
 
 { Analyse am√©lior√©e des sp√©cificateurs de type avec support complet des types C }
 Function parse_type_specifier: Integer;

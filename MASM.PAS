@@ -629,6 +629,12 @@ Var
   { Controle d emission (passe 1 = True => avancer LC sans ecrire) }
   no_emit    : Boolean;
 
+  { Point d entree (directive END label) et fin de source (TODO 25) }
+  has_entry  : Boolean;  { True si END label a ete trouve }
+  entry_seg  : Integer;  { segment du point d entree }
+  entry_off  : TWord;    { offset  du point d entree }
+  asm_end_seen : Boolean; { True apres directive END -> arreter la lecture }
+
   { Fichier de listing .LST }
   lst_file         : Text;           { fichier de listing ouvert }
   lst_is_open      : Boolean;        { True si lst_file est ouvert }
@@ -718,6 +724,10 @@ Begin
   seg_alpha       := False;
   do_crf          := False;
   crf_fname       := '';
+  has_entry    := False;
+  entry_seg    := 0;
+  entry_off    := 0;
+  asm_end_seen := False;
   src_fname  := '';
   obj_fname  := '';
   lst_fname  := '';
@@ -1583,6 +1593,20 @@ Begin
     Exit;
   End;
 
+  { --- Directive avec point initial (.CODE .DATA .MODEL .8086 etc.) --- }
+  { Si '.' est suivi d une lettre ou d un chiffre : mot-cle MASM }
+  If c = '.' Then
+  Begin
+    If (lex_pos+1 <= Length(lex_line)) And
+       (LexIsAlpha(lex_line[lex_pos+1]) Or LexIsDigit(lex_line[lex_pos+1])) Then
+    Begin
+      Inc(lex_pos);       { skip '.' }
+      LexReadIdent(tok);  { lit CODE, DATA, 8086... (LexReadIdent accepte alphanum) }
+      tok.val := '.' + tok.val;
+      Exit;
+    End;
+  End;
+
   { --- Ponctuation et operateurs a 2 caracteres --- }
   Inc(lex_pos);
   tok.kind := TK_PUNCT;
@@ -1919,7 +1943,8 @@ Begin
   End
   Else
   Begin
-    If (p^.kind <> SK_UNDEF) And (p^.kind <> SK_LABEL) Then
+    If (p^.kind <> SK_UNDEF) And (p^.kind <> SK_LABEL) And
+       (p^.kind <> SK_PUBLIC) Then
     Begin
       ErrorMsg('Redefinition de symbole : ' + name);
       Exit;
@@ -3021,7 +3046,8 @@ Begin
 
   { mettre a jour le symbole @MODEL }
   SymSetValue(SymFind('@MODEL'), mem_model);
-  Writeln('.MODEL ', model_name, ' : segments crees.');
+  If (pass_num = 1) And Not silent_mode Then
+    Writeln('.MODEL ', model_name, ' : segments crees.');
 End;
 
 { ============================================================
@@ -5137,9 +5163,17 @@ Begin
     Begin
       LexNext;
       If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
-        LexNext
+        LexNext    { consommer ':' : c est un prefixe de surcharge }
       Else
-        ovr := 0;
+      Begin
+        { pas de ':' -> c est un registre de segment (ex: MOV DS, AX) }
+        RegIndex(tok, ridx, rword, rseg);
+        op.kind    := OK_SREG;
+        op.reg     := ridx;
+        op.is_word := True;
+        If sz_hint > 0 Then op.ptr_size := sz_hint;
+        Exit;
+      End;
     End
     Else
       ovr := 0;
@@ -8739,6 +8773,7 @@ Var
   seg_comb   : TSegCombine; { combinaison pour SEGMENT }
   seg_cls    : TString;     { classe pour SEGMENT }
   si         : Integer;     { index de structure }
+  p_entry    : PSymbol;     { point d entree (directive END label) }
 Begin
   { substituer les macros texte (@DATE, @TIME, @FILENAME, TEXTEQU) }
   cur_line := TextEquSubstLine(cur_line);
@@ -9192,6 +9227,30 @@ Begin
     Exit;
   End;
 
+  { --- directive END [label] : fin du module source --- }
+  If mnem = 'END' Then
+  Begin
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      LexNext;
+      If pass_num = 2 Then
+      Begin
+        { chercher le symbole du point d entree }
+        p_entry := SymFind(lex_tok.val);
+        If p_entry <> Nil Then
+        Begin
+          has_entry := True;
+          entry_seg := p_entry^.seg_idx;
+          entry_off := p_entry^.offset;
+        End
+        Else
+          WarnMsg('Point d entree non defini : ' + lex_tok.val);
+      End;
+    End;
+    asm_end_seen := True;
+    Exit;
+  End;
+
   { instruction inconnue }
   If pass_num = 2 Then
     WarnMsg('Directive ou mnemonic inconnu : ' + mnem);
@@ -9221,6 +9280,9 @@ Begin
   ProcInit;
   { reinitialiser l expansion macro }
   macro_exp_top := -1;
+  { reinitialiser point d entree et fin de source }
+  has_entry    := False;
+  asm_end_seen := False;
 End;
 
 { ============================================================
@@ -9247,6 +9309,7 @@ Begin
     End;
 
     AssembleLine;
+    If asm_end_seen Then Break;  { END directive rencontree }
 
     { ecrire la ligne dans le listing (passe 2 uniquement) }
     If do_listing And lst_active And (pass = 2) And lst_is_open Then
@@ -9268,12 +9331,21 @@ End;
   out_name = nom du fichier .OBJ cible
   ============================================================ }
 Procedure Assemble(Const fname : TString; Const out_name : TString);
+Var
+  t1h, t1m, t1s, t1c : Word;
+  t2h, t2m, t2s, t2c : Word;
+  elapsed_cs, elapsed_s, elapsed_ds : LongInt;
+  total_bytes : LongInt;
+  i : Integer;
+  coment_str : TString;
 Begin
-  Writeln('Assemblage: ', fname);
+  GetTime(t1h, t1m, t1s, t1c);
+  If Not silent_mode Then
+    Writeln('Assemblage: ', fname);
 
   { === PASSE 1 : construction de la table des symboles === }
-  Writeln('Passe 1...');
-  { initialiser @DATE, @TIME, @FILENAME avant la passe 1 }
+  If Not silent_mode Then
+    Writeln('Passe 1...');
   textequ_count := 0;
   InitPredefDateTimeFilename(fname);
   ResetPassState;
@@ -9291,25 +9363,37 @@ Begin
     Exit;
   End;
 
+  { ---------------------------------------------------------------- }
+  { Sauvegarder les tailles de segments (encore valides apres passe 1) }
+  total_bytes := 0;
+  For i := 1 To seg_count Do
+    Inc(total_bytes, LongInt(seg_table[i].size));
+
+  { ---------------------------------------------------------------- }
+  { Ecriture des records d en-tete OMF (avec tailles de passe 1)      }
+  { Ordre OMF standard : THEADR COMENT LNAMES SEGDEF GRPDEF EXTDEF PUBDEF }
+  ObjOpen(out_name);
+  ObjTHEADR(fname);
+  coment_str := 'Assembled by MASM.PAS ' + VERSION + ' on ' + predef_date;
+  ObjCOMENT($88, $00, coment_str);
+  WriteAllSegments;   { LNAMES + SEGDEF (tailles passe 1) + GRPDEF }
+  EmitAllExtDefs;     { EXTDEF }
+  EmitAllPubDefs;     { PUBDEF (offsets connus depuis passe 1) }
+
   { === PASSE 2 : emission du code + listing === }
-  Writeln('Passe 2...');
+  If Not silent_mode Then
+    Writeln('Passe 2...');
   ResetPassState;
 
   { ouvrir le listing avant RunPass pour capturer toutes les lignes }
   If do_listing And (lst_fname <> '') Then
     LstOpen(lst_fname);
 
-  ObjOpen(out_name);
-  ObjTHEADR(fname);
-  WriteAllSegments;
-  EmitAllExtDefs;
-
   SrcPush(fname);
-  RunPass(2);
+  RunPass(2);         { LEDATA + FIXUPP }
 
   FlushLEDATA;
-  EmitAllPubDefs;
-  ObjMODEND(False, 0, 0);
+  ObjMODEND(has_entry, entry_seg, entry_off);
   ObjClose;
 
   { sections de fin de listing }
@@ -9324,10 +9408,24 @@ Begin
     LstClose;
   End;
 
-  { afficher les statistiques }
-  Writeln(cur_lineno, ' lignes compilees, ',
-          err_count, ' erreur(s), ',
-          warn_count, ' avertissement(s).');
+  { ---------------------------------------------------------------- }
+  { Rapport final (TODO 25)                                           }
+  GetTime(t2h, t2m, t2s, t2c);
+  elapsed_cs := LongInt(t2h)*360000 + LongInt(t2m)*6000
+              + LongInt(t2s)*100    + LongInt(t2c)
+              - LongInt(t1h)*360000 - LongInt(t1m)*6000
+              - LongInt(t1s)*100    - LongInt(t1c);
+  If elapsed_cs < 0 Then
+    Inc(elapsed_cs, 8640000);   { passage de minuit }
+  elapsed_s  := elapsed_cs Div 100;
+  elapsed_ds := (elapsed_cs Mod 100) Div 10;
+
+  Writeln(cur_lineno,   ' lignes, ',
+          sym_count,    ' symboles, ',
+          total_bytes,  ' octets, ',
+          err_count,    ' erreur(s), ',
+          warn_count,   ' avertissement(s).',
+          '  [', elapsed_s, '.', elapsed_ds, 's]');
 End;
 
 { ============================================================
@@ -9592,7 +9690,7 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 01-24 implementes)
+  Programme principal (TODOs 01-25 implementes)
   ============================================================ }
 Begin
   InitTables;
