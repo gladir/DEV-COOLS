@@ -298,6 +298,7 @@
 
 Program F77C86;
 
+{$N+}
 {$I-}   { desactiver les IO-check }
 
 { ============================================================
@@ -307,13 +308,13 @@ Program F77C86;
 { --- Constantes de dimensionnement --- }
 Const
   F77_VERSION  = '1.0';
-  F77_DATE     = '2026-03-03';
+  F77_DATE     = '2026-03-04';
 
-  MAX_SYM      = 512;    { entrees table des symboles                 }
+  MAX_SYM      = {$IFDEF FPC}512{$ELSE}100{$ENDIF};    { entrees table des symboles                 }
   MAX_SCOPE    = 16;     { niveaux de portee (F77 a portee unique)    }
-  MAX_PROC     = 128;    { sous-programmes et fonctions               }
-  MAX_PARAM    = 32;     { parametres par sous-programme              }
-  MAX_LABELS   = 1024;   { etiquettes numeriques Fortran (1-99999)    }
+  MAX_PROC     = {$IFDEF FPC}128{$ELSE}48{$ENDIF};    { sous-programmes et fonctions               }
+  MAX_PARAM    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};     { parametres par sous-programme              }
+  MAX_LABELS   = {$IFDEF FPC}1024{$ELSE}256{$ENDIF};   { etiquettes numeriques Fortran (1-99999)    }
   MAX_ERRORS   = 30;     { arret apres N erreurs                      }
   MAX_STR      = 127;    { longueur maximale d'une TString            }
   MAX_DIM      = 7;      { dimensions max d'un tableau (norme F77)    }
@@ -1261,7 +1262,7 @@ End;
   Organisation :
     LexDoRead(var tok)  -- lecture effective (interne)
     LexNext             -- avance cur_tok (utilise has_peek si disponible)
-    LexPeekTok          -- consulte le token suivant sans consommer
+    LexPeekKind/LexPeekVal  -- consulte le token suivant sans consommer
     LexExpect(val)      -- assertion sur cur_tok.val + avance
     LexExpectKind(k)    -- assertion sur cur_tok.kind + avance
     LexInit             -- initialise le lexer, lit le 1er enregistrement
@@ -1439,7 +1440,7 @@ End;
 
 { --------------------------------------------------------------------------
   LexDoRead : lecture effective d un token dans tok.
-  Appele par LexNext et LexPeekTok.
+  Appele par LexNext et LexPeekKind/LexPeekVal.
   Quand l enregistrement logique est epuise, retourne TK_NEWLINE
   et charge automatiquement le suivant (ou TK_EOF si fin de fichier).
   -------------------------------------------------------------------------- }
@@ -1783,7 +1784,7 @@ End;
 
 { --------------------------------------------------------------------------
   LexNext : avance cur_tok vers le token suivant.
-  Si un token a ete pre-lu par LexPeekTok (has_peek=True),
+  Si un token a ete pre-lu par LexEnsurePeek (has_peek=True),
   le retourne directement sans relire la source.
   -------------------------------------------------------------------------- }
 Procedure LexNext;
@@ -1798,17 +1799,29 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  LexPeekTok : retourne le prochain token sans consommer cur_tok.
-  Le resultat est mis en cache dans peek_tok / has_peek.
+  LexPeekKind / LexPeekVal : consulte le prochain token sans consommer
+  cur_tok.  En Turbo Pascal, une fonction ne peut pas retourner un record ;
+  on expose deux accesseurs scalaires sur le token mis en cache (peek_tok).
   -------------------------------------------------------------------------- }
-Function LexPeekTok : TToken;
+Procedure LexEnsurePeek;
 Begin
   If Not has_peek Then
   Begin
     LexDoRead(peek_tok);
     has_peek := True;
   End;
-  LexPeekTok := peek_tok;
+End;
+
+Function LexPeekKind : TTokenKind;
+Begin
+  LexEnsurePeek;
+  LexPeekKind := peek_tok.kind;
+End;
+
+Function LexPeekVal : TString;
+Begin
+  LexEnsurePeek;
+  LexPeekVal := peek_tok.val;
 End;
 
 { --------------------------------------------------------------------------
@@ -4459,9 +4472,9 @@ Begin
         If Not ((cur_tok.kind = TK_PUNCT) And (cur_tok.val = ')')) Then
         Repeat
           If (cur_tok.kind = TK_IDENT)
-          And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ','))
+          And ((LexPeekKind = TK_PUNCT) And (LexPeekVal = ','))
           Or ((cur_tok.kind = TK_IDENT)
-              And ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = ')')))
+              And ((LexPeekKind = TK_PUNCT) And (LexPeekVal = ')')))
           Then
           Begin
             ai[nargs] := SymFind(cur_tok.val);
@@ -5324,8 +5337,8 @@ Begin
   Begin
     idx := SymFind(cur_tok.val);
     If (idx > 0) And (sym_table^[idx].dtype = DT_LOGICAL)
-    And (LexPeekTok.kind <> TK_RELOP)
-    And Not ((LexPeekTok.kind = TK_PUNCT) And (LexPeekTok.val = '('))
+    And (LexPeekKind <> TK_RELOP)
+    And Not ((LexPeekKind = TK_PUNCT) And (LexPeekVal = '('))
     Then
     Begin
       { Charger la variable logique directement }
@@ -6364,6 +6377,9 @@ Procedure ParseFunctionDecl(ret_dtype : TDataType); Forward;
 { Forward pour BLOCK DATA (implementee en TODO 24) }
 Procedure ParseBlockData; Forward;
 
+{ Forward pour PROGRAM (implementee en TODO 25) }
+Procedure ParseProgramDecl; Forward;
+
 { --------------------------------------------------------------------------
   ParseIfArith : IF (expr) n1, n2, n3
   Le mot-cle IF et la ( sont deja consommes.
@@ -7131,6 +7147,7 @@ Begin
   If kw = 'INQUIRE'   Then Begin LexNext; ParseInquire;            Exit; End;
 
   If kw = 'BLOCKDATA'  Then Begin LexNext; ParseBlockData;              Exit; End;
+  If kw = 'PROGRAM'    Then Begin LexNext; ParseProgramDecl;            Exit; End;
   If kw = 'CALL'       Then Begin LexNext; ParseCallStmt;               Exit; End;
   If kw = 'SUBROUTINE' Then Begin LexNext; ParseSubroutineDecl;         Exit; End;
   If kw = 'FUNCTION'   Then Begin LexNext; ParseFunctionDecl(DT_NONE);  Exit; End;
@@ -8446,6 +8463,81 @@ Begin
 End;
 
 { ============================================================
+  TODO 25 - PROGRAMME PRINCIPAL (PROGRAM nom)
+  ============================================================
+  PROGRAM [nom] : unite principale en F77.
+  Au point d'entree START (deja ecrit par GenProgramEntry), on emet :
+    CALL _FP_<nom>      ; appel de la routine programme
+    MOV AX, 4C00h
+    INT 21h             ; epilogue DOS
+  Puis le corps est traite comme une subroutine NEAR sans parametres.
+  L'enonce END ferme la proc via ParseEnd (GenProcEnd).
+  ============================================================ }
+
+{ --------------------------------------------------------------------------
+  ParseProgramDecl : traiter la declaration PROGRAM [nom].
+  Le mot-cle PROGRAM a deja ete consomme.
+  -------------------------------------------------------------------------- }
+Procedure ParseProgramDecl;
+Var
+  pg_name : TString;
+  pi      : Integer;
+Begin
+  { Nom depuis pre_ident (F77 kw colle ex. "PROGRAMHELLO") ou token suivant }
+  pg_name := '';
+  If pre_ident <> '' Then
+  Begin
+    pg_name   := pre_ident;
+    pre_ident := '';
+  End
+  Else
+  Begin
+    While cur_tok.kind = TK_NEWLINE Do LexNext;
+    If cur_tok.kind = TK_IDENT Then
+    Begin
+      pg_name := cur_tok.val;
+      LexNext;
+    End;
+  End;
+  If pg_name = '' Then pg_name := 'MAIN';
+
+  prog_name   := pg_name;
+  cur_unit_kw := 'PROGRAM';
+
+  { Enregistrer dans proc_table (pour PUBLIC + stats) }
+  pi := 0;
+  If proc_count < MAX_PROC Then
+  Begin
+    Inc(proc_count);
+    pi := proc_count;
+    proc_table^[pi].name        := pg_name;
+    proc_table^[pi].asm_label   := FP_PFX + pg_name;
+    proc_table^[pi].is_function := False;
+    proc_table^[pi].ret_type    := DT_NONE;
+    proc_table^[pi].param_count := 0;
+  End
+  Else
+    ErrorMsg('Table proc saturee pour PROGRAM ' + pg_name);
+
+  { --- Emettre au point d'entree START (cur_out = out_file ici) ---
+    CALL vers la routine body + epilogue DOS }
+  EmitComment('Appel du programme principal ' + pg_name);
+  EmitI1('CALL', FP_PFX + pg_name);
+  EmitBlank;
+  EmitComment('Fin du programme principal');
+  EmitI2('MOV', 'AX', '4C00h');
+  EmitI0('INT 21h');
+  prog_epilogue_done := True;
+
+  { --- Corps du programme comme routine NEAR ---
+    GenProcBegin emet le label + PROC NEAR + PUSH BP/SP/SI/DI }
+  cur_proc_idx  := pi;
+  cur_subr_name := pg_name;
+  cur_ret_lbl   := GenBranchLabel;
+  GenProcBegin(pg_name, 0);
+End;
+
+{ ============================================================
   TODO 23 - RUNTIME FORTRAN 77 (_FRT_xxx)
   ============================================================
   Toutes les routines sont emises dans tmp_file (via SwitchToTmp).
@@ -9309,5 +9401,9 @@ Begin
 
   Writeln('Compilation terminee : ', err_count, ' erreur(s), ',
           warn_count, ' avertissement(s).');
+  Writeln('Statistiques         : ', phys_lines, ' ligne(s) F77, ',
+          sym_count,  ' symbole(s), ',
+          lbl_count,  ' etiquette(s) F77, ',
+          proc_count, ' procedure(s).');
   If err_count > 0 Then Halt(1);
 End.
