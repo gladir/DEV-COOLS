@@ -611,6 +611,17 @@ Var
   lst_fname  : TString;  { nom du fichier listing .LST }
   do_listing : Boolean;  { True = generer le fichier .LST }
 
+  { Options ligne de commande (TODO 24) }
+  case_sensitive  : Boolean;  { /ML = conserver la casse des labels }
+  case_public_ext : Boolean;  { /MX = casse des publics/externes }
+  warn_level      : Integer;  { /W0-2 = niveau d avertissement }
+  silent_mode     : Boolean;  { /T = mode silencieux }
+  list_cond       : Boolean;  { /X = lister blocs conditionnels inactifs }
+  show_err_lines  : Boolean;  { /Z = afficher ligne source avec erreur }
+  seg_alpha       : Boolean;  { /A = tri alpha; /S = ordre definition }
+  do_crf          : Boolean;  { /C = generer .CRF }
+  crf_fname       : TString;  { nom du fichier .CRF }
+
   { Ligne de source courante (pour messages d erreur) }
   cur_line   : TString;  { contenu de la ligne en cours d analyse }
   cur_lineno : Integer;  { numero de ligne logique (apres continuation) }
@@ -697,7 +708,16 @@ Begin
   lc         := 0;
   cur_seg    := 0;
   cur_lineno := 0;
-  do_listing := False;
+  do_listing      := False;
+  case_sensitive  := False;
+  case_public_ext := False;
+  warn_level      := 1;
+  silent_mode     := False;
+  list_cond       := False;
+  show_err_lines  := False;
+  seg_alpha       := False;
+  do_crf          := False;
+  crf_fname       := '';
   src_fname  := '';
   obj_fname  := '';
   lst_fname  := '';
@@ -728,7 +748,7 @@ Begin
             err_count:3, ': ', msg)
   Else
     Writeln('error A2', err_count:3, ': ', msg);
-  If cur_line <> '' Then
+  If show_err_lines And (cur_line <> '') Then
     Writeln('  ', cur_line);
 End;
 
@@ -737,6 +757,7 @@ End;
   ============================================================ }
 Procedure WarnMsg(Const msg : TString);
 Begin
+  If warn_level = 0 Then Exit;
   Inc(warn_count);
   If src_fname <> '' Then
     Writeln(src_fname, '(', cur_lineno, ') : warning A4',
@@ -9310,11 +9331,270 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 20 a 25 a implementer)
+  TODO 24 - TRAITEMENT DE LA LIGNE DE COMMANDE ET OPTIONS
+  ============================================================ }
+
+{ ChangeExt : remplace (ou ajoute) l extension d un nom de fichier }
+Function ChangeExt(Const fname : TString; Const ext : TString) : TString;
+Var
+  i    : Integer;
+  base : TString;
+Begin
+  base := fname;
+  i    := Length(base);
+  While i > 0 Do
+  Begin
+    If (base[i] = '\') Or (base[i] = '/') Or (base[i] = ':') Then
+    Begin
+      { separateur de repertoire atteint sans trouver de '.' : pas d extension }
+      ChangeExt := base + ext;
+      Exit;
+    End;
+    If base[i] = '.' Then
+    Begin
+      ChangeExt := Copy(base, 1, i-1) + ext;
+      Exit;
+    End;
+    Dec(i);
+  End;
+  { pas de '.' du tout }
+  ChangeExt := base + ext;
+End;
+
+{ UpStrCLI : convertir une chaine en majuscules (usage ligne de commande) }
+Function UpStrCLI(Const s : TString) : TString;
+Var k : Integer; r : TString;
+Begin
+  r := s;
+  For k := 1 To Length(r) Do r[k] := UpCase(r[k]);
+  UpStrCLI := r;
+End;
+
+{ ShowUsage : afficher l aide et terminer }
+Procedure ShowUsage;
+Begin
+  Writeln('Usage  : MASM [options] source[.ASM] [obj[.OBJ] [lst[.LST] [crf[.CRF]]]]');
+  Writeln('Options:');
+  Writeln('  /A        Trier segments alphabetiquement');
+  Writeln('  /B n      Taille buffer source (ignore)');
+  Writeln('  /C        Generer .CRF cross-reference (non implemente)');
+  Writeln('  /D        Double-passe (toujours actif, rien a faire)');
+  Writeln('  /L        Generer fichier listing .LST');
+  Writeln('  /ML       Labels sensibles a la casse');
+  Writeln('  /MU       Convertir labels en majuscules (defaut)');
+  Writeln('  /MX       Publics/externes sensibles a la casse');
+  Writeln('  /N        Omettre tables de symboles du listing');
+  Writeln('  /S        Segments en ordre de definition (defaut)');
+  Writeln('  /T        Mode silencieux');
+  Writeln('  /W0 /W1 /W2  Niveau d''avertissement (0=aucun, 2=tout)');
+  Writeln('  /X        Lister blocs conditionnels inactifs');
+  Writeln('  /Z        Afficher la ligne source avec chaque erreur');
+  Writeln('  /Zi /Zd   Infos debug CodeView (non implemente)');
+  Writeln('  /I chem   Ajouter repertoire de recherche INCLUDE');
+  Writeln('  /Dsym[=val]  Definir un symbole sur la ligne de commande');
+  Writeln('  /?        Afficher cette aide');
+  Halt(1);
+End;
+
+{ ParseArgs : analyser ParamStr(1..ParamCount) }
+Procedure ParseArgs;
+Var
+  i, eq, code, nval : Integer;
+  arg, uopt, sym, val, dirpath : TString;
+  pos_count : Integer;
+  si : PSymbol;
+Begin
+  pos_count := 0;
+  i := 1;
+  While i <= ParamCount Do
+  Begin
+    arg  := ParamStr(i);
+    If Length(arg) = 0 Then Begin Inc(i); Continue; End;
+    If (arg[1] = '/') Or (arg[1] = '-') Then
+    Begin
+      uopt := UpStrCLI(Copy(arg, 2, 255));
+      { --- aide --- }
+      If (uopt = '?') Or (uopt = 'H') Or (uopt = 'HELP') Then
+        ShowUsage
+      { --- /A : segments alphabetiques --- }
+      Else If uopt = 'A' Then
+        seg_alpha := True
+      { --- /B [n] : taille buffer, ignore --- }
+      Else If (uopt = 'B') Or ((Length(uopt) >= 2) And (uopt[1] = 'B')
+               And (uopt[2] >= '0') And (uopt[2] <= '9')) Then
+      Begin
+        If uopt = 'B' Then
+        Begin
+          { /B n : le nombre est dans le parametre suivant }
+          If i < ParamCount Then
+          Begin
+            val := ParamStr(i+1);
+            If (Length(val) > 0) And (val[1] >= '0') And (val[1] <= '9') Then
+              Inc(i);
+          End;
+        End;
+        { /Bn : ignorer le chiffre colle }
+      End
+      { --- /C : generer .CRF --- }
+      Else If uopt = 'C' Then
+        do_crf := True
+      { --- /D : double-pass (toujours actif) --- }
+      Else If uopt = 'D' Then
+        { rien a faire }
+      { --- /Dsym[=val] : definir un symbole --- }
+      Else If (Length(uopt) >= 2) And (uopt[1] = 'D') Then
+      Begin
+        sym := Copy(arg, 3, 255);   { conserver la casse originale }
+        val := '1';
+        eq  := Pos('=', sym);
+        If eq > 0 Then
+        Begin
+          val := Copy(sym, eq+1, 255);
+          sym := Copy(sym, 1,  eq-1);
+        End;
+        If sym <> '' Then
+        Begin
+          si := SymFind(sym);
+          If si = Nil Then
+            si := SymEnter(sym, SK_EQU, 0, 0, 2);
+          si^.kind    := SK_EQU;
+          si^.seg_idx := 0;
+          { convertir val en entier (base 10) }
+          nval := 0; code := 0;
+          For eq := 1 To Length(val) Do
+          Begin
+            If (val[eq] >= '0') And (val[eq] <= '9') Then
+              nval := nval * 10 + (Ord(val[eq]) - 48)
+            Else Begin code := -1; Break; End;
+          End;
+          If code = 0 Then si^.value := nval
+          Else             si^.value := 1;
+        End;
+      End
+      { --- /L : generer le listing --- }
+      Else If uopt = 'L' Then
+        do_listing := True
+      { --- /ML : casse des labels --- }
+      Else If uopt = 'ML' Then
+        case_sensitive := True
+      { --- /MU : majuscules (defaut) --- }
+      Else If uopt = 'MU' Then
+        case_sensitive := False
+      { --- /MX : casse publics/extern --- }
+      Else If uopt = 'MX' Then
+        case_public_ext := True
+      { --- /N : pas de table de symboles --- }
+      Else If uopt = 'N' Then
+        lst_sym_table := False
+      { --- /S : segments en ordre de definition (defaut) --- }
+      Else If uopt = 'S' Then
+        seg_alpha := False
+      { --- /T : silencieux --- }
+      Else If uopt = 'T' Then
+        silent_mode := True
+      { --- /W0 /W1 /W2 : niveau d avertissement --- }
+      Else If uopt = 'W0' Then warn_level := 0
+      Else If uopt = 'W1' Then warn_level := 1
+      Else If uopt = 'W2' Then warn_level := 2
+      { --- /X : lister blocs conditionnels inactifs --- }
+      Else If uopt = 'X' Then
+        list_cond := True
+      { --- /Z : afficher ligne source avec erreur --- }
+      Else If uopt = 'Z' Then
+        show_err_lines := True
+      { --- /Zi /Zd : CodeView debug (non implemente) --- }
+      Else If (uopt = 'ZI') Or (uopt = 'ZD') Then
+        { ignore }
+      { --- /I[chem] ou /I chem : repertoire INCLUDE --- }
+      Else If (Length(uopt) >= 1) And (uopt[1] = 'I') Then
+      Begin
+        If Length(uopt) > 1 Then
+          dirpath := Copy(arg, 3, 255)   { /Ipath : chemin colle }
+        Else
+        Begin
+          { /I path : chemin dans l argument suivant }
+          Inc(i);
+          If i > ParamCount Then
+          Begin
+            Writeln('Erreur: /I sans chemin');
+            Halt(1);
+          End;
+          dirpath := ParamStr(i);
+        End;
+        If inc_dir_cnt < 16 Then
+        Begin
+          inc_dirs[inc_dir_cnt] := dirpath;
+          Inc(inc_dir_cnt);
+        End
+        Else
+          Writeln('Avertissement: trop de repertoires /I (max 16), ignore: ', dirpath);
+      End
+      Else
+        Writeln('Avertissement: option inconnue ignoree: ', arg);
+    End
+    Else
+    Begin
+      { Argument positionnel : source obj lst crf }
+      Case pos_count Of
+        0:  { source.ASM }
+        Begin
+          src_fname := arg;
+          If Pos('.', arg) = 0 Then
+            src_fname := arg + '.ASM';
+          Inc(pos_count);
+        End;
+        1:  { obj.OBJ }
+        Begin
+          obj_fname := arg;
+          If Pos('.', arg) = 0 Then
+            obj_fname := arg + '.OBJ';
+          Inc(pos_count);
+        End;
+        2:  { lst.LST  (NUL = pas de listing) }
+        Begin
+          If (UpStrCLI(arg) = 'NUL') Or (UpStrCLI(arg) = 'NUL.LST') Then
+            lst_fname := ''
+          Else
+          Begin
+            lst_fname := arg;
+            If Pos('.', arg) = 0 Then
+              lst_fname := arg + '.LST';
+            do_listing := True;
+          End;
+          Inc(pos_count);
+        End;
+        3:  { crf.CRF : accepte et ignore }
+        Begin
+          crf_fname := arg;
+          Inc(pos_count);
+        End;
+      End;
+    End;
+    Inc(i);
+  End;
+
+  { Source obligatoire }
+  If src_fname = '' Then
+  Begin
+    Writeln('Microsoft Macro Assembler Version ', VERSION,
+            ' compatible MASM 5.x');
+    ShowUsage;
+    Exit;
+  End;
+
+  { Deriver obj_fname depuis src_fname si non fourni }
+  If obj_fname = '' Then
+    obj_fname := ChangeExt(src_fname, '.OBJ');
+
+  { Deriver lst_fname si listing demande et nom non fourni }
+  If do_listing And (lst_fname = '') Then
+    lst_fname := ChangeExt(src_fname, '.LST');
+End;
+
+{ ============================================================
+  Programme principal (TODOs 01-24 implementes)
   ============================================================ }
 Begin
-  Writeln('Microsoft Macro Assembler Version ', VERSION,
-          ' (MASM.PAS - compatible MASM 5.x)');
   InitTables;
   ObjInit;
   FixupInit;
@@ -9329,16 +9609,13 @@ Begin
   SymInit;
   local_unique_id := 0;
   no_emit         := False;
-  lst_is_open     := False;
-  lst_active      := False;
-  lst_sym_table   := True;
-  lst_page_lines  := 60;
-  lst_page_cols   := 80;
-  lst_page_num    := 0;
-  lst_line_on_page := 0;
-  lst_title       := '';
-  lst_subttl      := '';
-  lst_nbytes      := 0;
-  Writeln('TODOs 01-23 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc+macro+cond+proc+passes+listing+group+include+textequ).');
-  Writeln('TODOs 24 et 25 a implementer.');
+  { Analyser la ligne de commande (TODO 24) }
+  ParseArgs;
+  If Not silent_mode Then
+    Writeln('Microsoft Macro Assembler Version ', VERSION,
+            ' compatible MASM 5.x');
+  { Assembler }
+  Assemble(src_fname, obj_fname);
+  If err_count > 0 Then Halt(1)
+  Else Halt(0);
 End.
