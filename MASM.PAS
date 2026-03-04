@@ -6758,6 +6758,8 @@ Var
   fsym     : PSymbol;
   e        : TExpr;
   done     : Boolean;
+  dd_idx   : Integer;
+  i        : Integer;
 Begin
   { verifier que la structure n est pas deja definie }
   If StructFind(struc_name) > 0 Then
@@ -6827,8 +6829,10 @@ Begin
     has_def  := False;
 
     { tok est DB/DW/DD/DQ/DT directement, ou un nom de champ }
-    If (tok='DB') Or (tok='DW') Or (tok='DD') Or
-       (tok='DQ') Or (tok='DT') Then
+    dd_idx := 0;
+    For i := 1 To DD_COUNT Do
+      If DD_NAMES[i] = tok Then Begin dd_idx := i; Break; End;
+    If dd_idx > 0 Then
       dir := tok
     Else
     Begin
@@ -6838,15 +6842,14 @@ Begin
       Begin
         LexNext;
         dir := lex_tok.val;
+        dd_idx := 0;
+        For i := 1 To DD_COUNT Do
+          If DD_NAMES[i] = dir Then Begin dd_idx := i; Break; End;
       End;
     End;
 
     { taille selon la directive }
-    If      dir = 'DB' Then fsize := 1
-    Else If dir = 'DW' Then fsize := 2
-    Else If dir = 'DD' Then fsize := 4
-    Else If dir = 'DQ' Then fsize := 8
-    Else If dir = 'DT' Then fsize := 10
+    If dd_idx > 0 Then fsize := DD_SIZES[dd_idx]
     Else
     Begin
       { directive inconnue ou ligne de commentaire : ignorer }
