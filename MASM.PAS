@@ -4943,13 +4943,16 @@ End;
 { ============================================================
   SegrOverridePrefix : retourner le prefixe de segment ou 0
   ============================================================ }
+Const SO_COUNT = 4;
+      SO_NAMES: Array[1..4] Of String[2] = ('ES','CS','SS','DS');
+      SO_OPC:   Array[1..4] Of Byte      = ($26,$2E,$36,$3E);
+
 Function SegOvrByte(Const seg_name : TString) : Integer;
+Var i : Integer;
 Begin
-  If      seg_name = 'ES' Then SegOvrByte := $26
-  Else If seg_name = 'CS' Then SegOvrByte := $2E
-  Else If seg_name = 'SS' Then SegOvrByte := $36
-  Else If seg_name = 'DS' Then SegOvrByte := $3E
-  Else                          SegOvrByte := 0;
+  For i := 1 To SO_COUNT Do
+    If SO_NAMES[i] = seg_name Then Begin SegOvrByte := SO_OPC[i]; Exit; End;
+  SegOvrByte := 0;
 End;
 
 { ============================================================
