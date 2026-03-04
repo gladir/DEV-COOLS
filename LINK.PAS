@@ -11,60 +11,241 @@ Program LINK;
 Uses DOS;
 
 Const
- MAX_SEGMENTS=128;
- MAX_SYMBOLS=1024;
- MAX_RELOCATIONS=2048;
+ MAX_SEGMENTS=128;      { Nombre maximal de segments suivis pendant l'edition de liens }
+ MAX_SYMBOLS=1024;      { Nombre maximal de symboles (publics + externes) }
+ MAX_RELOCATIONS=2048;  { Nombre maximal d'entrees de relocation en memoire }
 
 Type
+ { En-tete DOS MZ du fichier executable genere }
  TExeHeader=Record
-  Signature:Word;          { 'MZ' }
-  LastPageBytes:Word;
-  PageCount:Word;
-  RelocCount:Word;
-  HeaderSize:Word;
-  MinAlloc:Word;
-  MaxAlloc:Word;
-  InitSS:Word;
-  InitSP:Word;
-  Checksum:Word;
-  InitIP:Word;
-  InitCS:Word;
-  RelocOffset:Word;
-  OverlayNumber:Word;
+  Signature:Word;          { Signature DOS 'MZ' }
+  LastPageBytes:Word;      { Nombre d'octets utilises dans la derniere page }
+  PageCount:Word;          { Nombre total de pages de 512 octets dans l'EXE }
+  RelocCount:Word;         { Nombre d'entrees de relocation }
+  HeaderSize:Word;         { Taille de l'en-tete en paragraphes (16 octets) }
+  MinAlloc:Word;           { Memoire minimale supplementaire demandee }
+  MaxAlloc:Word;           { Memoire maximale supplementaire demandee }
+  InitSS:Word;             { Valeur initiale de SS (relative au debut de chargement) }
+  InitSP:Word;             { Valeur initiale de SP }
+  Checksum:Word;           { Somme de controle (souvent 0 si non utilisee) }
+  InitIP:Word;             { Valeur initiale de IP }
+  InitCS:Word;             { Valeur initiale de CS (relative au debut de chargement) }
+  RelocOffset:Word;        { Offset dans l'en-tete de la table de relocation }
+  OverlayNumber:Word;      { Numero d'overlay (0 pour programme principal) }
  End;
 
+   { Description d'un segment logique dans l'image liee }
  TSegment=Record
-  Name:String[16];
-  Address:LongInt;
-  Size:Word;
-  Class:String[8];
+  Name:String[16];         { Nom logique du segment }
+  Address:LongInt;         { Adresse/offset de base du segment dans l'image liee }
+  Size:Word;               { Taille du segment en octets }
+  Class:String[8];         { Classe du segment (CODE, DATA, etc.) }
  End;
 
+   { Description d'un symbole resolu ou externe }
  TSymbol=Record
-  Name:String[32];
-  Segment:Word;
-  Offset:Word;
-  IsExternal:Boolean;
+  Name:String[32];         { Nom du symbole }
+  Segment:Word;            { Index du segment de definition (0 si externe) }
+  Offset:Word;             { Offset du symbole dans son segment }
+  IsExternal:Boolean;      { True si symbole externe non defini dans ce module }
  End;
 
+   { Entree de relocation pour corriger une adresse a l'execution }
  TRelocation=Record
-  Segment:Word;
-  Offset:Word;
-  Target:Word;
+  Offset:Word;             { Offset MZ de la valeur a relocaliser }
+  Segment:Word;            { Segment MZ (paragraphe) de la valeur a relocaliser }
+  Target:Word;             { Reserve pour informations de cible/fixup }
+ End;
+
+ PSegment=^TSegment;
+ PSymbol=^TSymbol;
+
+ { Listes chainees des structures principales }
+ PSegmentItem=^TSegmentItem;
+ TSegmentItem=Record
+  Value:TSegment;
+  Next:PSegmentItem;
+ End;
+
+ PSymbolItem=^TSymbolItem;
+ TSymbolItem=Record
+  Value:TSymbol;
+  Next:PSymbolItem;
+ End;
+
+ PRelocationItem=^TRelocationItem;
+ TRelocationItem=Record
+  Value:TRelocation;
+  Next:PRelocationItem;
+ End;
+
+ { Liste chainee des corrections OFFSET }
+ POffsetPatchItem=^TOffsetPatchItem;
+ TOffsetPatchItem=Record
+  Pos:LongInt;
+  Delta:Integer;
+  Next:POffsetPatchItem;
  End;
 
 Var
  ObjFile,ExeFile,MapFile:File;
  ExeHeader:TExeHeader;
- Segments:Array[1..MAX_SEGMENTS] of TSegment;
- Symbols:Array[1..MAX_SYMBOLS] of TSymbol;
- Relocations:Array[1..MAX_RELOCATIONS] of TRelocation;
+ SegmentHead,SegmentTail:PSegmentItem;
+ SymbolHead,SymbolTail:PSymbolItem;
+ RelocationHead,RelocationTail:PRelocationItem;
+ OffsetPatchHead,OffsetPatchTail:POffsetPatchItem;
  SegmentCount,SymbolCount,RelocationCount:Integer;
+ OffsetPatchCount:Integer;
  StackSize:Word;
+ ObjModuleName:String[64];
  ObjFileName,ExeFileName,MapFileName:String;  { Ajout des variables }
  i:Integer;
  Param:string;
  Buffer:Array[0..1023] of Byte;  { Ajout du tampon manquant }
+
+Procedure InitOffsetPatchList;
+Begin
+ OffsetPatchHead:=Nil;
+ OffsetPatchTail:=Nil;
+ OffsetPatchCount:=0;
+End;
+
+Procedure AddOffsetPatch(Const Pos:LongInt; Const Delta:Integer);
+Var item:POffsetPatchItem;
+Begin
+ If OffsetPatchCount>=MAX_RELOCATIONS Then Begin
+  WriteLn('Erreur : Trop de patchs OFFSET');
+  Halt(15);
+ End;
+ New(item);
+ item^.Pos:=Pos;
+ item^.Delta:=Delta;
+ item^.Next:=Nil;
+ If OffsetPatchHead=Nil Then OffsetPatchHead:=item
+                        Else OffsetPatchTail^.Next:=item;
+ OffsetPatchTail:=item;
+ Inc(OffsetPatchCount);
+End;
+
+Procedure FreeOffsetPatchList;
+Var item,nextItem:POffsetPatchItem;
+Begin
+ item:=OffsetPatchHead;
+ While item<>Nil do Begin
+  nextItem:=item^.Next;
+  Dispose(item);
+  item:=nextItem;
+ End;
+ OffsetPatchHead:=Nil;
+ OffsetPatchTail:=Nil;
+ OffsetPatchCount:=0;
+End;
+
+Procedure InitMainLists;
+Begin
+ SegmentHead:=Nil;
+ SegmentTail:=Nil;
+ SymbolHead:=Nil;
+ SymbolTail:=Nil;
+ RelocationHead:=Nil;
+ RelocationTail:=Nil;
+ SegmentCount:=0;
+ SymbolCount:=0;
+ RelocationCount:=0;
+End;
+
+Procedure FreeMainLists;
+Var
+ segItem,nextSeg:PSegmentItem;
+ symItem,nextSym:PSymbolItem;
+ relItem,nextRel:PRelocationItem;
+Begin
+ segItem:=SegmentHead;
+ While segItem<>Nil do Begin
+  nextSeg:=segItem^.Next;
+  Dispose(segItem);
+  segItem:=nextSeg;
+ End;
+ symItem:=SymbolHead;
+ While symItem<>Nil do Begin
+  nextSym:=symItem^.Next;
+  Dispose(symItem);
+  symItem:=nextSym;
+ End;
+ relItem:=RelocationHead;
+ While relItem<>Nil do Begin
+  nextRel:=relItem^.Next;
+  Dispose(relItem);
+  relItem:=nextRel;
+ End;
+ InitMainLists;
+End;
+
+Function AddSegment(Const Seg:TSegment):Integer;
+Var item:PSegmentItem;
+Begin
+ If SegmentCount>=MAX_SEGMENTS Then Begin
+  WriteLn('Erreur : Trop de segments dans le fichier objet');
+  Halt(11);
+ End;
+ New(item);
+ item^.Value:=Seg;
+ item^.Next:=Nil;
+ If SegmentHead=Nil Then SegmentHead:=item
+                    Else SegmentTail^.Next:=item;
+ SegmentTail:=item;
+ Inc(SegmentCount);
+ AddSegment:=SegmentCount;
+End;
+
+Procedure AddSymbol(Const Sym:TSymbol);
+Var item:PSymbolItem;
+Begin
+ New(item);
+ item^.Value:=Sym;
+ item^.Next:=Nil;
+ If SymbolHead=Nil Then SymbolHead:=item
+                   Else SymbolTail^.Next:=item;
+ SymbolTail:=item;
+ Inc(SymbolCount);
+End;
+
+Function GetSegmentPtr(Index:Integer):PSegment;
+Var
+ item:PSegmentItem;
+ n:Integer;
+Begin
+ GetSegmentPtr:=Nil;
+ If (Index<=0)Or(Index>SegmentCount) Then Exit;
+ item:=SegmentHead;
+ n:=1;
+ While(item<>Nil)And(n<Index)do Begin
+  item:=item^.Next;
+  Inc(n);
+ End;
+ If item<>Nil Then GetSegmentPtr:=@item^.Value;
+End;
+
+Procedure AddRelocationEntry(Const OffsetVal,SegmentVal,TargetVal:Word);
+Var
+ item:PRelocationItem;
+ rel:TRelocation;
+Begin
+ If RelocationCount>=MAX_RELOCATIONS Then Begin
+  WriteLn('Erreur : Trop de relocations');
+  Halt(14);
+ End;
+ rel.Offset:=OffsetVal;
+ rel.Segment:=SegmentVal;
+ rel.Target:=TargetVal;
+ New(item);
+ item^.Value:=rel;
+ item^.Next:=Nil;
+ If RelocationHead=Nil Then RelocationHead:=item
+                       Else RelocationTail^.Next:=item;
+ RelocationTail:=item;
+ Inc(RelocationCount);
+End;
 
 Function ReadObjFile(Const FileName:String):Boolean;
 Var
@@ -77,12 +258,36 @@ Var
  DataLen:Word;
  EndPos:LongInt;
  IdxSize:Integer;
+ ModuleEnded:Boolean;
+ NameLen:Byte;
+ j:Integer;
+ LastDataSeg:Word;
+ LastDataOfs:Word;
+ HasDataContext:Boolean;
+ FixPos,FixLimit:Integer;
+ Locat,FixDat,FixByte:Byte;
+ LocOfs:Word;
+ LocKind:Byte;
+ LocIsSelfRel:Boolean;
+ FrameMethod,TargetMethod:Byte;
+ RelocLinearPos,RelocDataPos:LongInt;
+ SymRec:TSymbol;
+ SegRec:TSegment;
+ SegPtr,PrevSegPtr:PSegment;
 Begin
  ReadObjFile:=False;
+ FreeMainLists;
+ InitMainLists;
+ FreeOffsetPatchList;
+ InitOffsetPatchList;
+ ModuleEnded:=False;
+ LastDataSeg:=0;
+ LastDataOfs:=0;
+ HasDataContext:=False;
  {$I-}Assign(ObjFile,FileName);
  Reset(ObjFile, 1);{$I+}
  If IOResult<>0 Then Exit;
- While Not Eof(ObjFile) do Begin
+ While(Not Eof(ObjFile))and(Not ModuleEnded)do Begin
   BlockRead(ObjFile,RecType,1);
   If Eof(ObjFile) Then Break;
   BlockRead(ObjFile,RecLen,2);
@@ -92,45 +297,171 @@ Begin
   End;
   BlockRead(ObjFile,Buffer,RecLen);
   Case RecType of
+    $00..$7F:Begin
+     { Codes invalides/reserves dans OMF Intel 16-bit : ignorer proprement }
+    End;
+    $80, $82:Begin
+      ObjModuleName:='';
+      If RecLen>=2 Then Begin
+       NameLen:=Buffer[0];
+       If NameLen>(RecLen-2) Then NameLen:=RecLen-2;
+       If NameLen>64 Then NameLen:=64;
+       For j:=1 to NameLen do ObjModuleName:=ObjModuleName+Chr(Buffer[j]);
+      End;
+    End;
+    $84, $86:Begin
+     { PEDATA/PIDATA (anciens) : non pris en charge, ignore }
+    End;
+    $88:Begin
+     { COMENT : commentaires/directives du compilateur/assembleur }
+    End;
+    $8A, $8B:Begin
+     { MODEND/MODEND32 : fin de module }
+     ModuleEnded:=True;
+    End;
+    $8C, $8D:Begin { EXTDEF/LEXTDEF : reference externe }
+      If SymbolCount>=MAX_SYMBOLS Then Begin
+      WriteLn('Erreur : Trop de symboles externes');
+      Halt(13);
+     End;
+      SymRec.Name:='';
+      SymRec.Segment:=0;
+      SymRec.Offset:=0;
+      SymRec.IsExternal:=True;
+      AddSymbol(SymRec);
+    End;
+    $8E, $8F:Begin
+     { TYPDEF / PUBDEF 32-bit ancien format : non utilise ici }
+    End;
+    $90, $91:Begin { PUBDEF/PUBDEF32 : definition publique }
+      If SymbolCount>=MAX_SYMBOLS Then Begin
+      WriteLn('Erreur : Trop de symboles publics');
+      Halt(12);
+     End;
+      SymRec.Name:='';
+      SymRec.Segment:=0;
+      SymRec.Offset:=0;
+      SymRec.IsExternal:=False;
+      AddSymbol(SymRec);
+    End;
+    $92, $93:Begin
+     { LPUBDEF/LPUBDEF32 : def publique locale, ignore pour instant }
+    End;
+    $94, $95:Begin
+     { LINNUM/LINNUM32 : info de debug lignes source }
+    End;
+    $96, $97:Begin
+     { LNAMES/LLNAMES : index de noms (segments/classes), non exploite ici }
+    End;
+    $99:Begin
+     { SEGDEF32 / variante etendue : non exploite par ce linker 16-bit }
+    End;
+    $9A, $9B:Begin
+     { GRPDEF / GRPDEF32 : definition de groupes de segments, ignore }
+    End;
+    $9C, $9D:Begin
+      { FIXUPP / FIXUPP32 : extraction des relocations chargeur MZ }
+      If (Not HasDataContext)Or(LastDataSeg=0)Or(LastDataSeg>SegmentCount) Then Continue;
+      If RecLen<2 Then Continue;
+
+      { Le dernier octet est le checksum OMF }
+      FixPos:=0;
+      FixLimit:=RecLen-1;
+
+      While FixPos<FixLimit do Begin
+       FixByte:=Buffer[FixPos];
+       Inc(FixPos);
+
+       If (FixByte And $80)=0 Then Begin
+        { THREAD subrecord : on ne decode pas l'etat interne ici }
+        { Le byte de thread est consomme, on poursuit le balayage }
+        Continue;
+       End;
+
+       { FIXUP subrecord }
+       Locat:=FixByte;
+       If FixPos>=FixLimit Then Break;
+       LocOfs:=(Word(Locat And $03) Shl 8) Or Buffer[FixPos];
+       Inc(FixPos);
+       LocKind:=(Locat Shr 2) And $0F;
+      LocIsSelfRel:=(Locat And $40)<>0;
+
+       If FixPos>=FixLimit Then Break;
+       FixDat:=Buffer[FixPos];
+       Inc(FixPos);
+
+       { Frame datum explicite }
+       If (FixDat And $80)<>0 Then Begin
+        FrameMethod:=(FixDat Shr 4) And $07;
+        If FrameMethod<=2 Then Begin
+         If FixPos>=FixLimit Then Break;
+         FixByte:=Buffer[FixPos];
+         Inc(FixPos);
+         If (FixByte And $80)<>0 Then If FixPos<FixLimit Then Inc(FixPos) Else Break;
+        End;
+       End;
+
+       { Target datum explicite }
+       If (FixDat And $08)<>0 Then Begin
+        TargetMethod:=FixDat And $03;
+        If TargetMethod<=2 Then Begin
+         If FixPos>=FixLimit Then Break;
+         FixByte:=Buffer[FixPos];
+         Inc(FixPos);
+         If (FixByte And $80)<>0 Then If FixPos<FixLimit Then Inc(FixPos) Else Break;
+        End;
+       End;
+
+       { Displacement cible si P=0 (bit 2 du FIXDAT) }
+      If (FixDat And $04)<>0 Then Begin
+        If RecType=$9D Then Begin
+         If FixPos+3<FixLimit Then Inc(FixPos,4)
+              Else FixPos:=FixLimit;
+        End Else Begin
+         If FixPos+1<FixLimit Then Inc(FixPos,2)
+              Else FixPos:=FixLimit;
+        End;
+       End;
+
+       { On ne genere des relocations MZ que pour BASE (2) et POINTER (3) }
+       Case LocKind of
+       1:RelocDataPos:=LongInt(LastDataOfs)+LongInt(LocOfs);           { OFFSET 16 }
+        2: RelocDataPos:=LongInt(LastDataOfs)+LongInt(LocOfs);
+        3: RelocDataPos:=LongInt(LastDataOfs)+LongInt(LocOfs)+2;
+       Else
+        RelocDataPos:=-1;
+       End;
+
+       If RelocDataPos>=0 Then Begin
+        SegPtr:=GetSegmentPtr(LastDataSeg);
+        If SegPtr=Nil Then Continue;
+        RelocLinearPos:=SegPtr^.Address+RelocDataPos;
+
+       { OFFSET segment-relatif : correction a l'edition de liens }
+       If (LocKind=1)And(Not LocIsSelfRel) Then Begin
+        If (RelocLinearPos>=0)And(RelocLinearPos<=1048575) Then Begin
+         AddOffsetPatch(RelocLinearPos, SegPtr^.Address);
+        End;
+       End;
+
+        If (RelocLinearPos>=0)And(RelocLinearPos<=1048575) Then Begin
+         If LocKind In [2,3] Then
+          AddRelocationEntry(RelocLinearPos Mod 16, RelocLinearPos Div 16, 0);
+        End;
+       End;
+      End;
+    End;
+    $9E, $9F:Begin
+     { Records OMF historiques/reserves }
+     { Le payload est deja lu dans Buffer : on l'ignore volontairement }
+    End;
    $98:Begin { SEGDEF : D�finition de segment OMF }
-    Inc(SegmentCount);
-    If SegmentCount>MAX_SEGMENTS Then Begin
-     WriteLn('Erreur : Trop de segments dans le fichier objet');
-     Halt(11);
-    End;
-    With Segments[SegmentCount] do Begin
-     Name:='';
-     If RecLen>=4 Then Move(Buffer[1], Size, 2)
-                 Else Size:=0;
-     Address:=0;
-     Class:='CODE';
-    End;
-   End;
-   $90:Begin { D�finition publique }
-    Inc(SymbolCount);
-    If SymbolCount>MAX_SYMBOLS Then Begin
-     WriteLn('Erreur : Trop de symboles publics');
-     Halt(12);
-    End;
-    With Symbols[SymbolCount] do Begin
-     Name:='';
-     Segment:=0;
-     Offset:=0;
-     IsExternal:=False;
-    End;
-   End;
-   $8C:Begin { EXTDEF : R�f�rence externe }
-    Inc(SymbolCount);
-    If SymbolCount>MAX_SYMBOLS Then Begin
-     WriteLn('Erreur : Trop de symboles externes');
-     Halt(13);
-    End;
-    With Symbols[SymbolCount] do Begin
-     Name:='';
-     Segment:=0;
-     Offset := 0;
-     IsExternal:=True;
-    End;
+      SegRec.Name:='';
+      If RecLen>=4 Then Move(Buffer[1], SegRec.Size, 2)
+            Else SegRec.Size:=0;
+      SegRec.Address:=0;
+      SegRec.Class:='CODE';
+      AddSegment(SegRec);
    End;
    $A0:Begin { LEDATA : Donn�es de segment }
     If RecLen>=5 Then Begin
@@ -144,19 +475,46 @@ Begin
      Move(Buffer[IdxSize],SegOffset,2);
      DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
      If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
-      EndPos:=LongInt(SegOffset)+LongInt(DataLen);
-      If EndPos>$FFFF Then EndPos:=$FFFF;
-      If EndPos>Segments[SegIndex].Size Then Segments[SegIndex].Size:=EndPos;
+      SegPtr:=GetSegmentPtr(SegIndex);
+      If SegPtr<>Nil Then Begin
+       EndPos:=LongInt(SegOffset)+LongInt(DataLen);
+       If EndPos>$FFFF Then EndPos:=$FFFF;
+       If EndPos>SegPtr^.Size Then SegPtr^.Size:=EndPos;
+       LastDataSeg:=SegIndex;
+       LastDataOfs:=SegOffset;
+       HasDataContext:=True;
+      End;
      End;
     End;
    End;
+      $A1:Begin
+       { LEDATA/LIDATA 32-bit : offset long, non supporte en sortie MZ 16-bit }
+      End;
+      $A2, $A3:Begin
+       { COMDAT / COMDAT32 ou variantes : ignorer pour instant }
+      End;
+      $A4, $A5:Begin
+       { BAKPAT / BAKPAT32 : backpatch, non implemente }
+      End;
+      $A6, $A7:Begin
+       { LINSYM / LINSYM32 : infos symboles de debug }
+      End;
+      $A8..$FF:Begin
+       { Codes OMF etendus/reserves/non documentes pour ce linker : ignorer }
+      End;
   End;
  End;
  Close(ObjFile);
   { Adresse relative de chaque segment dans l'image li�e }
  For i:=1 to SegmentCount do Begin
-  If i=1 Then Segments[i].Address:=0
-         Else Segments[i].Address:=Segments[i-1].Address+Segments[i-1].Size;
+  SegPtr:=GetSegmentPtr(i);
+  If SegPtr=Nil Then Continue;
+  If i=1 Then SegPtr^.Address:=0
+   Else Begin
+    PrevSegPtr:=GetSegmentPtr(i-1);
+    If PrevSegPtr<>Nil Then SegPtr^.Address:=PrevSegPtr^.Address+PrevSegPtr^.Size
+          Else SegPtr^.Address:=0;
+   End;
  End;
  ReadObjFile:=True;
 End;
@@ -166,6 +524,10 @@ Var
  i:Integer;
  CodeSize,HeaderBytes,DataStart:LongInt;
  Remaining,ChunkSize:Word;
+ PatchPos:LongInt;
+ OldWord,NewWord:Word;
+ PatchItem:POffsetPatchItem;
+ RelocItem:PRelocationItem;
  RecType:Byte;
  RecLen:Word;
  ObjBuf:Array[0..8191] of Byte;
@@ -174,6 +536,7 @@ Var
  DataLen:Word;
  IdxSize:Integer;
  WritePos:LongInt;
+ SegPtr:PSegment;
 Begin
   { Initialise l'ent�te EXE }
  FillChar(ExeHeader, SizeOf(ExeHeader), 0);
@@ -190,7 +553,10 @@ Begin
 
   { Calcul du taille du code }
  CodeSize:=0;
- For i:=1 to SegmentCount do Inc(CodeSize,Segments[i].Size);
+ For i:=1 to SegmentCount do Begin
+  SegPtr:=GetSegmentPtr(i);
+  If SegPtr<>Nil Then Inc(CodeSize,SegPtr^.Size);
+ End;
  ExeHeader.RelocCount:=RelocationCount;
 
  HeaderBytes:=SizeOf(TExeHeader)+LongInt(RelocationCount)*4;
@@ -206,7 +572,11 @@ Begin
  BlockWrite(ExeFile,ExeHeader,SizeOf(ExeHeader));
 
   { �crire la relocations }
- For i:=1 to RelocationCount do BlockWrite(ExeFile,Relocations[i],4);
+ RelocItem:=RelocationHead;
+ While RelocItem<>Nil do Begin
+  BlockWrite(ExeFile,RelocItem^.Value,4);
+  RelocItem:=RelocItem^.Next;
+ End;
 
     { Remplit le padding d'ent�te jusqu'� DataStart }
    FillChar(Buffer,SizeOf(Buffer),0);
@@ -218,7 +588,9 @@ Begin
 
     { R�serve les segments de code (z�ro) }
  For i:=1 to SegmentCount do Begin
-    Remaining:=Segments[i].Size;
+   SegPtr:=GetSegmentPtr(i);
+   If SegPtr=Nil Then Continue;
+   Remaining:=SegPtr^.Size;
     While Remaining>0 do Begin
      If Remaining>SizeOf(Buffer) Then ChunkSize:=SizeOf(Buffer)
                                Else ChunkSize:=Remaining;
@@ -253,12 +625,30 @@ Begin
      Move(ObjBuf[IdxSize],SegOffset,2);
      DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
      If (DataLen>0)And(SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
-      WritePos:=DataStart+Segments[SegIndex].Address+SegOffset;
-      Seek(ExeFile,WritePos);
-      BlockWrite(ExeFile,ObjBuf[IdxSize+2],DataLen);
+      SegPtr:=GetSegmentPtr(SegIndex);
+      If SegPtr<>Nil Then Begin
+       WritePos:=DataStart+SegPtr^.Address+SegOffset;
+       Seek(ExeFile,WritePos);
+       BlockWrite(ExeFile,ObjBuf[IdxSize+2],DataLen);
+      End;
      End;
     End;
    End;
+
+    { Applique les corrections OFFSET segment-relatives }
+  PatchItem:=OffsetPatchHead;
+  While PatchItem<>Nil do Begin
+   PatchPos:=DataStart+PatchItem^.Pos;
+    If (PatchPos>=0)And(PatchPos+1<FileSize(ExeFile)) Then Begin
+     Seek(ExeFile,PatchPos);
+     BlockRead(ExeFile,OldWord,2);
+    NewWord:=OldWord+PatchItem^.Delta;
+     Seek(ExeFile,PatchPos);
+     BlockWrite(ExeFile,NewWord,2);
+    End;
+   PatchItem:=PatchItem^.Next;
+   End;
+
    Close(ObjFile);
  Close(ExeFile);
 End;
@@ -317,9 +707,8 @@ BEGIN
   Halt;
  End;
   { Initialise }
- SegmentCount:=0;
- SymbolCount:=0;
- RelocationCount:=0;
+   InitMainLists;
+   InitOffsetPatchList;
  StackSize:=2048;  { Taille de la pile par d�faut }
   { Analyse de la ligne de commande }
  ObjFileName:=ParamStr(1);
@@ -341,4 +730,6 @@ BEGIN
  End
   Else
  WriteLn('Erreur de lecture de fichier objet');
+   FreeOffsetPatchList;
+   FreeMainLists;
 END.
