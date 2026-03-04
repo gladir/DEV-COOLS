@@ -2129,16 +2129,793 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 06 a 25 a implementer)
+  TODO 06 - FORMAT .OBJ INTEL OMF (DONNEES ET FIXUPS) - IMPLEMENTE
+  ============================================================
+
+  Gestion du buffer LEDATA :
+    - Chaque segment possede un buffer de donnees (max 1024 o.).
+    - FlushLEDATA : ecrit le buffer courant sous forme de record
+      LEDATA, puis vide le buffer. Appele automatiquement quand
+      le buffer est plein ou en fin d assemblage.
+    - EmitByte/EmitWord/EmitDWord : ajouter un octet/mot/dword
+      au segment courant (avec flush automatique si necessaire).
+
+  Gestion des fixups :
+    - Table de fixups internes (tableau fixup_table).
+    - Chaque fixup memorise : offset dans LEDATA, type, et
+      l index du symbole cible (SEGDEF ou EXTDEF).
+    - ObjFIXUPP : serialise la table en records FIXUPP OMF.
+  ============================================================ }
+
+{ ---- Types et constantes pour les fixups ---- }
+Const
+  FIXUP_OFFSET  = 0; { relocation 16-bit offset dans segment }
+  FIXUP_SEG     = 1; { relocation 16-bit valeur de segment }
+  FIXUP_SHORT   = 2; { relocation 8-bit deplacement court (Jcc) }
+  FIXUP_FAR     = 3; { relocation 32-bit seg:off (FAR PTR) }
+
+  FIXUP_TARGET_SEG = 0; { cible = index SEGDEF }
+  FIXUP_TARGET_EXT = 1; { cible = index EXTDEF }
+  FIXUP_TARGET_GRP = 2; { cible = index GRPDEF }
+
+{ Buffer LEDATA par segment }
+Const
+  LEDATA_BUF_MAX = 1020; { max octets de donnees par record LEDATA }
+
+Type
+  TFixupRec = Record
+    ledata_offset : TWord;    { offset de l octet a patcher dans le LEDATA }
+    fix_type      : Byte;     { FIXUP_OFFSET / FIXUP_SEG / FIXUP_SHORT / FIXUP_FAR }
+    target_kind   : Byte;     { FIXUP_TARGET_SEG / EXT / GRP }
+    target_idx    : Integer;  { index SEGDEF, EXTDEF ou GRPDEF (1-base) }
+    displacement  : TWord;    { deplacement ajoute a la cible }
+    is_seg_rel    : Boolean;  { True = relatif au segment (SELFREL=0), False = non }
+  End;
+
+Var
+  { Buffer LEDATA courant }
+  ledata_buf     : Array[0..LEDATA_BUF_MAX-1] Of Byte;
+  ledata_buf_len : Integer;    { nb d octets dans le buffer }
+  ledata_seg_idx : Integer;    { index SEGDEF du segment courant dans le buffer }
+  ledata_start   : TWord;      { offset de debut du buffer dans le segment }
+
+  { Table de fixups internes }
+  fixup_table    : Array[0..MAX_FIXUP-1] Of TFixupRec;
+  fixup_count    : Integer;
+
+{ ============================================================
+  FixupInit : vider la table de fixups
+  ============================================================ }
+Procedure FixupInit;
+Begin
+  fixup_count    := 0;
+  ledata_buf_len := 0;
+  ledata_seg_idx := 0;
+  ledata_start   := 0;
+End;
+
+{ ============================================================
+  ObjFIXUPP : ecrire les fixups accumules dans fixup_table
+  en un ou plusieurs records FIXUPP OMF.
+  Format simplifie : un fixup explicite par entree.
+  ============================================================ }
+Procedure ObjFIXUPP;
+Var
+  i      : Integer;
+  locat  : TWord;
+  fixdat : Byte;
+  fr     : TFixupRec;
+Begin
+  If fixup_count = 0 Then Exit;
+  ObjBeginRecord(OMF_FIXUPP);
+  For i := 0 To fixup_count - 1 Do
+  Begin
+    fr := fixup_table[i];
+    { LOCAT word :
+        bit 15     = 1 (c est un Fixup, pas un Thread)
+        bit 14     = 1 si SEGREL, 0 si SELFREL
+        bits 13-10 = Location type :
+                       0=lobyte, 1=offset16, 2=base, 3=pointer32
+                       4=offset8 (SHORT), 5=loffset16
+        bits 9-0   = data record offset de l octet dans le LEDATA }
+    locat := $8000; { bit 15 = fixup }
+    If fr.is_seg_rel Then
+      locat := locat Or $4000;
+    Case fr.fix_type Of
+      FIXUP_SHORT  : locat := locat Or ($0 Shl 10); { lobyte = 0 }
+      FIXUP_OFFSET : locat := locat Or ($1 Shl 10); { offset16 = 1 }
+      FIXUP_SEG    : locat := locat Or ($2 Shl 10); { base16 = 2 }
+      FIXUP_FAR    : locat := locat Or ($3 Shl 10); { pointer32 = 3 }
+    End;
+    locat := locat Or (fr.ledata_offset And $03FF);
+    ObjPutWord(locat);
+    { FIXDAT :
+        bits 7-4 = F T (frame/target thread + method)
+        F=0, frame_method=0 (segment index), T=0, target_method=0 (SEGDEF)
+        si T=1, target_method=2 (EXTDEF) }
+    fixdat := $00;
+    Case fr.target_kind Of
+      FIXUP_TARGET_SEG : fixdat := $00;  { target = SEGDEF }
+      FIXUP_TARGET_GRP : fixdat := $01;  { target = GRPDEF }
+      FIXUP_TARGET_EXT : fixdat := $02;  { target = EXTDEF }
+    End;
+    If fr.displacement = 0 Then
+      fixdat := fixdat Or $04; { bit 2 = P : pas de champ displacement }
+    ObjPutByte(fixdat);
+    ObjPutIndex(fr.target_idx);
+    If fr.displacement <> 0 Then
+      ObjPutWord(fr.displacement);
+  End;
+  ObjEndRecord;
+  fixup_count := 0;
+End;
+
+{ ============================================================
+  FlushLEDATA : ecrire le buffer LEDATA courant en un record
+  OMF, puis les fixups associes, et remettre le buffer a zero.
+  ============================================================ }
+Procedure FlushLEDATA;
+Var
+  i : Integer;
+Begin
+  If (ledata_buf_len = 0) Or (Not obj_is_open) Then Exit;
+  ObjBeginRecord(OMF_LEDATA);
+  ObjPutIndex(ledata_seg_idx);
+  ObjPutWord(ledata_start);
+  For i := 0 To ledata_buf_len - 1 Do
+    ObjPutByte(ledata_buf[i]);
+  ObjEndRecord;
+  { ecrire les fixups correspondant a ce bloc de donnees }
+  ObjFIXUPP;
+  { avancer le pointeur de debut }
+  ledata_start   := ledata_start + TWord(ledata_buf_len);
+  ledata_buf_len := 0;
+End;
+
+{ ============================================================
+  EmitByte : emettre un octet dans le segment courant
+  ============================================================ }
+Procedure EmitByte(b : Byte);
+Begin
+  If ledata_buf_len >= LEDATA_BUF_MAX Then
+    FlushLEDATA;
+  ledata_buf[ledata_buf_len] := b;
+  Inc(ledata_buf_len);
+  { mettre a jour le LC global }
+  Inc(lc);
+  { mettre a jour la taille du segment courant }
+  If (cur_seg >= 1) And (cur_seg <= MAX_SEG) Then
+  Begin
+    If seg_table[cur_seg].cur_lc > seg_table[cur_seg].size Then
+      seg_table[cur_seg].size := seg_table[cur_seg].cur_lc;
+    Inc(seg_table[cur_seg].cur_lc);
+    If seg_table[cur_seg].cur_lc > seg_table[cur_seg].size Then
+      seg_table[cur_seg].size := seg_table[cur_seg].cur_lc;
+  End;
+End;
+
+{ ============================================================
+  EmitWord : emettre un mot 16 bits (little-endian)
+  ============================================================ }
+Procedure EmitWord(w : TWord);
+Begin
+  EmitByte(Byte(w And $FF));
+  EmitByte(Byte((w Shr 8) And $FF));
+End;
+
+{ ============================================================
+  EmitDWord : emettre un double-mot 32 bits (little-endian)
+  ============================================================ }
+Procedure EmitDWord(d : TLong);
+Begin
+  EmitByte(Byte(d And $FF));
+  EmitByte(Byte((d Shr 8) And $FF));
+  EmitByte(Byte((d Shr 16) And $FF));
+  EmitByte(Byte((d Shr 24) And $FF));
+End;
+
+{ ============================================================
+  EmitZeros : emettre n octets nuls (BSS, DUP(0))
+  ============================================================ }
+Procedure EmitZeros(n : Integer);
+Var
+  i : Integer;
+Begin
+  For i := 1 To n Do
+    EmitByte(0);
+End;
+
+{ ============================================================
+  GenFixup : enregistrer un fixup dans fixup_table.
+    fix_type    : FIXUP_OFFSET / FIXUP_SEG / FIXUP_SHORT / FIXUP_FAR
+    target_kind : FIXUP_TARGET_SEG / EXT / GRP
+    target_idx  : index 1-base de la cible
+    disp        : deplacement additionnel
+    seg_rel     : True = correction par rapport au segment courant
+  ============================================================ }
+Procedure GenFixup(fix_type : Byte; target_kind : Byte;
+                   target_idx : Integer; disp : TWord;
+                   seg_rel : Boolean);
+Var
+  fr : TFixupRec;
+Begin
+  If fixup_count >= MAX_FIXUP Then
+  Begin
+    ErrorMsg('Table de fixups interne pleine - FlushLEDATA avant GenFixup');
+    Exit;
+  End;
+  { l offset dans le LEDATA est la position courante du buffer }
+  fr.ledata_offset := TWord(ledata_buf_len);
+  fr.fix_type      := fix_type;
+  fr.target_kind   := target_kind;
+  fr.target_idx    := target_idx;
+  fr.displacement  := disp;
+  fr.is_seg_rel    := seg_rel;
+  fixup_table[fixup_count] := fr;
+  Inc(fixup_count);
+End;
+
+{ ============================================================
+  ObjLIDATA : emettre un record LIDATA (donnees repetees)
+  Utile pour : label DB n DUP(val)
+    seg_i   : index SEGDEF
+    offset  : offset de debut dans le segment
+    repeat_count : nombre de repetitions
+    data    : octets a repeter
+    data_len: longueur du bloc de base
+  ============================================================ }
+Procedure ObjLIDATA(seg_i : Integer; off : TWord;
+                    repeat_count : TWord;
+                    Var data : Array Of Byte; data_len : Integer);
+Var
+  i : Integer;
+Begin
+  { s assurer que le buffer LEDATA precedent est vide }
+  FlushLEDATA;
+  ObjBeginRecord(OMF_LIDATA);
+  ObjPutIndex(seg_i);
+  ObjPutWord(off);
+  { bloc LIDATA : repeat_count + block_count(=0) + literal }
+  ObjPutWord(repeat_count);
+  ObjPutWord(0);          { block_count = 0 : c est un literal }
+  ObjPutByte(Byte(data_len)); { taille du literal }
+  For i := 0 To data_len - 1 Do
+    ObjPutByte(data[i]);
+  ObjEndRecord;
+End;
+
+{ ============================================================
+  SetSeg : changer le segment courant (flush LEDATA en cours)
+  ============================================================ }
+Procedure SetSeg(new_seg : Integer);
+Begin
+  If new_seg = cur_seg Then Exit;
+  { sauvegarder le LEDATA du segment precedent }
+  FlushLEDATA;
+  cur_seg        := new_seg;
+  ledata_seg_idx := new_seg;
+  If (new_seg >= 1) And (new_seg <= MAX_SEG) Then
+  Begin
+    lc             := seg_table[new_seg].cur_lc;
+    ledata_start   := lc;
+  End
+  Else
+  Begin
+    lc           := 0;
+    ledata_start := 0;
+  End;
+  ledata_buf_len := 0;
+End;
+
+{ ============================================================
+  TODO 07 - GESTION DES SEGMENTS ET DES MODELES MEMOIRE - IMPLEMENTE
+  ============================================================
+
+  Modeles memoire supportes (directive .MODEL) :
+    TINY    : CS=DS=SS, tout dans un segment, .COM target
+    SMALL   : CS=_TEXT, DS=SS=DGROUP (_DATA+_BSS)
+    COMPACT : CS=_TEXT, DS multiples, SS=DGROUP
+    MEDIUM  : CS multiples, DS=SS=DGROUP
+    LARGE   : CS et DS multiples
+    HUGE    : idem LARGE + tableaux > 64K
+
+  Segments standards crees automatiquement :
+    _TEXT  : code  (align WORD,  combine PUBLIC, classe 'CODE')
+    _DATA  : data  (align WORD,  combine PUBLIC, classe 'DATA')
+    _BSS   : bss   (align WORD,  combine PUBLIC, classe 'BSS')
+    STACK  : pile  (align PARA,  combine STACK,  classe 'STACK')
+    CONST  : cst   (align WORD,  combine PUBLIC, classe 'CONST')
+    DGROUP : groupe = _DATA + _BSS + CONST + STACK
+  ============================================================ }
+
+{ ---- Variables du modele memoire ---- }
+Var
+  mem_model   : Integer;  { 0=none,1=TINY,2=SMALL,3=COMPACT,4=MEDIUM,5=LARGE,6=HUGE }
+  model_name  : TString;  { nom textuel du modele }
+  call_far    : Boolean;  { True si CALL FAR par defaut (MEDIUM/LARGE/HUGE) }
+  data_far    : Boolean;  { True si DATA FAR par defaut (COMPACT/LARGE/HUGE) }
+
+  { Indices des segments standards dans seg_table (0 = non defini) }
+  seg_idx_text  : Integer;
+  seg_idx_data  : Integer;
+  seg_idx_bss   : Integer;
+  seg_idx_stack : Integer;
+  seg_idx_const : Integer;
+  grp_idx_dgroup: Integer; { index dans grp_table du groupe DGROUP }
+
+  { ASSUME : association registre/segment (index seg_table, 0=NOTHING) }
+  assume_cs : Integer;
+  assume_ds : Integer;
+  assume_ss : Integer;
+  assume_es : Integer;
+
+  { Pile SEGMENT/ENDS ouverts }
+  seg_open_stack : Array[0..8] Of Integer; { indices seg_table }
+  seg_open_top   : Integer;  { -1 = aucun }
+
+{ ============================================================
+  SegFind : chercher un segment par nom. Retourne l index (1-base)
+  dans seg_table ou 0 si non trouve.
+  ============================================================ }
+Function SegFind(Const name : TSymString) : Integer;
+Var
+  i : Integer;
+Begin
+  For i := 1 To seg_count Do
+    If seg_table[i].name = name Then
+    Begin
+      SegFind := i;
+      Exit;
+    End;
+  SegFind := 0;
+End;
+
+{ ============================================================
+  SegEnter : definir un nouveau segment. Retourne l index 1-base.
+  Si le segment existe deja, retourner son index sans creer.
+  ============================================================ }
+Function SegEnter(Const sname : TSymString; Const scls : TSymString;
+                  comb : TSegCombine; aln : TSegAlign) : Integer;
+Var
+  idx  : Integer;
+  p    : PSymbol;
+  uname : TSymString;
+Begin
+  uname := LexUpperCase(sname);
+  idx := SegFind(uname);
+  If idx > 0 Then
+  Begin
+    SegEnter := idx;
+    Exit;
+  End;
+  If seg_count >= MAX_SEG Then
+  Begin
+    ErrorMsg('Trop de segments');
+    SegEnter := 1;
+    Exit;
+  End;
+  Inc(seg_count);
+  seg_table[seg_count].name       := uname;
+  seg_table[seg_count].class_name := LexUpperCase(scls);
+  seg_table[seg_count].combine    := comb;
+  seg_table[seg_count].align      := aln;
+  seg_table[seg_count].size       := 0;
+  seg_table[seg_count].cur_lc     := 0;
+  seg_table[seg_count].defined    := True;
+  seg_table[seg_count].lnames_idx := LNamesRegister(uname);
+  If scls <> '' Then
+    LNamesRegister(LexUpperCase(scls));
+  { creer un symbole de type SK_SEG dans la table des symboles }
+  p := SymFind(uname);
+  If p = Nil Then
+  Begin
+    p := SymEnter(uname, SK_SEG, seg_count, 0, 0);
+    SymSetValue(p, 0);
+  End;
+  SegEnter := seg_count;
+End;
+
+{ ============================================================
+  GrpEnter : definir ou trouver un groupe. Retourne l index (1-base).
+  ============================================================ }
+Function GrpEnter(Const name : TSymString) : Integer;
+Var
+  i   : Integer;
+  p   : PSymbol;
+Begin
+  For i := 1 To grp_count Do
+    If grp_table[i].name = name Then
+    Begin
+      GrpEnter := i;
+      Exit;
+    End;
+  If grp_count >= MAX_GRP Then
+  Begin
+    ErrorMsg('Trop de groupes (max ' +
+             Chr(Ord('0') + MAX_GRP) + ')');
+    GrpEnter := 1;
+    Exit;
+  End;
+  Inc(grp_count);
+  With grp_table[grp_count] Do
+  Begin
+    name      := name;
+    seg_count := 0;
+    defined   := True;
+  End;
+  LNamesRegister(name);
+  p := SymFind(name);
+  If p = Nil Then
+  Begin
+    p := SymEnter(name, SK_GROUP, 0, 0, 0);
+    SymSetValue(p, 0);
+  End;
+  GrpEnter := grp_count;
+End;
+
+{ ============================================================
+  GrpAddSeg : ajouter un segment a un groupe
+  ============================================================ }
+Procedure GrpAddSeg(grp_i : Integer; seg_i : Integer);
+Var
+  j : Integer;
+Begin
+  If (grp_i < 1) Or (grp_i > grp_count) Then Exit;
+  With grp_table[grp_i] Do
+  Begin
+    { verifier si deja present }
+    For j := 1 To seg_count Do
+      If segs[j] = seg_i Then Exit;
+    If seg_count < MAX_SEG Then
+    Begin
+      Inc(seg_count);
+      segs[seg_count] := seg_i;
+    End;
+  End;
+End;
+
+{ ============================================================
+  ModelInit : initialiser les variables de modele
+  ============================================================ }
+Procedure ModelInit;
+Begin
+  mem_model      := 0;
+  model_name     := '';
+  call_far       := False;
+  data_far       := False;
+  seg_idx_text   := 0;
+  seg_idx_data   := 0;
+  seg_idx_bss    := 0;
+  seg_idx_stack  := 0;
+  seg_idx_const  := 0;
+  grp_idx_dgroup := 0;
+  assume_cs      := 0;
+  assume_ds      := 0;
+  assume_ss      := 0;
+  assume_es      := 0;
+  seg_open_top   := -1;
+End;
+
+{ ============================================================
+  ParseModel : traiter la directive .MODEL nom
+  Cree les segments standards et le groupe DGROUP.
+  ============================================================ }
+Procedure ParseModel(Const mname : TString);
+Begin
+  model_name := LexUpperCase(mname);
+  call_far   := False;
+  data_far   := False;
+  If model_name = 'TINY'    Then mem_model := 1
+  Else If model_name = 'SMALL'   Then mem_model := 2
+  Else If model_name = 'COMPACT' Then Begin mem_model := 3; data_far := True; End
+  Else If model_name = 'MEDIUM'  Then Begin mem_model := 4; call_far := True; End
+  Else If model_name = 'LARGE'   Then Begin mem_model := 5; call_far := True; data_far := True; End
+  Else If model_name = 'HUGE'    Then Begin mem_model := 6; call_far := True; data_far := True; End
+  Else
+  Begin
+    ErrorMsg('Modele memoire inconnu : ' + mname);
+    mem_model := 2; { defaut SMALL }
+  End;
+
+  { creer les segments standards }
+  seg_idx_text  := SegEnter('_TEXT',  'CODE',  SC_PUBLIC, SA_WORD);
+  seg_idx_data  := SegEnter('_DATA',  'DATA',  SC_PUBLIC, SA_WORD);
+  seg_idx_bss   := SegEnter('_BSS',   'BSS',   SC_PUBLIC, SA_WORD);
+  seg_idx_const := SegEnter('CONST',  'CONST', SC_PUBLIC, SA_WORD);
+  seg_idx_stack := SegEnter('STACK',  'STACK', SC_STACK,  SA_PARA);
+  { taille par defaut de la pile : 512 octets }
+  seg_table[seg_idx_stack].size := 512;
+
+  { creer le groupe DGROUP }
+  grp_idx_dgroup := GrpEnter('DGROUP');
+  GrpAddSeg(grp_idx_dgroup, seg_idx_data);
+  GrpAddSeg(grp_idx_dgroup, seg_idx_bss);
+  GrpAddSeg(grp_idx_dgroup, seg_idx_const);
+  GrpAddSeg(grp_idx_dgroup, seg_idx_stack);
+
+  { ASSUME par defaut }
+  assume_cs := seg_idx_text;
+  assume_ds := grp_idx_dgroup; { DS -> DGROUP }
+  assume_ss := grp_idx_dgroup;
+  assume_es := 0;
+
+  { mettre a jour le symbole @MODEL }
+  SymSetValue(SymFind('@MODEL'), mem_model);
+  Writeln('.MODEL ', model_name, ' : segments crees.');
+End;
+
+{ ============================================================
+  ParseDotCode : .CODE [nom]
+  ============================================================ }
+Procedure ParseDotCode(Const seg_name : TString);
+Var
+  sn  : TString;
+  idx : Integer;
+Begin
+  If seg_name = '' Then sn := '_TEXT'
+  Else sn := LexUpperCase(seg_name);
+  idx := SegFind(sn);
+  If idx = 0 Then
+    idx := SegEnter(sn, 'CODE', SC_PUBLIC, SA_WORD);
+  SetSeg(idx);
+  assume_cs := idx;
+  { mettre a jour @CURSEG }
+  SymSetValue(SymFind('@CURSEG'), idx);
+End;
+
+{ ============================================================
+  ParseDotData : .DATA / .DATA? / .CONST
+  ============================================================ }
+Procedure ParseDotData(Const kind : TString);
+Var
+  idx : Integer;
+Begin
+  If kind = '.CONST' Then
+  Begin
+    idx := seg_idx_const;
+    If idx = 0 Then idx := SegEnter('CONST', 'CONST', SC_PUBLIC, SA_WORD);
+  End
+  Else If kind = '.DATA?' Then
+  Begin
+    idx := seg_idx_bss;
+    If idx = 0 Then idx := SegEnter('_BSS', 'BSS', SC_PUBLIC, SA_WORD);
+  End
+  Else
+  Begin
+    idx := seg_idx_data;
+    If idx = 0 Then idx := SegEnter('_DATA', 'DATA', SC_PUBLIC, SA_WORD);
+  End;
+  SetSeg(idx);
+  SymSetValue(SymFind('@CURSEG'), idx);
+End;
+
+{ ============================================================
+  ParseDotStack : .STACK [taille]
+  ============================================================ }
+Procedure ParseDotStack(size : TWord);
+Begin
+  If seg_idx_stack = 0 Then
+    seg_idx_stack := SegEnter('STACK', 'STACK', SC_STACK, SA_PARA);
+  If size > 0 Then
+    seg_table[seg_idx_stack].size := size;
+  SetSeg(seg_idx_stack);
+  SymSetValue(SymFind('@CURSEG'), seg_idx_stack);
+End;
+
+{ ============================================================
+  ParseSegment : SEGMENT nom [align] [combine] [class]
+  Ouvre un segment utilisateur explicite.
+  ============================================================ }
+Procedure ParseSegment(Const name : TString;
+                       aln : TSegAlign; comb : TSegCombine;
+                       Const cls : TString);
+Var
+  idx : Integer;
+Begin
+  idx := SegFind(LexUpperCase(name));
+  If idx = 0 Then
+    idx := SegEnter(LexUpperCase(name), LexUpperCase(cls), comb, aln)
+  Else
+  Begin
+    { re-ouverture d un segment existant : coherence des attributs }
+    If seg_table[idx].combine <> comb Then
+      WarnMsg('Attributs de segment incoherents : ' + name);
+  End;
+  { empiler le segment courant }
+  If seg_open_top < 8 Then
+  Begin
+    Inc(seg_open_top);
+    seg_open_stack[seg_open_top] := cur_seg;
+  End;
+  SetSeg(idx);
+  SymSetValue(SymFind('@CURSEG'), idx);
+End;
+
+{ ============================================================
+  ParseEnds : ENDS [nom] - fermer le segment courant
+  ============================================================ }
+Procedure ParseEnds(Const name : TString);
+Var
+  expected : TString;
+Begin
+  { verifier que le nom correspond au segment ouvert }
+  If (cur_seg >= 1) And (cur_seg <= MAX_SEG) Then
+    expected := seg_table[cur_seg].name
+  Else
+    expected := '';
+  If (name <> '') And (LexUpperCase(name) <> expected) Then
+    WarnMsg('ENDS ne correspond pas au segment ouvert : ' + name);
+  FlushLEDATA;
+  { depiler }
+  If seg_open_top >= 0 Then
+  Begin
+    SetSeg(seg_open_stack[seg_open_top]);
+    Dec(seg_open_top);
+  End
+  Else
+    SetSeg(0);
+  SymSetValue(SymFind('@CURSEG'), cur_seg);
+End;
+
+{ ============================================================
+  ParseAssume : ASSUME reg:seg [, reg:seg ...]
+  Syntaxe simplifiee : reg et seg deja identifies par l appelant.
+  reg_name = 'CS'|'DS'|'SS'|'ES', seg_name = nom de segment ou groupe
+  ============================================================ }
+Procedure ParseAssume(Const reg_name : TString; Const seg_name : TString);
+Var
+  sidx  : Integer;
+  gi    : Integer;
+  gi2   : Integer;
+  useg  : TSymString;
+Begin
+  useg := LexUpperCase(seg_name);
+  If useg = 'NOTHING' Then
+    sidx := 0
+  Else
+  Begin
+    sidx := SegFind(useg);
+    If sidx = 0 Then
+    Begin
+      { chercher dans les groupes }
+      gi := 0;
+      For gi2 := 1 To grp_count Do
+        If grp_table[gi2].name = useg Then
+        Begin
+          gi := gi2;
+          Break;
+        End;
+      If gi > 0 Then sidx := gi
+      Else
+        WarnMsg('ASSUME : segment ou groupe inconnu : ' + seg_name);
+    End;
+  End;
+  If reg_name = 'CS' Then assume_cs := sidx
+  Else If reg_name = 'DS' Then assume_ds := sidx
+  Else If reg_name = 'SS' Then assume_ss := sidx
+  Else If reg_name = 'ES' Then assume_es := sidx
+  Else
+    WarnMsg('ASSUME : registre de segment inconnu : ' + reg_name);
+End;
+
+{ ============================================================
+  EmitAlignPad : aligner le LC sur un multiple de n octets.
+  Code : remplir avec NOP (90h). Data : remplir avec 0.
+  ============================================================ }
+Procedure EmitAlignPad(n : Integer);
+Var
+  pad   : Integer;
+  is_code : Boolean;
+  i     : Integer;
+Begin
+  If n <= 1 Then Exit;
+  pad := lc Mod n;
+  If pad = 0 Then Exit;
+  pad := n - pad;
+  is_code := (cur_seg = seg_idx_text) Or (cur_seg = assume_cs);
+  For i := 1 To pad Do
+    If is_code Then EmitByte($90) { NOP }
+    Else EmitByte($00);
+End;
+
+{ ============================================================
+  GetSegAlignByte : convertir TSegAlign en octet ACBP pour OMF
+  ============================================================ }
+Function GetSegAlignByte(a : TSegAlign) : Byte;
+Begin
+  Case a Of
+    SA_BYTE  : GetSegAlignByte := 1;
+    SA_WORD  : GetSegAlignByte := 2;
+    SA_PARA  : GetSegAlignByte := 3;
+    SA_PAGE  : GetSegAlignByte := 4;
+    SA_DWORD : GetSegAlignByte := 5;
+    Else       GetSegAlignByte := 3; { defaut PARA }
+  End;
+End;
+
+{ ============================================================
+  GetSegCombByte : convertir TSegCombine en octet ACBP pour OMF
+  ============================================================ }
+Function GetSegCombByte(c : TSegCombine) : Byte;
+Begin
+  Case c Of
+    SC_PRIVATE : GetSegCombByte := 0;
+    SC_PUBLIC  : GetSegCombByte := 2;
+    SC_STACK   : GetSegCombByte := 5;
+    SC_COMMON  : GetSegCombByte := 6;
+    SC_MEMORY  : GetSegCombByte := 2;
+    Else         GetSegCombByte := 0;
+  End;
+End;
+
+{ ============================================================
+  WriteAllSegments : ecrire LNAMES + tous les SEGDEF + GRPDEF
+  dans le fichier .OBJ. Appele apres la passe 2.
+  ============================================================ }
+Procedure WriteAllSegments;
+Var
+  i    : Integer;
+  gi   : Integer;
+  gj   : Integer;
+  sni  : Integer;
+  cni  : Integer;
+  tmp  : Array[0..MAX_SEG] Of Integer;
+  tcnt : Integer;
+Begin
+  { 1. ecrire LNAMES (accumules) }
+  ObjLNAMES;
+
+  { 2. ecrire un SEGDEF par segment }
+  For i := 1 To seg_count Do
+  Begin
+    With seg_table[i] Do
+    Begin
+      sni := lnames_idx;
+      If class_name <> '' Then
+        cni := LNamesRegister(class_name)
+      Else
+        cni := 0;
+      ObjSEGDEF(
+        GetSegAlignByte(align),
+        GetSegCombByte(combine),
+        size,
+        sni,
+        cni,
+        0   { pas d overlay }
+      );
+    End;
+  End;
+
+  { 3. ecrire un GRPDEF par groupe }
+  For gi := 1 To grp_count Do
+  Begin
+    With grp_table[gi] Do
+    Begin
+      tcnt := grp_table[gi].seg_count;
+      For gj := 1 To tcnt Do
+        tmp[gj-1] := segs[gj];
+      ObjGRPDEF(
+        LNamesRegister(name),
+        tmp,
+        tcnt
+      );
+    End;
+  End;
+End;
+
+{ ============================================================
+  Programme principal (TODOs 08 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
           ' (MASM.PAS - compatible MASM 5.x)');
   InitTables;
   ObjInit;
+  FixupInit;
+  ModelInit;
   SrcInit;
   LexInit;
   SymInit;
-  Writeln('TODOs 01-05 complets (infra + source + lexer + symboles + OMF de base).');
-  Writeln('TODOs 06 a 25 a implementer.');
+  Writeln('TODOs 01-07 complets (infra+src+lex+sym+OMF+LEDATA+segments).');
+  Writeln('TODOs 08 a 25 a implementer.');
 End.

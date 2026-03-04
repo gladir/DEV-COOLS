@@ -1835,7 +1835,7 @@ End;
 
 { --------------------------------------------------------------------------
   Chargement / stockage de variables dans AX selon leur portee.
-  Ces helpers seront appeles par les parseurs d'expression.
+  Ces assistants seront appeles par les analyseurs d'expression.
   -------------------------------------------------------------------------- }
 
 { Charger une variable globale (sym_table[si]) dans AX (ou DX:AX si 32 bits). }
@@ -1973,7 +1973,7 @@ Begin
 End;
 
 { ==========================================================================
-  TODO 21 - TABLEAUX ET ENREGISTREMENTS
+  TABLEAUX ET ENREGISTREMENTS
   ========================================================================== }
 
 { --------------------------------------------------------------------------
@@ -1998,7 +1998,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - DECLARATIONS DE CONSTANTES (CONST)
+  DECLARATIONS DE CONSTANTES (CONST)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -2312,7 +2312,7 @@ End;
   ParseManifestSection : parser la section CONST ident = expr ;
   -------------------------------------------------------------------------- }
 { ============================================================
-  TODO 06 - DECLARATIONS MANIFEST ET CONSTANTES BCPL
+  DECLARATIONS MANIFEST ET CONSTANTES BCPL
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -2454,9 +2454,8 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - DECLARATIONS LET ET TYPES (BCPL N'A PAS DE TYPES)
+  DECLARATIONS LET ET TYPES (BCPL N'A PAS DE TYPES)
   *** La section TYPE de Modula-2 n'existe pas en BCPL ***
-  *** Les declarations LET sont traitees dans TODO 16.  ***
   ============================================================ }
 
 { ParseTypeSection n'existe pas en BCPL.                         }
@@ -2548,8 +2547,7 @@ End;
 
 { --------------------------------------------------------------------------
   ParseProcType : PROCEDURE [ ( params ) ] [ : typeRef ]
-  Simplifie : on capture le type de retour ; le detail des parametres
-  formels sera gere en TODO 17 (on saute les parentheses ici).
+  Simplifie : on capture le type de retour ; (en saute les parentheses ici).
   -------------------------------------------------------------------------- }
 Function ParseProcType : Integer;
 Var ret_ti : Integer;
@@ -2557,7 +2555,7 @@ Var ret_ti : Integer;
 Begin
   LexExpect('PROCEDURE');
   ret_ti := 0;
-  { Sauter les parametres entre parentheses - sera traite en TODO 17 }
+  { Sauter les parametres entre parentheses }
   If cur_tok.val = '(' Then
   Begin
     depth := 1;
@@ -2653,12 +2651,13 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - VARIABLES LOCALES LET (BCPL)
+  VARIABLES LOCALES LET (BCPL)
   ============================================================ }
 
 { --------------------------------------------------------------------------
   GenGlobalVarData : emettre la reserve DATA pour une variable statique BCPL.
   -------------------------------------------------------------------------- }
+
 Procedure GenGlobalVarData(si : Integer);
 Var lbl : TString;
 Begin
@@ -2669,7 +2668,7 @@ End;
 
 { --------------------------------------------------------------------------
   ParseVarDecl : en BCPL les variables locales sont declarees avec LET.
-  Cette procedure adapte ParseVarDecl pour LET name = expr (TODO 16).
+  Cette procedure adapte ParseVarDecl pour LET name = expr.
   is_local=True -> variable locale (BP-n) ; is_local=False -> STATIC (.DATA)
   -------------------------------------------------------------------------- }
 Procedure ParseVarDecl(is_local : Boolean; Var local_off : Integer);
@@ -2722,30 +2721,30 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
+  EXPRESSIONS - NIVEAU PRIMAIRE
   ============================================================ }
 
-{ Forward : ParseExpr est defini en TODO 10 ; ParseFactor l'appelle
+{ Forward : ParseExpr est defini ; ParseFactor l'appelle
   pour les sous-expressions entre parentheses et les index de tableau. }
 Function ParseExpr : Integer; Forward;
 
-{ Forward : ParseProcCallArgs defini en TODO 18 ; ParseDesignator l'appelle. }
+{ Forward : ParseProcCallArgs defini; ParseDesignator l'appelle. }
 Function ParseProcCallArgs(pi : Integer) : Integer; Forward;
 
-{ Forward : ParseBuiltinFunc defini en TODO 19 ; ParseFactor l'appelle. }
+{ Forward : ParseBuiltinFunc defini; ParseFactor l'appelle. }
 Function ParseBuiltinFunc(Const fname : TString) : Integer; Forward;
 
-{ Forwards supplementaires TODO 19 utilises dans ParseFactor et ParseStatement. }
+{ Forwards supplementaires utilises dans ParseFactor et ParseStatement. }
 Function IsBuiltinProc(Const name : TString) : Boolean; Forward;
 Function IsBuiltinFunc(Const name : TString) : Boolean; Forward;
 Procedure ParseBuiltinProc(Const fname : TString); Forward;
 
-{ Forwards TODO 20 - modules standard Out / In. }
+{ Forwards - modules standard Out / In. }
 Function  IsStdModuleIdent(Const name : TString) : Boolean; Forward;
 Function  ParseStdModuleExpr : Integer; Forward;
 Procedure ParseStdModuleCall; Forward;
 
-{ Forwards TODO 23 - clause IMPORT et modules Math / SYSTEM. }
+{ Forwards - clause IMPORT et modules Math / SYSTEM. }
 Procedure ParseImportSection; Forward;
 
 { Forward : ParseStatementSeq / ParseStatement / ParseLetDecl utilises dans VALOF (ParseFactor). }
@@ -2824,7 +2823,7 @@ Begin
       GenLoadConst(sym_table^[si].const_ival, ti);
     SK_PROC :
       Begin
-        { Appel de procedure/fonction (TODO 18) }
+        { Appel de procedure/fonction }
         pi2 := sym_table^[si].proc_idx;
         If cur_tok.val = '(' Then
         Begin
@@ -2945,7 +2944,7 @@ Begin
         EmitI2('MOV', 'BX', '[BX]')  { deref adresse en BX }
       Else
         EmitI2('MOV', 'BX', 'AX');   { pointer etait dans AX }
-      { Verification NIL a l'execution (TODO 22) }
+      { Verification NIL a l'execution }
       EmitI2('OR',  'BX', 'BX');
       EmitI1('JZ',  '_ORT_NIL_ERR');
       ti := type_table^[ti].base_idx;
@@ -2966,7 +2965,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseFactor : facteur primaire BCPL (TODO 09)
+  ParseFactor : facteur primaire BCPL
   factor = integer | char | string
          | TRUE (-1) | FALSE (0)
          | tilde-factor  = NOT bit
@@ -3104,11 +3103,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
+  EXPRESSIONS - OPERATEURS ET PRIORITES
   ============================================================ }
 
 { --------------------------------------------------------------------------
-  ParseTerm : facteurs lies par operateurs de multiplicite BCPL (TODO 10).
+  ParseTerm : facteurs lies par operateurs de multiplicite BCPL.
   BCPL  : * / MOD REM & << >>
   -------------------------------------------------------------------------- }
 Function ParseTerm : Integer;
@@ -3163,7 +3162,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseSimpleExpr : termes lies par operateurs additifs BCPL (TODO 10).
+  ParseSimpleExpr : termes lies par operateurs additifs BCPL.
   BCPL : + - | EQV XOR  (le signe unaire est dans ParseFactor)
   -------------------------------------------------------------------------- }
 Function ParseSimpleExpr : Integer;
@@ -3197,7 +3196,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseExpr : relations BCPL (TODO 10).
+  ParseExpr : relations BCPL.
   BCPL : = ~= < <= > >=     Resultat : TRUE=-1  FALSE=0
   -------------------------------------------------------------------------- }
 Function ParseExpr:Integer;
@@ -3263,7 +3262,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - INSTRUCTION D'AFFECTATION (:=)
+  INSTRUCTION D'AFFECTATION (:=)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3343,7 +3342,7 @@ Begin
       If (ti < 1) Or (type_table^[ti].kind <> TYK_WORD) Then
         ErrorMsg('Dereferencement sur un type non POINTER');
       EmitI2('MOV', 'BX', '[BX]');    { deref }
-      { Verification NIL a l'execution (TODO 22) }
+      { Verification NIL a l'execution }
       EmitI2('OR',  'BX', 'BX');
       EmitI1('JZ',  '_ORT_NIL_ERR');
       ti := type_table^[ti].base_idx;
@@ -3441,7 +3440,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - INSTRUCTION IF / ELSIF / ELSE
+  INSTRUCTION IF / ELSIF / ELSE
   ============================================================ }
 
 { Forwards : ParseStatement et ParseLetDecl necessaires avant leur usage.
@@ -3550,7 +3549,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - INSTRUCTION WHILE / REPEAT / LOOP / EXIT
+  INSTRUCTION WHILE / REPEAT / LOOP / EXIT
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3659,7 +3658,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - INSTRUCTION FOR
+  INSTRUCTION FOR
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3668,7 +3667,7 @@ End;
     - SI    = valeur limite (end), calculee une seule fois avant la boucle
     - [v]   = variable de controle (SK_LOCAL ordinal)
     - step  = constante entiere evaluee au compile-time (defaut +1)
-  Le prologue de procedure sauvegarde deja SI (TODO 17) ; au niveau module
+  Le prologue de procedure sauvegarde deja SI ; au niveau module
   SI est libre apres GenStartEntry (qui ne fait que MOV DS).
   -------------------------------------------------------------------------- }
 Procedure ParseForStmt;
@@ -3751,7 +3750,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - COMMANDE SWITCHON BCPL
+  COMMANDE SWITCHON BCPL
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3882,7 +3881,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - BLOCS BCPL (deja traites via OpenBlock/CloseBlock)
+  BLOCS BCPL (deja traites via OpenBlock/CloseBlock)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3892,8 +3891,7 @@ End;
     v doit etre un pointeur ou un enregistrement.
     T est un type etendu de celui de v (sous-type).
     Dans le corps, v est vu comme ayant le type T (transtypage de portee).
-    Le test de type dynamique (IS) est emis comme commentaire/stub ici
-    et sera complete en TODO 22 quand le RTTI sera implemente.
+    Le test de type dynamique (IS) est emis comme commentaire/stub.
 
   Implementation :
     1. Rechercher v dans sym_table -> si_v
@@ -3942,7 +3940,7 @@ Begin
     Else
       ti_T := sym_table^[si_t].type_idx;
 
-    { Emettre la garde de type - stub (RTTI complet en TODO 22) }
+    { Emettre la garde de type - stub (RTTI complet) }
     EmitComment(' WITH ' + vname + ' : ' + tname + ' (type guard stub)');
     If si_v > 0 Then
       GenLoad(si_v);             { charger v dans AX }
@@ -3984,10 +3982,9 @@ End;
 { --------------------------------------------------------------------------
   ParseStatement : dispatch complet.
   Gere : IF, WHILE, REPEAT, LOOP, EXIT, FOR, CASE, WITH, affectation / appel.
-  Les TODOs suivants (17-19) ajouteront PROCEDURE, RETURN, stdlib, etc.
   -------------------------------------------------------------------------- }
 { --------------------------------------------------------------------------
-  ParseStatement BCPL (TODO 11-17).
+  ParseStatement BCPL.
   Commandes BCPL : IF UNLESS TEST WHILE UNTIL FOR LOOP REPEAT
     SWITCHON BREAK LOOP RETURN RESULTIS FINISH $( bloc $) ou affectation.
   -------------------------------------------------------------------------- }
@@ -4105,7 +4102,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 18 - APPELS DE PROCEDURES ET DE FONCTIONS
+  APPELS DE PROCEDURES ET DE FONCTIONS
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4161,7 +4158,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 19 - PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
+  PROCEDURES ET FONCTIONS INTEGREES (STANDARD)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4408,7 +4405,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 20 - MODULE D'ENTREE/SORTIE (InOut / Terminal / STORAGE)
+  MODULE D'ENTREE/SORTIE (InOut / Terminal / STORAGE)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -4433,7 +4430,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  GenBcplRuntime : emettre le runtime BCPL (_BRT_xxx) dans tmp_file (TODO 20).
+  GenBcplRuntime : emettre le runtime BCPL (_BRT_xxx) dans tmp_file.
   _BRT_WRITES : SI = chaine BCPL (octet 0 = longueur)
   _BRT_WRITEN : AX = entier signe -> decimal sur stdout
   _BRT_WRITEF : simple formateur %S %N %C
@@ -4447,7 +4444,7 @@ Procedure GenBcplRuntime;
 Begin
   SwitchToTmp;
   EmitSep;
-  EmitComment(' ====== RUNTIME BCPL (BRT) - BCPL86 TODO 20 ====== ');
+  EmitComment(' ====== RUNTIME BCPL (BRT) - BCPL86 ====== ');
   EmitBlank;
 
   { _BRT_WRITES : SI pointe vers chaine BCPL (octet 0 = longueur) }
@@ -4638,7 +4635,7 @@ Begin
   { _BRT_WRITEF : formateur simple BCPL  %S %N %C %I }
   { Convention : SI = format, CX = nb args, stack = args (deja empiles) }
   EmitLabel('_BRT_WRITEF');
-  EmitComment(' _BRT_WRITEF : formateur stub - imprime le format brut en TODO 19');
+  EmitComment(' _BRT_WRITEF : formateur stub - imprime le format brut');
   EmitI1('PUSH', 'BX');
   EmitI2('MOV',  'AX', 'SI');
   EmitI2('MOV',  'SI', 'AX');
@@ -4899,7 +4896,7 @@ Begin
     ParseStdModuleExpr := TYP_WORD;
   End
 
-  { ---- TODO 23 : Math.xxx -> stub FPU ---- }
+  { ---- Math.xxx -> stub FPU ---- }
   Else If (modname = 'Math') Then
   Begin
     EmitComment(' Math.' + methname + '(x) : stub - FPU non supporte - retourne 0');
@@ -4921,7 +4918,7 @@ Begin
     ParseStdModuleExpr := TYP_WORD;
   End
 
-  { ---- TODO 23 : SYSTEM.ADR / SYSTEM.VAL / SYSTEM.BIT ---- }
+  { ---- SYSTEM.ADR / SYSTEM.VAL / SYSTEM.BIT ---- }
   Else If modname = 'SYSTEM' Then
   Begin
     If methname = 'ADR' Then
@@ -5033,7 +5030,7 @@ Begin
       LexExpect(',');
       ParseExpr;                    { w -> stub }
       LexExpect(')');
-      EmitComment(' Out.Real : emulation REAL non implementee (TODO 21+)');
+      EmitComment(' Out.Real : emulation REAL non implementee');
     End
     Else
       ErrorMsg('InOut/Out : methode inconnue : ' + methname);
@@ -5163,7 +5160,7 @@ Begin
       ErrorMsg('InOut/In : methode inconnue : ' + methname);
   End
 
-  { ---- TODO 23 : Math.xxx(...) en position instruction : stub FPU ---- }
+  { ---- Math.xxx(...) en position instruction : stub FPU ---- }
   Else If modname = 'Math' Then
   Begin
     EmitComment(' Math.' + methname + '() : stub instruction - FPU non supporte');
@@ -5183,7 +5180,7 @@ Begin
     End;
   End
 
-  { ---- TODO 23 : SYSTEM.MOVE / SYSTEM.xxx en position instruction ---- }
+  { ---- SYSTEM.MOVE / SYSTEM.xxx en position instruction ---- }
   Else If modname = 'SYSTEM' Then
   Begin
     If methname = 'MOVE' Then
@@ -5227,7 +5224,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 - CLAUSE IMPORT
+  CLAUSE IMPORT
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -5320,7 +5317,7 @@ Begin
   Repeat
     ident := cur_tok.val;
     LexExpectKind(TK_IDENT);
-    { TODO : marquer le symbole comme exporte }  { is_qual -> acces qualifie }
+    { marquer le symbole comme exporte }  { is_qual -> acces qualifie }
     If cur_tok.val = ',' Then
       LexNext
     Else
@@ -5503,7 +5500,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - DECLARATIONS LET BCPL  (ParseLetDecl)
+  DECLARATIONS LET BCPL  (ParseLetDecl)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -5644,7 +5641,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - INTEGRATION FINALE : ParseProgram + ParseModule
+  INTEGRATION FINALE : ParseProgram + ParseModule
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -5666,7 +5663,7 @@ Begin
   End;
   SwitchToMain;
   EmitBlank;
-  EmitComment(' ----- Chaines litterales differees (TODO 25) -----');
+  EmitComment(' ----- Chaines litterales differees -----');
   Emit('_DATA           SEGMENT WORD PUBLIC ''DATA''');
   EmitBlank;
   While Not Eof(str_file) Do
@@ -5682,7 +5679,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseProgram BCPL : parser le source BCPL complet (TODO 25).
+  ParseProgram BCPL : parser le source BCPL complet.
   Structure BCPL (pas de MODULE) :
     [GET "fichier"] [SECTION "nom"]
     [MANIFEST $( ... $)] [GLOBAL $( ... $)] [STATIC $( ... $)]
@@ -5719,7 +5716,7 @@ Begin
     If cur_tok.val = 'GET' Then
     Begin
       LexNext;
-      { GET "fichier" : ignorer pour l'instant (TODO 21) }
+      { GET "fichier" : ignorer pour l'instant }
       If cur_tok.kind = TK_STRING Then LexNext;
     End
     Else If cur_tok.val = 'SECTION' Then
@@ -5758,8 +5755,7 @@ End;
 { --------------------------------------------------------------------------
   ParseModule : alias pour ParseProgram (compatibilite interne).
   -------------------------------------------------------------------------- }
-Procedure ParseModule;
-Begin
+Procedure ParseModule;Begin
   ParseProgram;
 End;
 
@@ -5767,46 +5763,36 @@ End;
   Programme principal
   ============================================================ }
 
-Begin
-  { --- Arguments --- }
+BEGIN
+   { --- Arguments --- }
   ParseArgs;
-
-  { --- Initialisation --- }
+   { --- Initialisation --- }
   InitTables;
   InitBcplSystem;
-
-  { --- Ouverture du source et lancement du lexer --- }
+   { --- Ouverture du source et lancement du lexer --- }
   LexInit(src_fname);  { ouvre src_file, charge le premier token }
-
-  { --- Portee module (niveau 1) --- }
+   { --- Portee module (niveau 1) --- }
   ScopeEnter;
-
-  { --- Ouverture de la sortie --- }
+   { --- Ouverture de la sortie --- }
   Assign(out_file, out_fname);
   Rewrite(out_file);
-  If IOResult <> 0 Then
-  Begin
+  If IOResult <> 0 Then Begin
     WriteLn('Erreur : impossible de creer ', out_fname);
     Close(src_file);
     Halt(1);
   End;
   cur_out := @out_file;
-
-  { --- Ouverture du fichier temporaire (code des procedures) --- }
+   { --- Ouverture du fichier temporaire (code des procedures) --- }
   Assign(tmp_file, tmp_fname);
   Rewrite(tmp_file);
-
-  { --- Compilation complete : ParseModule gere toute l'emission ASM --- }
+   { --- Compilation complete : ParseModule gere toute l'emission ASM --- }
   ParseModule;
-
-  { --- Fermeture --- }
+   { --- Fermeture --- }
   ScopeLeave;  { fermer la portee module }
   LexClose;
   Close(out_file);
-
-  { --- Rapport final (TODO 24) --- }
-  If opt_verbose Then
-  Begin
+   { --- Rapport final --- }
+  If opt_verbose Then Begin
     WriteLn;
     WriteLn('=== RAPPORT DE COMPILATION : ', src_fname, ' ===');
     WriteLn('  Lignes     : ', lex_lineno);
@@ -5820,25 +5806,20 @@ Begin
     WriteLn('  Erreurs    : ', err_count);
     WriteLn('  Avertissements   : ', warn_count);
     WriteLn('  Sortie     : ', out_fname);
-    If opt_debug Then
-    Begin
+    If opt_debug Then Begin
       WriteLn;
       TypeDump;
       WriteLn;
       SymDumpVerbose;
     End;
   End;
-
   FreeTables;
-
-  If err_count > 0 Then
-  Begin
-    WriteLn(err_count, ' erreur(s) - compilation echouee.');
-    Halt(1);
+  If err_count > 0 Then Begin
+   WriteLn(err_count, ' erreur(s) - compilation echouee.');
+   Halt(1);
   End
-  Else
+   Else
   Begin
-    If opt_verbose Then
-      WriteLn('Compilation reussie -> ', out_fname);
+   If opt_verbose Then WriteLn('Compilation reussie -> ', out_fname);
   End;
-End.
+END.
