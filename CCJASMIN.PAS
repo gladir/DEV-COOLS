@@ -14,23 +14,23 @@ Uses DOS;
 
 Const
  VERSION = 'Compilateur C pour Jasmin JVM V1.1';  { Version du compilateur C pour JVM }
- YES = 1;                         { Valeur boolï¿½enne vraie }
- NO = 0;                          { Valeur boolï¿½enne fausse }
+ YES = 1;                         { Valeur bool‚enne vraie }
+ NO = 0;                          { Valeur bool‚enne fausse }
 
-  { Paramï¿½tres de la table de symbole }
- symsiz = 14;       { Taille d'une entrï¿½e de symbole en octets }
+  { ParamŠtres de la table de symbole }
+ symsiz = 14;       { Taille d'une entr‚e de symbole en octets }
  numglbs = 512;     { Nombre maximum de symboles globaux }
  MASKGLBS = 511;    { Masque pour le hachage de la table de symboles }
  namesize = 32;     { Taille maximale d'un nom de symbole incluant le terminateur }
  namemax = 31;      { Longueur maximale d'un nom de symbole }
 
-  { Dï¿½placement du format d'entrï¿½e de la table des symboles }
- name = 0;          { Dï¿½placement du nom du symbole dans l'entrï¿½e }
- ident = 9;         { Dï¿½placement de l'identificateur de type }
- ctype = 10;        { Dï¿½placement du type de donnï¿½es C }
- storage = 11;      { Dï¿½placement de la classe d'entreposage }
- offset = 12;       { Dï¿½placement de la valeur/adresse du symbole }
- offsize = 2;       { Taille en octets du champ dï¿½placement }
+  { D‚placement du format d'entr‚e de la table des symboles }
+ name = 0;          { D‚placement du nom du symbole dans l'entr‚e }
+ ident = 9;         { D‚placement de l'identificateur de type }
+ ctype = 10;        { D‚placement du type de donn‚es C }
+ storage = 11;      { D‚placement de la classe d'entreposage }
+ offset = 12;       { D‚placement de la valeur/adresse du symbole }
+ offsize = 2;       { Taille en octets du champ d‚placement }
 
   { Types d'identificateurs }
  it_variable = 1;     { Variable simple }
@@ -39,49 +39,48 @@ Const
  it_function = 4;     { Fonction }
  it_struct_type = 5;  { Type structure }
  it_union_type = 6;   { Type union }
- it_typedef_type = 7; { Type dï¿½fini par typedef }
+ it_typedef_type = 7; { Type d‚fini par typedef }
 
-  { Types de donnï¿½es }
+  { Types de donn‚es }
  cvoid = 1;      { Type void (aucune valeur) }
- cchar = 2;      { Caractï¿½re signï¿½ 8 bits }
- cuchar = 3;     { Caractï¿½re non signï¿½ 8 bits }
- cshort = 4;     { Entier court signï¿½ 16 bits }
- cushort = 5;    { Entier court non signï¿½ 16 bits }
- cint = 6;       { Entier signï¿½ 16 bits }
- cuint = 7;      { Entier non signï¿½ 16 bits }
- clong = 8;      { Entier long signï¿½ 32 bits }
- culong = 9;     { Entier long non signï¿½ 32 bits }
- cfloat = 10;    { Nombre flottant simple prï¿½cision }
- cdouble = 11;   { Nombre flottant double prï¿½cision }
+ cchar = 2;      { CaractŠre sign‚ 8 bits }
+ cuchar = 3;     { CaractŠre non sign‚ 8 bits }
+ cshort = 4;     { Entier court sign‚ 16 bits }
+ cushort = 5;    { Entier court non sign‚ 16 bits }
+ cint = 6;       { Entier sign‚ 16 bits }
+ cuint = 7;      { Entier non sign‚ 16 bits }
+ clong = 8;      { Entier long sign‚ 32 bits }
+ culong = 9;     { Entier long non sign‚ 32 bits }
+ cfloat = 10;    { Nombre flottant simple pr‚cision }
+ cdouble = 11;   { Nombre flottant double pr‚cision }
  cpointer = 12;  { Pointeur vers un type }
- carray = 13;    { Tableau d'ï¿½lï¿½ments }
- cstruct = 14;   { Structure de donnï¿½es }
- cunion = 15;    { Union de donnï¿½es }
- cenum = 16;     { ï¿½numï¿½ration de valeurs }
+ carray = 13;    { Tableau d'‚l‚ments }
+ cstruct = 14;   { Structure de donn‚es }
+ cunion = 15;    { Union de donn‚es }
+ cenum = 16;     { num‚ration de valeurs }
 
   { Taille du type en octets }
  sizeof_void = 0;     { Taille du type void (aucune taille) }
  sizeof_char = 1;     { Taille du type char (1 octet) }
  sizeof_short = 2;    { Taille du type short (2 octets) }
- sizeof_int = 2;      { Taille du type int sur 6809 (2 octets) }
+ sizeof_int = 2;      { Taille du type int (2 octets) }
  sizeof_long = 4;     { Taille du type long (4 octets) }
  sizeof_float = 4;    { Taille du type float (4 octets) }
  sizeof_double = 8;   { Taille du type double (8 octets) }
- sizeof_pointer = 2;  { Taille d'un pointeur sur 6809 (2 octets) }
+ sizeof_pointer = 2;  { Taille d'un pointeur (2 octets) }
  sizeof_enum = 2;     { Taille du type enum (2 octets, comme int) }
 
   { Classes d'entreposage }
- statik = 1;      { Variable statique (durï¿½e de vie du programme) }
+ statik = 1;      { Variable statique (dur‚e de vie du programme) }
  stkloc = 2;      { Variable locale sur la pile }
- CEXTERNAL = 3;   { Variable externe dï¿½finie ailleurs }
- automatic = 4;   { Variable automatique (locale par dï¿½faut) }
+ CEXTERNAL = 3;   { Variable externe d‚finie ailleurs }
+ automatic = 4;   { Variable automatique (locale par d‚faut) }
 
   { Types d'instructions }
  streturn = 3;    { Instruction de retour de fonction }
 
   { Types d'assembleurs }
- AS6809 = 1;      { Assembleur pour processeur Motorola 6809 }
- AS9 = 2;         { Assembleur AS9 pour 6809 }
+ ASJASMIN = 1;    { Assembleur Jasmin pour JVM }
 
   { Niveau d'optimisations }
  OPT_NONE = 0;        { Aucune optimisation }
@@ -488,7 +487,7 @@ Var
  i: Integer;
 Begin
  result := s;
- 
+
  { Convertir les instructions 6809 vers Jasmin JVM }
  If Pos('ldd  # ', result) = 1 Then
   result := 'bipush ' + Copy(result, 7, Length(result)) { Charger constante sur pile }
@@ -570,7 +569,7 @@ Begin
  Begin
   { Instruction non reconnue - la laisser telle quelle }
  End;
- 
+
  convert_to_jasmin := result;
 End;
 
@@ -586,7 +585,7 @@ Begin
  ol('bipush ' + temp);
 End;
 
-{ GÃ©nÃ©rer instruction ldd avec variable }  
+{ GÃ©nÃ©rer instruction ldd avec variable }
 Procedure ol_ldd_var(varname: String);
 Begin
  ol('iload ' + varname);
@@ -7144,7 +7143,7 @@ BEGIN
  init_structs;
  { Initialisation de la table des Ã©tiquettes goto }
  init_goto_table;
- asmtype := AS6809;
+ asmtype := ASJASMIN;
  header;        { Code d''introduction }
  parse;         { Analyse toutes les entrï¿½e }
  trailer;       { Code de suivi }

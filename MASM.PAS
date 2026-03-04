@@ -6174,7 +6174,339 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 15 a 25 a implementer)
+  TODO 16 - STRUCTURES (STRUC / ENDS)
+  ============================================================
+
+  Chaque structure STRUC est stockee dans struct_table avec ses
+  champs (nom, offset, taille, valeur par defaut).
+  Le nom de la structure est enregistre dans la table des
+  symboles comme SK_STRUCT avec value = index dans struct_table.
+  Les noms de champs sont aussi enregistres comme SK_EQU avec
+  value = offset du champ dans la structure (pour [BX].champ).
+  SIZE nom = taille totale ; OFFSET nom.champ = offset champ.
+
+  Instanciation : var_name struct_name <val1, val2, ...>
+  ============================================================ }
+
+Const
+  MAX_STRUCT_FIELDS = 64;
+
+Type
+  TStructField = Record
+    fname    : TSymString;  { nom du champ (vide si pas de nom) }
+    foffset  : TWord;       { offset depuis debut structure }
+    fsize    : TWord;       { taille en octets (1/2/4/8/10) }
+    def_val  : TLong;       { valeur par defaut (0 si ?) }
+    has_def  : Boolean;     { True si valeur par defaut specifiee }
+  End;
+
+  TStructDef = Record
+    sname      : TSymString;   { nom de la structure }
+    total_size : TWord;        { taille totale en octets }
+    field_cnt  : Integer;      { nombre de champs }
+    fields     : Array[1..MAX_STRUCT_FIELDS] Of TStructField;
+  End;
+
+Var
+  struct_table : Array[1..MAX_STRUCT] Of TStructDef;
+  struct_count : Integer;
+
+{ ============================================================
+  StructInit : initialiser la table des structures
+  ============================================================ }
+Procedure StructInit;
+Begin
+  struct_count := 0;
+End;
+
+{ ============================================================
+  StructFind : trouver une structure par son nom.
+  Retourne l index dans struct_table (1-base) ou 0 si absent.
+  ============================================================ }
+Function StructFind(Const sname : TSymString) : Integer;
+Var
+  p : PSymbol;
+Begin
+  StructFind := 0;
+  p := SymFind(sname);
+  If p = Nil Then Exit;
+  If p^.kind <> SK_STRUCT Then Exit;
+  { value stocke l index dans struct_table }
+  If (p^.value >= 1) And (p^.value <= struct_count) Then
+    StructFind := Integer(p^.value);
+End;
+
+{ ============================================================
+  ParseStruc : traiter nom STRUC ... nom ENDS
+  Lit les lignes suivantes jusqu a ENDS, collecte les champs.
+  ============================================================ }
+Procedure ParseStruc(Const struc_name : TSymString);
+Var
+  si       : Integer;
+  cur_off  : TWord;
+  fld_name : TSymString;
+  fsize    : TWord;
+  def_val  : TLong;
+  has_def  : Boolean;
+  tok      : TString;
+  dir      : TString;
+  p        : PSymbol;
+  fsym     : PSymbol;
+  e        : TExpr;
+  done     : Boolean;
+Begin
+  { verifier que la structure n est pas deja definie }
+  If StructFind(struc_name) > 0 Then
+  Begin
+    WarnMsg('Structure deja definie : ' + struc_name);
+    Exit;
+  End;
+
+  { allouer une entree }
+  If struct_count >= MAX_STRUCT Then
+  Begin
+    ErrorMsg('Trop de structures definies');
+    Exit;
+  End;
+  Inc(struct_count);
+  si := struct_count;
+  struct_table[si].sname      := struc_name;
+  struct_table[si].total_size := 0;
+  struct_table[si].field_cnt  := 0;
+  cur_off := 0;
+
+  { enregistrer le symbole (taille inconnue pour l instant) }
+  p := SymFind(struc_name);
+  If p = Nil Then
+    p := SymEnter(struc_name, SK_STRUCT, 0, 0, 0);
+  p^.kind  := SK_STRUCT;
+  p^.value := si;
+
+  done := False;
+  While (Not done) And SrcReadLine Do
+  Begin
+    { nourrir le lexer avec la nouvelle ligne }
+    lex_line     := cur_line;
+    lex_pos      := 1;
+    lex_has_peek := False;
+    lex_at_eol   := False;
+
+    { ligne vide ou commentaire }
+    If LexPeekKind = TK_NEWLINE Then Continue;
+    If LexPeekKind = TK_EOF     Then Break;
+
+    { lire le premier token }
+    LexNext;
+    tok := lex_tok.val;
+
+    { --- detection de ENDS --- }
+    { forme "nom ENDS" ou juste "ENDS" }
+    If tok = 'ENDS' Then
+    Begin
+      done := True;
+      Continue;
+    End;
+    If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'ENDS') Then
+    Begin
+      { tok est soit le nom de la structure soit un label anonymous }
+      done := True;
+      LexNext; { consommer ENDS }
+      Continue;
+    End;
+
+    { --- analyse d un champ --- }
+    fld_name := '';
+    dir      := '';
+    fsize    := 1;
+    def_val  := 0;
+    has_def  := False;
+
+    { tok est DB/DW/DD/DQ/DT directement, ou un nom de champ }
+    If (tok='DB') Or (tok='DW') Or (tok='DD') Or
+       (tok='DQ') Or (tok='DT') Then
+      dir := tok
+    Else
+    Begin
+      fld_name := tok;
+      { lire la directive DB/DW/... }
+      If LexPeekKind = TK_IDENT Then
+      Begin
+        LexNext;
+        dir := lex_tok.val;
+      End;
+    End;
+
+    { taille selon la directive }
+    If      dir = 'DB' Then fsize := 1
+    Else If dir = 'DW' Then fsize := 2
+    Else If dir = 'DD' Then fsize := 4
+    Else If dir = 'DQ' Then fsize := 8
+    Else If dir = 'DT' Then fsize := 10
+    Else
+    Begin
+      { directive inconnue ou ligne de commentaire : ignorer }
+      Continue;
+    End;
+
+    { valeur par defaut : ? ou expression }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '?') Then
+    Begin
+      LexNext;
+      has_def := False;
+      def_val := 0;
+    End
+    Else If (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Then
+    Begin
+      ExprMakeNum(e, 0);
+      EvalExpr(e);
+      def_val := e.val;
+      has_def := True;
+    End;
+
+    { enregistrer le champ }
+    With struct_table[si] Do
+    Begin
+      If field_cnt < MAX_STRUCT_FIELDS Then
+      Begin
+        Inc(field_cnt);
+        fields[field_cnt].fname   := fld_name;
+        fields[field_cnt].foffset := cur_off;
+        fields[field_cnt].fsize   := fsize;
+        fields[field_cnt].def_val := def_val;
+        fields[field_cnt].has_def := has_def;
+      End
+      Else
+        WarnMsg('Trop de champs dans la structure ' + struc_name);
+    End;
+
+    { creer un symbole EQU = offset pour le champ nomme }
+    If fld_name <> '' Then
+    Begin
+      fsym := SymFind(fld_name);
+      If fsym = Nil Then
+        fsym := SymEnter(fld_name, SK_EQU, 0, 0, cur_off);
+      SymSetValue(fsym, cur_off);
+      fsym^.flags := fsym^.flags And Not 8; { non reassignable }
+    End;
+
+    cur_off := cur_off + fsize;
+  End;
+
+  { finaliser }
+  struct_table[si].total_size := cur_off;
+  p^.size  := cur_off;
+  p^.value := si;
+End;
+
+{ ============================================================
+  ParseStructInstance : emettre les octets d une instance
+  Syntaxe (apres lecture du nom de structure) :
+    var_name struct_name <val1, val2, ...>
+  Si var_name = '', c est un element anonyme (dans un DUP).
+  ============================================================ }
+Procedure ParseStructInstance(si_idx : Integer;
+                              Const var_name : TSymString);
+Var
+  nf       : Integer;
+  i, j     : Integer;
+  pad      : Integer;
+  inst_off : TWord;
+  p        : PSymbol;
+  e        : TExpr;
+  vals     : Array[1..MAX_STRUCT_FIELDS] Of TLong;
+  has_v    : Array[1..MAX_STRUCT_FIELDS] Of Boolean;
+Begin
+  nf := struct_table[si_idx].field_cnt;
+
+  { definir le label de la variable si nom fourni }
+  If var_name <> '' Then
+  Begin
+    p := SymFind(var_name);
+    If p = Nil Then
+      p := SymEnter(var_name, SK_LABEL, cur_seg, lc,
+                    struct_table[si_idx].total_size);
+    p^.kind    := SK_LABEL;
+    p^.seg_idx := cur_seg;
+    p^.offset  := lc;
+    p^.size    := struct_table[si_idx].total_size;
+    p^.flags   := p^.flags Or 4;  { is_defined }
+  End;
+
+  { charger les valeurs par defaut }
+  For i := 1 To nf Do
+  Begin
+    vals[i]  := struct_table[si_idx].fields[i].def_val;
+    has_v[i] := struct_table[si_idx].fields[i].has_def;
+  End;
+
+  { parser < val1, val2, ... > si present }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '<') Then
+  Begin
+    LexNext;  { consommer < }
+    i := 1;
+    While i <= nf Do
+    Begin
+      { valeur vide (,) ou fin > -> garder defaut }
+      If (LexPeekKind = TK_PUNCT) And
+         ((LexPeekVal = ',') Or (LexPeekVal = '>')) Then
+      Begin
+        { pas de valeur explicite : garder le defaut }
+      End
+      Else If (LexPeekKind <> TK_NEWLINE) And (LexPeekKind <> TK_EOF) Then
+      Begin
+        ExprMakeNum(e, 0);
+        EvalExpr(e);
+        vals[i]  := e.val;
+        has_v[i] := True;
+      End;
+      Inc(i);
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+        LexNext
+      Else
+        Break;
+    End;
+    { consommer le > final }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '>') Then
+      LexNext;
+  End;
+
+  { emettre les octets }
+  inst_off := 0;
+  For i := 1 To nf Do
+  Begin
+    { rembourrage entre champs si necessaire }
+    pad := Integer(struct_table[si_idx].fields[i].foffset) -
+           Integer(inst_off);
+    For j := 1 To pad Do EmitByte(0);
+    inst_off := inst_off + TWord(pad);
+
+    { emettre selon la taille du champ }
+    Case struct_table[si_idx].fields[i].fsize Of
+      1 : EmitByte(Byte(vals[i]));
+      2 : EmitWord(Word(vals[i]));
+      4 : Begin
+            EmitWord(Word(vals[i]));
+            EmitWord(Word(vals[i] Shr 16));
+          End;
+    Else
+      Begin
+        { taille > 4 : emettre DWORD bas, puis zeros }
+        EmitWord(Word(vals[i]));
+        EmitWord(Word(vals[i] Shr 16));
+        For j := 5 To Integer(struct_table[si_idx].fields[i].fsize) Do
+          EmitByte(0);
+      End;
+    End;
+    inst_off := inst_off + struct_table[si_idx].fields[i].fsize;
+  End;
+
+  { rembourrage final }
+  pad := Integer(struct_table[si_idx].total_size) - Integer(inst_off);
+  For j := 1 To pad Do EmitByte(0);
+End;
+
+{ ============================================================
+  Programme principal (TODOs 16 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -6184,10 +6516,11 @@ Begin
   FixupInit;
   ModelInit;
   VisInit;
+  StructInit;
   SrcInit;
   LexInit;
   SymInit;
   local_unique_id := 0;
-  Writeln('TODOs 01-15 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile).');
-  Writeln('TODOs 16 a 25 a implementer.');
+  Writeln('TODOs 01-16 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2+pub+enc86+sauts+arith+pile+struc).');
+  Writeln('TODOs 17 a 25 a implementer.');
 End.
