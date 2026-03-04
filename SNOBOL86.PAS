@@ -1748,63 +1748,36 @@ End;
   TIME               -> chaine heure DOS (AH=2Ch INT 21h)
   -------------------------------------------------------------------------- }
 
+Const
+  BC_COUNT  = 44;
+  BC_NAMES  : Array[1..44] Of String[10] = (
+    { Manipulation de chaines }
+    'SIZE','SUBSTR','DUPL','REPLACE','TRIM','LPAD','RPAD','REVERSE','UPPER','LOWER',
+    { Conversion et typage }
+    'CONVERT','DATATYPE','INTEGER','REAL','NUMERIC','CHAR','ORD',
+    { Predicats numeriques }
+    'LT','LE','GT','GE','EQ','NE',
+    { Predicats de chaines }
+    'IDENT','DIFFER',
+    { Fonctions systeme }
+    'DATE','TIME',
+    { Patterns predifinis }
+    'ANY','NOTANY','SPAN','BREAK','BREAKX','LEN','POS','RPOS','TAB','RTAB',
+    'ARB','ARBNO','REM','FAIL','FENCE','ABORT','SUCCEED');
+  BC_PARAMS : Array[1..44] Of Integer = (
+    1, 3, 2, 3, 1, 2, 2, 1, 1, 1,
+    2, 1, 1, 1, 1, 1, 1,
+    2, 2, 2, 2, 2, 2,
+    2, 2,
+    0, 0,
+    1, 1, 1, 1, 1, 1, 1, 1, 1, 1,
+    0, 1, 0, 0, 0, 0, 0);
+
 Procedure RegisterBuiltins;
+Var i : Integer;
 Begin
-  { --- Manipulation de chaines --- }
-  RegisterBuiltin('SIZE',     1);
-  RegisterBuiltin('SUBSTR',   3);
-  RegisterBuiltin('DUPL',     2);
-  RegisterBuiltin('REPLACE',  3);
-  RegisterBuiltin('TRIM',     1);
-  RegisterBuiltin('LPAD',     2);
-  RegisterBuiltin('RPAD',     2);
-  RegisterBuiltin('REVERSE',  1);
-  RegisterBuiltin('UPPER',    1);
-  RegisterBuiltin('LOWER',    1);
-
-  { --- Conversion et typage --- }
-  RegisterBuiltin('CONVERT',  2);
-  RegisterBuiltin('DATATYPE', 1);
-  RegisterBuiltin('INTEGER',  1);
-  RegisterBuiltin('REAL',     1);
-  RegisterBuiltin('NUMERIC',  1);
-  RegisterBuiltin('CHAR',     1);
-  RegisterBuiltin('ORD',      1);
-
-  { --- Predicats de comparaison numerique --- }
-  RegisterBuiltin('LT',       2);
-  RegisterBuiltin('LE',       2);
-  RegisterBuiltin('GT',       2);
-  RegisterBuiltin('GE',       2);
-  RegisterBuiltin('EQ',       2);
-  RegisterBuiltin('NE',       2);
-
-  { --- Predicats d'identite de chaines --- }
-  RegisterBuiltin('IDENT',    2);
-  RegisterBuiltin('DIFFER',   2);
-
-  { --- Fonctions systeme --- }
-  RegisterBuiltin('DATE',     0);
-  RegisterBuiltin('TIME',     0);
-
-  { --- Patterns predifinis (retournent un TPatNode) --- }
-  RegisterBuiltin('ANY',      1);
-  RegisterBuiltin('NOTANY',   1);
-  RegisterBuiltin('SPAN',     1);
-  RegisterBuiltin('BREAK',    1);
-  RegisterBuiltin('BREAKX',   1);
-  RegisterBuiltin('LEN',      1);
-  RegisterBuiltin('POS',      1);
-  RegisterBuiltin('RPOS',     1);
-  RegisterBuiltin('TAB',      1);
-  RegisterBuiltin('RTAB',     1);
-  RegisterBuiltin('ARB',      0);
-  RegisterBuiltin('ARBNO',    1);
-  RegisterBuiltin('REM',      0);
-  RegisterBuiltin('FAIL',     0);
-  RegisterBuiltin('FENCE',    0);
-  RegisterBuiltin('ABORT',    0);
-  RegisterBuiltin('SUCCEED',  0);
+  For i := 1 To BC_COUNT Do
+    RegisterBuiltin(BC_NAMES[i], BC_PARAMS[i]);
 End;
 
 { --------------------------------------------------------------------------
