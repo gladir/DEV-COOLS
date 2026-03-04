@@ -3722,28 +3722,43 @@ Begin
   Until False;
 End;
 
+{ ---- Table des operateurs relationnels pour EvalRelational ---- }
+Const
+  ER_EQ = 1; ER_NE = 2; ER_LT = 3; ER_LE = 4; ER_GT = 5; ER_GE = 6;
+  ER_COUNT = 6;
+  ER_NAMES : Array[1..6] Of String[2] = ('EQ','NE','LT','LE','GT','GE');
+
 { ============================================================
   EvalRelational : EQ NE LT LE GT GE (resultat -1=vrai, 0=faux)
   ============================================================ }
 Procedure EvalRelational(Var e : TExpr);
 Var
-  op : TString;
-  r  : TExpr;
-  b  : Boolean;
+  op    : TString;
+  r     : TExpr;
+  b     : Boolean;
+  er_idx : Integer;
+  i     : Integer;
 Begin
   EvalBitwise(e);
   Repeat
     If LexPeekKind = TK_IDENT Then
     Begin
-      op := LexPeekVal;
-      b  := False;
-      If      op = 'EQ' Then Begin LexNext; EvalBitwise(r); b := (e.val =  r.val); End
-      Else If op = 'NE' Then Begin LexNext; EvalBitwise(r); b := (e.val <> r.val); End
-      Else If op = 'LT' Then Begin LexNext; EvalBitwise(r); b := (e.val <  r.val); End
-      Else If op = 'LE' Then Begin LexNext; EvalBitwise(r); b := (e.val <= r.val); End
-      Else If op = 'GT' Then Begin LexNext; EvalBitwise(r); b := (e.val >  r.val); End
-      Else If op = 'GE' Then Begin LexNext; EvalBitwise(r); b := (e.val >= r.val); End
-      Else Break;
+      op     := LexPeekVal;
+      er_idx := 0;
+      For i := 1 To ER_COUNT Do
+        If ER_NAMES[i] = op Then Begin er_idx := i; Break; End;
+      If er_idx = 0 Then Break;
+      LexNext;
+      EvalBitwise(r);
+      Case er_idx Of
+        ER_EQ : b := (e.val =  r.val);
+        ER_NE : b := (e.val <> r.val);
+        ER_LT : b := (e.val <  r.val);
+        ER_LE : b := (e.val <= r.val);
+        ER_GT : b := (e.val >  r.val);
+        ER_GE : b := (e.val >= r.val);
+      Else b := False;
+      End;
       If b Then e.val := -1 Else e.val := 0;
       e.is_reloc := False;
       e.is_undef := e.is_undef Or r.is_undef;
