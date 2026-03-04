@@ -6933,27 +6933,30 @@ Type
   PMacroDef = ^TMacroDef;
 
   TMacroDef = Record
-    mname     : TSymString;
-    param_cnt : Integer;
-    params    : Array[1..MAX_MACRO_PARAMS] Of TSymString;
-    body_first : PLineNode; { premier noeud du corps (liste chainee) }    body_cnt  : Integer;
-    purged    : Boolean;
-    next      : PMacroDef; { liste chainee }
+    mname      : TSymString;
+    param_cnt  : Integer;
+    params     : Array[1..MAX_MACRO_PARAMS] Of TSymString;
+    body_first : PLineNode;
+    body_cnt   : Integer;
+    purged     : Boolean;
+    next       : PMacroDef;
   End;
 
-  TMacroExpCtx = Record
-    lines    : Array[1..MACRO_EXP_BUF] Of TString;
-    line_cnt : Integer;
-    cur_pos  : Integer;
-    do_exitm : Boolean;
-    mi       : PMacroDef; { pointeur macro (Nil = REPT/IRP/IRPC) }
+  PExpCtx = ^TExpCtx;
+
+  TExpCtx = Record
+    line_head : PLineNode;  { tete de la liste de lignes expandees }
+    line_tail : PLineNode;  { queue pour ajout O(1) }
+    cur_node  : PLineNode;  { noeud courant de lecture }
+    do_exitm  : Boolean;    { EXITM signale }
+    mi        : PMacroDef; { macro courante (Nil = REPT/IRP/IRPC) }
+    prev      : PExpCtx;   { contexte precedent (pile) }
   End;
 
 Var
   macro_list_head : PMacroDef;
   macro_count     : Integer;
-  macro_exp_stk   : Array[0..MACRO_EXP_DEPTH-1] Of TMacroExpCtx;
-  macro_exp_top   : Integer;   { -1 si aucune expansion active }
+  macro_exp_cur   : PExpCtx;    { sommet de la pile d expansion }
 
 { ============================================================
   MacroInit : (re)initialiser les tables macro
@@ -6962,7 +6965,7 @@ Procedure MacroInit;
 Begin
   macro_list_head := Nil;
   macro_count     := 0;
-  macro_exp_top   := -1;
+  macro_exp_cur   := Nil;
 End;
 
 { ============================================================
@@ -7177,19 +7180,20 @@ End;
 
 { GetNextLine : implementation reelle }
 Function GetNextLine : Boolean;
+Var
+  prev_ctx : PExpCtx;
 Begin
-  While macro_exp_top >= 0 Do
+  While macro_exp_cur <> Nil Do
   Begin
-    If macro_exp_stk[macro_exp_top].do_exitm Or
-       (macro_exp_stk[macro_exp_top].cur_pos >
-        macro_exp_stk[macro_exp_top].line_cnt) Then
+    If macro_exp_cur^.do_exitm Or (macro_exp_cur^.cur_node = Nil) Then
     Begin
-      Dec(macro_exp_top);
+      prev_ctx      := macro_exp_cur^.prev;
+      Dispose(macro_exp_cur);
+      macro_exp_cur := prev_ctx;
       Continue;
     End;
-    cur_line := macro_exp_stk[macro_exp_top].lines[
-                  macro_exp_stk[macro_exp_top].cur_pos];
-    Inc(macro_exp_stk[macro_exp_top].cur_pos);
+    cur_line              := macro_exp_cur^.cur_node^.line;
+    macro_exp_cur^.cur_node := macro_exp_cur^.cur_node^.next;
     GetNextLine := True;
     Exit;
   End;
@@ -7277,22 +7281,20 @@ Var
   local_cnt   : Integer;
   raw         : TString;
   tok         : TString;
-  expidx      : Integer;
   is_loc_line : Boolean;
   nd          : PLineNode;
+  en          : PLineNode;
+  prev_ctx    : PExpCtx;
 Begin
-  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
-  Begin
-    ErrorMsg('Expansion de macro trop profonde');
-    Exit;
-  End;
-  Inc(macro_exp_top);
-  expidx := macro_exp_top;
-
-  macro_exp_stk[expidx].line_cnt := 0;
-  macro_exp_stk[expidx].cur_pos  := 1;
-  macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := mi;
+  { pousser un nouveau contexte d expansion }
+  prev_ctx              := macro_exp_cur;
+  New(macro_exp_cur);
+  macro_exp_cur^.line_head := Nil;
+  macro_exp_cur^.line_tail := Nil;
+  macro_exp_cur^.cur_node  := Nil;
+  macro_exp_cur^.do_exitm  := False;
+  macro_exp_cur^.mi        := mi;
+  macro_exp_cur^.prev      := prev_ctx;
 
   pcnt := mi^.param_cnt;
   For i := 1 To MAX_MACRO_PARAMS Do args[i] := '';
@@ -7387,14 +7389,16 @@ Begin
       subst := SubstWholeWord(subst, local_from[j], local_to[j]);
 
     { ajouter au buffer d expansion }
-    If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
-    Begin
-      Inc(macro_exp_stk[expidx].line_cnt);
-      macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
-    End
+    New(en);
+    en^.line := subst;
+    en^.next := Nil;
+    If macro_exp_cur^.line_tail = Nil Then
+      macro_exp_cur^.line_head := en
     Else
-      WarnMsg('Buffer d expansion de macro plein');
+      macro_exp_cur^.line_tail^.next := en;
+    macro_exp_cur^.line_tail := en;
   End;
+  macro_exp_cur^.cur_node := macro_exp_cur^.line_head;
 End;
 
 { ============================================================
@@ -7406,8 +7410,9 @@ Var
   body_cnt   : Integer;
   body_first : PLineNode;
   i, j       : Integer;
-  expidx     : Integer;
   nd         : PLineNode;
+  en         : PLineNode;
+  prev_ctx   : PExpCtx;
   e          : TExpr;
 Begin
   ExprMakeNum(e, 0);
@@ -7418,31 +7423,33 @@ Begin
   body_first := CollectBlock(body_cnt);
   If (count = 0) Or (body_cnt = 0) Then Exit;
 
-  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
-  Begin
-    ErrorMsg('Expansion REPT trop profonde');
-    Exit;
-  End;
-  Inc(macro_exp_top);
-  expidx := macro_exp_top;
-  macro_exp_stk[expidx].line_cnt := 0;
-  macro_exp_stk[expidx].cur_pos  := 1;
-  macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := Nil;
+  { pousser un nouveau contexte d expansion }
+  prev_ctx              := macro_exp_cur;
+  New(macro_exp_cur);
+  macro_exp_cur^.line_head := Nil;
+  macro_exp_cur^.line_tail := Nil;
+  macro_exp_cur^.cur_node  := Nil;
+  macro_exp_cur^.do_exitm  := False;
+  macro_exp_cur^.mi        := Nil;
+  macro_exp_cur^.prev      := prev_ctx;
 
   For i := 1 To count Do
   Begin
     nd := body_first;
     For j := 1 To body_cnt Do
     Begin
-      If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
-      Begin
-        Inc(macro_exp_stk[expidx].line_cnt);
-        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := nd^.line;
-      End;
+      New(en);
+      en^.line := nd^.line;
+      en^.next := Nil;
+      If macro_exp_cur^.line_tail = Nil Then
+        macro_exp_cur^.line_head := en
+      Else
+        macro_exp_cur^.line_tail^.next := en;
+      macro_exp_cur^.line_tail := en;
       nd := nd^.next;
     End;
   End;
+  macro_exp_cur^.cur_node := macro_exp_cur^.line_head;
 End;
 
 { ============================================================
@@ -7454,12 +7461,13 @@ Var
   body_cnt   : Integer;
   body_first : PLineNode;
   i, j       : Integer;
-  expidx     : Integer;
   arg        : TString;
   subst      : TString;
   args       : Array[0..63] Of TString;
   arg_cnt    : Integer;
   nd         : PLineNode;
+  en         : PLineNode;
+  prev_ctx   : PExpCtx;
 Begin
   pname := '';
   If LexPeekKind = TK_IDENT Then
@@ -7505,17 +7513,15 @@ Begin
   body_first := CollectBlock(body_cnt);
   If (arg_cnt = 0) Or (body_cnt = 0) Then Exit;
 
-  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
-  Begin
-    ErrorMsg('Expansion IRP trop profonde');
-    Exit;
-  End;
-  Inc(macro_exp_top);
-  expidx := macro_exp_top;
-  macro_exp_stk[expidx].line_cnt := 0;
-  macro_exp_stk[expidx].cur_pos  := 1;
-  macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := Nil;
+  { pousser un nouveau contexte d expansion }
+  prev_ctx              := macro_exp_cur;
+  New(macro_exp_cur);
+  macro_exp_cur^.line_head := Nil;
+  macro_exp_cur^.line_tail := Nil;
+  macro_exp_cur^.cur_node  := Nil;
+  macro_exp_cur^.do_exitm  := False;
+  macro_exp_cur^.mi        := Nil;
+  macro_exp_cur^.prev      := prev_ctx;
 
   For i := 0 To arg_cnt - 1 Do
   Begin
@@ -7523,14 +7529,18 @@ Begin
     For j := 1 To body_cnt Do
     Begin
       subst := SubstOneParam(nd^.line, pname, args[i]);
-      If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
-      Begin
-        Inc(macro_exp_stk[expidx].line_cnt);
-        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
-      End;
+      New(en);
+      en^.line := subst;
+      en^.next := Nil;
+      If macro_exp_cur^.line_tail = Nil Then
+        macro_exp_cur^.line_head := en
+      Else
+        macro_exp_cur^.line_tail^.next := en;
+      macro_exp_cur^.line_tail := en;
       nd := nd^.next;
     End;
   End;
+  macro_exp_cur^.cur_node := macro_exp_cur^.line_head;
 End;
 
 { ============================================================
@@ -7543,11 +7553,12 @@ Var
   body_cnt   : Integer;
   body_first : PLineNode;
   i, j       : Integer;
-  expidx     : Integer;
   str_val    : TString;
   subst      : TString;
   char_str   : TString;
   nd         : PLineNode;
+  en         : PLineNode;
+  prev_ctx   : PExpCtx;
 Begin
   pname := '';
   If LexPeekKind = TK_IDENT Then
@@ -7583,17 +7594,15 @@ Begin
   body_first := CollectBlock(body_cnt);
   If (Length(str_val) = 0) Or (body_cnt = 0) Then Exit;
 
-  If macro_exp_top >= MACRO_EXP_DEPTH - 1 Then
-  Begin
-    ErrorMsg('Expansion IRPC trop profonde');
-    Exit;
-  End;
-  Inc(macro_exp_top);
-  expidx := macro_exp_top;
-  macro_exp_stk[expidx].line_cnt := 0;
-  macro_exp_stk[expidx].cur_pos  := 1;
-  macro_exp_stk[expidx].do_exitm := False;
-  macro_exp_stk[expidx].mi       := Nil;
+  { pousser un nouveau contexte d expansion }
+  prev_ctx              := macro_exp_cur;
+  New(macro_exp_cur);
+  macro_exp_cur^.line_head := Nil;
+  macro_exp_cur^.line_tail := Nil;
+  macro_exp_cur^.cur_node  := Nil;
+  macro_exp_cur^.do_exitm  := False;
+  macro_exp_cur^.mi        := Nil;
+  macro_exp_cur^.prev      := prev_ctx;
 
   For i := 1 To Length(str_val) Do
   Begin
@@ -7602,14 +7611,18 @@ Begin
     For j := 1 To body_cnt Do
     Begin
       subst := SubstOneParam(nd^.line, pname, char_str);
-      If macro_exp_stk[expidx].line_cnt < MACRO_EXP_BUF Then
-      Begin
-        Inc(macro_exp_stk[expidx].line_cnt);
-        macro_exp_stk[expidx].lines[macro_exp_stk[expidx].line_cnt] := subst;
-      End;
+      New(en);
+      en^.line := subst;
+      en^.next := Nil;
+      If macro_exp_cur^.line_tail = Nil Then
+        macro_exp_cur^.line_head := en
+      Else
+        macro_exp_cur^.line_tail^.next := en;
+      macro_exp_cur^.line_tail := en;
       nd := nd^.next;
     End;
   End;
+  macro_exp_cur^.cur_node := macro_exp_cur^.line_head;
 End;
 
 { ============================================================
@@ -7618,8 +7631,8 @@ End;
   ============================================================ }
 Procedure MacroExitm;
 Begin
-  If macro_exp_top >= 0 Then
-    macro_exp_stk[macro_exp_top].do_exitm := True;
+  If macro_exp_cur <> Nil Then
+    macro_exp_cur^.do_exitm := True;
 End;
 
 { ============================================================
@@ -9313,7 +9326,7 @@ Begin
   IfInit;
   ProcInit;
   { reinitialiser l expansion macro }
-  macro_exp_top := -1;
+  macro_exp_cur := Nil;
   { reinitialiser point d entree et fin de source }
   has_entry    := False;
   asm_end_seen := False;
