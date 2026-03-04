@@ -17,6 +17,7 @@ Const
  MAX_GROUPS=128;        { Nombre maximal de groupes OMF (GRPDEF) }
  MAX_LNAMES=2048;       { Nombre maximal de noms logiques LNAMES }
  MAX_LINENUMS=4096;     { Nombre maximal d'entrees de debug LINNUM }
+ MAX_COMMENTS=2048;     { Nombre maximal d'enregistrements COMENT OMF }
 
 Type
  { En-tete DOS MZ du fichier executable genere }
@@ -113,6 +114,14 @@ Type
   Next:PLineInfoItem;
  End;
 
+ PCommentItem=^TCommentItem;
+ TCommentItem=Record
+  Flags:Byte;
+  ClassCode:Byte;
+  Text:String[80];
+  Next:PCommentItem;
+ End;
+
  { Liste chainee des corrections OFFSET }
  POffsetPatchItem=^TOffsetPatchItem;
  TOffsetPatchItem=Record
@@ -120,6 +129,8 @@ Type
   Delta:Integer;
   Next:POffsetPatchItem;
  End;
+
+ TObjRecBuffer=Array[0..8191] of Byte;
 
 Var
  ObjFile,ExeFile,MapFile:File;
@@ -130,11 +141,16 @@ Var
  GroupHead,GroupTail:PGroupItem;
  LNameHead,LNameTail:PLNameItem;
  LineInfoHead,LineInfoTail:PLineInfoItem;
+ CommentHead,CommentTail:PCommentItem;
  OffsetPatchHead,OffsetPatchTail:POffsetPatchItem;
  SegmentCount,SymbolCount,RelocationCount:Integer;
  GroupCount:Integer;
  LNameCount,LineInfoCount:Integer;
+ CommentCount:Integer;
  OffsetPatchCount:Integer;
+ HasEntryPoint:Boolean;
+ EntrySegIndex:Word;
+ EntryOffset:LongInt;
  StackSize:Word;
  ObjModuleName:String[64];
  ObjFileName,ExeFileName,MapFileName:String;  { Ajout des variables }
@@ -194,12 +210,15 @@ Begin
  LNameTail:=Nil;
  LineInfoHead:=Nil;
  LineInfoTail:=Nil;
+ CommentHead:=Nil;
+ CommentTail:=Nil;
  SegmentCount:=0;
  SymbolCount:=0;
  RelocationCount:=0;
  GroupCount:=0;
  LNameCount:=0;
  LineInfoCount:=0;
+ CommentCount:=0;
 End;
 
 Procedure FreeMainLists;
@@ -211,6 +230,7 @@ Var
  memItem,nextMem:PGroupMemberItem;
  nameItem,nextName:PLNameItem;
  lineItem,nextLine:PLineInfoItem;
+ comItem,nextCom:PCommentItem;
 Begin
  segItem:=SegmentHead;
  While segItem<>Nil do Begin
@@ -256,6 +276,13 @@ Begin
   nextLine:=lineItem^.Next;
   Dispose(lineItem);
   lineItem:=nextLine;
+ End;
+
+ comItem:=CommentHead;
+ While comItem<>Nil do Begin
+  nextCom:=comItem^.Next;
+  Dispose(comItem);
+  comItem:=nextCom;
  End;
  InitMainLists;
 End;
@@ -372,6 +399,21 @@ Begin
  Inc(LineInfoCount);
 End;
 
+Procedure AddComment(Const Flags,ClassCode:Byte; Const Txt:String);
+Var item:PCommentItem;
+Begin
+ If CommentCount>=MAX_COMMENTS Then Exit;
+ New(item);
+ item^.Flags:=Flags;
+ item^.ClassCode:=ClassCode;
+ item^.Text:=Copy(Txt,1,80);
+ item^.Next:=Nil;
+ If CommentHead=Nil Then CommentHead:=item
+                    Else CommentTail^.Next:=item;
+ CommentTail:=item;
+ Inc(CommentCount);
+End;
+
 Function GetSegmentPtr(Index:Integer):PSegment;
 Var
  item:PSegmentItem;
@@ -409,11 +451,120 @@ Begin
  Inc(RelocationCount);
 End;
 
+Function SkipIterBlock16(Var RecBuf:TObjRecBuffer; Var Pos:Integer; Limit:Integer; Var Generated:LongInt):Boolean;
+Var
+ RepeatCount,BlockCount:Word;
+ DataCount:Byte;
+ i:Integer;
+ SubLen,AddLen:LongInt;
+Begin
+ Generated:=0;
+ SkipIterBlock16:=False;
+ If Pos+3>=Limit Then Exit;
+
+ RepeatCount:=RecBuf[Pos]+Word(RecBuf[Pos+1])*256;
+ Inc(Pos,2);
+ BlockCount:=RecBuf[Pos]+Word(RecBuf[Pos+1])*256;
+ Inc(Pos,2);
+
+ If BlockCount=0 Then Begin
+  If Pos>=Limit Then Exit;
+  DataCount:=RecBuf[Pos];
+  Inc(Pos);
+  If Pos+DataCount>Limit Then Exit;
+  Inc(Pos,DataCount);
+  Generated:=LongInt(RepeatCount)*LongInt(DataCount);
+  SkipIterBlock16:=True;
+  Exit;
+ End;
+
+ For i:=1 to BlockCount do Begin
+  If Not SkipIterBlock16(RecBuf,Pos,Limit,SubLen) Then Exit;
+  AddLen:=LongInt(RepeatCount)*SubLen;
+  If Generated>High(LongInt)-AddLen Then Generated:=High(LongInt)
+                                 Else Inc(Generated,AddLen);
+ End;
+
+ SkipIterBlock16:=True;
+End;
+
+Procedure EmitRawSpanToExe(Var ExeF:File; Var RecBuf:TObjRecBuffer;
+                           StartPos,Count:Integer; DestBase:LongInt;
+                           Var Produced:LongInt; MaxBytes:LongInt);
+Var
+ Writable:LongInt;
+ WriteCount:Word;
+Begin
+ If Count<=0 Then Exit;
+ Writable:=0;
+ If Produced<MaxBytes Then Begin
+  Writable:=MaxBytes-Produced;
+  If Writable>Count Then Writable:=Count;
+ End;
+ If Writable>0 Then Begin
+  WriteCount:=Writable;
+  Seek(ExeF,DestBase+Produced);
+  BlockWrite(ExeF,RecBuf[StartPos],WriteCount);
+ End;
+ If Produced>High(LongInt)-Count Then Produced:=High(LongInt)
+                                Else Inc(Produced,Count);
+End;
+
+Function EmitIterBlock16(Var ExeF:File; Var RecBuf:TObjRecBuffer;
+                         Var Pos:Integer; Limit:Integer;
+                         DestBase:LongInt; Var Produced:LongInt;
+                         MaxBytes:LongInt):Boolean;
+Var
+ RepeatCount,BlockCount:Word;
+ DataCount:Byte;
+ i,r:Integer;
+ TempPos,SubEnd:Integer;
+ DummyLen:LongInt;
+ DataStart:Integer;
+Begin
+ EmitIterBlock16:=False;
+ If Pos+3>=Limit Then Exit;
+
+ RepeatCount:=RecBuf[Pos]+Word(RecBuf[Pos+1])*256;
+ Inc(Pos,2);
+ BlockCount:=RecBuf[Pos]+Word(RecBuf[Pos+1])*256;
+ Inc(Pos,2);
+
+ If BlockCount=0 Then Begin
+  If Pos>=Limit Then Exit;
+  DataCount:=RecBuf[Pos];
+  Inc(Pos);
+  If Pos+DataCount>Limit Then Exit;
+  DataStart:=Pos;
+  Inc(Pos,DataCount);
+
+  For r:=1 to RepeatCount do
+   EmitRawSpanToExe(ExeF,RecBuf,DataStart,DataCount,DestBase,Produced,MaxBytes);
+
+  EmitIterBlock16:=True;
+  Exit;
+ End;
+
+ TempPos:=Pos;
+ For i:=1 to BlockCount do
+  If Not SkipIterBlock16(RecBuf,TempPos,Limit,DummyLen) Then Exit;
+ SubEnd:=TempPos;
+
+ For r:=1 to RepeatCount do Begin
+  TempPos:=Pos;
+  For i:=1 to BlockCount do
+   If Not EmitIterBlock16(ExeF,RecBuf,TempPos,SubEnd,DestBase,Produced,MaxBytes) Then Exit;
+ End;
+
+ Pos:=SubEnd;
+ EmitIterBlock16:=True;
+End;
+
 Function ReadObjFile(Const FileName:String):Boolean;
 Var
  RecType:Byte;
  RecLen:Word;
- Buffer:Array[0..8191] of Byte;
+ Buffer:TObjRecBuffer;
  i:Integer;
  SegIndex:Word;
  SegOffset:Word;
@@ -447,11 +598,20 @@ Var
  BaseGroupIdx,BaseSegIdx:Word;
  PubTypeIdx:Word;
  SegNameIdx,SegClassIdx,SegOverlayIdx:Word;
+ CommentFlags,CommentClass:Byte;
+ ModType,EndDat:Byte;
+ EntryFrameIdx,EntryTargetIdx:Word;
  ParsedName:String[64];
  ParsedClass:String[64];
+ CommentText:String[80];
  ParsedNameLen:Byte;
+ CommentTextLen:Byte;
  PubOfs:LongInt;
+ EntryDisp:LongInt;
  LineNum,LineOfs:LongInt;
+ IterLen,BlockLen:LongInt;
+ LegacyPubParsed:Integer;
+ IterPos:Integer;
  k:Integer;
 
  Function ReadOmfIndex(Var Pos:Integer; Limit:Integer; Var Idx:Word):Boolean;
@@ -479,6 +639,9 @@ Begin
  LastDataSeg:=0;
  LastDataOfs:=0;
  HasDataContext:=False;
+ HasEntryPoint:=False;
+ EntrySegIndex:=0;
+ EntryOffset:=0;
  {$I-}Assign(ObjFile,FileName);
  Reset(ObjFile, 1);{$I+}
  If IOResult<>0 Then Exit;
@@ -505,13 +668,142 @@ Begin
       End;
     End;
     $84, $86:Begin
-     { PEDATA/PIDATA (anciens) : non pris en charge, ignore }
+      { PEDATA/PIDATA (anciens) : support de compatibilite }
+      GroupPos:=0;
+      GroupLimit:=RecLen-1; { sans checksum }
+      If GroupLimit<=0 Then Continue;
+
+      SegIndex:=Buffer[GroupPos];
+      Inc(GroupPos);
+      If (SegIndex And $80)<>0 Then Begin
+       If GroupPos>=GroupLimit Then Continue;
+       SegIndex:=((SegIndex And $7F) Shl 8) Or Buffer[GroupPos];
+       Inc(GroupPos);
+      End;
+
+      If GroupPos+1>=GroupLimit Then Continue;
+      SegOffset:=Buffer[GroupPos]+Word(Buffer[GroupPos+1])*256;
+      Inc(GroupPos,2);
+
+      If RecType=$84 Then Begin
+       IterLen:=GroupLimit-GroupPos;
+      End Else Begin
+       IterPos:=GroupPos;
+       IterLen:=0;
+       While IterPos<GroupLimit do Begin
+        BlockLen:=0;
+        If Not SkipIterBlock16(Buffer,IterPos,GroupLimit,BlockLen) Then Break;
+        If IterLen>High(LongInt)-BlockLen Then IterLen:=High(LongInt)
+                      Else Inc(IterLen,BlockLen);
+       End;
+      End;
+
+      If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+       SegPtr:=GetSegmentPtr(SegIndex);
+       If SegPtr<>Nil Then Begin
+        EndPos:=LongInt(SegOffset)+IterLen;
+        If EndPos>$FFFF Then EndPos:=$FFFF;
+        If EndPos>SegPtr^.Size Then SegPtr^.Size:=EndPos;
+        LastDataSeg:=SegIndex;
+        LastDataOfs:=SegOffset;
+        HasDataContext:=True;
+       End;
+      End;
     End;
     $88:Begin
      { COMENT : commentaires/directives du compilateur/assembleur }
+      GroupLimit:=RecLen-1; { sans checksum }
+      If GroupLimit<2 Then Continue;
+      CommentFlags:=Buffer[0];
+      CommentClass:=Buffer[1];
+      CommentTextLen:=GroupLimit-2;
+      If CommentTextLen>80 Then CommentTextLen:=80;
+      CommentText:='';
+      For k:=1 to CommentTextLen do
+       CommentText:=CommentText+Chr(Buffer[1+k]);
+      AddComment(CommentFlags,CommentClass,CommentText);
     End;
     $8A, $8B:Begin
      { MODEND/MODEND32 : fin de module }
+         GroupPos:=0;
+         GroupLimit:=RecLen-1; { sans checksum }
+         If GroupLimit>0 Then Begin
+          ModType:=Buffer[GroupPos];
+          Inc(GroupPos);
+
+          { Bit 6 du MODTYP : adresse de depart presente }
+          If ((ModType And $40)<>0)And(GroupPos<GroupLimit) Then Begin
+           EndDat:=Buffer[GroupPos];
+           Inc(GroupPos);
+
+           EntryFrameIdx:=0;
+           EntryTargetIdx:=0;
+           EntryDisp:=0;
+
+           { Frame datum explicite si F=0 (bit 7) et methode 0..2 }
+           FrameMethod:=(EndDat Shr 4) And $07;
+           If ((EndDat And $80)=0)And(FrameMethod<=2) Then
+      If Not ReadOmfIndex(GroupPos,GroupLimit,EntryFrameIdx) Then GroupPos:=GroupLimit;
+
+           { Target datum explicite si T=0 (bit 3) et methode 0..2 }
+           TargetMethod:=EndDat And $03;
+           If ((EndDat And $08)=0)And(TargetMethod<=2) Then
+      If Not ReadOmfIndex(GroupPos,GroupLimit,EntryTargetIdx) Then GroupPos:=GroupLimit;
+
+           { P=0 => displacement present }
+           If (EndDat And $04)=0 Then Begin
+      If RecType=$8B Then Begin
+       If GroupPos+3<GroupLimit Then Begin
+        EntryDisp:=LongInt(Buffer[GroupPos])
+          + LongInt(Buffer[GroupPos+1]) * 256
+          + LongInt(Buffer[GroupPos+2]) * 65536
+          + LongInt(Buffer[GroupPos+3]) * 16777216;
+        Inc(GroupPos,4);
+       End;
+      End Else Begin
+       If GroupPos+1<GroupLimit Then Begin
+        EntryDisp:=Buffer[GroupPos]+LongInt(Buffer[GroupPos+1])*256;
+        Inc(GroupPos,2);
+       End;
+      End;
+           End;
+
+                 { Cas supporte pour MZ: cible segment (SEGDEF index) }
+                 If (TargetMethod=0)And(EntryTargetIdx>0) Then Begin
+      HasEntryPoint:=True;
+      EntrySegIndex:=EntryTargetIdx;
+      EntryOffset:=EntryDisp;
+           End;
+          End;
+
+                { Compatibilite pratique: certains OBJ codent MODEND avec 2 index sur 16 bits }
+                If (Not HasEntryPoint)And((ModType And $01)<>0) Then Begin
+                 If (RecType=$8A)And(GroupLimit>=7) Then Begin
+            EntryFrameIdx:=Word(Buffer[1]) * 256 + Buffer[2];
+            EntryTargetIdx:=Word(Buffer[3]) * 256 + Buffer[4];
+            EntryDisp:=Buffer[5] + LongInt(Buffer[6]) * 256;
+            If EntryTargetIdx=0 Then EntryTargetIdx:=EntryFrameIdx;
+            If EntryTargetIdx>0 Then Begin
+             HasEntryPoint:=True;
+             EntrySegIndex:=EntryTargetIdx;
+             EntryOffset:=EntryDisp;
+            End;
+                 End Else If (RecType=$8B)And(GroupLimit>=9) Then Begin
+            EntryFrameIdx:=Word(Buffer[1]) * 256 + Buffer[2];
+            EntryTargetIdx:=Word(Buffer[3]) * 256 + Buffer[4];
+            EntryDisp:=LongInt(Buffer[5])
+              + LongInt(Buffer[6]) * 256
+              + LongInt(Buffer[7]) * 65536
+              + LongInt(Buffer[8]) * 16777216;
+            If EntryTargetIdx=0 Then EntryTargetIdx:=EntryFrameIdx;
+            If EntryTargetIdx>0 Then Begin
+             HasEntryPoint:=True;
+             EntrySegIndex:=EntryTargetIdx;
+             EntryOffset:=EntryDisp;
+            End;
+                 End;
+                End;
+         End;
      ModuleEnded:=True;
     End;
     $8C, $8D:Begin { EXTDEF/LEXTDEF : reference externe }
@@ -526,18 +818,134 @@ Begin
       AddSymbol(SymRec);
     End;
     $8E, $8F:Begin
-     { TYPDEF / PUBDEF 32-bit ancien format : non utilise ici }
-    End;
-    $90, $91:Begin { PUBDEF/PUBDEF32 : definition publique }
-      If SymbolCount>=MAX_SYMBOLS Then Begin
-      WriteLn('Erreur : Trop de symboles publics');
-      Halt(12);
+     { TYPDEF / ancien PUBDEF(32) : tentative de decode PUBDEF, sinon ignore }
+     PubPos:=0;
+     PubLimit:=RecLen-1; { sans checksum }
+     LegacyPubParsed:=0;
+     If PubLimit<=0 Then Continue;
+
+     If ReadOmfIndex(PubPos,PubLimit,BaseGroupIdx)
+        And ReadOmfIndex(PubPos,PubLimit,BaseSegIdx) Then Begin
+
+      { Garde-fou: index segment aberrant => probablement TYPDEF }
+      If BaseSegIdx>MAX_SEGMENTS Then PubPos:=PubLimit;
+
+      { Cas special OMF : BaseSeg=0 => frame explicite }
+      If BaseSegIdx=0 Then Begin
+       If RecType=$8F Then Begin
+        If PubPos+3<PubLimit Then Inc(PubPos,4)
+                            Else PubPos:=PubLimit;
+       End Else Begin
+        If PubPos+1<PubLimit Then Inc(PubPos,2)
+                            Else PubPos:=PubLimit;
+       End;
+      End;
+
+      While PubPos<PubLimit do Begin
+       ParsedNameLen:=Buffer[PubPos];
+       Inc(PubPos);
+       If (ParsedNameLen=0)Or(PubPos>PubLimit) Then Break;
+       If PubPos+ParsedNameLen>PubLimit Then ParsedNameLen:=PubLimit-PubPos;
+
+       ParsedName:='';
+       For k:=1 to ParsedNameLen do Begin
+        ParsedName:=ParsedName+Chr(Buffer[PubPos]);
+        Inc(PubPos);
+       End;
+       If ParsedName='' Then Break;
+
+       If RecType=$8F Then Begin
+        If PubPos+3>=PubLimit Then Break;
+        PubOfs:=LongInt(Buffer[PubPos])
+              + LongInt(Buffer[PubPos+1]) * 256
+              + LongInt(Buffer[PubPos+2]) * 65536
+              + LongInt(Buffer[PubPos+3]) * 16777216;
+        Inc(PubPos,4);
+       End Else Begin
+        If PubPos+1>=PubLimit Then Break;
+        PubOfs:=Buffer[PubPos]+LongInt(Buffer[PubPos+1])*256;
+        Inc(PubPos,2);
+       End;
+
+       If Not ReadOmfIndex(PubPos,PubLimit,PubTypeIdx) Then Break;
+
+       If SymbolCount>=MAX_SYMBOLS Then Begin
+        WriteLn('Erreur : Trop de symboles publics');
+        Halt(12);
+       End;
+
+       SymRec.Name:=Copy(ParsedName,1,32);
+       SymRec.Segment:=BaseSegIdx;
+       If PubOfs<0 Then SymRec.Offset:=0
+       Else If PubOfs>$FFFF Then SymRec.Offset:=$FFFF
+       Else SymRec.Offset:=PubOfs;
+       SymRec.IsExternal:=False;
+       AddSymbol(SymRec);
+       Inc(LegacyPubParsed);
+      End;
      End;
-      SymRec.Name:='';
-      SymRec.Segment:=0;
-      SymRec.Offset:=0;
+
+     { Si aucun symbole extrait, on considere le record comme TYPDEF et on l'ignore }
+    End;
+    $90, $91:Begin
+     { PUBDEF/PUBDEF32 : definition publique }
+     PubPos:=0;
+     PubLimit:=RecLen-1; { sans checksum }
+     If PubLimit<=0 Then Continue;
+     If Not ReadOmfIndex(PubPos,PubLimit,BaseGroupIdx) Then Continue;
+     If Not ReadOmfIndex(PubPos,PubLimit,BaseSegIdx) Then Continue;
+
+     { Cas special OMF : BaseSeg=0 => frame explicite }
+     If BaseSegIdx=0 Then Begin
+      If RecType=$91 Then Begin
+       If PubPos+3<PubLimit Then Inc(PubPos,4)
+                           Else Continue;
+      End Else Begin
+       If PubPos+1<PubLimit Then Inc(PubPos,2)
+                           Else Continue;
+      End;
+     End;
+
+     While PubPos<PubLimit do Begin
+      ParsedNameLen:=Buffer[PubPos];
+      Inc(PubPos);
+      If (ParsedNameLen=0)Or(PubPos>PubLimit) Then Break;
+      If PubPos+ParsedNameLen>PubLimit Then ParsedNameLen:=PubLimit-PubPos;
+
+      ParsedName:='';
+      For k:=1 to ParsedNameLen do Begin
+       ParsedName:=ParsedName+Chr(Buffer[PubPos]);
+       Inc(PubPos);
+      End;
+
+      If RecType=$91 Then Begin
+       If PubPos+3>=PubLimit Then Break;
+       PubOfs:=LongInt(Buffer[PubPos])
+             + LongInt(Buffer[PubPos+1]) * 256
+             + LongInt(Buffer[PubPos+2]) * 65536
+             + LongInt(Buffer[PubPos+3]) * 16777216;
+       Inc(PubPos,4);
+      End Else Begin
+       If PubPos+1>=PubLimit Then Break;
+       PubOfs:=Buffer[PubPos]+LongInt(Buffer[PubPos+1])*256;
+       Inc(PubPos,2);
+      End;
+
+      If Not ReadOmfIndex(PubPos,PubLimit,PubTypeIdx) Then Break;
+
+      If SymbolCount>=MAX_SYMBOLS Then Begin
+       WriteLn('Erreur : Trop de symboles publics');
+       Halt(12);
+      End;
+
+      SymRec.Name:=Copy(ParsedName,1,32);
+      SymRec.Segment:=BaseSegIdx;
+      If PubOfs<0 Then SymRec.Offset:=0
+      Else If PubOfs>$FFFF Then SymRec.Offset:=$FFFF
+      Else SymRec.Offset:=PubOfs;
       SymRec.IsExternal:=False;
       AddSymbol(SymRec);
+     End;
     End;
     $92, $93:Begin
      { LPUBDEF/LPUBDEF32 : definition publique locale }
@@ -897,12 +1305,16 @@ Var
  RelocItem:PRelocationItem;
  RecType:Byte;
  RecLen:Word;
- ObjBuf:Array[0..8191] of Byte;
+ ObjBuf:TObjRecBuffer;
  SegIndex:Word;
  SegOffset:Word;
  DataLen:Word;
  IdxSize:Integer;
  WritePos:LongInt;
+ EntryLinear:LongInt;
+ GroupPos,GroupLimit:Integer;
+ MaxWrite,Produced:LongInt;
+ IterPos:Integer;
  SegPtr:PSegment;
 Begin
   { Initialise l'ent�te EXE }
@@ -916,6 +1328,18 @@ Begin
   InitCS:=0;
   InitIP:=0;
   RelocOffset:=SizeOf(TExeHeader);
+ End;
+
+ { Point d'entree issu de MODEND/MODEND32, si disponible }
+ If HasEntryPoint And (EntrySegIndex>0)And(EntrySegIndex<=SegmentCount) Then Begin
+  SegPtr:=GetSegmentPtr(EntrySegIndex);
+  If SegPtr<>Nil Then Begin
+   EntryLinear:=SegPtr^.Address+EntryOffset;
+   If EntryLinear<0 Then EntryLinear:=0;
+   If EntryLinear>(LongInt($FFFF)*16+15) Then EntryLinear:=LongInt($FFFF)*16+15;
+   ExeHeader.InitCS:=EntryLinear Div 16;
+   ExeHeader.InitIP:=EntryLinear Mod 16;
+  End;
  End;
 
   { Calcul du taille du code }
@@ -980,7 +1404,7 @@ Begin
      Exit;
     End;
     BlockRead(ObjFile,ObjBuf,RecLen);
-    If RecType=$A0 Then Begin
+    If (RecType=$A0)Or(RecType=$84) Then Begin
      If RecLen<5 Then Continue;
      IdxSize:=1;
      SegIndex:=ObjBuf[0];
@@ -997,6 +1421,35 @@ Begin
        WritePos:=DataStart+SegPtr^.Address+SegOffset;
        Seek(ExeFile,WritePos);
        BlockWrite(ExeFile,ObjBuf[IdxSize+2],DataLen);
+      End;
+     End;
+    End Else If RecType=$86 Then Begin
+     GroupPos:=0;
+     GroupLimit:=RecLen-1; { sans checksum }
+     If GroupLimit<=0 Then Continue;
+
+     SegIndex:=ObjBuf[GroupPos];
+     Inc(GroupPos);
+     If (SegIndex And $80)<>0 Then Begin
+      If GroupPos>=GroupLimit Then Continue;
+      SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
+      Inc(GroupPos);
+     End;
+
+     If GroupPos+1>=GroupLimit Then Continue;
+     SegOffset:=ObjBuf[GroupPos]+Word(ObjBuf[GroupPos+1])*256;
+     Inc(GroupPos,2);
+
+     If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+      SegPtr:=GetSegmentPtr(SegIndex);
+      If SegPtr<>Nil Then Begin
+       WritePos:=DataStart+SegPtr^.Address+SegOffset;
+       MaxWrite:=LongInt(SegPtr^.Size)-LongInt(SegOffset);
+       If MaxWrite<0 Then MaxWrite:=0;
+       Produced:=0;
+       IterPos:=GroupPos;
+       While IterPos<GroupLimit do
+        If Not EmitIterBlock16(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite) Then Break;
       End;
      End;
     End;
