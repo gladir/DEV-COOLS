@@ -3690,7 +3690,329 @@ Begin
 End;
 
 { ============================================================
-  Programme principal (TODOs 09 a 25 a implementer)
+  TODO 10 - DIRECTIVES SYMBOLIQUES (EQU  =  LABEL  ORG  LOCAL  RECORD)
+  ============================================================
+
+  EQU    : nom EQU expr  -> constante non reassignable (SK_EQU, flag bit3=0)
+  =      : nom = expr    -> equate reassignable          (SK_EQU, flag bit3=1)
+  LABEL  : nom LABEL type -> alias a la position courante, taille forcee
+  ORG    : ORG expr      -> repositionner le LC (pas de fixup emis)
+  LOCAL  : LOCAL a,b,c   -> dans macro, genere @@0000 @@0001 ...
+  RECORD : nom RECORD champ:bits[=init], ... -> packed bit fields
+  ============================================================ }
+
+{ ---- compteur global pour LOCAL (incremente a chaque expansion) ---- }
+Var
+  local_unique_id : LongInt;
+
+{ ============================================================
+  LocalNextName : genere un nom unique @@nnnn (4 hex digits)
+  ============================================================ }
+Function LocalNextName : TSymString;
+Var
+  s   : TSymString;
+  hex : String[4];
+  v   : LongInt;
+  i   : Integer;
+Const
+  HEX_CHARS : Array[0..15] Of Char =
+    ('0','1','2','3','4','5','6','7','8','9','A','B','C','D','E','F');
+Begin
+  v   := local_unique_id And $FFFF;
+  Inc(local_unique_id);
+  hex := '0000';
+  For i := 4 DownTo 1 Do
+  Begin
+    hex[i] := HEX_CHARS[v And 15];
+    v       := v Shr 4;
+  End;
+  s := '@@' + hex;
+  LocalNextName := s;
+End;
+
+{ ============================================================
+  ParseEqu : nom EQU expr (non reassignable)
+  ============================================================ }
+Procedure ParseEqu(Const name : TSymString);
+Var
+  p   : PSymbol;
+  e   : TExpr;
+Begin
+  EvalExpr(e);
+  p := SymFind(name);
+  If p <> Nil Then
+  Begin
+    { EQU ne peut pas etre redefini sauf si c est un SK_UNDEF (forward) }
+    If (p^.kind = SK_EQU) And ((p^.flags And 8) = 0) Then
+    Begin
+      ErrorMsg('Redefinition de constante EQU : ' + name);
+      Exit;
+    End;
+  End;
+  If p = Nil Then
+    p := SymEnter(name, SK_EQU, 0, 0, 2)
+  Else
+  Begin
+    p^.kind    := SK_EQU;
+    p^.seg_idx := 0;
+    p^.size    := 2;
+  End;
+  SymSetValue(p, e.val);
+  p^.flags := p^.flags And Not 8; { bit3=0 : non reassignable }
+End;
+
+{ ============================================================
+  ParseEquAssign : nom = expr (reassignable)
+  ============================================================ }
+Procedure ParseEquAssign(Const name : TSymString);
+Var
+  p : PSymbol;
+  e : TExpr;
+Begin
+  EvalExpr(e);
+  p := SymFind(name);
+  If p = Nil Then
+    p := SymEnter(name, SK_EQU, 0, 0, 2)
+  Else
+  Begin
+    { autoriser la reassignation si bit3=1 ou si SK_UNDEF }
+    If (p^.kind = SK_EQU) And ((p^.flags And 8) = 0) Then
+    Begin
+      ErrorMsg('Reassignation interdite (EQU non reassignable) : ' + name);
+      Exit;
+    End;
+    p^.kind    := SK_EQU;
+    p^.seg_idx := 0;
+    p^.size    := 2;
+  End;
+  SymSetValue(p, e.val);
+  p^.flags := p^.flags Or 8; { bit3=1 : reassignable }
+End;
+
+{ ============================================================
+  ParseLabelDir : nom LABEL type
+  type = BYTE WORD DWORD NEAR FAR PROC
+  Cree un label a la position courante avec la taille precisee.
+  ============================================================ }
+Procedure ParseLabelDir(Const name : TSymString);
+Var
+  p    : PSymbol;
+  tok  : TString;
+  sz   : TWord;
+Begin
+  sz := 0;
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    LexNext;
+    tok := lex_tok.val;
+    If      tok = 'BYTE'  Then sz := 1
+    Else If tok = 'WORD'  Then sz := 2
+    Else If tok = 'DWORD' Then sz := 4
+    Else If tok = 'QWORD' Then sz := 8
+    Else If tok = 'TBYTE' Then sz := 10
+    Else If (tok = 'NEAR') Or (tok = 'PROC') Then sz := 2
+    Else If tok = 'FAR'   Then sz := 4
+    Else
+      WarnMsg('Type de LABEL inconnu : ' + tok);
+  End
+  Else
+    WarnMsg('Type attendu apres LABEL');
+
+  SymDefineLabel(name, cur_seg, lc, sz);
+  p := SymFind(name);
+  If p <> Nil Then p^.size := sz;
+End;
+
+{ ============================================================
+  ParseOrg : ORG expr
+  Repositionne le LC dans le segment courant.
+  Flush le buffer LEDATA avant (on ne peut pas continuer le
+  meme bloc apres un ORG).
+  ============================================================ }
+Procedure ParseOrg;
+Var
+  new_lc : TLong;
+Begin
+  new_lc := EvalConstExpr;
+  FlushLEDATA;
+  lc := TWord(new_lc);
+  If (cur_seg >= 1) And (cur_seg <= seg_count) Then
+    seg_table[cur_seg].cur_lc := TWord(new_lc);
+  ledata_start := TWord(new_lc);
+  { mettre a jour $ }
+  SymSetValue(SymFind('@CURSEG'), cur_seg);
+End;
+
+{ ============================================================
+  ParseLocal : LOCAL a [, b, ...]
+  Genere des noms uniques et les entre dans la table des sym
+  comme des EQU de type chaine (valeur = index unique).
+  Utilise dans le corps des macros : remplace les noms par
+  les noms uniques lors de l expansion (TODO 18 / macros).
+  Ici on se contente de creer les symboles @@nnnn.
+  ============================================================ }
+Procedure ParseLocal;
+Var
+  orig  : TSymString;
+  uname : TSymString;
+  p     : PSymbol;
+Begin
+  Repeat
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    orig  := lex_tok.val;
+    uname := LocalNextName;
+    { enregistrer l alias : orig -> uname (comme EQU) }
+    p := SymFind(orig);
+    If p = Nil Then
+      p := SymEnter(orig, SK_EQU, 0, 0, 0);
+    { stocker l index unique dans value pour retrouver uname }
+    SymSetValue(p, local_unique_id - 1);
+    p^.flags := p^.flags Or 8;
+    { creer aussi le symbole cible @@nnnn }
+    p := SymFind(uname);
+    If p = Nil Then
+      p := SymEnter(uname, SK_LABEL, cur_seg, lc, 0);
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  ParseRecord : nom RECORD champ:bits[=init] [, champ:bits[=init] ...]
+  Champs emballes de MSB vers LSB dans BYTE (<=8 bits) ou WORD.
+  Pour chaque champ 'f' de largeur 'w' bits au decalage 'd' :
+    f        = decalage (shift amount) - valeur du symbole
+    MASK f   sera gere par l evaluateur (TODO 08 etendu)
+    Pour l instant on cree aussi f##_MASK comme EQU auxiliaire.
+  Le nom du RECORD devient SK_STRUCT, value = taille en octets.
+  ============================================================ }
+Const
+  RECORD_FIELDS_MAX = 16;
+
+Procedure ParseRecord(Const rec_name : TSymString);
+Type
+  TRecField = Record
+    fname   : TSymString;
+    width   : Integer;
+    init    : TLong;
+    has_init: Boolean;
+  End;
+Var
+  fields      : Array[0..RECORD_FIELDS_MAX-1] Of TRecField;
+  nfields     : Integer;
+  total_bits  : Integer;
+  rec_bytes   : Integer;
+  shift       : Integer;
+  mask        : TLong;
+  i           : Integer;
+  tok         : TString;
+  e           : TExpr;
+  p           : PSymbol;
+  mname       : TSymString;
+Begin
+  nfields := 0;
+  { parser la liste des champs }
+  Repeat
+    If LexPeekKind <> TK_IDENT Then Break;
+    LexNext;
+    tok := lex_tok.val;
+    If nfields < RECORD_FIELDS_MAX Then
+    Begin
+      fields[nfields].fname    := tok;
+      fields[nfields].width    := 0;
+      fields[nfields].init     := 0;
+      fields[nfields].has_init := False;
+    End;
+    { : largeur }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ':') Then
+    Begin
+      LexNext;
+      ExprMakeNum(e, 0);
+      EvalExpr(e);
+      If nfields < RECORD_FIELDS_MAX Then
+        fields[nfields].width := Integer(e.val);
+    End
+    Else
+      WarnMsg('Attendu : apres nom de champ dans RECORD');
+    { = valeur initiale optionnelle }
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '=') Then
+    Begin
+      LexNext;
+      EvalExpr(e);
+      If nfields < RECORD_FIELDS_MAX Then
+      Begin
+        fields[nfields].init     := e.val;
+        fields[nfields].has_init := True;
+      End;
+    End;
+    If nfields < RECORD_FIELDS_MAX Then
+      Inc(nfields);
+    If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ',') Then
+      LexNext
+    Else
+      Break;
+  Until False;
+
+  { calculer la taille totale }
+  total_bits := 0;
+  For i := 0 To nfields - 1 Do
+    total_bits := total_bits + fields[i].width;
+  If total_bits <= 8 Then rec_bytes := 1
+  Else                    rec_bytes := 2;
+
+  { calculer les decalages et creer les symboles }
+  { les champs sont emballes MSB en premier, donc on part de
+    (rec_bytes*8 - total_bits) comme offset de base }
+  shift := rec_bytes * 8 - total_bits;
+  If shift < 0 Then shift := 0;
+
+  For i := 0 To nfields - 1 Do
+  Begin
+    { masque du champ }
+    If fields[i].width >= 32 Then
+      mask := -1
+    Else
+    Begin
+      mask := (TLong(1) Shl fields[i].width) - 1;
+      mask := mask Shl shift;
+    End;
+
+    { symbole principal : valeur = position de shift }
+    p := SymFind(fields[i].fname);
+    If p = Nil Then
+      p := SymEnter(fields[i].fname, SK_EQU, 0, 0, 2);
+    SymSetValue(p, shift);
+    p^.flags := p^.flags And Not 8;
+
+    { symbole auxiliaire FIELDNAME_MASK = masque }
+    mname := fields[i].fname;
+    If Length(mname) <= 28 Then
+      mname := mname + '_MASK'
+    Else
+      mname := Copy(mname, 1, 27) + 'M';
+    p := SymFind(mname);
+    If p = Nil Then
+      p := SymEnter(mname, SK_EQU, 0, 0, 2);
+    SymSetValue(p, mask);
+    p^.flags := p^.flags And Not 8;
+
+    shift := shift + fields[i].width;
+  End;
+
+  { creer le symbole du RECORD lui-meme }
+  p := SymFind(rec_name);
+  If p = Nil Then
+    p := SymEnter(rec_name, SK_STRUCT, 0, 0, rec_bytes);
+  p^.kind  := SK_STRUCT;
+  p^.size  := rec_bytes;
+  SymSetValue(p, rec_bytes);
+End;
+
+{ ============================================================
+  Programme principal (TODOs 10 a 25 a implementer)
   ============================================================ }
 Begin
   Writeln('Microsoft Macro Assembler Version ', VERSION,
@@ -3702,6 +4024,7 @@ Begin
   SrcInit;
   LexInit;
   SymInit;
-  Writeln('TODOs 01-09 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data).');
-  Writeln('TODOs 10 a 25 a implementer.');
+  local_unique_id := 0;
+  Writeln('TODOs 01-10 complets (infra+src+lex+sym+OMF+LEDATA+seg+eval+data+sym2).');
+  Writeln('TODOs 11 a 25 a implementer.');
 End.

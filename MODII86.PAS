@@ -11,7 +11,7 @@ Program MODII86;
 {$I-}   { desactiver les IO-check pour gerer nous-memes les erreurs }
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE DE BASE
+  INFRASTRUCTURE DE BASE
   ============================================================ }
 
 { --- Constantes de dimensionnement --- }
@@ -190,7 +190,7 @@ Var
   src_file     : Text;
   out_file     : Text;
   tmp_file     : Text;
-  str_file     : Text;             { cha√Ænes litterales differees (TODO 25) }
+  str_file     : Text;             { chaånes litterales differees    }
   cur_out      : TTextPtr;   { pointe sur out_file ou tmp_file       }
   src_fname    : TString;
   out_fname    : TString;
@@ -207,7 +207,7 @@ Var
   warn_count   : Integer;
   instr_count  : Integer;
   str_lit_count: Integer;
-  tok_count    : Integer;   { TODO 24 : tokens lus depuis la source }
+  tok_count    : Integer;   { jetons lus depuis la source }
 
   { Etat lexer }
   lex_lineno   : Integer;
@@ -258,7 +258,7 @@ Var
   TYP_UNDEF    : Integer;
 
 { ============================================================
-  Utilitaires generaux (stubs - implementation dans TODO 02+)
+  Utilitaires generaux (stubs)
   ============================================================ }
 
 Function IntToStr(n : LongInt) : TString;
@@ -298,7 +298,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - ANALYSEUR LEXICAL (LEXER)
+  ANALYSEUR LEXICAL (LEXER)
   ============================================================ }
 
 { --- Predicats de caracteres --- }
@@ -771,7 +771,7 @@ Begin
     Exit;
   End;
 
-  Inc(tok_count);   { TODO 24 : compter les tokens fraichement scans }
+  Inc(tok_count);   { compter les tokens fraichement scans }
   LexSkipWS;
   lex_colno := lex_pos;
 
@@ -837,7 +837,7 @@ Begin
   End;
 End;
 
-{ Forward TODO 24 : ErrorMsg est utilise par LexExpect / LexExpectKind }
+{ Forward : ErrorMsg est utilise par LexExpect / LexExpectKind }
 Procedure ErrorMsg(Const msg : TString); Forward;
 
 { --------------------------------------------------------------------------
@@ -892,11 +892,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - TABLE DES SYMBOLES ET GESTION DE LA PORTEE
+  TABLE DES SYMBOLES ET GESTION DE LA PORTEE
   ============================================================ }
 
 { ============================================================
-  TODO 24 - GESTION DES ERREURS ET MODE VERBEUX
+  GESTION DES ERREURS ET MODE VERBEUX
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -1265,7 +1265,7 @@ Begin
   ConstFind := 0;
 End;
 
-{ Forward TODO 24 : TypeName est utilise par SymDumpVerbose }
+{ Forward : TypeName est utilise par SymDumpVerbose }
 Function TypeName(ti : Integer) : TString; Forward;
 
 { --------------------------------------------------------------------------
@@ -1304,7 +1304,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - SYSTEME DE TYPES
+  SYSTEME DE TYPES
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -1693,7 +1693,7 @@ Begin
   Dispose(const_table);
 End;
 
-{ Types primitifs predefinis - utilise TypeNew (TODO 04) }
+{ Types primitifs predefinis - utilise TypeNew }
 Procedure InitBuiltinTypes;
 Begin
   { Creer les descripteurs internes de types }
@@ -1785,7 +1785,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - GENERATEUR DE CODE 8086 - PRIMITIVES
+  GENERATEUR DE CODE 8086 - PRIMITIVES
   ============================================================ }
 
 Const
@@ -2089,7 +2089,7 @@ End;
 
 { --------------------------------------------------------------------------
   Chargement / stockage de variables dans AX selon leur portee.
-  Ces helpers seront appeles par les parseurs d'expression (TODO 09+).
+  Ces helpers seront appeles par les parseurs d'expression.
   -------------------------------------------------------------------------- }
 
 { Charger une variable globale (sym_table[si]) dans AX (ou DX:AX si 32 bits). }
@@ -2227,7 +2227,7 @@ Begin
 End;
 
 { ==========================================================================
-  TODO 21 - TABLEAUX ET ENREGISTREMENTS
+  TABLEAUX ET ENREGISTREMENTS
   ========================================================================== }
 
 { --------------------------------------------------------------------------
@@ -2252,7 +2252,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - DECLARATIONS DE CONSTANTES (CONST)
+  DECLARATIONS DE CONSTANTES (CONST)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -2577,7 +2577,7 @@ Begin
   Begin
     { Constante chaine }
     sval := cur_tok.val;
-    ti   := TYP_CHAR;   { ARRAY OF CHAR sera cree si besoin en TODO 07 }
+    ti   := TYP_CHAR;   { ARRAY OF CHAR sera cree si besoin }
     ival := 0;
     LexNext;
   End
@@ -2643,7 +2643,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - DECLARATIONS DE TYPES (TYPE)
+  DECLARATIONS DE TYPES (TYPE)
   ============================================================ }
 
 { Forward : ParseArrayType / ParseRecordType / ParsePointerType / ParseProcType
@@ -2735,8 +2735,7 @@ End;
 
 { --------------------------------------------------------------------------
   ParseProcType : PROCEDURE [ ( params ) ] [ : typeRef ]
-  Simplifie : on capture le type de retour ; le detail des parametres
-  formels sera gere en TODO 17 (on saute les parentheses ici).
+  Simplifie : on capture le type de retour (on saute les parentheses ici).
   -------------------------------------------------------------------------- }
 Function ParseProcType : Integer;
 Var ret_ti : Integer;
@@ -2744,7 +2743,7 @@ Var ret_ti : Integer;
 Begin
   LexExpect('PROCEDURE');
   ret_ti := 0;
-  { Sauter les parametres entre parentheses - sera traite en TODO 17 }
+  { Sauter les parametres entre parentheses }
   If cur_tok.val = '(' Then
   Begin
     depth := 1;
@@ -2840,7 +2839,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - DECLARATIONS DE VARIABLES (VAR)
+  DECLARATIONS DE VARIABLES (VAR)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -2959,30 +2958,30 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - EXPRESSIONS - NIVEAU PRIMAIRE
+  EXPRESSIONS - NIVEAU PRIMAIRE
   ============================================================ }
 
-{ Forward : ParseExpr est defini en TODO 10 ; ParseFactor l'appelle
+{ Forward : ParseExpr est defini ; ParseFactor l'appelle
   pour les sous-expressions entre parentheses et les index de tableau. }
 Function ParseExpr : Integer; Forward;
 
-{ Forward : ParseProcCallArgs defini en TODO 18 ; ParseDesignator l'appelle. }
+{ Forward : ParseProcCallArgs defini ; ParseDesignator l'appelle. }
 Function ParseProcCallArgs(pi : Integer) : Integer; Forward;
 
-{ Forward : ParseBuiltinFunc defini en TODO 19 ; ParseFactor l'appelle. }
+{ Forward : ParseBuiltinFunc defini ; ParseFactor l'appelle. }
 Function ParseBuiltinFunc(Const fname : TString) : Integer; Forward;
 
-{ Forwards supplementaires TODO 19 utilises dans ParseFactor et ParseStatement. }
+{ Forwards supplementaires utilises dans ParseFactor et ParseStatement. }
 Function IsBuiltinProc(Const name : TString) : Boolean; Forward;
 Function IsBuiltinFunc(Const name : TString) : Boolean; Forward;
 Procedure ParseBuiltinProc(Const fname : TString); Forward;
 
-{ Forwards TODO 20 - modules standard Out / In. }
+{ Forwards - modules standard Out / In. }
 Function  IsStdModuleIdent(Const name : TString) : Boolean; Forward;
 Function  ParseStdModuleExpr : Integer; Forward;
 Procedure ParseStdModuleCall; Forward;
 
-{ Forwards TODO 23 - clause IMPORT et modules Math / SYSTEM. }
+{ Forwards - clause IMPORT et modules Math / SYSTEM. }
 Procedure ParseImportSection; Forward;
 
 { --------------------------------------------------------------------------
@@ -3058,7 +3057,7 @@ Begin
       ErrorMsg('Nom de type non valide dans une expression : ' + name);
     SK_PROC :
       Begin
-        { Appel de procedure/fonction (TODO 18) }
+        { Appel de procedure/fonction }
         pi2 := sym_table^[si].proc_idx;
         If cur_tok.val = '(' Then
         Begin
@@ -3179,7 +3178,7 @@ Begin
         EmitI2('MOV', 'BX', '[BX]')  { deref adresse en BX }
       Else
         EmitI2('MOV', 'BX', 'AX');   { pointer etait dans AX }
-      { Verification NIL a l'execution (TODO 22) }
+      { Verification NIL a l'execution }
       EmitI2('OR',  'BX', 'BX');
       EmitI1('JZ',  '_ORT_NIL_ERR');
       ti := type_table^[ti].base_idx;
@@ -3208,7 +3207,7 @@ End;
            | '(' expr ')'
            | designator [ '(' ExprList ')' ]
   Resultat dans AX ; type retourne.
-  Les appels de fonction sont des stubs (TODO 18).
+  Les appels de fonction sont des stubs.
   -------------------------------------------------------------------------- }
 Function ParseFactor : Integer;
 Var ti    : Integer;
@@ -3309,7 +3308,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - EXPRESSIONS - OPERATEURS ET PRIORITES
+  EXPRESSIONS - OPERATEURS ET PRIORITES
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3407,7 +3406,7 @@ Begin
 End;
 
 { --------------------------------------------------------------------------
-  ParseExpr : implementation complete - remplace le stub TODO 09.
+  ParseExpr : implementation complete - remplace le stub.
   Relations Oberon : = # < <= > >= IN IS
   Gauche dans AX, droit dans CX, resultat BOOLEAN dans AX (0 ou 1).
   -------------------------------------------------------------------------- }
@@ -3441,7 +3440,7 @@ Begin
     End
     Else If op = 'IS' Then
     Begin
-      { IS : verification de type dynamique - stub (TODO 22+) }
+      { IS : verification de type dynamique - stub }
       EmitI2('MOV', 'AX', '0');
     End
     Else
@@ -3466,7 +3465,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - INSTRUCTION D'AFFECTATION (:=)
+  INSTRUCTION D'AFFECTATION (:=)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3546,7 +3545,7 @@ Begin
       If (ti < 1) Or (type_table^[ti].kind <> TYK_POINTER) Then
         ErrorMsg('Dereferencement sur un type non POINTER');
       EmitI2('MOV', 'BX', '[BX]');    { deref }
-      { Verification NIL a l'execution (TODO 22) }
+      { Verification NIL a l'execution }
       EmitI2('OR',  'BX', 'BX');
       EmitI1('JZ',  '_ORT_NIL_ERR');
       ti := type_table^[ti].base_idx;
@@ -3644,7 +3643,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - INSTRUCTION IF / ELSIF / ELSE
+  INSTRUCTION IF / ELSIF / ELSE
   ============================================================ }
 
 { Forward : ParseStatement est complete en TODO 13+ ;
