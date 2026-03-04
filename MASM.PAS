@@ -3432,14 +3432,6 @@ Const
     'BYTE','WORD','DWORD','QWORD','TBYTE','NEAR','FAR'
   );
 
-Function FindEvalUnary(Const s : TString) : Integer;
-Var i : Integer;
-Begin
-  For i := 1 To EU_COUNT Do
-    If EU_NAMES[i] = s Then Begin FindEvalUnary := i; Exit; End;
-  FindEvalUnary := 0;
-End;
-
 { ============================================================
   EvalUnary : unaires OFFSET SEG TYPE SIZE LENGTH SHORT, - +
   et BYTE/WORD/DWORD PTR (quand pas suivi de PTR : valeur taille)
@@ -3449,13 +3441,16 @@ Var
   tok   : TString;
   sz    : Integer;
   u_idx : Integer;
+  i     : Integer;
 Begin
   { ----- keywords unaires ----- }
   If LexPeekKind = TK_IDENT Then
   Begin
     tok   := LexPeekVal;
     sz    := 0;
-    u_idx := FindEvalUnary(tok);
+    u_idx := 0;
+    For i := 1 To EU_COUNT Do
+      If EU_NAMES[i] = tok Then Begin u_idx := i; Break; End;
     Case u_idx Of
       EU_OFFSET :
         Begin
