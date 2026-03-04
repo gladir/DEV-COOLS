@@ -46,7 +46,7 @@ _BV_GY                  DW      0
         INT  21h
 
 ; ------------------------------------------------------------
-;  ====== RUNTIME BCPL (BRT) - BCPL86 TODO 20 ====== 
+;  ====== RUNTIME BCPL (BRT) - BCPL86 ====== 
 
 _BRT_WRITES:
         PUSH  AX
@@ -220,7 +220,7 @@ _BRT_RS_DONE:
         RET
 
 _BRT_WRITEF:
-;  _BRT_WRITEF : formateur stub - imprime le format brut en TODO 19
+;  _BRT_WRITEF : formateur stub - imprime le format brut
         PUSH  BX
         MOV  AX, SI
         MOV  SI, AX
@@ -595,11 +595,8 @@ _BL_16:
         JNE  _BL_17
         JMP  _BL_19
 _BL_17:
-        MOV  AX, [BP+4]
-        NEG  AX
         JMP  _BL_18
 _BL_19:
-        MOV  AX, [BP+4]
 _BL_18:
 _BP_VABS_RET:
 
@@ -759,15 +756,18 @@ _BL_27:
         MOV  SI, AX
         CALL  _BRT_WRITES
         CALL  _BP_SAMPLES_BCPL_func_SEP
-        MOV  AX, 5
         NEG  AX
         MOV  [BP-12], AX
-        MOV  AX, 5
         MOV  SI, AX
 _BL_28:
         MOV  AX, [BP-12]
         CMP  AX, SI
         JG  _BL_29
+        MOV  AX, [BP-12]
+        INC  AX
+        MOV  [BP-12], AX
+        JMP  _BL_28
+_BL_29:
         LEA  AX, [_BK_8]
         MOV  SI, AX
         CALL  _BRT_WRITES
@@ -782,11 +782,6 @@ _BL_28:
         ADD  SP, 2
         CALL  _BRT_WRITEN
         CALL  _BRT_NEWLINE
-        MOV  AX, [BP-12]
-        INC  AX
-        MOV  [BP-12], AX
-        JMP  _BL_28
-_BL_29:
         CALL  _BP_SAMPLES_BCPL_func_SEP
         LEA  AX, [_BK_10]
         MOV  SI, AX
@@ -901,7 +896,7 @@ _BP_START_RET:
 _CODE           ENDS
 
 
-;  ----- Chaines litterales differees (TODO 25) -----
+;  ----- Chaines litterales differees -----
 _DATA           SEGMENT WORD PUBLIC 'DATA'
 
 _BK_1                   DB      4, 'pair'

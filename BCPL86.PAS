@@ -1477,21 +1477,6 @@ Begin
 End;
 
 { ============================================================
-  Impression de l'usage
-  ============================================================ }
-
-Procedure PrintUsage;
-Begin
-  WriteLn('BCPL86 v', BCPL86_VERSION, ' - Compilateur BCPL -> MASM 8086');
-  WriteLn('Usage : BCPL86 source.b [sortie.asm] [options]');
-  WriteLn('Options :');
-  WriteLn('  -v   mode verbeux (statistiques et symboles)');
-  WriteLn('  -d   mode debug   (trace de parsing)');
-  WriteLn('  -nr  pas de liaison avec le runtime');
-  Halt(1);
-End;
-
-{ ============================================================
   Lecture des arguments de la ligne de commande
   ============================================================ }
 
@@ -1515,18 +1500,21 @@ Begin
     Else If arg[1] = '-' Then
     Begin
       WriteLn('Option inconnue : ', arg);
-      PrintUsage;
+      Halt(1);
     End
     Else If src_fname = '' Then src_fname := arg
     Else If out_fname = '' Then out_fname := arg
     Else
     Begin
       WriteLn('Argument inattendu : ', arg);
-      PrintUsage;
+      Halt(2);
     End;
   End;
 
-  If src_fname = '' Then PrintUsage;
+  If src_fname = '' Then Begin
+   WriteLn('Source attendu !');
+   Halt(3);
+  End;
 
   If out_fname = '' Then
     out_fname := ChangeExtension(src_fname, '.asm');
@@ -5764,6 +5752,19 @@ End;
   ============================================================ }
 
 BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('BCPL86 - Cette commande permet de lancer le compilateur BCPL pour l''assembleur ',
+          'du microprocesseur 8086.');
+  WriteLn;
+  WriteLn('Syntaxe : BCPL86 source.b [sortie.asm] [options]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v   mode verbeux (statistiques et symboles)');
+  WriteLn('  -d   mode debug   (trace de parsing)');
+  WriteLn('  -nr  pas de liaison avec le runtime');
+  Halt(0);
+ End;
    { --- Arguments --- }
   ParseArgs;
    { --- Initialisation --- }

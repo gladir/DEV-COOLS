@@ -572,6 +572,15 @@ Type
     defined   : Boolean;                 { True si groupe declare }
   End;
 
+  { ------- TODO 08 : Resultat d une evaluation d expression ------- }
+  TExpr = Record
+    val        : TLong;    { valeur numerique de l expression }
+    is_reloc   : Boolean;  { True = adresse relocalisable dans un segment }
+    seg_idx    : Integer;  { index 1-base dans seg_table (si is_reloc=True) }
+    is_undef   : Boolean;  { True = symbole inconnu en passe 1 (reporter passe 2) }
+    ptr_size   : Integer;  { 0=non specifie,1=BYTE,2=WORD/NEAR,4=DWORD/FAR,8=QWORD,10=TBYTE }
+  End;
+
 { ---- Variables globales ---- }
 Var
   { Tables de la chaine de hachage (symboles sur le heap) }
@@ -2849,6 +2858,552 @@ Begin
 End;
 
 { ============================================================
+  TODO 08 - EVALUATEUR D EXPRESSIONS ASSEMBLEUR (DEUX PASSES)
+  ============================================================
+
+  Hierarchy d appel (du moins prioritaire au plus prioritaire) :
+    EvalExpr -> EvalRelational -> EvalBitwise -> EvalNot ->
+    EvalAdd -> EvalMul -> EvalPTR -> EvalUnary -> EvalPrimary
+  EvalPrimary appelle EvalExpr pour les parentheses.
+  ============================================================ }
+
+{ ---- Helpers TExpr ---- }
+Procedure ExprMakeNum(Var e : TExpr; v : TLong);
+Begin
+  e.val      := v;
+  e.is_reloc := False;
+  e.seg_idx  := 0;
+  e.is_undef := False;
+  e.ptr_size := 0;
+End;
+
+Procedure ExprMakeReloc(Var e : TExpr; v : TLong; sidx : Integer);
+Begin
+  e.val      := v;
+  e.is_reloc := True;
+  e.seg_idx  := sidx;
+  e.is_undef := False;
+  e.ptr_size := 0;
+End;
+
+Procedure ExprMakeUndef(Var e : TExpr);
+Begin
+  e.val      := 0;
+  e.is_reloc := False;
+  e.seg_idx  := 0;
+  e.is_undef := True;
+  e.ptr_size := 0;
+End;
+
+{ ---- Declarations Forward ---- }
+Procedure EvalExpr(Var e : TExpr); Forward;
+Procedure EvalRelational(Var e : TExpr); Forward;
+Procedure EvalBitwise(Var e : TExpr); Forward;
+Procedure EvalNot(Var e : TExpr); Forward;
+Procedure EvalAdd(Var e : TExpr); Forward;
+Procedure EvalMul(Var e : TExpr); Forward;
+Procedure EvalPTR(Var e : TExpr); Forward;
+Procedure EvalUnary(Var e : TExpr); Forward;
+Procedure EvalPrimary(Var e : TExpr); Forward;
+
+{ ============================================================
+  EvalPrimary : atome = nombre, chaine, $, ( ), [ ], identificateur
+  ============================================================ }
+Procedure EvalPrimary(Var e : TExpr);
+Var
+  tok : TString;
+  sym : PSymbol;
+Begin
+  { ---- nombre ---- }
+  If LexPeekKind = TK_NUMBER Then
+  Begin
+    LexNext;
+    ExprMakeNum(e, lex_tok.num_val);
+    Exit;
+  End;
+
+  { ---- litterale chaine : valeur = code ASCII du premier caractere ---- }
+  If LexPeekKind = TK_STRING Then
+  Begin
+    LexNext;
+    If Length(lex_tok.val) >= 1 Then
+      ExprMakeNum(e, Ord(lex_tok.val[1]))
+    Else
+      ExprMakeNum(e, 0);
+    Exit;
+  End;
+
+  { ---- ponctuation ---- }
+  If LexPeekKind = TK_PUNCT Then
+  Begin
+    { $ = location counter courant }
+    If LexPeekVal = '$' Then
+    Begin
+      LexNext;
+      ExprMakeReloc(e, lc, cur_seg);
+      Exit;
+    End;
+    { (expr) }
+    If LexPeekVal = '(' Then
+    Begin
+      LexNext;
+      EvalExpr(e);
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ')') Then
+        LexNext
+      Else
+        WarnMsg('Parenthese fermante ) manquante dans expression');
+      Exit;
+    End;
+    { [expr] }
+    If LexPeekVal = '[' Then
+    Begin
+      LexNext;
+      EvalExpr(e);
+      If (LexPeekKind = TK_PUNCT) And (LexPeekVal = ']') Then
+        LexNext
+      Else
+        WarnMsg('Crochet fermant ] manquant dans expression');
+      Exit;
+    End;
+  End;
+
+  { ---- identificateur ---- }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    LexNext;
+    tok := lex_tok.val; { majuscules garanties par LexNext }
+
+    { constantes booleennes }
+    If tok = 'TRUE'  Then Begin ExprMakeNum(e, -1); Exit; End;
+    If tok = 'FALSE' Then Begin ExprMakeNum(e,  0); Exit; End;
+
+    { recherche dans la table des symboles }
+    sym := SymFind(tok);
+    If sym = Nil Then
+    Begin
+      If pass_num = 1 Then
+        ExprMakeUndef(e)
+      Else
+      Begin
+        ErrorMsg('Symbole indefini : ' + tok);
+        ExprMakeNum(e, 0);
+      End;
+      Exit;
+    End;
+
+    Case sym^.kind Of
+      SK_LABEL, SK_PUBLIC :
+        ExprMakeReloc(e, sym^.offset, sym^.seg_idx);
+      SK_EXTERN :
+        Begin
+          { les EXTERN sont relocalisables, le fixup sera emis a l emit }
+          e.val      := 0;
+          e.is_reloc := True;
+          e.seg_idx  := 0;
+          e.is_undef := False;
+          e.ptr_size := sym^.size;
+        End;
+      SK_EQU :
+        ExprMakeNum(e, sym^.value);
+      SK_SEG :
+        ExprMakeNum(e, sym^.seg_idx);
+      SK_UNDEF :
+        Begin
+          If pass_num = 1 Then
+            ExprMakeUndef(e)
+          Else
+          Begin
+            ErrorMsg('Symbole indefini en passe 2 : ' + tok);
+            ExprMakeNum(e, 0);
+          End;
+        End;
+    Else
+      ExprMakeNum(e, sym^.value);
+    End;
+    Exit;
+  End;
+
+  { rien de reconnu }
+  ErrorMsg('Expression attendue, token inattendu : ' + LexPeekVal);
+  ExprMakeNum(e, 0);
+End;
+
+{ ============================================================
+  EvalUnary : unaires OFFSET SEG TYPE SIZE LENGTH SHORT, - +
+  et BYTE/WORD/DWORD PTR (quand pas suivi de PTR : valeur taille)
+  ============================================================ }
+Procedure EvalUnary(Var e : TExpr);
+Var
+  tok : TString;
+  sz  : Integer;
+Begin
+  { ----- keywords unaires (OFFSET SEG TYPE SIZE LENGTH SHORT) ----- }
+  If LexPeekKind = TK_IDENT Then
+  Begin
+    tok := LexPeekVal;
+
+    { --- OFFSET expr : retourne juste le deplacement, pas relocalisable --- }
+    If tok = 'OFFSET' Then
+    Begin
+      LexNext;
+      EvalPrimary(e);
+      e.is_reloc := False;
+      Exit;
+    End;
+
+    { --- SEG expr : retourne l index de segment --- }
+    If tok = 'SEG' Then
+    Begin
+      LexNext;
+      EvalPrimary(e);
+      If e.is_reloc Then
+        ExprMakeNum(e, e.seg_idx)
+      Else
+        ExprMakeNum(e, 0);
+      Exit;
+    End;
+
+    { --- TYPE expr : retourne la taille en octets du type --- }
+    If tok = 'TYPE' Then
+    Begin
+      LexNext;
+      EvalPrimary(e);
+      ExprMakeNum(e, e.ptr_size);
+      Exit;
+    End;
+
+    { --- SIZE expr : taille totale (LENGTH * TYPE) --- }
+    If tok = 'SIZE' Then
+    Begin
+      LexNext;
+      EvalPrimary(e);
+      ExprMakeNum(e, e.ptr_size); { simplification : taille = TYPE ici }
+      Exit;
+    End;
+
+    { --- LENGTH expr : nombre d elements alloues --- }
+    If tok = 'LENGTH' Then
+    Begin
+      LexNext;
+      EvalPrimary(e);
+      ExprMakeNum(e, 1); { par defaut 1 element sauf labels de tableaux }
+      Exit;
+    End;
+
+    { --- SHORT expr : force un deplacement court (8 bits) --- }
+    If tok = 'SHORT' Then
+    Begin
+      LexNext;
+      EvalPrimary(e);
+      e.ptr_size := 1;
+      Exit;
+    End;
+
+    { --- BYTE/WORD/DWORD/QWORD/NEAR/FAR : taille de type ou PTR --- }
+    sz := 0;
+    If      tok = 'BYTE'  Then sz := 1
+    Else If tok = 'WORD'  Then sz := 2
+    Else If tok = 'DWORD' Then sz := 4
+    Else If tok = 'QWORD' Then sz := 8
+    Else If tok = 'TBYTE' Then sz := 10
+    Else If tok = 'NEAR'  Then sz := 2
+    Else If tok = 'FAR'   Then sz := 4;
+
+    If sz > 0 Then
+    Begin
+      LexNext; { consommer BYTE/WORD/etc. }
+      { suivi de PTR ? }
+      If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'PTR') Then
+      Begin
+        LexNext; { consommer PTR }
+        EvalUnary(e);  { evaluer l operande droite }
+        e.ptr_size := sz;
+        Exit;
+      End;
+      { pas de PTR : retourner la valeur de la taille comme constante }
+      ExprMakeNum(e, sz);
+      Exit;
+    End;
+  End;
+
+  { ----- unaire - ----- }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '-') Then
+  Begin
+    LexNext;
+    EvalPrimary(e);
+    e.val      := -e.val;
+    e.is_reloc := False;
+    Exit;
+  End;
+
+  { ----- unaire + ----- }
+  If (LexPeekKind = TK_PUNCT) And (LexPeekVal = '+') Then
+  Begin
+    LexNext;
+    EvalPrimary(e);
+    Exit;
+  End;
+
+  { par defaut : primaire }
+  EvalPrimary(e);
+End;
+
+{ ============================================================
+  EvalPTR : operateur PTR  (BYTE PTR deja gere dans EvalUnary)
+  Ici EvalPTR sert de relais ; l operateur est intercepte en
+  EvalUnary avant que EvalPrimary ne consomme le mot-cle.
+  ============================================================ }
+Procedure EvalPTR(Var e : TExpr);
+Begin
+  EvalUnary(e);
+  { PTR apres identif non-keyword est deja traite dans EvalUnary.
+    Si un PTR orphelin se retrouve ici, on l ignore silencieusement. }
+End;
+
+{ ============================================================
+  EvalMul : * / MOD SHL SHR
+  ============================================================ }
+Procedure EvalMul(Var e : TExpr);
+Var
+  op  : TString;
+  r   : TExpr;
+Begin
+  EvalPTR(e);
+  Repeat
+    If LexPeekKind = TK_PUNCT Then
+    Begin
+      op := LexPeekVal;
+      If (op = '*') Or (op = '/') Then
+      Begin
+        LexNext;
+        EvalPTR(r);
+        If op = '*' Then
+          e.val := e.val * r.val
+        Else
+        Begin
+          If r.val = 0 Then
+          Begin
+            ErrorMsg('Division par zero dans expression');
+            e.val := 0;
+          End
+          Else
+            e.val := e.val Div r.val;
+        End;
+        e.is_reloc := False;
+      End
+      Else
+        Break;
+    End
+    Else If LexPeekKind = TK_IDENT Then
+    Begin
+      op := LexPeekVal;
+      If op = 'MOD' Then
+      Begin
+        LexNext;
+        EvalPTR(r);
+        If r.val = 0 Then
+          e.val := 0
+        Else
+          e.val := e.val Mod r.val;
+        e.is_reloc := False;
+      End
+      Else If op = 'SHL' Then
+      Begin
+        LexNext;
+        EvalPTR(r);
+        e.val := e.val Shl r.val;
+        e.is_reloc := False;
+      End
+      Else If op = 'SHR' Then
+      Begin
+        LexNext;
+        EvalPTR(r);
+        e.val := e.val Shr r.val;
+        e.is_reloc := False;
+      End
+      Else
+        Break;
+    End
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  EvalAdd : + - (additifs binaires)
+  ============================================================ }
+Procedure EvalAdd(Var e : TExpr);
+Var
+  op : TString;
+  r  : TExpr;
+Begin
+  EvalMul(e);
+  Repeat
+    If LexPeekKind = TK_PUNCT Then
+    Begin
+      op := LexPeekVal;
+      If (op = '+') Or (op = '-') Then
+      Begin
+        LexNext;
+        EvalMul(r);
+        If op = '+' Then
+          e.val := e.val + r.val
+        Else
+          e.val := e.val - r.val;
+        { si l un est relocalisable et l autre est une constante : OK }
+        { si les deux sont relocalisables + : erreur ; - : OK (difference) }
+        If e.is_reloc And r.is_reloc Then
+        Begin
+          If op = '-' Then
+            e.is_reloc := False { diff de deux reloc = constante }
+          Else
+          Begin
+            ErrorMsg('Addition de deux adresses relocalisables interdite');
+            e.is_reloc := False;
+          End;
+        End
+        Else If r.is_reloc Then
+        Begin
+          e.is_reloc := True;
+          e.seg_idx  := r.seg_idx;
+        End;
+        If r.is_undef Then e.is_undef := True;
+      End
+      Else
+        Break;
+    End
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  EvalNot : NOT unaire bitwise
+  ============================================================ }
+Procedure EvalNot(Var e : TExpr);
+Begin
+  If (LexPeekKind = TK_IDENT) And (LexPeekVal = 'NOT') Then
+  Begin
+    LexNext;
+    EvalNot(e); { recursif pour NOT NOT x }
+    e.val      := Not e.val;
+    e.is_reloc := False;
+  End
+  Else
+    EvalAdd(e);
+End;
+
+{ ============================================================
+  EvalBitwise : AND OR XOR (logiques bitwise)
+  ============================================================ }
+Procedure EvalBitwise(Var e : TExpr);
+Var
+  op : TString;
+  r  : TExpr;
+Begin
+  EvalNot(e);
+  Repeat
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      op := LexPeekVal;
+      If op = 'AND' Then
+      Begin
+        LexNext;
+        EvalNot(r);
+        e.val      := e.val And r.val;
+        e.is_reloc := False;
+        If r.is_undef Then e.is_undef := True;
+      End
+      Else If op = 'OR' Then
+      Begin
+        LexNext;
+        EvalNot(r);
+        e.val      := e.val Or r.val;
+        e.is_reloc := False;
+        If r.is_undef Then e.is_undef := True;
+      End
+      Else If op = 'XOR' Then
+      Begin
+        LexNext;
+        EvalNot(r);
+        e.val      := e.val Xor r.val;
+        e.is_reloc := False;
+        If r.is_undef Then e.is_undef := True;
+      End
+      Else
+        Break;
+    End
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  EvalRelational : EQ NE LT LE GT GE (resultat -1=vrai, 0=faux)
+  ============================================================ }
+Procedure EvalRelational(Var e : TExpr);
+Var
+  op : TString;
+  r  : TExpr;
+  b  : Boolean;
+Begin
+  EvalBitwise(e);
+  Repeat
+    If LexPeekKind = TK_IDENT Then
+    Begin
+      op := LexPeekVal;
+      b  := False;
+      If      op = 'EQ' Then Begin LexNext; EvalBitwise(r); b := (e.val =  r.val); End
+      Else If op = 'NE' Then Begin LexNext; EvalBitwise(r); b := (e.val <> r.val); End
+      Else If op = 'LT' Then Begin LexNext; EvalBitwise(r); b := (e.val <  r.val); End
+      Else If op = 'LE' Then Begin LexNext; EvalBitwise(r); b := (e.val <= r.val); End
+      Else If op = 'GT' Then Begin LexNext; EvalBitwise(r); b := (e.val >  r.val); End
+      Else If op = 'GE' Then Begin LexNext; EvalBitwise(r); b := (e.val >= r.val); End
+      Else Break;
+      If b Then e.val := -1 Else e.val := 0;
+      e.is_reloc := False;
+      e.is_undef := e.is_undef Or r.is_undef;
+    End
+    Else
+      Break;
+  Until False;
+End;
+
+{ ============================================================
+  EvalExpr : point d entree public de l evaluateur
+  ============================================================ }
+Procedure EvalExpr(Var e : TExpr);
+Begin
+  EvalRelational(e);
+End;
+
+{ ============================================================
+  EvalConstExpr : evaluer une expression qui DOIT etre constante
+  (non relocalisable). Signale une erreur si le resultat est
+  relocalisable ou indefini en passe 2.
+  ============================================================ }
+Function EvalConstExpr : TLong;
+Var
+  e : TExpr;
+Begin
+  EvalExpr(e);
+  If e.is_undef Then
+  Begin
+    If pass_num = 2 Then
+      ErrorMsg('Expression constante non resolue en passe 2');
+    EvalConstExpr := 0;
+    Exit;
+  End;
+  If e.is_reloc Then
+  Begin
+    ErrorMsg('Expression relocalisable inattendue (constante requise)');
+    EvalConstExpr := e.val;
+    Exit;
+  End;
+  EvalConstExpr := e.val;
+End;
+
+{ ============================================================
   WriteAllSegments : ecrire LNAMES + tous les SEGDEF + GRPDEF
   dans le fichier .OBJ. Appele apres la passe 2.
   ============================================================ }
@@ -2916,6 +3471,6 @@ Begin
   SrcInit;
   LexInit;
   SymInit;
-  Writeln('TODOs 01-07 complets (infra+src+lex+sym+OMF+LEDATA+segments).');
-  Writeln('TODOs 08 a 25 a implementer.');
+  Writeln('TODOs 01-08 complets (infra+src+lex+sym+OMF+LEDATA+segments+eval).');
+  Writeln('TODOs 09 a 25 a implementer.');
 End.
