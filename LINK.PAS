@@ -19,6 +19,9 @@ Const
  MAX_LINENUMS=4096;     { Nombre maximal d'entrees de debug LINNUM }
  MAX_COMMENTS=2048;     { Nombre maximal d'enregistrements COMENT OMF }
  MAX_ALIASES=1024;      { Nombre maximal de definitions ALIAS }
+ MAX_CMD_OBJS=256;      { Nombre maximal de fichiers objets en entree (phase 1) }
+ MAX_CMD_LIBS=256;      { Nombre maximal de bibliotheques en entree (phase 1) }
+ MAX_LIB_TRACKED_MODULES=256; { Modules de bibliotheque charges/suivis }
 
 Type
  { En-tete DOS MZ du fichier executable genere }
@@ -149,6 +152,13 @@ Type
  End;
 
  TObjRecBuffer=Array[0..8191] of Byte;
+ TStr32=String[32];
+ TStr64=String[64];
+ TStr128=String[128];
+ TCmdObjNameArray=Array[1..MAX_CMD_OBJS] of String[128];
+ PCmdObjNameArray=^TCmdObjNameArray;
+ TCmdLibNameArray=Array[1..MAX_CMD_LIBS] of String[128];
+ PCmdLibNameArray=^TCmdLibNameArray;
 
 Var
  ObjFile,ExeFile,MapFile:File;
@@ -176,6 +186,41 @@ Var
  StackSize:Word;
  ObjModuleName:String[64];
  ObjFileName,ExeFileName,MapFileName:String;  { Ajout des variables }
+ ObjInputCount,LibInputCount:Integer;
+ PrimaryObjInputCount:Integer;
+ ObjInputList:PCmdObjNameArray;
+ ObjSegBaseList:Array[1..MAX_CMD_OBJS] of Integer;
+ LibInputList:PCmdLibNameArray;
+ TempLibObjCount:Integer;
+ TempLibObjList:PCmdObjNameArray;
+ LoadedLibModuleCount:Integer;
+ LoadedLibModuleLibIndex:Array[1..MAX_LIB_TRACKED_MODULES] of Integer;
+ LoadedLibModuleStart:Array[1..MAX_LIB_TRACKED_MODULES] of LongInt;
+ LoadedLibModuleName:Array[1..MAX_LIB_TRACKED_MODULES] of String[64];
+ LibModulesScannedCount:LongInt;
+ LibModulesLoadedCount:LongInt;
+ LibResolutionPasses:Integer;
+ TraceLibRequested:Boolean;
+ TraceLibSymbolsRequested:Boolean;
+ MapRequested:Boolean;
+ LineNumbersRequested:Boolean;
+ PublicsMapRequested:Boolean;
+ NoDefaultLibrarySearch:Boolean;
+ NoGroupAssociation:Boolean;
+ NoIgnoreCase:Boolean;
+ DosSegOrdering:Boolean;
+ DsAllocateTop:Boolean;
+ ExePackRequested:Boolean;
+ HighLoadRequested:Boolean;
+ PauseRequested:Boolean;
+ OverlayInterruptSet:Boolean;
+ OverlayInterruptValue:Byte;
+ MaxAllocParagraphs:Word;
+ MaxSegmentsOption:Integer;
+ SpecField:Integer;
+ SpecTerminated:Boolean;
+ SpecCurrentItem:String[128];
+ ResponseDepth:Integer;
  i:Integer;
  Param:string;
  Buffer:Array[0..1023] of Byte;  { Ajout du tampon manquant }
@@ -407,6 +452,234 @@ Begin
  End;
  InitMainLists;
 End;
+
+Procedure ApplyAliasToExternalSymbols;
+Var
+ SymItem:PSymbolItem;
+Begin
+ SymItem:=SymbolHead;
+ While SymItem<>Nil do Begin
+  If SymItem^.Value.IsExternal Then
+   SymItem^.Value.Name:=Copy(ResolveAliasName(SymItem^.Value.Name),1,32);
+  SymItem:=SymItem^.Next;
+ End;
+End;
+
+Procedure RecomputeSegmentAddresses;
+Var
+ segItem:PSegmentItem;
+ currentBase:LongInt;
+Begin
+ currentBase:=0;
+ segItem:=SegmentHead;
+ While segItem<>Nil do Begin
+  segItem^.Value.Address:=currentBase;
+  Inc(currentBase,segItem^.Value.Size);
+  segItem:=segItem^.Next;
+ End;
+End;
+
+  Function NormalizeSymbolName(Const Nm:String):String;
+  Begin
+   NormalizeSymbolName:=Copy(ResolveAliasName(Copy(Nm,1,64)),1,32);
+  End;
+
+  Function IsPublicSymbolDefined(Const Nm:String):Boolean;
+  Var
+   symItem:PSymbolItem;
+   lookupName:String[32];
+  Begin
+   IsPublicSymbolDefined:=False;
+   lookupName:=NormalizeSymbolName(Nm);
+   If lookupName='' Then Exit;
+
+   symItem:=SymbolHead;
+   While symItem<>Nil do Begin
+    If Not symItem^.Value.IsExternal Then
+     If NormalizeSymbolName(symItem^.Value.Name)=lookupName Then Begin
+      IsPublicSymbolDefined:=True;
+      Exit;
+     End;
+    symItem:=symItem^.Next;
+   End;
+  End;
+
+  Function IsExternalNameUnresolved(Const Nm:String):Boolean;
+  Var
+   symItem:PSymbolItem;
+   lookupName:String[32];
+  Begin
+   IsExternalNameUnresolved:=False;
+   lookupName:=NormalizeSymbolName(Nm);
+   If lookupName='' Then Exit;
+   If IsPublicSymbolDefined(lookupName) Then Exit;
+
+   symItem:=SymbolHead;
+   While symItem<>Nil do Begin
+    If symItem^.Value.IsExternal Then
+     If NormalizeSymbolName(symItem^.Value.Name)=lookupName Then Begin
+      IsExternalNameUnresolved:=True;
+      Exit;
+     End;
+    symItem:=symItem^.Next;
+   End;
+  End;
+
+  Function CountExternalReferences:Integer;
+  Var
+   symItem:PSymbolItem;
+    count:Integer;
+  Begin
+    count:=0;
+   symItem:=SymbolHead;
+   While symItem<>Nil do Begin
+     If symItem^.Value.IsExternal Then Inc(count);
+    symItem:=symItem^.Next;
+   End;
+    CountExternalReferences:=count;
+  End;
+
+  Function CountPublicDefinitions:Integer;
+  Var
+   symItem:PSymbolItem;
+   count:Integer;
+  Begin
+   count:=0;
+   symItem:=SymbolHead;
+   While symItem<>Nil do Begin
+    If (Not symItem^.Value.IsExternal)And(symItem^.Value.Segment>0) Then
+     Inc(count);
+    symItem:=symItem^.Next;
+   End;
+   CountPublicDefinitions:=count;
+  End;
+
+  Function CountUnresolvedExternalNames:Integer;
+  Var
+   symItem:PSymbolItem;
+   names:Array[1..MAX_SYMBOLS] of String[32];
+   count,k:Integer;
+   nm:String[32];
+   seen:Boolean;
+  Begin
+   count:=0;
+   symItem:=SymbolHead;
+   While symItem<>Nil do Begin
+    If symItem^.Value.IsExternal Then Begin
+     nm:=NormalizeSymbolName(symItem^.Value.Name);
+     If (nm<>'')And IsExternalNameUnresolved(nm) Then Begin
+      seen:=False;
+      For k:=1 to count do
+       If names[k]=nm Then Begin
+        seen:=True;
+        Break;
+       End;
+      If Not seen Then Begin
+       If count<MAX_SYMBOLS Then Begin
+        Inc(count);
+        names[count]:=nm;
+       End;
+      End;
+     End;
+    End;
+    symItem:=symItem^.Next;
+   End;
+   CountUnresolvedExternalNames:=count;
+  End;
+
+  Procedure TraceUnresolvedExternalNames(Const Prefix:String; Const MaxItems:Integer);
+  Var
+   symItem:PSymbolItem;
+   names:Array[1..MAX_SYMBOLS] of String[32];
+   count,k,shown,limit:Integer;
+   nm:String[32];
+   seen:Boolean;
+  Begin
+   If Not TraceLibRequested Then Exit;
+
+   count:=0;
+   symItem:=SymbolHead;
+   While symItem<>Nil do Begin
+    If symItem^.Value.IsExternal Then Begin
+     nm:=NormalizeSymbolName(symItem^.Value.Name);
+     If (nm<>'')And IsExternalNameUnresolved(nm) Then Begin
+      seen:=False;
+      For k:=1 to count do
+       If names[k]=nm Then Begin
+        seen:=True;
+        Break;
+       End;
+      If (Not seen)And(count<MAX_SYMBOLS) Then Begin
+       Inc(count);
+       names[count]:=nm;
+      End;
+     End;
+    End;
+    symItem:=symItem^.Next;
+   End;
+
+   WriteLn('TRACE LIB: ',Prefix,' : ',count,' externe(s) non resolu(s)');
+   If Not TraceLibSymbolsRequested Then Exit;
+
+   limit:=MaxItems;
+   If limit<1 Then limit:=1;
+   shown:=0;
+   For k:=1 to count do Begin
+    Inc(shown);
+    If shown>limit Then Begin
+     WriteLn('TRACE LIB:   ... (',count-limit,' nom(s) supplementaire(s))');
+     Break;
+    End;
+    WriteLn('TRACE LIB:   - ',names[k]);
+   End;
+  End;
+
+  Procedure AddTempLibObjFile(Const FileName:String);
+  Begin
+   If TempLibObjCount<MAX_CMD_OBJS Then Begin
+    Inc(TempLibObjCount);
+    TempLibObjList^[TempLibObjCount]:=Copy(FileName,1,128);
+   End;
+  End;
+
+  Procedure CleanupTempLibObjFiles;
+  Var
+   f:File;
+   n:Integer;
+  Begin
+   For n:=1 to TempLibObjCount do Begin
+    If TempLibObjList^[n]<>'' Then Begin
+     {$I-}
+     Assign(f,TempLibObjList^[n]);
+     Erase(f);
+     If(IOResult<>0)Then;
+     {$I+}
+    End;
+   End;
+   TempLibObjCount:=0;
+  End;
+
+  Function IsLibModuleAlreadyLoaded(Const LibIdx:Integer; Const StartPos:LongInt):Boolean;
+  Var
+   n:Integer;
+  Begin
+   IsLibModuleAlreadyLoaded:=False;
+   For n:=1 to LoadedLibModuleCount do
+    If (LoadedLibModuleLibIndex[n]=LibIdx)And(LoadedLibModuleStart[n]=StartPos) Then Begin
+     IsLibModuleAlreadyLoaded:=True;
+     Exit;
+    End;
+  End;
+
+  Procedure MarkLibModuleLoaded(Const LibIdx:Integer; Const StartPos:LongInt; Const ModuleName:String);
+  Begin
+   If LoadedLibModuleCount<MAX_LIB_TRACKED_MODULES Then Begin
+    Inc(LoadedLibModuleCount);
+    LoadedLibModuleLibIndex[LoadedLibModuleCount]:=LibIdx;
+    LoadedLibModuleStart[LoadedLibModuleCount]:=StartPos;
+    LoadedLibModuleName[LoadedLibModuleCount]:=Copy(ModuleName,1,64);
+   End;
+  End;
 
 Function AddSegment(Const Seg:TSegment):Integer;
 Var item:PSegmentItem;
@@ -796,7 +1069,6 @@ Var
  RecType:Byte;
  RecLen:Word;
  Buffer:TObjRecBuffer;
- i:Integer;
  SegIndex:Word;
  SegOffset:Word;
  DataLen:Word;
@@ -818,8 +1090,7 @@ Var
  SegSize32:LongInt;
  SymRec:TSymbol;
  SegRec:TSegment;
- SegPtr,PrevSegPtr:PSegment;
- SymItem:PSymbolItem;
+ SegPtr:PSegment;
  GroupPtr:PGroupItem;
  GroupPos,GroupLimit:Integer;
  ExtPos,ExtLimit:Integer;
@@ -866,6 +1137,10 @@ Var
  ComdatAttr:Byte;
  ComdatAllocType:Byte;
  ComdatEnumOfs:LongInt;
+ ModuleSegBase:Integer;
+ ModuleLNameBase:Integer;
+ LocalSegCount:Integer;
+ LocalLNameCount:Integer;
 
  Function ReadOmfIndex(Var Pos:Integer; Limit:Integer; Var Idx:Word):Boolean;
  Var b:Byte;
@@ -881,6 +1156,18 @@ Var
   End Else Idx:=b;
   ReadOmfIndex:=True;
  End;
+
+   Function MapSegIndexLocal(Const LocalIdx:Word):Word;
+   Begin
+    If (LocalIdx=0)Or(LocalIdx>LocalSegCount) Then MapSegIndexLocal:=0
+    Else MapSegIndexLocal:=ModuleSegBase+LocalIdx;
+   End;
+
+   Function MapLNameIndexLocal(Const LocalIdx:Word):Word;
+   Begin
+    If (LocalIdx=0)Or(LocalIdx>LocalLNameCount) Then MapLNameIndexLocal:=0
+    Else MapLNameIndexLocal:=ModuleLNameBase+LocalIdx;
+   End;
 
  Function FindSymbolByName(Const Nm:String; Var SegIdx:Word; Var OfsVal:LongInt):Boolean;
  Var
@@ -932,10 +1219,10 @@ Var
 
 Begin
  ReadObjFile:=False;
- FreeMainLists;
- InitMainLists;
- FreeOffsetPatchList;
- InitOffsetPatchList;
+ ModuleSegBase:=SegmentCount;
+ ModuleLNameBase:=LNameCount;
+ LocalSegCount:=0;
+ LocalLNameCount:=0;
  ModuleEnded:=False;
  LastDataSeg:=0;
  LastDataOfs:=0;
@@ -944,9 +1231,6 @@ Begin
  LastLSymName:='';
  LastLSymSeg:=0;
  LastLSymBaseOfs:=0;
- HasEntryPoint:=False;
- EntrySegIndex:=0;
- EntryOffset:=0;
  {$I-}Assign(ObjFile,FileName);
  Reset(ObjFile, 1);{$I+}
  If IOResult<>0 Then Exit;
@@ -986,6 +1270,7 @@ Begin
        SegIndex:=((SegIndex And $7F) Shl 8) Or Buffer[GroupPos];
        Inc(GroupPos);
       End;
+      SegIndex:=MapSegIndexLocal(SegIndex);
 
       If GroupPos+1>=GroupLimit Then Continue;
       SegOffset:=Buffer[GroupPos]+Word(Buffer[GroupPos+1])*256;
@@ -1076,9 +1361,11 @@ Begin
 
                  { Cas supporte pour MZ: cible segment (SEGDEF index) }
                  If (TargetMethod=0)And(EntryTargetIdx>0) Then Begin
-      HasEntryPoint:=True;
-      EntrySegIndex:=EntryTargetIdx;
-      EntryOffset:=EntryDisp;
+              EntrySegIndex:=MapSegIndexLocal(EntryTargetIdx);
+              If EntrySegIndex>0 Then Begin
+               HasEntryPoint:=True;
+               EntryOffset:=EntryDisp;
+              End;
            End;
           End;
 
@@ -1089,9 +1376,9 @@ Begin
             EntryTargetIdx:=Word(Buffer[3]) * 256 + Buffer[4];
             EntryDisp:=Buffer[5] + LongInt(Buffer[6]) * 256;
             If EntryTargetIdx=0 Then EntryTargetIdx:=EntryFrameIdx;
-            If EntryTargetIdx>0 Then Begin
+            EntrySegIndex:=MapSegIndexLocal(EntryTargetIdx);
+            If EntrySegIndex>0 Then Begin
              HasEntryPoint:=True;
-             EntrySegIndex:=EntryTargetIdx;
              EntryOffset:=EntryDisp;
             End;
                  End Else If (RecType=$8B)And(GroupLimit>=9) Then Begin
@@ -1102,9 +1389,9 @@ Begin
               + LongInt(Buffer[7]) * 65536
               + LongInt(Buffer[8]) * 16777216;
             If EntryTargetIdx=0 Then EntryTargetIdx:=EntryFrameIdx;
-            If EntryTargetIdx>0 Then Begin
+            EntrySegIndex:=MapSegIndexLocal(EntryTargetIdx);
+            If EntrySegIndex>0 Then Begin
              HasEntryPoint:=True;
-             EntrySegIndex:=EntryTargetIdx;
              EntryOffset:=EntryDisp;
             End;
                  End;
@@ -1152,6 +1439,8 @@ Begin
 
      If ReadOmfIndex(PubPos,PubLimit,BaseGroupIdx)
         And ReadOmfIndex(PubPos,PubLimit,BaseSegIdx) Then Begin
+
+      BaseSegIdx:=MapSegIndexLocal(BaseSegIdx);
 
       { Garde-fou: index segment aberrant => probablement TYPDEF }
       If BaseSegIdx>MAX_SEGMENTS Then PubPos:=PubLimit;
@@ -1220,6 +1509,7 @@ Begin
      If PubLimit<=0 Then Continue;
      If Not ReadOmfIndex(PubPos,PubLimit,BaseGroupIdx) Then Continue;
      If Not ReadOmfIndex(PubPos,PubLimit,BaseSegIdx) Then Continue;
+    BaseSegIdx:=MapSegIndexLocal(BaseSegIdx);
 
      { Cas special OMF : BaseSeg=0 => frame explicite }
      If BaseSegIdx=0 Then Begin
@@ -1280,6 +1570,7 @@ Begin
      If PubLimit<=0 Then Continue;
      If Not ReadOmfIndex(PubPos,PubLimit,BaseGroupIdx) Then Continue;
      If Not ReadOmfIndex(PubPos,PubLimit,BaseSegIdx) Then Continue;
+    BaseSegIdx:=MapSegIndexLocal(BaseSegIdx);
 
      { Cas special OMF : BaseSeg=0 => frame explicite }
      If BaseSegIdx=0 Then Begin
@@ -1340,6 +1631,7 @@ Begin
      If LineLimit<=0 Then Continue;
      If Not ReadOmfIndex(LinePos,LineLimit,BaseGroupIdx) Then Continue;
      If Not ReadOmfIndex(LinePos,LineLimit,BaseSegIdx) Then Continue;
+    BaseSegIdx:=MapSegIndexLocal(BaseSegIdx);
 
      While LinePos<LineLimit do Begin
       If LinePos+1>=LineLimit Then Break;
@@ -1378,6 +1670,7 @@ Begin
        Inc(NamePos);
       End;
       AddLName(ParsedName);
+      Inc(LocalLNameCount);
      End;
     End;
     $99:Begin
@@ -1403,6 +1696,8 @@ Begin
        If ReadOmfIndex(GroupPos,GroupLimit,SegNameIdx) Then Begin
         If ReadOmfIndex(GroupPos,GroupLimit,SegClassIdx) Then Begin
          ReadOmfIndex(GroupPos,GroupLimit,SegOverlayIdx);
+           SegNameIdx:=MapLNameIndexLocal(SegNameIdx);
+           SegClassIdx:=MapLNameIndexLocal(SegClassIdx);
          ParsedName:=GetLName(SegNameIdx);
          ParsedClass:=GetLName(SegClassIdx);
          If ParsedName<>'' Then SegRec.Name:=Copy(ParsedName,1,16);
@@ -1412,6 +1707,7 @@ Begin
       End;
 
       AddSegment(SegRec);
+        Inc(LocalSegCount);
     End;
     $9A, $9B:Begin
       { GRPDEF / GRPDEF32 : definition de groupes de segments }
@@ -1419,6 +1715,7 @@ Begin
       GroupLimit:=RecLen-1;  { sans checksum OMF }
       If GroupLimit<=0 Then Continue;
       If Not ReadOmfIndex(GroupPos,GroupLimit,GroupNameIdx) Then Continue;
+      GroupNameIdx:=MapLNameIndexLocal(GroupNameIdx);
 
       GroupPtr:=AddGroup(GroupNameIdx, RecType=$9B);
 
@@ -1428,6 +1725,7 @@ Begin
        Case GroupItemType of
         $FF:Begin { composant segment }
          If Not ReadOmfIndex(GroupPos,GroupLimit,GroupMemberIdx) Then Break;
+         GroupMemberIdx:=MapSegIndexLocal(GroupMemberIdx);
          AddGroupMember(GroupPtr,GroupMemberIdx);
         End;
         $FE, $FD:Begin
@@ -1438,6 +1736,7 @@ Begin
         { Tolerance format : tentative index direct }
         Dec(GroupPos);
         If Not ReadOmfIndex(GroupPos,GroupLimit,GroupMemberIdx) Then Break;
+        GroupMemberIdx:=MapSegIndexLocal(GroupMemberIdx);
         AddGroupMember(GroupPtr,GroupMemberIdx);
        End;
       End;
@@ -1601,6 +1900,8 @@ Begin
        If ReadOmfIndex(GroupPos,GroupLimit,SegNameIdx) Then Begin
         If ReadOmfIndex(GroupPos,GroupLimit,SegClassIdx) Then Begin
          ReadOmfIndex(GroupPos,GroupLimit,SegOverlayIdx);
+          SegNameIdx:=MapLNameIndexLocal(SegNameIdx);
+          SegClassIdx:=MapLNameIndexLocal(SegClassIdx);
          ParsedName:=GetLName(SegNameIdx);
          ParsedClass:=GetLName(SegClassIdx);
          If ParsedName<>'' Then SegRec.Name:=Copy(ParsedName,1,16);
@@ -1610,6 +1911,7 @@ Begin
       End;
 
       AddSegment(SegRec);
+        Inc(LocalSegCount);
    End;
    $A0:Begin { LEDATA : Donn�es de segment }
     If RecLen>=5 Then Begin
@@ -1620,6 +1922,7 @@ Begin
       SegIndex:=((SegIndex And $7F) Shl 8) Or Buffer[1];
       IdxSize:=2;
      End;
+    SegIndex:=MapSegIndexLocal(SegIndex);
      Move(Buffer[IdxSize],SegOffset,2);
      DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
      If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
@@ -1648,6 +1951,7 @@ Begin
         SegIndex:=((SegIndex And $7F) Shl 8) Or Buffer[GroupPos];
         Inc(GroupPos);
        End;
+      SegIndex:=MapSegIndexLocal(SegIndex);
 
        If GroupPos+3>=GroupLimit Then Continue;
        DataOfs32:=LongInt(Buffer[GroupPos])
@@ -1712,6 +2016,7 @@ Begin
         SegIndex:=((SegIndex And $7F) Shl 8) Or Buffer[GroupPos];
         Inc(GroupPos);
              End;
+               SegIndex:=MapSegIndexLocal(SegIndex);
 
              If RecType=$A3 Then Begin
         If GroupPos+3>=GroupLimit Then Continue;
@@ -1781,6 +2086,7 @@ Begin
         If GroupLimit<=0 Then Continue;
 
         If Not ReadOmfIndex(GroupPos,GroupLimit,SegIndex) Then Continue;
+        SegIndex:=MapSegIndexLocal(SegIndex);
         If GroupPos>=GroupLimit Then Continue;
         BakLocType:=Buffer[GroupPos];
         Inc(GroupPos);
@@ -1902,6 +2208,7 @@ Begin
        If ComdatAllocType=0 Then Begin
         If Not ReadOmfIndex(GroupPos,GroupLimit,BaseGroupIdx) Then Continue;
         If Not ReadOmfIndex(GroupPos,GroupLimit,BaseSegIdx) Then Continue;
+        BaseSegIdx:=MapSegIndexLocal(BaseSegIdx);
         If BaseSegIdx=0 Then Begin
          If RecType=$C3 Then Begin
           If GroupPos+3<GroupLimit Then Inc(GroupPos,4)
@@ -2819,25 +3126,445 @@ Begin
   End;
  End;
  Close(ObjFile);
-  { Applique les ALIAS tardifs aux symboles externes deja collectes }
- SymItem:=SymbolHead;
- While SymItem<>Nil do Begin
-  If SymItem^.Value.IsExternal Then
-   SymItem^.Value.Name:=Copy(ResolveAliasName(SymItem^.Value.Name),1,32);
-  SymItem:=SymItem^.Next;
- End;
-  { Adresse relative de chaque segment dans l'image li�e }
- For i:=1 to SegmentCount do Begin
-  SegPtr:=GetSegmentPtr(i);
-  If SegPtr=Nil Then Continue;
-  If i=1 Then SegPtr^.Address:=0
-   Else Begin
-    PrevSegPtr:=GetSegmentPtr(i-1);
-    If PrevSegPtr<>Nil Then SegPtr^.Address:=PrevSegPtr^.Address+PrevSegPtr^.Size
-          Else SegPtr^.Address:=0;
-   End;
- End;
  ReadObjFile:=True;
+End;
+
+Function ReadRecordHeaderAt(Var InF:File; Const Pos,Limit:LongInt;
+                            Var RecType:Byte; Var RecLen:Word):Boolean;
+Begin
+ ReadRecordHeaderAt:=False;
+ If (Pos<0)Or(Pos+3>Limit) Then Exit;
+ Seek(InF,Pos);
+ BlockRead(InF,RecType,1);
+ BlockRead(InF,RecLen,2);
+ If RecType<$80 Then RecType:=RecType Or $80;
+ If (RecLen=0)Or(Pos+3+LongInt(RecLen)>Limit) Then Exit;
+ ReadRecordHeaderAt:=True;
+End;
+
+Function ReadOmfRecordAt(Var InF:File; Const Pos,Limit:LongInt;
+                         Var RecType:Byte; Var RecLen:Word;
+                         Var RecBuf:TObjRecBuffer):Boolean;
+Begin
+ ReadOmfRecordAt:=False;
+ If Not ReadRecordHeaderAt(InF,Pos,Limit,RecType,RecLen) Then Exit;
+ If RecLen>SizeOf(RecBuf) Then Exit;
+ Seek(InF,Pos+3);
+ BlockRead(InF,RecBuf,RecLen);
+ ReadOmfRecordAt:=True;
+End;
+
+Function ReadOmfIndexFromBuf(Var RecBuf:TObjRecBuffer; Var Pos:Integer;
+                             Limit:Integer; Var Idx:Word):Boolean;
+Var
+ b:Byte;
+Begin
+ ReadOmfIndexFromBuf:=False;
+ If Pos>=Limit Then Exit;
+ b:=RecBuf[Pos];
+ Inc(Pos);
+ If (b And $80)<>0 Then Begin
+  If Pos>=Limit Then Exit;
+  Idx:=((Word(b And $7F) Shl 8) Or RecBuf[Pos]);
+  Inc(Pos);
+ End Else Idx:=b;
+ ReadOmfIndexFromBuf:=True;
+End;
+
+Function PublicRecordDefinesNeededSymbol(Const RecType:Byte;
+                                         Var RecBuf:TObjRecBuffer;
+                                         Const RecLen:Word;
+                                         Const LibName,ModuleName:String;
+                                         Const DoTrace:Boolean;
+                                         Var PublicCount,NeededCount:Integer):Boolean;
+Var
+ PubPos,PubLimit:Integer;
+ ParsedName:String[64];
+ ParsedNameLen:Byte;
+ BaseGroupIdx,BaseSegIdx,PubTypeIdx:Word;
+ k:Integer;
+ Is32Rec:Boolean;
+ SymbolNeeded:Boolean;
+ DisplayModuleName:String[64];
+Begin
+ PublicRecordDefinesNeededSymbol:=False;
+ PubPos:=0;
+ PubLimit:=RecLen-1; { sans checksum }
+ If PubLimit<=0 Then Exit;
+ If ModuleName='' Then DisplayModuleName:='(sans_nom)'
+                 Else DisplayModuleName:=ModuleName;
+
+ If Not ReadOmfIndexFromBuf(RecBuf,PubPos,PubLimit,BaseGroupIdx) Then Exit;
+ If Not ReadOmfIndexFromBuf(RecBuf,PubPos,PubLimit,BaseSegIdx) Then Exit;
+
+ Is32Rec:=RecType In [$8F,$91,$93,$B7];
+ If BaseSegIdx=0 Then Begin
+  If Is32Rec Then Begin
+   If PubPos+3<PubLimit Then Inc(PubPos,4)
+                      Else Exit;
+  End Else Begin
+   If PubPos+1<PubLimit Then Inc(PubPos,2)
+                      Else Exit;
+  End;
+ End;
+
+ While PubPos<PubLimit do Begin
+  ParsedNameLen:=RecBuf[PubPos];
+  Inc(PubPos);
+  If (ParsedNameLen=0)Or(PubPos>PubLimit) Then Break;
+  If PubPos+ParsedNameLen>PubLimit Then ParsedNameLen:=PubLimit-PubPos;
+
+  ParsedName:='';
+  For k:=1 to ParsedNameLen do Begin
+   ParsedName:=ParsedName+Chr(RecBuf[PubPos]);
+   Inc(PubPos);
+  End;
+
+  If Is32Rec Then Begin
+   If PubPos+3>=PubLimit Then Break;
+   Inc(PubPos,4);
+  End Else Begin
+   If PubPos+1>=PubLimit Then Break;
+   Inc(PubPos,2);
+  End;
+
+  If Not ReadOmfIndexFromBuf(RecBuf,PubPos,PubLimit,PubTypeIdx) Then Break;
+
+  SymbolNeeded:=IsExternalNameUnresolved(ParsedName);
+  Inc(PublicCount);
+  If SymbolNeeded Then Begin
+   Inc(NeededCount);
+   PublicRecordDefinesNeededSymbol:=True;
+  End;
+
+  If DoTrace And TraceLibSymbolsRequested Then Begin
+   If SymbolNeeded Then
+    WriteLn('TRACE LIB:   symbole ',LibName,'::',DisplayModuleName,' -> ',ParsedName,' [utile]')
+   Else
+    WriteLn('TRACE LIB:   symbole ',LibName,'::',DisplayModuleName,' -> ',ParsedName,' [ignore]');
+  End;
+ End;
+End;
+
+Function ModuleDefinesNeededSymbol(Var LibF:File;
+                                   Const ModStart,ModEnd:LongInt;
+                                   Const LibName,ModuleName:String;
+                                   Const DoTrace:Boolean;
+                                   Var PublicCount,NeededCount:Integer):Boolean;
+Var
+ Pos:LongInt;
+ RecType:Byte;
+ RecLen:Word;
+ RecBuf:TObjRecBuffer;
+Begin
+ ModuleDefinesNeededSymbol:=False;
+ PublicCount:=0;
+ NeededCount:=0;
+ Pos:=ModStart;
+ While Pos<ModEnd do Begin
+  If Not ReadOmfRecordAt(LibF,Pos,ModEnd,RecType,RecLen,RecBuf) Then Exit;
+  If RecType In [$8E,$8F,$90,$91,$92,$93,$B6,$B7] Then
+   If PublicRecordDefinesNeededSymbol(RecType,RecBuf,RecLen,
+                                      LibName,ModuleName,DoTrace,
+                                      PublicCount,NeededCount) Then
+    ModuleDefinesNeededSymbol:=True;
+  Inc(Pos,3+RecLen);
+ End;
+End;
+
+Function TryParseOmfModuleRange(Var LibF:File; Const FileLimit,StartPos:LongInt;
+                                Var ModEnd:LongInt; Var ModName:TStr64):Boolean;
+Var
+ Pos,NextPos:LongInt;
+ RecType:Byte;
+ RecLen:Word;
+ RecBuf:TObjRecBuffer;
+ NameLen:Byte;
+ k:Integer;
+Begin
+ TryParseOmfModuleRange:=False;
+ ModEnd:=0;
+ ModName:='';
+
+ If Not ReadOmfRecordAt(LibF,StartPos,FileLimit,RecType,RecLen,RecBuf) Then Exit;
+ If Not (RecType In [$80,$82]) Then Exit;
+
+ If RecLen>=2 Then Begin
+  NameLen:=RecBuf[0];
+  If NameLen>(RecLen-2) Then NameLen:=RecLen-2;
+  If NameLen>64 Then NameLen:=64;
+  For k:=1 to NameLen do ModName:=ModName+Chr(RecBuf[k]);
+ End;
+
+ Pos:=StartPos;
+ While Pos<FileLimit do Begin
+  If Not ReadRecordHeaderAt(LibF,Pos,FileLimit,RecType,RecLen) Then Exit;
+  NextPos:=Pos+3+RecLen;
+  If NextPos>FileLimit Then Exit;
+  If RecType In [$8A,$8B] Then Begin
+   ModEnd:=NextPos;
+   TryParseOmfModuleRange:=True;
+   Exit;
+  End;
+  Pos:=NextPos;
+ End;
+End;
+
+Function FindNextOmfModuleInLib(Var LibF:File; Const FileLimit:LongInt;
+                                Var ScanPos:LongInt;
+                                Var ModStart,ModEnd:LongInt;
+                                Var ModName:TStr64):Boolean;
+Var
+ Pos:LongInt;
+ RecType:Byte;
+ RecLen:Word;
+Begin
+ FindNextOmfModuleInLib:=False;
+ ModStart:=0;
+ ModEnd:=0;
+ ModName:='';
+ Pos:=ScanPos;
+
+ While Pos+3<=FileLimit do Begin
+  If ReadRecordHeaderAt(LibF,Pos,FileLimit,RecType,RecLen) Then
+   If RecType In [$80,$82] Then
+    If TryParseOmfModuleRange(LibF,FileLimit,Pos,ModEnd,ModName) Then Begin
+     ModStart:=Pos;
+     ScanPos:=ModEnd;
+     FindNextOmfModuleInLib:=True;
+     Exit;
+    End;
+  Inc(Pos);
+ End;
+
+ ScanPos:=FileLimit;
+End;
+
+Function FileExistsSimple(Const FileName:String):Boolean;
+Var
+ f:File;
+ err:Integer;
+Begin
+ {$I-}
+ Assign(f,FileName);
+ Reset(f,1);
+ err:=IOResult;
+ {$I+}
+ If err=0 Then Begin
+  Close(f);
+  FileExistsSimple:=True;
+ End Else FileExistsSimple:=False;
+End;
+
+Function ExtractLibModuleToTempObj(Var LibF:File;
+                                   Const ModStart,ModEnd:LongInt;
+                                   Var TempObjName:TStr128):Boolean;
+Var
+ OutF:File;
+ CopyBuf:Array[0..1023] of Byte;
+ Remaining,CurPos:LongInt;
+ ChunkSize:Word;
+ numText:String;
+ candidate:String[128];
+ n:Integer;
+Begin
+ ExtractLibModuleToTempObj:=False;
+ TempObjName:='';
+ If ModEnd<=ModStart Then Exit;
+
+ n:=TempLibObjCount+1;
+ Repeat
+  Str(n:0,numText);
+  candidate:='~LNKLIB'+numText+'.OBJ';
+  Inc(n);
+ Until Not FileExistsSimple(candidate);
+
+ {$I-}
+ Assign(OutF,candidate);
+ Rewrite(OutF,1);
+ If IOResult<>0 Then Begin
+  {$I+}
+  Exit;
+ End;
+ {$I+}
+
+ CurPos:=ModStart;
+ Remaining:=ModEnd-ModStart;
+ While Remaining>0 do Begin
+  If Remaining>SizeOf(CopyBuf) Then ChunkSize:=SizeOf(CopyBuf)
+                              Else ChunkSize:=Remaining;
+  Seek(LibF,CurPos);
+  BlockRead(LibF,CopyBuf,ChunkSize);
+  BlockWrite(OutF,CopyBuf,ChunkSize);
+  Inc(CurPos,ChunkSize);
+  Dec(Remaining,ChunkSize);
+ End;
+ Close(OutF);
+
+ TempObjName:=candidate;
+ ExtractLibModuleToTempObj:=True;
+End;
+
+Function ResolveNeededModulesFromLibrary(Const LibIdx:Integer):Integer;
+Var
+ LibF:File;
+ fileLimit:LongInt;
+ scanPos,modStart,modEnd:LongInt;
+ moduleName:TStr64;
+ tempObjName:TStr128;
+ addedCount:Integer;
+ err:Integer;
+ modulePublicCount,moduleNeededCount:Integer;
+ moduleNeeded:Boolean;
+ unresolvedNow:Integer;
+Begin
+ ResolveNeededModulesFromLibrary:=0;
+ addedCount:=0;
+
+ {$I-}
+ Assign(LibF,LibInputList^[LibIdx]);
+ Reset(LibF,1);
+ err:=IOResult;
+ {$I+}
+ If err<>0 Then Begin
+  WriteLn('Avertissement : impossible de lire la bibliotheque : ',LibInputList^[LibIdx]);
+  Exit;
+ End;
+
+ If TraceLibRequested Then
+  WriteLn('TRACE LIB: bibliotheque #',LibIdx,' -> ',LibInputList^[LibIdx]);
+
+ fileLimit:=FileSize(LibF);
+ scanPos:=0;
+ While FindNextOmfModuleInLib(LibF,fileLimit,scanPos,modStart,modEnd,moduleName) do Begin
+  If TraceLibRequested Then
+  WriteLn('TRACE LIB: module detecte ',LibInputList^[LibIdx],'::',moduleName,
+        ' [start=',modStart,' end=',modEnd,']');
+
+  If IsLibModuleAlreadyLoaded(LibIdx,modStart) Then Begin
+  If TraceLibRequested Then
+   WriteLn('TRACE LIB:   module deja charge, ignore');
+  Continue;
+  End;
+  Inc(LibModulesScannedCount);
+
+  unresolvedNow:=CountUnresolvedExternalNames;
+  If unresolvedNow=0 Then Begin
+  If TraceLibRequested Then
+   WriteLn('TRACE LIB:   aucun externe non resolu restant, arret du scan de la bibliotheque');
+  Break;
+  End;
+
+  moduleNeeded:=ModuleDefinesNeededSymbol(LibF,modStart,modEnd,
+                            LibInputList^[LibIdx],moduleName,
+                            TraceLibRequested,
+                            modulePublicCount,moduleNeededCount);
+    If TraceLibRequested Then Begin
+     If moduleNeeded Then
+      WriteLn('TRACE LIB:   publics=',modulePublicCount,
+        ' utiles=',moduleNeededCount,' -> charge')
+     Else
+      WriteLn('TRACE LIB:   publics=',modulePublicCount,
+        ' utiles=',moduleNeededCount,' -> ignore');
+    End;
+
+  If moduleNeeded Then Begin
+   If ObjInputCount>=MAX_CMD_OBJS Then Begin
+    WriteLn('Erreur : Trop de modules OBJ apres extraction des bibliotheques');
+    Close(LibF);
+    Halt(31);
+   End;
+
+   If ExtractLibModuleToTempObj(LibF,modStart,modEnd,tempObjName) Then Begin
+   If TraceLibRequested Then
+    WriteLn('TRACE LIB:   extraction module vers ',tempObjName);
+    ObjSegBaseList[ObjInputCount+1]:=SegmentCount;
+    If ReadObjFile(tempObjName) Then Begin
+     Inc(ObjInputCount);
+      ObjInputList^[ObjInputCount]:=tempObjName;
+     AddTempLibObjFile(tempObjName);
+     MarkLibModuleLoaded(LibIdx,modStart,moduleName);
+     Inc(LibModulesLoadedCount);
+     Inc(addedCount);
+     ApplyAliasToExternalSymbols;
+    If TraceLibRequested Then
+     WriteLn('TRACE LIB:   module charge avec succes');
+    End Else Begin
+     WriteLn('Avertissement : module LIB ignore (lecture impossible) : ',tempObjName);
+     MarkLibModuleLoaded(LibIdx,modStart,moduleName);
+    If TraceLibRequested Then
+     WriteLn('TRACE LIB:   echec de lecture du module extrait');
+    End;
+   End Else Begin
+      WriteLn('Avertissement : extraction module LIB impossible : ',LibInputList^[LibIdx]);
+    MarkLibModuleLoaded(LibIdx,modStart,moduleName);
+   If TraceLibRequested Then
+    WriteLn('TRACE LIB:   echec extraction module');
+   End;
+  End Else Begin
+  If TraceLibRequested Then
+   WriteLn('TRACE LIB:   module ignore (aucun symbole utile)');
+  End;
+ End;
+
+ Close(LibF);
+ ResolveNeededModulesFromLibrary:=addedCount;
+End;
+
+Procedure ResolveLibrariesForExternals;
+Var
+ passIdx:Integer;
+ libIdx:Integer;
+ unresolvedBefore,unresolvedAfter:Integer;
+ addedPass:Integer;
+ done:Boolean;
+Begin
+ LibResolutionPasses:=0;
+ If LibInputCount=0 Then Exit;
+
+ If TraceLibRequested Then
+  WriteLn('TRACE LIB: debut resolution bibliotheques (',LibInputCount,' bibliotheque(s))');
+
+ passIdx:=0;
+ done:=False;
+ While Not done do Begin
+  Inc(passIdx);
+  LibResolutionPasses:=passIdx;
+  ApplyAliasToExternalSymbols;
+  unresolvedBefore:=CountUnresolvedExternalNames;
+
+  If TraceLibRequested Then Begin
+   WriteLn('TRACE LIB: ---- passe #',passIdx,' ----');
+   TraceUnresolvedExternalNames('avant passe',20);
+  End;
+
+  If unresolvedBefore=0 Then Begin
+   done:=True;
+   If TraceLibRequested Then
+    WriteLn('TRACE LIB: plus aucun externe non resolu, fin des passes');
+  End Else Begin
+   addedPass:=0;
+   For libIdx:=1 to LibInputCount do Begin
+    Inc(addedPass,ResolveNeededModulesFromLibrary(libIdx));
+    If CountUnresolvedExternalNames=0 Then Break;
+   End;
+
+   ApplyAliasToExternalSymbols;
+   unresolvedAfter:=CountUnresolvedExternalNames;
+   If TraceLibRequested Then Begin
+    WriteLn('TRACE LIB: fin passe #',passIdx,' -> modules charges=',addedPass,
+            ' externes restants=',unresolvedAfter);
+    TraceUnresolvedExternalNames('apres passe',20);
+   End;
+   If (addedPass=0)Or(unresolvedAfter=0)Or(passIdx>=32) Then done:=True;
+  End;
+ End;
+
+ unresolvedAfter:=CountUnresolvedExternalNames;
+ If unresolvedAfter>0 Then
+  WriteLn('Avertissement : externes non resolus apres recherche LIB : ',unresolvedAfter);
+ If TraceLibRequested Then
+  WriteLn('TRACE LIB: fin resolution bibliotheques');
 End;
 
 Procedure GenerateExe(Const FileName:String);
@@ -2882,6 +3609,10 @@ Var
  TmpPos:Integer;
  IterPos:Integer;
  SegPtr:PSegment;
+ ObjIdx:Integer;
+ CurObjName:String;
+ ModuleSegBase:Integer;
+ LocalSegCount:Integer;
 
  Function ReadOmfIndexObj(Var Pos:Integer; Limit:Integer; Var Idx:Word):Boolean;
  Var b:Byte;
@@ -2897,6 +3628,12 @@ Var
   End Else Idx:=b;
   ReadOmfIndexObj:=True;
  End;
+
+   Function MapSegIndexObj(Const LocalIdx:Word):Word;
+   Begin
+    If (LocalIdx=0)Or(LocalIdx>LocalSegCount) Then MapSegIndexObj:=0
+    Else MapSegIndexObj:=ModuleSegBase+LocalIdx;
+   End;
 
  Function FindSymbolByNameObj(Const Nm:String; Var SegIdx:Word; Var OfsVal:LongInt):Boolean;
  Var
@@ -2926,7 +3663,7 @@ Begin
  With ExeHeader do Begin
   Signature:=$5A4D;  { 'MZ' }
   MinAlloc:=0;
-  MaxAlloc:=$FFFF;
+    MaxAlloc:=MaxAllocParagraphs;
   InitSS:=0;
   InitSP:=StackSize;
   InitCS:=0;
@@ -2994,175 +3731,120 @@ Begin
     End;
  End;
 
-    { Copie les octets r�els depuis LEDATA du fichier OBJ }
-   Assign(ObjFile,ObjFileName);
-   Reset(ObjFile,1);
-   While Not Eof(ObjFile) do Begin
-    BlockRead(ObjFile,RecType,1);
-    If Eof(ObjFile) Then Break;
-      If RecType<$80 Then RecType:=RecType Or $80;
-    BlockRead(ObjFile,RecLen,2);
-    If RecLen>SizeOf(ObjBuf) Then Begin
-     WriteLn('Erreur : RecLen sup�rieur � la taille du tampon LEDATA');
-     Close(ObjFile);
+    { Copie les octets r�els depuis LEDATA des fichiers OBJ }
+   For ObjIdx:=1 to ObjInputCount do Begin
+      CurObjName:=ObjInputList^[ObjIdx];
+    ModuleSegBase:=ObjSegBaseList[ObjIdx];
+    LocalSegCount:=0;
+
+    {$I-}
+    Assign(ObjFile,CurObjName);
+    Reset(ObjFile,1);
+    If IOResult<>0 Then Begin
+     WriteLn('Erreur : impossible de relire l''objet : ',CurObjName);
      Close(ExeFile);
      Exit;
     End;
-    BlockRead(ObjFile,ObjBuf,RecLen);
-    If (RecType=$A0)Or(RecType=$84) Then Begin
-     If RecLen<5 Then Continue;
-     IdxSize:=1;
-     SegIndex:=ObjBuf[0];
-     If (SegIndex And $80)<>0 Then Begin
-      If RecLen<6 Then Continue;
-      SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[1];
-      IdxSize:=2;
+    {$I+}
+
+    While Not Eof(ObjFile) do Begin
+     BlockRead(ObjFile,RecType,1);
+     If Eof(ObjFile) Then Break;
+     If RecType<$80 Then RecType:=RecType Or $80;
+     BlockRead(ObjFile,RecLen,2);
+     If RecLen>SizeOf(ObjBuf) Then Begin
+      WriteLn('Erreur : RecLen sup�rieur � la taille du tampon LEDATA');
+      Close(ObjFile);
+      Close(ExeFile);
+      Exit;
      End;
-     Move(ObjBuf[IdxSize],SegOffset,2);
-     DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
-     If (DataLen>0)And(SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
-      SegPtr:=GetSegmentPtr(SegIndex);
-      If SegPtr<>Nil Then Begin
-       WritePos:=DataStart+SegPtr^.Address+SegOffset;
-       Seek(ExeFile,WritePos);
-       BlockWrite(ExeFile,ObjBuf[IdxSize+2],DataLen);
+     BlockRead(ObjFile,ObjBuf,RecLen);
+
+     If (RecType=$98)Or(RecType=$99) Then Begin
+      Inc(LocalSegCount);
+      Continue;
+     End;
+
+     If (RecType=$A0)Or(RecType=$84) Then Begin
+      If RecLen<5 Then Continue;
+      IdxSize:=1;
+      SegIndex:=ObjBuf[0];
+      If (SegIndex And $80)<>0 Then Begin
+       If RecLen<6 Then Continue;
+       SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[1];
+       IdxSize:=2;
       End;
-     End;
-    End Else If RecType=$86 Then Begin
-     GroupPos:=0;
-     GroupLimit:=RecLen-1; { sans checksum }
-     If GroupLimit<=0 Then Continue;
-
-     SegIndex:=ObjBuf[GroupPos];
-     Inc(GroupPos);
-     If (SegIndex And $80)<>0 Then Begin
-      If GroupPos>=GroupLimit Then Continue;
-      SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
-      Inc(GroupPos);
-     End;
-
-     If GroupPos+1>=GroupLimit Then Continue;
-     SegOffset:=ObjBuf[GroupPos]+Word(ObjBuf[GroupPos+1])*256;
-     Inc(GroupPos,2);
-
-     If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
-      SegPtr:=GetSegmentPtr(SegIndex);
-      If SegPtr<>Nil Then Begin
-       WritePos:=DataStart+SegPtr^.Address+SegOffset;
-       MaxWrite:=LongInt(SegPtr^.Size)-LongInt(SegOffset);
-       If MaxWrite<0 Then MaxWrite:=0;
-       Produced:=0;
-       IterPos:=GroupPos;
-       While IterPos<GroupLimit do
-        If Not EmitIterBlock16(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite) Then Break;
-      End;
-     End;
-        End Else If RecType=$A1 Then Begin
-         GroupPos:=0;
-         GroupLimit:=RecLen-1; { sans checksum }
-         If GroupLimit<=0 Then Continue;
-
-         SegIndex:=ObjBuf[GroupPos];
-         Inc(GroupPos);
-         If (SegIndex And $80)<>0 Then Begin
-          If GroupPos>=GroupLimit Then Continue;
-          SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
-          Inc(GroupPos);
-         End;
-
-         If GroupPos+3>=GroupLimit Then Continue;
-         DataOfs32:=LongInt(ObjBuf[GroupPos])
-           + LongInt(ObjBuf[GroupPos+1]) * 256
-           + LongInt(ObjBuf[GroupPos+2]) * 65536
-           + LongInt(ObjBuf[GroupPos+3]) * 16777216;
-         Inc(GroupPos,4);
-
-         If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
-          SegPtr:=GetSegmentPtr(SegIndex);
-          If (SegPtr<>Nil)And(DataOfs32>=0) Then Begin
-           WritePos:=DataStart+SegPtr^.Address+DataOfs32;
-           MaxWrite:=LongInt(SegPtr^.Size)-DataOfs32;
-           If MaxWrite<0 Then MaxWrite:=0;
-
-           A1IsIter:=False;
-           LidataUse32:=True;
-           TmpPos:=GroupPos;
-           ParseOK:=True;
-           While TmpPos<GroupLimit do
-      If Not SkipIterBlockEx(ObjBuf,TmpPos,GroupLimit,True,BlockLen) Then Begin
-       ParseOK:=False;
-       Break;
-      End;
-
-           If ParseOK And (TmpPos=GroupLimit) Then Begin
-      A1IsIter:=True;
-      LidataUse32:=True;
-           End Else Begin
-      TmpPos:=GroupPos;
-      ParseOK:=True;
-      While TmpPos<GroupLimit do
-       If Not SkipIterBlockEx(ObjBuf,TmpPos,GroupLimit,False,BlockLen) Then Begin
-        ParseOK:=False;
-        Break;
+      SegIndex:=MapSegIndexObj(SegIndex);
+      Move(ObjBuf[IdxSize],SegOffset,2);
+      DataLen:=RecLen-IdxSize-2-1; { -index -offset -checksum }
+      If (DataLen>0)And(SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+       SegPtr:=GetSegmentPtr(SegIndex);
+       If SegPtr<>Nil Then Begin
+        WritePos:=DataStart+SegPtr^.Address+SegOffset;
+        Seek(ExeFile,WritePos);
+        BlockWrite(ExeFile,ObjBuf[IdxSize+2],DataLen);
        End;
-      If ParseOK And (TmpPos=GroupLimit) Then Begin
-       A1IsIter:=True;
-       LidataUse32:=False;
       End;
-           End;
+     End Else If RecType=$86 Then Begin
+      GroupPos:=0;
+      GroupLimit:=RecLen-1; { sans checksum }
+      If GroupLimit<=0 Then Continue;
 
-           If A1IsIter Then Begin
-      Produced:=0;
-      IterPos:=GroupPos;
-      While IterPos<GroupLimit do
-       If Not EmitIterBlockEx(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite,LidataUse32) Then Break;
-           End Else Begin
-      If GroupPos<GroupLimit Then DataLen:=GroupLimit-GroupPos
-               Else DataLen:=0;
-      If MaxWrite<=0 Then DataLen:=0
-      Else If LongInt(DataLen)>MaxWrite Then DataLen:=MaxWrite;
-      If DataLen>0 Then Begin
-       Seek(ExeFile,WritePos);
-       BlockWrite(ExeFile,ObjBuf[GroupPos],DataLen);
-      End;
-           End;
-          End;
-         End;
-        End Else If (RecType=$A2)Or(RecType=$A3) Then Begin
-     GroupPos:=0;
-     GroupLimit:=RecLen-1; { sans checksum }
-     If GroupLimit<=0 Then Continue;
-
-     SegIndex:=ObjBuf[GroupPos];
-     Inc(GroupPos);
-     If (SegIndex And $80)<>0 Then Begin
-      If GroupPos>=GroupLimit Then Continue;
-      SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
+      SegIndex:=ObjBuf[GroupPos];
       Inc(GroupPos);
-     End;
+      If (SegIndex And $80)<>0 Then Begin
+       If GroupPos>=GroupLimit Then Continue;
+       SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
+       Inc(GroupPos);
+      End;
+      SegIndex:=MapSegIndexObj(SegIndex);
 
-     If RecType=$A3 Then Begin
+      If GroupPos+1>=GroupLimit Then Continue;
+      SegOffset:=ObjBuf[GroupPos]+Word(ObjBuf[GroupPos+1])*256;
+      Inc(GroupPos,2);
+
+      If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+       SegPtr:=GetSegmentPtr(SegIndex);
+       If SegPtr<>Nil Then Begin
+        WritePos:=DataStart+SegPtr^.Address+SegOffset;
+        MaxWrite:=LongInt(SegPtr^.Size)-LongInt(SegOffset);
+        If MaxWrite<0 Then MaxWrite:=0;
+        Produced:=0;
+        IterPos:=GroupPos;
+        While IterPos<GroupLimit do
+         If Not EmitIterBlock16(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite) Then Break;
+       End;
+      End;
+     End Else If RecType=$A1 Then Begin
+      GroupPos:=0;
+      GroupLimit:=RecLen-1; { sans checksum }
+      If GroupLimit<=0 Then Continue;
+
+      SegIndex:=ObjBuf[GroupPos];
+      Inc(GroupPos);
+      If (SegIndex And $80)<>0 Then Begin
+       If GroupPos>=GroupLimit Then Continue;
+       SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
+       Inc(GroupPos);
+      End;
+      SegIndex:=MapSegIndexObj(SegIndex);
+
       If GroupPos+3>=GroupLimit Then Continue;
       DataOfs32:=LongInt(ObjBuf[GroupPos])
-              + LongInt(ObjBuf[GroupPos+1]) * 256
-              + LongInt(ObjBuf[GroupPos+2]) * 65536
-              + LongInt(ObjBuf[GroupPos+3]) * 16777216;
+        + LongInt(ObjBuf[GroupPos+1]) * 256
+        + LongInt(ObjBuf[GroupPos+2]) * 65536
+        + LongInt(ObjBuf[GroupPos+3]) * 16777216;
       Inc(GroupPos,4);
-     End Else Begin
-      If GroupPos+1>=GroupLimit Then Continue;
-      DataOfs32:=ObjBuf[GroupPos]+LongInt(ObjBuf[GroupPos+1])*256;
-      Inc(GroupPos,2);
-     End;
 
-     If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
-      SegPtr:=GetSegmentPtr(SegIndex);
-      If (SegPtr<>Nil)And(DataOfs32>=0) Then Begin
-       WritePos:=DataStart+SegPtr^.Address+DataOfs32;
-       MaxWrite:=LongInt(SegPtr^.Size)-DataOfs32;
-       If MaxWrite<0 Then MaxWrite:=0;
+      If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+       SegPtr:=GetSegmentPtr(SegIndex);
+       If (SegPtr<>Nil)And(DataOfs32>=0) Then Begin
+        WritePos:=DataStart+SegPtr^.Address+DataOfs32;
+        MaxWrite:=LongInt(SegPtr^.Size)-DataOfs32;
+        If MaxWrite<0 Then MaxWrite:=0;
 
-       LidataUse32:=(RecType=$A3);
-       If LidataUse32 Then Begin
+        A1IsIter:=False;
+        LidataUse32:=True;
         TmpPos:=GroupPos;
         ParseOK:=True;
         While TmpPos<GroupLimit do
@@ -3170,89 +3852,76 @@ Begin
           ParseOK:=False;
           Break;
          End;
-        If Not ParseOK Then LidataUse32:=False;
+
+        If ParseOK And (TmpPos=GroupLimit) Then Begin
+         A1IsIter:=True;
+         LidataUse32:=True;
+        End Else Begin
+         TmpPos:=GroupPos;
+         ParseOK:=True;
+         While TmpPos<GroupLimit do
+          If Not SkipIterBlockEx(ObjBuf,TmpPos,GroupLimit,False,BlockLen) Then Begin
+           ParseOK:=False;
+           Break;
+          End;
+         If ParseOK And (TmpPos=GroupLimit) Then Begin
+          A1IsIter:=True;
+          LidataUse32:=False;
+         End;
+        End;
+
+        If A1IsIter Then Begin
+         Produced:=0;
+         IterPos:=GroupPos;
+         While IterPos<GroupLimit do
+          If Not EmitIterBlockEx(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite,LidataUse32) Then Break;
+        End Else Begin
+         If GroupPos<GroupLimit Then DataLen:=GroupLimit-GroupPos
+                             Else DataLen:=0;
+         If MaxWrite<=0 Then DataLen:=0
+         Else If LongInt(DataLen)>MaxWrite Then DataLen:=MaxWrite;
+         If DataLen>0 Then Begin
+          Seek(ExeFile,WritePos);
+          BlockWrite(ExeFile,ObjBuf[GroupPos],DataLen);
+         End;
+        End;
        End;
-
-       Produced:=0;
-       IterPos:=GroupPos;
-       While IterPos<GroupLimit do
-        If Not EmitIterBlockEx(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite,LidataUse32) Then Break;
       End;
-     End;
-    End Else If (RecType=$C2)Or(RecType=$C3) Then Begin
-     GroupPos:=0;
-     GroupLimit:=RecLen-1; { sans checksum }
-     If GroupLimit<=0 Then Continue;
-     If GroupPos+2>=GroupLimit Then Continue;
+     End Else If (RecType=$A2)Or(RecType=$A3) Then Begin
+      GroupPos:=0;
+      GroupLimit:=RecLen-1; { sans checksum }
+      If GroupLimit<=0 Then Continue;
 
-     ComdatFlags:=ObjBuf[GroupPos];
-     Inc(GroupPos);
-     ComdatAttr:=ObjBuf[GroupPos];
-     Inc(GroupPos);
-     ComdatAllocType:=ComdatAttr And $0F;
+      SegIndex:=ObjBuf[GroupPos];
+      Inc(GroupPos);
+      If (SegIndex And $80)<>0 Then Begin
+       If GroupPos>=GroupLimit Then Continue;
+       SegIndex:=((SegIndex And $7F) Shl 8) Or ObjBuf[GroupPos];
+       Inc(GroupPos);
+      End;
+      SegIndex:=MapSegIndexObj(SegIndex);
 
-     Inc(GroupPos); { Align }
-     If GroupPos>GroupLimit Then Continue;
-
-     If RecType=$C3 Then Begin
-      If GroupPos+3>=GroupLimit Then Continue;
-      ComdatEnumOfs:=LongInt(ObjBuf[GroupPos])
+      If RecType=$A3 Then Begin
+       If GroupPos+3>=GroupLimit Then Continue;
+       DataOfs32:=LongInt(ObjBuf[GroupPos])
                + LongInt(ObjBuf[GroupPos+1]) * 256
                + LongInt(ObjBuf[GroupPos+2]) * 65536
                + LongInt(ObjBuf[GroupPos+3]) * 16777216;
-      Inc(GroupPos,4);
-     End Else Begin
-      If GroupPos+1>=GroupLimit Then Continue;
-      ComdatEnumOfs:=ObjBuf[GroupPos]+LongInt(ObjBuf[GroupPos+1])*256;
-      Inc(GroupPos,2);
-     End;
-
-     If Not ReadOmfIndexObj(GroupPos,GroupLimit,ComdatTypeIdx) Then Continue;
-
-     ComdatTargetSeg:=0;
-     ComdatBaseOfs:=0;
-     If ComdatAllocType=0 Then Begin
-      If Not ReadOmfIndexObj(GroupPos,GroupLimit,ComdatBaseGroupIdx) Then Continue;
-      If Not ReadOmfIndexObj(GroupPos,GroupLimit,ComdatBaseSegIdx) Then Continue;
-      If ComdatBaseSegIdx=0 Then Begin
-       If RecType=$C3 Then Begin
-        If GroupPos+3<GroupLimit Then Inc(GroupPos,4)
-                            Else Continue;
-       End Else Begin
-        If GroupPos+1<GroupLimit Then Inc(GroupPos,2)
-                            Else Continue;
-       End;
+       Inc(GroupPos,4);
       End Else Begin
-       ComdatTargetSeg:=ComdatBaseSegIdx;
-       ComdatBaseOfs:=0;
+       If GroupPos+1>=GroupLimit Then Continue;
+       DataOfs32:=ObjBuf[GroupPos]+LongInt(ObjBuf[GroupPos+1])*256;
+       Inc(GroupPos,2);
       End;
-     End;
 
-     If GroupPos>=GroupLimit Then Continue;
-     ComdatNameLen:=ObjBuf[GroupPos];
-     Inc(GroupPos);
-     If ComdatNameLen>64 Then ComdatNameLen:=64;
-     If GroupPos+ComdatNameLen>GroupLimit Then ComdatNameLen:=GroupLimit-GroupPos;
+      If (SegIndex>0)And(SegIndex<=SegmentCount) Then Begin
+       SegPtr:=GetSegmentPtr(SegIndex);
+       If (SegPtr<>Nil)And(DataOfs32>=0) Then Begin
+        WritePos:=DataStart+SegPtr^.Address+DataOfs32;
+        MaxWrite:=LongInt(SegPtr^.Size)-DataOfs32;
+        If MaxWrite<0 Then MaxWrite:=0;
 
-     ComdatName:='';
-     For i:=1 to ComdatNameLen do Begin
-      ComdatName:=ComdatName+Chr(ObjBuf[GroupPos]);
-      Inc(GroupPos);
-     End;
-
-     If (ComdatTargetSeg=0)And(ComdatName<>'') Then
-      FindSymbolByNameObj(ComdatName,ComdatTargetSeg,ComdatBaseOfs);
-
-     DataOfs32:=ComdatBaseOfs+ComdatEnumOfs;
-     If (ComdatTargetSeg>0)And(ComdatTargetSeg<=SegmentCount)And(DataOfs32>=0) Then Begin
-      SegPtr:=GetSegmentPtr(ComdatTargetSeg);
-      If SegPtr<>Nil Then Begin
-       WritePos:=DataStart+SegPtr^.Address+DataOfs32;
-       MaxWrite:=LongInt(SegPtr^.Size)-DataOfs32;
-       If MaxWrite<0 Then MaxWrite:=0;
-
-       If (ComdatFlags And $02)<>0 Then Begin
-        LidataUse32:=(RecType=$C3);
+        LidataUse32:=(RecType=$A3);
         If LidataUse32 Then Begin
          TmpPos:=GroupPos;
          ParseOK:=True;
@@ -3268,19 +3937,113 @@ Begin
         IterPos:=GroupPos;
         While IterPos<GroupLimit do
          If Not EmitIterBlockEx(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite,LidataUse32) Then Break;
+       End;
+      End;
+     End Else If (RecType=$C2)Or(RecType=$C3) Then Begin
+      GroupPos:=0;
+      GroupLimit:=RecLen-1; { sans checksum }
+      If GroupLimit<=0 Then Continue;
+      If GroupPos+2>=GroupLimit Then Continue;
+
+      ComdatFlags:=ObjBuf[GroupPos];
+      Inc(GroupPos);
+      ComdatAttr:=ObjBuf[GroupPos];
+      Inc(GroupPos);
+      ComdatAllocType:=ComdatAttr And $0F;
+
+      Inc(GroupPos); { Align }
+      If GroupPos>GroupLimit Then Continue;
+
+      If RecType=$C3 Then Begin
+       If GroupPos+3>=GroupLimit Then Continue;
+       ComdatEnumOfs:=LongInt(ObjBuf[GroupPos])
+                + LongInt(ObjBuf[GroupPos+1]) * 256
+                + LongInt(ObjBuf[GroupPos+2]) * 65536
+                + LongInt(ObjBuf[GroupPos+3]) * 16777216;
+       Inc(GroupPos,4);
+      End Else Begin
+       If GroupPos+1>=GroupLimit Then Continue;
+       ComdatEnumOfs:=ObjBuf[GroupPos]+LongInt(ObjBuf[GroupPos+1])*256;
+       Inc(GroupPos,2);
+      End;
+
+      If Not ReadOmfIndexObj(GroupPos,GroupLimit,ComdatTypeIdx) Then Continue;
+
+      ComdatTargetSeg:=0;
+      ComdatBaseOfs:=0;
+      If ComdatAllocType=0 Then Begin
+       If Not ReadOmfIndexObj(GroupPos,GroupLimit,ComdatBaseGroupIdx) Then Continue;
+       If Not ReadOmfIndexObj(GroupPos,GroupLimit,ComdatBaseSegIdx) Then Continue;
+       ComdatBaseSegIdx:=MapSegIndexObj(ComdatBaseSegIdx);
+       If ComdatBaseSegIdx=0 Then Begin
+        If RecType=$C3 Then Begin
+         If GroupPos+3<GroupLimit Then Inc(GroupPos,4)
+                             Else Continue;
+        End Else Begin
+         If GroupPos+1<GroupLimit Then Inc(GroupPos,2)
+                             Else Continue;
+        End;
        End Else Begin
-        If GroupPos<GroupLimit Then DataLen:=GroupLimit-GroupPos
-                             Else DataLen:=0;
-        If MaxWrite<=0 Then DataLen:=0
-        Else If LongInt(DataLen)>MaxWrite Then DataLen:=MaxWrite;
-        If DataLen>0 Then Begin
-         Seek(ExeFile,WritePos);
-         BlockWrite(ExeFile,ObjBuf[GroupPos],DataLen);
+        ComdatTargetSeg:=ComdatBaseSegIdx;
+        ComdatBaseOfs:=0;
+       End;
+      End;
+
+      If GroupPos>=GroupLimit Then Continue;
+      ComdatNameLen:=ObjBuf[GroupPos];
+      Inc(GroupPos);
+      If ComdatNameLen>64 Then ComdatNameLen:=64;
+      If GroupPos+ComdatNameLen>GroupLimit Then ComdatNameLen:=GroupLimit-GroupPos;
+
+      ComdatName:='';
+      For i:=1 to ComdatNameLen do Begin
+       ComdatName:=ComdatName+Chr(ObjBuf[GroupPos]);
+       Inc(GroupPos);
+      End;
+
+      If (ComdatTargetSeg=0)And(ComdatName<>'') Then
+       FindSymbolByNameObj(ComdatName,ComdatTargetSeg,ComdatBaseOfs);
+
+      DataOfs32:=ComdatBaseOfs+ComdatEnumOfs;
+      If (ComdatTargetSeg>0)And(ComdatTargetSeg<=SegmentCount)And(DataOfs32>=0) Then Begin
+       SegPtr:=GetSegmentPtr(ComdatTargetSeg);
+       If SegPtr<>Nil Then Begin
+        WritePos:=DataStart+SegPtr^.Address+DataOfs32;
+        MaxWrite:=LongInt(SegPtr^.Size)-DataOfs32;
+        If MaxWrite<0 Then MaxWrite:=0;
+
+        If (ComdatFlags And $02)<>0 Then Begin
+         LidataUse32:=(RecType=$C3);
+         If LidataUse32 Then Begin
+          TmpPos:=GroupPos;
+          ParseOK:=True;
+          While TmpPos<GroupLimit do
+           If Not SkipIterBlockEx(ObjBuf,TmpPos,GroupLimit,True,BlockLen) Then Begin
+            ParseOK:=False;
+            Break;
+           End;
+          If Not ParseOK Then LidataUse32:=False;
+         End;
+
+         Produced:=0;
+         IterPos:=GroupPos;
+         While IterPos<GroupLimit do
+          If Not EmitIterBlockEx(ExeFile,ObjBuf,IterPos,GroupLimit,WritePos,Produced,MaxWrite,LidataUse32) Then Break;
+        End Else Begin
+         If GroupPos<GroupLimit Then DataLen:=GroupLimit-GroupPos
+                              Else DataLen:=0;
+         If MaxWrite<=0 Then DataLen:=0
+         Else If LongInt(DataLen)>MaxWrite Then DataLen:=MaxWrite;
+         If DataLen>0 Then Begin
+          Seek(ExeFile,WritePos);
+          BlockWrite(ExeFile,ObjBuf[GroupPos],DataLen);
+         End;
         End;
        End;
       End;
      End;
     End;
+    Close(ObjFile);
    End;
 
       { Applique les enregistrements BAKPAT/BAKPAT32 }
@@ -3340,9 +4103,281 @@ Begin
     End;
    PatchItem:=PatchItem^.Next;
    End;
-
-   Close(ObjFile);
  Close(ExeFile);
+End;
+
+Function HexDigit(Const N:Byte):Char;
+Begin
+ If N<10 Then HexDigit:=Chr(Ord('0')+N)
+   Else HexDigit:=Chr(Ord('A')+(N-10));
+End;
+
+Function HexN(Const V:LongInt; Digits:Integer):String;
+Var
+ i:Integer;
+ x:LongInt;
+ s:String;
+Begin
+ If Digits<1 Then Digits:=1;
+ If Digits>16 Then Digits:=16;
+ s:=Copy('0000000000000000',1,Digits);
+ x:=V;
+ For i:=Digits downto 1 do Begin
+  s[i]:=HexDigit(Byte(x And $0F));
+  x:=x Shr 4;
+ End;
+ HexN:=s;
+End;
+
+Function PadRight(Const S:String; Width:Integer):String;
+Var
+ r:String;
+Begin
+ r:=Copy(S,1,Width);
+ While Length(r)<Width do r:=r+' ';
+ PadRight:=r;
+End;
+
+Procedure GenerateMapFile(Const FileName:String);
+Type
+ TSegMapEntry=Record
+  Index:Integer;
+  Base:LongInt;
+  Size:Word;
+  Name:String[16];
+  ClassName:String[8];
+ End;
+ TSymMapEntry=Record
+  SegIndex:Word;
+  Ofs:Word;
+  Linear:LongInt;
+  Name:String[32];
+ End;
+ TLineMapEntry=Record
+  SegIndex:Word;
+  LineNo:LongInt;
+  Ofs:LongInt;
+ End;
+ TSegMapArray=Array[1..MAX_SEGMENTS] of TSegMapEntry;
+ PSegMapArray=^TSegMapArray;
+ TSymMapArray=Array[1..MAX_SYMBOLS] of TSymMapEntry;
+ PSymMapArray=^TSymMapArray;
+ TLineMapArray=Array[1..MAX_LINENUMS] of TLineMapEntry;
+ PLineMapArray=^TLineMapArray;
+ TUnresolvedMapArray=Array[1..MAX_SYMBOLS] of String[32];
+ PUnresolvedMapArray=^TUnresolvedMapArray;
+Var
+ f:Text;
+ segItem:PSegmentItem;
+ symItem:PSymbolItem;
+ lineItem:PLineInfoItem;
+ segPtr:PSegment;
+ mapName:String;
+ k,a,b:Integer;
+ segNo,symNo,lineNo,unresNo:Integer;
+ totalImage:LongInt;
+ unresolvedName:String[32];
+ found:Boolean;
+ extCount,pubCount,resolvedCount:LongInt;
+ segArr:PSegMapArray;
+ symArr:PSymMapArray;
+ lineArr:PLineMapArray;
+ unresolvedArr:PUnresolvedMapArray;
+ tmpSeg:TSegMapEntry;
+ tmpSym:TSymMapEntry;
+ tmpLine:TLineMapEntry;
+ tmpName:String[32];
+Begin
+ If Not MapRequested Then Exit;
+ mapName:=FileName;
+ For k:=1 to Length(mapName) do mapName[k]:=UpCase(mapName[k]);
+ If mapName='NUL' Then Exit;
+
+ {$I-}
+ Assign(f,FileName);
+ Rewrite(f);
+ If IOResult<>0 Then Begin
+  WriteLn('Avertissement : impossible de generer le fichier MAP : ',FileName);
+  Exit;
+ End;
+ {$I+}
+
+   segArr:=Nil;
+   symArr:=Nil;
+   lineArr:=Nil;
+   unresolvedArr:=Nil;
+
+   GetMem(segArr,SizeOf(TSegMapArray));
+   GetMem(symArr,SizeOf(TSymMapArray));
+   GetMem(lineArr,SizeOf(TLineMapArray));
+   GetMem(unresolvedArr,SizeOf(TUnresolvedMapArray));
+
+   FillChar(segArr^,SizeOf(TSegMapArray),0);
+   FillChar(symArr^,SizeOf(TSymMapArray),0);
+   FillChar(lineArr^,SizeOf(TLineMapArray),0);
+   FillChar(unresolvedArr^,SizeOf(TUnresolvedMapArray),0);
+
+ WriteLn(f,' Microsoft (R) Overlay Linker - MAP');
+ WriteLn(f,' Executable : ',ExeFileName);
+ WriteLn(f,' Objets     : ',ObjInputCount,' (CLI=',PrimaryObjInputCount,')');
+ WriteLn(f,' Bibliotheques : ',LibInputCount,'  Modules charges : ',LibModulesLoadedCount);
+ WriteLn(f);
+ WriteLn(f,' Start         Length     Name                   Class');
+
+ segNo:=0;
+ totalImage:=0;
+ segItem:=SegmentHead;
+ While segItem<>Nil do Begin
+  If segNo<MAX_SEGMENTS Then Begin
+   Inc(segNo);
+   segArr^[segNo].Index:=segNo;
+   segArr^[segNo].Base:=segItem^.Value.Address;
+   segArr^[segNo].Size:=segItem^.Value.Size;
+   segArr^[segNo].Name:=Copy(segItem^.Value.Name,1,16);
+   segArr^[segNo].ClassName:=Copy(segItem^.Value.Class,1,8);
+   Inc(totalImage,segItem^.Value.Size);
+  End;
+  segItem:=segItem^.Next;
+ End;
+
+ For a:=1 to segNo-1 do
+  For b:=a+1 to segNo do
+   If (segArr^[a].Base>segArr^[b].Base)
+      Or((segArr^[a].Base=segArr^[b].Base)And(segArr^[a].Name>segArr^[b].Name)) Then Begin
+    tmpSeg:=segArr^[a];
+    segArr^[a]:=segArr^[b];
+    segArr^[b]:=tmpSeg;
+   End;
+
+ For a:=1 to segNo do
+  WriteLn(f,' ',HexN(segArr^[a].Base Div 16,4),':',HexN(segArr^[a].Base Mod 16,8),'H ',
+            HexN(segArr^[a].Size,8),'H ',PadRight(segArr^[a].Name,22),' ',segArr^[a].ClassName);
+
+ If PublicsMapRequested Then Begin
+  symNo:=0;
+  symItem:=SymbolHead;
+  While symItem<>Nil do Begin
+   If (Not symItem^.Value.IsExternal)And(symItem^.Value.Segment>0) Then Begin
+    segPtr:=GetSegmentPtr(symItem^.Value.Segment);
+    If (segPtr<>Nil)And(symNo<MAX_SYMBOLS) Then Begin
+     Inc(symNo);
+     symArr^[symNo].SegIndex:=symItem^.Value.Segment;
+     symArr^[symNo].Ofs:=symItem^.Value.Offset;
+     symArr^[symNo].Linear:=segPtr^.Address+symItem^.Value.Offset;
+     symArr^[symNo].Name:=Copy(symItem^.Value.Name,1,32);
+    End;
+   End;
+   symItem:=symItem^.Next;
+  End;
+
+  For a:=1 to symNo-1 do
+   For b:=a+1 to symNo do
+    If (symArr^[a].Linear>symArr^[b].Linear)
+       Or((symArr^[a].Linear=symArr^[b].Linear)And(symArr^[a].Name>symArr^[b].Name)) Then Begin
+     tmpSym:=symArr^[a];
+     symArr^[a]:=symArr^[b];
+     symArr^[b]:=tmpSym;
+    End;
+
+  WriteLn(f);
+  WriteLn(f,'  Address         Publics by Value');
+  For a:=1 to symNo do
+   WriteLn(f,' ',HexN(symArr^[a].Linear Div 16,4),':',HexN(symArr^[a].Linear Mod 16,8),'H     ',symArr^[a].Name);
+ End;
+
+ If LineNumbersRequested Then Begin
+  lineNo:=0;
+  lineItem:=LineInfoHead;
+  While lineItem<>Nil do Begin
+   If (lineItem^.SegIndex>0)And(lineNo<MAX_LINENUMS) Then Begin
+    Inc(lineNo);
+    lineArr^[lineNo].SegIndex:=lineItem^.SegIndex;
+    lineArr^[lineNo].LineNo:=lineItem^.LineNo;
+    lineArr^[lineNo].Ofs:=lineItem^.CodeOffset;
+   End;
+   lineItem:=lineItem^.Next;
+  End;
+
+  For a:=1 to lineNo-1 do
+   For b:=a+1 to lineNo do
+    If (lineArr^[a].SegIndex>lineArr^[b].SegIndex)
+      Or((lineArr^[a].SegIndex=lineArr^[b].SegIndex)And(lineArr^[a].LineNo>lineArr^[b].LineNo))
+      Or((lineArr^[a].SegIndex=lineArr^[b].SegIndex)
+         And(lineArr^[a].LineNo=lineArr^[b].LineNo)
+         And(lineArr^[a].Ofs>lineArr^[b].Ofs)) Then Begin
+     tmpLine:=lineArr^[a];
+     lineArr^[a]:=lineArr^[b];
+     lineArr^[b]:=tmpLine;
+    End;
+
+  WriteLn(f);
+  WriteLn(f,'  Line numbers');
+  WriteLn(f,'  Segment  Ligne    Offset');
+  For a:=1 to lineNo do
+   WriteLn(f,'  ',lineArr^[a].SegIndex:5,'   ',lineArr^[a].LineNo:7,'  ',lineArr^[a].Ofs:8);
+ End;
+
+ unresNo:=0;
+ symItem:=SymbolHead;
+ While symItem<>Nil do Begin
+  If symItem^.Value.IsExternal Then Begin
+   unresolvedName:=NormalizeSymbolName(symItem^.Value.Name);
+   If (unresolvedName<>'')And IsExternalNameUnresolved(unresolvedName) Then Begin
+    found:=False;
+    For k:=1 to unresNo do
+     If unresolvedArr^[k]=unresolvedName Then Begin
+      found:=True;
+      Break;
+     End;
+    If (Not found)And(unresNo<MAX_SYMBOLS) Then Begin
+     Inc(unresNo);
+     unresolvedArr^[unresNo]:=unresolvedName;
+    End;
+   End;
+  End;
+  symItem:=symItem^.Next;
+ End;
+
+ For a:=1 to unresNo-1 do
+  For b:=a+1 to unresNo do
+   If unresolvedArr^[a]>unresolvedArr^[b] Then Begin
+    tmpName:=unresolvedArr^[a];
+    unresolvedArr^[a]:=unresolvedArr^[b];
+    unresolvedArr^[b]:=tmpName;
+   End;
+
+ If unresNo>0 Then Begin
+  WriteLn(f);
+  WriteLn(f,'  Unresolved externals');
+  For a:=1 to unresNo do
+   WriteLn(f,'   ',unresolvedArr^[a]);
+ End;
+
+ extCount:=CountExternalReferences;
+ pubCount:=CountPublicDefinitions;
+ resolvedCount:=extCount-unresNo;
+ If resolvedCount<0 Then resolvedCount:=0;
+
+ WriteLn(f);
+ WriteLn(f,'  Summary');
+ WriteLn(f,'   Segments              : ',segNo);
+ WriteLn(f,'   Taille image (octets) : ',totalImage);
+ WriteLn(f,'   Publics definis       : ',pubCount);
+ WriteLn(f,'   References externes   : ',extCount);
+ WriteLn(f,'   Externes resolus      : ',resolvedCount);
+ WriteLn(f,'   Externes non resolus  : ',unresNo);
+ WriteLn(f,'   Relocations MZ        : ',RelocationCount);
+ WriteLn(f,'   Infos lignes          : ',LineInfoCount);
+ WriteLn(f,'   Modules LIB analyses  : ',LibModulesScannedCount);
+ WriteLn(f,'   Modules LIB charges   : ',LibModulesLoadedCount);
+ WriteLn(f,'   Passes resolution LIB : ',LibResolutionPasses);
+
+ Close(f);
+
+ FreeMem(unresolvedArr,SizeOf(TUnresolvedMapArray));
+ FreeMem(lineArr,SizeOf(TLineMapArray));
+ FreeMem(symArr,SizeOf(TSymMapArray));
+ FreeMem(segArr,SizeOf(TSegMapArray));
 End;
 
 Function ChangeFileExt(Const FileName:String;Const NewExt:String):String;
@@ -3386,42 +4421,506 @@ Begin
              Else StrToInt:=Value;
 End;
 
-BEGIN
- If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
-   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
-  WriteLn('LINK : Cette commande permet de lancer le fabricant de liaison.');
-  WriteLn;
-  WriteLn('Syntaxe : LINK objfile[+objfile...][,[exefile][,[mapfile][,[libraries]]]] [options]');
-  WriteLn;
-  WriteLn('  /CP:n    - Fixe le maximum de paragraphes');
-  WriteLn('  /STACK:n - Fixe la taille de la pile');
-  WriteLn('  /MAP     - G�n�rer un fichier de cartographie (MAP)');
-  Halt;
+Function TrimStr(Const S:String):String;
+Var
+ i,j:Integer;
+Begin
+ i:=1;
+ j:=Length(S);
+ While (i<=j)And((S[i]=' ')Or(S[i]=#9)Or(S[i]=#13)Or(S[i]=#10)) do Inc(i);
+ While (j>=i)And((S[j]=' ')Or(S[j]=#9)Or(S[j]=#13)Or(S[j]=#10)) do Dec(j);
+ If j<i Then TrimStr:=''
+        Else TrimStr:=Copy(S,i,j-i+1);
+End;
+
+Function UpperStr(Const S:String):String;
+Var
+ k:Integer;
+ u:String;
+Begin
+ u:=S;
+ For k:=1 to Length(u) do u[k]:=UpCase(u[k]);
+ UpperStr:=u;
+End;
+
+Function EnsureDefaultExt(Const Nm,DefExt:String):String;
+Var
+ base:String;
+ k,lastSep,lastDot:Integer;
+Begin
+ base:=TrimStr(Nm);
+ If base='' Then Begin
+  EnsureDefaultExt:='';
+  Exit;
  End;
-  { Initialise }
-   InitMainLists;
-   InitOffsetPatchList;
- StackSize:=2048;  { Taille de la pile par d�faut }
-  { Analyse de la ligne de commande }
- ObjFileName:=ParamStr(1);
- If ParamCount>1 Then ExeFileName:=ParamStr(2)
-                 Else ExeFileName:=ChangeFileExt(ObjFileName, '.EXE');
-  { Traitements des options de la ligne de commande }
- For i:=1 to ParamCount do Begin
-  Param:=ParamStr(i);
-  If(Length(Param)>1)and(Param[1]='/')Then Begin
-   Case UpCase(Param[2]) of
-    'S':If Copy(Param,1,7)='/STACK:'Then StackSize:=StrToInt(Copy(Param,8,255));
+
+ lastSep:=0;
+ lastDot:=0;
+ For k:=1 to Length(base) do Begin
+  If (base[k]='\')Or(base[k]='/')Or(base[k]=':') Then Begin
+   lastSep:=k;
+   lastDot:=0;
+  End Else If base[k]='.' Then lastDot:=k;
+ End;
+
+ If lastDot<=lastSep Then EnsureDefaultExt:=base+DefExt
+                    Else EnsureDefaultExt:=base;
+End;
+
+Function HasExtension(Const Nm:String):Boolean;
+Var
+ s:String;
+ k,lastSep,lastDot:Integer;
+Begin
+ s:=TrimStr(Nm);
+ lastSep:=0;
+ lastDot:=0;
+ For k:=1 to Length(s) do Begin
+  If (s[k]='\')Or(s[k]='/')Or(s[k]=':') Then Begin
+   lastSep:=k;
+   lastDot:=0;
+  End Else If s[k]='.' Then lastDot:=k;
+ End;
+ HasExtension:=lastDot>lastSep;
+End;
+
+Procedure ShowLinkHelp;
+Begin
+ WriteLn('LINK : fabricant de liaison (compat syntaxique phase 2).');
+ WriteLn;
+ WriteLn('Syntaxe :');
+ WriteLn('  LINK obj_file[+obj_file...][,[exe_file]][,[map_file]][,[library[+library...]]] [options] [;]');
+ WriteLn('  LINK @response_file');
+ WriteLn;
+ WriteLn('Options reconnues (alias inclus) :');
+ WriteLn('  /CP:n /CPARMAXALLOC:n');
+ WriteLn('  /ST:n /STACK:n');
+ WriteLn('  /SE:n /SEGMENTS:n');
+ WriteLn('  /MAP /M      /LINENUMBERS /LI');
+ WriteLn('  /DOSSEG /DO  /EXEPACK /E  /HIGH /HI  /PAUSE /P');
+ WriteLn('  /DSALLOCATE /DS');
+ WriteLn('  /NODEFAULTLIBRARYSEARCH /NOD');
+ WriteLn('  /NOGROUPASSOCIATION /NOG');
+ WriteLn('  /NOIGNORECASE /NOI');
+ WriteLn('  /TRACE[:LIB|SYM|ALL] /TR[:LIB|SYM|ALL]');
+ WriteLn('  /OVERLAYINTERRUPT:n /O:n');
+ WriteLn('  /HELP /HE /H /?');
+End;
+
+Procedure AddObjInput(Const Nm:String);
+Begin
+ If Nm='' Then Exit;
+ If ObjInputCount>=MAX_CMD_OBJS Then Begin
+  WriteLn('Erreur : Trop de fichiers OBJ en entree');
+  Halt(21);
+ End;
+ Inc(ObjInputCount);
+ ObjInputList^[ObjInputCount]:=Copy(Nm,1,128);
+End;
+
+Procedure AddLibInput(Const Nm:String);
+Begin
+ If Nm='' Then Exit;
+ If LibInputCount>=MAX_CMD_LIBS Then Begin
+  WriteLn('Erreur : Trop de bibliotheques en entree');
+  Halt(22);
+ End;
+ Inc(LibInputCount);
+ LibInputList^[LibInputCount]:=Copy(Nm,1,128);
+End;
+
+Procedure InitCommandInputStorage;
+Begin
+ If ObjInputList=Nil Then GetMem(ObjInputList,SizeOf(TCmdObjNameArray));
+ If LibInputList=Nil Then GetMem(LibInputList,SizeOf(TCmdLibNameArray));
+ If TempLibObjList=Nil Then GetMem(TempLibObjList,SizeOf(TCmdObjNameArray));
+
+ FillChar(ObjInputList^,SizeOf(TCmdObjNameArray),0);
+ FillChar(LibInputList^,SizeOf(TCmdLibNameArray),0);
+ FillChar(TempLibObjList^,SizeOf(TCmdObjNameArray),0);
+End;
+
+Procedure FreeCommandInputStorage;
+Begin
+ If ObjInputList<>Nil Then Begin
+  FreeMem(ObjInputList,SizeOf(TCmdObjNameArray));
+  ObjInputList:=Nil;
+ End;
+ If LibInputList<>Nil Then Begin
+  FreeMem(LibInputList,SizeOf(TCmdLibNameArray));
+  LibInputList:=Nil;
+ End;
+ If TempLibObjList<>Nil Then Begin
+  FreeMem(TempLibObjList,SizeOf(TCmdObjNameArray));
+  TempLibObjList:=Nil;
+ End;
+End;
+
+Function ParseUInt(Const S:String; Var V:LongInt):Boolean;
+Var
+ k:Integer;
+Begin
+ V:=0;
+ ParseUInt:=False;
+ If S='' Then Exit;
+ For k:=1 to Length(S) do Begin
+  If (S[k]<'0')Or(S[k]>'9') Then Exit;
+  If V>214748364 Then Exit;
+  V:=V*10+Ord(S[k])-Ord('0');
+ End;
+ ParseUInt:=True;
+End;
+
+Procedure FlushSpecItem;
+Var
+ item,itemUpper:String;
+Begin
+ item:=TrimStr(SpecCurrentItem);
+ SpecCurrentItem:='';
+ If item='' Then Exit;
+
+ Case SpecField of
+  0:AddObjInput(EnsureDefaultExt(item,'.OBJ'));
+  1:If ExeFileName='' Then ExeFileName:=EnsureDefaultExt(item,'.EXE');
+  2:Begin
+    itemUpper:=UpperStr(item);
+    If itemUpper='NUL' Then MapFileName:='NUL'
+                       Else MapFileName:=EnsureDefaultExt(item,'.MAP');
+    MapRequested:=True;
    End;
+ Else
+  AddLibInput(EnsureDefaultExt(item,'.LIB'));
+ End;
+End;
+
+Procedure FeedSpecToken(Const Tok:String);
+Var
+ k:Integer;
+ ch:Char;
+Begin
+ If Tok='' Then Exit;
+ For k:=1 to Length(Tok) do Begin
+  If SpecTerminated Then Break;
+  ch:=Tok[k];
+  Case ch of
+   ';':Begin
+    FlushSpecItem;
+    SpecTerminated:=True;
+   End;
+   ',':Begin
+    FlushSpecItem;
+    If SpecField<3 Then Inc(SpecField);
+   End;
+   '+':Begin
+    If SpecField In [0,3] Then FlushSpecItem
+                         Else SpecCurrentItem:=SpecCurrentItem+ch;
+   End;
+  Else
+   SpecCurrentItem:=SpecCurrentItem+ch;
   End;
  End;
-  { Processus de liaison }
- If ReadObjFile(ObjFileName)Then Begin
-  GenerateExe(ExeFileName);
-  WriteLn('Liaison compl�t�');
- End
+End;
+
+Procedure ParseOptionToken(Const RawTok:String);
+Var
+ work,opt,val,valUpper:String;
+ p:Integer;
+ num:LongInt;
+Begin
+ work:=TrimStr(RawTok);
+ If work='' Then Exit;
+
+ If (work[1]='/')Or(work[1]='-') Then Delete(work,1,1);
+ work:=UpperStr(work);
+
+ If (work='?')Or(work='H')Or(work='HE')Or(work='HELP') Then Begin
+  ShowLinkHelp;
+  Halt;
+ End;
+
+ p:=Pos(':',work);
+ If p>0 Then Begin
+  opt:=Copy(work,1,p-1);
+  val:=Copy(work,p+1,255);
+ End Else Begin
+  opt:=work;
+  val:='';
+ End;
+
+ If (opt='CP')Or(opt='CPARMAXALLOC') Then Begin
+   If Not ParseUInt(val,num) Then Begin
+    WriteLn('Erreur : valeur invalide pour /',opt,' : ',val);
+    Halt(23);
+   End;
+   If num>65535 Then num:=65535;
+   MaxAllocParagraphs:=num;
+ End Else If (opt='DS')Or(opt='DSALLOCATE') Then DsAllocateTop:=True
+ Else If (opt='DO')Or(opt='DOSSEG') Then DosSegOrdering:=True
+ Else If (opt='E')Or(opt='EXEPACK') Then ExePackRequested:=True
+ Else If (opt='HI')Or(opt='HIGH') Then HighLoadRequested:=True
+ Else If (opt='LI')Or(opt='LINENUMBERS') Then Begin
+   LineNumbersRequested:=True;
+   MapRequested:=True;
+ End Else If (opt='M')Or(opt='MAP') Then Begin
+   PublicsMapRequested:=True;
+   MapRequested:=True;
+   If val<>'' Then Begin
+    valUpper:=UpperStr(val);
+    If valUpper='NUL' Then MapFileName:='NUL'
+                      Else MapFileName:=EnsureDefaultExt(val,'.MAP');
+   End;
+ End Else If (opt='NOD')Or(opt='NODEFAULTLIBRARYSEARCH') Then NoDefaultLibrarySearch:=True
+ Else If (opt='NOG')Or(opt='NOGROUPASSOCIATION') Then NoGroupAssociation:=True
+ Else If (opt='NOI')Or(opt='NOIGNORECASE') Then NoIgnoreCase:=True
+ Else If (opt='O')Or(opt='OVERLAYINTERRUPT') Then Begin
+   If Not ParseUInt(val,num) Then Begin
+    WriteLn('Erreur : valeur invalide pour /',opt,' : ',val);
+    Halt(24);
+   End;
+   If num>255 Then Begin
+    WriteLn('Erreur : /',opt,' doit etre entre 0 et 255');
+    Halt(24);
+   End;
+   OverlayInterruptSet:=True;
+   OverlayInterruptValue:=num;
+ End Else If (opt='P')Or(opt='PAUSE') Then PauseRequested:=True
+ Else If (opt='SE')Or(opt='SEGMENTS') Then Begin
+   If Not ParseUInt(val,num) Then Begin
+    WriteLn('Erreur : valeur invalide pour /',opt,' : ',val);
+    Halt(25);
+   End;
+   If num<1 Then num:=1;
+   If num>1024 Then num:=1024;
+   MaxSegmentsOption:=num;
+ End Else If (opt='ST')Or(opt='STACK') Then Begin
+   If Not ParseUInt(val,num) Then Begin
+    WriteLn('Erreur : valeur invalide pour /',opt,' : ',val);
+    Halt(26);
+   End;
+   If num<1 Then num:=1;
+   If num>65535 Then num:=65535;
+   StackSize:=num;
+ End Else If (opt='TR')Or(opt='TRACE') Then Begin
+   TraceLibRequested:=True;
+   If (val='')Or(val='ALL') Then Begin
+    TraceLibSymbolsRequested:=True;
+   End Else If (val='LIB')Or(val='MODULE')Or(val='MOD')Or(val='NOSYM') Then Begin
+    TraceLibSymbolsRequested:=False;
+   End Else If (val='SYM')Or(val='SYMBOL')Or(val='SYMBOLS') Then Begin
+    TraceLibSymbolsRequested:=True;
+   End Else Begin
+    WriteLn('Avertissement : /TRACE:',val,' inconnu, utiliser LIB, SYM ou ALL');
+    TraceLibSymbolsRequested:=True;
+   End;
+ End Else
+  WriteLn('Avertissement : option LINK non reconnue en phase 1 : /',opt);
+End;
+
+Procedure ProcessInputToken(Const Tok:String); Forward;
+Procedure ProcessResponseFile(Const RespFile:String); Forward;
+
+Procedure TokenizeAndProcessLine(Const Line:String);
+Var
+ k:Integer;
+ inQuote:Boolean;
+ ch:Char;
+ tok:String;
+Begin
+ inQuote:=False;
+ tok:='';
+ For k:=1 to Length(Line) do Begin
+  ch:=Line[k];
+  If ch='"' Then Begin
+   inQuote:=Not inQuote;
+   Continue;
+  End;
+
+  If (Not inQuote)And((ch=' ')Or(ch=#9)) Then Begin
+   If tok<>'' Then Begin
+    ProcessInputToken(tok);
+    tok:='';
+    If SpecTerminated Then Exit;
+   End;
+  End Else tok:=tok+ch;
+ End;
+
+ If tok<>'' Then ProcessInputToken(tok);
+End;
+
+Procedure ProcessResponseFile(Const RespFile:String);
+Var
+ f:Text;
+ line:String;
+ fName:String;
+ err:Integer;
+Begin
+ fName:=TrimStr(RespFile);
+ If fName='' Then Exit;
+
+ If ResponseDepth>=8 Then Begin
+  WriteLn('Erreur : profondeur maximale de @response atteinte');
+  Halt(27);
+ End;
+
+ {$I-}
+ Assign(f,fName);
+ Reset(f);
+ err:=IOResult;
+ {$I+}
+
+ If err<>0 Then Begin
+  If Not HasExtension(fName) Then Begin
+   fName:=fName+'.LNK';
+   {$I-}
+   Assign(f,fName);
+   Reset(f);
+   err:=IOResult;
+   {$I+}
+  End;
+ End;
+
+ If err<>0 Then Begin
+  WriteLn('Erreur : impossible de lire le fichier response : ',RespFile);
+  Halt(28);
+ End;
+
+ Inc(ResponseDepth);
+ While Not Eof(f) do Begin
+  ReadLn(f,line);
+  TokenizeAndProcessLine(line);
+  If SpecTerminated Then Break;
+ End;
+ Close(f);
+ Dec(ResponseDepth);
+End;
+
+Procedure ProcessInputToken(Const Tok:String);
+Begin
+ If Tok='' Then Exit;
+ If Tok[1]='@' Then ProcessResponseFile(Copy(Tok,2,255))
+ Else If (Tok[1]='/')Or(Tok[1]='-') Then ParseOptionToken(Tok)
+ Else FeedSpecToken(Tok);
+End;
+
+Procedure ParseLinkCommandLinePhase1;
+Var
+ argIdx:Integer;
+ tok:String;
+Begin
+ InitCommandInputStorage;
+
+ ObjInputCount:=0;
+ LibInputCount:=0;
+ PrimaryObjInputCount:=0;
+ TempLibObjCount:=0;
+ LoadedLibModuleCount:=0;
+ LibModulesScannedCount:=0;
+ LibModulesLoadedCount:=0;
+ LibResolutionPasses:=0;
+ TraceLibRequested:=False;
+ TraceLibSymbolsRequested:=False;
+ ObjFileName:='';
+ ExeFileName:='';
+ MapFileName:='';
+ MapRequested:=False;
+ LineNumbersRequested:=False;
+ PublicsMapRequested:=False;
+ NoDefaultLibrarySearch:=False;
+ NoGroupAssociation:=False;
+ NoIgnoreCase:=False;
+ DosSegOrdering:=False;
+ DsAllocateTop:=False;
+ ExePackRequested:=False;
+ HighLoadRequested:=False;
+ PauseRequested:=False;
+ OverlayInterruptSet:=False;
+ OverlayInterruptValue:=$3F;
+ MaxSegmentsOption:=MAX_SEGMENTS;
+ SpecField:=0;
+ SpecTerminated:=False;
+ SpecCurrentItem:='';
+ ResponseDepth:=0;
+
+ If ParamCount=0 Then Begin
+  ShowLinkHelp;
+  Halt;
+ End;
+
+ For argIdx:=1 to ParamCount do Begin
+  tok:=ParamStr(argIdx);
+  If tok='' Then Continue;
+  ProcessInputToken(tok);
+  If SpecTerminated Then Break;
+ End;
+ FlushSpecItem;
+
+ If ObjInputCount=0 Then Begin
+  WriteLn('Erreur : Aucun fichier objet indique.');
+  Halt(29);
+ End;
+
+ ObjFileName:=ObjInputList^[1];
+ PrimaryObjInputCount:=ObjInputCount;
+ If ExeFileName='' Then ExeFileName:=ChangeFileExt(ObjFileName,'.EXE');
+
+ If MapRequested And (MapFileName='') Then MapFileName:=ChangeFileExt(ExeFileName,'.MAP')
+                                      Else If MapFileName='' Then MapFileName:='NUL';
+
+ If LibInputCount>0 Then
+  WriteLn('Info : recherche des externes non resolus dans les LIB activee.');
+ If TraceLibRequested Then Begin
+  If TraceLibSymbolsRequested Then
+   WriteLn('Info : mode trace LIB active (modules + symboles).')
   Else
- WriteLn('Erreur de lecture de fichier objet');
+   WriteLn('Info : mode trace LIB active (modules).');
+ End;
+ If MaxSegmentsOption<>MAX_SEGMENTS Then
+  WriteLn('Avertissement : /SEGMENTS parse mais non applique dans cette version.');
+ If OverlayInterruptSet Then
+  WriteLn('Avertissement : /OVERLAYINTERRUPT parse mais non applique dans cette version.');
+ If DosSegOrdering Or DsAllocateTop Or ExePackRequested Or HighLoadRequested
+    Or PauseRequested Or NoDefaultLibrarySearch Or NoGroupAssociation
+    Or NoIgnoreCase Then
+  WriteLn('Avertissement : certaines options sont parsees (phase 2) mais sans effet d''edition de liens.');
+End;
+
+BEGIN
+ { Initialise }
+ InitMainLists;
+ InitOffsetPatchList;
+ StackSize:=2048;          { Taille de la pile par defaut }
+ MaxAllocParagraphs:=$FFFF;{ /CP ou /CPARMAXALLOC }
+ HasEntryPoint:=False;
+ EntrySegIndex:=0;
+ EntryOffset:=0;
+
+ { Parseur compatible syntaxe LINK }
+ ParseLinkCommandLinePhase1;
+
+  { Processus de liaison }
+ For i:=1 to ObjInputCount do Begin
+  ObjSegBaseList[i]:=SegmentCount;
+    If Not ReadObjFile(ObjInputList^[i]) Then Begin
+     WriteLn('Erreur de lecture de fichier objet : ',ObjInputList^[i]);
+   CleanupTempLibObjFiles;
+     FreeCommandInputStorage;
    FreeOffsetPatchList;
    FreeMainLists;
+   Halt(30);
+  End;
+ End;
+
+ ApplyAliasToExternalSymbols;
+ ResolveLibrariesForExternals;
+ ApplyAliasToExternalSymbols;
+ RecomputeSegmentAddresses;
+
+ GenerateExe(ExeFileName);
+ GenerateMapFile(MapFileName);
+ WriteLn('Liaison compl�t�');
+
+ CleanupTempLibObjFiles;
+ FreeCommandInputStorage;
+ FreeOffsetPatchList;
+ FreeMainLists;
 END.
