@@ -249,6 +249,9 @@ Const
   MAX_STR        = 255;
   MAX_INCLUDE    = 32;
   STACK_SIZE     = 1024;
+  MAX_CLASS      = 16;   { nombre max de classes                 }
+  MAX_CLASS_PROP = 16;   { proprietes max par classe             }
+  MAX_CLASS_METH = 16;   { methodes max par classe               }
 
   { Prefixes de nommage ASM }
   PH_VAR_PFX   = '_PHV_';
@@ -373,6 +376,22 @@ Type
     StrVal  : TString;
   End;
 
+  TClassPropRec = Record
+    PropName : TString;   { nom de la propriete (sans $)         }
+    PropOff  : Integer;   { offset en octets depuis le debut obj  }
+    PropType : Integer;   { TypeIdx                               }
+  End;
+
+  TClassRec = Record
+    ClsName    : TString;
+    ParentName : TString;
+    PropCount  : Integer;
+    Props      : Array[0..MAX_CLASS_PROP - 1] Of TClassPropRec;
+    MethCount  : Integer;
+    MethNames  : Array[0..MAX_CLASS_METH - 1] Of TString;
+    ObjSize    : Integer;   { taille en octets = PropCount * 2   }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -414,6 +433,7 @@ Var
   OutF      : Text;
   OutFOpen  : Boolean;
   CurFrameSize : Integer;
+  CurFnDepth   : Integer;    { 0 = global, >0 = dans une fonction }
   LoopTop      : Integer;
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
@@ -425,6 +445,12 @@ Var
   { Etat general }
   RuntimeEmitted : Boolean;
   InPhpMode      : Boolean;  { True quand on est a l'interieur de <?php ... ?> }
+  CurFnRetLbl    : TString;  { label epilogue de la fonction courante }
+
+  { Classes }
+  ClassTab   : Array[0..MAX_CLASS - 1] Of TClassRec;
+  ClassCount : Integer;
+  CurClsIdx  : Integer;   { -1 = hors classe, >= 0 = index dans ClassTab }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -432,6 +458,42 @@ Var
 Procedure LexClose;      Forward;
 Procedure EmitClose;     Forward;
 Procedure ParserAdvance; Forward;
+Procedure EmitDataSeg;   Forward;
+Function  DataAddStr(Const S : TString) : Integer; Forward;
+Function  DataAdd(Const ALbl : TString; AKind : TDataKind;
+                  AInt : LongInt; Const AStr : TString) : Integer; Forward;
+Function  AllocLocal(Const VarName : TString; TyIdx, DeclLine : Integer) : Integer; Forward;
+Function  AllocGlobal(Const VarName : TString; TyIdx, DeclLine : Integer) : Integer; Forward;
+Procedure VarStore(Idx : Integer); Forward;
+Procedure VarLoadToAX(Idx : Integer); Forward;
+Function  SymFind(Const AName : TString) : Integer; Forward;
+Function  SymFindLocal(Const AName : TString) : Integer; Forward;
+Function  SymFindCat(Const AName : TString; ACat : TSymCat) : Integer; Forward;
+Function  SymAdd(Const AName : TString; ACat : TSymCat; ATypeIdx : Integer;
+                 AIsRef : Boolean; AOffset : Integer; ADeclLine : Integer) : Integer; Forward;
+Function  SymNewLabel(Const Prefix : TString) : TString; Forward;
+Procedure ParseEchoStmt;    Forward;
+Procedure ParsePrintStmt;   Forward;
+Procedure ParseVarDumpStmt; Forward;
+Procedure ParseStmt;        Forward;
+Procedure ParseBlock;       Forward;
+Procedure ParseIfStmt;      Forward;
+Procedure ParseWhileStmt;   Forward;
+Procedure ParseDoWhileStmt; Forward;
+Procedure ParseForStmt;     Forward;
+Procedure ParseBreakStmt;   Forward;
+Procedure ParseContinueStmt; Forward;
+Procedure ParseIfCond(Var E : TExprVal; Var JmpFalse : TString); Forward;
+Procedure ParseForeachStmt;  Forward;
+Procedure ParseSwitchStmt;   Forward;
+Procedure ParseFnDecl;       Forward;
+Procedure ParseReturnStmt;   Forward;
+Procedure ParseCallExpr(Const FnName : TString; Var Res : TExprVal); Forward;
+Function  BlockEnterScope : Integer; Forward;
+Procedure BlockLeaveScope(SavedFrame : Integer); Forward;
+Procedure ParseArrayLit(Var Res : TExprVal); Forward;
+Procedure ParseClassDecl; Forward;
+Procedure ParseNewExpr(Const ClsName : TString; Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS
@@ -1374,9 +1436,10 @@ Begin
     TK_FLOAT   : LitEvalFloat(T, Res);
     TK_STRING  :
     Begin
-      { TODO 08 : DataAdd + MOV AX, OFFSET label }
-      { Pour l''instant : valeur nulle en attente de l''emetteur }
-      ExprMakeImm(0, TY_IDX_STRING, Res);
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := DataAddStr(T.Val);
     End;
     TK_KEYWORD :
     Begin
@@ -1513,12 +1576,25 @@ Begin
                 E.Kind := EK_AX;
               End;
     EK_MEM  : Begin
-                If E.Offset >= 0 Then Begin
-                  Str(E.Offset, S);
-                  EmitInstr('MOV', 'AX, [BP+' + S + ']');
-                End Else Begin
+                { Chaine litterale : Offset = index DataTab -> OFFSET label }
+                If E.TypeIdx = TY_IDX_STRING Then
+                Begin
+                  If (E.Offset >= 0) And (E.Offset < DataCount) Then
+                    EmitInstr('MOV', 'AX, OFFSET ' + DataTab[E.Offset].LblName)
+                  Else
+                    EmitInstr('XOR', 'AX, AX');
+                End
+                { Variable locale : [BP-n] }
+                Else If E.Offset < 0 Then
+                Begin
                   Str(-E.Offset, S);
                   EmitInstr('MOV', 'AX, [BP-' + S + ']');
+                End
+                { Variable parametre/frame : [BP+n] }
+                Else
+                Begin
+                  Str(E.Offset, S);
+                  EmitInstr('MOV', 'AX, [BP+' + S + ']');
                 End;
                 E.Kind := EK_AX;
               End;
@@ -1530,12 +1606,17 @@ End;
 
 { ---- ExprEmitBinOp : generer le code 8086 d'un operateur --
   Pliage de constantes si L et R sont EK_IMM.
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES (PRATT)
+  ============================================================ }
+
+{ ---- ExprEmitBinOp : generer le code 8086 d'un operateur --
+  Pliage de constantes si L et R sont EK_IMM.
   Operateurs PHP couverts :
     + - * / % ** (arith)   . (concat)
     == != === !== <=> < <= > >= (comparaison)
-    && || & | ^ << >> (logique/bitwise)
-    and or xor (mots-cles logiques)
-    ?? (null-coalesce)                                      }
+    && || & | ^ << >> (logique/bitwise, avec court-circuit && ||)
+    and or xor (mots-cles logiques)                           }
 Procedure ExprEmitBinOp(Const Op : TString; Var L : TExprVal; Var R : TExprVal);
 Var
   RS   : TString;
@@ -1570,7 +1651,7 @@ Begin
         L.ImmVal := Acc;
       End;
     End
-    Else If Op = '.'   Then L.ImmVal := 0  { concat constante : TODO 08 }
+    Else If Op = '.'   Then L.ImmVal := 0  { concat de constantes : non supporte en IMM }
     Else If Op = '&'   Then L.ImmVal := L.ImmVal And R.ImmVal
     Else If Op = '|'   Then L.ImmVal := L.ImmVal Or  R.ImmVal
     Else If Op = '^'   Then L.ImmVal := L.ImmVal Xor R.ImmVal
@@ -1598,16 +1679,61 @@ Begin
     Begin
       If ((L.ImmVal<>0) And (R.ImmVal=0)) Or ((L.ImmVal=0) And (R.ImmVal<>0)) Then
         L.ImmVal := 1 Else L.ImmVal := 0;
-    End
-    Else If Op = '??'  Then
-    Begin
-      If L.ImmVal = 0 Then L.ImmVal := R.ImmVal;  { simule null-coalesce }
     End;
     L.TypeIdx := TY_IDX_INT;
     Exit;
   End;
 
-  { ---- Cas general : emission 8086 ------------------------ }
+  { ---- Court-circuit && ------------------------------------ }
+  { AX = L; si 0 -> sauter R, resultat 0                      }
+  If (Op = '&&') Or (Op = 'and') Then
+  Begin
+    LblE := SymNewLabel('SCAND');
+    ExprLoad(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ',   LblE);
+    ExprLoad(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV',  'AX, 0');
+    EmitInstr('SETNE','AL');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  { ---- Court-circuit || ------------------------------------ }
+  If (Op = '||') Or (Op = 'or') Then
+  Begin
+    LblE := SymNewLabel('SCOR');
+    ExprLoad(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JNZ',  LblE);   { deja vrai : sauter R }
+    ExprLoad(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV',  'AX, 0');
+    EmitInstr('SETNE','AL');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  { ---- XOR logique ----------------------------------------- }
+  If Op = 'xor' Then
+  Begin
+    ExprLoad(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV',  'BX, 0');
+    EmitInstr('SETNE','BL');     { BL = (L<>0) }
+    ExprLoad(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV',  'AX, 0');
+    EmitInstr('SETNE','AL');     { AL = (R<>0) }
+    EmitInstr('XOR',  'AX, BX');
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  { ---- Cas general : emission 8086 ------------------------- }
   ExprLoad(L);
   If R.Kind = EK_IMM Then
   Begin
@@ -1617,12 +1743,20 @@ Begin
     Else If Op = '&'   Then EmitInstr('AND',  'AX, ' + RS)
     Else If Op = '|'   Then EmitInstr('OR',   'AX, ' + RS)
     Else If Op = '^'   Then EmitInstr('XOR',  'AX, ' + RS)
-    Else If Op = '<<'  Then EmitInstr('SHL',  'AX, ' + RS)
-    Else If Op = '>>'  Then EmitInstr('SHR',  'AX, ' + RS)
+    Else If Op = '<<'  Then
+    Begin
+      EmitInstr('MOV', 'CL, ' + RS);
+      EmitInstr('SHL', 'AX, CL');
+    End
+    Else If Op = '>>'  Then
+    Begin
+      EmitInstr('MOV', 'CL, ' + RS);
+      EmitInstr('SAR', 'AX, CL');
+    End
     Else If Op = '*'   Then EmitInstr('IMUL', RS)
     Else If Op = '**'  Then
     Begin
-      EmitInstr('MOV', 'CX, ' + RS);
+      EmitInstr('MOV',  'CX, ' + RS);
       EmitInstr('CALL', PH_RT_PFX + 'POWER');
     End
     Else If Op = '/'  Then
@@ -1640,35 +1774,33 @@ Begin
     End
     Else If Op = '.'  Then
     Begin
-      EmitInstr('MOV', 'BX, ' + RS);
+      { Concat : AX = dst (ptr chaine gauche), immediat non supporte ici }
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('MOV', 'DI, ' + RS);
       EmitInstr('CALL', PH_RT_PFX + 'CONCAT');
     End
-    Else If Op = '==' Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETE','AL'); End
-    Else If Op = '!=' Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETNE','AL'); End
-    Else If Op = '==='Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETE','AL'); End
-    Else If Op = '!=='Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETNE','AL'); End
-    Else If Op = '<'  Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETL','AL'); End
-    Else If Op = '<=' Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETLE','AL'); End
-    Else If Op = '>'  Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETG','AL'); End
-    Else If Op = '>=' Then Begin EmitInstr('CMP','AX,'+RS); EmitInstr('MOV','AX,0'); EmitInstr('SETGE','AL'); End
+    Else If Op = '==' Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETE','AL'); End
+    Else If Op = '!=' Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETNE','AL'); End
+    Else If Op = '==='Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETE','AL'); End
+    Else If Op = '!=='Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETNE','AL'); End
+    Else If Op = '<'  Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETL','AL'); End
+    Else If Op = '<=' Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETLE','AL'); End
+    Else If Op = '>'  Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETG','AL'); End
+    Else If Op = '>=' Then Begin EmitInstr('CMP','AX, '+RS); EmitInstr('MOV','AX, 0'); EmitInstr('SETGE','AL'); End
     Else If Op = '<=>'Then
     Begin
-      Lbl1 := NextLabelSeq; Lbl2 := NextLabelSeq; LblE := NextLabelSeq;
+      Lbl1 := SymNewLabel('CMPLT'); Lbl2 := SymNewLabel('CMPGT'); LblE := SymNewLabel('CMPEND');
       EmitInstr('CMP',  'AX, ' + RS);
-      EmitInstr('JL',   Lbl1);
-      EmitInstr('JG',   Lbl2);
-      EmitInstr('MOV',  'AX, 0');
-      EmitInstr('JMP',  LblE);
+      EmitInstr('JL',   Lbl1);  EmitInstr('JG',  Lbl2);
+      EmitInstr('MOV',  'AX, 0'); EmitInstr('JMP', LblE);
       EmitLabel(Lbl1); EmitInstr('MOV','AX, -1'); EmitInstr('JMP', LblE);
       EmitLabel(Lbl2); EmitInstr('MOV','AX, 1');
       EmitLabel(LblE);
-    End
-    Else If Op = '&&' Then EmitInstr('AND', 'AX, ' + RS)
-    Else If Op = '||' Then EmitInstr('OR',  'AX, ' + RS)
-    Else If (Op='and') Or (Op='or') Then EmitInstr('OR', 'AX, ' + RS);
-  End Else
+    End;
+  End
+  Else
   Begin
-    { R non immediat : sauvegarder L, charger R dans BX }
+    { R non immediat : sauvegarder L dans la pile, charger R dans BX }
     EmitInstr('PUSH', 'AX');
     ExprLoad(R);
     EmitInstr('MOV',  'BX, AX');
@@ -1678,30 +1810,42 @@ Begin
     Else If Op = '&'  Then EmitInstr('AND',  'AX, BX')
     Else If Op = '|'  Then EmitInstr('OR',   'AX, BX')
     Else If Op = '^'  Then EmitInstr('XOR',  'AX, BX')
+    Else If Op = '<<' Then Begin EmitInstr('MOV','CX, BX'); EmitInstr('SHL','AX, CL'); End
+    Else If Op = '>>' Then Begin EmitInstr('MOV','CX, BX'); EmitInstr('SAR','AX, CL'); End
     Else If Op = '*'  Then EmitInstr('IMUL', 'BX')
-    Else If Op = '**' Then EmitInstr('CALL', PH_RT_PFX + 'POWER')
+    Else If Op = '**' Then
+    Begin
+      EmitInstr('XCHG', 'AX, BX');  { AX=base, BX=exp -> swap pour POWER }
+      EmitInstr('MOV',  'CX, BX');
+      EmitInstr('MOV',  'AX, AX');
+      EmitInstr('CALL', PH_RT_PFX + 'POWER');
+    End
     Else If Op = '/'  Then Begin EmitInstr('CWD',''); EmitInstr('IDIV','BX'); End
-    Else If Op = '%'  Then Begin EmitInstr('CWD',''); EmitInstr('IDIV','BX'); EmitInstr('MOV','AX,DX'); End
-    Else If Op = '.'  Then EmitInstr('CALL', PH_RT_PFX + 'CONCAT')
+    Else If Op = '%'  Then Begin EmitInstr('CWD',''); EmitInstr('IDIV','BX'); EmitInstr('MOV','AX, DX'); End
+    Else If Op = '.'  Then
+    Begin
+      { Concat : AX=dst (gauche), BX=src (droite) }
+      EmitInstr('MOV',  'SI, AX');
+      EmitInstr('MOV',  'DI, BX');
+      EmitInstr('CALL', PH_RT_PFX + 'CONCAT');
+    End
     Else
     Begin
       EmitInstr('CMP', 'AX, BX');
       EmitInstr('MOV', 'AX, 0');
       If      Op = '===' Then EmitInstr('SETE','AL')
-      Else If Op = '==' Then EmitInstr('SETE','AL')
+      Else If Op = '=='  Then EmitInstr('SETE','AL')
       Else If Op = '!==' Then EmitInstr('SETNE','AL')
-      Else If Op = '!=' Then EmitInstr('SETNE','AL')
-      Else If Op = '<'  Then EmitInstr('SETL','AL')
-      Else If Op = '<=' Then EmitInstr('SETLE','AL')
-      Else If Op = '>'  Then EmitInstr('SETG','AL')
-      Else If Op = '>=' Then EmitInstr('SETGE','AL')
-      Else If Op = '<=>'Then
+      Else If Op = '!='  Then EmitInstr('SETNE','AL')
+      Else If Op = '<'   Then EmitInstr('SETL','AL')
+      Else If Op = '<='  Then EmitInstr('SETLE','AL')
+      Else If Op = '>'   Then EmitInstr('SETG','AL')
+      Else If Op = '>='  Then EmitInstr('SETGE','AL')
+      Else If Op = '<=>' Then
       Begin
-        Lbl1 := NextLabelSeq; Lbl2 := NextLabelSeq; LblE := NextLabelSeq;
-        EmitInstr('JL',  Lbl1);
-        EmitInstr('JG',  Lbl2);
-        EmitInstr('MOV', 'AX, 0');
-        EmitInstr('JMP', LblE);
+        Lbl1 := SymNewLabel('CMPLT'); Lbl2 := SymNewLabel('CMPGT'); LblE := SymNewLabel('CMPEND');
+        EmitInstr('JL',  Lbl1);  EmitInstr('JG',  Lbl2);
+        EmitInstr('MOV', 'AX, 0'); EmitInstr('JMP', LblE);
         EmitLabel(Lbl1); EmitInstr('MOV','AX, -1'); EmitInstr('JMP', LblE);
         EmitLabel(Lbl2); EmitInstr('MOV','AX, 1');
         EmitLabel(LblE);
@@ -1714,14 +1858,192 @@ End;
 { ---- Forward declarations -------------------------------- }
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 
-{ ---- ParsePrimary (stub, TODO 10 completera) ------------ }
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES
+  ============================================================ }
+
+{ ---- ParsePrimary : atome du parseur Pratt ----------------- }
+{ Gere : literaux, $var, ++/-- pre/post, casts, groupement () }
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  Idx     : Integer;
+  VNm     : TString;
+  OfsStr  : TString;
+  CastKw  : TString;
+  E       : TExprVal;
+  { TODO 21 : acces objet }
+  MembNm  : TString;
+  ClsNm   : TString;
+  ClsIdx2 : Integer;
+  PropOff2: Integer;
+  ArgCnt2 : Integer;
+  J       : Integer;
 Begin
   ExprMakeNone(Res);
   Case CurToken.Kind Of
-    TK_INTEGER : Begin LitEvalInt(CurToken, Res);   ParserAdvance; End;
+
+    { ---- Identificateur : appel de fonction ou builtin ---- }
+    TK_IDENT :
+    Begin
+      VNm := CurToken.Val;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        { Appel de fonction : name(args...) }
+        ParseCallExpr(VNm, Res);
+      End
+      Else
+      Begin
+        { Identifiant simple sans appel : warning + EK_NONE }
+        WriteLn('PHP86:', CurToken.Line, ': avert: identifiant ''', VNm, ''' utilise comme expression (non-supporte)');
+        Inc(WarnCount);
+        ExprMakeNone(Res);
+      End;
+    End;
+
+    { ---- Litteraux entier / flottant / chaine ---- }
+    TK_INTEGER : Begin LitEvalInt(CurToken, Res);    ParserAdvance; End;
     TK_FLOAT   : Begin LitEvalFloat(CurToken, Res);  ParserAdvance; End;
     TK_STRING  : Begin LitEval(CurToken, Res);       ParserAdvance; End;
+
+    { ---- Variable $var ---- }
+    TK_VAR :
+    Begin
+      VNm := CurToken.Val;
+      ParserAdvance;
+      { pre-increment/decrement deja traite dans TK_OP }
+      Idx := SymFind(VNm);
+      If Idx < 0 Then
+        Idx := AllocLocal(VNm, TY_IDX_MIXED, CurToken.Line);
+      { Charger la valeur : local -> EK_MEM, global -> EK_AX }
+      If (SymTab[Idx].Cat = SC_VAR) Or (SymTab[Idx].Cat = SC_PARAM) Then
+      Begin
+        Res.Kind    := EK_MEM;
+        Res.Offset  := SymTab[Idx].Offset;
+        Res.TypeIdx := SymTab[Idx].TypeIdx;
+        Res.ImmVal  := 0;
+      End
+      Else
+      Begin
+        VarLoadToAX(Idx);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := SymTab[Idx].TypeIdx;
+        Res.Offset  := 0;
+        Res.ImmVal  := 0;
+      End;
+      { Post-increment/decrement : $var++ ou $var-- }
+      If CurToken.Kind = TK_OP Then
+      Begin
+        If CurToken.Val = '++' Then
+        Begin
+          ExprLoad(Res);   { AX = valeur courante (vraie retournee) }
+          EmitInstr('PUSH', 'AX');   { sauvegarder l''ancienne valeur }
+          EmitInstr('INC', 'AX');
+          VarStore(Idx);
+          EmitInstr('POP', 'AX');    { restaurer l''ancienne valeur }
+          Res.Kind := EK_AX;
+          ParserAdvance;
+        End
+        Else If CurToken.Val = '--' Then
+        Begin
+          ExprLoad(Res);
+          EmitInstr('PUSH', 'AX');
+          EmitInstr('DEC', 'AX');
+          VarStore(Idx);
+          EmitInstr('POP', 'AX');
+          Res.Kind := EK_AX;
+          ParserAdvance;
+        End;
+      End;
+      { Acces tableau : $a[indice] }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+      Begin
+        ParserAdvance;  { consommer '[' }
+        ParseExprPrec(1, E);   { evaluer l''indice dans E }
+        ExprLoad(Res);  { AX = base ptr du tableau }
+        EmitInstr('MOV', 'SI, AX');
+        ExprLoad(E);    { AX = valeur de l''indice }
+        EmitInstr('MOV', 'BX, AX');
+        EmitInstr('SHL', 'BX, 1');          { BX = indice * 2 }
+        EmitInstr('MOV', 'AX, [SI+BX+2]'); { +2 pour sauter le mot count }
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_MIXED;
+        Res.Offset  := 0;
+        Res.ImmVal  := 0;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance;
+      End;
+      { Acces membre objet : $obj->prop ou $obj->method() }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+      Begin
+        ExprLoad(Res);
+        EmitInstr('MOV', 'SI, AX');
+        ParserAdvance;  { consommer '->' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          MembNm := CurToken.Val;
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            { Appel de methode : $obj->method(args) }
+            If SymTab[Idx].TypeIdx >= TY_PRIM_COUNT Then
+              ClsIdx2 := SymTab[Idx].TypeIdx - TY_PRIM_COUNT
+            Else
+              ClsIdx2 := -1;
+            If (ClsIdx2 >= 0) And (ClsIdx2 < ClassCount) Then
+              ClsNm := ClassTab[ClsIdx2].ClsName
+            Else
+              ClsNm := SymTab[Idx].MangledName;
+            ParserAdvance;  { consommer '(' }
+            ArgCnt2 := 0;
+            While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+                  And (CurToken.Kind <> TK_EOF) Do
+            Begin
+              ParseExprPrec(1, E);
+              ExprLoad(E);
+              EmitInstr('PUSH', 'AX');
+              Inc(ArgCnt2);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+            EmitInstr('PUSH', 'SI');   { $this en dernier }
+            EmitInstr('CALL', PH_FN_PFX + ClsNm + '__' + MembNm);
+            Str((ArgCnt2 + 1) * 2, OfsStr);
+            EmitInstr('ADD', 'SP, ' + OfsStr);
+          End
+          Else
+          Begin
+            { Acces propriete : chercher l''offset dans ClassTab }
+            PropOff2 := 0;
+            If SymTab[Idx].TypeIdx >= TY_PRIM_COUNT Then
+            Begin
+              ClsIdx2 := SymTab[Idx].TypeIdx - TY_PRIM_COUNT;
+              If (ClsIdx2 >= 0) And (ClsIdx2 < ClassCount) Then
+                For J := 0 To ClassTab[ClsIdx2].PropCount - 1 Do
+                  If ClassTab[ClsIdx2].Props[J].PropName = MembNm Then
+                  Begin
+                    PropOff2 := ClassTab[ClsIdx2].Props[J].PropOff;
+                    Break;
+                  End;
+            End;
+            Str(PropOff2, OfsStr);
+            EmitInstr('MOV', 'AX, [SI+' + OfsStr + ']');
+          End;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_MIXED;
+          Res.Offset := 0; Res.ImmVal := 0;
+        End
+        Else
+        Begin
+          WriteLn('PHP86:', CurToken.Line, ': erreur: membre attendu apres ->');
+          Inc(ErrorCount);
+          ExprMakeNone(Res);
+        End;
+      End;
+    End;
+
+    { ---- Mots-cles litteraux : true false null array isset empty ---- }
     TK_KEYWORD :
     Begin
       If (CurToken.Val = 'true')  Or (CurToken.Val = 'TRUE')  Or
@@ -1729,72 +2051,353 @@ Begin
          (CurToken.Val = 'null')  Or (CurToken.Val = 'NULL') Then
       Begin
         LitEvalBool(CurToken, Res); ParserAdvance;
-      End Else
+      End Else If (CurToken.Val = 'array') Or (CurToken.Val = 'Array') Then
+        ParseArrayLit(Res)
+      Else If CurToken.Val = 'isset' Then
+      Begin
+        { isset($v) -> AX = 1 si variable definie et != 0, 0 sinon }
+        ParserAdvance;  { consommer 'isset' }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;
+        If CurToken.Kind = TK_VAR Then
+        Begin
+          Idx := SymFind(CurToken.Val);
+          If Idx < 0 Then
+          Begin
+            EmitInstr('MOV', 'AX, 0');  { variable inconnue -> false }
+            ParserAdvance;
+          End
+          Else
+          Begin
+            ParseExprPrec(1, E); { charger la variable }
+            ExprLoad(E);
+            EmitInstr('TEST', 'AX, AX');
+            EmitInstr('MOV',  'AX, 0');
+            EmitInstr('SETNE','AL');
+          End;
+        End
+        Else
+        Begin
+          ParseExprPrec(1, E); ExprLoad(E);
+          EmitInstr('TEST', 'AX, AX');
+          EmitInstr('MOV',  'AX, 0');
+          EmitInstr('SETNE','AL');
+        End;
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOL;
+        Res.Offset := 0; Res.ImmVal := 0;
+      End Else If CurToken.Val = 'empty' Then
+      Begin
+        { empty($v) -> AX = 1 si variable vaut 0/false/null, 0 sinon }
+        ParserAdvance;  { consommer 'empty' }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;
+        ParseExprPrec(1, E); ExprLoad(E);
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstr('TEST', 'AX, AX');
+        EmitInstr('MOV',  'AX, 0');
+        EmitInstr('SETE', 'AL');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOL;
+        Res.Offset := 0; Res.ImmVal := 0;
+      End Else If CurToken.Val = 'new' Then
+      Begin
+        { new ClassName(args) : allouer l''objet et appeler le constructeur }
+        ParserAdvance;  { consommer 'new' }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          ClsNm := CurToken.Val;
+          ParserAdvance;
+          ParseNewExpr(ClsNm, Res);
+        End
+        Else
+        Begin
+          WriteLn('PHP86:', CurToken.Line, ': erreur: nom de classe attendu apres new');
+          Inc(ErrorCount);
+          ExprMakeNone(Res);
+        End;
+      End
+      Else
       Begin
         WriteLn('PHP86:', CurToken.Line, ': erreur: expression attendue, mot-cle: ', CurToken.Val);
         Inc(ErrorCount); ParserAdvance;
       End;
     End;
+
+    { ---- Operateurs unaires : - ! ~ ++$var --$var ---- }
     TK_OP :
     Begin
-      { Operateurs unaires : - ! ~ }
       If CurToken.Val = '-' Then
       Begin
         ParserAdvance; ParseExprPrec(14, Res);
         If Res.Kind = EK_IMM Then Res.ImmVal := -Res.ImmVal
         Else Begin ExprLoad(Res); EmitInstr('NEG', 'AX'); End;
-      End Else If CurToken.Val = '!' Then
+      End
+      Else If CurToken.Val = '+' Then
       Begin
         ParserAdvance; ParseExprPrec(14, Res);
-        If Res.Kind = EK_IMM Then Begin If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1; End
-        Else Begin ExprLoad(Res); EmitInstr('TEST','AX,AX'); EmitInstr('MOV','AX,0'); EmitInstr('SETE','AL'); End;
-      End Else If CurToken.Val = '~' Then
+        { unaire + : aucune operation, juste charger }
+        If Res.Kind <> EK_IMM Then ExprLoad(Res);
+      End
+      Else If CurToken.Val = '!' Then
+      Begin
+        ParserAdvance; ParseExprPrec(14, Res);
+        If Res.Kind = EK_IMM Then
+        Begin
+          If Res.ImmVal <> 0 Then Res.ImmVal := 0 Else Res.ImmVal := 1;
+        End
+        Else
+        Begin
+          ExprLoad(Res);
+          EmitInstr('TEST', 'AX, AX');
+          EmitInstr('MOV',  'AX, 0');
+          EmitInstr('SETE', 'AL');
+        End;
+      End
+      Else If CurToken.Val = '~' Then
       Begin
         ParserAdvance; ParseExprPrec(14, Res);
         If Res.Kind = EK_IMM Then Res.ImmVal := Not Res.ImmVal
         Else Begin ExprLoad(Res); EmitInstr('NOT', 'AX'); End;
-      End Else
+      End
+      Else If CurToken.Val = '++' Then
+      Begin
+        { Pre-increment : ++$var }
+        ParserAdvance;
+        If CurToken.Kind = TK_VAR Then
+        Begin
+          VNm := CurToken.Val;
+          ParserAdvance;
+          Idx := SymFind(VNm);
+          If Idx < 0 Then Idx := AllocLocal(VNm, TY_IDX_MIXED, CurToken.Line);
+          VarLoadToAX(Idx);
+          EmitInstr('INC', 'AX');
+          VarStore(Idx);
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := SymTab[Idx].TypeIdx;
+          Res.Offset  := 0;
+          Res.ImmVal  := 0;
+        End
+        Else
+        Begin
+          WriteLn('PHP86:', CurToken.Line, ': erreur: $var attendu apres ++');
+          Inc(ErrorCount);
+          ExprMakeNone(Res);
+        End;
+      End
+      Else If CurToken.Val = '--' Then
+      Begin
+        { Pre-decrement : --$var }
+        ParserAdvance;
+        If CurToken.Kind = TK_VAR Then
+        Begin
+          VNm := CurToken.Val;
+          ParserAdvance;
+          Idx := SymFind(VNm);
+          If Idx < 0 Then Idx := AllocLocal(VNm, TY_IDX_MIXED, CurToken.Line);
+          VarLoadToAX(Idx);
+          EmitInstr('DEC', 'AX');
+          VarStore(Idx);
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := SymTab[Idx].TypeIdx;
+          Res.Offset  := 0;
+          Res.ImmVal  := 0;
+        End
+        Else
+        Begin
+          WriteLn('PHP86:', CurToken.Line, ': erreur: $var attendu apres --');
+          Inc(ErrorCount);
+          ExprMakeNone(Res);
+        End;
+      End
+      Else
       Begin
         WriteLn('PHP86:', CurToken.Line, ': erreur: expression inattendue: ', CurToken.Val);
         Inc(ErrorCount); ParserAdvance;
       End;
     End;
+
+    { ---- Groupement ( expr ) et casts ---- }
     TK_PUNCT :
     Begin
-      { Groupement ( expr ) }
       If CurToken.Val = '(' Then
       Begin
         ParserAdvance;
+        { Detecter un cast : (int) (float) (string) (bool) (array) }
+        If CurToken.Kind = TK_KEYWORD Then
+        Begin
+          CastKw := CurToken.Val;
+          If (CastKw = 'int')    Or (CastKw = 'float')  Or
+             (CastKw = 'string') Or (CastKw = 'bool')   Or
+             (CastKw = 'array')  Or (CastKw = 'object') Or
+             (CastKw = 'unset') Then
+          Begin
+            ParserAdvance; { consommer le mot-cle de cast }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            Begin
+              ParserAdvance; { consommer ')' }
+              ParseExprPrec(14, E);
+              ExprLoad(E);
+              { Effectuer la conversion }
+              If CastKw = 'int' Then
+              Begin
+                { deja un entier ou converti en AX : rien a faire }
+                Res.Kind    := EK_AX;
+                Res.TypeIdx := TY_IDX_INT;
+                Res.Offset  := 0;
+                Res.ImmVal  := 0;
+              End
+              Else If CastKw = 'bool' Then
+              Begin
+                EmitInstr('TEST', 'AX, AX');
+                EmitInstr('MOV',  'AX, 0');
+                EmitInstr('SETNE','AL');
+                Res.Kind    := EK_AX;
+                Res.TypeIdx := TY_IDX_BOOL;
+                Res.Offset  := 0;
+                Res.ImmVal  := 0;
+              End
+              Else If CastKw = 'unset' Then
+              Begin
+                EmitInstr('XOR', 'AX, AX');
+                Res.Kind    := EK_AX;
+                Res.TypeIdx := TY_IDX_NULL;
+                Res.Offset  := 0;
+                Res.ImmVal  := 0;
+              End
+              Else
+              Begin
+                { (float) (string) (array) (object) : AX inchange, type change }
+                Res.Kind    := EK_AX;
+                If CastKw = 'float'  Then Res.TypeIdx := TY_IDX_FLOAT
+                Else If CastKw = 'string' Then Res.TypeIdx := TY_IDX_STRING
+                Else Res.TypeIdx := TY_IDX_MIXED;
+                Res.Offset  := 0;
+                Res.ImmVal  := 0;
+              End;
+              Exit; { eviter le groupement normal ci-dessous }
+            End;
+            { Pas de ')' apres le mot-cle -> revenir au groupement normal }
+            { (ne peut pas reculer le token, on parse l''expression avec CastKw) }
+            ExprMakeNone(Res);
+            WriteLn('PHP86:', CurToken.Line, ': erreur: '')'' attendu apres cast');
+            Inc(ErrorCount);
+            Exit;
+          End;
+        End;
+        { Groupement simple : ( expr ) }
         ParseExprPrec(1, Res);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-          ParserAdvance;
-      End Else
+          ParserAdvance
+        Else
+        Begin
+          WriteLn('PHP86:', CurToken.Line, ': erreur: '')'' manquant');
+          Inc(ErrorCount);
+        End;
+      End Else If CurToken.Val = '[' Then
+        ParseArrayLit(Res)
+      Else
       Begin
         WriteLn('PHP86:', CurToken.Line, ': erreur: expression attendue: ', CurToken.Val);
         Inc(ErrorCount); ParserAdvance;
       End;
     End;
+
   Else
     WriteLn('PHP86:', CurToken.Line, ': erreur: expression attendue (token: ', CurToken.Val, ')');
     Inc(ErrorCount); ParserAdvance;
   End;
 End;
 
-{ ---- ParseExprPrec : boucle Pratt (corps du Forward) ----- }
-Procedure ParseExprPrec; { signatura uniquement via Forward }
+{ ---- ParseExprPrec : boucle Pratt complete (TODO 11) ------ }
+{ Gere : operateurs binaires, ternaire cond ? a : b, ??       }
+Procedure ParseExprPrec; { corps du Forward : parametres MinPrec, Res utilises depuis la signature forward }
 Var
-  L    : TExprVal;
-  R    : TExprVal;
-  Op   : TString;
-  Prec : Integer;
+  L     : TExprVal;
+  R     : TExprVal;
+  Alt   : TExprVal;
+  Op    : TString;
+  Prec  : Integer;
+  LblElse : TString;
+  LblEnd  : TString;
 Begin
   ParsePrimary(L);
-  { Operateurs binaires TK_OP }
-  While CurToken.Kind = TK_OP Do
+  { Boucle Pratt principale : operateurs TK_OP }
+  While True Do
   Begin
+    { ---- null-coalescing ?? ---- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '??') Then
+    Begin
+      If BinOpPrec('??') < MinPrec Then Break;
+      ParserAdvance;
+      { Si L est IMM et vaut 0 (null) -> evaluer R }
+      If L.Kind = EK_IMM Then
+      Begin
+        If L.ImmVal = 0 Then
+        Begin
+          ParseExprPrec(BinOpPrec('??'), R);
+          L := R;
+        End
+        Else
+          ParseExprPrec(BinOpPrec('??'), R);  { consommer R mais ignorer }
+      End
+      Else
+      Begin
+        { Emission : TEST AX, AX ; JNZ end ; evaluer R ; end: }
+        LblEnd := SymNewLabel('NCEND');
+        ExprLoad(L);
+        EmitInstr('TEST', 'AX, AX');
+        EmitInstr('JNZ',  LblEnd);
+        ParseExprPrec(BinOpPrec('??'), R);
+        ExprLoad(R);
+        EmitLabel(LblEnd);
+        L.Kind := EK_AX; L.TypeIdx := TY_IDX_MIXED;
+      End;
+      Continue;
+    End;
+    { ---- ternaire ? a : b ---- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+    Begin
+      If 4 < MinPrec Then Break;  { precedence du ternaire = 4 }
+      ParserAdvance;
+      If L.Kind = EK_IMM Then
+      Begin
+        { Pliage : condition connue a la compilation }
+        ParseExprPrec(1, R);     { branche then }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then ParserAdvance;
+        ParseExprPrec(1, Alt);   { branche else }
+        If L.ImmVal <> 0 Then L := R Else L := Alt;
+      End
+      Else
+      Begin
+        LblElse := SymNewLabel('TERN');
+        LblEnd  := SymNewLabel('TERNEND');
+        ExprLoad(L);
+        EmitInstr('TEST', 'AX, AX');
+        EmitInstr('JZ',   LblElse);
+        ParseExprPrec(1, R);
+        ExprLoad(R);
+        EmitInstr('JMP',  LblEnd);
+        EmitLabel(LblElse);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then ParserAdvance
+        Else Begin WriteLn('PHP86:', CurToken.Line, ': erreur: '':'' attendu dans ternaire'); Inc(ErrorCount); End;
+        ParseExprPrec(1, Alt);
+        ExprLoad(Alt);
+        EmitLabel(LblEnd);
+        L.Kind := EK_AX; L.TypeIdx := TY_IDX_MIXED;
+      End;
+      Continue;
+    End;
+    { ---- operateurs binaires normaux ---- }
+    If CurToken.Kind <> TK_OP Then Break;
     Op   := CurToken.Val;
     Prec := BinOpPrec(Op);
-    If Prec < MinPrec Then Break;
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
     ParserAdvance;
     If IsRightAssoc(Op) Then
       ParseExprPrec(Prec, R)
@@ -1802,12 +2405,13 @@ Begin
       ParseExprPrec(Prec + 1, R);
     ExprEmitBinOp(Op, L, R);
   End;
-  { Mots-cles binaires : and or xor }
+  { ---- mots-cles binaires : and or xor ---- }
   While CurToken.Kind = TK_KEYWORD Do
   Begin
     Op   := CurToken.Val;
     Prec := BinOpPrec(Op);
     If Prec < MinPrec Then Break;
+    If Prec = 0 Then Break;
     ParserAdvance;
     ParseExprPrec(Prec + 1, R);
     ExprEmitBinOp(Op, L, R);
@@ -2241,6 +2845,7 @@ Begin
     { Clore le segment TEXT si ouvert }
     EmitBlankLine;
     WriteLn(OutF, '_TEXT   ENDS');
+    EmitDataSeg;
     WriteLn(OutF);
     WriteLn(OutF, '        END');
     Close(OutF);
@@ -2248,7 +2853,2336 @@ Begin
   End;
 End;
 
-{ ---- Compilation principale (stub -- completer TODO 07+) -- }
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  ============================================================ }
+
+{ ---- DataAdd : enregistrer une entree dans DataTab ---------- }
+{ Retourne l''index alloue ou -1 si table pleine.              }
+Function DataAdd(Const ALbl : TString; AKind : TDataKind;
+                 AInt : LongInt; Const AStr : TString) : Integer;
+Var Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    FatalError('Table de donnees statiques pleine (MAX_DATA)');
+    DataAdd := -1;
+    Exit;
+  End;
+  Idx := DataCount;
+  DataTab[Idx].LblName := ALbl;
+  DataTab[Idx].Kind    := AKind;
+  DataTab[Idx].IntVal  := AInt;
+  DataTab[Idx].StrVal  := AStr;
+  Inc(DataCount);
+  DataAdd := Idx;
+End;
+
+{ ---- DataAddStr : creer une entree DK_STR pour une chaine --- }
+{ Reutilise les doublons (meme contenu -> meme label).         }
+{ Retourne l''index dans DataTab, utilise comme Offset EK_MEM. }
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  I   : Integer;
+  Lbl : TString;
+  NS  : TString;
+Begin
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := I;
+      Exit;
+    End;
+  Inc(LabelSeq);
+  Str(LabelSeq, NS);
+  Lbl := PH_STR_PFX + NS;
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+{ ---- DataAddWord : enregistrer un mot (variable globale) ---- }
+Function DataAddWord(Const ALbl : TString; AInit : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(ALbl, DK_WORD, AInit, '');
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA dans le .ASM --- }
+{ Appele depuis EmitClose juste apres _TEXT ENDS, avant END.  }
+Procedure EmitDataSeg;
+Var
+  I  : Integer;
+  J  : Integer;
+  B  : Byte;
+  NS : String[6];
+Begin
+  If Not OutFOpen Then Exit;
+  If DataCount = 0 Then Exit;
+  WriteLn(OutF);
+  WriteLn(OutF, '_DATA   SEGMENT PUBLIC ', #39, 'DATA', #39);
+  WriteLn(OutF, '        ASSUME  DS:_DATA');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    WriteLn(OutF, DataTab[I].LblName, ':');
+    Case DataTab[I].Kind Of
+      DK_WORD :
+      Begin
+        Str(DataTab[I].IntVal, NS);
+        WriteLn(OutF, '        DW      ', NS);
+      End;
+      DK_BYTE :
+      Begin
+        Str(DataTab[I].IntVal And $FF, NS);
+        WriteLn(OutF, '        DB      ', NS);
+      End;
+      DK_STR  :
+      Begin
+        Write(OutF, '        DB      ');
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          B := Ord(DataTab[I].StrVal[J]);
+          Str(B, NS);
+          If J > 1 Then Write(OutF, ',');
+          Write(OutF, NS);
+        End;
+        WriteLn(OutF, ',0');
+      End;
+    End;
+  End;
+  WriteLn(OutF, '_DATA   ENDS');
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS
+  ============================================================ }
+
+{ ---- AllocLocal : allouer une variable locale sur la pile -- }
+{ Emet SUB SP,n ; enregistre dans SymTab (SC_VAR, offset<0).  }
+{ Retourne l''index SymTab ou -1.                             }
+Function AllocLocal(Const VarName : TString; TyIdx, DeclLine : Integer) : Integer;
+Var
+  VarSize : Integer;
+  SZ      : TString;
+Begin
+  VarSize := TypeSizeof(TyIdx);
+  If VarSize < 2 Then VarSize := 2;
+  Dec(CurFrameSize, VarSize);
+  Str(VarSize, SZ);
+  EmitComment('local $' + VarName + ' [BP-' + SZ + ']');
+  EmitInstr('SUB', 'SP, ' + SZ);
+  AllocLocal := SymAdd(VarName, SC_VAR, TyIdx, False, CurFrameSize, DeclLine);
+End;
+
+{ ---- AllocGlobal : allouer une variable globale dans DATA -- }
+{ Cree une entree DK_WORD (_PHV_name) et un symbole SC_GLOBAL. }
+Function AllocGlobal(Const VarName : TString; TyIdx, DeclLine : Integer) : Integer;
+Var
+  Lbl  : TString;
+  DIdx : Integer;
+Begin
+  Lbl  := PH_VAR_PFX + VarName;
+  DIdx := DataAddWord(Lbl, 0);
+  AllocGlobal := SymAdd(VarName, SC_GLOBAL, TyIdx, False, DIdx, DeclLine);
+End;
+
+{ ---- VarStore : stocker AX dans la variable d''indice Idx --- }
+{ SC_VAR/SC_PARAM -> MOV [BP+-n], AX                          }
+{ SC_GLOBAL/SC_CONST -> MOV [_PHV_name], AX                   }
+Procedure VarStore(Idx : Integer);
+Var
+  OfsStr : TString;
+Begin
+  If (Idx < 0) Or (Idx >= SymCount) Then Exit;
+  If (SymTab[Idx].Cat = SC_VAR) Or (SymTab[Idx].Cat = SC_PARAM) Then
+  Begin
+    If SymTab[Idx].Offset < 0 Then
+    Begin
+      Str(-SymTab[Idx].Offset, OfsStr);
+      EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
+    End
+    Else
+    Begin
+      Str(SymTab[Idx].Offset, OfsStr);
+      EmitInstr('MOV', '[BP+' + OfsStr + '], AX');
+    End;
+  End
+  Else If (SymTab[Idx].Cat = SC_GLOBAL) Or (SymTab[Idx].Cat = SC_CONST) Then
+    EmitInstr('MOV', '[' + SymTab[Idx].MangledName + '], AX')
+  Else
+  Begin
+    WriteLn('PHP86: VarStore: categorie non supportee pour $', SymTab[Idx].Name);
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- VarLoadToAX : charger la variable d''indice Idx dans AX }
+Procedure VarLoadToAX(Idx : Integer);
+Var
+  OfsStr : TString;
+Begin
+  If (Idx < 0) Or (Idx >= SymCount) Then
+  Begin
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
+  If (SymTab[Idx].Cat = SC_VAR) Or (SymTab[Idx].Cat = SC_PARAM) Then
+  Begin
+    If SymTab[Idx].Offset < 0 Then
+    Begin
+      Str(-SymTab[Idx].Offset, OfsStr);
+      EmitInstr('MOV', 'AX, [BP-' + OfsStr + ']');
+    End
+    Else
+    Begin
+      Str(SymTab[Idx].Offset, OfsStr);
+      EmitInstr('MOV', 'AX, [BP+' + OfsStr + ']');
+    End;
+  End
+  Else If (SymTab[Idx].Cat = SC_GLOBAL) Or (SymTab[Idx].Cat = SC_CONST) Then
+    EmitInstr('MOV', 'AX, [' + SymTab[Idx].MangledName + ']')
+  Else
+    EmitInstr('XOR', 'AX, AX');
+End;
+
+{ ---- ParseAssignStmt : $var = expr; ou $var op= expr; ------- }
+{ Appelable depuis ParseStmt quand CurToken = TK_VAR.          }
+{ Alloue la variable si inconnue (locale par defaut).          }
+Procedure ParseAssignStmt;
+Var
+  VarName : TString;
+  Op      : TString;
+  Idx     : Integer;
+  SrcIdx  : Integer;
+  E       : TExprVal;
+  OfsStr  : TString;
+  IsRef   : Boolean;
+  SrcName : TString;
+Begin
+  VarName := CurToken.Val;
+  ParserAdvance;
+  If CurToken.Kind <> TK_OP Then Exit;
+  Op := CurToken.Val;
+  If (Op <> '=')   And (Op <> '+=')  And (Op <> '-=')  And
+     (Op <> '*=')  And (Op <> '/=')  And (Op <> '%=')  And
+     (Op <> '&=')  And (Op <> '|=')  And (Op <> '^=')  And
+     (Op <> '.=')  And (Op <> '<<=') And (Op <> '>>=') Then Exit;
+  ParserAdvance;
+  { Detecter affectation par reference : $a = &$b }
+  IsRef := False;
+  If (Op = '=') And (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+  Begin
+    IsRef := True;
+    ParserAdvance;
+  End;
+  { Chercher ou creer la variable cible }
+  Idx := SymFind(VarName);
+  If Idx < 0 Then
+    Idx := AllocLocal(VarName, TY_IDX_MIXED, CurToken.Line);
+  If IsRef Then
+  Begin
+    { $a = &$b : LEA adresse source dans AX }
+    If CurToken.Kind = TK_VAR Then
+    Begin
+      SrcName := CurToken.Val;
+      ParserAdvance;
+      SrcIdx := SymFind(SrcName);
+      If SrcIdx < 0 Then
+        SrcIdx := AllocLocal(SrcName, TY_IDX_MIXED, CurToken.Line);
+      If (SymTab[SrcIdx].Cat = SC_VAR) Or (SymTab[SrcIdx].Cat = SC_PARAM) Then
+      Begin
+        If SymTab[SrcIdx].Offset < 0 Then
+        Begin
+          Str(-SymTab[SrcIdx].Offset, OfsStr);
+          EmitInstr('LEA', 'AX, [BP-' + OfsStr + ']');
+        End
+        Else
+        Begin
+          Str(SymTab[SrcIdx].Offset, OfsStr);
+          EmitInstr('LEA', 'AX, [BP+' + OfsStr + ']');
+        End;
+      End
+      Else
+        EmitInstr('MOV', 'AX, OFFSET ' + SymTab[SrcIdx].MangledName);
+    End
+    Else
+    Begin
+      ParseExprPrec(1, E);
+      ExprLoad(E);
+    End;
+  End
+  Else If Op = '=' Then
+  Begin
+    ParseExprPrec(1, E);
+    ExprLoad(E);
+    { TODO 21 : propagation du type objet pour resolution -> }
+    If E.TypeIdx >= TY_PRIM_COUNT Then
+    Begin
+      SymTab[Idx].TypeIdx := E.TypeIdx;
+      If SymTab[Idx].Cat = SC_VAR Then
+        If (E.TypeIdx - TY_PRIM_COUNT >= 0) And
+           (E.TypeIdx - TY_PRIM_COUNT < ClassCount) Then
+          SymTab[Idx].MangledName := ClassTab[E.TypeIdx - TY_PRIM_COUNT].ClsName;
+    End;
+  End
+  Else
+  Begin
+    { Affectation composee : charger la valeur courante dans BX }
+    VarLoadToAX(Idx);
+    EmitInstr('MOV', 'BX, AX');
+    ParseExprPrec(1, E);
+    ExprLoad(E);
+    If      Op = '+='  Then EmitInstr('ADD', 'BX, AX')
+    Else If Op = '-='  Then EmitInstr('SUB', 'BX, AX')
+    Else If Op = '*='  Then Begin EmitInstr('IMUL', 'BX'); EmitInstr('MOV', 'BX, AX'); End
+    Else If Op = '&='  Then EmitInstr('AND', 'BX, AX')
+    Else If Op = '|='  Then EmitInstr('OR',  'BX, AX')
+    Else If Op = '^='  Then EmitInstr('XOR', 'BX, AX')
+    Else If Op = '<<=' Then Begin EmitInstr('MOV', 'CX, AX'); EmitInstr('SHL', 'BX, CL'); End
+    Else If Op = '>>=' Then Begin EmitInstr('MOV', 'CX, AX'); EmitInstr('SAR', 'BX, CL'); End
+    Else
+    Begin
+      WriteLn('PHP86:', CurToken.Line, ': avertissement: ', Op, ' non supporte');
+      Inc(WarnCount);
+    End;
+    EmitInstr('MOV', 'AX, BX');
+  End;
+  VarStore(Idx);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseGlobalDecl : global $var [, $var2 ...]; ----------- }
+{ Lie les noms a des variables globales dans le segment DATA.  }
+Procedure ParseGlobalDecl;
+Var
+  VarName : TString;
+  GIdx    : Integer;
+  LIdx    : Integer;
+Begin
+  ParserAdvance; { consommer 'global' }
+  Repeat
+    If CurToken.Kind <> TK_VAR Then
+    Begin
+      WriteLn('PHP86:', CurToken.Line, ': erreur: $var attendu apres global');
+      Inc(ErrorCount);
+      Exit;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;
+    GIdx := SymFindCat(VarName, SC_GLOBAL);
+    If GIdx < 0 Then
+      GIdx := AllocGlobal(VarName, TY_IDX_MIXED, CurToken.Line);
+    LIdx := SymFindLocal(VarName);
+    If LIdx < 0 Then
+      SymAdd(VarName, SC_GLOBAL, SymTab[GIdx].TypeIdx,
+             False, SymTab[GIdx].Offset, CurToken.Line);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '';'' attendu apres global');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- ParseStaticDecl : static $var [= expr]; ---------------- }
+{ Variable locale persistante : stockee dans le segment DATA.  }
+Procedure ParseStaticDecl;
+Var
+  VarName : TString;
+  Lbl     : TString;
+  NS      : TString;
+  DIdx    : Integer;
+  E       : TExprVal;
+Begin
+  ParserAdvance; { consommer 'static' }
+  If CurToken.Kind <> TK_VAR Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: $var attendu apres static');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+  Inc(LabelSeq);
+  Str(LabelSeq, NS);
+  Lbl  := PH_VAR_PFX + VarName + '_S' + NS;
+  DIdx := DataAddWord(Lbl, 0);
+  SymAdd(VarName, SC_GLOBAL, TY_IDX_MIXED, False, DIdx, CurToken.Line);
+  SymTab[SymCount - 1].MangledName := Lbl;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance;
+    ParseExprPrec(1, E);
+    If E.Kind = EK_IMM Then
+      DataTab[DIdx].IntVal := E.ImmVal
+    Else
+    Begin
+      ExprLoad(E);
+      EmitInstr('MOV', '[' + Lbl + '], AX');
+    End;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '';'' attendu apres static');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ============================================================
+  TODO 12 - ECHO / PRINT / VAR_DUMP
+  ============================================================ }
+
+{ ---- EmitPrintExpr : imprimer la valeur de E sur stdout --- }
+{ Appelle ExprLoad (AX = valeur ou OFFSET chaine).           }
+{ Chaines  : MOV SI, AX  + CALL _PHRT_PRINT                 }
+{ Entiers  : CALL _PHRT_ITOA  + CALL _PHRT_PRINT             }
+Procedure EmitPrintExpr(Var E : TExprVal);
+Begin
+  ExprLoad(E);       { materialiser dans AX }
+  If E.TypeIdx = TY_IDX_STRING Then
+  Begin
+    { AX = OFFSET du buffer de chaine -> SI }
+    EmitInstr('MOV',  'SI, AX');
+    EmitInstr('CALL', PH_RT_PFX + 'PRINT');
+  End
+  Else
+  Begin
+    { entier / bool / float / autre : AX = valeur numerique }
+    EmitInstr('CALL', PH_RT_PFX + 'ITOA');   { AX -> SI (buffer interne) }
+    EmitInstr('CALL', PH_RT_PFX + 'PRINT');  { SI -> stdout }
+  End;
+End;
+
+{ ---- ParseEchoStmt : echo expr [, expr]* ; --------------- }
+{ CurToken = TK_KEYWORD 'echo' a l''entree.                   }
+Procedure ParseEchoStmt;
+Var
+  E    : TExprVal;
+  More : Boolean;
+Begin
+  ParserAdvance;   { consommer 'echo' }
+  More := True;
+  While More Do
+  Begin
+    ParseExpr(E);
+    EmitComment('echo');
+    EmitPrintExpr(E);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;   { consommer ',' }
+      More := True;
+    End
+    Else
+      More := False;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '';'' attendu apres echo');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- ParsePrintStmt : print expr ; (retourne 1 dans AX) -- }
+{ CurToken = TK_KEYWORD 'print' a l''entree.                  }
+Procedure ParsePrintStmt;
+Var
+  E : TExprVal;
+Begin
+  ParserAdvance;   { consommer 'print' }
+  ParseExpr(E);
+  EmitComment('print');
+  EmitPrintExpr(E);
+  EmitInstr('MOV', 'AX, 1');   { print() retourne toujours 1 }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '';'' attendu apres print');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- ParseVarDumpStmt : var_dump(expr [, expr]*) ; ------- }
+{ CurToken = TK_IDENT 'var_dump' a l''entree.               }
+{ Emet : type(  puis valeur puis )\n pour chaque argument.  }
+Procedure ParseVarDumpStmt;
+Var
+  E      : TExprVal;
+  TName  : TString;
+  TyLbl  : TString;
+  More   : Boolean;
+  TyIdx  : Integer;
+Begin
+  ParserAdvance;   { consommer 'var_dump' }
+  If (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> '(') Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: ''('' attendu apres var_dump');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  ParserAdvance;   { consommer '(' }
+  More := True;
+  While More Do
+  Begin
+    ParseExpr(E);
+    { determiner le nom du type cible }
+    TyIdx := E.TypeIdx;
+    If (TyIdx >= 0) And (TyIdx < TypeCount) Then
+      TName := TypeTab[TyIdx].Name
+    Else
+      TName := 'unknown';
+    EmitComment('var_dump: ' + TName);
+    { Emettre le prefixe  type(  }  
+    TyLbl := DataTab[DataAddStr(TName + '(')].LblName;
+    EmitInstr('MOV',  'SI, OFFSET ' + TyLbl);
+    EmitInstr('CALL', PH_RT_PFX + 'PRINT');
+    { Emettre la valeur }
+    EmitPrintExpr(E);
+    { Emettre le suffixe  )\n  }
+    TyLbl := DataTab[DataAddStr(')')].LblName;
+    EmitInstr('MOV',  'SI, OFFSET ' + TyLbl);
+    EmitInstr('CALL', PH_RT_PFX + 'PRINT');
+    EmitInstr('CALL', PH_RT_PFX + 'NEWLINE');   { retour a la ligne }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      More := True;
+    End
+    Else
+      More := False;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '')'' attendu apres var_dump(...)');
+    Inc(ErrorCount);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '';'' attendu apres var_dump(...)');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLES : while / do..while / for
+  ============================================================ }
+
+{ ---- LoopPush : empiler les labels break/continue ---------- }
+Procedure LoopPush(Const BrkLbl, CntLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    WriteLn('PHP86: imbrication de boucles trop profonde (max ', MAX_LOOP_NEST, ')');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BrkLbl;
+  LoopContLbl [LoopTop] := CntLbl;
+  Inc(LoopTop);
+End;
+
+{ ---- LoopPop : depiler les labels break/continue ----------- }
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then Dec(LoopTop);
+End;
+
+{ ---- ParseForExprItem : une expression dans for(init;cond;incr) }
+{ Gere : $var = expr   $var op= expr   $var++  $var--   expr  }
+Procedure ParseForExprItem;
+Var
+  E       : TExprVal;
+  VarName : TString;
+  Op      : TString;
+  Idx     : Integer;
+Begin
+  If CurToken.Kind = TK_VAR Then
+  Begin
+    VarName := CurToken.Val;
+    ParserAdvance;   { consommer $var }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op := CurToken.Val;
+      If (Op = '=')  Or (Op = '+=') Or (Op = '-=') Or
+         (Op = '*=') Or (Op = '/=') Or (Op = '%=') Or
+         (Op = '.=') Then
+      Begin
+        ParserAdvance;  { consommer op }
+        ParseExpr(E);
+        ExprLoad(E);
+        Idx := SymFind(VarName);
+        If Idx < 0 Then
+          Idx := AllocLocal(VarName, TY_IDX_INT, CurToken.Line);
+        If Op = '=' Then
+          VarStore(Idx)
+        Else
+        Begin
+          { compound : charger var dans BX, RHS est dans AX }
+          EmitInstr('MOV', 'BX, AX');   { BX = RHS }
+          VarLoadToAX(Idx);             { AX = LHS }
+          If      Op = '+=' Then EmitInstr('ADD',  'AX, BX')
+          Else If Op = '-=' Then EmitInstr('SUB',  'AX, BX')
+          Else If Op = '*=' Then EmitInstr('IMUL', 'BX')
+          Else If Op = '.=' Then Begin EmitInstr('MOV', 'SI, AX'); EmitInstr('MOV', 'DI, BX'); EmitInstr('CALL', PH_RT_PFX + 'CONCAT'); End
+          Else                   EmitInstr('ADD',  'AX, BX');  { fallback }
+          VarStore(Idx);
+        End;
+        Exit;
+      End;
+      If Op = '++' Then
+      Begin
+        Idx := SymFind(VarName);
+        If Idx < 0 Then Idx := AllocLocal(VarName, TY_IDX_INT, CurToken.Line);
+        VarLoadToAX(Idx);
+        EmitInstr('INC', 'AX');
+        VarStore(Idx);
+        ParserAdvance;   { consommer '++' }
+        Exit;
+      End;
+      If Op = '--' Then
+      Begin
+        Idx := SymFind(VarName);
+        If Idx < 0 Then Idx := AllocLocal(VarName, TY_IDX_INT, CurToken.Line);
+        VarLoadToAX(Idx);
+        EmitInstr('DEC', 'AX');
+        VarStore(Idx);
+        ParserAdvance;   { consommer '--' }
+        Exit;
+      End;
+    End;
+    { juste une reference de variable : charger dans AX }
+    Idx := SymFind(VarName);
+    If Idx >= 0 Then VarLoadToAX(Idx);
+  End
+  Else
+  Begin
+    ParseExpr(E);
+    ExprLoad(E);
+  End;
+End;
+
+{ ---- ParseForExprList : liste d''expr separees par , jusqu''a StopCh }
+Procedure ParseForExprList(StopCh : Char);
+Begin
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = StopCh))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForExprItem;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+End;
+
+{ ---- ParseWhileStmt : while (cond) BLOC ou while (cond): ...endwhile; }
+{ CurToken = TK_KEYWORD 'while' a l''entree.                          }
+Procedure ParseWhileStmt;
+Var
+  TopLbl, EndLbl : TString;
+  E              : TExprVal;
+  JmpFalse       : TString;
+  IsAlt          : Boolean;
+Begin
+  ParserAdvance;   { consommer 'while' }
+  TopLbl := SymNewLabel('WHTOP');
+  EndLbl := SymNewLabel('WHEND');
+  LoopPush(EndLbl, TopLbl);   { break -> EndLbl, continue -> TopLbl }
+  EmitLabel(TopLbl);
+  { condition }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  ParseIfCond(E, JmpFalse);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  EmitInstr(JmpFalse, EndLbl);
+  { syntaxe alternative : while (cond): }
+  IsAlt := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':');
+  If IsAlt Then ParserAdvance;
+  { corps }
+  If Not IsAlt Then
+    ParseBlock
+  Else
+    While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endwhile'))
+          And (CurToken.Kind <> TK_EOF) Do
+      ParseStmt;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endwhile') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+  EmitInstr('JMP', TopLbl);
+  EmitLabel(EndLbl);
+  LoopPop;
+End;
+
+{ ---- ParseDoWhileStmt : do BLOC while (cond); --------------- }
+{ CurToken = TK_KEYWORD 'do' a l''entree.                     }
+Procedure ParseDoWhileStmt;
+Var
+  TopLbl, EndLbl, ContLbl : TString;
+  E                       : TExprVal;
+  JmpFalse                : TString;
+Begin
+  ParserAdvance;   { consommer 'do' }
+  TopLbl  := SymNewLabel('DOTOP');
+  EndLbl  := SymNewLabel('DOEND');
+  ContLbl := SymNewLabel('DOCONT');
+  LoopPush(EndLbl, ContLbl);   { break -> EndLbl, continue -> ContLbl }
+  EmitLabel(TopLbl);
+  { corps }
+  ParseBlock;
+  { ContLbl : point de re-test de la condition (cible de continue) }
+  EmitLabel(ContLbl);
+  { while (cond) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  ParseIfCond(E, JmpFalse);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  { si condition vraie : repartir en haut (inverser JmpFalse) }
+  If JmpFalse = 'JZ'  Then EmitInstr('JNZ', TopLbl)
+  Else                      EmitInstr('JZ',  TopLbl);
+  EmitLabel(EndLbl);
+  LoopPop;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseForStmt : for (init; cond; incr) BLOC ------------ }
+{ Structure ASM emise :                                         }
+{   INIT_code                                                   }
+{   FORTOP: COND_check JmpFalse FOREND JMP FORBODY             }
+{   FORINC: INCR_code JMP FORTOP                               }
+{   FORBODY: BODY_code JMP FORINC                              }
+{   FOREND:                                                     }
+Procedure ParseForStmt;
+Var
+  TopLbl, EndLbl, IncrLbl, BodyLbl : TString;
+  E                                : TExprVal;
+  JmpFalse                         : TString;
+  HasCond                          : Boolean;
+  IsAlt                            : Boolean;
+Begin
+  ParserAdvance;   { consommer 'for' }
+  TopLbl  := SymNewLabel('FORTOP');
+  EndLbl  := SymNewLabel('FOREND');
+  IncrLbl := SymNewLabel('FORINC');
+  BodyLbl := SymNewLabel('FORBODY');
+  LoopPush(EndLbl, IncrLbl);   { break -> EndLbl, continue -> IncrLbl }
+  { consommer '(' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  { section INIT : expr , expr... jusqu''au premier ';' }
+  ParseForExprList(';');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+  { label FORTOP : debut du test de condition }
+  EmitLabel(TopLbl);
+  { section COND : optionnelle }
+  HasCond := Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';'));
+  If HasCond Then
+  Begin
+    ParseIfCond(E, JmpFalse);
+    EmitInstr(JmpFalse, EndLbl);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+  { saut vers le corps (par dessus la section incr) }
+  EmitInstr('JMP', BodyLbl);
+  { label FORINC : cible de continue et debut de section incr }
+  EmitLabel(IncrLbl);
+  { section INCR : expr , expr... jusqu''au ')' }
+  ParseForExprList(')');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  EmitInstr('JMP', TopLbl);   { reboucler vers le test }
+  { label FORBODY : debut du corps }
+  EmitLabel(BodyLbl);
+  { syntaxe alternative : for (...): }
+  IsAlt := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':');
+  If IsAlt Then ParserAdvance;
+  If Not IsAlt Then
+    ParseBlock
+  Else
+    While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endfor'))
+          And (CurToken.Kind <> TK_EOF) Do
+      ParseStmt;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endfor') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+  EmitInstr('JMP', IncrLbl);   { fin de corps -> incrementeur }
+  EmitLabel(EndLbl);
+  LoopPop;
+End;
+
+{ ---- ParseBreakStmt : break [N]; --------------------------- }
+{ CurToken = TK_KEYWORD 'break' a l''entree.                  }
+{ break N : sort des N boucles les plus internes (PHP)        }
+Procedure ParseBreakStmt;
+Var
+  Levels : Integer;
+  TgtIdx : Integer;
+  E      : TExprVal;
+Begin
+  ParserAdvance;   { consommer 'break' }
+  Levels := 1;
+  { N optionnel (entier) }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    ParseExpr(E);
+    If E.Kind = EK_IMM Then Levels := E.ImmVal;
+  End;
+  If LoopTop <= 0 Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: break hors d''une boucle');
+    Inc(ErrorCount);
+  End
+  Else
+  Begin
+    TgtIdx := LoopTop - Levels;
+    If TgtIdx < 0 Then TgtIdx := 0;
+    EmitInstr('JMP', LoopBreakLbl[TgtIdx]);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseContinueStmt : continue [N]; --------------------- }
+{ CurToken = TK_KEYWORD 'continue' a l''entree.               }
+Procedure ParseContinueStmt;
+Var
+  Levels : Integer;
+  TgtIdx : Integer;
+  E      : TExprVal;
+Begin
+  ParserAdvance;   { consommer 'continue' }
+  Levels := 1;
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    ParseExpr(E);
+    If E.Kind = EK_IMM Then Levels := E.ImmVal;
+  End;
+  If LoopTop <= 0 Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: continue hors d''une boucle');
+    Inc(ErrorCount);
+  End
+  Else
+  Begin
+    TgtIdx := LoopTop - Levels;
+    If TgtIdx < 0 Then TgtIdx := 0;
+    EmitInstr('JMP', LoopContLbl[TgtIdx]);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 13 - IF / ELSEIF / ELSE  (suite : ParseStmt mis a jour)
+  ============================================================ }
+
+{ ---- ParseBlock : bloc accolades ou instruction simple ----- }
+{ Un bloc ouvre une portee de symboles propre.                }
+{ Sinon : un seul ParseStmt (syntaxe sans accolades)          }
+Procedure ParseBlock;
+Var
+  SavedFrame : Integer;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;   { consommer accolade ouvrante }
+    SavedFrame := BlockEnterScope;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+          And (CurToken.Kind <> TK_EOF) Do
+      ParseStmt;
+    BlockLeaveScope(SavedFrame);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance
+    Else
+    Begin
+      WriteLn('PHP86:', CurToken.Line, ': erreur: ''}'' attendu en fin de bloc');
+      Inc(ErrorCount);
+    End;
+  End
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance   { instruction vide }
+  Else
+  Begin
+    SavedFrame := BlockEnterScope;
+    ParseStmt;
+    BlockLeaveScope(SavedFrame);
+  End;
+End;
+
+{ ---- ParseIfCond : parse interieur de cond, resultat AX      }
+{ Retourne JmpFalse = instruction de saut si cond est FAUSSE.  }
+{ Gere isset(v)   -> JZ si AX=0                               }
+{ Gere is_null(v) -> JNZ si AX<>0 (condition vraie = AX=0)   }
+Procedure ParseIfCond(Var E : TExprVal; Var JmpFalse : TString);
+Var
+  Fn : TString;
+Begin
+  JmpFalse := 'JZ';     { par defaut : saut si zero = false }
+  Fn := '';
+  { cas speciaux isset($v) / is_null($v) }
+  If (CurToken.Kind = TK_IDENT) And
+     ((CurToken.Val = 'isset') Or (CurToken.Val = 'is_null')) Then
+  Begin
+    Fn := CurToken.Val;
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance;   { paren interne de isset ou is_null }
+    ParseExpr(E);
+    ExprLoad(E);
+    EmitInstr('TEST', 'AX, AX');
+    { is_null(v) est vraie quand AX=0 ; saut vers else si AX<>0 }
+    If Fn = 'is_null' Then
+      JmpFalse := 'JNZ';
+    E.Kind := EK_AX; E.TypeIdx := TY_IDX_BOOL;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;   { paren fermante de isset ou is_null }
+  End
+  Else
+  Begin
+    ParseExpr(E);
+    ExprLoad(E);
+    EmitInstr('TEST', 'AX, AX');
+  End;
+End;
+
+{ ---- ParseIfStmt : if [elseif]* [else] --------------------- }
+{ CurToken = TK_KEYWORD 'if' a l''entree.                       }
+{ Syntaxe normale  : if (c) BLOC elseif (c) BLOC else BLOC    }
+{ Syntaxe alt.     : if (c): ... elseif(c): ... else: ... endif; }
+Procedure ParseIfStmt;
+Var
+  EndLbl   : TString;
+  NxtLbl   : TString;
+  E        : TExprVal;
+  IsAlt    : Boolean;
+  JmpFalse : TString;
+Begin
+  ParserAdvance;   { consommer 'if' }
+  EndLbl := SymNewLabel('ENDIF');
+  { --- parse ( condition ) --- }
+  If (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> '(') Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: ''('' attendu apres if');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  ParserAdvance;   { '(' }
+  ParseIfCond(E, JmpFalse);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: '')'' attendu apres condition if');
+    Inc(ErrorCount);
+  End;
+  { saut vers le premier label ELSE/ELSEIF/ENDIF si condition fausse }
+  NxtLbl := SymNewLabel('ELSE');
+  EmitInstr(JmpFalse, NxtLbl);
+  { syntaxe alternative : if (cond): }
+  IsAlt := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':');
+  If IsAlt Then
+    ParserAdvance;
+  { --- bloc THEN --- }
+  If Not IsAlt Then
+    ParseBlock
+  Else
+    While Not ((CurToken.Kind = TK_KEYWORD) And
+               ((CurToken.Val = 'elseif') Or (CurToken.Val = 'else') Or
+                (CurToken.Val = 'endif')))
+          And (CurToken.Kind <> TK_EOF) Do
+      ParseStmt;
+  { --- chaine elseif --- }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'elseif') Do
+  Begin
+    EmitInstr('JMP', EndLbl);   { sauter hors du then }
+    EmitLabel(NxtLbl);          { debut de ce elseif }
+    ParserAdvance;              { consommer 'elseif' }
+    { condition elseif }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance;
+    ParseIfCond(E, JmpFalse);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    NxtLbl := SymNewLabel('ELSE');
+    EmitInstr(JmpFalse, NxtLbl);
+    IsAlt := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':');
+    If IsAlt Then ParserAdvance;
+    If Not IsAlt Then
+      ParseBlock
+    Else
+      While Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((CurToken.Val = 'elseif') Or (CurToken.Val = 'else') Or
+                  (CurToken.Val = 'endif')))
+            And (CurToken.Kind <> TK_EOF) Do
+        ParseStmt;
+  End;
+  { --- bloc ELSE --- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    EmitInstr('JMP', EndLbl);   { sauter hors du dernier then/elseif }
+    EmitLabel(NxtLbl);          { entree de else }
+    NxtLbl := EndLbl;           { endif = fin de else }
+    ParserAdvance;              { consommer 'else' }
+    IsAlt := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':');
+    If IsAlt Then ParserAdvance;
+    If Not IsAlt Then
+      ParseBlock
+    Else
+      While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endif'))
+            And (CurToken.Kind <> TK_EOF) Do
+        ParseStmt;
+  End;
+  { --- endif; pour syntaxe alternative --- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endif') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+  { labels de fin : NxtLbl (si pas de else) puis EndLbl }
+  If NxtLbl <> EndLbl Then
+  Begin
+    EmitLabel(NxtLbl);   { label else/endif quand il n''y avait pas de else }
+    EmitLabel(EndLbl);
+  End
+  Else
+    EmitLabel(EndLbl);   { cas avec else : NxtLbl = EndLbl, deja emis }
+End;
+
+{ ---- ParseStmt : dispatcher de statements (TODO 24 completera) }
+{ Reconnait echo, print, var_dump, if, global, static, $var=... }
+Procedure ParseStmt;
+Begin
+  If CurToken.Kind = TK_EOF Then Exit;
+  { instruction vide }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+  { bloc explicite }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+  { mots-cles }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If CurToken.Val = 'echo'     Then Begin ParseEchoStmt;     Exit; End;
+    If CurToken.Val = 'print'    Then Begin ParsePrintStmt;    Exit; End;
+    If CurToken.Val = 'if'       Then Begin ParseIfStmt;       Exit; End;
+    If CurToken.Val = 'while'    Then Begin ParseWhileStmt;    Exit; End;
+    If CurToken.Val = 'do'       Then Begin ParseDoWhileStmt;  Exit; End;
+    If CurToken.Val = 'for'      Then Begin ParseForStmt;      Exit; End;
+    If CurToken.Val = 'foreach'   Then Begin ParseForeachStmt;  Exit; End;
+    If CurToken.Val = 'switch'    Then Begin ParseSwitchStmt;   Exit; End;
+    If CurToken.Val = 'break'    Then Begin ParseBreakStmt;    Exit; End;
+    If CurToken.Val = 'continue' Then Begin ParseContinueStmt; Exit; End;
+    If CurToken.Val = 'global'   Then Begin ParseGlobalDecl;   Exit; End;
+    If CurToken.Val = 'static'   Then Begin ParseStaticDecl;   Exit; End;
+    If CurToken.Val = 'function' Then Begin ParseFnDecl;       Exit; End;
+    If CurToken.Val = 'return'   Then Begin ParseReturnStmt;   Exit; End;
+    If CurToken.Val = 'class'    Then Begin ParseClassDecl;    Exit; End;
+    { mot-cle non supporte a ce stade }
+    WriteLn('PHP86:', CurToken.Line, ': avert: statement ''',
+            CurToken.Val, ''' non supporte (TODO)');
+    Inc(WarnCount);
+    ParserAdvance;
+    Exit;
+  End;
+  { identifiant : var_dump, die, exit ou appel inconnu }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    If CurToken.Val = 'var_dump' Then Begin ParseVarDumpStmt; Exit; End;
+    { die/exit comme statement : die; die(0); exit; exit(1); }
+    If (CurToken.Val = 'die') Or (CurToken.Val = 'exit') Then
+    Begin
+      ParserAdvance;  { consommer 'die'/'exit' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;  { consommer '(' }
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+        Begin
+          ParseExpr(GExprDummy); ExprLoad(GExprDummy);
+          EmitInstr('MOV', 'AH, 4Ch');
+        End
+        Else
+          EmitInstr('MOV', 'AX, 4C00h');
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End
+      Else
+        EmitInstr('MOV', 'AX, 4C00h');
+      EmitInstr('INT', '21h');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    WriteLn('PHP86:', CurToken.Line, ': avert: appel ''',
+            CurToken.Val, ''' non supporte (TODO)');
+    Inc(WarnCount);
+    ParserAdvance;
+    Exit;
+  End;
+  { variable : assignation }
+  If CurToken.Kind = TK_VAR Then
+  Begin
+    ParseAssignStmt;
+    Exit;
+  End;
+  { token inattendu }
+  WriteLn('PHP86:', CurToken.Line, ': avert: token inattendu ''',
+          CurToken.Val, ''' dans statement');
+  Inc(WarnCount);
+  ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 15 - FOREACH
+  ============================================================ }
+
+{ ---- ParseForeachStmt : foreach ($arr as [$key =>] $val) ----}
+{ Modele ASM pour tableaux indexes simples (count, data...) :  }
+{   [SI]    = nombre d''elements (word)                        }
+{   [SI+2].. = elements consecutifs (word chacun)              }
+{ Temporaires locaux alloues dynamiquement :                   }
+{   __feB_N = adresse de base du 1er element (SI+2)            }
+{   __feI_N = index courant (0..count-1)                       }
+{   __feE_N = nombre d''elements (borne exclusive)             }
+Procedure ParseForeachStmt;
+Var
+  ValName : TString;
+  KeyName : TString;
+  HasKey  : Boolean;
+  IsAlt   : Boolean;
+  TopLbl  : TString;
+  EndLbl  : TString;
+  ContLbl : TString;
+  BaseVar : Integer;
+  IdxVar  : Integer;
+  EndVar  : Integer;
+  ValIdx  : Integer;
+  KeyIdx  : Integer;
+  BaseN   : TString;
+  IdxN    : TString;
+  EndN    : TString;
+  UidStr  : TString;
+  FirstName : TString;
+  E       : TExprVal;
+Begin
+  ParserAdvance;   { consommer 'foreach' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  { evaluer l''expression du tableau : AX = ptr vers struct [count,data...] }
+  ParseExpr(E);
+  ExprLoad(E);
+  { noms uniques pour les temporaires de boucle }
+  Inc(LabelSeq);
+  Str(LabelSeq, UidStr);
+  BaseN := '__feB' + UidStr;
+  IdxN  := '__feI' + UidStr;
+  EndN  := '__feE' + UidStr;
+  BaseVar := AllocLocal(BaseN, TY_IDX_INT, CurToken.Line);
+  IdxVar  := AllocLocal(IdxN,  TY_IDX_INT, CurToken.Line);
+  EndVar  := AllocLocal(EndN,  TY_IDX_INT, CurToken.Line);
+  { SI = pointeur tableau ; lire count ; avancer vers les donnees }
+  EmitComment('foreach : init');
+  EmitInstr('MOV', 'SI, AX');        { SI = ptr tableau }
+  EmitInstr('MOV', 'AX, [SI]');      { AX = count }
+  VarStore(EndVar);                  { __feE = count }
+  EmitInstr('INC', 'SI');            { SI += 2 (en 2 fois pour 8086 strict) }
+  EmitInstr('INC', 'SI');
+  EmitInstr('MOV', 'AX, SI');        { AX = adresse du 1er element }
+  VarStore(BaseVar);                 { __feB = &data[0] }
+  EmitInstr('XOR', 'AX, AX');
+  VarStore(IdxVar);                  { __feI = 0 }
+  { consommer 'as' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'as') Then
+    ParserAdvance;
+  { $FirstName  ou  $key => $val }
+  HasKey    := False;
+  ValName   := '';
+  KeyName   := '';
+  FirstName := '';
+  If CurToken.Kind = TK_VAR Then
+  Begin
+    FirstName := CurToken.Val;
+    ParserAdvance;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+    Begin
+      HasKey  := True;
+      KeyName := FirstName;
+      ParserAdvance;   { consommer '=>' }
+      If CurToken.Kind = TK_VAR Then
+      Begin
+        ValName := CurToken.Val;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ValName := FirstName;
+  End;
+  { consommer ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  { creer/trouver les variables Val et Key }
+  ValIdx := SymFind(ValName);
+  If (ValName <> '') And (ValIdx < 0) Then
+    ValIdx := AllocLocal(ValName, TY_IDX_MIXED, CurToken.Line);
+  If HasKey Then
+  Begin
+    KeyIdx := SymFind(KeyName);
+    If (KeyName <> '') And (KeyIdx < 0) Then
+      KeyIdx := AllocLocal(KeyName, TY_IDX_INT, CurToken.Line);
+  End
+  Else
+    KeyIdx := -1;
+  { labels de boucle }
+  TopLbl  := SymNewLabel('FETOP');
+  EndLbl  := SymNewLabel('FEEND');
+  ContLbl := SymNewLabel('FECONT');
+  LoopPush(EndLbl, ContLbl);
+  { FETOP: test idx < end }
+  EmitLabel(TopLbl);
+  EmitComment('foreach : test fin de tableau');
+  VarLoadToAX(IdxVar);
+  EmitInstr('MOV', 'BX, AX');    { BX = idx }
+  VarLoadToAX(EndVar);
+  EmitInstr('CMP', 'BX, AX');    { idx >= count ? }
+  EmitInstr('JAE', EndLbl);
+  { charger arr[idx] : adresse = BaseVar + idx*2, BX+SI }  
+  EmitComment('foreach : charger arr[idx]');
+  VarLoadToAX(BaseVar);
+  EmitInstr('MOV', 'SI, AX');    { SI = base }
+  VarLoadToAX(IdxVar);
+  EmitInstr('SHL', 'AX, 1');     { AX = idx * 2 (octet offset) }
+  EmitInstr('MOV', 'BX, AX');    { BX = offset }
+  EmitInstr('MOV', 'AX, [SI+BX]'); { AX = arr[idx] }
+  { stocker dans $val }
+  If ValIdx >= 0 Then
+    VarStore(ValIdx);
+  { stocker idx dans $key si demande }
+  If HasKey And (KeyIdx >= 0) Then
+  Begin
+    EmitComment('foreach : cle (index)');
+    VarLoadToAX(IdxVar);
+    VarStore(KeyIdx);
+  End;
+  { corps : syntaxe normale ou alternative }
+  IsAlt := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':');
+  If IsAlt Then ParserAdvance;
+  If Not IsAlt Then
+    ParseBlock
+  Else
+    While Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endforeach'))
+          And (CurToken.Kind <> TK_EOF) Do
+      ParseStmt;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endforeach') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+  { FECONT : incrementer idx et reboucler }
+  EmitLabel(ContLbl);
+  EmitComment('foreach : incrementer index');
+  VarLoadToAX(IdxVar);
+  EmitInstr('INC', 'AX');
+  VarStore(IdxVar);
+  EmitInstr('JMP', TopLbl);
+  EmitLabel(EndLbl);
+  LoopPop;
+End;
+
+{ ============================================================
+  TODO 16 - SWITCH / CASE / DEFAULT
+  ============================================================ }
+
+{ ---- ParseSwitchStmt : switch(expr) case/default/endswitch -- }
+{ Structure ASM :                                              }
+{   sujet -> local __swSN ; DX = flag match (0=non, 1=oui)    }
+{   chaque case val: CMP BX,val + JNE skip ; MOV DX,1 ;       }
+{                    TEST DX,DX + JZ corps_suivant             }
+{   fall-through : quand le corps ne contient pas de break     }
+{   default en dernier : label seul, corps toujours execute    }
+{   break -> JMP SWEND via LoopBreakLbl                       }
+Procedure ParseSwitchStmt;
+Var
+  EndLbl      : TString;
+  SubjVar     : Integer;
+  PendSkipLbl : TString;    { label a emettre au debut du prochain case }
+  HasPend     : Boolean;
+  NomatchLbl  : TString;
+  UidStr      : TString;
+  SubjN       : TString;
+  E           : TExprVal;
+  CaseE       : TExprVal;
+  IsAlt       : Boolean;
+  HasDefault  : Boolean;
+Begin
+  ParserAdvance;   { consommer 'switch' }
+  { generer des identifiants uniques }
+  Inc(LabelSeq);
+  Str(LabelSeq, UidStr);
+  EndLbl := PH_LBL_PFX + 'SWEND_' + UidStr;
+  SubjN  := '__swS' + UidStr;
+  { evaluer le sujet et le sauvegarder dans une variable locale }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  ParseExpr(E);
+  ExprLoad(E);
+  SubjVar := AllocLocal(SubjN, TY_IDX_INT, CurToken.Line);
+  VarStore(SubjVar);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  { initialiser DX = 0 (flag : aucun case matche encore) }
+  EmitComment('switch : init match flag DX=0');
+  EmitInstr('XOR', 'DX, DX');
+  { LoopPush : break -> EndLbl, continue -> EndLbl (idem en PHP) }
+  LoopPush(EndLbl, EndLbl);
+  { consommer l''ouvrant : soit '{' soit ':' (syntaxe alt.) }
+  IsAlt := False;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    IsAlt := True;
+    ParserAdvance;
+  End
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: accolade ou '':'' attendu apres switch()');
+    Inc(ErrorCount);
+  End;
+  PendSkipLbl := '';
+  HasPend     := False;
+  HasDefault  := False;
+  { boucle sur les clauses case / default }
+  Repeat
+    { fin de switch : accolade ou endswitch }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then Break;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endswitch') Then Break;
+    If CurToken.Kind = TK_EOF Then Break;
+    { cas : case expr: }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'case') Then
+    Begin
+      ParserAdvance;   { consommer 'case' }
+      { emettre le label de saut du corps precedent }
+      If HasPend Then EmitLabel(PendSkipLbl);
+      { evaluer la valeur du case }
+      ParseExpr(CaseE);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      EmitComment('case');
+      { recharger le sujet dans BX }
+      VarLoadToAX(SubjVar);
+      EmitInstr('MOV', 'BX, AX');
+      { comparer sujet vs valeur du case }
+      If (CaseE.TypeIdx = TY_IDX_STRING) And (CaseE.Kind = EK_MEM) Then
+      Begin
+        { cas chaine : CALL _PHRT_STREQ (SI=sujet, DI=case_val) }
+        EmitInstr('MOV', 'SI, BX');
+        If (CaseE.Offset >= 0) And (CaseE.Offset < DataCount) Then
+          EmitInstr('MOV', 'DI, OFFSET ' + DataTab[CaseE.Offset].LblName)
+        Else
+          EmitInstr('XOR', 'DI, DI');
+        NomatchLbl := PH_LBL_PFX + 'CSNE_' + UidStr + '_' + PendSkipLbl;
+        If NomatchLbl = PendSkipLbl Then
+        Begin
+          Inc(LabelSeq); Str(LabelSeq, NomatchLbl);
+          NomatchLbl := PH_LBL_PFX + 'CSNE_' + NomatchLbl;
+        End;
+        EmitInstr('CALL', PH_RT_PFX + 'STREQ');
+        EmitInstr('TEST', 'AX, AX');
+        EmitInstr('JZ',   NomatchLbl);   { pas egal -> pas de match }
+        EmitInstr('MOV',  'DX, 1');      { mark as matched }
+        EmitLabel(NomatchLbl);
+      End
+      Else
+      Begin
+        { cas scalaire (entier, bool, null) }
+        If CaseE.Kind = EK_IMM Then
+        Begin
+          Str(CaseE.ImmVal, UidStr);
+          EmitInstr('CMP', 'BX, ' + UidStr);
+        End
+        Else
+        Begin
+          ExprLoad(CaseE);
+          EmitInstr('CMP', 'BX, AX');
+        End;
+        Inc(LabelSeq); Str(LabelSeq, UidStr);
+        NomatchLbl := PH_LBL_PFX + 'CSNE_' + UidStr;
+        EmitInstr('JNE',  NomatchLbl);   { different -> pas de match }
+        EmitInstr('MOV',  'DX, 1');      { mark as matched }
+        EmitLabel(NomatchLbl);
+      End;
+      { TEST DX,DX + JZ pendingSkipLabel : sauter le corps si non matche }
+      EmitInstr('TEST', 'DX, DX');
+      Inc(LabelSeq); Str(LabelSeq, UidStr);
+      PendSkipLbl := PH_LBL_PFX + 'CSKP_' + UidStr;
+      HasPend := True;
+      EmitInstr('JZ', PendSkipLbl);
+      { corps du case : statements jusqu''au prochain case/default/end }
+      While Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((CurToken.Val = 'case') Or (CurToken.Val = 'default') Or
+                  (CurToken.Val = 'endswitch')))
+            And Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+            And (CurToken.Kind <> TK_EOF) Do
+        ParseStmt;
+    End
+    { clause : default: }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'default') Then
+    Begin
+      ParserAdvance;   { consommer 'default' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      { emettre le label de saut du corps precedent }
+      If HasPend Then EmitLabel(PendSkipLbl);
+      HasPend    := False;
+      HasDefault := True;
+      EmitComment('default');
+      { corps du default : statements jusqu''a la fermeture }
+      While Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((CurToken.Val = 'case') Or (CurToken.Val = 'endswitch')))
+            And Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+            And (CurToken.Kind <> TK_EOF) Do
+        ParseStmt;
+    End
+    Else
+    Begin
+      { token inattendu dans switch }
+      WriteLn('PHP86:', CurToken.Line, ': erreur: case ou default attendu dans switch, token: ''', CurToken.Val, '''');
+      Inc(ErrorCount);
+      ParserAdvance;
+    End;
+  Until False;
+  { emettre le dernier label de saut de corps si encore en attente }
+  If HasPend Then EmitLabel(PendSkipLbl);
+  { consommer le fermeture }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'endswitch') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+  EmitLabel(EndLbl);
+  LoopPop;
+End;
+
+{ ============================================================
+  TODO 17 - FONCTIONS
+  ============================================================ }
+
+{ ---- ParseCallExpr : emettre un appel de fonction ---------- }
+{ FnName = nom PHP sans prefixe ; CurToken doit etre '('      }
+{ Convention : appelant pousse args gauche->droite, nettoie.   }
+Procedure ParseCallExpr(Const FnName : TString; Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  E        : TExprVal;
+  AStr     : TString;
+  FnMang   : TString;
+Begin
+  { ---- Builtins speciaux (TODO 19) ---- }
+  { count($a) : retourne le mot count stocke en [ptr] }
+  If FnName = 'count' Then
+  Begin
+    ParserAdvance;  { consommer '(' }
+    ParseExpr(E);
+    ExprLoad(E);    { AX = adresse du tableau }
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('MOV', 'AX, [SI]');   { mot count = premier mot }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;                 { drainer args superflus }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_INT;
+    Res.Offset  := 0;
+    Res.ImmVal  := 0;
+    Exit;
+  End;
+  { array_push($a, v) : appel runtime _PHRT_ARRAY_PUSH }
+  If FnName = 'array_push' Then
+  Begin
+    ArgCount := 0;
+    ParserAdvance;  { consommer '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      ParseExpr(E);
+      ExprLoad(E);
+      EmitInstr('PUSH', 'AX');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    EmitInstr('CALL', PH_RT_PFX + 'ARRAY_PUSH');
+    If ArgCount > 0 Then
+    Begin
+      Str(ArgCount * 2, AStr);
+      EmitInstr('ADD', 'SP, ' + AStr);
+    End;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_INT;
+    Res.Offset  := 0;
+    Res.ImmVal  := 0;
+    Exit;
+  End;
+  { ============================================================
+    TODO 20 - BUILTINS
+    ============================================================ }
+
+  { strlen($s) -> CALL _PHRT_STRLEN -> AX = longueur }
+  If FnName = 'strlen' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    EmitInstr('PUSH', 'AX');
+    EmitInstr('CALL', PH_RT_PFX + 'STRLEN');
+    EmitInstr('ADD',  'SP, 2');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_INT;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { intval($s) -> CALL _PHRT_ATOI -> AX = entier }
+  If FnName = 'intval' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    EmitInstr('PUSH', 'AX');
+    EmitInstr('CALL', PH_RT_PFX + 'ATOI');
+    EmitInstr('ADD',  'SP, 2');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_INT;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { strval($n) -> CALL _PHRT_ITOA -> AX = ptr chaine }
+  If FnName = 'strval' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    EmitInstr('PUSH', 'AX');
+    EmitInstr('CALL', PH_RT_PFX + 'ITOA');
+    EmitInstr('ADD',  'SP, 2');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { is_null($v) -> AX = (LoadedVal == 0) ? 1 : 0 }
+  If FnName = 'is_null' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV',  'AX, 0');
+    EmitInstr('SETE', 'AL');
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOL;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { defined(NAME) -> AX = 1 si constante trouvee, 0 sinon }
+  If FnName = 'defined' Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_STRING) Then
+    Begin
+      If SymFindCat(CurToken.Val, SC_CONST) >= 0 Then
+        EmitInstr('MOV', 'AX, 1')
+      Else
+        EmitInstr('MOV', 'AX, 0');
+      ParserAdvance;
+    End
+    Else
+      EmitInstr('MOV', 'AX, 0');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOL;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { abs($n) -> inline via CWD : DX=masque signe, XOR+SUB }
+  If FnName = 'abs' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    EmitInstr('CWD',  '');
+    EmitInstr('XOR',  'AX, DX');
+    EmitInstr('SUB',  'AX, DX');
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_INT;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { min($a,$b) -> inline : POP BX ; CMP BX,AX ; JLE done ; MOV AX,BX }
+  If FnName = 'min' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    EmitInstr('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+    ParseExpr(E); ExprLoad(E);  { AX = b }
+    EmitInstr('POP', 'BX');     { BX = a }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    AStr := SymNewLabel(PH_LBL_PFX + 'MIN');
+    EmitInstr('CMP',  'AX, BX');  { b < a ? }
+    EmitInstr('JLE',  AStr);      { b <= a : AX = b (garder AX) }
+    EmitInstr('MOV',  'AX, BX');  { a < b : AX = a }
+    EmitLabel(AStr);
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_INT;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { max($a,$b) -> inline : POP BX ; CMP AX,BX ; JGE done ; MOV AX,BX }
+  If FnName = 'max' Then
+  Begin
+    ParserAdvance;
+    ParseExpr(E); ExprLoad(E);
+    EmitInstr('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+    ParseExpr(E); ExprLoad(E);  { AX = b }
+    EmitInstr('POP', 'BX');     { BX = a }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    AStr := SymNewLabel(PH_LBL_PFX + 'MAX');
+    EmitInstr('CMP',  'AX, BX');  { b > a ? }
+    EmitInstr('JGE',  AStr);      { b >= a : AX = b (garder AX) }
+    EmitInstr('MOV',  'AX, BX');  { a > b : AX = a }
+    EmitLabel(AStr);
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_INT;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { die/exit([code]) -> MOV AX,4C00h / INT 21h }
+  If (FnName = 'die') Or (FnName = 'exit') Then
+  Begin
+    ParserAdvance;
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      ParseExpr(E); ExprLoad(E);
+      EmitInstr('MOV', 'AH, 4Ch');
+    End
+    Else
+      EmitInstr('MOV', 'AX, 4C00h');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    EmitInstr('INT',  '21h');
+    ExprMakeImm(0, TY_IDX_INT, Res); Exit;
+  End;
+
+  { ---- Appel de fonction generique (cdecl) ---- }
+  FnMang   := PH_FN_PFX + FnName;
+  ArgCount := 0;
+  ParserAdvance;   { consommer '(' }
+  { Evaluer et pousser chaque argument de gauche a droite }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseExpr(E);
+    ExprLoad(E);
+    EmitInstr('PUSH', 'AX');        { AX = valeur de l''argument }
+    Inc(ArgCount);
+    If ArgCount >= MAX_PARAM Then
+    Begin
+      WriteLn('PHP86:', CurToken.Line, ': avert: trop d''arguments (max ', MAX_PARAM, ')');
+      Inc(WarnCount); Break;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  EmitInstr('CALL', FnMang);
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 2, AStr);
+    EmitInstr('ADD', 'SP, ' + AStr);   { nettoyer la pile (cdecl caller) }
+  End;
+  { valeur de retour dans AX }
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_MIXED;
+  Res.Offset  := 0;
+  Res.ImmVal  := 0;
+End;
+
+{ ---- ParseReturnStmt : return [expr]; ---------------------- }
+{ CurToken = TK_KEYWORD 'return' a l''entree.                 }
+Procedure ParseReturnStmt;
+Var
+  E : TExprVal;
+Begin
+  ParserAdvance;   { consommer 'return' }
+  { Expression optionnelle }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+  Begin
+    ParseExpr(E);
+    ExprLoad(E);   { valeur de retour dans AX }
+  End
+  Else
+    EmitInstr('XOR', 'AX, AX');   { return; -> retourner 0 }
+  { Saut vers l''epilogue de la fonction courante }
+  If CurFnRetLbl <> '' Then
+    EmitInstr('JMP', CurFnRetLbl)
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: return hors d''une fonction');
+    Inc(ErrorCount);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseFnDecl : function name(params) corps -----------   }
+{ CurToken = TK_KEYWORD 'function' a l''entree.               }
+{ Convention cdecl : appelant PUSH args L->R, nettoie la pile. }
+{   PUSH BP ; MOV BP,SP ; corps ; MOV SP,BP ; POP BP ; RET    }
+{   $p1 au plus haut offset, $pN = [BP+4]                     }
+Procedure ParseFnDecl;
+Var
+  FnName      : TString;
+  FnMangled   : TString;
+  RetLbl      : TString;
+  EndLbl      : TString;
+  PNames      : Array[0..MAX_PARAM - 1] Of TString;
+  PRefs       : Array[0..MAX_PARAM - 1] Of Boolean;
+  PCount      : Integer;
+  I           : Integer;
+  Idx         : Integer;
+  POfStr      : TString;
+  SaveRetLbl  : TString;
+  SaveFrame   : Integer;
+  NS          : TString;
+  E           : TExprVal;
+Begin
+  ParserAdvance;   { consommer 'function' }
+  { nom de la fonction }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: nom de fonction attendu');
+    Inc(ErrorCount); Exit;
+  End;
+  FnName    := CurToken.Val;
+  FnMangled := PH_FN_PFX + FnName;
+  ParserAdvance;
+  { enregistrer dans la table des symboles }
+  If SymFindCat(FnName, SC_FN) < 0 Then
+    Idx := SymAdd(FnName, SC_FN, TY_IDX_MIXED, False, 0, CurToken.Line);
+  { labels }
+  Inc(LabelSeq); Str(LabelSeq, NS);
+  RetLbl := PH_LBL_PFX + 'FNRET_' + NS;
+  EndLbl := FnMangled + '_END';
+  { JMP par-dessus le corps (les fonctions sont definies inline) }
+  EmitInstr('JMP', EndLbl);
+  EmitBlankLine;
+  EmitComment('function ' + FnName);
+  EmitLabel(FnMangled);
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV',  'BP, SP');
+  EmitComment('frame function ' + FnName + ' (locaux alloues incrementalement)');
+  { analyser la liste des parametres }
+  PCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;   { '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      { parametre variadique ...$arg (non supporte) }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+      Begin
+        WriteLn('PHP86:', CurToken.Line, ': avert: parametre variadique ignore');
+        Inc(WarnCount);
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+              And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+        Break;
+      End;
+      { &$param : par reference }
+      PRefs[PCount] := False;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+      Begin
+        PRefs[PCount] := True;
+        ParserAdvance;
+      End;
+      { $paramname }
+      If CurToken.Kind = TK_VAR Then
+      Begin
+        PNames[PCount] := CurToken.Val;
+        ParserAdvance;
+        { valeur par defaut : $p = expr (on emet un aversion et on ignore) }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;   { consommer '=' }
+          EmitComment('parametre par defaut $' + PNames[PCount]);
+          { consommer l''expression sans emettre de code utile }
+          While Not ((CurToken.Kind = TK_PUNCT) And
+                     ((CurToken.Val = ',') Or (CurToken.Val = ')')))
+                And (CurToken.Kind <> TK_EOF) Do
+            ParserAdvance;
+        End;
+        Inc(PCount);
+        If PCount >= MAX_PARAM Then Break;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  { sauvegarder contexte de la fonction englobante }
+  SaveRetLbl := CurFnRetLbl;
+  SaveFrame  := CurFrameSize;
+  CurFnRetLbl  := RetLbl;
+  CurFrameSize := 0;
+  Inc(CurFnDepth);
+  { entrer dans la portee de la fonction }
+  SymEnterScope;
+  { enregistrer les parametres : $p1 au plus haut offset, $pN au plus bas }
+  { push gauche->droite : $p1 en premier, donc [BP+4+(n-1)*2] }
+  For I := 0 To PCount - 1 Do
+  Begin
+    Idx := SymAdd(PNames[I], SC_PARAM, TY_IDX_MIXED,
+                  PRefs[I], 4 + 2 * (PCount - 1 - I), CurToken.Line);
+    Str(4 + 2 * (PCount - 1 - I), POfStr);
+    EmitComment('param $' + PNames[I] + ' = [BP+' + POfStr + ']');
+  End;
+  { corps de la fonction }
+  ParseBlock;
+  { epilogue }
+  EmitLabel(RetLbl);
+  EmitInstr('MOV', 'SP, BP');   { restaurer SP (libere les locaux) }
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+  { fermer la portee }
+  SymLeaveScope;
+  Dec(CurFnDepth);
+  CurFnRetLbl  := SaveRetLbl;
+  CurFrameSize := SaveFrame;
+  EmitLabel(EndLbl);
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 18 - PORTEE, PILE ET CADRES
+  ============================================================ }
+
+{ ---- BlockEnterScope : entrer dans un sous-bloc ------------ }
+{ Sauvegarde CurFrameSize et ouvre une portee de symboles.    }
+{ Retourne la taille du cadre avant ce bloc (pour BlockLeave).}
+Function BlockEnterScope : Integer;
+Begin
+  SymEnterScope;
+  BlockEnterScope := CurFrameSize;
+End;
+
+{ ---- BlockLeaveScope : quitter un sous-bloc ---------------- }
+{ SavedFrame = valeur retournee par BlockEnterScope.          }
+{ Ferme la portee de symboles et restaure CurFrameSize.       }
+{ Si on est a l''exterieur d''une fonction (CurFnDepth=0)     }
+{ ET que des octets ont ete alloues : emet ADD SP, delta.     }
+{ A l''interieur d''une fonction, MOV SP,BP dans l''epilogue   }
+{ restaure tout : pas besoin d''ADD SP par bloc.              }
+Procedure BlockLeaveScope(SavedFrame : Integer);
+Var
+  Delta : Integer;
+  DS    : TString;
+Begin
+  Delta := SavedFrame - CurFrameSize;   { octets alloues dans ce bloc }
+  SymLeaveScope;
+  CurFrameSize := SavedFrame;           { restaurer le compteur }
+  If (Delta > 0) And (CurFnDepth = 0) Then
+  Begin
+    Str(Delta, DS);
+    EmitInstr('ADD', 'SP, ' + DS);      { liberer les locaux hors-fonction }
+  End;
+End;
+
+{ ============================================================
+  TODO 19 - TABLEAUX : array(), [], $a[i], count, array_push
+  ============================================================ }
+
+{ ---- ParseArrayLit : array(v1,...) ou [v1,...] ------------- }
+{ CurToken = 'array' (TK_KEYWORD) ou '[' (TK_PUNCT) a l''entree.  }
+{ Disposition DATA : DW count, DW e0, DW e1, ...              }
+{ Retourne EK_AX avec AX = OFFSET label (pointe sur count).   }
+Procedure ParseArrayLit(Var Res : TExprVal);
+Var
+  Elems    : Array[0..63] Of LongInt;
+  ECount   : Integer;
+  I        : Integer;
+  E        : TExprVal;
+  ArrSeq   : TString;
+  ArrLbl   : TString;
+  ELbl     : TString;
+  NS       : TString;
+  CloseStr : TString;
+Begin
+  ExprMakeNone(Res);
+  { Determiner syntaxe : array(...) ou [...] }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'array') Then
+  Begin
+    ParserAdvance;  { consommer 'array' }
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+    Begin
+      WriteLn('PHP86:', CurToken.Line, ': erreur: ''('' attendu apres array');
+      Inc(ErrorCount); Exit;
+    End;
+    ParserAdvance;  { consommer '(' }
+    CloseStr := ')';
+  End
+  Else
+  Begin
+    ParserAdvance;  { consommer '[' }
+    CloseStr := ']';
+  End;
+  ECount := 0;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = CloseStr))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseExpr(E);
+    { Detection tableau associatif : expr => val }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+    Begin
+      WriteLn('PHP86:', CurToken.Line,
+              ': avert: tableau associatif non supporte, cle ignoree');
+      Inc(WarnCount);
+      ParserAdvance;  { consommer '=>' }
+      ParseExpr(E);   { valeur (remplace la cle) }
+    End;
+    If ECount < 64 Then
+    Begin
+      If E.Kind = EK_IMM Then
+        Elems[ECount] := E.ImmVal
+      Else
+      Begin
+        WriteLn('PHP86:', CurToken.Line,
+                ': avert: element tableau non-constant ignore, 0 emis');
+        Inc(WarnCount);
+        Elems[ECount] := 0;
+      End;
+      Inc(ECount);
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = CloseStr) Then
+    ParserAdvance;
+  { Generer label unique pour ce tableau }
+  Str(LabelSeq, ArrSeq); Inc(LabelSeq);
+  ArrLbl := PH_STR_PFX + 'ARR' + ArrSeq;
+  { Premier mot DATA = count (avec le label du tableau) }
+  DataAddWord(ArrLbl, ECount);
+  { Mots suivants = elements (labels derives) }
+  For I := 0 To ECount - 1 Do
+  Begin
+    Str(I, NS);
+    ELbl := ArrLbl + '_' + NS;
+    DataAddWord(ELbl, Elems[I]);
+  End;
+  { Retourner AX = OFFSET du label (pointe sur le mot count) }
+  EmitInstr('MOV', 'AX, OFFSET ' + ArrLbl);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_MIXED;
+  Res.Offset  := 0;
+  Res.ImmVal  := 0;
+End;
+
+{ ============================================================
+  TODO 21 - CLASSES PHP (BASIQUE)
+  ============================================================ }
+
+{ ---- ParseNewExpr : allouer un objet, appeler son constructeur }
+{ ClsName = nom PHP de la classe ; CurToken est apres le nom.  }
+{ Allocation sur la pile de l''appelant : SUB SP, ObjSize.     }
+{ $this = SI = ptr objet. Convention : $this pousse EN DERNIER }
+{   => methodeName([BP+4] = $this, [BP+6] = arg0, ...).        }
+Procedure ParseNewExpr(Const ClsName : TString; Var Res : TExprVal);
+Var
+  CIdx     : Integer;
+  I        : Integer;
+  ArgCount : Integer;
+  SzStr    : TString;
+  AStr     : TString;
+  CtorFn   : TString;
+  E        : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  { Localiser la classe dans ClassTab }
+  CIdx := -1;
+  For I := 0 To ClassCount - 1 Do
+    If ClassTab[I].ClsName = ClsName Then Begin CIdx := I; Break; End;
+  If CIdx < 0 Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': avert: classe ''', ClsName, ''' inconnue, nil emis');
+    Inc(WarnCount);
+    EmitInstr('XOR', 'AX, AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+            And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_MIXED;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+  { Allouer l''objet sur la pile (SUB SP, ObjSize) }
+  If ClassTab[CIdx].ObjSize > 0 Then
+  Begin
+    Str(ClassTab[CIdx].ObjSize, SzStr);
+    EmitInstr('SUB', 'SP, ' + SzStr);
+    Inc(CurFrameSize, ClassTab[CIdx].ObjSize);
+    { Zeroinit : effacer les mots de l''objet }
+    EmitInstr('MOV', 'SI, SP');
+    EmitComment('zeroinit: ' + ClsName + ' (' + SzStr + ' octets)');
+    For I := 0 To ClassTab[CIdx].ObjSize Div 2 - 1 Do
+    Begin
+      Str(I * 2, AStr);
+      EmitInstr('MOV', 'WORD PTR [SI+' + AStr + '], 0');
+    End;
+  End
+  Else
+    EmitInstr('MOV', 'SI, SP');
+  { SI = ptr $this }
+  { Verifier si un constructeur __construct existe }
+  CtorFn := '';
+  For I := 0 To ClassTab[CIdx].MethCount - 1 Do
+    If ClassTab[CIdx].MethNames[I] = '__construct' Then
+    Begin
+      CtorFn := PH_FN_PFX + ClsName + '____construct';
+      Break;
+    End;
+  { Parser et pousser les arguments du constructeur }
+  ArgCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer '(' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do
+    Begin
+      ParseExpr(E);
+      ExprLoad(E);
+      EmitInstr('PUSH', 'AX');
+      Inc(ArgCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+  If CtorFn <> '' Then
+  Begin
+    EmitInstr('PUSH', 'SI');           { $this en dernier = [BP+4] }
+    EmitInstr('CALL', CtorFn);
+    Str((ArgCount + 1) * 2, AStr);    { nettoyer args + $this }
+    EmitInstr('ADD', 'SP, ' + AStr);
+  End
+  Else If ArgCount > 0 Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line,
+            ': avert: classe ''', ClsName,
+            ''' sans __construct, ', ArgCount, ' arg(s) ignores');
+    Inc(WarnCount);
+    Str(ArgCount * 2, AStr);
+    EmitInstr('ADD', 'SP, ' + AStr);
+  End;
+  EmitInstr('MOV', 'AX, SI');        { retourner le ptr objet }
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_PRIM_COUNT + CIdx;   { encode la classe }
+  Res.Offset  := 0;
+  Res.ImmVal  := 0;
+End;
+
+{ ---- ParseClassDecl : class Name [extends P] with members -- }
+{ CurToken = TK_KEYWORD 'class' a l''entree.                  }
+{ Proprietes : enregistrees dans ClassTab, taille objet=2*n.  }
+{ Methodes   : emises comme _PHF_ClsName__methName.           }
+{   $this est le DERNIER argument depile = [BP+4].            }
+Procedure ParseClassDecl;
+Var
+  ClsName     : TString;
+  ParentNm    : TString;
+  MethName    : TString;
+  MethMangled : TString;
+  CIdx        : Integer;
+  PCount      : Integer;
+  MCount      : Integer;
+  ObjSz       : Integer;
+  DeclLine    : Integer;
+  PropName    : TString;
+  E           : TExprVal;
+  NS          : TString;
+  I           : Integer;
+  PNames      : Array[0..MAX_CLASS_METH - 1] Of TString;
+  PRefs       : Array[0..MAX_CLASS_METH - 1] Of Boolean;
+  PPCount     : Integer;
+  POfStr      : TString;
+  SaveRetLbl  : TString;
+  SaveFrame   : Integer;
+  SaveDepth   : Integer;
+  RetLbl      : TString;
+  EndLbl      : TString;
+Begin
+  ParserAdvance;   { consommer 'class' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: nom de classe attendu');
+    Inc(ErrorCount); Exit;
+  End;
+  ClsName  := CurToken.Val;
+  DeclLine := CurToken.Line;
+  ParserAdvance;
+  ParentNm := '';
+  { extends : heritage non supporte }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'extends') Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ParentNm := CurToken.Val;
+      WriteLn('PHP86:', DeclLine, ': avert: heritage de ''',
+              ParentNm, ''' non supporte, ignore');
+      Inc(WarnCount);
+      ParserAdvance;
+    End;
+  End;
+  { implements : ignore }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'implements') Then
+  Begin
+    WriteLn('PHP86:', DeclLine, ': avert: implements non supporte, ignore');
+    Inc(WarnCount);
+    ParserAdvance;
+    While (CurToken.Kind = TK_IDENT) Or
+          ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Do
+      ParserAdvance;
+  End;
+  { Creer l''entree dans ClassTab }
+  If ClassCount >= MAX_CLASS Then
+  Begin
+    WriteLn('PHP86:', DeclLine, ': erreur: trop de classes (max ', MAX_CLASS, ')');
+    Inc(ErrorCount); Exit;
+  End;
+  CIdx := ClassCount; Inc(ClassCount);
+  ClassTab[CIdx].ClsName    := ClsName;
+  ClassTab[CIdx].ParentName := ParentNm;
+  ClassTab[CIdx].PropCount  := 0;
+  ClassTab[CIdx].MethCount  := 0;
+  ClassTab[CIdx].ObjSize    := 0;
+  CurClsIdx := CIdx;
+  { Enregistrer la classe dans SymTab }
+  SymAdd(ClsName, SC_CLASS, TY_IDX_MIXED, False, CIdx, DeclLine);
+  { Ouvrir le corps }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: ''{'' attendu apres nom de classe');
+    Inc(ErrorCount); Exit;
+  End;
+  ParserAdvance;  { consommer '{' }
+  ObjSz  := 0;  PCount := 0;  MCount := 0;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    { Ignorer les modificateurs de visibilite }
+    While (CurToken.Kind = TK_KEYWORD) And
+          ((CurToken.Val = 'public')   Or (CurToken.Val = 'protected') Or
+           (CurToken.Val = 'private')  Or (CurToken.Val = 'static')    Or
+           (CurToken.Val = 'abstract') Or (CurToken.Val = 'final')     Or
+           (CurToken.Val = 'readonly')) Do
+      ParserAdvance;
+    { Propriete : $prop [= val]; }
+    If CurToken.Kind = TK_VAR Then
+    Begin
+      PropName := CurToken.Val;
+      ParserAdvance;
+      If PCount < MAX_CLASS_PROP Then
+      Begin
+        ClassTab[CIdx].Props[PCount].PropName := PropName;
+        ClassTab[CIdx].Props[PCount].PropOff  := ObjSz;
+        ClassTab[CIdx].Props[PCount].PropType := TY_IDX_MIXED;
+        Inc(PCount); Inc(ObjSz, 2);
+      End
+      Else
+      Begin
+        WriteLn('PHP86:', CurToken.Line,
+                ': avert: trop de proprietes dans ''', ClsName, '''');
+        Inc(WarnCount);
+      End;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance; ParseExpr(E);   { valeur initiale ignoree }
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+    { Methode : function methName(params) + body }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
+    Begin
+      ParserAdvance;  { consommer 'function' }
+      If CurToken.Kind <> TK_IDENT Then
+      Begin
+        WriteLn('PHP86:', CurToken.Line, ': erreur: nom de methode attendu');
+        Inc(ErrorCount); Break;
+      End;
+      MethName    := CurToken.Val;
+      DeclLine    := CurToken.Line;
+      MethMangled := PH_FN_PFX + ClsName + '__' + MethName;
+      ParserAdvance;
+      If MCount < MAX_CLASS_METH Then
+      Begin
+        ClassTab[CIdx].MethNames[MCount] := MethName;
+        Inc(MCount);
+      End;
+      { Prologue : JMP over body + label + PUSH BP + MOV BP,SP }
+      EndLbl := MethMangled + '_END';
+      EmitInstr('JMP', EndLbl);
+      EmitLabel(MethMangled);
+      EmitInstr('PUSH', 'BP');
+      EmitInstr('MOV',  'BP, SP');
+      { Sauvegarder contexte }
+      SaveRetLbl := CurFnRetLbl;
+      SaveFrame  := CurFrameSize;
+      SaveDepth  := CurFnDepth;
+      Inc(LabelSeq); Str(LabelSeq, NS);
+      RetLbl := PH_LBL_PFX + 'METR' + NS;
+      CurFnRetLbl  := RetLbl;
+      CurFrameSize := 0;
+      CurFnDepth   := CurFnDepth + 1;
+      SymEnterScope;
+      { Parser les parametres explicites }
+      PPCount := 0;
+      If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+      Begin
+        WriteLn('PHP86:', CurToken.Line, ': erreur: ''('' attendu');
+        Inc(ErrorCount);
+      End
+      Else
+      Begin
+        ParserAdvance;  { consommer '(' }
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+              And (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+          Begin
+            If PPCount < MAX_CLASS_METH Then PRefs[PPCount] := True;
+            ParserAdvance;
+          End
+          Else
+            If PPCount < MAX_CLASS_METH Then PRefs[PPCount] := False;
+          If CurToken.Kind = TK_VAR Then
+          Begin
+            If PPCount < MAX_CLASS_METH Then PNames[PPCount] := CurToken.Val;
+            Inc(PPCount);
+            ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance; ParseExpr(E);  { valeur par defaut ignoree }
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      { Enregistrer $this = [BP+4] (dernier pousse = le plus proche BP) }
+      { Params : param[PPCount-1] = [BP+6], ..., param[0] = [BP+4+PPCount*2] }
+      {          $this                             = [BP+4]                   }
+      SymAdd('this', SC_PARAM, TY_PRIM_COUNT + CIdx, False, 4, DeclLine);
+      For I := 0 To PPCount - 1 Do
+      Begin
+        Str(6 + I * 2, POfStr);
+        SymAdd(PNames[I], SC_PARAM, TY_IDX_MIXED, PRefs[I],
+               6 + I * 2, DeclLine);
+      End;
+      { Corps de la methode }
+      ParseBlock;
+      { Epilogue }
+      EmitLabel(RetLbl);
+      EmitInstr('MOV', 'SP, BP');
+      EmitInstr('POP', 'BP');
+      EmitInstr('RET', '');
+      EmitLabel(EndLbl);
+      SymLeaveScope;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFrameSize := SaveFrame;
+      CurFnDepth   := SaveDepth;
+    End
+    Else
+    Begin
+      { Membre non reconnu }
+      If CurToken.Kind <> TK_EOF Then
+      Begin
+        WriteLn('PHP86:', CurToken.Line,
+                ': avert: membre ''', CurToken.Val, ''' non reconnu dans ''',
+                ClsName, ''', ignore');
+        Inc(WarnCount);
+        ParserAdvance;
+      End;
+    End;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+  { Finaliser la classe }
+  ClassTab[CIdx].PropCount := PCount;
+  ClassTab[CIdx].MethCount := MCount;
+  ClassTab[CIdx].ObjSize   := ObjSz;
+  CurClsIdx := -1;
+  If Opts.Verbose Then
+    WriteLn('PHP86: classe ''', ClsName, ''' : ',
+            PCount, ' prop., ', MCount, ' meth., taille=', ObjSz, 'o');
+End;
+
+{ ---- Compilation principale (stub -- completer TODO 19+) -- }
 Procedure Run;
 Begin
   TypeInit;
@@ -2285,8 +5219,12 @@ Begin
   TypeCount    := 0;
   DataCount    := 0;
   CurFrameSize := 0;
+  CurFnDepth   := 0;
   LoopTop      := 0;
+  CurFnRetLbl  := '';
   RuntimeEmitted := False;
+  ClassCount   := 0;
+  CurClsIdx    := -1;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
