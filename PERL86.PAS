@@ -320,6 +320,7 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_INCLUDE   = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_PKG       = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
+  MAX_ARR_ELEMS = 32;   { elements max par tableau @arr local (fixe) }
   STACK_SIZE    = 1024;
 
   { Prefixes de nommage ASM }
@@ -585,6 +586,9 @@ Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
 Procedure ExprMakeUndef(Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+{ TODO 15 }
+Procedure ParseArrElemAccess(ArrIdx : Integer; Var Res : TExprVal); Forward;
+Procedure ParseArrBuiltin(IsStmt : Boolean); Forward;
 { TODO 04 }
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  IsRightAssoc(Const Op : TString) : Boolean; Forward;
@@ -1050,6 +1054,13 @@ Begin
         EmitComment('redo: hors d''une boucle (ignore)');
       If CurToken.Kind = TK_IDENT Then ParserAdvance;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit;
+    End;
+    { TODO 15 : push / pop / shift / unshift / scalar sur @arr }
+    If (KW = 'push') Or (KW = 'pop') Or
+       (KW = 'shift') Or (KW = 'unshift') Then
+    Begin
+      ParseArrBuiltin(True);
       Exit;
     End;
   End;
@@ -2327,6 +2338,10 @@ Begin
         { Variable locale my/local : acces [BP - Offset] }
         Str(E.Offset, S);
         EmitInstr('MOV', 'AX, WORD PTR [BP-' + S + ']');
+      End Else If E.ImmVal = 2 Then
+      Begin
+        { Element tableau dynamique : adresse deja dans BX }
+        EmitInstr('MOV', 'AX, [BX]');
       End Else
       Begin
         { Donnee statique DATA : Offset = indice dans DataTab }
@@ -2731,6 +2746,36 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
+    { TODO 15 : pop / shift en contexte expression }
+    If (NStr = 'pop') Or (NStr = 'shift') Then
+    Begin
+      ParseArrBuiltin(False);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 15 : scalar(@arr) en contexte expression }
+    If NStr = 'scalar' Then
+    Begin
+      ParserAdvance;  { consommer 'scalar' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      If CurToken.Kind = TK_ARRAY_SIG Then
+      Begin
+        Idx := SymFindCat(CurToken.Val, SC_ARRAY_VAR);
+        If Idx >= 0 Then
+        Begin
+          Str(SymTab[Idx].Offset, S);
+          EmitInstr('MOV', 'AX, WORD PTR [BP-' + S + ']');
+        End Else
+          EmitInstr('MOV', 'AX, 0');
+        ParserAdvance;
+      End Else
+        EmitInstr('MOV', 'AX, 0');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
     { Appel de sous-routine avec mot-cle non reconnu : avancer }
     ParserAdvance;
     ExprMakeNone(Res);
@@ -2782,25 +2827,47 @@ Begin
   { ---- Variable scalaire $var ---- }
   If CurToken.Kind = TK_SCALAR Then
   Begin
-    Idx := SymFind(CurToken.Val, '$');
+    NStr := CurToken.Val;
+    Idx  := SymFind(NStr, '$');
+    ParserAdvance;
+    { Acces a un element de tableau : $arr[idx] }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      { Chercher d''abord un tableau @arr avec le meme nom }
+      Idx := SymFindCat(NStr, SC_ARRAY_VAR);
+      If Idx >= 0 Then
+      Begin
+        ParseArrElemAccess(Idx, Res);
+        ParsePostfixOps(Res);
+        Exit;
+      End;
+    End;
     If Idx < 0 Then
     Begin
       If Opts.Strict Then
-        SymError('Variable non declaree : $' + CurToken.Val);
+        SymError('Variable non declaree : $' + NStr);
       ExprMakeNone(Res);
-      ParserAdvance;
       Exit;
     End;
-    ParserAdvance;
     Res := ExprMakeMem(Idx);
     ParsePostfixOps(Res);
     Exit;
   End;
-  { ---- @arr ou %hash en contexte scalaire -> 0 (stub) ---- }
+  { ---- @arr en contexte scalaire -> nombre d''elements ---- }
   If (CurToken.Kind = TK_ARRAY_SIG) Or (CurToken.Kind = TK_HASH_SIG) Then
   Begin
-    EmitComment('@/% scalaire -> 0 (stub TODO 15/16)');
-    EmitInstr('MOV', 'AX, 0');
+    If CurToken.Kind = TK_ARRAY_SIG Then
+    Begin
+      { scalar(@arr) = mot [BP-Offset] = count }
+      Idx := SymFindCat(CurToken.Val, SC_ARRAY_VAR);
+      If Idx >= 0 Then
+      Begin
+        Str(SymTab[Idx].Offset, S);
+        EmitInstr('MOV', 'AX, WORD PTR [BP-' + S + ']');
+      End Else
+        EmitInstr('MOV', 'AX, 0');  { tableau inconnu -> 0 }
+    End Else
+      EmitInstr('MOV', 'AX, 0');  { %hash scalaire : stub TODO 16 }
     ParserAdvance;
     Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
     Res.ImmVal := 0; Res.Offset := 0;
@@ -3557,7 +3624,11 @@ Var
   S : TString;
 Begin
   If Lv.Kind <> EK_MEM Then Exit;  { rien a stocker }
-  If Lv.ImmVal = 1 Then
+  If Lv.ImmVal = 2 Then
+  Begin
+    { Element tableau dynamique : adresse deja dans BX }
+    EmitInstr('MOV', '[BX], AX');
+  End Else If Lv.ImmVal = 1 Then
   Begin
     { Variable locale my/local }
     Str(Lv.Offset, S);
@@ -3576,18 +3647,20 @@ End;
 { Ajoute le symbole dans SymTab, emet l''allocation et l''init.  }
 Procedure ParseVarDecl;
 Var
-  Kw    : TString;
-  IsMy  : Boolean;
-  IsOur : Boolean;
-  IsLoc : Boolean;
-  Sigil : Char;
-  VName : TString;
-  Cat   : TSymCat;
-  TIdx  : Integer;
-  Idx   : Integer;
-  E     : TExprVal;
-  Lv    : TExprVal;
-  OffS  : TString;
+  Kw        : TString;
+  IsMy      : Boolean;
+  IsOur     : Boolean;
+  IsLoc     : Boolean;
+  Sigil     : Char;
+  VName     : TString;
+  Cat       : TSymCat;
+  TIdx      : Integer;
+  Idx       : Integer;
+  E         : TExprVal;
+  Lv        : TExprVal;
+  OffS      : TString;
+  ElemCount : Integer;
+  TmpS      : TString;
 Begin
   Kw    := CurToken.Val;
   IsMy  := Kw = 'my';
@@ -3618,11 +3691,53 @@ Begin
   { Allouer / reserver l''espace selon la portee }
   If IsMy Or IsLoc Then
   Begin
-    { Variable locale : SymAdd a incremente CurFrameSize, emet SUB SP, 2 }
-    EmitAllocLocal(2);
-    Str(SymTab[Idx].Offset, OffS);
-    EmitComment('init my ' + Sigil + VName);
-    EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], 0');
+    If Cat = SC_ARRAY_VAR Then
+    Begin
+      { Tableau @arr : mot de count + MAX_ARR_ELEMS slots de 2 octets }
+      EmitAllocLocal(2);   { SymAdd a deja incremente CurFrameSize de 2 }
+      Str(SymTab[Idx].Offset, OffS);
+      EmitComment('init @' + VName + ' : count=0, ' + OffS + ' slots');
+      EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], 0');
+      { Reserver les slots elements : CurFrameSize avance manuellement }
+      Inc(CurFrameSize, 2 * MAX_ARR_ELEMS);
+      Str(2 * MAX_ARR_ELEMS, TmpS);
+      EmitInstr('SUB', 'SP, ' + TmpS);
+      { Init optionnelle depuis liste : my @arr = (e1, e2, ...) }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;   { consommer '=' }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;  { consommer '(' }
+        ElemCount := 0;
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+                  (CurToken.Kind <> TK_EOF) And
+                  (ElemCount < MAX_ARR_ELEMS) Do
+        Begin
+          ParseExpr(E);
+          ExprLoad(E);
+          { Stocker AX dans arr[ElemCount] = [BP - (Offset+2 + ElemCount*2)] }
+          Str(SymTab[Idx].Offset + 2 + ElemCount * 2, TmpS);
+          EmitInstr('MOV', 'WORD PTR [BP-' + TmpS + '], AX');
+          Inc(ElemCount);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        { Mettre a jour le count }
+        Str(SymTab[Idx].Offset, OffS);
+        Str(ElemCount, TmpS);
+        EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], ' + TmpS);
+      End;
+      Exit;
+    End Else
+    Begin
+      { Variable scalaire ou hash : SymAdd a incremente CurFrameSize, emet SUB SP, 2 }
+      EmitAllocLocal(2);
+      Str(SymTab[Idx].Offset, OffS);
+      EmitComment('init my ' + Sigil + VName);
+      EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], 0');
+    End;
   End Else If IsOur Then
   Begin
     { Variable globale : reservee dans _DATA }
@@ -4229,6 +4344,177 @@ Begin
   End;
   EmitLabel(LblEnd);
   LoopPop;
+End;
+
+{ ============================================================
+  TODO 15 - TABLEAUX @arr
+  ============================================================ }
+
+{ ---- ParseArrElemAccess : $arr[idx] -> TExprVal lvalue ----- }
+{ ArrIdx = indice dans SymTab de @arr.                         }
+{ Layout pile : [BP-Offset]=count, [BP-Offset-2]=elem[0], ... }
+{ Pour idx constant (EK_IMM), Res = EK_MEM ImmVal=1 direct.   }
+{ Pour idx variable, adresse calculee dans BX : EK_MEM ImmVal=2 }
+Procedure ParseArrElemAccess(ArrIdx : Integer; Var Res : TExprVal);
+Var
+  IdxE    : TExprVal;
+  ElemOff : LongInt;
+  S       : TString;
+  BaseOff : Integer;
+Begin
+  ParserAdvance;  { consommer '[' }
+  ParseExpr(IdxE);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+    ParserAdvance;
+  BaseOff := SymTab[ArrIdx].Offset;
+  If IdxE.Kind = EK_IMM Then
+  Begin
+    { Index constant : acces direct [BP - (BaseOff+2 + idx*2)] }
+    ElemOff := BaseOff + 2 + IdxE.ImmVal * 2;
+    Str(ElemOff, S);
+    Res.Kind    := EK_MEM;
+    Res.ImmVal  := 1;
+    Res.Offset  := ElemOff;
+    Res.TypeIdx := TY_IDX_SCALAR;
+  End Else
+  Begin
+    { Index dynamique : calculer adresse dans BX }
+    ExprLoad(IdxE);      { AX = index }
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('SHL', 'SI, 1');         { SI = idx * 2 }
+    Str(BaseOff + 2, S);
+    EmitInstr('ADD', 'SI, ' + S);      { SI = offset base elements + idx*2 }
+    EmitInstr('MOV', 'BX, BP');
+    EmitInstr('SUB', 'BX, SI');        { BX = &arr[idx] }
+    Res.Kind    := EK_MEM;
+    Res.ImmVal  := 2;
+    Res.Offset  := 0;
+    Res.TypeIdx := TY_IDX_SCALAR;
+  End;
+End;
+
+{ ---- ParseArrBuiltin : push / pop / shift / unshift @arr -- }
+{ push  @arr, val => ajouter val a la fin, incr count         }
+{ pop   @arr      => retirer dernier elem dans AX, decr count }
+{ shift @arr      => retirer premier elem dans AX, decr count }
+{ unshift @arr, val => inserer val au debut, incr count       }
+Procedure ParseArrBuiltin(IsStmt : Boolean);
+Var
+  KW     : TString;
+  ArrIdx : Integer;
+  E      : TExprVal;
+  OffS   : TString;
+  BaseS  : TString;
+  I      : Integer;
+  IS     : TString;
+Begin
+  KW := CurToken.Val;
+  ParserAdvance;  { consommer le keyword }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  { Identifier @arr }
+  ArrIdx := -1;
+  If CurToken.Kind = TK_ARRAY_SIG Then
+  Begin
+    ArrIdx := SymFindCat(CurToken.Val, SC_ARRAY_VAR);
+    ParserAdvance;
+  End;
+  If KW = 'push' Then
+  Begin
+    { push @arr, val }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E);
+    ExprLoad(E);  { AX = valeur a pousser }
+    If ArrIdx >= 0 Then
+    Begin
+      Str(SymTab[ArrIdx].Offset, OffS);
+      Str(SymTab[ArrIdx].Offset + 2, BaseS);
+      EmitComment('push @arr');
+      EmitInstr('MOV', 'CX, WORD PTR [BP-' + OffS + ']');  { CX = count }
+      EmitInstr('MOV', 'SI, CX');
+      EmitInstr('SHL', 'SI, 1');          { SI = count*2 }
+      EmitInstr('ADD', 'SI, ' + BaseS);   { SI = offset de arr[count] }
+      EmitInstr('MOV', 'BX, BP');
+      EmitInstr('SUB', 'BX, SI');         { BX = &arr[count] }
+      EmitInstr('MOV', '[BX], AX');       { arr[count] = val }
+      EmitInstr('INC', 'WORD PTR [BP-' + OffS + ']');  { count++ }
+    End;
+  End Else If KW = 'pop' Then
+  Begin
+    { pop @arr : retourne dernier element dans AX }
+    If ArrIdx >= 0 Then
+    Begin
+      Str(SymTab[ArrIdx].Offset, OffS);
+      Str(SymTab[ArrIdx].Offset + 2, BaseS);
+      EmitComment('pop @arr');
+      EmitInstr('MOV', 'CX, WORD PTR [BP-' + OffS + ']');  { CX = count }
+      EmitInstr('DEC', 'CX');             { CX = last idx }
+      EmitInstr('DEC', 'WORD PTR [BP-' + OffS + ']');  { count-- }
+      EmitInstr('MOV', 'SI, CX');
+      EmitInstr('SHL', 'SI, 1');
+      EmitInstr('ADD', 'SI, ' + BaseS);
+      EmitInstr('MOV', 'BX, BP');
+      EmitInstr('SUB', 'BX, SI');
+      EmitInstr('MOV', 'AX, [BX]');      { AX = valeur retournee }
+    End Else
+      EmitInstr('MOV', 'AX, 0');
+  End Else If KW = 'shift' Then
+  Begin
+    { shift @arr : retirer et retourner premier element, decaler }
+    If ArrIdx >= 0 Then
+    Begin
+      Str(SymTab[ArrIdx].Offset, OffS);
+      Str(SymTab[ArrIdx].Offset + 2, BaseS);
+      EmitComment('shift @arr');
+      { Sauvegarder arr[0] dans AX }
+      Str(SymTab[ArrIdx].Offset + 2, IS);
+      EmitInstr('MOV', 'AX, WORD PTR [BP-' + IS + ']');
+      EmitInstr('PUSH', 'AX');  { sauver valeur retournee }
+      { Decaler arr[1..n-1] vers arr[0..n-2] via boucle }
+      EmitInstr('MOV', 'CX, WORD PTR [BP-' + OffS + ']');
+      EmitInstr('DEC', 'CX');   { CX = count-1 (nombre d''elements a decaler) }
+      EmitInstr('JCXZ', '_PRL_SHFTE_' + OffS);
+      EmitLabel('_PRL_SHFTS_' + OffS);
+      { BX = &arr[1] initialement -> avancer }
+      EmitInstr('MOV', 'SI, ' + BaseS);
+      EmitInstr('MOV', 'BX, BP');
+      EmitInstr('SUB', 'BX, SI');     { BX = &arr[0] }
+      EmitInstr('MOV', 'DI, SI');
+      EmitInstr('SUB', 'DI, 2');      { DI = offset arr[1] }
+      EmitInstr('MOV', 'DX, BP');
+      EmitInstr('SUB', 'DX, DI');     { DX = &arr[1] = src }
+      EmitInstr('MOV', 'AX, [DX]');
+      EmitInstr('MOV', '[BX], AX');
+      EmitLabel('_PRL_SHFTE_' + OffS);
+      EmitInstr('DEC', 'WORD PTR [BP-' + OffS + ']');
+      EmitInstr('POP', 'AX');
+    End Else
+      EmitInstr('MOV', 'AX, 0');
+  End Else If KW = 'unshift' Then
+  Begin
+    { unshift @arr, val : inserer val en tete }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExpr(E);
+    ExprLoad(E);
+    If ArrIdx >= 0 Then
+    Begin
+      Str(SymTab[ArrIdx].Offset, OffS);
+      Str(SymTab[ArrIdx].Offset + 2, BaseS);
+      EmitComment('unshift @arr');
+      { Incr count d''abord }
+      EmitInstr('INC', 'WORD PTR [BP-' + OffS + ']');
+      { Stocker val dans arr[0] }
+      Str(SymTab[ArrIdx].Offset + 2, IS);
+      EmitInstr('MOV', 'WORD PTR [BP-' + IS + '], AX');
+    End;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  If IsStmt Then
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
 End;
 
 { ============================================================

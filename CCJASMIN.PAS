@@ -6082,7 +6082,7 @@ Begin
        _Germany: errrpt('Kann const Variable nicht zuweisen: ' + sname);
        Else
        {$ENDIF}
-       errrpt('Impossible d''assigner √† la variable const: ' + sname);
+       errrpt('Impossible d''assigner Ö la variable const: ' + sname);
        {$IFDEF FPC}
        End;
       {$ENDIF}
@@ -6090,18 +6090,16 @@ Begin
      Else
      Begin
       safe_writeln('; Assignment to variable: ' + sname);
-
-      { Use expression parser for right side }
+       { Utilise l'analyseur d'expression pour le cìtÇ droite }
       expression(right_lval);
-
-      { Store result in variable }
+       { Entrepose le rÇsultat dans la variable }
       ol('std   ' + sname);
      End;
     End;
    End
    Else
    Begin
-    { Load variable }
+    { Charge la variable }
     If lookup_variable(sname, lval) Then
     Begin
      ot('ldd  ');
@@ -6111,27 +6109,21 @@ Begin
    End;
    Continue;
   End;
-
-  { Try to parse as expression }
+   { Essayez d'analyser comme une expression }
   lptr := 1;
   blanks;
-  If (peek_char >= '0') and (peek_char <= '9') Then
-  Begin
+  If (peek_char >= '0') and (peek_char <= '9') Then Begin
    safe_writeln('; Expression detected');
    expression(lval);
    Continue;
   End;
-
-  { Simple function detection fallback }
-  If Pos('(', line) > 0 Then
-  Begin
+  { DÇtection de fonction simple }
+  If Pos('(', line) > 0 Then Begin
    safe_writeln('; Function found: ' + line);
    ol('nop ; placeholder for function');
   End;
-
-  { Output any remaining content as comment }
-  If Length(line) > 0 Then
-  Begin
+   { Afficher le contenu restant sous forme de commentaire }
+  If Length(line) > 0 Then Begin
    safe_writeln('; Unknown: ' + line);
   End;
  End;
@@ -6178,7 +6170,7 @@ BEGIN
     WriteLn('  -O3    Aggressive optimizations (all)');
    End;
    _Germany:Begin
-    WriteLn('CCJASMIN - Dieser Befehl erm√∂glicht es, den C-Compiler f√ºr ',
+    WriteLn('CCJASMIN - Dieser Befehl ermîglicht es, den C-Compiler fÅr ',
             'den Jasmin-Mikroprozessor zu starten.');
     WriteLn;
     WriteLn('Syntax: CCJASMIN infile.c [outfile] [-optionen]');
@@ -6186,7 +6178,7 @@ BEGIN
     WriteLn('Optionen:');
     WriteLn('  -O0    Keine Optimierung (Standard)');
     WriteLn('  -O1    Grundlegende Optimierungen (Guckloch, Konstantenfaltung)');
-    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, Spr√ºnge)');
+    WriteLn('  -O2    Erweiterte Optimierungen (+ toter Code, SprÅnge)');
     WriteLn('  -O3    Aggressive Optimierungen (alle)');
    End;
    Else
@@ -6198,9 +6190,9 @@ BEGIN
     WriteLn('Syntaxe : CCJASMIN infile.c [outfile] [-options]');
     WriteLn;
     WriteLn('Options :');
-    WriteLn('  -O0    Pas d''optimisation (valeur par dÔøΩfaut)');
+    WriteLn('  -O0    Pas d''optimisation (valeur par dÇfaut)');
     WriteLn('  -O1    Optimisations de base (oeilleon, pliage constant)');
-    WriteLn('  -O2    Optimisations avancÔøΩes (code mort, sauts)');
+    WriteLn('  -O2    Optimisations avancÇes (code mort, sauts)');
     WriteLn('  -O3    Optimisations aggressives (toutes)');
    End;
   {$IFDEF FPC}
@@ -6208,8 +6200,8 @@ BEGIN
   {$ENDIF}
   Halt(1);
  End;
-  { Initialize variables - symtab no longer needed }
- { FillChar(symtab, SizeOf(symtab), 0); -- Old symbol table removed }
+  { Initialise les variables - symtab n'est plus nÇcessaire }
+ { FillChar(symtab, SizeOf(symtab), 0); -- Vieille table de symbole a enlever }
  glbptr := startglb;
  locptr := startloc;
  stkp := 0;
@@ -6220,21 +6212,21 @@ BEGIN
  first_func := True;
  declared := False;
  use_stdout := True;
- { Initialize include file system }
+ { Initialise le systäme de fichier include }
  include_depth := 0;
  current_filename := '';
- { Initialize define system }
+ { Initialise le systäme define }
  init_defines;
- { Initialize heap-based symbol table }
+ { Initialise la table de symbole basÇ sur la mÇmoire de tas }
  init_symbols;
-  { Compiler main body }
+  { Compile le corps de main }
  nxtlab := 0;
  kill;
  WriteLn('CCJASMIN - Compilateur C pour JASMIN V1.01');
  WriteLn;
  optimize := OPT_NONE;
  ctext := NO;
- { Parse command line arguments }
+ { Analyse les paramätres de la ligne de commande }
  For i := 1 to ParamCount do Begin
   param := ParamStr(i);
   If param = '-O0' Then optimize := OPT_NONE
@@ -6242,45 +6234,35 @@ BEGIN
   Else If param = '-O2' Then optimize := OPT_ADVANCED
   Else If param = '-O3' Then optimize := OPT_AGGRESSIVE;
  End;
-
- { Open input file with error checking }
+  { Ouvre le fichier d'entrÇe avec la vÇrification d'erreur }
  Assign(input, ParamStr(1));
  {$I-}
  Reset(input);
- If IOResult <> 0 Then
- Begin
+ If IOResult <> 0 Then Begin
   WriteLn('Error: Cannot open input file: ', ParamStr(1));
   Halt(1);
  End;
  {$I+}
-
- current_filename := ParamStr(1); { Set initial filename for include system }
- WriteLn('Compiling Source file: ', ParamStr(1));
-
- { Initialize global variables }
+ current_filename := ParamStr(1); { DÇfinir le nom de fichier initiale pour le systäme d'inclusion }
+ WriteLn('Compile le fichier Source: ', ParamStr(1));
+ { Initialise les variables global }
  eof := 0;
  errcnt := 0;
  lptr := 1;
  line := '';
  nextlabel := 0;
- use_stdout := True; { Initialize early - may be changed later }
-
- { Initialize heap-based symbol table }
+ use_stdout := True; { Initialize tìt - peut àtre modifiÇ ulltÇrieurement }
+  { Initialiser la table des symboles basÇe sur la mÇmoire de tas }
  init_symbols;
-
- { Initialize defines table }
+  { Initialiser la tables des defines }
  init_defines;
-
- { Initialize inclusion system }
+  { Initialise le systäme d'inclusion }
  init_inclusion_system;
-
- { Initialize conditions system }
+  { Initialise le systäme de conditions }
  init_conditions;
-
- { Initialize control flow tables }
+  { Initialise la table de contrìle de flux }
  init_goto_table;
  init_switch_table;
-
  If optimize > OPT_NONE Then WriteLn('Optimization level: ', optimize);
  If ParamCount >= 2 Then Begin
   param := ParamStr(2);
@@ -6294,13 +6276,13 @@ BEGIN
     Halt(1);
    End;
    {$I+}
-   { Message supprim√© temporairement }
+   { Message supprimÇ temporairement }
    { WriteLn('Generating asm file: ', param); }
    use_stdout := False;
   End
    Else
   Begin
-   { Ne pas assigner de sortie ÔøΩ la sortie; utiliser plutÔøΩt un drapeau }
+   { Ne pas assigner de sortie Ö la sortie; utiliser plutìt un drapeau }
    {$IFDEF FPC}
    Case Language of
     _English:WriteLn('Using console screen for output.');
@@ -6315,7 +6297,7 @@ BEGIN
  End
   Else
  Begin
-   { Ne pas assigner de sortie ÔøΩ la sortie; utiliser plutÔøΩt un drapeau }
+   { Ne pas assigner de sortie Ö la sortie; utiliser plutìt un drapeau }
   {$IFDEF FPC}
   Case Language of
    _English:WriteLn('Using console screen for output.');
@@ -6327,26 +6309,26 @@ BEGIN
   {$ENDIF}
   use_stdout := True;
  End;
-  { Initialisation du syst√®me d'optimisation }
+  { Initialisation du systäme d'optimisation }
  init_optimization;
- { Initialize loop context stack }
+ { Initialise la pile de contexte boucle }
  loop_depth := 0;
- { Initialize type info table }
+ { Initialise la table d'information de type }
  type_info_count := 0;
-  { Initialisaton du systÔøΩme de gestion des fonctions }
+  { Initialisaton du systäme de gestion des fonctions }
  init_functions;
-  { Initialisation du syst√®me de gestion des structures }
+  { Initialisation du systäme de gestion des structures }
  init_structs;
- { Initialisation de la table des √©tiquettes goto }
+ { Initialisation de la table des Çtiquettes goto }
  init_goto_table;
  asmtype := ASJASMIN;
- header;        { Code d''introduction }
- parse;         { Analyse toutes les entrÔøΩe }
- trailer;       { Code de suivi }
- free_defines;  { Free define memory from heap }
- free_conditions; { Free conditions system }
- free_symbols;  { Free symbol table from heap }
- free_structs;  { Free struct definitions from heap }
- closeout;      { Fermer la sortie }
- errrptsummary; { RÔøΩsumer les erreurs }
+ header;          { Code d'introduction }
+ parse;           { Analyse toutes les entrÇe }
+ trailer;         { Code de suivi }
+ free_defines;    { Libäre la mÇmoire de define de la mÇmoire de tas }
+ free_conditions; { Libäre le systäme de conditions }
+ free_symbols;    { Libäre la table de symbole de la mÇmoire de tas }
+ free_structs;    { Libäre les dÇfinitions de struct de la mÇmoire de tas }
+ closeout;        { Fermer la sortie }
+ errrptsummary;   { RÇsumer les erreurs }
 END.
