@@ -6,197 +6,12 @@
   @description: Compilateur Rust vers assembleur 8086
 }
 
-(*
-  ============================================================
-  PLAN DE DEVELOPPEMENT - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE GENERALE
-            Definir les constantes de dimensionnement (MAX_SYM, MAX_PROC,
-            MAX_LABEL, MAX_SCOPE, MAX_ERRORS, MAX_STR, etc.) et les
-            types fondamentaux TString/TToken; etablir la structure
-            du programme principal (ParseArgs, Run, Cleanup).
-
-  TODO 02 - LEXER : TOKENS DE BASE
-            Implanter le scanner de caracteres (ouverture fichier,
-            buffer ligne, gestion lignes/colonnes, AvanceChar,
-            PeekChar). Reconnaitre les identifiants, les entiers
-            decimaux/hexadecimaux (0x...) et les caracteres de
-            ponctuation simples.
-
-  TODO 03 - LEXER : LITTERAUX CHAINES ET CARACTERES
-            Gerer les litteraux '' (char) et "" (str), les
-            sequences d'echappement (\n \t \r \\ \0 \uXXXX),
-            les raw strings r#"..."# et les byte literals b'X'.
-
-  TODO 04 - LEXER : OPERATEURS ET MOTS-CLES RUST
-            Reconnaitre tous les operateurs Rust (-> :: .. ..=
-            => && || != >= <= ** << >> &= |= ^= += -= *= /= %=
-            <<=  >>= etc.) et la liste complete des mots-cles
-            reserves (fn, let, mut, if, else, match, loop, while,
-            for, in, return, struct, enum, impl, trait, use, mod,
-            pub, self, Self, super, crate, const, static, type,
-            where, unsafe, extern, as, ref, break, continue, dyn).
-
-  TODO 05 - TABLE DES SYMBOLES
-            Creer la table des symboles (identifiant, categorie,
-            type, portee, offset BP / adresse statique, mutabilite,
-            flag reference). Implanter Add/Find/EnterScope/
-            LeaveScope avec pile de portees imbriquees.
-
-  TODO 06 - SYSTEME DE TYPES PRIMITIFS
-            Modeliser les types scalaires Rust cibles 8086 :
-            i8, u8 (1 octet), i16, u16, isize, usize (2 octets),
-            i32, u32 (4 octets - paire de registres), bool (1 octet),
-            char (4 octets Unicode tronque a u8 sur 8086), () (unit).
-            Calculer sizeof et alignement pour chaque type.
-
-  TODO 07 - TYPES COMPOSES : TUPLES ET TABLEAUX
-            Gerer les types tuple (T1, T2, ...) et les tableaux
-            de taille fixe [T; N]. Calculer l'offset de chaque
-            element dans la disposition memoire et generer les
-            acces par indice en assembleur 8086.
-
-  TODO 08 - TYPES COMPOSES : STRUCT
-            Analyser les declarations struct (struct Nom { champ:
-            Type, ... }). Construire la table des champs avec
-            offsets 8086 alignes. Gerer les struct tuple
-            (struct Foo(T1, T2)) et les struct unites (struct Foo;).
-
-  TODO 09 - TYPES COMPOSES : ENUM
-            Analyser les declarations enum (enum Nom { Var1,
-            Var2(T), Var3 { champ: T }, ... }). Encoder le
-            discriminant (tag 8 bits) suivi des donnees de la
-            variante. Etablir la representation memoire 8086
-            (taille = tag + max_payload).
-
-  TODO 10 - TRAITS ET IMPL (SANS DYNAMIC DISPATCH)
-            Analyser les blocs impl Type { fn ... } et impl Trait
-            for Type { fn ... }. Stocker les methodes dans la table
-            des symboles avec mungling de nom (_IMPL_Type_fn).
-            Exclure le dynamic dispatch (dyn Trait) de la
-            cible 8086/TP7 (erreur explicite si rencontre).
-
-  TODO 11 - REFERENCES ET EMPRUNTS (BORROW SIMPLIFIE)
-            Modeliser &T et &mut T comme pointeurs 16 bits (offset
-            ou segment:offset en mode far optionnel). Implanter la
-            verification statique de base : une seule reference
-            mutable active par variable. Signaler les violations
-            comme erreur de compilation sans implementer la duree
-            de vie complete.
-
-  TODO 12 - DUREES DE VIE (LIFETIME ELISION UNIQUEMENT)
-            Accepter les annotations de duree de vie ('a) en
-            syntaxe sans les verifier au-dela de l'elision
-            standard (une seule reference en entree -> meme
-            lifetime en sortie). Emettre un avertissement pour
-            les lifetimes explicites complexes non verifies.
-
-  TODO 13 - EXPRESSIONS : ARITHMETIQUE ET LOGIQUE
-            Implanter le parseur d'expressions par precedence
-            (Pratt ou recursif descendant). Couvrir : +, -, *,
-            /, %, &, |, ^, !, <<, >>, &&, ||, ==, !=, <, >,
-            <=, >= , as (cast), unaire -, !, *deref, &borrow.
-            Generer le code 8086 correspondant (ADD, SUB, IMUL,
-            IDIV, AND, OR, XOR, SHL, SHR, NEG, NOT, CMP + Jcc).
-
-  TODO 14 - EXPRESSIONS : APPELS DE FONCTIONS ET METHODES
-            Gerer les appels fn(args), objet.methode(args) et
-            Trait::fn(args). Implanter la convention d'appel
-            cdecl 8086 : arguments empiles droite a gauche,
-            retour dans AX (8/16 bits) ou DX:AX (32 bits),
-            nettoyage par l'appelant.
-
-  TODO 15 - INSTRUCTIONS : LET, AFFECTATION, BLOCS
-            Analyser let [mut] motif [: Type] [= expr];.
-            Allouer l'espace sur la pile (SUB SP, n). Generer
-            les affectations simples et les affectations
-            composees (+=, -= etc.). Gerer les blocs { ... }
-            comme expressions retournant une valeur.
-
-  TODO 16 - INSTRUCTIONS : IF / ELSE / IF LET
-            Analyser if cond { } [else { }] et la forme if let
-            Motif = expr { }. Generer les sauts conditionnels
-            8086 avec labels locaux _L_THEN_N / _L_ELSE_N /
-            _L_ENDIF_N. Gerer if comme expression (les deux
-            branches doivent produire le meme type).
-
-  TODO 17 - INSTRUCTIONS : BOUCLES (loop, while, for..in)
-            Analyser loop { }, while cond { } et for var in
-            expr { } (iterateurs simples : intervalles a..b
-            et a..=b sur entiers). Generer les labels de boucle
-            _L_LOOP_N / _L_BREAK_N et les instructions break /
-            continue avec support des labels de boucle (break
-            'label).
-
-  TODO 18 - PATTERN MATCHING (match)
-            Analyser match expr { motif => expr, ... }.
-            Supporter les motifs : litteral, _, variable,
-            tuple, struct, enum incluant les gardes (if cond).
-            Generer une chaine de tests 8086 (CMP + Jcc) pour
-            les discriminants enum et les litteraux entiers.
-
-  TODO 19 - CLOSURES (FORME SIMPLIFIEE)
-            Analyser la syntaxe |params| expr et |params| {
-            bloc }. Traiter les closures non-capturantes comme
-            des fonctions anonymes emises directement. Emettre
-            une erreur explicite pour la capture de variables
-            (Fn / FnMut / FnOnce) non implantee sur cible 8086.
-
-  TODO 20 - GESTION MEMOIRE : PILE ET CADRE DE PILE
-            Generer le prologue 8086 (PUSH BP / MOV BP,SP /
-            SUB SP,N) et l'epilogue (MOV SP,BP / POP BP / RET).
-            Calculer N (taille totale des variables locales) en
-            fin d'analyse de la fonction. Respecter l'alignement
-            8086 sur 2 octets.
-
-  TODO 21 - SEGMENT DE DONNEES : STATICS ET CONSTS
-            Emettre les declarations static et const Rust dans
-            le segment .DATA de l'assembleur 8086. Gerer les
-            chaines litterales (tableau d'octets termine par 0
-            ou avec longueur prepend selon le contexte). Attribuer
-            des etiquettes prefixees _RS_ (Rust Static).
-
-  TODO 22 - MODULES ET USE
-            Analyser les declarations mod nom { ... } et
-            use chemin::nom [as alias]. Implanter une resolution
-            de noms par chaine de modules imbriquee. Traduire
-            les chemins absolus vers les etiquettes assembleur
-            par mungling : _MOD_sousmod_fn.
-
-  TODO 23 - BLOCS UNSAFE ET POINTEURS BRUTS
-            Reconnaitre unsafe { } et les types *const T / *mut T.
-            Dans un bloc unsafe, autoriser la deref de pointeur
-            brut (MOV reg,[adr]) et l'appel de fonctions externse
-            (extern "C" fn). Hors unsafe, interdire ces operations
-            et emettre une erreur de compilation.
-
-  TODO 24 - RUNTIME MINIMAL ET PANIC
-            Emettre les routines runtime en assembleur 8086 :
-            _RS_PANIC (affiche message + INT 20h), _RS_MEMSET,
-            _RS_MEMCPY, _RS_ITOA (formatage entier), _RS_PRINT
-            (appel DOS INT 21h AH=40h). Generer l'appel a
-            _RS_PANIC pour les cas unreachable!() et les debordements
-            verifies (debug_assert).
-
-  TODO 25 - GENERATION FINALE ET FICHIER .ASM
-            Assembler les segments produits (en-tete .MODEL SMALL,
-            .STACK, .DATA, .CODE) dans le fichier de sortie .ASM.
-            Emettre les directives EXTRN et PUBLIC adequats pour
-            chaque symbole. Implanter les options de ligne de
-            commande (fichier source, fichier sortie, -v verbose,
-            -d debug tokens, --edition 2021 etc.) et afficher les
-            statistiques de compilation (lignes, symboles, erreurs).
-
-  ============================================================
-*)
-
 Program RUST86;
 
 {$I-}   { Desactiver les IO-check pour gerer nous-memes les erreurs }
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE GENERALE
+  INFRASTRUCTURE GENERALE
   ============================================================ }
 
 { --- Constantes de dimensionnement --- }
@@ -208,13 +23,13 @@ Const
   MAX_PROC   = {$IFDEF FPC}256{$ELSE}64{$ENDIF};     { fonctions fn                           }
   MAX_IMPL   = {$IFDEF FPC}64{$ELSE}32{$ENDIF};    { blocs impl (impl Type / impl Trait for Type) }
   MAX_METHOD = {$IFDEF FPC}256{$ELSE}30{$ENDIF};   { methodes total dans tous les blocs impl      }
-  MAX_BORROW   = {$IFDEF FPC}128{$ELSE}32{$ENDIF};  { verrous d'emprunt actifs simultanement max (TODO 11) }
-  MAX_LIFETIME = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   { annotations de duree de vie actives max  (TODO 12) }
-  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};  { profondeur max de boucles imbriquees     (TODO 17) }
-  MAX_DATA   = {$IFDEF FPC}256{$ELSE}32{$ENDIF};    { entrees maxi dans le segment de donnees  (TODO 21) }
+  MAX_BORROW   = {$IFDEF FPC}128{$ELSE}32{$ENDIF};  { verrous d'emprunt actifs simultanement max }
+  MAX_LIFETIME = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   { annotations de duree de vie actives max   }
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};  { profondeur max de boucles imbriquees      }
+  MAX_DATA   = {$IFDEF FPC}256{$ELSE}32{$ENDIF};    { entrees maxi dans le segment de donnees }
   MAX_PARAM  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};      { parametres par fonction                }
   MAX_FIELD  = {$IFDEF FPC}64{$ELSE}32{$ENDIF};    { champs par struct/enum                     }
-  MAX_FIELDS_TOTAL = {$IFDEF FPC}512{$ELSE}64{$ENDIF}; { pool global de champs pour tous les types (TODO 07) }
+  MAX_FIELDS_TOTAL = {$IFDEF FPC}512{$ELSE}64{$ENDIF}; { bassin global de champs pour tous les types }
   MAX_CONST  = 512;   { constantes (const / static immuable)       }
   MAX_TYPE   = 64;    { descripteurs de type                       }
   MAX_LABEL  = 2048;  { labels internes (if/loop/match/break...)   }
@@ -241,7 +56,7 @@ Const
   EXIT_USAGE = 2;
 
   { ============================================================
-    TODO 06 - Indices des types primitifs dans TypeTab
+    Indices des types primitifs dans TypeTab
     Ces constantes garantissent un acces direct O(1) aux types
     de base sans recherche par nom.
     ============================================================ }
@@ -299,7 +114,7 @@ Type
     NoOptim    : Boolean;     { --no-opt : desactiver optimisations }
   End;
 
-  { ---- Categorie d'un symbole (TODO 05) ---- }
+  { ---- Categorie d'un symbole ---- }
   TSymCat = (
     SC_VAR,      { variable locale (sur la pile)            }
     SC_PARAM,    { parametre de fonction                     }
@@ -315,7 +130,7 @@ Type
   TSymRec = Record
     Name     : TString;       { nom Rust du symbole                }
     Cat      : TSymCat;       { categorie                          }
-    TypeIdx  : Integer;       { index dans la table de types (TODO06) }
+    TypeIdx  : Integer;       { index dans la table de types }
     ScopeLevel : Integer;     { niveau de portee (0 = global)      }
     Offset   : Integer;       { offset BP pour locals/params (negatif pour locals) }
     MangledName : TString;    { etiquette assembleur 8086          }
@@ -325,12 +140,12 @@ Type
   End;
 
   { ============================================================
-    TODO 06 - Categorie d'un descripteur de type
+    Categorie d'un descripteur de type
     ============================================================ }
   TTypeKind = (
     TKD_PRIM,    { type scalaire primitif (i8..u32, bool, char, ()) }
     TKD_REF,     { reference &T ou &mut T                          }
-    TKD_PTR,     { pointeur brut *const T ou *mut T     (TODO 23) }
+    TKD_PTR,     { pointeur brut *const T ou *mut T     }
     TKD_ARRAY,   { tableau de taille fixe [T; N]                   }
     TKD_TUPLE,   { tuple (T1, T2, ...)                             }
     TKD_STRUCT,  { struct avec champs nommes                      }
@@ -340,7 +155,7 @@ Type
   );
 
   { ============================================================
-    TODO 10 - Descripteur d'un bloc impl
+    Descripteur d'un bloc impl
     ============================================================ }
   TImplRec = Record
     TypeName   : TString;   { nom du type recepteur (ex: 'Point')     }
@@ -360,7 +175,7 @@ Type
   End;
 
   { ============================================================
-    TODO 11 - Emprunts : &T (partage) et &mut T (mutable)
+    Emprunts : &T (partage) et &mut T (mutable)
     ============================================================ }
   TBorrowKind = (BK_SHARED, BK_MUT);  { partage ou mutable }
 
@@ -373,7 +188,7 @@ Type
   End;
 
   { ============================================================
-    TODO 12 - Durees de vie : lifetime elision uniquement
+    Durees de vie : lifetime elision uniquement
     ============================================================ }
   TLifetimeRec = Record
     Name      : TString;   { etiquette Rust : 'a, 'b, 'static ...      }
@@ -384,7 +199,7 @@ Type
   End;
 
   { ============================================================
-    TODO 13 - Valeur d'une expression et son emplacement 8086
+    Valeur d'une expression et son emplacement 8086
     ============================================================ }
   TExprKind = (
     EK_NONE,   { valeur invalide / expression vide              }
@@ -415,7 +230,7 @@ Type
   End;
 
   { ============================================================
-    TODO 07 - Descripteur d'un element/champ d'un type compose
+    Descripteur d'un element/champ d'un type compose
               Utilise pour les tuples, tableaux, structs, enums.
     ============================================================ }
   TFieldRec = Record
@@ -436,7 +251,7 @@ Var
   TotalSyms  : Integer;      { symboles enregistres                }
   GExprDummy : TExprVal;     { TP7 : recoit les TExprVal ignores   }
 
-{ --- Variables globales du lexer (TODO 02) --- }
+{ --- Variables globales du lexer --- }
 Var
   LexSrcF   : Text;          { fichier source ouvert              }
   LexLine   : String;        { ligne courante                     }
@@ -446,7 +261,7 @@ Var
   LexOpened : Boolean;       { vrai si LexSrcF est ouvert         }
   CurToken  : TToken;        { token courant                      }
 
-{ --- Variables globales de la table des symboles (TODO 05) --- }
+{ --- Variables globales de la table des symboles --- }
 Var
   SymTab     : Array[0..MAX_SYM - 1]   Of TSymRec;  { table des symboles  }
   SymCount   : Integer;                              { nb symboles inseres }
@@ -455,43 +270,43 @@ Var
   CurScope   : Integer;                              { niveau de portee courant (0=global)}
   LabelSeq   : Integer;                              { compteur global de labels uniques  }
 
-{ --- Variables globales du systeme de types (TODO 06) --- }
+{ --- Variables globales du systeme de types --- }
 Var
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;  { descripteurs de types           }
   TypeCount : Integer;                              { nb de types enregistres          }
 
-{ --- Variables globales des champs de types composes (TODO 07) --- }
+{ --- Variables globales des champs de types composes --- }
 Var
   FieldTab   : Array[0..MAX_FIELDS_TOTAL - 1] Of TFieldRec; { pool de champs/elements }
   FieldCount : Integer;                                      { nb entrees utilisees    }
 
-{ --- Variables globales des blocs impl (TODO 10) --- }
+{ --- Variables globales des blocs impl --- }
 Var
   ImplTab    : Array[0..MAX_IMPL   - 1] Of TImplRec;    { blocs impl enregistres  }
   ImplCount  : Integer;                                  { nb de blocs impl        }
   MethodTab  : Array[0..MAX_METHOD - 1] Of TMethodRec;  { methodes de tous les impl }
   MethodCount: Integer;                                  { nb de methodes total    }
 
-{ --- Variables globales des emprunts (TODO 11) --- }
+{ --- Variables globales des emprunts --- }
 Var
   BorrowTab  : Array[0..MAX_BORROW - 1] Of TBorrowRec;  { table des emprunts actifs }
   BorrowCount: Integer;                                  { nb d'emprunts enregistres }
 
-{ --- Variables globales des durees de vie (TODO 12) --- }
+{ --- Variables globales des durees de vie --- }
 Var
   LifetimeTab  : Array[0..MAX_LIFETIME - 1] Of TLifetimeRec; { annotations actives  }
   LifetimeCount: Integer;                                     { nb d'annotations      }
 
-{ --- Variables globales d'emission de code (TODO 13) --- }
+{ --- Variables globales d'emission de code --- }
 Var
   OutF       : Text;     { fichier de sortie ASM                    }
   OutFOpen   : Boolean;  { vrai si OutF est ouvert en ecriture      }
-  CurFrameSize : Integer;  { TODO 15 : taille de pile locale (octets) }
-  LoopTop      : Integer;  { TODO 17 : niveau de boucle courant (0 = hors boucle) }
+  CurFrameSize : Integer;  { taille de pile locale (octets) }
+  LoopTop      : Integer;  { niveau de boucle courant (0 = hors boucle) }
   LoopBreakLbl : Array[0..MAX_LOOP_NEST-1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST-1] Of TString;
 
-{ --- Variables globales du segment de donnees (TODO 21) --- }
+{ --- Variables globales du segment de donnees --- }
 Type
   TDataKind = (DK_WORD, DK_BYTE, DK_STR);  { entier 16b, octet, chaine }
   TDataRec  = Record
@@ -505,12 +320,12 @@ Var
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
   DataCount  : Integer;  { nb d'entrees dans DataTab }
 
-{ --- Variables globales de modules (TODO 22) --- }
+{ --- Variables globales de modules --- }
 Var
   CurModPath    : TString;   { chemin de module courant ex: 'foo::bar' (vide = racine) }
   ModDepth      : Integer;   { profondeur d'imbrication de mod BLOC }
-  InUnsafeDepth : Integer;   { TODO 23 : profondeur de bloc unsafe courant }
-  RuntimeEmitted: Boolean;   { TODO 24 : routines runtime deja emises dans OutF }
+  InUnsafeDepth : Integer;   { profondeur de bloc unsafe courant }
+  RuntimeEmitted: Boolean;   { routines runtime deja emises dans OutF }
 
 { ============================================================
   Procedure : Erreur fatale
@@ -660,7 +475,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LEXER : TOKENS DE BASE
+  LEXER : TOKENS DE BASE
   ============================================================ }
 
 { ============================================================
@@ -845,7 +660,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - LEXER : OPERATEURS ET MOTS-CLES RUST
+  LEXER : OPERATEURS ET MOTS-CLES RUST
   ============================================================ }
 
 { --- Table des mots-cles Rust (44 entrees : 0..43) --- }
@@ -903,7 +718,7 @@ End;
              Bases supportees : decimal, 0x hex, 0b binaire, 0o octal
              Les underscores de lisibilite sont ignores.
              Le suffixe de type (u8, i32, usize...) est stocke
-             dans Val mais non interprete (reserve pour TODO 06).
+             dans Val mais non interprete.
   ============================================================ }
 Procedure LexScanNumber(Var T : TToken; SL, SC : Integer);
 Var
@@ -1047,7 +862,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - LEXER : LITTERAUX CHAINES ET CARACTERES
+  LEXER : LITTERAUX CHAINES ET CARACTERES
   ============================================================ }
 
 { ============================================================
@@ -1572,7 +1387,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - SYSTEME DE TYPES PRIMITIFS
+  SYSTEME DE TYPES PRIMITIFS
   ============================================================ }
 
 { ============================================================
@@ -1624,7 +1439,7 @@ Var
   I : Integer;
 Begin
   TypeCount  := 0;
-  FieldCount := 0;  { TODO 07 - pool de champs }
+  FieldCount := 0;  { bassin de champs }
   For I := 0 To MAX_TYPE - 1 Do
   Begin
     TypeTab[I].Kind       := TKD_UNKNOWN;
@@ -1799,7 +1614,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - TYPES COMPOSES : TUPLES ET TABLEAUX
+  TYPES COMPOSES : TUPLES ET TABLEAUX
   ============================================================ }
 
 { ============================================================
@@ -1985,7 +1800,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - TYPES COMPOSES : STRUCT
+  TYPES COMPOSES : STRUCT
   ============================================================ }
 
 { ============================================================
@@ -2125,7 +1940,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - TYPES COMPOSES : ENUM
+  TYPES COMPOSES : ENUM
   Encodage 8086 :
     octet 0    = tag discriminant (u8, 0..N-1)
     octets 1.. = donnees de la variante (payload)
@@ -2175,7 +1990,7 @@ End;
   TypeAddStructBegin/Field/End), PUIS appeler TypeAddEnumBegin,
   puis TypeAddVariantUnit / TypeAddVariantWithPayload.
   Cela garantit que les entrees de variantes dans FieldTab
-  restent contiguÃ«s.
+  restent contigu‚s.
   ============================================================ }
 
 { ============================================================
@@ -2292,7 +2107,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - TRAITS ET IMPL (SANS DYNAMIC DISPATCH)
+  TRAITS ET IMPL (SANS DYNAMIC DISPATCH)
   ============================================================ }
 
 { ============================================================
@@ -2415,7 +2230,7 @@ Begin
   MethodTab[Idx].ImplIdx     := AImplIdx;
   Inc(ImplTab[AImplIdx].MethodCount);
   Inc(MethodCount);
-  { Note : enregistrement dans SymTab effectue par le parseur (TODO 13) }
+  { Note : enregistrement dans SymTab effectue par le parseur }
   ImplAddMethod := Idx;
 End;
 
@@ -2489,7 +2304,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES
+  TABLE DES SYMBOLES
   ============================================================ }
 
 { ============================================================
@@ -2739,7 +2554,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - REFERENCES ET EMPRUNTS
+  REFERENCES ET EMPRUNTS
   BorrowInit, TypeAddRef, BorrowAdd, BorrowCheckMutConflict,
   BorrowRelease, BorrowDump
   ============================================================ }
@@ -2851,7 +2666,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - DUREES DE VIE (LIFETIME ELISION UNIQUEMENT)
+  DUREES DE VIE (LIFETIME ELISION UNIQUEMENT)
   LifetimeInit, LifetimeAdd, LifetimeFind, LifetimeElide, LifetimeDump
   ============================================================ }
 
@@ -2937,7 +2752,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - PARSEUR D'EXPRESSIONS ET GENERATION DE CODE 8086
+  PARSEUR D'EXPRESSIONS ET GENERATION DE CODE 8086
   EmitOpen, EmitClose, EmitRaw, EmitInstr, EmitLabel, EmitComment,
   BinOpPrec, ExprMakeImm, ExprMakeNone, ExprLoad,
   ExprEmitBinOp, ParserAdvance,
@@ -3166,7 +2981,7 @@ End;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 
 { ============================================================
-  TODO 14 - Appels de fonctions et de methodes
+  Appels de fonctions et de methodes
   ParseCallArgs, EmitCallSite
   ============================================================ }
 
@@ -3350,7 +3165,7 @@ Begin
         MethN := CurToken.Val;
         ParserAdvance;   { consommer nom_fn }
         MangN := RS_IMPL_PFX + Name + '_' + MethN;
-        RetTy := TY_IDX_UNIT;   { type de retour affine en TODO 19 }
+        RetTy := TY_IDX_UNIT;   { type de retour affine }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
           ACnt := ParseCallArgs;
           EmitCallSite(MangN, ACnt, RetTy, E);
@@ -3485,7 +3300,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - LET, AFFECTATION, BLOCS
+  LET, AFFECTATION, BLOCS
   ParseTypeName, ParseLetStmt, ParseCompoundAssign,
   ParseStmt (Forward), ParseBlock, ParseStmt corpus
   ============================================================ }
@@ -3540,7 +3355,7 @@ Begin
     Res := E;
     Exit;
   End;
-  ParserAdvance;   { consommer '{' }
+  ParserAdvance;   { consommer l'ouverture d'accolade }
   SymEnterScope;
   While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
         And (CurToken.Kind <> TK_EOF) Do Begin
@@ -3559,7 +3374,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 19 - CLOSURES (FORME SIMPLIFIEE)
+  CLOSURES (FORME SIMPLIFIEE)
   ParseClosureExpr : closure non-capturante emise comme fn anonyme
   Signature : |params| expr   ou   |params| BLOC
   Convention cdecl 8086 : params a [BP+4], [BP+6], ...
@@ -3607,7 +3422,7 @@ Begin
       If CurToken.Kind = TK_IDENT Then Begin
         ParamName := CurToken.Val;
         ParserAdvance;
-        { type optionnel : name }  
+        { type optionnel : name }
         If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then Begin
           ParserAdvance;
           ParseTypeName;
@@ -3749,7 +3564,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - IF / ELSE / IF LET
+  IF / ELSE / IF LET
   ParseIfStmt : generer les sauts conditionnels 8086
   Labels : _RSL_ELSE_N et _RSL_ENDIF_N via SymNewLabel
   ============================================================ }
@@ -3840,7 +3655,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - BOUCLES : loop, while, for..in, break, continue
+  BOUCLES : loop, while, for..in, break, continue
   LoopPush/LoopPop, ParseLoopStmt, ParseWhileStmt, ParseForInStmt
   ============================================================ }
 
@@ -3980,7 +3795,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 18 - MATCH / FILTRAGE PAR MOTIF
+  MATCH / FILTRAGE PAR MOTIF
   match expr BraceOpen bras* BraceClose
   Motifs : litteral entier, _ (joker), ident (liaison)
   Garde : if cond apres le motif avant =>
@@ -4121,7 +3936,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 21 - SEGMENT DE DONNEES : STATICS ET CONSTS
+  SEGMENT DE DONNEES : STATICS ET CONSTS
   TDataRec/DataTab, DataAdd, EmitDataSeg
   ParseStaticDecl, ParseConstDecl
   Gestion des chaines litterales TK_STRING dans ParsePrimary
@@ -4144,7 +3959,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - GENERATION FINALE ET FICHIER .ASM
+  GENERATION FINALE ET FICHIER .ASM
   EmitHeader : en-tete MASM (MODEL SMALL, STACK, _TEXT SEGMENT)
   EmitFooter : fermer _TEXT, emettre _DATA, emettre END
   Rewrite Run : pipeline complet source -> .ASM
@@ -4310,7 +4125,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 20 - GESTION MEMOIRE : PILE ET CADRE DE PILE
+  GESTION MEMOIRE : PILE ET CADRE DE PILE
   ParseReturnStmt, ParseFnDecl, ParseTopLevel
   Prologue : PUSH BP / MOV BP,SP
   Locaux   : chaque let emet SUB SP, n (incremental)
@@ -4429,7 +4244,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 22 - MODULES ET USE
+  MODULES ET USE
   ParseUseDecl : use chemin::nom [as alias];
   ParseModDecl : mod nom BLOC avec imbrication de CurModPath
   SymMangle(SC_FN) integre CurModPath -> _MOD_path_fn
@@ -4502,7 +4317,7 @@ Begin
   Else CurModPath := CurModPath + '::' + Name;
   Inc(ModDepth);
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then Begin
-    ParserAdvance;  { consommer { }
+    ParserAdvance;  { consommer l'accolade d'ouverture }
     While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
           And (CurToken.Kind <> TK_EOF) Do Begin
       ParseTopLevel;
@@ -4520,7 +4335,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 24 - RUNTIME MINIMAL ET PANIC
+  RUNTIME MINIMAL ET PANIC
   EmitRuntime : emettre les 5 routines runtime 8086 dans OutF
   ParseMacroCall : panic! unreachable! debug_assert! print! println!
   RuntimeEmitted flag pour eviter double emission
@@ -4726,7 +4541,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 - BLOCS UNSAFE ET POINTEURS BRUTS
+  BLOCS UNSAFE ET POINTEURS BRUTS
   ParseUnsafeBlock : unsafe BLOC avec InUnsafeDepth
   ParseExternDecl  : extern ABI fn name() -> T + directive EXTRN
   TypeAddPtr + TKD_PTR dans ParseTypeName
@@ -5040,7 +4855,7 @@ Begin
         ParserAdvance;
       Exit;
     End;
-    { affectations composees : += -= *= /= %= &= |= ^= }  
+    { affectations composees : += -= *= /= %= &= |= ^= }
     Op := '';
     If CurToken.Kind = TK_OP Then Begin
       If CurToken.Val = '+=' Then Op := '+'
@@ -5112,8 +4927,7 @@ Begin
   LexInit;
   ParserAdvance;
   { Boucle principale : analyser les items de haut niveau }
-  While CurToken.Kind <> TK_EOF Do
-    ParseTopLevel;
+  While CurToken.Kind <> TK_EOF Do ParseTopLevel;
   LexClose;
   { Routines runtime (toujours emises pour qu'un linker puisse les trouver) }
   EmitRuntime;
@@ -5141,36 +4955,35 @@ End;
 { ============================================================
   Procedure : Liberation des ressources
   ============================================================ }
-Procedure Cleanup;
-Begin
+Procedure Cleanup;Begin
   LexClose;
-  EmitClose;  { TODO 13 : fermer le fichier ASM si ouvert }
+  EmitClose;  { fermer le fichier ASM si ouvert }
 End;
 
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
+BEGIN
   ErrorCount := 0;
   WarnCount  := 0;
   TotalLines := 0;
   TotalSyms  := 0;
   LexOpened  := False;
-  { TODO 05 : pre-initialiser la table des symboles }
+  { pre-initialiser la table des symboles }
   TypeCount  := 0;
-  FieldCount := 0;  { TODO 07 }
-  ImplCount  := 0;  { TODO 10 }
-  MethodCount:= 0;  { TODO 10 }
-  BorrowCount  := 0;  { TODO 11 }
-  LifetimeCount:= 0;  { TODO 12 }
-  OutFOpen     := False;  { TODO 13 }
-  CurFrameSize := 0;      { TODO 15 }
-  LoopTop      := 0;      { TODO 17 }
-  DataCount      := 0;      { TODO 21 }
-  CurModPath     := '';     { TODO 22 }
-  ModDepth       := 0;      { TODO 22 }
-  InUnsafeDepth  := 0;      { TODO 23 }
-  RuntimeEmitted  := False;  { TODO 24 }
+  FieldCount := 0;
+  ImplCount  := 0;
+  MethodCount:= 0;
+  BorrowCount  := 0;
+  LifetimeCount:= 0;
+  OutFOpen     := False;
+  CurFrameSize := 0;
+  LoopTop      := 0;
+  DataCount      := 0;
+  CurModPath     := '';
+  ModDepth       := 0;
+  InUnsafeDepth  := 0;
+  RuntimeEmitted  := False;
   SymCount   := 0;
   ScopeTop   := 0;
   CurScope   := 0;
@@ -5185,4 +4998,4 @@ Begin
     Halt(EXIT_ERROR)
   Else
     Halt(EXIT_OK);
-End.
+END.

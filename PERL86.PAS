@@ -320,8 +320,10 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_INCLUDE   = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_PKG       = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
-  MAX_ARR_ELEMS = 32;   { elements max par tableau @arr local (fixe) }
-  STACK_SIZE    = 1024;
+  MAX_ARR_ELEMS  = 32;   { elements max par tableau @arr local (fixe) }
+  MAX_HASH_PAIRS  = 16;   { paires cle/valeur max par %hash local       }
+  MAX_HASH_KEYS   = 512;  { entrees totales dans la table de hachage    }
+  STACK_SIZE      = 1024;
 
   { Prefixes de nommage ASM }
   PR_VAR_PFX  = '_PRV_';    { variable scalaire/tableau/hash }
@@ -469,6 +471,17 @@ Type
     ElemCount : Integer;   { DK_ARRAY_BLK : nombre d'elements }
   End;
 
+  { ---- Table de hachage (compile-time) ------------------- }
+  { Pour chaque paire cle/valeur d'un %hash local, on stocke  }
+  { l'indice du hash dans SymTab, la cle Perl (string) et le  }
+  { numero de slot (0..MAX_HASH_PAIRS-1).                     }
+  THashKeyRec = Record
+    HashSym : Integer;   { indice SymTab du %hash              }
+    KeyStr  : TString;   { cle Perl (chaine ou bareword)       }
+    SlotIdx : Integer;   { slot 0..MAX_HASH_PAIRS-1            }
+    KeyLbl  : TString;   { label ASM de la cle en DATA         }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -522,6 +535,10 @@ Var
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount : Integer;
 
+  { Table de hachage compile-time pour %hash locaux }
+  HashKeyTab   : Array[0..MAX_HASH_KEYS - 1] Of THashKeyRec;
+  HashKeyCount : Integer;
+
   { Etat general }
   RuntimeEmitted : Boolean;
 
@@ -534,6 +551,9 @@ Var
 
   { Flag : le mot-cle courant a deja ete consomme avant l''appel }
   GKwConsumed : Boolean;
+  { TODO 17 : compteur d''args du dernier appel + arg shift @_ }
+  GCallArgCount  : Integer;  { nb args du dernier ParseCallArgs }
+  CurArgShiftIdx : Integer;  { index prochain shift dans @_ }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -589,6 +609,13 @@ Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 { TODO 15 }
 Procedure ParseArrElemAccess(ArrIdx : Integer; Var Res : TExprVal); Forward;
 Procedure ParseArrBuiltin(IsStmt : Boolean); Forward;
+{ TODO 16 }
+Function  HashSlotFind(HashSym : Integer; Const Key : TString) : Integer; Forward;
+Function  HashSlotAdd(HashSym : Integer; Const Key : TString;
+                      Const KeyLbl : TString) : Integer; Forward;
+Procedure ParseHashElemAccess(HashIdx : Integer; Var Res : TExprVal); Forward;
+{ TODO 17 }
+Procedure ParseSubDecl; Forward;
 { TODO 04 }
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  IsRightAssoc(Const Op : TString) : Boolean; Forward;
@@ -945,6 +972,94 @@ Procedure EmitRuntime;
 Begin
 End;
 
+{ ============================================================
+  TODO 17 - ParseSubDecl : declare et compile une sous-routine
+  Supporte : sub nom BLOC et sub anonyme dans expression
+  Convention : push gauche->droite, callee fait PUSH BP/MOV BP,SP
+  var_k depuis @_ = WORD PTR [BP + 4 + (N-1-k)*2]
+  ============================================================ }
+Procedure ParseSubDecl;
+Var
+  SubName    : TString;
+  SubSeq     : TString;
+  LblEnd     : TString;
+  LblRet     : TString;
+  SaveFrame  : Integer;
+  SaveDepth  : Integer;
+  SaveRetLbl : TString;
+  SaveFnName : TString;
+  SaveArgSh  : Integer;
+  IsAnon     : Boolean;
+  Idx        : Integer;
+Begin
+  { Consommer 'sub' si encore present }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'sub') Then
+    ParserAdvance;
+  { Verifier si sub anonyme (pas d''identifiant avant le bloc) }
+  IsAnon := Not (CurToken.Kind = TK_IDENT);
+  If Not IsAnon Then
+  Begin
+    SubName := CurToken.Val;
+    ParserAdvance;  { consommer le nom }
+    { Ignorer le prototype eventuel (...) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+                (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    { Enregistrer dans la table des symboles }
+    Idx := SymAdd(SubName, '&', SC_FN, TY_IDX_CODE, False, True, False);
+  End Else
+  Begin
+    { Sous-routine anonyme : generer un nom unique }
+    Inc(LabelSeq);
+    Str(LabelSeq, SubSeq);
+    SubName := '_ANON_' + SubSeq;
+  End;
+  { Generer les labels uniques }
+  Inc(LabelSeq);
+  Str(LabelSeq, SubSeq);
+  LblEnd := '_PRL_SUBEND_' + SubSeq;
+  LblRet := '_PRL_SUBRET_' + SubSeq;
+  { Sauter le corps de la sous-routine a l''execution }
+  EmitInstr('JMP', LblEnd);
+  EmitLabel(PR_FN_PFX + SubName);
+  EmitInstr1('PUSH BP');
+  EmitInstr('MOV', 'BP, SP');
+  { Sauver le contexte du compilateur }
+  SaveFrame  := CurFrameSize;
+  SaveDepth  := CurFnDepth;
+  SaveRetLbl := CurFnRetLbl;
+  SaveFnName := CurFnName;
+  SaveArgSh  := CurArgShiftIdx;
+  CurFrameSize   := 0;
+  CurFnDepth     := CurFnDepth + 1;
+  CurFnRetLbl    := LblRet;
+  CurFnName      := SubName;
+  CurArgShiftIdx := 0;
+  SymEnterScope;
+  ParseBlock;
+  SymLeaveScope;
+  EmitLabel(LblRet);
+  EmitInstr('MOV', 'SP, BP');
+  EmitInstr1('POP BP');
+  EmitInstr1('RET');
+  EmitLabel(LblEnd);
+  { Restaurer le contexte }
+  CurFrameSize   := SaveFrame;
+  CurFnDepth     := SaveDepth;
+  CurFnRetLbl    := SaveRetLbl;
+  CurFnName      := SaveFnName;
+  CurArgShiftIdx := SaveArgSh;
+  { Pour sous-routine anonyme : charger l''offset dans AX }
+  If IsAnon Then
+    EmitInstr('MOV', 'AX, OFFSET ' + PR_FN_PFX + SubName);
+End;
+
 Procedure ParseStmt;
 { Analyse une instruction Perl et emet le code ASM correspondant.         }
 { Reconnait : my/our/local ; use ; print/say ; if/unless ; expr [MOD] ;   }
@@ -1061,6 +1176,35 @@ Begin
        (KW = 'shift') Or (KW = 'unshift') Then
     Begin
       ParseArrBuiltin(True);
+      Exit;
+    End;
+    { TODO 17 : sub declaration }
+    If KW = 'sub' Then
+    Begin
+      ParseSubDecl;
+      Exit;
+    End;
+    { TODO 17 : return [expr] }
+    If KW = 'return' Then
+    Begin
+      ParserAdvance;  { consommer 'return' }
+      If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+         (CurToken.Kind <> TK_EOF) Then
+      Begin
+        ParseExpr(E);
+        ExprLoad(E);
+      End Else
+        EmitInstr('XOR', 'AX, AX');  { return; sans valeur -> 0 }
+      If CurFnDepth > 0 Then
+        EmitInstr('JMP', CurFnRetLbl)  { retour sous-routine }
+      Else
+      Begin
+        { return au niveau global -> sortie programme }
+        EmitInstr('MOV', 'BX, AX');
+        EmitInstr('MOV', 'AH, 4Ch');
+        EmitInstr1('INT 21h');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
       Exit;
     End;
   End;
@@ -2621,11 +2765,14 @@ End;
 { defined($v), ref($v), mots-cles builtins a 1 arg             }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  Op   : TString;
-  Sub  : TExprVal;
-  Idx  : Integer;
-  NStr : TString;
-  S    : TString;
+  Op      : TString;
+  Sub     : TExprVal;
+  Idx     : Integer;
+  NStr    : TString;
+  S       : TString;
+  NCStr   : TString;   { TODO 17 : taille nettoyage pile apres CALL }
+  HKIdx   : Integer;   { indice entree HashKeyTab pour hash }
+  SlotIdx : Integer;   { slot 0..MAX_HASH_PAIRS-1           }
 Begin
   ExprMakeNone(Res);
   { ---- Operateurs unaires prefixes ---- }
@@ -2735,7 +2882,7 @@ Begin
        (NStr = 'uc')    Or (NStr = 'lcfirst') Or (NStr = 'ucfirst') Or
        (NStr = 'int')   Or (NStr = 'abs')     Or (NStr = 'hex')     Or
        (NStr = 'oct')   Or (NStr = 'sqrt')    Or (NStr = 'pos')     Or
-       (NStr = 'exists') Or (NStr = 'delete') Or (NStr = 'chdir')   Then
+       (NStr = 'chdir')   Then
     Begin
       ParserAdvance;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
@@ -2744,6 +2891,65 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
       Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
       Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 16 : exists et delete sur hash }
+    If (NStr = 'exists') Or (NStr = 'delete') Then
+    Begin
+      Op := NStr;   { sauver 'exists'/'delete' avant de reutiliser NStr }
+      ParserAdvance;  { consommer 'exists'/'delete' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      { Detecter hash-aware : $h[key] }
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        S := CurToken.Val;  { nom du hash }
+        ParserAdvance;  { consommer $h }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          Idx := SymFindCat(S, SC_HASH_VAR);
+          If Idx >= 0 Then
+          Begin
+            ParserAdvance;  { consommer '{' }
+            { Cle constante : bareword ou chaine }
+            NStr := '';
+            If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_STRING) Then
+            Begin
+              NStr := CurToken.Val;
+              ParserAdvance;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then ParserAdvance;
+            HKIdx := HashSlotFind(Idx, NStr);
+            If HKIdx >= 0 Then
+            Begin
+              SlotIdx := HashKeyTab[HKIdx].SlotIdx;
+              Str(SymTab[Idx].Offset + 4 + SlotIdx * 4, S);
+              If Op = 'exists' Then
+                EmitInstr('MOV', 'AX, 1')  { cle connue -> existe toujours }
+              Else
+              Begin
+                { delete : zeroiser la valeur }
+                EmitInstr('MOV', 'WORD PTR [BP-' + S + '], 0');
+                EmitInstr('MOV', 'AX, 1');
+              End;
+            End Else
+              EmitInstr('MOV', 'AX, 0');  { cle inconnue }
+            Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+            Res.ImmVal := 0; Res.Offset := 0;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+            Exit;
+          End;
+        End;
+        { Fallback : traitement generique }
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+        Res.ImmVal := 0; Res.Offset := 0;
+      End Else
+      Begin
+        ParsePrimary(Sub);
+        ExprLoad(Sub);
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+        Res.ImmVal := 0; Res.Offset := 0;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
       Exit;
     End;
     { TODO 15 : pop / shift en contexte expression }
@@ -2776,6 +2982,25 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
+    { TODO 17 : wantarray() -> 0 (contexte toujours scalaire dans impl.) }
+    If NStr = 'wantarray' Then
+    Begin
+      ParserAdvance;  { consommer 'wantarray' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      EmitInstr('MOV', 'AX, 0');
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 17 : sous-routine anonyme en contexte expression }
+    If NStr = 'sub' Then
+    Begin
+      ParseSubDecl;
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_CODE;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
     { Appel de sous-routine avec mot-cle non reconnu : avancer }
     ParserAdvance;
     ExprMakeNone(Res);
@@ -2792,6 +3017,11 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         ParseCallArgs;
       EmitInstr('CALL', PR_FN_PFX + NStr);
+      If GCallArgCount > 0 Then
+      Begin
+        Str(GCallArgCount * 2, NCStr);
+        EmitInstr('ADD', 'SP, ' + NCStr);
+      End;
     End;
     Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
     Res.ImmVal := 0; Res.Offset := 0;
@@ -2830,6 +3060,17 @@ Begin
     NStr := CurToken.Val;
     Idx  := SymFind(NStr, '$');
     ParserAdvance;
+    { Acces a un element de hash : signe $ suivi de accolade }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      HKIdx := SymFindCat(NStr, SC_HASH_VAR);
+      If HKIdx >= 0 Then
+      Begin
+        ParseHashElemAccess(HKIdx, Res);
+        ParsePostfixOps(Res);
+        Exit;
+      End;
+    End;
     { Acces a un element de tableau : $arr[idx] }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
@@ -2867,7 +3108,16 @@ Begin
       End Else
         EmitInstr('MOV', 'AX, 0');  { tableau inconnu -> 0 }
     End Else
-      EmitInstr('MOV', 'AX, 0');  { %hash scalaire : stub TODO 16 }
+    Begin
+      { %hash en contexte scalaire -> count }
+      Idx := SymFindCat(CurToken.Val, SC_HASH_VAR);
+      If Idx >= 0 Then
+      Begin
+        Str(SymTab[Idx].Offset, S);
+        EmitInstr('MOV', 'AX, WORD PTR [BP-' + S + ']');
+      End Else
+        EmitInstr('MOV', 'AX, 0');  { hash inconnu -> 0 }
+    End;
     ParserAdvance;
     Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
     Res.ImmVal := 0; Res.Offset := 0;
@@ -2882,6 +3132,11 @@ Begin
     Begin
       ParseCallArgs;
       EmitInstr('CALL', PR_FN_PFX + NStr);
+      If GCallArgCount > 0 Then
+      Begin
+        Str(GCallArgCount * 2, NCStr);
+        EmitInstr('ADD', 'SP, ' + NCStr);
+      End;
       Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
@@ -3661,12 +3916,71 @@ Var
   OffS      : TString;
   ElemCount : Integer;
   TmpS      : TString;
+  KeyCount  : Integer;
+  KeyStr    : TString;
+  KeyLbl    : TString;
+  SlotIdx   : Integer;
+  HKIdx     : Integer;   { indice entrée dans HashKeyTab }
+  ParamNames: Array[0..MAX_PARAM - 1] Of TString;  { TODO 17 }
+  I         : Integer;   { TODO 17 : index de boucle }
+  Idx2      : Integer;   { TODO 17 : second indice SymTab }
 Begin
   Kw    := CurToken.Val;
   IsMy  := Kw = 'my';
   IsOur := Kw = 'our';
   IsLoc := Kw = 'local';
   ParserAdvance;   { consommer 'my'/'our'/'local' }
+  { TODO 17 : my ($a, $b, ...) = @_ : liste de parametres }
+  If (Kw = 'my') And (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer '(' }
+    { Collecter les noms de params scalaires }
+    Idx := 0;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) And (Idx < MAX_PARAM) Do
+    Begin
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        ParamNames[Idx] := CurToken.Val;
+        ParserAdvance;
+        Inc(Idx);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    { Consommer '=' }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      ParserAdvance;
+      { Verifier '@_' ou expression liste }
+      If CurToken.Kind = TK_ARRAY_SIG Then
+      Begin
+        If CurToken.Val = '_' Then
+        Begin
+          { Assignation depuis @_ : [BP+4+(N-1-k)*2] pour param k }
+          ParserAdvance;  { consommer '@_' }
+          ElemCount := Idx;  { nombre de params }
+          For I := 0 To ElemCount - 1 Do
+          Begin
+            Idx2 := SymAdd(ParamNames[I], '$', SC_SCALAR, TY_IDX_SCALAR, True, False, False);
+            EmitAllocLocal(2);
+            Str(SymTab[Idx2].Offset, OffS);
+            EmitComment('param $' + ParamNames[I] + ' depuis @_[' + ParamNames[I] + ']');
+            { arg[k] = [BP + 4 + (N-1-k)*2] avec notre convention push gauche->droite }
+            Str(4 + (ElemCount - 1 - I) * 2, TmpS);
+            EmitInstr('MOV', 'AX, WORD PTR [BP+' + TmpS + ']');
+            EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], AX');
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+          Exit;
+        End;
+      End;
+      { Fallback : evaluer l''expression liste et ignorer }
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+    Exit;
+  End;
   { Determiner le sigil et le type associe }
   If CurToken.Kind = TK_SCALAR Then
   Begin
@@ -3730,9 +4044,91 @@ Begin
         EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], ' + TmpS);
       End;
       Exit;
+    End Else If Cat = SC_HASH_VAR Then
+    Begin
+      { Hash %h : mot de count + MAX_HASH_PAIRS*(key_ptr+val) slots }
+      EmitAllocLocal(2);   { CurFrameSize += 2, count word }
+      Str(SymTab[Idx].Offset, OffS);
+      EmitComment('init %' + VName + ' : count=0, ' + OffS);
+      EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], 0');
+      Inc(CurFrameSize, MAX_HASH_PAIRS * 4);
+      Str(MAX_HASH_PAIRS * 4, TmpS);
+      EmitInstr('SUB', 'SP, ' + TmpS);
+      { Init optionnelle : my %h = (cle => val, ...) }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;   { consommer '=' }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          ParserAdvance;  { consommer '(' }
+        KeyCount := 0;
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+                  (CurToken.Kind <> TK_EOF) And
+                  (KeyCount < MAX_HASH_PAIRS) Do
+        Begin
+          { -- Parse cle (bareword, chaine ou scalaire) -- }
+          KeyStr := '';
+          If (CurToken.Kind = TK_IDENT) Or
+             ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val <> 'undef')) Then
+          Begin
+            KeyStr := CurToken.Val;   { bareword : stringification }
+            ParserAdvance;
+          End Else If CurToken.Kind = TK_STRING Then
+          Begin
+            KeyStr := CurToken.Val;
+            ParserAdvance;
+          End Else
+          Begin
+            { Cle variable ou complexe : traiter comme expr mais pas stocker }
+            ParseExpr(E);
+            ExprLoad(E);
+            KeyStr := '__var__';
+          End;
+          { Consommer '=>' ou ',' separant cle et valeur }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+            ParserAdvance
+          Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          { -- Parse valeur -- }
+          ParseExpr(E);
+          ExprLoad(E);   { AX = valeur }
+          { -- Enregistrer la paire cle/valeur -- }
+          If KeyStr <> '__var__' Then
+          Begin
+            SlotIdx := -1;
+            HKIdx   := HashSlotFind(Idx, KeyStr);
+            If HKIdx < 0 Then
+            Begin
+              { Ajouter la cle dans DATA }
+              ElemCount := DataAddStr(KeyStr);
+              KeyLbl    := DataTab[ElemCount].LblName;
+              SlotIdx   := HashSlotAdd(Idx, KeyStr, KeyLbl);
+            End Else
+            Begin
+              SlotIdx := HashKeyTab[HKIdx].SlotIdx;
+              KeyLbl  := HashKeyTab[HKIdx].KeyLbl;
+            End;
+            { key_ptr[SlotIdx] = OFFSET KeyLbl }
+            Str(SymTab[Idx].Offset + 2 + SlotIdx * 4, TmpS);
+            EmitInstr('MOV', 'WORD PTR [BP-' + TmpS + '], OFFSET ' + KeyLbl);
+            { val[SlotIdx] = AX }
+            Str(SymTab[Idx].Offset + 4 + SlotIdx * 4, TmpS);
+            EmitInstr('MOV', 'WORD PTR [BP-' + TmpS + '], AX');
+          End;
+          Inc(KeyCount);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        { Mettre a jour count }
+        Str(SymTab[Idx].Offset, OffS);
+        Str(KeyCount, TmpS);
+        EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], ' + TmpS);
+      End;
+      Exit;
     End Else
     Begin
-      { Variable scalaire ou hash : SymAdd a incremente CurFrameSize, emet SUB SP, 2 }
+      { Variable scalaire : SymAdd a incremente CurFrameSize, emet SUB SP, 2 }
       EmitAllocLocal(2);
       Str(SymTab[Idx].Offset, OffS);
       EmitComment('init my ' + Sigil + VName);
@@ -3765,9 +4161,12 @@ End;
 { Retourne le nombre d''arguments empiles dans N (var globale).  }
 Procedure ParseCallArgs;
 Var
-  A : TExprVal;
+  A    : TExprVal;
+  ArgN : Integer;
 Begin
-  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then Exit;
+  ArgN := 0;
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin GCallArgCount := 0; Exit; End;
   ParserAdvance;   { consommer '(' }
   While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
         (CurToken.Kind <> TK_EOF) Do
@@ -3775,6 +4174,7 @@ Begin
     ParseExpr(A);
     ExprLoad(A);
     EmitInstr1('PUSH AX');
+    Inc(ArgN);
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       ParserAdvance
     Else
@@ -3787,6 +4187,7 @@ Begin
     WriteLn('PERL86:', CurToken.Line, ': Erreur: '')'' attendu dans appel');
     Inc(ErrorCount);
   End;
+  GCallArgCount := ArgN;
 End;
 
 { ---- EmitIncrDecr : ++ ou -- avec effet de bord ------------ }
@@ -3846,6 +4247,9 @@ End;
 { ---- ParsePostfixOps : operateurs postfixe apres une primaire }
 { Boucle sur post-++ post-- .                                    }
 Procedure ParsePostfixOps(Var Res : TExprVal);
+Var
+  ArgCnt : Integer;
+  S      : TString;
 Begin
   Repeat
     If CurToken.Kind = TK_OP Then
@@ -3854,6 +4258,27 @@ Begin
       Begin ParserAdvance; EmitIncrDecr(Res, True,  False, Res); Continue; End;
       If CurToken.Val = '--' Then
       Begin ParserAdvance; EmitIncrDecr(Res, False, False, Res); Continue; End;
+      { TODO 17 : appel via coderef $f->(args) }
+      If CurToken.Val = '->' Then
+      Begin
+        ParserAdvance;  { consommer '->' }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ExprLoad(Res);         { AX = adresse de la sous-routine }
+          EmitInstr('MOV', 'BX, AX');  { sauver dans BX }
+          ParseCallArgs;
+          ArgCnt := GCallArgCount;
+          EmitInstr('CALL', 'BX');
+          If ArgCnt > 0 Then
+          Begin
+            Str(ArgCnt * 2, S);
+            EmitInstr('ADD', 'SP, ' + S);
+          End;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+          Res.ImmVal := 0; Res.Offset := 0;
+          Continue;
+        End;
+      End;
     End;
     Break;
   Until False;
@@ -4423,8 +4848,7 @@ Begin
   Begin
     { push @arr, val }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
-      ParserAdvance;
-    ParseExpr(E);
+      ParserAdvance;    ParseExpr(E);
     ExprLoad(E);  { AX = valeur a pousser }
     If ArrIdx >= 0 Then
     Begin
@@ -4489,6 +4913,15 @@ Begin
       EmitLabel('_PRL_SHFTE_' + OffS);
       EmitInstr('DEC', 'WORD PTR [BP-' + OffS + ']');
       EmitInstr('POP', 'AX');
+    End Else If CurFnDepth > 0 Then
+    Begin
+      { TODO 17 : shift sans @arr explicite dans un sub -> shift @_ }
+      { Convention push gauche->droite : arg0=[BP+4+(N-1)*2], arg1=[BP+4+(N-2)*2] }
+      { CurArgShiftIdx 0 = dernier argument pousse = [BP+4] }
+      Str(4 + CurArgShiftIdx * 2, OffS);
+      EmitComment('shift @_[' + OffS + ']');
+      EmitInstr('MOV', 'AX, WORD PTR [BP+' + OffS + ']');
+      Inc(CurArgShiftIdx);
     End Else
       EmitInstr('MOV', 'AX, 0');
   End Else If KW = 'unshift' Then
@@ -4510,11 +4943,121 @@ Begin
       EmitInstr('MOV', 'WORD PTR [BP-' + IS + '], AX');
     End;
   End;
-  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+End;  { ParseArrBuiltin }
+
+{ ---- HashSlotFind : chercher une cle dans HashKeyTab ------- }
+{ Retourne l''indice de l''entree dans HashKeyTab, ou -1.       }
+Function HashSlotFind(HashSym : Integer; Const Key : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  HashSlotFind := -1;
+  For I := 0 To HashKeyCount - 1 Do
+    If (HashKeyTab[I].HashSym = HashSym) And (HashKeyTab[I].KeyStr = Key) Then
+    Begin
+      HashSlotFind := I;
+      Exit;
+    End;
+End;
+
+{ ---- HashSlotAdd : ajouter une nouvelle cle dans le hash --- }
+{ Retourne le SlotIdx (position 0..N-1) dans le hash.         }
+Function HashSlotAdd(HashSym : Integer; Const Key : TString;
+                     Const KeyLbl : TString) : Integer;
+Var
+  I     : Integer;
+  SlotN : Integer;
+Begin
+  { Compter les slots existants pour ce hash }
+  SlotN := 0;
+  For I := 0 To HashKeyCount - 1 Do
+    If HashKeyTab[I].HashSym = HashSym Then
+      Inc(SlotN);
+  { Ajouter la nouvelle entree }
+  If HashKeyCount < MAX_HASH_KEYS Then
+  Begin
+    HashKeyTab[HashKeyCount].HashSym := HashSym;
+    HashKeyTab[HashKeyCount].KeyStr  := Key;
+    HashKeyTab[HashKeyCount].SlotIdx := SlotN;
+    HashKeyTab[HashKeyCount].KeyLbl  := KeyLbl;
+    Inc(HashKeyCount);
+  End Else
+  Begin
+    WriteLn('PERL86: ERREUR - HashKeyTab pleine (MAX_HASH_KEYS=', MAX_HASH_KEYS, ')');
+    Inc(ErrorCount);
+  End;
+  HashSlotAdd := SlotN;
+End;
+
+{ ---- ParseHashElemAccess : acces element hash -> TExprVal -- }
+{ HashIdx = indice dans SymTab du %hash.                       }
+{ Layout pile :                                                }
+{   [BP-hashOff]           = count (paires initialisees)       }
+{   [BP-hashOff-2-k*4]     = key_ptr[k] (OFFSET string DATA)  }
+{   [BP-hashOff-4-k*4]     = val[k]     (mot valeur)           }
+{ Cle constante -> EK_MEM ImmVal=1 (acces direct [BP-n])       }
+{ Cle variable  -> stub, EK_AX = 0                             }
+Procedure ParseHashElemAccess(HashIdx : Integer; Var Res : TExprVal);
+Var
+  KeyStr  : TString;
+  HKIdx   : Integer;
+  SlotIdx : Integer;
+  KeyLbl  : TString;
+  ValOff  : Integer;
+  S       : TString;
+  ElemIdx : Integer;
+Begin
+  ParserAdvance;  { consommer '{' }
+  { -- Cle constante : bareword, string ou keyword-as-string -- }
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_STRING) Or
+     ((CurToken.Kind = TK_KEYWORD) And
+      (CurToken.Val <> 'undef') And (CurToken.Val <> 'my') And
+      (CurToken.Val <> 'our')   And (CurToken.Val <> 'if')) Then
+  Begin
+    KeyStr := CurToken.Val;
     ParserAdvance;
-  If IsStmt Then
-    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then ParserAdvance;
+    HKIdx := HashSlotFind(HashIdx, KeyStr);
+    If HKIdx >= 0 Then
+    Begin
+      { Cle deja connue : acces direct }
+      SlotIdx := HashKeyTab[HKIdx].SlotIdx;
+    End Else
+    Begin
+      { Cle inconnue : ajouter en DATA + enregistrer }
+      ElemIdx := DataAddStr(KeyStr);
+      KeyLbl  := DataTab[ElemIdx].LblName;
+      SlotIdx := HashSlotAdd(HashIdx, KeyStr, KeyLbl);
+      { Initialiser key_ptr au moment de la premiere mention }
+      Str(SymTab[HashIdx].Offset + 2 + SlotIdx * 4, S);
+      EmitInstr('MOV', 'WORD PTR [BP-' + S + '], OFFSET ' + KeyLbl);
+      { Incremeter count pour ce nouveau slot }
+      Str(SymTab[HashIdx].Offset, S);
+      EmitInstr('INC', 'WORD PTR [BP-' + S + ']');
+    End;
+    ValOff      := SymTab[HashIdx].Offset + 4 + SlotIdx * 4;
+    Res.Kind    := EK_MEM;
+    Res.ImmVal  := 1;
+    Res.Offset  := ValOff;
+    Res.TypeIdx := TY_IDX_SCALAR;
+  End Else
+  Begin
+    { -- Cle variable : stub -> retourner 0 -- }
+    EmitComment('$h var-key : runtime non implemente (stub TODO 16)');
+    EmitInstr('MOV', 'AX, 0');
+    If (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> '}') Then
+    Begin
+      { Consommer la cle variable }
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+                (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then ParserAdvance;
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.TypeIdx := TY_IDX_SCALAR;
+  End;
 End;
 
 { ============================================================
