@@ -295,5 +295,3428 @@
 
 Program PERL86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES GLOBALES
+  ============================================================ }
+Const
+  PERL86_VERSION = '1.0';
+  PERL86_DATE    = '2026-03-05';
+
+  { Limites des tableaux internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_INCLUDE   = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_PKG       = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  PR_VAR_PFX  = '_PRV_';    { variable scalaire/tableau/hash }
+  PR_FN_PFX   = '_PRF_';    { sous-routine sub              }
+  PR_STR_PFX  = '_PRK_';    { constante chaine              }
+  PR_RT_PFX   = '_PRRT_';   { routine runtime               }
+  PR_LBL_PFX  = '_PRL_';    { label de saut interne         }
+  PR_CAP_PFX  = '_PRCAP_';  { capture regexp $1/$2/...      }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Contexte d''evaluation Perl }
+  CTX_SCALAR = 0;  { scalaire : un seul entier/pointeur }
+  CTX_LIST   = 1;  { liste   : plusieurs valeurs        }
+  CTX_BOOL   = 2;  { booleen : test vrai/faux           }
+  CTX_VOID   = 3;  { void   : valeur ignoree            }
+
+  { Indices de types primitifs Perl }
+  TY_IDX_SCALAR  = 0;   { scalaire entier/chaine unifie }
+  TY_IDX_ARRAY   = 1;   { tableau @arr                  }
+  TY_IDX_HASH    = 2;   { hash %h                       }
+  TY_IDX_REF     = 3;   { reference \$v                 }
+  TY_IDX_CODE    = 4;   { reference de code \&sub       }
+  TY_IDX_UNDEF   = 5;   { undef                         }
+  TY_IDX_MIXED   = 6;   { contexte indetermine          }
+  TY_PRIM_COUNT  = 7;
+  TY_UNKNOWN     = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Tokens Perl ---------------------------------------- }
+  TTokenKind = (
+    TK_EOF,         { fin de fichier                       }
+    TK_IDENT,       { identificateur (mot-cle ou bare-word) }
+    TK_KEYWORD,     { mot-cle Perl reconnu                  }
+    TK_SCALAR,      { variable scalaire $nom               }
+    TK_ARRAY_SIG,   { variable tableau @nom                }
+    TK_HASH_SIG,    { variable hash %nom                   }
+    TK_INTEGER,     { litteral entier                      }
+    TK_FLOAT,       { litteral flottant                    }
+    TK_STRING,      { litteral chaine (simple- ou double-q) }
+    TK_HEREDOC,     { heredoc <<LABEL                      }
+    TK_REGEXP,      { expression reguliere /pat/flags      }
+    TK_FILEHANDLE,  { descripteur STDOUT STDERR STDIN <FH> }
+    TK_OP,          { operateur                            }
+    TK_PUNCT        { ponctuation () [] ; , ->              }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;       { valeur textuelle brute             }
+    IntVal   : LongInt;       { valeur entiere (TK_INTEGER)        }
+    FloatVal : Real;          { valeur flottante (TK_FLOAT)        }
+    Line     : Integer;       { ligne source (1-base)              }
+    Col      : Integer;       { colonne source (1-base)            }
+  End;
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { script source (.pl)                  }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugTok  : Boolean;   { -d : affichage de chaque token       }
+    Strict    : Boolean;   { -s : equivalence use strict          }
+    Warnings  : Boolean;   { -w : equivalence use warnings        }
+  End;
+
+  { ---- Categories de symboles ----------------------------- }
+  TSymCat = (
+    SC_SCALAR,       { my/our $var scalaire              }
+    SC_ARRAY_VAR,    { my/our @arr tableau                }
+    SC_HASH_VAR,     { my/our %h hash                    }
+    SC_PARAM,        { parametre de sous-routine          }
+    SC_FN,           { sous-routine (sub)                 }
+    SC_PKG,          { package / namespace                }
+    SC_CONST,        { use constant NOM => val            }
+    SC_FILEHANDLE    { filehandle open(my $fh, ...)       }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { nom Perl sans sigil             }
+    SigilName   : TString;   { nom avec sigil ($foo @foo %foo) }
+    MangledName : TString;   { _PRV_foo / _PRF_foo             }
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   { indice dans TypeTab             }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { [BP-n] pour locaux, DATA sinon  }
+    IsMy        : Boolean;   { lexical my                      }
+    IsOur       : Boolean;   { global our                      }
+    IsLocal     : Boolean;   { dynamique local                 }
+    IsRef       : Boolean;   { passe par reference \$p         }
+    DeclLine    : Integer;
+  End;
+
+  { ---- Types internes ------------------------------------- }
+  TTypeKind = (
+    TKD_SCALAR,
+    TKD_ARRAY,
+    TKD_HASH,
+    TKD_REF,
+    TKD_CODE,
+    TKD_UNDEF,
+    TKD_MIXED,
+    TKD_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   { taille en octets : scalar=2, ref=2 }
+    ElemIdx : Integer;   { type des elements (TKD_ARRAY)      }
+  End;
+
+  { ---- Valeurs d'expression ------------------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur  }
+    EK_IMM,    { immediat dans ImmVal  }
+    EK_AX,     { valeur dans AX        }
+    EK_DXAX,   { valeur longue DX:AX   }
+    EK_MEM     { adresse [BP+Offset] ou [_PRV_x] }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+  End;
+
+  { ---- Segment de donnees --------------------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;   { DK_ARRAY_BLK : nombre d'elements }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs globaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Valeur fictive pour ignorer un retour TExprVal }
+  GExprDummy : TExprVal;
+
+  { Lexeur }
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  { Table des symboles }
+  SymTab    : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount  : Integer;
+  ScopeStack: Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop  : Integer;
+  CurScope  : Integer;
+  LabelSeq  : Integer;
+
+  { Table des types }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Emetteur ASM }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;   { taille du cadre local courant        }
+  CurFnDepth   : Integer;   { 0 = global, >0 = dans une sub       }
+  CurFnRetLbl  : TString;   { label epilogue de la sub courante    }
+  CurFnName    : TString;   { nom de la sub courante               }
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+
+  { Segment de donnees statiques }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+
+  { Garde d'inclusion (require_once / use) }
+  IncludeTab   : Array[0..MAX_INCLUDE - 1] Of TString;
+  IncludeCount : Integer;
+
+  { Package courant }
+  CurPackage : TString;   { 'main' par defaut }
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexInit;       Forward;
+Procedure LexClose;      Forward;
+Procedure EmitOpen;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitDataSeg;   Forward;
+Procedure EmitRuntime;   Forward;
+Procedure EmitHeader;    Forward;
+Procedure ParserAdvance; Forward;
+Procedure ParseStmt;     Forward;
+Procedure TypeInit;      Forward;
+Procedure SymInit;       Forward;
+Function  DataAddStr(Const S : TString) : Integer; Forward;
+Function  DataAdd(Const ALbl : TString; AKind : TDataKind;
+                  AInt : LongInt; Const AStr : TString) : Integer; Forward;
+{ TODO 08 }
+Procedure EmitDataStr(Const Lbl, S : TString); Forward;
+Function  DataAddWord(Const ALbl : TString; AVal : LongInt) : Integer; Forward;
+Function  DataAddConst(Const ALbl : TString; AVal : LongInt;
+                       Const AStr : TString) : Integer; Forward;
+Function  DataFindByLabel(Const ALbl : TString) : Integer; Forward;
+{ TODO 09 }
+Procedure EmitAllocLocal(Sz : Integer); Forward;
+Procedure EmitStoreScalar(Const Lv : TExprVal); Forward;
+Function  ExprMakeMem(SymIdx : Integer) : TExprVal; Forward;
+Procedure ParseVarDecl; Forward;
+{ TODO 10 }
+Procedure ParseCallArgs; Forward;
+Procedure EmitIncrDecr(Const Lv : TExprVal; IsInc : Boolean; Pre : Boolean;
+                       Var Res : TExprVal); Forward;
+Procedure ParsePostfixOps(Var Res : TExprVal); Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeUndef(Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+{ TODO 04 }
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  IsRightAssoc(Const Op : TString) : Boolean; Forward;
+Procedure ExprLoad(Var E : TExprVal); Forward;
+Procedure ExprEmitBinOp(Const Op : TString;
+                         Var Left, Right : TExprVal;
+                         Var Res         : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Function  CurTokIsInfixOp(Var OpStr : TString) : Boolean; Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ TODO 05 }
+Function  SymMangle(Cat : TSymCat; IsMy : Boolean;
+                    Const Name, Pkg : TString;
+                    SeqN : Integer) : TString; Forward;
+Function  SymAdd(Const Name : TString; Sigil : Char; Cat : TSymCat;
+                 TypeIdx : Integer;
+                 IsMy, IsOur, IsLocal : Boolean) : Integer; Forward;
+Function  SymFind(Const Name : TString; Sigil : Char) : Integer; Forward;
+Function  SymFindCat(Const Name : TString; Cat : TSymCat) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Procedure SymWarn(Const Msg : TString); Forward;
+Procedure SymError(Const Msg : TString); Forward;
+{ TODO 06 }
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeKindName(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsCompatible(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  ExprIsBoolFalse(Const E : TExprVal) : Boolean; Forward;
+{ TODO 07 }
+Function  LabelGen(Const Prefix : TString) : TString; Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Name : TString); Forward;
+Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+Procedure EmitInstr1(Const Mnem : TString); Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  ============================================================ }
+
+{ ---- Erreur fatale ---------------------------------------- }
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('PERL86: ERREUR FATALE - ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+{ ---- Aide en ligne ---------------------------------------- }
+Procedure ShowHelp;
+Begin
+  WriteLn('Usage: PERL86 <source.pl> [sortie.asm] [-v] [-d] [-s] [-w]');
+  WriteLn('  -v   mode verbeux (banniere + statistiques)');
+  WriteLn('  -d   debug tokens (affiche chaque token)');
+  WriteLn('  -s   use strict (toute variable doit etre declaree)');
+  WriteLn('  -w   use warnings (avertissements supplementaires)');
+  WriteLn('  -h   cette aide');
+  WriteLn('');
+  WriteLn('Le fichier source doit avoir l''extension .pl');
+  WriteLn('Le fichier de sortie defaut remplace .pl par .asm');
+  Halt(EXIT_OK);
+End;
+
+{ ---- Initialisation des options --------------------------- }
+Procedure InitOptions;
+Begin
+  Opts.SrcFile  := '';
+  Opts.OutFile  := '';
+  Opts.Verbose  := False;
+  Opts.DebugTok := False;
+  Opts.Strict   := False;
+  Opts.Warnings := False;
+End;
+
+{ ---- Construction du nom de sortie par defaut ------------- }
+Procedure BuildOutName;
+Var
+  Base : TString;
+  I    : Integer;
+Begin
+  Base := Opts.SrcFile;
+  { Retrancher l'extension .pl ou .PL }
+  For I := Length(Base) DownTo 1 Do
+  Begin
+    If Base[I] = '.' Then
+    Begin
+      If (Copy(Base, I, 3) = '.pl') Or (Copy(Base, I, 3) = '.PL') Then
+        Base := Copy(Base, 1, I - 1);
+      Break;
+    End;
+  End;
+  Opts.OutFile := Base + '.asm';
+End;
+
+{ ---- Analyse des arguments de la ligne de commande -------- }
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  If ParamCount = 0 Then
+    ShowHelp;
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+    If (Arg = '-h') Or (Arg = '--help') Then
+      ShowHelp
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If (Arg = '-d') Or (Arg = '--debug') Then
+      Opts.DebugTok := True
+    Else If (Arg = '-s') Or (Arg = '--strict') Then
+      Opts.Strict := True
+    Else If (Arg = '-w') Or (Arg = '--warnings') Then
+      Opts.Warnings := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('PERL86: option inconnue : ', Arg);
+      Halt(EXIT_USAGE);
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('PERL86: argument inattendu : ', Arg);
+      Halt(EXIT_USAGE);
+    End;
+    Inc(I);
+  End;
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('PERL86: aucun fichier source specifie.');
+    Halt(EXIT_USAGE);
+  End;
+  If Opts.OutFile = '' Then
+    BuildOutName;
+End;
+
+{ ---- Banniere --------------------------------------------- }
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('================================================');
+  WriteLn(' PERL86 v', PERL86_VERSION, ' (', PERL86_DATE, ')');
+  WriteLn(' Compilateur Perl -> assembleur 8086 / DOS');
+  WriteLn('================================================');
+  WriteLn(' Source  : ', Opts.SrcFile);
+  WriteLn(' Sortie  : ', Opts.OutFile);
+  If Opts.Strict   Then WriteLn(' Mode    : use strict');
+  If Opts.Warnings Then WriteLn(' Mode    : use warnings');
+  WriteLn('------------------------------------------------');
+End;
+
+{ ---- Statistiques finales --------------------------------- }
+Procedure ShowStats;
+Begin
+  WriteLn('------------------------------------------------');
+  WriteLn(' Lignes   : ', TotalLines);
+  WriteLn(' Symboles : ', SymCount);
+  WriteLn(' Erreurs  : ', ErrorCount);
+  WriteLn(' Avert.   : ', WarnCount);
+  If ErrorCount = 0 Then
+    WriteLn(' Resultat : OK -> ', Opts.OutFile)
+  Else
+    WriteLn(' Resultat : ECHEC (', ErrorCount, ' erreur(s))');
+  WriteLn('================================================');
+End;
+
+{ ---- Nettoyage des ressources ----------------------------- }
+Procedure Cleanup;
+Begin
+  LexClose;
+  EmitClose;
+End;
+
+{ ============================================================
+  STUBS DES TODOS 03-25 (seront implementes dans les TODOs suivants)
+  ============================================================ }
+
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name    := '';
+    TypeTab[I].Kind    := TKD_UNKNOWN;
+    TypeTab[I].Size    := 0;
+    TypeTab[I].ElemIdx := TY_UNKNOWN;
+  End;
+  { TY_IDX_SCALAR = 0 : scalaire unifie int/float/str, taille 2 octets (mot) }
+  TypeTab[TY_IDX_SCALAR].Name    := 'scalar';
+  TypeTab[TY_IDX_SCALAR].Kind    := TKD_SCALAR;
+  TypeTab[TY_IDX_SCALAR].Size    := 2;
+  TypeTab[TY_IDX_SCALAR].ElemIdx := TY_UNKNOWN;
+  { TY_IDX_ARRAY = 1 : tableau @arr, represente comme pointeur (2 octets) }
+  TypeTab[TY_IDX_ARRAY].Name    := 'array';
+  TypeTab[TY_IDX_ARRAY].Kind    := TKD_ARRAY;
+  TypeTab[TY_IDX_ARRAY].Size    := 2;
+  TypeTab[TY_IDX_ARRAY].ElemIdx := TY_IDX_SCALAR;
+  { TY_IDX_HASH = 2 : hash %h, represente comme pointeur (2 octets) }
+  TypeTab[TY_IDX_HASH].Name    := 'hash';
+  TypeTab[TY_IDX_HASH].Kind    := TKD_HASH;
+  TypeTab[TY_IDX_HASH].Size    := 2;
+  TypeTab[TY_IDX_HASH].ElemIdx := TY_IDX_SCALAR;
+  { TY_IDX_REF = 3 : reference \$v ou \@arr, taille 2 octets (pointeur) }
+  TypeTab[TY_IDX_REF].Name    := 'ref';
+  TypeTab[TY_IDX_REF].Kind    := TKD_REF;
+  TypeTab[TY_IDX_REF].Size    := 2;
+  TypeTab[TY_IDX_REF].ElemIdx := TY_UNKNOWN;
+  { TY_IDX_CODE = 4 : reference de code \&sub, taille 2 octets }
+  TypeTab[TY_IDX_CODE].Name    := 'code';
+  TypeTab[TY_IDX_CODE].Kind    := TKD_CODE;
+  TypeTab[TY_IDX_CODE].Size    := 2;
+  TypeTab[TY_IDX_CODE].ElemIdx := TY_UNKNOWN;
+  { TY_IDX_UNDEF = 5 : undef, taille 2 octets (valeur 0) }
+  TypeTab[TY_IDX_UNDEF].Name    := 'undef';
+  TypeTab[TY_IDX_UNDEF].Kind    := TKD_UNDEF;
+  TypeTab[TY_IDX_UNDEF].Size    := 2;
+  TypeTab[TY_IDX_UNDEF].ElemIdx := TY_UNKNOWN;
+  { TY_IDX_MIXED = 6 : contexte indetermine (liste heterogene) }
+  TypeTab[TY_IDX_MIXED].Name    := 'mixed';
+  TypeTab[TY_IDX_MIXED].Kind    := TKD_MIXED;
+  TypeTab[TY_IDX_MIXED].Size    := 2;
+  TypeTab[TY_IDX_MIXED].ElemIdx := TY_UNKNOWN;
+  TypeCount := TY_PRIM_COUNT;  { 7 types primitifs enregistres }
+End;
+
+Procedure SymInit;
+Var
+  I : Integer;
+Begin
+  SymCount     := 0;
+  ScopeTop     := 0;
+  CurScope     := 0;
+  LabelSeq     := 0;
+  CurFrameSize := 0;
+  CurFnDepth   := 0;
+  LoopTop      := 0;
+  CurFnRetLbl  := '';
+  CurFnName    := '';
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].SigilName   := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Cat         := SC_SCALAR;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsMy        := False;
+    SymTab[I].IsOur       := False;
+    SymTab[I].IsLocal     := False;
+    SymTab[I].IsRef       := False;
+    SymTab[I].DeclLine    := 0;
+  End;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir le fichier de sortie : ' + Opts.OutFile);
+  OutFOpen := True;
+  EmitHeader;   { emet le preambule ASM }
+End;
+
+Procedure EmitClose;
+Begin
+  If Not OutFOpen Then Exit;
+  { Code de sortie par defaut : exit(0) en cas de chute de fin de script }
+  EmitBlankLine;
+  EmitComment('Fin du script Perl - sortie implicite code 0');
+  EmitInstr('MOV', 'AX, 4C00h');
+  EmitInstr('INT', '21h');
+  EmitRaw('_PRF_main ENDP');
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  EmitDataSeg;   { TODO 08 : segment de donnees }
+  EmitBlankLine;
+  EmitRaw('        END     _PRF_main');
+  Close(OutF);
+  OutFOpen := False;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('Generated by PERL86 v' + PERL86_VERSION + ' - ' + PERL86_DATE);
+  EmitComment('Source : ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('        .MODEL  SMALL');
+  EmitRaw('        .STACK  1024');
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA');
+  EmitBlankLine;
+  EmitRaw('_PRF_main PROC NEAR');
+  EmitInstr('MOV', 'AX, @DATA');
+  EmitInstr('MOV', 'DS, AX');
+  EmitBlankLine;
+End;
+
+Procedure EmitDataSeg;
+{ Emet le segment _DATA complet : DW (scalaires our/constantes),           }
+{ DB (octets), DB '...',0 (chaines litterales), DW N DUP(0) (tableaux).    }
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  If DataCount = 0 Then
+    EmitRaw('; _PRL_DUMMY  DB  0')  { segment vide : rien a emettre }
+  Else
+    For I := 0 To DataCount - 1 Do
+    Begin
+      EmitBlankLine;
+      Case DataTab[I].Kind Of
+        DK_WORD :
+          Begin
+            Str(DataTab[I].IntVal, Tmp);
+            EmitRaw(DataTab[I].LblName + ':');
+            EmitRaw('        DW  ' + Tmp);
+          End;
+        DK_BYTE :
+          Begin
+            Str(DataTab[I].IntVal And $FF, Tmp);
+            EmitRaw(DataTab[I].LblName + ':');
+            EmitRaw('        DB  ' + Tmp);
+          End;
+        DK_STR :
+          EmitDataStr(DataTab[I].LblName, DataTab[I].StrVal);
+        DK_ARRAY_BLK :
+          Begin
+            Str(DataTab[I].ElemCount, Tmp);
+            EmitRaw(DataTab[I].LblName + ':');
+            EmitRaw('        DW  ' + Tmp + ' DUP(0)');
+          End;
+      End;
+    End;
+  EmitBlankLine;
+  EmitRaw('_DATA   ENDS');
+End;
+
+Procedure EmitRuntime;
+Begin
+End;
+
+Procedure ParseStmt;
+{ Analyse une instruction Perl et emet le code ASM correspondant.         }
+{ Reconnait : my/our/local $var [= expr] ;   use ... ;   expr ;           }
+{ En cas d''erreur de syntaxe, resynchronise sur le prochain '';''.         }
+Var
+  KW : TString;
+  E  : TExprVal;
+Begin
+  { Ignorer les points-virgules isoles (instructions vides) }
+  While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+    ParserAdvance;
+  If CurToken.Kind = TK_EOF Then Exit;
+  { Mots-cles de declaration de variable }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    KW := CurToken.Val;
+    If (KW = 'my') Or (KW = 'our') Or (KW = 'local') Then
+    Begin
+      ParseVarDecl;
+      { Consommer le '';'' terminal }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    { use strict ; use warnings ; use constant ... : ignorer pour l''instant }
+    If KW = 'use' Then
+    Begin
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+                (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+  End;
+  { Instruction expression : $var = expr ;  ou  expr ; }
+  ParseExpr(E);
+  { Consommer le '';'' ou tolerera EOF }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else If CurToken.Kind <> TK_EOF Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line, ': Erreur: '';'' attendu, obtenu ''',
+            CurToken.Val, '''');
+    Inc(ErrorCount);
+    { Resynchroniser : sauter jusqu''au prochain '';'' }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+              (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
+End;
+
+{ ============================================================
+  TODO 02 - LEXEUR PERL
+  ============================================================ }
+
+{ ---- Primitives de bas niveau ----------------------------- }
+Function LexCurChar : Char;
+Begin
+  If (LexEOF) Or (LexColNo > Length(LexLine)) Then
+    LexCurChar := #0
+  Else
+    LexCurChar := LexLine[LexColNo];
+End;
+
+Function LexPeek : Char;
+Begin
+  If (LexEOF) Or (LexColNo + 1 > Length(LexLine)) Then
+    LexPeek := #0
+  Else
+    LexPeek := LexLine[LexColNo + 1];
+End;
+
+Function LexPeek2 : Char;
+Begin
+  If (LexEOF) Or (LexColNo + 2 > Length(LexLine)) Then
+    LexPeek2 := #0
+  Else
+    LexPeek2 := LexLine[LexColNo + 2];
+End;
+
+Procedure LexAdvance;
+Begin
+  Inc(LexColNo);
+End;
+
+Procedure LexNextLine;
+Begin
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ---- Erreur lexicale (non fatale) ------------------------- }
+Procedure LexError(Const Msg : TString);
+Begin
+  WriteLn('PERL86:', LexLineNo, ':', LexColNo, ': Erreur: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('Trop d''erreurs - compilation abandonnee');
+End;
+
+{ ---- Constructeur de token -------------------------------- }
+Procedure MakeToken(Var T : TToken; K : TTokenKind;
+                    Const V : TString; L, C : Integer);
+Begin
+  T.Kind     := K;
+  T.Val      := V;
+  T.IntVal   := 0;
+  T.FloatVal := 0.0;
+  T.Line     := L;
+  T.Col      := C;
+End;
+
+{ ---- Commentaires Perl : # jusqu''a la fin de ligne ------- }
+{ (Perl n''a pas de /* */ contrairement a PHP)                }
+Procedure LexSkipLineComment;
+Begin
+  LexColNo := Length(LexLine) + 1;
+End;
+
+{ ---- Passer les espaces et les commentaires --------------- }
+Procedure LexSkipWS;
+Var
+  C : Char;
+Begin
+  Repeat
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+    If LexEOF Then Exit;
+    C := LexCurChar;
+    If (C = ' ') Or (C = #9) Or (C = #13) Or (C = #10) Then
+      LexAdvance
+    Else If C = '#' Then
+      LexSkipLineComment   { seul type de commentaire en Perl }
+    Else
+      Exit;
+  Until False;
+End;
+
+{ ---- Utilitaires caracteres ------------------------------- }
+Function IsAlpha(C : Char) : Boolean;
+Begin
+  IsAlpha := ((C >= 'a') And (C <= 'z')) Or
+             ((C >= 'A') And (C <= 'Z')) Or (C = '_');
+End;
+
+Function IsDigit(C : Char) : Boolean;
+Begin
+  IsDigit := (C >= '0') And (C <= '9');
+End;
+
+Function IsAlNum(C : Char) : Boolean;
+Begin
+  IsAlNum := IsAlpha(C) Or IsDigit(C);
+End;
+
+Function IsHexDigit(C : Char) : Boolean;
+Begin
+  IsHexDigit := IsDigit(C) Or
+                ((C >= 'a') And (C <= 'f')) Or
+                ((C >= 'A') And (C <= 'F'));
+End;
+
+Function HexVal(C : Char) : Integer;
+Begin
+  If   (C >= '0') And (C <= '9') Then HexVal := Ord(C) - Ord('0')
+  Else If (C >= 'a') And (C <= 'f') Then HexVal := Ord(C) - Ord('a') + 10
+  Else HexVal := Ord(C) - Ord('A') + 10;
+End;
+
+{ ---- Table des mots-cles Perl ----------------------------- }
+Const
+  PERL_KW_COUNT = 66;
+  PERL_KW : Array[0..65] Of String[14] = (
+    { Declaration de portee }
+    'my',           'our',          'local',
+    { Sous-routines }
+    'sub',          'return',       'wantarray',
+    { Packages et modules }
+    'use',          'require',      'package',
+    'BEGIN',        'END',
+    { Conditionnels }
+    'if',           'elsif',        'else',
+    'unless',
+    { Boucles }
+    'while',        'until',        'for',
+    'foreach',      'do',
+    'last',         'next',         'redo',
+    { E/S et print }
+    'print',        'say',          'printf',
+    'sprintf',      'warn',         'die',
+    'exit',
+    { Tableaux }
+    'push',         'pop',          'shift',
+    'unshift',      'splice',       'reverse',
+    'sort',         'join',         'split',
+    'grep',         'map',
+    { Hashes }
+    'keys',         'values',       'each',
+    'exists',       'delete',
+    { Scalaires et types }
+    'defined',      'undef',        'ref',
+    'chomp',        'chop',         'length',
+    'substr',       'index',        'int',
+    'abs',          'hex',          'oct',
+    'chr',          'ord',          'lc',
+    'uc',
+    { Logiques basse precedence }
+    'not',          'and',          'or',
+    { Operateur de repetition }
+    'x'
+  );
+
+Function IsPerlKeyword(Const S : TString) : Boolean;
+Var
+  I : Integer;
+Begin
+  IsPerlKeyword := False;
+  For I := 0 To PERL_KW_COUNT - 1 Do
+    If S = PERL_KW[I] Then
+    Begin IsPerlKeyword := True; Exit; End;
+End;
+
+{ ---- LexScanIdent : identificateur, mot-cle ou bareword --- }
+{ Les barewords STDOUT STDERR STDIN deviennent TK_FILEHANDLE  }
+Procedure LexScanIdent(Var T : TToken; SL, SC : Integer);
+Var
+  S : TString;
+Begin
+  S := '';
+  While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+        IsAlNum(LexCurChar) Do
+  Begin
+    If Length(S) < MAX_STR Then S := S + LexCurChar;
+    LexAdvance;
+  End;
+  { Filehandles connus }
+  If (S = 'STDOUT') Or (S = 'STDERR') Or (S = 'STDIN') Then
+    MakeToken(T, TK_FILEHANDLE, S, SL, SC)
+  Else If IsPerlKeyword(S) Then
+    MakeToken(T, TK_KEYWORD, S, SL, SC)
+  Else
+    MakeToken(T, TK_IDENT, S, SL, SC);
+End;
+
+{ ---- LexScanNumber : entier ou flottant ------------------- }
+{ Perl : 0x hex, 0b binaire, 0 octal, 1_000 separateurs       }
+Procedure LexScanNumber(Var T : TToken; SL, SC : Integer);
+Var
+  S     : TString;
+  Val   : LongInt;
+  Base  : Integer;
+  C     : Char;
+  Fv    : Real;
+  Div10 : Real;
+Begin
+  S    := '';
+  Val  := 0;
+  Base := 10;
+  C    := LexCurChar;
+  If (C = '0') And (LexPeek <> #0) Then
+  Begin
+    Case LexPeek Of
+      'x','X': Begin S := '0x'; LexAdvance; LexAdvance; Base := 16; End;
+      'b','B': Begin S := '0b'; LexAdvance; LexAdvance; Base := 2;  End;
+    Else
+      { octal classique en Perl : 0NNN }
+      If IsDigit(LexPeek) Then
+      Begin
+        S := '0'; Val := 0;
+        LexAdvance;
+        Base := 8;
+      End Else
+      Begin
+        S := '0'; Val := 0; LexAdvance;
+      End;
+    End;
+  End Else
+  Begin
+    Val := Ord(C) - Ord('0');
+    S   := C;
+    LexAdvance;
+  End;
+  While (Not LexEOF) And (LexColNo <= Length(LexLine)) Do
+  Begin
+    C := LexCurChar;
+    If C = '_' Then Begin LexAdvance; Continue; End;  { separateur numerique }
+    Case Base Of
+      2  : If (C = '0') Or (C = '1') Then
+           Begin Val:=Val*2+(Ord(C)-Ord('0')); If Length(S)<MAX_STR Then S:=S+C; LexAdvance; End
+           Else Break;
+      8  : If (C >= '0') And (C <= '7') Then
+           Begin Val:=Val*8+(Ord(C)-Ord('0')); If Length(S)<MAX_STR Then S:=S+C; LexAdvance; End
+           Else Break;
+      10 : If IsDigit(C) Then
+           Begin Val:=Val*10+(Ord(C)-Ord('0')); If Length(S)<MAX_STR Then S:=S+C; LexAdvance; End
+           Else Break;
+      16 : If IsHexDigit(C) Then
+           Begin Val:=Val*16+HexVal(C); If Length(S)<MAX_STR Then S:=S+C; LexAdvance; End
+           Else Break;
+    End;
+  End;
+  { Detection flottant (base 10 uniquement) }
+  If (Base = 10) And (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+     (LexCurChar = '.') And IsDigit(LexPeek) Then
+  Begin
+    Fv    := Val * 1.0;
+    Div10 := 10.0;
+    If Length(S) < MAX_STR Then S := S + '.';
+    LexAdvance;
+    While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+          (IsDigit(LexCurChar) Or (LexCurChar = '_')) Do
+    Begin
+      If LexCurChar <> '_' Then
+      Begin
+        Fv    := Fv + (Ord(LexCurChar) - Ord('0')) / Div10;
+        Div10 := Div10 * 10.0;
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+      End;
+      LexAdvance;
+    End;
+    { Exposant e/E }
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+       ((LexCurChar = 'e') Or (LexCurChar = 'E')) Then
+    Begin
+      If Length(S) < MAX_STR Then S := S + LexCurChar;
+      LexAdvance;
+      If (LexColNo <= Length(LexLine)) And
+         ((LexCurChar = '+') Or (LexCurChar = '-')) Then
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+        LexAdvance;
+      End;
+      While (Not LexEOF) And (LexColNo <= Length(LexLine)) And IsDigit(LexCurChar) Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+        LexAdvance;
+      End;
+    End;
+    MakeToken(T, TK_FLOAT, S, SL, SC);
+    T.FloatVal := Fv;
+    Exit;
+  End;
+  MakeToken(T, TK_INTEGER, S, SL, SC);
+  T.IntVal := Val;
+End;
+
+{ ---- LexScanEscape : sequence d''echappement (double-quote) }
+{ Perl : \n \t \r \f \e \0 \\ \' \" \$ \@ \xNN \NNN (octal)  }
+Function LexScanEscape(Var IntOut : LongInt) : Char;
+Var
+  C    : Char;
+  Code : LongInt;
+  I    : Integer;
+Begin
+  IntOut := 0;
+  Code   := 0;
+  If LexColNo > Length(LexLine) Then
+  Begin
+    LexError('Sequence d''echappement incomplete');
+    LexScanEscape := '?';
+    Exit;
+  End;
+  C := LexCurChar;
+  LexAdvance;
+  Case C Of
+    'n' : Begin LexScanEscape := #10; IntOut := 10;  End;
+    't' : Begin LexScanEscape := #9;  IntOut := 9;   End;
+    'r' : Begin LexScanEscape := #13; IntOut := 13;  End;
+    'f' : Begin LexScanEscape := #12; IntOut := 12;  End;
+    'e' : Begin LexScanEscape := #27; IntOut := 27;  End;  { ESC }
+    '0' : Begin LexScanEscape := #0;  IntOut := 0;   End;
+    '"' : Begin LexScanEscape := '"'; IntOut := 34;  End;
+    '''': Begin LexScanEscape := ''''; IntOut := 39; End;
+    '\' : Begin LexScanEscape := '\'; IntOut := 92;  End;
+    '$' : Begin LexScanEscape := '$'; IntOut := 36;  End;
+    '@' : Begin LexScanEscape := '@'; IntOut := 64;  End;
+    'x' : Begin
+            Code := 0;
+            For I := 1 To 2 Do
+            Begin
+              If (LexColNo > Length(LexLine)) Or (Not IsHexDigit(LexCurChar)) Then
+              Begin LexError('\x: 2 chiffres hexa attendus'); Break; End;
+              Code := Code * 16 + HexVal(LexCurChar);
+              LexAdvance;
+            End;
+            IntOut := Code;
+            LexScanEscape := Chr(Code And $FF);
+          End;
+  Else
+    LexScanEscape := C;
+    IntOut := Ord(C);
+  End;
+End;
+
+{ ---- LexScanStrSingle : simple-quote (pas d''interpolation) }
+Procedure LexScanStrSingle(Var T : TToken; SL, SC : Integer);
+Var
+  S    : TString;
+  C    : Char;
+  Done : Boolean;
+Begin
+  LexAdvance; { consommer le guillemet-simple ouverture }
+  S    := '';
+  Done := False;
+  Repeat
+    If LexColNo > Length(LexLine) Then
+    Begin
+      { Continuer sur la ligne suivante (chaine multi-ligne) }
+      If LexEOF Then
+      Begin
+        LexError('Chaine simple-quote non fermee (EOF)');
+        Done := True;
+      End Else
+      Begin
+        If Length(S) < MAX_STR Then S := S + #10;
+        LexNextLine;
+      End;
+    End Else
+    Begin
+      C := LexCurChar;
+      If Ord(C) = 39 Then                { '  : fermeture }
+      Begin
+        LexAdvance; Done := True;
+      End Else If Ord(C) = 92 Then       { \  : echappement limite }
+      Begin
+        LexAdvance;
+        If (LexColNo <= Length(LexLine)) And
+           ((LexCurChar = #39) Or (LexCurChar = #92)) Then
+        Begin
+          If Length(S) < MAX_STR Then S := S + LexCurChar;
+          LexAdvance;
+        End Else
+          If Length(S) < MAX_STR Then S := S + '\';
+      End Else
+      Begin
+        If Length(S) < MAX_STR Then S := S + C;
+        LexAdvance;
+      End;
+    End;
+  Until Done;
+  MakeToken(T, TK_STRING, S, SL, SC);
+End;
+
+{ ---- LexScanStrDouble : double-quote avec interpolation ---- }
+{ Les interpolations $var et @arr sont encodees dans Val :     }
+{   $nom  -> #1 + nom + #2                                     }
+{   @nom  -> #3 + nom + #4                                     }
+Procedure LexScanStrDouble(Var T : TToken; SL, SC : Integer);
+Var
+  S    : TString;
+  C    : Char;
+  IV   : LongInt;
+  VN   : TString;
+  Done : Boolean;
+Begin
+  LexAdvance; { consommer le guillemet-double ouverture }
+  S    := '';
+  Done := False;
+  Repeat
+    If LexColNo > Length(LexLine) Then
+    Begin
+      If LexEOF Then
+      Begin
+        LexError('Chaine double-quote non fermee (EOF)');
+        Done := True;
+      End Else
+      Begin
+        If Length(S) < MAX_STR Then S := S + #10;
+        LexNextLine;
+      End;
+    End Else
+    Begin
+      C := LexCurChar;
+      If Ord(C) = 34 Then                { "  : fermeture }
+      Begin
+        LexAdvance; Done := True;
+      End Else If Ord(C) = 92 Then       { \  : echappement }
+      Begin
+        LexAdvance;
+        C := LexScanEscape(IV);
+        If Length(S) < MAX_STR Then S := S + C;
+      End Else If C = '$' Then           { $var : interpolation scalaire }
+      Begin
+        LexAdvance;
+        VN := '';
+        While (LexColNo <= Length(LexLine)) And IsAlNum(LexCurChar) Do
+        Begin
+          If Length(VN) < 30 Then VN := VN + LexCurChar;
+          LexAdvance;
+        End;
+        If VN <> '' Then
+        Begin
+          If Length(S) < MAX_STR Then S := S + #1;  { marqueur debut $var }
+          If Length(S) + Length(VN) <= MAX_STR Then S := S + VN;
+          If Length(S) < MAX_STR Then S := S + #2;  { marqueur fin $var   }
+        End Else
+          If Length(S) < MAX_STR Then S := S + '$';
+      End Else If C = '@' Then           { @arr : interpolation tableau }
+      Begin
+        LexAdvance;
+        VN := '';
+        While (LexColNo <= Length(LexLine)) And IsAlNum(LexCurChar) Do
+        Begin
+          If Length(VN) < 30 Then VN := VN + LexCurChar;
+          LexAdvance;
+        End;
+        If VN <> '' Then
+        Begin
+          If Length(S) < MAX_STR Then S := S + #3;  { marqueur debut @arr }
+          If Length(S) + Length(VN) <= MAX_STR Then S := S + VN;
+          If Length(S) < MAX_STR Then S := S + #4;  { marqueur fin @arr   }
+        End Else
+          If Length(S) < MAX_STR Then S := S + '@';
+      End Else
+      Begin
+        If Length(S) < MAX_STR Then S := S + C;
+        LexAdvance;
+      End;
+    End;
+  Until Done;
+  MakeToken(T, TK_STRING, S, SL, SC);
+End;
+
+{ ---- LexScanStrBacktick : backtick ` (commande systeme) ---  }
+{ Non supporte sur DOS 8086 : on consomme et on emet warning   }
+Procedure LexScanStrBacktick(Var T : TToken; SL, SC : Integer);
+Var
+  C : Char;
+Begin
+  LexAdvance; { consommer le backtick ouverture }
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      If LexEOF Then Break;
+      LexNextLine;
+    End Else
+    Begin
+      C := LexCurChar;
+      LexAdvance;
+      If C = '`' Then Break;
+    End;
+  End;
+  WriteLn('PERL86:', SL, ':', SC,
+          ': Avertissement: backtick (commande systeme) non supporte - chaine vide');
+  Inc(WarnCount);
+  MakeToken(T, TK_STRING, '', SL, SC);
+End;
+
+{ ---- LexScanHeredoc : << LABEL, <<"LABEL", <<''LABEL''     }
+{ Fin : ligne contenant exactement le label (sans espaces)    }
+Procedure LexScanHeredoc(Var T : TToken; SL, SC : Integer);
+Var
+  Lbl      : TString;
+  IsNowdoc : Boolean;
+  S        : TString;
+  LLen     : Integer;
+Begin
+  { Consommer '<< ' (deux caracteres, le curseur est sur le 2e '<') }
+  LexAdvance; LexAdvance;  { passer << (le 1er '<' a deja ete vu dans LexNextToken) }
+  IsNowdoc := False;
+  Lbl      := '';
+  { Ignorer les espaces apres << }
+  While (LexColNo <= Length(LexLine)) And (LexCurChar = ' ') Do LexAdvance;
+  If (LexColNo <= Length(LexLine)) Then
+  Begin
+    Case LexCurChar Of
+      '''': { Nowdoc <<'LABEL' : pas d''interpolation }
+        Begin
+          IsNowdoc := True;
+          LexAdvance;
+          While (LexColNo <= Length(LexLine)) And (Ord(LexCurChar) <> 39) Do
+          Begin
+            If Length(Lbl) < 30 Then Lbl := Lbl + LexCurChar;
+            LexAdvance;
+          End;
+          If LexColNo <= Length(LexLine) Then LexAdvance; { fermer ' }
+        End;
+      '"': { Heredoc <<"LABEL" : avec interpolation (meme comportement que sans quote) }
+        Begin
+          LexAdvance;
+          While (LexColNo <= Length(LexLine)) And (Ord(LexCurChar) <> 34) Do
+          Begin
+            If Length(Lbl) < 30 Then Lbl := Lbl + LexCurChar;
+            LexAdvance;
+          End;
+          If LexColNo <= Length(LexLine) Then LexAdvance; { fermer " }
+        End;
+    Else
+      { Heredoc <<LABEL }
+      While (LexColNo <= Length(LexLine)) And IsAlNum(LexCurChar) Do
+      Begin
+        If Length(Lbl) < 30 Then Lbl := Lbl + LexCurChar;
+        LexAdvance;
+      End;
+    End;
+  End;
+  If Lbl = '' Then
+  Begin
+    LexError('Heredoc: label manquant apres <<');
+    MakeToken(T, TK_STRING, '', SL, SC);
+    Exit;
+  End;
+  { Passer a la premiere ligne de contenu }
+  LexNextLine;
+  S    := '';
+  LLen := Length(Lbl);
+  While Not LexEOF Do
+  Begin
+    { Le label de fermeture doit etre seul sur sa ligne }
+    If (Length(LexLine) = LLen) And (Copy(LexLine, 1, LLen) = Lbl) Then
+    Begin
+      LexColNo := LLen + 1;  { positionner apres le label }
+      MakeToken(T, TK_HEREDOC, S, SL, SC);
+      Exit;
+    End;
+    If (Length(LexLine) > LLen) And
+       (Copy(LexLine, 1, LLen) = Lbl) And
+       (LexLine[LLen + 1] = ';') Then
+    Begin
+      LexColNo := LLen + 1;  { laisser ';' pour le parseur }
+      MakeToken(T, TK_HEREDOC, S, SL, SC);
+      Exit;
+    End;
+    { Accumuler la ligne }
+    If Length(S) + Length(LexLine) < MAX_STR Then
+      S := S + LexLine;
+    If Length(S) < MAX_STR Then S := S + #10;
+    LexNextLine;
+  End;
+  LexError('Heredoc: label de fermeture "' + Lbl + '" introuvable (EOF)');
+  MakeToken(T, TK_HEREDOC, S, SL, SC);
+End;
+
+{ ---- LexScanOp : operateurs Perl (simples et composes) ---- }
+{ Specificites Perl vs PHP :                                   }
+{   x=   repetition-assigne                                    }
+{   ..   plage (range)                                         }
+{   ...  plage exclusive                                       }
+{   //   defined-or (PAS un commentaire en Perl !)             }
+{   //=  defined-or-assign                                     }
+{   ->   dereferencement fleche                                }
+{   =>   grosse-virgule (fat comma)                            }
+{   <=>  spaceship numerique                                   }
+{   ~~   smartmatch (tokenise mais non supporte)               }
+Procedure LexScanOp(Var T : TToken; SL, SC : Integer);
+Var
+  S : TString;
+  C : Char;
+  P : Char;
+  P2: Char;
+Begin
+  C  := LexCurChar;
+  P  := LexPeek;
+  P2 := LexPeek2;
+  S  := C;
+  LexAdvance;
+  Case C Of
+    '+': If P = '+' Then Begin S := '++'; LexAdvance; End
+         Else If P = '=' Then Begin S := '+='; LexAdvance; End;
+    '-': If P = '-' Then Begin S := '--'; LexAdvance; End
+         Else If P = '>' Then Begin S := '->'; LexAdvance; End
+         Else If P = '=' Then Begin S := '-='; LexAdvance; End;
+    '*': If P = '*' Then
+         Begin
+           S := '**'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '**='; LexAdvance; End;
+         End
+         Else If P = '=' Then Begin S := '*='; LexAdvance; End;
+    '/': If P = '/' Then
+         Begin
+           S := '//'; LexAdvance;          { defined-or, PAS commentaire }
+           If LexCurChar = '=' Then Begin S := '//='; LexAdvance; End;
+         End
+         Else If P = '=' Then Begin S := '/='; LexAdvance; End;
+    '%': If P = '=' Then Begin S := '%='; LexAdvance; End;
+    '.': If P = '.' Then
+         Begin
+           S := '..'; LexAdvance;
+           If LexCurChar = '.' Then Begin S := '...'; LexAdvance; End;
+         End
+         Else If P = '=' Then Begin S := '.='; LexAdvance; End;
+    '!': If P = '=' Then Begin S := '!='; LexAdvance; End
+         Else If P = '~' Then Begin S := '!~'; LexAdvance; End;  { not-match }
+    '=': If P = '=' Then
+         Begin
+           S := '=='; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '==='; LexAdvance; End;  { non-Perl, securite }
+         End
+         Else If P = '>' Then Begin S := '=>'; LexAdvance; End  { fat comma }
+         Else If P = '~' Then Begin S := '=~'; LexAdvance; End; { match }
+    '<': If P = '=' Then
+         Begin
+           S := '<='; LexAdvance;
+           If LexCurChar = '>' Then Begin S := '<=>'; LexAdvance; End; { spaceship }
+         End
+         Else If P = '<' Then
+         Begin
+           S := '<<'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '<<='; LexAdvance; End;
+         End;
+    '>': If P = '=' Then Begin S := '>='; LexAdvance; End
+         Else If P = '>' Then
+         Begin
+           S := '>>'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '>>='; LexAdvance; End;
+         End;
+    '&': If P = '&' Then Begin S := '&&'; LexAdvance; End
+         Else If P = '=' Then Begin S := '&='; LexAdvance; End;
+    '|': If P = '|' Then
+         Begin
+           S := '||'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '||='; LexAdvance; End;
+         End
+         Else If P = '=' Then Begin S := '|='; LexAdvance; End;
+    '^': If P = '=' Then Begin S := '^='; LexAdvance; End;
+    ':': If P = ':' Then Begin S := '::'; LexAdvance; End;  { separateur package }
+    '~': If P = '~' Then Begin S := '~~'; LexAdvance; End;  { smartmatch (tokenise) }
+    '?': ; { ternaire simple }
+  End;
+  MakeToken(T, TK_OP, S, SL, SC);
+End;
+
+{ ---- LexScanPunct : ponctuation simple -------------------- }
+Procedure LexScanPunct(Var T : TToken; SL, SC : Integer);
+Var
+  S : TString;
+Begin
+  S := LexCurChar;
+  LexAdvance;
+  MakeToken(T, TK_PUNCT, S, SL, SC);
+End;
+
+{ ---- LexNextToken : produire le prochain token Perl ------- }
+Procedure LexNextToken(Var T : TToken);
+Var
+  SL, SC : Integer;
+  C      : Char;
+  S      : TString;
+Begin
+  LexSkipWS;
+  If LexEOF Or (LexColNo > Length(LexLine)) Then
+  Begin
+    MakeToken(T, TK_EOF, '', LexLineNo, LexColNo);
+    Exit;
+  End;
+  SL := LexLineNo;
+  SC := LexColNo;
+  C  := LexCurChar;
+
+  { Sigil $ : variable scalaire $nom }
+  If C = '$' Then
+  Begin
+    LexAdvance;
+    S := '';
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) And IsAlpha(LexCurChar) Then
+    Begin
+      While (Not LexEOF) And (LexColNo <= Length(LexLine)) And IsAlNum(LexCurChar) Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+        LexAdvance;
+      End;
+    End Else If (LexColNo <= Length(LexLine)) And (LexCurChar = '{') Then
+    Begin
+      (* Forme avec accolades : $-nom- *)
+      LexAdvance;
+      While (LexColNo <= Length(LexLine)) And (LexCurChar <> '}') Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+        LexAdvance;
+      End;
+      If LexColNo <= Length(LexLine) Then LexAdvance; (* fermer l'accolade de ${nom} *)
+    End;
+    MakeToken(T, TK_SCALAR, S, SL, SC);
+    Exit;
+  End;
+
+  { Sigil @ : variable tableau @nom }
+  If C = '@' Then
+  Begin
+    LexAdvance;
+    S := '';
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) And IsAlpha(LexCurChar) Then
+    Begin
+      While (Not LexEOF) And (LexColNo <= Length(LexLine)) And IsAlNum(LexCurChar) Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+        LexAdvance;
+      End;
+    End;
+    MakeToken(T, TK_ARRAY_SIG, S, SL, SC);
+    Exit;
+  End;
+
+  { Sigil % : variable hash %nom }
+  If C = '%' Then
+  Begin
+    { Attention : '%=' est un operateur, '%' seul suivi d''ident = hash }
+    If IsAlpha(LexPeek) Then
+    Begin
+      LexAdvance;
+      S := '';
+      While (Not LexEOF) And (LexColNo <= Length(LexLine)) And IsAlNum(LexCurChar) Do
+      Begin
+        If Length(S) < MAX_STR Then S := S + LexCurChar;
+        LexAdvance;
+      End;
+      MakeToken(T, TK_HASH_SIG, S, SL, SC);
+      Exit;
+    End;
+    { Sinon : operateur % ou %= }
+    LexScanOp(T, SL, SC);
+    Exit;
+  End;
+
+  { Identifiant ou mot-cle }
+  If IsAlpha(C) Then Begin LexScanIdent(T, SL, SC); Exit; End;
+
+  { Litteraux numeriques }
+  If IsDigit(C) Then Begin LexScanNumber(T, SL, SC); Exit; End;
+
+  { Chaine simple-quote }
+  If Ord(C) = 39 Then Begin LexScanStrSingle(T, SL, SC); Exit; End;
+
+  { Chaine double-quote }
+  If Ord(C) = 34 Then Begin LexScanStrDouble(T, SL, SC); Exit; End;
+
+  { Backtick : commande systeme (non supporte) }
+  If C = '`' Then Begin LexScanStrBacktick(T, SL, SC); Exit; End;
+
+  { Heredoc : << (detecter avant LexScanOp qui consomme '<') }
+  { Condition : suivant est '<' et caractere suivant n''est PAS '<' }
+  { (C = '<' et LexPeek = '<' et LexPeek2 != '<')                  }
+  If (C = '<') And (LexPeek = '<') And (LexPeek2 <> '<') Then
+  Begin
+    { Verifier que ce n''est pas un operateur binaire :            }
+    { heuristique : si la chaine apres << commence par un ident,   }
+    { une quote ou un espace -> heredoc                            }
+    If IsAlpha(LexPeek2) Or (LexPeek2 = '''') Or
+       (LexPeek2 = '"')  Or (LexPeek2 = ' ')  Then
+    Begin
+      LexAdvance;  { consommer le 1er '<' }
+      LexScanHeredoc(T, SL, SC);
+      Exit;
+    End;
+  End;
+
+  { Operateurs Perl }
+  Case C Of
+    '+','-','*','/','.',
+    '!','=','<','>','&','|','^','~','?',':':
+      Begin LexScanOp(T, SL, SC); Exit; End;
+  End;
+
+  { Ponctuation }
+  LexScanPunct(T, SL, SC);
+End;
+
+{ ---- LexInit : ouvrir le fichier source et initialiser ---- }
+{ Gestion du shebang : si la 1ere ligne commence par #!,      }
+{ elle est ignoree silencieusement.                           }
+Procedure LexInit;
+Begin
+  LexOpened := False;
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('Impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened := True;
+  LexEOF    := False;
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexLine   := '';
+  { Lire la premiere ligne }
+  LexNextLine;
+  { Shebang : ignorer #!/usr/bin/perl ou #!/usr/bin/env perl }
+  If (Length(LexLine) >= 2) And
+     (LexLine[1] = '#') And (LexLine[2] = '!') Then
+  Begin
+    LexSkipLineComment;  { sauter toute la ligne }
+    LexNextLine;         { passer a la ligne suivante }
+  End;
+End;
+
+{ ---- LexClose : fermer le fichier source ------------------ }
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ---- PrintToken : mode debug -d --------------------------- }
+Procedure PrintToken(Const T : TToken);
+Var
+  KS : String[12];
+  NS : TString;
+Begin
+  Case T.Kind Of
+    TK_IDENT      : KS := 'IDENT   ';
+    TK_KEYWORD    : KS := 'KEYWORD ';
+    TK_SCALAR     : KS := 'SCALAR  ';
+    TK_ARRAY_SIG  : KS := 'ARRAY@  ';
+    TK_HASH_SIG   : KS := 'HASH%   ';
+    TK_INTEGER    : KS := 'INTEGER ';
+    TK_FLOAT      : KS := 'FLOAT   ';
+    TK_STRING     : KS := 'STRING  ';
+    TK_HEREDOC    : KS := 'HEREDOC ';
+    TK_REGEXP     : KS := 'REGEXP  ';
+    TK_FILEHANDLE : KS := 'FILEHND ';
+    TK_OP         : KS := 'OP      ';
+    TK_PUNCT      : KS := 'PUNCT   ';
+    TK_EOF        : KS := 'EOF     ';
+  End;
+  Write('[', T.Line, ':', T.Col, '] ', KS, ' "', T.Val, '"');
+  If T.Kind = TK_INTEGER Then
+  Begin Str(T.IntVal, NS); Write(' =', NS); End
+  Else If T.Kind = TK_FLOAT Then
+  Begin Str(T.FloatVal : 0 : 6, NS); Write(' =', NS); End;
+  WriteLn;
+End;
+
+{ ---- ParserAdvance : lire le prochain token --------------- }
+Procedure ParserAdvance;
+Begin
+  LexNextToken(CurToken);
+  If Opts.DebugTok Then
+    PrintToken(CurToken);
+End;
+
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES PERL
+  ============================================================ }
+
+{ ---- DataAdd / DataAddStr : table de donnees statiques ------- }
+{ Implementation complete (initialement ebauche TODO 03, stabilise TODO 08) }
+Function DataAdd(Const ALbl : TString; AKind : TDataKind;
+                 AInt : LongInt; Const AStr : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    WriteLn('PERL86: ERREUR - table de donnees saturee (MAX_DATA=', MAX_DATA, ')');
+    Inc(ErrorCount);
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := ALbl;
+  DataTab[DataCount].Kind      := AKind;
+  DataTab[DataCount].IntVal    := AInt;
+  DataTab[DataCount].StrVal    := AStr;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  I   : Integer;
+  Lbl : TString;
+  Seq : TString;
+Begin
+  { Chercher si la chaine existe deja pour eviter les doublons }
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := I;
+      Exit;
+    End;
+  { Nouvelle entree }
+  Inc(LabelSeq);
+  Str(LabelSeq, Seq);
+  Lbl := PR_STR_PFX + Seq;
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+{ ---- ExprMakeImm : construire une valeur immediate -------- }
+{ TP7 : pas de retour de Record -> parametre Var Res          }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+End;
+
+{ ---- ExprMakeNone : valeur void/invalide ------------------ }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+End;
+
+{ ---- ExprMakeUndef : valeur undef (pointeur nul) ---------- }
+{ En Perl, undef est la valeur « non definie » ; on la         }
+{ represente par un immediat 0 avec le type TY_IDX_UNDEF.      }
+Procedure ExprMakeUndef(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_UNDEF;
+  Res.Offset  := 0;
+End;
+
+{ ---- LitEvalInt : token TK_INTEGER -> TExprVal ------------ }
+{ IntVal est deja calcule par LexScanNumber (hex/bin/oct/dec)  }
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_SCALAR, Res);
+End;
+
+{ ---- LitEvalFloat : TK_FLOAT -> int tronque + warning ----- }
+{ Cible 8086 sans FPU : les flottants sont tronques en entier. }
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := Trunc(T.FloatVal);
+  ExprMakeImm(IV, TY_IDX_SCALAR, Res);
+  WriteLn('PERL86:', T.Line, ':', T.Col,
+          ': Avertissement: flottant tronque a ', IV,
+          ' (pas de FPU sur 8086)');
+  Inc(WarnCount);
+End;
+
+{ ---- LitEvalStr : TK_STRING -> EK_MEM pointant dans DataSeg }
+{ La chaine est ajoutee au segment de donnees.                 }
+{ Les interpolations encodees (#1nom#2, #3nom#4) seront        }
+{ resolues par EmitInterpolatedStr dans les TODOs suivants.    }
+Procedure LitEvalStr(Const T : TToken; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_MEM;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_SCALAR;
+  Res.Offset  := DataAddStr(T.Val);
+End;
+
+{ ---- LitEvalHeredoc : TK_HEREDOC -> meme chemin que STRING -- }
+Procedure LitEvalHeredoc(Const T : TToken; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_MEM;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_SCALAR;
+  Res.Offset  := DataAddStr(T.Val);
+End;
+
+{ ---- ParseQwList : qw(mot1 mot2 mot3) -> tableau statique -- }
+{ Consomme les tokens jusqu''a la parenthese fermante.         }
+{ Retourne le nombre d''elements lus (max MAX_PARAM).          }
+{ Les elements sont deposes dans DataTab comme DK_STR.         }
+{ Res reçoit EK_NONE (les elements seront utilises par TODO 15) }
+Function ParseQwList(Var Items : Array Of Integer;
+                     Var ItemCount : Integer) : Boolean;
+Var
+  S    : TString;
+  Sep  : Char;
+Begin
+  ParseQwList := False;
+  ItemCount  := 0;
+  { CurToken doit etre '(' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line, ': Erreur: ''('' attendu apres qw');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  { Determiner le separateur de fermeture }
+  Sep := ')';
+  ParserAdvance;  { consommer ''('' }
+  { Accumuler les barewords separes par des espaces ou virgules }
+  S := '';
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+        Not (CurToken.Kind = TK_EOF) Do
+  Begin
+    { Les tokens dans qw() sont des IDENTs ou mot-cles (barewords) }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Or
+       (CurToken.Kind = TK_INTEGER) Or (CurToken.Kind = TK_STRING) Then
+    Begin
+      S := CurToken.Val;
+      If ItemCount <= High(Items) Then
+      Begin
+        Items[ItemCount] := DataAddStr(S);
+        Inc(ItemCount);
+      End;
+    End Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      { virgule optionnelle : on ignore }
+    End;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;  { consommer '')'' }
+  ParseQwList := True;
+End;
+
+{ ---- LitEval : dispatcher principal des litteraux Perl ----- }
+{ Tokens traites : TK_INTEGER, TK_FLOAT, TK_STRING,           }
+{   TK_HEREDOC, TK_KEYWORD (undef / true / false).            }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);  { valeur par defaut }
+  Case T.Kind Of
+    TK_INTEGER : LitEvalInt(T, Res);
+    TK_FLOAT   : LitEvalFloat(T, Res);
+    TK_STRING  : LitEvalStr(T, Res);
+    TK_HEREDOC : LitEvalHeredoc(T, Res);
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'undef' Then
+        ExprMakeUndef(Res)
+      Else If (T.Val = 'not') Then
+        ExprMakeImm(1, TY_IDX_SCALAR, Res) { sera inverse par l''expression parente }
+      Else
+      Begin
+        WriteLn('PERL86:', T.Line, ':', T.Col,
+                ': Erreur: mot-cle non utilisable comme litteral : ', T.Val);
+        Inc(ErrorCount);
+      End;
+    End;
+    TK_IDENT :
+    Begin
+      { Bareword : traite comme chaine litterale en contexte litteral }
+      { Ex: print FOO; -> "FOO" }
+      If Opts.Strict Then
+      Begin
+        WriteLn('PERL86:', T.Line, ':', T.Col,
+                ': Erreur (strict): bareword "', T.Val, '" non autorise');
+        Inc(ErrorCount);
+      End Else
+      Begin
+        WriteLn('PERL86:', T.Line, ':', T.Col,
+                ': Avertissement: bareword "', T.Val,
+                '" interprete comme chaine');
+        Inc(WarnCount);
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_SCALAR;
+        Res.Offset  := DataAddStr(T.Val);
+      End;
+    End;
+  Else
+    WriteLn('PERL86:', T.Line, ':', T.Col,
+            ': Erreur: token non litteral : ', T.Val);
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE (PRATT PARSER)
+  ============================================================ }
+
+{ ---- BinOpPrec : precedence d''un operateur binaire -------- }
+{ Retourne 0 si ce n''est pas un operateur binaire infix.      }
+{ Perl : deux familles logiques :                              }
+{   haute  &&  ||  //  !   (precedence C-style)               }
+{   basse  and  or  not    (precedence tres basse)             }
+{ Niveaux numeriques : plus le chiffre est eleve, plus l''op   }
+{ est prioritaire dans les expressions.                        }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  { Prec 1 (plus basse) : or xor }
+  If (Op = 'or') Or (Op = 'xor') Then Begin BinOpPrec := 1; Exit; End;
+  { Prec 2 : and }
+  If Op = 'and' Then Begin BinOpPrec := 2; Exit; End;
+  { Prec 3 : affectations = += -= *= /= %= .= //= &&= ||= x= **= <<= >>= &= |= ^= }
+  If (Op = '=')   Or (Op = '+=')  Or (Op = '-=')  Or (Op = '*=')  Or
+     (Op = '/=')  Or (Op = '%=')  Or (Op = '.=')  Or (Op = '//=') Or
+     (Op = '&&=') Or (Op = '||=') Or (Op = 'x=')  Or (Op = '**=') Or
+     (Op = '<<=') Or (Op = '>>=') Or (Op = '&=')  Or (Op = '|=')  Or
+     (Op = '^=')  Then Begin BinOpPrec := 3; Exit; End;
+  { Prec 4 : ternaire '?' et ':' traites directement dans ParseExprPrec }
+  { Prec 5 : .. et ... (plage) }
+  If (Op = '..') Or (Op = '...') Then Begin BinOpPrec := 5; Exit; End;
+  { Prec 6 : || // (defined-or) }
+  If (Op = '||') Or (Op = '//') Then Begin BinOpPrec := 6; Exit; End;
+  { Prec 7 : && }
+  If Op = '&&' Then Begin BinOpPrec := 7; Exit; End;
+  { Prec 8 : | ^ (bitwise or / xor) }
+  If (Op = '|') Or (Op = '^') Then Begin BinOpPrec := 8; Exit; End;
+  { Prec 9 : & (bitwise and) }
+  If Op = '&' Then Begin BinOpPrec := 9; Exit; End;
+  { Prec 10 : == != <=> eq ne cmp ~~ }
+  If (Op = '==')  Or (Op = '!=')  Or (Op = '<=>') Or
+     (Op = 'eq')  Or (Op = 'ne')  Or (Op = 'cmp') Or
+     (Op = '~~')  Then Begin BinOpPrec := 10; Exit; End;
+  { Prec 11 : < > <= >= lt gt le ge }
+  If (Op = '<')  Or (Op = '>')  Or (Op = '<=') Or (Op = '>=') Or
+     (Op = 'lt') Or (Op = 'gt') Or (Op = 'le') Or (Op = 'ge') Then
+  Begin BinOpPrec := 11; Exit; End;
+  { Prec 12 : << >> (decalage bit) }
+  If (Op = '<<') Or (Op = '>>') Then Begin BinOpPrec := 12; Exit; End;
+  { Prec 13 : + - . (addition, soustraction, concatenation) }
+  If (Op = '+') Or (Op = '-') Or (Op = '.') Then Begin BinOpPrec := 13; Exit; End;
+  { Prec 14 : * / % x (multiplication, modulo, repetition) }
+  If (Op = '*') Or (Op = '/') Or (Op = '%') Or (Op = 'x') Then
+  Begin BinOpPrec := 14; Exit; End;
+  { Prec 15 (plus haute, binaire) : ** (puissance, assoc droite) }
+  If Op = '**' Then Begin BinOpPrec := 15; Exit; End;
+  BinOpPrec := 0;  { Pas un operateur binaire connu }
+End;
+
+{ ---- IsRightAssoc : operateur droite-associatif ? ---------- }
+{ En Perl : = += -= etc. et ** sont associatifs a droite       }
+{ Ex : $a = $b = 5  -> $a = ($b = 5)                          }
+{       2 ** 3 ** 4 -> 2 ** (3 ** 4)                          }
+Function IsRightAssoc(Const Op : TString) : Boolean;
+Begin
+  IsRightAssoc :=
+    (Op = '=')   Or (Op = '+=')  Or (Op = '-=')  Or (Op = '*=')  Or
+    (Op = '/=')  Or (Op = '%=')  Or (Op = '.=')  Or (Op = '//=') Or
+    (Op = '&&=') Or (Op = '||=') Or (Op = 'x=')  Or (Op = '**=') Or
+    (Op = '<<=') Or (Op = '>>=') Or (Op = '&=')  Or (Op = '|=')  Or
+    (Op = '^=')  Or (Op = '**');
+End;
+
+{ ---- ExprLoad : charger une TExprVal dans le registre AX -- }
+{ Stub - implementation complete dans TODO 07 (emetteur ASM)   }
+{ En mode stub, on marque simplement la valeur comme etant en  }
+{ AX pour que le parseur puisse continuer a travailler.        }
+Procedure ExprLoad(Var E : TExprVal);
+{ Convention EK_MEM :                                          }
+{   ImmVal = 0 -> Offset = indice DataTab (donnee statique)    }
+{   ImmVal = 1 -> Offset = deplacement pile (local [BP-Offset]) }
+Var
+  S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, S);
+      EmitInstr('MOV', 'AX, ' + S);
+    End;
+    EK_MEM :
+    Begin
+      If E.ImmVal = 1 Then
+      Begin
+        { Variable locale my/local : acces [BP - Offset] }
+        Str(E.Offset, S);
+        EmitInstr('MOV', 'AX, WORD PTR [BP-' + S + ']');
+      End Else
+      Begin
+        { Donnee statique DATA : Offset = indice dans DataTab }
+        If (E.Offset >= 0) And (E.Offset < DataCount) Then
+        Begin
+          If DataTab[E.Offset].Kind = DK_STR Then
+            EmitInstr('MOV', 'AX, OFFSET ' + DataTab[E.Offset].LblName)
+          Else
+            EmitInstr('MOV', 'AX, [' + DataTab[E.Offset].LblName + ']');
+        End Else
+          EmitInstr('MOV', 'AX, 0');  { securite : indice invalide }
+      End;
+    End;
+    EK_AX   : ;  { deja dans AX, rien a emettre }
+    EK_DXAX : ;  { deja dans DX:AX, rien a emettre }
+    EK_NONE : ;  { expression vide, rien a emettre }
+  End;
+  E.Kind := EK_AX;
+End;
+
+{ ---- ExprEmitBinOp : code ASM pour un operateur binaire ---- }
+{ Stub - implementation complete dans TODO 11 (expressions)    }
+{ Convention d''appel :                                         }
+{   Left  : operande gauche (ExprLoad l''a mis en AX)          }
+{   Right : operande droite (sera charge en BX ou CX)          }
+{   Res   : valeur resultante -> EK_AX                         }
+{ Operateurs impliques :                                        }
+{   +  -> ADD  AX, BX        -  -> SUB  AX, BX                }
+{   *  -> IMUL BX            /  -> CWD / IDIV BX -> AX = quotient }
+{   %  -> CWD / IDIV BX -> residue dans DX                    }
+{   ** -> appel runtime _PRRT_POW (entier, boucle de mul)      }
+{   .  -> appel runtime _PRRT_CONCAT(DI=dst, SI=src)           }
+{   x  -> appel runtime _PRRT_STRREPEAT(DI, SI, CX)           }
+{   == -> CMP AX, BX ; SETE  AL ; MOVZX AX, AL               }
+{   != -> CMP AX, BX ; SETNE AL ; MOVZX AX, AL               }
+{   <  -> CMP AX, BX ; SETL  AL  etc.                         }
+{   <=> -> CMP AX, BX ; SETL/SETE -> AX=-1/0/1                }
+{   && -> court-circuit via labels _PRL_LAND_N                 }
+{   || -> court-circuit via labels _PRL_LOR_N                  }
+{   // -> test defined (!=undef) puis court-circuit             }
+{   &  -> AND AX, BX  |  -> OR AX, BX  ^  -> XOR AX, BX      }
+{   << -> SAL AX, CL   >> -> SAR AX, CL                       }
+{   eq / ne / lt / le / gt / ge / cmp -> _PRRT_STRCMP          }
+{ ---- ExprEmitBinOp : code ASM pour un operateur binaire ---- }
+{ Convention d''appel (etablie par ParseExprPrec) :             }
+{   Affectations (prec=3) : Left=EK_MEM (lvalue), AX=Right     }
+{   Tous les autres (prec>=4 et prec=1,2) :                    }
+{     BX = valeur gauche, AX = valeur droite                    }
+{   &&, ||, // : traites directement dans ParseExprPrec         }
+Procedure ExprEmitBinOp(Const Op : TString;
+                         Var Left, Right : TExprVal;
+                         Var Res         : TExprVal);
+Var
+  LblA : TString;
+  LblB : TString;
+  LblC : TString;
+  SaveLeft : TExprVal;   { copie de Left pour affectations composees }
+Begin
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SCALAR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  { ==============================================================
+    Affectation simple '=' : Left=EK_MEM, AX=Right
+    ============================================================== }
+  If Op = '=' Then
+  Begin
+    EmitStoreScalar(Left);
+    Res.TypeIdx := Left.TypeIdx;
+    Exit;
+  End;
+  { ==============================================================
+    Affectations composees : Left=EK_MEM, AX=Right (valeur)
+    On sauve Right dans CX, charge Left, applique l''op, re-stocke.
+    ============================================================== }
+  SaveLeft := Left;   { garder l''adresse lvalue }
+  If (Op = '+=') Or (Op = '-=') Or (Op = '*=') Or (Op = '/=') Or
+     (Op = '%=') Or (Op = '&=') Or (Op = '|=') Or (Op = '^=') Or
+     (Op = '<<=') Or (Op = '>>=') Or (Op = '.=') Or (Op = '**=') Or
+     (Op = '||=') Or (Op = '&&=') Or (Op = '//=') Or (Op = 'x=') Then
+  Begin
+    { CX = Right (valeur du membre droit) }
+    EmitInstr('MOV', 'CX, AX');
+    { Charger Left dans AX }
+    ExprLoad(SaveLeft);
+    { Appliquer l''operation }
+    If      Op = '+='  Then EmitInstr('ADD',  'AX, CX')
+    Else If Op = '-='  Then EmitInstr('SUB',  'AX, CX')
+    Else If Op = '*='  Then
+    Begin EmitInstr('IMUL', 'CX'); End
+    Else If Op = '/='  Then
+    Begin EmitInstr1('CWD'); EmitInstr('IDIV', 'CX'); End
+    Else If Op = '%='  Then
+    Begin EmitInstr1('CWD'); EmitInstr('IDIV', 'CX'); EmitInstr('MOV', 'AX, DX'); End
+    Else If Op = '&='  Then EmitInstr('AND',  'AX, CX')
+    Else If Op = '|='  Then EmitInstr('OR',   'AX, CX')
+    Else If Op = '^='  Then EmitInstr('XOR',  'AX, CX')
+    Else If Op = '<<=' Then Begin EmitInstr('MOV', 'CL, CL'); EmitInstr('SHL', 'AX, CL'); End
+    Else If Op = '>>=' Then Begin EmitInstr('SAR', 'AX, CL'); End
+    Else If Op = '||=' Then
+    Begin
+      { AX = Left ; si non-zero, ne rien changer ; sinon AX = Right (CX) }
+      EmitInstr('TEST', 'AX, AX');
+      LblA := LabelGen(PR_LBL_PFX);
+      EmitInstr('JNZ', LblA);
+      EmitInstr('MOV', 'AX, CX');
+      EmitLabel(LblA);
+    End
+    Else If (Op = '&&=') Or (Op = '//=') Then
+    Begin
+      { AX = Left ; si zero, ne rien changer ; sinon AX = Right (CX) }
+      EmitInstr('TEST', 'AX, AX');
+      LblA := LabelGen(PR_LBL_PFX);
+      EmitInstr('JZ', LblA);
+      EmitInstr('MOV', 'AX, CX');
+      EmitLabel(LblA);
+    End
+    Else { .= **= x= : stub, garder l''ancienne valeur }
+      EmitComment(Op + ' : stub, valeur inchangee');
+    { Stocker le resultat dans la lvalue }
+    EmitStoreScalar(Left);
+    Exit;
+  End;
+  { ==============================================================
+    Operateurs binaires standard : BX=Left, AX=Right
+    ============================================================== }
+  { ---- Arithmetiques ---- }
+  If Op = '+' Then Begin EmitInstr('ADD', 'AX, BX'); Exit; End;
+  If Op = '-' Then
+  Begin
+    { AX = Right, BX = Left -> voulons Left-Right }
+    EmitInstr('XCHG', 'AX, BX');
+    EmitInstr('SUB',  'AX, BX');
+    Exit;
+  End;
+  If Op = '*' Then Begin EmitInstr('IMUL', 'BX'); Exit; End;
+  If Op = '/' Then
+  Begin
+    { BX=Left, AX=Right : voulons Left/Right -> AX=Left, BX=Right }
+    EmitInstr('XCHG', 'AX, BX');
+    EmitInstr1('CWD');
+    EmitInstr('IDIV', 'BX');
+    Exit;
+  End;
+  If Op = '%' Then
+  Begin
+    EmitInstr('XCHG', 'AX, BX');
+    EmitInstr1('CWD');
+    EmitInstr('IDIV', 'BX');
+    EmitInstr('MOV', 'AX, DX');
+    Exit;
+  End;
+  If Op = '**' Then
+  Begin
+    { Puissance entiere : stub -> CALL _PRRT_POW (TODO 24) }
+    EmitComment('** : CALL _PRRT_POW non implemente (stub)');
+    EmitInstr('MOV', 'AX, 1');
+    Exit;
+  End;
+  { ---- Concatenation et repetition ---- }
+  If Op = '.' Then
+  Begin
+    EmitComment('. : concat -> CALL _PRRT_CONCAT (TODO 24)');
+    Exit;
+  End;
+  If Op = 'x' Then
+  Begin
+    EmitComment('x : repet -> CALL _PRRT_STRREPEAT (TODO 24)');
+    Exit;
+  End;
+  { ---- Comparaisons numeriques : BX=Left, AX=Right ---- }
+  If Op = '==' Then
+  Begin EmitInstr('CMP', 'BX, AX'); EmitInstr('SETE',  'AL'); EmitInstr('MOVZX', 'AX, AL'); Exit; End;
+  If Op = '!=' Then
+  Begin EmitInstr('CMP', 'BX, AX'); EmitInstr('SETNE', 'AL'); EmitInstr('MOVZX', 'AX, AL'); Exit; End;
+  If Op = '<'  Then
+  Begin EmitInstr('CMP', 'BX, AX'); EmitInstr('SETL',  'AL'); EmitInstr('MOVZX', 'AX, AL'); Exit; End;
+  If Op = '<=' Then
+  Begin EmitInstr('CMP', 'BX, AX'); EmitInstr('SETLE', 'AL'); EmitInstr('MOVZX', 'AX, AL'); Exit; End;
+  If Op = '>'  Then
+  Begin EmitInstr('CMP', 'BX, AX'); EmitInstr('SETG',  'AL'); EmitInstr('MOVZX', 'AX, AL'); Exit; End;
+  If Op = '>=' Then
+  Begin EmitInstr('CMP', 'BX, AX'); EmitInstr('SETGE', 'AL'); EmitInstr('MOVZX', 'AX, AL'); Exit; End;
+  If Op = '<=>' Then
+  Begin
+    { Spaceship : BX=Left, AX=Right -> AX = -1/0/+1 }
+    LblA := LabelGen(PR_LBL_PFX);   { label ''Left < Right'' }
+    LblB := LabelGen(PR_LBL_PFX);   { label ''Left = Right'' }
+    LblC := LabelGen(PR_LBL_PFX);   { label ''fin'' }
+    EmitInstr('CMP', 'BX, AX');
+    EmitInstr('JL',  LblA);
+    EmitInstr('JE',  LblB);
+    { Left > Right }
+    EmitInstr('MOV', 'AX, 1');
+    EmitInstr('JMP', LblC);
+    EmitLabel(LblA);
+    EmitInstr('MOV', 'AX, 0FFFFh');  { -1 en 16 bits }
+    EmitInstr('JMP', LblC);
+    EmitLabel(LblB);
+    EmitInstr('XOR', 'AX, AX');
+    EmitLabel(LblC);
+    Exit;
+  End;
+  { ---- Comparaisons de chaines : stub ---- }
+  If (Op = 'eq') Or (Op = 'ne') Or (Op = 'lt') Or (Op = 'le') Or
+     (Op = 'gt') Or (Op = 'ge') Or (Op = 'cmp') Then
+  Begin
+    EmitComment(Op + ' : CALL _PRRT_STRCMP (TODO 24)');
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
+  { ---- Bitwise ---- }
+  If Op = '&' Then Begin EmitInstr('AND', 'AX, BX'); Exit; End;
+  If Op = '|' Then Begin EmitInstr('OR',  'AX, BX'); Exit; End;
+  If Op = '^' Then Begin EmitInstr('XOR', 'AX, BX'); Exit; End;
+  If Op = '<<' Then
+  Begin
+    { BX=Left, AX=Right (shift count) : Left << Right }
+    EmitInstr('MOV', 'CX, AX');
+    EmitInstr('MOV', 'AX, BX');
+    EmitInstr('SHL', 'AX, CL');
+    Exit;
+  End;
+  If Op = '>>' Then
+  Begin
+    EmitInstr('MOV', 'CX, AX');
+    EmitInstr('MOV', 'AX, BX');
+    EmitInstr('SAR', 'AX, CL');
+    Exit;
+  End;
+  { ---- Logiques bas niveau : BX=Left, AX=Right ---- }
+  { ''and'' : equiv && mais prec basse : booleens sans court-circuit }
+  If Op = 'and' Then
+  Begin
+    EmitInstr('TEST', 'BX, BX');
+    EmitInstr('SETNE', 'BL');
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('SETNE', 'AL');
+    EmitInstr('AND', 'AL, BL');
+    EmitInstr('MOVZX', 'AX, AL');
+    Exit;
+  End;
+  If Op = 'or' Then
+  Begin
+    EmitInstr('TEST', 'BX, BX');
+    EmitInstr('SETNE', 'BL');
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('SETNE', 'AL');
+    EmitInstr('OR',  'AL, BL');
+    EmitInstr('MOVZX', 'AX, AL');
+    Exit;
+  End;
+  If Op = 'xor' Then
+  Begin
+    EmitInstr('TEST', 'BX, BX');
+    EmitInstr('SETNE', 'BL');
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('SETNE', 'AL');
+    EmitInstr('XOR', 'AL, BL');
+    EmitInstr('MOVZX', 'AX, AL');
+    Exit;
+  End;
+  { ---- Plage .. et ... : stub ---- }
+  If (Op = '..') Or (Op = '...') Then
+  Begin
+    EmitComment(Op + ' : plage, stub TODO 14');
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
+  { Operateur inconnu : ne rien emettre }
+  EmitComment('ExprEmitBinOp : operateur non gere : ' + Op);
+End;
+
+{ ---- ParsePrimary : expression primaire (atome) - TODO 10 -- }
+{ Unaires : -  !  ~  not  pre++ pre--  \(ref)                  }
+{ Parens, litteraux, $var, @arr/%hash scalaire, func(), &sub() }
+{ defined($v), ref($v), mots-cles builtins a 1 arg             }
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  Op   : TString;
+  Sub  : TExprVal;
+  Idx  : Integer;
+  NStr : TString;
+  S    : TString;
+Begin
+  ExprMakeNone(Res);
+  { ---- Operateurs unaires prefixes ---- }
+  If CurToken.Kind = TK_OP Then
+  Begin
+    Op := CurToken.Val;
+    If (Op = '-') Or (Op = '!') Or (Op = '~') Then
+    Begin
+      ParserAdvance;   { consommer l''operateur }
+      ParsePrimary(Sub);
+      ExprLoad(Sub);
+      If Op = '-' Then
+        EmitInstr1('NEG AX')
+      Else If Op = '!' Then
+      Begin
+        EmitInstr('TEST',  'AX, AX');
+        EmitInstr('SETE',  'AL');
+        EmitInstr('MOVZX', 'AX, AL');
+      End Else
+        EmitInstr1('NOT AX');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := Sub.TypeIdx;
+      Res.ImmVal  := 0;
+      Res.Offset  := 0;
+      Exit;
+    End;
+    { Pre-++ et pre-- : EmitIncrDecr }
+    If (Op = '++') Or (Op = '--') Then
+    Begin
+      ParserAdvance;
+      ParsePrimary(Sub);
+      EmitIncrDecr(Sub, Op = '++', True, Res);
+      Exit;
+    End;
+    { \ (reference) : LEA si lvalue memoire, sinon adresse OFFSET }
+    If Op = '\' Then
+    Begin
+      ParserAdvance;
+      ParsePrimary(Sub);
+      If (Sub.Kind = EK_MEM) And (Sub.ImmVal = 1) Then
+      Begin
+        Str(Sub.Offset, S);
+        EmitInstr('LEA', 'AX, [BP-' + S + ']');
+      End Else If (Sub.Kind = EK_MEM) And (Sub.ImmVal = 0) And
+                  (Sub.Offset >= 0) And (Sub.Offset < DataCount) Then
+        EmitInstr('MOV', 'AX, OFFSET ' + DataTab[Sub.Offset].LblName)
+      Else
+        ExprLoad(Sub);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_REF;
+      Res.ImmVal  := 0;
+      Res.Offset  := 0;
+      Exit;
+    End;
+  End;
+  { ---- Unaire 'not' (mot-cle, basse precedence) ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+  Begin
+    ParserAdvance;
+    ParsePrimary(Sub);
+    ExprLoad(Sub);
+    EmitInstr('TEST',  'AX, AX');
+    EmitInstr('SETE',  'AL');
+    EmitInstr('MOVZX', 'AX, AL');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_SCALAR;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Exit;
+  End;
+  { ---- defined($v) : AX = (AX != 0) ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'defined') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+    ParsePrimary(Sub);
+    ExprLoad(Sub);
+    EmitInstr('TEST',  'AX, AX');
+    EmitInstr('SETNE', 'AL');
+    EmitInstr('MOVZX', 'AX, AL');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+    Res.ImmVal := 0; Res.Offset := 0;
+    Exit;
+  End;
+  { ---- ref($v) : AX = (AX != 0) ---- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ref') Then
+  Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+    ParsePrimary(Sub);
+    ExprLoad(Sub);
+    EmitInstr('TEST',  'AX, AX');
+    EmitInstr('SETNE', 'AL');
+    EmitInstr('MOVZX', 'AX, AL');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+    Res.ImmVal := 0; Res.Offset := 0;
+    Exit;
+  End;
+  { ---- Builtins a un argument : chomp, chr, ord, length, lc, uc, int ... ---- }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    NStr := CurToken.Val;
+    If (NStr = 'chomp') Or (NStr = 'chop')    Or (NStr = 'chr')     Or
+       (NStr = 'ord')   Or (NStr = 'length')  Or (NStr = 'lc')      Or
+       (NStr = 'uc')    Or (NStr = 'lcfirst') Or (NStr = 'ucfirst') Or
+       (NStr = 'int')   Or (NStr = 'abs')     Or (NStr = 'hex')     Or
+       (NStr = 'oct')   Or (NStr = 'sqrt')    Or (NStr = 'pos')     Or
+       (NStr = 'exists') Or (NStr = 'delete') Or (NStr = 'chdir')   Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParsePrimary(Sub);
+      ExprLoad(Sub);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { Appel de sous-routine avec mot-cle non reconnu : avancer }
+    ParserAdvance;
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  { ---- Appel &sub(args) ---- }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      NStr := CurToken.Val;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        ParseCallArgs;
+      EmitInstr('CALL', PR_FN_PFX + NStr);
+    End;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+    Res.ImmVal := 0; Res.Offset := 0;
+    Exit;
+  End;
+  { ---- Sous-expression parenthesee ---- }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;     { consommer '(' }
+    ParseExpr(Res);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance    { consommer ')' }
+    Else
+    Begin
+      WriteLn('PERL86:', CurToken.Line, ': Erreur: '')'' attendu dans expression');
+      Inc(ErrorCount);
+    End;
+    ParsePostfixOps(Res);
+    Exit;
+  End;
+  { ---- Litteraux directs ---- }
+  If (CurToken.Kind = TK_INTEGER) Or
+     (CurToken.Kind = TK_FLOAT)   Or
+     (CurToken.Kind = TK_STRING)  Or
+     (CurToken.Kind = TK_HEREDOC) Or
+     ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'undef')) Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+    ParsePostfixOps(Res);
+    Exit;
+  End;
+  { ---- Variable scalaire $var ---- }
+  If CurToken.Kind = TK_SCALAR Then
+  Begin
+    Idx := SymFind(CurToken.Val, '$');
+    If Idx < 0 Then
+    Begin
+      If Opts.Strict Then
+        SymError('Variable non declaree : $' + CurToken.Val);
+      ExprMakeNone(Res);
+      ParserAdvance;
+      Exit;
+    End;
+    ParserAdvance;
+    Res := ExprMakeMem(Idx);
+    ParsePostfixOps(Res);
+    Exit;
+  End;
+  { ---- @arr ou %hash en contexte scalaire -> 0 (stub) ---- }
+  If (CurToken.Kind = TK_ARRAY_SIG) Or (CurToken.Kind = TK_HASH_SIG) Then
+  Begin
+    EmitComment('@/% scalaire -> 0 (stub TODO 15/16)');
+    EmitInstr('MOV', 'AX, 0');
+    ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+    Res.ImmVal := 0; Res.Offset := 0;
+    Exit;
+  End;
+  { ---- TK_IDENT : appel de fonction ou bareword ---- }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    NStr := CurToken.Val;
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParseCallArgs;
+      EmitInstr('CALL', PR_FN_PFX + NStr);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    If Opts.Warnings Then
+      WriteLn('PERL86:', CurToken.Line, ': Avert: bareword ''', NStr, '''');
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  { ---- Fin ou ponctuation non reconnue : ne rien consommer ---- }
+End;
+
+{ ---- CurTokIsInfixOp : le token courant est-il un op infix? }
+{ Retourne True si le token peut etre un operateur binaire     }
+{ infix, et place le nom de l''operateur dans OpStr.           }
+{ Teste : TK_OP avec prec > 0, et TK_KEYWORD pour and/or etc. }
+Function CurTokIsInfixOp(Var OpStr : TString) : Boolean;
+Begin
+  OpStr := '';
+  CurTokIsInfixOp := False;
+  If CurToken.Kind = TK_OP Then
+  Begin
+    OpStr := CurToken.Val;
+    If BinOpPrec(OpStr) > 0 Then
+    Begin CurTokIsInfixOp := True; Exit; End;
+    OpStr := '';
+    Exit;
+  End;
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If (CurToken.Val = 'and') Or (CurToken.Val = 'or')  Or
+       (CurToken.Val = 'xor') Or (CurToken.Val = 'eq')  Or
+       (CurToken.Val = 'ne')  Or (CurToken.Val = 'lt')  Or
+       (CurToken.Val = 'le')  Or (CurToken.Val = 'gt')  Or
+       (CurToken.Val = 'ge')  Or (CurToken.Val = 'cmp') Or
+       (CurToken.Val = 'x')   Then
+    Begin
+      OpStr := CurToken.Val;
+      CurTokIsInfixOp := True;
+    End;
+  End;
+End;
+
+{ ---- ParseExprPrec : coeur du parseur Pratt - TODO 11 ------ }
+{ Convention BX=Left, AX=Right pour les ops non-affectation.    }
+{ Court-circuit inline pour && || //.                           }
+{ Ternaire ? : avec labels _PRL_N.                              }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op    : TString;
+  Prec  : Integer;
+  Right : TExprVal;
+  Left  : TExprVal;
+  CondT : TExprVal;
+  TSeq  : TString;
+  TernL : Integer;
+  LblA  : TString;
+  LblB  : TString;
+Begin
+  ParsePrimary(Left);
+  Res := Left;
+  Repeat
+    { ---- Ternaire '?' : traitement special avec labels ---- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') And
+       (MinPrec <= 4) Then
+    Begin
+      ParserAdvance;
+      Inc(LabelSeq); TernL := LabelSeq; Str(TernL, TSeq);
+      ExprLoad(Left);
+      LblA := PR_LBL_PFX + 'TE' + TSeq;   { ternaire else }
+      LblB := PR_LBL_PFX + 'TD' + TSeq;   { ternaire done }
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ',   LblA);
+      ParseExprPrec(1, CondT);
+      ExprLoad(CondT);
+      EmitInstr('JMP', LblB);
+      EmitLabel(LblA);
+      If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':')) Then
+      Begin
+        WriteLn('PERL86:', CurToken.Line, ': Erreur: '':'' attendu');
+        Inc(ErrorCount);
+      End Else
+        ParserAdvance;
+      ParseExprPrec(4, Right);
+      ExprLoad(Right);
+      EmitLabel(LblB);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Left := Res;
+      Continue;
+    End;
+    { ---- Operateur binaire standard ---- }
+    If Not CurTokIsInfixOp(Op) Then Break;
+    Prec := BinOpPrec(Op);
+    If Prec < MinPrec Then Break;
+    ParserAdvance;
+    { ---- Court-circuit && : si Left faux, sauter Right ---- }
+    If (Op = '&&') Or (Op = 'and') Then
+    Begin
+      ExprLoad(Left);
+      LblA := LabelGen(PR_LBL_PFX);
+      LblB := LabelGen(PR_LBL_PFX);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ',   LblA);
+      If IsRightAssoc(Op) Then ParseExprPrec(Prec, Right)
+      Else ParseExprPrec(Prec + 1, Right);
+      ExprLoad(Right);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('SETNE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+      EmitInstr('JMP', LblB);
+      EmitLabel(LblA);
+      EmitInstr('XOR', 'AX, AX');   { Left etait faux -> 0 }
+      EmitLabel(LblB);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Left := Res;
+      Continue;
+    End;
+    { ---- Court-circuit || : si Left vrai, sauter Right ---- }
+    If (Op = '||') Or (Op = 'or') Then
+    Begin
+      ExprLoad(Left);
+      LblA := LabelGen(PR_LBL_PFX);
+      LblB := LabelGen(PR_LBL_PFX);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JNZ',  LblA);
+      If IsRightAssoc(Op) Then ParseExprPrec(Prec, Right)
+      Else ParseExprPrec(Prec + 1, Right);
+      ExprLoad(Right);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('SETNE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+      EmitInstr('JMP', LblB);
+      EmitLabel(LblA);
+      EmitInstr('MOV', 'AX, 1');    { Left etait vrai -> 1 }
+      EmitLabel(LblB);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Left := Res;
+      Continue;
+    End;
+    { ---- Court-circuit // (defined-or) : si Left defini (!=0) ---- }
+    If Op = '//' Then
+    Begin
+      ExprLoad(Left);
+      LblA := LabelGen(PR_LBL_PFX);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JNZ',  LblA);   { defini : garder AX }
+      If IsRightAssoc(Op) Then ParseExprPrec(Prec, Right)
+      Else ParseExprPrec(Prec + 1, Right);
+      ExprLoad(Right);
+      EmitLabel(LblA);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Left := Res;
+      Continue;
+    End;
+    { ---- Affectations (prec=3) : garder Left en EK_MEM ---- }
+    If Prec = 3 Then
+    Begin
+      { Evaluer Right (IsRightAssoc pour toutes les affectations) }
+      ParseExprPrec(Prec, Right);
+      ExprLoad(Right);
+      ExprEmitBinOp(Op, Left, Right, Res);
+      Left := Res;
+      Continue;
+    End;
+    { ---- Autres operateurs binaires : BX=Left, AX=Right ---- }
+    If IsRightAssoc(Op) Then ParseExprPrec(Prec, Right)
+    Else ParseExprPrec(Prec + 1, Right);
+    { Charger Left dans BX avant de charger Right dans AX }
+    ExprLoad(Left);
+    EmitInstr('PUSH', 'AX');   { sauver Left }
+    ExprLoad(Right);
+    EmitInstr('POP', 'BX');    { BX = Left, AX = Right }
+    ExprEmitBinOp(Op, Left, Right, Res);
+    Left := Res;
+  Until False;
+  Res := Left;
+End;
+
+{ ---- ParseExpr : point d''entree principal des expressions -- }
+{ Accepte tous les operateurs (precedence minimale = 1).        }
+{ C''est la procedure a appeler depuis ParseStmt et les autres  }
+{ contextes d''expressions.                                      }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES
+  ============================================================ }
+
+{ ---- SymWarn / SymError : messages contextuels -----------  }
+Procedure SymWarn(Const Msg : TString);
+Begin
+  WriteLn('PERL86:', CurToken.Line, ': Avertissement: ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure SymError(Const Msg : TString);
+Begin
+  WriteLn('PERL86:', CurToken.Line, ': Erreur: ', Msg);
+  Inc(ErrorCount);
+End;
+
+{ ---- SymMangle : generer le nom mangle ASM d''un symbole -- }
+{ Convention de nommage :                                      }
+{   SC_FN             -> _PRF_nom                             }
+{   SC_FILEHANDLE     -> nom (tel quel)                       }
+{   SC_CONST          -> _PRV_PKG_nom                         }
+{   SC_SCALAR/ARRAY/HASH/PARAM (our)  -> _PRV_PKG_nom         }
+{   SC_SCALAR/ARRAY/HASH/PARAM (my)   -> _PRV_nom_Nseq        }
+{     (les vars my sont sur la pile ; le label sert au debug)  }
+Function SymMangle(Cat : TSymCat; IsMy : Boolean;
+                   Const Name, Pkg : TString;
+                   SeqN : Integer) : TString;
+Var
+  Seq : TString;
+Begin
+  Case Cat Of
+    SC_FN :
+      SymMangle := PR_FN_PFX + Name;
+    SC_FILEHANDLE :
+      SymMangle := Name;
+  Else
+    { SC_SCALAR, SC_ARRAY_VAR, SC_HASH_VAR, SC_PARAM, SC_PKG, SC_CONST }
+    If IsMy Then
+    Begin
+      { Variable lexicale : suffixe de sequence pour unicite }
+      Str(SeqN, Seq);
+      SymMangle := PR_VAR_PFX + Name + '_' + Seq;
+    End Else
+    Begin
+      { Variable globale our / constante : prefixe package }
+      If Pkg = 'main' Then
+        SymMangle := PR_VAR_PFX + Name
+      Else
+        SymMangle := PR_VAR_PFX + Pkg + '_' + Name;
+    End;
+  End;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table ------------ }
+{ Retourne l''indice du nouveau symbole, ou -1 en cas d''erreur }
+{ IsMy    : portee lexicale (variable sur la pile)             }
+{ IsOur   : portee package (variable dans DATA)               }
+{ IsLocal : portee dynamique (sauvegarde/restauration pile)    }
+Function SymAdd(Const Name : TString; Sigil : Char; Cat : TSymCat;
+                TypeIdx : Integer;
+                IsMy, IsOur, IsLocal : Boolean) : Integer;
+Var
+  R   : TSymRec;
+  Seq : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    SymError('Table des symboles saturee (MAX_SYM)');
+    SymAdd := -1;
+    Exit;
+  End;
+  { En mode strict, toute redeclaration est une erreur }
+  If Opts.Strict And (SymFind(Name, Sigil) >= 0) And
+     (Cat = SC_SCALAR) Then
+    SymWarn('Redeclaration de ' + Sigil + Name);
+  R.Name        := Name;
+  R.SigilName   := Sigil + Name;
+  R.Cat         := Cat;
+  R.TypeIdx     := TypeIdx;
+  R.IsMy        := IsMy;
+  R.IsOur       := IsOur;
+  R.IsLocal     := IsLocal;
+  R.IsRef       := False;
+  R.DeclLine    := CurToken.Line;
+  R.ScopeLevel  := CurScope;
+  { Offset dans le cadre de pile (IsMy ou IsLocal) }
+  If IsMy Or IsLocal Then
+  Begin
+    Inc(CurFrameSize, 2);       { un scalaire = 1 mot de 2 octets }
+    R.Offset := CurFrameSize;   { acces via [BP - Offset] }
+  End Else
+    R.Offset := 0;              { resoluble via MangledName dans DATA }
+  { Nom mangle : generer un numero de sequence unique }
+  Inc(LabelSeq);
+  R.MangledName := SymMangle(Cat, IsMy, Name, CurPackage, LabelSeq);
+  SymTab[SymCount] := R;
+  SymAdd          := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+{ ---- SymAddFn : raccourci pour declarer une sous-routine -- }
+{ Retourne l''indice, ou -1. Toujours global (our implicite).   }
+Function SymAddFn(Const Name : TString) : Integer;
+Begin
+  SymAddFn := SymAdd(Name, '&', SC_FN, TY_IDX_CODE,
+                     False{ IsMy }, True{ IsOur }, False{ IsLocal });
+End;
+
+{ ---- SymFind : chercher un symbole par nom et sigil ------- }
+{ Parcourt la table de bas en haut pour respecter la portee    }
+{ lexicale (le symbole le plus recent a la priorite).          }
+{ Sigil : ''$'' ''@'' ''%'' ''&'' (utiliser #0 pour toute categorie) }
+{ Retourne l''indice dans SymTab, ou -1 si introuvable.         }
+Function SymFind(Const Name : TString; Sigil : Char) : Integer;
+Var
+  I    : Integer;
+  SCat : TSymCat;
+Begin
+  SymFind := -1;
+  If Sigil = '&' Then SCat := SC_FN
+  Else SCat := SC_SCALAR;  { valeur par defaut, non utilisee si Sigil=#0 }
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If SymTab[I].Name <> Name Then Continue;
+    If Sigil = #0 Then
+    Begin
+      { Chercher quelle que soit la categorie }
+      SymFind := I; Exit;
+    End;
+    If Sigil = '&' Then
+    Begin
+      If SymTab[I].Cat = SC_FN Then Begin SymFind := I; Exit; End;
+    End Else If Sigil = '$' Then
+    Begin
+      If SymTab[I].Cat In [SC_SCALAR, SC_PARAM, SC_CONST] Then
+      Begin SymFind := I; Exit; End;
+    End Else If Sigil = '@' Then
+    Begin
+      If SymTab[I].Cat = SC_ARRAY_VAR Then Begin SymFind := I; Exit; End;
+    End Else If Sigil = '%' Then
+    Begin
+      If SymTab[I].Cat = SC_HASH_VAR Then Begin SymFind := I; Exit; End;
+    End Else
+    Begin
+      { Sigil inconnu : comparer le premier caractere de SigilName }
+      If (Length(SymTab[I].SigilName) > 0) And
+         (SymTab[I].SigilName[1] = Sigil) Then
+      Begin SymFind := I; Exit; End;
+    End;
+  End;
+End;
+
+{ ---- SymFindCat : chercher par nom et categorie exacte ---- }
+Function SymFindCat(Const Name : TString; Cat : TSymCat) : Integer;
+Var
+  I : Integer;
+Begin
+  SymFindCat := -1;
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And (SymTab[I].Cat = Cat) Then
+    Begin
+      SymFindCat := I;
+      Exit;
+    End;
+End;
+
+{ ---- SymFindOrError : chercher ou signaler une erreur ----- }
+{ Utilisee quand une variable doit obligatoirement etre declaree }
+{ (notamment en mode use strict).                              }
+Function SymFindOrError(Const Name : TString; Sigil : Char) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := SymFind(Name, Sigil);
+  If Idx < 0 Then
+  Begin
+    If Opts.Strict Then
+      SymError('Variable non declaree: ' + Sigil + Name +
+               ' (use strict actif)')
+    Else
+      SymWarn('Variable non declaree: ' + Sigil + Name);
+  End;
+  SymFindOrError := Idx;
+End;
+
+{ ---- SymEnterScope : entrer dans un nouveau bloc ---------- }
+{ Sauvegarde l''index courant de SymCount pour restauration     }
+{ lors de SymLeaveScope. Aussi utilise pour gerer le cadre     }
+{ local d''une sous-routine (CurFrameSize).                     }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+    FatalError('Trop d''imbrications de blocs (MAX_SCOPE)');
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+End;
+
+{ ---- SymLeaveScope : sortir du bloc courant --------------- }
+{ Supprime les symboles my/local ajoutes dans ce bloc.         }
+{ Les symboles our (globaux) sont compactes et conserves.      }
+Procedure SymLeaveScope;
+Var
+  I, Base, NewCount : Integer;
+Begin
+  If ScopeTop = 0 Then
+  Begin
+    SymError('SymLeaveScope: pas de portee ouverte (erreur interne)');
+    Exit;
+  End;
+  Dec(ScopeTop);
+  Dec(CurScope);
+  Base     := ScopeStack[ScopeTop];  { limite inferieure ancienne }
+  { Conserver les symboles our (portee package) en compactant }
+  NewCount := Base;
+  For I := Base To SymCount - 1 Do
+    If SymTab[I].IsOur Or (SymTab[I].Cat = SC_FN) Then
+    Begin
+      If NewCount <> I Then
+        SymTab[NewCount] := SymTab[I];
+      Inc(NewCount);
+    End;
+  SymCount := NewCount;
+End;
+
+{ ---- SymDump : affichage de la table (mode debug -d) ------ }
+Procedure SymDump;
+Var
+  I   : Integer;
+  CS  : TString;
+Begin
+  WriteLn('--- TABLE DES SYMBOLES (', SymCount, ' entrees) ---');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    Case SymTab[I].Cat Of
+      SC_SCALAR    : CS := 'SCALAR';
+      SC_ARRAY_VAR : CS := 'ARRAY ';
+      SC_HASH_VAR  : CS := 'HASH  ';
+      SC_PARAM     : CS := 'PARAM ';
+      SC_FN        : CS := 'FN    ';
+      SC_PKG       : CS := 'PKG   ';
+      SC_CONST     : CS := 'CONST ';
+      SC_FILEHANDLE: CS := 'FILEHD';
+    End;
+    Write('[', I, '] ', CS, ' ', SymTab[I].SigilName);
+    Write(' scope=', SymTab[I].ScopeLevel);
+    Write(' ofs=', SymTab[I].Offset);
+    If SymTab[I].IsMy    Then Write(' my');
+    If SymTab[I].IsOur   Then Write(' our');
+    If SymTab[I].IsLocal Then Write(' local');
+    WriteLn('  -> ', SymTab[I].MangledName);
+  End;
+  WriteLn('---');
+End;
+
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES ET CONTEXTE
+  ============================================================ }
+
+{ ---- TypeSizeof : taille en octets d''un type --------------- }
+{ Sur 8086 DOS : scalaire = 2 octets (mot 16 bits)             }
+{   ref = 2 octets (pointeur near 16 bits)                     }
+{   array/hash = 2 octets (pointeur vers bloc memoire)         }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;  { defaut : 1 mot }
+End;
+
+{ ---- TypeMangle : suffixe de type pour les labels ASM ------ }
+{ Exemples : TY_IDX_SCALAR -> 'S', TY_IDX_ARRAY -> 'A', ...   }
+{ Ces suffixes sont utilises dans les labels de runtime        }
+{ _PRRT_CONCAT_S, _PRRT_PUSH_A, etc.                          }
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeIdx Of
+    TY_IDX_SCALAR : TypeMangle := 'S';
+    TY_IDX_ARRAY  : TypeMangle := 'A';
+    TY_IDX_HASH   : TypeMangle := 'H';
+    TY_IDX_REF    : TypeMangle := 'R';
+    TY_IDX_CODE   : TypeMangle := 'C';
+    TY_IDX_UNDEF  : TypeMangle := 'U';
+    TY_IDX_MIXED  : TypeMangle := 'M';
+  Else
+    TypeMangle := 'X';
+  End;
+End;
+
+{ ---- TypeKindName : nom lisible d''un type (messages, debug) -}
+Function TypeKindName(TypeIdx : Integer) : TString;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindName := TypeTab[TypeIdx].Name
+  Else
+    TypeKindName := 'unknown';
+End;
+
+{ ---- TypeIsCompatible : deux types sont-ils compatibles ? -- }
+{ Regles simplifiees pour 8086 DOS :                           }
+{   - UNDEF est compatible avec tout (affectation d''undef)    }
+{   - MIXED est compatible avec tout                           }
+{   - Meme TypeIdx toujours compatible                         }
+{   - SCALAR <-> REF : accepte (pointeur vs entier)            }
+{   - Sinon : incompatible -> warning (pas erreur fatale)      }
+Function TypeIsCompatible(SrcIdx, DstIdx : Integer) : Boolean;
+Begin
+  If (SrcIdx = DstIdx) Or
+     (SrcIdx = TY_IDX_UNDEF) Or (DstIdx = TY_IDX_UNDEF) Or
+     (SrcIdx = TY_IDX_MIXED) Or (DstIdx = TY_IDX_MIXED) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Scalaire <-> Reference : tolere (usage courant en Perl) }
+  If ((SrcIdx = TY_IDX_SCALAR) And (DstIdx = TY_IDX_REF)) Or
+     ((SrcIdx = TY_IDX_REF)    And (DstIdx = TY_IDX_SCALAR)) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  TypeIsCompatible := False;
+End;
+
+{ ---- ExprIsBoolFalse : tester la faussete d''une expression - }
+{ Perl boolean : faux = undef, 0 (entier), "" (chaine vide),   }
+{   "0" (chaine contenant zero).                               }
+{ Pour les immediats connus a la compilation, on peut           }
+{ determiner la valeur booleenne sans emettre de code.         }
+{ Retourne True si expr est CERTAINEMENT fausse (EK_IMM=0 ou   }
+{ EK_NONE). Pour toute autre valeur -> False (incertain).      }
+Function ExprIsBoolFalse(Const E : TExprVal) : Boolean;
+Begin
+  If E.Kind = EK_NONE Then
+    ExprIsBoolFalse := True
+  Else If (E.Kind = EK_IMM) And
+          ((E.ImmVal = 0) Or (E.TypeIdx = TY_IDX_UNDEF)) Then
+    ExprIsBoolFalse := True
+  Else
+    ExprIsBoolFalse := False;
+End;
+
+{ ---- ExprIsBoolTrue : tester la verite certaine a la compile }
+{ Retourne True si on sait avec certitude que E est vraie.     }
+Function ExprIsBoolTrue(Const E : TExprVal) : Boolean;
+Begin
+  If (E.Kind = EK_IMM) And
+     (E.TypeIdx <> TY_IDX_UNDEF) And
+     (E.ImmVal <> 0) Then
+    ExprIsBoolTrue := True
+  Else
+    ExprIsBoolTrue := False;
+End;
+
+{ ---- TypeWarn : avertissement de type --------------------- }
+Procedure TypeWarn(SrcIdx, DstIdx : Integer);
+Begin
+  WriteLn('PERL86:', CurToken.Line,
+          ': Avertissement: conversion de type ',
+          TypeKindName(SrcIdx), ' -> ', TypeKindName(DstIdx));
+  Inc(WarnCount);
+End;
+
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  ============================================================ }
+
+{ ---- EmitDataStr : emettre une chaine DB dans le segment DATA }
+{ Format : label:         <- ligne du label                     }
+{          DB  b,b,...,0  <- octets par tranches de 16          }
+{ Caracteres printables (32..126 sauf '') = litteral MASM.      }
+{ Autres : valeur decimale.                                     }
+{ Le quote simple dans MASM se double : '' -> ''''              }
+Procedure EmitDataStr(Const Lbl, S : TString);
+Const
+  CHUNK = 16;
+Var
+  I      : Integer;
+  C      : Char;
+  InQ    : Boolean;
+  Line   : TString;
+  Tmp    : TString;
+  NeedSep: Boolean;
+  Count  : Integer;
+Begin
+  EmitRaw(Lbl + ':');
+  I      := 1;
+  { Boucle sur tous les octets de S + 1 octet pour le zero final }
+  While I <= Length(S) + 1 Do
+  Begin
+    Line    := '        DB  ';
+    InQ     := False;
+    NeedSep := False;
+    Count   := 0;
+    While (Count < CHUNK) And (I <= Length(S) + 1) Do
+    Begin
+      If I > Length(S) Then
+      Begin
+        { Zero final : fermer quote si ouverte }
+        If InQ Then Begin Line := Line + ''''; InQ := False; End;
+        If NeedSep Then Line := Line + ',';
+        Line := Line + '0';
+        NeedSep := True;
+        Inc(I);
+      End Else
+      Begin
+        C := S[I];
+        If (Ord(C) >= 32) And (Ord(C) <= 126) And (C <> '''') Then
+        Begin
+          { Caractere imprimable (sauf quote simple traitee comme non-imprimable) }
+          If Not InQ Then
+          Begin
+            If NeedSep Then Line := Line + ',';
+            Line    := Line + '''';
+            InQ     := True;
+            NeedSep := False;
+          End;
+          Line := Line + C;
+        End Else
+        Begin
+          { Caractere non imprimable ou quote : valeur decimale }
+          If InQ Then Begin Line := Line + ''''; InQ := False; End;
+          If NeedSep Then Line := Line + ',';
+          Str(Ord(C), Tmp);
+          Line    := Line + Tmp;
+          NeedSep := True;
+        End;
+        Inc(I);
+      End;
+      Inc(Count);
+    End;
+    If InQ Then Line := Line + '''';
+    EmitRaw(Line);
+  End;
+End;
+
+{ ---- DataAddWord : ajouter une variable globale DK_WORD ----- }
+{ Utilise pour : our $var (valeur initiale 0), use constant N.  }
+{ Retourne l''indice dans DataTab, ou -1 si sature.              }
+Function DataAddWord(Const ALbl : TString; AVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(ALbl, DK_WORD, AVal, '');
+End;
+
+{ ---- DataAddConst : constante use constant NOM => val ------- }
+{ Si AStr <> '' -> DK_STR ; sinon -> DK_WORD.                  }
+Function DataAddConst(Const ALbl : TString; AVal : LongInt;
+                      Const AStr : TString) : Integer;
+Begin
+  If AStr <> '' Then
+    DataAddConst := DataAdd(ALbl, DK_STR, 0, AStr)
+  Else
+    DataAddConst := DataAdd(ALbl, DK_WORD, AVal, '');
+End;
+
+{ ---- DataFindByLabel : chercher une entree par son label ---- }
+{ Retourne l''indice dans DataTab, ou -1 si introuvable.         }
+Function DataFindByLabel(Const ALbl : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  DataFindByLabel := -1;
+  For I := 0 To DataCount - 1 Do
+    If DataTab[I].LblName = ALbl Then
+    Begin
+      DataFindByLabel := I;
+      Exit;
+    End;
+End;
+
+{ ---- DataDump : affichage de la table de donnees (debug) ---- }
+Procedure DataDump;
+Var
+  I  : Integer;
+  KS : TString;
+Begin
+  WriteLn('--- TABLE DE DONNEES (', DataCount, ' entrees) ---');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD      : KS := 'DW';
+      DK_BYTE      : KS := 'DB';
+      DK_STR       : KS := 'STR';
+      DK_ARRAY_BLK : KS := 'ARR';
+    End;
+    Write('[', I, '] ', KS, ' ', DataTab[I].LblName);
+    If DataTab[I].Kind = DK_STR Then
+      WriteLn(' = "', Copy(DataTab[I].StrVal, 1, 32), '.."')
+    Else
+    Begin
+      WriteLn(' = ', DataTab[I].IntVal);
+    End;
+  End;
+  WriteLn('---');
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS
+  ============================================================ }
+
+{ ---- ExprMakeMem : construire EK_MEM pour un symbole ------- }
+{ Convention EK_MEM :                                           }
+{   ImmVal=1, Offset=n  -> variable locale my/local [BP-n]    }
+{   ImmVal=0, Offset=di -> donnee statique DataTab[di]         }
+Function ExprMakeMem(SymIdx : Integer) : TExprVal;
+Var
+  Res : TExprVal;
+  Di  : Integer;
+Begin
+  Res.TypeIdx := SymTab[SymIdx].TypeIdx;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.Kind    := EK_MEM;
+  If SymTab[SymIdx].IsMy Or SymTab[SymIdx].IsLocal Then
+  Begin
+    { Variable locale : acces [BP - Offset] }
+    Res.ImmVal := 1;
+    Res.Offset := SymTab[SymIdx].Offset;
+  End Else
+  Begin
+    { Variable globale our : dans le segment DATA }
+    Di := DataFindByLabel(SymTab[SymIdx].MangledName);
+    If Di >= 0 Then
+      Res.Offset := Di
+    Else
+      Res.Offset := 0;   { securite }
+  End;
+  ExprMakeMem := Res;
+End;
+
+{ ---- EmitAllocLocal : allouer des octets sur la pile ------- }
+{ Emet SUB SP, Sz pour reserver de l''espace pour une locale.   }
+Procedure EmitAllocLocal(Sz : Integer);
+Var
+  S : TString;
+Begin
+  Str(Sz, S);
+  EmitInstr('SUB', 'SP, ' + S);
+End;
+
+{ ---- EmitStoreScalar : stocker AX dans une lvalue ---------- }
+{ Si Lv.ImmVal=1 -> MOV WORD PTR [BP-n], AX (locale)          }
+{ Si Lv.ImmVal=0 -> MOV [label], AX          (statique)        }
+Procedure EmitStoreScalar(Const Lv : TExprVal);
+Var
+  S : TString;
+Begin
+  If Lv.Kind <> EK_MEM Then Exit;  { rien a stocker }
+  If Lv.ImmVal = 1 Then
+  Begin
+    { Variable locale my/local }
+    Str(Lv.Offset, S);
+    EmitInstr('MOV', 'WORD PTR [BP-' + S + '], AX');
+  End Else
+  Begin
+    { Donnee statique our }
+    If (Lv.Offset >= 0) And (Lv.Offset < DataCount) Then
+      EmitInstr('MOV', '[' + DataTab[Lv.Offset].LblName + '], AX')
+    Else
+      EmitComment('EmitStoreScalar: indice DataTab invalide');
+  End;
+End;
+
+{ ---- ParseVarDecl : declaration my/our/local $var [= expr] - }
+{ Ajoute le symbole dans SymTab, emet l''allocation et l''init.  }
+Procedure ParseVarDecl;
+Var
+  Kw    : TString;
+  IsMy  : Boolean;
+  IsOur : Boolean;
+  IsLoc : Boolean;
+  Sigil : Char;
+  VName : TString;
+  Cat   : TSymCat;
+  TIdx  : Integer;
+  Idx   : Integer;
+  E     : TExprVal;
+  Lv    : TExprVal;
+  OffS  : TString;
+Begin
+  Kw    := CurToken.Val;
+  IsMy  := Kw = 'my';
+  IsOur := Kw = 'our';
+  IsLoc := Kw = 'local';
+  ParserAdvance;   { consommer 'my'/'our'/'local' }
+  { Determiner le sigil et le type associe }
+  If CurToken.Kind = TK_SCALAR Then
+  Begin
+    Sigil := '$';  Cat := SC_SCALAR;    TIdx := TY_IDX_SCALAR;
+  End Else If CurToken.Kind = TK_ARRAY_SIG Then
+  Begin
+    Sigil := '@';  Cat := SC_ARRAY_VAR; TIdx := TY_IDX_ARRAY;
+  End Else If CurToken.Kind = TK_HASH_SIG Then
+  Begin
+    Sigil := '%';  Cat := SC_HASH_VAR;  TIdx := TY_IDX_HASH;
+  End Else
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Erreur: variable attendue apres ''', Kw, '''');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  VName := CurToken.Val;
+  ParserAdvance;   { consommer le nom de variable }
+  { Enregistrer dans la table des symboles }
+  Idx := SymAdd(VName, Sigil, Cat, TIdx, IsMy, IsOur, IsLoc);
+  { Allouer / reserver l''espace selon la portee }
+  If IsMy Or IsLoc Then
+  Begin
+    { Variable locale : SymAdd a incremente CurFrameSize, emet SUB SP, 2 }
+    EmitAllocLocal(2);
+    Str(SymTab[Idx].Offset, OffS);
+    EmitComment('init my ' + Sigil + VName);
+    EmitInstr('MOV', 'WORD PTR [BP-' + OffS + '], 0');
+  End Else If IsOur Then
+  Begin
+    { Variable globale : reservee dans _DATA }
+    DataAddWord(SymTab[Idx].MangledName, 0);
+    EmitComment('our ' + Sigil + VName + ' dans _DATA');
+  End;
+  { Affectation initiale optionnelle : my $x = expr }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance;   { consommer ''='' }
+    ParseExpr(E);
+    ExprLoad(E);
+    { Stocker AX dans la variable nouvellement declaree }
+    Lv := ExprMakeMem(Idx);
+    EmitStoreScalar(Lv);
+  End;
+End;
+
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES
+  ============================================================ }
+
+{ ---- ParseCallArgs : evaluer + empiler les arguments -------- }
+{ Parse ''('' expr, expr, ... '')'' ; empile chaque arg en AX.   }
+{ Retourne le nombre d''arguments empiles dans N (var globale).  }
+Procedure ParseCallArgs;
+Var
+  A : TExprVal;
+Begin
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then Exit;
+  ParserAdvance;   { consommer '(' }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseExpr(A);
+    ExprLoad(A);
+    EmitInstr1('PUSH AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+  Begin
+    WriteLn('PERL86:', CurToken.Line, ': Erreur: '')'' attendu dans appel');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- EmitIncrDecr : ++ ou -- avec effet de bord ------------ }
+{ Pre=True  -> pre  : inc d''abord, puis charge AX dans Res     }
+{ Pre=False -> post : charge AX d''abord, puis inc dans memoire  }
+Procedure EmitIncrDecr(Const Lv : TExprVal; IsInc : Boolean; Pre : Boolean;
+                       Var Res : TExprVal);
+Var
+  S      : TString;
+  Addr   : TString;
+  LvKind : TExprKind;   { copie locale : Lv et Res peuvent etre aliases }
+  LvImmV : LongInt;
+  LvOff  : Integer;
+Begin
+  { Copier les champs de Lv avant de toucher a Res (aliasing possible) }
+  LvKind := Lv.Kind;
+  LvImmV := Lv.ImmVal;
+  LvOff  := Lv.Offset;
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SCALAR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  If LvKind <> EK_MEM Then
+  Begin
+    EmitComment('++ / -- sur non-lvalue : ignore');
+    EmitInstr('MOV', 'AX, 0');
+    Exit;
+  End;
+  If LvImmV = 1 Then
+  Begin
+    Str(LvOff, S);
+    Addr := 'WORD PTR [BP-' + S + ']';
+  End Else
+  Begin
+    If (LvOff >= 0) And (LvOff < DataCount) Then
+      Addr := 'WORD PTR [' + DataTab[LvOff].LblName + ']'
+    Else
+    Begin
+      EmitComment('++ / -- : indice DataTab invalide');
+      EmitInstr('MOV', 'AX, 0');
+      Exit;
+    End;
+  End;
+  If Pre Then
+  Begin
+    If IsInc Then EmitInstr('INC', Addr)
+    Else          EmitInstr('DEC', Addr);
+    EmitInstr('MOV', 'AX, ' + Addr);
+  End Else
+  Begin
+    EmitInstr('MOV', 'AX, ' + Addr);
+    If IsInc Then EmitInstr('INC', Addr)
+    Else          EmitInstr('DEC', Addr);
+  End;
+End;
+
+{ ---- ParsePostfixOps : operateurs postfixe apres une primaire }
+{ Boucle sur post-++ post-- .                                    }
+Procedure ParsePostfixOps(Var Res : TExprVal);
+Begin
+  Repeat
+    If CurToken.Kind = TK_OP Then
+    Begin
+      If CurToken.Val = '++' Then
+      Begin ParserAdvance; EmitIncrDecr(Res, True,  False, Res); Continue; End;
+      If CurToken.Val = '--' Then
+      Begin ParserAdvance; EmitIncrDecr(Res, False, False, Res); Continue; End;
+    End;
+    Break;
+  Until False;
+End;
+
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM
+  ============================================================ }
+
+{ ---- LabelGen : generateur de labels ASM uniques ---------- }
+{ Incremente LabelSeq et retourne Prefix + N.                  }
+{ Ex : LabelGen(PR_LBL_PFX) -> ''_PRL_42''                     }
+Function LabelGen(Const Prefix : TString) : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, S);
+  LabelGen := Prefix + S;
+End;
+
+{ ---- EmitRaw : ecriture directe dans le fichier de sortie - }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+{ ---- EmitBlankLine : ligne vide --------------------------- }
+Procedure EmitBlankLine;
+Begin
+  EmitRaw('');
+End;
+
+{ ---- EmitComment : commentaire ASM (prefixe ;) ------------ }
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+{ ---- EmitLabel : etiquette ASM (non indentee) ------------- }
+{ Convention MASM : label sur sa propre ligne, suivi de '':''. }
+Procedure EmitLabel(Const Name : TString);
+Begin
+  EmitRaw(Name + ':');
+End;
+
+{ ---- EmitInstr : instruction a 2 operandes (indenation 8sp) }
+{ Format : ''        MNEM  OPS''                               }
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  EmitRaw('        ' + Mnem + '  ' + Ops);
+End;
+
+{ ---- EmitInstr1 : instruction sans operande (MOV SP,BP ...) }
+Procedure EmitInstr1(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+{ ============================================================
+  TODO 25 - RUN (stub minimal, complete en TODO 25)
+  ============================================================ }
+Procedure Run;
+Begin
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  If ErrorCount > 0 Then Exit;
+  { Lexeur + analyse syntaxique }
+  LexInit;
+  ParserAdvance;
+  If Opts.DebugTok Then
+  Begin
+    { Mode debug : afficher tous les tokens sans emettre de code }
+    While CurToken.Kind <> TK_EOF Do
+      ParserAdvance;
+  End
+  Else
+  Begin
+    { Analyse normale : stub - ParseStmt sera complete dans les TODOs suivants }
+    While CurToken.Kind <> TK_EOF Do
+      ParseStmt;
+  End;
+  LexClose;
+  EmitClose;
+  If Opts.Verbose Then
+    WriteLn('PERL86: ', TotalLines, ' ligne(s) lues depuis ', Opts.SrcFile);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ErrorCount   := 0;
+  WarnCount    := 0;
+  TotalLines   := 0;
+  TotalSyms    := 0;
+  LexOpened    := False;
+  OutFOpen     := False;
+  SymCount     := 0;
+  ScopeTop     := 0;
+  CurScope     := 0;
+  LabelSeq     := 0;
+  TypeCount    := 0;
+  DataCount    := 0;
+  CurFrameSize := 0;
+  CurFnDepth   := 0;
+  LoopTop      := 0;
+  CurFnRetLbl  := '';
+  CurFnName    := '';
+  CurPackage   := 'main';
+  RuntimeEmitted := False;
+  IncludeCount := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  InitOptions;
+  ParseArgs;
+  ShowBanner;
+  Run;
+  Cleanup;
+  If Opts.Verbose Then ShowStats;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 End.
