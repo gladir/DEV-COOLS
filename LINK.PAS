@@ -468,16 +468,88 @@ Begin
 End;
 
 Procedure RecomputeSegmentAddresses;
+Type
+ TSegOrderItem=Record
+  SegPtr:PSegmentItem;
+  Priority:Integer;
+  OrigIndex:Integer;
+  ClassName:String[8];
+  SegName:String[16];
+ End;
 Var
  segItem:PSegmentItem;
  currentBase:LongInt;
+ segCount,a,b:Integer;
+ orderArr:Array[1..MAX_SEGMENTS] of TSegOrderItem;
+ tmp:TSegOrderItem;
+
+ Function UpStrLocal(Const S:String):String;
+ Var
+  r:String;
+  k:Integer;
+ Begin
+  r:=S;
+  For k:=1 to Length(r) do r[k]:=UpCase(r[k]);
+  UpStrLocal:=r;
+ End;
+
+ Function DosSegPriority(Const ClassName,SegName:String):Integer;
+ Var
+  cls,nm:String;
+ Begin
+  cls:=UpStrLocal(ClassName);
+  nm:=UpStrLocal(SegName);
+
+  If (Pos('CODE',cls)>0)Or(Pos('CODE',nm)>0)Or(Pos('_TEXT',nm)>0) Then DosSegPriority:=10
+  Else If (Pos('DATA',cls)>0)Or(Pos('DATA',nm)>0) Then DosSegPriority:=20
+  Else If (Pos('BSS',cls)>0)Or(Pos('BSS',nm)>0) Then DosSegPriority:=30
+  Else If (Pos('STACK',cls)>0)Or(Pos('STACK',nm)>0) Then DosSegPriority:=90
+  Else DosSegPriority:=50;
+ End;
 Begin
  currentBase:=0;
- segItem:=SegmentHead;
- While segItem<>Nil do Begin
+
+ If (Not DosSegOrdering)Or(SegmentCount<2) Then Begin
+  segItem:=SegmentHead;
+  While segItem<>Nil do Begin
   segItem^.Value.Address:=currentBase;
   Inc(currentBase,segItem^.Value.Size);
   segItem:=segItem^.Next;
+  End;
+  Exit;
+ End;
+
+ segCount:=0;
+ segItem:=SegmentHead;
+ While segItem<>Nil do Begin
+  If segCount<MAX_SEGMENTS Then Begin
+  Inc(segCount);
+  orderArr[segCount].SegPtr:=segItem;
+  orderArr[segCount].Priority:=DosSegPriority(segItem^.Value.Class,segItem^.Value.Name);
+  orderArr[segCount].OrigIndex:=segCount;
+  orderArr[segCount].ClassName:=segItem^.Value.Class;
+  orderArr[segCount].SegName:=segItem^.Value.Name;
+  End;
+  segItem:=segItem^.Next;
+ End;
+
+ For a:=1 to segCount-1 do
+  For b:=a+1 to segCount do
+  If (orderArr[a].Priority>orderArr[b].Priority)
+    Or((orderArr[a].Priority=orderArr[b].Priority)And(orderArr[a].ClassName>orderArr[b].ClassName))
+    Or((orderArr[a].Priority=orderArr[b].Priority)And(orderArr[a].ClassName=orderArr[b].ClassName)
+      And(orderArr[a].SegName>orderArr[b].SegName))
+    Or((orderArr[a].Priority=orderArr[b].Priority)And(orderArr[a].ClassName=orderArr[b].ClassName)
+      And(orderArr[a].SegName=orderArr[b].SegName)
+      And(orderArr[a].OrigIndex>orderArr[b].OrigIndex)) Then Begin
+   tmp:=orderArr[a];
+   orderArr[a]:=orderArr[b];
+   orderArr[b]:=tmp;
+  End;
+
+ For a:=1 to segCount do Begin
+  orderArr[a].SegPtr^.Value.Address:=currentBase;
+  Inc(currentBase,orderArr[a].SegPtr^.Value.Size);
  End;
 End;
 
@@ -4542,7 +4614,8 @@ Begin
  WriteLn('  /OVERLAYINTERRUPT:n  ou /O:n');
  WriteLn('     Parametre accepte (0..255) mais actuellement non applique.');
  WriteLn('  /DOSSEG /DO, /EXEPACK /E, /HIGH /HI, /PAUSE /P, /DSALLOCATE /DS');
- WriteLn('     /PAUSE attend Entree en fin d''execution; les autres restent en compatibilite sans effet.');
+ WriteLn('     /DOSSEG active un ordre DOS des segments (CODE, DATA/BSS, autres, STACK).');
+ WriteLn('     /PAUSE attend Entree en fin d''execution; EXEPACK/HIGH/DSALLOCATE restent sans effet.');
  WriteLn('  /NODEFAULTLIBRARYSEARCH /NOD, /NOGROUPASSOCIATION /NOG, /NOIGNORECASE /NOI');
  WriteLn('     /NOIGNORECASE active la sensibilite a la casse; NOD/NOG restent sans effet.');
  WriteLn('  /HELP /HE /H /?');
@@ -4980,9 +5053,11 @@ Begin
   If TraceSymNameFilter<>'' Then
    WriteLn('Info : filtre trace symbole = ',TraceSymNameFilter);
  End;
+   If DosSegOrdering Then
+    WriteLn('Info : /DOSSEG actif (ordre DOS des segments applique).');
  If OverlayInterruptSet Then
   WriteLn('Avertissement : /OVERLAYINTERRUPT parse mais non applique dans cette version.');
- If DosSegOrdering Or DsAllocateTop Or ExePackRequested Or HighLoadRequested
+   If DsAllocateTop Or ExePackRequested Or HighLoadRequested
     Or NoDefaultLibrarySearch Or NoGroupAssociation Then
   WriteLn('Avertissement : certaines options sont parsees (phase 2) mais sans effet d''edition de liens.');
 End;
