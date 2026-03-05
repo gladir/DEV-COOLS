@@ -482,8 +482,14 @@ Begin
 End;
 
   Function NormalizeSymbolName(Const Nm:String):String;
+  Var
+   canon:String;
+   k:Integer;
   Begin
-   NormalizeSymbolName:=Copy(ResolveAliasName(Copy(Nm,1,64)),1,32);
+   canon:=Copy(ResolveAliasName(Copy(Nm,1,64)),1,32);
+   If Not NoIgnoreCase Then
+    For k:=1 to Length(canon) do canon[k]:=UpCase(canon[k]);
+   NormalizeSymbolName:=canon;
   End;
 
   Function IsPublicSymbolDefined(Const Nm:String):Boolean;
@@ -708,7 +714,7 @@ End;
 Function AddSegment(Const Seg:TSegment):Integer;
 Var item:PSegmentItem;
 Begin
- If SegmentCount>=MAX_SEGMENTS Then Begin
+ If SegmentCount>=MaxSegmentsOption Then Begin
   WriteLn('Erreur : Trop de segments dans le fichier objet');
   Halt(11);
  End;
@@ -4513,25 +4519,34 @@ End;
 
 Procedure ShowLinkHelp;
 Begin
- WriteLn('LINK : fabricant de liaison (compat syntaxique phase 2).');
+ WriteLn('LINK : Cette commander permet de lancer le fabricant de liaison (compat syntaxique phase 2).');
  WriteLn;
  WriteLn('Syntaxe :');
  WriteLn('  LINK obj_file[+obj_file...][,[exe_file]][,[map_file]][,[library[+library...]]] [options] [;]');
  WriteLn('  LINK @response_file');
  WriteLn;
  WriteLn('Options reconnues (alias inclus) :');
- WriteLn('  /CP:n /CPARMAXALLOC:n');
- WriteLn('  /ST:n /STACK:n');
- WriteLn('  /SE:n /SEGMENTS:n');
- WriteLn('  /MAP /M      /LINENUMBERS /LI');
- WriteLn('  /DOSSEG /DO  /EXEPACK /E  /HIGH /HI  /PAUSE /P');
- WriteLn('  /DSALLOCATE /DS');
- WriteLn('  /NODEFAULTLIBRARYSEARCH /NOD');
- WriteLn('  /NOGROUPASSOCIATION /NOG');
- WriteLn('  /NOIGNORECASE /NOI');
- WriteLn('  /TRACE[:LIB|SYM|ALL[=filtre]] /TR[:LIB|SYM|ALL[=filtre]]');
- WriteLn('  /OVERLAYINTERRUPT:n /O:n');
+ WriteLn('  /CP:n  ou /CPARMAXALLOC:n');
+ WriteLn('     Definit MaxAlloc (paragraphes) dans l''en-tete EXE MZ, 0..65535.');
+ WriteLn('  /ST:n  ou /STACK:n');
+ WriteLn('     Definit la taille initiale de pile (SP), 1..65535 octets.');
+ WriteLn('  /MAP[:fichier]  ou /M[:fichier]');
+ WriteLn('     Genere un MAP (segments + publics). Si :NUL, desactive la sortie fichier MAP.');
+ WriteLn('  /LINENUMBERS  ou /LI');
+ WriteLn('     Ajoute les infos de lignes dans le MAP (active MAP automatiquement).');
+ WriteLn('  /TRACE[:directives]  ou /TR[:directives]');
+ WriteLn('     Active la trace de resolution LIB. Directives: LIB, SYM, ALL, combinaisons par virgules.');
+ WriteLn('     Exemples: /TRACE:LIB  /TRACE:SYM=PRINTF  /TRACE:LIB=CLIB,SYM=STR');
+ WriteLn('  /SE:n  ou /SEGMENTS:n');
+ WriteLn('     Limite le nombre maximal de segments a l''edition de liens (plafond interne: ',MAX_SEGMENTS,').');
+ WriteLn('  /OVERLAYINTERRUPT:n  ou /O:n');
+ WriteLn('     Parametre accepte (0..255) mais actuellement non applique.');
+ WriteLn('  /DOSSEG /DO, /EXEPACK /E, /HIGH /HI, /PAUSE /P, /DSALLOCATE /DS');
+ WriteLn('     /PAUSE attend Entree en fin d''execution; les autres restent en compatibilite sans effet.');
+ WriteLn('  /NODEFAULTLIBRARYSEARCH /NOD, /NOGROUPASSOCIATION /NOG, /NOIGNORECASE /NOI');
+ WriteLn('     /NOIGNORECASE active la sensibilite a la casse; NOD/NOG restent sans effet.');
  WriteLn('  /HELP /HE /H /?');
+ WriteLn('     Affiche cette aide.');
 End;
 
 Procedure AddObjInput(Const Nm:String);
@@ -4648,10 +4663,74 @@ Begin
  End;
 End;
 
+  Procedure ApplyTraceDirective(Const RawItem:String; Var HadError:Boolean);
+  Var
+   item,keyPart,valPart:String;
+   eqPos:Integer;
+  Begin
+   item:=UpperStr(TrimStr(RawItem));
+   If item='' Then Exit;
+
+   eqPos:=Pos('=',item);
+   If eqPos>0 Then Begin
+    keyPart:=TrimStr(Copy(item,1,eqPos-1));
+    valPart:=TrimStr(Copy(item,eqPos+1,255));
+   End Else Begin
+    keyPart:=item;
+    valPart:='';
+   End;
+
+   If (keyPart='')Or(keyPart='ALL') Then Begin
+    TraceLibSymbolsRequested:=True;
+    If eqPos>0 Then Begin
+     TraceLibNameFilter:=Copy(valPart,1,128);
+     TraceSymNameFilter:=Copy(valPart,1,32);
+    End;
+   End Else If (keyPart='LIB')Or(keyPart='MODULE')Or(keyPart='MOD')Or(keyPart='NOSYM') Then Begin
+    TraceLibSymbolsRequested:=False;
+    If eqPos>0 Then TraceLibNameFilter:=Copy(valPart,1,128);
+   End Else If (keyPart='SYM')Or(keyPart='SYMBOL')Or(keyPart='SYMBOLS') Then Begin
+    TraceLibSymbolsRequested:=True;
+    If eqPos>0 Then TraceSymNameFilter:=Copy(valPart,1,32);
+   End Else Begin
+    HadError:=True;
+   End;
+  End;
+
+  Procedure ParseTraceOptionValue(Const TraceValue:String);
+  Var
+   rest,item:String;
+   commaPos:Integer;
+   hadError:Boolean;
+  Begin
+   rest:=TrimStr(TraceValue);
+   If rest='' Then Begin
+    TraceLibSymbolsRequested:=True;
+    Exit;
+   End;
+
+   hadError:=False;
+   Repeat
+    commaPos:=Pos(',',rest);
+    If commaPos>0 Then Begin
+     item:=Copy(rest,1,commaPos-1);
+     Delete(rest,1,commaPos);
+    End Else Begin
+     item:=rest;
+     rest:='';
+    End;
+    ApplyTraceDirective(item,hadError);
+   Until rest='';
+
+   If hadError Then
+    WriteLn('Avertissement : /TRACE:',TraceValue,
+      ' invalide, utiliser LIB, SYM, ALL et variantes =filtre (combinaison via virgules).');
+  End;
+
 Procedure ParseOptionToken(Const RawTok:String);
 Var
- work,opt,val,valUpper,traceMode,traceFilter:String;
- p,eqPos:Integer;
+   work,opt,val,valUpper:String;
+   p:Integer;
  num:LongInt;
 Begin
  work:=TrimStr(RawTok);
@@ -4717,7 +4796,10 @@ Begin
     Halt(25);
    End;
    If num<1 Then num:=1;
-   If num>1024 Then num:=1024;
+   If num>MAX_SEGMENTS Then Begin
+    WriteLn('Avertissement : /SEGMENTS limite a ',MAX_SEGMENTS,' dans cette version.');
+    num:=MAX_SEGMENTS;
+   End;
    MaxSegmentsOption:=num;
  End Else If (opt='ST')Or(opt='STACK') Then Begin
    If Not ParseUInt(val,num) Then Begin
@@ -4729,30 +4811,7 @@ Begin
    StackSize:=num;
  End Else If (opt='TR')Or(opt='TRACE') Then Begin
    TraceLibRequested:=True;
-   traceMode:=val;
-   traceFilter:='';
-   eqPos:=Pos('=',traceMode);
-   If eqPos>0 Then Begin
-    traceFilter:=Copy(traceMode,eqPos+1,255);
-    traceMode:=Copy(traceMode,1,eqPos-1);
-   End;
-
-   If (traceMode='')Or(traceMode='ALL') Then Begin
-    TraceLibSymbolsRequested:=True;
-    If eqPos>0 Then Begin
-     TraceLibNameFilter:=traceFilter;
-     TraceSymNameFilter:=traceFilter;
-    End;
-   End Else If (traceMode='LIB')Or(traceMode='MODULE')Or(traceMode='MOD')Or(traceMode='NOSYM') Then Begin
-    TraceLibSymbolsRequested:=False;
-    If eqPos>0 Then TraceLibNameFilter:=traceFilter;
-   End Else If (traceMode='SYM')Or(traceMode='SYMBOL')Or(traceMode='SYMBOLS') Then Begin
-    TraceLibSymbolsRequested:=True;
-    If eqPos>0 Then TraceSymNameFilter:=traceFilter;
-   End Else Begin
-    WriteLn('Avertissement : /TRACE:',val,' inconnu, utiliser LIB, SYM ou ALL (optionnel =filtre)');
-    TraceLibSymbolsRequested:=True;
-   End;
+   ParseTraceOptionValue(val);
  End Else
   WriteLn('Avertissement : option LINK non reconnue en phase 1 : /',opt);
 End;
@@ -4921,13 +4980,10 @@ Begin
   If TraceSymNameFilter<>'' Then
    WriteLn('Info : filtre trace symbole = ',TraceSymNameFilter);
  End;
- If MaxSegmentsOption<>MAX_SEGMENTS Then
-  WriteLn('Avertissement : /SEGMENTS parse mais non applique dans cette version.');
  If OverlayInterruptSet Then
   WriteLn('Avertissement : /OVERLAYINTERRUPT parse mais non applique dans cette version.');
  If DosSegOrdering Or DsAllocateTop Or ExePackRequested Or HighLoadRequested
-    Or PauseRequested Or NoDefaultLibrarySearch Or NoGroupAssociation
-    Or NoIgnoreCase Then
+    Or NoDefaultLibrarySearch Or NoGroupAssociation Then
   WriteLn('Avertissement : certaines options sont parsees (phase 2) mais sans effet d''edition de liens.');
 End;
 
@@ -4965,6 +5021,11 @@ BEGIN
  GenerateExe(ExeFileName);
  GenerateMapFile(MapFileName);
  WriteLn('Liaison compl�t�');
+
+ If PauseRequested Then Begin
+  Write('Pause demandee (/PAUSE). Appuyez sur Entree pour continuer...');
+  ReadLn;
+ End;
 
  CleanupTempLibObjFiles;
  FreeCommandInputStorage;
