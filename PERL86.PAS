@@ -1028,15 +1028,20 @@ Begin
   { Sauter le corps de la sous-routine a l''execution }
   EmitInstr('JMP', LblEnd);
   EmitLabel(PR_FN_PFX + SubName);
+  { TODO 18 - Prologue cdecl 16 bits }
   EmitInstr1('PUSH BP');
   EmitInstr('MOV', 'BP, SP');
+  { TODO 18 - Sauvegarder registres appel (cdecl : SI et DI preserves) }
+  EmitInstr1('PUSH SI');
+  EmitInstr1('PUSH DI');
   { Sauver le contexte du compilateur }
   SaveFrame  := CurFrameSize;
   SaveDepth  := CurFnDepth;
   SaveRetLbl := CurFnRetLbl;
   SaveFnName := CurFnName;
   SaveArgSh  := CurArgShiftIdx;
-  CurFrameSize   := 0;
+  { TODO 18 - CurFrameSize demarre a 4 (SI+DI deja pousses, 2 octets chacun) }
+  CurFrameSize   := 4;
   CurFnDepth     := CurFnDepth + 1;
   CurFnRetLbl    := LblRet;
   CurFnName      := SubName;
@@ -1044,8 +1049,12 @@ Begin
   SymEnterScope;
   ParseBlock;
   SymLeaveScope;
+  { TODO 18 - Epilogue : restaurer SP, DI, SI puis BP avant RET }
   EmitLabel(LblRet);
-  EmitInstr('MOV', 'SP, BP');
+  EmitInstr('MOV', 'SP, BP');   { liberer les locaux }
+  EmitInstr('SUB', 'SP, 4');    { pointer sur zone DI puis SI }
+  EmitInstr1('POP DI');         { restaurer DI }
+  EmitInstr1('POP SI');         { restaurer SI }
   EmitInstr1('POP BP');
   EmitInstr1('RET');
   EmitLabel(LblEnd);
@@ -4396,7 +4405,12 @@ End;
   ============================================================ }
 
 { ---- ParseBlock : parse un bloc de stmts avec portee lexicale ---- }
+{ TODO 18 : restaurer SP a la fin du bloc si des locaux ont ete alloues }
 Procedure ParseBlock;
+Var
+  SaveFrameSz : Integer;   { taille cadre avant ce bloc }
+  Delta       : Integer;   { octets alloues dans ce bloc }
+  DeltaS      : TString;
 Begin
   If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then
   Begin
@@ -4406,11 +4420,20 @@ Begin
     Exit;
   End;
   ParserAdvance;   { consommer '{' }
+  SaveFrameSz := CurFrameSize;   { sauver taille cadre avant les locaux du bloc }
   SymEnterScope;
   While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
             (CurToken.Kind <> TK_EOF) Do
     ParseStmt;
   SymLeaveScope;
+  { TODO 18 : liberer les locaux alloues dans ce bloc (sauf dans l''epilogue sub) }
+  If (CurFnDepth > 0) And (CurFrameSize > SaveFrameSz) Then
+  Begin
+    Delta := CurFrameSize - SaveFrameSz;
+    Str(Delta, DeltaS);
+    EmitInstr('ADD', 'SP, ' + DeltaS);   { restaurer SP }
+    CurFrameSize := SaveFrameSz;          { mettre a jour le traqueur }
+  End;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
     ParserAdvance;  { consommer accolade fermante }
 End;
