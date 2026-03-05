@@ -5928,7 +5928,7 @@ Procedure errrptsummary;Begin
  WriteLn(errcnt, ' error(s) in compilation.');
 End;
 
-{ Enhanced parsing with variable declarations, control structures and expression parser }
+ { Analyse syntaxique am‚lior‚e avec d‚clarations de variables, structures de contr“le et analyseur d'expression }
 Procedure parse;
 Var
  lval: TLVal;
@@ -5940,122 +5940,109 @@ Begin
  While eof = 0 do Begin
   {$I-}
   If not readinline Then Break;
-  If IOResult <> 0 Then
-  Begin
+  If IOResult <> 0 Then Begin
    eof := 1;
    Break;
   End;
   {$I+}
-
-  { Simple comment processing }
-  If match('/*') Then
-  Begin
-   While (not match('*/')) and (eof = 0) do
-    readinline;
+   { Traitement de simple commentaire }
+  If match('/*') Then Begin
+   While (not match('*/')) and (eof = 0) do readinline;
    Continue;
   End;
-
-  { Process preprocessor directives BEFORE macro expansion }
-  If match('#') Then
-  Begin
-   If match('include') Then
-   Begin
-    { Process #include directive }
-    If not should_skip_code Then
-    Begin
-     If process_include_directive(line) Then
-     Begin
-      { Include successful - reset line pointer and continue with included file }
-      lptr := Length(line) + 1; { Force readinline to be called for new file }
+   { Traiter les directives du pr‚processeur AVANT l'expansion macro }
+  If match('#') Then Begin
+   If match('include') Then Begin
+    { Traite la directive #include }
+    If not should_skip_code Then Begin
+     If process_include_directive(line) Then Begin
+       { SuccŠs de include - R‚initialise le pointeur de ligne et continue avec le fichier d'inclusion }
+      lptr := Length(line) + 1; { Force l'appel … readinline pour tout nouveau fichier }
       Continue;
      End
-     Else
+      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d‚j… signal‚e, ignorez cette ligne }
       Continue;
      End;
     End
-    Else
+     Else
     Begin
-     { Skip include in conditional block }
+      { Ignorer l'inclusion dans le bloc conditionnel }
      Continue;
     End;
    End
-   Else If match('define') Then
-   Begin
-    { Process #define directive }
-    If not should_skip_code Then
-    Begin
+    Else
+   If match('define') Then Begin
+    { Traite la directive #define }
+    If not should_skip_code Then Begin
      If process_define_directive(line) Then
-      Continue  { Continue with next line }
-     Else
+      Continue  { Continue avec la prochaine ligne }
+      Else
      Begin
-      { Error already reported, skip this line }
+      { Erreur d‚j… signal‚e, ignorez cette ligne }
       Continue;
      End;
     End
     Else
     Begin
-     { Skip define in conditional block }
+     { Ignorer la d‚finition dans le bloc conditionnel }
      Continue;
     End;
    End
    Else If match('if ') Then
    Begin
-    { Process #if directive }
+    { Traite la directive #if }
     blanks;
     process_if_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('ifdef ') Then
    Begin
-    { Process #ifdef directive }
+    { Traite la directive #ifdef }
     blanks;
     process_ifdef_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('ifndef ') Then
    Begin
-    { Process #ifndef directive }
+    { Traite la directive #ifndef }
     blanks;
     process_ifndef_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('elif ') Then
    Begin
-    { Process #elif directive }
+    { Traite la directive #elif }
     blanks;
     process_elif_directive(Copy(line, lptr, 255));
     Continue;
    End
    Else If match('else') Then
    Begin
-    { Process #else directive }
+    { Traite la directive #else }
     process_else_directive;
     Continue;
    End
    Else If match('endif') Then
    Begin
-    { Process #endif directive }
+    { Traite la directive #endif }
     process_endif_directive;
     Continue;
    End
    Else
    Begin
-    { Other preprocessor directives - skip for now }
+    { Autre directives de pr‚processeur - saute pour le moment }
     safe_writeln('; Skipping preprocessor directive: ' + line);
     Continue;
    End;
   End;
-
-  { Check if we should skip code due to conditional compilation }
-  If should_skip_code Then
-  Begin
-   { Skip this line completely }
+   { V‚rifier si nous devons ignorer du code en raison d'une compilation conditionnelle }
+  If should_skip_code Then Begin
+   { Saute cette ligne complŠtement }
    Continue;
   End;
-
-  { Apply macro expansion to the line AFTER conditional processing }
+   { Appliquer l'expansion de macro … ligne APRES le traitemetn conditionnel }
   expanded_line := expand_macros(line);
   If expanded_line <> line Then
   Begin
@@ -6063,41 +6050,30 @@ Begin
    If use_stdout Then WriteLn('; Line after macro expansion: ', line)
                  Else safe_writeln('; Line after macro expansion: ' + line);
   End;
-
-  { Skip empty lines }
+   { Ignorer les lignes vides }
   blanks;
   If Length(line) = 0 Then Continue;
-
   safe_writeln('; Processing: ' + line);
-
-  { Reset position for parsing }
+   { R‚initialiser la position pour l'analyse }
   lptr := 1;
   FillChar(lval, SizeOf(lval), 0);
-
-  { Try to parse as statement (includes declarations and control structures) }
-  If parse_statement Then
-  Begin
+   { Essayez d'analyser comme une instruction (incluant les d‚clarations et les structures de contr“le) }
+  If parse_statement Then Begin
    safe_writeln('; Statement processed');
    Continue;
   End;
-
-  { Fallback: Parse identifiers and expressions for backward compatibility }
+   { Solution de repli : Analyser les identifiants et les expressions pour assurer la r‚trocompatibilit‚ }
   lptr := 1;
-  If symname(sname) Then
-  Begin
+  If symname(sname) Then Begin
    safe_writeln('; Identifier: ' + sname);
-
-   { Check for assignment }
+    { V‚rifier pour l'affectation }
    blanks;
-   If match('=') Then
-   Begin
+   If match('=') Then Begin
     safe_writeln('; Assignment to ' + sname);
     blanks;
-
-    { Look up variable in symbol table }
-    If lookup_variable(sname, lval) Then
-    Begin
-     { Check if variable is const and prevent assignment }
+     { Recherchez la variable dans le tableau des symboles }
+    If lookup_variable(sname, lval) Then Begin
+     { V‚rifiez si la variable est constante et empˆcher son affectation }
      If lval.type_info.is_const Then
      Begin
       {$IFDEF FPC}

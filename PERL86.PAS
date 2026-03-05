@@ -515,6 +515,7 @@ Var
   LoopTop      : Integer;
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopRedoLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
 
   { Segment de donnees statiques }
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
@@ -529,6 +530,9 @@ Var
 
   { Package courant }
   CurPackage : TString;   { 'main' par defaut }
+
+  { Flag : le mot-cle courant a deja ete consomme avant l''appel }
+  GKwConsumed : Boolean;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -563,6 +567,19 @@ Procedure ParseCallArgs; Forward;
 Procedure EmitIncrDecr(Const Lv : TExprVal; IsInc : Boolean; Pre : Boolean;
                        Var Res : TExprVal); Forward;
 Procedure ParsePostfixOps(Var Res : TExprVal); Forward;
+{ TODO 12 }
+Procedure EmitPrintVal(Const BXval : TString; Var E : TExprVal); Forward;
+Procedure ParsePrintStmt; Forward;
+{ TODO 13 }
+Procedure ParseBlock; Forward;
+Procedure ParseIfStmt; Forward;
+{ TODO 14 }
+Procedure LoopPush(Const BrkLbl, ContLbl, RedoLbl : TString); Forward;
+Procedure LoopPop; Forward;
+Procedure ParseWhileStmt; Forward;
+Procedure ParseForStmt; Forward;
+Procedure ParseForeachStmt; Forward;
+Procedure ParseDoStmt; Forward;
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
@@ -813,6 +830,7 @@ Begin
   CurFrameSize := 0;
   CurFnDepth   := 0;
   LoopTop      := 0;
+  GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
   For I := 0 To MAX_SYM - 1 Do
@@ -925,24 +943,26 @@ End;
 
 Procedure ParseStmt;
 { Analyse une instruction Perl et emet le code ASM correspondant.         }
-{ Reconnait : my/our/local $var [= expr] ;   use ... ;   expr ;           }
-{ En cas d''erreur de syntaxe, resynchronise sur le prochain '';''.         }
+{ Reconnait : my/our/local ; use ; print/say ; if/unless ; expr [MOD] ;   }
 Var
-  KW : TString;
-  E  : TExprVal;
+  KW                       : TString;
+  E                        : TExprVal;
+  LblBody, LblCond, LblEnd : TString;
+  HasMod                   : Boolean;
+  ModKW                    : TString;
+  CondE                    : TExprVal;
 Begin
   { Ignorer les points-virgules isoles (instructions vides) }
   While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
     ParserAdvance;
   If CurToken.Kind = TK_EOF Then Exit;
-  { Mots-cles de declaration de variable }
+  { Mots-cles de declaration et instructions speciales }
   If CurToken.Kind = TK_KEYWORD Then
   Begin
     KW := CurToken.Val;
     If (KW = 'my') Or (KW = 'our') Or (KW = 'local') Then
     Begin
       ParseVarDecl;
-      { Consommer le '';'' terminal }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         ParserAdvance;
       Exit;
@@ -957,10 +977,139 @@ Begin
         ParserAdvance;
       Exit;
     End;
+    { TODO 12 : print / say / printf / warn / die }
+    If (KW = 'print') Or (KW = 'say') Or (KW = 'printf') Or
+       (KW = 'warn') Or (KW = 'die') Then
+    Begin
+      ParsePrintStmt;
+      Exit;
+    End;
+    { TODO 13 : if / unless }
+    If (KW = 'if') Or (KW = 'unless') Then
+    Begin
+      ParseIfStmt;
+      Exit;
+    End;
+    { TODO 14 : while / until / foreach / do }
+    If (KW = 'while') Or (KW = 'until') Then
+    Begin
+      ParseWhileStmt;
+      Exit;
+    End;
+    If KW = 'foreach' Then
+    Begin
+      ParseForeachStmt;
+      Exit;
+    End;
+    If KW = 'for' Then
+    Begin
+      { Avancer au-dela de 'for' pour detecter le style de boucle }
+      ParserAdvance;   { CurToken = token apres 'for' }
+      GKwConsumed := True;
+      { foreach-alias : for my $var (...) ou for $var (...) }
+      If ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'my')) Or
+          (CurToken.Kind = TK_SCALAR) Then
+        ParseForeachStmt
+      Else
+        ParseForStmt;
+      GKwConsumed := False;
+      Exit;
+    End;
+    If KW = 'do' Then
+    Begin
+      ParseDoStmt;
+      Exit;
+    End;
+    { TODO 14 : last / next / redo }
+    If KW = 'last' Then
+    Begin
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        EmitComment('last: hors d''une boucle (ignore)');
+      { eventuel label de boucle (on ignore) }
+      If CurToken.Kind = TK_IDENT Then ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit;
+    End;
+    If KW = 'next' Then
+    Begin
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        EmitComment('next: hors d''une boucle (ignore)');
+      If CurToken.Kind = TK_IDENT Then ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit;
+    End;
+    If KW = 'redo' Then
+    Begin
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopRedoLbl[LoopTop - 1])
+      Else
+        EmitComment('redo: hors d''une boucle (ignore)');
+      If CurToken.Kind = TK_IDENT Then ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit;
+    End;
   End;
-  { Instruction expression : $var = expr ;  ou  expr ; }
+  { ----------------------------------------------------------- }
+  { Instruction expression avec modificateur potentiel          }
+  { Structure :                                                  }
+  {   JMP Lcond                                                  }
+  {   Lbody:  [corps - expression Perl]                         }
+  {           JMP Lend                                          }
+  {   Lcond:  [condition] JNZ/JZ Lbody  ou  JMP Lbody          }
+  {   Lend:                                                      }
+  { ----------------------------------------------------------- }
+  LblBody := LabelGen('_PRL_SMBOD_');
+  LblCond := LabelGen('_PRL_SMCND_');
+  LblEnd  := LabelGen('_PRL_SMEND_');
+  EmitInstr('JMP', LblCond);
+  EmitLabel(LblBody);
   ParseExpr(E);
-  { Consommer le '';'' ou tolerera EOF }
+  EmitInstr('JMP', LblEnd);
+  EmitLabel(LblCond);
+  { Detecter modificateur if / unless / while / until }
+  HasMod := False;
+  ModKW  := '';
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    ModKW := CurToken.Val;
+    If (ModKW = 'if') Or (ModKW = 'unless') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(CondE);
+      ExprLoad(CondE);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      EmitInstr('TEST', 'AX, AX');
+      If ModKW = 'if' Then
+        EmitInstr('JNZ', LblBody)   { if: executer si VRAI }
+      Else
+        EmitInstr('JZ', LblBody);   { unless: executer si FAUX }
+      HasMod := True;
+    End Else If (ModKW = 'while') Or (ModKW = 'until') Then
+    Begin
+      { Structure deja en place : LblCond est le bon point d'entree }
+      { On emet la condition ici et on reboucle vers LblBody }
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(CondE);
+      ExprLoad(CondE);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      EmitInstr('TEST', 'AX, AX');
+      If ModKW = 'while' Then
+        EmitInstr('JNZ', LblBody)   { while: executer tant que VRAI }
+      Else
+        EmitInstr('JZ', LblBody);   { until: executer tant que FAUX }
+      HasMod := True;
+    End;
+  End;
+  If Not HasMod Then
+    EmitInstr('JMP', LblBody);  { pas de modificateur : toujours executer }
+  EmitLabel(LblEnd);
+  { Consommer '';'' ou tolerer EOF }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance
   Else If CurToken.Kind <> TK_EOF Then
@@ -968,7 +1117,6 @@ Begin
     WriteLn('PERL86:', CurToken.Line, ': Erreur: '';'' attendu, obtenu ''',
             CurToken.Val, '''');
     Inc(ErrorCount);
-    { Resynchroniser : sauter jusqu''au prochain '';'' }
     While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
               (CurToken.Kind <> TK_EOF) Do
       ParserAdvance;
@@ -3597,6 +3745,493 @@ Begin
 End;
 
 { ============================================================
+  TODO 12 - PRINT / SAY / PRINTF / WARN / DIE
+  ============================================================ }
+
+{ ---- EmitPrintVal : emet AX ou chaine statique sur handle -- }
+{ BXval = '1' (STDOUT), '2' (STDERR), '0' (STDIN)             }
+{ Chaine statique DK_STR -> MOV SI,OFFSET lbl + _PRRT_STRLEN  }
+{ Sinon : ExprLoad -> AX puis _PRRT_ITOA + _PRRT_STRLEN        }
+Procedure EmitPrintVal(Const BXval : TString; Var E : TExprVal);
+Var
+  DidStr : Boolean;
+  Idx    : Integer;
+Begin
+  DidStr := False;
+  { Chaine statique dans DataTab }
+  If (E.Kind = EK_MEM) And (E.ImmVal = 0) Then
+  Begin
+    Idx := E.Offset;
+    If (Idx >= 0) And (Idx < DataCount) And (DataTab[Idx].Kind = DK_STR) Then
+    Begin
+      EmitInstr('MOV', 'SI, OFFSET ' + DataTab[Idx].LblName);
+      EmitInstr('CALL', '_PRRT_STRLEN');
+      EmitInstr('MOV', 'CX, AX');
+      EmitInstr('MOV', 'BX, ' + BXval);
+      EmitInstr('CALL', '_PRRT_PRINT');
+      DidStr := True;
+    End;
+  End;
+  If Not DidStr Then
+  Begin
+    { Valeur entiere : charger AX puis convertir via _PRRT_ITOA }
+    ExprLoad(E);
+    { S'assurer que le buffer ITOA est dans DataTab }
+    If DataFindByLabel('_PRRT_IBUF') < 0 Then
+    Begin
+      Idx := DataAdd('_PRRT_IBUF', DK_ARRAY_BLK, 0, '');
+      If Idx >= 0 Then DataTab[Idx].ElemCount := 8;  { 8 DW = 16 octets }
+    End;
+    EmitInstr('MOV', 'DI, OFFSET _PRRT_IBUF');
+    EmitInstr('CALL', '_PRRT_ITOA');
+    EmitInstr('MOV', 'SI, DI');
+    EmitInstr('CALL', '_PRRT_STRLEN');
+    EmitInstr('MOV', 'CX, AX');
+    EmitInstr('MOV', 'BX, ' + BXval);
+    EmitInstr('CALL', '_PRRT_PRINT');
+  End;
+End;
+
+{ ---- ParsePrintStmt : print / say / printf / warn / die --- }
+{ CurToken.Val = le mot-cle. Le consomme puis parse la liste.  }
+Procedure ParsePrintStmt;
+Var
+  KW    : TString;
+  BXval : TString;
+  IsSay : Boolean;
+  IsDie : Boolean;
+  E     : TExprVal;
+Begin
+  KW    := CurToken.Val;
+  ParserAdvance;                            { consommer le mot-cle }
+  BXval := '1';                             { STDOUT par defaut }
+  IsSay := (KW = 'say');
+  IsDie := (KW = 'die');
+  If (KW = 'warn') Or IsDie Then BXval := '2';  { STDERR }
+  { Filehandle explicite : STDOUT / STDERR / STDIN sans sigil }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    If      CurToken.Val = 'STDOUT' Then Begin BXval := '1'; ParserAdvance; End
+    Else If CurToken.Val = 'STDERR' Then Begin BXval := '2'; ParserAdvance; End
+    Else If CurToken.Val = 'STDIN'  Then Begin BXval := '0'; ParserAdvance; End;
+    { Sinon : identifiant inconnu -> traiter comme premiere expression }
+  End;
+  { printf : note dans le commentaire ASM }
+  If KW = 'printf' Then
+    EmitComment('printf : format interprete simple (TODO 20)');
+  { Evaluer et imprimer chaque argument de la liste }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+         (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseExpr(E);
+    EmitPrintVal(BXval, E);
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then Break;
+      If CurToken.Kind = TK_EOF Then Break;
+      ParseExpr(E);
+      EmitPrintVal(BXval, E);
+    End;
+  End;
+  { say : saut de ligne final via _PRRT_PRINTLN }
+  If IsSay Then
+  Begin
+    EmitInstr('MOV', 'BX, ' + BXval);
+    EmitInstr('CALL', '_PRRT_PRINTLN');
+  End;
+  { die : terminer le programme avec code 255 }
+  If IsDie Then
+  Begin
+    EmitInstr('MOV', 'AX, 4CFFh');
+    EmitInstr('INT', '21h');
+  End;
+  { Consommer le '';'' de fin de statement }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 13 - IF / ELSIF / ELSE / UNLESS + MODIFICATEURS DE STATEMENT
+  ============================================================ }
+
+{ ---- ParseBlock : parse un bloc de stmts avec portee lexicale ---- }
+Procedure ParseBlock;
+Begin
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Erreur: ''{'' attendu pour bloc, obtenu ''', CurToken.Val, '''');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  ParserAdvance;   { consommer '{' }
+  SymEnterScope;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+            (CurToken.Kind <> TK_EOF) Do
+    ParseStmt;
+  SymLeaveScope;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;  { consommer accolade fermante }
+End;
+
+{ ---- ParseIfStmt : if/unless/elsif/else ------------------- }
+{ if (cond) BLOC [elsif (cond) BLOC]* [else BLOC]             }
+{ unless (cond) BLOC [else BLOC]  (condition inversee)        }
+Procedure ParseIfStmt;
+Var
+  KW       : TString;
+  IsUnless : Boolean;
+  LblNext  : TString;
+  LblEnd   : TString;
+  Cond     : TExprVal;
+Begin
+  KW       := CurToken.Val;   { 'if' ou 'unless' }
+  IsUnless := (KW = 'unless');
+  ParserAdvance;               { consommer 'if' ou 'unless' }
+  LblEnd  := LabelGen('_PRL_ENDIF_');
+  LblNext := LabelGen('_PRL_ELSE_');
+  { Evaluer la condition (parentheses optionnelles) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+  ParseExpr(Cond);
+  ExprLoad(Cond);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+  EmitInstr('TEST', 'AX, AX');
+  If IsUnless Then
+    EmitInstr('JNZ', LblNext)  { unless: sauter vers else/fin si VRAI }
+  Else
+    EmitInstr('JZ', LblNext);  { if: sauter vers else/fin si FAUX }
+  { Bloc then }
+  ParseBlock;
+  { Chaines elsif }
+  While (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'elsif') Do
+  Begin
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblNext);
+    LblNext := LabelGen('_PRL_ELSE_');
+    ParserAdvance;  { consommer 'elsif' }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+    ParseExpr(Cond);
+    ExprLoad(Cond);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ', LblNext);
+    ParseBlock;
+  End;
+  { Saut vers la fin + etiquette de la branche suivante/else }
+  EmitInstr('JMP', LblEnd);
+  EmitLabel(LblNext);
+  { Bloc else optionnel }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    ParserAdvance;  { consommer 'else' }
+    ParseBlock;
+  End;
+  EmitLabel(LblEnd);
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLES : while / until / for / foreach / do
+  ============================================================ }
+
+{ ---- LoopPush / LoopPop : gestion de la pile de boucles --- }
+Procedure LoopPush(Const BrkLbl, ContLbl, RedoLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    WriteLn('PERL86: Erreur: Boucles trop imbriquees (max=', MAX_LOOP_NEST, ')');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BrkLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  LoopRedoLbl[LoopTop]  := RedoLbl;
+  Inc(LoopTop);
+End;
+
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then Dec(LoopTop);
+End;
+
+{ ---- ParseWhileStmt : while/until (cond) BLOC [continue BL] }
+{ CurToken.Val = 'while' ou 'until'                            }
+Procedure ParseWhileStmt;
+Var
+  IsUntil : Boolean;
+  LblTop  : TString;
+  LblEnd  : TString;
+  LblCont : TString;
+  Cond    : TExprVal;
+Begin
+  IsUntil := (CurToken.Val = 'until');
+  ParserAdvance;  { consommer 'while'/'until' }
+  LblTop  := LabelGen('_PRL_WTOP_');
+  LblEnd  := LabelGen('_PRL_WEND_');
+  LblCont := LabelGen('_PRL_WCNT_');
+  LoopPush(LblEnd, LblCont, LblTop);
+  EmitLabel(LblTop);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+  ParseExpr(Cond);
+  ExprLoad(Cond);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+  EmitInstr('TEST', 'AX, AX');
+  If IsUntil Then
+    EmitInstr('JNZ', LblEnd)   { until: sortir si VRAI }
+  Else
+    EmitInstr('JZ', LblEnd);   { while: sortir si FAUX }
+  ParseBlock;
+  { bloc continue (optionnel) }
+  EmitLabel(LblCont);
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'continue') Then
+  Begin
+    ParserAdvance;
+    ParseBlock;
+  End;
+  EmitInstr('JMP', LblTop);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+{ ---- ParseForStmt : for (init; cond; incr) BLOC (style C) -- }
+Procedure ParseForStmt;
+Var
+  LblTop  : TString;
+  LblEnd  : TString;
+  LblIncr : TString;
+  Cond    : TExprVal;
+  Dummy   : TExprVal;
+Begin
+  If Not GKwConsumed Then ParserAdvance;  { consommer 'for' }
+  GKwConsumed := False;
+  LblTop  := LabelGen('_PRL_FTOP_');
+  LblEnd  := LabelGen('_PRL_FEND_');
+  LblIncr := LabelGen('_PRL_FINCR_');
+  LoopPush(LblEnd, LblIncr, LblTop);
+  { Parenthese ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+  { Init : my $i = expr ; ou expr ; ou juste ; }
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'my') Or (CurToken.Val = 'our')) Then
+    ParseVarDecl
+  Else If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+  Begin
+    ParseExpr(Dummy);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+  { Test de condition }
+  EmitLabel(LblTop);
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+  Begin
+    ParseExpr(Cond);
+    ExprLoad(Cond);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ', LblEnd);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+  { Sauvegarder l'expression d'incrementation a la fin du bloc }
+  { On emet un JMP vers le corps, puis l'increment, puis JMP LblTop }
+  { Structure : LblTop; [cond]; JZ LblEnd; JMP LblBody; }
+  {             LblIncr: [incr]; JMP LblTop; }
+  {             LblBody: [bloc]; JMP LblIncr; LblEnd: }
+  { Simple : on place l'increment dans le "continue" }
+  { Pour simplifier : on emmet l'increment inline apres le corps }
+  { via goto LblIncr apres le bloc, LblIncr: [incr] JMP LblTop }
+  { On doit lire l'expr incr maintenant et la "stocker" - impossible }
+  { Solution : lire et ignorer l'incr sur le plan textuel est mauvais }
+  { On emet: JMP LblBody; LblIncr: [incr]; JMP LblTop; LblBody: [bloc]; JMP LblIncr }
+  EmitInstr('JMP', '_PRL_FBOD_' + Copy(LblTop, 10, 20));
+  EmitLabel(LblIncr);
+  { Lire l'expression d'incrementation }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    ParseExpr(Dummy);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+  EmitInstr('JMP', LblTop);
+  EmitLabel('_PRL_FBOD_' + Copy(LblTop, 10, 20));
+  ParseBlock;
+  EmitInstr('JMP', LblIncr);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+{ ---- ParseForeachStmt : foreach [my $var] (LIST) BLOC ------- }
+Procedure ParseForeachStmt;
+Var
+  VarName    : TString;
+  SymIdx     : Integer;
+  LblTop     : TString;
+  LblEnd     : TString;
+  LblCont    : TString;
+  ListLbl    : TString;
+  CntLbl     : TString;
+  IdxLbl     : TString;
+  E          : TExprVal;
+  HasVar     : Boolean;
+  RangeStart : TExprVal;
+  RangeEnd   : TExprVal;
+  IsRange    : Boolean;
+  DummyE     : TExprVal;
+Begin
+  If Not GKwConsumed Then ParserAdvance;  { consommer 'foreach'/'for' }
+  GKwConsumed := False;
+  LblTop  := LabelGen('_PRL_EITOP_');
+  LblEnd  := LabelGen('_PRL_EIEND_');
+  LblCont := LabelGen('_PRL_EICNT_');
+  HasVar  := False;
+  IsRange := False;
+  SymIdx  := -1;
+  VarName := '_';
+  { Variable d'iteration optionnelle : my $var }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'my') Then
+  Begin
+    ParserAdvance;  { consommer 'my' }
+    If CurToken.Kind = TK_SCALAR Then
+    Begin
+      VarName := CurToken.Val;
+      ParserAdvance;
+      SymIdx := SymAdd(VarName, '$', SC_SCALAR, TY_IDX_SCALAR,
+                       True, False, False);
+      If SymIdx >= 0 Then EmitAllocLocal(2);
+      HasVar := True;
+    End;
+  End;
+  LoopPush(LblEnd, LblCont, LblTop);
+  { Parenthese ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+  { Detecter plage A..B }
+  ParseExpr(RangeStart);
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '..') Then
+  Begin
+    IsRange := True;
+    ParserAdvance;  { consommer '..' }
+    ParseExpr(RangeEnd);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    { Allouer compteur de boucle sur la pile }
+    CntLbl := LabelGen('_PRL_FECNT_');
+    { Chargement de la valeur de debut dans $var et le compteur }
+    ExprLoad(RangeStart);
+    If HasVar And (SymIdx >= 0) Then
+    Begin
+      Str(SymTab[SymIdx].Offset, CntLbl);
+      EmitInstr('MOV', 'WORD PTR [BP-' + CntLbl + '], AX');
+    End;
+    EmitLabel(LblTop);
+    { Test : compteur <= fin }
+    If HasVar And (SymIdx >= 0) Then
+    Begin
+      Str(SymTab[SymIdx].Offset, CntLbl);
+      EmitInstr('MOV', 'AX, WORD PTR [BP-' + CntLbl + ']');
+    End Else
+      EmitInstr('MOV', 'AX, 0');
+    ExprLoad(RangeEnd);
+    EmitInstr('XCHG', 'AX, BX');
+    EmitInstr('MOV', 'AX, BX');
+    { BX = courant, AX charge RangeEnd - on veut courant <= fin }
+    { En fait: charger courant dans BX, fin dans AX }
+    If HasVar And (SymIdx >= 0) Then
+    Begin
+      Str(SymTab[SymIdx].Offset, CntLbl);
+      EmitInstr('MOV', 'BX, WORD PTR [BP-' + CntLbl + ']');
+      ExprLoad(RangeEnd);
+    End Else
+      EmitInstr('MOV', 'BX, 0');
+    EmitInstr('CMP', 'BX, AX');
+    EmitInstr('JG', LblEnd);
+    LoopPush(LblEnd, LblCont, LblTop);
+    ParseBlock;
+    EmitLabel(LblCont);
+    { Incrementer $var }
+    If HasVar And (SymIdx >= 0) Then
+    Begin
+      Str(SymTab[SymIdx].Offset, CntLbl);
+      EmitInstr('INC', 'WORD PTR [BP-' + CntLbl + ']');
+    End;
+    EmitInstr('JMP', LblTop);
+    EmitLabel(LblEnd);
+    LoopPop;
+  End Else
+  Begin
+    { Liste simple : foreach (expr, ...) }
+    { Allocation : compteur d'index dans DATA }
+    IdxLbl  := LabelGen('_PRL_FEIDX_');
+    ListLbl := IdxLbl;
+    { Evaluer et imprimer la premiere expr  }
+    ExprLoad(RangeStart);
+    If HasVar And (SymIdx >= 0) Then
+    Begin
+      Str(SymTab[SymIdx].Offset, CntLbl);
+      EmitInstr('MOV', 'WORD PTR [BP-' + CntLbl + '], AX');
+    End;
+    { Consommer le reste de la liste silencieusement }
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      ParseExpr(DummyE);
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    { Boucle simplifiee : une seule iteration (limitation) }
+    EmitComment('foreach: boucle simplifiee (liste literale 1 iteration)');
+    LoopPush(LblEnd, LblCont, LblTop);
+    EmitLabel(LblTop);
+    ParseBlock;
+    EmitLabel(LblCont);
+    EmitLabel(LblEnd);
+    LoopPop;
+  End;
+  LoopPop;
+End;
+
+{ ---- ParseDoStmt : do BLOC [while/until cond]  --------------- }
+Procedure ParseDoStmt;
+Var
+  LblTop  : TString;
+  LblEnd  : TString;
+  LblCont : TString;
+  Cond    : TExprVal;
+  HasLoop : Boolean;
+  IsUntil : Boolean;
+Begin
+  ParserAdvance;  { consommer 'do' }
+  LblTop  := LabelGen('_PRL_DOTOP_');
+  LblEnd  := LabelGen('_PRL_DOEND_');
+  LblCont := LabelGen('_PRL_DOCNT_');
+  HasLoop := False;
+  IsUntil := False;
+  LoopPush(LblEnd, LblCont, LblTop);
+  EmitLabel(LblTop);
+  ParseBlock;
+  EmitLabel(LblCont);
+  { do BLOC while/until cond }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If (CurToken.Val = 'while') Or (CurToken.Val = 'until') Then
+    Begin
+      IsUntil := (CurToken.Val = 'until');
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(Cond);
+      ExprLoad(Cond);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      EmitInstr('TEST', 'AX, AX');
+      If IsUntil Then
+        EmitInstr('JZ', LblTop)    { until: reboucler si FAUX }
+      Else
+        EmitInstr('JNZ', LblTop);  { while: reboucler si VRAI }
+      HasLoop := True;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End;
+  End;
+  If Not HasLoop Then
+  Begin
+    { do BLOC seul (pas de while/until) : executer une fois }
+    EmitComment('do BLOC : execution unique');
+  End;
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+{ ============================================================
   TODO 07 - EMETTEUR DE CODE ASM
   ============================================================ }
 
@@ -3700,6 +4335,7 @@ Begin
   CurFrameSize := 0;
   CurFnDepth   := 0;
   LoopTop      := 0;
+  GKwConsumed  := False;
   CurFnRetLbl  := '';
   CurFnName    := '';
   CurPackage   := 'main';
