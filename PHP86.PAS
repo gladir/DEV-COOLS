@@ -235,23 +235,23 @@ Const
   PHP86_DATE     = '2026-03-05';
 
   { Limites des tableaux internes }
-  MAX_SYM        = 2048;
-  MAX_PROC       = 256;
-  MAX_LABEL      = 2048;
-  MAX_SCOPE      = 64;
-  MAX_DATA       = 256;
-  MAX_TYPE       = 32;
-  MAX_FIELD      = 64;
-  MAX_METHOD     = 128;
-  MAX_PARAM      = 32;
-  MAX_LOOP_NEST  = 16;
-  MAX_ERRORS     = 30;
-  MAX_STR        = 255;
-  MAX_INCLUDE    = 32;
+  MAX_SYM        = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_PROC       = {$IFDEF FPC}256{$ELSE}50{$ENDIF};
+  MAX_LABEL      = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE      = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA       = {$IFDEF FPC}256{$ELSE}128{$ENDIF};
+  MAX_TYPE       = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_FIELD      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_METHOD     = {$IFDEF FPC}128{$ELSE}32{$ENDIF};
+  MAX_PARAM      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST  = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS     = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR        = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_INCLUDE    = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   STACK_SIZE     = 1024;
-  MAX_CLASS      = 16;   { nombre max de classes                 }
-  MAX_CLASS_PROP = 16;   { proprietes max par classe             }
-  MAX_CLASS_METH = 16;   { methodes max par classe               }
+  MAX_CLASS      = {$IFDEF FPC}16{$ELSE}8{$ENDIF};   { nombre max de classes                 }
+  MAX_CLASS_PROP = {$IFDEF FPC}16{$ELSE}8{$ENDIF};   { proprietes max par classe             }
+  MAX_CLASS_METH = {$IFDEF FPC}16{$ELSE}8{$ENDIF};   { methodes max par classe               }
 
   { Prefixes de nommage ASM }
   PH_VAR_PFX   = '_PHV_';
@@ -3479,7 +3479,11 @@ Begin
           If      Op = '+=' Then EmitInstr('ADD',  'AX, BX')
           Else If Op = '-=' Then EmitInstr('SUB',  'AX, BX')
           Else If Op = '*=' Then EmitInstr('IMUL', 'BX')
-          Else If Op = '.=' Then Begin EmitInstr('MOV', 'SI, AX'); EmitInstr('MOV', 'DI, BX'); EmitInstr('CALL', PH_RT_PFX + 'CONCAT'); End
+          Else If Op = '.=' Then Begin
+           EmitInstr('MOV', 'SI, AX');
+           EmitInstr('MOV', 'DI, BX');
+           EmitInstr('CALL', PH_RT_PFX + 'CONCAT');
+          End
           Else                   EmitInstr('ADD',  'AX, BX');  { fallback }
           VarStore(Idx);
         End;
