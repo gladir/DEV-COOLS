@@ -204,20 +204,23 @@ Const
   RUST86_VERSION = '1.0';
   RUST86_DATE    = '2026-03-04';
 
-  MAX_SYM    = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};   { entrees table des symboles             }
+  MAX_SYM    = {$IFDEF FPC}2048{$ELSE}64{$ENDIF};   { entrees table des symboles             }
   MAX_PROC   = {$IFDEF FPC}256{$ELSE}64{$ENDIF};     { fonctions fn                           }
-  MAX_IMPL   = 64;    { blocs impl (impl Type / impl Trait for Type) }
-  MAX_METHOD = 256;   { methodes total dans tous les blocs impl      }
-  MAX_BORROW = 128;   { verrous d'emprunt actifs simultanement max (TODO 11) }
-  MAX_PARAM  = {$IFDEF FPC}32{$ELSE}16{$ENDIF};      { parametres par fonction                }
-  MAX_FIELD  = 64;    { champs par struct/enum                     }
-  MAX_FIELDS_TOTAL = 512; { pool global de champs pour tous les types (TODO 07) }
+  MAX_IMPL   = {$IFDEF FPC}64{$ELSE}32{$ENDIF};    { blocs impl (impl Type / impl Trait for Type) }
+  MAX_METHOD = {$IFDEF FPC}256{$ELSE}30{$ENDIF};   { methodes total dans tous les blocs impl      }
+  MAX_BORROW   = {$IFDEF FPC}128{$ELSE}32{$ENDIF};  { verrous d'emprunt actifs simultanement max (TODO 11) }
+  MAX_LIFETIME = {$IFDEF FPC}64{$ELSE}16{$ENDIF};   { annotations de duree de vie actives max  (TODO 12) }
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};  { profondeur max de boucles imbriquees     (TODO 17) }
+  MAX_DATA   = {$IFDEF FPC}256{$ELSE}32{$ENDIF};    { entrees maxi dans le segment de donnees  (TODO 21) }
+  MAX_PARAM  = {$IFDEF FPC}32{$ELSE}8{$ENDIF};      { parametres par fonction                }
+  MAX_FIELD  = {$IFDEF FPC}64{$ELSE}32{$ENDIF};    { champs par struct/enum                     }
+  MAX_FIELDS_TOTAL = {$IFDEF FPC}512{$ELSE}64{$ENDIF}; { pool global de champs pour tous les types (TODO 07) }
   MAX_CONST  = 512;   { constantes (const / static immuable)       }
   MAX_TYPE   = 64;    { descripteurs de type                       }
   MAX_LABEL  = 2048;  { labels internes (if/loop/match/break...)   }
   MAX_SCOPE  = 64;    { profondeur maximale de portee              }
   MAX_ERRORS = 30;    { arret apres N erreurs                      }
-  MAX_STR    = {$IFDEF FPC}255{$ELSE}127{$ENDIF};    { longueur maximale d'une TString        }
+  MAX_STR    = {$IFDEF FPC}255{$ELSE}80{$ENDIF};    { longueur maximale d'une TString        }
   MAX_IMPORT = 32;    { fichiers mod / use inclus                  }
   MAX_SWITCH = 256;   { branches par match                         }
   MAX_MANGLE = 128;   { longueur maximale d'un nom mangle          }
@@ -230,6 +233,7 @@ Const
   RS_LABEL_PFX= '_RSL_';   { etiquettes de controle (if/loop/match)   }
   RS_STR_PFX  = '_RSK_';   { constantes de chaines litterales          }
   RS_RT_PFX   = '_RSRT_';  { routines runtime (panic, print, memcpy)   }
+  RS_MOD_PFX  = '_MOD_';   { fonctions definies dans les modules Rust   }
 
   { Codes de sortie du programme }
   EXIT_OK    = 0;
@@ -326,6 +330,7 @@ Type
   TTypeKind = (
     TKD_PRIM,    { type scalaire primitif (i8..u32, bool, char, ()) }
     TKD_REF,     { reference &T ou &mut T                          }
+    TKD_PTR,     { pointeur brut *const T ou *mut T     (TODO 23) }
     TKD_ARRAY,   { tableau de taille fixe [T; N]                   }
     TKD_TUPLE,   { tuple (T1, T2, ...)                             }
     TKD_STRUCT,  { struct avec champs nommes                      }
@@ -365,6 +370,35 @@ Type
     TypeIdx  : Integer;      { index du type pointe dans TypeTab       }
     IsActive : Boolean;      { emprunt encore actif dans la portee     }
     DeclLine : Integer;      { numero de ligne de la declaration       }
+  End;
+
+  { ============================================================
+    TODO 12 - Durees de vie : lifetime elision uniquement
+    ============================================================ }
+  TLifetimeRec = Record
+    Name      : TString;   { etiquette Rust : 'a, 'b, 'static ...      }
+    ScopeLevel: Integer;   { niveau de portee de la declaration         }
+    DeclLine  : Integer;   { ligne source de la declaration             }
+    IsElided  : Boolean;   { vrai si inferee par l'elision standard     }
+    IsComplex : Boolean;   { vrai si annotation complexe non verifiee   }
+  End;
+
+  { ============================================================
+    TODO 13 - Valeur d'une expression et son emplacement 8086
+    ============================================================ }
+  TExprKind = (
+    EK_NONE,   { valeur invalide / expression vide              }
+    EK_IMM,    { immediat : constante entiere                   }
+    EK_AX,     { valeur 16 bits dans le registre AX             }
+    EK_DXAX,   { valeur 32 bits dans DX:AX                     }
+    EK_MEM     { memoire : [BP + Offset]                        }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;  { ou est la valeur                    }
+    ImmVal  : LongInt;    { valeur si EK_IMM                    }
+    TypeIdx : Integer;    { type de l'expression dans TypeTab   }
+    Offset  : Integer;    { offset BP si EK_MEM                 }
   End;
 
   { ---- Enregistrement d'un type (table de types TypeTab) ---- }
@@ -441,6 +475,41 @@ Var
 Var
   BorrowTab  : Array[0..MAX_BORROW - 1] Of TBorrowRec;  { table des emprunts actifs }
   BorrowCount: Integer;                                  { nb d'emprunts enregistres }
+
+{ --- Variables globales des durees de vie (TODO 12) --- }
+Var
+  LifetimeTab  : Array[0..MAX_LIFETIME - 1] Of TLifetimeRec; { annotations actives  }
+  LifetimeCount: Integer;                                     { nb d'annotations      }
+
+{ --- Variables globales d'emission de code (TODO 13) --- }
+Var
+  OutF       : Text;     { fichier de sortie ASM                    }
+  OutFOpen   : Boolean;  { vrai si OutF est ouvert en ecriture      }
+  CurFrameSize : Integer;  { TODO 15 : taille de pile locale (octets) }
+  LoopTop      : Integer;  { TODO 17 : niveau de boucle courant (0 = hors boucle) }
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST-1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST-1] Of TString;
+
+{ --- Variables globales du segment de donnees (TODO 21) --- }
+Type
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR);  { entier 16b, octet, chaine }
+  TDataRec  = Record
+    LblName  : TString;        { etiquette assembleur (ex: _RSV_CNT) }
+    Kind     : TDataKind;      { type de donnee                      }
+    IntVal   : LongInt;        { valeur entiere pour DK_WORD/DK_BYTE }
+    StrVal   : TString;        { valeur chaine pour DK_STR           }
+    TypeIdx  : Integer;        { indice TypeTab                      }
+  End;
+Var
+  DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
+  DataCount  : Integer;  { nb d'entrees dans DataTab }
+
+{ --- Variables globales de modules (TODO 22) --- }
+Var
+  CurModPath    : TString;   { chemin de module courant ex: 'foo::bar' (vide = racine) }
+  ModDepth      : Integer;   { profondeur d'imbrication de mod BLOC }
+  InUnsafeDepth : Integer;   { TODO 23 : profondeur de bloc unsafe courant }
+  RuntimeEmitted: Boolean;   { TODO 24 : routines runtime deja emises dans OutF }
 
 { ============================================================
   Procedure : Erreur fatale
@@ -1653,6 +1722,7 @@ Begin
   Case K Of
     TKD_PRIM   : TypeKindName := 'prim  ';
     TKD_REF    : TypeKindName := 'ref   ';
+    TKD_PTR    : TypeKindName := 'ptr   ';
     TKD_ARRAY  : TypeKindName := 'array ';
     TKD_TUPLE  : TypeKindName := 'tuple ';
     TKD_STRUCT : TypeKindName := 'struct';
@@ -2477,6 +2547,8 @@ Function SymMangle(Cat : TSymCat; Const BaseName : TString) : TString;
 Var
   S : TString;
   I : Integer;
+  T : TString;
+  J : Integer;
 Begin
   S := BaseName;
   { Remplacer :: par _ dans le nom }
@@ -2492,7 +2564,20 @@ Begin
       Inc(I);
   End;
   Case Cat Of
-    SC_FN     : SymMangle := RS_FN_PFX   + S;
+    SC_FN : Begin
+      If CurModPath <> '' Then Begin
+        T := CurModPath + '::' + BaseName;
+        J := 1;
+        While J <= Length(T) - 1 Do Begin
+          If (T[J] = ':') And (T[J+1] = ':') Then Begin
+            Delete(T, J, 2);
+            If J <= Length(T) Then System.Insert('_', T, J);
+          End Else Inc(J);
+        End;
+        SymMangle := RS_MOD_PFX + T;
+      End Else
+        SymMangle := RS_FN_PFX + S;
+    End;
     SC_STATIC : SymMangle := RS_VAR_PFX  + S;
     SC_CONST  : SymMangle := RS_VAR_PFX  + S;
     SC_IMPL   : SymMangle := RS_IMPL_PFX + S;
@@ -2686,6 +2771,19 @@ Begin
   TypeAddRef := Idx;
 End;
 
+{ ---- TypeAddPtr : cree un type pointeur brut *const T ou *mut T ----
+  AElemIdx = index du type pointe, AIsMut = True pour *mut T.           }
+Function TypeAddPtr(AElemIdx : Integer; AIsMut : Boolean) : Integer;
+Var
+  Idx : Integer;
+  Nom : TString;
+Begin
+  If AIsMut Then Nom := '*mut '   + TypeName(AElemIdx)
+            Else Nom := '*const ' + TypeName(AElemIdx);
+  Idx := TypeAddRec(TKD_PTR, Nom, 2, 2, False, AElemIdx, 0);
+  TypeAddPtr := Idx;
+End;
+
 { ---- BorrowAdd : enregistre un nouvel emprunt ----
   Retourne l'index dans BorrowTab.                  }
 Function BorrowAdd(Const AVarName : TString; AKind : TBorrowKind;
@@ -2752,57 +2850,2298 @@ Begin
 End;
 
 { ============================================================
+  TODO 12 - DUREES DE VIE (LIFETIME ELISION UNIQUEMENT)
+  LifetimeInit, LifetimeAdd, LifetimeFind, LifetimeElide, LifetimeDump
+  ============================================================ }
+
+{ ---- LifetimeInit : vider la table des durees de vie ---- }
+Procedure LifetimeInit;
+Var I : Integer;
+Begin
+  For I := 0 To MAX_LIFETIME - 1 Do Begin
+    LifetimeTab[I].Name       := '';
+    LifetimeTab[I].ScopeLevel := 0;
+    LifetimeTab[I].DeclLine   := 0;
+    LifetimeTab[I].IsElided   := False;
+    LifetimeTab[I].IsComplex  := False;
+  End;
+  LifetimeCount := 0;
+End;
+
+{ ---- LifetimeAdd : enregistrer une annotation de duree de vie ----
+  Retourne l'index dans LifetimeTab.                              }
+Function LifetimeAdd(Const AName : TString; AScopeLevel, ADeclLine : Integer;
+                     AIsElided : Boolean) : Integer;
+Var Idx : Integer;
+Begin
+  If LifetimeCount >= MAX_LIFETIME Then Begin
+    WriteLn('RUST86: FATAL - table lifetimes pleine (MAX_LIFETIME=', MAX_LIFETIME, ')');
+    Halt(EXIT_ERROR);
+  End;
+  Idx := LifetimeCount;
+  LifetimeTab[Idx].Name       := AName;
+  LifetimeTab[Idx].ScopeLevel := AScopeLevel;
+  LifetimeTab[Idx].DeclLine   := ADeclLine;
+  LifetimeTab[Idx].IsElided   := AIsElided;
+  LifetimeTab[Idx].IsComplex  := False;
+  Inc(LifetimeCount);
+  LifetimeAdd := Idx;
+End;
+
+{ ---- LifetimeFind : rechercher une lifetime par son nom ----
+  Retourne l'index ou -1 si absente.                          }
+Function LifetimeFind(Const AName : TString) : Integer;
+Var I : Integer;
+Begin
+  LifetimeFind := -1;
+  For I := 0 To LifetimeCount - 1 Do
+    If LifetimeTab[I].Name = AName Then Begin
+      LifetimeFind := I;
+      Exit;
+    End;
+End;
+
+{ ---- LifetimeElide : appliquer les regles d'elision standard ----
+  AInputRefCount = nombre de references en entree de la signature.
+  Regle 1 : 0 refs en entree -> pas de sortie lifetime (OK, True).
+  Regle 2 : 1 ref en entree  -> elision : sortie = meme lifetime (OK, True).
+  Sinon    : complexe -> avertissement, retourne False.            }
+Function LifetimeElide(AInputRefCount : Integer) : Boolean;
+Begin
+  If AInputRefCount <= 1 Then Begin
+    LifetimeElide := True;
+    Exit;
+  End;
+  WriteLn('RUST86: avertissement: ',
+          AInputRefCount, ' references en entree, ',
+          'l', #39, 'elision de duree de vie ne s', #39,
+          'applique pas, annotation explicite non verifiee.');
+  Inc(WarnCount);
+  LifetimeElide := False;
+End;
+
+{ ---- LifetimeDump : afficher la table des durees de vie en mode -v ---- }
+Procedure LifetimeDump;
+Var I : Integer;
+Begin
+  WriteLn('--- LifetimeTab (', LifetimeCount, ' entrees) ---');
+  For I := 0 To LifetimeCount - 1 Do Begin
+    Write('  [', I, '] name=', LifetimeTab[I].Name,
+          ' scope=', LifetimeTab[I].ScopeLevel,
+          ' line=',  LifetimeTab[I].DeclLine,
+          ' elided=', LifetimeTab[I].IsElided,
+          ' complex=', LifetimeTab[I].IsComplex);
+    WriteLn;
+  End;
+End;
+
+{ ============================================================
+  TODO 13 - PARSEUR D'EXPRESSIONS ET GENERATION DE CODE 8086
+  EmitOpen, EmitClose, EmitRaw, EmitInstr, EmitLabel, EmitComment,
+  BinOpPrec, ExprMakeImm, ExprMakeNone, ExprLoad,
+  ExprEmitBinOp, ParserAdvance,
+  ParseExprPrec (Forward), ParsePrimary, ParseExprPrec, ParseExpr
+  ============================================================ }
+
+{ ---- EmitOpen : ouvrir le fichier de sortie en ecriture ---- }
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then Begin
+    WriteLn('RUST86: Erreur - impossible de creer ', Opts.OutFile);
+    Inc(ErrorCount);
+    OutFOpen := False;
+    Exit;
+  End;
+  OutFOpen := True;
+End;
+
+{ ---- EmitClose : fermer le fichier de sortie ---- }
+Procedure EmitClose;
+Begin
+  If OutFOpen Then Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le fichier de sortie ---- }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, S);
+End;
+
+{ ---- EmitInstr : instruction indentee TAB mnemo TAB operandes ---- }
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  If Ops <> '' Then
+    WriteLn(OutF, #9, Mnem, #9, Ops)
+  Else
+    WriteLn(OutF, #9, Mnem);
+End;
+
+{ ---- EmitLabel : ecrire une etiquette suivie de ':' ---- }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, Lbl, ':');
+End;
+
+{ ---- EmitComment : ecrire un commentaire ---- }
+Procedure EmitComment(Const Msg : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '; ', Msg);
+End;
+
+{ ---- BinOpPrec : precedence d'un operateur binaire (0 = pas binaire) ----
+  Echelle croissante || (1) -> * / % (9). Suit les priorites Rust.    }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = '||'                                    Then BinOpPrec := 1
+  Else If Op = '&&'                               Then BinOpPrec := 2
+  Else If (Op = '==') Or (Op = '!=')
+       Or (Op = '<')  Or (Op = '>')
+       Or (Op = '<=') Or (Op = '>=')              Then BinOpPrec := 3
+  Else If Op = '|'                                Then BinOpPrec := 4
+  Else If Op = '^'                                Then BinOpPrec := 5
+  Else If Op = '&'                                Then BinOpPrec := 6
+  Else If (Op = '<<') Or (Op = '>>')             Then BinOpPrec := 7
+  Else If (Op = '+')  Or (Op = '-')              Then BinOpPrec := 8
+  Else If (Op = '*')  Or (Op = '/') Or (Op = '%') Then BinOpPrec := 9
+  Else                                             BinOpPrec := 0;
+End;
+
+{ ---- ExprMakeImm : construire un TExprVal immediat ---- }
+Function ExprMakeImm(AVal : LongInt; ATypeIdx : Integer) : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_IMM;
+  E.ImmVal  := AVal;
+  E.TypeIdx := ATypeIdx;
+  E.Offset  := 0;
+  ExprMakeImm := E;
+End;
+
+{ ---- ExprMakeNone : valeur invalide (erreur ou vide) ---- }
+Function ExprMakeNone : TExprVal;
+Var E : TExprVal;
+Begin
+  E.Kind    := EK_NONE;
+  E.ImmVal  := 0;
+  E.TypeIdx := TY_UNKNOWN;
+  E.Offset  := 0;
+  ExprMakeNone := E;
+End;
+
+{ ---- ExprLoad : materialiser la valeur dans AX (emet MOV AX si besoin) ---- }
+Procedure ExprLoad(Var E : TExprVal);
+Var S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM  : Begin
+                 Str(E.ImmVal, S);
+                 EmitInstr('MOV', 'AX, ' + S);
+                 E.Kind := EK_AX;
+               End;
+    EK_MEM  : Begin
+                 Str(Abs(E.Offset), S);
+                 If E.Offset >= 0 Then
+                   EmitInstr('MOV', 'AX, [BP+' + S + ']')
+                 Else
+                   EmitInstr('MOV', 'AX, [BP-' + S + ']');
+                 E.Kind := EK_AX;
+               End;
+    EK_AX   : ;   { deja dans AX }
+    EK_DXAX : ;   { deja dans DX:AX }
+    EK_NONE : ;
+  End;
+End;
+
+{ ---- ExprEmitBinOp : generer le code 8086 pour un operateur binaire ----
+  Pliage de constantes si L et R sont EK_IMM.
+  Sinon : charge L dans AX et emet l'instruction 8086.                 }
+Procedure ExprEmitBinOp(Const Op : TString; Var L : TExprVal; Var R : TExprVal);
+Var RS : TString;
+Begin
+  { Pliage de constantes : les deux immediats }
+  If (L.Kind = EK_IMM) And (R.Kind = EK_IMM) Then Begin
+    If      Op = '+'  Then L.ImmVal := L.ImmVal + R.ImmVal
+    Else If Op = '-'  Then L.ImmVal := L.ImmVal - R.ImmVal
+    Else If Op = '*'  Then L.ImmVal := L.ImmVal * R.ImmVal
+    Else If Op = '/'  Then Begin
+      If R.ImmVal = 0 Then Begin
+        WriteLn('RUST86: erreur: division par zero'); Inc(ErrorCount);
+      End Else L.ImmVal := L.ImmVal Div R.ImmVal;
+    End
+    Else If Op = '%'  Then Begin
+      If R.ImmVal = 0 Then Begin
+        WriteLn('RUST86: erreur: modulo par zero'); Inc(ErrorCount);
+      End Else L.ImmVal := L.ImmVal Mod R.ImmVal;
+    End
+    Else If Op = '&'  Then L.ImmVal := L.ImmVal And R.ImmVal
+    Else If Op = '|'  Then L.ImmVal := L.ImmVal Or  R.ImmVal
+    Else If Op = '^'  Then L.ImmVal := L.ImmVal Xor R.ImmVal
+    Else If Op = '<<' Then L.ImmVal := L.ImmVal Shl R.ImmVal
+    Else If Op = '>>' Then L.ImmVal := L.ImmVal Shr R.ImmVal
+    Else If Op = '==' Then Begin If L.ImmVal =  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '!=' Then Begin If L.ImmVal <> R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<'  Then Begin If L.ImmVal <  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '<=' Then Begin If L.ImmVal <= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>'  Then Begin If L.ImmVal >  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '>=' Then Begin If L.ImmVal >= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '&&' Then Begin If (L.ImmVal <> 0) And (R.ImmVal <> 0) Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If Op = '||' Then Begin If (L.ImmVal <> 0) Or  (R.ImmVal <> 0) Then L.ImmVal := 1 Else L.ImmVal := 0; End;
+    { L reste EK_IMM avec la valeur pliee }
+    Exit;
+  End;
+  { Cas general : L dans AX, R immediat ou via BX }
+  ExprLoad(L);
+  If R.Kind = EK_IMM Then Begin
+    Str(R.ImmVal, RS);
+    If      Op = '+'  Then EmitInstr('ADD',  'AX, ' + RS)
+    Else If Op = '-'  Then EmitInstr('SUB',  'AX, ' + RS)
+    Else If Op = '&'  Then EmitInstr('AND',  'AX, ' + RS)
+    Else If Op = '|'  Then EmitInstr('OR',   'AX, ' + RS)
+    Else If Op = '^'  Then EmitInstr('XOR',  'AX, ' + RS)
+    Else If Op = '<<' Then EmitInstr('SHL',  'AX, ' + RS)
+    Else If Op = '>>' Then Begin
+      If TypeIsSigned(L.TypeIdx) Then EmitInstr('SAR', 'AX, ' + RS)
+                                  Else EmitInstr('SHR', 'AX, ' + RS);
+    End
+    Else If Op = '*'  Then EmitInstr('IMUL', RS)
+    Else If Op = '/'  Then Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+    End
+    Else If Op = '%'  Then Begin
+      EmitInstr('MOV', 'BX, ' + RS);
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+      EmitInstr('MOV', 'AX, DX');
+    End
+    Else If Op = '==' Then Begin EmitInstr('CMP', 'AX, ' + RS); EmitInstr('MOV', 'AX, 0'); EmitInstr('SETE',  'AL'); End
+    Else If Op = '!=' Then Begin EmitInstr('CMP', 'AX, ' + RS); EmitInstr('MOV', 'AX, 0'); EmitInstr('SETNE', 'AL'); End
+    Else If Op = '<'  Then Begin EmitInstr('CMP', 'AX, ' + RS); EmitInstr('MOV', 'AX, 0'); EmitInstr('SETL',  'AL'); End
+    Else If Op = '<=' Then Begin EmitInstr('CMP', 'AX, ' + RS); EmitInstr('MOV', 'AX, 0'); EmitInstr('SETLE', 'AL'); End
+    Else If Op = '>'  Then Begin EmitInstr('CMP', 'AX, ' + RS); EmitInstr('MOV', 'AX, 0'); EmitInstr('SETG',  'AL'); End
+    Else If Op = '>=' Then Begin EmitInstr('CMP', 'AX, ' + RS); EmitInstr('MOV', 'AX, 0'); EmitInstr('SETGE', 'AL'); End
+    Else If Op = '&&' Then EmitInstr('AND', 'AX, ' + RS)
+    Else If Op = '||' Then EmitInstr('OR',  'AX, ' + RS);
+  End Else Begin
+    { R non immediat -> charger dans BX via pile intermediaire }
+    EmitInstr('PUSH', 'AX');        { sauvegarder L }
+    ExprLoad(R);
+    EmitInstr('MOV',  'BX, AX');    { BX = R }
+    EmitInstr('POP',  'AX');        { AX = L }
+    If      Op = '+'  Then EmitInstr('ADD',  'AX, BX')
+    Else If Op = '-'  Then EmitInstr('SUB',  'AX, BX')
+    Else If Op = '&'  Then EmitInstr('AND',  'AX, BX')
+    Else If Op = '|'  Then EmitInstr('OR',   'AX, BX')
+    Else If Op = '^'  Then EmitInstr('XOR',  'AX, BX')
+    Else If Op = '*'  Then EmitInstr('IMUL', 'BX')
+    Else If Op = '/'  Then Begin EmitInstr('CWD', ''); EmitInstr('IDIV', 'BX'); End
+    Else If Op = '%'  Then Begin EmitInstr('CWD', ''); EmitInstr('IDIV', 'BX'); EmitInstr('MOV', 'AX, DX'); End
+    Else Begin
+      EmitInstr('CMP', 'AX, BX');
+      EmitInstr('MOV', 'AX, 0');
+      If      Op = '==' Then EmitInstr('SETE',  'AL')
+      Else If Op = '!=' Then EmitInstr('SETNE', 'AL')
+      Else If Op = '<'  Then EmitInstr('SETL',  'AL')
+      Else If Op = '<=' Then EmitInstr('SETLE', 'AL')
+      Else If Op = '>'  Then EmitInstr('SETG',  'AL')
+      Else If Op = '>=' Then EmitInstr('SETGE', 'AL');
+    End;
+  End;
+  L.Kind := EK_AX;
+End;
+
+{ ---- ParserAdvance : consommer le token courant, avancer au suivant ---- }
+Procedure ParserAdvance;
+Begin
+  LexNextToken(CurToken);
+End;
+
+{ Declarations anticipees pour la recursion mutuelle }
+Function ParseExprPrec(MinPrec : Integer) : TExprVal; Forward;
+
+{ ============================================================
+  TODO 14 - Appels de fonctions et de methodes
+  ParseCallArgs, EmitCallSite
+  ============================================================ }
+
+{ ---- ParseCallArgs : analyser la liste d'arguments et les empiler ----
+  Precondition : CurToken est '(' (l'apostrophe ouvrante).
+  Les arguments sont evalues gauche-droite, pousses droite-gauche (cdecl).
+  Retourne le nombre d'arguments consommes.                              }
+Function ParseCallArgs : Integer;
+Var
+  Args   : Array[0..MAX_PARAM - 1] Of TExprVal;
+  ArgCnt : Integer;
+  I      : Integer;
+Begin
+  ArgCnt := 0;
+  ParserAdvance;   { consommer '(' }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+        (CurToken.Kind <> TK_EOF) Do Begin
+    If ArgCnt >= MAX_PARAM Then Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': trop d', #39, 'arguments (max=', MAX_PARAM, ')');
+      Inc(ErrorCount);
+      Break;
+    End;
+    Args[ArgCnt] := ParseExprPrec(1);
+    Inc(ArgCnt);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;   { consommer la virgule }
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;     { consommer la parenthese fermante }
+  { Pousser les arguments de droite a gauche (convention cdecl) }
+  For I := ArgCnt - 1 DownTo 0 Do Begin
+    ExprLoad(Args[I]);
+    EmitInstr('PUSH', 'AX');
+  End;
+  ParseCallArgs := ArgCnt;
+End;
+
+{ ---- EmitCallSite : emettre CALL + nettoyage pile (cdecl) ----
+  ManglName  : etiquette 8086 de la fonction.
+  ArgCnt     : nombre d'arguments (chacun 2 octets sur 8086).
+  RetTypeIdx : type de retour (determine AX / DX:AX / rien).
+  Retourne un TExprVal decrivant la valeur de retour.          }
+Function EmitCallSite(Const ManglName : TString;
+                      ArgCnt, RetTypeIdx : Integer) : TExprVal;
+Var
+  E   : TExprVal;
+  NSP : TString;
+Begin
+  EmitInstr('CALL', ManglName);
+  { nettoyage par l'appelant : ADD SP, n*2 }
+  If ArgCnt > 0 Then Begin
+    Str(ArgCnt * 2, NSP);
+    EmitInstr('ADD', 'SP, ' + NSP);
+  End;
+  E.ImmVal := 0;
+  E.Offset := 0;
+  If RetTypeIdx = TY_IDX_UNIT Then Begin
+    E.Kind    := EK_NONE;
+    E.TypeIdx := TY_IDX_UNIT;
+  End Else If TypeSizeof(RetTypeIdx) > 2 Then Begin
+    E.Kind    := EK_DXAX;
+    E.TypeIdx := RetTypeIdx;
+  End Else Begin
+    E.Kind    := EK_AX;
+    E.TypeIdx := RetTypeIdx;
+  End;
+  EmitCallSite := E;
+End;
+
+{ ---- DataAdd : forward declare pour usage dans ParsePrimary ---- }
+Procedure DataAdd(Const ALbl : TString; AKind : TDataKind;
+                  AInt : LongInt; Const AStr : TString;
+                  ATy : Integer); Forward;
+
+{ ---- ParseClosureExpr doit etre resolu apres ParseBlock ---- }
+Function ParseClosureExpr(ParamsClosed : Boolean) : TExprVal; Forward;
+
+{ ---- ParseMacroCall doit etre resolu apres le corps de ParsePrimary ---- }
+Function ParseMacroCall(Const MacroName : TString) : TExprVal; Forward;
+
+{ ---- ParsePrimary : expression primaire (lit., ident., unaire, groupe) ---- }
+Function ParsePrimary : TExprVal;
+Var
+  E     : TExprVal;
+  S     : TString;
+  Idx   : Integer;
+  Name  : TString;    { identificateur courant                       }
+  MethN : TString;    { nom de la methode apres '.'                  }
+  MangN : TString;    { nom mangle de la fonction ou methode         }
+  RetTy : Integer;    { type de retour de la fonction                }
+  ACnt  : Integer;    { nombre d'arguments de l'appel                }
+  ELine : Integer;    { ligne pour messages d'erreur                 }
+Begin
+  E := ExprMakeNone;
+  If CurToken.Kind = TK_INTEGER Then Begin
+    E := ExprMakeImm(CurToken.IntVal, TY_IDX_I32);
+    ParserAdvance;
+  End Else If CurToken.Kind = TK_STRING Then Begin
+    { chaine litterale : ajouter dans DataTab  et retourner OFFSET }
+    S := RS_STR_PFX + SymNewLabel('S');
+    DataAdd(S, DK_STR, 0, CurToken.Val, TY_IDX_STR);
+    EmitInstr('MOV', 'AX, OFFSET ' + S);
+    E.Kind    := EK_AX;
+    E.TypeIdx := TY_IDX_STR;
+    E.ImmVal  := 0;
+    E.Offset  := 0;
+    ParserAdvance;
+  End Else If CurToken.Kind = TK_CHAR Then Begin
+    { caractere litteral : constante immediate }
+    E := ExprMakeImm(CurToken.IntVal, TY_IDX_U8);
+    ParserAdvance;
+  End Else If (CurToken.Kind = TK_KEYWORD) And
+              ((CurToken.Val = 'true') Or (CurToken.Val = 'false')) Then Begin
+    { booleen : true=1, false=0 }
+    If CurToken.Val = 'true' Then
+      E := ExprMakeImm(1, TY_IDX_BOOL)
+    Else
+      E := ExprMakeImm(0, TY_IDX_BOOL);
+    ParserAdvance;
+  End Else If CurToken.Kind = TK_IDENT Then Begin
+    Name  := CurToken.Val;
+    ELine := CurToken.Line;
+    ParserAdvance;   { avancer : CurToken = token apres l'ident }
+    { --- Appel de macro : name!(...) --- }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then Begin
+      ParserAdvance;   { consommer '!' }
+      E := ParseMacroCall(Name);
+    End Else
+    { --- Appel de fonction : name(...) --- }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
+      Idx := SymFindCat(Name, SC_FN);
+      If Idx >= 0 Then Begin
+        MangN := SymTab[Idx].MangledName;
+        RetTy := SymTab[Idx].TypeIdx;
+      End Else Begin
+        MangN := RS_FN_PFX + Name;
+        RetTy := TY_IDX_UNIT;   { type de retour inconnu : suppose unit }
+        WriteLn('RUST86: avertissement ligne ', ELine,
+                ': fonction non declaree, appel : ', Name);
+        Inc(WarnCount);
+      End;
+      ACnt := ParseCallArgs;   { consomme '(' args... ')' et pousse les args }
+      E    := EmitCallSite(MangN, ACnt, RetTy);
+    End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then Begin
+      { --- Appel de methode : obj.method(...) --- }
+      ParserAdvance;   { consommer '.' }
+      If CurToken.Kind <> TK_IDENT Then Begin
+        WriteLn('RUST86: erreur ligne ', ELine,
+                ': nom de methode attendu apres le point');
+        Inc(ErrorCount);
+      End Else Begin
+        MethN := CurToken.Val;
+        ParserAdvance;   { consommer nom_methode }
+        { rechercher le type de l'objet pour construire le nom mangle }
+        Idx := SymFind(Name);
+        If Idx >= 0 Then Begin
+          MangN := RS_IMPL_PFX + TypeName(SymTab[Idx].TypeIdx) + '_' + MethN;
+          RetTy := TY_IDX_UNIT;   { type de retour affine par le parseur complet }
+        End Else Begin
+          MangN := RS_IMPL_PFX + Name + '_' + MethN;
+          RetTy := TY_IDX_UNIT;
+          WriteLn('RUST86: avertissement ligne ', ELine,
+                  ': type de ', Name, ' non resolu, appel : ', MethN);
+          Inc(WarnCount);
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
+          ACnt := ParseCallArgs;
+          E    := EmitCallSite(MangN, ACnt, RetTy);
+        End Else Begin
+          WriteLn('RUST86: erreur ligne ', ELine,
+                  ': parenthese attendue apres le nom de methode');
+          Inc(ErrorCount);
+        End;
+      End;
+    End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Then Begin
+      { --- Appel statique : Trait::fn(...) --- }
+      ParserAdvance;   { consommer '::' }
+      If CurToken.Kind <> TK_IDENT Then Begin
+        WriteLn('RUST86: erreur ligne ', ELine,
+                ': nom de fonction attendu apres :: dans ', Name);
+        Inc(ErrorCount);
+      End Else Begin
+        MethN := CurToken.Val;
+        ParserAdvance;   { consommer nom_fn }
+        MangN := RS_IMPL_PFX + Name + '_' + MethN;
+        RetTy := TY_IDX_UNIT;   { type de retour affine en TODO 19 }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
+          ACnt := ParseCallArgs;
+          E    := EmitCallSite(MangN, ACnt, RetTy);
+        End Else Begin
+          WriteLn('RUST86: erreur ligne ', ELine,
+                  ': parenthese attendue apres Trait::', MethN);
+          Inc(ErrorCount);
+        End;
+      End;
+    End Else Begin
+      { --- Variable ordinaire --- }
+      Idx := SymFind(Name);
+      If Idx >= 0 Then Begin
+        E.Kind    := EK_MEM;
+        E.Offset  := SymTab[Idx].Offset;
+        E.TypeIdx := SymTab[Idx].TypeIdx;
+        E.ImmVal  := 0;
+      End Else Begin
+        WriteLn('RUST86: erreur ligne ', ELine,
+                ': identifiant inconnu : ', Name);
+        Inc(ErrorCount);
+      End;
+    End;
+  End Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
+    ParserAdvance;
+    E := ParseExprPrec(1);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance
+    Else Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': parenthese fermante attendue');
+      Inc(ErrorCount);
+    End;
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then Begin
+    ParserAdvance;
+    E := ParsePrimary;
+    If E.Kind = EK_IMM Then
+      E.ImmVal := -E.ImmVal
+    Else Begin
+      ExprLoad(E);
+      EmitInstr('NEG', 'AX');
+    End;
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then Begin
+    ParserAdvance;
+    E := ParsePrimary;
+    If E.Kind = EK_IMM Then Begin
+      If E.ImmVal = 0 Then E.ImmVal := 1 Else E.ImmVal := 0;
+    End Else Begin
+      ExprLoad(E);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('MOV',  'AX, 0');
+      EmitInstr('SETE', 'AL');
+    End;
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then Begin
+    { deref *ptr : operation unsafe uniquement }
+    If InUnsafeDepth = 0 Then Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': deref pointeur brut interdit hors unsafe');
+      Inc(ErrorCount);
+    End;
+    ParserAdvance;
+    E := ParsePrimary;
+    ExprLoad(E);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('MOV', 'AX, [BX]');
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then Begin
+    { &borrow : adresse de la variable }
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then Begin
+      Idx := SymFind(CurToken.Val);
+      If Idx >= 0 Then Begin
+        Str(Abs(SymTab[Idx].Offset), S);
+        If SymTab[Idx].Offset >= 0 Then
+          EmitInstr('LEA', 'AX, [BP+' + S + ']')
+        Else
+          EmitInstr('LEA', 'AX, [BP-' + S + ']');
+        E.Kind    := EK_AX;
+        E.TypeIdx := TypeAddRef(SymTab[Idx].TypeIdx, False);
+        E.ImmVal  := 0;
+        E.Offset  := 0;
+      End Else Begin
+        WriteLn('RUST86: erreur ligne ', CurToken.Line,
+                ': variable inconnue dans &borrow: ', CurToken.Val);
+        Inc(ErrorCount);
+      End;
+      ParserAdvance;
+    End;
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '||') Then Begin
+    { closure sans parametres : || expr ou || BLOC }
+    ParserAdvance;           { consommer '||' }
+    E := ParseClosureExpr(True);
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then Begin
+    { closure avec parametres : |p1, p2| expr ou |p1| BLOC }
+    ParserAdvance;           { consommer '|' ouvrant }
+    E := ParseClosureExpr(False);
+  End Else Begin
+    If CurToken.Kind <> TK_EOF Then Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': expression attendue, trouve "', CurToken.Val, '"');
+      Inc(ErrorCount);
+      ParserAdvance;
+    End;
+  End;
+  ParsePrimary := E;
+End;
+
+{ ---- ParseExprPrec : boucle Pratt par precedence croissante ---- }
+Function ParseExprPrec;  { corps du Forward declre plus haut }
+Var
+  L    : TExprVal;
+  R    : TExprVal;
+  Op   : TString;
+  Prec : Integer;
+Begin
+  L := ParsePrimary;
+  While CurToken.Kind = TK_OP Do Begin
+    Op   := CurToken.Val;
+    Prec := BinOpPrec(Op);
+    If Prec < MinPrec Then Break;
+    ParserAdvance;
+    R := ParseExprPrec(Prec + 1);
+    ExprEmitBinOp(Op, L, R);
+  End;
+  ParseExprPrec := L;
+End;
+
+{ ---- ParseExpr : point d'entree du parseur d'expressions ---- }
+Function ParseExpr : TExprVal;
+Begin
+  ParserAdvance;           { charger le 1er token dans CurToken }
+  ParseExpr := ParseExprPrec(1);
+End;
+
+{ ============================================================
+  TODO 15 - LET, AFFECTATION, BLOCS
+  ParseTypeName, ParseLetStmt, ParseCompoundAssign,
+  ParseStmt (Forward), ParseBlock, ParseStmt corpus
+  ============================================================ }
+
+{ ---- ParseTypeName : reconnaitre un nom de type Rust ----
+  Consomme le token courant si c'est un type connu.
+  Retourne l'index TypeTab ou TY_UNKNOWN si non reconnu.   }
+Function ParseTypeName : Integer;
+Var N : TString; Idx : Integer; IsMut : Boolean; Inner : Integer;
+Begin
+  Idx := TY_UNKNOWN;
+  { pointeur brut : *const T ou *mut T }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then Begin
+    ParserAdvance;
+    IsMut := False;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mut') Then Begin
+      IsMut := True; ParserAdvance;
+    End Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'const') Then
+      ParserAdvance;
+    Inner := ParseTypeName;
+    If Inner = TY_UNKNOWN Then Inner := TY_IDX_I16;
+    ParseTypeName := TypeAddPtr(Inner, IsMut);
+    Exit;
+  End;
+  N := CurToken.Val;
+  If CurToken.Kind = TK_IDENT Then Begin
+    Idx := TypeFind(N);
+    If Idx >= 0 Then ParserAdvance
+                Else Idx := TY_UNKNOWN;
+  End;
+  ParseTypeName := Idx;
+End;
+
+{ Declarations anticipees pour ParseStmt/ParseBlock/ParseTopLevel }
+Procedure ParseStmt; Forward;
+Procedure ParseTopLevel; Forward;
+Procedure ParseUseDecl; Forward;
+Procedure ParseModDecl; Forward;
+Procedure ParseUnsafeBlock; Forward;
+Procedure ParseExternDecl; Forward;
+
+{ ---- ParseBlock : analyser un bloc stmt* entre accolades ----
+  Ouvre une portee, analyse les instructions, ferme la portee.
+  La derniere expression sans ';' est la valeur du bloc.     }
+Function ParseBlock : TExprVal;
+Var E : TExprVal;
+Begin
+  E := ExprMakeNone;
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line, ': accolade ouvrante attendue');
+    Inc(ErrorCount);
+    ParseBlock := E;
+    Exit;
+  End;
+  ParserAdvance;   { consommer '{' }
+  SymEnterScope;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+        And (CurToken.Kind <> TK_EOF) Do Begin
+    { expression finale sans ';' = valeur du bloc }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then Break;
+    ParseStmt;
+  End;
+  SymLeaveScope;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance   { consommer l'accolade fermante }
+  Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line, ': accolade fermante attendue');
+    Inc(ErrorCount);
+  End;
+  ParseBlock := E;
+End;
+
+{ ============================================================
+  TODO 19 - CLOSURES (FORME SIMPLIFIEE)
+  ParseClosureExpr : closure non-capturante emise comme fn anonyme
+  Signature : |params| expr   ou   |params| BLOC
+  Convention cdecl 8086 : params a [BP+4], [BP+6], ...
+  Si la closure accede a une variable hors portee -> warning
+  ============================================================ }
+
+{ ---- ParseClosureExpr : corps apres consommation du pipe ouvrant ----
+  ParamsClosed = True  -> '||' deja consomme, aucun parametre a lire.
+  ParamsClosed = False -> lit les params jusqu'au pipe fermant.        }
+Function ParseClosureExpr; { corps du Forward }
+Var
+  LblClo    : TString;
+  LblCloEnd : TString;
+  E         : TExprVal;
+  ParamName : TString;
+  ParamOfs  : Integer;
+  ParamCnt  : Integer;
+  HasMut    : Boolean;
+  OfsStr    : TString;
+Begin
+  LblClo    := SymNewLabel('CLO');
+  LblCloEnd := SymNewLabel('CLOEND');
+
+  { le corps de la closure est emis ici-meme ; on saute par-dessus }
+  EmitInstr('JMP', LblCloEnd);
+  EmitLabel(LblClo);
+
+  { prologue cdecl 8086 }
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV',  'BP, SP');
+
+  { enregistrer les parametres dans une portee locale }
+  SymEnterScope;
+  ParamCnt := 0;
+
+  If Not ParamsClosed Then Begin
+    { lire les parametres jusqu'au pipe fermant }
+    While Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '|'))
+          And (CurToken.Kind <> TK_EOF) Do Begin
+      HasMut := False;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mut') Then Begin
+        HasMut := True;
+        ParserAdvance;
+      End;
+      If CurToken.Kind = TK_IDENT Then Begin
+        ParamName := CurToken.Val;
+        ParserAdvance;
+        { type optionnel : name }  
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then Begin
+          ParserAdvance;
+          ParseTypeName;
+        End;
+        { offset cdecl : BP+4 premier, BP+6 deuxieme, etc. }
+        ParamOfs := 4 + ParamCnt * 2;
+        Str(ParamOfs, OfsStr);
+        SymAdd(ParamName, SC_PARAM, TY_IDX_I16, HasMut, ParamOfs, 0);
+        Inc(ParamCnt);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    { consommer le pipe fermant }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then
+      ParserAdvance;
+  End;
+
+  { corps de la closure : BLOC ou expression }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParseBlock
+  Else Begin
+    E := ParseExprPrec(1);
+    ExprLoad(E);
+  End;
+
+  SymLeaveScope;
+
+  { epilogue cdecl 8086 }
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+
+  { label de saut post-corps }
+  EmitLabel(LblCloEnd);
+
+  { retourner l'adresse de la closure dans AX }
+  EmitInstr('MOV', 'AX, OFFSET ' + LblClo);
+  E.Kind    := EK_AX;
+  E.TypeIdx := TY_IDX_UNIT;
+  E.ImmVal  := 0;
+  E.Offset  := 0;
+  ParseClosureExpr := E;
+End;
+
+{ ---- ParseLetStmt : analyser let [mut] name [: Type] [= expr]; ----
+  Alloue l'espace sur la pile (SUB SP, taille) et enregistre le symbole. }
+Procedure ParseLetStmt;
+Var
+  IsMut   : Boolean;
+  VarName : TString;
+  TyIdx   : Integer;
+  VarSize : Integer;
+  OfsStr  : TString;
+  E       : TExprVal;
+Begin
+  { consommer 'let' (deja consomme par ParseStmt) }
+  IsMut := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mut') Then Begin
+    IsMut := True;
+    ParserAdvance;
+  End;
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line, ': nom de variable attendu apres let');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+  { type optionnel : Type }
+  TyIdx := TY_IDX_I16;   { type par defaut i16 }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then Begin
+    ParserAdvance;
+    TyIdx := ParseTypeName;
+    If TyIdx = TY_UNKNOWN Then Begin
+      WriteLn('RUST86: avertissement: type inconnu pour ', VarName, ', i16 assume');
+      Inc(WarnCount);
+      TyIdx := TY_IDX_I16;
+    End;
+  End;
+  { allouer sur la pile : taille minimale = 2 octets (word 8086) }
+  VarSize := TypeSizeof(TyIdx);
+  If VarSize < 2 Then VarSize := 2;
+  Dec(CurFrameSize, VarSize);
+  Str(VarSize, OfsStr);
+  EmitComment('let ' + VarName + ' : ' + TypeName(TyIdx));
+  EmitInstr('SUB', 'SP, ' + OfsStr);
+  { enregistrer dans SymTab avec offset BP-relatif (negatif) }
+  SymAdd(VarName, SC_VAR, TyIdx, IsMut, CurFrameSize, CurToken.Line);
+  { initialiseur optionnel = expr }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then Begin
+    ParserAdvance;
+    E := ParseExprPrec(1);
+    ExprLoad(E);
+    Str(Abs(CurFrameSize), OfsStr);
+    EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
+  End;
+  { point-virgule }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance
+  Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line, ': point-virgule attendu apres let');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- ParseCompoundAssign : generer l'instruction composee (+=, -=...) ----
+  AName = nom de la variable cible, Op = operateur binaire de base.    }
+Procedure ParseCompoundAssign(Const AName, Op : TString);
+Var
+  Idx    : Integer;
+  E      : TExprVal;
+  OfsStr : TString;
+  L      : TExprVal;
+Begin
+  Idx := SymFind(AName);
+  If Idx < 0 Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line, ': variable inconnue : ', AName);
+    Inc(ErrorCount);
+    Exit;
+  End;
+  If Not SymTab[Idx].IsMut Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': tentative d', #39, 'affectation d', #39, 'une variable non-mut : ', AName);
+    Inc(ErrorCount);
+  End;
+  { charger la valeur courante dans L }
+  L.Kind    := EK_MEM;
+  L.Offset  := SymTab[Idx].Offset;
+  L.TypeIdx := SymTab[Idx].TypeIdx;
+  L.ImmVal  := 0;
+  { evaluer le membre droit }
+  E := ParseExprPrec(1);
+  ExprEmitBinOp(Op, L, E);   { resultat dans AX }
+  Str(Abs(SymTab[Idx].Offset), OfsStr);
+  If SymTab[Idx].Offset >= 0 Then
+    EmitInstr('MOV', '[BP+' + OfsStr + '], AX')
+  Else
+    EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
+End;
+
+{ ============================================================
+  TODO 16 - IF / ELSE / IF LET
+  ParseIfStmt : generer les sauts conditionnels 8086
+  Labels : _RSL_ELSE_N et _RSL_ENDIF_N via SymNewLabel
+  ============================================================ }
+
+{ ---- ParseIfStmt : analyser  if cond BLOC [else BLOC|if]  ----
+  Supporte egalement if let IDENT = expr BLOC (liaison simple). }
+Procedure ParseIfStmt;
+Var
+  LblElse   : TString;
+  LblEndif  : TString;
+  Cond      : TExprVal;
+  HasElse   : Boolean;
+  PatName   : TString;
+  HasPat    : Boolean;
+  PatVarOfs : Integer;
+  VarSize   : Integer;
+  OfsStr    : TString;
+Begin
+  { 'if' deja consomme par l'appelant }
+  HasPat    := False;
+  PatName   := '';
+  PatVarOfs := 0;
+
+  { --- if let Pattern = expr --- }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'let') Then Begin
+    ParserAdvance;   { consommer 'let' }
+    HasPat := True;
+    If CurToken.Kind = TK_IDENT Then Begin
+      PatName := CurToken.Val;
+      ParserAdvance;
+    End Else Begin
+      WriteLn('RUST86: avertissement ligne ', CurToken.Line,
+              ': motif complexe dans if let, simplifie');
+      Inc(WarnCount);
+    End;
+    { consommer '=' }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      ParserAdvance
+    Else Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': ''='' attendu dans if let');
+      Inc(ErrorCount);
+    End;
+  End;
+
+  { evaluer la condition (ou valeur de if let) dans AX }
+  Cond := ParseExprPrec(1);
+  ExprLoad(Cond);
+
+  { generer les labels locaux uniques }
+  LblElse  := SymNewLabel('ELSE');
+  LblEndif := SymNewLabel('ENDIF');
+
+  { TEST AX, AX puis saut conditionnel vers branche else }
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblElse);
+
+  { si if let avec variable, allouer et lier AX au nom }
+  If HasPat And (PatName <> '_') And (PatName <> '') Then Begin
+    VarSize := 2;   { i16 par defaut }
+    Dec(CurFrameSize, VarSize);
+    PatVarOfs := CurFrameSize;
+    EmitInstr('SUB', 'SP, 2');
+    SymAdd(PatName, SC_VAR, TY_IDX_I16, False, PatVarOfs, CurToken.Line);
+    Str(Abs(PatVarOfs), OfsStr);
+    EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
+  End;
+
+  { branche then }
+  ParseBlock;
+
+  HasElse := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else');
+  If HasElse Then
+    EmitInstr('JMP', LblEndif);
+
+  { etiquette else (atterrissage du JZ) }
+  EmitLabel(LblElse);
+
+  If HasElse Then Begin
+    ParserAdvance;   { consommer 'else' }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then Begin
+      ParserAdvance;   { consommer 'if' }
+      ParseIfStmt;     { else if : appel recursif }
+    End Else
+      ParseBlock;
+    EmitLabel(LblEndif);
+  End;
+End;
+
+{ ============================================================
+  TODO 17 - BOUCLES : loop, while, for..in, break, continue
+  LoopPush/LoopPop, ParseLoopStmt, ParseWhileStmt, ParseForInStmt
+  ============================================================ }
+
+Procedure LoopPush(Const BrkLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST - 1 Then Begin
+    WriteLn('RUST86: FATAL - boucles trop imbriquees (max=', MAX_LOOP_NEST, ')');
+    Halt(EXIT_ERROR);
+  End;
+  Inc(LoopTop);
+  LoopBreakLbl[LoopTop] := BrkLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+End;
+
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then Dec(LoopTop);
+End;
+
+{ ---- ParseLoopStmt : loop BLOC ---- }
+Procedure ParseLoopStmt;
+Var
+  LblLoop  : TString;
+  LblBreak : TString;
+Begin
+  LblLoop  := SymNewLabel('LOOP');
+  LblBreak := SymNewLabel('BREAK');
+  LoopPush(LblBreak, LblLoop);
+  EmitLabel(LblLoop);
+  ParseBlock;
+  EmitInstr('JMP', LblLoop);
+  EmitLabel(LblBreak);
+  LoopPop;
+End;
+
+{ ---- ParseWhileStmt : while cond BLOC ---- }
+Procedure ParseWhileStmt;
+Var
+  LblLoop  : TString;
+  LblBreak : TString;
+  Cond     : TExprVal;
+Begin
+  LblLoop  := SymNewLabel('LOOP');
+  LblBreak := SymNewLabel('BREAK');
+  LoopPush(LblBreak, LblLoop);
+  EmitLabel(LblLoop);
+  Cond := ParseExprPrec(1);
+  ExprLoad(Cond);
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblBreak);
+  ParseBlock;
+  EmitInstr('JMP', LblLoop);
+  EmitLabel(LblBreak);
+  LoopPop;
+End;
+
+{ ---- ParseForInStmt : for var in Start..End BLOC ----
+  Gere les intervalles a..b (exclusif) et a..=b (inclusif).
+  Variable de boucle allouee sur la pile (i16 par defaut).   }
+Procedure ParseForInStmt;
+Var
+  VarName   : TString;
+  LblLoop   : TString;
+  LblBreak  : TString;
+  StartE    : TExprVal;
+  EndE      : TExprVal;
+  OfsStr    : TString;
+  VarOfs    : Integer;
+  Inclusive : Boolean;
+Begin
+  LblLoop  := SymNewLabel('LOOP');
+  LblBreak := SymNewLabel('BREAK');
+  { lire le nom de la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line, ': variable attendue dans for..in');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+  { consommer 'in' }
+  If Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in')) Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': mot-cle ''in'' attendu dans for');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  ParserAdvance;
+  { evaluer la borne de debut -- ParseExprPrec s'arrete avant '..' }
+  StartE := ParseExprPrec(1);
+  { consommer '..' ou '..=' }
+  Inclusive := False;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '..=') Then Begin
+    Inclusive := True;
+    ParserAdvance;
+  End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '..') Then
+    ParserAdvance
+  Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': ''..'' ou ''..='' attendu dans for..in');
+    Inc(ErrorCount);
+  End;
+  { evaluer la borne de fin -- s'arrete sur l'accolade ouvrante }
+  EndE := ParseExprPrec(1);
+  { allouer la variable de boucle sur la pile }
+  Dec(CurFrameSize, 2);
+  VarOfs := CurFrameSize;
+  Str(Abs(VarOfs), OfsStr);
+  EmitInstr('SUB', 'SP, 2');
+  SymEnterScope;
+  SymAdd(VarName, SC_VAR, TY_IDX_I16, True, VarOfs, 0);
+  EmitComment('init var boucle ' + VarName);
+  ExprLoad(StartE);
+  EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
+  LoopPush(LblBreak, LblLoop);
+  { tete de boucle : tester borne }
+  EmitLabel(LblLoop);
+  EmitComment('test borne ' + VarName);
+  ExprLoad(EndE);
+  EmitInstr('MOV', 'BX, AX');
+  Str(Abs(VarOfs), OfsStr);
+  EmitInstr('MOV', 'AX, [BP-' + OfsStr + ']');
+  EmitInstr('CMP', 'AX, BX');
+  If Inclusive Then
+    EmitInstr('JG',  LblBreak)
+  Else
+    EmitInstr('JGE', LblBreak);
+  { corps de boucle }
+  ParseBlock;
+  { incrementer la variable }
+  Str(Abs(VarOfs), OfsStr);
+  EmitInstr('INC', 'WORD PTR [BP-' + OfsStr + ']');
+  EmitInstr('JMP', LblLoop);
+  EmitLabel(LblBreak);
+  LoopPop;
+  SymLeaveScope;
+End;
+
+{ ============================================================
+  TODO 18 - MATCH / FILTRAGE PAR MOTIF
+  match expr BraceOpen bras* BraceClose
+  Motifs : litteral entier, _ (joker), ident (liaison)
+  Garde : if cond apres le motif avant =>
+  Generation : CMP BX, lit + JNE bras_suivant + JMP fin_match
+  ============================================================ }
+
+Procedure ParseMatchStmt;
+Var
+  LblEnd   : TString;
+  LblNext  : TString;
+  Subject  : TExprVal;
+  Guard    : TExprVal;
+  Pat      : TString;
+  PatIsNum : Boolean;
+  PatVal   : LongInt;
+  OfsStr   : TString;
+  IsNeg    : Boolean;
+  VarOfs   : Integer;
+  InScope  : Boolean;
+Begin
+  { 'match' deja consomme par l'appelant }
+  LblEnd := SymNewLabel('MEND');
+
+  { evaluer le sujet dans AX, sauvegarder dans BX }
+  Subject := ParseExprPrec(1);
+  ExprLoad(Subject);
+  EmitInstr('MOV', 'BX, AX');
+
+  { accolade ouvrante du bloc match }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': accolade ouvrante attendue apres match expr');
+    Inc(ErrorCount);
+    Exit;
+  End;
+
+  { boucle sur les bras : motif [if garde] => corps [,] }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+        And (CurToken.Kind <> TK_EOF) Do Begin
+
+    LblNext  := SymNewLabel('MARM');
+    Pat      := '';
+    PatIsNum := False;
+    PatVal   := 0;
+    IsNeg    := False;
+    InScope  := False;
+
+    { motif negatif facultatif }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then Begin
+      IsNeg := True;
+      ParserAdvance;
+    End;
+
+    { motif : entier, _ ou ident }
+    If CurToken.Kind = TK_INTEGER Then Begin
+      PatIsNum := True;
+      PatVal   := CurToken.IntVal;
+      If IsNeg Then PatVal := -PatVal;
+      ParserAdvance;
+    End Else If CurToken.Kind = TK_IDENT Then Begin
+      Pat := CurToken.Val;
+      ParserAdvance;
+    End Else Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': motif inattendu dans match');
+      Inc(ErrorCount);
+      Exit;
+    End;
+
+    { comparer BX avec le motif entier -> sauter si different }
+    If PatIsNum Then Begin
+      Str(PatVal, OfsStr);
+      EmitInstr('CMP', 'BX, ' + OfsStr);
+      EmitInstr('JNE', LblNext);
+    End Else If Pat <> '_' Then Begin
+      { liaison variable : allouer sur la pile et charger BX }
+      SymEnterScope;
+      InScope := True;
+      Dec(CurFrameSize, 2);
+      VarOfs := CurFrameSize;
+      Str(Abs(VarOfs), OfsStr);
+      EmitInstr('SUB', 'SP, 2');
+      SymAdd(Pat, SC_VAR, TY_IDX_I16, False, VarOfs, CurToken.Line);
+      EmitInstr('MOV', '[BP-' + OfsStr + '], BX');
+    End;
+    { _ joker : pas de comparaison }
+
+    { garde optionnelle : if cond }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then Begin
+      ParserAdvance;
+      Guard := ParseExprPrec(1);
+      ExprLoad(Guard);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblNext);
+    End;
+
+    { consommer '=>' }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+      ParserAdvance
+    Else Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': ''=>'' attendu dans bras match');
+      Inc(ErrorCount);
+    End;
+
+    { corps du bras : bloc ou expression }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      ParseBlock
+    Else Begin
+      Subject := ParseExprPrec(1);
+      ExprLoad(Subject);
+    End;
+
+    { liberer la portee de liaison si necessaire }
+    If InScope Then SymLeaveScope;
+
+    { sauter a la fin du match puis etiquette du bras suivant }
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblNext);
+
+    { virgule optionnelle entre bras }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+
+  { accolade fermante du match }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': accolade fermante attendue en fin de match');
+    Inc(ErrorCount);
+  End;
+
+  EmitLabel(LblEnd);
+End;
+
+{ ============================================================
+  TODO 21 - SEGMENT DE DONNEES : STATICS ET CONSTS
+  TDataRec/DataTab, DataAdd, EmitDataSeg
+  ParseStaticDecl, ParseConstDecl
+  Gestion des chaines litterales TK_STRING dans ParsePrimary
+  ============================================================ }
+
+{ ---- DataAdd : enregistrer une entree dans DataTab ---- }
+Procedure DataAdd(Const ALbl : TString; AKind : TDataKind;
+                  AInt : LongInt; Const AStr : TString; ATy : Integer);
+Begin
+  If DataCount >= MAX_DATA Then Begin
+    WriteLn('RUST86: FATAL DataTab pleine (MAX_DATA=', MAX_DATA, ')');
+    Halt(EXIT_ERROR);
+  End;
+  DataTab[DataCount].LblName := ALbl;
+  DataTab[DataCount].Kind    := AKind;
+  DataTab[DataCount].IntVal  := AInt;
+  DataTab[DataCount].StrVal  := AStr;
+  DataTab[DataCount].TypeIdx := ATy;
+  Inc(DataCount);
+End;
+
+{ ============================================================
+  TODO 25 - GENERATION FINALE ET FICHIER .ASM
+  EmitHeader : en-tete MASM (MODEL SMALL, STACK, _TEXT SEGMENT)
+  EmitFooter : fermer _TEXT, emettre _DATA, emettre END
+  Rewrite Run : pipeline complet source -> .ASM
+  ============================================================ }
+
+{ ---- EmitHeader : emettre l'en-tete MASM du fichier .ASM ---- }
+Procedure EmitHeader;
+Var NS : TString;
+Begin
+  If Not OutFOpen Then Exit;
+  WriteLn(OutF, '; Generated by RUST86 v', RUST86_VERSION, ' (', RUST86_DATE, ')');
+  Str(STACK_SIZE, NS);
+  WriteLn(OutF, '; Cible : 8086 DOS (.MODEL SMALL)');
+  WriteLn(OutF, '; Pile  : ', NS, ' octets');
+  WriteLn(OutF);
+  WriteLn(OutF, '        .MODEL  SMALL');
+  WriteLn(OutF, '        .STACK  ', NS);
+  WriteLn(OutF);
+  WriteLn(OutF, '_TEXT   SEGMENT PUBLIC ''CODE''');
+  WriteLn(OutF, '        ASSUME  CS:_TEXT');
+  WriteLn(OutF);
+End;
+
+{ ---- EmitDataSeg : emettre toutes les entrees DataTab dans le fichier ASM ----
+  Appele apres emission du code (section TEXT) pour clore le segment.          }
+Procedure EmitDataSeg;
+Var
+  I   : Integer;
+  J   : Integer;
+  B   : Byte;
+  S   : TString;
+  NS  : TString;
+Begin
+  If Not OutFOpen Then Exit;
+  If DataCount = 0 Then Exit;
+  WriteLn(OutF);
+  WriteLn(OutF, '_DATA   SEGMENT PUBLIC ''DATA''');
+  WriteLn(OutF, '        ASSUME  DS:_DATA');
+  For I := 0 To DataCount - 1 Do Begin
+    Case DataTab[I].Kind Of
+      DK_WORD : Begin
+        Str(DataTab[I].IntVal, NS);
+        WriteLn(OutF, DataTab[I].LblName, ':');
+        WriteLn(OutF, '        DW      ', NS);
+      End;
+      DK_BYTE : Begin
+        Str(DataTab[I].IntVal, NS);
+        WriteLn(OutF, DataTab[I].LblName, ':');
+        WriteLn(OutF, '        DB      ', NS);
+      End;
+      DK_STR : Begin
+        S := DataTab[I].StrVal;
+        WriteLn(OutF, DataTab[I].LblName, ':');
+        Write(OutF,   '        DB      ');
+        For J := 1 To Length(S) Do Begin
+          B := Ord(S[J]);
+          Str(B, NS);
+          If J > 1 Then Write(OutF, ',');
+          Write(OutF, NS);
+        End;
+        WriteLn(OutF, ',0');
+      End;
+    End;
+  End;
+  WriteLn(OutF, '_DATA   ENDS');
+End;
+
+{ ---- ParseStaticDecl : static [mut] NAME : Type = expr; ---- }
+Procedure ParseStaticDecl;
+Var
+  IsMut   : Boolean;
+  VarName : TString;
+  TyIdx   : Integer;
+  MangN   : TString;
+  E       : TExprVal;
+Begin
+  IsMut := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mut') Then Begin
+    IsMut := True;
+    ParserAdvance;
+  End;
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': nom attendu apres static');
+    Inc(ErrorCount); Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+  TyIdx := TY_IDX_I16;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then Begin
+    ParserAdvance;
+    TyIdx := ParseTypeName;
+    If TyIdx = TY_UNKNOWN Then TyIdx := TY_IDX_I16;
+  End;
+  MangN := RS_VAR_PFX + VarName;
+  SymAdd(VarName, SC_STATIC, TyIdx, IsMut, 0, CurToken.Line);
+  SymTab[SymCount-1].MangledName := MangN;
+  { initialiseur optionnel }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then Begin
+    ParserAdvance;
+    E := ParseExprPrec(1);
+    If E.Kind = EK_IMM Then Begin
+      If TypeSizeof(TyIdx) <= 1 Then
+        DataAdd(MangN, DK_BYTE, E.ImmVal, '', TyIdx)
+      Else
+        DataAdd(MangN, DK_WORD, E.ImmVal, '', TyIdx);
+    End Else Begin
+      WriteLn('RUST86: avertissement ligne ', CurToken.Line,
+              ': initialiseur static non constant, 0 suppose pour ', VarName);
+      Inc(WarnCount);
+      DataAdd(MangN, DK_WORD, 0, '', TyIdx);
+    End;
+  End Else
+    DataAdd(MangN, DK_WORD, 0, '', TyIdx);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseConstDecl : const NAME : Type = expr; ---- }
+Procedure ParseConstDecl;
+Var
+  VarName : TString;
+  TyIdx   : Integer;
+  MangN   : TString;
+  E       : TExprVal;
+Begin
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': nom attendu apres const');
+    Inc(ErrorCount); Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+  TyIdx := TY_IDX_I16;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then Begin
+    ParserAdvance;
+    TyIdx := ParseTypeName;
+    If TyIdx = TY_UNKNOWN Then TyIdx := TY_IDX_I16;
+  End;
+  If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '=')) Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': ''='' attendu dans const');
+    Inc(ErrorCount); Exit;
+  End;
+  ParserAdvance;
+  E := ParseExprPrec(1);
+  MangN := RS_VAR_PFX + VarName;
+  SymAdd(VarName, SC_CONST, TyIdx, False, 0, CurToken.Line);
+  SymTab[SymCount-1].MangledName := MangN;
+  If E.Kind = EK_IMM Then Begin
+    If TypeSizeof(TyIdx) <= 1 Then
+      DataAdd(MangN, DK_BYTE, E.ImmVal, '', TyIdx)
+    Else
+      DataAdd(MangN, DK_WORD, E.ImmVal, '', TyIdx);
+  End Else Begin
+    WriteLn('RUST86: avertissement ligne ', CurToken.Line,
+            ': const non pliable, 0 suppose pour ', VarName);
+    Inc(WarnCount);
+    DataAdd(MangN, DK_WORD, 0, '', TyIdx);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 20 - GESTION MEMOIRE : PILE ET CADRE DE PILE
+  ParseReturnStmt, ParseFnDecl, ParseTopLevel
+  Prologue : PUSH BP / MOV BP,SP
+  Locaux   : chaque let emet SUB SP, n (incremental)
+  Epilogue : MOV SP,BP / POP BP / RET
+  N total  : -CurFrameSize apres le corps
+  ============================================================ }
+
+{ ---- ParseReturnStmt : return [expr]; ---- }
+Procedure ParseReturnStmt;
+Var E : TExprVal;
+Begin
+  { 'return' deja consomme }
+  If Not ((CurToken.Kind = TK_PUNCT) And
+         ((CurToken.Val = ';') Or (CurToken.Val = '}'))) Then Begin
+    E := ParseExprPrec(1);
+    ExprLoad(E);
+  End;
+  EmitInstr('MOV', 'SP, BP');
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseFnDecl : analyser fn name(params) [-> RetType] BLOC ----
+  Enregistre la fonction dans SymTab, emet le code 8086 complet.   }
+Procedure ParseFnDecl(IsPub : Boolean);
+Var
+  FnName   : TString;
+  MangName : TString;
+  RetTy    : Integer;
+  ParamCnt : Integer;
+  ParamN   : TString;
+  ParamTy  : Integer;
+  ParamOfs : Integer;
+  SaveFrm  : Integer;
+  FrameN   : Integer;
+  NSP      : TString;
+Begin
+  { 'fn' deja consomme }
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': nom de fonction attendu apres fn');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  ParserAdvance;
+  SymAdd(FnName, SC_FN, TY_IDX_I16, IsPub, 0, CurToken.Line);
+  MangName := SymTab[SymCount-1].MangledName;  { calcule par SymAdd via SymMangle }
+  { consommer '(' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': parenthese attendue apres le nom de fn');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  ParserAdvance;
+  SaveFrm  := CurFrameSize;
+  CurFrameSize := 0;
+  SymEnterScope;
+  ParamCnt := 0;
+  { lire les parametres }
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+        (CurToken.Kind <> TK_EOF) Do Begin
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'self') Then Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+      Continue;
+    End;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mut') Then
+      ParserAdvance;
+    If CurToken.Kind <> TK_IDENT Then Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line, ': parametre attendu');
+      Inc(ErrorCount); Break;
+    End;
+    ParamN := CurToken.Val;
+    ParserAdvance;
+    ParamTy := TY_IDX_I16;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then Begin
+      ParserAdvance;
+      ParamTy := ParseTypeName;
+      If ParamTy = TY_UNKNOWN Then ParamTy := TY_IDX_I16;
+    End;
+    ParamOfs := 4 + ParamCnt * 2;
+    SymAdd(ParamN, SC_PARAM, ParamTy, False, ParamOfs, CurToken.Line);
+    Inc(ParamCnt);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+  { type de retour optionnel }
+  RetTy := TY_IDX_UNIT;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then Begin
+    ParserAdvance;
+    RetTy := ParseTypeName;
+    If RetTy = TY_UNKNOWN Then RetTy := TY_IDX_UNIT;
+  End;
+  { prologue 8086 }
+  Str(ParamCnt, NSP);
+  EmitComment('fn ' + FnName + '  params=' + NSP);
+  If IsPub Then EmitRaw('        PUBLIC  ' + MangName);
+  EmitLabel(MangName);
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV',  'BP, SP');
+  { corps : locaux emis incrementalement par ParseLetStmt }
+  ParseBlock;
+  { epilogue implicite }
+  FrameN := -CurFrameSize;
+  Str(FrameN,  NSP);
+  EmitComment('frame size = ' + NSP + ' bytes');
+  EmitInstr('MOV', 'SP, BP');
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+  SymLeaveScope;
+  CurFrameSize := SaveFrm;
+End;
+
+{ ============================================================
+  TODO 22 - MODULES ET USE
+  ParseUseDecl : use chemin::nom [as alias];
+  ParseModDecl : mod nom BLOC avec imbrication de CurModPath
+  SymMangle(SC_FN) integre CurModPath -> _MOD_path_fn
+  ============================================================ }
+
+{ ---- ParseUseDecl : use chemin::nom [as alias]; ---- }
+Procedure ParseUseDecl;
+Var
+  Path  : TString;
+  Alias : TString;
+  MangN : TString;
+  Idx   : Integer;
+Begin
+  { 'use' deja consomme }
+  Path := '';
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': identifiant attendu apres use');
+    Inc(ErrorCount); Exit;
+  End;
+  Path := CurToken.Val; ParserAdvance;
+  { lire la suite du chemin : :: ident* }
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '::') Do Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then Begin
+      Path := Path + '::' + CurToken.Val; ParserAdvance;
+    End Else Break;
+  End;
+  { optionnel : as alias }
+  Alias := '';
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'as') Then Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then Begin
+      Alias := CurToken.Val; ParserAdvance;
+    End;
+  End;
+  { deduire alias depuis la derniere partie du chemin }
+  If Alias = '' Then Begin
+    Alias := Path;
+    Idx := Length(Alias);
+    While (Idx > 0) And (Alias[Idx] <> ':') Do Dec(Idx);
+    If Idx > 0 Then Alias := Copy(Alias, Idx+1, 255);
+  End;
+  { enregistrer l'alias dans la table des symboles }
+  MangN := SymMangle(SC_FN, Path);
+  SymAdd(Alias, SC_TYPEDEF, TY_IDX_I16, False, 0, CurToken.Line);
+  If SymCount > 0 Then
+    SymTab[SymCount-1].MangledName := MangN;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+  If Opts.Verbose Then
+    WriteLn('use ', Path, ' as ', Alias, ' -> ', MangN);
+End;
+
+{ ---- ParseModDecl : mod nom BLOC declarations ---- }
+Procedure ParseModDecl;
+Var
+  Name    : TString;
+  OldPath : TString;
+Begin
+  { 'mod' deja consomme }
+  If CurToken.Kind <> TK_IDENT Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': nom de module attendu apres mod');
+    Inc(ErrorCount); Exit;
+  End;
+  Name := CurToken.Val; ParserAdvance;
+  OldPath := CurModPath;
+  If CurModPath = '' Then CurModPath := Name
+  Else CurModPath := CurModPath + '::' + Name;
+  Inc(ModDepth);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then Begin
+    ParserAdvance;  { consommer { }
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+          And (CurToken.Kind <> TK_EOF) Do Begin
+      ParseTopLevel;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then Begin
+    { mod externe : mod name; -- ignorer corps }
+    ParserAdvance;
+  End;
+  Dec(ModDepth);
+  CurModPath := OldPath;
+  If Opts.Verbose Then
+    WriteLn('mod ', Name, ' OK (depth=', ModDepth+1, ')');
+End;
+
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL ET PANIC
+  EmitRuntime : emettre les 5 routines runtime 8086 dans OutF
+  ParseMacroCall : panic! unreachable! debug_assert! print! println!
+  RuntimeEmitted flag pour eviter double emission
+  ============================================================ }
+
+{ ---- EmitRuntime : emettre les routines runtime en ASM 8086 ---- }
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  If Not OutFOpen Then Exit;
+  EmitRaw('');
+  EmitRaw('; -------- RUST86 Runtime --------');
+  { === _RSRT_PANIC : SI = message zero-terminated, ecrit stderr + quitte === }
+  EmitLabel('_RSRT_PANIC');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('MOV',  'BX, 2');
+  EmitInstr('MOV',  'DX, SI');
+  EmitInstr('MOV',  'AX, SI');
+  EmitInstr('XOR',  'CX, CX');
+  EmitLabel('_RSRT_PANIC_L');
+  EmitRaw('        CMP     BYTE PTR [AX], 0');
+  EmitInstr('JE',   '_RSRT_PANIC_D');
+  EmitInstr('INC',  'AX');
+  EmitInstr('INC',  'CX');
+  EmitInstr('JMP',  '_RSRT_PANIC_L');
+  EmitLabel('_RSRT_PANIC_D');
+  EmitInstr('MOV',  'AH, 40h');
+  EmitInstr('INT',  '21h');
+  EmitInstr('POP',  'DX');
+  EmitInstr('POP',  'CX');
+  EmitInstr('POP',  'BX');
+  EmitInstr('MOV',  'AX, 4C01h');
+  EmitInstr('INT',  '21h');
+  { === _RSRT_PRINT : SI = message zero-terminated, ecrit stdout === }
+  EmitLabel('_RSRT_PRINT');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('MOV',  'BX, 1');
+  EmitInstr('MOV',  'DX, SI');
+  EmitInstr('MOV',  'AX, SI');
+  EmitInstr('XOR',  'CX, CX');
+  EmitLabel('_RSRT_PRINT_L');
+  EmitRaw('        CMP     BYTE PTR [AX], 0');
+  EmitInstr('JE',   '_RSRT_PRINT_D');
+  EmitInstr('INC',  'AX');
+  EmitInstr('INC',  'CX');
+  EmitInstr('JMP',  '_RSRT_PRINT_L');
+  EmitLabel('_RSRT_PRINT_D');
+  EmitInstr('MOV',  'AH, 40h');
+  EmitInstr('INT',  '21h');
+  EmitInstr('POP',  'DX');
+  EmitInstr('POP',  'CX');
+  EmitInstr('POP',  'BX');
+  EmitInstr('RET',  '');
+  { === _RSRT_MEMSET : DI = dest, AL = valeur, CX = nb octets === }
+  EmitLabel('_RSRT_MEMSET');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel('_RSRT_MEMSET_L');
+  EmitRaw('        MOV     [DI], AL');
+  EmitInstr('INC',  'DI');
+  EmitInstr('LOOP', '_RSRT_MEMSET_L');
+  EmitInstr('POP',  'DI');
+  EmitInstr('POP',  'CX');
+  EmitInstr('RET',  '');
+  { === _RSRT_MEMCPY : DI = dest, SI = src, CX = nb octets === }
+  EmitLabel('_RSRT_MEMCPY');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel('_RSRT_MEMCPY_L');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     [DI], AL');
+  EmitInstr('INC',  'SI');
+  EmitInstr('INC',  'DI');
+  EmitInstr('LOOP', '_RSRT_MEMCPY_L');
+  EmitInstr('POP',  'DI');
+  EmitInstr('POP',  'SI');
+  EmitInstr('POP',  'CX');
+  EmitInstr('RET',  '');
+  { === _RSRT_ITOA : AX = entier signe, DI = buffer sortie === }
+  EmitLabel('_RSRT_ITOA');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('XOR',  'CX, CX');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JGE',  '_RSRT_ITOA_POS');
+  EmitRaw('        MOV     BYTE PTR [DI], 2Dh');
+  EmitInstr('INC',  'DI');
+  EmitInstr('NEG',  'AX');
+  EmitLabel('_RSRT_ITOA_POS');
+  EmitInstr('MOV',  'BX, 10');
+  EmitLabel('_RSRT_ITOA_DIV');
+  EmitInstr('XOR',  'DX, DX');
+  EmitInstr('DIV',  'BX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('INC',  'CX');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNZ',  '_RSRT_ITOA_DIV');
+  EmitLabel('_RSRT_ITOA_POP');
+  EmitInstr('POP',  'AX');
+  EmitInstr('ADD',  'AL, 30h');
+  EmitRaw('        MOV     [DI], AL');
+  EmitInstr('INC',  'DI');
+  EmitInstr('LOOP', '_RSRT_ITOA_POP');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitInstr('POP',  'DI');
+  EmitInstr('POP',  'DX');
+  EmitInstr('POP',  'CX');
+  EmitInstr('POP',  'BX');
+  EmitInstr('RET',  '');
+End;
+
+{ ---- ParseMacroCall : gerer les macros Rust panic! unreachable! etc. ----
+  MacroName = nom sans '!', '(' deja attendu                              }
+Function ParseMacroCall;
+Var
+  E       : TExprVal;
+  Msg     : TString;
+  LblMsg  : TString;
+  LblSkip : TString;
+  Cond    : TExprVal;
+Begin
+  E := ExprMakeNone;
+  { Verifier et consommer '(' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': '' ( '' attendu apres macro ', MacroName, '!');
+    Inc(ErrorCount);
+    ParseMacroCall := E;
+    Exit;
+  End;
+  ParserAdvance;   { consommer '(' }
+  If MacroName = 'panic' Then Begin
+    Msg := 'panic!';
+    If CurToken.Kind = TK_STRING Then Begin
+      Msg := CurToken.Val; ParserAdvance;
+    End;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    LblMsg := RS_STR_PFX + SymNewLabel('PANIC');
+    DataAdd(LblMsg, DK_STR, 0, Msg, TY_IDX_STR);
+    EmitInstr('MOV',  'SI, OFFSET ' + LblMsg);
+    EmitInstr('CALL', '_RSRT_PANIC');
+  End Else If MacroName = 'unreachable' Then Begin
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    LblMsg := RS_STR_PFX + SymNewLabel('UNREACH');
+    DataAdd(LblMsg, DK_STR, 0, 'unreachable!', TY_IDX_STR);
+    EmitInstr('MOV',  'SI, OFFSET ' + LblMsg);
+    EmitInstr('CALL', '_RSRT_PANIC');
+  End Else If MacroName = 'debug_assert' Then Begin
+    Cond := ParseExprPrec(1);
+    ExprLoad(Cond);
+    LblSkip := SymNewLabel('ASSERT_OK');
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JNZ',  LblSkip);
+    LblMsg := RS_STR_PFX + SymNewLabel('ASSERTMSG');
+    DataAdd(LblMsg, DK_STR, 0, 'debug_assert failed', TY_IDX_STR);
+    EmitInstr('MOV',  'SI, OFFSET ' + LblMsg);
+    EmitInstr('CALL', '_RSRT_PANIC');
+    EmitLabel(LblSkip);
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+  End Else If MacroName = 'print' Then Begin
+    Msg := '';
+    If CurToken.Kind = TK_STRING Then Begin
+      Msg := CurToken.Val; ParserAdvance;
+    End;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    LblMsg := RS_STR_PFX + SymNewLabel('PRINT');
+    DataAdd(LblMsg, DK_STR, 0, Msg, TY_IDX_STR);
+    EmitInstr('MOV',  'SI, OFFSET ' + LblMsg);
+    EmitInstr('CALL', '_RSRT_PRINT');
+  End Else If MacroName = 'println' Then Begin
+    Msg := '';
+    If CurToken.Kind = TK_STRING Then Begin
+      Msg := CurToken.Val; ParserAdvance;
+    End;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    LblMsg := RS_STR_PFX + SymNewLabel('PRINTLN');
+    DataAdd(LblMsg, DK_STR, 0, Msg + Chr(10), TY_IDX_STR);
+    EmitInstr('MOV',  'SI, OFFSET ' + LblMsg);
+    EmitInstr('CALL', '_RSRT_PRINT');
+  End Else Begin
+    WriteLn('RUST86: avertissement ligne ', CurToken.Line,
+            ': macro inconnue ignoree: ', MacroName, '!');
+    Inc(WarnCount);
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  ParseMacroCall := E;
+End;
+
+{ ============================================================
+  TODO 23 - BLOCS UNSAFE ET POINTEURS BRUTS
+  ParseUnsafeBlock : unsafe BLOC avec InUnsafeDepth
+  ParseExternDecl  : extern ABI fn name() -> T + directive EXTRN
+  TypeAddPtr + TKD_PTR dans ParseTypeName
+  ============================================================ }
+
+{ ---- ParseUnsafeBlock : unsafe BLOC ---- }
+Procedure ParseUnsafeBlock;
+Begin
+  { 'unsafe' deja consomme }
+  Inc(InUnsafeDepth);
+  ParseBlock;
+  Dec(InUnsafeDepth);
+End;
+
+{ ---- ParseExternDecl : extern ABI fn name(params) -> T; ----
+  Reconnait extern ABI simple ou extern ABI BLOC.           }
+Procedure ParseExternDecl;
+Var
+  Name  : TString;
+  RetTy : Integer;
+Begin
+  { 'extern' deja consomme }
+  { consommer l'ABI optionnelle ex: "C" }
+  If CurToken.Kind = TK_STRING Then
+    ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then Begin
+    { extern ABI BLOC - plusieurs declarations fn }
+    ParserAdvance;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+          And (CurToken.Kind <> TK_EOF) Do Begin
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fn') Then Begin
+        ParserAdvance;
+        If CurToken.Kind <> TK_IDENT Then Begin Inc(ErrorCount); Break; End;
+        Name := CurToken.Val; ParserAdvance;
+        RetTy := TY_IDX_UNIT;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
+          ParserAdvance;
+          While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+                And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then Begin
+          ParserAdvance;
+          RetTy := ParseTypeName;
+          If RetTy = TY_UNKNOWN Then RetTy := TY_IDX_UNIT;
+        End;
+        SymAdd(Name, SC_FN, RetTy, False, 0, CurToken.Line);
+        If SymCount > 0 Then Begin
+          SymTab[SymCount-1].MangledName := Name;
+          SymTab[SymCount-1].IsRef := True;  { marqueur extern }
+        End;
+        EmitRaw('        EXTRN   ' + Name + ':NEAR');
+        If Opts.Verbose Then WriteLn('extern fn ', Name, ' -> EXTRN');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          ParserAdvance;
+      End Else ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fn') Then Begin
+    ParserAdvance;
+    If CurToken.Kind <> TK_IDENT Then Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line,
+              ': nom attendu apres extern fn');
+      Inc(ErrorCount); Exit;
+    End;
+    Name := CurToken.Val; ParserAdvance;
+    RetTy := TY_IDX_UNIT;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
+      ParserAdvance;
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+            And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then Begin
+      ParserAdvance;
+      RetTy := ParseTypeName;
+      If RetTy = TY_UNKNOWN Then RetTy := TY_IDX_UNIT;
+    End;
+    SymAdd(Name, SC_FN, RetTy, False, 0, CurToken.Line);
+    If SymCount > 0 Then Begin
+      SymTab[SymCount-1].MangledName := Name;
+      SymTab[SymCount-1].IsRef := True;  { marqueur extern }
+    End;
+    EmitRaw('        EXTRN   ' + Name + ':NEAR');
+    If Opts.Verbose Then WriteLn('extern fn ', Name, ' -> EXTRN');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': fn ou accolade attendue apres extern');
+    Inc(ErrorCount);
+  End;
+End;
+
+{ ---- ParseTopLevel : items de haut niveau (fn, pub fn, mod, use) ---- }
+Procedure ParseTopLevel;
+Var IsPub : Boolean;
+Begin
+  IsPub := False;
+  { === use chemin::nom [as alias]; === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'use') Then Begin
+    ParserAdvance;
+    ParseUseDecl;
+    Exit;
+  End;
+  { === mod nom BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mod') Then Begin
+    ParserAdvance;
+    ParseModDecl;
+    Exit;
+  End;
+  { === unsafe fn ou unsafe BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'unsafe') Then Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fn') Then Begin
+      ParserAdvance; ParseFnDecl(IsPub);
+    End Else
+      ParseUnsafeBlock;
+    Exit;
+  End;
+  { === extern ABI fn ... ou extern ABI BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'extern') Then Begin
+    ParserAdvance;
+    ParseExternDecl;
+    Exit;
+  End;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'pub') Then Begin
+    IsPub := True; ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fn') Then Begin
+    ParserAdvance;
+    ParseFnDecl(IsPub);
+  End Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then Begin
+    ParserAdvance;
+    ParseStaticDecl;
+  End Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'const') Then Begin
+    ParserAdvance;
+    ParseConstDecl;
+  End Else Begin
+    WriteLn('RUST86: erreur ligne ', CurToken.Line,
+            ': declaration attendue (fn, pub fn)');
+    Inc(ErrorCount);
+    ParserAdvance;
+  End;
+End;
+
+{ ---- ParseStmt : analyser une instruction ou expression-statement ---- }
+Procedure ParseStmt;   { corps du Forward }
+Var
+  Name   : TString;
+  Idx    : Integer;
+  E      : TExprVal;
+  Rhs    : TExprVal;
+  OfsStr : TString;
+  Op     : TString;
+Begin
+  { === static [mut] NAME : Type = expr; === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then Begin
+    ParserAdvance;
+    ParseStaticDecl;
+    Exit;
+  End;
+  { === use chemin::nom [as alias]; === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'use') Then Begin
+    ParserAdvance;
+    ParseUseDecl;
+    Exit;
+  End;
+  { === mod nom BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mod') Then Begin
+    ParserAdvance;
+    ParseModDecl;
+    Exit;
+  End;
+  { === unsafe BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'unsafe') Then Begin
+    ParserAdvance;
+    ParseUnsafeBlock;
+    Exit;
+  End;
+  { === extern ABI fn name() -> T; === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'extern') Then Begin
+    ParserAdvance;
+    ParseExternDecl;
+    Exit;
+  End;
+  { === const NAME : Type = expr; === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'const') Then Begin
+    ParserAdvance;
+    ParseConstDecl;
+    Exit;
+  End;
+  { === return [expr]; === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'return') Then Begin
+    ParserAdvance;
+    ParseReturnStmt;
+    Exit;
+  End;
+  { === fn name(params) BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fn') Then Begin
+    ParserAdvance;
+    ParseFnDecl(False);
+    Exit;
+  End;
+  { === pub fn name(params) BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'pub') Then Begin
+    ParserAdvance;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fn') Then Begin
+      ParserAdvance;
+      ParseFnDecl(True);
+    End;
+    Exit;
+  End;
+  { === let [mut] name ... === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'let') Then Begin
+    ParserAdvance;   { consommer 'let' }
+    ParseLetStmt;
+    Exit;
+  End;
+  { === if [let] cond BLOC [else BLOC] === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then Begin
+    ParserAdvance;   { consommer 'if' }
+    ParseIfStmt;
+    Exit;
+  End;
+  { === boucle loop BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'loop') Then Begin
+    ParserAdvance;
+    ParseLoopStmt;
+    Exit;
+  End;
+  { === boucle while cond BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then Begin
+    ParserAdvance;
+    ParseWhileStmt;
+    Exit;
+  End;
+  { === boucle for var in start..end BLOC === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'for') Then Begin
+    ParserAdvance;
+    ParseForInStmt;
+    Exit;
+  End;
+  { === match expr BLOC de bras === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'match') Then Begin
+    ParserAdvance;
+    ParseMatchStmt;
+    Exit;
+  End;
+  { === break : saut vers la sortie de boucle courante === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'break') Then Begin
+    If LoopTop > 0 Then
+      EmitInstr('JMP', LoopBreakLbl[LoopTop])
+    Else Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line, ': break hors boucle');
+      Inc(ErrorCount);
+    End;
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+  { === continue : saut vers la tete de boucle courante === }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'continue') Then Begin
+    If LoopTop > 0 Then
+      EmitInstr('JMP', LoopContLbl[LoopTop])
+    Else Begin
+      WriteLn('RUST86: erreur ligne ', CurToken.Line, ': continue hors boucle');
+      Inc(ErrorCount);
+    End;
+    ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+  { --- instruction bloc entre accolades --- }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then Begin
+    E := ParseBlock;
+    { point-virgule optionnel apres un bloc }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+  { === affectation simple ou composee : name = / name += ... === }
+  If CurToken.Kind = TK_IDENT Then Begin
+    Name := CurToken.Val;
+    ParserAdvance;   { avancer }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then Begin
+      ParserAdvance;   { consommer '=' }
+      Idx := SymFind(Name);
+      If Idx < 0 Then Begin
+        WriteLn('RUST86: erreur ligne ', CurToken.Line, ': variable inconnue : ', Name);
+        Inc(ErrorCount);
+      End Else If Not SymTab[Idx].IsMut Then Begin
+        WriteLn('RUST86: erreur ligne ', CurToken.Line,
+                ': tentative d', #39, 'affectation d', #39, 'une variable non-mut : ', Name);
+        Inc(ErrorCount);
+      End Else Begin
+        E := ParseExprPrec(1);
+        ExprLoad(E);
+        Str(Abs(SymTab[Idx].Offset), OfsStr);
+        If SymTab[Idx].Offset >= 0 Then
+          EmitInstr('MOV', '[BP+' + OfsStr + '], AX')
+        Else
+          EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    { affectations composees : += -= *= /= %= &= |= ^= }  
+    Op := '';
+    If CurToken.Kind = TK_OP Then Begin
+      If CurToken.Val = '+=' Then Op := '+'
+      Else If CurToken.Val = '-=' Then Op := '-'
+      Else If CurToken.Val = '*=' Then Op := '*'
+      Else If CurToken.Val = '/=' Then Op := '/'
+      Else If CurToken.Val = '%=' Then Op := '%'
+      Else If CurToken.Val = '&=' Then Op := '&'
+      Else If CurToken.Val = '|=' Then Op := '|'
+      Else If CurToken.Val = '^=' Then Op := '^';
+    End;
+    If Op <> '' Then Begin
+      ParserAdvance;   { consommer l'operateur compose }
+      ParseCompoundAssign(Name, Op);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    { sinon : c'est une expression commencant par un ident (appel, etc.) }
+    { On recree un TExprVal EK_MEM ou on rappelle ParsePrimary apres avoir }
+    { sauvegarde le nom -- ici on re-consomme via SymFind directement        }
+    Idx := SymFind(Name);
+    If Idx >= 0 Then Begin
+      E.Kind    := EK_MEM;
+      E.Offset  := SymTab[Idx].Offset;
+      E.TypeIdx := SymTab[Idx].TypeIdx;
+      E.ImmVal  := 0;
+    End Else
+      E := ExprMakeNone;
+    { continuer l'analyse comme expression binaire }
+    While CurToken.Kind = TK_OP Do Begin
+      Op := CurToken.Val;
+      If BinOpPrec(Op) = 0 Then Break;
+      ParserAdvance;
+      Rhs := ParseExprPrec(BinOpPrec(Op) + 1);
+      ExprEmitBinOp(Op, E, Rhs);
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+  { === expression-statement quelconque === }
+  E := ParseExprPrec(1);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
   Procedure : Corps principal de la compilation
   ============================================================ }
 Procedure Run;
 Var
-  T        : TToken;
-  RefIdx   : Integer;   { TODO 11 test : index du type reference cree }
-  RefIdx2  : Integer;   { TODO 11 test : deuxieme reference mutable   }
-  BIdx     : Integer;   { TODO 11 test : index dans BorrowTab         }
+  HasMain : Boolean;
+  I       : Integer;
 Begin
   { initialiser tous les sous-systemes }
   TypeInit;
   SymInit;
   ImplInit;
   BorrowInit;
-  LexInit;
-  If Opts.Verbose Then
-    WriteLn('RUST86: Analyse lexicale de ', Opts.SrcFile, ' ...');
-  Repeat
-    LexNextToken(T);
-    If Opts.DebugTok Then PrintToken(T);
-  Until T.Kind = TK_EOF;
-  If Opts.Verbose Then
-    WriteLn('RUST86: Analyse lexicale terminee.');
-  If Opts.Verbose Then TypeDump;
-  If Opts.Verbose Then SymDump;
-  If Opts.Verbose Then ImplDump;
-  { --- Auto-test TODO 11 : references et emprunts --- }
-  If Opts.Verbose Then
-  Begin
-    { Creer &i16 (partage) et &mut i32 (mutable) }
-    RefIdx  := TypeAddRef(TY_IDX_I16, False);
-    RefIdx2 := TypeAddRef(TY_IDX_I32, True);
-    WriteLn('T11 &i16  tyidx=', RefIdx,  ' name=', TypeTab[RefIdx].Name,
-            ' size=', TypeTab[RefIdx].Size);
-    WriteLn('T11 &mut i32 tyidx=', RefIdx2, ' name=', TypeTab[RefIdx2].Name,
-            ' size=', TypeTab[RefIdx2].Size);
-    { Enregistrer un emprunt &mut sur "buf" }
-    BIdx := BorrowAdd('buf', BK_MUT, RefIdx2, 42);
-    WriteLn('T11 borrow[', BIdx, '] var=', BorrowTab[BIdx].VarName,
-            ' active=', BorrowTab[BIdx].IsActive);
-    { Tenter un deuxieme &mut sur "buf" -> doit emettre une erreur }
-    BorrowCheckMutConflict('buf');
-    { Relacher "buf" et retenter -> pas d'erreur }
-    BorrowRelease('buf');
-    WriteLn('T11 apres release: active=', BorrowTab[BIdx].IsActive);
-    BorrowCheckMutConflict('buf');
-    { Affichage complet }
-    BorrowDump;
-    WriteLn('T11 ErrorCount=', ErrorCount);
+  LifetimeInit;
+  If Opts.Verbose Then Begin
+    WriteLn('RUST86: Compilation de ', Opts.SrcFile, ' ...');
   End;
-  { TODO 12+ : parseur, generation de code }
+  { Ouvrir le fichier de sortie et emettre l'en-tete MASM }
+  EmitOpen;
+  EmitHeader;
+  { Initialiser le parseur : ouvrir la source et lire le premier token }
+  LexInit;
+  ParserAdvance;
+  { Boucle principale : analyser les items de haut niveau }
+  While CurToken.Kind <> TK_EOF Do
+    ParseTopLevel;
+  LexClose;
+  { Routines runtime (toujours emises pour qu'un linker puisse les trouver) }
+  EmitRuntime;
+  { Fermer le segment de code }
+  EmitRaw('');
+  EmitRaw('_TEXT   ENDS');
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  { Epilogue : point d'entree }
+  WriteLn(OutF);
+  HasMain := False;
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].Cat = SC_FN) And (SymTab[I].Name = 'main') Then
+      HasMain := True;
+  If HasMain Then
+    WriteLn(OutF, '        END     _RSF_main')
+  Else
+    WriteLn(OutF, '        END');
+  EmitClose;
+  If Opts.Verbose Then
+    WriteLn('RUST86: ', TotalLines, ' lignes, ', SymCount, ' symboles, ',
+            ErrorCount, ' erreur(s), ', WarnCount, ' avertissement(s).');
 End;
 
 { ============================================================
@@ -2811,6 +5150,7 @@ End;
 Procedure Cleanup;
 Begin
   LexClose;
+  EmitClose;  { TODO 13 : fermer le fichier ASM si ouvert }
 End;
 
 { ============================================================
@@ -2827,7 +5167,16 @@ Begin
   FieldCount := 0;  { TODO 07 }
   ImplCount  := 0;  { TODO 10 }
   MethodCount:= 0;  { TODO 10 }
-  BorrowCount:= 0;  { TODO 11 }
+  BorrowCount  := 0;  { TODO 11 }
+  LifetimeCount:= 0;  { TODO 12 }
+  OutFOpen     := False;  { TODO 13 }
+  CurFrameSize := 0;      { TODO 15 }
+  LoopTop      := 0;      { TODO 17 }
+  DataCount      := 0;      { TODO 21 }
+  CurModPath     := '';     { TODO 22 }
+  ModDepth       := 0;      { TODO 22 }
+  InUnsafeDepth  := 0;      { TODO 23 }
+  RuntimeEmitted  := False;  { TODO 24 }
   SymCount   := 0;
   ScopeTop   := 0;
   CurScope   := 0;
