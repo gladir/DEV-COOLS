@@ -555,6 +555,10 @@ Var
   GCallArgCount  : Integer;  { nb args du dernier ParseCallArgs }
   CurArgShiftIdx : Integer;  { index prochain shift dans @_ }
 
+  { TODO 19 : expressions regulieres }
+  LexExpectRegex : Boolean;  { True apres =~ ou !~ pour scanner regex }
+  RegexSeq       : Integer;  { compteur labels regex dans DataTab }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -627,6 +631,10 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Function  CurTokIsInfixOp(Var OpStr : TString) : Boolean; Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ TODO 19 }
+Procedure ParseRegexOp(Const Op : TString;
+                        Var Left : TExprVal;
+                        Var Res  : TExprVal); Forward;
 { TODO 05 }
 Function  SymMangle(Cat : TSymCat; IsMy : Boolean;
                     Const Name, Pkg : TString;
@@ -1981,6 +1989,92 @@ Begin
   MakeToken(T, TK_PUNCT, S, SL, SC);
 End;
 
+{ ---- LexScanRegexLit : scanner un literal regex apres =~ ou !~ }
+{ Formes supportees :                                              }
+{   /pat/flags   m/pat/flags   s/pat/repl/flags   tr/s1/s2/flags  }
+{ Encode dans T.Val : kind + Chr(1) + pat + Chr(1) + repl         }
+{   kind = 'm' (match), 's' (substitution), 't' (transliteration) }
+Procedure LexScanRegexLit(Var T : TToken; SL, SC : Integer);
+Var
+  C    : Char;
+  Kind : Char;
+  Pat  : TString;
+  Repl : TString;
+Begin
+  C    := LexCurChar;
+  Kind := 'm';
+  Pat  := '';
+  Repl := '';
+  { Determiner le type et avancer jusqu'au premier '/' }
+  If C = 's' Then
+  Begin
+    Kind := 's';
+    LexAdvance;  { skip 's' }
+    { skip '/' delimiter }
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) Then LexAdvance;
+  End
+  Else If (C = 't') And (LexPeek = 'r') Then
+  Begin
+    Kind := 't';
+    LexAdvance;  { skip 't' }
+    LexAdvance;  { skip 'r' }
+    { skip '/' delimiter }
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) Then LexAdvance;
+  End
+  Else If C = 'm' Then
+  Begin
+    LexAdvance;  { skip 'm' }
+    { skip '/' delimiter }
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) Then LexAdvance;
+  End
+  Else
+  Begin
+    { C = '/' : delimiter direct }
+    LexAdvance;  { skip '/' }
+  End;
+  { Scanner le pattern jusqu'au prochain '/' }
+  While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+        (LexCurChar <> '/') Do
+  Begin
+    If LexCurChar = '\' Then
+    Begin
+      { Sequence d'echappement : conserver les deux caracteres }
+      If Length(Pat) < MAX_STR - 1 Then Pat := Pat + '\';
+      LexAdvance;
+      If (Not LexEOF) And (LexColNo <= Length(LexLine)) Then
+      Begin
+        If Length(Pat) < MAX_STR Then Pat := Pat + LexCurChar;
+        LexAdvance;
+      End;
+    End
+    Else
+    Begin
+      If Length(Pat) < MAX_STR Then Pat := Pat + LexCurChar;
+      LexAdvance;
+    End;
+  End;
+  { Consommer le '/' de fermeture du pattern }
+  If (Not LexEOF) And (LexColNo <= Length(LexLine)) Then LexAdvance;
+  { Pour s/// et tr/// : scanner la chaine de remplacement }
+  If (Kind = 's') Or (Kind = 't') Then
+  Begin
+    While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+          (LexCurChar <> '/') Do
+    Begin
+      If Length(Repl) < MAX_STR Then Repl := Repl + LexCurChar;
+      LexAdvance;
+    End;
+    { Consommer le '/' final }
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) Then LexAdvance;
+  End;
+  { Sauter les flags eventuels : g i m s x (on les ignore dans cette version) }
+  While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+        IsAlpha(LexCurChar) Do
+    LexAdvance;
+  { Encoder dans Val : kind + Chr(1) + pat + Chr(1) + repl }
+  MakeToken(T, TK_REGEXP, Kind + Chr(1) + Pat + Chr(1) + Repl, SL, SC);
+End;
+
 { ---- LexNextToken : produire le prochain token Perl ------- }
 Procedure LexNextToken(Var T : TToken);
 Var
@@ -1997,6 +2091,21 @@ Begin
   SL := LexLineNo;
   SC := LexColNo;
   C  := LexCurChar;
+
+  { TODO 19 : literal regex attendu apres =~ ou !~ }
+  If LexExpectRegex Then
+  Begin
+    LexExpectRegex := False;
+    If (C = '/') Or
+       ((C = 'm') And (LexPeek = '/')) Or
+       ((C = 's') And (LexPeek = '/')) Or
+       ((C = 't') And (LexPeek = 'r')) Then
+    Begin
+      LexScanRegexLit(T, SL, SC);
+      Exit;
+    End;
+    { Pas une regex reconnue : continuer le scan normal }
+  End;
 
   { Sigil $ : variable scalaire $nom }
   If C = '$' Then
@@ -2433,10 +2542,12 @@ Begin
   If (Op = '|') Or (Op = '^') Then Begin BinOpPrec := 8; Exit; End;
   { Prec 9 : & (bitwise and) }
   If Op = '&' Then Begin BinOpPrec := 9; Exit; End;
-  { Prec 10 : == != <=> eq ne cmp ~~ }
+  { Prec 10 : == != <=> eq ne cmp ~~ =~ !~ }
   If (Op = '==')  Or (Op = '!=')  Or (Op = '<=>') Or
      (Op = 'eq')  Or (Op = 'ne')  Or (Op = 'cmp') Or
      (Op = '~~')  Then Begin BinOpPrec := 10; Exit; End;
+  { TODO 19 : operateurs de matching =~ et !~ (meme precedence 10) }
+  If (Op = '=~') Or (Op = '!~') Then Begin BinOpPrec := 10; Exit; End;
   { Prec 11 : < > <= >= lt gt le ge }
   If (Op = '<')  Or (Op = '>')  Or (Op = '<=') Or (Op = '>=') Or
      (Op = 'lt') Or (Op = 'gt') Or (Op = 'le') Or (Op = 'ge') Then

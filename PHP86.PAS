@@ -5685,7 +5685,12 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
   ErrorCount   := 0;
   WarnCount    := 0;
   TotalLines   := 0;
@@ -5722,4 +5727,4 @@ Begin
     Halt(EXIT_ERROR)
   Else
     Halt(EXIT_OK);
-End.
+END.
