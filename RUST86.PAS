@@ -342,9 +342,9 @@ End;
 Procedure ShowHelp;
 Begin
   WriteLn('RUST86 v', RUST86_VERSION, ' (', RUST86_DATE, ')');
-  WriteLn('Compilateur Rust vers assembleur 8086');
+  WriteLn('Cette commande permet de lancer le compilateur Rust vers assembleur 8086');
   WriteLn;
-  WriteLn('Usage: RUST86 <source.rs> [<sortie.asm>] [options]');
+  WriteLn('Syntaxe: RUST86 <source.rs> [<sortie.asm>] [options]');
   WriteLn;
   WriteLn('Options:');
   WriteLn('  -v              Mode verbeux (messages detailles)');
@@ -4964,6 +4964,11 @@ End;
   PROGRAMME PRINCIPAL
   ============================================================ }
 BEGIN
+  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+   ShowHelp;
+   Halt(0);
+  End;
   ErrorCount := 0;
   WarnCount  := 0;
   TotalLines := 0;
