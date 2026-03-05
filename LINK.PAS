@@ -202,6 +202,8 @@ Var
  LibResolutionPasses:Integer;
  TraceLibRequested:Boolean;
  TraceLibSymbolsRequested:Boolean;
+ TraceLibNameFilter:String[128];
+ TraceSymNameFilter:String[32];
  MapRequested:Boolean;
  LineNumbersRequested:Boolean;
  PublicsMapRequested:Boolean;
@@ -587,6 +589,28 @@ End;
    CountUnresolvedExternalNames:=count;
   End;
 
+   Function TraceLibraryMatches(Const LibName:String):Boolean;
+   Var
+    u:String;
+    k:Integer;
+   Begin
+    u:=LibName;
+    For k:=1 to Length(u) do u[k]:=UpCase(u[k]);
+    If TraceLibNameFilter='' Then TraceLibraryMatches:=True
+                           Else TraceLibraryMatches:=Pos(TraceLibNameFilter,u)>0;
+   End;
+
+   Function TraceSymbolMatches(Const SymbolName:String):Boolean;
+   Var
+    u:String;
+    k:Integer;
+   Begin
+    u:=SymbolName;
+    For k:=1 to Length(u) do u[k]:=UpCase(u[k]);
+    If TraceSymNameFilter='' Then TraceSymbolMatches:=True
+                           Else TraceSymbolMatches:=Pos(TraceSymNameFilter,u)>0;
+   End;
+
   Procedure TraceUnresolvedExternalNames(Const Prefix:String; Const MaxItems:Integer);
   Var
    symItem:PSymbolItem;
@@ -602,7 +626,7 @@ End;
    While symItem<>Nil do Begin
     If symItem^.Value.IsExternal Then Begin
      nm:=NormalizeSymbolName(symItem^.Value.Name);
-     If (nm<>'')And IsExternalNameUnresolved(nm) Then Begin
+     If (nm<>'')And IsExternalNameUnresolved(nm)And TraceSymbolMatches(nm) Then Begin
       seen:=False;
       For k:=1 to count do
        If names[k]=nm Then Begin
@@ -3237,7 +3261,7 @@ Begin
    PublicRecordDefinesNeededSymbol:=True;
   End;
 
-  If DoTrace And TraceLibSymbolsRequested Then Begin
+  If DoTrace And TraceLibSymbolsRequested And TraceSymbolMatches(ParsedName) Then Begin
    If SymbolNeeded Then
     WriteLn('TRACE LIB:   symbole ',LibName,'::',DisplayModuleName,' -> ',ParsedName,' [utile]')
    Else
@@ -3417,6 +3441,7 @@ Var
  modulePublicCount,moduleNeededCount:Integer;
  moduleNeeded:Boolean;
  unresolvedNow:Integer;
+ traceThisLib:Boolean;
 Begin
  ResolveNeededModulesFromLibrary:=0;
  addedCount:=0;
@@ -3431,18 +3456,20 @@ Begin
   Exit;
  End;
 
- If TraceLibRequested Then
+ traceThisLib:=TraceLibRequested And TraceLibraryMatches(LibInputList^[LibIdx]);
+
+ If traceThisLib Then
   WriteLn('TRACE LIB: bibliotheque #',LibIdx,' -> ',LibInputList^[LibIdx]);
 
  fileLimit:=FileSize(LibF);
  scanPos:=0;
  While FindNextOmfModuleInLib(LibF,fileLimit,scanPos,modStart,modEnd,moduleName) do Begin
-  If TraceLibRequested Then
+  If traceThisLib Then
   WriteLn('TRACE LIB: module detecte ',LibInputList^[LibIdx],'::',moduleName,
         ' [start=',modStart,' end=',modEnd,']');
 
   If IsLibModuleAlreadyLoaded(LibIdx,modStart) Then Begin
-  If TraceLibRequested Then
+  If traceThisLib Then
    WriteLn('TRACE LIB:   module deja charge, ignore');
   Continue;
   End;
@@ -3450,16 +3477,16 @@ Begin
 
   unresolvedNow:=CountUnresolvedExternalNames;
   If unresolvedNow=0 Then Begin
-  If TraceLibRequested Then
+  If traceThisLib Then
    WriteLn('TRACE LIB:   aucun externe non resolu restant, arret du scan de la bibliotheque');
   Break;
   End;
 
   moduleNeeded:=ModuleDefinesNeededSymbol(LibF,modStart,modEnd,
                             LibInputList^[LibIdx],moduleName,
-                            TraceLibRequested,
+                            traceThisLib,
                             modulePublicCount,moduleNeededCount);
-    If TraceLibRequested Then Begin
+    If traceThisLib Then Begin
      If moduleNeeded Then
       WriteLn('TRACE LIB:   publics=',modulePublicCount,
         ' utiles=',moduleNeededCount,' -> charge')
@@ -3476,7 +3503,7 @@ Begin
    End;
 
    If ExtractLibModuleToTempObj(LibF,modStart,modEnd,tempObjName) Then Begin
-   If TraceLibRequested Then
+  If traceThisLib Then
     WriteLn('TRACE LIB:   extraction module vers ',tempObjName);
     ObjSegBaseList[ObjInputCount+1]:=SegmentCount;
     If ReadObjFile(tempObjName) Then Begin
@@ -3487,22 +3514,22 @@ Begin
      Inc(LibModulesLoadedCount);
      Inc(addedCount);
      ApplyAliasToExternalSymbols;
-    If TraceLibRequested Then
+     If traceThisLib Then
      WriteLn('TRACE LIB:   module charge avec succes');
     End Else Begin
      WriteLn('Avertissement : module LIB ignore (lecture impossible) : ',tempObjName);
      MarkLibModuleLoaded(LibIdx,modStart,moduleName);
-    If TraceLibRequested Then
+     If traceThisLib Then
      WriteLn('TRACE LIB:   echec de lecture du module extrait');
     End;
    End Else Begin
       WriteLn('Avertissement : extraction module LIB impossible : ',LibInputList^[LibIdx]);
     MarkLibModuleLoaded(LibIdx,modStart,moduleName);
-   If TraceLibRequested Then
+    If traceThisLib Then
     WriteLn('TRACE LIB:   echec extraction module');
    End;
   End Else Begin
-  If TraceLibRequested Then
+    If traceThisLib Then
    WriteLn('TRACE LIB:   module ignore (aucun symbole utile)');
   End;
  End;
@@ -4502,7 +4529,7 @@ Begin
  WriteLn('  /NODEFAULTLIBRARYSEARCH /NOD');
  WriteLn('  /NOGROUPASSOCIATION /NOG');
  WriteLn('  /NOIGNORECASE /NOI');
- WriteLn('  /TRACE[:LIB|SYM|ALL] /TR[:LIB|SYM|ALL]');
+ WriteLn('  /TRACE[:LIB|SYM|ALL[=filtre]] /TR[:LIB|SYM|ALL[=filtre]]');
  WriteLn('  /OVERLAYINTERRUPT:n /O:n');
  WriteLn('  /HELP /HE /H /?');
 End;
@@ -4623,8 +4650,8 @@ End;
 
 Procedure ParseOptionToken(Const RawTok:String);
 Var
- work,opt,val,valUpper:String;
- p:Integer;
+ work,opt,val,valUpper,traceMode,traceFilter:String;
+ p,eqPos:Integer;
  num:LongInt;
 Begin
  work:=TrimStr(RawTok);
@@ -4702,14 +4729,28 @@ Begin
    StackSize:=num;
  End Else If (opt='TR')Or(opt='TRACE') Then Begin
    TraceLibRequested:=True;
-   If (val='')Or(val='ALL') Then Begin
+   traceMode:=val;
+   traceFilter:='';
+   eqPos:=Pos('=',traceMode);
+   If eqPos>0 Then Begin
+    traceFilter:=Copy(traceMode,eqPos+1,255);
+    traceMode:=Copy(traceMode,1,eqPos-1);
+   End;
+
+   If (traceMode='')Or(traceMode='ALL') Then Begin
     TraceLibSymbolsRequested:=True;
-   End Else If (val='LIB')Or(val='MODULE')Or(val='MOD')Or(val='NOSYM') Then Begin
+    If eqPos>0 Then Begin
+     TraceLibNameFilter:=traceFilter;
+     TraceSymNameFilter:=traceFilter;
+    End;
+   End Else If (traceMode='LIB')Or(traceMode='MODULE')Or(traceMode='MOD')Or(traceMode='NOSYM') Then Begin
     TraceLibSymbolsRequested:=False;
-   End Else If (val='SYM')Or(val='SYMBOL')Or(val='SYMBOLS') Then Begin
+    If eqPos>0 Then TraceLibNameFilter:=traceFilter;
+   End Else If (traceMode='SYM')Or(traceMode='SYMBOL')Or(traceMode='SYMBOLS') Then Begin
     TraceLibSymbolsRequested:=True;
+    If eqPos>0 Then TraceSymNameFilter:=traceFilter;
    End Else Begin
-    WriteLn('Avertissement : /TRACE:',val,' inconnu, utiliser LIB, SYM ou ALL');
+    WriteLn('Avertissement : /TRACE:',val,' inconnu, utiliser LIB, SYM ou ALL (optionnel =filtre)');
     TraceLibSymbolsRequested:=True;
    End;
  End Else
@@ -4819,6 +4860,8 @@ Begin
  LibResolutionPasses:=0;
  TraceLibRequested:=False;
  TraceLibSymbolsRequested:=False;
+ TraceLibNameFilter:='';
+ TraceSymNameFilter:='';
  ObjFileName:='';
  ExeFileName:='';
  MapFileName:='';
@@ -4873,6 +4916,10 @@ Begin
    WriteLn('Info : mode trace LIB active (modules + symboles).')
   Else
    WriteLn('Info : mode trace LIB active (modules).');
+  If TraceLibNameFilter<>'' Then
+   WriteLn('Info : filtre trace bibliotheque = ',TraceLibNameFilter);
+  If TraceSymNameFilter<>'' Then
+   WriteLn('Info : filtre trace symbole = ',TraceSymNameFilter);
  End;
  If MaxSegmentsOption<>MAX_SEGMENTS Then
   WriteLn('Avertissement : /SEGMENTS parse mais non applique dans cette version.');
