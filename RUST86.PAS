@@ -434,6 +434,7 @@ Var
   WarnCount  : Integer;      { nombre d'avertissements             }
   TotalLines : LongInt;      { lignes sources analysees            }
   TotalSyms  : Integer;      { symboles enregistres                }
+  GExprDummy : TExprVal;     { TP7 : recoit les TExprVal ignores   }
 
 { --- Variables globales du lexer (TODO 02) --- }
 Var
@@ -3015,25 +3016,21 @@ Begin
 End;
 
 { ---- ExprMakeImm : construire un TExprVal immediat ---- }
-Function ExprMakeImm(AVal : LongInt; ATypeIdx : Integer) : TExprVal;
-Var E : TExprVal;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer; Var Res : TExprVal);
 Begin
-  E.Kind    := EK_IMM;
-  E.ImmVal  := AVal;
-  E.TypeIdx := ATypeIdx;
-  E.Offset  := 0;
-  ExprMakeImm := E;
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
 End;
 
 { ---- ExprMakeNone : valeur invalide (erreur ou vide) ---- }
-Function ExprMakeNone : TExprVal;
-Var E : TExprVal;
+Procedure ExprMakeNone(Var Res : TExprVal);
 Begin
-  E.Kind    := EK_NONE;
-  E.ImmVal  := 0;
-  E.TypeIdx := TY_UNKNOWN;
-  E.Offset  := 0;
-  ExprMakeNone := E;
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
 End;
 
 { ---- ExprLoad : materialiser la valeur dans AX (emet MOV AX si besoin) ---- }
@@ -3166,7 +3163,7 @@ Begin
 End;
 
 { Declarations anticipees pour la recursion mutuelle }
-Function ParseExprPrec(MinPrec : Integer) : TExprVal; Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 14 - Appels de fonctions et de methodes
@@ -3193,7 +3190,7 @@ Begin
       Inc(ErrorCount);
       Break;
     End;
-    Args[ArgCnt] := ParseExprPrec(1);
+    ParseExprPrec(1, Args[ArgCnt]);
     Inc(ArgCnt);
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       ParserAdvance;   { consommer la virgule }
@@ -3213,11 +3210,9 @@ End;
   ArgCnt     : nombre d'arguments (chacun 2 octets sur 8086).
   RetTypeIdx : type de retour (determine AX / DX:AX / rien).
   Retourne un TExprVal decrivant la valeur de retour.          }
-Function EmitCallSite(Const ManglName : TString;
-                      ArgCnt, RetTypeIdx : Integer) : TExprVal;
-Var
-  E   : TExprVal;
-  NSP : TString;
+Procedure EmitCallSite(Const ManglName : TString;
+                       ArgCnt, RetTypeIdx : Integer; Var Res : TExprVal);
+Var NSP : TString;
 Begin
   EmitInstr('CALL', ManglName);
   { nettoyage par l'appelant : ADD SP, n*2 }
@@ -3225,19 +3220,18 @@ Begin
     Str(ArgCnt * 2, NSP);
     EmitInstr('ADD', 'SP, ' + NSP);
   End;
-  E.ImmVal := 0;
-  E.Offset := 0;
+  Res.ImmVal := 0;
+  Res.Offset := 0;
   If RetTypeIdx = TY_IDX_UNIT Then Begin
-    E.Kind    := EK_NONE;
-    E.TypeIdx := TY_IDX_UNIT;
+    Res.Kind    := EK_NONE;
+    Res.TypeIdx := TY_IDX_UNIT;
   End Else If TypeSizeof(RetTypeIdx) > 2 Then Begin
-    E.Kind    := EK_DXAX;
-    E.TypeIdx := RetTypeIdx;
+    Res.Kind    := EK_DXAX;
+    Res.TypeIdx := RetTypeIdx;
   End Else Begin
-    E.Kind    := EK_AX;
-    E.TypeIdx := RetTypeIdx;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := RetTypeIdx;
   End;
-  EmitCallSite := E;
 End;
 
 { ---- DataAdd : forward declare pour usage dans ParsePrimary ---- }
@@ -3246,13 +3240,13 @@ Procedure DataAdd(Const ALbl : TString; AKind : TDataKind;
                   ATy : Integer); Forward;
 
 { ---- ParseClosureExpr doit etre resolu apres ParseBlock ---- }
-Function ParseClosureExpr(ParamsClosed : Boolean) : TExprVal; Forward;
+Procedure ParseClosureExpr(ParamsClosed : Boolean; Var Res : TExprVal); Forward;
 
 { ---- ParseMacroCall doit etre resolu apres le corps de ParsePrimary ---- }
-Function ParseMacroCall(Const MacroName : TString) : TExprVal; Forward;
+Procedure ParseMacroCall(Const MacroName : TString; Var Res : TExprVal); Forward;
 
 { ---- ParsePrimary : expression primaire (lit., ident., unaire, groupe) ---- }
-Function ParsePrimary : TExprVal;
+Procedure ParsePrimary(Var Res : TExprVal);
 Var
   E     : TExprVal;
   S     : TString;
@@ -3264,9 +3258,9 @@ Var
   ACnt  : Integer;    { nombre d'arguments de l'appel                }
   ELine : Integer;    { ligne pour messages d'erreur                 }
 Begin
-  E := ExprMakeNone;
+  ExprMakeNone(E);
   If CurToken.Kind = TK_INTEGER Then Begin
-    E := ExprMakeImm(CurToken.IntVal, TY_IDX_I32);
+    ExprMakeImm(CurToken.IntVal, TY_IDX_I32, E);
     ParserAdvance;
   End Else If CurToken.Kind = TK_STRING Then Begin
     { chaine litterale : ajouter dans DataTab  et retourner OFFSET }
@@ -3280,15 +3274,15 @@ Begin
     ParserAdvance;
   End Else If CurToken.Kind = TK_CHAR Then Begin
     { caractere litteral : constante immediate }
-    E := ExprMakeImm(CurToken.IntVal, TY_IDX_U8);
+    ExprMakeImm(CurToken.IntVal, TY_IDX_U8, E);
     ParserAdvance;
   End Else If (CurToken.Kind = TK_KEYWORD) And
               ((CurToken.Val = 'true') Or (CurToken.Val = 'false')) Then Begin
     { booleen : true=1, false=0 }
     If CurToken.Val = 'true' Then
-      E := ExprMakeImm(1, TY_IDX_BOOL)
+      ExprMakeImm(1, TY_IDX_BOOL, E)
     Else
-      E := ExprMakeImm(0, TY_IDX_BOOL);
+      ExprMakeImm(0, TY_IDX_BOOL, E);
     ParserAdvance;
   End Else If CurToken.Kind = TK_IDENT Then Begin
     Name  := CurToken.Val;
@@ -3297,7 +3291,7 @@ Begin
     { --- Appel de macro : name!(...) --- }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then Begin
       ParserAdvance;   { consommer '!' }
-      E := ParseMacroCall(Name);
+      ParseMacroCall(Name, E);
     End Else
     { --- Appel de fonction : name(...) --- }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
@@ -3313,7 +3307,7 @@ Begin
         Inc(WarnCount);
       End;
       ACnt := ParseCallArgs;   { consomme '(' args... ')' et pousse les args }
-      E    := EmitCallSite(MangN, ACnt, RetTy);
+      EmitCallSite(MangN, ACnt, RetTy, E);
     End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then Begin
       { --- Appel de methode : obj.method(...) --- }
       ParserAdvance;   { consommer '.' }
@@ -3338,7 +3332,7 @@ Begin
         End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
           ACnt := ParseCallArgs;
-          E    := EmitCallSite(MangN, ACnt, RetTy);
+          EmitCallSite(MangN, ACnt, RetTy, E);
         End Else Begin
           WriteLn('RUST86: erreur ligne ', ELine,
                   ': parenthese attendue apres le nom de methode');
@@ -3359,7 +3353,7 @@ Begin
         RetTy := TY_IDX_UNIT;   { type de retour affine en TODO 19 }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
           ACnt := ParseCallArgs;
-          E    := EmitCallSite(MangN, ACnt, RetTy);
+          EmitCallSite(MangN, ACnt, RetTy, E);
         End Else Begin
           WriteLn('RUST86: erreur ligne ', ELine,
                   ': parenthese attendue apres Trait::', MethN);
@@ -3382,7 +3376,7 @@ Begin
     End;
   End Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then Begin
     ParserAdvance;
-    E := ParseExprPrec(1);
+    ParseExprPrec(1, E);
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
       ParserAdvance
     Else Begin
@@ -3392,7 +3386,7 @@ Begin
     End;
   End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then Begin
     ParserAdvance;
-    E := ParsePrimary;
+    ParsePrimary(E);
     If E.Kind = EK_IMM Then
       E.ImmVal := -E.ImmVal
     Else Begin
@@ -3401,7 +3395,7 @@ Begin
     End;
   End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then Begin
     ParserAdvance;
-    E := ParsePrimary;
+    ParsePrimary(E);
     If E.Kind = EK_IMM Then Begin
       If E.ImmVal = 0 Then E.ImmVal := 1 Else E.ImmVal := 0;
     End Else Begin
@@ -3418,7 +3412,7 @@ Begin
       Inc(ErrorCount);
     End;
     ParserAdvance;
-    E := ParsePrimary;
+    ParsePrimary(E);
     ExprLoad(E);
     EmitInstr('MOV', 'BX, AX');
     EmitInstr('MOV', 'AX, [BX]');
@@ -3447,11 +3441,11 @@ Begin
   End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '||') Then Begin
     { closure sans parametres : || expr ou || BLOC }
     ParserAdvance;           { consommer '||' }
-    E := ParseClosureExpr(True);
+    ParseClosureExpr(True, E);
   End Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '|') Then Begin
     { closure avec parametres : |p1, p2| expr ou |p1| BLOC }
     ParserAdvance;           { consommer '|' ouvrant }
-    E := ParseClosureExpr(False);
+    ParseClosureExpr(False, E);
   End Else Begin
     If CurToken.Kind <> TK_EOF Then Begin
       WriteLn('RUST86: erreur ligne ', CurToken.Line,
@@ -3460,34 +3454,34 @@ Begin
       ParserAdvance;
     End;
   End;
-  ParsePrimary := E;
+  Res := E;
 End;
 
 { ---- ParseExprPrec : boucle Pratt par precedence croissante ---- }
-Function ParseExprPrec;  { corps du Forward declre plus haut }
+Procedure ParseExprPrec;  { corps du Forward declre plus haut }
 Var
   L    : TExprVal;
   R    : TExprVal;
   Op   : TString;
   Prec : Integer;
 Begin
-  L := ParsePrimary;
+  ParsePrimary(L);
   While CurToken.Kind = TK_OP Do Begin
     Op   := CurToken.Val;
     Prec := BinOpPrec(Op);
     If Prec < MinPrec Then Break;
     ParserAdvance;
-    R := ParseExprPrec(Prec + 1);
+    ParseExprPrec(Prec + 1, R);
     ExprEmitBinOp(Op, L, R);
   End;
-  ParseExprPrec := L;
+  Res := L;
 End;
 
 { ---- ParseExpr : point d'entree du parseur d'expressions ---- }
-Function ParseExpr : TExprVal;
+Procedure ParseExpr(Var Res : TExprVal);
 Begin
   ParserAdvance;           { charger le 1er token dans CurToken }
-  ParseExpr := ParseExprPrec(1);
+  ParseExprPrec(1, Res);
 End;
 
 { ============================================================
@@ -3536,14 +3530,14 @@ Procedure ParseExternDecl; Forward;
 { ---- ParseBlock : analyser un bloc stmt* entre accolades ----
   Ouvre une portee, analyse les instructions, ferme la portee.
   La derniere expression sans ';' est la valeur du bloc.     }
-Function ParseBlock : TExprVal;
+Procedure ParseBlock(Var Res : TExprVal);
 Var E : TExprVal;
 Begin
-  E := ExprMakeNone;
+  ExprMakeNone(E);
   If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then Begin
     WriteLn('RUST86: erreur ligne ', CurToken.Line, ': accolade ouvrante attendue');
     Inc(ErrorCount);
-    ParseBlock := E;
+    Res := E;
     Exit;
   End;
   ParserAdvance;   { consommer '{' }
@@ -3561,7 +3555,7 @@ Begin
     WriteLn('RUST86: erreur ligne ', CurToken.Line, ': accolade fermante attendue');
     Inc(ErrorCount);
   End;
-  ParseBlock := E;
+  Res := E;
 End;
 
 { ============================================================
@@ -3575,7 +3569,7 @@ End;
 { ---- ParseClosureExpr : corps apres consommation du pipe ouvrant ----
   ParamsClosed = True  -> '||' deja consomme, aucun parametre a lire.
   ParamsClosed = False -> lit les params jusqu'au pipe fermant.        }
-Function ParseClosureExpr; { corps du Forward }
+Procedure ParseClosureExpr; { corps du Forward }
 Var
   LblClo    : TString;
   LblCloEnd : TString;
@@ -3634,9 +3628,9 @@ Begin
 
   { corps de la closure : BLOC ou expression }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
-    ParseBlock
+    ParseBlock(GExprDummy)
   Else Begin
-    E := ParseExprPrec(1);
+    ParseExprPrec(1, E);
     ExprLoad(E);
   End;
 
@@ -3655,7 +3649,7 @@ Begin
   E.TypeIdx := TY_IDX_UNIT;
   E.ImmVal  := 0;
   E.Offset  := 0;
-  ParseClosureExpr := E;
+  Res := E;
 End;
 
 { ---- ParseLetStmt : analyser let [mut] name [: Type] [= expr]; ----
@@ -3705,7 +3699,7 @@ Begin
   { initialiseur optionnel = expr }
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then Begin
     ParserAdvance;
-    E := ParseExprPrec(1);
+    ParseExprPrec(1, E);
     ExprLoad(E);
     Str(Abs(CurFrameSize), OfsStr);
     EmitInstr('MOV', '[BP-' + OfsStr + '], AX');
@@ -3745,7 +3739,7 @@ Begin
   L.TypeIdx := SymTab[Idx].TypeIdx;
   L.ImmVal  := 0;
   { evaluer le membre droit }
-  E := ParseExprPrec(1);
+  ParseExprPrec(1, E);
   ExprEmitBinOp(Op, L, E);   { resultat dans AX }
   Str(Abs(SymTab[Idx].Offset), OfsStr);
   If SymTab[Idx].Offset >= 0 Then
@@ -3802,7 +3796,7 @@ Begin
   End;
 
   { evaluer la condition (ou valeur de if let) dans AX }
-  Cond := ParseExprPrec(1);
+  ParseExprPrec(1, Cond);
   ExprLoad(Cond);
 
   { generer les labels locaux uniques }
@@ -3825,7 +3819,7 @@ Begin
   End;
 
   { branche then }
-  ParseBlock;
+  ParseBlock(GExprDummy);
 
   HasElse := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else');
   If HasElse Then
@@ -3840,7 +3834,7 @@ Begin
       ParserAdvance;   { consommer 'if' }
       ParseIfStmt;     { else if : appel recursif }
     End Else
-      ParseBlock;
+      ParseBlock(GExprDummy);
     EmitLabel(LblEndif);
   End;
 End;
@@ -3876,7 +3870,7 @@ Begin
   LblBreak := SymNewLabel('BREAK');
   LoopPush(LblBreak, LblLoop);
   EmitLabel(LblLoop);
-  ParseBlock;
+  ParseBlock(GExprDummy);
   EmitInstr('JMP', LblLoop);
   EmitLabel(LblBreak);
   LoopPop;
@@ -3893,11 +3887,11 @@ Begin
   LblBreak := SymNewLabel('BREAK');
   LoopPush(LblBreak, LblLoop);
   EmitLabel(LblLoop);
-  Cond := ParseExprPrec(1);
+  ParseExprPrec(1, Cond);
   ExprLoad(Cond);
   EmitInstr('TEST', 'AX, AX');
   EmitInstr('JZ', LblBreak);
-  ParseBlock;
+  ParseBlock(GExprDummy);
   EmitInstr('JMP', LblLoop);
   EmitLabel(LblBreak);
   LoopPop;
@@ -3936,7 +3930,7 @@ Begin
   End;
   ParserAdvance;
   { evaluer la borne de debut -- ParseExprPrec s'arrete avant '..' }
-  StartE := ParseExprPrec(1);
+  ParseExprPrec(1, StartE);
   { consommer '..' ou '..=' }
   Inclusive := False;
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '..=') Then Begin
@@ -3950,7 +3944,7 @@ Begin
     Inc(ErrorCount);
   End;
   { evaluer la borne de fin -- s'arrete sur l'accolade ouvrante }
-  EndE := ParseExprPrec(1);
+  ParseExprPrec(1, EndE);
   { allouer la variable de boucle sur la pile }
   Dec(CurFrameSize, 2);
   VarOfs := CurFrameSize;
@@ -3975,7 +3969,7 @@ Begin
   Else
     EmitInstr('JGE', LblBreak);
   { corps de boucle }
-  ParseBlock;
+  ParseBlock(GExprDummy);
   { incrementer la variable }
   Str(Abs(VarOfs), OfsStr);
   EmitInstr('INC', 'WORD PTR [BP-' + OfsStr + ']');
@@ -4011,7 +4005,7 @@ Begin
   LblEnd := SymNewLabel('MEND');
 
   { evaluer le sujet dans AX, sauvegarder dans BX }
-  Subject := ParseExprPrec(1);
+  ParseExprPrec(1, Subject);
   ExprLoad(Subject);
   EmitInstr('MOV', 'BX, AX');
 
@@ -4079,7 +4073,7 @@ Begin
     { garde optionnelle : if cond }
     If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then Begin
       ParserAdvance;
-      Guard := ParseExprPrec(1);
+      ParseExprPrec(1, Guard);
       ExprLoad(Guard);
       EmitInstr('TEST', 'AX, AX');
       EmitInstr('JZ', LblNext);
@@ -4096,9 +4090,9 @@ Begin
 
     { corps du bras : bloc ou expression }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
-      ParseBlock
+      ParseBlock(GExprDummy)
     Else Begin
-      Subject := ParseExprPrec(1);
+      ParseExprPrec(1, Subject);
       ExprLoad(Subject);
     End;
 
@@ -4251,7 +4245,7 @@ Begin
   { initialiseur optionnel }
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then Begin
     ParserAdvance;
-    E := ParseExprPrec(1);
+    ParseExprPrec(1, E);
     If E.Kind = EK_IMM Then Begin
       If TypeSizeof(TyIdx) <= 1 Then
         DataAdd(MangN, DK_BYTE, E.ImmVal, '', TyIdx)
@@ -4296,7 +4290,7 @@ Begin
     Inc(ErrorCount); Exit;
   End;
   ParserAdvance;
-  E := ParseExprPrec(1);
+  ParseExprPrec(1, E);
   MangN := RS_VAR_PFX + VarName;
   SymAdd(VarName, SC_CONST, TyIdx, False, 0, CurToken.Line);
   SymTab[SymCount-1].MangledName := MangN;
@@ -4331,7 +4325,7 @@ Begin
   { 'return' deja consomme }
   If Not ((CurToken.Kind = TK_PUNCT) And
          ((CurToken.Val = ';') Or (CurToken.Val = '}'))) Then Begin
-    E := ParseExprPrec(1);
+    ParseExprPrec(1, E);
     ExprLoad(E);
   End;
   EmitInstr('MOV', 'SP, BP');
@@ -4422,7 +4416,7 @@ Begin
   EmitInstr('PUSH', 'BP');
   EmitInstr('MOV',  'BP, SP');
   { corps : locaux emis incrementalement par ParseLetStmt }
-  ParseBlock;
+  ParseBlock(GExprDummy);
   { epilogue implicite }
   FrameN := -CurFrameSize;
   Str(FrameN,  NSP);
@@ -4648,7 +4642,7 @@ End;
 
 { ---- ParseMacroCall : gerer les macros Rust panic! unreachable! etc. ----
   MacroName = nom sans '!', '(' deja attendu                              }
-Function ParseMacroCall;
+Procedure ParseMacroCall;
 Var
   E       : TExprVal;
   Msg     : TString;
@@ -4656,13 +4650,13 @@ Var
   LblSkip : TString;
   Cond    : TExprVal;
 Begin
-  E := ExprMakeNone;
+  ExprMakeNone(E);
   { Verifier et consommer '(' }
   If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then Begin
     WriteLn('RUST86: erreur ligne ', CurToken.Line,
             ': '' ( '' attendu apres macro ', MacroName, '!');
     Inc(ErrorCount);
-    ParseMacroCall := E;
+    Res := E;
     Exit;
   End;
   ParserAdvance;   { consommer '(' }
@@ -4685,7 +4679,7 @@ Begin
     EmitInstr('MOV',  'SI, OFFSET ' + LblMsg);
     EmitInstr('CALL', '_RSRT_PANIC');
   End Else If MacroName = 'debug_assert' Then Begin
-    Cond := ParseExprPrec(1);
+    ParseExprPrec(1, Cond);
     ExprLoad(Cond);
     LblSkip := SymNewLabel('ASSERT_OK');
     EmitInstr('TEST', 'AX, AX');
@@ -4728,7 +4722,7 @@ Begin
   End;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
     ParserAdvance;
-  ParseMacroCall := E;
+  Res := E;
 End;
 
 { ============================================================
@@ -4743,7 +4737,7 @@ Procedure ParseUnsafeBlock;
 Begin
   { 'unsafe' deja consomme }
   Inc(InUnsafeDepth);
-  ParseBlock;
+  ParseBlock(GExprDummy);
   Dec(InUnsafeDepth);
 End;
 
@@ -5013,7 +5007,7 @@ Begin
   End;
   { --- instruction bloc entre accolades --- }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then Begin
-    E := ParseBlock;
+    ParseBlock(E);
     { point-virgule optionnel apres un bloc }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       ParserAdvance;
@@ -5034,7 +5028,7 @@ Begin
                 ': tentative d', #39, 'affectation d', #39, 'une variable non-mut : ', Name);
         Inc(ErrorCount);
       End Else Begin
-        E := ParseExprPrec(1);
+        ParseExprPrec(1, E);
         ExprLoad(E);
         Str(Abs(SymTab[Idx].Offset), OfsStr);
         If SymTab[Idx].Offset >= 0 Then
@@ -5075,13 +5069,13 @@ Begin
       E.TypeIdx := SymTab[Idx].TypeIdx;
       E.ImmVal  := 0;
     End Else
-      E := ExprMakeNone;
+      ExprMakeNone(E);
     { continuer l'analyse comme expression binaire }
     While CurToken.Kind = TK_OP Do Begin
       Op := CurToken.Val;
       If BinOpPrec(Op) = 0 Then Break;
       ParserAdvance;
-      Rhs := ParseExprPrec(BinOpPrec(Op) + 1);
+      ParseExprPrec(BinOpPrec(Op) + 1, Rhs);
       ExprEmitBinOp(Op, E, Rhs);
     End;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -5089,7 +5083,7 @@ Begin
     Exit;
   End;
   { === expression-statement quelconque === }
-  E := ParseExprPrec(1);
+  ParseExprPrec(1, E);
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
 End;
