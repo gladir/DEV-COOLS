@@ -496,14 +496,34 @@ Var
  Function DosSegPriority(Const ClassName,SegName:String):Integer;
  Var
   cls,nm:String;
+  isCode,isData,isBss,isStack:Boolean;
  Begin
   cls:=UpStrLocal(ClassName);
   nm:=UpStrLocal(SegName);
 
-  If (Pos('CODE',cls)>0)Or(Pos('CODE',nm)>0)Or(Pos('_TEXT',nm)>0) Then DosSegPriority:=10
-  Else If (Pos('DATA',cls)>0)Or(Pos('DATA',nm)>0) Then DosSegPriority:=20
-  Else If (Pos('BSS',cls)>0)Or(Pos('BSS',nm)>0) Then DosSegPriority:=30
-  Else If (Pos('STACK',cls)>0)Or(Pos('STACK',nm)>0) Then DosSegPriority:=90
+  isCode:=(Pos('CODE',cls)>0)Or(Pos('CODE',nm)>0)Or(Pos('_TEXT',nm)>0);
+  isData:=(Pos('DATA',cls)>0)Or(Pos('DATA',nm)>0);
+  isBss:=(Pos('BSS',cls)>0)Or(Pos('BSS',nm)>0);
+  isStack:=(Pos('STACK',cls)>0)Or(Pos('STACK',nm)>0);
+
+  If isCode Then Begin
+   DosSegPriority:=10;
+   Exit;
+  End;
+  If isStack Then Begin
+   DosSegPriority:=90;
+   Exit;
+  End;
+
+  If DsAllocateTop Then Begin
+   If isData Then DosSegPriority:=70
+   Else If isBss Then DosSegPriority:=80
+   Else DosSegPriority:=50;
+   Exit;
+  End;
+
+  If isData Then DosSegPriority:=20
+  Else If isBss Then DosSegPriority:=30
   Else DosSegPriority:=50;
  End;
 Begin
@@ -883,7 +903,8 @@ Var item:PLineInfoItem;
 Begin
  If LineInfoCount>=MAX_LINENUMS Then Exit;
  New(item);
- item^.GroupIndex:=GrpIdx;
+ If NoGroupAssociation Then item^.GroupIndex:=0
+                      Else item^.GroupIndex:=GrpIdx;
  item^.SegIndex:=SegIdx;
  item^.LineNo:=LineNum;
  item^.CodeOffset:=CodeOfs;
@@ -1271,6 +1292,132 @@ Var
     Else MapLNameIndexLocal:=ModuleLNameBase+LocalIdx;
    End;
 
+   Function UpperLocalStr(Const S:String):String;
+   Var
+    r:String;
+    u:Integer;
+   Begin
+    r:=S;
+    For u:=1 to Length(r) do r[u]:=UpCase(r[u]);
+    UpperLocalStr:=r;
+   End;
+
+   Function HasExtensionLocal(Const Nm:String):Boolean;
+   Var
+    s:String;
+    n,lastSep,lastDot,i,j:Integer;
+   Begin
+    i:=1;
+    j:=Length(Nm);
+    While (i<=j)And((Nm[i]=' ')Or(Nm[i]=#9)Or(Nm[i]=#13)Or(Nm[i]=#10)) do Inc(i);
+    While (j>=i)And((Nm[j]=' ')Or(Nm[j]=#9)Or(Nm[j]=#13)Or(Nm[j]=#10)) do Dec(j);
+    If j<i Then s:=''
+           Else s:=Copy(Nm,i,j-i+1);
+    lastSep:=0;
+    lastDot:=0;
+    For n:=1 to Length(s) do Begin
+     If (s[n]='\')Or(s[n]='/')Or(s[n]=':') Then Begin
+      lastSep:=n;
+      lastDot:=0;
+     End Else If s[n]='.' Then lastDot:=n;
+    End;
+    HasExtensionLocal:=lastDot>lastSep;
+   End;
+
+   Function EnsureDefaultLibExt(Const Nm:String):String;
+   Var
+    s:String;
+    i,j:Integer;
+   Begin
+    i:=1;
+    j:=Length(Nm);
+    While (i<=j)And((Nm[i]=' ')Or(Nm[i]=#9)Or(Nm[i]=#13)Or(Nm[i]=#10)) do Inc(i);
+    While (j>=i)And((Nm[j]=' ')Or(Nm[j]=#9)Or(Nm[j]=#13)Or(Nm[j]=#10)) do Dec(j);
+    If j<i Then s:=''
+         Else s:=Copy(Nm,i,j-i+1);
+    If s='' Then Begin
+     EnsureDefaultLibExt:='';
+     Exit;
+    End;
+    If HasExtensionLocal(s) Then EnsureDefaultLibExt:=s
+                            Else EnsureDefaultLibExt:=s+'.LIB';
+   End;
+
+   Function IsLibAlreadyListed(Const Nm:String):Boolean;
+   Var
+    m:Integer;
+    probe:String;
+   Begin
+    IsLibAlreadyListed:=False;
+    probe:=UpperLocalStr(Copy(Nm,1,128));
+    For m:=1 to LibInputCount do
+     If UpperLocalStr(LibInputList^[m])=probe Then Begin
+      IsLibAlreadyListed:=True;
+      Exit;
+     End;
+   End;
+
+   Procedure AddDefaultLibraryFromCommentName(Const Nm:String);
+   Var
+    libName:String;
+   Begin
+    libName:=EnsureDefaultLibExt(Nm);
+    If libName='' Then Exit;
+    If IsLibAlreadyListed(libName) Then Exit;
+
+    If LibInputCount>=MAX_CMD_LIBS Then Begin
+     WriteLn('Avertissement : limite bibliotheques atteinte, DEFAULTLIB ignoree : ',libName);
+     Exit;
+    End;
+
+    Inc(LibInputCount);
+    LibInputList^[LibInputCount]:=Copy(libName,1,128);
+   End;
+
+   Procedure ParseDefaultLibrariesFromComment(Const Txt:String);
+   Var
+    up:String;
+    i,j:Integer;
+    nameStart,nameEnd:Integer;
+    quoteCh:Char;
+    libName:String;
+   Begin
+    up:=UpperLocalStr(Txt);
+    i:=1;
+    While i<=Length(up)-9 do Begin
+     If Copy(up,i,10)='DEFAULTLIB' Then Begin
+      j:=i+10;
+      While (j<=Length(up))And((up[j]=' ')Or(up[j]=#9)) do Inc(j);
+      If (j<=Length(up))And((up[j]=':')Or(up[j]='=')) Then Inc(j);
+      While (j<=Length(up))And((up[j]=' ')Or(up[j]=#9)) do Inc(j);
+
+      If j<=Length(up) Then Begin
+       If (Txt[j]='"')Or(Txt[j]='''') Then Begin
+        quoteCh:=Txt[j];
+        Inc(j);
+        nameStart:=j;
+        While (j<=Length(Txt))And(Txt[j]<>quoteCh) do Inc(j);
+        nameEnd:=j-1;
+        If (nameEnd>=nameStart) Then Begin
+         libName:=Copy(Txt,nameStart,nameEnd-nameStart+1);
+         AddDefaultLibraryFromCommentName(libName);
+        End;
+        If j<=Length(Txt) Then Inc(j);
+       End Else Begin
+        nameStart:=j;
+        While (j<=Length(Txt))And(Txt[j]>' ')And(Txt[j]<>',')And(Txt[j]<>';') do Inc(j);
+        nameEnd:=j-1;
+        If (nameEnd>=nameStart) Then Begin
+         libName:=Copy(Txt,nameStart,nameEnd-nameStart+1);
+         AddDefaultLibraryFromCommentName(libName);
+        End;
+       End;
+      End;
+      i:=j;
+     End Else Inc(i);
+    End;
+   End;
+
  Function FindSymbolByName(Const Nm:String; Var SegIdx:Word; Var OfsVal:LongInt):Boolean;
  Var
   symItem:PSymbolItem;
@@ -1415,6 +1562,8 @@ Begin
       For k:=1 to CommentTextLen do
        CommentText:=CommentText+Chr(Buffer[1+k]);
       AddComment(CommentFlags,CommentClass,CommentText);
+      If Not NoDefaultLibrarySearch Then
+       ParseDefaultLibrariesFromComment(CommentText);
     End;
     $8A, $8B:Begin
      { MODEND/MODEND32 : fin de module }
@@ -1813,6 +1962,7 @@ Begin
     End;
     $9A, $9B:Begin
       { GRPDEF / GRPDEF32 : definition de groupes de segments }
+      If NoGroupAssociation Then Continue;
       GroupPos:=0;
       GroupLimit:=RecLen-1;  { sans checksum OMF }
       If GroupLimit<=0 Then Continue;
@@ -4613,11 +4763,14 @@ Begin
  WriteLn('     Limite le nombre maximal de segments a l''edition de liens (plafond interne: ',MAX_SEGMENTS,').');
  WriteLn('  /OVERLAYINTERRUPT:n  ou /O:n');
  WriteLn('     Parametre accepte (0..255) mais actuellement non applique.');
- WriteLn('  /DOSSEG /DO, /EXEPACK /E, /HIGH /HI, /PAUSE /P, /DSALLOCATE /DS');
+ WriteLn('  /DOSSEG /DO, /DSALLOCATE /DS, /EXEPACK /E, /HIGH /HI, /PAUSE /P');
  WriteLn('     /DOSSEG active un ordre DOS des segments (CODE, DATA/BSS, autres, STACK).');
- WriteLn('     /PAUSE attend Entree en fin d''execution; EXEPACK/HIGH/DSALLOCATE restent sans effet.');
+ WriteLn('     /DSALLOCATE place DATA/BSS en haut (avant STACK) et active aussi /DOSSEG.');
+ WriteLn('     /PAUSE attend Entree en fin d''execution; EXEPACK/HIGH restent sans effet.');
  WriteLn('  /NODEFAULTLIBRARYSEARCH /NOD, /NOGROUPASSOCIATION /NOG, /NOIGNORECASE /NOI');
- WriteLn('     /NOIGNORECASE active la sensibilite a la casse; NOD/NOG restent sans effet.');
+ WriteLn('     /NODEFAULTLIBRARYSEARCH ignore les DEFAULTLIB detectees dans les COMENT OMF.');
+ WriteLn('     /NOGROUPASSOCIATION ignore GRPDEF et neutralise les index de groupe des lignes.');
+ WriteLn('     /NOIGNORECASE active la sensibilite a la casse des symboles.');
  WriteLn('  /HELP /HE /H /?');
  WriteLn('     Affiche cette aide.');
 End;
@@ -4833,7 +4986,10 @@ Begin
    End;
    If num>65535 Then num:=65535;
    MaxAllocParagraphs:=num;
- End Else If (opt='DS')Or(opt='DSALLOCATE') Then DsAllocateTop:=True
+ End Else If (opt='DS')Or(opt='DSALLOCATE') Then Begin
+   DsAllocateTop:=True;
+   DosSegOrdering:=True;
+ End
  Else If (opt='DO')Or(opt='DOSSEG') Then DosSegOrdering:=True
  Else If (opt='E')Or(opt='EXEPACK') Then ExePackRequested:=True
  Else If (opt='HI')Or(opt='HIGH') Then HighLoadRequested:=True
@@ -5055,10 +5211,16 @@ Begin
  End;
    If DosSegOrdering Then
     WriteLn('Info : /DOSSEG actif (ordre DOS des segments applique).');
+   If DsAllocateTop Then
+    WriteLn('Info : /DSALLOCATE actif (DATA/BSS places en haut avant STACK).');
+   If NoDefaultLibrarySearch Then
+    WriteLn('Info : /NODEFAULTLIBRARYSEARCH actif (DEFAULTLIB OMF ignorees).');
+   If NoGroupAssociation Then
+    WriteLn('Info : /NOGROUPASSOCIATION actif (GRPDEF et groupes ignores).');
  If OverlayInterruptSet Then
   WriteLn('Avertissement : /OVERLAYINTERRUPT parse mais non applique dans cette version.');
-   If DsAllocateTop Or ExePackRequested Or HighLoadRequested
-    Or NoDefaultLibrarySearch Or NoGroupAssociation Then
+   If ExePackRequested Or HighLoadRequested
+      Then
   WriteLn('Avertissement : certaines options sont parsees (phase 2) mais sans effet d''edition de liens.');
 End;
 
