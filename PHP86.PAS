@@ -446,11 +446,16 @@ Var
   RuntimeEmitted : Boolean;
   InPhpMode      : Boolean;  { True quand on est a l'interieur de <?php ... ?> }
   CurFnRetLbl    : TString;  { label epilogue de la fonction courante }
+  CurFnName      : TString;  { nom de la fonction courante (pour __FUNCTION__) }
 
   { Classes }
   ClassTab   : Array[0..MAX_CLASS - 1] Of TClassRec;
   ClassCount : Integer;
   CurClsIdx  : Integer;   { -1 = hors classe, >= 0 = index dans ClassTab }
+
+  { Garde d'inclusion (_once) }
+  IncludeTab   : Array[0..MAX_INCLUDE - 1] Of TString;
+  IncludeCount : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -494,6 +499,9 @@ Procedure BlockLeaveScope(SavedFrame : Integer); Forward;
 Procedure ParseArrayLit(Var Res : TExprVal); Forward;
 Procedure ParseClassDecl; Forward;
 Procedure ParseNewExpr(Const ClsName : TString; Var Res : TExprVal); Forward;
+Procedure ParseIncludeStmt; Forward;
+Procedure ParseConstDecl;   Forward;
+Procedure InitBuiltinConsts; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS
@@ -1878,6 +1886,7 @@ Var
   PropOff2: Integer;
   ArgCnt2 : Integer;
   J       : Integer;
+  VLine   : Integer;  { numero de ligne du token courant (pour __LINE__) }
 Begin
   ExprMakeNone(Res);
   Case CurToken.Kind Of
@@ -1885,6 +1894,7 @@ Begin
     { ---- Identificateur : appel de fonction ou builtin ---- }
     TK_IDENT :
     Begin
+      VLine := CurToken.Line;
       VNm := CurToken.Val;
       ParserAdvance;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -1894,10 +1904,44 @@ Begin
       End
       Else
       Begin
-        { Identifiant simple sans appel : warning + EK_NONE }
-        WriteLn('PHP86:', CurToken.Line, ': avert: identifiant ''', VNm, ''' utilise comme expression (non-supporte)');
-        Inc(WarnCount);
-        ExprMakeNone(Res);
+        { Constante utilisateur : SC_CONST dans SymTab }
+        Idx := SymFindCat(VNm, SC_CONST);
+        If Idx >= 0 Then
+        Begin
+          If SymTab[Idx].TypeIdx = TY_IDX_STRING Then
+          Begin
+            Res.Kind    := EK_MEM;
+            Res.TypeIdx := TY_IDX_STRING;
+            Res.Offset  := SymTab[Idx].Offset;
+            Res.ImmVal  := 0;
+          End
+          Else
+            ExprMakeImm(SymTab[Idx].Offset, SymTab[Idx].TypeIdx, Res);
+        End
+        { Constantes magiques PHP }
+        Else If VNm = '__LINE__' Then
+          ExprMakeImm(VLine, TY_IDX_INT, Res)
+        Else If VNm = '__FILE__' Then
+        Begin
+          Res.Kind    := EK_MEM;
+          Res.TypeIdx := TY_IDX_STRING;
+          Res.Offset  := DataAddStr(Opts.SrcFile);
+          Res.ImmVal  := 0;
+        End
+        Else If VNm = '__FUNCTION__' Then
+        Begin
+          Res.Kind    := EK_MEM;
+          Res.TypeIdx := TY_IDX_STRING;
+          Res.Offset  := DataAddStr(CurFnName);
+          Res.ImmVal  := 0;
+        End
+        Else
+        Begin
+          { Identifiant non reconnu }
+          WriteLn('PHP86:', VLine, ': avert: identifiant ''', VNm, ''' non reconnu');
+          Inc(WarnCount);
+          ExprMakeNone(Res);
+        End;
       End;
     End;
 
@@ -2369,7 +2413,7 @@ Begin
       Begin
         { Pliage : condition connue a la compilation }
         ParseExprPrec(1, R);     { branche then }
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then ParserAdvance;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then ParserAdvance;
         ParseExprPrec(1, Alt);   { branche else }
         If L.ImmVal <> 0 Then L := R Else L := Alt;
       End
@@ -2384,7 +2428,7 @@ Begin
         ExprLoad(R);
         EmitInstr('JMP',  LblEnd);
         EmitLabel(LblElse);
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then ParserAdvance
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then ParserAdvance
         Else Begin WriteLn('PHP86:', CurToken.Line, ': erreur: '':'' attendu dans ternaire'); Inc(ErrorCount); End;
         ParseExprPrec(1, Alt);
         ExprLoad(Alt);
@@ -2842,12 +2886,12 @@ Procedure EmitClose;
 Begin
   If OutFOpen Then
   Begin
-    { Clore le segment TEXT si ouvert }
+    { Clore le segment TEXT et emettre le segment DATA }
     EmitBlankLine;
     WriteLn(OutF, '_TEXT   ENDS');
     EmitDataSeg;
     WriteLn(OutF);
-    WriteLn(OutF, '        END');
+    WriteLn(OutF, '        END     ', PH_FN_PFX, 'main');
     Close(OutF);
     OutFOpen := False;
   End;
@@ -3871,9 +3915,285 @@ Begin
     EmitLabel(EndLbl);   { cas avec else : NxtLbl = EndLbl, deja emis }
 End;
 
-{ ---- ParseStmt : dispatcher de statements (TODO 24 completera) }
+{ ============================================================
+  TODO 23 - INCLUDE / REQUIRE
+  ============================================================ }
+
+{ ---- PathExtractDir : extraire le repertoire d''un chemin --- }
+Function PathExtractDir(Const Path : TString) : TString;
+Var
+  I : Integer;
+Begin
+  I := Length(Path);
+  While (I > 0) And (Path[I] <> '\') And (Path[I] <> '/') Do
+    Dec(I);
+  If I > 0 Then
+    PathExtractDir := Copy(Path, 1, I)
+  Else
+    PathExtractDir := '';
+End;
+
+{ ---- PathIsAbsolute : vrai si chemin absolu (DOS/Unix) ----- }
+Function PathIsAbsolute(Const Path : TString) : Boolean;
+Begin
+  If Length(Path) = 0 Then Begin PathIsAbsolute := False; Exit; End;
+  If (Path[1] = '\') Or (Path[1] = '/') Then Begin PathIsAbsolute := True; Exit; End;
+  If (Length(Path) > 1) And (Path[2] = ':') Then Begin PathIsAbsolute := True; Exit; End;
+  PathIsAbsolute := False;
+End;
+
+{ ---- ParseIncludeStmt : include/require/include_once/require_once }
+Procedure ParseIncludeStmt;
+Var
+  Kw         : TString;
+  IsOnce     : Boolean;
+  IsFatal    : Boolean;
+  IncFile    : TString;
+  SaveFile   : TString;
+  SaveLine   : TString;
+  SaveLineNo : Integer;
+  SaveColNo  : Integer;
+  SaveEOF    : Boolean;
+  SavePhpMode: Boolean;
+  SaveTok    : TToken;
+  AlreadyInc : Boolean;
+  I, J       : Integer;
+  TmpLine    : TString;
+Begin
+  Kw      := CurToken.Val;
+  IsOnce  := (Kw = 'include_once') Or (Kw = 'require_once');
+  IsFatal := (Kw = 'require')      Or (Kw = 'require_once');
+  ParserAdvance;  { consommer le mot-cle }
+
+  { Lire le nom du fichier (style include 'file' ou include('file')) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;  { ignorer '(' optionnel }
+
+  If CurToken.Kind <> TK_STRING Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: nom de fichier attendu apres ', Kw);
+    Inc(ErrorCount);
+    While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ';') Do
+      If CurToken.Kind = TK_EOF Then Exit Else ParserAdvance;
+    ParserAdvance;
+    Exit;
+  End;
+  IncFile := CurToken.Val;
+  ParserAdvance;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;  { ignorer ')' optionnel }
+
+  { Resolution du chemin relatif par rapport au fichier courant }
+  If Not PathIsAbsolute(IncFile) Then
+    IncFile := PathExtractDir(Opts.SrcFile) + IncFile;
+
+  { Consommer le ';' - apres ca CurToken = premier token apres ';' dans fichier original }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  { Garde _once : verifier si ce fichier a deja ete inclus }
+  If IsOnce Then
+  Begin
+    AlreadyInc := False;
+    For I := 0 To IncludeCount - 1 Do
+      If IncludeTab[I] = IncFile Then Begin AlreadyInc := True; Break; End;
+    If AlreadyInc Then Exit;  { deja inclus, on ne fait rien }
+  End;
+
+  { Enregistrer dans la table de garde }
+  If IncludeCount < MAX_INCLUDE Then
+  Begin
+    IncludeTab[IncludeCount] := IncFile;
+    Inc(IncludeCount);
+  End;
+
+  { Sauvegarder l''etat complet du lexeur courant }
+  SaveFile    := Opts.SrcFile;
+  SaveLine    := LexLine;
+  SaveLineNo  := LexLineNo;
+  SaveColNo   := LexColNo;
+  SaveEOF     := LexEOF;
+  SavePhpMode := InPhpMode;
+  SaveTok     := CurToken;  { token apres ';' dans le fichier original }
+
+  { Fermer le fichier source courant }
+  LexClose;
+
+  { Ouvrir le fichier inclus }
+  Assign(LexSrcF, IncFile);
+  {$I-} Reset(LexSrcF); {$I+}
+  If IOResult <> 0 Then
+  Begin
+    If IsFatal Then
+      FatalError('fichier require introuvable : ' + IncFile)
+    Else
+    Begin
+      WriteLn('PHP86:', SaveLineNo, ': avert: fichier include introuvable : ', IncFile);
+      Inc(WarnCount);
+    End;
+    { Restaurer le fichier original }
+    Opts.SrcFile := SaveFile;
+    Assign(LexSrcF, SaveFile);
+    {$I-} Reset(LexSrcF); {$I+}
+    If IOResult = 0 Then
+    Begin
+      LexOpened := True;
+      LexEOF    := False;
+      LexLine   := '';
+      LexLineNo := 0;
+      LexColNo  := 1;
+      For J := 1 To SaveLineNo Do
+      Begin
+        If EOF(LexSrcF) Then Break;
+        ReadLn(LexSrcF, TmpLine);
+        Inc(LexLineNo);
+      End;
+      LexLine    := SaveLine;
+      LexLineNo  := SaveLineNo;
+      LexColNo   := SaveColNo;
+      LexEOF     := SaveEOF;
+      InPhpMode  := SavePhpMode;
+      CurToken   := SaveTok;
+    End;
+    Exit;
+  End;
+
+  { Initialiser le lexeur pour le fichier inclus }
+  LexOpened := True;
+  Opts.SrcFile := IncFile;
+  LexEOF    := False;
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexLine   := '';
+  InPhpMode := False;
+  LexNextLine;
+  LexSkipToPhp;
+  ParserAdvance;  { premier token du fichier inclus }
+
+  { Parser tout le contenu du fichier inclus }
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  { Fermer le fichier inclus }
+  LexClose;
+
+  { Restaurer le fichier source original }
+  Opts.SrcFile := SaveFile;
+  Assign(LexSrcF, SaveFile);
+  {$I-} Reset(LexSrcF); {$I+}
+  If IOResult <> 0 Then
+    FatalError('Impossible de rouvrir le fichier source : ' + SaveFile);
+  LexOpened := True;
+  LexEOF    := False;
+  LexLine   := '';
+  LexLineNo := 0;
+  LexColNo  := 1;
+
+  { Avancer jusqu''a la ligne sauvegardee sans compter dans TotalLines }
+  For J := 1 To SaveLineNo Do
+  Begin
+    If EOF(LexSrcF) Then Break;
+    ReadLn(LexSrcF, TmpLine);
+    Inc(LexLineNo);
+  End;
+
+  { Restaurer l''etat exact apres la lecture du token sauvegarde }
+  LexLine   := SaveLine;
+  LexLineNo := SaveLineNo;
+  LexColNo  := SaveColNo;
+  LexEOF    := SaveEOF;
+  InPhpMode := SavePhpMode;
+
+  { Restaurer le token courant (premier apres ';' dans le fichier original) }
+  CurToken := SaveTok;
+End;
+
+{ ============================================================
+  TODO 24 - PREPROCESSEUR ET CONSTANTES
+  ============================================================ }
+
+{ ---- InitBuiltinConsts : constantes predefinies PHP -------- }
+{ PHP_INT_MAX = 32767 (entier signe 16 bits)                   }
+{ PHP_EOL = CR+LF                                              }
+{ PHP_OS = 'WIN32'                                             }
+Procedure InitBuiltinConsts;
+Var
+  DIdx : Integer;
+Begin
+  { PHP_INT_MAX = 32767 }
+  SymAdd('PHP_INT_MAX', SC_CONST, TY_IDX_INT, False, 32767, 0);
+
+  { PHP_EOL = CR+LF -> entree DK_STR dans DataTab }
+  DIdx := DataAddStr(Chr(13) + Chr(10));
+  SymAdd('PHP_EOL', SC_CONST, TY_IDX_STRING, False, DIdx, 0);
+
+  { PHP_OS = 'WIN32' }
+  DIdx := DataAddStr('WIN32');
+  SymAdd('PHP_OS', SC_CONST, TY_IDX_STRING, False, DIdx, 0);
+
+  { PHP_INT_MIN = -32768 }
+  SymAdd('PHP_INT_MIN', SC_CONST, TY_IDX_INT, False, -32768, 0);
+
+  { PHP_MAJOR_VERSION = 8 (cible emulation PHP 8) }
+  SymAdd('PHP_MAJOR_VERSION', SC_CONST, TY_IDX_INT, False, 8, 0);
+End;
+
+{ ---- ParseConstDecl : const NOM = val; -------------------- }
+{ CurToken = TK_KEYWORD 'const' a l''entree.                  }
+Procedure ParseConstDecl;
+Var
+  CName : TString;
+  E     : TExprVal;
+Begin
+  ParserAdvance;  { consommer 'const' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: nom de constante attendu apres const');
+    Inc(ErrorCount);
+    While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ';') Do
+      If CurToken.Kind = TK_EOF Then Exit Else ParserAdvance;
+    ParserAdvance;
+    Exit;
+  End;
+  CName := CurToken.Val;
+  ParserAdvance;  { consommer le nom }
+  If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '=')) Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: ''='' attendu apres const ', CName);
+    Inc(ErrorCount);
+    While (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ';') Do
+      If CurToken.Kind = TK_EOF Then Exit Else ParserAdvance;
+    ParserAdvance;
+    Exit;
+  End;
+  ParserAdvance;  { consommer '=' }
+  { Evaluer la valeur (doit etre un litteral constant) }
+  ParseExpr(E);
+  { Verifier si deja definie }
+  If SymFindCat(CName, SC_CONST) >= 0 Then
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': avert: constante ''', CName, ''' deja definie');
+    Inc(WarnCount);
+  End
+  Else If E.Kind = EK_IMM Then
+    SymAdd(CName, SC_CONST, E.TypeIdx, False, E.ImmVal, CurToken.Line)
+  Else If (E.Kind = EK_MEM) And (E.TypeIdx = TY_IDX_STRING) Then
+    SymAdd(CName, SC_CONST, TY_IDX_STRING, False, E.Offset, CurToken.Line)
+  Else
+  Begin
+    WriteLn('PHP86:', CurToken.Line, ': erreur: valeur litterale attendue pour const ', CName);
+    Inc(ErrorCount);
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseStmt : dispatcher de statements }
 { Reconnait echo, print, var_dump, if, global, static, $var=... }
 Procedure ParseStmt;
+Var
+  VNm : TString;
 Begin
   If CurToken.Kind = TK_EOF Then Exit;
   { instruction vide }
@@ -3905,7 +4225,12 @@ Begin
     If CurToken.Val = 'static'   Then Begin ParseStaticDecl;   Exit; End;
     If CurToken.Val = 'function' Then Begin ParseFnDecl;       Exit; End;
     If CurToken.Val = 'return'   Then Begin ParseReturnStmt;   Exit; End;
-    If CurToken.Val = 'class'    Then Begin ParseClassDecl;    Exit; End;
+    If CurToken.Val = 'class'        Then Begin ParseClassDecl;    Exit; End;
+    If CurToken.Val = 'include'      Then Begin ParseIncludeStmt;  Exit; End;
+    If CurToken.Val = 'require'      Then Begin ParseIncludeStmt;  Exit; End;
+    If CurToken.Val = 'include_once' Then Begin ParseIncludeStmt;  Exit; End;
+    If CurToken.Val = 'require_once' Then Begin ParseIncludeStmt;  Exit; End;
+    If CurToken.Val = 'const'        Then Begin ParseConstDecl;    Exit; End;
     { mot-cle non supporte a ce stade }
     WriteLn('PHP86:', CurToken.Line, ': avert: statement ''',
             CurToken.Val, ''' non supporte (TODO)');
@@ -3943,11 +4268,21 @@ Begin
         ParserAdvance;
       Exit;
     End;
-    WriteLn('PHP86:', CurToken.Line, ': avert: appel ''',
-            CurToken.Val, ''' non supporte (TODO)');
+    { Appel de fonction comme statement : ident(args) ; }
+    { ex: define(...), array_push(...), ou toute fonction }
+    VNm := CurToken.Val;  { sauvegarder le nom avant d''avancer }
+    ParserAdvance;        { consommer l''identifiant }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParseCallExpr(VNm, GExprDummy);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
+    { Identifiant nu (pas d''appel) : avertissement }
+    WriteLn('PHP86:', CurToken.Line, ': avert: identifiant ''', VNm, ''' non reconnu');
     Inc(WarnCount);
-    ParserAdvance;
-    Exit;
+    Exit;  { CurToken deja avance }
   End;
   { variable : assignation }
   If CurToken.Kind = TK_VAR Then
@@ -3956,6 +4291,11 @@ Begin
     Exit;
   End;
   { token inattendu }
+  { ':' peut apparaitre dans les corps de switch (cas: label: syntaxe) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance; Exit;
+  End;
   WriteLn('PHP86:', CurToken.Line, ': avert: token inattendu ''',
           CurToken.Val, ''' dans statement');
   Inc(WarnCount);
@@ -4021,8 +4361,9 @@ Begin
   VarStore(BaseVar);                 { __feB = &data[0] }
   EmitInstr('XOR', 'AX, AX');
   VarStore(IdxVar);                  { __feI = 0 }
-  { consommer 'as' }
-  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'as') Then
+  { consommer 'as' (TK_KEYWORD ou TK_IDENT selon le lexeur) }
+  If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT))
+     And (CurToken.Val = 'as') Then
     ParserAdvance;
   { $FirstName  ou  $key => $val }
   HasKey    := False;
@@ -4169,7 +4510,7 @@ Begin
   IsAlt := False;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
     ParserAdvance
-  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
   Begin
     IsAlt := True;
     ParserAdvance;
@@ -4196,7 +4537,7 @@ Begin
       If HasPend Then EmitLabel(PendSkipLbl);
       { evaluer la valeur du case }
       ParseExpr(CaseE);
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
         ParserAdvance;
       EmitComment('case');
       { recharger le sujet dans BX }
@@ -4260,7 +4601,7 @@ Begin
     Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'default') Then
     Begin
       ParserAdvance;   { consommer 'default' }
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
         ParserAdvance;
       { emettre le label de saut du corps precedent }
       If HasPend Then EmitLabel(PendSkipLbl);
@@ -4310,6 +4651,7 @@ Var
   E        : TExprVal;
   AStr     : TString;
   FnMang   : TString;
+  VNm      : TString;  { nom temporaire pour define() }
 Begin
   { ---- Builtins speciaux (TODO 19) ---- }
   { count($a) : retourne le mot count stocke en [ptr] }
@@ -4441,6 +4783,51 @@ Begin
     While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
           And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOL;
+    Res.Offset := 0; Res.ImmVal := 0; Exit;
+  End;
+
+  { define('NOM', val) -> enregistre SC_CONST dans SymTab }
+  If FnName = 'define' Then
+  Begin
+    ParserAdvance;  { consommer '(' apres define }
+    { Lire le nom de la constante }
+    If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      VNm := CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      WriteLn('PHP86:', CurToken.Line, ': erreur: nom attendu dans define()');
+      Inc(ErrorCount);
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+            And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      ExprMakeImm(0, TY_IDX_BOOL, Res); Exit;
+    End;
+    { Consommer la virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    { Evaluer la valeur }
+    ParseExpr(E);
+    { Enregistrer la constante si pas deja definie }
+    If SymFindCat(VNm, SC_CONST) < 0 Then
+    Begin
+      If E.Kind = EK_IMM Then
+        SymAdd(VNm, SC_CONST, E.TypeIdx, False, E.ImmVal, CurToken.Line)
+      Else If (E.Kind = EK_MEM) And (E.TypeIdx = TY_IDX_STRING) Then
+        SymAdd(VNm, SC_CONST, TY_IDX_STRING, False, E.Offset, CurToken.Line)
+      Else
+      Begin
+        WriteLn('PHP86:', CurToken.Line, ': erreur: valeur litterale attendue dans define()');
+        Inc(ErrorCount);
+      End;
+    End;
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+          And (CurToken.Kind <> TK_EOF) Do ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    EmitInstr('MOV', 'AX, 1');  { define() retourne true }
     Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOL;
     Res.Offset := 0; Res.ImmVal := 0; Exit;
   End;
@@ -4601,6 +4988,7 @@ Var
   POfStr      : TString;
   SaveRetLbl  : TString;
   SaveFrame   : Integer;
+  SaveFnName  : TString;  { sauvegarde de CurFnName pour __FUNCTION__ }
   NS          : TString;
   E           : TExprVal;
 Begin
@@ -4679,7 +5067,9 @@ Begin
       ParserAdvance;
   End;
   { sauvegarder contexte de la fonction englobante }
-  SaveRetLbl := CurFnRetLbl;
+  SaveRetLbl  := CurFnRetLbl;
+  SaveFnName  := CurFnName;
+  CurFnName   := FnName;
   SaveFrame  := CurFrameSize;
   CurFnRetLbl  := RetLbl;
   CurFrameSize := 0;
@@ -4706,6 +5096,7 @@ Begin
   SymLeaveScope;
   Dec(CurFnDepth);
   CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
   CurFrameSize := SaveFrame;
   EmitLabel(EndLbl);
   EmitBlankLine;
@@ -5182,21 +5573,314 @@ Begin
             PCount, ' prop., ', MCount, ' meth., taille=', ObjSz, 'o');
 End;
 
-{ ---- Compilation principale (stub -- completer TODO 19+) -- }
+{ ============================================================
+  TODO 22 - RUNTIME MINIMAL
+  ============================================================ }
+
+{ ---- EmitRuntime : ecrire les routines runtime dans _TEXT -- }
+{ N'emet qu''une seule fois (guard RuntimeEmitted).           }
+{ Routines fournies :                                         }
+{   _PHRT_STRLEN  ([BP+4]=str)         -> AX=longueur         }
+{   _PHRT_PRINT   (SI=str null-term)   -> stdout              }
+{   _PHRT_NEWLINE ()                   -> CR+LF stdout        }
+{   _PHRT_PRINTLN (SI=str)             -> str + CR+LF         }
+{   _PHRT_ITOA    (AX=n)              -> SI=ptr buffer ASCII  }
+{   _PHRT_ATOI    ([BP+4]=str)         -> AX=entier           }
+{   _PHRT_CONCAT  (SI=dst, DI=src)    -> AX=SI               }
+{   _PHRT_STREQ   (SI=a, DI=b)        -> AX=1 si egal        }
+{   _PHRT_POWER   (AX=base, CX=exp)   -> AX=resultat         }
+{   _PHRT_ARRAY_PUSH stub             -> AX=0                 }
+{   _PHRT_PANIC   (SI=msg)            -> affiche + exit 1     }
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Or Not OutFOpen Then Exit;
+  RuntimeEmitted := True;
+  { --- Ajouter les buffers DATA necessaires --- }
+  DataAdd('_PHRT_CRLF', DK_STR, 0, Chr(13) + Chr(10));
+  { Buffer ITOA : 13 octets (signe + 5 chiffres max 16-bit + null) }
+  DataAdd('_PHRT_IBUF', DK_STR, 0, '            ');  { 12 espaces + null }
+  EmitBlankLine;
+  EmitRaw('; ============================================================');
+  EmitRaw('; RUNTIME PHP86 -- TODO 22');
+  EmitRaw('; ============================================================');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_STRLEN : cdecl [BP+4]=ptr chaine -> AX=longueur   }
+  EmitRaw('_PHRT_STRLEN:');
+  EmitRaw('        PUSH    BP');
+  EmitRaw('        MOV     BP, SP');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, [BP+4]');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('_PHRT_SL_LP:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      _PHRT_SL_DN');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     AX');
+  EmitRaw('        JMP     _PHRT_SL_LP');
+  EmitRaw('_PHRT_SL_DN:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_PRINT : SI=ptr chaine null-terminee -> stdout     }
+  EmitRaw('_PHRT_PRINT:');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     DX, SI');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw('_PHRT_PR_LN:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      _PHRT_PR_DN');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     CX');
+  EmitRaw('        JMP     _PHRT_PR_LN');
+  EmitRaw('_PHRT_PR_DN:');
+  EmitRaw('        JCXZ    _PHRT_PR_RET');
+  EmitRaw('        MOV     AH, 40h');
+  EmitRaw('        MOV     BX, 1');
+  EmitRaw('        INT     21h');
+  EmitRaw('_PHRT_PR_RET:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_NEWLINE : emet CR+LF                              }
+  EmitRaw('_PHRT_NEWLINE:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, OFFSET _PHRT_CRLF');
+  EmitRaw('        CALL    _PHRT_PRINT');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_PRINTLN : SI=str, emet str puis CR+LF            }
+  EmitRaw('_PHRT_PRINTLN:');
+  EmitRaw('        CALL    _PHRT_PRINT');
+  EmitRaw('        CALL    _PHRT_NEWLINE');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_ITOA : AX=entier signe -> SI=ptr buffer ASCII    }
+  EmitRaw('_PHRT_ITOA:');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, OFFSET _PHRT_IBUF');
+  EmitRaw('        MOV     SI, DI');
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JNS     _PHRT_IA_POS');
+  EmitRaw('        MOV     BYTE PTR [DI], 2Dh');   { '' - '' }
+  EmitRaw('        INC     DI');
+  EmitRaw('        NEG     AX');
+  EmitRaw('_PHRT_IA_POS:');
+  EmitRaw('        MOV     BX, 10');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw('_PHRT_IA_LP:');
+  EmitRaw('        XOR     DX, DX');
+  EmitRaw('        DIV     BX');
+  EmitRaw('        ADD     DL, 30h');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        INC     CX');
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JNZ     _PHRT_IA_LP');
+  EmitRaw('_PHRT_IA_POP:');
+  EmitRaw('        POP     DX');
+  EmitRaw('        MOV     [DI], DL');
+  EmitRaw('        INC     DI');
+  EmitRaw('        LOOP    _PHRT_IA_POP');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_ATOI : cdecl [BP+4]=ptr chaine -> AX=entier      }
+  EmitRaw('_PHRT_ATOI:');
+  EmitRaw('        PUSH    BP');
+  EmitRaw('        MOV     BP, SP');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, [BP+4]');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        MOV     CX, 1');      { signe : +1 }
+  EmitRaw('        CMP     BYTE PTR [SI], 2Dh');   { '' - '' }
+  EmitRaw('        JNE     _PHRT_AI_LP');
+  EmitRaw('        MOV     CX, -1');
+  EmitRaw('        INC     SI');
+  EmitRaw('_PHRT_AI_LP:');
+  EmitRaw('        MOV     BL, [SI]');
+  EmitRaw('        CMP     BL, 30h');
+  EmitRaw('        JB      _PHRT_AI_DN');
+  EmitRaw('        CMP     BL, 39h');
+  EmitRaw('        JA      _PHRT_AI_DN');
+  EmitRaw('        IMUL    AX, AX, 10');
+  EmitRaw('        SUB     BL, 30h');
+  EmitRaw('        XOR     BH, BH');
+  EmitRaw('        ADD     AX, BX');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     _PHRT_AI_LP');
+  EmitRaw('_PHRT_AI_DN:');
+  EmitRaw('        IMUL    AX, CX');    { appliquer le signe }
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     BP');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_CONCAT : SI=dst, DI=src -> appende src a dst      }
+  EmitRaw('_PHRT_CONCAT:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     BX, SI');   { BX = base (valeur de retour) }
+  EmitRaw('_PHRT_CC_END:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      _PHRT_CC_CPY');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     _PHRT_CC_END');
+  EmitRaw('_PHRT_CC_CPY:');           { SI pointe sur null de fin de dst }
+  EmitRaw('        MOV     AL, [DI]');
+  EmitRaw('        MOV     [SI], AL');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JNZ     _PHRT_CC_CPY');
+  EmitRaw('        MOV     AX, BX');  { AX = ptr base dst }
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_STREQ : SI=str1, DI=str2 -> AX=1 si egal         }
+  EmitRaw('_PHRT_STREQ:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('_PHRT_SE_LP:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     BL, [DI]');
+  EmitRaw('        CMP     AL, BL');
+  EmitRaw('        JNE     _PHRT_SE_NO');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      _PHRT_SE_YES');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     _PHRT_SE_LP');
+  EmitRaw('_PHRT_SE_YES:');
+  EmitRaw('        MOV     AX, 1');
+  EmitRaw('        JMP     _PHRT_SE_DN');
+  EmitRaw('_PHRT_SE_NO:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('_PHRT_SE_DN:');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_POWER : AX=base, CX=exposant -> AX=resultat      }
+  EmitRaw('_PHRT_POWER:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     BX, AX');  { BX = base }
+  EmitRaw('        MOV     AX, 1');   { AX = resultat }
+  EmitRaw('        TEST    CX, CX');
+  EmitRaw('        JZ      _PHRT_PW_DN');
+  EmitRaw('_PHRT_PW_LP:');
+  EmitRaw('        IMUL    AX, BX');
+  EmitRaw('        LOOP    _PHRT_PW_LP');
+  EmitRaw('_PHRT_PW_DN:');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_ARRAY_PUSH : stub (tableaux fixes en DATA)        }
+  EmitRaw('_PHRT_ARRAY_PUSH:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+  { ===========================================================
+    _PHRT_PANIC : SI=msg -> affiche + exit 1               }
+  EmitRaw('_PHRT_PANIC:');
+  EmitRaw('        CALL    _PHRT_PRINTLN');
+  EmitRaw('        MOV     AX, 4C01h');
+  EmitRaw('        INT     21h');
+  EmitBlankLine;
+End;
+
+{ ============================================================
+  TODO 25 - GENERATION FINALE
+  ============================================================ }
+
+{ ---- Run : pipeline complet de compilation ----------------- }
 Procedure Run;
 Begin
   TypeInit;
   SymInit;
+  InitBuiltinConsts;  { constantes predefinies PHP_INT_MAX, PHP_EOL, PHP_OS }
   EmitOpen;
   If ErrorCount > 0 Then Exit;
+
+  { --- En-tete ASM : .MODEL SMALL / .STACK / _TEXT SEGMENT -- }
   EmitHeader;
+
+  { --- Prologue de la fonction main (point d''entree DOS) ---- }
+  EmitComment('Point d''entree programme PHP86');
+  EmitLabel(PH_FN_PFX + 'main');
+  EmitInstr('MOV', 'AX, @DATA');
+  EmitInstr('MOV', 'DS, AX');
+  EmitInstr('MOV', 'AX, SS');
+  EmitInstr('MOV', 'ES, AX');
+  EmitBlankLine;
+  EmitComment('-- Code PHP traduit ---');
+  EmitBlankLine;
+
+  { --- Lexeur + analyse syntaxique du fichier source --------- }
   LexInit;
   ParserAdvance;
-  { En mode debug, consommer tous les tokens pour tester le lexeur }
+
   If Opts.DebugTok Then
+  Begin
+    { Mode debug : consommer tous les tokens sans emettre de code }
     While CurToken.Kind <> TK_EOF Do
       ParserAdvance;
-  { TODO 25 : boucle ParseTopLevel + EmitRuntime + EmitDataSeg }
+  End
+  Else
+  Begin
+    { Analyse normale : boucle de statements de niveau superieur }
+    While CurToken.Kind <> TK_EOF Do
+      ParseStmt;
+  End;
+
+  LexClose;
+
+  { --- Epilogue main : sortie DOS propre --------------------- }
+  EmitBlankLine;
+  EmitComment('-- Fin de programme --');
+  EmitInstr('MOV', 'AX, 4C00h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+
+  { --- Sous-routines runtime ---------------------------------- }
+  EmitRuntime;
+
+  { --- Fermeture : _TEXT ENDS / _DATA SEGMENT / END _PHF_main  }
+  EmitClose;
+
   If Opts.Verbose Then
     WriteLn('PHP86: ', TotalLines, ' ligne(s) lues depuis ', Opts.SrcFile);
 End;
@@ -5222,9 +5906,11 @@ Begin
   CurFnDepth   := 0;
   LoopTop      := 0;
   CurFnRetLbl  := '';
+  CurFnName     := '';  { hors fonction = vide (pour __FUNCTION__) }
   RuntimeEmitted := False;
   ClassCount   := 0;
   CurClsIdx    := -1;
+  IncludeCount := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;

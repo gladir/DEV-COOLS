@@ -4646,343 +4646,295 @@ Begin
  End;
 End;
 
-{ Relational expression parser - handles >, <, >=, <=, ==, != }
-Procedure relational_expression(var lval: TLVal);
-Begin
+{ Analyseur d'expressions relationnelles - gŠre >, <, >=, <=, ==, != }
+Procedure relational_expression(var lval: TLVal);Begin
  additive_expression(lval);
-
- While True do
- Begin
-  If match('>') Then
-  Begin
-   If match('=') Then
-   Begin
+ While True do Begin
+  If match('>') Then Begin
+   If match('=') Then Begin
     { >= operator }
-    safe_writeln('; OpÃ©rateur >=');
-    ol('pshs d');    { Push left operand }
+    safe_writeln('; Op‚rateur >=');
+    ol('pshs d');    { Pousser l'op‚rande gauche }
     additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('bge *+5');   { Branch if greater or equal }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
+    ol('puls x');    { Op‚rande gauche versX }
+    ol('cmpx d');    { Compare X avec D }
+    ol('bge *+5');   { Branchement si sup‚rieur ou ‚gale }
+    ol('ldd #0');    { R‚sultat false }
+    ol('bra *+3');   { Saute le r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
    End
-   Else
+    Else
    Begin
-    { > operator }
-    safe_writeln('; OpÃ©rateur >');
-    ol('pshs d');    { Push left operand }
+    { Op‚rateur > }
+    safe_writeln('; Op‚rateur >');
+    ol('pshs d');    { Empile l'op‚rande gauche }
     additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('bgt *+5');   { Branch if greater }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
+    ol('puls x');    { Op‚rande de gauche vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('bgt *+5');   { Branchement si sup‚rieur }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { Saute le r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
    End;
   End
-  Else If match('<') Then
-  Begin
-   If match('=') Then
-   Begin
-    { <= operator }
-    safe_writeln('; OpÃ©rateur <=');
-    ol('pshs d');    { Push left operand }
-    additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('ble *+5');   { Branch if less or equal }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
-   End
    Else
-   Begin
-    { < operator }
-    safe_writeln('; OpÃ©rateur <');
-    ol('pshs d');    { Push left operand }
+  If match('<') Then Begin
+   If match('=') Then Begin
+    { Op‚rateur <= }
+    safe_writeln('; Op‚rateur <=');
+    ol('pshs d');    { Empile l'op‚rande gauche }
     additive_expression(lval);
-    ol('puls x');    { Left operand to X }
-    ol('cmpx d');    { Compare X with D }
-    ol('blt *+5');   { Branch if less }
-    ol('ldd #0');    { False result }
-    ol('bra *+3');   { Skip true result }
-    ol('ldd #1');    { True result }
+    ol('puls x');    { Op‚rande de gauche vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('ble *+5');   { Branchement si inf‚rieur ou ‚gale }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { Saute le r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
+   End
+    Else
+   Begin
+    { Op‚rateur < }
+    safe_writeln('; Op‚rateur <');
+    ol('pshs d');    { Empile l'op‚rande de gauche }
+    additive_expression(lval);
+    ol('puls x');    { Op‚rande de gauche vers X }
+    ol('cmpx d');    { Compare X avec D }
+    ol('blt *+5');   { Branchement si inf‚rieur }
+    ol('ldd #0');    { R‚sultat False }
+    ol('bra *+3');   { Saute le r‚sultat true }
+    ol('ldd #1');    { R‚sultat True }
    End;
   End
-  Else If match('=') and match('=') Then
-  Begin
-   { == operator }
-   safe_writeln('; OpÃ©rateur ==');
-   ol('pshs d');    { Push left operand }
+   Else
+  If match('=') and match('=') Then Begin
+   { Op‚rateur == }
+   safe_writeln('; Op‚rateur ==');
+   ol('pshs d');    { Empile l'op‚rande de gauche }
    additive_expression(lval);
-   ol('puls x');    { Left operand to X }
-   ol('cmpx d');    { Compare X with D }
-   ol('beq *+5');   { Branch if equal }
-   ol('ldd #0');    { False result }
-   ol('bra *+3');   { Skip true result }
-   ol('ldd #1');    { True result }
+   ol('puls x');    { Op‚rande de gauche vers X }
+   ol('cmpx d');    { Compare X avec D }
+   ol('beq *+5');   { Branchement si ‚gale }
+   ol('ldd #0');    { R‚sultat False }
+   ol('bra *+3');   { Saute le r‚sultat true }
+   ol('ldd #1');    { R‚sultat True }
   End
-  Else If match('!') and match('=') Then
-  Begin
-   { != operator }
-   safe_writeln('; OpÃ©rateur !=');
-   ol('pshs d');    { Push left operand }
+   Else
+  If match('!') and match('=') Then Begin
+   { Op‚rateur != }
+   safe_writeln('; Op‚rateur !=');
+   ol('pshs d');    { Empile l'op‚rande de gauche }
    additive_expression(lval);
-   ol('puls x');    { Left operand to X }
-   ol('cmpx d');    { Compare X with D }
-   ol('bne *+5');   { Branch if not equal }
-   ol('ldd #0');    { False result }
-   ol('bra *+3');   { Skip true result }
-   ol('ldd #1');    { True result }
+   ol('puls x');    { Op‚rande de gauche vers X }
+   ol('cmpx d');    { Compare X avec D }
+   ol('bne *+5');   { Branchement si pas ‚gale }
+   ol('ldd #0');    { R‚sultat False }
+   ol('bra *+3');   { Saute le r‚sultat true }
+   ol('ldd #1');    { R‚sultat True }
   End
-  Else
-   Break; { No more relational operators }
+   Else
+  Break; { Pas plus d'op‚rateurs relationnel }
  End;
 End;
 
-{ Bitwise AND expression parser - handles & }
-Procedure bitwise_and_expression(var lval: TLVal);
-Begin
+{ Analyseur d'expression binaire ET - GŠre le & }
+Procedure bitwise_and_expression(var lval: TLVal);Begin
  relational_expression(lval);
-
- While match('&') do
- Begin
-  { VÃ©rifier que ce n'est pas && }
-  If peek_char = '&' Then
-  Begin
-   { Reculer car c'est && qui sera traitÃ© par logical_and }
+ While match('&') do Begin
+  { V‚rifier que ce n'est pas && }
+  If peek_char = '&' Then Begin
+   { Reculer car c'est && qui sera trait‚ par logical_and }
    Dec(lptr);
    Break;
   End;
-
-  safe_writeln('; OpÃ©rateur & (ET binaire)');
-  ol('pshs d');    { Push left operand }
+  safe_writeln('; Op‚rateur & (ET binaire)');
+  ol('pshs d');    { Empile l'op‚rande de gauche }
   relational_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('anda 1,x');  { AND low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('anda 0,x');  { AND high bytes }
+  ol('tfr  d,x');  { Op‚rande de droite vers X }
+  ol('puls d');    { Op‚rande de gauche vers D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B vers A pour l'octet bas }
+  ol('anda 1,x');  { Octet bas AND }
+  ol('tfr  a,b');  { R‚sultat de l'octet bas vers B }
+  ol('tfr  u,a');  { Restaure l'octet haut de U }
+  ol('anda 0,x');  { L'octet haut AND }
  End;
 End;
 
-{ Bitwise XOR expression parser - handles ^ }
-Procedure bitwise_xor_expression(var lval: TLVal);
-Begin
+{ Analyseur d'expression binaire XOR - GŠre le ^ }
+Procedure bitwise_xor_expression(var lval: TLVal);Begin
  bitwise_and_expression(lval);
-
- While match('^') do
- Begin
-  safe_writeln('; OpÃ©rateur ^ (XOR binaire)');
-  ol('pshs d');    { Push left operand }
+ While match('^') do Begin
+  safe_writeln('; Op‚rateur ^ (XOR binaire)');
+  ol('pshs d');    { Empile l'op‚rande de gauche }
   bitwise_and_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('eora 1,x');  { XOR low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('eora 0,x');  { XOR high bytes }
+  ol('tfr  d,x');  { Op‚rande de droite vers X }
+  ol('puls d');    { Op‚rande de gauche vers D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B vers A pour l'octet bas }
+  ol('eora 1,x');  { Octet bas XOR }
+  ol('tfr  a,b');  { R‚sultat de l'octet bas vers B }
+  ol('tfr  u,a');  { Restaure l'octet haut de U }
+  ol('eora 0,x');  { Octets haut XOR }
  End;
 End;
 
-{ Bitwise OR expression parser - handles | }
-Procedure bitwise_or_expression(var lval: TLVal);
-Begin
+ { Analyse l'expression binaire OU - GŠre le | }
+Procedure bitwise_or_expression(var lval: TLVal);Begin
  bitwise_xor_expression(lval);
-
- While match('|') do
- Begin
-  { VÃ©rifier que ce n'est pas || }
-  If peek_char = '|' Then
-  Begin
-   { Reculer car c'est || qui sera traitÃ© par logical_or }
+ While match('|') do Begin
+  { V‚rifier que ce n'est pas || }
+  If peek_char = '|' Then Begin
+   { Reculer car c'est || ‚tant trait‚ par logical_or }
    Dec(lptr);
    Break;
   End;
-
-  safe_writeln('; OpÃ©rateur | (OU binaire)');
-  ol('pshs d');    { Push left operand }
+  safe_writeln('; Op‚rateur | (OU binaire)');
+  ol('pshs d');    { Empile l'op‚rande de gauche }
   bitwise_xor_expression(lval);
-  ol('tfr  d,x');  { Right operand to X }
-  ol('puls d');    { Left operand to D }
-  ol('tfr  a,u');  { Save A in U }
-  ol('tfr  b,a');  { B to A for low byte }
-  ol('ora  1,x');  { OR low bytes }
-  ol('tfr  a,b');  { Result low byte to B }
-  ol('tfr  u,a');  { Restore high byte from U }
-  ol('ora  0,x');  { OR high bytes }
+  ol('tfr  d,x');  { Op‚rande gauche vers X }
+  ol('puls d');    { Op‚rande de gauche vers D }
+  ol('tfr  a,u');  { Sauvegarde A dans U }
+  ol('tfr  b,a');  { B vers A pour l'octet bas }
+  ol('ora  1,x');  { Octets bas OR }
+  ol('tfr  a,b');  { R‚sultat de l'octet bas vers B }
+  ol('tfr  u,a');  { Restaure l'octet haut de U }
+  ol('ora  0,x');  { Octet haut OR }
  End;
 End;
 
-{ Logical AND expression parser - handles && }
+ { Analyseur d'expression logique ET - GŠre le && }
 Procedure logical_and_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
 Begin
  bitwise_or_expression(lval);
-
- While match('&') and match('&') do
- Begin
-  safe_writeln('; OpÃ©rateur && (ET logique)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+ While match('&') and match('&') do Begin
+  safe_writeln('; Op‚rateur && (ET logique)');
+   { G‚n‚rer les ‚tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premiÃ¨re expression }
+   { Tester la premiŠre expression }
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-
-  { Ã‰valuer la deuxiÃ¨me expression }
+   { valuer la deuxiŠme expression }
   bitwise_or_expression(lval);
   ol('tstd');
   ot('lbeq ');
   printlabel(false_label);
   nl;
-
-  { Les deux sont vraies - rÃ©sultat = 1 }
+  { Les deux sont vraies - r‚sultat = 1 }
   ol('ldd #1');
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est fausse - rÃ©sultat = 0 }
+   { Au moins une est fausse - r‚sultat = 0 }
   prelabel(false_label);
   ol('ldd #0');
-
-  { Fin }
+   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Logical OR expression parser - handles || }
+ { Analyse l'expression logique OU - G‚rer le || }
 Procedure logical_or_expression(var lval: TLVal);
 Var
  true_label, end_label: Integer;
 Begin
  logical_and_expression(lval);
-
- While match('|') and match('|') do
- Begin
-  safe_writeln('; OpÃ©rateur || (OU logique)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+ While match('|') and match('|') do Begin
+  safe_writeln('; Op‚rateur || (OU logique)');
+   { G‚n‚rer les ‚tiquettes }
   true_label := getlabel;
   end_label := getlabel;
-
-  { Tester la premiÃ¨re expression }
+   { Tester la premiŠre expression }
   ol('tstd');
   ot('lbne ');
   printlabel(true_label);
   nl;
-
-  { Ã‰valuer la deuxiÃ¨me expression }
+  { valuer la deuxiŠme expression }
   logical_and_expression(lval);
   ol('tstd');
   ot('lbne ');
   printlabel(true_label);
   nl;
-
-  { Les deux sont fausses - rÃ©sultat = 0 }
+  { Les deux sont fausses - r‚sultat = 0 }
   ol('ldd #0');
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Au moins une est vraie - rÃ©sultat = 1 }
+  { Au moins une est vraie - r‚sultat = 1 }
   prelabel(true_label);
   ol('ldd #1');
-
   { Fin }
   prelabel(end_label);
  End;
 End;
 
-{ Conditional expression parser - handles ?: (ternary operator) }
+{ Analyseur d'expresion conditionnelle - GŠre le ?: (op‚rateur ternaire) }
 Procedure conditional_expression(var lval: TLVal);
 Var
  false_label, end_label: Integer;
  true_lval, false_lval: TLVal;
 Begin
  logical_or_expression(lval);
-
- If match('?') Then
- Begin
-  safe_writeln('; OpÃ©rateur ternaire ? : (expression conditionnelle)');
-
-  { GÃ©nÃ©rer les Ã©tiquettes }
+ If match('?') Then Begin
+  safe_writeln('; Op‚rateur ternaire ? : (expression conditionnelle)');
+   { G‚n‚rer les ‚tiquettes }
   false_label := getlabel;
   end_label := getlabel;
-
-  { Tester la condition }
-  ol('tstd');         { Tester le rÃ©sultat de la condition }
-  ot('lbeq ');        { Si faux, aller Ã  l''expression fausse }
+   { Tester la condition }
+  ol('tstd');         { Tester le r‚sultat de la condition }
+  ot('lbeq ');        { Si faux, aller … l'expression fausse }
   printlabel(false_label);
   nl;
-
-  { Analyser l'expression vraie }
+   { Analyser l'expression vraie }
   safe_writeln('; Expression vraie du ternaire');
   logical_or_expression(true_lval);
-
-  { Sauter l'expression fausse }
+   { Sauter l'expression fausse }
   ot('lbra ');
   printlabel(end_label);
   nl;
-
-  { Attendre ':' }
+   { Attendre ':' }
   If not match(':') Then
   Begin
    Case Language of
     _English: errrpt('Expected : in ternary operator');
     {$IFDEF FPC}
-    _Germany: errrpt('Erwartete : im ternÃ¤ren Operator');
+    _Germany: errrpt('Erwartete : im tern„ren Operator');
     {$ENDIF}
-    Else errrpt(': attendu dans l''opÃ©rateur ternaire');
+    Else errrpt(': attendu dans l''op‚rateur ternaire');
    End;
    Exit;
   End;
-
-  { Ã‰tiquette pour l'expression fausse }
+   { tiquette pour l'expression fausse }
   prelabel(false_label);
-
-  { Analyser l'expression fausse }
+   { Analyser l'expression fausse }
   safe_writeln('; Expression fausse du ternaire');
   logical_or_expression(false_lval);
-
-  { Ã‰tiquette de fin }
+   { tiquette de fin }
   prelabel(end_label);
-
-  { Le rÃ©sultat est dans D - copier les informations de type appropriÃ©es }
-  { Pour simplifier, utiliser le type de l'expression vraie }
+   { Le r‚sultat est dans D - copier les informations de type appropri‚es }
+   { Pour simplifier, utiliser le type de l'expression vraie }
   lval := true_lval;
-  safe_writeln('; Fin opÃ©rateur ternaire');
+  safe_writeln('; Fin op‚rateur ternaire');
  End;
 End;
 
-{ Main expression parser }
-Function expression_bool(var lval: TLVal): Boolean;
-Begin
+ { Analyseur d'expresion Main }
+Function expression_bool(var lval: TLVal):Boolean;Begin
  conditional_expression(lval);
  expression_bool := True;
 End;
 
-{ Wrapper procedure for backward compatibility }
-Procedure expression(var lval: TLVal);
-Begin
+ { Enveloppe de proc‚dure pour la compatibilit‚ ascendante }
+Procedure expression(var lval:TLVal);Begin
  expression_bool(lval);
 End;
 
-{ Variable declaration parsing functions - moved after expression }
-{ Enhanced declaration parsing with full type support }
+{ Fonctions d'analyse de d‚claration de variable - d‚placer aprŠs l'expression }
+{ tendre l'analyse de la d‚claration avec un support de type complet }
 Function parse_declaration: Boolean;
 Var
  base_type, var_type, storage_class: Integer;
@@ -4992,71 +4944,55 @@ Var
  save_lptr: Integer;
 Begin
  parse_declaration := False;
-
- { Parse storage class specifier first }
+  { Analyse le premier sp‚cificateur de classe d'entreposage }
  storage_class := parse_storage_class_specifier;
-
- { Check if this is a typedef declaration }
- If storage_class = it_typedef_type Then
- Begin
-  { Handle typedef declaration }
-  If parse_typedef_declaration Then
-   parse_declaration := True;
+  { V‚rifie si c'est une d‚claration typedef }
+ If storage_class = it_typedef_type Then Begin
+  { GŠre la d‚claration typedef }
+  If parse_typedef_declaration Then parse_declaration := True;
   Exit;
  End;
-
- { Parse type specifier with qualifiers }
+  { Analyse le sp‚cificateur de type avec les qualificateurs }
  base_type := parse_type_specifier_with_qualifiers(type_info);
- If base_type = -1 Then Exit; { No valid type found }
-
- { Save position to check for function vs variable }
+ If base_type = -1 Then Exit; { Pas de type valide trouv‚ }
+  { Sauvegarde la position pour v‚rifier si la fonction est une fonction ou une variable }
  save_lptr := lptr;
-
- { Try to parse as declarator to get the name }
+  { Essayer d'analyser comme un d‚clarateur pour obtenir le nom }
  var_type := parse_declarator(var_name, base_type, type_info);
  If var_type = 0 Then Exit;
-
- { Check if this is a function declaration/definition }
- If match('(') Then
- Begin
-  { This is a function - restore position and parse as function }
+  { V‚rifie si c'est une fonction de d‚claration ou de d‚finition }
+ If match('(') Then Begin
+  { C'est une fonction - restaure la position et analyse la fonction }
   lptr := save_lptr;
-  If parse_function_declaration(base_type) Then
-   parse_declaration := True;
+  If parse_function_declaration(base_type) Then parse_declaration := True;
   Exit;
  End;
-
- { This is a variable declaration - pass storage class }
+  { C'est une d‚claration de variable - passe la classe d'entreposage }
  declare_variable(var_name, var_type, type_info, storage_class);
  parse_declaration := True;
-
- { Check for initialization }
- If match('=') Then
- Begin
+  { V‚rifie pour l'initialisation }
+ If match('=') Then Begin
   safe_writeln('; Initializing variable: ' + var_name + ' (' + get_type_name(type_info) + ')');
   expression(lval);
-
-  { Type checking for initialization }
-  If type_info.is_const Then
-  Begin
+   { V‚rifie le type pour l'initialisation }
+  If type_info.is_const Then Begin
    safe_writeln('; const variable initialized');
   End;
-
-  { Generate type-appropriate initialization code }
+   { G‚nŠre le type le code d'initialisation appropri‚ }
   Case type_info.size of
    1: Begin
-       ol('stb   ' + var_name); { Store byte for char }
+       ol('stb   ' + var_name); { Entrepose l'octet pour char }
       End;
    2: Begin
-       ol('std   ' + var_name); { Store word for int/short/pointers }
+       ol('std   ' + var_name); { Entrepose le mot pour int/short/pointeurs }
       End;
   Else
    Begin
-    ol('std   ' + var_name); { Default to word }
+    ol('std   ' + var_name); { Par d‚faut vers word }
    End;
   End;
  End
- Else
+  Else
  Begin
   { Check if const variable needs initialization }
   If type_info.is_const Then
