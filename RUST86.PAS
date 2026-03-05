@@ -206,8 +206,12 @@ Const
 
   MAX_SYM    = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};   { entrees table des symboles             }
   MAX_PROC   = {$IFDEF FPC}256{$ELSE}64{$ENDIF};     { fonctions fn                           }
+  MAX_IMPL   = 64;    { blocs impl (impl Type / impl Trait for Type) }
+  MAX_METHOD = 256;   { methodes total dans tous les blocs impl      }
+  MAX_BORROW = 128;   { verrous d'emprunt actifs simultanement max (TODO 11) }
   MAX_PARAM  = {$IFDEF FPC}32{$ELSE}16{$ENDIF};      { parametres par fonction                }
   MAX_FIELD  = 64;    { champs par struct/enum                     }
+  MAX_FIELDS_TOTAL = 512; { pool global de champs pour tous les types (TODO 07) }
   MAX_CONST  = 512;   { constantes (const / static immuable)       }
   MAX_TYPE   = 64;    { descripteurs de type                       }
   MAX_LABEL  = 2048;  { labels internes (if/loop/match/break...)   }
@@ -232,13 +236,34 @@ Const
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
 
+  { ============================================================
+    TODO 06 - Indices des types primitifs dans TypeTab
+    Ces constantes garantissent un acces direct O(1) aux types
+    de base sans recherche par nom.
+    ============================================================ }
+  TY_IDX_I8    = 0;   { i8   : entier signe  8 bits (1 octet)        }
+  TY_IDX_U8    = 1;   { u8   : entier non-signe 8 bits (1 octet)     }
+  TY_IDX_I16   = 2;   { i16  : entier signe 16 bits (2 octets)       }
+  TY_IDX_U16   = 3;   { u16  : entier non-signe 16 bits (2 octets)   }
+  TY_IDX_I32   = 4;   { i32  : entier signe 32 bits (4 octets DX:AX) }
+  TY_IDX_U32   = 5;   { u32  : entier non-signe 32 bits (4 octets)   }
+  TY_IDX_ISIZE = 6;   { isize: ptr-signe 16 bits sur 8086            }
+  TY_IDX_USIZE = 7;   { usize: ptr non-signe 16 bits sur 8086        }
+  TY_IDX_BOOL  = 8;   { bool : 0=false 1=true (1 octet)              }
+  TY_IDX_CHAR  = 9;   { char : Unicode tronque a u8 sur 8086         }
+  TY_IDX_UNIT  = 10;  { ()   : type unite, taille 0                  }
+  TY_IDX_STR   = 11;  { &str : pointeur fat (ptr+len) 4 octets       }
+  TY_PRIM_COUNT= 12;  { nombre de types primitifs pre-enregistres    }
+  TY_UNKNOWN   = -1;  { type non resolu / erreur                     }
+
 { --- Types fondamentaux --- }
 Type
   TString = String[MAX_STR];
 
   { ---- Categories de tokens ---- }
   TTokenKind = (
-    TK_IDENT,     { identificateur / mot-cle                      }
+    TK_IDENT,     { identificateur                                }
+    TK_KEYWORD,   { mot-cle Rust reserve                          }
     TK_INTEGER,   { litteral entier : 42  0xFF  0b1010  0o17      }
     TK_FLOAT,     { litteral flottant : 3.14  1e10                }
     TK_CHAR,      { litteral caractere : 'A'  '\n'                }
@@ -270,6 +295,104 @@ Type
     NoOptim    : Boolean;     { --no-opt : desactiver optimisations }
   End;
 
+  { ---- Categorie d'un symbole (TODO 05) ---- }
+  TSymCat = (
+    SC_VAR,      { variable locale (sur la pile)            }
+    SC_PARAM,    { parametre de fonction                     }
+    SC_FN,       { fonction / methode                        }
+    SC_CONST,    { constante (const)                         }
+    SC_STATIC,   { variable statique (static)                }
+    SC_TYPEDEF,  { alias de type (type Foo = ...)            }
+    SC_FIELD,    { champ de struct / enum                    }
+    SC_IMPL      { methode via impl (mungling _IMP_T_fn)     }
+  );
+
+  { ---- Enregistrement de la table des symboles ---- }
+  TSymRec = Record
+    Name     : TString;       { nom Rust du symbole                }
+    Cat      : TSymCat;       { categorie                          }
+    TypeIdx  : Integer;       { index dans la table de types (TODO06) }
+    ScopeLevel : Integer;     { niveau de portee (0 = global)      }
+    Offset   : Integer;       { offset BP pour locals/params (negatif pour locals) }
+    MangledName : TString;    { etiquette assembleur 8086          }
+    IsMut    : Boolean;       { variable mutable                   }
+    IsRef    : Boolean;       { symbole est une reference &T       }
+    DeclLine : Integer;       { ligne de declaration dans le source }
+  End;
+
+  { ============================================================
+    TODO 06 - Categorie d'un descripteur de type
+    ============================================================ }
+  TTypeKind = (
+    TKD_PRIM,    { type scalaire primitif (i8..u32, bool, char, ()) }
+    TKD_REF,     { reference &T ou &mut T                          }
+    TKD_ARRAY,   { tableau de taille fixe [T; N]                   }
+    TKD_TUPLE,   { tuple (T1, T2, ...)                             }
+    TKD_STRUCT,  { struct avec champs nommes                      }
+    TKD_ENUM,    { enum avec variantes et donnees                  }
+    TKD_FN,      { pointeur de fonction fn(T1) -> T2               }
+    TKD_UNKNOWN  { type non encore resolu                          }
+  );
+
+  { ============================================================
+    TODO 10 - Descripteur d'un bloc impl
+    ============================================================ }
+  TImplRec = Record
+    TypeName   : TString;   { nom du type recepteur (ex: 'Point')     }
+    TraitName  : TString;   { nom du trait implante (vide si impl libre) }
+    MethodBase : Integer;   { premier index dans MethodTab             }
+    MethodCount: Integer;   { nombre de methodes de ce bloc            }
+    TypeIdx    : Integer;   { index dans TypeTab (-1 si non resolu)    }
+  End;
+
+  { ---- Descripteur d'une methode impl ---- }
+  TMethodRec = Record
+    Name       : TString;   { nom Rust de la methode (ex: 'push')     }
+    MangledName: TString;   { etiquette 8086 (ex: '_IMP_Point_push')  }
+    RetTypeIdx : Integer;   { index du type de retour dans TypeTab     }
+    IsPublic   : Boolean;   { methode pub ou privee                    }
+    ImplIdx    : Integer;   { index du bloc impl parent dans ImplTab   }
+  End;
+
+  { ============================================================
+    TODO 11 - Emprunts : &T (partage) et &mut T (mutable)
+    ============================================================ }
+  TBorrowKind = (BK_SHARED, BK_MUT);  { partage ou mutable }
+
+  TBorrowRec = Record
+    VarName  : TString;      { nom de la variable empruntee            }
+    Kind     : TBorrowKind;  { BK_SHARED = &T  ou  BK_MUT = &mut T    }
+    TypeIdx  : Integer;      { index du type pointe dans TypeTab       }
+    IsActive : Boolean;      { emprunt encore actif dans la portee     }
+    DeclLine : Integer;      { numero de ligne de la declaration       }
+  End;
+
+  { ---- Enregistrement d'un type (table de types TypeTab) ---- }
+  TTypeRec = Record
+    Kind      : TTypeKind; { categorie du type                     }
+    Name      : TString;   { nom Rust canonique (ex: 'i32', 'bool')}
+    Size      : Integer;   { taille en octets sur 8086             }
+    Align     : Integer;   { alignement requis en octets           }
+    Signed    : Boolean;   { vrai si type entier signe             }
+    ElemType  : Integer;   { index type element (ref,array,fn ret) }
+    ElemCount : Integer;   { nb elements (taille tableau) ou params}
+    FieldBase : Integer;   { premier champ dans FieldTab (struct)  }
+    FieldCount: Integer;   { nombre de champs (struct/tuple/enum)  }
+  End;
+
+  { ============================================================
+    TODO 07 - Descripteur d'un element/champ d'un type compose
+              Utilise pour les tuples, tableaux, structs, enums.
+    ============================================================ }
+  TFieldRec = Record
+    Name    : TString;   { nom du champ (vide pour tuples/arrays)  }
+    TypeIdx : Integer;   { index du type de cet element            }
+    Offset  : Integer;   { offset en octets depuis le debut du type}
+  End;
+
+  { ---- Tableau de types elements pour TypeAddTuple ---- }
+  TTupleElems = Array[0..MAX_PARAM - 1] Of Integer;
+
 { --- Variables globales du compilateur --- }
 Var
   Opts       : TOptions;
@@ -287,6 +410,37 @@ Var
   LexEOF    : Boolean;       { vrai si fin de fichier atteinte    }
   LexOpened : Boolean;       { vrai si LexSrcF est ouvert         }
   CurToken  : TToken;        { token courant                      }
+
+{ --- Variables globales de la table des symboles (TODO 05) --- }
+Var
+  SymTab     : Array[0..MAX_SYM - 1]   Of TSymRec;  { table des symboles  }
+  SymCount   : Integer;                              { nb symboles inseres }
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;  { debut de chaque portee dans SymTab }
+  ScopeTop   : Integer;                              { index sommet de pile de portees    }
+  CurScope   : Integer;                              { niveau de portee courant (0=global)}
+  LabelSeq   : Integer;                              { compteur global de labels uniques  }
+
+{ --- Variables globales du systeme de types (TODO 06) --- }
+Var
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;  { descripteurs de types           }
+  TypeCount : Integer;                              { nb de types enregistres          }
+
+{ --- Variables globales des champs de types composes (TODO 07) --- }
+Var
+  FieldTab   : Array[0..MAX_FIELDS_TOTAL - 1] Of TFieldRec; { pool de champs/elements }
+  FieldCount : Integer;                                      { nb entrees utilisees    }
+
+{ --- Variables globales des blocs impl (TODO 10) --- }
+Var
+  ImplTab    : Array[0..MAX_IMPL   - 1] Of TImplRec;    { blocs impl enregistres  }
+  ImplCount  : Integer;                                  { nb de blocs impl        }
+  MethodTab  : Array[0..MAX_METHOD - 1] Of TMethodRec;  { methodes de tous les impl }
+  MethodCount: Integer;                                  { nb de methodes total    }
+
+{ --- Variables globales des emprunts (TODO 11) --- }
+Var
+  BorrowTab  : Array[0..MAX_BORROW - 1] Of TBorrowRec;  { table des emprunts actifs }
+  BorrowCount: Integer;                                  { nb d'emprunts enregistres }
 
 { ============================================================
   Procedure : Erreur fatale
@@ -621,6 +775,40 @@ Begin
 End;
 
 { ============================================================
+  TODO 04 - LEXER : OPERATEURS ET MOTS-CLES RUST
+  ============================================================ }
+
+{ --- Table des mots-cles Rust (44 entrees : 0..43) --- }
+Const
+  RUST_KW : Array[0..43] Of String[10] = (
+    'fn',       'let',      'mut',      'if',       'else',
+    'match',    'loop',     'while',    'for',      'in',
+    'return',   'struct',   'enum',     'impl',     'trait',
+    'use',      'mod',      'pub',      'self',     'Self',
+    'super',    'crate',    'const',    'static',   'type',
+    'where',    'unsafe',   'extern',   'as',       'ref',
+    'break',    'continue', 'dyn',      'move',     'async',
+    'await',    'true',     'false',    'box',      'do',
+    'macro',    'try',      'yield',    'abstract'
+  );
+
+{ ============================================================
+  Fonction : IsRustKeyword - verifier si une chaine est un mot-cle
+  ============================================================ }
+Function IsRustKeyword(Const S : TString) : Boolean;
+Var
+  I : Integer;
+Begin
+  IsRustKeyword := False;
+  For I := 0 To 43 Do
+    If S = RUST_KW[I] Then
+    Begin
+      IsRustKeyword := True;
+      Exit;
+    End;
+End;
+
+{ ============================================================
   Procedure : LexScanIdent - lire un identifiant ou mot-cle
   ============================================================ }
 Procedure LexScanIdent(Var T : TToken; SL, SC : Integer);
@@ -634,7 +822,10 @@ Begin
     If Length(S) < MAX_STR Then S := S + LexCurChar;
     LexAdvance;
   End;
-  MakeToken(T, TK_IDENT, S, SL, SC);
+  If IsRustKeyword(S) Then
+    MakeToken(T, TK_KEYWORD, S, SL, SC)
+  Else
+    MakeToken(T, TK_IDENT, S, SL, SC);
 End;
 
 { ============================================================
@@ -1109,6 +1300,61 @@ Begin
 End;
 
 { ============================================================
+  Procedure : LexScanOp - scanner un operateur simple ou compose
+             Operateurs Rust reconnus :
+             +  +=    -  ->  -=    *  *=    /  /=    %  %=
+             &  &&  &=   |  ||  |=    ^  ^=    !  !=
+             =  ==  =>    <  <=  <<  <<=    >  >=  >>  >>=
+             :  ::    .  ..  ..=    ?  @  #
+  ============================================================ }
+Procedure LexScanOp(Var T : TToken; SL, SC : Integer);
+Var
+  S : TString;
+  C : Char;
+  P : Char;
+Begin
+  C := LexCurChar;
+  P := LexPeek;
+  S := C;
+  LexAdvance;
+  Case C Of
+    '+': If P = '=' Then Begin S := '+='; LexAdvance; End;
+    '-': If P = '>' Then Begin S := '->'; LexAdvance; End
+         Else If P = '=' Then Begin S := '-='; LexAdvance; End;
+    '*': If P = '=' Then Begin S := '*='; LexAdvance; End;
+    '/': If P = '=' Then Begin S := '/='; LexAdvance; End;
+    '%': If P = '=' Then Begin S := '%='; LexAdvance; End;
+    '&': If P = '&' Then Begin S := '&&'; LexAdvance; End
+         Else If P = '=' Then Begin S := '&='; LexAdvance; End;
+    '|': If P = '|' Then Begin S := '||'; LexAdvance; End
+         Else If P = '=' Then Begin S := '|='; LexAdvance; End;
+    '^': If P = '=' Then Begin S := '^='; LexAdvance; End;
+    '!': If P = '=' Then Begin S := '!='; LexAdvance; End;
+    '=': If P = '=' Then Begin S := '=='; LexAdvance; End
+         Else If P = '>' Then Begin S := '=>'; LexAdvance; End;
+    '<': If P = '=' Then Begin S := '<='; LexAdvance; End
+         Else If P = '<' Then
+         Begin
+           S := '<<'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '<<='; LexAdvance; End;
+         End;
+    '>': If P = '=' Then Begin S := '>='; LexAdvance; End
+         Else If P = '>' Then
+         Begin
+           S := '>>'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '>>='; LexAdvance; End;
+         End;
+    ':': If P = ':' Then Begin S := '::'; LexAdvance; End;
+    '.': If P = '.' Then
+         Begin
+           S := '..'; LexAdvance;
+           If LexCurChar = '=' Then Begin S := '..='; LexAdvance; End;
+         End;
+  End;
+  MakeToken(T, TK_OP, S, SL, SC);
+End;
+
+{ ============================================================
   Procedure : LexScanPunct - consommer un caractere de ponctuation
   ============================================================ }
 Procedure LexScanPunct(Var T : TToken; SL, SC : Integer);
@@ -1172,7 +1418,14 @@ Begin
     End;
     LexScanCharLit(T, SL, SC); Exit;
   End;
-  { Ponctuation simple - les operateurs composes sont en TODO 04 }
+  { Operateurs simples et composes Rust }
+  Case C Of
+    '+','-','*','/','%','&','|','^','!','=','<','>',':','.','?','@','#':
+    Begin
+      LexScanOp(T, SL, SC); Exit;
+    End;
+  End;
+  { Ponctuation pure : ; , ( ) [ ] et blocs }
   LexScanPunct(T, SL, SC);
 End;
 
@@ -1223,6 +1476,7 @@ Begin
     TK_BYTE     : KS := 'BYTE    ';
     TK_OP       : KS := 'OP      ';
     TK_PUNCT    : KS := 'PUNCT   ';
+    TK_KEYWORD  : KS := 'KEYWORD ';
     TK_LIFETIME : KS := 'LIFETIME';
     TK_EOF      : KS := 'EOF     ';
   End;
@@ -1248,12 +1502,1270 @@ Begin
 End;
 
 { ============================================================
+  TODO 06 - SYSTEME DE TYPES PRIMITIFS
+  ============================================================ }
+
+{ ============================================================
+  Fonction  : TypeAddRec - enregistrer un type dans TypeTab
+              Usage interne uniquement (TypeInit l'utilise).
+  ============================================================ }
+Function TypeAddRec(AKind : TTypeKind; Const AName : TString;
+                    ASize, AAlign : Integer;
+                    ASigned : Boolean;
+                    AElem, ACount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WriteLn('RUST86: FATAL - table de types pleine');
+    Halt(EXIT_ERROR);
+  End;
+  Idx := TypeCount;
+  TypeTab[Idx].Kind       := AKind;
+  TypeTab[Idx].Name       := AName;
+  TypeTab[Idx].Size       := ASize;
+  TypeTab[Idx].Align      := AAlign;
+  TypeTab[Idx].Signed     := ASigned;
+  TypeTab[Idx].ElemType   := AElem;
+  TypeTab[Idx].ElemCount  := ACount;
+  TypeTab[Idx].FieldBase  := 0;
+  TypeTab[Idx].FieldCount := 0;
+  Inc(TypeCount);
+  TypeAddRec := Idx;
+End;
+
+{ ============================================================
+  Procedure : TypeInit - enregistrer tous les types primitifs
+              Doit etre appelee en tout premier avant toute
+              compilation (avant meme SymInit).
+  Mapping 8086 :
+    i8 / u8    ->  1 octet  (AL/BL/CL/DL)
+    i16 / u16  ->  2 octets (AX/BX)
+    i32 / u32  ->  4 octets paire DX:AX
+    isize/usize->  2 octets (equivalents u16 sur 8086)
+    bool       ->  1 octet  (0 = false, 1 = true)
+    char       ->  1 octet  (codepoint Unicode tronque en u8)
+    ()         ->  0 octet  (type unite, pas de valeur)
+    &str       ->  4 octets (ptr 2o + len 2o)
+  ============================================================ }
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount  := 0;
+  FieldCount := 0;  { TODO 07 - pool de champs }
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Kind       := TKD_UNKNOWN;
+    TypeTab[I].Name       := '';
+    TypeTab[I].Size       := 0;
+    TypeTab[I].Align      := 1;
+    TypeTab[I].Signed     := False;
+    TypeTab[I].ElemType   := TY_UNKNOWN;
+    TypeTab[I].ElemCount  := 0;
+    TypeTab[I].FieldBase  := 0;
+    TypeTab[I].FieldCount := 0;
+  End;
+  { Index fixes : TY_IDX_* }
+  TypeAddRec(TKD_PRIM, 'i8',    1, 1, True,  TY_UNKNOWN, 0);  { 0  }
+  TypeAddRec(TKD_PRIM, 'u8',    1, 1, False, TY_UNKNOWN, 0);  { 1  }
+  TypeAddRec(TKD_PRIM, 'i16',   2, 2, True,  TY_UNKNOWN, 0);  { 2  }
+  TypeAddRec(TKD_PRIM, 'u16',   2, 2, False, TY_UNKNOWN, 0);  { 3  }
+  TypeAddRec(TKD_PRIM, 'i32',   4, 2, True,  TY_UNKNOWN, 0);  { 4  }
+  TypeAddRec(TKD_PRIM, 'u32',   4, 2, False, TY_UNKNOWN, 0);  { 5  }
+  TypeAddRec(TKD_PRIM, 'isize', 2, 2, True,  TY_UNKNOWN, 0);  { 6  }
+  TypeAddRec(TKD_PRIM, 'usize', 2, 2, False, TY_UNKNOWN, 0);  { 7  }
+  TypeAddRec(TKD_PRIM, 'bool',  1, 1, False, TY_UNKNOWN, 0);  { 8  }
+  TypeAddRec(TKD_PRIM, 'char',  1, 1, False, TY_UNKNOWN, 0);  { 9  }
+  TypeAddRec(TKD_PRIM, '()',    0, 1, False, TY_UNKNOWN, 0);  { 10 }
+  TypeAddRec(TKD_REF,  '&str',  4, 2, False, TY_IDX_U8,  0);  { 11 }
+End;
+
+{ ============================================================
+  Fonction  : TypeSizeof - taille en octets d'un type
+              Retourne 0 pour les types inconnus / unit.
+  ============================================================ }
+Function TypeSizeof(Idx : Integer) : Integer;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeSizeof := 0
+  Else
+    TypeSizeof := TypeTab[Idx].Size;
+End;
+
+{ ============================================================
+  Fonction  : TypeAlign - alignement requis d'un type en octets
+  ============================================================ }
+Function TypeAlign(Idx : Integer) : Integer;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeAlign := 1
+  Else
+    TypeAlign := TypeTab[Idx].Align;
+End;
+
+{ ============================================================
+  Fonction  : TypeIsSigned - vrai si type entier signe
+  ============================================================ }
+Function TypeIsSigned(Idx : Integer) : Boolean;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeIsSigned := False
+  Else
+    TypeIsSigned := TypeTab[Idx].Signed;
+End;
+
+{ ============================================================
+  Fonction  : TypeName - nom canonique Rust d'un type
+  ============================================================ }
+Function TypeName(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeName := '?'
+  Else
+    TypeName := TypeTab[Idx].Name;
+End;
+
+{ ============================================================
+  Fonction  : TypeFind - chercher un type par nom canonique
+              Retourne l'index ou TY_UNKNOWN (-1).
+              Pour les primitifs, acces en O(TY_PRIM_COUNT).
+  ============================================================ }
+Function TypeFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = AName Then
+    Begin
+      TypeFind := I;
+      Exit;
+    End;
+  TypeFind := TY_UNKNOWN;
+End;
+
+{ ============================================================
+  Fonction  : TypeKindName - nom lisible de TTypeKind
+  ============================================================ }
+Function TypeKindName(K : TTypeKind) : TString;
+Begin
+  Case K Of
+    TKD_PRIM   : TypeKindName := 'prim  ';
+    TKD_REF    : TypeKindName := 'ref   ';
+    TKD_ARRAY  : TypeKindName := 'array ';
+    TKD_TUPLE  : TypeKindName := 'tuple ';
+    TKD_STRUCT : TypeKindName := 'struct';
+    TKD_ENUM   : TypeKindName := 'enum  ';
+    TKD_FN     : TypeKindName := 'fn    ';
+  Else
+    TypeKindName := '?     ';
+  End;
+End;
+
+{ ============================================================
+  Procedure : TypeDump - afficher la table de types (mode -v)
+  ============================================================ }
+Procedure TypeDump;
+Var
+  I   : Integer;
+  J   : Integer;
+  SZ  : String[4];
+  ALN : String[4];
+  OFS : String[6];
+  FB  : Integer;
+Begin
+  WriteLn;
+  WriteLn('--- Table des types (', TypeCount, ' entrees) ---');
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    Str(TypeTab[I].Size,  SZ);
+    Str(TypeTab[I].Align, ALN);
+    Write('  [', I, '] kind=', TypeKindName(TypeTab[I].Kind),
+          ' size=', SZ,
+          ' align=', ALN,
+          ' signed=', TypeTab[I].Signed,
+          ' name=', TypeTab[I].Name);
+    If TypeTab[I].ElemType >= 0 Then
+      Write(' elem->', TypeTab[I].ElemType);
+    WriteLn;
+    { Pour tuples, tableaux, structs et enums : afficher les elements }
+    If TypeTab[I].Kind In [TKD_TUPLE, TKD_ARRAY, TKD_STRUCT, TKD_ENUM] Then
+    Begin
+      If TypeTab[I].Kind = TKD_ARRAY Then
+      Begin
+        Str(TypeSizeof(TypeTab[I].ElemType), SZ);
+        WriteLn('      array[', TypeTab[I].ElemCount, '] of ',
+                TypeName(TypeTab[I].ElemType),
+                ' (elem-size=', SZ, ')');
+      End Else If TypeTab[I].Kind = TKD_ENUM Then
+      Begin
+        FB := TypeTab[I].FieldBase;
+        For J := 0 To TypeTab[I].FieldCount - 1 Do
+        Begin
+          Str(FieldTab[FB + J].Offset, OFS);  { Offset = discriminant }
+          Write('      #', OFS, ' ', FieldTab[FB + J].Name);
+          If FieldTab[FB + J].TypeIdx <> TY_IDX_UNIT Then
+            Write(' (', TypeName(FieldTab[FB + J].TypeIdx), ')');
+          WriteLn;
+        End;
+      End Else
+      Begin
+        FB := TypeTab[I].FieldBase;
+        For J := 0 To TypeTab[I].FieldCount - 1 Do
+        Begin
+          Str(FieldTab[FB + J].Offset, OFS);
+          If FieldTab[FB + J].Name <> '' Then
+            Write('      .', FieldTab[FB + J].Name)
+          Else
+            Write('      .', J);
+          WriteLn(' @+', OFS,
+                  ' type=', TypeName(FieldTab[FB + J].TypeIdx));
+        End;
+      End;
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 07 - TYPES COMPOSES : TUPLES ET TABLEAUX
+  ============================================================ }
+
+{ ============================================================
+  Fonction  : TypeAlignUp - arrondir V au prochain multiple de A
+  ============================================================ }
+Function TypeAlignUp(V, A : Integer) : Integer;
+Begin
+  If A <= 1 Then
+    TypeAlignUp := V
+  Else If (V Mod A) = 0 Then
+    TypeAlignUp := V
+  Else
+    TypeAlignUp := V + (A - (V Mod A));
+End;
+
+{ ============================================================
+  Fonction  : TypeAddField - ajouter un element dans le pool
+              Usage interne uniquement.
+              Retourne l'index dans FieldTab.
+  ============================================================ }
+Function TypeAddField(Const AName : TString;
+                      ATypeIdx, AOffset : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If FieldCount >= MAX_FIELDS_TOTAL Then
+  Begin
+    WriteLn('RUST86: FATAL - pool de champs plein (MAX_FIELDS_TOTAL)');
+    Halt(EXIT_ERROR);
+  End;
+  Idx := FieldCount;
+  FieldTab[Idx].Name    := AName;
+  FieldTab[Idx].TypeIdx := ATypeIdx;
+  FieldTab[Idx].Offset  := AOffset;
+  Inc(FieldCount);
+  TypeAddField := Idx;
+End;
+
+{ ============================================================
+  Fonction  : TypeAddArray - creer le type tableau [T; N]
+              Taille = N * sizeof(T), alignement = align(T).
+              Retourne l'index dans TypeTab.
+  ============================================================ }
+Function TypeAddArray(AElemIdx, N : Integer) : Integer;
+Var
+  Idx   : Integer;
+  ESz   : Integer;
+  EAln  : Integer;
+  TName : TString;
+  NS    : String[12];
+Begin
+  ESz  := TypeSizeof(AElemIdx);
+  EAln := TypeAlign(AElemIdx);
+  { Enregistrer le descripteur (nom provisoire vide) }
+  Idx  := TypeAddRec(TKD_ARRAY, '', ESz * N, EAln, False, AElemIdx, N);
+  { Construire le nom canonique '[T; N]' }
+  TName := '[';
+  TName := TName + TypeName(AElemIdx);
+  TName := TName + '; ';
+  Str(N, NS);
+  TName := TName + NS;
+  TName := TName + ']';
+  TypeTab[Idx].Name := TName;
+  TypeAddArray := Idx;
+End;
+
+{ ============================================================
+  Fonction  : TypeAddTuple - creer un type tuple (T1, T2, ..., TN)
+              sur 8086 : elements places sequentiellement, chacun
+              aligne a son propre alignement. Taille finale arrondie
+              a l'alignement maximal des elements.
+              Retourne l'index dans TypeTab.
+  ============================================================ }
+Function TypeAddTuple(Const Elems : TTupleElems; N : Integer) : Integer;
+Var
+  Idx    : Integer;
+  I      : Integer;
+  Cur    : Integer;
+  MaxAln : Integer;
+  ESz    : Integer;
+  EAln   : Integer;
+  FB     : Integer;
+  TName  : TString;
+  NS     : String[4];
+Begin
+  If N = 0 Then
+  Begin
+    TypeAddTuple := TY_IDX_UNIT;
+    Exit;
+  End;
+  Cur    := 0;
+  MaxAln := 1;
+  FB     := FieldCount;
+  For I := 0 To N - 1 Do
+  Begin
+    ESz  := TypeSizeof(Elems[I]);
+    EAln := TypeAlign(Elems[I]);
+    Cur  := TypeAlignUp(Cur, EAln);
+    Str(I, NS);
+    TypeAddField(NS, Elems[I], Cur);
+    Inc(Cur, ESz);
+    If EAln > MaxAln Then MaxAln := EAln;
+  End;
+  Cur   := TypeAlignUp(Cur, MaxAln);
+  { Nom canonique '(T1, T2, ...)' }
+  TName := '(';
+  For I := 0 To N - 1 Do
+  Begin
+    If I > 0 Then TName := TName + ', ';
+    TName := TName + TypeName(Elems[I]);
+  End;
+  TName := TName + ')';
+  Idx := TypeAddRec(TKD_TUPLE, TName, Cur, MaxAln, False, TY_UNKNOWN, N);
+  TypeTab[Idx].FieldBase  := FB;
+  TypeTab[Idx].FieldCount := N;
+  TypeAddTuple := Idx;
+End;
+
+{ ============================================================
+  Fonction  : TypeElemOffset - offset en octets de l'element K
+              dans un type compose (array, tuple, struct).
+  ============================================================ }
+Function TypeElemOffset(TypeIdx, K : Integer) : Integer;
+Var
+  FB  : Integer;
+  FC  : Integer;
+  ESz : Integer;
+Begin
+  If (TypeIdx < 0) Or (TypeIdx >= TypeCount) Then
+  Begin
+    TypeElemOffset := 0;
+    Exit;
+  End;
+  Case TypeTab[TypeIdx].Kind Of
+    TKD_ARRAY :
+    Begin
+      ESz := TypeSizeof(TypeTab[TypeIdx].ElemType);
+      TypeElemOffset := K * ESz;
+    End;
+    TKD_TUPLE, TKD_STRUCT :
+    Begin
+      FB := TypeTab[TypeIdx].FieldBase;
+      FC := TypeTab[TypeIdx].FieldCount;
+      If (K >= 0) And (K < FC) Then
+        TypeElemOffset := FieldTab[FB + K].Offset
+      Else
+        TypeElemOffset := 0;
+    End;
+  Else
+    TypeElemOffset := 0;
+  End;
+End;
+
+{ ============================================================
+  Fonction  : TypeElemType - type de l'element K dans un type
+              compose (retourne TY_UNKNOWN si hors bornes).
+  ============================================================ }
+Function TypeElemType(TypeIdx, K : Integer) : Integer;
+Var
+  FB : Integer;
+  FC : Integer;
+Begin
+  If (TypeIdx < 0) Or (TypeIdx >= TypeCount) Then
+  Begin
+    TypeElemType := TY_UNKNOWN;
+    Exit;
+  End;
+  Case TypeTab[TypeIdx].Kind Of
+    TKD_ARRAY :
+      TypeElemType := TypeTab[TypeIdx].ElemType;
+    TKD_TUPLE, TKD_STRUCT :
+    Begin
+      FB := TypeTab[TypeIdx].FieldBase;
+      FC := TypeTab[TypeIdx].FieldCount;
+      If (K >= 0) And (K < FC) Then
+        TypeElemType := FieldTab[FB + K].TypeIdx
+      Else
+        TypeElemType := TY_UNKNOWN;
+    End;
+  Else
+    TypeElemType := TY_UNKNOWN;
+  End;
+End;
+
+{ ============================================================
+  TODO 08 - TYPES COMPOSES : STRUCT
+  ============================================================ }
+
+{ ============================================================
+  Fonction  : TypeAddStructBegin - creer un descripteur TKD_STRUCT
+              vide et retourner son index.
+              Les champs sont ensuite ajoutes avec TypeAddStructField
+              puis finalises avec TypeAddStructEnd.
+  ============================================================ }
+Function TypeAddStructBegin(Const AName : TString) : Integer;
+Begin
+  TypeAddStructBegin := TypeAddRec(TKD_STRUCT, AName, 0, 1, False, TY_UNKNOWN, 0);
+  TypeTab[TypeCount - 1].FieldBase  := FieldCount;
+  TypeTab[TypeCount - 1].FieldCount := 0;
+End;
+
+{ ============================================================
+  Procedure : TypeAddStructField - ajouter un champ nomme a un
+              struct en cours de construction.
+              AStructIdx : index du struct dans TypeTab
+              AFieldName : nom Rust du champ
+              AFieldType : index du type du champ dans TypeTab
+  ============================================================ }
+Procedure TypeAddStructField(AStructIdx : Integer;
+                             Const AFieldName : TString;
+                             AFieldType : Integer);
+Var
+  ESz   : Integer;
+  EAln  : Integer;
+  Cur   : Integer;
+  MaxA  : Integer;
+Begin
+  ESz  := TypeSizeof(AFieldType);
+  EAln := TypeAlign(AFieldType);
+  Cur  := TypeTab[AStructIdx].Size;
+  Cur  := TypeAlignUp(Cur, EAln);
+  TypeAddField(AFieldName, AFieldType, Cur);
+  Inc(TypeTab[AStructIdx].FieldCount);
+  Inc(Cur, ESz);
+  TypeTab[AStructIdx].Size := Cur;
+  MaxA := TypeTab[AStructIdx].Align;
+  If EAln > MaxA Then
+    TypeTab[AStructIdx].Align := EAln;
+End;
+
+{ ============================================================
+  Procedure : TypeAddStructEnd - finaliser un struct :
+              arrondir la taille totale a l'alignement maximal.
+              (Requis en C/Rust pour que les tableaux de structs
+              soient correctement alignes.)
+  ============================================================ }
+Procedure TypeAddStructEnd(AStructIdx : Integer);
+Var
+  A : Integer;
+Begin
+  A := TypeTab[AStructIdx].Align;
+  TypeTab[AStructIdx].Size := TypeAlignUp(TypeTab[AStructIdx].Size, A);
+End;
+
+{ ============================================================
+  Fonction  : TypeAddTupleStruct - creer un struct-tuple nomme
+              (struct Foo(T1, T2)) : champs .0 .1 .2 ...
+              Disposition identique a TypeAddTuple mais nomme.
+  ============================================================ }
+Function TypeAddTupleStruct(Const AName : TString;
+                            Const Elems : TTupleElems;
+                            N : Integer) : Integer;
+Var
+  Idx  : Integer;
+  I    : Integer;
+  NS   : String[4];
+Begin
+  Idx := TypeAddStructBegin(AName);
+  For I := 0 To N - 1 Do
+  Begin
+    Str(I, NS);
+    TypeAddStructField(Idx, NS, Elems[I]);
+  End;
+  TypeAddStructEnd(Idx);
+  TypeAddTupleStruct := Idx;
+End;
+
+{ ============================================================
+  Fonction  : TypeAddUnitStruct - creer un struct-unite
+              (struct Foo;) : taille 0, aucun champ.
+  ============================================================ }
+Function TypeAddUnitStruct(Const AName : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := TypeAddStructBegin(AName);
+  TypeAddStructEnd(Idx);
+  TypeAddUnitStruct := Idx;
+End;
+
+{ ============================================================
+  Fonction  : TypeFindField - chercher un champ par nom dans un
+              struct ou tuple. Retourne l'index dans FieldTab
+              (absolu), ou -1 si non trouve.
+  ============================================================ }
+Function TypeFindField(AStructIdx : Integer;
+                       Const AFieldName : TString) : Integer;
+Var
+  FB : Integer;
+  FC : Integer;
+  I  : Integer;
+Begin
+  If (AStructIdx < 0) Or (AStructIdx >= TypeCount) Then
+  Begin
+    TypeFindField := -1;
+    Exit;
+  End;
+  FB := TypeTab[AStructIdx].FieldBase;
+  FC := TypeTab[AStructIdx].FieldCount;
+  For I := 0 To FC - 1 Do
+    If FieldTab[FB + I].Name = AFieldName Then
+    Begin
+      TypeFindField := FB + I;
+      Exit;
+    End;
+  TypeFindField := -1;
+End;
+
+{ ============================================================
+  Fonction  : TypeFieldOffset - offset d'un champ par nom
+              dans un struct. Retourne 0 si non trouve.
+  ============================================================ }
+Function TypeFieldOffset(AStructIdx : Integer;
+                         Const AFieldName : TString) : Integer;
+Var
+  FIdx : Integer;
+Begin
+  FIdx := TypeFindField(AStructIdx, AFieldName);
+  If FIdx < 0 Then
+    TypeFieldOffset := 0
+  Else
+    TypeFieldOffset := FieldTab[FIdx].Offset;
+End;
+
+{ ============================================================
+  TODO 09 - TYPES COMPOSES : ENUM
+  Encodage 8086 :
+    octet 0    = tag discriminant (u8, 0..N-1)
+    octets 1.. = donnees de la variante (payload)
+  Taille totale = 1 + max_payload, arrondi a max_align.
+  Dans FieldTab, chaque entree de variante utilise :
+    Name    = nom de la variante
+    TypeIdx = type du payload (TY_IDX_UNIT si variante unite)
+    Offset  = valeur du discriminant (0, 1, 2, ...)
+  ============================================================ }
+
+{ ============================================================
+  Fonction  : TypeAddEnumBegin - creer un descripteur TKD_ENUM
+              vide et retourner son index.
+  ============================================================ }
+Function TypeAddEnumBegin(Const AName : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := TypeAddRec(TKD_ENUM, AName, 0, 1, False, TY_UNKNOWN, 0);
+  TypeTab[Idx].FieldBase  := FieldCount;
+  TypeTab[Idx].FieldCount := 0;
+  TypeTab[Idx].ElemCount  := 0;  { prochain discriminant }
+  TypeAddEnumBegin := Idx;
+End;
+
+{ ============================================================
+  Fonction  : TypeAddVariantUnit - ajouter une variante unite
+              (sans donnees) a un enum.
+              Exemple : None dans Option<T>.
+              Retourne la valeur du discriminant.
+  ============================================================ }
+Function TypeAddVariantUnit(AEnumIdx : Integer;
+                            Const AVarName : TString) : Integer;
+Var
+  Tag : Integer;
+Begin
+  Tag := TypeTab[AEnumIdx].ElemCount;
+  TypeAddField(AVarName, TY_IDX_UNIT, Tag);  { Offset = discriminant }
+  Inc(TypeTab[AEnumIdx].FieldCount);
+  Inc(TypeTab[AEnumIdx].ElemCount);
+  TypeAddVariantUnit := Tag;
+End;
+
+{ ============================================================
+  NOTE : Pour les variantes avec donnees (tuple ou struct),
+  construire le type payload EN PREMIER (TypeAddTupleStruct ou
+  TypeAddStructBegin/Field/End), PUIS appeler TypeAddEnumBegin,
+  puis TypeAddVariantUnit / TypeAddVariantWithPayload.
+  Cela garantit que les entrees de variantes dans FieldTab
+  restent contiguës.
+  ============================================================ }
+
+{ ============================================================
+  Fonction  : TypeAddVariantWithPayload - ajouter une variante
+              avec un type payload deja construit (struct, tuple
+              ou primitif). Pour les variantes struct :
+              construire d'abord le payload avec TypeAddStructBegin
+              puis appeler cette fonction.
+              Retourne le discriminant.
+  ============================================================ }
+Function TypeAddVariantWithPayload(AEnumIdx : Integer;
+                                   Const AVarName : TString;
+                                   PayloadTypeIdx : Integer) : Integer;
+Var
+  Tag    : Integer;
+  PldSz  : Integer;
+  PldAln : Integer;
+Begin
+  Tag    := TypeTab[AEnumIdx].ElemCount;
+  PldSz  := TypeSizeof(PayloadTypeIdx);
+  PldAln := TypeAlign(PayloadTypeIdx);
+  TypeAddField(AVarName, PayloadTypeIdx, Tag);
+  Inc(TypeTab[AEnumIdx].FieldCount);
+  Inc(TypeTab[AEnumIdx].ElemCount);
+  If PldSz > TypeTab[AEnumIdx].Size Then
+    TypeTab[AEnumIdx].Size := PldSz;
+  If PldAln > TypeTab[AEnumIdx].Align Then
+    TypeTab[AEnumIdx].Align := PldAln;
+  TypeAddVariantWithPayload := Tag;
+End;
+
+{ ============================================================
+  Procedure : TypeAddEnumEnd - finaliser un enum :
+              taille = 1 (tag) + max_payload, arrondi a l'alignement.
+              Si l'enum est purement unite (pas de payload),
+              la taille reste 1.
+  ============================================================ }
+Procedure TypeAddEnumEnd(AEnumIdx : Integer);
+Var
+  MaxPld : Integer;
+  A      : Integer;
+Begin
+  MaxPld := TypeTab[AEnumIdx].Size;  { max payload accumule }
+  A      := TypeTab[AEnumIdx].Align;
+  If A < 1 Then A := 1;
+  { taille = 1 (tag u8) + payload aligne apres le tag }
+  TypeTab[AEnumIdx].Size := TypeAlignUp(1 + MaxPld, A);
+  TypeTab[AEnumIdx].Align := A;
+End;
+
+{ ============================================================
+  Fonction  : TypeFindVariant - chercher une variante par nom
+              dans un enum. Retourne l'index absolu dans
+              FieldTab, ou -1 si non trouve.
+  ============================================================ }
+Function TypeFindVariant(AEnumIdx : Integer;
+                         Const AVarName : TString) : Integer;
+Var
+  FB : Integer;
+  FC : Integer;
+  I  : Integer;
+Begin
+  If (AEnumIdx < 0) Or (AEnumIdx >= TypeCount) Then
+  Begin
+    TypeFindVariant := -1;
+    Exit;
+  End;
+  If TypeTab[AEnumIdx].Kind <> TKD_ENUM Then
+  Begin
+    TypeFindVariant := -1;
+    Exit;
+  End;
+  FB := TypeTab[AEnumIdx].FieldBase;
+  FC := TypeTab[AEnumIdx].FieldCount;
+  For I := 0 To FC - 1 Do
+    If FieldTab[FB + I].Name = AVarName Then
+    Begin
+      TypeFindVariant := FB + I;
+      Exit;
+    End;
+  TypeFindVariant := -1;
+End;
+
+{ ============================================================
+  Fonction  : TypeVariantDiscriminant - retourne la valeur du
+              discriminant d'une variante (ou -1 si non trouvee).
+  ============================================================ }
+Function TypeVariantDiscriminant(AEnumIdx : Integer;
+                                 Const AVarName : TString) : Integer;
+Var
+  FIdx : Integer;
+Begin
+  FIdx := TypeFindVariant(AEnumIdx, AVarName);
+  If FIdx < 0 Then
+    TypeVariantDiscriminant := -1
+  Else
+    TypeVariantDiscriminant := FieldTab[FIdx].Offset;  { Offset stocke le tag }
+End;
+
+{ ============================================================
+  Fonction  : TypeVariantPayload - retourne l'index du type
+              payload d'une variante (TY_IDX_UNIT si unite).
+  ============================================================ }
+Function TypeVariantPayload(AEnumIdx : Integer;
+                            Const AVarName : TString) : Integer;
+Var
+  FIdx : Integer;
+Begin
+  FIdx := TypeFindVariant(AEnumIdx, AVarName);
+  If FIdx < 0 Then
+    TypeVariantPayload := TY_IDX_UNIT
+  Else
+    TypeVariantPayload := FieldTab[FIdx].TypeIdx;
+End;
+
+{ ============================================================
+  TODO 10 - TRAITS ET IMPL (SANS DYNAMIC DISPATCH)
+  ============================================================ }
+
+{ ============================================================
+  Procedure : ImplInit - initialiser les tables impl/methode
+  ============================================================ }
+Procedure ImplInit;
+Var
+  I : Integer;
+Begin
+  ImplCount   := 0;
+  MethodCount := 0;
+  For I := 0 To MAX_IMPL - 1 Do
+  Begin
+    ImplTab[I].TypeName    := '';
+    ImplTab[I].TraitName   := '';
+    ImplTab[I].MethodBase  := 0;
+    ImplTab[I].MethodCount := 0;
+    ImplTab[I].TypeIdx     := TY_UNKNOWN;
+  End;
+  For I := 0 To MAX_METHOD - 1 Do
+  Begin
+    MethodTab[I].Name        := '';
+    MethodTab[I].MangledName := '';
+    MethodTab[I].RetTypeIdx  := TY_IDX_UNIT;
+    MethodTab[I].IsPublic    := False;
+    MethodTab[I].ImplIdx     := -1;
+  End;
+End;
+
+{ ============================================================
+  Fonction  : ImplAdd - enregistrer un nouveau bloc impl Type
+              ou impl Trait for Type.
+              ATraitName = '' si c'est un impl libre.
+              Retourne l'index du bloc impl ou -1 si table pleine.
+  ============================================================ }
+Function ImplAdd(Const ATypeName : TString;
+                 Const ATraitName : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If ImplCount >= MAX_IMPL Then
+  Begin
+    WriteLn('RUST86: FATAL - table impl pleine (MAX_IMPL=', MAX_IMPL, ')');
+    Halt(EXIT_ERROR);
+  End;
+  Idx := ImplCount;
+  ImplTab[Idx].TypeName    := ATypeName;
+  ImplTab[Idx].TraitName   := ATraitName;
+  ImplTab[Idx].MethodBase  := MethodCount;
+  ImplTab[Idx].MethodCount := 0;
+  ImplTab[Idx].TypeIdx     := TypeFind(ATypeName);
+  Inc(ImplCount);
+  ImplAdd := Idx;
+End;
+
+{ ============================================================
+  Fonction  : ImplFind - trouver le premier bloc impl d'un type
+              (impl libre, sans trait). Retourne l'index ou -1.
+  ============================================================ }
+Function ImplFind(Const ATypeName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ImplCount - 1 Do
+    If (ImplTab[I].TypeName = ATypeName) And
+       (ImplTab[I].TraitName = '') Then
+    Begin
+      ImplFind := I;
+      Exit;
+    End;
+  ImplFind := -1;
+End;
+
+{ ============================================================
+  Fonction  : ImplFindTrait - trouver un bloc impl Trait for Type.
+              Retourne l'index ou -1.
+  ============================================================ }
+Function ImplFindTrait(Const ATypeName : TString;
+                       Const ATraitName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To ImplCount - 1 Do
+    If (ImplTab[I].TypeName  = ATypeName) And
+       (ImplTab[I].TraitName = ATraitName) Then
+    Begin
+      ImplFindTrait := I;
+      Exit;
+    End;
+  ImplFindTrait := -1;
+End;
+
+{ ============================================================
+  Fonction  : ImplAddMethod - enregistrer une methode dans un
+              bloc impl et dans la table des symboles.
+              Le nom mangle est _IMP_TypeName_MethodName.
+              Retourne l'index dans MethodTab ou -1.
+  ============================================================ }
+Function ImplAddMethod(AImplIdx : Integer;
+                       Const AName : TString;
+                       ARetTypeIdx : Integer;
+                       AIsPublic   : Boolean) : Integer;
+Var
+  Idx    : Integer;
+  MN     : TString;
+  TName  : TString;
+Begin
+  If MethodCount >= MAX_METHOD Then
+  Begin
+    WriteLn('RUST86: FATAL - table methodes pleine (MAX_METHOD=', MAX_METHOD, ')');
+    Halt(EXIT_ERROR);
+  End;
+  Idx   := MethodCount;
+  TName := ImplTab[AImplIdx].TypeName;
+  MN    := RS_IMPL_PFX + TName + '_' + AName;
+  MethodTab[Idx].Name        := AName;
+  MethodTab[Idx].MangledName := MN;
+  MethodTab[Idx].RetTypeIdx  := ARetTypeIdx;
+  MethodTab[Idx].IsPublic    := AIsPublic;
+  MethodTab[Idx].ImplIdx     := AImplIdx;
+  Inc(ImplTab[AImplIdx].MethodCount);
+  Inc(MethodCount);
+  { Note : enregistrement dans SymTab effectue par le parseur (TODO 13) }
+  ImplAddMethod := Idx;
+End;
+
+{ ============================================================
+  Fonction  : ImplFindMethod - chercher une methode par nom dans
+              un bloc impl. Retourne l'index dans MethodTab ou -1.
+  ============================================================ }
+Function ImplFindMethod(AImplIdx : Integer;
+                        Const AName : TString) : Integer;
+Var
+  I    : Integer;
+  Base : Integer;
+  Cnt  : Integer;
+Begin
+  If (AImplIdx < 0) Or (AImplIdx >= ImplCount) Then
+  Begin
+    ImplFindMethod := -1;
+    Exit;
+  End;
+  Base := ImplTab[AImplIdx].MethodBase;
+  Cnt  := ImplTab[AImplIdx].MethodCount;
+  For I := Base To Base + Cnt - 1 Do
+    If MethodTab[I].Name = AName Then
+    Begin
+      ImplFindMethod := I;
+      Exit;
+    End;
+  ImplFindMethod := -1;
+End;
+
+{ ============================================================
+  Procedure : ImplCheckDynTrait - signaler une erreur si l'on
+              rencontre le mot-cle 'dyn' (dynamic dispatch).
+              Le dynamic dispatch n'est pas supporte sur 8086/TP7.
+  ============================================================ }
+Procedure ImplCheckDynTrait(Const TraitName : TString);
+Begin
+  Inc(ErrorCount);
+  WriteLn('RUST86: Erreur [dyn non supporte] : dyn ', TraitName,
+          ' - le dispatch dynamique est interdit sur cible 8086.');
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('Trop d' + #39 + 'erreurs, compilation abandonnee.');
+End;
+
+{ ============================================================
+  Procedure : ImplDump - afficher les blocs impl (mode -v)
+  ============================================================ }
+Procedure ImplDump;
+Var
+  I : Integer;
+  J : Integer;
+  B : Integer;
+Begin
+  WriteLn;
+  WriteLn('--- Table impl (', ImplCount, ' blocs, ', MethodCount, ' methodes) ---');
+  For I := 0 To ImplCount - 1 Do
+  Begin
+    Write('  impl[', I, '] type=', ImplTab[I].TypeName);
+    If ImplTab[I].TraitName <> '' Then
+      Write(' trait=', ImplTab[I].TraitName);
+    WriteLn(' methods=', ImplTab[I].MethodCount);
+    B := ImplTab[I].MethodBase;
+    For J := B To B + ImplTab[I].MethodCount - 1 Do
+    Begin
+      Write('    .', MethodTab[J].Name);
+      If MethodTab[J].IsPublic Then Write(' [pub]');
+      WriteLn(' -> ', MethodTab[J].MangledName,
+              ' ret=', TypeName(MethodTab[J].RetTypeIdx));
+    End;
+  End;
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES
+  ============================================================ }
+
+{ ============================================================
+  Procedure : SymInit - initialiser la table des symboles
+  ============================================================ }
+Procedure SymInit;
+Begin
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  LabelSeq  := 0;
+  ScopeStack[0] := 0;
+End;
+
+{ ============================================================
+  Procedure : SymEnterScope - entrer dans une nouvelle portee
+  ============================================================ }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE - 1 Then
+  Begin
+    LexError('Profondeur de portee maximale atteinte');
+    Exit;
+  End;
+  Inc(CurScope);
+  Inc(ScopeTop);
+  ScopeStack[ScopeTop] := SymCount;
+End;
+
+{ ============================================================
+  Procedure : SymLeaveScope - quitter la portee courante
+             Les symboles de la portee sont retires de la table.
+  ============================================================ }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    LexError('Desequilibre de portees : LeaveScope sans EnterScope');
+    Exit;
+  End;
+  SymCount := ScopeStack[ScopeTop];
+  Dec(ScopeTop);
+  Dec(CurScope);
+End;
+
+{ ============================================================
+  Fonction : SymMangle - construire l'etiquette assembleur 8086
+             pour un symbole selon sa categorie et son chemin.
+             Exemples :
+               SC_FN     "foo"         -> _RSF_foo
+               SC_VAR    "x" (local)   -> (offset BP, pas d'etiquette)
+               SC_STATIC "CNT"         -> _RSV_CNT
+               SC_IMPL   "Vec::push"   -> _IMP_Vec_push
+  ============================================================ }
+Function SymMangle(Cat : TSymCat; Const BaseName : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := BaseName;
+  { Remplacer :: par _ dans le nom }
+  I := 1;
+  While I <= Length(S) - 1 Do
+  Begin
+    If (S[I] = ':') And (S[I + 1] = ':') Then
+    Begin
+      Delete(S, I, 2);
+      If I <= Length(S) Then
+        System.Insert('_', S, I);
+    End Else
+      Inc(I);
+  End;
+  Case Cat Of
+    SC_FN     : SymMangle := RS_FN_PFX   + S;
+    SC_STATIC : SymMangle := RS_VAR_PFX  + S;
+    SC_CONST  : SymMangle := RS_VAR_PFX  + S;
+    SC_IMPL   : SymMangle := RS_IMPL_PFX + S;
+    SC_TYPEDEF: SymMangle := '_RST_'     + S;
+  Else
+    SymMangle := '_RSL_' + S;   { locals : etiquette rarement emise }
+  End;
+End;
+
+{ ============================================================
+  Fonction : SymAdd - ajouter un symbole dans la table
+             Retourne l'index du symbole ajoute (0-base)
+             ou -1 en cas d'erreur.
+  ============================================================ }
+Function SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AIsMut : Boolean;
+                AOffset : Integer; ADeclLine : Integer) : Integer;
+Var
+  Idx  : Integer;
+  MN   : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    LexError('Table des symboles pleine');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name       := AName;
+  SymTab[Idx].Cat        := ACat;
+  SymTab[Idx].TypeIdx    := ATypeIdx;
+  SymTab[Idx].ScopeLevel := CurScope;
+  SymTab[Idx].Offset     := AOffset;
+  SymTab[Idx].IsMut      := AIsMut;
+  SymTab[Idx].IsRef      := False;
+  SymTab[Idx].DeclLine   := ADeclLine;
+  If (ACat = SC_VAR) Or (ACat = SC_PARAM) Then
+    MN := ''   { variables locales : acces par [BP+offset], pas d'etiquette globale }
+  Else
+    MN := SymMangle(ACat, AName);
+  SymTab[Idx].MangledName := MN;
+  Inc(SymCount);
+  Inc(TotalSyms);
+  SymAdd := Idx;
+End;
+
+{ ============================================================
+  Fonction : SymFindLocal - chercher un symbole dans la portee
+             courante uniquement (pour detecter les redeclarations).
+             Retourne l'index ou -1.
+  ============================================================ }
+Function SymFindLocal(Const AName : TString) : Integer;
+Var
+  I     : Integer;
+  Start : Integer;
+Begin
+  Start := ScopeStack[ScopeTop];
+  For I := SymCount - 1 DownTo Start Do
+    If SymTab[I].Name = AName Then
+    Begin
+      SymFindLocal := I;
+      Exit;
+    End;
+  SymFindLocal := -1;
+End;
+
+{ ============================================================
+  Fonction : SymFind - chercher un symbole dans toutes les portees
+             (portee la plus proche en premier).
+             Retourne l'index ou -1.
+  ============================================================ }
+Function SymFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = AName Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ============================================================
+  Fonction : SymFindCat - chercher un symbole d'une categorie
+             precise dans toutes les portees.
+             Retourne l'index ou -1.
+  ============================================================ }
+Function SymFindCat(Const AName : TString; ACat : TSymCat) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = AName) And (SymTab[I].Cat = ACat) Then
+    Begin
+      SymFindCat := I;
+      Exit;
+    End;
+  SymFindCat := -1;
+End;
+
+{ ============================================================
+  Fonction : SymNewLabel - generer une etiquette locale unique
+             Exemple : SymNewLabel('IF') -> '_RSL_IF_17'
+  ============================================================ }
+Function SymNewLabel(Const Prefix : TString) : TString;
+Var
+  NS : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, NS);
+  SymNewLabel := RS_LABEL_PFX + Prefix + '_' + NS;
+End;
+
+{ ============================================================
+  Procedure : SymCatName - nom lisible d'une categorie de symbole
+  ============================================================ }
+Function SymCatName(Cat : TSymCat) : TString;
+Begin
+  Case Cat Of
+    SC_VAR     : SymCatName := 'var   ';
+    SC_PARAM   : SymCatName := 'param ';
+    SC_FN      : SymCatName := 'fn    ';
+    SC_CONST   : SymCatName := 'const ';
+    SC_STATIC  : SymCatName := 'static';
+    SC_TYPEDEF : SymCatName := 'type  ';
+    SC_FIELD   : SymCatName := 'field ';
+    SC_IMPL    : SymCatName := 'impl  ';
+  Else
+    SymCatName := '?     ';
+  End;
+End;
+
+{ ============================================================
+  Procedure : SymDump - afficher la table des symboles (debug)
+  ============================================================ }
+Procedure SymDump;
+Var
+  I   : Integer;
+  MN  : TString;
+  OFS : String[8];
+Begin
+  WriteLn;
+  WriteLn('--- Table des symboles (', SymCount, ' entrees) ---');
+  For I := 0 To SymCount - 1 Do
+  Begin
+    Str(SymTab[I].Offset, OFS);
+    MN := SymTab[I].MangledName;
+    If MN = '' Then MN := '[BP' + OFS + ']';
+    Write('  [', I, '] sc=', SymTab[I].ScopeLevel,
+          ' cat=', SymCatName(SymTab[I].Cat),
+          ' mut=', SymTab[I].IsMut,
+          ' name=', SymTab[I].Name);
+    If MN <> '' Then Write(' -> ', MN);
+    WriteLn;
+  End;
+End;
+
+{ ============================================================
+  TODO 11 - REFERENCES ET EMPRUNTS
+  BorrowInit, TypeAddRef, BorrowAdd, BorrowCheckMutConflict,
+  BorrowRelease, BorrowDump
+  ============================================================ }
+
+{ ---- BorrowInit : initialise la table des emprunts ---- }
+Procedure BorrowInit;
+Var I : Integer;
+Begin
+  For I := 0 To MAX_BORROW - 1 Do Begin
+    BorrowTab[I].VarName  := '';
+    BorrowTab[I].Kind     := BK_SHARED;
+    BorrowTab[I].TypeIdx  := TY_UNKNOWN;
+    BorrowTab[I].IsActive := False;
+    BorrowTab[I].DeclLine := 0;
+  End;
+  BorrowCount := 0;
+End;
+
+{ ---- TypeAddRef : cree un type reference &T ou &mut T ----
+  AElemIdx = index du type pointe, AIsMut = True pour &mut T.
+  Retourne l'index dans TypeTab.                            }
+Function TypeAddRef(AElemIdx : Integer; AIsMut : Boolean) : Integer;
+Var
+  Idx : Integer;
+  Nom : TString;
+Begin
+  If AIsMut Then Nom := '&mut ' + TypeName(AElemIdx)
+            Else Nom := '&'     + TypeName(AElemIdx);
+  Idx := TypeAddRec(TKD_REF, Nom, 2, 2, False, AElemIdx, 0);
+  TypeAddRef := Idx;
+End;
+
+{ ---- BorrowAdd : enregistre un nouvel emprunt ----
+  Retourne l'index dans BorrowTab.                  }
+Function BorrowAdd(Const AVarName : TString; AKind : TBorrowKind;
+                   ATypeIdx, ADeclLine : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  If BorrowCount >= MAX_BORROW Then Begin
+    WriteLn('RUST86: FATAL - table d'#39'emprunts pleine (MAX_BORROW=', MAX_BORROW, ')');
+    Halt(EXIT_ERROR);
+  End;
+  Idx := BorrowCount;
+  BorrowTab[Idx].VarName  := AVarName;
+  BorrowTab[Idx].Kind     := AKind;
+  BorrowTab[Idx].TypeIdx  := ATypeIdx;
+  BorrowTab[Idx].IsActive := True;
+  BorrowTab[Idx].DeclLine := ADeclLine;
+  Inc(BorrowCount);
+  BorrowAdd := Idx;
+End;
+
+{ ---- BorrowCheckMutConflict : unicite reference mutable ----
+  Retourne True si une reference &mut pour AVarName est deja
+  active (emet une erreur de compilation dans ce cas).      }
+Function BorrowCheckMutConflict(Const AVarName : TString) : Boolean;
+Var I : Integer;
+Begin
+  BorrowCheckMutConflict := False;
+  For I := 0 To BorrowCount - 1 Do Begin
+    If BorrowTab[I].IsActive And (BorrowTab[I].Kind = BK_MUT)
+       And (BorrowTab[I].VarName = AVarName) Then Begin
+      WriteLn('RUST86: erreur: variable ', AVarName,
+              ' possede deja une reference mutable active',
+              ' (declaree a la ligne ', BorrowTab[I].DeclLine, ')');
+      Inc(ErrorCount);
+      BorrowCheckMutConflict := True;
+      Exit;
+    End;
+  End;
+End;
+
+{ ---- BorrowRelease : desactive tous les emprunts d'une variable ---- }
+Procedure BorrowRelease(Const AVarName : TString);
+Var I : Integer;
+Begin
+  For I := 0 To BorrowCount - 1 Do Begin
+    If BorrowTab[I].VarName = AVarName Then
+      BorrowTab[I].IsActive := False;
+  End;
+End;
+
+{ ---- BorrowDump : affiche la table des emprunts en mode -v ---- }
+Procedure BorrowDump;
+Var I : Integer;
+Begin
+  WriteLn('--- BorrowTab (', BorrowCount, ' entrees) ---');
+  For I := 0 To BorrowCount - 1 Do Begin
+    Write('  [', I, '] var=', BorrowTab[I].VarName, ' kind=');
+    If BorrowTab[I].Kind = BK_MUT Then Write('&mut') Else Write('&');
+    Write(' tyidx=', BorrowTab[I].TypeIdx,
+          ' active=', BorrowTab[I].IsActive,
+          ' line=', BorrowTab[I].DeclLine);
+    WriteLn;
+  End;
+End;
+
+{ ============================================================
   Procedure : Corps principal de la compilation
   ============================================================ }
 Procedure Run;
 Var
-  T : TToken;
+  T        : TToken;
+  RefIdx   : Integer;   { TODO 11 test : index du type reference cree }
+  RefIdx2  : Integer;   { TODO 11 test : deuxieme reference mutable   }
+  BIdx     : Integer;   { TODO 11 test : index dans BorrowTab         }
 Begin
+  { initialiser tous les sous-systemes }
+  TypeInit;
+  SymInit;
+  ImplInit;
+  BorrowInit;
   LexInit;
   If Opts.Verbose Then
     WriteLn('RUST86: Analyse lexicale de ', Opts.SrcFile, ' ...');
@@ -1263,8 +2775,34 @@ Begin
   Until T.Kind = TK_EOF;
   If Opts.Verbose Then
     WriteLn('RUST86: Analyse lexicale terminee.');
-  { TODO 03-04 : litteraux chaines/char, operateurs composes }
-  { TODO 05+   : parsing, types, generation de code          }
+  If Opts.Verbose Then TypeDump;
+  If Opts.Verbose Then SymDump;
+  If Opts.Verbose Then ImplDump;
+  { --- Auto-test TODO 11 : references et emprunts --- }
+  If Opts.Verbose Then
+  Begin
+    { Creer &i16 (partage) et &mut i32 (mutable) }
+    RefIdx  := TypeAddRef(TY_IDX_I16, False);
+    RefIdx2 := TypeAddRef(TY_IDX_I32, True);
+    WriteLn('T11 &i16  tyidx=', RefIdx,  ' name=', TypeTab[RefIdx].Name,
+            ' size=', TypeTab[RefIdx].Size);
+    WriteLn('T11 &mut i32 tyidx=', RefIdx2, ' name=', TypeTab[RefIdx2].Name,
+            ' size=', TypeTab[RefIdx2].Size);
+    { Enregistrer un emprunt &mut sur "buf" }
+    BIdx := BorrowAdd('buf', BK_MUT, RefIdx2, 42);
+    WriteLn('T11 borrow[', BIdx, '] var=', BorrowTab[BIdx].VarName,
+            ' active=', BorrowTab[BIdx].IsActive);
+    { Tenter un deuxieme &mut sur "buf" -> doit emettre une erreur }
+    BorrowCheckMutConflict('buf');
+    { Relacher "buf" et retenter -> pas d'erreur }
+    BorrowRelease('buf');
+    WriteLn('T11 apres release: active=', BorrowTab[BIdx].IsActive);
+    BorrowCheckMutConflict('buf');
+    { Affichage complet }
+    BorrowDump;
+    WriteLn('T11 ErrorCount=', ErrorCount);
+  End;
+  { TODO 12+ : parseur, generation de code }
 End;
 
 { ============================================================
@@ -1284,6 +2822,16 @@ Begin
   TotalLines := 0;
   TotalSyms  := 0;
   LexOpened  := False;
+  { TODO 05 : pre-initialiser la table des symboles }
+  TypeCount  := 0;
+  FieldCount := 0;  { TODO 07 }
+  ImplCount  := 0;  { TODO 10 }
+  MethodCount:= 0;  { TODO 10 }
+  BorrowCount:= 0;  { TODO 11 }
+  SymCount   := 0;
+  ScopeTop   := 0;
+  CurScope   := 0;
+  LabelSeq   := 0;
   InitOptions;
   ParseArgs;
   ShowBanner;
