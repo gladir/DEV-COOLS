@@ -202,28 +202,39 @@
             Sauvegarde registres : SI, DI, ES preserves dans sub (si utilises)
             CurFrameSize : taille courante du cadre local
 
-  TODO 19 - EXPRESSIONS REGULIERES (basique)
-            TRegexpRec : Pattern, Flags (g i m s x)
+  TODO 19 - EXPRESSIONS REGULIERES (basique)  [IMPLEMENTE]
+            LexExpectRegex : flag lexeur pour scanner /pat/ apres =~ ou !~
+            LexScanRegexLit : scanne /pat/f m/pat/f s/pat/repl/f tr/c1/c2/
+            TK_REGEXP : Val = kind+Chr(1)+pat+Chr(1)+repl
+            BinOpPrec : =~ et !~ a precedence 10 (comme ==)
+            ParseRegexOp : genere MOV SI,AX / MOV DI,OFFSET / CALL runtime
             $str =~ /pattern/ : emission de CALL _PRRT_REMATCH(SI,DI) -> AX
-            $str =~ s/pattern/replacement/ : CALL _PRRT_RESUB -> AX
-            $str =~ tr/chars/chars/ : CALL _PRRT_TRANSLITERATE
-            $str !~ /pattern/ : negation du resultat
+            $str =~ s/pattern/replacement/ : CALL _PRRT_RESUB(SI,DI,BX) -> AX
+            $str =~ tr/chars/chars/ : stub -> AX=0 (non implemente)
+            $str !~ /pattern/ : negation SETZ du resultat
             Captures $1 $2 : variables globales _PRCAP_1 _PRCAP_2 dans DATA
             Support minimal : pattern fixe (chaine litterale sans meta)
-            Patterns avec metacaracteres ^ $ . * + ? : avertissement complexite
+            Patterns avec metacaracteres ^ $ . * + ? : avertissement compile
 
-  TODO 20 - FONCTIONS INTEGREES (BUILTINS)
-            length($s) -> CALL _PRRT_STRLEN -> AX
-            substr($s, off [, len]) -> CALL _PRRT_SUBSTR
-            index($s, $sub [, pos]) -> CALL _PRRT_INDEX -> AX (ou -1)
-            rindex($s, $sub [, pos]) -> CALL _PRRT_RINDEX -> AX
-            uc($s), lc($s), ucfirst, lcfirst -> CALL _PRRT_UC / _LC
-            chomp($s) : supprime \n final ; chop($s) : supprime dernier char
-            split(/pat/, $str) -> tableau (taille fixe) ; join($sep, @arr)
-            int($n), abs($n), sprintf("%d", $n)
-            hex($s), oct($s) -> conversion de base -> AX
-            chr($n) -> char ; ord($s) -> AX
-            defined($v) -> AX=0/1 ; undef($v) -> mise a zero
+  TODO 20 - FONCTIONS INTEGREES (BUILTINS)  [IMPLEMENTE]
+            length($s)          -> MOV SI,AX + CALL _PRRT_STRLEN -> AX
+            uc/lc/ucfirst/lcfirst($s) -> MOV SI,DI + CALL _PRRT_UC|LC|... -> AX=buf
+            chomp($s)           -> MOV SI,AX + CALL _PRRT_CHOMP -> AX=0|1
+            chop($s)            -> MOV SI,AX + CALL _PRRT_CHOP -> AX=char_retire
+            chr($n)             -> MOV DI,OFFSET _PRRT_STRBUF + CALL _PRRT_CHR -> AX=buf
+            ord($s)             -> MOV SI,AX + CALL _PRRT_ORD -> AX=premier_octet
+            abs($n)             -> CALL _PRRT_ABS -> AX=|AX|
+            hex($s)             -> MOV SI,AX + CALL _PRRT_HEX2INT -> AX
+            oct($s)             -> MOV SI,AX + CALL _PRRT_OCT2INT -> AX
+            int($n)             -> pass-through (deja entier)
+            index($s,$sub)      -> PUSH AX, parseSub, MOV DI,AX, POP SI + CALL _PRRT_INDEX -> AX
+            rindex($s,$sub)     -> idem avec _PRRT_RINDEX -> AX (derniere occur)
+            substr($s,$off,$len)-> 3 args, MOV SI/BX/CX + CALL _PRRT_SUBSTR -> AX=buf
+            join(sep,@arr)      -> stub AX=0
+            split(/pat/,$str)   -> stub AX=0
+            defined($v)         -> deja implemente: TEST AX,AX; SETNE; MOVZX
+            _PRRT_STRBUF : 256 octets dans DATA (buffer uc/lc/chr/substr)
+            Mots-cles ajoutes : rindex ucfirst lcfirst (PERL_KW_COUNT 66->69)
 
   TODO 21 - PACKAGES ET MODULES (basique)
             ParsePackageDecl : package NomModule; -> nouveau namespace
@@ -909,6 +920,7 @@ Begin
   EmitInstr('INT', '21h');
   EmitRaw('_PRF_main ENDP');
   EmitBlankLine;
+  EmitRuntime;   { TODO 19 : routines runtime dans _TEXT }
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
   EmitDataSeg;   { TODO 08 : segment de donnees }
@@ -973,11 +985,531 @@ Begin
       End;
     End;
   EmitBlankLine;
+  { TODO 19 : variables globales de capture $1 et $2 }
+  EmitRaw('_PRCAP_1:');
+  EmitRaw('        DW  0');
+  EmitRaw('_PRCAP_2:');
+  EmitRaw('        DW  0');
+  EmitBlankLine;
   EmitRaw('_DATA   ENDS');
 End;
 
+{ ============================================================
+  TODO 19 - EmitRuntime : procedures helper 8086 dans _TEXT
+  _PRRT_REMATCH  : SI=sujet DI=pattern -> AX=1 si trouve
+  _PRRT_RESUB    : SI=sujet DI=pattern BX=repl -> AX=1 si subst
+  ============================================================ }
 Procedure EmitRuntime;
 Begin
+  EmitBlankLine;
+  EmitRaw('; === Runtime PERL86 - TODO 19 ===');
+  EmitBlankLine;
+  { ---- _PRRT_REMATCH : recherche de chaine (strstr basique) ---- }
+  EmitRaw('_PRRT_REMATCH PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BX, SI');
+  EmitRaw('_PRRT_RML:');
+  EmitRaw('        MOV   AL, [BX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RMFL');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        MOV   CX, DI');
+  EmitRaw('_PRRT_RMC:');
+  EmitRaw('        MOV   AL, [CX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RMOK');
+  EmitRaw('        MOV   DL, [SI]');
+  EmitRaw('        CMP   AL, DL');
+  EmitRaw('        JNE   _PRRT_RMN');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   CX');
+  EmitRaw('        JMP   _PRRT_RMC');
+  EmitRaw('_PRRT_RMN:');
+  EmitRaw('        INC   BX');
+  EmitRaw('        JMP   _PRRT_RML');
+  EmitRaw('_PRRT_RMOK:');
+  EmitRaw('        MOV   AX, 1');
+  EmitRaw('        JMP   _PRRT_RMDN');
+  EmitRaw('_PRRT_RMFL:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('_PRRT_RMDN:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_REMATCH ENDP');
+  EmitBlankLine;
+  { ---- _PRRT_RESUB : substitution premiere occurrence ---- }
+  { SI=sujet DI=pattern BX=remplacement -> AX=1 si effectuee }
+  EmitRaw('_PRRT_RESUB PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BX, SI');
+  EmitRaw('_PRRT_RSL:');
+  EmitRaw('        MOV   AL, [BX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RSFL');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        MOV   CX, DI');
+  EmitRaw('_PRRT_RSC:');
+  EmitRaw('        MOV   AL, [CX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RSOK');
+  EmitRaw('        MOV   DL, [SI]');
+  EmitRaw('        CMP   AL, DL');
+  EmitRaw('        JNE   _PRRT_RSN');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   CX');
+  EmitRaw('        JMP   _PRRT_RSC');
+  EmitRaw('_PRRT_RSN:');
+  EmitRaw('        INC   BX');
+  EmitRaw('        JMP   _PRRT_RSL');
+  EmitRaw('_PRRT_RSOK:');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        MOV   CX, [BP-6]');
+  EmitRaw('_PRRT_RSCPY:');
+  EmitRaw('        MOV   AL, [CX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RS0');
+  EmitRaw('        MOV   [SI], AL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   CX');
+  EmitRaw('        JMP   _PRRT_RSCPY');
+  EmitRaw('_PRRT_RS0:');
+  EmitRaw('        MOV   BYTE PTR [SI], 0');
+  EmitRaw('        MOV   AX, 1');
+  EmitRaw('        JMP   _PRRT_RSDN');
+  EmitRaw('_PRRT_RSFL:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('_PRRT_RSDN:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_RESUB ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_ABS : AX=|AX| ---- }
+  EmitRaw('_PRRT_ABS PROC NEAR');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JNS   _PRRT_ABS_OK');
+  EmitRaw('        NEG   AX');
+  EmitRaw('_PRRT_ABS_OK:');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_ABS ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_ORD : SI=str -> AX=premier octet ---- }
+  EmitRaw('_PRRT_ORD PROC NEAR');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_ORD ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_CHR : AX=n, DI=buf -> buf[0]=chr(n), buf[1]=0 ---- }
+  EmitRaw('_PRRT_CHR PROC NEAR');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        MOV   BX, DI');
+  EmitRaw('        INC   BX');
+  EmitRaw('        MOV   BYTE PTR [BX], 0');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_CHR ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_CHOMP : SI=str -> supprime '\n' final, AX=0/1 ---- }
+  EmitRaw('_PRRT_CHOMP PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   DI, SI');
+  EmitRaw('_PRRT_CHML:');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_CHME');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_CHML');
+  EmitRaw('_PRRT_CHME:');
+  EmitRaw('        CMP   DI, SI');
+  EmitRaw('        JE    _PRRT_CHMNO');
+  EmitRaw('        DEC   DI');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        CMP   AL, 10');
+  EmitRaw('        JNE   _PRRT_CHMNO');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        MOV   AX, 1');
+  EmitRaw('        JMP   _PRRT_CHMRN');
+  EmitRaw('_PRRT_CHMNO:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('_PRRT_CHMRN:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_CHOMP ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_CHOP : SI=str -> supprime dernier car, AX=ce car ---- }
+  EmitRaw('_PRRT_CHOP PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   DI, SI');
+  EmitRaw('_PRRT_CHPL:');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_CHPE');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_CHPL');
+  EmitRaw('_PRRT_CHPE:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        CMP   DI, SI');
+  EmitRaw('        JE    _PRRT_CHPRN');
+  EmitRaw('        DEC   DI');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('_PRRT_CHPRN:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_CHOP ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_UC : SI=src, DI=dst -> uppercased copy, AX=DI ---- }
+  EmitRaw('_PRRT_UC PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('_PRRT_UCL:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_UCE');
+  EmitRaw('        CMP   AL, 97');
+  EmitRaw('        JL    _PRRT_UCCP');
+  EmitRaw('        CMP   AL, 122');
+  EmitRaw('        JG    _PRRT_UCCP');
+  EmitRaw('        SUB   AL, 32');
+  EmitRaw('_PRRT_UCCP:');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_UCL');
+  EmitRaw('_PRRT_UCE:');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_UC ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_LC : SI=src, DI=dst -> lowercased copy, AX=DI ---- }
+  EmitRaw('_PRRT_LC PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('_PRRT_LCL:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_LCE');
+  EmitRaw('        CMP   AL, 65');
+  EmitRaw('        JL    _PRRT_LCCP');
+  EmitRaw('        CMP   AL, 90');
+  EmitRaw('        JG    _PRRT_LCCP');
+  EmitRaw('        ADD   AL, 32');
+  EmitRaw('_PRRT_LCCP:');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_LCL');
+  EmitRaw('_PRRT_LCE:');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_LC ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_UCFIRST : comme UC mais seulement premier char ---- }
+  EmitRaw('_PRRT_UCFIRST PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_UCFE');
+  EmitRaw('        CMP   AL, 97');
+  EmitRaw('        JL    _PRRT_UCFC');
+  EmitRaw('        CMP   AL, 122');
+  EmitRaw('        JG    _PRRT_UCFC');
+  EmitRaw('        SUB   AL, 32');
+  EmitRaw('_PRRT_UCFC:');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('_PRRT_UCFR:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_UCFE');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_UCFR');
+  EmitRaw('_PRRT_UCFE:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_UCFIRST ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_LCFIRST : comme LC mais seulement premier char ---- }
+  EmitRaw('_PRRT_LCFIRST PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_LCFE');
+  EmitRaw('        CMP   AL, 65');
+  EmitRaw('        JL    _PRRT_LCFC');
+  EmitRaw('        CMP   AL, 90');
+  EmitRaw('        JG    _PRRT_LCFC');
+  EmitRaw('        ADD   AL, 32');
+  EmitRaw('_PRRT_LCFC:');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('_PRRT_LCFR:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_LCFE');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_LCFR');
+  EmitRaw('_PRRT_LCFE:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_LCFIRST ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_INDEX : SI=str, DI=pat -> AX=pos (0-base) ou -1 ---- }
+  EmitRaw('_PRRT_INDEX PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        SUB   SP, 2');
+  EmitRaw('        MOV   WORD PTR [BP-2], DI');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BX, SI');
+  EmitRaw('        XOR   DX, DX');
+  EmitRaw('_PRRT_IDXL:');
+  EmitRaw('        MOV   AL, [BX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_IDXFL');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        MOV   DI, WORD PTR [BP-2]');
+  EmitRaw('_PRRT_IDXC:');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_IDXOK');
+  EmitRaw('        MOV   AH, [SI]');
+  EmitRaw('        CMP   AL, AH');
+  EmitRaw('        JNE   _PRRT_IDXN');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_IDXC');
+  EmitRaw('_PRRT_IDXN:');
+  EmitRaw('        INC   BX');
+  EmitRaw('        INC   DX');
+  EmitRaw('        JMP   _PRRT_IDXL');
+  EmitRaw('_PRRT_IDXOK:');
+  EmitRaw('        MOV   AX, DX');
+  EmitRaw('        JMP   _PRRT_IDXDN');
+  EmitRaw('_PRRT_IDXFL:');
+  EmitRaw('        MOV   AX, 0FFFFh');
+  EmitRaw('_PRRT_IDXDN:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        ADD   SP, 2');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_INDEX ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_RINDEX : SI=str, DI=pat -> AX=derniere pos ou -1 ---- }
+  EmitRaw('_PRRT_RINDEX PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        SUB   SP, 2');
+  EmitRaw('        MOV   WORD PTR [BP-2], DI');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   BX, SI');
+  EmitRaw('        XOR   DX, DX');
+  EmitRaw('        MOV   AX, 0FFFFh');
+  EmitRaw('_PRRT_RIL:');
+  EmitRaw('        MOV   AL, [BX]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RIDN');
+  EmitRaw('        MOV   SI, BX');
+  EmitRaw('        MOV   DI, WORD PTR [BP-2]');
+  EmitRaw('_PRRT_RIC:');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_RIOK');
+  EmitRaw('        MOV   AH, [SI]');
+  EmitRaw('        CMP   AL, AH');
+  EmitRaw('        JNE   _PRRT_RIN');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_RIC');
+  EmitRaw('_PRRT_RIN:');
+  EmitRaw('        INC   BX');
+  EmitRaw('        INC   DX');
+  EmitRaw('        JMP   _PRRT_RIL');
+  EmitRaw('_PRRT_RIOK:');
+  EmitRaw('        MOV   AX, DX');
+  EmitRaw('        INC   BX');
+  EmitRaw('        INC   DX');
+  EmitRaw('        JMP   _PRRT_RIL');
+  EmitRaw('_PRRT_RIDN:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        ADD   SP, 2');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_RINDEX ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_SUBSTR : SI=str, BX=off, CX=len, DI=dst -> copy ---- }
+  EmitRaw('_PRRT_SUBSTR PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        TEST  BX, BX');
+  EmitRaw('        JZ    _PRRT_SUBST');
+  EmitRaw('_PRRT_SUBADV:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_SUBEN');
+  EmitRaw('        INC   SI');
+  EmitRaw('        DEC   BX');
+  EmitRaw('        JNZ   _PRRT_SUBADV');
+  EmitRaw('_PRRT_SUBST:');
+  EmitRaw('_PRRT_SUBCPY:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_SUBEN');
+  EmitRaw('        CMP   CX, 0FFFFh');
+  EmitRaw('        JE    _PRRT_SUBND');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _PRRT_SUBEN');
+  EmitRaw('        DEC   CX');
+  EmitRaw('_PRRT_SUBND:');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_SUBCPY');
+  EmitRaw('_PRRT_SUBEN:');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_SUBSTR ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_HEX2INT : SI=str hex -> AX ---- }
+  EmitRaw('_PRRT_HEX2INT PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        XOR   BX, BX');
+  EmitRaw('        MOV   BL, [SI]');
+  EmitRaw('        CMP   BL, 48');
+  EmitRaw('        JNE   _PRRT_HIL');
+  EmitRaw('        MOV   BL, [SI+1]');
+  EmitRaw('        CMP   BL, 120');
+  EmitRaw('        JE    _PRRT_HISKIP');
+  EmitRaw('        CMP   BL, 88');
+  EmitRaw('        JNE   _PRRT_HIL');
+  EmitRaw('_PRRT_HISKIP:');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   SI');
+  EmitRaw('_PRRT_HIL:');
+  EmitRaw('        XOR   BX, BX');
+  EmitRaw('        MOV   BL, [SI]');
+  EmitRaw('        TEST  BL, BL');
+  EmitRaw('        JZ    _PRRT_HIDN');
+  EmitRaw('        CMP   BL, 48');
+  EmitRaw('        JL    _PRRT_HIDN');
+  EmitRaw('        CMP   BL, 57');
+  EmitRaw('        JLE   _PRRT_HIDIG');
+  EmitRaw('        CMP   BL, 65');
+  EmitRaw('        JL    _PRRT_HIDN');
+  EmitRaw('        CMP   BL, 70');
+  EmitRaw('        JLE   _PRRT_HIHEX');
+  EmitRaw('        CMP   BL, 97');
+  EmitRaw('        JL    _PRRT_HIDN');
+  EmitRaw('        CMP   BL, 102');
+  EmitRaw('        JG    _PRRT_HIDN');
+  EmitRaw('        SUB   BL, 87');
+  EmitRaw('        JMP   _PRRT_HIACC');
+  EmitRaw('_PRRT_HIHEX:');
+  EmitRaw('        SUB   BL, 55');
+  EmitRaw('        JMP   _PRRT_HIACC');
+  EmitRaw('_PRRT_HIDIG:');
+  EmitRaw('        SUB   BL, 48');
+  EmitRaw('_PRRT_HIACC:');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        OR    AX, BX');
+  EmitRaw('        INC   SI');
+  EmitRaw('        JMP   _PRRT_HIL');
+  EmitRaw('_PRRT_HIDN:');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_HEX2INT ENDP');
+  EmitBlankLine;
+  { ---- TODO 20 : _PRRT_OCT2INT : SI=str octal -> AX ---- }
+  EmitRaw('_PRRT_OCT2INT PROC NEAR');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('_PRRT_OIL:');
+  EmitRaw('        XOR   BX, BX');
+  EmitRaw('        MOV   BL, [SI]');
+  EmitRaw('        TEST  BL, BL');
+  EmitRaw('        JZ    _PRRT_OIDN');
+  EmitRaw('        SUB   BL, 48');
+  EmitRaw('        JL    _PRRT_OIDN');
+  EmitRaw('        CMP   BL, 7');
+  EmitRaw('        JG    _PRRT_OIDN');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        SHL   AX, 1');
+  EmitRaw('        OR    AX, BX');
+  EmitRaw('        INC   SI');
+  EmitRaw('        JMP   _PRRT_OIL');
+  EmitRaw('_PRRT_OIDN:');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_OCT2INT ENDP');
+  EmitBlankLine;
 End;
 
 { ============================================================
@@ -1427,8 +1959,8 @@ End;
 
 { ---- Table des mots-cles Perl ----------------------------- }
 Const
-  PERL_KW_COUNT = 66;
-  PERL_KW : Array[0..65] Of String[14] = (
+  PERL_KW_COUNT = 69;
+  PERL_KW : Array[0..68] Of String[14] = (
     { Declaration de portee }
     'my',           'our',          'local',
     { Sous-routines }
@@ -1461,7 +1993,8 @@ Const
     'substr',       'index',        'int',
     'abs',          'hex',          'oct',
     'chr',          'ord',          'lc',
-    'uc',
+    'uc',           'ucfirst',      'lcfirst',
+    'rindex',
     { Logiques basse precedence }
     'not',          'and',          'or',
     { Operateur de repetition }
@@ -2993,22 +3526,182 @@ Begin
     Res.ImmVal := 0; Res.Offset := 0;
     Exit;
   End;
-  { ---- Builtins a un argument : chomp, chr, ord, length, lc, uc, int ... ---- }
+  { ---- Builtins : simples et multi-args (TODO 20) ---- }
   If CurToken.Kind = TK_KEYWORD Then
   Begin
     NStr := CurToken.Val;
+    { TODO 20 : index(s, sub [,pos]) -> _PRRT_INDEX -> AX(-1 si absent) }
+    If NStr = 'index' Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(Sub); ExprLoad(Sub);
+      EmitInstr('PUSH', 'AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+      ParseExpr(Sub); ExprLoad(Sub);
+      EmitInstr('MOV', 'DI, AX');
+      EmitInstr('POP', 'SI');
+      EmitInstr('CALL', '_PRRT_INDEX');
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      Begin ParserAdvance; ParseExpr(Sub); End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 20 : rindex(s, sub [,pos]) -> _PRRT_RINDEX -> AX (derniere occ) }
+    If NStr = 'rindex' Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(Sub); ExprLoad(Sub);
+      EmitInstr('PUSH', 'AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+      ParseExpr(Sub); ExprLoad(Sub);
+      EmitInstr('MOV', 'DI, AX');
+      EmitInstr('POP', 'SI');
+      EmitInstr('CALL', '_PRRT_RINDEX');
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      Begin ParserAdvance; ParseExpr(Sub); End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 20 : substr(s, off [,len]) -> _PRRT_SUBSTR -> AX=ptr buf }
+    If NStr = 'substr' Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(Sub); ExprLoad(Sub);
+      EmitInstr('PUSH', 'AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+      ParseExpr(Sub); ExprLoad(Sub);
+      EmitInstr('MOV', 'BX, AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        ParserAdvance; ParseExpr(Sub); ExprLoad(Sub);
+        EmitInstr('MOV', 'CX, AX');
+      End Else
+        EmitInstr('MOV', 'CX, 0FFFFh');
+      EmitInstr('POP', 'SI');
+      If DataFindByLabel('_PRRT_STRBUF') < 0 Then
+      Begin
+        Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
+        DataTab[Idx].ElemCount := 128;
+      End;
+      EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+      EmitInstr('CALL', '_PRRT_SUBSTR');
+      EmitInstr('MOV', 'AX, DI');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 20 : join(sep, list) -> stub AX=0 }
+    If NStr = 'join' Then
+    Begin
+      EmitComment('join : stub AX=0 (TODO 24)');
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      ParseExpr(Sub);
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      Begin ParserAdvance; ParseExpr(Sub); End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      EmitInstr('XOR', 'AX, AX');
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 20 : split(pat, str) -> stub AX=0 }
+    If NStr = 'split' Then
+    Begin
+      EmitComment('split : stub AX=0 (TODO 24)');
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+                (CurToken.Kind <> TK_EOF) Do
+        ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      EmitInstr('XOR', 'AX, AX');
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 20 : builtins a un argument avec dispatch real }
     If (NStr = 'chomp') Or (NStr = 'chop')    Or (NStr = 'chr')     Or
        (NStr = 'ord')   Or (NStr = 'length')  Or (NStr = 'lc')      Or
        (NStr = 'uc')    Or (NStr = 'lcfirst') Or (NStr = 'ucfirst') Or
        (NStr = 'int')   Or (NStr = 'abs')     Or (NStr = 'hex')     Or
        (NStr = 'oct')   Or (NStr = 'sqrt')    Or (NStr = 'pos')     Or
-       (NStr = 'chdir')   Then
+       (NStr = 'chdir') Then
     Begin
       ParserAdvance;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
       ParsePrimary(Sub);
       ExprLoad(Sub);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      { Dispatch vers la routine runtime adequate }
+      If NStr = 'length' Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', '_PRRT_STRLEN');
+      End
+      Else If (NStr = 'uc') Or (NStr = 'lc') Or
+              (NStr = 'ucfirst') Or (NStr = 'lcfirst') Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        If DataFindByLabel('_PRRT_STRBUF') < 0 Then
+        Begin
+          Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
+          DataTab[Idx].ElemCount := 128;
+        End;
+        EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+        If NStr = 'uc' Then EmitInstr('CALL', '_PRRT_UC')
+        Else If NStr = 'lc' Then EmitInstr('CALL', '_PRRT_LC')
+        Else If NStr = 'ucfirst' Then EmitInstr('CALL', '_PRRT_UCFIRST')
+        Else EmitInstr('CALL', '_PRRT_LCFIRST');
+        EmitInstr('MOV', 'AX, DI');
+      End
+      Else If NStr = 'chr' Then
+      Begin
+        If DataFindByLabel('_PRRT_STRBUF') < 0 Then
+        Begin
+          Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
+          DataTab[Idx].ElemCount := 128;
+        End;
+        EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+        EmitInstr('CALL', '_PRRT_CHR');
+        EmitInstr('MOV', 'AX, DI');
+      End
+      Else If NStr = 'ord' Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', '_PRRT_ORD');
+      End
+      Else If NStr = 'chomp' Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', '_PRRT_CHOMP');
+      End
+      Else If NStr = 'chop' Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', '_PRRT_CHOP');
+      End
+      Else If NStr = 'abs' Then
+        EmitInstr('CALL', '_PRRT_ABS')
+      Else If NStr = 'hex' Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', '_PRRT_HEX2INT');
+      End
+      Else If NStr = 'oct' Then
+      Begin
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', '_PRRT_OCT2INT');
+      End;
+      { int sqrt pos chdir : AX reste inchange }
       Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
@@ -3178,6 +3871,18 @@ Begin
   If CurToken.Kind = TK_SCALAR Then
   Begin
     NStr := CurToken.Val;
+    { TODO 19 : variables de capture $1 et $2 -> _PRCAP_1, _PRCAP_2 }
+    If (NStr = '1') Or (NStr = '2') Then
+    Begin
+      ParserAdvance;
+      EmitInstr('MOV', 'AX, WORD PTR [_PRCAP_' + NStr + ']');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal  := 0;
+      Res.Offset  := 0;
+      ParsePostfixOps(Res);
+      Exit;
+    End;
     Idx  := SymFind(NStr, '$');
     ParserAdvance;
     { Acces a un element de hash : signe $ suivi de accolade }
@@ -3300,6 +4005,123 @@ Begin
   End;
 End;
 
+{ ---- ParseRegexOp : generer le code pour $str =~ /pat/ ------ }
+{ TODO 19                                                          }
+{ CurToken doit etre TK_REGEXP (Val = kind+Chr(1)+pat+Chr(1)+repl)}
+{ Left = expression gauche (la chaine sujet).                      }
+{ Op = '=~' ou '!~'.                                               }
+{ Resultat dans AX : 1 si match (ou subst), 0 sinon.               }
+{ Negation si Op = '!~'.                                            }
+Procedure ParseRegexOp(Const Op : TString;
+                        Var Left : TExprVal;
+                        Var Res  : TExprVal);
+Var
+  RKind  : Char;
+  RPat   : TString;
+  RRepl  : TString;
+  PatLbl : TString;
+  ReplLbl: TString;
+  SeqStr : TString;
+  I      : Integer;
+  C      : Char;
+  HasMeta: Boolean;
+Begin
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SCALAR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  If CurToken.Kind <> TK_REGEXP Then
+  Begin
+    SymError('Expression reguliere attendue apres ' + Op);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  { Decoder Val : kind + Chr(1) + pat + Chr(1) + repl }
+  If Length(CurToken.Val) < 1 Then
+  Begin
+    SymError('Token regex invalide');
+    ParserAdvance;
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  RKind := CurToken.Val[1];
+  RPat  := '';
+  RRepl := '';
+  { Extraire pat : entre le 1er et 2eme Chr(1) }
+  I := 3;  { sauter kind + Chr(1) }
+  While (I <= Length(CurToken.Val)) And (CurToken.Val[I] <> Chr(1)) Do
+  Begin
+    RPat := RPat + CurToken.Val[I];
+    Inc(I);
+  End;
+  { Extraire repl : apres le 2eme Chr(1) }
+  If (I <= Length(CurToken.Val)) And (CurToken.Val[I] = Chr(1)) Then
+  Begin
+    Inc(I);
+    While I <= Length(CurToken.Val) Do
+    Begin
+      RRepl := RRepl + CurToken.Val[I];
+      Inc(I);
+    End;
+  End;
+  { Avertir si metacaracteres dans le pattern }
+  HasMeta := False;
+  For I := 1 To Length(RPat) Do
+  Begin
+    C := RPat[I];
+    If (C = '^') Or (C = '$') Or (C = '.') Or (C = '*') Or
+       (C = '+') Or (C = '?') Or (C = '(') Or (C = ')') Or
+       (C = '[') Or (C = ']') Or (C = '{') Or (C = '}') Or
+       (C = '|') Then
+      HasMeta := True;
+  End;
+  If HasMeta Then
+    WriteLn('PERL86:', CurToken.Line, ': Avertissement: metacaracteres ignores dans /', RPat, '/');
+  { Creer un label unique pour ce pattern dans DataTab }
+  Inc(RegexSeq);
+  Str(RegexSeq, SeqStr);
+  PatLbl := '_PRRX_P' + SeqStr;
+  DataAdd(PatLbl, DK_STR, 0, RPat);
+  { Consommer le token TK_REGEXP }
+  ParserAdvance;
+  { Charger l'adresse de la chaine sujet dans SI }
+  ExprLoad(Left);
+  EmitInstr('MOV', 'SI, AX');
+  { Charger l'adresse du pattern dans DI }
+  EmitInstr('MOV', 'DI, OFFSET ' + PatLbl);
+  { Emettre l'appel runtime selon le type }
+  If RKind = 's' Then
+  Begin
+    { Substitution s/pat/repl/ }
+    ReplLbl := '_PRRX_R' + SeqStr;
+    DataAdd(ReplLbl, DK_STR, 0, RRepl);
+    EmitInstr('MOV', 'BX, OFFSET ' + ReplLbl);
+    EmitInstr('CALL', '_PRRT_RESUB');
+    EmitComment('s/pat/repl/ : AX=1 si substitution effectuee');
+  End
+  Else If RKind = 't' Then
+  Begin
+    { Transliteration tr/// : stub minimal }
+    EmitComment('tr/// : non implemente -> AX=0');
+    EmitInstr('XOR', 'AX, AX');
+  End
+  Else
+  Begin
+    { Match /pat/ ou m/pat/ }
+    EmitInstr('CALL', '_PRRT_REMATCH');
+    EmitComment('/pat/ : AX=1 si trouve');
+  End;
+  { Stocker le resultat dans la variable capture $1 }
+  EmitInstr('MOV', 'WORD PTR [_PRCAP_1], AX');
+  { Negation pour !~ }
+  If Op = '!~' Then
+  Begin
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('SETZ', 'AL');
+    EmitInstr('MOVZX', 'AX, AL');
+  End;
+End;
+
 { ---- ParseExprPrec : coeur du parseur Pratt - TODO 11 ------ }
 { Convention BX=Left, AX=Right pour les ops non-affectation.    }
 { Court-circuit inline pour && || //.                           }
@@ -3352,7 +4174,16 @@ Begin
     If Not CurTokIsInfixOp(Op) Then Break;
     Prec := BinOpPrec(Op);
     If Prec < MinPrec Then Break;
+    { TODO 19 : signaler avant avance si regex attendue apres =~ !~ }
+    If (Op = '=~') Or (Op = '!~') Then LexExpectRegex := True;
     ParserAdvance;
+    { ---- TODO 19 : matching =~ et !~ -> ParseRegexOp ---- }
+    If (Op = '=~') Or (Op = '!~') Then
+    Begin
+      ParseRegexOp(Op, Left, Res);
+      Left := Res;
+      Continue;
+    End;
     { ---- Court-circuit && : si Left faux, sauter Right ---- }
     If (Op = '&&') Or (Op = 'and') Then
     Begin
@@ -5304,6 +6135,9 @@ Begin
   CurPackage   := 'main';
   RuntimeEmitted := False;
   IncludeCount := 0;
+  { TODO 19 : expressions regulieres }
+  LexExpectRegex := False;
+  RegexSeq       := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
