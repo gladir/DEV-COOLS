@@ -3273,7 +3273,7 @@ Begin
 End;
 
 { ---- ParseExprPrec : boucle Pratt par precedence croissante ---- }
-Procedure ParseExprPrec;  { corps du Forward declre plus haut }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);  { corps du Forward declre plus haut }
 Var
   L    : TExprVal;
   R    : TExprVal;
@@ -3384,7 +3384,7 @@ End;
 { ---- ParseClosureExpr : corps apres consommation du pipe ouvrant ----
   ParamsClosed = True  -> '||' deja consomme, aucun parametre a lire.
   ParamsClosed = False -> lit les params jusqu'au pipe fermant.        }
-Procedure ParseClosureExpr; { corps du Forward }
+Procedure ParseClosureExpr(ParamsClosed : Boolean; Var Res : TExprVal); { corps du Forward }
 Var
   LblClo    : TString;
   LblCloEnd : TString;
@@ -4457,7 +4457,7 @@ End;
 
 { ---- ParseMacroCall : gerer les macros Rust panic! unreachable! etc. ----
   MacroName = nom sans '!', '(' deja attendu                              }
-Procedure ParseMacroCall;
+Procedure ParseMacroCall(Const MacroName : TString; Var Res : TExprVal);
 Var
   E       : TExprVal;
   Msg     : TString;
