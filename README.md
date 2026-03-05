@@ -380,7 +380,11 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>ROT13PAS.PAS</b></td>
 			<td>Cette commande permet d'obscurcir le code Pascal en le transformant avec l'algorithme rot13 sur les identificateurs du programme.</td>
 		</tr>
-    		<tr>
+		<tr>
+			<td><b>RUST86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Rust vers l'assembleur 8086.</td>
+		</tr>
+    	<tr>
 			<td><b>SYMDEB.PAS</b></td>
 			<td>Cette commande permet de lancer le débogueur DOS. Cette commande est inspiré du SYMDEB du MASM.</td>
 		</tr>
