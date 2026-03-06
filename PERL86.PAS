@@ -1,311 +1,15 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur Perl vers assembleur 8086
+  @license: MIT
+}
+
 (* ============================================================
-  PERL86.PAS - Compilateur Perl vers assembleur 8086
-  Turbo Pascal / Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
-
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
-            TOptions (SrcFile, OutFile, Verbose, DebugMode, Strict, Warnings)
-            ParseArgs : analyser argv (script.pl [sortie.asm] [-v] [-d] [-w])
-            FatalError, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Shebang : ignorer la premiere ligne #!/usr/bin/perl ou #!/usr/bin/env perl
-            Programme principal : validation des arguments et appel Run
-
-  TODO 02 - LEXEUR (TOKENS PERL)
-            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
-              TK_HEREDOC, TK_REGEXP, TK_IDENT, TK_SCALAR ($), TK_ARRAY (@),
-              TK_HASH (%), TK_KEYWORD, TK_OP, TK_PUNCT, TK_FILEHANDLE
-            Sigils : $ @ % reconnus et consommes comme prefixe de token
-            LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
-            LexScanString : simple-quote (\\ \'), double-quote (interpolation
-              de $var @arr et sequences \n \t \r \0 \x1B), backtick (`)
-            LexScanRegexp : /pattern/flags apres =~ ou m// ou s///replacement/flags
-            Commentaires : # jusqu'a fin de ligne  (pas de /* */ en Perl)
-            IsKeyword : liste complete my our local sub use require package
-              if elsif else unless while until for foreach do last next redo
-              return print say printf sprintf die exit wantarray chomp chop
-            Mode debug -d : affichage de chaque token avec PrintToken
-
-  TODO 03 - LITTERAUX ET CONSTANTES
-            Entiers decimaux, hexadecimaux (0x), octaux (0), binaires (0b)
-            Separateurs numeriques : 1_000_000 -> 1000000
-            Flottants : reconnus par le lexeur, traites comme entiers (trunc)
-            Chaines simple-quote : pas d'interpolation, uniquement \\ et \'
-            Chaines double-quote : interpolation de $scalaire, @tableau
-              (liste entre parens), sequences \n \t \r \f \e \0 \xNN \cX
-            Backtick ` : commande systeme, non supporte -> warning + chaine vide
-            Heredoc : <<LABEL / <<"LABEL" (interpolation) / <<'LABEL' (literal)
-              Fin au label seul en debut de ligne
-            Expressions qw() : liste de mots separes par espaces -> tableau litteral
-            true / false / undef : constantes booleennes et valeur indefinie
-
-  TODO 04 - OPERATEURS ET PRECEDENCE
-            Arithmetiques   : + - * / % ** (puissance)
-            Concatenation   : . et .=
-            Repetition      : x et x= ($str x 3 / @arr x 2)
-            Comparaison num : == != < <= > >= <=> (spaceship)
-            Comparaison str : eq ne lt le gt ge cmp
-            Logiques haute  : && || // (or-defined) ! (precedence C)
-            Logiques basse  : and or not (precedence tres basse)
-            Bitwise         : & | ^ ~ << >>
-            Ternaire        : cond ? a : b
-            Plage           : .. et ... (range dans for/foreach)
-            Assignation     : = += -= *= /= %= .= //= &&= ||= x=
-            BinOpPrec : table de precedences Pratt adaptee a Perl
-
-  TODO 05 - TABLE DES SYMBOLES
-            TSymCat : SC_SCALAR, SC_ARRAY_VAR, SC_HASH_VAR,
-              SC_PARAM, SC_FN, SC_PKG, SC_CONST, SC_FILEHANDLE
-            TSymRec : Name, SigilName (avec $/@/%), MangledName, Cat,
-              TypeIdx, Offset, IsMy, IsOur, IsLocal, IsRef
-            SymAdd, SymFind, SymFindCat, SymMangle
-            Portee lexicale my : SymEnterScope / SymLeaveScope
-            Portee dynamique local : sauvegarde de la valeur sur la pile
-            Portee globale our : pointeur vers la table du package courant
-            use strict -> activation du mode strict (toute var doit etre declaree)
-            use constant NOM => val : ajout SC_CONST dans SymTab
-
-  TODO 06 - SYSTEME DE TYPES ET CONTEXTE
-            TTypeKind : TKD_SCALAR (int/float/str unifie), TKD_ARRAY,
-              TKD_HASH, TKD_REF, TKD_CODE, TKD_UNDEF, TKD_FILEHANDLE
-            TypeTab, TypeInit : enregistrer les types primitifs
-            TypeSizeof : scalar=2o (ptr ou int), ref=2o, array=ptr 2o
-            Contexte scalaire vs liste : distinction a la compilation
-              scalaire(@arr) -> nombre d'elements ; @arr dans liste -> elements
-            Context booleen : 0, "", "0", undef = faux ; tout autre = vrai
-            TypeMangle : nom mangle du type pour les labels ASM
-
-  TODO 07 - EMETTEUR DE CODE ASM
-            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
-            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
-            EmitComment, EmitBlankLine
-            LabelGen global (compteur unique _PRL_NNNNN)
-            Prefixes : _PRV_ (variable), _PRF_ (sub/fonction),
-              _PRK_ (constante chaine), _PRRT_ (runtime), _PRL_ (label)
-            EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
-
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
-            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY),
-              IntVal, StrVal, ElemCount
-            DataTab[0..MAX_DATA-1], DataCount
-            DataAdd : enregistrer une entree dans DataTab
-            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
-            Chaines litterales -> entree DK_STR automatique (terminateur 0)
-            Variables globales our/use : entrees DK_WORD dans DataTab
-            Constantes use constant : entrees DK_WORD ou DK_STR
-
-  TODO 09 - VARIABLES ET AFFECTATIONS
-            Scalaires my $var : alloues sur la pile (SUB SP, 2)
-            Scalaires our $var : dans le segment DATA (DK_WORD)
-            Affectation simple : $var = expr -> ExprLoad + MOV [BP-n], AX
-            Operateurs composes : += -= *= .= etc. -> load/op/store
-            Affectation de liste : ($a, $b) = ($b, $a) -> via pile temporaire
-            local $var : sauvegarde de la valeur globale avant modif, restaure
-            Dereferencement d'affectation : $$ref = expr ; @$ref = liste
-            Affectation en chaine : $a = $b = expr -> associatif droite
-
-  TODO 10 - EXPRESSIONS PRIMAIRES
-            ParsePrimary : literal entier, literal chaine, $scalaire,
-              @tableau (contexte liste), %hash (contexte hash),
-              operateurs unaires (- ! ~ ++ -- pre/post), not, defined($v)
-            Groupement parenthese, liste (a, b, c)
-            ref($v) -> retourne chaine du type ; \$v -> reference scalaire
-            undef : constante -> AX=0 ; defined($v) : test pointeur non nul
-            Appel de sous-routine : nomSub(args) ou &nomSub(args)
-            ExprMakeImm, ExprMakeNone, ExprMakeUndef : constructeurs TExprVal
-
-  TODO 11 - EXPRESSIONS BINAIRES (PRATT)
-            ParseExprPrec(MinPrec, Var Res) : boucle Pratt complete
-            ExprEmitBinOp : ADD/SUB/IMUL/IDIV/REM, CMP+SETcc, AND/OR/XOR
-            Concatenation . : appel _PRRT_CONCAT(DI=dst, SI=src)
-            Repetition x : boucle inline ou appel _PRRT_STRREPEAT
-            Spaceship <=> : CMP + SETL/SETE/SETG -> AX=-1/0/1
-            Operateur // (defined-or) : test EK_UNDEF puis branchement
-            Ternaire cond ? a : b : emission avec labels _PRL_TERN_N
-
-  TODO 12 - PRINT / SAY / PRINTF / SPRINTF / WARN / DIE
-            ParsePrintStmt : print LIST; print FILEHANDLE LIST;
-            say LIST : identique a print avec \n final automatique
-            printf FORMAT, LIST : interpretation du format simplifie
-              %d -> CALL _PRRT_ITOA  %s -> chaine directe  %% -> '%'
-            sprintf FORMAT, LIST : meme logique, retourne chaine (buffer)
-            warn MSG : affiche sur STDERR (INT 21h BX=2)
-            die MSG : affiche + exit code 255
-            Filehandles STDOUT / STDERR / STDIN : BX=1/2/0 dans INT 21h
-
-  TODO 13 - IF / ELSIF / ELSE / UNLESS + MODIFICATEURS DE STATEMENT
-            ParseIfStmt : if (cond) BLOC [elsif (cond) BLOC]* [else BLOC]
-            unless (cond) BLOC [else BLOC] : condition inversee
-            Labels _PRL_ELSIF_N, _PRL_ELSE_N, _PRL_ENDIF_N
-            Modificateurs de fin de statement : expr if cond ;
-              expr unless cond ; expr while cond ; expr until cond ;
-              expr for LIST ; expr foreach LIST ;
-            Traduction en IF/WHILE inline avec label court
-
-  TODO 14 - BOUCLES : while / until / for / foreach / do+while
-            ParseWhileStmt : while (cond) { BLOC } [continue { BLOC }]
-            ParseUntilStmt : until (cond) BLOC (condition inversee)
-            ParseForStmt : for (init; cond; incr) BLOC (style C)
-            ParseForeachStmt : foreach my $elem (LIST) { BLOC }
-              Plage : foreach (A..B) -> iteration [A,B] incremental
-            do { BLOC } while (cond) et do { BLOC } until (cond)
-            LoopPush / LoopPop : pile de labels last/next
-            last [LABEL], next [LABEL], redo [LABEL] :
-              last = break, next = continue, redo = recommence sans retest
-            Labels de boucle : BOUCLE: while { ... }
-
-  TODO 15 - TABLEAUX (@array)
-            Declaration : my @arr et initialisation my @arr = (1,2,3)
-            Representation memoire : entete [count:word] suivi des elements
-            Acces $arr[i] (i constant ou expr) : calcul offset, MOV/CMP
-            Acces $arr[-1] : index negatif -> count+index
-            Affectation $arr[i] = expr
-            push @arr, val : CALL _PRRT_PUSH (realloc non supporte, taille fixe)
-            pop @arr, shift @arr, unshift @arr, val
-            scalar(@arr) -> AX = count ; wantarray -> AX = 0 (contexte)
-            Slices @arr[1,2,3] : avertissement + acces sequentiel
-            reverse, sort (tri numerique/alphabetique inline ou builtins)
-
-  TODO 16 - HASHES (%hash)
-            Declaration : my %h et initialisation my %h = (cle => val, ...)
-            Representation : paires cle/valeur dans DATA (taille fixe a compile)
-            Acces $h{key} (cle constante chaine) : offset precompile
-            Acces $h{$k} (cle variable) : linearisation sequentielle + CMP
-            Affectation $h{key} = expr
-            exists $h{key} : recherche et retourne bool -> AX
-            delete $h{key} : mise a zero de la valeur (cle conservee)
-            keys %h, values %h -> liste en contexte liste
-            each %h -> paires ($k, $v) en iteration
-            Hashes profonds (reference) : avertissement, non pris en charge
-
-  TODO 17 - SOUS-ROUTINES (sub)
-            ParseSubDecl : sub nom PROTO BLOC et sub nom { BLOC }
-            Signature @_ : tableau des arguments passes par l'appelant
-              my ($a, $b) = @_; -> shift de @_ dans les parametres locaux
-            Prototypes sub nom ($$$) : verification d'arite (warning seulement)
-            Valeur de retour : return expr; ou derniere expr evaluee -> AX
-            Contexte de retour : wantarray() -> 0 (scalaire) dans impl. simplifiee
-            Sous-routines anonymes : my $f = sub { BLOC }; -> pointeur code
-            Appel : $f->() ou &$f() ; dereferencer pointeur + CALL AX
-            ParseCallArgs, EmitCallSite : convention cdecl 16 bits
-            sub BEGIN, END : executes au compile/fin (stub ou avertissement)
-
-  TODO 18 - PORTEE, PILE ET CADRES
-            Convention d'appel : cdecl 16 bits, args de gauche a droite
-            Prologue sous-routine : PUSH BP / MOV BP, SP
-            Epilogue : MOV SP, BP / POP BP / RET N
-            Variables my : allouees sur la pile (SUB SP, 2 par scalaire)
-            Arguments @_ : adresses des args sur la pile, copie dans locaux
-            Fermeture de portee : SymLeaveScope + restauration SP
-            Sauvegarde registres : SI, DI, ES preserves dans sub (si utilises)
-            CurFrameSize : taille courante du cadre local
-
-  TODO 19 - EXPRESSIONS REGULIERES (basique)  [IMPLEMENTE]
-            LexExpectRegex : flag lexeur pour scanner /pat/ apres =~ ou !~
-            LexScanRegexLit : scanne /pat/f m/pat/f s/pat/repl/f tr/c1/c2/
-            TK_REGEXP : Val = kind+Chr(1)+pat+Chr(1)+repl
-            BinOpPrec : =~ et !~ a precedence 10 (comme ==)
-            ParseRegexOp : genere MOV SI,AX / MOV DI,OFFSET / CALL runtime
-            $str =~ /pattern/ : emission de CALL _PRRT_REMATCH(SI,DI) -> AX
-            $str =~ s/pattern/replacement/ : CALL _PRRT_RESUB(SI,DI,BX) -> AX
-            $str =~ tr/chars/chars/ : stub -> AX=0 (non implemente)
-            $str !~ /pattern/ : negation SETZ du resultat
-            Captures $1 $2 : variables globales _PRCAP_1 _PRCAP_2 dans DATA
-            Support minimal : pattern fixe (chaine litterale sans meta)
-            Patterns avec metacaracteres ^ $ . * + ? : avertissement compile
-
-  TODO 20 - FONCTIONS INTEGREES (BUILTINS)  [IMPLEMENTE]
-            length($s)          -> MOV SI,AX + CALL _PRRT_STRLEN -> AX
-            uc/lc/ucfirst/lcfirst($s) -> MOV SI,DI + CALL _PRRT_UC|LC|... -> AX=buf
-            chomp($s)           -> MOV SI,AX + CALL _PRRT_CHOMP -> AX=0|1
-            chop($s)            -> MOV SI,AX + CALL _PRRT_CHOP -> AX=char_retire
-            chr($n)             -> MOV DI,OFFSET _PRRT_STRBUF + CALL _PRRT_CHR -> AX=buf
-            ord($s)             -> MOV SI,AX + CALL _PRRT_ORD -> AX=premier_octet
-            abs($n)             -> CALL _PRRT_ABS -> AX=|AX|
-            hex($s)             -> MOV SI,AX + CALL _PRRT_HEX2INT -> AX
-            oct($s)             -> MOV SI,AX + CALL _PRRT_OCT2INT -> AX
-            int($n)             -> pass-through (deja entier)
-            index($s,$sub)      -> PUSH AX, parseSub, MOV DI,AX, POP SI + CALL _PRRT_INDEX -> AX
-            rindex($s,$sub)     -> idem avec _PRRT_RINDEX -> AX (derniere occur)
-            substr($s,$off,$len)-> 3 args, MOV SI/BX/CX + CALL _PRRT_SUBSTR -> AX=buf
-            join(sep,@arr)      -> stub AX=0
-            split(/pat/,$str)   -> stub AX=0
-            defined($v)         -> deja implemente: TEST AX,AX; SETNE; MOVZX
-            _PRRT_STRBUF : 256 octets dans DATA (buffer uc/lc/chr/substr)
-            Mots-cles ajoutes : rindex ucfirst lcfirst (PERL_KW_COUNT 66->69)
-
-  TODO 21 - PACKAGES ET MODULES (basique)  [IMPLEMENTE]
-            ParsePackageDecl : package NomModule; -> CurPackage := NomModule
-            use strict -> Opts.Strict := True + EmitComment
-            use warnings -> Opts.Warnings := True + EmitComment
-            use constant NOM => val -> SC_CONST dans SymTab + DataAddConst
-              Acces NOM dans ParsePrimary (TK_IDENT -> SC_CONST lookup)
-              Valeur entiere: DK_WORD ; valeur chaine: DK_STR
-            use POSIX/autre -> avertissement + skip jusqu''au ;
-            require 'fichier.pl' -> avertissement + skip
-            do 'fichier.pl' -> avertissement + XOR AX,AX (non pris en charge)
-            BEGIN { } -> ParseBlock inline (emission immediate)
-            END { } -> skip du bloc (stub)
-
-  TODO 22 - REFERENCES ET DEREFERENCEMENT  [IMPLEMENTE]
-            \$scalar -> LEA AX,[BP-n] (my) ou MOV AX,OFFSET (our)
-            \@arr -> LEA AX,[BP-n] ou MOV AX,OFFSET (cas speciaux avant ParsePrimary)
-            \%hash -> idem
-            $$ref -> MOV BX,[ptr]; MOV AX,[BX]  (TK_SCALAR val='' -> deref)
-            ${$ref} -> idem avec accolades
-            @$ref -> compte du tableau reference (TK_ARRAY_SIG val='' -> deref)
-            $ref->[$i] -> load ptr, SHL idx*2+2, MOV AX,[BX+SI]
-            $ref->{key} -> stub : avertissement + XOR AX,AX
-            $ref->() -> deja en place (TODO 17)
-            ref($v) -> 'SCALAR'/'ARRAY'/'HASH'/'CODE' selon TypeIdx compile
-            @aoa / %hoh -> avertissement
-
-  TODO 23 - I/O FICHIERS (basique)  [IMPLEMENTE]
-            open(my $fh, '<', 'fichier.txt') -> INT 21h AH=3Dh
-            open(my $fh, '>', 'fichier.txt') -> INT 21h AH=3Ch (creation)
-            open(my $fh, '>>', 'fichier.txt') -> INT 21h AH=3Dh mode append
-            close($fh) -> INT 21h AH=3Eh
-            print $fh, LIST -> INT 21h AH=40h BX=handle
-            readline($fh) / <$fh> -> CALL _PRRT_READLINE -> AX=ptr
-            eof($fh) -> AX=1 si fin de fichier (INT 21h AH=3Fh = 0 octets)
-            Modes non supportes : pipe, socket -> avertissement
-
-  TODO 24 - RUNTIME MINIMAL  [IMPLEMENTE]
-            _PRRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
-            _PRRT_PRINTLN : _PRRT_PRINT + emet CR+LF
-            _PRRT_ITOA(AX=n, DI=buf) : conversion entier -> chaine ASCII
-            _PRRT_STRLEN(SI=str) : compte octets jusqu'a 0 -> AX et CX
-            _PRRT_CONCAT(DI=dst, SI=src) : copie src dans dst (strcat)
-            _PRRT_STRREPEAT(DI=dst, SI=src, CX=n) : repete src n fois
-            _PRRT_REMATCH(SI=str, DI=pat) : recherche pattern fixe -> AX
-            _PRRT_RESUB(SI=str, DI=pat, BX=repl) : substitution -> AX
-            _PRRT_PUSH(SI=arr_ptr, AX=val) : pousse val dans tableau (fixe)
-            _PRRT_INDEX(SI=str, DI=sub) : position -> AX (-1 si absent)
-            _PRRT_PANIC(SI=msg) : affiche msg + MOV AX,4C01h + INT 21h
-            RuntimeEmitted : flag pour n'emettre le runtime qu'une fois
-
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES  [IMPLEMENTE]
-            EmitClose : END _PRF_main dans _TEXT ENDS / DATA ENDS
-            Run : pipeline complet LexInit -> ParseStmt loop ->
-              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _PRF_main
-            Fichiers SAMPLES\PERL\ crees :
-              hello.pl    (print, variables scalaires, concatenation, say)
-              math.pl     (sous-routines, arithmetique, return, recursion)
-              control.pl  (if/elsif/else/unless, while, for, foreach, last/next)
-              arrays.pl   (tableaux, push/pop/shift, foreach, sort, reverse)
-              hashes.pl   (hashes, keys/values, exists/delete, each)
-              regex.pl    (=~ correspondance et substitution simples)
-            Smoke tests : PERL86.EXE -v SAMPLES\PERL\*.pl
-
   ============================================================ *)
-
-{ ============================================================
-  PERL86 - Compilateur Perl -> assembleur 8086
-  Version : 1.0  Date : 2026-03-05
-  Compilation : ppc386 -O2 -Mtp PERL86.PAS
-  ============================================================ }
 
 Program PERL86;
 
@@ -326,7 +30,7 @@ Const
   MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
   MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
   MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
-  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}100{$ENDIF};
   MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
@@ -336,7 +40,7 @@ Const
   MAX_PKG       = {$IFDEF FPC}16{$ELSE}4{$ENDIF};
   MAX_ARR_ELEMS  = 32;   { elements max par tableau @arr local (fixe) }
   MAX_HASH_PAIRS  = 16;   { paires cle/valeur max par %hash local       }
-  MAX_HASH_KEYS   = 512;  { entrees totales dans la table de hachage    }
+  MAX_HASH_KEYS   = {$IFDEF FPC}512{$ELSE}100{$ENDIF};  { entrees totales dans la table de hachage    }
   STACK_SIZE      = 1024;
 
   { Prefixes de nommage ASM }
@@ -563,13 +267,13 @@ Var
   { Package courant }
   CurPackage : TString;   { 'main' par defaut }
 
-  { Flag : le mot-cle courant a deja ete consomme avant l''appel }
+  { Drapeau : le mot-clef courant a deja ete consomme avant l'appel }
   GKwConsumed : Boolean;
-  { TODO 17 : compteur d''args du dernier appel + arg shift @_ }
+  { Compteur d'args du dernier appel + arg shift @_ }
   GCallArgCount  : Integer;  { nb args du dernier ParseCallArgs }
   CurArgShiftIdx : Integer;  { index prochain shift dans @_ }
 
-  { TODO 19 : expressions regulieres }
+  { Expressions regulieres }
   LexExpectRegex : Boolean;  { True apres =~ ou !~ pour scanner regex }
   RegexSeq       : Integer;  { compteur labels regex dans DataTab }
 
@@ -590,29 +294,23 @@ Procedure SymInit;       Forward;
 Function  DataAddStr(Const S : TString) : Integer; Forward;
 Function  DataAdd(Const ALbl : TString; AKind : TDataKind;
                   AInt : LongInt; Const AStr : TString) : Integer; Forward;
-{ TODO 08 }
 Procedure EmitDataStr(Const Lbl, S : TString); Forward;
 Function  DataAddWord(Const ALbl : TString; AVal : LongInt) : Integer; Forward;
 Function  DataAddConst(Const ALbl : TString; AVal : LongInt;
                        Const AStr : TString) : Integer; Forward;
 Function  DataFindByLabel(Const ALbl : TString) : Integer; Forward;
-{ TODO 09 }
 Procedure EmitAllocLocal(Sz : Integer); Forward;
 Procedure EmitStoreScalar(Const Lv : TExprVal); Forward;
 Function  ExprMakeMem(SymIdx : Integer) : TExprVal; Forward;
 Procedure ParseVarDecl; Forward;
-{ TODO 10 }
 Procedure ParseCallArgs; Forward;
 Procedure EmitIncrDecr(Const Lv : TExprVal; IsInc : Boolean; Pre : Boolean;
                        Var Res : TExprVal); Forward;
 Procedure ParsePostfixOps(Var Res : TExprVal); Forward;
-{ TODO 12 }
 Procedure EmitPrintVal(Const BXval : TString; Var E : TExprVal); Forward;
 Procedure ParsePrintStmt; Forward;
-{ TODO 13 }
 Procedure ParseBlock; Forward;
 Procedure ParseIfStmt; Forward;
-{ TODO 14 }
 Procedure LoopPush(Const BrkLbl, ContLbl, RedoLbl : TString); Forward;
 Procedure LoopPop; Forward;
 Procedure ParseWhileStmt; Forward;
@@ -624,22 +322,16 @@ Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
 Procedure ExprMakeUndef(Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
-{ TODO 15 }
 Procedure ParseArrElemAccess(ArrIdx : Integer; Var Res : TExprVal); Forward;
 Procedure ParseArrBuiltin(IsStmt : Boolean); Forward;
-{ TODO 16 }
 Function  HashSlotFind(HashSym : Integer; Const Key : TString) : Integer; Forward;
 Function  HashSlotAdd(HashSym : Integer; Const Key : TString;
                       Const KeyLbl : TString) : Integer; Forward;
 Procedure ParseHashElemAccess(HashIdx : Integer; Var Res : TExprVal); Forward;
-{ TODO 17 }
 Procedure ParseSubDecl; Forward;
-{ TODO 21 }
 Procedure ParseUseStmt; Forward;
-{ TODO 23 }
 Procedure ParseOpenStmt; Forward;
 Procedure ParseCloseStmt; Forward;
-{ TODO 04 }
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  IsRightAssoc(Const Op : TString) : Boolean; Forward;
 Procedure ExprLoad(Var E : TExprVal); Forward;
@@ -650,11 +342,9 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Function  CurTokIsInfixOp(Var OpStr : TString) : Boolean; Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
-{ TODO 19 }
 Procedure ParseRegexOp(Const Op : TString;
                         Var Left : TExprVal;
                         Var Res  : TExprVal); Forward;
-{ TODO 05 }
 Function  SymMangle(Cat : TSymCat; IsMy : Boolean;
                     Const Name, Pkg : TString;
                     SeqN : Integer) : TString; Forward;
@@ -667,13 +357,11 @@ Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymWarn(Const Msg : TString); Forward;
 Procedure SymError(Const Msg : TString); Forward;
-{ TODO 06 }
 Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
 Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
 Function  TypeKindName(TypeIdx : Integer) : TString; Forward;
 Function  TypeIsCompatible(SrcIdx, DstIdx : Integer) : Boolean; Forward;
 Function  ExprIsBoolFalse(Const E : TExprVal) : Boolean; Forward;
-{ TODO 07 }
 Function  LabelGen(Const Prefix : TString) : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
 Procedure EmitBlankLine; Forward;
@@ -683,7 +371,7 @@ Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
 Procedure EmitInstr1(Const Mnem : TString); Forward;
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  INFRASTRUCTURE ET OPTIONS
   ============================================================ }
 
 { ---- Erreur fatale ---------------------------------------- }
@@ -694,18 +382,21 @@ Begin
 End;
 
 { ---- Aide en ligne ---------------------------------------- }
-Procedure ShowHelp;
-Begin
-  WriteLn('Usage: PERL86 <source.pl> [sortie.asm] [-v] [-d] [-s] [-w]');
-  WriteLn('  -v   mode verbeux (banniere + statistiques)');
-  WriteLn('  -d   debug tokens (affiche chaque token)');
-  WriteLn('  -s   use strict (toute variable doit etre declaree)');
-  WriteLn('  -w   use warnings (avertissements supplementaires)');
-  WriteLn('  -h   cette aide');
-  WriteLn('');
-  WriteLn('Le fichier source doit avoir l''extension .pl');
-  WriteLn('Le fichier de sortie defaut remplace .pl par .asm');
-  Halt(EXIT_OK);
+Procedure ShowHelp;Begin
+ WriteLn('PERL86 - Cette commande permet de lancer le compilateur Perl pour de l''assembleur du microprocesseur ',
+         '8086 ou 8088.');
+ WriteLn;
+ WriteLn('Syntaxe : PERL86 <source.pl> [sortie.asm] [-v] [-d] [-s] [-w]');
+ WriteLn;
+ WriteLn('  -v   mode verbeux (banniere + statistiques)');
+ WriteLn('  -d   debug tokens (affiche chaque token)');
+ WriteLn('  -s   use strict (toute variable doit etre declaree)');
+ WriteLn('  -w   use warnings (avertissements supplementaires)');
+ WriteLn('  -h   cette aide');
+ WriteLn;
+ WriteLn('Le fichier source doit avoir l''extension .pl');
+ WriteLn('Le fichier de sortie defaut remplace .pl par .asm');
+ Halt(EXIT_OK);
 End;
 
 { ---- Initialisation des options --------------------------- }
@@ -817,14 +508,13 @@ Begin
 End;
 
 { ---- Nettoyage des ressources ----------------------------- }
-Procedure Cleanup;
-Begin
+Procedure Cleanup;Begin
   LexClose;
   EmitClose;
 End;
 
 { ============================================================
-  STUBS DES TODOS 03-25 (seront implementes dans les TODOs suivants)
+  STUBS
   ============================================================ }
 
 Procedure TypeInit;
@@ -928,10 +618,10 @@ Begin
   EmitInstr('INT', '21h');
   EmitRaw('_PRF_main ENDP');
   EmitBlankLine;
-  EmitRuntime;   { TODO 19 : routines runtime dans _TEXT }
+  EmitRuntime;   { Routines runtime dans _TEXT }
   EmitRaw('_TEXT   ENDS');
   EmitBlankLine;
-  EmitDataSeg;   { TODO 08 : segment de donnees }
+  EmitDataSeg;   { Segment de donnees }
   EmitBlankLine;
   EmitRaw('        END     _PRF_main');
   Close(OutF);
@@ -993,7 +683,7 @@ Begin
       End;
     End;
   EmitBlankLine;
-  { TODO 19 : variables globales de capture $1 et $2 }
+  { Variables globales de capture $1 et $2 }
   EmitRaw('_PRCAP_1:');
   EmitRaw('        DW  0');
   EmitRaw('_PRCAP_2:');
@@ -1003,7 +693,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 19 - EmitRuntime : procedures helper 8086 dans _TEXT
+  EmitRuntime : procedures helper 8086 dans _TEXT
   _PRRT_REMATCH  : SI=sujet DI=pattern -> AX=1 si trouve
   _PRRT_RESUB    : SI=sujet DI=pattern BX=repl -> AX=1 si subst
   ============================================================ }
@@ -1011,10 +701,10 @@ Procedure EmitRuntime;
 Var
   Idx : Integer;
 Begin
-  If RuntimeEmitted Then Exit;  { TODO 24 : emettre le runtime une seule fois }
+  If RuntimeEmitted Then Exit;  { Emettre le runtime une seule fois }
   RuntimeEmitted := True;
   EmitBlankLine;
-  EmitRaw('; === Runtime PERL86 - TODO 19/24 ===');
+  EmitRaw('; === Runtime PERL86 ===');
   EmitBlankLine;
   { ---- _PRRT_REMATCH : recherche de chaine (strstr basique) ---- }
   EmitRaw('_PRRT_REMATCH PROC NEAR');
@@ -1117,7 +807,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_RESUB ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_ABS : AX=|AX| ---- }
+  { ---- _PRRT_ABS : AX=|AX| ---- }
   EmitRaw('_PRRT_ABS PROC NEAR');
   EmitRaw('        TEST  AX, AX');
   EmitRaw('        JNS   _PRRT_ABS_OK');
@@ -1126,14 +816,14 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_ABS ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_ORD : SI=str -> AX=premier octet ---- }
+  { ---- _PRRT_ORD : SI=str -> AX=premier octet ---- }
   EmitRaw('_PRRT_ORD PROC NEAR');
   EmitRaw('        XOR   AX, AX');
   EmitRaw('        MOV   AL, [SI]');
   EmitRaw('        RET');
   EmitRaw('_PRRT_ORD ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_CHR : AX=n, DI=buf -> buf[0]=chr(n), buf[1]=0 ---- }
+  { ---- _PRRT_CHR : AX=n, DI=buf -> buf[0]=chr(n), buf[1]=0 ---- }
   EmitRaw('_PRRT_CHR PROC NEAR');
   EmitRaw('        MOV   [DI], AL');
   EmitRaw('        PUSH  BX');
@@ -1144,7 +834,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_CHR ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_CHOMP : SI=str -> supprime '\n' final, AX=0/1 ---- }
+  { ---- _PRRT_CHOMP : SI=str -> supprime '\n' final, AX=0/1 ---- }
   EmitRaw('_PRRT_CHOMP PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1173,7 +863,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_CHOMP ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_CHOP : SI=str -> supprime dernier car, AX=ce car ---- }
+  { ---- _PRRT_CHOP : SI=str -> supprime dernier car, AX=ce car ---- }
   EmitRaw('_PRRT_CHOP PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1197,7 +887,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_CHOP ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_UC : SI=src, DI=dst -> uppercased copy, AX=DI ---- }
+  { ---- _PRRT_UC : SI=src, DI=dst -> uppercased copy, AX=DI ---- }
   EmitRaw('_PRRT_UC PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1222,7 +912,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_UC ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_LC : SI=src, DI=dst -> lowercased copy, AX=DI ---- }
+  { ---- _PRRT_LC : SI=src, DI=dst -> lowercased copy, AX=DI ---- }
   EmitRaw('_PRRT_LC PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1247,7 +937,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_LC ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_UCFIRST : comme UC mais seulement premier char ---- }
+  { ---- _PRRT_UCFIRST : comme UC mais seulement premier char ---- }
   EmitRaw('_PRRT_UCFIRST PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1277,7 +967,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_UCFIRST ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_LCFIRST : comme LC mais seulement premier char ---- }
+  { ---- _PRRT_LCFIRST : comme LC mais seulement premier char ---- }
   EmitRaw('_PRRT_LCFIRST PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1307,7 +997,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_LCFIRST ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_INDEX : SI=str, DI=pat -> AX=pos (0-base) ou -1 ---- }
+  { ---- _PRRT_INDEX : SI=str, DI=pat -> AX=pos (0-base) ou -1 ---- }
   EmitRaw('_PRRT_INDEX PROC NEAR');
   EmitRaw('        PUSH  BP');
   EmitRaw('        MOV   BP, SP');
@@ -1354,7 +1044,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_INDEX ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_RINDEX : SI=str, DI=pat -> AX=derniere pos ou -1 ---- }
+  { ---- _PRRT_RINDEX : SI=str, DI=pat -> AX=derniere pos ou -1 ---- }
   EmitRaw('_PRRT_RINDEX PROC NEAR');
   EmitRaw('        PUSH  BP');
   EmitRaw('        MOV   BP, SP');
@@ -1402,7 +1092,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_RINDEX ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_SUBSTR : SI=str, BX=off, CX=len, DI=dst -> copy ---- }
+  { ---- _PRRT_SUBSTR : SI=str, BX=off, CX=len, DI=dst -> copy ---- }
   EmitRaw('_PRRT_SUBSTR PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  DI');
@@ -1441,7 +1131,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_SUBSTR ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_HEX2INT : SI=str hex -> AX ---- }
+  { ---- _PRRT_HEX2INT : SI=str hex -> AX ---- }
   EmitRaw('_PRRT_HEX2INT PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  BX');
@@ -1496,7 +1186,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_HEX2INT ENDP');
   EmitBlankLine;
-  { ---- TODO 20 : _PRRT_OCT2INT : SI=str octal -> AX ---- }
+  { ---- _PRRT_OCT2INT : SI=str octal -> AX ---- }
   EmitRaw('_PRRT_OCT2INT PROC NEAR');
   EmitRaw('        PUSH  SI');
   EmitRaw('        PUSH  BX');
@@ -1522,7 +1212,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_OCT2INT ENDP');
   EmitBlankLine;
-  { TODO 23 : _PRRT_READLINE - lire une ligne depuis un handle DOS }
+  { _PRRT_READLINE - lire une ligne depuis un handle DOS }
   { Entree : BX=handle                                             }
   { Sortie : AX=OFFSET _PRRT_FHBUF (ptr ligne null-terminee)      }
   {          AX=0 si EOF avant de lire quoi que ce soit            }
@@ -1578,7 +1268,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_READLINE ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_STRLEN - longueur d''une chaine C                }
+  { _PRRT_STRLEN - longueur d''une chaine C                }
   { Entree : SI=ptr chaine null-terminee                             }
   { Sortie : AX=longueur, CX=longueur                               }
   EmitRaw('_PRRT_STRLEN PROC NEAR');
@@ -1598,7 +1288,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_STRLEN ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_PRINT - ecrire une chaine sur un handle DOS     }
+  { _PRRT_PRINT - ecrire une chaine sur un handle DOS     }
   { Entree : BX=handle, SI=msg, CX=longueur                         }
   { Appel DOS : AH=40h BX=handle CX=nb_octets DS:DX=buf             }
   EmitRaw('_PRRT_PRINT PROC NEAR');
@@ -1612,7 +1302,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_PRINT ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_PRINTLN - ecrire CR+LF sur un handle DOS        }
+  { _PRRT_PRINTLN - ecrire CR+LF sur un handle DOS        }
   { Entree : BX=handle                                               }
   If DataFindByLabel('_PRRT_CRLF') < 0 Then
     DataAdd('_PRRT_CRLF', DK_STR, 0, #13#10);
@@ -1633,7 +1323,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_PRINTLN ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_ITOA - convertir entier signe en chaine ASCII   }
+  { _PRRT_ITOA - convertir entier signe en chaine ASCII   }
   { Entree : AX=entier, DI=buffer de destination                     }
   { Sortie : DI inchange (pointe debut buffer), null-termine         }
   EmitRaw('_PRRT_ITOA PROC NEAR');
@@ -1676,7 +1366,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_ITOA ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_CONCAT - strcat(DI, SI) : ajouter SI a la fin  }
+  { _PRRT_CONCAT - strcat(DI, SI) : ajouter SI a la fin  }
   { Entree : DI=dst (chaine C), SI=src (chaine C)                   }
   EmitRaw('_PRRT_CONCAT PROC NEAR');
   EmitRaw('        PUSH  AX');
@@ -1703,7 +1393,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_CONCAT ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_STRREPEAT - repeter src n fois dans dst         }
+  { _PRRT_STRREPEAT - repeter src n fois dans dst         }
   { Entree : DI=dst, SI=src, CX=n  (CX=0 -> chaine vide)            }
   EmitRaw('_PRRT_STRREPEAT PROC NEAR');
   EmitRaw('        PUSH  BP');
@@ -1740,7 +1430,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_STRREPEAT ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_PUSH - pousser une valeur dans un tableau       }
+  { _PRRT_PUSH - pousser une valeur dans un tableau       }
   { Entree : SI=ptr word count, AX=valeur                            }
   { Disposition : [SI]=count, [SI+2]=elem[0], [SI+4]=elem[1], ...   }
   EmitRaw('_PRRT_PUSH PROC NEAR');
@@ -1758,7 +1448,7 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_PUSH ENDP');
   EmitBlankLine;
-  { TODO 24 : _PRRT_PANIC - afficher msg + terminer code 1           }
+  { _PRRT_PANIC - afficher msg + terminer code 1           }
   { Entree : SI=ptr chaine d''erreur                                  }
   EmitRaw('_PRRT_PANIC PROC NEAR');
   EmitRaw('        PUSH  DX');
@@ -1775,7 +1465,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - ParseSubDecl : declare et compile une sous-routine
+  ParseSubDecl : declare et compile une sous-routine
   Supporte : sub nom BLOC et sub anonyme dans expression
   Convention : push gauche->droite, callee fait PUSH BP/MOV BP,SP
   var_k depuis @_ = WORD PTR [BP + 4 + (N-1-k)*2]
@@ -1830,10 +1520,10 @@ Begin
   { Sauter le corps de la sous-routine a l''execution }
   EmitInstr('JMP', LblEnd);
   EmitLabel(PR_FN_PFX + SubName);
-  { TODO 18 - Prologue cdecl 16 bits }
+  { Prologue cdecl 16 bits }
   EmitInstr1('PUSH BP');
   EmitInstr('MOV', 'BP, SP');
-  { TODO 18 - Sauvegarder registres appel (cdecl : SI et DI preserves) }
+  { Sauvegarder registres appel (cdecl : SI et DI preserves) }
   EmitInstr1('PUSH SI');
   EmitInstr1('PUSH DI');
   { Sauver le contexte du compilateur }
@@ -1842,7 +1532,7 @@ Begin
   SaveRetLbl := CurFnRetLbl;
   SaveFnName := CurFnName;
   SaveArgSh  := CurArgShiftIdx;
-  { TODO 18 - CurFrameSize demarre a 4 (SI+DI deja pousses, 2 octets chacun) }
+  { CurFrameSize demarre a 4 (SI+DI deja pousses, 2 octets chacun) }
   CurFrameSize   := 4;
   CurFnDepth     := CurFnDepth + 1;
   CurFnRetLbl    := LblRet;
@@ -1851,7 +1541,7 @@ Begin
   SymEnterScope;
   ParseBlock;
   SymLeaveScope;
-  { TODO 18 - Epilogue : restaurer SP, DI, SI puis BP avant RET }
+  { Epilogue : restaurer SP, DI, SI puis BP avant RET }
   EmitLabel(LblRet);
   EmitInstr('MOV', 'SP, BP');   { liberer les locaux }
   EmitInstr('SUB', 'SP, 4');    { pointer sur zone DI puis SI }
@@ -1872,7 +1562,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 21 - PACKAGES ET MODULES (basique)
+  PAQUETS ET MODULES (simple)
   ============================================================ }
 
 { ---- ParseUseStmt : use strict / warnings / constant / mod - }
@@ -1982,7 +1672,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 - I/O FICHIERS (basique)
+  ENTREES/SORTIES FICHIERS (simple)
   ParseOpenStmt  : open(my $fh, '<'|'>'|'>>', 'fichier')
   ParseCloseStmt : close($fh)
   ============================================================ }
@@ -2184,25 +1874,24 @@ Begin
         ParserAdvance;
       Exit;
     End;
-    { TODO 21 : use strict / warnings / constant / module }
+    { use strict / warnings / constant / module }
     If KW = 'use' Then
     Begin
       ParseUseStmt;
       Exit;
     End;
-    { TODO 23 : open(my $fh, mode, 'fichier') }
-    If KW = 'open' Then
-    Begin
+    { open(my $fh, mode, 'fichier') }
+    If KW = 'open' Then Begin
       ParseOpenStmt;
       Exit;
     End;
-    { TODO 23 : close($fh) }
+    { close($fh) }
     If KW = 'close' Then
     Begin
       ParseCloseStmt;
       Exit;
     End;
-    { TODO 21 : package NomModule; -> changer le namespace courant }
+    { paquet NomModule; -> changer le namespace courant }
     If KW = 'package' Then
     Begin
       ParserAdvance;   { consommer 'package' }
@@ -2215,7 +1904,7 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
       Exit;
     End;
-    { TODO 21 : require 'fichier.pl' -> avertissement }
+    { require 'fichier.pl' -> avertissement }
     If KW = 'require' Then
     Begin
       ParserAdvance;   { consommer 'require' }
@@ -2235,17 +1924,15 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
       Exit;
     End;
-    { TODO 21 : BEGIN bloc -> emis inline au moment de la compilation }
-    If KW = 'BEGIN' Then
-    Begin
+    { BEGIN bloc -> emis inline au moment de la compilation }
+    If KW = 'BEGIN' Then Begin
       ParserAdvance;   { consommer 'BEGIN' }
       EmitComment('BEGIN: bloc execute au chargement (inline)');
       ParseBlock;
       Exit;
     End;
-    { TODO 21 : END bloc -> stub, le bloc est ignore }
-    If KW = 'END' Then
-    Begin
+    { END bloc -> stub, le bloc est ignore }
+    If KW = 'END' Then Begin
       ParserAdvance;   { consommer 'END' }
       EmitComment('END: bloc ignore (non execute)');
       { Sauter le bloc sans l''emettre : compter les accolades }
@@ -2260,22 +1947,20 @@ Begin
       End;
       Exit;
     End;
-    { TODO 12 : print / say / printf / warn / die }
+    { print / say / printf / warn / die }
     If (KW = 'print') Or (KW = 'say') Or (KW = 'printf') Or
        (KW = 'warn') Or (KW = 'die') Then
     Begin
       ParsePrintStmt;
       Exit;
     End;
-    { TODO 13 : if / unless }
-    If (KW = 'if') Or (KW = 'unless') Then
-    Begin
+    { if / unless }
+    If (KW = 'if') Or (KW = 'unless') Then Begin
       ParseIfStmt;
       Exit;
     End;
-    { TODO 14 : while / until / foreach / do }
-    If (KW = 'while') Or (KW = 'until') Then
-    Begin
+    { while / until / foreach / do }
+    If (KW = 'while') Or (KW = 'until') Then Begin
       ParseWhileStmt;
       Exit;
     End;
@@ -2303,7 +1988,7 @@ Begin
       ParseDoStmt;
       Exit;
     End;
-    { TODO 14 : last / next / redo }
+    { last / next / redo }
     If KW = 'last' Then
     Begin
       If LoopTop > 0 Then
@@ -2335,20 +2020,20 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
       Exit;
     End;
-    { TODO 15 : push / pop / shift / unshift / scalar sur @arr }
+    { push / pop / shift / unshift / scalar sur @arr }
     If (KW = 'push') Or (KW = 'pop') Or
        (KW = 'shift') Or (KW = 'unshift') Then
     Begin
       ParseArrBuiltin(True);
       Exit;
     End;
-    { TODO 17 : sub declaration }
+    { sub declaration }
     If KW = 'sub' Then
     Begin
       ParseSubDecl;
       Exit;
     End;
-    { TODO 17 : return [expr] }
+    { return [expr] }
     If KW = 'return' Then
     Begin
       ParserAdvance;  { consommer 'return' }
@@ -2445,7 +2130,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LEXEUR PERL
+  LEXEUR PERL
   ============================================================ }
 
 { ---- Primitives de bas niveau ----------------------------- }
@@ -2614,7 +2299,7 @@ Const
     'not',          'and',          'or',
     { Operateur de repetition }
     'x',
-    { TODO 23 : I/O fichiers }
+    { E/S fichiers }
     'open',         'close',        'readline',
     'eof'
   );
@@ -3243,7 +2928,7 @@ Begin
   SC := LexColNo;
   C  := LexCurChar;
 
-  { TODO 19 : literal regex attendu apres =~ ou !~ }
+  { Literal regex attendu apres =~ ou !~ }
   If LexExpectRegex Then
   Begin
     LexExpectRegex := False;
@@ -3338,7 +3023,7 @@ Begin
   { Backtick : commande systeme (non supporte) }
   If C = '`' Then Begin LexScanStrBacktick(T, SL, SC); Exit; End;
 
-  { TODO 23 : Diamond <$fh> : readline depuis un filehandle scalaire }
+  { Diamond <$fh> : readline depuis un filehandle scalaire }
   { Detecter avant le heredoc << et l''operateur < de LexScanOp      }
   If (C = '<') And (LexPeek = '$') Then
   Begin
@@ -3461,11 +3146,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - LITTERAUX ET CONSTANTES PERL
+  LITTERAUX ET CONSTANTES PERL
   ============================================================ }
 
 { ---- DataAdd / DataAddStr : table de donnees statiques ------- }
-{ Implementation complete (initialement ebauche TODO 03, stabilise TODO 08) }
+{ Implementation complete (initialement ebauche, stabilise) }
 Function DataAdd(Const ALbl : TString; AKind : TDataKind;
                  AInt : LongInt; Const AStr : TString) : Integer;
 Begin
@@ -3560,7 +3245,7 @@ End;
 { ---- LitEvalStr : TK_STRING -> EK_MEM pointant dans DataSeg }
 { La chaine est ajoutee au segment de donnees.                 }
 { Les interpolations encodees (#1nom#2, #3nom#4) seront        }
-{ resolues par EmitInterpolatedStr dans les TODOs suivants.    }
+{ resolues par EmitInterpolatedStr.                            }
 Procedure LitEvalStr(Const T : TToken; Var Res : TExprVal);
 Begin
   Res.Kind    := EK_MEM;
@@ -3582,7 +3267,7 @@ End;
 { Consomme les tokens jusqu''a la parenthese fermante.         }
 { Retourne le nombre d''elements lus (max MAX_PARAM).          }
 { Les elements sont deposes dans DataTab comme DK_STR.         }
-{ Res reçoit EK_NONE (les elements seront utilises par TODO 15) }
+{ Res re�oit EK_NONE }
 Function ParseQwList(Var Items : Array Of Integer;
                      Var ItemCount : Integer) : Boolean;
 Var
@@ -3680,7 +3365,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - OPERATEURS ET PRECEDENCE (PRATT PARSER)
+  OPERATEURS ET PRECEDENCE (PRATT PARSER)
   ============================================================ }
 
 { ---- BinOpPrec : precedence d''un operateur binaire -------- }
@@ -3717,7 +3402,7 @@ Begin
   If (Op = '==')  Or (Op = '!=')  Or (Op = '<=>') Or
      (Op = 'eq')  Or (Op = 'ne')  Or (Op = 'cmp') Or
      (Op = '~~')  Then Begin BinOpPrec := 10; Exit; End;
-  { TODO 19 : operateurs de matching =~ et !~ (meme precedence 10) }
+  { operateurs de matching =~ et !~ (meme precedence 10) }
   If (Op = '=~') Or (Op = '!~') Then Begin BinOpPrec := 10; Exit; End;
   { Prec 11 : < > <= >= lt gt le ge }
   If (Op = '<')  Or (Op = '>')  Or (Op = '<=') Or (Op = '>=') Or
@@ -3750,7 +3435,7 @@ Begin
 End;
 
 { ---- ExprLoad : charger une TExprVal dans le registre AX -- }
-{ Stub - implementation complete dans TODO 07 (emetteur ASM)   }
+{ Stub - implementation complete (emetteur ASM)                }
 { En mode stub, on marque simplement la valeur comme etant en  }
 { AX pour que le parseur puisse continuer a travailler.        }
 Procedure ExprLoad(Var E : TExprVal);
@@ -3798,7 +3483,7 @@ Begin
 End;
 
 { ---- ExprEmitBinOp : code ASM pour un operateur binaire ---- }
-{ Stub - implementation complete dans TODO 11 (expressions)    }
+{ Stub - implementation complete (expressions)                 }
 { Convention d''appel :                                         }
 {   Left  : operande gauche (ExprLoad l''a mis en AX)          }
 {   Right : operande droite (sera charge en BX ou CX)          }
@@ -3834,7 +3519,7 @@ Var
   LblB : TString;
   LblC : TString;
   SaveLeft : TExprVal;   { copie de Left pour affectations composees }
-  Idx  : Integer;        { TODO 24 : DataTab pour _PRRT_STRBUF }
+  Idx  : Integer;        { DataTab pour _PRRT_STRBUF }
 Begin
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_IDX_SCALAR;
@@ -3897,7 +3582,7 @@ Begin
     End
     Else If Op = '.=' Then
     Begin
-      { TODO 24 : concat-assign : STRBUF = Left + Right, AX = STRBUF }
+      { concat-assign : STRBUF = Left + Right, AX = STRBUF }
       If DataFindByLabel('_PRRT_STRBUF') < 0 Then
       Begin
         Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
@@ -3949,7 +3634,7 @@ Begin
   End;
   If Op = '**' Then
   Begin
-    { Puissance entiere : stub -> CALL _PRRT_POW (TODO 24) }
+    { Puissance entiere : stub -> CALL _PRRT_POW }
     EmitComment('** : CALL _PRRT_POW non implemente (stub)');
     EmitInstr('MOV', 'AX, 1');
     Exit;
@@ -3957,7 +3642,7 @@ Begin
   { ---- Concatenation et repetition ---- }
   If Op = '.' Then
   Begin
-    { TODO 24 : BX=Left string ptr, AX=Right string ptr -> concat -> STRBUF }
+    { BX=Left string ptr, AX=Right string ptr -> concat -> STRBUF }
     If DataFindByLabel('_PRRT_STRBUF') < 0 Then
     Begin
       Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
@@ -3976,7 +3661,7 @@ Begin
   End;
   If Op = 'x' Then
   Begin
-    { TODO 24 : BX=src string ptr, AX=count -> repete -> STRBUF }
+    { BX=src string ptr, AX=count -> repete -> STRBUF }
     If DataFindByLabel('_PRRT_STRBUF') < 0 Then
     Begin
       Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
@@ -4026,7 +3711,7 @@ Begin
   If (Op = 'eq') Or (Op = 'ne') Or (Op = 'lt') Or (Op = 'le') Or
      (Op = 'gt') Or (Op = 'ge') Or (Op = 'cmp') Then
   Begin
-    EmitComment(Op + ' : CALL _PRRT_STRCMP (TODO 24)');
+    EmitComment(Op + ' : CALL _PRRT_STRCMP');
     EmitInstr('XOR', 'AX, AX');
     Exit;
   End;
@@ -4084,7 +3769,7 @@ Begin
   { ---- Plage .. et ... : stub ---- }
   If (Op = '..') Or (Op = '...') Then
   Begin
-    EmitComment(Op + ' : plage, stub TODO 14');
+    EmitComment(Op + ' : plage, stub');
     EmitInstr('XOR', 'AX, AX');
     Exit;
   End;
@@ -4092,7 +3777,7 @@ Begin
   EmitComment('ExprEmitBinOp : operateur non gere : ' + Op);
 End;
 
-{ ---- ParsePrimary : expression primaire (atome) - TODO 10 -- }
+{ ---- ParsePrimary : expression primaire (atome) -- }
 { Unaires : -  !  ~  not  pre++ pre--  \(ref)                  }
 { Parens, litteraux, $var, @arr/%hash scalaire, func(), &sub() }
 { defined($v), ref($v), mots-cles builtins a 1 arg             }
@@ -4103,7 +3788,7 @@ Var
   Idx     : Integer;
   NStr    : TString;
   S       : TString;
-  NCStr   : TString;   { TODO 17 : taille nettoyage pile apres CALL }
+  NCStr   : TString;   { taille nettoyage pile apres CALL }
   HKIdx   : Integer;   { indice entree HashKeyTab pour hash }
   SlotIdx : Integer;   { slot 0..MAX_HASH_PAIRS-1           }
 Begin
@@ -4141,11 +3826,11 @@ Begin
       Exit;
     End;
     { \ (reference) : LEA si lvalue memoire, sinon adresse OFFSET }
-    { TODO 22 : \@arr, \%hash speciaux (avant ParsePrimary recursif) }
+    { \@arr, \%hash speciaux (avant ParsePrimary recursif) }
     If Op = '\' Then
     Begin
       ParserAdvance;
-      { \@arr : retourner l''adresse du tableau }  
+      { \@arr : retourner l''adresse du tableau }
       If CurToken.Kind = TK_ARRAY_SIG Then
       Begin
         NStr := CurToken.Val;
@@ -4225,7 +3910,7 @@ Begin
     Res.ImmVal := 0; Res.Offset := 0;
     Exit;
   End;
-  { ---- ref($v) : retourne chaine type ou 0 (TODO 22) ---- }
+  { ---- ref($v) : retourne chaine type ou 0 ---- }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ref') Then
   Begin
     ParserAdvance;
@@ -4269,11 +3954,11 @@ Begin
     Res.ImmVal := 0; Res.Offset := 0;
     Exit;
   End;
-  { ---- Builtins : simples et multi-args (TODO 20) ---- }
+  { ---- Builtins : simples et multi-args ---- }
   If CurToken.Kind = TK_KEYWORD Then
   Begin
     NStr := CurToken.Val;
-    { TODO 20 : index(s, sub [,pos]) -> _PRRT_INDEX -> AX(-1 si absent) }
+    { index(s, sub [,pos]) -> _PRRT_INDEX -> AX(-1 si absent) }
     If NStr = 'index' Then
     Begin
       ParserAdvance;
@@ -4292,7 +3977,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 20 : rindex(s, sub [,pos]) -> _PRRT_RINDEX -> AX (derniere occ) }
+    { rindex(s, sub [,pos]) -> _PRRT_RINDEX -> AX (derniere occ) }
     If NStr = 'rindex' Then
     Begin
       ParserAdvance;
@@ -4311,7 +3996,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 20 : substr(s, off [,len]) -> _PRRT_SUBSTR -> AX=ptr buf }
+    { substr(s, off [,len]) -> _PRRT_SUBSTR -> AX=ptr buf }
     If NStr = 'substr' Then
     Begin
       ParserAdvance;
@@ -4341,10 +4026,10 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 20 : join(sep, list) -> stub AX=0 }
+    { join(sep, list) -> stub AX=0 }
     If NStr = 'join' Then
     Begin
-      EmitComment('join : stub AX=0 (TODO 24)');
+      EmitComment('join : stub AX=0');
       ParserAdvance;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
       ParseExpr(Sub);
@@ -4356,10 +4041,10 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 20 : split(pat, str) -> stub AX=0 }
+    { split(pat, str) -> stub AX=0 }
     If NStr = 'split' Then
     Begin
-      EmitComment('split : stub AX=0 (TODO 24)');
+      EmitComment('split : stub AX=0');
       ParserAdvance;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
       While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
@@ -4371,7 +4056,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 20 : builtins a un argument avec dispatch real }
+    { builtins a un argument avec dispatch real }
     If (NStr = 'chomp') Or (NStr = 'chop')    Or (NStr = 'chr')     Or
        (NStr = 'ord')   Or (NStr = 'length')  Or (NStr = 'lc')      Or
        (NStr = 'uc')    Or (NStr = 'lcfirst') Or (NStr = 'ucfirst') Or
@@ -4449,7 +4134,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 16 : exists et delete sur hash }
+    { exists et delete sur hash }
     If (NStr = 'exists') Or (NStr = 'delete') Then
     Begin
       Op := NStr;   { sauver 'exists'/'delete' avant de reutiliser NStr }
@@ -4508,7 +4193,7 @@ Begin
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
       Exit;
     End;
-    { TODO 15 : pop / shift en contexte expression }
+    { pop / shift en contexte expression }
     If (NStr = 'pop') Or (NStr = 'shift') Then
     Begin
       ParseArrBuiltin(False);
@@ -4516,7 +4201,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 15 : scalar(@arr) en contexte expression }
+    { scalar(@arr) en contexte expression }
     If NStr = 'scalar' Then
     Begin
       ParserAdvance;  { consommer 'scalar' }
@@ -4538,7 +4223,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 17 : wantarray() -> 0 (contexte toujours scalaire dans impl.) }
+    { wantarray() -> 0 (contexte toujours scalaire dans impl.) }
     If NStr = 'wantarray' Then
     Begin
       ParserAdvance;  { consommer 'wantarray' }
@@ -4549,7 +4234,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 17 : sous-routine anonyme en contexte expression }
+    { sous-routine anonyme en contexte expression }
     If NStr = 'sub' Then
     Begin
       ParseSubDecl;
@@ -4557,7 +4242,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 23 : readline($fh) -> CALL _PRRT_READLINE -> AX=ptr ligne }
+    { readline($fh) -> CALL _PRRT_READLINE -> AX=ptr ligne }
     If NStr = 'readline' Then
     Begin
       ParserAdvance;  { consommer 'readline' }
@@ -4585,7 +4270,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 23 : eof($fh) -> AX=1 si fin de fichier, 0 sinon }
+    { eof($fh) -> AX=1 si fin de fichier, 0 sinon }
     If NStr = 'eof' Then
     Begin
       ParserAdvance;  { consommer 'eof' }
@@ -4673,7 +4358,7 @@ Begin
     ParsePostfixOps(Res);
     Exit;
   End;
-  { ---- TODO 23 : TK_FILEHANDLE <$fh> : readline depuis filehandle ---- }
+  { ---- TK_FILEHANDLE <$fh> : readline depuis filehandle ---- }
   { STDOUT/STDERR/STDIN en contexte expression -> valeur nulle (pas readline) }
   If CurToken.Kind = TK_FILEHANDLE Then
   Begin
@@ -4721,7 +4406,7 @@ Begin
   If CurToken.Kind = TK_SCALAR Then
   Begin
     NStr := CurToken.Val;
-    { TODO 19 : variables de capture $1 et $2 -> _PRCAP_1, _PRCAP_2 }
+    { variables de capture $1 et $2 -> _PRCAP_1, _PRCAP_2 }
     If (NStr = '1') Or (NStr = '2') Then
     Begin
       ParserAdvance;
@@ -4758,7 +4443,7 @@ Begin
         Exit;
       End;
     End;
-    { TODO 22 : $$ref et deref-brace -> dereferencement scalaire (NStr vide) }
+    { $$ref et deref-brace -> dereferencement scalaire (NStr vide) }
     If NStr = '' Then
     Begin
       If CurToken.Kind = TK_SCALAR Then
@@ -4820,7 +4505,7 @@ Begin
   Begin
     If CurToken.Kind = TK_ARRAY_SIG Then
     Begin
-      { TODO 22 : @$ref -> dereference reference tableau (sigil vide) }
+      { @$ref -> dereference reference tableau (sigil vide) }
       If CurToken.Val = '' Then
       Begin
         ParserAdvance;  { consommer @-sigil vide }
@@ -4883,7 +4568,7 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
-    { TODO 21 : constante use constant NOM => val }
+    { constante use constant NOM => val }
     Idx := SymFindCat(NStr, SC_CONST);
     If Idx >= 0 Then
     Begin
@@ -4932,7 +4617,7 @@ Begin
 End;
 
 { ---- ParseRegexOp : generer le code pour $str =~ /pat/ ------ }
-{ TODO 19                                                          }
+{                                                                 }
 { CurToken doit etre TK_REGEXP (Val = kind+Chr(1)+pat+Chr(1)+repl)}
 { Left = expression gauche (la chaine sujet).                      }
 { Op = '=~' ou '!~'.                                               }
@@ -5048,7 +4733,7 @@ Begin
   End;
 End;
 
-{ ---- ParseExprPrec : coeur du parseur Pratt - TODO 11 ------ }
+{ ---- ParseExprPrec : coeur du parseur Pratt  ------ }
 { Convention BX=Left, AX=Right pour les ops non-affectation.    }
 { Court-circuit inline pour && || //.                           }
 { Ternaire ? : avec labels _PRL_N.                              }
@@ -5100,10 +4785,10 @@ Begin
     If Not CurTokIsInfixOp(Op) Then Break;
     Prec := BinOpPrec(Op);
     If Prec < MinPrec Then Break;
-    { TODO 19 : signaler avant avance si regex attendue apres =~ !~ }
+    { signaler avant avance si regex attendue apres =~ !~ }
     If (Op = '=~') Or (Op = '!~') Then LexExpectRegex := True;
     ParserAdvance;
-    { ---- TODO 19 : matching =~ et !~ -> ParseRegexOp ---- }
+    { ---- matching =~ et !~ -> ParseRegexOp ---- }
     If (Op = '=~') Or (Op = '!~') Then
     Begin
       ParseRegexOp(Op, Left, Res);
@@ -5206,7 +4891,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES
+  TABLE DES SYMBOLES
   ============================================================ }
 
 { ---- SymWarn / SymError : messages contextuels -----------  }
@@ -5463,7 +5148,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - SYSTEME DE TYPES ET CONTEXTE
+  SYSTEME DE TYPES ET CONTEXTE
   ============================================================ }
 
 { ---- TypeSizeof : taille en octets d''un type --------------- }
@@ -5572,7 +5257,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  SEGMENT DE DONNEES ET STATIQUES
   ============================================================ }
 
 { ---- EmitDataStr : emettre une chaine DB dans le segment DATA }
@@ -5705,7 +5390,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  VARIABLES ET AFFECTATIONS
   ============================================================ }
 
 { ---- ExprMakeMem : construire EK_MEM pour un symbole ------- }
@@ -5798,16 +5483,16 @@ Var
   KeyLbl    : TString;
   SlotIdx   : Integer;
   HKIdx     : Integer;   { indice entrée dans HashKeyTab }
-  ParamNames: Array[0..MAX_PARAM - 1] Of TString;  { TODO 17 }
-  I         : Integer;   { TODO 17 : index de boucle }
-  Idx2      : Integer;   { TODO 17 : second indice SymTab }
+  ParamNames: Array[0..MAX_PARAM - 1] Of TString;
+  I         : Integer;   { index de boucle }
+  Idx2      : Integer;   { second indice SymTab }
 Begin
   Kw    := CurToken.Val;
   IsMy  := Kw = 'my';
   IsOur := Kw = 'our';
   IsLoc := Kw = 'local';
   ParserAdvance;   { consommer 'my'/'our'/'local' }
-  { TODO 17 : my ($a, $b, ...) = @_ : liste de parametres }
+  { my ($a, $b, ...) = @_ : liste de parametres }
   If (Kw = 'my') And (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
     ParserAdvance;  { consommer '(' }
@@ -6030,7 +5715,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  EXPRESSIONS PRIMAIRES
   ============================================================ }
 
 { ---- ParseCallArgs : evaluer + empiler les arguments -------- }
@@ -6127,7 +5812,7 @@ Procedure ParsePostfixOps(Var Res : TExprVal);
 Var
   ArgCnt : Integer;
   S      : TString;
-  Sub    : TExprVal;   { TODO 22 : expression d''index pour ->[] }
+  Sub    : TExprVal;   { expression d''index pour ->[] }
 Begin
   Repeat
     If CurToken.Kind = TK_OP Then
@@ -6136,7 +5821,7 @@ Begin
       Begin ParserAdvance; EmitIncrDecr(Res, True,  False, Res); Continue; End;
       If CurToken.Val = '--' Then
       Begin ParserAdvance; EmitIncrDecr(Res, False, False, Res); Continue; End;
-      { TODO 17/22 : operateur fleche -> }
+      { operateur fleche -> }
       If CurToken.Val = '->' Then
       Begin
         ParserAdvance;  { consommer '->' }
@@ -6154,7 +5839,7 @@ Begin
           Res.ImmVal := 0; Res.Offset := 0;
           Continue;
         End;
-        { TODO 22 : $ref->[$i] : acces element tableau reference }
+        { $ref->[$i] : acces element tableau reference }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
         Begin
           ExprLoad(Res);               { AX = ptr vers tableau }
@@ -6171,7 +5856,7 @@ Begin
           Res.ImmVal := 0; Res.Offset := 0;
           Continue;
         End;
-        { TODO 22 : ref-fleche-cle : acces element hash reference (stub) }
+        { ref-fleche-cle : acces element hash reference (stub) }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
         Begin
           ParserAdvance;  { consommer '{' }
@@ -6192,7 +5877,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - PRINT / SAY / PRINTF / WARN / DIE
+  PRINT / SAY / PRINTF / WARN / DIE
   ============================================================ }
 
 { ---- EmitPrintVal : emet AX ou chaine statique sur handle -- }
@@ -6265,7 +5950,7 @@ Begin
     Else If CurToken.Val = 'STDIN'  Then Begin BXval := '0'; ParserAdvance; End;
     { Sinon : identifiant inconnu -> traiter comme premiere expression }
   End;
-  { TODO 23 : print $fh, LIST -> filehandle scalaire (SC_FILEHANDLE uniquement) }
+  { print $fh, LIST -> filehandle scalaire (SC_FILEHANDLE uniquement) }
   If CurToken.Kind = TK_SCALAR Then
   Begin
     FhIdx := SymFindCat(CurToken.Val, SC_FILEHANDLE);
@@ -6281,7 +5966,7 @@ Begin
   End;
   { printf : note dans le commentaire ASM }
   If KW = 'printf' Then
-    EmitComment('printf : format interprete simple (TODO 20)');
+    EmitComment('printf : format interprete simple');
   { Evaluer et imprimer chaque argument de la liste }
   If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
          (CurToken.Kind <> TK_EOF) Then
@@ -6315,11 +6000,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - IF / ELSIF / ELSE / UNLESS + MODIFICATEURS DE STATEMENT
+  IF / ELSIF / ELSE / UNLESS + MODIFICATEURS DE STATEMENT
   ============================================================ }
 
 { ---- ParseBlock : parse un bloc de stmts avec portee lexicale ---- }
-{ TODO 18 : restaurer SP a la fin du bloc si des locaux ont ete alloues }
+{ restaurer SP a la fin du bloc si des locaux ont ete alloues }
 Procedure ParseBlock;
 Var
   SaveFrameSz : Integer;   { taille cadre avant ce bloc }
@@ -6340,7 +6025,7 @@ Begin
             (CurToken.Kind <> TK_EOF) Do
     ParseStmt;
   SymLeaveScope;
-  { TODO 18 : liberer les locaux alloues dans ce bloc (sauf dans l''epilogue sub) }
+  { liberer les locaux alloues dans ce bloc (sauf dans l''epilogue sub) }
   If (CurFnDepth > 0) And (CurFrameSize > SaveFrameSz) Then
   Begin
     Delta := CurFrameSize - SaveFrameSz;
@@ -6408,7 +6093,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - BOUCLES : while / until / for / foreach / do
+  BOUCLES : while / until / for / foreach / do
   ============================================================ }
 
 { ---- LoopPush / LoopPop : gestion de la pile de boucles --- }
@@ -6426,8 +6111,7 @@ Begin
   Inc(LoopTop);
 End;
 
-Procedure LoopPop;
-Begin
+Procedure LoopPop;Begin
   If LoopTop > 0 Then Dec(LoopTop);
 End;
 
@@ -6669,7 +6353,7 @@ Var
   IsUntil : Boolean;
 Begin
   ParserAdvance;  { consommer 'do' }
-  { TODO 21 : do 'fichier.pl' -> non pris en charge }
+  { do 'fichier.pl' -> non pris en charge }
   If CurToken.Kind = TK_STRING Then
   Begin
     WriteLn('PERL86:', CurToken.Line, ': Avert: do ''',
@@ -6720,7 +6404,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - TABLEAUX @arr
+  TABLEAUX @arr
   ============================================================ }
 
 { ---- ParseArrElemAccess : $arr[idx] -> TExprVal lvalue ----- }
@@ -6863,7 +6547,7 @@ Begin
       EmitInstr('POP', 'AX');
     End Else If CurFnDepth > 0 Then
     Begin
-      { TODO 17 : shift sans @arr explicite dans un sub -> shift @_ }
+      { shift sans @arr explicite dans un sub -> shift @_ }
       { Convention push gauche->droite : arg0=[BP+4+(N-1)*2], arg1=[BP+4+(N-2)*2] }
       { CurArgShiftIdx 0 = dernier argument pousse = [BP+4] }
       Str(4 + CurArgShiftIdx * 2, OffS);
@@ -6991,7 +6675,7 @@ Begin
   End Else
   Begin
     { -- Cle variable : stub -> retourner 0 -- }
-    EmitComment('$h var-key : runtime non implemente (stub TODO 16)');
+    EmitComment('$h var-key : runtime non implemente (stub)');
     EmitInstr('MOV', 'AX, 0');
     If (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> '}') Then
     Begin
@@ -7009,7 +6693,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - EMETTEUR DE CODE ASM
+  EMETTEUR DE CODE ASM
   ============================================================ }
 
 { ---- LabelGen : generateur de labels ASM uniques ---------- }
@@ -7064,77 +6748,75 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - RUN  [IMPLEMENTE]
+  RUN  [IMPLEMENTE]
   Pipeline complet : TypeInit/SymInit/EmitOpen -> LexInit/ParseStmt ->
   LexClose -> EmitClose (EmitRuntime + EmitDataSeg + END _PRF_main)
   ============================================================ }
-Procedure Run;
-Begin
-  TypeInit;
-  SymInit;
-  EmitOpen;
-  If ErrorCount > 0 Then Exit;
+Procedure Run;Begin
+ TypeInit;
+ SymInit;
+ EmitOpen;
+ If ErrorCount > 0 Then Exit;
   { Lexeur + analyse syntaxique }
-  LexInit;
-  ParserAdvance;
-  If Opts.DebugTok Then
-  Begin
+ LexInit;
+ ParserAdvance;
+ If Opts.DebugTok Then Begin
     { Mode debug : afficher tous les tokens sans emettre de code }
-    While CurToken.Kind <> TK_EOF Do
-      ParserAdvance;
-  End
+  While CurToken.Kind <> TK_EOF Do ParserAdvance;
+ End
   Else
-  Begin
-    { Analyse normale : stub - ParseStmt sera complete dans les TODOs suivants }
-    While CurToken.Kind <> TK_EOF Do
-      ParseStmt;
-  End;
-  LexClose;
-  EmitClose;
-  If Opts.Verbose Then
-    WriteLn('PERL86: ', TotalLines, ' ligne(s) lues depuis ', Opts.SrcFile);
+ Begin
+   { Analyse normale : stub }
+  While CurToken.Kind <> TK_EOF Do ParseStmt;
+ End;
+ LexClose;
+ EmitClose;
+ If Opts.Verbose Then WriteLn('PERL86: ', TotalLines, ' ligne(s) lues depuis ', Opts.SrcFile);
 End;
 
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
-  ErrorCount   := 0;
-  WarnCount    := 0;
-  TotalLines   := 0;
-  TotalSyms    := 0;
-  LexOpened    := False;
-  OutFOpen     := False;
-  SymCount     := 0;
-  ScopeTop     := 0;
-  CurScope     := 0;
-  LabelSeq     := 0;
-  TypeCount    := 0;
-  DataCount    := 0;
-  CurFrameSize := 0;
-  CurFnDepth   := 0;
-  LoopTop      := 0;
-  GKwConsumed  := False;
-  CurFnRetLbl  := '';
-  CurFnName    := '';
-  CurPackage   := 'main';
-  RuntimeEmitted := False;
-  IncludeCount := 0;
-  { TODO 19 : expressions regulieres }
-  LexExpectRegex := False;
-  RegexSeq       := 0;
-  GExprDummy.Kind    := EK_NONE;
-  GExprDummy.ImmVal  := 0;
-  GExprDummy.TypeIdx := TY_UNKNOWN;
-  GExprDummy.Offset  := 0;
-  InitOptions;
-  ParseArgs;
-  ShowBanner;
-  Run;
-  Cleanup;
-  If Opts.Verbose Then ShowStats;
-  If ErrorCount > 0 Then
-    Halt(EXIT_ERROR)
-  Else
-    Halt(EXIT_OK);
-End.
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
+ ErrorCount   := 0;
+ WarnCount    := 0;
+ TotalLines   := 0;
+ TotalSyms    := 0;
+ LexOpened    := False;
+ OutFOpen     := False;
+ SymCount     := 0;
+ ScopeTop     := 0;
+ CurScope     := 0;
+ LabelSeq     := 0;
+ TypeCount    := 0;
+ DataCount    := 0;
+ CurFrameSize := 0;
+ CurFnDepth   := 0;
+ LoopTop      := 0;
+ GKwConsumed  := False;
+ CurFnRetLbl  := '';
+ CurFnName    := '';
+ CurPackage   := 'main';
+ RuntimeEmitted := False;
+ IncludeCount := 0;
+  { Expressions regulieres }
+ LexExpectRegex := False;
+ RegexSeq       := 0;
+ GExprDummy.Kind    := EK_NONE;
+ GExprDummy.ImmVal  := 0;
+ GExprDummy.TypeIdx := TY_UNKNOWN;
+ GExprDummy.Offset  := 0;
+ InitOptions;
+ ParseArgs;
+ ShowBanner;
+ Run;
+ Cleanup;
+ If Opts.Verbose Then ShowStats;
+ If ErrorCount > 0 Then Halt(EXIT_ERROR)
+                   Else Halt(EXIT_OK);
+END.
