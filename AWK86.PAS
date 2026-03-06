@@ -3954,7 +3954,7 @@ Begin
   EmitInstr('CMP', 'WORD PTR [' + FlagLbl + '], 0');
   EmitInstr('JNZ', LblActive);
   { Pas encore active : tester pat1 }
-  EmitInstr('LEA', 'SI, [_AW_RECBUF]');
+  EmitInstr('LEA', 'SI, _AW_RECBUF');
   EmitInstr('LEA', 'DI, ' + Pat1Lbl);
   GenMatchCall;
   EmitInstr('TEST', 'AX, AX');
@@ -3964,7 +3964,7 @@ Begin
   EmitInstr('JMP', LblEnd);
   { Active : tester pat2 pour desactiver }
   EmitLabel(LblActive);
-  EmitInstr('LEA', 'SI, [_AW_RECBUF]');
+  EmitInstr('LEA', 'SI, _AW_RECBUF');
   EmitInstr('LEA', 'DI, ' + Pat2Lbl);
   GenMatchCall;
   EmitInstr('TEST', 'AX, AX');
@@ -4023,7 +4023,7 @@ Begin
     Begin
       { Pattern regexp : tester $0 ~ /pat/ }
       LblSkip := NewLabel('RSKIP');
-      EmitInstr('LEA', 'SI, [_AW_RECBUF]');
+      EmitInstr('LEA', 'SI, _AW_RECBUF');
       EmitInstr('LEA', 'DI, ' + RulePatterns[I]);
       GenMatchCall;
       EmitInstr('TEST', 'AX, AX');
@@ -4234,6 +4234,7 @@ Var
   PrevLine : Integer;
   PrevCol  : Integer;
   RuleLbl  : TString;
+  SkipLbl  : TString;
   PatIdx   : Integer;
 Begin
   TypeInit;
@@ -4321,8 +4322,8 @@ Begin
         RuleLabels[RuleCount]   := RuleLbl;
         RulePatterns[RuleCount] := '';
         Inc(RuleCount);
-        RuleLbl := NewLabel('RSKP');
-        EmitInstr('JMP', RuleLbl);
+        SkipLbl := NewLabel('RSKP');
+        EmitInstr('JMP', SkipLbl);
         EmitLabel(RuleLabels[RuleCount - 1]);
         EmitInstr('PUSH', 'BP');
         EmitInstr('MOV', 'BP, SP');
@@ -4330,7 +4331,7 @@ Begin
         EmitInstr('MOV', 'SP, BP');
         EmitInstr('POP', 'BP');
         EmitInstr('RET', '');
-        EmitLabel(RuleLbl);
+        EmitLabel(SkipLbl);
       End
       Else
       Begin
@@ -4354,8 +4355,8 @@ Begin
           RuleLabels[RuleCount]   := RuleLbl;
           RulePatterns[RuleCount] := DataTab[PatIdx].LblName;
           Inc(RuleCount);
-          RuleLbl := NewLabel('RSKP');
-          EmitInstr('JMP', RuleLbl);
+          SkipLbl := NewLabel('RSKP');
+          EmitInstr('JMP', SkipLbl);
           EmitLabel(RuleLabels[RuleCount - 1]);
           EmitInstr('PUSH', 'BP');
           EmitInstr('MOV', 'BP, SP');
@@ -4363,11 +4364,11 @@ Begin
           EmitInstr('MOV', 'SP, BP');
           EmitInstr('POP', 'BP');
           EmitInstr('RET', '');
-          EmitLabel(RuleLbl);
+          EmitLabel(SkipLbl);
         End
         Else
         Begin
-          CompileError('trop de regles');
+          CompileError('trop de regles (max=' + IntToStr(MAX_RULES) + ')');
           ParseBlock;
         End;
       End;
