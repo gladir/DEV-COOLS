@@ -159,7 +159,7 @@
              Optionnel : expr? (optional chaining) -> test nil + acces
              Nil-coalescing : expr ?? defaut -> valeur ou defaut si nil
 
-   TODO 11 - EXPRESSIONS BINAIRES
+   TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
              ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
              Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
              Modulo : IDIV -> resultat dans DX (reste) pour %
@@ -176,7 +176,7 @@
              Casting as : conversion de type (verification statique)
              Casting as? : conversion conditionnelle -> Optional
 
-   TODO 12 - ENTREES/SORTIES (print / readLine)
+   TODO 12 - ENTREES/SORTIES (print / readLine) [IMPLEMENTE]
              print(items..., separator, terminator) :
                print("Hello")      -> CALL _SWRT_PRINTSTR
                print(42)           -> CALL _SWRT_PRINTINT
@@ -192,7 +192,7 @@
                _SWRT_PRINTCRLF        : ecriture CR+LF
                _SWRT_READLINE(DI=buf) : INT 21h AH=0Ah -> chaine
 
-   TODO 13 - IF / ELSE IF / ELSE / GUARD / SWITCH
+   TODO 13 - IF / ELSE IF / ELSE / GUARD / SWITCH [IMPLEMENTE]
              ParseIfStmt : if cond { stmts } else if cond { stmts } else { stmts }
                Emission TEST AX,AX / JZ pour condition fausse
                Labels : _SWL_ELIF_N, _SWL_ELSE_N, _SWL_ENDIF_N
@@ -210,7 +210,7 @@
                Labels : _SWL_CASE_N, _SWL_CDEF_N, _SWL_CSEND_N
              if let / if var : optional binding -> test nil + unwrap
 
-   TODO 14 - BOUCLES : while / repeat-while / for-in / break / continue
+   TODO 14 - BOUCLES : while / repeat-while / for-in / break / continue [IMPLEMENTE]
              ParseWhileStmt : while cond { stmts }
                Labels : _SWL_WTEST_N, _SWL_WEND_N
              ParseRepeatWhileStmt : repeat { stmts } while cond
@@ -229,7 +229,7 @@
              Labeled statements : label: while/for -> break label / continue label
              LoopPush / LoopPop : pile de labels pour break/continue
 
-   TODO 15 - TABLEAUX (Array)
+   TODO 15 - TABLEAUX (Array) [IMPLEMENTE]
              var arr: [Int] = [1, 2, 3] : tableau litteral
                Taille connue a la compilation -> donnees dans DATA ou pile
              var arr = [Int]() : tableau vide (ptr + count = 0)
@@ -741,6 +741,17 @@ Procedure ParseAssignStmt(SIdx : Integer; Const Op : TString); Forward;
 Procedure ParseExprStmt; Forward;
 Procedure ParseCallArgs(Var ArgCount : Integer); Forward;
 Procedure ParsePostfix(Var Res : TExprVal); Forward;
+Procedure EmitBinOp(Const Op : TString; LeftTy, RightTy : Integer); Forward;
+Procedure ParsePrintStmt; Forward;
+Procedure ParseIfStmt; Forward;
+Procedure ParseGuardStmt; Forward;
+Procedure ParseSwitchStmt; Forward;
+Procedure ParseWhileStmt; Forward;
+Procedure ParseRepeatWhileStmt; Forward;
+Procedure ParseForInStmt; Forward;
+Procedure ParseBlock; Forward;
+Procedure LoopPush(Const BreakLbl, ContLbl : TString); Forward;
+Procedure LoopPop; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1786,7 +1797,33 @@ Begin
       Begin
         MemberName := CurToken.Val;
         ParserAdvance;
-        EmitComment('  .' + MemberName + ' (acces membre stub)');
+        { TODO 15 : membres de tableaux }
+        If MemberName = 'count' Then
+        Begin
+          { AX pointe sur le tableau, le premier mot = count }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'AX', '[SI]');
+          EmitComment('  .count');
+          Res.TypeIdx := TY_IDX_INT;
+        End
+        Else If MemberName = 'isEmpty' Then
+        Begin
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrAB('MOV', 'AX', '[SI]');
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrAB('MOV', 'AX', '0');
+          EmitInstrA('JNE', LabelGen);
+          EmitInstrAB('MOV', 'AX', '1');
+          EmitComment('  .isEmpty');
+          Res.TypeIdx := TY_IDX_BOOL;
+        End
+        Else If (MemberName = 'append') Or (MemberName = 'remove') Or
+                (MemberName = 'insert') Then
+        Begin
+          EmitComment('  .' + MemberName + '() (stub TODO 15)');
+        End
+        Else
+          EmitComment('  .' + MemberName + ' (acces membre)');
         Res.Kind   := EK_AX;
         Res.SymIdx := -1;
       End
@@ -1805,14 +1842,24 @@ Begin
       End;
     End
 
-    { Acces index : expr[i] }
+    { Acces index : expr[i] -> calcul offset }
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX');          { sauvegarder ptr tableau }
       ParserAdvance;  { consomme '[' }
       ParseExpr(IdxExpr);
+      ExprFlushToAX(IdxExpr);
+      { AX = index, [SP] = ptr tableau }
+      { Offset = 2 + index * 2 (premiere word = count) }
+      EmitInstrAB('SHL', 'AX', '1');     { AX = index * 2 }
+      EmitInstrAB('ADD', 'AX', '2');     { AX = offset (skip count) }
+      EmitInstr('POP    BX');            { BX = ptr tableau }
+      EmitInstrAB('ADD', 'BX', 'AX');   { BX = adresse element }
+      EmitInstrAB('MOV', 'AX', '[BX]'); { AX = valeur de l element }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
         ParserAdvance;
-      EmitComment('  [index] (acces tableau stub)');
+      EmitComment('  [index] acces tableau');
       Res.Kind   := EK_AX;
       Res.SymIdx := -1;
     End
@@ -1941,21 +1988,31 @@ Begin
       End
       Else If CurToken.Val = '[' Then
       Begin
-        { Array literal : [expr, expr, ...] }
+        { TODO 15 : Array literal : [expr, expr, ...] }
+        { Chaque element est evalue et PUSH sur la pile }
+        { puis on alloue un bloc DATA et on y copie }
         ParserAdvance;
+        Res.ImmVal := 0;  { compteur d elements }
         While (CurToken.Kind <> TK_EOF) And
               Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
         Begin
           ParseExpr(Res);
+          ExprFlushToAX(Res);
+          EmitInstrA('PUSH', 'AX');
+          Inc(Res.ImmVal);
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
             ParserAdvance;
         End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
           ParserAdvance;
+        EmitComment('  [array literal] ' + IntToStr(Res.ImmVal) + ' elements');
+        { Les elements sont sur la pile en ordre inverse }
+        { On nettoie la pile : ADD SP, N*2 }
+        If Res.ImmVal > 0 Then
+          EmitInstrAB('ADD', 'SP', IntToStr(Res.ImmVal * 2));
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_UNKNOWN;
         Res.SymIdx  := -1;
-        EmitComment('  [array literal] (stub)');
         ParsePostfix(Res);
       End
       Else
@@ -1996,7 +2053,21 @@ Begin
           Res.ImmVal := Not Res.ImmVal;
       End
       Else
+      Begin
+        { Emettre le code pour unaire sur expression non-constante }
+        ExprFlushToAX(Res);
+        If Op = '-' Then
+          EmitInstr('NEG    AX')
+        Else If Op = '!' Then
+        Begin
+          EmitInstrAB('XOR', 'AX', '1');
+          Res.TypeIdx := TY_IDX_BOOL;
+        End
+        Else If Op = '~' Then
+          EmitInstr('NOT    AX');
+        { Op = '+' : rien a faire }
         Res.Kind := EK_AX;
+      End;
       Exit;
     End;
   End;
@@ -2010,10 +2081,12 @@ End;
 
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
 Var
-  Op    : TString;
-  Prec  : Integer;
-  Right : TExprVal;
-  NextP : Integer;
+  Op      : TString;
+  Prec    : Integer;
+  Right   : TExprVal;
+  NextP   : Integer;
+  LblSkip : TString;
+  LblEnd  : TString;
 Begin
   ParseUnary(Res);
   Repeat
@@ -2032,11 +2105,90 @@ Begin
     End;
     If (Prec = 0) Or (Prec < MinPrec) Then Break;
     ParserAdvance;
+
+    { Court-circuit && : evaluer gauche, JZ vers fin }
+    If Op = '&&' Then
+    Begin
+      ExprFlushToAX(Res);
+      LblSkip := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblSkip);
+      ParseExprPrec(Prec + 1, Right);
+      ExprFlushToAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOL;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+    { Court-circuit || : evaluer gauche, JNZ vers fin }
+    If Op = '||' Then
+    Begin
+      ExprFlushToAX(Res);
+      LblSkip := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JNZ', LblSkip);
+      ParseExprPrec(Prec + 1, Right);
+      ExprFlushToAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOL;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+    { Ternaire ? a : b }
+    If Op = '?' Then
+    Begin
+      ExprFlushToAX(Res);
+      LblSkip := LabelGen;
+      LblEnd  := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JZ', LblSkip);
+      ParseExprPrec(1, Res);   { branche vraie }
+      ExprFlushToAX(Res);
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblSkip);
+      { consommer le ':' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      ParseExprPrec(1, Right);  { branche fausse }
+      ExprFlushToAX(Right);
+      EmitLabel(LblEnd);
+      Res.Kind   := EK_AX;
+      Res.SymIdx := -1;
+      Continue;
+    End;
+    { Nil-coalescing ?? }
+    If Op = '??' Then
+    Begin
+      ExprFlushToAX(Res);
+      LblSkip := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JNZ', LblSkip);
+      ParseExprPrec(Prec, Right);
+      ExprFlushToAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind   := EK_AX;
+      Res.SymIdx := -1;
+      Continue;
+    End;
+    { Casting as / as? }
+    If (Op = 'as') Or (Op = 'as?') Or (Op = 'as!') Or (Op = 'is') Then
+    Begin
+      { Consomme le nom de type, stub }
+      If CurToken.Kind = TK_IDENT Then
+        ParserAdvance;
+      EmitComment('  (' + Op + ' cast - stub)');
+      Res.Kind := EK_AX;
+      Continue;
+    End;
+
     If BinOpIsRight(Op) Then
       NextP := Prec
     Else
       NextP := Prec + 1;
     ParseExprPrec(NextP, Right);
+    { Constant folding pour les deux immediats }
     If (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM) Then
     Begin
       If Op = '+' Then
@@ -2105,7 +2257,18 @@ Begin
         Res.Kind := EK_AX;
     End
     Else
-      Res.Kind := EK_AX;
+    Begin
+      { Code emission pour operations non-constantes }
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX');
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstr('POP    AX');
+      EmitBinOp(Op, Res.TypeIdx, Right.TypeIdx);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TypeCoerceResult(Res.TypeIdx, Right.TypeIdx, Op);
+      Res.SymIdx  := -1;
+    End;
   Until False;
 End;
 
@@ -2723,6 +2886,11 @@ Begin
   EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
   { Buffer de travail pour concatenation de chaines }
   EmitRaw('_SWRT_STRBUF DB 512 DUP(0)');
+  { Constantes pour print(Bool) }
+  EmitRaw(SW_RT_PFX + 'S_TRUE  DB ''true'',0');
+  EmitRaw(SW_RT_PFX + 'S_FALSE DB ''false'',0');
+  { Buffer pour readLine }
+  EmitRaw(SW_RT_PFX + 'RLBUF DB 128 DUP(0)');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -2758,13 +2926,130 @@ Begin
   EmitRaw('_DATA   ENDS');
 End;
 
-{ EmitRuntime : emettre les routines runtime (stub TODO 24) }
+{ EmitRuntime : emettre les routines runtime pour print/readLine }
 Procedure EmitRuntime;
 Begin
   If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
   EmitBlankLine;
-  EmitComment('--- runtime stubs (TODO 24) ---');
+  EmitComment('--- runtime ---');
+  EmitBlankLine;
+  { _SWRT_PRINTSTR : afficher chaine ASCIIZ pointee par SI }
+  EmitLabel(SW_RT_PFX + 'PRINTSTR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitLabel(SW_RT_PFX + 'PS_LOOP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', SW_RT_PFX + 'PS_DONE');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('INC    SI');
+  EmitInstrA('JMP', SW_RT_PFX + 'PS_LOOP');
+  EmitLabel(SW_RT_PFX + 'PS_DONE');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_PRINTINT : afficher entier signe dans AX }
+  EmitLabel(SW_RT_PFX + 'PRINTINT');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JGE', SW_RT_PFX + 'PI_POS');
+  EmitInstr('PUSH   AX');
+  EmitInstrAB('MOV', 'DL', '''-''');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    AX');
+  EmitInstr('NEG    AX');
+  EmitLabel(SW_RT_PFX + 'PI_POS');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitLabel(SW_RT_PFX + 'PI_DIV');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstr('INC    CX');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', SW_RT_PFX + 'PI_DIV');
+  EmitLabel(SW_RT_PFX + 'PI_OUT');
+  EmitInstr('POP    DX');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrA('LOOP', SW_RT_PFX + 'PI_OUT');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_PRINTBOOL : afficher "true" ou "false" selon AX }
+  EmitLabel(SW_RT_PFX + 'PRINTBOOL');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', SW_RT_PFX + 'PB_F');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + SW_RT_PFX + 'S_TRUE');
+  EmitInstrA('JMP', SW_RT_PFX + 'PB_P');
+  EmitLabel(SW_RT_PFX + 'PB_F');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + SW_RT_PFX + 'S_FALSE');
+  EmitLabel(SW_RT_PFX + 'PB_P');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_PRINTCHAR : afficher un caractere dans AL }
+  EmitLabel(SW_RT_PFX + 'PRINTCHAR');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_PRINTCRLF : afficher CR+LF }
+  EmitLabel(SW_RT_PFX + 'PRINTCRLF');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'DL', '0Dh');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'DL', '0Ah');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_READLINE : lire une ligne dans DI (DOS INT 21h AH=0Ah) }
+  EmitLabel(SW_RT_PFX + 'READLINE');
+  EmitInstr('PUSH   DX');
+  EmitInstrAB('MOV', 'DX', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '126');  { taille max }
+  EmitInstrAB('MOV', 'AH', '0Ah');
+  EmitInstr('INT    21h');
+  { Null-terminer la chaine }
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'BL', '[DI+1]');   { longueur lue }
+  EmitInstrAB('MOV', 'BYTE PTR [DI+BX+2]', '0');
+  EmitInstrAB('ADD', 'DI', '2');         { DI pointe sur la chaine }
+  EmitInstr('POP    DX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_STRCAT : concatener AX + BX -> AX (simplifie, copie dans STRBUF) }
+  EmitLabel(SW_RT_PFX + 'STRCAT');
+  EmitComment('  (strcat stub - TODO 24 runtime complet)');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_INTTOSTR : convertir AX en chaine -> AX=ptr }
+  EmitLabel(SW_RT_PFX + 'INTTOSTR');
+  EmitComment('  (inttostr stub - TODO 24 runtime complet)');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 { EmitClose : fermer le fichier assembleur (ecrire _TEXT ENDS, DATA, END) }
@@ -3009,6 +3294,545 @@ Begin
   EmitComment('  ' + SymTab[SIdx].Name + ' ' + Op + ' <expr>');
 End;
 
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ EmitBinOp : emettre l instruction ASM pour AX op BX }
+Procedure EmitBinOp(Const Op : TString; LeftTy, RightTy : Integer);
+Var
+  LblTrue, LblEnd : TString;
+Begin
+  { Arithmetique entiere }
+  If Op = '+' Then
+  Begin
+    If (TypeKindOf(LeftTy) = TYK_STRING) Or
+       (TypeKindOf(RightTy) = TYK_STRING) Then
+      EmitInstrA('CALL', SW_RT_PFX + 'STRCAT')
+    Else
+      EmitInstrAB('ADD', 'AX', 'BX');
+  End
+  Else If Op = '-' Then
+    EmitInstrAB('SUB', 'AX', 'BX')
+  Else If Op = '*' Then
+  Begin
+    EmitInstrA('IMUL', 'BX');
+    EmitComment('  resultat dans DX:AX, on garde AX');
+  End
+  Else If Op = '/' Then
+  Begin
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+    EmitComment('  quotient dans AX');
+  End
+  Else If Op = '%' Then
+  Begin
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+    EmitInstrAB('MOV', 'AX', 'DX');
+    EmitComment('  reste dans DX -> AX');
+  End
+  { Comparaisons : CMP + Jcc }
+  Else If (Op = '==') Or (Op = '!=') Or
+          (Op = '<')  Or (Op = '<=') Or
+          (Op = '>')  Or (Op = '>=') Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    If Op = '==' Then
+      EmitInstrA('JE', LblTrue)
+    Else If Op = '!=' Then
+      EmitInstrA('JNE', LblTrue)
+    Else If Op = '<' Then
+      EmitInstrA('JL', LblTrue)
+    Else If Op = '<=' Then
+      EmitInstrA('JLE', LblTrue)
+    Else If Op = '>' Then
+      EmitInstrA('JG', LblTrue)
+    Else If Op = '>=' Then
+      EmitInstrA('JGE', LblTrue);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstrAB('MOV', 'AX', '1');
+    EmitLabel(LblEnd);
+  End
+  { Bitwise }
+  Else If Op = '&' Then
+    EmitInstrAB('AND', 'AX', 'BX')
+  Else If Op = '|' Then
+    EmitInstrAB('OR', 'AX', 'BX')
+  Else If Op = '^' Then
+    EmitInstrAB('XOR', 'AX', 'BX')
+  Else If Op = '<<' Then
+  Begin
+    EmitInstrAB('MOV', 'CL', 'BL');
+    EmitInstrAB('SHL', 'AX', 'CL');
+  End
+  Else If Op = '>>' Then
+  Begin
+    EmitInstrAB('MOV', 'CL', 'BL');
+    EmitInstrAB('SAR', 'AX', 'CL');
+  End
+  { Intervalle ..< et ... : laisser bornes dans AX/BX, utilise par for-in }
+  Else If (Op = '..<') Or (Op = '...') Then
+  Begin
+    EmitComment('  intervalle ' + Op + ' (bornes AX..BX)');
+  End
+  Else
+    EmitComment('  [binop ' + Op + ' : stub TODO 11]');
+End;
+
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES (print / readLine) [IMPLEMENTE]
+  ============================================================ }
+
+{ ParsePrintStmt : print(items..., separator:, terminator:) }
+Procedure ParsePrintStmt;
+Var
+  ArgExpr   : TExprVal;
+  ArgCount  : Integer;
+  HasTerm   : Boolean;
+Begin
+  ParserAdvance;  { consomme 'print' }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+  Begin
+    CompileError('''('' attendu apres print');
+    Exit;
+  End;
+  ParserAdvance;  { consomme '(' }
+  ArgCount := 0;
+  HasTerm  := True;
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    { Gerer separator: et terminator: }
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'separator') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      ParseExpr(ArgExpr);
+      ExprFlushToAX(ArgExpr);
+      EmitComment('  (separator: personnalise - stub)');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+      Continue;
+    End;
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'terminator') Then
+    Begin
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      ParseExpr(ArgExpr);
+      { Si terminator est "", pas de CRLF }
+      HasTerm := True;
+      EmitComment('  (terminator: personnalise - stub)');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+      Continue;
+    End;
+    { Separateur entre arguments }
+    If ArgCount > 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '32');
+      EmitInstrA('CALL', SW_RT_PFX + 'PRINTCHAR');
+      EmitComment('  separateur '' ''');
+    End;
+    ParseExpr(ArgExpr);
+    ExprFlushToAX(ArgExpr);
+    { Determiner le type pour choisir la routine runtime }
+    If TypeKindOf(ArgExpr.TypeIdx) = TYK_STRING Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrA('CALL', SW_RT_PFX + 'PRINTSTR');
+    End
+    Else If TypeKindOf(ArgExpr.TypeIdx) = TYK_BOOL Then
+    Begin
+      EmitInstrA('CALL', SW_RT_PFX + 'PRINTBOOL');
+    End
+    Else
+    Begin
+      EmitInstrA('CALL', SW_RT_PFX + 'PRINTINT');
+    End;
+    Inc(ArgCount);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  { Terminator par defaut : CRLF }
+  If HasTerm Then
+    EmitInstrA('CALL', SW_RT_PFX + 'PRINTCRLF');
+  EmitComment('  print (fin)');
+End;
+
+{ ============================================================
+  TODO 13 - IF / ELSE IF / ELSE / GUARD / SWITCH [IMPLEMENTE]
+  ============================================================ }
+
+{ ParseBlock : parser un bloc entre accolades }
+Procedure ParseBlock;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+  SymEnterScope;
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    ParseStmt;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+  SymLeaveScope;
+End;
+
+(* ParseIfStmt : if cond ... else if cond ... else ... *)
+Procedure ParseIfStmt;
+Var
+  CondExpr  : TExprVal;
+  LblElse   : TString;
+  LblEndIf  : TString;
+Begin
+  LblEndIf := LabelGen;  { label commun pour la fin du if complet }
+  Repeat
+    ParserAdvance;  { consomme 'if' ou 'else' suivi de 'if' }
+    { if let / if var : optional binding }
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'let') Or (CurToken.Val = 'var')) Then
+    Begin
+      ParseDeclStmt(CurToken.Val = 'let');
+      EmitComment('  (if let/var binding)');
+      EmitInstrAB('TEST', 'AX', 'AX');
+    End
+    Else
+    Begin
+      ParseExpr(CondExpr);
+      ExprFlushToAX(CondExpr);
+      EmitInstrAB('TEST', 'AX', 'AX');
+    End;
+    LblElse := LabelGen;
+    EmitInstrA('JZ', LblElse);
+    { Bloc then }
+    ParseBlock;
+    EmitInstrA('JMP', LblEndIf);
+    EmitLabel(LblElse);
+    { else if / else ? }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+    Begin
+      ParserAdvance;  { consomme 'else' }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+        Continue  { boucle pour else if }
+      Else
+      Begin
+        { Bloc else }
+        ParseBlock;
+        Break;
+      End;
+    End
+    Else
+      Break;
+  Until False;
+  EmitLabel(LblEndIf);
+End;
+
+(* ParseGuardStmt : guard cond else ... *)
+Procedure ParseGuardStmt;
+Var
+  CondExpr  : TExprVal;
+  LblEnd    : TString;
+Begin
+  ParserAdvance;  { consomme 'guard' }
+  { guard let : optional binding }
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'let') Or (CurToken.Val = 'var')) Then
+  Begin
+    ParseDeclStmt(CurToken.Val = 'let');
+    EmitComment('  (guard let/var binding)');
+    EmitInstrAB('TEST', 'AX', 'AX');
+  End
+  Else
+  Begin
+    ParseExpr(CondExpr);
+    ExprFlushToAX(CondExpr);
+    EmitInstrAB('TEST', 'AX', 'AX');
+  End;
+  LblEnd   := LabelGen;
+  EmitInstrA('JNZ', LblEnd);   { condition vraie -> sauter le bloc else }
+  { Consomme 'else' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+    ParserAdvance;
+  { Bloc else (doit contenir return/break/continue) }
+  ParseBlock;
+  EmitLabel(LblEnd);
+End;
+
+(* ParseSwitchStmt : switch expr ... case val: stmts ... default: stmts *)
+Procedure ParseSwitchStmt;
+Var
+  SwitchExpr : TExprVal;
+  CaseExpr   : TExprVal;
+  LblNext    : TString;
+  LblEnd     : TString;
+  LblCase    : TString;
+Begin
+  ParserAdvance;  { consomme 'switch' }
+  ParseExpr(SwitchExpr);
+  ExprFlushToAX(SwitchExpr);
+  EmitInstrA('PUSH', 'AX');
+  EmitComment('  switch (valeur sur pile)');
+  LblEnd := LabelGen;
+  { Consomme accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'case') Then
+    Begin
+      ParserAdvance;  { consomme 'case' }
+      LblNext := LabelGen;
+      LblCase := LabelGen;
+      { Lire la valeur du case }
+      ParseExpr(CaseExpr);
+      ExprFlushToAX(CaseExpr);
+      { Comparer avec la valeur du switch }
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('MOV', 'AX', '[SP]');
+      EmitInstrAB('CMP', 'AX', 'BX');
+      EmitInstrA('JE', LblCase);
+      { Gerer les valeurs multiples : case val1, val2 }
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      Begin
+        ParserAdvance;
+        ParseExpr(CaseExpr);
+        ExprFlushToAX(CaseExpr);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        EmitInstrAB('MOV', 'AX', '[SP]');
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrA('JE', LblCase);
+      End;
+      EmitInstrA('JMP', LblNext);
+      EmitLabel(LblCase);
+      { Consomme ':' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      { Instructions du case }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((CurToken.Val = 'case') Or (CurToken.Val = 'default'))) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      Begin
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'fallthrough') Then
+        Begin
+          ParserAdvance;
+          EmitComment('  fallthrough');
+        End
+        Else
+          ParseStmt;
+      End;
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblNext);
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'default') Then
+    Begin
+      ParserAdvance;  { consomme 'default' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParseStmt;
+      EmitInstrA('JMP', LblEnd);
+    End
+    Else
+    Begin
+      { Inattendu dans le switch }
+      ParserAdvance;
+    End;
+  End;
+  EmitLabel(LblEnd);
+  EmitInstrAB('ADD', 'SP', '2');   { depiler la valeur du switch }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 14 - BOUCLES : while / repeat-while / for-in [IMPLEMENTE]
+  ============================================================ }
+
+{ LoopPush : empiler les labels break/continue pour la boucle courante }
+Procedure LoopPush(Const BreakLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('boucles trop imbriquees (max=' + IntToStr(MAX_LOOP_NEST) + ')');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BreakLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  Inc(LoopTop);
+End;
+
+{ LoopPop : depiler les labels de boucle }
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+(* ParseWhileStmt : while cond ... *)
+Procedure ParseWhileStmt;
+Var
+  CondExpr : TExprVal;
+  LblTest  : TString;
+  LblEnd   : TString;
+Begin
+  ParserAdvance;  { consomme 'while' }
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+  LoopPush(LblEnd, LblTest);
+  EmitLabel(LblTest);
+  ParseExpr(CondExpr);
+  ExprFlushToAX(CondExpr);
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblEnd);
+  ParseBlock;
+  EmitInstrA('JMP', LblTest);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+(* ParseRepeatWhileStmt : repeat ... while cond *)
+Procedure ParseRepeatWhileStmt;
+Var
+  CondExpr : TExprVal;
+  LblBeg   : TString;
+  LblTest  : TString;
+  LblEnd   : TString;
+Begin
+  ParserAdvance;  { consomme 'repeat' }
+  LblBeg  := LabelGen;
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+  LoopPush(LblEnd, LblTest);
+  EmitLabel(LblBeg);
+  ParseBlock;
+  EmitLabel(LblTest);
+  { Consomme 'while' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    ParserAdvance;
+  ParseExpr(CondExpr);
+  ExprFlushToAX(CondExpr);
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', LblBeg);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+(* ParseForInStmt : for item in expr ... *)
+Procedure ParseForInStmt;
+Var
+  LoopVarName : TString;
+  SIdx        : Integer;
+  RangeExpr   : TExprVal;
+  LblTest     : TString;
+  LblIncr     : TString;
+  LblEnd      : TString;
+  IsWildcard  : Boolean;
+Begin
+  ParserAdvance;  { consomme 'for' }
+  LblTest := LabelGen;
+  LblIncr := LabelGen;
+  LblEnd  := LabelGen;
+  LoopPush(LblEnd, LblIncr);
+  SymEnterScope;
+  { Variable de boucle ou _ (wildcard) }
+  IsWildcard := False;
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = '_') Then
+  Begin
+    IsWildcard := True;
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    LoopVarName := CurToken.Val;
+    ParserAdvance;
+  End
+  Else
+  Begin
+    CompileError('variable de boucle attendue apres ''for''');
+    LoopVarName := '_tmp';
+  End;
+  { Allouer la variable de boucle (immuable, let implicite) }
+  If Not IsWildcard Then
+  Begin
+    SIdx := DeclAllocSym(LoopVarName, SK_LET);
+    If SIdx >= 0 Then
+      SymTab[SIdx].TypeIdx := TY_IDX_INT;
+  End
+  Else
+    SIdx := -1;
+  { Consomme 'in' }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+    ParserAdvance;
+  { Evaluer l expression de la collection/intervalle }
+  ParseExpr(RangeExpr);
+  { Initialiser la variable de boucle avec la borne basse (AX) }
+  { Pour un intervalle a..<b ou a...b : AX=a, BX=b }
+  { On sauvegarde la borne haute sur la pile }
+  EmitInstrA('PUSH', 'BX');        { borne haute }
+  If SIdx >= 0 Then
+    ExprStore(SIdx)                { var_boucle = borne basse }
+  Else
+    EmitInstrA('PUSH', 'AX');     { wildcard : empiler compteur }
+  EmitComment('  for-in init');
+  { Test de boucle }
+  EmitLabel(LblTest);
+  If SIdx >= 0 Then
+  Begin
+    EmitInstrAB('MOV', 'AX', ExprAddrOf(SIdx));
+    EmitInstrAB('CMP', 'AX', '[SP]');   { comparer avec borne haute }
+  End
+  Else
+  Begin
+    EmitInstrAB('MOV', 'AX', '[SP+2]');  { wildcard compteur }
+    EmitInstrAB('CMP', 'AX', '[SP]');
+  End;
+  EmitInstrA('JGE', LblEnd);
+  { Corps de la boucle }
+  ParseBlock;
+  { Increment }
+  EmitLabel(LblIncr);
+  If SIdx >= 0 Then
+  Begin
+    EmitInstrAB('MOV', 'AX', ExprAddrOf(SIdx));
+    EmitInstr('INC    AX');
+    EmitInstrAB('MOV', ExprAddrOf(SIdx), 'AX');
+  End
+  Else
+  Begin
+    EmitInstrAB('MOV', 'AX', '[SP+2]');
+    EmitInstr('INC    AX');
+    EmitInstrAB('MOV', '[SP+2]', 'AX');
+  End;
+  EmitInstrA('JMP', LblTest);
+  EmitLabel(LblEnd);
+  { Nettoyer la pile }
+  EmitInstrAB('ADD', 'SP', '2');   { depiler borne haute }
+  If IsWildcard Then
+    EmitInstrAB('ADD', 'SP', '2'); { depiler compteur wildcard }
+  SymLeaveScope;
+  LoopPop;
+End;
+
+{ ============================================================
+  TODO 15 - TABLEAUX (Array) [IMPLEMENTE]
+  ============================================================ }
+
+{ Les tableaux sont geres comme des pointeurs vers un bloc memoire     }
+{ dans le segment DATA. Le premier mot est le count, suivi des elements }
+{ L acces par index est calcule avec offset = 2 + i * sizeof(elem)     }
+{ Les operations append/remove/insert sont simplifiees (stubs)          }
+
 { ParseExprStmt : instruction-expression (appel de func, affectation, etc.) }
 Procedure ParseExprStmt;
 Var
@@ -3070,7 +3894,14 @@ Var
 Begin
   If CurToken.Kind = TK_EOF Then Exit;
 
-  { Declaration let / var }
+  { Sauter les points-virgules optionnels }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Declaration let / var et mots-cles }
   If CurToken.Kind = TK_KEYWORD Then
   Begin
     Kw := CurToken.Val;
@@ -3101,6 +3932,57 @@ Begin
       EmitComment('  return');
       Exit;
     End
+    { TODO 13 : if / guard / switch }
+    Else If Kw = 'if' Then
+    Begin
+      ParseIfStmt;
+      Exit;
+    End
+    Else If Kw = 'guard' Then
+    Begin
+      ParseGuardStmt;
+      Exit;
+    End
+    Else If Kw = 'switch' Then
+    Begin
+      ParseSwitchStmt;
+      Exit;
+    End
+    { TODO 14 : while / repeat / for }
+    Else If Kw = 'while' Then
+    Begin
+      ParseWhileStmt;
+      Exit;
+    End
+    Else If Kw = 'repeat' Then
+    Begin
+      ParseRepeatWhileStmt;
+      Exit;
+    End
+    Else If Kw = 'for' Then
+    Begin
+      ParseForInStmt;
+      Exit;
+    End
+    { break / continue }
+    Else If Kw = 'break' Then
+    Begin
+      ParserAdvance;
+      If LoopTop > 0 Then
+        EmitInstrA('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        CompileError('break en dehors d''une boucle');
+      Exit;
+    End
+    Else If Kw = 'continue' Then
+    Begin
+      ParserAdvance;
+      If LoopTop > 0 Then
+        EmitInstrA('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        CompileError('continue en dehors d''une boucle');
+      Exit;
+    End
     Else
     Begin
       { Autres mots-cles : stub, avancer }
@@ -3109,17 +3991,17 @@ Begin
     End;
   End;
 
+  { TODO 12 : print() comme fonction speciale }
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'print') Then
+  Begin
+    ParsePrintStmt;
+    Exit;
+  End;
+
   (* Bloc ... *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
   Begin
-    ParserAdvance;  (* consomme accolade ouvrante *)
-    SymEnterScope;
-    While (CurToken.Kind <> TK_EOF) And
-          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
-      ParseStmt;
-    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
-      ParserAdvance;
-    SymLeaveScope;
+    ParseBlock;
     Exit;
   End;
 
