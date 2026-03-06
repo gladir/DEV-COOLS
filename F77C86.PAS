@@ -1,300 +1,11 @@
-{ F77C86.PAS - Compilateur Fortran 77 vers assembleur 8086
-   Turbo Pascal / Free Pascal (-Mtp)
-   ================================================================
-
-   LISTE DES TRAVAUX A REALISER (25 TODOS)
-   ========================================
-
-   TODO 01 - INFRASTRUCTURE DE BASE
-     Constantes globales (VERSION, MAX_SYM, MAX_SCOPE, MAX_PROC,
-     MAX_PARAM, MAX_LABELS, MAX_ERRORS, MAX_STR, MAX_DIM, MAX_COMMON,
-     MAX_FORMAT, STACK_SIZE). Types fondamentaux : TString, TToken,
-     TTokenKind, TSymKind (SK_VAR, SK_ARRAY, SK_PARAM, SK_FUNC,
-     SK_SUBR, SK_COMMON, SK_PARAM_CONST, SK_INTRINSIC), TDataType
-     (DT_INTEGER, DT_REAL, DT_DOUBLE, DT_COMPLEX, DT_LOGICAL,
-     DT_CHARACTER), TSymRec, TProcRec. Cadre principal : arguments
-     en ligne de commande (source .F ou .F77, sortie .ASM, options
-     -v -d -nr), ouverture des fichiers, prefixes labels ASM
-     FL_ (Fortran Label), FV_ (Fortran Variable), FB_ (Fortran Branch),
-     FRT_ (Fortran RunTime). Sortie MASM/TASM modele SMALL.
-
-   TODO 02 - LECTEUR DE SOURCE A FORMAT FIXE
-     Lecture colonne par colonne du format standard Fortran 77 :
-     colonne 1 = commentaire si 'C' ou '*', colonnes 1-5 = etiquette
-     d'instruction (label numerique 1-99999), colonne 6 = indicateur
-     de continuation (caractere non espace et non zero), colonnes
-     7-72 = corps de l'instruction, colonnes 73-80 = identification
-     (ignorees). Assembler les lignes de continuation en un seul
-     enregistrement logique de jusqu'a 1320 caracteres. Compter les
-     lignes physiques pour les messages d'erreur. Gerer les fins de
-     fichier et erreurs d'ouverture.
-
-   TODO 03 - ANALYSEUR LEXICAL (LEXER)
-     LexChar, LexPeek, LexAdvance, position dans l'enregistrement
-     logique. Tokens Fortran 77 : mots-cles PROGRAM END STOP PAUSE
-     RETURN CALL SUBROUTINE FUNCTION BLOCK DATA COMMON EQUIVALENCE
-     DIMENSION IMPLICIT EXTERNAL INTRINSIC SAVE PARAMETER DATA FORMAT
-     INCLUDE IF THEN ELSE ELSEIF ENDIF DO CONTINUE GOTO ASSIGN
-     READ WRITE PRINT OPEN CLOSE REWIND BACKSPACE ENDFILE INQUIRE.
-     Types : INTEGER REAL DOUBLE PRECISION COMPLEX LOGICAL CHARACTER.
-     Entiers : suite de chiffres decimaux. Reels : notations 1.5,
-     1.5E+3, 1.5D-2 (double). Logique : .TRUE. .FALSE. Charactères :
-     'abc' (apostrophe doublee pour echapper ''). Operateurs
-     arithmetiques + - * / ** (puissance). Operateurs relationnels
-     .EQ. .NE. .LT. .LE. .GT. .GE. Operateurs logiques .AND. .OR.
-     .NOT. .EQV. .NEQV. Separateurs ( ) , = :. Hollerith nHccc...
-
-   TODO 04 - TABLE DES SYMBOLES ET PORTEE
-     SymEnter, SymFind, SymFindLocal. Portee unique par unite de
-     programme (PROGRAM / SUBROUTINE / FUNCTION / BLOCK DATA) : pas
-     de portees imbriquees en Fortran 77, sauf COMMON global. Champs
-     du symbole : nom (6 chars max norm Fortran), categorie, type de
-     donnee, taille (pour CHARACTER*n), dimensions (DIMENSION),
-     offset pile ou label DATA, attributs (SAVE, EXTERNAL, INTRINSIC,
-     common_block, equivalence_group, is_par, is_dummy, is_defined).
-     Table des etiquettes numeriques : LabelEnter, LabelFind,
-     LabelMarkDefined (pour detecter GOTO vers label non defini).
-     Table de COMMON blocks : CommonEnter, CommonFind.
-
-   TODO 05 - TYPAGE IMPLICITE ET DECLARATIONS DE TYPE
-     Regle implicite Fortran 77 par defaut : variables dont le nom
-     commence par I J K L M N sont INTEGER, toutes les autres REAL.
-     IMPLICIT NONE desactive le typage implicite (toute variable non
-     declaree = erreur). IMPLICIT INTEGER(A-H,O-Z) etIMPLICIT REAL(I-N)
-     renversent les regles pour des plages de lettres. Parser les
-     enonces de declaration de type explicites :
-     INTEGER [*nb] liste, REAL [*nb] liste, DOUBLE PRECISION liste,
-     COMPLEX [*nb] liste, LOGICAL [*nb] liste, CHARACTER [*nb] liste
-     avec les variantes de taille (*2, *4, *8 pour INTEGER/LOGICAL/
-     REAL/DOUBLE/COMPLEX, *n pour CHARACTER). Appliquer le type
-     implicite lors du premier usage d'un identificateur.
-
-   TODO 06 - DECLARATIONS DIMENSION ET TABLEAUX
-     DIMENSION nom(borne1, ..., borneN) avec 1 a 7 dimensions (norme
-     F77). Bornes inferieures et superieures : lb:ub (defaut lb=1).
-     Stocker les bornes dans TSymRec.dims[1..7] (lb, ub). Calcul de
-     la taille totale du tableau = produit des etendues. Calcul de
-     l'adresse d'un element : formule de linearisation par colonnes
-     (FORTRAN column-major order). Declarer en DATA statique ou sur
-     la pile selon la classe de memoire. Tableaux dummy (parametres
-     formels de taille ajustable : ub = *).
-
-   TODO 07 - DECLARATION COMMON ET EQUIVALENCE
-     COMMON /nom/ liste : regroupement de variables dans un bloc
-     commun partage entre unites de programme. Allouer le bloc COMMON
-     en DATA avec le label _FC_nom_ (BLANK COMMON = _FC_BLANK_).
-     Chaque variable d'un COMMON recoit un offset dans le bloc.
-     EQUIVALENCE (a,b) : superposition de variables a la meme adresse
-     (meme offset dans la zone locale ou dans un COMMON). Detecter et
-     signaler les equivalences illegales (entre deux COMMON differents
-     ou etendant un COMMON en arriere). SAVE : marquer les variables
-     locales comme statiques (conserver leur valeur entre les appels).
-
-   TODO 08 - DECLARATION DATA ET CONSTANTES NOMMEES
-     DATA liste/valeurs/ : initialiser des variables, elements de
-     tableaux ou groupes avec des constantes. Syntaxe de repetition :
-     n*valeur. Types de constantes : entier, reel, double, complexe
-     (re,im), logique .TRUE./.FALSE., chaine de caracteres. Emettre
-     des directives DW/DD/DQ/DB en segment DATA selon le type.
-     PARAMETER (nom=expr) : constante symbolique, substituee par sa
-     valeur au moment de la compilation (pas de symbole DATA).
-     Evaluer les expressions constantes de PARAMETER au compile-time.
-
-   TODO 09 - GENERATEUR DE CODE 8086 - PRIMITIVES
-     EmitLabel, EmitI0..EmitI2, EmitComment, EmitDB, EmitDW, EmitDD,
-     EmitDQ, EmitDup, EmitSep, EmitBlank. Compteur instr_count.
-     Basculement out_file / tmp_file (SwitchToMain / SwitchToTmp).
-     Organisation des segments : .DATA (variables statiques, COMMON,
-     tableaux data, chaines format), .CODE (corps des sous-programmes
-     puis START). Prefixe des labels MASM/TASM. Convention d'appel
-     Fortran : arguments passes PAR REFERENCE (adresses empilees de
-     droite a gauche), valeur de retour de FUNCTION dans DX:AX pour
-     INTEGER/REAL 2 octets ou via un parametre cache pour les autres.
-
-   TODO 10 - EXPRESSIONS ARITHMETIQUES ENTIERES
-     ParseIntExpr, ParseIntTerm, ParseIntFactor. Operateurs :
-     unaire - (NEG AX), + (identite), ** (puissance entiere :
-     boucle IMUL ou appel _FRT_IPOW). Termes : * (IMUL),
-     / (division tronquee vers zero en Fortran 77 : CWD + IDIV),
-     MOD implicite via DIV puis reste. Additifs : + (ADD), - (SUB).
-     Constantes entieres directes (MOV AX, imm). Variables entieres :
-     charger depuis adresse effective [BP-off] ou [segment:off].
-     Appels de fonctions entieres intrinsèques et utilisateur.
-     Priorites Fortran : ** > unaire > * / > + -.
-
-   TODO 11 - EXPRESSIONS ARITHMETIQUES REELLES ET DOUBLE PRECISION
-     Emulation virgule flottante sans FPU 8087 (stub runtime).
-     Representation REAL 4 octets (DX:AX) et DOUBLE 8 octets (pile).
-     Routines runtime _FRT_FADD, _FRT_FSUB, _FRT_FMUL, _FRT_FDIV,
-     _FRT_FPOW, _FRT_FNEG, _FRT_ITOF (entier vers reel),
-     _FRT_FTOI (reel vers entier par troncature). Conversion
-     automatique INTEGER -> REAL dans les expressions mixtes.
-     Constantes reelles : convertir representation textuelle en
-     motif binaire IEEE 754 a la compilation (ou emettre en DATA DD).
-
-   TODO 12 - EXPRESSIONS LOGIQUES ET RELATIONNELLES
-     Relations : .EQ. .NE. .LT. .LE. .GT. .GE. entre entiers ->
-     result -1 (TRUE) ou 0 (FALSE) en 16 bits.
-     Relations entre reels : appel _FRT_FCMP -> signe du resultat.
-     Relations entre chaines CHARACTER : _FRT_SCMP (comparaison
-     lexicographique). Operateurs logiques : .NOT. (NOT AX),
-     .AND. (AND AX,CX), .OR. (OR AX,CX), .EQV. (XNOR),
-     .NEQV. (XOR). Conversion logique -> entier et inverse.
-     .TRUE. = -1 (0FFFFh), .FALSE. = 0 (meme convention BCPL).
-
-   TODO 13 - EXPRESSIONS CARACTERES (CHARACTER)
-     Type CHARACTER*n : chaine de longueur fixe completee par espaces
-     (blank-padded, pas null-terminated). Concatenation // :
-     appel _FRT_SCAT(dst, src1, len1, src2, len2). Sous-chaine
-     str(lo:hi) : LEA + offset, avec clipping sur les bornes. Affec-
-     tation de chaines : _FRT_SCOPY(dst, ndst, src, nsrc) avec
-     troncature ou remplissage par espaces. Fonctions intrinsèques
-     LEN, INDEX, CHAR, ICHAR. Variables CHARACTER declarees en DATA
-     avec DB n DUP(' ') ou initialisees par DATA.
-
-   TODO 14 - TABLE DES LABELS ET INSTRUCTIONS DE BRANCHEMENT SIMPLES
-     LabelTable (1-99999), chaque entree : defini (oui/non), nom ASM
-     FL_nnnnn. GOTO n : JMP FL_nnnnn (backpatching si forward). GOTO
-     (n1,n2,...), i : calcul index, table de sauts indirecte. ASSIGN n
-     TO v / GOTO v : sauts assignes (stocker l'adresse du label dans v,
-     IndirectJMP). CONTINUE : instruction vide (juste un label eventuel).
-     Backpatching : resoudre les sauts a terme a la fin de l'unite de
-     programme. Verifier que tous les labels cibles sont definis.
-
-   TODO 15 - INSTRUCTION IF ARITHMETIQUE ET IF LOGIQUE
-     IF arithmetique : IF (expr) n1, n2, n3 -> CMP AX,0 puis
-     JL FL_n1 / JE FL_n2 / JG FL_n3 (trois sauts conditionnels).
-     IF logique : IF (expr_logique) instruction -> CMP AX,0 ;
-     JE suite ; exec instruction inline.
-     IF bloc : IF (cond) THEN ... [ELSEIF (cond) THEN ...]*
-     [ELSE ...] ENDIF -> generateur de labels emboites avec
-     pile de blocs IF (max 20 niveaux d'imbrication norme F77).
-
-   TODO 16 - BOUCLE DO
-     DO label var = debut, fin [, pas]  (pas par defaut = 1).
-     Initialisation : MOV [var], debut. Calcul du nombre d'iterations
-     MAX(INT((fin-debut+pas)/pas), 0) stocke dans CX ou sur la pile.
-     Test d'iterations : LOOP FL_label ou DEC + JNZ. Gerer le cas
-     pas negatif. DO imbriques (pile de DO actifs). Controle de la
-     variable de boucle : non modifiable dans le corps (avertissement).
-     FIN de la boucle : label numerique cible (souvent CONTINUE).
-
-   TODO 17 - INSTRUCTIONS D'AFFECTATION ET D'E/S SIMPLES
-     Affectation : var = expr (entier, reel, logique, character).
-     Convertir le type rvalue vers le type lvalue si necessaire.
-     Lvalue : variable scalaire, element de tableau avec calcul
-     d'adresse colonne-major, sous-chaine, variable de COMMON.
-     PRINT *, liste : ecriture sur stdout avec format libre.
-     READ *, liste : lecture depuis stdin avec format libre.
-     Appels _FRT_PRINT_I, _FRT_PRINT_R, _FRT_PRINT_L,
-     _FRT_PRINT_S, _FRT_PRINT_NL, _FRT_READ_I, _FRT_READ_R.
-
-   TODO 18 - INSTRUCTIONS READ / WRITE AVEC FORMAT
-     WRITE(unite, format) liste et READ(unite, format) liste.
-     Unite : 6 = stdout, 5 = stdin, numero de fichier ouvert.
-     Format : etiquette numerique d'un enonce FORMAT, ou chaine
-     litterale, ou * (format libre). Parser les specifications
-     FORMAT : Iw, Fw.d, Ew.d, Dw.d, Gw.d, Lw, Aw, nX, /, 'str',
-     nH..., T tabs, repetitions n(...). Runtime _FRT_FMT_WRITE_I,
-     _FRT_FMT_WRITE_F, _FRT_FMT_WRITE_E, _FRT_FMT_WRITE_S,
-     _FRT_FMT_NEWLINE, _FRT_FMT_SKIP_COL. Format libre (*)
-     separe par espaces ou virgules.
-
-   TODO 19 - INSTRUCTIONS D'E/S FICHIERS
-     OPEN(unit, FILE=nom, STATUS=, ACCESS=, FORM=, RECL=, IOSTAT=,
-     ERR=, BLANK=). CLOSE(unit [,STATUS=] [,IOSTAT=] [,ERR=]).
-     REWIND(unit), BACKSPACE(unit), ENDFILE(unit), INQUIRE(unit, ...).
-     Table des unites logiques (1..99) : associer chaque unite a un
-     handle DOS (INT 21h). Runtime _FRT_OPEN, _FRT_CLOSE,
-     _FRT_REWIND, _FRT_BACKSPACE. Gestion IOSTAT (code d'erreur
-     retourne dans une variable INTEGER) et ERR= (saut sur erreur).
-
-   TODO 20 - DECLARATION ET APPEL DE SOUS-PROGRAMME (SUBROUTINE)
-     SUBROUTINE nom [(liste_params)] ... RETURN [x] ... END.
-     Generer le prologue (PUSH BP / MOV BP,SP / PUSH reg preserves)
-     et l'epilogue (POP + RET n*2). Parametres passes par adresse :
-     chaque parametre formel = pointeur 16 bits sur la pile.
-     CALL nom [(liste_args)] : pousser les adresses des arguments
-     (LEA pour variables, temporaire sur pile pour expressions).
-     Tableau dummy (parametre ajustable) : passer l'adresse du
-     premier element. CHARACTER dummy : passer adresse + longueur
-     (parametre cache longueur pour chaque arg CHARACTER).
-
-   TODO 21 - DECLARATION ET APPEL DE FONCTION (FUNCTION)
-     FUNCTION nom [(liste_params)] ... nom = expr ... RETURN ... END.
-     Le nom de la fonction agit comme variable locale pour le retour.
-     INTEGER FUNCTION, REAL FUNCTION, LOGICAL FUNCTION, CHARACTER*n
-     FUNCTION. Retour par DX:AX pour types <= 4 octets. Pour DOUBLE
-     PRECISION et CHARACTER : parametre cache supplementaire (adresse
-     du buffer du resultat). EXTERNAL : declarer un sous-programme
-     externe passable comme argument. INTRINSIC : declarer une
-     fonction intrinsèque passable comme argument. Fonctions
-     statement : FUNC(x) = expr (substitution inline a la compilation).
-
-   TODO 22 - FONCTIONS INTRINSEQUES
-     Groupe conversion : INT IFIX IDINT REAL FLOAT SNGL DBLE DCMPLX
-     CMPLX ICHAR CHAR. Groupe mathematique : ABS IABS DABS CABS
-     MOD AMOD DMOD SIGN ISIGN DSIGN DIM IDIM DDIM MAX MAX0 AMAX0
-     AMAX1 DMAX1 MIN MIN0 AMIN0 AMIN1 DMIN1. Groupe virgule flottante
-     via runtime _FRT_SQRT _FRT_EXP _FRT_LOG _FRT_LOG10 _FRT_SIN
-     _FRT_COS _FRT_TAN _FRT_ASIN _FRT_ACOS _FRT_ATAN _FRT_ATAN2
-     _FRT_SINH _FRT_COSH _FRT_TANH. Fonctions corde :
-     LEN INDEX LNBLNK LENTRIM. Fonctions de bits : IBITS IAND IOR
-     IEOR INOT ISHFT ISHFTC IBCLR IBSET BTEST MVBITS.
-
-   TODO 23 - RUNTIME FORTRAN 77 (_FRT_xxx)
-     Routines assemblee dans le segment CODE (SwitchToTmp) :
-     _FRT_IPOW   : puissance entiere (AX^CX -> AX par boucle IMUL).
-     _FRT_PRINT_I : afficher un entier signe en decimal (DOS INT 21h).
-     _FRT_PRINT_NL : emettre CR+LF.
-     _FRT_PRINT_S : afficher une chaine a longueur explicite.
-     _FRT_PRINT_L : afficher .TRUE. ou .FALSE.
-     _FRT_READ_I  : lire un entier depuis stdin (INT 21h 0Ah + parse).
-     _FRT_READ_NL : vider le tampon jusqu'au retour chariot.
-     _FRT_SCOPY   : copie chaine Fortran avec padding espaces.
-     _FRT_SCMP    : comparaison lexicographique 2 chaines Fortran.
-     _FRT_SCAT    : concatenation de chaines Fortran //.
-     _FRT_STOP_0  : STOP sans code -> MOV AX,4C00h / INT 21h.
-     _FRT_STOP_N  : STOP n -> afficher n, puis exit.
-     _FRT_PAUSE   : PAUSE [n] -> afficher message, attendre touche.
-     Routines reelles simulees : _FRT_FADD _FRT_FSUB _FRT_FMUL
-     _FRT_FDIV _FRT_ITOF _FRT_FTOI _FRT_FCMP (stubs pour la 1re
-     iteration, remplacement par 8087 optionnel en TODO futur).
-
-   TODO 24 - BLOCK DATA ET UNITES DE COMPILATION MULTIPLES
-     BLOCK DATA [nom] ... END : unites d'initialisation des blocs
-     COMMON. Seules les declarations et enonces DATA sont autorises.
-     Generer les segments DATA nommes pour chaque BLOCK DATA.
-     Unites de compilation independantes : chaque fichier source est
-     compile separement et donne un .OBJ (ou module .ASM) distinct.
-     Emettre des directives EXTRN pour les symboles externes (COMMON
-     public, SUBROUTINE et FUNCTION appelees depuis d'autres unites).
-     Directives PUBLIC pour les symboles exportes. Compatibilite
-     avec l'assembleur MASM/TASM 2.x et le linker LINK.EXE de DOS.
-
-   TODO 25 - INTEGRATION FINALE, PROGRAMME PRINCIPAL ET TESTS
-     PROGRAM nom : unite principale. Generer le point d'entree START
-     (segement CODE debut), initialiser SS:SP, DS, initialiser les
-     COMMON blancs et nommes, appeler les BLOCK DATA, puis CALL START
-     effectif qui appelle la routine PROGRAM. GenProgramPrologue,
-     GenProgramEpilogue (MOV AX,4C00h / INT 21h). ParseProgram :
-     dispatcher PROGRAM / SUBROUTINE / FUNCTION / BLOCK DATA selon
-     le premier token de l'unite. Tester avec :
-       hello.f  : PROGRAM HELLO / PRINT *, 'BONJOUR' / END
-       arith.f  : soustrait, multiplie, divise deux entiers + PRINT
-       do_test.f: boucle DO 10 I=1,10 / PRINT *,I / 10 CONTINUE / END
-       sub_test.f: SUBROUTINE FACT(N,R) + appel depuis PROGRAM
-       fibo.f   : calcul recursif (via FUNCTION) des nombres Fibonacci.
-     Rapport final de compilation : statistiques (lignes, symboles,
-     labels, erreurs, temps).
-
-   ================================================================
-   @author:  (a completer)
-   @created: 2026
-   @target:  Turbo Pascal 7 / Free Pascal 3.2 (-Mtp)
-   @output:  MASM/TASM 8086 (.ASM) - Modele memoire SMALL
-   @license: (a definir)
-   ================================================================ }
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Free Pascal 3.2)
+  @description: Compilateur Fortran 77 vers assembleur 8086
+  @output:  MASM/TASM 8086 (.ASM) - Modele memoire SMALL
+  @license: MIT }
 
 Program F77C86;
 
@@ -302,7 +13,7 @@ Program F77C86;
 {$I-}   { desactiver les IO-check }
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE DE BASE
+  INFRASTRUCTURE DE BASE
   ============================================================ }
 
 { --- Constantes de dimensionnement --- }
@@ -541,7 +252,7 @@ Var
   data_lbl_count   : Integer;   { compteur labels constantes DATA _FK_     }
   phys_lines   : Integer;         { lignes physiques lues          }
 
-  { Lecteur de source format fixe (TODO 02) }
+  { Lecteur de source format fixe }
   src_eof      : Boolean;
   log_rec      : ^TLogRec;            { enregistrement logique courant }
   log_rec_len  : Integer;             { longueur de log_rec            }
@@ -552,7 +263,7 @@ Var
   peek_phys_buf : String[255];          { ligne physique anticipee (SrcIsContinued) }
   has_peek_phys : Boolean;              { True si peek_phys_buf est valide          }
 
-  { Lecteur lexical (TODO 03) }
+  { Lecteur lexical }
   cur_tok      : TToken;
   peek_tok     : TToken;
   has_peek     : Boolean;
@@ -563,16 +274,16 @@ Var
   cur_proc_idx : Integer;             { 0=niveau module                    }
   cur_unit_kw  : TString;             { PROGRAM SUBROUTINE FUNCTION BLOCKDATA }
 
-  { Typage implicite (TODO 05) }
+  { Typage implicite }
   impl_type    : Array['A'..'Z'] of TDataType;  { regle implicite par lettre }
   impl_none    : Boolean;             { IMPLICIT NONE actif                }
 
-  { Pile de blocs IF (TODO 15) }
+  { Pile de blocs IF }
   if_depth     : Integer;
   if_else_lbl  : Array[1..MAX_SCOPE] of TString;
   if_end_lbl   : Array[1..MAX_SCOPE] of TString;
 
-  { Pile de boucles DO (TODO 16) }
+  { Pile de boucles DO }
   do_depth     : Integer;
   do_top_lbl   : Array[1..MAX_SCOPE] of TString;  { label haut DO    }
   do_end_lbl   : Array[1..MAX_SCOPE] of TString;  { label fin DO     }
@@ -583,11 +294,11 @@ Var
   cur_ret_lbl   : TString;
   cur_subr_name : TString;  { nom du sous-programme courant (vide=prog. principal) }
 
-  { Fonction courante (TODO 21) }
+  { Fonction courante }
   cur_func_result_si : Integer;   { index sym variable-resultat (0=SUBROUTINE) }
   cur_func_ret_type  : TDataType; { type de retour FUNCTION courant }
 
-  { Dernier label d'enonce courant (pour FORMAT, TODO 18) }
+  { Dernier label d'enonce courant (pour FORMAT) }
   last_stmt_lbl : Integer;
 
   { Options de compilation }
@@ -807,19 +518,6 @@ End;
   Affichage d'aide et traitement de la ligne de commande
   ============================================================ }
 
-Procedure PrintUsage;
-Begin
-  Writeln('F77C86 v', F77_VERSION, ' - Compilateur Fortran 77 vers assembleur 8086');
-  Writeln('Usage : F77C86 [options] source.f [sortie.asm]');
-  Writeln('Options :');
-  Writeln('  -v     : mode verbeux (afficher les etapes)');
-  Writeln('  -d     : mode debogage (commentaires supplementaires)');
-  Writeln('  -nr    : ne pas emettre le runtime FRT dans le .ASM');
-  Writeln('  -h     : afficher cette aide');
-  Writeln('Source : fichier .F ou .F77 en format fixe Fortran 77');
-  Writeln('Sortie : fichier .ASM au format MASM/TASM, modele SMALL');
-End;
-
 Procedure ParseArgs;
 Var i : Integer; arg : TString;
 Begin
@@ -835,20 +533,14 @@ Begin
       opt_debug := True
     Else If arg = '-NR' Then
       opt_no_rt := True
-    Else If (arg = '-H') Or (arg = '/?') Or (arg = '-?') Then
-    Begin
-      PrintUsage;
-      Halt(0);
-    End
     Else If src_fname = '' Then
       src_fname := ParamStr(i)
     Else If out_fname = '' Then
       out_fname := ParamStr(i);
   End;
 
-  If src_fname = '' Then
-  Begin
-    PrintUsage;
+  If src_fname = '' Then Begin
+    WriteLn('Fichier source requis !');
     Halt(1);
   End;
 
@@ -952,7 +644,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LECTEUR DE SOURCE A FORMAT FIXE
+  LECTEUR DE SOURCE A FORMAT FIXE
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -1252,7 +944,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - ANALYSEUR LEXICAL (LEXER)
+  ANALYSEUR LEXICAL (LEXER)
   ============================================================
   Lit les tokens Fortran 77 depuis l'enregistrement logique courant
   (log_rec^ via LogCurChar / LogAdvance / LogAtEnd).
@@ -1876,7 +1568,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - TABLE DES SYMBOLES ET PORTEE
+  TABLE DES SYMBOLES ET PORTEE
   ============================================================
   En Fortran 77 il n'y a qu'une seule portee par unite de programme
   (PROGRAM / SUBROUTINE / FUNCTION / BLOCK DATA).  Pas de portees
@@ -2235,7 +1927,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TYPAGE IMPLICITE ET DECLARATIONS DE TYPE
+  TYPAGE IMPLICITE ET DECLARATIONS DE TYPE
   ============================================================
   Regle F77 par defaut : I J K L M N -> INTEGER, reste -> REAL.
   IMPLICIT NONE interdit tout type implicite.
@@ -2463,7 +2155,7 @@ End;
     - si elle existe deja, son type est mis a jour
     - sinon, elle est creee avec SK_VAR et le type declare
   Les dimensions entre parentheses dans une declaration de type (extensions)
-  sont simplement ignorees ici (traitees par TODO 06 via DIMENSION).
+  sont simplement ignorees ici (traitee via DIMENSION).
   -------------------------------------------------------------------------- }
 Procedure ParseTypeDecl(dt : TDataType);
 Var
@@ -2514,7 +2206,7 @@ Begin
 
     { Ignorer les dimensions eventuellement presentes ici :
       ex. INTEGER A(10) dans une declaration de type (extension F77).
-      Elles seront traitees par le parseur DIMENSION (TODO 06). }
+      Elles seront traitees par le parseur DIMENSION. }
     If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then
     Begin
       LexNext;
@@ -2539,7 +2231,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - DECLARATIONS DIMENSION ET TABLEAUX
+  DECLARATIONS DIMENSION ET TABLEAUX
   ============================================================
   DIMENSION var(borne[,borne]...) avec 1 a 7 dimensions (norme F77).
   Borne simple n  -> lb=1, ub=n
@@ -2792,7 +2484,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - DECLARATIONS COMMON, EQUIVALENCE ET SAVE
+  DECLARATIONS COMMON, EQUIVALENCE ET SAVE
   ============================================================
   Fonctions exposees :
     ParseCommonVarIntoBlock(ci, vname) -- attacher une variable au bloc ci
@@ -2950,7 +2642,7 @@ End;
   Le mot-cle EQUIVALENCE est deja consomme avant l'appel.
   Chaque groupe recoit un index equiv_grp unique (1..equiv_count).
   Les sous-elements de tableau (v(i)) sont reconnus mais l'offset n'est
-  pas calcule ici (necessiterait le generateur d'expressions TODO 10).
+  pas calcule ici (necessiterait le generateur d'expressions).
   Une equivalence entre deux blocs COMMON distincts est une erreur F77.
   -------------------------------------------------------------------------- }
 Procedure ParseEquivalence;
@@ -3010,7 +2702,7 @@ Begin
           Else
           Begin
             sym_table^[idx].equiv_grp := grp;
-            sym_table^[idx].equiv_off := 0;   { offset a affiner en TODO 10 }
+            sym_table^[idx].equiv_off := 0;   { offset a affiner }
           End;
         End;
       End;
@@ -3098,7 +2790,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - DECLARATION DATA ET CONSTANTES NOMMEES (PARAMETER)
+  DECLARATION DATA ET CONSTANTES NOMMEES (PARAMETER)
   ============================================================
   Fonctions exposees :
     ParseDataConst(out_dt, out_ival, out_rval, out_sval)
@@ -3110,7 +2802,7 @@ End;
   Architecture :
     DATA scalaire  -> sym_table^[idx].const_ival/rval/sval + is_defined
     PARAMETER      -> sym_table^[idx].kind = SK_PARAM_CONST + const_*
-    Emission DATA  -> deferred au TODO 09 (generateur de code 8086)
+    Emission DATA  -> deferred (generateur de code 8086)
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -3200,7 +2892,7 @@ Begin
       LexNext;
       ParseDataConst(im_dt, im_ival, im_rval, im_sval);
       { Partie imaginaire stockee dans out_ival (ecrasement approx.) }
-      { Emission complete en TODO 09 }
+      { Emission complete }
     End
     Else
       WarnMsg('Constante COMPLEX : virgule manquante entre re et im');
@@ -3265,7 +2957,7 @@ End;
     DATA varlist / vallist / [, varlist / vallist /  ...]
   Elements de varlist autorises :
     var           -> scalaire entier
-    var(e)        -> element de tableau (indice ignore, TODO 10)
+    var(e)        -> element de tableau (indice ignore)
     var(ib:ie)    -> sous-chaine CHARACTER (ignore pour l'instant)
     (var(i),i=l,u[,s]) -> DO implicite (liste partielle supportee)
   Elements de vallist :
@@ -3618,7 +3310,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - GENERATEUR DE CODE 8086 - PRIMITIVES
+  GENERATEUR DE CODE 8086 - PRIMITIVES
   ============================================================
   Fonctions exposees :
     EmitLabel(lbl)            -- emettre un label MASM (col 0)
@@ -4111,9 +3803,9 @@ Begin
     Case s.dtype Of
       DT_INTEGER   : EmitDWi(s.const_ival);
       DT_LOGICAL   : EmitDWi(s.const_ival);
-      DT_REAL      : EmitRaw('        DD 0    ; reel init TODO 11');
-      DT_DOUBLE    : EmitRaw('        DQ 0    ; double init TODO 11');
-      DT_COMPLEX   : EmitRaw('        DD 0, 0 ; complexe init TODO 11');
+      DT_REAL      : EmitRaw('        DD 0    ; reel init');
+      DT_DOUBLE    : EmitRaw('        DQ 0    ; double init');
+      DT_COMPLEX   : EmitRaw('        DD 0, 0 ; complexe init');
       DT_CHARACTER :
       Begin
         EmitDBStr(s.const_sval);
@@ -4210,7 +3902,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - EXPRESSIONS ARITHMETIQUES ENTIERES
+  EXPRESSIONS ARITHMETIQUES ENTIERES
   ============================================================
   Architecture :
     ParseIntFactor   -- primaire : literal, var, PARAMETER, (expr),
@@ -4247,7 +3939,7 @@ Begin
   Else If (fname = 'INT') Or (fname = 'IFIX') Or (fname = 'IDINT') Then
   Begin
     { Argument reel : stub - supposer que AX contient deja la partie entiere }
-    EmitComment('Conversion ' + fname + ' : stub (TODO 11)');
+    EmitComment('Conversion ' + fname + ' : stub');
   End
   Else If (fname = 'NOT') Or (fname = 'LNOT') Then
   Begin
@@ -4644,7 +4336,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - EXPRESSIONS ARITHMETIQUES REELLES ET DOUBLE PRECISION
+  EXPRESSIONS ARITHMETIQUES REELLES ET DOUBLE PRECISION
   ============================================================
   Convention registres :
     REAL (4 octets IEEE 754) : DX = mot haut, AX = mot bas.
@@ -4654,7 +4346,7 @@ End;
     PUSH DX_gauche ; PUSH AX_gauche    (4 octets, deja sur pile)
     eval droite → DX:AX
     PUSH DX ; PUSH AX                  (4 octets droite)
-    CALL _FRT_Fxxx  (voir TODO 23 pour les corps)
+    CALL _FRT_Fxxx  (pour les corps)
     ADD SP, 8                          (nettoyer 4 mots = 8 octets)
     Resultat dans DX:AX.
   Constantes reelles : label FK_nnn en .DATA inline (DD) chargé
@@ -5166,17 +4858,17 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - EXPRESSIONS LOGIQUES ET RELATIONNELLES
+  EXPRESSIONS LOGIQUES ET RELATIONNELLES
   ============================================================
   Priorite F77 (du plus fort au plus faible) :
-    expressions arithmetiques (TODO 10/11)
+    expressions arithmetiques
     .NOT.
     .AND.
     .OR.
     .EQV. / .NEQV.
   Convention : .TRUE. = -1 (0FFFFh), .FALSE. = 0 (meme que BCPL86).
   Relations entre entiers : CMP AX,CX + Jxx inline.
-  Relations entre reels : CALL _FRT_FCMP (stub TODO 23).
+  Relations entre reels : CALL _FRT_FCMP (stub).
   Operateurs logiques : NOT/AND/OR/XOR/XNOR directs sur 16 bits.
   ============================================================ }
 
@@ -5444,7 +5136,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - EXPRESSIONS CARACTERES (CHARACTER)
+  EXPRESSIONS CARACTERES (CHARACTER)
   ============================================================
   Convention registres pour les expressions CHARACTER :
     AX = adresse (offset near) de la chaine dans DS
@@ -5824,12 +5516,12 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - TABLE DES LABELS ET INSTRUCTIONS DE BRANCHEMENT SIMPLES
+  TABLE DES LABELS ET INSTRUCTIONS DE BRANCHEMENT SIMPLES
   ============================================================
   La table des labels (lbl_table) et ses fonctions primitives
   (LabelFind, LabelEnter, LabelMarkDefined, LabelCheckAll) sont deja
-  implementees dans TODO 04.
-  Ce TODO ajoute la generation de code :
+  implementees.
+  Ce partie ajoute la generation de code :
 
     GenNumLabel(anum)       -- emettre le label ASM FL_nnnnn:
     GenGotoSimple(anum)     -- JMP FL_nnnnn
@@ -5883,7 +5575,7 @@ Begin
   GenLoadInt(do_var_si[depth]);                { AX = var }
   EmitI2('ADD', 'AX', 'BX');                  { AX = var + step }
   GenStoreInt(do_var_si[depth]);               { var = AX }
-  { Decrementer le compteur d'iterations }    
+  { Decrementer le compteur d'iterations }
   EmitRaw('        DEC WORD PTR [SP+2]');      { niter-- }
   EmitI1('JNZ', do_top_lbl[depth]);           { niter > 0 : reboucler }
   EmitI2('ADD', 'SP', '4');                   { depiler niter + step }
@@ -6215,7 +5907,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - BOUCLE DO
+  BOUCLE DO
   ============================================================
   Syntaxe F77 :
     DO label var = debut, fin [, pas]
@@ -6328,7 +6020,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - INSTRUCTION IF ARITHMETIQUE ET IF LOGIQUE
+  INSTRUCTION IF ARITHMETIQUE ET IF LOGIQUE
   ============================================================
   Trois formes F77 :
     IF arithmetique  : IF (expr_arith) n1, n2, n3
@@ -6350,34 +6042,34 @@ End;
     if_end_lbl [1..depth]  -- label du ENDIF courant
   ============================================================ }
 
-{ Forward pour ParseStatement (implementee en TODO 17) }
+{ Forward pour ParseStatement (implementee) }
 Procedure ParseStatement; Forward;
 
-{ Forward pour ParseFmtIoList (implementee en TODO 18) }
+{ Forward pour ParseFmtIoList (implementee) }
 Procedure ParseFmtIoList(is_write : Boolean; unit_num : Integer;
                           fmt_anum : Integer; Const fmt_str : TString); Forward;
 
-{ Forward pour ParseFormatStmt (implementee en TODO 18) }
+{ Forward pour ParseFormatStmt (implementee) }
 Procedure ParseFormatStmt(fmt_lbl : Integer); Forward;
 
-{ Forwards pour les E/S fichiers (implementees en TODO 19) }
+{ Forwards pour les E/S fichiers (implementees) }
 Procedure ParseOpen; Forward;
 Procedure ParseClose; Forward;
 Procedure ParseSimpleIo(Const frt_suffix : TString); Forward;
 Procedure ParseInquire; Forward;
 
-{ Forwards pour SUBROUTINE/CALL/END (implementees en TODO 20) }
+{ Forwards pour SUBROUTINE/CALL/END (implementees) }
 Procedure ParseSubroutineDecl; Forward;
 Procedure ParseCallStmt; Forward;
 Procedure ParseEnd; Forward;
 
-{ Forward pour FUNCTION (implementee en TODO 21) }
+{ Forward pour FUNCTION (implementee) }
 Procedure ParseFunctionDecl(ret_dtype : TDataType); Forward;
 
-{ Forward pour BLOCK DATA (implementee en TODO 24) }
+{ Forward pour BLOCK DATA (implementee) }
 Procedure ParseBlockData; Forward;
 
-{ Forward pour PROGRAM (implementee en TODO 25) }
+{ Forward pour PROGRAM (implementee) }
 Procedure ParseProgramDecl; Forward;
 
 { --------------------------------------------------------------------------
@@ -6608,7 +6300,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - AFFECTATION ET E/S SIMPLES
+  AFFECTATION ET E/S SIMPLES
   ============================================================
   Affectation scalaire et tableaux (calcul d'adresse colonne-major F77).
   PRINT *, liste  ->  _FRT_PRINT_I / _FRT_PRINT_R / _FRT_PRINT_L /
@@ -6897,7 +6589,7 @@ Begin
 End;
 
 { ============================================================
-  ParseStatement - implementation complete (remplace le stub TODO 15)
+  ParseStatement - implementation complete (remplace le stub)
   Dispatcher principal de tous les enonces F77.
   ============================================================ }
 Procedure ParseStatement;
@@ -7237,7 +6929,7 @@ Begin
   End;
   If kw = 'PARAMETER' Then
   Begin
-    { TODO: evaluer expressions constantes - ignorer pour l'instant }
+    { evaluer expressions constantes - ignorer pour l'instant }
     LexNext; pre_ident := '';
     While (cur_tok.kind <> TK_NEWLINE) And (cur_tok.kind <> TK_EOF) Do LexNext;
     Exit;
@@ -7256,7 +6948,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 18 - READ / WRITE AVEC FORMAT
+  READ / WRITE AVEC FORMAT
   ============================================================
   Format spec : stockee comme chaine 0-terminee en .DATA sous
   le label _FF_nnnnn (independant du label code _FL_nnnnn).
@@ -7510,7 +7202,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 19 - INSTRUCTIONS D'E/S FICHIERS
+  INSTRUCTIONS D'E/S FICHIERS
   ============================================================
   OPEN(unit [,FILE=str] [,STATUS=str] [,ACCESS=str] [,FORM=str]
             [,RECL=n] [,IOSTAT=var] [,ERR=lbl])
@@ -7864,7 +7556,7 @@ Procedure ParseInquire;
 Var unit_num : Integer;
 Begin
   unit_num := 0;
-  WarnMsg('INQUIRE : implementation simplifiee (TODO 19)');
+  WarnMsg('INQUIRE : implementation simplifiee');
   If (cur_tok.kind = TK_PUNCT) And (cur_tok.val = '(') Then LexNext;
   { Chercher UNIT= ou numero positionnel }
   If (cur_tok.kind = TK_IDENT) And (cur_tok.val = 'FILE') Then
@@ -7885,7 +7577,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 20 - SUBROUTINE ET CALL
+  SUBROUTINE ET CALL
   ============================================================
   Convention 8086 by-reference (.MODEL SMALL, NEAR calls) :
     - L'appelant pousse les ADRESSES de chaque argument (PUSH OFFSET var
@@ -7992,7 +7684,7 @@ Begin
   End;
   nargs := 0;
 
-  { Enregistrer le nom pour emission EXTRN eventuelle (TODO 24) }
+  { Enregistrer le nom pour emission EXTRN eventuelle }
   found := False;
   For j := 1 To called_list_cnt Do
     If called_list[j] = sub_name Then Begin found := True; Break; End;
@@ -8173,11 +7865,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 21 - DECLARATION ET APPEL DE FONCTION (FUNCTION)
+  DECLARATION ET APPEL DE FONCTION (FUNCTION)
   ============================================================
   FUNCTION nom [(params)] ... nom = expr ... RETURN ... END
   Convention : la valeur de retour est stockee dans une variable
-  statique _FV_<nom>_RES (accessible depuis toute l'unite).  
+  statique _FV_<nom>_RES (accessible depuis toute l'unite).
   L'appelant recupere la valeur dans AX (INTEGER/LOGICAL) ou
   DX:AX (REAL).
   ============================================================ }
@@ -8300,7 +7992,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 24 - BLOCK DATA ET UNITES DE COMPILATION MULTIPLES
+  BLOCK DATA ET UNITES DE COMPILATION MULTIPLES
   ============================================================ }
 
 { --------------------------------------------------------------------------
@@ -8463,7 +8155,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - PROGRAMME PRINCIPAL (PROGRAM nom)
+  PROGRAMME PRINCIPAL (PROGRAM nom)
   ============================================================
   PROGRAM [nom] : unite principale en F77.
   Au point d'entree START (deja ecrit par GenProgramEntry), on emet :
@@ -8538,7 +8230,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 23 - RUNTIME FORTRAN 77 (_FRT_xxx)
+  RUNTIME FORTRAN 77 (_FRT_xxx)
   ============================================================
   Toutes les routines sont emises dans tmp_file (via SwitchToTmp).
   AppendTmpToOut les recopie dans out_file avant GenFileEnd.
@@ -8621,12 +8313,12 @@ Begin
   R(FRT_PFX + 'MSG_FALSE DB  ''.FALSE.''');
   R(FRT_PFX + 'MSG_PAUSE DB  ''PAUSE'', 0Dh, 0Ah, ''$''');
 
-  { Blocs COMMON, variables statiques et subroutines du programme (TODO 24) }
+  { Blocs COMMON, variables statiques et subroutines du programme }
   GenAllVarDecls(0);
   R('        .CODE');
   R('');
 
-  { Directives PUBLIC et EXTRN (TODO 24) }
+  { Directives PUBLIC et EXTRN }
   GenPublicDecls;
   GenExtrnDecls;
 
@@ -9362,48 +9054,54 @@ End;
   Programme principal
   ============================================================ }
 
-Begin
-  InitTables;
-  ParseArgs;
-  OpenFiles;
-
-  Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
-
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  WriteLn('F77C86 - Cette commande permet de lancer le compilateur Fortran 77 pour l''assembleur de ',
+          'microprocesseur 8086');
+  WriteLn;
+  Writeln('Syntaxe : F77C86 [options] source.f [sortie.asm]');
+  WriteLn;
+  Writeln('Options :');
+  Writeln('  -v     : mode verbeux (afficher les etapes)');
+  Writeln('  -d     : mode debogage (commentaires supplementaires)');
+  Writeln('  -nr    : ne pas emettre le runtime FRT dans le .ASM');
+  Writeln('  -h     : afficher cette aide');
+  Writeln('Source : fichier .F ou .F77 en format fixe Fortran 77');
+  Writeln('Sortie : fichier .ASM au format MASM/TASM, modele SMALL');
+  Halt(0);
+ End;
+ InitTables;
+ ParseArgs;
+ OpenFiles;
+ Writeln('F77C86 v', F77_VERSION, ' - Compilation de ', src_fname);
   { Phase 1 : Entete ASM + segments vides }
-  GenProgramHeader;
-  GenDataSegBegin;
-  GenDataSegEnd;
-  GenCodeSegBegin;
-  GenProgramEntry;
-
+ GenProgramHeader;
+ GenDataSegBegin;
+ GenDataSegEnd;
+ GenCodeSegBegin;
+ GenProgramEntry;
   { Phase 2 : Parser le source F77 }
-  LexInit;
-  Repeat
-    While cur_tok.kind = TK_NEWLINE Do LexNext;
-    If cur_tok.kind = TK_EOF Then Break;
-    ParseStatement;
-  Until cur_tok.kind = TK_EOF;
-
+ LexInit;
+ Repeat
+  While cur_tok.kind = TK_NEWLINE Do LexNext;
+  If cur_tok.kind = TK_EOF Then Break;
+  ParseStatement;
+ Until cur_tok.kind = TK_EOF;
   { Si le source n'avait pas d'enonce END pour le programme principal }
-  If Not prog_epilogue_done Then
-    GenProgramEpilogue;
-
+ If Not prog_epilogue_done Then GenProgramEpilogue;
   { Phase 3 : Emettre les routines runtime dans tmp_file }
-  GenRuntimeRoutines;
-
+ GenRuntimeRoutines;
   { Phase 4 : Fusionner tmp_file dans out_file (subroutines + runtime) }
-  AppendTmpToOut;
-
+ AppendTmpToOut;
   { Phase 5 : Directive de fin de fichier ASM }
-  GenFileEnd('START');
-
-  CloseFiles;
-
-  Writeln('Compilation terminee : ', err_count, ' erreur(s), ',
-          warn_count, ' avertissement(s).');
-  Writeln('Statistiques         : ', phys_lines, ' ligne(s) F77, ',
-          sym_count,  ' symbole(s), ',
-          lbl_count,  ' etiquette(s) F77, ',
-          proc_count, ' procedure(s).');
-  If err_count > 0 Then Halt(1);
-End.
+ GenFileEnd('START');
+ CloseFiles;
+ Writeln('Compilation terminee : ', err_count, ' erreur(s), ',
+         warn_count, ' avertissement(s).');
+ Writeln('Statistiques         : ', phys_lines, ' ligne(s) F77, ',
+         sym_count,  ' symbole(s), ',
+         lbl_count,  ' etiquette(s) F77, ',
+         proc_count, ' procedure(s).');
+ If err_count > 0 Then Halt(1);
+END.

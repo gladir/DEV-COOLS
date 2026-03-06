@@ -1,5 +1,5 @@
 ; Genere par F77C86 v1.0 - 2026-03-04
-; Source : SAMPLES\F77\arith.f
+; Source : samples\f77\arith.f
 
         .MODEL SMALL
         .STACK 512

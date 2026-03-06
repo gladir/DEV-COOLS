@@ -249,17 +249,18 @@
             BEGIN { } -> ParseBlock inline (emission immediate)
             END { } -> skip du bloc (stub)
 
-  TODO 22 - REFERENCES ET DEREFERENCEMENT
-            Constructeur de reference : \$scalar -> MOV AX, offset [BP-n]
-              \@arr -> MOV AX, OFFSET _PRV_arr  \%hash -> idem
-              \&sub -> MOV AX, OFFSET _PRF_sub
-            Dereferencement scalaire : $$ref, ${$ref} -> MOV AX, [BX]
-            Dereferencement tableau : @$ref, @{$ref} -> utiliser ptr comme base
-            Dereferencement hash : %$ref, %{$ref}
-            Operateur fleche : $ref->[$i], $ref->{key}, $ref->()
-            Tableaux de references : @aoa (array of arrays) -> avertissement
-            Hashes de references : %hoh -> avertissement
-            Verification ref($v) -> chaine 'SCALAR'/'ARRAY'/'HASH'/'CODE'
+  TODO 22 - REFERENCES ET DEREFERENCEMENT  [IMPLEMENTE]
+            \$scalar -> LEA AX,[BP-n] (my) ou MOV AX,OFFSET (our)
+            \@arr -> LEA AX,[BP-n] ou MOV AX,OFFSET (cas speciaux avant ParsePrimary)
+            \%hash -> idem
+            $$ref -> MOV BX,[ptr]; MOV AX,[BX]  (TK_SCALAR val='' -> deref)
+            ${$ref} -> idem avec accolades
+            @$ref -> compte du tableau reference (TK_ARRAY_SIG val='' -> deref)
+            $ref->[$i] -> load ptr, SHL idx*2+2, MOV AX,[BX+SI]
+            $ref->{key} -> stub : avertissement + XOR AX,AX
+            $ref->() -> deja en place (TODO 17)
+            ref($v) -> 'SCALAR'/'ARRAY'/'HASH'/'CODE' selon TypeIdx compile
+            @aoa / %hoh -> avertissement
 
   TODO 23 - I/O FICHIERS (basique)
             open(my $fh, '<', 'fichier.txt') -> INT 21h AH=3Dh
@@ -2908,7 +2909,7 @@ Begin
   { Operateurs Perl }
   Case C Of
     '+','-','*','/','.',
-    '!','=','<','>','&','|','^','~','?',':':
+    '!','=','<','>','&','|','^','~','?',':','\':
       Begin LexScanOp(T, SL, SC); Exit; End;
   End;
 
@@ -3629,9 +3630,43 @@ Begin
       Exit;
     End;
     { \ (reference) : LEA si lvalue memoire, sinon adresse OFFSET }
+    { TODO 22 : \@arr, \%hash speciaux (avant ParsePrimary recursif) }
     If Op = '\' Then
     Begin
       ParserAdvance;
+      { \@arr : retourner l''adresse du tableau }  
+      If CurToken.Kind = TK_ARRAY_SIG Then
+      Begin
+        NStr := CurToken.Val;
+        Idx  := SymFindCat(NStr, SC_ARRAY_VAR);
+        ParserAdvance;
+        If Idx >= 0 Then
+        Begin
+          If SymTab[Idx].IsMy Then
+          Begin Str(SymTab[Idx].Offset, S); EmitInstr('LEA', 'AX, [BP-' + S + ']'); End
+          Else  EmitInstr('MOV', 'AX, OFFSET ' + SymTab[Idx].MangledName);
+        End Else EmitInstr('XOR', 'AX, AX');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY;   { ref to array }
+        Res.ImmVal := 0; Res.Offset := 0;
+        Exit;
+      End;
+      { \%hash : retourner l''adresse du hash }
+      If CurToken.Kind = TK_HASH_SIG Then
+      Begin
+        NStr := CurToken.Val;
+        Idx  := SymFindCat(NStr, SC_HASH_VAR);
+        ParserAdvance;
+        If Idx >= 0 Then
+        Begin
+          If SymTab[Idx].IsMy Then
+          Begin Str(SymTab[Idx].Offset, S); EmitInstr('LEA', 'AX, [BP-' + S + ']'); End
+          Else  EmitInstr('MOV', 'AX, OFFSET ' + SymTab[Idx].MangledName);
+        End Else EmitInstr('XOR', 'AX, AX');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_HASH;    { ref to hash }
+        Res.ImmVal := 0; Res.Offset := 0;
+        Exit;
+      End;
+      { Cas general : \$scalar ou \expr }
       ParsePrimary(Sub);
       If (Sub.Kind = EK_MEM) And (Sub.ImmVal = 1) Then
       Begin
@@ -3679,17 +3714,46 @@ Begin
     Res.ImmVal := 0; Res.Offset := 0;
     Exit;
   End;
-  { ---- ref($v) : AX = (AX != 0) ---- }
+  { ---- ref($v) : retourne chaine type ou 0 (TODO 22) ---- }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'ref') Then
   Begin
     ParserAdvance;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
     ParsePrimary(Sub);
-    ExprLoad(Sub);
-    EmitInstr('TEST',  'AX, AX');
-    EmitInstr('SETNE', 'AL');
-    EmitInstr('MOVZX', 'AX, AL');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+    { Determination du type au moment de la compilation selon TypeIdx }
+    Case Sub.TypeIdx Of
+      TY_IDX_REF :
+      Begin
+        Idx := DataAddStr('SCALAR');
+        If Idx >= 0 Then EmitInstr('MOV', 'AX, OFFSET ' + DataTab[Idx].LblName)
+        Else EmitInstr('XOR', 'AX, AX');
+      End;
+      TY_IDX_ARRAY :
+      Begin
+        Idx := DataAddStr('ARRAY');
+        If Idx >= 0 Then EmitInstr('MOV', 'AX, OFFSET ' + DataTab[Idx].LblName)
+        Else EmitInstr('XOR', 'AX, AX');
+      End;
+      TY_IDX_HASH :
+      Begin
+        Idx := DataAddStr('HASH');
+        If Idx >= 0 Then EmitInstr('MOV', 'AX, OFFSET ' + DataTab[Idx].LblName)
+        Else EmitInstr('XOR', 'AX, AX');
+      End;
+      TY_IDX_CODE :
+      Begin
+        Idx := DataAddStr('CODE');
+        If Idx >= 0 Then EmitInstr('MOV', 'AX, OFFSET ' + DataTab[Idx].LblName)
+        Else EmitInstr('XOR', 'AX, AX');
+      End;
+    Else
+      { Non-reference : tester si non-nul (compatibilite) }
+      ExprLoad(Sub);
+      EmitInstr('TEST',  'AX, AX');
+      EmitInstr('SETNE', 'AL');
+      EmitInstr('MOVZX', 'AX, AL');
+    End;
     Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
     Res.ImmVal := 0; Res.Offset := 0;
     Exit;
@@ -4076,6 +4140,52 @@ Begin
         Exit;
       End;
     End;
+    { TODO 22 : $$ref et deref-brace -> dereferencement scalaire (NStr vide) }
+    If NStr = '' Then
+    Begin
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        { $$ref : charger $ref dans BX puis AX = [BX] }
+        Idx := SymFind(CurToken.Val, '$');
+        ParserAdvance;
+        If Idx >= 0 Then
+        Begin
+          Sub := ExprMakeMem(Idx);
+          ExprLoad(Sub);
+          EmitInstr('MOV', 'BX, AX');
+          EmitInstr('MOV', 'AX, [BX]');
+        End Else EmitInstr('XOR', 'AX, AX');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+        Res.ImmVal := 0; Res.Offset := 0;
+        ParsePostfixOps(Res);
+        Exit;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        { deref-brace-ref : idem avec accolades }
+        ParserAdvance;  { consommer { }
+        If CurToken.Kind = TK_SCALAR Then
+        Begin
+          Idx := SymFind(CurToken.Val, '$');
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then ParserAdvance;
+          If Idx >= 0 Then
+          Begin
+            Sub := ExprMakeMem(Idx);
+            ExprLoad(Sub);
+            EmitInstr('MOV', 'BX, AX');
+            EmitInstr('MOV', 'AX, [BX]');
+          End Else EmitInstr('XOR', 'AX, AX');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+          Res.ImmVal := 0; Res.Offset := 0;
+          ParsePostfixOps(Res);
+          Exit;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then ParserAdvance;
+      End;
+      ExprMakeNone(Res);
+      Exit;
+    End;
     If Idx < 0 Then
     Begin
       If Opts.Strict Then
@@ -4087,11 +4197,32 @@ Begin
     ParsePostfixOps(Res);
     Exit;
   End;
-  { ---- @arr en contexte scalaire -> nombre d''elements ---- }
+  { ---- @arr / %hash en contexte scalaire ou dereferencement ---- }
   If (CurToken.Kind = TK_ARRAY_SIG) Or (CurToken.Kind = TK_HASH_SIG) Then
   Begin
     If CurToken.Kind = TK_ARRAY_SIG Then
     Begin
+      { TODO 22 : @$ref -> dereference reference tableau (sigil vide) }
+      If CurToken.Val = '' Then
+      Begin
+        ParserAdvance;  { consommer @-sigil vide }
+        If CurToken.Kind = TK_SCALAR Then
+        Begin
+          Idx := SymFind(CurToken.Val, '$');
+          ParserAdvance;
+          If Idx >= 0 Then
+          Begin
+            Sub := ExprMakeMem(Idx);
+            ExprLoad(Sub);
+            EmitComment('@$ref: dereferencement tableau');
+            EmitInstr('MOV', 'BX, AX');
+            EmitInstr('MOV', 'AX, [BX]');
+          End Else EmitInstr('XOR', 'AX, AX');
+        End Else EmitInstr('XOR', 'AX, AX');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+        Res.ImmVal := 0; Res.Offset := 0;
+        Exit;
+      End;
       { scalar(@arr) = mot [BP-Offset] = count }
       Idx := SymFindCat(CurToken.Val, SC_ARRAY_VAR);
       If Idx >= 0 Then
@@ -5378,6 +5509,7 @@ Procedure ParsePostfixOps(Var Res : TExprVal);
 Var
   ArgCnt : Integer;
   S      : TString;
+  Sub    : TExprVal;   { TODO 22 : expression d''index pour ->[] }
 Begin
   Repeat
     If CurToken.Kind = TK_OP Then
@@ -5386,22 +5518,51 @@ Begin
       Begin ParserAdvance; EmitIncrDecr(Res, True,  False, Res); Continue; End;
       If CurToken.Val = '--' Then
       Begin ParserAdvance; EmitIncrDecr(Res, False, False, Res); Continue; End;
-      { TODO 17 : appel via coderef $f->(args) }
+      { TODO 17/22 : operateur fleche -> }
       If CurToken.Val = '->' Then
       Begin
         ParserAdvance;  { consommer '->' }
+        { $ref->() : appel via coderef }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
-          ExprLoad(Res);         { AX = adresse de la sous-routine }
-          EmitInstr('MOV', 'BX, AX');  { sauver dans BX }
+          ExprLoad(Res);
+          EmitInstr('MOV', 'BX, AX');
           ParseCallArgs;
           ArgCnt := GCallArgCount;
           EmitInstr('CALL', 'BX');
           If ArgCnt > 0 Then
-          Begin
-            Str(ArgCnt * 2, S);
-            EmitInstr('ADD', 'SP, ' + S);
-          End;
+          Begin Str(ArgCnt * 2, S); EmitInstr('ADD', 'SP, ' + S); End;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+          Res.ImmVal := 0; Res.Offset := 0;
+          Continue;
+        End;
+        { TODO 22 : $ref->[$i] : acces element tableau reference }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          ExprLoad(Res);               { AX = ptr vers tableau }
+          EmitInstr('MOV', 'BX, AX'); { BX = base du tableau  }
+          ParserAdvance;               { consommer '[' }
+          ParseExpr(Sub);
+          ExprLoad(Sub);               { AX = index }
+          EmitInstr('SHL', 'AX, 1');   { AX = idx * 2 }
+          EmitInstr('ADD', 'AX, 2');   { +2 pour sauter le count }
+          EmitInstr('MOV', 'SI, AX');
+          EmitInstr('MOV', 'AX, [BX+SI]'); { element du tableau }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then ParserAdvance;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+          Res.ImmVal := 0; Res.Offset := 0;
+          Continue;
+        End;
+        { TODO 22 : ref-fleche-cle : acces element hash reference (stub) }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          ParserAdvance;  { consommer '{' }
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_STRING) Or
+             (CurToken.Kind = TK_SCALAR) Then
+            ParserAdvance;  { ignorer la cle }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then ParserAdvance;
+          EmitComment('$ref->{key}: dereferencement hash (stub)');
+          EmitInstr('XOR', 'AX, AX');
           Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
           Res.ImmVal := 0; Res.Offset := 0;
           Continue;
