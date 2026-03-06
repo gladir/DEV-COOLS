@@ -1637,6 +1637,75 @@ Begin
     TypeSizeof := TypeTab[Idx].Size;
 End;
 
+{ ---- TypeKindOf : retourne le TTypeKind d un type ----------- }
+Function TypeKindOf(Idx : Integer) : TTypeKind;
+Begin
+  If (Idx >= 0) And (Idx < TypeCount) Then
+    TypeKindOf := TypeTab[Idx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+{ ---- TypeIsNumeric : vrai si le type est numerique ---------- }
+{ En AWK, number et uninit (converti implicitement en 0) sont   }
+{ numeriques.                                                    }
+Function TypeIsNumeric(Idx : Integer) : Boolean;
+Var K : TTypeKind;
+Begin
+  K := TypeKindOf(Idx);
+  TypeIsNumeric := (K = TYK_NUMBER) Or (K = TYK_UNINITIALIZED);
+End;
+
+{ ---- TypeIsPtr : vrai si le type est un pointeur ------------ }
+{ string, regexp et array sont des pointeurs en 16 bits.        }
+Function TypeIsPtr(Idx : Integer) : Boolean;
+Var K : TTypeKind;
+Begin
+  K := TypeKindOf(Idx);
+  TypeIsPtr := (K = TYK_STRING) Or (K = TYK_REGEXP) Or (K = TYK_ARRAY);
+End;
+
+{ ---- TypeCanCoerce : vrai si la coercition src -> dst est possible }
+{ En AWK toute coercition scalaire est possible (nombre <-> chaine). }
+{ Les tableaux ne se convertissent pas en scalaires.                 }
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Begin
+  TypeCanCoerce := True;
+  If SrcIdx = DstIdx Then Exit;
+  If (SrcIdx < 0) Or (DstIdx < 0) Then Exit;
+  If (TypeKindOf(SrcIdx) = TYK_ARRAY) And
+     (TypeKindOf(DstIdx) <> TYK_ARRAY) Then
+    TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type resultant d une operation ------ }
+{ Concatenation -> string, comparaison/logique -> number,       }
+{ arithmetique : si les deux sont numeriques -> number,         }
+{ si l un est chaine -> string, sinon -> number.                }
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Begin
+  { Concatenation toujours chaine }
+  If Op = 'CONCAT' Then
+  Begin TypeCoerceResult := TY_IDX_STRING; Exit; End;
+  { Comparaison : resultat numerique (0 ou 1) }
+  If (Op = '==') Or (Op = '!=') Or (Op = '<') Or
+     (Op = '<=') Or (Op = '>') Or (Op = '>=') Or
+     (Op = '~') Or (Op = '!~') Then
+  Begin TypeCoerceResult := TY_IDX_NUMBER; Exit; End;
+  { Logiques }
+  If (Op = '&&') Or (Op = '||') Or (Op = '!') Then
+  Begin TypeCoerceResult := TY_IDX_NUMBER; Exit; End;
+  { Arithmetique }
+  If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+    TypeCoerceResult := TY_IDX_NUMBER
+  Else If (TypeKindOf(LeftIdx) = TYK_STRING) Or
+          (TypeKindOf(RightIdx) = TYK_STRING) Then
+    TypeCoerceResult := TY_IDX_STRING
+  Else
+    TypeCoerceResult := TY_IDX_NUMBER;
+End;
+
 { ---- ExprMakeImm : construire une valeur immediate --------- }
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal);
@@ -2055,6 +2124,36 @@ Begin
   EmitInstr('MOV', 'SP, BP');
   EmitInstr('POP', 'BP');
   EmitInstr('RET', '');
+End;
+
+{ ---- EmitCoerce : emettre le code de coercition AWK ---------- }
+{ Contexte numerique : chaine -> CALL _AWRT_STRTONUM -> AX      }
+{ Contexte chaine : nombre -> CALL _AWRT_NUMTOSTR -> AX=ptr     }
+Procedure EmitCoerce(SrcTypeIdx, DstTypeIdx : Integer);
+Var
+  SK, DK : TTypeKind;
+Begin
+  If SrcTypeIdx = DstTypeIdx Then Exit;
+  SK := TypeKindOf(SrcTypeIdx);
+  DK := TypeKindOf(DstTypeIdx);
+  { Chaine -> nombre }
+  If (SK = TYK_STRING) And (DK = TYK_NUMBER) Then
+  Begin
+    EmitInstr('CALL', AW_RT_PFX + 'STRTONUM');
+    Exit;
+  End;
+  { Nombre -> chaine }
+  If (SK = TYK_NUMBER) And (DK = TYK_STRING) Then
+  Begin
+    EmitInstr('CALL', AW_RT_PFX + 'NUMTOSTR');
+    Exit;
+  End;
+  { Non initialise -> nombre : AX = 0 }
+  If (SK = TYK_UNINITIALIZED) And (DK = TYK_NUMBER) Then
+  Begin
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
 End;
 
 { ============================================================
