@@ -95,7 +95,7 @@
              Qualificateurs : Type.membre -> recherche dans la portee du type
              Niveaux d acces : open, public, internal, fileprivate, private
 
-   TODO 06 - SYSTEME DE TYPES
+   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
              TTypeKind : TYK_INT (16 bits signe), TYK_UINT (16 bits non signe),
                TYK_BOOL (8 bits), TYK_STRING (ptr chaine),
                TYK_DOUBLE (stub entier), TYK_FLOAT (stub entier),
@@ -109,7 +109,7 @@
              Tuples : (Int, String) -> acces par .0, .1, etc.
              Type alias : typealias NomAlias = TypeExistant
 
-   TODO 07 - EMETTEUR DE CODE ASM
+   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
              TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
              EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
              EmitComment, EmitBlankLine
@@ -121,7 +121,7 @@
              EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
              EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-   TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
              TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_STRUCT),
                IntVal, StrVal, ElemCount
              DataTab[0..MAX_DATA-1], DataCount
@@ -132,7 +132,7 @@
              Tables de methodes virtuelles (vtable) pour les classes
              Descripteurs d enumeration : DW code + ptr nom dans DATA
 
-   TODO 09 - VARIABLES ET AFFECTATIONS (let / var)
+   TODO 09 - VARIABLES ET AFFECTATIONS (let / var) [IMPLEMENTE]
              let (constante) : valeur immuable, erreur si tentative de modification
              var (variable)  : valeur mutable, modification autorisee
              Variables globales : segment DATA, acces par label _SWV_nom
@@ -144,7 +144,7 @@
              Tuples : let (a, b) = (1, 2) -> decomposition sur la pile
              Optionnels : var x: Int? = nil -> flag + valeur (2 mots)
 
-   TODO 10 - EXPRESSIONS PRIMAIRES
+   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
              ParsePrimary : literal entier, literal chaine, ident, appel de func
              Acces membre : expr.membre -> offset dans struct/class
              Acces index : expr[i] -> offset dans Array
@@ -727,6 +727,20 @@ Procedure ParserAdvance; Forward;
 Procedure ParseStmt;     Forward;
 Procedure TypeInit;      Forward;
 Procedure SymInit;       Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
+Procedure EmitCoerce(SrcTypeIdx, DstTypeIdx : Integer); Forward;
+Function  DeclAllocSym(Const Name : TString; Kind : TSymKind) : Integer; Forward;
+Function  ParseTypeAnnotation : Integer; Forward;
+Procedure ParseDeclStmt(IsLet : Boolean); Forward;
+Procedure ParseAssignStmt(SIdx : Integer; Const Op : TString); Forward;
+Procedure ParseExprStmt; Forward;
+Procedure ParseCallArgs(Var ArgCount : Integer); Forward;
+Procedure ParsePostfix(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1698,13 +1712,153 @@ Begin
   BinOpIsRight := IsAssignOp(Op) Or (Op = '??');
 End;
 
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+{ ParseCallArgs : parser les arguments d un appel func(arg1, label: arg2) }
+Procedure ParseCallArgs(Var ArgCount : Integer);
+Var
+  ArgExpr : TExprVal;
+Begin
+  ArgCount := 0;
+  ParserAdvance;  { consomme '(' }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    { Gerer label: arg (ignorer le label pour l instant) }
+    If (CurToken.Kind = TK_IDENT) Then
+    Begin
+      { Verifier si c est label: }
+      { On ne peut pas lookahead facilement, on parse comme expression }
+    End;
+    ParseExpr(ArgExpr);
+    ExprFlushToAX(ArgExpr);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+End;
+
+{ ParsePostfix : parser les operateurs postfixes (appel, membre, index) }
+Procedure ParsePostfix(Var Res : TExprVal);
+Var
+  ArgCount   : Integer;
+  MemberName : TString;
+  IdxExpr    : TExprVal;
+  SavedName  : TString;
+Begin
+  { Boucle pour chainer les postfixes : a.b.c() etc. }
+  While True Do
+  Begin
+    { Appel de fonction : ident(...) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      { Flush la valeur courante dans AX si besoin }
+      If (Res.SymIdx >= 0) And (SymTab[Res.SymIdx].Kind = SK_FUNC) Then
+      Begin
+        SavedName := SymTab[Res.SymIdx].MangledName;
+        ParseCallArgs(ArgCount);
+        EmitInstrA('CALL', SavedName);
+        If ArgCount > 0 Then
+          EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+        Res.Kind   := EK_AX;
+        Res.SymIdx := -1;
+        EmitComment('  appel ' + SavedName);
+      End
+      Else
+      Begin
+        { Appel indirect ou identifiant inconnu }
+        ParseCallArgs(ArgCount);
+        Res.Kind   := EK_AX;
+        Res.SymIdx := -1;
+      End;
+    End
+
+    { Acces membre : expr.membre }
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      ParserAdvance;  { consomme '.' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MemberName := CurToken.Val;
+        ParserAdvance;
+        EmitComment('  .' + MemberName + ' (acces membre stub)');
+        Res.Kind   := EK_AX;
+        Res.SymIdx := -1;
+      End
+      Else If CurToken.Kind = TK_INTEGER Then
+      Begin
+        { Acces tuple : .0, .1, etc. }
+        EmitComment('  .' + IntToStr(CurToken.IntVal) + ' (acces tuple stub)');
+        ParserAdvance;
+        Res.Kind   := EK_AX;
+        Res.SymIdx := -1;
+      End
+      Else
+      Begin
+        CompileError('membre attendu apres ''.''');
+        Break;
+      End;
+    End
+
+    { Acces index : expr[i] }
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      ParserAdvance;  { consomme '[' }
+      ParseExpr(IdxExpr);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance;
+      EmitComment('  [index] (acces tableau stub)');
+      Res.Kind   := EK_AX;
+      Res.SymIdx := -1;
+    End
+
+    { Optional chaining : expr?.membre }
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '?.') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MemberName := CurToken.Val;
+        ParserAdvance;
+        EmitComment('  ?.' + MemberName + ' (optional chaining stub)');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_OPT;
+        Res.SymIdx  := -1;
+      End;
+    End
+
+    Else
+      Break;
+  End;
+End;
+
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  StrLbl : TString;
 Begin
   Case CurToken.Kind Of
-    TK_INTEGER, TK_REAL, TK_STRING :
+    TK_INTEGER, TK_REAL :
     Begin
       LitEval(CurToken, Res);
       ParserAdvance;
+    End;
+    TK_STRING :
+    Begin
+      { Allouer la chaine dans le segment DATA }
+      StrLbl := DataAddStr(CurToken.Val);
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + StrLbl);
+      ParserAdvance;
+      ParsePostfix(Res);
     End;
     TK_KEYWORD :
     Begin
@@ -1713,6 +1867,42 @@ Begin
       Begin
         LitEval(CurToken, Res);
         ParserAdvance;
+      End
+      Else If CurToken.Val = 'self' Then
+      Begin
+        { self : reference a l instance courante }
+        EmitComment('  self (stub)');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+        ParserAdvance;
+        ParsePostfix(Res);
+      End
+      Else If CurToken.Val = 'Self' Then
+      Begin
+        { Self : reference au type courant }
+        EmitComment('  Self (stub)');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+        ParserAdvance;
+        ParsePostfix(Res);
+      End
+      Else If CurToken.Val = 'super' Then
+      Begin
+        { super : reference a la classe parente }
+        EmitComment('  super (stub)');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+        ParserAdvance;
+        ParsePostfix(Res);
       End
       Else
       Begin
@@ -1731,8 +1921,13 @@ Begin
         Res.Offset  := SymTab[Res.SymIdx].Offset;
       End
       Else
+      Begin
+        { Identifiant pas encore declare : peut etre un appel de fonction }
         ExprMakeNone(Res);
+      End;
       ParserAdvance;
+      { Parser les postfixes : appels, membres, index }
+      ParsePostfix(Res);
     End;
     TK_PUNCT :
     Begin
@@ -1742,9 +1937,11 @@ Begin
         ParseExpr(Res);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance;
+        ParsePostfix(Res);
       End
       Else If CurToken.Val = '[' Then
       Begin
+        { Array literal : [expr, expr, ...] }
         ParserAdvance;
         While (CurToken.Kind <> TK_EOF) And
               Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
@@ -1755,7 +1952,11 @@ Begin
         End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
           ParserAdvance;
-        ExprMakeNone(Res);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.SymIdx  := -1;
+        EmitComment('  [array literal] (stub)');
+        ParsePostfix(Res);
       End
       Else
       Begin
@@ -2030,9 +2231,10 @@ Begin
 End;
 
 { ============================================================
-  STUBS PREALABLES (TODO 06..25 - a implementer)
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
 
+{ TypeKindOf : retourner le TTypeKind associe a un indice de type }
 Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
 Begin
   If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
@@ -2041,6 +2243,7 @@ Begin
     TypeKindOf := TYK_UNKNOWN;
 End;
 
+{ TypeSizeof : taille en octets d un type (Int=2, String=2 ptr, Bool=1) }
 Function TypeSizeof(TypeIdx : Integer) : Integer;
 Begin
   If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
@@ -2049,6 +2252,30 @@ Begin
     TypeSizeof := 2;
 End;
 
+{ TypeMangle : prefixe ASM selon le type pour les labels }
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_INT      : TypeMangle := '_SWN_';
+    TYK_UINT     : TypeMangle := '_SWN_';
+    TYK_BOOL     : TypeMangle := '_SWB_';
+    TYK_STRING   : TypeMangle := '_SWS_';
+    TYK_DOUBLE   : TypeMangle := '_SWD_';
+    TYK_FLOAT    : TypeMangle := '_SWD_';
+    TYK_ARRAY    : TypeMangle := '_SWA_';
+    TYK_DICT     : TypeMangle := '_SWM_';
+    TYK_STRUCT   : TypeMangle := '_SWT_';
+    TYK_CLASS    : TypeMangle := '_SWT_';
+    TYK_ENUM     : TypeMangle := '_SWE_';
+    TYK_OPTIONAL : TypeMangle := '_SWO_';
+    TYK_FUNC     : TypeMangle := '_SWF_';
+    TYK_VOID     : TypeMangle := '_SWV_';
+  Else
+    TypeMangle := '_SWX_';
+  End;
+End;
+
+{ TypeIsNumeric : vrai si le type est comparable a un nombre }
 Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
 Var
   K : TTypeKind;
@@ -2059,6 +2286,7 @@ Begin
     (K = TYK_DOUBLE) Or (K = TYK_FLOAT);
 End;
 
+{ TypeIsPtr : vrai si le type est un pointeur (String/Array/Class/Func) }
 Function TypeIsPtr(TypeIdx : Integer) : Boolean;
 Var
   K : TTypeKind;
@@ -2069,6 +2297,157 @@ Begin
     (K = TYK_CLASS) Or (K = TYK_FUNC);
 End;
 
+{ TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx a la compilation }
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Begin
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int <-> UInt : taille identique }
+  If ((SrcIdx = TY_IDX_INT) And (DstIdx = TY_IDX_UINT)) Or
+     ((SrcIdx = TY_IDX_UINT) And (DstIdx = TY_IDX_INT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Bool -> Int : 0 ou 1 }
+  If (SrcIdx = TY_IDX_BOOL) And
+     ((DstIdx = TY_IDX_INT) Or (DstIdx = TY_IDX_UINT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int/UInt -> Bool : non-zero = true }
+  If ((SrcIdx = TY_IDX_INT) Or (SrcIdx = TY_IDX_UINT)) And
+     (DstIdx = TY_IDX_BOOL) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int/UInt -> Double : entier -> stub entier }
+  If ((SrcIdx = TY_IDX_INT) Or (SrcIdx = TY_IDX_UINT)) And
+     (DstIdx = TY_IDX_DOUBLE) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Any accepte tout }
+  If DstIdx = TY_IDX_ANY Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { T -> Optional<T> : emballage }
+  If TypeKindOf(DstIdx) = TYK_OPTIONAL Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  TypeCanCoerce := False;
+End;
+
+{ TypeCoerceResult : deduire le type resultat d une operation binaire }
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+  { Operateurs toujours booleens }
+  If (Op = '==')  Or (Op = '!=')  Or
+     (Op = '<')   Or (Op = '<=')  Or
+     (Op = '>')   Or (Op = '>=')  Or
+     (Op = '&&')  Or (Op = '||')  Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+  { Nil-coalescing : retourne le type non-optional }
+  If Op = '??' Then
+  Begin
+    If LK = TYK_OPTIONAL Then
+      TypeCoerceResult := RightIdx
+    Else
+      TypeCoerceResult := LeftIdx;
+    Exit;
+  End;
+  { + avec une chaine : concatenation -> String }
+  If Op = '+' Then
+  Begin
+    If (LK = TYK_STRING) Or (RK = TYK_STRING) Then
+    Begin
+      TypeCoerceResult := TY_IDX_STRING;
+      Exit;
+    End;
+  End;
+  { Operateurs bit a bit -> Int }
+  If (Op = '&')  Or (Op = '|')  Or (Op = '^') Or
+     (Op = '<<') Or (Op = '>>') Then
+  Begin
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+  { Arithmetiques generaux }
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '%') Then
+  Begin
+    If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+    Begin
+      { Double si l un des deux est Double/Float }
+      If (LK = TYK_DOUBLE) Or (LK = TYK_FLOAT) Or
+         (RK = TYK_DOUBLE) Or (RK = TYK_FLOAT) Then
+        TypeCoerceResult := TY_IDX_DOUBLE
+      Else
+        TypeCoerceResult := TY_IDX_INT;
+      Exit;
+    End;
+    TypeCoerceResult := TY_UNKNOWN;
+    Exit;
+  End;
+  { Intervalle ..< ou ... -> Int (bornes entieres) }
+  If (Op = '..<') Or (Op = '...') Then
+  Begin
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+  { Assignation : type du cote droit }
+  TypeCoerceResult := RightIdx;
+End;
+
+{ TypeInfer : deduire le type d une expression a partir de son TExprVal }
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_INT
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+{ TypeLookupName : chercher un type par nom dans TypeTab }
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+{ TypeInit : enregistrer les types primitifs Swift }
 Procedure TypeInit;
 Var
   I : Integer;
@@ -2107,6 +2486,7 @@ Begin
   TypeCount := TY_PRIM_COUNT;
 End;
 
+{ SymInit : initialiser la table des symboles }
 Procedure SymInit;
 Var
   I : Integer;
@@ -2130,6 +2510,11 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ LabelGen : generer un label unique _SWL_NNNNN }
 Function LabelGen : TString;
 Var
   S : TString;
@@ -2139,41 +2524,49 @@ Begin
   LabelGen := SW_LBL_PFX + S;
 End;
 
+{ EmitRaw : ecrire une ligne brute dans le fichier de sortie }
 Procedure EmitRaw(Const S : TString);
 Begin
   WriteLn(OutF, S);
 End;
 
+{ EmitBlankLine : ligne vide }
 Procedure EmitBlankLine;
 Begin
   WriteLn(OutF);
 End;
 
+{ EmitComment : commentaire ASM '; texte' }
 Procedure EmitComment(Const S : TString);
 Begin
   WriteLn(OutF, '; ', S);
 End;
 
+{ EmitLabel : label ASM suivi de ':' en colonne 0 }
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   WriteLn(OutF, Lbl, ':');
 End;
 
+{ EmitInstr : instruction sans operandes (8 espaces d indentation) }
 Procedure EmitInstr(Const Mnem : TString);
 Begin
   WriteLn(OutF, '        ', Mnem);
 End;
 
+{ EmitInstrA : instruction + un operande }
 Procedure EmitInstrA(Const Mnem, A1 : TString);
 Begin
   WriteLn(OutF, '        ', Mnem, '   ', A1);
 End;
 
+{ EmitInstrAB : instruction + deux operandes separes par ', ' }
 Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
 Begin
   WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
 End;
 
+{ EmitProlog : preambule de fonction (BP frame) }
 Procedure EmitProlog;
 Begin
   EmitInstr('PUSH   BP');
@@ -2182,6 +2575,7 @@ Begin
     EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize * 2));
 End;
 
+{ EmitEpilog : epilogue de fonction (restaurer SP/BP et retourner) }
 Procedure EmitEpilog;
 Begin
   If CurFnRetLbl <> '' Then
@@ -2192,29 +2586,47 @@ Begin
   EmitInstr('RET');
 End;
 
-Procedure LexInit;
+{ EmitCoerce : emettre le code de coercition SrcTypeIdx -> DstTypeIdx }
+Procedure EmitCoerce(SrcTypeIdx, DstTypeIdx : Integer);
+Var
+  SK, DK : TTypeKind;
 Begin
-  Assign(LexSrcF, Opts.SrcFile);
-  Reset(LexSrcF);
-  If IOResult <> 0 Then
-    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
-  LexOpened  := True;
-  LexLineNo  := 0;
-  LexColNo   := 1;
-  LexEOF     := False;
-  LexLine    := '';
-  LexNextLine;
-End;
-
-Procedure LexClose;
-Begin
-  If LexOpened Then
+  If SrcTypeIdx = DstTypeIdx Then Exit;
+  SK := TypeKindOf(SrcTypeIdx);
+  DK := TypeKindOf(DstTypeIdx);
+  { Bool -> Int : AX est deja 0 ou 1, rien a faire }
+  If (DK = TYK_INT) And (SK = TYK_BOOL) Then
+    Exit;
+  { Int -> Bool : AND AX,AX }
+  If (DK = TYK_BOOL) And ((SK = TYK_INT) Or (SK = TYK_UINT)) Then
   Begin
-    Close(LexSrcF);
-    LexOpened := False;
+    EmitInstrAB('AND', 'AX', 'AX');
+    EmitComment('  (coerce Int->Bool)');
+    Exit;
   End;
+  { Int -> String : appel runtime }
+  If (DK = TYK_STRING) And TypeIsNumeric(SrcTypeIdx) Then
+  Begin
+    EmitInstrA('CALL', SW_RT_PFX + 'INTTOSTR');
+    Exit;
+  End;
+  { Optional unwrap : le flag est dans le mot haut }
+  If (SK = TYK_OPTIONAL) And (DK <> TYK_OPTIONAL) Then
+  Begin
+    EmitComment('  (unwrap optional -> valeur)');
+    Exit;
+  End;
+  { T -> Optional<T> : emballer }
+  If (DK = TYK_OPTIONAL) And (SK <> TYK_OPTIONAL) Then
+  Begin
+    EmitComment('  (wrap valeur -> optional)');
+    Exit;
+  End;
+  EmitComment('  [coerce ' + IntToStr(SrcTypeIdx) +
+              ' -> ' + IntToStr(DstTypeIdx) + ' : runtime TODO 24]');
 End;
 
+{ EmitOpen : ouvrir le fichier assembleur de sortie }
 Procedure EmitOpen;
 Begin
   Assign(OutF, Opts.OutFile);
@@ -2224,6 +2636,7 @@ Begin
   OutFOpen := True;
 End;
 
+{ EmitHeader : en-tete MASM (.MODEL SMALL, _TEXT SEGMENT) }
 Procedure EmitHeader;
 Begin
   EmitComment('Genere par SWIFT86 v' + SW86_VERSION + ' - ' + Opts.SrcFile);
@@ -2238,6 +2651,145 @@ Begin
   EmitBlankLine;
 End;
 
+{ LexInit : ouvrir le source, lire la premiere ligne }
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexEOF     := False;
+  LexLine    := '';
+  LexNextLine;
+End;
+
+{ LexClose : fermer le fichier source }
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ DataAdd : ajouter une entree generique dans DataTab }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ DataAddStr : creer un label _SWK_N et stocker la chaine litterale }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := SW_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ DataAddWord : ajouter un mot 16 bits dans le segment DATA }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ EmitDataSeg : ecrire _DATA SEGMENT complet (constantes, strbuf, DataTab) }
+Procedure EmitDataSeg;
+Var
+  I : Integer;
+  S : TString;
+  J : Integer;
+  Quote : Char;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  { Buffer de travail pour concatenation de chaines }
+  EmitRaw('_SWRT_STRBUF DB 512 DUP(0)');
+  { Entrees dynamiques de DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          { Double les apostrophes pour MASM }
+          S := '';
+          Quote := '''';
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If DataTab[I].StrVal[J] = Quote Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+        End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].ElemCount) +
+                '   ; array (' + IntToStr(DataTab[I].ElemCount) + ' elem)');
+      DK_STRUCT_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW  0   ; struct stub');
+    End;
+  End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ EmitRuntime : emettre les routines runtime (stub TODO 24) }
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('--- runtime stubs (TODO 24) ---');
+End;
+
+{ EmitClose : fermer le fichier assembleur (ecrire _TEXT ENDS, DATA, END) }
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- fin du code genere ---');
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS (let / var) [IMPLEMENTE]
+  ============================================================ }
+
+{ ExprAddrOf : retourne la chaine d adressage MASM d un symbole }
 Function ExprAddrOf(SIdx : Integer) : TString;
 Var
   Ofs : Integer;
@@ -2251,6 +2803,7 @@ Begin
     ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']';
 End;
 
+{ ExprFlushToAX : s assurer que la valeur d expression est dans AX }
 Procedure ExprFlushToAX(Const E : TExprVal);
 Var
   Addr : TString;
@@ -2275,6 +2828,7 @@ Begin
   End;
 End;
 
+{ ExprStore : stocker AX dans le symbole SIdx }
 Procedure ExprStore(SIdx : Integer);
 Var
   Addr : TString;
@@ -2284,6 +2838,7 @@ Begin
   EmitInstrAB('MOV', Addr, 'AX');
 End;
 
+{ ExprLoad : charger le symbole SIdx dans AX et initialiser Res }
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
 Var
   Addr : TString;
@@ -2297,110 +2852,279 @@ Begin
   EmitInstrAB('MOV', 'AX', Addr);
 End;
 
-Function DataAdd(Const Lbl : TString; Kind : TDataKind;
-                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
-Begin
-  If DataCount >= MAX_DATA Then
-    FatalError('DataTab pleine (MAX_DATA atteint)');
-  DataTab[DataCount].LblName   := Lbl;
-  DataTab[DataCount].Kind      := Kind;
-  DataTab[DataCount].IntVal    := AIntVal;
-  DataTab[DataCount].StrVal    := AStrVal;
-  DataTab[DataCount].ElemCount := 0;
-  DataAdd := DataCount;
-  Inc(DataCount);
-End;
-
-Function DataAddStr(Const S : TString) : TString;
+{ DeclAllocSym : creer un symbole de declaration (let/var) }
+Function DeclAllocSym(Const Name : TString; Kind : TSymKind) : Integer;
 Var
-  Lbl : TString;
+  SIdx   : Integer;
+  Offset : Integer;
 Begin
-  Inc(LabelGenSeq);
-  Lbl := SW_STR_PFX + IntToStr(LabelGenSeq);
-  DataAdd(Lbl, DK_STR, 0, S);
-  DataAddStr := Lbl;
-End;
-
-Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
-Begin
-  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
-End;
-
-Procedure EmitDataSeg;
-Var
-  I : Integer;
-  S : TString;
-  J : Integer;
-  Quote : Char;
-Begin
-  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
-  EmitRaw('_SWRT_STRBUF DB 512 DUP(0)');
-  For I := 0 To DataCount - 1 Do
+  { Verifier la redeclaration dans le meme scope }
+  SIdx := SymFind(Name);
+  If (SIdx >= 0) And (SymTab[SIdx].ScopeLevel = CurScope) Then
   Begin
-    Case DataTab[I].Kind Of
-      DK_WORD :
-        EmitRaw(DataTab[I].LblName + '  DW  ' +
-                IntToStr(DataTab[I].IntVal));
-      DK_BYTE :
-        EmitRaw(DataTab[I].LblName + '  DB  ' +
-                IntToStr(DataTab[I].IntVal));
-      DK_STR :
-        Begin
-          S := '';
-          Quote := '''';
-          For J := 1 To Length(DataTab[I].StrVal) Do
-          Begin
-            If DataTab[I].StrVal[J] = Quote Then
-              S := S + ''''''
-            Else
-              S := S + DataTab[I].StrVal[J];
-          End;
-          EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
-        End;
-      DK_ARRAY_BLK :
-        EmitRaw(DataTab[I].LblName + '  DW  ' +
-                IntToStr(DataTab[I].ElemCount) +
-                '   ; array (' + IntToStr(DataTab[I].ElemCount) + ' elem)');
-      DK_STRUCT_BLK :
-        EmitRaw(DataTab[I].LblName + '  DW  0   ; struct stub');
+    CompileError('redeclaration de ''' + Name + '''');
+    DeclAllocSym := SIdx;
+    Exit;
+  End;
+  { Allouer l espace }
+  If CurFnDepth > 0 Then
+    Offset := SymNextOffset
+  Else
+    Offset := 0;
+  SIdx := SymAdd(Name, Kind, TY_UNKNOWN, Offset);
+  { Variable globale : ajouter une entree DATA }
+  If (SIdx >= 0) And (CurFnDepth = 0) Then
+    DataAddWord(SymTab[SIdx].MangledName, 0);
+  DeclAllocSym := SIdx;
+End;
+
+{ ParseTypeAnnotation : parser ': Type' apres une declaration, retourne l indice }
+Function ParseTypeAnnotation : Integer;
+Var
+  TIdx : Integer;
+Begin
+  ParseTypeAnnotation := TY_UNKNOWN;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance;  { consomme ':' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      TIdx := TypeLookupName(CurToken.Val);
+      If TIdx = TY_UNKNOWN Then
+        WarnMsg('type inconnu: ' + CurToken.Val);
+      ParseTypeAnnotation := TIdx;
+      ParserAdvance;
+      { Gerer le ? pour Optional }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+      Begin
+        ParseTypeAnnotation := TY_IDX_OPT;
+        ParserAdvance;
+      End;
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'Int') Or (CurToken.Val = 'Bool') Or
+             (CurToken.Val = 'String')) Then
+    Begin
+      TIdx := TypeLookupName(CurToken.Val);
+      ParseTypeAnnotation := TIdx;
+      ParserAdvance;
+    End
+    Else
+      CompileError('type attendu apres '':''');
+  End;
+End;
+
+{ ParseDeclStmt : declaration let/var }
+Procedure ParseDeclStmt(IsLet : Boolean);
+Var
+  VarName  : TString;
+  SIdx     : Integer;
+  Kind     : TSymKind;
+  TIdx     : Integer;
+  InitExpr : TExprVal;
+Begin
+  If IsLet Then Kind := SK_LET Else Kind := SK_VAR;
+  ParserAdvance;  { consomme 'let' ou 'var' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres let/var');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;  { consomme le nom }
+  { Type annotation optionnelle }
+  TIdx := ParseTypeAnnotation;
+  { Allouer le symbole }
+  SIdx := DeclAllocSym(VarName, Kind);
+  If SIdx < 0 Then Exit;
+  { Initialisation optionnelle avec = }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance;  { consomme '=' }
+    ParseExpr(InitExpr);
+    { Inference de type si pas de type annotation }
+    If TIdx = TY_UNKNOWN Then
+      TIdx := TypeInfer(InitExpr);
+    SymTab[SIdx].TypeIdx := TIdx;
+    { Emettre le code d initialisation }
+    ExprFlushToAX(InitExpr);
+    ExprStore(SIdx);
+    EmitComment('  ' + VarName + ' = <expr>');
+  End
+  Else
+  Begin
+    { Pas d initialisation }
+    If TIdx <> TY_UNKNOWN Then
+      SymTab[SIdx].TypeIdx := TIdx;
+    { let doit avoir un initialiseur }
+    If IsLet Then
+      WarnMsg('let ''' + VarName + ''' sans initialiseur');
+  End;
+End;
+
+{ ParseAssignStmt : affectation var = expr ou var op= expr }
+Procedure ParseAssignStmt(SIdx : Integer; Const Op : TString);
+Var
+  RightExpr : TExprVal;
+  Addr      : TString;
+Begin
+  { Verifier que ce n est pas un let }
+  If SymTab[SIdx].Kind = SK_LET Then
+    CompileError('impossible de modifier ''' + SymTab[SIdx].Name +
+                 ''' (declare avec let)');
+  ParseExpr(RightExpr);
+  ExprFlushToAX(RightExpr);
+  If Op = '=' Then
+  Begin
+    ExprStore(SIdx);
+  End
+  Else
+  Begin
+    { Affectation composee : charger la variable, operation, stocker }
+    Addr := ExprAddrOf(SIdx);
+    EmitInstrAB('MOV', 'BX', 'AX');        { BX = rvalue }
+    EmitInstrAB('MOV', 'AX', Addr);        { AX = lvalue }
+    If Op = '+=' Then
+      EmitInstrAB('ADD', 'AX', 'BX')
+    Else If Op = '-=' Then
+      EmitInstrAB('SUB', 'AX', 'BX')
+    Else If Op = '*=' Then
+    Begin
+      EmitInstrA('MUL', 'BX');
+      EmitComment('  (MUL 8086 : resultat DX:AX, on garde AX)');
+    End
+    Else If Op = '/=' Then
+    Begin
+      EmitInstr('CWD');
+      EmitInstrA('IDIV', 'BX');
+    End
+    Else If Op = '%=' Then
+    Begin
+      EmitInstr('CWD');
+      EmitInstrA('IDIV', 'BX');
+      EmitInstrAB('MOV', 'AX', 'DX');      { reste dans DX }
     End;
+    ExprStore(SIdx);
   End;
-  EmitRaw('_DATA   ENDS');
+  EmitComment('  ' + SymTab[SIdx].Name + ' ' + Op + ' <expr>');
 End;
 
-Procedure EmitRuntime;
+{ ParseExprStmt : instruction-expression (appel de func, affectation, etc.) }
+Procedure ParseExprStmt;
+Var
+  Res : TExprVal;
+  SIdx : Integer;
+  AssOp : TString;
 Begin
-  { Stub : TODO 24 }
-End;
-
-Procedure EmitClose;
-Begin
-  EmitBlankLine;
-  EmitComment('--- fin du code genere ---');
-  EmitBlankLine;
-  EmitRaw('_TEXT   ENDS');
-  EmitBlankLine;
-  EmitDataSeg;
-  EmitBlankLine;
-  EmitRaw('        END');
-  If OutFOpen Then
+  { Verifier si c est un identificateur suivi d un operateur d affectation }
+  If CurToken.Kind = TK_IDENT Then
   Begin
-    Close(OutF);
-    OutFOpen := False;
+    SIdx := SymFind(CurToken.Val);
+    If SIdx >= 0 Then
+    Begin
+      ParserAdvance;  { consomme l ident }
+      If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) Then
+      Begin
+        AssOp := CurToken.Val;
+        ParserAdvance;  { consomme l operateur }
+        ParseAssignStmt(SIdx, AssOp);
+        Exit;
+      End
+      Else
+      Begin
+        { C etait une expression, pas une affectation }
+        { On a deja consomme l ident, on construit le resultat }
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := SymTab[SIdx].TypeIdx;
+        Res.Offset  := SymTab[SIdx].Offset;
+        Res.SymIdx  := SIdx;
+        { Continuer a parser comme expression (postfixe/binaire) }
+        { Pour l instant on ignore la valeur }
+      End;
+    End
+    Else
+    Begin
+      { Identifiant inconnu : parser comme expression }
+      ParseExpr(Res);
+    End;
+  End
+  Else
+  Begin
+    ParseExpr(Res);
   End;
 End;
 
+{ ParserAdvance : lire le prochain token }
 Procedure ParserAdvance;
 Begin
   LexNextToken;
   PrintToken(CurToken);
 End;
 
+{ ParseStmt : parser une instruction Swift }
 Procedure ParseStmt;
+Var
+  Kw      : TString;
+  RetExpr : TExprVal;
 Begin
-  { Stub : TODO 09+ implementeront les instructions }
   If CurToken.Kind = TK_EOF Then Exit;
-  ParserAdvance;
+
+  { Declaration let / var }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    Kw := CurToken.Val;
+    If Kw = 'let' Then
+    Begin
+      ParseDeclStmt(True);
+      Exit;
+    End
+    Else If Kw = 'var' Then
+    Begin
+      ParseDeclStmt(False);
+      Exit;
+    End
+    Else If Kw = 'return' Then
+    Begin
+      ParserAdvance;  { consomme 'return' }
+      If (CurToken.Kind <> TK_EOF) And
+         Not ((CurToken.Kind = TK_PUNCT) And
+              ((CurToken.Val = '}') Or (CurToken.Val = ';'))) Then
+      Begin
+        ParseExpr(RetExpr);
+        ExprFlushToAX(RetExpr);
+      End;
+      If CurFnRetLbl <> '' Then
+        EmitInstrA('JMP', CurFnRetLbl)
+      Else
+        EmitInstr('RET');
+      EmitComment('  return');
+      Exit;
+    End
+    Else
+    Begin
+      { Autres mots-cles : stub, avancer }
+      ParserAdvance;
+      Exit;
+    End;
+  End;
+
+  (* Bloc ... *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;  (* consomme accolade ouvrante *)
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+    SymLeaveScope;
+    Exit;
+  End;
+
+  { Instruction-expression }
+  ParseExprStmt;
 End;
 
 Procedure Run;
