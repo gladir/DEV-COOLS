@@ -94,7 +94,7 @@
             SymEnterScope / SymLeaveScope : gestion des portees de fonctions
             Prefixe ASM : _AWV_ (variable), _AWF_ (fonction), _AWK_ (constante)
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_NUMBER (entier 16 bits signe), TYK_STRING (ptr),
               TYK_UNINITIALIZED (valeur par defaut "", equiv 0),
               TYK_REGEXP (ptr pattern), TYK_ARRAY (tableau associatif),
@@ -108,7 +108,7 @@
                 sinon comparer comme chaines (CALL _AWRT_STRCMP)
             Verite AWK : 0 et "" sont faux, tout le reste est vrai
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -120,7 +120,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -135,7 +135,7 @@
             Buffer de champs : _AW_FIELDS DW 64 DUP(0) (ptrs vers champs)
             Heap statique : _AW_HEAP DB 4096 DUP(0) + _AW_HEAPTOP DW 0
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables globales : segment DATA, acces par label _AWV_nom
             Variables locales de fonction : pile BP, acces [BP-offset]
             Parametres de fonction : pile BP, acces [BP+offset]
@@ -147,7 +147,7 @@
               Reconstruction de $0 a partir des champs modifies
             Coercition implicite : si contexte numerique et val est chaine, convertir
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal nombre, literal chaine, ident, appel de fonction
             Reference de champ : $expr -> CALL _AWRT_GETFIELD(AX=index) -> AX=ptr
               $0 : enregistrement courant complet
@@ -670,9 +670,14 @@ Var
   { Generateur de labels }
   LabelGenSeq : LongInt;
 
-  { Emetteur de code (stub pour TODOs futurs) }
+  { Emetteur de code (TODO 07) }
   OutF      : Text;
   OutFOpen  : Boolean;
+  RuntimeEmitted : Boolean;
+
+  { Frame de fonction courante (TODO 09/17) }
+  CurFrameSize : Integer;   { nombre de mots locaux dans le cadre  }
+  CurFnRetLbl  : TString;   { label de retour de la fonction       }
 
 { ============================================================
   INFRASTRUCTURE ET OPTIONS
@@ -1942,16 +1947,983 @@ Begin
   SymAdd('ARGV',     SC_BUILTIN_VAR, TY_IDX_ARRAY,  0);
 End;
 
+{ ============================================================
+  SYSTEME DE TYPES (TODO 06)
+  ============================================================ }
+
+{ ---- TypeSizeof : taille en octets d un type --------------- }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx < 0) Or (TypeIdx >= TypeCount) Then
+    TypeSizeof := 2
+  Else
+    TypeSizeof := TypeTab[TypeIdx].Size;
+End;
+
+{ ---- TypeKindOf : retourne le TTypeKind d un type ---------- }
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx < 0) Or (TypeIdx >= TypeCount) Then
+    TypeKindOf := TYK_UNKNOWN
+  Else
+    TypeKindOf := TypeTab[TypeIdx].Kind;
+End;
+
+{ ---- TypeIsNumeric : vrai si le type est numerique --------- }
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric := (K = TYK_NUMBER) Or (K = TYK_UNINITIALIZED);
+End;
+
+{ ---- TypeIsPtr : vrai si le type est un pointeur ----------- }
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr := (K = TYK_STRING) Or (K = TYK_REGEXP) Or (K = TYK_ARRAY);
+End;
+
+{ ---- TypeCanCoerce : vrai si la coercition est possible ---- }
+{ En AWK toute coercition est possible (nombre <-> chaine).    }
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Begin
+  TypeCanCoerce := True;
+  If SrcIdx = DstIdx Then Exit;
+  If (SrcIdx < 0) Or (DstIdx < 0) Then Exit;
+  { Tableaux ne se convertissent pas en scalaire }
+  If (TypeKindOf(SrcIdx) = TYK_ARRAY) And
+     (TypeKindOf(DstIdx) <> TYK_ARRAY) Then
+    TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type resultant d une operation ----- }
+{ Si les deux operandes sont numeriques -> TY_IDX_NUMBER       }
+{ Si l un est chaine -> TY_IDX_STRING                          }
+{ Concatenation -> TY_IDX_STRING                               }
+{ Sinon -> TY_IDX_NUMBER                                       }
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Begin
+  { Concatenation toujours chaine }
+  If Op = 'CONCAT' Then
+  Begin TypeCoerceResult := TY_IDX_STRING; Exit; End;
+  { Comparaison : resultat numerique (0 ou 1) }
+  If (Op = '==') Or (Op = '!=') Or (Op = '<') Or
+     (Op = '<=') Or (Op = '>') Or (Op = '>=') Or
+     (Op = '~') Or (Op = '!~') Then
+  Begin TypeCoerceResult := TY_IDX_NUMBER; Exit; End;
+  { Logiques }
+  If (Op = '&&') Or (Op = '||') Or (Op = '!') Then
+  Begin TypeCoerceResult := TY_IDX_NUMBER; Exit; End;
+  { Arithmetique }
+  If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+    TypeCoerceResult := TY_IDX_NUMBER
+  Else If (TypeKindOf(LeftIdx) = TYK_STRING) Or
+          (TypeKindOf(RightIdx) = TYK_STRING) Then
+    TypeCoerceResult := TY_IDX_STRING
+  Else
+    TypeCoerceResult := TY_IDX_NUMBER;
+End;
+
+{ ============================================================
+  EMETTEUR DE CODE ASM (TODO 07)
+  ============================================================ }
+
+{ ---- LabelGen : generer un label unique _AWL_NNNN ---------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := AW_LBL_PFX + IntToStr(LabelGenSeq);
+End;
+
+{ ---- EmitOpen : ouvrir le fichier de sortie en ecriture ---- }
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('AWK86: erreur - impossible de creer ', Opts.OutFile);
+    Inc(ErrorCount);
+    OutFOpen := False;
+    Exit;
+  End;
+  OutFOpen := True;
+End;
+
+{ ---- EmitRaw : ligne brute sans indentation ----------------- }
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, S);
+End;
+
+{ ---- EmitBlankLine : ligne vide ------------------------------ }
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then WriteLn(OutF);
+End;
+
+{ ---- EmitComment : commentaire ASM '; texte' ---------------- }
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '; ', S);
+End;
+
+{ ---- EmitLabel : label ASM suivi de ':' en colonne 0 -------- }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, Lbl, ':');
+End;
+
+{ ---- EmitInstr : instruction sans operandes (8 espaces) ----- }
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '        ', Mnem);
+End;
+
+{ ---- EmitInstrA : instruction + un operande ----------------- }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+{ ---- EmitInstrAB : instruction + deux operandes ------------- }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+{ ---- EmitHeader : en-tete MASM (.MODEL SMALL) --------------- }
+Procedure EmitHeader;
+Var
+  NS : TString;
+Begin
+  If Not OutFOpen Then Exit;
+  WriteLn(OutF, '; Generated by AWK86 v', AWK86_VERSION,
+                ' (', AWK86_DATE, ')');
+  WriteLn(OutF, '; Source : ', Opts.SrcFile);
+  WriteLn(OutF, '; Cible  : 8086 DOS (.MODEL SMALL)');
+  Str(STACK_SIZE, NS);
+  WriteLn(OutF, '; Pile   : ', NS, ' octets');
+  WriteLn(OutF);
+  WriteLn(OutF, '        .MODEL  SMALL');
+  WriteLn(OutF, '        .STACK  ', NS);
+  WriteLn(OutF);
+  WriteLn(OutF, '_TEXT   SEGMENT PUBLIC ', #39, 'CODE', #39);
+  WriteLn(OutF, '        ASSUME  CS:_TEXT');
+  WriteLn(OutF);
+End;
+
+{ ---- EmitProlog : preambule de fonction (BP frame) ---------- }
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  If CurFrameSize > 0 Then
+    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize * 2));
+End;
+
+{ ---- EmitEpilog : epilogue de fonction ---------------------- }
+Procedure EmitEpilog;
+Begin
+  If CurFnRetLbl <> '' Then
+    EmitLabel(CurFnRetLbl);
+  If CurFrameSize > 0 Then
+    EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+End;
+
+{ ---- EmitCoerce : emettre le code de coercition AWK --------- }
+{ Contexte numerique : chaine -> CALL _AWRT_STRTONUM -> AX     }
+{ Contexte chaine : nombre -> CALL _AWRT_NUMTOSTR -> AX=ptr    }
+Procedure EmitCoerce(SrcTypeIdx, DstTypeIdx : Integer);
+Var
+  SK, DK : TTypeKind;
+Begin
+  If SrcTypeIdx = DstTypeIdx Then Exit;
+  SK := TypeKindOf(SrcTypeIdx);
+  DK := TypeKindOf(DstTypeIdx);
+  { Chaine -> nombre }
+  If (SK = TYK_STRING) And (DK = TYK_NUMBER) Then
+  Begin
+    EmitInstrA('CALL', AW_RT_PFX + 'STRTONUM');
+    EmitComment('  (coerce string->number)');
+    Exit;
+  End;
+  { Nombre -> chaine }
+  If (SK = TYK_NUMBER) And (DK = TYK_STRING) Then
+  Begin
+    EmitInstrA('CALL', AW_RT_PFX + 'NUMTOSTR');
+    EmitComment('  (coerce number->string)');
+    Exit;
+  End;
+  { Non initialise -> nombre : XOR AX,AX }
+  If (SK = TYK_UNINITIALIZED) And (DK = TYK_NUMBER) Then
+  Begin
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitComment('  (coerce uninit->number)');
+    Exit;
+  End;
+  { Inconnu : commentaire pour le runtime }
+  EmitComment('  [coerce ' + IntToStr(SrcTypeIdx) +
+              ' -> ' + IntToStr(DstTypeIdx) + ' : runtime TODO 24]');
+End;
+
+{ ============================================================
+  SEGMENT DE DONNEES ET STATIQUES (TODO 08)
+  ============================================================ }
+
+{ ---- DataAddArray : ajouter un bloc de tableau associatif --- }
+Function DataAddArray(Const Lbl : TString; Pairs : Integer) : Integer;
+Var Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAddArray := -1;
+    Exit;
+  End;
+  Idx := DataCount;
+  DataTab[Idx].LblName   := Lbl;
+  DataTab[Idx].Kind      := DK_ARRAY_BLK;
+  DataTab[Idx].IntVal    := 0;
+  DataTab[Idx].StrVal    := '';
+  DataTab[Idx].ElemCount := Pairs;
+  DataAddArray := Idx;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddPredefined : variables predefinies AWK en DATA -- }
+{ Ajoute les entrees DW/DB pour FS, RS, OFS, ORS, buffers, etc }
+Procedure DataAddPredefined;
+Begin
+  { Separateurs par defaut : FS = espace, RS = LF, OFS = espace, ORS = CRLF }
+  DataAdd(AW_VAR_PFX + 'FS',   DK_STR, 0, ' ');
+  DataAdd(AW_VAR_PFX + 'RS',   DK_STR, 0, Chr(10));
+  DataAdd(AW_VAR_PFX + 'OFS',  DK_STR, 0, ' ');
+  DataAdd(AW_VAR_PFX + 'ORS',  DK_STR, 0, Chr(13) + Chr(10));
+  { Compteurs }
+  DataAddWord(AW_VAR_PFX + 'NR',       0);
+  DataAddWord(AW_VAR_PFX + 'NF',       0);
+  DataAddWord(AW_VAR_PFX + 'FNR',      0);
+  DataAddWord(AW_VAR_PFX + 'RSTART',   0);
+  DataAddWord(AW_VAR_PFX + 'RLENGTH',  0);
+  DataAddWord(AW_VAR_PFX + 'ARGC',     0);
+  { Chaines speciales }
+  DataAdd(AW_VAR_PFX + 'FILENAME', DK_STR, 0, '');
+  DataAdd(AW_VAR_PFX + 'SUBSEP',   DK_STR, 0, Chr(28));   { \034 }
+  DataAdd(AW_VAR_PFX + 'OFMT',     DK_STR, 0, '%.6g');
+  DataAdd(AW_VAR_PFX + 'CONVFMT',  DK_STR, 0, '%.6g');
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA dans le .ASM --- }
+Procedure EmitDataSeg;
+Var
+  I  : Integer;
+  J  : Integer;
+  B  : Byte;
+  NS : String[6];
+Begin
+  If Not OutFOpen Then Exit;
+  EmitBlankLine;
+  EmitRaw('_DATA   SEGMENT PUBLIC ' + #39 + 'DATA' + #39);
+  EmitBlankLine;
+  EmitComment('--- variables et constantes AWK ---');
+  { Emettre les entrees de DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+      Begin
+        Str(DataTab[I].IntVal, NS);
+        EmitRaw(DataTab[I].LblName + '  DW  ' + NS);
+      End;
+      DK_BYTE :
+      Begin
+        Str(DataTab[I].IntVal, NS);
+        EmitRaw(DataTab[I].LblName + '  DB  ' + NS);
+      End;
+      DK_STR :
+      Begin
+        If DataTab[I].StrVal = '' Then
+          EmitRaw(DataTab[I].LblName + '  DB  0')
+        Else
+        Begin
+          Write(OutF, DataTab[I].LblName, '  DB  ');
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            B := Ord(DataTab[I].StrVal[J]);
+            If J > 1 Then Write(OutF, ',');
+            Write(OutF, B);
+          End;
+          WriteLn(OutF, ',0');
+        End;
+      End;
+      DK_ARRAY_BLK :
+      Begin
+        Str(DataTab[I].ElemCount, NS);
+        EmitRaw(DataTab[I].LblName + '  DW  0   ; count');
+        EmitRaw('  DW  ' + NS + ' DUP(0,0)   ; key/val pairs');
+      End;
+    End;
+  End;
+  EmitBlankLine;
+  EmitComment('--- buffers et heap ---');
+  EmitRaw('_AW_RECBUF  DB  1024 DUP(0)   ; buffer enregistrement $0');
+  EmitRaw('_AW_FIELDS  DW  ' + IntToStr(MAX_FIELDS) +
+          ' DUP(0)     ; ptrs champs $1..$NF');
+  EmitRaw('_AW_HEAP    DB  4096 DUP(0)    ; heap statique');
+  EmitRaw('_AW_HEAPTOP DW  0              ; sommet du heap');
+  EmitBlankLine;
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ ---- EmitClose : fermer proprement le fichier de sortie ---- }
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    EmitBlankLine;
+    EmitComment('--- fin du code genere ---');
+    EmitBlankLine;
+    EmitRaw('_TEXT   ENDS');
+    EmitDataSeg;
+    EmitBlankLine;
+    EmitRaw('        END     ' + AW_RULE_PFX + 'ENTRY');
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================
+  VARIABLES ET AFFECTATIONS (TODO 09)
+  ============================================================ }
+
+{ ---- ExprAddrOf : adresse MASM d un symbole ----------------- }
+{ Locale -> [BP-n], parametre -> [BP+n], globale -> [label]    }
+Function ExprAddrOf(SIdx : Integer) : TString;
+Var
+  Ofs : Integer;
+Begin
+  If SIdx < 0 Then
+  Begin ExprAddrOf := '[0]'; Exit; End;
+  Ofs := SymTab[SIdx].Offset;
+  If Ofs < 0 Then
+    ExprAddrOf := '[BP' + IntToStr(Ofs) + ']'     { locale : [BP-2] }
+  Else If Ofs > 0 Then
+    ExprAddrOf := '[BP+' + IntToStr(Ofs) + ']'    { parametre : [BP+4] }
+  Else
+    ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']'; { global }
+End;
+
+{ ---- ExprFlushToAX : s assurer que la valeur est dans AX ---- }
+Procedure ExprFlushToAX(Const E : TExprVal);
+Var
+  Addr : TString;
+  SVal : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM  :
+    Begin
+      SVal := IntToStr(E.ImmVal);
+      EmitInstrAB('MOV', 'AX', SVal);
+    End;
+    EK_MEM  :
+    Begin
+      If E.SymIdx >= 0 Then
+      Begin
+        Addr := ExprAddrOf(E.SymIdx);
+        EmitInstrAB('MOV', 'AX', Addr);
+      End
+      Else If (E.Offset >= 0) And (E.Offset < DataCount) Then
+        EmitInstrAB('MOV', 'AX', 'OFFSET ' +
+                    DataTab[E.Offset].LblName)
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+    End;
+    EK_AX   : ; { deja dans AX }
+    EK_NONE : EmitInstrAB('XOR', 'AX', 'AX');
+  End;
+End;
+
+{ ---- ExprStore : stocker AX dans le symbole SIdx ------------ }
+Procedure ExprStore(SIdx : Integer);
+Var Addr : TString;
+Begin
+  If SIdx < 0 Then Exit;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', Addr, 'AX');
+End;
+
+{ ---- ExprLoadSym : charger un symbole dans AX et remplir Res }
+Procedure ExprLoadSym(SIdx : Integer; Var Res : TExprVal);
+Var Addr : TString;
+Begin
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.ImmVal  := 0;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', 'AX', Addr);
+End;
+
+{ ---- DeclAllocSym : declarer une variable et allouer DATA --- }
+{ Ajoute le symbole a la table et reserve son espace DATA.      }
+Function DeclAllocSym(Const Name : TString; Cat : TSymCat) : Integer;
+Var
+  SIdx : Integer;
+  DIdx : Integer;
+Begin
+  SIdx := SymAdd(Name, Cat, TY_IDX_UNINIT, 0);
+  If SIdx < 0 Then
+  Begin DeclAllocSym := -1; Exit; End;
+  If Cat = SC_ARRAY Then
+  Begin
+    DIdx := DataAddArray(SymTab[SIdx].MangledName, MAX_HASH_PAIRS);
+    SymTab[SIdx].ArrayIdx := DIdx;
+  End
+  Else If (CurScope = 0) And (Cat <> SC_PARAM) Then
+  Begin
+    DIdx := DataAddWord(SymTab[SIdx].MangledName, 0);
+  End;
+  DeclAllocSym := SIdx;
+End;
+
+{ ---- VarLoadToAX : charger une variable dans AX par index --- }
+Procedure VarLoadToAX(Idx : Integer);
+Var Addr : TString;
+Begin
+  If Idx < 0 Then
+  Begin EmitInstrAB('XOR', 'AX', 'AX'); Exit; End;
+  Addr := ExprAddrOf(Idx);
+  EmitInstrAB('MOV', 'AX', Addr);
+End;
+
+{ ---- VarStore : stocker AX dans une variable par index ------ }
+Procedure VarStore(Idx : Integer);
+Begin
+  ExprStore(Idx);
+End;
+
+{ ---- EmitAssignCompound : operateur compose (+=, -=, ...) --- }
+{ AX = valeur RHS, BX = valeur LHS avant l operation           }
+Procedure EmitAssignCompound(Const Op : TString);
+Begin
+  If      Op = '+='  Then EmitInstrAB('ADD', 'BX', 'AX')
+  Else If Op = '-='  Then EmitInstrAB('SUB', 'BX', 'AX')
+  Else If Op = '*='  Then
+  Begin
+    EmitInstrA('IMUL', 'AX');
+    EmitInstrAB('MOV', 'BX', 'AX');
+  End
+  Else If Op = '/='  Then
+  Begin
+    EmitInstrAB('MOV', 'CX', 'AX');
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'CX');
+    EmitInstrAB('MOV', 'BX', 'AX');
+  End
+  Else If Op = '%='  Then
+  Begin
+    EmitInstrAB('MOV', 'CX', 'AX');
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'CX');
+    EmitInstrAB('MOV', 'BX', 'DX');  { reste dans DX }
+  End
+  Else If Op = '^='  Then
+  Begin
+    EmitInstrAB('MOV', 'BX', 'AX');  { exposant }
+    EmitInstrA('CALL', AW_RT_PFX + 'POW');
+    EmitInstrAB('MOV', 'BX', 'AX');
+  End;
+  { Resultat dans BX, copier dans AX pour le store }
+  EmitInstrAB('MOV', 'AX', 'BX');
+End;
+
+{ ---- EmitPreIncDec : ++var ou --var ------------------------- }
+Procedure EmitPreIncDec(SIdx : Integer; IsInc : Boolean);
+Begin
+  VarLoadToAX(SIdx);
+  If IsInc Then
+    EmitInstrA('INC', 'AX')
+  Else
+    EmitInstrA('DEC', 'AX');
+  VarStore(SIdx);
+End;
+
+{ ---- EmitPostIncDec : var++ ou var-- ------------------------ }
+{ Retourne l ancienne valeur dans AX.                          }
+Procedure EmitPostIncDec(SIdx : Integer; IsInc : Boolean);
+Begin
+  VarLoadToAX(SIdx);
+  EmitInstrA('PUSH', 'AX');       { sauver ancienne valeur }
+  If IsInc Then
+    EmitInstrA('INC', 'AX')
+  Else
+    EmitInstrA('DEC', 'AX');
+  VarStore(SIdx);
+  EmitInstrA('POP', 'AX');        { restaurer ancienne valeur }
+End;
+
+{ ============================================================
+  EXPRESSIONS PRIMAIRES (TODO 10)
+  ============================================================ }
+
+{ ---- Forward : parseur Pratt -------------------------------- }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+
+{ ---- ParseCallArgs : parser les arguments d un appel -------- }
+{ Empile les arguments et retourne le nombre d arguments.       }
+Function ParseCallArgs : Integer;
+Var
+  ArgCount : Integer;
+  E        : TExprVal;
+Begin
+  ArgCount := 0;
+  { Sauter le '(' }
+  ParserAdvance;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseExprPrec(1, E);
+    ExprFlushToAX(E);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  { Consommer le ')' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  ParseCallArgs := ArgCount;
+End;
+
+{ ---- ParsePrimary : atome du parseur Pratt AWK -------------- }
+{ Gere : litteraux, identificateurs, champs $n, appels, ()     }
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  SIdx     : Integer;
+  ArgCnt   : Integer;
+  VName    : TString;
+  StrLbl   : TString;
+  FieldVal : TString;
+Begin
+  ExprMakeNone(Res);
+  Case CurToken.Kind Of
+
+    { ---- Litteraux numeriques ---- }
+    TK_INTEGER, TK_FLOAT :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { ---- Litteral chaine ---- }
+    TK_STRING :
+    Begin
+      SIdx := DataAddStr(CurToken.Val);
+      If SIdx >= 0 Then
+        StrLbl := DataTab[SIdx].LblName
+      Else
+        StrLbl := '0';
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + StrLbl);
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := SIdx;
+      Res.SymIdx  := -1;
+      ParserAdvance;
+    End;
+
+    { ---- Expression reguliere /pattern/ ---- }
+    TK_REGEXP :
+    Begin
+      SIdx := DataAddStr(CurToken.Val);
+      If SIdx >= 0 Then
+        StrLbl := DataTab[SIdx].LblName
+      Else
+        StrLbl := '0';
+      EmitInstrAB('MOV', 'AX', 'OFFSET ' + StrLbl);
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_REGEXP;
+      Res.Offset  := SIdx;
+      Res.SymIdx  := -1;
+      ParserAdvance;
+    End;
+
+    { ---- Reference de champ $n ---- }
+    TK_FIELD :
+    Begin
+      FieldVal := CurToken.Val;
+      ParserAdvance;
+      { $0 : enregistrement courant complet }
+      If FieldVal = '0' Then
+      Begin
+        EmitInstrAB('MOV', 'AX', 'OFFSET _AW_RECBUF');
+      End
+      Else
+      Begin
+        { $1..$NF ou $expr : CALL _AWRT_GETFIELD }
+        EmitInstrAB('MOV', 'AX', FieldVal);
+        EmitInstrA('CALL', AW_RT_PFX + 'GETFIELD');
+      End;
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+    End;
+
+    { ---- Identificateur utilisateur ---- }
+    TK_IDENT :
+    Begin
+      VName := CurToken.Val;
+      ParserAdvance;
+      { Appel de fonction si suivi de '(' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ArgCnt := ParseCallArgs;
+        EmitInstrA('CALL', AW_FN_PFX + SymNameClean(VName));
+        { Nettoyer la pile (cdecl : appelant nettoie) }
+        If ArgCnt > 0 Then
+          EmitInstrAB('ADD', 'SP', IntToStr(ArgCnt * 2));
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_NUMBER;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
+        { Variable : chercher dans la table des symboles }
+        SIdx := SymFind(VName);
+        If SIdx < 0 Then
+          SIdx := DeclAllocSym(VName, SC_VAR);
+        If SIdx >= 0 Then
+        Begin
+          Res.Kind    := EK_MEM;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.Offset  := SymTab[SIdx].Offset;
+          Res.SymIdx  := SIdx;
+          { Acces tableau : arr[key] }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+          Begin
+            ParserAdvance;  { '[' }
+            { Charger la cle dans DI }
+            ParseExprPrec(1, Res);
+            ExprFlushToAX(Res);
+            EmitInstrAB('MOV', 'DI', 'AX');
+            { Charger l adresse du tableau dans SI }
+            EmitInstrAB('LEA', 'SI',
+                        '[' + SymTab[SIdx].MangledName + ']');
+            EmitInstrA('CALL', AW_RT_PFX + 'ARRGET');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+              ParserAdvance;
+            Res.Kind    := EK_AX;
+            Res.TypeIdx := TY_IDX_STRING;
+            Res.SymIdx  := -1;
+          End
+          { Post-increment/decrement }
+          Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '++') Then
+          Begin
+            EmitPostIncDec(SIdx, True);
+            Res.Kind := EK_AX;
+            Res.TypeIdx := TY_IDX_NUMBER;
+            ParserAdvance;
+          End
+          Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '--') Then
+          Begin
+            EmitPostIncDec(SIdx, False);
+            Res.Kind := EK_AX;
+            Res.TypeIdx := TY_IDX_NUMBER;
+            ParserAdvance;
+          End;
+        End;
+      End;
+    End;
+
+    { ---- Mot-cle : getline ---- }
+    TK_KEYWORD :
+    Begin
+      If CurToken.Val = 'getline' Then
+      Begin
+        ParserAdvance;
+        EmitInstrA('CALL', AW_RT_PFX + 'GETLINE');
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_NUMBER;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
+        CompileError('expression attendue, mot-cle inattendu: ' +
+                     CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+
+    { ---- Fonction builtin ---- }
+    TK_BUILTIN :
+    Begin
+      VName := CurToken.Val;
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ArgCnt := ParseCallArgs;
+        { Appel via le runtime : _AWRT_UPPER(length) etc. }
+        If VName = 'length' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'STRLEN')
+        Else If VName = 'substr' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'SUBSTR')
+        Else If VName = 'index' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'INDEX')
+        Else If VName = 'split' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'SPLIT')
+        Else If VName = 'sub' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'SUB')
+        Else If VName = 'gsub' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'GSUB')
+        Else If VName = 'match' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'MATCHPOS')
+        Else If VName = 'sprintf' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'PRINTF')
+        Else If VName = 'tolower' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'TOLOWER')
+        Else If VName = 'toupper' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'TOUPPER')
+        Else If VName = 'sin' Then
+        Begin
+          EmitInstrAB('XOR', 'AX', 'AX');
+          WarnMsg('sin() stub : retourne 0 (pas de flottant 16 bits)');
+        End
+        Else If VName = 'cos' Then
+        Begin
+          EmitInstrAB('MOV', 'AX', '1');
+          WarnMsg('cos() stub : retourne 1 (pas de flottant 16 bits)');
+        End
+        Else If VName = 'atan2' Then
+        Begin
+          EmitInstrAB('XOR', 'AX', 'AX');
+          WarnMsg('atan2() stub : retourne 0 (pas de flottant 16 bits)');
+        End
+        Else If VName = 'exp' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'EXP')
+        Else If VName = 'log' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'LOG')
+        Else If VName = 'sqrt' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'SQRT')
+        Else If VName = 'int' Then
+          { int(x) : pass-through (deja entier 16 bits) }
+        Else If VName = 'rand' Then
+          EmitInstrA('CALL', AW_RT_PFX + 'RAND')
+        Else If VName = 'srand' Then
+        Begin
+          If ArgCnt = 0 Then
+          Begin
+            { srand() sans argument : horloge systeme }
+            EmitComment('srand() : graine depuis horloge');
+            EmitInstrAB('MOV', 'AH', '00h');
+            EmitInstrA('INT', '1Ah');
+            EmitInstrAB('MOV', '[' + AW_RT_PFX + 'SEED]', 'DX');
+          End
+          Else
+            EmitInstrAB('MOV', '[' + AW_RT_PFX + 'SEED]', 'AX');
+        End
+        Else If VName = 'system' Then
+        Begin
+          EmitInstrAB('XOR', 'AX', 'AX');
+          WarnMsg('system() stub : retourne 0 (pas de support shell)');
+        End
+        Else If VName = 'close' Then
+        Begin
+          EmitInstrA('CALL', AW_RT_PFX + 'FCLOSE');
+        End
+        Else
+        Begin
+          EmitInstrA('CALL', AW_RT_PFX +
+                     SymNameClean(VName));
+          WarnMsg('builtin ' + VName + ' : appel runtime stub');
+        End;
+        { Nettoyer la pile }
+        If ArgCnt > 0 Then
+          EmitInstrAB('ADD', 'SP', IntToStr(ArgCnt * 2));
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_NUMBER;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
+        { length sans parentheses = length($0) }
+        If VName = 'length' Then
+        Begin
+          EmitInstrAB('MOV', 'AX', 'OFFSET _AW_RECBUF');
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrA('CALL', AW_RT_PFX + 'STRLEN');
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_NUMBER;
+          Res.SymIdx  := -1;
+        End
+        Else
+        Begin
+          CompileError('builtin ' + VName + ' requiert des parentheses');
+          Res.Kind := EK_NONE;
+        End;
+      End;
+    End;
+
+    { ---- Ponctuation : groupement () et test (key in arr) ---- }
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance;
+        ParseExprPrec(1, Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance
+        Else
+          CompileError(''')'' manquant');
+      End
+      Else
+      Begin
+        CompileError('expression attendue: ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+
+    { ---- Operateurs unaires prefixes ---- }
+    TK_OP :
+    Begin
+      If CurToken.Val = '!' Then
+      Begin
+        ParserAdvance;
+        ParsePrimary(Res);
+        ExprFlushToAX(Res);
+        { Negation logique AWK : 0 -> 1, tout le reste -> 0 }
+        EmitInstrAB('TEST', 'AX', 'AX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JNZ', LabelGen);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(AW_LBL_PFX + IntToStr(LabelGenSeq));
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_NUMBER;
+      End
+      Else If CurToken.Val = '-' Then
+      Begin
+        ParserAdvance;
+        ParsePrimary(Res);
+        ExprFlushToAX(Res);
+        EmitInstrA('NEG', 'AX');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_NUMBER;
+      End
+      Else If CurToken.Val = '+' Then
+      Begin
+        ParserAdvance;
+        ParsePrimary(Res);
+        { Unaire + : force contexte numerique }
+        If Res.TypeIdx = TY_IDX_STRING Then
+        Begin
+          ExprFlushToAX(Res);
+          EmitCoerce(TY_IDX_STRING, TY_IDX_NUMBER);
+        End;
+        Res.TypeIdx := TY_IDX_NUMBER;
+      End
+      Else If CurToken.Val = '++' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          VName := CurToken.Val;
+          ParserAdvance;
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then SIdx := DeclAllocSym(VName, SC_VAR);
+          If SIdx >= 0 Then EmitPreIncDec(SIdx, True);
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_NUMBER;
+          Res.SymIdx  := SIdx;
+        End
+        Else
+        Begin
+          CompileError('identificateur attendu apres ++');
+        End;
+      End
+      Else If CurToken.Val = '--' Then
+      Begin
+        ParserAdvance;
+        If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          VName := CurToken.Val;
+          ParserAdvance;
+          SIdx := SymFind(VName);
+          If SIdx < 0 Then SIdx := DeclAllocSym(VName, SC_VAR);
+          If SIdx >= 0 Then EmitPreIncDec(SIdx, False);
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_NUMBER;
+          Res.SymIdx  := SIdx;
+        End
+        Else
+        Begin
+          CompileError('identificateur attendu apres --');
+        End;
+      End
+      Else
+      Begin
+        CompileError('operateur unaire inattendu: ' + CurToken.Val);
+        ParserAdvance;
+      End;
+    End;
+
+  Else
+    CompileError('expression attendue (token: ' + CurToken.Val + ')');
+    ParserAdvance;
+  End;
+End;
+
+{ ---- ParseExpr : parser une expression complete ------------- }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ---- ParseExprPrec : boucle Pratt (stub pour TODO 11) ------- }
+{ Pour l instant, ne gere que ParsePrimary.                    }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Begin
+  ParsePrimary(Res);
+  { Les operateurs binaires seront geres dans TODO 11 }
+End;
+
 { ---- Run : boucle principale de compilation ----------------- }
 Procedure Run;
 Begin
   TypeInit;
   SymInit;
+  CurFrameSize := 0;
+  CurFnRetLbl  := '';
+  RuntimeEmitted := False;
+  EmitOpen;
+  EmitHeader;
+  DataAddPredefined;
   LexInit;
   ParserAdvance;
   While CurToken.Kind <> TK_EOF Do
     ParserAdvance;
   LexClose;
+  EmitClose;
 End;
 
 { ============================================================
