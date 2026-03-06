@@ -236,16 +236,18 @@
             _PRRT_STRBUF : 256 octets dans DATA (buffer uc/lc/chr/substr)
             Mots-cles ajoutes : rindex ucfirst lcfirst (PERL_KW_COUNT 66->69)
 
-  TODO 21 - PACKAGES ET MODULES (basique)
-            ParsePackageDecl : package NomModule; -> nouveau namespace
-            use strict -> active SC_STRICT : toute var doit etre declaree
-            use warnings -> active SC_WARNINGS : active les avertissements
-            use constant NOM => val -> ajout SC_CONST dans SymTab
-            use POSIX () -> avertissement, non pris en charge
-            require 'fichier.pl' -> include conditionnel (comme PHP require)
-            do 'fichier.pl' -> execute fichier dans la portee courante
-            BEGIN { } / END { } : blocs speciaux -> executes en phase parse
-              BEGIN : evaluation immediate (constantes only) ; END : stub
+  TODO 21 - PACKAGES ET MODULES (basique)  [IMPLEMENTE]
+            ParsePackageDecl : package NomModule; -> CurPackage := NomModule
+            use strict -> Opts.Strict := True + EmitComment
+            use warnings -> Opts.Warnings := True + EmitComment
+            use constant NOM => val -> SC_CONST dans SymTab + DataAddConst
+              Acces NOM dans ParsePrimary (TK_IDENT -> SC_CONST lookup)
+              Valeur entiere: DK_WORD ; valeur chaine: DK_STR
+            use POSIX/autre -> avertissement + skip jusqu''au ;
+            require 'fichier.pl' -> avertissement + skip
+            do 'fichier.pl' -> avertissement + XOR AX,AX (non pris en charge)
+            BEGIN { } -> ParseBlock inline (emission immediate)
+            END { } -> skip du bloc (stub)
 
   TODO 22 - REFERENCES ET DEREFERENCEMENT
             Constructeur de reference : \$scalar -> MOV AX, offset [BP-n]
@@ -631,6 +633,8 @@ Function  HashSlotAdd(HashSym : Integer; Const Key : TString;
 Procedure ParseHashElemAccess(HashIdx : Integer; Var Res : TExprVal); Forward;
 { TODO 17 }
 Procedure ParseSubDecl; Forward;
+{ TODO 21 }
+Procedure ParseUseStmt; Forward;
 { TODO 04 }
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  IsRightAssoc(Const Op : TString) : Boolean; Forward;
@@ -1609,6 +1613,116 @@ Begin
     EmitInstr('MOV', 'AX, OFFSET ' + PR_FN_PFX + SubName);
 End;
 
+{ ============================================================
+  TODO 21 - PACKAGES ET MODULES (basique)
+  ============================================================ }
+
+{ ---- ParseUseStmt : use strict / warnings / constant / mod - }
+{ CurToken.Val = 'use' au moment de l''appel.                  }
+Procedure ParseUseStmt;
+Var
+  ModName  : TString;
+  CstName  : TString;
+  CstLbl   : TString;
+  CstInt   : LongInt;
+  CstStr   : TString;
+  IsStr    : Boolean;
+  Idx      : Integer;
+Begin
+  ParserAdvance;   { consommer 'use' }
+  If CurToken.Kind = TK_EOF Then Exit;
+  { Obtenir le nom du module (peut etre un TK_IDENT ou TK_KEYWORD) }
+  ModName := CurToken.Val;
+  { --- use strict --- }
+  If ModName = 'strict' Then
+  Begin
+    Opts.Strict := True;
+    EmitComment('use strict: mode strict active');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+              (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+    Exit;
+  End;
+  { --- use warnings --- }
+  If ModName = 'warnings' Then
+  Begin
+    Opts.Warnings := True;
+    EmitComment('use warnings: mode warnings active');
+    While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+              (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+    Exit;
+  End;
+  { --- use constant NOM => val --- }
+  If ModName = 'constant' Then
+  Begin
+    ParserAdvance;   { consommer 'constant' }
+    CstName := '';
+    CstInt  := 0;
+    CstStr  := '';
+    IsStr   := False;
+    { Nom de la constante : TK_IDENT ou TK_KEYWORD }
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      CstName := CurToken.Val;
+      ParserAdvance;
+    End;
+    { Consommer '=>' }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=>') Then
+      ParserAdvance;
+    { Valeur : entier ou chaine (negation optionnelle) }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        CstInt := -CurToken.IntVal;
+        ParserAdvance;
+      End;
+    End Else If CurToken.Kind = TK_INTEGER Then
+    Begin
+      CstInt := CurToken.IntVal;
+      ParserAdvance;
+    End Else If CurToken.Kind = TK_STRING Then
+    Begin
+      CstStr := CurToken.Val;
+      IsStr  := True;
+      ParserAdvance;
+    End;
+    { Enregistrer dans SymTab + DataTab si nom valide }
+    If CstName <> '' Then
+    Begin
+      Idx := SymAdd(CstName, '$', SC_CONST, TY_IDX_SCALAR,
+                    False, True, False);
+      If Idx >= 0 Then
+      Begin
+        CstLbl := SymTab[Idx].MangledName;
+        If DataFindByLabel(CstLbl) < 0 Then
+          DataAddConst(CstLbl, CstInt, CstStr);
+        If IsStr Then
+          EmitComment('use constant ' + CstName + ' => ''' + CstStr + '''')
+        Else
+        Begin
+          Str(CstInt, CstStr);
+          EmitComment('use constant ' + CstName + ' => ' + CstStr);
+        End;
+      End;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+    Exit;
+  End;
+  { --- Tout autre module : avertissement + skip --- }
+  WriteLn('PERL86:', CurToken.Line, ': Avert: module ''', ModName,
+          ''' non pris en charge');
+  Inc(WarnCount);
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+            (CurToken.Kind <> TK_EOF) Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+End;
+
 Procedure ParseStmt;
 { Analyse une instruction Perl et emet le code ASM correspondant.         }
 { Reconnait : my/our/local ; use ; print/say ; if/unless ; expr [MOD] ;   }
@@ -1635,14 +1749,68 @@ Begin
         ParserAdvance;
       Exit;
     End;
-    { use strict ; use warnings ; use constant ... : ignorer pour l''instant }
+    { TODO 21 : use strict / warnings / constant / module }
     If KW = 'use' Then
     Begin
-      While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
-                (CurToken.Kind <> TK_EOF) Do
+      ParseUseStmt;
+      Exit;
+    End;
+    { TODO 21 : package NomModule; -> changer le namespace courant }
+    If KW = 'package' Then
+    Begin
+      ParserAdvance;   { consommer 'package' }
+      If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        CurPackage := CurToken.Val;
+        EmitComment('package ' + CurPackage);
         ParserAdvance;
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit;
+    End;
+    { TODO 21 : require 'fichier.pl' -> avertissement }
+    If KW = 'require' Then
+    Begin
+      ParserAdvance;   { consommer 'require' }
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        WriteLn('PERL86:', CurToken.Line, ': Avert: require ''',
+                CurToken.Val, ''' non pris en charge');
+        Inc(WarnCount);
         ParserAdvance;
+      End Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        WriteLn('PERL86:', CurToken.Line, ': Avert: require ',
+                CurToken.Val, ' non pris en charge');
+        Inc(WarnCount);
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit;
+    End;
+    { TODO 21 : BEGIN bloc -> emis inline au moment de la compilation }
+    If KW = 'BEGIN' Then
+    Begin
+      ParserAdvance;   { consommer 'BEGIN' }
+      EmitComment('BEGIN: bloc execute au chargement (inline)');
+      ParseBlock;
+      Exit;
+    End;
+    { TODO 21 : END bloc -> stub, le bloc est ignore }
+    If KW = 'END' Then
+    Begin
+      ParserAdvance;   { consommer 'END' }
+      EmitComment('END: bloc ignore (non execute)');
+      { Sauter le bloc sans l''emettre : compter les accolades }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        ParserAdvance;   { consommer '{' }
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) And
+                  (CurToken.Kind <> TK_EOF) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance;
+      End;
       Exit;
     End;
     { TODO 12 : print / say / printf / warn / die }
@@ -3966,6 +4134,15 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
+    { TODO 21 : constante use constant NOM => val }
+    Idx := SymFindCat(NStr, SC_CONST);
+    If Idx >= 0 Then
+    Begin
+      EmitInstr('MOV', 'AX, [' + SymTab[Idx].MangledName + ']');
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
     If Opts.Warnings Then
       WriteLn('PERL86:', CurToken.Line, ': Avert: bareword ''', NStr, '''');
     ExprMakeNone(Res);
@@ -5697,6 +5874,17 @@ Var
   IsUntil : Boolean;
 Begin
   ParserAdvance;  { consommer 'do' }
+  { TODO 21 : do 'fichier.pl' -> non pris en charge }
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line, ': Avert: do ''',
+            CurToken.Val, ''' non pris en charge');
+    Inc(WarnCount);
+    ParserAdvance;
+    EmitInstr('XOR', 'AX, AX');   { retourner 0 }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+    Exit;
+  End;
   LblTop  := LabelGen('_PRL_DOTOP_');
   LblEnd  := LabelGen('_PRL_DOEND_');
   LblCont := LabelGen('_PRL_DOCNT_');
