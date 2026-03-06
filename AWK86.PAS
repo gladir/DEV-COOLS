@@ -2453,10 +2453,7 @@ Begin
         If Idx >= 0 Then
           VarLoadToAX(Idx)
         Else
-        Begin
-          Str(0, NS);
           EmitInstr('XOR', 'AX, AX');
-        End;
       End;
       GenFieldLoad;
       ExprMakeAX(TY_IDX_STRING, Res);
@@ -2593,8 +2590,11 @@ Begin
         ExprLoadToAX(Res);
         EmitInstr('TEST', 'AX, AX');
         EmitInstr('MOV', 'AX, 0');
-        EmitInstr('JNZ', NewLabel('NOT') );
+        Idx := 0; { reuse Idx for label trick }
+        VName := NewLabel('NOT');
+        EmitInstr('JNZ', VName);
         EmitInstr('MOV', 'AX, 1');
+        EmitLabel(VName);
         ExprMakeAX(TY_IDX_NUMBER, Res);
       End
       Else If CurToken.Val = '++' Then
