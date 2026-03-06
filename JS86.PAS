@@ -21,7 +21,7 @@
             LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
             LexScanString : single-quote et double-quote (\n \t \r \0 \xNN \uNNNN)
             LexScanTemplate : backtick `...${expr}...` -> sequence TK_TEMPLATE
-              interpolation de ${expr} : scanner jusqu a } imbriqué
+              interpolation de ${expr} : scanner jusqu a } imbriqu??
             LexScanRegexp : /pattern/flags apres = ( [ ! & | ? : , ; { return
               Distinction slash-division vs slash-regexp par contexte lexical
             Commentaires : // jusqu a fin de ligne, /* ... */ multi-lignes
@@ -428,7 +428,7 @@
               _JSL_UNHANDLED : affiche 'Uncaught: ' + msg + \n puis INT 21h 4C01h
             new Error(msg) :
               CALL _JSRT_MKERROR(SI=msg) -> AX=ptr struct {type:ptr, msg:ptr}
-            Types d erreur supplémentaires :
+            Types d erreur suppl??mentaires :
               TypeError / RangeError / SyntaxError -> stub = new Error
             Erreurs natives :
               Division par zero -> JZ avant IDIV + throw _JS_ERR_DIV0
@@ -512,6 +512,7 @@ Const
   MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
   MAX_OBJ_PROP  = 16;   { proprietes max par objet literal inline }
   STACK_SIZE    = 1024;
+  CALL_DEPTH_WARN = 32;  { seuil d avertissement profondeur appels (TODO 18) }
 
   { Prefixes de nommage ASM }
   JS_VAR_PFX  = '_JSV_';    { variable scalaire / objet / tableau }
@@ -605,6 +606,8 @@ Type
     IsConst     : Boolean;   { const : erreur si reassigne     }
     IsParam     : Boolean;   { parametre de fonction           }
     IsCapture   : Boolean;   { variable capturee par closure   }
+    CaptureLabel: TString;    { label DATA pour var capturee (TODO 18) }
+    FnDepthLvl  : Integer;    { CurFnDepth au moment de la creation  }
     DeclLine    : Integer;
   End;
 
@@ -717,6 +720,8 @@ Var
   CurFnRetLbl  : TString;    { label epilogue de la function        }
   CurFnName    : TString;    { nom de la function courante          }
   CurClassName : TString;    { nom de la classe courante (TODO 21)  }
+  CurParentClass : TString;  { nom de la classe parente (TODO 21)   }
+  CurMethodThis  : Integer;  { offset BP du param cache this (0=no) }
   LoopTop      : Integer;
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
@@ -829,6 +834,12 @@ Procedure ParseBlock; Forward;
 Procedure ParseStmtOrBlock; Forward;
 { TODO 17 }
 Procedure ParseFuncDecl; Forward;
+{ TODO 21 }
+Procedure ParseClassDecl; Forward;
+{ TODO 22 }
+Procedure EmitCaptureSync(OuterDepth : Integer); Forward;
+{ TODO 23 }
+Procedure ParseTryStmt; Forward;
 Procedure LexSaveState(Var St : TLexState); Forward;
 Procedure LexRestoreState(Const St : TLexState); Forward;
 { TODO 12 }
@@ -1117,6 +1128,8 @@ Begin
   CurFnRetLbl    := '';
   CurFnName      := '';
   CurClassName   := '';
+  CurParentClass := '';
+  CurMethodThis  := 0;
   LoopTop        := 0;
   RuntimeEmitted := False;
   GKwConsumed    := False;
@@ -2262,10 +2275,11 @@ End;
   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
   ============================================================ }
 
-{ LexRegexpFlagOk : valider un flag de regexp JS (g i m s) }
+{ LexRegexpFlagOk : valider un flag de regexp JS (g i m s u) (TODO 19) }
 Function LexRegexpFlagOk(Ch : Char) : Boolean;
 Begin
-  LexRegexpFlagOk := (Ch = 'g') Or (Ch = 'i') Or (Ch = 'm') Or (Ch = 's');
+  LexRegexpFlagOk := (Ch = 'g') Or (Ch = 'i') Or (Ch = 'm') Or
+                     (Ch = 's') Or (Ch = 'u');
 End;
 
 { LexCheckTagTemplate : avertir si backtick suit un identifiant (tag template) }
@@ -2480,7 +2494,9 @@ Var
   SubProp   : TString;
   I         : Integer;
   StrLbl    : TString;
+  ObjThisSaved : Boolean; { true si BX (this objet) empile - TODO 21 }
 Begin
+  ObjThisSaved := False;
   While True Do
   Begin
     { ---- Appel de fonction : expr(...) ---- }
@@ -2526,11 +2542,94 @@ Begin
         Res.TypeIdx := TY_IDX_UNDEF;
         Res.SymIdx  := -1;
         Continue;
+      End
+      (* ---- Fonctions globales natives (TODO 20) ---- *)
+      Else If SymName = 'parseInt' Then
+      Begin
+        ParserAdvance; { consomme '(' }
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        Begin
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'CX', 'AX');
+        End
+        Else
+          EmitInstrAB('MOV', 'CX', '10');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrA('CALL', '_JSRT_STRTOINT');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        Continue;
+      End
+      Else If SymName = 'parseFloat' Then
+      Begin
+        ParserAdvance; { consomme '(' }
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('MOV', 'CX', '10');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrA('CALL', '_JSRT_STRTOINT');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        Continue;
+      End
+      Else If SymName = 'Number' Then
+      Begin
+        ParserAdvance; { consomme '(' }
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrA('CALL', '_JSRT_STRTONUM');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        Continue;
+      End
+      Else If SymName = 'isNaN' Then
+      Begin
+        ParserAdvance; { consomme '(' }
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrAB('XOR', 'AX', 'AX'); { jamais NaN en 16 bits entier }
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+        Continue;
+      End
+      Else If SymName = 'isFinite' Then
+      Begin
+        ParserAdvance; { consomme '(' }
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        EmitInstrAB('MOV', 'AX', '1'); { toujours fini en 16 bits entier }
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+        Continue;
       End;
       { Appel de fonction standard }
+      { Si methode objet, sauver le ptr de fn avant ParseCallArgs }
+      If ObjThisSaved Then
+        EmitInstrA('PUSH', 'AX');  { sauver fn ptr sur pile }
       ParseCallArgs(ArgCount);
       GCallArgCount := ArgCount;
-      If (FnIdx >= 0) And (SymTab[FnIdx].Cat = SC_FUNCTION) Then
+      { Passer this pour les methodes d objet (TODO 21) }
+      If ObjThisSaved Then
+      Begin
+        EmitInstrA('PUSH', 'WORD PTR [_JSRT_OBJTMP]');
+      End;
+      If ObjThisSaved Then
+      Begin
+        { Restaurer fn ptr depuis la pile (sous les args + this) }
+        EmitInstrAB('MOV', 'AX', '[SP+' + IntToStr((ArgCount + 1) * 2) + ']');
+        EmitInstrA('CALL', 'AX');
+      End
+      Else If (FnIdx >= 0) And (SymTab[FnIdx].Cat = SC_FUNCTION) Then
         EmitInstrA('CALL', SymTab[FnIdx].MangledName)
       Else If FnIdx >= 0 Then
       Begin
@@ -2542,7 +2641,14 @@ Begin
         ExprFlushToAX(Res);
         EmitInstrA('CALL', 'AX');
       End;
-      If ArgCount > 0 Then
+      { Nettoyage pile : args + this + fn_ptr si methode objet }
+      If ObjThisSaved Then
+      Begin
+        { args + this + fn_ptr sauvegarde }
+        EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 2) * 2));
+        ObjThisSaved := False;
+      End
+      Else If ArgCount > 0 Then
         EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_UNKNOWN;
@@ -2764,13 +2870,244 @@ Begin
         Continue;
       End;
 
+      (* ---- Objet Math (TODO 20) ---- *)
+      If SymName = 'Math' Then
+      Begin
+        If PropName = 'abs' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.abs'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrA('CALL', '_JSRT_ABS');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'max' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.max'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrA('PUSH', 'AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrA('POP', 'BX');
+          LblArr := LabelGen;
+          EmitInstrAB('CMP', 'BX', 'AX');
+          EmitInstrA('JLE', LblArr);
+          EmitInstrAB('MOV', 'AX', 'BX');
+          EmitLabel(LblArr);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'min' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.min'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrA('PUSH', 'AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrA('POP', 'BX');
+          LblArr := LabelGen;
+          EmitInstrAB('CMP', 'BX', 'AX');
+          EmitInstrA('JGE', LblArr);
+          EmitInstrAB('MOV', 'AX', 'BX');
+          EmitLabel(LblArr);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If (PropName = 'floor') Or (PropName = 'ceil') Or
+                (PropName = 'round') Or (PropName = 'trunc') Then
+        Begin
+          { Entier 16 bits -> pass-through }
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.' + PropName); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'pow' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.pow'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrA('PUSH', 'AX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstrA('POP', 'AX');
+          EmitInstrA('CALL', '_JSRT_POW');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'sqrt' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.sqrt'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrA('CALL', '_JSRT_SQRT');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'random' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+          End;
+          EmitInstrA('CALL', '_JSRT_RAND');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'sign' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Math.sign'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrA('CALL', '_JSRT_SIGN');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else If PropName = 'PI' Then
+        Begin
+          WarnMsg('Math.PI tronque a 3 (entier 16 bits)');
+          EmitInstrAB('MOV', 'AX', '3');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End
+        Else
+        Begin
+          WarnMsg('Math.' + PropName + ' non supporte : stub');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+        End;
+        Continue;
+      End;
+
+      (* ---- Objet Number (TODO 20) ---- *)
+      If SymName = 'Number' Then
+      Begin
+        If PropName = 'isInteger' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres Number.isInteger'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrAB('MOV', 'AX', '1'); { tous les nombres sont entiers }
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+        End
+        Else
+        Begin
+          WarnMsg('Number.' + PropName + ' non supporte : stub');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_UNKNOWN; Res.SymIdx := -1;
+        End;
+        Continue;
+      End;
+
+      (* ---- Objet String (TODO 20) ---- *)
+      If SymName = 'String' Then
+      Begin
+        If PropName = 'fromCharCode' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres String.fromCharCode'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrA('CALL', '_JSRT_CHR');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+        End
+        Else
+        Begin
+          WarnMsg('String.' + PropName + ' non supporte : stub');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_UNKNOWN; Res.SymIdx := -1;
+        End;
+        Continue;
+      End;
+
+      (* ---- Objet JSON (TODO 20) ---- *)
+      If SymName = 'JSON' Then
+      Begin
+        If PropName = 'stringify' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres JSON.stringify'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          EmitInstrA('CALL', '_JSRT_JSONSTR');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+        End
+        Else If PropName = 'parse' Then
+        Begin
+          WarnMsg('JSON.parse() : stub, retourne 0');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance;
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+          End;
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_UNKNOWN; Res.SymIdx := -1;
+        End
+        Else
+        Begin
+          WarnMsg('JSON.' + PropName + ' non supporte : stub');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind := EK_AX; Res.TypeIdx := TY_UNKNOWN; Res.SymIdx := -1;
+        End;
+        Continue;
+      End;
+
       { ---- Proprietes speciales generiques ---- }
-      { ---- Proprietes / methodes de tableau (TODO 15) ---- }
+      { ---- Proprietes / methodes de tableau (TODO 15) + string (TODO 20) ---- }
       If PropName = 'length' Then
       Begin
         ExprFlushToAX(Res);
         EmitInstrAB('MOV', 'SI', 'AX');
-        EmitInstrAB('MOV', 'AX', '[SI]');
+        If Res.TypeIdx = TY_IDX_STRING Then
+          EmitInstrA('CALL', '_JSRT_STRLEN')
+        Else
+          EmitInstrAB('MOV', 'AX', '[SI]');
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_IDX_NUMBER;
         Res.SymIdx  := -1;
@@ -2843,9 +3180,18 @@ Begin
         ParserAdvance;
         ParseExprPrec(2, Arg);
         ExprFlushToAX(Arg);
-        EmitInstrAB('MOV', 'BX', 'AX');
-        EmitInstrA('POP', 'SI');
-        EmitInstrA('CALL', '_JSRT_ARRIDXOF');
+        If Res.TypeIdx = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'DI', 'AX');
+          EmitInstrA('POP', 'SI');
+          EmitInstrA('CALL', '_JSRT_STRINDEXOF');
+        End
+        Else
+        Begin
+          EmitInstrAB('MOV', 'BX', 'AX');
+          EmitInstrA('POP', 'SI');
+          EmitInstrA('CALL', '_JSRT_ARRIDXOF');
+        End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance;
         Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
@@ -2954,8 +3300,7 @@ Begin
           WarnMsg('forEach sans callback identifiee : stub');
         Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_UNDEF; Res.SymIdx := -1;
       End
-      Else If (PropName = 'map') Or (PropName = 'filter') Or
-              (PropName = 'slice') Then
+      Else If (PropName = 'map') Or (PropName = 'filter') Then
       Begin
         ExprFlushToAX(Res);
         WarnMsg(PropName + '() non supporte, retourne tableau original');
@@ -2969,6 +3314,387 @@ Begin
             ParserAdvance;
         End;
         Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
+      End
+      Else If PropName = 'slice' Then
+      Begin
+        ExprFlushToAX(Res);
+        If Res.TypeIdx = TY_IDX_STRING Then
+        Begin
+          { s.slice(a, b) -> _JSRT_STRSLICE(SI, BX=start, CX=end) }
+          EmitInstrAB('MOV', 'SI', 'AX');
+          EmitInstrA('PUSH', 'SI');
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin CompileError('"(" attendu apres .slice'); Continue; End;
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'BX', 'AX'); { BX = start }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExprPrec(2, Arg);
+            ExprFlushToAX(Arg);
+            EmitInstrAB('MOV', 'CX', 'AX'); { CX = end }
+          End
+          Else
+            EmitInstrAB('MOV', 'CX', '7FFFh'); { end = max }
+          EmitInstrA('POP', 'SI');
+          EmitInstrA('CALL', '_JSRT_STRSLICE');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+        End
+        Else
+        Begin
+          WarnMsg('slice() sur tableau : stub, retourne tableau original');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            ParserAdvance;
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+          End;
+          Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
+        End;
+      End
+      (* ---- Methodes RegExp : re.test(str), re.exec(str) (TODO 19) ---- *)
+      Else If PropName = 'test' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'DI', 'AX');  { DI = ptr pattern regexp }
+        EmitInstrA('PUSH', 'DI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .test'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr string }
+        EmitInstrA('POP', 'DI');
+        EmitInstrA('CALL', '_JSRT_REMATCH');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+      End
+      Else If PropName = 'exec' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'DI', 'AX');  { DI = ptr regexp }
+        EmitInstrA('PUSH', 'DI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .exec'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr string }
+        EmitInstrA('POP', 'DI');
+        EmitInstrA('CALL', '_JSRT_REEXEC');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
+      End
+      (* ---- Methodes String sur regexp : .match .search .replace .split (TODO 19) ---- *)
+      Else If PropName = 'match' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr string }
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .match'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'DI', 'AX');  { DI = ptr regexp/string }
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_REMATCH');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+      End
+      Else If PropName = 'search' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr string }
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .search'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'DI', 'AX');  { DI = ptr regexp/string }
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_REINDEX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+      End
+      Else If PropName = 'replace' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr string }
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .replace'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrA('PUSH', 'AX');  { sauver pattern }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'BX', 'AX');  { BX = ptr replacement }
+        EmitInstrA('POP', 'DI');          { DI = ptr pattern }
+        EmitInstrA('POP', 'SI');          { SI = ptr string }
+        EmitInstrA('CALL', '_JSRT_RESUB');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'split' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');  { SI = ptr string }
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .split'); Continue; End;
+        ParserAdvance;
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+        Begin
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'DI', 'AX'); { DI = ptr separateur }
+        End
+        Else
+        Begin
+          StrLbl := DataAddStr(',');
+          EmitInstrAB('LEA', 'DI', StrLbl); { separateur virgule par defaut }
+        End;
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRSPLIT');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
+      End
+      (* ---- Methodes String natives (TODO 20) ---- *)
+      Else If PropName = 'charAt' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .charAt'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'CX', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRCHAR');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'charCodeAt' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .charCodeAt'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'CX', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRORD');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+      End
+      Else If PropName = 'toUpperCase' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+        End;
+        EmitInstrA('CALL', '_JSRT_STRTOUPPER');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'toLowerCase' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+        End;
+        EmitInstrA('CALL', '_JSRT_STRTOLOWER');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'trim' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+        End;
+        EmitInstrA('CALL', '_JSRT_STRTRIM');
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'lastIndexOf' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .lastIndexOf'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'DI', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRLASTIDX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_NUMBER; Res.SymIdx := -1;
+      End
+      Else If PropName = 'includes' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .includes'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'DI', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRINDEXOF');
+        { AX = index ou -1 -> convertir en booleen : AX != -1 }
+        LblArr := LabelGen;
+        SubProp := LabelGen;
+        EmitInstrAB('CMP', 'AX', '0FFFFh');
+        EmitInstrA('JE', LblArr);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitInstrA('JMP', SubProp);
+        EmitLabel(LblArr);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(SubProp);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+      End
+      Else If PropName = 'startsWith' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .startsWith'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'DI', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRSTARTW');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+      End
+      Else If PropName = 'endsWith' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .endsWith'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'DI', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRENDW');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_BOOLEAN; Res.SymIdx := -1;
+      End
+      Else If PropName = 'substring' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .substring'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'BX', 'AX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        Begin
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'CX', 'AX');
+        End
+        Else
+          EmitInstrAB('MOV', 'CX', '7FFFh');
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRSLICE');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'repeat' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .repeat'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'CX', 'AX');
+        EmitInstrA('POP', 'SI');
+        EmitInstrAB('LEA', 'DI', '_JSRT_STRBUF');
+        EmitInstrA('CALL', '_JSRT_STRREPEAT');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
+      End
+      Else If PropName = 'padStart' Then
+      Begin
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrA('PUSH', 'SI');
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+        Begin CompileError('"(" attendu apres .padStart'); Continue; End;
+        ParserAdvance;
+        ParseExprPrec(2, Arg);
+        ExprFlushToAX(Arg);
+        EmitInstrAB('MOV', 'CX', 'AX'); { CX = target length }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        Begin
+          ParserAdvance;
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitInstrAB('MOV', 'DI', 'AX'); { DI = pad string }
+        End
+        Else
+        Begin
+          StrLbl := DataAddStr(' ');
+          EmitInstrAB('LEA', 'DI', StrLbl); { defaut = espace }
+        End;
+        EmitInstrA('POP', 'SI');
+        EmitInstrA('CALL', '_JSRT_STRPADS');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_STRING; Res.SymIdx := -1;
       End
       Else
       Begin
@@ -2995,6 +3721,12 @@ Begin
           EmitInstrAB('MOV', 'BX', 'AX');
           EmitInstrAB('LEA', 'DI', StrLbl);
           EmitInstrA('CALL', '_JSRT_OBJGET');
+          { Si suivi de ( -> appel de methode, sauver this dans tmp (TODO 21) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            EmitInstrAB('MOV', '[_JSRT_OBJTMP]', 'BX');
+            ObjThisSaved := True;
+          End;
           Res.Kind    := EK_AX;
           Res.TypeIdx := TY_UNKNOWN;
           Res.SymIdx  := -1;
@@ -3096,6 +3828,12 @@ Var
   ObjValIsImm : Array[0..15] Of Boolean;
   SavedLex    : TLexState;
   IsArrowOk   : Boolean;
+  RegPat      : TString;    { pattern regexp (TODO 19) }
+  RegFlags    : TString;    { flags regexp   (TODO 19) }
+  RegSep      : Integer;    { position du Chr(1) separateur }
+  RegI        : Integer;    { index boucle regexp }
+  SuperMethod : TString;    { nom methode parent (TODO 21) }
+  SaveThis    : Integer;    { sauvegarde CurMethodThis (TODO 22) }
 Begin
   Case CurToken.Kind Of
 
@@ -3132,9 +3870,50 @@ Begin
       ParserAdvance;
     End;
 
-    { ---- Regexp literal ---- }
+    { ---- Regexp literal (TODO 19) ---- }
     TK_REGEXP :
     Begin
+      (* Analyser le pattern pour metacaracteres et captures *)
+      RegPat := '';
+      RegFlags := '';
+      RegSep := Pos(Chr(1), CurToken.Val);
+      If RegSep > 0 Then
+      Begin
+        RegPat   := Copy(CurToken.Val, 1, RegSep - 1);
+        RegFlags := Copy(CurToken.Val, RegSep + 1,
+                         Length(CurToken.Val) - RegSep);
+      End
+      Else
+        RegPat := CurToken.Val;
+      (* Avertir si metacaracteres non supportes *)
+      For RegI := 1 To Length(RegPat) Do
+      Begin
+        If (RegPat[RegI] = '.') Or (RegPat[RegI] = '^') Or
+           (RegPat[RegI] = '$') Or (RegPat[RegI] = '*') Or
+           (RegPat[RegI] = '+') Or (RegPat[RegI] = '?') Or
+           (RegPat[RegI] = '[') Or (RegPat[RegI] = ']') Or
+           (RegPat[RegI] = '{') Or (RegPat[RegI] = '}') Or
+           (RegPat[RegI] = '|') Then
+        Begin
+          WarnMsg('regexp metacaractere "' + RegPat[RegI] +
+                  '" non supporte : recherche litterale');
+          Break;
+        End;
+        If (RegPat[RegI] = '(') Then
+        Begin
+          WarnMsg('regexp captures non supportees : stub');
+          Break;
+        End;
+      End;
+      (* Avertir pour flags speciaux *)
+      For RegI := 1 To Length(RegFlags) Do
+      Begin
+        If RegFlags[RegI] = 'i' Then
+          WarnMsg('flag /i (case-insensitive) : non supporte, ignore')
+        Else If (RegFlags[RegI] = 'm') Or (RegFlags[RegI] = 's') Or
+                (RegFlags[RegI] = 'u') Then
+          WarnMsg('flag /' + RegFlags[RegI] + ' : non supporte, ignore');
+      End;
       StrLbl := DataAddStr(CurToken.Val);
       EmitInstrAB('LEA', 'AX', StrLbl);
       Res.Kind    := EK_AX;
@@ -3172,14 +3951,114 @@ Begin
       End
       Else If CurToken.Val = 'this' Then
       Begin
-        WarnMsg('this : contexte global, traite comme 0');
-        EmitInstrAB('XOR', 'AX', 'AX');
+        If CurMethodThis > 0 Then
+        Begin
+          { Dans une methode de classe : this = param cache }
+          EmitInstrAB('MOV', 'AX', '[BP+' + IntToStr(CurMethodThis) + ']');
+        End
+        Else
+        Begin
+          WarnMsg('this : contexte global, traite comme 0');
+          EmitInstrAB('XOR', 'AX', 'AX');
+        End;
         Res.Kind    := EK_AX;
         Res.ImmVal  := 0;
         Res.TypeIdx := TY_IDX_OBJECT;
         Res.Offset  := 0;
         Res.SymIdx  := -1;
         ParserAdvance;
+      End
+      Else If CurToken.Val = 'super' Then
+      Begin
+        { super() -> appel constructeur parent }
+        { super.method() -> appel methode parent }
+        ParserAdvance; { consomme 'super' }
+        If CurParentClass = '' Then
+        Begin
+          WarnMsg('super utilise hors d''une classe derivee');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_OBJECT;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          { super(args) -> PUSH this, push args, CALL _JSF_Parent_ctor }
+          ParseCallArgs(ArgCount);
+          If CurMethodThis > 0 Then
+          Begin
+            EmitInstrAB('MOV', 'AX', '[BP+' + IntToStr(CurMethodThis) + ']');
+            EmitInstrA('PUSH', 'AX');
+            EmitInstrA('CALL', JS_FN_PFX + CurParentClass + '_ctor');
+            EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+          End
+          Else
+          Begin
+            EmitInstrA('CALL', JS_FN_PFX + CurParentClass + '_ctor');
+            If ArgCount > 0 Then
+              EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+          End;
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_UNDEF;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
+        Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+        Begin
+          { super.method(args) }
+          ParserAdvance; { consomme '.' }
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            SuperMethod := CurToken.Val;
+            ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              ParseCallArgs(ArgCount);
+              If CurMethodThis > 0 Then
+              Begin
+                EmitInstrAB('MOV', 'AX', '[BP+' + IntToStr(CurMethodThis) + ']');
+                EmitInstrA('PUSH', 'AX');
+                EmitInstrA('CALL', JS_FN_PFX + CurParentClass + '_' + SuperMethod);
+                EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+              End
+              Else
+              Begin
+                EmitInstrA('CALL', JS_FN_PFX + CurParentClass + '_' + SuperMethod);
+                If ArgCount > 0 Then
+                  EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
+              End;
+            End
+            Else
+            Begin
+              { super.prop sans appel }
+              WarnMsg('super.' + SuperMethod + ' sans appel : stub');
+              EmitInstrAB('XOR', 'AX', 'AX');
+            End;
+          End
+          Else
+          Begin
+            CompileError('identifiant attendu apres super.');
+            EmitInstrAB('XOR', 'AX', 'AX');
+          End;
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_UNKNOWN;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End
+        Else
+        Begin
+          WarnMsg('super sans () ni .method : stub');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          Res.Kind    := EK_AX;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_OBJECT;
+          Res.Offset  := 0;
+          Res.SymIdx  := -1;
+        End;
       End
       Else If CurToken.Val = 'new' Then
       Begin
@@ -3239,6 +4118,78 @@ Begin
             Res.Offset  := 0;
             Res.SymIdx  := -1;
           End
+          Else If CtorName = 'RegExp' Then
+          Begin
+            (* new RegExp(pat, flags) -> synthetiser un TK_REGEXP (TODO 19) *)
+            RegPat := ''; RegFlags := '';
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              ParserAdvance;
+              If CurToken.Kind = TK_STRING Then
+              Begin
+                RegPat := CurToken.Val;
+                ParserAdvance;
+              End Else Begin
+                WarnMsg('new RegExp() : pattern non litteral, stub');
+                While (CurToken.Kind <> TK_EOF) And
+                      Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+                  ParserAdvance;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              Begin
+                ParserAdvance;
+                If CurToken.Kind = TK_STRING Then
+                Begin
+                  RegFlags := CurToken.Val;
+                  ParserAdvance;
+                End;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance;
+            End;
+            StrLbl := DataAddStr(RegPat + Chr(1) + RegFlags);
+            EmitInstrAB('LEA', 'AX', StrLbl);
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_OBJECT;
+            Res.Offset  := 0;
+            Res.SymIdx  := -1;
+          End
+          Else If (CtorName = 'Error') Or (CtorName = 'TypeError') Or
+                  (CtorName = 'RangeError') Or (CtorName = 'SyntaxError') Or
+                  (CtorName = 'ReferenceError') Then
+          Begin
+            { new Error(msg) -> CALL _JSRT_MKERROR (TODO 23) }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              ParserAdvance; { consomme '(' }
+              If (CurToken.Kind <> TK_EOF) And
+                 Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+              Begin
+                ParseExprPrec(2, ElemRes);
+                ExprFlushToAX(ElemRes);
+                EmitInstrAB('MOV', 'SI', 'AX');
+              End
+              Else
+              Begin
+                StrLbl := DataAddStr(CtorName);
+                EmitInstrAB('LEA', 'SI', StrLbl);
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance;
+            End
+            Else
+            Begin
+              StrLbl := DataAddStr(CtorName);
+              EmitInstrAB('LEA', 'SI', StrLbl);
+            End;
+            EmitInstrA('CALL', '_JSRT_MKERROR');
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_OBJECT;
+            Res.Offset  := 0;
+            Res.SymIdx  := -1;
+          End
           Else
           Begin
           { Chercher le constructeur dans la table des symboles }
@@ -3246,7 +4197,22 @@ Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           Begin
             ParseCallArgs(ArgCount);
-            If (FnIdx >= 0) And (SymTab[FnIdx].Cat = SC_FUNCTION) Then
+            If (FnIdx >= 0) And (SymTab[FnIdx].Cat = SC_CLASS) Then
+            Begin
+              { new ClassName(args) -> OBJCREATE + init methodes + appel ctor }
+              EmitInstrAB('LEA', 'BX', SymTab[FnIdx].MangledName);
+              EmitInstrA('CALL', '_JSRT_OBJCREATE');
+              { Initialiser les methodes sur l'objet }
+              EmitInstrAB('MOV', 'BX', 'AX');
+              EmitInstrA('CALL', JS_FN_PFX + CtorName + '__init');
+              EmitInstrAB('MOV', 'AX', 'BX'); { restaurer AX=obj ptr }
+              EmitInstrAB('MOV', '[_JSRT_OBJTMP]', 'AX'); { sauver ptr }
+              EmitInstrA('PUSH', 'AX');    { passer this en dernier (cdecl) }
+              EmitInstrA('CALL', JS_FN_PFX + CtorName + '_ctor');
+              EmitInstrAB('ADD', 'SP', IntToStr((ArgCount + 1) * 2));
+              EmitInstrAB('MOV', 'AX', '[_JSRT_OBJTMP]'); { recuperer ptr }
+            End
+            Else If (FnIdx >= 0) And (SymTab[FnIdx].Cat = SC_FUNCTION) Then
             Begin
               EmitInstrA('CALL', '_JSRT_NEW');
               EmitInstrA('PUSH', 'AX');    { sauver this }
@@ -3340,12 +4306,15 @@ Begin
         EmitLabel(ArrLbl);
         EmitInstrA('PUSH', 'BP');
         EmitInstrAB('MOV', 'BP', 'SP');
+        EmitInstrA('PUSH', 'SI');
+        EmitInstrA('PUSH', 'DI');
+        EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
         { Sauvegarder contexte }
         ArgCount := CurFnDepth;  { reuse ArgCount as save slot }
         Inc(CurFnDepth);
         CurFnRetLbl := CtorName;
         FnIdx := CurFrameSize; { reuse FnIdx as save frame }
-        CurFrameSize := 0;
+        CurFrameSize := 2;  { 2 words pour SI/DI (TODO 18) }
         SymEnterScope;
         For I := 0 To ElemCnt - 1 Do
           SymAdd(ObjKeyLbls[I], SC_PARAM, TY_UNKNOWN,
@@ -3362,6 +4331,9 @@ Begin
         End;
         EmitInstrAB('XOR', 'AX', 'AX');
         EmitLabel(CtorName);
+        EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
+        EmitInstrAB('MOV', 'SI', '[BP-2]');
+        EmitInstrAB('MOV', 'DI', '[BP-4]');
         EmitInstrAB('MOV', 'SP', 'BP');
         EmitInstrA('POP', 'BP');
         EmitInstr('RET');
@@ -3369,6 +4341,8 @@ Begin
         SymLeaveScope;
         CurFrameSize := FnIdx;
         EmitLabel(StrLbl);
+        { Sync des variables capturees (TODO 22) }
+        EmitCaptureSync(CurFnDepth);
         EmitInstrAB('LEA', 'AX', ArrLbl);
         Res.Kind    := EK_AX;
         Res.ImmVal  := 0;
@@ -3441,11 +4415,16 @@ Begin
           EmitLabel(ArrLbl);
           EmitInstrA('PUSH', 'BP');
           EmitInstrAB('MOV', 'BP', 'SP');
+          EmitInstrA('PUSH', 'SI');
+          EmitInstrA('PUSH', 'DI');
+          EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
           ArgCount := CurFnDepth;
           Inc(CurFnDepth);
+          SaveThis := CurMethodThis;   { arrow : this = 0 (TODO 22) }
+          CurMethodThis := 0;
           CurFnRetLbl := CtorName;
           FnIdx := CurFrameSize;
-          CurFrameSize := 0;
+          CurFrameSize := 2;  { SI/DI (TODO 18) }
           SymEnterScope;
           SymAdd(ObjLbl, SC_PARAM, TY_UNKNOWN, 4);
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
@@ -3464,13 +4443,19 @@ Begin
             ExprFlushToAX(ElemRes);
           End;
           EmitLabel(CtorName);
+          EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
+          EmitInstrAB('MOV', 'SI', '[BP-2]');
+          EmitInstrAB('MOV', 'DI', '[BP-4]');
           EmitInstrAB('MOV', 'SP', 'BP');
           EmitInstrA('POP', 'BP');
           EmitInstr('RET');
           CurFnDepth := ArgCount;
+          CurMethodThis := SaveThis;   { restaurer (TODO 22) }
           SymLeaveScope;
           CurFrameSize := FnIdx;
           EmitLabel(StrLbl);
+          { Sync des variables capturees (TODO 22) }
+          EmitCaptureSync(CurFnDepth);
           EmitInstrAB('LEA', 'AX', ArrLbl);
           Res.Kind := EK_AX; Res.ImmVal := 0;
           Res.TypeIdx := TY_IDX_FUNCTION; Res.Offset := 0; Res.SymIdx := -1;
@@ -3576,11 +4561,16 @@ Begin
           EmitLabel(ArrLbl);
           EmitInstrA('PUSH', 'BP');
           EmitInstrAB('MOV', 'BP', 'SP');
+          EmitInstrA('PUSH', 'SI');
+          EmitInstrA('PUSH', 'DI');
+          EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
           ArgCount := CurFnDepth;
           Inc(CurFnDepth);
+          SaveThis := CurMethodThis;   { arrow : this = 0 (TODO 22) }
+          CurMethodThis := 0;
           CurFnRetLbl := CtorName;
           FnIdx := CurFrameSize;
-          CurFrameSize := 0;
+          CurFrameSize := 2;  { SI/DI (TODO 18) }
           SymEnterScope;
           For I := 0 To ElemCnt - 1 Do
             SymAdd(ObjKeyLbls[I], SC_PARAM, TY_UNKNOWN,
@@ -3601,13 +4591,19 @@ Begin
             ExprFlushToAX(ElemRes);
           End;
           EmitLabel(CtorName);
+          EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
+          EmitInstrAB('MOV', 'SI', '[BP-2]');
+          EmitInstrAB('MOV', 'DI', '[BP-4]');
           EmitInstrAB('MOV', 'SP', 'BP');
           EmitInstrA('POP', 'BP');
           EmitInstr('RET');
           CurFnDepth := ArgCount;
+          CurMethodThis := SaveThis;   { restaurer (TODO 22) }
           SymLeaveScope;
           CurFrameSize := FnIdx;
           EmitLabel(StrLbl);
+          { Sync des variables capturees (TODO 22) }
+          EmitCaptureSync(CurFnDepth);
           EmitInstrAB('LEA', 'AX', ArrLbl);
           Res.Kind := EK_AX; Res.ImmVal := 0;
           Res.TypeIdx := TY_IDX_FUNCTION; Res.Offset := 0; Res.SymIdx := -1;
@@ -3824,9 +4820,10 @@ End;
 { ParseUnary : operateurs unaires prefixe + postfixe }
 Procedure ParseUnary(Var Res : TExprVal);
 Var
-  Op   : TString;
-  Addr : TString;
-  TLbl : TString;
+  Op    : TString;
+  Addr  : TString;
+  TLbl  : TString;
+  FnIdx : Integer;   { pour & (TODO 22) }
 Begin
   { Unaire prefixe sur TK_OP }
   If CurToken.Kind = TK_OP Then
@@ -3907,6 +4904,61 @@ Begin
         Res.Kind := EK_AX;
         Res.SymIdx := -1;
       End;
+      Exit;
+    End;
+    { Operateur de reference & (TODO 22) : &ident -> adresse }
+    If Op = '&' Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FnIdx := SymFind(CurToken.Val);
+        If FnIdx >= 0 Then
+        Begin
+          If SymTab[FnIdx].Cat = SC_FUNCTION Then
+            EmitInstrAB('LEA', 'AX', SymTab[FnIdx].MangledName)
+          Else If SymTab[FnIdx].IsCapture Then
+            EmitInstrAB('LEA', 'AX', SymTab[FnIdx].CaptureLabel)
+          Else If SymTab[FnIdx].Offset < 0 Then
+            EmitInstrAB('LEA', 'AX', '[BP' + IntToStr(SymTab[FnIdx].Offset) + ']')
+          Else If SymTab[FnIdx].Offset > 0 Then
+            EmitInstrAB('LEA', 'AX', '[BP+' + IntToStr(SymTab[FnIdx].Offset) + ']')
+          Else
+            EmitInstrAB('LEA', 'AX', SymTab[FnIdx].MangledName);
+        End
+        Else
+        Begin
+          WarnMsg('& sur identifiant inconnu "' + CurToken.Val + '"');
+          EmitInstrAB('XOR', 'AX', 'AX');
+        End;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        WarnMsg('& attend un identifiant');
+        ParseUnary(Res);
+        ExprFlushToAX(Res);
+      End;
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_NUMBER;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+      Exit;
+    End;
+    { Operateur de dereference * (TODO 22) : *expr -> MOV BX,AX / MOV AX,[BX] }
+    If Op = '*' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprFlushToAX(Res);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrAB('MOV', 'AX', '[BX]');
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_NUMBER;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
       Exit;
     End;
     { '?.' optional chaining : stub (geree aussi dans ParsePostfix) }
@@ -4292,8 +5344,16 @@ Begin
       End
       Else If Op = 'instanceof' Then
       Begin
-        EmitInstrAB('XOR', 'AX', 'AX');
-        If Opts.Warnings Then WarnMsg('instanceof : stub, retourne 0');
+        { AX = instance ptr (pointe vers n_props, proto a [AX-2]) }
+        { BX = LEA _JSC_Class (adresse du proto de la classe) }
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('MOV', 'AX', '[SI-2]'); { proto ptr de l'objet }
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JNE', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
       End
       Else If Op = 'in' Then
       Begin
@@ -4545,6 +5605,8 @@ Begin
   SymTab[SymCount].IsConst     := (Cat = SC_CONST_JS);
   SymTab[SymCount].IsParam     := (Cat = SC_PARAM);
   SymTab[SymCount].IsCapture   := False;
+  SymTab[SymCount].CaptureLabel := '';
+  SymTab[SymCount].FnDepthLvl  := CurFnDepth;
   SymTab[SymCount].DeclLine    := CurToken.Line;
   SymAdd := SymCount;
   Inc(SymCount);
@@ -4844,23 +5906,26 @@ Begin
   WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
 End;
 
-{ EmitProlog : preambule de fonction (BP frame) }
+{ EmitProlog : preambule de fonction (BP frame + SI/DI + profondeur) (TODO 18) }
 Procedure EmitProlog;
 Begin
-  EmitInstr('PUSH   BP');
+  EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
-  If CurFrameSize > 0 Then
-    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize * 2));
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
 End;
 
-{ EmitEpilog : epilogue de fonction (restaurer SP/BP et retourner) }
+{ EmitEpilog : epilogue de fonction (restaurer SI/DI/SP/BP et retourner) (TODO 18) }
 Procedure EmitEpilog;
 Begin
   If CurFnRetLbl <> '' Then
     EmitLabel(CurFnRetLbl);
-  If CurFrameSize > 0 Then
-    EmitInstrAB('MOV', 'SP', 'BP');
-  EmitInstr('POP    BP');
+  EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
+  EmitInstrAB('MOV', 'SI', '[BP-2]');
+  EmitInstrAB('MOV', 'DI', '[BP-4]');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
   EmitInstr('RET');
 End;
 
@@ -5020,6 +6085,11 @@ Begin
   EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
   EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:STACK');
   EmitBlankLine;
+  EmitLabel('_JSF_main');
+  EmitComment('--- initialisation segment de donnees ---');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
   EmitComment('--- debut du code genere ---');
   EmitBlankLine;
 End;
@@ -5082,6 +6152,39 @@ Begin
   EmitRaw('_JS_WARNPFX DB  ''Warning: '',0');
   { Buffer statique pour Object.keys() (TODO 16) }
   EmitRaw('_JSRT_OKBUF  DW  ' + IntToStr(MAX_OBJ_PROP + 1) + ' DUP(0)');
+  (* Compteur profondeur d appels - TODO 18 *)
+  EmitRaw('_JS_CALLDEPTH  DW  0');
+  (* Stubs de capture regexp _JSCAP_1.._JSCAP_9 - TODO 19 *)
+  For I := 1 To 9 Do
+    EmitRaw('_JSCAP_' + Chr(Ord('0') + I) + '  DW  0');
+  (* Buffer temporaire pour _JSRT_RESUB - TODO 19 *)
+  EmitRaw('_JSRT_REBUF  DB  256 DUP(0)');
+  (* Buffers et donnees pour methodes natives - TODO 20 *)
+  EmitRaw('_JSRT_CHRBUF DB  2 DUP(0)');
+  EmitRaw('_JSRT_JSONBUF DB 256 DUP(0)');
+  EmitRaw('_JSRT_SPLITBUF DW 64 DUP(0)');
+  EmitRaw('_JS_RNDSEED  DW  12345');
+  (* Heap et compteur pour objets classes - TODO 21 *)
+  EmitRaw('_JSRT_OBJHEAP DB 4096 DUP(0)');
+  EmitRaw('_JSRT_HEAPTOP DW 0');
+  EmitRaw('_JSRT_OBJTMP  DW 0');
+  (* Gestion des exceptions - TODO 23 *)
+  EmitRaw('_JSX_HANDLER  DW  0');
+  EmitRaw('_JSX_SAVESP   DW  0');
+  EmitRaw('_JSX_SAVEBP   DW  0');
+  EmitRaw('_JSX_ERRPTR   DW  0');
+  EmitRaw('_JS_ERR_DIV0  DB  ''Division by zero'',0');
+  EmitRaw('_JS_ERR_UNCAUGHT DB ''Uncaught: '',0');
+  EmitRaw('_JSRT_ERRBUF  DB  64 DUP(0)');
+  (* Runtime core - TODO 24 *)
+  EmitRaw('_JSRT_NUMBUF  DB  12 DUP(0)');
+  EmitRaw('_JS_TYP_NUMBER  DB ''number'',0');
+  EmitRaw('_JS_TYP_STRING  DB ''string'',0');
+  EmitRaw('_JS_TYP_BOOLEAN DB ''boolean'',0');
+  EmitRaw('_JS_TYP_OBJECT  DB ''object'',0');
+  EmitRaw('_JS_TYP_FUNCTION DB ''function'',0');
+  EmitRaw('_JS_HEAP      DB 4096 DUP(0)');
+  EmitRaw('_JS_HEAPTOP   DW 0');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -5269,6 +6372,216 @@ Procedure EmitRuntime;
 Var
   Lbl1, Lbl2, Lbl3, Lbl4 : TString;
 Begin
+  { Guard : ne pas emettre deux fois }
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+
+  EmitBlankLine;
+  EmitComment('--- runtime core routines (TODO 24) ---');
+
+  { _JSRT_NUMTOSTR : entier signe -> ASCII (itoa)
+    IN  : AX = nombre (signe 16 bits)
+    OUT : AX = ptr chaine ASCIIZ dans _JSRT_NUMBUF
+    Preserve : BX, CX }
+  EmitLabel('_JSRT_NUMTOSTR');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('LEA', 'DI', '_JSRT_NUMBUF');
+  EmitInstrAB('ADD', 'DI', '11');     { pointer vers la fin du buffer }
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0'); { terminateur }
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('XOR', 'CX', 'CX');     { CX = compteur de chiffres }
+  EmitInstrAB('MOV', 'BX', 'AX');     { sauver signe }
+  EmitInstrAB('OR', 'AX', 'AX');
+  Lbl1 := LabelGen; { not negative }
+  EmitInstrA('JNS', Lbl1);
+  EmitInstr('NEG    AX');
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'SI', '10');     { diviseur }
+  Lbl1 := LabelGen; { digit loop }
+  Lbl2 := LabelGen; { done digits }
+  EmitLabel(Lbl1);
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstr('DIV    SI');              { AX=quotient, DX=reste }
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstrA('DEC', 'DI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNZ', Lbl1);
+  { Ajouter signe si negatif }
+  EmitInstrAB('OR', 'BX', 'BX');
+  EmitInstrA('JNS', Lbl2);
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstrA('DEC', 'DI');
+  EmitLabel(Lbl2);
+  EmitInstrA('INC', 'DI');            { DI = debut chaine }
+  EmitInstrAB('MOV', 'AX', 'DI');    { AX = ptr resultat }
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_CONCAT : concatenation de chaines
+    IN  : AX = ptr chaine gauche, BX = ptr chaine droite
+    OUT : AX = ptr _JSRT_STRBUF (resultat concatene) }
+  EmitLabel('_JSRT_CONCAT');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('LEA', 'DI', '_JSRT_STRBUF');
+  EmitInstrAB('MOV', 'SI', 'AX');    { SI = gauche }
+  Lbl1 := LabelGen; { copy left }
+  Lbl2 := LabelGen; { copy right }
+  Lbl3 := LabelGen; { done }
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'SI', 'BX');    { SI = droite }
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl3);
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { _JSRT_PRINT : ecriture brute sur un handle
+    IN  : BX = handle (1=stdout, 2=stderr), DX = ptr buf, CX = longueur
+    OUT : AX = nb octets ecrits }
+  EmitLabel('_JSRT_PRINT');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+
+  { _JSRT_PRINTLN : _JSRT_PRINT + CR LF
+    IN  : BX = handle, DX = ptr buf, CX = longueur }
+  EmitLabel('_JSRT_PRINTLN');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('LEA', 'DX', '_JS_CRLF');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+
+  { _JSRT_TYPEOF : retourne ptr chaine du type
+    IN  : AX = valeur, BX = type index (compile-time)
+    OUT : AX = ptr chaine type (ASCIIZ)
+    Types: 0=number, 1=string, 2=boolean, 3=object, 4=undefined, 5=function }
+  EmitLabel('_JSRT_TYPEOF');
+  Lbl1 := LabelGen; { string }
+  Lbl2 := LabelGen; { boolean }
+  Lbl3 := LabelGen; { object }
+  Lbl4 := LabelGen; { undefined }
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_STRING));
+  EmitInstrA('JE', Lbl1);
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_BOOLEAN));
+  EmitInstrA('JE', Lbl2);
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_OBJECT));
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_UNDEF));
+  EmitInstrA('JE', Lbl4);
+  { default : "number" }
+  EmitInstrAB('LEA', 'AX', '_JS_TYP_NUMBER');
+  EmitInstr('RET');
+  EmitLabel(Lbl1);
+  EmitInstrAB('LEA', 'AX', '_JS_TYP_STRING');
+  EmitInstr('RET');
+  EmitLabel(Lbl2);
+  EmitInstrAB('LEA', 'AX', '_JS_TYP_BOOLEAN');
+  EmitInstr('RET');
+  EmitLabel(Lbl3);
+  EmitInstrAB('LEA', 'AX', '_JS_TYP_OBJECT');
+  EmitInstr('RET');
+  EmitLabel(Lbl4);
+  EmitInstrAB('LEA', 'AX', '_JS_UNDEF');
+  EmitInstr('RET');
+
+  { _JSRT_TRUTHY : conversion en booleen (truthiness)
+    IN  : AX = valeur, BX = type index
+    OUT : AX = 0 (falsy) ou 1 (truthy)
+    Falsy : 0, '', null, undefined, false, NaN
+    Truthy : tout le reste }
+  EmitLabel('_JSRT_TRUTHY');
+  Lbl1 := LabelGen; { string check }
+  Lbl2 := LabelGen; { truthy }
+  Lbl3 := LabelGen; { falsy }
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_UNDEF));
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_NULL));
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('CMP', 'BX', IntToStr(TY_IDX_STRING));
+  EmitInstrA('JE', Lbl1);
+  { number/boolean/object : falsy si AX=0 }
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JZ', Lbl3);
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl1); { string : falsy si premier octet = 0 (chaine vide) }
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl3);
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(Lbl3);
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+
+  { _JSRT_STRTRUTHY : truthiness pour chaine
+    IN  : SI = ptr chaine (ou AX = ptr)
+    OUT : AX = 1 sauf si chaine vide ou "0" }
+  EmitLabel('_JSRT_STRTRUTHY');
+  Lbl1 := LabelGen; { truthy }
+  Lbl2 := LabelGen; { falsy }
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl2);
+  { Verifier "0" : un seul caractere '0' suivi de NUL }
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''0''');
+  EmitInstrA('JNE', Lbl1);
+  EmitInstrAB('CMP', 'BYTE PTR [SI+1]', '0');
+  EmitInstrA('JE', Lbl2);
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(Lbl2);
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+
+  { _JSRT_ALLOC : allocateur heap statique
+    IN  : CX = nombre d octets a allouer
+    OUT : AX = ptr dans _JS_HEAP }
+  EmitLabel('_JSRT_ALLOC');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', '[_JS_HEAPTOP]');
+  EmitInstrAB('LEA', 'AX', '_JS_HEAP');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', '[_JS_HEAPTOP]', 'BX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
   EmitBlankLine;
   EmitComment('--- runtime array routines (TODO 15) ---');
 
@@ -5636,6 +6949,1078 @@ Begin
   EmitInstrA('POP', 'DI');
   EmitInstrA('POP', 'CX');
   EmitInstr('RET');
+
+  (* ---- routines regexp (TODO 19) ---- *)
+  EmitBlankLine;
+  EmitComment('--- runtime regexp routines (TODO 19) ---');
+
+  { _JSRT_REPARSE : utilitaire interne
+    Extrait le pattern pur de DI (ptr regexp = pattern + Chr(1) + flags)
+    Avance DI jusqu a sauter le Chr(1) dans le buffer regexp
+    Ne modifie que DI (pointe apres Chr(1))
+    Pattern pur reste a l adresse originale de DI
+    Retourne la longueur du pattern dans CX }
+  EmitLabel('_JSRT_REPARSE');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'DI');  { BX = debut pattern }
+  Lbl1 := LabelGen; { scan loop }
+  Lbl2 := LabelGen; { done }
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[BX]');
+  EmitInstrAB('CMP', 'AL', '1');   { Chr(1) = separateur }
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'CX', 'BX');
+  EmitInstrAB('SUB', 'CX', 'DI');  { CX = longueur pattern }
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_REMATCH : recherche de sous-chaine (strstr basique)
+    IN  : SI = ptr string, DI = ptr regexp (pattern + Chr(1) + flags)
+    OUT : AX = 1 si trouve, 0 sinon }
+  EmitLabel('_JSRT_REMATCH');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('CALL', '_JSRT_REPARSE'); { CX = len pattern, DI = ptr pat }
+  EmitInstrAB('OR', 'CX', 'CX');
+  Lbl1 := LabelGen; { outer loop }
+  Lbl2 := LabelGen; { inner loop }
+  Lbl3 := LabelGen; { found }
+  Lbl4 := LabelGen; { not found }
+  EmitInstrA('JZ', Lbl3);           { pattern vide -> match }
+  EmitLabel(Lbl1);                   { pour chaque position dans SI }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl4);           { fin de chaine -> pas trouve }
+  EmitInstrA('PUSH', 'SI');          { sauver position }
+  EmitInstrA('PUSH', 'DI');          { sauver debut pattern }
+  EmitInstrA('PUSH', 'CX');          { sauver len }
+  EmitInstrAB('MOV', 'DX', 'CX');   { DX = compteur }
+  EmitLabel(Lbl2);                   { comparer char par char }
+  EmitInstrAB('OR', 'DX', 'DX');
+  EmitInstrA('JZ', Lbl3 + 'B');     { tous chars matches -> found }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNZ', Lbl4 + 'B');    { mismatch -> avancer }
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'DX');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3 + 'B');             { match complet a cette position }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', Lbl3);
+  EmitLabel(Lbl4 + 'B');             { mismatch -> avancer position }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl3);                   { found }
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(Lbl4);                   { not found }
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { _JSRT_REINDEX : retourne la position de la 1ere occurrence
+    IN  : SI = ptr string, DI = ptr regexp (pattern + Chr(1) + flags)
+    OUT : AX = index (0-based) ou -1 si non trouve }
+  EmitLabel('_JSRT_REINDEX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'BX', 'SI');   { BX = debut chaine originale }
+  EmitInstrA('CALL', '_JSRT_REPARSE'); { CX = len pattern }
+  Lbl1 := LabelGen; { outer loop }
+  Lbl2 := LabelGen; { inner loop }
+  Lbl3 := LabelGen; { found }
+  Lbl4 := LabelGen; { not found }
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', Lbl3);
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl4);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'DX', 'CX');
+  EmitLabel(Lbl2);
+  EmitInstrAB('OR', 'DX', 'DX');
+  EmitInstrA('JZ', Lbl3 + 'B');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNZ', Lbl4 + 'B');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'DX');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3 + 'B');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', Lbl3);
+  EmitLabel(Lbl4 + 'B');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrAB('SUB', 'AX', 'BX');   { AX = index 0-based }
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+  EmitLabel(Lbl4);
+  EmitInstrAB('MOV', 'AX', '-1');   { pas trouve }
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { _JSRT_REEXEC : exec simplifie (retourne ptr string si match, 0 sinon)
+    IN  : SI = ptr string, DI = ptr regexp
+    OUT : AX = ptr sous-chaine trouvee ou 0 }
+  EmitLabel('_JSRT_REEXEC');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('CALL', '_JSRT_REMATCH');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  Lbl1 := LabelGen;
+  EmitInstrA('JZ', Lbl1);
+  EmitInstrAB('MOV', 'AX', 'SI');   { retourner ptr string }
+  EmitInstr('RET');
+  EmitLabel(Lbl1);
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+
+  { _JSRT_RESUB : substitution de la 1ere occurrence
+    IN  : SI = ptr string source, DI = ptr pattern (regexp format)
+          BX = ptr remplacement
+    OUT : AX = ptr _JSRT_REBUF (resultat)
+    Algorithme : copier src vers REBUF, quand on trouve pattern on copie
+                 le remplacement a la place, puis on continue avec le reste.
+    On utilise la pile pour sauvegarder les params et des registres de travail. }
+  EmitLabel('_JSRT_RESUB');
+  EmitInstrA('PUSH', 'BX');       { [SP+8] = repl ptr }
+  EmitInstrA('PUSH', 'DI');       { [SP+6] = pattern ptr }
+  EmitInstrA('PUSH', 'SI');       { [SP+4] = src ptr }
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('CALL', '_JSRT_REPARSE');   { CX = len pattern, DI unchanged }
+  EmitInstrAB('MOV', 'DX', 'CX');       { DX = pattern length }
+  EmitInstrAB('LEA', 'BX', '_JSRT_REBUF'); { BX = dest ptr }
+  Lbl1 := LabelGen; { main copy loop }
+  Lbl2 := LabelGen; { try match }
+  Lbl3 := LabelGen; { match found - copy repl }
+  Lbl4 := LabelGen; { done }
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl4);           { fin de src -> terminaison }
+  { Essayer de matcher le pattern a cette position }
+  EmitInstrAB('OR', 'DX', 'DX');
+  EmitInstrA('JZ', Lbl2 + 'C');     { pattern vide -> copier char }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'DX');
+  EmitLabel(Lbl2);
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', Lbl3);           { tous chars matches }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNZ', Lbl2 + 'N');    { mismatch }
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl2 + 'N');            { mismatch -> restaurer et copier 1 char }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(Lbl2 + 'C');            { copier 1 char de src vers dest }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl3);                   { match trouve! }
+  EmitInstrA('POP', 'CX');          { restaurer CX }
+  EmitInstrA('POP', 'DI');          { restaurer DI }
+  EmitInstrA('POP', 'AX');          { jeter ancien SI (on garde le nouveau) }
+  { SI pointe maintenant apres le match - copier le remplacement }
+  EmitInstrA('PUSH', 'SI');          { sauver SI (suite apres match) }
+  EmitInstrAB('MOV', 'SI', '[SP+10]'); { SI = ptr remplacement (BX initial) }
+  Lbl3 := LabelGen; { copy repl loop }
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl3 + 'D');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl3);
+  EmitLabel(Lbl3 + 'D');
+  EmitInstrA('POP', 'SI');           { SI = suite source apres match }
+  { Copier le reste de la source sans plus chercher }
+  Lbl3 := LabelGen; { copy rest loop }
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl4);
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl3);
+  EmitLabel(Lbl4);                   { terminer la chaine dest }
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('LEA', 'AX', '_JSRT_REBUF');
+  EmitInstr('RET');
+
+  EmitBlankLine;
+  EmitComment('--- runtime string / math / number routines (TODO 20) ---');
+
+  { _JSRT_STRLEN : SI = ptr chaine ASCIIZ -> AX = longueur }
+  EmitLabel('_JSRT_STRLEN');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl2);
+  EmitInstrA('INC', 'AX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrA('POP', 'SI');
+  EmitInstr('RET');
+
+  { _JSRT_STRINDEXOF : SI = string, DI = substring -> AX = index ou -1 }
+  EmitLabel('_JSRT_STRINDEXOF');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'BX', 'SI');  { BX = debut original }
+  Lbl1 := LabelGen; { boucle exterieure }
+  Lbl2 := LabelGen; { boucle interieure }
+  Lbl3 := LabelGen; { trouve }
+  Lbl4 := LabelGen; { pas trouve }
+  EmitLabel(Lbl1);
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl4);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(Lbl2);
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', Lbl2 + 'N');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);  { trouvé }
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'AX');  { AX = position de match }
+  EmitInstrAB('SUB', 'AX', 'BX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(Lbl2 + 'N');  { mismatch }
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl4);  { pas trouvé }
+  EmitInstrAB('MOV', 'AX', '0FFFFh');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_STRLASTIDX : SI = string, DI = substring -> AX = last index ou -1 }
+  EmitLabel('_JSRT_STRLASTIDX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'BX', 'SI');
+  EmitInstrAB('MOV', 'DX', '0FFFFh');  { DX = meilleur index = -1 }
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  Lbl4 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl4);
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitLabel(Lbl2);
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', Lbl2 + 'N');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);  { match }
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('SUB', 'AX', 'BX');
+  EmitInstrAB('MOV', 'DX', 'AX');  { DX = dernier index trouvé }
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2 + 'N');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl4);
+  EmitInstrAB('MOV', 'AX', 'DX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_STRSTARTW : SI = string, DI = prefix -> AX = 0|1 }
+  EmitLabel('_JSRT_STRSTARTW');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', Lbl1 + 'Y');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', Lbl2);
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl1 + 'Y');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitLabel(Lbl2);
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+
+  { _JSRT_STRENDW : SI = string, DI = suffix -> AX = 0|1 }
+  EmitLabel('_JSRT_STRENDW');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  { calculer strlen(SI) }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('CALL', '_JSRT_STRLEN');
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = len(str) }
+  EmitInstrA('POP', 'SI');
+  { calculer strlen(DI) }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('CALL', '_JSRT_STRLEN');
+  EmitInstrAB('MOV', 'CX', 'AX');  { CX = len(suffix) }
+  EmitInstrA('POP', 'SI');
+  Lbl1 := LabelGen;
+  { si suffix plus long que string -> false }
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JA', Lbl1);
+  { pointer SI vers la fin - len(suffix) }
+  EmitInstrAB('SUB', 'BX', 'CX');
+  EmitInstrAB('ADD', 'SI', 'BX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('JMP', '_JSRT_STRSTARTW');  { reutilise startsWith }
+  EmitLabel(Lbl1);
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_STRSLICE : SI = string, BX = start, CX = end -> AX = ptr _JSRT_STRBUF }
+  EmitLabel('_JSRT_STRSLICE');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('LEA', 'DI', '_JSRT_STRBUF');
+  { avancer SI de BX caracteres }
+  EmitInstrAB('MOV', 'DX', 'BX');  { DX = start counter }
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('OR', 'DX', 'DX');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl3);
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'DX');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);  { copier de BX a CX }
+  EmitInstrAB('CMP', 'BX', 'CX');
+  EmitInstrA('JGE', Lbl3);
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  { _JSRT_STRTOUPPER : SI = string -> AX = ptr _JSRT_STRBUF (uppercased) }
+  EmitLabel('_JSRT_STRTOUPPER');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_JSRT_STRBUF');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', Lbl1 + 'C');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JA', Lbl1 + 'C');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitLabel(Lbl1 + 'C');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  { _JSRT_STRTOLOWER : SI = string -> AX = ptr _JSRT_STRBUF (lowercased) }
+  EmitLabel('_JSRT_STRTOLOWER');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_JSRT_STRBUF');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('CMP', 'AL', '''A''');
+  EmitInstrA('JB', Lbl1 + 'C');
+  EmitInstrAB('CMP', 'AL', '''Z''');
+  EmitInstrA('JA', Lbl1 + 'C');
+  EmitInstrAB('ADD', 'AL', '32');
+  EmitLabel(Lbl1 + 'C');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  { _JSRT_STRTRIM : SI = string -> AX = ptr _JSRT_STRBUF (trimmed) }
+  EmitLabel('_JSRT_STRTRIM');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'BX');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  { Skip leading spaces/tabs }
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '32');
+  EmitInstrA('JE', Lbl1 + 'S');
+  EmitInstrAB('CMP', 'AL', '9');
+  EmitInstrA('JE', Lbl1 + 'S');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl1 + 'S');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  { Copy to buffer }
+  EmitInstrAB('LEA', 'DI', '_JSRT_STRBUF');
+  EmitInstrAB('MOV', 'BX', 'DI');  { BX = start of buffer }
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl3);
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);
+  { Remove trailing spaces: walk back from DI }
+  Lbl3 := LabelGen;
+  EmitLabel(Lbl3);
+  EmitInstrA('DEC', 'DI');
+  EmitInstrAB('CMP', 'DI', 'BX');
+  EmitInstrA('JB', Lbl3 + 'D');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '32');
+  EmitInstrA('JE', Lbl3);
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '9');
+  EmitInstrA('JE', Lbl3);
+  EmitLabel(Lbl3 + 'D');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  { _JSRT_STRSPLIT : SI = string, DI = separator -> AX = ptr _JSRT_SPLITBUF
+    Format resultat : [count, ptr1, ptr2, ...] (pointeurs dans la chaine source) }
+  EmitLabel('_JSRT_STRSPLIT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('LEA', 'BX', '_JSRT_SPLITBUF');
+  EmitInstrAB('MOV', 'WORD PTR [BX]', '0');  { count = 0 }
+  EmitInstrAB('ADD', 'BX', '2');  { skip count field }
+  { Calculer longueur du separateur }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('CALL', '_JSRT_STRLEN');
+  EmitInstrAB('MOV', 'DX', 'AX');  { DX = sep len }
+  EmitInstrA('POP', 'SI');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  Lbl4 := LabelGen;
+  { Ajouter premier element }
+  EmitInstrAB('MOV', '[BX]', 'SI');
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('LEA', 'AX', '_JSRT_SPLITBUF');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'CX');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrA('INC', 'AX');
+  EmitInstrAB('MOV', '[SI]', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitLabel(Lbl1);  { boucle principale }
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', Lbl4);
+  { Tester si separateur a cette position }
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'DX');  { CX = sep len }
+  EmitLabel(Lbl2);
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', Lbl3);  { match complet }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', Lbl2 + 'N');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl2 + 'N');  { pas de match }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl3);  { match trouvé -> couper }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'AX');  { jeter ancien SI }
+  { SI pointe après le separateur; mettre NUL avant }
+  EmitInstrAB('MOV', '[BX]', 'SI');  { ajouter nouvel element }
+  EmitInstrAB('ADD', 'BX', '2');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'CX');
+  EmitInstrAB('MOV', 'AX', '[SI]');
+  EmitInstrA('INC', 'AX');
+  EmitInstrAB('MOV', '[SI]', 'AX');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl4);
+  EmitInstrAB('LEA', 'AX', '_JSRT_SPLITBUF');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_STRCHAR : SI = string, CX = index -> AX = ptr _JSRT_CHRBUF }
+  EmitLabel('_JSRT_STRCHAR');
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [_JSRT_CHRBUF]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [_JSRT_CHRBUF+1]', '0');
+  EmitInstrAB('LEA', 'AX', '_JSRT_CHRBUF');
+  EmitInstr('RET');
+
+  { _JSRT_STRORD : SI = string, CX = index -> AX = char code }
+  EmitLabel('_JSRT_STRORD');
+  EmitInstrAB('ADD', 'SI', 'CX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstr('RET');
+
+  { _JSRT_STRREPEAT : SI = src, DI = dest buf, CX = count -> AX = DI }
+  EmitLabel('_JSRT_STRREPEAT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'BX', 'DI');  { BX = debut buf }
+  EmitInstrAB('MOV', 'DX', 'SI');  { DX = src original }
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  EmitLabel(Lbl1);  { boucle des repetitions }
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', Lbl3);
+  EmitInstrAB('MOV', 'SI', 'DX');  { remettre SI au debut }
+  EmitLabel(Lbl2);  { copier une occurrence }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl2 + 'D');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl2 + 'D');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('MOV', 'AX', 'BX');  { AX = debut buf }
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_STRPADS : SI = string, CX = target len, DI = pad string -> AX = ptr buf }
+  EmitLabel('_JSRT_STRPADS');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  { Calculer strlen(SI) }
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('CALL', '_JSRT_STRLEN');
+  EmitInstrAB('MOV', 'DX', 'AX');  { DX = strlen(str) }
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'CX');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  { Si deja assez long -> copier tel quel }
+  EmitInstrAB('CMP', 'DX', 'CX');
+  EmitInstrA('JAE', Lbl3);
+  { Besoin de (CX - DX) caracteres de padding }
+  EmitInstrAB('SUB', 'CX', 'DX');  { CX = nb chars a ajouter }
+  EmitInstrAB('LEA', 'BX', '_JSRT_STRBUF');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrAB('MOV', 'SI', 'DI');  { SI = pad string }
+  EmitLabel(Lbl1);
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', Lbl1 + 'C');
+  EmitInstrAB('MOV', 'SI', 'DI');  { recommencer le pad }
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitLabel(Lbl1 + 'C');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrA('POP', 'SI');  { SI = original string }
+  { Copier la chaine originale }
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl2 + 'D');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl2 + 'D');
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(Lbl3);
+  { Chaine deja assez longue -> copier directement }
+  EmitInstrAB('LEA', 'BX', '_JSRT_STRBUF');
+  Lbl3 := LabelGen;
+  EmitLabel(Lbl3);
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl3 + 'D');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'BX');
+  EmitInstrA('JMP', Lbl3);
+  EmitLabel(Lbl3 + 'D');
+  EmitInstrAB('LEA', 'AX', '_JSRT_STRBUF');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_CHR : AX = char code -> AX = ptr _JSRT_CHRBUF (1-char string) }
+  EmitLabel('_JSRT_CHR');
+  EmitInstrAB('MOV', 'BYTE PTR [_JSRT_CHRBUF]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [_JSRT_CHRBUF+1]', '0');
+  EmitInstrAB('LEA', 'AX', '_JSRT_CHRBUF');
+  EmitInstr('RET');
+
+  { _JSRT_STRTONUM : SI = ptr string -> AX = integer (atoi simple, base 10) }
+  EmitLabel('_JSRT_STRTONUM');
+  EmitInstrAB('MOV', 'CX', '10');
+  EmitInstrA('JMP', '_JSRT_STRTOINT');
+
+  { _JSRT_STRTOINT : SI = ptr string, CX = radix -> AX = integer }
+  EmitLabel('_JSRT_STRTOINT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'BX', 'BX');  { BX = signe (0=positif) }
+  { Ignorer espaces }
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '32');
+  EmitInstrA('JE', Lbl1 + 'S');
+  EmitInstrA('JMP', Lbl1 + 'E');
+  EmitLabel(Lbl1 + 'S');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl1 + 'E');
+  { Verifier signe }
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''-''');
+  EmitInstrA('JNE', Lbl1 + 'P');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl1 + 'P');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''+''');
+  EmitInstrA('JNE', Lbl2);
+  EmitInstrA('INC', 'SI');
+  EmitLabel(Lbl2);  { boucle de conversion }
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrAB('MOV', 'DL', '[SI]');
+  EmitInstrAB('OR', 'DL', 'DL');
+  EmitInstrA('JZ', Lbl3);
+  { Convertir caractere en digit }
+  EmitInstrAB('CMP', 'DL', '''0''');
+  EmitInstrA('JB', Lbl3);
+  EmitInstrAB('CMP', 'DL', '''9''');
+  EmitInstrA('JA', Lbl2 + 'H');
+  EmitInstrAB('SUB', 'DL', '''0''');
+  EmitInstrA('JMP', Lbl2 + 'M');
+  EmitLabel(Lbl2 + 'H');  { hex a-f/A-F }
+  EmitInstrAB('CMP', 'DL', '''a''');
+  EmitInstrA('JB', Lbl2 + 'U');
+  EmitInstrAB('CMP', 'DL', '''f''');
+  EmitInstrA('JA', Lbl3);
+  EmitInstrAB('SUB', 'DL', '''a''');
+  EmitInstrAB('ADD', 'DL', '10');
+  EmitInstrA('JMP', Lbl2 + 'M');
+  EmitLabel(Lbl2 + 'U');  { A-F }
+  EmitInstrAB('CMP', 'DL', '''A''');
+  EmitInstrA('JB', Lbl3);
+  EmitInstrAB('CMP', 'DL', '''F''');
+  EmitInstrA('JA', Lbl3);
+  EmitInstrAB('SUB', 'DL', '''A''');
+  EmitInstrAB('ADD', 'DL', '10');
+  EmitLabel(Lbl2 + 'M');  { digit en DL, verifier < radix }
+  EmitInstrAB('CMP', 'DL', 'CL');
+  EmitInstrA('JAE', Lbl3);
+  { AX = AX * CX + DL }
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstr('MUL    CX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrAB('ADD', 'AX', 'DX');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);  { fin }
+  EmitInstrAB('OR', 'BX', 'BX');
+  EmitInstrA('JZ', Lbl3 + 'D');
+  EmitInstr('NEG    AX');
+  EmitLabel(Lbl3 + 'D');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_ABS : AX = n -> AX = |n| }
+  EmitLabel('_JSRT_ABS');
+  Lbl1 := LabelGen;
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JNS', Lbl1);
+  EmitInstr('NEG    AX');
+  EmitLabel(Lbl1);
+  EmitInstr('RET');
+
+  { _JSRT_POW : AX = base, BX = exponent -> AX = base^exp }
+  EmitLabel('_JSRT_POW');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'CX', 'BX');  { CX = exp }
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = base }
+  EmitInstrAB('MOV', 'AX', '1');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitLabel(Lbl1);
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrA('PUSH', 'DX');
+  EmitInstr('MUL    BX');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('DEC', 'CX');
+  EmitInstrA('JMP', Lbl1);
+  EmitLabel(Lbl2);
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+
+  { _JSRT_SQRT : AX = n -> AX = isqrt(n) (Newton-Raphson entier) }
+  EmitLabel('_JSRT_SQRT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrAB('MOV', 'BX', 'AX');  { BX = n }
+  EmitInstrAB('SHR', 'AX', '1');   { guess = n/2 }
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JZ', Lbl2 + 'O');
+  EmitLabel(Lbl1);  { iteration }
+  EmitInstrAB('MOV', 'CX', 'AX');  { CX = old guess }
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstr('DIV    CX');  { AX = n / guess }
+  EmitInstrA('POP', 'BX');
+  EmitInstrAB('ADD', 'AX', 'CX');  { AX = guess + n/guess }
+  EmitInstrAB('SHR', 'AX', '1');   { AX = (guess + n/guess) / 2 }
+  EmitInstrAB('CMP', 'AX', 'CX');
+  EmitInstrA('JB', Lbl1);
+  EmitInstrAB('MOV', 'AX', 'CX');  { retourner le plus petit }
+  EmitLabel(Lbl2);
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitLabel(Lbl2 + 'O');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_RAND : LCG 16 bits -> AX = pseudo-random 0..32767 }
+  EmitLabel('_JSRT_RAND');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'AX', '[_JS_RNDSEED]');
+  EmitInstrAB('MOV', 'DX', '25173');
+  EmitInstr('MUL    DX');
+  EmitInstrAB('ADD', 'AX', '13849');
+  EmitInstrAB('MOV', '[_JS_RNDSEED]', 'AX');
+  EmitInstrAB('AND', 'AX', '7FFFh');
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+
+  { _JSRT_SIGN : AX = n -> AX = -1|0|1 }
+  EmitLabel('_JSRT_SIGN');
+  Lbl1 := LabelGen;
+  Lbl2 := LabelGen;
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstrA('JZ', Lbl2);
+  EmitInstrA('JS', Lbl1);
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl1);
+  EmitInstrAB('MOV', 'AX', '0FFFFh');
+  EmitLabel(Lbl2);
+  EmitInstr('RET');
+
+  { _JSRT_JSONSTR : AX = valeur (traite comme nombre) -> AX = ptr buf }
+  EmitLabel('_JSRT_JSONSTR');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('LEA', 'DI', '_JSRT_JSONBUF');
+  EmitInstrA('CALL', '_JSRT_NUMTOSTR');
+  EmitInstrAB('LEA', 'AX', '_JSRT_JSONBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+
+  (* ---- routines classes/heritage (TODO 21) ---- *)
+  EmitBlankLine;
+  EmitComment('--- runtime class routines (TODO 21) ---');
+
+  { _JSRT_NEW : alloue un objet vide (bloc DW) dans _JSRT_OBJHEAP
+    IN  : rien
+    OUT : AX = ptr nouvel objet (n_props=0, proto=0) }
+  EmitLabel('_JSRT_NEW');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', '[_JSRT_HEAPTOP]');
+  EmitInstrAB('LEA', 'AX', '_JSRT_OBJHEAP');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrA('PUSH', 'AX');              { sauver ptr retour }
+  EmitInstrAB('MOV', 'WORD PTR [AX]', '0');   { proto = 0 }
+  EmitInstrAB('MOV', 'WORD PTR [AX+2]', '0'); { n_props = 0 }
+  EmitInstrAB('ADD', 'BX', IntToStr(2 + 2 + MAX_OBJ_PROP * 4));
+  EmitInstrAB('MOV', '[_JSRT_HEAPTOP]', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { _JSRT_OBJCREATE : alloue un objet avec proto
+    IN  : BX = ptr label proto classe (_JSC_Nom)
+    OUT : AX = ptr nouvel objet (pointe vers n_props)
+          Layout en memoire : [proto_ptr][n_props][paires...]
+          AX pointe vers n_props pour compatibilite OBJGET/OBJSET }
+  EmitLabel('_JSRT_OBJCREATE');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DX', 'BX');       { DX = proto ptr }
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', '[_JSRT_HEAPTOP]');
+  EmitInstrAB('LEA', 'AX', '_JSRT_OBJHEAP');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstrAB('MOV', '[AX]', 'DX');     { proto ptr at offset 0 }
+  EmitInstrAB('MOV', 'WORD PTR [AX+2]', '0'); { n_props = 0 at offset 2 }
+  EmitInstrAB('ADD', 'AX', '2');        { AX -> n_props (compatible OBJGET) }
+  EmitInstrA('PUSH', 'AX');             { sauver ptr retour }
+  EmitInstrAB('ADD', 'BX', IntToStr(2 + 2 + MAX_OBJ_PROP * 4));
+  EmitInstrAB('MOV', '[_JSRT_HEAPTOP]', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'DX');
+  EmitInstr('RET');
+
+  (* ---- routines exceptions (TODO 23) ---- *)
+  EmitBlankLine;
+  EmitComment('--- runtime exception routines (TODO 23) ---');
+
+  { _JSRT_MKERROR : cree une struct Error minimale
+    IN  : SI = ptr message (ASCIIZ)
+    OUT : AX = SI (retourne le ptr message directement) }
+  EmitLabel('_JSRT_MKERROR');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstr('RET');
+
+  { _JSRT_THROW : lance une exception
+    IN  : AX = ptr objet erreur / chaine
+    Si _JSX_HANDLER != 0 : saute vers le handler catch
+    Sinon : panic (uncaught exception) }
+  Lbl1 := LabelGen; { unhandled }
+  EmitLabel('_JSRT_THROW');
+  EmitInstrAB('MOV', '[_JSX_ERRPTR]', 'AX');
+  EmitInstrAB('CMP', 'WORD PTR [_JSX_HANDLER]', '0');
+  EmitInstrA('JZ', Lbl1);
+  { Restaurer SP/BP et sauter au handler }
+  EmitInstrAB('MOV', 'SP', '[_JSX_SAVESP]');
+  EmitInstrAB('MOV', 'BP', '[_JSX_SAVEBP]');
+  EmitInstrAB('MOV', 'BX', '[_JSX_HANDLER]');
+  EmitInstrA('JMP', 'BX');
+  EmitLabel(Lbl1);
+  { Uncaught exception : afficher message et quitter }
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('LEA', 'DX', '_JS_ERR_UNCAUGHT');
+  EmitInstrAB('MOV', 'DI', 'DX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  Lbl2 := LabelGen; { strlen loop }
+  Lbl3 := LabelGen; { strlen done }
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl3);
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);
+  EmitInstrAB('SUB', 'DI', 'CX');
+  EmitInstrAB('MOV', 'DX', 'DI');
+  EmitInstrAB('MOV', 'BX', '2');   { stderr }
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  { Afficher le message d erreur }
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', 'DI', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  Lbl2 := LabelGen;
+  Lbl3 := LabelGen;
+  EmitLabel(Lbl2);
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', Lbl3);
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('JMP', Lbl2);
+  EmitLabel(Lbl3);
+  EmitInstrAB('SUB', 'DI', 'CX');
+  EmitInstrAB('MOV', 'DX', 'DI');
+  EmitInstrAB('MOV', 'BX', '2');   { stderr }
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  { Newline }
+  EmitInstrAB('LEA', 'DX', '_JS_CRLF');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('MOV', 'BX', '2');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  { Quitter avec code 1 }
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
+
+  { _JSRT_PANIC : affiche message et quitte
+    IN  : SI = ptr message ASCIIZ  }
+  EmitLabel('_JSRT_PANIC');
+  EmitInstrAB('MOV', 'AX', 'SI');
+  EmitInstrA('CALL', '_JSRT_THROW');
+  EmitInstr('RET');
 End;
 
 Procedure EmitClose;
@@ -5647,7 +8032,7 @@ Begin
   EmitBlankLine;
   EmitDataSeg;
   EmitBlankLine;
-  EmitRaw('        END');
+  EmitRaw('        END   _JSF_main');
   If OutFOpen Then
   Begin
     Close(OutF);
@@ -5662,15 +8047,64 @@ End;
 { ExprAddrOf : retourne la chaine d'adressage MASM d'un symbole }
 Function ExprAddrOf(SIdx : Integer) : TString;
 Var
-  Ofs : Integer;
+  Ofs    : Integer;
+  CapLbl : TString;
 Begin
   Ofs := SymTab[SIdx].Offset;
+  (* Si deja marque capture (TODO 22) : toujours utiliser cellule DATA *)
+  If SymTab[SIdx].IsCapture Then
+  Begin
+    ExprAddrOf := '[' + SymTab[SIdx].CaptureLabel + ']';
+    Exit;
+  End;
+  (* Detection de capture closure - TODO 18/22 *)
+  If (Ofs <> 0) And (SymTab[SIdx].FnDepthLvl < CurFnDepth) And
+     (CurFnDepth > 0) Then
+  Begin
+    (* Variable d une portee de fonction externe : acces via cellule DATA *)
+    CapLbl := '_JSCAP_' + SymTab[SIdx].Name;
+    DataAddWord(CapLbl, 0);
+    SymTab[SIdx].IsCapture   := True;
+    SymTab[SIdx].CaptureLabel := CapLbl;
+    If (CurFnDepth - SymTab[SIdx].FnDepthLvl) > 1 Then
+      WarnMsg('closure profonde (>' + IntToStr(1) +
+              ' niveau) pour "' + SymTab[SIdx].Name +
+              '" : approximation statique')
+    Else
+      WarnMsg('variable capturee "' + SymTab[SIdx].Name +
+              '" : cellule DATA statique (approximation closure)');
+    ExprAddrOf := '[' + SymTab[SIdx].CaptureLabel + ']';
+    Exit;
+  End;
   If Ofs < 0 Then
     ExprAddrOf := '[BP' + IntToStr(Ofs) + ']'     { locale : [BP-2] }
   Else If Ofs > 0 Then
     ExprAddrOf := '[BP+' + IntToStr(Ofs) + ']'    { parametre : [BP+4] }
   Else
     ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']'; { global }
+End;
+
+{ EmitCaptureSync : sync captured stack vars -> DATA cells (TODO 22) }
+{ Appele apres compilation d une fonction imbriquee, au skip label, pour
+  copier la valeur actuelle des locales/params capturees dans la cellule DATA. }
+Procedure EmitCaptureSync(OuterDepth : Integer);
+Var
+  I   : Integer;
+  Ofs : Integer;
+Begin
+  For I := 0 To SymCount - 1 Do
+  Begin
+    If SymTab[I].IsCapture And (SymTab[I].FnDepthLvl = OuterDepth) And
+       (SymTab[I].Offset <> 0) Then
+    Begin
+      Ofs := SymTab[I].Offset;
+      If Ofs < 0 Then
+        EmitInstrAB('MOV', 'AX', '[BP' + IntToStr(Ofs) + ']')
+      Else
+        EmitInstrAB('MOV', 'AX', '[BP+' + IntToStr(Ofs) + ']');
+      EmitInstrAB('MOV', '[' + SymTab[I].CaptureLabel + ']', 'AX');
+    End;
+  End;
 End;
 
 { ExprFlushToAX : s'assurer que la valeur d'expression est dans AX }
@@ -5688,8 +8122,16 @@ Begin
     EK_MEM  :
       If E.SymIdx >= 0 Then
       Begin
-        Addr := ExprAddrOf(E.SymIdx);
-        EmitInstrAB('MOV', 'AX', Addr);
+        { Pour les classes et fonctions, charger l'adresse du label (LEA) }
+        If SymTab[E.SymIdx].Cat = SC_CLASS Then
+          EmitInstrAB('LEA', 'AX', SymTab[E.SymIdx].MangledName)
+        Else If SymTab[E.SymIdx].Cat = SC_FUNCTION Then
+          EmitInstrAB('LEA', 'AX', SymTab[E.SymIdx].MangledName)
+        Else
+        Begin
+          Addr := ExprAddrOf(E.SymIdx);
+          EmitInstrAB('MOV', 'AX', Addr);
+        End;
       End
       Else
         EmitInstrAB('XOR', 'AX', 'AX'); { undefined }
@@ -6255,7 +8697,7 @@ Begin
     Begin
       VarName := CurToken.Val;
       ParserAdvance; { consomme identifiant }
-      If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'of') Then
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'of') Then
       Begin
         IsForOf := True;
         ParserAdvance; { consomme 'of' }
@@ -6456,6 +8898,138 @@ Begin
   SymLeaveScope;
 End;
 
+(* ParseTryStmt : try { bloc } [catch(e) { bloc }] [finally { bloc }] - TODO 23 *)
+Procedure ParseTryStmt;
+Var
+  LblCatch    : TString;
+  LblFinally  : TString;
+  LblEnd      : TString;
+  LblTryOk    : TString;
+  HasCatch    : Boolean;
+  HasFinally  : Boolean;
+  ErrVarName  : TString;
+  SIdx        : Integer;
+  SaveHandler : TString;
+Begin
+  HasCatch   := False;
+  HasFinally := False;
+  SaveHandler := LabelGen; { label pour stocker ancien handler }
+
+  LblCatch   := LabelGen;
+  LblTryOk   := LabelGen;
+  LblFinally := LabelGen;
+  LblEnd     := LabelGen;
+
+  { Sauvegarder l ancien handler }
+  EmitInstrAB('MOV', 'AX', '[_JSX_HANDLER]');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', '[_JSX_SAVESP]');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', '[_JSX_SAVEBP]');
+  EmitInstrA('PUSH', 'AX');
+
+  { Installer le handler catch }
+  EmitInstrAB('MOV', 'WORD PTR [_JSX_HANDLER]', 'OFFSET ' + LblCatch);
+  EmitInstrAB('MOV', '[_JSX_SAVESP]', 'SP');
+  EmitInstrAB('MOV', '[_JSX_SAVEBP]', 'BP');
+
+  { ---- try block ---- }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End
+  Else
+    CompileError('"{" attendu apres try');
+
+  { Terminaison normale du try }
+  EmitInstrA('JMP', LblTryOk);
+
+  { ---- catch label ---- }
+  EmitLabel(LblCatch);
+  { AX = ptr erreur (via _JSX_ERRPTR) }
+  EmitInstrAB('MOV', 'AX', '[_JSX_ERRPTR]');
+
+  If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+     (CurToken.Val = 'catch') Then
+  Begin
+    HasCatch := True;
+    ParserAdvance; { consomme 'catch' }
+    ErrVarName := 'e';
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ErrVarName := CurToken.Val;
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End;
+    { Declarer la variable d erreur dans un nouveau scope }
+    SymEnterScope;
+    SIdx := DeclAllocSym(ErrVarName, SC_LET);
+    SymTab[SIdx].TypeIdx := TY_IDX_STRING;
+    ExprStore(SIdx); { stocker AX (ptr erreur) dans la variable }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        ParserAdvance;
+    End
+    Else
+      CompileError('"{" attendu apres catch');
+    SymLeaveScope;
+  End
+  Else
+  Begin
+    { catch implicite : ignorer l exception }
+  End;
+
+  { --- try-ok : restaurer handler et sauter au finally --- }
+  EmitLabel(LblTryOk);
+  { Restaurer l ancien handler }
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', '[_JSX_SAVEBP]', 'AX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', '[_JSX_SAVESP]', 'AX');
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', '[_JSX_HANDLER]', 'AX');
+
+  { ---- finally block ---- }
+  If ((CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT)) And
+     (CurToken.Val = 'finally') Then
+  Begin
+    HasFinally := True;
+    ParserAdvance; { consomme 'finally' }
+    EmitLabel(LblFinally);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      ParserAdvance;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+        ParseStmt;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        ParserAdvance;
+    End
+    Else
+      CompileError('"{" attendu apres finally');
+  End;
+
+  If (Not HasCatch) And (Not HasFinally) Then
+    WarnMsg('try sans catch ni finally');
+
+  EmitLabel(LblEnd);
+End;
+
 (* ParseFuncDecl : function nom(params) bloc - TODO 17 *)
 Procedure ParseFuncDecl;
 Var
@@ -6525,18 +9099,26 @@ Begin
   { Emettre JMP par-dessus le corps }
   EmitInstrA('JMP', SkipLabel);
   EmitLabel(FnLabel);
-  { Prologue }
+  { Prologue (TODO 18 : sauvegarde SI/DI + profondeur appels) }
   EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
   { Sauvegarder le contexte }
   SaveDepth  := CurFnDepth;
   SaveRetLbl := CurFnRetLbl;
   SaveFnName := CurFnName;
   SaveFrame  := CurFrameSize;
   Inc(CurFnDepth);
+  If CurFnDepth > 2 Then
+    WarnMsg('fonctions imbriquees > 2 niveaux : fermeture approximative (TODO 22)');
+  If CurFnDepth >= CALL_DEPTH_WARN Then
+    WarnMsg('imbrication de fonctions >= ' + IntToStr(CALL_DEPTH_WARN) +
+            ' niveaux : risque de debordement de pile');
   CurFnRetLbl := RetLabel;
   CurFnName   := FnName;
-  CurFrameSize := 0;
+  CurFrameSize := 2;  { 2 words reserves pour SI/DI sauvegardes (TODO 18) }
   { Scope et parametres }
   SymEnterScope;
   For I := 0 To ParamCount - 1 Do
@@ -6558,8 +9140,11 @@ Begin
     CompileError('"{" attendu apres parametres de fonction');
   { Retour par defaut : undefined }
   EmitInstrAB('XOR', 'AX', 'AX');
-  { Epilogue }
+  { Epilogue (TODO 18 : restauration SI/DI + profondeur appels) }
   EmitLabel(RetLabel);
+  EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
+  EmitInstrAB('MOV', 'SI', '[BP-2]');
+  EmitInstrAB('MOV', 'DI', '[BP-4]');
   EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstrA('POP', 'BP');
   EmitInstr('RET');
@@ -6571,6 +9156,383 @@ Begin
   CurFrameSize := SaveFrame;
   { Label de saut apres la fonction }
   EmitLabel(SkipLabel);
+  { Sync des variables capturees vers cellules DATA (TODO 22) }
+  EmitCaptureSync(CurFnDepth);
+End;
+
+(* ParseClassDecl : class Nom [extends Parent] { corps } - TODO 21 *)
+Procedure ParseClassDecl;
+Const
+  MAX_CLASS_METH = 32;
+Var
+  ClassName   : TString;
+  ParentName  : TString;
+  SIdx        : Integer;
+  MethName    : TString;
+  MethLabel   : TString;
+  RetLabel    : TString;
+  SkipLabel   : TString;
+  ParamNames  : Array[0..MAX_PARAM - 1] Of TString;
+  ParamCount  : Integer;
+  I           : Integer;
+  SaveDepth   : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  SaveFrame   : Integer;
+  SaveClass   : TString;
+  SaveParent  : TString;
+  SaveThis    : Integer;
+  ThisOffset  : Integer;
+  IsStatic    : Boolean;
+  IsGetter    : Boolean;
+  IsSetter    : Boolean;
+  DummyRes    : TExprVal;
+  HasCtor     : Boolean;
+  ClassSkip   : TString;
+  { Suivi des methodes pour init des instances (TODO 21) }
+  MethNames   : Array[0..MAX_CLASS_METH - 1] Of TString;
+  MethLabels  : Array[0..MAX_CLASS_METH - 1] Of TString;
+  MethKeyLbls : Array[0..MAX_CLASS_METH - 1] Of TString;
+  MethCount   : Integer;
+Begin
+  { Le mot-cle 'class' a deja ete consomme }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de classe attendu apres "class"');
+    Exit;
+  End;
+  ClassName := CurToken.Val;
+  ParserAdvance;
+
+  { extends Parent ? }
+  ParentName := '';
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'extends') Then
+  Begin
+    ParserAdvance; { consomme 'extends' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ParentName := CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+      CompileError('nom de classe parente attendu apres "extends"');
+  End;
+
+  { Enregistrer la classe dans la table des symboles }
+  SIdx := SymAdd(ClassName, SC_CLASS, TY_IDX_OBJECT, 0);
+
+  { Ajouter la zone prototype dans DATA : _JSC_Nom DW OFFSET _JSC_Parent ou 0 }
+  If ParentName <> '' Then
+    DataAdd(JS_CLS_PFX + ClassName, DK_WORD, 0, JS_CLS_PFX + ParentName)
+  Else
+    DataAddWord(JS_CLS_PFX + ClassName, 0);
+
+  { Sauvegarder le contexte de classe }
+  SaveClass  := CurClassName;
+  SaveParent := CurParentClass;
+  SaveThis   := CurMethodThis;
+  CurClassName   := ClassName;
+  CurParentClass := ParentName;
+
+  { JMP par-dessus toutes les methodes de la classe }
+  ClassSkip := LabelGen;
+  EmitInstrA('JMP', ClassSkip);
+
+  { Accolade ouvrante }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then
+  Begin
+    CompileError('"{" attendu apres declaration de classe');
+    CurClassName   := SaveClass;
+    CurParentClass := SaveParent;
+    CurMethodThis  := SaveThis;
+    Exit;
+  End;
+  ParserAdvance; { consomme '{' }
+
+  HasCtor := False;
+  MethCount := 0;
+
+  { Parcourir le corps de la classe }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    { Points-virgules parasites }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    IsStatic := False;
+    IsGetter := False;
+    IsSetter := False;
+
+    { static ? }
+    If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+       (CurToken.Val = 'static') Then
+    Begin
+      IsStatic := True;
+      ParserAdvance;
+    End;
+
+    { get / set ? }
+    If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+       (CurToken.Val = 'get') Then
+    Begin
+      IsGetter := True;
+      ParserAdvance;
+    End
+    Else If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+            (CurToken.Val = 'set') Then
+    Begin
+      IsSetter := True;
+      ParserAdvance;
+    End;
+
+    { Champs prives #x }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '#') Then
+    Begin
+      WarnMsg('champ prive (#) : stub');
+      ParserAdvance;
+    End;
+
+    { Nom de la methode ou du champ }
+    If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+    Begin
+      { Token inattendu dans le corps de classe }
+      WarnMsg('token inattendu dans corps de classe : ' + CurToken.Val);
+      ParserAdvance;
+      Continue;
+    End;
+
+    MethName := CurToken.Val;
+    ParserAdvance;
+
+    { Constructeur ou methode avec parentheses }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      { Getter/setter : stubs }
+      If IsGetter Or IsSetter Then
+      Begin
+        If IsGetter Then
+          WarnMsg('getter "' + MethName + '" : stub, compile comme methode')
+        Else
+          WarnMsg('setter "' + MethName + '" : stub, compile comme methode');
+      End;
+
+      { Determiner le label de la methode }
+      If MethName = 'constructor' Then
+      Begin
+        HasCtor := True;
+        MethLabel := JS_FN_PFX + ClassName + '_ctor';
+      End
+      Else If IsStatic Then
+        MethLabel := JS_FN_PFX + ClassName + '_S_' + MethName
+      Else
+        MethLabel := JS_FN_PFX + ClassName + '_' + MethName;
+
+      { Parser les parametres }
+      ParamCount := 0;
+      ParserAdvance; { consomme '(' }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '...') Then
+        Begin WarnMsg('rest params (...) : stub'); ParserAdvance; End;
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          If ParamCount < MAX_PARAM Then
+            ParamNames[ParamCount] := CurToken.Val;
+          Inc(ParamCount);
+          ParserAdvance;
+        End;
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          WarnMsg('valeur par defaut de parametre : stub');
+          ParserAdvance;
+          ParseExprPrec(2, DummyRes);
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+
+      { Calculer offset du this cache }
+      { Convention : this est empile en dernier (comme args cdecl)
+        this   -> [BP + 4 + 2 * ParamCount]
+        param0 -> [BP + 4 + 2 * (ParamCount - 1)]
+        ...
+        paramN -> [BP + 4] }
+      If IsStatic Then
+        ThisOffset := 0
+      Else
+        ThisOffset := 4;  { this est empile en dernier, a [BP+4] }
+
+      { Emettre le code de la methode }
+      RetLabel  := LabelGen;
+      SkipLabel := LabelGen;
+
+      EmitLabel(MethLabel);
+      { Prologue }
+      EmitInstrA('PUSH', 'BP');
+      EmitInstrAB('MOV', 'BP', 'SP');
+      EmitInstrA('PUSH', 'SI');
+      EmitInstrA('PUSH', 'DI');
+      EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
+
+      { Sauvegarder le contexte courant }
+      SaveDepth  := CurFnDepth;
+      SaveRetLbl := CurFnRetLbl;
+      SaveFnName := CurFnName;
+      SaveFrame  := CurFrameSize;
+
+      Inc(CurFnDepth);
+      CurFnRetLbl  := RetLabel;
+      CurFnName    := ClassName + '.' + MethName;
+      CurFrameSize := 2;  { SI/DI sauvegardes }
+      CurMethodThis := ThisOffset;
+
+      { Scope et parametres }
+      SymEnterScope;
+      If IsStatic Then
+      Begin
+        { Statique : pas de this, offsetting normal }
+        For I := 0 To ParamCount - 1 Do
+          SymAdd(ParamNames[I], SC_PARAM, TY_UNKNOWN,
+                 4 + 2 * (ParamCount - 1 - I));
+      End
+      Else
+      Begin
+        { Instance : this est a [BP+4], params decalent de +2 }
+        For I := 0 To ParamCount - 1 Do
+          SymAdd(ParamNames[I], SC_PARAM, TY_UNKNOWN,
+                 6 + 2 * (ParamCount - 1 - I));
+      End;
+
+      { Corps de la methode }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance
+        Else
+          CompileError('"}" attendu apres corps de methode');
+      End
+      Else
+        CompileError('"{" attendu apres parametres de methode');
+
+      { Retour par defaut : undefined (ou this pour constructeur) }
+      If MethName = 'constructor' Then
+      Begin
+        If ThisOffset > 0 Then
+          EmitInstrAB('MOV', 'AX', '[BP+' + IntToStr(ThisOffset) + ']')
+        Else
+          EmitInstrAB('XOR', 'AX', 'AX');
+      End
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+
+      { Epilogue }
+      EmitLabel(RetLabel);
+      EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
+      EmitInstrAB('MOV', 'SI', '[BP-2]');
+      EmitInstrAB('MOV', 'DI', '[BP-4]');
+      EmitInstrAB('MOV', 'SP', 'BP');
+      EmitInstrA('POP', 'BP');
+      EmitInstr('RET');
+
+      { Restaurer contexte }
+      CurFnDepth   := SaveDepth;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      SymLeaveScope;
+      CurFrameSize := SaveFrame;
+
+      { Suivi des methodes non-statiques, non-constructeur (TODO 21) }
+      If (Not IsStatic) And (MethName <> 'constructor') Then
+      Begin
+        If MethCount < MAX_CLASS_METH Then
+        Begin
+          MethNames[MethCount]   := MethName;
+          MethLabels[MethCount]  := MethLabel;
+          MethKeyLbls[MethCount] := DataAddStr(MethName);
+          Inc(MethCount);
+        End;
+      End;
+    End
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      { Champ public : fieldName = value; -> stub/warning }
+      WarnMsg('champ de classe "' + MethName + '" : stub, init ignoree');
+      ParserAdvance; { consomme '=' }
+      ParseExprPrec(2, DummyRes);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+    Else
+    Begin
+      { Champ sans valeur ou token inattendu }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End;
+  End; { While corps de classe }
+
+  { Si pas de constructeur defini, emettre un constructeur par defaut }
+  If Not HasCtor Then
+  Begin
+    MethLabel := JS_FN_PFX + ClassName + '_ctor';
+    EmitLabel(MethLabel);
+    EmitInstrA('PUSH', 'BP');
+    EmitInstrAB('MOV', 'BP', 'SP');
+    { Si extends, appeler super constructeur par defaut }
+    If ParentName <> '' Then
+    Begin
+      EmitInstrAB('MOV', 'AX', '[BP+4]');   { this }
+      EmitInstrA('PUSH', 'AX');
+      EmitInstrA('CALL', JS_FN_PFX + ParentName + '_ctor');
+      EmitInstrAB('ADD', 'SP', '2');
+    End;
+    EmitInstrAB('MOV', 'AX', '[BP+4]');     { return this }
+    EmitInstrAB('MOV', 'SP', 'BP');
+    EmitInstrA('POP', 'BP');
+    EmitInstr('RET');
+  End;
+
+  { Emettre la routine d'init des methodes : _JSF_Nom__init(BX=this)
+    Stocke les ptrs de methode comme proprietes de l'objet
+    Si extends, appelle d'abord __init du parent }
+  EmitLabel(JS_FN_PFX + ClassName + '__init');
+  EmitInstrA('PUSH', 'BX');
+  { Appeler __init du parent pour heriter les methodes }
+  If ParentName <> '' Then
+    EmitInstrA('CALL', JS_FN_PFX + ParentName + '__init');
+  { Stocker les methodes de cette classe }
+  For I := 0 To MethCount - 1 Do
+  Begin
+    EmitInstrAB('LEA', 'DI', MethKeyLbls[I]);
+    EmitInstrAB('LEA', 'AX', MethLabels[I]);
+    EmitInstrA('CALL', '_JSRT_OBJSET');
+  End;
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+
+  { Accolade fermante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance
+  Else
+    CompileError('"}" attendu apres corps de classe');
+
+  { Label de saut apres la classe }
+  EmitLabel(ClassSkip);
+
+  { Restaurer le contexte de classe }
+  CurClassName   := SaveClass;
+  CurParentClass := SaveParent;
+  CurMethodThis  := SaveThis;
 End;
 
 { ParseBlock : parse un bloc entre accolades stmt* avec scope }
@@ -6845,6 +9807,13 @@ Begin
       Exit;
     End;
 
+    If Kw = 'class' Then
+    Begin
+      ParserAdvance; { consomme 'class' }
+      ParseClassDecl;
+      Exit;
+    End;
+
     If Kw = 'return' Then
     Begin
       ParserAdvance; { consomme 'return' }
@@ -6926,6 +9895,24 @@ Begin
         ParserAdvance;
       Exit;
     End;
+
+    If Kw = 'try' Then
+    Begin
+      ParserAdvance; { consomme 'try' }
+      ParseTryStmt;
+      Exit;
+    End;
+
+    If Kw = 'throw' Then
+    Begin
+      ParserAdvance; { consomme 'throw' }
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      EmitInstrA('CALL', '_JSRT_THROW');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+      Exit;
+    End;
   End;
   { Expression-statement (affectation, appel de fn, etc.) }
   If CurToken.Kind <> TK_EOF Then
@@ -6964,6 +9951,12 @@ Begin
   { Boucle principale de compilation }
   While CurToken.Kind <> TK_EOF Do
     ParseStmt;
+
+  { Terminaison propre du programme (TODO 25) }
+  EmitBlankLine;
+  EmitComment('--- sortie programme ---');
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT    21h');
 
   LexClose;
   EmitRuntime;

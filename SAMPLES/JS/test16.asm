@@ -589,6 +589,787 @@ _JSL_74:
         POP   CX
         RET
 
+; --- runtime regexp routines (TODO 19) ---
+_JSRT_REPARSE:
+        PUSH   BX
+        MOV   BX, DI
+_JSL_75:
+        MOV   AL, [BX]
+        CMP   AL, 1
+        JZ   _JSL_76
+        OR   AL, AL
+        JZ   _JSL_76
+        INC   BX
+        JMP   _JSL_75
+_JSL_76:
+        MOV   CX, BX
+        SUB   CX, DI
+        POP   BX
+        RET
+_JSRT_REMATCH:
+        PUSH   SI
+        PUSH   DI
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        CALL   _JSRT_REPARSE
+        OR   CX, CX
+        JZ   _JSL_79
+_JSL_77:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_80
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        MOV   DX, CX
+_JSL_78:
+        OR   DX, DX
+        JZ   _JSL_79B
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNZ   _JSL_80B
+        INC   SI
+        INC   DI
+        DEC   DX
+        JMP   _JSL_78
+_JSL_79B:
+        POP   CX
+        POP   DI
+        POP   SI
+        JMP   _JSL_79
+_JSL_80B:
+        POP   CX
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _JSL_77
+_JSL_79:
+        MOV   AX, 1
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   DI
+        POP   SI
+        RET
+_JSL_80:
+        XOR   AX, AX
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   DI
+        POP   SI
+        RET
+_JSRT_REINDEX:
+        PUSH   SI
+        PUSH   DI
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        MOV   BX, SI
+        CALL   _JSRT_REPARSE
+        OR   CX, CX
+        JZ   _JSL_83
+_JSL_81:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_84
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        MOV   DX, CX
+_JSL_82:
+        OR   DX, DX
+        JZ   _JSL_83B
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNZ   _JSL_84B
+        INC   SI
+        INC   DI
+        DEC   DX
+        JMP   _JSL_82
+_JSL_83B:
+        POP   CX
+        POP   DI
+        POP   SI
+        JMP   _JSL_83
+_JSL_84B:
+        POP   CX
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _JSL_81
+_JSL_83:
+        MOV   AX, SI
+        SUB   AX, BX
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   DI
+        POP   SI
+        RET
+_JSL_84:
+        MOV   AX, -1
+        POP   DX
+        POP   CX
+        POP   BX
+        POP   DI
+        POP   SI
+        RET
+_JSRT_REEXEC:
+        PUSH   SI
+        PUSH   DI
+        CALL   _JSRT_REMATCH
+        POP   DI
+        POP   SI
+        OR   AX, AX
+        JZ   _JSL_85
+        MOV   AX, SI
+        RET
+_JSL_85:
+        XOR   AX, AX
+        RET
+_JSRT_RESUB:
+        PUSH   BX
+        PUSH   DI
+        PUSH   SI
+        PUSH   CX
+        PUSH   DX
+        CALL   _JSRT_REPARSE
+        MOV   DX, CX
+        LEA   BX, _JSRT_REBUF
+_JSL_86:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_89
+        OR   DX, DX
+        JZ   _JSL_87C
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        MOV   CX, DX
+_JSL_87:
+        OR   CX, CX
+        JZ   _JSL_88
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNZ   _JSL_87N
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _JSL_87
+_JSL_87N:
+        POP   CX
+        POP   DI
+        POP   SI
+_JSL_87C:
+        MOV   AL, [SI]
+        MOV   [BX], AL
+        INC   SI
+        INC   BX
+        JMP   _JSL_86
+_JSL_88:
+        POP   CX
+        POP   DI
+        POP   AX
+        PUSH   SI
+        MOV   SI, [SP+10]
+_JSL_90:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_90D
+        MOV   [BX], AL
+        INC   SI
+        INC   BX
+        JMP   _JSL_90
+_JSL_90D:
+        POP   SI
+_JSL_91:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_89
+        MOV   [BX], AL
+        INC   SI
+        INC   BX
+        JMP   _JSL_91
+_JSL_89:
+        MOV   BYTE PTR [BX], 0
+        POP   DX
+        POP   CX
+        POP   SI
+        POP   DI
+        POP   BX
+        LEA   AX, _JSRT_REBUF
+        RET
+
+; --- runtime string / math / number routines (TODO 20) ---
+_JSRT_STRLEN:
+        PUSH   SI
+        XOR   AX, AX
+_JSL_92:
+        CMP   BYTE PTR [SI], 0
+        JE   _JSL_93
+        INC   AX
+        INC   SI
+        JMP   _JSL_92
+_JSL_93:
+        POP   SI
+        RET
+_JSRT_STRINDEXOF:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        MOV   BX, SI
+_JSL_94:
+        CMP   BYTE PTR [SI], 0
+        JE   _JSL_97
+        PUSH   SI
+        PUSH   DI
+_JSL_95:
+        CMP   BYTE PTR [DI], 0
+        JE   _JSL_96
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _JSL_95N
+        INC   SI
+        INC   DI
+        JMP   _JSL_95
+_JSL_96:
+        POP   DI
+        POP   AX
+        SUB   AX, BX
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_JSL_95N:
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _JSL_94
+_JSL_97:
+        MOV   AX, 0FFFFh
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_JSRT_STRLASTIDX:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        MOV   BX, SI
+        MOV   DX, 0FFFFh
+_JSL_98:
+        CMP   BYTE PTR [SI], 0
+        JE   _JSL_101
+        PUSH   SI
+        PUSH   DI
+_JSL_99:
+        CMP   BYTE PTR [DI], 0
+        JE   _JSL_100
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _JSL_99N
+        INC   SI
+        INC   DI
+        JMP   _JSL_99
+_JSL_100:
+        POP   DI
+        POP   AX
+        SUB   AX, BX
+        MOV   DX, AX
+        ADD   AX, BX
+        MOV   SI, AX
+        INC   SI
+        JMP   _JSL_98
+_JSL_99N:
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _JSL_98
+_JSL_101:
+        MOV   AX, DX
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_JSRT_STRSTARTW:
+_JSL_102:
+        CMP   BYTE PTR [DI], 0
+        JE   _JSL_102Y
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _JSL_103
+        INC   SI
+        INC   DI
+        JMP   _JSL_102
+_JSL_102Y:
+        MOV   AX, 1
+        RET
+_JSL_103:
+        XOR   AX, AX
+        RET
+_JSRT_STRENDW:
+        PUSH   BX
+        PUSH   CX
+        PUSH   SI
+        CALL   _JSRT_STRLEN
+        MOV   BX, AX
+        POP   SI
+        PUSH   SI
+        MOV   SI, DI
+        CALL   _JSRT_STRLEN
+        MOV   CX, AX
+        POP   SI
+        CMP   CX, BX
+        JA   _JSL_104
+        SUB   BX, CX
+        ADD   SI, BX
+        POP   CX
+        POP   BX
+        JMP   _JSRT_STRSTARTW
+_JSL_104:
+        XOR   AX, AX
+        POP   CX
+        POP   BX
+        RET
+_JSRT_STRSLICE:
+        PUSH   DI
+        PUSH   DX
+        LEA   DI, _JSRT_STRBUF
+        MOV   DX, BX
+_JSL_105:
+        OR   DX, DX
+        JZ   _JSL_106
+        CMP   BYTE PTR [SI], 0
+        JE   _JSL_107
+        INC   SI
+        DEC   DX
+        JMP   _JSL_105
+_JSL_106:
+        CMP   BX, CX
+        JGE   _JSL_107
+        CMP   BYTE PTR [SI], 0
+        JE   _JSL_107
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        INC   BX
+        JMP   _JSL_106
+_JSL_107:
+        MOV   BYTE PTR [DI], 0
+        LEA   AX, _JSRT_STRBUF
+        POP   DX
+        POP   DI
+        RET
+_JSRT_STRTOUPPER:
+        PUSH   DI
+        LEA   DI, _JSRT_STRBUF
+_JSL_108:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_109
+        CMP   AL, 'a'
+        JB   _JSL_108C
+        CMP   AL, 'z'
+        JA   _JSL_108C
+        SUB   AL, 32
+_JSL_108C:
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _JSL_108
+_JSL_109:
+        MOV   BYTE PTR [DI], 0
+        LEA   AX, _JSRT_STRBUF
+        POP   DI
+        RET
+_JSRT_STRTOLOWER:
+        PUSH   DI
+        LEA   DI, _JSRT_STRBUF
+_JSL_110:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_111
+        CMP   AL, 'A'
+        JB   _JSL_110C
+        CMP   AL, 'Z'
+        JA   _JSL_110C
+        ADD   AL, 32
+_JSL_110C:
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _JSL_110
+_JSL_111:
+        MOV   BYTE PTR [DI], 0
+        LEA   AX, _JSRT_STRBUF
+        POP   DI
+        RET
+_JSRT_STRTRIM:
+        PUSH   DI
+        PUSH   BX
+_JSL_112:
+        MOV   AL, [SI]
+        CMP   AL, 32
+        JE   _JSL_112S
+        CMP   AL, 9
+        JE   _JSL_112S
+        JMP   _JSL_113
+_JSL_112S:
+        INC   SI
+        JMP   _JSL_112
+_JSL_113:
+        LEA   DI, _JSRT_STRBUF
+        MOV   BX, DI
+_JSL_115:
+        MOV   AL, [SI]
+        MOV   [DI], AL
+        OR   AL, AL
+        JZ   _JSL_114
+        INC   SI
+        INC   DI
+        JMP   _JSL_115
+_JSL_114:
+_JSL_116:
+        DEC   DI
+        CMP   DI, BX
+        JB   _JSL_116D
+        CMP   BYTE PTR [DI], 32
+        JE   _JSL_116
+        CMP   BYTE PTR [DI], 9
+        JE   _JSL_116
+_JSL_116D:
+        INC   DI
+        MOV   BYTE PTR [DI], 0
+        LEA   AX, _JSRT_STRBUF
+        POP   BX
+        POP   DI
+        RET
+_JSRT_STRSPLIT:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        LEA   BX, _JSRT_SPLITBUF
+        MOV   WORD PTR [BX], 0
+        ADD   BX, 2
+        PUSH   SI
+        MOV   SI, DI
+        CALL   _JSRT_STRLEN
+        MOV   DX, AX
+        POP   SI
+        MOV   [BX], SI
+        ADD   BX, 2
+        PUSH   AX
+        LEA   AX, _JSRT_SPLITBUF
+        MOV   CX, AX
+        POP   AX
+        PUSH   SI
+        MOV   SI, CX
+        MOV   AX, [SI]
+        INC   AX
+        MOV   [SI], AX
+        POP   SI
+_JSL_117:
+        CMP   BYTE PTR [SI], 0
+        JE   _JSL_120
+        PUSH   SI
+        PUSH   DI
+        PUSH   CX
+        MOV   CX, DX
+_JSL_118:
+        OR   CX, CX
+        JZ   _JSL_119
+        MOV   AL, [SI]
+        CMP   AL, [DI]
+        JNE   _JSL_118N
+        INC   SI
+        INC   DI
+        DEC   CX
+        JMP   _JSL_118
+_JSL_118N:
+        POP   CX
+        POP   DI
+        POP   SI
+        INC   SI
+        JMP   _JSL_117
+_JSL_119:
+        POP   CX
+        POP   DI
+        POP   AX
+        MOV   [BX], SI
+        ADD   BX, 2
+        PUSH   SI
+        MOV   SI, CX
+        MOV   AX, [SI]
+        INC   AX
+        MOV   [SI], AX
+        POP   SI
+        JMP   _JSL_117
+_JSL_120:
+        LEA   AX, _JSRT_SPLITBUF
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_JSRT_STRCHAR:
+        ADD   SI, CX
+        MOV   AL, [SI]
+        MOV   BYTE PTR [_JSRT_CHRBUF], AL
+        MOV   BYTE PTR [_JSRT_CHRBUF+1], 0
+        LEA   AX, _JSRT_CHRBUF
+        RET
+_JSRT_STRORD:
+        ADD   SI, CX
+        XOR   AX, AX
+        MOV   AL, [SI]
+        RET
+_JSRT_STRREPEAT:
+        PUSH   BX
+        PUSH   DX
+        MOV   BX, DI
+        MOV   DX, SI
+_JSL_121:
+        OR   CX, CX
+        JZ   _JSL_123
+        MOV   SI, DX
+_JSL_122:
+        MOV   AL, [SI]
+        OR   AL, AL
+        JZ   _JSL_122D
+        MOV   [DI], AL
+        INC   SI
+        INC   DI
+        JMP   _JSL_122
+_JSL_122D:
+        DEC   CX
+        JMP   _JSL_121
+_JSL_123:
+        MOV   BYTE PTR [DI], 0
+        MOV   AX, BX
+        POP   DX
+        POP   BX
+        RET
+_JSRT_STRPADS:
+        PUSH   BX
+        PUSH   DX
+        PUSH   CX
+        PUSH   DI
+        CALL   _JSRT_STRLEN
+        MOV   DX, AX
+        POP   DI
+        POP   CX
+        CMP   DX, CX
+        JAE   _JSL_126
+        SUB   CX, DX
+        LEA   BX, _JSRT_STRBUF
+        PUSH   SI
+        MOV   SI, DI
+_JSL_124:
+        OR   CX, CX
+        JZ   _JSL_125
+        MOV   AL, [SI]
+        OR   AL, AL
+        JNZ   _JSL_124C
+        MOV   SI, DI
+        MOV   AL, [SI]
+_JSL_124C:
+        MOV   [BX], AL
+        INC   BX
+        INC   SI
+        DEC   CX
+        JMP   _JSL_124
+_JSL_125:
+        POP   SI
+_JSL_127:
+        MOV   AL, [SI]
+        MOV   [BX], AL
+        OR   AL, AL
+        JZ   _JSL_127D
+        INC   SI
+        INC   BX
+        JMP   _JSL_127
+_JSL_127D:
+        LEA   AX, _JSRT_STRBUF
+        POP   DX
+        POP   BX
+        RET
+_JSL_126:
+        LEA   BX, _JSRT_STRBUF
+_JSL_128:
+        MOV   AL, [SI]
+        MOV   [BX], AL
+        OR   AL, AL
+        JZ   _JSL_128D
+        INC   SI
+        INC   BX
+        JMP   _JSL_128
+_JSL_128D:
+        LEA   AX, _JSRT_STRBUF
+        POP   DX
+        POP   BX
+        RET
+_JSRT_CHR:
+        MOV   BYTE PTR [_JSRT_CHRBUF], AL
+        MOV   BYTE PTR [_JSRT_CHRBUF+1], 0
+        LEA   AX, _JSRT_CHRBUF
+        RET
+_JSRT_STRTONUM:
+        MOV   CX, 10
+        JMP   _JSRT_STRTOINT
+_JSRT_STRTOINT:
+        PUSH   BX
+        PUSH   DX
+        XOR   AX, AX
+        XOR   BX, BX
+_JSL_129:
+        CMP   BYTE PTR [SI], 32
+        JE   _JSL_129S
+        JMP   _JSL_129E
+_JSL_129S:
+        INC   SI
+        JMP   _JSL_129
+_JSL_129E:
+        CMP   BYTE PTR [SI], '-'
+        JNE   _JSL_129P
+        MOV   BX, 1
+        INC   SI
+        JMP   _JSL_130
+_JSL_129P:
+        CMP   BYTE PTR [SI], '+'
+        JNE   _JSL_130
+        INC   SI
+_JSL_130:
+        XOR   DX, DX
+        MOV   DL, [SI]
+        OR   DL, DL
+        JZ   _JSL_131
+        CMP   DL, '0'
+        JB   _JSL_131
+        CMP   DL, '9'
+        JA   _JSL_130H
+        SUB   DL, '0'
+        JMP   _JSL_130M
+_JSL_130H:
+        CMP   DL, 'a'
+        JB   _JSL_130U
+        CMP   DL, 'f'
+        JA   _JSL_131
+        SUB   DL, 'a'
+        ADD   DL, 10
+        JMP   _JSL_130M
+_JSL_130U:
+        CMP   DL, 'A'
+        JB   _JSL_131
+        CMP   DL, 'F'
+        JA   _JSL_131
+        SUB   DL, 'A'
+        ADD   DL, 10
+_JSL_130M:
+        CMP   DL, CL
+        JAE   _JSL_131
+        PUSH   DX
+        PUSH   CX
+        MUL    CX
+        POP   CX
+        POP   DX
+        ADD   AX, DX
+        INC   SI
+        JMP   _JSL_130
+_JSL_131:
+        OR   BX, BX
+        JZ   _JSL_131D
+        NEG    AX
+_JSL_131D:
+        POP   DX
+        POP   BX
+        RET
+_JSRT_ABS:
+        OR   AX, AX
+        JNS   _JSL_132
+        NEG    AX
+_JSL_132:
+        RET
+_JSRT_POW:
+        PUSH   CX
+        PUSH   DX
+        MOV   CX, BX
+        MOV   BX, AX
+        MOV   AX, 1
+_JSL_133:
+        OR   CX, CX
+        JZ   _JSL_134
+        PUSH   DX
+        MUL    BX
+        POP   DX
+        DEC   CX
+        JMP   _JSL_133
+_JSL_134:
+        POP   DX
+        POP   CX
+        RET
+_JSRT_SQRT:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        OR   AX, AX
+        JZ   _JSL_136
+        MOV   BX, AX
+        SHR   AX, 1
+        OR   AX, AX
+        JZ   _JSL_136O
+_JSL_135:
+        MOV   CX, AX
+        PUSH   BX
+        XOR   DX, DX
+        MOV   AX, BX
+        DIV    CX
+        POP   BX
+        ADD   AX, CX
+        SHR   AX, 1
+        CMP   AX, CX
+        JB   _JSL_135
+        MOV   AX, CX
+_JSL_136:
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_JSL_136O:
+        MOV   AX, 1
+        POP   DX
+        POP   CX
+        POP   BX
+        RET
+_JSRT_RAND:
+        PUSH   DX
+        MOV   AX, [_JS_RNDSEED]
+        MOV   DX, 25173
+        MUL    DX
+        ADD   AX, 13849
+        MOV   [_JS_RNDSEED], AX
+        AND   AX, 7FFFh
+        POP   DX
+        RET
+_JSRT_SIGN:
+        OR   AX, AX
+        JZ   _JSL_138
+        JS   _JSL_137
+        MOV   AX, 1
+        JMP   _JSL_138
+_JSL_137:
+        MOV   AX, 0FFFFh
+_JSL_138:
+        RET
+_JSRT_JSONSTR:
+        PUSH   DI
+        LEA   DI, _JSRT_JSONBUF
+        CALL   _JSRT_NUMTOSTR
+        LEA   AX, _JSRT_JSONBUF
+        POP   DI
+        RET
+
 ; --- fin du code genere ---
 
 _TEXT   ENDS
@@ -603,6 +1384,21 @@ _JS_CRLF    DB  13,10,0
 _JS_SPACE   DB  ' ',0
 _JS_WARNPFX DB  'Warning: ',0
 _JSRT_OKBUF  DW  17 DUP(0)
+_JS_CALLDEPTH  DW  0
+_JSCAP_1  DW  0
+_JSCAP_2  DW  0
+_JSCAP_3  DW  0
+_JSCAP_4  DW  0
+_JSCAP_5  DW  0
+_JSCAP_6  DW  0
+_JSCAP_7  DW  0
+_JSCAP_8  DW  0
+_JSCAP_9  DW  0
+_JSRT_REBUF  DB  256 DUP(0)
+_JSRT_CHRBUF DB  2 DUP(0)
+_JSRT_JSONBUF DB 256 DUP(0)
+_JSRT_SPLITBUF DW 64 DUP(0)
+_JS_RNDSEED  DW  12345
 _JSV_obj  DW  0
 _JSK_2  DB  'x',0
 _JSK_3  DB  'y',0
