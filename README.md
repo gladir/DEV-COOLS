@@ -284,10 +284,14 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td><b>FNT2PAS.PAS</b></td>
 			<td>Cette commande permet de convertir des fichiers de polices de caractères .FNT en code source Pascal.</td>
 		</tr>
-	        <tr>
+		<tr>
+			<td><b>F77C86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Fortran 77 pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+	    <tr>
 			<td><b>HEXCOM.PAS</b></td>
-	                <td>Cette commande permet de charger un HEX (fichier de vidage hexadécimal) et en fait un fichier de format  «.COM».</td>
-                </tr>
+	        <td>Cette commande permet de charger un HEX (fichier de vidage hexadécimal) et en fait un fichier de format  «.COM».</td>
+        </tr>
 		<tr>
 			<td><b>HEXDUMP.PAS</b></td>
 			<td>Cette commande permet d'afficher le contenu d'un fichier en format hexadecimal et d'avoir des formats de sortie comme C, CSV, JSON, HTML, PASCAL, SQL, XML,... Cette commande est inspiré de la commande de Linux.</td>
