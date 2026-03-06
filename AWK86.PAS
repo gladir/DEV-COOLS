@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, FieldSep, Warnings)
             ParseArgs : analyser argv (script.awk [sortie.asm] [-v] [-d] [-w])
             Option -F sep : separateur de champs (defaut espace/tabulation)
@@ -463,7 +463,315 @@
 
   ============================================================ *)
 
+{ ============================================================
+  AWK86 - Compilateur AWK -> assembleur 8086
+  Version : 1.0  Date : 2026-03-06
+  Compilation : ppc386 -O2 -Mtp AWK86.PAS
+  ============================================================ }
+
 Program AWK86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES GLOBALES
+  ============================================================ }
+Const
+  AWK86_VERSION = '1.0';
+  AWK86_DATE    = '2026-03-06';
+
+  { Limites des tableaux internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_RULES     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_FIELDS    = 64;       { nombre max de champs $1..$NF     }
+  MAX_HASH_PAIRS = 64;      { paires max par tableau associatif }
+  MAX_INIT_VARS  = 16;      { nombre max de -v var=val          }
+  STACK_SIZE     = 1024;
+
+  { Prefixes de nommage ASM }
+  AW_VAR_PFX  = '_AWV_';    { variable utilisateur              }
+  AW_FN_PFX   = '_AWF_';    { fonction utilisateur              }
+  AW_STR_PFX  = '_AWK_';    { constante chaine                  }
+  AW_RT_PFX   = '_AWRT_';   { routine runtime                   }
+  AW_LBL_PFX  = '_AWL_';    { label de saut interne             }
+  AW_ARR_PFX  = '_AWA_';    { tableau associatif                }
+  AW_PAT_PFX  = '_AWP_';    { pattern data                      }
+  AW_RULE_PFX = '_AWR_';    { regle pattern-action              }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ------------------------------ }
+  TInitVar = Record
+    VarName  : TString;     { nom de la variable                }
+    VarValue : TString;     { valeur (chaine)                   }
+  End;
+
+  TOptions = Record
+    SrcFile   : TString;    { script source (.awk)              }
+    OutFile   : TString;    { fichier assembleur de sortie      }
+    Verbose   : Boolean;    { -v : banniere et statistiques     }
+    DebugMode : Boolean;    { -d : affichage de chaque token    }
+    Warnings  : Boolean;    { -w : avertissements actifs        }
+    FieldSep  : TString;    { -F sep : separateur de champs     }
+    InitVars  : Array[0..MAX_INIT_VARS - 1] Of TInitVar;
+    InitCount : Integer;    { nombre de -v var=val              }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options de compilation }
+  Opts       : TOptions;
+
+  { Compteurs d erreurs }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+{ ============================================================
+  INFRASTRUCTURE ET OPTIONS
+  ============================================================ }
+
+{ ---- Erreur fatale ---------------------------------------- }
+Procedure FatalError(Const Msg : TString);
 Begin
-End.
+  WriteLn('AWK86: ERREUR FATALE - ', Msg);
+  Halt(EXIT_ERROR);
+End;
+
+{ ---- Erreur de compilation -------------------------------- }
+Procedure CompileError(Const Msg : TString);
+Begin
+  WriteLn('AWK86: error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+{ ---- Avertissement ---------------------------------------- }
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('AWK86: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Aide en ligne ---------------------------------------- }
+Procedure ShowHelp;
+Begin
+  WriteLn('AWK86 - Compilateur AWK vers assembleur 8086 (MASM/TASM)');
+  WriteLn;
+  WriteLn('Syntaxe : AWK86 [options] <source.awk> [sortie.asm]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -F sep   separateur de champs (defaut espace/tabulation)');
+  WriteLn('  -v var=val  initialisation de variable avant BEGIN');
+  WriteLn('  -d       mode debug (affichage des tokens)');
+  WriteLn('  -w       activer les avertissements');
+  WriteLn('  -h       afficher cette aide');
+  WriteLn('  --help   afficher cette aide');
+  WriteLn('  --verbose  mode verbeux (banniere et statistiques)');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  AWK86 hello.awk');
+  WriteLn('  AWK86 -F: script.awk sortie.asm');
+  WriteLn('  AWK86 -v N=10 script.awk');
+  Halt(EXIT_OK);
+End;
+
+{ ---- Initialisation des options --------------------------- }
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.FieldSep  := ' ';
+  Opts.InitCount := 0;
+End;
+
+{ ---- Construction du nom de sortie par defaut ------------- }
+Procedure BuildOutName;
+Var
+  Base : TString;
+  Ext  : TString;
+  I    : Integer;
+Begin
+  Base := Opts.SrcFile;
+  Ext := '';
+  For I := Length(Base) DownTo 1 Do
+  Begin
+    If Base[I] = '.' Then
+    Begin
+      Ext  := Copy(Base, I, Length(Base) - I + 1);
+      Base := Copy(Base, 1, I - 1);
+      Break;
+    End;
+  End;
+  If (Ext = '.awk') Or (Ext = '.AWK') Then
+    Opts.OutFile := Base + '.asm'
+  Else
+    Opts.OutFile := Opts.SrcFile + '.asm';
+End;
+
+{ ---- Analyse des arguments de la ligne de commande -------- }
+Procedure ParseArgs;
+Var
+  I     : Integer;
+  Arg   : TString;
+  EqPos : Integer;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-F' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -F requiert un argument');
+      Opts.FieldSep := ParamStr(I);
+    End
+    Else If (Length(Arg) > 2) And (Arg[1] = '-') And (Arg[2] = 'F') Then
+    Begin
+      { -Fsep : separateur colle a l option }
+      Opts.FieldSep := Copy(Arg, 3, Length(Arg) - 2);
+    End
+    Else If Arg = '-v' Then
+    Begin
+      Inc(I);
+      If I > ParamCount Then
+        FatalError('option -v requiert un argument var=val');
+      Arg := ParamStr(I);
+      { Chercher le signe = }
+      EqPos := 0;
+      For EqPos := 1 To Length(Arg) Do
+        If Arg[EqPos] = '=' Then Break;
+      If (EqPos < 2) Or (EqPos > Length(Arg)) Or (Arg[EqPos] <> '=') Then
+        FatalError('-v : format attendu var=val');
+      If Opts.InitCount >= MAX_INIT_VARS Then
+        FatalError('trop de variables -v');
+      Opts.InitVars[Opts.InitCount].VarName :=
+        Copy(Arg, 1, EqPos - 1);
+      Opts.InitVars[Opts.InitCount].VarValue :=
+        Copy(Arg, EqPos + 1, Length(Arg) - EqPos);
+      Inc(Opts.InitCount);
+    End
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('AWK86: option inconnue : ', Arg);
+      Halt(EXIT_USAGE);
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('AWK86: argument inattendu : ', Arg);
+      Halt(EXIT_USAGE);
+    End;
+    Inc(I);
+  End;
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('AWK86: aucun fichier source specifie.');
+    Halt(EXIT_USAGE);
+  End;
+  If Opts.OutFile = '' Then
+    BuildOutName;
+End;
+
+{ ---- Banniere verbose ------------------------------------- }
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('================================================');
+  WriteLn(' AWK86 v', AWK86_VERSION, ' (', AWK86_DATE, ')');
+  WriteLn('================================================');
+  WriteLn(' Source  : ', Opts.SrcFile);
+  WriteLn(' Sortie  : ', Opts.OutFile);
+  If Opts.FieldSep <> ' ' Then
+    WriteLn(' FS      : ', Opts.FieldSep);
+  If Opts.InitCount > 0 Then
+    WriteLn(' InitVars: ', Opts.InitCount);
+  WriteLn('------------------------------------------------');
+End;
+
+{ ---- Statistiques finales --------------------------------- }
+Procedure ShowStats;
+Begin
+  WriteLn('------------------------------------------------');
+  WriteLn(' Lignes   : ', TotalLines);
+  WriteLn(' Erreurs  : ', ErrorCount);
+  WriteLn(' Avert.   : ', WarnCount);
+  If ErrorCount = 0 Then
+    WriteLn(' Resultat : OK -> ', Opts.OutFile)
+  Else
+    WriteLn(' Resultat : ECHEC (', ErrorCount, ' erreur(s))');
+  WriteLn('================================================');
+End;
+
+{ ---- Stub Run (sera implemente dans les TODOs suivants) --- }
+Procedure Run;
+Begin
+  WriteLn('AWK86: compilation de ', Opts.SrcFile, ' ...');
+  WriteLn('AWK86: TODO 02..25 pas encore implementes.');
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  InitOptions;
+  ParseArgs;
+  ShowBanner;
+  Run;
+  If Opts.Verbose Then ShowStats;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+END.
