@@ -14,7 +14,7 @@
    FEUILLE DE ROUTE - 25 TODOS
    ============================================================
 
-   TODO 01 - INFRASTRUCTURE ET OPTIONS
+   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
              TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
              ParseArgs : analyser argv (source.swift [sortie.asm] [-v] [-d] [-w])
              FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -22,7 +22,7 @@
              Programme principal : validation des arguments et appel Run
              Version, Date, aide en ligne (option -h)
 
-   TODO 02 - LEXEUR (TOKENS SWIFT)
+   TODO 02 - LEXEUR (TOKENS SWIFT) [IMPLEMENTE]
              TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_STRING,
                TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT, TK_INTERP
              LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
@@ -43,7 +43,7 @@
                Protocol required right set Type unowned weak willSet
              Mode debug -d : affichage de chaque token avec PrintToken
 
-   TODO 03 - LITTERAUX ET CONSTANTES
+   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
              Entiers decimaux : 0..65535 (UInt16) ou -32768..32767 (Int16)
              Entiers hexadecimaux : 0xFF, octaux : 0o77, binaires : 0b1010
              Separateur numerique : 1_000_000 (ignorer les underscores)
@@ -56,7 +56,7 @@
              true : constante booleenne -> AX=1
              false : constante booleenne -> AX=0
 
-   TODO 04 - OPERATEURS ET PRECEDENCE
+   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
              Arithmetiques  : + - * / % (entiers)
              Comparaison    : == != < <= > >=
              Logiques       : && || ! (court-circuit)
@@ -84,7 +84,7 @@
               11. cond ? a : b (ternaire)
               12. = += -= *= /= %= (affectation)
 
-   TODO 05 - TABLE DES SYMBOLES
+   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
              TSymKind : SK_LET, SK_VAR, SK_FUNC, SK_PARAM, SK_TYPE,
                SK_STRUCT, SK_CLASS, SK_ENUM, SK_PROTOCOL, SK_CASE
              TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
@@ -441,7 +441,2007 @@
 
    ============================================================ *)
 
+{ ============================================================
+  SWIFT86 - Compilateur Swift -> assembleur 8086
+  Version : 1.0  Date : 2026-03-06
+  Compilation : ppc386 -O2 -Mtp SWIFT86.PAS
+  ============================================================ }
+
 Program SWIFT86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  SW86_VERSION = '1.0';
+  SW86_DATE    = '2026-03-06';
+
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  SW_VAR_PFX  = '_SWV_';
+  SW_FN_PFX   = '_SWF_';
+  SW_STR_PFX  = '_SWK_';
+  SW_RT_PFX   = '_SWRT_';
+  SW_LBL_PFX  = '_SWL_';
+  SW_TYPE_PFX = '_SWT_';
+  SW_ENUM_PFX = '_SWE_';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  TY_IDX_INT     = 0;
+  TY_IDX_UINT    = 1;
+  TY_IDX_BOOL    = 2;
+  TY_IDX_STRING  = 3;
+  TY_IDX_DOUBLE  = 4;
+  TY_IDX_VOID    = 5;
+  TY_IDX_ANY     = 6;
+  TY_IDX_OPT     = 7;
+  TY_PRIM_COUNT  = 8;
+  TY_UNKNOWN     = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  TOptions = Record
+    SrcFile   : TString;
+    OutFile   : TString;
+    Verbose   : Boolean;
+    DebugMode : Boolean;
+    Warnings  : Boolean;
+  End;
+
+  TTokenKind = (
+    TK_EOF,
+    TK_INTEGER,
+    TK_REAL,
+    TK_STRING,
+    TK_IDENT,
+    TK_KEYWORD,
+    TK_OP,
+    TK_PUNCT,
+    TK_INTERP
+  );
+
+  TToken = Record
+    Kind   : TTokenKind;
+    Val    : TString;
+    IntVal : LongInt;
+    Line   : Integer;
+    Col    : Integer;
+  End;
+
+  TSymKind = (
+    SK_LET,
+    SK_VAR,
+    SK_FUNC,
+    SK_PARAM,
+    SK_TYPE,
+    SK_STRUCT,
+    SK_CLASS,
+    SK_ENUM,
+    SK_PROTOCOL,
+    SK_CASE
+  );
+
+  TSymRec = Record
+    Name        : TString;
+    MangledName : TString;
+    Kind        : TSymKind;
+    TypeIdx     : Integer;
+    ScopeLevel  : Integer;
+    Offset      : Integer;
+    IsPublic    : Boolean;
+    IsPrivate   : Boolean;
+    IsMutating  : Boolean;
+    IsOptional  : Boolean;
+    DeclLine    : Integer;
+  End;
+
+  TTypeKind = (
+    TYK_INT,
+    TYK_UINT,
+    TYK_BOOL,
+    TYK_STRING,
+    TYK_DOUBLE,
+    TYK_FLOAT,
+    TYK_ARRAY,
+    TYK_DICT,
+    TYK_STRUCT,
+    TYK_CLASS,
+    TYK_ENUM,
+    TYK_PROTOCOL,
+    TYK_OPTIONAL,
+    TYK_TUPLE,
+    TYK_FUNC,
+    TYK_VOID,
+    TYK_ANY,
+    TYK_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name : TString;
+    Kind : TTypeKind;
+    Size : Integer;
+  End;
+
+  TExprKind = (
+    EK_NONE,
+    EK_IMM,
+    EK_AX,
+    EK_MEM
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;
+  End;
+
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_STRUCT_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  Opts : TOptions;
+
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  GExprDummy : TExprVal;
+
+  LexSrcF    : Text;
+  LexLine    : String;
+  LexLineNo  : Integer;
+  LexColNo   : Integer;
+  LexEOF     : Boolean;
+  LexOpened  : Boolean;
+  CurToken   : TToken;
+
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount  : Integer;
+
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;
+  CurFnDepth   : Integer;
+  CurFnRetLbl  : TString;
+  CurFnName    : TString;
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LabelGenSeq  : Integer;
+
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  RuntimeEmitted : Boolean;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Function  IsKeyword(Const S : TString) : Boolean; Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure LexNextLine;         Forward;
+Procedure LexSkipBlockComment; Forward;
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsHexDigit(Ch : Char) : Boolean; Forward;
+Function  HexVal(Ch : Char) : Integer; Forward;
+Procedure LexScanIdent;        Forward;
+Procedure LexScanNumber;       Forward;
+Function  LexScanEscChar : Char; Forward;
+Procedure LexScanString;       Forward;
+Procedure LexNextToken;        Forward;
+Function  IntToStr(N : LongInt) : TString; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Function  IsAssignOp(Const Op : TString) : Boolean; Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindKind(Const Name : TString; Kind : TSymKind) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 TypeIdx, Offset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Function  SymNextOffset : Integer; Forward;
+Function  LabelGen : TString; Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Procedure EmitOpen;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitDataSeg;   Forward;
+Procedure EmitHeader;    Forward;
+Procedure EmitRuntime;   Forward;
+Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
+Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Procedure ExprStore(SIdx : Integer); Forward;
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure ParserAdvance; Forward;
+Procedure ParseStmt;     Forward;
+Procedure TypeInit;      Forward;
+Procedure SymInit;       Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('SWIFT86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('SWIFT86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('SWIFT86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure ShowBanner;
+Begin
+  WriteLn('SWIFT86 v', SW86_VERSION, ' (', SW86_DATE, ')');
+  WriteLn('Compilateur Swift -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: SWIFT86 <source.swift> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.swift : fichier Swift source');
+  WriteLn('  sortie.asm   : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v           : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d           : debug tokens (affiche chaque token)');
+  WriteLn('  -w           : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('SWIFT86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('SWIFT86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('SWIFT86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  CurFrameSize   := 0;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  TODO 02 - LEXEUR (TOKENS SWIFT) [IMPLEMENTE]
+  ============================================================ }
+
+Function IsKeyword(Const S : TString) : Boolean;
+Begin
+  IsKeyword :=
+    (S = 'as')           Or (S = 'associatedtype') Or
+    (S = 'break')        Or (S = 'case')       Or (S = 'catch')     Or
+    (S = 'class')        Or (S = 'continue')   Or (S = 'default')   Or
+    (S = 'defer')        Or (S = 'deinit')     Or (S = 'do')        Or
+    (S = 'else')         Or (S = 'enum')       Or (S = 'extension') Or
+    (S = 'fallthrough')  Or (S = 'false')      Or (S = 'fileprivate') Or
+    (S = 'for')          Or (S = 'func')       Or (S = 'guard')     Or
+    (S = 'if')           Or (S = 'import')     Or (S = 'in')        Or
+    (S = 'init')         Or (S = 'inout')      Or (S = 'internal')  Or
+    (S = 'is')           Or (S = 'let')        Or (S = 'nil')       Or
+    (S = 'open')         Or (S = 'operator')   Or (S = 'override')  Or
+    (S = 'private')      Or (S = 'protocol')   Or (S = 'public')    Or
+    (S = 'repeat')       Or (S = 'return')     Or (S = 'self')      Or
+    (S = 'Self')         Or (S = 'static')     Or (S = 'struct')    Or
+    (S = 'subscript')    Or (S = 'super')      Or (S = 'switch')    Or
+    (S = 'throw')        Or (S = 'throws')     Or (S = 'true')      Or
+    (S = 'try')          Or (S = 'typealias')  Or (S = 'var')       Or
+    (S = 'where')        Or (S = 'while');
+End;
+
+Procedure PrintToken(Const T : TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF     : Write('EOF');
+    TK_INTEGER : Write('INT(', T.IntVal, ')');
+    TK_REAL    : Write('REAL(', T.Val, ')');
+    TK_STRING  : Write('STR("', T.Val, '")');
+    TK_IDENT   : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD : Write('KW(', T.Val, ')');
+    TK_OP      : Write('OP(', T.Val, ')');
+    TK_PUNCT   : Write('PUNCT(', T.Val, ')');
+    TK_INTERP  : Write('INTERP(', T.Val, ')');
+  End;
+  WriteLn;
+End;
+
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+Procedure LexSkipBlockComment;
+Var
+  Depth : Integer;
+Begin
+  Inc(LexColNo); Inc(LexColNo);
+  Depth := 1;
+  While (Not LexEOF) And (Depth > 0) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexLine[LexColNo] = '/') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Inc(Depth);
+    End
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Dec(Depth);
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+Procedure LexScanIdent;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+  If IsKeyword(S) Then
+    CurToken.Kind := TK_KEYWORD
+  Else
+    CurToken.Kind := TK_IDENT;
+End;
+
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  Base    : Integer;
+  IsFloat : Boolean;
+  Ch      : Char;
+Begin
+  N       := 0;
+  Base    := 10;
+  IsFloat := False;
+  Ch      := LexLine[LexColNo];
+  If (Ch = '0') And (LexColNo < Length(LexLine)) Then
+  Begin
+    Ch := LexLine[LexColNo + 1];
+    If (Ch = 'x') Or (Ch = 'X') Then
+    Begin
+      Base := 16;
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else If (Ch = 'o') Or (Ch = 'O') Then
+    Begin
+      Base := 8;
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else If (Ch = 'b') Or (Ch = 'B') Then
+    Begin
+      Base := 2;
+      Inc(LexColNo); Inc(LexColNo);
+    End;
+  End;
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '_' Then
+    Begin
+      Inc(LexColNo);
+    End
+    Else If (Base = 16) And IsHexDigit(Ch) Then
+    Begin
+      N := N * 16 + HexVal(Ch);
+      Inc(LexColNo);
+    End
+    Else If (Base = 8) And (Ch >= '0') And (Ch <= '7') Then
+    Begin
+      N := N * 8 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else If (Base = 2) And ((Ch = '0') Or (Ch = '1')) Then
+    Begin
+      N := N * 2 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else If (Base = 10) And (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      N := N * 10 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else
+      Break;
+  End;
+  If (Base = 10) And (LexColNo <= Length(LexLine)) And
+     (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    While (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Or
+           (LexLine[LexColNo] = '_')) Do
+      Inc(LexColNo);
+  End;
+  If (Base = 10) And (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'e') Or (LexLine[LexColNo] = 'E')) Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    If (LexColNo <= Length(LexLine)) And
+       ((LexLine[LexColNo] = '+') Or (LexLine[LexColNo] = '-')) Then
+      Inc(LexColNo);
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+      Inc(LexColNo);
+  End;
+  CurToken.IntVal := N;
+  Str(N, CurToken.Val);
+  If IsFloat Then
+    CurToken.Kind := TK_REAL
+  Else
+    CurToken.Kind := TK_INTEGER;
+End;
+
+Function LexScanEscChar : Char;
+Var
+  Ch : Char;
+  V  : Integer;
+Begin
+  If LexColNo > Length(LexLine) Then
+  Begin
+    LexScanEscChar := '\';
+    Exit;
+  End;
+  Ch := LexLine[LexColNo];
+  Inc(LexColNo);
+  Case Ch Of
+    'n'  : LexScanEscChar := #10;
+    't'  : LexScanEscChar := #9;
+    'r'  : LexScanEscChar := #13;
+    '0'  : LexScanEscChar := #0;
+    '\'  : LexScanEscChar := '\';
+    '"'  : LexScanEscChar := '"';
+    ''''  : LexScanEscChar := '''';
+    'u'  :
+    Begin
+      V := 0;
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '{') Then
+        Inc(LexColNo);
+      While (LexColNo <= Length(LexLine)) And IsHexDigit(LexLine[LexColNo]) Do
+      Begin
+        V := V * 16 + HexVal(LexLine[LexColNo]);
+        Inc(LexColNo);
+      End;
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '}') Then
+        Inc(LexColNo);
+      LexScanEscChar := Chr(V And $FF);
+    End;
+  Else
+    LexScanEscChar := Ch;
+  End;
+End;
+
+Procedure LexScanString;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo);
+  While (LexColNo <= Length(LexLine)) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '"' Then
+    Begin
+      Inc(LexColNo);
+      Break;
+    End
+    Else If (Ch = '\') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '(') Then
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + '\(';
+      Inc(LexColNo); Inc(LexColNo);
+      While (LexColNo <= Length(LexLine)) And
+            (LexLine[LexColNo] <> ')') Do
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + LexLine[LexColNo];
+        Inc(LexColNo);
+      End;
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = ')') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + ')';
+        Inc(LexColNo);
+      End;
+    End
+    Else If Ch = '\' Then
+    Begin
+      Inc(LexColNo);
+      Ch := LexScanEscChar;
+      If (Ch <> #0) And (Length(S) < MAX_STR) Then
+        S := S + Ch;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind   := TK_STRING;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+Procedure LexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+Begin
+  CurToken.IntVal := 0;
+  Scanning := True;
+  While Scanning Do
+  Begin
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    If LexEOF Then
+    Begin
+      CurToken.Kind := TK_EOF;
+      CurToken.Val  := '';
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+      Scanning      := False;
+      Break;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+      Inc(LexColNo)
+
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+      LexColNo := Length(LexLine) + 1
+
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+      LexSkipBlockComment
+
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Scanning := False;
+    End
+
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+
+    Else If Ch = '"' Then
+    Begin
+      LexScanString;
+      Scanning := False;
+    End
+
+    Else If Ch = '=' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '==';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '=';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '!' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '!=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '!';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '<') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '<<';
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '<=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '<';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '>>';
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '>=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '>';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '+' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '+=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '+';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '-' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '->';
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '-=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '-';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '*' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '*=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '*';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '/' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '/=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '/';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '%' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '%=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '%';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '&' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '&') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '&&';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '&';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '|' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '|') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '||';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '|';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '^' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind := TK_OP; CurToken.Val := '^';
+      Scanning := False;
+    End
+
+    Else If Ch = '~' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind := TK_OP; CurToken.Val := '~';
+      Scanning := False;
+    End
+
+    Else If Ch = '?' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '?') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '??';
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '?.';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '?';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = '.' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '<') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '..<';
+        End
+        Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '...';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP; CurToken.Val := '..';
+        End;
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_PUNCT; CurToken.Val := '.';
+      End;
+      Scanning := False;
+    End
+
+    Else If Ch = ':' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind := TK_PUNCT; CurToken.Val := ':';
+      Scanning := False;
+    End
+
+    Else If (Ch = ';') Or (Ch = ',') Or (Ch = '(') Or (Ch = ')') Or
+            (Ch = '[') Or (Ch = ']') Or (Ch = '@') Or (Ch = '#') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    Else If (Ch = '{') Or (Ch = '}') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    Else
+    Begin
+      WarnMsg('caractere inconnu: ' + Ch);
+      Inc(LexColNo);
+    End;
+
+  End;
+End;
+
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  Case T.Kind Of
+    TK_INTEGER :
+      ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+    TK_REAL :
+      ExprMakeImm(T.IntVal, TY_IDX_DOUBLE, Res);
+    TK_STRING :
+    Begin
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+    End;
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'nil' Then
+        ExprMakeImm(0, TY_IDX_OPT, Res)
+      Else If T.Val = 'true' Then
+        ExprMakeBool(1, Res)
+      Else If T.Val = 'false' Then
+        ExprMakeBool(0, Res)
+      Else
+        ExprMakeNone(Res);
+    End;
+  Else
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+Function IsAssignOp(Const Op : TString) : Boolean;
+Begin
+  IsAssignOp :=
+    (Op = '=') Or (Op = '+=') Or (Op = '-=') Or
+    (Op = '*=') Or (Op = '/=') Or (Op = '%=');
+End;
+
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If IsAssignOp(Op) Then BinOpPrec := 1
+  Else If Op = '?'  Then BinOpPrec := 2
+  Else If Op = '||' Then BinOpPrec := 3
+  Else If Op = '&&' Then BinOpPrec := 4
+  Else If (Op = '==')  Or (Op = '!=') Or
+          (Op = '<')   Or (Op = '<=') Or
+          (Op = '>')   Or (Op = '>=') Then BinOpPrec := 5
+  Else If Op = '??' Then BinOpPrec := 6
+  Else If (Op = 'as') Or (Op = 'as?') Or (Op = 'as!') Then BinOpPrec := 7
+  Else If (Op = '..<') Or (Op = '...') Then BinOpPrec := 8
+  Else If (Op = '+') Or (Op = '-') Or
+          (Op = '|') Or (Op = '^') Then BinOpPrec := 9
+  Else If (Op = '*') Or (Op = '/') Or (Op = '%') Or
+          (Op = '&') Then BinOpPrec := 10
+  Else If (Op = '<<') Or (Op = '>>') Then BinOpPrec := 11
+  Else BinOpPrec := 0;
+End;
+
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := IsAssignOp(Op) Or (Op = '??');
+End;
+
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  Case CurToken.Kind Of
+    TK_INTEGER, TK_REAL, TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'nil') Or (CurToken.Val = 'true') Or
+         (CurToken.Val = 'false') Then
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
+    TK_IDENT :
+    Begin
+      Res.SymIdx := SymFind(CurToken.Val);
+      If Res.SymIdx >= 0 Then
+      Begin
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+        Res.Offset  := SymTab[Res.SymIdx].Offset;
+      End
+      Else
+        ExprMakeNone(Res);
+      ParserAdvance;
+    End;
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance;
+        ParseExpr(Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End
+      Else If CurToken.Val = '[' Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
+        Begin
+          ParseExpr(Res);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          ParserAdvance;
+        ExprMakeNone(Res);
+      End
+      Else
+      Begin
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
+  Else
+    ExprMakeNone(Res);
+    ParserAdvance;
+  End;
+End;
+
+Procedure ParseUnary(Var Res : TExprVal);
+Var
+  Op : TString;
+Begin
+  If CurToken.Kind = TK_OP Then
+  Begin
+    Op := CurToken.Val;
+    If (Op = '+') Or (Op = '-') Or (Op = '!') Or (Op = '~') Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Op = '-' Then
+          Res.ImmVal := -Res.ImmVal
+        Else If Op = '+' Then
+          { rien }
+        Else If Op = '!' Then
+        Begin
+          If Res.ImmVal = 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+          Res.TypeIdx := TY_IDX_BOOL;
+        End
+        Else If Op = '~' Then
+          Res.ImmVal := Not Res.ImmVal;
+      End
+      Else
+        Res.Kind := EK_AX;
+      Exit;
+    End;
+  End;
+  ParsePrimary(Res);
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then
+  Begin
+    ParserAdvance;
+    Res.Kind := EK_AX;
+  End;
+End;
+
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op    : TString;
+  Prec  : Integer;
+  Right : TExprVal;
+  NextP : Integer;
+Begin
+  ParseUnary(Res);
+  Repeat
+    Op   := '';
+    Prec := 0;
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'as') Or (CurToken.Val = 'is')) Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End;
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+    ParserAdvance;
+    If BinOpIsRight(Op) Then
+      NextP := Prec
+    Else
+      NextP := Prec + 1;
+    ParseExprPrec(NextP, Right);
+    If (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM) Then
+    Begin
+      If Op = '+' Then
+        Res.ImmVal := Res.ImmVal + Right.ImmVal
+      Else If Op = '-' Then
+        Res.ImmVal := Res.ImmVal - Right.ImmVal
+      Else If Op = '*' Then
+        Res.ImmVal := Res.ImmVal * Right.ImmVal
+      Else If (Op = '/') And (Right.ImmVal <> 0) Then
+        Res.ImmVal := Res.ImmVal Div Right.ImmVal
+      Else If (Op = '%') And (Right.ImmVal <> 0) Then
+        Res.ImmVal := Res.ImmVal Mod Right.ImmVal
+      Else If Op = '&' Then
+        Res.ImmVal := Res.ImmVal And Right.ImmVal
+      Else If Op = '|' Then
+        Res.ImmVal := Res.ImmVal Or Right.ImmVal
+      Else If Op = '^' Then
+        Res.ImmVal := Res.ImmVal Xor Right.ImmVal
+      Else If Op = '<<' Then
+        Res.ImmVal := Res.ImmVal Shl Right.ImmVal
+      Else If Op = '>>' Then
+        Res.ImmVal := Res.ImmVal Shr Right.ImmVal
+      Else If Op = '==' Then
+      Begin
+        If Res.ImmVal = Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '!=' Then
+      Begin
+        If Res.ImmVal <> Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '<' Then
+      Begin
+        If Res.ImmVal < Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '<=' Then
+      Begin
+        If Res.ImmVal <= Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '>' Then
+      Begin
+        If Res.ImmVal > Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '>=' Then
+      Begin
+        If Res.ImmVal >= Right.ImmVal Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '&&' Then
+      Begin
+        If (Res.ImmVal <> 0) And (Right.ImmVal <> 0) Then Res.ImmVal := 1
+        Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else If Op = '||' Then
+      Begin
+        If (Res.ImmVal <> 0) Or (Right.ImmVal <> 0) Then Res.ImmVal := 1
+        Else Res.ImmVal := 0;
+        Res.TypeIdx := TY_IDX_BOOL;
+      End
+      Else
+        Res.Kind := EK_AX;
+    End
+    Else
+      Res.Kind := EK_AX;
+  Until False;
+End;
+
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+    If ((Name[I] >= 'A') And (Name[I] <= 'Z')) Or
+       ((Name[I] >= 'a') And (Name[I] <= 'z')) Or
+       ((Name[I] >= '0') And (Name[I] <= '9')) Or
+       (Name[I] = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + Name[I];
+    End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_FUNC     : SymMangle := SW_FN_PFX   + Clean;
+    SK_STRUCT   : SymMangle := SW_TYPE_PFX  + Clean;
+    SK_CLASS    : SymMangle := SW_TYPE_PFX  + Clean;
+    SK_ENUM     : SymMangle := SW_ENUM_PFX  + Clean;
+    SK_PROTOCOL : SymMangle := SW_TYPE_PFX  + Clean;
+  Else
+    SymMangle := SW_VAR_PFX + Clean;
+  End;
+End;
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+Function SymFindKind(Const Name : TString; Kind : TSymKind) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And (SymTab[I].Kind = Kind) Then
+    Begin
+      SymFindKind := I;
+      Exit;
+    End;
+  SymFindKind := -1;
+End;
+
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].IsPublic    := False;
+  SymTab[SymCount].IsPrivate   := False;
+  SymTab[SymCount].IsMutating  := False;
+  SymTab[SymCount].IsOptional  := False;
+  SymTab[SymCount].DeclLine    := CurToken.Line;
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+End;
+
+Function SymNextOffset : Integer;
+Begin
+  Inc(CurFrameSize);
+  SymNextOffset := -(CurFrameSize * 2);
+End;
+
+{ ============================================================
+  STUBS PREALABLES (TODO 06..25 - a implementer)
+  ============================================================ }
+
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_INT) Or (K = TYK_UINT) Or (K = TYK_BOOL) Or
+    (K = TYK_DOUBLE) Or (K = TYK_FLOAT);
+End;
+
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TYK_STRING) Or (K = TYK_ARRAY) Or
+    (K = TYK_CLASS) Or (K = TYK_FUNC);
+End;
+
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+  TypeTab[TY_IDX_INT].Name    := 'Int';
+  TypeTab[TY_IDX_INT].Kind    := TYK_INT;
+  TypeTab[TY_IDX_INT].Size    := 2;
+  TypeTab[TY_IDX_UINT].Name   := 'UInt';
+  TypeTab[TY_IDX_UINT].Kind   := TYK_UINT;
+  TypeTab[TY_IDX_UINT].Size   := 2;
+  TypeTab[TY_IDX_BOOL].Name   := 'Bool';
+  TypeTab[TY_IDX_BOOL].Kind   := TYK_BOOL;
+  TypeTab[TY_IDX_BOOL].Size   := 1;
+  TypeTab[TY_IDX_STRING].Name := 'String';
+  TypeTab[TY_IDX_STRING].Kind := TYK_STRING;
+  TypeTab[TY_IDX_STRING].Size := 2;
+  TypeTab[TY_IDX_DOUBLE].Name := 'Double';
+  TypeTab[TY_IDX_DOUBLE].Kind := TYK_DOUBLE;
+  TypeTab[TY_IDX_DOUBLE].Size := 2;
+  TypeTab[TY_IDX_VOID].Name   := 'Void';
+  TypeTab[TY_IDX_VOID].Kind   := TYK_VOID;
+  TypeTab[TY_IDX_VOID].Size   := 0;
+  TypeTab[TY_IDX_ANY].Name    := 'Any';
+  TypeTab[TY_IDX_ANY].Kind    := TYK_ANY;
+  TypeTab[TY_IDX_ANY].Size    := 2;
+  TypeTab[TY_IDX_OPT].Name    := 'Optional';
+  TypeTab[TY_IDX_OPT].Kind    := TYK_OPTIONAL;
+  TypeTab[TY_IDX_OPT].Size    := 4;
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+Procedure SymInit;
+Var
+  I : Integer;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_VAR;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsPublic    := False;
+    SymTab[I].IsPrivate   := False;
+    SymTab[I].IsMutating  := False;
+    SymTab[I].IsOptional  := False;
+    SymTab[I].DeclLine    := 0;
+  End;
+End;
+
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := SW_LBL_PFX + S;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  WriteLn(OutF, '; ', S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  WriteLn(OutF, Lbl, ':');
+End;
+
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem);
+End;
+
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  If CurFrameSize > 0 Then
+    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize * 2));
+End;
+
+Procedure EmitEpilog;
+Begin
+  If CurFnRetLbl <> '' Then
+    EmitLabel(CurFnRetLbl);
+  If CurFrameSize > 0 Then
+    EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+End;
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexEOF     := False;
+  LexLine    := '';
+  LexNextLine;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('Genere par SWIFT86 v' + SW86_VERSION + ' - ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+  EmitComment('--- debut du code genere ---');
+  EmitBlankLine;
+End;
+
+Function ExprAddrOf(SIdx : Integer) : TString;
+Var
+  Ofs : Integer;
+Begin
+  Ofs := SymTab[SIdx].Offset;
+  If Ofs < 0 Then
+    ExprAddrOf := '[BP' + IntToStr(Ofs) + ']'
+  Else If Ofs > 0 Then
+    ExprAddrOf := '[BP+' + IntToStr(Ofs) + ']'
+  Else
+    ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']';
+End;
+
+Procedure ExprFlushToAX(Const E : TExprVal);
+Var
+  Addr : TString;
+  SVal : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+      Begin
+        SVal := IntToStr(E.ImmVal);
+        EmitInstrAB('MOV', 'AX', SVal);
+      End;
+    EK_MEM :
+      If E.SymIdx >= 0 Then
+      Begin
+        Addr := ExprAddrOf(E.SymIdx);
+        EmitInstrAB('MOV', 'AX', Addr);
+      End
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+    EK_AX  : ;
+    EK_NONE : EmitInstrAB('XOR', 'AX', 'AX');
+  End;
+End;
+
+Procedure ExprStore(SIdx : Integer);
+Var
+  Addr : TString;
+Begin
+  If SIdx < 0 Then Exit;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', Addr, 'AX');
+End;
+
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  Addr : TString;
+Begin
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.ImmVal  := 0;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', 'AX', Addr);
+End;
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := SW_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+Procedure EmitDataSeg;
+Var
+  I : Integer;
+  S : TString;
+  J : Integer;
+  Quote : Char;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitRaw('_SWRT_STRBUF DB 512 DUP(0)');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          S := '';
+          Quote := '''';
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If DataTab[I].StrVal[J] = Quote Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+        End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].ElemCount) +
+                '   ; array (' + IntToStr(DataTab[I].ElemCount) + ' elem)');
+      DK_STRUCT_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW  0   ; struct stub');
+    End;
+  End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+Procedure EmitRuntime;
+Begin
+  { Stub : TODO 24 }
+End;
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- fin du code genere ---');
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+  PrintToken(CurToken);
+End;
+
+Procedure ParseStmt;
+Begin
+  { Stub : TODO 09+ implementeront les instructions }
+  If CurToken.Kind = TK_EOF Then Exit;
+  ParserAdvance;
+End;
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  EmitHeader;
+  LexInit;
+
+  ParserAdvance;
+
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  LexClose;
+  EmitRuntime;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes      : ', TotalLines);
+    WriteLn('  Symboles    : ', TotalSyms);
+    WriteLn('  Erreurs     : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ParseArgs;
+  Run;
 End.
