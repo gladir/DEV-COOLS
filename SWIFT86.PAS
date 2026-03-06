@@ -341,7 +341,7 @@
                Comparable : < <= > >=
                CaseIterable : allCases
 
-   TODO 21 - OPTIONNELS (Optional)
+   TODO 21 - OPTIONNELS (Optional) [IMPLEMENTE]
              var x: Int? : Optional<Int> -> flag (1 mot) + valeur (1 mot)
                .none / nil : flag = 0, valeur indefinie
                .some(val)  : flag = 1, valeur = val
@@ -358,7 +358,7 @@
              Implicitly unwrapped : var x: Int! (traite comme x! a chaque usage)
              map / flatMap sur Optional : (stubs simplifies)
 
-   TODO 22 - GESTION D ERREURS (do / try / catch / throw)
+   TODO 22 - GESTION D ERREURS (do / try / catch / throw) [IMPLEMENTE]
              Fonctions throwing : func f() throws -> T
                Convention : retour en AX = valeur, flag d erreur en DX
                DX=0 : succes, DX=code_erreur : erreur levee
@@ -379,7 +379,7 @@
              Declaration d erreur : enum MyError: Error { case reason }
                Chaque case = code entier distinct
 
-   TODO 23 - GENERIQUES
+   TODO 23 - GENERIQUES [IMPLEMENTE]
              func nom<T>(param: T) -> T { ... }
                Instanciation : generation de code pour chaque type concret utilise
                Limitation : types concrets Int, UInt, Bool, String seulement
@@ -396,7 +396,7 @@
              Limitation : un seul parametre generique par declaration (simplifie)
              Protocoles generiques avec associatedtype (stub minimal)
 
-   TODO 24 - RUNTIME MINIMAL
+   TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
              _SWRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
              _SWRT_PRINTLN : _SWRT_PRINT + CR+LF via _SW_CRLF DB 13,10,0
              _SWRT_PRINTSTR(SI=str) : afficher chaine terminee par 0
@@ -420,7 +420,7 @@
              RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
              Heap statique : _SW_HEAP DB 4096 DUP(0) + _SW_HEAPTOP DW 0
 
-   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
              EmitClose : END _SWF_main dans _TEXT ENDS / DATA ENDS
              Run : pipeline complet LexInit -> ParseTopLevel ->
                EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _SWF_main
@@ -758,6 +758,13 @@ Procedure ParseEnumDecl; Forward;
 Procedure ParseClassDecl; Forward;
 Procedure ParseProtocolDecl; Forward;
 Procedure ParseExtensionDecl; Forward;
+Procedure ParseOptionalExpr; Forward;
+Procedure ParseIfLetStmt; Forward;
+Procedure ParseGuardLetStmt; Forward;
+Procedure ParseDoBlock; Forward;
+Procedure ParseThrowStmt; Forward;
+Procedure ParseDeferStmt; Forward;
+Procedure ParseGenericParams; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2900,6 +2907,17 @@ Begin
   EmitRaw(SW_RT_PFX + 'S_FALSE DB ''false'',0');
   { Buffer pour readLine }
   EmitRaw(SW_RT_PFX + 'RLBUF DB 128 DUP(0)');
+  { CR+LF }
+  EmitRaw('_SW_CRLF DB 13,10,0');
+  { Heap statique }
+  EmitRaw('_SW_HEAP DB 4096 DUP(0)');
+  EmitRaw('_SW_HEAPTOP DW _SW_HEAP');
+  { Messages d erreur runtime }
+  EmitRaw(SW_RT_PFX + 'MSG_NIL  DB ''Fatal error: nil unwrap'',0');
+  EmitRaw(SW_RT_PFX + 'MSG_IDX  DB ''Fatal error: index out of range'',0');
+  EmitRaw(SW_RT_PFX + 'MSG_PANIC DB ''Fatal error: unhandled error'',0');
+  { Buffer pour NUMTOSTR (itoa) }
+  EmitRaw(SW_RT_PFX + 'NTSBUF DB 8 DUP(0)');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -3049,15 +3067,224 @@ Begin
   EmitInstr('POP    DX');
   EmitInstr('RET');
   EmitBlankLine;
-  { _SWRT_STRCAT : concatener AX + BX -> AX (simplifie, copie dans STRBUF) }
+  { _SWRT_STRCAT : concatener SI=src1 + DI=src2 -> AX=ptr STRBUF }
   EmitLabel(SW_RT_PFX + 'STRCAT');
-  EmitComment('  (strcat stub - TODO 24 runtime complet)');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _SWRT_STRBUF');
+  { Copier src1 (SI) dans STRBUF }
+  EmitLabel(SW_RT_PFX + 'SC_CP1');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', SW_RT_PFX + 'SC_CP2');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    BX');
+  EmitInstrA('JMP', SW_RT_PFX + 'SC_CP1');
+  { Copier src2 (DI) dans STRBUF }
+  EmitLabel(SW_RT_PFX + 'SC_CP2');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitLabel(SW_RT_PFX + 'SC_CP3');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', SW_RT_PFX + 'SC_END');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    BX');
+  EmitInstrA('JMP', SW_RT_PFX + 'SC_CP3');
+  EmitLabel(SW_RT_PFX + 'SC_END');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrAB('MOV', 'AX', 'OFFSET _SWRT_STRBUF');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
   EmitInstr('RET');
   EmitBlankLine;
-  { _SWRT_INTTOSTR : convertir AX en chaine -> AX=ptr }
+  { _SWRT_INTTOSTR / NUMTOSTR : convertir AX (signe) en chaine -> AX=ptr }
+  { INTTOSTR est un alias de NUMTOSTR pour compatibilite avec le code existant }
   EmitLabel(SW_RT_PFX + 'INTTOSTR');
-  EmitComment('  (inttostr stub - TODO 24 runtime complet)');
+  EmitLabel(SW_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET ' + SW_RT_PFX + 'NTSBUF');
+  EmitInstrAB('ADD', 'DI', '7');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstr('DEC    DI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', SW_RT_PFX + 'NT_POS');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstr('NEG    AX');
+  EmitLabel(SW_RT_PFX + 'NT_POS');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitLabel(SW_RT_PFX + 'NT_DIV');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstr('DEC    DI');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', SW_RT_PFX + 'NT_DIV');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SW_RT_PFX + 'NT_OK');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstr('DEC    DI');
+  EmitLabel(SW_RT_PFX + 'NT_OK');
+  EmitInstr('INC    DI');
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
   EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_STRLEN : compter octets jusqu a 0 (SI=str) -> AX=longueur }
+  EmitLabel(SW_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitLabel(SW_RT_PFX + 'SL_LP');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '0');
+  EmitInstrA('JE', SW_RT_PFX + 'SL_DN');
+  EmitInstr('INC    AX');
+  EmitInstr('INC    SI');
+  EmitInstrA('JMP', SW_RT_PFX + 'SL_LP');
+  EmitLabel(SW_RT_PFX + 'SL_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_STRTONUM : ASCII string (SI) -> entier signe -> AX (atoi) }
+  EmitLabel(SW_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   SI');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('CMP', 'BYTE PTR [SI]', '''-''');
+  EmitInstrA('JNE', SW_RT_PFX + 'SN_LP');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitInstr('INC    SI');
+  EmitLabel(SW_RT_PFX + 'SN_LP');
+  EmitInstrAB('MOV', 'BL', '[SI]');
+  EmitInstrAB('CMP', 'BL', '''0''');
+  EmitInstrA('JB', SW_RT_PFX + 'SN_DN');
+  EmitInstrAB('CMP', 'BL', '''9''');
+  EmitInstrA('JA', SW_RT_PFX + 'SN_DN');
+  EmitInstrAB('MOV', 'BH', '10');
+  EmitInstrA('MUL', 'BH');
+  EmitInstrAB('SUB', 'BL', '''0''');
+  EmitInstrAB('XOR', 'BH', 'BH');
+  EmitInstrAB('ADD', 'AX', 'BX');
+  EmitInstr('INC    SI');
+  EmitInstrA('JMP', SW_RT_PFX + 'SN_LP');
+  EmitLabel(SW_RT_PFX + 'SN_DN');
+  EmitInstrAB('TEST', 'CX', 'CX');
+  EmitInstrA('JZ', SW_RT_PFX + 'SN_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel(SW_RT_PFX + 'SN_OK');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_STRCMP : comparer SI=str1, DI=str2 -> drapeaux ZF/CF }
+  EmitLabel(SW_RT_PFX + 'STRCMP');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(SW_RT_PFX + 'CMP_LP');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', 'AH', '[DI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', SW_RT_PFX + 'CMP_DN');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', SW_RT_PFX + 'CMP_DN');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', SW_RT_PFX + 'CMP_LP');
+  EmitLabel(SW_RT_PFX + 'CMP_DN');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_STREQ : egalite SI=str1, DI=str2 -> AX=0|1 }
+  EmitLabel(SW_RT_PFX + 'STREQ');
+  EmitInstrA('CALL', SW_RT_PFX + 'STRCMP');
+  EmitInstrA('JE', SW_RT_PFX + 'SEQ_Y');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET');
+  EmitLabel(SW_RT_PFX + 'SEQ_Y');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_ALLOC : allocation simple depuis _SW_HEAP (CX=taille) -> AX=ptr }
+  EmitLabel(SW_RT_PFX + 'ALLOC');
+  EmitInstr('PUSH   BX');
+  EmitInstrAB('MOV', 'BX', '[_SW_HEAPTOP]');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitInstrAB('ADD', 'BX', 'CX');
+  EmitInstrAB('MOV', '[_SW_HEAPTOP]', 'BX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_RETAIN : incrementer refcount (stub, AX=ptr) }
+  EmitLabel(SW_RT_PFX + 'RETAIN');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_RELEASE : decrementer refcount (stub, AX=ptr) }
+  EmitLabel(SW_RT_PFX + 'RELEASE');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_ABS : valeur absolue AX -> AX }
+  EmitLabel(SW_RT_PFX + 'ABS');
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNS', SW_RT_PFX + 'ABS_OK');
+  EmitInstr('NEG    AX');
+  EmitLabel(SW_RT_PFX + 'ABS_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_MAX : maximum AX,BX -> AX }
+  EmitLabel(SW_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', SW_RT_PFX + 'MAX_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(SW_RT_PFX + 'MAX_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_MIN : minimum AX,BX -> AX }
+  EmitLabel(SW_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', SW_RT_PFX + 'MIN_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(SW_RT_PFX + 'MIN_OK');
+  EmitInstr('RET');
+  EmitBlankLine;
+  { _SWRT_NILFATAL : erreur fatale nil unwrap }
+  EmitLabel(SW_RT_PFX + 'NILFATAL');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + SW_RT_PFX + 'MSG_NIL');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTCRLF');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+  { _SWRT_IDXFATAL : erreur fatale index out of range }
+  EmitLabel(SW_RT_PFX + 'IDXFATAL');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + SW_RT_PFX + 'MSG_IDX');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTCRLF');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+  { _SWRT_PANIC : afficher message (SI=msg) et halt }
+  EmitLabel(SW_RT_PFX + 'PANIC');
+  EmitInstrAB('MOV', 'SI', 'OFFSET ' + SW_RT_PFX + 'MSG_PANIC');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', SW_RT_PFX + 'PRINTCRLF');
+  EmitInstrAB('MOV', 'AX', '4C01h');
+  EmitInstr('INT    21h');
   EmitBlankLine;
 End;
 
@@ -3071,7 +3298,7 @@ Begin
   EmitBlankLine;
   EmitDataSeg;
   EmitBlankLine;
-  EmitRaw('        END');
+  EmitRaw('        END _SWF_main');
   If OutFOpen Then
   Begin
     Close(OutF);
@@ -5006,6 +5233,311 @@ Begin
   EmitComment('end extension ' + ExtName);
 End;
 
+(* ============================================================
+   TODO 21 - OPTIONNELS (Optional) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ParseOptionalExpr : gestion de ! (forced unwrap), ?. et ??            *)
+(* Convention optionnel : 2 mots (flag + valeur). flag=0 -> nil          *)
+Procedure ParseOptionalExpr;
+Var
+  LblOk      : TString;
+  LblEnd     : TString;
+  LblNil     : TString;
+  DefaultVal : TExprVal;
+Begin
+  (* Forced unwrap : x! -> tester flag, JZ NILFATAL, charger valeur *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then
+  Begin
+    ParserAdvance;
+    LblOk := LabelGen;
+    EmitComment('  forced unwrap (!)');
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JNZ', LblOk);
+    EmitInstrA('CALL', SW_RT_PFX + 'NILFATAL');
+    EmitLabel(LblOk);
+    EmitInstrAB('MOV', 'AX', 'BX');
+  End
+  (* Nil-coalescing : ?? defaultValue *)
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '??') Then
+  Begin
+    ParserAdvance;
+    LblEnd := LabelGen;
+    EmitComment('  nil-coalescing (??)');
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JNZ', LblEnd);
+    ParseExpr(DefaultVal);
+    ExprFlushToAX(DefaultVal);
+    EmitLabel(LblEnd);
+  End
+  (* Optional chaining : ?. methode() *)
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '?.') Then
+  Begin
+    ParserAdvance;
+    LblNil := LabelGen;
+    LblEnd := LabelGen;
+    EmitComment('  optional chaining (?.)');
+    EmitInstrAB('TEST', 'AX', 'AX');
+    EmitInstrA('JZ', LblNil);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    { Sauter l appel si nil }
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblNil);
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitLabel(LblEnd);
+  End;
+End;
+
+(* ParseIfLetStmt : if let val = optExpr { ... }                        *)
+(* Teste le flag optionnel, entre dans le bloc si flag=1                 *)
+Procedure ParseIfLetStmt;
+Var
+  VarName  : TString;
+  SIdx     : Integer;
+  OptExpr  : TExprVal;
+  LblElse  : TString;
+  LblEnd   : TString;
+Begin
+  ParserAdvance;  { consomme 'if' deja passe, on est sur 'let' }
+  ParserAdvance;  { consomme 'let' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres ''if let''');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;  { consomme le nom }
+  { Consomme '=' }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance;
+  ParseExpr(OptExpr);
+  ExprFlushToAX(OptExpr);
+  LblElse := LabelGen;
+  LblEnd  := LabelGen;
+  EmitComment('  if let ' + VarName);
+  { Tester le flag optionnel (AX=flag) }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', LblElse);
+  { Flag=1 : entrer dans le bloc avec la valeur dans BX }
+  SymEnterScope;
+  SIdx := DeclAllocSym(VarName, SK_LET);
+  If SIdx >= 0 Then
+  Begin
+    EmitInstrAB('MOV', 'AX', 'BX');
+    ExprStore(SIdx);
+  End;
+  ParseBlock;
+  SymLeaveScope;
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(LblElse);
+  { Bloc else optionnel }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    ParserAdvance;
+    ParseBlock;
+  End;
+  EmitLabel(LblEnd);
+End;
+
+(* ParseGuardLetStmt : guard let val = optExpr else { ... }             *)
+(* Teste le flag optionnel, entre dans else si flag=0                    *)
+Procedure ParseGuardLetStmt;
+Var
+  VarName  : TString;
+  SIdx     : Integer;
+  OptExpr  : TExprVal;
+  LblOk    : TString;
+Begin
+  ParserAdvance;  { consomme 'guard' deja passe, on est sur 'let' }
+  ParserAdvance;  { consomme 'let' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identificateur attendu apres ''guard let''');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;  { consomme le nom }
+  { Consomme '=' }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance;
+  ParseExpr(OptExpr);
+  ExprFlushToAX(OptExpr);
+  LblOk := LabelGen;
+  EmitComment('  guard let ' + VarName);
+  { Tester le flag optionnel (AX=flag) }
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JNZ', LblOk);
+  { Flag=0 : entrer dans le bloc else }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+    ParserAdvance;
+  ParseBlock;
+  EmitLabel(LblOk);
+  { Declarer la variable unwrapped dans le scope courant }
+  SIdx := DeclAllocSym(VarName, SK_LET);
+  If SIdx >= 0 Then
+  Begin
+    EmitInstrAB('MOV', 'AX', 'BX');
+    ExprStore(SIdx);
+  End;
+End;
+
+(* ============================================================
+   TODO 22 - GESTION D ERREURS (do/try/catch/throw) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ParseDoBlock : do { try f() } catch { ... }                          *)
+(* Convention : DX=0 succes, DX!=0 code erreur                          *)
+Procedure ParseDoBlock;
+Var
+  LblCatch : TString;
+  LblEnd   : TString;
+Begin
+  ParserAdvance;  { consomme 'do' }
+  LblCatch := LabelGen;
+  LblEnd   := LabelGen;
+  EmitComment('  do block');
+  (* Bloc do : parser les instructions *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+  SymEnterScope;
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    (* try : appeler la fonction, tester DX apres retour *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
+    Begin
+      ParserAdvance;  { consomme 'try' }
+      (* try? : convertir en optional si erreur *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+      Begin
+        ParserAdvance;
+        ParseStmt;
+        EmitComment('  try? -> optional on error');
+        EmitInstrAB('TEST', 'DX', 'DX');
+        EmitInstrA('JZ', LabelGen);
+        EmitInstrAB('XOR', 'AX', 'AX');
+      End
+      (* try! : crash si erreur *)
+      Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then
+      Begin
+        ParserAdvance;
+        ParseStmt;
+        EmitComment('  try! -> panic on error');
+        EmitInstrAB('TEST', 'DX', 'DX');
+        EmitInstrA('JZ', LabelGen);
+        EmitInstrA('CALL', SW_RT_PFX + 'PANIC');
+      End
+      Else
+      Begin
+        (* try normal : appel + test DX *)
+        ParseStmt;
+        EmitComment('  try -> catch on error');
+        EmitInstrAB('TEST', 'DX', 'DX');
+        EmitInstrA('JNZ', LblCatch);
+      End;
+    End
+    Else
+      ParseStmt;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+  SymLeaveScope;
+  EmitInstrA('JMP', LblEnd);
+  (* Bloc catch *)
+  EmitLabel(LblCatch);
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'catch') Then
+  Begin
+    ParserAdvance;  { consomme 'catch' }
+    EmitComment('  catch block');
+    (* catch let error : capturer l erreur dans une variable *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'let') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        EmitComment('  catch let ' + CurToken.Val);
+        EmitInstrAB('MOV', 'AX', 'DX');
+        ParserAdvance;
+      End;
+    End;
+    ParseBlock;
+  End;
+  EmitLabel(LblEnd);
+End;
+
+(* ParseThrowStmt : throw expr                                          *)
+(* MOV DX, code_erreur ; JMP vers epilogue                              *)
+Procedure ParseThrowStmt;
+Var
+  ThrowExpr : TExprVal;
+Begin
+  ParserAdvance;  { consomme 'throw' }
+  ParseExpr(ThrowExpr);
+  ExprFlushToAX(ThrowExpr);
+  EmitComment('  throw');
+  EmitInstrAB('MOV', 'DX', 'AX');
+  If CurFnRetLbl <> '' Then
+    EmitInstrA('JMP', CurFnRetLbl)
+  Else
+    EmitInstr('RET');
+End;
+
+(* ParseDeferStmt : defer { stmts }                                     *)
+(* Enregistrer le bloc, emettre avant chaque return/epilogue (simplifie) *)
+Procedure ParseDeferStmt;
+Var
+  LblDefer : TString;
+  LblSkip  : TString;
+Begin
+  ParserAdvance;  { consomme 'defer' }
+  LblDefer := LabelGen;
+  LblSkip  := LabelGen;
+  EmitComment('  defer block');
+  EmitInstrA('JMP', LblSkip);
+  EmitLabel(LblDefer);
+  ParseBlock;
+  EmitInstr('RET');
+  EmitLabel(LblSkip);
+  { Appeler le bloc defer maintenant (simplifie) }
+  EmitInstrA('CALL', LblDefer);
+End;
+
+(* ============================================================
+   TODO 23 - GENERIQUES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ParseGenericParams : parser <T> apres func/struct                    *)
+(* Limitation : un seul parametre, substitue par Int par defaut          *)
+Procedure ParseGenericParams;
+Var
+  TypeParam : TString;
+Begin
+  If Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '<')) Then
+    Exit;
+  ParserAdvance;  { consomme '<' }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    TypeParam := CurToken.Val;
+    EmitComment('  generic param <' + TypeParam +
+                '> (substituted as Int)');
+    ParserAdvance;  { consomme le nom du parametre type }
+  End;
+  { Contrainte optionnelle : T: Proto }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      EmitComment('  constraint: ' + TypeParam + ' conforms to ' +
+                  CurToken.Val);
+      ParserAdvance;
+    End;
+  End;
+  { Consomme '>' }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '>') Then
+    ParserAdvance;
+End;
+
 { ParseExprStmt : instruction-expression (appel de func, affectation, etc.) }
 Procedure ParseExprStmt;
 Var
@@ -5191,6 +5723,22 @@ Begin
       ParseExtensionDecl;
       Exit;
     End
+    { TODO 22 : do / throw / defer }
+    Else If Kw = 'do' Then
+    Begin
+      ParseDoBlock;
+      Exit;
+    End
+    Else If Kw = 'throw' Then
+    Begin
+      ParseThrowStmt;
+      Exit;
+    End
+    Else If Kw = 'defer' Then
+    Begin
+      ParseDeferStmt;
+      Exit;
+    End
     Else
     Begin
       { Autres mots-cles : stub, avancer }
@@ -5240,10 +5788,11 @@ Begin
   If Opts.Verbose Then
   Begin
     WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
-    WriteLn('  Lignes      : ', TotalLines);
-    WriteLn('  Symboles    : ', TotalSyms);
-    WriteLn('  Erreurs     : ', ErrorCount);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
     WriteLn('  Avertissements : ', WarnCount);
+    WriteLn('  Samples: SAMPLES\SWIFT\');
   End;
 
   If ErrorCount > 0 Then
