@@ -262,7 +262,7 @@
             ref($v) -> 'SCALAR'/'ARRAY'/'HASH'/'CODE' selon TypeIdx compile
             @aoa / %hoh -> avertissement
 
-  TODO 23 - I/O FICHIERS (basique)
+  TODO 23 - I/O FICHIERS (basique)  [IMPLEMENTE]
             open(my $fh, '<', 'fichier.txt') -> INT 21h AH=3Dh
             open(my $fh, '>', 'fichier.txt') -> INT 21h AH=3Ch (creation)
             open(my $fh, '>>', 'fichier.txt') -> INT 21h AH=3Dh mode append
@@ -636,6 +636,9 @@ Procedure ParseHashElemAccess(HashIdx : Integer; Var Res : TExprVal); Forward;
 Procedure ParseSubDecl; Forward;
 { TODO 21 }
 Procedure ParseUseStmt; Forward;
+{ TODO 23 }
+Procedure ParseOpenStmt; Forward;
+Procedure ParseCloseStmt; Forward;
 { TODO 04 }
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  IsRightAssoc(Const Op : TString) : Boolean; Forward;
@@ -1005,6 +1008,8 @@ End;
   _PRRT_RESUB    : SI=sujet DI=pattern BX=repl -> AX=1 si subst
   ============================================================ }
 Procedure EmitRuntime;
+Var
+  Idx : Integer;
 Begin
   EmitBlankLine;
   EmitRaw('; === Runtime PERL86 - TODO 19 ===');
@@ -1515,6 +1520,62 @@ Begin
   EmitRaw('        RET');
   EmitRaw('_PRRT_OCT2INT ENDP');
   EmitBlankLine;
+  { TODO 23 : _PRRT_READLINE - lire une ligne depuis un handle DOS }
+  { Entree : BX=handle                                             }
+  { Sortie : AX=OFFSET _PRRT_FHBUF (ptr ligne null-terminee)      }
+  {          AX=0 si EOF avant de lire quoi que ce soit            }
+  { Utilise : _PRRT_FHBUF (256 octets dans DATA)                   }
+  { Garantir que _PRRT_FHBUF est dans la table de donnees          }
+  If DataFindByLabel('_PRRT_FHBUF') < 0 Then
+  Begin
+    Idx := DataAdd('_PRRT_FHBUF', DK_ARRAY_BLK, 0, '');
+    If Idx >= 0 Then DataTab[Idx].ElemCount := 128;  { 256 octets }
+  End;
+  EmitRaw('_PRRT_READLINE PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   DI, OFFSET _PRRT_FHBUF');
+  EmitRaw('        MOV   SI, 0');
+  EmitRaw('_PRRT_RLL:');
+  EmitRaw('        CMP   SI, 0FEh');
+  EmitRaw('        JGE   _PRRT_RLDON');
+  EmitRaw('        MOV   BX, WORD PTR [BP-2]');
+  EmitRaw('        MOV   AH, 3Fh');
+  EmitRaw('        MOV   CX, 1');
+  EmitRaw('        MOV   DX, DI');
+  EmitRaw('        INT   21h');
+  EmitRaw('        JC    _PRRT_RLEOF');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JZ    _PRRT_RLEOF');
+  EmitRaw('        MOV   AL, BYTE PTR [DI]');
+  EmitRaw('        CMP   AL, 0Ah');
+  EmitRaw('        JE    _PRRT_RLDON');
+  EmitRaw('        CMP   AL, 0Dh');
+  EmitRaw('        JE    _PRRT_RLDON');
+  EmitRaw('        INC   DI');
+  EmitRaw('        INC   SI');
+  EmitRaw('        JMP   _PRRT_RLL');
+  EmitRaw('_PRRT_RLEOF:');
+  EmitRaw('        TEST  SI, SI');
+  EmitRaw('        JZ    _PRRT_RLNUL');
+  EmitRaw('        JMP   _PRRT_RLDON');
+  EmitRaw('_PRRT_RLNUL:');
+  EmitRaw('        XOR   AX, AX');
+  EmitRaw('        JMP   _PRRT_RLRET');
+  EmitRaw('_PRRT_RLDON:');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        MOV   AX, OFFSET _PRRT_FHBUF');
+  EmitRaw('_PRRT_RLRET:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_READLINE ENDP');
+  EmitBlankLine;
 End;
 
 { ============================================================
@@ -1724,6 +1785,183 @@ Begin
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
 End;
 
+{ ============================================================
+  TODO 23 - I/O FICHIERS (basique)
+  ParseOpenStmt  : open(my $fh, '<'|'>'|'>>', 'fichier')
+  ParseCloseStmt : close($fh)
+  ============================================================ }
+
+{ ---- ParseOpenStmt : open(my $fh, mode, 'fichier') ---------- }
+{ Mode '<'  -> INT 21h AH=3Dh AL=0 (lecture seule)             }
+{ Mode '>'  -> INT 21h AH=3Ch CX=0 (creation / troncature)     }
+{ Mode '>>' -> INT 21h AH=3Dh AL=1 + seek fin AH=42h AL=2      }
+{ Le handle DOS (AX) est stocke dans WORD PTR [BP-Offset]       }
+Procedure ParseOpenStmt;
+Var
+  FhName  : TString;
+  FhIdx   : Integer;
+  Mode    : TString;
+  FName   : TString;
+  FLbl    : TString;
+  FhOfs   : TString;
+  DIdx    : Integer;
+  IsAppnd : Boolean;
+  IsWrite : Boolean;
+  LblOk   : TString;
+Begin
+  ParserAdvance;  { consommer 'open' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+  { Lire le filehandle : my $fh ou $fh }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'my') Then
+    ParserAdvance;  { consommer 'my' }
+  FhName := '';
+  If CurToken.Kind = TK_SCALAR Then
+  Begin
+    FhName := CurToken.Val;
+    ParserAdvance;
+  End Else
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Erreur: ''$fh'' attendu dans open()');
+    Inc(ErrorCount);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+    Exit;
+  End;
+  { Allouer ou trouver le filehandle dans le cadre local }
+  FhIdx := SymFindCat(FhName, SC_FILEHANDLE);
+  If FhIdx < 0 Then
+    FhIdx := SymAdd(FhName, '$', SC_FILEHANDLE, TY_IDX_SCALAR,
+                    True, False, False);
+  If FhIdx < 0 Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Erreur: Impossible d''allouer filehandle $', FhName);
+    Inc(ErrorCount);
+    Exit;
+  End;
+  EmitAllocLocal(2);  { WORD sur la pile pour stocker le handle DOS }
+  Str(SymTab[FhIdx].Offset, FhOfs);
+  { Consommer ',' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+  { Lire le mode (toujours une chaine literale) }
+  Mode    := '<';
+  IsAppnd := False;
+  IsWrite := False;
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    Mode := CurToken.Val;
+    ParserAdvance;
+  End Else If CurToken.Kind = TK_OP Then
+  Begin
+    Mode := CurToken.Val;
+    ParserAdvance;
+  End;
+  If      Mode = '<'  Then IsWrite := False
+  Else If Mode = '>'  Then Begin IsWrite := True; IsAppnd := False; End
+  Else If Mode = '>>' Then Begin IsWrite := True; IsAppnd := True;  End
+  Else
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Avert: mode ''', Mode, ''' non supporte dans open() (pipe/socket)');
+    Inc(WarnCount);
+  End;
+  { Consommer ',' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+  { Lire le nom de fichier }
+  FName := '';
+  If CurToken.Kind = TK_STRING Then
+  Begin
+    FName := CurToken.Val;
+    ParserAdvance;
+  End Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    FName := CurToken.Val;
+    ParserAdvance;
+  End;
+  { Consommer ')' et ';' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+  { Ajouter le nom de fichier dans le segment de donnees }
+  DIdx := DataAddStr(FName);
+  FLbl := DataTab[DIdx].LblName;
+  { Emettre le commentaire et l''appel DOS }
+  EmitComment('open $' + FhName + ', ''' + Mode + ''', ''' + FName + '''');
+  LblOk := LabelGen('_PRL_OPOK_');
+  EmitInstr('MOV', 'DX, OFFSET ' + FLbl);
+  If IsWrite And Not IsAppnd Then
+  Begin
+    { Creation / troncature : AH=3Ch CX=0 }
+    EmitInstr('MOV', 'AH, 3Ch');
+    EmitInstr('MOV', 'CX, 0');
+    EmitInstr1('INT 21h');
+    EmitInstr('JC', LblOk);
+    EmitInstr('MOV', 'WORD PTR [BP-' + FhOfs + '], AX');
+  End Else If IsAppnd Then
+  Begin
+    { Append : ouvrir en ecriture seule (AH=3Dh AL=1) }
+    EmitInstr('MOV', 'AX, 3D01h');
+    EmitInstr1('INT 21h');
+    EmitInstr('JC', LblOk);
+    EmitInstr('MOV', 'BX, AX');
+    { Seek a la fin : AH=42h AL=2 CX=0 DX=0 }
+    EmitInstr('MOV', 'AX, 4202h');
+    EmitInstr('MOV', 'CX, 0');
+    EmitInstr('MOV', 'DX, 0');
+    EmitInstr1('INT 21h');
+    EmitInstr('MOV', 'WORD PTR [BP-' + FhOfs + '], BX');
+  End Else
+  Begin
+    { Lecture : AH=3Dh AL=0 }
+    EmitInstr('MOV', 'AX, 3D00h');
+    EmitInstr1('INT 21h');
+    EmitInstr('JC', LblOk);
+    EmitInstr('MOV', 'WORD PTR [BP-' + FhOfs + '], AX');
+  End;
+  EmitLabel(LblOk);
+End;
+
+{ ---- ParseCloseStmt : close($fh) ----------------------------- }
+{ INT 21h AH=3Eh BX=handle DOS                                  }
+Procedure ParseCloseStmt;
+Var
+  FhName : TString;
+  FhIdx  : Integer;
+  FhOfs  : TString;
+Begin
+  ParserAdvance;   { consommer 'close' }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+  FhName := '';
+  If CurToken.Kind = TK_SCALAR Then
+  Begin
+    FhName := CurToken.Val;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+  If FhName = '' Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Erreur: ''$fh'' attendu dans close()');
+    Inc(ErrorCount);
+    Exit;
+  End;
+  FhIdx := SymFindCat(FhName, SC_FILEHANDLE);
+  If FhIdx < 0 Then
+    FhIdx := SymFind(FhName, '$');
+  If FhIdx < 0 Then
+  Begin
+    WriteLn('PERL86:', CurToken.Line,
+            ': Avert: filehandle $', FhName, ' inconnu dans close()');
+    Inc(WarnCount);
+    Exit;
+  End;
+  Str(SymTab[FhIdx].Offset, FhOfs);
+  EmitComment('close $' + FhName);
+  EmitInstr('MOV', 'BX, WORD PTR [BP-' + FhOfs + ']');
+  EmitInstr('MOV', 'AH, 3Eh');
+  EmitInstr1('INT 21h');
+End;
+
 Procedure ParseStmt;
 { Analyse une instruction Perl et emet le code ASM correspondant.         }
 { Reconnait : my/our/local ; use ; print/say ; if/unless ; expr [MOD] ;   }
@@ -1754,6 +1992,18 @@ Begin
     If KW = 'use' Then
     Begin
       ParseUseStmt;
+      Exit;
+    End;
+    { TODO 23 : open(my $fh, mode, 'fichier') }
+    If KW = 'open' Then
+    Begin
+      ParseOpenStmt;
+      Exit;
+    End;
+    { TODO 23 : close($fh) }
+    If KW = 'close' Then
+    Begin
+      ParseCloseStmt;
       Exit;
     End;
     { TODO 21 : package NomModule; -> changer le namespace courant }
@@ -2128,8 +2378,8 @@ End;
 
 { ---- Table des mots-cles Perl ----------------------------- }
 Const
-  PERL_KW_COUNT = 69;
-  PERL_KW : Array[0..68] Of String[14] = (
+  PERL_KW_COUNT = 73;
+  PERL_KW : Array[0..72] Of String[14] = (
     { Declaration de portee }
     'my',           'our',          'local',
     { Sous-routines }
@@ -2167,7 +2417,10 @@ Const
     { Logiques basse precedence }
     'not',          'and',          'or',
     { Operateur de repetition }
-    'x'
+    'x',
+    { TODO 23 : I/O fichiers }
+    'open',         'close',        'readline',
+    'eof'
   );
 
 Function IsPerlKeyword(Const S : TString) : Boolean;
@@ -2888,6 +3141,26 @@ Begin
 
   { Backtick : commande systeme (non supporte) }
   If C = '`' Then Begin LexScanStrBacktick(T, SL, SC); Exit; End;
+
+  { TODO 23 : Diamond <$fh> : readline depuis un filehandle scalaire }
+  { Detecter avant le heredoc << et l''operateur < de LexScanOp      }
+  If (C = '<') And (LexPeek = '$') Then
+  Begin
+    LexAdvance;  { sauter '<' }
+    LexAdvance;  { sauter '$' : on pointe sur le 1er char du nom }
+    S := '';
+    While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+          (LexCurChar <> '>') And IsAlNum(LexCurChar) Do
+    Begin
+      If Length(S) < MAX_STR Then S := S + LexCurChar;
+      LexAdvance;
+    End;
+    If (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+       (LexCurChar = '>') Then
+      LexAdvance;  { sauter '>' }
+    MakeToken(T, TK_FILEHANDLE, S, SL, SC);
+    Exit;
+  End;
 
   { Heredoc : << (detecter avant LexScanOp qui consomme '<') }
   { Condition : suivant est '<' et caractere suivant n''est PAS '<' }
@@ -4046,6 +4319,81 @@ Begin
       Res.ImmVal := 0; Res.Offset := 0;
       Exit;
     End;
+    { TODO 23 : readline($fh) -> CALL _PRRT_READLINE -> AX=ptr ligne }
+    If NStr = 'readline' Then
+    Begin
+      ParserAdvance;  { consommer 'readline' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        Idx := SymFindCat(CurToken.Val, SC_FILEHANDLE);
+        If Idx < 0 Then Idx := SymFind(CurToken.Val, '$');
+        ParserAdvance;
+        If Idx >= 0 Then
+        Begin
+          Str(SymTab[Idx].Offset, S);
+          EmitInstr('MOV', 'BX, WORD PTR [BP-' + S + ']');
+        End Else
+          EmitInstr('MOV', 'BX, 0');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      If DataFindByLabel('_PRRT_FHBUF') < 0 Then
+      Begin
+        Idx := DataAdd('_PRRT_FHBUF', DK_ARRAY_BLK, 0, '');
+        DataTab[Idx].ElemCount := 128;  { 256 octets }
+      End;
+      EmitInstr('CALL', '_PRRT_READLINE');
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
+    { TODO 23 : eof($fh) -> AX=1 si fin de fichier, 0 sinon }
+    If NStr = 'eof' Then
+    Begin
+      ParserAdvance;  { consommer 'eof' }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then ParserAdvance;
+      If CurToken.Kind = TK_SCALAR Then
+      Begin
+        Idx := SymFindCat(CurToken.Val, SC_FILEHANDLE);
+        If Idx < 0 Then Idx := SymFind(CurToken.Val, '$');
+        ParserAdvance;
+        If Idx >= 0 Then
+        Begin
+          Str(SymTab[Idx].Offset, S);
+          EmitInstr('MOV', 'BX, WORD PTR [BP-' + S + ']');
+        End Else
+          EmitInstr('MOV', 'BX, 0');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then ParserAdvance;
+      { Essayer de lire 1 octet : si AX=0 -> EOF }
+      If DataFindByLabel('_PRRT_FHBUF') < 0 Then
+      Begin
+        Idx := DataAdd('_PRRT_FHBUF', DK_ARRAY_BLK, 0, '');
+        DataTab[Idx].ElemCount := 128;
+      End;
+      S    := LabelGen('_PRL_EOFYES_');
+      NStr := LabelGen('_PRL_EOFEND_');
+      EmitInstr('MOV', 'AH, 3Fh');
+      EmitInstr('MOV', 'CX, 1');
+      EmitInstr('MOV', 'DX, OFFSET _PRRT_FHBUF');
+      EmitInstr1('INT 21h');
+      EmitInstr('JC', S);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', S);
+      { Pas EOF : reculer d''un octet (seek relatif -1) }
+      EmitInstr('MOV', 'AX, 4201h');
+      EmitInstr('MOV', 'CX, 0FFFFh');
+      EmitInstr('MOV', 'DX, 0FFFFh');
+      EmitInstr1('INT 21h');
+      EmitInstr('MOV', 'AX, 0');
+      EmitInstr('JMP', NStr);
+      EmitLabel(S);
+      EmitInstr('MOV', 'AX, 1');
+      EmitLabel(NStr);
+      Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+      Res.ImmVal := 0; Res.Offset := 0;
+      Exit;
+    End;
     { Appel de sous-routine avec mot-cle non reconnu : avancer }
     ParserAdvance;
     ExprMakeNone(Res);
@@ -4085,6 +4433,31 @@ Begin
       Inc(ErrorCount);
     End;
     ParsePostfixOps(Res);
+    Exit;
+  End;
+  { ---- TODO 23 : TK_FILEHANDLE <$fh> : readline depuis filehandle ---- }
+  If CurToken.Kind = TK_FILEHANDLE Then
+  Begin
+    NStr := CurToken.Val;  { nom du filehandle (sans $) }
+    ParserAdvance;
+    { Charger le handle DOS dans BX }
+    Idx := SymFindCat(NStr, SC_FILEHANDLE);
+    If Idx < 0 Then Idx := SymFind(NStr, '$');
+    If Idx >= 0 Then
+    Begin
+      Str(SymTab[Idx].Offset, S);
+      EmitInstr('MOV', 'BX, WORD PTR [BP-' + S + ']');
+    End Else
+      EmitInstr('MOV', 'BX, 0');
+    { Garantir _PRRT_FHBUF dans DataTab }
+    If DataFindByLabel('_PRRT_FHBUF') < 0 Then
+    Begin
+      Idx := DataAdd('_PRRT_FHBUF', DK_ARRAY_BLK, 0, '');
+      DataTab[Idx].ElemCount := 128;
+    End;
+    EmitInstr('CALL', '_PRRT_READLINE');
+    Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_SCALAR;
+    Res.ImmVal := 0; Res.Offset := 0;
     Exit;
   End;
   { ---- Litteraux directs ---- }
@@ -5630,6 +6003,8 @@ Var
   IsSay : Boolean;
   IsDie : Boolean;
   E     : TExprVal;
+  FhIdx : Integer;
+  FhOfs : TString;
 Begin
   KW    := CurToken.Val;
   ParserAdvance;                            { consommer le mot-cle }
@@ -5644,6 +6019,20 @@ Begin
     Else If CurToken.Val = 'STDERR' Then Begin BXval := '2'; ParserAdvance; End
     Else If CurToken.Val = 'STDIN'  Then Begin BXval := '0'; ParserAdvance; End;
     { Sinon : identifiant inconnu -> traiter comme premiere expression }
+  End;
+  { TODO 23 : print $fh, LIST -> filehandle scalaire }
+  If CurToken.Kind = TK_SCALAR Then
+  Begin
+    FhIdx := SymFindCat(CurToken.Val, SC_FILEHANDLE);
+    If FhIdx < 0 Then FhIdx := SymFind(CurToken.Val, '$');
+    If FhIdx >= 0 Then
+    Begin
+      Str(SymTab[FhIdx].Offset, FhOfs);
+      BXval := 'WORD PTR [BP-' + FhOfs + ']';
+      ParserAdvance;  { consommer $fh }
+      { Consommer ',' separant $fh de la liste }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then ParserAdvance;
+    End;
   End;
   { printf : note dans le commentaire ASM }
   If KW = 'printf' Then
