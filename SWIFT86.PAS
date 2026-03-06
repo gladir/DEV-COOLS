@@ -1757,10 +1757,11 @@ End;
 { ParsePostfix : parser les operateurs postfixes (appel, membre, index) }
 Procedure ParsePostfix(Var Res : TExprVal);
 Var
-  ArgCount   : Integer;
-  MemberName : TString;
-  IdxExpr    : TExprVal;
-  SavedName  : TString;
+  ArgCount      : Integer;
+  MemberName    : TString;
+  IdxExpr       : TExprVal;
+  SavedName     : TString;
+  LblNotEmpty   : TString;
 Begin
   { Boucle pour chainer les postfixes : a.b.c() etc. }
   While True Do
@@ -1808,12 +1809,14 @@ Begin
         End
         Else If MemberName = 'isEmpty' Then
         Begin
+          LblNotEmpty := LabelGen;
           EmitInstrAB('MOV', 'SI', 'AX');
           EmitInstrAB('MOV', 'AX', '[SI]');
           EmitInstrAB('CMP', 'AX', '0');
-          EmitInstrAB('MOV', 'AX', '0');
-          EmitInstrA('JNE', LabelGen);
           EmitInstrAB('MOV', 'AX', '1');
+          EmitInstrA('JE', LblNotEmpty);
+          EmitInstrAB('XOR', 'AX', 'AX');
+          EmitLabel(LblNotEmpty);
           EmitComment('  .isEmpty');
           Res.TypeIdx := TY_IDX_BOOL;
         End
