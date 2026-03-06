@@ -41,7 +41,7 @@
               try except finally raise (stubs Delphi)
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - ANALYSEUR DE TEMPLATE PSP
+  TODO 03 - ANALYSEUR DE TEMPLATE PSP [IMPLEMENTE]
             Boucle principale : lire le fichier .psp caractere par caractere
             Mode IN_HTML (hors balises) :
               Accumuler le texte HTML brut dans un buffer
@@ -65,7 +65,7 @@
             Terminateur de bloc : end. ou end; acceptes (le . est optionnel)
             Imbrication interdite : <% ... <% ... %> ... %> -> erreur
 
-  TODO 04 - LITTERAUX ET CONSTANTES PASCAL
+  TODO 04 - LITTERAUX ET CONSTANTES PASCAL [IMPLEMENTE]
             Entiers decimaux : 0, 42, -1, 32767
             Entiers hexadecimaux : $FF, $0A, $FFFF
             Reels : 3.14, 1.5E3 -> tronques en entier + avertissement
@@ -78,7 +78,7 @@
             Constantes nommees : const MAX = 100; -> substitution a la compilation
             Constantes typees : const X: Integer = 42; -> entree DATA DK_WORD
 
-  TODO 05 - OPERATEURS ET PRECEDENCE
+  TODO 05 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques   : + - * (IMUL) / (IDIV quotient) div (IDIV) mod (IDIV reste)
             Comparaison     : = <> < > <= >= (CMP + Jcc -> AX=0|1)
             Logiques        : and or xor not (booleens -> AX=0|1)
@@ -97,7 +97,7 @@
               Niveau 3 : + - or xor (additifs)
               Niveau 4 : = <> < > <= >= in (comparaison)
 
-  TODO 06 - TABLE DES SYMBOLES
+  TODO 06 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR, SC_CONST, SC_TYPED_CONST, SC_PARAM,
               SC_VARPARAM (parametre var par reference), SC_FUNC, SC_PROC,
               SC_TYPE, SC_FIELD (champ de record), SC_ENUM_VAL, SC_LABEL
@@ -694,6 +694,65 @@ Type
     Col      : Integer;     { colonne source (1-base)          }
   End;
 
+  { ---- Mode du template PSP (TODO 03) --------------------- }
+  TPSPMode = (TPL_HTML, TPL_CODE);
+
+  { ---- Segment de donnees (TODO 04) ----------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR);
+
+  TDataRec = Record
+    LblName : TString;
+    Kind    : TDataKind;
+    IntVal  : LongInt;
+    StrVal  : TString;
+  End;
+
+  { ---- Valeurs d expression (TODO 04) --------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur                       }
+    EK_IMM,    { valeur immediate dans ImmVal                }
+    EK_AX,     { valeur dans registre AX                     }
+    EK_MEM     { adresse memoire [BP+Offset] ou [_PSP_x]    }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   { indice dans SymTab (-1 si pas lvalue) }
+  End;
+
+  { ---- Categorie de symbole (TODO 06) ---------------------- }
+  TSymCat = (
+    SC_VAR,          { variable globale ou locale           }
+    SC_CONST,        { constante non-typee (substitution)   }
+    SC_TYPED_CONST,  { constante typee (en DATA)            }
+    SC_PARAM,        { parametre par valeur                 }
+    SC_VARPARAM,     { parametre var (par reference)        }
+    SC_FUNC,         { fonction                             }
+    SC_PROC,         { procedure                            }
+    SC_TYPE,         { nom de type                          }
+    SC_FIELD,        { champ de record                      }
+    SC_ENUM_VAL,     { valeur d enumeration                 }
+    SC_LABEL         { label nomme                          }
+  );
+
+  { ---- Enregistrement symbole (TODO 06) -------------------- }
+  TSymRec = Record
+    Name        : TString;  { nom original Pascal (minuscule)    }
+    MangledName : TString;  { nom ASM mangled (_PSP_xxx etc.)    }
+    Cat         : TSymCat;  { categorie (var/const/func etc.)    }
+    TypeIdx     : Integer;  { indice dans TypeTab (TY_IDX_*)     }
+    Offset      : Integer;  { offset cadre local (BP+n)          }
+    ScopeLevel  : Integer;  { profondeur de portee (0=global)    }
+    ScopeId     : Integer;  { identifiant unique de portee       }
+    IsForward   : Boolean;  { declaration forward non resolue    }
+    IsLocal     : Boolean;  { True si variable locale            }
+    ImmVal      : LongInt;  { valeur immediate (SC_CONST)        }
+    DataIdx     : Integer;  { index DataTab (SC_TYPED_CONST)     }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -719,6 +778,24 @@ Var
   LexColNo  : Integer;
   LexEOF    : Boolean;
   CurToken  : TToken;
+
+  { Analyseur de template (TODO 03) }
+  TplMode      : TPSPMode;
+  TplHtmlBuf   : TString;
+  TplPending   : TTokenKind;
+  TplHtmlCount : Integer;
+
+  { Segment de donnees (TODO 04) }
+  DataTab      : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount    : Integer;
+  LabelGenSeq  : Integer;
+
+  { Table des symboles (TODO 06) }
+  SymTab        : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount      : Integer;
+  CurScopeLevel : Integer;
+  CurScopeId    : Integer;
+  ScopeIdSeq    : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -749,6 +826,46 @@ Procedure PrintToken(Const T : TToken); Forward;
 Procedure LexSkipBraceComment; Forward;
 Procedure LexSkipParenStarComment; Forward;
 Procedure LexSkipLineComment; Forward;
+{ Analyseur de template (TODO 03) }
+Procedure TplInit;       Forward;
+Procedure TplClose;      Forward;
+Procedure TplEmitHtml;   Forward;
+Procedure TplEmitPSPOpen(Kind : TTokenKind); Forward;
+Procedure TplNextToken;  Forward;
+{ Segment de donnees et litteraux (TODO 04) }
+Function  LabelGen : TString; Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure EmitRaw(Const S : String); Forward;
+Procedure EmitDataSeg; Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure ParseConstDecl; Forward;
+{ Table des symboles (TODO 06) }
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymAdd(Const Name : TString; Cat : TSymCat;
+               TIdx : Integer) : Integer; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+               Level : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Procedure SymInit; Forward;
+{ Emetteur ASM (TODO 05) }
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+{ Operateurs et expressions (TODO 05) }
+Function  OpPrec(Const Op : TString) : Integer; Forward;
+Procedure ExprMakeImm(V : LongInt; TIdx : Integer; Var R : TExprVal); Forward;
+Procedure ExprFlushToAX(Var E : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 02 - LEXEUR (TOKENS PASCAL) [IMPLEMENTE]
@@ -1408,6 +1525,1332 @@ Begin
 End;
 
 { ============================================================
+  TODO 03 - ANALYSEUR DE TEMPLATE PSP [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TplInit : initialiser l analyseur de template --------- }
+Procedure TplInit;
+Begin
+  TplMode      := TPL_HTML;
+  TplHtmlBuf   := '';
+  TplPending   := TK_EOF;
+  TplHtmlCount := 0;
+End;
+
+{ ---- TplClose : finaliser l analyseur de template ---------- }
+Procedure TplClose;
+Begin
+  If TplMode = TPL_CODE Then
+    WarnMsg('fin de fichier atteinte en mode code (balise %> manquante ?)');
+End;
+
+{ ---- TplEmitHtml : emettre le buffer HTML comme token ------- }
+{ Procedure interne utilisee par TplNextToken                   }
+Procedure TplEmitHtml;
+Begin
+  CurToken.Kind    := TK_HTML;
+  CurToken.Val     := TplHtmlBuf;
+  CurToken.Line    := LexLineNo;
+  CurToken.Col     := LexColNo;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  Inc(TplHtmlCount);
+  PrintToken(CurToken);
+  TplHtmlBuf := '';
+End;
+
+{ ---- TplEmitPSPOpen : emettre un token PSP open ------------- }
+Procedure TplEmitPSPOpen(Kind : TTokenKind);
+Begin
+  CurToken.Kind := Kind;
+  CurToken.Line := LexLineNo;
+  CurToken.Col  := LexColNo;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  Case Kind Of
+    TK_PSP_OPEN:      CurToken.Val := '<%';
+    TK_PSP_EXPR_OPEN: CurToken.Val := '<%=';
+    TK_PSP_DIRECTIVE:  CurToken.Val := '<%@';
+  Else
+    CurToken.Val := '';
+  End;
+  TplMode := TPL_CODE;
+  PrintToken(CurToken);
+End;
+
+{ ---- TplNextToken : token suivant en mode template --------- }
+{ Alterne entre mode HTML (accumulation texte brut) et mode    }
+{ CODE (lexeur Pascal via LexNextToken).                       }
+{ En HTML : accumule les caracteres jusqu a < pourcent ou EOF. }
+{ En CODE : delegue a LexNextToken, revient en HTML sur        }
+{   TK_PSP_CLOSE (pourcent >).                                 }
+Procedure TplNextToken;
+Var
+  Ch    : Char;
+  Kind  : TTokenKind;
+Begin
+  { 1) Si un tag PSP est en attente (apres emission de TK_HTML) }
+  If TplPending <> TK_EOF Then
+  Begin
+    Kind := TplPending;
+    TplPending := TK_EOF;
+    TplEmitPSPOpen(Kind);
+    Exit;
+  End;
+
+  { 2) Mode HTML : scanner caractere par caractere }
+  If TplMode = TPL_HTML Then
+  Begin
+    TplHtmlBuf := '';
+
+    While Not LexEOF Do
+    Begin
+      { Fin de ligne : ajouter saut de ligne au buffer }
+      If LexColNo > Length(LexLine) Then
+      Begin
+        { Vider le buffer si presque plein (reserve pour CR+LF) }
+        If Length(TplHtmlBuf) >= MAX_STR - 1 Then
+        Begin
+          TplEmitHtml;
+          Exit;
+        End;
+        TplHtmlBuf := TplHtmlBuf + #13#10;
+        LexNextLine;
+        Continue;
+      End;
+
+      Ch := LexLine[LexColNo];
+
+      { Detection de la balise ouvrante <pourcent }
+      If (Ch = '<') And (LexColNo < Length(LexLine)) And
+         (LexLine[LexColNo + 1] = '%') Then
+      Begin
+        Inc(LexColNo, 2);
+
+        { Determiner le type : <%=  <%@  ou  <% simple }
+        If (LexColNo <= Length(LexLine)) And
+           (LexLine[LexColNo] = '=') Then
+        Begin
+          Kind := TK_PSP_EXPR_OPEN;
+          Inc(LexColNo);
+        End
+        Else If (LexColNo <= Length(LexLine)) And
+                (LexLine[LexColNo] = '@') Then
+        Begin
+          Kind := TK_PSP_DIRECTIVE;
+          Inc(LexColNo);
+        End
+        Else
+          Kind := TK_PSP_OPEN;
+
+        { Si du HTML a emettre d abord, mettre le tag en attente }
+        If Length(TplHtmlBuf) > 0 Then
+        Begin
+          TplPending := Kind;
+          TplEmitHtml;
+          Exit;
+        End
+        Else
+        Begin
+          { Pas de HTML, emettre directement le tag PSP }
+          TplEmitPSPOpen(Kind);
+          Exit;
+        End;
+      End
+      Else
+      Begin
+        { Caractere HTML normal }
+        If Length(TplHtmlBuf) >= MAX_STR Then
+        Begin
+          { Buffer plein : emettre le fragment }
+          TplEmitHtml;
+          Exit;
+        End;
+        TplHtmlBuf := TplHtmlBuf + Ch;
+        Inc(LexColNo);
+      End;
+    End;
+
+    { EOF atteint en mode HTML }
+    If Length(TplHtmlBuf) > 0 Then
+    Begin
+      TplEmitHtml;
+      Exit;
+    End;
+
+    { Plus de HTML, emettre TK_EOF }
+    CurToken.Kind    := TK_EOF;
+    CurToken.Val     := '';
+    CurToken.Line    := LexLineNo;
+    CurToken.Col     := LexColNo;
+    CurToken.IntVal  := 0;
+    CurToken.RealVal := 0.0;
+    PrintToken(CurToken);
+  End
+
+  { 3) Mode CODE : deleguer au lexeur Pascal }
+  Else
+  Begin
+    LexNextToken;
+
+    { Si le lexeur retourne pourcent>, repasser en mode HTML }
+    If CurToken.Kind = TK_PSP_CLOSE Then
+      TplMode := TPL_HTML;
+  End;
+End;
+
+{ ============================================================
+  TODO 04 - LITTERAUX ET CONSTANTES PASCAL [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LabelGen : generateur de labels uniques ---------------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := PSP_LBL_PFX + IntToStr(LabelGenSeq);
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le fichier ASM --- }
+Procedure EmitRaw(Const S : String);
+Begin
+  WriteLn(OutF, S);
+End;
+
+{ ---- DataAdd : ajouter une entree dans DataTab -------------- }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName := Lbl;
+  DataTab[DataCount].Kind    := Kind;
+  DataTab[DataCount].IntVal  := AIntVal;
+  DataTab[DataCount].StrVal  := AStrVal;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label et stocker une chaine ------ }
+{ Retourne le label genere (_PSPK_N).                           }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := PSP_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans DataTab ------ }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA complet --------- }
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  { Constantes Pascal runtime }
+  EmitRaw(PSP_RT_PFX + 'CRLF    DB  13,10,0');
+  EmitRaw(PSP_RT_PFX + 'STRBUF  DB  256 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'NUMBUF  DB  12 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'TRUE_S  DB  ''TRUE'',0');
+  EmitRaw(PSP_RT_PFX + 'FALSE_S DB  ''FALSE'',0');
+  { Entrees dynamiques de DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        If DataTab[I].StrVal <> '' Then
+          EmitRaw(DataTab[I].LblName + '  DW  OFFSET ' + DataTab[I].StrVal)
+        Else
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          { Doubler les apostrophes pour syntaxe MASM }
+          S := '';
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If DataTab[I].StrVal[J] = '''' Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+        End;
+    End;
+  End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ ---- LitEval : evaluer un token litteral en TExprVal -------- }
+{ Gere : TK_INTEGER, TK_REAL (tronque+warn), TK_STRING,         }
+{        TK_CHAR, TK_KEYWORD (true/false/nil).                  }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  Lw : TString;
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+
+  Case T.Kind Of
+    { --- Entiers (decimaux et hexadecimaux) --- }
+    TK_INTEGER :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Reels : tronquer en entier + avertissement --- }
+    TK_REAL :
+    Begin
+      WarnMsg('reel ' + T.Val + ' tronque en entier');
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := Trunc(T.RealVal);
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Chaines : stocker en DATA, retourner index DataTab --- }
+    TK_STRING :
+    Begin
+      DataAddStr(T.Val);
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := DataCount - 1;  { index de l entree dans DataTab }
+    End;
+
+    { --- Caracteres : valeur ordinale dans ImmVal --- }
+    TK_CHAR :
+    Begin
+      If Length(T.Val) = 1 Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := Ord(T.Val[1]);
+        Res.TypeIdx := TY_IDX_CHAR;
+      End
+      Else
+      Begin
+        { Multi-caractere (#13#10 etc.) : traiter comme chaine }
+        DataAddStr(T.Val);
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_STRING;
+      End;
+    End;
+
+    { --- Mots-cles speciaux : true, false, nil --- }
+    TK_KEYWORD :
+    Begin
+      Lw := T.Val;
+      If Lw = 'true' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 1;
+        Res.TypeIdx := TY_IDX_BOOLEAN;
+      End
+      Else If Lw = 'false' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_BOOLEAN;
+      End
+      Else If Lw = 'nil' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_NIL;
+      End;
+    End;
+  Else
+    { Token non reconnu comme litteral }
+    Res.Kind := EK_NONE;
+  End;
+End;
+
+{ ---- ParseConstDecl : analyser un bloc const ---------------- }
+{ Syntaxe : const Ident = Expr;                                 }
+{           const Ident : Type = Expr;                          }
+{ Apres le mot-cle 'const', peut contenir plusieurs constantes. }
+Procedure ParseConstDecl;
+Var
+  CName   : TString;
+  CType   : TString;
+  IsTyped : Boolean;
+  Ev      : TExprVal;
+  Idx     : Integer;
+  DIdx    : Integer;
+Begin
+  { Le mot-cle 'const' a deja ete consomme par l appelant }
+  { Boucle : tant qu on voit un identificateur, on parse une constante }
+  While (CurToken.Kind = TK_IDENT) Or
+        ((CurToken.Kind = TK_KEYWORD) And
+         ((CurToken.Val = 'integer') Or (CurToken.Val = 'word') Or
+          (CurToken.Val = 'byte') Or (CurToken.Val = 'char') Or
+          (CurToken.Val = 'boolean') Or (CurToken.Val = 'string') Or
+          (CurToken.Val = 'real'))) Do
+  Begin
+    { Nom de la constante }
+    If CurToken.Kind <> TK_IDENT Then
+      Break;
+    CName := CurToken.Val;
+    TplNextToken;
+
+    { Constante typee ? const X : Integer = 42; }
+    IsTyped := False;
+    CType   := '';
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      IsTyped := True;
+      TplNextToken;
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        CType := CurToken.Val;
+        TplNextToken;
+      End
+      Else
+        WarnMsg('type attendu apres '':'' dans la constante ' + CName);
+    End;
+
+    { Signe = }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      TplNextToken
+    Else
+    Begin
+      WarnMsg('''='' attendu dans la declaration de constante ' + CName);
+      Break;
+    End;
+
+    { Valeur : expression constante (pliage de constantes) }
+    ParseExpr(Ev);
+
+    { Enregistrer la constante dans la table des symboles (TODO 06) }
+    If IsTyped Then
+    Begin
+      { Constante typee -> entree DATA + symbole SC_TYPED_CONST }
+      If Ev.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST_TYPED: ', CName, ' : ', CType,
+                  ' = ''', DataTab[Ev.SymIdx].StrVal, '''');
+        DIdx := DataAdd(PSP_VAR_PFX + CName, DK_WORD, 0,
+                        DataTab[Ev.SymIdx].LblName);
+      End
+      Else
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST_TYPED: ', CName, ' : ', CType,
+                  ' = ', Ev.ImmVal);
+        DIdx := DataAddWord(PSP_VAR_PFX + CName, Ev.ImmVal);
+      End;
+      Idx := SymAdd(CName, SC_TYPED_CONST, Ev.TypeIdx);
+      If Idx >= 0 Then
+      Begin
+        SymTab[Idx].ImmVal  := Ev.ImmVal;
+        SymTab[Idx].DataIdx := DIdx;
+      End;
+    End
+    Else
+    Begin
+      { Constante non-typee -> substitution : symbole SC_CONST }
+      { Valeur immediate stockee dans ImmVal de TSymRec         }
+      If Ev.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST: ', CName,
+                  ' = ''', DataTab[Ev.SymIdx].StrVal, '''');
+        DIdx := DataAdd(PSP_VAR_PFX + CName, DK_WORD, 0,
+                        DataTab[Ev.SymIdx].LblName);
+        Idx := SymAdd(CName, SC_CONST, Ev.TypeIdx);
+        If Idx >= 0 Then
+        Begin
+          SymTab[Idx].ImmVal  := 0;
+          SymTab[Idx].DataIdx := DIdx;
+        End;
+      End
+      Else
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST: ', CName, ' = ', Ev.ImmVal);
+        Idx := SymAdd(CName, SC_CONST, Ev.TypeIdx);
+        If Idx >= 0 Then
+        Begin
+          SymTab[Idx].ImmVal  := Ev.ImmVal;
+          SymTab[Idx].DataIdx := -1;
+        End;
+      End;
+    End;
+
+    { Point-virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+  End;
+End;
+
+{ ============================================================
+  TODO 06 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymMangle : generer le nom ASM mangled ------------------- }
+{ Le prefixe depend de la categorie du symbole.                   }
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx : TString;
+Begin
+  Case Cat Of
+    SC_VAR        : Pfx := PSP_VAR_PFX;
+    SC_CONST      : Pfx := PSP_VAR_PFX;
+    SC_TYPED_CONST: Pfx := PSP_VAR_PFX;
+    SC_PARAM      : Pfx := PSP_VAR_PFX;
+    SC_VARPARAM   : Pfx := PSP_VAR_PFX;
+    SC_FUNC       : Pfx := PSP_FN_PFX;
+    SC_PROC       : Pfx := PSP_FN_PFX;
+    SC_TYPE       : Pfx := '';
+    SC_FIELD      : Pfx := PSP_REC_PFX;
+    SC_ENUM_VAL   : Pfx := PSP_ENUM_PFX;
+    SC_LABEL      : Pfx := PSP_LBL_PFX;
+  Else
+    Pfx := PSP_VAR_PFX;
+  End;
+  SymMangle := Pfx + StrUpperCase(Name);
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l indice du symbole ajoute, ou -1 si table pleine.    }
+{ Verifie les doublons dans le scope courant.                     }
+Function SymAdd(Const Name : TString; Cat : TSymCat;
+               TIdx : Integer) : Integer;
+Var
+  Lw  : TString;
+  Idx : Integer;
+  Dup : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Lw := StrLowerCase(Name);
+
+  { Verifier doublon dans le scope courant }
+  Dup := SymFindInScope(Lw, CurScopeLevel);
+  If Dup >= 0 Then
+  Begin
+    { Si c est un forward, on autorise la redefinition }
+    If SymTab[Dup].IsForward Then
+    Begin
+      SymTab[Dup].IsForward := False;
+      SymTab[Dup].TypeIdx   := TIdx;
+      SymAdd := Dup;
+      Exit;
+    End
+    Else
+    Begin
+      WarnMsg('symbole deja declare dans ce scope: ' + Name);
+      SymAdd := Dup;
+      Exit;
+    End;
+  End;
+
+  Idx := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  SymTab[Idx].Name        := Lw;
+  SymTab[Idx].MangledName := SymMangle(Lw, Cat);
+  SymTab[Idx].Cat         := Cat;
+  SymTab[Idx].TypeIdx     := TIdx;
+  SymTab[Idx].Offset      := 0;
+  SymTab[Idx].ScopeLevel  := CurScopeLevel;
+  SymTab[Idx].ScopeId     := CurScopeId;
+  SymTab[Idx].IsForward   := False;
+  SymTab[Idx].IsLocal     := (CurScopeLevel > 0);
+  SymTab[Idx].ImmVal      := 0;
+  SymTab[Idx].DataIdx     := -1;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
+            ' cat=', Ord(Cat),
+            ' scope=', CurScopeLevel,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+{ ---- SymFind : rechercher un symbole (interne -> global) ----- }
+{ Parcourt la table du plus recent au plus ancien, retourne le    }
+{ premier symbole dont le ScopeLevel est inferieur ou egal au     }
+{ scope courant. Retourne -1 si non trouve.                       }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel <= CurScopeLevel) Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : rechercher dans un scope precis -------- }
+{ Retourne l indice du symbole ou -1 si non trouve.               }
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymEnterScope : entrer dans un nouveau scope ------------ }
+Procedure SymEnterScope;
+Begin
+  If CurScopeLevel >= MAX_SCOPE Then
+  Begin
+    WarnMsg('profondeur de scope maximale atteinte');
+    Exit;
+  End;
+  Inc(CurScopeLevel);
+  Inc(ScopeIdSeq);
+  CurScopeId := ScopeIdSeq;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScopeLevel,
+            ' id=', CurScopeId);
+End;
+
+{ ---- SymLeaveScope : quitter le scope courant ---------------- }
+{ Les symboles du scope courant restent dans la table mais ne     }
+{ seront plus trouves par SymFind car ScopeLevel > CurScopeLevel. }
+Procedure SymLeaveScope;
+Begin
+  If CurScopeLevel <= 0 Then
+  Begin
+    WarnMsg('tentative de quitter le scope global');
+    Exit;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScopeLevel);
+  Dec(CurScopeLevel);
+  { Restaurer le ScopeId du scope parent }
+  If CurScopeLevel = 0 Then
+    CurScopeId := 0
+  Else
+    CurScopeId := CurScopeLevel;  { simplifie, suffisant pour l instant }
+End;
+
+{ ---- SymInit : predeclarer les types et symboles builtin ----- }
+{ Enregistre les types primitifs et les constantes/procedures     }
+{ predefinies dans la table des symboles au scope global (0).     }
+Procedure SymInit;
+Var
+  Idx : Integer;
+Begin
+  { Types primitifs }
+  Idx := SymAdd('integer', SC_TYPE, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'INTEGER';
+  Idx := SymAdd('word', SC_TYPE, TY_IDX_WORD);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'WORD';
+  Idx := SymAdd('byte', SC_TYPE, TY_IDX_BYTE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'BYTE';
+  Idx := SymAdd('char', SC_TYPE, TY_IDX_CHAR);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'CHAR';
+  Idx := SymAdd('boolean', SC_TYPE, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'BOOLEAN';
+  Idx := SymAdd('string', SC_TYPE, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'STRING';
+  Idx := SymAdd('real', SC_TYPE, TY_IDX_REAL);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'REAL';
+
+  { Constantes predefinies : true, false, nil }
+  Idx := SymAdd('true', SC_CONST, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 1;
+    SymTab[Idx].MangledName := 'TRUE';
+  End;
+  Idx := SymAdd('false', SC_CONST, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 0;
+    SymTab[Idx].MangledName := 'FALSE';
+  End;
+  Idx := SymAdd('nil', SC_CONST, TY_IDX_NIL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 0;
+    SymTab[Idx].MangledName := 'NIL';
+  End;
+
+  { Procedures/fonctions runtime predeclarees }
+  Idx := SymAdd('write', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'WRITE';
+  Idx := SymAdd('writeln', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'WRITELN';
+  Idx := SymAdd('read', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'READ';
+  Idx := SymAdd('readln', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'READLN';
+End;
+
+{ ============================================================
+  TODO 05 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Emetteur ASM : instructions formatees ------------------- }
+
+{ EmitComment : commentaire ASM (prefixe ;) }
+Procedure EmitComment(Const S : TString);
+Begin
+  WriteLn(OutF, '; ', S);
+End;
+
+{ EmitLabel : label ASM suivi de ':' en colonne 0 }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  WriteLn(OutF, Lbl, ':');
+End;
+
+{ EmitInstr : instruction sans operande (8 espaces) }
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem);
+End;
+
+{ EmitInstrA : instruction + un operande }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+{ EmitInstrAB : instruction + deux operandes }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+{ ---- OpPrec : precedence des operateurs binaires Pascal ------ }
+{ Retourne 0 si ce n est pas un operateur binaire connu.         }
+{ Niveaux Pascal :                                               }
+{   4 = multiplicatifs : * / div mod and shl shr                 }
+{   3 = additifs       : + - or xor                              }
+{   2 = comparaison    : = <> < > <= >= in                       }
+{   1 = pas d operateur (seuil pour ParseExpr)                   }
+Function OpPrec(Const Op : TString) : Integer;
+Begin
+  If (Op = '*') Or (Op = '/') Or (Op = 'div') Or (Op = 'mod') Or
+     (Op = 'and') Or (Op = 'shl') Or (Op = 'shr') Then
+    OpPrec := 4
+  Else If (Op = '+') Or (Op = '-') Or (Op = 'or') Or (Op = 'xor') Then
+    OpPrec := 3
+  Else If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
+          (Op = '<=') Or (Op = '>=') Or (Op = 'in') Then
+    OpPrec := 2
+  Else
+    OpPrec := 0;
+End;
+
+{ ---- ExprMakeImm : creer une valeur immediate --------------- }
+Procedure ExprMakeImm(V : LongInt; TIdx : Integer; Var R : TExprVal);
+Begin
+  R.Kind    := EK_IMM;
+  R.ImmVal  := V;
+  R.TypeIdx := TIdx;
+  R.Offset  := 0;
+  R.SymIdx  := -1;
+End;
+
+{ ---- ExprFlushToAX : materialiser une expression dans AX ---- }
+{ Si deja AX, ne rien faire. Si immediate, MOV AX, imm.         }
+{ Si memoire, sera gere au TODO 06/09.                          }
+Procedure ExprFlushToAX(Var E : TExprVal);
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      If E.ImmVal = 0 Then
+        EmitInstrAB('XOR', 'AX', 'AX')
+      Else
+        EmitInstrAB('MOV', 'AX', IntToStr(E.ImmVal));
+      E.Kind := EK_AX;
+    End;
+    EK_AX :
+      ; { deja dans AX }
+    EK_MEM :
+    Begin
+      { Sera gere proprement au TODO 06 avec SymTab }
+      { Pour l instant, stub : laisser en AX }
+      E.Kind := EK_AX;
+    End;
+    EK_NONE :
+    Begin
+      EmitInstrAB('XOR', 'AX', 'AX');
+      E.Kind := EK_AX;
+    End;
+  End;
+End;
+
+{ ---- ParsePrimary : token primaire -> TExprVal --------------- }
+{ Gere : litteraux (entier, reel, chaine, char, true/false/nil), }
+{        identificateurs (stub -> EK_MEM, TODO 06),              }
+{        sous-expression parenthesee (expr).                     }
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+
+  Case CurToken.Kind Of
+    { Litteraux numeriques }
+    TK_INTEGER, TK_REAL, TK_CHAR :
+    Begin
+      LitEval(CurToken, Res);
+      TplNextToken;
+    End;
+
+    { Chaine litterale }
+    TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      { Emettre LEA AX, label de la chaine }
+      If (Res.SymIdx >= 0) And (Res.SymIdx < DataCount) Then
+        EmitInstrAB('LEA', 'AX', DataTab[Res.SymIdx].LblName)
+      Else If DataCount > 0 Then
+        EmitInstrAB('LEA', 'AX', DataTab[DataCount - 1].LblName);
+      Res.Kind := EK_AX;
+      TplNextToken;
+    End;
+
+    { Mots-cles speciaux : true, false, nil }
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'true') Or (CurToken.Val = 'false') Or
+         (CurToken.Val = 'nil') Then
+      Begin
+        LitEval(CurToken, Res);
+        TplNextToken;
+      End
+      Else
+      Begin
+        { Mot-cle non gere comme expression : erreur douce }
+        WarnMsg('mot-cle inattendu dans expression: ' + CurToken.Val);
+        TplNextToken;
+      End;
+    End;
+
+    { Identificateur (variable, constante nommee, appel fonction) }
+    TK_IDENT :
+    Begin
+      { Rechercher dans la table des symboles (TODO 06) }
+      Res.SymIdx := SymFind(CurToken.Val);
+      If Res.SymIdx >= 0 Then
+      Begin
+        { Symbole trouve }
+        If Opts.DebugMode Then
+          WriteLn('  EXPR_IDENT: ', CurToken.Val,
+                  ' -> sym[', Res.SymIdx, '] cat=',
+                  Ord(SymTab[Res.SymIdx].Cat));
+        Case SymTab[Res.SymIdx].Cat Of
+          SC_CONST :
+          Begin
+            { Constante non-typee : substitution immediate }
+            Res.Kind    := EK_IMM;
+            Res.ImmVal  := SymTab[Res.SymIdx].ImmVal;
+            Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+          End;
+          SC_TYPED_CONST :
+          Begin
+            { Constante typee : reference memoire DATA }
+            Res.Kind    := EK_MEM;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+          End;
+          SC_VAR, SC_PARAM, SC_VARPARAM :
+          Begin
+            { Variable : reference memoire }
+            Res.Kind    := EK_MEM;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+            Res.Offset  := SymTab[Res.SymIdx].Offset;
+          End;
+          SC_FUNC :
+          Begin
+            { Fonction : sera un appel }
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+          End;
+          SC_ENUM_VAL :
+          Begin
+            { Valeur d enumeration : immediate }
+            Res.Kind    := EK_IMM;
+            Res.ImmVal  := SymTab[Res.SymIdx].ImmVal;
+            Res.TypeIdx := SymTab[Res.SymIdx].TypeIdx;
+          End;
+        Else
+          { Autre categorie (type, proc, field, label) }
+          Res.Kind    := EK_MEM;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := TY_IDX_INTEGER;
+        End;
+      End
+      Else
+      Begin
+        { Symbole non trouve : avertissement, traiter comme 0 }
+        WarnMsg('symbole non declare: ' + CurToken.Val);
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_INTEGER;
+        Res.SymIdx  := -1;
+      End;
+      TplNextToken;
+      { Detecter un appel de fonction : ident( }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        { Stub : sauter les arguments jusqu a ) }
+        TplNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          TplNextToken;
+        Res.Kind := EK_AX;
+      End;
+    End;
+
+    { Sous-expression parenthesee }
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        TplNextToken;  { consommer ( }
+        ParseExpr(Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          TplNextToken  { consommer ) }
+        Else
+          WarnMsg(''')'' attendu apres expression parenthesee');
+      End
+      Else
+      Begin
+        WarnMsg('token inattendu dans expression: ' + CurToken.Val);
+        TplNextToken;
+      End;
+    End;
+
+  Else
+    WarnMsg('expression attendue, token: ' + CurToken.Val);
+    TplNextToken;
+  End;
+End;
+
+{ ---- ParseUnary : operateurs unaires prefixes --------------- }
+{ Niveau 1 : not, -, @, ^                                       }
+Procedure ParseUnary(Var Res : TExprVal);
+Begin
+  { not (logique ou bits selon type) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+  Begin
+    TplNextToken;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      { Pliage de constantes }
+      If Res.TypeIdx = TY_IDX_BOOLEAN Then
+      Begin
+        If Res.ImmVal = 0 Then Res.ImmVal := 1
+        Else Res.ImmVal := 0;
+      End
+      Else
+        Res.ImmVal := Not Res.ImmVal;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      If Res.TypeIdx = TY_IDX_BOOLEAN Then
+      Begin
+        { not booleen : XOR AX,1 }
+        EmitInstrAB('XOR', 'AX', '1');
+      End
+      Else
+      Begin
+        { not entier (bits) : NOT AX }
+        EmitInstr('NOT    AX');
+      End;
+      Res.Kind   := EK_AX;
+      Res.SymIdx := -1;
+    End;
+    Exit;
+  End;
+
+  { Moins unaire }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    TplNextToken;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := -Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('NEG    AX');
+      Res.Kind   := EK_AX;
+      Res.SymIdx := -1;
+    End;
+    Exit;
+  End;
+
+  { Plus unaire (no-op) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+  Begin
+    TplNextToken;
+    ParseUnary(Res);
+    Exit;
+  End;
+
+  { @ (adresse de) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '@') Then
+  Begin
+    TplNextToken;
+    ParseUnary(Res);
+    { Stub : sera gere au TODO 06 avec LEA AX,[var] }
+    If Opts.Warnings Then
+      WarnMsg('@ : adresse de -> stub, sera gere au TODO 06');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_POINTER;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  { ^ (dereferencement pointeur : prefixe en Pascal = ptr^) }
+  { En Pascal, ^ est normalement postfixe, mais on le gere ici en prefixe }
+  { Le vrai postfixe sera gere au TODO 09 }
+
+  { Pas d operateur unaire : appeler ParsePrimary }
+  ParsePrimary(Res);
+End;
+
+{ ---- ParseExprPrec : Pratt parser pour operateurs binaires --- }
+{ Boucle de montee de precedence.                                }
+{ AX = gauche, BX = droite pour emission.                        }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op        : TString;
+  Prec      : Integer;
+  Right     : TExprVal;
+  LeftIsImm : Boolean;
+  LeftImm   : LongInt;
+  ResType   : Integer;
+  LblSkip   : TString;
+  LblDone   : TString;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    { Detecter operateur binaire }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := OpPrec(Op);
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'div') Or (CurToken.Val = 'mod') Or
+             (CurToken.Val = 'and') Or (CurToken.Val = 'or') Or
+             (CurToken.Val = 'xor') Or (CurToken.Val = 'shl') Or
+             (CurToken.Val = 'shr') Or (CurToken.Val = 'in')) Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := OpPrec(Op);
+    End;
+
+    { Arreter si pas operateur ou precedence insuffisante }
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    TplNextToken;  { consommer l operateur }
+
+    { Sauvegarder operande gauche }
+    LeftIsImm := (Res.Kind = EK_IMM);
+    LeftImm   := Res.ImmVal;
+    If Not LeftIsImm Then
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstrA('PUSH', 'AX');
+    End;
+
+    { Recurser cote droit (gauche-assoc : Prec + 1) }
+    ParseExprPrec(Prec + 1, Right);
+
+    { Pliage de constantes si les deux sont immediats }
+    If LeftIsImm And (Right.Kind = EK_IMM) Then
+    Begin
+      If Op = '+' Then
+        ExprMakeImm(LeftImm + Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = '-' Then
+        ExprMakeImm(LeftImm - Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = '*' Then
+        ExprMakeImm(LeftImm * Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If (Op = '/') Or (Op = 'div') Then
+      Begin
+        If Right.ImmVal <> 0 Then
+          ExprMakeImm(LeftImm Div Right.ImmVal, TY_IDX_INTEGER, Res)
+        Else
+        Begin
+          WarnMsg('division par zero dans constante');
+          ExprMakeImm(0, TY_IDX_INTEGER, Res);
+        End;
+      End
+      Else If Op = 'mod' Then
+      Begin
+        If Right.ImmVal <> 0 Then
+          ExprMakeImm(LeftImm Mod Right.ImmVal, TY_IDX_INTEGER, Res)
+        Else
+        Begin
+          WarnMsg('modulo par zero dans constante');
+          ExprMakeImm(0, TY_IDX_INTEGER, Res);
+        End;
+      End
+      Else If Op = 'and' Then
+        ExprMakeImm(LeftImm And Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = 'or' Then
+        ExprMakeImm(LeftImm Or Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = 'xor' Then
+        ExprMakeImm(LeftImm Xor Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = 'shl' Then
+        ExprMakeImm(LeftImm Shl Integer(Right.ImmVal And 15),
+                    TY_IDX_INTEGER, Res)
+      Else If Op = 'shr' Then
+        ExprMakeImm(LeftImm Shr Integer(Right.ImmVal And 15),
+                    TY_IDX_INTEGER, Res)
+      { Comparaisons -> booleen }
+      Else If Op = '=' Then
+        ExprMakeImm(Ord(LeftImm = Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '<>' Then
+        ExprMakeImm(Ord(LeftImm <> Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '<' Then
+        ExprMakeImm(Ord(LeftImm < Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '>' Then
+        ExprMakeImm(Ord(LeftImm > Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '<=' Then
+        ExprMakeImm(Ord(LeftImm <= Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '>=' Then
+        ExprMakeImm(Ord(LeftImm >= Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = 'in' Then
+      Begin
+        WarnMsg('in : ensembles non supportes, retourne 0');
+        ExprMakeImm(0, TY_IDX_BOOLEAN, Res);
+      End
+      Else
+        ExprMakeImm(0, TY_IDX_INTEGER, Res);
+    End
+    Else
+    Begin
+      { ---- Emission de code binaire ---- }
+      { Determiner le type resultat }
+      ResType := Res.TypeIdx;
+      If (Res.TypeIdx = TY_IDX_STRING) Or (Right.TypeIdx = TY_IDX_STRING) Then
+        ResType := TY_IDX_STRING
+      Else If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
+              (Op = '<=') Or (Op = '>=') Or (Op = 'in') Then
+        ResType := TY_IDX_BOOLEAN;
+
+      { Charger droite dans BX }
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+
+      { Restaurer gauche dans AX }
+      If LeftIsImm Then
+        EmitInstrAB('MOV', 'AX', IntToStr(LeftImm))
+      Else
+        EmitInstrA('POP', 'AX');
+
+      { AX = gauche, BX = droite }
+
+      { --- Arithmetique --- }
+      If Op = '+' Then
+      Begin
+        If ResType = TY_IDX_STRING Then
+          { Concatenation chaine : CALL _PSPRT_CONCAT }
+          EmitInstr('CALL   ' + PSP_RT_PFX + 'CONCAT')
+        Else
+          EmitInstrAB('ADD', 'AX', 'BX');
+      End
+      Else If Op = '-' Then
+        EmitInstrAB('SUB', 'AX', 'BX')
+
+      Else If Op = '*' Then
+        EmitInstrA('IMUL', 'BX')
+
+      Else If (Op = '/') Or (Op = 'div') Then
+      Begin
+        { IDIV BX : AX = quotient, DX = reste }
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        WarnMsg('division par zero possible a l''execution');
+        EmitLabel(LblDone);
+      End
+
+      Else If Op = 'mod' Then
+      Begin
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrAB('MOV', 'AX', 'DX');  { reste dans DX }
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblDone);
+      End
+
+      { --- Bits / Logiques (meme instruction, type determine le sens) --- }
+      Else If Op = 'and' Then
+        EmitInstrAB('AND', 'AX', 'BX')
+
+      Else If Op = 'or' Then
+        EmitInstrAB('OR', 'AX', 'BX')
+
+      Else If Op = 'xor' Then
+        EmitInstrAB('XOR', 'AX', 'BX')
+
+      Else If Op = 'shl' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SHL', 'AX', 'CL');
+      End
+
+      Else If Op = 'shr' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SHR', 'AX', 'CL');
+      End
+
+      { --- Comparaisons : CMP + Jcc -> AX = 0|1 --- }
+      Else If Op = '=' Then
+      Begin
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JNE', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '<>' Then
+      Begin
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '<' Then
+      Begin
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JGE', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '<=' Then
+      Begin
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JG', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '>' Then
+      Begin
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JLE', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '>=' Then
+      Begin
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', 'BX');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('JL', LblSkip);
+        EmitInstr('INC    AX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = 'in' Then
+      Begin
+        { in : test appartenance sous-plage (stub) }
+        EmitInstrAB('XOR', 'AX', 'AX');
+        WarnMsg('in : ensembles non supportes, retourne 0');
+      End;
+
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := ResType;
+      Res.SymIdx  := -1;
+    End;
+  Until False;
+End;
+
+{ ---- ParseExpr : point d entree pour les expressions --------- }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
 
@@ -1664,6 +3107,15 @@ Begin
   CurToken.RealVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  { TODO 04 }
+  DataCount   := 0;
+  LabelGenSeq := 0;
+  { TODO 06 }
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+  SymInit;
 End;
 
 { ---- Pipeline de compilation (stub) ------------------------- }
@@ -1687,20 +3139,28 @@ Begin
     FatalError('impossible de creer le fichier de sortie: ' + Opts.OutFile);
   OutFOpen := True;
 
-  { Initialiser le lexeur }
+  { Initialiser le lexeur et l analyseur template }
   LexInit;
+  TplInit;
 
-  { TODO 03+ : boucle de compilation ici }
-  { En attendant, si -d actif, scanner tous les tokens pour debug }
-  If Opts.DebugMode Then
-  Begin
-    Repeat
-      LexNextToken;
-    Until CurToken.Kind = TK_EOF;
-  End;
+  { Boucle principale : analyseur de template PSP }
+  Repeat
+    TplNextToken;
+    { TODO 04 : intercepter const pour test }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'const') Then
+    Begin
+      TplNextToken;
+      ParseConstDecl;
+    End;
+  Until CurToken.Kind = TK_EOF;
 
-  { Fermer les fichiers }
+  { Fermer l analyseur template et le lexeur }
+  TplClose;
   LexClose;
+
+  { Emettre le segment de donnees (TODO 04) }
+  EmitDataSeg;
+
   Cleanup;
 
   If Opts.Verbose Then
