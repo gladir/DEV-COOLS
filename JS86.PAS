@@ -804,6 +804,12 @@ Procedure ParseExprStmt; Forward;
 { TODO 10 }
 Procedure ParseCallArgs(Var ArgCount : Integer); Forward;
 Procedure ParsePostfix(Var Res : TExprVal); Forward;
+{ TODO 12 }
+Procedure EmitPrintAX(TIdx : Integer); Forward;
+Procedure EmitPrintAXFD(TIdx, FD : Integer); Forward;
+Procedure EmitPrintNewline(FD : Integer); Forward;
+Procedure EmitPrintStr(Const Lbl : TString; FD : Integer); Forward;
+Procedure EmitPrintSpace(FD : Integer); Forward;
 { TODO 08 }
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
@@ -2433,95 +2439,267 @@ Begin
 End;
 
 { ParsePostfix : gere les operations postfixe : appel f(), membre .p, index [i] }
+{ Intercepte console.log/error/warn, process.exit/stdout/stderr, alert, prompt }
 Procedure ParsePostfix(Var Res : TExprVal);
 Var
-  ArgCount : Integer;
-  FnIdx    : Integer;
-  PropName : TString;
-  IdxExpr  : TExprVal;
-  LblArr   : TString;
+  ArgCount  : Integer;
+  FnIdx     : Integer;
+  PropName  : TString;
+  IdxExpr   : TExprVal;
+  LblArr    : TString;
+  SymName   : TString;
+  Arg       : TExprVal;
+  FD        : Integer;
+  SubProp   : TString;
+  I         : Integer;
 Begin
   While True Do
   Begin
-    { Appel de fonction : expr(...) }
+    { ---- Appel de fonction : expr(...) ---- }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
-      { Flush la cible de l'appel dans AX (ou connaitre le sym) }
       FnIdx := Res.SymIdx;
+      { Intercepter alert(s) et prompt(s) (TODO 12) }
+      If FnIdx >= 0 Then
+        SymName := SymTab[FnIdx].Name
+      Else
+        SymName := '';
+      If SymName = 'alert' Then
+      Begin
+        { alert(s) -> console.log(s) : affiche sur stdout + newline }
+        ParserAdvance; { consomme '(' }
+        I := 0;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        Begin
+          If I > 0 Then EmitPrintSpace(1);
+          ParseExprPrec(2, Arg);
+          ExprFlushToAX(Arg);
+          EmitPrintAX(Arg.TypeIdx);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          Inc(I);
+        End;
+        EmitPrintNewline(1);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_UNDEF;
+        Res.SymIdx  := -1;
+        Continue;
+      End
+      Else If SymName = 'prompt' Then
+      Begin
+        { prompt(s) -> stub : XOR AX,AX + warning }
+        ParseCallArgs(ArgCount);
+        WarnMsg('prompt() non supporte en environnement DOS, retourne undefined');
+        EmitInstrAB('XOR', 'AX', 'AX');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_UNDEF;
+        Res.SymIdx  := -1;
+        Continue;
+      End;
+      { Appel de fonction standard }
       ParseCallArgs(ArgCount);
       GCallArgCount := ArgCount;
-      { Emission du CALL }
       If (FnIdx >= 0) And (SymTab[FnIdx].Cat = SC_FUNCTION) Then
-      Begin
-        EmitInstrA('CALL', SymTab[FnIdx].MangledName);
-      End
+        EmitInstrA('CALL', SymTab[FnIdx].MangledName)
       Else If FnIdx >= 0 Then
       Begin
-        { Appel indirect via variable contenant un ptr de fonction }
         ExprFlushToAX(Res);
         EmitInstrA('CALL', 'AX');
       End
       Else
       Begin
-        { Appel d'expression (ex: (getFunc())(args)) }
         ExprFlushToAX(Res);
         EmitInstrA('CALL', 'AX');
       End;
-      { Nettoyer les arguments de la pile }
       If ArgCount > 0 Then
         EmitInstrAB('ADD', 'SP', IntToStr(ArgCount * 2));
-      { Resultat dans AX }
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_UNKNOWN;
       Res.SymIdx  := -1;
       Continue;
     End;
 
-    { Acces membre : expr.prop }
+    { ---- Acces membre : expr.prop ---- }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
     Begin
+      { Determiner le nom du symbole gauche (pour console/process) }
+      If Res.SymIdx >= 0 Then
+        SymName := SymTab[Res.SymIdx].Name
+      Else
+        SymName := '';
+
       ParserAdvance; { consomme '.' }
-      If CurToken.Kind = TK_IDENT Then
+      If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
       Begin
-        PropName := CurToken.Val;
-        ParserAdvance;
-        { Proprietes speciales connues a la compilation }
-        If PropName = 'length' Then
+        CompileError('identifiant attendu apres "."');
+        Continue;
+      End;
+      PropName := CurToken.Val;
+      ParserAdvance;
+
+      { ---- console.log / console.error / console.warn (TODO 12) ---- }
+      If SymName = 'console' Then
+      Begin
+        If PropName = 'log' Then FD := 1
+        Else If PropName = 'error' Then FD := 2
+        Else If PropName = 'warn' Then FD := 2
+        Else FD := -1;
+        If FD > 0 Then
         Begin
-          { Pour tableau/chaine : premier word = longueur }
-          ExprFlushToAX(Res);
-          EmitInstrAB('MOV', 'SI', 'AX');
-          EmitInstrAB('MOV', 'AX', '[SI]');
+          { Consommer (args) et emettre le code d'affichage inline }
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin
+            CompileError('"(" attendu apres console.' + PropName);
+            Continue;
+          End;
+          ParserAdvance; { consomme '(' }
+          { Prefixe Warning: pour console.warn }
+          If PropName = 'warn' Then
+            EmitPrintStr('_JS_WARNPFX', FD);
+          I := 0;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          Begin
+            If I > 0 Then EmitPrintSpace(FD);
+            ParseExprPrec(2, Arg);
+            ExprFlushToAX(Arg);
+            EmitPrintAXFD(Arg.TypeIdx, FD);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+            Inc(I);
+          End;
+          EmitPrintNewline(FD);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
           Res.Kind    := EK_AX;
-          Res.TypeIdx := TY_IDX_NUMBER;
+          Res.TypeIdx := TY_IDX_UNDEF;
           Res.SymIdx  := -1;
-        End
-        Else
+          Continue;
+        End;
+        { Autre propriete de console : stub }
+        WarnMsg('console.' + PropName + ' non supporte : stub');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.SymIdx  := -1;
+        Continue;
+      End;
+
+      { ---- process.exit / process.stdout.write / process.stderr.write ---- }
+      If SymName = 'process' Then
+      Begin
+        If PropName = 'exit' Then
         Begin
-          { Acces propriete generique : stub }
-          ExprFlushToAX(Res);
-          WarnMsg('acces propriete ".' + PropName + '" : stub');
+          { process.exit(code) -> MOV AH,4Ch + MOV AL,code + INT 21h }
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+          Begin
+            CompileError('"(" attendu apres process.exit');
+            Continue;
+          End;
+          ParserAdvance; { consomme '(' }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          Begin
+            { process.exit() sans argument : code 0 }
+            EmitInstrAB('MOV', 'AX', '4C00h');
+          End
+          Else
+          Begin
+            ParseExprPrec(2, Arg);
+            ExprFlushToAX(Arg);
+            EmitInstrAB('MOV', 'AH', '4Ch');
+          End;
+          EmitInstr('INT    21h');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_UNDEF;
+          Res.SymIdx  := -1;
+          Continue;
+        End
+        Else If (PropName = 'stdout') Or (PropName = 'stderr') Then
+        Begin
+          { process.stdout.write(s) / process.stderr.write(s) }
+          If PropName = 'stdout' Then FD := 1
+          Else FD := 2;
+          { Attendre .write }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+          Begin
+            ParserAdvance; { consomme '.' }
+            If CurToken.Kind = TK_IDENT Then
+            Begin
+              SubProp := CurToken.Val;
+              ParserAdvance;
+            End
+            Else
+              SubProp := '';
+            If SubProp = 'write' Then
+            Begin
+              If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
+              Begin
+                CompileError('"(" attendu apres process.' + PropName + '.write');
+                Continue;
+              End;
+              ParserAdvance; { consomme '(' }
+              I := 0;
+              While (CurToken.Kind <> TK_EOF) And
+                    Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+              Begin
+                If I > 0 Then EmitPrintSpace(FD);
+                ParseExprPrec(2, Arg);
+                ExprFlushToAX(Arg);
+                EmitPrintAXFD(Arg.TypeIdx, FD);
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                  ParserAdvance;
+                Inc(I);
+              End;
+              { Pas de newline pour write }
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                ParserAdvance;
+              Res.Kind    := EK_AX;
+              Res.TypeIdx := TY_IDX_UNDEF;
+              Res.SymIdx  := -1;
+              Continue;
+            End
+            Else
+              WarnMsg('process.' + PropName + '.' + SubProp + ' non supporte');
+          End;
           Res.Kind    := EK_AX;
           Res.TypeIdx := TY_UNKNOWN;
           Res.SymIdx  := -1;
+          Continue;
         End;
-      End
-      Else If CurToken.Kind = TK_KEYWORD Then
+        { Autre propriete de process : stub }
+        WarnMsg('process.' + PropName + ' non supporte : stub');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+        Res.SymIdx  := -1;
+        Continue;
+      End;
+
+      { ---- Proprietes speciales generiques ---- }
+      If PropName = 'length' Then
       Begin
-        PropName := CurToken.Val;
-        ParserAdvance;
+        ExprFlushToAX(Res);
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstrAB('MOV', 'AX', '[SI]');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_NUMBER;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
         ExprFlushToAX(Res);
         WarnMsg('acces propriete ".' + PropName + '" : stub');
         Res.Kind    := EK_AX;
         Res.TypeIdx := TY_UNKNOWN;
         Res.SymIdx  := -1;
-      End
-      Else
-        CompileError('identifiant attendu apres "."');
+      End;
       Continue;
     End;
 
-    { Optional chaining : expr?.prop }
+    { ---- Optional chaining : expr?.prop ---- }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '?.') Then
     Begin
       ParserAdvance;
@@ -2542,23 +2720,22 @@ Begin
       Continue;
     End;
 
-    { Acces index : expr[idx] }
+    { ---- Acces index : expr[idx] ---- }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
       ParserAdvance; { consomme '[' }
       ExprFlushToAX(Res);
-      EmitInstrA('PUSH', 'AX'); { sauvegarder ptr base }
+      EmitInstrA('PUSH', 'AX');
       ParseExpr(IdxExpr);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
         ParserAdvance
       Else
         CompileError('"]" attendu apres l''index');
-      { Calcul d'adresse : base + 2 + idx*2 (1er word = count) }
       ExprFlushToAX(IdxExpr);
-      EmitInstrAB('SHL', 'AX', '1');        { AX = idx * 2 }
-      EmitInstrAB('ADD', 'AX', '2');        { AX = 2 + idx*2 }
+      EmitInstrAB('SHL', 'AX', '1');
+      EmitInstrAB('ADD', 'AX', '2');
       EmitInstrAB('MOV', 'SI', 'AX');
-      EmitInstrA('POP', 'BX');              { BX = base ptr }
+      EmitInstrA('POP', 'BX');
       EmitInstrAB('ADD', 'SI', 'BX');
       EmitInstrAB('MOV', 'AX', '[SI]');
       Res.Kind    := EK_AX;
@@ -2567,7 +2744,7 @@ Begin
       Continue;
     End;
 
-    { Template tag : expr`tmpl` (non supporte) }
+    { ---- Template tag : expr`tmpl` (non supporte) ---- }
     If CurToken.Kind = TK_TEMPLATE Then
     Begin
       WarnMsg('tagged template : stub');
@@ -2763,8 +2940,11 @@ Begin
         Else
         Begin
           { Variable non declaree : reference globale implicite }
-          WarnMsg('variable non declaree: "' + CurToken.Val +
-                  '", reference globale implicite');
+          { Globals intrinseques (TODO 12) : pas de warning }
+          If (CurToken.Val <> 'console') And (CurToken.Val <> 'process') And
+             (CurToken.Val <> 'alert')   And (CurToken.Val <> 'prompt') Then
+            WarnMsg('variable non declaree: "' + CurToken.Val +
+                    '", reference globale implicite');
           FnIdx := SymAdd(CurToken.Val, SC_VAR, TY_UNKNOWN, 0);
           If FnIdx >= 0 Then
           Begin
@@ -4213,6 +4393,10 @@ Begin
   EmitRaw('_JS_FALSE   DB  ''false'',0');
   { Buffer de travail pour concatenation et coercition de chaines }
   EmitRaw('_JSRT_STRBUF DB 512 DUP(0)');
+  { Constantes console/IO (TODO 12) }
+  EmitRaw('_JS_CRLF    DB  13,10,0');
+  EmitRaw('_JS_SPACE   DB  '' '',0');
+  EmitRaw('_JS_WARNPFX DB  ''Warning: '',0');
   { Entrees dynamiques de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
@@ -4246,6 +4430,149 @@ Begin
     End;
   End;
   EmitRaw('_DATA   ENDS');
+End;
+
+{ ============================================================
+  TODO 12 - CONSOLE / PROCESS / SORTIES [IMPLEMENTE]
+  ============================================================ }
+
+{ EmitStrLen : emet code pour calculer longueur chaine ASCIIZ.
+  IN  : DI = ptr chaine     OUT : CX = longueur
+  Utilise DI, AL, CX. }
+Procedure EmitStrLen;
+Var
+  LblLoop, LblDone : TString;
+Begin
+  LblLoop := LabelGen;
+  LblDone := LabelGen;
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(LblLoop);
+  EmitRaw('        MOV   AL, [DI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', LblDone);
+  EmitInstr('INC    CX');
+  EmitInstr('INC    DI');
+  EmitInstrA('JMP', LblLoop);
+  EmitLabel(LblDone);
+  { DI pointe apres le 0, rembobiner }
+  EmitInstrAB('SUB', 'DI', 'CX');
+End;
+
+{ EmitWriteFD : emet INT 21h AH=40h pour BX=fd, DX=buf, CX=len }
+Procedure EmitWriteFD(FD : Integer);
+Begin
+  EmitInstrAB('MOV', 'BX', IntToStr(FD));
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+End;
+
+{ EmitPrintStr : affiche la chaine constante Lbl sur fd.
+  Utilise DI, CX, DX, AH, BX }
+Procedure EmitPrintStr(Const Lbl : TString; FD : Integer);
+Begin
+  EmitInstrAB('LEA', 'DI', Lbl);
+  EmitStrLen;
+  EmitInstrAB('LEA', 'DX', Lbl);
+  EmitWriteFD(FD);
+End;
+
+{ EmitPrintNewline : affiche CRLF sur fd }
+Procedure EmitPrintNewline(FD : Integer);
+Begin
+  EmitInstrAB('LEA', 'DX', '_JS_CRLF');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitWriteFD(FD);
+End;
+
+{ EmitPrintSpace : affiche un espace sur fd }
+Procedure EmitPrintSpace(FD : Integer);
+Begin
+  EmitInstrAB('LEA', 'DX', '_JS_SPACE');
+  EmitInstrAB('MOV', 'CX', '1');
+  EmitWriteFD(FD);
+End;
+
+{ EmitPrintAX : affiche la valeur de AX sur fd=1 (stdout) en fonction du type.
+  - TY_IDX_STRING : AX=ptr chaine ASCIIZ -> strlen + write
+  - TY_IDX_NUMBER ou autre : CALL _JSRT_NUMTOSTR -> AX=ptr -> strlen + write
+  - TY_IDX_BOOLEAN : affiche "true" ou "false"
+  - TY_IDX_NULL : affiche "null"
+  - TY_IDX_UNDEF : affiche "undefined" }
+Procedure EmitPrintAX(TIdx : Integer);
+Var
+  LblTrue, LblDone : TString;
+Begin
+  If TIdx = TY_IDX_STRING Then
+  Begin
+    { AX = ptr chaine ASCIIZ }
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitStrLen;
+    EmitInstrAB('MOV', 'DX', 'DI');
+    EmitWriteFD(1);
+  End
+  Else If TIdx = TY_IDX_BOOLEAN Then
+  Begin
+    LblTrue := LabelGen;
+    LblDone := LabelGen;
+    EmitInstrAB('OR', 'AX', 'AX');
+    EmitInstrA('JNZ', LblTrue);
+    EmitPrintStr('_JS_FALSE', 1);
+    EmitInstrA('JMP', LblDone);
+    EmitLabel(LblTrue);
+    EmitPrintStr('_JS_TRUE', 1);
+    EmitLabel(LblDone);
+  End
+  Else If TIdx = TY_IDX_NULL Then
+    EmitPrintStr('_JS_NULL', 1)
+  Else If TIdx = TY_IDX_UNDEF Then
+    EmitPrintStr('_JS_UNDEF', 1)
+  Else
+  Begin
+    { Number ou inconnu : convertir en chaine puis afficher }
+    EmitInstr('CALL   _JSRT_NUMTOSTR');
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitStrLen;
+    EmitInstrAB('MOV', 'DX', 'DI');
+    EmitWriteFD(1);
+  End;
+End;
+
+{ EmitPrintAXFD : comme EmitPrintAX mais pour un fd arbitraire }
+Procedure EmitPrintAXFD(TIdx, FD : Integer);
+Var
+  LblTrue, LblDone : TString;
+Begin
+  If TIdx = TY_IDX_STRING Then
+  Begin
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitStrLen;
+    EmitInstrAB('MOV', 'DX', 'DI');
+    EmitWriteFD(FD);
+  End
+  Else If TIdx = TY_IDX_BOOLEAN Then
+  Begin
+    LblTrue := LabelGen;
+    LblDone := LabelGen;
+    EmitInstrAB('OR', 'AX', 'AX');
+    EmitInstrA('JNZ', LblTrue);
+    EmitPrintStr('_JS_FALSE', FD);
+    EmitInstrA('JMP', LblDone);
+    EmitLabel(LblTrue);
+    EmitPrintStr('_JS_TRUE', FD);
+    EmitLabel(LblDone);
+  End
+  Else If TIdx = TY_IDX_NULL Then
+    EmitPrintStr('_JS_NULL', FD)
+  Else If TIdx = TY_IDX_UNDEF Then
+    EmitPrintStr('_JS_UNDEF', FD)
+  Else
+  Begin
+    EmitInstr('CALL   _JSRT_NUMTOSTR');
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitStrLen;
+    EmitInstrAB('MOV', 'DX', 'DI');
+    EmitWriteFD(FD);
+  End;
 End;
 
 Procedure EmitRuntime;
