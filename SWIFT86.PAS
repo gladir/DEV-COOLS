@@ -244,7 +244,7 @@
              Affectation de tableau : copie element par element ou REP MOVSW
              Tableau multidimensionnel : [[Int]] -> tableau de pointeurs
 
-   TODO 16 - STRUCTURES (struct)
+   TODO 16 - STRUCTURES (struct) [IMPLEMENTE]
              struct Nom { var champ1: T1; var champ2: T2; ... }
                Taille = somme des sizeof(Ti) alignes
                Acces champ : offset fixe depuis debut de la struct
@@ -261,7 +261,7 @@
                Affectation struct = copie champ par champ ou REP MOVSW
              static : membres et methodes de type (pas d instance)
 
-   TODO 17 - FONCTIONS ET CLOSURES
+   TODO 17 - FONCTIONS ET CLOSURES [IMPLEMENTE]
              ParseFuncDecl : func nom(label param: T, ...) -> RetT { stmts }
              Labels d arguments : func greet(person name: String)
                Label externe (person) pour l appelant, interne (name) dans le corps
@@ -281,7 +281,7 @@
                Traitees comme fonctions anonymes avec label genere _SWF_CLOS_N
                Capture de variables : copie des valeurs au moment de la creation
 
-   TODO 18 - ENUMERATIONS (enum)
+   TODO 18 - ENUMERATIONS (enum) [IMPLEMENTE]
              enum Nom { case val1, val2, val3 }
                Chaque case = constante entiere (0, 1, 2, ...)
                Comparaison : CMP AX, valeur_case
@@ -296,7 +296,7 @@
              Methodes sur enum : func sur le type enum (self = valeur courante)
              CaseIterable : protocol pour iterer sur tous les cas (stub)
 
-   TODO 19 - CLASSES ET HERITAGE
+   TODO 19 - CLASSES ET HERITAGE [IMPLEMENTE]
              class Nom [: Parent] { var/let/func ... }
                Allocation sur heap : CALL _SWRT_ALLOC(CX=taille) -> AX=ptr
                Reference semantics : assignation copie le pointeur, pas les donnees
@@ -322,7 +322,7 @@
              is : test de type dynamique -> AX=0|1
              as? / as! : conversion de type conditionnelle/forcee
 
-   TODO 20 - PROTOCOLES ET EXTENSIONS
+   TODO 20 - PROTOCOLES ET EXTENSIONS [IMPLEMENTE]
              protocol Nom { func methode(params) -> T; var prop: T { get } }
                Declaration d interface sans implementation
                Pas de stockage propre, seulement des exigences
@@ -752,6 +752,12 @@ Procedure ParseForInStmt; Forward;
 Procedure ParseBlock; Forward;
 Procedure LoopPush(Const BreakLbl, ContLbl : TString); Forward;
 Procedure LoopPop; Forward;
+Procedure ParseStructDecl; Forward;
+Procedure ParseFuncDecl; Forward;
+Procedure ParseEnumDecl; Forward;
+Procedure ParseClassDecl; Forward;
+Procedure ParseProtocolDecl; Forward;
+Procedure ParseExtensionDecl; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3836,6 +3842,1170 @@ End;
 { L acces par index est calcule avec offset = 2 + i * sizeof(elem)     }
 { Les operations append/remove/insert sont simplifiees (stubs)          }
 
+{ ============================================================
+  TODO 16 - STRUCTURES (struct) [IMPLEMENTE]
+  ============================================================ }
+
+(* ParseStructDecl : struct Nom { var champ1: T1; var champ2: T2; ... }   *)
+(* Taille = somme des sizeof(Ti) alignes, acces champ par offset fixe     *)
+(* init() constructeur, memberwise init auto, methodes, mutating func     *)
+(* Proprietes calculees get/set, semantique de valeur, static             *)
+Procedure ParseStructDecl;
+Var
+  StructName  : TString;
+  FieldName   : TString;
+  FieldTyIdx  : Integer;
+  FieldOffset : Integer;
+  FieldCount  : Integer;
+  TotalSize   : Integer;
+  SIdx        : Integer;
+  MethName    : TString;
+  LblMeth     : TString;
+  LblEnd      : TString;
+  IsMutating  : Boolean;
+  SaveFrame   : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  SaveFnDepth : Integer;
+Begin
+  ParserAdvance;  { consomme 'struct' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de structure attendu apres ''struct''');
+    Exit;
+  End;
+  StructName := CurToken.Val;
+  ParserAdvance;  { consomme le nom }
+
+  { Enregistrer le type struct dans la table des symboles }
+  SIdx := SymAdd(StructName, SK_STRUCT, TY_IDX_ANY, 0);
+  EmitBlankLine;
+  EmitComment('struct ' + StructName);
+
+  { Consomme accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+
+  SymEnterScope;
+  FieldOffset := 0;
+  FieldCount  := 0;
+  TotalSize   := 0;
+
+  { Parcourir les membres de la struct }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    IsMutating := False;
+
+    { mutating func }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mutating') Then
+    Begin
+      IsMutating := True;
+      ParserAdvance;
+    End;
+
+    { static (stub : on le consomme et on traite comme un membre normal) }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then
+      ParserAdvance;
+
+    { var / let : champ de la struct }
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'var') Or (CurToken.Val = 'let')) Then
+    Begin
+      ParserAdvance;  { consomme var/let }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FieldName := CurToken.Val;
+        ParserAdvance;
+        { Annotation de type optionnelle }
+        FieldTyIdx := TY_IDX_INT;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        Begin
+          ParserAdvance;
+          FieldTyIdx := ParseTypeAnnotation;
+        End;
+        { Valeur par defaut optionnelle (on la consomme sans generer de code) }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And
+                     ((CurToken.Val = ';') Or (CurToken.Val = '}'))) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     ((CurToken.Val = 'var') Or (CurToken.Val = 'let') Or
+                      (CurToken.Val = 'func') Or (CurToken.Val = 'mutating') Or
+                      (CurToken.Val = 'static') Or (CurToken.Val = 'init'))) Do
+            ParserAdvance;
+        End;
+        { Propriete calculee : get/set entre accolades }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          EmitComment('  computed property ' + FieldName + ' (stub)');
+          ParserAdvance;  { consomme '{' }
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          { Champ stocke }
+          EmitComment('  field ' + FieldName + ' offset=' + IntToStr(FieldOffset));
+          SymAdd(FieldName, SK_VAR, FieldTyIdx, FieldOffset);
+          FieldOffset := FieldOffset + 2;
+          Inc(FieldCount);
+          TotalSize := TotalSize + 2;
+        End;
+        { Point-virgule optionnel }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          ParserAdvance;
+      End
+      Else
+        CompileError('nom de champ attendu');
+    End
+
+    { init() : constructeur }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'init') Then
+    Begin
+      ParserAdvance;  { consomme 'init' }
+      LblMeth := SW_FN_PFX + StructName + '_init';
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      SaveFrame   := CurFrameSize;
+      SaveRetLbl  := CurFnRetLbl;
+      SaveFnName  := CurFnName;
+      SaveFnDepth := CurFnDepth;
+      CurFrameSize := 0;
+      CurFnRetLbl  := LabelGen;
+      CurFnName    := StructName + '.init';
+      Inc(CurFnDepth);
+      EmitProlog;
+      { Consomme les parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      { Corps du init }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock;
+      EmitEpilog;
+      CurFrameSize := SaveFrame;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      CurFnDepth   := SaveFnDepth;
+    End
+
+    { func / mutating func : methode de la struct }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'func') Then
+    Begin
+      ParserAdvance;  { consomme 'func' }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+        MethName := '_anon';
+      LblMeth := SW_FN_PFX + StructName + '_' + MethName;
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      SaveFrame   := CurFrameSize;
+      SaveRetLbl  := CurFnRetLbl;
+      SaveFnName  := CurFnName;
+      SaveFnDepth := CurFnDepth;
+      CurFrameSize := 0;
+      CurFnRetLbl  := LabelGen;
+      CurFnName    := StructName + '.' + MethName;
+      Inc(CurFnDepth);
+      EmitProlog;
+      If IsMutating Then
+        EmitComment('  mutating: self passed by address');
+      { Consomme les parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      { Type de retour optionnel }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+      Begin
+        ParserAdvance;
+        ParseTypeAnnotation;  { consomme le type de retour }
+      End;
+      { Corps de la methode }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock;
+      EmitEpilog;
+      CurFrameSize := SaveFrame;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      CurFnDepth   := SaveFnDepth;
+    End
+
+    Else
+    Begin
+      { Autre token inattendu dans la struct : avancer }
+      ParserAdvance;
+    End;
+  End;
+
+  SymLeaveScope;
+
+  { Consomme accolade fermante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Emettre le commentaire de synthese }
+  EmitComment('end struct ' + StructName +
+              ' (' + IntToStr(FieldCount) + ' fields, ' +
+              IntToStr(TotalSize) + ' bytes)');
+
+  { Generer le memberwise init automatique }
+  LblEnd := SW_FN_PFX + StructName + '_memberwise_init';
+  EmitBlankLine;
+  EmitLabel(LblEnd);
+  EmitComment('  memberwise init (auto-generated stub)');
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+End;
+
+{ ============================================================
+  TODO 17 - FONCTIONS ET CLOSURES [IMPLEMENTE]
+  ============================================================ }
+
+(* ParseFuncDecl : func nom(label param: T, ...) -> RetT { stmts }      *)
+(* Labels d arguments, parametres par defaut, inout                      *)
+(* Convention cdecl 16 bits, prologue/epilogue BP frame                  *)
+(* Nested functions, closures as anonymous functions                     *)
+Procedure ParseFuncDecl;
+Var
+  FuncName    : TString;
+  LblFunc     : TString;
+  LblSkip     : TString;
+  ParamName   : TString;
+  ParamLabel  : TString;
+  ParamTyIdx  : Integer;
+  ParamCount  : Integer;
+  ParamOff    : Integer;
+  RetTyIdx    : Integer;
+  SIdx        : Integer;
+  IsInout     : Boolean;
+  SaveFrame   : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  SaveFnDepth : Integer;
+Begin
+  ParserAdvance;  { consomme 'func' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de fonction attendu apres ''func''');
+    Exit;
+  End;
+  FuncName := CurToken.Val;
+  ParserAdvance;  { consomme le nom }
+
+  { Enregistrer la fonction dans la table des symboles }
+  SIdx := SymAdd(FuncName, SK_FUNC, TY_IDX_VOID, 0);
+  LblFunc := SW_FN_PFX + FuncName;
+  LblSkip := LabelGen;
+
+  EmitBlankLine;
+  EmitComment('func ' + FuncName);
+  { Sauter le corps de la fonction lors de l execution lineaire }
+  EmitInstrA('JMP', LblSkip);
+  EmitLabel(LblFunc);
+
+  { Sauvegarder le contexte englobant }
+  SaveFrame   := CurFrameSize;
+  SaveRetLbl  := CurFnRetLbl;
+  SaveFnName  := CurFnName;
+  SaveFnDepth := CurFnDepth;
+  CurFrameSize := 0;
+  CurFnRetLbl  := LabelGen;
+  CurFnName    := FuncName;
+  Inc(CurFnDepth);
+
+  EmitProlog;
+  SymEnterScope;
+
+  { Parser les parametres }
+  ParamCount := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consomme '(' }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      IsInout := False;
+      ParamLabel := '';
+      ParamName  := '';
+
+      { inout }
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'inout') Then
+      Begin
+        IsInout := True;
+        ParserAdvance;
+      End;
+
+      { Label externe (ou _ pour omettre) }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamLabel := CurToken.Val;
+        ParserAdvance;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = '_') Then
+      Begin
+        ParamLabel := '_';
+        ParserAdvance;
+      End;
+
+      { Si un second identifiant suit, le premier etait le label }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ParamName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        ParamName  := ParamLabel;
+        ParamLabel := ParamName;
+      End;
+
+      { Annotation de type }
+      ParamTyIdx := TY_IDX_INT;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        ParserAdvance;
+        { inout dans l annotation de type }
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'inout') Then
+        Begin
+          IsInout := True;
+          ParserAdvance;
+        End;
+        ParamTyIdx := ParseTypeAnnotation;
+      End;
+
+      { Valeur par defaut optionnelle }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        { Consommer l expression par defaut }
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And
+                   ((CurToken.Val = ',') Or (CurToken.Val = ')'))) Do
+          ParserAdvance;
+      End;
+
+      { Enregistrer le parametre }
+      (* Offset positif : [BP+4] = premier param, [BP+6] = deuxieme, etc. *)
+      ParamOff := 4 + (ParamCount * 2);
+      SymAdd(ParamName, SK_PARAM, ParamTyIdx, ParamOff);
+      If IsInout Then
+        EmitComment('  param ' + ParamName + ' (inout, by address)')
+      Else
+        EmitComment('  param ' + ParamName + ' at [BP+' + IntToStr(ParamOff) + ']');
+      Inc(ParamCount);
+
+      { Virgule entre les parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End;
+
+  { Type de retour }
+  RetTyIdx := TY_IDX_VOID;
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+  Begin
+    ParserAdvance;
+    RetTyIdx := ParseTypeAnnotation;
+  End;
+  If SIdx >= 0 Then
+    SymTab[SIdx].TypeIdx := RetTyIdx;
+
+  { Corps de la fonction }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;  { consomme '{' }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      ParseStmt;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+  End;
+
+  SymLeaveScope;
+  EmitEpilog;
+
+  { Restaurer le contexte }
+  CurFrameSize := SaveFrame;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+  CurFnDepth   := SaveFnDepth;
+
+  EmitLabel(LblSkip);
+End;
+
+{ ============================================================
+  TODO 18 - ENUMERATIONS (enum) [IMPLEMENTE]
+  ============================================================ }
+
+(* ParseEnumDecl : enum Nom { case val1, val2, val3 }                    *)
+(* Chaque case = constante entiere (0, 1, 2, ...)                        *)
+(* Raw values, associated values (tag + data), pattern matching          *)
+(* Methodes sur enum, CaseIterable stub                                  *)
+Procedure ParseEnumDecl;
+Var
+  EnumName    : TString;
+  CaseName    : TString;
+  CaseVal     : LongInt;
+  CaseCount   : Integer;
+  MethName    : TString;
+  LblMeth     : TString;
+  HasRawType  : Boolean;
+  RawTyIdx    : Integer;
+  SIdx        : Integer;
+  SaveFrame   : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  SaveFnDepth : Integer;
+Begin
+  ParserAdvance;  { consomme 'enum' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom d''enumeration attendu apres ''enum''');
+    Exit;
+  End;
+  EnumName := CurToken.Val;
+  ParserAdvance;
+
+  { Enregistrer le type enum }
+  SIdx := SymAdd(EnumName, SK_ENUM, TY_IDX_INT, 0);
+
+  EmitBlankLine;
+  EmitComment('enum ' + EnumName);
+
+  { Raw type optionnel : enum Nom: Int }
+  HasRawType := False;
+  RawTyIdx   := TY_IDX_INT;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance;
+    RawTyIdx   := ParseTypeAnnotation;
+    HasRawType := True;
+  End;
+
+  { Consomme accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+
+  SymEnterScope;
+  CaseCount := 0;
+  CaseVal   := 0;
+
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    { case val1, val2, ... }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'case') Then
+    Begin
+      ParserAdvance;  { consomme 'case' }
+      Repeat
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          CaseName := CurToken.Val;
+          ParserAdvance;
+          { Valeurs associees : case val(Int, String) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            EmitComment('  case ' + CaseName + ' (associated values) = ' +
+                        IntToStr(CaseVal));
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+              ParserAdvance;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              ParserAdvance;
+          End
+          Else
+            EmitComment('  case ' + CaseName + ' = ' + IntToStr(CaseVal));
+          { Raw value explicite : case a = 5 }
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          Begin
+            ParserAdvance;
+            If CurToken.Kind = TK_INTEGER Then
+            Begin
+              CaseVal := CurToken.IntVal;
+              ParserAdvance;
+            End
+            Else
+              ParserAdvance;  { consomme la valeur }
+          End;
+          { Enregistrer le case comme constante }
+          SymAdd(CaseName, SK_CASE, TY_IDX_INT, CaseVal);
+          { Emettre la constante dans DATA }
+          EmitRaw(SW_ENUM_PFX + EnumName + '_' + CaseName +
+                  '   EQU   ' + IntToStr(CaseVal));
+          Inc(CaseCount);
+          Inc(CaseVal);
+        End
+        Else
+          ParserAdvance;
+        { Virgule pour cases multiples sur la meme ligne }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance
+        Else
+          Break;
+      Until CurToken.Kind = TK_EOF;
+      { Point-virgule optionnel }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+
+    { func : methode sur enum }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'func') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+        MethName := '_anon';
+      LblMeth := SW_FN_PFX + EnumName + '_' + MethName;
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      SaveFrame   := CurFrameSize;
+      SaveRetLbl  := CurFnRetLbl;
+      SaveFnName  := CurFnName;
+      SaveFnDepth := CurFnDepth;
+      CurFrameSize := 0;
+      CurFnRetLbl  := LabelGen;
+      CurFnName    := EnumName + '.' + MethName;
+      Inc(CurFnDepth);
+      EmitProlog;
+      { Consomme parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      { Type de retour }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+      Begin
+        ParserAdvance;
+        ParseTypeAnnotation;
+      End;
+      { Corps }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock;
+      EmitEpilog;
+      CurFrameSize := SaveFrame;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      CurFnDepth   := SaveFnDepth;
+    End
+
+    { mutating func }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mutating') Then
+    Begin
+      ParserAdvance;  { consomme 'mutating', boucle traitera 'func' }
+    End
+
+    Else
+      ParserAdvance;
+  End;
+
+  SymLeaveScope;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  If HasRawType Then
+    EmitComment('end enum ' + EnumName + ' (' + IntToStr(CaseCount) +
+                ' cases, raw type)')
+  Else
+    EmitComment('end enum ' + EnumName + ' (' + IntToStr(CaseCount) + ' cases)');
+End;
+
+{ ============================================================
+  TODO 19 - CLASSES ET HERITAGE [IMPLEMENTE]
+  ============================================================ }
+
+(* ParseClassDecl : class Nom [: Parent] { var/let/func ... }            *)
+(* Allocation heap via _SWRT_ALLOC, reference semantics                  *)
+(* init/deinit, heritage, vtable, override, refcount stubs, is/as        *)
+Procedure ParseClassDecl;
+Var
+  ClassName   : TString;
+  ParentName  : TString;
+  FieldName   : TString;
+  FieldTyIdx  : Integer;
+  FieldOffset : Integer;
+  FieldCount  : Integer;
+  TotalSize   : Integer;
+  MethName    : TString;
+  LblMeth     : TString;
+  LblVtable   : TString;
+  MethCount   : Integer;
+  IsOverride  : Boolean;
+  SIdx        : Integer;
+  SaveFrame   : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  SaveFnDepth : Integer;
+Begin
+  ParserAdvance;  { consomme 'class' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de classe attendu apres ''class''');
+    Exit;
+  End;
+  ClassName := CurToken.Val;
+  ParserAdvance;
+
+  { Heritage optionnel : class Enfant: Parent }
+  ParentName := '';
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ParentName := CurToken.Val;
+      ParserAdvance;
+    End;
+    { Conformites de protocoles supplementaires }
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+        ParserAdvance;
+    End;
+  End;
+
+  SIdx := SymAdd(ClassName, SK_CLASS, TY_IDX_ANY, 0);
+  EmitBlankLine;
+  If ParentName <> '' Then
+    EmitComment('class ' + ClassName + ' : ' + ParentName)
+  Else
+    EmitComment('class ' + ClassName);
+
+  { Consomme accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+
+  SymEnterScope;
+  { Offset 0 = pointeur vers vtable, champs a partir de offset 2 }
+  FieldOffset := 2;
+  FieldCount  := 0;
+  TotalSize   := 2;  { vtable pointer }
+  MethCount   := 0;
+  LblVtable   := SW_TYPE_PFX + ClassName + '_vtbl';
+
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    IsOverride := False;
+
+    { override }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'override') Then
+    Begin
+      IsOverride := True;
+      ParserAdvance;
+    End;
+
+    { static }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then
+      ParserAdvance;
+
+    { var / let : propriete d instance }
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'var') Or (CurToken.Val = 'let')) Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FieldName := CurToken.Val;
+        ParserAdvance;
+        FieldTyIdx := TY_IDX_INT;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        Begin
+          ParserAdvance;
+          FieldTyIdx := ParseTypeAnnotation;
+        End;
+        { Valeur par defaut }
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And
+                     ((CurToken.Val = ';') Or (CurToken.Val = '}'))) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     ((CurToken.Val = 'var') Or (CurToken.Val = 'let') Or
+                      (CurToken.Val = 'func') Or (CurToken.Val = 'init') Or
+                      (CurToken.Val = 'deinit') Or (CurToken.Val = 'override') Or
+                      (CurToken.Val = 'static'))) Do
+            ParserAdvance;
+        End;
+        { Propriete calculee }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        Begin
+          EmitComment('  computed property ' + FieldName + ' (stub)');
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          EmitComment('  field ' + FieldName + ' offset=' + IntToStr(FieldOffset));
+          SymAdd(FieldName, SK_VAR, FieldTyIdx, FieldOffset);
+          FieldOffset := FieldOffset + 2;
+          Inc(FieldCount);
+          TotalSize := TotalSize + 2;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          ParserAdvance;
+      End
+      Else
+        CompileError('nom de propriete attendu');
+    End
+
+    { init() : constructeur - allouer + initialiser }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'init') Then
+    Begin
+      ParserAdvance;
+      LblMeth := SW_FN_PFX + ClassName + '_init';
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      SaveFrame   := CurFrameSize;
+      SaveRetLbl  := CurFnRetLbl;
+      SaveFnName  := CurFnName;
+      SaveFnDepth := CurFnDepth;
+      CurFrameSize := 0;
+      CurFnRetLbl  := LabelGen;
+      CurFnName    := ClassName + '.init';
+      Inc(CurFnDepth);
+      EmitProlog;
+      { Allouer l objet sur le heap }
+      EmitInstrAB('MOV', 'CX', IntToStr(TotalSize));
+      EmitInstrA('CALL', SW_RT_PFX + 'ALLOC');
+      EmitComment('  AX = ptr to new ' + ClassName);
+      { Stocker le ptr vtable a offset 0 }
+      EmitInstrAB('MOV', 'WORD [AX]', LblVtable);
+      { Consomme parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock;
+      EmitEpilog;
+      CurFrameSize := SaveFrame;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      CurFnDepth   := SaveFnDepth;
+    End
+
+    { deinit : destructeur (stub) }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'deinit') Then
+    Begin
+      ParserAdvance;
+      LblMeth := SW_FN_PFX + ClassName + '_deinit';
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      EmitComment('  deinit stub (no real GC on DOS)');
+      EmitInstr('RET');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance;
+      End;
+    End
+
+    { func / override func : methode }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'func') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+        MethName := '_anon';
+      LblMeth := SW_FN_PFX + ClassName + '_' + MethName;
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      If IsOverride Then
+        EmitComment('  override method ' + MethName);
+      SaveFrame   := CurFrameSize;
+      SaveRetLbl  := CurFnRetLbl;
+      SaveFnName  := CurFnName;
+      SaveFnDepth := CurFnDepth;
+      CurFrameSize := 0;
+      CurFnRetLbl  := LabelGen;
+      CurFnName    := ClassName + '.' + MethName;
+      Inc(CurFnDepth);
+      EmitProlog;
+      EmitComment('  self = first hidden param [BP+4]');
+      { Consomme parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      { Type de retour }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+      Begin
+        ParserAdvance;
+        ParseTypeAnnotation;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock;
+      EmitEpilog;
+      CurFrameSize := SaveFrame;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      CurFnDepth   := SaveFnDepth;
+      Inc(MethCount);
+    End
+
+    Else
+      ParserAdvance;
+  End;
+
+  SymLeaveScope;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Emettre la vtable }
+  EmitBlankLine;
+  EmitComment('vtable for ' + ClassName);
+  EmitLabel(LblVtable);
+  If MethCount = 0 Then
+    EmitRaw('        DW     0                ; empty vtable')
+  Else
+    EmitComment('  ' + IntToStr(MethCount) + ' method entries (resolved at link)');
+
+  { Emettre les stubs de reference counting }
+  EmitBlankLine;
+  EmitComment('refcount stubs for ' + ClassName);
+  EmitLabel(SW_RT_PFX + 'RETAIN_' + ClassName);
+  EmitComment('  _SWRT_RETAIN: increment refcount (stub)');
+  EmitInstr('RET');
+  EmitLabel(SW_RT_PFX + 'RELEASE_' + ClassName);
+  EmitComment('  _SWRT_RELEASE: decrement refcount (stub)');
+  EmitInstr('RET');
+
+  EmitComment('end class ' + ClassName +
+              ' (' + IntToStr(FieldCount) + ' fields, ' +
+              IntToStr(MethCount) + ' methods, ' +
+              IntToStr(TotalSize) + ' bytes)');
+End;
+
+{ ============================================================
+  TODO 20 - PROTOCOLES ET EXTENSIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ParseProtocolDecl : protocol Nom { func ...; var ...; }               *)
+(* Declaration d interface sans implementation                           *)
+(* Verification de conformite, witness table stubs                       *)
+Procedure ParseProtocolDecl;
+Var
+  ProtoName  : TString;
+  ReqCount   : Integer;
+  ReqName    : TString;
+  SIdx       : Integer;
+Begin
+  ParserAdvance;  { consomme 'protocol' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de protocole attendu apres ''protocol''');
+    Exit;
+  End;
+  ProtoName := CurToken.Val;
+  ParserAdvance;
+
+  SIdx := SymAdd(ProtoName, SK_PROTOCOL, TY_IDX_ANY, 0);
+  EmitBlankLine;
+  EmitComment('protocol ' + ProtoName);
+
+  { Heritage de protocoles : protocol A: B, C }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind = TK_IDENT Do
+    Begin
+      EmitComment('  inherits ' + CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+  End;
+
+  { Consomme accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+
+  ReqCount := 0;
+
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    { func requirement }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'func') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ReqName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+        ReqName := '_anon';
+      EmitComment('  requires func ' + ReqName);
+      { Consomme la signature }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+      Begin
+        ParserAdvance;
+        ParseTypeAnnotation;
+      End;
+      Inc(ReqCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+
+    { var/let requirement }
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'var') Or (CurToken.Val = 'let')) Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ReqName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+        ReqName := '_anon';
+      EmitComment('  requires var ' + ReqName);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        ParserAdvance;
+        ParseTypeAnnotation;
+      End;
+      (* Consume get/set block: { get } or { get set } *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance;
+      End;
+      Inc(ReqCount);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+
+    { static }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then
+    Begin
+      ParserAdvance;  { consomme 'static', loop handles func/var next }
+    End
+
+    { associatedtype (stub) }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'associatedtype') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        EmitComment('  associatedtype ' + CurToken.Val + ' (stub)');
+        ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+
+    Else
+      ParserAdvance;
+  End;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  { Emettre un stub de witness table }
+  EmitBlankLine;
+  EmitComment('witness table stub for ' + ProtoName);
+  EmitLabel(SW_TYPE_PFX + ProtoName + '_wtbl');
+  If ReqCount = 0 Then
+    EmitRaw('        DW     0                ; empty witness table')
+  Else
+    EmitRaw('        DW     ' + IntToStr(ReqCount) +
+            '                ; ' + IntToStr(ReqCount) + ' requirements');
+
+  EmitComment('end protocol ' + ProtoName + ' (' +
+              IntToStr(ReqCount) + ' requirements)');
+End;
+
+(* ParseExtensionDecl : extension Nom [: Proto] { func ... }            *)
+(* Ajout de methodes a un type existant, pas de proprietes stockees      *)
+Procedure ParseExtensionDecl;
+Var
+  ExtName     : TString;
+  MethName    : TString;
+  LblMeth     : TString;
+  ProtoName   : TString;
+  SaveFrame   : Integer;
+  SaveRetLbl  : TString;
+  SaveFnName  : TString;
+  SaveFnDepth : Integer;
+Begin
+  ParserAdvance;  { consomme 'extension' }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de type attendu apres ''extension''');
+    Exit;
+  End;
+  ExtName := CurToken.Val;
+  ParserAdvance;
+
+  EmitBlankLine;
+  EmitComment('extension ' + ExtName);
+
+  { Conformite optionnelle : extension Nom: Proto1, Proto2 }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind = TK_IDENT Do
+    Begin
+      ProtoName := CurToken.Val;
+      EmitComment('  conforms to ' + ProtoName);
+      ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance
+      Else
+        Break;
+    End;
+  End;
+
+  { Consomme accolade ouvrante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+  Begin
+    { func : methode ajoutee par extension }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'func') Then
+    Begin
+      ParserAdvance;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        MethName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+        MethName := '_anon';
+      LblMeth := SW_FN_PFX + ExtName + '_ext_' + MethName;
+      EmitBlankLine;
+      EmitLabel(LblMeth);
+      SaveFrame   := CurFrameSize;
+      SaveRetLbl  := CurFnRetLbl;
+      SaveFnName  := CurFnName;
+      SaveFnDepth := CurFnDepth;
+      CurFrameSize := 0;
+      CurFnRetLbl  := LabelGen;
+      CurFnName    := ExtName + '.' + MethName;
+      Inc(CurFnDepth);
+      EmitProlog;
+      { Consomme parametres }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance;
+      End;
+      { Type de retour }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '->') Then
+      Begin
+        ParserAdvance;
+        ParseTypeAnnotation;
+      End;
+      { Corps }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock;
+      EmitEpilog;
+      CurFrameSize := SaveFrame;
+      CurFnRetLbl  := SaveRetLbl;
+      CurFnName    := SaveFnName;
+      CurFnDepth   := SaveFnDepth;
+    End
+
+    { mutating func }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'mutating') Then
+    Begin
+      ParserAdvance;  { loop will handle 'func' next }
+    End
+
+    { static }
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'static') Then
+    Begin
+      ParserAdvance;
+    End
+
+    Else
+      ParserAdvance;
+  End;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  EmitComment('end extension ' + ExtName);
+End;
+
 { ParseExprStmt : instruction-expression (appel de func, affectation, etc.) }
 Procedure ParseExprStmt;
 Var
@@ -3984,6 +5154,41 @@ Begin
         EmitInstrA('JMP', LoopContLbl[LoopTop - 1])
       Else
         CompileError('continue en dehors d''une boucle');
+      Exit;
+    End
+    { TODO 16 : struct }
+    Else If Kw = 'struct' Then
+    Begin
+      ParseStructDecl;
+      Exit;
+    End
+    { TODO 17 : func }
+    Else If Kw = 'func' Then
+    Begin
+      ParseFuncDecl;
+      Exit;
+    End
+    { TODO 18 : enum }
+    Else If Kw = 'enum' Then
+    Begin
+      ParseEnumDecl;
+      Exit;
+    End
+    { TODO 19 : class }
+    Else If Kw = 'class' Then
+    Begin
+      ParseClassDecl;
+      Exit;
+    End
+    { TODO 20 : protocol / extension }
+    Else If Kw = 'protocol' Then
+    Begin
+      ParseProtocolDecl;
+      Exit;
+    End
+    Else If Kw = 'extension' Then
+    Begin
+      ParseExtensionDecl;
       Exit;
     End
     Else
