@@ -2572,7 +2572,7 @@ Begin
           Idx := SymAdd(VName, SC_ARRAY, TY_IDX_ARRAY, 0);
         EmitComment('arr[key] : ' + VName);
         EmitInstr('LEA', 'SI, ' + SymTab[Idx].MangledName);
-        { Cle simple (on ne traite pas la multi-dim ici, juste la cle) }
+        { TODO 11 : evaluer l expression de cle et charger dans DI }
         { Pour l instant on consomme les tokens jusqu au ] }
         While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']'))
               And (CurToken.Kind <> TK_EOF) Do
@@ -2587,7 +2587,8 @@ Begin
       Begin
         ParserAdvance; { '(' }
         EmitComment('call ' + VName);
-        { Consommer les arguments (simplifie : on ignore) }
+        { TODO 11 : evaluer les arguments, les empiler (PUSH AX), }
+        { et nettoyer la pile apres l appel (ADD SP, ArgCnt*2)     }
         While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
               And (CurToken.Kind <> TK_EOF) Do
           ParserAdvance;
@@ -2650,6 +2651,7 @@ Begin
       If CurToken.Val = '(' Then
       Begin
         ParserAdvance; { '(' }
+        { TODO 11 : appeler ParseExprPrec pour les expressions completes }
         ParsePrimary(Res);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance
