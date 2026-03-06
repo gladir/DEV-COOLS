@@ -162,7 +162,7 @@
             Appel de fonction integree : print, printf, length, substr, ...
             Getline primaire : getline [var] -> CALL _AWRT_GETLINE -> AX
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             Modulo % : IDIV -> resultat dans DX (reste)
@@ -179,7 +179,7 @@
             Ternaire ? : -> labels _AWL_TERNF_N / _AWL_TERNE_N
             Operateur in : CALL _AWRT_ARRHAS(SI=arr, DI=key) -> AX=0|1
 
-  TODO 12 - ENTREES/SORTIES (print / printf / getline)
+  TODO 12 - ENTREES/SORTIES (print / printf / getline) [IMPLEMENTE]
             print expr, expr, ... :
               Separateur OFS entre arguments (defaut espace)
               Terminateur ORS en fin (defaut newline)
@@ -201,7 +201,7 @@
               cmd | getline var : lire depuis un pipe (stub)
               Retour : 1 = succes, 0 = fin de fichier, -1 = erreur
 
-  TODO 13 - IF / ELSE
+  TODO 13 - IF / ELSE [IMPLEMENTE]
             ParseIfStmt : if (cond) stmt [else stmt]
               Condition verite AWK : 0 et "" sont faux
               Emission TEST AX,AX / JZ pour valeur numerique fausse
@@ -211,7 +211,7 @@
             If imbrique : if (c1) s1 else if (c2) s2 else s3
               Labels : _AWL_ELIF_N pour chaque branche
 
-  TODO 14 - BOUCLES : while / for / for-in / do-while
+  TODO 14 - BOUCLES : while / for / for-in / do-while [IMPLEMENTE]
             ParseWhileStmt : while (cond) stmt_ou_bloc
               Labels : _AWL_WTEST_N, _AWL_WEND_N
             ParseDoWhileStmt : do stmt_ou_bloc while (cond)
@@ -228,7 +228,7 @@
             continue : saut vers le test/increment -> JMP _AWL_INCR_N
             LoopPush / LoopPop : pile de labels break/continue
 
-  TODO 15 - TABLEAUX ASSOCIATIFS
+  TODO 15 - TABLEAUX ASSOCIATIFS [IMPLEMENTE]
             Representation memoire : table de hachage statique
               _AWA_nom : zone DATA de MAX_HASH_PAIRS paires (cle_ptr, val_ptr)
               Entete : DW count (nombre de paires actives)
@@ -678,6 +678,11 @@ Var
   { Frame de fonction courante (TODO 09/17) }
   CurFrameSize : Integer;   { nombre de mots locaux dans le cadre  }
   CurFnRetLbl  : TString;   { label de retour de la fonction       }
+
+  { Pile de boucles pour break/continue (TODO 14) }
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopDepth    : Integer;
 
 { ============================================================
   INFRASTRUCTURE ET OPTIONS
@@ -1392,10 +1397,15 @@ Procedure LexNextToken(Var T : TToken);
 Var
   SL, SC : Integer;
   C      : Char;
+  WasNewLine : Boolean;
 Begin
+  WasNewLine := False;
   { Passer espaces et commentaires, mais pas les fins de ligne }
   While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+  Begin
+    WasNewLine := True;
     LexNextLine;
+  End;
   If LexEOF Then
   Begin
     MakeToken(T, TK_EOF, '', LexLineNo, LexColNo);
@@ -1405,6 +1415,13 @@ Begin
   While (LexColNo <= Length(LexLine)) And
         ((LexLine[LexColNo] = ' ') Or (LexLine[LexColNo] = #9)) Do
     Inc(LexColNo);
+  { Si on a change de ligne, emettre un NEWLINE pour separer les stmts }
+  If WasNewLine And (LexLastKind <> TK_NEWLINE) Then
+  Begin
+    MakeToken(T, TK_NEWLINE, '', LexLineNo, LexColNo);
+    LexLastKind := TK_NEWLINE;
+    Exit;
+  End;
   { Commentaire # -> passer toute la ligne }
   If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '#') Then
   Begin
@@ -2483,6 +2500,12 @@ Begin
   End;
 End;
 
+{ ---- Forward declarations pour recursion mutuelle ------------ }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseStatement; Forward;
+Procedure ParseBlock; Forward;
+Procedure ParseStmtOrBlock; Forward;
+
 { ---- ParsePrimary : analyser une expression primaire AWK ----- }
 { Gere : literal nombre, literal chaine, regexp, identifiant,   }
 {   reference de champ $n, acces tableau, (expr), appel de       }
@@ -2572,11 +2595,10 @@ Begin
           Idx := SymAdd(VName, SC_ARRAY, TY_IDX_ARRAY, 0);
         EmitComment('arr[key] : ' + VName);
         EmitInstr('LEA', 'SI, ' + SymTab[Idx].MangledName);
-        { TODO 11 : evaluer l expression de cle et charger dans DI }
-        { Pour l instant on consomme les tokens jusqu au ] }
-        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']'))
-              And (CurToken.Kind <> TK_EOF) Do
-          ParserAdvance;
+        { Evaluer l expression de cle }
+        ParseExprPrec(1, Res);
+        ExprLoadToAX(Res);
+        EmitInstr('MOV', 'DI, AX');
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
           ParserAdvance;
         EmitInstr('CALL', AW_RT_PFX + 'ARRGET');
@@ -2587,14 +2609,30 @@ Begin
       Begin
         ParserAdvance; { '(' }
         EmitComment('call ' + VName);
-        { TODO 11 : evaluer les arguments, les empiler (PUSH AX), }
-        { et nettoyer la pile apres l appel (ADD SP, ArgCnt*2)     }
-        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
-              And (CurToken.Kind <> TK_EOF) Do
-          ParserAdvance;
+        { Evaluer les arguments et les empiler }
+        NS := '0'; { compteur d arguments }
+        Idx := 0;
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+        Begin
+          Repeat
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('PUSH', 'AX');
+            Inc(Idx);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance
+            Else
+              Break;
+          Until CurToken.Kind = TK_EOF;
+        End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance;
         EmitInstr('CALL', AW_FN_PFX + SymNameClean(VName));
+        If Idx > 0 Then
+        Begin
+          Str(Idx * 2, NS);
+          EmitInstr('ADD', 'SP, ' + NS);
+        End;
         ExprMakeAX(TY_IDX_NUMBER, Res);
       End
       { Variable simple }
@@ -2651,8 +2689,7 @@ Begin
       If CurToken.Val = '(' Then
       Begin
         ParserAdvance; { '(' }
-        { TODO 11 : appeler ParseExprPrec pour les expressions completes }
-        ParsePrimary(Res);
+        ParseExprPrec(1, Res);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance
         Else
@@ -2750,17 +2787,908 @@ Begin
   End;
 End;
 
+{ ============================================================
+  EXPRESSIONS BINAIRES (TODO 11)
+  ============================================================ }
+
+{ ---- SkipNewlines : sauter les fins de ligne logiques -------- }
+Procedure SkipNewlines;
+Begin
+  While CurToken.Kind = TK_NEWLINE Do
+    ParserAdvance;
+End;
+
+{ ---- IsConcatContext : detection de juxtaposition implicite -- }
+{ Vrai si le token courant peut debuter un operande droit de    }
+{ concatenation (pas un operateur binaire ni un terminateur).   }
+Function IsConcatContext : Boolean;
+Begin
+  IsConcatContext := False;
+  Case CurToken.Kind Of
+    TK_INTEGER, TK_FLOAT, TK_STRING, TK_REGEXP,
+    TK_IDENT, TK_BUILTIN, TK_FIELD :
+      IsConcatContext := True;
+    TK_PUNCT :
+      If CurToken.Val = '(' Then IsConcatContext := True;
+    TK_OP :
+      If (CurToken.Val = '-') Or (CurToken.Val = '+') Or
+         (CurToken.Val = '!') Or (CurToken.Val = '++') Or
+         (CurToken.Val = '--') Then
+        IsConcatContext := True;
+  End;
+End;
+
+{ ---- ParseExprPrec : parseur de Pratt pour expressions ------- }
+{ MinPrec = niveau de precedence minimal a capturer.            }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  Rhs      : TExprVal;
+  Idx      : Integer;
+  LblF     : TString;
+  LblE     : TString;
+  LblT     : TString;
+  ResType  : Integer;
+Begin
+  ParsePrimary(Res);
+  { Post-increment / post-decrement }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '++') Then
+  Begin
+    If Res.SymIdx >= 0 Then
+    Begin
+      ExprLoadToAX(Res);
+      GenPostInc(Res.SymIdx);
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+    End;
+    ParserAdvance;
+  End
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '--') Then
+  Begin
+    If Res.SymIdx >= 0 Then
+    Begin
+      ExprLoadToAX(Res);
+      GenPostDec(Res.SymIdx);
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+    End;
+    ParserAdvance;
+  End;
+  { Boucle binaire Pratt }
+  While True Do
+  Begin
+    { Operateur binaire explicite ou mot-cle in }
+    If (CurToken.Kind = TK_OP) Then
+      Op := CurToken.Val
+    Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+      Op := 'in'
+    Else
+      Op := '';
+    Prec := BinOpPrec(Op);
+    { Concatenation implicite (juxtaposition) si pas d op binaire }
+    If ((Op = '') Or (Prec = 0)) And (MinPrec <= 8) And IsConcatContext Then
+    Begin
+      ExprLoadToAX(Res);
+      EmitInstr('PUSH', 'AX');        { sauver gauche }
+      EmitInstr('MOV', 'SI, AX');
+      ParseExprPrec(9, Rhs);           { niveau 9 = plus serre }
+      ExprLoadToAX(Rhs);
+      EmitInstr('MOV', 'DI, AX');
+      EmitInstr('POP', 'SI');
+      EmitInstr('CALL', AW_RT_PFX + 'CONCAT');
+      ExprMakeAX(TY_IDX_STRING, Res);
+      Continue;
+    End;
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+    ParserAdvance;
+    { Affectation : droit-associatif, RHS d abord }
+    If IsAssignOp(Op) Then
+    Begin
+      Idx := Res.SymIdx;
+      ParseExprPrec(Prec, Rhs);
+      ExprLoadToAX(Rhs);
+      If Op = '=' Then
+      Begin
+        If Idx >= 0 Then
+          VarStore(Idx);
+      End
+      Else
+      Begin
+        If Idx >= 0 Then
+          GenAssignOp(Idx, Op);
+      End;
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+      Continue;
+    End;
+    { Ternaire ? : }
+    If Op = '?' Then
+    Begin
+      ExprLoadToAX(Res);
+      LblF := NewLabel('TERNF');
+      LblE := NewLabel('TERNE');
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblF);
+      ParseExprPrec(3, Res);  { niveau 3 pour ne pas capturer : }
+      ExprLoadToAX(Res);
+      EmitInstr('JMP', LblE);
+      EmitLabel(LblF);
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':') Then
+        ParserAdvance
+      Else
+        CompileError(': attendu dans ternaire');
+      ParseExprPrec(3, Rhs);
+      ExprLoadToAX(Rhs);
+      EmitLabel(LblE);
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+      Continue;
+    End;
+    { Logique && : court-circuit }
+    If Op = '&&' Then
+    Begin
+      ExprLoadToAX(Res);
+      LblF := NewLabel('ANDF');
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblF);
+      If BinOpIsRight(Op) Then NextPrec := Prec
+      Else NextPrec := Prec + 1;
+      ParseExprPrec(NextPrec, Rhs);
+      ExprLoadToAX(Rhs);
+      EmitLabel(LblF);
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+      Continue;
+    End;
+    { Logique || : court-circuit }
+    If Op = '||' Then
+    Begin
+      ExprLoadToAX(Res);
+      LblT := NewLabel('ORT');
+      LblE := NewLabel('ORE');
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JNZ', LblT);
+      If BinOpIsRight(Op) Then NextPrec := Prec
+      Else NextPrec := Prec + 1;
+      ParseExprPrec(NextPrec, Rhs);
+      ExprLoadToAX(Rhs);
+      EmitInstr('JMP', LblE);
+      EmitLabel(LblT);
+      EmitInstr('MOV', 'AX, 1');
+      EmitLabel(LblE);
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+      Continue;
+    End;
+    { Operateur in : test d appartenance }
+    If Op = 'in' Then
+    Begin
+      ExprLoadToAX(Res);
+      EmitInstr('MOV', 'DI, AX');    { cle }
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        If Idx < 0 Then
+          Idx := SymAdd(CurToken.Val, SC_ARRAY, TY_IDX_ARRAY, 0);
+        EmitInstr('LEA', 'SI, ' + SymTab[Idx].MangledName);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        CompileError('nom de tableau attendu apres in');
+        EmitInstr('XOR', 'SI, SI');
+      End;
+      EmitInstr('CALL', AW_RT_PFX + 'ARRHAS');
+      ExprMakeAX(TY_IDX_NUMBER, Res);
+      Continue;
+    End;
+    { Tous les autres operateurs binaires }
+    ExprLoadToAX(Res);
+    EmitInstr('PUSH', 'AX');
+    If BinOpIsRight(Op) Then NextPrec := Prec
+    Else NextPrec := Prec + 1;
+    ParseExprPrec(NextPrec, Rhs);
+    ExprLoadToAX(Rhs);
+    EmitInstr('MOV', 'BX, AX');
+    EmitInstr('POP', 'AX');
+    ResType := TypeCoerceResult(Res.TypeIdx, Rhs.TypeIdx, Op);
+    { Arithmetique }
+    If Op = '+' Then
+      EmitInstr('ADD', 'AX, BX')
+    Else If Op = '-' Then
+      EmitInstr('SUB', 'AX, BX')
+    Else If Op = '*' Then
+      EmitInstr('IMUL', 'BX')
+    Else If Op = '/' Then
+    Begin
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+    End
+    Else If Op = '%' Then
+    Begin
+      EmitInstr('CWD', '');
+      EmitInstr('IDIV', 'BX');
+      EmitInstr('MOV', 'AX, DX');
+    End
+    Else If Op = '^' Then
+    Begin
+      EmitInstr('PUSH', 'BX');
+      EmitInstr('PUSH', 'AX');
+      EmitInstr('CALL', AW_RT_PFX + 'POW');
+      EmitInstr('ADD', 'SP, 4');
+    End
+    { Comparaison }
+    Else If (Op = '==') Or (Op = '!=') Or (Op = '<') Or
+            (Op = '<=') Or (Op = '>') Or (Op = '>=') Then
+    Begin
+      LblT := NewLabel('CMP');
+      LblE := NewLabel('CMPE');
+      EmitInstr('CMP', 'AX, BX');
+      If Op = '==' Then EmitInstr('JE', LblT)
+      Else If Op = '!=' Then EmitInstr('JNE', LblT)
+      Else If Op = '<' Then EmitInstr('JL', LblT)
+      Else If Op = '<=' Then EmitInstr('JLE', LblT)
+      Else If Op = '>' Then EmitInstr('JG', LblT)
+      Else If Op = '>=' Then EmitInstr('JGE', LblT);
+      EmitInstr('XOR', 'AX, AX');
+      EmitInstr('JMP', LblE);
+      EmitLabel(LblT);
+      EmitInstr('MOV', 'AX, 1');
+      EmitLabel(LblE);
+      ResType := TY_IDX_NUMBER;
+    End
+    { Correspondance regexp }
+    Else If Op = '~' Then
+    Begin
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('MOV', 'DI, BX');
+      EmitInstr('CALL', AW_RT_PFX + 'MATCH');
+      ResType := TY_IDX_NUMBER;
+    End
+    Else If Op = '!~' Then
+    Begin
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('MOV', 'DI, BX');
+      EmitInstr('CALL', AW_RT_PFX + 'MATCH');
+      EmitInstr('XOR', 'AX, 1');
+      ResType := TY_IDX_NUMBER;
+    End;
+    ExprMakeAX(ResType, Res);
+  End;
+End;
+
+{ ---- ParseExpr : raccourci pour ParseExprPrec(1, Res) -------- }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  ENTREES/SORTIES (TODO 12)
+  ============================================================ }
+
+{ ---- ParsePrintStmt : print expr, expr, ... [> file] --------- }
+Procedure ParsePrintStmt;
+Var
+  Res    : TExprVal;
+  ArgCnt : Integer;
+  Redir  : Boolean;
+  NS     : TString;
+Begin
+  EmitComment('print statement');
+  ArgCnt := 0;
+  Redir  := False;
+  { print sans argument -> print $0 }
+  If (CurToken.Kind = TK_NEWLINE) Or (CurToken.Kind = TK_EOF) Or
+     (CurToken.Kind = TK_PUNCT) And
+     ((CurToken.Val = ';') Or (CurToken.Val = '}')) Then
+  Begin
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('CALL', AW_RT_PFX + 'GETFIELD');
+    EmitInstr('CALL', AW_RT_PFX + 'PRINTVAL');
+    EmitInstr('CALL', AW_RT_PFX + 'PRINTORS');
+    Exit;
+  End;
+  { print expr, expr, ... }
+  Repeat
+    ParseExprPrec(1, Res);
+    ExprLoadToAX(Res);
+    EmitInstr('CALL', AW_RT_PFX + 'PRINTVAL');
+    Inc(ArgCnt);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      EmitInstr('CALL', AW_RT_PFX + 'PRINTOFS');
+      ParserAdvance;
+    End
+    Else
+      Break;
+  Until CurToken.Kind = TK_EOF;
+  { Redirection > ou >> }
+  If (CurToken.Kind = TK_OP) And
+     ((CurToken.Val = '>') Or (CurToken.Val = '>>')) Then
+  Begin
+    Redir := True;
+    ParserAdvance;
+    ParseExprPrec(1, Res);
+    ExprLoadToAX(Res);
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('CALL', AW_RT_PFX + 'FOPEN');
+    { BX = handle }
+    EmitInstr('CALL', AW_RT_PFX + 'FCLOSE');
+  End;
+  If Not Redir Then
+    EmitInstr('CALL', AW_RT_PFX + 'PRINTORS');
+End;
+
+{ ---- ParsePrintfStmt : printf fmt, expr, ... ----------------- }
+Procedure ParsePrintfStmt;
+Var
+  Res    : TExprVal;
+  ArgCnt : Integer;
+  NS     : TString;
+Begin
+  EmitComment('printf statement');
+  ArgCnt := 0;
+  Repeat
+    ParseExprPrec(1, Res);
+    ExprLoadToAX(Res);
+    EmitInstr('PUSH', 'AX');
+    Inc(ArgCnt);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until CurToken.Kind = TK_EOF;
+  Str(ArgCnt, NS);
+  EmitInstr('MOV', 'CX, ' + NS);
+  EmitInstr('CALL', AW_RT_PFX + 'PRINTF');
+  If ArgCnt > 0 Then
+  Begin
+    Str(ArgCnt * 2, NS);
+    EmitInstr('ADD', 'SP, ' + NS);
+  End;
+End;
+
+{ ---- ParseGetline : getline [var] [< file] ------------------- }
+Procedure ParseGetline;
+Var
+  Res : TExprVal;
+  Idx : Integer;
+Begin
+  EmitComment('getline');
+  { getline var }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    Idx := SymFind(CurToken.Val);
+    If Idx < 0 Then
+      Idx := SymAdd(CurToken.Val, SC_VAR, TY_IDX_STRING, 0);
+    ParserAdvance;
+    EmitInstr('CALL', AW_RT_PFX + 'GETLINE');
+    VarStore(Idx);
+  End
+  { getline < "fichier" }
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '<') Then
+  Begin
+    ParserAdvance;
+    ParseExprPrec(1, Res);
+    ExprLoadToAX(Res);
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('CALL', AW_RT_PFX + 'FGETLINE');
+  End
+  Else
+    EmitInstr('CALL', AW_RT_PFX + 'GETLINE');
+End;
+
+{ ============================================================
+  IF / ELSE (TODO 13)
+  ============================================================ }
+
+{ ---- ParseIfStmt : if (cond) stmt [else stmt] ---------------- }
+Procedure ParseIfStmt;
+Var
+  Res     : TExprVal;
+  LblElse : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('if');
+  { Attendre ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('( attendu apres if');
+  { Condition }
+  ParseExprPrec(1, Res);
+  ExprLoadToAX(Res);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(') attendu apres condition if');
+  LblElse := NewLabel('ELSE');
+  LblEnd  := NewLabel('ENDIF');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblElse);
+  { Branche then }
+  SkipNewlines;
+  ParseStmtOrBlock;
+  { Branche else }
+  SkipNewlines;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblElse);
+    ParserAdvance;
+    SkipNewlines;
+    ParseStmtOrBlock;
+    EmitLabel(LblEnd);
+  End
+  Else
+    EmitLabel(LblElse);
+End;
+
+{ ============================================================
+  BOUCLES (TODO 14)
+  ============================================================ }
+
+{ ---- LoopPush : empiler les labels break/continue ------------ }
+Procedure LoopPush(Const BrkLbl, ContLbl : TString);
+Begin
+  If LoopDepth >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('imbrication de boucles trop profonde');
+    Exit;
+  End;
+  LoopBreakLbl[LoopDepth] := BrkLbl;
+  LoopContLbl[LoopDepth]  := ContLbl;
+  Inc(LoopDepth);
+End;
+
+{ ---- LoopPop : depiler les labels break/continue ------------- }
+Procedure LoopPop;
+Begin
+  If LoopDepth > 0 Then
+    Dec(LoopDepth);
+End;
+
+{ ---- ParseWhileStmt : while (cond) stmt_ou_bloc -------------- }
+Procedure ParseWhileStmt;
+Var
+  Res     : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('while');
+  LblTest := NewLabel('WTEST');
+  LblEnd  := NewLabel('WEND');
+  LoopPush(LblEnd, LblTest);
+  EmitLabel(LblTest);
+  { Condition }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('( attendu apres while');
+  ParseExprPrec(1, Res);
+  ExprLoadToAX(Res);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(') attendu apres condition while');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblEnd);
+  { Corps }
+  SkipNewlines;
+  ParseStmtOrBlock;
+  EmitInstr('JMP', LblTest);
+  EmitLabel(LblEnd);
+  LoopPop;
+End;
+
+{ ---- ParseDoWhileStmt : do stmt while (cond) ----------------- }
+Procedure ParseDoWhileStmt;
+Var
+  Res      : TExprVal;
+  LblBegin : TString;
+  LblTest  : TString;
+Begin
+  EmitComment('do-while');
+  LblBegin := NewLabel('DOBEG');
+  LblTest  := NewLabel('DOTEST');
+  LoopPush(LblTest, LblTest);
+  EmitLabel(LblBegin);
+  { Corps }
+  SkipNewlines;
+  ParseStmtOrBlock;
+  SkipNewlines;
+  { while (cond) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+    ParserAdvance
+  Else
+    CompileError('while attendu apres do { ... }');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  EmitLabel(LblTest);
+  ParseExprPrec(1, Res);
+  ExprLoadToAX(Res);
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNZ', LblBegin);
+  LoopPop;
+End;
+
+{ ---- ParseForStmt : for (...) ou for (var in arr) ------------ }
+Procedure ParseForStmt;
+Var
+  Res      : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+  LblFI    : TString;
+  LblFIE   : TString;
+  VName    : TString;
+  Idx      : Integer;
+  ArrIdx   : Integer;
+  IsForIn  : Boolean;
+Begin
+  EmitComment('for');
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+    CompileError('( attendu apres for');
+  { Detecter for (var in array) }
+  IsForIn := False;
+  If (CurToken.Kind = TK_IDENT) Then
+  Begin
+    VName := CurToken.Val;
+    { Regarder si le prochain token (apres l ident) est 'in' }
+    { Sauver la position pour reculer si ce n est pas for-in }
+    ParserAdvance;
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'in') Then
+    Begin
+      IsForIn := True;
+      ParserAdvance; { consommer 'in' }
+    End;
+  End;
+  If IsForIn Then
+  Begin
+    { for (var in array) }
+    EmitComment('for-in ' + VName);
+    Idx := SymFind(VName);
+    If Idx < 0 Then
+      Idx := SymAdd(VName, SC_VAR, TY_IDX_STRING, 0);
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      ArrIdx := SymFind(CurToken.Val);
+      If ArrIdx < 0 Then
+        ArrIdx := SymAdd(CurToken.Val, SC_ARRAY, TY_IDX_ARRAY, 0);
+      EmitInstr('LEA', 'SI, ' + SymTab[ArrIdx].MangledName);
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('nom de tableau attendu dans for-in');
+      EmitInstr('XOR', 'SI, SI');
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    LblFI  := NewLabel('FITEST');
+    LblFIE := NewLabel('FIEND');
+    LoopPush(LblFIE, LblFI);
+    EmitInstr('CALL', AW_RT_PFX + 'ARRFIRST');
+    EmitLabel(LblFI);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ', LblFIE);
+    VarStore(Idx);
+    { Corps }
+    SkipNewlines;
+    ParseStmtOrBlock;
+    EmitInstr('CALL', AW_RT_PFX + 'ARRNEXT');
+    EmitInstr('JMP', LblFI);
+    EmitLabel(LblFIE);
+    LoopPop;
+  End
+  Else
+  Begin
+    { for (init; cond; incr) corps }
+    { L ident deja consomme est le debut de init (peut-etre assignation) }
+    { On va traiter le cas ou c est une variable = expr }
+    LblTest := NewLabel('FTEST');
+    LblIncr := NewLabel('FINCR');
+    LblEnd  := NewLabel('FEND');
+    LoopPush(LblEnd, LblIncr);
+    { init : on a deja consomme VName, verifier s il y a = }
+    If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) Then
+    Begin
+      Idx := SymFind(VName);
+      If Idx < 0 Then
+        Idx := SymAdd(VName, SC_VAR, TY_IDX_NUMBER, 0);
+      ParserAdvance; { = }
+      ParseExprPrec(1, Res);
+      ExprLoadToAX(Res);
+      VarStore(Idx);
+    End
+    Else
+    Begin
+      { init peut etre n importe quelle expression }
+      { VName est deja consomme, essayer de traiter comme expr }
+      Idx := SymFind(VName);
+      If Idx >= 0 Then
+        VarLoadToAX(Idx);
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    { cond }
+    EmitLabel(LblTest);
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+    Begin
+      ParseExprPrec(1, Res);
+      ExprLoadToAX(Res);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblEnd);
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    { Sauver la position d increment pour l emettre apres le corps }
+    { On ne peut pas facilement sauver, donc on emet un JMP par-dessus }
+    { l increment et on l emet a la place du label }
+    EmitInstr('JMP', NewLabel('FBODY'));
+    EmitLabel(LblIncr);
+    { incr }
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+    Begin
+      ParseExprPrec(1, Res);
+      ExprLoadToAX(Res);
+    End;
+    EmitInstr('JMP', LblTest);
+    { Le label FBODY est le dernier label genere moins 3 }
+    EmitLabel(AW_LBL_PFX + 'FBODY_' + IntToStr(LabelGenSeq - 3));
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    { Corps }
+    SkipNewlines;
+    ParseStmtOrBlock;
+    EmitInstr('JMP', LblIncr);
+    EmitLabel(LblEnd);
+    LoopPop;
+  End;
+End;
+
+{ ============================================================
+  TABLEAUX ASSOCIATIFS (TODO 15)
+  ============================================================ }
+
+{ ---- ParseDeleteStmt : delete arr[key] ou delete arr --------- }
+Procedure ParseDeleteStmt;
+Var
+  Idx : Integer;
+  Res : TExprVal;
+Begin
+  EmitComment('delete');
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de tableau attendu apres delete');
+    Exit;
+  End;
+  Idx := SymFind(CurToken.Val);
+  If Idx < 0 Then
+    Idx := SymAdd(CurToken.Val, SC_ARRAY, TY_IDX_ARRAY, 0);
+  EmitInstr('LEA', 'SI, ' + SymTab[Idx].MangledName);
+  ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+  Begin
+    { delete arr[key] }
+    ParserAdvance;
+    ParseExprPrec(1, Res);
+    ExprLoadToAX(Res);
+    EmitInstr('MOV', 'DI, AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+      ParserAdvance;
+    EmitInstr('CALL', AW_RT_PFX + 'ARRDEL');
+  End
+  Else
+  Begin
+    { delete arr (vider tout le tableau) }
+    EmitInstr('CALL', AW_RT_PFX + 'ARRCLEAR');
+  End;
+End;
+
+{ ============================================================
+  PARSEUR DE STATEMENTS ET BLOCS
+  ============================================================ }
+
+{ ---- ParseBlock : bloc d instructions entre accolades -------- }
+Procedure ParseBlock;
+Begin
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance;
+  SkipNewlines;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}'))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseStatement;
+    SkipNewlines;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    SkipNewlines;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseStmtOrBlock : statement unique ou bloc accolades --- }
+Procedure ParseStmtOrBlock;
+Begin
+  SkipNewlines;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParseBlock
+  Else
+    ParseStatement;
+End;
+
+{ ---- ParseStatement : analyser un statement AWK -------------- }
+Procedure ParseStatement;
+Var
+  Res : TExprVal;
+Begin
+  SkipNewlines;
+  If CurToken.Kind = TK_EOF Then Exit;
+  { Terminateur }
+  If (CurToken.Kind = TK_PUNCT) And
+     ((CurToken.Val = ';') Or (CurToken.Val = '}')) Then
+    Exit;
+  { Mots-cles de controle }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If CurToken.Val = 'if' Then
+    Begin
+      ParserAdvance;
+      ParseIfStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'while' Then
+    Begin
+      ParserAdvance;
+      ParseWhileStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'do' Then
+    Begin
+      ParserAdvance;
+      ParseDoWhileStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'for' Then
+    Begin
+      ParserAdvance;
+      ParseForStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'print' Then
+    Begin
+      ParserAdvance;
+      ParsePrintStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'printf' Then
+    Begin
+      ParserAdvance;
+      ParsePrintfStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'getline' Then
+    Begin
+      ParserAdvance;
+      ParseGetline;
+      Exit;
+    End;
+    If CurToken.Val = 'delete' Then
+    Begin
+      ParserAdvance;
+      ParseDeleteStmt;
+      Exit;
+    End;
+    If CurToken.Val = 'break' Then
+    Begin
+      ParserAdvance;
+      If LoopDepth > 0 Then
+        EmitInstr('JMP', LoopBreakLbl[LoopDepth - 1])
+      Else
+        CompileError('break en dehors d''une boucle');
+      Exit;
+    End;
+    If CurToken.Val = 'continue' Then
+    Begin
+      ParserAdvance;
+      If LoopDepth > 0 Then
+        EmitInstr('JMP', LoopContLbl[LoopDepth - 1])
+      Else
+        CompileError('continue en dehors d''une boucle');
+      Exit;
+    End;
+    If CurToken.Val = 'exit' Then
+    Begin
+      ParserAdvance;
+      If Not ((CurToken.Kind = TK_NEWLINE) Or (CurToken.Kind = TK_EOF) Or
+              ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = ';') Or (CurToken.Val = '}')))) Then
+      Begin
+        ParseExprPrec(1, Res);
+        ExprLoadToAX(Res);
+        EmitInstr('MOV', 'AH, 4Ch');
+        EmitInstr('INT', '21h');
+      End
+      Else
+      Begin
+        EmitInstr('MOV', 'AX, 4C00h');
+        EmitInstr('INT', '21h');
+      End;
+      Exit;
+    End;
+    If CurToken.Val = 'next' Then
+    Begin
+      ParserAdvance;
+      EmitComment('next -> JMP to main loop');
+      EmitInstr('JMP', AW_RULE_PFX + 'MAIN');
+      Exit;
+    End;
+    If CurToken.Val = 'return' Then
+    Begin
+      ParserAdvance;
+      If Not ((CurToken.Kind = TK_NEWLINE) Or (CurToken.Kind = TK_EOF) Or
+              ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = ';') Or (CurToken.Val = '}')))) Then
+      Begin
+        ParseExprPrec(1, Res);
+        ExprLoadToAX(Res);
+      End
+      Else
+        EmitInstr('XOR', 'AX, AX');
+      If CurFnRetLbl <> '' Then
+        EmitInstr('JMP', CurFnRetLbl);
+      Exit;
+    End;
+    If (CurToken.Val = 'BEGIN') Or (CurToken.Val = 'END') Then
+    Begin
+      ParserAdvance;
+      Exit;
+    End;
+  End;
+  (* Bloc accolades *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+  { Expression (affectation, appel de fonction, etc.) }
+  ParseExprPrec(1, Res);
+End;
+
 { ---- Run : boucle principale de compilation ----------------- }
 Procedure Run;
 Begin
   TypeInit;
   SymInit;
+  LoopDepth := 0;
   EmitOpen;
   EmitHeader;
   LexInit;
   ParserAdvance;
+  SkipNewlines;
   While CurToken.Kind <> TK_EOF Do
-    ParserAdvance;
+  Begin
+    ParseStatement;
+    SkipNewlines;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    SkipNewlines;
+    { Si on n avance pas, forcer l avancement pour eviter boucle infinie }
+    If (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_NEWLINE) And
+       (CurToken.Kind <> TK_KEYWORD) And (CurToken.Kind <> TK_IDENT) And
+       (CurToken.Kind <> TK_BUILTIN) And (CurToken.Kind <> TK_FIELD) And
+       (CurToken.Kind <> TK_INTEGER) And (CurToken.Kind <> TK_FLOAT) And
+       (CurToken.Kind <> TK_STRING) And (CurToken.Kind <> TK_REGEXP) And
+       Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) And
+       Not ((CurToken.Kind = TK_OP) And
+            ((CurToken.Val = '-') Or (CurToken.Val = '+') Or
+             (CurToken.Val = '!') Or (CurToken.Val = '++') Or
+             (CurToken.Val = '--'))) Then
+      ParserAdvance;
+  End;
   LexClose;
   EmitClose;
 End;
