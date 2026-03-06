@@ -272,7 +272,7 @@
             eof($fh) -> AX=1 si fin de fichier (INT 21h AH=3Fh = 0 octets)
             Modes non supportes : pipe, socket -> avertissement
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL  [IMPLEMENTE]
             _PRRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _PRRT_PRINTLN : _PRRT_PRINT + emet CR+LF
             _PRRT_ITOA(AX=n, DI=buf) : conversion entier -> chaine ASCII
@@ -1011,8 +1011,10 @@ Procedure EmitRuntime;
 Var
   Idx : Integer;
 Begin
+  If RuntimeEmitted Then Exit;  { TODO 24 : emettre le runtime une seule fois }
+  RuntimeEmitted := True;
   EmitBlankLine;
-  EmitRaw('; === Runtime PERL86 - TODO 19 ===');
+  EmitRaw('; === Runtime PERL86 - TODO 19/24 ===');
   EmitBlankLine;
   { ---- _PRRT_REMATCH : recherche de chaine (strstr basique) ---- }
   EmitRaw('_PRRT_REMATCH PROC NEAR');
@@ -1575,6 +1577,200 @@ Begin
   EmitRaw('        POP   BP');
   EmitRaw('        RET');
   EmitRaw('_PRRT_READLINE ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_STRLEN - longueur d''une chaine C                }
+  { Entree : SI=ptr chaine null-terminee                             }
+  { Sortie : AX=longueur, CX=longueur                               }
+  EmitRaw('_PRRT_STRLEN PROC NEAR');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        MOV   DI, SI');
+  EmitRaw('_PRRT_STL:');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_STE');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_STL');
+  EmitRaw('_PRRT_STE:');
+  EmitRaw('        MOV   AX, DI');
+  EmitRaw('        SUB   AX, SI');
+  EmitRaw('        MOV   CX, AX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_STRLEN ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_PRINT - ecrire une chaine sur un handle DOS     }
+  { Entree : BX=handle, SI=msg, CX=longueur                         }
+  { Appel DOS : AH=40h BX=handle CX=nb_octets DS:DX=buf             }
+  EmitRaw('_PRRT_PRINT PROC NEAR');
+  EmitRaw('        PUSH  AX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   DX, SI');
+  EmitRaw('        MOV   AH, 40h');
+  EmitRaw('        INT   21h');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   AX');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_PRINT ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_PRINTLN - ecrire CR+LF sur un handle DOS        }
+  { Entree : BX=handle                                               }
+  If DataFindByLabel('_PRRT_CRLF') < 0 Then
+    DataAdd('_PRRT_CRLF', DK_STR, 0, #13#10);
+  EmitRaw('_PRRT_PRINTLN PROC NEAR');
+  EmitRaw('        PUSH  AX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        MOV   SI, OFFSET _PRRT_CRLF');
+  EmitRaw('        MOV   DX, SI');
+  EmitRaw('        MOV   CX, 2');
+  EmitRaw('        MOV   AH, 40h');
+  EmitRaw('        INT   21h');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   AX');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_PRINTLN ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_ITOA - convertir entier signe en chaine ASCII   }
+  { Entree : AX=entier, DI=buffer de destination                     }
+  { Sortie : DI inchange (pointe debut buffer), null-termine         }
+  EmitRaw('_PRRT_ITOA PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JGE   _PRRT_ITP');
+  EmitRaw('        NEG   AX');
+  EmitRaw('        MOV   BYTE PTR [DI], ''-''');
+  EmitRaw('        INC   DI');
+  EmitRaw('_PRRT_ITP:');
+  EmitRaw('        MOV   SI, DI');
+  EmitRaw('        MOV   BX, 10');
+  EmitRaw('        XOR   CX, CX');
+  EmitRaw('_PRRT_ITDL:');
+  EmitRaw('        XOR   DX, DX');
+  EmitRaw('        DIV   BX');
+  EmitRaw('        ADD   DL, 48');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        INC   CX');
+  EmitRaw('        TEST  AX, AX');
+  EmitRaw('        JNZ   _PRRT_ITDL');
+  EmitRaw('_PRRT_ITRL:');
+  EmitRaw('        POP   DX');
+  EmitRaw('        MOV   [SI], DL');
+  EmitRaw('        INC   SI');
+  EmitRaw('        LOOP  _PRRT_ITRL');
+  EmitRaw('        MOV   BYTE PTR [SI], 0');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   DX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_ITOA ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_CONCAT - strcat(DI, SI) : ajouter SI a la fin  }
+  { Entree : DI=dst (chaine C), SI=src (chaine C)                   }
+  EmitRaw('_PRRT_CONCAT PROC NEAR');
+  EmitRaw('        PUSH  AX');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('_PRRT_CCW:');
+  EmitRaw('        MOV   AL, [DI]');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_CCC');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_CCW');
+  EmitRaw('_PRRT_CCC:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   [DI], AL');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_CCE');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   DI');
+  EmitRaw('        JMP   _PRRT_CCC');
+  EmitRaw('_PRRT_CCE:');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   AX');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_CONCAT ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_STRREPEAT - repeter src n fois dans dst         }
+  { Entree : DI=dst, SI=src, CX=n  (CX=0 -> chaine vide)            }
+  EmitRaw('_PRRT_STRREPEAT PROC NEAR');
+  EmitRaw('        PUSH  BP');
+  EmitRaw('        MOV   BP, SP');
+  EmitRaw('        PUSH  SI');
+  EmitRaw('        PUSH  DI');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  AX');
+  EmitRaw('        MOV   BYTE PTR [DI], 0');
+  EmitRaw('        TEST  CX, CX');
+  EmitRaw('        JZ    _PRRT_SRPE');
+  EmitRaw('        MOV   BX, DI');
+  EmitRaw('_PRRT_SRPL:');
+  EmitRaw('        MOV   SI, WORD PTR [BP-2]');
+  EmitRaw('_PRRT_SRCPY:');
+  EmitRaw('        MOV   AL, [SI]');
+  EmitRaw('        MOV   [BX], AL');
+  EmitRaw('        TEST  AL, AL');
+  EmitRaw('        JZ    _PRRT_SRD1');
+  EmitRaw('        INC   SI');
+  EmitRaw('        INC   BX');
+  EmitRaw('        JMP   _PRRT_SRCPY');
+  EmitRaw('_PRRT_SRD1:');
+  EmitRaw('        DEC   CX');
+  EmitRaw('        JNZ   _PRRT_SRPL');
+  EmitRaw('_PRRT_SRPE:');
+  EmitRaw('        POP   AX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   DI');
+  EmitRaw('        POP   SI');
+  EmitRaw('        POP   BP');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_STRREPEAT ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_PUSH - pousser une valeur dans un tableau       }
+  { Entree : SI=ptr word count, AX=valeur                            }
+  { Disposition : [SI]=count, [SI+2]=elem[0], [SI+4]=elem[1], ...   }
+  EmitRaw('_PRRT_PUSH PROC NEAR');
+  EmitRaw('        PUSH  BX');
+  EmitRaw('        PUSH  CX');
+  EmitRaw('        MOV   CX, [SI]');
+  EmitRaw('        INC   CX');
+  EmitRaw('        MOV   BX, SI');
+  EmitRaw('        SHL   CX, 1');
+  EmitRaw('        ADD   BX, CX');
+  EmitRaw('        MOV   [BX], AX');
+  EmitRaw('        INC   WORD PTR [SI]');
+  EmitRaw('        POP   CX');
+  EmitRaw('        POP   BX');
+  EmitRaw('        RET');
+  EmitRaw('_PRRT_PUSH ENDP');
+  EmitBlankLine;
+  { TODO 24 : _PRRT_PANIC - afficher msg + terminer code 1           }
+  { Entree : SI=ptr chaine d''erreur                                  }
+  EmitRaw('_PRRT_PANIC PROC NEAR');
+  EmitRaw('        PUSH  DX');
+  EmitRaw('        CALL  _PRRT_STRLEN');
+  EmitRaw('        MOV   DX, SI');
+  EmitRaw('        MOV   BX, 2');
+  EmitRaw('        MOV   AH, 40h');
+  EmitRaw('        INT   21h');
+  EmitRaw('        POP   DX');
+  EmitRaw('        MOV   AX, 4C01h');
+  EmitRaw('        INT   21h');
+  EmitRaw('_PRRT_PANIC ENDP');
   EmitBlankLine;
 End;
 
@@ -3638,6 +3834,7 @@ Var
   LblB : TString;
   LblC : TString;
   SaveLeft : TExprVal;   { copie de Left pour affectations composees }
+  Idx  : Integer;        { TODO 24 : DataTab pour _PRRT_STRBUF }
 Begin
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_IDX_SCALAR;
@@ -3698,7 +3895,24 @@ Begin
       EmitInstr('MOV', 'AX, CX');
       EmitLabel(LblA);
     End
-    Else { .= **= x= : stub, garder l''ancienne valeur }
+    Else If Op = '.=' Then
+    Begin
+      { TODO 24 : concat-assign : STRBUF = Left + Right, AX = STRBUF }
+      If DataFindByLabel('_PRRT_STRBUF') < 0 Then
+      Begin
+        Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
+        DataTab[Idx].ElemCount := 128;
+      End;
+      EmitInstr('MOV', 'BYTE PTR [_PRRT_STRBUF], 0');
+      EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+      EmitInstr('MOV', 'SI, AX');   { Left (courante) en SI }
+      EmitInstr('CALL', '_PRRT_CONCAT');   { copie Left -> STRBUF }
+      EmitInstr('MOV', 'SI, CX');   { Right (appended) en SI }
+      EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+      EmitInstr('CALL', '_PRRT_CONCAT');   { ajoute Right }
+      EmitInstr('MOV', 'AX, OFFSET _PRRT_STRBUF');
+    End
+    Else { **= x= : stub, garder l''ancienne valeur }
       EmitComment(Op + ' : stub, valeur inchangee');
     { Stocker le resultat dans la lvalue }
     EmitStoreScalar(Left);
@@ -3743,12 +3957,36 @@ Begin
   { ---- Concatenation et repetition ---- }
   If Op = '.' Then
   Begin
-    EmitComment('. : concat -> CALL _PRRT_CONCAT (TODO 24)');
+    { TODO 24 : BX=Left string ptr, AX=Right string ptr -> concat -> STRBUF }
+    If DataFindByLabel('_PRRT_STRBUF') < 0 Then
+    Begin
+      Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
+      DataTab[Idx].ElemCount := 128;
+    End;
+    EmitInstr('PUSH', 'AX');                           { sauver Right }
+    EmitInstr('MOV', 'BYTE PTR [_PRRT_STRBUF], 0');   { vider STRBUF }
+    EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+    EmitInstr('MOV', 'SI, BX');                        { SI = Left }
+    EmitInstr('CALL', '_PRRT_CONCAT');                 { copie Left }
+    EmitInstr('POP', 'SI');                            { SI = Right }
+    EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+    EmitInstr('CALL', '_PRRT_CONCAT');                 { ajoute Right }
+    EmitInstr('MOV', 'AX, OFFSET _PRRT_STRBUF');
     Exit;
   End;
   If Op = 'x' Then
   Begin
-    EmitComment('x : repet -> CALL _PRRT_STRREPEAT (TODO 24)');
+    { TODO 24 : BX=src string ptr, AX=count -> repete -> STRBUF }
+    If DataFindByLabel('_PRRT_STRBUF') < 0 Then
+    Begin
+      Idx := DataAdd('_PRRT_STRBUF', DK_ARRAY_BLK, 0, '');
+      DataTab[Idx].ElemCount := 128;
+    End;
+    EmitInstr('MOV', 'CX, AX');                        { CX = count }
+    EmitInstr('MOV', 'SI, BX');                        { SI = src }
+    EmitInstr('MOV', 'DI, OFFSET _PRRT_STRBUF');
+    EmitInstr('CALL', '_PRRT_STRREPEAT');
+    EmitInstr('MOV', 'AX, OFFSET _PRRT_STRBUF');
     Exit;
   End;
   { ---- Comparaisons numeriques : BX=Left, AX=Right ---- }
@@ -4436,13 +4674,20 @@ Begin
     Exit;
   End;
   { ---- TODO 23 : TK_FILEHANDLE <$fh> : readline depuis filehandle ---- }
+  { STDOUT/STDERR/STDIN en contexte expression -> valeur nulle (pas readline) }
   If CurToken.Kind = TK_FILEHANDLE Then
   Begin
     NStr := CurToken.Val;  { nom du filehandle (sans $) }
+    If (NStr = 'STDOUT') Or (NStr = 'STDERR') Or (NStr = 'STDIN') Then
+    Begin
+      { Bareword standard en expression : avancer sans emettre de code }
+      ParserAdvance;
+      ExprMakeNone(Res);
+      Exit;
+    End;
     ParserAdvance;
     { Charger le handle DOS dans BX }
     Idx := SymFindCat(NStr, SC_FILEHANDLE);
-    If Idx < 0 Then Idx := SymFind(NStr, '$');
     If Idx >= 0 Then
     Begin
       Str(SymTab[Idx].Offset, S);
@@ -6012,19 +6257,19 @@ Begin
   IsSay := (KW = 'say');
   IsDie := (KW = 'die');
   If (KW = 'warn') Or IsDie Then BXval := '2';  { STDERR }
-  { Filehandle explicite : STDOUT / STDERR / STDIN sans sigil }
-  If CurToken.Kind = TK_IDENT Then
+  { Filehandle explicite : STDOUT / STDERR / STDIN (TK_IDENT ou TK_FILEHANDLE) }
+  If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_FILEHANDLE) Then
   Begin
     If      CurToken.Val = 'STDOUT' Then Begin BXval := '1'; ParserAdvance; End
     Else If CurToken.Val = 'STDERR' Then Begin BXval := '2'; ParserAdvance; End
     Else If CurToken.Val = 'STDIN'  Then Begin BXval := '0'; ParserAdvance; End;
     { Sinon : identifiant inconnu -> traiter comme premiere expression }
   End;
-  { TODO 23 : print $fh, LIST -> filehandle scalaire }
+  { TODO 23 : print $fh, LIST -> filehandle scalaire (SC_FILEHANDLE uniquement) }
   If CurToken.Kind = TK_SCALAR Then
   Begin
     FhIdx := SymFindCat(CurToken.Val, SC_FILEHANDLE);
-    If FhIdx < 0 Then FhIdx := SymFind(CurToken.Val, '$');
+    { Pas de fallback SymFind : seuls les vrais filehandles sont detectes ici }
     If FhIdx >= 0 Then
     Begin
       Str(SymTab[FhIdx].Offset, FhOfs);
