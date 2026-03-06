@@ -286,11 +286,11 @@
             _PRRT_PANIC(SI=msg) : affiche msg + MOV AX,4C01h + INT 21h
             RuntimeEmitted : flag pour n'emettre le runtime qu'une fois
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES  [IMPLEMENTE]
             EmitClose : END _PRF_main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseStmt loop ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _PRF_main
-            Fichiers SAMPLES\PERL\ a creer :
+            Fichiers SAMPLES\PERL\ crees :
               hello.pl    (print, variables scalaires, concatenation, say)
               math.pl     (sous-routines, arithmetique, return, recursion)
               control.pl  (if/elsif/else/unless, while, for, foreach, last/next)
@@ -7064,7 +7064,9 @@ Begin
 End;
 
 { ============================================================
-  TODO 25 - RUN (stub minimal, complete en TODO 25)
+  TODO 25 - RUN  [IMPLEMENTE]
+  Pipeline complet : TypeInit/SymInit/EmitOpen -> LexInit/ParseStmt ->
+  LexClose -> EmitClose (EmitRuntime + EmitDataSeg + END _PRF_main)
   ============================================================ }
 Procedure Run;
 Begin
