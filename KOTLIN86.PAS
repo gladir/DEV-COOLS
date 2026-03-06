@@ -1,0 +1,513 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur Kotlin vers assembleur 8086
+}
+
+(* ============================================================
+  KOTLIN86.PAS - Compilateur Kotlin vers assembleur 8086
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .MODEL SMALL, DOS 16 bits
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE ET OPTIONS
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
+            ParseArgs : analyser argv (source.kt [sortie.asm] [-v] [-d] [-w])
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .kt (source Kotlin)
+            Programme principal : validation des arguments et appel Run
+            Version, Date, aide en ligne (option -h)
+
+  TODO 02 - LEXEUR (TOKENS KOTLIN)
+            TTokenKind : TK_EOF, TK_INTEGER, TK_LONG, TK_FLOAT,
+              TK_STRING, TK_CHAR, TK_IDENT, TK_KEYWORD,
+              TK_OP, TK_PUNCT, TK_NEWLINE (insertion implicite de ;)
+            LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
+            LexScanString : chaine entre guillemets doubles "abc"
+              Sequences d echappement : \n \t \r \\ \" \$ \uNNNN
+            LexScanChar : litteral caractere entre apostrophes 'A'
+            LexScanTemplate : interpolation de chaine "$var" et "${expr}"
+            Commentaires : // ligne, /* ... */ multi-lignes (imbrication autorisee)
+            Mots-cles : abstract annotation as break by catch class companion
+              const constructor continue crossinline data do downTo else enum
+              external false final finally for fun if import in infix init
+              inline inner interface internal is it lateinit noinline null
+              object open operator out override package private protected
+              public reified return sealed step super this throw to true
+              try typealias until val var vararg when where while
+            Mode debug -d : affichage de chaque token avec PrintToken
+
+  TODO 03 - LITTERAUX ET CONSTANTES
+            Entiers decimaux : 0..65535 (Int) ou -32768..32767 (signe)
+            Entiers hexadecimaux : 0xFF, 0XFF
+            Entiers binaires : 0b1010, 0B1010
+            Suffixe Long : 123L -> avertissement (traite comme Int 16 bits)
+            Separateurs numeriques : 1_000_000 -> 1000000
+            Flottants : reconnus par le lexeur, traites comme entiers (trunc)
+              Suffixes F et D : avertissement + trunc
+            Caracteres : 'A' ou '\n' ou '\uNNNN'
+            Chaines : "abc" -> pointeur vers donnees DATA
+              Chaine brute : triple guillemets non supportes -> avertissement
+            Interpolation de chaine : "x = $x" et "y = ${y+1}"
+              -> concatenation via appels _KTRT_CONCAT et _KTRT_NUMTOSTR
+            null  : constante -> AX=0 (reference nulle)
+            true  : constante -> AX=1
+            false : constante -> AX=0
+
+  TODO 04 - OPERATEURS ET PRECEDENCE
+            Arithmetiques  : + - * / % (entiers 16 bits)
+            Comparaison    : == != < <= > >= (egalite structurelle)
+            Identite ref   : === !== (egalite referentielle, comparaison de ptrs)
+            Logiques       : && || ! (court-circuit -> labels _KTL_NNNN)
+            Bits           : and or xor inv shl shr ushr (fonctions infixes)
+            Intervalle     : .. (creation de range, a..b)
+            Contenance     : in !in (appartenance a un range ou collection)
+            Verification   : is !is (test de type -> smart cast)
+            Elvis          : ?: (null-coalescing, si gauche null -> droite)
+            Safe call      : ?. (appel/acces si non-null, sinon null)
+            Not-null assert: !! (assertion non-null, exception si null)
+            Affectation    : = += -= *= /= %=
+            Unaire         : + - ! ++ -- (prefixe et suffixe)
+            Precedence (du plus fort au plus faible) :
+              1. Suffixe : ++ -- . ?. () [] !!
+              2. Prefixe : - + ++ -- !
+              3. Type RHS : as as?
+              4. * / %
+              5. + -
+              6. ..
+              7. Infixe nomme (in !in is !is, fonctions infix)
+              8. Elvis ?:
+              9. Comparaison < > <= >= == != === !==
+              10. && ||
+              11. Spread *arr (dans appel de fonction)
+              12. Affectation = += -= *= /= %=
+
+  TODO 05 - TABLE DES SYMBOLES
+            TSymKind : SK_VAL, SK_VAR, SK_PARAM, SK_FUN, SK_CLASS,
+              SK_OBJECT, SK_ENUM, SK_INTERFACE, SK_COMPANION, SK_PROP
+            TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
+              Scope, IsConst, IsNullable, IsLateinit, Visibility
+            SymAdd, SymFind, SymFindInScope, SymMangle
+            CurScope : compteur de portee imbriquee (max MAX_SCOPE)
+            SymEnterScope / SymLeaveScope : gestion des portees imbriquees
+            Visibilite : public (defaut), private, protected, internal
+            Smart cast : marquer le type affine apres un test is
+            Qualificateurs : Package.Classe.membre -> recherche chainee
+
+  TODO 06 - SYSTEME DE TYPES
+            TTypeKind : TYK_INT (16 bits signe), TYK_SHORT (16 bits signe),
+              TYK_LONG (stub 16 bits), TYK_BYTE (8 bits signe),
+              TYK_BOOLEAN (8 bits), TYK_CHAR (16 bits, stocke 8 bits),
+              TYK_FLOAT (stub entier), TYK_DOUBLE (stub entier),
+              TYK_STRING (ptr chaine), TYK_ARRAY (ptr tableau),
+              TYK_INTARRAY (ptr IntArray), TYK_CLASS (ptr objet),
+              TYK_INTERFACE (ptr vtable), TYK_ENUM (ordinal),
+              TYK_UNIT (void), TYK_NOTHING (type bottom),
+              TYK_NULLABLE (enveloppe nullable), TYK_ANY (type racine),
+              TYK_LAMBDA (ptr code)
+            TypeTab, TypeInit : enregistrer les types primitifs et utilisateur
+            TypeSizeof : Int=2, Short=2, Byte=1, Boolean=1, Char=2(stocke 1),
+              String/Array/objet=2(ptr), Unit=0
+            Nullable : T? -> meme taille + flag IsNullable
+              AX=0 represente null pour les types nullable
+            Smart cast : si (x is T) alors x est traite comme T dans le bloc
+            Type inference : deduction du type via l expression d initialisation
+
+  TODO 07 - EMETTEUR DE CODE ASM
+            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
+            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
+            EmitComment, EmitBlankLine
+            LabelGen global (compteur unique _KTL_NNNNN)
+            Prefixes : _KTV_ (variable), _KTF_ (fonction), _KTK_ (chaine const),
+              _KTRT_ (runtime), _KTL_ (label), _KTC_ (classe/vtable),
+              _KTE_ (enum), _KTI_ (interface), _KTO_ (object singleton)
+            EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
+            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
+            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_OBJ),
+              IntVal, StrVal, ElemCount
+            DataTab[0..MAX_DATA-1], DataCount
+            DataAdd, DataAddStr, DataAddArray, DataAddObj : variantes d ajout
+            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+            Variables globales (val/var top-level) : entrees DK_WORD dans DATA
+            Constantes const val : entrees DK_WORD ou DK_STR (immuables)
+            Chaines litterales : DB 'abc',0 dans DATA avec label _KTK_N
+            Singletons object : bloc DATA pour chaque object declaration
+            Tables de methodes virtuelles : DW offset proc par methode
+            Descripteurs d enum : DW ordinal + ptr nom pour chaque entree
+
+  TODO 09 - VARIABLES ET AFFECTATIONS
+            val nom : Type = expr -> variable immuable (erreur si reassignation)
+              Allocation locale : SUB SP,2 / MOV [BP-n], AX
+              Allocation globale : entree _KTV_nom DW dans DATA
+            var nom : Type = expr -> variable mutable
+              Meme allocation, mais reassignation autorisee
+            Type inference : val x = 42 -> type Int deduit automatiquement
+            lateinit var : declaration sans initialisation (verification a l execution)
+              -> flag, MOV AX,[BP-n] / CMP AX,0 / JZ _KTL_UNINIT_ERR
+            const val : constante de compilation (top-level ou companion object)
+              -> valeur inlinee directement dans le code
+            Affectation simple : var = expr -> ExprLoad + MOV [BP-n], AX
+            Operateurs composes : += -= *= /= %= -> load / op / store
+            Destructuration : val (a, b) = pair -> acces componentN() -> stubs
+
+  TODO 10 - EXPRESSIONS PRIMAIRES
+            ParsePrimary : literal entier, literal chaine, literal caractere,
+              ident, this, super, null, true, false
+            this -> BX = ptr objet courant (parametre cache)
+              En contexte top-level : avertissement + XOR AX,AX
+            null -> XOR AX,AX
+            true -> MOV AX,1   false -> XOR AX,AX
+            Appel de fonction : nom(args) -> PUSH args + CALL _KTF_nom
+            Acces membre : expr.membre -> offset dans objet ou appel methode
+            Safe call : expr?.membre -> CMP AX,0 / JZ null_branch
+            Not-null assert : expr!! -> CMP AX,0 / JZ _KTL_NPE (exception)
+            Acces index : expr[i] -> calcul offset dans tableau
+            Cast : expr as Type -> verification + AX inchange
+            Safe cast : expr as? Type -> AX ou 0 si echec
+            Groupement parenthese : (expr)
+            Interpolation chaine : "texte $var texte" -> concat multiple
+
+  TODO 11 - EXPRESSIONS BINAIRES (PRATT)
+            ParseExprPrec(MinPrec) : boucle Pratt complete
+            Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
+            Modulo : IDIV -> resultat dans DX (reste)
+            Concatenation String : + -> CALL _KTRT_CONCAT(SI=gauche, DI=droite)
+            Comparaison : CMP + Jcc pour ==, !=, <, <=, >, >=
+            Comparaison String : CALL _KTRT_STRCMP -> drapeaux
+            Egalite referentielle === : CMP direct des pointeurs
+            Logique && : court-circuit JZ vers false-branch
+            Logique || : court-circuit JNZ vers true-branch
+            Logique ! : XOR AX,1
+            Elvis ?: : CMP AX,0 / JNZ skip / evaluer droite
+            Range .. : creation d un range (bornes dans registres)
+            Operateur in : verification appartenance range (CMP bornes)
+            Operateur is : verification type dynamique -> AX=0|1
+            Fonctions infixes : a shl b -> SHL AX,CL
+              shr -> SHR, ushr -> SHR (non signe), and -> AND, or -> OR,
+              xor -> XOR, inv -> NOT (unaire)
+
+  TODO 12 - ENTREES/SORTIES (println / readLine / print)
+            println(args) : affiche chaque argument converti en chaine + \n
+              Detection du type compile -> _KTRT_NUMTOSTR ou chaine directe
+              Separateur : pas de separateur entre arguments
+              -> INT 21h AH=40h BX=1 (STDOUT) + CR+LF
+            print(args) : idem sans \n final
+            readLine() : lecture d une ligne depuis STDIN -> AX=ptr chaine
+              -> INT 21h AH=0Ah (lecture ligne bufferisee)
+            readLine()!!.toInt() : lecture + conversion chaine -> entier
+              -> CALL _KTRT_READLINE + CALL _KTRT_STRTONUM -> AX
+            Fonctions de conversion sur types :
+              toString() -> CALL _KTRT_NUMTOSTR -> AX=ptr
+              toInt() -> CALL _KTRT_STRTONUM -> AX
+              toChar() -> MOV AL,valeur (octet bas)
+              toByte() / toShort() / toLong() : stubs -> AX tel quel
+
+  TODO 13 - IF / ELSE / WHEN (EXPRESSIONS ET STATEMENTS)
+            ParseIfStmt : if (cond) bloc [else if (cond) bloc] [else bloc]
+              Emission TEST AX,AX / JZ pour condition fausse
+              Labels : _KTL_ELIF_N, _KTL_ELSE_N, _KTL_ENDIF_N
+            If comme expression : val x = if (c) a else b
+              -> evalue dans AX, les deux branches deposent dans AX
+            ParseWhenStmt : when (expr) {
+                val1 -> stmts
+                val2, val3 -> stmts
+                in lo..hi -> stmts (intervalle)
+                is Type -> stmts (test de type + smart cast)
+                else -> stmts
+              }
+              Emission : CMP + JE pour chaque valeur
+              Intervalle in : CMP+JB / CMP+JA pour les bornes
+              is Type : CALL _KTRT_TYPECODE + CMP
+              Labels : _KTL_WHEN_N, _KTL_WBRANCH_N, _KTL_WEND_N
+            When sans argument : when { cond1 -> ... cond2 -> ... else -> }
+              -> enchainement de if/else if
+            When comme expression : val x = when { ... }
+
+  TODO 14 - BOUCLES : while / do-while / for / repeat
+            ParseWhileStmt : while (cond) bloc
+              Labels : _KTL_WTEST_N, _KTL_WEND_N
+            ParseDoWhileStmt : do bloc while (cond)
+              Labels : _KTL_DOBEG_N, _KTL_DOTEST_N
+            ParseForStmt : for (item in collection) bloc
+              for (i in 0..n) : boucle sur range inclusif
+              for (i in 0 until n) : boucle sur range exclusif borne haute
+              for (i in n downTo 0) : boucle decroissante
+              for (i in 0..n step 2) : boucle avec pas
+              for (ch in "abc") : iteration sur caracteres d une chaine
+              for (e in array) : iteration sur elements d un tableau
+              Labels : _KTL_FTEST_N, _KTL_FINCR_N, _KTL_FEND_N
+            repeat(n) { bloc } : boucle n fois (fonction inline stdlib)
+              -> emission comme for (i in 0 until n)
+            break : saut vers fin de la boucle englobante
+            continue : saut vers l increment/test de la boucle
+            Labels de boucle : label@ for (...) { break@label }
+            LoopPush / LoopPop : pile de labels break/continue
+
+  TODO 15 - TABLEAUX (Array / IntArray / arrayOf)
+            arrayOf(e0, e1, e2) : creation d un tableau -> DATA ou pile
+            intArrayOf(e0, e1, e2) : creation d un IntArray
+            Array(n) { init } : creation avec lambda d initialisation
+              -> boucle interne, init(index) pour chaque element
+            IntArray(n) : creation d un IntArray de taille n, init a 0
+            Representation memoire : [count:word] [e0:word] [e1:word] ...
+              Taille fixe a la compilation (MAX_ARR_ELEM elements max)
+            Acces arr[i] (i constant) : offset = 2 + i*2, MOV AX,[BX+SI]
+            Acces arr[i] (i variable) : SHL AX,1 / ADD AX,2 / MOV SI,AX
+            Affectation arr[i] = expr : calcul offset + MOV [BX+SI],AX
+            arr.size -> MOV AX,[BX] (premier word = count)
+            Methodes Array :
+              arr.get(i) / arr.set(i,v) : idem acces par index
+              arr.indexOf(v) -> CALL _KTRT_ARRIDXOF -> AX
+              arr.contains(v) -> indexOf != -1 -> AX=0|1
+              arr.forEach { action } -> boucle inline
+              arr.map { transform } -> stub + avertissement
+              arr.filter { predicate } -> stub + avertissement
+              arr.sorted() -> CALL _KTRT_ARRSORT -> AX=ptr copie triee
+              arr.sum() -> CALL _KTRT_ARRSUM -> AX
+            Verification de bornes : CMP index / JB/JAE -> exception si hors bornes
+
+  TODO 16 - CLASSES ET DATA CLASSES
+            ParseClassDecl : [open|abstract|data|sealed] class Nom
+              [constructor(params)] [: SuperType(args)[, Interface]] { corps }
+            Constructeur primaire : class Nom(val x: Int, var y: Int)
+              Parametres val/var : proprietes automatiques + init dans constructeur
+              Parametres sans val/var : disponibles dans init {} seulement
+            Bloc init { } : code d initialisation execute apres le constructeur
+            Proprietes : val/var avec getters/setters optionnels
+              get() = expr / set(value) { bloc }
+            Data class : genere automatiquement :
+              toString() -> _KTF_Nom_toString : "Nom(x=..., y=...)"
+              equals() -> comparaison champ par champ
+              hashCode() -> stub AX=0
+              copy() -> allocation + copie des champs
+              componentN() -> acces au N-ieme champ (pour destructuration)
+            Sealed class : hierarchie fermee (enum de sous-types)
+              -> verification exhaustive dans when
+            Allocation : CALL _KTRT_NEW(CX=sizeof) -> AX=ptr objet
+            Representation objet : [vtable:word] [champ1:word] [champ2:word] ...
+
+  TODO 17 - FONCTIONS ET LAMBDAS
+            ParseFunDecl : fun nom(params): RetType { bloc }
+              ou fun nom(params): RetType = expr (expression body)
+            Parametres : nom: Type, valeurs par defaut (nom: Type = val)
+              vararg : dernier parametre variable -> stub + avertissement
+            Valeur de retour : return expr -> MOV AX,val / JMP _KTL_RET_N
+              Retour implicite de Unit si pas de return
+            Fonctions locales : fun imbriquee dans une autre fun
+              Acces au cadre englobant via lien statique (parametre cache)
+            Fonctions d extension : fun Type.nom(params) { this -> BX=receveur }
+              -> _KTF_Type_nom : premier parametre = receveur (this)
+            Fonctions infix : infix fun Int.shl(n: Int) -> utilisation a shl b
+            Fonctions inline : inline fun -> corps substitue a l appel (optimisation)
+              -> emission directe du corps au site d appel
+            Lambdas : { params -> corps } -> label _KTF_LAMBDA_N PROC NEAR
+              Dernier parametre lambda hors parentheses : f(x) { lambda }
+              it : parametre implicite si un seul parametre
+              Capture de variables : allouees dans DATA (cellules partagees)
+            Types fonctionnels : (Int, Int) -> Int -> ptr code
+              Appel indirect : CALL AX
+
+  TODO 18 - PORTEE, PILE ET CADRES
+            Convention d appel : cdecl 16 bits, args empiles gauche a droite
+            Prologue fonction : PUSH BP / MOV BP,SP / SUB SP, locals_size
+            Epilogue : MOV SP,BP / POP BP / RET
+            Variables val/var locales : allouees sur pile [BP-offset]
+            Parametres : acces [BP+offset] (apres BP sauvegarde et adresse retour)
+            Portee de bloc : { } cree une nouvelle portee
+              SymEnterScope a l ouverture, SymLeaveScope a la fermeture
+              Variables de bloc : SUB SP,2 a l entree, ADD SP,2 a la sortie
+            Fermetures (lambdas capturant des variables) :
+              Variables capturees allouees dans DATA (cellules partagees)
+              Emission : MOV AX,[_KTV_nom_cap] / MOV [_KTV_nom_cap],AX
+              Avertissement si capture profonde (>1 niveau)
+            Sauvegarde registres : SI, DI preserves dans chaque fonction
+            CurFrameSize : taille courante du cadre local (nb de words)
+
+  TODO 19 - CHAINES ET METHODES STRING
+            Representation : pointeur vers zone DATA terminee par 0
+            Interpolation : "Hello, $name!" -> concat de segments
+              "${expr}" -> evaluation expr + _KTRT_NUMTOSTR si numerique
+            Concatenation + : CALL _KTRT_CONCAT(SI=gauche, DI=droite) -> AX
+            Comparaison == : CALL _KTRT_STRCMP -> drapeaux ZF
+            Methodes String :
+              s.length -> CALL _KTRT_STRLEN(SI=AX) -> AX
+              s.get(i) / s[i] -> CALL _KTRT_STRCHAR(SI,CX) -> AX=ptr char
+              s.substring(a,b) -> CALL _KTRT_STRSUB(SI,BX,CX) -> AX=ptr
+              s.indexOf(sub) -> CALL _KTRT_STRINDEXOF(SI,DI) -> AX
+              s.contains(sub) -> indexOf != -1 -> AX=0|1
+              s.startsWith(p) -> CALL _KTRT_STRSTARTW -> AX
+              s.endsWith(s2) -> CALL _KTRT_STRENDW -> AX
+              s.uppercase() -> CALL _KTRT_STRTOUPPER(SI) -> AX=buf
+              s.lowercase() -> CALL _KTRT_STRTOLOWER(SI) -> AX=buf
+              s.trim() -> CALL _KTRT_STRTRIM(SI) -> AX=buf
+              s.split(sep) -> CALL _KTRT_STRSPLIT(SI,DI) -> AX=arr ptr
+              s.replace(a,b) -> CALL _KTRT_STRRPLS(SI,DI,BX) -> AX=buf
+              s.toInt() -> CALL _KTRT_STRTONUM(SI) -> AX
+              s.reversed() -> CALL _KTRT_STRREV(SI) -> AX=buf
+              s.repeat(n) -> CALL _KTRT_STRREPEAT(SI,CX) -> AX=buf
+            Caracteres Char :
+              ch.code -> AX = valeur ordinale (MOVZX ou XOR AH,AH / MOV AL,ch)
+              ch.isLetter() / isDigit() / isWhitespace() -> CALL _KTRT_CHKCHAR
+
+  TODO 20 - NULL SAFETY
+            Types nullable : T? -> meme representation + flag IsNullable
+              AX=0 represente null pour tout type nullable
+            Safe call ?. : expr?.membre
+              CMP AX,0 / JZ _KTL_NULL_N (branche null -> AX reste 0)
+              sinon acces membre normalement
+              Chainable : a?.b?.c -> verifications successives
+            Elvis ?: : expr1 ?: expr2
+              CMP AX,0 / JNZ _KTL_SKIP_N (garder AX si non-null)
+              sinon evaluer expr2
+            Not-null assert !! : expr!!
+              CMP AX,0 / JZ _KTL_NPE_N
+              _KTL_NPE_N : CALL _KTRT_PANIC('NullPointerException')
+            Smart cast apres is : if (x is String) { x.length }
+              Le compilateur marque x comme String dans la branche then
+              Pas de cast explicite necessaire
+            Safe cast as? : expr as? Type
+              Si type incompatible -> AX=0 (null) au lieu d exception
+            Verification au compilateur :
+              Affectation de null a un type non-nullable -> erreur
+              Appel de methode sur nullable sans ?. ou !! -> erreur
+            let : x?.let { bloc avec it } -> if (x != null) { bloc }
+              Emission comme if/else avec variable temporaire
+
+  TODO 21 - HERITAGE, INTERFACES ET OBJETS
+            Heritage : open class Parent / class Enfant : Parent(args)
+              open : permet l heritage (par defaut les classes sont final)
+              Surcharge : override fun methode() dans la sous-classe
+              super.methode() -> CALL methode du parent directement
+            Classes abstraites : abstract class Nom { abstract fun m() }
+              Methodes abstraites : pas de corps, doivent etre surchargees
+            Interfaces : interface Nom { fun m(); val p: Type }
+              Implementation : class C : Interface { override fun m() ... }
+              Proprietes d interface : val/var abstraites ou avec defaut
+              Interfaces multiples : class C : I1, I2 { ... }
+            Vtable (table de methodes virtuelles) :
+              Chaque classe ouverte a une vtable dans DATA
+              Heritage : copie de la vtable du parent + surcharges
+              Appel virtuel : MOV BX,[AX] / CALL [BX+offset_methode]
+            Object declaration (singleton) :
+              object Nom { ... } -> instance unique dans DATA
+              Label _KTO_Nom, init une seule fois au premier acces
+            Companion object : companion object { fun create() ... }
+              -> accessible via NomClasse.create() (methode statique)
+            Enum class : enum class Dir { NORTH, SOUTH, EAST, WEST }
+              Ordinal : NORTH=0, SOUTH=1, ... -> constantes entieres
+              name : ptr vers chaine du nom dans DATA
+              values() -> tableau de toutes les entrees
+              valueOf(s) -> recherche par nom -> ordinal
+
+  TODO 22 - EXTENSIONS ET FONCTIONS D ORDRE SUPERIEUR
+            Fonctions d extension : fun String.hello() { println(this) }
+              -> _KTF_String_hello : premier param = receveur (this dans BX)
+              Appel : "abc".hello() -> PUSH ptr_chaine + CALL _KTF_String_hello
+              Resolues statiquement (pas de dispatch virtuel)
+            Proprietes d extension : val String.lastChar: Char get() = ...
+              -> appel de fonction getter avec receveur
+            Fonctions d ordre superieur : fun apply(f: (Int) -> Int, x: Int): Int
+              -> parametre f est un ptr de fonction sur pile
+              Appel : PUSH x / PUSH f / CALL _KTF_apply
+              Dans apply : POP AX (f) / PUSH x / CALL AX
+            Lambda passee en argument : apply({ it * 2 }, 5)
+              -> emission de _KTF_LAMBDA_N + passage de ptr
+              Trailing lambda : apply(5) { it * 2 }
+            Fonctions standard d ordre superieur :
+              let : obj.let { transform(it) } -> appel inline
+              also : obj.also { sideEffect(it) } -> retourne obj
+              run : obj.run { this.compute() } -> retourne resultat
+              with : with(obj) { this.compute() } -> retourne resultat
+              apply : obj.apply { this.init() } -> retourne obj
+            Inline : fun inline avec lambda -> corps substitue directement
+              Evite le cout d appel + allocation de fermeture
+
+  TODO 23 - EXCEPTIONS (try / catch / finally / throw)
+            ParseTryStmt : try { bloc } catch (e: ExType) { bloc } [finally { bloc }]
+              Catches multiples : catch (e: Type1) { } catch (e: Type2) { }
+            Mecanisme sans support OS :
+              _KTX_HANDLER DW 0 dans DATA (ptr vers handler courant)
+              try : sauvegarder ancien handler, installer nouveau
+                MOV [_KTX_HANDLER], OFFSET _KTL_CATCH_N
+              catch (e: Type) : label _KTL_CATCH_N
+                AX = ptr objet exception, CMP type pour chaque catch
+                Variable e : MOV [BP-n], AX
+              finally : label _KTL_FINALLY_N, execute dans tous les cas
+              Restauration : MOV [_KTX_HANDLER], ancien_handler
+            throw expr : lever une exception
+              AX = ptr objet exception
+              CMP WORD PTR [_KTX_HANDLER], 0 / JZ _KTL_UNHANDLED
+              MOV BX, [_KTX_HANDLER] / JMP BX
+              _KTL_UNHANDLED : affiche message + MOV AX,4C01h + INT 21h
+            Try comme expression : val x = try { expr } catch (e: E) { defaut }
+            Types d exception predefinies :
+              Exception, RuntimeException, NullPointerException,
+              IllegalArgumentException, IndexOutOfBoundsException
+              -> stubs : chaines constantes dans DATA
+            require(cond) { msg } : si !cond -> throw IllegalArgumentException
+            check(cond) { msg } : si !cond -> throw IllegalStateException
+
+  TODO 24 - RUNTIME MINIMAL
+            _KTRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
+            _KTRT_PRINTLN : _KTRT_PRINT + CR+LF via _KT_CRLF DB 13,10,0
+            _KTRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
+            _KTRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
+            _KTRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
+            _KTRT_CONCAT(DI=dst, SI=src) : concatenation chaines -> AX=ptr buf
+            _KTRT_STRCMP(SI=str1, DI=str2) : comparaison -> drapeaux ZF/CF
+            _KTRT_STRSUB(SI=str, BX=start, CX=len) : sous-chaine -> AX=ptr
+            _KTRT_STRINDEXOF(SI=str, DI=sub) : recherche -> AX=pos|-1
+            _KTRT_STRTOUPPER(SI=str) : majuscules -> AX=buf
+            _KTRT_STRTOLOWER(SI=str) : minuscules -> AX=buf
+            _KTRT_STRTRIM(SI=str) : supprime espaces debut/fin -> AX=buf
+            _KTRT_STRREV(SI=str) : inverse la chaine -> AX=buf
+            _KTRT_STRREPEAT(SI=str, CX=n) : repete n fois -> AX=buf
+            _KTRT_READLINE(DI=buf) : lecture ligne STDIN -> AX=ptr
+            _KTRT_ABS(AX=n) : valeur absolue -> AX
+            _KTRT_MAX(AX=a, BX=b) : maximum -> AX
+            _KTRT_MIN(AX=a, BX=b) : minimum -> AX
+            _KTRT_NEW(CX=nb_octets) : allocation heap -> AX=ptr
+            _KTRT_ARRIDXOF(SI=ptr, BX=val) : recherche dans tableau -> AX
+            _KTRT_ARRSORT(SI=ptr) : tri a bulles numerique in-place
+            _KTRT_ARRSUM(SI=ptr) : somme des elements -> AX
+            _KTRT_TYPECODE(BX=ptr_objet) : lire typecode -> AX
+            _KTRT_CHKIDX(AX=index, BX=lo, CX=hi) : verification bornes
+              -> exception si hors bornes
+            _KTRT_CHKNIL(AX=ptr) : verification null
+              -> NullPointerException si AX=0
+            _KTRT_PANIC(SI=msg) : affiche message + MOV AX,4C01h + INT 21h
+            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
+            Heap statique : _KT_HEAP DB 4096 DUP(0) + _KT_HEAPTOP DW 0
+              _KTRT_ALLOC(CX=nb_bytes) -> AX=ptr dans le heap statique
+            _KTRT_STRBUF[0..511] : buffer de travail pour concatenation
+
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+            EmitClose : END _KTF_main dans _TEXT ENDS / DATA ENDS
+            Run : pipeline complet LexInit -> ParseTopLevel ->
+              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _KTF_main
+            Point d entree : fun main() ou fun main(args: Array<String>)
+              -> label _KTF_main PROC NEAR ... _KTF_main ENDP
+            Fichiers SAMPLES\KOTLIN\ a creer :
+              hello.kt    (println, val/var, interpolation de chaine)
+              math.kt     (fonctions, recursion, return, expressions)
+              control.kt  (if/else, when, while, for, ranges)
+              arrays.kt   (arrayOf, IntArray, forEach, size, indexOf)
+              classes.kt  (class, data class, constructeur, proprietes)
+              inherit.kt  (open class, override, interface, object)
+              nullsafe.kt (nullable, ?. , ?:, !!, smart cast)
+              lambda.kt   (lambdas, fonctions d ordre superieur, extension)
+            Smoke tests : KOTLIN86.EXE -v SAMPLES\KOTLIN\*.kt
+
+  ============================================================ *)
+
+Program KOTLIN86;
+
+Begin
+End.
