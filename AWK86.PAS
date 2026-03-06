@@ -41,7 +41,7 @@
               getline next nextfile print printf sprintf
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 (valeur 16 bits)
             Entiers octaux : 0377 (prefixe 0)
             Entiers hexadecimaux : 0xFF (prefixe 0x)
@@ -53,7 +53,7 @@
             Chaine vide "" : equivalent de faux en contexte booleen
             Valeur non initialisee : "" (chaine vide) ou 0 selon contexte
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques   : + - * / % ^ (puissance)
             Concatenation   : espace implicite entre deux expressions (juxtaposition)
             Assignation     : = += -= *= /= %= ^=
@@ -80,7 +80,7 @@
              11. ? : (ternaire)
              12. = += -= *= /= %= ^= (assignation)
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR (variable utilisateur), SC_BUILTIN_VAR,
               SC_ARRAY (tableau associatif), SC_PARAM, SC_FUNCTION,
               SC_FIELD (champ $n)
@@ -563,6 +563,73 @@ Type
     Col      : Integer;     { numero de colonne source          }
   End;
 
+  { ---- Systeme de types (TODO 06 stub) --------------------- }
+  TTypeKind = (
+    TYK_NUMBER,        { entier 16 bits signe                   }
+    TYK_STRING,        { pointeur vers chaine terminee par 0    }
+    TYK_UNINITIALIZED, { valeur par defaut : "" ou 0            }
+    TYK_REGEXP,        { pointeur vers pattern data             }
+    TYK_ARRAY,         { tableau associatif (pointeur)          }
+    TYK_UNKNOWN        { type indetermine (coercition dynamique)}
+  );
+
+  TTypeRec = Record
+    Name : TString;
+    Kind : TTypeKind;
+    Size : Integer;    { taille en octets : number=2, string=2  }
+  End;
+
+  { ---- Valeur d expression (TODO 03) ----------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur                          }
+    EK_IMM,    { valeur immediate dans ImmVal                   }
+    EK_AX,     { valeur dans le registre AX                     }
+    EK_MEM     { adresse memoire [BP+Offset] ou [_AWV_x]       }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;   { indice dans TypeTab                  }
+    Offset  : Integer;   { offset donnee/pile                   }
+    SymIdx  : Integer;   { indice dans SymTab (-1 = pas lvalue) }
+  End;
+
+  { ---- Segment de donnees (TODO 08 stub) ------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;  { DK_ARRAY_BLK : nb paires            }
+  End;
+
+  { ---- Categories de symboles (TODO 05) -------------------- }
+  TSymCat = (
+    SC_VAR,          { variable utilisateur                     }
+    SC_BUILTIN_VAR,  { variable predefinie (FS, NR, NF ...)    }
+    SC_ARRAY,        { tableau associatif                       }
+    SC_PARAM,        { parametre de fonction                    }
+    SC_FUNCTION,     { fonction utilisateur                     }
+    SC_FIELD         { champ $n                                 }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { identifiant AWK                 }
+    MangledName : TString;   { _AWV_nom / _AWF_nom / _AWA_nom  }
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   { indice dans TypeTab              }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { offset BP pour locales/params    }
+    IsLocal     : Boolean;   { vrai si variable locale          }
+    IsParam     : Boolean;   { vrai si parametre de fonction    }
+    IsArray     : Boolean;   { vrai si tableau associatif       }
+    ArrayIdx    : Integer;   { indice DataTab du tableau        }
+    DeclLine    : Integer;   { ligne de declaration             }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -584,6 +651,28 @@ Var
   LexOpened  : Boolean;
   CurToken   : TToken;
   LexLastKind: TTokenKind;  { dernier token emis (pour regexp) }
+
+  { Table des types }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Table des symboles }
+  SymTab    : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount  : Integer;
+  ScopeStack: Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop  : Integer;
+  CurScope  : Integer;
+
+  { Segment de donnees }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Generateur de labels }
+  LabelGenSeq : LongInt;
+
+  { Emetteur de code (stub pour TODOs futurs) }
+  OutF      : Text;
+  OutFOpen  : Boolean;
 
 { ============================================================
   INFRASTRUCTURE ET OPTIONS
@@ -1486,9 +1575,378 @@ Begin
     PrintToken(CurToken);
 End;
 
+{ ============================================================
+  LITTERAUX ET CONSTANTES (TODO 03)
+  ============================================================ }
+
+{ ---- IntToStr : conversion entier -> chaine ---------------- }
+Function IntToStr(V : LongInt) : TString;
+Var S : TString;
+Begin
+  Str(V, S);
+  IntToStr := S;
+End;
+
+{ ---- Constantes d index de types primitifs ----------------- }
+Const
+  TY_IDX_NUMBER  = 0;   { entier 16 bits signe                 }
+  TY_IDX_STRING  = 1;   { pointeur vers chaine                 }
+  TY_IDX_REGEXP  = 2;   { pointeur vers pattern                }
+  TY_IDX_ARRAY   = 3;   { tableau associatif                   }
+  TY_IDX_UNINIT  = 4;   { non initialise (""  / 0)             }
+  TY_UNKNOWN     = -1;  { type indetermine                     }
+
+{ ---- TypeInit : enregistrer les types primitifs ------------ }
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+  { TY_IDX_NUMBER = 0 }
+  TypeTab[0].Name := 'number';
+  TypeTab[0].Kind := TYK_NUMBER;
+  TypeTab[0].Size := 2;
+  { TY_IDX_STRING = 1 }
+  TypeTab[1].Name := 'string';
+  TypeTab[1].Kind := TYK_STRING;
+  TypeTab[1].Size := 2;
+  { TY_IDX_REGEXP = 2 }
+  TypeTab[2].Name := 'regexp';
+  TypeTab[2].Kind := TYK_REGEXP;
+  TypeTab[2].Size := 2;
+  { TY_IDX_ARRAY = 3 }
+  TypeTab[3].Name := 'array';
+  TypeTab[3].Kind := TYK_ARRAY;
+  TypeTab[3].Size := 2;
+  { TY_IDX_UNINIT = 4 }
+  TypeTab[4].Name := 'uninit';
+  TypeTab[4].Kind := TYK_UNINITIALIZED;
+  TypeTab[4].Size := 2;
+  TypeCount := 5;
+End;
+
+{ ---- ExprMakeImm : construire une valeur immediate --------- }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNone : valeur invalide (void/erreur) ---------- }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- DataAdd : ajouter une entree dans le segment DATA ----- }
+{ Retourne l index dans DataTab ou -1 si plein.                }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label _AWK_N et stocker chaine -- }
+{ Retourne l index dans DataTab.                               }
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := AW_STR_PFX + IntToStr(LabelGenSeq);
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+{ ---- DataAddWord : ajouter variable/constante DW ----------- }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- LitEvalInt : evaluer un token TK_INTEGER --------------- }
+{ IntVal est deja calcule par LexScanNumber.                   }
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUMBER, Res);
+End;
+
+{ ---- LitEvalFloat : evaluer un token TK_FLOAT (trunc) ------ }
+{ AWK traite les flottants ; en 16 bits on tronque a l entier. }
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := Trunc(T.FloatVal);
+  If IV > 32767 Then IV := 32767;
+  If IV < -32768 Then IV := -32768;
+  ExprMakeImm(IV, TY_IDX_NUMBER, Res);
+End;
+
+{ ---- LitEval : dispatcher pour les litteraux ---------------- }
+{ Tokens : TK_INTEGER, TK_FLOAT, TK_STRING, TK_REGEXP         }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  Case T.Kind Of
+    TK_INTEGER : LitEvalInt(T, Res);
+    TK_FLOAT   : LitEvalFloat(T, Res);
+    TK_STRING  :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+    TK_REGEXP  :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_REGEXP;
+      Res.Offset  := DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+  End;
+End;
+
+{ ============================================================
+  OPERATEURS ET PRECEDENCE (TODO 04)
+  ============================================================ }
+
+{ ---- IsAssignOp : teste si Op est un operateur d assignation }
+Function IsAssignOp(Const Op : TString) : Boolean;
+Begin
+  IsAssignOp :=
+    (Op = '=')  Or (Op = '+=') Or (Op = '-=') Or (Op = '*=') Or
+    (Op = '/=') Or (Op = '%=') Or (Op = '^=');
+End;
+
+{ ---- BinOpPrec : table de precedences AWK (Pratt) ---------- }
+{ Retourne 0 si l operateur n est pas binaire.                 }
+{ Niveaux (croissant = plus serre) :                           }
+{   = += -= *= /= %= ^=  -> 1  (assignation)                  }
+{   ? :                   -> 2  (ternaire)                     }
+{   ||                    -> 3  (OU logique)                   }
+{   &&                    -> 4  (ET logique)                   }
+{   in                    -> 5  (appartenance tableau)          }
+{   ~ !~                  -> 6  (correspondance regexp)        }
+{   == != < <= > >=       -> 7  (comparaison)                  }
+{   (concat)              -> 8  (concatenation implicite)      }
+{   + - (binaire)         -> 9                                 }
+{   * / %                 -> 10                                }
+{   ^ (puissance)         -> 11 (droit-associatif)             }
+{   ! ++ -- + - (unaire)  -> traites par ParseUnary            }
+{   $ (champ)             -> traite par ParsePrimary           }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If IsAssignOp(Op) Then
+    BinOpPrec := 1
+  Else If (Op = '?') Or (Op = ':') Then
+    BinOpPrec := 2
+  Else If Op = '||' Then
+    BinOpPrec := 3
+  Else If Op = '&&' Then
+    BinOpPrec := 4
+  Else If Op = 'in' Then
+    BinOpPrec := 5
+  Else If (Op = '~') Or (Op = '!~') Then
+    BinOpPrec := 6
+  Else If (Op = '==') Or (Op = '!=') Or
+          (Op = '<')  Or (Op = '<=') Or
+          (Op = '>')  Or (Op = '>=') Or
+          (Op = '>>') Then
+    BinOpPrec := 7
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 9
+  Else If (Op = '*') Or (Op = '/') Or (Op = '%') Then
+    BinOpPrec := 10
+  Else If Op = '^' Then
+    BinOpPrec := 11
+  Else If Op = '|' Then
+    BinOpPrec := 0  { pipe dans print, pas operateur binaire normal }
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ---- BinOpIsRight : vrai si operateur droit-associatif ----- }
+{ En AWK : ^ (puissance) et les assignations sont droit-assoc. }
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '^') Or IsAssignOp(Op);
+End;
+
+{ ============================================================
+  TABLE DES SYMBOLES (TODO 05)
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour nommage ASM ------- }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    If IsAlNum(Name[I]) Then
+    Begin
+      If Length(S) < MAX_STR Then S := S + Name[I];
+    End Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + '_';
+    End;
+  End;
+  SymNameClean := S;
+End;
+
+{ ---- SymMangle : generer un label ASM depuis un symbole ---- }
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx : TString;
+Begin
+  Case Cat Of
+    SC_VAR         : Pfx := AW_VAR_PFX;
+    SC_BUILTIN_VAR : Pfx := AW_VAR_PFX;
+    SC_ARRAY       : Pfx := AW_ARR_PFX;
+    SC_PARAM       : Pfx := AW_VAR_PFX;
+    SC_FUNCTION    : Pfx := AW_FN_PFX;
+    SC_FIELD       : Pfx := AW_VAR_PFX;
+  Else
+    Pfx := AW_VAR_PFX;
+  End;
+  SymMangle := Pfx + SymNameClean(Name);
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table ------------- }
+{ Retourne l index du symbole (0-base) ou -1 en cas d erreur.  }
+Function SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AOffset : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name        := AName;
+  SymTab[Idx].MangledName := SymMangle(AName, ACat);
+  SymTab[Idx].Cat         := ACat;
+  SymTab[Idx].TypeIdx     := ATypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := AOffset;
+  SymTab[Idx].IsLocal     := (CurScope > 0);
+  SymTab[Idx].IsParam     := (ACat = SC_PARAM);
+  SymTab[Idx].IsArray     := (ACat = SC_ARRAY);
+  SymTab[Idx].ArrayIdx    := -1;
+  SymTab[Idx].DeclLine    := LexLineNo;
+  Inc(SymCount);
+  SymAdd := Idx;
+End;
+
+{ ---- SymFind : chercher dans toutes les portees ------------ }
+{ Retourne l index du symbole le plus recent, ou -1.           }
+Function SymFind(Const AName : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = AName Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindCat : chercher par nom ET categorie ------------ }
+Function SymFindCat(Const AName : TString; ACat : TSymCat) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = AName) And (SymTab[I].Cat = ACat) Then
+    Begin
+      SymFindCat := I;
+      Exit;
+    End;
+  SymFindCat := -1;
+End;
+
+{ ---- SymEnterScope : entrer dans une portee de fonction ---- }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    FatalError('imbrication de portees trop profonde');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------ }
+{ Retire tous les symboles ajoutes dans cette portee.          }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount  := ScopeStack[ScopeTop];
+  Dec(CurScope);
+End;
+
+{ ---- SymInit : initialiser la table et les variables predefinies }
+Procedure SymInit;
+Begin
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  DataCount := 0;
+  LabelGenSeq := 0;
+  { Variables predefinies AWK (SC_BUILTIN_VAR) }
+  SymAdd('FS',       SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('RS',       SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('OFS',      SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('ORS',      SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('NR',       SC_BUILTIN_VAR, TY_IDX_NUMBER, 0);
+  SymAdd('NF',       SC_BUILTIN_VAR, TY_IDX_NUMBER, 0);
+  SymAdd('FNR',      SC_BUILTIN_VAR, TY_IDX_NUMBER, 0);
+  SymAdd('FILENAME', SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('RSTART',   SC_BUILTIN_VAR, TY_IDX_NUMBER, 0);
+  SymAdd('RLENGTH',  SC_BUILTIN_VAR, TY_IDX_NUMBER, 0);
+  SymAdd('SUBSEP',   SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('OFMT',     SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('CONVFMT',  SC_BUILTIN_VAR, TY_IDX_STRING, 0);
+  SymAdd('ARGC',     SC_BUILTIN_VAR, TY_IDX_NUMBER, 0);
+  SymAdd('ARGV',     SC_BUILTIN_VAR, TY_IDX_ARRAY,  0);
+End;
+
 { ---- Run : boucle principale de compilation ----------------- }
 Procedure Run;
 Begin
+  TypeInit;
+  SymInit;
   LexInit;
   ParserAdvance;
   While CurToken.Kind <> TK_EOF Do
