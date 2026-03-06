@@ -3069,7 +3069,6 @@ Var
   Res    : TExprVal;
   ArgCnt : Integer;
   Redir  : Boolean;
-  NS     : TString;
 Begin
   EmitComment('print statement');
   ArgCnt := 0;
@@ -3318,6 +3317,7 @@ Var
   LblTest  : TString;
   LblIncr  : TString;
   LblEnd   : TString;
+  LblBody  : TString;
   LblFI    : TString;
   LblFIE   : TString;
   VName    : TString;
@@ -3426,7 +3426,8 @@ Begin
     { Sauver la position d increment pour l emettre apres le corps }
     { On ne peut pas facilement sauver, donc on emet un JMP par-dessus }
     { l increment et on l emet a la place du label }
-    EmitInstr('JMP', NewLabel('FBODY'));
+    LblBody := NewLabel('FBODY');
+    EmitInstr('JMP', LblBody);
     EmitLabel(LblIncr);
     { incr }
     If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
@@ -3435,8 +3436,7 @@ Begin
       ExprLoadToAX(Res);
     End;
     EmitInstr('JMP', LblTest);
-    { Le label FBODY est le dernier label genere moins 3 }
-    EmitLabel(AW_LBL_PFX + 'FBODY_' + IntToStr(LabelGenSeq - 3));
+    EmitLabel(LblBody);
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
       ParserAdvance;
     { Corps }
@@ -3660,6 +3660,9 @@ End;
 
 { ---- Run : boucle principale de compilation ----------------- }
 Procedure Run;
+Var
+  PrevLine : Integer;
+  PrevCol  : Integer;
 Begin
   TypeInit;
   SymInit;
@@ -3671,22 +3674,16 @@ Begin
   SkipNewlines;
   While CurToken.Kind <> TK_EOF Do
   Begin
+    PrevLine := CurToken.Line;
+    PrevCol  := CurToken.Col;
     ParseStatement;
     SkipNewlines;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       ParserAdvance;
     SkipNewlines;
-    { Si on n avance pas, forcer l avancement pour eviter boucle infinie }
-    If (CurToken.Kind <> TK_EOF) And (CurToken.Kind <> TK_NEWLINE) And
-       (CurToken.Kind <> TK_KEYWORD) And (CurToken.Kind <> TK_IDENT) And
-       (CurToken.Kind <> TK_BUILTIN) And (CurToken.Kind <> TK_FIELD) And
-       (CurToken.Kind <> TK_INTEGER) And (CurToken.Kind <> TK_FLOAT) And
-       (CurToken.Kind <> TK_STRING) And (CurToken.Kind <> TK_REGEXP) And
-       Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) And
-       Not ((CurToken.Kind = TK_OP) And
-            ((CurToken.Val = '-') Or (CurToken.Val = '+') Or
-             (CurToken.Val = '!') Or (CurToken.Val = '++') Or
-             (CurToken.Val = '--'))) Then
+    { Protection contre boucle infinie : si le parseur n a pas avance }
+    If (CurToken.Kind <> TK_EOF) And
+       (CurToken.Line = PrevLine) And (CurToken.Col = PrevCol) Then
       ParserAdvance;
   End;
   LexClose;
