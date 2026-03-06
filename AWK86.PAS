@@ -245,7 +245,7 @@
             length(arr) : nombre d elements -> CALL _AWRT_ARRLEN -> AX
             Fonction de hachage : _AWRT_HASH(SI=key) -> AX=index (modulo taille)
 
-  TODO 16 - CHAMPS ET ENREGISTREMENTS
+  TODO 16 - CHAMPS ET ENREGISTREMENTS [IMPLEMENTE]
             Lecture d enregistrement : _AWRT_READLINE -> $0 dans _AW_RECBUF
               Separateur RS (defaut \n) : lire jusqu a RS
               Mise a jour de NR (numero d enregistrement global)
@@ -267,7 +267,7 @@
               -> CALL _AWRT_REBUILD0
             NF modifiable : NF = expr -> tronquer ou etendre les champs
 
-  TODO 17 - FONCTIONS UTILISATEUR
+  TODO 17 - FONCTIONS UTILISATEUR [IMPLEMENTE]
             ParseFuncDecl : function nom(params) { bloc }
               Parametres passes par valeur (scalaires) ou par reference (tableaux)
               Convention d appel : cdecl 16 bits, args empiles droite a gauche
@@ -284,7 +284,7 @@
               -> LEA AX, [_AWA_nom] + PUSH AX
             Fonctions declarees avant ou apres utilisation (pre-passe de scan)
 
-  TODO 18 - EXPRESSIONS REGULIERES ET CORRESPONDANCE
+  TODO 18 - EXPRESSIONS REGULIERES ET CORRESPONDANCE [IMPLEMENTE]
             Representation : /pattern/ -> chaine constante en DATA
             Operateur ~ : str ~ /pat/ -> CALL _AWRT_MATCH(SI=str, DI=pat) -> AX
             Operateur !~ : str !~ /pat/ -> CALL _AWRT_MATCH + XOR AX,1
@@ -303,7 +303,7 @@
             Support minimal : recherche de sous-chaine fixe (pas de metacaracteres)
             Metacaracteres . ^ $ * + ? [ ] | ( ) : avertissement compile
 
-  TODO 19 - REGLES PATTERN-ACTION (BEGIN / END / pattern { action })
+  TODO 19 - REGLES PATTERN-ACTION (BEGIN / END / pattern { action }) [IMPLEMENTE]
             Structure d un programme AWK :
               BEGIN { actions }       -> execute une seule fois avant les donnees
               pattern { actions }     -> execute pour chaque enregistrement matchant
@@ -328,7 +328,7 @@
             nextfile : passer au fichier suivant (stub + avertissement)
             exit [expr] : sortir avec code -> MOV AX,4C00h + code + INT 21h
 
-  TODO 20 - FONCTIONS CHAINES INTEGREES
+  TODO 20 - FONCTIONS CHAINES INTEGREES [IMPLEMENTE]
             length(s)       -> CALL _AWRT_STRLEN(SI=s) -> AX
             length(arr)     -> CALL _AWRT_ARRLEN(SI=arr) -> AX (nombre d elements)
             length           -> length($0) si sans argument
@@ -683,6 +683,18 @@ Var
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopDepth    : Integer;
+
+  { Table des regles pattern-action (TODO 19) }
+  RuleCount    : Integer;
+  RuleLabels   : Array[0..MAX_RULES - 1] Of TString;
+  RulePatterns : Array[0..MAX_RULES - 1] Of TString;
+  HasBegin     : Boolean;
+  HasEnd       : Boolean;
+  BeginLbl     : TString;
+  EndLbl       : TString;
+
+  { Compteur de pattern de plage (TODO 18) }
+  RangeCount   : Integer;
 
 { ============================================================
   INFRASTRUCTURE ET OPTIONS
@@ -2505,6 +2517,12 @@ Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
 Procedure ParseStmtOrBlock; Forward;
+Procedure ParseFuncDecl; Forward;
+Procedure GenMatchCall; Forward;
+Procedure GenMatchPos; Forward;
+Procedure GenSubCall; Forward;
+Procedure GenGsubCall; Forward;
+Procedure GenSplitCall; Forward;
 
 { ---- ParsePrimary : analyser une expression primaire AWK ----- }
 { Gere : literal nombre, literal chaine, regexp, identifiant,   }
@@ -2648,23 +2666,286 @@ Begin
       End;
     End;
 
-    { --- Fonction builtin AWK --- }
+    { --- Fonction builtin AWK (TODO 20) --- }
     TK_BUILTIN :
     Begin
       VName := CurToken.Val;
       ParserAdvance;
       EmitComment('builtin ' + VName);
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      { length sans parenthese -> length($0) }
+      If (VName = 'length') And
+         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Then
       Begin
-        ParserAdvance; { '(' }
-        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
-              And (CurToken.Kind <> TK_EOF) Do
-          ParserAdvance;
+        EmitInstr('XOR', 'AX, AX');
+        GenFieldLoad;
+        EmitInstr('MOV', 'SI, AX');
+        EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+        ExprMakeAX(TY_IDX_NUMBER, Res);
+      End
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParserAdvance;
+        { --- length(s) ou length(arr) --- }
+        If VName = 'length' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          Begin
+            { length() -> length($0) }
+            EmitInstr('XOR', 'AX, AX');
+            GenFieldLoad;
+            EmitInstr('MOV', 'SI, AX');
+            EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+          End
+          Else
+          Begin
+            { Verifier si c est un tableau }
+            If (CurToken.Kind = TK_IDENT) Then
+            Begin
+              Idx := SymFind(CurToken.Val);
+              If (Idx >= 0) And (SymTab[Idx].Cat = SC_ARRAY) Then
+              Begin
+                EmitInstr('LEA', 'SI, ' + SymTab[Idx].MangledName);
+                ParserAdvance;
+                EmitInstr('CALL', AW_RT_PFX + 'ARRLEN');
+              End
+              Else
+              Begin
+                ParseExprPrec(1, Res);
+                ExprLoadToAX(Res);
+                EmitInstr('MOV', 'SI, AX');
+                EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+              End;
+            End
+            Else
+            Begin
+              ParseExprPrec(1, Res);
+              ExprLoadToAX(Res);
+              EmitInstr('MOV', 'SI, AX');
+              EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+            End;
+          End;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- substr(s, debut [, longueur]) --- }
+        Else If VName = 'substr' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('PUSH', 'AX');         { s }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'BX, AX');      { debut }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('MOV', 'CX, AX');    { longueur }
+          End
+          Else
+            EmitInstr('MOV', 'CX, 0FFFFh'); { longueur max }
+          EmitInstr('POP', 'SI');           { s }
+          EmitInstr('CALL', AW_RT_PFX + 'SUBSTR');
+          ExprMakeAX(TY_IDX_STRING, Res);
+        End
+        { --- index(s, t) --- }
+        Else If VName = 'index' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('PUSH', 'AX');         { s }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'DI, AX');      { t }
+          EmitInstr('POP', 'SI');           { s }
+          EmitInstr('CALL', AW_RT_PFX + 'INDEX');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- split(s, arr, sep) --- }
+        Else If VName = 'split' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('PUSH', 'AX');          { s }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          { arr }
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            Idx := SymFind(CurToken.Val);
+            If Idx < 0 Then
+              Idx := SymAdd(CurToken.Val, SC_ARRAY, TY_IDX_ARRAY, 0);
+            EmitInstr('LEA', 'DI, ' + SymTab[Idx].MangledName);
+            ParserAdvance;
+          End
+          Else
+            EmitInstr('XOR', 'DI, DI');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('MOV', 'BX, AX');    { sep }
+          End
+          Else
+            EmitInstr('LEA', 'BX, [' + AW_VAR_PFX + 'FS]');
+          EmitInstr('POP', 'SI');           { s }
+          GenSplitCall;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- sub(r, s [, t]) --- }
+        Else If VName = 'sub' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('PUSH', 'AX');          { r (pattern) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'BX, AX');       { s (replacement) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('MOV', 'SI, AX');     { t (target) }
+          End
+          Else
+          Begin
+            EmitInstr('XOR', 'AX, AX');
+            GenFieldLoad;
+            EmitInstr('MOV', 'SI, AX');     { $0 par defaut }
+          End;
+          EmitInstr('POP', 'DI');           { r }
+          GenSubCall;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- gsub(r, s [, t]) --- }
+        Else If VName = 'gsub' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('PUSH', 'AX');          { r (pattern) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'BX, AX');       { s (replacement) }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            ParserAdvance;
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('MOV', 'SI, AX');     { t (target) }
+          End
+          Else
+          Begin
+            EmitInstr('XOR', 'AX, AX');
+            GenFieldLoad;
+            EmitInstr('MOV', 'SI, AX');     { $0 par defaut }
+          End;
+          EmitInstr('POP', 'DI');           { r }
+          GenGsubCall;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- match(s, r) --- }
+        Else If VName = 'match' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('PUSH', 'AX');          { s }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'DI, AX');       { r }
+          EmitInstr('POP', 'SI');            { s }
+          GenMatchPos;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- tolower(s) --- }
+        Else If VName = 'tolower' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'SI, AX');
+          EmitInstr('CALL', AW_RT_PFX + 'TOLOWER');
+          ExprMakeAX(TY_IDX_STRING, Res);
+        End
+        { --- toupper(s) --- }
+        Else If VName = 'toupper' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'SI, AX');
+          EmitInstr('CALL', AW_RT_PFX + 'TOUPPER');
+          ExprMakeAX(TY_IDX_STRING, Res);
+        End
+        { --- sprintf(fmt, args...) --- }
+        Else If VName = 'sprintf' Then
+        Begin
+          Idx := 0;
+          Repeat
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('PUSH', 'AX');
+            Inc(Idx);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance
+            Else
+              Break;
+          Until CurToken.Kind = TK_EOF;
+          Str(Idx, NS);
+          EmitInstr('MOV', 'CX, ' + NS);
+          EmitInstr('CALL', AW_RT_PFX + 'SPRINTF');
+          If Idx > 0 Then
+          Begin
+            Str(Idx * 2, NS);
+            EmitInstr('ADD', 'SP, ' + NS);
+          End;
+          ExprMakeAX(TY_IDX_STRING, Res);
+        End
+        { --- Autre builtin generique --- }
+        Else
+        Begin
+          { Evaluer les arguments et les empiler }
+          Idx := 0;
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            Repeat
+              ParseExprPrec(1, Res);
+              ExprLoadToAX(Res);
+              EmitInstr('PUSH', 'AX');
+              Inc(Idx);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                ParserAdvance
+              Else
+                Break;
+            Until CurToken.Kind = TK_EOF;
+          End;
+          EmitInstr('CALL', AW_RT_PFX + SymNameClean(VName));
+          If Idx > 0 Then
+          Begin
+            Str(Idx * 2, NS);
+            EmitInstr('ADD', 'SP, ' + NS);
+          End;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End;
+        { Fermer la parenthese }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           ParserAdvance;
+      End
+      Else
+      Begin
+        { Builtin sans parenthese, traiter comme appel simple }
+        EmitInstr('CALL', AW_RT_PFX + SymNameClean(VName));
+        ExprMakeAX(TY_IDX_NUMBER, Res);
       End;
-      EmitInstr('CALL', AW_RT_PFX + SymNameClean(VName));
-      ExprMakeAX(TY_IDX_NUMBER, Res);
     End;
 
     { --- Mot-cle special (getline) --- }
@@ -3488,8 +3769,286 @@ Begin
 End;
 
 { ============================================================
-  PARSEUR DE STATEMENTS ET BLOCS
+  CHAMPS ET ENREGISTREMENTS (TODO 16)
   ============================================================ }
+
+{ ---- GenReadLine : lire le prochain enregistrement ----------- }
+{ Appelle _AWRT_READLINE, met a jour NR et FNR, puis decoupe.  }
+Procedure GenReadLine;
+Begin
+  EmitComment('readline + splitrec');
+  EmitInstr('CALL', AW_RT_PFX + 'READLINE');
+  EmitInstr('INC', 'WORD PTR [' + AW_VAR_PFX + 'NR]');
+  EmitInstr('INC', 'WORD PTR [' + AW_VAR_PFX + 'FNR]');
+  EmitInstr('CALL', AW_RT_PFX + 'SPLITREC');
+End;
+
+{ ---- GenSplitRec : decouper $0 en champs -------------------- }
+{ Utilise FS pour decouper _AW_RECBUF en _AW_FIELDS et NF.     }
+Procedure GenSplitRec;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'SPLITREC');
+End;
+
+{ ---- GenFieldAssign : affecter un champ $n = val ------------- }
+{ AX = valeur, BX = index du champ.                            }
+{ Apres affectation, reconstruit $0.                            }
+Procedure GenFieldAssign;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'SETFIELD');
+  EmitInstr('CALL', AW_RT_PFX + 'REBUILD0');
+End;
+
+{ ---- GenResetFNR : remettre FNR a zero pour nouveau fichier -- }
+Procedure GenResetFNR;
+Begin
+  EmitInstr('MOV', 'WORD PTR [' + AW_VAR_PFX + 'FNR], 0');
+End;
+
+{ ============================================================
+  FONCTIONS UTILISATEUR (TODO 17)
+  ============================================================ }
+
+{ ---- ParseFuncDecl : function nom(params) bloc --------------- }
+{ Compile une declaration de fonction utilisateur AWK.          }
+{ Convention cdecl 16 bits : args empiles droite a gauche.      }
+{ Params apres l espace extra sont des variables locales.       }
+Procedure ParseFuncDecl;
+Var
+  FnName   : TString;
+  FnLbl    : TString;
+  RetLbl   : TString;
+  SkipLbl  : TString;
+  ParamCnt : Integer;
+  LocalCnt : Integer;
+  PName    : TString;
+  Idx      : Integer;
+  SaveFrame: Integer;
+  SaveRet  : TString;
+  NS       : TString;
+Begin
+  EmitComment('function declaration');
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('nom de fonction attendu apres function');
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  FnLbl  := AW_FN_PFX + SymNameClean(FnName);
+  RetLbl := NewLabel('FRET');
+  ParserAdvance;
+  { Enregistrer la fonction dans la table des symboles }
+  Idx := SymFind(FnName);
+  If Idx < 0 Then
+    Idx := SymAdd(FnName, SC_FUNCTION, TY_IDX_NUMBER, 0);
+  SymTab[Idx].MangledName := FnLbl;
+  { Sauvegarder le contexte }
+  SaveFrame := CurFrameSize;
+  SaveRet   := CurFnRetLbl;
+  CurFnRetLbl := RetLbl;
+  ParamCnt := 0;
+  LocalCnt := 0;
+  { Parser les parametres }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+  SymEnterScope;
+  While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')'))
+        And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      PName := CurToken.Val;
+      Inc(ParamCnt);
+      { Offset positif par rapport a BP : [BP+4] = 1er param, [BP+6] = 2eme }
+      Idx := SymAdd(PName, SC_PARAM, TY_IDX_UNINIT, ParamCnt * 2 + 2);
+      SymTab[Idx].IsParam := True;
+      SymTab[Idx].IsLocal := True;
+      ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  CurFrameSize := 0;
+  { Emettre un JMP par-dessus le corps de la fonction }
+  SkipLbl := NewLabel('FSKIP');
+  EmitInstr('JMP', SkipLbl);
+  { Prologue }
+  EmitProlog(FnLbl);
+  If LocalCnt > 0 Then
+  Begin
+    Str(LocalCnt * 2, NS);
+    EmitInstr('SUB', 'SP, ' + NS);
+  End;
+  { Corps de la fonction }
+  SkipNewlines;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParseBlock
+  Else
+    CompileError('accolade ouvrante attendue dans function');
+  { Valeur par defaut : 0 }
+  EmitInstr('XOR', 'AX, AX');
+  { Epilogue }
+  EmitEpilog(RetLbl);
+  EmitLabel(SkipLbl);
+  SymLeaveScope;
+  { Restaurer le contexte }
+  CurFrameSize := SaveFrame;
+  CurFnRetLbl  := SaveRet;
+End;
+
+{ ============================================================
+  EXPRESSIONS REGULIERES ET CORRESPONDANCE (TODO 18)
+  ============================================================ }
+
+{ ---- GenMatchCall : emettre un appel _AWRT_MATCH ------------- }
+{ SI = chaine, DI = pattern. Retourne AX = 0 ou 1.            }
+Procedure GenMatchCall;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'MATCH');
+End;
+
+{ ---- GenMatchPos : emettre un appel _AWRT_MATCHPOS ----------- }
+{ SI = chaine, DI = pattern. Met a jour RSTART et RLENGTH.    }
+{ Retourne AX = RSTART (0 si pas de correspondance).          }
+Procedure GenMatchPos;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'MATCHPOS');
+End;
+
+{ ---- GenSubCall : emettre un appel _AWRT_SUB ----------------- }
+{ SI = target, DI = pattern, BX = replacement.                 }
+Procedure GenSubCall;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'SUB');
+End;
+
+{ ---- GenGsubCall : emettre un appel _AWRT_GSUB --------------- }
+{ SI = target, DI = pattern, BX = replacement. AX = nb_rempl. }
+Procedure GenGsubCall;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'GSUB');
+End;
+
+{ ---- GenSplitCall : emettre un appel _AWRT_SPLIT ------------- }
+{ SI = chaine, DI = tableau, BX = separateur. AX = nb_elems.  }
+Procedure GenSplitCall;
+Begin
+  EmitInstr('CALL', AW_RT_PFX + 'SPLIT');
+End;
+
+{ ---- GenRangePattern : emettre le test d un pattern de plage - }
+{ /pat1/,/pat2/ : utilise un flag d etat _AWR_RANGE_N.         }
+{ Retourne AX = 1 si dans la plage, 0 sinon.                  }
+Procedure GenRangePattern(Const FlagLbl, Pat1Lbl, Pat2Lbl : TString);
+Var
+  LblActive : TString;
+  LblEnd    : TString;
+  LblTest2  : TString;
+Begin
+  LblActive := NewLabel('RNG_ACT');
+  LblEnd    := NewLabel('RNG_END');
+  LblTest2  := NewLabel('RNG_T2');
+  EmitComment('range pattern');
+  EmitInstr('CMP', 'WORD PTR [' + FlagLbl + '], 0');
+  EmitInstr('JNZ', LblActive);
+  { Pas encore active : tester pat1 }
+  EmitInstr('LEA', 'SI, [_AW_RECBUF]');
+  EmitInstr('LEA', 'DI, ' + Pat1Lbl);
+  GenMatchCall;
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblEnd);
+  EmitInstr('MOV', 'WORD PTR [' + FlagLbl + '], 1');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('JMP', LblEnd);
+  { Active : tester pat2 pour desactiver }
+  EmitLabel(LblActive);
+  EmitInstr('LEA', 'SI, [_AW_RECBUF]');
+  EmitInstr('LEA', 'DI, ' + Pat2Lbl);
+  GenMatchCall;
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblTest2);
+  EmitInstr('MOV', 'WORD PTR [' + FlagLbl + '], 0');
+  EmitLabel(LblTest2);
+  EmitInstr('MOV', 'AX, 1');
+  EmitLabel(LblEnd);
+End;
+
+{ ============================================================
+  REGLES PATTERN-ACTION (TODO 19)
+  ============================================================ }
+
+{ ---- EmitEntryPoint : emettre le point d entree _AWR_ENTRY --- }
+Procedure EmitEntryPoint;
+Begin
+  EmitLabel(AW_RULE_PFX + 'ENTRY');
+  EmitComment('programme AWK : point d entree');
+  EmitInstr('MOV', 'AX, _DATA');
+  EmitInstr('MOV', 'DS, AX');
+End;
+
+{ ---- EmitBeginCall : appeler la section BEGIN si presente ---- }
+Procedure EmitBeginCall;
+Begin
+  If HasBegin Then
+    EmitInstr('CALL', AW_RULE_PFX + 'BEGIN');
+End;
+
+{ ---- EmitMainLoop : emettre la boucle principale ------------- }
+{ Lit chaque enregistrement, decoupe, teste les patterns.       }
+Procedure EmitMainLoop;
+Var
+  I       : Integer;
+  LblSkip : TString;
+Begin
+  EmitLabel(AW_RULE_PFX + 'MAIN');
+  GenReadLine;
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', AW_RULE_PFX + 'DONE');
+  { Tester chaque regle }
+  For I := 0 To RuleCount - 1 Do
+  Begin
+    If RulePatterns[I] = '' Then
+    Begin
+      { Pas de pattern : toujours executer }
+      EmitInstr('CALL', RuleLabels[I]);
+    End
+    Else If RulePatterns[I] = '*EXPR*' Then
+    Begin
+      { Pattern expression : deja emis inline }
+      EmitInstr('CALL', RuleLabels[I]);
+    End
+    Else
+    Begin
+      { Pattern regexp : tester $0 ~ /pat/ }
+      LblSkip := NewLabel('RSKIP');
+      EmitInstr('LEA', 'SI, [_AW_RECBUF]');
+      EmitInstr('LEA', 'DI, ' + RulePatterns[I]);
+      GenMatchCall;
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblSkip);
+      EmitInstr('CALL', RuleLabels[I]);
+      EmitLabel(LblSkip);
+    End;
+  End;
+  EmitInstr('JMP', AW_RULE_PFX + 'MAIN');
+  EmitLabel(AW_RULE_PFX + 'DONE');
+End;
+
+{ ---- EmitEndCall : appeler la section END si presente -------- }
+Procedure EmitEndCall;
+Begin
+  If HasEnd Then
+    EmitInstr('CALL', AW_RULE_PFX + 'END');
+End;
+
+{ ---- EmitExit : sortie propre du programme ------------------- }
+Procedure EmitProgramExit;
+Begin
+  EmitInstr('MOV', 'AX, 4C00h');
+  EmitInstr('INT', '21h');
+End;
 
 { ---- ParseBlock : bloc d instructions entre accolades -------- }
 Procedure ParseBlock;
@@ -3647,6 +4206,12 @@ Begin
       ParserAdvance;
       Exit;
     End;
+    If CurToken.Val = 'function' Then
+    Begin
+      ParserAdvance;
+      ParseFuncDecl;
+      Exit;
+    End;
   End;
   (* Bloc accolades *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
@@ -3658,34 +4223,180 @@ Begin
   ParseExprPrec(1, Res);
 End;
 
-{ ---- Run : boucle principale de compilation ----------------- }
+{ ---- Run : boucle principale de compilation (TODO 19) -------- }
+{ Compile un programme AWK avec structure:                       }
+{   function declarations                                       }
+{   BEGIN (* actions *)                                          }
+{   pattern (* actions *)                                        }
+{   END (* actions *)                                            }
 Procedure Run;
 Var
   PrevLine : Integer;
   PrevCol  : Integer;
+  RuleLbl  : TString;
+  PatIdx   : Integer;
 Begin
   TypeInit;
   SymInit;
-  LoopDepth := 0;
+  LoopDepth  := 0;
+  RuleCount  := 0;
+  RangeCount := 0;
+  HasBegin   := False;
+  HasEnd     := False;
   EmitOpen;
   EmitHeader;
   LexInit;
   ParserAdvance;
   SkipNewlines;
+  { Point d entree du programme }
+  EmitEntryPoint;
+  { Parcourir le source : declarations et regles }
   While CurToken.Kind <> TK_EOF Do
   Begin
     PrevLine := CurToken.Line;
     PrevCol  := CurToken.Col;
+    SkipNewlines;
+    If CurToken.Kind = TK_EOF Then Break;
+    { function declaration }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
+    Begin
+      ParserAdvance;
+      ParseFuncDecl;
+      SkipNewlines;
+      Continue;
+    End;
+    { BEGIN block }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'BEGIN') Then
+    Begin
+      ParserAdvance;
+      SkipNewlines;
+      HasBegin := True;
+      BeginLbl := AW_RULE_PFX + 'BEGIN';
+      RuleLbl  := NewLabel('BSKIP');
+      EmitInstr('JMP', RuleLbl);
+      EmitLabel(BeginLbl);
+      EmitInstr('PUSH', 'BP');
+      EmitInstr('MOV', 'BP, SP');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock
+      Else
+        ParseStatement;
+      EmitInstr('MOV', 'SP, BP');
+      EmitInstr('POP', 'BP');
+      EmitInstr('RET', '');
+      EmitLabel(RuleLbl);
+      SkipNewlines;
+      Continue;
+    End;
+    { END block }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'END') Then
+    Begin
+      ParserAdvance;
+      SkipNewlines;
+      HasEnd := True;
+      EndLbl := AW_RULE_PFX + 'END';
+      RuleLbl := NewLabel('ESKIP');
+      EmitInstr('JMP', RuleLbl);
+      EmitLabel(EndLbl);
+      EmitInstr('PUSH', 'BP');
+      EmitInstr('MOV', 'BP, SP');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+        ParseBlock
+      Else
+        ParseStatement;
+      EmitInstr('MOV', 'SP, BP');
+      EmitInstr('POP', 'BP');
+      EmitInstr('RET', '');
+      EmitLabel(RuleLbl);
+      SkipNewlines;
+      Continue;
+    End;
+    { Pattern-action rule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      { Pas de pattern -> action pour chaque enregistrement }
+      If RuleCount < MAX_RULES Then
+      Begin
+        RuleLbl := NewLabel('RULE');
+        RuleLabels[RuleCount]   := RuleLbl;
+        RulePatterns[RuleCount] := '';
+        Inc(RuleCount);
+        RuleLbl := NewLabel('RSKP');
+        EmitInstr('JMP', RuleLbl);
+        EmitLabel(RuleLabels[RuleCount - 1]);
+        EmitInstr('PUSH', 'BP');
+        EmitInstr('MOV', 'BP, SP');
+        ParseBlock;
+        EmitInstr('MOV', 'SP, BP');
+        EmitInstr('POP', 'BP');
+        EmitInstr('RET', '');
+        EmitLabel(RuleLbl);
+      End
+      Else
+      Begin
+        CompileError('trop de regles (max=' + IntToStr(MAX_RULES) + ')');
+        ParseBlock;
+      End;
+      SkipNewlines;
+      Continue;
+    End;
+    { /regexp/ (* action *) : pattern regexp }
+    If CurToken.Kind = TK_REGEXP Then
+    Begin
+      PatIdx := DataAddStr(CurToken.Val);
+      ParserAdvance;
+      SkipNewlines;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        If RuleCount < MAX_RULES Then
+        Begin
+          RuleLbl := NewLabel('RULE');
+          RuleLabels[RuleCount]   := RuleLbl;
+          RulePatterns[RuleCount] := DataTab[PatIdx].LblName;
+          Inc(RuleCount);
+          RuleLbl := NewLabel('RSKP');
+          EmitInstr('JMP', RuleLbl);
+          EmitLabel(RuleLabels[RuleCount - 1]);
+          EmitInstr('PUSH', 'BP');
+          EmitInstr('MOV', 'BP, SP');
+          ParseBlock;
+          EmitInstr('MOV', 'SP, BP');
+          EmitInstr('POP', 'BP');
+          EmitInstr('RET', '');
+          EmitLabel(RuleLbl);
+        End
+        Else
+        Begin
+          CompileError('trop de regles');
+          ParseBlock;
+        End;
+      End;
+      SkipNewlines;
+      Continue;
+    End;
+    { Sinon : statement normal (expressions, etc.) }
     ParseStatement;
     SkipNewlines;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
       ParserAdvance;
     SkipNewlines;
-    { Protection contre boucle infinie : si le parseur n a pas avance }
+    { Protection contre boucle infinie }
     If (CurToken.Kind <> TK_EOF) And
        (CurToken.Line = PrevLine) And (CurToken.Col = PrevCol) Then
       ParserAdvance;
   End;
+  { Emettre la structure globale du programme }
+  EmitBlankLine;
+  EmitComment('=== Structure du programme AWK ===');
+  { Appel BEGIN }
+  EmitBeginCall;
+  { Boucle principale si des regles existent }
+  If RuleCount > 0 Then
+    EmitMainLoop;
+  { Appel END }
+  EmitEndCall;
+  { Sortie programme }
+  EmitProgramExit;
   LexClose;
   EmitClose;
 End;
