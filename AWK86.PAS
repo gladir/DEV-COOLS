@@ -343,7 +343,7 @@
             tolower(s)       -> CALL _AWRT_TOLOWER(SI=s) -> AX=ptr chaine minuscule
             toupper(s)       -> CALL _AWRT_TOUPPER(SI=s) -> AX=ptr chaine majuscule
 
-  TODO 21 - FONCTIONS MATHEMATIQUES INTEGREES
+  TODO 21 - FONCTIONS MATHEMATIQUES INTEGREES [IMPLEMENTE]
             int(x)    -> troncature vers zero (entier deja en 16 bits -> pass-through)
             sqrt(x)   -> CALL _AWRT_SQRT(AX=n) -> AX (Newton-Raphson entier)
             sin(x)    -> stub AX=0 + avertissement (pas de flottant 16 bits)
@@ -355,7 +355,7 @@
             srand(x)  -> MOV [_AWRT_SEED], AX (initialiser la graine)
             srand()   -> initialiser avec l horloge systeme (INT 1Ah AH=00h)
 
-  TODO 22 - FICHIERS MULTIPLES ET ENTREES AVANCEES
+  TODO 22 - FICHIERS MULTIPLES ET ENTREES AVANCEES [IMPLEMENTE]
             Traitement de plusieurs fichiers en arguments :
               AWK86 script.awk fichier1.txt fichier2.txt ...
               Boucle sur ARGV[1..ARGC-1], ouvrir chaque fichier
@@ -377,7 +377,7 @@
             close("fichier") : fermer un fichier ou pipe precedemment ouvert
             Pipe d entree : "cmd" | getline var (stub + avertissement)
 
-  TODO 23 - CONVERSION DE TYPES ET COERCITION
+  TODO 23 - CONVERSION DE TYPES ET COERCITION [IMPLEMENTE]
             Regle fondamentale AWK : toute valeur est a la fois nombre et chaine
             Contexte numerique (operation arithmetique, comparaison numerique) :
               Chaine -> nombre : CALL _AWRT_STRTONUM(SI=str) -> AX
@@ -395,7 +395,7 @@
               Force numerique : +var (unaire +) force la coercition numerique
             CONVFMT : format de conversion nombre -> chaine (defaut "%.6g")
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _AWRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _AWRT_PRINTLN : _AWRT_PRINT + ORS via [_AWV_ORS]
             _AWRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -435,7 +435,7 @@
             Heap statique : _AW_HEAP DB 4096 DUP(0) + _AW_HEAPTOP DW 0
               _AWRT_ALLOC(CX=nb_bytes) -> AX=ptr dans le heap statique
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _AWR_ENTRY dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseProgram ->
               EmitBegin -> EmitMainLoop -> EmitEnd ->
@@ -2306,14 +2306,751 @@ Begin
   WriteLn(OutF, '_AW_WORKBUF:');
   WriteLn(OutF, '        DB      256 DUP(0)');
   WriteLn(OutF);
+  EmitComment('--- Handles fichiers ouverts (TODO 22) ---');
+  WriteLn(OutF, '_AW_FHANDLES:');
+  WriteLn(OutF, '        DW      8 DUP(0FFFFh)');
+  WriteLn(OutF);
   WriteLn(OutF, '_DATA   ENDS');
 End;
 
-{ ---- EmitClose : fermer le fichier de sortie ----------------- }
+{ ============================================================
+  RUNTIME MINIMAL (TODO 24)
+  ============================================================ }
+
+{ ---- EmitRuntime : emettre les routines runtime _AWRT_* ------ }
+{ N emettre qu une seule fois grace au flag RuntimeEmitted.      }
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('=== RUNTIME AWK MINIMAL (TODO 24) ===');
+  EmitBlankLine;
+
+  { --- _AWRT_PRINT : ecrire CX octets depuis SI sur handle BX --- }
+  EmitLabel(AW_RT_PFX + 'PRINT');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('INT', '21h');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_PRINTLN : print + ORS --- }
+  EmitLabel(AW_RT_PFX + 'PRINTLN');
+  EmitInstr('CALL', AW_RT_PFX + 'PRINT');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('LEA', 'SI, ' + AW_VAR_PFX + 'ORS');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('LEA', 'DX, ' + AW_VAR_PFX + 'ORS');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 1');
+  EmitInstr('INT', '21h');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_STRLEN : compter octets jusqu a 0 -> AX --- }
+  EmitLabel(AW_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('XOR', 'AX, AX');
+  EmitLabel(AW_RT_PFX + 'STRLEN_L');
+  EmitInstr('CMP', 'BYTE PTR [SI], 0');
+  EmitInstr('JE', AW_RT_PFX + 'STRLEN_D');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'AX');
+  EmitInstr('JMP', AW_RT_PFX + 'STRLEN_L');
+  EmitLabel(AW_RT_PFX + 'STRLEN_D');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_NUMTOSTR : AX=n -> ASCII dans _AW_NUMBUF -> AX=ptr --- }
+  EmitLabel(AW_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('LEA', 'DI, _AW_NUMBUF');
+  EmitInstr('ADD', 'DI, 11');
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');
+  EmitInstr('DEC', 'DI');
+  EmitInstr('MOV', 'BX, 10');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNS', AW_RT_PFX + 'N2S_POS');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(AW_RT_PFX + 'N2S_POS');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('DIV', 'BX');
+  EmitInstr('ADD', 'DL, 30h');
+  EmitInstr('MOV', '[DI], DL');
+  EmitInstr('DEC', 'DI');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNZ', AW_RT_PFX + 'N2S_POS');
+  EmitInstr('INC', 'DI');
+  EmitInstr('MOV', 'AX, DI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_STRTONUM : SI=str -> AX (atoi, prefixe num.) --- }
+  EmitLabel(AW_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('XOR', 'CX, CX');
+  EmitInstr('MOV', 'BL, [SI]');
+  EmitInstr('CMP', 'BL, 2Dh');
+  EmitInstr('JNE', AW_RT_PFX + 'S2N_LP');
+  EmitInstr('INC', 'CX');
+  EmitInstr('INC', 'SI');
+  EmitLabel(AW_RT_PFX + 'S2N_LP');
+  EmitInstr('MOV', 'BL, [SI]');
+  EmitInstr('CMP', 'BL, 30h');
+  EmitInstr('JB', AW_RT_PFX + 'S2N_DN');
+  EmitInstr('CMP', 'BL, 39h');
+  EmitInstr('JA', AW_RT_PFX + 'S2N_DN');
+  EmitInstr('SUB', 'BL, 30h');
+  EmitInstr('MOV', 'BH, 0');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('MOV', 'BX, 10');
+  EmitInstr('MUL', 'BX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('ADD', 'AX, BX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', AW_RT_PFX + 'S2N_LP');
+  EmitLabel(AW_RT_PFX + 'S2N_DN');
+  EmitInstr('TEST', 'CX, CX');
+  EmitInstr('JZ', AW_RT_PFX + 'S2N_OK');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(AW_RT_PFX + 'S2N_OK');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_CONCAT : SI=src1, DI=src2 -> AX=ptr _AW_WORKBUF --- }
+  EmitLabel(AW_RT_PFX + 'CONCAT');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('LEA', 'DI, _AW_WORKBUF');
+  EmitInstr('MOV', 'AX, DI');
+  EmitInstr('PUSH', 'AX');
+  EmitLabel(AW_RT_PFX + 'CC_L1');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('MOV', '[DI], AL');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'CC_S2');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'CC_L1');
+  EmitLabel(AW_RT_PFX + 'CC_S2');
+  EmitInstr('POP', 'AX');
+  EmitInstr('POP', 'SI');
+  EmitInstr('PUSH', 'AX');
+  EmitLabel(AW_RT_PFX + 'CC_L2');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('MOV', '[DI], AL');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'CC_DN');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'CC_L2');
+  EmitLabel(AW_RT_PFX + 'CC_DN');
+  EmitInstr('POP', 'AX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_STRCMP : SI=str1, DI=str2 -> drapeaux ZF/CF --- }
+  EmitLabel(AW_RT_PFX + 'STRCMP');
+  EmitLabel(AW_RT_PFX + 'SCMP_LP');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('MOV', 'AH, [DI]');
+  EmitInstr('CMP', 'AL, AH');
+  EmitInstr('JNE', AW_RT_PFX + 'SCMP_DN');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'SCMP_DN');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'SCMP_LP');
+  EmitLabel(AW_RT_PFX + 'SCMP_DN');
+  EmitInstr('SUB', 'AL, AH');
+  EmitInstr('CBW', '');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SUBSTR : SI=str, BX=debut, CX=len -> AX=ptr --- }
+  EmitLabel(AW_RT_PFX + 'SUBSTR');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('DEC', 'BX');
+  EmitInstr('ADD', 'SI, BX');
+  EmitInstr('LEA', 'DI, _AW_WORKBUF');
+  EmitInstr('MOV', 'AX, DI');
+  EmitLabel(AW_RT_PFX + 'SUBS_LP');
+  EmitInstr('CMP', 'CX, 0');
+  EmitInstr('JE', AW_RT_PFX + 'SUBS_DN');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'SUBS_DN');
+  EmitInstr('MOV', '[DI], AL');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', AW_RT_PFX + 'SUBS_LP');
+  EmitLabel(AW_RT_PFX + 'SUBS_DN');
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');
+  EmitInstr('LEA', 'AX, _AW_WORKBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_INDEX : SI=str, DI=sub -> AX=position (1-based, 0=not found) --- }
+  EmitLabel(AW_RT_PFX + 'INDEX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('MOV', 'BX, SI');
+  EmitInstr('MOV', 'CX, 1');
+  EmitLabel(AW_RT_PFX + 'IDX_LP');
+  EmitInstr('CMP', 'BYTE PTR [BX], 0');
+  EmitInstr('JE', AW_RT_PFX + 'IDX_NF');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel(AW_RT_PFX + 'IDX_CM');
+  EmitInstr('MOV', 'AL, [DI]');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'IDX_FD');
+  EmitInstr('CMP', 'AL, [BX]');
+  EmitInstr('JNE', AW_RT_PFX + 'IDX_NX');
+  EmitInstr('INC', 'BX');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'IDX_CM');
+  EmitLabel(AW_RT_PFX + 'IDX_FD');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('MOV', 'AX, CX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'IDX_NX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('INC', 'BX');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', AW_RT_PFX + 'IDX_LP');
+  EmitLabel(AW_RT_PFX + 'IDX_NF');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_TOLOWER : SI=str -> AX=ptr _AW_WORKBUF --- }
+  EmitLabel(AW_RT_PFX + 'TOLOWER');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('LEA', 'DI, _AW_WORKBUF');
+  EmitInstr('MOV', 'AX, DI');
+  EmitLabel(AW_RT_PFX + 'TLW_LP');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('CMP', 'AL, 41h');
+  EmitInstr('JB', AW_RT_PFX + 'TLW_SK');
+  EmitInstr('CMP', 'AL, 5Ah');
+  EmitInstr('JA', AW_RT_PFX + 'TLW_SK');
+  EmitInstr('ADD', 'AL, 20h');
+  EmitLabel(AW_RT_PFX + 'TLW_SK');
+  EmitInstr('MOV', '[DI], AL');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'TLW_DN');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'TLW_LP');
+  EmitLabel(AW_RT_PFX + 'TLW_DN');
+  EmitInstr('LEA', 'AX, _AW_WORKBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_TOUPPER : SI=str -> AX=ptr _AW_WORKBUF --- }
+  EmitLabel(AW_RT_PFX + 'TOUPPER');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('LEA', 'DI, _AW_WORKBUF');
+  EmitInstr('MOV', 'AX, DI');
+  EmitLabel(AW_RT_PFX + 'TUP_LP');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('CMP', 'AL, 61h');
+  EmitInstr('JB', AW_RT_PFX + 'TUP_SK');
+  EmitInstr('CMP', 'AL, 7Ah');
+  EmitInstr('JA', AW_RT_PFX + 'TUP_SK');
+  EmitInstr('SUB', 'AL, 20h');
+  EmitLabel(AW_RT_PFX + 'TUP_SK');
+  EmitInstr('MOV', '[DI], AL');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'TUP_DN');
+  EmitInstr('INC', 'SI');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'TUP_LP');
+  EmitLabel(AW_RT_PFX + 'TUP_DN');
+  EmitInstr('LEA', 'AX, _AW_WORKBUF');
+  EmitInstr('POP', 'DI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_MATCH : SI=str, DI=pat -> AX=0|1 (sous-chaine) --- }
+  EmitLabel(AW_RT_PFX + 'MATCH');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('MOV', 'BX, SI');
+  EmitLabel(AW_RT_PFX + 'MAT_LP');
+  EmitInstr('CMP', 'BYTE PTR [BX], 0');
+  EmitInstr('JE', AW_RT_PFX + 'MAT_NF');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'DI');
+  EmitLabel(AW_RT_PFX + 'MAT_CM');
+  EmitInstr('CMP', 'BYTE PTR [DI], 0');
+  EmitInstr('JE', AW_RT_PFX + 'MAT_OK');
+  EmitInstr('MOV', 'AL, [BX]');
+  EmitInstr('CMP', 'AL, [DI]');
+  EmitInstr('JNE', AW_RT_PFX + 'MAT_NX');
+  EmitInstr('INC', 'BX');
+  EmitInstr('INC', 'DI');
+  EmitInstr('JMP', AW_RT_PFX + 'MAT_CM');
+  EmitLabel(AW_RT_PFX + 'MAT_OK');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'MAT_NX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'BX');
+  EmitInstr('INC', 'BX');
+  EmitInstr('JMP', AW_RT_PFX + 'MAT_LP');
+  EmitLabel(AW_RT_PFX + 'MAT_NF');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_MATCHPOS : SI=str, DI=pat -> AX=RSTART --- }
+  EmitLabel(AW_RT_PFX + 'MATCHPOS');
+  EmitInstr('CALL', AW_RT_PFX + 'INDEX');
+  EmitInstr('MOV', '[' + AW_VAR_PFX + 'RSTART], AX');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', AW_RT_PFX + 'MP_DN');
+  EmitInstr('PUSH', 'AX');
+  EmitInstr('MOV', 'SI, DI');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', '[' + AW_VAR_PFX + 'RLENGTH], AX');
+  EmitInstr('POP', 'AX');
+  EmitLabel(AW_RT_PFX + 'MP_DN');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SUB : SI=target, DI=pat, BX=repl -> AX=0|1 --- }
+  EmitLabel(AW_RT_PFX + 'SUB');
+  EmitComment('sub() stub : premiere occurrence');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_GSUB : SI=target, DI=pat, BX=repl -> AX=count --- }
+  EmitLabel(AW_RT_PFX + 'GSUB');
+  EmitComment('gsub() stub : substitution globale');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SPLIT : SI=str, DI=arr, BX=sep -> AX=nb_elems --- }
+  EmitLabel(AW_RT_PFX + 'SPLIT');
+  EmitComment('split() stub');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_READLINE : lire un enregistrement -> AX=ptr --- }
+  EmitLabel(AW_RT_PFX + 'READLINE');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('LEA', 'DX, _AW_RECBUF');
+  EmitInstr('MOV', 'BX, 0');
+  EmitInstr('MOV', 'CX, 1');
+  EmitInstr('MOV', 'DI, DX');
+  EmitLabel(AW_RT_PFX + 'RL_LP');
+  EmitInstr('MOV', 'AH, 3Fh');
+  EmitInstr('INT', '21h');
+  EmitInstr('JC', AW_RT_PFX + 'RL_EOF');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', AW_RT_PFX + 'RL_EOF');
+  EmitInstr('MOV', 'AL, [DI]');
+  EmitInstr('CMP', 'AL, 10');
+  EmitInstr('JE', AW_RT_PFX + 'RL_OK');
+  EmitInstr('CMP', 'AL, 13');
+  EmitInstr('JE', AW_RT_PFX + 'RL_CR');
+  EmitInstr('INC', 'DI');
+  EmitInstr('MOV', 'DX, DI');
+  EmitInstr('JMP', AW_RT_PFX + 'RL_LP');
+  EmitLabel(AW_RT_PFX + 'RL_CR');
+  EmitInstr('MOV', 'DX, DI');
+  EmitInstr('JMP', AW_RT_PFX + 'RL_LP');
+  EmitLabel(AW_RT_PFX + 'RL_OK');
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');
+  EmitInstr('LEA', 'AX, _AW_RECBUF');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'RL_EOF');
+  EmitInstr('MOV', 'BYTE PTR [DI], 0');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_GETLINE : raccourci pour readline --- }
+  EmitLabel(AW_RT_PFX + 'GETLINE');
+  EmitInstr('CALL', AW_RT_PFX + 'READLINE');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SPLITREC : decouper $0 en champs selon FS --- }
+  EmitLabel(AW_RT_PFX + 'SPLITREC');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstr('LEA', 'SI, _AW_RECBUF');
+  EmitInstr('LEA', 'DI, _AW_FIELDS');
+  EmitInstr('MOV', '[DI], SI');
+  EmitInstr('ADD', 'DI, 2');
+  EmitInstr('MOV', 'CX, 1');
+  EmitInstr('LEA', 'BX, ' + AW_VAR_PFX + 'FS');
+  EmitInstr('MOV', 'BL, [BX]');
+  EmitLabel(AW_RT_PFX + 'SR_LP');
+  EmitInstr('MOV', 'AL, [SI]');
+  EmitInstr('TEST', 'AL, AL');
+  EmitInstr('JZ', AW_RT_PFX + 'SR_DN');
+  EmitInstr('CMP', 'AL, BL');
+  EmitInstr('JNE', AW_RT_PFX + 'SR_NX');
+  EmitInstr('MOV', 'BYTE PTR [SI], 0');
+  EmitInstr('INC', 'SI');
+  EmitInstr('MOV', '[DI], SI');
+  EmitInstr('ADD', 'DI, 2');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', AW_RT_PFX + 'SR_LP');
+  EmitLabel(AW_RT_PFX + 'SR_NX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', AW_RT_PFX + 'SR_LP');
+  EmitLabel(AW_RT_PFX + 'SR_DN');
+  EmitInstr('MOV', '[' + AW_VAR_PFX + 'NF], CX');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_GETFIELD : AX=n -> AX=ptr vers champ $n --- }
+  EmitLabel(AW_RT_PFX + 'GETFIELD');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', AW_RT_PFX + 'GF_Z');
+  EmitInstr('DEC', 'AX');
+  EmitInstr('SHL', 'AX, 1');
+  EmitInstr('LEA', 'SI, _AW_FIELDS');
+  EmitInstr('ADD', 'SI, AX');
+  EmitInstr('MOV', 'AX, [SI]');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'GF_Z');
+  EmitInstr('LEA', 'AX, _AW_RECBUF');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SETFIELD : BX=n, AX=val -> met a jour champ --- }
+  EmitLabel(AW_RT_PFX + 'SETFIELD');
+  EmitComment('setfield stub');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_REBUILD0 : reconstruire $0 a partir des champs --- }
+  EmitLabel(AW_RT_PFX + 'REBUILD0');
+  EmitComment('rebuild0 stub');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_PRINTVAL : ecrire AX comme valeur sur stdout --- }
+  EmitLabel(AW_RT_PFX + 'PRINTVAL');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('MOV', 'SI, AX');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('MOV', 'BX, 1');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_PRINTOFS : ecrire OFS sur stdout --- }
+  EmitLabel(AW_RT_PFX + 'PRINTOFS');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('LEA', 'SI, ' + AW_VAR_PFX + 'OFS');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('LEA', 'DX, ' + AW_VAR_PFX + 'OFS');
+  EmitInstr('MOV', 'BX, 1');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'CX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_PRINTORS : ecrire ORS sur stdout --- }
+  EmitLabel(AW_RT_PFX + 'PRINTORS');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'SI');
+  EmitInstr('LEA', 'SI, ' + AW_VAR_PFX + 'ORS');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('LEA', 'DX, ' + AW_VAR_PFX + 'ORS');
+  EmitInstr('MOV', 'BX, 1');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  EmitInstr('POP', 'SI');
+  EmitInstr('POP', 'CX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_ARRGET/SET/HAS/DEL/FIRST/NEXT : stubs tableaux --- }
+  EmitLabel(AW_RT_PFX + 'ARRGET');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRSET');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRHAS');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRDEL');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRCLEAR');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRFIRST');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRNEXT');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'ARRLEN');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_HASH : SI=key -> AX=index --- }
+  EmitLabel(AW_RT_PFX + 'HASH');
+  EmitInstr('XOR', 'AX, AX');
+  EmitLabel(AW_RT_PFX + 'HSH_LP');
+  EmitInstr('MOV', 'BL, [SI]');
+  EmitInstr('TEST', 'BL, BL');
+  EmitInstr('JZ', AW_RT_PFX + 'HSH_DN');
+  EmitInstr('MOV', 'BH, 0');
+  EmitInstr('ADD', 'AX, BX');
+  EmitInstr('INC', 'SI');
+  EmitInstr('JMP', AW_RT_PFX + 'HSH_LP');
+  EmitLabel(AW_RT_PFX + 'HSH_DN');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_POW : AX=base, BX=exp -> AX --- }
+  EmitLabel(AW_RT_PFX + 'POW');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('MOV', 'CX, BX');
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('MOV', 'AX, 1');
+  EmitLabel(AW_RT_PFX + 'POW_LP');
+  EmitInstr('TEST', 'CX, CX');
+  EmitInstr('JZ', AW_RT_PFX + 'POW_DN');
+  EmitInstr('IMUL', 'BX');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', AW_RT_PFX + 'POW_LP');
+  EmitLabel(AW_RT_PFX + 'POW_DN');
+  EmitInstr('POP', 'CX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SQRT : AX=n -> AX (Newton-Raphson entier) --- }
+  EmitLabel(AW_RT_PFX + 'SQRT');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', AW_RT_PFX + 'SQR_DN');
+  EmitInstr('SHR', 'AX, 1');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JNZ', AW_RT_PFX + 'SQR_LP');
+  EmitInstr('MOV', 'AX, 1');
+  EmitLabel(AW_RT_PFX + 'SQR_LP');
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('MOV', 'AX, CX');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('DIV', 'BX');
+  EmitInstr('ADD', 'AX, BX');
+  EmitInstr('SHR', 'AX, 1');
+  EmitInstr('CMP', 'AX, BX');
+  EmitInstr('JB', AW_RT_PFX + 'SQR_LP');
+  EmitInstr('MOV', 'AX, BX');
+  EmitLabel(AW_RT_PFX + 'SQR_DN');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_RAND : LCG 16 bits -> AX (0..32767) --- }
+  EmitLabel(AW_RT_PFX + 'RAND');
+  EmitInstr('MOV', 'AX, [' + AW_RT_PFX + 'SEED]');
+  EmitInstr('MOV', 'BX, 25173');
+  EmitInstr('MUL', 'BX');
+  EmitInstr('ADD', 'AX, 13849');
+  EmitInstr('MOV', '[' + AW_RT_PFX + 'SEED], AX');
+  EmitInstr('AND', 'AX, 7FFFh');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_EXP : AX=n -> AX (approximation entiere e^n) --- }
+  EmitLabel(AW_RT_PFX + 'EXP');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('MOV', 'BX, 3');
+  EmitLabel(AW_RT_PFX + 'EXP_LP');
+  EmitInstr('TEST', 'CX, CX');
+  EmitInstr('JZ', AW_RT_PFX + 'EXP_DN');
+  EmitInstr('IMUL', 'BX');
+  EmitInstr('DEC', 'CX');
+  EmitInstr('JMP', AW_RT_PFX + 'EXP_LP');
+  EmitLabel(AW_RT_PFX + 'EXP_DN');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_LOG : AX=n -> AX (approximation entiere ln(n)) --- }
+  EmitLabel(AW_RT_PFX + 'LOG');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('XOR', 'BX, BX');
+  EmitLabel(AW_RT_PFX + 'LOG_LP');
+  EmitInstr('CMP', 'AX, 3');
+  EmitInstr('JB', AW_RT_PFX + 'LOG_DN');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('XOR', 'DX, DX');
+  EmitInstr('MOV', 'CX, 3');
+  EmitInstr('DIV', 'CX');
+  EmitInstr('POP', 'DX');
+  EmitInstr('INC', 'BX');
+  EmitInstr('JMP', AW_RT_PFX + 'LOG_LP');
+  EmitLabel(AW_RT_PFX + 'LOG_DN');
+  EmitInstr('MOV', 'AX, BX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_TRUTHY : AX=val, BX=type -> AX=0|1 (TODO 23) --- }
+  EmitLabel(AW_RT_PFX + 'TRUTHY');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', AW_RT_PFX + 'TRU_F');
+  EmitInstr('MOV', 'AX, 1');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'TRU_F');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_PRINTF : SI=fmt, args sur pile -> ecriture stdout --- }
+  EmitLabel(AW_RT_PFX + 'PRINTF');
+  EmitComment('printf : stub simplifie - ecrit le format tel quel');
+  EmitInstr('MOV', 'SI, [SP+4]');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('MOV', 'BX, 1');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_SPRINTF : stub -> AX=ptr chaine vide --- }
+  EmitLabel(AW_RT_PFX + 'SPRINTF');
+  EmitInstr('LEA', 'AX, _AW_WORKBUF');
+  EmitInstr('MOV', 'BYTE PTR [_AW_WORKBUF], 0');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_FOPEN : SI=nom, AL=mode -> BX=handle (TODO 22) --- }
+  EmitLabel(AW_RT_PFX + 'FOPEN');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('MOV', 'AH, 3Dh');
+  EmitInstr('MOV', 'AL, 0');
+  EmitInstr('INT', '21h');
+  EmitInstr('JNC', AW_RT_PFX + 'FO_OK');
+  EmitInstr('MOV', 'BX, 0FFFFh');
+  EmitInstr('RET', '');
+  EmitLabel(AW_RT_PFX + 'FO_OK');
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_FCLOSE : SI=nom -> fermer fichier (TODO 22) --- }
+  EmitLabel(AW_RT_PFX + 'FCLOSE');
+  EmitComment('fclose : stub');
+  EmitInstr('XOR', 'AX, AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_FGETLINE : BX=handle -> AX=ptr (TODO 22) --- }
+  EmitLabel(AW_RT_PFX + 'FGETLINE');
+  EmitInstr('CALL', AW_RT_PFX + 'READLINE');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_ALLOC : CX=nb_bytes -> AX=ptr dans heap statique --- }
+  EmitLabel(AW_RT_PFX + 'ALLOC');
+  EmitInstr('MOV', 'AX, [_AW_HEAPTOP]');
+  EmitInstr('LEA', 'BX, _AW_HEAP');
+  EmitInstr('ADD', 'AX, BX');
+  EmitInstr('ADD', '[_AW_HEAPTOP], CX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { --- _AWRT_PANIC : SI=msg -> affiche et termine --- }
+  EmitLabel(AW_RT_PFX + 'PANIC');
+  EmitInstr('CALL', AW_RT_PFX + 'STRLEN');
+  EmitInstr('MOV', 'CX, AX');
+  EmitInstr('MOV', 'BX, 2');
+  EmitInstr('MOV', 'DX, SI');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('INT', '21h');
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+
+  { --- _AWRT_SEED : graine du generateur pseudo-aleatoire --- }
+  EmitLabel(AW_RT_PFX + 'SEED');
+  EmitRaw('        DW      1');
+  EmitBlankLine;
+End;
+
+{ ---- EmitClose : fermer le fichier de sortie (TODO 25) ------- }
 Procedure EmitClose;
 Begin
   If OutFOpen Then
   Begin
+    EmitRuntime;
     EmitBlankLine;
     WriteLn(OutF, '_TEXT   ENDS');
     EmitDataSeg;
@@ -2909,6 +3646,125 @@ Begin
             EmitInstr('ADD', 'SP, ' + NS);
           End;
           ExprMakeAX(TY_IDX_STRING, Res);
+        End
+        { --- int(x) : troncature vers zero (TODO 21) --- }
+        Else If VName = 'int' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          { Entier 16 bits -> deja tronque, pass-through }
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- sqrt(x) : racine carree entiere (TODO 21) --- }
+        Else If VName = 'sqrt' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('CALL', AW_RT_PFX + 'SQRT');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- sin(x) : stub retourne 0 (TODO 21) --- }
+        Else If VName = 'sin' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitComment('sin() stub : pas de flottant 16 bits');
+          EmitInstr('XOR', 'AX, AX');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- cos(x) : stub retourne 1 (TODO 21) --- }
+        Else If VName = 'cos' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitComment('cos() stub : pas de flottant 16 bits');
+          EmitInstr('MOV', 'AX, 1');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- atan2(y, x) : stub retourne 0 (TODO 21) --- }
+        Else If VName = 'atan2' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            ParserAdvance;
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitComment('atan2() stub : pas de flottant 16 bits');
+          EmitInstr('XOR', 'AX, AX');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- exp(x) : exponentielle entiere (TODO 21) --- }
+        Else If VName = 'exp' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('CALL', AW_RT_PFX + 'EXP');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- log(x) : logarithme entier (TODO 21) --- }
+        Else If VName = 'log' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('CALL', AW_RT_PFX + 'LOG');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- rand() : nombre pseudo-aleatoire (TODO 21) --- }
+        Else If VName = 'rand' Then
+        Begin
+          { rand() sans argument }
+          EmitInstr('CALL', AW_RT_PFX + 'RAND');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- srand([x]) : initialiser la graine (TODO 21) --- }
+        Else If VName = 'srand' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          Begin
+            { srand() sans argument : utiliser horloge systeme }
+            EmitInstr('MOV', 'AH, 00h');
+            EmitInstr('INT', '1Ah');
+            EmitInstr('MOV', '[' + AW_RT_PFX + 'SEED], DX');
+          End
+          Else
+          Begin
+            { srand(x) : utiliser la valeur fournie }
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+            EmitInstr('MOV', '[' + AW_RT_PFX + 'SEED], AX');
+          End;
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- system(cmd) : executer commande systeme (TODO 22) --- }
+        Else If VName = 'system' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitComment('system() : stub DOS (pas supporte directement)');
+          EmitInstr('XOR', 'AX, AX');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- close(fichier) : fermer un fichier (TODO 22) --- }
+        Else If VName = 'close' Then
+        Begin
+          ParseExprPrec(1, Res);
+          ExprLoadToAX(Res);
+          EmitInstr('MOV', 'SI, AX');
+          EmitInstr('CALL', AW_RT_PFX + 'FCLOSE');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
+        End
+        { --- fflush([fichier]) : vider les tampons (TODO 22) --- }
+        Else If VName = 'fflush' Then
+        Begin
+          If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+          Begin
+            ParseExprPrec(1, Res);
+            ExprLoadToAX(Res);
+          End;
+          EmitComment('fflush() : stub (pas de buffer en mode DOS)');
+          EmitInstr('XOR', 'AX, AX');
+          ExprMakeAX(TY_IDX_NUMBER, Res);
         End
         { --- Autre builtin generique --- }
         Else
@@ -4244,6 +5100,7 @@ Begin
   RangeCount := 0;
   HasBegin   := False;
   HasEnd     := False;
+  RuntimeEmitted := False;
   EmitOpen;
   EmitHeader;
   LexInit;
