@@ -232,7 +232,7 @@
             LoopPush / LoopPop : pile de labels pour break/continue
               (max MAX_LOOP_NEST niveaux d imbrication)
 
-  TODO 15 - TABLEAUX (ARRAY)
+  TODO 15 - TABLEAUX (ARRAY) [IMPLEMENTE]
             ARRAY [lo..hi] OF T : tableau a bornes fixes
               Taille = (hi - lo + 1) * sizeof(T) en 32 bits
               Acces : MOV EAX,[base + (index - lo) * elemsize]
@@ -6191,6 +6191,11 @@ Var
   SavedName : TString;
   SIdx      : Integer;
   HaltEv    : TExprVal;
+  ArrTIdx   : Integer;
+  ArrLo     : LongInt;
+  ElemSz    : Integer;
+  IdxExpr   : TExprVal;
+  ValExpr   : TExprVal;
 Begin
   { Rien a faire si EOF }
   If CurToken.Kind = TK_EOF Then Exit;
@@ -6427,6 +6432,90 @@ Begin
     Begin
       ParseAssignment(SavedName);
       Exit;
+    End;
+
+    { Affectation element de tableau : ident[index] := expr }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      SIdx := SymFind(SavedName);
+      If (SIdx >= 0) And (SIdx < SymCount) And
+         (SymTab[SIdx].TypeIdx >= 0) And
+         (SymTab[SIdx].TypeIdx < TypeCount) And
+         (TypeTab[SymTab[SIdx].TypeIdx].Kind = TKP_ARRAY) Then
+      Begin
+        ArrTIdx := SymTab[SIdx].TypeIdx;
+        ArrLo   := TypeTab[ArrTIdx].Lo;
+        ElemSz  := TypeSizeof(TypeTab[ArrTIdx].BaseTypeIdx);
+
+        TplNextToken;
+
+        ParseExpr(IdxExpr);
+        ExprFlushToEAX(IdxExpr);
+
+        EmitInstrA('PUSH', 'EAX');
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+          TplNextToken
+        Else
+          WarnMsg(''']'' attendu apres index de tableau');
+
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+          TplNextToken
+        Else
+          WarnMsg(''':='' attendu apres arr[i]');
+
+        EmitComment('assign ' + SavedName + '[]');
+
+        ParseExpr(ValExpr);
+        ExprFlushToEAX(ValExpr);
+
+        EmitInstrA('POP', 'ECX');
+
+        If ArrLo <> 0 Then
+          EmitInstrAB('SUB', 'ECX', IntToStr(ArrLo));
+        If ElemSz = 4 Then
+          EmitInstrAB('SHL', 'ECX', '2')
+        Else If ElemSz = 2 Then
+          EmitInstrAB('SHL', 'ECX', '1')
+        Else If (ElemSz <> 1) And (ElemSz > 4) Then
+        Begin
+          EmitInstrA('PUSH', 'EAX');
+          EmitInstrAB('MOV', 'EAX', 'ECX');
+          EmitInstrAB('MOV', 'ECX', IntToStr(ElemSz));
+          EmitInstrAB('IMUL', 'EAX', 'ECX');
+          EmitInstrAB('MOV', 'ECX', 'EAX');
+          EmitInstrA('POP', 'EAX');
+        End;
+
+        If SymTab[SIdx].IsLocal Then
+          EmitInstrAB('LEA', 'EBX',
+            EBPOfs(SymTab[SIdx].Offset))
+        Else
+          EmitInstrAB('MOV', 'EBX',
+            'OFFSET ' + SymTab[SIdx].MangledName);
+
+        EmitInstrAB('ADD', 'EBX', 'ECX');
+
+        If ElemSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Exit;
+      End
+      Else
+      Begin
+        WarnMsg('indexation sur un non-tableau: ' + SavedName);
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = ';')) Do
+          TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Exit;
+      End;
     End;
 
     { Appel de procedure : ident(...) }
@@ -6752,6 +6841,22 @@ Begin
   { Depiler le contexte de boucle }
   LoopPop;
 End;
+
+(* ============================================================
+   TODO 15 - TABLEAUX (ARRAY) [IMPLEMENTE]
+   ============================================================
+   Code reparti dans les fonctions existantes :
+   - ParseVarDecl : declaration ARRAY[lo..hi] OF Type
+     (type TKP_ARRAY, global via DataAddArray, local sur pile)
+   - ParsePrimary : lecture element arr[i] avec calcul index 32 bits
+     (SUB lo, SHL/IMUL elemsize, LEA/MOV base, MOV EAX,[EBX])
+   - ParseStatement : ecriture element arr[i] := expr
+     (PUSH index, parse value, POP ECX, calcul offset, MOV [EBX],EAX)
+   - Length/Low/High/SizeOf : constantes evaluees a la compilation
+     (Length = Hi - Lo + 1, Low = Lo, High = Hi,
+      SizeOf = (Hi - Lo + 1) * sizeof element)
+   - EmitDataSeg : emission DK_ARRAY (DB n DUP(0) / DD n DUP(0))
+   - TypeTab : Kind=TKP_ARRAY, Lo, Hi, BaseTypeIdx, Size *)
 
 { --- Stubs Fonctions/Procedures (TODO 18) --- }
 Procedure ParseFuncDecl; Begin End;
