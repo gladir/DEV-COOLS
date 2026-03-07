@@ -40,7 +40,7 @@
               (ex: FUNC pour FUNCTION, PROC pour PROCEDURE, RETU pour RETURN)
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 ou -32768..32767
             Entiers hexadecimaux : 0xFF ou 0x1A
             Reels : reconnus par le lexeur, traites comme entiers (trunc)
@@ -518,7 +518,20 @@ Const
   { Limites internes }
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}256{$ELSE}128{$ENDIF};
   STACK_SIZE    = 1024;
+
+  { Indices de types primitifs Clipper }
+  TY_IDX_NIL    = 0;     { NIL : valeur non initialisee          }
+  TY_IDX_NUM    = 1;     { NUMERIC : entier 16 bits signe        }
+  TY_IDX_CHAR   = 2;     { CHARACTER : pointeur vers chaine      }
+  TY_IDX_DATE   = 3;     { DATE : entier julien 16 bits          }
+  TY_IDX_LOGIC  = 4;     { LOGICAL : 0 (.F.) ou 1 (.T.)         }
+  TY_IDX_ARRAY  = 5;     { ARRAY : pointeur vers bloc tableau    }
+  TY_IDX_BLOCK  = 6;     { CODEBLOCK : pointeur vers descripteur }
+  TY_IDX_OBJECT = 7;     { OBJECT : pointeur vers instance       }
+
+  TY_UNKNOWN    = -1;    { type inconnu / pas de valeur          }
 
   { Prefixes de nommage ASM }
   CL_VAR_PFX   = '_CLV_';    { variable locale / globale            }
@@ -573,6 +586,32 @@ Type
     Col      : Integer;     { colonne source (1-base)              }
   End;
 
+  { ---- Valeur d expression (TODO 03) ----------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur                          }
+    EK_IMM,    { valeur immediate dans ImmVal                   }
+    EK_AX,     { valeur dans le registre AX                     }
+    EK_MEM     { adresse memoire [BP+Offset] ou label DATA      }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;     { valeur immediate (EK_IMM)            }
+    TypeIdx : Integer;     { indice type (TY_IDX_*)               }
+    Offset  : Integer;     { offset donnee/pile ou index DataTab  }
+    SymIdx  : Integer;     { indice dans SymTab (-1 = pas lvalue) }
+  End;
+
+  { ---- Segment de donnees (TODO 03) ------------------------ }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR);
+
+  TDataRec = Record
+    LblName : TString;     { label ASM de l entree                }
+    Kind    : TDataKind;   { type de donnee                       }
+    IntVal  : LongInt;     { valeur entiere (DK_WORD/DK_BYTE)     }
+    StrVal  : TString;     { contenu chaine (DK_STR)              }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -598,9 +637,15 @@ Var
   LexOpened  : Boolean;    { fichier source ouvert                }
   CurToken   : TToken;     { token courant                        }
 
+  { Segment de donnees (TODO 03) }
+  DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount  : Integer;    { nombre d entrees dans DataTab         }
+  LabelSeq   : Integer;    { compteur unique pour generation labels }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
+{ Lexeur (TODO 02) }
 Procedure LexInit;             Forward;
 Procedure LexClose;            Forward;
 Procedure LexNextLine;         Forward;
@@ -616,6 +661,20 @@ Procedure LexScanNumber;       Forward;
 Procedure LexScanString(Quote : Char); Forward;
 Procedure LexScanBracketStr;   Forward;
 Procedure LexNextToken;        Forward;
+{ Litteraux et constantes (TODO 03) }
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : Integer; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure ExprMakeNil(Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure EmitDataSeg; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -855,6 +914,8 @@ Begin
   WarnCount  := 0;
   TotalLines := 0;
   OutFOpen   := False;
+  DataCount  := 0;
+  LabelSeq   := 0;
 End;
 
 { ---- Affichage des statistiques ----------------------------- }
@@ -1745,6 +1806,219 @@ Begin
   CompileError('caractere inattendu: ' + Ch);
   Inc(LexColNo);
   LexNextToken; { relancer le scanner }
+End;
+
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAdd : ajouter une entree dans le segment DATA ----- }
+(* Retourne l index dans DataTab ou -1 si plein.                *)
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  Idx := DataCount;
+  DataTab[Idx].LblName := Lbl;
+  DataTab[Idx].Kind    := Kind;
+  DataTab[Idx].IntVal  := AIntVal;
+  DataTab[Idx].StrVal  := AStrVal;
+  Inc(DataCount);
+  DataAdd := Idx;
+End;
+
+{ ---- DataAddStr : ajouter une chaine litterale avec dedup --- }
+(* Reutilise les doublons : meme contenu -> meme label.
+   Retourne l index dans DataTab, utilise comme Offset EK_MEM. *)
+
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  I   : Integer;
+  Lbl : TString;
+  NS  : TString;
+Begin
+  { Rechercher un doublon existant }
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := I;
+      Exit;
+    End;
+  { Creer une nouvelle entree }
+  Inc(LabelSeq);
+  Str(LabelSeq, NS);
+  Lbl := CL_STR_PFX + NS;
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans DATA -------- }
+
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- ExprMakeImm : construire une valeur immediate ---------- }
+
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNone : valeur invalide (void/erreur) ----------- }
+
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeBool : construire un booleen Clipper ----------- }
+(* .T. -> AX=1 (TY_IDX_LOGIC), .F. -> AX=0 (TY_IDX_LOGIC)    *)
+
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_LOGIC;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNil : construire une valeur NIL Clipper -------- }
+(* NIL -> AX=0, type TY_IDX_NIL                                *)
+
+Procedure ExprMakeNil(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_NIL;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- LitEvalInt : convertir un token TK_INTEGER en valeur --- }
+(* IntVal est deja calcule par LexScanNumber (decimal ou 0x).   *)
+
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUM, Res);
+End;
+
+{ ---- LitEvalFloat : convertir TK_FLOAT -> int (trunc) ------ }
+(* Clipper cible 8086 : pas de FPU, les flottants sont tronques *)
+
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUM, Res);
+End;
+
+{ ---- LitEval : dispatcher principal pour les litteraux ------ }
+(* Types de tokens acceptes :
+   - TK_INTEGER -> entier decimal ou hexadecimal
+   - TK_FLOAT   -> reel tronque a entier
+   - TK_STRING  -> chaine dans le segment DATA
+   - TK_KEYWORD -> .T. / .F. (booleens), NIL (valeur nulle)    *)
+
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  Case T.Kind Of
+    TK_INTEGER : LitEvalInt(T, Res);
+    TK_FLOAT   : LitEvalFloat(T, Res);
+    TK_STRING  :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_CHAR;
+      Res.Offset  := DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+    TK_KEYWORD :
+    Begin
+      If (T.Val = '.T.') Then
+        ExprMakeBool(1, Res)
+      Else If (T.Val = '.F.') Then
+        ExprMakeBool(0, Res)
+      Else If (T.Val = 'NIL') Then
+        ExprMakeNil(Res)
+      Else
+      Begin
+        CompileError('mot-cle non utilisable comme litteral : ' + T.Val);
+      End;
+    End;
+  Else
+    CompileError('token non litterale : ' + T.Val);
+  End;
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA dans le .ASM ---- }
+(* Appele en fin de compilation pour ecrire les constantes.
+   Contient : chaines litterales (DK_STR), mots (DK_WORD),
+   octets (DK_BYTE), et constantes predefinies Clipper.         *)
+
+Procedure EmitDataSeg;
+Var
+  I  : Integer;
+  J  : Integer;
+  B  : Byte;
+  NS : String[6];
+Begin
+  If Not OutFOpen Then Exit;
+  If DataCount = 0 Then Exit;
+  WriteLn(OutF);
+  WriteLn(OutF, '_DATA   SEGMENT PUBLIC ''DATA''');
+  WriteLn(OutF, '        ASSUME  DS:_DATA');
+  { Constantes Clipper predefinies (utilisees par le runtime TODO 06+) }
+  WriteLn(OutF, '_CL_NIL_S   DB  ''NIL'',0');
+  WriteLn(OutF, '_CL_TRUE_S  DB  ''.T.'',0');
+  WriteLn(OutF, '_CL_FALSE_S DB  ''.F.'',0');
+  { Entrees DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    WriteLn(OutF, DataTab[I].LblName, ':');
+    Case DataTab[I].Kind Of
+      DK_WORD :
+      Begin
+        Str(DataTab[I].IntVal, NS);
+        WriteLn(OutF, '        DW      ', NS);
+      End;
+      DK_BYTE :
+      Begin
+        Str(DataTab[I].IntVal And $FF, NS);
+        WriteLn(OutF, '        DB      ', NS);
+      End;
+      DK_STR  :
+      Begin
+        Write(OutF, '        DB      ');
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          B := Ord(DataTab[I].StrVal[J]);
+          Str(B, NS);
+          If J > 1 Then Write(OutF, ',');
+          Write(OutF, NS);
+        End;
+        WriteLn(OutF, ',0');
+      End;
+    End;
+  End;
+  WriteLn(OutF, '_DATA   ENDS');
 End;
 
 { ============================================================
