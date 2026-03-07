@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (page.cfm [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -421,5 +421,738 @@
 
 Program CF86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  CF86_VERSION = '1.0';
+  CF86_DATE    = '2026-03-06';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_INCLUDE   = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  CF_VAR_PFX  = '_CFV_';    { variable scalaire                   }
+  CF_FN_PFX   = '_CFF_';    { fonction / methode                  }
+  CF_STR_PFX  = '_CFK_';    { constante chaine litterale          }
+  CF_RT_PFX   = '_CFRT_';   { routine runtime                     }
+  CF_LBL_PFX  = '_CFL_';    { label de saut interne               }
+  CF_CMP_PFX  = '_CFC_';    { composant CFC                       }
+  CF_PROP_PFX = '_CFP_';    { propriete de composant              }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs ColdFusion }
+  TY_IDX_NUMERIC  = 0;  { entier 16 bits signe  }
+  TY_IDX_STRING   = 1;  { pointeur chaine DATA  }
+  TY_IDX_BOOLEAN  = 2;  { 0 ou 1 dans AX        }
+  TY_IDX_ARRAY    = 3;  { pointeur bloc DATA     }
+  TY_IDX_STRUCT   = 4;  { pointeur struct DATA   }
+  TY_IDX_QUERY    = 5;  { pointeur stub query    }
+  TY_IDX_NULL     = 6;  { AX=0                   }
+  TY_IDX_ANY      = 7;  { type dynamique         }
+  TY_PRIM_COUNT   = 8;
+  TY_UNKNOWN      = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { page source (.cfm / .cfc)            }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+    IsComponent : Boolean; { True si .cfc, False si .cfm          }
+  End;
+
+  { ---- Tokens CFML (TODO 02) ----------------------------- }
+  TTokenKind = (
+    TK_EOF,        { fin de fichier                          }
+    TK_INTEGER,    { literal entier 42                       }
+    TK_FLOAT,      { literal flottant 3.14                   }
+    TK_STRING,     { literal chaine "abc" ou 'abc'           }
+    TK_IDENT,      { identificateur (non-mot-cle)            }
+    TK_KEYWORD,    { mot-cle CF reconnu (EQ, AND, OR...)     }
+    TK_OP,         { operateur + - * / etc.                  }
+    TK_PUNCT,      { ponctuation ; , ( ) [ ]                 }
+    TK_TAG_OPEN,   { <cfset, <cfif, <cfoutput...             }
+    TK_TAG_CLOSE,  { </cfset>, </cfif>, </cfoutput>...       }
+    TK_TAG_SELFCLOSE, { <cfset .../> auto-fermant             }
+    TK_TEXT        { contenu texte brut entre balises         }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute          }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)     }
+    FloatVal : Real;        { valeur flottante (TK_FLOAT)     }
+    Line     : Integer;     { ligne source (1-base)           }
+    Col      : Integer;     { colonne source (1-base)         }
+  End;
+
+  { ---- Categories de symboles (TODO 05) ------------------ }
+  TSymCat = (
+    SC_VAR,        { variable scope variables (defaut)  }
+    SC_LOCAL,      { variable locale (var / local.x)    }
+    SC_PARAM,      { parametre de fonction (cfargument) }
+    SC_FUNCTION,   { declaration cffunction             }
+    SC_COMPONENT,  { declaration cfcomponent            }
+    SC_CFPROPERTY  { propriete cfproperty               }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { identifiant CF                  }
+    MangledName : TString;   { _CFV_nom / _CFF_nom             }
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   { indice dans TypeTab             }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { [BP-n] pour locaux              }
+    IsLocal     : Boolean;   { variable locale dans cffunction }
+    IsArgument  : Boolean;   { parametre cfargument            }
+    IsOutput    : Boolean;   { argument output=yes             }
+    DeclLine    : Integer;
+  End;
+
+  { ---- Types internes (TODO 06) -------------------------- }
+  TTypeKind = (
+    TKC_NUMERIC,
+    TKC_STRING,
+    TKC_BOOLEAN,
+    TKC_ARRAY,
+    TKC_STRUCT,
+    TKC_QUERY,
+    TKC_NULL,
+    TKC_ANY
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   { octets : numeric=2, ptr=2 }
+  End;
+
+  { ---- Valeurs d expression (TODO 11) -------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur            }
+    EK_IMM,    { immediate dans ImmVal           }
+    EK_AX,     { valeur dans AX                  }
+    EK_MEM     { adresse [BP+Offset] ou [_CFV_x] }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   { indice dans SymTab (-1 = pas de lvalue) }
+  End;
+
+  { ---- Segment de donnees (TODO 08) ---------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_STRUCT_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Valeur fictive pour ignorer un retour TExprVal }
+  GExprDummy : TExprVal;
+
+  { Lexeur (TODO 02) }
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+  InCfScript : Boolean;   { True dans un bloc <cfscript> }
+
+  { Table des symboles (TODO 05) }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  { Table des types (TODO 06) }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Emetteur ASM (TODO 07) }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;
+  CurFnDepth   : Integer;    { 0 = global, >0 = dans une cffunction }
+  CurFnRetLbl  : TString;
+  CurFnName    : TString;
+  CurCompName  : TString;    { nom du composant courant (TODO 20) }
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LabelGenSeq  : Integer;
+
+  { Segment de donnees (TODO 08) }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+  InSilentMode   : Boolean;  { True dans <cfsilent> }
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexClose;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitDataSeg;   Forward;
+Procedure EmitRuntime;   Forward;
+Procedure EmitHeader;    Forward;
+Procedure EmitOpen;      Forward;
+Procedure LexInit;       Forward;
+Procedure ParserAdvance; Forward;
+Procedure ParsePage;     Forward;
+Procedure TypeInit;      Forward;
+Procedure SymInit;       Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
 Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+{ Extrait le nom de base d un chemin (sans extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Extrait l extension d un chemin en minuscules }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('CF86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('CF86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('CF86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('CF86 v', CF86_VERSION, ' (', CF86_DATE, ')');
+  WriteLn('Compilateur ColdFusion -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: CF86 <source.cfm|.cfc> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.cfm : page ColdFusion source');
+  WriteLn('  source.cfc : composant ColdFusion source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -h         : afficher cette aide');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile     := '';
+  Opts.OutFile     := '';
+  Opts.Verbose     := False;
+  Opts.DebugMode   := False;
+  Opts.Warnings    := False;
+  Opts.IsComponent := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('CF86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('CF86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('CF86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Detecter l extension .cfm (page) ou .cfc (composant) }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext = '.cfc' Then
+    Opts.IsComponent := True
+  Else If (Ext <> '.cfm') And (Ext <> '.cfc') Then
+  Begin
+    WriteLn('CF86: avertissement: extension non reconnue: ', Ext);
+    WriteLn('  extensions attendues: .cfm (page) ou .cfc (composant)');
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  InCfScript     := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  CurCompName    := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  InSilentMode   := False;
+  CurFrameSize   := 0;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  STUBS POUR COMPILATION (implementes dans les TODOs suivants)
+  ============================================================ }
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  {$I-}
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened := True;
+  LexEOF    := False;
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexLine   := '';
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure ParserAdvance;
+Begin
+  { stub : marquer fin de fichier }
+  CurToken.Kind := TK_EOF;
+  CurToken.Val  := '';
+End;
+
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+End;
+
+Procedure SymInit;
+Begin
+  SymCount := 0;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  {$I-}
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WriteLn('CF86: impossible de creer ', Opts.OutFile);
+    Inc(ErrorCount);
+    OutFOpen := False;
+    Exit;
+  End;
+  OutFOpen := True;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '; ', S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, Lbl, ':');
+End;
+
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  If Ops <> '' Then WriteLn(OutF, #9, Mnem, #9, Ops)
+  Else WriteLn(OutF, #9, Mnem);
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('CF86 v' + CF86_VERSION + ' - ' + CF86_DATE);
+  EmitComment('Compilateur ColdFusion -> assembleur 8086');
+  EmitComment('Source: ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT SEGMENT PUBLIC ''CODE''');
+  EmitRaw('  ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitBlankLine;
+End;
+
+Procedure EmitRuntime;
+Begin
+  { stub }
+  RuntimeEmitted := True;
+End;
+
+Procedure EmitDataSeg;
+Begin
+  { stub }
+  EmitBlankLine;
+  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  EmitRaw('_CF_CRLF  DB 13, 10, 0');
+  EmitRaw('_DATA ENDS');
+  EmitBlankLine;
+End;
+
+Procedure EmitClose;
+Begin
+  If Not OutFOpen Then Exit;
+  EmitBlankLine;
+  EmitRaw('_TEXT ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitRaw('END ' + CF_FN_PFX + 'Main');
+  Close(OutF);
+  OutFOpen := False;
+End;
+
+Procedure ParsePage;
+Begin
+  { stub : consommer tous les tokens }
+  While CurToken.Kind <> TK_EOF Do
+    ParserAdvance;
+End;
+
+{ ============================================================
+  PROCEDURE RUN - PIPELINE DE COMPILATION
+  ============================================================ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  EmitHeader;
+  LexInit;
+
+  { Point d entree programme }
+  EmitComment('Point d''entree programme CF86');
+  EmitLabel(CF_FN_PFX + 'Main');
+  EmitInstr('MOV', 'AX, @DATA');
+  EmitInstr('MOV', 'DS, AX');
+  EmitBlankLine;
+
+  ParserAdvance;
+  ParsePage;
+
+  LexClose;
+
+  { Epilogue : sortie DOS propre }
+  EmitBlankLine;
+  EmitComment('Fin de programme');
+  EmitInstr('MOV', 'AX, 4C00h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+
+  EmitRuntime;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+    If Opts.IsComponent Then
+      WriteLn('  Mode           : composant CFC')
+    Else
+      WriteLn('  Mode           : page CFM');
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowUsage;
+ End;
+  ParseArgs;
+  Run;
 End.
