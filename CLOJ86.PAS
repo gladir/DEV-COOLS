@@ -2823,7 +2823,7 @@ Begin
           End
           Else
           Begin
-            (* Caractere de controle ou apostrophe -> valeur decimale *)
+            (* Caractere non imprimable ou apostrophe -> valeur decimale *)
             If InQ Then
             Begin
               S := S + '''';
@@ -2836,10 +2836,8 @@ Begin
           End;
         End;
         If InQ Then S := S + '''';
-        If Need Or InQ Then
-          S := S + ',0'
-        Else
-          S := S + '0';
+        If Need Or InQ Then S := S + ',';
+        S := S + '0';
         EmitRaw(S);
       End;
     Else
