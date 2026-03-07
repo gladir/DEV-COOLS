@@ -173,7 +173,7 @@
               Abs, Sqr, Odd, Succ, Pred, Inc, Dec
             Expression en ligne PSP : <%= expr %> -> evaluer et ecrire
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt parser)
             Arithmetique entiere 32 bits : ADD/SUB/IMUL/IDIV pour +,-,*,DIV
             MOD : IDIV -> resultat dans EDX (reste)
@@ -5795,6 +5795,28 @@ Begin
   If CurToken.Kind = TK_PSP_CLOSE Then
     TplNextToken;
 End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+{ La totalite de ce TODO est implementee dans la section
+  TODO 04 (ParseExprPrec, OpPrec, ParseUnary, ParseExpr).
+  ParseExprPrec est un parseur de Pratt en montee de precedence
+  (4 niveaux Pascal) gerant :
+  - Arithmetique entiere 32 bits : ADD/SUB EAX,EBX,
+    IMUL EBX, CDQ+IDIV EBX pour *, div, /
+  - MOD : IDIV -> resultat dans EDX (reste)
+  - Comparaisons : CMP EAX,EBX + MOV EAX,0 + Jcc + INC EAX
+  - Comparaison chaines : MOV ESI,EAX / MOV EDI,EBX /
+    CALL _PSPRT_STRCMP / CMP EAX,0 + Jcc
+  - Concatenation chaines : + sur String ->
+    MOV ESI,EAX / MOV EDI,EBX / CALL _PSPRT_CONCAT
+  - Logique/bits : AND/OR/XOR EAX,EBX
+  - Decalages : MOV CL,BL / SHL EAX,CL et SHR EAX,CL
+  - NOT (dans ParseUnary) : XOR EAX,1 (booleen) ou NOT EAX (bits)
+  - Repli de constantes (constant folding) pour operandes immediats
+  - Protection division par zero : CMP EBX,0 / JE _PSPRT_PANIC_DIV0
+  - IN : stub avec avertissement (ensembles non supportes) }
 
 { --- Stubs Write (TODO 12) --- }
 Procedure ParseWriteStmt(IsWriteLn : Boolean); Begin End;
