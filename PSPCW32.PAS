@@ -116,7 +116,7 @@
             TypeCoerceResult : promotion vers le type le plus large
             TypeInfer, TypeLookupName (insensible a la casse)
 
-  TODO 07 - EMETTEUR DE CODE ASM 80386
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -2267,6 +2267,7 @@ Begin
   EmitRaw(PSP_RT_PFX + 'PANICMSG DB 0');
   { Handle stdout Win32 }
   EmitRaw(PSP_RT_PFX + 'HSTDOUT DD  0');
+  EmitRaw(PSP_RT_PFX + 'WRITTEN DD  0');
   EmitBlankLine;
 
   { --- Entrees dynamiques de DataTab --- }
@@ -3166,25 +3167,455 @@ Begin
     TypeResolve := TY_UNKNOWN;
 End;
 
-{ --- Stubs Emetteur (TODO 07) --- }
-Procedure EmitComment(Const S : TString); Begin End;
-Procedure EmitLabel(Const Lbl : TString); Begin End;
-Procedure EmitInstr(Const Mnem : TString); Begin End;
-Procedure EmitInstrA(Const Mnem, A1 : TString); Begin End;
-Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Begin End;
-Procedure EmitBlankLine; Begin End;
-Function NewLabel : TString; Begin NewLabel := LabelGen; End;
-Procedure EmitHeader; Begin End;
-Procedure EmitFooter; Begin End;
-Procedure EmitProlog(FrameSize : Integer); Begin End;
-Procedure EmitEpilog(ParamBytes : Integer); Begin End;
-Procedure EmitPush(Const Reg : TString); Begin End;
-Procedure EmitPop(Const Reg : TString); Begin End;
-Procedure EmitMov(Const Dst, Src : TString); Begin End;
-Procedure EmitCall(Const Target : TString); Begin End;
-Procedure EmitJmp(Const Target : TString); Begin End;
-Procedure EmitJmpCond(Const Cond, Target : TString); Begin End;
-Procedure EmitCoerce(SrcType, DstType : Integer); Begin End;
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitComment : ecrire un commentaire ASM ----------------- }
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+{ ---- EmitLabel : ecrire un label avec deux-points ------------ }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+{ ---- EmitInstr : instruction sans operande ------------------- }
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+{ ---- EmitInstrA : instruction avec un operande --------------- }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '   ' + A1);
+End;
+
+{ ---- EmitInstrAB : instruction avec deux operandes ----------- }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '   ' + A1 + ', ' + A2);
+End;
+
+{ ---- EmitBlankLine : ligne vide ------------------------------ }
+Procedure EmitBlankLine;
+Begin
+  WriteLn(OutF);
+End;
+
+{ ---- NewLabel : generer un label unique ---------------------- }
+Function NewLabel : TString;
+Begin
+  NewLabel := LabelGen;
+End;
+
+{ ---- EmitHeader : en-tete ASM Win32 FLAT --------------------- }
+Procedure EmitHeader;
+Begin
+  EmitComment('========================================');
+  EmitComment('Genere par PSPCW32 v' + PSPCW32_VERSION +
+              ' (' + PSPCW32_DATE + ')');
+  EmitComment('Source : ' + Opts.SrcFile);
+  EmitComment('Cible  : Win32 / 80386 / PE');
+  EmitComment('========================================');
+  EmitBlankLine;
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitRaw('OPTION CASEMAP:NONE');
+  EmitBlankLine;
+  EmitComment('--- Declarations externes Win32 ---');
+  EmitRaw('EXTRN   _ExitProcess@4       : PROC');
+  EmitRaw('EXTRN   _GetStdHandle@4      : PROC');
+  EmitRaw('EXTRN   _WriteFile@20        : PROC');
+  EmitRaw('EXTRN   _ReadFile@20         : PROC');
+  EmitRaw('EXTRN   _GetProcessHeap@0    : PROC');
+  EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
+  EmitRaw('EXTRN   _HeapFree@12         : PROC');
+  EmitBlankLine;
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitComment('--- Segment de code ---');
+  EmitRaw('_TEXT   SEGMENT DWORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT');
+  EmitBlankLine;
+  EmitComment('--- Point d entree principal ---');
+  EmitLabel(PSP_FN_PFX + 'main');
+  EmitComment('Obtenir le handle stdout');
+  EmitInstrA('PUSH', '-11');
+  EmitInstrA('CALL', '_GetStdHandle@4');
+  EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDOUT]', 'EAX');
+  EmitBlankLine;
+  EmitInstrA('JMP', PSP_LBL_PFX + 'MAINBODY');
+  EmitBlankLine;
+End;
+
+{ ---- EmitFooter : pied de page ASM + runtime 32 bits --------- }
+Procedure EmitFooter;
+Begin
+  EmitBlankLine;
+  { Emettre le label MAINBODY si pas deja fait }
+  If Not MainBodyEmitted Then
+  Begin
+    EmitLabel(PSP_LBL_PFX + 'MAINBODY');
+    MainBodyEmitted := True;
+  End;
+  EmitBlankLine;
+  EmitComment('--- Sortie programme ---');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('CALL', '_ExitProcess@4');
+  EmitBlankLine;
+
+  { -- Routines runtime 32 bits -- }
+  If Not RuntimeEmitted Then
+  Begin
+    RuntimeEmitted := True;
+    EmitComment('========================================');
+    EmitComment('  ROUTINES RUNTIME 32 BITS');
+    EmitComment('========================================');
+    EmitBlankLine;
+
+    { _PSPRT_PRINTSTR : afficher chaine ASCIIZ pointee par ESI }
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrAB('MOV', 'EDI', 'ESI');
+    EmitComment('calculer la longueur');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_L');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'PRINTSTR_W');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'PRINTSTR_L');
+    EmitLabel(PSP_RT_PFX + 'PRINTSTR_W');
+    EmitComment('WriteFile(hStdout, pStr, len, pWritten, 0)');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('PUSH', 'OFFSET ' + PSP_RT_PFX + 'WRITTEN');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDOUT]');
+    EmitInstrA('CALL', '_WriteFile@20');
+    EmitInstrA('POP', 'ESI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_NUMTOSTR : convertir EAX signe -> ASCIIZ dans NUMBUF }
+    EmitLabel(PSP_RT_PFX + 'NUMTOSTR');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'NUMBUF + 15');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrAB('MOV', 'ECX', '0');
+    EmitInstrAB('MOV', 'EBX', '10');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JGE', PSP_RT_PFX + 'NTS_POS');
+    EmitInstrA('NEG', 'EAX');
+    EmitInstrAB('MOV', 'ECX', '1');
+    EmitLabel(PSP_RT_PFX + 'NTS_POS');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JNE', PSP_RT_PFX + 'NTS_LOOP');
+    EmitInstrA('DEC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''0''');
+    EmitInstrA('JMP', PSP_RT_PFX + 'NTS_SIGN');
+    EmitLabel(PSP_RT_PFX + 'NTS_LOOP');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'NTS_SIGN');
+    EmitInstrAB('XOR', 'EDX', 'EDX');
+    EmitInstrA('DIV', 'EBX');
+    EmitInstrAB('ADD', 'DL', '''0''');
+    EmitInstrA('DEC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'DL');
+    EmitInstrA('JMP', PSP_RT_PFX + 'NTS_LOOP');
+    EmitLabel(PSP_RT_PFX + 'NTS_SIGN');
+    EmitInstrAB('CMP', 'ECX', '1');
+    EmitInstrA('JNE', PSP_RT_PFX + 'NTS_DONE');
+    EmitInstrA('DEC', 'EDI');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''-''');
+    EmitLabel(PSP_RT_PFX + 'NTS_DONE');
+    EmitInstrAB('MOV', 'EAX', 'EDI');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_STRLEN : longueur chaine ASCIIZ ESI -> EAX }
+    EmitLabel(PSP_RT_PFX + 'STRLEN');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('MOV', 'EDI', 'ESI');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'STRLEN_L');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'STRLEN_D');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'EAX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'STRLEN_L');
+    EmitLabel(PSP_RT_PFX + 'STRLEN_D');
+    EmitInstrA('POP', 'EDI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CONCAT : ESI + EDI -> STRBUF, EAX = OFFSET STRBUF }
+    EmitLabel(PSP_RT_PFX + 'CONCAT');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrAB('LEA', 'EBX', PSP_RT_PFX + 'STRBUF');
+    EmitLabel(PSP_RT_PFX + 'CONC_L1');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CONC_L2');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CONC_L1');
+    EmitLabel(PSP_RT_PFX + 'CONC_L2');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [EDI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'CONC_DN');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'CONC_L2');
+    EmitLabel(PSP_RT_PFX + 'CONC_DN');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'STRBUF');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_STRCMP : ESI vs EDI -> EAX (-1/0/+1) }
+    EmitLabel(PSP_RT_PFX + 'STRCMP');
+    EmitInstrA('PUSH', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'SCMP_L');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BL', 'BYTE PTR [EDI]');
+    EmitInstrAB('CMP', 'AL', 'BL');
+    EmitInstrA('JB', PSP_RT_PFX + 'SCMP_LT');
+    EmitInstrA('JA', PSP_RT_PFX + 'SCMP_GT');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'SCMP_EQ');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'SCMP_L');
+    EmitLabel(PSP_RT_PFX + 'SCMP_EQ');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'SCMP_DN');
+    EmitLabel(PSP_RT_PFX + 'SCMP_LT');
+    EmitInstrAB('MOV', 'EAX', '-1');
+    EmitInstrA('JMP', PSP_RT_PFX + 'SCMP_DN');
+    EmitLabel(PSP_RT_PFX + 'SCMP_GT');
+    EmitInstrAB('MOV', 'EAX', '1');
+    EmitLabel(PSP_RT_PFX + 'SCMP_DN');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_WRITECRLF : ecrire CR+LF }
+    EmitLabel(PSP_RT_PFX + 'WRITECRLF');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CRLF');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_CHR : AL -> chaine 1 car dans CHRBUF, EAX = ptr }
+    EmitLabel(PSP_RT_PFX + 'CHR');
+    EmitInstrAB('MOV', 'BYTE PTR [' + PSP_RT_PFX + 'CHRBUF]', 'AL');
+    EmitInstrAB('MOV', 'BYTE PTR [' + PSP_RT_PFX + 'CHRBUF + 1]', '0');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'CHRBUF');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_STRTONUM : ESI (ASCIIZ) -> EAX (entier signe) }
+    EmitLabel(PSP_RT_PFX + 'STRTONUM');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI]', '''-''');
+    EmitInstrA('JNE', PSP_RT_PFX + 'STN_LP');
+    EmitInstrAB('MOV', 'ECX', '1');
+    EmitInstrA('INC', 'ESI');
+    EmitLabel(PSP_RT_PFX + 'STN_LP');
+    EmitInstrAB('MOVZX', 'EBX', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'EBX', '''0''');
+    EmitInstrA('JB', PSP_RT_PFX + 'STN_DN');
+    EmitInstrAB('CMP', 'EBX', '''9''');
+    EmitInstrA('JA', PSP_RT_PFX + 'STN_DN');
+    EmitInstrAB('SUB', 'EBX', '''0''');
+    EmitInstrAB('IMUL', 'EAX', '10');
+    EmitInstrAB('ADD', 'EAX', 'EBX');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'STN_LP');
+    EmitLabel(PSP_RT_PFX + 'STN_DN');
+    EmitInstrAB('CMP', 'ECX', '1');
+    EmitInstrA('JNE', PSP_RT_PFX + 'STN_OK');
+    EmitInstrA('NEG', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'STN_OK');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_COPY : ESI=src, ECX=index(1-based), EDX=count -> STRBUF }
+    EmitLabel(PSP_RT_PFX + 'COPY');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('DEC', 'ECX');
+    EmitInstrAB('ADD', 'ESI', 'ECX');
+    EmitInstrAB('LEA', 'EBX', PSP_RT_PFX + 'STRBUF');
+    EmitLabel(PSP_RT_PFX + 'COPY_L');
+    EmitInstrAB('CMP', 'EDX', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'COPY_DN');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'COPY_DN');
+    EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrA('DEC', 'EDX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'COPY_L');
+    EmitLabel(PSP_RT_PFX + 'COPY_DN');
+    EmitInstrAB('MOV', 'BYTE PTR [EBX]', '0');
+    EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'STRBUF');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_POS : ESI=sub, EDI=str -> EAX (1-based, 0 si absent) }
+    EmitLabel(PSP_RT_PFX + 'POS');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrAB('MOV', 'EBX', 'EDI');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'POS_NX');
+    EmitInstrAB('CMP', 'BYTE PTR [EBX]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'POS_NF');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'POS_CM');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'POS_FD');
+    EmitInstrAB('CMP', 'AL', 'BYTE PTR [EBX]');
+    EmitInstrA('JNE', PSP_RT_PFX + 'POS_NM');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'POS_CM');
+    EmitLabel(PSP_RT_PFX + 'POS_FD');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrAB('MOV', 'EAX', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'POS_DN');
+    EmitLabel(PSP_RT_PFX + 'POS_NM');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('INC', 'EBX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'POS_NX');
+    EmitLabel(PSP_RT_PFX + 'POS_NF');
+    EmitInstrAB('XOR', 'EAX', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'POS_DN');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_UPCASE : AL -> majuscule }
+    EmitLabel(PSP_RT_PFX + 'UPCASE');
+    EmitInstrAB('CMP', 'AL', '''a''');
+    EmitInstrA('JB', PSP_RT_PFX + 'UPC_DN');
+    EmitInstrAB('CMP', 'AL', '''z''');
+    EmitInstrA('JA', PSP_RT_PFX + 'UPC_DN');
+    EmitInstrAB('SUB', 'AL', '32');
+    EmitLabel(PSP_RT_PFX + 'UPC_DN');
+    EmitInstr('RET');
+    EmitBlankLine;
+  End;
+
+  EmitComment('--- Fin du segment de code ---');
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+End;
+
+{ ---- EmitProlog : prologue de fonction 32 bits --------------- }
+Procedure EmitProlog(FrameSize : Integer);
+Begin
+  EmitPush('EBP');
+  EmitInstrAB('MOV', 'EBP', 'ESP');
+  If FrameSize > 0 Then
+  Begin
+    EmitInstrAB('SUB', 'ESP', IntToStr(FrameSize));
+    If (FrameSize > FRAME_WARN) And Opts.Warnings Then
+      WarnMsg('cadre de pile volumineux : ' + IntToStr(FrameSize) +
+              ' octets');
+  End;
+  EmitPush('ESI');
+  EmitPush('EDI');
+End;
+
+{ ---- EmitEpilog : epilogue de fonction 32 bits --------------- }
+Procedure EmitEpilog(ParamBytes : Integer);
+Begin
+  EmitPop('EDI');
+  EmitPop('ESI');
+  EmitInstrAB('MOV', 'ESP', 'EBP');
+  EmitPop('EBP');
+  If ParamBytes > 0 Then
+    EmitInstrA('RET', IntToStr(ParamBytes))
+  Else
+    EmitInstr('RET');
+End;
+
+{ ---- EmitPush : instruction PUSH ----------------------------- }
+Procedure EmitPush(Const Reg : TString);
+Begin
+  EmitInstrA('PUSH', Reg);
+End;
+
+{ ---- EmitPop : instruction POP ------------------------------- }
+Procedure EmitPop(Const Reg : TString);
+Begin
+  EmitInstrA('POP', Reg);
+End;
+
+{ ---- EmitMov : instruction MOV ------------------------------- }
+Procedure EmitMov(Const Dst, Src : TString);
+Begin
+  EmitInstrAB('MOV', Dst, Src);
+End;
+
+{ ---- EmitCall : instruction CALL ----------------------------- }
+Procedure EmitCall(Const Target : TString);
+Begin
+  EmitInstrA('CALL', Target);
+End;
+
+{ ---- EmitJmp : instruction JMP ------------------------------- }
+Procedure EmitJmp(Const Target : TString);
+Begin
+  EmitInstrA('JMP', Target);
+End;
+
+{ ---- EmitJmpCond : saut conditionnel (JE, JNE, JL, ...) ----- }
+Procedure EmitJmpCond(Const Cond, Target : TString);
+Begin
+  EmitInstrA(Cond, Target);
+End;
+
+{ ---- EmitCoerce : emettre la coercition de type -------------- }
+Procedure EmitCoerce(SrcType, DstType : Integer);
+Var
+  R : Integer;
+Begin
+  If SrcType <> DstType Then
+  Begin
+    R := TypeCoerce(SrcType, DstType);
+    If R = R Then; { eviter note variable non utilisee }
+  End;
+End;
 
 { ============================================================
   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
@@ -5182,7 +5613,8 @@ Begin
   { TODO 02+ : Initialiser le lexeur et l analyseur template }
   LexInit;
   TplInit;
-  { TODO 07  : Emettre l en-tete ASM }
+  { Emettre l en-tete ASM }
+  EmitHeader;
   { TODO 19  : Boucle principale template PSP }
   { Debug : scanner tous les tokens si -d est actif }
   If Opts.DebugMode Then
@@ -5191,8 +5623,13 @@ Begin
       TplNextToken;
     Until CurToken.Kind = TK_EOF;
   End;
-  { TODO 07  : Emettre le pied de page ASM }
-  { TODO 08  : Emettre le segment de donnees }
+  { Emettre le pied de page ASM }
+  EmitFooter;
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  { Directive END }
+  If OutFOpen Then
+    EmitRaw('        END     ' + PSP_FN_PFX + 'main');
   TplClose;
 
 
