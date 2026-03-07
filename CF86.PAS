@@ -70,7 +70,7 @@
               6. OR XOR
               7. ? : (ternaire)
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_PARAM, SK_FUNCTION, SK_COMPONENT,
               SK_ARGUMENT, SK_LOCAL, SK_CFPROPERTY
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
@@ -699,6 +699,17 @@ Procedure ExprEmitBinOp(Const Op : TString;
                         Var L : TExprVal; Var R : TExprVal); Forward;
 Procedure ExprEmitUnary(Const Op : TString;
                         Var E : TExprVal); Forward;
+{ TODO 05 }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                         Level : Integer) : Integer; Forward;
+Function  SymAdd(Const AName : TString; ACat : TSymCat;
+                 ATypeIdx : Integer; AOffset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Function  SymNextOffset : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2325,17 +2336,204 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour nommage ASM ------- }
+(* Remplace tout caractere non alpha-numerique par _ .          *)
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    If Length(S) >= MAX_STR Then Break;
+    If ((Name[I] >= 'A') And (Name[I] <= 'Z')) Or
+       ((Name[I] >= 'a') And (Name[I] <= 'z')) Or
+       ((Name[I] >= '0') And (Name[I] <= '9')) Or
+       (Name[I] = '_') Then
+      S := S + Name[I]
+    Else
+      S := S + '_';
+  End;
+  If S = '' Then S := '_anon';
+  SymNameClean := S;
+End;
+
+{ ---- SymMangle : generer un label ASM depuis un symbole ---- }
+(* Le prefixe depend de la categorie du symbole :               *)
+(*   SC_VAR, SC_LOCAL, SC_PARAM   -> _CFV_                     *)
+(*   SC_FUNCTION                  -> _CFF_                     *)
+(*   SC_COMPONENT                 -> _CFC_                     *)
+(*   SC_CFPROPERTY                -> _CFP_                     *)
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx : TString;
+Begin
+  Case Cat Of
+    SC_VAR        : Pfx := CF_VAR_PFX;
+    SC_LOCAL      : Pfx := CF_VAR_PFX;
+    SC_PARAM      : Pfx := CF_VAR_PFX;
+    SC_FUNCTION   : Pfx := CF_FN_PFX;
+    SC_COMPONENT  : Pfx := CF_CMP_PFX;
+    SC_CFPROPERTY : Pfx := CF_PROP_PFX;
+  Else
+    Pfx := CF_VAR_PFX;
+  End;
+  SymMangle := Pfx + SymNameClean(StrLowerCase(Name));
+End;
+
+{ ---- SymFind : rechercher un symbole par nom --------------- }
+(* Parcourt la table du plus recent au plus ancien pour         *)
+(* respecter la portee la plus interne (shadowing).             *)
+(* ColdFusion est insensible a la casse -> comparaison lower.   *)
+(* Retourne l index (0-base) ou -1 si non trouve.               *)
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+  Sw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    Sw := StrLowerCase(SymTab[I].Name);
+    If Sw = Lw Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : rechercher dans un scope specifique -- }
+(* Ne retourne que les symboles dont ScopeLevel = Level.        *)
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+  Sw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    Sw := StrLowerCase(SymTab[I].Name);
+    If (Sw = Lw) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table ------------- }
+(* Retourne l index du symbole (0-base) ou -1 en cas d erreur.  *)
+Function SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AOffset : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name        := AName;
+  SymTab[Idx].MangledName := SymMangle(AName, ACat);
+  SymTab[Idx].Cat         := ACat;
+  SymTab[Idx].TypeIdx     := ATypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := AOffset;
+  SymTab[Idx].IsLocal     := (ACat = SC_LOCAL) Or (ACat = SC_PARAM);
+  SymTab[Idx].IsArgument  := (ACat = SC_PARAM);
+  SymTab[Idx].IsOutput    := False;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', AName,
+            ' cat=', Ord(ACat),
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+{ ---- SymEnterScope : entrer dans un nouveau scope ---------- }
+(* Empile le nombre de symboles pour pouvoir les retirer au     *)
+(* retour de scope avec SymLeaveScope.                          *)
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------ }
+(* Retire tous les symboles ajoutes dans cette portee.          *)
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+End;
+
+{ ---- SymNextOffset : calculer le prochain offset [BP-n] ---- }
+(* Chaque variable locale occupe 2 octets (mot 16 bits).        *)
+Function SymNextOffset : Integer;
+Begin
+  Inc(CurFrameSize, 2);
+  SymNextOffset := -CurFrameSize;
+End;
+
+{ ---- SymInit : initialiser la table des symboles ----------- }
+(* Remet a zero la table et enregistre les portees predefinies   *)
+(* de ColdFusion : variables, local, arguments, form, url, cgi, *)
+(* application, session, request (stubs).                       *)
+Procedure SymInit;
+Var
+  I : Integer;
+Begin
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Cat         := SC_VAR;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsLocal     := False;
+    SymTab[I].IsArgument  := False;
+    SymTab[I].IsOutput    := False;
+    SymTab[I].DeclLine    := 0;
+  End;
+End;
+
+{ ============================================================
   STUBS POUR COMPILATION (implementes dans les TODOs suivants)
   ============================================================ }
 
 Procedure TypeInit;
 Begin
   TypeCount := 0;
-End;
-
-Procedure SymInit;
-Begin
-  SymCount := 0;
 End;
 
 Procedure EmitOpen;
