@@ -2906,7 +2906,7 @@ End;
 Function TypeMangle(TypeIdx : Integer) : TString;
 Begin
   Case TypeKindOf(TypeIdx) Of
-    TYK_NIL      : TypeMangle := '_LUAN_';  { nil    }
+    TYK_NIL      : TypeMangle := '_LUANL_'; { nil    }
     TYK_BOOLEAN  : TypeMangle := '_LUAB_';  { bool   }
     TYK_NUMBER   : TypeMangle := '_LUAN_';  { number }
     TYK_STRING   : TypeMangle := '_LUAS_';  { string }
@@ -2946,6 +2946,9 @@ End;
 { ---- TypeIsTruthy : semantique de verite Lua ----------------------- }
 { En Lua, seuls nil et false sont faux (falsy).                         }
 { Tout le reste est vrai (truthy) : 0, "", table vide = truthy !        }
+{ Note : pour TYK_BOOLEAN, on retourne False car la verite depend       }
+{   de la valeur a l execution (false=falsy, true=truthy).              }
+{   Pour TYK_UNKNOWN, meme chose : verification a l execution.         }
 Function TypeIsTruthy(TypeIdx : Integer) : Boolean;
 Var
   K : TTypeKind;
@@ -3148,7 +3151,7 @@ Begin
     TypeTab[I].Kind := TYK_UNKNOWN;
     TypeTab[I].Size := 0;
   End;
-  { nil : valeur speciale, pas de donnee, taille 0 mais occupe 2 octets (tag) }
+  { nil : valeur speciale, occupe 2 octets en memoire (tag de type) }
   TypeTab[TY_IDX_NIL].Name      := 'nil';
   TypeTab[TY_IDX_NIL].Kind      := TYK_NIL;
   TypeTab[TY_IDX_NIL].Size      := 2;
