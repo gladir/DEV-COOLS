@@ -74,19 +74,26 @@
             IsAssignOp, BinOpPrec, BinOpIsRight, ExprFlushToAX
             ParsePrimary, ParseUnary, ParseFormula(MinPrio), ParseExpr
 
-  TODO 05 - TABLE DES SYMBOLES ET PORTEES
+  TODO 05 - TABLE DES SYMBOLES ET PORTEES [IMPLEMENTE]
             TSymKind : SK_IDENT (identite), SK_VAR (variable REF),
               SK_PROC (procedure), SK_OP (operateur), SK_MODE (type),
               SK_LABEL (etiquette), SK_PRIO (priorite d operateur)
             TSymRec : Name, MangledName, Kind, ModeIdx, Offset,
               ScopeLevel, IsParam, IsHeap, IsLoc
-            SymAdd, SymFind, SymFindInScope, SymMangle
+            SymNameClean, SymMangle, SymAdd, SymFind, SymFindInScope
             CurScope : compteur de portee imbriquee (max MAX_SCOPE)
             SymEnterScope / SymLeaveScope : gestion des portees
-            Portees imbriquees : chaque clause ouvre une portee
-              (BEGIN..END, IF..FI, DO..OD, parentheses, etc.)
-            Regles de visibilite Algol 68 : identification
-              d un identificateur dans la plus petite portee englobante
+            SymNextOffset : prochain offset [BP-n] pour locale
+            SymInit : predeclare 61 symboles standard Algol 68
+              I/O (print/read/newline/newpage/space/backspace)
+              Transput (put/get/open/close/associate/create/establish)
+              Operateurs (abs/odd/sign/entier/round/repr/leng/shorten/
+                bin/elem/level/re/im/conj/arg)
+              Math (sqrt/exp/ln/sin/cos/tan/arcsin/arccos/arctan)
+              Chaines (whole/fixed/float/char in string/string in string)
+              Constantes (max int/max real/small real/pi/blank/flip/flop)
+              Fichiers (stand in/stand out/stand error/stand back)
+              Divers (random/next random/stop)
 
   TODO 06 - SYSTEME DE MODES (TYPES)
             TModeKind : MK_INT (16 bits signe), MK_REAL (stub entier),
@@ -713,7 +720,11 @@ Procedure ParseFormula(MinPrio : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { TODO 05 - Symboles }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                         Level : Integer) : Integer; Forward;
 Function  SymAdd(Const Name : TString; Cat : TSymCat;
                  ModeIdx, Offset : Integer) : Integer; Forward;
 Procedure SymEnterScope; Forward;
@@ -3151,38 +3162,290 @@ Begin
   ParseFormula(1, Res);
 End;
 
-Function SymFind(Const Name : TString) : Integer;
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES ET PORTEES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour MASM --------------- }
+{ Remplace tout caractere non alphanumerique par underscore.    }
+
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I   : Integer;
+  Res : TString;
+  Ch  : Char;
 Begin
-  { TODO 05 }
+  Res := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    Ch := Name[I];
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or
+       ((Ch >= '0') And (Ch <= '9')) Or
+       (Ch = '_') Then
+      Res := Res + Ch
+    Else
+      Res := Res + '_';
+  End;
+  SymNameClean := Res;
+End;
+
+{ ---- SymMangle : construire l etiquette ASM d un symbole ---- }
+{ SC_IDENT  : identite (INT x = 42)      -> _A68V_ + name      }
+{ SC_VAR    : variable (REF INT x := 42) -> _A68V_ + name      }
+{ SC_PROC   : procedure                  -> _A68P_ + name      }
+{ SC_OP     : operateur utilisateur       -> _A68O_ + name      }
+{ SC_MODE   : declaration de mode         -> _A68M_ + name      }
+{ SC_LABEL  : etiquette                   -> _A68L_ + name      }
+{ SC_PARAM  : parametre formel            -> _A68V_ + name      }
+
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Clean : TString;
+  Pfx   : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Cat Of
+    SC_IDENT  : Pfx := A68_VAR_PFX;
+    SC_VAR    : Pfx := A68_VAR_PFX;
+    SC_PROC   : Pfx := A68_PROC_PFX;
+    SC_OP     : Pfx := A68_OP_PFX;
+    SC_MODE   : Pfx := A68_MODE_PFX;
+    SC_LABEL  : Pfx := A68_LBL_PFX;
+    SC_PARAM  : Pfx := A68_VAR_PFX;
+  Else
+    Pfx := A68_VAR_PFX;
+  End;
+  SymMangle := Pfx + Clean;
+End;
+
+{ ---- SymFind : chercher un symbole (plus recent d abord) ---- }
+{ Parcourt la table du plus recent au plus ancien pour respecter }
+{ la regle Algol 68 de visibilite dans la plus petite portee    }
+{ englobante.  Retourne l index (0-base) ou -1.                 }
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
   SymFind := -1;
 End;
 
+{ ---- SymFindInScope : chercher un symbole dans une portee --- }
+{ Retourne l index du symbole de nom Name dans la portee Level, }
+{ ou -1 si pas trouve.                                          }
+
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l index du nouveau symbole (0-base) ou -1 si plein.  }
+
 Function SymAdd(Const Name : TString; Cat : TSymCat;
                 ModeIdx, Offset : Integer) : Integer;
+Var
+  Idx : Integer;
 Begin
-  { TODO 05 }
-  SymAdd := -1;
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name        := Name;
+  SymTab[Idx].MangledName := SymMangle(Name, Cat);
+  SymTab[Idx].Cat         := Cat;
+  SymTab[Idx].ModeIdx     := ModeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := Offset;
+  SymTab[Idx].IsParam     := (Cat = SC_PARAM);
+  SymTab[Idx].IsHeap      := False;
+  SymTab[Idx].IsConst     := (Cat = SC_IDENT);
+  SymTab[Idx].DeclLine    := LexLineNo;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Name,
+            ' cat=', Ord(Cat),
+            ' mode=', ModeIdx,
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
 End;
+
+{ ---- SymEnterScope : ouvrir une nouvelle portee ------------- }
+{ Sauvegarde SymCount sur la pile de portees pour pouvoir       }
+{ retirer les symboles locaux lors du SymLeaveScope.            }
 
 Procedure SymEnterScope;
 Begin
-  { TODO 05 }
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('imbrication de portees trop profonde (max=' +
+                 IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER level=', CurScope,
+            ' syms=', SymCount);
 End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------- }
+{ Retire tous les symboles ajoutes dans cette portee en         }
+{ restaurant SymCount depuis la pile.                            }
 
 Procedure SymLeaveScope;
 Begin
-  { TODO 05 }
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('desequilibre de portees : LeaveScope sans EnterScope');
+    Exit;
+  End;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE level=', CurScope,
+            ' syms=', SymCount);
 End;
 
+{ ---- SymNextOffset : prochain offset disponible pour locale -- }
+{ Calcule [BP - 2*N] pour la prochaine variable locale.          }
+
 Function SymNextOffset : Integer;
+Var
+  I, MaxOfs : Integer;
 Begin
-  { TODO 05 }
-  SymNextOffset := 0;
+  MaxOfs := 0;
+  For I := 0 To SymCount - 1 Do
+    If (SymTab[I].ScopeLevel >= 1) And
+       (Not SymTab[I].IsParam) And
+       (SymTab[I].Offset < MaxOfs) Then
+      MaxOfs := SymTab[I].Offset;
+  { Prochain offset = MaxOfs - 2 (taille mot 16 bits par defaut ;
+    le dimensionnement specifique par mode sera dans TODO 06) }
+  SymNextOffset := MaxOfs - 2;
 End;
+
+{ ---- SymInit : initialiser la table et predeclarer ---------- }
+{ Symboles standard Algol 68 :                                   }
+{   I/O : print, read, newline, newpage, space, backspace        }
+{   Operateurs : abs, odd, sign, repr, entier, round, leng,     }
+{     shorten, bin, elem, level, re, im, conj, arg               }
+{   Chaines : char in string, string in string                   }
+{   Transput : put, get, open, close, associate, create           }
+{   Math : sqrt, exp, ln, sin, cos, tan, arcsin, arccos, arctan  }
+{   Divers : random, next random, whole repr, fixed repr,        }
+{     float repr                                                  }
 
 Procedure SymInit;
 Begin
-  { TODO 05 }
+  SymCount    := 0;
+  ScopeTop    := 0;
+  CurScope    := 0;
+  TotalSyms   := 0;
+
+  { === Procedures d entree/sortie standard (transput) === }
+  SymAdd('print',             SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('printf',            SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('read',              SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('readf',             SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('newline',           SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('newpage',           SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('space',             SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('backspace',         SC_PROC, TY_IDX_VOID, 0);
+
+  { === Procedures de transput fichier === }
+  SymAdd('put',               SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('get',               SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('open',              SC_PROC, TY_IDX_INT, 0);
+  SymAdd('close',             SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('associate',         SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('create',            SC_PROC, TY_IDX_VOID, 0);
+  SymAdd('establish',         SC_PROC, TY_IDX_VOID, 0);
+
+  { === Operateurs standard (modes entiers) === }
+  SymAdd('abs',               SC_PROC, TY_IDX_INT, 0);
+  SymAdd('odd',               SC_PROC, TY_IDX_BOOL, 0);
+  SymAdd('sign',              SC_PROC, TY_IDX_INT, 0);
+  SymAdd('entier',            SC_PROC, TY_IDX_INT, 0);
+  SymAdd('round',             SC_PROC, TY_IDX_INT, 0);
+  SymAdd('repr',              SC_PROC, TY_IDX_CHAR, 0);
+  SymAdd('leng',              SC_PROC, TY_IDX_INT, 0);
+  SymAdd('shorten',           SC_PROC, TY_IDX_INT, 0);
+  SymAdd('bin',               SC_PROC, TY_IDX_BITS, 0);
+  SymAdd('elem',              SC_PROC, TY_IDX_BOOL, 0);
+  SymAdd('level',             SC_PROC, TY_IDX_INT, 0);
+  SymAdd('re',                SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('im',                SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('conj',              SC_PROC, TY_IDX_COMPL, 0);
+  SymAdd('arg',               SC_PROC, TY_IDX_REAL, 0);
+
+  { === Fonctions mathematiques === }
+  SymAdd('sqrt',              SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('exp',               SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('ln',                SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('sin',               SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('cos',               SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('tan',               SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('arcsin',            SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('arccos',            SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('arctan',            SC_PROC, TY_IDX_REAL, 0);
+
+  { === Procedures de conversion chaine === }
+  SymAdd('whole',             SC_PROC, TY_IDX_STRING, 0);
+  SymAdd('fixed',             SC_PROC, TY_IDX_STRING, 0);
+  SymAdd('float',             SC_PROC, TY_IDX_STRING, 0);
+  SymAdd('char in string',    SC_PROC, TY_IDX_BOOL, 0);
+  SymAdd('string in string',  SC_PROC, TY_IDX_BOOL, 0);
+
+  { === Constantes predefinies === }
+  SymAdd('max int',           SC_IDENT, TY_IDX_INT, 0);
+  SymAdd('max real',          SC_IDENT, TY_IDX_REAL, 0);
+  SymAdd('small real',        SC_IDENT, TY_IDX_REAL, 0);
+  SymAdd('max abs char',      SC_IDENT, TY_IDX_INT, 0);
+  SymAdd('null character',    SC_IDENT, TY_IDX_CHAR, 0);
+  SymAdd('blank',             SC_IDENT, TY_IDX_CHAR, 0);
+  SymAdd('flip',              SC_IDENT, TY_IDX_CHAR, 0);
+  SymAdd('flop',              SC_IDENT, TY_IDX_CHAR, 0);
+  SymAdd('error char',        SC_IDENT, TY_IDX_CHAR, 0);
+  SymAdd('pi',                SC_IDENT, TY_IDX_REAL, 0);
+
+  { === Fichiers standard === }
+  SymAdd('stand in',          SC_IDENT, TY_IDX_REF, 0);
+  SymAdd('stand out',         SC_IDENT, TY_IDX_REF, 0);
+  SymAdd('stand error',       SC_IDENT, TY_IDX_REF, 0);
+  SymAdd('stand back',        SC_IDENT, TY_IDX_REF, 0);
+
+  { === Divers === }
+  SymAdd('random',            SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('next random',       SC_PROC, TY_IDX_REAL, 0);
+  SymAdd('stop',              SC_PROC, TY_IDX_VOID, 0);
 End;
 
 Procedure ModeInit;
