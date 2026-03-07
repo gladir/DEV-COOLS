@@ -2211,19 +2211,14 @@ Begin
       CompileError('#ifdef imbrique trop profondement');
       Exit;
     End;
+    (* Verifier si le parent est actif avant d incrementer *)
+    If (CondTop >= 0) And (CondStack[CondTop] <> CS_ACTIVE) Then
+    Begin
+      Inc(CondTop);
+      CondStack[CondTop] := CS_SKIPPING;
+      Exit;
+    End;
     Inc(CondTop);
-    If Not CondIsActive Then
-    Begin
-      (* Le parent saute deja : on saute aussi *)
-      CondStack[CondTop] := CS_SKIPPING;
-      Exit;
-    End;
-    (* Verifier le parent (CondTop-1) *)
-    If (CondTop > 0) And (CondStack[CondTop - 1] <> CS_ACTIVE) Then
-    Begin
-      CondStack[CondTop] := CS_SKIPPING;
-      Exit;
-    End;
     Defined := (DefineFind(Name) >= 0);
     If Defined Then
       CondStack[CondTop] := CS_ACTIVE
@@ -2240,12 +2235,14 @@ Begin
       CompileError('#ifndef imbrique trop profondement');
       Exit;
     End;
-    Inc(CondTop);
-    If (CondTop > 0) And (CondStack[CondTop - 1] <> CS_ACTIVE) Then
+    (* Verifier si le parent est actif avant d incrementer *)
+    If (CondTop >= 0) And (CondStack[CondTop] <> CS_ACTIVE) Then
     Begin
+      Inc(CondTop);
       CondStack[CondTop] := CS_SKIPPING;
       Exit;
     End;
+    Inc(CondTop);
     Defined := (DefineFind(Name) >= 0);
     If Not Defined Then
       CondStack[CondTop] := CS_ACTIVE
@@ -2297,11 +2294,15 @@ Begin
       CompileError('#define: nom manquant');
       Exit;
     End;
-    (* Verifier si c est un macro avec parametres (stub simplifie) *)
-    If (Length(Name) > 0) And (P <= Length(Clean)) And (Clean[P] = '(') Then
+    (* Verifier si c est un macro avec parametres : NOM( ou NOM suivi de ( *)
+    If (Pos('(', Name) > 0) Or
+       ((P <= Length(Clean)) And (Clean[P] = '(')) Then
     Begin
       (* Macro avec parametres : avertissement et stockage du texte brut *)
       WarnMsg('#define avec parametres non supporte, traite comme texte');
+      (* Extraire le vrai nom avant la parenthese *)
+      If Pos('(', Name) > 0 Then
+        Name := Copy(Name, 1, Pos('(', Name) - 1);
     End;
     (* Extraire la valeur (tout le reste de la ligne) *)
     Value := '';
