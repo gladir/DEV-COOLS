@@ -43,7 +43,7 @@
               variables converties en majuscules par defaut
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Nombres entiers : 0..65535 pour entiers 16 bits
               Pas de suffixe de type (REXX est non type)
             Nombres decimaux : reconnus par le lexeur, tronques en entier
@@ -743,6 +743,15 @@ Procedure EmitRuntime;         Forward;
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+
+(* TODO 03 - Litteraux et constantes *)
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 
 (* TODO 10 - Expressions *)
 Procedure ParsePrimary(Var Res : TExprVal); Forward;
@@ -1745,6 +1754,115 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ExprMakeImm : construire une valeur immediate -------- *)
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeNone : valeur invalide (void / erreur) ------- *)
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- LitEvalInt : evaluer un token TK_NUMBER (entier) ----- *)
+(* IntVal est deja calcule par LexScanNumber.                   *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INTEGER, Res);
+End;
+
+(* ---- LitEvalFloat : evaluer un nombre decimal (tronque) --- *)
+(* REXX n a pas de distinction entier/flottant pour le code ;   *)
+(* les decimaux sont tronques en entier 16 bits par le lexeur.  *)
+(* On emet un avertissement si la valeur originale contenait    *)
+(* un point decimal ou un exposant.                             *)
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Begin
+  WarnMsg('nombre decimal ''' + T.Val + ''' tronque en entier');
+  ExprMakeImm(T.IntVal, TY_IDX_INTEGER, Res);
+End;
+
+(* ---- LitEval : dispatcher principal pour les litteraux ---- *)
+(* Tokens acceptes :                                            *)
+(*   TK_NUMBER  -> entier 16 bits (EK_IMM)                     *)
+(*   TK_STRING  -> stocker en DATA, retourner index (EK_MEM)   *)
+(*   TK_IDENT   -> constantes predefinies RC, RESULT, SIGL     *)
+(*     (variables speciales non encore affectees = leur nom)    *)
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  U   : TString;
+  Idx : Integer;
+Begin
+  ExprMakeNone(Res);
+  Case T.Kind Of
+    (* --- Nombres : entier ou decimal tronque --- *)
+    TK_NUMBER :
+      LitEvalInt(T, Res);
+
+    (* --- Chaines : stocker en DATA, retourner index DataTab --- *)
+    TK_STRING :
+    Begin
+      DataAddStr(T.Val);
+      Idx := DataCount - 1;
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := Idx;
+      Res.SymIdx  := -1;
+    End;
+
+    (* --- Identificateur : verifier constantes predefinies --- *)
+    TK_IDENT :
+    Begin
+      U := T.Val; (* deja en majuscules par le lexeur *)
+      If U = 'RC' Then
+      Begin
+        (* RC = code retour : _RX_RC (DW) *)
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_INTEGER;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else If U = 'RESULT' Then
+      Begin
+        (* RESULT = valeur de retour : _RX_RESULT (chaine) *)
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_STRING;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End
+      Else If U = 'SIGL' Then
+      Begin
+        (* SIGL = numero de ligne : _RX_SIGL (DW) *)
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_INTEGER;
+        Res.Offset  := 0;
+        Res.SymIdx  := -1;
+      End;
+      (* Si non reconnu, ExprMakeNone reste valide (sera traite *)
+      (* par le parseur comme variable/fonction dans TODO 09/10) *)
+    End;
+  End; (* Case *)
+End;
+
 (* TODO 05 - Table des symboles *)
 Procedure SymInit;
 Begin
@@ -1937,6 +2055,13 @@ Begin
   EmitRaw('_TEXT ENDS');
   EmitBlankLine;
   EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  (* Constantes symboliques predefinies REXX *)
+  EmitComment('Constantes predefinies REXX');
+  EmitRaw('_RX_RC      DW 0');
+  EmitRaw('_RX_RESULT  DB ''RESULT'',0');
+  EmitRaw('_RX_SIGL    DW 0');
+  EmitBlankLine;
+  (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
   Begin
     Case DataTab[I].Kind Of
@@ -2035,12 +2160,26 @@ Function DataAddStr(Const S : TString) : TString;
 Var
   Lbl : TString;
   Seq : TString;
+  I   : Integer;
 Begin
+  (* Deduplication : chercher une chaine existante *)
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := DataTab[I].LblName;
+      Exit;
+    End;
   Inc(LabelSeq);
   Str(LabelSeq, Seq);
   Lbl := RX_STR_PFX + Seq;
   DataAdd(Lbl, DK_STR, 0, S);
   DataAddStr := Lbl;
+End;
+
+(* ---- DataAddWord : ajouter un mot (DW) dans le segment DATA *)
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
 (* TODO 10/11 - Expressions *)
