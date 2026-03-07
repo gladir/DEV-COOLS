@@ -146,7 +146,7 @@
             IsDefined("variable") : verifie si variable existe -> AX=0|1
             Len(chaine) : longueur -> CALL _CFRT_STRLEN -> AX
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             MOD : IDIV -> resultat dans DX (reste)
@@ -739,9 +739,10 @@ Procedure ParseVarDecl; Forward;
 { TODO 10 }
 Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Function  ParseCallArgs : Integer; Forward;
-Procedure ParseExpr(Var Res : TExprVal); Forward;
-Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
+{ TODO 11 }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2306,6 +2307,35 @@ Begin
     Exit;
   End;
 
+  { ---- Comparaison chaine : CALL _CFRT_STRCMP -------------- }
+  (* Si au moins un operande est de type STRING et l operateur  *)
+  (* est un operateur de comparaison, on appelle _CFRT_STRCMP   *)
+  (* qui retourne dans AX : 0 si egal, <0 si L<R, >0 si L>R.  *)
+  (* On compare ensuite AX a 0 avec SETcc pour obtenir 0|1.    *)
+  If ((NP = '==') Or (NP = '!=') Or (NP = '<') Or (NP = '<=') Or
+      (NP = '>') Or (NP = '>=')) And
+     ((L.TypeIdx = TY_IDX_STRING) Or (R.TypeIdx = TY_IDX_STRING)) Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('PUSH', 'SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'DI, AX');
+    EmitInstr('POP', 'SI');
+    EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+    { AX = strcmp : 0 si egal, <0 si L<R, >0 si L>R }
+    EmitInstr('CMP', 'AX, 0');
+    EmitInstr('MOV', 'AX, 0');
+    If      NP = '==' Then EmitInstr('SETE', 'AL')
+    Else If NP = '!=' Then EmitInstr('SETNE', 'AL')
+    Else If NP = '<'  Then EmitInstr('SETL', 'AL')
+    Else If NP = '<=' Then EmitInstr('SETLE', 'AL')
+    Else If NP = '>'  Then EmitInstr('SETG', 'AL')
+    Else If NP = '>=' Then EmitInstr('SETGE', 'AL');
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
   { ---- Cas general : L dans AX, R dans BX ----------------- }
   ExprFlushToAX(L);
   EmitInstr('PUSH', 'AX');
@@ -3705,6 +3735,10 @@ Begin
   End;
   ParsePrimary(Res);
 End;
+
+{ ============================================================ }
+{  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]                 }
+{ ============================================================ }
 
 { ---- ParseExprPrec : parseur Pratt a precedence ------------ }
 (* Boucle sur les operateurs binaires tant que leur precedence  *)
