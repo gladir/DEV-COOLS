@@ -37,7 +37,7 @@
               (comment ...) forme speciale ignoree
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 (positifs) ou -32768..32767 (signes)
             Entiers hexadecimaux : 0xFF -> reconnaissance et conversion
             Entiers octaux : 0377 -> reconnaissance et conversion
@@ -640,6 +640,13 @@ Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Function  DataAddWord(Const Lbl : TString;
+                      AIntVal : LongInt) : Integer; Forward;
+Function  KwFind(Const Name : TString) : Integer; Forward;
+Function  KwAdd(Const Name : TString) : Integer; Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalChar(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalKW(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 (* TODO 05 *)
 Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
@@ -1573,9 +1580,10 @@ Begin
 End;
 
 (* ============================================================
-   STUBS POUR TODOs 03-25  (a implementer)
+   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
    ============================================================ *)
 
+(* ---- ExprMakeImm : valeur immediate constante ------------- *)
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal);
 Begin
@@ -1586,6 +1594,7 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ---- ExprMakeNone : valeur invalide (void / nil) ---------- *)
 Procedure ExprMakeNone(Var Res : TExprVal);
 Begin
   Res.Kind    := EK_NONE;
@@ -1595,6 +1604,7 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ---- ExprMakeBool : valeur booleenne (true=1, false=0) ---- *)
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
 Begin
   Res.Kind    := EK_IMM;
@@ -1607,11 +1617,112 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ---- DataAddWord : ajouter un mot DW au segment DATA ------ *)
+Function DataAddWord(Const Lbl : TString;
+                     AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+(* ---- KwFind : chercher un keyword dans KwTab --------------- *)
+(* Retourne l indice (0-base) ou -1 si non trouve.             *)
+Function KwFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := 0 To KwCount - 1 Do
+    If KwTab[I] = Name Then
+    Begin
+      KwFind := I;
+      Exit;
+    End;
+  KwFind := -1;
+End;
+
+(* ---- KwAdd : ajouter un keyword dans KwTab ----------------- *)
+(* Retourne l indice (reutilise un existant si deja present).   *)
+Function KwAdd(Const Name : TString) : Integer;
+Var Idx : Integer;
+Begin
+  Idx := KwFind(Name);
+  If Idx >= 0 Then
+  Begin
+    KwAdd := Idx;
+    Exit;
+  End;
+  If KwCount >= MAX_KW Then
+  Begin
+    CompileError('table des keywords pleine (max=' + IntToStr(MAX_KW) + ')');
+    KwAdd := -1;
+    Exit;
+  End;
+  KwTab[KwCount] := Name;
+  KwAdd := KwCount;
+  Inc(KwCount);
+End;
+
+(* ---- LitEvalInt : evaluer un token TK_INTEGER -------------- *)
+(* IntVal est deja calcule par LexScanNumber (dec/hex/oct).     *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+(* ---- LitEvalChar : evaluer un token TK_CHAR ---------------- *)
+(* IntVal contient le code ASCII du caractere (\a \newline etc) *)
+Procedure LitEvalChar(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_CHAR, Res);
+End;
+
+(* ---- LitEvalKW : evaluer un token TK_KEYWORD --------------- *)
+(* Enregistre le keyword dans KwTab et retourne son index.      *)
+Procedure LitEvalKW(Const T : TToken; Var Res : TExprVal);
+Var Idx : Integer;
+Begin
+  Idx := KwAdd(T.Val);
+  ExprMakeImm(Idx, TY_IDX_KW, Res);
+End;
+
+(* ---- LitEval : dispatcher principal pour les litteraux ------ *)
+(* Tokens acceptes : TK_INTEGER, TK_STRING, TK_TRUE, TK_FALSE, *)
+(* TK_NIL, TK_CHAR, TK_KEYWORD.                                *)
 Procedure LitEval(Const T : TToken; Var Res : TExprVal);
 Begin
-  (* TODO 03 - stub *)
-  ExprMakeNone(Res);
+  ExprMakeNone(Res);  (* valeur par defaut *)
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+
+    TK_STRING :
+    Begin
+      DataAddStr(T.Val);
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STR;
+      Res.Offset  := DataCount - 1;
+      Res.SymIdx  := -1;
+    End;
+
+    TK_TRUE :
+      ExprMakeBool(1, Res);
+
+    TK_FALSE :
+      ExprMakeBool(0, Res);
+
+    TK_NIL :
+      ExprMakeImm(0, TY_IDX_NIL, Res);
+
+    TK_CHAR :
+      LitEvalChar(T, Res);
+
+    TK_KEYWORD :
+      LitEvalKW(T, Res);
+  End;
 End;
+
+(* ============================================================
+   STUBS POUR TODOs 04-25  (a implementer)
+   ============================================================ *)
 
 Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
 Begin
@@ -1771,15 +1882,27 @@ End;
 
 Procedure EmitDataSeg;
 Var I : Integer;
+    S : TString;
 Begin
   EmitBlankLine;
   EmitRaw('_DATA   SEGMENT PUBLIC ''DATA''');
   EmitBlankLine;
+  (* Chaines predefinies Clojure *)
+  EmitRaw(CL_NIL_LBL   + '        DB ''nil'',0');
+  EmitRaw(CL_TRUE_LBL  + '        DB ''true'',0');
+  EmitRaw(CL_FALSE_LBL + '        DB ''false'',0');
+  EmitBlankLine;
+  (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
   Begin
     Case DataTab[I].Kind Of
       DK_WORD :
-        EmitRaw(DataTab[I].LblName + '        DW ' + DataTab[I].StrVal);
+      Begin
+        Str(DataTab[I].IntVal, S);
+        If DataTab[I].StrVal <> '' Then
+          S := DataTab[I].StrVal;
+        EmitRaw(DataTab[I].LblName + '        DW ' + S);
+      End;
       DK_BYTE :
         EmitRaw(DataTab[I].LblName + '        DB ' + DataTab[I].StrVal);
       DK_STR :
