@@ -90,7 +90,7 @@
             MEMVAR : variable memoire explicite (MEMVAR->nom)
             Resolution d ambiguite : FIELD->nom vs MEMVAR->nom vs nom seul
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             Clipper est dynamiquement type : chaque valeur porte un tag de type
             TTypeTag : TT_NIL, TT_NUMERIC, TT_CHARACTER, TT_DATE,
               TT_LOGICAL, TT_ARRAY, TT_CODEBLOCK, TT_OBJECT
@@ -521,6 +521,7 @@ Const
   MAX_DATA      = {$IFDEF FPC}256{$ELSE}128{$ENDIF};
   MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
   MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
   STACK_SIZE    = 1024;
 
   { Indices de types primitifs Clipper }
@@ -532,6 +533,7 @@ Const
   TY_IDX_ARRAY  = 5;     { ARRAY : pointeur vers bloc tableau    }
   TY_IDX_BLOCK  = 6;     { CODEBLOCK : pointeur vers descripteur }
   TY_IDX_OBJECT = 7;     { OBJECT : pointeur vers instance       }
+  TY_PRIM_COUNT = 8;     { nombre de types primitifs              }
 
   TY_UNKNOWN    = -1;    { type inconnu / pas de valeur          }
 
@@ -641,6 +643,25 @@ Type
     DeclLine    : Integer;   { ligne de declaration (source)        }
   End;
 
+  { ---- Systeme de types (TODO 06) ----------------------------- }
+  TTypeTag = (
+    TT_NIL,        { valeur non initialisee                      }
+    TT_NUMERIC,    { entier 16 bits signe                        }
+    TT_CHARACTER,  { pointeur vers chaine terminee par 0         }
+    TT_DATE,       { entier julien 16 bits                       }
+    TT_LOGICAL,    { 0 (.F.) ou 1 (.T.)                         }
+    TT_ARRAY,      { pointeur vers bloc tableau en heap          }
+    TT_CODEBLOCK,  { pointeur vers descripteur de code block     }
+    TT_OBJECT,     { pointeur vers instance objet                }
+    TT_UNKNOWN     { type inconnu / polymorphe                   }
+  );
+
+  TTypeRec = Record
+    Name : TString;      { nom du type (UPPER)                    }
+    Tag  : TTypeTag;     { tag de type Clipper                    }
+    Size : Integer;      { taille en octets (2 pour 16-bit)       }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -678,6 +699,10 @@ Var
   ScopeTop   : Integer;    { sommet de pile des portees             }
   CurScope   : Integer;    { profondeur de portee courante          }
   TotalSyms  : Integer;    { nombre total de symboles declares      }
+
+  { Table des types (TODO 06) }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;     { nombre d entrees dans TypeTab          }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -739,6 +764,19 @@ Function  SymAdd(Const Name : TString; Cat : TSymCat;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymInit; Forward;
+{ Systeme de types (TODO 06) }
+Function  TypeKindOf(TypeIdx : Integer) : TTypeTag; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsTruthy(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
+Procedure TypeInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -980,6 +1018,7 @@ Begin
   OutFOpen   := False;
   DataCount  := 0;
   LabelSeq   := 0;
+  TypeInit;
   SymInit;
 End;
 
@@ -991,6 +1030,7 @@ Begin
   WriteLn('--- Statistiques ---');
   WriteLn('  Lignes sources : ', TotalLines);
   WriteLn('  Symboles       : ', TotalSyms);
+  WriteLn('  Types          : ', TypeCount);
   WriteLn('  Erreurs        : ', ErrorCount);
   WriteLn('  Avertissements : ', WarnCount);
 End;
@@ -3097,6 +3137,401 @@ Begin
   SymAdd('OS',       SC_FUNC, TY_IDX_CHAR, 0);
   SymAdd('VERSION',  SC_FUNC, TY_IDX_CHAR, 0);
   SymAdd('CLIPPER',  SC_FUNC, TY_IDX_CHAR, 0);
+End;
+
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeKindOf : retourner le TTypeTag d un indice de type -- }
+(* Retourne TT_UNKNOWN si l indice est hors bornes.             *)
+
+Function TypeKindOf(TypeIdx : Integer) : TTypeTag;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Tag
+  Else
+    TypeKindOf := TT_UNKNOWN;
+End;
+
+{ ---- TypeSizeof : taille en octets d un type ----------------- }
+(* En 16 bits, toutes les valeurs tiennent dans 2 octets (un mot).
+   Le tag de type occupe 1 octet supplementaire quand stocke
+   avec la valeur (3 octets = tag + word).                       *)
+
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+{ ---- TypeMangle : prefixe ASM selon le type pour labels ------ }
+(* Prefixes Clipper :
+     TT_NIL       -> _CLTN_  (nil)
+     TT_NUMERIC   -> _CLTN_  (numeric)
+     TT_CHARACTER -> _CLTC_  (character)
+     TT_DATE      -> _CLTD_  (date)
+     TT_LOGICAL   -> _CLTL_  (logical)
+     TT_ARRAY     -> _CLTA_  (array)
+     TT_CODEBLOCK -> _CLTB_  (codeblock)
+     TT_OBJECT    -> _CLTO_  (object)
+     TT_UNKNOWN   -> _CLTX_  (unknown)                          *)
+
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TT_NIL       : TypeMangle := '_CLTN_';
+    TT_NUMERIC   : TypeMangle := '_CLTN_';
+    TT_CHARACTER : TypeMangle := '_CLTC_';
+    TT_DATE      : TypeMangle := '_CLTD_';
+    TT_LOGICAL   : TypeMangle := '_CLTL_';
+    TT_ARRAY     : TypeMangle := '_CLTA_';
+    TT_CODEBLOCK : TypeMangle := '_CLTB_';
+    TT_OBJECT    : TypeMangle := '_CLTO_';
+  Else
+    TypeMangle := '_CLTX_';
+  End;
+End;
+
+{ ---- TypeIsNumeric : vrai si le type est numerique ----------- }
+(* Numeric, Date (julien) et Logical (0/1) sont numeriques.
+   NIL est aussi traite comme numerique (valeur 0).              *)
+
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  T : TTypeTag;
+Begin
+  T := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (T = TT_NUMERIC) Or (T = TT_DATE) Or
+    (T = TT_LOGICAL) Or (T = TT_NIL);
+End;
+
+{ ---- TypeIsPtr : vrai si le type est un pointeur ------------- }
+(* Character (chaine), Array, Codeblock et Object sont des
+   pointeurs vers des blocs en memoire.                          *)
+
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  T : TTypeTag;
+Begin
+  T := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (T = TT_CHARACTER) Or (T = TT_ARRAY) Or
+    (T = TT_CODEBLOCK) Or (T = TT_OBJECT);
+End;
+
+{ ---- TypeIsTruthy : evaluation booleenne d un type ----------- }
+(* Clipper truthiness :
+     NIL       -> toujours faux (pas de valeur)
+     LOGICAL   -> potentiellement vrai (depend de la valeur)
+     NUMERIC   -> potentiellement vrai (0=faux, autre=vrai)
+     CHARACTER -> potentiellement vrai (chaine non vide)
+     DATE      -> potentiellement vrai (date non nulle)
+     ARRAY     -> toujours vrai (reference non nulle)
+     CODEBLOCK -> toujours vrai
+     OBJECT    -> toujours vrai
+   Retourne True si la valeur du type peut etre vraie,
+   False si elle est toujours fausse (NIL/UNKNOWN).              *)
+
+Function TypeIsTruthy(TypeIdx : Integer) : Boolean;
+Var
+  T : TTypeTag;
+Begin
+  T := TypeKindOf(TypeIdx);
+  Case T Of
+    TT_NIL       : TypeIsTruthy := False;
+    TT_LOGICAL   : TypeIsTruthy := True;  { a verifier au runtime }
+    TT_NUMERIC   : TypeIsTruthy := True;  { a verifier au runtime }
+    TT_CHARACTER : TypeIsTruthy := True;
+    TT_DATE      : TypeIsTruthy := True;  { a verifier au runtime }
+    TT_ARRAY     : TypeIsTruthy := True;
+    TT_CODEBLOCK : TypeIsTruthy := True;
+    TT_OBJECT    : TypeIsTruthy := True;
+  Else
+    TypeIsTruthy := False;
+  End;
+End;
+
+{ ---- TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx ? -- }
+(* Clipper est dynamiquement type : la plupart des coercions
+   sont verifiees au runtime. Au compile-time on autorise :
+     - meme type -> toujours OK
+     - anything -> UNKNOWN -> OK (perd l info de type)
+     - NIL -> tout type -> OK (variable non initialisee)
+     - LOGICAL -> NUMERIC (0/1 est deja un entier)
+     - NUMERIC -> LOGICAL (0=.F., non-zero=.T.)
+     - DATE -> NUMERIC (julien est un entier)
+     - NUMERIC -> DATE (entier -> julien)
+     - CHARACTER -> CHARACTER (toujours OK, meme type)
+   Pour les conversions dynamiques (STR, VAL, CTOD, etc.)
+   on deleguera au runtime via les builtins.                     *)
+
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Begin
+  { Meme type : toujours OK }
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { anything -> UNKNOWN : OK }
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { UNKNOWN -> anything : OK (polymorphe) }
+  If SrcIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { NIL -> tout type : OK (variable non init) }
+  If SrcIdx = TY_IDX_NIL Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { LOGICAL -> NUMERIC : 0/1 est deja un entier }
+  If (SrcIdx = TY_IDX_LOGIC) And (DstIdx = TY_IDX_NUM) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { NUMERIC -> LOGICAL : 0=.F., non-zero=.T. }
+  If (SrcIdx = TY_IDX_NUM) And (DstIdx = TY_IDX_LOGIC) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { DATE <-> NUMERIC : julien est un entier }
+  If ((SrcIdx = TY_IDX_DATE) And (DstIdx = TY_IDX_NUM)) Or
+     ((SrcIdx = TY_IDX_NUM) And (DstIdx = TY_IDX_DATE)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Pas de coercion statique possible }
+  TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type de resultat d une op binaire ---- }
+(* Deduit le type de resultat en fonction des operandes et de
+   l operateur. En Clipper :
+     - Comparaisons -> LOGICAL
+     - .AND. / .OR. -> LOGICAL
+     - Arithmetique entre numeriques -> NUMERIC
+     - + entre chaines -> CHARACTER (concatenation)
+     - - entre chaines -> CHARACTER (concat+trim droite)
+     - + entre dates et numeriques -> DATE
+     - - entre deux dates -> NUMERIC (difference en jours)
+     - $ -> LOGICAL (containment)
+     - ** / ^ -> NUMERIC (puissance)
+     - Affectation := -> type du cote droit                      *)
+
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LT, RT : TTypeTag;
+Begin
+  LT := TypeKindOf(LeftIdx);
+  RT := TypeKindOf(RightIdx);
+
+  { Operateurs de comparaison -> LOGICAL }
+  If (Op = '==') Or (Op = '=') Or
+     (Op = '!=') Or (Op = '<>') Or (Op = '#') Or
+     (Op = '<') Or (Op = '<=') Or
+     (Op = '>') Or (Op = '>=') Then
+  Begin
+    TypeCoerceResult := TY_IDX_LOGIC;
+    Exit;
+  End;
+
+  { Operateurs logiques -> LOGICAL }
+  If (Op = '.AND.') Or (Op = '.OR.') Then
+  Begin
+    TypeCoerceResult := TY_IDX_LOGIC;
+    Exit;
+  End;
+
+  { Containment $ -> LOGICAL }
+  If Op = '$' Then
+  Begin
+    TypeCoerceResult := TY_IDX_LOGIC;
+    Exit;
+  End;
+
+  { Concatenation chaines : + ou - avec deux chaines -> CHARACTER }
+  If (Op = '+') Or (Op = '-') Then
+  Begin
+    If (LT = TT_CHARACTER) And (RT = TT_CHARACTER) Then
+    Begin
+      TypeCoerceResult := TY_IDX_CHAR;
+      Exit;
+    End;
+  End;
+
+  { Date + Numeric ou Numeric + Date -> DATE }
+  If Op = '+' Then
+  Begin
+    If ((LT = TT_DATE) And (RT = TT_NUMERIC)) Or
+       ((LT = TT_NUMERIC) And (RT = TT_DATE)) Then
+    Begin
+      TypeCoerceResult := TY_IDX_DATE;
+      Exit;
+    End;
+  End;
+
+  { Date - Numeric -> DATE (reculer) }
+  If Op = '-' Then
+  Begin
+    If (LT = TT_DATE) And (RT = TT_NUMERIC) Then
+    Begin
+      TypeCoerceResult := TY_IDX_DATE;
+      Exit;
+    End;
+    { Date - Date -> NUMERIC (difference en jours) }
+    If (LT = TT_DATE) And (RT = TT_DATE) Then
+    Begin
+      TypeCoerceResult := TY_IDX_NUM;
+      Exit;
+    End;
+  End;
+
+  { Puissance ** ou ^ -> NUMERIC }
+  If (Op = '**') Or (Op = '^') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUM;
+    Exit;
+  End;
+
+  { Arithmetique generale : + - * / % entre numeriques -> NUMERIC }
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '%') Then
+  Begin
+    If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+    Begin
+      TypeCoerceResult := TY_IDX_NUM;
+      Exit;
+    End;
+  End;
+
+  { Affectation := += -= *= /= %= -> type du cote droit }
+  If (Op = ':=') Or (Op = '+=') Or (Op = '-=') Or
+     (Op = '*=') Or (Op = '/=') Or (Op = '%=') Then
+  Begin
+    TypeCoerceResult := RightIdx;
+    Exit;
+  End;
+
+  { Par defaut : polymorphe }
+  TypeCoerceResult := TY_UNKNOWN;
+End;
+
+{ ---- TypeInfer : deduire le type d une expression ------------ }
+(* A partir d une TExprVal, infere le type :
+     EK_IMM -> NUMERIC (immediate = entier)
+     Sinon  -> utilise TypeIdx de l expression
+     Si TypeIdx non defini -> UNKNOWN                            *)
+
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_NUM
+  Else If E.TypeIdx >= 0 Then
+    TypeInfer := E.TypeIdx
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+{ ---- TypeLookupName : chercher un type par son nom ----------- }
+(* Recherche insensible a la casse (UPPER) dans TypeTab.
+   Retourne l indice du type ou TY_UNKNOWN si non trouve.        *)
+
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  UName : TString;
+Begin
+  UName := StrUpper(Name);
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = UName Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+{ ---- TypeInit : initialiser la table des types --------------- }
+(* Cree les 8 types primitifs Clipper :
+     0: NIL       (U) - valeur non initialisee, taille 2
+     1: NUMERIC   (N) - entier 16 bits signe, taille 2
+     2: CHARACTER (C) - pointeur vers chaine, taille 2
+     3: DATE      (D) - entier julien 16 bits, taille 2
+     4: LOGICAL   (L) - 0 ou 1, taille 2
+     5: ARRAY     (A) - pointeur vers bloc tableau, taille 2
+     6: CODEBLOCK (B) - pointeur vers descripteur, taille 2
+     7: OBJECT    (O) - pointeur vers instance, taille 2
+   Tous ont une taille de 2 octets (un mot 16 bits).
+   Le tag de type (1 octet) est stocke separement.               *)
+
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Tag  := TT_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+
+  { NIL }
+  TypeTab[TY_IDX_NIL].Name := 'NIL';
+  TypeTab[TY_IDX_NIL].Tag  := TT_NIL;
+  TypeTab[TY_IDX_NIL].Size := 2;
+
+  { NUMERIC }
+  TypeTab[TY_IDX_NUM].Name := 'NUMERIC';
+  TypeTab[TY_IDX_NUM].Tag  := TT_NUMERIC;
+  TypeTab[TY_IDX_NUM].Size := 2;
+
+  { CHARACTER }
+  TypeTab[TY_IDX_CHAR].Name := 'CHARACTER';
+  TypeTab[TY_IDX_CHAR].Tag  := TT_CHARACTER;
+  TypeTab[TY_IDX_CHAR].Size := 2;
+
+  { DATE }
+  TypeTab[TY_IDX_DATE].Name := 'DATE';
+  TypeTab[TY_IDX_DATE].Tag  := TT_DATE;
+  TypeTab[TY_IDX_DATE].Size := 2;
+
+  { LOGICAL }
+  TypeTab[TY_IDX_LOGIC].Name := 'LOGICAL';
+  TypeTab[TY_IDX_LOGIC].Tag  := TT_LOGICAL;
+  TypeTab[TY_IDX_LOGIC].Size := 2;
+
+  { ARRAY }
+  TypeTab[TY_IDX_ARRAY].Name := 'ARRAY';
+  TypeTab[TY_IDX_ARRAY].Tag  := TT_ARRAY;
+  TypeTab[TY_IDX_ARRAY].Size := 2;
+
+  { CODEBLOCK }
+  TypeTab[TY_IDX_BLOCK].Name := 'CODEBLOCK';
+  TypeTab[TY_IDX_BLOCK].Tag  := TT_CODEBLOCK;
+  TypeTab[TY_IDX_BLOCK].Size := 2;
+
+  { OBJECT }
+  TypeTab[TY_IDX_OBJECT].Name := 'OBJECT';
+  TypeTab[TY_IDX_OBJECT].Tag  := TT_OBJECT;
+  TypeTab[TY_IDX_OBJECT].Size := 2;
+
+  TypeCount := TY_PRIM_COUNT;
 End;
 
 { ============================================================
