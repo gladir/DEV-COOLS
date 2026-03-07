@@ -85,7 +85,7 @@
               3. + - OR XOR
               4. = <> < > <= >= IN
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR, SC_CONST, SC_TYPED_CONST, SC_PARAM,
               SC_VARPARAM, SC_FUNC, SC_PROC, SC_TYPE, SC_FIELD,
               SC_ENUM_VAL, SC_LABEL
@@ -2543,19 +2543,249 @@ Begin
   End;
 End;
 
-{ --- Stubs Symboles (TODO 05) --- }
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymMangle : generer le nom ASM mangled ------------------- }
+{ Le prefixe depend de la categorie du symbole.                   }
 Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
-Begin SymMangle := Name; End;
+Var
+  Pfx : TString;
+Begin
+  Case Cat Of
+    SC_VAR        : Pfx := PSP_VAR_PFX;
+    SC_CONST      : Pfx := PSP_VAR_PFX;
+    SC_TYPED_CONST: Pfx := PSP_VAR_PFX;
+    SC_PARAM      : Pfx := PSP_VAR_PFX;
+    SC_VARPARAM   : Pfx := PSP_VAR_PFX;
+    SC_FUNC       : Pfx := PSP_FN_PFX;
+    SC_PROC       : Pfx := PSP_FN_PFX;
+    SC_TYPE       : Pfx := '';
+    SC_FIELD      : Pfx := PSP_REC_PFX;
+    SC_ENUM_VAL   : Pfx := PSP_ENUM_PFX;
+    SC_LABEL      : Pfx := PSP_LBL_PFX;
+  Else
+    Pfx := PSP_VAR_PFX;
+  End;
+  SymMangle := Pfx + StrUpperCase(Name);
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l indice du symbole ajoute, ou -1 si table pleine.    }
+{ Verifie les doublons dans le scope courant.                     }
 Function SymAdd(Const Name : TString; Cat : TSymCat;
-             TIdx : Integer) : Integer;
-Begin SymAdd := 0; End;
-Function SymFind(Const Name : TString) : Integer; Begin SymFind := -1; End;
+               TIdx : Integer) : Integer;
+Var
+  Lw  : TString;
+  Idx : Integer;
+  Dup : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Lw := StrLowerCase(Name);
+
+  { Verifier doublon dans le scope courant }
+  Dup := SymFindInScope(Lw, CurScopeLevel);
+  If Dup >= 0 Then
+  Begin
+    { Si c est un forward, on autorise la redefinition }
+    If SymTab[Dup].IsForward Then
+    Begin
+      SymTab[Dup].IsForward := False;
+      SymTab[Dup].TypeIdx   := TIdx;
+      SymAdd := Dup;
+      Exit;
+    End
+    Else
+    Begin
+      WarnMsg('symbole deja declare dans ce scope: ' + Name);
+      SymAdd := Dup;
+      Exit;
+    End;
+  End;
+
+  Idx := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  SymTab[Idx].Name        := Lw;
+  SymTab[Idx].MangledName := SymMangle(Lw, Cat);
+  SymTab[Idx].Cat         := Cat;
+  SymTab[Idx].TypeIdx     := TIdx;
+  SymTab[Idx].Offset      := 0;
+  SymTab[Idx].ScopeLevel  := CurScopeLevel;
+  SymTab[Idx].ScopeId     := CurScopeId;
+  SymTab[Idx].IsForward   := False;
+  SymTab[Idx].IsLocal     := (CurScopeLevel > 0);
+  SymTab[Idx].ImmVal      := 0;
+  SymTab[Idx].DataIdx     := -1;
+  SymTab[Idx].ParamCnt    := 0;
+  SymTab[Idx].VarParamMask:= 0;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
+            ' cat=', Ord(Cat),
+            ' scope=', CurScopeLevel,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+{ ---- SymFind : rechercher un symbole (interne -> global) ----- }
+{ Parcourt la table du plus recent au plus ancien, retourne le    }
+{ premier symbole dont le ScopeLevel est inferieur ou egal au     }
+{ scope courant. Retourne -1 si non trouve.                       }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel <= CurScopeLevel) Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : rechercher dans un scope precis -------- }
+{ Retourne l indice du symbole ou -1 si non trouve.               }
 Function SymFindInScope(Const Name : TString;
-             Level : Integer) : Integer;
-Begin SymFindInScope := -1; End;
-Procedure SymEnterScope; Begin End;
-Procedure SymLeaveScope; Begin End;
-Procedure SymInit; Begin End;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel = Level) And
+       ((Level = 0) Or (SymTab[I].ScopeId = CurScopeId)) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymEnterScope : entrer dans un nouveau scope ------------ }
+Procedure SymEnterScope;
+Begin
+  If CurScopeLevel >= MAX_SCOPE Then
+  Begin
+    WarnMsg('profondeur de scope maximale atteinte');
+    Exit;
+  End;
+  Inc(CurScopeLevel);
+  Inc(ScopeIdSeq);
+  CurScopeId := ScopeIdSeq;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScopeLevel,
+            ' id=', CurScopeId);
+End;
+
+{ ---- SymLeaveScope : quitter le scope courant ---------------- }
+{ Les symboles du scope courant restent dans la table mais ne     }
+{ seront plus trouves par SymFind car ScopeLevel > CurScopeLevel. }
+Procedure SymLeaveScope;
+Begin
+  If CurScopeLevel <= 0 Then
+  Begin
+    WarnMsg('tentative de quitter le scope global');
+    Exit;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScopeLevel);
+  Dec(CurScopeLevel);
+  { Restaurer le ScopeId du scope parent }
+  If CurScopeLevel = 0 Then
+    CurScopeId := 0
+  Else
+    CurScopeId := CurScopeLevel;
+End;
+
+{ ---- SymInit : predeclarer les types et symboles builtin ----- }
+{ Enregistre les types primitifs et les constantes/procedures     }
+{ predefinies dans la table des symboles au scope global (0).     }
+Procedure SymInit;
+Var
+  Idx : Integer;
+Begin
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+  TotalSyms     := 0;
+
+  { Types primitifs (32 bits) }
+  Idx := SymAdd('integer', SC_TYPE, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'INTEGER';
+  Idx := SymAdd('word', SC_TYPE, TY_IDX_WORD);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'WORD';
+  Idx := SymAdd('byte', SC_TYPE, TY_IDX_BYTE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'BYTE';
+  Idx := SymAdd('char', SC_TYPE, TY_IDX_CHAR);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'CHAR';
+  Idx := SymAdd('boolean', SC_TYPE, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'BOOLEAN';
+  Idx := SymAdd('string', SC_TYPE, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'STRING';
+  Idx := SymAdd('real', SC_TYPE, TY_IDX_REAL);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'REAL';
+  Idx := SymAdd('pointer', SC_TYPE, TY_IDX_POINTER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'POINTER';
+  Idx := SymAdd('text', SC_TYPE, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'TEXT';
+
+  { Constantes predefinies : true, false, nil, maxint }
+  Idx := SymAdd('true', SC_CONST, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 1;
+    SymTab[Idx].MangledName := 'TRUE';
+  End;
+  Idx := SymAdd('false', SC_CONST, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 0;
+    SymTab[Idx].MangledName := 'FALSE';
+  End;
+  Idx := SymAdd('nil', SC_CONST, TY_IDX_NIL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 0;
+    SymTab[Idx].MangledName := 'NIL';
+  End;
+  Idx := SymAdd('maxint', SC_CONST, TY_IDX_INTEGER);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 2147483647;
+    SymTab[Idx].MangledName := 'MAXINT';
+  End;
+
+  { Procedures/fonctions runtime predeclarees (Win32) }
+  Idx := SymAdd('write', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'WRITE';
+  Idx := SymAdd('writeln', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'WRITELN';
+  Idx := SymAdd('read', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'READ';
+  Idx := SymAdd('readln', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := PSP_RT_PFX + 'READLN';
+End;
 
 { --- Stubs Types (TODO 06) --- }
 Procedure TypeInit; Begin End;
