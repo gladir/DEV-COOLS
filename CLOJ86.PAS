@@ -2957,7 +2957,7 @@ Begin
   Lbl := CL_MAP_PFX + Seq;
   Idx := DataAdd(Lbl, DK_MAP, 0, '');
   If Idx >= 0 Then
-    DataTab[Idx].ElemCount := APairCount * 2;
+    DataTab[Idx].ElemCount := APairCount * 2; (* paire = cle + val = 2 DW *)
   DataAddMap := Lbl;
 End;
 
