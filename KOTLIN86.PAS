@@ -1307,6 +1307,8 @@ Begin
 End;
 
 Procedure LexScanNumber;
+Var
+  VCode : Integer;
 Begin
   { stub - TODO 02 }
   CurToken.Kind   := TK_INTEGER;
@@ -1318,8 +1320,7 @@ Begin
     CurToken.Val := CurToken.Val + LexLine[LexColNo];
     Inc(LexColNo);
   End;
-  Val(CurToken.Val, CurToken.IntVal, ErrorCount);
-  ErrorCount := 0;
+  Val(CurToken.Val, CurToken.IntVal, VCode);
 End;
 
 Function LexScanEscChar : Char;
