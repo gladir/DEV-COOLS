@@ -111,7 +111,7 @@
               -> sinon, operations via routines chaines du runtime
             Taille interne : STRING=ptr(2) + len(2), INTEGER=2 octets
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -748,6 +748,8 @@ Procedure EmitBlankLine;       Forward;
 Procedure EmitComment(Const S : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
 Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
 Procedure EmitOpen;            Forward;
 Procedure EmitClose;           Forward;
 Procedure EmitHeader;          Forward;
@@ -2399,7 +2401,11 @@ Begin
     WriteLn('  TYPE_INIT: ', TypeCount, ' types primitifs enregistres');
 End;
 
-(* TODO 07 - Emetteur ASM *)
+(* ============================================================
+   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- LabelGen : generer un label unique _RXL_N ------------- *)
 Function LabelGen : TString;
 Var
   S : TString;
@@ -2409,30 +2415,36 @@ Begin
   LabelGen := RX_LBL_PFX + S;
 End;
 
+(* ---- EmitRaw : ecrire une ligne brute dans le fichier ASM -- *)
 Procedure EmitRaw(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, S);
 End;
 
+(* ---- EmitBlankLine : ligne vide ----------------------------- *)
 Procedure EmitBlankLine;
 Begin
   If OutFOpen Then
     WriteLn(OutF);
 End;
 
+(* ---- EmitComment : commentaire ASM '; texte' --------------- *)
 Procedure EmitComment(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, '; ', S);
 End;
 
+(* ---- EmitLabel : label ASM suivi de ':' en colonne 0 ------- *)
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, Lbl, ':');
 End;
 
+(* ---- EmitInstr : instruction + operandes (8 espaces) ------- *)
+(* Si Ops est vide, seul le mnemonique est emis.                *)
 Procedure EmitInstr(Const Mnem, Ops : TString);
 Begin
   If OutFOpen Then
@@ -2444,26 +2456,38 @@ Begin
   End;
 End;
 
+(* ---- EmitInstrA : instruction + un operande ----------------- *)
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+(* ---- EmitInstrAB : instruction + deux operandes A, B -------- *)
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+(* ---- EmitOpen : ouvrir le fichier de sortie ASM ------------- *)
 Procedure EmitOpen;
 Begin
   Assign(OutF, Opts.OutFile);
+  {$I-}
   Rewrite(OutF);
+  {$I+}
   If IOResult <> 0 Then
+  Begin
     FatalError('impossible de creer ' + Opts.OutFile);
+    Exit; { FatalError appelle Halt, mais par securite }
+  End;
   OutFOpen := True;
 End;
 
-Procedure EmitClose;
-Begin
-  If OutFOpen Then
-  Begin
-    EmitDataSeg;
-    EmitRaw('END _RXP_Main');
-    Close(OutF);
-    OutFOpen := False;
-  End;
-End;
-
+(* ---- EmitHeader : en-tete MASM (.MODEL SMALL, _TEXT) -------- *)
+(* Emet la directive .MODEL SMALL, .STACK, ouvre le segment       *)
+(* _TEXT et initialise DS dans le point d entree _RXP_Main.       *)
 Procedure EmitHeader;
 Begin
   EmitComment('REXX86 v' + REXX86_VERSION + ' - ' + Opts.SrcFile);
@@ -2475,35 +2499,45 @@ Begin
   EmitBlankLine;
   EmitComment('--- Point d''entree (main) ---');
   EmitLabel('_RXP_Main');
-  EmitInstr('MOV', 'AX, _DATA');
-  EmitInstr('MOV', 'DS, AX');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
   EmitBlankLine;
 End;
 
+(* ---- EmitProlog : prologue de procedure (PUSH BP/MOV BP,SP) -- *)
 Procedure EmitProlog;
 Begin
-  EmitInstr('PUSH', 'BP');
-  EmitInstr('MOV', 'BP, SP');
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
   If CurFrameSize > 0 Then
-    EmitInstr('SUB', 'SP, ' + IntToStr(CurFrameSize));
+    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize));
 End;
 
+(* ---- EmitEpilog : epilogue de procedure (POP BP/RET) --------- *)
 Procedure EmitEpilog;
 Begin
   If CurFrameSize > 0 Then
-    EmitInstr('MOV', 'SP, BP');
-  EmitInstr('POP', 'BP');
-  EmitInstr('RET', '');
+    EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitRaw('        RET');
 End;
 
+(* ---- EmitDataSeg : emettre le segment _DATA dans le .ASM ----- *)
+(* Ecrit _DATA SEGMENT ... _DATA ENDS avec les constantes         *)
+(* predefinies REXX et les donnees utilisateur de DataTab.         *)
+(* Les caracteres de controle dans DK_STR sont emis en valeur     *)
+(* numerique (DB n) au lieu de notation chaine MASM.               *)
 Procedure EmitDataSeg;
 Var
-  I : Integer;
+  I, J : Integer;
+  B    : Byte;
+  NS   : String[6];
+  InStr : Boolean;
 Begin
   EmitBlankLine;
-  EmitRaw('_TEXT ENDS');
-  EmitBlankLine;
   EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  EmitRaw('        ASSUME DS:_DATA');
+  EmitBlankLine;
   (* Constantes symboliques predefinies REXX *)
   EmitComment('Constantes predefinies REXX');
   EmitRaw('_RX_RC      DW 0');
@@ -2519,71 +2553,135 @@ Begin
       DK_BYTE:
         EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr(DataTab[I].IntVal));
       DK_STR:
-        EmitRaw(DataTab[I].LblName + ' DB ''' + DataTab[I].StrVal + ''',0');
+        Begin
+          (* Gestion des caracteres de controle et apostrophes *)
+          If OutFOpen Then
+          Begin
+            Write(OutF, DataTab[I].LblName, ' DB ');
+            InStr := False;
+            For J := 1 To Length(DataTab[I].StrVal) Do
+            Begin
+              B := Ord(DataTab[I].StrVal[J]);
+              If (B < 32) Or (B > 126) Or (B = 39) Then  (* 39 = apostrophe *)
+              Begin
+                (* caractere non imprimable ou apostrophe -> numerique *)
+                If InStr Then
+                Begin
+                  Write(OutF, '''');
+                  InStr := False;
+                End;
+                If J > 1 Then Write(OutF, ',');
+                Str(B, NS);
+                Write(OutF, NS);
+              End
+              Else
+              Begin
+                (* caractere imprimable -> notation chaine *)
+                If Not InStr Then
+                Begin
+                  If J > 1 Then Write(OutF, ',');
+                  Write(OutF, '''');
+                  InStr := True;
+                End;
+                Write(OutF, DataTab[I].StrVal[J]);
+              End;
+            End;
+            If InStr Then
+              Write(OutF, '''');
+            WriteLn(OutF, ',0');
+          End;
+        End;
       DK_BUFFER:
-        EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr(DataTab[I].BufSize) + ' DUP(0)');
+        EmitRaw(DataTab[I].LblName + ' DB ' +
+                IntToStr(DataTab[I].BufSize) + ' DUP(0)');
     End;
   End;
   EmitRaw('_DATA ENDS');
 End;
 
+(* ---- EmitRuntime : routines runtime minimales REXX ----------- *)
+(* Emet le runtime minimal necessaire pour SAY et la gestion des  *)
+(* erreurs. Sera etendu dans TODO 24.                              *)
 Procedure EmitRuntime;
 Begin
-  (* stub - sera complete dans TODO 24 *)
   If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
   EmitBlankLine;
   EmitComment('--- Runtime minimal REXX ---');
+  EmitBlankLine;
 
-  (* _RXRT_PRINT : affiche chaine SI sur STDOUT *)
+  (* _RXRT_PRINT : affiche chaine ASCIIZ pointee par SI sur STDOUT *)
   EmitLabel('_RXRT_PRINT');
-  EmitInstr('PUSH', 'AX');
-  EmitInstr('PUSH', 'BX');
-  EmitInstr('PUSH', 'CX');
-  EmitInstr('PUSH', 'DX');
-  EmitInstr('MOV', 'DI, SI');
-  EmitInstr('XOR', 'CX, CX');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'DI', 'SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
   EmitLabel('_RXRT_PRINT_L');
-  EmitInstr('CMP', 'BYTE PTR [DI], 0');
-  EmitRaw('        JE      _RXRT_PRINT_W');
-  EmitInstr('INC', 'DI');
-  EmitInstr('INC', 'CX');
-  EmitRaw('        JMP     _RXRT_PRINT_L');
+  EmitInstrAB('CMP', 'BYTE PTR [DI]', '0');
+  EmitInstrA('JE', '_RXRT_PRINT_W');
+  EmitInstrA('INC', 'DI');
+  EmitInstrA('INC', 'CX');
+  EmitInstrA('JMP', '_RXRT_PRINT_L');
   EmitLabel('_RXRT_PRINT_W');
-  EmitInstr('MOV', 'AH, 40h');
-  EmitInstr('MOV', 'BX, 1');
-  EmitInstr('MOV', 'DX, SI');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrAB('MOV', 'DX', 'SI');
   EmitRaw('        INT     21h');
-  EmitInstr('POP', 'DX');
-  EmitInstr('POP', 'CX');
-  EmitInstr('POP', 'BX');
-  EmitInstr('POP', 'AX');
-  EmitInstr('RET', '');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+  EmitRaw('        RET');
   EmitBlankLine;
 
   (* _RXRT_PRINTLN : affiche chaine SI + CR+LF *)
   EmitLabel('_RXRT_PRINTLN');
-  EmitRaw('        CALL    _RXRT_PRINT');
-  EmitInstr('MOV', 'SI, OFFSET _RX_CRLF');
-  EmitRaw('        CALL    _RXRT_PRINT');
-  EmitInstr('RET', '');
+  EmitInstrA('CALL', '_RXRT_PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _RX_CRLF');
+  EmitInstrA('CALL', '_RXRT_PRINT');
+  EmitRaw('        RET');
   EmitBlankLine;
 
-  (* _RXRT_PANIC : affiche msg + exit 1 *)
+  (* _RXRT_PANIC : affiche msg + exit code 1 *)
   EmitLabel('_RXRT_PANIC');
-  EmitRaw('        CALL    _RXRT_PRINTLN');
-  EmitInstr('MOV', 'AX, 4C01h');
+  EmitInstrA('CALL', '_RXRT_PRINTLN');
+  EmitInstrAB('MOV', 'AX', '4C01h');
   EmitRaw('        INT     21h');
   EmitBlankLine;
 
-  (* Sortie propre du programme *)
+  (* _RXP_Exit : sortie propre du programme (exit code 0) *)
   EmitLabel('_RXP_Exit');
-  EmitInstr('MOV', 'AX, 4C00h');
+  EmitInstrAB('MOV', 'AX', '4C00h');
   EmitRaw('        INT     21h');
   EmitBlankLine;
 
   (* Donnees runtime : CR+LF *)
   DataAdd('_RX_CRLF', DK_STR, 0, #13#10);
+End;
+
+(* ---- EmitClose : fermer le fichier de sortie ASM ------------- *)
+(* Emet la sortie DOS, le runtime, ferme _TEXT, ecrit _DATA,      *)
+(* puis la directive END avec le point d entree _RXP_Main.         *)
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    EmitBlankLine;
+    EmitComment('--- sortie DOS ---');
+    EmitInstrAB('MOV', 'AX', '4C00h');
+    EmitRaw('        INT     21h');
+    EmitBlankLine;
+    EmitRuntime;
+    EmitRaw('_TEXT ENDS');
+    EmitBlankLine;
+    EmitDataSeg;
+    EmitBlankLine;
+    EmitRaw('END _RXP_Main');
+    Close(OutF);
+    OutFOpen := False;
+  End;
 End;
 
 (* TODO 08 - Segment de donnees *)
