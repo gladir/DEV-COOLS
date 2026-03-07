@@ -1898,9 +1898,10 @@ Begin
     Case DataTab[I].Kind Of
       DK_WORD :
       Begin
-        Str(DataTab[I].IntVal, S);
         If DataTab[I].StrVal <> '' Then
-          S := DataTab[I].StrVal;
+          S := DataTab[I].StrVal
+        Else
+          Str(DataTab[I].IntVal, S);
         EmitRaw(DataTab[I].LblName + '        DW ' + S);
       End;
       DK_BYTE :
