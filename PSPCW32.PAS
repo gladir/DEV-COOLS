@@ -7249,7 +7249,10 @@ Begin
         BaseStr := CurToken.Val;
         BaseTIdx := TypeResolve(BaseStr);
         If BaseTIdx = TY_UNKNOWN Then
+        Begin
+          WarnMsg('type inconnu: ' + BaseStr);
           BaseTIdx := TY_IDX_INTEGER;
+        End;
         TplNextToken;
 
         { Verifier si c est un sous-intervalle ident..hi }
@@ -7260,7 +7263,10 @@ Begin
              (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
             LoVal := SymTab[Idx].ImmVal
           Else
+          Begin
+            WarnMsg('borne inferieure non constante: ' + BaseStr);
             LoVal := 0;
+          End;
           TplNextToken;
           ParseExpr(Ev);
           If TypeCount >= MAX_TYPE Then
