@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.sas [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -454,7 +454,791 @@
 
   ============================================================ *)
 
+{ ============================================================
+  SAS86 - Compilateur SAS -> assembleur 8086
+  Version : 1.0  Date : 2026-03-07
+  Compilation : ppc386 -O2 -Mtp SAS86.PAS
+  ============================================================ }
+
 Program SAS86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  SAS86_VERSION = '1.0';
+  SAS86_DATE    = '2026-03-07';
+
+  (* Limites internes *)
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_OBS_SIZE  = 512;    (* taille max d une observation en octets *)
+  MAX_DATASETS  = 32;     (* nombre max de datasets en memoire      *)
+  STACK_SIZE    = 1024;
+  MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
+
+  (* Prefixes de nommage ASM *)
+  SAS_VAR_PFX  = '_SASV_';   (* variable dans le PDV              *)
+  SAS_PROC_PFX = '_SASP_';   (* procedure / etape                 *)
+  SAS_STR_PFX  = '_SASK_';   (* constante chaine litterale        *)
+  SAS_RT_PFX   = '_SASRT_';  (* routine runtime                   *)
+  SAS_LBL_PFX  = '_SASL_';   (* label de saut interne             *)
+  SAS_DS_PFX   = '_SASD_';   (* dataset en memoire                *)
+  SAS_MAC_PFX  = '_SASM_';   (* macro                             *)
+  SAS_FMT_PFX  = '_SASF_';   (* format utilisateur                *)
+
+  (* Codes de sortie *)
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  (* Indices de types primitifs SAS *)
+  TY_IDX_NUMERIC   = 0;  (* entier 16 bits signe          *)
+  TY_IDX_CHARACTER = 1;  (* chaine longueur fixe          *)
+  TY_IDX_DATE      = 2;  (* jours depuis 01JAN1960        *)
+  TY_IDX_TIME      = 3;  (* secondes depuis minuit         *)
+  TY_IDX_DATETIME  = 4;  (* secondes depuis 01JAN1960      *)
+  TY_PRIM_COUNT    = 5;
+  TY_UNKNOWN       = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  (* ---- Options de compilation ----------------------------- *)
+  TOptions = Record
+    SrcFile   : TString;   (* fichier source (.sas)               *)
+    OutFile   : TString;   (* fichier assembleur de sortie (.asm)  *)
+    Verbose   : Boolean;   (* -v : banniere et statistiques        *)
+    DebugMode : Boolean;   (* -d : affichage de chaque token       *)
+    Warnings  : Boolean;   (* -w : activer les avertissements      *)
+  End;
+
+  (* ---- Tokens SAS (TODO 02) ------------------------------ *)
+  TTokenKind = (
+    TK_EOF,        (* fin de fichier                         *)
+    TK_INTEGER,    (* literal entier 42                      *)
+    TK_FLOAT,      (* literal reel 3.14                      *)
+    TK_STRING,     (* literal chaine 'abc' ou "abc"          *)
+    TK_IDENT,      (* identificateur                         *)
+    TK_KEYWORD,    (* mot-cle SAS reconnu                    *)
+    TK_OP,         (* operateur + - * / ** = ^= < > etc.     *)
+    TK_PUNCT,      (* ponctuation ( ) , .                    *)
+    TK_SEMICOLON,  (* delimiteur d instruction ;             *)
+    TK_AMPERSAND,  (* & (macro-variable)                     *)
+    TK_PERCENT,    (* % (macro instruction)                  *)
+    TK_FORMAT      (* format w.d ou $w. ou nom_format.       *)
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     (* valeur textuelle brute             *)
+    IntVal   : LongInt;     (* valeur entiere (TK_INTEGER)        *)
+    FloatVal : Real;        (* valeur flottante (TK_FLOAT)        *)
+    Line     : Integer;     (* ligne source (1-base)              *)
+    Col      : Integer;     (* colonne source (1-base)            *)
+  End;
+
+  (* ---- Categories de symboles (TODO 05) ------------------- *)
+  TSymCat = (
+    SC_VAR,       (* variable numerique ou caractere          *)
+    SC_ARRAY,     (* tableau SAS                              *)
+    SC_FORMAT,    (* format utilisateur                       *)
+    SC_INFORMAT,  (* informat utilisateur                     *)
+    SC_LABEL,     (* etiquette de saut (GOTO)                 *)
+    SC_MACRO,     (* macro %MACRO/%MEND                       *)
+    SC_MACROVAR,  (* macro-variable %LET                      *)
+    SC_DATASET,   (* dataset en memoire                       *)
+    SC_PROC       (* procedure SAS                            *)
+  );
+
+  TSymRec = Record
+    Name        : TString;   (* identifiant SAS (majuscules)       *)
+    MangledName : TString;   (* _SASV_nom / _SASP_nom              *)
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   (* indice dans TypeTab                *)
+    ScopeLevel  : Integer;
+    Offset      : Integer;   (* offset dans le PDV                 *)
+    VarLen      : Integer;   (* longueur pour CHARACTER             *)
+    IsRetained  : Boolean;   (* RETAIN : ne pas reinitialiser      *)
+    IsDropped   : Boolean;   (* DROP : exclure du dataset           *)
+    IsKept      : Boolean;   (* KEEP : inclure dans le dataset      *)
+    DeclLine    : Integer;
+  End;
+
+  (* ---- Types internes (TODO 06) --------------------------- *)
+  TTypeKind = (
+    TYK_NUMERIC,    (* entier 16 bits signe                  *)
+    TYK_CHARACTER,  (* chaine longueur fixe                  *)
+    TYK_DATE,       (* jours depuis 01JAN1960                *)
+    TYK_TIME,       (* secondes depuis minuit                 *)
+    TYK_DATETIME,   (* secondes depuis 01JAN1960              *)
+    TYK_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   (* octets : numeric=2, character=longueur *)
+  End;
+
+  (* ---- Valeurs d expression (TODO 10-11) ------------------ *)
+  TExprKind = (
+    EK_NONE,   (* void / pas de valeur                       *)
+    EK_IMM,    (* immediate dans ImmVal                      *)
+    EK_AX,     (* valeur dans AX                             *)
+    EK_MEM     (* adresse dans le PDV ou label               *)
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   (* indice dans SymTab (-1 = pas de lvalue) *)
+  End;
+
+  (* ---- Segment de donnees (TODO 08) ----------------------- *)
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_RECORD_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  (* Options *)
+  Opts : TOptions;
+
+  (* Compteurs generaux *)
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  (* Valeur fictive pour ignorer un retour TExprVal *)
+  GExprDummy : TExprVal;
+
+  (* Lexeur (TODO 02) *)
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  (* Table des symboles (TODO 05) *)
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  (* Table des types (TODO 06) *)
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  (* Emetteur ASM (TODO 07) *)
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;
+  LabelGenSeq  : Integer;
+
+  (* Boucles (TODO 14) *)
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+
+  (* Segment de donnees (TODO 08) *)
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  (* Etat general *)
+  RuntimeEmitted : Boolean;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexNextToken;        Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+Procedure ParseStmt;           Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine;       Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Function  LabelGen : TString;  Forward;
+Procedure EmitOpen;            Forward;
+Procedure EmitClose;           Forward;
+Procedure EmitHeader;          Forward;
+Procedure EmitDataSeg;         Forward;
+Procedure EmitRuntime;         Forward;
+Procedure EmitProlog;          Forward;
+Procedure EmitEpilog;          Forward;
+Procedure TypeInit;            Forward;
+Procedure SymInit;             Forward;
+Procedure ParserAdvance;       Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- Messages d erreur et d avertissement ----------------- *)
+
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('SAS86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('SAS86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('SAS86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+(* ---- Banniere ---------------------------------------------- *)
+
+Procedure ShowBanner;
+Begin
+  WriteLn('SAS86 v', SAS86_VERSION, ' (', SAS86_DATE, ')');
+  WriteLn('Compilateur SAS -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: SAS86 <source.sas> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.sas : fichier SAS source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('SAS86 - Compilateur SAS vers assembleur 8086 (MASM/TASM)');
+  WriteLn;
+  WriteLn('Syntaxe : SAS86 [options] <source.sas> [sortie.asm]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v         mode verbeux (banniere et statistiques)');
+  WriteLn('  -d         mode debug (affichage des tokens)');
+  WriteLn('  -w         activer les avertissements');
+  WriteLn('  -h         afficher cette aide');
+  WriteLn('  --help     afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  SAS86 hello.sas');
+  WriteLn('  SAS86 hello.sas hello.asm -v');
+  WriteLn('  SAS86 -d -w programme.sas');
+  WriteLn;
+  Halt(EXIT_OK);
+End;
+
+(* ---- Utilitaires chaines ----------------------------------- *)
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+(* Extrait le nom de base d un chemin (sans extension) *)
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+(* Remplace l extension d un chemin *)
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+(* ---- Initialisation des options ---------------------------- *)
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+(* ---- Analyse des arguments de la ligne de commande --------- *)
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('SAS86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('SAS86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('SAS86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+(* ---- Nettoyage --------------------------------------------- *)
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+(* ---- Initialisation generale des variables globales --------- *)
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFrameSize   := 0;
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 02..25 (a implementer)
+  ============================================================ }
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir ' + Opts.SrcFile);
+  LexOpened := True;
+  LexLineNo := 0;
+  LexColNo  := 0;
+  LexLine   := '';
+  LexEOF    := False;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure LexNextToken;
+Begin
+  CurToken.Kind := TK_EOF;
+  CurToken.Val  := '';
+End;
+
+Procedure PrintToken(Const T : TToken);
+Begin
+  WriteLn('  [', T.Line, ':', T.Col, '] ', T.Val);
+End;
+
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  Res := GExprDummy;
+End;
+
+Procedure ParseStmt;
+Begin
+  (* stub : consomme un token pour eviter boucle infinie *)
+  LexNextToken;
+End;
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := SAS_LBL_PFX + S;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1);
+End;
+
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1 + ', ' + A2);
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('SAS86 v' + SAS86_VERSION + ' - ' + Opts.SrcFile);
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+  (* Point d entree principal *)
+  EmitLabel(SAS_PROC_PFX + 'Main');
+  EmitProlog;
+  (* Initialiser DS *)
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+End;
+
+Procedure EmitProlog;
+Begin
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+End;
+
+Procedure EmitEpilog;
+Begin
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+End;
+
+Procedure EmitDataSeg;
+Begin
+  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  EmitBlankLine;
+  (* TODO 08 : emettre les entrees DataTab ici *)
+  EmitBlankLine;
+  EmitRaw('_DATA ENDS');
+End;
+
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('--- Runtime minimal SAS86 ---');
+  (* TODO 24 : emettre les routines runtime ici *)
+  EmitBlankLine;
+End;
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Fin du code ---');
+  EmitEpilog;
+  (* Terminaison DOS *)
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+  EmitRuntime;
+  EmitRaw('_TEXT ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('END ' + SAS_PROC_PFX + 'Main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+  (* Types primitifs *)
+  TypeTab[0].Name := 'NUMERIC';   TypeTab[0].Kind := TYK_NUMERIC;   TypeTab[0].Size := 2;
+  TypeTab[1].Name := 'CHARACTER'; TypeTab[1].Kind := TYK_CHARACTER; TypeTab[1].Size := 8;
+  TypeTab[2].Name := 'DATE';      TypeTab[2].Kind := TYK_DATE;      TypeTab[2].Size := 2;
+  TypeTab[3].Name := 'TIME';      TypeTab[3].Kind := TYK_TIME;      TypeTab[3].Size := 2;
+  TypeTab[4].Name := 'DATETIME';  TypeTab[4].Kind := TYK_DATETIME;  TypeTab[4].Size := 2;
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+Procedure SymInit;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+End;
+
+{ ============================================================
+  PROCEDURE RUN : PIPELINE COMPLET
+  ============================================================ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  If ErrorCount > 0 Then
+  Begin
+    Cleanup;
+    Halt(EXIT_ERROR);
+  End;
+
+  EmitHeader;
+  LexInit;
+
+  (* Lire le premier token *)
+  ParserAdvance;
+
+  (* Boucle principale de compilation *)
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  LexClose;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  If (ParamCount >= 1) And
+     ((ParamStr(1) = '-h') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '/?') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowHelp;
+    Halt(0);
+  End;
+  ParseArgs;
+  If Opts.Verbose Then ShowBanner;
+  Run;
 End.
