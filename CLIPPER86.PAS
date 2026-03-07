@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.prg [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -494,7 +494,356 @@
 
   ============================================================ *)
 
+{ ============================================================
+  CLIPPER86 - Compilateur Clipper -> assembleur 8086
+  Version : 1.0  Date : 2026-03-07
+  Compilation : ppc386 -O2 -Mtp CLIPPER86.PAS
+  ============================================================ }
+
 Program CLIPPER86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  CLIPPER86_VERSION = '1.0';
+  CLIPPER86_DATE    = '2026-03-07';
+
+  { Limites internes }
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  CL_VAR_PFX   = '_CLV_';    { variable locale / globale            }
+  CL_FN_PFX    = '_CLP_';    { procedure / fonction                 }
+  CL_STR_PFX   = '_CLK_';    { constante chaine litterale           }
+  CL_RT_PFX    = '_CLRT_';   { routine runtime                      }
+  CL_LBL_PFX   = '_CLL_';    { label de saut interne                }
+  CL_GLB_PFX   = '_CLG_';    { variable PUBLIC globale              }
+  CL_STAT_PFX  = '_CLS_';    { variable STATIC                      }
+  CL_ALIAS_PFX = '_CLA_';    { alias DBF                            }
+  CL_BLK_PFX   = '_CLB_';    { code block                           }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.prg / .ch)          }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Emetteur ASM }
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('CLIPPER86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  WriteLn('CLIPPER86: error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('CLIPPER86: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('CLIPPER86 v', CLIPPER86_VERSION, ' (', CLIPPER86_DATE, ')');
+  WriteLn('Compilateur Clipper -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: CLIPPER86 <source.prg> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.prg : fichier Clipper source (.prg ou .ch)');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+{ ---- Utilitaires de chemin ---------------------------------- }
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('CLIPPER86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('CLIPPER86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('CLIPPER86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier l extension .prg ou .ch }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.prg') And (Ext <> '.ch') Then
+    WarnMsg('extension attendue .prg ou .ch, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut : meme nom avec .asm }
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+End;
+
+{ ---- Affichage des statistiques ----------------------------- }
+
+Procedure ShowStats;
+Begin
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('  Lignes sources : ', TotalLines);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+{ ---- Pipeline de compilation (stub) ------------------------ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then
+    ShowBanner;
+
+  { TODO 02..25 : implementation a venir }
+  WriteLn('CLIPPER86: compilation non encore implementee (TODO 02-25)');
+
+  If Opts.Verbose Then
+    ShowStats;
+
+  Cleanup;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ParseArgs;
+  Run;
 End.
