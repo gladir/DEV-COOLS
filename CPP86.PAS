@@ -1906,7 +1906,7 @@ Begin
         ExprMakeBool(1, Res)
       Else If T.Val = 'false' Then
         ExprMakeBool(0, Res)
-      Else If (T.Val = 'nullptr') Or (T.Val = 'NULL') Then
+      Else If T.Val = 'nullptr' Then
         ExprMakeImm(0, TY_IDX_PTR, Res)
       Else
         ExprMakeNone(Res);
