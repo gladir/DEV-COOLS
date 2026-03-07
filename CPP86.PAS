@@ -67,7 +67,7 @@
             #pragma once : empecher inclusion multiple
             Commentaires dans les directives : ignorer // et /* ... */
 
-  TODO 05 - OPERATEURS ET PRECEDENCE
+  TODO 05 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques  : + - * / % (entiers 16 bits)
             Comparaison    : == != < <= > >=
             Logiques       : && || ! (court-circuit)
@@ -2459,44 +2459,892 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 04..25
-  (a implementer dans les prochaines etapes)
+  TODO 05 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
   ============================================================ *)
 
-Function BinOpPrec(Const Op : TString) : Integer;
-Begin
-  BinOpPrec := 0; (* stub *)
-End;
-
-Function BinOpIsRight(Const Op : TString) : Boolean;
-Begin
-  BinOpIsRight := False; (* stub *)
-End;
-
+(* ---- IsAssignOp : detecter les operateurs d affectation C++ - *)
+(* = += -= *= /= %= &= |= ^= <<= >>=                           *)
 Function IsAssignOp(Const Op : TString) : Boolean;
 Begin
-  IsAssignOp := False; (* stub *)
+  IsAssignOp :=
+    (Op = '=')   Or (Op = '+=')  Or (Op = '-=')  Or (Op = '*=')  Or
+    (Op = '/=')  Or (Op = '%=')  Or (Op = '&=')  Or (Op = '|=')  Or
+    (Op = '^=')  Or (Op = '<<=') Or (Op = '>>=');
 End;
 
+(* ---- BinOpPrec : table de precedence C++ (Pratt) ------------ *)
+(* Niveaux (croissant = plus serre) :                            *)
+(*   ,                    -> 1  (virgule, evaluer g puis d)      *)
+(*   = += -= *= /= %= etc -> 2  (affectation, droit-assoc)      *)
+(*   ? :                  -> 3  (ternaire, droit-assoc)          *)
+(*   ||                   -> 4  (OU logique, court-circuit)      *)
+(*   &&                   -> 5  (ET logique, court-circuit)      *)
+(*   |                    -> 6  (OU bit a bit)                   *)
+(*   ^                    -> 7  (XOR bit a bit)                  *)
+(*   &                    -> 8  (ET bit a bit)                   *)
+(*   == !=                -> 9  (egalite)                        *)
+(*   < <= > >=            -> 10 (comparaison)                    *)
+(*   << >>                -> 11 (decalages)                      *)
+(*   + - (binaire)        -> 12 (addition / soustraction)        *)
+(*   * / %                -> 13 (multiplication / division)      *)
+(*   Unaires (++ -- + - ! ~ sizeof new delete * & (cast))        *)
+(*   -> traites par ParseUnary                                   *)
+(*   . -> :: () []        -> traites par ParsePrimary/postfixe   *)
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = ',' Then
+    BinOpPrec := 1
+  Else If IsAssignOp(Op) Then
+    BinOpPrec := 2
+  Else If Op = '?' Then
+    BinOpPrec := 3
+  Else If Op = '||' Then
+    BinOpPrec := 4
+  Else If Op = '&&' Then
+    BinOpPrec := 5
+  Else If Op = '|' Then
+    BinOpPrec := 6
+  Else If Op = '^' Then
+    BinOpPrec := 7
+  Else If Op = '&' Then
+    BinOpPrec := 8
+  Else If (Op = '==') Or (Op = '!=') Then
+    BinOpPrec := 9
+  Else If (Op = '<') Or (Op = '<=') Or
+          (Op = '>') Or (Op = '>=') Then
+    BinOpPrec := 10
+  Else If (Op = '<<') Or (Op = '>>') Then
+    BinOpPrec := 11
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 12
+  Else If (Op = '*') Or (Op = '/') Or (Op = '%') Then
+    BinOpPrec := 13
+  Else
+    BinOpPrec := 0;
+End;
+
+(* ---- BinOpIsRight : operateurs droit-associatifs ------------ *)
+(* Affectations et ternaire sont droite-associatifs en C++.      *)
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := IsAssignOp(Op) Or (Op = '?');
+End;
+
+(* ---- ParsePrimary : expressions primaires C++ --------------- *)
+(* Tokens primaires : entiers, flottants, caracteres, chaines,   *)
+(* true/false/nullptr/NULL, identificateurs, sous-expressions    *)
+(* entre parentheses.                                            *)
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  SIdx : Integer;
 Begin
-  ExprMakeNone(Res); (* stub *)
+  Case CurToken.Kind Of
+    TK_INTEGER, TK_FLOAT, TK_CHAR, TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'true') Or (CurToken.Val = 'false') Or
+         (CurToken.Val = 'nullptr') Then
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else If CurToken.Val = 'sizeof' Then
+      Begin
+        (* sizeof(type) ou sizeof(expr) : retourne taille en octets *)
+        ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance; (* consomme '(' *)
+          (* Verifier si c est un type connu *)
+          If (CurToken.Kind = TK_KEYWORD) And
+             ((CurToken.Val = 'int') Or (CurToken.Val = 'short') Or
+              (CurToken.Val = 'long') Or (CurToken.Val = 'char') Or
+              (CurToken.Val = 'bool') Or (CurToken.Val = 'void') Or
+              (CurToken.Val = 'float') Or (CurToken.Val = 'double') Or
+              (CurToken.Val = 'unsigned') Or (CurToken.Val = 'signed')) Then
+          Begin
+            If (CurToken.Val = 'char') Or (CurToken.Val = 'bool') Then
+              ExprMakeImm(1, TY_IDX_INT, Res)
+            Else If CurToken.Val = 'short' Then
+              ExprMakeImm(2, TY_IDX_INT, Res)
+            Else If (CurToken.Val = 'int') Or (CurToken.Val = 'unsigned') Or
+                    (CurToken.Val = 'signed') Then
+              ExprMakeImm(2, TY_IDX_INT, Res)
+            Else If CurToken.Val = 'long' Then
+              ExprMakeImm(4, TY_IDX_INT, Res)
+            Else If (CurToken.Val = 'float') Or (CurToken.Val = 'double') Then
+              ExprMakeImm(4, TY_IDX_INT, Res)
+            Else
+              ExprMakeImm(2, TY_IDX_INT, Res); (* defaut 16 bits *)
+            ParserAdvance;
+            (* Gerer les types composes : unsigned int, long int, etc. *)
+            If (CurToken.Kind = TK_KEYWORD) And
+               ((CurToken.Val = 'int') Or (CurToken.Val = 'char') Or
+                (CurToken.Val = 'long') Or (CurToken.Val = 'short')) Then
+              ParserAdvance;
+            (* Gerer les pointeurs : type* *)
+            While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
+            Begin
+              ExprMakeImm(2, TY_IDX_INT, Res); (* pointeur = 2 octets *)
+              ParserAdvance;
+            End;
+          End
+          Else
+          Begin
+            (* sizeof(expression) : evaluer et retourner 2 pour 16 bits *)
+            ParseExpr(Res);
+            ExprMakeImm(2, TY_IDX_INT, Res); (* defaut 16 bits *)
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End
+        Else
+        Begin
+          (* sizeof expr sans parens *)
+          ParseUnary(Res);
+          ExprMakeImm(2, TY_IDX_INT, Res);
+        End;
+      End
+      Else If CurToken.Val = 'new' Then
+      Begin
+        (* new : allocation dynamique (stub, TODO 20) *)
+        ParserAdvance;
+        WarnMsg('new : allocation dynamique non implementee (stub)');
+        (* Consommer le type *)
+        If CurToken.Kind = TK_KEYWORD Then ParserAdvance;
+        If CurToken.Kind = TK_IDENT Then ParserAdvance;
+        (* Consommer les arguments optionnels *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+        (* Consommer les initialiseurs [] optionnels *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            ParserAdvance;
+        End;
+        ExprMakeImm(0, TY_IDX_PTR, Res);
+      End
+      Else If CurToken.Val = 'delete' Then
+      Begin
+        (* delete : liberation dynamique (stub, TODO 20) *)
+        ParserAdvance;
+        WarnMsg('delete : liberation dynamique non implementee (stub)');
+        (* delete[] *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            ParserAdvance;
+        End;
+        ParseUnary(Res);
+        ExprMakeNone(Res);
+      End
+      Else
+      Begin
+        (* Autre mot-cle : stub *)
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
+    TK_IDENT :
+    Begin
+      If CurToken.Val = 'NULL' Then
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        (* Recherche dans la table des symboles *)
+        SIdx := SymFind(CurToken.Val);
+        If SIdx >= 0 Then
+        Begin
+          Res.Kind    := EK_MEM;
+          Res.ImmVal  := 0;
+          Res.TypeIdx := SymTab[SIdx].TypeIdx;
+          Res.Offset  := SymTab[SIdx].Offset;
+          Res.SymIdx  := SIdx;
+        End
+        Else
+        Begin
+          (* Identificateur non declare : EK_NONE, sera gere par TODO 10 *)
+          ExprMakeNone(Res);
+          Res.SymIdx := -1;
+        End;
+        ParserAdvance;
+        (* Appel de fonction : ident(...) -> stub postfixe TODO 18 *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          ParserAdvance;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          Begin
+            ParseExpr(GExprDummy);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          Res.Kind := EK_AX;
+        End;
+        (* Acceseur tableau : ident[expr] -> stub postfixe TODO 22 *)
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(GExprDummy);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            ParserAdvance;
+          Res.Kind := EK_AX;
+        End;
+        (* Acces membre : ident.member ou ident->member -> stub TODO 19 *)
+        While (CurToken.Kind = TK_OP) And
+              ((CurToken.Val = '.') Or (CurToken.Val = '->') Or
+               (CurToken.Val = '::')) Do
+        Begin
+          ParserAdvance;
+          If CurToken.Kind = TK_IDENT Then
+            ParserAdvance;
+          Res.Kind   := EK_AX;
+          Res.SymIdx := -1;
+        End;
+      End;
+    End;
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance; (* consomme '(' *)
+        (* Verifier si c est un cast : (type)expr *)
+        If (CurToken.Kind = TK_KEYWORD) And
+           ((CurToken.Val = 'int') Or (CurToken.Val = 'char') Or
+            (CurToken.Val = 'short') Or (CurToken.Val = 'long') Or
+            (CurToken.Val = 'unsigned') Or (CurToken.Val = 'signed') Or
+            (CurToken.Val = 'bool') Or (CurToken.Val = 'float') Or
+            (CurToken.Val = 'double') Or (CurToken.Val = 'void')) Then
+        Begin
+          (* Cast de type : (type)expr *)
+          ParserAdvance; (* consomme le type *)
+          (* Gerer types composes *)
+          While (CurToken.Kind = TK_KEYWORD) And
+                ((CurToken.Val = 'int') Or (CurToken.Val = 'char') Or
+                 (CurToken.Val = 'long') Or (CurToken.Val = 'short')) Do
+            ParserAdvance;
+          While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          ParseUnary(Res);
+          Res.Kind := EK_AX; (* cast -> resultat dans AX *)
+        End
+        Else
+        Begin
+          (* Sous-expression entre parentheses *)
+          ParseExpr(Res);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+        End;
+      End
+      Else
+      Begin
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
+  Else
+    ExprMakeNone(Res);
+    ParserAdvance;
+  End;
 End;
 
+(* ---- ParseUnary : operateurs unaires C++ -------------------- *)
+(* Prefixe : ++ -- + - ! ~ * & sizeof new delete (cast)          *)
+(* Postfixe : ++ -- (geres apres ParsePrimary)                   *)
 Procedure ParseUnary(Var Res : TExprVal);
+Var
+  Op : TString;
 Begin
-  ExprMakeNone(Res); (* stub *)
+  If CurToken.Kind = TK_OP Then
+  Begin
+    Op := CurToken.Val;
+    (* Unaire prefixe arithmetique et logique *)
+    If (Op = '+') Or (Op = '-') Or (Op = '!') Or (Op = '~') Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res); (* recursif pour chainer : --x, !~x *)
+      (* Pliage de constantes *)
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Op = '-' Then
+          Res.ImmVal := -Res.ImmVal
+        Else If Op = '+' Then
+          (* rien : coerce en nombre *)
+        Else If Op = '!' Then
+        Begin
+          If Res.ImmVal = 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+          Res.TypeIdx := TY_IDX_BOOL;
+        End
+        Else If Op = '~' Then
+          Res.ImmVal := Not Res.ImmVal;
+      End
+      Else
+      Begin
+        (* Emission ASM pour unaire non-constant *)
+        ExprFlushToAX(Res);
+        If Op = '-' Then
+          EmitInstr('NEG    AX')
+        Else If Op = '!' Then
+        Begin
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstr('SETE   AL');
+          EmitInstrAB('MOVZX', 'AX', 'AL');
+          Res.TypeIdx := TY_IDX_BOOL;
+        End
+        Else If Op = '~' Then
+          EmitInstr('NOT    AX');
+        (* Op = '+' : rien *)
+        Res.Kind := EK_AX;
+      End;
+      Exit;
+    End;
+    (* Pre-increment et pre-decrement *)
+    If (Op = '++') Or (Op = '--') Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      If Res.SymIdx >= 0 Then
+      Begin
+        ExprFlushToAX(Res);
+        If Op = '++' Then
+          EmitInstr('INC    AX')
+        Else
+          EmitInstr('DEC    AX');
+        ExprStore(Res.SymIdx);
+      End;
+      Res.Kind := EK_AX;
+      Exit;
+    End;
+    (* Dereferencement : *ptr (TODO 21 : pointeurs) *)
+    If Op = '*' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_INT;
+      Res.SymIdx  := -1;
+      Exit;
+    End;
+    (* Adresse de : &var (TODO 21 : pointeurs) *)
+    If Op = '&' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_PTR;
+      Res.SymIdx  := -1;
+      Exit;
+    End;
+  End;
+  (* Unaire prefixe sur TK_KEYWORD : sizeof, new, delete *)
+  (* (geres dans ParsePrimary car sizeof a une syntaxe speciale) *)
+  (* Pas d operateur unaire : appeler ParsePrimary *)
+  ParsePrimary(Res);
+  (* Post-increment et post-decrement *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '++') Then
+  Begin
+    If Res.SymIdx >= 0 Then
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('PUSH   AX');   (* sauver ancienne valeur *)
+      EmitInstr('INC    AX');
+      ExprStore(Res.SymIdx);
+      EmitInstr('POP    AX');   (* restaurer ancienne valeur *)
+    End;
+    Res.Kind := EK_AX;
+    ParserAdvance;
+  End
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '--') Then
+  Begin
+    If Res.SymIdx >= 0 Then
+    Begin
+      ExprFlushToAX(Res);
+      EmitInstr('PUSH   AX');
+      EmitInstr('DEC    AX');
+      ExprStore(Res.SymIdx);
+      EmitInstr('POP    AX');
+    End;
+    Res.Kind := EK_AX;
+    ParserAdvance;
+  End;
 End;
 
+(* ---- ParseExprPrec : Pratt parser pour C++ ------------------ *)
+(* Boucle de montee de precedence pour operateurs binaires.      *)
+(* AX = gauche, BX = droite pour emission.                       *)
+(* Court-circuit pour && et ||.                                   *)
+(* Ternaire ? : gere en interne.                                 *)
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op        : TString;
+  Prec      : Integer;
+  Right     : TExprVal;
+  TrueBr    : TExprVal;
+  FoldOk    : Boolean;
+  ShiftAmt  : Integer;
+  LblSkip   : TString;
+  LblDone   : TString;
+  Addr      : TString;
 Begin
-  ExprMakeNone(Res); (* stub *)
+  ParseUnary(Res);
+  Repeat
+    Op   := '';
+    Prec := 0;
+    (* Detecter operateur binaire *)
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      Op   := ',';
+      Prec := 1;
+    End;
+    (* Arreter si fin ou priorite insuffisante *)
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+    (* Les assignations sont gerees a part (droite-assoc, prec=2) *)
+    If IsAssignOp(Op) Then Break;
+    ParserAdvance;
+
+    (* ---- Ternaire ? : ---- *)
+    If Op = '?' Then
+    Begin
+      (* Evaluer branche vraie jusqu au ':' *)
+      ParseExprPrec(3, TrueBr);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance
+      Else
+        CompileError('operateur ternaire : attendu ":"');
+      (* Evaluer branche fausse (droite-assoc) *)
+      ParseExprPrec(3, Right);
+      (* Pliage si condition constante *)
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Res.ImmVal <> 0 Then Res := TrueBr
+        Else                    Res := Right;
+      End
+      Else
+      Begin
+        (* Emission ASM ternaire *)
+        ExprFlushToAX(Res);
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'AX', '0');
+        EmitInstrA('JE', LblSkip);
+        ExprFlushToAX(TrueBr);
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        ExprFlushToAX(Right);
+        EmitLabel(LblDone);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_INT;
+        Res.SymIdx  := -1;
+      End;
+      Continue;
+    End;
+
+    (* ---- Operateur virgule ---- *)
+    If Op = ',' Then
+    Begin
+      (* Evaluer gauche (deja dans Res), evaluer droite, retourner droite *)
+      ParseExprPrec(2, Right);
+      Res := Right;
+      Continue;
+    End;
+
+    (* ---- Court-circuit && ---- *)
+    If Op = '&&' Then
+    Begin
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Res.ImmVal = 0 Then
+        Begin
+          (* Gauche fausse : ne pas evaluer droite *)
+          ParseExprPrec(Prec + 1, Right);
+          ExprMakeImm(0, TY_IDX_BOOL, Res);
+        End
+        Else
+        Begin
+          ParseExprPrec(Prec + 1, Right);
+          If Right.Kind = EK_IMM Then
+          Begin
+            If Right.ImmVal <> 0 Then
+              ExprMakeImm(1, TY_IDX_BOOL, Res)
+            Else
+              ExprMakeImm(0, TY_IDX_BOOL, Res);
+          End
+          Else
+            Res := Right;
+        End;
+      End
+      Else
+      Begin
+        ExprFlushToAX(Res);
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', '0');
+        EmitInstrA('JE', LblSkip);
+        ParseExprPrec(Prec + 1, Right);
+        ExprFlushToAX(Right);
+        EmitLabel(LblSkip);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_BOOL;
+        Res.SymIdx  := -1;
+      End;
+      Continue;
+    End;
+
+    (* ---- Court-circuit || ---- *)
+    If Op = '||' Then
+    Begin
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Res.ImmVal <> 0 Then
+        Begin
+          (* Gauche vraie : ne pas evaluer droite *)
+          ParseExprPrec(Prec + 1, Right);
+          ExprMakeImm(1, TY_IDX_BOOL, Res);
+        End
+        Else
+        Begin
+          ParseExprPrec(Prec + 1, Right);
+          If Right.Kind = EK_IMM Then
+          Begin
+            If Right.ImmVal <> 0 Then
+              ExprMakeImm(1, TY_IDX_BOOL, Res)
+            Else
+              ExprMakeImm(0, TY_IDX_BOOL, Res);
+          End
+          Else
+            Res := Right;
+        End;
+      End
+      Else
+      Begin
+        ExprFlushToAX(Res);
+        LblSkip := LabelGen;
+        EmitInstrAB('CMP', 'AX', '0');
+        EmitInstrA('JNE', LblSkip);
+        ParseExprPrec(Prec + 1, Right);
+        ExprFlushToAX(Right);
+        EmitLabel(LblSkip);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_BOOL;
+        Res.SymIdx  := -1;
+      End;
+      Continue;
+    End;
+
+    (* ---- Tous les autres operateurs binaires ---- *)
+    If BinOpIsRight(Op) Then
+      ParseExprPrec(Prec, Right)
+    Else
+      ParseExprPrec(Prec + 1, Right);
+
+    (* Pliage de constantes si les deux membres sont immediats *)
+    FoldOk := (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM);
+    If FoldOk Then
+    Begin
+      If Op = '+' Then
+        ExprMakeImm(Res.ImmVal + Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '-' Then
+        ExprMakeImm(Res.ImmVal - Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '*' Then
+        ExprMakeImm(Res.ImmVal * Right.ImmVal, TY_IDX_INT, Res)
+      Else If (Op = '/') And (Right.ImmVal <> 0) Then
+        ExprMakeImm(Res.ImmVal Div Right.ImmVal, TY_IDX_INT, Res)
+      Else If (Op = '%') And (Right.ImmVal <> 0) Then
+        ExprMakeImm(Res.ImmVal Mod Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '&' Then
+        ExprMakeImm(Res.ImmVal And Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '|' Then
+        ExprMakeImm(Res.ImmVal Or Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '^' Then
+        ExprMakeImm(Res.ImmVal Xor Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '<<' Then
+      Begin
+        ShiftAmt := Integer(Right.ImmVal And 15);
+        ExprMakeImm(Res.ImmVal Shl ShiftAmt, TY_IDX_INT, Res);
+      End
+      Else If Op = '>>' Then
+      Begin
+        ShiftAmt := Integer(Right.ImmVal And 15);
+        ExprMakeImm(Res.ImmVal Shr ShiftAmt, TY_IDX_INT, Res);
+      End
+      Else If Op = '==' Then
+        ExprMakeBool(Ord(Res.ImmVal = Right.ImmVal), Res)
+      Else If Op = '!=' Then
+        ExprMakeBool(Ord(Res.ImmVal <> Right.ImmVal), Res)
+      Else If Op = '<' Then
+        ExprMakeBool(Ord(Res.ImmVal < Right.ImmVal), Res)
+      Else If Op = '<=' Then
+        ExprMakeBool(Ord(Res.ImmVal <= Right.ImmVal), Res)
+      Else If Op = '>' Then
+        ExprMakeBool(Ord(Res.ImmVal > Right.ImmVal), Res)
+      Else If Op = '>=' Then
+        ExprMakeBool(Ord(Res.ImmVal >= Right.ImmVal), Res)
+      Else
+      Begin
+        (* Division par zero ou operateur inconnu : pas de pliage *)
+        If ((Op = '/') Or (Op = '%')) And (Right.ImmVal = 0) Then
+          WarnMsg('division par zero detectee a la compilation');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_INT;
+      End;
+    End
+    Else
+    Begin
+      (* Non constant : emettre code ASM *)
+      ExprFlushToAX(Res);
+      EmitInstr('PUSH   AX');
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstr('POP    AX');
+      (* Emission de l operation binaire *)
+      If Op = '+' Then
+        EmitInstrAB('ADD', 'AX', 'BX')
+      Else If Op = '-' Then
+        EmitInstrAB('SUB', 'AX', 'BX')
+      Else If Op = '*' Then
+        EmitInstrA('IMUL', 'BX')
+      Else If Op = '/' Then
+      Begin
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '%' Then
+      Begin
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrAB('MOV', 'AX', 'DX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '&' Then
+        EmitInstrAB('AND', 'AX', 'BX')
+      Else If Op = '|' Then
+        EmitInstrAB('OR', 'AX', 'BX')
+      Else If Op = '^' Then
+        EmitInstrAB('XOR', 'AX', 'BX')
+      Else If Op = '<<' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SAL', 'AX', 'CL');
+      End
+      Else If Op = '>>' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SAR', 'AX', 'CL');
+      End
+      Else If Op = '==' Then
+      Begin
+        EmitInstrAB('CMP', 'AX', 'BX');
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrA('JE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '!=' Then
+      Begin
+        EmitInstrAB('CMP', 'AX', 'BX');
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrA('JNE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '<' Then
+      Begin
+        EmitInstrAB('CMP', 'AX', 'BX');
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrA('JL', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '<=' Then
+      Begin
+        EmitInstrAB('CMP', 'AX', 'BX');
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrA('JLE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '>' Then
+      Begin
+        EmitInstrAB('CMP', 'AX', 'BX');
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrA('JG', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '>=' Then
+      Begin
+        EmitInstrAB('CMP', 'AX', 'BX');
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrA('JGE', LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitLabel(LblDone);
+      End;
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_INT;
+      Res.SymIdx  := -1;
+    End;
+  Until False;
+
+  (* ---- Operateurs d affectation (prec=2, droit-assoc) ---- *)
+  If (CurToken.Kind = TK_OP) And IsAssignOp(CurToken.Val) Then
+  Begin
+    Op := CurToken.Val;
+    ParserAdvance;
+    ParseExprPrec(2, Right); (* droite-associatif *)
+    If Res.SymIdx < 0 Then
+    Begin
+      CompileError('cible d''affectation invalide (lvalue requise)');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_INT;
+      Exit;
+    End;
+    If SymTab[Res.SymIdx].IsConst Then
+      CompileError('affectation a une constante: "' +
+                   SymTab[Res.SymIdx].Name + '"');
+    If Op = '=' Then
+    Begin
+      ExprFlushToAX(Right);
+      ExprStore(Res.SymIdx);
+    End
+    Else
+    Begin
+      (* Operateur compose : old val dans AX, op avec BX, stocker *)
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      Addr := ExprAddrOf(Res.SymIdx);
+      If Length(Addr) > 0 Then
+        EmitInstrAB('MOV', 'AX', Addr)
+      Else
+        ExprFlushToAX(Res);
+      If Op = '+='  Then EmitInstrAB('ADD', 'AX', 'BX')
+      Else If Op = '-='  Then EmitInstrAB('SUB', 'AX', 'BX')
+      Else If Op = '*='  Then EmitInstrA('IMUL', 'BX')
+      Else If Op = '/='  Then
+      Begin
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '%='  Then
+      Begin
+        LblSkip := LabelGen;
+        LblDone := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrAB('MOV', 'AX', 'DX');
+        EmitInstrA('JMP', LblDone);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblDone);
+      End
+      Else If Op = '&='  Then EmitInstrAB('AND', 'AX', 'BX')
+      Else If Op = '|='  Then EmitInstrAB('OR',  'AX', 'BX')
+      Else If Op = '^='  Then EmitInstrAB('XOR', 'AX', 'BX')
+      Else If Op = '<<=' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SAL', 'AX', 'CL');
+      End
+      Else If Op = '>>=' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SAR', 'AX', 'CL');
+      End;
+      ExprStore(Res.SymIdx);
+    End;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_INT;
+  End;
 End;
 
+(* ---- ParseExpr : point d entree principal ------------------- *)
+(* Evalue une expression complete C++.                           *)
+(* MinPrec=2 pour ignorer la virgule de niveau 1 dans les appels *)
+(* normaux. Le niveau virgule est gere dans ParseExprPrec.       *)
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
-  ExprMakeNone(Res); (* stub *)
+  ParseExprPrec(2, Res);
 End;
+
+(* ============================================================
+  STUBS POUR TODO 06..25
+  (a implementer dans les prochaines etapes)
+  ============================================================ *)
 
 Function SymNameClean(Const Name : TString) : TString;
 Begin
