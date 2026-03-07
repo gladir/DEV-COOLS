@@ -8853,9 +8853,7 @@ Begin
   CurFrameOffset    := 0;
   HasPendingAssign  := False;
   PendingAssignName := '';
-  { TODO 14 }
   LoopTop := -1;
-  { TODO 16 }
   CurFuncName   := '';
   CurFuncRetOfs := 0;
   CurRetLabel   := '';
@@ -8863,9 +8861,7 @@ Begin
   CurParamBytes := 0;
   MainBodyEmitted := False;
   RuntimeEmitted  := False;
-  { TODO 20 }
   WithTop := -1;
-  { TODO 21 }
   IncTop        := -1;
   DefineCount   := 0;
   CompilerMode  := 'TP';
@@ -8901,7 +8897,7 @@ Begin
   LexInit;
   TplInit;
 
-  { Emettre l en-tete ASM (TODO 08) }
+  { Emettre l en-tete ASM }
   EmitHeader;
 
   { Boucle principale : analyseur de template PSP }
@@ -8930,12 +8926,12 @@ Begin
     Begin
       TplNextToken;  { consommer %>, retour en mode HTML }
     End
-    { --- Directive <%@ ... %> : parser attributs (TODO 21) --- }
+    { --- Directive <%@ ... %> : parser attributs --- }
     Else If CurToken.Kind = TK_PSP_DIRECTIVE Then
     Begin
       ParsePSPDirective;
     End
-    { --- Instructions Pascal (TODO 13 : delegation a ParseStatement) --- }
+    { --- Instructions Pascal (delegation a ParseStatement) --- }
     Else If (CurToken.Kind = TK_KEYWORD) Or
             (CurToken.Kind = TK_IDENT) Then
     Begin
@@ -8947,41 +8943,32 @@ Begin
     Else
       TplNextToken;  { Avancer seulement si aucun match }
   End;
-
-  { Emettre le pied de page ASM (TODO 08) }
+   { Emettre le pied de page ASM }
   EmitFooter;
-
-  { Fermer l analyseur template et le lexeur }
+   { Fermer l analyseur template et le lexeur }
   TplClose;
   LexClose;
-
-  { Emettre le segment de donnees (TODO 04) }
+   { Emettre le segment de donnees }
   EmitDataSeg;
-
-  { Emettre la directive END (TODO 25) }
+   { Emettre la directive END }
   If OutFOpen Then
     WriteLn(OutF, '        END     ' + PSP_FN_PFX + 'main');
-
   Cleanup;
-
-  If Opts.Verbose Then
-  Begin
+  If Opts.Verbose Then Begin
     WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
     WriteLn('  Lignes         : ', TotalLines);
     WriteLn('  Symboles       : ', TotalSyms);
     WriteLn('  Erreurs        : ', ErrorCount);
     WriteLn('  Avertissements : ', WarnCount);
   End;
-
-  If ErrorCount > 0 Then
-    Halt(EXIT_ERROR)
-  Else
-    Halt(EXIT_OK);
+  If ErrorCount > 0 Then Halt(EXIT_ERROR)
+                    Else Halt(EXIT_OK);
 End;
 
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
+
 BEGIN
  If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
    (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
