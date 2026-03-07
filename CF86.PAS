@@ -990,6 +990,7 @@ Begin
 End;
 
 { ---- IsCFKeyword : teste si S est un mot-cle CFML ---------- }
+(* S doit etre en minuscules ou en casse quelconque             *)
 Function IsCFKeyword(Const S : TString) : Boolean;
 Var
   U : TString;
@@ -1089,7 +1090,7 @@ End;
 (* ColdFusion est insensible a la casse : on met en minuscules *)
 Procedure LexScanIdent;
 Var
-  S : TString;
+  S, Lo : TString;
 Begin
   S := '';
   While (LexColNo <= Length(LexLine)) And
@@ -1099,17 +1100,13 @@ Begin
       S := S + LexLine[LexColNo];
     Inc(LexColNo);
   End;
+  Lo := StrLowerCase(S);
   CurToken.IntVal := 0;
-  If IsCFKeyword(S) Then
-  Begin
-    CurToken.Kind := TK_KEYWORD;
-    CurToken.Val  := StrLowerCase(S);
-  End
+  CurToken.Val    := Lo;
+  If IsCFKeyword(Lo) Then
+    CurToken.Kind := TK_KEYWORD
   Else
-  Begin
     CurToken.Kind := TK_IDENT;
-    CurToken.Val  := StrLowerCase(S);
-  End;
 End;
 
 { ---- LexScanNumber : scanner un litteral numerique ---------- }
