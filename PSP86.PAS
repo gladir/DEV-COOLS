@@ -1,4 +1,13 @@
-﻿(* ============================================================
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Free Pascal 3.2)
+  @description: Compilateur PSP (Pascal Server Pages) vers assembleur 8086
+  @license: MIT
+}
+
+(* ============================================================
   PSP86.PAS - Compilateur Pascal Server Pages vers assembleur 8086
   Turbo Pascal / Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
@@ -607,16 +616,16 @@ Const
   MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
   MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
   MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
-  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
-  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
   MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
-  MAX_INCLUDE   = 8;     { profondeur max d inclusion }
-  MAX_DEFINE    = 64;    { nombre max de symboles de compilation }
-  MAX_FIELD     = 32;    { champs max par record }
-  MAX_ENUM      = 64;    { valeurs max par enumeration }
+  MAX_INCLUDE   = {$IFDEF FPC}8{$ELSE}4{$ENDIF};     { profondeur max d inclusion }
+  MAX_DEFINE    = {$IFDEF FPC}64{$ELSE}16{$ENDIF};    { nombre max de symboles de compilation }
+  MAX_FIELD     = {$IFDEF FPC}32{$ELSE}16{$ENDIF};    { champs max par record }
+  MAX_ENUM      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};    { valeurs max par enumeration }
   MAX_WITH      = 8;     { profondeur max de with imbrique }
   STACK_SIZE    = 1024;
   FRAME_WARN    = 256;   { seuil avertissement taille cadre (octets) }
@@ -876,11 +885,13 @@ Var
   WithTop         : Integer;  { sommet de la pile (-1 = vide) }
 
   { Directives et inclusions (TODO 21) }
-  IncSavedF       : Array[0..MAX_INCLUDE - 1] Of Text;   { fichiers empiles }
+  IncSavedFName   : Array[0..MAX_INCLUDE - 1] Of TString; { nom fichier empile }
+  IncSavedFLine   : Array[0..MAX_INCLUDE - 1] Of Integer;{ ligne dans fichier }
   IncSavedLine    : Array[0..MAX_INCLUDE - 1] Of String; { ligne courante  }
   IncSavedLineNo  : Array[0..MAX_INCLUDE - 1] Of Integer;{ numero de ligne }
   IncSavedColNo   : Array[0..MAX_INCLUDE - 1] Of Integer;{ colonne         }
   IncSavedEOF     : Array[0..MAX_INCLUDE - 1] Of Boolean;{ EOF sauvegarde  }
+  LexSrcFName     : TString;  { nom du fichier source courant }
   IncTop          : Integer;  { sommet pile inclusion (-1 = vide) }
   DefineTab       : Array[0..MAX_DEFINE - 1] Of TString; { symboles defines }
   DefineCount     : Integer;  { nombre de defines actifs }
@@ -1254,13 +1265,16 @@ Begin
     WarnMsg('profondeur d''inclusion maximale atteinte');
     Exit;
   End;
-  { Sauvegarder l etat du lexeur }
+  { Sauvegarder l etat du lexeur : nom fichier + ligne atteinte }
   Inc(IncTop);
-  IncSavedF[IncTop]      := LexSrcF;
+  IncSavedFName[IncTop]  := LexSrcFName;
+  IncSavedFLine[IncTop]  := LexLineNo;
   IncSavedLine[IncTop]   := LexLine;
   IncSavedLineNo[IncTop] := LexLineNo;
   IncSavedColNo[IncTop]  := LexColNo;
   IncSavedEOF[IncTop]    := LexEOF;
+  { Fermer le fichier courant avant d ouvrir l include }
+  Close(LexSrcF);
   { Ouvrir le fichier inclus }
   FullPath := FileName;
   {$I-}
@@ -1270,9 +1284,13 @@ Begin
   If IOResult <> 0 Then
   Begin
     WarnMsg('impossible d''ouvrir le fichier include: ' + FullPath);
+    { Rouvrir le fichier precedent }
+    Assign(LexSrcF, IncSavedFName[IncTop]);
+    Reset(LexSrcF);
     Dec(IncTop);
     Exit;
   End;
+  LexSrcFName := FullPath;
   LexOpened := True;
   LexLine   := '';
   LexLineNo := 0;
@@ -1283,10 +1301,21 @@ End;
 
 { ---- IncludePop : depiler et restaurer le fichier precedent -- }
 Procedure IncludePop;
+Var
+  I : Integer;
+  Dummy : String;
 Begin
   If IncTop < 0 Then Exit;
   Close(LexSrcF);
-  LexSrcF   := IncSavedF[IncTop];
+  { Rouvrir le fichier precedent et avancer jusqu a la bonne ligne }
+  Assign(LexSrcF, IncSavedFName[IncTop]);
+  Reset(LexSrcF);
+  For I := 1 To IncSavedFLine[IncTop] Do
+  Begin
+    If Not EOF(LexSrcF) Then
+      ReadLn(LexSrcF, Dummy);
+  End;
+  LexSrcFName := IncSavedFName[IncTop];
   LexLine   := IncSavedLine[IncTop];
   LexLineNo := IncSavedLineNo[IncTop];
   LexColNo  := IncSavedColNo[IncTop];
@@ -6471,7 +6500,7 @@ Begin
   Ks := TypeTab[SrcType].Kind;
   Kd := TypeTab[DstType].Kind;
 
-  { Byte -> Integer/Word : extension zero MOVZX ou XOR AH,AH }  
+  { Byte -> Integer/Word : extension zero MOVZX ou XOR AH,AH }
   If (Ks = TKP_BYTE) And ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
   Begin
     EmitComment('coerce byte -> word');
@@ -9163,17 +9192,19 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: PSP86 <page.psp> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  page.psp   : fichier Pascal Server Pages source');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: page.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('PSP86 - Cette commande permet de lancer le compilateur de PSP (Pascal Server Pages) pour ',
+         'l''assembleur du microprocesseur 8086.');
+ WriteLn;
+ WriteLn('Syntaxe : PSP86 <page.psp> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  page.psp   : fichier Pascal Server Pages source');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: page.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 { ---- Utilitaires chaines ------------------------------------ }
@@ -9423,6 +9454,7 @@ Begin
   DefineCount   := 0;
   CompilerMode  := 'TP';
   ContentTypeLbl := '';
+  LexSrcFName   := '';
   TypeInit;
   SymInit;
 End;
@@ -9440,6 +9472,7 @@ Begin
   If IOResult <> 0 Then
     FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
   LexOpened := True;
+  LexSrcFName := Opts.SrcFile;
 
   { Creer le fichier de sortie }
   Assign(OutF, Opts.OutFile);
@@ -9533,7 +9566,12 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
-  ParseArgs;
-  Run;
-End.
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowUsage;
+  Halt(0);
+ End;
+ ParseArgs;
+ Run;
+END.
