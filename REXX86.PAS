@@ -123,7 +123,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_BUFFER),
               IntVal, StrVal, BufSize
             DataTab[0..MAX_DATA-1], DataCount
@@ -763,6 +763,8 @@ Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
 Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataAddBuffer(Const Lbl : TString; ASize : Integer) : Integer; Forward;
+Procedure DataInit; Forward;
 
 (* TODO 03 - Litteraux et constantes *)
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
@@ -2523,8 +2525,8 @@ Begin
 End;
 
 (* ---- EmitDataSeg : emettre le segment _DATA dans le .ASM ----- *)
-(* Ecrit _DATA SEGMENT ... _DATA ENDS avec les constantes         *)
-(* predefinies REXX et les donnees utilisateur de DataTab.         *)
+(* Ecrit _DATA SEGMENT ... _DATA ENDS avec toutes les donnees     *)
+(* de DataTab (predefinies par DataInit + utilisateur).             *)
 (* Les caracteres de controle dans DK_STR sont emis en valeur     *)
 (* numerique (DB n) au lieu de notation chaine MASM.               *)
 Procedure EmitDataSeg;
@@ -2538,13 +2540,8 @@ Begin
   EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
   EmitRaw('        ASSUME DS:_DATA');
   EmitBlankLine;
-  (* Constantes symboliques predefinies REXX *)
-  EmitComment('Constantes predefinies REXX');
-  EmitRaw('_RX_RC      DW 0');
-  EmitRaw('_RX_RESULT  DB ''RESULT'',0');
-  EmitRaw('_RX_SIGL    DW 0');
-  EmitBlankLine;
-  (* Donnees utilisateur *)
+  EmitComment('Donnees REXX (predefinies + utilisateur)');
+  (* Toutes les donnees depuis DataTab *)
   For I := 0 To DataCount - 1 Do
   Begin
     Case DataTab[I].Kind Of
@@ -2558,37 +2555,42 @@ Begin
           If OutFOpen Then
           Begin
             Write(OutF, DataTab[I].LblName, ' DB ');
-            InStr := False;
-            For J := 1 To Length(DataTab[I].StrVal) Do
+            If Length(DataTab[I].StrVal) = 0 Then
+              WriteLn(OutF, '0')  (* chaine vide -> juste le NUL terminal *)
+            Else
             Begin
-              B := Ord(DataTab[I].StrVal[J]);
-              If (B < 32) Or (B > 126) Or (B = 39) Then  (* 39 = apostrophe *)
+              InStr := False;
+              For J := 1 To Length(DataTab[I].StrVal) Do
               Begin
-                (* caractere non imprimable ou apostrophe -> numerique *)
-                If InStr Then
+                B := Ord(DataTab[I].StrVal[J]);
+                If (B < 32) Or (B > 126) Or (B = 39) Then  (* 39 = apostrophe *)
                 Begin
-                  Write(OutF, '''');
-                  InStr := False;
-                End;
-                If J > 1 Then Write(OutF, ',');
-                Str(B, NS);
-                Write(OutF, NS);
-              End
-              Else
-              Begin
-                (* caractere imprimable -> notation chaine *)
-                If Not InStr Then
-                Begin
+                  (* caractere non imprimable ou apostrophe -> numerique *)
+                  If InStr Then
+                  Begin
+                    Write(OutF, '''');
+                    InStr := False;
+                  End;
                   If J > 1 Then Write(OutF, ',');
-                  Write(OutF, '''');
-                  InStr := True;
+                  Str(B, NS);
+                  Write(OutF, NS);
+                End
+                Else
+                Begin
+                  (* caractere imprimable -> notation chaine *)
+                  If Not InStr Then
+                  Begin
+                    If J > 1 Then Write(OutF, ',');
+                    Write(OutF, '''');
+                    InStr := True;
+                  End;
+                  Write(OutF, DataTab[I].StrVal[J]);
                 End;
-                Write(OutF, DataTab[I].StrVal[J]);
               End;
+              If InStr Then
+                Write(OutF, '''');
+              WriteLn(OutF, ',0');
             End;
-            If InStr Then
-              Write(OutF, '''');
-            WriteLn(OutF, ',0');
           End;
         End;
       DK_BUFFER:
@@ -2656,9 +2658,6 @@ Begin
   EmitInstrAB('MOV', 'AX', '4C00h');
   EmitRaw('        INT     21h');
   EmitBlankLine;
-
-  (* Donnees runtime : CR+LF *)
-  DataAdd('_RX_CRLF', DK_STR, 0, #13#10);
 End;
 
 (* ---- EmitClose : fermer le fichier de sortie ASM ------------- *)
@@ -2684,7 +2683,9 @@ Begin
   End;
 End;
 
-(* TODO 08 - Segment de donnees *)
+(* ============================================================
+   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+   ============================================================ *)
 Function DataAdd(Const Lbl : TString; Kind : TDataKind;
                  AIntVal : LongInt; Const AStrVal : TString) : Integer;
 Begin
@@ -2727,6 +2728,38 @@ End;
 Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
 Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+(* ---- DataAddBuffer : ajouter un tampon (DB n DUP(0)) ------- *)
+Function DataAddBuffer(Const Lbl : TString; ASize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_BUFFER, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].BufSize := ASize;
+  DataAddBuffer := Idx;
+End;
+
+(* ---- DataInit : pre-remplir DataTab avec les donnees REXX --- *)
+(* Ajoute les constantes et tampons predefinies necessaires au    *)
+(* runtime REXX : RC, RESULT, SIGL, CRLF, buffers de travail.    *)
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  (* Variables speciales REXX *)
+  DataAddWord('_RX_RC', 0);                      (* Return Code         *)
+  DataAdd('_RX_RESULT', DK_STR, 0, 'RESULT');    (* RESULT default      *)
+  DataAddWord('_RX_SIGL', 0);                     (* SIGL (source line)  *)
+  (* Constantes chaines *)
+  DataAdd('_RX_CRLF', DK_STR, 0, #13#10);        (* CR+LF               *)
+  DataAdd('_RX_NULL_STR', DK_STR, 0, '');         (* chaine vide         *)
+  DataAdd('_RX_TRUE_S', DK_STR, 0, '1');          (* chaine "1" (true)   *)
+  DataAdd('_RX_FALSE_S', DK_STR, 0, '0');         (* chaine "0" (false)  *)
+  (* Tampons de travail *)
+  DataAddBuffer('_RX_STRBUF', 256);               (* buffer general      *)
+  DataAddBuffer('_RX_TMPBUF', 256);               (* tampon temporaire   *)
+  DataAddBuffer('_RX_NUMBUF', 12);                (* conversion numerique *)
 End;
 
 (* TODO 10/11 - Expressions *)
@@ -3447,6 +3480,7 @@ Begin
 
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   If ErrorCount > 0 Then Exit;
 
