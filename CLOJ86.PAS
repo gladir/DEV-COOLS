@@ -2355,17 +2355,23 @@ Begin
     (K = TKC_SET)      Or (K = TKC_FUNCTION);
 End;
 
-(* TypeIsTruthy : semantique de verite Clojure                     *)
-(* nil et false sont faux (falsy) ; tout le reste est vrai (truthy) *)
+(* TypeIsTruthy : le type est-il toujours truthy en Clojure ?       *)
+(* nil : toujours falsy. boolean : depend de la valeur (false=0).  *)
+(* Tout autre type est toujours truthy (int, string, list, etc.)   *)
+(* Retourne True si le type est certainement truthy sans verifier  *)
+(* la valeur. Pour TKC_NIL retourne False (toujours falsy).        *)
+(* Pour TKC_BOOLEAN retourne False (faut verifier la valeur).      *)
 Function TypeIsTruthy(TypeIdx : Integer) : Boolean;
 Var
   K : TTypeKind;
 Begin
   K := TypeKindOf(TypeIdx);
-  TypeIsTruthy := (K <> TKC_NIL) And (K <> TKC_BOOLEAN);
-  (* Note : pour TKC_BOOLEAN, la verite depend de la valeur (0|1), *)
-  (* pas du type seul. On retourne False pour indiquer qu il faut  *)
-  (* verifier la valeur a l execution.                             *)
+  If K = TKC_NIL Then
+    TypeIsTruthy := False       (* nil est toujours falsy *)
+  Else If K = TKC_BOOLEAN Then
+    TypeIsTruthy := False       (* false est falsy, true est truthy -> runtime *)
+  Else
+    TypeIsTruthy := True;       (* tout le reste est toujours truthy *)
 End;
 
 (* TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx ?          *)
@@ -2416,8 +2422,15 @@ Begin
     TypeCanCoerce := True;
     Exit;
   End;
-  (* En Clojure, la coercition dynamique est le defaut *)
-  TypeCanCoerce := True;
+  (* function -> int/char/bool : coercition invalide *)
+  If (SrcIdx = TY_IDX_FN) And TypeIsNumeric(DstIdx) Then
+  Begin
+    TypeCanCoerce := False;
+    Exit;
+  End;
+  (* Clojure est dynamiquement type : la plupart des autres      *)
+  (* coercitions sont gerees a l execution par le runtime         *)
+  TypeCanCoerce := False;
 End;
 
 (* TypeCoerceResult : deduire le type de resultat d une op binaire *)
@@ -2532,8 +2545,8 @@ Begin
     Exit;
   End;
 
-  (* Par defaut : type du cote droit *)
-  TypeCoerceResult := RightIdx;
+  (* Par defaut : type inconnu pour les operateurs non geres *)
+  TypeCoerceResult := TY_UNKNOWN;
 End;
 
 (* TypeInfer : deduire le type d une expression a partir de TExprVal *)
