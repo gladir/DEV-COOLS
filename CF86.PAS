@@ -3309,7 +3309,6 @@ Begin
   ParserAdvance;  { consommer = }
 
   { Evaluer l expression a droite du = }
-  { Stub simplifie : consommer un literal ou identifiant }
   ExprMakeNone(Res);
   If CurToken.Kind = TK_INTEGER Then
   Begin
@@ -3365,13 +3364,7 @@ Begin
   { Chercher ou creer la variable cible }
   SIdx := SymFind(VarName);
   If SIdx < 0 Then
-  Begin
-    { Creation implicite de la variable }
-    If (Cat = SC_LOCAL) And (CurFnDepth > 0) Then
-      SIdx := VarAlloc(VarName, TypeInfer(Res))
-    Else
-      SIdx := VarAlloc(VarName, TypeInfer(Res));
-  End;
+    SIdx := VarAlloc(VarName, TypeInfer(Res));
 
   { Generer l affectation }
   If SIdx >= 0 Then
