@@ -22,7 +22,7 @@
             Programme principal : validation des arguments et appel Run
             Version, Date, aide en ligne (option -h)
 
-  TODO 02 - LEXEUR (TOKENS CFML)
+  TODO 02 - LEXEUR (TOKENS CFML) [IMPLEMENTE]
             TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
               TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT,
               TK_TAG_OPEN, TK_TAG_CLOSE, TK_TAG_SELFCLOSE,
@@ -607,6 +607,8 @@ Var
   LexOpened : Boolean;
   CurToken  : TToken;
   InCfScript : Boolean;   { True dans un bloc <cfscript> }
+  InTag      : Boolean;   { True dans les attributs d une balise CF }
+  InHashExpr : Boolean;   { True dans une interpolation #expr# }
 
   { Table des symboles (TODO 05) }
   SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
@@ -644,17 +646,33 @@ Var
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
-Procedure LexClose;      Forward;
+{ TODO 01 }
 Procedure EmitClose;     Forward;
 Procedure EmitDataSeg;   Forward;
 Procedure EmitRuntime;   Forward;
 Procedure EmitHeader;    Forward;
 Procedure EmitOpen;      Forward;
-Procedure LexInit;       Forward;
-Procedure ParserAdvance; Forward;
 Procedure ParsePage;     Forward;
 Procedure TypeInit;      Forward;
 Procedure SymInit;       Forward;
+{ TODO 02 }
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsCFKeyword(Const S : TString) : Boolean; Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure LexNextLine;         Forward;
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexScanIdent;        Forward;
+Procedure LexScanNumber;       Forward;
+Procedure LexScanString(Quote : Char); Forward;
+Procedure LexScanTag;          Forward;
+Procedure LexScanText;         Forward;
+Procedure LexSkipCFComment;    Forward;
+Procedure LexSkipLineComment;  Forward;
+Procedure LexSkipBlockComment; Forward;
+Procedure LexNextToken;        Forward;
+Procedure ParserAdvance;       Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -930,6 +948,8 @@ Begin
   LexOpened      := False;
   LexEOF         := False;
   InCfScript     := False;
+  InTag          := False;
+  InHashExpr     := False;
   CurFnDepth     := 0;
   CurFnRetLbl    := '';
   CurFnName      := '';
@@ -953,9 +973,89 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR COMPILATION (implementes dans les TODOs suivants)
+  TODO 02 - LEXEUR (TOKENS CFML) [IMPLEMENTE]
   ============================================================ }
 
+{ ---- Test de caracteres ------------------------------------- }
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or ((Ch >= '0') And (Ch <= '9'));
+End;
+
+{ ---- IsCFKeyword : teste si S est un mot-cle CFML ---------- }
+Function IsCFKeyword(Const S : TString) : Boolean;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(S);
+  IsCFKeyword :=
+    (U = 'EQ')       Or (U = 'NEQ')      Or (U = 'LT')       Or
+    (U = 'LTE')      Or (U = 'GT')       Or (U = 'GTE')      Or
+    (U = 'AND')      Or (U = 'OR')       Or (U = 'NOT')      Or
+    (U = 'XOR')      Or (U = 'MOD')      Or (U = 'CONTAINS') Or
+    (U = 'IS')       Or (U = 'TRUE')     Or (U = 'FALSE')    Or
+    (U = 'YES')      Or (U = 'NO')       Or (U = 'NULL')     Or
+    (U = 'VAR')      Or (U = 'IF')       Or (U = 'ELSE')     Or
+    (U = 'WHILE')    Or (U = 'DO')       Or (U = 'FOR')      Or
+    (U = 'IN')       Or (U = 'BREAK')    Or (U = 'CONTINUE') Or
+    (U = 'SWITCH')   Or (U = 'CASE')     Or (U = 'DEFAULT')  Or
+    (U = 'FUNCTION') Or (U = 'RETURN')   Or (U = 'NEW')      Or
+    (U = 'TRY')      Or (U = 'CATCH')    Or (U = 'FINALLY')  Or
+    (U = 'THROW')    Or (U = 'COMPONENT') Or (U = 'PROPERTY') Or
+    (U = 'THIS')     Or (U = 'IMPORT');
+End;
+
+{ ---- PrintToken : affichage debug d un token --------------- }
+Procedure PrintToken(Const T : TToken);
+Var
+  NS : TString;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF          : Write('EOF');
+    TK_INTEGER      : Begin Str(T.IntVal, NS); Write('INT(', NS, ')'); End;
+    TK_FLOAT        : Write('FLOAT(', T.Val, ')');
+    TK_STRING       : Write('STR("', T.Val, '")');
+    TK_IDENT        : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD      : Write('KW(', T.Val, ')');
+    TK_OP           : Write('OP(', T.Val, ')');
+    TK_PUNCT        : Write('PUNCT(', T.Val, ')');
+    TK_TAG_OPEN     : Write('TAG_OPEN(<', T.Val, '>)');
+    TK_TAG_CLOSE    : Write('TAG_CLOSE(</', T.Val, '>)');
+    TK_TAG_SELFCLOSE: Write('TAG_SELFCLOSE');
+    TK_TEXT         : Write('TEXT("', T.Val, '")');
+  End;
+  WriteLn;
+End;
+
+{ ---- LexNextLine : lire la prochaine ligne source ----------- }
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ---- LexInit : ouvrir le fichier source et initialiser ----- }
 Procedure LexInit;
 Begin
   Assign(LexSrcF, Opts.SrcFile);
@@ -964,13 +1064,18 @@ Begin
   {$I+}
   If IOResult <> 0 Then
     FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
-  LexOpened := True;
-  LexEOF    := False;
-  LexLineNo := 0;
-  LexColNo  := 1;
-  LexLine   := '';
+  LexOpened  := True;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  InTag      := False;
+  InCfScript := False;
+  InHashExpr := False;
+  LexNextLine;
 End;
 
+{ ---- LexClose : fermer le fichier source ------------------- }
 Procedure LexClose;
 Begin
   If LexOpened Then
@@ -980,12 +1085,648 @@ Begin
   End;
 End;
 
-Procedure ParserAdvance;
+{ ---- LexScanIdent : scanner un identifiant ou mot-cle ------ }
+(* ColdFusion est insensible a la casse : on met en minuscules *)
+Procedure LexScanIdent;
+Var
+  S : TString;
 Begin
-  { stub : marquer fin de fichier }
+  S := '';
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.IntVal := 0;
+  If IsCFKeyword(S) Then
+  Begin
+    CurToken.Kind := TK_KEYWORD;
+    CurToken.Val  := StrLowerCase(S);
+  End
+  Else
+  Begin
+    CurToken.Kind := TK_IDENT;
+    CurToken.Val  := StrLowerCase(S);
+  End;
+End;
+
+{ ---- LexScanNumber : scanner un litteral numerique ---------- }
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsFloat : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  FltVal  : Real;
+Begin
+  N       := 0;
+  IsFloat := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  { Partie entiere }
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    Inc(LexColNo);
+  End;
+  { Partie decimale .ddd }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      Inc(LexColNo);
+    End;
+  End;
+  If IsFloat Then
+  Begin
+    FltVal := N + FracVal;
+    CurToken.Kind     := TK_FLOAT;
+    CurToken.FloatVal := FltVal;
+    If FltVal > 32767.0 Then N := 32767
+    Else If FltVal < -32768.0 Then N := -32768
+    Else N := Trunc(FltVal);
+  End
+  Else
+    CurToken.Kind := TK_INTEGER;
+  CurToken.IntVal := N;
+  Str(N, CurToken.Val);
+End;
+
+{ ---- LexScanString : scanner une chaine ColdFusion --------- }
+(*  Quote = '"' ou Quote = chr(39) (apostrophe)                 *)
+(*  Echappement : doubler le delimiteur ("" dans "..." )        *)
+Procedure LexScanString(Quote : Char);
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo);  { sauter le delimiteur ouvrant }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = Quote Then
+    Begin
+      { Delimiteur double = echappement }
+      If (LexColNo < Length(LexLine)) And
+         (LexLine[LexColNo + 1] = Quote) Then
+      Begin
+        If Length(S) < MAX_STR Then S := S + Quote;
+        Inc(LexColNo); Inc(LexColNo);
+      End
+      Else
+      Begin
+        Inc(LexColNo);  { fermer la chaine }
+        Break;
+      End;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind   := TK_STRING;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+{ ---- LexSkipCFComment : sauter <!--- ... ---> -------------- }
+(*  Les commentaires CFML peuvent etre imbriques                *)
+Procedure LexSkipCFComment;
+Var
+  Depth : Integer;
+Begin
+  Inc(LexColNo, 5);  { sauter <!--- }
+  Depth := 1;
+  While (Not LexEOF) And (Depth > 0) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexColNo + 4 <= Length(LexLine)) And
+            (LexLine[LexColNo] = '<') And (LexLine[LexColNo+1] = '!') And
+            (LexLine[LexColNo+2] = '-') And (LexLine[LexColNo+3] = '-') And
+            (LexLine[LexColNo+4] = '-') Then
+    Begin
+      Inc(Depth);
+      Inc(LexColNo, 5);
+    End
+    Else If (LexColNo + 2 <= Length(LexLine)) And
+            (LexLine[LexColNo] = '-') And (LexLine[LexColNo+1] = '-') And
+            (LexLine[LexColNo+2] = '>') Then
+    Begin
+      Dec(Depth);
+      Inc(LexColNo, 3);
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+{ ---- LexSkipLineComment : sauter // jusqu a fin de ligne ---- }
+Procedure LexSkipLineComment;
+Begin
+  LexColNo := Length(LexLine) + 1;
+End;
+
+{ ---- LexSkipBlockComment : sauter /* ... */ (cfscript) ------ }
+Procedure LexSkipBlockComment;
+Var
+  Done : Boolean;
+Begin
+  Inc(LexColNo); Inc(LexColNo);  { sauter /* }
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Done := True;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+{ ---- LexScanTag : scanner <cf...> ou </cf...> -------------- }
+(*  Produit TK_TAG_OPEN ou TK_TAG_CLOSE                        *)
+Procedure LexScanTag;
+Var
+  S       : TString;
+  IsClose : Boolean;
+Begin
+  S := '';
+  IsClose := False;
+  Inc(LexColNo);  { sauter '<' }
+  { Detecter la forme fermante </cf... }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '/') Then
+  Begin
+    IsClose := True;
+    Inc(LexColNo);
+  End;
+  { Lire le nom de la balise : cf... }
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.Val    := StrLowerCase(S);
+  CurToken.IntVal := 0;
+  If IsClose Then
+  Begin
+    CurToken.Kind := TK_TAG_CLOSE;
+    { Pour les balises fermantes, consommer jusqu au > }
+    While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] <> '>') Do
+      Inc(LexColNo);
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+      Inc(LexColNo);
+    { Detecter </cfscript> pour sortir du mode cfscript }
+    If CurToken.Val = 'cfscript' Then
+      InCfScript := False;
+  End
+  Else
+  Begin
+    CurToken.Kind := TK_TAG_OPEN;
+    InTag := True;
+    { Detecter <cfscript> pour entrer en mode cfscript }
+    If CurToken.Val = 'cfscript' Then
+    Begin
+      { Consommer le reste de la balise jusqu au > }
+      While (Not LexEOF) And (LexColNo <= Length(LexLine)) And
+            (LexLine[LexColNo] <> '>') Do
+        Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+        Inc(LexColNo);
+      InTag := False;
+      InCfScript := True;
+    End;
+  End;
+End;
+
+{ ---- LexScanText : scanner du texte brut entre balises ------ }
+(*  S arrete devant <cf, </cf, <!--- ou #expr#                  *)
+Procedure LexScanText;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  While Not LexEOF Do
+  Begin
+    { Fin de ligne -> ajouter CR+LF et continuer }
+    If LexColNo > Length(LexLine) Then
+    Begin
+      If Length(S) < MAX_STR Then S := S + #13;
+      If Length(S) < MAX_STR Then S := S + #10;
+      LexNextLine;
+      If LexEOF Then Break;
+      Continue;
+    End;
+    Ch := LexLine[LexColNo];
+    { Detecter <cf ou </cf ou <!--- }
+    If Ch = '<' Then
+    Begin
+      If (LexColNo + 2 <= Length(LexLine)) And
+         ((LexLine[LexColNo+1] = 'c') Or (LexLine[LexColNo+1] = 'C')) And
+         ((LexLine[LexColNo+2] = 'f') Or (LexLine[LexColNo+2] = 'F')) Then
+        Break;
+      If (LexColNo + 3 <= Length(LexLine)) And
+         (LexLine[LexColNo+1] = '/') And
+         ((LexLine[LexColNo+2] = 'c') Or (LexLine[LexColNo+2] = 'C')) And
+         ((LexLine[LexColNo+3] = 'f') Or (LexLine[LexColNo+3] = 'F')) Then
+        Break;
+      If (LexColNo + 4 <= Length(LexLine)) And
+         (LexLine[LexColNo+1] = '!') And (LexLine[LexColNo+2] = '-') And
+         (LexLine[LexColNo+3] = '-') And (LexLine[LexColNo+4] = '-') Then
+        Break;
+    End;
+    { Detecter # (debut d interpolation) }
+    If Ch = '#' Then
+    Begin
+      { ## est un echappement -> un seul # dans le texte }
+      If (LexColNo < Length(LexLine)) And
+         (LexLine[LexColNo+1] = '#') Then
+      Begin
+        If Length(S) < MAX_STR Then S := S + '#';
+        Inc(LexColNo); Inc(LexColNo);
+      End
+      Else
+        Break;  { debut d une expression #expr# }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind   := TK_TEXT;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+{ ---- LexNextToken : produire le prochain token -------------- }
+Procedure LexNextToken;
+Var
+  Ch, Ch2 : Char;
+Begin
+  CurToken.Kind     := TK_EOF;
+  CurToken.Val      := '';
+  CurToken.IntVal   := 0;
+  CurToken.FloatVal := 0.0;
+
+  While Not LexEOF Do
+  Begin
+    { Avancer a la ligne suivante si fin de ligne }
+    If LexColNo > Length(LexLine) Then
+    Begin
+      LexNextLine;
+      If LexEOF Then Break;
+      Continue;
+    End;
+
+    Ch := LexLine[LexColNo];
+
+    { === Mode expression : dans un tag, cfscript ou #expr# === }
+    If InTag Or InCfScript Or InHashExpr Then
+    Begin
+      { Sauter les espaces }
+      If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Then
+      Begin
+        Inc(LexColNo);
+        Continue;
+      End;
+
+      { Commentaire CFML <!--- ... ---> }
+      If (Ch = '<') And (LexColNo + 4 <= Length(LexLine)) And
+         (LexLine[LexColNo+1] = '!') And (LexLine[LexColNo+2] = '-') And
+         (LexLine[LexColNo+3] = '-') And (LexLine[LexColNo+4] = '-') Then
+      Begin
+        LexSkipCFComment;
+        Continue;
+      End;
+
+      { Commentaires cfscript : // et /* ... */ }
+      If InCfScript Then
+      Begin
+        If (Ch = '/') And (LexColNo < Length(LexLine)) And
+           (LexLine[LexColNo+1] = '/') Then
+        Begin
+          LexSkipLineComment;
+          Continue;
+        End;
+        If (Ch = '/') And (LexColNo < Length(LexLine)) And
+           (LexLine[LexColNo+1] = '*') Then
+        Begin
+          LexSkipBlockComment;
+          Continue;
+        End;
+      End;
+
+      { Noter la position du token }
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+
+      { Fermeture # pour sortir de l interpolation #expr# }
+      If InHashExpr And (Ch = '#') Then
+      Begin
+        CurToken.Kind := TK_PUNCT;
+        CurToken.Val  := '#';
+        Inc(LexColNo);
+        InHashExpr := False;
+        Exit;
+      End;
+
+      { Fermeture de balise : /> (self-close) }
+      If InTag And (Not InHashExpr) And (Ch = '/') And
+         (LexColNo < Length(LexLine)) And
+         (LexLine[LexColNo+1] = '>') Then
+      Begin
+        CurToken.Kind := TK_TAG_SELFCLOSE;
+        CurToken.Val  := '/>';
+        Inc(LexColNo); Inc(LexColNo);
+        InTag := False;
+        Exit;
+      End;
+
+      { Fermeture de balise : > }
+      If InTag And (Not InHashExpr) And (Ch = '>') Then
+      Begin
+        CurToken.Kind := TK_PUNCT;
+        CurToken.Val  := '>';
+        Inc(LexColNo);
+        InTag := False;
+        Exit;
+      End;
+
+      { Detecter </cfscript> dans le mode cfscript }
+      If InCfScript And (Ch = '<') And
+         (LexColNo + 10 <= Length(LexLine)) Then
+      Begin
+        If StrLowerCase(Copy(LexLine, LexColNo, 11)) = '</cfscript>' Then
+        Begin
+          CurToken.Kind := TK_TAG_CLOSE;
+          CurToken.Val  := 'cfscript';
+          Inc(LexColNo, 11);
+          InCfScript := False;
+          Exit;
+        End;
+      End;
+
+      { Identifiant ou mot-cle }
+      If IsIdentStart(Ch) Then
+      Begin
+        LexScanIdent;
+        Exit;
+      End;
+
+      { Nombre }
+      If (Ch >= '0') And (Ch <= '9') Then
+      Begin
+        LexScanNumber;
+        Exit;
+      End;
+
+      { Chaine double-quote }
+      If Ch = '"' Then
+      Begin
+        LexScanString('"');
+        Exit;
+      End;
+
+      { Chaine simple-quote }
+      If Ch = '''' Then
+      Begin
+        LexScanString('''');
+        Exit;
+      End;
+
+      { Hash # pour interpolation dans les attributs }
+      If (Ch = '#') And InTag And (Not InHashExpr) Then
+      Begin
+        CurToken.Kind := TK_PUNCT;
+        CurToken.Val  := '#';
+        Inc(LexColNo);
+        InHashExpr := True;
+        Exit;
+      End;
+
+      { Operateurs multi-caracteres }
+      Ch2 := #0;
+      If LexColNo < Length(LexLine) Then
+        Ch2 := LexLine[LexColNo + 1];
+
+      Case Ch Of
+        '=': Begin
+               If Ch2 = '=' Then
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '==';
+                 Inc(LexColNo, 2);
+               End
+               Else
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '=';
+                 Inc(LexColNo);
+               End;
+               Exit;
+             End;
+        '!': Begin
+               If Ch2 = '=' Then
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '!=';
+                 Inc(LexColNo, 2);
+               End
+               Else
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '!';
+                 Inc(LexColNo);
+               End;
+               Exit;
+             End;
+        '<': Begin
+               If Ch2 = '=' Then
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '<=';
+                 Inc(LexColNo, 2);
+               End
+               Else
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '<';
+                 Inc(LexColNo);
+               End;
+               Exit;
+             End;
+        '>': Begin
+               If Ch2 = '=' Then
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '>=';
+                 Inc(LexColNo, 2);
+               End
+               Else
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '>';
+                 Inc(LexColNo);
+               End;
+               Exit;
+             End;
+        '&': Begin
+               If Ch2 = '&' Then
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '&&';
+                 Inc(LexColNo, 2);
+               End
+               Else
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '&';
+                 Inc(LexColNo);
+               End;
+               Exit;
+             End;
+        '|': Begin
+               If Ch2 = '|' Then
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '||';
+                 Inc(LexColNo, 2);
+               End
+               Else
+               Begin
+                 CurToken.Kind := TK_OP; CurToken.Val := '|';
+                 Inc(LexColNo);
+               End;
+               Exit;
+             End;
+        '+','-','*','%','\': Begin
+               CurToken.Kind := TK_OP; CurToken.Val := Ch;
+               Inc(LexColNo);
+               Exit;
+             End;
+        '/': Begin
+               CurToken.Kind := TK_OP; CurToken.Val := '/';
+               Inc(LexColNo);
+               Exit;
+             End;
+        '?',':': Begin
+               CurToken.Kind := TK_OP; CurToken.Val := Ch;
+               Inc(LexColNo);
+               Exit;
+             End;
+        '.': Begin
+               CurToken.Kind := TK_OP; CurToken.Val := '.';
+               Inc(LexColNo);
+               Exit;
+             End;
+      End; { Case }
+
+      { Ponctuation }
+      If (Ch = '(') Or (Ch = ')') Or (Ch = '[') Or (Ch = ']') Or
+         (Ch = ',') Or (Ch = ';') Or (Ch = '{') Or (Ch = '}') Or
+         (Ch = '#') Then
+      Begin
+        CurToken.Kind := TK_PUNCT;
+        CurToken.Val  := Ch;
+        Inc(LexColNo);
+        Exit;
+      End;
+
+      { Caractere inconnu : avancer }
+      CompileError('caractere inattendu: ' + Ch);
+      Inc(LexColNo);
+    End
+
+    { === Mode texte : hors balise et hors cfscript === }
+    Else
+    Begin
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+
+      { Commentaire CFML <!--- ... ---> }
+      If (Ch = '<') And (LexColNo + 4 <= Length(LexLine)) And
+         (LexLine[LexColNo+1] = '!') And (LexLine[LexColNo+2] = '-') And
+         (LexLine[LexColNo+3] = '-') And (LexLine[LexColNo+4] = '-') Then
+      Begin
+        LexSkipCFComment;
+        Continue;
+      End;
+
+      { Balise ColdFusion ouvrante : <cf... }
+      If (Ch = '<') And (LexColNo + 2 <= Length(LexLine)) And
+         ((LexLine[LexColNo+1] = 'c') Or (LexLine[LexColNo+1] = 'C')) And
+         ((LexLine[LexColNo+2] = 'f') Or (LexLine[LexColNo+2] = 'F')) Then
+      Begin
+        LexScanTag;
+        Exit;
+      End;
+
+      { Balise fermante : </cf... }
+      If (Ch = '<') And (LexColNo + 3 <= Length(LexLine)) And
+         (LexLine[LexColNo+1] = '/') And
+         ((LexLine[LexColNo+2] = 'c') Or (LexLine[LexColNo+2] = 'C')) And
+         ((LexLine[LexColNo+3] = 'f') Or (LexLine[LexColNo+3] = 'F')) Then
+      Begin
+        LexScanTag;
+        Exit;
+      End;
+
+      { Hash # : debut d interpolation #expression# }
+      If Ch = '#' Then
+      Begin
+        { ## est un echappement -> traiter comme texte }
+        If (LexColNo < Length(LexLine)) And
+           (LexLine[LexColNo+1] = '#') Then
+        Begin
+          LexScanText;
+          If CurToken.Val <> '' Then Exit;
+          Continue;
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_PUNCT;
+          CurToken.Val  := '#';
+          Inc(LexColNo);
+          InHashExpr := True;
+          Exit;
+        End;
+      End;
+
+      { Texte brut entre balises }
+      LexScanText;
+      If CurToken.Val <> '' Then Exit;
+    End;
+  End;
+
+  { Fin de fichier }
   CurToken.Kind := TK_EOF;
   CurToken.Val  := '';
+  CurToken.Line := LexLineNo;
+  CurToken.Col  := LexColNo;
 End;
+
+{ ---- ParserAdvance : lire le prochain token et debug ------- }
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+  PrintToken(CurToken);
+End;
+
+{ ============================================================
+  STUBS POUR COMPILATION (implementes dans les TODOs suivants)
+  ============================================================ }
 
 Procedure TypeInit;
 Begin
