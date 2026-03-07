@@ -134,7 +134,7 @@
             EmitDataSeg : .DATA SEGMENT ... avec variables et litteraux
             Mode -asm : ecrire le fichier .ASM lisible avec commentaires
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/DK_ARRAY/
               DK_REC), IntVal, StrVal, ElemCount, ElemSize, RecSize
             DataTab[0..MAX_DATA-1], DataCount
@@ -880,6 +880,7 @@ Function  DataAddArray(Const Lbl : TString;
                 ECount, ESz : Integer) : Integer; Forward;
 Function  DataAddRec(Const Lbl : TString;
                 RSz : Integer) : Integer; Forward;
+Function  DataAddHtml(Const Html : TString) : TString; Forward;
 Procedure EmitRaw(Const S : String); Forward;
 Procedure EmitDataSeg; Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
@@ -3615,6 +3616,34 @@ Begin
     R := TypeCoerce(SrcType, DstType);
     If R = R Then; { eviter note variable non utilisee }
   End;
+End;
+
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+{ La majorite des fonctions de ce TODO est implementee dans les
+  sections TODO 03 (DataAdd, DataAddStr, DataAddDWord, DataAddByte,
+  DataAddArray, DataAddRec, LabelGen, EmitRaw, EmitDataSeg, LitEval,
+  ParseConstDecl) et TODO 07 (EmitDataSeg ameliore avec les
+  tampons runtime Win32, HSTDOUT, WRITTEN).
+  Ci-dessous : DataAddHtml pour les fragments HTML.               }
+
+{ ---- DataAddHtml : ajouter un fragment HTML dans DataTab ---- }
+{ Cree une entree DK_STR avec le prefixe _PSPK_HTML_N.           }
+{ Retourne le label genere.                                       }
+Function DataAddHtml(Const Html : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  If Length(Html) = 0 Then
+  Begin
+    DataAddHtml := '';
+    Exit;
+  End;
+  Inc(LabelGenSeq);
+  Lbl := PSP_HTML_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, Html);
+  DataAddHtml := Lbl;
 End;
 
 { ============================================================
