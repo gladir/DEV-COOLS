@@ -3402,12 +3402,8 @@ Begin
   While (CurToken.Kind <> TK_EOF) And
         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
   Begin
-    { Argument nomme : ident = expr  (on ignore le nom ici) }
-    If (CurToken.Kind = TK_IDENT) Then
-    Begin
-      { Regarder si c est un argument nomme (ident = val) }
-      { On ne peut pas lookahead facilement, on traite comme expr }
-    End;
+    { Note : les arguments nommes (param="val") sont traites comme }
+    { des expressions par ParseExpr (ident = val sera evalue).     }
     ParseExpr(ArgVal);
     ExprFlushToAX(ArgVal);
     EmitInstr('PUSH', 'AX');
@@ -3475,16 +3471,9 @@ Begin
       LitEval(CurToken, Res);
       ParserAdvance;
     End
-    { NOT / operateur logique unaire }
-    Else If (U = 'NOT') Then
-    Begin
-      ParserAdvance;  { consommer NOT }
-      ParsePrimary(SubExpr);
-      ExprEmitUnary('NOT', SubExpr);
-      Res := SubExpr;
-    End
     Else
     Begin
+      { Mot-cle non litteral (NOT est gere par ParseUnary) }
       ExprMakeNone(Res);
       ParserAdvance;
     End;
@@ -3575,14 +3564,8 @@ Begin
           Break;
         End;
       End;
-      { Rechercher d abord comme scope.variable, puis comme struct }
+      { Rechercher comme nom complet (scope.variable) }
       SIdx := SymFind(Name);
-      If SIdx < 0 Then
-      Begin
-        { Essayer en extrayant le scope }
-        InnerStr := Name;
-        SIdx := SymFind(InnerStr);
-      End;
       If SIdx >= 0 Then
       Begin
         VarLoad(SIdx);
@@ -3673,33 +3656,7 @@ Begin
       ParserAdvance;
   End
 
-  { ---- Operateur unaire - --------------------------------- }
-  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
-  Begin
-    ParserAdvance;
-    ParsePrimary(SubExpr);
-    ExprEmitUnary('-', SubExpr);
-    Res := SubExpr;
-  End
-
-  { ---- Operateur unaire + (identite) ---------------------- }
-  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
-  Begin
-    ParserAdvance;
-    ParsePrimary(SubExpr);
-    Res := SubExpr;
-  End
-
-  { ---- Operateur unaire ! (NOT) --------------------------- }
-  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then
-  Begin
-    ParserAdvance;
-    ParsePrimary(SubExpr);
-    ExprEmitUnary('!', SubExpr);
-    Res := SubExpr;
-  End
-
-  { ---- Token non reconnu ---------------------------------- }
+  { ---- Token non reconnu (unaires geres par ParseUnary) --- }
   Else
   Begin
     ExprMakeNone(Res);
