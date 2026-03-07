@@ -6477,7 +6477,7 @@ Begin
           EmitInstrAB('SHL', 'ECX', '2')
         Else If ElemSz = 2 Then
           EmitInstrAB('SHL', 'ECX', '1')
-        Else If (ElemSz <> 1) And (ElemSz > 4) Then
+        Else If ElemSz > 4 Then
         Begin
           EmitInstrA('PUSH', 'EAX');
           EmitInstrAB('MOV', 'EAX', 'ECX');
@@ -6498,6 +6498,8 @@ Begin
 
         If ElemSz = 1 Then
           EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else If ElemSz = 2 Then
+          EmitInstrAB('MOV', 'WORD PTR [EBX]', 'AX')
         Else
           EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
 
