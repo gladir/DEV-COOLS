@@ -148,7 +148,7 @@
             Instruction LENGTH : definir la longueur d une variable caractere
             Instruction LABEL : associer un libelle descriptif a une variable
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, identificateur
             Acces variable : recherche dans PDV -> MOV AX, [_SAS_PDV + offset]
             Appel de fonction : nom(args) -> CALL _SASP_nom
@@ -784,6 +784,10 @@ Procedure ParseKeep; Forward;
 Procedure ParseRename; Forward;
 Procedure ParseLength; Forward;
 Procedure ParseLabelStmt; Forward;
+(* TODO 10 - Forward declarations expressions primaires *)
+Function  IsBuiltinFunc(Const Name : TString) : Boolean; Forward;
+Procedure ParseFuncCall(Const FName : TString; Var Res : TExprVal); Forward;
+Procedure ParseInOp(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2168,10 +2172,14 @@ End;
 (* ---- ParsePrimary : atome du parseur Pratt ------------------- *)
 (* Gere : litteraux (entiers, reels, chaines), . (valeur manquante) *)
 (* identificateurs (variables), groupement parenthese (expr),      *)
-(* appels de fonction (stub pour TODO 16).                         *)
+(* fonctions internes (ABS, SUBSTR, etc.), acces tableau,          *)
+(* variables automatiques (_N_, _ERROR_), macro-variables.         *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
-  T : TToken;
+  T      : TToken;
+  SIdx   : Integer;
+  FName  : TString;
+  ArrIdx : TExprVal;
 Begin
   ExprMakeNone(Res);
 
@@ -2184,7 +2192,7 @@ Begin
       LitEval(T, Res);
     End;
 
-    (* . (valeur manquante) *)
+    (* . (valeur manquante) ou ( groupement *)
     TK_PUNCT :
     Begin
       If CurToken.Val = '.' Then
@@ -2209,36 +2217,92 @@ Begin
       End;
     End;
 
-    (* Identificateur : variable ou appel de fonction *)
+    (* Identificateur : variable, fonction interne, ou appel externe *)
     TK_IDENT, TK_KEYWORD :
     Begin
-      (* Pour l instant, stub : les variables seront gerees au TODO 05/09 *)
-      (* On consomme l identificateur et on retourne une valeur stub *)
       T := CurToken;
+      FName := StrUpperCase(T.Val);
       ParserAdvance;
+
       (* Verifier si c est un appel de fonction (suivi de parenthese) *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
-        (* Stub appel de fonction : sera gere au TODO 16 *)
-        WarnMsg('appel de fonction ' + T.Val + '() : stub (TODO 16)');
-        ParserAdvance;  (* consommer ( *)
-        (* Lire et ignorer les arguments jusqu a ) *)
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          ParserAdvance;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-          ParserAdvance;
-        ExprMakeImm(0, TY_IDX_NUMERIC, Res);
-        Res.Kind := EK_AX;
+        (* Fonction interne reconnue ? *)
+        If IsBuiltinFunc(FName) Then
+          ParseFuncCall(FName, Res)
+        Else
+        Begin
+          (* Appel de fonction externe : stub pour TODO 16 *)
+          WarnMsg('appel de fonction ' + FName + '() : stub (TODO 16)');
+          ParserAdvance;  (* consommer ( *)
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            ParserAdvance;
+          ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+          Res.Kind := EK_AX;
+        End;
+      End
+      (* Acces tableau avec accolades : array{indice} *)
+      Else If (CurToken.Kind = TK_PUNCT) And (Ord(CurToken.Val[1]) = 123) Then
+      Begin
+        ParserAdvance;  (* consommer { *)
+        SIdx := SymFind(FName);
+        If SIdx < 0 Then
+        Begin
+          WarnMsg('tableau "' + FName + '" non declare');
+          SIdx := VarAlloc(FName, TY_IDX_NUMERIC, 0);
+        End;
+        (* Parser l indice *)
+        ParseExprPrec(1, ArrIdx);
+        (* Consommer } *)
+        If (CurToken.Kind = TK_PUNCT) And (Ord(CurToken.Val[1]) = 125) Then
+          ParserAdvance
+        Else
+          CompileError('"}" manquant apres indice de tableau');
+        (* Generer le code d acces : base + indice * taille element *)
+        ExprFlushToAX(ArrIdx);
+        EmitComment('acces tableau ' + FName + '{i}');
+        If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+        Begin
+          (* Caractere : element = VarLen octets *)
+          EmitInstrAB('MOV', 'BX', IntToStr(SymTab[SIdx].VarLen));
+          EmitInstrA('IMUL', 'BX');
+        End
+        Else
+        Begin
+          (* Numerique : element = 2 octets *)
+          EmitInstrAB('SHL', 'AX', '1');
+        End;
+        EmitInstrAB('ADD', 'AX',
+                     IntToStr(SymTab[SIdx].Offset));
+        EmitInstrAB('MOV', 'BX', 'AX');
+        If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+          EmitInstrAB('LEA', 'AX', '[_SAS_PDV + BX]')
+        Else
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + BX]');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := SymTab[SIdx].TypeIdx;
+        Res.ImmVal  := 0;
+        Res.Offset  := SymTab[SIdx].Offset;
+        Res.SymIdx  := SIdx;
       End
       Else
       Begin
-        (* Variable simple : stub pour l instant *)
-        Res.Kind    := EK_MEM;
-        Res.ImmVal  := 0;
-        Res.TypeIdx := TY_IDX_NUMERIC;
-        Res.Offset  := 0;
-        Res.SymIdx  := -1;
+        (* Variable simple : rechercher dans SymTab *)
+        SIdx := SymFind(FName);
+        If SIdx >= 0 Then
+          VarLoad(SIdx, Res)
+        Else
+        Begin
+          (* Variable non declaree : allocation automatique (numerique) *)
+          SIdx := VarAlloc(FName, TY_IDX_NUMERIC, 0);
+          If SIdx >= 0 Then
+            VarLoad(SIdx, Res)
+          Else
+            ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+        End;
       End;
     End;
 
@@ -3493,7 +3557,422 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 10..25 (a implementer)
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- IsBuiltinFunc : teste si un nom est une fonction interne SAS *)
+(* Noms en majuscules. Fonctions numeriques et caracteres.           *)
+Function IsBuiltinFunc(Const Name : TString) : Boolean;
+Begin
+  IsBuiltinFunc :=
+    (* Fonctions numeriques *)
+    (Name = 'ABS')    Or (Name = 'INT')    Or (Name = 'ROUND')  Or
+    (Name = 'CEIL')   Or (Name = 'FLOOR')  Or (Name = 'MOD')    Or
+    (Name = 'SQRT')   Or (Name = 'LOG')    Or (Name = 'EXP')    Or
+    (Name = 'MIN')    Or (Name = 'MAX')    Or (Name = 'SIGN')   Or
+    (Name = 'SUM')    Or
+    (* Fonctions caracteres *)
+    (Name = 'SUBSTR') Or (Name = 'TRIM')   Or (Name = 'LEFT')   Or
+    (Name = 'RIGHT')  Or (Name = 'UPCASE') Or (Name = 'LOWCASE') Or
+    (Name = 'INDEX')  Or (Name = 'LENGTH') Or
+    (Name = 'COMPRESS') Or (Name = 'CAT')  Or (Name = 'CATS')   Or
+    (Name = 'CATX')   Or (Name = 'PUT')    Or (Name = 'INPUT');
+End;
+
+(* ---- ParseFuncCall : parser et emettre un appel de fonction ------ *)
+(* Prereq : le nom est deja consomme, CurToken = '('                 *)
+(* Gere les fonctions internes avec emission de code ASM direct      *)
+(* ou appel runtime SAS86.                                           *)
+Procedure ParseFuncCall(Const FName : TString; Var Res : TExprVal);
+Var
+  Arg1, Arg2, Arg3 : TExprVal;
+  LblPos, LblEnd   : TString;
+  NArgs             : Integer;
+Begin
+  ParserAdvance;  (* consommer ( *)
+  EmitComment(FName + '()');
+
+  (* ========= Fonctions a 1 argument numerique ========= *)
+  If (FName = 'ABS') Or (FName = 'INT') Or (FName = 'ROUND') Or
+     (FName = 'CEIL') Or (FName = 'FLOOR') Or (FName = 'SIGN') Or
+     (FName = 'SQRT') Or (FName = 'LOG') Or (FName = 'EXP') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+
+    If FName = 'ABS' Then
+    Begin
+      (* ABS(x) : si AX < 0, NEG AX *)
+      LblPos := LabelGen;
+      EmitInstrAB('TEST', 'AX', 'AX');
+      EmitInstrA('JNS', LblPos);
+      EmitInstrA('NEG', 'AX');
+      EmitLabel(LblPos);
+    End
+    Else If (FName = 'INT') Or (FName = 'FLOOR') Then
+    Begin
+      (* INT/FLOOR(x) : pour des entiers 16 bits, c est l identite *)
+      (* (pas d operation supplementaire necessaire) *)
+    End
+    Else If FName = 'ROUND' Then
+    Begin
+      (* ROUND(x) : pour des entiers 16 bits, identite *)
+      (* (arrondi applicable seulement aux reels, stub) *)
+    End
+    Else If FName = 'CEIL' Then
+    Begin
+      (* CEIL(x) : pour des entiers 16 bits, identite *)
+    End
+    Else If FName = 'SIGN' Then
+    Begin
+      (* SIGN(x) : -1 si <0, 0 si =0, 1 si >0 *)
+      LblPos := LabelGen;
+      LblEnd := LabelGen;
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JG', LblPos);
+      EmitInstrA('JL', LblEnd);
+      (* AX=0 : deja 0 *)
+      EmitInstrA('JMP', LblEnd);
+      EmitLabel(LblPos);
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitInstrA('JMP', LblEnd);
+      (* Cas negatif : on y arrive naturellement *)
+      EmitLabel(LblEnd);
+      (* Correction pour le cas negatif *)
+      LblPos := LabelGen;
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JGE', LblPos);
+      EmitInstrAB('MOV', 'AX', '-1');
+      EmitLabel(LblPos);
+    End
+    Else If FName = 'SQRT' Then
+    Begin
+      WarnMsg('SQRT() : approximation entiere (stub)');
+      EmitInstrA('CALL', SAS_RT_PFX + 'SQRT');
+    End
+    Else If FName = 'LOG' Then
+    Begin
+      WarnMsg('LOG() : approximation entiere (stub)');
+      EmitInstrA('CALL', SAS_RT_PFX + 'LOG');
+    End
+    Else If FName = 'EXP' Then
+    Begin
+      WarnMsg('EXP() : approximation entiere (stub)');
+      EmitInstrA('CALL', SAS_RT_PFX + 'EXP');
+    End;
+
+    (* Consommer la virgule si argument optionnel de ROUND *)
+    If (FName = 'ROUND') And
+       (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, Arg2);
+      (* ignorer le 2e argument pour ROUND entier *)
+    End;
+
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= MOD(a, b) : modulo ========================= *)
+  Else If FName = 'MOD' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstr('CWD');
+    EmitInstrA('IDIV', 'BX');
+    EmitInstrAB('MOV', 'AX', 'DX');  (* reste dans DX *)
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= MIN(a, b) / MAX(a, b) ====================== *)
+  Else If (FName = 'MIN') Or (FName = 'MAX') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    If FName = 'MIN' Then
+      EmitInstrA('CALL', SAS_RT_PFX + 'MIN')
+    Else
+      EmitInstrA('CALL', SAS_RT_PFX + 'MAX');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= SUM(a, b, ...) : somme variable ============= *)
+  Else If FName = 'SUM' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    NArgs := 1;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      EmitInstrA('PUSH', 'AX');
+      ParseExprPrec(1, Arg2);
+      ExprFlushToAX(Arg2);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+      EmitInstrAB('ADD', 'AX', 'BX');
+      Inc(NArgs);
+    End;
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= LENGTH(str) : longueur de chaine ============= *)
+  Else If FName = 'LENGTH' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    (* AX = pointeur vers chaine, appel runtime *)
+    EmitInstrA('CALL', SAS_RT_PFX + 'STRLEN');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= INDEX(str, substr) : position ================ *)
+  Else If FName = 'INDEX' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrAB('MOV', 'DI', 'AX');
+    EmitInstrA('POP', 'SI');
+    EmitInstrA('CALL', SAS_RT_PFX + 'INDEX');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_NUMERIC;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= SUBSTR(str, pos [,len]) ===================== *)
+  Else If FName = 'SUBSTR' Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('PUSH', 'AX');  (* chaine source *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+    ParseExprPrec(1, Arg2);
+    ExprFlushToAX(Arg2);
+    EmitInstrA('PUSH', 'AX');  (* position *)
+    (* Optionnel : longueur *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      ParseExprPrec(1, Arg3);
+      ExprFlushToAX(Arg3);
+    End
+    Else
+      EmitInstrAB('MOV', 'AX', '-1');  (* -1 = jusqu a la fin *)
+    EmitInstrAB('MOV', 'CX', 'AX');   (* longueur *)
+    EmitInstrA('POP', 'BX');           (* position *)
+    EmitInstrA('POP', 'SI');           (* source *)
+    EmitInstrA('CALL', SAS_RT_PFX + 'SUBSTR');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= Fonctions chaine a 1 argument ================ *)
+  (* TRIM, LEFT, RIGHT, UPCASE, LOWCASE, COMPRESS            *)
+  Else If (FName = 'TRIM') Or (FName = 'LEFT') Or
+          (FName = 'RIGHT') Or (FName = 'UPCASE') Or
+          (FName = 'LOWCASE') Or (FName = 'COMPRESS') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    EmitInstrA('CALL', SAS_RT_PFX + FName);
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= CAT/CATS/CATX : concatenation ================ *)
+  Else If (FName = 'CAT') Or (FName = 'CATS') Or
+          (FName = 'CATX') Then
+  Begin
+    If FName = 'CATX' Then
+    Begin
+      (* Premier argument = separateur *)
+      ParseExprPrec(1, Arg1);
+      ExprFlushToAX(Arg1);
+      EmitInstrA('PUSH', 'AX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        ParserAdvance;
+    End;
+    (* Lire tous les arguments restants *)
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      ParserAdvance;
+      EmitInstrA('PUSH', 'AX');
+      ParseExprPrec(1, Arg2);
+      ExprFlushToAX(Arg2);
+      EmitInstrAB('MOV', 'DI', 'AX');
+      EmitInstrA('POP', 'SI');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCAT');
+    End;
+    If FName = 'CATX' Then
+      EmitInstrA('POP', 'BX');  (* recuperer separateur *)
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_CHARACTER;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= PUT/INPUT : conversion type ================== *)
+  Else If (FName = 'PUT') Or (FName = 'INPUT') Then
+  Begin
+    ParseExprPrec(1, Arg1);
+    ExprFlushToAX(Arg1);
+    (* Consommer le format optionnel apres la virgule *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      ParserAdvance;
+      (* Consommer le format *)
+      If (CurToken.Kind = TK_FORMAT) Or (CurToken.Kind = TK_IDENT) Then
+        ParserAdvance;
+    End;
+    If FName = 'PUT' Then
+    Begin
+      EmitInstrA('CALL', SAS_RT_PFX + 'NUM2STR');
+      Res.TypeIdx := TY_IDX_CHARACTER;
+    End
+    Else
+    Begin
+      EmitInstrA('CALL', SAS_RT_PFX + 'STR2NUM');
+      Res.TypeIdx := TY_IDX_NUMERIC;
+    End;
+    Res.Kind    := EK_AX;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+
+  (* ========= Fallback : fonction inconnue ================= *)
+  Else
+  Begin
+    WarnMsg('fonction interne ' + FName + '() non implementee');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    Res.Kind := EK_AX;
+  End;
+
+  (* Consommer ) final *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance
+  Else
+    CompileError(''')'' manquant apres ' + FName + '()');
+End;
+
+(* ---- ParseInOp : operateur IN (expr IN (val1, val2, ...)) ---- *)
+(* Genere une serie de CMP + JE pour tester l appartenance.       *)
+(* AX contient la valeur a tester. Resultat : 1 si trouve, 0 sinon*)
+Procedure ParseInOp(Var Res : TExprVal);
+Var
+  Item    : TExprVal;
+  LblTrue : TString;
+  LblEnd  : TString;
+Begin
+  LblTrue := LabelGen;
+  LblEnd  := LabelGen;
+
+  EmitComment('IN ()');
+  ExprFlushToAX(Res);
+  EmitInstrA('PUSH', 'AX');  (* sauvegarder la valeur a tester *)
+
+  (* Consommer ( *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendu apres IN');
+    Exit;
+  End;
+
+  (* Parser chaque element de la liste *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    ParseExprPrec(1, Item);
+    ExprFlushToAX(Item);
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrAB('MOV', 'AX', '[SP]');  (* relire la valeur testee *)
+    EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JE', LblTrue);
+
+    (* Consommer la virgule optionnelle *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance;
+  End;
+
+  (* Consommer ) *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  (* Pas trouve *)
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('XOR', 'AX', 'AX');  (* resultat = 0 *)
+  EmitInstrA('JMP', LblEnd);
+  (* Trouve *)
+  EmitLabel(LblTrue);
+  EmitInstrA('POP', 'AX');
+  EmitInstrAB('MOV', 'AX', '1');   (* resultat = 1 *)
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NUMERIC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 11..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
