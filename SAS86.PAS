@@ -494,6 +494,12 @@ Const
   STACK_SIZE    = 1024;
   MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
 
+  (* Caracteres speciaux (accolades = delimiteurs d indices tableau) *)
+  (* En Turbo Pascal, { et } sont des delimiteurs de commentaire,   *)
+  (* on utilise donc les codes ASCII.                                *)
+  CH_LBRACE = Chr(123);  (* '{' *)
+  CH_RBRACE = Chr(125);  (* '}' *)
+
   (* Prefixes de nommage ASM *)
   SAS_VAR_PFX  = '_SASV_';   (* variable dans le PDV              *)
   SAS_PROC_PFX = '_SASP_';   (* procedure / etape                 *)
@@ -2245,7 +2251,7 @@ Begin
         End;
       End
       (* Acces tableau avec accolades : array{indice} *)
-      Else If (CurToken.Kind = TK_PUNCT) And (Ord(CurToken.Val[1]) = 123) Then
+      Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_LBRACE) Then
       Begin
         ParserAdvance;  (* consommer { *)
         SIdx := SymFind(FName);
@@ -2257,7 +2263,7 @@ Begin
         (* Parser l indice *)
         ParseExprPrec(1, ArrIdx);
         (* Consommer } *)
-        If (CurToken.Kind = TK_PUNCT) And (Ord(CurToken.Val[1]) = 125) Then
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val[1] = CH_RBRACE) Then
           ParserAdvance
         Else
           CompileError('"}" manquant apres indice de tableau');
@@ -3630,20 +3636,14 @@ Begin
       LblEnd := LabelGen;
       EmitInstrAB('CMP', 'AX', '0');
       EmitInstrA('JG', LblPos);
-      EmitInstrA('JL', LblEnd);
-      (* AX=0 : deja 0 *)
+      EmitInstrA('JGE', LblEnd);   (* AX=0 : deja 0, sauter a fin *)
+      (* AX < 0 *)
+      EmitInstrAB('MOV', 'AX', '-1');
       EmitInstrA('JMP', LblEnd);
+      (* AX > 0 *)
       EmitLabel(LblPos);
       EmitInstrAB('MOV', 'AX', '1');
-      EmitInstrA('JMP', LblEnd);
-      (* Cas negatif : on y arrive naturellement *)
       EmitLabel(LblEnd);
-      (* Correction pour le cas negatif *)
-      LblPos := LabelGen;
-      EmitInstrAB('CMP', 'AX', '0');
-      EmitInstrA('JGE', LblPos);
-      EmitInstrAB('MOV', 'AX', '-1');
-      EmitLabel(LblPos);
     End
     Else If FName = 'SQRT' Then
     Begin
