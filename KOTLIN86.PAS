@@ -142,7 +142,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_OBJ),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -844,6 +844,9 @@ Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
 Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataAddArray(Const Lbl : TString; ACount : Integer) : Integer; Forward;
+Function  DataAddObj(Const Lbl : TString; ASize : Integer) : Integer; Forward;
+Procedure DataInit;      Forward;
 Procedure EmitRuntime;   Forward;
 Procedure EmitHeader;    Forward;
 { TODO 09 - Variables }
@@ -3022,18 +3025,20 @@ Begin
   EmitBlankLine;
   EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
   EmitBlankLine;
-  { Donnees predefinies Kotlin }
-  EmitRaw('_KT_CRLF    DB 13, 10, 0');
-  EmitRaw('_KT_STRBUF  DB 256 DUP(0)');
-  EmitBlankLine;
-  { Donnees utilisateur (DataTab) }
+  { Emettre toutes les donnees depuis DataTab (predefinies + utilisateur) }
   For I := 0 To DataCount - 1 Do
   Begin
     Case DataTab[I].Kind Of
       DK_WORD :
         EmitRaw(DataTab[I].LblName + '  DW ' + IntToStr(DataTab[I].IntVal));
       DK_BYTE :
-        EmitRaw(DataTab[I].LblName + '  DB ' + IntToStr(DataTab[I].IntVal));
+        Begin
+          If DataTab[I].ElemCount > 0 Then
+            EmitRaw(DataTab[I].LblName + '  DB ' +
+                    IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+          Else
+            EmitRaw(DataTab[I].LblName + '  DB ' + IntToStr(DataTab[I].IntVal));
+        End;
       DK_STR :
         Begin
           S := DataTab[I].StrVal;
@@ -3080,7 +3085,13 @@ Begin
                   IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
         End;
       DK_OBJ_BLK :
-        EmitRaw(DataTab[I].LblName + '  DW 0   ; object slot');
+        Begin
+          If DataTab[I].ElemCount > 0 Then
+            EmitRaw(DataTab[I].LblName + '  DB ' +
+                    IntToStr(DataTab[I].ElemCount) + ' DUP(0)   ; object block')
+          Else
+            EmitRaw(DataTab[I].LblName + '  DW 0   ; object slot');
+        End;
     Else
       EmitRaw(DataTab[I].LblName + '  DW 0');
     End;
@@ -3437,7 +3448,7 @@ Begin
   AddType('Lambda',   TYK_LAMBDA,   2);  { TY_IDX_LAMBDA   = 14 }
 End;
 
-{ --- TODO 08 : Donnees ------------------------------------- }
+{ --- TODO 08 : Donnees [IMPLEMENTE] ------------------------- }
 Function DataAdd(Const Lbl : TString; Kind : TDataKind;
                  AIntVal : LongInt; Const AStrVal : TString) : Integer;
 Begin
@@ -3476,6 +3487,42 @@ End;
 Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
 Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+(* ---- DataAddArray : ajouter un bloc DK_ARRAY_BLK ----------- *)
+Function DataAddArray(Const Lbl : TString; ACount : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := ACount;
+  DataAddArray := Idx;
+End;
+
+(* ---- DataAddObj : ajouter un bloc DK_OBJ_BLK --------------- *)
+Function DataAddObj(Const Lbl : TString; ASize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_OBJ_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := ASize;
+  DataAddObj := Idx;
+End;
+
+(* ---- DataInit : pre-remplir le segment DATA ----------------- *)
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  { Chaines predefinies Kotlin }
+  DataAdd('_KT_CRLF',      DK_STR, 0, #13#10);
+  DataAdd('_KT_NULL_STR',  DK_STR, 0, '');
+  DataAdd('_KT_TRUE_S',    DK_STR, 0, 'true');
+  DataAdd('_KT_FALSE_S',   DK_STR, 0, 'false');
+  { Tampon de travail }
+  DataAdd('_KT_STRBUF',    DK_BYTE, 0, '');
+  DataTab[DataCount - 1].ElemCount := 256;
 End;
 
 { --- TODO 09 : Variables ----------------------------------- }
@@ -3526,6 +3573,7 @@ Begin
 
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   EmitHeader;
   LexInit;
