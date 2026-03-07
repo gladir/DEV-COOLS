@@ -93,7 +93,7 @@
               even?, odd?, apply, map, filter, reduce, atom, deref,
               reset!, swap!, compare-and-set!
 
-  TODO 06 - SYSTEME DE TYPES INTERNES (TAGS)
+  TODO 06 - SYSTEME DE TYPES INTERNES (TAGS) [IMPLEMENTE]
             Tags de valeurs Clojure (3 bits hauts d un Word) :
               TAG_NIL (0), TAG_TRUE (1), TAG_FALSE (2),
               TAG_INT (3), TAG_SYM (4), TAG_KW (5),
@@ -101,11 +101,17 @@
               TAG_SET (9), TAG_STR (10), TAG_FN (11), TAG_ATOM (12)
             Encodage compact : tag sur 4 bits + payload sur 12 bits
               ou tag dans un champ separe pour les objets heap
-            TypeTab, TypeInit : enregistrer les types internes
-            TypeCheck : verification dynamique de type a l execution
-            type : forme retournant le tag d une valeur -> AX
-            instance? : test de type -> AX=0|1
-            Truthiness : nil et false sont faux, tout le reste est vrai
+            TypeTab, TypeInit : enregistrer les 12 types primitifs
+            TypeKindOf : retourner le TTypeKind d un indice de type
+            TypeSizeof : taille en octets (2 en 16-bit pour tous)
+            TypeMangle : prefixe ASM selon le tag (_CLI_/_CLS_/_CLB_ etc.)
+            TypeIsNumeric : int et char sont numeriques
+            TypeIsPtr : string/list/vector/map/set/function
+            TypeIsTruthy : nil et false faux, tout le reste vrai
+            TypeCanCoerce : coercitions dynamiques Clojure
+            TypeCoerceResult : type resultat d une operation
+            TypeInfer : deduction de type depuis TExprVal
+            TypeLookupName : recherche par nom dans TypeTab
 
   TODO 07 - EMETTEUR DE CODE ASM
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
@@ -690,6 +696,16 @@ Function  IsSpecialForm(Const Name : TString) : Boolean; Forward;
 (* TODO 06 *)
 Procedure TypeInit;      Forward;
 Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsTruthy(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 (* TODO 07 *)
 Function  LabelGen : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
@@ -2270,19 +2286,358 @@ Begin
 End;
 
 (* ============================================================
-   STUBS POUR TODOs 06-25  (a implementer)
+   TODO 06 - SYSTEME DE TYPES INTERNES (TAGS) [IMPLEMENTE]
    ============================================================ *)
 
-Procedure TypeInit;
+(* TypeKindOf : retourner le TTypeKind associe a un indice de type *)
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
 Begin
-  (* TODO 06 - stub : initialiser les types primitifs *)
-  TypeCount := 0;
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TKC_UNKNOWN;
 End;
 
+(* TypeSizeof : taille en octets d un type                        *)
+(* En 16 bits, toutes les valeurs Clojure tiennent dans un word   *)
+(* (AX = entier, pointeur near, ou tag+payload)                   *)
 Function TypeSizeof(TypeIdx : Integer) : Integer;
 Begin
-  (* TODO 06 - stub *)
-  TypeSizeof := 2;
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+(* TypeMangle : prefixe ASM selon le tag/type pour les labels data *)
+(* Permet de differencier les blocs dans le segment DATA           *)
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TKC_NIL      : TypeMangle := '_CLN_';
+    TKC_INT      : TypeMangle := '_CLI_';
+    TKC_STRING   : TypeMangle := '_CLS_';
+    TKC_BOOLEAN  : TypeMangle := '_CLB_';
+    TKC_KEYWORD  : TypeMangle := '_CLKW_';
+    TKC_SYMBOL   : TypeMangle := '_CLSY_';
+    TKC_LIST     : TypeMangle := '_CLL_';
+    TKC_VECTOR   : TypeMangle := '_CLVD_';
+    TKC_MAP      : TypeMangle := '_CLMD_';
+    TKC_SET      : TypeMangle := '_CLSD_';
+    TKC_FUNCTION : TypeMangle := '_CLF_';
+    TKC_CHAR     : TypeMangle := '_CLCH_';
+  Else
+    TypeMangle := '_CLX_';  (* inconnu *)
+  End;
+End;
+
+(* TypeIsNumeric : vrai si le type est comparable a un nombre     *)
+(* En Clojure, seuls int et char sont numeriques                   *)
+(* (boolean n est PAS numerique, contrairement a d autres langages) *)
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric := (K = TKC_INT) Or (K = TKC_CHAR);
+End;
+
+(* TypeIsPtr : vrai si le type est un pointeur near vers le heap  *)
+(* string, list, vector, map, set, function sont des pointeurs    *)
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TKC_STRING)   Or (K = TKC_LIST)     Or
+    (K = TKC_VECTOR)   Or (K = TKC_MAP)      Or
+    (K = TKC_SET)      Or (K = TKC_FUNCTION);
+End;
+
+(* TypeIsTruthy : semantique de verite Clojure                     *)
+(* nil et false sont faux (falsy) ; tout le reste est vrai (truthy) *)
+Function TypeIsTruthy(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsTruthy := (K <> TKC_NIL) And (K <> TKC_BOOLEAN);
+  (* Note : pour TKC_BOOLEAN, la verite depend de la valeur (0|1), *)
+  (* pas du type seul. On retourne False pour indiquer qu il faut  *)
+  (* verifier la valeur a l execution.                             *)
+End;
+
+(* TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx ?          *)
+(* Clojure est dynamiquement type -> la plupart des coercitions    *)
+(* sont possibles a l execution via le runtime                     *)
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Begin
+  (* meme type -> toujours OK *)
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* tout -> UNKNOWN est OK (perd l info de type) *)
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* nil -> tout type : nil est une valeur valide partout *)
+  If SrcIdx = TY_IDX_NIL Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* int <-> char : meme representation 16 bits *)
+  If ((SrcIdx = TY_IDX_INT)  And (DstIdx = TY_IDX_CHAR)) Or
+     ((SrcIdx = TY_IDX_CHAR) And (DstIdx = TY_IDX_INT)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* int/char -> bool : toute valeur non nulle = true *)
+  If (DstIdx = TY_IDX_BOOL) And TypeIsNumeric(SrcIdx) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* bool -> int : false=0, true=1 *)
+  If (DstIdx = TY_IDX_INT) And (SrcIdx = TY_IDX_BOOL) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* int/char/bool/keyword -> string : via str runtime *)
+  If (DstIdx = TY_IDX_STR) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* En Clojure, la coercition dynamique est le defaut *)
+  TypeCanCoerce := True;
+End;
+
+(* TypeCoerceResult : deduire le type de resultat d une op binaire *)
+(* basee sur les types des operandes et l operateur                *)
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+
+  (* Operateurs de comparaison -> toujours booleen *)
+  If (Op = '=')   Or (Op = 'not=') Or (Op = '==') Or
+     (Op = '<')   Or (Op = '>')    Or
+     (Op = '<=')  Or (Op = '>=')   Or
+     (Op = 'identical?') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  (* Operateurs logiques -> booleen *)
+  If (Op = 'and') Or (Op = 'or') Or (Op = 'not') Then
+  Begin
+    (* en Clojure, and/or retournent la derniere valeur evaluee *)
+    (* mais pour la verification de type, on simplifie en bool  *)
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  (* Predicats -> booleen *)
+  If (Op = 'nil?')  Or (Op = 'zero?') Or (Op = 'pos?')   Or
+     (Op = 'neg?')  Or (Op = 'even?') Or (Op = 'odd?')   Or
+     (Op = 'empty?') Or (Op = 'instance?') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  (* Operateurs arithmetiques : si les deux sont numeriques -> int *)
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = 'mod') Or (Op = 'rem') Then
+  Begin
+    If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+    Begin
+      TypeCoerceResult := TY_IDX_INT;
+      Exit;
+    End;
+    (* str : + avec une chaine -> concatenation en Clojure via (str ..) *)
+    If (Op = '+') And ((LK = TKC_STRING) Or (RK = TKC_STRING)) Then
+    Begin
+      TypeCoerceResult := TY_IDX_STR;
+      Exit;
+    End;
+    TypeCoerceResult := TY_UNKNOWN;
+    Exit;
+  End;
+
+  (* inc/dec -> int *)
+  If (Op = 'inc') Or (Op = 'dec') Then
+  Begin
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  (* Collections constructors *)
+  If (Op = 'cons')  Or (Op = 'list') Or (Op = 'rest') Or
+     (Op = 'seq')   Or (Op = 'map')  Or (Op = 'filter') Or
+     (Op = 'reduce') Then
+  Begin
+    TypeCoerceResult := TY_IDX_LIST;
+    Exit;
+  End;
+
+  If (Op = 'vector') Or (Op = 'conj') Then
+  Begin
+    TypeCoerceResult := TY_IDX_VEC;
+    Exit;
+  End;
+
+  If (Op = 'hash-map') Or (Op = 'assoc') Or (Op = 'dissoc') Then
+  Begin
+    TypeCoerceResult := TY_IDX_MAP;
+    Exit;
+  End;
+
+  If (Op = 'hash-set') Then
+  Begin
+    TypeCoerceResult := TY_IDX_SET;
+    Exit;
+  End;
+
+  (* str -> string *)
+  If Op = 'str' Then
+  Begin
+    TypeCoerceResult := TY_IDX_STR;
+    Exit;
+  End;
+
+  (* first/nth/get -> type inconnu (depend du contenu) *)
+  If (Op = 'first') Or (Op = 'nth') Or (Op = 'get') Then
+  Begin
+    TypeCoerceResult := TY_UNKNOWN;
+    Exit;
+  End;
+
+  (* count -> int *)
+  If Op = 'count' Then
+  Begin
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  (* Par defaut : type du cote droit *)
+  TypeCoerceResult := RightIdx;
+End;
+
+(* TypeInfer : deduire le type d une expression a partir de TExprVal *)
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_INT
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+(* TypeLookupName : chercher un type par nom dans TypeTab           *)
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+(* TypeInit : enregistrer les 12 types primitifs Clojure           *)
+(* Chaque type a un tag (0..11) correspondant a TY_IDX_*           *)
+(* En 8086 16 bits, toutes les valeurs occupent 2 octets (Word)    *)
+(* sauf nil (0) et bool (1 octet logique, stocke dans AX=2 octets) *)
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TKC_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+
+  (* TY_IDX_NIL = 0 : nil *)
+  TypeTab[TY_IDX_NIL].Name := 'nil';
+  TypeTab[TY_IDX_NIL].Kind := TKC_NIL;
+  TypeTab[TY_IDX_NIL].Size := 2;
+
+  (* TY_IDX_INT = 1 : entier 16 bits signe *)
+  TypeTab[TY_IDX_INT].Name := 'int';
+  TypeTab[TY_IDX_INT].Kind := TKC_INT;
+  TypeTab[TY_IDX_INT].Size := 2;
+
+  (* TY_IDX_STR = 2 : pointeur chaine *)
+  TypeTab[TY_IDX_STR].Name := 'string';
+  TypeTab[TY_IDX_STR].Kind := TKC_STRING;
+  TypeTab[TY_IDX_STR].Size := 2;
+
+  (* TY_IDX_BOOL = 3 : booleen 0/1 *)
+  TypeTab[TY_IDX_BOOL].Name := 'boolean';
+  TypeTab[TY_IDX_BOOL].Kind := TKC_BOOLEAN;
+  TypeTab[TY_IDX_BOOL].Size := 2;
+
+  (* TY_IDX_KW = 4 : keyword *)
+  TypeTab[TY_IDX_KW].Name := 'keyword';
+  TypeTab[TY_IDX_KW].Kind := TKC_KEYWORD;
+  TypeTab[TY_IDX_KW].Size := 2;
+
+  (* TY_IDX_SYM = 5 : symbole *)
+  TypeTab[TY_IDX_SYM].Name := 'symbol';
+  TypeTab[TY_IDX_SYM].Kind := TKC_SYMBOL;
+  TypeTab[TY_IDX_SYM].Size := 2;
+
+  (* TY_IDX_LIST = 6 : liste (cons cells) *)
+  TypeTab[TY_IDX_LIST].Name := 'list';
+  TypeTab[TY_IDX_LIST].Kind := TKC_LIST;
+  TypeTab[TY_IDX_LIST].Size := 2;
+
+  (* TY_IDX_VEC = 7 : vecteur *)
+  TypeTab[TY_IDX_VEC].Name := 'vector';
+  TypeTab[TY_IDX_VEC].Kind := TKC_VECTOR;
+  TypeTab[TY_IDX_VEC].Size := 2;
+
+  (* TY_IDX_MAP = 8 : hash-map *)
+  TypeTab[TY_IDX_MAP].Name := 'map';
+  TypeTab[TY_IDX_MAP].Kind := TKC_MAP;
+  TypeTab[TY_IDX_MAP].Size := 2;
+
+  (* TY_IDX_SET = 9 : hash-set *)
+  TypeTab[TY_IDX_SET].Name := 'set';
+  TypeTab[TY_IDX_SET].Kind := TKC_SET;
+  TypeTab[TY_IDX_SET].Size := 2;
+
+  (* TY_IDX_FN = 10 : fonction / closure *)
+  TypeTab[TY_IDX_FN].Name := 'function';
+  TypeTab[TY_IDX_FN].Kind := TKC_FUNCTION;
+  TypeTab[TY_IDX_FN].Size := 2;
+
+  (* TY_IDX_CHAR = 11 : caractere *)
+  TypeTab[TY_IDX_CHAR].Name := 'char';
+  TypeTab[TY_IDX_CHAR].Kind := TKC_CHAR;
+  TypeTab[TY_IDX_CHAR].Size := 2;
+
+  TypeCount := TY_PRIM_COUNT;
 End;
 
 Function LabelGen : TString;
