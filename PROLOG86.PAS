@@ -96,7 +96,7 @@
             Stack (environnements) : _PL_STACK DW 1024 DUP(0), _PL_STOP DW 0
             Trail (historique des liaisons) : _PL_TRAIL DW 512 DUP(0), _PL_TTOP DW 0
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -759,6 +759,21 @@ Procedure TrailPush(Addr : Integer); Forward;
 Function  TrailTop : Integer; Forward;
 Procedure TrailReset; Forward;
 Procedure TermInit; Forward;
+{ Emetteur de code ASM (TODO 07) }
+Procedure EmitOpen; Forward;
+Procedure EmitClose; Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
+Procedure EmitHeader; Forward;
+Procedure EmitDataSeg; Forward;
+Procedure EmitRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3379,7 +3394,240 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (07..25)
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitOpen : ouvrir le fichier de sortie ASM --------------- }
+{ Assigne le fichier OutF a Opts.OutFile et l ouvre en ecriture.  }
+{ En cas d echec (IOResult <> 0), arrete avec FatalError.         }
+Procedure EmitOpen;
+Begin
+  {$I-}
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le fichier ASM ---- }
+Procedure EmitRaw(Const S : TString);
+Begin
+  WriteLn(OutF, S);
+End;
+
+{ ---- EmitBlankLine : ecrire une ligne vide -------------------- }
+Procedure EmitBlankLine;
+Begin
+  WriteLn(OutF);
+End;
+
+{ ---- EmitComment : ecrire un commentaire ASM (; texte) ------- }
+Procedure EmitComment(Const S : TString);
+Begin
+  WriteLn(OutF, '; ', S);
+End;
+
+{ ---- EmitLabel : ecrire un label en colonne 0 (label:) ------- }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  WriteLn(OutF, Lbl, ':');
+End;
+
+{ ---- EmitInstr : instruction sans operande (8 espaces indent) - }
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem);
+End;
+
+{ ---- EmitInstrA : instruction avec un operande --------------- }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+{ ---- EmitInstrAB : instruction avec deux operandes ----------- }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+{ ---- EmitProlog : prologue de predicat/procedure ------------- }
+{ PUSH BP / MOV BP,SP pour creer un frame de pile.               }
+Procedure EmitProlog;
+Begin
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+End;
+
+{ ---- EmitEpilog : epilogue de predicat/procedure ------------- }
+{ MOV SP,BP / POP BP / RET pour restaurer et retourner.          }
+Procedure EmitEpilog;
+Begin
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('RET');
+End;
+
+{ ---- EmitHeader : en-tete du fichier ASM --------------------- }
+{ Emet le commentaire d identification, les directives .MODEL     }
+{ SMALL, .STACK 2048, et ouvre le segment _TEXT.                  }
+{ Le point d entree est _PLP_Main (label du predicat principal).  }
+Procedure EmitHeader;
+Begin
+  EmitComment('Genere par PROLOG86 v' + PL86_VERSION + ' - ' +
+              Opts.SrcFile);
+  EmitComment('Date: ' + PL86_DATE);
+  EmitBlankLine;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK 2048');
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+  EmitComment('--- Point d entree ---');
+  EmitLabel('_PLP_Main');
+  { Initialiser DS pour le segment DATA }
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+End;
+
+{ ---- EmitDataSeg : emettre le segment de donnees ------------- }
+{ Ecrit _DATA SEGMENT ... _DATA ENDS avec :                      }
+{   - _PL_CRLF DB 13,10,0 (retour chariot+saut de ligne)        }
+{   - Toutes les entrees du DataTab (DK_WORD, DK_BYTE, DK_STR,  }
+{     DK_ATOM_TBL)                                               }
+{   - Les zones WAM statiques (heap, stack, trail)               }
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlankLine;
+
+  { Constante CRLF pour les ecritures }
+  EmitRaw('_PL_CRLF    DB  13,10,0');
+  EmitBlankLine;
+
+  { Buffer de travail pour les conversions }
+  EmitRaw('_PL_STRBUF  DB  256 DUP(0)');
+  EmitBlankLine;
+
+  { Entrees dynamiques du DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          { Echapper les apostrophes pour MASM : ' -> ''          }
+          { Caracteres de controle : emis en valeurs numeriques DB }
+          { Le terminateur null est ajoute apres tous les octets. }
+          S := '';
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If (Ord(DataTab[I].StrVal[J]) < 32) Or
+               (Ord(DataTab[I].StrVal[J]) > 126) Then
+            Begin
+              { Vider le texte accumule avant le caractere de controle }
+              If Length(S) > 0 Then
+              Begin
+                EmitRaw(DataTab[I].LblName + '  DB  ''' + S + '''');
+                S := '';
+              End;
+              EmitRaw('        DB  ' +
+                      IntToStr(Ord(DataTab[I].StrVal[J])));
+            End
+            Else If DataTab[I].StrVal[J] = '''' Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          { Emettre le reste du texte + terminateur null }
+          If Length(S) > 0 Then
+            EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0')
+          Else
+            EmitRaw('        DB  0');
+        End;
+      DK_ATOM_TBL :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].ElemCount) +
+                '   ; table (' + IntToStr(DataTab[I].ElemCount) +
+                ' entrees)');
+    End; { Case }
+  End;
+
+  EmitBlankLine;
+
+  { Zones WAM statiques (seront remplies par TODO 08) }
+  EmitComment('--- Zones memoire WAM ---');
+  EmitRaw('_PL_HEAP    DW  ' + IntToStr(HEAP_SIZE) + ' DUP(0)');
+  EmitRaw('_PL_HTOP    DW  0');
+  EmitRaw('_PL_STACK   DW  ' + IntToStr(STACK_SIZE) + ' DUP(0)');
+  EmitRaw('_PL_STOP    DW  0');
+  EmitRaw('_PL_TRAIL   DW  ' + IntToStr(TRAIL_SIZE) + ' DUP(0)');
+  EmitRaw('_PL_TTOP    DW  0');
+
+  EmitBlankLine;
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ ---- EmitRuntime : emettre les routines runtime --------------- }
+{ Stub : sera complete par TODO 24 (runtime WAM minimal).        }
+Procedure EmitRuntime;
+Begin
+  { Stub pour TODO 24 - runtime WAM minimal }
+End;
+
+{ ---- EmitClose : fermer le fichier de sortie ASM -------------- }
+{ Emettre la fin du segment _TEXT, le runtime, le segment DATA,   }
+{ la directive END, et fermer le fichier.                         }
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Fin du code genere ---');
+  EmitBlankLine;
+
+  { Sortie DOS : MOV AX,4C00h / INT 21h }
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstrA('INT', '21h');
+
+  EmitBlankLine;
+
+  { Emettre les routines runtime (TODO 24) }
+  EmitRuntime;
+
+  { Fermer le segment _TEXT }
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  EmitBlankLine;
+
+  { Directive de fin : point d entree _PLP_Main }
+  EmitRaw('        END    _PLP_Main');
+
+  { Fermer le fichier }
+  If OutFOpen Then
+  Begin
+    {$I-}
+    Close(OutF);
+    {$I+}
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (08..25)
   ============================================================ }
 
 Procedure Run;
