@@ -41,7 +41,7 @@
             Directives preprocesseur : detecter # en debut de ligne
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 ou -32768..32767 (16 bits)
             Entiers hexadecimaux : 0xFF, 0x1A
             Entiers octaux : 077
@@ -616,6 +616,8 @@ Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 (* TODO 05 - Operateurs *)
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
@@ -1823,10 +1825,10 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 03..25
-  (a implementer dans les prochaines etapes)
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
   ============================================================ *)
 
+(* ---- ExprMakeImm : construire une valeur immediate --------- *)
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal);
 Begin
@@ -1837,6 +1839,7 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ---- ExprMakeNone : expression sans valeur (void) ---------- *)
 Procedure ExprMakeNone(Var Res : TExprVal);
 Begin
   Res.Kind    := EK_NONE;
@@ -1846,19 +1849,172 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ---- ExprMakeBool : valeur booleenne (0 ou 1) -------------- *)
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
 Begin
   Res.Kind    := EK_IMM;
-  Res.ImmVal  := AVal;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
   Res.TypeIdx := TY_IDX_BOOL;
   Res.Offset  := 0;
   Res.SymIdx  := -1;
 End;
 
+(* ---- LitEvalInt : convertir un token TK_INTEGER en valeur -- *)
+(* IntVal est deja calcule par LexScanNumber.                   *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+(* ---- LitEvalFloat : convertir un token TK_FLOAT (trunc) --- *)
+(* C++ traite les flottants ; en 16 bits on tronque a l entier. *)
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := Trunc(T.FloatVal);
+  If IV > 32767 Then IV := 32767;
+  If IV < -32768 Then IV := -32768;
+  ExprMakeImm(IV, TY_IDX_INT, Res);
+End;
+
+(* ---- LitEval : dispatcher principal pour les litteraux ----- *)
+(* Types de tokens acceptes : TK_INTEGER, TK_FLOAT, TK_CHAR,   *)
+(* TK_STRING, TK_KEYWORD (true/false/nullptr/NULL).             *)
 Procedure LitEval(Const T : TToken; Var Res : TExprVal);
 Begin
-  ExprMakeNone(Res); (* stub *)
+  ExprMakeNone(Res);
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+    TK_FLOAT :
+      LitEvalFloat(T, Res);
+    TK_CHAR :
+      ExprMakeImm(T.IntVal, TY_IDX_CHAR, Res);
+    TK_STRING :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_PTR;
+      Res.Offset  := DataCount;  (* index courant avant ajout *)
+      DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'true' Then
+        ExprMakeBool(1, Res)
+      Else If T.Val = 'false' Then
+        ExprMakeBool(0, Res)
+      Else If (T.Val = 'nullptr') Or (T.Val = 'NULL') Then
+        ExprMakeImm(0, TY_IDX_PTR, Res)
+      Else
+        ExprMakeNone(Res);
+    End;
+    TK_IDENT :
+    Begin
+      If T.Val = 'NULL' Then
+        ExprMakeImm(0, TY_IDX_PTR, Res)
+      Else
+        ExprMakeNone(Res);
+    End;
+  Else
+    ExprMakeNone(Res);
+  End;
 End;
+
+(* ---- DataAdd : ajouter une entree dans le segment DATA ----- *)
+(* Retourne l index dans DataTab ou -1 si plein.                *)
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+(* ---- DataAddStr : creer un label _CC_K_N et stocker chaine - *)
+(* Retourne le label genere.                                     *)
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := CC_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+(* ---- DataAddWord : ajouter un mot 16 bits dans DATA -------- *)
+(* Retourne l index dans DataTab.                                *)
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+(* ---- EmitDataSeg : ecrire _DATA SEGMENT complet ------------ *)
+(* Constantes C++ predefinies + DataTab (DK_WORD/DK_BYTE/DK_STR) *)
+Procedure EmitDataSeg;
+Var
+  I : Integer;
+  S : TString;
+  J : Integer;
+  Quote : Char;
+Begin
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  (* Constantes C++ predefinies *)
+  EmitRaw('_CC_TRUE_S   DB  ''true'',0');
+  EmitRaw('_CC_FALSE_S  DB  ''false'',0');
+  EmitRaw('_CC_NULL_S   DB  ''(null)'',0');
+  (* Buffer de travail pour concatenation de chaines *)
+  EmitRaw('_CC_STRBUF   DB  256 DUP(0)');
+  (* Entrees dynamiques de DataTab *)
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        (* Doubler les apostrophes pour MASM *)
+        S := '';
+        Quote := '''';
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          If DataTab[I].StrVal[J] = Quote Then
+            S := S + ''''''
+          Else
+            S := S + DataTab[I].StrVal[J];
+        End;
+        EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+      End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].ElemCount) +
+                '   ; tableau (' + IntToStr(DataTab[I].ElemCount) + ' elem)');
+    End;
+  End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+(* ============================================================
+  STUBS POUR TODO 04..25
+  (a implementer dans les prochaines etapes)
+  ============================================================ *)
 
 Function BinOpPrec(Const Op : TString) : Integer;
 Begin
@@ -2047,17 +2203,15 @@ Procedure EmitClose;
 Begin
   If OutFOpen Then
   Begin
-    EmitDataSeg;
+    EmitBlankLine;
     EmitRaw('_TEXT ENDS');
+    EmitBlankLine;
+    EmitDataSeg;
+    EmitBlankLine;
     EmitRaw('END _main');
     Close(OutF);
     OutFOpen := False;
   End;
-End;
-
-Procedure EmitDataSeg;
-Begin
-  (* stub *)
 End;
 
 Procedure EmitHeader;
@@ -2072,22 +2226,6 @@ Begin
   EmitRaw('_TEXT SEGMENT WORD PUBLIC ''CODE''');
   EmitRaw('ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
   EmitBlankLine;
-End;
-
-Function DataAdd(Const Lbl : TString; Kind : TDataKind;
-                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
-Begin
-  DataAdd := -1; (* stub *)
-End;
-
-Function DataAddStr(Const S : TString) : TString;
-Begin
-  DataAddStr := ''; (* stub *)
-End;
-
-Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
-Begin
-  DataAddWord := -1; (* stub *)
 End;
 
 Procedure EmitRuntime;
