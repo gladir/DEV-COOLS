@@ -88,7 +88,7 @@
             Upvalues : variables capturees par les closures englobantes
             Labels goto : enregistrement dans la table pour saut avant/arriere
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_NIL, TYK_BOOLEAN, TYK_NUMBER (entier 16 bits),
               TYK_STRING (ptr chaine terminee par 0), TYK_TABLE (ptr),
               TYK_FUNCTION (ptr code), TYK_USERDATA (stub ptr),
@@ -750,6 +750,19 @@ Function  SymAdd(Const Name : TString; Kind : TSymKind;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymInit; Forward;
+{ Systeme de types (TODO 06) }
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsTruthy(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
+Procedure TypeInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1037,6 +1050,7 @@ Begin
   CurToken.FloatVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  TypeInit;  { TODO 06 : initialiser table des types primitifs Lua }
   SymInit;  { TODO 05 : initialiser table des symboles + builtins Lua }
 End;
 
@@ -2864,7 +2878,309 @@ Begin
   Idx := SymAdd('arg',            SK_GLOBAL,   TY_IDX_TABLE,    0);
 End;
 
-{ ---- Run : pipeline de compilation (stub pour TODO 06-25) ---- }
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- TypeKindOf : retourner le TTypeKind associe a un indice ----- }
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+{ ---- TypeSizeof : taille en octets d un type (16 bits = 2) ------- }
+{ En Lua 16-bit : number = 2 octets, tous les pointeurs = 2 octets.  }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;  { defaut : mot 16-bit }
+End;
+
+{ ---- TypeMangle : prefixe ASM selon le type pour les labels ------- }
+{ Utilise pour generer des labels specifiques au type.                 }
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_NIL      : TypeMangle := '_LUAN_';  { nil    }
+    TYK_BOOLEAN  : TypeMangle := '_LUAB_';  { bool   }
+    TYK_NUMBER   : TypeMangle := '_LUAN_';  { number }
+    TYK_STRING   : TypeMangle := '_LUAS_';  { string }
+    TYK_TABLE    : TypeMangle := '_LUAT_';  { table  }
+    TYK_FUNCTION : TypeMangle := '_LUAF_';  { func   }
+    TYK_USERDATA : TypeMangle := '_LUAU_';  { udata  }
+  Else
+    TypeMangle := '_LUAX_'; { inconnu / polymorphe }
+  End;
+End;
+
+{ ---- TypeIsNumeric : vrai si le type est interpretable comme nombre  }
+{ En Lua, seuls number et boolean (false=0, true=1) sont numeriques.   }
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric := (K = TYK_NUMBER) Or (K = TYK_BOOLEAN);
+End;
+
+{ ---- TypeIsPtr : vrai si le type est un pointeur (reference) ------- }
+{ string = ptr vers chaine terminee par 0                               }
+{ table  = ptr vers structure table                                     }
+{ function = ptr vers code                                              }
+{ userdata = ptr opaque                                                 }
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TYK_STRING)   Or (K = TYK_TABLE) Or
+    (K = TYK_FUNCTION) Or (K = TYK_USERDATA);
+End;
+
+{ ---- TypeIsTruthy : semantique de verite Lua ----------------------- }
+{ En Lua, seuls nil et false sont faux (falsy).                         }
+{ Tout le reste est vrai (truthy) : 0, "", table vide = truthy !        }
+Function TypeIsTruthy(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  Case K Of
+    TYK_NIL     : TypeIsTruthy := False;  { nil est toujours faux }
+    TYK_BOOLEAN : TypeIsTruthy := False;  { faux si false, vrai si true -> runtime }
+    TYK_UNKNOWN : TypeIsTruthy := False;  { inconnu -> doit verifier a l execution }
+  Else
+    TypeIsTruthy := True;  { number, string, table, function, userdata = vrai }
+  End;
+End;
+
+{ ---- TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx ? -------- }
+{ Lua a une coercition automatique entre nombres et chaines :            }
+{   - string -> number : tostring peut etre interprete comme nombre     }
+{   - number -> string : tostring() implicite pour concatenation        }
+{ nil/boolean ne sont PAS coercibles vers number en Lua (contrairement  }
+{   a JavaScript).                                                       }
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  { Meme type : toujours OK }
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { anything -> UNKNOWN : on perd l info de type }
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { UNKNOWN -> anything : typage dynamique, on accepte }
+  If SrcIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  { Coercition automatique Lua : string <-> number }
+  If (SK = TYK_STRING) And (DK = TYK_NUMBER) Then
+  Begin
+    TypeCanCoerce := True;  { tonumber implicite }
+    Exit;
+  End;
+  If (SK = TYK_NUMBER) And (DK = TYK_STRING) Then
+  Begin
+    TypeCanCoerce := True;  { tostring implicite }
+    Exit;
+  End;
+  { boolean -> number : false=0, true=1 (pas standard Lua mais utile) }
+  If (SK = TYK_BOOLEAN) And (DK = TYK_NUMBER) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Pas de coercition automatique pour les autres types }
+  TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type de resultat d une operation binaire ---- }
+{ Determine le type resultant selon les types des operandes et           }
+{ l operateur utilise.                                                    }
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+
+  { Operateurs de comparaison : resultat toujours boolean }
+  If (Op = '==') Or (Op = '~=') Or
+     (Op = '<')  Or (Op = '<=') Or
+     (Op = '>')  Or (Op = '>=') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { Operateurs logiques 'and' / 'or' : retournent une des operandes }
+  { En Lua, 'and' retourne le premier faux ou le dernier vrai         }
+  {          'or' retourne le premier vrai ou le dernier faux          }
+  If Op = 'and' Then
+  Begin
+    { Si le gauche peut etre falsy -> type du gauche, sinon type du droit }
+    If (LK = TYK_NIL) Or (LK = TYK_BOOLEAN) Or (LK = TYK_UNKNOWN) Then
+      TypeCoerceResult := TY_UNKNOWN  { dynamique }
+    Else
+      TypeCoerceResult := RightIdx;
+    Exit;
+  End;
+  If Op = 'or' Then
+  Begin
+    If (LK = TYK_NIL) Or (LK = TYK_BOOLEAN) Or (LK = TYK_UNKNOWN) Then
+      TypeCoerceResult := TY_UNKNOWN  { dynamique }
+    Else
+      TypeCoerceResult := LeftIdx;
+    Exit;
+  End;
+
+  { Concatenation '..' : resultat toujours string }
+  If Op = '..' Then
+  Begin
+    TypeCoerceResult := TY_IDX_STRING;
+    Exit;
+  End;
+
+  { Operateurs arithmetiques : + - * / % ^ // }
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '%') Or (Op = '^') Or
+     (Op = '//') Then
+  Begin
+    { Si les deux sont numeriques ou coercibles -> number }
+    If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+    Begin
+      TypeCoerceResult := TY_IDX_NUMBER;
+      Exit;
+    End;
+    { Coercition string->number automatique en Lua }
+    If ((LK = TYK_NUMBER) Or (LK = TYK_STRING)) And
+       ((RK = TYK_NUMBER) Or (RK = TYK_STRING)) Then
+    Begin
+      TypeCoerceResult := TY_IDX_NUMBER;
+      Exit;
+    End;
+    { Sinon : polymorphe }
+    TypeCoerceResult := TY_UNKNOWN;
+    Exit;
+  End;
+
+  { Operateurs bit a bit Lua 5.3+ : & | ~ << >> }
+  If (Op = '&')  Or (Op = '|')  Or (Op = '~') Or
+     (Op = '<<') Or (Op = '>>') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMBER;
+    Exit;
+  End;
+
+  { Assignation et defaut : type du cote droit }
+  TypeCoerceResult := RightIdx;
+End;
+
+{ ---- TypeInfer : inferer le type d une expression ------------------- }
+{ Retourne l indice de type le plus probable pour une TExprVal donnee.   }
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      { Une valeur immediate est un nombre entier }
+      TypeInfer := TY_IDX_NUMBER;
+      Exit;
+    End;
+    EK_AX, EK_MEM :
+    Begin
+      { Si le TypeIdx est deja connu, le retourner }
+      If E.TypeIdx <> TY_UNKNOWN Then
+      Begin
+        TypeInfer := E.TypeIdx;
+        Exit;
+      End;
+    End;
+  End;
+  { Par defaut en Lua : typage dynamique -> UNKNOWN }
+  TypeInfer := TY_UNKNOWN;
+End;
+
+{ ---- TypeLookupName : chercher un type par nom ---------------------- }
+{ Retourne l indice dans TypeTab ou TY_UNKNOWN si introuvable.           }
+{ Lua est sensible a la casse.                                           }
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+{ ---- TypeInit : initialisation de la table des types ---------------- }
+{ Enregistre les 7 types primitifs Lua dans TypeTab.                     }
+Procedure TypeInit;
+Var
+  I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+  { nil : valeur speciale, pas de donnee, taille 0 mais occupe 2 octets (tag) }
+  TypeTab[TY_IDX_NIL].Name      := 'nil';
+  TypeTab[TY_IDX_NIL].Kind      := TYK_NIL;
+  TypeTab[TY_IDX_NIL].Size      := 2;
+  { boolean : true/false, 2 octets (0 ou 1) }
+  TypeTab[TY_IDX_BOOLEAN].Name  := 'boolean';
+  TypeTab[TY_IDX_BOOLEAN].Kind  := TYK_BOOLEAN;
+  TypeTab[TY_IDX_BOOLEAN].Size  := 2;
+  { number : entier 16 bits signe }
+  TypeTab[TY_IDX_NUMBER].Name   := 'number';
+  TypeTab[TY_IDX_NUMBER].Kind   := TYK_NUMBER;
+  TypeTab[TY_IDX_NUMBER].Size   := 2;
+  { string : pointeur vers chaine terminee par 0 }
+  TypeTab[TY_IDX_STRING].Name   := 'string';
+  TypeTab[TY_IDX_STRING].Kind   := TYK_STRING;
+  TypeTab[TY_IDX_STRING].Size   := 2;
+  { table : pointeur vers structure table (array / hash) }
+  TypeTab[TY_IDX_TABLE].Name    := 'table';
+  TypeTab[TY_IDX_TABLE].Kind    := TYK_TABLE;
+  TypeTab[TY_IDX_TABLE].Size    := 2;
+  { function : pointeur vers code }
+  TypeTab[TY_IDX_FUNCTION].Name := 'function';
+  TypeTab[TY_IDX_FUNCTION].Kind := TYK_FUNCTION;
+  TypeTab[TY_IDX_FUNCTION].Size := 2;
+  { userdata : pointeur opaque (stub pour extensions C) }
+  TypeTab[TY_IDX_USERDATA].Name := 'userdata';
+  TypeTab[TY_IDX_USERDATA].Kind := TYK_USERDATA;
+  TypeTab[TY_IDX_USERDATA].Size := 2;
+
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+{ ---- Run : pipeline de compilation (stub pour TODO 07-25) ---- }
 
 Procedure Run;
 Var
