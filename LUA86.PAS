@@ -1811,7 +1811,8 @@ Begin
       Scanning := False;
     End
 
-    { Accolades Chr(123) et Chr(125) }
+    { Accolades : Chr(123)='(' et Chr(125)=')' car les accolades    }
+    { literales interferent avec les commentaires Pascal              }
     Else If Ch = Chr(123) Then
     Begin
       CurToken.Kind := TK_PUNCT;
