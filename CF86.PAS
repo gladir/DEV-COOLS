@@ -111,7 +111,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_STRUCT),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -689,6 +689,8 @@ Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : Integer; Forward;
 Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataAddStruct(Const Lbl : TString; ASize : Integer) : Integer; Forward;
+Procedure DataInit; Forward;
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
@@ -1825,6 +1827,55 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
+{ ---- DataAddStruct : ajouter un bloc structure dans DataTab - }
+(* Cree une entree DK_STRUCT_BLK de taille ASize octets.       *)
+(* Utilisee pour les structures ColdFusion (paires cle/valeur). *)
+Function DataAddStruct(Const Lbl : TString; ASize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_STRUCT_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := ASize;
+  DataAddStruct := Idx;
+End;
+
+{ ============================================================ }
+{  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]      }
+{ ============================================================ }
+
+{ ---- DataInit : pre-populer le segment DATA avec les -------- }
+(* constantes et buffers internes de CF86.                      *)
+(* Contenu :                                                     *)
+(*   _CF_CRLF      DB 13,10,0       (retour chariot)            *)
+(*   _CF_NULL_STR   DB 0              (chaine vide)              *)
+(*   _CF_STRBUF    DB 256 DUP(0)    (buffer chaines temporaire) *)
+(*   _CF_TXTBUF    DB 512 DUP(0)    (buffer texte brut/output)  *)
+(* Ces entrees sont ajoutees en premier dans DataTab pour etre  *)
+(* disponibles durant toute la compilation.                     *)
+Procedure DataInit;
+Var
+  Idx : Integer;
+Begin
+  DataCount := 0;
+
+  { Retour chariot CRLF - caracteres de controle geres par EmitDataSeg }
+  DataAdd('_CF_CRLF', DK_STR, 0, #13#10);
+
+  { Chaine vide (null string) }
+  DataAdd('_CF_NULL_STR', DK_STR, 0, '');
+
+  { Buffer pour concatenation de chaines temporaires }
+  Idx := DataAdd('_CF_STRBUF', DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := 256;
+
+  { Buffer pour contenu texte brut (sortie cfoutput) }
+  Idx := DataAdd('_CF_TXTBUF', DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := 512;
+End;
+
 { ---- ExprMakeImm : construire une valeur immediate --------- }
 (* ATTENTION TP7 : ne pas retourner de Record - utiliser Var   *)
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
@@ -2906,12 +2957,12 @@ Procedure EmitDataSeg;
 Var
   I, J : Integer;
   S    : TString;
+  Ch   : Char;
+  InStr : Boolean;
 Begin
   EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
   EmitBlankLine;
-  (* Constante retour chariot *)
-  EmitComment('Constante CRLF ColdFusion');
-  EmitRaw('_CF_CRLF  DB  13, 10, 0');
+  EmitComment('Donnees statiques CF86');
   EmitBlankLine;
   (* Emettre les entrees DataTab *)
   For I := 0 To DataCount - 1 Do
@@ -2925,16 +2976,42 @@ Begin
                 IntToStr(DataTab[I].IntVal));
       DK_STR :
       Begin
-        (* Doubler les apostrophes pour syntaxe MASM *)
+        (* Gerer les caracteres de controle : emettre en octets *)
+        (* numeriques separes des portions texte.                *)
         S := '';
+        InStr := False;
         For J := 1 To Length(DataTab[I].StrVal) Do
         Begin
-          If DataTab[I].StrVal[J] = '''' Then
-            S := S + ''''''
+          Ch := DataTab[I].StrVal[J];
+          If (Ord(Ch) < 32) Or (Ord(Ch) > 126) Then
+          Begin
+            (* Caractere de controle -> emettre en numerique *)
+            If InStr Then
+            Begin
+              S := S + ''',';
+              InStr := False;
+            End;
+            S := S + IntToStr(Ord(Ch)) + ',';
+          End
           Else
-            S := S + DataTab[I].StrVal[J];
+          Begin
+            (* Caractere imprimable *)
+            If Not InStr Then
+            Begin
+              S := S + '''';
+              InStr := True;
+            End;
+            If Ch = '''' Then
+              S := S + ''''''
+            Else
+              S := S + Ch;
+          End;
         End;
-        EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+        If InStr Then
+          S := S + ''',';
+        (* Ajouter le zero terminal *)
+        S := S + '0';
+        EmitRaw(DataTab[I].LblName + '  DB  ' + S);
       End;
       DK_ARRAY_BLK :
         EmitRaw(DataTab[I].LblName + '  DB  ' +
@@ -3000,6 +3077,7 @@ Begin
 
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   EmitHeader;
   LexInit;
