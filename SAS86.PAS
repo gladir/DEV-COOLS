@@ -1,0 +1,1244 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur SAS (Statistical Analysis System) vers assembleur 8086
+}
+
+(* ============================================================
+  SAS86.PAS - Compilateur SAS vers assembleur 8086
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .MODEL SMALL, DOS 16 bits
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
+            ParseArgs : analyser argv (source.sas [sortie.asm] [-v] [-d] [-w])
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .sas du fichier source
+            Programme principal : validation des arguments et appel Run
+            Version, Date, aide en ligne (option -h)
+
+  TODO 02 - LEXEUR (TOKENS SAS)
+            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
+              TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT, TK_SEMICOLON,
+              TK_AMPERSAND, TK_PERCENT, TK_FORMAT
+            LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
+            LexScanString : chaine entre guillemets simples 'abc'
+              ou guillemets doubles "abc" (resolution des macro-variables &var)
+            Commentaires : * ... ; en debut de ligne
+              /* ... */ commentaires multi-lignes (non imbricables)
+            Mots-cles : DATA RUN SET MERGE BY INPUT PUT INFILE FILE
+              IF THEN ELSE DO END WHILE UNTIL OUTPUT RETURN DELETE
+              RETAIN DROP KEEP RENAME LENGTH FORMAT INFORMAT LABEL
+              ARRAY PROC QUIT TITLE FOOTNOTE OPTIONS WHERE CARDS
+              DATALINES STOP ABORT GOTO LINK SELECT WHEN OTHERWISE
+              ATTRIB CALL
+            Insensibilite a la casse : convertir tout en majuscules
+            Le point-virgule ; est le delimiteur d instruction en SAS
+            Mode debug -d : affichage de chaque token avec PrintToken
+
+  TODO 03 - LITTERAUX ET CONSTANTES
+            Entiers decimaux : 0..65535 (non signe) ou -32768..32767 (signe)
+            Reels : reconnus par le lexeur, traites comme entiers (trunc)
+              Notation scientifique : 1.5E3 -> 1500 (trunc)
+            Chaines simples : 'texte' -> pointeur vers donnees DATA
+            Chaines doubles : "texte avec &macro" -> resolution macro avant stockage
+            Constantes speciales manquantes :
+              . (point) : valeur manquante numerique -> AX=8000h (sentinelle)
+              ' ' (espace) : valeur manquante caractere -> AL=20h
+            Dates litterales : '01JAN2026'd -> nombre de jours depuis 01JAN1960
+              avertissement si hors intervalle 16 bits
+            Heures litterales : '12:30't -> nombre de secondes depuis minuit (trunc)
+            Constantes hexadecimales : '0A'x -> valeur hexadecimale -> AX
+            Constantes nommees : %LET nom = valeur dans macro-langage
+
+  TODO 04 - OPERATEURS ET PRECEDENCE
+            Arithmetiques  : + - * / ** (puissance -> CALL _SASRT_POW)
+            Comparaison    : = ^= (ou NE) < <= > >= (ou EQ NE LT LE GT GE)
+              IN (val1, val2, ...) : appartenance a une liste
+            Logiques       : AND OR NOT (ou & | ^ en notation symbolique)
+              Court-circuit : AND -> JZ, OR -> JNZ
+            Concatenation  : || (concatenation de chaines)
+              !! (synonyme de || dans certains environnements SAS)
+            Unaire         : + - (signe) NOT (negation logique)
+            MIN/MAX        : <> (minimum) >< (maximum) entre deux valeurs
+            Precedence (du plus fort au plus faible) :
+              1. ** (puissance)
+              2. + - (unaire) NOT
+              3. * /
+              4. + - (binaire) || (concatenation)
+              5. < <= = ^= >= > IN
+              6. AND
+              7. OR
+
+  TODO 05 - TABLE DES SYMBOLES
+            TSymKind : SK_VAR, SK_ARRAY, SK_FORMAT, SK_INFORMAT,
+              SK_LABEL, SK_MACRO, SK_MACROVAR, SK_DATASET, SK_PROC
+            TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
+              Scope, Length, IsRetained, IsDropped, IsKept
+            SymAdd, SymFind, SymFindInScope, SymMangle
+            CurScope : compteur de portee (DATA step, PROC step, macro)
+            SymEnterScope / SymLeaveScope : gestion des portees
+            Variables automatiques : _N_ (compteur observation), _ERROR_,
+              _INFILE_, _LAST_ -> creees automatiquement dans chaque DATA step
+            PDV (Program Data Vector) : liste ordonnee des variables actives
+            Regle de retention : variables remises a manquant a chaque iteration
+              sauf si RETAIN est specifie
+
+  TODO 06 - SYSTEME DE TYPES
+            TTypeKind : TYK_NUMERIC (8 octets en SAS, 2 octets ici -> entier 16 bits),
+              TYK_CHARACTER (chaine a longueur fixe, max 200 octets),
+              TYK_DATE (entier jours depuis 01JAN1960),
+              TYK_TIME (entier secondes depuis minuit),
+              TYK_DATETIME (entier secondes depuis 01JAN1960 00:00:00)
+            TypeTab, TypeInit : enregistrer types primitifs
+            TypeSizeof : NUMERIC=2 (entier 16 bits), CHARACTER=longueur declaree
+            LENGTH nom $ longueur : definir la longueur d une variable caractere
+            $ dans INPUT : marque une variable comme caractere (type CHARACTER)
+            Conversion implicite : num -> char via PUT(), char -> num via INPUT()
+            Valeur manquante : . pour numerique, ' ' pour caractere
+
+  TODO 07 - EMETTEUR DE CODE ASM
+            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
+            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
+            EmitComment, EmitBlankLine
+            LabelGen global (compteur unique _SASL_NNNNN)
+            Prefixes : _SASV_ (variable), _SASP_ (procedure/etape),
+              _SASK_ (chaine constante), _SASRT_ (runtime), _SASL_ (label),
+              _SASD_ (dataset), _SASM_ (macro), _SASF_ (format)
+            EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
+            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
+            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_RECORD),
+              IntVal, StrVal, ElemCount
+            DataTab[0..MAX_DATA-1], DataCount
+            DataAdd, DataAddStr, DataAddObs : variantes d ajout
+            Variables globales du DATA step : entrees dans DATA segment
+            Chaines litterales : DB 'abc',0 dans DATA avec label _SASK_N
+            PDV (Program Data Vector) : zone memoire pour une observation
+              _SAS_PDV DB MAX_OBS_SIZE DUP(0)
+            Datasets en memoire : table d observations empilees
+              _SASD_nom DB nb_obs * obs_size DUP(0)
+            Compteurs internes : _SAS_N DW 0 (compteur _N_)
+              _SAS_ERROR DW 0 (indicateur _ERROR_)
+
+  TODO 09 - VARIABLES ET AFFECTATIONS
+            Variables numeriques : 2 octets (entier 16 bits signe)
+              Acces dans le PDV par offset : [_SAS_PDV + offset]
+            Variables caracteres : n octets (longueur fixe, padding espaces)
+              Acces dans le PDV par offset + longueur
+            Affectation : variable = expression ;
+              ExprLoad -> MOV [_SAS_PDV + offset], AX (numerique)
+              ou CALL _SASRT_STRCPY pour caractere
+            Instruction RETAIN : marquer la variable pour ne pas reinitialiser
+              entre les iterations du DATA step
+            Instruction DROP : exclure la variable du dataset de sortie
+            Instruction KEEP : inclure uniquement les variables listees
+            Instruction RENAME : old_name = new_name dans le dataset de sortie
+            Instruction LENGTH : definir la longueur d une variable caractere
+            Instruction LABEL : associer un libelle descriptif a une variable
+
+  TODO 10 - EXPRESSIONS PRIMAIRES
+            ParsePrimary : literal entier, literal chaine, identificateur
+            Acces variable : recherche dans PDV -> MOV AX, [_SAS_PDV + offset]
+            Appel de fonction : nom(args) -> CALL _SASP_nom
+            Variables automatiques : _N_, _ERROR_ -> acces direct labels DATA
+            Constante manquante : . -> MOV AX, 8000h (sentinelle)
+            Parentheses : ( expr ) pour groupement
+            Operateur IN : expr IN (val1, val2, ...) -> serie de CMP + JE
+            Acces tableau : array{indice} -> calcul offset dans PDV
+              (les tableaux SAS utilisent des accolades)
+            Fonctions numeriques internes :
+              ABS, INT, ROUND, CEIL, FLOOR, MOD, SQRT, LOG, EXP
+              (SQRT, LOG, EXP : avertissement + stub entier)
+            Fonctions caracteres internes :
+              SUBSTR, TRIM, LEFT, RIGHT, UPCASE, LOWCASE, INDEX, LENGTH
+
+  TODO 11 - EXPRESSIONS BINAIRES
+            ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
+            Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
+            Puissance : ** -> CALL _SASRT_POW(AX=base, BX=exposant) -> AX
+            Concatenation : || -> CALL _SASRT_CONCAT(SI=gauche, DI=droite) -> AX
+            Comparaison : CMP + Jcc pour =, ^=, <, <=, >, >=
+              Synonymes mnemoniques : EQ NE LT LE GT GE
+            Comparaison de chaines : CALL _SASRT_STRCMP -> drapeaux
+            Logique AND : court-circuit JZ vers false-branch
+            Logique OR : court-circuit JNZ vers true-branch
+            Logique NOT : XOR AX,1
+            Operateurs MIN/MAX : <> (min) et >< (max) entre deux valeurs
+              -> CMP + CMOV (ou JG/JL + MOV)
+            Propagation des valeurs manquantes :
+              Si un operande = 8000h, le resultat = 8000h (manquant)
+
+  TODO 12 - ENTREES/SORTIES (PUT / INPUT / INFILE / FILE)
+            Instruction INPUT : lire des donnees depuis une source
+              INPUT var1 var2 $var3 : lecture en liste (espaces comme separateurs)
+              INPUT var1 1-5 var2 6-10 : lecture en colonnes (positions fixes)
+              INPUT var1 @col var2 @col : pointeur de colonne (@)
+              INPUT var1 : $8. : lecture formatee (informat $8.)
+              Source par defaut : CARDS/DATALINES en ligne dans le programme
+            Instruction INFILE : specifier un fichier externe comme source
+              INFILE 'chemin.dat' : ouvrir avec INT 21h AH=3Dh
+              Options : DLM=',' (delimiteur), FIRSTOBS=2 (sauter lignes)
+            Instruction PUT : ecrire des donnees vers une destination
+              PUT var1 var2 : ecriture en liste -> INT 21h AH=40h (STDOUT)
+              PUT var1 1-5 var2 6-10 : ecriture en colonnes
+              PUT 'texte' : ecriture de texte litteral
+            Instruction FILE : specifier un fichier externe comme destination
+              FILE 'sortie.dat' : ouvrir avec INT 21h AH=3Ch
+              FILE PRINT : destination imprimante (STDOUT avec sauts de page)
+
+  TODO 13 - IF / THEN / ELSE / SELECT
+            ParseIfStmt : IF condition THEN action ;
+              IF condition THEN action ; ELSE action ;
+              Emission TEST AX,AX / JZ pour condition fausse
+              Labels : _SASL_ELSE_N, _SASL_ENDIF_N
+            IF/THEN avec bloc DO : IF cond THEN DO; stmts; END;
+              Permet plusieurs instructions dans la branche
+            ParseSelectStmt : SELECT (expr) ;
+              WHEN (val1, val2) action ;
+              WHEN (val3) DO; stmts; END;
+              OTHERWISE action ;
+              END;
+              Emission : CMP + JE pour chaque valeur WHEN
+              Labels : _SASL_WHEN_N, _SASL_OWHEN_N, _SASL_SELEND_N
+            SELECT sans expression : SELECT ;
+              WHEN (cond1) action ;
+              WHEN (cond2) action ;
+              Chaque WHEN est une condition booleenne independante
+
+  TODO 14 - BOUCLES : DO / DO WHILE / DO UNTIL
+            ParseDoSimple : DO; stmts; END;
+              Bloc d instructions simple (pas de boucle)
+            ParseDoIterative : DO var = debut TO fin [BY pas] ;
+              stmts; END;
+              Variable de boucle, increment automatique
+              BY pas : increment different de 1 (positif ou negatif)
+              Labels : _SASL_DTEST_N, _SASL_DINCR_N, _SASL_DEND_N
+            ParseDoWhile : DO WHILE (condition) ; stmts; END;
+              Test de condition en debut de boucle
+              Labels : _SASL_DWTEST_N, _SASL_DWEND_N
+            ParseDoUntil : DO UNTIL (condition) ; stmts; END;
+              Test de condition en fin de boucle (execute au moins une fois)
+              Labels : _SASL_DUBEG_N, _SASL_DUTEST_N
+            Combinaison : DO var = 1 TO 10 WHILE (cond) ; stmts; END;
+              Boucle iterative avec condition de sortie supplementaire
+            Instructions LEAVE et CONTINUE :
+              LEAVE : sortir de la boucle DO -> JMP _SASL_DEND_N
+              CONTINUE : passer a l iteration suivante -> JMP _SASL_DINCR_N
+            Instruction GOTO label : saut inconditionnel vers une etiquette
+
+  TODO 15 - TABLEAUX SAS (ARRAY)
+            Declaration : ARRAY nom {dim} [$ [longueur]] [elements] ;
+              ARRAY scores {5} score1-score5 ;
+              ARRAY noms {3} $ 20 nom1 nom2 nom3 ;
+            Acces par indice : nom{i} -> calcul offset dans le PDV
+              Indice base 1 par defaut (convention SAS)
+              Acces : [_SAS_PDV + base_offset + (i-1) * elem_size]
+            DIM(array) : nombre d elements -> AX (constante a la compilation)
+            Tableaux multidimensionnels : ARRAY tab {lignes, colonnes} ;
+              Acces : tab{i,j} -> offset = (i-1)*nb_col + (j-1) * elem_size
+            Tableaux temporaires : ARRAY _tmp {5} _TEMPORARY_ ;
+              Variables non ecrites dans le dataset de sortie
+            Listes numerotees : score1-score5 -> 5 variables contiguees
+            Boucle typique : DO i = 1 TO DIM(scores); scores{i} = 0; END;
+
+  TODO 16 - ETAPE DATA (DATA STEP)
+            ParseDataStep : DATA nom_dataset ; stmts; RUN;
+              Cree ou remplace un dataset en memoire
+            Boucle implicite : le DATA step itere automatiquement
+              sur chaque observation de l entree (SET/MERGE/INPUT)
+              Jusqu a fin de fichier ou STOP explicite
+            Instruction SET : lire les observations d un dataset existant
+              SET dataset1 ; -> copie chaque observation dans le PDV
+              SET dataset1 dataset2 ; -> concatenation verticale
+            Instruction OUTPUT : ecrire l observation courante dans le dataset
+              OUTPUT; -> copie le PDV dans le dataset de sortie
+              OUTPUT implicite en fin de DATA step si aucun OUTPUT explicite
+            Instruction DELETE : ne pas ecrire l observation courante
+            Instruction STOP : arreter l execution du DATA step
+            Instruction ABORT : arreter avec code d erreur
+            Reinitialisation du PDV : variables remises a manquant (.)
+              a chaque iteration sauf celles marquees RETAIN
+            Variables automatiques : _N_ incremente a chaque iteration
+              _ERROR_ = 1 si erreur de conversion ou donnees invalides
+
+  TODO 17 - ETAPE PROC (PROC STEP) ET INFRASTRUCTURE
+            ParseProcStep : PROC nom_proc [DATA=dataset] [options] ; stmts; RUN;
+              ou QUIT; pour terminer certaines procedures
+            Options communes :
+              DATA=dataset : specifier le dataset d entree
+              OUT=dataset : specifier le dataset de sortie
+              WHERE=(condition) : filtrer les observations
+              NOPRINT : supprimer l affichage des resultats
+            Instructions communes dans les PROC :
+              VAR variables ; -> specifier les variables a analyser
+              BY variables ; -> traitement par groupe
+              CLASS variables ; -> variables de classification
+              TITLE 'texte' ; -> titre du rapport
+              FOOTNOTE 'texte' ; -> note de bas de page
+            Mecanisme d appel : table de procedures connues
+              Chaque PROC connue a un handler dedie
+            Procedures non reconnues : avertissement + ignorer jusqu a RUN/QUIT
+
+  TODO 18 - PROC PRINT ET PROC MEANS
+            PROC PRINT : affichage tabulaire des observations
+              PROC PRINT DATA=dataset ; RUN;
+              VAR var1 var2 ; -> colonnes a afficher (defaut : toutes)
+              WHERE (condition) ; -> filtrer les observations
+              Emission : boucle sur les observations du dataset
+                En-tete : noms des variables (CALL _SASRT_PRINT)
+                Ligne : valeurs formatees de chaque variable
+                Utilisation INT 21h AH=40h pour ecriture STDOUT
+            PROC MEANS : statistiques descriptives
+              PROC MEANS DATA=dataset [N MEAN STD MIN MAX SUM] ; RUN;
+              VAR var1 var2 ; -> variables a analyser
+              Statistiques calculees (entier 16 bits, approximation) :
+                N     : compteur d observations non manquantes
+                SUM   : somme -> accumulation ADD
+                MEAN  : moyenne -> SUM / N (division entiere)
+                MIN   : minimum -> CMP + JL
+                MAX   : maximum -> CMP + JG
+                STD   : ecart-type -> approximation entiere (stub)
+              Emission : calcul en une passe sur le dataset + affichage
+
+  TODO 19 - PROC FREQ ET PROC SORT
+            PROC FREQ : tableaux de frequences
+              PROC FREQ DATA=dataset ; TABLES var1 var2 ; RUN;
+              TABLES var1 : frequences simples (comptage par valeur)
+              TABLES var1 * var2 : tableau croise (stub, avertissement)
+              Emission : parcourir le dataset, compter les occurrences
+                Table de hachage simple : valeur -> compteur
+                Affichage : valeur, frequence, pourcentage (approx entier)
+            PROC SORT : tri du dataset
+              PROC SORT DATA=dataset [OUT=sortie] ; BY var1 [DESCENDING var2] ; RUN;
+              Algorithme : tri a bulles sur les observations en memoire
+                (simple pour implementation 8086)
+              BY var1 : cle de tri ascendante par defaut
+              DESCENDING var2 : cle de tri descendante
+              Emission : boucle de tri + echanges d observations (REP MOVSW)
+
+  TODO 20 - PROC FORMAT ET FORMATS
+            PROC FORMAT : definir des formats personnalises
+              PROC FORMAT ; VALUE nom_fmt
+                valeur = 'libelle'
+                low - 50 = 'Bas'
+                51 - 100 = 'Haut'
+                OTHER = 'Inconnu' ;
+              RUN;
+            Application des formats : FORMAT var1 nom_fmt. ;
+              Lors du PUT ou PROC PRINT, la valeur est convertie en libelle
+            Formats numeriques predefinis (stubs) :
+              BEST. : affichage entier par defaut
+              COMMA. : separateur de milliers (stub)
+              DOLLAR. : prefixe $ (stub)
+              DATE9. : format date JJmmmAAAA (ex: 01JAN2026)
+            Informats : lecture formatee dans INPUT
+              $CHAR. : lecture caractere brute
+              $. : lecture caractere avec troncature
+              COMMA. : lecture avec separateur de milliers
+
+  TODO 21 - MACRO-LANGAGE SAS
+            Macro-variables : %LET nom = valeur ;
+              Stockage dans une table dediee MacroVarTab
+              Resolution : &nom -> substitution textuelle avant compilation
+              &&nom : double resolution (& -> &nom -> valeur)
+              &nom. : le point delimite la fin du nom de la macro-variable
+            Macros : %MACRO nom(param1, param2) ; stmts; %MEND ;
+              Stockage du corps de la macro dans MacroTab
+              Appel : %nom(arg1, arg2) -> substitution des parametres
+            Fonctions macro : %EVAL(expr), %SYSEVALF(expr),
+              %SUBSTR(chaine, pos, len), %UPCASE(chaine),
+              %LENGTH(chaine), %SCAN(chaine, n, delim),
+              %SYSFUNC(fonction(args))
+            Logique macro : %IF %THEN %ELSE, %DO %END, %DO %WHILE, %DO %UNTIL
+              Evaluee a la pre-compilation (avant le DATA/PROC step)
+            Variables macro automatiques : &SYSDATE (date courante),
+              &SYSTIME (heure courante), &SYSVER (version SAS)
+              -> valeurs constantes codees en dur dans le compilateur
+
+  TODO 22 - FONCTIONS INTEGREES
+            Fonctions numeriques :
+              ABS(x) : valeur absolue -> CALL _SASRT_ABS
+              INT(x) : partie entiere (identite sur entier 16 bits)
+              ROUND(x, unite) : arrondi -> CALL _SASRT_ROUND
+              MOD(x, y) : modulo -> IDIV, resultat dans DX
+              MIN(a, b, ...) : minimum de n valeurs -> boucle CMP
+              MAX(a, b, ...) : maximum de n valeurs -> boucle CMP
+              SUM(a, b, ...) : somme ignorant les manquants
+              SIGN(x) : signe (-1, 0, 1) -> CMP + conditionnel
+              SQRT(x), LOG(x), EXP(x) : avertissement + stub entier
+            Fonctions caracteres :
+              SUBSTR(str, pos, len) : sous-chaine -> CALL _SASRT_SUBSTR
+              TRIM(str) : supprimer espaces de fin -> CALL _SASRT_TRIM
+              LEFT(str) : aligner a gauche -> CALL _SASRT_LEFT
+              RIGHT(str) : aligner a droite -> CALL _SASRT_RIGHT
+              UPCASE(str) : majuscules -> CALL _SASRT_UPCASE
+              LOWCASE(str) : minuscules -> CALL _SASRT_LOWCASE
+              INDEX(str, sub) : position de sous-chaine -> CALL _SASRT_INDEX
+              LENGTH(str) : longueur effective -> CALL _SASRT_STRLEN
+              COMPRESS(str, chars) : supprimer caracteres -> CALL _SASRT_COMPRESS
+              CAT(a, b), CATS(a, b), CATX(sep, a, b) : concatenation
+              PUT(num, fmt.) : conversion num -> char avec format
+              INPUT(str, infmt.) : conversion char -> num avec informat
+            Fonctions de date :
+              TODAY() : date courante -> valeur constante codee en dur
+              MDY(m, d, y) : construire une date SAS
+              YEAR(date), MONTH(date), DAY(date) : extraire composantes
+
+  TODO 23 - FUSION ET MANIPULATION DE DATASETS (MERGE / SET / BY)
+            Instruction SET : lecture sequentielle
+              SET ds1 ; -> lire observation par observation
+              SET ds1 ds2 ; -> concatenation verticale (empiler)
+              SET ds1 POINT=n ; -> acces direct a l observation n
+              SET ds1 NOBS=total ; -> nombre total d observations -> variable
+              Fin de fichier : variable automatique END= detectee
+            Instruction MERGE : fusion horizontale par cle
+              MERGE ds1 ds2 ; BY cle ; -> fusion par correspondance de cle
+              Variables communes : la derniere valeur lue prevaut
+              MERGE un-a-un si pas de BY (correspondance par position)
+              Observations non appariees : manquantes pour les variables absentes
+            Instruction BY : specifier les cles de tri pour MERGE ou traitement
+              BY var1 var2 ; -> tri requis prealable (PROC SORT)
+              Variables automatiques : FIRST.var (debut de groupe), LAST.var (fin)
+                FIRST.var = 1 si premiere observation du groupe -> AX=1
+                LAST.var = 1 si derniere observation du groupe -> AX=1
+            Instruction UPDATE : mise a jour d un dataset maitre par un dataset
+              de transactions (similaire a MERGE, valeurs non manquantes ecrasent)
+            Instruction MODIFY : modification en place d un dataset existant
+
+  TODO 24 - RUNTIME MINIMAL
+            _SASRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
+            _SASRT_PRINTLN : _SASRT_PRINT + CR+LF via _SAS_CRLF DB 13,10,0
+            _SASRT_STRLEN(SI=str) : compte octets non-espace depuis la fin -> AX
+            _SASRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
+            _SASRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
+            _SASRT_CONCAT(SI=src1, DI=src2) : concatenation chaines -> AX=ptr buf
+            _SASRT_STRCMP(SI=str1, DI=str2) : comparaison -> drapeaux ZF/CF
+            _SASRT_SUBSTR(SI=str, BX=pos, CX=len) : sous-chaine -> AX=ptr
+            _SASRT_TRIM(SI=str) : supprimer espaces de fin -> AX=ptr
+            _SASRT_LEFT(SI=str) : supprimer espaces de debut -> AX=ptr
+            _SASRT_UPCASE(SI=str) : convertir en majuscules -> AX=ptr
+            _SASRT_LOWCASE(SI=str) : convertir en minuscules -> AX=ptr
+            _SASRT_INDEX(SI=str, DI=sub) : recherche sous-chaine -> AX=pos
+            _SASRT_ABS(AX=n) : valeur absolue -> AX
+            _SASRT_POW(AX=base, BX=exp) : puissance entiere -> AX
+            _SASRT_ROUND(AX=n, BX=unite) : arrondi entier -> AX
+            _SASRT_COMPRESS(SI=str, DI=chars) : supprimer caracteres -> AX=ptr
+            _SASRT_READLINE(DI=buf, CX=maxlen) : lire une ligne -> AX=len
+            _SASRT_MISSING(AX=val) : tester si manquant (8000h) -> ZF=1 si oui
+            _SASRT_PANIC(SI=msg) : affiche message + MOV AX,4C01h + INT 21h
+            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
+            Heap statique : _SAS_HEAP DB 4096 DUP(0) + _SAS_HEAPTOP DW 0
+
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+            EmitClose : END _SASP_Main dans _TEXT ENDS / DATA ENDS
+            Run : pipeline complet LexInit -> ParseProgram ->
+              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _SASP_Main
+            Fichiers SAMPLES\SAS\ a creer :
+              hello.sas     (DATA _NULL_, PUT, chaines, variables)
+              datastep.sas  (DATA step, INPUT, DATALINES, observations)
+              control.sas   (IF/THEN/ELSE, SELECT/WHEN, DO loops)
+              arrays.sas    (ARRAY, boucle DO sur tableaux, DIM)
+              merge.sas     (SET, MERGE, BY, FIRST./LAST.)
+              procprint.sas (PROC PRINT, VAR, WHERE, FORMAT)
+              procmeans.sas (PROC MEANS, N MEAN MIN MAX SUM)
+              macros.sas    (macro-variables, %MACRO/%MEND, %IF/%THEN)
+            Smoke tests : SAS86.EXE -v SAMPLES\SAS\*.sas
+
+  ============================================================ *)
+
+{ ============================================================
+  SAS86 - Compilateur SAS -> assembleur 8086
+  Version : 1.0  Date : 2026-03-07
+  Compilation : ppc386 -O2 -Mtp SAS86.PAS
+  ============================================================ }
+
+Program SAS86;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  SAS86_VERSION = '1.0';
+  SAS86_DATE    = '2026-03-07';
+
+  (* Limites internes *)
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_OBS_SIZE  = 512;    (* taille max d une observation en octets *)
+  MAX_DATASETS  = 32;     (* nombre max de datasets en memoire      *)
+  STACK_SIZE    = 1024;
+  MISSING_VAL   = -32768; (* sentinelle valeur manquante = 8000h    *)
+
+  (* Prefixes de nommage ASM *)
+  SAS_VAR_PFX  = '_SASV_';   (* variable dans le PDV              *)
+  SAS_PROC_PFX = '_SASP_';   (* procedure / etape                 *)
+  SAS_STR_PFX  = '_SASK_';   (* constante chaine litterale        *)
+  SAS_RT_PFX   = '_SASRT_';  (* routine runtime                   *)
+  SAS_LBL_PFX  = '_SASL_';   (* label de saut interne             *)
+  SAS_DS_PFX   = '_SASD_';   (* dataset en memoire                *)
+  SAS_MAC_PFX  = '_SASM_';   (* macro                             *)
+  SAS_FMT_PFX  = '_SASF_';   (* format utilisateur                *)
+
+  (* Codes de sortie *)
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  (* Indices de types primitifs SAS *)
+  TY_IDX_NUMERIC   = 0;  (* entier 16 bits signe          *)
+  TY_IDX_CHARACTER = 1;  (* chaine longueur fixe          *)
+  TY_IDX_DATE      = 2;  (* jours depuis 01JAN1960        *)
+  TY_IDX_TIME      = 3;  (* secondes depuis minuit         *)
+  TY_IDX_DATETIME  = 4;  (* secondes depuis 01JAN1960      *)
+  TY_PRIM_COUNT    = 5;
+  TY_UNKNOWN       = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  (* ---- Options de compilation ----------------------------- *)
+  TOptions = Record
+    SrcFile   : TString;   (* fichier source (.sas)               *)
+    OutFile   : TString;   (* fichier assembleur de sortie (.asm)  *)
+    Verbose   : Boolean;   (* -v : banniere et statistiques        *)
+    DebugMode : Boolean;   (* -d : affichage de chaque token       *)
+    Warnings  : Boolean;   (* -w : activer les avertissements      *)
+  End;
+
+  (* ---- Tokens SAS (TODO 02) ------------------------------ *)
+  TTokenKind = (
+    TK_EOF,        (* fin de fichier                         *)
+    TK_INTEGER,    (* literal entier 42                      *)
+    TK_FLOAT,      (* literal reel 3.14                      *)
+    TK_STRING,     (* literal chaine 'abc' ou "abc"          *)
+    TK_IDENT,      (* identificateur                         *)
+    TK_KEYWORD,    (* mot-cle SAS reconnu                    *)
+    TK_OP,         (* operateur + - * / ** = ^= < > etc.     *)
+    TK_PUNCT,      (* ponctuation ( ) , .                    *)
+    TK_SEMICOLON,  (* delimiteur d instruction ;             *)
+    TK_AMPERSAND,  (* & (macro-variable)                     *)
+    TK_PERCENT,    (* % (macro instruction)                  *)
+    TK_FORMAT      (* format w.d ou $w. ou nom_format.       *)
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     (* valeur textuelle brute             *)
+    IntVal   : LongInt;     (* valeur entiere (TK_INTEGER)        *)
+    FloatVal : Real;        (* valeur flottante (TK_FLOAT)        *)
+    Line     : Integer;     (* ligne source (1-base)              *)
+    Col      : Integer;     (* colonne source (1-base)            *)
+  End;
+
+  (* ---- Categories de symboles (TODO 05) ------------------- *)
+  TSymCat = (
+    SC_VAR,       (* variable numerique ou caractere          *)
+    SC_ARRAY,     (* tableau SAS                              *)
+    SC_FORMAT,    (* format utilisateur                       *)
+    SC_INFORMAT,  (* informat utilisateur                     *)
+    SC_LABEL,     (* etiquette de saut (GOTO)                 *)
+    SC_MACRO,     (* macro %MACRO/%MEND                       *)
+    SC_MACROVAR,  (* macro-variable %LET                      *)
+    SC_DATASET,   (* dataset en memoire                       *)
+    SC_PROC       (* procedure SAS                            *)
+  );
+
+  TSymRec = Record
+    Name        : TString;   (* identifiant SAS (majuscules)       *)
+    MangledName : TString;   (* _SASV_nom / _SASP_nom              *)
+    Cat         : TSymCat;
+    TypeIdx     : Integer;   (* indice dans TypeTab                *)
+    ScopeLevel  : Integer;
+    Offset      : Integer;   (* offset dans le PDV                 *)
+    VarLen      : Integer;   (* longueur pour CHARACTER             *)
+    IsRetained  : Boolean;   (* RETAIN : ne pas reinitialiser      *)
+    IsDropped   : Boolean;   (* DROP : exclure du dataset           *)
+    IsKept      : Boolean;   (* KEEP : inclure dans le dataset      *)
+    DeclLine    : Integer;
+  End;
+
+  (* ---- Types internes (TODO 06) --------------------------- *)
+  TTypeKind = (
+    TYK_NUMERIC,    (* entier 16 bits signe                  *)
+    TYK_CHARACTER,  (* chaine longueur fixe                  *)
+    TYK_DATE,       (* jours depuis 01JAN1960                *)
+    TYK_TIME,       (* secondes depuis minuit                 *)
+    TYK_DATETIME,   (* secondes depuis 01JAN1960              *)
+    TYK_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   (* octets : numeric=2, character=longueur *)
+  End;
+
+  (* ---- Valeurs d expression (TODO 10-11) ------------------ *)
+  TExprKind = (
+    EK_NONE,   (* void / pas de valeur                       *)
+    EK_IMM,    (* immediate dans ImmVal                      *)
+    EK_AX,     (* valeur dans AX                             *)
+    EK_MEM     (* adresse dans le PDV ou label               *)
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   (* indice dans SymTab (-1 = pas de lvalue) *)
+  End;
+
+  (* ---- Segment de donnees (TODO 08) ----------------------- *)
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_RECORD_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  (* Options *)
+  Opts : TOptions;
+
+  (* Compteurs generaux *)
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  (* Valeur fictive pour ignorer un retour TExprVal *)
+  GExprDummy : TExprVal;
+
+  (* Lexeur (TODO 02) *)
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  (* Table des symboles (TODO 05) *)
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  (* Table des types (TODO 06) *)
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  (* Emetteur ASM (TODO 07) *)
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;
+  LabelGenSeq  : Integer;
+
+  (* Boucles (TODO 14) *)
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+
+  (* Segment de donnees (TODO 08) *)
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  (* Etat general *)
+  RuntimeEmitted : Boolean;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexNextToken;        Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+Procedure ParseStmt;           Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine;       Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Function  LabelGen : TString;  Forward;
+Procedure EmitOpen;            Forward;
+Procedure EmitClose;           Forward;
+Procedure EmitHeader;          Forward;
+Procedure EmitDataSeg;         Forward;
+Procedure EmitRuntime;         Forward;
+Procedure EmitProlog;          Forward;
+Procedure EmitEpilog;          Forward;
+Procedure TypeInit;            Forward;
+Procedure SymInit;             Forward;
+Procedure ParserAdvance;       Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- Messages d erreur et d avertissement ----------------- *)
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('SAS86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('SAS86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('SAS86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+(* ---- Banniere ---------------------------------------------- *)
+
+Procedure ShowBanner;
+Begin
+  WriteLn('SAS86 v', SAS86_VERSION, ' (', SAS86_DATE, ')');
+  WriteLn('Compilateur SAS -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: SAS86 <source.sas> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.sas : fichier SAS source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('SAS86 - Compilateur SAS vers assembleur 8086 (MASM/TASM)');
+  WriteLn;
+  WriteLn('Syntaxe : SAS86 [options] <source.sas> [sortie.asm]');
+  WriteLn;
+  WriteLn('Options :');
+  WriteLn('  -v         mode verbeux (banniere et statistiques)');
+  WriteLn('  -d         mode debug (affichage des tokens)');
+  WriteLn('  -w         activer les avertissements');
+  WriteLn('  -h         afficher cette aide');
+  WriteLn('  --help     afficher cette aide');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  SAS86 hello.sas');
+  WriteLn('  SAS86 hello.sas hello.asm -v');
+  WriteLn('  SAS86 -d -w programme.sas');
+  WriteLn;
+  Halt(EXIT_OK);
+End;
+
+(* ---- Utilitaires chaines ----------------------------------- *)
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+(* Extrait le nom de base d un chemin (sans extension) *)
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+(* Remplace l extension d un chemin *)
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+(* ---- Initialisation des options ---------------------------- *)
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+(* ---- Analyse des arguments de la ligne de commande --------- *)
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('SAS86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('SAS86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('SAS86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+(* ---- Nettoyage --------------------------------------------- *)
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+(* ---- Initialisation generale des variables globales --------- *)
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFrameSize   := 0;
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 02..25 (a implementer)
+  ============================================================ }
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir ' + Opts.SrcFile);
+  LexOpened := True;
+  LexLineNo := 0;
+  LexColNo  := 0;
+  LexLine   := '';
+  LexEOF    := False;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure LexNextToken;
+Begin
+  CurToken.Kind := TK_EOF;
+  CurToken.Val  := '';
+End;
+
+Procedure PrintToken(Const T : TToken);
+Begin
+  WriteLn('  [', T.Line, ':', T.Col, '] ', T.Val);
+End;
+
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  Res := GExprDummy;
+End;
+
+Procedure ParseStmt;
+Begin
+  (* stub : consomme un token pour eviter boucle infinie *)
+  LexNextToken;
+End;
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := SAS_LBL_PFX + S;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1);
+End;
+
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1 + ', ' + A2);
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('SAS86 v' + SAS86_VERSION + ' - ' + Opts.SrcFile);
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+  (* Point d entree principal *)
+  EmitLabel(SAS_PROC_PFX + 'Main');
+  EmitProlog;
+  (* Initialiser DS *)
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+End;
+
+Procedure EmitProlog;
+Begin
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+End;
+
+Procedure EmitEpilog;
+Begin
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+End;
+
+Procedure EmitDataSeg;
+Begin
+  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  EmitBlankLine;
+  (* TODO 08 : emettre les entrees DataTab ici *)
+  EmitBlankLine;
+  EmitRaw('_DATA ENDS');
+End;
+
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('--- Runtime minimal SAS86 ---');
+  (* TODO 24 : emettre les routines runtime ici *)
+  EmitBlankLine;
+End;
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Fin du code ---');
+  EmitEpilog;
+  (* Terminaison DOS *)
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+  EmitRuntime;
+  EmitRaw('_TEXT ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('END ' + SAS_PROC_PFX + 'Main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+  (* Types primitifs *)
+  TypeTab[0].Name := 'NUMERIC';   TypeTab[0].Kind := TYK_NUMERIC;   TypeTab[0].Size := 2;
+  TypeTab[1].Name := 'CHARACTER'; TypeTab[1].Kind := TYK_CHARACTER; TypeTab[1].Size := 8;
+  TypeTab[2].Name := 'DATE';      TypeTab[2].Kind := TYK_DATE;      TypeTab[2].Size := 2;
+  TypeTab[3].Name := 'TIME';      TypeTab[3].Kind := TYK_TIME;      TypeTab[3].Size := 2;
+  TypeTab[4].Name := 'DATETIME';  TypeTab[4].Kind := TYK_DATETIME;  TypeTab[4].Size := 2;
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+Procedure SymInit;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+End;
+
+{ ============================================================
+  PROCEDURE RUN : PIPELINE COMPLET
+  ============================================================ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  If ErrorCount > 0 Then
+  Begin
+    Cleanup;
+    Halt(EXIT_ERROR);
+  End;
+
+  EmitHeader;
+  LexInit;
+
+  (* Lire le premier token *)
+  ParserAdvance;
+
+  (* Boucle principale de compilation *)
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  LexClose;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  If (ParamCount >= 1) And
+     ((ParamStr(1) = '-h') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '/?') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowHelp;
+    Halt(0);
+  End;
+  ParseArgs;
+  If Opts.Verbose Then ShowBanner;
+  Run;
+End.
