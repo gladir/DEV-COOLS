@@ -2076,11 +2076,10 @@ Begin
 
   (* Propagation des valeurs manquantes pour operations numeriques *)
   (* Si un operande = 8000h, le resultat = 8000h (manquant)       *)
-  NeedMissCheck := True;
-  If IsStrCmp Then NeedMissCheck := False;
-  If (Op = '||') Or (Op = '!!') Then NeedMissCheck := False;
-  If (Op = 'AND') Or (Op = '&') Then NeedMissCheck := False;
-  If (Op = 'OR') Or (Op = '|') Then NeedMissCheck := False;
+  NeedMissCheck := (Not IsStrCmp) And
+                   (Op <> '||') And (Op <> '!!') And
+                   (Op <> 'AND') And (Op <> '&') And
+                   (Op <> 'OR') And (Op <> '|');
 
   If NeedMissCheck Then
   Begin
