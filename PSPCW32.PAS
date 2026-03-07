@@ -247,7 +247,7 @@
             SizeOf(arr) : constante (hi - lo + 1) * sizeof(element)
             Verification de bornes (optionnelle) : CMP + JB/JAE -> erreur
 
-  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH
+  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
             TYPE TRec = RECORD champ1: T1; champ2: T2; ... END;
               Taille = somme des sizeof(Ti) alignes sur 4 octets
               Acces champ : offset fixe depuis debut du record
@@ -6196,6 +6196,13 @@ Var
   ElemSz    : Integer;
   IdxExpr   : TExprVal;
   ValExpr   : TExprVal;
+  RecTIdx   : Integer;
+  FldIdx    : Integer;
+  FldTIdx   : Integer;
+  FldSz     : Integer;
+  FI        : Integer;
+  WIdx      : Integer;
+  WI        : Integer;
 Begin
   { Rien a faire si EOF }
   If CurToken.Kind = TK_EOF Then Exit;
@@ -6428,8 +6435,54 @@ Begin
     TplNextToken;
 
     { Affectation : ident := expr }
+    { Verifier d abord si c est un champ du with-stack }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
     Begin
+      WIdx := -1;
+      If WithTop >= 0 Then
+      Begin
+        For WI := WithTop DownTo 0 Do
+        Begin
+          RecTIdx := SymTab[WithSymIdx[WI]].TypeIdx;
+          For FI := 0 To TypeTab[RecTIdx].FieldCount - 1 Do
+            If StrLowerCase(TypeTab[RecTIdx].Fields[FI].Name) =
+               StrLowerCase(SavedName) Then
+            Begin
+              WIdx := WI;
+              FldIdx := FI;
+              Break;
+            End;
+          If WIdx >= 0 Then Break;
+        End;
+      End;
+      If WIdx >= 0 Then
+      Begin
+        RecTIdx := SymTab[WithSymIdx[WIdx]].TypeIdx;
+        If SymTab[WithSymIdx[WIdx]].IsLocal Then
+          EmitInstrAB('LEA', 'EBX',
+            EBPOfs(SymTab[WithSymIdx[WIdx]].Offset))
+        Else
+          EmitInstrAB('MOV', 'EBX',
+            'OFFSET ' + SymTab[WithSymIdx[WIdx]].MangledName);
+        If TypeTab[RecTIdx].Fields[FldIdx].Offset > 0 Then
+          EmitInstrAB('ADD', 'EBX',
+            IntToStr(TypeTab[RecTIdx].Fields[FldIdx].Offset));
+        EmitInstrA('PUSH', 'EBX');
+        FldTIdx := TypeTab[RecTIdx].Fields[FldIdx].TypeIdx;
+        FldSz   := TypeSizeof(FldTIdx);
+        TplNextToken;
+        EmitComment('with-assign ' + SavedName);
+        ParseExpr(ValExpr);
+        ExprFlushToEAX(ValExpr);
+        EmitInstrA('POP', 'EBX');
+        If FldSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Exit;
+      End;
       ParseAssignment(SavedName);
       Exit;
     End;
@@ -6510,6 +6563,92 @@ Begin
       Else
       Begin
         WarnMsg('indexation sur un non-tableau: ' + SavedName);
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = ';')) Do
+          TplNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Exit;
+      End;
+    End;
+
+    { Affectation champ record : ident.field := expr }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      SIdx := SymFind(SavedName);
+      If (SIdx >= 0) And (SIdx < SymCount) And
+         (SymTab[SIdx].TypeIdx >= 0) And
+         (SymTab[SIdx].TypeIdx < TypeCount) And
+         (TypeTab[SymTab[SIdx].TypeIdx].Kind = TKP_RECORD) Then
+      Begin
+        RecTIdx := SymTab[SIdx].TypeIdx;
+        If SymTab[SIdx].IsLocal Then
+          EmitInstrAB('LEA', 'EBX',
+            EBPOfs(SymTab[SIdx].Offset))
+        Else
+          EmitInstrAB('MOV', 'EBX',
+            'OFFSET ' + SymTab[SIdx].MangledName);
+        FldTIdx := TY_IDX_INTEGER;
+        FldSz   := 4;
+        While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Do
+        Begin
+          TplNextToken;
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            FldIdx := -1;
+            For FI := 0 To TypeTab[RecTIdx].FieldCount - 1 Do
+              If StrLowerCase(TypeTab[RecTIdx].Fields[FI].Name) =
+                 StrLowerCase(CurToken.Val) Then
+              Begin
+                FldIdx := FI;
+                Break;
+              End;
+            If FldIdx >= 0 Then
+            Begin
+              If TypeTab[RecTIdx].Fields[FldIdx].Offset > 0 Then
+                EmitInstrAB('ADD', 'EBX',
+                  IntToStr(TypeTab[RecTIdx].Fields[FldIdx].Offset));
+              FldTIdx := TypeTab[RecTIdx].Fields[FldIdx].TypeIdx;
+              FldSz   := TypeSizeof(FldTIdx);
+              TplNextToken;
+              If (FldTIdx >= 0) And (FldTIdx < TypeCount) And
+                 (TypeTab[FldTIdx].Kind = TKP_RECORD) Then
+                RecTIdx := FldTIdx;
+            End
+            Else
+            Begin
+              WarnMsg('champ inconnu: ' + CurToken.Val);
+              TplNextToken;
+              Break;
+            End;
+          End
+          Else
+          Begin
+            WarnMsg('nom de champ attendu apres "."');
+            Break;
+          End;
+        End;
+        EmitInstrA('PUSH', 'EBX');
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+          TplNextToken
+        Else
+          WarnMsg(''':='' attendu apres rec.field');
+        EmitComment('assign ' + SavedName + '.field');
+        ParseExpr(ValExpr);
+        ExprFlushToEAX(ValExpr);
+        EmitInstrA('POP', 'EBX');
+        If FldSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Exit;
+      End
+      Else
+      Begin
+        WarnMsg('acces "." sur un non-record: ' + SavedName);
         While (CurToken.Kind <> TK_EOF) And
               Not ((CurToken.Kind = TK_PUNCT) And
                    (CurToken.Val = ';')) Do
@@ -6865,11 +7004,193 @@ Procedure ParseFuncDecl; Begin End;
 Procedure ParseProcDecl; Begin End;
 
 { --- Stubs Types/Enumerations (TODO 06 / 17) --- }
-Procedure ParseTypeDecl; Begin End;
+{ ParseTypeDecl : gere TYPE name = RECORD ... END (et aliases).
+  Les enumerations seront ajoutees dans un TODO futur.            }
+Procedure ParseTypeDecl;
+Var
+  TName    : TString;
+  NewTIdx  : Integer;
+  BaseTIdx : Integer;
+  BaseStr  : TString;
+  Idx      : Integer;
+Begin
+  While (CurToken.Kind <> TK_EOF) And
+        (CurToken.Kind = TK_IDENT) Do
+  Begin
+    TName := CurToken.Val;
+    TplNextToken;
+
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      TplNextToken
+    Else
+    Begin
+      WarnMsg('''='' attendu apres nom de type');
+      Break;
+    End;
+
+    { RECORD ... END }
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'record') Then
+    Begin
+      TplNextToken;
+      NewTIdx := TypeCount;
+      Inc(TypeCount);
+      TypeTab[NewTIdx].Kind        := TKP_RECORD;
+      TypeTab[NewTIdx].Size        := 0;
+      TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_INTEGER;
+      TypeTab[NewTIdx].Lo          := 0;
+      TypeTab[NewTIdx].Hi          := 0;
+      TypeTab[NewTIdx].FieldCount  := 0;
+      TypeTab[NewTIdx].EnumCount   := 0;
+
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (CurToken.Val = 'end')) Do
+      Begin
+        If (CurToken.Kind = TK_IDENT) Or
+           (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          BaseStr := CurToken.Val;
+          TplNextToken;
+
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+            TplNextToken
+          Else
+            WarnMsg(''':'' attendu apres nom de champ');
+
+          BaseTIdx := TY_IDX_INTEGER;
+          If (CurToken.Kind = TK_KEYWORD) Or
+             (CurToken.Kind = TK_IDENT) Then
+          Begin
+            BaseTIdx := TypeResolve(CurToken.Val);
+            If BaseTIdx = TY_UNKNOWN Then
+            Begin
+              WarnMsg('type de champ inconnu: ' + CurToken.Val);
+              BaseTIdx := TY_IDX_INTEGER;
+            End;
+            TplNextToken;
+          End;
+
+          If TypeTab[NewTIdx].FieldCount < MAX_FIELD Then
+          Begin
+            TypeTab[NewTIdx].Fields[
+              TypeTab[NewTIdx].FieldCount].Name :=
+                StrLowerCase(BaseStr);
+            TypeTab[NewTIdx].Fields[
+              TypeTab[NewTIdx].FieldCount].TypeIdx := BaseTIdx;
+            TypeTab[NewTIdx].Fields[
+              TypeTab[NewTIdx].FieldCount].Offset :=
+                TypeTab[NewTIdx].Size;
+            Inc(TypeTab[NewTIdx].FieldCount);
+            TypeTab[NewTIdx].Size :=
+              TypeTab[NewTIdx].Size + TypeSizeof(BaseTIdx);
+            If Opts.DebugMode Then
+              WriteLn('  FIELD: ', BaseStr, ' : type=', BaseTIdx,
+                      ' ofs=', TypeTab[NewTIdx].Fields[
+                        TypeTab[NewTIdx].FieldCount - 1].Offset);
+          End
+          Else
+            WarnMsg('trop de champs dans le record');
+
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            TplNextToken;
+        End
+        Else
+        Begin
+          WarnMsg('identificateur attendu dans record');
+          TplNextToken;
+        End;
+      End;
+
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+        TplNextToken;
+
+      Idx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Idx >= 0 Then
+        SymTab[Idx].MangledName := StrUpperCase(TName);
+
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_RECORD: ', TName,
+                ' size=', TypeTab[NewTIdx].Size,
+                ' fields=', TypeTab[NewTIdx].FieldCount);
+    End
+    Else
+    Begin
+      { Alias de type : TYPE T2 = T1 }
+      If (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_IDENT) Then
+      Begin
+        BaseTIdx := TypeResolve(CurToken.Val);
+        If BaseTIdx = TY_UNKNOWN Then
+        Begin
+          WarnMsg('type inconnu: ' + CurToken.Val);
+          BaseTIdx := TY_IDX_INTEGER;
+        End;
+        TplNextToken;
+        Idx := SymAdd(TName, SC_TYPE, BaseTIdx);
+        If Idx >= 0 Then
+          SymTab[Idx].MangledName := StrUpperCase(TName);
+      End
+      Else
+      Begin
+        WarnMsg('type ou record attendu');
+        TplNextToken;
+      End;
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+  End;
+End;
 Procedure ParseIncDecStmt(IsInc : Boolean); Begin End;
 
-{ --- Stubs Records (TODO 16) --- }
-Procedure ParseWithStmt; Begin End;
+{ ============================================================
+  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
+  ============================================================ }
+{ ParseWithStmt : WITH RecVar DO stmt
+  Empile le symbole du record sur la pile with (WithSymIdx).
+  Les champs du record deviennent accessibles sans prefixe.
+  Imbrication max : MAX_WITH niveaux.
+  En sortie, depile le with-stack.                                }
+Procedure ParseWithStmt;
+Var
+  WSIdx : Integer;
+Begin
+  TplNextToken;
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    WSIdx := SymFind(CurToken.Val);
+    If (WSIdx >= 0) And
+       (SymTab[WSIdx].TypeIdx >= 0) And
+       (SymTab[WSIdx].TypeIdx < TypeCount) And
+       (TypeTab[SymTab[WSIdx].TypeIdx].Kind = TKP_RECORD) Then
+    Begin
+      TplNextToken;
+      If WithTop < MAX_WITH - 1 Then
+      Begin
+        Inc(WithTop);
+        WithSymIdx[WithTop] := WSIdx;
+      End
+      Else
+        WarnMsg('imbrication with trop profonde');
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+        TplNextToken;
+      ParseStatement;
+      If WithTop >= 0 Then
+        Dec(WithTop);
+    End
+    Else
+    Begin
+      WarnMsg('with : variable record attendue');
+      TplNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+        TplNextToken;
+      ParseStatement;
+    End;
+  End
+  Else
+    WarnMsg('identificateur attendu apres with');
+End;
 
 { --- Stubs Exceptions (TODO 21) --- }
 Procedure ParseTryExcept; Begin End;
