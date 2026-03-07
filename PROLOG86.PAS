@@ -70,7 +70,7 @@
             ParseExprPrec(MaxPrec) : boucle de precedence (Pratt/operateur)
             op(Priorite, Type, Nom) : declaration d operateurs utilisateur
 
-  TODO 05 - TABLE DES SYMBOLES (PREDICATS ET FONCTEURS)
+  TODO 05 - TABLE DES SYMBOLES (PREDICATS ET FONCTEURS) [IMPLEMENTE]
             TSymKind : SK_ATOM, SK_FUNCTOR, SK_PREDICATE, SK_BUILTIN,
               SK_OPERATOR, SK_MODULE
             TSymRec : Name, MangledName, Kind, Arity, ClauseHead,
@@ -563,6 +563,48 @@ Const
   TY_IDX_LIST  =  5;   { liste                                 }
   TY_IDX_TERM  =  6;   { terme structure                       }
 
+Type
+  { ---- Table des symboles - categories (TODO 05) ------------- }
+  TSymKind = (
+    SK_ATOM,       { atome interne (interning)                   }
+    SK_FUNCTOR,    { foncteur : couple (atome, arite)            }
+    SK_PREDICATE,  { predicat : nom/arite + liste de clauses     }
+    SK_BUILTIN,    { predicat builtin (is, write, read, ...)     }
+    SK_OPERATOR,   { operateur defini par op/3                   }
+    SK_MODULE      { module (stub pour TODO 25)                  }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { nom de l atome / predicat          }
+    MangledName : TString;   { label ASM _PLP_nom, _PLV_nom, etc. }
+    Kind        : TSymKind;
+    Arity       : Integer;   { arite du foncteur/predicat          }
+    ClauseHead  : Integer;   { index premiere clause (-1=aucune)   }
+    ClauseCount : Integer;   { nombre de clauses pour ce predicat  }
+    ScopeLevel  : Integer;   { niveau de portee (0=global)         }
+    IsBuiltin   : Boolean;   { predicat builtin ?                  }
+    IsDynamic   : Boolean;   { predicat dynamique (assert/retract) }
+    IsExported  : Boolean;   { exporte hors du module ?            }
+    DeclLine    : Integer;   { ligne de declaration                }
+  End;
+
+  { ---- Table des atomes (interning) -------------------------- }
+  { Chaque atome unique a un index. AtomIntern retourne l index  }
+  { existant ou en cree un nouveau.                              }
+  TAtomEntry = Record
+    Name  : TString;   { texte de l atome                        }
+    SymIdx : Integer;  { index dans SymTab (-1 si pas de predicat)}
+  End;
+
+  { ---- Table des foncteurs ----------------------------------- }
+  { Un foncteur est un couple (atome_index, arite). Deux termes  }
+  { avec le meme nom et la meme arite partagent le meme index.   }
+  TFunctorEntry = Record
+    AtomIdx : Integer;   { index dans AtomTab                    }
+    Arity   : Integer;   { arite du foncteur                     }
+    SymIdx  : Integer;   { index dans SymTab (-1 si pas lie)     }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -593,6 +635,18 @@ Var
   DataTab      : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount    : Integer;
   LabelGenSeq  : Integer;
+
+  { Table des symboles (TODO 05) }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  AtomTab    : Array[0..MAX_ATOM - 1] Of TAtomEntry;
+  AtomCount  : Integer;
+  FunctorTab : Array[0..MAX_FUNCTOR - 1] Of TFunctorEntry;
+  FunctorCount : Integer;
+  TotalSyms  : Integer;  { compteur cumulatif de symboles ajoutes }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -646,6 +700,20 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ Table des symboles (TODO 05) }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindPredicate(Const Name : TString;
+                           AArity : Integer) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 AArity : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Function  AtomIntern(Const Name : TString) : Integer; Forward;
+Function  AtomName(Idx : Integer) : TString; Forward;
+Function  FunctorIntern(AAtomIdx, AArity : Integer) : Integer; Forward;
+Procedure SymInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -924,6 +992,8 @@ Begin
   { TODO 03 }
   DataCount   := 0;
   LabelGenSeq := 0;
+  { TODO 05 }
+  SymInit;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -934,6 +1004,9 @@ Begin
   WriteLn('Source         : ', Opts.SrcFile);
   WriteLn('Sortie         : ', Opts.OutFile);
   WriteLn('Lignes lues    : ', TotalLines);
+  WriteLn('Atomes internes: ', AtomCount);
+  WriteLn('Foncteurs      : ', FunctorCount);
+  WriteLn('Symboles       : ', SymCount, ' (total cumul: ', TotalSyms, ')');
   WriteLn('Erreurs        : ', ErrorCount);
   WriteLn('Avertissements : ', WarnCount);
 End;
@@ -2661,7 +2734,363 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (05..25)
+  TODO 05 - TABLE DES SYMBOLES (PREDICATS ET FONCTEURS) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour MASM ---------------- }
+{ Remplace les caracteres non alphanumeriques par '_'.           }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  Ch : Char;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    Ch := Name[I];
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or
+       ((Ch >= '0') And (Ch <= '9')) Or
+       (Ch = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + Ch;
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+{ ---- SymMangle : generer le nom ASM mangled ------------------- }
+{ Le prefixe depend de la categorie du symbole.                   }
+{   SK_ATOM      -> _PLA_ (table des atomes)                     }
+{   SK_FUNCTOR   -> _PLF_ (table des foncteurs)                  }
+{   SK_PREDICATE -> _PLP_ (predicat utilisateur)                 }
+{   SK_BUILTIN   -> _PLRT_ (predicat builtin -> runtime)         }
+{   SK_OPERATOR  -> _PLP_ (operateur = predicat special)         }
+{   SK_MODULE    -> _PLM_ (module - stub)                        }
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+  Pfx   : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_ATOM      : Pfx := PL_ATOM_PFX;
+    SK_FUNCTOR   : Pfx := PL_FUN_PFX;
+    SK_PREDICATE : Pfx := PL_PRED_PFX;
+    SK_BUILTIN   : Pfx := PL_RT_PFX;
+    SK_OPERATOR  : Pfx := PL_PRED_PFX;
+    SK_MODULE    : Pfx := '_PLM_';
+  Else
+    Pfx := PL_VAR_PFX;
+  End;
+  SymMangle := Pfx + Clean;
+End;
+
+{ ---- SymFind : chercher un symbole par nom (MRU) ------------- }
+{ Parcourt la table du plus recent au plus ancien.                }
+{ Retourne l index du symbole, ou -1 si non trouve.               }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindPredicate : chercher un predicat par nom ET arite - }
+{ En Prolog, un predicat est identifie par le couple nom/arite.   }
+{ foo/1 et foo/2 sont des predicats differents.                   }
+Function SymFindPredicate(Const Name : TString;
+                           AArity : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       ((SymTab[I].Kind = SK_PREDICATE) Or (SymTab[I].Kind = SK_BUILTIN)) And
+       (SymTab[I].Arity = AArity) Then
+    Begin
+      SymFindPredicate := I;
+      Exit;
+    End;
+  SymFindPredicate := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table ---------------- }
+{ Retourne l index du symbole ajoute (0-base) ou -1 si plein.     }
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                AArity : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Idx := SymCount;
+  SymTab[Idx].Name        := Name;
+  SymTab[Idx].MangledName := SymMangle(Name, Kind);
+  SymTab[Idx].Kind        := Kind;
+  SymTab[Idx].Arity       := AArity;
+  SymTab[Idx].ClauseHead  := -1;
+  SymTab[Idx].ClauseCount := 0;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].IsBuiltin   := (Kind = SK_BUILTIN);
+  SymTab[Idx].IsDynamic   := False;
+  SymTab[Idx].IsExported  := False;
+  SymTab[Idx].DeclLine    := LexLineNo;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Name,
+            ' kind=', Ord(Kind),
+            ' arity=', AArity,
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee ---------- }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante --------------- }
+{ Retire tous les symboles ajoutes dans cette portee.             }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+End;
+
+{ ---- AtomIntern : interning d un atome ----------------------- }
+{ Retourne l index de l atome dans AtomTab. Si l atome existe     }
+{ deja, retourne l index existant (deduplication). Sinon, cree    }
+{ une nouvelle entree.                                            }
+Function AtomIntern(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  { Chercher si l atome existe deja }
+  For I := 0 To AtomCount - 1 Do
+    If AtomTab[I].Name = Name Then
+    Begin
+      AtomIntern := I;
+      Exit;
+    End;
+  { Ajouter un nouvel atome }
+  If AtomCount >= MAX_ATOM Then
+  Begin
+    CompileError('table des atomes pleine (max=' + IntToStr(MAX_ATOM) + ')');
+    AtomIntern := -1;
+    Exit;
+  End;
+  AtomTab[AtomCount].Name   := Name;
+  AtomTab[AtomCount].SymIdx := -1;
+  AtomIntern := AtomCount;
+  Inc(AtomCount);
+End;
+
+{ ---- AtomName : retourner le nom d un atome par son index ----- }
+Function AtomName(Idx : Integer) : TString;
+Begin
+  If (Idx >= 0) And (Idx < AtomCount) Then
+    AtomName := AtomTab[Idx].Name
+  Else
+    AtomName := '?atom?';
+End;
+
+{ ---- FunctorIntern : interning d un foncteur ------------------ }
+{ Un foncteur est un couple (atome_index, arite). Deux termes     }
+{ f(a,b) et f(x,y) partagent le meme foncteur f/2.               }
+{ Retourne l index dans FunctorTab.                               }
+Function FunctorIntern(AAtomIdx, AArity : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  { Chercher si le foncteur existe deja }
+  For I := 0 To FunctorCount - 1 Do
+    If (FunctorTab[I].AtomIdx = AAtomIdx) And
+       (FunctorTab[I].Arity = AArity) Then
+    Begin
+      FunctorIntern := I;
+      Exit;
+    End;
+  { Ajouter un nouveau foncteur }
+  If FunctorCount >= MAX_FUNCTOR Then
+  Begin
+    CompileError('table des foncteurs pleine (max=' + IntToStr(MAX_FUNCTOR) + ')');
+    FunctorIntern := -1;
+    Exit;
+  End;
+  FunctorTab[FunctorCount].AtomIdx := AAtomIdx;
+  FunctorTab[FunctorCount].Arity   := AArity;
+  FunctorTab[FunctorCount].SymIdx  := -1;
+  FunctorIntern := FunctorCount;
+  Inc(FunctorCount);
+End;
+
+{ ---- SymInit : initialiser les tables et builtins ------------- }
+{ Enregistre les predicats builtins et les foncteurs systeme.     }
+Procedure SymInit;
+Var
+  A : Integer;  { index atome temporaire }
+Begin
+  SymCount     := 0;
+  ScopeTop     := 0;
+  CurScope     := 0;
+  AtomCount    := 0;
+  FunctorCount := 0;
+  TotalSyms    := 0;
+
+  { Foncteurs systeme : interning des atomes de base }
+  A := AtomIntern('.');     { cons : '.'/2 }
+  FunctorIntern(A, 2);
+  A := AtomIntern('[]');    { nil  : []/0  }
+  FunctorIntern(A, 0);
+  A := AtomIntern(',');     { conjonction : ','/2 }
+  FunctorIntern(A, 2);
+  A := AtomIntern(';');     { disjonction : ';'/2 }
+  FunctorIntern(A, 2);
+  A := AtomIntern('->');    { if-then : '->'/2 }
+  FunctorIntern(A, 2);
+
+  { Atomes speciaux }
+  AtomIntern('true');
+  AtomIntern('fail');
+  AtomIntern('false');
+
+  { Predicats builtins ISO (controle) }
+  SymAdd('true',      SK_BUILTIN, 0);
+  SymAdd('fail',      SK_BUILTIN, 0);
+  SymAdd('halt',      SK_BUILTIN, 0);
+  SymAdd('halt',      SK_BUILTIN, 1);
+
+  { Predicats builtins ISO (unification) }
+  SymAdd('=',         SK_BUILTIN, 2);   { unification   }
+  SymAdd('\=',        SK_BUILTIN, 2);   { non-unification }
+  SymAdd('==',        SK_BUILTIN, 2);   { egalite stricte }
+  SymAdd('\==',       SK_BUILTIN, 2);   { inegalite stricte }
+  SymAdd('copy_term', SK_BUILTIN, 2);
+
+  { Predicats builtins ISO (arithmetique) }
+  SymAdd('is',        SK_BUILTIN, 2);   { evaluation arithmetique }
+  SymAdd('=:=',       SK_BUILTIN, 2);   { egalite arithmetique }
+  SymAdd('=\=',       SK_BUILTIN, 2);   { inegalite arithmetique }
+  SymAdd('<',         SK_BUILTIN, 2);
+  SymAdd('>',         SK_BUILTIN, 2);
+  SymAdd('=<',        SK_BUILTIN, 2);
+  SymAdd('>=',        SK_BUILTIN, 2);
+
+  { Predicats builtins ISO (comparaison de termes) }
+  SymAdd('@<',        SK_BUILTIN, 2);
+  SymAdd('@>',        SK_BUILTIN, 2);
+  SymAdd('@=<',       SK_BUILTIN, 2);
+  SymAdd('@>=',       SK_BUILTIN, 2);
+  SymAdd('compare',   SK_BUILTIN, 3);
+
+  { Predicats builtins ISO (type checking) }
+  SymAdd('var',       SK_BUILTIN, 1);
+  SymAdd('nonvar',    SK_BUILTIN, 1);
+  SymAdd('atom',      SK_BUILTIN, 1);
+  SymAdd('number',    SK_BUILTIN, 1);
+  SymAdd('integer',   SK_BUILTIN, 1);
+  SymAdd('float',     SK_BUILTIN, 1);
+  SymAdd('compound',  SK_BUILTIN, 1);
+  SymAdd('callable',  SK_BUILTIN, 1);
+  SymAdd('is_list',   SK_BUILTIN, 1);
+  SymAdd('atomic',    SK_BUILTIN, 1);
+  SymAdd('ground',    SK_BUILTIN, 1);
+
+  { Predicats builtins ISO (decomposition de termes) }
+  SymAdd('functor',   SK_BUILTIN, 3);
+  SymAdd('arg',       SK_BUILTIN, 3);
+  SymAdd('=..',       SK_BUILTIN, 2);   { univ }
+
+  { Predicats builtins ISO (listes) }
+  SymAdd('append',    SK_BUILTIN, 3);
+  SymAdd('length',    SK_BUILTIN, 2);
+  SymAdd('member',    SK_BUILTIN, 2);
+  SymAdd('last',      SK_BUILTIN, 2);
+  SymAdd('reverse',   SK_BUILTIN, 2);
+  SymAdd('msort',     SK_BUILTIN, 2);
+  SymAdd('sort',      SK_BUILTIN, 2);
+  SymAdd('nth0',      SK_BUILTIN, 3);
+  SymAdd('nth1',      SK_BUILTIN, 3);
+
+  { Predicats builtins ISO (E/S) }
+  SymAdd('write',     SK_BUILTIN, 1);
+  SymAdd('writeln',   SK_BUILTIN, 1);
+  SymAdd('write_canonical', SK_BUILTIN, 1);
+  SymAdd('print',     SK_BUILTIN, 1);
+  SymAdd('nl',        SK_BUILTIN, 0);
+  SymAdd('read',      SK_BUILTIN, 1);
+  SymAdd('read_term', SK_BUILTIN, 2);
+  SymAdd('get_char',  SK_BUILTIN, 1);
+  SymAdd('put_char',  SK_BUILTIN, 1);
+
+  { Predicats builtins ISO (assert/retract) }
+  SymAdd('assert',    SK_BUILTIN, 1);
+  SymAdd('asserta',   SK_BUILTIN, 1);
+  SymAdd('assertz',   SK_BUILTIN, 1);
+  SymAdd('retract',   SK_BUILTIN, 1);
+  SymAdd('abolish',   SK_BUILTIN, 1);
+
+  { Predicats builtins ISO (controle) }
+  SymAdd('call',      SK_BUILTIN, 1);
+  SymAdd('not',       SK_BUILTIN, 1);  { negation par echec }
+  SymAdd('findall',   SK_BUILTIN, 3);
+  SymAdd('bagof',     SK_BUILTIN, 3);
+  SymAdd('setof',     SK_BUILTIN, 3);
+  SymAdd('between',   SK_BUILTIN, 3);
+
+  { Predicats builtins ISO (atomes et chaines) }
+  SymAdd('atom_length',  SK_BUILTIN, 2);
+  SymAdd('atom_concat',  SK_BUILTIN, 3);
+  SymAdd('atom_chars',   SK_BUILTIN, 2);
+  SymAdd('atom_codes',   SK_BUILTIN, 2);
+  SymAdd('atom_string',  SK_BUILTIN, 2);
+  SymAdd('char_code',    SK_BUILTIN, 2);
+  SymAdd('number_codes', SK_BUILTIN, 2);
+  SymAdd('number_chars', SK_BUILTIN, 2);
+  SymAdd('sub_atom',     SK_BUILTIN, 5);
+  SymAdd('upcase_atom',  SK_BUILTIN, 2);
+  SymAdd('downcase_atom', SK_BUILTIN, 2);
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (06..25)
   ============================================================ }
 
 Procedure Run;
