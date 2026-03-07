@@ -38,7 +38,7 @@
               =  \= == \== is < > =< >= =:= =\= @< @> @=< @>=
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 ou -32768..32767
             Entiers hexadecimaux : 0xFF -> conversion en entier
             Entiers octaux : 0o77, caractere : 0'A (code ASCII de A)
@@ -525,6 +525,44 @@ Type
     Col      : Integer;     { colonne source (1-base)         }
   End;
 
+  { ---- Segment de donnees (TODO 03) ------------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ATOM_TBL);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;   { DK_ATOM_TBL : nb entrees          }
+  End;
+
+  { ---- Valeur d expression (TODO 03) ----------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur                          }
+    EK_IMM,    { valeur immediate dans ImmVal                   }
+    EK_AX,     { valeur dans le registre AX                     }
+    EK_MEM     { adresse memoire [label] ou [BP+Offset]        }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;   { indice de type (TY_IDX_*)            }
+    Offset  : Integer;   { offset donnee/pile                   }
+    SymIdx  : Integer;   { indice dans SymTab (-1 = pas lvalue) }
+  End;
+
+Const
+  { Indices de types primitifs Prolog }
+  TY_UNKNOWN   = -1;
+  TY_IDX_INT   =  0;   { entier                                }
+  TY_IDX_FLOAT =  1;   { flottant (traite comme entier trunc)  }
+  TY_IDX_ATOM  =  2;   { atome                                 }
+  TY_IDX_STR   =  3;   { chaine (liste de codes)               }
+  TY_IDX_VAR   =  4;   { variable Prolog                       }
+  TY_IDX_LIST  =  5;   { liste                                 }
+  TY_IDX_TERM  =  6;   { terme structure                       }
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -550,6 +588,11 @@ Var
   LexEOF    : Boolean;
   LexOpened : Boolean;
   CurToken  : TToken;
+
+  { Segment de donnees (TODO 03) }
+  DataTab      : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount    : Integer;
+  LabelGenSeq  : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -579,6 +622,19 @@ Procedure LexScanString;       Forward;
 Function  LexScanEscChar : Char; Forward;
 Procedure LexNextToken;        Forward;
 Procedure PrintToken(Const T : TToken); Forward;
+{ Litteraux et constantes (TODO 03) }
+Function  LabelGen : TString; Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Function  IsSpecialAtom(Const S : TString) : Boolean; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -854,6 +910,9 @@ Begin
   CurToken.FloatVal := 0.0;
   CurToken.Line     := 0;
   CurToken.Col      := 0;
+  { TODO 03 }
+  DataCount   := 0;
+  LabelGenSeq := 0;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -1805,7 +1864,187 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (03..25)
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LabelGen : generateur de labels uniques ---------------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := PL_LBL_PFX + IntToStr(LabelGenSeq);
+End;
+
+{ ---- DataAdd : ajouter une entree dans le segment DATA ----- }
+{ Retourne l index dans DataTab ou -1 si plein.                }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label _PLK_N et stocker chaine --- }
+{ Retourne le label genere.                                     }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := PL_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans le segment DATA }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- ExprMakeImm : creer une valeur immediate --------------- }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNone : valeur invalide (void/erreur) ---------- }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- LitEvalInt : convertir un token TK_INTEGER en valeur -- }
+{ IntVal est deja calcule par LexScanNumber (dec/hex/oct/bin/  }
+{ char 0'A).                                                   }
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+{ ---- LitEvalFloat : convertir un token TK_FLOAT en entier -- }
+{ Prolog 8086 16 bits : les flottants sont tronques en entiers }
+{ avec avertissement.                                          }
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  N : LongInt;
+Begin
+  WarnMsg('flottant ' + T.Val + ' tronque en entier');
+  If T.FloatVal > 32767.0 Then N := 32767
+  Else If T.FloatVal < -32768.0 Then N := -32768
+  Else N := Trunc(T.FloatVal);
+  ExprMakeImm(N, TY_IDX_INT, Res);
+End;
+
+{ ---- IsSpecialAtom : teste si un atome est predefini -------- }
+{ true -> succes immediat, fail -> echec immediat               }
+Function IsSpecialAtom(Const S : TString) : Boolean;
+Begin
+  IsSpecialAtom := (S = 'true') Or (S = 'fail') Or
+                   (S = 'is') Or (S = 'mod') Or (S = 'rem') Or
+                   (S = 'not') Or (S = 'xor');
+End;
+
+{ ---- LitEval : dispatcher principal pour les litteraux ----- }
+{ Types de tokens acceptes :                                    }
+{   TK_INTEGER : entier -> EK_IMM / TY_IDX_INT                }
+{   TK_FLOAT   : flottant -> tronque en entier + warning       }
+{   TK_ATOM    : atome -> stocker en DATA, retourner EK_MEM   }
+{   TK_STRING  : chaine -> stocker en DATA, retourner EK_MEM  }
+{   TK_CUT     : ! -> EK_IMM avec valeur 0 (marqueur cut)     }
+{   TK_UNDERSCORE : _ -> EK_IMM / TY_IDX_VAR (var anonyme)    }
+{   TK_VARIABLE : Var -> EK_NONE (resolu plus tard par symtab) }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);  { valeur par defaut }
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+
+    TK_FLOAT :
+      LitEvalFloat(T, Res);
+
+    TK_ATOM :
+    Begin
+      { Atomes speciaux : true et fail }
+      If T.Val = 'true' Then
+        ExprMakeImm(1, TY_IDX_ATOM, Res)
+      Else If T.Val = 'fail' Then
+        ExprMakeImm(0, TY_IDX_ATOM, Res)
+      Else
+      Begin
+        { Atome general : stocker la chaine en DATA }
+        DataAddStr(T.Val);
+        Res.Kind    := EK_MEM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_ATOM;
+        Res.Offset  := DataCount - 1;
+        Res.SymIdx  := -1;
+      End;
+    End;
+
+    TK_STRING :
+    Begin
+      { Chaine "abc" : stocker en DATA }
+      DataAddStr(T.Val);
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STR;
+      Res.Offset  := DataCount - 1;
+      Res.SymIdx  := -1;
+    End;
+
+    TK_CUT :
+    Begin
+      { ! (cut) : marqueur special }
+      ExprMakeImm(0, TY_IDX_ATOM, Res);
+    End;
+
+    TK_UNDERSCORE :
+    Begin
+      { _ (variable anonyme) : chaque occurrence est independante }
+      ExprMakeImm(0, TY_IDX_VAR, Res);
+    End;
+
+    TK_VARIABLE :
+    Begin
+      { Variable nommee : sera resolue par la table des symboles }
+      Res.Kind    := EK_NONE;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_VAR;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+    End;
+
+    TK_LBRACKET :
+    Begin
+      { [] (liste vide) : atome special }
+      ExprMakeImm(0, TY_IDX_LIST, Res);
+    End;
+  End; { Case }
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (04..25)
   ============================================================ }
 
 Procedure Run;
