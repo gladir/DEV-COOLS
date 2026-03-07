@@ -2577,62 +2577,59 @@ Begin
       CompileError('cible d''affectation invalide');
       Exit;
     End;
-    (* Emission du store si lvalue connue (stub TODO 09) *)
-    If Res.SymIdx >= 0 Then
+    (* Emission du store pour la lvalue *)
+    If SymTab[Res.SymIdx].IsConst Then
+      CompileError('affectation a une constante val: "' +
+                   SymTab[Res.SymIdx].Name + '"');
+    If Op = '=' Then
     Begin
-      If SymTab[Res.SymIdx].IsConst Then
-        CompileError('affectation a une constante val: "' +
-                     SymTab[Res.SymIdx].Name + '"');
-      If Op = '=' Then
+      ExprFlushToAX(Right);
+      ExprStore(Res.SymIdx);
+      SymTab[Res.SymIdx].TypeIdx := Right.TypeIdx;
+    End
+    Else
+    Begin
+      (* Operateur compose : AX=old, BX=new, op, stocker *)
+      ExprFlushToAX(Right);
+      EmitInstrAB('MOV', 'BX', 'AX');
+      ExprLoad(Res.SymIdx, Res);
+      ExprFlushToAX(Res);
+      If Op = '+=' Then
+        EmitInstrAB('ADD', 'AX', 'BX')
+      Else If Op = '-=' Then
+        EmitInstrAB('SUB', 'AX', 'BX')
+      Else If Op = '*=' Then
+        EmitInstrA('IMUL', 'BX')
+      Else If Op = '/=' Then
       Begin
-        ExprFlushToAX(Right);
-        ExprStore(Res.SymIdx);
-        SymTab[Res.SymIdx].TypeIdx := Right.TypeIdx;
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblEnd);
+      End
+      Else If Op = '%=' Then
+      Begin
+        LblSkip := LabelGen;
+        LblEnd  := LabelGen;
+        EmitInstrAB('CMP', 'BX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('CWD');
+        EmitInstrA('IDIV', 'BX');
+        EmitInstrAB('MOV', 'AX', 'DX');
+        EmitInstrA('JMP', LblEnd);
+        EmitLabel(LblSkip);
+        EmitInstrAB('XOR', 'AX', 'AX');
+        EmitLabel(LblEnd);
       End
       Else
-      Begin
-        (* Operateur compose : AX=old, BX=new, op, stocker *)
-        ExprFlushToAX(Right);
-        EmitInstrAB('MOV', 'BX', 'AX');
-        ExprLoad(Res.SymIdx, Res);
-        ExprFlushToAX(Res);
-        If Op = '+=' Then
-          EmitInstrAB('ADD', 'AX', 'BX')
-        Else If Op = '-=' Then
-          EmitInstrAB('SUB', 'AX', 'BX')
-        Else If Op = '*=' Then
-          EmitInstrA('IMUL', 'BX')
-        Else If Op = '/=' Then
-        Begin
-          LblSkip := LabelGen;
-          LblEnd  := LabelGen;
-          EmitInstrAB('CMP', 'BX', '0');
-          EmitInstrA('JE', LblSkip);
-          EmitInstr('CWD');
-          EmitInstrA('IDIV', 'BX');
-          EmitInstrA('JMP', LblEnd);
-          EmitLabel(LblSkip);
-          EmitInstrAB('XOR', 'AX', 'AX');
-          EmitLabel(LblEnd);
-        End
-        Else If Op = '%=' Then
-        Begin
-          LblSkip := LabelGen;
-          LblEnd  := LabelGen;
-          EmitInstrAB('CMP', 'BX', '0');
-          EmitInstrA('JE', LblSkip);
-          EmitInstr('CWD');
-          EmitInstrA('IDIV', 'BX');
-          EmitInstrAB('MOV', 'AX', 'DX');
-          EmitInstrA('JMP', LblEnd);
-          EmitLabel(LblSkip);
-          EmitInstrAB('XOR', 'AX', 'AX');
-          EmitLabel(LblEnd);
-        End
-        Else
-          WarnMsg('operateur compose "' + Op + '" : stub');
-        ExprStore(Res.SymIdx);
-      End;
+        WarnMsg('operateur compose "' + Op + '" : stub');
+      ExprStore(Res.SymIdx);
     End;
   End;
 End;
