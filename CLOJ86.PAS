@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.clj [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -377,5 +377,931 @@
 
 Program CLOJ86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+(* ============================================================
+   CONSTANTES GLOBALES
+   ============================================================ *)
+Const
+  CLOJ86_VERSION = '1.0';
+  CLOJ86_DATE    = '2026-03-07';
+
+  (* Limites internes *)
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_KW        = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  (* Prefixes de nommage ASM *)
+  CL_VAR_PFX  = '_CLV_';     (* variable globale (def)              *)
+  CL_FN_PFX   = '_CLF_';     (* fonction (defn / fn)                *)
+  CL_STR_PFX  = '_CLK_';     (* constante chaine litterale          *)
+  CL_RT_PFX   = '_CLRT_';    (* routine runtime                     *)
+  CL_LBL_PFX  = '_CL_';      (* label de saut interne               *)
+  CL_KW_PFX   = '_CLKW_';    (* keyword (:nom)                      *)
+  CL_VEC_PFX  = '_CLVEC_';   (* vecteur literal DATA                *)
+  CL_MAP_PFX  = '_CLMAP_';   (* map literal DATA                    *)
+  CL_SET_PFX  = '_CLSET_';   (* set literal DATA                    *)
+  CL_NIL_LBL  = '_CL_NIL';   (* etiquette DATA chaine 'nil'         *)
+  CL_TRUE_LBL = '_CL_TRUE';  (* etiquette DATA chaine 'true'        *)
+  CL_FALSE_LBL= '_CL_FALSE'; (* etiquette DATA chaine 'false'       *)
+
+  (* Codes de sortie *)
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  (* Indices de types primitifs Clojure *)
+  TY_IDX_NIL     = 0;   (* nil                         *)
+  TY_IDX_INT     = 1;   (* entier 16 bits signe        *)
+  TY_IDX_STR     = 2;   (* pointeur chaine DATA        *)
+  TY_IDX_BOOL    = 3;   (* 0 ou 1 dans AX              *)
+  TY_IDX_KW      = 4;   (* keyword (:nom) -> index     *)
+  TY_IDX_SYM     = 5;   (* symbole (nom) -> index      *)
+  TY_IDX_LIST    = 6;   (* liste (cons cells)          *)
+  TY_IDX_VEC     = 7;   (* vecteur (bloc contigu)      *)
+  TY_IDX_MAP     = 8;   (* hash-map (paires cle/val)   *)
+  TY_IDX_SET     = 9;   (* hash-set                    *)
+  TY_IDX_FN      = 10;  (* fonction / closure           *)
+  TY_IDX_CHAR    = 11;  (* caractere                    *)
+  TY_PRIM_COUNT  = 12;
+  TY_UNKNOWN     = -1;
+
+(* ============================================================
+   TYPES
+   ============================================================ *)
+Type
+  TString = String[MAX_STR];
+
+  (* ---- Options de compilation ----------------------------- *)
+  TOptions = Record
+    SrcFile   : TString;   (* fichier source (.clj)                *)
+    OutFile   : TString;   (* fichier assembleur de sortie (.asm)  *)
+    Verbose   : Boolean;   (* -v : banniere et statistiques        *)
+    DebugMode : Boolean;   (* -d : affichage de chaque token       *)
+    Warnings  : Boolean;   (* -w : activer les avertissements      *)
+  End;
+
+  (* ---- Tokens Clojure (TODO 02) -------------------------- *)
+  TTokenKind = (
+    TK_EOF,              (* fin de fichier                       *)
+    TK_INTEGER,          (* literal entier 42 0xFF 0377          *)
+    TK_STRING,           (* literal chaine "abc"                 *)
+    TK_SYMBOL,           (* symbole : identifiant non mot-cle    *)
+    TK_KEYWORD,          (* :mot-cle                             *)
+    TK_LPAREN,           (* (                                    *)
+    TK_RPAREN,           (* )                                    *)
+    TK_LBRACKET,         (* [                                    *)
+    TK_RBRACKET,         (* ]                                    *)
+    TK_LBRACE,           (* accolade ouvrante                    *)
+    TK_RBRACE,           (* accolade fermante                    *)
+    TK_QUOTE,            (* '                                    *)
+    TK_DEREF,            (* @                                    *)
+    TK_META,             (* ^                                    *)
+    TK_SYNTAX_QUOTE,     (* `                                    *)
+    TK_UNQUOTE,          (* ~                                    *)
+    TK_UNQUOTE_SPLICE,   (* ~@                                   *)
+    TK_DISPATCH,         (* #                                    *)
+    TK_TRUE,             (* true                                 *)
+    TK_FALSE,            (* false                                *)
+    TK_NIL,              (* nil                                  *)
+    TK_CHAR              (* \a \newline \space \tab              *)
+  );
+
+  TToken = Record
+    Kind   : TTokenKind;
+    Val    : TString;      (* valeur textuelle brute              *)
+    IntVal : LongInt;      (* valeur entiere (TK_INTEGER)         *)
+    Line   : Integer;      (* ligne source (1-base)               *)
+    Col    : Integer;      (* colonne source (1-base)             *)
+  End;
+
+  (* ---- Categories de symboles (TODO 05) ------------------- *)
+  TSymKind = (
+    SK_VAR,       (* variable globale (def)               *)
+    SK_FN,        (* fonction (defn)                      *)
+    SK_MACRO,     (* macro (defmacro) - stub              *)
+    SK_SPECIAL,   (* forme speciale (if, do, let, ...)    *)
+    SK_LOCAL,     (* variable locale (let, fn param)      *)
+    SK_KEYWORD,   (* keyword (:nom)                       *)
+    SK_NS         (* namespace                            *)
+  );
+
+  TSymRec = Record
+    Name        : TString;   (* identifiant Clojure             *)
+    MangledName : TString;   (* _CLV_nom / _CLF_nom             *)
+    Kind        : TSymKind;
+    TypeIdx     : Integer;   (* indice dans TypeTab             *)
+    ScopeLevel  : Integer;
+    Offset      : Integer;   (* [BP-n] pour locaux              *)
+    IsConst     : Boolean;   (* ^:const -> erreur si reassigne  *)
+    Namespace   : TString;   (* espace de noms (vide = courant) *)
+    DeclLine    : Integer;
+  End;
+
+  (* ---- Types internes (TODO 06) --------------------------- *)
+  TTypeKind = (
+    TKC_NIL,
+    TKC_INT,
+    TKC_STRING,
+    TKC_BOOLEAN,
+    TKC_KEYWORD,
+    TKC_SYMBOL,
+    TKC_LIST,
+    TKC_VECTOR,
+    TKC_MAP,
+    TKC_SET,
+    TKC_FUNCTION,
+    TKC_CHAR,
+    TKC_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name : TString;
+    Kind : TTypeKind;
+    Size : Integer;   (* octets : int=2, ptr=2             *)
+  End;
+
+  (* ---- Valeurs d expression (TODO 10) --------------------- *)
+  TExprKind = (
+    EK_NONE,   (* void / pas de valeur                      *)
+    EK_IMM,    (* immediate dans ImmVal                     *)
+    EK_AX,     (* valeur dans AX                            *)
+    EK_MEM     (* adresse [BP+Offset] ou [_CLV_x]          *)
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   (* indice dans SymTab (-1 = pas de lvalue) *)
+  End;
+
+  (* ---- Segment de donnees (TODO 08) ----------------------- *)
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_LIST, DK_VEC, DK_MAP);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+(* ============================================================
+   VARIABLES GLOBALES
+   ============================================================ *)
+Var
+  (* Options *)
+  Opts : TOptions;
+
+  (* Compteurs generaux *)
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  (* Valeur fictive pour ignorer un retour TExprVal *)
+  GExprDummy : TExprVal;
+
+  (* Lexeur (TODO 02) *)
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  (* Table des symboles (TODO 05) *)
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  (* Table des types (TODO 06) *)
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  (* Emetteur ASM (TODO 07) *)
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;    (* taille cadre local courant (words)  *)
+  CurFnDepth   : Integer;    (* 0 = global, >0 = dans une defn/fn  *)
+  CurFnRetLbl  : TString;    (* label epilogue de la fonction       *)
+  CurFnName    : TString;    (* nom de la fonction courante         *)
+  LoopTop      : Integer;
+  LoopLbl      : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LabelGenSeq  : Integer;    (* compteur unique pour LabelGen       *)
+
+  (* Keywords (TODO 02/08) *)
+  KwTab   : Array[0..MAX_KW - 1] Of TString;
+  KwCount : Integer;
+
+  (* Segment de donnees (TODO 08) *)
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  (* Etat general *)
+  RuntimeEmitted : Boolean;
+
+(* ============================================================
+   FORWARD DECLARATIONS
+   ============================================================ *)
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexNextToken;        Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+(* TODO 03 *)
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+(* TODO 05 *)
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 TypeIdx, Offset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+(* TODO 06 *)
+Procedure TypeInit;      Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+(* TODO 07 *)
+Function  LabelGen : TString; Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
+Procedure EmitOpen;    Forward;
+Procedure EmitClose;   Forward;
+Procedure EmitHeader;  Forward;
+Procedure EmitDataSeg; Forward;
+(* TODO 08 *)
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+(* TODO 10 *)
+Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Procedure ParseForm(Var Res : TExprVal); Forward;
+(* TODO 24 *)
+Procedure EmitRuntime;   Forward;
+(* TODO 25 *)
+Procedure SymInit;       Forward;
+Procedure ParseProgram;  Forward;
+
+(* ============================================================
+   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- Messages d erreur et d avertissement ----------------- *)
+
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('CLOJ86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('CLOJ86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('CLOJ86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+(* ---- Banniere et aide ------------------------------------- *)
+
+Procedure ShowBanner;
+Begin
+  WriteLn('CLOJ86 v', CLOJ86_VERSION, ' (', CLOJ86_DATE, ')');
+  WriteLn('Compilateur Clojure -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: CLOJ86 <source.clj> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.clj : fichier Clojure source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+(* ---- Fonctions utilitaires sur les chaines ----------------- *)
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+(* ---- Initialisation des options ----------------------------- *)
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+(* ---- Analyse des arguments de la ligne de commande ---------- *)
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('CLOJ86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('CLOJ86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('CLOJ86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  (* Verifier l extension .clj *)
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.clj' Then
+    WarnMsg('extension attendue .clj, trouvee: ' + Ext);
+
+  (* Fichier de sortie par defaut : meme nom avec .asm *)
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+(* ---- Nettoyage ---------------------------------------------- *)
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+(* ---- Initialisation generale des variables globales --------- *)
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  KwCount        := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  CurFrameSize   := 0;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+(* ---- Statistiques ------------------------------------------ *)
+
+Procedure ShowStats;
+Begin
+  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Symboles       : ', TotalSyms);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+(* ============================================================
+   STUBS POUR TODOs 02-25  (a implementer)
+   ============================================================ *)
+
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir ' + Opts.SrcFile);
+  LexOpened := True;
+  LexLineNo := 0;
+  LexColNo  := 0;
+  LexLine   := '';
+  LexEOF    := False;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure LexNextToken;
+Begin
+  (* TODO 02 - stub : signale fin de fichier *)
+  CurToken.Kind   := TK_EOF;
+  CurToken.Val    := '';
+  CurToken.IntVal := 0;
+  CurToken.Line   := LexLineNo;
+  CurToken.Col    := LexColNo;
+End;
+
+Procedure PrintToken(Const T : TToken);
+Begin
+  (* TODO 02 - stub *)
+  WriteLn('  [', Ord(T.Kind), '] ', T.Val);
+End;
+
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_NIL;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then
+    Res.ImmVal := 1
+  Else
+    Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  (* TODO 03 - stub *)
+  ExprMakeNone(Res);
+End;
+
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Begin
+  Case Kind Of
+    SK_VAR   : SymMangle := CL_VAR_PFX + Name;
+    SK_FN    : SymMangle := CL_FN_PFX + Name;
+    SK_LOCAL : SymMangle := CL_VAR_PFX + Name;
+  Else
+    SymMangle := CL_VAR_PFX + Name;
+  End;
+End;
+
+Function SymFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    FatalError('table des symboles pleine');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].IsConst     := False;
+  SymTab[SymCount].Namespace   := '';
+  SymTab[SymCount].DeclLine    := CurToken.Line;
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+    FatalError('profondeur de portee maximale atteinte');
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop > 0 Then
+  Begin
+    Dec(ScopeTop);
+    SymCount := ScopeStack[ScopeTop];
+    Dec(CurScope);
+  End;
+End;
+
+Procedure TypeInit;
+Begin
+  (* TODO 06 - stub : initialiser les types primitifs *)
+  TypeCount := 0;
+End;
+
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  (* TODO 06 - stub *)
+  TypeSizeof := 2;
+End;
+
+Function LabelGen : TString;
+Var S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := CL_LBL_PFX + S;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If Ops = '' Then
+    EmitRaw('        ' + Mnem)
+  Else
+    EmitRaw('        ' + Mnem + ' ' + Ops);
+End;
+
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP,SP');
+End;
+
+Procedure EmitEpilog;
+Begin
+  EmitInstr('MOV', 'SP,BP');
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('=========================================================');
+  EmitComment('Genere par CLOJ86 v' + CLOJ86_VERSION + ' (' + CLOJ86_DATE + ')');
+  EmitComment('Source  : ' + Opts.SrcFile);
+  EmitComment('Cible   : MASM 8086, modele SMALL');
+  EmitComment('=========================================================');
+  EmitBlankLine;
+  EmitRaw('        .8086');
+  EmitRaw('        DOSSEG');
+  EmitRaw('        .MODEL  SMALL');
+  EmitBlankLine;
+  EmitRaw('        .STACK  ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitBlankLine;
+End;
+
+Procedure EmitDataSeg;
+Var I : Integer;
+Begin
+  EmitBlankLine;
+  EmitRaw('_DATA   SEGMENT PUBLIC ''DATA''');
+  EmitBlankLine;
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '        DW ' + DataTab[I].StrVal);
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '        DB ' + DataTab[I].StrVal);
+      DK_STR :
+        EmitRaw(DataTab[I].LblName + '        DB ''' + DataTab[I].StrVal + ''',0');
+    Else
+      EmitRaw(DataTab[I].LblName + '        DW 0');
+    End;
+  End;
+  EmitBlankLine;
+  EmitRaw('_DATA   ENDS');
+End;
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END _CLF_main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    FatalError('segment de donnees plein');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+Function DataAddStr(Const S : TString) : TString;
+Var Lbl : TString;
+    Seq : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, Seq);
+  Lbl := CL_STR_PFX + Seq;
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+Procedure ExprFlushToAX(Const E : TExprVal);
+Var S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, S);
+      EmitInstr('MOV', 'AX,' + S);
+    End;
+    EK_MEM :
+    Begin
+      Str(E.Offset, S);
+      EmitInstr('MOV', 'AX,[BP-' + S + ']');
+    End;
+    EK_AX  : ;  (* deja dans AX *)
+    EK_NONE : EmitInstr('XOR', 'AX,AX');  (* nil = 0 *)
+  End;
+End;
+
+Procedure ParseForm(Var Res : TExprVal);
+Begin
+  (* TODO 10 - stub *)
+  ExprMakeNone(Res);
+End;
+
+Procedure EmitRuntime;
+Begin
+  (* TODO 24 - stub *)
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+End;
+
+Procedure SymInit;
+Begin
+  (* TODO 05 - stub : enregistrer les formes speciales *)
+  SymCount := 0;
+End;
+
+Procedure ParseProgram;
+Begin
+  (* TODO 25 - stub : lire le premier token et boucler *)
+  LexNextToken;
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    ParseForm(GExprDummy);
+    LexNextToken;
+  End;
+End;
+
+(* ============================================================
+   PROCEDURE RUN - PIPELINE PRINCIPAL
+   ============================================================ *)
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  EmitHeader;
+  LexInit;
+
+  (* Boucle principale de compilation *)
+  ParseProgram;
+
+  LexClose;
+  EmitRuntime;
+  EmitClose;
+
+  If Opts.Verbose Then ShowStats;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+(* ============================================================
+   PROGRAMME PRINCIPAL
+   ============================================================ *)
+Begin
+  ParseArgs;
+  Run;
 End.
