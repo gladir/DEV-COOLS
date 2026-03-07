@@ -41,7 +41,7 @@
               try typealias until val var vararg when where while
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 (Int) ou -32768..32767 (signe)
             Entiers hexadecimaux : 0xFF, 0XFF
             Entiers binaires : 0b1010, 0B1010
@@ -2035,7 +2035,11 @@ Begin
   PrintToken(CurToken);
 End;
 
-{ --- TODO 03 : Litteraux ----------------------------------- }
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExprMakeImm : construire une valeur immediate --------- }
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal);
 Begin
@@ -2046,6 +2050,7 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+{ ---- ExprMakeNone : valeur invalide (void/erreur) ---------- }
 Procedure ExprMakeNone(Var Res : TExprVal);
 Begin
   Res.Kind    := EK_NONE;
@@ -2055,15 +2060,81 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+{ ---- ExprMakeBool : valeur booleenne Kotlin (0 ou 1) ------- }
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
 Begin
-  ExprMakeImm(AVal, TY_IDX_BOOLEAN, Res);
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOLEAN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
 End;
 
+{ ---- LitEvalInt : convertir un TK_INTEGER en valeur -------- }
+(* IntVal est deja calcule par LexScanNumber pour dec/hex/bin. *)
+(* Separateurs _ deja ignores par le lexeur.                   *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+{ ---- LitEvalFloat : convertir un TK_FLOAT en entier -------- }
+(* Flottant tronque en entier 16 bits (pas de FPU 8086).       *)
+(* Les suffixes F/D sont deja traites par le lexeur.           *)
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+{ ---- LitEval : dispatcher principal pour les litteraux ----- }
+(* Types de tokens acceptes : TK_INTEGER, TK_LONG, TK_FLOAT,  *)
+(* TK_STRING, TK_CHAR, TK_KEYWORD (true/false/null).          *)
+(* TK_STRING : cree une entree dans le segment DATA via        *)
+(* DataAddStr et retourne un EK_MEM pointant vers le label.    *)
+(* TK_CHAR : retourne Ord(caractere) comme immediat.           *)
+(* TK_LONG : traite comme TK_INTEGER (16 bits).                *)
 Procedure LitEval(Const T : TToken; Var Res : TExprVal);
 Begin
-  { stub - TODO 03 }
-  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+  ExprMakeNone(Res);  { valeur par defaut }
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+    TK_LONG :
+      LitEvalInt(T, Res);    { Long -> traite comme Int 16 bits }
+    TK_FLOAT :
+      LitEvalFloat(T, Res);  { flottant tronque en entier       }
+    TK_STRING :
+    Begin
+      { L'adresse DATA sera resolue dans ParsePrimary (TODO 10) }
+      { via DataAddStr et LEA AX, [_KTK_n]                      }
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+    End;
+    TK_CHAR :
+    Begin
+      { Caractere : 'A' -> Ord('A') = 65 }
+      If Length(T.Val) > 0 Then
+        ExprMakeImm(Ord(T.Val[1]), TY_IDX_CHAR, Res)
+      Else
+        ExprMakeImm(0, TY_IDX_CHAR, Res);
+    End;
+    TK_KEYWORD :
+    Begin
+      If T.Val = 'true' Then
+        ExprMakeBool(1, Res)
+      Else If T.Val = 'false' Then
+        ExprMakeBool(0, Res)
+      Else If T.Val = 'null' Then
+        ExprMakeImm(0, TY_IDX_ANY, Res)  { null -> AX=0, type Any? }
+      Else
+        ExprMakeNone(Res);
+    End;
+  Else
+    ExprMakeNone(Res);
+  End;
 End;
 
 { --- TODO 04 : Operateurs ---------------------------------- }
