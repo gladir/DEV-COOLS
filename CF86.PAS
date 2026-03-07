@@ -49,7 +49,7 @@
             Dates : "01/15/2026" (avertissement, traite comme chaine)
             NULL : valeur nulle (javaCast("null","")) -> AX=0
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques   : + - * / MOD (modulo) \ (division entiere)
             Concatenation   : & (chaine & chaine -> appel _CFRT_CONCAT)
             Comparaison     : EQ NEQ LT LTE GT GTE
@@ -655,6 +655,11 @@ Procedure EmitOpen;      Forward;
 Procedure ParsePage;     Forward;
 Procedure TypeInit;      Forward;
 Procedure SymInit;       Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
 { TODO 02 }
 Function  IsIdentStart(Ch : Char) : Boolean; Forward;
 Function  IsIdentCont(Ch : Char) : Boolean; Forward;
@@ -683,6 +688,17 @@ Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+{ TODO 04 }
+Function  NewLabel(Const Prefix : TString) : TString; Forward;
+Function  IsAssignOp(Const Op : TString) : Boolean; Forward;
+Function  IsCFBinOp(Const T : TToken) : Boolean; Forward;
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Procedure ExprFlushToAX(Var E : TExprVal); Forward;
+Procedure ExprEmitBinOp(Const Op : TString;
+                        Var L : TExprVal; Var R : TExprVal); Forward;
+Procedure ExprEmitUnary(Const Op : TString;
+                        Var E : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1881,6 +1897,431 @@ Begin
   Else
     ExprMakeNone(Res);
   End;
+End;
+
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- NewLabel : generer un label unique _CFL_prefix_N ------- }
+Function NewLabel(Const Prefix : TString) : TString;
+Var
+  NS : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, NS);
+  NewLabel := CF_LBL_PFX + Prefix + '_' + NS;
+End;
+
+{ ---- IsAssignOp : teste si Op est un operateur d affectation }
+(* ColdFusion n a que = pour l affectation                     *)
+Function IsAssignOp(Const Op : TString) : Boolean;
+Begin
+  IsAssignOp := (Op = '=');
+End;
+
+{ ---- IsCFBinOp : teste si le token courant est un operateur  }
+(* binaire ColdFusion (operateur symbolique ou mot-cle)        *)
+Function IsCFBinOp(Const T : TToken) : Boolean;
+Var
+  U : TString;
+Begin
+  IsCFBinOp := False;
+  If T.Kind = TK_OP Then
+  Begin
+    IsCFBinOp := (BinOpPrec(T.Val) > 0);
+    Exit;
+  End;
+  If T.Kind = TK_KEYWORD Then
+  Begin
+    U := StrUpperCase(T.Val);
+    IsCFBinOp :=
+      (U = 'EQ')  Or (U = 'NEQ')      Or (U = 'LT')  Or (U = 'LTE') Or
+      (U = 'GT')  Or (U = 'GTE')      Or (U = 'AND') Or (U = 'OR')  Or
+      (U = 'XOR') Or (U = 'MOD')      Or (U = 'CONTAINS');
+  End;
+End;
+
+{ ---- BinOpPrec : table de precedences ColdFusion (Pratt) --- }
+(* Retourne 0 si l operateur n est pas binaire.                *)
+(* Niveaux (croissant = plus serre) :                          *)
+(*   ? :           -> 1  (ternaire)                            *)
+(*   OR XOR ||     -> 2  (OU logique / XOR)                    *)
+(*   AND &&        -> 3  (ET logique)                          *)
+(*   EQ NEQ LT LTE GT GTE CONTAINS == != < <= > >=  -> 4      *)
+(*   + - &         -> 5  (addition, soustraction, concat)      *)
+(*   * / MOD \     -> 6  (multiplication, division, modulo)    *)
+(*   NOT ! unaire  -> traites par ExprEmitUnary / ParsePrimary *)
+Function BinOpPrec(Const Op : TString) : Integer;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(Op);
+  { Ternaire }
+  If (U = '?') Or (U = ':') Then
+    BinOpPrec := 1
+  { OU logique / XOR }
+  Else If (U = 'OR') Or (U = 'XOR') Or (U = '||') Then
+    BinOpPrec := 2
+  { ET logique }
+  Else If (U = 'AND') Or (U = '&&') Then
+    BinOpPrec := 3
+  { Comparaison }
+  Else If (U = 'EQ')  Or (U = 'NEQ')      Or (U = 'LT')  Or (U = 'LTE') Or
+          (U = 'GT')  Or (U = 'GTE')      Or (U = 'CONTAINS') Or
+          (U = '==')  Or (U = '!=')        Or (U = '<')   Or (U = '<=')  Or
+          (U = '>')   Or (U = '>=') Then
+    BinOpPrec := 4
+  { Addition, soustraction, concatenation }
+  Else If (U = '+') Or (U = '-') Or (U = '&') Then
+    BinOpPrec := 5
+  { Multiplication, division, modulo, division entiere }
+  Else If (U = '*') Or (U = '/') Or (U = 'MOD') Or (U = '\') Then
+    BinOpPrec := 6
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ---- BinOpIsRight : vrai si operateur droit-associatif ----- }
+(* En ColdFusion : le ternaire ? est droit-associatif         *)
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '?');
+End;
+
+{ ---- ExprFlushToAX : charger la valeur d une TExprVal ------ }
+(* dans le registre AX, quel que soit son mode (IMM/MEM/AX)   *)
+Procedure ExprFlushToAX(Var E : TExprVal);
+Var
+  S : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      Str(E.ImmVal, S);
+      EmitInstr('MOV', 'AX, ' + S);
+      E.Kind := EK_AX;
+    End;
+    EK_MEM :
+    Begin
+      { Chaine litterale : Offset = index DataTab -> OFFSET label }
+      If E.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If (E.Offset >= 0) And (E.Offset < DataCount) Then
+          EmitInstr('MOV', 'AX, OFFSET ' + DataTab[E.Offset].LblName)
+        Else
+          EmitInstr('XOR', 'AX, AX');
+      End
+      { Variable locale : [BP-n] }
+      Else If E.Offset < 0 Then
+      Begin
+        Str(-E.Offset, S);
+        EmitInstr('MOV', 'AX, [BP-' + S + ']');
+      End
+      { Variable globale ou parametre : [BP+n] ou [_CFV_label] }
+      Else
+      Begin
+        If (E.SymIdx >= 0) And (E.SymIdx < SymCount) Then
+          EmitInstr('MOV', 'AX, [' + SymTab[E.SymIdx].MangledName + ']')
+        Else
+        Begin
+          Str(E.Offset, S);
+          EmitInstr('MOV', 'AX, [BP+' + S + ']');
+        End;
+      End;
+      E.Kind := EK_AX;
+    End;
+    EK_AX  : ;  { deja dans AX }
+    EK_NONE : ;  { rien a faire }
+  End;
+End;
+
+{ ---- NormOp : normaliser un operateur ColdFusion ---------- }
+(* Convertit les mots-cles ColdFusion en forme symbolique     *)
+(* pour simplifier le traitement dans ExprEmitBinOp            *)
+Function NormOp(Const Op : TString) : TString;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(Op);
+  If      U = 'EQ'  Then NormOp := '=='
+  Else If U = 'NEQ' Then NormOp := '!='
+  Else If U = 'LT'  Then NormOp := '<'
+  Else If U = 'LTE' Then NormOp := '<='
+  Else If U = 'GT'  Then NormOp := '>'
+  Else If U = 'GTE' Then NormOp := '>='
+  Else If U = 'AND' Then NormOp := '&&'
+  Else If U = 'OR'  Then NormOp := '||'
+  Else NormOp := Op;
+End;
+
+{ ---- ExprEmitBinOp : generer le code 8086 pour op binaire -- }
+(* Pliage de constantes si L et R sont EK_IMM.                 *)
+(* Operateurs CF couverts :                                    *)
+(*   + - * / MOD \ (arith)  & (concat)                        *)
+(*   EQ NEQ LT LTE GT GTE CONTAINS == != < <= > >= (comp)     *)
+(*   AND OR XOR && || (logique, avec court-circuit)            *)
+Procedure ExprEmitBinOp(Const Op : TString;
+                        Var L : TExprVal; Var R : TExprVal);
+Var
+  NP    : TString;
+  LblE  : TString;
+  LblT  : TString;
+Begin
+  NP := NormOp(Op);
+
+  { ---- Pliage de constantes -------------------------------- }
+  If (L.Kind = EK_IMM) And (R.Kind = EK_IMM) Then
+  Begin
+    If      NP = '+'  Then L.ImmVal := L.ImmVal + R.ImmVal
+    Else If NP = '-'  Then L.ImmVal := L.ImmVal - R.ImmVal
+    Else If NP = '*'  Then L.ImmVal := L.ImmVal * R.ImmVal
+    Else If NP = '/'  Then
+    Begin
+      If R.ImmVal = 0 Then
+      Begin CompileError('division par zero'); L.ImmVal := 0; End
+      Else L.ImmVal := L.ImmVal Div R.ImmVal;
+    End
+    Else If (StrUpperCase(Op) = 'MOD') Or (NP = '%') Then
+    Begin
+      If R.ImmVal = 0 Then
+      Begin CompileError('modulo par zero'); L.ImmVal := 0; End
+      Else L.ImmVal := L.ImmVal Mod R.ImmVal;
+    End
+    Else If NP = '\' Then
+    Begin
+      If R.ImmVal = 0 Then
+      Begin CompileError('division entiere par zero'); L.ImmVal := 0; End
+      Else L.ImmVal := L.ImmVal Div R.ImmVal;
+    End
+    Else If NP = '==' Then
+    Begin If L.ImmVal =  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If NP = '!=' Then
+    Begin If L.ImmVal <> R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If NP = '<'  Then
+    Begin If L.ImmVal <  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If NP = '<=' Then
+    Begin If L.ImmVal <= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If NP = '>'  Then
+    Begin If L.ImmVal >  R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If NP = '>=' Then
+    Begin If L.ImmVal >= R.ImmVal Then L.ImmVal := 1 Else L.ImmVal := 0; End
+    Else If NP = '&&' Then
+    Begin
+      If (L.ImmVal <> 0) And (R.ImmVal <> 0) Then L.ImmVal := 1
+      Else L.ImmVal := 0;
+    End
+    Else If NP = '||' Then
+    Begin
+      If (L.ImmVal <> 0) Or (R.ImmVal <> 0) Then L.ImmVal := 1
+      Else L.ImmVal := 0;
+    End
+    Else If StrUpperCase(Op) = 'XOR' Then
+    Begin
+      If ((L.ImmVal <> 0) And (R.ImmVal = 0)) Or
+         ((L.ImmVal = 0) And (R.ImmVal <> 0)) Then L.ImmVal := 1
+      Else L.ImmVal := 0;
+    End
+    Else If NP = '&' Then
+      L.ImmVal := 0;  { concat de constantes : pas supporte en IMM }
+    L.TypeIdx := TY_IDX_NUMERIC;
+    Exit;
+  End;
+
+  { ---- Court-circuit && / AND ------------------------------ }
+  If NP = '&&' Then
+  Begin
+    LblE := NewLabel('SCAND');
+    ExprFlushToAX(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ', LblE);
+    ExprFlushToAX(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblE);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Court-circuit || / OR ------------------------------- }
+  If NP = '||' Then
+  Begin
+    LblE := NewLabel('SCOR');
+    ExprFlushToAX(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JNZ', LblE);
+    ExprFlushToAX(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('JZ', LblE);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblE);
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- XOR logique ----------------------------------------- }
+  If StrUpperCase(Op) = 'XOR' Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    LblT := NewLabel('XNLA');
+    EmitInstr('JZ', LblT);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblT);
+    EmitInstr('PUSH', 'AX');
+    ExprFlushToAX(R);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    LblE := NewLabel('XNLB');
+    EmitInstr('JZ', LblE);
+    EmitInstr('MOV', 'AX, 1');
+    EmitLabel(LblE);
+    EmitInstr('POP', 'BX');
+    EmitInstr('XOR', 'AX, BX');
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Concatenation & ------------------------------------- }
+  If NP = '&' Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('PUSH', 'SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'DI, AX');
+    EmitInstr('POP', 'SI');
+    EmitInstr('CALL', CF_RT_PFX + 'CONCAT');
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_STRING;
+    Exit;
+  End;
+
+  { ---- CONTAINS -------------------------------------------- }
+  If StrUpperCase(Op) = 'CONTAINS' Then
+  Begin
+    ExprFlushToAX(L);
+    EmitInstr('MOV', 'SI, AX');
+    EmitInstr('PUSH', 'SI');
+    ExprFlushToAX(R);
+    EmitInstr('MOV', 'DI, AX');
+    EmitInstr('POP', 'SI');
+    EmitInstr('CALL', CF_RT_PFX + 'CONTAINS');
+    L.Kind := EK_AX; L.TypeIdx := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { ---- Cas general : L dans AX, R dans BX ----------------- }
+  ExprFlushToAX(L);
+  EmitInstr('PUSH', 'AX');
+  ExprFlushToAX(R);
+  EmitInstr('MOV', 'BX, AX');
+  EmitInstr('POP', 'AX');
+  { AX = gauche, BX = droite }
+
+  { Arithmetique }
+  If      NP = '+'  Then EmitInstr('ADD', 'AX, BX')
+  Else If NP = '-'  Then EmitInstr('SUB', 'AX, BX')
+  Else If NP = '*'  Then EmitInstr('IMUL', 'BX')
+  Else If NP = '/'  Then
+  Begin
+    EmitInstr('CWD', '');
+    EmitInstr('IDIV', 'BX');
+  End
+  Else If (StrUpperCase(Op) = 'MOD') Or (NP = '%') Then
+  Begin
+    EmitInstr('CWD', '');
+    EmitInstr('IDIV', 'BX');
+    EmitInstr('MOV', 'AX, DX');
+  End
+  Else If NP = '\' Then
+  Begin
+    EmitInstr('CWD', '');
+    EmitInstr('IDIV', 'BX');
+    { quotient deja dans AX }
+  End
+  { Comparaison }
+  Else If NP = '==' Then
+  Begin
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETE', 'AL');
+  End
+  Else If NP = '!=' Then
+  Begin
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETNE', 'AL');
+  End
+  Else If NP = '<' Then
+  Begin
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETL', 'AL');
+  End
+  Else If NP = '<=' Then
+  Begin
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETLE', 'AL');
+  End
+  Else If NP = '>' Then
+  Begin
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETG', 'AL');
+  End
+  Else If NP = '>=' Then
+  Begin
+    EmitInstr('CMP', 'AX, BX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETGE', 'AL');
+  End;
+
+  L.Kind := EK_AX;
+End;
+
+{ ---- ExprEmitUnary : generer le code 8086 pour op unaire --- }
+(* NOT / ! -> TEST AX,AX ; MOV AX,0 ; SETZ AL                 *)
+(* unaire - -> NEG AX                                          *)
+(* unaire + -> rien (identite)                                 *)
+Procedure ExprEmitUnary(Const Op : TString; Var E : TExprVal);
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(Op);
+
+  { Pliage de constante unaire }
+  If E.Kind = EK_IMM Then
+  Begin
+    If (U = 'NOT') Or (U = '!') Then
+    Begin
+      If E.ImmVal <> 0 Then E.ImmVal := 0 Else E.ImmVal := 1;
+      E.TypeIdx := TY_IDX_BOOLEAN;
+    End
+    Else If U = '-' Then
+      E.ImmVal := -E.ImmVal
+    Else If U = '+' Then
+      ;  { identite }
+    Exit;
+  End;
+
+  ExprFlushToAX(E);
+  If (U = 'NOT') Or (U = '!') Then
+  Begin
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('MOV', 'AX, 0');
+    EmitInstr('SETZ', 'AL');
+    E.TypeIdx := TY_IDX_BOOLEAN;
+  End
+  Else If U = '-' Then
+    EmitInstr('NEG', 'AX')
+  Else If U = '+' Then
+    ;  { identite : rien a generer }
+  E.Kind := EK_AX;
 End;
 
 { ============================================================
