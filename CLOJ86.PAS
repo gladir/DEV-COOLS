@@ -1563,8 +1563,8 @@ Begin
       Scanning := True;
       (* On jette le token lu et on en lit un autre.
          Si c etait un LPAREN/LBRACKET/LBRACE il faudrait
-         sauter toute la forme, mais en mode stub on saute
-         juste un token. Le vrai skip recursif sera dans TODO 04. *)
+         sauter toute la forme imbriquee. Pour l instant on
+         saute un seul token. Le skip recursif sera dans TODO 04. *)
     End;
   End;
 
