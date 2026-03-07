@@ -217,7 +217,7 @@
               Labels : _PSPL_CASE_N, _PSPL_CEND_N
             ParseBlock : BEGIN stmt [; stmt] END
 
-  TODO 14 - BOUCLES : FOR / WHILE / REPEAT / BREAK / CONTINUE
+  TODO 14 - BOUCLES : FOR / WHILE / REPEAT / BREAK / CONTINUE [IMPLEMENTE]
             ParseForStmt : FOR id := lo TO|DOWNTO hi DO stmt
               Variable locale ou globale comme compteur
               TO : increment par INC EAX / CMP EAX,hi / JLE boucle
@@ -6480,10 +6480,278 @@ Begin
   End;
 End;
 
-{ --- Stubs Boucles (TODO 14) --- }
-Procedure ParseForStmt; Begin End;
-Procedure ParseWhileStmt; Begin End;
-Procedure ParseRepeatStmt; Begin End;
+{ ============================================================
+  TODO 14 - BOUCLES : FOR / WHILE / REPEAT / BREAK / CONTINUE
+            [IMPLEMENTE]
+  ============================================================ }
+{ LoopPush / LoopPop : pile de labels pour break/continue
+  ParseForStmt : FOR id := lo TO|DOWNTO hi DO stmt
+    Variable locale ou globale comme compteur
+    TO : increment par INC / CMP EAX,hi / JG fin
+    DOWNTO : decrement par DEC / CMP EAX,lo / JL fin
+    Limite stockee dans .DATA (DataAddDWord)
+  ParseWhileStmt : WHILE cond DO stmt
+    Labels : test + fin
+    Emission TEST EAX,EAX / JZ fin, JMP test
+  ParseRepeatStmt : REPEAT stmts UNTIL cond
+    Labels : debut + fin
+    Emission TEST EAX,EAX / JZ debut
+  BREAK : JMP vers label de fin de boucle englobante
+  CONTINUE : JMP vers label de test/increment de boucle
+    (deja geres dans ParseStatement) }
+
+{ ---- LoopPush : empiler un contexte de boucle ---------------- }
+Procedure LoopPush(Const LblBreak, LblCont : TString);
+Begin
+  Inc(LoopTop);
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    WarnMsg('trop de boucles imbriquees');
+    Dec(LoopTop);
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := LblBreak;
+  LoopContLbl[LoopTop]  := LblCont;
+End;
+
+{ ---- LoopPop : depiler un contexte de boucle ----------------- }
+Procedure LoopPop;
+Begin
+  If LoopTop >= 0 Then
+    Dec(LoopTop);
+End;
+
+{ ---- ParseForStmt : for v := expr1 to|downto expr2 do stmt --- }
+{ CurToken est sur 'for'.                                        }
+Procedure ParseForStmt;
+Var
+  VarName   : TString;
+  Ev        : TExprVal;
+  LimLabel  : TString;
+  LblTest   : TString;
+  LblEnd    : TString;
+  LblCont   : TString;
+  IsDownTo  : Boolean;
+  SIdx      : Integer;
+  VarRef    : TString;
+Begin
+  EmitComment('for');
+
+  { Consommer for }
+  TplNextToken;
+
+  { Lire la variable de boucle }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WarnMsg('variable de boucle attendue apres ''for''');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  TplNextToken;
+
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    TplNextToken
+  Else
+    WarnMsg(''':='' attendu apres variable de boucle');
+
+  { Evaluer l expression de depart }
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+
+  { Chercher le symbole de la variable }
+  SIdx := SymFind(VarName);
+  If SIdx < 0 Then
+  Begin
+    WarnMsg('variable de boucle ''' + VarName + ''' non declaree');
+    Exit;
+  End;
+  If SymTab[SIdx].IsLocal Then
+    VarRef := 'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset)
+  Else
+    VarRef := 'DWORD PTR [' + SymTab[SIdx].MangledName + ']';
+
+  { Stocker la valeur de depart }
+  EmitInstrAB('MOV', VarRef, 'EAX');
+
+  { Consommer to ou downto }
+  IsDownTo := False;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'to') Then
+    TplNextToken
+  Else If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'downto') Then
+  Begin
+    IsDownTo := True;
+    TplNextToken;
+  End
+  Else
+    WarnMsg('''to'' ou ''downto'' attendu');
+
+  { Evaluer l expression limite et la stocker dans une variable data }
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+  LimLabel := LabelGen;
+  EmitInstrAB('MOV', 'DWORD PTR [' + LimLabel + ']', 'EAX');
+
+  { Generer les labels de boucle }
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+  LblCont := LabelGen;
+
+  { Consommer do }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+    TplNextToken
+  Else
+    WarnMsg('''do'' attendu apres expression limite');
+
+  { Label de test }
+  EmitLabel(LblTest);
+
+  { Test : CMP var, limite }
+  EmitInstrAB('MOV', 'EAX', VarRef);
+  EmitInstrAB('CMP', 'EAX', 'DWORD PTR [' + LimLabel + ']');
+  If IsDownTo Then
+    EmitInstrA('JL', LblEnd)
+  Else
+    EmitInstrA('JG', LblEnd);
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblEnd, LblCont);
+
+  { Compiler le corps de la boucle }
+  ParseStatement;
+
+  { Consommer le ; optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+
+  { Label continue (increment) }
+  EmitLabel(LblCont);
+
+  { Increment ou decrement }
+  If IsDownTo Then
+    EmitInstrA('DEC', VarRef)
+  Else
+    EmitInstrA('INC', VarRef);
+
+  { Retour au test }
+  EmitInstrA('JMP', LblTest);
+
+  { Label fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte de boucle }
+  LoopPop;
+
+  { Ajouter la variable limite dans le segment de donnees }
+  DataAddDWord(LimLabel, 0);
+End;
+
+{ ---- ParseWhileStmt : while expr do stmt --------------------- }
+{ CurToken est sur 'while'.                                       }
+Procedure ParseWhileStmt;
+Var
+  Ev      : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  EmitComment('while');
+
+  { Consommer while }
+  TplNextToken;
+
+  { Generer les labels }
+  LblTest := LabelGen;
+  LblEnd  := LabelGen;
+
+  { Label de test }
+  EmitLabel(LblTest);
+
+  { Evaluer la condition }
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+
+  { TEST EAX,EAX / JZ fin }
+  EmitInstrAB('TEST', 'EAX', 'EAX');
+  EmitInstrA('JZ', LblEnd);
+
+  { Consommer do }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'do') Then
+    TplNextToken
+  Else
+    WarnMsg('''do'' attendu apres condition while');
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblEnd, LblTest);
+
+  { Compiler le corps }
+  ParseStatement;
+
+  { Consommer le ; optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+
+  { Retour au test }
+  EmitInstrA('JMP', LblTest);
+
+  { Label fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte de boucle }
+  LoopPop;
+End;
+
+{ ---- ParseRepeatStmt : repeat stmts until expr --------------- }
+{ CurToken est sur 'repeat'.                                     }
+Procedure ParseRepeatStmt;
+Var
+  Ev     : TExprVal;
+  LblBeg : TString;
+  LblEnd : TString;
+Begin
+  EmitComment('repeat');
+
+  { Consommer repeat }
+  TplNextToken;
+
+  { Generer les labels }
+  LblBeg := LabelGen;
+  LblEnd := LabelGen;
+
+  { Label debut }
+  EmitLabel(LblBeg);
+
+  { Empiler le contexte de boucle }
+  LoopPush(LblEnd, LblBeg);
+
+  { Compiler les instructions jusqu a until }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until')) Do
+  Begin
+    ParseStatement;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+  End;
+
+  { Consommer until }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'until') Then
+    TplNextToken
+  Else
+    WarnMsg('''until'' attendu pour fermer le repeat');
+
+  { Evaluer la condition }
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+
+  { TEST EAX,EAX / JZ debut (si faux, on boucle) }
+  EmitInstrAB('TEST', 'EAX', 'EAX');
+  EmitInstrA('JZ', LblBeg);
+
+  { Label fin }
+  EmitLabel(LblEnd);
+
+  { Depiler le contexte de boucle }
+  LoopPop;
+End;
 
 { --- Stubs Fonctions/Procedures (TODO 18) --- }
 Procedure ParseFuncDecl; Begin End;
