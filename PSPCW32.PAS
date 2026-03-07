@@ -204,7 +204,7 @@
             ReadLn(var) : Read + consommer jusqu a CR+LF
             Expression inline <%= expr %> : evaluer, convertir, ecrire
 
-  TODO 13 - IF / CASE / BLOCS BEGIN..END
+  TODO 13 - IF / CASE / BLOCS BEGIN..END [IMPLEMENTE]
             ParseIfStmt : IF cond THEN stmt [ELSE stmt]
               Emission TEST EAX,EAX / JZ pour condition fausse
               Labels : _PSPL_ELSE_N, _PSPL_ENDIF_N
@@ -5912,11 +5912,571 @@ Begin
     TplNextToken;
 End;
 
-{ --- Stubs If/Case/Blocs (TODO 13) --- }
-Procedure ParseStatement; Begin End;
-Procedure ParseBlock; Begin End;
-Procedure ParseIfStmt; Begin End;
-Procedure ParseCaseStmt; Begin End;
+{ ============================================================
+  TODO 13 - IF / CASE / BLOCS BEGIN..END [IMPLEMENTE]
+  ============================================================ }
+{ ParseBlock : BEGIN stmt [; stmt] END
+  ParseIfStmt : IF cond THEN stmt [ELSE stmt]
+    Emission TEST EAX,EAX / JZ pour condition fausse
+    Labels : _PSPL_N (ELSE et ENDIF)
+    Gestion du dangling else (attachement au if le plus proche)
+  ParseCaseStmt : CASE expr OF val: stmt; [val: stmt;] [ELSE stmt] END
+    Valeurs simples : CMP EAX,val / JE label_branche
+    Intervalles : val1..val2 -> CMP EAX,val1 / JL skip /
+      CMP EAX,val2 / JG skip -> JMP branche
+    Valeurs multiples : val1, val2, val3 : stmt
+    Labels : _PSPL_N (CASE et CEND)
+  ParseStatement : dispatcheur principal pour tous les types
+    d instructions (blocs, if, case, boucles, affectations,
+    declarations, appels de procedures, E/S, etc.). }
+
+{ ---- ParseBlock : analyser un bloc BEGIN...END --------------- }
+Procedure ParseBlock;
+Begin
+  { Consommer begin }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'begin') Then
+    TplNextToken
+  Else
+  Begin
+    WarnMsg('''begin'' attendu');
+    Exit;
+  End;
+
+  { Boucle : instructions separees par ; }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+  Begin
+    ParseStatement;
+    { Consommer les ; separateurs }
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+      TplNextToken;
+  End;
+
+  { Consommer end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    TplNextToken
+  Else
+    WarnMsg('''end'' attendu pour fermer le bloc begin');
+End;
+
+{ ---- ParseIfStmt : analyser IF cond THEN stmt [ELSE stmt] --- }
+Procedure ParseIfStmt;
+Var
+  Ev          : TExprVal;
+  LblElse     : TString;
+  LblEndIf    : TString;
+  HasElsePart : Boolean;
+Begin
+  EmitComment('if');
+
+  { Consommer if }
+  TplNextToken;
+
+  { Evaluer la condition }
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+
+  { Generer labels }
+  LblElse  := LabelGen;
+  LblEndIf := LabelGen;
+
+  { TEST EAX,EAX / JZ lbl_else }
+  EmitInstrAB('TEST', 'EAX', 'EAX');
+  EmitInstrA('JZ', LblElse);
+
+  { Consommer then }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'then') Then
+    TplNextToken
+  Else
+    WarnMsg('''then'' attendu apres condition if');
+
+  { Compiler le bloc then }
+  ParseStatement;
+
+  { Consommer le ; optionnel apres le stmt du then }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+
+  { Verifier si else suit }
+  HasElsePart := (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else');
+
+  If HasElsePart Then
+  Begin
+    { JMP endif pour sauter le bloc else }
+    EmitInstrA('JMP', LblEndIf);
+    { Label else }
+    EmitLabel(LblElse);
+
+    { Consommer else }
+    TplNextToken;
+
+    { Compiler le bloc else }
+    ParseStatement;
+
+    { Consommer le ; optionnel apres le stmt du else }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+
+    { Label endif }
+    EmitLabel(LblEndIf);
+  End
+  Else
+  Begin
+    { Pas de else : label else = fin }
+    EmitLabel(LblElse);
+  End;
+End;
+
+{ ---- ParseCaseStmt : analyser CASE expr OF ... END ----------- }
+Procedure ParseCaseStmt;
+Var
+  Ev       : TExprVal;
+  CaseEv   : TExprVal;
+  LblEnd   : TString;
+  LblNext  : TString;
+  LblHit   : TString;
+  RangeHi  : LongInt;
+  FirstVal : Boolean;
+Begin
+  EmitComment('case');
+
+  { Consommer case }
+  TplNextToken;
+
+  { Evaluer l expression switch }
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+  EmitInstrA('PUSH', 'EAX');  { sauvegarder la valeur sur la pile }
+
+  { Consommer of }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'of') Then
+    TplNextToken
+  Else
+    WarnMsg('''of'' attendu apres expression case');
+
+  LblEnd := LabelGen;
+
+  { Boucle sur les branches }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             ((CurToken.Val = 'end') Or (CurToken.Val = 'else'))) Do
+  Begin
+    LblNext := LabelGen;
+    LblHit  := LabelGen;
+    FirstVal := True;
+
+    { Lire les valeurs de la branche (separees par virgule) }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':')) Do
+    Begin
+      { Recuperer la valeur de la branche }
+      ParseExpr(CaseEv);
+
+      FirstVal := False;
+
+      { Restaurer la valeur switch dans EAX }
+      EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
+
+      { Detecter plage val1..val2 }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '..') Then
+      Begin
+        { Plage : CaseEv.ImmVal est la borne basse }
+        TplNextToken;  { consommer .. }
+        RangeHi := 0;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          RangeHi := CurToken.IntVal;
+          TplNextToken;
+        End
+        Else
+        Begin
+          { Evaluer la borne haute }
+          ParseExpr(CaseEv);
+          RangeHi := CaseEv.ImmVal;
+        End;
+        { CMP EAX, lo / JB next }
+        EmitInstrAB('CMP', 'EAX', IntToStr(CaseEv.ImmVal));
+        EmitInstrA('JL', LblNext);
+        { CMP EAX, hi / JA next -> JBE hit }
+        EmitInstrAB('CMP', 'EAX', IntToStr(RangeHi));
+        EmitInstrA('JLE', LblHit);
+        { Si pas dans la plage, aller a next }
+        EmitInstrA('JMP', LblNext);
+      End
+      Else
+      Begin
+        { Valeur simple : CMP EAX, val / JE hit }
+        If CaseEv.Kind = EK_IMM Then
+          EmitInstrAB('CMP', 'EAX', IntToStr(CaseEv.ImmVal))
+        Else
+        Begin
+          ExprFlushToEAX(CaseEv);
+          EmitInstrAB('MOV', 'EBX', 'EAX');
+          EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        End;
+        EmitInstrA('JE', LblHit);
+      End;
+
+      { Virgule : autre valeur pour la meme branche }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        TplNextToken
+      Else
+        Break;
+    End;
+
+    { Aucun match : sauter a la branche suivante }
+    EmitInstrA('JMP', LblNext);
+
+    { Label hit : on arrive ici si un match est trouve }
+    EmitLabel(LblHit);
+
+    { Consommer le : }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      TplNextToken;
+
+    { Compiler l instruction de la branche }
+    ParseStatement;
+
+    { Consommer le ; optionnel }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+
+    { Sauter a la fin du case }
+    EmitInstrA('JMP', LblEnd);
+
+    { Label next : prochaine branche }
+    EmitLabel(LblNext);
+  End;
+
+  { Branche else (default) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'else') Then
+  Begin
+    TplNextToken;
+    EmitComment('case else');
+    { Boucle : instructions jusqu a end }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+    Begin
+      ParseStatement;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        TplNextToken;
+    End;
+  End;
+
+  { Label fin du case }
+  EmitLabel(LblEnd);
+
+  { Depiler la valeur switch }
+  EmitInstrA('POP', 'EAX');
+
+  { Consommer end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    TplNextToken
+  Else
+    WarnMsg('''end'' attendu pour fermer le case');
+
+  { Consommer le ; optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+End;
+
+{ ---- ParseStatement : dispatcheur principal d instructions --- }
+{ Determine le type de l instruction courante et appelle le      }
+{ parseur specialise correspondant.                               }
+Procedure ParseStatement;
+Var
+  SavedName : TString;
+  SIdx      : Integer;
+  HaltEv    : TExprVal;
+Begin
+  { Rien a faire si EOF }
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  { Emettre le label MAINBODY si pas encore fait }
+  If (Not MainBodyEmitted) And (CurScopeLevel = 0) Then
+  Begin
+    EmitLabel(PSP_LBL_PFX + 'MAINBODY');
+    MainBodyEmitted := True;
+  End;
+
+  { Fragment HTML }
+  If CurToken.Kind = TK_HTML Then
+  Begin
+    EmitHtmlFragment(CurToken.Val);
+    TplNextToken;
+    Exit;
+  End;
+
+  { Expression inline <%= ... %> }
+  If CurToken.Kind = TK_PSP_EXPR_OPEN Then
+  Begin
+    TplNextToken;
+    EmitExprInline;
+    Exit;
+  End;
+
+  { Directive PSP <% ... %> }
+  If CurToken.Kind = TK_PSP_OPEN Then
+  Begin
+    TplNextToken;
+    Exit;
+  End;
+  If CurToken.Kind = TK_PSP_CLOSE Then
+  Begin
+    TplNextToken;
+    Exit;
+  End;
+
+  { Bloc begin ... end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'begin') Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+
+  { if ... then ... [else ...] }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'if') Then
+  Begin
+    ParseIfStmt;
+    Exit;
+  End;
+
+  { case ... of ... end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'case') Then
+  Begin
+    ParseCaseStmt;
+    Exit;
+  End;
+
+  { for ... to|downto ... do }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'for') Then
+  Begin
+    ParseForStmt;
+    Exit;
+  End;
+
+  { while ... do ... }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'while') Then
+  Begin
+    ParseWhileStmt;
+    Exit;
+  End;
+
+  { repeat ... until ... }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'repeat') Then
+  Begin
+    ParseRepeatStmt;
+    Exit;
+  End;
+
+  { break }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'break') Then
+  Begin
+    TplNextToken;
+    If LoopTop < 0 Then
+      WarnMsg('''break'' en dehors d''une boucle')
+    Else
+      EmitInstrA('JMP', LoopBreakLbl[LoopTop]);
+    Exit;
+  End;
+
+  { continue }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'continue') Then
+  Begin
+    TplNextToken;
+    If LoopTop < 0 Then
+      WarnMsg('''continue'' en dehors d''une boucle')
+    Else
+      EmitInstrA('JMP', LoopContLbl[LoopTop]);
+    Exit;
+  End;
+
+  { Write / WriteLn }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'writeln') Then
+  Begin
+    TplNextToken;
+    ParseWriteStmt(True);
+    Exit;
+  End;
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'write') Then
+  Begin
+    TplNextToken;
+    ParseWriteStmt(False);
+    Exit;
+  End;
+
+  { var declarations }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'var') Then
+  Begin
+    TplNextToken;
+    ParseVarDecl;
+    Exit;
+  End;
+
+  { const declarations }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'const') Then
+  Begin
+    TplNextToken;
+    ParseConstDecl;
+    Exit;
+  End;
+
+  { type declarations }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'type') Then
+  Begin
+    TplNextToken;
+    ParseTypeDecl;
+    Exit;
+  End;
+
+  { Inc / Dec }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'inc') Then
+  Begin
+    TplNextToken;
+    ParseIncDecStmt(True);
+    Exit;
+  End;
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'dec') Then
+  Begin
+    TplNextToken;
+    ParseIncDecStmt(False);
+    Exit;
+  End;
+
+  { function / procedure declarations }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
+  Begin
+    ParseFuncDecl;
+    Exit;
+  End;
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'procedure') Then
+  Begin
+    ParseProcDecl;
+    Exit;
+  End;
+
+  { exit }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'exit') Then
+  Begin
+    TplNextToken;
+    If CurRetLabel <> '' Then
+      EmitInstrA('JMP', CurRetLabel)
+    Else
+      EmitComment('exit (pas dans une fonction)');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { halt / halt(code) }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'halt') Then
+  Begin
+    TplNextToken;
+    EmitComment('halt');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      TplNextToken;
+      { Evaluer le code de sortie }
+      ParseExpr(HaltEv);
+      ExprFlushToEAX(HaltEv);
+      EmitInstrA('PUSH', 'EAX');
+      EmitInstrA('CALL', '_ExitProcess@4');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+    End
+    Else
+    Begin
+      EmitInstrA('PUSH', '0');
+      EmitInstrA('CALL', '_ExitProcess@4');
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { with RecVar do }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'with') Then
+  Begin
+    ParseWithStmt;
+    Exit;
+  End;
+
+  { try...except...finally }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
+  Begin
+    ParseTryExcept;
+    Exit;
+  End;
+
+  { Identificateur : affectation ou appel de procedure }
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    SavedName := CurToken.Val;
+    TplNextToken;
+
+    { Affectation : ident := expr }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      ParseAssignment(SavedName);
+      Exit;
+    End;
+
+    { Appel de procedure : ident(...) }
+    SIdx := SymFind(SavedName);
+    If SIdx >= 0 Then
+    Begin
+      If SymTab[SIdx].Cat In [SC_PROC, SC_FUNC] Then
+      Begin
+        EmitComment('call ' + SavedName);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          TplNextToken;
+          ParseCallArgs(SIdx);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            TplNextToken;
+        End;
+        EmitCall(SymTab[SIdx].MangledName);
+        If SymTab[SIdx].ParamCnt > 0 Then
+          EmitInstrAB('ADD', 'ESP',
+            IntToStr(SymTab[SIdx].ParamCnt * 4));
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Exit;
+      End;
+    End;
+
+    { Identificateur inconnu ou non-procedure : avertir et sauter }
+    WarnMsg('instruction inconnue ou non implementee: ' + SavedName);
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               ((CurToken.Val = 'end') Or (CurToken.Val = 'else'))) Do
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Point-virgule seul : instruction vide }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    TplNextToken;
+    Exit;
+  End;
+
+  { Token inconnu : sauter pour eviter une boucle infinie }
+  If CurToken.Kind <> TK_EOF Then
+  Begin
+    WarnMsg('token inattendu: ' + CurToken.Val);
+    TplNextToken;
+  End;
+End;
 
 { --- Stubs Boucles (TODO 14) --- }
 Procedure ParseForStmt; Begin End;
