@@ -1162,9 +1162,11 @@ Begin
       Res.Kind    := EK_MEM;
       Res.ImmVal  := 0;
       Res.TypeIdx := TY_IDX_STRING;
-      Res.Offset  := 0;
       Res.SymIdx  := -1;
-      { Stocker la chaine dans le segment DATA }
+      Res.Offset  := 0;
+      { Stocker la chaine dans le segment DATA. Le label est cree/     }
+      { reutilise par DataAddStr. Le code generation (TODO 10+) pourra }
+      { retrouver le label via une recherche dans DataTab par contenu. }
       DataAddStr(T.Val);
     End;
     TK_KEYWORD :
