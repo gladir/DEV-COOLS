@@ -99,7 +99,7 @@
               IsNumeric(val) pour determiner le type a l execution
             JavaCast : javaCast("int", val) -> conversion explicite (stub)
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -660,6 +660,12 @@ Procedure EmitBlankLine; Forward;
 Procedure EmitComment(Const S : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
 Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+{ TODO 07 }
+Function  LabelGen : TString; Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
 { TODO 02 }
 Function  IsIdentStart(Ch : Char) : Boolean; Forward;
 Function  IsIdentCont(Ch : Char) : Boolean; Forward;
@@ -2786,9 +2792,65 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR COMPILATION (implementes dans les TODOs suivants)
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
   ============================================================ }
 
+(* ---- LabelGen : generer un label unique _CFL_NNNNN ---------- *)
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := CF_LBL_PFX + S;
+End;
+
+(* ---- EmitRaw : ecrire une ligne brute dans le fichier ------- *)
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, S);
+End;
+
+(* ---- EmitBlankLine : ligne vide ----------------------------- *)
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then WriteLn(OutF);
+End;
+
+(* ---- EmitComment : commentaire ASM '; texte' ---------------- *)
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, '; ', S);
+End;
+
+(* ---- EmitLabel : label ASM suivi de ':' en colonne 0 -------- *)
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then WriteLn(OutF, Lbl, ':');
+End;
+
+(* ---- EmitInstr : instruction avec operandes optionnels ------ *)
+(* Si Ops est vide, emet juste le mnemonique.                    *)
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If Not OutFOpen Then Exit;
+  If Ops <> '' Then WriteLn(OutF, '        ', Mnem, '   ', Ops)
+  Else WriteLn(OutF, '        ', Mnem);
+End;
+
+(* ---- EmitInstrA : instruction + un operande ----------------- *)
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitInstr(Mnem, A1);
+End;
+
+(* ---- EmitInstrAB : instruction + deux operandes ------------- *)
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitInstr(Mnem, A1 + ', ' + A2);
+End;
+
+(* ---- EmitOpen : ouvrir le fichier de sortie ASM ------------- *)
 Procedure EmitOpen;
 Begin
   Assign(OutF, Opts.OutFile);
@@ -2805,33 +2867,25 @@ Begin
   OutFOpen := True;
 End;
 
-Procedure EmitRaw(Const S : TString);
+(* ---- EmitProlog : prologue de procedure --------------------- *)
+(* PUSH BP / MOV BP,SP                                           *)
+Procedure EmitProlog;
 Begin
-  If OutFOpen Then WriteLn(OutF, S);
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
 End;
 
-Procedure EmitBlankLine;
+(* ---- EmitEpilog : epilogue de procedure --------------------- *)
+(* MOV SP,BP / POP BP                                            *)
+Procedure EmitEpilog;
 Begin
-  If OutFOpen Then WriteLn(OutF);
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
 End;
 
-Procedure EmitComment(Const S : TString);
-Begin
-  If OutFOpen Then WriteLn(OutF, '; ', S);
-End;
-
-Procedure EmitLabel(Const Lbl : TString);
-Begin
-  If OutFOpen Then WriteLn(OutF, Lbl, ':');
-End;
-
-Procedure EmitInstr(Const Mnem, Ops : TString);
-Begin
-  If Not OutFOpen Then Exit;
-  If Ops <> '' Then WriteLn(OutF, #9, Mnem, #9, Ops)
-  Else WriteLn(OutF, #9, Mnem);
-End;
-
+(* ---- EmitHeader : en-tete du fichier ASM -------------------- *)
+(* .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT PUBLIC             *)
+(* Point d entree : _CFF_Main + init DS                          *)
 Procedure EmitHeader;
 Begin
   EmitComment('CF86 v' + CF86_VERSION + ' - ' + CF86_DATE);
@@ -2842,33 +2896,87 @@ Begin
   EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
   EmitRaw('_TEXT SEGMENT PUBLIC ''CODE''');
-  EmitRaw('  ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
   EmitBlankLine;
 End;
 
+(* ---- EmitDataSeg : emettre le segment DATA complet ---------- *)
+(* Emettre _CF_CRLF + toutes les entrees DataTab                 *)
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+Begin
+  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  EmitBlankLine;
+  (* Constante retour chariot *)
+  EmitComment('Constante CRLF ColdFusion');
+  EmitRaw('_CF_CRLF  DB  13, 10, 0');
+  EmitBlankLine;
+  (* Emettre les entrees DataTab *)
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        (* Doubler les apostrophes pour syntaxe MASM *)
+        S := '';
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          If DataTab[I].StrVal[J] = '''' Then
+            S := S + ''''''
+          Else
+            S := S + DataTab[I].StrVal[J];
+        End;
+        EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+      End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+      DK_STRUCT_BLK :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+    End;
+  End;
+  EmitBlankLine;
+  EmitRaw('_DATA ENDS');
+End;
+
+(* ---- EmitRuntime : emettre les routines runtime ------------- *)
+(* Stub pour TODO 22 : les routines runtime seront ajoutees ici  *)
 Procedure EmitRuntime;
 Begin
-  { stub }
+  If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
-End;
-
-Procedure EmitDataSeg;
-Begin
-  { stub }
   EmitBlankLine;
-  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
-  EmitRaw('_CF_CRLF  DB 13, 10, 0');
-  EmitRaw('_DATA ENDS');
+  EmitComment('--- Runtime minimal CF86 ---');
+  (* TODO 22 : emettre les routines runtime ici *)
   EmitBlankLine;
 End;
 
+(* ---- EmitClose : fermer le fichier assembleur --------------- *)
+(* Emettre runtime + _TEXT ENDS + DATA + END _CFF_Main           *)
 Procedure EmitClose;
 Begin
   If Not OutFOpen Then Exit;
   EmitBlankLine;
+  EmitComment('--- Fin du code ---');
+  EmitEpilog;
+  (* Terminaison DOS *)
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+  EmitRuntime;
   EmitRaw('_TEXT ENDS');
   EmitBlankLine;
   EmitDataSeg;
+  EmitBlankLine;
   EmitRaw('END ' + CF_FN_PFX + 'Main');
   Close(OutF);
   OutFOpen := False;
@@ -2899,23 +3007,15 @@ Begin
   { Point d entree programme }
   EmitComment('Point d''entree programme CF86');
   EmitLabel(CF_FN_PFX + 'Main');
-  EmitInstr('MOV', 'AX, @DATA');
-  EmitInstr('MOV', 'DS, AX');
+  EmitProlog;
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
   EmitBlankLine;
 
   ParserAdvance;
   ParsePage;
 
   LexClose;
-
-  { Epilogue : sortie DOS propre }
-  EmitBlankLine;
-  EmitComment('Fin de programme');
-  EmitInstr('MOV', 'AX, 4C00h');
-  EmitInstr('INT', '21h');
-  EmitBlankLine;
-
-  EmitRuntime;
   EmitClose;
 
   If Opts.Verbose Then
