@@ -66,17 +66,32 @@
             Lecture de maps : {:a 1 :b 2} -> table de hachage
             Lecture d ensembles : #{1 2 3} -> ensemble
 
-  TODO 05 - TABLE DES SYMBOLES ET ENVIRONNEMENTS
+  TODO 05 - TABLE DES SYMBOLES ET ENVIRONNEMENTS [IMPLEMENTE]
             TSymKind : SK_VAR, SK_FN, SK_MACRO, SK_SPECIAL, SK_LOCAL,
               SK_KEYWORD, SK_NS
             TSymRec : Name, MangledName, Kind, TypeTag, Offset,
               ScopeLevel, IsConst, Namespace
-            SymAdd, SymFind, SymFindInScope, SymMangle
+            SymNameClean : nettoyer les caracteres non-MASM (tirets etc.)
+            SymMangle : prefixer selon Kind (SK_VAR->_CLV_, SK_FN->_CLF_,
+              SK_MACRO->_CLV_, SK_LOCAL->_CLV_, SK_NS->_CLV_)
+            SymFind : recherche MRU (du plus recent au plus ancien)
+            SymFindInScope : recherche dans un niveau de portee specifique
+            SymAdd : ajout (debug trace en -d, Namespace, DeclLine)
             CurScope : compteur de portee imbriquee (let, fn, loop)
             SymEnterScope / SymLeaveScope : gestion des portees imbriquees
-            Environnements lexicaux : chaque let/fn cree une portee
-            Espaces de noms : prefixe ns/nom pour les symboles qualifies
-            Symboles speciaux : def, defn, fn, let, if, do, recur, etc.
+            IsSpecialForm : detecte def/defn/defmacro/fn/let/if/do/
+              when/cond/case/recur/loop/quote/var/try/catch/finally/
+              throw/new/set!/monitor-enter/monitor-exit
+            SymInit : enregistre les formes speciales + symboles predefinis
+              def, defn, defmacro, fn, let, if, do, when, cond, case,
+              recur, loop, quote, var, try, catch, finally, throw,
+              new, set!, nil, true, false, not, and, or, println,
+              print, pr, prn, str, +, -, mod, rem, inc, dec,
+              =, <, >, <=, >=, ==, not=, cons, first, rest, list,
+              vector, hash-map, hash-set, get, assoc, dissoc, conj,
+              count, nth, seq, empty?, nil?, zero?, pos?, neg?,
+              even?, odd?, apply, map, filter, reduce, atom, deref,
+              reset!, swap!, compare-and-set!
 
   TODO 06 - SYSTEME DE TYPES INTERNES (TAGS)
             Tags de valeurs Clojure (3 bits hauts d un Word) :
@@ -662,12 +677,16 @@ Procedure ReadMeta; Forward;
 Procedure ReadDispatch; Forward;
 Procedure ReadForm(Var Res : TExprVal); Forward;
 (* TODO 05 *)
+Function  SymNameClean(Const Name : TString) : TString; Forward;
 Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                 Level : Integer) : Integer; Forward;
 Function  SymAdd(Const Name : TString; Kind : TSymKind;
                  TypeIdx, Offset : Integer) : Integer; Forward;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
+Function  IsSpecialForm(Const Name : TString) : Boolean; Forward;
 (* TODO 06 *)
 Procedure TypeInit;      Forward;
 Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
@@ -2077,20 +2096,70 @@ Begin
 End;
 
 (* ============================================================
-   STUBS POUR TODOs 05-25  (a implementer)
+   TODO 05 - TABLE DES SYMBOLES ET ENVIRONNEMENTS [IMPLEMENTE]
    ============================================================ *)
 
-Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+(* ---- SymNameClean : nettoyer les caracteres non valides en MASM --- *)
+(* Les symboles Clojure peuvent contenir - ! ? * + / < > = etc.      *)
+(* On remplace par _ pour obtenir un identifiant ASM valide.          *)
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  C : Char;
 Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + C;
+    End
+    Else
+    Begin
+      (* Remplacer les caracteres speciaux par _ *)
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+(* ---- SymMangle : calculer le nom ASM mangled selon le Kind ------- *)
+(* SK_VAR   -> _CLV_ + nom nettoye (variable globale)                *)
+(* SK_FN    -> _CLF_ + nom nettoye (fonction)                        *)
+(* SK_MACRO -> _CLV_ + nom nettoye (macro traite comme var)          *)
+(* SK_LOCAL -> _CLV_ + nom nettoye (locale via let/fn param)         *)
+(* SK_NS    -> _CLV_ + nom nettoye (namespace)                       *)
+(* SK_SPECIAL -> pas de label ASM (forme speciale interne)           *)
+(* SK_KEYWORD -> _CLKW_ + nom nettoye                                *)
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
   Case Kind Of
-    SK_VAR   : SymMangle := CL_VAR_PFX + Name;
-    SK_FN    : SymMangle := CL_FN_PFX + Name;
-    SK_LOCAL : SymMangle := CL_VAR_PFX + Name;
+    SK_VAR     : SymMangle := CL_VAR_PFX + Clean;
+    SK_FN      : SymMangle := CL_FN_PFX  + Clean;
+    SK_LOCAL   : SymMangle := CL_VAR_PFX + Clean;
+    SK_KEYWORD : SymMangle := CL_KW_PFX  + Clean;
+    SK_NS      : SymMangle := CL_VAR_PFX + Clean;
+    SK_MACRO   : SymMangle := CL_VAR_PFX + Clean;
+    SK_SPECIAL : SymMangle := '';   (* formes speciales : pas de label *)
   Else
-    SymMangle := CL_VAR_PFX + Name;
+    SymMangle := CL_VAR_PFX + Clean;
   End;
 End;
 
+(* ---- SymFind : rechercher un symbole par nom (MRU first) --------- *)
+(* Parcourt la table du plus recent au plus ancien pour respecter     *)
+(* le shadowing des environnements lexicaux (let, fn).                *)
 Function SymFind(Const Name : TString) : Integer;
 Var I : Integer;
 Begin
@@ -2103,12 +2172,30 @@ Begin
   SymFind := -1;
 End;
 
+(* ---- SymFindInScope : rechercher un symbole dans un scope precis - *)
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+(* ---- SymAdd : ajouter un symbole dans la table ------------------- *)
+(* Retourne l indice du symbole (0-base) ou -1 en cas d erreur.      *)
 Function SymAdd(Const Name : TString; Kind : TSymKind;
                 TypeIdx, Offset : Integer) : Integer;
 Begin
   If SymCount >= MAX_SYM Then
   Begin
-    FatalError('table des symboles pleine');
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr(MAX_SYM) + ')');
     SymAdd := -1;
     Exit;
   End;
@@ -2121,29 +2208,70 @@ Begin
   SymTab[SymCount].IsConst     := False;
   SymTab[SymCount].Namespace   := '';
   SymTab[SymCount].DeclLine    := CurToken.Line;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', SymCount, ']: ', Name,
+            ' kind=', Ord(Kind),
+            ' scope=', CurScope,
+            ' -> ', SymTab[SymCount].MangledName);
+
   SymAdd := SymCount;
   Inc(SymCount);
   Inc(TotalSyms);
 End;
 
+(* ---- SymEnterScope : entrer dans une nouvelle portee ------------- *)
+(* Chaque let, fn, loop cree un nouvel environnement lexical.        *)
 Procedure SymEnterScope;
 Begin
   If ScopeTop >= MAX_SCOPE Then
-    FatalError('profondeur de portee maximale atteinte');
+  Begin
+    CompileError('portees trop imbriquees (max=' +
+                 IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
   ScopeStack[ScopeTop] := SymCount;
   Inc(ScopeTop);
   Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
 End;
 
+(* ---- SymLeaveScope : quitter la portee courante ------------------ *)
+(* Les symboles locaux de cette portee sont retires de la table.      *)
 Procedure SymLeaveScope;
 Begin
-  If ScopeTop > 0 Then
-  Begin
-    Dec(ScopeTop);
-    SymCount := ScopeStack[ScopeTop];
-    Dec(CurScope);
-  End;
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
 End;
+
+(* ---- IsSpecialForm : est-ce une forme speciale Clojure ? ---------- *)
+(* Les formes speciales sont traitees directement par le compilateur   *)
+(* et ne peuvent pas etre redefinies par l utilisateur.                *)
+Function IsSpecialForm(Const Name : TString) : Boolean;
+Begin
+  IsSpecialForm :=
+    (Name = 'def') Or (Name = 'defn') Or (Name = 'defmacro') Or
+    (Name = 'fn') Or (Name = 'fn*') Or
+    (Name = 'let') Or (Name = 'let*') Or
+    (Name = 'if') Or (Name = 'do') Or
+    (Name = 'when') Or (Name = 'cond') Or (Name = 'case') Or
+    (Name = 'recur') Or (Name = 'loop') Or
+    (Name = 'quote') Or (Name = 'var') Or
+    (Name = 'try') Or (Name = 'catch') Or (Name = 'finally') Or
+    (Name = 'throw') Or (Name = 'new') Or
+    (Name = 'set!') Or
+    (Name = 'monitor-enter') Or (Name = 'monitor-exit') Or
+    (Name = '.') Or (Name = 'import');
+End;
+
+(* ============================================================
+   STUBS POUR TODOs 06-25  (a implementer)
+   ============================================================ *)
 
 Procedure TypeInit;
 Begin
@@ -2349,8 +2477,110 @@ End;
 
 Procedure SymInit;
 Begin
-  (* TODO 05 - stub : enregistrer les formes speciales *)
-  SymCount := 0;
+  (* TODO 05 - initialiser la table des symboles *)
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  LabelSeq  := 0;
+
+  (* Formes speciales Clojure *)
+  SymAdd('def',        SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('defn',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('defmacro',   SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('fn',         SK_SPECIAL, TY_IDX_FN,  0);
+  SymAdd('fn*',        SK_SPECIAL, TY_IDX_FN,  0);
+  SymAdd('let',        SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('let*',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('if',         SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('do',         SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('when',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('cond',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('case',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('recur',      SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('loop',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('quote',      SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('var',        SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('try',        SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('catch',      SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('finally',    SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('throw',      SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('new',        SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('set!',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('monitor-enter', SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('monitor-exit',  SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('.',          SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('import',     SK_SPECIAL, TY_UNKNOWN, 0);
+
+  (* Fonctions predefinies - arithmetique *)
+  SymAdd('+',          SK_FN, TY_IDX_INT, 0);
+  SymAdd('-',          SK_FN, TY_IDX_INT, 0);
+  SymAdd('*',          SK_FN, TY_IDX_INT, 0);
+  SymAdd('/',          SK_FN, TY_IDX_INT, 0);
+  SymAdd('mod',        SK_FN, TY_IDX_INT, 0);
+  SymAdd('rem',        SK_FN, TY_IDX_INT, 0);
+  SymAdd('inc',        SK_FN, TY_IDX_INT, 0);
+  SymAdd('dec',        SK_FN, TY_IDX_INT, 0);
+
+  (* Fonctions predefinies - comparaison *)
+  SymAdd('=',          SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('<',          SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('>',          SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('<=',         SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('>=',         SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('==',         SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('not=',       SK_FN, TY_IDX_BOOL, 0);
+
+  (* Fonctions predefinies - logique *)
+  SymAdd('not',        SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('and',        SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('or',         SK_FN, TY_IDX_BOOL, 0);
+
+  (* Fonctions predefinies - predicats *)
+  SymAdd('nil?',       SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('zero?',      SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('pos?',       SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('neg?',       SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('even?',      SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('odd?',       SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('empty?',     SK_FN, TY_IDX_BOOL, 0);
+
+  (* Fonctions predefinies - E/S *)
+  SymAdd('println',    SK_FN, TY_IDX_NIL, 0);
+  SymAdd('print',      SK_FN, TY_IDX_NIL, 0);
+  SymAdd('pr',         SK_FN, TY_IDX_NIL, 0);
+  SymAdd('prn',        SK_FN, TY_IDX_NIL, 0);
+
+  (* Fonctions predefinies - chaines *)
+  SymAdd('str',        SK_FN, TY_IDX_STR, 0);
+  SymAdd('count',      SK_FN, TY_IDX_INT, 0);
+
+  (* Fonctions predefinies - collections *)
+  SymAdd('cons',       SK_FN, TY_IDX_LIST, 0);
+  SymAdd('first',      SK_FN, TY_UNKNOWN,  0);
+  SymAdd('rest',       SK_FN, TY_IDX_LIST, 0);
+  SymAdd('list',       SK_FN, TY_IDX_LIST, 0);
+  SymAdd('vector',     SK_FN, TY_IDX_VEC,  0);
+  SymAdd('hash-map',   SK_FN, TY_IDX_MAP,  0);
+  SymAdd('hash-set',   SK_FN, TY_IDX_SET,  0);
+  SymAdd('get',        SK_FN, TY_UNKNOWN,  0);
+  SymAdd('assoc',      SK_FN, TY_UNKNOWN,  0);
+  SymAdd('dissoc',     SK_FN, TY_UNKNOWN,  0);
+  SymAdd('conj',       SK_FN, TY_UNKNOWN,  0);
+  SymAdd('nth',        SK_FN, TY_UNKNOWN,  0);
+  SymAdd('seq',        SK_FN, TY_IDX_LIST, 0);
+
+  (* Fonctions predefinies - fonctions d ordre superieur *)
+  SymAdd('apply',      SK_FN, TY_UNKNOWN, 0);
+  SymAdd('map',        SK_FN, TY_IDX_LIST, 0);
+  SymAdd('filter',     SK_FN, TY_IDX_LIST, 0);
+  SymAdd('reduce',     SK_FN, TY_UNKNOWN,  0);
+
+  (* Fonctions predefinies - atomes *)
+  SymAdd('atom',       SK_FN, TY_UNKNOWN, 0);
+  SymAdd('deref',      SK_FN, TY_UNKNOWN, 0);
+  SymAdd('reset!',     SK_FN, TY_UNKNOWN, 0);
+  SymAdd('swap!',      SK_FN, TY_UNKNOWN, 0);
+  SymAdd('compare-and-set!', SK_FN, TY_UNKNOWN, 0);
 End;
 
 Procedure ParseProgram;
