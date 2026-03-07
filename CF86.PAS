@@ -87,7 +87,7 @@
             CurScope : compteur de portee imbriquee (max MAX_SCOPE)
             SymEnterScope / SymLeaveScope : gestion des portees
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKC_NUMERIC (entier 16 bits signe), TKC_STRING (ptr),
               TKC_BOOLEAN (0/1 dans AX), TKC_ARRAY (ptr bloc DATA),
               TKC_STRUCT (ptr table cle/valeur), TKC_QUERY (stub ptr),
@@ -710,6 +710,17 @@ Function  SymAdd(Const AName : TString; ACat : TSymCat;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Function  SymNextOffset : Integer; Forward;
+{ TODO 06 }
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2528,13 +2539,255 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR COMPILATION (implementes dans les TODOs suivants)
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
 
+{ ---- TypeKindOf : retourner le TTypeKind pour un indice ----- }
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TKC_ANY;
+End;
+
+{ ---- TypeSizeof : taille en octets d un type par index ------ }
+(* numeric=2, string=2 (ptr), boolean=2, array=2 (ptr),         *)
+(* struct=2 (ptr), query=2 (ptr), null=2, any=2.                *)
+(* En 16 bits tout tient dans un mot (AX).                      *)
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+{ ---- TypeMangle : prefixe ASM selon le type ----------------- }
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TKC_NUMERIC : TypeMangle := '_CFN_';
+    TKC_STRING  : TypeMangle := '_CFS_';
+    TKC_BOOLEAN : TypeMangle := '_CFB_';
+    TKC_ARRAY   : TypeMangle := '_CFA_';
+    TKC_STRUCT  : TypeMangle := '_CFT_';
+    TKC_QUERY   : TypeMangle := '_CFQ_';
+    TKC_NULL    : TypeMangle := '_CFZ_';
+    TKC_ANY     : TypeMangle := '_CFX_';
+  Else
+    TypeMangle := '_CFX_';
+  End;
+End;
+
+{ ---- TypeIsNumeric : vrai si le type est comparable a un nombre }
+(* En ColdFusion, numeric, boolean et null sont numeriques.      *)
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TKC_NUMERIC) Or (K = TKC_BOOLEAN) Or (K = TKC_NULL);
+End;
+
+{ ---- TypeIsPtr : vrai si le type est un pointeur ------------ }
+(* string, array, struct et query sont des pointeurs 16 bits.   *)
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TKC_STRING) Or (K = TKC_ARRAY) Or
+    (K = TKC_STRUCT) Or (K = TKC_QUERY);
+End;
+
+{ ---- TypeCanCoerce : coercition ColdFusion ------------------- }
+(* ColdFusion est faiblement type : presque toute coercition     *)
+(* est acceptee (string <-> numeric, bool <-> numeric, etc.).    *)
+(* Seuls les types complexes (struct/query/array) ne se          *)
+(* convertissent pas implicitement vers les scalaires.           *)
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If (DstIdx = TY_UNKNOWN) Or (DstIdx = TY_IDX_ANY) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If (SrcIdx = TY_UNKNOWN) Or (SrcIdx = TY_IDX_ANY) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  (* scalaire -> scalaire : toujours OK en CF *)
+  If ((SK = TKC_NUMERIC) Or (SK = TKC_STRING) Or
+      (SK = TKC_BOOLEAN) Or (SK = TKC_NULL)) And
+     ((DK = TKC_NUMERIC) Or (DK = TKC_STRING) Or
+      (DK = TKC_BOOLEAN) Or (DK = TKC_NULL)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  TypeCanCoerce := False;
+End;
+
+{ ---- TypeCoerceResult : type resultat d une operation binaire }
+(* Comparaisons -> boolean, concat & -> string, arith -> numeric *)
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+  U : TString;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+  U := StrUpperCase(Op);
+  (* Operateurs de comparaison -> booleen *)
+  If (U = 'EQ')  Or (U = 'NEQ') Or
+     (U = 'LT')  Or (U = 'LTE') Or
+     (U = 'GT')  Or (U = 'GTE') Or
+     (U = '==')  Or (U = '!=')  Or
+     (U = '<')   Or (U = '<=')  Or
+     (U = '>')   Or (U = '>=')  Or
+     (U = 'CONTAINS') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+  (* Operateurs logiques -> booleen *)
+  If (U = 'AND') Or (U = 'OR') Or (U = 'XOR') Or
+     (U = '&&')  Or (U = '||') Or (U = 'NOT') Or (U = '!') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+  (* Concatenation -> string *)
+  If U = '&' Then
+  Begin
+    TypeCoerceResult := TY_IDX_STRING;
+    Exit;
+  End;
+  (* Arithmetique : si les deux cotes sont numeriques -> numeric *)
+  If (U = '+') Or (U = '-') Or (U = '*') Or
+     (U = '/') Or (U = 'MOD') Or (U = '\') Then
+  Begin
+    If TypeIsNumeric(LeftIdx) And TypeIsNumeric(RightIdx) Then
+      TypeCoerceResult := TY_IDX_NUMERIC
+    Else If (LK = TKC_STRING) Or (RK = TKC_STRING) Then
+      TypeCoerceResult := TY_IDX_NUMERIC  (* CF coerce string -> number en arith *)
+    Else
+      TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Par defaut : type du cote gauche *)
+  If LeftIdx <> TY_UNKNOWN Then
+    TypeCoerceResult := LeftIdx
+  Else
+    TypeCoerceResult := RightIdx;
+End;
+
+{ ---- TypeInfer : deduire le type d une expression ----------- }
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_NUMERIC
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+{ ---- TypeLookupName : chercher un type par nom -------------- }
+(* ColdFusion est insensible a la casse -> comparaison lower.   *)
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+  Tw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    Tw := StrLowerCase(TypeTab[I].Name);
+    If Tw = Lw Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+{ ---- TypeInit : enregistrer les types primitifs ColdFusion -- }
+(* Indices fixes : TY_IDX_NUMERIC=0 .. TY_IDX_ANY=7            *)
+(* Mapping 8086 :                                               *)
+(*   numeric = 2 octets (word, AX)                              *)
+(*   string  = 2 octets (pointeur near vers chaine DATA)        *)
+(*   boolean = 2 octets (0=false, 1=true dans AX)               *)
+(*   array   = 2 octets (pointeur vers bloc DATA)               *)
+(*   struct  = 2 octets (pointeur vers table cle/valeur)        *)
+(*   query   = 2 octets (pointeur stub)                         *)
+(*   null    = 2 octets (AX=0)                                  *)
+(*   any     = 2 octets (type dynamique par defaut)             *)
 Procedure TypeInit;
+Var
+  I : Integer;
 Begin
   TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TKC_ANY;
+    TypeTab[I].Size := 0;
+  End;
+  (* TY_IDX_NUMERIC = 0 *)
+  TypeTab[0].Name := 'numeric';
+  TypeTab[0].Kind := TKC_NUMERIC;
+  TypeTab[0].Size := 2;
+  (* TY_IDX_STRING = 1 *)
+  TypeTab[1].Name := 'string';
+  TypeTab[1].Kind := TKC_STRING;
+  TypeTab[1].Size := 2;
+  (* TY_IDX_BOOLEAN = 2 *)
+  TypeTab[2].Name := 'boolean';
+  TypeTab[2].Kind := TKC_BOOLEAN;
+  TypeTab[2].Size := 2;
+  (* TY_IDX_ARRAY = 3 *)
+  TypeTab[3].Name := 'array';
+  TypeTab[3].Kind := TKC_ARRAY;
+  TypeTab[3].Size := 2;
+  (* TY_IDX_STRUCT = 4 *)
+  TypeTab[4].Name := 'struct';
+  TypeTab[4].Kind := TKC_STRUCT;
+  TypeTab[4].Size := 2;
+  (* TY_IDX_QUERY = 5 *)
+  TypeTab[5].Name := 'query';
+  TypeTab[5].Kind := TKC_QUERY;
+  TypeTab[5].Size := 2;
+  (* TY_IDX_NULL = 6 *)
+  TypeTab[6].Name := 'null';
+  TypeTab[6].Kind := TKC_NULL;
+  TypeTab[6].Size := 2;
+  (* TY_IDX_ANY = 7 *)
+  TypeTab[7].Name := 'any';
+  TypeTab[7].Kind := TKC_ANY;
+  TypeTab[7].Size := 2;
+  TypeCount := TY_PRIM_COUNT;
 End;
+
+{ ============================================================
+  STUBS POUR COMPILATION (implementes dans les TODOs suivants)
+  ============================================================ }
 
 Procedure EmitOpen;
 Begin
