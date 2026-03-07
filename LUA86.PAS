@@ -74,7 +74,7 @@
               11. not # - (unaires)
               12. ^ (puissance, associatif a droite)
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_LOCAL, SK_GLOBAL, SK_PARAM, SK_UPVALUE,
               SK_FUNCTION, SK_LABEL
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
@@ -739,6 +739,17 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
 Procedure ParserAdvance; Forward;
+{ Table des symboles (TODO 05) }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                Level : Integer) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                ATypeIdx : Integer; AOffset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Procedure SymInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1003,10 +1014,6 @@ Begin
   WarnCount      := 0;
   TotalLines     := 0;
   TotalSyms      := 0;
-  SymCount       := 0;
-  ScopeTop       := 0;
-  CurScope       := 0;
-  LabelSeq       := 0;
   TypeCount      := 0;
   DataCount      := 0;
   OutFOpen       := False;
@@ -1030,6 +1037,7 @@ Begin
   CurToken.FloatVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  SymInit;  { TODO 05 : initialiser table des symboles + builtins Lua }
 End;
 
 { ============================================================
@@ -2634,7 +2642,229 @@ Begin
   PrintToken(CurToken);
 End;
 
-{ ---- Run : pipeline de compilation (stub pour TODO 05-25) ---- }
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymNameClean : nettoyer un nom pour MASM ---------------- }
+{ Remplace les caracteres non alphanumeriques par '_'.           }
+{ Lua autorise lettres, chiffres et underscore (pas de $).       }
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  C : Char;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + C;
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+{ ---- SymMangle : calculer le nom ASM mangled selon le kind ---- }
+{ Prefixes :                                                       }
+{   SK_LOCAL    -> _LUAV_ (variable locale, acces par [BP-n])      }
+{   SK_GLOBAL   -> _LUAV_ (variable globale, acces par label DATA) }
+{   SK_PARAM    -> _LUAV_ (parametre formel, acces par [BP+n])     }
+{   SK_UPVALUE  -> _LUAU_ (variable capturee par closure)          }
+{   SK_FUNCTION -> _LUAF_ (fonction)                               }
+{   SK_LABEL    -> _LUAL_ (label goto)                             }
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_FUNCTION : SymMangle := LUA_FN_PFX  + Clean;
+    SK_LABEL    : SymMangle := LUA_LBL_PFX + Clean;
+    SK_UPVALUE  : SymMangle := LUA_UP_PFX  + Clean;
+  Else
+    SymMangle := LUA_VAR_PFX + Clean;
+  End;
+End;
+
+{ ---- SymFind : chercher un symbole par nom (MRU, interne->externe) }
+{ Retourne l indice dans SymTab ou -1 si introuvable.                 }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : chercher un symbole dans une portee donnee }
+{ Retourne l indice ou -1.                                          }
+Function SymFindInScope(Const Name : TString;
+                Level : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l indice du symbole (0-base) ou -1 en cas d erreur.   }
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                ATypeIdx : Integer; AOffset : Integer) : Integer;
+Var
+  NS : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := ATypeIdx;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].Offset      := AOffset;
+  SymTab[SymCount].IsLocal     := (Kind = SK_LOCAL) Or (Kind = SK_PARAM);
+  SymTab[SymCount].IsUpvalue   := (Kind = SK_UPVALUE);
+  SymTab[SymCount].DeclLine    := CurToken.Line;
+  If Opts.DebugMode Then
+  Begin
+    Str(SymCount, NS);
+    WriteLn('  SYM[', NS, '] ', Name, ' -> ', SymTab[SymCount].MangledName,
+            ' scope=', CurScope);
+  End;
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee de bloc -- }
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante --------------- }
+{ Les symboles locaux du bloc sont retires de la table.           }
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+{ ---- SymInit : initialisation de la table des symboles --------- }
+{ Predeclare les fonctions et modules de la bibliotheque standard   }
+{ Lua au niveau du scope global (0).                                }
+Procedure SymInit;
+Var
+  I   : Integer;
+  Idx : Integer;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+  LabelSeq := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_GLOBAL;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsLocal     := False;
+    SymTab[I].IsUpvalue   := False;
+    SymTab[I].DeclLine    := 0;
+  End;
+
+  { ---- Fonctions globales predefinies (Lua standard library) ---- }
+  { E/S de base }
+  Idx := SymAdd('print',          SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('io',             SK_GLOBAL,   TY_IDX_TABLE,    0);
+  { Conversion de types }
+  Idx := SymAdd('type',           SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('tostring',       SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('tonumber',       SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  { Controle }
+  Idx := SymAdd('assert',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('error',          SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('pcall',          SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('xpcall',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  { Iterateurs }
+  Idx := SymAdd('pairs',          SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('ipairs',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('next',           SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  { Divers }
+  Idx := SymAdd('select',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('unpack',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('rawget',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('rawset',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('rawlen',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('rawequal',       SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('setmetatable',   SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('getmetatable',   SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  { Chargement de modules }
+  Idx := SymAdd('require',        SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('dofile',         SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('loadfile',       SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  Idx := SymAdd('load',           SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  { Gestion memoire }
+  Idx := SymAdd('collectgarbage', SK_FUNCTION, TY_IDX_FUNCTION, 0);
+  { Coroutines }
+  Idx := SymAdd('coroutine',      SK_GLOBAL,   TY_IDX_TABLE,    0);
+
+  { ---- Modules de bibliotheque standard (tables) ---- }
+  Idx := SymAdd('string',         SK_GLOBAL,   TY_IDX_TABLE,    0);
+  Idx := SymAdd('table',          SK_GLOBAL,   TY_IDX_TABLE,    0);
+  Idx := SymAdd('math',           SK_GLOBAL,   TY_IDX_TABLE,    0);
+  Idx := SymAdd('os',             SK_GLOBAL,   TY_IDX_TABLE,    0);
+
+  { ---- Variables globales predefinies ---- }
+  Idx := SymAdd('_G',             SK_GLOBAL,   TY_IDX_TABLE,    0);
+  Idx := SymAdd('_VERSION',       SK_GLOBAL,   TY_IDX_STRING,   0);
+  Idx := SymAdd('arg',            SK_GLOBAL,   TY_IDX_TABLE,    0);
+End;
+
+{ ---- Run : pipeline de compilation (stub pour TODO 06-25) ---- }
 
 Procedure Run;
 Var
