@@ -95,7 +95,7 @@
               Fichiers (stand in/stand out/stand error/stand back)
               Divers (random/next random/stop)
 
-  TODO 06 - SYSTEME DE MODES (TYPES)
+  TODO 06 - SYSTEME DE MODES (TYPES) [IMPLEMENTE]
             TModeKind : MK_INT (16 bits signe), MK_REAL (stub entier),
               MK_BOOL (8 bits), MK_CHAR (8 bits), MK_BITS (16 bits),
               MK_BYTES (tableau octets), MK_COMPL (paire d entiers),
@@ -103,14 +103,21 @@
               MK_STRUCT (structure), MK_UNION (mode uni),
               MK_REF (reference), MK_PROC (procedure),
               MK_ARRAY (tableau flexible), MK_ROW (rangee)
-            ModeTab, ModeInit : enregistrer les modes primitifs et utilisateur
-            Declaration MODE : MODE NEWMODE = definition;
-              Equivalence structurelle des modes (pas nominale)
+            ModeTab, ModeInit : 10 modes primitifs (INT/REAL/BOOL/CHAR/
+              BITS/STRING/VOID/REF/COMPL/BYTES)
             ModeSizeof : INT=2, REAL=2, BOOL=1, CHAR=1, BITS=2,
-              COMPL=4, REF=2, pointeurs=2
-            LONG et SHORT prefixes : LONG INT, SHORT REAL, etc.
-              (avertissement : non supportes, traites comme INT/REAL)
-            Verification de compatibilite : mode source vs mode cible
+              COMPL=4, REF=2, STRING=2(ptr), VOID=0, BYTES=2(ptr)
+            ModeKindOf, ModeMangle (_A68N_/_A68B_/_A68C_/_A68S_/
+              _A68U_/_A68R_/_A68T_/_A68W_/_A68X_)
+            ModeIsNumeric (INT/REAL/BITS/COMPL/BOOL/CHAR)
+            ModeIsPtr (STRING/ROW/REF/PROC/STRUCT/UNION/BYTES)
+            ModeCanCoerce : meme->OK, UNKNOWN->OK, INT->REAL(widen),
+              CHAR->INT, BOOL->INT, INT<->BITS(BIN), REF->elem(deref),
+              CHAR->STRING(row), INT/REAL->COMPL, tout->VOID
+            ModeCoerceResult : cmp/logic->BOOL, SHL/SHR->BITS/INT,
+              +*I->COMPL, **->base, :=->cible, COMPL>REAL>INT promo
+            ModeInfer (IMM->INT, else ModeIdx/UNKNOWN)
+            ModeLookupName (case-insensitive)
 
   TODO 07 - COERCITIONS (COERCIONS)
             Les 6 coercitions Algol 68, appliquees automatiquement :
@@ -735,6 +742,15 @@ Procedure SymInit;       Forward;
 { TODO 06 - Modes }
 Procedure ModeInit;      Forward;
 Function  ModeSizeof(ModeIdx : Integer) : Integer; Forward;
+Function  ModeKindOf(ModeIdx : Integer) : TModeKind; Forward;
+Function  ModeMangle(ModeIdx : Integer) : TString; Forward;
+Function  ModeIsNumeric(ModeIdx : Integer) : Boolean; Forward;
+Function  ModeIsPtr(ModeIdx : Integer) : Boolean; Forward;
+Function  ModeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  ModeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  ModeInfer(Const E : TExprVal) : Integer; Forward;
+Function  ModeLookupName(Const Name : TString) : Integer; Forward;
 
 { TODO 07 - Coercitions }
 Procedure ApplyCoercion(SrcMode, DstMode : Integer); Forward;
@@ -3448,15 +3464,366 @@ Begin
   SymAdd('stop',              SC_PROC, TY_IDX_VOID, 0);
 End;
 
+{ ============================================================
+  TODO 06 - SYSTEME DE MODES (TYPES) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ModeInit : initialiser la table des modes primitifs ----- }
+{ Enregistre les 10 modes primitifs d Algol 68 dans ModeTab     }
+{ aux indices TY_IDX_INT..TY_IDX_BYTES.                         }
+
 Procedure ModeInit;
+
+  Procedure AddMode(Const AName : TString; AKind : TModeKind;
+                    ASize : Integer; AElem : Integer);
+  Begin
+    If ModeCount >= MAX_MODE Then Exit;
+    ModeTab[ModeCount].Name    := AName;
+    ModeTab[ModeCount].Kind    := AKind;
+    ModeTab[ModeCount].Size    := ASize;
+    ModeTab[ModeCount].ElemIdx := AElem;
+    Inc(ModeCount);
+  End;
+
 Begin
-  { TODO 06 }
+  ModeCount := 0;
+  { idx 0 } AddMode('INT',    MK_INT,     2, -1);
+  { idx 1 } AddMode('REAL',   MK_REAL,    2, -1);
+  { idx 2 } AddMode('BOOL',   MK_BOOL,    1, -1);
+  { idx 3 } AddMode('CHAR',   MK_CHAR,    1, -1);
+  { idx 4 } AddMode('BITS',   MK_BITS,    2, -1);
+  { idx 5 } AddMode('STRING', MK_STRING,  2, -1);
+  { idx 6 } AddMode('VOID',   MK_VOID,    0, -1);
+  { idx 7 } AddMode('REF',    MK_REF,     2, -1);
+  { idx 8 } AddMode('COMPL',  MK_COMPL,   4, -1);
+  { idx 9 } AddMode('BYTES',  MK_BYTES,   2, -1);
 End;
+
+{ ---- ModeKindOf : retourner le TModeKind d un mode ---------- }
+{ Retourne MK_UNKNOWN si l indice est hors de la table.         }
+
+Function ModeKindOf(ModeIdx : Integer) : TModeKind;
+Begin
+  If (ModeIdx >= 0) And (ModeIdx < ModeCount) Then
+    ModeKindOf := ModeTab[ModeIdx].Kind
+  Else
+    ModeKindOf := MK_UNKNOWN;
+End;
+
+{ ---- ModeSizeof : taille en octets d un mode ----------------- }
+{ INT=2, REAL=2 (stub entier), BOOL=1, CHAR=1, BITS=2,          }
+{ STRING=2 (ptr), VOID=0, REF=2 (ptr), COMPL=4, BYTES=2 (ptr), }
+{ STRUCT/UNION/ROW/PROC -> 2 (ptr generique), UNKNOWN -> 2.     }
 
 Function ModeSizeof(ModeIdx : Integer) : Integer;
 Begin
-  { TODO 06 }
-  ModeSizeof := 2;
+  If (ModeIdx >= 0) And (ModeIdx < ModeCount) Then
+    ModeSizeof := ModeTab[ModeIdx].Size
+  Else
+    ModeSizeof := 2;
+End;
+
+{ ---- ModeMangle : prefixe ASM pour un mode ------------------- }
+{ Retourne un prefixe MASM pour generer des etiquettes de type :  }
+{   INT/REAL/BITS/COMPL -> _A68N_ (numerique)                    }
+{   BOOL               -> _A68B_ (booleen)                       }
+{   CHAR/BYTES          -> _A68C_ (caractere)                    }
+{   STRING             -> _A68S_ (chaine)                        }
+{   VOID               -> _A68U_ (void/unit)                     }
+{   REF/ROW/PROC       -> _A68R_ (reference)                     }
+{   STRUCT             -> _A68T_ (structure)                      }
+{   UNION              -> _A68W_ (union)                          }
+{   UNKNOWN            -> _A68X_ (inconnu)                        }
+
+Function ModeMangle(ModeIdx : Integer) : TString;
+Var
+  K : TModeKind;
+Begin
+  K := ModeKindOf(ModeIdx);
+  Case K Of
+    MK_INT     : ModeMangle := '_A68N_';
+    MK_REAL    : ModeMangle := '_A68N_';
+    MK_BOOL    : ModeMangle := '_A68B_';
+    MK_CHAR    : ModeMangle := '_A68C_';
+    MK_BITS    : ModeMangle := '_A68N_';
+    MK_BYTES   : ModeMangle := '_A68C_';
+    MK_COMPL   : ModeMangle := '_A68N_';
+    MK_STRING  : ModeMangle := '_A68S_';
+    MK_VOID    : ModeMangle := '_A68U_';
+    MK_STRUCT  : ModeMangle := '_A68T_';
+    MK_UNION   : ModeMangle := '_A68W_';
+    MK_REF     : ModeMangle := '_A68R_';
+    MK_PROC    : ModeMangle := '_A68R_';
+    MK_ROW     : ModeMangle := '_A68R_';
+  Else
+    ModeMangle := '_A68X_';
+  End;
+End;
+
+{ ---- ModeIsNumeric : vrai si le mode est numerique ----------- }
+{ INT, REAL, BITS, COMPL, BOOL (coerci en INT) sont numeriques.  }
+
+Function ModeIsNumeric(ModeIdx : Integer) : Boolean;
+Var
+  K : TModeKind;
+Begin
+  K := ModeKindOf(ModeIdx);
+  ModeIsNumeric :=
+    (K = MK_INT) Or (K = MK_REAL) Or (K = MK_BITS) Or
+    (K = MK_COMPL) Or (K = MK_BOOL) Or (K = MK_CHAR);
+End;
+
+{ ---- ModeIsPtr : vrai si le mode est un pointeur ------------- }
+{ STRING, ROW, REF, PROC, STRUCT, UNION, BYTES sont des ptrs.   }
+
+Function ModeIsPtr(ModeIdx : Integer) : Boolean;
+Var
+  K : TModeKind;
+Begin
+  K := ModeKindOf(ModeIdx);
+  ModeIsPtr :=
+    (K = MK_STRING) Or (K = MK_ROW) Or (K = MK_REF) Or
+    (K = MK_PROC) Or (K = MK_STRUCT) Or (K = MK_UNION) Or
+    (K = MK_BYTES);
+End;
+
+{ ---- ModeCanCoerce : compatibilite de coercition ------------- }
+{ Algol 68 a des coercitions implicites :                         }
+{   meme mode -> OK                                               }
+{   UNKNOWN -> tout : OK                                          }
+{   INT -> REAL : widening                                        }
+{   CHAR -> INT : widening                                        }
+{   BOOL -> INT : widening (ABS)                                  }
+{   INT -> BITS : reinterpretation (BIN)                          }
+{   BITS -> INT : reinterpretation                                }
+{   REF M -> M : dereferencing                                    }
+{   tout -> VOID : voiding                                        }
+
+Function ModeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TModeKind;
+Begin
+  { Meme mode : toujours OK }
+  If SrcIdx = DstIdx Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { UNKNOWN -> tout : OK }
+  If (SrcIdx = TY_IDX_UNKNOWN) Or (DstIdx = TY_IDX_UNKNOWN) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  SK := ModeKindOf(SrcIdx);
+  DK := ModeKindOf(DstIdx);
+  { Tout -> VOID : voiding }
+  If DK = MK_VOID Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { INT -> REAL : widening }
+  If (SK = MK_INT) And (DK = MK_REAL) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { REAL -> INT : narrowing (avec ENTIER/ROUND) }
+  If (SK = MK_REAL) And (DK = MK_INT) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { CHAR -> INT : widening }
+  If (SK = MK_CHAR) And (DK = MK_INT) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { INT -> CHAR : narrowing }
+  If (SK = MK_INT) And (DK = MK_CHAR) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { BOOL -> INT : widening (ABS bool) }
+  If (SK = MK_BOOL) And (DK = MK_INT) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { INT <-> BITS : reinterpretation (BIN) }
+  If ((SK = MK_INT) And (DK = MK_BITS)) Or
+     ((SK = MK_BITS) And (DK = MK_INT)) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { REF -> element : dereferencing }
+  If SK = MK_REF Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { CHAR -> STRING : rowing }
+  If (SK = MK_CHAR) And (DK = MK_STRING) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { INT -> COMPL : widening (re part) }
+  If (SK = MK_INT) And (DK = MK_COMPL) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  { REAL -> COMPL : widening (re part) }
+  If (SK = MK_REAL) And (DK = MK_COMPL) Then
+  Begin
+    ModeCanCoerce := True;
+    Exit;
+  End;
+  ModeCanCoerce := False;
+End;
+
+{ ---- ModeCoerceResult : type resultat d une operation binaire  }
+{ Determine le mode du resultat selon l operateur et les modes    }
+{ des operandes gauche et droit.                                  }
+
+Function ModeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TModeKind;
+Begin
+  LK := ModeKindOf(LeftIdx);
+  RK := ModeKindOf(RightIdx);
+
+  { Operateurs de comparaison et logiques -> BOOL }
+  If (Op = '=')   Or (Op = '/=') Or (Op = '~=') Or
+     (Op = '<')   Or (Op = '<=') Or
+     (Op = '>')   Or (Op = '>=') Or
+     (Op = 'AND') Or (Op = 'OR') Or (Op = '&') Or
+     (Op = 'ANDTH') Or (Op = 'OREL') Then
+  Begin
+    ModeCoerceResult := TY_IDX_BOOL;
+    Exit;
+  End;
+
+  { Operateurs sur les bits -> BITS }
+  If (Op = 'SHL') Or (Op = 'SHR') Or
+     (Op = 'ELEM') Or (Op = 'UP') Or (Op = 'DOWN') Then
+  Begin
+    If (LK = MK_BITS) Or (RK = MK_BITS) Then
+      ModeCoerceResult := TY_IDX_BITS
+    Else
+      ModeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  { LWB / UPB -> INT (borne de tableau) }
+  If (Op = 'LWB') Or (Op = 'UPB') Then
+  Begin
+    ModeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  { Concatenation + sur STRING -> STRING }
+  If Op = '+' Then
+  Begin
+    If (LK = MK_STRING) Or (RK = MK_STRING) Then
+    Begin
+      ModeCoerceResult := TY_IDX_STRING;
+      Exit;
+    End;
+  End;
+
+  { Operateurs complexes +* et I -> COMPL }
+  If (Op = '+*') Or (Op = 'I') Then
+  Begin
+    ModeCoerceResult := TY_IDX_COMPL;
+    Exit;
+  End;
+
+  { Exponentiation ** -> type de la base }
+  If Op = '**' Then
+  Begin
+    ModeCoerceResult := LeftIdx;
+    Exit;
+  End;
+
+  { Affectation := +: = -:= *:= /:= -> type de la cible (gauche) }
+  If (Op = ':=')  Or (Op = '+:=') Or (Op = '-:=') Or
+     (Op = '*:=') Or (Op = '/:=') Then
+  Begin
+    ModeCoerceResult := LeftIdx;
+    Exit;
+  End;
+
+  { Promotion arithmetique : COMPL > REAL > INT }
+  If (LK = MK_COMPL) Or (RK = MK_COMPL) Then
+  Begin
+    ModeCoerceResult := TY_IDX_COMPL;
+    Exit;
+  End;
+  If (LK = MK_REAL) Or (RK = MK_REAL) Then
+  Begin
+    ModeCoerceResult := TY_IDX_REAL;
+    Exit;
+  End;
+  If (LK = MK_CHAR) And (RK = MK_CHAR) Then
+  Begin
+    ModeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+  If (LK = MK_BOOL) And (RK = MK_BOOL) Then
+  Begin
+    ModeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+
+  { Default : type de gauche }
+  ModeCoerceResult := LeftIdx;
+End;
+
+{ ---- ModeInfer : deduire le mode d une expression ----------- }
+{ EK_IMM -> INT, sinon : ModeIdx de l expression ou UNKNOWN.    }
+
+Function ModeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.Kind = EK_IMM Then
+    ModeInfer := TY_IDX_INT
+  Else If E.ModeIdx >= 0 Then
+    ModeInfer := E.ModeIdx
+  Else
+    ModeInfer := TY_IDX_UNKNOWN;
+End;
+
+{ ---- ModeLookupName : chercher un mode par nom --------------- }
+{ Recherche case-insensitive dans ModeTab. Retourne l indice     }
+{ (0-base) ou -1 si non trouve.                                  }
+
+Function ModeLookupName(Const Name : TString) : Integer;
+Var
+  I      : Integer;
+  Upper  : TString;
+  TabUp  : TString;
+Begin
+  Upper := Name;
+  For I := 1 To Length(Upper) Do
+    If (Upper[I] >= 'a') And (Upper[I] <= 'z') Then
+      Upper[I] := Chr(Ord(Upper[I]) - 32);
+  For I := 0 To ModeCount - 1 Do
+  Begin
+    TabUp := ModeTab[I].Name;
+    { ModeTab names are already uppercase }
+    If TabUp = Upper Then
+    Begin
+      ModeLookupName := I;
+      Exit;
+    End;
+  End;
+  ModeLookupName := -1;
 End;
 
 Procedure ApplyCoercion(SrcMode, DstMode : Integer);
