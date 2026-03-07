@@ -132,7 +132,7 @@
               _SAS_ERROR DW 0 (indicateur _ERROR_)
             EmitDataSeg mis a jour : PDV + compteurs + CRLF + DataTab
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables numeriques : 2 octets (entier 16 bits signe)
               Acces dans le PDV par offset : [_SAS_PDV + offset]
             Variables caracteres : n octets (longueur fixe, padding espaces)
@@ -681,6 +681,9 @@ Var
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount : Integer;
 
+  (* Variables et PDV (TODO 09) *)
+  CurPDVOffset : Integer;  (* prochain offset libre dans le PDV *)
+
   (* Etat general *)
   RuntimeEmitted : Boolean;
 
@@ -768,6 +771,19 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
                            Const Op : TString) : Integer; Forward;
 Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
 Function  TypeLookupName(Const Name : TString) : Integer; Forward;
+(* TODO 09 - Forward declarations variables et affectations *)
+Function  VarAlloc(Const AName : TString; ATypeIdx : Integer;
+                   AVarLen : Integer) : Integer; Forward;
+Function  VarAddrOf(SIdx : Integer) : TString; Forward;
+Procedure VarLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure VarStore(SIdx : Integer); Forward;
+Procedure ParseAssign(SIdx : Integer); Forward;
+Procedure ParseRetain; Forward;
+Procedure ParseDrop; Forward;
+Procedure ParseKeep; Forward;
+Procedure ParseRename; Forward;
+Procedure ParseLength; Forward;
+Procedure ParseLabelStmt; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1034,6 +1050,7 @@ Begin
   LoopTop        := 0;
   RuntimeEmitted := False;
   LabelGenSeq    := 0;
+  CurPDVOffset   := 0;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -3026,6 +3043,453 @@ Begin
     Close(OutF);
     OutFOpen := False;
   End;
+End;
+
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- VarAlloc : allouer une variable dans le PDV ------------- *)
+(* Cree un symbole SC_VAR dans la table des symboles avec un      *)
+(* offset dans le PDV (Program Data Vector).                       *)
+(* ATypeIdx : TY_IDX_NUMERIC ou TY_IDX_CHARACTER                  *)
+(* AVarLen  : longueur pour CHARACTER (0 => defaut 8)              *)
+(* Retourne l indice du symbole dans SymTab.                       *)
+Function VarAlloc(Const AName : TString; ATypeIdx : Integer;
+                  AVarLen : Integer) : Integer;
+Var
+  SIdx     : Integer;
+  VarSize  : Integer;
+Begin
+  (* Verifier si deja declaree *)
+  SIdx := SymFind(AName);
+  If SIdx >= 0 Then
+  Begin
+    VarAlloc := SIdx;
+    Exit;
+  End;
+
+  (* Calculer la taille dans le PDV *)
+  If ATypeIdx = TY_IDX_CHARACTER Then
+  Begin
+    If AVarLen <= 0 Then
+      VarSize := 8   (* longueur par defaut en SAS *)
+    Else
+      VarSize := AVarLen;
+  End
+  Else
+    VarSize := 2;  (* NUMERIC : entier 16 bits = 2 octets *)
+
+  (* Verifier debordement du PDV *)
+  If CurPDVOffset + VarSize > MAX_OBS_SIZE Then
+  Begin
+    CompileError('PDV plein : pas assez d espace pour la variable "'
+                 + AName + '" (offset=' + IntToStr(CurPDVOffset)
+                 + ' taille=' + IntToStr(VarSize) + ')');
+    VarAlloc := -1;
+    Exit;
+  End;
+
+  (* Creer le symbole *)
+  SIdx := SymAdd(AName, SC_VAR, ATypeIdx, CurPDVOffset);
+  If SIdx >= 0 Then
+  Begin
+    SymTab[SIdx].VarLen := VarSize;
+    Inc(CurPDVOffset, VarSize);
+  End;
+
+  VarAlloc := SIdx;
+End;
+
+(* ---- VarAddrOf : retourne la chaine d adressage MASM --------- *)
+(* Pour une variable SAS dans le PDV : [_SAS_PDV + offset]         *)
+(* Pour une variable automatique sans offset : [label]             *)
+Function VarAddrOf(SIdx : Integer) : TString;
+Begin
+  If SIdx < 0 Then
+  Begin
+    VarAddrOf := '0';
+    Exit;
+  End;
+  If SymTab[SIdx].Offset = 0 Then
+  Begin
+    (* Variable automatique : _N_ -> _SAS_N, _ERROR_ -> _SAS_ERROR *)
+    If SymTab[SIdx].Name = '_N_' Then
+      VarAddrOf := '[_SAS_N]'
+    Else If SymTab[SIdx].Name = '_ERROR_' Then
+      VarAddrOf := '[_SAS_ERROR]'
+    Else
+      VarAddrOf := '[_SAS_PDV]'
+  End
+  Else
+    VarAddrOf := '[_SAS_PDV + ' + IntToStr(SymTab[SIdx].Offset) + ']';
+End;
+
+(* ---- VarLoad : charger une variable dans AX ------------------- *)
+(* Pour NUMERIC : MOV AX, [_SAS_PDV + offset]                     *)
+(* Pour CHARACTER : LEA AX, [_SAS_PDV + offset] (pointeur)        *)
+Procedure VarLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  Addr : TString;
+Begin
+  If SIdx < 0 Then
+  Begin
+    Res.Kind    := EK_NONE;
+    Res.ImmVal  := 0;
+    Res.TypeIdx := TY_UNKNOWN;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  Addr := VarAddrOf(SIdx);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.ImmVal  := 0;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
+
+  If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+  Begin
+    (* Chaine : charger l adresse (pointeur) *)
+    EmitComment('charger adresse de ' + SymTab[SIdx].Name);
+    EmitInstrAB('LEA', 'AX', '_SAS_PDV + '
+                + IntToStr(SymTab[SIdx].Offset));
+  End
+  Else
+  Begin
+    (* Numerique : charger la valeur *)
+    EmitComment('charger ' + SymTab[SIdx].Name);
+    EmitInstrAB('MOV', 'AX', Addr);
+  End;
+End;
+
+(* ---- VarStore : stocker AX dans une variable du PDV ----------- *)
+(* Suppose que AX contient la valeur (NUMERIC) ou l adresse        *)
+(* source (CHARACTER avec STRCPY).                                  *)
+Procedure VarStore(SIdx : Integer);
+Var
+  Addr : TString;
+Begin
+  If SIdx < 0 Then Exit;
+
+  Addr := VarAddrOf(SIdx);
+
+  If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+  Begin
+    (* Copie de chaine : AX = source, destination = PDV offset *)
+    EmitComment('stocker chaine dans ' + SymTab[SIdx].Name);
+    EmitInstrAB('MOV', 'DI', '_SAS_PDV + '
+                + IntToStr(SymTab[SIdx].Offset));
+    EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+    EmitInstrA('CALL', SAS_RT_PFX + 'STRCPY');
+  End
+  Else
+  Begin
+    (* Numerique : stocker AX directement *)
+    EmitComment('stocker ' + SymTab[SIdx].Name);
+    EmitInstrAB('MOV', Addr, 'AX');
+  End;
+End;
+
+(* ---- ParseAssign : affectation variable = expression ; -------- *)
+(* SIdx est l indice du symbole cible (deja recherche/alloue).     *)
+(* Consomme le = , parse l expression, stocke le resultat.         *)
+Procedure ParseAssign(SIdx : Integer);
+Var
+  E : TExprVal;
+Begin
+  (* Consommer le = *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"=" attendu dans l affectation');
+    Exit;
+  End;
+
+  (* Parser l expression *)
+  ParseExpr(E);
+
+  (* Charger la valeur dans AX *)
+  ExprFlushToAX(E);
+
+  (* Stocker dans la variable *)
+  VarStore(SIdx);
+
+  (* Consommer ; si present *)
+  If (CurToken.Kind = TK_SEMICOLON) Then
+    ParserAdvance;
+End;
+
+(* ---- ParseRetain : instruction RETAIN var1 var2 ... ; --------- *)
+(* Marque les variables listees pour ne pas etre reinitialisees     *)
+(* entre les iterations du DATA step.                               *)
+Procedure ParseRetain;
+Var
+  SIdx : Integer;
+Begin
+  (* RETAIN est deja consomme par le parseur appelant *)
+  EmitComment('RETAIN');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(CurToken.Val, TY_IDX_NUMERIC, 0);
+      If SIdx >= 0 Then
+        SymTab[SIdx].IsRetained := True;
+    End;
+    ParserAdvance;
+  End;
+
+  (* Consommer ; *)
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseDrop : instruction DROP var1 var2 ... ; ------------- *)
+(* Exclut les variables listees du dataset de sortie.              *)
+Procedure ParseDrop;
+Var
+  SIdx : Integer;
+Begin
+  EmitComment('DROP');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(CurToken.Val, TY_IDX_NUMERIC, 0);
+      If SIdx >= 0 Then
+        SymTab[SIdx].IsDropped := True;
+    End;
+    ParserAdvance;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseKeep : instruction KEEP var1 var2 ... ; ------------- *)
+(* Inclut uniquement les variables listees dans le dataset.        *)
+Procedure ParseKeep;
+Var
+  SIdx : Integer;
+Begin
+  EmitComment('KEEP');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(CurToken.Val, TY_IDX_NUMERIC, 0);
+      If SIdx >= 0 Then
+        SymTab[SIdx].IsKept := True;
+    End;
+    ParserAdvance;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseRename : instruction RENAME old=new ... ; ----------- *)
+(* Renomme les variables dans le dataset de sortie.                *)
+(* Syntaxe : RENAME old_name = new_name old2 = new2 ... ;         *)
+Procedure ParseRename;
+Var
+  OldName : TString;
+  NewName : TString;
+  SIdx    : Integer;
+Begin
+  EmitComment('RENAME');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    OldName := CurToken.Val;
+    ParserAdvance;
+
+    (* Consommer = *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('"=" attendu dans RENAME apres "' + OldName + '"');
+      Exit;
+    End;
+
+    (* Nouveau nom *)
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      CompileError('identificateur attendu apres "=" dans RENAME');
+      Exit;
+    End;
+    NewName := CurToken.Val;
+    ParserAdvance;
+
+    (* Trouver la variable et la renommer pour le dataset *)
+    SIdx := SymFind(OldName);
+    If SIdx < 0 Then
+      WarnMsg('RENAME : variable "' + OldName + '" non declaree')
+    Else
+    Begin
+      If Opts.DebugMode Then
+        WriteLn('  RENAME: ', OldName, ' -> ', NewName);
+      (* Le mangling du dataset de sortie utilise le nouveau nom *)
+      SymTab[SIdx].MangledName := SymMangle(
+        StrUpperCase(NewName), SC_VAR);
+    End;
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseLength : instruction LENGTH var1 $n var2 n ... ; ---- *)
+(* Definit la longueur d une variable caractere.                   *)
+(* Syntaxe : LENGTH var $n ; ou LENGTH var1 $n1 var2 $n2 ... ;    *)
+(* $ signifie type CHARACTER, n est la longueur.                   *)
+Procedure ParseLength;
+Var
+  VarName    : TString;
+  IsChar     : Boolean;
+  Len        : Integer;
+  SIdx       : Integer;
+  TIdx       : Integer;
+Begin
+  EmitComment('LENGTH');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    (* Verifier si $ pour type CHARACTER *)
+    IsChar := False;
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '$') Then
+    Begin
+      IsChar := True;
+      ParserAdvance;
+    End;
+
+    (* Lire la longueur si un entier suit *)
+    Len := 8;  (* defaut SAS *)
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      Len := CurToken.IntVal;
+      If Len <= 0 Then Len := 8;
+      ParserAdvance;
+    End;
+
+    If IsChar Then
+      TIdx := TY_IDX_CHARACTER
+    Else
+      TIdx := TY_IDX_NUMERIC;
+
+    SIdx := SymFind(VarName);
+    If SIdx < 0 Then
+      SIdx := VarAlloc(VarName, TIdx, Len)
+    Else
+    Begin
+      (* Mettre a jour la longueur si deja declaree *)
+      SymTab[SIdx].TypeIdx := TIdx;
+      SymTab[SIdx].VarLen  := Len;
+    End;
+
+    If Opts.DebugMode And (SIdx >= 0) Then
+      WriteLn('  LENGTH: ', VarName, ' type=', TIdx,
+              ' len=', Len);
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
+End;
+
+(* ---- ParseLabelStmt : instruction LABEL var='libelle' ... ; --- *)
+(* Associe un libelle descriptif a une variable.                   *)
+(* Syntaxe : LABEL var1 = 'Libelle 1' var2 = 'Libelle 2' ... ;   *)
+(* Le libelle est stocke comme commentaire ASM (pas d impact code).*)
+Procedure ParseLabelStmt;
+Var
+  VarName : TString;
+  Lbl     : TString;
+  SIdx    : Integer;
+Begin
+  EmitComment('LABEL');
+
+  While (CurToken.Kind <> TK_SEMICOLON) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      ParserAdvance;
+      Continue;
+    End;
+
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    (* Consommer = *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      ParserAdvance
+    Else
+    Begin
+      CompileError('"=" attendu dans LABEL apres "' + VarName + '"');
+      Exit;
+    End;
+
+    (* Lire le libelle (chaine) *)
+    If CurToken.Kind = TK_STRING Then
+    Begin
+      Lbl := CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('chaine attendue dans LABEL pour "' + VarName + '"');
+      Exit;
+    End;
+
+    SIdx := SymFind(VarName);
+    If SIdx < 0 Then
+      WarnMsg('LABEL : variable "' + VarName + '" non declaree');
+    EmitComment('  ' + VarName + ' = "' + Lbl + '"');
+
+    If Opts.DebugMode Then
+      WriteLn('  LABEL: ', VarName, ' = "', Lbl, '"');
+  End;
+
+  If CurToken.Kind = TK_SEMICOLON Then
+    ParserAdvance;
 End;
 
 { ============================================================
