@@ -36,7 +36,7 @@
             Programme principal : validation des arguments et appel Run
             Version, Date, aide en ligne (option -h)
 
-  TODO 02 - LEXEUR PSP (TOKENS PASCAL ET BALISES HTML)
+  TODO 02 - LEXEUR PSP (TOKENS PASCAL ET BALISES HTML) [IMPLEMENTE]
             TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_CHAR,
               TK_STRING, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT,
               TK_HTML, TK_PSP_OPEN, TK_PSP_CLOSE, TK_PSP_EXPR_OPEN,
@@ -853,6 +853,8 @@ Procedure PrintToken(Const T : TToken); Forward;
 Procedure LexSkipBraceComment; Forward;
 Procedure LexSkipParenStarComment; Forward;
 Procedure LexSkipLineComment; Forward;
+Procedure LexScanHexNumber; Forward;
+Procedure LexSkipCondFalse; Forward;
 { Directives et inclusions - TODO 20 }
 Procedure LexHandleDollarDirective; Forward;
 Procedure IncludePush(Const FileName : TString); Forward;
@@ -960,40 +962,1196 @@ Procedure ParseTryExcept; Forward;
   STUBS POUR DECLARATIONS FORWARD (a implementer dans les TODOs suivants)
   ============================================================ }
 
-{ --- Stubs Lexeur (TODO 02) --- }
-Procedure LexInit; Begin End;
-Procedure LexClose; Begin End;
-Procedure LexNextLine; Begin End;
-Procedure LexNextToken; Begin End;
-Procedure LexScanIdent; Begin End;
-Procedure LexScanNumber; Begin End;
-Procedure LexScanString; Begin End;
-Procedure LexScanCharLit; Begin End;
-Function IsKeyword(Const S : TString) : Boolean; Begin IsKeyword := False; End;
-Function IsIdentStart(Ch : Char) : Boolean; Begin IsIdentStart := False; End;
-Function IsIdentCont(Ch : Char) : Boolean; Begin IsIdentCont := False; End;
-Function IsHexDigit(Ch : Char) : Boolean; Begin IsHexDigit := False; End;
-Function HexVal(Ch : Char) : Integer; Begin HexVal := 0; End;
-Procedure PrintToken(Const T : TToken); Begin End;
-Procedure LexSkipBraceComment; Begin End;
-Procedure LexSkipParenStarComment; Begin End;
-Procedure LexSkipLineComment; Begin End;
+{ ============================================================
+  TODO 02 - LEXEUR PSP (TOKENS PASCAL ET BALISES HTML) [IMPLEMENTE]
+  ============================================================ }
 
-{ --- Stubs Directives (TODO 20) --- }
-Procedure LexHandleDollarDirective; Begin End;
-Procedure IncludePush(Const FileName : TString); Begin End;
-Procedure IncludePop; Begin End;
-Function DefineDefined(Const Name : TString) : Boolean; Begin DefineDefined := False; End;
-Procedure DefineAdd(Const Name : TString); Begin End;
-Procedure DefineRemove(Const Name : TString); Begin End;
-Procedure ParsePSPDirective; Begin End;
+{ ---- IsKeyword : teste si S est un mot-cle Pascal ---------- }
+{ Comparaison insensible a la casse                            }
+Function IsKeyword(Const S : TString) : Boolean;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(S);
+  IsKeyword :=
+    (L = 'program')   Or (L = 'begin')     Or (L = 'end')       Or
+    (L = 'var')        Or (L = 'const')     Or (L = 'type')      Or
+    (L = 'if')         Or (L = 'then')      Or (L = 'else')      Or
+    (L = 'while')      Or (L = 'do')        Or (L = 'for')       Or
+    (L = 'to')         Or (L = 'downto')    Or (L = 'repeat')    Or
+    (L = 'until')      Or (L = 'case')      Or (L = 'of')        Or
+    (L = 'function')   Or (L = 'procedure') Or (L = 'forward')   Or
+    (L = 'array')      Or (L = 'record')    Or (L = 'string')    Or
+    (L = 'integer')    Or (L = 'boolean')   Or (L = 'char')      Or
+    (L = 'byte')       Or (L = 'word')      Or (L = 'real')      Or
+    (L = 'nil')        Or (L = 'true')      Or (L = 'false')     Or
+    (L = 'not')        Or (L = 'and')       Or (L = 'or')        Or
+    (L = 'xor')        Or (L = 'div')       Or (L = 'mod')       Or
+    (L = 'shl')        Or (L = 'shr')       Or (L = 'in')        Or
+    (L = 'with')       Or (L = 'uses')      Or (L = 'write')     Or
+    (L = 'writeln')    Or (L = 'read')      Or (L = 'readln')    Or
+    (L = 'break')      Or (L = 'continue')  Or (L = 'exit')      Or
+    (L = 'halt')       Or (L = 'try')       Or (L = 'except')    Or
+    (L = 'finally')    Or (L = 'raise')     Or (L = 'result');
+End;
 
-{ --- Stubs Template (TODO 19) --- }
-Procedure TplInit; Begin End;
-Procedure TplClose; Begin End;
-Procedure TplEmitHtml; Begin End;
-Procedure TplEmitPSPOpen(Kind : TTokenKind); Begin End;
-Procedure TplNextToken; Begin End;
+{ ---- PrintToken : affichage debug d un token --------------- }
+Procedure PrintToken(Const T : TToken);
+Var
+  S : TString;
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF           : Write('EOF');
+    TK_INTEGER       : Write('INT(', T.IntVal, ')');
+    TK_REAL          : Write('REAL(', T.Val, ')');
+    TK_STRING        : Write('STR(''', T.Val, ''')');
+    TK_CHAR          : Write('CHAR(#', T.IntVal, ')');
+    TK_IDENT         : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD       : Write('KW(', T.Val, ')');
+    TK_OP            : Write('OP(', T.Val, ')');
+    TK_PUNCT         : Write('PUNCT(', T.Val, ')');
+    TK_HTML          : Begin
+                         S := T.Val;
+                         If Length(S) > 40 Then
+                           S := Copy(S, 1, 37) + '...';
+                         Write('HTML("', S, '")');
+                       End;
+    TK_PSP_OPEN      : Write('PSP_OPEN');
+    TK_PSP_CLOSE     : Write('PSP_CLOSE');
+    TK_PSP_EXPR_OPEN : Write('PSP_EXPR');
+    TK_PSP_DIRECTIVE : Write('PSP_DIR');
+  End;
+  WriteLn;
+End;
+
+{ ---- LexNextLine : lire la prochaine ligne source ----------- }
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    { Si on est dans un fichier inclus, depiler }
+    If IncTop >= 0 Then
+    Begin
+      IncludePop;
+      Exit;  { reprendre la lecture dans le fichier parent }
+    End;
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ---- Fonctions de test sur les caracteres ------------------- }
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+{ ---- LexSkipBraceComment : sauter accolade-commentaire ------ }
+{ Si le premier caractere apres la accolade ouvrante est $, on   }
+{ dispatche vers LexHandleDollarDirective pour les directives.   }
+Procedure LexSkipBraceComment;
+Begin
+  { Detecter dollar-directive }
+  If (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] = '$') Then
+  Begin
+    LexHandleDollarDirective;
+    Exit;
+  End;
+  Inc(LexColNo); { sauter accolade ouvrante }
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If LexLine[LexColNo] = '}' Then
+    Begin
+      Inc(LexColNo);
+      Exit;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+{ ---- LexSkipParenStarComment : sauter paren-star comment ---- }
+Procedure LexSkipParenStarComment;
+Begin
+  Inc(LexColNo); Inc(LexColNo); { sauter ( et * }
+  While Not LexEOF Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = ')') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Exit;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+{ ---- LexSkipLineComment : sauter // ... fin de ligne -------- }
+Procedure LexSkipLineComment;
+Begin
+  LexColNo := Length(LexLine) + 1;
+End;
+
+{ ============================================================
+  DIRECTIVES PSP ET INCLUSIONS
+  ============================================================ }
+
+{ ---- DefineDefined : teste si un symbole est defini --------- }
+Function DefineDefined(Const Name : TString) : Boolean;
+Var
+  I : Integer;
+  N : TString;
+Begin
+  N := StrUpperCase(Name);
+  DefineDefined := False;
+  For I := 0 To DefineCount - 1 Do
+    If DefineTab[I] = N Then
+    Begin
+      DefineDefined := True;
+      Exit;
+    End;
+End;
+
+{ ---- DefineAdd : ajouter un symbole de compilation ---------- }
+Procedure DefineAdd(Const Name : TString);
+Var
+  N : TString;
+Begin
+  N := StrUpperCase(Name);
+  If DefineDefined(N) Then Exit;  { deja defini }
+  If DefineCount >= MAX_DEFINE Then
+  Begin
+    WarnMsg('trop de symboles $DEFINE');
+    Exit;
+  End;
+  DefineTab[DefineCount] := N;
+  Inc(DefineCount);
+End;
+
+{ ---- DefineRemove : supprimer un symbole de compilation ----- }
+Procedure DefineRemove(Const Name : TString);
+Var
+  I : Integer;
+  N : TString;
+Begin
+  N := StrUpperCase(Name);
+  For I := 0 To DefineCount - 1 Do
+    If DefineTab[I] = N Then
+    Begin
+      DefineTab[I] := DefineTab[DefineCount - 1];
+      Dec(DefineCount);
+      Exit;
+    End;
+End;
+
+{ ---- IncludePush : empiler le fichier courant et ouvrir un include }
+Procedure IncludePush(Const FileName : TString);
+Var
+  FullPath : TString;
+Begin
+  If IncTop >= MAX_INCLUDE - 1 Then
+  Begin
+    WarnMsg('profondeur d''inclusion maximale atteinte');
+    Exit;
+  End;
+  { Sauvegarder l etat du lexeur }
+  Inc(IncTop);
+  IncSavedFName[IncTop]  := LexSrcFName;
+  IncSavedFLine[IncTop]  := LexLineNo;
+  IncSavedLine[IncTop]   := LexLine;
+  IncSavedLineNo[IncTop] := LexLineNo;
+  IncSavedColNo[IncTop]  := LexColNo;
+  IncSavedEOF[IncTop]    := LexEOF;
+  { Fermer le fichier courant avant d ouvrir l include }
+  Close(LexSrcF);
+  { Ouvrir le fichier inclus }
+  FullPath := FileName;
+  {$I-}
+  Assign(LexSrcF, FullPath);
+  Reset(LexSrcF);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    WarnMsg('impossible d''ouvrir le fichier include: ' + FullPath);
+    { Rouvrir le fichier precedent }
+    Assign(LexSrcF, IncSavedFName[IncTop]);
+    Reset(LexSrcF);
+    Dec(IncTop);
+    Exit;
+  End;
+  LexSrcFName := FullPath;
+  LexOpened := True;
+  LexLine   := '';
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexEOF    := False;
+  LexNextLine;
+End;
+
+{ ---- IncludePop : depiler et restaurer le fichier precedent -- }
+Procedure IncludePop;
+Var
+  I : Integer;
+  Dummy : String;
+Begin
+  If IncTop < 0 Then Exit;
+  Close(LexSrcF);
+  { Rouvrir le fichier precedent et avancer jusqu a la bonne ligne }
+  Assign(LexSrcF, IncSavedFName[IncTop]);
+  Reset(LexSrcF);
+  For I := 1 To IncSavedFLine[IncTop] Do
+  Begin
+    If Not EOF(LexSrcF) Then
+      ReadLn(LexSrcF, Dummy);
+  End;
+  LexSrcFName := IncSavedFName[IncTop];
+  LexLine   := IncSavedLine[IncTop];
+  LexLineNo := IncSavedLineNo[IncTop];
+  LexColNo  := IncSavedColNo[IncTop];
+  LexEOF    := IncSavedEOF[IncTop];
+  Dec(IncTop);
+End;
+
+(* ---- LexSkipCondFalse : sauter le code dans un IFDEF faux --- *)
+(* Saute jusqu a trouver ELSE ou ENDIF au meme niveau            *)
+Procedure LexSkipCondFalse;
+Var
+  Depth : Integer;
+  P     : Integer;
+  Dir   : TString;
+Begin
+  Depth := 1;
+  While (Depth > 0) And (Not LexEOF) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    If LexLine[LexColNo] = '{' Then
+    Begin
+      P := LexColNo + 1;
+      If (P <= Length(LexLine)) And (LexLine[P] = '$') Then
+      Begin
+        Inc(P);
+        Dir := '';
+        While (P <= Length(LexLine)) And (LexLine[P] <> '}') And
+              (LexLine[P] <> ' ') Do
+        Begin
+          Dir := Dir + UpCase(LexLine[P]);
+          Inc(P);
+        End;
+        If (Dir = 'IFDEF') Or (Dir = 'IFNDEF') Then
+          Inc(Depth)
+        Else If Dir = 'ENDIF' Then
+        Begin
+          Dec(Depth);
+          If Depth = 0 Then
+          Begin
+            (* Trouver l accolade fermante *)
+            While (P <= Length(LexLine)) And (LexLine[P] <> '}') Do
+              Inc(P);
+            LexColNo := P + 1;
+            Exit;
+          End;
+        End
+        Else If (Dir = 'ELSE') And (Depth = 1) Then
+        Begin
+          { $ELSE au meme niveau : on commence a compiler }
+          While (P <= Length(LexLine)) And (LexLine[P] <> '}') Do
+            Inc(P);
+          LexColNo := P + 1;
+          Exit;
+        End;
+      End;
+      { Sauter toute l accolade }
+      While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] <> '}') Do
+        Inc(LexColNo);
+      If LexColNo <= Length(LexLine) Then
+        Inc(LexColNo);
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+(* ---- LexHandleDollarDirective : traiter dollar-directives -- *)
+(* Appelee quand LexColNo pointe sur accolade et le char suivant *)
+(* est $. Gere I, INCLUDE, DEFINE, UNDEF, IFDEF, IFNDEF,        *)
+(* ELSE, ENDIF, MODE. Les autres sont ignores.                   *)
+Procedure LexHandleDollarDirective;
+Var
+  Dir  : TString;
+  Arg  : TString;
+Begin
+  Inc(LexColNo);  { sauter accolade ouvrante }
+  Inc(LexColNo);  { sauter $ }
+  { Lire le nom de la directive }
+  Dir := '';
+  While (LexColNo <= Length(LexLine)) And
+        IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    Dir := Dir + UpCase(LexLine[LexColNo]);
+    Inc(LexColNo);
+  End;
+  { Sauter espaces }
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] = ' ') Do
+    Inc(LexColNo);
+  (* Lire l argument jusqu a accolade fermante *)
+  Arg := '';
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] <> '}') Do
+  Begin
+    Arg := Arg + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  { Supprimer espaces de fin de l argument }
+  While (Length(Arg) > 0) And (Arg[Length(Arg)] = ' ') Do
+    Delete(Arg, Length(Arg), 1);
+  (* Consommer accolade fermante *)
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '}') Then
+    Inc(LexColNo);
+
+  { Dispatcher }
+  If (Dir = 'I') Or (Dir = 'INCLUDE') Then
+  Begin
+    { Supprimer quotes eventuelles autour du nom de fichier }
+    If (Length(Arg) >= 2) And
+       ((Arg[1] = '''') Or (Arg[1] = '"')) Then
+    Begin
+      Delete(Arg, 1, 1);
+      If (Length(Arg) > 0) And
+         ((Arg[Length(Arg)] = '''') Or (Arg[Length(Arg)] = '"')) Then
+        Delete(Arg, Length(Arg), 1);
+    End;
+    If Length(Arg) > 0 Then
+      IncludePush(Arg)
+    Else
+      WarnMsg('nom de fichier attendu pour $INCLUDE');
+  End
+  Else If Dir = 'DEFINE' Then
+    DefineAdd(Arg)
+  Else If Dir = 'UNDEF' Then
+    DefineRemove(Arg)
+  Else If Dir = 'IFDEF' Then
+  Begin
+    If DefineDefined(Arg) Then
+      { Condition vraie : on ne fait rien, le code suivant sera compile }
+    Else
+      LexSkipCondFalse;
+  End
+  Else If Dir = 'IFNDEF' Then
+  Begin
+    If Not DefineDefined(Arg) Then
+      { Condition vraie : compiler }
+    Else
+      LexSkipCondFalse;
+  End
+  Else If Dir = 'ELSE' Then
+  Begin
+    { On est dans la branche vraie d un $IFDEF, sauter jusqu a $ENDIF }
+    LexSkipCondFalse;
+  End
+  Else If Dir = 'ENDIF' Then
+  Begin
+    { Fin de bloc conditionnel, rien a faire }
+  End
+  Else If Dir = 'MODE' Then
+  Begin
+    Arg := StrUpperCase(Arg);
+    If (Arg = 'TP') Or (Arg = 'FPC') Then
+      CompilerMode := Arg
+    Else
+      WarnMsg('mode inconnu: ' + Arg + ' (TP ou FPC attendu)');
+  End;
+  { Autres directives : ignorees silencieusement }
+End;
+
+{ ---- ParsePSPDirective : traiter <%@ ... %> ------------------ }
+{ Appelee quand CurToken = TK_PSP_DIRECTIVE. Parse les attributs  }
+{ ContentType=xxx, Include file="xxx", CodePage=xxx               }
+Procedure ParsePSPDirective;
+Var
+  AttrName  : TString;
+  AttrVal   : TString;
+  Lbl       : TString;
+Begin
+  TplNextToken;  { consommer <%@ }
+  While (CurToken.Kind <> TK_EOF) And
+        (CurToken.Kind <> TK_PSP_CLOSE) Do
+  Begin
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      TplNextToken;
+      { Consommer = }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        TplNextToken;
+      { Lire la valeur : peut etre une chaine ou un ident/keyword }
+      AttrVal := '';
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        AttrVal := CurToken.Val;
+        TplNextToken;
+      End
+      Else
+      Begin
+        { Lire jusqu a un espace, %> ou fin de ligne }
+        While (CurToken.Kind <> TK_EOF) And
+              (CurToken.Kind <> TK_PSP_CLOSE) And
+              (CurToken.Kind <> TK_IDENT) Do
+        Begin
+          AttrVal := AttrVal + CurToken.Val;
+          TplNextToken;
+        End;
+        If Length(AttrVal) = 0 Then
+        Begin
+          AttrVal := CurToken.Val;
+          TplNextToken;
+        End;
+      End;
+
+      { Dispatcher l attribut }
+      If AttrName = 'contenttype' Then
+      Begin
+        { Generer un label pour le content-type }
+        Lbl := PSP_STR_PFX + 'CT';
+        DataAdd(Lbl, DK_STR, 0,
+          'Content-Type: ' + AttrVal + #13#10#13#10);
+        ContentTypeLbl := Lbl;
+      End
+      Else If AttrName = 'include' Then
+      Begin
+        { Supprimer le mot file= si present }
+        If Length(AttrVal) > 0 Then
+          IncludePush(AttrVal)
+        Else
+          WarnMsg('nom de fichier attendu dans <%@ Include %>');
+      End
+      Else If AttrName = 'codepage' Then
+        WarnMsg('CodePage=' + AttrVal + ' ignore (pas de support Unicode)')
+      Else
+        WarnMsg('directive PSP inconnue: ' + AttrName);
+    End
+    { Gerer Include file="..." ou page language="..." }
+    Else If (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      TplNextToken;
+      { Ignorer les keywords non reconnus, avancer }
+    End
+    Else
+      TplNextToken;
+  End;
+  { Consommer %> }
+  If CurToken.Kind = TK_PSP_CLOSE Then
+    TplNextToken;
+End;
+
+{ ---- LexScanIdent : scanner un identificateur ou mot-cle --- }
+Procedure LexScanIdent;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+  CurToken.RealVal := 0.0;
+  { Mots-cles Pascal : stocker en minuscules normalisees }
+  If IsKeyword(S) Then
+  Begin
+    CurToken.Kind := TK_KEYWORD;
+    CurToken.Val  := StrLowerCase(S);
+  End
+  Else
+    CurToken.Kind := TK_IDENT;
+End;
+
+{ ---- LexScanNumber : scanner un litteral numerique ---------- }
+{ Entiers decimaux, hexadecimaux ($FF), reels (3.14, 1.5E3)    }
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsReal  : Boolean;
+  NegExp  : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  ExpVal  : Integer;
+  FltVal  : Real;
+Begin
+  N       := 0;
+  IsReal  := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  ExpVal  := 0;
+
+  { Scanner la partie entiere decimale }
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    Inc(LexColNo);
+  End;
+
+  { Partie decimale .ddd (mais pas '..' qui est le token de plage) }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And (LexLine[LexColNo + 1] <> '.') And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsReal := True;
+    Inc(LexColNo); { sauter point }
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Exposant E [+-] ddd }
+  If (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'E') Or (LexLine[LexColNo] = 'e')) Then
+  Begin
+    IsReal := True;
+    Inc(LexColNo);
+    NegExp := False;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+      Inc(LexColNo);
+    ExpVal := 0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+      Inc(LexColNo);
+    End;
+  End;
+
+  If IsReal Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else           FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    CurToken.Kind    := TK_REAL;
+    CurToken.RealVal := FltVal;
+    If FltVal > 2147483647.0 Then N := 2147483647
+    Else If FltVal < -2147483648.0 Then N := -2147483648
+    Else N := Trunc(FltVal);
+    CurToken.IntVal := N;
+    Str(FltVal:0:6, CurToken.Val);
+  End
+  Else
+  Begin
+    CurToken.Kind    := TK_INTEGER;
+    CurToken.IntVal  := N;
+    CurToken.RealVal := 0.0;
+    Str(N, CurToken.Val);
+  End;
+End;
+
+{ ---- LexScanHexNumber : scanner un entier hexadecimal $FF -- }
+Procedure LexScanHexNumber;
+Var
+  N : LongInt;
+Begin
+  Inc(LexColNo); { sauter $ }
+  N := 0;
+  While (LexColNo <= Length(LexLine)) And IsHexDigit(LexLine[LexColNo]) Do
+  Begin
+    N := N * 16 + HexVal(LexLine[LexColNo]);
+    Inc(LexColNo);
+  End;
+  CurToken.Kind    := TK_INTEGER;
+  CurToken.IntVal  := N;
+  CurToken.RealVal := 0.0;
+  Str(N, CurToken.Val);
+End;
+
+{ ---- LexScanString : chaine Pascal entre quotes simples ---- }
+{ Gere le doublement de quote : 'l''echo' -> l'echo            }
+Procedure LexScanString;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter quote ouvrante }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '''' Then
+    Begin
+      Inc(LexColNo);
+      { Quote doublee '' -> un seul caractere ' }
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '''';
+        Inc(LexColNo);
+      End
+      Else
+        Break; { fin de chaine }
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind    := TK_STRING;
+  CurToken.Val     := S;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  { Si chaine de longueur 1, stocker aussi le code ASCII }
+  If Length(S) = 1 Then
+    CurToken.IntVal := Ord(S[1]);
+End;
+
+{ ---- LexScanCharLit : caractere #nn ou #$nn ----------------- }
+Procedure LexScanCharLit;
+Var
+  V : LongInt;
+  S : TString;
+Begin
+  S := '';
+  { Scanner une sequence de #nn segments et concatener }
+  While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '#') Do
+  Begin
+    Inc(LexColNo); { sauter # }
+    V := 0;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '$') Then
+    Begin
+      Inc(LexColNo); { sauter $ }
+      While (LexColNo <= Length(LexLine)) And IsHexDigit(LexLine[LexColNo]) Do
+      Begin
+        V := V * 16 + HexVal(LexLine[LexColNo]);
+        Inc(LexColNo);
+      End;
+    End
+    Else
+    Begin
+      While (LexColNo <= Length(LexLine)) And
+            (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+      Begin
+        V := V * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+        Inc(LexColNo);
+      End;
+    End;
+    If Length(S) < MAX_STR Then
+      S := S + Chr(V And $FF);
+  End;
+
+  { Si suivi d une chaine 'xxx', concatener }
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+  Begin
+    Inc(LexColNo); { sauter quote ouvrante }
+    While LexColNo <= Length(LexLine) Do
+    Begin
+      If LexLine[LexColNo] = '''' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+        Begin
+          If Length(S) < MAX_STR Then S := S + '''';
+          Inc(LexColNo);
+        End
+        Else
+          Break;
+      End
+      Else
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + LexLine[LexColNo];
+        Inc(LexColNo);
+      End;
+    End;
+    { Peut etre suivi d un autre #nn }
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '#') Then
+    Begin
+      While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '#') Do
+      Begin
+        Inc(LexColNo);
+        V := 0;
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '$') Then
+        Begin
+          Inc(LexColNo);
+          While (LexColNo <= Length(LexLine)) And IsHexDigit(LexLine[LexColNo]) Do
+          Begin
+            V := V * 16 + HexVal(LexLine[LexColNo]);
+            Inc(LexColNo);
+          End;
+        End
+        Else
+        Begin
+          While (LexColNo <= Length(LexLine)) And
+                (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+          Begin
+            V := V * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+            Inc(LexColNo);
+          End;
+        End;
+        If Length(S) < MAX_STR Then
+          S := S + Chr(V And $FF);
+      End;
+    End;
+  End;
+
+  { Si un seul caractere -> TK_CHAR, sinon TK_STRING }
+  If Length(S) = 1 Then
+  Begin
+    CurToken.Kind   := TK_CHAR;
+    CurToken.IntVal := Ord(S[1]);
+  End
+  Else
+  Begin
+    CurToken.Kind   := TK_STRING;
+    CurToken.IntVal := 0;
+  End;
+  CurToken.Val     := S;
+  CurToken.RealVal := 0.0;
+End;
+
+{ ---- LexInit / LexClose ------------------------------------ }
+Procedure LexInit;
+Begin
+  LexLineNo := 0;
+  LexColNo  := 1;
+  LexEOF    := False;
+  LexLine   := '';
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+  { Lire la premiere ligne }
+  LexNextLine;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ---- LexNextToken : scanner principal ----------------------- }
+Procedure LexNextToken;
+Var
+  Ch : Char;
+  Scanning : Boolean;
+Begin
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Avancer a la prochaine ligne si fin de ligne }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    { Fin de fichier }
+    If LexEOF Then
+    Begin
+      CurToken.Kind := TK_EOF;
+      CurToken.Val  := '';
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+      Scanning := False;
+      Break;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    { Espaces blancs }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(LexColNo);
+    End
+
+    { Commentaire // ligne }
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      LexSkipLineComment;
+    End
+
+    { Commentaire accolade - ne pas confondre avec dollar-directives }
+    Else If Ch = '{' Then
+    Begin
+      LexSkipBraceComment;
+    End
+
+    { Commentaire ( star ... star ) ou operateur ( }
+    Else If (Ch = '(') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      LexSkipParenStarComment;
+    End
+
+    { Entier hexadecimal $FF }
+    Else If (Ch = '$') And (LexColNo < Length(LexLine)) And
+            IsHexDigit(LexLine[LexColNo + 1]) Then
+    Begin
+      LexScanHexNumber;
+      Scanning := False;
+    End
+
+    { Caractere literal #nn }
+    Else If Ch = '#' Then
+    Begin
+      LexScanCharLit;
+      Scanning := False;
+    End
+
+    { Chaine Pascal 'xxx' }
+    Else If Ch = '''' Then
+    Begin
+      LexScanString;
+      Scanning := False;
+    End
+
+    { Identificateur ou mot-cle }
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Scanning := False;
+    End
+
+    { Nombre decimal }
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+
+    { Operateur d affectation := }
+    Else If (Ch = ':') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := ':=';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateur <> }
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<>';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateur <= }
+    Else If (Ch = '<') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '<=';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateur >= }
+    Else If (Ch = '>') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '=') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '>=';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Token de plage .. }
+    Else If (Ch = '.') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '.') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := '..';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Operateurs simples }
+    Else If (Ch = '+') Or (Ch = '-') Or (Ch = '*') Or (Ch = '/') Or
+            (Ch = '=') Or (Ch = '<') Or (Ch = '>') Or (Ch = '@') Or
+            (Ch = '^') Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Ponctuation }
+    Else If (Ch = ';') Or (Ch = ',') Or (Ch = '(') Or (Ch = ')') Or
+            (Ch = '[') Or (Ch = ']') Or (Ch = '.') Or (Ch = ':') Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := Ch;
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Balise fermante %> (geree ici en contexte code Pascal) }
+    Else If (Ch = '%') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '>') Then
+    Begin
+      CurToken.Kind := TK_PSP_CLOSE;
+      CurToken.Val  := '%>';
+      Inc(LexColNo, 2);
+      Scanning := False;
+    End
+
+    { Caractere inconnu : avancer et signaler }
+    Else
+    Begin
+      WarnMsg('caractere inattendu: ' + Ch + ' (ord=' + IntToStr(Ord(Ch)) + ')');
+      Inc(LexColNo);
+    End;
+  End;
+
+  PrintToken(CurToken);
+End;
+
+{ ============================================================
+  ANALYSEUR DE TEMPLATE PSP
+  ============================================================ }
+
+{ ---- TplInit : initialiser l analyseur de template --------- }
+Procedure TplInit;
+Begin
+  TplMode      := TPL_HTML;
+  TplHtmlBuf   := '';
+  TplPending   := TK_EOF;
+  TplHtmlCount := 0;
+End;
+
+{ ---- TplClose : finaliser l analyseur de template ---------- }
+Procedure TplClose;
+Begin
+  If TplMode = TPL_CODE Then
+    WarnMsg('fin de fichier atteinte en mode code (balise %> manquante ?)');
+End;
+
+{ ---- TplEmitHtml : emettre le buffer HTML comme token ------- }
+{ Procedure interne utilisee par TplNextToken                   }
+Procedure TplEmitHtml;
+Begin
+  CurToken.Kind    := TK_HTML;
+  CurToken.Val     := TplHtmlBuf;
+  CurToken.Line    := LexLineNo;
+  CurToken.Col     := LexColNo;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  Inc(TplHtmlCount);
+  PrintToken(CurToken);
+  TplHtmlBuf := '';
+End;
+
+{ ---- TplEmitPSPOpen : emettre un token PSP open ------------- }
+Procedure TplEmitPSPOpen(Kind : TTokenKind);
+Begin
+  CurToken.Kind := Kind;
+  CurToken.Line := LexLineNo;
+  CurToken.Col  := LexColNo;
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  Case Kind Of
+    TK_PSP_OPEN:      CurToken.Val := '<%';
+    TK_PSP_EXPR_OPEN: CurToken.Val := '<%=';
+    TK_PSP_DIRECTIVE:  CurToken.Val := '<%@';
+  Else
+    CurToken.Val := '';
+  End;
+  TplMode := TPL_CODE;
+  PrintToken(CurToken);
+End;
+
+{ ---- TplNextToken : token suivant en mode template --------- }
+{ Alterne entre mode HTML (accumulation texte brut) et mode    }
+{ CODE (lexeur Pascal via LexNextToken).                       }
+Procedure TplNextToken;
+Var
+  Ch    : Char;
+  Kind  : TTokenKind;
+Begin
+  { 1) Si un tag PSP est en attente (apres emission de TK_HTML) }
+  If TplPending <> TK_EOF Then
+  Begin
+    Kind := TplPending;
+    TplPending := TK_EOF;
+    TplEmitPSPOpen(Kind);
+    Exit;
+  End;
+
+  { 2) Mode HTML : scanner caractere par caractere }
+  If TplMode = TPL_HTML Then
+  Begin
+    TplHtmlBuf := '';
+
+    While Not LexEOF Do
+    Begin
+      { Fin de ligne : ajouter saut de ligne au buffer }
+      If LexColNo > Length(LexLine) Then
+      Begin
+        { Vider le buffer si presque plein (reserve pour CR+LF) }
+        If Length(TplHtmlBuf) >= MAX_STR - 1 Then
+        Begin
+          TplEmitHtml;
+          Exit;
+        End;
+        TplHtmlBuf := TplHtmlBuf + #13#10;
+        LexNextLine;
+        Continue;
+      End;
+
+      Ch := LexLine[LexColNo];
+
+      { Detection de la balise ouvrante <pourcent }
+      If (Ch = '<') And (LexColNo < Length(LexLine)) And
+         (LexLine[LexColNo + 1] = '%') Then
+      Begin
+        Inc(LexColNo, 2);
+
+        { Determiner le type : <%=  <%@  ou  <% simple }
+        If (LexColNo <= Length(LexLine)) And
+           (LexLine[LexColNo] = '=') Then
+        Begin
+          Kind := TK_PSP_EXPR_OPEN;
+          Inc(LexColNo);
+        End
+        Else If (LexColNo <= Length(LexLine)) And
+                (LexLine[LexColNo] = '@') Then
+        Begin
+          Kind := TK_PSP_DIRECTIVE;
+          Inc(LexColNo);
+        End
+        Else
+          Kind := TK_PSP_OPEN;
+
+        { Si du HTML a emettre d abord, mettre le tag en attente }
+        If Length(TplHtmlBuf) > 0 Then
+        Begin
+          TplPending := Kind;
+          TplEmitHtml;
+          Exit;
+        End
+        Else
+        Begin
+          { Pas de HTML, emettre directement le tag PSP }
+          TplEmitPSPOpen(Kind);
+          Exit;
+        End;
+      End
+      Else
+      Begin
+        { Caractere HTML normal }
+        If Length(TplHtmlBuf) >= MAX_STR Then
+        Begin
+          { Buffer plein : emettre le fragment }
+          TplEmitHtml;
+          Exit;
+        End;
+        TplHtmlBuf := TplHtmlBuf + Ch;
+        Inc(LexColNo);
+      End;
+    End;
+
+    { EOF atteint en mode HTML }
+    If Length(TplHtmlBuf) > 0 Then
+    Begin
+      TplEmitHtml;
+      Exit;
+    End;
+
+    { Plus de HTML, emettre TK_EOF }
+    CurToken.Kind    := TK_EOF;
+    CurToken.Val     := '';
+    CurToken.Line    := LexLineNo;
+    CurToken.Col     := LexColNo;
+    CurToken.IntVal  := 0;
+    CurToken.RealVal := 0.0;
+    PrintToken(CurToken);
+  End
+
+  { 3) Mode CODE : deleguer au lexeur Pascal }
+  Else
+  Begin
+    LexNextToken;
+
+    { Si le lexeur retourne pourcent>, repasser en mode HTML }
+    If CurToken.Kind = TK_PSP_CLOSE Then
+      TplMode := TPL_HTML;
+  End;
+End;
 
 { --- Stubs Donnees (TODO 03 / 08) --- }
 Function LabelGen : TString; Begin LabelGen := '_PSPL_00000'; End;
@@ -1497,10 +2655,21 @@ Begin
   OutFOpen := True;
 
   { TODO 02+ : Initialiser le lexeur et l analyseur template }
+  LexInit;
+  TplInit;
   { TODO 07  : Emettre l en-tete ASM }
   { TODO 19  : Boucle principale template PSP }
+  { Debug : scanner tous les tokens si -d est actif }
+  If Opts.DebugMode Then
+  Begin
+    Repeat
+      TplNextToken;
+    Until CurToken.Kind = TK_EOF;
+  End;
   { TODO 07  : Emettre le pied de page ASM }
   { TODO 08  : Emettre le segment de donnees }
+  TplClose;
+
 
   Cleanup;
   If Opts.Verbose Then Begin
