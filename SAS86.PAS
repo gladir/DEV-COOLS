@@ -102,7 +102,7 @@
             Conversion implicite : num -> char via PUT(), char -> num via INPUT()
             Valeur manquante : . pour numerique, ' ' pour caractere
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -2765,24 +2765,10 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 08..25 (a implementer)
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
   ============================================================ }
 
-Procedure ParseStmt;
-Begin
-  (* stub : consomme un token pour eviter boucle infinie *)
-  LexNextToken;
-  If Opts.DebugMode Then
-    PrintToken(CurToken);
-End;
-
-Procedure ParserAdvance;
-Begin
-  LexNextToken;
-  If Opts.DebugMode Then
-    PrintToken(CurToken);
-End;
-
+(* ---- LabelGen : generer un label unique _SASL_NNNNN ------- *)
 Function LabelGen : TString;
 Var
   S : TString;
@@ -2792,43 +2778,51 @@ Begin
   LabelGen := SAS_LBL_PFX + S;
 End;
 
+(* ---- EmitRaw : ecrire une ligne brute dans le fichier ----- *)
 Procedure EmitRaw(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, S);
 End;
 
+(* ---- EmitBlankLine : ligne vide ---------------------------- *)
 Procedure EmitBlankLine;
 Begin
   If OutFOpen Then
     WriteLn(OutF);
 End;
 
+(* ---- EmitComment : commentaire ASM '; texte' -------------- *)
 Procedure EmitComment(Const S : TString);
 Begin
   EmitRaw('; ' + S);
 End;
 
+(* ---- EmitLabel : label ASM suivi de ':' en colonne 0 ------ *)
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   EmitRaw(Lbl + ':');
 End;
 
+(* ---- EmitInstr : instruction sans operandes (8 espaces) --- *)
 Procedure EmitInstr(Const Mnem : TString);
 Begin
   EmitRaw('        ' + Mnem);
 End;
 
+(* ---- EmitInstrA : instruction + un operande --------------- *)
 Procedure EmitInstrA(Const Mnem, A1 : TString);
 Begin
   EmitRaw('        ' + Mnem + ' ' + A1);
 End;
 
+(* ---- EmitInstrAB : instruction + deux operandes ----------- *)
 Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
 Begin
   EmitRaw('        ' + Mnem + ' ' + A1 + ', ' + A2);
 End;
 
+(* ---- EmitOpen : ouvrir le fichier de sortie ASM ----------- *)
 Procedure EmitOpen;
 Begin
   Assign(OutF, Opts.OutFile);
@@ -2838,6 +2832,9 @@ Begin
   OutFOpen := True;
 End;
 
+(* ---- EmitHeader : en-tete ASM .MODEL SMALL ---------------- *)
+(* Genere : .MODEL SMALL / .STACK / _TEXT SEGMENT /            *)
+(* point d entree _SASP_Main / prologue / init DS              *)
 Procedure EmitHeader;
 Begin
   EmitComment('SAS86 v' + SAS86_VERSION + ' - ' + Opts.SrcFile);
@@ -2856,18 +2853,25 @@ Begin
   EmitBlankLine;
 End;
 
+(* ---- EmitProlog : prologue de procedure -------------------- *)
+(* PUSH BP / MOV BP,SP                                          *)
 Procedure EmitProlog;
 Begin
   EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
 End;
 
+(* ---- EmitEpilog : epilogue de procedure -------------------- *)
+(* MOV SP,BP / POP BP                                           *)
 Procedure EmitEpilog;
 Begin
   EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstrA('POP', 'BP');
 End;
 
+(* ---- EmitDataSeg : emettre _DATA SEGMENT avec DataTab ------ *)
+(* Ecrit _SAS_MISSING + toutes les entrees de DataTab +          *)
+(* _DATA ENDS                                                     *)
 Procedure EmitDataSeg;
 Var
   I, J : Integer;
@@ -2914,6 +2918,8 @@ Begin
   EmitRaw('_DATA ENDS');
 End;
 
+(* ---- EmitRuntime : emettre runtime minimal SAS86 ----------- *)
+(* Stub : sera complete au TODO 24                               *)
 Procedure EmitRuntime;
 Begin
   If RuntimeEmitted Then Exit;
@@ -2924,6 +2930,9 @@ Begin
   EmitBlankLine;
 End;
 
+(* ---- EmitClose : fermer le fichier ASM ---------------------- *)
+(* Genere : epilogue / INT 21h / runtime / _TEXT ENDS /          *)
+(* _DATA / END _SASP_Main                                        *)
 Procedure EmitClose;
 Begin
   EmitBlankLine;
@@ -2944,6 +2953,25 @@ Begin
     Close(OutF);
     OutFOpen := False;
   End;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 09..25 (a implementer)
+  ============================================================ }
+
+Procedure ParseStmt;
+Begin
+  (* stub : consomme un token pour eviter boucle infinie *)
+  LexNextToken;
+  If Opts.DebugMode Then
+    PrintToken(CurToken);
+End;
+
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+  If Opts.DebugMode Then
+    PrintToken(CurToken);
 End;
 
 Procedure TypeInit;
