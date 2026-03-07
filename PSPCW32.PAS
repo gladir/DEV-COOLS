@@ -6036,7 +6036,7 @@ Var
   LblNext  : TString;
   LblHit   : TString;
   RangeHi  : LongInt;
-  FirstVal : Boolean;
+  RangeLo  : LongInt;
 Begin
   EmitComment('case');
 
@@ -6063,7 +6063,6 @@ Begin
   Begin
     LblNext := LabelGen;
     LblHit  := LabelGen;
-    FirstVal := True;
 
     { Lire les valeurs de la branche (separees par virgule) }
     While (CurToken.Kind <> TK_EOF) And
@@ -6072,8 +6071,6 @@ Begin
       { Recuperer la valeur de la branche }
       ParseExpr(CaseEv);
 
-      FirstVal := False;
-
       { Restaurer la valeur switch dans EAX }
       EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
 
@@ -6081,6 +6078,9 @@ Begin
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '..') Then
       Begin
         { Plage : CaseEv.ImmVal est la borne basse }
+        If CaseEv.Kind <> EK_IMM Then
+          WarnMsg('borne basse de case doit etre une constante');
+        RangeLo := CaseEv.ImmVal;
         TplNextToken;  { consommer .. }
         RangeHi := 0;
         If CurToken.Kind = TK_INTEGER Then
@@ -6092,12 +6092,14 @@ Begin
         Begin
           { Evaluer la borne haute }
           ParseExpr(CaseEv);
+          If CaseEv.Kind <> EK_IMM Then
+            WarnMsg('borne haute de case doit etre une constante');
           RangeHi := CaseEv.ImmVal;
         End;
-        { CMP EAX, lo / JB next }
-        EmitInstrAB('CMP', 'EAX', IntToStr(CaseEv.ImmVal));
+        { CMP EAX, lo / JL next }
+        EmitInstrAB('CMP', 'EAX', IntToStr(RangeLo));
         EmitInstrA('JL', LblNext);
-        { CMP EAX, hi / JA next -> JBE hit }
+        { CMP EAX, hi / JG next -> JLE hit }
         EmitInstrAB('CMP', 'EAX', IntToStr(RangeHi));
         EmitInstrA('JLE', LblHit);
         { Si pas dans la plage, aller a next }
