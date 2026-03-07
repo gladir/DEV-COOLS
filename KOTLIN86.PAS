@@ -1346,6 +1346,9 @@ Begin
   Base    := 10;
   IsFloat := False;
   IsLong  := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  ExpVal  := 0;
   Ch      := LexLine[LexColNo];
 
   { Prefixe 0x (hex) ou 0b (binaire) }
