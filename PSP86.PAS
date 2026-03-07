@@ -18,584 +18,7 @@
   Les expressions en ligne s ecrivent <%= expr %>.
   Le compilateur produit un fichier .ASM autonome (mode CGI DOS).
 
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
-            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
-            ParseArgs : analyser argv (page.psp [sortie.asm] [-v] [-d] [-w])
-            FatalError(msg), WarnMsg(msg), EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Detection de l extension .psp sur le fichier source
-            Ouverture du fichier source en lecture ; creation du fichier ASM
-            Programme principal : validation des arguments et appel Run
-
-  TODO 02 - LEXEUR (TOKENS PASCAL) [IMPLEMENTE]
-            TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_STRING,
-              TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT,
-              TK_HTML (texte literal hors balises), TK_PSP_OPEN, TK_PSP_CLOSE,
-              TK_PSP_EXPR_OPEN (<%=), TK_PSP_DIRECTIVE (<%@)
-            LexInit, LexClose, LexNextToken
-            LexScanIdent : identifier ou mot-cle Pascal
-            LexScanNumber : entier decimal, hexadecimal ($FF), reel (3.14)
-            LexScanString : chaine simple-quote ('It''s') ; #65 #$41 (char literal)
-            Commentaires Pascal : { ... }  (star...star)  // commentaire ligne
-            IsKeyword : program begin end var const type
-              if then else while do for to downto
-              repeat until case of function procedure
-              forward array record string integer boolean
-              char byte word real nil true false
-              not and or xor div mod shl shr in
-              with uses write writeln read readln
-              break continue exit halt
-              try except finally raise (stubs Delphi)
-            Mode debug -d : affichage de chaque token avec PrintToken
-
-  TODO 03 - ANALYSEUR DE TEMPLATE PSP [IMPLEMENTE]
-            Boucle principale : lire le fichier .psp caractere par caractere
-            Mode IN_HTML (hors balises) :
-              Accumuler le texte HTML brut dans un buffer
-              A la rencontre de <% ou fin de fichier :
-                Emettre le texte HTML comme chaine DATA + CALL _PSPRT_PRINT
-            Mode IN_CODE (entre <% et %>) :
-              Basculer vers le lexeur Pascal pour analyser les tokens
-              A la rencontre de %> : revenir en mode IN_HTML
-            Balise d expression <%= expr %> :
-              Evaluer l expression Pascal -> AX
-              Convertir selon le type -> _PSPRT_NUMTOSTR si entier
-              Emettre CALL _PSPRT_PRINT pour afficher le resultat
-            Balise de directive <%@ Directive=Valeur %> :
-              ContentType : emettre en-tete HTTP Content-Type: ... CR LF CR LF
-              Include : inclure un fichier .psp dans le flux source
-              CodePage : stub + avertissement (non implemente)
-            Gestion des blocs multiples :
-              Chaque bloc <% ... %> est compile dans le meme scope global
-              Les declarations (var, function, procedure) persistent
-              Les blocs begin...end sont concatenes dans _PSPF_main
-            Terminateur de bloc : end. ou end; acceptes (le . est optionnel)
-            Imbrication interdite : <% ... <% ... %> ... %> -> erreur
-
-  TODO 04 - LITTERAUX ET CONSTANTES PASCAL [IMPLEMENTE]
-            Entiers decimaux : 0, 42, -1, 32767
-            Entiers hexadecimaux : $FF, $0A, $FFFF
-            Reels : 3.14, 1.5E3 -> tronques en entier + avertissement
-            Caracteres : 'A' (chaine de longueur 1), #65, #$41
-              Caracteres speciaux : #13#10 (CR+LF), #9 (tab), #0 (nul)
-            Chaines : 'Hello World', '' (vide), 'l''echo' (quote doublee)
-              Chaines multi-segments : 'abc'#13#10'def' -> concatenation compile
-            Booleens : True -> MOV AX,1 ; False -> XOR AX,AX
-            nil : XOR AX,AX (pointeur nul)
-            Constantes nommees : const MAX = 100; -> substitution a la compilation
-            Constantes typees : const X: Integer = 42; -> entree DATA DK_WORD
-
-  TODO 05 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
-            Arithmetiques   : + - * (IMUL) / (IDIV quotient) div (IDIV) mod (IDIV reste)
-            Comparaison     : = <> < > <= >= (CMP + Jcc -> AX=0|1)
-            Logiques        : and or xor not (booleens -> AX=0|1)
-            Bits            : and or xor not shl shr (sur entiers -> AX)
-              Distinction logique/bits par le type des operandes :
-                Boolean and Boolean -> logique ; Integer and Integer -> bits
-            Concatenation   : + si l un des operandes est String -> _PSPRT_CONCAT
-            Affectation     : := (non un operateur d expression en Pascal)
-            Unaires         : - (NEG AX) not (NOT AX ou XOR AX,1 selon type)
-                              @ (adresse de -> LEA AX,[var])
-                              ^ (dereferencement pointeur -> MOV BX,AX / MOV AX,[BX])
-            Ensemble        : in (test appartenance sous-plage -> CMP + JB/JA)
-            Precedences Pascal (du plus fort au plus faible) :
-              Niveau 1 : not - @ ^ (unaires)
-              Niveau 2 : * / div mod and shl shr (multiplicatifs)
-              Niveau 3 : + - or xor (additifs)
-              Niveau 4 : = <> < > <= >= in (comparaison)
-
-  TODO 06 - TABLE DES SYMBOLES [IMPLEMENTE]
-            TSymCat : SC_VAR, SC_CONST, SC_TYPED_CONST, SC_PARAM,
-              SC_VARPARAM (parametre var par reference), SC_FUNC, SC_PROC,
-              SC_TYPE, SC_FIELD (champ de record), SC_ENUM_VAL, SC_LABEL
-            TSymRec : Name, MangledName, Cat, TypeIdx, Offset,
-              ScopeLevel, ScopeId, IsForward, IsLocal
-            SymTab[0..MAX_SYM-1], SymCount
-            SymAdd, SymFind, SymFindInScope, SymMangle
-            Portees imbriquees : ScopeLevel = 0 (global) .. SCOPE_MAX
-              SymEnterScope : incrementer ScopeLevel, enregistrer ScopeId
-              SymLeaveScope : invalider les symboles du scope courant
-            Prefixes de mangling :
-              _PSP_  (variable globale)    _PSPL_ (label genere)
-              _PSPF_ (function/procedure)  _PSPK_ (chaine constante)
-              _PSPRT_(routine runtime)     _PSPR_ (record)
-              _PSPA_ (tableau)             _PSPE_ (enum)
-            Resolution des noms : recherche du scope le plus interne vers global
-            Symboles predeclares : Integer, Word, Byte, Char, Boolean,
-              String, Real, True, False, nil, Write, WriteLn, Read, ReadLn
-
-  TODO 07 - SYSTEME DE TYPES [IMPLEMENTE]
-            TTypeKind : TKP_INTEGER (entier 16 bits signe),
-              TKP_WORD (entier 16 bits non signe), TKP_BYTE (8 bits non signe),
-              TKP_CHAR (8 bits), TKP_BOOLEAN (0|1 dans AL, etendu AX),
-              TKP_STRING (pointeur ASCIIZ dans AX),
-              TKP_REAL (avertissement : tronque en entier 16 bits),
-              TKP_ARRAY, TKP_RECORD, TKP_ENUM, TKP_SUBRANGE,
-              TKP_POINTER (pointeur generique, 16 bits), TKP_NIL,
-              TKP_TEXT (fichier texte), TKP_VOID (procedure, pas de retour)
-            TypeTab[0..MAX_TYPE-1], TypeCount
-            TTypeRec : Kind, Size, BaseTypeIdx (pour pointer/array/subrange),
-              Lo, Hi (pour subrange/array), FieldList (pour record),
-              EnumList (pour enum)
-            TypeInit : enregistrer les types primitifs aux index reserves
-              TY_IDX_INTEGER=0, TY_IDX_WORD=1, TY_IDX_BYTE=2,
-              TY_IDX_CHAR=3, TY_IDX_BOOLEAN=4, TY_IDX_STRING=5,
-              TY_IDX_REAL=6, TY_IDX_POINTER=7, TY_IDX_NIL=8, TY_IDX_TEXT=9
-            TypeSizeof : Integer=2, Word=2, Byte=1, Char=1, Boolean=1,
-              String=2 (ptr), Pointer=2, Text=2 (handle)
-            Compatibilite de types :
-              Integer <-> Word (implicite avec avertissement si signe/non-signe)
-              Byte -> Integer (promotion implicite), Char -> Integer (Ord)
-              Char <-> String (1 caractere, conversion implicite)
-              Boolean -> Integer (0|1), Enum -> Integer (Ord)
-            TypeCoerce : emission de code de conversion selon types source/dest
-
-  TODO 08 - EMETTEUR DE CODE ASM [IMPLEMENTE]
-            TEmitter : OutF (fichier Text), OutFOpen, EmitOpen, EmitClose
-            EmitRaw(s), EmitLabel(lbl), EmitInstr(instr) (indentation 8 espaces)
-            EmitComment(s), EmitBlankLine
-            LabelGen : compteur global -> _PSPL_NNNNN
-            NewLabel : retourne le prochain label unique
-            EmitHeader : .MODEL SMALL / .STACK 1024 / .386 (optionnel pour MOVZX)
-              _TEXT SEGMENT PUBLIC 'CODE' / ASSUME CS:_TEXT, DS:_DATA
-              _PSPF_main: / MOV AX, _DATA / MOV DS, AX
-            EmitProlog : PUSH BP / MOV BP,SP / [SUB SP, framesize]
-            EmitEpilog : MOV SP,BP / POP BP / RET [n] (n = taille params)
-            EmitPush(reg), EmitPop(reg), EmitMov, EmitCall, EmitJmp
-            EmitCoerce(srcType, dstType) : code de conversion inline
-
-  TODO 09 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
-            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_REC),
-              IntVal, StrVal, ElemCount, RecSize
-            DataTab[0..MAX_DATA-1], DataCount
-            DataAdd, DataAddStr, DataAddWord, DataAddByte
-            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
-            Chaines HTML litterales -> entrees DK_STR (ASCIIZ)
-              Chaque fragment HTML accumule -> _PSPK_HTML_N DB '...',0
-            Chaines Pascal litterales -> entrees DK_STR
-            Variables globales : var X: Integer -> _PSP_X DW 0
-            Constantes typees : const S: String = 'abc' -> _PSPK_S DB 'abc',0
-            Tableaux globaux : _PSPA_arr DW elem_count DUP(0)
-            Records globaux : _PSPR_rec DB rec_size DUP(0)
-            Buffers internes :
-              _PSP_STRBUF DB 512 DUP(0)  (buffer concatenation/conversion)
-              _PSP_NUMBUF DB 12 DUP(0)   (buffer itoa)
-              _PSP_HEAP DB 4096 DUP(0)   (tas statique)
-              _PSP_HEAPTOP DW 0          (sommet du tas)
-              _PSP_CRLF DB 13,10,0       (saut de ligne)
-
-  TODO 10 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
-            ParseVarDecl : var a, b, c: Integer; s: String;
-              Declarations multiples sur une meme ligne (meme type)
-              Variables locales : SUB SP,2 par variable (Integer/Word/Pointer)
-                SUB SP,1 pour Byte/Char/Boolean (aligne sur 2 si necessaire)
-              Variables globales : entree dans DataTab (DK_WORD ou DK_BYTE)
-            Affectation : ParseAssignment -> ident := expr ;
-              Variable locale : MOV [BP-n], AX
-              Variable globale : MOV [_PSP_ident], AX
-              Parametre var (reference) : MOV BX,[BP+n] / MOV [BX], AX
-            Verification de type : type de l expression doit etre compatible
-              avec le type de la variable cible
-            Affectation de chaine : copie de pointeur (shallow copy)
-              s := 'hello' -> MOV AX, OFFSET _PSPK_N / MOV [BP-n], AX
-            Indexation array et champs record comme cibles :
-              arr[i] := expr et rec.champ := expr (traites dans TODO 19 et 20)
-
-  TODO 11 - EXPRESSIONS [IMPLEMENTE]
-            ParseExpr : expression complete (comparaison en sommet)
-            ParseSimpleExpr : +, -, or, xor (binaires additifs)
-            ParseTerm : *, /, div, mod, and, shl, shr (multiplicatifs)
-            ParseFactor :
-              Litteral entier -> MOV AX, valeur
-              Litteral chaine -> MOV AX, OFFSET _PSPK_N
-              Litteral caractere -> MOV AX, ord(c) ou OFFSET _PSPK_N si String
-              Identificateur -> MOV AX, [BP-n] ou [_PSP_ident]
-              Appel de fonction -> ParseCallArgs + CALL _PSPF_nom ;  AX = retour
-              (expr) -> ParseExpr recursivement
-              not expr -> ParseFactor + NOT AX ou XOR AX,1
-              -expr -> ParseFactor + NEG AX
-              @ident -> LEA AX, [BP-n] ou MOV AX, OFFSET _PSP_ident
-              Transtypage : Integer(expr), Char(expr), Byte(expr), Word(expr)
-            ParseCallArgs : evaluation et PUSH des arguments de gauche a droite
-            Detection du type de l expression pour coercition automatique :
-              Integer + String -> _PSPRT_NUMTOSTR + _PSPRT_CONCAT
-              Char + String -> promotion Char en chaine 1 caractere
-
-  TODO 12 - WRITE / WRITELN ET EMISSION HTML [IMPLEMENTE]
-            ParseWriteStmt : Write(arg1, arg2, ...) et WriteLn(...)
-              Pour chaque argument :
-                Si Integer/Word/Byte -> CALL _PSPRT_NUMTOSTR + CALL _PSPRT_PRINT
-                Si Boolean -> afficher 'TRUE' ou 'FALSE'
-                Si Char -> afficher 1 octet via INT 21h AH=02h
-                Si String -> CALL _PSPRT_PRINT directement
-              WriteLn : apres les arguments, emettre CR+LF
-            Formatage Write(n:w) : largeur de champ w (padding espaces a gauche)
-              Write(r:w:d) : stub + avertissement (pas de virgule flottante)
-            Texte HTML literal (hors <% %>) :
-              Chaque fragment HTML -> _PSPK_HTML_N en DATA
-              Emission : MOV SI, OFFSET _PSPK_HTML_N / CALL _PSPRT_PRINTSTR
-            Expression inline <%= expr %> :
-              Evaluer expr -> AX
-              Si type String : CALL _PSPRT_PRINT
-              Si type Integer : CALL _PSPRT_NUMTOSTR + CALL _PSPRT_PRINT
-              Si type Boolean : emit 'TRUE'/'FALSE'
-            En-tete HTTP (si directive ContentType) :
-              _PSPK_HDR DB 'Content-Type: text/html',13,10,13,10,0
-              Emission au debut du code avant tout autre sortie
-            Separateur : WriteLn sans argument -> emet seulement CR+LF
-
-  TODO 13 - IF / THEN / ELSE + CASE / OF [IMPLEMENTE]
-            ParseIfStmt : if expr then stmt [else stmt]
-              Evaluation de la condition : ParseExpr -> AX
-              TEST AX,AX / JZ _PSPL_ELSE_N ou _PSPL_ENDIF_N
-              Compilation du bloc then
-              Si else present : JMP _PSPL_ENDIF_N + label _PSPL_ELSE_N
-              Label _PSPL_ENDIF_N en fin
-            Dangling else : rattachement au if le plus proche (standard Pascal)
-            Blocs : begin ... end en tant que statement compose
-            ParseCaseStmt : case expr of val: stmt; ... [else stmt;] end;
-              Evaluation de l expression switch -> PUSH AX sur pile
-              Chaque branche case : POP AX / CMP AX,valeur / JE _PSPL_CASE_N
-                Apres le stmt de la branche -> JMP _PSPL_CSEND_N
-              Plages : 1..5 -> CMP AX,1 / JB next / CMP AX,5 / JA next
-              Valeurs multiples : 1, 3, 5 : -> CMP AX,1 / JE hit / CMP AX,3 ...
-              Branche else (default) : label apres toutes les branches
-              Label _PSPL_CSEND_N en fin du case
-
-  TODO 14 - BOUCLES : FOR / WHILE / REPEAT [IMPLEMENTE]
-            ParseForStmt : for v := expr1 to|downto expr2 do stmt
-              to   : _PSPL_FTEST_N: CMP [BP-n],limite / JG  _PSPL_FEND_N
-              downto: _PSPL_FTEST_N: CMP [BP-n],limite / JL  _PSPL_FEND_N
-              Increment : INC WORD PTR [BP-n] ou DEC selon to/downto
-              Label _PSPL_FTEST_N (test), _PSPL_FEND_N (sortie)
-            ParseWhileStmt : while expr do stmt
-              _PSPL_WTEST_N: evaluation condition / TEST AX,AX / JZ _PSPL_WEND_N
-              Compilation du bloc / JMP _PSPL_WTEST_N
-              Label _PSPL_WEND_N (sortie)
-            ParseRepeatStmt : repeat stmts until expr ;
-              _PSPL_RBEG_N: compilation des instructions
-              Evaluation condition / TEST AX,AX / JZ _PSPL_RBEG_N
-            Break : JMP vers le label _PSPL_*END_N de la boucle courante
-            Continue : JMP vers le label de test/increment de la boucle courante
-            LoopPush / LoopPop : pile des labels break/continue pour imbrication
-
-  TODO 15 - CHAINES DE CARACTERES (String) [IMPLEMENTE]
-            Representation : pointeur 16 bits vers ASCIIZ (termine par 0)
-            Affectation : copie de pointeur (pas de copie profonde)
-              s := 'abc' -> MOV AX, OFFSET _PSPK_N / MOV [BP-n], AX
-            Concatenation : s := s1 + s2 ;
-              PUSH AX (s2) / ... load s1 into AX
-              POP BX / CALL _PSPRT_CONCAT -> AX = ptr _PSP_STRBUF
-            Comparaison : s1 = s2      -> CALL _PSPRT_STRCMP / TEST AX,AX / SETZ
-                          s1 <> s2     -> CALL _PSPRT_STRCMP / TEST AX,AX / SETNZ
-                          s1 < s2 etc. -> CALL _PSPRT_STRCMP / CMP AX,0 / Jcc
-            Fonctions de chaine (appels inline) :
-              Length(s)         -> CALL _PSPRT_STRLEN(SI=AX) -> AX = longueur
-              Copy(s, pos, len) -> CALL _PSPRT_COPY(SI,BX,CX) -> AX = ptr buf
-              Pos(sub, s)       -> CALL _PSPRT_POS(SI=sub,DI=s) -> AX = position (1-base) ou 0
-              Delete(s, pos, len) -> CALL _PSPRT_DELETE(SI,BX,CX) -> modifie buf
-              Insert(sub, s, pos) -> CALL _PSPRT_INSERT(SI=sub,DI=s,BX=pos)
-              Concat(s1,s2,...) -> chaine de CALL _PSPRT_CONCAT
-              UpCase(c)         -> AND AL,0DFh (si 'a'..'z') -> AX
-              LowerCase(s)      -> CALL _PSPRT_LOWERCASE(SI=AX) -> AX = ptr buf
-              Trim(s)           -> CALL _PSPRT_TRIM(SI=AX) -> AX = ptr buf
-            Conversion nombre <-> chaine :
-              IntToStr(n)  / Str(n, s)  -> CALL _PSPRT_NUMTOSTR
-              StrToInt(s)  / Val(s,n,c) -> CALL _PSPRT_STRTONUM
-              Chr(n)       -> CALL _PSPRT_CHR -> AX = ptr chaine 1 car
-              Ord(c)       -> valeur directe (AX = code ASCII)
-
-  TODO 16 - FONCTIONS ET PROCEDURES [IMPLEMENTE]
-            ParseFuncDecl : function Nom(params): TypeRetour;
-              [forward;] -> enregistrement sans corps, IsForward = true
-              Bloc : [const] [type] [var] begin stmts end;
-              Valeur de retour : Nom := expr; -> MOV [BP+retoffset], AX
-                Ou Result := expr; (extension Free Pascal) -> meme chose
-              Label de retour : _PSPL_RET_N pour Exit premature
-              Emission : _PSPF_Nom PROC NEAR ... _PSPF_Nom ENDP
-            ParseProcDecl : procedure Nom(params);
-              Identique sauf pas de valeur de retour (TypeIdx = TY_VOID)
-            Parametres :
-              Par valeur : function F(x: Integer) -> copie sur pile
-              Par reference : function F(var x: Integer) -> pointeur sur pile
-                Lecture : MOV BX,[BP+n] / MOV AX,[BX]
-                Ecriture : MOV BX,[BP+n] / MOV [BX],AX
-              Plusieurs params meme type : (a, b, c: Integer)
-              Valeurs par defaut : stub + avertissement (non standard TP)
-            Forward declaration : procedure P; forward;
-              Premier passage : enregistre le symbole SC_PROC + IsForward
-              Deuxieme passage : associe le corps a la declaration
-            Fonctions imbriquees (1 niveau) : procedure interne dans une procedure
-              Acces au cadre parent via chainage statique [BP]
-              Avertissement si plus de 2 niveaux d imbrication
-            Appel : ParseCallArgs empile les arguments dans l ordre Pascal
-              (gauche a droite), CALL _PSPF_Nom, resultat dans AX
-
-  TODO 17 - PORTEE, PILE ET CADRES D'APPEL [IMPLEMENTE]
-            Convention d appel Pascal :
-              Arguments empiles gauche a droite (premier arg en premier)
-              Le sous-programme nettoie la pile (RET n)
-            Prologue de sous-programme :
-              PUSH BP / MOV BP,SP / SUB SP, framesize
-              framesize = nombre de variables locales * 2 (ou taille alignee)
-            Epilogue :
-              MOV SP,BP / POP BP / RET paramsize
-              paramsize = nombre de parametres * 2
-            Acces aux parametres : [BP+4] premier param, [BP+6] deuxieme, etc.
-              (apres le BP sauvegarde et l adresse de retour)
-            Acces aux variables locales : [BP-2] premiere var, [BP-4] deuxieme, etc.
-            Parametres var (reference) :
-              L appelant empile LEA AX,[BP-n] / PUSH AX (adresse)
-              Le sous-programme lit l adresse : MOV BX,[BP+n] / MOV AX,[BX]
-            Chainage statique pour procedures imbriquees :
-              L appelant empile le BP parent comme argument supplementaire
-              La procedure interne accede au cadre parent via [BP+framelink]
-            CurFrameSize : taille courante du cadre local (compteur de mots)
-            MaxNesting : avertissement si imbrication > NEST_MAX (4 niveaux)
-            Sauvegarde registres : SI, DI preserves par convention dans le code
-
-  TODO 18 - CONSTANTES, TYPES DEFINIS ET ENUMERATIONS [IMPLEMENTE]
-            ParseConstDecl : const PI = 3; MAX = 100; NAME = 'test';
-              Constantes non typees : valeur substituee a la compilation
-              Constantes typees : const X: Integer = 42; -> DATA DK_WORD
-              Constantes chaine : const S = 'abc'; -> DATA DK_STR
-            ParseTypeDecl : type TMonType = ... ;
-              Alias de type : type TEntier = Integer; -> meme TypeIdx
-              Enumeration : type TCouleur = (Rouge, Vert, Bleu);
-                Chaque valeur -> SC_ENUM_VAL, Ord = 0, 1, 2, ...
-                Fonctions : Ord(v), Succ(v), Pred(v), Low(T), High(T)
-              Sous-plage : type TJour = 1..31;
-                Stockage : meme taille que le type de base
-                Verification de bornes a la compilation si possible
-              Pointeur : type PEntier = ^Integer;
-                TypeRec.BaseTypeIdx = TY_IDX_INTEGER
-              Tableau : type TTab = array[1..10] of Integer;
-                (traite en detail dans TODO 19)
-              Record : type TPoint = record X,Y: Integer; end;
-                (traite en detail dans TODO 20)
-            Fonctions ordinales integrees :
-              Ord(x) -> AX tel quel (valeur ordinale)
-              Chr(n) -> CALL _PSPRT_CHR
-              Succ(x) -> INC AX
-              Pred(x) -> DEC AX
-              Inc(x)  -> INC WORD PTR [BP-n]
-              Inc(x,n)-> ADD WORD PTR [BP-n], n
-              Dec(x)  -> DEC WORD PTR [BP-n]
-              Dec(x,n)-> SUB WORD PTR [BP-n], n
-              Low(T)  -> MOV AX, borne_inf
-              High(T) -> MOV AX, borne_sup
-
-  TODO 19 - TABLEAUX (Array) [IMPLEMENTE]
-            Declaration : var arr: array[lo..hi] of TypeElem;
-              Calcul de la taille : (hi - lo + 1) * SizeOf(TypeElem)
-              Variable locale : SUB SP, taille_totale
-              Variable globale : _PSPA_arr DB taille_totale DUP(0)
-            Tableau litteral : non standard en TP -> stub + avertissement
-            Declaration avec taille constante : const N = 10; var a: array[1..N] of Integer;
-            Acces en lecture : a[i]
-              Index constant : LEA BX,[BP - base_offset + (i-lo)*elemsize]
-                MOV AX,[BX]
-              Index variable : MOV CX,AX / SUB CX,lo / SHL CX,1 (si word)
-                LEA BX,[BP - base_offset] / ADD BX,CX / MOV AX,[BX]
-            Acces en ecriture : a[i] := expr;
-              Meme calcul d adresse + MOV [BX], AX
-            Verification de bornes : si -w (warnings) et index constant :
-              Verifier lo <= i <= hi a la compilation ; avertissement sinon
-            Tableaux de chaines : array[1..N] of String;
-              Chaque element = pointeur 16 bits (2 octets)
-            Tableaux multi-dimensionnels : array[1..R, 1..C] of Integer;
-              Linearisation : offset = ((i-lo_r)*cols + (j-lo_c)) * elemsize
-              Avertissement si plus de 2 dimensions
-            Fonctions sur tableaux :
-              Length(arr)   -> MOV AX, hi-lo+1 (constante compilee)
-              High(arr)     -> MOV AX, hi
-              Low(arr)      -> MOV AX, lo
-              SizeOf(arr)   -> MOV AX, taille_totale
-            FillChar(arr, size, val) : CALL _PSPRT_FILLCHAR
-            Move(src, dst, count) : CALL _PSPRT_MOVE
-
-  TODO 20 - ENREGISTREMENTS (Record) [IMPLEMENTE]
-            ParseRecordType : record champ1: Type1; champ2: Type2; ... end;
-              Calcul des offsets : chaque champ aligne selon sa taille
-              Taille totale du record : somme des tailles des champs
-              Enregistrement dans TypeTab : TKP_RECORD + FieldList
-            Declaration : var p: TPoint; -> allocation locale ou globale
-              Local : SUB SP, SizeOf(TPoint)
-              Global : _PSPR_p DB SizeOf(TPoint) DUP(0)
-            Acces en lecture : p.X -> LEA BX,[BP-base] / ADD BX,offset_X / MOV AX,[BX]
-            Acces en ecriture : p.X := 10; -> meme adresse + MOV [BX],AX
-            Acces imbrique : r.inner.field -> calcul offset cumule
-            ParseWithStmt : with p do begin X := 10; Y := 20; end;
-              Empiler le pointeur de base du record sur une pile with
-              Lors de la resolution d un identifiant : chercher d abord dans
-                les champs du record courant (stack with)
-              Imbrication : with r1 do with r2 do ... (plusieurs niveaux)
-            Records imbriques : record contenant un record comme champ
-              Calcul d offset recursif
-            Variant record (simplifie) :
-              record case Tag: Integer of
-                0: (x: Integer);
-                1: (s: String);
-              end;
-              Tous les variants partagent le meme espace (union)
-              Taille = max(taille de chaque variant) + taille du tag
-              Avertissement : pas de verification de coherence a l execution
-
-  TODO 21 - DIRECTIVES PSP ET INCLUSIONS [IMPLEMENTE]
-            Directives de page <%@ ... %> :
-              ContentType=text/html : emission d un en-tete HTTP en debut de sortie
-                _PSPK_CT DB 'Content-Type: text/html',13,10,13,10,0
-                Avant tout autre code : MOV SI, OFFSET _PSPK_CT / CALL _PSPRT_PRINTSTR
-              ContentType=text/plain : idem avec text/plain
-              ContentType=application/json : idem
-              Include file="chemin.psp" : inclure le contenu d un autre fichier
-                Ouverture du fichier inclus, insertion dans le flux du lexeur
-                Retour au fichier principal apres la fin de l include
-                Profondeur maximale d inclusion : INCLUDE_MAX (8)
-              CodePage=65001 : stub + avertissement (pas de support Unicode)
-            Directives Pascal {$ ... } :
-              {$I filename} ou {$INCLUDE filename} : inclusion de fichier source
-                Meme mecanisme que l include PSP mais dans le code Pascal
-              {$DEFINE nom} : definir un symbole de compilation
-              {$UNDEF nom} : indefinir un symbole
-              {$IFDEF nom} / {$IFNDEF nom} / {$ELSE} / {$ENDIF} :
-                Compilation conditionnelle : si symbole defini/indefini
-                Pile de conditions pour imbrication
-              {$MODE TP} : mode Turbo Pascal (compatible TP7)
-              {$MODE FPC} : mode Free Pascal (active Result, etc.)
-                Detecte au debut de la compilation, affecte certaines extensions
-            DefineTab[0..MAX_DEFINE-1] : table des symboles de compilation
-            IncludeStack[0..INCLUDE_MAX-1] : pile des fichiers inclus
-
-  TODO 22 - FONCTIONS ET PROCEDURES STANDARD [IMPLEMENTE]
-            Entrees/Sorties :
-              Write(...) et WriteLn(...) : traites dans TODO 12
-              Read(v) : INT 21h AH=01h -> caractere dans AL ; boucle pour nombre
-              ReadLn(v) : Read(v) + consommer jusqu a CR
-              Assign(f, nom) : stub, fichier texte non supporte en mode CGI
-              Reset(f), Rewrite(f), Close(f) : stubs + avertissement
-              EOF(f), EOLN(f) : stubs -> MOV AX,1 (toujours vrai)
-            Mathematiques :
-              Abs(n)    -> CWD / XOR AX,DX / SUB AX,DX (valeur absolue)
-              Sqr(n)    -> IMUL AX,AX (carre)
-              Sqrt(n)   -> CALL _PSPRT_SQRT (Newton-Raphson entier)
-              Odd(n)    -> AND AX,1 (impair -> AX=1)
-              Random    -> CALL _PSPRT_RANDOM (LCG 16 bits) -> AX
-              Random(n) -> CALL _PSPRT_RANDOM / XOR DX,DX / IDIV n -> DX (reste)
-              Randomize -> CALL _PSPRT_RANDOMIZE (graine depuis horloge)
-            Systeme :
-              Halt       -> MOV AX,4C00h / INT 21h
-              Halt(code) -> MOV AX,4C00h + code / INT 21h
-              Exit       -> JMP _PSPL_RET_N (sortie de la procedure courante)
-              Break      -> JMP label_end de la boucle courante
-              Continue   -> JMP label_test de la boucle courante
-              SizeOf(T)  -> MOV AX, taille (constante compilee)
-              Lo(w)      -> AND AX,00FFh
-              Hi(w)      -> MOV AL,AH / XOR AH,AH
-              Swap(w)    -> XCHG AL,AH
-            Memoire :
-              New(p)      -> CALL _PSPRT_ALLOC(CX=sizeof(type)) -> AX=ptr
-              Dispose(p)  -> stub (pas de liberation dans le heap statique)
-              GetMem(p,n) -> CALL _PSPRT_ALLOC(CX=n) -> AX=ptr
-              FreeMem(p,n)-> stub + avertissement
-              FillChar(v, n, c) -> CALL _PSPRT_FILLCHAR(DI=ptr, CX=n, AL=c)
-              Move(src, dst, n) -> CALL _PSPRT_MOVE(SI=src, DI=dst, CX=n)
-            Conversion (voir aussi TODO 15) :
-              Str(n, s)   -> _PSPRT_NUMTOSTR + copie ptr dans s
-              Val(s, n, code) -> _PSPRT_STRTONUM + code=0 si OK
-              IntToStr(n) -> _PSPRT_NUMTOSTR -> AX=ptr (extension FPC)
-              StrToInt(s) -> _PSPRT_STRTONUM -> AX=entier (extension FPC)
-            Environnement (extensions CGI) :
-              ParamStr(i) -> stub MOV AX,0 + avertissement
-              ParamCount  -> stub MOV AX,0  + avertissement
-              GetEnv(s)   -> INT 21h AH=62h (stub) + avertissement
-
-  TODO 23 - GESTION DES ERREURS [IMPLEMENTE]
-            Erreurs de compilation :
-              FatalError(msg) : affiche 'Erreur ligne N : msg' + arret (exit code 1)
-              WarnMsg(msg) : affiche 'Avertissement ligne N : msg' (si -w actif)
-              Compteur d erreurs et d avertissements : affiche le total en fin
-            Erreurs de syntaxe :
-              Expect(token) : si le token courant ne correspond pas -> FatalError
-              SkipTo(tokens) : avancer jusqu a un token de synchronisation
-                Tokens de synchro : ; end %> begin (pour recovery minimaliste)
-            Erreurs de type :
-              Type incompatible dans affectation -> erreur
-              Type incompatible dans expression -> avertissement + coercition
-              Parametre de type incorrect -> erreur
-            Erreurs d execution (code genere) :
-              Division par zero : TEST BX,BX / JNZ ok / CALL _PSPRT_PANIC_DIV0
-              Depassement de pile : avertissement compile si framesize > FRAME_WARN
-              Index hors bornes (si verifiable a la compilation) : avertissement
-            Gestion try/except (style Delphi, basique) :
-              try bloc except [on E: Exception do bloc] end;
-              Similaire a TODO 23 de JS86 : vecteur _PSPX_HANDLER + save/restore SP/BP
-              raise expr -> evaluer expr + JMP vers le handler ou _PSPRT_PANIC
-              Stub simplifie : try/except attrape toutes les erreurs sans filtre
-              finally : toujours execute apres try ou except
-              _PSPX_HANDLER DW 0, _PSPX_SAVESP DW 0, _PSPX_SAVEBP DW 0
-
-  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
-            _PSPRT_PRINT(BX=handle, DX=buf, CX=len) : INT 21h AH=40h
-            _PSPRT_PRINTSTR(SI=ptr ASCIIZ) : calcule longueur + _PSPRT_PRINT BX=1
-            _PSPRT_PRINTLN : _PSPRT_PRINTSTR + emet CR+LF
-            _PSPRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX=longueur
-            _PSPRT_NUMTOSTR(AX=n) : entier signe -> ASCII dans _PSP_NUMBUF -> AX=ptr
-            _PSPRT_STRTONUM(SI=str) : ASCII -> entier signe -> AX
-            _PSPRT_CONCAT(AX=s1, BX=s2) : copie s1+s2 dans _PSP_STRBUF -> AX=ptr
-            _PSPRT_STRCMP(SI=s1, DI=s2) : compare -> AX = -1/0/+1
-            _PSPRT_COPY(SI=src, BX=pos, CX=len) : sous-chaine -> AX=ptr buf
-            _PSPRT_POS(SI=sub, DI=str) : recherche -> AX = position 1-base ou 0
-            _PSPRT_DELETE(SI=str, BX=pos, CX=len) : supprime en place -> buf
-            _PSPRT_INSERT(SI=sub, DI=str, BX=pos) : insere -> buf
-            _PSPRT_LOWERCASE(SI=str) : minuscules -> AX=ptr buf
-            _PSPRT_TRIM(SI=str) : supprime espaces debut/fin -> AX=ptr buf
-            _PSPRT_CHR(AL=code) : 1 caractere -> AX=ptr chaine 1 car dans buf
-            _PSPRT_SQRT(AX=n) : racine carree entiere (Newton-Raphson) -> AX
-            _PSPRT_RANDOM : LCG 16 bits -> AX (graine _PSPRT_SEED DW 1)
-            _PSPRT_RANDOMIZE : INT 1Ah AH=00h -> CX:DX -> _PSPRT_SEED
-            _PSPRT_ALLOC(CX=nb_bytes) : allocation bump dans _PSP_HEAP -> AX=ptr
-            _PSPRT_FILLCHAR(DI=ptr, CX=n, AL=val) : REP STOSB
-            _PSPRT_MOVE(SI=src, DI=dst, CX=n) : REP MOVSB
-            _PSPRT_PANIC(SI=msg) : affiche msg + MOV AX,4C01h + INT 21h
-            _PSPRT_PANIC_DIV0 : msg = 'Runtime error: Division by zero'
-            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
-            Heap statique : _PSP_HEAP DB 4096 DUP(0) + _PSP_HEAPTOP DW 0
-
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
-            EmitClose : END _PSPF_main dans _TEXT ENDS / _DATA ENDS
-            Run : pipeline complet :
-              1. ParseArgs et ouverture des fichiers
-              2. EmitHeader (_TEXT SEGMENT, _PSPF_main:, MOV AX,_DATA / MOV DS,AX)
-              3. Boucle de template : alterner HTML literal / blocs <% %>
-              4. Emission MOV AX,4C00h / INT 21h (fin du programme)
-              5. EmitRuntime (routines _PSPRT_ )
-              6. _TEXT ENDS
-              7. EmitDataSeg (_DATA SEGMENT ... _DATA ENDS)
-              8. END _PSPF_main
-            Fichiers SAMPLES\PSP\ existants et a creer :
-              hello.psp           (HTML + Write/WriteLn, boucle for, variables)
-              test_string.psp     (chaines, concatenation, litteraux)
-              test_function.psp   (fonctions, parametres, appels)
-              test_case.psp       (case/of, entiers)
-              calculcalciumcorrige.psp (fonctions Real, calcul scientifique)
-              -- fichiers supplementaires a creer --
-              test_if.psp         (if/then/else, booleens, comparaisons)
-              test_array.psp      (tableaux, acces, boucle sur elements)
-              test_record.psp     (records, champs, with)
-              test_include.psp    (directive <%@ Include %>, {$I})
-              test_expr.psp       (expressions, operateurs, priorites)
-            Smoke tests : PSP86.EXE -v SAMPLES\PSP\*.psp
-
   ============================================================ *)
-
-{ ============================================================
-  PSP86 - Compilateur Pascal Server Pages -> assembleur 8086
-  Version : 1.0  Date : 2026-03-06
-  Compilation : ppc386 -O2 -Mtp PSP86.PAS
-  ============================================================ }
 
 Program PSP86;
 
@@ -640,8 +63,8 @@ Const
   PSP_ARR_PFX   = '_PSPA_';    { tableau                       }
   PSP_REC_PFX   = '_PSPR_';    { record                        }
   PSP_ENUM_PFX  = '_PSPE_';    { enumeration                   }
-  PSP_HTML_PFX  = '_PSPK_HTML_'; { fragment HTML literal        }
-  PSP_EX_PFX    = '_PSPX_';     { exception handler (TODO 23)   }
+  PSP_HTML_PFX  = '_PSPK_HTML_'; { fragment HTML literal       }
+  PSP_EX_PFX    = '_PSPX_';     { exception handler            }
 
   { Codes de sortie }
   EXIT_OK    = 0;
@@ -677,7 +100,7 @@ Type
     Warnings  : Boolean;   { -w : activer les avertissements      }
   End;
 
-  { ---- Tokens Pascal / PSP (TODO 02) ---------------------- }
+  { ---- Tokens Pascal / PSP ---------------------- }
   TTokenKind = (
     TK_EOF,            { fin de fichier                       }
     TK_INTEGER,        { literal entier 42 $FF                }
@@ -704,10 +127,10 @@ Type
     Col      : Integer;     { colonne source (1-base)          }
   End;
 
-  { ---- Mode du template PSP (TODO 03) --------------------- }
+  { ---- Mode du template PSP --------------------- }
   TPSPMode = (TPL_HTML, TPL_CODE);
 
-  { ---- Segment de donnees (TODO 04 + TODO 09) ------------ }
+  { ---- Segment de donnees ------------ }
   TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY, DK_REC);
 
   TDataRec = Record
@@ -720,7 +143,7 @@ Type
     RecSize   : Integer;   { taille totale en octets (DK_REC)    }
   End;
 
-  { ---- Valeurs d expression (TODO 04) --------------------- }
+  { ---- Valeurs d expression --------------------- }
   TExprKind = (
     EK_NONE,   { void / pas de valeur                       }
     EK_IMM,    { valeur immediate dans ImmVal                }
@@ -736,7 +159,7 @@ Type
     SymIdx  : Integer;   { indice dans SymTab (-1 si pas lvalue) }
   End;
 
-  { ---- Genre de type (TODO 07) ----------------------------- }
+  { ---- Genre de type ----------------------------- }
   TTypeKind = (
     TKP_INTEGER,   { entier 16 bits signe                    }
     TKP_WORD,      { entier 16 bits non signe                 }
@@ -755,20 +178,20 @@ Type
     TKP_VOID       { procedure, pas de valeur de retour        }
   );
 
-  { ---- Champ de record (TODO 07) --------------------------- }
+  { ---- Champ de record --------------------------- }
   TFieldRec = Record
     Name    : TString;
     TypeIdx : Integer;
     Offset  : Integer;  { decalage en octets dans le record }
   End;
 
-  { ---- Valeur d enumeration (TODO 07) ---------------------- }
+  { ---- Valeur d enumeration ---------------------- }
   TEnumValRec = Record
     Name  : TString;
     Value : Integer;
   End;
 
-  { ---- Enregistrement de type (TODO 07) -------------------- }
+  { ---- Enregistrement de type -------------------- }
   TTypeRec = Record
     Kind        : TTypeKind;
     Size        : Integer;     { taille en octets                   }
@@ -781,7 +204,7 @@ Type
     Enums       : Array[0..MAX_ENUM - 1] Of TEnumValRec;
   End;
 
-  { ---- Categorie de symbole (TODO 06) ---------------------- }
+  { ---- Categorie de symbole ---------------------- }
   TSymCat = (
     SC_VAR,          { variable globale ou locale           }
     SC_CONST,        { constante non-typee (substitution)   }
@@ -796,7 +219,7 @@ Type
     SC_LABEL         { label nomme                          }
   );
 
-  { ---- Enregistrement symbole (TODO 06) -------------------- }
+  { ---- Enregistrement symbole -------------------- }
   TSymRec = Record
     Name        : TString;  { nom original Pascal (minuscule)    }
     MangledName : TString;  { nom ASM mangled (_PSP_xxx etc.)    }
@@ -830,7 +253,7 @@ Var
   OutF     : Text;
   OutFOpen : Boolean;
 
-  { Lexeur (TODO 02) }
+  { Lexeur }
   LexSrcF   : Text;
   LexOpened : Boolean;
   LexLine   : String;
@@ -839,52 +262,52 @@ Var
   LexEOF    : Boolean;
   CurToken  : TToken;
 
-  { Analyseur de template (TODO 03) }
+  { Analyseur de template }
   TplMode      : TPSPMode;
   TplHtmlBuf   : TString;
   TplPending   : TTokenKind;
   TplHtmlCount : Integer;
 
-  { Segment de donnees (TODO 04) }
+  { Segment de donnees }
   DataTab      : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount    : Integer;
   LabelGenSeq  : Integer;
 
-  { Table des symboles (TODO 06) }
+  { Table des symboles }
   SymTab        : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount      : Integer;
   CurScopeLevel : Integer;
   CurScopeId    : Integer;
   ScopeIdSeq    : Integer;
 
-  { Table des types (TODO 07) }
+  { Table des types }
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;
 
-  { Variables et affectations (TODO 10) }
+  { Variables et affectations }
   CurFrameOffset   : Integer;  { offset courant dans le cadre local (negatif) }
   PendingAssignName : TString; { nom ident en attente (lookahead ParseVarDecl) }
   HasPendingAssign  : Boolean; { True si une affectation a ete detectee }
 
-  { Pile de boucles pour break/continue (TODO 14) }
+  { Pile de boucles pour break/continue }
   LoopBreakLbl    : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl     : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopTop         : Integer;  { sommet de la pile (-1 = vide) }
 
-  { Fonctions et procedures (TODO 16) }
+  { Fonctions et procedures }
   CurFuncName     : TString;  { nom de la fonction en cours ('' si aucune) }
   CurFuncRetOfs   : Integer;  { offset de la valeur de retour [BP+n] }
   CurRetLabel     : TString;  { label de retour (_PSPL_RET_N) pour Exit }
   CurNestLevel    : Integer;  { profondeur d imbrication proc/func }
   CurParamBytes   : Integer;  { taille des parametres pour RET n }
   MainBodyEmitted : Boolean;  { True si _PSPL_MAINBODY deja emis }
-  RuntimeEmitted  : Boolean;  { True si routines runtime deja emises (TODO 24) }
+  RuntimeEmitted  : Boolean;  { True si routines runtime deja emises }
 
-  { Pile with pour records (TODO 20) }
+  { Pile with pour records }
   WithSymIdx      : Array[0..MAX_WITH - 1] Of Integer;  { symidx du record }
   WithTop         : Integer;  { sommet de la pile (-1 = vide) }
 
-  { Directives et inclusions (TODO 21) }
+  { Directives et inclusions }
   IncSavedFName   : Array[0..MAX_INCLUDE - 1] Of TString; { nom fichier empile }
   IncSavedFLine   : Array[0..MAX_INCLUDE - 1] Of Integer;{ ligne dans fichier }
   IncSavedLine    : Array[0..MAX_INCLUDE - 1] Of String; { ligne courante  }
@@ -901,19 +324,19 @@ Var
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
-{ Utilitaires chaines (TODO 01) }
+{ Utilitaires chaines }
 Function  StrLowerCase(Const S : TString) : TString; Forward;
 Function  StrUpperCase(Const S : TString) : TString; Forward;
 Function  IntToStr(N : LongInt) : TString; Forward;
 Function  BPOfs(Ofs : Integer) : TString; Forward;
 Function  StrToIntDef(Const S : TString; Def : LongInt) : LongInt; Forward;
-{ Messages (TODO 01) }
+{ Messages }
 Procedure FatalError(Const Msg : TString); Forward;
 Procedure WarnMsg(Const Msg : TString); Forward;
 Procedure ErrorMsg(Const Msg : TString); Forward;
 Procedure Expect(Const Expected : TString); Forward;
 Procedure SkipTo; Forward;
-{ Lexeur (TODO 02) }
+{ Lexeur }
 Procedure LexInit;       Forward;
 Procedure LexClose;      Forward;
 Procedure LexNextLine;   Forward;
@@ -931,7 +354,7 @@ Procedure PrintToken(Const T : TToken); Forward;
 Procedure LexSkipBraceComment; Forward;
 Procedure LexSkipParenStarComment; Forward;
 Procedure LexSkipLineComment; Forward;
-{ Directives et inclusions (TODO 21) }
+{ Directives et inclusions }
 Procedure LexHandleDollarDirective; Forward;
 Procedure IncludePush(Const FileName : TString); Forward;
 Procedure IncludePop; Forward;
@@ -939,13 +362,13 @@ Function  DefineDefined(Const Name : TString) : Boolean; Forward;
 Procedure DefineAdd(Const Name : TString); Forward;
 Procedure DefineRemove(Const Name : TString); Forward;
 Procedure ParsePSPDirective; Forward;
-{ Analyseur de template (TODO 03) }
+{ Analyseur de template }
 Procedure TplInit;       Forward;
 Procedure TplClose;      Forward;
 Procedure TplEmitHtml;   Forward;
 Procedure TplEmitPSPOpen(Kind : TTokenKind); Forward;
 Procedure TplNextToken;  Forward;
-{ Segment de donnees et litteraux (TODO 04) }
+{ Segment de donnees et litteraux }
 Function  LabelGen : TString; Forward;
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
@@ -960,7 +383,7 @@ Procedure EmitRaw(Const S : String); Forward;
 Procedure EmitDataSeg; Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure ParseConstDecl; Forward;
-{ Table des symboles (TODO 06) }
+{ Table des symboles }
 Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
 Function  SymAdd(Const Name : TString; Cat : TSymCat;
                TIdx : Integer) : Integer; Forward;
@@ -970,7 +393,7 @@ Function  SymFindInScope(Const Name : TString;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymInit; Forward;
-{ Systeme de types (TODO 07) }
+{ Systeme de types }
 Procedure TypeInit; Forward;
 Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
 Function  TypeCompatible(T1, T2 : Integer) : Boolean; Forward;
@@ -979,13 +402,13 @@ Function  TypeResolve(Const Name : TString) : Integer; Forward;
 Function  TypeIsOrdinal(TIdx : Integer) : Boolean; Forward;
 Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
 Function  TypeIsPointer(TIdx : Integer) : Boolean; Forward;
-{ Emetteur ASM (TODO 05) }
+{ Emetteur ASM }
 Procedure EmitComment(Const S : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
 Procedure EmitInstr(Const Mnem : TString); Forward;
 Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
 Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
-{ Emetteur de code ASM (TODO 08) }
+{ Emetteur de code ASM }
 Procedure EmitBlankLine; Forward;
 Function  NewLabel : TString; Forward;
 Procedure EmitHeader; Forward;
@@ -999,7 +422,7 @@ Procedure EmitCall(Const Target : TString); Forward;
 Procedure EmitJmp(Const Target : TString); Forward;
 Procedure EmitJmpCond(Const Cond, Target : TString); Forward;
 Procedure EmitCoerce(SrcType, DstType : Integer); Forward;
-{ Operateurs et expressions (TODO 05) }
+{ Operateurs et expressions }
 Function  OpPrec(Const Op : TString) : Integer; Forward;
 Procedure ExprMakeImm(V : LongInt; TIdx : Integer; Var R : TExprVal); Forward;
 Procedure ExprFlushToAX(Var E : TExprVal); Forward;
@@ -1008,34 +431,34 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
-{ Variables et affectations (TODO 10) }
+{ Variables et affectations }
 Procedure ParseVarDecl; Forward;
 Procedure ParseAssignment(Const VarName : TString); Forward;
-{ Write/WriteLn et emission HTML (TODO 12) }
+{ Write/WriteLn et emission HTML }
 Procedure ParseWriteStmt(IsWriteLn : Boolean); Forward;
 Procedure EmitHtmlFragment(Const Html : TString); Forward;
 Procedure EmitExprInline; Forward;
-{ If/Then/Else, Case/Of, Blocs (TODO 13) }
+{ If/Then/Else, Case/Of, Blocs }
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
 Procedure ParseIfStmt; Forward;
 Procedure ParseCaseStmt; Forward;
-{ Boucles (TODO 14) }
+{ Boucles }
 Procedure ParseForStmt; Forward;
 Procedure ParseWhileStmt; Forward;
 Procedure ParseRepeatStmt; Forward;
-{ Fonctions et procedures (TODO 16) }
+{ Fonctions et procedures }
 Procedure ParseFuncDecl; Forward;
 Procedure ParseProcDecl; Forward;
-{ Types definis et enumerations (TODO 18) }
+{ Types definis et enumerations }
 Procedure ParseTypeDecl; Forward;
 Procedure ParseIncDecStmt(IsInc : Boolean); Forward;
-{ Enregistrements (TODO 20) }
+{ Enregistrements }
 Procedure ParseWithStmt; Forward;
-Procedure ParseTryExcept; Forward;  { TODO 23 }
+Procedure ParseTryExcept; Forward;
 
 { ============================================================
-  TODO 02 - LEXEUR (TOKENS PASCAL) [IMPLEMENTE]
+  LEXEUR (TOKENS PASCAL)
   ============================================================ }
 
 { ---- IsKeyword : teste si S est un mot-cle Pascal ---------- }
@@ -1099,12 +522,11 @@ Begin
 End;
 
 { ---- LexNextLine : lire la prochaine ligne source ----------- }
-Procedure LexNextLine;
-Begin
+Procedure LexNextLine;Begin
   If LexEOF Then Exit;
   If EOF(LexSrcF) Then
   Begin
-    { Si on est dans un fichier inclus, depiler (TODO 21) }
+    { Si on est dans un fichier inclus, depiler }
     If IncTop >= 0 Then
     Begin
       IncludePop;
@@ -1204,7 +626,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 21 - DIRECTIVES PSP ET INCLUSIONS
+  DIRECTIVES PSP ET INCLUSIONS
   ============================================================ }
 
 { ---- DefineDefined : teste si un symbole est defini --------- }
@@ -2064,7 +1486,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - ANALYSEUR DE TEMPLATE PSP [IMPLEMENTE]
+  ANALYSEUR DE TEMPLATE PSP [IMPLEMENTE]
   ============================================================ }
 
 { ---- TplInit : initialiser l analyseur de template --------- }
@@ -2239,7 +1661,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - LITTERAUX ET CONSTANTES PASCAL [IMPLEMENTE]
+  LITTERAUX ET CONSTANTES PASCAL
   ============================================================ }
 
 { ---- LabelGen : generateur de labels uniques ---------------- }
@@ -2290,13 +1712,13 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
-{ ---- DataAddByte : ajouter un octet dans DataTab (TODO 09) -- }
+{ ---- DataAddByte : ajouter un octet dans DataTab -- }
 Function DataAddByte(Const Lbl : TString; AIntVal : LongInt) : Integer;
 Begin
   DataAddByte := DataAdd(Lbl, DK_BYTE, AIntVal, '');
 End;
 
-{ ---- DataAddArray : ajouter un tableau dans DataTab (TODO 09)  }
+{ ---- DataAddArray : ajouter un tableau dans DataTab }
 { ECount = nombre d elements, ESz = taille d un element en octets }
 Function DataAddArray(Const Lbl : TString;
                 ECount, ESz : Integer) : Integer;
@@ -2309,7 +1731,7 @@ Begin
   DataAddArray := Idx;
 End;
 
-{ ---- DataAddRec : ajouter un record dans DataTab (TODO 09) --- }
+{ ---- DataAddRec : ajouter un record dans DataTab --- }
 { RSz = taille totale du record en octets                         }
 Function DataAddRec(Const Lbl : TString;
                 RSz : Integer) : Integer;
@@ -2323,7 +1745,7 @@ End;
 
 { ---- EmitDataSeg : emettre le segment _DATA complet --------- }
 { Genere _DATA SEGMENT, les buffers internes, les entrees         }
-{ dynamiques de DataTab, puis _DATA ENDS.        (TODO 04+09)     }
+{ dynamiques de DataTab, puis _DATA ENDS.            }
 Procedure EmitDataSeg;
 Var
   I, J : Integer;
@@ -2332,7 +1754,7 @@ Var
 Begin
   EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
 
-  { --- Buffers internes (TODO 09) --- }
+  { --- Buffers internes --- }
   EmitComment('--- Buffers internes ---');
   EmitRaw(PSP_RT_PFX + 'CRLF    DB  13,10,0');
   EmitRaw(PSP_RT_PFX + 'STRBUF  DB  512 DUP(0)');
@@ -2343,7 +1765,7 @@ Begin
   EmitRaw(PSP_RT_PFX + 'HEAP    DB  4096 DUP(0)');
   EmitRaw(PSP_RT_PFX + 'HEAPTOP DW  OFFSET ' + PSP_RT_PFX + 'HEAP');
   EmitRaw(PSP_RT_PFX + 'SEED    DW  1');
-  { TODO 23 : variables exception handler et messages panic }
+  { Variables exception handler et messages panic }
   EmitRaw(PSP_EX_PFX + 'HANDLER DW  0');
   EmitRaw(PSP_EX_PFX + 'SAVESP  DW  0');
   EmitRaw(PSP_EX_PFX + 'SAVEBP  DW  0');
@@ -2551,10 +1973,10 @@ Begin
     { Valeur : expression constante (pliage de constantes) }
     ParseExpr(Ev);
 
-    { Enregistrer la constante dans la table des symboles (TODO 06) }
+    { Enregistrer la constante dans la table des symboles }
     If IsTyped Then
     Begin
-      { Resoudre le nom de type (TODO 07) }
+      { Resoudre le nom de type }
       ResTIdx := TypeResolve(CType);
       If ResTIdx = TY_UNKNOWN Then
         WarnMsg('type inconnu: ' + CType);
@@ -2625,7 +2047,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 18 - CONSTANTES, TYPES DEFINIS ET ENUMERATIONS [IMPLEMENTE]
+  CONSTANTES, TYPES DEFINIS ET ENUMERATIONS [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseTypeDecl : analyser un bloc type -------------------- }
@@ -2788,7 +2210,7 @@ Begin
       Continue;
     End;
 
-    { --- TODO 19 : type TArr = array[lo..hi] of TypeElem --- }
+    { --- type TArr = array[lo..hi] of TypeElem --- }
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'array') Then
     Begin
@@ -2898,7 +2320,7 @@ Begin
       Continue;
     End;
 
-    { --- TODO 20 : type TRec = record ... end --- }
+    { --- type TRec = record ... end --- }
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'record') Then
     Begin
@@ -2933,7 +2355,7 @@ Begin
 
           { Virgules supplementaires }
           { Pour simplifier, on gere un seul champ par ligne }
-          { TODO : multi-champs par ligne }
+          { multi-champs par ligne }
 
           { Deux-points }
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
@@ -3242,7 +2664,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  VARIABLES ET AFFECTATIONS [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseVarDecl : analyser un bloc var ---------------------- }
@@ -3258,7 +2680,7 @@ Var
   TSz      : Integer;
   I, Idx   : Integer;
   DIdx     : Integer;
-  { TODO 19 - Tableaux }
+  { Tableaux }
   ArrLo, ArrHi   : LongInt;
   ArrCount        : LongInt;
   ArrSize         : LongInt;
@@ -3321,7 +2743,7 @@ Begin
       Continue;
     End;
 
-    { --- TODO 19 : Detection array[lo..hi] of TypeElem --- }
+    { --- Detection array[lo..hi] of TypeElem --- }
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'array') Then
     Begin
@@ -3500,7 +2922,7 @@ Begin
         If CurScopeLevel = 0 Then
         Begin
           { Variable globale : ajouter dans DataTab }
-          { TODO 20 : records utilise DataAddRec }
+          { records utilise DataAddRec }
           If (TIdx >= 0) And (TIdx < TypeCount) And
              (TypeTab[TIdx].Kind = TKP_RECORD) Then
           Begin
@@ -3564,7 +2986,7 @@ Var
   SIdx : Integer;
   Ev   : TExprVal;
 Begin
-  { Affectation a la valeur de retour : FuncName := expr (TODO 16) }
+  { Affectation a la valeur de retour : FuncName := expr }
   If (CurFuncName <> '') And
      ((StrLowerCase(VarName) = CurFuncName) Or
       (StrLowerCase(VarName) = 'result')) Then
@@ -3623,7 +3045,7 @@ Begin
   { Evaluer l expression }
   ParseExpr(Ev);
 
-  { Verification de compatibilite de type (TODO 23 : erreur) }
+  { Verification de compatibilite de type (erreur) }
   If (SymTab[SIdx].TypeIdx <> TY_UNKNOWN) And
      (Ev.TypeIdx <> TY_UNKNOWN) Then
   Begin
@@ -3672,7 +3094,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - WRITE / WRITELN ET EMISSION HTML [IMPLEMENTE]
+  WRITE / WRITELN ET EMISSION HTML [IMPLEMENTE]
   ============================================================ }
 
 { ---- EmitPrintAX : emettre code pour afficher AX selon type -- }
@@ -3845,7 +3267,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - IF / THEN / ELSE + CASE / OF [IMPLEMENTE]
+  IF / THEN / ELSE + CASE / OF [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseStatement : analyser une instruction simple --------- }
@@ -3856,14 +3278,14 @@ Procedure ParseStatement;
 Var
   SavedName : TString;
   ProcIdx   : Integer;
-  { TODO 19 - Tableaux }
+  { Tableaux }
   ArrSIdx   : Integer;
   ArrTIdx   : Integer;
   ArrLo     : LongInt;
   ElemSz    : Integer;
   IdxExpr   : TExprVal;
   ValExpr   : TExprVal;
-  { TODO 20 - Records }
+  { Records }
   RecSIdx   : Integer;
   RecTIdx   : Integer;
   FldIdx    : Integer;
@@ -3872,19 +3294,19 @@ Var
   FldSz     : Integer;
   WIdx      : Integer;
   WI        : Integer;
-  { TODO 22 - Standard lib }
+  { Standard lib }
   HaltExpr  : TExprVal;
   ReadVarIdx : Integer;
 Begin
   { Emettre le label MAINBODY avant la premiere instruction }
-  { du code principal (pas les declarations func/proc) (TODO 16) }
+  { du code principal (pas les declarations func/proc) }
   If (Not MainBodyEmitted) And (CurScopeLevel = 0) And
      Not ((CurToken.Kind = TK_KEYWORD) And
           ((CurToken.Val = 'function') Or (CurToken.Val = 'procedure'))) Then
   Begin
     MainBodyEmitted := True;
     EmitLabel(PSP_LBL_PFX + 'MAINBODY');
-    { TODO 21 : emettre Content-Type si defini par <%@ ContentType=...%> }
+    { emettre Content-Type si defini par <%@ ContentType=...%> }
     If ContentTypeLbl <> '' Then
     Begin
       EmitInstrAB('MOV', 'SI', 'OFFSET ' + ContentTypeLbl);
@@ -3991,7 +3413,7 @@ Begin
     Exit;
   End;
 
-  { Declarations type (TODO 18) }
+  { Declarations type }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'type') Then
   Begin
     TplNextToken;
@@ -4020,7 +3442,7 @@ Begin
     Exit;
   End;
 
-  { Inc/Dec comme instructions (TODO 18) }
+  { Inc/Dec comme instructions }
   If (CurToken.Kind = TK_IDENT) And
      (StrLowerCase(CurToken.Val) = 'inc') Then
   Begin
@@ -4036,7 +3458,7 @@ Begin
     Exit;
   End;
 
-  { --- TODO 19 : FillChar(var, count, value) --- }
+  { --- FillChar(var, count, value) --- }
   If (CurToken.Kind = TK_IDENT) And
      (StrLowerCase(CurToken.Val) = 'fillchar') Then
   Begin
@@ -4092,7 +3514,7 @@ Begin
     Exit;
   End;
 
-  { --- TODO 19 : Move(src, dst, count) --- }
+  { --- Move(src, dst, count) --- }
   If (CurToken.Kind = TK_IDENT) And
      (StrLowerCase(CurToken.Val) = 'move') Then
   Begin
@@ -4167,7 +3589,7 @@ Begin
     Exit;
   End;
 
-  { ====== TODO 22 : Procedures standard ====== }
+  { ====== Procedures standard ====== }
 
   { --- Read(var) / ReadLn(var) --- }
   If (CurToken.Kind = TK_IDENT) And
@@ -4475,7 +3897,7 @@ Begin
     Exit;
   End;
 
-  { --- Assign / Reset / Rewrite / Close : stubs (TODO 22) --- }
+  { --- Assign / Reset / Rewrite / Close : stubs --- }
   If (CurToken.Kind = TK_IDENT) And
      ((StrLowerCase(CurToken.Val) = 'assign') Or
       (StrLowerCase(CurToken.Val) = 'reset') Or
@@ -4501,7 +3923,7 @@ Begin
     Exit;
   End;
 
-  { --- TODO 24 : Delete(s, pos, len) --- }
+  { --- Delete(s, pos, len) --- }
   If (CurToken.Kind = TK_IDENT) And
      (StrLowerCase(CurToken.Val) = 'delete') Then
   Begin
@@ -4543,7 +3965,7 @@ Begin
     Exit;
   End;
 
-  { --- TODO 24 : Insert(sub, s, pos) --- }
+  { --- Insert(sub, s, pos) --- }
   If (CurToken.Kind = TK_IDENT) And
      (StrLowerCase(CurToken.Val) = 'insert') Then
   Begin
@@ -4586,7 +4008,7 @@ Begin
     Exit;
   End;
 
-  { Declarations function / procedure (TODO 16) }
+  { Declarations function / procedure }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
   Begin
     ParseFuncDecl;
@@ -4598,7 +4020,7 @@ Begin
     Exit;
   End;
 
-  { Exit : saut au label de retour de la fonction courante (TODO 16) }
+  { Exit : saut au label de retour de la fonction courante }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'exit') Then
   Begin
     TplNextToken;
@@ -4609,7 +4031,7 @@ Begin
     Exit;
   End;
 
-  { Result := expr (TODO 16 - valeur de retour via Result) }
+  { Result := expr (valeur de retour via Result) }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'result') Then
   Begin
     If CurFuncName <> '' Then
@@ -4625,14 +4047,14 @@ Begin
     Exit;
   End;
 
-  { ====== TODO 23 : try ... except ... [finally ...] end ====== }
+  { ====== try ... except ... [finally ...] end ====== }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
   Begin
     ParseTryExcept;
     Exit;
   End;
 
-  { ====== TODO 23 : raise ====== }
+  { ====== raise ====== }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'raise') Then
   Begin
     TplNextToken;
@@ -4656,7 +4078,7 @@ Begin
     Exit;
   End;
 
-  { with RecVar do Stmt (TODO 20 - Records) }
+  { with RecVar do Stmt (Records) }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'with') Then
   Begin
     ParseWithStmt;
@@ -4668,7 +4090,7 @@ Begin
   Begin
     SavedName := CurToken.Val;
     TplNextToken;
-    { --- TODO 20 : rec.field := expr --- }
+    { --- rec.field := expr --- }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
     Begin
       RecSIdx := SymFind(SavedName);
@@ -4759,7 +4181,7 @@ Begin
       End;
     End
     Else
-    { --- TODO 20 : with-stack field := expr --- }
+    { --- with-stack field := expr --- }
     If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
     Begin
       WIdx := -1;
@@ -4810,7 +4232,7 @@ Begin
       Else
         ParseAssignment(SavedName);
     End
-    { --- TODO 19 : arr[i] := expr ; --- }
+    { --- arr[i] := expr ; --- }
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
       ArrSIdx := SymFind(SavedName);
@@ -4901,7 +4323,7 @@ Begin
     End
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
-      { Appel de procedure comme instruction (TODO 16) }
+      { Appel de procedure comme instruction }
       ProcIdx := SymFind(SavedName);
       If (ProcIdx >= 0) And
          (SymTab[ProcIdx].Cat In [SC_FUNC, SC_PROC]) Then
@@ -4920,7 +4342,7 @@ Begin
     Else
     Begin
       { Pas une affectation ni un appel avec () : }
-      { verifier si c est un appel de proc sans parentheses (TODO 16) }
+      { verifier si c est un appel de proc sans parentheses }
       ProcIdx := SymFind(SavedName);
       If (ProcIdx >= 0) And
          (SymTab[ProcIdx].Cat In [SC_FUNC, SC_PROC]) Then
@@ -4972,7 +4394,7 @@ Begin
     WarnMsg('''end'' attendu pour fermer le bloc begin');
 End;
 
-{ ---- ParseWithStmt : analyser with RecVar do Stmt (TODO 20) ---- }
+{ ---- ParseWithStmt : analyser with RecVar do Stmt ---- }
 { CurToken est sur 'with'. Empile l index symbole du record dans   }
 { WithStack, execute le bloc interne, puis depile.                 }
 Procedure ParseWithStmt;
@@ -5018,7 +4440,7 @@ Begin
     WarnMsg('identificateur attendu apres with');
 End;
 
-{ ---- TODO 23 : ParseTryExcept -------------------------------- }
+{ ---- ParseTryExcept -------------------------------- }
 { try bloc except [on E: Exception do bloc end;] end;            }
 { Gere aussi finally apres except (toujours execute).             }
 { Implem simplifie : handler unique, attrape toute exception.     }
@@ -5357,7 +4779,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - BOUCLES : FOR / WHILE / REPEAT [IMPLEMENTE]
+  BOUCLES : FOR / WHILE / REPEAT [IMPLEMENTE]
   ============================================================ }
 
 { ---- LoopPush : empiler un contexte de boucle ---------------- }
@@ -5614,7 +5036,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - FONCTIONS ET PROCEDURES [IMPLEMENTE]
+  FONCTIONS ET PROCEDURES [IMPLEMENTE]
   ============================================================ }
 
 { ---- ParseParamList : analyser la liste de parametres --------- }
@@ -5763,9 +5185,9 @@ Var
   SaveParamB   : Integer;
   Cat          : TSymCat;
   RetVarIdx    : Integer;
-  VarMask      : LongInt;   { bitmask params var (TODO 17) }
-  PCnt         : Integer;   { compteur params (TODO 17) }
-  I            : Integer;   { iterateur (TODO 17) }
+  VarMask      : LongInt;   { bitmask params var }
+  PCnt         : Integer;   { compteur params }
+  I            : Integer;   { iterateur }
 Begin
   { Consommer function/procedure }
   TplNextToken;
@@ -5813,9 +5235,8 @@ Begin
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     ParamBytes := ParseParamList;
 
-  { Construire le masque des parametres var (TODO 17) }
-  If FIdx >= 0 Then
-  Begin
+  { Construire le masque des parametres var }
+  If FIdx >= 0 Then Begin
     VarMask := 0;
     PCnt    := 0;
     For I := 0 To SymCount - 1 Do
@@ -6003,7 +5424,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - TABLE DES SYMBOLES [IMPLEMENTE]
+  TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
 { ---- SymMangle : generer le nom ASM mangled ------------------- }
@@ -6229,7 +5650,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - SYSTEME DE TYPES [IMPLEMENTE]
+  SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
 
 { ---- TypeInit : enregistrer les types primitifs --------------- }
@@ -6618,7 +6039,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  OPERATEURS ET PRECEDENCE [IMPLEMENTE]
   ============================================================ }
 
 { ---- Emetteur ASM : instructions formatees ------------------- }
@@ -6654,7 +6075,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  EMETTEUR DE CODE ASM [IMPLEMENTE]
   ============================================================ }
 
 { ---- EmitBlankLine : ligne vide dans la sortie ASM ----------- }
@@ -6710,7 +6131,7 @@ Begin
   Begin
     MainBodyEmitted := True;
     EmitLabel(PSP_LBL_PFX + 'MAINBODY');
-    { TODO 21 : emettre Content-Type si defini par <%@ ContentType=...%> }
+    { emettre Content-Type si defini par <%@ ContentType=...%> }
     If ContentTypeLbl <> '' Then
     Begin
       EmitInstrAB('MOV', 'SI', 'OFFSET ' + ContentTypeLbl);
@@ -6725,7 +6146,7 @@ Begin
   EmitInstr('INT    21h');
   EmitBlankLine;
 
-  { --- Routines runtime (TODO 12 + TODO 24) --- }
+  { --- Routines runtime --- }
   If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
   EmitComment('=== Routines runtime ===');
@@ -6786,7 +6207,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { --- Routines runtime chaines (TODO 15) --- }
+  { --- Routines runtime chaines --- }
 
   { _PSPRT_STRLEN : longueur chaine ASCIIZ }
   { Entree : SI = pointeur chaine. Sortie : AX = longueur }
@@ -6981,7 +6402,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { --- Routines runtime tableaux (TODO 19) --- }
+  { --- Routines runtime tableaux --- }
 
   { _PSPRT_FILLCHAR : remplir un bloc memoire }
   { Entree : DI = ptr dest, CX = count, AL = valeur }
@@ -6999,7 +6420,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { --- Routines runtime TODO 22 --- }
+  { --- Routines runtime --- }
 
   { _PSPRT_SQRT : racine carree entiere (Newton-Raphson) }
   { Entree : AX = n. Sortie : AX = floor(sqrt(n)) }
@@ -7110,7 +6531,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { --- TODO 24 : _PSPRT_PRINT : ecriture brute via handle --- }
+  { --- _PSPRT_PRINT : ecriture brute via handle --- }
   { Entree : BX=handle, DX=buf, CX=len }
   EmitComment('PRINT : BX=handle, DX=buf, CX=len -> INT 21h/40h');
   EmitLabel(PSP_RT_PFX + 'PRINT');
@@ -7314,7 +6735,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { --- TODO 23 : _PSPRT_PANIC : affiche message + halt(1) --- }
+  { --- _PSPRT_PANIC : affiche message + halt(1) --- }
   EmitComment('PANIC : SI=msg ASCIIZ -> affiche + halt(1)');
   EmitLabel(PSP_RT_PFX + 'PANIC');
   EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
@@ -7357,7 +6778,7 @@ Begin
       WarnMsg('cadre de pile volumineux : ' + IntToStr(FrameSize) +
               ' octets');
   End;
-  { Sauvegarder SI/DI (TODO 17) }
+  { Sauvegarder SI/DI }
   EmitPush('SI');
   EmitPush('DI');
 End;
@@ -7366,7 +6787,7 @@ End;
 { POP DI / POP SI / MOV SP,BP / POP BP / RET [n]                  }
 Procedure EmitEpilog(ParamBytes : Integer);
 Begin
-  { Restaurer DI/SI (TODO 17) }
+  { Restaurer DI/SI }
   EmitPop('DI');
   EmitPop('SI');
   EmitInstrAB('MOV', 'SP', 'BP');
@@ -7531,7 +6952,7 @@ End;
 { FuncIdx est l indice du symbole de la fonction dans SymTab.    }
 { Evalue chaque argument, flush dans AX et PUSH AX.             }
 { Pour un parametre var, empile l adresse (LEA) au lieu de la   }
-{ valeur (TODO 17).                                              }
+{ valeur .                                                      }
 { CurToken doit etre sur ( au debut. Consomme jusqu a ).        }
 Procedure ParseCallArgs(FuncIdx : Integer);
 Var
@@ -7551,7 +6972,7 @@ Begin
   While (CurToken.Kind <> TK_EOF) And
         Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
   Begin
-    { Verifier si cet argument est un parametre var (TODO 17) }
+    { Verifier si cet argument est un parametre var }
     IsVarArg := False;
     If (FuncIdx >= 0) And
        (SymTab[FuncIdx].Cat In [SC_FUNC, SC_PROC]) And
@@ -7652,14 +7073,14 @@ Procedure ParsePrimary(Var Res : TExprVal);
 Var
   CastTypeIdx : Integer;
   LblUC       : String;
-  BaseTIdx    : Integer;   { pour Low/High/SizeOf (TODO 18) }
-  Idx         : Integer;   { pour Low/High/SizeOf (TODO 18) }
-  { TODO 19 - Tableaux }
+  BaseTIdx    : Integer;   { pour Low/High/SizeOf }
+  Idx         : Integer;   { pour Low/High/SizeOf }
+  { Tableaux }
   ArrTIdx     : Integer;
   IdxExpr     : TExprVal;
   ArrLo       : LongInt;
   ElemSz      : Integer;
-  { TODO 20 - Records }
+  { Records }
   RecTIdx     : Integer;
   FldIdx      : Integer;
   FI          : Integer;
@@ -7753,13 +7174,13 @@ Begin
     { Identificateur (variable, constante nommee, appel fonction) }
     TK_IDENT :
     Begin
-      { --- Fonctions builtin string (TODO 15) --- }
+      { --- Fonctions builtin string --- }
       If StrLowerCase(CurToken.Val) = 'length' Then
       Begin
         TplNextToken;  { consommer length }
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           TplNextToken;  { consommer ( }
-        { TODO 19 : si argument est un tableau, retourner hi-lo+1 }
+        { Si argument est un tableau, retourner hi-lo+1 }
         Idx := -1;
         If (CurToken.Kind = TK_IDENT) Then
           Idx := SymFind(CurToken.Val);
@@ -7944,7 +7365,7 @@ Begin
         Res.TypeIdx := TY_IDX_STRING;
         Res.SymIdx  := -1;
       End
-      { --- Succ(x) : INC AX (TODO 18) --- }
+      { --- Succ(x) : INC AX --- }
       Else If StrLowerCase(CurToken.Val) = 'succ' Then
       Begin
         TplNextToken;  { consommer succ }
@@ -7960,7 +7381,7 @@ Begin
           Res.TypeIdx := TY_IDX_INTEGER;
         Res.SymIdx  := -1;
       End
-      { --- Pred(x) : DEC AX (TODO 18) --- }
+      { --- Pred(x) : DEC AX --- }
       Else If StrLowerCase(CurToken.Val) = 'pred' Then
       Begin
         TplNextToken;  { consommer pred }
@@ -7976,7 +7397,7 @@ Begin
           Res.TypeIdx := TY_IDX_INTEGER;
         Res.SymIdx  := -1;
       End
-      { --- Low(T) : borne inf du type (TODO 18) --- }
+      { --- Low(T) : borne inf du type --- }
       Else If StrLowerCase(CurToken.Val) = 'low' Then
       Begin
         TplNextToken;  { consommer low }
@@ -8013,7 +7434,7 @@ Begin
         Res.TypeIdx := TY_IDX_INTEGER;
         Res.SymIdx  := -1;
       End
-      { --- High(T) : borne sup du type (TODO 18) --- }
+      { --- High(T) : borne sup du type --- }
       Else If StrLowerCase(CurToken.Val) = 'high' Then
       Begin
         TplNextToken;  { consommer high }
@@ -8049,7 +7470,7 @@ Begin
         Res.TypeIdx := TY_IDX_INTEGER;
         Res.SymIdx  := -1;
       End
-      { --- SizeOf(T) : taille en octets (TODO 18) --- }
+      { --- SizeOf(T) : taille en octets --- }
       Else If StrLowerCase(CurToken.Val) = 'sizeof' Then
       Begin
         TplNextToken;  { consommer sizeof }
@@ -8083,7 +7504,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Abs(n) --- }
+      { --- Abs(n) --- }
       Else If StrLowerCase(CurToken.Val) = 'abs' Then
       Begin
         TplNextToken;
@@ -8101,7 +7522,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Sqr(n) --- }
+      { --- Sqr(n) --- }
       Else If StrLowerCase(CurToken.Val) = 'sqr' Then
       Begin
         TplNextToken;
@@ -8117,7 +7538,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Odd(n) --- }
+      { --- Odd(n) --- }
       Else If StrLowerCase(CurToken.Val) = 'odd' Then
       Begin
         TplNextToken;
@@ -8133,7 +7554,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Lo(w) --- }
+      { --- Lo(w) --- }
       Else If StrLowerCase(CurToken.Val) = 'lo' Then
       Begin
         TplNextToken;
@@ -8149,7 +7570,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Hi(w) --- }
+      { --- Hi(w) --- }
       Else If StrLowerCase(CurToken.Val) = 'hi' Then
       Begin
         TplNextToken;
@@ -8166,7 +7587,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Swap(w) --- }
+      { --- Swap(w) --- }
       Else If StrLowerCase(CurToken.Val) = 'swap' Then
       Begin
         TplNextToken;
@@ -8182,7 +7603,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Sqrt(n) --- }
+      { --- Sqrt(n) --- }
       Else If StrLowerCase(CurToken.Val) = 'sqrt' Then
       Begin
         TplNextToken;
@@ -8198,7 +7619,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : Random / Random(n) --- }
+      { --- Random / Random(n) --- }
       Else If StrLowerCase(CurToken.Val) = 'random' Then
       Begin
         TplNextToken;
@@ -8225,7 +7646,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : IntToStr(n) --- }
+      { --- IntToStr(n) --- }
       Else If StrLowerCase(CurToken.Val) = 'inttostr' Then
       Begin
         TplNextToken;
@@ -8242,7 +7663,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : StrToInt(s) --- }
+      { --- StrToInt(s) --- }
       Else If StrLowerCase(CurToken.Val) = 'strtoint' Then
       Begin
         TplNextToken;
@@ -8259,7 +7680,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 24 : LowerCase(s) --- }
+      { --- LowerCase(s) --- }
       Else If StrLowerCase(CurToken.Val) = 'lowercase' Then
       Begin
         TplNextToken;
@@ -8276,7 +7697,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 24 : Trim(s) --- }
+      { --- Trim(s) --- }
       Else If StrLowerCase(CurToken.Val) = 'trim' Then
       Begin
         TplNextToken;
@@ -8293,7 +7714,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : EOF (stub retourne True=1) --- }
+      { --- EOF (stub retourne True=1) --- }
       Else If StrLowerCase(CurToken.Val) = 'eof' Then
       Begin
         TplNextToken;
@@ -8314,7 +7735,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : EOLN (stub retourne True=1) --- }
+      { --- EOLN (stub retourne True=1) --- }
       Else If StrLowerCase(CurToken.Val) = 'eoln' Then
       Begin
         TplNextToken;
@@ -8335,7 +7756,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : ParamCount (stub retourne 0) --- }
+      { --- ParamCount (stub retourne 0) --- }
       Else If StrLowerCase(CurToken.Val) = 'paramcount' Then
       Begin
         TplNextToken;
@@ -8346,7 +7767,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : ParamStr(n) (stub retourne chaine vide) --- }
+      { --- ParamStr(n) (stub retourne chaine vide) --- }
       Else If StrLowerCase(CurToken.Val) = 'paramstr' Then
       Begin
         TplNextToken;
@@ -8364,7 +7785,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { --- TODO 22 : GetEnv(s) (stub retourne chaine vide) --- }
+      { --- GetEnv(s) (stub retourne chaine vide) --- }
       Else If StrLowerCase(CurToken.Val) = 'getenv' Then
       Begin
         TplNextToken;
@@ -8385,7 +7806,7 @@ Begin
       Else
       Begin
       { --- Fin fonctions builtin, debut gestion ident standard --- }
-      { --- TODO 20 : Resolution with-stack pour lecture champ --- }
+      { --- Resolution with-stack pour lecture champ --- }
       WIdx := -1;
       If WithTop >= 0 Then
       Begin
@@ -8497,7 +7918,7 @@ Begin
         Res.SymIdx  := -1;
       End;
       TplNextToken;
-      { --- TODO 20 : Detecter acces champ record : ident.field --- }
+      { --- Detecter acces champ record : ident.field --- }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
       Begin
         If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) And
@@ -8574,7 +7995,7 @@ Begin
         End;
       End
       Else
-      { --- TODO 19 : Detecter indexation tableau : ident[ --- }
+      { --- Detecter indexation tableau : ident[ --- }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
       Begin
         If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) And
@@ -8795,7 +8216,6 @@ Begin
 
   { ^ (dereferencement pointeur : prefixe en Pascal = ptr^) }
   { En Pascal, ^ est normalement postfixe, mais on le gere ici en prefixe }
-  { Le vrai postfixe sera gere au TODO 09 }
 
   { Pas d operateur unaire : appeler ParsePrimary }
   ParsePrimary(Res);
@@ -8959,7 +8379,7 @@ Begin
 
       Else If (Op = '/') Or (Op = 'div') Then
       Begin
-        { IDIV BX : AX = quotient, DX = reste (TODO 23 : div0 = panic) }
+        { IDIV BX : AX = quotient, DX = reste (div0 = panic) }
         EmitInstrAB('CMP', 'BX', '0');
         EmitInstrA('JE', PSP_RT_PFX + 'PANIC_DIV0');
         EmitInstr('CWD');
@@ -9127,7 +8547,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
 
 { ---- Messages d'erreur et d'avertissement ---------------- }
@@ -9153,7 +8573,7 @@ Begin
   Inc(WarnCount);
 End;
 
-{ ---- TODO 23 : ErrorMsg, Expect, SkipTo -------------------- }
+{ ---- ErrorMsg, Expect, SkipTo -------------------- }
 
 Procedure ErrorMsg(Const Msg : TString);
 Begin
@@ -9423,17 +8843,13 @@ Begin
   CurToken.RealVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
-  { TODO 04 }
   DataCount   := 0;
   LabelGenSeq := 0;
-  { TODO 06 }
   SymCount      := 0;
   CurScopeLevel := 0;
   CurScopeId    := 0;
   ScopeIdSeq    := 0;
-  { TODO 07 }
   TypeCount := 0;
-  { TODO 10 }
   CurFrameOffset    := 0;
   HasPendingAssign  := False;
   PendingAssignName := '';
