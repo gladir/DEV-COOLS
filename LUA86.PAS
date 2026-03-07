@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (script.lua [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -470,7 +470,582 @@
 
   ============================================================ *)
 
+{ ============================================================
+  LUA86 - Compilateur Lua -> assembleur 8086
+  Version : 1.0  Date : 2026-03-07
+  Compilation : ppc386 -O2 -Mtp LUA86.PAS
+  ============================================================ }
+
 Program LUA86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  LUA86_VERSION = '1.0';
+  LUA86_DATE    = '2026-03-07';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_RETVALS   = 8;    { nombre max de valeurs de retour multiples }
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  LUA_VAR_PFX  = '_LUAV_';   { variable globale                    }
+  LUA_FN_PFX   = '_LUAF_';   { fonction                            }
+  LUA_STR_PFX  = '_LUAK_';   { constante chaine litterale          }
+  LUA_RT_PFX   = '_LUART_';  { routine runtime                     }
+  LUA_LBL_PFX  = '_LUAL_';   { label de saut interne               }
+  LUA_TBL_PFX  = '_LUAT_';   { table donnees                       }
+  LUA_UP_PFX   = '_LUAU_';   { upvalue                             }
+  LUA_ERR_PFX  = '_LUAX_';   { handler d erreur                    }
+  LUA_NIL_LBL  = '_LUA_NIL_S';   { etiquette DATA chaine 'nil'     }
+  LUA_TRUE_LBL = '_LUA_TRUE_S';  { etiquette DATA chaine 'true'    }
+  LUA_FALSE_LBL= '_LUA_FALSE_S'; { etiquette DATA chaine 'false'   }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs Lua }
+  TY_IDX_NIL      = 0;  { nil                           }
+  TY_IDX_BOOLEAN  = 1;  { true/false                    }
+  TY_IDX_NUMBER   = 2;  { entier 16 bits signe          }
+  TY_IDX_STRING   = 3;  { pointeur chaine DATA          }
+  TY_IDX_TABLE    = 4;  { pointeur structure table       }
+  TY_IDX_FUNCTION = 5;  { pointeur de code               }
+  TY_IDX_USERDATA = 6;  { stub pointeur                  }
+  TY_PRIM_COUNT   = 7;
+  TY_UNKNOWN      = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { script source (.lua)                 }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+  { ---- Tokens Lua (TODO 02) ------------------------------- }
+  TTokenKind = (
+    TK_EOF,       { fin de fichier                          }
+    TK_INTEGER,   { literal entier 42 0xFF                  }
+    TK_FLOAT,     { literal flottant 3.14 1.5e3             }
+    TK_STRING,    { literal chaine simple ou double quote   }
+    TK_IDENT,     { identificateur (non-mot-cle)            }
+    TK_KEYWORD,   { mot-cle Lua reconnu                     }
+    TK_OP,        { operateur + - * / .. == ~= etc.         }
+    TK_PUNCT      { ponctuation ; , ( ) etc.                }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute          }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)     }
+    FloatVal : Real;        { valeur flottante (TK_FLOAT)     }
+    Line     : Integer;     { ligne source (1-base)           }
+    Col      : Integer;     { colonne source (1-base)         }
+  End;
+
+  { ---- Categories de symboles (TODO 05) ------------------- }
+  TSymKind = (
+    SK_LOCAL,      { variable locale (local x)         }
+    SK_GLOBAL,     { variable globale (implicite)      }
+    SK_PARAM,      { parametre formel de fonction      }
+    SK_UPVALUE,    { variable capturee par closure     }
+    SK_FUNCTION,   { declaration de fonction           }
+    SK_LABEL       { label goto (::label::)            }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { identifiant Lua                 }
+    MangledName : TString;   { _LUAV_nom / _LUAF_nom           }
+    Kind        : TSymKind;
+    TypeIdx     : Integer;   { indice dans TypeTab              }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { [BP-n] pour locaux               }
+    IsLocal     : Boolean;   { True si declare avec local       }
+    IsUpvalue   : Boolean;   { True si capture par une closure  }
+    DeclLine    : Integer;
+  End;
+
+  { ---- Types internes (TODO 06) --------------------------- }
+  TTypeKind = (
+    TYK_NIL,
+    TYK_BOOLEAN,
+    TYK_NUMBER,
+    TYK_STRING,
+    TYK_TABLE,
+    TYK_FUNCTION,
+    TYK_USERDATA,
+    TYK_UNKNOWN
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   { octets : number=2, ptr=2 }
+  End;
+
+  { ---- Valeurs d expression (TODO 11) --------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur             }
+    EK_IMM,    { immediate dans ImmVal             }
+    EK_AX,     { valeur dans AX                    }
+    EK_MEM     { adresse [BP+Offset] ou [_LUAV_x]  }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   { indice dans SymTab (-1 = pas de lvalue) }
+  End;
+
+  { ---- Segment de donnees (TODO 08) ----------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_TABLE_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;  { DK_TABLE_BLK : nb elements }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Valeur fictive pour ignorer un retour TExprVal }
+  GExprDummy : TExprVal;
+
+  { Lexeur (TODO 02) }
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  { Table des symboles (TODO 05) }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  { Table des types (TODO 06) }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Emetteur ASM (TODO 07) }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;    { taille cadre local courant (words)   }
+  CurFnDepth   : Integer;    { 0 = global, >0 = dans une function  }
+  CurFnRetLbl  : TString;    { label epilogue de la function        }
+  CurFnName    : TString;    { nom de la function courante          }
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LabelGenSeq  : Integer;    { compteur unique pour LabelGen        }
+
+  { Segment de donnees (TODO 08) }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+Procedure LexClose;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitDataSeg;   Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
 Begin
-End.
+  WriteLn('LUA86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('LUA86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('LUA86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('LUA86 v', LUA86_VERSION, ' (', LUA86_DATE, ')');
+  WriteLn('Compilateur Lua -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: LUA86 <source.lua> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.lua : fichier Lua source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('LUA86 v', LUA86_VERSION, ' - Compilateur Lua -> 8086 ASM');
+  WriteLn;
+  ShowUsage;
+End;
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+{ Extrait le nom de base d un chemin (sans extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Extrait l extension d un chemin }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('LUA86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('LUA86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('LUA86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier l extension .lua }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.lua') Then
+    WarnMsg('extension attendue .lua, obtenu ' + Ext);
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  CurFrameSize   := 0;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  STUBS POUR TODOS 02-25
+  ============================================================ }
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure EmitDataSeg;
+Begin
+  { TODO 08 }
+End;
+
+{ ---- Run : pipeline de compilation (stub) ------------------ }
+
+Procedure Run;
+Begin
+  { TODO 02-25 : lexeur, parseur, generateur de code }
+  WriteLn('LUA86: compilation non encore implementee (TODO 02-25)');
+  WriteLn('LUA86: source = ', Opts.SrcFile);
+  WriteLn('LUA86: sortie = ', Opts.OutFile);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  GlobalInit;
+  ParseArgs;
+  If Opts.Verbose Then ShowBanner;
+  Run;
+  Cleanup;
+  If Opts.Verbose Then
+  Begin
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+END.
