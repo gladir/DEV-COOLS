@@ -95,7 +95,7 @@
             Conversion automatique nom -> majuscules dans la table
             SymInit : enregistrement des 71 builtins REXX (ABBREV..XRANGE)
 
-  TODO 06 - SYSTEME DE TYPES INTERNE
+  TODO 06 - SYSTEME DE TYPES INTERNE [IMPLEMENTE]
             TTypeKind : TYK_STRING (chaine, type principal),
               TYK_INTEGER (entier 16 bits, optimisation interne),
               TYK_STEM (variable composee / tableau associatif),
@@ -103,6 +103,8 @@
             En REXX tout est chaine de caracteres :
               Les nombres sont des chaines avec representation numerique
               La conversion chaine <-> nombre est implicite et automatique
+            TypeKindOf, TypeSizeof, TypeMangle, TypeIsNumeric, TypeIsPtr,
+              TypeCanCoerce, TypeCoerceResult, TypeInfer, TypeLookupName
             TypeTab, TypeInit : types internes pour optimisation
             TypeInfer : determiner si une valeur est utilisable comme nombre
               -> si oui, operations arithmetiques directes sur registres
@@ -728,6 +730,16 @@ Function  SymAdd(Const Name : TString; Kind : TSymKind;
 
 (* TODO 06 - Systeme de types *)
 Procedure TypeInit;            Forward;
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 
 (* TODO 07 - Emetteur ASM *)
 Function  LabelGen : TString;   Forward;
@@ -2147,27 +2159,244 @@ Begin
     WriteLn('  SYM_INIT: ', SymCount, ' builtins enregistres');
 End;
 
-(* TODO 06 - Systeme de types *)
+(* ============================================================
+   TODO 06 - SYSTEME DE TYPES INTERNE [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- TypeKindOf : retourner le TTypeKind associe a un indice ---- *)
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_STRING;   { par defaut : chaine (tout est chaine en REXX) }
+End;
+
+(* ---- TypeSizeof : taille en octets d un type -------------------- *)
+(* En 16 bits : tous les types REXX occupent 2 octets (word).        *)
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+(* ---- TypeMangle : prefixe ASM selon le type pour les labels ----- *)
+(*   STRING  -> _RXN_  (pointeur near vers chaine)                   *)
+(*   INTEGER -> _RXI_  (mot 16 bits dans AX/registre)                *)
+(*   BOOLEAN -> _RXB_  (0 ou 1 dans AL, etendu AX)                  *)
+(*   STEM    -> _RXS_  (pointeur near vers table stem)               *)
+(*   defaut  -> _RXX_                                                *)
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_STRING  : TypeMangle := '_RXN_';
+    TYK_INTEGER : TypeMangle := '_RXI_';
+    TYK_BOOLEAN : TypeMangle := '_RXB_';
+    TYK_STEM    : TypeMangle := '_RXS_';
+  Else
+    TypeMangle := '_RXX_';
+  End;
+End;
+
+(* ---- TypeIsNumeric : vrai si le type est utilisable comme nombre -- *)
+(* En REXX, STRING et INTEGER et BOOLEAN sont tous numeriques :       *)
+(*   STRING est toujours potentiellement un nombre (conversion auto),  *)
+(*   INTEGER est nativement numerique,                                  *)
+(*   BOOLEAN est 0 ou 1 (donc numerique aussi).                        *)
+(* Seul STEM (tableau associatif) n est pas directement numerique.     *)
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_STRING) Or (K = TYK_INTEGER) Or (K = TYK_BOOLEAN);
+End;
+
+(* ---- TypeIsPtr : vrai si le type est un pointeur near ----------- *)
+(* STRING et STEM sont des pointeurs vers la zone chaines / heap.     *)
+(* INTEGER et BOOLEAN sont des scalaires dans AX.                     *)
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr := (K = TYK_STRING) Or (K = TYK_STEM);
+End;
+
+(* ---- TypeCanCoerce : peut-on convertir SrcIdx vers DstIdx ? ----- *)
+(* En REXX, tout est chaine : toute coercition scalaire est possible  *)
+(* car les nombres sont des chaines avec representation numerique.     *)
+(* Seules les conversions impliquant STEM sont refusees.               *)
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  { Meme type : toujours OK }
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { UNKNOWN -> n importe quoi : OK (on perd l info de type) }
+  If SrcIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  { STEM ne se convertit pas en scalaire et inversement }
+  If (SK = TYK_STEM) Or (DK = TYK_STEM) Then
+  Begin
+    TypeCanCoerce := (SK = DK);
+    Exit;
+  End;
+  { Toutes les autres coercitions scalaires sont possibles en REXX }
+  { STRING <-> INTEGER : conversion numerique implicite            }
+  { STRING <-> BOOLEAN : '0'/'1' <-> 0/1                          }
+  { INTEGER <-> BOOLEAN : 0 = False, non-0 = True                 }
+  TypeCanCoerce := True;
+End;
+
+(* ---- TypeCoerceResult : deduire le type resultat d une operation -- *)
+(* Regles REXX :                                                       *)
+(*   - operateurs logiques (& | &&) -> BOOLEAN                        *)
+(*   - operateurs de comparaison (= \= < > etc.) -> BOOLEAN           *)
+(*   - operateurs arithmetiques (+ - * / % //) -> INTEGER              *)
+(*     (si les deux operandes sont INTEGER, sinon STRING pour runtime)  *)
+(*   - concatenation (|| espace) -> STRING                             *)
+(*   - puissance ( ** ) -> INTEGER                                     *)
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+
+  { Operateurs de comparaison -> BOOLEAN }
+  If (Op = '=')  Or (Op = '\=') Or (Op = '<>') Or
+     (Op = '><') Or (Op = '<')  Or (Op = '>') Or
+     (Op = '<=') Or (Op = '>=') Or (Op = '<<') Or
+     (Op = '>>') Or (Op = '\<') Or (Op = '\>') Or
+     (Op = '==') Or (Op = '\==') Or
+     (Op = '<<=') Or (Op = '>>=') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { Operateurs logiques -> BOOLEAN }
+  If (Op = '&') Or (Op = '|') Or (Op = '&&') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+
+  { Concatenation -> STRING }
+  If (Op = '||') Then
+  Begin
+    TypeCoerceResult := TY_IDX_STRING;
+    Exit;
+  End;
+
+  { Operateurs arithmetiques : si les deux cotes sont INTEGER, }
+  { le resultat est INTEGER (optimisation registres), sinon     }
+  { STRING (passage via runtime string-to-number).              }
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '%') Or (Op = '//') Or
+     (Op = '**') Then
+  Begin
+    If ((LK = TYK_INTEGER) Or (LK = TYK_BOOLEAN)) And
+       ((RK = TYK_INTEGER) Or (RK = TYK_BOOLEAN)) Then
+      TypeCoerceResult := TY_IDX_INTEGER
+    Else
+      TypeCoerceResult := TY_IDX_STRING;
+    Exit;
+  End;
+
+  { Par defaut : STRING (type principal REXX) }
+  TypeCoerceResult := TY_IDX_STRING;
+End;
+
+(* ---- TypeInfer : deduire le type d une expression depuis TExprVal -- *)
+(* Si le TypeIdx est deja connu, on le retourne.                        *)
+(* Si la valeur est une immediate, on suppose INTEGER.                  *)
+(* Sinon, STRING par defaut (REXX = tout est chaine).                   *)
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_INTEGER
+  Else
+    TypeInfer := TY_IDX_STRING;
+End;
+
+(* ---- TypeLookupName : chercher un type par nom dans TypeTab -------- *)
+(* Comparaison insensible a la casse (convention REXX).                 *)
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := 0 To TypeCount - 1 Do
+    If StrUpperCase(TypeTab[I].Name) = U Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+(* ---- TypeInit : enregistrer les types primitifs REXX --------------- *)
+(* Indices fixes : TY_IDX_STRING=0, TY_IDX_INTEGER=1,                  *)
+(*                 TY_IDX_BOOLEAN=2, TY_IDX_STEM=3                     *)
+(* En REXX tout est chaine : STRING est le type principal.              *)
+(*   STRING  = 2 octets (pointeur near vers espace chaines)             *)
+(*   INTEGER = 2 octets (mot dans AX, optimisation arithmetique)        *)
+(*   BOOLEAN = 2 octets (0 ou 1 dans AX)                               *)
+(*   STEM    = 2 octets (pointeur near vers table associative)          *)
 Procedure TypeInit;
+Var
+  I : Integer;
 Begin
   TypeCount := 0;
-  (* STRING *)
-  TypeTab[0].Name := 'STRING';
-  TypeTab[0].Kind := TYK_STRING;
-  TypeTab[0].Size := 2;
-  (* INTEGER *)
-  TypeTab[1].Name := 'INTEGER';
-  TypeTab[1].Kind := TYK_INTEGER;
-  TypeTab[1].Size := 2;
-  (* BOOLEAN *)
-  TypeTab[2].Name := 'BOOLEAN';
-  TypeTab[2].Kind := TYK_BOOLEAN;
-  TypeTab[2].Size := 2;
-  (* STEM *)
-  TypeTab[3].Name := 'STEM';
-  TypeTab[3].Kind := TYK_STEM;
-  TypeTab[3].Size := 2;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_STRING;
+    TypeTab[I].Size := 0;
+  End;
+  (* STRING : type principal REXX *)
+  TypeTab[TY_IDX_STRING].Name  := 'STRING';
+  TypeTab[TY_IDX_STRING].Kind  := TYK_STRING;
+  TypeTab[TY_IDX_STRING].Size  := 2;
+  (* INTEGER : optimisation interne pour arithmetique *)
+  TypeTab[TY_IDX_INTEGER].Name := 'INTEGER';
+  TypeTab[TY_IDX_INTEGER].Kind := TYK_INTEGER;
+  TypeTab[TY_IDX_INTEGER].Size := 2;
+  (* BOOLEAN : resultat logique 0/1 *)
+  TypeTab[TY_IDX_BOOLEAN].Name := 'BOOLEAN';
+  TypeTab[TY_IDX_BOOLEAN].Kind := TYK_BOOLEAN;
+  TypeTab[TY_IDX_BOOLEAN].Size := 2;
+  (* STEM : variable composee / tableau associatif *)
+  TypeTab[TY_IDX_STEM].Name    := 'STEM';
+  TypeTab[TY_IDX_STEM].Kind    := TYK_STEM;
+  TypeTab[TY_IDX_STEM].Size    := 2;
   TypeCount := TY_PRIM_COUNT;
+
+  If Opts.DebugMode Then
+    WriteLn('  TYPE_INIT: ', TypeCount, ' types primitifs enregistres');
 End;
 
 (* TODO 07 - Emetteur ASM *)
