@@ -51,7 +51,7 @@
             false  : constante -> AX=0
             Concatenation de chaines : .. operateur -> CALL _LUART_CONCAT
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques  : + - * / // (div entiere) % (modulo)
             Puissance      : ^ (associatif a droite -> CALL _LUART_POW)
             Concatenation  : .. (chaines -> CALL _LUART_CONCAT)
@@ -728,6 +728,17 @@ Procedure ExprMakeNil(Var Res : TExprVal); Forward;
 Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+{ Operateurs et precedence (TODO 04) }
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Procedure EmitBinOp(Const Op : TString;
+                    Var L : TExprVal; Const R : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+Procedure ParserAdvance; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2084,6 +2095,534 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- BinOpPrec : table de precedences Lua (Pratt) ----------- }
+{ Retourne 0 si l operateur n est pas binaire.                  }
+{ Niveaux (croissant = plus serre) :                            }
+{   or               -> 1  (OU logique, court-circuit)          }
+{   and              -> 2  (ET logique, court-circuit)          }
+{   < > <= >= ~= ==  -> 3  (comparaison)                       }
+{   |                -> 4  (Lua 5.3+ bitwise OR, stub)         }
+{   ~                -> 5  (Lua 5.3+ bitwise XOR, stub)        }
+{   &                -> 6  (Lua 5.3+ bitwise AND, stub)        }
+{   << >>            -> 7  (Lua 5.3+ decalages, stub)          }
+{   ..               -> 8  (concatenation, droit-associatif)   }
+{   + -              -> 9  (addition / soustraction)            }
+{   * / // %         -> 10 (multiplication / division)         }
+{   ^ (puissance)    -> 12 (droit-associatif)                  }
+{   not # - (unaire) -> traites par ParseUnary (niveau 11)     }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If (Op = 'or') Then
+    BinOpPrec := 1
+  Else If (Op = 'and') Then
+    BinOpPrec := 2
+  Else If (Op = '<') Or (Op = '>') Or (Op = '<=') Or (Op = '>=') Or
+          (Op = '~=') Or (Op = '==') Then
+    BinOpPrec := 3
+  Else If Op = '|' Then
+    BinOpPrec := 4
+  Else If Op = '~' Then
+    BinOpPrec := 5
+  Else If Op = '&' Then
+    BinOpPrec := 6
+  Else If (Op = '<<') Or (Op = '>>') Then
+    BinOpPrec := 7
+  Else If Op = '..' Then
+    BinOpPrec := 8
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 9
+  Else If (Op = '*') Or (Op = '/') Or (Op = '//') Or (Op = '%') Then
+    BinOpPrec := 10
+  Else If Op = '^' Then
+    BinOpPrec := 12
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ---- BinOpIsRight : associativite droite --------------------- }
+{ En Lua : ^ (puissance) et .. (concatenation) sont a droite.   }
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '^') Or (Op = '..');
+End;
+
+{ ---- ExprFlushToAX : forcer une TExprVal dans le registre AX  }
+{ Stub pour TODO 07 (emetteur). Marque le resultat comme EK_AX. }
+Procedure ExprFlushToAX(Const E : TExprVal);
+Begin
+  { TODO 07 : emettre le code reel }
+  { EK_IMM  : MOV AX, ImmVal                   }
+  { EK_MEM  : MOV AX, [BP+Offset] ou [label]   }
+  { EK_AX   : deja dans AX                      }
+  { EK_NONE : XOR AX, AX                        }
+End;
+
+{ ---- EmitBinOp : emettre le code pour un operateur binaire --- }
+{ Stub pour TODO 07. L = AX, R = BX -> resultat dans AX.        }
+{ Pour les operateurs arithmetiques :                            }
+{   + -> ADD AX,BX   - -> SUB AX,BX   * -> IMUL BX             }
+{   / -> CWD IDIV BX (quotient AX)   % -> CWD IDIV BX MOV AX,DX }
+{   // -> CWD IDIV BX (div entiere)                              }
+{   ^ -> CALL _LUART_POW   .. -> CALL _LUART_CONCAT             }
+{ Pour les comparaisons : CMP AX,BX + Jcc                       }
+{ Pour les bitwise (5.3+) : AND/OR/XOR/SAL/SAR                  }
+Procedure EmitBinOp(Const Op : TString;
+                    Var L : TExprVal; Const R : TExprVal);
+Begin
+  { Stub : marquer le resultat dans AX }
+  L.Kind := EK_AX;
+End;
+
+{ ---- ParsePrimary : atome du parseur Pratt ------------------- }
+{ Gere : literals (int, float, string), nil, true, false,       }
+{ identifiant (stub), parentheses, constructeur de table (stub)  }
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  Case CurToken.Kind Of
+    TK_INTEGER, TK_FLOAT, TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'nil') Or (CurToken.Val = 'true') Or
+         (CurToken.Val = 'false') Then
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else If CurToken.Val = 'function' Then
+      Begin
+        { Fonction anonyme : stub, sera TODO 13 }
+        ExprMakeNone(Res);
+        ParserAdvance;
+        { Sauter les tokens jusqu a end }
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+          ParserAdvance;
+      End
+      Else
+      Begin
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
+    TK_IDENT :
+    Begin
+      { TODO 09 : resoudre la variable dans SymTab }
+      { Pour l instant, stub EK_AX type inconnu }
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_UNKNOWN;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+      ParserAdvance;
+    End;
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        ParserAdvance;   { consomme '(' }
+        ParseExpr(Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          ParserAdvance  { consomme ')' }
+        Else
+          CompileError('")" attendue');
+      End
+      Else If CurToken.Val = Chr(123) Then
+      Begin
+        { Constructeur de table : stub, sera TODO 15 }
+        If Opts.Warnings Then
+          WarnMsg('constructeur de table : stub, sera TODO 15');
+        ParserAdvance;   { consomme Chr(123) = open brace }
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = Chr(125))) Do
+          ParserAdvance;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = Chr(125)) Then
+          ParserAdvance;   { consomme Chr(125) = close brace }
+        ExprMakeNone(Res);
+        Res.TypeIdx := TY_IDX_TABLE;
+      End
+      Else
+      Begin
+        ExprMakeNone(Res);
+        ParserAdvance;
+      End;
+    End;
+  Else
+    ExprMakeNone(Res);
+    ParserAdvance;
+  End;
+End;
+
+{ ---- ParseUnary : operateurs unaires prefixes Lua ----------- }
+{ Lua a trois operateurs unaires :                               }
+{   - (negation arithmetique)                                    }
+{   not (negation logique : retourne true/false)                 }
+{   # (longueur : chaine ou table -> CALL _LUART_LEN)           }
+{   ~ (Lua 5.3+ bitwise NOT, stub)                              }
+Procedure ParseUnary(Var Res : TExprVal);
+Var
+  Op : TString;
+Begin
+  { Unaire prefixe : - }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);  { recursion pour chainage de unaires }
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := -Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      { TODO 07 : NEG AX }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMBER;
+    End;
+    Exit;
+  End;
+  { Unaire prefixe : # (longueur) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '#') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      { Longueur d un litteral de chaine : constante pliable }
+      { Mais #nil ou #42 est une erreur Lua, on accepte stub }
+      If Res.TypeIdx = TY_IDX_STRING Then
+        { Pas fiable ici, stub -> AX }
+        Res.Kind := EK_AX
+      Else
+      Begin
+        { Pour un nombre, # n a pas de sens : warning }
+        If Opts.Warnings Then
+          WarnMsg('# applique a un non-string/table');
+        Res.Kind := EK_AX;
+      End;
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      { TODO 07 : CALL _LUART_LEN }
+      Res.Kind := EK_AX;
+    End;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Exit;
+  End;
+  { Unaire prefixe : not (mot-cle) }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      { Lua : not false -> true, not nil -> true, tout le reste -> false }
+      If (Res.TypeIdx = TY_IDX_NIL) Or
+         ((Res.TypeIdx = TY_IDX_BOOLEAN) And (Res.ImmVal = 0)) Then
+        ExprMakeBool(1, Res)
+      Else
+        ExprMakeBool(0, Res);
+    End
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      { TODO 07 : OR AX,AX / SETZ AL / MOVZX AX,AL ou equiv. }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+    End;
+    Exit;
+  End;
+  { Unaire prefixe : ~ (Lua 5.3+ bitwise NOT, stub) }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '~') Then
+  Begin
+    ParserAdvance;
+    ParseUnary(Res);
+    If Opts.Warnings Then
+      WarnMsg('~ (bitwise NOT Lua 5.3+) : stub 16 bits');
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := Not Res.ImmVal
+    Else
+    Begin
+      ExprFlushToAX(Res);
+      { TODO 07 : NOT AX }
+      Res.Kind := EK_AX;
+    End;
+    Res.TypeIdx := TY_IDX_NUMBER;
+    Exit;
+  End;
+  { Pas d operateur unaire : appeler ParsePrimary }
+  ParsePrimary(Res);
+End;
+
+{ ---- ParseExprPrec : parseur de Pratt pour expressions Lua --- }
+{ MinPrec = niveau de precedence minimal a capturer.             }
+{ Boucle de montee de precedence avec pliage de constantes,      }
+{ court-circuit pour and/or, et associativite droite pour ^/.. . }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  Right    : TExprVal;
+  FoldOk   : Boolean;
+  ShiftAmt : Integer;
+  LblSkip  : TString;
+  LblEnd   : TString;
+  NS       : TString;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    { Detecter operateur binaire sur TK_OP }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    { Detecter and/or sur TK_KEYWORD }
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'and') Or (CurToken.Val = 'or')) Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End;
+
+    { Arreter si pas un operateur binaire ou priorite insuffisante }
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    ParserAdvance;  { consomme l operateur }
+
+    { Avertissements Lua 5.3+ bitwise stubs }
+    If (Op = '|') Or (Op = '&') Or (Op = '<<') Or (Op = '>>') Then
+    Begin
+      If Opts.Warnings Then
+        WarnMsg(Op + ' (bitwise Lua 5.3+) : stub 16 bits');
+    End;
+    { ~ en position binaire = xor Lua 5.3+ }
+    If Op = '~' Then
+    Begin
+      If Opts.Warnings Then
+        WarnMsg('~ (bitwise XOR Lua 5.3+) : stub 16 bits');
+    End;
+
+    { ---- Court-circuit pour and / or ---- }
+    { Lua : and retourne le premier faux, or retourne le premier vrai }
+    If Op = 'and' Then
+    Begin
+      If (Res.Kind = EK_IMM) Then
+      Begin
+        { Pliage : si gauche est nil ou false -> retourner gauche }
+        If (Res.TypeIdx = TY_IDX_NIL) Or
+           ((Res.TypeIdx = TY_IDX_BOOLEAN) And (Res.ImmVal = 0)) Then
+        Begin
+          { Gauche est falsy -> ignorer droite (mais la parser) }
+          ParseExprPrec(Prec + 1, Right);
+          { Res reste inchange (falsy) }
+        End
+        Else
+        Begin
+          { Gauche est truthy -> retourner droite }
+          ParseExprPrec(Prec + 1, Right);
+          Res := Right;
+        End;
+      End
+      Else
+      Begin
+        { Non constant : generer code avec court-circuit }
+        ExprFlushToAX(Res);
+        { TODO 07 : OR AX,AX / JZ LblSkip / ... / LblSkip: }
+        ParseExprPrec(Prec + 1, Right);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+      End;
+      Continue;
+    End;
+
+    If Op = 'or' Then
+    Begin
+      If (Res.Kind = EK_IMM) Then
+      Begin
+        { Pliage : si gauche est truthy -> retourner gauche }
+        If Not ((Res.TypeIdx = TY_IDX_NIL) Or
+                ((Res.TypeIdx = TY_IDX_BOOLEAN) And (Res.ImmVal = 0))) Then
+        Begin
+          { Gauche est truthy -> ignorer droite (mais la parser) }
+          ParseExprPrec(Prec + 1, Right);
+          { Res reste inchange (truthy) }
+        End
+        Else
+        Begin
+          { Gauche est falsy -> retourner droite }
+          ParseExprPrec(Prec + 1, Right);
+          Res := Right;
+        End;
+      End
+      Else
+      Begin
+        { Non constant : generer code avec court-circuit }
+        ExprFlushToAX(Res);
+        { TODO 07 : OR AX,AX / JNZ LblSkip / ... / LblSkip: }
+        ParseExprPrec(Prec + 1, Right);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_UNKNOWN;
+      End;
+      Continue;
+    End;
+
+    { ---- Concatenation .. ---- }
+    If Op = '..' Then
+    Begin
+      { Associatif a droite : recurser avec meme precedence }
+      ParseExprPrec(Prec, Right);
+      If (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM) And
+         (Res.TypeIdx = TY_IDX_STRING) And (Right.TypeIdx = TY_IDX_STRING) Then
+      Begin
+        { Pliage impossible car on n a que les indices DATA, pas les chaines }
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_STRING;
+      End
+      Else
+      Begin
+        { TODO 07 : CALL _LUART_CONCAT }
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_STRING;
+      End;
+      Continue;
+    End;
+
+    { ---- Puissance ^ (droit-associatif) ---- }
+    If Op = '^' Then
+    Begin
+      ParseExprPrec(Prec, Right);
+      If (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM) Then
+      Begin
+        { Pliage simple : petites puissances entieres }
+        If Right.ImmVal = 0 Then
+          ExprMakeImm(1, TY_IDX_NUMBER, Res)
+        Else If Right.ImmVal = 1 Then
+          { Res reste inchange }
+        Else If Right.ImmVal = 2 Then
+          ExprMakeImm(Res.ImmVal * Res.ImmVal, TY_IDX_NUMBER, Res)
+        Else
+        Begin
+          { TODO 07 : CALL _LUART_POW }
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_NUMBER;
+        End;
+      End
+      Else
+      Begin
+        { TODO 07 : CALL _LUART_POW }
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_NUMBER;
+      End;
+      Continue;
+    End;
+
+    { ---- Operateurs binaires generiques ---- }
+    { Recurser cote droit avec precedence ajustee }
+    If BinOpIsRight(Op) Then
+      ParseExprPrec(Prec, Right)
+    Else
+      ParseExprPrec(Prec + 1, Right);
+
+    { Pliage de constantes si les deux membres sont immediats }
+    FoldOk := (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM);
+    If FoldOk Then
+    Begin
+      { Arithmetique }
+      If Op = '+' Then
+        ExprMakeImm(Res.ImmVal + Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If Op = '-' Then
+        ExprMakeImm(Res.ImmVal - Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If Op = '*' Then
+        ExprMakeImm(Res.ImmVal * Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If (Op = '/') And (Right.ImmVal <> 0) Then
+        ExprMakeImm(Res.ImmVal Div Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If (Op = '//') And (Right.ImmVal <> 0) Then
+        ExprMakeImm(Res.ImmVal Div Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If (Op = '%') And (Right.ImmVal <> 0) Then
+        ExprMakeImm(Res.ImmVal Mod Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If (Op = '/') And (Right.ImmVal = 0) Then
+      Begin
+        CompileError('division par zero');
+        ExprMakeImm(0, TY_IDX_NUMBER, Res);
+      End
+      Else If ((Op = '//') Or (Op = '%')) And (Right.ImmVal = 0) Then
+      Begin
+        CompileError('division par zero');
+        ExprMakeImm(0, TY_IDX_NUMBER, Res);
+      End
+      { Comparaisons }
+      Else If Op = '==' Then
+        ExprMakeBool(Ord(Res.ImmVal = Right.ImmVal), Res)
+      Else If Op = '~=' Then
+        ExprMakeBool(Ord(Res.ImmVal <> Right.ImmVal), Res)
+      Else If Op = '<' Then
+        ExprMakeBool(Ord(Res.ImmVal < Right.ImmVal), Res)
+      Else If Op = '<=' Then
+        ExprMakeBool(Ord(Res.ImmVal <= Right.ImmVal), Res)
+      Else If Op = '>' Then
+        ExprMakeBool(Ord(Res.ImmVal > Right.ImmVal), Res)
+      Else If Op = '>=' Then
+        ExprMakeBool(Ord(Res.ImmVal >= Right.ImmVal), Res)
+      { Bitwise Lua 5.3+ }
+      Else If Op = '&' Then
+        ExprMakeImm(Res.ImmVal And Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If Op = '|' Then
+        ExprMakeImm(Res.ImmVal Or Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If Op = '~' Then
+        ExprMakeImm(Res.ImmVal Xor Right.ImmVal, TY_IDX_NUMBER, Res)
+      Else If Op = '<<' Then
+      Begin
+        ShiftAmt := Integer(Right.ImmVal And 31);
+        ExprMakeImm(Res.ImmVal Shl ShiftAmt, TY_IDX_NUMBER, Res);
+      End
+      Else If Op = '>>' Then
+      Begin
+        ShiftAmt := Integer(Right.ImmVal And 31);
+        ExprMakeImm(Res.ImmVal Shr ShiftAmt, TY_IDX_NUMBER, Res);
+      End
+      Else
+      Begin
+        { Operateur non pliable : resultat dans AX }
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_NUMBER;
+      End;
+    End
+    Else
+    Begin
+      { Non constant : resultat dans AX (code emis par TODO 07) }
+      EmitBinOp(Op, Res, Right);
+      Res.Kind := EK_AX;
+      { Determiner le type resultat }
+      If (Op = '==') Or (Op = '~=') Or (Op = '<') Or (Op = '<=') Or
+         (Op = '>') Or (Op = '>=') Then
+        Res.TypeIdx := TY_IDX_BOOLEAN
+      Else
+        Res.TypeIdx := TY_IDX_NUMBER;
+    End;
+  Until False;
+End;
+
+{ ---- ParseExpr : point d entree principal pour les expressions }
+{ En Lua, pas d operateur virgule : c est juste ParseExprPrec(1). }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
 { ---- ParserAdvance : lire le prochain token et afficher ----- }
 Procedure ParserAdvance;
 Begin
@@ -2091,16 +2630,24 @@ Begin
   PrintToken(CurToken);
 End;
 
-{ ---- Run : pipeline de compilation (stub pour TODO 03-25) --- }
+{ ---- Run : pipeline de compilation (stub pour TODO 05-25) ---- }
 
 Procedure Run;
+Var
+  E : TExprVal;
 Begin
   LexInit;
   ParserAdvance;  { lire le premier token }
 
-  { Pour l instant (stubs TODO 03-25), on boucle juste sur les tokens }
+  { Boucle principale : parser les expressions / instructions }
   While CurToken.Kind <> TK_EOF Do
-    ParserAdvance;
+  Begin
+    { Parser une expression et la consommer }
+    ParseExpr(E);
+    { Consommer le ';' optionnel (separateur d instructions en Lua) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+  End;
 
   LexClose;
 End;
