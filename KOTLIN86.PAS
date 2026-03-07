@@ -2128,7 +2128,7 @@ Begin
       Else If T.Val = 'false' Then
         ExprMakeBool(0, Res)
       Else If T.Val = 'null' Then
-        ExprMakeImm(0, TY_IDX_ANY, Res)  { null -> AX=0, type Any? }
+        ExprMakeImm(0, TY_IDX_ANY, Res)  { null -> 0 (reference nulle) }
       Else
         ExprMakeNone(Res);
     End;
