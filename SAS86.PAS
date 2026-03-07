@@ -164,7 +164,7 @@
             Fonctions caracteres internes :
               SUBSTR, TRIM, LEFT, RIGHT, UPCASE, LOWCASE, INDEX, LENGTH
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, /
             Puissance : ** -> CALL _SASRT_POW(AX=base, BX=exposant) -> AX
@@ -2055,18 +2055,52 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ============================================================ }
+
 (* ---- EmitBinOp : emettre l instruction ASM pour AX op BX ---- *)
 (* AX = operande gauche, BX = operande droite.                   *)
 (* Resultat dans AX.                                              *)
+(* TODO 11 : concatenation CONCAT avec SI/DI, comparaison de     *)
+(* chaines via _SASRT_STRCMP, MIN/MAX inline CMP+Jcc+MOV,         *)
+(* propagation des valeurs manquantes (8000h).                    *)
 Procedure EmitBinOp(Const Op : TString; LeftTy, RightTy : Integer);
 Var
-  LblTrue, LblEnd : TString;
+  LblTrue, LblEnd, LblSkip : TString;
+  LblMiss, LblEndMiss      : TString;
+  IsStrCmp                  : Boolean;
+  NeedMissCheck             : Boolean;
 Begin
-  (* Arithmetique *)
+  IsStrCmp := (LeftTy = TY_IDX_CHARACTER) And (RightTy = TY_IDX_CHARACTER);
+
+  (* Propagation des valeurs manquantes pour operations numeriques *)
+  (* Si un operande = 8000h, le resultat = 8000h (manquant)       *)
+  NeedMissCheck := True;
+  If IsStrCmp Then NeedMissCheck := False;
+  If (Op = '||') Or (Op = '!!') Then NeedMissCheck := False;
+  If (Op = 'AND') Or (Op = '&') Then NeedMissCheck := False;
+  If (Op = 'OR') Or (Op = '|') Then NeedMissCheck := False;
+
+  If NeedMissCheck Then
+  Begin
+    LblMiss    := LabelGen;
+    LblEndMiss := LabelGen;
+    EmitInstrAB('CMP', 'AX', '8000h');
+    EmitInstrA('JE', LblMiss);
+    EmitInstrAB('CMP', 'BX', '8000h');
+    EmitInstrA('JE', LblMiss);
+  End;
+
+  (* Arithmetique entiere : ADD/SUB/IMUL/IDIV *)
   If Op = '+' Then
   Begin
     If (LeftTy = TY_IDX_CHARACTER) Or (RightTy = TY_IDX_CHARACTER) Then
-      EmitInstrA('CALL', SAS_RT_PFX + 'STRCAT')
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'CONCAT');
+    End
     Else
       EmitInstrAB('ADD', 'AX', 'BX');
   End
@@ -2079,22 +2113,47 @@ Begin
     EmitInstr('CWD');
     EmitInstrA('IDIV', 'BX');
   End
+  (* Puissance : ** -> CALL _SASRT_POW(AX=base, BX=exposant) *)
   Else If Op = '**' Then
     EmitInstrA('CALL', SAS_RT_PFX + 'POW')
-  (* Concatenation *)
+  (* Concatenation : || -> CALL _SASRT_CONCAT(SI=gauche, DI=droite) *)
   Else If (Op = '||') Or (Op = '!!') Then
-    EmitInstrA('CALL', SAS_RT_PFX + 'STRCAT')
-  (* MIN/MAX *)
+  Begin
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('MOV', 'DI', 'BX');
+    EmitInstrA('CALL', SAS_RT_PFX + 'CONCAT');
+  End
+  (* MIN/MAX inline : CMP + JLE/JGE + MOV *)
   Else If Op = '<>' Then
-    EmitInstrA('CALL', SAS_RT_PFX + 'MIN')
+  Begin
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JLE', LblSkip);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitLabel(LblSkip);
+  End
   Else If Op = '><' Then
-    EmitInstrA('CALL', SAS_RT_PFX + 'MAX')
-  (* Comparaison *)
+  Begin
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    EmitInstrA('JGE', LblSkip);
+    EmitInstrAB('MOV', 'AX', 'BX');
+    EmitLabel(LblSkip);
+  End
+  (* Comparaison : CMP + Jcc pour =, ^=, <, <=, >, >=            *)
+  (* Chaines : CALL _SASRT_STRCMP(SI=str1, DI=str2) -> drapeaux   *)
   Else If (Op = '=') Or (Op = 'EQ') Then
   Begin
     LblTrue := LabelGen;
     LblEnd  := LabelGen;
-    EmitInstrAB('CMP', 'AX', 'BX');
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
     EmitInstrA('JE', LblTrue);
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstrA('JMP', LblEnd);
@@ -2106,7 +2165,14 @@ Begin
   Begin
     LblTrue := LabelGen;
     LblEnd  := LabelGen;
-    EmitInstrAB('CMP', 'AX', 'BX');
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
     EmitInstrA('JNE', LblTrue);
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstrA('JMP', LblEnd);
@@ -2118,7 +2184,14 @@ Begin
   Begin
     LblTrue := LabelGen;
     LblEnd  := LabelGen;
-    EmitInstrAB('CMP', 'AX', 'BX');
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
     EmitInstrA('JL', LblTrue);
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstrA('JMP', LblEnd);
@@ -2130,7 +2203,14 @@ Begin
   Begin
     LblTrue := LabelGen;
     LblEnd  := LabelGen;
-    EmitInstrAB('CMP', 'AX', 'BX');
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
     EmitInstrA('JLE', LblTrue);
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstrA('JMP', LblEnd);
@@ -2142,7 +2222,14 @@ Begin
   Begin
     LblTrue := LabelGen;
     LblEnd  := LabelGen;
-    EmitInstrAB('CMP', 'AX', 'BX');
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
     EmitInstrA('JG', LblTrue);
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstrA('JMP', LblEnd);
@@ -2154,7 +2241,14 @@ Begin
   Begin
     LblTrue := LabelGen;
     LblEnd  := LabelGen;
-    EmitInstrAB('CMP', 'AX', 'BX');
+    If IsStrCmp Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'AX');
+      EmitInstrAB('MOV', 'DI', 'BX');
+      EmitInstrA('CALL', SAS_RT_PFX + 'STRCMP');
+    End
+    Else
+      EmitInstrAB('CMP', 'AX', 'BX');
     EmitInstrA('JGE', LblTrue);
     EmitInstrAB('XOR', 'AX', 'AX');
     EmitInstrA('JMP', LblEnd);
@@ -2163,7 +2257,6 @@ Begin
     EmitLabel(LblEnd);
   End
   Else If Op = 'IN' Then
-    (* IN : stub runtime - test d appartenance a une liste *)
     EmitInstrA('CALL', SAS_RT_PFX + 'INLIST')
   (* Logiques : AND/OR traites par court-circuit dans ParseExprPrec *)
   (* mais on garde un fallback ici pour les cas non court-circuites *)
@@ -2173,6 +2266,15 @@ Begin
     EmitInstrAB('OR', 'AX', 'BX')
   Else
     EmitComment('EmitBinOp: operateur inconnu: ' + Op);
+
+  (* Fin de la propagation des valeurs manquantes *)
+  If NeedMissCheck Then
+  Begin
+    EmitInstrA('JMP', LblEndMiss);
+    EmitLabel(LblMiss);
+    EmitInstrAB('MOV', 'AX', '8000h');
+    EmitLabel(LblEndMiss);
+  End;
 End;
 
 (* ---- ParsePrimary : atome du parseur Pratt ------------------- *)
@@ -3972,7 +4074,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 11..25 (a implementer)
+  STUBS POUR TODO 12..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
