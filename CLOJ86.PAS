@@ -171,7 +171,7 @@
               (not x) -> si nil ou false alors true, sinon false
             (min a b ...) (max a b ...) -> comparaison iteree
 
-  TODO 12 - ENTREES/SORTIES (println / print / read-line)
+  TODO 12 - ENTREES/SORTIES (println / print / read-line) [IMPLEMENTE]
             (println expr ...) : afficher les arguments separes par espace + CR+LF
               Evaluation de chaque argument, conversion en chaine
               INT 21h AH=40h BX=1 (STDOUT) pour chaque partie
@@ -755,6 +755,14 @@ Procedure ParseAnd(Var Res : TExprVal); Forward;
 Procedure ParseOr(Var Res : TExprVal); Forward;
 Procedure ParseNot(Var Res : TExprVal); Forward;
 Procedure ParseMinMax(Const Op : TString; Var Res : TExprVal); Forward;
+(* TODO 12 *)
+Procedure ParsePrintln(Var Res : TExprVal); Forward;
+Procedure ParsePrint(Var Res : TExprVal); Forward;
+Procedure ParseNewline(Var Res : TExprVal); Forward;
+Procedure ParseReadLine(Var Res : TExprVal); Forward;
+Procedure ParseStr(Var Res : TExprVal); Forward;
+Procedure ParsePrStr(Var Res : TExprVal); Forward;
+Procedure ParseFlush(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2995,6 +3003,8 @@ Begin
   DataAdd('_CL_NL_S',    DK_BYTE, 0, '13,10,0');
   DataAdd('_CL_TMPBUF',  DK_BYTE, 0, '256 DUP(0)');
   DataAdd('_CL_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
+  DataAdd('_CL_INBUF',   DK_BYTE, 0, '130 DUP(0)');
+  DataAdd('_CL_SPACE',   DK_STR, 0, ' ');
 End;
 
 (* ============================================================
@@ -3762,6 +3772,57 @@ Begin
             Exit;
           End
 
+          (* TODO 12 : dispatcher les fonctions d E/S *)
+          Else If (HeadSym = 'println') Or (HeadSym = 'prn') Then
+          Begin
+            ParsePrintln(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres println');
+            Exit;
+          End
+          Else If (HeadSym = 'print') Or (HeadSym = 'pr') Then
+          Begin
+            ParsePrint(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres print');
+            Exit;
+          End
+          Else If HeadSym = 'newline' Then
+          Begin
+            ParseNewline(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres newline');
+            Exit;
+          End
+          Else If HeadSym = 'read-line' Then
+          Begin
+            ParseReadLine(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres read-line');
+            Exit;
+          End
+          Else If HeadSym = 'str' Then
+          Begin
+            ParseStr(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres str');
+            Exit;
+          End
+          Else If HeadSym = 'pr-str' Then
+          Begin
+            ParsePrStr(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres pr-str');
+            Exit;
+          End
+          Else If HeadSym = 'flush' Then
+          Begin
+            ParseFlush(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres flush');
+            Exit;
+          End
+
           (* Appel de fonction generique *)
           Else If (SIdx >= 0) And
              ((SymTab[SIdx].Kind = SK_FN) Or
@@ -4221,11 +4282,529 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ============================================================
+   TODO 12 - ENTREES/SORTIES (println / print / read-line) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- EmitPrintVal : emettre le code pour afficher AX ---------- *)
+(* AX contient la valeur a imprimer. TypeIdx indique le type.      *)
+(* Pour un entier, on appelle _CLRT_NUMTOSTR puis _CLRT_PRINTSTR.  *)
+(* Pour une chaine (pointeur), on appelle directement _CLRT_PRINTSTR. *)
+(* Pour un booleen, on charge l adresse 'true' ou 'false'.         *)
+Procedure EmitPrintVal(TIdx : Integer);
+Begin
+  If TypeIsPtr(TIdx) Then
+  Begin
+    (* AX = pointeur vers chaine null-terminee *)
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', CL_RT_PFX + 'PRINTSTR');
+  End
+  Else If TIdx = TY_IDX_BOOL Then
+  Begin
+    (* AX = 0 ou 1 -> afficher 'true' ou 'false' *)
+    EmitInstrA('CALL', CL_RT_PFX + 'PRINTBOOL');
+  End
+  Else If TIdx = TY_IDX_NIL Then
+  Begin
+    (* Afficher 'nil' *)
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + CL_NIL_LBL);
+    EmitInstrA('CALL', CL_RT_PFX + 'PRINTSTR');
+  End
+  Else
+  Begin
+    (* AX = entier signe -> convertir en ASCII puis afficher *)
+    EmitInstrAB('MOV', 'DI', 'OFFSET _CL_NUMBUF');
+    EmitInstrA('CALL', CL_RT_PFX + 'NUMTOSTR');
+    EmitInstrAB('MOV', 'SI', 'DI');
+    EmitInstrA('CALL', CL_RT_PFX + 'PRINTSTR');
+  End;
+End;
+
+(* ---- ParsePrintln : (println expr ...) ------------------------ *)
+(* Affiche chaque argument separe par un espace, puis CR+LF.       *)
+(* (println) sans argument -> saut de ligne seul.                   *)
+(* Retourne nil (AX = 0).                                          *)
+Procedure ParsePrintln(Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  ArgCount : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(println ...)');
+  ArgCount := 0;
+
+  (* Evaluer et afficher chaque argument *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Espace separateur avant chaque argument sauf le premier *)
+    If ArgCount > 0 Then
+      EmitInstrA('CALL', CL_RT_PFX + 'PRINTSPACE');
+
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitPrintVal(ArgRes.TypeIdx);
+    Inc(ArgCount);
+  End;
+
+  (* Saut de ligne final *)
+  EmitInstrA('CALL', CL_RT_PFX + 'WRITECRLF');
+
+  (* Retourne nil *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParsePrint : (print expr ...) ----------------------------- *)
+(* Comme println mais sans saut de ligne final.                      *)
+Procedure ParsePrint(Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  ArgCount : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(print ...)');
+  ArgCount := 0;
+
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If ArgCount > 0 Then
+      EmitInstrA('CALL', CL_RT_PFX + 'PRINTSPACE');
+
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitPrintVal(ArgRes.TypeIdx);
+    Inc(ArgCount);
+  End;
+
+  (* Retourne nil *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseNewline : (newline) ---------------------------------- *)
+(* Ecrire CR+LF seul. Retourne nil.                                 *)
+Procedure ParseNewline(Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(newline)');
+  EmitInstrA('CALL', CL_RT_PFX + 'WRITECRLF');
+
+  EmitInstrAB('XOR', 'AX', 'AX');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseReadLine : (read-line) ------------------------------- *)
+(* Lire une ligne de texte depuis STDIN.                            *)
+(* Utilise INT 21h AH=0Ah (lecture ligne bufferisee).               *)
+(* Retourne AX = pointeur vers la chaine lue (null-terminee).       *)
+Procedure ParseReadLine(Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(read-line)');
+  EmitInstrA('CALL', CL_RT_PFX + 'READLINE');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseStr : (str expr ...) --------------------------------- *)
+(* Concatener les representations en chaine de tous les arguments.   *)
+(* (str) -> ""                                                       *)
+(* (str 42) -> "42"                                                  *)
+(* (str "hello" " " "world") -> "hello world"                        *)
+(* Utilise _CL_STRBUF comme buffer de concatenation.                 *)
+Procedure ParseStr(Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  ArgCount : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(str ...)');
+
+  (* Initialiser le buffer de sortie a vide *)
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CL_STRBUF');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+
+  ArgCount := 0;
+
+  (* (str) sans argument -> chaine vide *)
+  If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    EmitInstrAB('MOV', 'AX', 'OFFSET _CL_STRBUF');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_STR;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+
+    (* Convertir la valeur en chaine si necessaire *)
+    If TypeIsPtr(ArgRes.TypeIdx) Then
+    Begin
+      (* AX = deja un pointeur string *)
+      EmitInstrAB('MOV', 'SI', 'AX');
+    End
+    Else If ArgRes.TypeIdx = TY_IDX_BOOL Then
+    Begin
+      (* Convertir booleen en chaine 'true'/'false' *)
+      EmitInstrA('CALL', CL_RT_PFX + 'BOOLTOSTR');
+      EmitInstrAB('MOV', 'SI', 'AX');
+    End
+    Else If ArgRes.TypeIdx = TY_IDX_NIL Then
+    Begin
+      EmitInstrAB('MOV', 'SI', 'OFFSET _CL_EMPTY_S');
+    End
+    Else
+    Begin
+      (* Entier -> convertir en ASCII *)
+      EmitInstrAB('MOV', 'DI', 'OFFSET _CL_TMPBUF');
+      EmitInstrA('CALL', CL_RT_PFX + 'NUMTOSTR');
+      EmitInstrAB('MOV', 'SI', 'DI');
+    End;
+
+    (* Concatener SI a la fin de _CL_STRBUF *)
+    EmitInstrAB('MOV', 'DI', 'OFFSET _CL_STRBUF');
+    EmitInstrA('CALL', CL_RT_PFX + 'CONCAT');
+
+    Inc(ArgCount);
+  End;
+
+  (* Retourner pointeur vers _CL_STRBUF *)
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CL_STRBUF');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParsePrStr : (pr-str expr) -------------------------------- *)
+(* Convertir une expression en sa representation lisible (chaine).   *)
+(* Les chaines sont entourees de guillemets, les autres sont         *)
+(* converties normalement. Retourne AX=ptr chaine.                   *)
+Procedure ParsePrStr(Var Res : TExprVal);
+Var
+  ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(pr-str ...)');
+
+  If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    (* (pr-str) sans argument -> "" *)
+    EmitInstrAB('MOV', 'AX', 'OFFSET _CL_EMPTY_S');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_STR;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* Convertir la valeur en representation lisible *)
+  If TypeIsPtr(ArgRes.TypeIdx) Then
+    EmitInstrAB('MOV', 'SI', 'AX')
+  Else If ArgRes.TypeIdx = TY_IDX_BOOL Then
+  Begin
+    EmitInstrA('CALL', CL_RT_PFX + 'BOOLTOSTR');
+    EmitInstrAB('MOV', 'SI', 'AX');
+  End
+  Else If ArgRes.TypeIdx = TY_IDX_NIL Then
+    EmitInstrAB('MOV', 'SI', 'OFFSET ' + CL_NIL_LBL)
+  Else
+  Begin
+    EmitInstrAB('MOV', 'DI', 'OFFSET _CL_NUMBUF');
+    EmitInstrA('CALL', CL_RT_PFX + 'NUMTOSTR');
+    EmitInstrAB('MOV', 'SI', 'DI');
+  End;
+
+  EmitInstrAB('MOV', 'AX', 'SI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseFlush : (flush) -------------------------------------- *)
+(* Stub : pas de buffering sur DOS. Retourne nil.                    *)
+Procedure ParseFlush(Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(flush) - stub, no buffering on DOS');
+
+  EmitInstrAB('XOR', 'AX', 'AX');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
 Procedure EmitRuntime;
 Begin
-  (* TODO 24 - stub *)
+  (* TODO 24 - runtime minimal pour E/S *)
   If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('=== RUNTIME CLOJURE ===');
+  EmitBlankLine;
+
+  (* --- _CLRT_PRINTSTR : afficher chaine ASCIIZ via STDOUT --- *)
+  (* Entree : SI = pointeur chaine null-terminee                *)
+  EmitRaw(CL_RT_PFX + 'PRINTSTR:');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     DX, SI');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw(CL_RT_PFX + 'PS_LN:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'PS_DN');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'PS_LN');
+  EmitRaw(CL_RT_PFX + 'PS_DN:');
+  EmitRaw('        TEST    CX, CX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'PS_EX');
+  EmitRaw('        MOV     BX, 1');
+  EmitRaw('        MOV     AH, 40h');
+  EmitRaw('        INT     21h');
+  EmitRaw(CL_RT_PFX + 'PS_EX:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_WRITECRLF : ecrire CR+LF via STDOUT --- *)
+  EmitRaw(CL_RT_PFX + 'WRITECRLF:');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     DX, OFFSET _CL_CRLF');
+  EmitRaw('        MOV     CX, 2');
+  EmitRaw('        MOV     BX, 1');
+  EmitRaw('        MOV     AH, 40h');
+  EmitRaw('        INT     21h');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_PRINTSPACE : ecrire un espace --- *)
+  EmitRaw(CL_RT_PFX + 'PRINTSPACE:');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     DL, 32');
+  EmitRaw('        MOV     AH, 02h');
+  EmitRaw('        INT     21h');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_NUMTOSTR : entier signe -> ASCII ASCIIZ --- *)
+  (* Entree : AX = entier, DI = buffer destination          *)
+  (* Sortie : buffer rempli, null-termine                   *)
+  EmitRaw(CL_RT_PFX + 'NUMTOSTR:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JGE     ' + CL_RT_PFX + 'NT_POS');
+  EmitRaw('        NEG     AX');
+  EmitRaw('        MOV     BYTE PTR [DI], ''-''');
+  EmitRaw('        INC     DI');
+  EmitRaw(CL_RT_PFX + 'NT_POS:');
+  EmitRaw('        MOV     SI, DI');
+  EmitRaw('        MOV     BX, 10');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw(CL_RT_PFX + 'NT_DL:');
+  EmitRaw('        XOR     DX, DX');
+  EmitRaw('        DIV     BX');
+  EmitRaw('        ADD     DL, 48');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        INC     CX');
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JNZ     ' + CL_RT_PFX + 'NT_DL');
+  EmitRaw(CL_RT_PFX + 'NT_RL:');
+  EmitRaw('        POP     DX');
+  EmitRaw('        MOV     [SI], DL');
+  EmitRaw('        INC     SI');
+  EmitRaw('        LOOP    ' + CL_RT_PFX + 'NT_RL');
+  EmitRaw('        MOV     BYTE PTR [SI], 0');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_PRINTBOOL : AX = 0|1 -> afficher 'false'|'true' --- *)
+  EmitRaw(CL_RT_PFX + 'PRINTBOOL:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'PB_F');
+  EmitRaw('        MOV     SI, OFFSET ' + CL_TRUE_LBL);
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'PB_P');
+  EmitRaw(CL_RT_PFX + 'PB_F:');
+  EmitRaw('        MOV     SI, OFFSET ' + CL_FALSE_LBL);
+  EmitRaw(CL_RT_PFX + 'PB_P:');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_BOOLTOSTR : AX=0|1 -> AX=ptr 'false'|'true' --- *)
+  EmitRaw(CL_RT_PFX + 'BOOLTOSTR:');
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'BTS_F');
+  EmitRaw('        MOV     AX, OFFSET ' + CL_TRUE_LBL);
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'BTS_F:');
+  EmitRaw('        MOV     AX, OFFSET ' + CL_FALSE_LBL);
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_STRLEN : SI=chaine ASCIIZ -> AX=longueur --- *)
+  EmitRaw(CL_RT_PFX + 'STRLEN:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw(CL_RT_PFX + 'SL_LP:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SL_DN');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     AX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SL_LP');
+  EmitRaw(CL_RT_PFX + 'SL_DN:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_CONCAT : concatener SI apres DI (ASCIIZ) --- *)
+  (* DI = destination (chaine ASCIIZ existante)              *)
+  (* SI = source a ajouter (chaine ASCIIZ)                   *)
+  EmitRaw(CL_RT_PFX + 'CONCAT:');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    SI');
+  (* Avancer DI jusqu a la fin de la chaine destination *)
+  EmitRaw(CL_RT_PFX + 'CC_SK:');
+  EmitRaw('        CMP     BYTE PTR [DI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'CC_CP');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'CC_SK');
+  (* Copier SI dans DI *)
+  EmitRaw(CL_RT_PFX + 'CC_CP:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'CC_DN');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'CC_CP');
+  EmitRaw(CL_RT_PFX + 'CC_DN:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_STRCMP : comparer SI et DI (ASCIIZ) --- *)
+  (* Resultat dans AX : <0, 0, >0                      *)
+  EmitRaw(CL_RT_PFX + 'STRCMP:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw(CL_RT_PFX + 'SC_LP:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     AH, [DI]');
+  EmitRaw('        CMP     AL, AH');
+  EmitRaw('        JNE     ' + CL_RT_PFX + 'SC_NE');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SC_EQ');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SC_LP');
+  EmitRaw(CL_RT_PFX + 'SC_EQ:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SC_DN');
+  EmitRaw(CL_RT_PFX + 'SC_NE:');
+  EmitRaw('        XOR     AH, AH');
+  EmitRaw('        MOV     BL, [DI]');
+  EmitRaw('        XOR     BH, BH');
+  EmitRaw('        SUB     AX, BX');
+  EmitRaw(CL_RT_PFX + 'SC_DN:');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- _CLRT_READLINE : lire une ligne depuis STDIN --- *)
+  (* Utilise INT 21h AH=0Ah (lecture bufferisee)          *)
+  (* Retourne AX = pointeur vers chaine null-terminee     *)
+  EmitRaw(CL_RT_PFX + 'READLINE:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     DX, OFFSET _CL_INBUF');
+  EmitRaw('        MOV     SI, DX');
+  EmitRaw('        MOV     BYTE PTR [SI], 126');
+  EmitRaw('        MOV     AH, 0Ah');
+  EmitRaw('        INT     21h');
+  (* Longueur reelle en [SI+1], chaine commence a [SI+2] *)
+  EmitRaw('        XOR     CH, CH');
+  EmitRaw('        MOV     CL, [SI+1]');
+  EmitRaw('        LEA     AX, [SI+2]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     SI, CX');
+  EmitRaw('        MOV     BYTE PTR [SI], 0');
+  EmitRaw('        LEA     AX, [DX+2]');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  EmitComment('=== FIN RUNTIME ===');
+  EmitBlankLine;
 End;
 
 Procedure SymInit;
