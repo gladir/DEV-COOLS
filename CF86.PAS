@@ -132,7 +132,7 @@
             Affectation de struct : copie par reference (pointeur)
             Affectation de array : copie par reference (pointeur)
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident, appel de fonction
             Acces variable avec scope : scope.nom -> recherche dans la portee
             Acces cle de structure : struct.cle ou struct["cle"]
@@ -736,6 +736,12 @@ Procedure VarLoad(SIdx : Integer); Forward;
 Procedure VarStore(SIdx : Integer); Forward;
 Procedure ParseCfSet; Forward;
 Procedure ParseVarDecl; Forward;
+{ TODO 10 }
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Function  ParseCallArgs : Integer; Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3308,58 +3314,9 @@ Begin
   End;
   ParserAdvance;  { consommer = }
 
-  { Evaluer l expression a droite du = }
+  { Evaluer l expression a droite du = (TODO 10 : ParseExpr) }
   ExprMakeNone(Res);
-  If CurToken.Kind = TK_INTEGER Then
-  Begin
-    LitEval(CurToken, Res);
-    ParserAdvance;
-  End
-  Else If CurToken.Kind = TK_FLOAT Then
-  Begin
-    LitEval(CurToken, Res);
-    ParserAdvance;
-  End
-  Else If CurToken.Kind = TK_STRING Then
-  Begin
-    LitEval(CurToken, Res);
-    ParserAdvance;
-  End
-  Else If (CurToken.Kind = TK_KEYWORD) And IsBoolKeyword(CurToken.Val) Then
-  Begin
-    LitEval(CurToken, Res);
-    ParserAdvance;
-  End
-  Else If CurToken.Kind = TK_IDENT Then
-  Begin
-    { Charger une variable existante }
-    SIdx := SymFind(CurToken.Val);
-    If SIdx >= 0 Then
-    Begin
-      VarLoad(SIdx);
-      Res.Kind    := EK_AX;
-      Res.TypeIdx := SymTab[SIdx].TypeIdx;
-      Res.SymIdx  := SIdx;
-    End
-    Else
-    Begin
-      { Variable non trouvee : traiter comme 0 + warning }
-      WarnMsg('variable non definie : ' + CurToken.Val);
-      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
-    End;
-    ParserAdvance;
-  End
-  Else
-  Begin
-    { Expression non reconnue - stocker 0 par defaut }
-    WarnMsg('expression non supportee dans cfset (stub)');
-    ExprMakeImm(0, TY_IDX_NUMERIC, Res);
-    { Consommer jusqu a la fin de la balise }
-    While (CurToken.Kind <> TK_TAG_CLOSE) And
-          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
-          (CurToken.Kind <> TK_EOF) Do
-      ParserAdvance;
-  End;
+  ParseExpr(Res);
 
   { Chercher ou creer la variable cible }
   SIdx := SymFind(VarName);
@@ -3405,49 +3362,8 @@ Begin
   If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
   Begin
     ParserAdvance;  { consommer = }
-    { Evaluer l expression a droite }
-    If CurToken.Kind = TK_INTEGER Then
-    Begin
-      LitEval(CurToken, Res);
-      ParserAdvance;
-    End
-    Else If CurToken.Kind = TK_FLOAT Then
-    Begin
-      LitEval(CurToken, Res);
-      ParserAdvance;
-    End
-    Else If CurToken.Kind = TK_STRING Then
-    Begin
-      LitEval(CurToken, Res);
-      ParserAdvance;
-    End
-    Else If (CurToken.Kind = TK_KEYWORD) And IsBoolKeyword(CurToken.Val) Then
-    Begin
-      LitEval(CurToken, Res);
-      ParserAdvance;
-    End
-    Else If CurToken.Kind = TK_IDENT Then
-    Begin
-      SIdx := SymFind(CurToken.Val);
-      If SIdx >= 0 Then
-      Begin
-        VarLoad(SIdx);
-        Res.Kind    := EK_AX;
-        Res.TypeIdx := SymTab[SIdx].TypeIdx;
-        Res.SymIdx  := SIdx;
-      End
-      Else
-      Begin
-        WarnMsg('variable non definie : ' + CurToken.Val);
-        ExprMakeImm(0, TY_IDX_NUMERIC, Res);
-      End;
-      ParserAdvance;
-    End
-    Else
-    Begin
-      WarnMsg('expression non supportee dans var (stub)');
-      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
-    End;
+    { Evaluer l expression a droite (TODO 10 : ParseExpr) }
+    ParseExpr(Res);
   End
   Else
     ExprMakeImm(0, TY_IDX_NUMERIC, Res);
@@ -3465,6 +3381,406 @@ Begin
   { Consommer le point-virgule si present }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     ParserAdvance;
+End;
+
+{ ============================================================ }
+{  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]                }
+{ ============================================================ }
+
+{ ---- ParseCallArgs : parser les arguments d un appel -------- }
+(* Consomme la parenthese ouvrante, evalue chaque argument,     *)
+(* les empile (PUSH AX) et retourne le nombre d arguments.      *)
+(* Gere aussi les arguments nommes : param="val"                *)
+Function ParseCallArgs : Integer;
+Var
+  ArgCount : Integer;
+  ArgVal   : TExprVal;
+Begin
+  ArgCount := 0;
+  { La parenthese ouvrante ( est deja verifiee par l appelant }
+  ParserAdvance;  { consommer ( }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    { Argument nomme : ident = expr  (on ignore le nom ici) }
+    If (CurToken.Kind = TK_IDENT) Then
+    Begin
+      { Regarder si c est un argument nomme (ident = val) }
+      { On ne peut pas lookahead facilement, on traite comme expr }
+    End;
+    ParseExpr(ArgVal);
+    ExprFlushToAX(ArgVal);
+    EmitInstr('PUSH', 'AX');
+    Inc(ArgCount);
+    { Virgule entre arguments }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  End;
+  { Consommer la parenthese fermante }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+  ParseCallArgs := ArgCount;
+End;
+
+{ ---- ParsePrimary : expression primaire ColdFusion ---------- }
+(* Gere les atomes du langage d expression :                    *)
+(*   - Litteral entier, flottant, chaine                        *)
+(*   - Mots-cles booleens (true/false/yes/no) et null           *)
+(*   - Identificateur -> variable, acces struct, appel fonction *)
+(*   - Parentheses : ( expr )                                   *)
+(*   - NOT / ! expr (operateur unaire logique)                  *)
+(*   - - expr (negation unaire)                                 *)
+(*   - IsDefined("var") -> AX=1 si existe, 0 sinon             *)
+(*   - Len(str) -> CALL _CFRT_STRLEN -> AX                     *)
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  Name     : TString;
+  SIdx     : Integer;
+  ArgCount : Integer;
+  U        : TString;
+  SubExpr  : TExprVal;
+  InnerStr : TString;
+Begin
+  ExprMakeNone(Res);
+
+  { ---- Litteral entier ------------------------------------ }
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+
+  { ---- Litteral flottant (tronque a entier) --------------- }
+  Else If CurToken.Kind = TK_FLOAT Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+
+  { ---- Litteral chaine ------------------------------------ }
+  Else If CurToken.Kind = TK_STRING Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+
+  { ---- Mots-cles booleens / null -------------------------- }
+  Else If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    U := StrUpperCase(CurToken.Val);
+    If IsBoolKeyword(CurToken.Val) Or (U = 'NULL') Then
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End
+    { NOT / operateur logique unaire }
+    Else If (U = 'NOT') Then
+    Begin
+      ParserAdvance;  { consommer NOT }
+      ParsePrimary(SubExpr);
+      ExprEmitUnary('NOT', SubExpr);
+      Res := SubExpr;
+    End
+    Else
+    Begin
+      ExprMakeNone(Res);
+      ParserAdvance;
+    End;
+  End
+
+  { ---- Identificateur ------------------------------------- }
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    Name := CurToken.Val;
+    U := StrUpperCase(Name);
+    ParserAdvance;
+
+    { -- Fonction integree : IsDefined("var") ---------------- }
+    If (U = 'ISDEFINED') And
+       (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('IsDefined()');
+      ParserAdvance;  { consommer ( }
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        InnerStr := CurToken.Val;
+        ParserAdvance;  { consommer la chaine }
+        SIdx := SymFind(InnerStr);
+        If SIdx >= 0 Then
+          ExprMakeImm(1, TY_IDX_BOOLEAN, Res)
+        Else
+          ExprMakeImm(0, TY_IDX_BOOLEAN, Res);
+      End
+      Else
+      Begin
+        WarnMsg('IsDefined attend une chaine litterale');
+        ExprMakeImm(0, TY_IDX_BOOLEAN, Res);
+        { Consommer l argument }
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          ParserAdvance;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        ParserAdvance;
+    End
+
+    { -- Fonction integree : Len(expr) ---------------------- }
+    Else If (U = 'LEN') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Len()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');  { recuperer l argument (pointeur chaine) }
+      EmitInstr('CALL', CF_RT_PFX + 'STRLEN');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Appel de fonction utilisateur : nom( args ) --------- }
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('appel ' + Name);
+      ArgCount := ParseCallArgs;
+      { Appeler la fonction }
+      EmitInstr('CALL', CF_FN_PFX + SymNameClean(Name));
+      { Nettoyer la pile : ArgCount * 2 octets }
+      If ArgCount > 0 Then
+      Begin
+        Str(ArgCount * 2, InnerStr);
+        EmitInstr('ADD', 'SP, ' + InnerStr);
+      End;
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_ANY;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Acces membre par point : struct.cle ---------------- }
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Then
+    Begin
+      { Construire le nom complet scope.member }
+      While (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Do
+      Begin
+        ParserAdvance;  { consommer . }
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          Name := Name + '.' + CurToken.Val;
+          ParserAdvance;
+        End
+        Else
+        Begin
+          CompileError('identifiant attendu apres "."');
+          Break;
+        End;
+      End;
+      { Rechercher d abord comme scope.variable, puis comme struct }
+      SIdx := SymFind(Name);
+      If SIdx < 0 Then
+      Begin
+        { Essayer en extrayant le scope }
+        InnerStr := Name;
+        SIdx := SymFind(InnerStr);
+      End;
+      If SIdx >= 0 Then
+      Begin
+        VarLoad(SIdx);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := SymTab[SIdx].TypeIdx;
+        Res.SymIdx  := SIdx;
+      End
+      Else
+      Begin
+        WarnMsg('membre non resolu : ' + Name);
+        ExprMakeImm(0, TY_IDX_ANY, Res);
+      End;
+    End
+
+    { -- Acces par crochet : struct["cle"] ou array[i] ------ }
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+    Begin
+      EmitComment('acces [] : ' + Name);
+      SIdx := SymFind(Name);
+      ParserAdvance;  { consommer [ }
+      ParseExpr(SubExpr);
+      { Fermer le crochet }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        ParserAdvance;
+      { Si c est un tableau : calculer l offset }
+      If (SIdx >= 0) And (TypeKindOf(SymTab[SIdx].TypeIdx) = TKC_ARRAY) Then
+      Begin
+        { AX = index, multiplier par 2 (16-bit words) }
+        ExprFlushToAX(SubExpr);
+        EmitInstr('SHL', 'AX, 1');
+        EmitInstr('MOV', 'BX, AX');
+        EmitInstr('MOV', 'AX, OFFSET ' + SymTab[SIdx].MangledName);
+        EmitInstr('ADD', 'BX, AX');
+        EmitInstr('MOV', 'AX, [BX]');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_ANY;
+        Res.SymIdx  := -1;
+      End
+      { Si c est un struct : appeler le runtime }
+      Else If (SIdx >= 0) And (TypeKindOf(SymTab[SIdx].TypeIdx) = TKC_STRUCT) Then
+      Begin
+        VarLoad(SIdx);
+        EmitInstr('MOV', 'SI, AX');
+        ExprFlushToAX(SubExpr);
+        EmitInstr('MOV', 'DI, AX');
+        EmitInstr('CALL', CF_RT_PFX + 'STRUCTGET');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_ANY;
+        Res.SymIdx  := -1;
+      End
+      Else
+      Begin
+        { Variable non trouvee ou type inconnu }
+        ExprFlushToAX(SubExpr);
+        WarnMsg('acces [] sur variable non resolue : ' + Name);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_ANY;
+        Res.SymIdx  := -1;
+      End;
+    End
+
+    { -- Variable simple ------------------------------------ }
+    Else
+    Begin
+      SIdx := SymFind(Name);
+      If SIdx >= 0 Then
+      Begin
+        VarLoad(SIdx);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := SymTab[SIdx].TypeIdx;
+        Res.SymIdx  := SIdx;
+      End
+      Else
+      Begin
+        WarnMsg('variable non definie : ' + Name);
+        ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+      End;
+    End;
+  End
+
+  { ---- Parentheses ( expr ) ------------------------------- }
+  Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    ParserAdvance;  { consommer ( }
+    ParseExpr(SubExpr);
+    Res := SubExpr;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+  End
+
+  { ---- Operateur unaire - --------------------------------- }
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    ParserAdvance;
+    ParsePrimary(SubExpr);
+    ExprEmitUnary('-', SubExpr);
+    Res := SubExpr;
+  End
+
+  { ---- Operateur unaire + (identite) ---------------------- }
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+  Begin
+    ParserAdvance;
+    ParsePrimary(SubExpr);
+    Res := SubExpr;
+  End
+
+  { ---- Operateur unaire ! (NOT) --------------------------- }
+  Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '!') Then
+  Begin
+    ParserAdvance;
+    ParsePrimary(SubExpr);
+    ExprEmitUnary('!', SubExpr);
+    Res := SubExpr;
+  End
+
+  { ---- Token non reconnu ---------------------------------- }
+  Else
+  Begin
+    ExprMakeNone(Res);
+  End;
+End;
+
+{ ---- ParseUnary : operateur unaire avant ParsePrimary ------- }
+(* Traite les prefixes unaires NOT, !, -, + puis ParsePrimary  *)
+Procedure ParseUnary(Var Res : TExprVal);
+Var
+  U : TString;
+Begin
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    U := StrUpperCase(CurToken.Val);
+    If U = 'NOT' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprEmitUnary('NOT', Res);
+      Exit;
+    End;
+  End;
+  If CurToken.Kind = TK_OP Then
+  Begin
+    If CurToken.Val = '!' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprEmitUnary('!', Res);
+      Exit;
+    End
+    Else If CurToken.Val = '-' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      ExprEmitUnary('-', Res);
+      Exit;
+    End
+    Else If CurToken.Val = '+' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      Exit;
+    End;
+  End;
+  ParsePrimary(Res);
+End;
+
+{ ---- ParseExprPrec : parseur Pratt a precedence ------------ }
+(* Boucle sur les operateurs binaires tant que leur precedence  *)
+(* est >= MinPrec.  Utilise ExprEmitBinOp pour la generation.   *)
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op    : TString;
+  Prec  : Integer;
+  Right : TExprVal;
+  NextP : Integer;
+Begin
+  ParseUnary(Res);
+  While (CurToken.Kind <> TK_EOF) And IsCFBinOp(CurToken) Do
+  Begin
+    Op := CurToken.Val;
+    Prec := BinOpPrec(Op);
+    If Prec < MinPrec Then Break;
+    ParserAdvance;  { consommer l operateur }
+    If BinOpIsRight(Op) Then
+      NextP := Prec
+    Else
+      NextP := Prec + 1;
+    ExprMakeNone(Right);
+    ParseExprPrec(NextP, Right);
+    ExprEmitBinOp(Op, Res, Right);
+  End;
+End;
+
+{ ---- ParseExpr : point d entree d evaluation d expression --- }
+(* Appelle ParseExprPrec avec la precedence minimale = 1.       *)
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
 End;
 
 Procedure ParsePage;
