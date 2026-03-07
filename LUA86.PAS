@@ -2111,7 +2111,7 @@ End;
 {   << >>            -> 7  (Lua 5.3+ decalages, stub)          }
 {   ..               -> 8  (concatenation, droit-associatif)   }
 {   + -              -> 9  (addition / soustraction)            }
-{   * / // %         -> 10 (multiplication / division)         }
+{   * / // %         -> 10 (multiplication / division / modulo)  }
 {   ^ (puissance)    -> 12 (droit-associatif)                  }
 {   not # - (unaire) -> traites par ParseUnary (niveau 11)     }
 Function BinOpPrec(Const Op : TString) : Integer;
@@ -2548,8 +2548,11 @@ Begin
         ExprMakeImm(Res.ImmVal - Right.ImmVal, TY_IDX_NUMBER, Res)
       Else If Op = '*' Then
         ExprMakeImm(Res.ImmVal * Right.ImmVal, TY_IDX_NUMBER, Res)
+      { Lua : / est une division flottante, mais en 8086 16 bits }
+      { on n a pas de FPU -> traite comme division entiere (Div) }
       Else If (Op = '/') And (Right.ImmVal <> 0) Then
         ExprMakeImm(Res.ImmVal Div Right.ImmVal, TY_IDX_NUMBER, Res)
+      { // est la division entiere plancher (floor division) en Lua }
       Else If (Op = '//') And (Right.ImmVal <> 0) Then
         ExprMakeImm(Res.ImmVal Div Right.ImmVal, TY_IDX_NUMBER, Res)
       Else If (Op = '%') And (Right.ImmVal <> 0) Then
@@ -2586,12 +2589,13 @@ Begin
         ExprMakeImm(Res.ImmVal Xor Right.ImmVal, TY_IDX_NUMBER, Res)
       Else If Op = '<<' Then
       Begin
-        ShiftAmt := Integer(Right.ImmVal And 31);
+        { Masque a 15 pour registre 16 bits (0..15 positions valides) }
+        ShiftAmt := Integer(Right.ImmVal And 15);
         ExprMakeImm(Res.ImmVal Shl ShiftAmt, TY_IDX_NUMBER, Res);
       End
       Else If Op = '>>' Then
       Begin
-        ShiftAmt := Integer(Right.ImmVal And 31);
+        ShiftAmt := Integer(Right.ImmVal And 15);
         ExprMakeImm(Res.ImmVal Shr ShiftAmt, TY_IDX_NUMBER, Res);
       End
       Else
