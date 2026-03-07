@@ -111,7 +111,7 @@
             Smart cast : marquer le type affine apres un test is
             Qualificateurs : Package.Classe.membre -> recherche chainee
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_INT (16 bits signe), TYK_SHORT (16 bits signe),
               TYK_LONG (stub 16 bits), TYK_BYTE (8 bits signe),
               TYK_BOOLEAN (8 bits), TYK_CHAR (16 bits, stocke 8 bits),
@@ -828,6 +828,14 @@ Procedure EmitEpilog; Forward;
 { TODO 06 - Types }
 Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 Procedure EmitOpen;      Forward;
 Procedure EmitClose;     Forward;
 Procedure EmitDataSeg;   Forward;
@@ -2952,7 +2960,11 @@ Begin
   EmitInstr('RET');
 End;
 
-{ --- TODO 06 : Types --------------------------------------- }
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- TypeSizeof : taille en octets d un type ---------------- *)
 Function TypeSizeof(TypeIdx : Integer) : Integer;
 Begin
   If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
@@ -2961,12 +2973,273 @@ Begin
     TypeSizeof := 2;
 End;
 
+(* ---- TypeKindOf : retourner le TTypeKind d un type ---------- *)
 Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
 Begin
   If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
     TypeKindOf := TypeTab[TypeIdx].Kind
   Else
     TypeKindOf := TYK_INT;
+End;
+
+(* ---- TypeMangle : prefixe ASM selon le type Kotlin ---------- *)
+(* Utilisee pour nommer les etiquettes DATA specifiques au type.  *)
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_INT      : TypeMangle := '_KTN_';
+    TYK_SHORT    : TypeMangle := '_KTN_';
+    TYK_LONG     : TypeMangle := '_KTN_';
+    TYK_BYTE     : TypeMangle := '_KTB_';
+    TYK_BOOLEAN  : TypeMangle := '_KTB_';
+    TYK_CHAR     : TypeMangle := '_KTC_';
+    TYK_FLOAT    : TypeMangle := '_KTD_';
+    TYK_DOUBLE   : TypeMangle := '_KTD_';
+    TYK_STRING   : TypeMangle := '_KTS_';
+    TYK_ARRAY    : TypeMangle := '_KTA_';
+    TYK_INTARRAY : TypeMangle := '_KTA_';
+    TYK_CLASS    : TypeMangle := '_KTO_';
+    TYK_INTERFACE: TypeMangle := '_KTI_';
+    TYK_ENUM     : TypeMangle := '_KTE_';
+    TYK_UNIT     : TypeMangle := '_KTU_';
+    TYK_NOTHING  : TypeMangle := '_KTU_';
+    TYK_ANY      : TypeMangle := '_KTX_';
+    TYK_LAMBDA   : TypeMangle := '_KTL_';
+    TYK_NULLABLE : TypeMangle := '_KTQ_';
+  Else
+    TypeMangle := '_KTX_';
+  End;
+End;
+
+(* ---- TypeIsNumeric : vrai si le type se place dans AX ------- *)
+(* Int, Short, Long, Byte, Float, Double, Char, Boolean, Enum    *)
+(* sont tous representables comme un entier 16 bits dans AX.      *)
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_INT)     Or (K = TYK_SHORT)   Or
+    (K = TYK_LONG)    Or (K = TYK_BYTE)    Or
+    (K = TYK_FLOAT)   Or (K = TYK_DOUBLE)  Or
+    (K = TYK_CHAR)    Or (K = TYK_BOOLEAN) Or
+    (K = TYK_ENUM);
+End;
+
+(* ---- TypeIsPtr : vrai si le type est un pointeur 16 bits ---- *)
+(* String, Array, IntArray, Class, Interface, Lambda, Any         *)
+(* sont stockes comme des pointeurs 16 bits (segment DATA).       *)
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsPtr :=
+    (K = TYK_STRING)   Or (K = TYK_ARRAY)    Or
+    (K = TYK_INTARRAY) Or (K = TYK_CLASS)     Or
+    (K = TYK_INTERFACE)Or (K = TYK_LAMBDA)    Or
+    (K = TYK_ANY);
+End;
+
+(* ---- TypeCanCoerce : coercition src -> dst possible ? ------- *)
+(* Kotlin est strict sur les coercitions : pas de coercition       *)
+(* implicite entre types numeriques. On autorise cependant :       *)
+(*   - meme type                                                   *)
+(*   - dst=UNKNOWN -> toujours OK                                  *)
+(*   - src=NOTHING -> convertible en tout (type bottom)            *)
+(*   - dst=ANY -> toujours OK (type racine)                        *)
+(*   - dst=NULLABLE -> si src compatible avec le type sous-jacent  *)
+(*   - promotions entier explicites Int<->Short/Long/Byte          *)
+(*   - Boolean/Byte -> Int (widening)                              *)
+(*   - Float <-> Double                                            *)
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If SrcIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  { Nothing -> tout type (type bottom) }
+  If SK = TYK_NOTHING Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { tout -> Any (type racine) }
+  If DK = TYK_ANY Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { tout -> Nullable (enveloppe) }
+  If DK = TYK_NULLABLE Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Promotions numeriques entieres Kotlin (widening) :             }
+  {   Byte -> Short -> Int -> Long                                  }
+  {   Char -> Int                                                   }
+  If (DK = TYK_INT) And
+     ((SK = TYK_BYTE) Or (SK = TYK_SHORT) Or
+      (SK = TYK_CHAR) Or (SK = TYK_BOOLEAN)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If (DK = TYK_SHORT) And (SK = TYK_BYTE) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  If (DK = TYK_LONG) And
+     ((SK = TYK_INT) Or (SK = TYK_SHORT) Or (SK = TYK_BYTE)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Float <-> Double : meme representation stub }
+  If ((DK = TYK_DOUBLE) And (SK = TYK_FLOAT)) Or
+     ((DK = TYK_FLOAT) And (SK = TYK_DOUBLE)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  { Int/Short/Long/Byte -> Float/Double : widening numerique }
+  If ((DK = TYK_FLOAT) Or (DK = TYK_DOUBLE)) And
+     ((SK = TYK_INT) Or (SK = TYK_SHORT) Or
+      (SK = TYK_LONG) Or (SK = TYK_BYTE)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  TypeCanCoerce := False;
+End;
+
+(* ---- TypeCoerceResult : type resultat d une operation binaire *)
+(* Logique Kotlin :                                                *)
+(*   comparaisons/logique -> Boolean                               *)
+(*   ?: (elvis) -> type du cote non-null                           *)
+(*   + avec String -> String (concatenation)                       *)
+(*   arithmetique entre entiers -> Int (ou Long si un Long)        *)
+(*   arithmetique avec Float/Double -> Float/Double                *)
+(*   assignation -> type du cote droit                             *)
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+  { Operateurs toujours booleens }
+  If (Op = '==')  Or (Op = '!=')  Or
+     (Op = '===') Or (Op = '!==') Or
+     (Op = '<')   Or (Op = '<=')  Or
+     (Op = '>')   Or (Op = '>=')  Or
+     (Op = '&&')  Or (Op = '||')  Or
+     (Op = 'in')  Or (Op = '!in') Or
+     (Op = 'is')  Or (Op = '!is') Then
+  Begin
+    TypeCoerceResult := TY_IDX_BOOLEAN;
+    Exit;
+  End;
+  { Elvis ?: retourne le type du cote non-nullable }
+  If Op = '?:' Then
+  Begin
+    TypeCoerceResult := RightIdx;
+    Exit;
+  End;
+  { Range .. retourne Int (stub) }
+  If Op = '..' Then
+  Begin
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+  { + avec une String : concatenation -> String }
+  If Op = '+' Then
+  Begin
+    If (LK = TYK_STRING) Or (RK = TYK_STRING) Then
+    Begin
+      TypeCoerceResult := TY_IDX_STRING;
+      Exit;
+    End;
+  End;
+  { as / as? : cast -> type de droite }
+  If (Op = 'as') Or (Op = 'as?') Then
+  Begin
+    TypeCoerceResult := RightIdx;
+    Exit;
+  End;
+  { Arithmetique : +, -, *, /, % }
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '%') Then
+  Begin
+    { Si un des deux est Double/Float -> Double }
+    If (LK = TYK_DOUBLE) Or (RK = TYK_DOUBLE) Then
+    Begin
+      TypeCoerceResult := TY_IDX_DOUBLE;
+      Exit;
+    End;
+    If (LK = TYK_FLOAT) Or (RK = TYK_FLOAT) Then
+    Begin
+      TypeCoerceResult := TY_IDX_FLOAT;
+      Exit;
+    End;
+    { Si un des deux est Long -> Long }
+    If (LK = TYK_LONG) Or (RK = TYK_LONG) Then
+    Begin
+      TypeCoerceResult := TY_IDX_LONG;
+      Exit;
+    End;
+    { Sinon -> Int }
+    TypeCoerceResult := TY_IDX_INT;
+    Exit;
+  End;
+  { Assignation : le type du cote droit }
+  TypeCoerceResult := RightIdx;
+End;
+
+(* ---- TypeInfer : deduire le type d une expression ----------- *)
+(* Si le TypeIdx est deja connu, on le retourne directement.       *)
+(* Sinon pour une immediate on suppose Int, pour le reste UNKNOWN. *)
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_INT
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+(* ---- TypeLookupName : chercher un type par nom -------------- *)
+(* Comparaison exacte (Kotlin est case-sensitive).                 *)
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Name Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
 End;
 
 Procedure TypeInit;
