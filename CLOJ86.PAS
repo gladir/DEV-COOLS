@@ -50,7 +50,7 @@
             Mots-cles (keywords) : :nom -> entier unique dans une table
             Ratios et BigDecimal : avertissement + troncature entiere
 
-  TODO 04 - READER MACROS ET FORMES SPECIALES DE LECTURE
+  TODO 04 - READER MACROS ET FORMES SPECIALES DE LECTURE [IMPLEMENTE]
             Quote : 'expr -> (quote expr)
             Syntax-quote : `expr -> (quasiquote expr)
             Unquote : ~expr -> (unquote expr)
@@ -648,6 +648,19 @@ Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalChar(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalKW(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+(* TODO 04 *)
+Procedure SkipForm; Forward;
+Procedure ReadList(Var ECount : Integer); Forward;
+Procedure ReadVector(Var ECount : Integer); Forward;
+Procedure ReadMap(Var ECount : Integer); Forward;
+Procedure ReadSet(Var ECount : Integer); Forward;
+Procedure ReadQuote; Forward;
+Procedure ReadSyntaxQuote; Forward;
+Procedure ReadUnquote; Forward;
+Procedure ReadDeref; Forward;
+Procedure ReadMeta; Forward;
+Procedure ReadDispatch; Forward;
+Procedure ReadForm(Var Res : TExprVal); Forward;
 (* TODO 05 *)
 Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
@@ -1301,6 +1314,8 @@ Var
   Ch      : Char;
   Scanning : Boolean;
   ShouldSkipForm : Boolean;
+  SkipDepth : Integer;
+  SaveDebug : Boolean;
 Begin
   CurToken.IntVal := 0;
   Scanning := True;
@@ -1567,11 +1582,43 @@ Begin
     If (Not Scanning) And ShouldSkipForm Then
     Begin
       ShouldSkipForm := False;
+      SaveDebug := Opts.DebugMode;
+      Opts.DebugMode := False;
+      (* Skip recursif : sauter la forme complete (TODO 04) *)
+      (* Pour les formes composees, compter la profondeur    *)
+      If CurToken.Kind = TK_LPAREN Then
+      Begin
+        SkipDepth := 1;
+        While (SkipDepth > 0) And (Not LexEOF) Do
+        Begin
+          LexNextToken;
+          If CurToken.Kind = TK_LPAREN Then Inc(SkipDepth);
+          If CurToken.Kind = TK_RPAREN Then Dec(SkipDepth);
+        End;
+      End
+      Else If CurToken.Kind = TK_LBRACKET Then
+      Begin
+        SkipDepth := 1;
+        While (SkipDepth > 0) And (Not LexEOF) Do
+        Begin
+          LexNextToken;
+          If CurToken.Kind = TK_LBRACKET Then Inc(SkipDepth);
+          If CurToken.Kind = TK_RBRACKET Then Dec(SkipDepth);
+        End;
+      End
+      Else If CurToken.Kind = TK_LBRACE Then
+      Begin
+        SkipDepth := 1;
+        While (SkipDepth > 0) And (Not LexEOF) Do
+        Begin
+          LexNextToken;
+          If CurToken.Kind = TK_LBRACE Then Inc(SkipDepth);
+          If CurToken.Kind = TK_RBRACE Then Dec(SkipDepth);
+        End;
+      End;
+      (* Sinon c est un token atomique : deja lu et jete *)
+      Opts.DebugMode := SaveDebug;
       Scanning := True;
-      (* On jette le token lu et on en lit un autre.
-         Si c etait un LPAREN/LBRACKET/LBRACE il faudrait
-         sauter toute la forme imbriquee. Pour l instant on
-         saute un seul token. Le skip recursif sera dans TODO 04. *)
     End;
   End;
 
@@ -1721,7 +1768,316 @@ Begin
 End;
 
 (* ============================================================
-   STUBS POUR TODOs 04-25  (a implementer)
+   TODO 04 - READER MACROS ET FORMES SPECIALES DE LECTURE [IMPLEMENTE]
+   ============================================================
+   Fonctions exposees :
+     SkipForm        -- sauter recursivement une forme Clojure (pour #_)
+     ReadList        -- lire (a b c) jusqu au ) -> compte les elements
+     ReadVector      -- lire [a b c] jusqu au ] -> compte les elements
+     ReadMap         -- lire {:a 1 :b 2} jusqu a l accolade fermante
+     ReadSet         -- lire #{1 2 3} jusqu a l accolade fermante
+     ReadQuote       -- 'expr  -> traiter comme (quote expr)
+     ReadSyntaxQuote -- `expr  -> traiter comme (quasiquote expr)
+     ReadUnquote     -- ~expr / ~@expr -> traiter comme unquote
+     ReadDeref       -- @expr  -> traiter comme (deref expr)
+     ReadMeta        -- ^{:k v} ou ^:tag -> lire et ignorer l annotation
+     ReadDispatch    -- #"regex" #{} #() #' etc
+     ReadForm        -- dispatcher principal : lit une forme selon le token
+   ============================================================ *)
+
+(* ---- SkipForm : sauter recursivement une forme Clojure ----- *)
+(* Utilisee pour #_ (comment macro). Saute un token atomique    *)
+(* ou une forme composee complete (liste, vecteur, map, set).   *)
+Procedure SkipForm;
+Var Depth : Integer;
+Begin
+  Case CurToken.Kind Of
+    TK_LPAREN :
+    Begin
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_LPAREN Then Inc(Depth);
+        If CurToken.Kind = TK_RPAREN Then Dec(Depth);
+      End;
+    End;
+    TK_LBRACKET :
+    Begin
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_LBRACKET Then Inc(Depth);
+        If CurToken.Kind = TK_RBRACKET Then Dec(Depth);
+      End;
+    End;
+    TK_LBRACE :
+    Begin
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_LBRACE Then Inc(Depth);
+        If CurToken.Kind = TK_RBRACE Then Dec(Depth);
+      End;
+    End;
+  Else
+    (* Token atomique : deja consomme, rien a faire *)
+  End;
+End;
+
+(* ---- ReadList : lire une liste (e1 e2 ... eN) -------------- *)
+(* CurToken doit etre TK_LPAREN a l entree.                    *)
+(* Lit les sous-formes jusqu a TK_RPAREN.                       *)
+(* ECount retourne le nombre d elements lus.                    *)
+Procedure ReadList(Var ECount : Integer);
+Var Sub : TExprVal;
+Begin
+  ECount := 0;
+  LexNextToken;  (* consommer le ( *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ReadForm(Sub);
+    Inc(ECount);
+    LexNextToken;
+  End;
+  (* CurToken est ) ou EOF *)
+  If CurToken.Kind <> TK_RPAREN Then
+    CompileError(') attendue en fin de liste');
+End;
+
+(* ---- ReadVector : lire un vecteur [e1 e2 ... eN] ----------- *)
+(* CurToken doit etre TK_LBRACKET a l entree.                  *)
+Procedure ReadVector(Var ECount : Integer);
+Var Sub : TExprVal;
+Begin
+  ECount := 0;
+  LexNextToken;  (* consommer le [ *)
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ReadForm(Sub);
+    Inc(ECount);
+    LexNextToken;
+  End;
+  If CurToken.Kind <> TK_RBRACKET Then
+    CompileError('] attendu en fin de vecteur');
+End;
+
+(* ---- ReadMap : lire une map accolade-ouvrante :a 1 :b 2 accolade-fermante *)
+(* CurToken doit etre TK_LBRACE a l entree.                    *)
+(* Lit des paires cle/valeur ; ECount = nombre de paires.       *)
+Procedure ReadMap(Var ECount : Integer);
+Var Sub : TExprVal;
+    Cnt : Integer;
+Begin
+  ECount := 0;
+  Cnt := 0;
+  LexNextToken;  (* consommer l accolade ouvrante *)
+  While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ReadForm(Sub);
+    Inc(Cnt);
+    LexNextToken;
+  End;
+  If CurToken.Kind <> TK_RBRACE Then
+    CompileError('accolade fermante attendue en fin de map');
+  If (Cnt Mod 2) <> 0 Then
+    CompileError('nombre impair d elements dans une map');
+  ECount := Cnt Div 2;
+End;
+
+(* ---- ReadSet : lire un ensemble #accolade e1 e2 ... accolade-fermante *)
+(* CurToken doit etre TK_LBRACE a l entree (le # a ete consomme). *)
+Procedure ReadSet(Var ECount : Integer);
+Var Sub : TExprVal;
+Begin
+  ECount := 0;
+  LexNextToken;  (* consommer l accolade ouvrante *)
+  While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ReadForm(Sub);
+    Inc(ECount);
+    LexNextToken;
+  End;
+  If CurToken.Kind <> TK_RBRACE Then
+    CompileError('accolade fermante attendue en fin d ensemble');
+End;
+
+(* ---- ReadQuote : 'expr -> traitement comme (quote expr) ----- *)
+(* CurToken doit etre TK_QUOTE a l entree.                     *)
+(* Lit la forme suivante et l evalue comme constante quotee.     *)
+Procedure ReadQuote;
+Var Sub : TExprVal;
+Begin
+  LexNextToken;  (* consommer le ' *)
+  ReadForm(Sub);
+  (* Pour l instant, quote retourne la valeur litterale          *)
+  (* Le traitement complet (liste quotee etc.) sera dans TODO 10 *)
+End;
+
+(* ---- ReadSyntaxQuote : `expr -> (quasiquote expr) ----------- *)
+(* Syntax-quote est utilise pour les macros. En l absence de     *)
+(* macro-expansion reelle, on traite comme un quote simple.      *)
+Procedure ReadSyntaxQuote;
+Var Sub : TExprVal;
+Begin
+  LexNextToken;  (* consommer le ` *)
+  ReadForm(Sub);
+  If Opts.Warnings Then
+    WarnMsg('syntax-quote non entierement supporte, traite comme quote');
+End;
+
+(* ---- ReadUnquote : ~expr ou ~@expr -> (unquote[-splice] expr) *)
+Procedure ReadUnquote;
+Var Sub : TExprVal;
+Begin
+  (* CurToken est TK_UNQUOTE ou TK_UNQUOTE_SPLICE *)
+  LexNextToken;  (* consommer ~ ou ~@ *)
+  ReadForm(Sub);
+  If Opts.Warnings Then
+    WarnMsg('unquote hors d un syntax-quote, ignore');
+End;
+
+(* ---- ReadDeref : @expr -> (deref expr) ---------------------- *)
+(* Deref est utilise pour les atomes (atom). Pour l instant,     *)
+(* on lit simplement la sous-forme.                              *)
+Procedure ReadDeref;
+Var Sub : TExprVal;
+Begin
+  LexNextToken;  (* consommer le @ *)
+  ReadForm(Sub);
+  (* Le code de deref sera genere dans TODO 10/17 *)
+End;
+
+(* ---- ReadMeta : ^annotation forme -> lire et ignorer le meta *)
+(* ^:tag expr ou ^accolade-ouvrante :k v accolade-fermante expr *)
+Procedure ReadMeta;
+Var Sub   : TExprVal;
+    ECnt  : Integer;
+Begin
+  LexNextToken;  (* consommer le ^ *)
+  (* Lire l annotation *)
+  If CurToken.Kind = TK_LBRACE Then
+    ReadMap(ECnt)      (* ^accolade :k v accolade -> ignorer *)
+  Else If CurToken.Kind = TK_KEYWORD Then
+    (* ^:tag -> ignorer le keyword *)
+  Else If CurToken.Kind = TK_SYMBOL Then
+    (* ^Type -> ignorer le type hint *)
+  Else
+    CompileError('metadata attendue apres ^');
+  (* Lire la forme annotee *)
+  LexNextToken;
+  ReadForm(Sub);
+End;
+
+(* ---- ReadDispatch : # suivi de divers caracteres ------------ *)
+(* #"regex" -> avertissement                                     *)
+(* #accolade -> ensemble litteral (hash-set)                     *)
+(* #( -> fonction anonyme courte (avertissement)                 *)
+(* #' -> var quote                                               *)
+(* #_ -> skip form (deja gere dans le lexeur, securite ici)     *)
+Procedure ReadDispatch;
+Var Sub  : TExprVal;
+    ECnt : Integer;
+Begin
+  LexNextToken;  (* consommer le # et lire le token suivant *)
+  If CurToken.Kind = TK_LBRACE Then
+  Begin
+    (* #{...} -> hash-set *)
+    ReadSet(ECnt);
+    (* Le set sera construit dans DATA par TODO 20 *)
+  End
+  Else If CurToken.Kind = TK_LPAREN Then
+  Begin
+    (* #(...) -> fonction anonyme courte *)
+    If Opts.Warnings Then
+      WarnMsg('#() fonctions anonymes courtes non supportees, lu comme liste');
+    ReadList(ECnt);
+  End
+  Else If CurToken.Kind = TK_STRING Then
+  Begin
+    (* #"regex" -> avertissement *)
+    If Opts.Warnings Then
+      WarnMsg('#"..." expressions regulieres non supportees');
+  End
+  Else If (CurToken.Kind = TK_QUOTE) Then
+  Begin
+    (* #'sym -> var quote *)
+    LexNextToken;  (* consommer ' apres # *)
+    ReadForm(Sub);
+    (* Traitement var quote dans TODO 10 *)
+  End
+  Else
+  Begin
+    (* Dispatch inconnu : avertissement *)
+    If Opts.Warnings Then
+      WarnMsg('dispatch # non reconnu : ' + CurToken.Val);
+  End;
+End;
+
+(* ---- ReadForm : dispatcher principal du reader Clojure ------ *)
+(* Lit une forme Clojure complete a partir de CurToken.          *)
+(* - Litteraux : entier, chaine, char, keyword, true/false/nil  *)
+(* - Symboles : identifiants Clojure                             *)
+(* - Listes : (...)                                              *)
+(* - Vecteurs : [...]                                            *)
+(* - Maps : accolade-ouvrante ... accolade-fermante              *)
+(* - Reader macros : ' ` ~ ~@ @ ^ #                             *)
+Procedure ReadForm(Var Res : TExprVal);
+Var ECnt : Integer;
+Begin
+  ExprMakeNone(Res);
+  Case CurToken.Kind Of
+    (* Litteraux *)
+    TK_INTEGER,
+    TK_STRING,
+    TK_TRUE,
+    TK_FALSE,
+    TK_NIL,
+    TK_CHAR,
+    TK_KEYWORD :
+      LitEval(CurToken, Res);
+
+    (* Symbole *)
+    TK_SYMBOL :
+    Begin
+      (* Pour l instant on ne resout pas les symboles ; *)
+      (* Le lookup et le codegen viendront dans TODO 10 *)
+      Res.Kind    := EK_NONE;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_SYM;
+      Res.Offset  := 0;
+      Res.SymIdx  := -1;
+    End;
+
+    (* Collections *)
+    TK_LPAREN   : ReadList(ECnt);
+    TK_LBRACKET : ReadVector(ECnt);
+    TK_LBRACE   : ReadMap(ECnt);
+
+    (* Reader macros *)
+    TK_QUOTE          : ReadQuote;
+    TK_SYNTAX_QUOTE   : ReadSyntaxQuote;
+    TK_UNQUOTE        : ReadUnquote;
+    TK_UNQUOTE_SPLICE : ReadUnquote;
+    TK_DEREF          : ReadDeref;
+    TK_META           : ReadMeta;
+    TK_DISPATCH       : ReadDispatch;
+
+    TK_RPAREN :
+      CompileError(') inattendue');
+    TK_RBRACKET :
+      CompileError('] inattendu');
+    TK_RBRACE :
+      CompileError('accolade fermante inattendue');
+
+    TK_EOF : ;  (* fin de fichier *)
+  End;
+End;
+
+(* ============================================================
+   STUBS POUR TODOs 05-25  (a implementer)
    ============================================================ *)
 
 Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
