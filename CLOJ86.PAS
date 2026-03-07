@@ -4636,7 +4636,7 @@ Begin
   ParseForm(TestRes);
   ExprFlushToAX(TestRes);
 
-  (* Si vrai (non-zero) -> sauter le body *)
+  (* Si vrai (non-zero) -> sauter le body (when-not = body quand test faux) *)
   EmitInstrAB('CMP', 'AX', '0');
   EmitInstrA('JNE', LblEnd);
 
@@ -4819,27 +4819,27 @@ Begin
           SIdx2 := SymFind(HeadSym2);
           LexNextToken;
 
-            (* Appeler le dispatcher de formes pour le contenu *)
-            (* Traiter comme un appel de fonction *)
-            If (SIdx2 >= 0) And
-               ((SymTab[SIdx2].Kind = SK_FN) Or
-                (SymTab[SIdx2].Kind = SK_VAR)) Then
-            Begin
-              ParseFnCall(HeadSym2, SIdx2, ValRes);
-            End
-            Else
-            Begin
-              (* Fonction inconnue : avertir *)
-              WarnMsg('case default: symbole inconnu "' + HeadSym2 + '"');
-              ExprMakeNone(ValRes);
-              While (CurToken.Kind <> TK_RPAREN) And
-                    (CurToken.Kind <> TK_EOF) Do
-                LexNextToken;
-            End;
-            If CurToken.Kind = TK_RPAREN Then LexNextToken;
-            ExprFlushToAX(ValRes);
-            Res := ValRes;
-            Res.Kind := EK_AX;
+          (* Appeler le dispatcher de formes pour le contenu *)
+          (* Traiter comme un appel de fonction *)
+          If (SIdx2 >= 0) And
+             ((SymTab[SIdx2].Kind = SK_FN) Or
+              (SymTab[SIdx2].Kind = SK_VAR)) Then
+          Begin
+            ParseFnCall(HeadSym2, SIdx2, ValRes);
+          End
+          Else
+          Begin
+            (* Fonction inconnue : avertir *)
+            WarnMsg('case default: symbole inconnu "' + HeadSym2 + '"');
+            ExprMakeNone(ValRes);
+            While (CurToken.Kind <> TK_RPAREN) And
+                  (CurToken.Kind <> TK_EOF) Do
+              LexNextToken;
+          End;
+          If CurToken.Kind = TK_RPAREN Then LexNextToken;
+          ExprFlushToAX(ValRes);
+          Res := ValRes;
+          Res.Kind := EK_AX;
           EmitInstrA('JMP', LblEnd);
         End
         Else
