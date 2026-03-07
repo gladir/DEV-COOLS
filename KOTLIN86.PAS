@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.kt [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -507,7 +507,1436 @@
 
   ============================================================ *)
 
+{ ============================================================
+  KOTLIN86 - Compilateur Kotlin -> assembleur 8086
+  Version : 1.0  Date : 2026-03-07
+  Compilation : ppc386 -O2 -Mtp KOTLIN86.PAS
+  ============================================================ }
+
 Program KOTLIN86;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  KT86_VERSION = '1.0';
+  KT86_DATE    = '2026-03-07';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
+  STACK_SIZE    = 1024;
+
+  { Prefixes de nommage ASM }
+  KT_VAR_PFX  = '_KTV_';    { variable val/var                    }
+  KT_FN_PFX   = '_KTF_';    { fonction / methode                  }
+  KT_STR_PFX  = '_KTK_';    { constante chaine litterale          }
+  KT_RT_PFX   = '_KTRT_';   { routine runtime                     }
+  KT_LBL_PFX  = '_KTL_';    { label de saut interne               }
+  KT_CLS_PFX  = '_KTC_';    { classe / vtable                     }
+  KT_ENM_PFX  = '_KTE_';    { enum class                          }
+  KT_ITF_PFX  = '_KTI_';    { interface                           }
+  KT_OBJ_PFX  = '_KTO_';    { object singleton                    }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs Kotlin }
+  TY_IDX_INT      = 0;   { entier 16 bits signe         }
+  TY_IDX_SHORT    = 1;   { 16 bits signe (= Int)        }
+  TY_IDX_LONG     = 2;   { stub 16 bits                 }
+  TY_IDX_BYTE     = 3;   { 8 bits signe                 }
+  TY_IDX_BOOLEAN  = 4;   { 0 ou 1 dans AX              }
+  TY_IDX_CHAR     = 5;   { 8 bits (stocke comme octet) }
+  TY_IDX_FLOAT    = 6;   { stub entier tronque          }
+  TY_IDX_DOUBLE   = 7;   { stub entier tronque          }
+  TY_IDX_STRING   = 8;   { pointeur chaine DATA         }
+  TY_IDX_ARRAY    = 9;   { pointeur bloc DATA           }
+  TY_IDX_INTARRAY = 10;  { pointeur IntArray            }
+  TY_IDX_UNIT     = 11;  { void (pas de valeur)         }
+  TY_IDX_NOTHING  = 12;  { type bottom                  }
+  TY_IDX_ANY      = 13;  { type racine                  }
+  TY_IDX_LAMBDA   = 14;  { pointeur de code             }
+  TY_PRIM_COUNT   = 15;
+  TY_UNKNOWN      = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.kt)                 }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+  { ---- Tokens Kotlin (TODO 02) ---------------------------- }
+  TTokenKind = (
+    TK_EOF,       { fin de fichier                         }
+    TK_INTEGER,   { literal entier 42 0xFF 0b101           }
+    TK_LONG,      { literal long 42L (traite comme entier) }
+    TK_FLOAT,     { literal flottant 3.14 1.5e3            }
+    TK_STRING,    { literal chaine "abc"                   }
+    TK_CHAR,      { literal caractere 'A'                  }
+    TK_IDENT,     { identificateur (non-mot-cle)           }
+    TK_KEYWORD,   { mot-cle Kotlin reconnu                 }
+    TK_OP,        { operateur + - * / === ?.  etc.         }
+    TK_PUNCT      { ponctuation ; , ( ) [ ]                }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute          }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)     }
+    FloatVal : Real;        { valeur flottante (TK_FLOAT)     }
+    Line     : Integer;     { ligne source (1-base)           }
+    Col      : Integer;     { colonne source (1-base)         }
+  End;
+
+  { ---- Categories de symboles (TODO 05) ------------------- }
+  TSymKind = (
+    SK_VAL,        { val (immutable)                  }
+    SK_VAR,        { var (mutable)                    }
+    SK_PARAM,      { parametre formel de fonction     }
+    SK_FUN,        { declaration fun                  }
+    SK_CLASS,      { declaration class                }
+    SK_OBJECT,     { declaration object (singleton)   }
+    SK_ENUM,       { declaration enum class           }
+    SK_INTERFACE,  { declaration interface            }
+    SK_COMPANION,  { companion object                 }
+    SK_PROP        { propriete de classe              }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { identifiant Kotlin              }
+    MangledName : TString;   { _KTV_nom / _KTF_nom             }
+    Kind        : TSymKind;
+    TypeIdx     : Integer;   { indice dans TypeTab             }
+    ScopeLevel  : Integer;
+    Offset      : Integer;   { [BP-n] pour locaux              }
+    IsConst     : Boolean;   { const val : erreur si reassigne }
+    IsNullable  : Boolean;   { type nullable T?                }
+    IsLateinit  : Boolean;   { lateinit var                    }
+    Visibility  : Byte;      { 0=public 1=private 2=protected 3=internal }
+    DeclLine    : Integer;
+  End;
+
+  { ---- Types internes (TODO 06) --------------------------- }
+  TTypeKind = (
+    TYK_INT,
+    TYK_SHORT,
+    TYK_LONG,
+    TYK_BYTE,
+    TYK_BOOLEAN,
+    TYK_CHAR,
+    TYK_FLOAT,
+    TYK_DOUBLE,
+    TYK_STRING,
+    TYK_ARRAY,
+    TYK_INTARRAY,
+    TYK_CLASS,
+    TYK_INTERFACE,
+    TYK_ENUM,
+    TYK_UNIT,
+    TYK_NOTHING,
+    TYK_NULLABLE,
+    TYK_ANY,
+    TYK_LAMBDA
+  );
+
+  TTypeRec = Record
+    Name    : TString;
+    Kind    : TTypeKind;
+    Size    : Integer;   { octets : Int=2, Byte=1, ptr=2 }
+  End;
+
+  { ---- Valeurs d expression (TODO 11) --------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur            }
+    EK_IMM,    { immediate dans ImmVal           }
+    EK_AX,     { valeur dans AX                  }
+    EK_MEM     { adresse [BP+Offset] ou [_KTV_x] }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   { indice dans SymTab (-1 = pas de lvalue) }
+  End;
+
+  { ---- Segment de donnees (TODO 08) ----------------------- }
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_OBJ_BLK);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Valeur fictive pour ignorer un retour TExprVal }
+  GExprDummy : TExprVal;
+
+  { Lexeur (TODO 02) }
+  LexSrcF     : Text;
+  LexLine     : String;
+  LexLineNo   : Integer;
+  LexColNo    : Integer;
+  LexEOF      : Boolean;
+  LexOpened   : Boolean;
+  CurToken    : TToken;
+
+  { Table des symboles (TODO 05) }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  { Table des types (TODO 06) }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Emetteur ASM (TODO 07) }
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;    { taille cadre local courant (words)   }
+  CurFnDepth   : Integer;    { 0 = global, >0 = dans une function  }
+  CurFnRetLbl  : TString;    { label epilogue de la function        }
+  CurFnName    : TString;    { nom de la function courante          }
+  CurClassName : TString;    { nom de la classe courante            }
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LabelGenSeq  : Integer;    { compteur unique pour LabelGen        }
+
+  { Segment de donnees (TODO 08) }
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  { Etat general }
+  RuntimeEmitted : Boolean;
+  GCallArgCount  : Integer;  { nb args du dernier ParseCallArgs     }
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+{ TODO 02 - Lexeur }
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Function  IsKeyword(Const S : TString) : Boolean; Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure LexNextLine;         Forward;
+Procedure LexSkipBlockComment; Forward;
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsHexDigit(Ch : Char) : Boolean; Forward;
+Function  HexVal(Ch : Char) : Integer; Forward;
+Procedure LexScanIdent;        Forward;
+Procedure LexScanNumber;       Forward;
+Function  LexScanEscChar : Char; Forward;
+Procedure LexScanString;       Forward;
+Procedure LexScanChar;         Forward;
+Procedure LexNextToken;        Forward;
+{ TODO 03 - Litteraux }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+{ TODO 04 - Operateurs }
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Function  IsAssignOp(Const Op : TString) : Boolean; Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ TODO 05 - Symboles }
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 TypeIdx, Offset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Function  SymNextOffset : Integer; Forward;
+{ TODO 07 - Emetteur }
+Function  LabelGen : TString; Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
+{ TODO 06 - Types }
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Procedure EmitOpen;      Forward;
+Procedure EmitClose;     Forward;
+Procedure EmitDataSeg;   Forward;
+{ TODO 08 - Donnees }
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure EmitRuntime;   Forward;
+Procedure EmitHeader;    Forward;
+{ TODO 09 - Variables }
+Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Procedure ExprStore(SIdx : Integer); Forward;
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Procedure ParseDeclStmt(Const Kw : TString); Forward;
+{ General }
+Procedure ParserAdvance; Forward;
+Procedure ParseStmt;     Forward;
+Procedure TypeInit;      Forward;
+Procedure SymInit;       Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
 Begin
-End.
+  WriteLn('KOTLIN86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('KOTLIN86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('KOTLIN86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('KOTLIN86 v', KT86_VERSION, ' (', KT86_DATE, ')');
+  WriteLn('Compilateur Kotlin -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.kt  : fichier Kotlin source');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -h         : afficher cette aide');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  WriteLn('KOTLIN86 v', KT86_VERSION, ' - Compilateur Kotlin -> assembleur 8086');
+  WriteLn;
+  WriteLn('Usage: KOTLIN86 <source.kt> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.kt  : fichier Kotlin source (.kt)');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  -v   mode verbeux (banniere + statistiques en fin de compilation)');
+  WriteLn('  -d   debug tokens (affiche chaque token lu par le lexeur)');
+  WriteLn('  -w   activer les avertissements');
+  WriteLn('  -h   afficher cette aide');
+  WriteLn;
+  WriteLn('Sous-ensemble Kotlin supporte:');
+  WriteLn('  val/var, fun, if/else/when, while/do-while/for, class/data class,');
+  WriteLn('  object, interface, enum class, lambdas, null safety (?. ?: !!),');
+  WriteLn('  println/print/readLine, String templates, ranges (..)');
+  WriteLn;
+  WriteLn('Sortie: code assembleur MASM 8086 .MODEL SMALL (DOS 16 bits)');
+  Halt(EXIT_OK);
+End;
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('KOTLIN86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('KOTLIN86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('KOTLIN86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier l extension .kt }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.kt' Then
+    WriteLn('KOTLIN86: avertissement: extension attendue .kt (recu: ', Ext, ')');
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  CurClassName   := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  GCallArgCount  := 0;
+  CurFrameSize   := 0;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  STUBS TODO 02-25
+  (chaque stub sera remplace au fur et a mesure)
+  ============================================================ }
+
+{ --- TODO 02 : Lexeur --------------------------------------- }
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  LexEOF     := False;
+  LexNextLine;
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Function IsKeyword(Const S : TString) : Boolean;
+Begin
+  IsKeyword :=
+    (S = 'abstract')   Or (S = 'annotation') Or (S = 'as')         Or
+    (S = 'break')      Or (S = 'by')         Or (S = 'catch')      Or
+    (S = 'class')      Or (S = 'companion')  Or (S = 'const')      Or
+    (S = 'constructor') Or (S = 'continue')  Or (S = 'crossinline') Or
+    (S = 'data')       Or (S = 'do')         Or (S = 'downTo')     Or
+    (S = 'else')       Or (S = 'enum')       Or (S = 'external')   Or
+    (S = 'false')      Or (S = 'final')      Or (S = 'finally')    Or
+    (S = 'for')        Or (S = 'fun')        Or (S = 'if')         Or
+    (S = 'import')     Or (S = 'in')         Or (S = 'infix')      Or
+    (S = 'init')       Or (S = 'inline')     Or (S = 'inner')      Or
+    (S = 'interface')  Or (S = 'internal')   Or (S = 'is')         Or
+    (S = 'it')         Or (S = 'lateinit')   Or (S = 'noinline')   Or
+    (S = 'null')       Or (S = 'object')     Or (S = 'open')       Or
+    (S = 'operator')   Or (S = 'out')        Or (S = 'override')   Or
+    (S = 'package')    Or (S = 'private')    Or (S = 'protected')  Or
+    (S = 'public')     Or (S = 'reified')    Or (S = 'return')     Or
+    (S = 'sealed')     Or (S = 'step')       Or (S = 'super')      Or
+    (S = 'this')       Or (S = 'throw')      Or (S = 'to')         Or
+    (S = 'true')       Or (S = 'try')        Or (S = 'typealias')  Or
+    (S = 'until')      Or (S = 'val')        Or (S = 'var')        Or
+    (S = 'vararg')     Or (S = 'when')       Or (S = 'where')      Or
+    (S = 'while');
+End;
+
+Procedure PrintToken(Const T : TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF     : Write('EOF');
+    TK_INTEGER : Write('INT(', T.IntVal, ')');
+    TK_LONG    : Write('LONG(', T.IntVal, ')');
+    TK_FLOAT   : Write('FLOAT(', T.Val, ')');
+    TK_STRING  : Write('STR(', T.Val, ')');
+    TK_CHAR    : Write('CHAR(', T.Val, ')');
+    TK_IDENT   : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD : Write('KW(', T.Val, ')');
+    TK_OP      : Write('OP(', T.Val, ')');
+    TK_PUNCT   : Write('PUNCT(', T.Val, ')');
+  End;
+  WriteLn;
+End;
+
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+Procedure LexSkipBlockComment;
+Var
+  Depth : Integer;
+Begin
+  Inc(LexColNo, 2); { sauter '/' et '*' }
+  Depth := 1;
+  While (Not LexEOF) And (Depth > 0) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    If (LexColNo < Length(LexLine)) And
+       (LexLine[LexColNo] = '/') And (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      Inc(Depth);
+      Inc(LexColNo, 2);
+    End
+    Else If (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo] = '*') And (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      Dec(Depth);
+      Inc(LexColNo, 2);
+    End
+    Else
+      Inc(LexColNo);
+  End;
+End;
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or ((Ch >= '0') And (Ch <= '9'));
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := 10 + Ord(Ch) - Ord('A')
+  Else If (Ch >= 'a') And (Ch <= 'f') Then HexVal := 10 + Ord(Ch) - Ord('a')
+  Else HexVal := 0;
+End;
+
+Procedure LexScanIdent;
+Var
+  Start : Integer;
+Begin
+  Start := LexColNo;
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+    Inc(LexColNo);
+  CurToken.Val := Copy(LexLine, Start, LexColNo - Start);
+  If IsKeyword(CurToken.Val) Then
+    CurToken.Kind := TK_KEYWORD
+  Else
+    CurToken.Kind := TK_IDENT;
+End;
+
+Procedure LexScanNumber;
+Begin
+  { stub - TODO 02 }
+  CurToken.Kind   := TK_INTEGER;
+  CurToken.Val    := '';
+  CurToken.IntVal := 0;
+  While (LexColNo <= Length(LexLine)) And
+        ((LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9')) Do
+  Begin
+    CurToken.Val := CurToken.Val + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  Val(CurToken.Val, CurToken.IntVal, ErrorCount);
+  ErrorCount := 0;
+End;
+
+Function LexScanEscChar : Char;
+Begin
+  { stub - TODO 02 }
+  LexScanEscChar := '?';
+  Inc(LexColNo);
+End;
+
+Procedure LexScanString;
+Begin
+  { stub - TODO 02 }
+  CurToken.Kind := TK_STRING;
+  CurToken.Val  := '';
+  Inc(LexColNo); { sauter le guillemet ouvrant }
+  While (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] <> '"') Do
+  Begin
+    CurToken.Val := CurToken.Val + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  If LexColNo <= Length(LexLine) Then
+    Inc(LexColNo); { sauter le guillemet fermant }
+End;
+
+Procedure LexScanChar;
+Begin
+  { stub - TODO 02 }
+  CurToken.Kind := TK_CHAR;
+  CurToken.Val  := '';
+  Inc(LexColNo); { sauter l apostrophe ouvrante }
+  If LexColNo <= Length(LexLine) Then
+  Begin
+    CurToken.Val := LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+    Inc(LexColNo); { sauter l apostrophe fermante }
+End;
+
+Procedure LexNextToken;
+Var
+  Ch : Char;
+Begin
+  { Sauter espaces et commentaires }
+  While Not LexEOF Do
+  Begin
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] <= ' ') Do
+      Inc(LexColNo);
+    If LexColNo > Length(LexLine) Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    { Commentaire // }
+    If (LexColNo < Length(LexLine)) And
+       (LexLine[LexColNo] = '/') And (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      LexNextLine;
+      Continue;
+    End;
+    { Commentaire imbrique }
+    If (LexColNo < Length(LexLine)) And
+       (LexLine[LexColNo] = '/') And (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      LexSkipBlockComment;
+      Continue;
+    End;
+    Break;
+  End;
+
+  If LexEOF Then
+  Begin
+    CurToken.Kind := TK_EOF;
+    CurToken.Val  := '';
+    Exit;
+  End;
+
+  CurToken.Line := LexLineNo;
+  CurToken.Col  := LexColNo;
+  Ch := LexLine[LexColNo];
+
+  { Identificateurs et mots-cles }
+  If IsIdentStart(Ch) Then
+  Begin
+    LexScanIdent;
+    PrintToken(CurToken);
+    Exit;
+  End;
+
+  { Nombres }
+  If (Ch >= '0') And (Ch <= '9') Then
+  Begin
+    LexScanNumber;
+    PrintToken(CurToken);
+    Exit;
+  End;
+
+  { Chaines }
+  If Ch = '"' Then
+  Begin
+    LexScanString;
+    PrintToken(CurToken);
+    Exit;
+  End;
+
+  { Caracteres }
+  If Ch = '''' Then
+  Begin
+    LexScanChar;
+    PrintToken(CurToken);
+    Exit;
+  End;
+
+  { Ponctuation et operateurs (stub minimal) }
+  CurToken.Val := Ch;
+  Inc(LexColNo);
+  If Ch In ['(', ')', '[', ']', ',', ';', '@'] Then
+    CurToken.Kind := TK_PUNCT
+  Else
+    CurToken.Kind := TK_OP;
+
+  PrintToken(CurToken);
+End;
+
+{ --- TODO 03 : Litteraux ----------------------------------- }
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_UNIT;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  ExprMakeImm(AVal, TY_IDX_BOOLEAN, Res);
+End;
+
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  { stub - TODO 03 }
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+{ --- TODO 04 : Operateurs ---------------------------------- }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  { stub - TODO 04 }
+  BinOpPrec := 0;
+End;
+
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  { stub - TODO 04 }
+  BinOpIsRight := False;
+End;
+
+Function IsAssignOp(Const Op : TString) : Boolean;
+Begin
+  { stub - TODO 04 }
+  IsAssignOp := (Op = '=') Or (Op = '+=') Or (Op = '-=') Or
+                (Op = '*=') Or (Op = '/=') Or (Op = '%=');
+End;
+
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  { stub - TODO 10 }
+  ExprMakeNone(Res);
+End;
+
+Procedure ParseUnary(Var Res : TExprVal);
+Begin
+  { stub - TODO 10 }
+  ParsePrimary(Res);
+End;
+
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Begin
+  { stub - TODO 11 }
+  ParseUnary(Res);
+End;
+
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  { stub - TODO 11 }
+  ParseExprPrec(0, Res);
+End;
+
+{ --- TODO 05 : Symboles ------------------------------------ }
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Begin
+  Case Kind Of
+    SK_FUN      : SymMangle := KT_FN_PFX + Name;
+    SK_CLASS    : SymMangle := KT_CLS_PFX + Name;
+    SK_OBJECT   : SymMangle := KT_OBJ_PFX + Name;
+    SK_ENUM     : SymMangle := KT_ENM_PFX + Name;
+    SK_INTERFACE: SymMangle := KT_ITF_PFX + Name;
+  Else
+    SymMangle := KT_VAR_PFX + Name;
+  End;
+End;
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    FatalError('table des symboles pleine');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].IsConst     := False;
+  SymTab[SymCount].IsNullable  := False;
+  SymTab[SymCount].IsLateinit  := False;
+  SymTab[SymCount].Visibility  := 0;
+  SymTab[SymCount].DeclLine    := CurToken.Line;
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+    FatalError('profondeur de portee max atteinte')
+  Else
+  Begin
+    ScopeStack[ScopeTop] := SymCount;
+    Inc(ScopeTop);
+    Inc(CurScope);
+  End;
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop > 0 Then
+  Begin
+    Dec(ScopeTop);
+    SymCount := ScopeStack[ScopeTop];
+    Dec(CurScope);
+  End;
+End;
+
+Function SymNextOffset : Integer;
+Begin
+  Inc(CurFrameSize);
+  SymNextOffset := CurFrameSize * 2;
+End;
+
+{ --- TODO 07 : Emetteur ASM -------------------------------- }
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := KT_LBL_PFX + S;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+End;
+
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem);
+End;
+
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem, ' ', A1);
+End;
+
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '        ', Mnem, ' ', A1, ', ', A2);
+End;
+
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+End;
+
+Procedure EmitEpilog;
+Begin
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP BP');
+  EmitInstr('RET');
+End;
+
+{ --- TODO 06 : Types --------------------------------------- }
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;
+End;
+
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_INT;
+End;
+
+Procedure TypeInit;
+  Procedure AddType(Const N : TString; K : TTypeKind; Sz : Integer);
+  Begin
+    If TypeCount >= MAX_TYPE Then Exit;
+    TypeTab[TypeCount].Name := N;
+    TypeTab[TypeCount].Kind := K;
+    TypeTab[TypeCount].Size := Sz;
+    Inc(TypeCount);
+  End;
+Begin
+  TypeCount := 0;
+  AddType('Int',      TYK_INT,      2);  { TY_IDX_INT      = 0  }
+  AddType('Short',    TYK_SHORT,    2);  { TY_IDX_SHORT    = 1  }
+  AddType('Long',     TYK_LONG,     2);  { TY_IDX_LONG     = 2  }
+  AddType('Byte',     TYK_BYTE,     1);  { TY_IDX_BYTE     = 3  }
+  AddType('Boolean',  TYK_BOOLEAN,  1);  { TY_IDX_BOOLEAN  = 4  }
+  AddType('Char',     TYK_CHAR,     1);  { TY_IDX_CHAR     = 5  }
+  AddType('Float',    TYK_FLOAT,    2);  { TY_IDX_FLOAT    = 6  }
+  AddType('Double',   TYK_DOUBLE,   2);  { TY_IDX_DOUBLE   = 7  }
+  AddType('String',   TYK_STRING,   2);  { TY_IDX_STRING   = 8  }
+  AddType('Array',    TYK_ARRAY,    2);  { TY_IDX_ARRAY    = 9  }
+  AddType('IntArray', TYK_INTARRAY, 2);  { TY_IDX_INTARRAY = 10 }
+  AddType('Unit',     TYK_UNIT,     0);  { TY_IDX_UNIT     = 11 }
+  AddType('Nothing',  TYK_NOTHING,  0);  { TY_IDX_NOTHING  = 12 }
+  AddType('Any',      TYK_ANY,      2);  { TY_IDX_ANY      = 13 }
+  AddType('Lambda',   TYK_LAMBDA,   2);  { TY_IDX_LAMBDA   = 14 }
+End;
+
+Procedure SymInit;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('=========================================================');
+  EmitComment('Genere par KOTLIN86 v' + KT86_VERSION + ' (' + KT86_DATE + ')');
+  EmitComment('Source  : ' + Opts.SrcFile);
+  EmitComment('Cible   : MASM 8086, modele SMALL');
+  EmitComment('=========================================================');
+  EmitBlankLine;
+  EmitRaw('        .8086');
+  EmitRaw('        DOSSEG');
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitBlankLine;
+  EmitComment('-- Point d''entree : fun main() --');
+  EmitLabel(KT_FN_PFX + 'main');
+  EmitProlog;
+  EmitBlankLine;
+End;
+
+Procedure EmitDataSeg;
+Var
+  I : Integer;
+Begin
+  EmitBlankLine;
+  EmitRaw('_DATA   SEGMENT PUBLIC ''DATA''');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW ' + IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB ' + IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        EmitRaw(DataTab[I].LblName + '  DB ''' + DataTab[I].StrVal + ''',0');
+    Else
+      EmitRaw(DataTab[I].LblName + '  DW 0');
+    End;
+  End;
+  EmitRaw('_DATA   ENDS');
+End;
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Fin de programme --');
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+  EmitEpilog;
+  EmitRaw(KT_FN_PFX + 'main ENDP');
+  EmitBlankLine;
+  If RuntimeEmitted Then
+    { runtime deja emis }
+  Else
+    EmitRuntime;
+  EmitRaw('_TEXT   ENDS');
+  EmitDataSeg;
+  EmitRaw('        END ' + KT_FN_PFX + 'main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ --- TODO 08 : Donnees ------------------------------------- }
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    FatalError('table de donnees pleine');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+  I   : Integer;
+Begin
+  { Dedup : chercher chaine existante }
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := DataTab[I].LblName;
+      Exit;
+    End;
+  Lbl := KT_STR_PFX + IntToStr(DataCount);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('RUNTIME MINIMAL KOTLIN86');
+  EmitComment('=========================================================');
+  { stub - les routines runtime seront ajoutees dans TODO 24 }
+End;
+
+{ --- TODO 09 : Variables ----------------------------------- }
+Procedure ExprFlushToAX(Const E : TExprVal);
+Begin
+  { stub - TODO 09 }
+End;
+
+Procedure ExprStore(SIdx : Integer);
+Begin
+  { stub - TODO 09 }
+End;
+
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Begin
+  { stub - TODO 09 }
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.Offset  := 0;
+  Res.SymIdx  := SIdx;
+End;
+
+Procedure ParseDeclStmt(Const Kw : TString);
+Begin
+  { stub - TODO 09 }
+End;
+
+{ --- Stubs generaux ---------------------------------------- }
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+Procedure ParseStmt;
+Begin
+  { stub - sera implemente dans les TODOs suivants }
+  If CurToken.Kind <> TK_EOF Then
+    ParserAdvance;
+End;
+
+{ ---- Pipeline de compilation -------------------------------- }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  EmitHeader;
+  LexInit;
+
+  { Lire le premier token }
+  ParserAdvance;
+
+  { Boucle principale de compilation }
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  LexClose;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+BEGIN
+  If (ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+     (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+     (ParamStr(1) = '/H') Then
+  Begin
+    ShowHelp;
+    Halt(0);
+  End;
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  ParseArgs;
+  Run;
+END.
