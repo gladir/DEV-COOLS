@@ -159,7 +159,7 @@
             ExprAddrOf, ExprStore, ExprLoad, ExprFlushToEAX
             DeclAllocGlobal / DeclAllocLocal
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, literal char,
               TRUE, FALSE, NIL, identificateur, appel de fonction,
               expression parenthesee (expr)
@@ -942,7 +942,9 @@ Function  DeclAllocLocal(Const Name : TString;
                 TIdx : Integer) : Integer; Forward;
 Procedure ParseVarDecl; Forward;
 Procedure ParseAssignment(Const VarName : TString); Forward;
-{ Write/WriteLn et emission HTML - TODO 12 / 19 }
+{ Impression selon type - TODO 10 }
+Procedure EmitPrintEAX(TypeIdx : Integer); Forward;
+{ Write/WriteLn et emission HTML - TODO 10 / 12 / 19 }
 Procedure ParseWriteStmt(IsWriteLn : Boolean); Forward;
 Procedure EmitHtmlFragment(Const Html : TString); Forward;
 Procedure EmitExprInline; Forward;
@@ -5697,10 +5699,105 @@ Begin
     TplNextToken;
 End;
 
-{ --- Stubs Write/HTML (TODO 12 / 19) --- }
+{ ============================================================
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  ============================================================ }
+{ La majorite des fonctions de ce TODO est implementee dans les
+  sections TODO 04 (ParsePrimary, ParseCallArgs, ParseUnary,
+  ExprMakeImm, ExprFlushToEAX avec litteraux, identificateurs,
+  fonctions predefinies, acces tableaux, acces champs record,
+  appels de fonctions, expressions parenthesees) et
+  TODO 09 (ExprAddrOf, ExprStore, ExprLoad pour l acces aux
+  variables locales, globales et parametres var).
+  Ci-dessous : EmitPrintEAX, EmitHtmlFragment, EmitExprInline
+  pour l emission PSP (fragments HTML et expressions en ligne). }
+
+{ ---- EmitPrintEAX : emettre le code pour afficher EAX ------- }
+{ Selon le type, emet le code pour convertir et afficher la      }
+{ valeur dans EAX via les routines runtime Win32.                }
+{   string  -> MOV ESI, EAX ; CALL _PSPRT_PRINTSTR              }
+{   char    -> stocker dans CHRBUF ; CALL _PSPRT_PRINTSTR        }
+{   boolean -> CMP + JE vers FALSE_S / TRUE_S ; PRINTSTR         }
+{   integer -> CALL _PSPRT_NUMTOSTR ; PRINTSTR depuis NUMBUF    }
+Procedure EmitPrintEAX(TypeIdx : Integer);
+Var
+  LblFalse, LblDone : TString;
+Begin
+  If TypeIdx = TY_IDX_STRING Then
+  Begin
+    { EAX = pointeur ASCIIZ -> imprimer directement }
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    EmitCall(PSP_RT_PFX + 'PRINTSTR');
+  End
+  Else If TypeIdx = TY_IDX_CHAR Then
+  Begin
+    { Stocker le caractere dans CHRBUF et imprimer }
+    EmitInstrAB('MOV',
+      'BYTE PTR [' + PSP_RT_PFX + 'CHRBUF]', 'AL');
+    EmitInstrAB('MOV', 'ESI',
+      'OFFSET ' + PSP_RT_PFX + 'CHRBUF');
+    EmitCall(PSP_RT_PFX + 'PRINTSTR');
+  End
+  Else If TypeIdx = TY_IDX_BOOLEAN Then
+  Begin
+    { EAX = 0 -> FALSE, sinon -> TRUE }
+    LblFalse := LabelGen;
+    LblDone  := LabelGen;
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JE', LblFalse);
+    EmitInstrAB('MOV', 'ESI',
+      'OFFSET ' + PSP_RT_PFX + 'TRUE_S');
+    EmitInstrA('JMP', LblDone);
+    EmitLabel(LblFalse);
+    EmitInstrAB('MOV', 'ESI',
+      'OFFSET ' + PSP_RT_PFX + 'FALSE_S');
+    EmitLabel(LblDone);
+    EmitCall(PSP_RT_PFX + 'PRINTSTR');
+  End
+  Else
+  Begin
+    { Integer/Word/Byte/Real -> convertir en chaine + afficher }
+    EmitCall(PSP_RT_PFX + 'NUMTOSTR');
+    EmitInstrAB('MOV', 'ESI',
+      'OFFSET ' + PSP_RT_PFX + 'NUMBUF');
+    EmitCall(PSP_RT_PFX + 'PRINTSTR');
+  End;
+End;
+
+{ ---- EmitHtmlFragment : emettre un fragment HTML literal ------ }
+{ Stocke le texte en DATA sous _PSPK_HTML_N via DataAddHtml et    }
+{ emet le code pour l afficher via _PSPRT_PRINTSTR.               }
+Procedure EmitHtmlFragment(Const Html : TString);
+Var
+  Lbl : TString;
+Begin
+  If Length(Html) = 0 Then Exit;
+  Lbl := DataAddHtml(Html);
+  If Length(Lbl) = 0 Then Exit;
+  EmitComment('html fragment');
+  EmitInstrAB('MOV', 'ESI', 'OFFSET ' + Lbl);
+  EmitCall(PSP_RT_PFX + 'PRINTSTR');
+End;
+
+{ ---- EmitExprInline : emettre une expression <%= expr %> ----- }
+{ Evalue l expression, materialise dans EAX, imprime selon type.  }
+{ CurToken doit etre sur le premier token de l expression.       }
+{ Consomme jusqu au PSP_CLOSE (%>).                              }
+Procedure EmitExprInline;
+Var
+  Ev : TExprVal;
+Begin
+  EmitComment('expr inline');
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+  EmitPrintEAX(Ev.TypeIdx);
+  { Consommer le %> (PSP_CLOSE) s il est present }
+  If CurToken.Kind = TK_PSP_CLOSE Then
+    TplNextToken;
+End;
+
+{ --- Stubs Write (TODO 12) --- }
 Procedure ParseWriteStmt(IsWriteLn : Boolean); Begin End;
-Procedure EmitHtmlFragment(Const Html : TString); Begin End;
-Procedure EmitExprInline; Begin End;
 
 { --- Stubs If/Case/Blocs (TODO 13) --- }
 Procedure ParseStatement; Begin End;
