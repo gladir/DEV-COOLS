@@ -89,7 +89,7 @@
             Regle de retention : variables remises a manquant a chaque iteration
               sauf si RETAIN est specifie
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TYK_NUMERIC (8 octets en SAS, 2 octets ici -> entier 16 bits),
               TYK_CHARACTER (chaine a longueur fixe, max 200 octets),
               TYK_DATE (entier jours depuis 01JAN1960),
@@ -750,6 +750,17 @@ Function  SymAdd(Const AName : TString; ACat : TSymCat;
                 ATypeIdx : Integer; AOffset : Integer) : Integer; Forward;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
+(* TODO 06 - Forward declarations systeme de types *)
+Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
+Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
+Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
+Function  TypeIsNumeric(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeIsPtr(TypeIdx : Integer) : Boolean; Forward;
+Function  TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean; Forward;
+Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                           Const Op : TString) : Integer; Forward;
+Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
+Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2563,7 +2574,198 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 06..25 (a implementer)
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- TypeKindOf : retourner le TTypeKind d un indice de type -- *)
+Function TypeKindOf(TypeIdx : Integer) : TTypeKind;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeKindOf := TypeTab[TypeIdx].Kind
+  Else
+    TypeKindOf := TYK_UNKNOWN;
+End;
+
+(* ---- TypeSizeof : taille en octets d un type par son indice --- *)
+(* NUMERIC=2 (entier 16 bits), CHARACTER=longueur (defaut 8),     *)
+(* DATE/TIME/DATETIME=2 (entier 16 bits).                         *)
+Function TypeSizeof(TypeIdx : Integer) : Integer;
+Begin
+  If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TypeIdx].Size
+  Else
+    TypeSizeof := 2;  (* taille par defaut : word *)
+End;
+
+(* ---- TypeMangle : prefixe ASM selon le type pour les labels --- *)
+(* Utilise pour generer des labels distincts par type :            *)
+(*   _SASN_ = numerique, _SASC_ = caractere, _SASD_ = date,      *)
+(*   _SAST_ = time, _SASDT_ = datetime, _SASX_ = inconnu         *)
+Function TypeMangle(TypeIdx : Integer) : TString;
+Begin
+  Case TypeKindOf(TypeIdx) Of
+    TYK_NUMERIC   : TypeMangle := '_SASN_';
+    TYK_CHARACTER : TypeMangle := '_SASC_';
+    TYK_DATE      : TypeMangle := '_SASD_';
+    TYK_TIME      : TypeMangle := '_SAST_';
+    TYK_DATETIME  : TypeMangle := '_SASDT_';
+  Else
+    TypeMangle := '_SASX_';
+  End;
+End;
+
+(* ---- TypeIsNumeric : vrai si le type est un type numerique ---- *)
+(* En SAS : NUMERIC, DATE, TIME, DATETIME sont tous numeriques.   *)
+(* Les dates/times sont stockes comme des entiers.                 *)
+Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
+Var
+  K : TTypeKind;
+Begin
+  K := TypeKindOf(TypeIdx);
+  TypeIsNumeric :=
+    (K = TYK_NUMERIC) Or (K = TYK_DATE) Or
+    (K = TYK_TIME)    Or (K = TYK_DATETIME);
+End;
+
+(* ---- TypeIsPtr : vrai si le type est un pointeur -------------- *)
+(* En SAS, seul CHARACTER est un pointeur (adresse vers chaine).   *)
+Function TypeIsPtr(TypeIdx : Integer) : Boolean;
+Begin
+  TypeIsPtr := (TypeKindOf(TypeIdx) = TYK_CHARACTER);
+End;
+
+(* ---- TypeCanCoerce : la coercition src -> dst est-elle possible *)
+(* En SAS, la conversion implicite est tolerante :                 *)
+(*   num -> char via PUT() (runtime), char -> num via INPUT()      *)
+(*   Meme type -> toujours OK.                                     *)
+(*   Vers UNKNOWN -> toujours OK (perte d information de type).    *)
+(*   date/time/datetime <-> numeric -> OK (memes octets).          *)
+(*   numeric <-> character -> conversion implicite avec warning.   *)
+Function TypeCanCoerce(SrcIdx, DstIdx : Integer) : Boolean;
+Var
+  SK, DK : TTypeKind;
+Begin
+  (* Meme type : trivial *)
+  If SrcIdx = DstIdx Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Vers UNKNOWN : toujours OK *)
+  If DstIdx = TY_UNKNOWN Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  SK := TypeKindOf(SrcIdx);
+  DK := TypeKindOf(DstIdx);
+  (* Tous les numeriques (num/date/time/datetime) entre eux : OK *)
+  If TypeIsNumeric(SrcIdx) And TypeIsNumeric(DstIdx) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Numerique <-> Caractere : conversion implicite SAS (PUT/INPUT) *)
+  If (TypeIsNumeric(SrcIdx) And (DK = TYK_CHARACTER)) Or
+     ((SK = TYK_CHARACTER) And TypeIsNumeric(DstIdx)) Then
+  Begin
+    TypeCanCoerce := True;
+    Exit;
+  End;
+  (* Autres cas : pas de coercition *)
+  TypeCanCoerce := False;
+End;
+
+(* ---- TypeCoerceResult : type du resultat d une operation ------- *)
+(* Deduit le type du resultat en fonction de l operateur et des     *)
+(* types des operandes.                                             *)
+(*   Comparaison (= ^= < > etc.) -> NUMERIC (0 ou 1)               *)
+(*   AND, OR                     -> NUMERIC (booleen)               *)
+(*   Arithmetiques : + - * / puissance -> NUMERIC                   *)
+(*   Concatenation (|| !!)       -> CHARACTER                       *)
+(*   MIN/MAX (<> ><)             -> NUMERIC                         *)
+Function TypeCoerceResult(LeftIdx, RightIdx : Integer;
+                          Const Op : TString) : Integer;
+Var
+  LK, RK : TTypeKind;
+Begin
+  LK := TypeKindOf(LeftIdx);
+  RK := TypeKindOf(RightIdx);
+  (* Operateurs de comparaison -> NUMERIC (0 ou 1) *)
+  If (Op = '=') Or (Op = '^=') Or (Op = '~=') Or
+     (Op = '<') Or (Op = '<=') Or
+     (Op = '>') Or (Op = '>=') Or
+     (Op = 'EQ') Or (Op = 'NE') Or
+     (Op = 'LT') Or (Op = 'LE') Or
+     (Op = 'GT') Or (Op = 'GE') Or
+     (Op = 'IN') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Operateurs logiques -> NUMERIC (0 ou 1) *)
+  If (Op = 'AND') Or (Op = 'OR') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Concatenation -> CHARACTER *)
+  If (Op = '||') Or (Op = '!!') Then
+  Begin
+    TypeCoerceResult := TY_IDX_CHARACTER;
+    Exit;
+  End;
+  (* MIN/MAX -> NUMERIC *)
+  If (Op = '<>') Or (Op = '><') Then
+  Begin
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Operateurs arithmetiques -> NUMERIC *)
+  If (Op = '+') Or (Op = '-') Or (Op = '*') Or
+     (Op = '/') Or (Op = '**') Then
+  Begin
+    (* Si un cote est CHARACTER, SAS convertit implicitement en num *)
+    TypeCoerceResult := TY_IDX_NUMERIC;
+    Exit;
+  End;
+  (* Assignation : type du cote droit *)
+  TypeCoerceResult := RightIdx;
+End;
+
+(* ---- TypeInfer : deduire le type d une expression ------------- *)
+(* Si le TypeIdx de l expression est connu, le retourner.          *)
+(* Sinon, deviner : EK_IMM -> NUMERIC, EK_MEM -> selon contexte.  *)
+Function TypeInfer(Const E : TExprVal) : Integer;
+Begin
+  If E.TypeIdx <> TY_UNKNOWN Then
+    TypeInfer := E.TypeIdx
+  Else If E.Kind = EK_IMM Then
+    TypeInfer := TY_IDX_NUMERIC
+  Else
+    TypeInfer := TY_UNKNOWN;
+End;
+
+(* ---- TypeLookupName : chercher un type par nom ---------------- *)
+(* SAS est insensible a la casse : comparaison en majuscules.      *)
+(* Retourne l indice dans TypeTab ou TY_UNKNOWN si non trouve.     *)
+Function TypeLookupName(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = Up Then
+    Begin
+      TypeLookupName := I;
+      Exit;
+    End;
+  TypeLookupName := TY_UNKNOWN;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 08..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -2745,14 +2947,32 @@ Begin
 End;
 
 Procedure TypeInit;
+Var
+  I : Integer;
 Begin
   TypeCount := 0;
-  (* Types primitifs *)
-  TypeTab[0].Name := 'NUMERIC';   TypeTab[0].Kind := TYK_NUMERIC;   TypeTab[0].Size := 2;
-  TypeTab[1].Name := 'CHARACTER'; TypeTab[1].Kind := TYK_CHARACTER; TypeTab[1].Size := 8;
-  TypeTab[2].Name := 'DATE';      TypeTab[2].Kind := TYK_DATE;      TypeTab[2].Size := 2;
-  TypeTab[3].Name := 'TIME';      TypeTab[3].Kind := TYK_TIME;      TypeTab[3].Size := 2;
-  TypeTab[4].Name := 'DATETIME';  TypeTab[4].Kind := TYK_DATETIME;  TypeTab[4].Size := 2;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Name := '';
+    TypeTab[I].Kind := TYK_UNKNOWN;
+    TypeTab[I].Size := 0;
+  End;
+  (* Types primitifs SAS *)
+  TypeTab[TY_IDX_NUMERIC].Name   := 'NUMERIC';
+  TypeTab[TY_IDX_NUMERIC].Kind   := TYK_NUMERIC;
+  TypeTab[TY_IDX_NUMERIC].Size   := 2;
+  TypeTab[TY_IDX_CHARACTER].Name := 'CHARACTER';
+  TypeTab[TY_IDX_CHARACTER].Kind := TYK_CHARACTER;
+  TypeTab[TY_IDX_CHARACTER].Size := 8;  (* longueur par defaut en SAS *)
+  TypeTab[TY_IDX_DATE].Name      := 'DATE';
+  TypeTab[TY_IDX_DATE].Kind      := TYK_DATE;
+  TypeTab[TY_IDX_DATE].Size      := 2;
+  TypeTab[TY_IDX_TIME].Name      := 'TIME';
+  TypeTab[TY_IDX_TIME].Kind      := TYK_TIME;
+  TypeTab[TY_IDX_TIME].Size      := 2;
+  TypeTab[TY_IDX_DATETIME].Name  := 'DATETIME';
+  TypeTab[TY_IDX_DATETIME].Kind  := TYK_DATETIME;
+  TypeTab[TY_IDX_DATETIME].Size  := 2;
   TypeCount := TY_PRIM_COUNT;
 End;
 
