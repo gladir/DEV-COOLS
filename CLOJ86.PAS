@@ -3003,7 +3003,7 @@ Begin
   DataAdd('_CL_NL_S',    DK_BYTE, 0, '13,10,0');
   DataAdd('_CL_TMPBUF',  DK_BYTE, 0, '256 DUP(0)');
   DataAdd('_CL_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
-  DataAdd('_CL_INBUF',   DK_BYTE, 0, '130 DUP(0)');
+  DataAdd('_CL_INBUF',   DK_BYTE, 0, '130 DUP(0)');  (* 2 octets DOS + 128 donnees *)
   DataAdd('_CL_SPACE',   DK_STR, 0, ' ');
 End;
 
