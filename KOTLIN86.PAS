@@ -155,7 +155,7 @@
             Tables de methodes virtuelles : DW offset proc par methode
             Descripteurs d enum : DW ordinal + ptr nom pour chaque entree
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             val nom : Type = expr -> variable immuable (erreur si reassignation)
               Allocation locale : SUB SP,2 / MOV [BP-n], AX
               Allocation globale : entree _KTV_nom DW dans DATA
@@ -850,9 +850,11 @@ Procedure DataInit;      Forward;
 Procedure EmitRuntime;   Forward;
 Procedure EmitHeader;    Forward;
 { TODO 09 - Variables }
+Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
 Procedure ExprStore(SIdx : Integer); Forward;
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Function  DeclAllocSym(Const Name : TString; Kind : TSymKind) : Integer; Forward;
 Procedure ParseDeclStmt(Const Kw : TString); Forward;
 { General }
 Procedure ParserAdvance; Forward;
@@ -3525,30 +3527,220 @@ Begin
   DataTab[DataCount - 1].ElemCount := 256;
 End;
 
-{ --- TODO 09 : Variables ----------------------------------- }
+{ --- TODO 09 : Variables et Affectations [IMPLEMENTE] --------- }
+
+(* ---- ExprAddrOf : retourne l adresse MASM d un symbole ------ *)
+(* Locaux : [BP-n], parametres : [BP+n], globaux : [_KTV_nom]     *)
+Function ExprAddrOf(SIdx : Integer) : TString;
+Var
+  Ofs : Integer;
+Begin
+  Ofs := SymTab[SIdx].Offset;
+  If Ofs < 0 Then
+    ExprAddrOf := '[BP' + IntToStr(Ofs) + ']'
+  Else If Ofs > 0 Then
+    ExprAddrOf := '[BP+' + IntToStr(Ofs) + ']'
+  Else
+    ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']';
+End;
+
+(* ---- ExprFlushToAX : s assurer que la valeur est dans AX ---- *)
 Procedure ExprFlushToAX(Const E : TExprVal);
+Var
+  Addr : TString;
+  SVal : TString;
 Begin
-  { stub - TODO 09 }
+  Case E.Kind Of
+    EK_IMM :
+      Begin
+        SVal := IntToStr(E.ImmVal);
+        EmitInstrAB('MOV', 'AX', SVal);
+      End;
+    EK_MEM :
+      If E.SymIdx >= 0 Then
+      Begin
+        Addr := ExprAddrOf(E.SymIdx);
+        If TypeIsPtr(E.TypeIdx) Then
+          EmitInstrAB('LEA', 'AX', Addr)
+        Else
+          EmitInstrAB('MOV', 'AX', Addr);
+      End
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+    EK_AX   : ; { deja dans AX }
+    EK_NONE : EmitInstrAB('XOR', 'AX', 'AX');
+  End;
 End;
 
+(* ---- ExprStore : stocker AX dans le symbole SIdx ------------ *)
 Procedure ExprStore(SIdx : Integer);
+Var
+  Addr : TString;
 Begin
-  { stub - TODO 09 }
+  If SIdx < 0 Then Exit;
+  If SymTab[SIdx].IsConst Then
+  Begin
+    CompileError('val "' + SymTab[SIdx].Name + '" ne peut pas etre reassignee');
+    Exit;
+  End;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', Addr, 'AX');
 End;
 
+(* ---- ExprLoad : charger le symbole SIdx dans AX ------------- *)
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  Addr : TString;
 Begin
-  { stub - TODO 09 }
   Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
   Res.ImmVal  := 0;
-  Res.TypeIdx := TY_IDX_INT;
-  Res.Offset  := 0;
+  Res.Offset  := SymTab[SIdx].Offset;
   Res.SymIdx  := SIdx;
+  Addr := ExprAddrOf(SIdx);
+  If TypeIsPtr(Res.TypeIdx) Then
+    EmitInstrAB('LEA', 'AX', Addr)
+  Else
+    EmitInstrAB('MOV', 'AX', Addr);
 End;
 
-Procedure ParseDeclStmt(Const Kw : TString);
+(* ---- DeclAllocSym : creer un symbole pour val/var ----------- *)
+(* Global (CurFnDepth=0) : Offset=0 + entree DK_WORD dans DATA   *)
+(* Local  (CurFnDepth>0) : Offset=-SymNextOffset (pile)           *)
+Function DeclAllocSym(Const Name : TString; Kind : TSymKind) : Integer;
+Var
+  SIdx   : Integer;
+  Offset : Integer;
 Begin
-  { stub - TODO 09 }
+  { Verifier la redeclaration dans le meme scope }
+  SIdx := SymFindInScope(Name, CurScope);
+  If SIdx >= 0 Then
+  Begin
+    CompileError('redeclaration de "' + Name + '" dans la meme portee');
+    DeclAllocSym := SIdx;
+    Exit;
+  End;
+  { Calculer l offset selon le contexte }
+  If CurFnDepth = 0 Then
+    Offset := 0
+  Else
+    Offset := -SymNextOffset;
+  SIdx := SymAdd(Name, Kind, TY_UNKNOWN, Offset);
+  { Variable globale : entree dans le segment de donnees }
+  If CurFnDepth = 0 Then
+    DataAddWord(SymTab[SIdx].MangledName, 0);
+  DeclAllocSym := SIdx;
+End;
+
+(* ---- ParseTypeAnnotation : parser : Type optionnel ---------- *)
+(* Retourne l indice dans TypeTab ou TY_UNKNOWN si absent.        *)
+Function ParseTypeAnnotation : Integer;
+Var
+  TName : TString;
+  TIdx  : Integer;
+Begin
+  ParseTypeAnnotation := TY_UNKNOWN;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+  Begin
+    ParserAdvance; { consomme ':' }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      TName := CurToken.Val;
+      TIdx := TypeLookupName(TName);
+      If TIdx >= 0 Then
+        ParseTypeAnnotation := TIdx
+      Else
+        WarnMsg('type inconnu : ' + TName);
+      ParserAdvance;
+      { Nullable ? }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+        ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      TName := CurToken.Val;
+      TIdx := TypeLookupName(TName);
+      If TIdx >= 0 Then
+        ParseTypeAnnotation := TIdx;
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '?') Then
+        ParserAdvance;
+    End
+    Else
+      CompileError('nom de type attendu apres ":"');
+  End;
+End;
+
+(* ---- ParseDeclStmt : val/var nom [: Type] [= expr] ---------- *)
+(* Kw = 'val' ou 'var'. Gere const val et lateinit var.           *)
+Procedure ParseDeclStmt(Const Kw : TString);
+Var
+  Kind    : TSymKind;
+  IsConst : Boolean;
+  IsLateinit : Boolean;
+  Name    : TString;
+  SIdx    : Integer;
+  TyIdx   : Integer;
+  Res     : TExprVal;
+  Addr    : TString;
+Begin
+  IsConst    := False;
+  IsLateinit := False;
+  { Determiner le TSymKind }
+  If Kw = 'val' Then
+  Begin
+    Kind := SK_VAL;
+    IsConst := True;
+  End
+  Else
+    Kind := SK_VAR;
+
+  { Verifier modificateur 'lateinit' devant (deja consomme avant appel) }
+  { Note : en Kotlin, 'lateinit var x: Type' - le modificateur est      }
+  {   gere en amont dans ParseStmt si besoin                            }
+
+  { L identifiant }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identifiant attendu apres "' + Kw + '"');
+    Exit;
+  End;
+  Name := CurToken.Val;
+  ParserAdvance;
+
+  { Annotation de type optionnelle : : Type }
+  TyIdx := ParseTypeAnnotation;
+
+  { Allouer le symbole }
+  SIdx := DeclAllocSym(Name, Kind);
+  If TyIdx <> TY_UNKNOWN Then
+    SymTab[SIdx].TypeIdx := TyIdx;
+  SymTab[SIdx].IsConst    := IsConst;
+  SymTab[SIdx].IsLateinit := IsLateinit;
+
+  { Initialisation : = expr }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance; { consomme '=' }
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    Addr := ExprAddrOf(SIdx);
+    EmitInstrAB('MOV', Addr, 'AX');
+    { Inference de type si non annote }
+    If SymTab[SIdx].TypeIdx = TY_UNKNOWN Then
+      SymTab[SIdx].TypeIdx := Res.TypeIdx;
+  End
+  Else
+  Begin
+    { Pas d initialisation }
+    If IsConst Then
+      CompileError('val "' + Name + '" doit etre initialisee');
+    { Initialiser a 0 }
+    Addr := ExprAddrOf(SIdx);
+    EmitInstrAB('MOV', Addr, '0');
+    If SymTab[SIdx].TypeIdx = TY_UNKNOWN Then
+      SymTab[SIdx].TypeIdx := TY_IDX_INT;
+  End;
 End;
 
 { --- Stubs generaux ---------------------------------------- }
@@ -3558,8 +3750,21 @@ Begin
 End;
 
 Procedure ParseStmt;
+Var
+  Kw : TString;
 Begin
-  { stub - sera implemente dans les TODOs suivants }
+  { Declarations val / var }
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    Kw := CurToken.Val;
+    If (Kw = 'val') Or (Kw = 'var') Then
+    Begin
+      ParserAdvance; { consomme val/var }
+      ParseDeclStmt(Kw);
+      Exit;
+    End;
+  End;
+  { Autres statements : stub pour les TODOs suivants }
   If CurToken.Kind <> TK_EOF Then
     ParserAdvance;
 End;
