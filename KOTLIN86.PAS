@@ -130,7 +130,7 @@
             Smart cast : si (x is T) alors x est traite comme T dans le bloc
             Type inference : deduction du type via l expression d initialisation
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -2895,7 +2895,11 @@ Begin
   SymAdd('takeUnless',  SK_FUN, TY_IDX_ANY,     0);
 End;
 
-{ --- TODO 07 : Emetteur ASM -------------------------------- }
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- LabelGen : generer un label unique _KTL_NNNNN --------- *)
 Function LabelGen : TString;
 Var
   S : TString;
@@ -2905,59 +2909,221 @@ Begin
   LabelGen := KT_LBL_PFX + S;
 End;
 
+(* ---- EmitRaw : ecrire une ligne brute dans le fichier ------- *)
 Procedure EmitRaw(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, S);
 End;
 
+(* ---- EmitBlankLine : ecrire une ligne vide ------------------- *)
 Procedure EmitBlankLine;
 Begin
   If OutFOpen Then
     WriteLn(OutF);
 End;
 
+(* ---- EmitComment : ecrire un commentaire ASM ----------------- *)
 Procedure EmitComment(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, '; ', S);
 End;
 
+(* ---- EmitLabel : ecrire un label suivi de ':' --------------- *)
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, Lbl, ':');
 End;
 
+(* ---- EmitInstr : instruction sans operande (8 espaces) ------ *)
 Procedure EmitInstr(Const Mnem : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', Mnem);
 End;
 
+(* ---- EmitInstrA : instruction + un operande ----------------- *)
 Procedure EmitInstrA(Const Mnem, A1 : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', Mnem, ' ', A1);
 End;
 
+(* ---- EmitInstrAB : instruction + deux operandes ------------- *)
 Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, '        ', Mnem, ' ', A1, ', ', A2);
 End;
 
+(* ---- EmitProlog : preambule de fonction (cadre BP) ---------- *)
 Procedure EmitProlog;
 Begin
   EmitInstr('PUSH BP');
   EmitInstrAB('MOV', 'BP', 'SP');
 End;
 
+(* ---- EmitEpilog : epilogue de fonction ---------------------- *)
 Procedure EmitEpilog;
 Begin
   EmitInstrAB('MOV', 'SP', 'BP');
   EmitInstr('POP BP');
   EmitInstr('RET');
+End;
+
+(* ---- EmitOpen : ouvrir le fichier de sortie ASM ------------- *)
+Procedure EmitOpen;
+Begin
+  {$I-}
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+(* ---- EmitHeader : en-tete ASM (.MODEL SMALL, _TEXT) --------- *)
+Procedure EmitHeader;
+Begin
+  EmitComment('=========================================================');
+  EmitComment('Genere par KOTLIN86 v' + KT86_VERSION + ' (' + KT86_DATE + ')');
+  EmitComment('Source  : ' + Opts.SrcFile);
+  EmitComment('Cible   : MASM 8086, modele SMALL');
+  EmitComment('=========================================================');
+  EmitBlankLine;
+  EmitRaw('        .8086');
+  EmitRaw('        DOSSEG');
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitBlankLine;
+  EmitComment('-- Point d''entree : fun main() --');
+  EmitLabel(KT_FN_PFX + 'main');
+  EmitProlog;
+  EmitComment('-- Initialiser DS sur le segment de donnees --');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+End;
+
+(* ---- EmitDataSeg : emettre le segment de donnees ----------- *)
+Procedure EmitDataSeg;
+Var
+  I, J  : Integer;
+  S     : TString;
+  C     : Char;
+  InStr : Boolean;
+Begin
+  EmitBlankLine;
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlankLine;
+  { Donnees predefinies Kotlin }
+  EmitRaw('_KT_CRLF    DB 13, 10, 0');
+  EmitRaw('_KT_STRBUF  DB 256 DUP(0)');
+  EmitBlankLine;
+  { Donnees utilisateur (DataTab) }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW ' + IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB ' + IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          S := DataTab[I].StrVal;
+          If Length(S) = 0 Then
+            EmitRaw(DataTab[I].LblName + '  DB 0')
+          Else If OutFOpen Then
+          Begin
+            { Gerer les caracteres de controle et apostrophes }
+            InStr := False;
+            Write(OutF, DataTab[I].LblName, '  DB ');
+            For J := 1 To Length(S) Do
+            Begin
+              C := S[J];
+              If (Ord(C) < 32) Or (Ord(C) > 126) Or (C = '''') Then
+              Begin
+                If InStr Then
+                Begin
+                  Write(OutF, '''');
+                  InStr := False;
+                End;
+                If J > 1 Then Write(OutF, ', ');
+                Write(OutF, IntToStr(Ord(C)));
+              End
+              Else
+              Begin
+                If Not InStr Then
+                Begin
+                  If J > 1 Then Write(OutF, ', ');
+                  Write(OutF, '''');
+                  InStr := True;
+                End;
+                Write(OutF, C);
+              End;
+            End;
+            If InStr Then Write(OutF, '''');
+            WriteLn(OutF, ', 0');
+          End;
+        End;
+      DK_ARRAY_BLK :
+        Begin
+          EmitRaw(DataTab[I].LblName + '  DW ' +
+                  IntToStr(DataTab[I].ElemCount));
+          EmitRaw(DataTab[I].LblName + '_D  DW ' +
+                  IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+        End;
+      DK_OBJ_BLK :
+        EmitRaw(DataTab[I].LblName + '  DW 0   ; object slot');
+    Else
+      EmitRaw(DataTab[I].LblName + '  DW 0');
+    End;
+  End;
+  EmitBlankLine;
+  EmitRaw('_DATA   ENDS');
+End;
+
+(* ---- EmitRuntime : emettre les routines runtime ------------- *)
+Procedure EmitRuntime;
+Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('=========================================================');
+  EmitComment('RUNTIME MINIMAL KOTLIN86');
+  EmitComment('=========================================================');
+  { stub - les routines runtime seront ajoutees dans TODO 24 }
+End;
+
+(* ---- EmitClose : fermer le fichier de sortie ASM ----------- *)
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('-- Fin de programme : DOS exit --');
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT 21h');
+  EmitBlankLine;
+  EmitEpilog;
+  EmitBlankLine;
+  If Not RuntimeEmitted Then
+    EmitRuntime;
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END ' + KT_FN_PFX + 'main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
 End;
 
 { ============================================================
@@ -3271,83 +3437,6 @@ Begin
   AddType('Lambda',   TYK_LAMBDA,   2);  { TY_IDX_LAMBDA   = 14 }
 End;
 
-Procedure EmitOpen;
-Begin
-  Assign(OutF, Opts.OutFile);
-  Rewrite(OutF);
-  If IOResult <> 0 Then
-    FatalError('impossible de creer: ' + Opts.OutFile);
-  OutFOpen := True;
-End;
-
-Procedure EmitHeader;
-Begin
-  EmitComment('=========================================================');
-  EmitComment('Genere par KOTLIN86 v' + KT86_VERSION + ' (' + KT86_DATE + ')');
-  EmitComment('Source  : ' + Opts.SrcFile);
-  EmitComment('Cible   : MASM 8086, modele SMALL');
-  EmitComment('=========================================================');
-  EmitBlankLine;
-  EmitRaw('        .8086');
-  EmitRaw('        DOSSEG');
-  EmitRaw('        .MODEL SMALL');
-  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
-  EmitBlankLine;
-  EmitRaw('_TEXT   SEGMENT PUBLIC ''CODE''');
-  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
-  EmitBlankLine;
-  EmitComment('-- Point d''entree : fun main() --');
-  EmitLabel(KT_FN_PFX + 'main');
-  EmitProlog;
-  EmitBlankLine;
-End;
-
-Procedure EmitDataSeg;
-Var
-  I : Integer;
-Begin
-  EmitBlankLine;
-  EmitRaw('_DATA   SEGMENT PUBLIC ''DATA''');
-  For I := 0 To DataCount - 1 Do
-  Begin
-    Case DataTab[I].Kind Of
-      DK_WORD :
-        EmitRaw(DataTab[I].LblName + '  DW ' + IntToStr(DataTab[I].IntVal));
-      DK_BYTE :
-        EmitRaw(DataTab[I].LblName + '  DB ' + IntToStr(DataTab[I].IntVal));
-      DK_STR :
-        EmitRaw(DataTab[I].LblName + '  DB ''' + DataTab[I].StrVal + ''',0');
-    Else
-      EmitRaw(DataTab[I].LblName + '  DW 0');
-    End;
-  End;
-  EmitRaw('_DATA   ENDS');
-End;
-
-Procedure EmitClose;
-Begin
-  EmitBlankLine;
-  EmitComment('-- Fin de programme --');
-  EmitInstrAB('MOV', 'AX', '4C00h');
-  EmitInstr('INT 21h');
-  EmitBlankLine;
-  EmitEpilog;
-  EmitRaw(KT_FN_PFX + 'main ENDP');
-  EmitBlankLine;
-  If RuntimeEmitted Then
-    { runtime deja emis }
-  Else
-    EmitRuntime;
-  EmitRaw('_TEXT   ENDS');
-  EmitDataSeg;
-  EmitRaw('        END ' + KT_FN_PFX + 'main');
-  If OutFOpen Then
-  Begin
-    Close(OutF);
-    OutFOpen := False;
-  End;
-End;
-
 { --- TODO 08 : Donnees ------------------------------------- }
 Function DataAdd(Const Lbl : TString; Kind : TDataKind;
                  AIntVal : LongInt; Const AStrVal : TString) : Integer;
@@ -3387,17 +3476,6 @@ End;
 Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
 Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
-End;
-
-Procedure EmitRuntime;
-Begin
-  If RuntimeEmitted Then Exit;
-  RuntimeEmitted := True;
-  EmitBlankLine;
-  EmitComment('=========================================================');
-  EmitComment('RUNTIME MINIMAL KOTLIN86');
-  EmitComment('=========================================================');
-  { stub - les routines runtime seront ajoutees dans TODO 24 }
 End;
 
 { --- TODO 09 : Variables ----------------------------------- }
