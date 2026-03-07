@@ -14,7 +14,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
             ParseArgs : analyser argv (source.rex [sortie.asm] [-v] [-d] [-w])
             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
@@ -476,5 +476,968 @@
 
 Program REXX86;
 
+{ ============================================================================
+  TYPES DE BASE, CONSTANTES ET VARIABLES GLOBALES DU COMPILATEUR
+  ============================================================================ }
+
+{ --------------------------------------------------------------------------
+  Directives compilateur (Turbo Pascal / Free Pascal)
+  -------------------------------------------------------------------------- }
+{$A-}   (* Pas d alignement memoire                                         *)
+{$I-}   (* Pas de verification I/O automatique (gestion manuelle)           *)
+{$B-}   (* Evaluation booleenne court-circuit                               *)
+{$Q-}   (* Pas de verification overflow                                     *)
+{$R-}   (* Pas de verification de range                                     *)
+
+{$IFDEF FPC}
+ {$MODE TP}
+{$ENDIF}
+
+{ --------------------------------------------------------------------------
+  Constantes dimensionnant les tables et buffers internes
+  -------------------------------------------------------------------------- }
+Const
+  (* --- Version --- *)
+  REXX86_VERSION = '1.0';
+  REXX86_DATE    = '2026-03-07';
+
+  (* --- Limites des tables principales --- *)
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_STEM      = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
+  STACK_SIZE    = 1024;
+
+  (* --- Prefixes de nommage ASM --- *)
+  RX_VAR_PFX  = '_RXV_';    (* variable simple                      *)
+  RX_PROC_PFX = '_RXP_';    (* procedure / label interne            *)
+  RX_STR_PFX  = '_RXK_';    (* constante chaine litterale           *)
+  RX_RT_PFX   = '_RXRT_';   (* routine runtime                      *)
+  RX_LBL_PFX  = '_RXL_';    (* label de saut interne                *)
+  RX_STEM_PFX = '_RXS_';    (* variable composee (stem)             *)
+  RX_DATA_PFX = '_RXD_';    (* donnees data                         *)
+  RX_BLT_PFX  = '_RXB_';    (* fonction integree (builtin)          *)
+
+  (* --- Codes de sortie --- *)
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  (* --- Indices de types internes REXX --- *)
+  TY_IDX_STRING  = 0;   (* chaine (type principal REXX)  *)
+  TY_IDX_INTEGER = 1;   (* entier 16 bits (optimisation) *)
+  TY_IDX_BOOLEAN = 2;   (* resultat logique 0/1          *)
+  TY_IDX_STEM    = 3;   (* variable composee (tableau)   *)
+  TY_PRIM_COUNT  = 4;
+  TY_UNKNOWN     = -1;
+
+{ --------------------------------------------------------------------------
+  Types
+  -------------------------------------------------------------------------- }
+Type
+  TString = String[MAX_STR];
+
+  (* ---- Options de compilation ----------------------------- *)
+  TOptions = Record
+    SrcFile   : TString;   (* fichier source (.rex / .rexx / .cmd) *)
+    OutFile   : TString;   (* fichier assembleur de sortie (.asm)  *)
+    Verbose   : Boolean;   (* -v : banniere et statistiques        *)
+    DebugMode : Boolean;   (* -d : affichage de chaque token       *)
+    Warnings  : Boolean;   (* -w : activer les avertissements      *)
+  End;
+
+  (* ---- Tokens REXX (TODO 02) ----------------------------- *)
+  TTokenKind = (
+    TK_EOF,       (* fin de fichier                          *)
+    TK_NUMBER,    (* literal numerique 42  3.14              *)
+    TK_STRING,    (* literal chaine 'abc' ou "abc"           *)
+    TK_IDENT,     (* identificateur (non mot-cle)            *)
+    TK_KEYWORD,   (* mot-cle REXX reconnu                    *)
+    TK_OP,        (* operateur + - * / = || etc.             *)
+    TK_PUNCT,     (* ponctuation ; , ( ) :                   *)
+    TK_LABEL,     (* label : identificateur suivi de :       *)
+    TK_COMMA,     (* virgule (aussi continuation de ligne)   *)
+    TK_EOL        (* fin de ligne logique                    *)
+  );
+
+  TToken = Record
+    Kind   : TTokenKind;
+    Val    : TString;     (* valeur textuelle brute               *)
+    IntVal : LongInt;     (* valeur entiere (TK_NUMBER)           *)
+    Line   : Integer;     (* ligne source (1-base)                *)
+    Col    : Integer;     (* colonne source (1-base)              *)
+  End;
+
+  (* ---- Categories de symboles (TODO 05) ------------------- *)
+  TSymKind = (
+    SK_VAR,        (* variable simple                    *)
+    SK_LABEL,      (* label (cible CALL / SIGNAL)        *)
+    SK_PROC,       (* procedure interne (label+PROCEDURE)*)
+    SK_STEM,       (* variable composee (tige)           *)
+    SK_EXPOSED,    (* variable exposee (PROCEDURE EXPOSE)*)
+    SK_BUILTIN     (* fonction integree                  *)
+  );
+
+  TSymRec = Record
+    Name        : TString;   (* identifiant (majuscules)           *)
+    MangledName : TString;   (* _RXV_NOM / _RXP_NOM               *)
+    Kind        : TSymKind;
+    TypeIdx     : Integer;   (* indice dans TypeTab                *)
+    ScopeLevel  : Integer;
+    Offset      : Integer;   (* [BP-n] pour locaux                 *)
+    IsExposed   : Boolean;   (* variable exposee par PROCEDURE     *)
+    IsStem      : Boolean;   (* variable composee                  *)
+    DeclLine    : Integer;
+  End;
+
+  (* ---- Types internes (TODO 06) --------------------------- *)
+  TTypeKind = (
+    TYK_STRING,    (* chaine de caracteres (type principal)  *)
+    TYK_INTEGER,   (* entier 16 bits (optimisation interne)  *)
+    TYK_BOOLEAN,   (* resultat logique 0 ou 1                *)
+    TYK_STEM       (* variable composee / tableau associatif *)
+  );
+
+  TTypeRec = Record
+    Name : TString;
+    Kind : TTypeKind;
+    Size : Integer;   (* octets : STRING=2(ptr), INTEGER=2 *)
+  End;
+
+  (* ---- Valeurs d expression (TODO 11) --------------------- *)
+  TExprKind = (
+    EK_NONE,   (* void / pas de valeur            *)
+    EK_IMM,    (* immediate dans ImmVal            *)
+    EK_AX,     (* valeur dans AX                   *)
+    EK_MEM     (* adresse [BP+Offset] ou [_RXV_x]  *)
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   (* indice dans SymTab (-1 = pas de lvalue) *)
+  End;
+
+  (* ---- Segment de donnees (TODO 08) ----------------------- *)
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_BUFFER);
+
+  TDataRec = Record
+    LblName : TString;
+    Kind    : TDataKind;
+    IntVal  : LongInt;
+    StrVal  : TString;
+    BufSize : Integer;  (* DK_BUFFER : taille en octets *)
+  End;
+
+{ --------------------------------------------------------------------------
+  Variables globales
+  -------------------------------------------------------------------------- }
+Var
+  (* Options *)
+  Opts : TOptions;
+
+  (* Compteurs generaux *)
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  (* Valeur fictive pour ignorer un retour TExprVal *)
+  GExprDummy : TExprVal;
+
+  (* Lexeur (TODO 02) *)
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+  (* Table des symboles (TODO 05) *)
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;
+  CurScope   : Integer;
+  LabelSeq   : Integer;
+
+  (* Table des types (TODO 06) *)
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  (* Emetteur ASM (TODO 07) *)
+  OutF         : Text;
+  OutFOpen     : Boolean;
+  CurFrameSize : Integer;    (* taille cadre local courant (words)   *)
+  CurFnDepth   : Integer;    (* 0 = global, >0 = dans une procedure  *)
+  CurFnRetLbl  : TString;    (* label epilogue de la procedure       *)
+  CurFnName    : TString;    (* nom de la procedure courante         *)
+  LoopTop      : Integer;
+  LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LabelGenSeq  : Integer;    (* compteur unique pour LabelGen        *)
+
+  (* Segment de donnees (TODO 08) *)
+  DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount : Integer;
+
+  (* Etat general *)
+  RuntimeEmitted : Boolean;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+
+(* TODO 02 - Lexeur *)
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexNextToken;        Forward;
+Procedure LexNextLine;         Forward;
+
+(* TODO 05 - Table des symboles *)
+Procedure SymInit;             Forward;
+Procedure SymEnterScope;       Forward;
+Procedure SymLeaveScope;       Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Kind : TSymKind;
+                 TypeIdx, Offset : Integer) : Integer; Forward;
+
+(* TODO 06 - Systeme de types *)
+Procedure TypeInit;            Forward;
+
+(* TODO 07 - Emetteur ASM *)
+Function  LabelGen : TString;   Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine;       Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+Procedure EmitOpen;            Forward;
+Procedure EmitClose;           Forward;
+Procedure EmitHeader;          Forward;
+Procedure EmitProlog;          Forward;
+Procedure EmitEpilog;          Forward;
+Procedure EmitDataSeg;         Forward;
+Procedure EmitRuntime;         Forward;
+
+(* TODO 08 - Segment de donnees *)
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+
+(* TODO 10 - Expressions *)
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal);    Forward;
+
+(* TODO 09 - Variables *)
+Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+
+(* Autres stubs *)
+Procedure ParseStmt;           Forward;
+Procedure ParserAdvance;       Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- Erreur fatale --------------------------------------- *)
+Procedure FatalError(Const Msg : TString);
 Begin
+  WriteLn('REXX86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+(* ---- Erreur de compilation ------------------------------- *)
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('REXX86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+(* ---- Avertissement --------------------------------------- *)
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('REXX86:');
+  If CurToken.Line > 0 Then
+    Write(Opts.SrcFile, ':', CurToken.Line, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+(* ---- Banniere -------------------------------------------- *)
+Procedure ShowBanner;
+Begin
+  WriteLn('REXX86 v', REXX86_VERSION, ' (', REXX86_DATE, ')');
+  WriteLn('Compilateur REXX -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+(* ---- Aide en ligne --------------------------------------- *)
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: REXX86 <source.rex> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.rex  : fichier REXX source (.rex, .rexx ou .cmd)');
+  WriteLn('  sortie.asm  : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v          : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d          : debug tokens (affiche chaque token)');
+  WriteLn('  -w          : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+(* ---- Utilitaires chaines --------------------------------- *)
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+(* ---- Manipulation de chemins ------------------------------ *)
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+(* ---- Gestion des options --------------------------------- *)
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('REXX86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('REXX86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('REXX86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+(* ---- Nettoyage ------------------------------------------- *)
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+    LexClose;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+(* ---- Initialisation globale ------------------------------ *)
+
+Procedure GlobalInit;
+Begin
+  ErrorCount     := 0;
+  WarnCount      := 0;
+  TotalLines     := 0;
+  TotalSyms      := 0;
+  SymCount       := 0;
+  ScopeTop       := 0;
+  CurScope       := 0;
+  LabelSeq       := 0;
+  TypeCount      := 0;
+  DataCount      := 0;
+  OutFOpen       := False;
+  LexOpened      := False;
+  LexEOF         := False;
+  CurFnDepth     := 0;
+  CurFnRetLbl    := '';
+  CurFnName      := '';
+  LoopTop        := 0;
+  RuntimeEmitted := False;
+  CurFrameSize   := 0;
+  LabelGenSeq    := 0;
+  GExprDummy.Kind    := EK_NONE;
+  GExprDummy.ImmVal  := 0;
+  GExprDummy.TypeIdx := TY_UNKNOWN;
+  GExprDummy.Offset  := 0;
+  GExprDummy.SymIdx  := -1;
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+End;
+
+{ ============================================================
+  STUBS pour les TODOs non encore implementes
+  ============================================================ }
+
+(* TODO 02 - Lexeur *)
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir ' + Opts.SrcFile);
+  LexOpened := True;
+  LexLineNo := 0;
+  LexColNo  := 0;
+  LexEOF    := False;
+  LexLine   := '';
+End;
+
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+Procedure LexNextLine;
+Begin
+  If Eof(LexSrcF) Then
+  Begin
+    LexEOF := True;
+    Exit;
+  End;
+  ReadLn(LexSrcF, LexLine);
+  Inc(LexLineNo);
+  Inc(TotalLines);
+  LexColNo := 1;
+End;
+
+Procedure LexNextToken;
+Begin
+  CurToken.Kind := TK_EOF;
+  CurToken.Val  := '';
+End;
+
+(* TODO 05 - Table des symboles *)
+Procedure SymInit;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+End;
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop < MAX_SCOPE Then
+  Begin
+    ScopeStack[ScopeTop] := SymCount;
+    Inc(ScopeTop);
+    Inc(CurScope);
+  End;
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop > 0 Then
+  Begin
+    Dec(ScopeTop);
+    SymCount := ScopeStack[ScopeTop];
+    Dec(CurScope);
+  End;
+End;
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+Function SymAdd(Const Name : TString; Kind : TSymKind;
+                TypeIdx, Offset : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    FatalError('table des symboles pleine');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := RX_VAR_PFX + Name;
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].IsExposed   := False;
+  SymTab[SymCount].IsStem      := (Kind = SK_STEM);
+  SymTab[SymCount].DeclLine    := LexLineNo;
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+End;
+
+(* TODO 06 - Systeme de types *)
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+  (* STRING *)
+  TypeTab[0].Name := 'STRING';
+  TypeTab[0].Kind := TYK_STRING;
+  TypeTab[0].Size := 2;
+  (* INTEGER *)
+  TypeTab[1].Name := 'INTEGER';
+  TypeTab[1].Kind := TYK_INTEGER;
+  TypeTab[1].Size := 2;
+  (* BOOLEAN *)
+  TypeTab[2].Name := 'BOOLEAN';
+  TypeTab[2].Kind := TYK_BOOLEAN;
+  TypeTab[2].Size := 2;
+  (* STEM *)
+  TypeTab[3].Name := 'STEM';
+  TypeTab[3].Kind := TYK_STEM;
+  TypeTab[3].Size := 2;
+  TypeCount := TY_PRIM_COUNT;
+End;
+
+(* TODO 07 - Emetteur ASM *)
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := RX_LBL_PFX + S;
+End;
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+Procedure EmitComment(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, '; ', S);
+End;
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, Lbl, ':');
+End;
+
+Procedure EmitInstr(Const Mnem, Ops : TString);
+Begin
+  If OutFOpen Then
+  Begin
+    If Ops = '' Then
+      WriteLn(OutF, '        ', Mnem)
+    Else
+      WriteLn(OutF, '        ', Mnem, '     ', Ops);
+  End;
+End;
+
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+Procedure EmitClose;
+Begin
+  If OutFOpen Then
+  Begin
+    EmitDataSeg;
+    EmitRaw('END _RXP_Main');
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure EmitHeader;
+Begin
+  EmitComment('REXX86 v' + REXX86_VERSION + ' - ' + Opts.SrcFile);
+  EmitRaw('.MODEL SMALL');
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT SEGMENT PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitBlankLine;
+  EmitComment('--- Point d''entree (main) ---');
+  EmitLabel('_RXP_Main');
+  EmitInstr('MOV', 'AX, _DATA');
+  EmitInstr('MOV', 'DS, AX');
+  EmitBlankLine;
+End;
+
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH', 'BP');
+  EmitInstr('MOV', 'BP, SP');
+  If CurFrameSize > 0 Then
+    EmitInstr('SUB', 'SP, ' + IntToStr(CurFrameSize));
+End;
+
+Procedure EmitEpilog;
+Begin
+  If CurFrameSize > 0 Then
+    EmitInstr('MOV', 'SP, BP');
+  EmitInstr('POP', 'BP');
+  EmitInstr('RET', '');
+End;
+
+Procedure EmitDataSeg;
+Var
+  I : Integer;
+Begin
+  EmitBlankLine;
+  EmitRaw('_TEXT ENDS');
+  EmitBlankLine;
+  EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD:
+        EmitRaw(DataTab[I].LblName + ' DW ' + IntToStr(DataTab[I].IntVal));
+      DK_BYTE:
+        EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr(DataTab[I].IntVal));
+      DK_STR:
+        EmitRaw(DataTab[I].LblName + ' DB ''' + DataTab[I].StrVal + ''',0');
+      DK_BUFFER:
+        EmitRaw(DataTab[I].LblName + ' DB ' + IntToStr(DataTab[I].BufSize) + ' DUP(0)');
+    End;
+  End;
+  EmitRaw('_DATA ENDS');
+End;
+
+Procedure EmitRuntime;
+Begin
+  (* stub - sera complete dans TODO 24 *)
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
+  EmitBlankLine;
+  EmitComment('--- Runtime minimal REXX ---');
+
+  (* _RXRT_PRINT : affiche chaine SI sur STDOUT *)
+  EmitLabel('_RXRT_PRINT');
+  EmitInstr('PUSH', 'AX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('MOV', 'DI, SI');
+  EmitInstr('XOR', 'CX, CX');
+  EmitLabel('_RXRT_PRINT_L');
+  EmitInstr('CMP', 'BYTE PTR [DI], 0');
+  EmitRaw('        JE      _RXRT_PRINT_W');
+  EmitInstr('INC', 'DI');
+  EmitInstr('INC', 'CX');
+  EmitRaw('        JMP     _RXRT_PRINT_L');
+  EmitLabel('_RXRT_PRINT_W');
+  EmitInstr('MOV', 'AH, 40h');
+  EmitInstr('MOV', 'BX, 1');
+  EmitInstr('MOV', 'DX, SI');
+  EmitRaw('        INT     21h');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  (* _RXRT_PRINTLN : affiche chaine SI + CR+LF *)
+  EmitLabel('_RXRT_PRINTLN');
+  EmitRaw('        CALL    _RXRT_PRINT');
+  EmitInstr('MOV', 'SI, OFFSET _RX_CRLF');
+  EmitRaw('        CALL    _RXRT_PRINT');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  (* _RXRT_PANIC : affiche msg + exit 1 *)
+  EmitLabel('_RXRT_PANIC');
+  EmitRaw('        CALL    _RXRT_PRINTLN');
+  EmitInstr('MOV', 'AX, 4C01h');
+  EmitRaw('        INT     21h');
+  EmitBlankLine;
+
+  (* Sortie propre du programme *)
+  EmitLabel('_RXP_Exit');
+  EmitInstr('MOV', 'AX, 4C00h');
+  EmitRaw('        INT     21h');
+  EmitBlankLine;
+
+  (* Donnees runtime : CR+LF *)
+  DataAdd('_RX_CRLF', DK_STR, 0, #13#10);
+End;
+
+(* TODO 08 - Segment de donnees *)
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    FatalError('table de donnees pleine');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName := Lbl;
+  DataTab[DataCount].Kind    := Kind;
+  DataTab[DataCount].IntVal  := AIntVal;
+  DataTab[DataCount].StrVal  := AStrVal;
+  DataTab[DataCount].BufSize := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+  Seq : TString;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, Seq);
+  Lbl := RX_STR_PFX + Seq;
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+(* TODO 10/11 - Expressions *)
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParsePrimary(Res);
+End;
+
+(* TODO 09 *)
+Procedure ExprFlushToAX(Const E : TExprVal);
+Begin
+  (* stub *)
+End;
+
+(* Stubs parseur *)
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+End;
+
+Procedure ParseStmt;
+Begin
+  ParserAdvance;
+End;
+
+{ ============================================================
+  Run : pipeline complet de compilation
+  ============================================================ }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  TypeInit;
+  SymInit;
+  EmitOpen;
+  If ErrorCount > 0 Then Exit;
+
+  EmitHeader;
+  LexInit;
+
+  (* Boucle principale de compilation *)
+  While CurToken.Kind <> TK_EOF Do
+    ParseStmt;
+
+  LexClose;
+
+  (* Epilogue : saut vers sortie propre *)
+  EmitRaw('        JMP     _RXP_Exit');
+  EmitBlankLine;
+
+  EmitRuntime;
+  EmitClose;
+
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+  End;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+
+Begin
+  If (ParamCount >= 1) And
+     ((ParamStr(1) = '-h') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '/?') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowUsage;
+  End;
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  InitOptions;
+  ParseArgs;
+  Run;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 End.
