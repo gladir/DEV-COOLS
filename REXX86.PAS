@@ -79,12 +79,12 @@
               7. & (AND)
               8. | (OR) && (XOR)
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_LABEL, SK_PROC, SK_STEM,
               SK_EXPOSED, SK_BUILTIN
             TSymRec : Name, MangledName, Kind, Offset,
               Scope, IsExposed, IsStem, DefaultVal
-            SymAdd, SymFind, SymFindInScope, SymMangle
+            SymNameClean, SymMangle, SymAdd, SymFind, SymFindInScope
             CurScope : compteur de portee (0 = global, >0 = PROCEDURE)
             SymEnterScope / SymLeaveScope : gestion des portees
             PROCEDURE EXPOSE : marquer les variables exposees
@@ -93,6 +93,7 @@
               (convention REXX : variable non affectee = son propre nom)
             DROP var : retablir la variable a sa valeur par defaut (son nom)
             Conversion automatique nom -> majuscules dans la table
+            SymInit : enregistrement des 71 builtins REXX (ABBREV..XRANGE)
 
   TODO 06 - SYSTEME DE TYPES INTERNE
             TTypeKind : TYK_STRING (chaine, type principal),
@@ -714,10 +715,14 @@ Procedure LexScanNumber;       Forward;
 Procedure LexScanString(Quote : Char); Forward;
 
 (* TODO 05 - Table des symboles *)
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
 Procedure SymInit;             Forward;
 Procedure SymEnterScope;       Forward;
 Procedure SymLeaveScope;       Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                         Level : Integer) : Integer; Forward;
 Function  SymAdd(Const Name : TString; Kind : TSymKind;
                  TypeIdx, Offset : Integer) : Integer; Forward;
 
@@ -1871,40 +1876,78 @@ Begin
   End; (* Case *)
 End;
 
-(* TODO 05 - Table des symboles *)
-Procedure SymInit;
+(* ============================================================
+   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- SymNameClean : nettoyer les caracteres non-MASM ------- *)
+(* Remplace tout caractere non alpha-numerique par '_'.         *)
+(* Retourne '_anon' si le resultat est vide.                    *)
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  C : Char;
 Begin
-  SymCount := 0;
-  ScopeTop := 0;
-  CurScope := 0;
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    C := Name[I];
+    If ((C >= 'A') And (C <= 'Z')) Or
+       ((C >= 'a') And (C <= 'z')) Or
+       ((C >= '0') And (C <= '9')) Or
+       (C = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + C;
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
 End;
 
-Procedure SymEnterScope;
+(* ---- SymMangle : calculer le nom ASM mangled --------------- *)
+(* Prefixes REXX :                                               *)
+(*   SK_VAR     -> _RXV_   (variable simple)                    *)
+(*   SK_LABEL   -> _RXP_   (label / cible SIGNAL/CALL)         *)
+(*   SK_PROC    -> _RXP_   (procedure interne)                  *)
+(*   SK_STEM    -> _RXS_   (variable composee)                  *)
+(*   SK_EXPOSED -> _RXV_   (meme prefixe que variable)          *)
+(*   SK_BUILTIN -> _RXB_   (fonction integree)                  *)
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
 Begin
-  If ScopeTop < MAX_SCOPE Then
-  Begin
-    ScopeStack[ScopeTop] := SymCount;
-    Inc(ScopeTop);
-    Inc(CurScope);
+  Clean := SymNameClean(Name);
+  Case Kind Of
+    SK_VAR     : SymMangle := RX_VAR_PFX  + Clean;
+    SK_LABEL   : SymMangle := RX_PROC_PFX + Clean;
+    SK_PROC    : SymMangle := RX_PROC_PFX + Clean;
+    SK_STEM    : SymMangle := RX_STEM_PFX + Clean;
+    SK_EXPOSED : SymMangle := RX_VAR_PFX  + Clean;
+    SK_BUILTIN : SymMangle := RX_BLT_PFX  + Clean;
+  Else
+    SymMangle := RX_VAR_PFX + Clean;
   End;
 End;
 
-Procedure SymLeaveScope;
-Begin
-  If ScopeTop > 0 Then
-  Begin
-    Dec(ScopeTop);
-    SymCount := ScopeStack[ScopeTop];
-    Dec(CurScope);
-  End;
-End;
-
+(* ---- SymFind : chercher un symbole par nom (MRU d abord) --- *)
+(* Recherche insensible a la casse : les noms sont stockes en   *)
+(* majuscules dans la table (convention REXX).                   *)
+(* Retourne l index (0-base) ou -1 si non trouve.               *)
 Function SymFind(Const Name : TString) : Integer;
 Var
   I : Integer;
+  U : TString;
 Begin
+  U := StrUpperCase(Name);
   For I := SymCount - 1 DownTo 0 Do
-    If SymTab[I].Name = Name Then
+    If SymTab[I].Name = U Then
     Begin
       SymFind := I;
       Exit;
@@ -1912,27 +1955,196 @@ Begin
   SymFind := -1;
 End;
 
+(* ---- SymFindInScope : chercher dans une portee specifique -- *)
+(* Retourne l index ou -1.                                      *)
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+  U : TString;
+Begin
+  U := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = U) And (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+(* ---- SymAdd : ajouter un symbole dans la table ------------- *)
+(* Le nom est converti en majuscules (convention REXX).         *)
+(* Retourne l index du symbole (0-base) ou -1 si erreur.        *)
 Function SymAdd(Const Name : TString; Kind : TSymKind;
                 TypeIdx, Offset : Integer) : Integer;
+Var
+  U   : TString;
+  Idx : Integer;
 Begin
   If SymCount >= MAX_SYM Then
   Begin
-    FatalError('table des symboles pleine');
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
     SymAdd := -1;
     Exit;
   End;
-  SymTab[SymCount].Name        := Name;
-  SymTab[SymCount].MangledName := RX_VAR_PFX + Name;
-  SymTab[SymCount].Kind        := Kind;
-  SymTab[SymCount].TypeIdx     := TypeIdx;
-  SymTab[SymCount].ScopeLevel  := CurScope;
-  SymTab[SymCount].Offset      := Offset;
-  SymTab[SymCount].IsExposed   := False;
-  SymTab[SymCount].IsStem      := (Kind = SK_STEM);
-  SymTab[SymCount].DeclLine    := LexLineNo;
-  SymAdd := SymCount;
+
+  U := StrUpperCase(Name);
+  Idx := SymCount;
+
+  SymTab[Idx].Name        := U;
+  SymTab[Idx].MangledName := SymMangle(U, Kind);
+  SymTab[Idx].Kind        := Kind;
+  SymTab[Idx].TypeIdx     := TypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := Offset;
+  SymTab[Idx].IsExposed   := (Kind = SK_EXPOSED);
+  SymTab[Idx].IsStem      := (Kind = SK_STEM);
+  SymTab[Idx].DeclLine    := LexLineNo;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM[', Idx, '] ', U,
+            ' kind=', Ord(Kind),
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
   Inc(SymCount);
   Inc(TotalSyms);
+  SymAdd := Idx;
+End;
+
+(* ---- SymEnterScope : ouvrir une nouvelle portee ------------ *)
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees imbriquees trop profondes (max=' +
+                 IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER -> ', CurScope);
+End;
+
+(* ---- SymLeaveScope : fermer la portee courante ------------- *)
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop > 0 Then
+  Begin
+    Dec(ScopeTop);
+    SymCount := ScopeStack[ScopeTop];
+    Dec(CurScope);
+    If Opts.DebugMode Then
+      WriteLn('  SCOPE_LEAVE -> ', CurScope);
+  End;
+End;
+
+(* ---- SymInit : initialiser la table et enregistrer les builtins *)
+(* En REXX, toutes les fonctions integrees (BIF) sont connues     *)
+(* globalement. On les enregistre comme SK_BUILTIN, portee 0.     *)
+Procedure SymInit;
+
+  Procedure RegBuiltin(Const BName : TString);
+  Begin
+    SymAdd(BName, SK_BUILTIN, TY_IDX_STRING, 0);
+  End;
+
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+
+  (* --- Fonctions integrees REXX (BIF) --- *)
+  (* Chaines *)
+  RegBuiltin('ABBREV');
+  RegBuiltin('CENTER');
+  RegBuiltin('CENTRE');
+  RegBuiltin('CHANGESTR');
+  RegBuiltin('COMPARE');
+  RegBuiltin('COPIES');
+  RegBuiltin('COUNTSTR');
+  RegBuiltin('DELSTR');
+  RegBuiltin('DELWORD');
+  RegBuiltin('INSERT');
+  RegBuiltin('LASTPOS');
+  RegBuiltin('LEFT');
+  RegBuiltin('LENGTH');
+  RegBuiltin('OVERLAY');
+  RegBuiltin('POS');
+  RegBuiltin('REVERSE');
+  RegBuiltin('RIGHT');
+  RegBuiltin('SPACE');
+  RegBuiltin('STRIP');
+  RegBuiltin('SUBSTR');
+  RegBuiltin('SUBWORD');
+  RegBuiltin('TRANSLATE');
+  RegBuiltin('VERIFY');
+  RegBuiltin('WORD');
+  RegBuiltin('WORDINDEX');
+  RegBuiltin('WORDLENGTH');
+  RegBuiltin('WORDPOS');
+  RegBuiltin('WORDS');
+  RegBuiltin('XRANGE');
+
+  (* Conversion *)
+  RegBuiltin('C2D');
+  RegBuiltin('C2X');
+  RegBuiltin('D2C');
+  RegBuiltin('D2X');
+  RegBuiltin('X2C');
+  RegBuiltin('X2D');
+  RegBuiltin('B2X');
+  RegBuiltin('X2B');
+
+  (* Arithmetique *)
+  RegBuiltin('ABS');
+  RegBuiltin('FORMAT');
+  RegBuiltin('MAX');
+  RegBuiltin('MIN');
+  RegBuiltin('SIGN');
+  RegBuiltin('TRUNC');
+
+  (* Informations *)
+  RegBuiltin('ADDRESS');
+  RegBuiltin('ARG');
+  RegBuiltin('DATATYPE');
+  RegBuiltin('DATE');
+  RegBuiltin('DIGITS');
+  RegBuiltin('ERRORTEXT');
+  RegBuiltin('FORM');
+  RegBuiltin('FUZZ');
+  RegBuiltin('QUEUED');
+  RegBuiltin('RANDOM');
+  RegBuiltin('SOURCELINE');
+  RegBuiltin('SYMBOL');
+  RegBuiltin('TIME');
+  RegBuiltin('TRACE');
+  RegBuiltin('VALUE');
+
+  (* Entrees-sorties *)
+  RegBuiltin('CHARIN');
+  RegBuiltin('CHAROUT');
+  RegBuiltin('CHARS');
+  RegBuiltin('LINEIN');
+  RegBuiltin('LINEOUT');
+  RegBuiltin('LINES');
+  RegBuiltin('STREAM');
+
+  (* Logique binaire *)
+  RegBuiltin('BITAND');
+  RegBuiltin('BITOR');
+  RegBuiltin('BITXOR');
+
+  (* Divers *)
+  RegBuiltin('CONDITION');
+  RegBuiltin('QUALIFY');
+  RegBuiltin('USERID');
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_INIT: ', SymCount, ' builtins enregistres');
 End;
 
 (* TODO 06 - Systeme de types *)
