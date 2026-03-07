@@ -23,7 +23,7 @@
             Version, Date, aide en ligne (option -h)
             Ignorer le commentaire en premiere ligne si /* ... */
 
-  TODO 02 - LEXEUR (TOKENS REXX)
+  TODO 02 - LEXEUR (TOKENS REXX) [IMPLEMENTE]
             TTokenKind : TK_EOF, TK_NUMBER, TK_STRING, TK_IDENT,
               TK_KEYWORD, TK_OP, TK_PUNCT, TK_LABEL, TK_COMMA, TK_EOL
             LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
@@ -702,6 +702,16 @@ Procedure LexInit;             Forward;
 Procedure LexClose;            Forward;
 Procedure LexNextToken;        Forward;
 Procedure LexNextLine;         Forward;
+Function  IsKeyword(Const S : TString) : Boolean; Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure LexSkipBlockComment; Forward;
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsHexDigit(Ch : Char) : Boolean; Forward;
+Function  HexVal(Ch : Char) : Integer; Forward;
+Procedure LexScanIdent;        Forward;
+Procedure LexScanNumber;       Forward;
+Procedure LexScanString(Quote : Char); Forward;
 
 (* TODO 05 - Table des symboles *)
 Procedure SymInit;             Forward;
@@ -1003,10 +1013,711 @@ Begin
 End;
 
 { ============================================================
-  STUBS pour les TODOs non encore implementes
+  TODO 02 - LEXEUR (TOKENS REXX) [IMPLEMENTE]
   ============================================================ }
 
-(* TODO 02 - Lexeur *)
+(* ---- IsKeyword : teste si S est un mot-cle REXX ---------- *)
+(* Les mots-cles sont compares en majuscules (REXX insensible) *)
+Function IsKeyword(Const S : TString) : Boolean;
+Begin
+  IsKeyword :=
+    (S = 'ADDRESS')   Or (S = 'ARG')       Or (S = 'BY')         Or
+    (S = 'CALL')      Or (S = 'DO')        Or (S = 'DROP')       Or
+    (S = 'ELSE')      Or (S = 'END')       Or (S = 'EXIT')       Or
+    (S = 'EXPOSE')    Or (S = 'FOR')       Or (S = 'FOREVER')    Or
+    (S = 'FUNCTION')  Or (S = 'IF')        Or (S = 'INTERPRET')  Or
+    (S = 'ITERATE')   Or (S = 'LEAVE')     Or (S = 'LOOP')       Or
+    (S = 'NOP')       Or (S = 'NUMERIC')   Or (S = 'OTHERWISE')  Or
+    (S = 'PARSE')     Or (S = 'PROCEDURE') Or (S = 'PULL')       Or
+    (S = 'PUSH')      Or (S = 'QUEUE')     Or (S = 'RETURN')     Or
+    (S = 'SAY')       Or (S = 'SELECT')    Or (S = 'SIGNAL')     Or
+    (S = 'THEN')      Or (S = 'TO')        Or (S = 'TRACE')      Or
+    (S = 'UNTIL')     Or (S = 'UPPER')     Or (S = 'VALUE')      Or
+    (S = 'WHEN')      Or (S = 'WHILE')     Or (S = 'WITH');
+End;
+
+(* ---- PrintToken : affichage debug d un token -------------- *)
+Procedure PrintToken(Const T : TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF     : Write('EOF');
+    TK_NUMBER  : Write('NUM(', T.Val, '=', T.IntVal, ')');
+    TK_STRING  : Write('STR(''', T.Val, ''')');
+    TK_IDENT   : Write('IDENT(', T.Val, ')');
+    TK_KEYWORD : Write('KW(', T.Val, ')');
+    TK_OP      : Write('OP(', T.Val, ')');
+    TK_PUNCT   : Write('PUNCT(', T.Val, ')');
+    TK_LABEL   : Write('LABEL(', T.Val, ')');
+    TK_COMMA   : Write('COMMA');
+    TK_EOL     : Write('EOL');
+  End;
+  WriteLn;
+End;
+
+(* ---- LexNextLine : lire la prochaine ligne source --------- *)
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+(* ---- LexSkipBlockComment : commentaires imbriques /* */ --- *)
+(* REXX autorise les commentaires imbriques : nesting level    *)
+Procedure LexSkipBlockComment;
+Var
+  Depth : Integer;
+Begin
+  Inc(LexColNo); Inc(LexColNo); (* sauter /* *)
+  Depth := 1;
+  While (Not LexEOF) And (Depth > 0) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+      LexNextLine
+    Else If (LexLine[LexColNo] = '/') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      Inc(Depth);
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      Dec(Depth);
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else
+      Inc(LexColNo);
+  End;
+  If Depth > 0 Then
+    CompileError('commentaire /* non ferme en fin de fichier');
+End;
+
+(* ---- Fonctions de test sur les caracteres ------------------ *)
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'A') And (Ch <= 'Z')) Or
+                  ((Ch >= 'a') And (Ch <= 'z')) Or
+                  (Ch = '_') Or (Ch = '!') Or (Ch = '?');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := IsIdentStart(Ch) Or
+                 ((Ch >= '0') And (Ch <= '9')) Or
+                 (Ch = '.');
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+(* ---- LexScanIdent : identificateur ou mot-cle ------------- *)
+(* En REXX, les variables sont converties en majuscules        *)
+(* Un identificateur suivi de ':' est reconnu comme label      *)
+Procedure LexScanIdent;
+Var
+  S : TString;
+  U : TString;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  U := StrUpperCase(S);
+  (* Detecter label : ident suivi de ':' *)
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = ':') Then
+  Begin
+    Inc(LexColNo); (* consommer ':' *)
+    CurToken.Kind   := TK_LABEL;
+    CurToken.Val    := U;
+    CurToken.IntVal := 0;
+    Exit;
+  End;
+  CurToken.IntVal := 0;
+  If IsKeyword(U) Then
+  Begin
+    CurToken.Kind := TK_KEYWORD;
+    CurToken.Val  := U;
+  End
+  Else
+  Begin
+    CurToken.Kind := TK_IDENT;
+    CurToken.Val  := U;
+  End;
+End;
+
+(* ---- LexScanNumber : literal numerique -------------------- *)
+(* REXX : nombres decimaux simples, pas de 0x ou 0b prefixes  *)
+(* Les nombres decimaux sont tronques en entier                *)
+Procedure LexScanNumber;
+Var
+  N       : LongInt;
+  IsFloat : Boolean;
+  FracDiv : Real;
+  FracVal : Real;
+  FltVal  : Real;
+  ExpVal  : Integer;
+  NegExp  : Boolean;
+Begin
+  N       := 0;
+  IsFloat := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  (* Partie entiere *)
+  While (LexColNo <= Length(LexLine)) And
+        (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+  Begin
+    N := N * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+    Inc(LexColNo);
+  End;
+  (* Partie decimale .ddd *)
+  If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo); (* sauter '.' *)
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      Inc(LexColNo);
+    End;
+  End;
+  (* Exposant e/E [+-]ddd *)
+  If (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'e') Or (LexLine[LexColNo] = 'E')) Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    NegExp := False;
+    ExpVal := 0;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+      Inc(LexColNo);
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+      Inc(LexColNo);
+    End;
+  End;
+  (* Calculer la valeur finale tronquee a entier *)
+  If IsFloat Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else           FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    If FltVal > 32767.0 Then N := 32767
+    Else If FltVal < -32768.0 Then N := -32768
+    Else N := Trunc(FltVal);
+  End;
+  CurToken.IntVal := N;
+  Str(N, CurToken.Val);
+  CurToken.Kind := TK_NUMBER;
+End;
+
+(* ---- LexScanString : chaines REXX ------------------------ *)
+(* REXX supporte :                                              *)
+(*   'abc' ou "abc" (doublement pour echapper : 'l''eau')       *)
+(*   'hex hex'x -> chaine hexadecimale                          *)
+(*   'bits'b -> chaine binaire                                  *)
+Procedure LexScanString(Quote : Char);
+Var
+  S     : TString;
+  Ch    : Char;
+  Tmp   : TString;
+  HByte : Integer;
+  BitCt : Integer;
+  HCt   : Integer;
+  I     : Integer;
+Begin
+  S := '';
+  Inc(LexColNo); (* sauter le guillemet ouvrant *)
+  While (Not LexEOF) And (LexColNo <= Length(LexLine)) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = Quote Then
+    Begin
+      Inc(LexColNo);
+      (* Doublement : 'l''eau' -> l'eau *)
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = Quote) Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + Quote;
+        Inc(LexColNo);
+      End
+      Else
+        Break; (* fin de chaine *)
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  (* Verifier suffixe x (hexadecimal) *)
+  If (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'x') Or (LexLine[LexColNo] = 'X')) Then
+  Begin
+    Inc(LexColNo);
+    Tmp := '';
+    HByte := 0;
+    HCt := 0;
+    For I := 1 To Length(S) Do
+    Begin
+      Ch := S[I];
+      If Ch = ' ' Then Continue;
+      If Not IsHexDigit(Ch) Then
+      Begin
+        CompileError('chiffre hexadecimal attendu dans chaine hex');
+        Break;
+      End;
+      HByte := HByte * 16 + HexVal(Ch);
+      Inc(HCt);
+      If HCt = 2 Then
+      Begin
+        If Length(Tmp) < MAX_STR Then
+          Tmp := Tmp + Chr(HByte And $FF);
+        HByte := 0;
+        HCt := 0;
+      End;
+    End;
+    If HCt = 1 Then
+    Begin
+      (* Un seul chiffre hex restant : traiter comme demi-octet bas *)
+      If Length(Tmp) < MAX_STR Then
+        Tmp := Tmp + Chr(HByte And $FF);
+    End;
+    S := Tmp;
+  End
+  (* Verifier suffixe b (binaire) *)
+  Else If (LexColNo <= Length(LexLine)) And
+          ((LexLine[LexColNo] = 'b') Or (LexLine[LexColNo] = 'B')) Then
+  Begin
+    Inc(LexColNo);
+    Tmp := '';
+    HByte := 0;
+    BitCt := 0;
+    For I := 1 To Length(S) Do
+    Begin
+      Ch := S[I];
+      If Ch = ' ' Then Continue;
+      If (Ch <> '0') And (Ch <> '1') Then
+      Begin
+        CompileError('chiffre binaire attendu dans chaine binaire');
+        Break;
+      End;
+      HByte := HByte * 2 + (Ord(Ch) - Ord('0'));
+      Inc(BitCt);
+      If BitCt = 8 Then
+      Begin
+        If Length(Tmp) < MAX_STR Then
+          Tmp := Tmp + Chr(HByte And $FF);
+        HByte := 0;
+        BitCt := 0;
+      End;
+    End;
+    If BitCt > 0 Then
+    Begin
+      (* Reste de bits : decaler a gauche pour remplir l octet *)
+      While BitCt < 8 Do
+      Begin
+        HByte := HByte * 2;
+        Inc(BitCt);
+      End;
+      If Length(Tmp) < MAX_STR Then
+        Tmp := Tmp + Chr(HByte And $FF);
+    End;
+    S := Tmp;
+  End;
+  CurToken.Kind   := TK_STRING;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+(* ---- LexNextToken : produire le prochain token ------------ *)
+Procedure LexNextToken;
+Var
+  Ch       : Char;
+  Scanning : Boolean;
+Begin
+  Scanning := True;
+  While Scanning Do
+  Begin
+    (* Passer les lignes vides / fin de fichier *)
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    If LexEOF Then
+    Begin
+      CurToken.Kind   := TK_EOF;
+      CurToken.Val    := '';
+      CurToken.IntVal := 0;
+      CurToken.Line   := LexLineNo;
+      CurToken.Col    := LexColNo;
+      Scanning := False;
+      Exit;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+    Ch := LexLine[LexColNo];
+
+    (* Espaces blancs *)
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(LexColNo);
+    End
+
+    (* Commentaire bloc imbrique /* ... */ *)
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      LexSkipBlockComment;
+    End
+
+    (* Fin de ligne : point-virgule implicite ou explicite *)
+    Else If Ch = ';' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_EOL;
+      CurToken.Val    := ';';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Virgule - aussi continuation de ligne *)
+    Else If Ch = ',' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_COMMA;
+      CurToken.Val    := ',';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Parentheses et ponctuation *)
+    Else If (Ch = '(') Or (Ch = ')') Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_PUNCT;
+      CurToken.Val    := Ch;
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Chaine entre apostrophes *)
+    Else If Ch = '''' Then
+    Begin
+      LexScanString('''');
+      Scanning := False;
+    End
+
+    (* Chaine entre guillemets *)
+    Else If Ch = '"' Then
+    Begin
+      LexScanString('"');
+      Scanning := False;
+    End
+
+    (* Nombre *)
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+
+    (* Identificateur, mot-cle ou label *)
+    Else If IsIdentStart(Ch) Then
+    Begin
+      LexScanIdent;
+      Scanning := False;
+    End
+
+    (* Operateur : concatenation explicite || *)
+    Else If (Ch = '|') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '|') Then
+    Begin
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '||';
+      CurToken.IntVal := 0;
+      Inc(LexColNo); Inc(LexColNo);
+      Scanning := False;
+    End
+
+    (* Operateur logique OR : | *)
+    Else If Ch = '|' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '|';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Operateur logique XOR : && *)
+    Else If (Ch = '&') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '&') Then
+    Begin
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '&&';
+      CurToken.IntVal := 0;
+      Inc(LexColNo); Inc(LexColNo);
+      Scanning := False;
+    End
+
+    (* Operateur logique AND : & *)
+    Else If Ch = '&' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '&';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Operateurs de comparaison et affectation *)
+    Else If Ch = '=' Then
+    Begin
+      Inc(LexColNo);
+      (* Comparaison stricte == *)
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '==';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '=';
+      End;
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* NOT (\) et \= \== *)
+    Else If Ch = '\' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP;
+          CurToken.Val  := '\==';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP;
+          CurToken.Val  := '\=';
+        End;
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '\';
+      End;
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Operateurs > >= >> >>= *)
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP;
+          CurToken.Val  := '>>=';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP;
+          CurToken.Val  := '>>';
+        End;
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '>=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '>';
+      End;
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Operateurs < <= << <<= *)
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '<') Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP;
+          CurToken.Val  := '<<=';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP;
+          CurToken.Val  := '<<';
+        End;
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '<=';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '<';
+      End;
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Operateurs arithmetiques : + - *)
+    Else If (Ch = '+') Or (Ch = '-') Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := Ch;
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Puissance ** *)
+    Else If (Ch = '*') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '**';
+      CurToken.IntVal := 0;
+      Inc(LexColNo); Inc(LexColNo);
+      Scanning := False;
+    End
+
+    (* Multiplication * *)
+    Else If Ch = '*' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '*';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Reste // *)
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '//';
+      CurToken.IntVal := 0;
+      Inc(LexColNo); Inc(LexColNo);
+      Scanning := False;
+    End
+
+    (* Division / *)
+    Else If Ch = '/' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '/';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Division entiere % *)
+    Else If Ch = '%' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_OP;
+      CurToken.Val    := '%';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Deux-points : (ponctuation, mais pas un label ici) *)
+    Else If Ch = ':' Then
+    Begin
+      Inc(LexColNo);
+      CurToken.Kind   := TK_PUNCT;
+      CurToken.Val    := ':';
+      CurToken.IntVal := 0;
+      Scanning := False;
+    End
+
+    (* Caractere inconnu *)
+    Else
+    Begin
+      CompileError('caractere inattendu: ' + Ch);
+      Inc(LexColNo);
+    End;
+  End; (* While Scanning *)
+
+  PrintToken(CurToken);
+End;
+
+(* ---- LexInit : initialiser le lexeur ---------------------- *)
 Procedure LexInit;
 Begin
   Assign(LexSrcF, Opts.SrcFile);
@@ -1015,11 +1726,16 @@ Begin
     FatalError('impossible d''ouvrir ' + Opts.SrcFile);
   LexOpened := True;
   LexLineNo := 0;
-  LexColNo  := 0;
+  LexColNo  := 1;
   LexEOF    := False;
   LexLine   := '';
+  (* Lire la premiere ligne *)
+  LexNextLine;
+  (* Lire le premier token *)
+  LexNextToken;
 End;
 
+(* ---- LexClose : fermer le fichier source ------------------ *)
 Procedure LexClose;
 Begin
   If LexOpened Then
@@ -1027,25 +1743,6 @@ Begin
     Close(LexSrcF);
     LexOpened := False;
   End;
-End;
-
-Procedure LexNextLine;
-Begin
-  If Eof(LexSrcF) Then
-  Begin
-    LexEOF := True;
-    Exit;
-  End;
-  ReadLn(LexSrcF, LexLine);
-  Inc(LexLineNo);
-  Inc(TotalLines);
-  LexColNo := 1;
-End;
-
-Procedure LexNextToken;
-Begin
-  CurToken.Kind := TK_EOF;
-  CurToken.Val  := '';
 End;
 
 (* TODO 05 - Table des symboles *)
