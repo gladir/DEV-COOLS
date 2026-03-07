@@ -125,7 +125,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_LIST/DK_VEC/DK_MAP),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -433,6 +433,7 @@ Const
   CL_VEC_PFX  = '_CLVEC_';   (* vecteur literal DATA                *)
   CL_MAP_PFX  = '_CLMAP_';   (* map literal DATA                    *)
   CL_SET_PFX  = '_CLSET_';   (* set literal DATA                    *)
+  CL_LIST_PFX = '_CLLS_';    (* list literal DATA                   *)
   CL_NIL_LBL  = '_CL_NIL';   (* etiquette DATA chaine 'nil'         *)
   CL_TRUE_LBL = '_CL_TRUE';  (* etiquette DATA chaine 'true'        *)
   CL_FALSE_LBL= '_CL_FALSE'; (* etiquette DATA chaine 'false'       *)
@@ -725,6 +726,10 @@ Procedure EmitDataSeg; Forward;
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddList(AElemCount : Integer) : TString; Forward;
+Function  DataAddVec(AElemCount : Integer) : TString; Forward;
+Function  DataAddMap(APairCount : Integer) : TString; Forward;
+Procedure DataInit; Forward;
 (* TODO 10 *)
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
 Procedure ParseForm(Var Res : TExprVal); Forward;
@@ -2840,6 +2845,12 @@ Begin
         S := S + '0';
         EmitRaw(S);
       End;
+      DK_LIST, DK_VEC, DK_MAP :
+      Begin
+        (* Bloc contigu de mots : ElemCount x DW 0 *)
+        Str(DataTab[I].ElemCount, Tmp);
+        EmitRaw(DataTab[I].LblName + '  DW ' + Tmp + ' DUP(0)');
+      End;
     Else
       EmitRaw(DataTab[I].LblName + '  DW 0');
     End;
@@ -2899,6 +2910,69 @@ Begin
   Lbl := CL_STR_PFX + Seq;
   DataAdd(Lbl, DK_STR, 0, S);
   DataAddStr := Lbl;
+End;
+
+(* ============================================================
+   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+   ============================================================ *)
+
+(* DataAddList : ajouter un bloc liste (ElemCount mots DW contigus) *)
+Function DataAddList(AElemCount : Integer) : TString;
+Var Lbl : TString;
+    Seq : TString;
+    Idx : Integer;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, Seq);
+  Lbl := CL_LIST_PFX + Seq;
+  Idx := DataAdd(Lbl, DK_LIST, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := AElemCount;
+  DataAddList := Lbl;
+End;
+
+(* DataAddVec : ajouter un bloc vecteur (ElemCount mots DW contigus) *)
+Function DataAddVec(AElemCount : Integer) : TString;
+Var Lbl : TString;
+    Seq : TString;
+    Idx : Integer;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, Seq);
+  Lbl := CL_VEC_PFX + Seq;
+  Idx := DataAdd(Lbl, DK_VEC, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := AElemCount;
+  DataAddVec := Lbl;
+End;
+
+(* DataAddMap : ajouter un bloc map (APairCount paires cle/valeur = 2*N DW) *)
+Function DataAddMap(APairCount : Integer) : TString;
+Var Lbl : TString;
+    Seq : TString;
+    Idx : Integer;
+Begin
+  Inc(LabelSeq);
+  Str(LabelSeq, Seq);
+  Lbl := CL_MAP_PFX + Seq;
+  Idx := DataAdd(Lbl, DK_MAP, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := APairCount * 2;
+  DataAddMap := Lbl;
+End;
+
+(* DataInit : pre-populer le segment de donnees avec les constantes *)
+(* Clojure predefinies. Appele apres SymInit dans Run.              *)
+Procedure DataInit;
+Begin
+  DataAdd('_CL_NIL_S',   DK_STR, 0, 'nil');
+  DataAdd('_CL_TRUE_S',  DK_STR, 0, 'true');
+  DataAdd('_CL_FALSE_S', DK_STR, 0, 'false');
+  DataAdd('_CL_EMPTY_S', DK_STR, 0, '');
+  DataAdd('_CL_SPACE_S', DK_STR, 0, ' ');
+  DataAdd('_CL_NL_S',    DK_BYTE, 0, '13,10,0');
+  DataAdd('_CL_TMPBUF',  DK_BYTE, 0, '256 DUP(0)');
+  DataAdd('_CL_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
 End;
 
 Procedure ExprFlushToAX(Const E : TExprVal);
@@ -3063,6 +3137,7 @@ Begin
 
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   EmitHeader;
   LexInit;
