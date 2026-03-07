@@ -3012,8 +3012,9 @@ Begin
 End;
 
 (* ---- TypeIsNumeric : vrai si le type se place dans AX ------- *)
-(* Int, Short, Long, Byte, Float, Double, Char, Boolean, Enum    *)
-(* sont tous representables comme un entier 16 bits dans AX.      *)
+(* Int, Short, Long (stub 16-bit), Byte, Float/Double (stub        *)
+(* entier tronque), Char, Boolean, Enum sont tous representes       *)
+(* comme des entiers 16 bits dans AX sur la cible 8086.             *)
 Function TypeIsNumeric(TypeIdx : Integer) : Boolean;
 Var
   K : TTypeKind;
