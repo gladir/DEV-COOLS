@@ -3087,12 +3087,19 @@ Begin
       Else If Op = '<<' Then
       Begin
         ShiftAmt := Integer(Right.ImmVal And 15);
-        ExprMakeImm(Res.ImmVal Shl ShiftAmt, TY_IDX_INT, Res);
+        ExprMakeImm((Res.ImmVal Shl ShiftAmt) And $FFFF, TY_IDX_INT, Res);
       End
       Else If Op = '>>' Then
       Begin
         ShiftAmt := Integer(Right.ImmVal And 15);
-        ExprMakeImm(Res.ImmVal Shr ShiftAmt, TY_IDX_INT, Res);
+        (* SAR : decalage arithmetique signe, comme l ASM cible *)
+        If Res.ImmVal < 0 Then
+          ExprMakeImm(
+            (Res.ImmVal Shr ShiftAmt) Or
+            (LongInt($FFFF) Shl (16 - ShiftAmt)),
+            TY_IDX_INT, Res)
+        Else
+          ExprMakeImm(Res.ImmVal Shr ShiftAmt, TY_IDX_INT, Res);
       End
       Else If Op = '==' Then
         ExprMakeBool(Ord(Res.ImmVal = Right.ImmVal), Res)
