@@ -187,7 +187,7 @@
             Bits : AND/OR/XOR EAX,EBX / SHL EAX,CL / SHR EAX,CL
             Repli de constantes (constant folding) pour operandes immediats
 
-  TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn)
+  TODO 12 - ENTREES/SORTIES (Write / WriteLn / Read / ReadLn) [IMPLEMENTE]
             Ecriture via API Win32 WriteFile :
               GetStdHandle(STD_OUTPUT_HANDLE) -> _PSPRT_HSTDOUT
               WriteFile(hStdOut, ptr, len, &written, NULL)
@@ -5818,8 +5818,99 @@ End;
   - Protection division par zero : CMP EBX,0 / JE _PSPRT_PANIC_DIV0
   - IN : stub avec avertissement (ensembles non supportes) }
 
-{ --- Stubs Write (TODO 12) --- }
-Procedure ParseWriteStmt(IsWriteLn : Boolean); Begin End;
+{ ============================================================
+  TODO 12 - ENTREES/SORTIES (Write/WriteLn) [IMPLEMENTE]
+  ============================================================ }
+{ La sortie se fait via l API Win32 WriteFile :
+  GetStdHandle(STD_OUTPUT_HANDLE) -> _PSPRT_HSTDOUT
+  WriteFile(hStdOut, ptr, len, &written, NULL)
+  Les routines runtime _PSPRT_PRINTSTR / _PSPRT_NUMTOSTR /
+  _PSPRT_CHR sont deja emises dans EmitFooter (TODO 07).
+  EmitPrintEAX (TODO 10) gere l affichage selon le type. }
+
+{ ---- ParseWriteStmt : analyser Write ou WriteLn -------------- }
+{ Le mot-cle write/writeln a deja ete consomme.                  }
+{ CurToken est sur ( si arguments, ou ; si WriteLn sans args.    }
+Procedure ParseWriteStmt(IsWriteLn : Boolean);
+Var
+  Ev      : TExprVal;
+  WidthEv : TExprVal;
+Begin
+  If IsWriteLn Then
+    EmitComment('writeln')
+  Else
+    EmitComment('write');
+
+  { Gerer WriteLn sans arguments -> juste CR+LF }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    If IsWriteLn Then
+    Begin
+      EmitInstrAB('MOV', 'ESI', 'OFFSET ' + PSP_RT_PFX + 'CRLF');
+      EmitCall(PSP_RT_PFX + 'PRINTSTR');
+    End;
+    TplNextToken;
+    Exit;
+  End;
+
+  { Consommer ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    TplNextToken
+  Else
+  Begin
+    { WriteLn sans parentheses -> CR+LF }
+    If IsWriteLn Then
+    Begin
+      EmitInstrAB('MOV', 'ESI', 'OFFSET ' + PSP_RT_PFX + 'CRLF');
+      EmitCall(PSP_RT_PFX + 'PRINTSTR');
+    End;
+    Exit;
+  End;
+
+  { Boucle sur les arguments }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    { Evaluer l expression argument }
+    ParseExpr(Ev);
+
+    { Detecter formatage Write(val:width) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      TplNextToken;
+      ParseExpr(WidthEv);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        TplNextToken;
+        ParseExpr(WidthEv);
+        WarnMsg('formatage flottant :w:d non supporte, ignore');
+      End;
+    End;
+
+    { Materialiser et afficher }
+    ExprFlushToEAX(Ev);
+    EmitPrintEAX(Ev.TypeIdx);
+
+    { Virgule entre arguments }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+  End;
+
+  { Consommer ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    TplNextToken;
+
+  { WriteLn : ajouter CR+LF }
+  If IsWriteLn Then
+  Begin
+    EmitInstrAB('MOV', 'ESI', 'OFFSET ' + PSP_RT_PFX + 'CRLF');
+    EmitCall(PSP_RT_PFX + 'PRINTSTR');
+  End;
+
+  { Point-virgule }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+End;
 
 { --- Stubs If/Case/Blocs (TODO 13) --- }
 Procedure ParseStatement; Begin End;
