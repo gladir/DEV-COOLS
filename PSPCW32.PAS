@@ -147,7 +147,7 @@
               _PSPRT_CHRBUF (2), _PSPRT_CRLF DB 13,10,0
             Handles stdout : _PSPRT_HSTDOUT DD 0 (initialise au demarrage)
 
-  TODO 09 - VARIABLES ET AFFECTATIONS (32 BITS)
+  TODO 09 - VARIABLES ET AFFECTATIONS (32 BITS) [IMPLEMENTE]
             Variables globales : segment .DATA, acces par label _PSP_nom
               MOV EAX,[_PSP_nom] / MOV [_PSP_nom],EAX
             Variables locales : pile EBP, acces [EBP-offset]
@@ -933,6 +933,13 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
 { Variables et affectations - TODO 09 }
+Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
+Procedure ExprStore(SIdx : Integer); Forward;
+Procedure ExprLoad(SIdx : Integer; Var E : TExprVal); Forward;
+Function  DeclAllocGlobal(Const Name : TString;
+                TIdx : Integer) : Integer; Forward;
+Function  DeclAllocLocal(Const Name : TString;
+                TIdx : Integer) : Integer; Forward;
 Procedure ParseVarDecl; Forward;
 Procedure ParseAssignment(Const VarName : TString); Forward;
 { Write/WriteLn et emission HTML - TODO 12 / 19 }
@@ -5215,9 +5222,480 @@ Begin
   ParseExprPrec(1, Res);
 End;
 
-{ --- Stubs Variables (TODO 09) --- }
-Procedure ParseVarDecl; Begin End;
-Procedure ParseAssignment(Const VarName : TString); Begin End;
+{ ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS (32 BITS) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExprAddrOf : retourner la chaine d adresse d un symbole - }
+{ Retourne la representation MASM de l adresse :                   }
+{   - locale/param -> [EBP-n] ou [EBP+n]                          }
+{   - globale -> [_PSP_xxx]                                        }
+Function ExprAddrOf(SIdx : Integer) : TString;
+Begin
+  If SymTab[SIdx].IsLocal Then
+    ExprAddrOf := EBPOfs(SymTab[SIdx].Offset)
+  Else
+    ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']';
+End;
+
+{ ---- ExprStore : stocker EAX dans la cible SIdx ------------- }
+{ Gere : variable locale, globale, parametre var (double indirection) }
+Procedure ExprStore(SIdx : Integer);
+Var
+  Sz : Integer;
+Begin
+  Sz := TypeSizeof(SymTab[SIdx].TypeIdx);
+  If SymTab[SIdx].IsLocal Then
+  Begin
+    If SymTab[SIdx].Cat = SC_VARPARAM Then
+    Begin
+      { Parametre var (reference) : MOV EBX,[EBP+n] / MOV [EBX], EAX }
+      EmitInstrAB('MOV', 'EBX',
+        'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset));
+      If Sz = 1 Then
+        EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+      Else
+        EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+    End
+    Else
+    Begin
+      { Variable locale ou parametre value : MOV [EBP-n], EAX }
+      If Sz = 1 Then
+        EmitInstrAB('MOV',
+          'BYTE PTR ' + EBPOfs(SymTab[SIdx].Offset), 'AL')
+      Else
+        EmitInstrAB('MOV',
+          'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset), 'EAX');
+    End;
+  End
+  Else
+  Begin
+    { Variable globale : MOV [_PSP_xxx], EAX }
+    If Sz = 1 Then
+      EmitInstrAB('MOV',
+        'BYTE PTR [' + SymTab[SIdx].MangledName + ']', 'AL')
+    Else
+      EmitInstrAB('MOV',
+        'DWORD PTR [' + SymTab[SIdx].MangledName + ']', 'EAX');
+  End;
+End;
+
+{ ---- ExprLoad : charger un symbole dans un TExprVal --------- }
+Procedure ExprLoad(SIdx : Integer; Var E : TExprVal);
+Begin
+  E.Kind    := EK_MEM;
+  E.ImmVal  := 0;
+  E.TypeIdx := SymTab[SIdx].TypeIdx;
+  E.Offset  := SymTab[SIdx].Offset;
+  E.SymIdx  := SIdx;
+End;
+
+{ ---- DeclAllocGlobal : allouer une variable globale --------- }
+{ Cree une entree dans DataTab et met a jour le symbole.          }
+Function DeclAllocGlobal(Const Name : TString;
+                TIdx : Integer) : Integer;
+Var
+  SIdx, DIdx : Integer;
+  TSz : Integer;
+Begin
+  SIdx := SymAdd(Name, SC_VAR, TIdx);
+  DeclAllocGlobal := SIdx;
+  If SIdx < 0 Then Exit;
+  TSz := TypeSizeof(TIdx);
+  { Records }
+  If (TIdx >= 0) And (TIdx < TypeCount) And
+     (TypeTab[TIdx].Kind = TKP_RECORD) Then
+  Begin
+    SymTab[SIdx].MangledName := PSP_REC_PFX +
+      StrUpperCase(Name);
+    DIdx := DataAddRec(SymTab[SIdx].MangledName, TSz);
+    SymTab[SIdx].DataIdx := DIdx;
+    SymTab[SIdx].IsLocal := False;
+  End
+  Else If TSz = 1 Then
+  Begin
+    DIdx := DataAddByte(SymTab[SIdx].MangledName, 0);
+    SymTab[SIdx].DataIdx := DIdx;
+    SymTab[SIdx].IsLocal := False;
+  End
+  Else
+  Begin
+    DIdx := DataAddDWord(SymTab[SIdx].MangledName, 0);
+    SymTab[SIdx].DataIdx := DIdx;
+    SymTab[SIdx].IsLocal := False;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  VAR_GLOBAL: ', Name, ' -> ',
+            SymTab[SIdx].MangledName);
+End;
+
+{ ---- DeclAllocLocal : allouer une variable locale ----------- }
+{ Decremente CurFrameOffset et stocke l offset dans le symbole.  }
+Function DeclAllocLocal(Const Name : TString;
+                TIdx : Integer) : Integer;
+Var
+  SIdx : Integer;
+  TSz  : Integer;
+Begin
+  SIdx := SymAdd(Name, SC_VAR, TIdx);
+  DeclAllocLocal := SIdx;
+  If SIdx < 0 Then Exit;
+  TSz := TypeSizeof(TIdx);
+  { Aligner Byte/Char/Boolean sur 4 octets (DWORD) }
+  If TSz < 4 Then
+    TSz := 4;
+  Dec(CurFrameOffset, TSz);
+  SymTab[SIdx].Offset  := CurFrameOffset;
+  SymTab[SIdx].IsLocal := True;
+  If Opts.DebugMode Then
+    WriteLn('  VAR_LOCAL: ', Name, ' -> ',
+            EBPOfs(CurFrameOffset));
+End;
+
+{ ---- ParseVarDecl : analyser un bloc var ---------------------- }
+{ Syntaxe : var a, b, c: Integer; s: String;                      }
+{ Gere les declarations multiples sur une meme ligne.             }
+{ Scope global -> entree DataTab, scope local -> offset cadre.    }
+Procedure ParseVarDecl;
+Var
+  Names    : Array[0..MAX_PARAM - 1] Of TString;
+  NCount   : Integer;
+  TName    : TString;
+  TIdx     : Integer;
+  I, Idx   : Integer;
+  DIdx     : Integer;
+  { Tableaux }
+  ArrLo, ArrHi   : LongInt;
+  ArrCount        : LongInt;
+  ArrSize         : LongInt;
+  ElemTIdx        : Integer;
+  NewArrTIdx      : Integer;
+  ElemTName       : TString;
+  ElemSz          : Integer;
+Begin
+  { Le mot-cle 'var' a deja ete consomme par l appelant }
+  HasPendingAssign := False;
+  While (CurToken.Kind = TK_IDENT) Do
+  Begin
+    { Lookahead : lire le premier ident puis verifier le token suivant }
+    Names[0] := CurToken.Val;
+    NCount := 1;
+    TplNextToken;
+
+    { Si := suit, c est une affectation, pas une declaration var }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      PendingAssignName := Names[0];
+      HasPendingAssign  := True;
+      Exit;  { Quitter ParseVarDecl, laisser CurToken sur := }
+    End;
+
+    { Collecter d eventuels noms supplementaires separes par virgule }
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      TplNextToken;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        If NCount < MAX_PARAM Then
+        Begin
+          Names[NCount] := CurToken.Val;
+          Inc(NCount);
+        End
+        Else
+          WarnMsg('trop de variables dans une declaration');
+        TplNextToken;
+      End
+      Else
+      Begin
+        WarnMsg('identificateur attendu apres virgule');
+        Break;
+      End;
+    End;
+
+    { Deux-points + nom de type }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      TplNextToken
+    Else
+    Begin
+      WarnMsg(''':'' attendu apres le(s) nom(s) de variable');
+      { Sauter jusqu au prochain ; }
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        TplNextToken;
+      Continue;
+    End;
+
+    { --- Detection array[lo..hi] of TypeElem --- }
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'array') Then
+    Begin
+      TplNextToken;  { consommer array }
+
+      { Consommer [ }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        TplNextToken
+      Else
+        WarnMsg('''['' attendu apres array');
+
+      { Borne inferieure }
+      ArrLo := 0;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrLo := CurToken.IntVal;
+        TplNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or
+              (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        If (Idx >= 0) And
+           (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrLo := SymTab[Idx].ImmVal
+        Else
+          WarnMsg('constante attendue pour borne inferieure');
+        TplNextToken;
+      End;
+
+      { Consommer .. }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+        TplNextToken
+      Else
+        WarnMsg('''..'' attendu dans declaration array');
+
+      { Borne superieure }
+      ArrHi := 0;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrHi := CurToken.IntVal;
+        TplNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or
+              (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        If (Idx >= 0) And
+           (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrHi := SymTab[Idx].ImmVal
+        Else
+          WarnMsg('constante attendue pour borne superieure');
+        TplNextToken;
+      End;
+
+      { Consommer ] }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+        TplNextToken
+      Else
+        WarnMsg(''']'' attendu');
+
+      { Consommer of }
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        TplNextToken
+      Else
+        WarnMsg('''of'' attendu apres array[...]');
+
+      { Lire le type element }
+      ElemTName := '';
+      If (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_IDENT) Then
+      Begin
+        ElemTName := CurToken.Val;
+        TplNextToken;
+      End
+      Else
+        WarnMsg('type element attendu');
+
+      ElemTIdx := TypeResolve(ElemTName);
+      If ElemTIdx = TY_UNKNOWN Then
+      Begin
+        WarnMsg('type element inconnu: ' + ElemTName);
+        ElemTIdx := TY_IDX_INTEGER;
+      End;
+      ElemSz := TypeSizeof(ElemTIdx);
+
+      ArrCount := ArrHi - ArrLo + 1;
+      If ArrCount < 1 Then ArrCount := 1;
+      ArrSize := ArrCount * ElemSz;
+
+      { Creer entree TypeTab pour ce type array }
+      NewArrTIdx := TY_IDX_INTEGER;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewArrTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewArrTIdx].Kind        := TKP_ARRAY;
+        TypeTab[NewArrTIdx].Size        := ArrSize;
+        TypeTab[NewArrTIdx].BaseTypeIdx := ElemTIdx;
+        TypeTab[NewArrTIdx].Lo          := ArrLo;
+        TypeTab[NewArrTIdx].Hi          := ArrHi;
+        TypeTab[NewArrTIdx].FieldCount  := 0;
+        TypeTab[NewArrTIdx].EnumCount   := 0;
+      End
+      Else
+        WarnMsg('nombre maximal de types atteint');
+
+      { Enregistrer chaque variable tableau }
+      For I := 0 To NCount - 1 Do
+      Begin
+        Idx := SymAdd(Names[I], SC_VAR, NewArrTIdx);
+        If Idx >= 0 Then
+        Begin
+          If CurScopeLevel = 0 Then
+          Begin
+            { Tableau global }
+            SymTab[Idx].MangledName := PSP_ARR_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddArray(
+              SymTab[Idx].MangledName, ArrCount, ElemSz);
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_ARRAY_GLOBAL: ', Names[I],
+                      ' [', ArrLo, '..', ArrHi, '] of ',
+                      ElemTName, ' -> ',
+                      SymTab[Idx].MangledName);
+          End
+          Else
+          Begin
+            { Tableau local : allouer sur la pile }
+            Dec(CurFrameOffset, ArrSize);
+            SymTab[Idx].Offset  := CurFrameOffset;
+            SymTab[Idx].IsLocal := True;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_ARRAY_LOCAL: ', Names[I],
+                      ' [', ArrLo, '..', ArrHi, '] of ',
+                      ElemTName, ' -> ',
+                      EBPOfs(CurFrameOffset));
+          End;
+        End;
+      End;
+
+      { Point-virgule }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        TplNextToken;
+      Continue;
+    End;
+
+    { Lire le nom de type }
+    TName := '';
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      TName := CurToken.Val;
+      TplNextToken;
+    End
+    Else
+      WarnMsg('nom de type attendu');
+
+    { Resoudre le type }
+    TIdx := TypeResolve(TName);
+    If TIdx = TY_UNKNOWN Then
+    Begin
+      WarnMsg('type inconnu: ' + TName);
+      TIdx := TY_IDX_INTEGER;  { defaut }
+    End;
+
+    { Enregistrer chaque variable }
+    For I := 0 To NCount - 1 Do
+    Begin
+      If CurScopeLevel = 0 Then
+        Idx := DeclAllocGlobal(Names[I], TIdx)
+      Else
+        Idx := DeclAllocLocal(Names[I], TIdx);
+    End;
+
+    { Point-virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+  End;
+End;
+
+{ ---- ParseAssignment : analyser une affectation --------------- }
+{ Syntaxe : variable := expression ;                               }
+{ Gere : retour de fonction, variable locale/globale, param var.   }
+Procedure ParseAssignment(Const VarName : TString);
+Var
+  SIdx : Integer;
+  Ev   : TExprVal;
+Begin
+  { Affectation a la valeur de retour : FuncName := expr }
+  If (CurFuncName <> '') And
+     ((StrLowerCase(VarName) = CurFuncName) Or
+      (StrLowerCase(VarName) = 'result')) Then
+  Begin
+    { Consommer := }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      TplNextToken
+    Else
+    Begin
+      WarnMsg(''':='' attendu pour l''affectation');
+      Exit;
+    End;
+
+    EmitComment('assign retval ' + VarName);
+    ParseExpr(Ev);
+    ExprFlushToEAX(Ev);
+    EmitInstrAB('MOV',
+      'DWORD PTR ' + EBPOfs(CurFuncRetOfs), 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Rechercher la variable }
+  SIdx := SymFind(VarName);
+  If SIdx < 0 Then
+  Begin
+    WarnMsg('variable non declaree: ' + VarName);
+    { Sauter jusqu au ; }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Verifier que c est bien une variable/param }
+  If Not (SymTab[SIdx].Cat In [SC_VAR, SC_PARAM, SC_VARPARAM,
+                                 SC_TYPED_CONST]) Then
+  Begin
+    WarnMsg('cible d''affectation invalide: ' + VarName);
+  End;
+
+  { Consommer := }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    TplNextToken
+  Else
+  Begin
+    WarnMsg(''':='' attendu pour l''affectation');
+    Exit;
+  End;
+
+  EmitComment('assign ' + VarName);
+
+  { Evaluer l expression }
+  ParseExpr(Ev);
+
+  { Verification de compatibilite de type }
+  If (SymTab[SIdx].TypeIdx <> TY_UNKNOWN) And
+     (Ev.TypeIdx <> TY_UNKNOWN) Then
+  Begin
+    If Not TypeCompatible(SymTab[SIdx].TypeIdx, Ev.TypeIdx) Then
+      ErrorMsg('type incompatible dans l''affectation de ' + VarName);
+  End;
+
+  { Materialiser la valeur dans EAX }
+  ExprFlushToEAX(Ev);
+
+  { Stocker EAX dans la cible }
+  ExprStore(SIdx);
+
+  { Point-virgule }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+End;
 
 { --- Stubs Write/HTML (TODO 12 / 19) --- }
 Procedure ParseWriteStmt(IsWriteLn : Boolean); Begin End;
