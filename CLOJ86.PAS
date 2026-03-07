@@ -157,7 +157,7 @@
             Forme quote : (quote x) -> retourne x sans evaluation
             Forme do : (do expr1 expr2 ... exprN) -> evalue tout, retourne exprN
 
-  TODO 11 - EXPRESSIONS ARITHMETIQUES ET COMPARAISONS
+  TODO 11 - EXPRESSIONS ARITHMETIQUES ET COMPARAISONS [IMPLEMENTE]
             Arithmetique : (+ a b ...) (- a b ...) (* a b ...) (/ a b ...)
               Variadic : (+ a b c) -> a+b puis +c via boucle ou depliage
               ADD/SUB/IMUL/IDIV pour les operations entieres
@@ -746,6 +746,15 @@ Procedure ParseLet(Var Res : TExprVal); Forward;
 Procedure ParseFnCall(Const FnName : TString; FnSIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ParseForm(Var Res : TExprVal); Forward;
+(* TODO 11 *)
+Procedure ParseArith(Const Op : TString; Var Res : TExprVal); Forward;
+Procedure ParseMod(Const Op : TString; Var Res : TExprVal); Forward;
+Procedure ParseIncDec(Const Op : TString; Var Res : TExprVal); Forward;
+Procedure ParseCompare(Const Op : TString; Var Res : TExprVal); Forward;
+Procedure ParseAnd(Var Res : TExprVal); Forward;
+Procedure ParseOr(Var Res : TExprVal); Forward;
+Procedure ParseNot(Var Res : TExprVal); Forward;
+Procedure ParseMinMax(Const Op : TString; Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -3690,7 +3699,71 @@ Begin
         Begin
           SIdx := SymFind(HeadSym);
           LexNextToken;  (* consomme le nom de la fonction *)
-          If (SIdx >= 0) And
+
+          (* TODO 11 : dispatcher les operateurs arithmetiques *)
+          If (HeadSym = '+') Or (HeadSym = '-') Or
+             (HeadSym = '*') Or (HeadSym = '/') Then
+          Begin
+            ParseArith(HeadSym, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres ' + HeadSym);
+            Exit;
+          End
+          Else If (HeadSym = 'mod') Or (HeadSym = 'rem') Then
+          Begin
+            ParseMod(HeadSym, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres ' + HeadSym);
+            Exit;
+          End
+          Else If (HeadSym = 'inc') Or (HeadSym = 'dec') Then
+          Begin
+            ParseIncDec(HeadSym, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres ' + HeadSym);
+            Exit;
+          End
+          Else If (HeadSym = '=') Or (HeadSym = 'not=') Or
+                  (HeadSym = '<') Or (HeadSym = '<=') Or
+                  (HeadSym = '>') Or (HeadSym = '>=') Or
+                  (HeadSym = '==') Then
+          Begin
+            ParseCompare(HeadSym, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres ' + HeadSym);
+            Exit;
+          End
+          Else If HeadSym = 'and' Then
+          Begin
+            ParseAnd(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres and');
+            Exit;
+          End
+          Else If HeadSym = 'or' Then
+          Begin
+            ParseOr(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres or');
+            Exit;
+          End
+          Else If HeadSym = 'not' Then
+          Begin
+            ParseNot(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres not');
+            Exit;
+          End
+          Else If (HeadSym = 'min') Or (HeadSym = 'max') Then
+          Begin
+            ParseMinMax(HeadSym, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres ' + HeadSym);
+            Exit;
+          End
+
+          (* Appel de fonction generique *)
+          Else If (SIdx >= 0) And
              ((SymTab[SIdx].Kind = SK_FN) Or
               (SymTab[SIdx].Kind = SK_VAR)) Then
           Begin
@@ -3760,6 +3833,392 @@ Begin
     (* Token non gere : avancer *)
     LexNextToken;
   End;
+End;
+
+(* ============================================================
+   TODO 11 - EXPRESSIONS ARITHMETIQUES ET COMPARAISONS [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseArith : (+ a b) (- a b) (mul a b) (/ a b) -------- *)
+(* Operateurs arithmetiques variadiques Clojure.                  *)
+(* Premiere forme evaluee dans AX, puis accumulation iterative.   *)
+(* (+ a b c) = a+b puis +c                                       *)
+(* Sans argument : (+) = 0, (mul) = 1                             *)
+(* Un seul argument : (+ x) = x, (- x) = -x                      *)
+Procedure ParseArith(Const Op : TString; Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  ArgCount : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(' + Op + ' ...)');
+  ArgCount := 0;
+
+  (* Verifier s il y a des arguments *)
+  If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    (* Pas d argument : identite de l operateur *)
+    If (Op = '+') Or (Op = '-') Then
+      ExprMakeImm(0, TY_IDX_INT, Res)    { (+) = 0, (-) = 0 }
+    Else
+      ExprMakeImm(1, TY_IDX_INT, Res);   { mul = 1, (/) = 1 }
+    Exit;
+  End;
+
+  (* Premier argument *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  Inc(ArgCount);
+
+  (* Un seul argument avec - : negation *)
+  If (ArgCount = 1) And (Op = '-') And
+     ((CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF)) Then
+  Begin
+    EmitInstrA('NEG', 'AX');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_INT;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  (* Arguments suivants : accumulation *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    EmitInstrA('PUSH', 'AX');        (* sauvegarder l accumulateur *)
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrAB('MOV', 'BX', 'AX'); (* BX = nouvel argument *)
+    EmitInstrA('POP', 'AX');         (* AX = accumulateur *)
+
+    If Op = '+' Then
+      EmitInstrAB('ADD', 'AX', 'BX')
+    Else If Op = '-' Then
+      EmitInstrAB('SUB', 'AX', 'BX')
+    Else If Op = '*' Then
+    Begin
+      EmitInstrA('IMUL', 'BX');      { DX:AX = AX x BX }
+    End
+    Else If Op = '/' Then
+    Begin
+      EmitInstr('CWD', '');          (* signe-etend AX dans DX:AX *)
+      EmitInstrA('IDIV', 'BX');      (* AX = quotient, DX = reste *)
+    End;
+    Inc(ArgCount);
+  End;
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseMod : (mod a b) / (rem a b) ----------------------- *)
+(* Reste de la division entiere.                                   *)
+(* mod : reste avec signe du diviseur (semantique Clojure)         *)
+(* rem : reste avec signe du dividende (semantique Java)           *)
+Procedure ParseMod(Const Op : TString; Var Res : TExprVal);
+Var
+  ArgA, ArgB : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(' + Op + ' a b)');
+
+  (* Premier argument *)
+  ParseForm(ArgA);
+  ExprFlushToAX(ArgA);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Second argument *)
+  ParseForm(ArgB);
+  ExprFlushToAX(ArgB);
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrA('POP', 'AX');
+
+  (* Division : AX = quotient, DX = reste *)
+  EmitInstr('CWD', '');
+  EmitInstrA('IDIV', 'BX');
+  EmitInstrAB('MOV', 'AX', 'DX');   (* AX = reste *)
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseIncDec : (inc x) / (dec x) ------------------------ *)
+(* Incremente ou decremente la valeur de 1.                       *)
+Procedure ParseIncDec(Const Op : TString; Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(' + Op + ' x)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  If Op = 'inc' Then
+    EmitInstrAB('ADD', 'AX', '1')
+  Else
+    EmitInstrAB('SUB', 'AX', '1');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseCompare : (= a b) (< a b) (> a b) etc. ----------- *)
+(* Compare deux valeurs. Pour les entiers : CMP + SETcc.          *)
+(* Pour les chaines : CALL _CLRT_STRCMP puis CMP AX,0 + SETcc.   *)
+(* Resultat : AX=1 (true) ou AX=0 (false)                        *)
+Procedure ParseCompare(Const Op : TString; Var Res : TExprVal);
+Var
+  ArgA, ArgB : TExprVal;
+  LblTrue, LblEnd : TString;
+  Jcc : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(' + Op + ' a b)');
+
+  (* Evaluer les deux arguments *)
+  ParseForm(ArgA);
+  ExprFlushToAX(ArgA);
+  EmitInstrA('PUSH', 'AX');
+
+  ParseForm(ArgB);
+  ExprFlushToAX(ArgB);
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrA('POP', 'AX');
+
+  (* Comparaison de chaines si les deux sont des pointeurs string *)
+  If (TypeIsPtr(ArgA.TypeIdx)) Or (TypeIsPtr(ArgB.TypeIdx)) Then
+  Begin
+    (* AX = gauche, BX = droite -> CALL _CLRT_STRCMP *)
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('MOV', 'DI', 'BX');
+    EmitInstrA('CALL', CL_RT_PFX + 'STRCMP');
+    (* AX contient le resultat : <0, 0, >0 *)
+    EmitInstrAB('CMP', 'AX', '0');
+  End
+  Else
+  Begin
+    (* Comparaison entiere *)
+    EmitInstrAB('CMP', 'AX', 'BX');
+  End;
+
+  (* Determiner le saut conditionnel *)
+  LblTrue := LabelGen;
+  LblEnd  := LabelGen;
+
+  If      Op = '='    Then Jcc := 'JE'
+  Else If Op = 'not=' Then Jcc := 'JNE'
+  Else If Op = '<'    Then Jcc := 'JL'
+  Else If Op = '<='   Then Jcc := 'JLE'
+  Else If Op = '>'    Then Jcc := 'JG'
+  Else If Op = '>='   Then Jcc := 'JGE'
+  Else If Op = '=='   Then Jcc := 'JE'
+  Else                     Jcc := 'JE';
+
+  EmitInstrA(Jcc, LblTrue);
+  EmitInstrAB('XOR', 'AX', 'AX');   (* false = 0 *)
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(LblTrue);
+  EmitInstrAB('MOV', 'AX', '1');    (* true = 1 *)
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseAnd : (and a b ...) ------------------------------- *)
+(* Court-circuit : retourne la premiere valeur fausse (nil/false) *)
+(* ou la derniere valeur vraie. En Clojure, (and) -> true.        *)
+Procedure ParseAnd(Var Res : TExprVal);
+Var
+  ArgRes  : TExprVal;
+  LblFail : TString;
+  LblEnd  : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(and ...)');
+  LblFail := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* (and) sans arguments -> true *)
+  If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    ExprMakeBool(1, Res);
+    Exit;
+  End;
+
+  (* Evaluer les arguments avec court-circuit *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+
+    (* Verifier si dernier argument *)
+    If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+    Begin
+      (* Dernier argument : la valeur reste dans AX *)
+    End
+    Else
+    Begin
+      (* Pas le dernier : tester la verite *)
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JE', LblFail);   (* nil/false -> court-circuit *)
+    End;
+  End;
+  EmitInstrA('JMP', LblEnd);
+
+  EmitLabel(LblFail);
+  EmitInstrAB('XOR', 'AX', 'AX');  (* retourner nil/false = 0 *)
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseOr : (or a b ...) --------------------------------- *)
+(* Court-circuit : retourne la premiere valeur vraie              *)
+(* ou la derniere valeur. En Clojure, (or) -> nil.                *)
+Procedure ParseOr(Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  LblTrue  : TString;
+  LblEnd   : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(or ...)');
+  LblTrue := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* (or) sans arguments -> nil *)
+  If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    ExprMakeNone(Res);
+    Exit;
+  End;
+
+  (* Evaluer les arguments avec court-circuit *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+
+    (* Verifier si dernier argument *)
+    If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+    Begin
+      (* Dernier argument : la valeur reste dans AX *)
+    End
+    Else
+    Begin
+      (* Pas le dernier : tester la verite *)
+      EmitInstrAB('CMP', 'AX', '0');
+      EmitInstrA('JNE', LblTrue);  (* vrai -> court-circuit *)
+    End;
+  End;
+  EmitInstrA('JMP', LblEnd);
+
+  EmitLabel(LblTrue);
+  (* AX contient deja la valeur vraie *)
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseNot : (not x) ------------------------------------- *)
+(* Si x est nil ou false -> true (1), sinon -> false (0)          *)
+Procedure ParseNot(Var Res : TExprVal);
+Var
+  ArgRes  : TExprVal;
+  LblTrue, LblEnd : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(not x)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  LblTrue := LabelGen;
+  LblEnd  := LabelGen;
+
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblTrue);        (* nil/false -> retourne true *)
+  EmitInstrAB('XOR', 'AX', 'AX');   (* false = 0 *)
+  EmitInstrA('JMP', LblEnd);
+  EmitLabel(LblTrue);
+  EmitInstrAB('MOV', 'AX', '1');    (* true = 1 *)
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseMinMax : (min a b ...) / (max a b ...) ------------ *)
+(* Retourne le minimum ou maximum de N arguments.                 *)
+(* Accumulation iterative : compare chaque argument avec AX.      *)
+Procedure ParseMinMax(Const Op : TString; Var Res : TExprVal);
+Var
+  ArgRes   : TExprVal;
+  LblSkip  : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(' + Op + ' ...)');
+
+  (* Premier argument *)
+  If (CurToken.Kind = TK_RPAREN) Or (CurToken.Kind = TK_EOF) Then
+  Begin
+    WarnMsg(Op + ' sans argument');
+    ExprMakeNone(Res);
+    Exit;
+  End;
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* Arguments suivants : comparaison iteree *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    EmitInstrA('PUSH', 'AX');        (* sauvegarder le min/max courant *)
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrAB('MOV', 'BX', 'AX'); (* BX = nouvel argument *)
+    EmitInstrA('POP', 'AX');         (* AX = min/max courant *)
+
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', 'AX', 'BX');
+    If Op = 'min' Then
+      EmitInstrA('JLE', LblSkip)     (* AX <= BX : garder AX *)
+    Else
+      EmitInstrA('JGE', LblSkip);    (* AX >= BX : garder AX *)
+    EmitInstrAB('MOV', 'AX', 'BX'); (* sinon prendre BX *)
+    EmitLabel(LblSkip);
+  End;
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
 End;
 
 Procedure EmitRuntime;
