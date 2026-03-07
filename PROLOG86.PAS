@@ -53,7 +53,7 @@
             true : atome predefini -> succes immediat
             fail : atome predefini -> echec immediat
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Notation prefixe, infixe, postfixe : fx, fy, xfx, xfy, yfx, xf, yf
             Priorites standard (du plus faible au plus fort) :
               1200 : :- (directive), ?- (requete), --> (DCG)
@@ -635,6 +635,17 @@ Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 Function  IsSpecialAtom(Const S : TString) : Boolean; Forward;
+{ Operateurs et precedence (TODO 04) }
+Procedure ParserAdvance; Forward;
+Function  BinOpPrec(Const Op : TString) : Integer; Forward;
+Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
+Function  OpSpecifier(Const Op : TString) : TString; Forward;
+Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Procedure EmitBinOp(Const Op : TString; LeftType, RightType : Integer); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2044,7 +2055,613 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (04..25)
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParserAdvance : consommer le token courant ------------- }
+{ Appelle LexNextToken et affiche le token en mode debug.       }
+Procedure ParserAdvance;
+Begin
+  LexNextToken;
+  If Opts.DebugMode Then
+    PrintToken(CurToken);
+End;
+
+{ ---- BinOpPrec : table de precedences Prolog (Pratt) -------- }
+{ En Prolog ISO, les priorites sont decroissantes (1200=faible, }
+{ 200=fort). On les convertit en niveaux croissants pour le     }
+{ parseur Pratt (plus grand = plus serre, 0 = pas operateur).  }
+{                                                                }
+{   Prolog 1200 -> Pratt 1 : :- ?- -->                          }
+{   Prolog 1100 -> Pratt 2 : ; (disjonction)                   }
+{   Prolog 1050 -> Pratt 3 : -> (if-then)                      }
+{   Prolog 1000 -> Pratt 4 : , (conjonction)                   }
+{   Prolog 900  -> Pratt 5 : \+ (negation par echec)           }
+{   Prolog 700  -> Pratt 6 : is = \= == \== < > =< >= =:= =\= }
+{                             @< @> @=< @>= =.. copy_term      }
+{   Prolog 500  -> Pratt 7 : + - /\ \/                         }
+{   Prolog 400  -> Pratt 8 : * / // rem mod << >>              }
+{   Prolog 200  -> Pratt 9 : ** ^                              }
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  { Niveau 1 : directif / requete (1200) }
+  If (Op = ':-') Or (Op = '?-') Or (Op = '-->') Then
+    BinOpPrec := 1
+  { Niveau 2 : disjonction (1100) }
+  Else If Op = ';' Then
+    BinOpPrec := 2
+  { Niveau 3 : if-then (1050) }
+  Else If Op = '->' Then
+    BinOpPrec := 3
+  { Niveau 4 : conjonction (1000) }
+  Else If Op = ',' Then
+    BinOpPrec := 4
+  { Niveau 5 : negation par echec (900) - unaire prefix, mais traite }
+  { comme operateur binaire potentiel pour \+ dans certains contextes }
+  { (ce cas est principalement gere par ParseUnary)                  }
+  { Niveau 6 : comparaison / unification / evaluation (700) }
+  Else If (Op = 'is')  Or (Op = '=')   Or (Op = '\=') Or
+          (Op = '==')  Or (Op = '\==') Or (Op = '=:=') Or
+          (Op = '=\=') Or (Op = '<')   Or (Op = '>') Or
+          (Op = '=<')  Or (Op = '>=')  Or (Op = '=..') Or
+          (Op = '@<')  Or (Op = '@>')  Or (Op = '@=<') Or
+          (Op = '@>=') Then
+    BinOpPrec := 6
+  { Niveau 7 : addition / soustraction / bits (500) }
+  Else If (Op = '+') Or (Op = '-') Or (Op = '/\') Or (Op = '\/') Then
+    BinOpPrec := 7
+  { Niveau 8 : multiplication / division (400) }
+  Else If (Op = '*')   Or (Op = '/')   Or (Op = '//') Or
+          (Op = 'rem') Or (Op = 'mod') Or
+          (Op = '<<')  Or (Op = '>>') Then
+    BinOpPrec := 8
+  { Niveau 9 : puissance / existentiel (200) }
+  Else If (Op = '**') Or (Op = '^') Then
+    BinOpPrec := 9
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ---- BinOpIsRight : operateur droit-associatif ? ------------ }
+{ En Prolog ISO :                                                }
+{   xfx : non associatif (=, ==, is, \=, ... -> gauche par def) }
+{   xfy : associatif a droite (:-, ?-, ;, ->, ',', \+)          }
+{   yfx : associatif a gauche (+, -, *, /, //, mod, rem, etc.)  }
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight :=
+    (Op = ':-') Or (Op = '?-') Or (Op = '-->') Or
+    (Op = ';')  Or (Op = '->') Or
+    (Op = ',')  Or
+    (Op = '^');
+End;
+
+{ ---- OpSpecifier : retourner le type d operateur Prolog ------ }
+{ fx/fy  : prefixe (non/associatif a droite)                    }
+{ xfx    : infixe non-associatif                                }
+{ xfy    : infixe droit-associatif                               }
+{ yfx    : infixe gauche-associatif                              }
+{ xf/yf  : postfixe (non utilise dans ISO standard)             }
+Function OpSpecifier(Const Op : TString) : TString;
+Begin
+  { Prefixes }
+  If (Op = ':-') Or (Op = '?-') Then
+    OpSpecifier := 'fx'
+  Else If (Op = '\+') Or (Op = 'not') Then
+    OpSpecifier := 'fy'
+  { Infixes xfy (droit-associatif) }
+  Else If (Op = ';') Or (Op = '->') Or (Op = ',') Then
+    OpSpecifier := 'xfy'
+  Else If (Op = '**') Then
+    OpSpecifier := 'xfx'
+  Else If (Op = '^') Then
+    OpSpecifier := 'xfy'
+  { Infixes xfx (non-associatif) }
+  Else If (Op = 'is')  Or (Op = '=')   Or (Op = '\=') Or
+          (Op = '==')  Or (Op = '\==') Or (Op = '=:=') Or
+          (Op = '=\=') Or (Op = '<')   Or (Op = '>') Or
+          (Op = '=<')  Or (Op = '>=')  Or (Op = '=..') Or
+          (Op = '@<')  Or (Op = '@>')  Or (Op = '@=<') Or
+          (Op = '@>=') Then
+    OpSpecifier := 'xfx'
+  { Infixes yfx (gauche-associatif) }
+  Else If (Op = '+')   Or (Op = '-')   Or (Op = '/\') Or (Op = '\/') Or
+          (Op = '*')   Or (Op = '/')   Or (Op = '//') Or
+          (Op = 'rem') Or (Op = 'mod') Or
+          (Op = '<<')  Or (Op = '>>') Then
+    OpSpecifier := 'yfx'
+  { Directive/requete prefixe }
+  Else If (Op = '-->') Then
+    OpSpecifier := 'xfx'
+  Else
+    OpSpecifier := 'yfx';
+End;
+
+{ ---- ExprFlushToAX : materialiser une valeur dans AX -------- }
+{ Emet le code 8086 necessaire pour charger la valeur dans AX.  }
+{ Note : stub minimal, sera complete par TODO 07 (emetteur).    }
+Procedure ExprFlushToAX(Const E : TExprVal);
+Var
+  NS : TString;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      If E.ImmVal = 0 Then
+        { XOR AX,AX est plus court que MOV AX,0 }
+      Else
+      Begin
+        Str(E.ImmVal, NS);
+        { MOV AX, valeur }
+      End;
+    End;
+    EK_MEM :
+    Begin
+      If (E.Offset >= 0) And (E.Offset < DataCount) Then
+      Begin
+        { MOV AX, OFFSET label }
+      End
+      Else
+      Begin
+        { XOR AX,AX }
+      End;
+    End;
+    EK_AX :
+      { deja dans AX } ;
+    EK_NONE :
+      { XOR AX,AX } ;
+  End;
+End;
+
+{ ---- EmitBinOp : emettre code pour un operateur binaire ------ }
+{ AX = operande gauche, BX = operande droit.                     }
+{ Resultat dans AX. Stub : sera complete par TODO 07.            }
+Procedure EmitBinOp(Const Op : TString; LeftType, RightType : Integer);
+Begin
+  { Stub : sera complete quand l emetteur ASM sera implemente }
+  { (TODO 07). Les operations seront :                         }
+  {   +  -> ADD AX, BX                                        }
+  {   -  -> SUB AX, BX                                        }
+  {   *  -> IMUL BX                                           }
+  {   /  -> CWD / IDIV BX                                     }
+  {   // -> CWD / IDIV BX                                     }
+  {   mod/rem -> CWD / IDIV BX, MOV AX,DX                     }
+  {   ** -> CALL _PLRT_POW                                     }
+  {   << -> MOV CL,BL / SHL AX,CL                             }
+  {   >> -> MOV CL,BL / SAR AX,CL                             }
+  {   /\ -> AND AX, BX                                        }
+  {   \/ -> OR  AX, BX                                        }
+  {   =:= =\= < > =< >= -> CMP AX,BX + Jcc                   }
+  {   = \= == \== -> CALL _PLRT_UNIFY / _PLRT_EQUAL           }
+  {   is -> evaluation arithmetique                            }
+  If LeftType = LeftType Then { eviter note unused }
+  Begin End;
+  If RightType = RightType Then
+  Begin End;
+End;
+
+{ ---- ParsePrimary : parser un terme primaire Prolog ---------- }
+{ Gere : entiers, flottants, atomes, variables, chaines,        }
+{   listes [H|T], parentheses (expr), cut !, variable anonyme _ }
+Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  TmpExpr : TExprVal;
+Begin
+  Case CurToken.Kind Of
+    { --- Entier --- }
+    TK_INTEGER :
+    Begin
+      LitEvalInt(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { --- Flottant (tronque en entier) --- }
+    TK_FLOAT :
+    Begin
+      LitEvalFloat(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { --- Atome (identificateur minuscule ou atome quote) --- }
+    TK_ATOM :
+    Begin
+      { Atomes operateurs mot-cle utilises comme valeurs }
+      If (CurToken.Val = 'is') Or (CurToken.Val = 'mod') Or
+         (CurToken.Val = 'rem') Or (CurToken.Val = 'not') Or
+         (CurToken.Val = 'xor') Then
+      Begin
+        { Dans un contexte primaire, ce sont des atomes }
+        LitEval(CurToken, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        LitEval(CurToken, Res);
+        ParserAdvance;
+        { Verifier si c est un foncteur : atome( ... ) }
+        If (CurToken.Kind = TK_LPAREN) Then
+        Begin
+          { Foncteur : atome(arg1, arg2, ...) }
+          { Stub : consommer les arguments et retourner EK_AX }
+          ParserAdvance; { consomme '(' }
+          While (CurToken.Kind <> TK_EOF) And
+                (CurToken.Kind <> TK_RPAREN) Do
+          Begin
+            ParseExprPrec(5, TmpExpr); { prec > , pour separer les args }
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              ParserAdvance;
+          End;
+          If CurToken.Kind = TK_RPAREN Then
+            ParserAdvance;
+          Res.Kind    := EK_AX;
+          Res.TypeIdx := TY_IDX_TERM;
+          Res.SymIdx  := -1;
+        End;
+      End;
+    End;
+
+    { --- Variable (commence par majuscule ou _Xxx) --- }
+    TK_VARIABLE :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { --- Chaine "abc" --- }
+    TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { --- Variable anonyme _ --- }
+    TK_UNDERSCORE :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { --- Cut ! --- }
+    TK_CUT :
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End;
+
+    { --- Parentheses (expr) --- }
+    TK_LPAREN :
+    Begin
+      ParserAdvance; { consomme '(' }
+      ParseExprPrec(1, Res); { parser l expression complete }
+      If CurToken.Kind = TK_RPAREN Then
+        ParserAdvance
+      Else
+        CompileError('parenthese fermante ) attendue');
+    End;
+
+    { --- Liste [elem1, elem2 | Queue] ou [] --- }
+    TK_LBRACKET :
+    Begin
+      ParserAdvance; { consomme '[' }
+      { Liste vide [] }
+      If CurToken.Kind = TK_RBRACKET Then
+      Begin
+        ExprMakeImm(0, TY_IDX_LIST, Res);
+        ParserAdvance;
+      End
+      Else
+      Begin
+        { Parser les elements de la liste }
+        ParseExprPrec(5, Res); { premier element (prec > ',') }
+        Res.TypeIdx := TY_IDX_LIST;
+        While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+        Begin
+          ParserAdvance; { consomme ',' }
+          ParseExprPrec(5, TmpExpr);
+        End;
+        { Queue de liste | }
+        If CurToken.Kind = TK_PIPE Then
+        Begin
+          ParserAdvance; { consomme '|' }
+          ParseExprPrec(5, TmpExpr); { queue }
+        End;
+        If CurToken.Kind = TK_RBRACKET Then
+          ParserAdvance
+        Else
+          CompileError('crochet fermant ] attendu');
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_LIST;
+        Res.SymIdx  := -1;
+      End;
+    End;
+
+  Else
+    { Token inconnu pour une expression primaire }
+    ExprMakeNone(Res);
+    ParserAdvance;
+  End;
+End;
+
+{ ---- ParseUnary : parser les operateurs unaires prefixe ------ }
+{ Prolog ISO :                                                    }
+{   - (unaire, fy, prec 200) : negation arithmetique             }
+{   \+ (fy, prec 900) : negation par echec (NAF)                }
+{   not (fy, prec 900) : synonyme de \+                          }
+{   + (unaire) : identite                                        }
+{   \ (unaire) : complement bit a bit                            }
+Procedure ParseUnary(Var Res : TExprVal);
+Var
+  Op : TString;
+Begin
+  { Operateur unaire sur TK_OP }
+  If CurToken.Kind = TK_OP Then
+  Begin
+    Op := CurToken.Val;
+    { - : negation arithmetique (fy, 200) }
+    If Op = '-' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      { Pliage de constantes }
+      If Res.Kind = EK_IMM Then
+        Res.ImmVal := -Res.ImmVal
+      Else
+        Res.Kind := EK_AX;
+      Exit;
+    End
+    { + : identite (fy, 200) }
+    Else If Op = '+' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      { Pas de changement de valeur, coerce en nombre }
+      Exit;
+    End
+    { \+ : negation par echec (fy, 900) }
+    Else If Op = '\+' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Res.ImmVal = 0 Then Res.ImmVal := 1
+        Else Res.ImmVal := 0;
+      End
+      Else
+        Res.Kind := EK_AX;
+      Exit;
+    End
+    { \ : complement bit-a-bit }
+    Else If Op = '\' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      If Res.Kind = EK_IMM Then
+        Res.ImmVal := Not Res.ImmVal
+      Else
+        Res.Kind := EK_AX;
+      Exit;
+    End;
+  End;
+  { Operateur unaire sur TK_ATOM (mot-cle operateur) }
+  If CurToken.Kind = TK_ATOM Then
+  Begin
+    Op := CurToken.Val;
+    { not : synonyme de \+ (fy, 900) }
+    If Op = 'not' Then
+    Begin
+      ParserAdvance;
+      ParseUnary(Res);
+      If Res.Kind = EK_IMM Then
+      Begin
+        If Res.ImmVal = 0 Then Res.ImmVal := 1
+        Else Res.ImmVal := 0;
+      End
+      Else
+        Res.Kind := EK_AX;
+      Exit;
+    End;
+  End;
+  { Pas d operateur unaire : appeler ParsePrimary }
+  ParsePrimary(Res);
+End;
+
+{ ---- ParseExprPrec : parseur Pratt pour expressions Prolog --- }
+{ MinPrec = niveau de precedence minimal a capturer.             }
+{ On utilise la convention Pratt standard : plus grand = plus    }
+{ serre. Le parseur s arrete quand un operateur a une priorite  }
+{ inferieure au minimum demande.                                 }
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  Right    : TExprVal;
+  FoldOk   : Boolean;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    { Detecter operateur binaire dans TK_OP }
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := BinOpPrec(Op);
+    End
+    { Detecter operateur binaire dans TK_ATOM (is, mod, rem, xor) }
+    Else If CurToken.Kind = TK_ATOM Then
+    Begin
+      If (CurToken.Val = 'is')  Or (CurToken.Val = 'mod') Or
+         (CurToken.Val = 'rem') Or (CurToken.Val = 'xor') Then
+      Begin
+        Op   := CurToken.Val;
+        Prec := BinOpPrec(Op);
+      End;
+    End
+    { Detecter , (conjonction) et ; (disjonction) dans TK_PUNCT }
+    Else If CurToken.Kind = TK_PUNCT Then
+    Begin
+      If (CurToken.Val = ',') Or (CurToken.Val = ';') Then
+      Begin
+        Op   := CurToken.Val;
+        Prec := BinOpPrec(Op);
+      End;
+    End;
+
+    { Arreter si pas d operateur ou si priorite insuffisante }
+    If Prec = 0 Then Break;
+    If Prec < MinPrec Then Break;
+
+    { Consommer l operateur }
+    ParserAdvance;
+
+    { Calculer la priorite pour le cote droit }
+    If BinOpIsRight(Op) Then
+      NextPrec := Prec      { droit-associatif : meme niveau }
+    Else
+      NextPrec := Prec + 1; { gauche-associatif : niveau plus serre }
+
+    { Parser l operande droit }
+    ParseExprPrec(NextPrec, Right);
+
+    { Pliage de constantes si les deux cotes sont immediats }
+    FoldOk := (Res.Kind = EK_IMM) And (Right.Kind = EK_IMM);
+    If FoldOk Then
+    Begin
+      { Arithmetique }
+      If Op = '+' Then
+        ExprMakeImm(Res.ImmVal + Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '-' Then
+        ExprMakeImm(Res.ImmVal - Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '*' Then
+        ExprMakeImm(Res.ImmVal * Right.ImmVal, TY_IDX_INT, Res)
+      Else If (Op = '/') Or (Op = '//') Then
+      Begin
+        If Right.ImmVal <> 0 Then
+          ExprMakeImm(Res.ImmVal Div Right.ImmVal, TY_IDX_INT, Res)
+        Else
+        Begin
+          CompileError('division par zero');
+          ExprMakeImm(0, TY_IDX_INT, Res);
+        End;
+      End
+      Else If (Op = 'mod') Or (Op = 'rem') Then
+      Begin
+        If Right.ImmVal <> 0 Then
+          ExprMakeImm(Res.ImmVal Mod Right.ImmVal, TY_IDX_INT, Res)
+        Else
+        Begin
+          CompileError('modulo par zero');
+          ExprMakeImm(0, TY_IDX_INT, Res);
+        End;
+      End
+      Else If Op = '**' Then
+      Begin
+        { Puissance entiere simplifiee }
+        If Right.ImmVal = 0 Then
+          ExprMakeImm(1, TY_IDX_INT, Res)
+        Else If Right.ImmVal = 1 Then
+          { garde Res.ImmVal }
+        Else
+        Begin
+          { Stub : ** avec constantes non triviales -> AX }
+          Res.Kind := EK_AX;
+          Res.TypeIdx := TY_IDX_INT;
+        End;
+      End
+      { Bits }
+      Else If Op = '/\' Then
+        ExprMakeImm(Res.ImmVal And Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '\/' Then
+        ExprMakeImm(Res.ImmVal Or Right.ImmVal, TY_IDX_INT, Res)
+      Else If Op = '<<' Then
+        ExprMakeImm(Res.ImmVal Shl (Right.ImmVal And 15), TY_IDX_INT, Res)
+      Else If Op = '>>' Then
+        ExprMakeImm(Res.ImmVal Shr (Right.ImmVal And 15), TY_IDX_INT, Res)
+      Else If Op = 'xor' Then
+        ExprMakeImm(Res.ImmVal Xor Right.ImmVal, TY_IDX_INT, Res)
+      { Comparaison (retourne 1=vrai, 0=faux) }
+      Else If Op = '<' Then
+        ExprMakeImm(Ord(Res.ImmVal < Right.ImmVal), TY_IDX_INT, Res)
+      Else If Op = '>' Then
+        ExprMakeImm(Ord(Res.ImmVal > Right.ImmVal), TY_IDX_INT, Res)
+      Else If Op = '=<' Then
+        ExprMakeImm(Ord(Res.ImmVal <= Right.ImmVal), TY_IDX_INT, Res)
+      Else If Op = '>=' Then
+        ExprMakeImm(Ord(Res.ImmVal >= Right.ImmVal), TY_IDX_INT, Res)
+      Else If Op = '=:=' Then
+        ExprMakeImm(Ord(Res.ImmVal = Right.ImmVal), TY_IDX_INT, Res)
+      Else If Op = '=\=' Then
+        ExprMakeImm(Ord(Res.ImmVal <> Right.ImmVal), TY_IDX_INT, Res)
+      { Unification / egalite structurelle : pas de pliage simple }
+      Else If (Op = '=') Or (Op = '\=') Or (Op = '==') Or (Op = '\==') Or
+              (Op = '=..') Or (Op = '@<') Or (Op = '@>') Or
+              (Op = '@=<') Or (Op = '@>=') Then
+      Begin
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_INT;
+      End
+      { is : evaluation arithmetique (le cote droit est deja evalue) }
+      Else If Op = 'is' Then
+        Res := Right
+      { Conjonction , : si gauche = 1 (vrai), resultat = droit }
+      Else If Op = ',' Then
+      Begin
+        If Res.ImmVal = 0 Then
+          ExprMakeImm(0, TY_IDX_INT, Res) { echec short-circuit }
+        Else
+          Res := Right;
+      End
+      { Disjonction ; : si gauche <> 0 (vrai), garde gauche }
+      Else If Op = ';' Then
+      Begin
+        If Res.ImmVal <> 0 Then
+          { garde Res }
+        Else
+          Res := Right;
+      End
+      { -> (if-then) : si gauche vrai, resultat = droit }
+      Else If Op = '->' Then
+      Begin
+        If Res.ImmVal <> 0 Then
+          Res := Right
+        Else
+          ExprMakeImm(0, TY_IDX_INT, Res); { echec }
+      End
+      Else
+      Begin
+        { Operateur non pliant : resultat dans AX }
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := TY_IDX_INT;
+      End;
+    End
+    Else
+    Begin
+      { Operandes non constants : le resultat sera dans AX (TODO 07) }
+      { Emettre le code binaire via EmitBinOp stub }
+      ExprFlushToAX(Res);
+      ExprFlushToAX(Right);
+      EmitBinOp(Op, Res.TypeIdx, Right.TypeIdx);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_INT;
+      Res.SymIdx  := -1;
+    End;
+  Until False;
+End;
+
+{ ---- ParseExpr : parser une expression Prolog complete ------- }
+{ Equivalent a ParseExprPrec avec MinPrec=1 (tous les           }
+{ operateurs sont captures, y compris :- et ?- au niveau 1).    }
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (05..25)
   ============================================================ }
 
 Procedure Run;
