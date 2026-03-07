@@ -136,7 +136,7 @@
               _RX_NUMBUF DB 12 DUP(0) (tampon conversion numerique)
             Pile de donnees (data stack) : zone reservee dans DATA
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables simples : chaines allouees dans DATA ou sur le heap
               Acces par label _RXV_NOM (majuscules)
             Variables locales (dans PROCEDURE) : pile BP, acces [BP-offset]
@@ -148,6 +148,13 @@
             DROP var : reinitialiser a la valeur par defaut (le nom)
             UPPER var : convertir le contenu en majuscules
             Affectation multiple via PARSE : voir TODO 16
+            VarAlloc : alloue variable globale (DB dans DATA) ou locale (pile)
+            VarAddrOf : retourne chaine d adressage ASM ([_RXV_X] ou [BP-n])
+            VarLoad : emet MOV AX / LEA AX pour charger ptr vers contenu
+            VarStore : emet CALL _RXRT_STRCPY pour copier chaine dans var
+            ParseAssign : parse var = expr, evalue et stocke
+            ParseDrop : parse DROP var1 var2 ... reinitialise au nom
+            ParseUpper : parse UPPER var1 var2 ... convertit en majuscules
 
   TODO 10 - EXPRESSIONS PRIMAIRES
             ParsePrimary : literal nombre, literal chaine, ident, appel fonction
@@ -788,6 +795,13 @@ Procedure ParseExpr(Var Res : TExprVal);    Forward;
 
 (* TODO 09 - Variables *)
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Function  VarAlloc(Const Name : TString) : Integer; Forward;
+Function  VarAddrOf(Idx : Integer) : TString; Forward;
+Procedure VarLoad(Idx : Integer); Forward;
+Procedure VarStore(Idx : Integer); Forward;
+Procedure ParseAssign(Const VarName : TString); Forward;
+Procedure ParseDrop; Forward;
+Procedure ParseUpper; Forward;
 
 (* Autres stubs *)
 Procedure ParseStmt;           Forward;
@@ -2658,6 +2672,46 @@ Begin
   EmitInstrAB('MOV', 'AX', '4C00h');
   EmitRaw('        INT     21h');
   EmitBlankLine;
+
+  (* _RXRT_STRCPY : copier chaine ASCIIZ de SI vers DI *)
+  (* Entree : SI = source, DI = destination              *)
+  (* Sortie : rien (DI pointe apres le 0 final)          *)
+  EmitLabel('_RXRT_STRCPY');
+  EmitInstrA('PUSH', 'AX');
+  EmitLabel('_RXRT_STRCPY_L');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', 'AL');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('INC', 'DI');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JNZ', '_RXRT_STRCPY_L');
+  EmitInstrA('POP', 'AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* _RXRT_UPPER : convertir chaine ASCIIZ pointee par SI en majuscules *)
+  (* Entree : SI = chaine a convertir (modifiee sur place)               *)
+  EmitLabel('_RXRT_UPPER');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrA('PUSH', 'SI');
+  EmitLabel('_RXRT_UPPER_L');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstrA('JZ', '_RXRT_UPPER_D');
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', '_RXRT_UPPER_N');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JA', '_RXRT_UPPER_N');
+  EmitInstrAB('SUB', 'AL', '20h');
+  EmitInstrAB('MOV', 'BYTE PTR [SI]', 'AL');
+  EmitLabel('_RXRT_UPPER_N');
+  EmitInstrA('INC', 'SI');
+  EmitInstrA('JMP', '_RXRT_UPPER_L');
+  EmitLabel('_RXRT_UPPER_D');
+  EmitInstrA('POP', 'SI');
+  EmitInstrA('POP', 'AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
 End;
 
 (* ---- EmitClose : fermer le fichier de sortie ASM ------------- *)
@@ -2760,6 +2814,211 @@ Begin
   DataAddBuffer('_RX_STRBUF', 256);               (* buffer general      *)
   DataAddBuffer('_RX_TMPBUF', 256);               (* tampon temporaire   *)
   DataAddBuffer('_RX_NUMBUF', 12);                (* conversion numerique *)
+End;
+
+(* ============================================================
+   TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- VarAlloc : allouer une variable REXX --------------------- *)
+(* En REXX, toute variable est une chaine. Les variables globales   *)
+(* sont allouees comme buffer de 256 octets dans le segment DATA.   *)
+(* La valeur par defaut d une variable non initialisee est son nom  *)
+(* en majuscules (convention REXX). Les variables locales (dans     *)
+(* une PROCEDURE) utilisent la pile [BP-offset].                    *)
+(* Retourne l index dans SymTab.                                    *)
+Function VarAlloc(Const Name : TString) : Integer;
+Var
+  U     : TString;
+  Idx   : Integer;
+  Lbl   : TString;
+  DefLbl: TString;
+Begin
+  U := StrUpperCase(Name);
+
+  (* Chercher si la variable existe deja *)
+  Idx := SymFind(U);
+  If (Idx >= 0) And (SymTab[Idx].Kind = SK_VAR) Then
+  Begin
+    VarAlloc := Idx;
+    Exit;
+  End;
+
+  If CurFnDepth > 0 Then
+  Begin
+    (* Variable locale : allouer sur la pile [BP-n] *)
+    Inc(CurFrameSize, 2);
+    Idx := SymAdd(U, SK_VAR, TY_IDX_STRING, -CurFrameSize);
+    VarAlloc := Idx;
+  End
+  Else
+  Begin
+    (* Variable globale : creer un buffer de 256 octets dans DATA *)
+    (* et une constante contenant le nom par defaut                 *)
+    Lbl := RX_VAR_PFX + SymNameClean(U);
+    DataAddBuffer(Lbl, 256);
+    (* Stocker la valeur par defaut (le nom en majuscules) *)
+    DefLbl := Lbl + '_D';
+    DataAdd(DefLbl, DK_STR, 0, U);
+    Idx := SymAdd(U, SK_VAR, TY_IDX_STRING, 0);
+    VarAlloc := Idx;
+  End;
+End;
+
+(* ---- VarAddrOf : retourner l expression d adresse ASM -------- *)
+(* Pour une variable globale : OFFSET _RXV_NOM                     *)
+(* Pour une variable locale : WORD PTR [BP-offset]                  *)
+Function VarAddrOf(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= SymCount) Then
+  Begin
+    VarAddrOf := 'OFFSET _RX_NULL_STR';
+    Exit;
+  End;
+  If SymTab[Idx].Offset < 0 Then
+    (* Variable locale sur la pile *)
+    VarAddrOf := 'WORD PTR [BP' + IntToStr(SymTab[Idx].Offset) + ']'
+  Else
+    (* Variable globale dans DATA *)
+    VarAddrOf := 'OFFSET ' + SymTab[Idx].MangledName;
+End;
+
+(* ---- VarLoad : emettre le code pour charger le ptr var dans AX *)
+(* Pour les variables REXX, on charge l adresse du buffer chaine   *)
+(* dans AX (pointeur near).                                        *)
+Procedure VarLoad(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= SymCount) Then
+  Begin
+    EmitInstr('MOV', 'AX, OFFSET _RX_NULL_STR');
+    Exit;
+  End;
+  If SymTab[Idx].Offset < 0 Then
+    (* Variable locale : charger le pointeur depuis la pile *)
+    EmitInstr('MOV', 'AX, WORD PTR [BP' +
+              IntToStr(SymTab[Idx].Offset) + ']')
+  Else
+    (* Variable globale : LEA vers le buffer dans DATA *)
+    EmitInstr('LEA', 'AX, ' + SymTab[Idx].MangledName);
+End;
+
+(* ---- VarStore : emettre le code pour stocker AX dans variable *)
+(* AX contient un pointeur vers la chaine source. On copie cette  *)
+(* chaine dans le buffer de la variable cible via _RXRT_STRCPY.   *)
+Procedure VarStore(Idx : Integer);
+Begin
+  If (Idx < 0) Or (Idx >= SymCount) Then Exit;
+
+  (* Sauver AX (source) dans SI *)
+  EmitInstr('MOV', 'SI, AX');
+
+  If SymTab[Idx].Offset < 0 Then
+  Begin
+    (* Variable locale : la pile contient un pointeur *)
+    EmitInstr('LEA', 'DI, [BP' +
+              IntToStr(SymTab[Idx].Offset) + ']');
+  End
+  Else
+  Begin
+    (* Variable globale : DI = adresse du buffer *)
+    EmitInstr('LEA', 'DI, ' + SymTab[Idx].MangledName);
+  End;
+
+  (* Appeler la copie de chaine : SI=source, DI=dest *)
+  EmitInstr('CALL', '_RXRT_STRCPY');
+End;
+
+(* ---- ParseAssign : parser et executer var = expr --------------- *)
+(* En REXX, l affectation est : symbole = expression                *)
+(* On evalue l expression, puis on stocke le resultat dans la       *)
+(* variable (avec auto-allocation si necessaire).                    *)
+Procedure ParseAssign(Const VarName : TString);
+Var
+  Res : TExprVal;
+  Idx : Integer;
+Begin
+  (* Allouer la variable si elle n existe pas *)
+  Idx := VarAlloc(VarName);
+
+  EmitComment('assign: ' + VarName + ' = ...');
+
+  (* = deja consomme par l appelant *)
+  (* Evaluer l expression *)
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  (* Stocker dans la variable *)
+  VarStore(Idx);
+End;
+
+(* ---- ParseDrop : parser DROP var1 var2 ... -------------------- *)
+(* Reinitialise chaque variable a sa valeur par defaut (son nom en *)
+(* majuscules). Syntaxe : DROP var1 var2 ... [;]                    *)
+Procedure ParseDrop;
+Var
+  VarName : TString;
+  Idx     : Integer;
+  DefLbl  : TString;
+Begin
+  EmitComment('DROP');
+
+  (* Consommer les variables apres DROP *)
+  While (CurToken.Kind = TK_IDENT) Do
+  Begin
+    VarName := StrUpperCase(CurToken.Val);
+    Idx := SymFind(VarName);
+    If Idx < 0 Then
+      Idx := VarAlloc(VarName);
+
+    (* Copier la valeur par defaut (le nom) dans la variable *)
+    If (Idx >= 0) And (SymTab[Idx].Offset >= 0) Then
+    Begin
+      DefLbl := SymTab[Idx].MangledName + '_D';
+      EmitInstr('LEA', 'SI, ' + DefLbl);
+      EmitInstr('LEA', 'DI, ' + SymTab[Idx].MangledName);
+      EmitInstr('CALL', '_RXRT_STRCPY');
+    End
+    Else If Idx >= 0 Then
+    Begin
+      (* Variable locale : remettre pointeur vers nom par defaut *)
+      (* On cree la constante nom dans DATA si pas deja fait *)
+      DefLbl := DataAddStr(VarName);
+      EmitInstr('MOV', 'SI, OFFSET ' + DefLbl);
+      EmitInstr('LEA', 'DI, [BP' +
+                IntToStr(SymTab[Idx].Offset) + ']');
+      EmitInstr('CALL', '_RXRT_STRCPY');
+    End;
+
+    ParserAdvance;
+  End;
+End;
+
+(* ---- ParseUpper : parser UPPER var1 var2 ... ------------------ *)
+(* Convertit le contenu de chaque variable en majuscules.           *)
+(* Syntaxe : UPPER var1 var2 ... [;]                                *)
+Procedure ParseUpper;
+Var
+  VarName : TString;
+  Idx     : Integer;
+Begin
+  EmitComment('UPPER');
+
+  While (CurToken.Kind = TK_IDENT) Do
+  Begin
+    VarName := StrUpperCase(CurToken.Val);
+    Idx := SymFind(VarName);
+    If Idx < 0 Then
+      Idx := VarAlloc(VarName);
+
+    If Idx >= 0 Then
+    Begin
+      VarLoad(Idx);
+      EmitInstr('MOV', 'SI, AX');
+      EmitInstr('CALL', '_RXRT_UPPER');
+    End;
+
+    ParserAdvance;
+  End;
 End;
 
 (* TODO 10/11 - Expressions *)
@@ -3162,11 +3421,23 @@ Begin
         LitEval(CurToken, Res);
         If Res.Kind = EK_NONE Then
         Begin
-          (* Variable inconnue : stub TODO 09 *)
-          Res.Kind    := EK_AX;
-          Res.ImmVal  := 0;
-          Res.TypeIdx := TY_IDX_STRING;
-          Res.SymIdx  := -1;
+          (* Variable inconnue : auto-allouer (convention REXX) *)
+          Idx := VarAlloc(CurToken.Val);
+          If Idx >= 0 Then
+          Begin
+            Res.Kind    := EK_MEM;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_STRING;
+            Res.Offset  := SymTab[Idx].Offset;
+            Res.SymIdx  := Idx;
+          End
+          Else
+          Begin
+            Res.Kind    := EK_AX;
+            Res.ImmVal  := 0;
+            Res.TypeIdx := TY_IDX_STRING;
+            Res.SymIdx  := -1;
+          End;
         End;
       End;
       ParserAdvance;
