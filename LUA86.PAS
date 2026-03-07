@@ -102,7 +102,7 @@
             type(x) : retourne la chaine du type -> CALL _LUART_TYPE -> AX=ptr
             Coercition automatique nombre/chaine (tonumber/tostring implicite)
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -763,6 +763,20 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
 Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
 Function  TypeLookupName(Const Name : TString) : Integer; Forward;
 Procedure TypeInit; Forward;
+{ Emetteur ASM (TODO 07) }
+Function  LabelGen : TString; Forward;
+Procedure EmitRaw(Const S : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitProlog; Forward;
+Procedure EmitEpilog; Forward;
+Procedure EmitOpen; Forward;
+Procedure EmitHeader; Forward;
+Procedure EmitRuntime; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1055,16 +1069,142 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODOS 04-25 (emetteur / donnees)
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
   ============================================================ }
 
+{ LabelGen : generer un label unique _LUAL_NNNNN }
+Function LabelGen : TString;
+Var
+  S : TString;
+Begin
+  Inc(LabelGenSeq);
+  Str(LabelGenSeq, S);
+  LabelGen := LUA_LBL_PFX + S;
+End;
+
+{ EmitRaw : ecrire une ligne brute dans le fichier de sortie }
+Procedure EmitRaw(Const S : TString);
+Begin
+  WriteLn(OutF, S);
+End;
+
+{ EmitBlankLine : ligne vide }
+Procedure EmitBlankLine;
+Begin
+  WriteLn(OutF);
+End;
+
+{ EmitComment : commentaire ASM '; texte' }
+Procedure EmitComment(Const S : TString);
+Begin
+  WriteLn(OutF, '; ', S);
+End;
+
+{ EmitLabel : label ASM suivi de ':' en colonne 0 }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  WriteLn(OutF, Lbl, ':');
+End;
+
+{ EmitInstr : instruction sans operandes (8 espaces d indentation) }
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem);
+End;
+
+{ EmitInstrA : instruction + un operande }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1);
+End;
+
+{ EmitInstrAB : instruction + deux operandes separes par ', ' }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
+End;
+
+{ EmitProlog : preambule de fonction (BP frame) }
+Procedure EmitProlog;
+Begin
+  EmitInstr('PUSH   BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  If CurFrameSize > 0 Then
+    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize * 2));
+End;
+
+{ EmitEpilog : epilogue de fonction (restaurer SP/BP et retourner) }
+Procedure EmitEpilog;
+Begin
+  If CurFnRetLbl <> '' Then
+    EmitLabel(CurFnRetLbl);
+  If CurFrameSize > 0 Then
+    EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstr('POP    BP');
+  EmitInstr('RET');
+End;
+
+{ EmitOpen : ouvrir le fichier de sortie ASM }
+Procedure EmitOpen;
+Begin
+  {$I-}
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+{ EmitHeader : emettre le preambule ASM (.MODEL SMALL, etc.) }
+Procedure EmitHeader;
+Begin
+  EmitComment('Genere par LUA86 v' + LUA86_VERSION + ' - ' + Opts.SrcFile);
+  EmitBlankLine;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:NOTHING');
+  EmitBlankLine;
+  { Point d entree _LUAF_main }
+  EmitLabel(LUA_FN_PFX + 'main');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+  EmitComment('--- debut du code genere ---');
+  EmitBlankLine;
+End;
+
+{ EmitRuntime : emettre les routines runtime (stub pour TODO 24) }
+Procedure EmitRuntime;
+Begin
+  { Stub : sera implemente dans TODO 24 }
+End;
+
+{ EmitClose : terminer le fichier ASM (DOS exit, runtime, DATA, END) }
 Procedure EmitClose;
 Begin
-  If OutFOpen Then
-  Begin
-    Close(OutF);
-    OutFOpen := False;
-  End;
+  If Not OutFOpen Then Exit;
+  EmitBlankLine;
+  EmitComment('--- fin du code genere ---');
+  EmitBlankLine;
+  { Sortie DOS : MOV AX,4C00h / INT 21h }
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+  { Routines runtime (TODO 24) }
+  EmitRuntime;
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  EmitBlankLine;
+  { Segment de donnees }
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END    ' + LUA_FN_PFX + 'main');
+  { Fermer le fichier de sortie }
+  Close(OutF);
+  OutFOpen := False;
 End;
 
 { ============================================================
@@ -1219,61 +1359,85 @@ Begin
 End;
 
 { ---- EmitDataSeg : emettre le segment _DATA dans le .ASM ---- }
-{ Appele depuis EmitClose / Run. Ecrit _DATA SEGMENT ... ENDS.  }
-{ Emet aussi les chaines predefinies nil/true/false.             }
+{ Appele depuis EmitClose. Ecrit _DATA SEGMENT ... ENDS.        }
+{ Emet aussi les chaines predefinies nil/true/false et buffers.  }
 Procedure EmitDataSeg;
 Var
-  I  : Integer;
-  J  : Integer;
-  B  : Byte;
-  NS : String[6];
+  I     : Integer;
+  J     : Integer;
+  B     : Byte;
+  NS    : String[6];
+  InStr : Boolean;
+  First : Boolean;
 Begin
   If Not OutFOpen Then Exit;
-  WriteLn(OutF);
-  WriteLn(OutF, '_DATA   SEGMENT WORD PUBLIC ', Chr(39), 'DATA', Chr(39));
-  WriteLn(OutF, '        ASSUME  DS:_DATA');
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
   { Chaines predefinies pour type() et tostring() }
-  WriteLn(OutF, LUA_NIL_LBL, ':');
-  WriteLn(OutF, '        DB      ', Chr(39), 'nil', Chr(39), ',0');
-  WriteLn(OutF, LUA_TRUE_LBL, ':');
-  WriteLn(OutF, '        DB      ', Chr(39), 'true', Chr(39), ',0');
-  WriteLn(OutF, LUA_FALSE_LBL, ':');
-  WriteLn(OutF, '        DB      ', Chr(39), 'false', Chr(39), ',0');
+  EmitRaw(LUA_NIL_LBL + '   DB ''nil'',0');
+  EmitRaw(LUA_TRUE_LBL + '  DB ''true'',0');
+  EmitRaw(LUA_FALSE_LBL + ' DB ''false'',0');
+  { CRLF et buffer de travail }
+  EmitRaw('_LUA_CRLF      DB 13,10,0');
+  EmitRaw('_LUA_STRBUF    DB 256 DUP(0)');
   { Emettre les entrees de DataTab }
   For I := 0 To DataCount - 1 Do
   Begin
-    WriteLn(OutF, DataTab[I].LblName, ':');
     Case DataTab[I].Kind Of
       DK_WORD :
       Begin
         Str(DataTab[I].IntVal, NS);
-        WriteLn(OutF, '        DW      ', NS);
+        EmitRaw(DataTab[I].LblName + '  DW  ' + NS);
       End;
       DK_BYTE :
       Begin
         Str(DataTab[I].IntVal And $FF, NS);
-        WriteLn(OutF, '        DB      ', NS);
+        EmitRaw(DataTab[I].LblName + '  DB  ' + NS);
       End;
       DK_STR  :
       Begin
-        Write(OutF, '        DB      ');
+        { Emettre la chaine avec gestion des caracteres de controle }
+        Write(OutF, DataTab[I].LblName, '  DB  ');
+        InStr := False;
+        First := True;
         For J := 1 To Length(DataTab[I].StrVal) Do
         Begin
           B := Ord(DataTab[I].StrVal[J]);
-          Str(B, NS);
-          If J > 1 Then Write(OutF, ',');
-          Write(OutF, NS);
+          If (B >= 32) And (B < 127) And (DataTab[I].StrVal[J] <> '''') Then
+          Begin
+            { Caractere imprimable (pas apostrophe) }
+            If Not InStr Then
+            Begin
+              If Not First Then Write(OutF, ',');
+              Write(OutF, '''');
+              InStr := True;
+            End;
+            Write(OutF, DataTab[I].StrVal[J]);
+          End
+          Else
+          Begin
+            { Caractere non imprimable ou apostrophe : valeur numerique }
+            If InStr Then
+            Begin
+              Write(OutF, '''');
+              InStr := False;
+            End;
+            If Not First Then Write(OutF, ',');
+            Str(B, NS);
+            Write(OutF, NS);
+          End;
+          First := False;
         End;
+        If InStr Then Write(OutF, '''');
         WriteLn(OutF, ',0');
       End;
       DK_TABLE_BLK :
       Begin
         { TODO 15 : construction de tables }
-        WriteLn(OutF, '        DW      0  ; table stub');
+        EmitRaw(DataTab[I].LblName + '  DW  0   ; table stub');
       End;
     End;
   End;
-  WriteLn(OutF, '_DATA   ENDS');
+  EmitRaw('_DATA   ENDS');
 End;
 
 { ============================================================
@@ -3183,12 +3347,14 @@ Begin
   TypeCount := TY_PRIM_COUNT;
 End;
 
-{ ---- Run : pipeline de compilation (stub pour TODO 07-25) ---- }
+{ ---- Run : pipeline de compilation ----------------------------- }
 
 Procedure Run;
 Var
   E : TExprVal;
 Begin
+  EmitOpen;     { ouvrir le fichier de sortie }
+  EmitHeader;   { emettre le preambule ASM }
   LexInit;
   ParserAdvance;  { lire le premier token }
 
@@ -3203,6 +3369,7 @@ Begin
   End;
 
   LexClose;
+  EmitClose;   { EmitDataSeg est appele depuis EmitClose }
 End;
 
 { ============================================================
