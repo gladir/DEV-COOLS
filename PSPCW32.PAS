@@ -57,7 +57,7 @@
               VAR WHILE WITH XOR
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..2147483647 (32 bits signe)
             Entiers hexadecimaux : $FF, $DEADBEEF (prefixe $)
             Reels : reconnus par le lexeur, tronques en entiers (avertissement)
@@ -2153,26 +2153,395 @@ Begin
   End;
 End;
 
-{ --- Stubs Donnees (TODO 03 / 08) --- }
-Function LabelGen : TString; Begin LabelGen := '_PSPL_00000'; End;
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- LabelGen : generateur de labels uniques ---------------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := PSP_LBL_PFX + IntToStr(LabelGenSeq);
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le fichier ASM --- }
+Procedure EmitRaw(Const S : String);
+Begin
+  WriteLn(OutF, S);
+End;
+
+{ ---- DataAdd : ajouter une entree dans DataTab -------------- }
 Function DataAdd(Const Lbl : TString; Kind : TDataKind;
-               AIntVal : LongInt; Const AStrVal : TString) : Integer;
-Begin DataAdd := 0; End;
-Function DataAddStr(Const S : TString) : TString; Begin DataAddStr := ''; End;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataTab[DataCount].ElemSize  := 0;
+  DataTab[DataCount].RecSize   := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label et stocker une chaine ------ }
+{ Retourne le label genere (_PSPK_N).                           }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := PSP_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddDWord : ajouter un double-mot 32 bits dans DataTab }
 Function DataAddDWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
-Begin DataAddDWord := 0; End;
+Begin
+  DataAddDWord := DataAdd(Lbl, DK_DWORD, AIntVal, '');
+End;
+
+{ ---- DataAddByte : ajouter un octet dans DataTab ------------ }
 Function DataAddByte(Const Lbl : TString; AIntVal : LongInt) : Integer;
-Begin DataAddByte := 0; End;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, AIntVal, '');
+End;
+
+{ ---- DataAddArray : ajouter un tableau dans DataTab --------- }
+{ ECount = nombre d elements, ESz = taille d un element en octets }
 Function DataAddArray(Const Lbl : TString;
-              ECount, ESz : Integer) : Integer;
-Begin DataAddArray := 0; End;
+                ECount, ESz : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY, 0, '');
+  DataTab[Idx].ElemCount := ECount;
+  DataTab[Idx].ElemSize  := ESz;
+  DataAddArray := Idx;
+End;
+
+{ ---- DataAddRec : ajouter un record dans DataTab ------------ }
+{ RSz = taille totale du record en octets                         }
 Function DataAddRec(Const Lbl : TString;
-              RSz : Integer) : Integer;
-Begin DataAddRec := 0; End;
-Procedure EmitRaw(Const S : String); Begin End;
-Procedure EmitDataSeg; Begin End;
-Procedure LitEval(Const T : TToken; Var Res : TExprVal); Begin End;
-Procedure ParseConstDecl; Begin End;
+                RSz : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_REC, 0, '');
+  DataTab[Idx].RecSize := RSz;
+  DataAddRec := Idx;
+End;
+
+{ ---- EmitDataSeg : emettre le segment .DATA complet --------- }
+{ Genere _DATA SEGMENT, les buffers internes, les entrees         }
+{ dynamiques de DataTab, puis _DATA ENDS.                         }
+{ Win32 : utilise DD (32 bits) pour DK_DWORD au lieu de DW.      }
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+  Sz   : Integer;
+Begin
+  EmitRaw('_DATA   SEGMENT DWORD PUBLIC ''DATA''');
+
+  { --- Buffers internes --- }
+  EmitComment('--- Buffers internes ---');
+  EmitRaw(PSP_RT_PFX + 'CRLF    DB  13,10,0');
+  EmitRaw(PSP_RT_PFX + 'STRBUF  DB  512 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'CHRBUF  DB  2 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'NUMBUF  DB  12 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'TRUE_S  DB  ''TRUE'',0');
+  EmitRaw(PSP_RT_PFX + 'FALSE_S DB  ''FALSE'',0');
+  EmitRaw(PSP_RT_PFX + 'HEAP    DB  4096 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'HEAPTOP DD  OFFSET ' + PSP_RT_PFX + 'HEAP');
+  EmitRaw(PSP_RT_PFX + 'SEED    DD  1');
+  { Variables exception handler et messages panic }
+  EmitRaw(PSP_EX_PFX + 'HANDLER DD  0');
+  EmitRaw(PSP_EX_PFX + 'SAVESP  DD  0');
+  EmitRaw(PSP_EX_PFX + 'SAVEBP  DD  0');
+  EmitRaw(PSP_RT_PFX + 'DIV0MSG DB  ''Runtime error: Division by zero'',0');
+  EmitRaw(PSP_RT_PFX + 'PANICMSG DB 0');
+  { Handle stdout Win32 }
+  EmitRaw(PSP_RT_PFX + 'HSTDOUT DD  0');
+  EmitBlankLine;
+
+  { --- Entrees dynamiques de DataTab --- }
+  If DataCount > 0 Then
+    EmitComment('--- Donnees du programme ---');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_DWORD :
+        If DataTab[I].StrVal <> '' Then
+          EmitRaw(DataTab[I].LblName + '  DD  OFFSET ' + DataTab[I].StrVal)
+        Else
+          EmitRaw(DataTab[I].LblName + '  DD  ' +
+                  IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          { Doubler les apostrophes pour syntaxe MASM }
+          S := '';
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If DataTab[I].StrVal[J] = '''' Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+        End;
+      DK_ARRAY :
+        Begin
+          { Tableau : DD/DB elem_count DUP(0) selon taille element }
+          Sz := DataTab[I].ElemSize;
+          If Sz <= 1 Then
+            EmitRaw(DataTab[I].LblName + '  DB  ' +
+                    IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+          Else If Sz = 4 Then
+            EmitRaw(DataTab[I].LblName + '  DD  ' +
+                    IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+          Else
+            EmitRaw(DataTab[I].LblName + '  DB  ' +
+                    IntToStr(DataTab[I].ElemCount * Sz) + ' DUP(0)');
+        End;
+      DK_REC :
+        Begin
+          { Record : DB rec_size DUP(0) }
+          EmitRaw(DataTab[I].LblName + '  DB  ' +
+                  IntToStr(DataTab[I].RecSize) + ' DUP(0)');
+        End;
+    End;
+  End;
+
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ ---- LitEval : evaluer un token litteral en TExprVal -------- }
+{ Gere : TK_INTEGER, TK_REAL (tronque+warn), TK_STRING,         }
+{        TK_CHAR, TK_KEYWORD (true/false/nil).                  }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  Lw : TString;
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+
+  Case T.Kind Of
+    { --- Entiers (decimaux et hexadecimaux) --- }
+    TK_INTEGER :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Reels : tronquer en entier + avertissement --- }
+    TK_REAL :
+    Begin
+      WarnMsg('reel ' + T.Val + ' tronque en entier');
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := Trunc(T.RealVal);
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Chaines : stocker en DATA, retourner index DataTab --- }
+    TK_STRING :
+    Begin
+      DataAddStr(T.Val);
+      Res.Kind    := EK_AX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := DataCount - 1;  { index de l entree dans DataTab }
+    End;
+
+    { --- Caracteres : valeur ordinale dans ImmVal --- }
+    TK_CHAR :
+    Begin
+      If Length(T.Val) = 1 Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := Ord(T.Val[1]);
+        Res.TypeIdx := TY_IDX_CHAR;
+      End
+      Else
+      Begin
+        { Multi-caractere (#13#10 etc.) : traiter comme chaine }
+        DataAddStr(T.Val);
+        Res.Kind    := EK_AX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_STRING;
+        Res.SymIdx  := DataCount - 1;
+      End;
+    End;
+
+    { --- Mots-cles speciaux : true, false, nil --- }
+    TK_KEYWORD :
+    Begin
+      Lw := T.Val;
+      If Lw = 'true' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 1;
+        Res.TypeIdx := TY_IDX_BOOLEAN;
+      End
+      Else If Lw = 'false' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_BOOLEAN;
+      End
+      Else If Lw = 'nil' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_NIL;
+      End;
+    End;
+  Else
+    { Token non reconnu comme litteral }
+    Res.Kind := EK_NONE;
+  End;
+End;
+
+{ ---- ParseConstDecl : analyser un bloc const ---------------- }
+{ Syntaxe : const Ident = Expr;                                 }
+{           const Ident : Type = Expr;                          }
+{ Apres le mot-cle 'const', peut contenir plusieurs constantes. }
+Procedure ParseConstDecl;
+Var
+  CName    : TString;
+  CType    : TString;
+  IsTyped  : Boolean;
+  Ev       : TExprVal;
+  Idx      : Integer;
+  DIdx     : Integer;
+  ResTIdx  : Integer;
+Begin
+  { Le mot-cle 'const' a deja ete consomme par l appelant }
+  { Boucle : tant qu on voit un identificateur, on parse une constante }
+  While (CurToken.Kind = TK_IDENT) Or
+        ((CurToken.Kind = TK_KEYWORD) And
+         ((CurToken.Val = 'integer') Or (CurToken.Val = 'word') Or
+          (CurToken.Val = 'byte') Or (CurToken.Val = 'char') Or
+          (CurToken.Val = 'boolean') Or (CurToken.Val = 'string') Or
+          (CurToken.Val = 'real'))) Do
+  Begin
+    { Nom de la constante }
+    If CurToken.Kind <> TK_IDENT Then
+      Break;
+    CName := CurToken.Val;
+    TplNextToken;
+
+    { Constante typee ? const X : Integer = 42; }
+    IsTyped := False;
+    CType   := '';
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      IsTyped := True;
+      TplNextToken;
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        CType := CurToken.Val;
+        TplNextToken;
+      End
+      Else
+        WarnMsg('type attendu apres '':'' dans la constante ' + CName);
+    End;
+
+    { Signe = }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      TplNextToken
+    Else
+    Begin
+      WarnMsg('''='' attendu dans la declaration de constante ' + CName);
+      Break;
+    End;
+
+    { Valeur : expression constante (pliage de constantes) }
+    ParseExpr(Ev);
+
+    { Enregistrer la constante dans la table des symboles }
+    If IsTyped Then
+    Begin
+      { Resoudre le nom de type }
+      ResTIdx := TypeResolve(CType);
+      If ResTIdx = TY_UNKNOWN Then
+        WarnMsg('type inconnu: ' + CType);
+      { Verifier compatibilite type declare vs valeur }
+      If (ResTIdx <> TY_UNKNOWN) And (Ev.TypeIdx <> TY_UNKNOWN) Then
+      Begin
+        If Not TypeCompatible(ResTIdx, Ev.TypeIdx) Then
+          WarnMsg('type incompatible pour la constante ' + CName);
+      End;
+      { Constante typee -> entree DATA + symbole SC_TYPED_CONST }
+      If Ev.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST_TYPED: ', CName, ' : ', CType,
+                  ' = ''', DataTab[Ev.SymIdx].StrVal, '''');
+        DIdx := DataAdd(PSP_VAR_PFX + CName, DK_DWORD, 0,
+                        DataTab[Ev.SymIdx].LblName);
+      End
+      Else
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST_TYPED: ', CName, ' : ', CType,
+                  ' = ', Ev.ImmVal);
+        DIdx := DataAddDWord(PSP_VAR_PFX + CName, Ev.ImmVal);
+      End;
+      Idx := SymAdd(CName, SC_TYPED_CONST, Ev.TypeIdx);
+      If Idx >= 0 Then
+      Begin
+        SymTab[Idx].ImmVal  := Ev.ImmVal;
+        SymTab[Idx].DataIdx := DIdx;
+      End;
+    End
+    Else
+    Begin
+      { Constante non-typee -> substitution : symbole SC_CONST }
+      { Valeur immediate stockee dans ImmVal de TSymRec         }
+      If Ev.TypeIdx = TY_IDX_STRING Then
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST: ', CName,
+                  ' = ''', DataTab[Ev.SymIdx].StrVal, '''');
+        DIdx := DataAdd(PSP_VAR_PFX + CName, DK_DWORD, 0,
+                        DataTab[Ev.SymIdx].LblName);
+        Idx := SymAdd(CName, SC_CONST, Ev.TypeIdx);
+        If Idx >= 0 Then
+        Begin
+          SymTab[Idx].ImmVal  := 0;
+          SymTab[Idx].DataIdx := DIdx;
+        End;
+      End
+      Else
+      Begin
+        If Opts.DebugMode Then
+          WriteLn('  CONST: ', CName, ' = ', Ev.ImmVal);
+        Idx := SymAdd(CName, SC_CONST, Ev.TypeIdx);
+        If Idx >= 0 Then
+        Begin
+          SymTab[Idx].ImmVal  := Ev.ImmVal;
+          SymTab[Idx].DataIdx := -1;
+        End;
+      End;
+    End;
+
+    { Point-virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+  End;
+End;
 
 { --- Stubs Symboles (TODO 05) --- }
 Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
