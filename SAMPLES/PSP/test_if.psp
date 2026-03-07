@@ -1,0 +1,59 @@
+<%@ language="pascal" %>
+<html>
+<body>
+<%
+  var x : Integer;
+  x := 10;
+
+  { Test if/then simple }
+  if x > 5 then
+    writeln('x est plus grand que 5');
+
+  { Test if/then/else }
+  if x > 20 then
+    writeln('x est plus grand que 20')
+  else
+    writeln('x est pas plus grand que 20');
+
+  { Test if/then/else avec begin..end }
+  if x = 10 then
+  begin
+    var y : Integer;
+    y := 42;
+    writeln('x vaut 10');
+    writeln('y vaut 42');
+  end
+  else
+  begin
+    writeln('x ne vaut pas 10');
+  end;
+
+  { Test if imbrique }
+  if x > 0 then
+    if x < 100 then
+      writeln('x entre 0 et 100')
+    else
+      writeln('x >= 100');
+
+  { Test case/of }
+  var code : Integer;
+  code := 2;
+  case code of
+    1 : writeln('code est un');
+    2 : writeln('code est deux');
+    3 : writeln('code est trois');
+  else
+    writeln('code inconnu');
+  end;
+
+  { Test case avec valeurs multiples }
+  var cat : Integer;
+  cat := 5;
+  case cat of
+    1, 2, 3 : writeln('petit');
+    4, 5, 6 : writeln('moyen');
+    7, 8, 9 : writeln('grand');
+  end;
+%>
+</body>
+</html>

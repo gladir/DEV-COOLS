@@ -1,0 +1,115 @@
+<%
+{ test_stdlib.psp - Tests des fonctions et procedures standard (TODO 22) }
+
+var
+  n: Integer;
+  s: String;
+  code: Integer;
+  p: Integer;
+
+{ --- Abs --- }
+n := Abs(-42);
+write('Abs(-42)=');
+write(n);
+writeln;
+
+n := Abs(7);
+write('Abs(7)=');
+write(n);
+writeln;
+
+{ --- Sqr --- }
+n := Sqr(5);
+write('Sqr(5)=');
+write(n);
+writeln;
+
+{ --- Odd --- }
+n := Odd(3);
+write('Odd(3)=');
+write(n);
+writeln;
+
+n := Odd(4);
+write('Odd(4)=');
+write(n);
+writeln;
+
+{ --- Lo / Hi / Swap --- }
+n := Lo(258);
+write('Lo(258)=');
+write(n);
+writeln;
+
+n := Hi(258);
+write('Hi(258)=');
+write(n);
+writeln;
+
+n := Swap(258);
+write('Swap(258)=');
+write(n);
+writeln;
+
+{ --- Sqrt --- }
+n := Sqrt(144);
+write('Sqrt(144)=');
+write(n);
+writeln;
+
+n := Sqrt(0);
+write('Sqrt(0)=');
+write(n);
+writeln;
+
+{ --- Halt(0) n est pas teste car il arrete le programme --- }
+
+{ --- Str --- }
+Str(42, s);
+write('Str(42)=');
+write(s);
+writeln;
+
+{ --- Val --- }
+Val('123', n, code);
+write('Val(123)=');
+write(n);
+write(' code=');
+write(code);
+writeln;
+
+{ --- IntToStr --- }
+s := IntToStr(99);
+write('IntToStr(99)=');
+write(s);
+writeln;
+
+{ --- Randomize + Random --- }
+Randomize;
+n := Random(100);
+write('Random(100)=');
+write(n);
+writeln;
+
+{ --- New/GetMem (allocation) --- }
+New(p);
+write('New(p)=ok');
+writeln;
+
+GetMem(p, 64);
+write('GetMem(p,64)=ok');
+writeln;
+
+{ --- SizeOf (deja teste mais verifions) --- }
+n := SizeOf(Integer);
+write('SizeOf(Integer)=');
+write(n);
+writeln;
+
+{ --- Stubs --- }
+Dispose(p);
+FreeMem(p, 64);
+
+write('Done');
+writeln;
+%>

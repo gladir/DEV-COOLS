@@ -1,0 +1,70 @@
+<%
+{ test_errors.psp - Tests gestion des erreurs (TODO 23) }
+
+var
+  a: Integer;
+  b: Integer;
+  s: String;
+
+{ --- Test try/except basique --- }
+write('Test try/except: ');
+try
+  a := 10;
+  b := 2;
+  a := a div b;
+  write(a);
+except
+  write('Exception attrapee');
+end;
+writeln;
+
+{ --- Test try/except avec finally --- }
+write('Test try/finally: ');
+try
+  a := 42;
+  write(a);
+except
+  write('except');
+finally
+  write(' finally');
+end;
+writeln;
+
+{ --- Test try imbrique --- }
+write('Test try imbrique: ');
+try
+  try
+    a := 100;
+    write(a);
+  except
+    write('inner except');
+  end;
+except
+  write('outer except');
+end;
+writeln;
+
+{ --- Test division normale (pas par zero) --- }
+write('Div 10/3=');
+a := 10;
+b := 3;
+a := a div b;
+write(a);
+writeln;
+
+write('Mod 10%3=');
+a := 10;
+b := 3;
+a := a mod b;
+write(a);
+writeln;
+
+{ --- Test Abs (verification que stdlib fonctionne encore) --- }
+a := Abs(-5);
+write('Abs(-5)=');
+write(a);
+writeln;
+
+write('Done');
+writeln;
+%>

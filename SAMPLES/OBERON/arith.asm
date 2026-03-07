@@ -1,8 +1,8 @@
 ; ------------------------------------------------------------
-;  Fichier genere par MODII86 v1.0
+;  Fichier genere par OBERON86 v1.0
 ;  Date   : 2026-03-03
-;  Source : arith_m2.mod
-;  Module : Arithmetique
+;  Source : C:\SOURCE\GITHUB\DEV-COOLS\arith.obn
+;  Module : Arith
 ;  Cible  : MASM 8086, modele SMALL, near cdecl
 ; ------------------------------------------------------------
 
@@ -17,7 +17,7 @@ _STACK          ENDS
 ;  ----- Segment DATA -----
 _DATA           SEGMENT WORD PUBLIC 'DATA'
 
-;  ----- Variables systeme MODII86 -----
+;  ----- Variables systeme OBERON86 -----
 _OV_OUTBUF              DB      256 DUP(0)
 _OV_INBUF               DB      128 DUP(0)
 _OV_INTBUF              DB      12 DUP(0)
@@ -29,8 +29,9 @@ _OV_IN_DONE             DW      1
 _OV_HEAP_PTR            DW      0
 _OV_HEAP_BUF            DB      4096 DUP(0)
 
-_OV_i                   DW      0
-_OV_s                   DW      0
+_OV_a                   DW      0
+_OV_b                   DW      0
+_OV_c                   DW      0
 
 _DATA           ENDS
 
@@ -45,30 +46,92 @@ START:
         MOV  AX, OFFSET _OV_HEAP_BUF
         MOV  [_OV_HEAP_PTR], AX
 
-        MOV  AX, 0
-        MOV  [_OV_s], AX
-        MOV  AX, 1
-        MOV  [_OV_i], AX
         MOV  AX, 10
-        MOV  SI, AX
-_OL_1:
-        MOV  AX, [_OV_i]
-        CMP  AX, SI
-        JG  _OL_2
-        LEA  BX, [_OV_s]
-        MOV  AX, [_OV_i]
-        ADD  Word Ptr [BX], AX
-        MOV  AX, [_OV_i]
-        INC  AX
-        MOV  [_OV_i], AX
-        JMP  _OL_1
-_OL_2:
+        MOV  [_OV_a], AX
+        MOV  AX, 3
+        MOV  [_OV_b], AX
+        MOV  AX, [_OV_a]
+        PUSH AX
+        MOV  AX, [_OV_b]
+        MOV  CX, AX
+        POP  AX
+        ADD  AX, CX
+        MOV  [_OV_c], AX
         LEA  AX, [_OK_1]
         MOV  SI, AX
         CALL  _ORT_WRITESTR
-        MOV  AX, [_OV_s]
+        MOV  AX, [_OV_c]
+        PUSH AX
         MOV  AX, 0
-;  Out.Real : emulation REAL non implementee (TODO 21+)
+        POP  AX
+        CALL  _ORT_WRITEINT
+        CALL  _ORT_WRITELN
+        MOV  AX, [_OV_a]
+        PUSH AX
+        MOV  AX, [_OV_b]
+        MOV  CX, AX
+        POP  AX
+        SUB  AX, CX
+        MOV  [_OV_c], AX
+        LEA  AX, [_OK_2]
+        MOV  SI, AX
+        CALL  _ORT_WRITESTR
+        MOV  AX, [_OV_c]
+        PUSH AX
+        MOV  AX, 0
+        POP  AX
+        CALL  _ORT_WRITEINT
+        CALL  _ORT_WRITELN
+        MOV  AX, [_OV_a]
+        PUSH AX
+        MOV  AX, [_OV_b]
+        MOV  CX, AX
+        POP  AX
+        IMUL CX
+        MOV  [_OV_c], AX
+        LEA  AX, [_OK_3]
+        MOV  SI, AX
+        CALL  _ORT_WRITESTR
+        MOV  AX, [_OV_c]
+        PUSH AX
+        MOV  AX, 0
+        POP  AX
+        CALL  _ORT_WRITEINT
+        CALL  _ORT_WRITELN
+        MOV  AX, [_OV_a]
+        PUSH AX
+        MOV  AX, [_OV_b]
+        MOV  CX, AX
+        POP  AX
+        CWD
+        IDIV CX
+        MOV  [_OV_c], AX
+        LEA  AX, [_OK_4]
+        MOV  SI, AX
+        CALL  _ORT_WRITESTR
+        MOV  AX, [_OV_c]
+        PUSH AX
+        MOV  AX, 0
+        POP  AX
+        CALL  _ORT_WRITEINT
+        CALL  _ORT_WRITELN
+        MOV  AX, [_OV_a]
+        PUSH AX
+        MOV  AX, [_OV_b]
+        MOV  CX, AX
+        POP  AX
+        CWD
+        IDIV CX
+        MOV  AX, DX
+        MOV  [_OV_c], AX
+        LEA  AX, [_OK_5]
+        MOV  SI, AX
+        CALL  _ORT_WRITESTR
+        MOV  AX, [_OV_c]
+        PUSH AX
+        MOV  AX, 0
+        POP  AX
+        CALL  _ORT_WRITEINT
         CALL  _ORT_WRITELN
 
 ;  Fin normale du programme
@@ -76,7 +139,7 @@ _OL_2:
         INT  21h
 
 ; ------------------------------------------------------------
-;  ====== RUNTIME InOut / Terminal - MODII86 TODO 20 ====== 
+;  ====== RUNTIME Out / In - OBERON86 TODO 20 ====== 
 
 _ORT_WRITESTR:
         PUSH  AX
@@ -276,7 +339,11 @@ _CODE           ENDS
 ;  ----- Chaines litterales differees (TODO 25) -----
 _DATA           SEGMENT WORD PUBLIC 'DATA'
 
-_OK_1                   DB      'Somme 1..10 = ', 0
+_OK_1                   DB      '10 + 3 = ', 0
+_OK_2                   DB      '10 - 3 = ', 0
+_OK_3                   DB      '10 * 3 = ', 0
+_OK_4                   DB      '10 DIV 3 = ', 0
+_OK_5                   DB      '10 MOD 3 = ', 0
 
 _DATA           ENDS
 

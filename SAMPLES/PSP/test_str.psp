@@ -1,0 +1,83 @@
+<%
+{ test_str.psp - Tests des chaines de caracteres (TODO 15) }
+
+var s1 : string;
+var s2 : string;
+var s3 : string;
+var n  : integer;
+
+{ --- Concatenation avec operateur + --- }
+s1 := 'Hello';
+s2 := ' World';
+s3 := s1 + s2;
+write(s3);
+writeln;
+
+{ --- Fonction Length --- }
+n := Length(s1);
+write(n);
+writeln;
+
+{ --- Fonction Chr --- }
+s3 := Chr(65);
+write(s3);
+writeln;
+
+{ --- Fonction Ord --- }
+n := Ord('A');
+write(n);
+writeln;
+
+{ --- Fonction IntToStr --- }
+s3 := IntToStr(42);
+write(s3);
+writeln;
+
+{ --- Fonction StrToInt --- }
+n := StrToInt('123');
+write(n);
+writeln;
+
+{ --- Comparaison de chaines --- }
+s1 := 'abc';
+s2 := 'abc';
+if s1 = s2 then
+  write('EQUAL')
+else
+  write('DIFF');
+writeln;
+
+s2 := 'xyz';
+if s1 <> s2 then
+  write('NOTEQUAL')
+else
+  write('SAME');
+writeln;
+
+if s1 < s2 then
+  write('LESS')
+else
+  write('GREATEQ');
+writeln;
+
+{ --- Fonction Concat --- }
+s3 := Concat('A', 'B', 'C');
+write(s3);
+writeln;
+
+{ --- Fonction Copy --- }
+s1 := 'Hello World';
+s3 := Copy(s1, 7, 5);
+write(s3);
+writeln;
+
+{ --- Fonction Pos --- }
+n := Pos('World', s1);
+write(n);
+writeln;
+
+{ --- Fonction UpCase --- }
+write(UpCase('m'));
+writeln;
+
+%>
