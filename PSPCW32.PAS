@@ -22,7 +22,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               EmitExe, EmitObj, EmitAsm)
             ParseArgs : analyser argv (source.psp [-o sortie] [-v] [-d]
@@ -518,5 +518,1018 @@
 
 Program PSPCW32;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  PSPCW32_VERSION = '1.0';
+  PSPCW32_DATE    = '2026-03-07';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_INCLUDE   = {$IFDEF FPC}8{$ELSE}4{$ENDIF};     { profondeur max d inclusion }
+  MAX_DEFINE    = {$IFDEF FPC}64{$ELSE}16{$ENDIF};    { nombre max de symboles de compilation }
+  MAX_FIELD     = {$IFDEF FPC}32{$ELSE}16{$ENDIF};    { champs max par record }
+  MAX_ENUM      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};    { valeurs max par enumeration }
+  MAX_WITH      = 8;     { profondeur max de with imbrique }
+  STACK_SIZE    = 4096;  { taille pile Win32 }
+  FRAME_WARN    = 512;   { seuil avertissement taille cadre (octets) }
+  NEST_MAX      = 4;     { profondeur max imbrication proc/func }
+
+  { Prefixes de nommage ASM }
+  PSP_VAR_PFX   = '_PSP_';      { variable globale              }
+  PSP_FN_PFX    = '_PSPF_';     { fonction / procedure          }
+  PSP_STR_PFX   = '_PSPK_';     { constante chaine litterale    }
+  PSP_RT_PFX    = '_PSPRT_';    { routine runtime               }
+  PSP_LBL_PFX   = '_PSPL_';     { label de saut interne         }
+  PSP_ARR_PFX   = '_PSPA_';     { tableau                       }
+  PSP_REC_PFX   = '_PSPR_';     { record                        }
+  PSP_ENUM_PFX  = '_PSPE_';     { enumeration                   }
+  PSP_HTML_PFX  = '_PSPK_HTML_'; { fragment HTML literal         }
+  PSP_EX_PFX    = '_PSPX_';     { exception handler             }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs Pascal (32 bits) }
+  TY_IDX_INTEGER = 0;   { entier 32 bits signe   }
+  TY_IDX_WORD    = 1;   { entier 32 bits non signe }
+  TY_IDX_BYTE    = 2;   { 8 bits non signe       }
+  TY_IDX_CHAR    = 3;   { 8 bits caractere       }
+  TY_IDX_BOOLEAN = 4;   { 0 | 1 dans AL/EAX     }
+  TY_IDX_STRING  = 5;   { pointeur ASCIIZ 32 bits }
+  TY_IDX_REAL    = 6;   { tronque en entier      }
+  TY_IDX_POINTER = 7;   { pointeur generique 32 bits }
+  TY_IDX_NIL     = 8;   { pointeur nul           }
+  TY_IDX_TEXT    = 9;    { fichier texte (handle Win32) }
+  TY_PRIM_COUNT  = 10;
+  TY_UNKNOWN     = -1;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.psp)                }
+    OutFile   : TString;   { fichier de sortie (.exe/.obj/.asm)   }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+    EmitExe   : Boolean;   { produire un .EXE PE (defaut)         }
+    EmitObj   : Boolean;   { -obj : produire uniquement un .OBJ   }
+    EmitAsm   : Boolean;   { -asm : produire un listing .ASM      }
+  End;
+
+  { ---- Tokens Pascal / PSP ---------------------- }
+  TTokenKind = (
+    TK_EOF,            { fin de fichier                       }
+    TK_INTEGER,        { literal entier 42 $FF                }
+    TK_REAL,           { literal reel 3.14 1.5E3              }
+    TK_STRING,         { literal chaine 'hello'               }
+    TK_CHAR,           { literal caractere #65 #$41           }
+    TK_IDENT,          { identificateur (non-mot-cle)         }
+    TK_KEYWORD,        { mot-cle Pascal reconnu               }
+    TK_OP,             { operateur := + - * / = <> < > etc.   }
+    TK_PUNCT,          { ponctuation ; , ( ) [ ] . ..         }
+    TK_HTML,           { texte HTML literal hors balises       }
+    TK_PSP_OPEN,       { balise <% ouvrante                   }
+    TK_PSP_CLOSE,      { balise %> fermante                   }
+    TK_PSP_EXPR_OPEN,  { balise <%= (expression inline)       }
+    TK_PSP_DIRECTIVE   { balise <%@ (directive de page)       }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute           }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)      }
+    RealVal  : Real;        { valeur reelle (TK_REAL)          }
+    Line     : Integer;     { ligne source (1-base)            }
+    Col      : Integer;     { colonne source (1-base)          }
+  End;
+
+  { ---- Mode du template PSP --------------------- }
+  TPSPMode = (TPL_HTML, TPL_CODE);
+
+  { ---- Segment de donnees ------------ }
+  TDataKind = (DK_DWORD, DK_BYTE, DK_STR, DK_ARRAY, DK_REC);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;   { nombre d elements (DK_ARRAY)        }
+    ElemSize  : Integer;   { taille d un element (DK_ARRAY)      }
+    RecSize   : Integer;   { taille totale en octets (DK_REC)    }
+  End;
+
+  { ---- Valeurs d expression --------------------- }
+  TExprKind = (
+    EK_NONE,   { void / pas de valeur                       }
+    EK_IMM,    { valeur immediate dans ImmVal                }
+    EK_AX,     { valeur dans registre EAX                    }
+    EK_MEM     { adresse memoire [EBP+Offset] ou [_PSP_x]   }
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;   { indice dans SymTab (-1 si pas lvalue) }
+  End;
+
+  { ---- Genre de type ----------------------------- }
+  TTypeKind = (
+    TKP_INTEGER,   { entier 32 bits signe                    }
+    TKP_WORD,      { entier 32 bits non signe                 }
+    TKP_BYTE,      { 8 bits non signe                         }
+    TKP_CHAR,      { 8 bits caractere                         }
+    TKP_BOOLEAN,   { 0 ou 1 dans AL, etendu EAX               }
+    TKP_STRING,    { pointeur ASCIIZ dans EAX                  }
+    TKP_REAL,      { tronque en entier 32 bits                 }
+    TKP_ARRAY,     { tableau (BaseTypeIdx = type element)      }
+    TKP_RECORD,    { enregistrement (FieldCount champs)        }
+    TKP_ENUM,      { enumeration (EnumCount valeurs)           }
+    TKP_SUBRANGE,  { sous-intervalle (Lo..Hi)                  }
+    TKP_POINTER,   { pointeur generique 32 bits                }
+    TKP_NIL,       { pointeur nul                              }
+    TKP_TEXT,      { fichier texte (handle Win32)              }
+    TKP_VOID       { procedure, pas de valeur de retour        }
+  );
+
+  { ---- Champ de record --------------------------- }
+  TFieldRec = Record
+    Name    : TString;
+    TypeIdx : Integer;
+    Offset  : Integer;  { decalage en octets dans le record }
+  End;
+
+  { ---- Valeur d enumeration ---------------------- }
+  TEnumValRec = Record
+    Name  : TString;
+    Value : Integer;
+  End;
+
+  { ---- Enregistrement de type -------------------- }
+  TTypeRec = Record
+    Kind        : TTypeKind;
+    Size        : Integer;     { taille en octets                   }
+    BaseTypeIdx : Integer;     { type de base (pointer/array/sub)   }
+    Lo          : LongInt;     { borne inf (subrange/array)         }
+    Hi          : LongInt;     { borne sup (subrange/array)         }
+    FieldCount  : Integer;     { nombre de champs (record)          }
+    Fields      : Array[0..MAX_FIELD - 1] Of TFieldRec;
+    EnumCount   : Integer;     { nombre de valeurs (enum)           }
+    Enums       : Array[0..MAX_ENUM - 1] Of TEnumValRec;
+  End;
+
+  { ---- Categorie de symbole ---------------------- }
+  TSymCat = (
+    SC_VAR,          { variable globale ou locale           }
+    SC_CONST,        { constante non-typee (substitution)   }
+    SC_TYPED_CONST,  { constante typee (en DATA)            }
+    SC_PARAM,        { parametre par valeur                 }
+    SC_VARPARAM,     { parametre var (par reference)        }
+    SC_FUNC,         { fonction                             }
+    SC_PROC,         { procedure                            }
+    SC_TYPE,         { nom de type                          }
+    SC_FIELD,        { champ de record                      }
+    SC_ENUM_VAL,     { valeur d enumeration                 }
+    SC_LABEL         { label nomme                          }
+  );
+
+  { ---- Enregistrement symbole -------------------- }
+  TSymRec = Record
+    Name        : TString;  { nom original Pascal (minuscule)    }
+    MangledName : TString;  { nom ASM mangled (_PSP_xxx etc.)    }
+    Cat         : TSymCat;  { categorie (var/const/func etc.)    }
+    TypeIdx     : Integer;  { indice dans TypeTab (TY_IDX_*)     }
+    Offset      : Integer;  { offset cadre local (EBP+n)         }
+    ScopeLevel  : Integer;  { profondeur de portee (0=global)    }
+    ScopeId     : Integer;  { identifiant unique de portee       }
+    IsForward   : Boolean;  { declaration forward non resolue    }
+    IsLocal     : Boolean;  { True si variable locale            }
+    ImmVal      : LongInt;  { valeur immediate (SC_CONST)        }
+    DataIdx     : Integer;  { index DataTab (SC_TYPED_CONST)     }
+    ParamCnt    : Integer;  { nb params (SC_FUNC/SC_PROC)        }
+    VarParamMask: LongInt;  { bitmask var params (bit i=1)       }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Emetteur ASM (pour Cleanup) }
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+  { Lexeur }
+  LexSrcF   : Text;
+  LexOpened : Boolean;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  CurToken  : TToken;
+
+  { Analyseur de template }
+  TplMode      : TPSPMode;
+  TplHtmlBuf   : TString;
+  TplPending   : TTokenKind;
+  TplHtmlCount : Integer;
+
+  { Segment de donnees }
+  DataTab      : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount    : Integer;
+  LabelGenSeq  : Integer;
+
+  { Table des symboles }
+  SymTab        : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount      : Integer;
+  CurScopeLevel : Integer;
+  CurScopeId    : Integer;
+  ScopeIdSeq    : Integer;
+
+  { Table des types }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Variables et affectations }
+  CurFrameOffset   : Integer;  { offset courant dans le cadre local (negatif) }
+  PendingAssignName : TString; { nom ident en attente (lookahead ParseVarDecl) }
+  HasPendingAssign  : Boolean; { True si une affectation a ete detectee }
+
+  { Pile de boucles pour break/continue }
+  LoopBreakLbl    : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl     : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopTop         : Integer;  { sommet de la pile (-1 = vide) }
+
+  { Fonctions et procedures }
+  CurFuncName     : TString;  { nom de la fonction en cours ('' si aucune) }
+  CurFuncRetOfs   : Integer;  { offset de la valeur de retour [EBP+n] }
+  CurRetLabel     : TString;  { label de retour (_PSPL_RET_N) pour Exit }
+  CurNestLevel    : Integer;  { profondeur d imbrication proc/func }
+  CurParamBytes   : Integer;  { taille des parametres pour RET n }
+  MainBodyEmitted : Boolean;  { True si _PSPL_MAINBODY deja emis }
+  RuntimeEmitted  : Boolean;  { True si routines runtime deja emises }
+
+  { Pile with pour records }
+  WithSymIdx      : Array[0..MAX_WITH - 1] Of Integer;  { symidx du record }
+  WithTop         : Integer;  { sommet de la pile (-1 = vide) }
+
+  { Directives et inclusions }
+  IncSavedFName   : Array[0..MAX_INCLUDE - 1] Of TString; { nom fichier empile }
+  IncSavedFLine   : Array[0..MAX_INCLUDE - 1] Of Integer;{ ligne dans fichier }
+  IncSavedLine    : Array[0..MAX_INCLUDE - 1] Of String; { ligne courante  }
+  IncSavedLineNo  : Array[0..MAX_INCLUDE - 1] Of Integer;{ numero de ligne }
+  IncSavedColNo   : Array[0..MAX_INCLUDE - 1] Of Integer;{ colonne         }
+  IncSavedEOF     : Array[0..MAX_INCLUDE - 1] Of Boolean;{ EOF sauvegarde  }
+  LexSrcFName     : TString;  { nom du fichier source courant }
+  IncTop          : Integer;  { sommet pile inclusion (-1 = vide) }
+  DefineTab       : Array[0..MAX_DEFINE - 1] Of TString; { symboles defines }
+  DefineCount     : Integer;  { nombre de defines actifs }
+  CompilerMode    : TString;  { 'TP' ou 'FPC' }
+  ContentTypeLbl  : TString;  { label content-type ou '' }
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+{ Utilitaires chaines - TODO 01 }
+Function  StrLowerCase(Const S : TString) : TString; Forward;
+Function  StrUpperCase(Const S : TString) : TString; Forward;
+Function  IntToStr(N : LongInt) : TString; Forward;
+Function  EBPOfs(Ofs : Integer) : TString; Forward;
+Function  StrToIntDef(Const S : TString; Def : LongInt) : LongInt; Forward;
+{ Messages - TODO 01 }
+Procedure FatalError(Const Msg : TString); Forward;
+Procedure WarnMsg(Const Msg : TString); Forward;
+Procedure ErrorMsg(Const Msg : TString); Forward;
+Procedure Expect(Const Expected : TString); Forward;
+Procedure SkipTo; Forward;
+{ Lexeur - TODO 02 }
+Procedure LexInit;       Forward;
+Procedure LexClose;      Forward;
+Procedure LexNextLine;   Forward;
+Procedure LexNextToken;  Forward;
+Procedure LexScanIdent;  Forward;
+Procedure LexScanNumber; Forward;
+Procedure LexScanString; Forward;
+Procedure LexScanCharLit;Forward;
+Function  IsKeyword(Const S : TString) : Boolean; Forward;
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsHexDigit(Ch : Char) : Boolean; Forward;
+Function  HexVal(Ch : Char) : Integer; Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+Procedure LexSkipBraceComment; Forward;
+Procedure LexSkipParenStarComment; Forward;
+Procedure LexSkipLineComment; Forward;
+{ Directives et inclusions - TODO 20 }
+Procedure LexHandleDollarDirective; Forward;
+Procedure IncludePush(Const FileName : TString); Forward;
+Procedure IncludePop; Forward;
+Function  DefineDefined(Const Name : TString) : Boolean; Forward;
+Procedure DefineAdd(Const Name : TString); Forward;
+Procedure DefineRemove(Const Name : TString); Forward;
+Procedure ParsePSPDirective; Forward;
+{ Analyseur de template - TODO 19 }
+Procedure TplInit;       Forward;
+Procedure TplClose;      Forward;
+Procedure TplEmitHtml;   Forward;
+Procedure TplEmitPSPOpen(Kind : TTokenKind); Forward;
+Procedure TplNextToken;  Forward;
+{ Segment de donnees et litteraux - TODO 03 / 08 }
+Function  LabelGen : TString; Forward;
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : TString; Forward;
+Function  DataAddDWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataAddByte(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataAddArray(Const Lbl : TString;
+                ECount, ESz : Integer) : Integer; Forward;
+Function  DataAddRec(Const Lbl : TString;
+                RSz : Integer) : Integer; Forward;
+Procedure EmitRaw(Const S : String); Forward;
+Procedure EmitDataSeg; Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure ParseConstDecl; Forward;
+{ Table des symboles - TODO 05 }
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymAdd(Const Name : TString; Cat : TSymCat;
+               TIdx : Integer) : Integer; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+               Level : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Procedure SymInit; Forward;
+{ Systeme de types - TODO 06 }
+Procedure TypeInit; Forward;
+Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
+Function  TypeCompatible(T1, T2 : Integer) : Boolean; Forward;
+Function  TypeCoerce(SrcType, DstType : Integer) : Integer; Forward;
+Function  TypeResolve(Const Name : TString) : Integer; Forward;
+Function  TypeIsOrdinal(TIdx : Integer) : Boolean; Forward;
+Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
+Function  TypeIsPointer(TIdx : Integer) : Boolean; Forward;
+{ Emetteur ASM - TODO 07 }
+Procedure EmitComment(Const S : TString); Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitBlankLine; Forward;
+Function  NewLabel : TString; Forward;
+Procedure EmitHeader; Forward;
+Procedure EmitFooter; Forward;
+Procedure EmitProlog(FrameSize : Integer); Forward;
+Procedure EmitEpilog(ParamBytes : Integer); Forward;
+Procedure EmitPush(Const Reg : TString); Forward;
+Procedure EmitPop(Const Reg : TString); Forward;
+Procedure EmitMov(Const Dst, Src : TString); Forward;
+Procedure EmitCall(Const Target : TString); Forward;
+Procedure EmitJmp(Const Target : TString); Forward;
+Procedure EmitJmpCond(Const Cond, Target : TString); Forward;
+Procedure EmitCoerce(SrcType, DstType : Integer); Forward;
+{ Operateurs et expressions - TODO 04 / 10 / 11 }
+Function  OpPrec(Const Op : TString) : Integer; Forward;
+Procedure ExprMakeImm(V : LongInt; TIdx : Integer; Var R : TExprVal); Forward;
+Procedure ExprFlushToEAX(Var E : TExprVal); Forward;
+Procedure ParseCallArgs(FuncIdx : Integer); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ Variables et affectations - TODO 09 }
+Procedure ParseVarDecl; Forward;
+Procedure ParseAssignment(Const VarName : TString); Forward;
+{ Write/WriteLn et emission HTML - TODO 12 / 19 }
+Procedure ParseWriteStmt(IsWriteLn : Boolean); Forward;
+Procedure EmitHtmlFragment(Const Html : TString); Forward;
+Procedure EmitExprInline; Forward;
+{ If/Then/Else, Case/Of, Blocs - TODO 13 }
+Procedure ParseStatement; Forward;
+Procedure ParseBlock; Forward;
+Procedure ParseIfStmt; Forward;
+Procedure ParseCaseStmt; Forward;
+{ Boucles - TODO 14 }
+Procedure ParseForStmt; Forward;
+Procedure ParseWhileStmt; Forward;
+Procedure ParseRepeatStmt; Forward;
+{ Fonctions et procedures - TODO 18 }
+Procedure ParseFuncDecl; Forward;
+Procedure ParseProcDecl; Forward;
+{ Types definis et enumerations - TODO 06 / 17 }
+Procedure ParseTypeDecl; Forward;
+Procedure ParseIncDecStmt(IsInc : Boolean); Forward;
+{ Enregistrements - TODO 16 }
+Procedure ParseWithStmt; Forward;
+{ Exceptions - TODO 21 }
+Procedure ParseTryExcept; Forward;
+
+{ ============================================================
+  STUBS POUR DECLARATIONS FORWARD (a implementer dans les TODOs suivants)
+  ============================================================ }
+
+{ --- Stubs Lexeur (TODO 02) --- }
+Procedure LexInit; Begin End;
+Procedure LexClose; Begin End;
+Procedure LexNextLine; Begin End;
+Procedure LexNextToken; Begin End;
+Procedure LexScanIdent; Begin End;
+Procedure LexScanNumber; Begin End;
+Procedure LexScanString; Begin End;
+Procedure LexScanCharLit; Begin End;
+Function IsKeyword(Const S : TString) : Boolean; Begin IsKeyword := False; End;
+Function IsIdentStart(Ch : Char) : Boolean; Begin IsIdentStart := False; End;
+Function IsIdentCont(Ch : Char) : Boolean; Begin IsIdentCont := False; End;
+Function IsHexDigit(Ch : Char) : Boolean; Begin IsHexDigit := False; End;
+Function HexVal(Ch : Char) : Integer; Begin HexVal := 0; End;
+Procedure PrintToken(Const T : TToken); Begin End;
+Procedure LexSkipBraceComment; Begin End;
+Procedure LexSkipParenStarComment; Begin End;
+Procedure LexSkipLineComment; Begin End;
+
+{ --- Stubs Directives (TODO 20) --- }
+Procedure LexHandleDollarDirective; Begin End;
+Procedure IncludePush(Const FileName : TString); Begin End;
+Procedure IncludePop; Begin End;
+Function DefineDefined(Const Name : TString) : Boolean; Begin DefineDefined := False; End;
+Procedure DefineAdd(Const Name : TString); Begin End;
+Procedure DefineRemove(Const Name : TString); Begin End;
+Procedure ParsePSPDirective; Begin End;
+
+{ --- Stubs Template (TODO 19) --- }
+Procedure TplInit; Begin End;
+Procedure TplClose; Begin End;
+Procedure TplEmitHtml; Begin End;
+Procedure TplEmitPSPOpen(Kind : TTokenKind); Begin End;
+Procedure TplNextToken; Begin End;
+
+{ --- Stubs Donnees (TODO 03 / 08) --- }
+Function LabelGen : TString; Begin LabelGen := '_PSPL_00000'; End;
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+               AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin DataAdd := 0; End;
+Function DataAddStr(Const S : TString) : TString; Begin DataAddStr := ''; End;
+Function DataAddDWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin DataAddDWord := 0; End;
+Function DataAddByte(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin DataAddByte := 0; End;
+Function DataAddArray(Const Lbl : TString;
+              ECount, ESz : Integer) : Integer;
+Begin DataAddArray := 0; End;
+Function DataAddRec(Const Lbl : TString;
+              RSz : Integer) : Integer;
+Begin DataAddRec := 0; End;
+Procedure EmitRaw(Const S : String); Begin End;
+Procedure EmitDataSeg; Begin End;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Begin End;
+Procedure ParseConstDecl; Begin End;
+
+{ --- Stubs Symboles (TODO 05) --- }
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Begin SymMangle := Name; End;
+Function SymAdd(Const Name : TString; Cat : TSymCat;
+             TIdx : Integer) : Integer;
+Begin SymAdd := 0; End;
+Function SymFind(Const Name : TString) : Integer; Begin SymFind := -1; End;
+Function SymFindInScope(Const Name : TString;
+             Level : Integer) : Integer;
+Begin SymFindInScope := -1; End;
+Procedure SymEnterScope; Begin End;
+Procedure SymLeaveScope; Begin End;
+Procedure SymInit; Begin End;
+
+{ --- Stubs Types (TODO 06) --- }
+Procedure TypeInit; Begin End;
+Function TypeSizeof(TIdx : Integer) : Integer; Begin TypeSizeof := 4; End;
+Function TypeCompatible(T1, T2 : Integer) : Boolean; Begin TypeCompatible := True; End;
+Function TypeCoerce(SrcType, DstType : Integer) : Integer;
+Begin TypeCoerce := DstType; End;
+Function TypeResolve(Const Name : TString) : Integer;
+Begin TypeResolve := TY_UNKNOWN; End;
+Function TypeIsOrdinal(TIdx : Integer) : Boolean; Begin TypeIsOrdinal := False; End;
+Function TypeIsNumeric(TIdx : Integer) : Boolean; Begin TypeIsNumeric := False; End;
+Function TypeIsPointer(TIdx : Integer) : Boolean; Begin TypeIsPointer := False; End;
+
+{ --- Stubs Emetteur (TODO 07) --- }
+Procedure EmitComment(Const S : TString); Begin End;
+Procedure EmitLabel(Const Lbl : TString); Begin End;
+Procedure EmitInstr(Const Mnem : TString); Begin End;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Begin End;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Begin End;
+Procedure EmitBlankLine; Begin End;
+Function NewLabel : TString; Begin NewLabel := LabelGen; End;
+Procedure EmitHeader; Begin End;
+Procedure EmitFooter; Begin End;
+Procedure EmitProlog(FrameSize : Integer); Begin End;
+Procedure EmitEpilog(ParamBytes : Integer); Begin End;
+Procedure EmitPush(Const Reg : TString); Begin End;
+Procedure EmitPop(Const Reg : TString); Begin End;
+Procedure EmitMov(Const Dst, Src : TString); Begin End;
+Procedure EmitCall(Const Target : TString); Begin End;
+Procedure EmitJmp(Const Target : TString); Begin End;
+Procedure EmitJmpCond(Const Cond, Target : TString); Begin End;
+Procedure EmitCoerce(SrcType, DstType : Integer); Begin End;
+
+{ --- Stubs Expressions (TODO 04 / 10 / 11) --- }
+Function OpPrec(Const Op : TString) : Integer; Begin OpPrec := 0; End;
+Procedure ExprMakeImm(V : LongInt; TIdx : Integer; Var R : TExprVal); Begin End;
+Procedure ExprFlushToEAX(Var E : TExprVal); Begin End;
+Procedure ParseCallArgs(FuncIdx : Integer); Begin End;
+Procedure ParsePrimary(Var Res : TExprVal); Begin End;
+Procedure ParseUnary(Var Res : TExprVal); Begin End;
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Begin End;
+Procedure ParseExpr(Var Res : TExprVal); Begin End;
+
+{ --- Stubs Variables (TODO 09) --- }
+Procedure ParseVarDecl; Begin End;
+Procedure ParseAssignment(Const VarName : TString); Begin End;
+
+{ --- Stubs Write/HTML (TODO 12 / 19) --- }
+Procedure ParseWriteStmt(IsWriteLn : Boolean); Begin End;
+Procedure EmitHtmlFragment(Const Html : TString); Begin End;
+Procedure EmitExprInline; Begin End;
+
+{ --- Stubs If/Case/Blocs (TODO 13) --- }
+Procedure ParseStatement; Begin End;
+Procedure ParseBlock; Begin End;
+Procedure ParseIfStmt; Begin End;
+Procedure ParseCaseStmt; Begin End;
+
+{ --- Stubs Boucles (TODO 14) --- }
+Procedure ParseForStmt; Begin End;
+Procedure ParseWhileStmt; Begin End;
+Procedure ParseRepeatStmt; Begin End;
+
+{ --- Stubs Fonctions/Procedures (TODO 18) --- }
+Procedure ParseFuncDecl; Begin End;
+Procedure ParseProcDecl; Begin End;
+
+{ --- Stubs Types/Enumerations (TODO 06 / 17) --- }
+Procedure ParseTypeDecl; Begin End;
+Procedure ParseIncDecStmt(IsInc : Boolean); Begin End;
+
+{ --- Stubs Records (TODO 16) --- }
+Procedure ParseWithStmt; Begin End;
+
+{ --- Stubs Exceptions (TODO 21) --- }
+Procedure ParseTryExcept; Begin End;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- FatalError ------------------------------------------ }
+Procedure FatalError(Const Msg : TString);
 Begin
-End.
+  WriteLn('PSPCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+{ ---- WarnMsg --------------------------------------------- }
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('PSPCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- ErrorMsg, Expect, SkipTo -------------------- }
+
+Procedure ErrorMsg(Const Msg : TString);
+Begin
+  WriteLn('PSPCW32: erreur ligne ', LexLineNo, ' : ', Msg);
+  Inc(ErrorCount);
+End;
+
+Procedure Expect(Const Expected : TString);
+Begin
+  If CurToken.Val <> Expected Then
+  Begin
+    ErrorMsg('''' + Expected + ''' attendu, trouve ''' + CurToken.Val + '''');
+    SkipTo;
+  End
+  Else
+    TplNextToken;
+End;
+
+Procedure SkipTo;
+Begin
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end')) And
+        Not ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'begin')) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '%>')) Do
+    TplNextToken;
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('PSPCW32 v', PSPCW32_VERSION, ' (', PSPCW32_DATE, ')');
+  WriteLn('Compilateur Pascal Server Pages -> assembleur 80386 / Win32');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)  Cible: MASM .386 .MODEL FLAT');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('PSPCW32 - Compilateur de PSP (Pascal Server Pages) pour ',
+          'l''assembleur du microprocesseur 80386 (Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : PSPCW32 <page.psp> [-o sortie] [-v] [-d] [-w] [-obj] [-asm]');
+  WriteLn;
+  WriteLn('  page.psp   : fichier Pascal Server Pages source');
+  WriteLn('  -o nom     : specifier le nom du fichier de sortie');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -obj       : produire uniquement un .OBJ (format COFF 32 bits)');
+  WriteLn('  -asm       : produire egalement un listing assembleur .ASM');
+  WriteLn('  -h         : afficher cette aide');
+  WriteLn;
+  WriteLn('Par defaut, PSPCW32 produit un fichier .EXE (PE Windows 32 bits).');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  ShowBanner;
+  ShowUsage;
+End;
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+{ Retourne '[EBP+n]' ou '[EBP-n]' selon le signe }
+Function EBPOfs(Ofs : Integer) : TString;
+Begin
+  If Ofs >= 0 Then
+    EBPOfs := '[EBP+' + IntToStr(Ofs) + ']'
+  Else
+    EBPOfs := '[EBP' + IntToStr(Ofs) + ']';
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+{ Extrait le nom de base d un chemin (sans extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne l extension d un chemin (avec le point) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.EmitExe   := True;    { par defaut : produire un .EXE }
+  Opts.EmitObj   := False;
+  Opts.EmitAsm   := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-o' Then
+    Begin
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        Opts.OutFile := ParamStr(I);
+      End
+      Else
+      Begin
+        WriteLn('PSPCW32: -o requiert un nom de fichier');
+        ShowUsage;
+      End;
+    End
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('PSPCW32: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else
+    Begin
+      WriteLn('PSPCW32: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+
+    Inc(I);
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('PSPCW32: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier l extension .psp }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.psp') Then
+    WarnMsg('extension attendue .psp, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut selon le mode }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale -------------------------------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  TotalSyms  := 0;
+  OutFOpen   := False;
+  LexOpened  := False;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+  DataCount   := 0;
+  LabelGenSeq := 0;
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+  TypeCount := 0;
+  CurFrameOffset    := 0;
+  HasPendingAssign  := False;
+  PendingAssignName := '';
+  LoopTop := -1;
+  CurFuncName   := '';
+  CurFuncRetOfs := 0;
+  CurRetLabel   := '';
+  CurNestLevel  := 0;
+  CurParamBytes := 0;
+  MainBodyEmitted := False;
+  RuntimeEmitted  := False;
+  WithTop := -1;
+  IncTop        := -1;
+  DefineCount   := 0;
+  CompilerMode  := 'TP';
+  ContentTypeLbl := '';
+  LexSrcFName   := '';
+  TypeInit;
+  SymInit;
+End;
+
+{ ---- Pipeline de compilation (stub) ------------------------- }
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  { Verifier que le fichier source existe }
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened := True;
+  LexSrcFName := Opts.SrcFile;
+
+  { Creer le fichier de sortie }
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier de sortie: ' + Opts.OutFile);
+  OutFOpen := True;
+
+  { TODO 02+ : Initialiser le lexeur et l analyseur template }
+  { TODO 07  : Emettre l en-tete ASM }
+  { TODO 19  : Boucle principale template PSP }
+  { TODO 07  : Emettre le pied de page ASM }
+  { TODO 08  : Emettre le segment de donnees }
+
+  Cleanup;
+  If Opts.Verbose Then Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+    If Opts.EmitExe Then
+      WriteLn('  Mode           : EXE (PE Win32)')
+    Else If Opts.EmitObj Then
+      WriteLn('  Mode           : OBJ (COFF 32 bits)');
+    If Opts.EmitAsm Then
+      WriteLn('  Listing ASM    : oui');
+  End;
+  If ErrorCount > 0 Then Halt(EXIT_ERROR)
+                    Else Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
+ ParseArgs;
+ Run;
+END.
