@@ -39,7 +39,7 @@
               // et /* ... */ dans les blocs <cfscript>
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 ou -32768..32767
             Flottants : reconnus par le lexeur, traites comme entiers (trunc)
             Chaines : "abc" ou 'abc' -> pointeur vers donnees DATA
@@ -673,6 +673,16 @@ Procedure LexSkipLineComment;  Forward;
 Procedure LexSkipBlockComment; Forward;
 Procedure LexNextToken;        Forward;
 Procedure ParserAdvance;       Forward;
+{ TODO 03 }
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : Integer; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1719,6 +1729,158 @@ Procedure ParserAdvance;
 Begin
   LexNextToken;
   PrintToken(CurToken);
+End;
+
+{ ============================================================
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAdd : ajouter une entree generique dans DataTab --- }
+(* Retourne l index dans DataTab ou -1 si plein.               *)
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label _CFK_N et stocker chaine -- }
+(* Reutilise les doublons (meme contenu -> meme label).        *)
+(* Retourne l index dans DataTab.                              *)
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  I   : Integer;
+  Lbl : TString;
+Begin
+  { Chercher un doublon existant }
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := I;
+      Exit;
+    End;
+  Inc(LabelGenSeq);
+  Lbl := CF_STR_PFX + IntToStr(LabelGenSeq);
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans DataTab ----- }
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- ExprMakeImm : construire une valeur immediate --------- }
+(* ATTENTION TP7 : ne pas retourner de Record - utiliser Var   *)
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNone : valeur vide (void / erreur) ------------ }
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeBool : construire une valeur booleenne --------- }
+(* AVal <> 0 -> AX=1 (true), AVal = 0 -> AX=0 (false)        *)
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.TypeIdx := TY_IDX_BOOLEAN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- LitEvalInt : convertir un token TK_INTEGER en valeur -- }
+(* IntVal est deja calcule par LexScanNumber                   *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUMERIC, Res);
+End;
+
+{ ---- LitEvalFloat : convertir un token TK_FLOAT en valeur -- }
+(* ColdFusion traite les flottants comme des entiers (trunc)   *)
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUMERIC, Res);
+  WarnMsg('flottant tronque a entier : ' + T.Val);
+End;
+
+{ ---- IsBoolKeyword : test rapide true/false/yes/no ---------- }
+Function IsBoolKeyword(Const S : TString) : Boolean;
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(S);
+  IsBoolKeyword := (U = 'TRUE') Or (U = 'FALSE') Or
+                   (U = 'YES')  Or (U = 'NO');
+End;
+
+{ ---- LitEvalKW : evaluer un mot-cle litteral ---------------- }
+(* true / yes -> AX=1, false / no -> AX=0, null -> AX=0       *)
+Procedure LitEvalKW(Const T : TToken; Var Res : TExprVal);
+Var
+  U : TString;
+Begin
+  U := StrUpperCase(T.Val);
+  If (U = 'TRUE') Or (U = 'YES') Then
+    ExprMakeBool(1, Res)
+  Else If (U = 'FALSE') Or (U = 'NO') Then
+    ExprMakeBool(0, Res)
+  Else If U = 'NULL' Then
+    ExprMakeImm(0, TY_IDX_NULL, Res)
+  Else
+    ExprMakeNone(Res);
+End;
+
+{ ---- LitEval : dispatcher principal pour les litteraux ----- }
+(* Types de tokens acceptes :                                   *)
+(*   TK_INTEGER  -> entier decimal (LitEvalInt)                 *)
+(*   TK_FLOAT    -> flottant tronque (LitEvalFloat)             *)
+(*   TK_STRING   -> chaine -> DataAddStr + EK_MEM               *)
+(*   TK_KEYWORD  -> true/false/yes/no/null (LitEvalKW)          *)
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);  { valeur par defaut }
+  Case T.Kind Of
+    TK_INTEGER : LitEvalInt(T, Res);
+    TK_FLOAT   : LitEvalFloat(T, Res);
+    TK_STRING  :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.Offset  := DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+    TK_KEYWORD :
+      LitEvalKW(T, Res);
+  Else
+    ExprMakeNone(Res);
+  End;
 End;
 
 { ============================================================
