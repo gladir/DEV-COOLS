@@ -75,7 +75,7 @@
               6. AND
               7. OR
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_ARRAY, SK_FORMAT, SK_INFORMAT,
               SK_LABEL, SK_MACRO, SK_MACROVAR, SK_DATASET, SK_PROC
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
@@ -740,6 +740,16 @@ Procedure EmitBinOp(Const Op : TString; LeftTy, RightTy : Integer); Forward;
 Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
+(* TODO 05 - Forward declarations table des symboles *)
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                Level : Integer) : Integer; Forward;
+Function  SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AOffset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2384,7 +2394,176 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 05..25 (a implementer)
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- SymNameClean : nettoyer un nom pour nommage ASM -------- *)
+(* Remplace les caracteres non alphanumeriques par '_'.           *)
+(* SAS est insensible a la casse : le nom est deja en majuscules. *)
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  S : TString;
+  I : Integer;
+Begin
+  S := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    If IsIdentCont(Name[I]) Then
+    Begin
+      If Length(S) < MAX_STR Then S := S + Name[I];
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then S := S + '_';
+    End;
+  End;
+  If S = '' Then S := '_anon';
+  SymNameClean := S;
+End;
+
+(* ---- SymMangle : generer un label ASM depuis un symbole ----- *)
+(* Le prefixe depend de la categorie du symbole.                  *)
+(*   SC_VAR      -> _SASV_  (variable dans le PDV)                *)
+(*   SC_ARRAY    -> _SASV_  (tableau = variable aussi)            *)
+(*   SC_FORMAT   -> _SASF_  (format utilisateur)                  *)
+(*   SC_INFORMAT -> _SASF_  (informat)                            *)
+(*   SC_LABEL    -> _SASL_  (label de saut)                       *)
+(*   SC_MACRO    -> _SASM_  (macro)                               *)
+(*   SC_MACROVAR -> _SASM_  (macro-variable)                      *)
+(*   SC_DATASET  -> _SASD_  (dataset)                             *)
+(*   SC_PROC     -> _SASP_  (procedure SAS)                       *)
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx   : TString;
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Cat Of
+    SC_VAR      : Pfx := SAS_VAR_PFX;
+    SC_ARRAY    : Pfx := SAS_VAR_PFX;
+    SC_FORMAT   : Pfx := SAS_FMT_PFX;
+    SC_INFORMAT : Pfx := SAS_FMT_PFX;
+    SC_LABEL    : Pfx := SAS_LBL_PFX;
+    SC_MACRO    : Pfx := SAS_MAC_PFX;
+    SC_MACROVAR : Pfx := SAS_MAC_PFX;
+    SC_DATASET  : Pfx := SAS_DS_PFX;
+    SC_PROC     : Pfx := SAS_PROC_PFX;
+  Else
+    Pfx := SAS_VAR_PFX;
+  End;
+  SymMangle := Pfx + Clean;
+End;
+
+(* ---- SymFind : chercher un symbole par nom ------------------- *)
+(* Parcourt la table du plus recent au plus ancien.                *)
+(* SAS est insensible a la casse : la comparaison est en           *)
+(* majuscules (les noms sont stockes en majuscules).               *)
+(* Retourne l indice (0-base) ou -1 si non trouve.                 *)
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Up Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+(* ---- SymFindInScope : chercher un symbole dans un scope ----- *)
+(* Retourne l indice (0-base) ou -1 si non trouve.                *)
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Up : TString;
+Begin
+  Up := StrUpperCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Up) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+(* ---- SymAdd : ajouter un symbole dans la table -------------- *)
+(* Retourne l indice du symbole (0-base) ou -1 si table pleine.   *)
+(* Le nom est converti en majuscules (SAS insensible a la casse). *)
+Function SymAdd(Const AName : TString; ACat : TSymCat;
+                ATypeIdx : Integer; AOffset : Integer) : Integer;
+Var
+  Idx : Integer;
+  Up  : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  Up  := StrUpperCase(AName);
+  Idx := SymCount;
+  SymTab[Idx].Name        := Up;
+  SymTab[Idx].MangledName := SymMangle(Up, ACat);
+  SymTab[Idx].Cat         := ACat;
+  SymTab[Idx].TypeIdx     := ATypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := AOffset;
+  SymTab[Idx].VarLen      := 0;
+  SymTab[Idx].IsRetained  := False;
+  SymTab[Idx].IsDropped   := False;
+  SymTab[Idx].IsKept      := False;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Up,
+            ' cat=', Ord(ACat),
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+(* ---- SymEnterScope : entrer dans une nouvelle portee --------- *)
+(* Sauvegarde le SymCount courant sur la pile de portees.          *)
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('profondeur de portee maximale atteinte (max='
+                 + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
+End;
+
+(* ---- SymLeaveScope : quitter la portee courante -------------- *)
+(* Retire tous les symboles ajoutes dans cette portee.             *)
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScope);
+End;
+
+{ ============================================================
+  STUBS POUR TODO 06..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -2582,6 +2761,15 @@ Begin
   SymCount := 0;
   ScopeTop := 0;
   CurScope := 0;
+  (* Variables automatiques SAS : creees dans chaque DATA step *)
+  (* _N_      : compteur d observation (1, 2, 3, ...)          *)
+  (* _ERROR_  : indicateur d erreur (0 = pas d erreur)         *)
+  (* _INFILE_ : nom du fichier en cours de lecture              *)
+  (* _LAST_   : derniere observation lue                        *)
+  SymAdd('_N_',      SC_VAR, TY_IDX_NUMERIC, 0);
+  SymAdd('_ERROR_',  SC_VAR, TY_IDX_NUMERIC, 0);
+  SymAdd('_INFILE_', SC_VAR, TY_IDX_CHARACTER, 0);
+  SymAdd('_LAST_',   SC_VAR, TY_IDX_NUMERIC, 0);
 End;
 
 { ============================================================
