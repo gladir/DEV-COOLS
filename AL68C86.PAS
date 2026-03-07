@@ -119,23 +119,25 @@
             ModeInfer (IMM->INT, else ModeIdx/UNKNOWN)
             ModeLookupName (case-insensitive)
 
-  TODO 07 - COERCITIONS (COERCIONS)
+  TODO 07 - COERCITIONS (COERCIONS) [IMPLEMENTE]
             Les 6 coercitions Algol 68, appliquees automatiquement :
             Dereferencement (dereferencing) : REF M -> M
               MOV BX,AX / MOV AX,[BX] (suivre le pointeur)
             Deproceduration (deproceduring) : PROC M -> M
-              CALL adresse_proc -> resultat dans AX
-            Elargissement (widening) : INT -> REAL, REAL -> COMPL
-              (en pratique : NOP ou extension de signe)
-            Mise en rangee (rowing) : M -> [1:1] M (singleton array)
-              Creer un tableau d un element sur la pile
-            Unification (uniting) : M -> UNION(M, ...) 
-              Encapsuler la valeur avec un discriminant de mode
+              CALL AX -> resultat dans AX
+            Elargissement (widening) : INT -> REAL (NOP stub),
+              CHAR->INT (XOR AH,AH), BOOL->INT (AND AX,1),
+              INT/REAL->COMPL (PUSH AX/PUSH 0), INT<->BITS (NOP),
+              INT->CHAR (AND AX,0FFh)
+            Mise en rangee (rowing) : M -> ROW M
+              PUSH AX / MOV AX,SP (singleton array sur pile)
+            Unification (uniting) : M -> UNION(M, ...)
+              PUSH AX / PUSH disc / MOV AX,SP (discriminant+valeur)
             Vidage (voiding) : M -> VOID
-              Ignorer le resultat (POP ou ne pas utiliser AX)
-            Chaine de coercitions : appliquer dans l ordre canonique
+              Ignorer le resultat (NOP, valeur AX non utilisee)
+            CoerceChain : chaine dans l ordre canonique
               deref -> deproc -> widen -> row -> unite -> void
-            Contexte de coercition : fort, ferme, faible, doux, meek
+            ApplyCoercion : point d entree avec verification
 
   TODO 08 - EMETTEUR DE CODE ASM
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
@@ -753,6 +755,13 @@ Function  ModeInfer(Const E : TExprVal) : Integer; Forward;
 Function  ModeLookupName(Const Name : TString) : Integer; Forward;
 
 { TODO 07 - Coercitions }
+Procedure CoerceDeref(SrcMode : Integer); Forward;
+Procedure CoerceDeproc(SrcMode : Integer); Forward;
+Procedure CoerceWiden(SrcMode, DstMode : Integer); Forward;
+Procedure CoerceRow(SrcMode : Integer); Forward;
+Procedure CoerceUnite(SrcMode, DstMode : Integer); Forward;
+Procedure CoerceVoid; Forward;
+Procedure CoerceChain(SrcMode, DstMode : Integer); Forward;
 Procedure ApplyCoercion(SrcMode, DstMode : Integer); Forward;
 
 { TODO 08 - Emetteur ASM }
@@ -3826,9 +3835,217 @@ Begin
   ModeLookupName := -1;
 End;
 
+{ ============================================================
+  TODO 07 - COERCITIONS (COERCIONS) [IMPLEMENTE]
+  Les 6 coercitions Algol 68 appliquees automatiquement.
+  Ordre canonique : deref -> deproc -> widen -> row -> unite -> void
+  ============================================================ }
+
+{ ---- CoerceDeref : dereferencement (dereferencing) ----------- }
+{ REF M -> M : suivre le pointeur dans AX                        }
+{   MOV BX, AX        ; adresse du REF dans BX                   }
+{   MOV AX, [BX]      ; charger la valeur pointee               }
+
+Procedure CoerceDeref(SrcMode : Integer);
+Begin
+  If ModeKindOf(SrcMode) <> MK_REF Then Exit;
+  EmitInstr('MOV    BX, AX');
+  EmitInstr('MOV    AX, [BX]');
+End;
+
+{ ---- CoerceDeproc : deproceduration (deproceduring) ---------- }
+{ PROC M -> M : appeler la procedure, resultat dans AX           }
+{   CALL adresse_proc  ; la valeur revient dans AX               }
+
+Procedure CoerceDeproc(SrcMode : Integer);
+Begin
+  If ModeKindOf(SrcMode) <> MK_PROC Then Exit;
+  { AX contient l adresse de la procedure }
+  EmitInstr('CALL   AX');
+End;
+
+{ ---- CoerceWiden : elargissement (widening) ------------------ }
+{ INT -> REAL   : en 16 bits stub, NOP (meme representation)     }
+{ CHAR -> INT   : XOR AH,AH (etendre octet a mot)              }
+{ BOOL -> INT   : AND AX,1 (normaliser 0/1)                     }
+{ INT -> COMPL  : PUSH 0 / PUSH AX (re=AX, im=0)              }
+{ REAL -> COMPL : PUSH 0 / PUSH AX (re=AX, im=0)              }
+{ INT -> BITS   : NOP (meme taille, reinterpretation)            }
+{ BITS -> INT   : NOP (meme taille, reinterpretation)            }
+
+Procedure CoerceWiden(SrcMode, DstMode : Integer);
+Var
+  SK, DK : TModeKind;
+Begin
+  SK := ModeKindOf(SrcMode);
+  DK := ModeKindOf(DstMode);
+  { CHAR -> INT : etendre octet bas a mot }
+  If (SK = MK_CHAR) And (DK = MK_INT) Then
+  Begin
+    EmitInstr('XOR    AH, AH');
+    Exit;
+  End;
+  { BOOL -> INT : normaliser a 0 ou 1 }
+  If (SK = MK_BOOL) And (DK = MK_INT) Then
+  Begin
+    EmitInstr('AND    AX, 1');
+    Exit;
+  End;
+  { INT -> COMPL ou REAL -> COMPL : pousser (re=AX, im=0) }
+  If ((SK = MK_INT) Or (SK = MK_REAL)) And (DK = MK_COMPL) Then
+  Begin
+    EmitInstr('PUSH   AX');
+    EmitInstr('XOR    AX, AX');
+    EmitInstr('PUSH   AX');
+    WarnMsg('widening to COMPL : re=AX, im=0 on stack');
+    Exit;
+  End;
+  { INT -> REAL : NOP en stub 16 bits (meme representation) }
+  If (SK = MK_INT) And (DK = MK_REAL) Then
+    Exit;
+  { REAL -> INT : NOP en stub 16 bits (deja un entier tronque) }
+  If (SK = MK_REAL) And (DK = MK_INT) Then
+    Exit;
+  { INT <-> BITS : NOP (reinterpretation, meme taille) }
+  If ((SK = MK_INT) And (DK = MK_BITS)) Or
+     ((SK = MK_BITS) And (DK = MK_INT)) Then
+    Exit;
+  { INT -> CHAR : tronquer a l octet bas }
+  If (SK = MK_INT) And (DK = MK_CHAR) Then
+  Begin
+    EmitInstr('AND    AX, 0FFh');
+    Exit;
+  End;
+End;
+
+{ ---- CoerceRow : mise en rangee (rowing) --------------------- }
+{ M -> ROW M : creer un singleton array sur la pile               }
+{   PUSH AX         ; element unique                              }
+{   MOV AX, SP      ; AX = adresse du tableau sur la pile        }
+
+Procedure CoerceRow(SrcMode : Integer);
+Begin
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    AX, SP');
+End;
+
+{ ---- CoerceUnite : unification (uniting) --------------------- }
+{ M -> UNION(M,...) : encapsuler avec discriminant de mode        }
+{   PUSH AX         ; valeur                                      }
+{   MOV AX, disc    ; discriminant = index du mode source        }
+{   PUSH AX         ; discriminant sur la pile                    }
+{   MOV AX, SP      ; AX = adresse du bloc UNION                }
+
+Procedure CoerceUnite(SrcMode, DstMode : Integer);
+Begin
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    AX, ' + IntToStr(SrcMode));
+  EmitInstr('PUSH   AX');
+  EmitInstr('MOV    AX, SP');
+End;
+
+{ ---- CoerceVoid : vidage (voiding) --------------------------- }
+{ M -> VOID : ignorer la valeur dans AX                           }
+{   (ne rien emettre, la valeur dans AX est simplement ignoree)  }
+
+Procedure CoerceVoid;
+Begin
+  { Rien a emettre : la valeur dans AX est ignoree }
+End;
+
+{ ---- CoerceChain : chaine de coercitions --------------------- }
+{ Applique les coercitions dans l ordre canonique Algol 68 :      }
+{   1. Dereferencement (REF M -> M)                               }
+{   2. Deproceduration (PROC M -> M)                              }
+{   3. Elargissement (INT->REAL, CHAR->INT, BOOL->INT, ->COMPL) }
+{   4. Mise en rangee (M -> ROW M)                                }
+{   5. Unification (M -> UNION)                                   }
+{   6. Vidage (M -> VOID)                                         }
+
+Procedure CoerceChain(SrcMode, DstMode : Integer);
+Var
+  CurMode : Integer;
+  SK, DK  : TModeKind;
+Begin
+  If SrcMode = DstMode Then Exit;
+  If (SrcMode = TY_IDX_UNKNOWN) Or (DstMode = TY_IDX_UNKNOWN) Then Exit;
+  CurMode := SrcMode;
+  SK := ModeKindOf(CurMode);
+  DK := ModeKindOf(DstMode);
+
+  { 1. Dereferencement : REF M -> M }
+  If SK = MK_REF Then
+  Begin
+    CoerceDeref(CurMode);
+    { Apres deref, on suppose le mode element (INT par defaut) }
+    If ModeTab[CurMode].ElemIdx >= 0 Then
+      CurMode := ModeTab[CurMode].ElemIdx
+    Else
+      CurMode := TY_IDX_INT;
+    SK := ModeKindOf(CurMode);
+    If CurMode = DstMode Then Exit;
+  End;
+
+  { 2. Deproceduration : PROC M -> M }
+  If SK = MK_PROC Then
+  Begin
+    CoerceDeproc(CurMode);
+    If ModeTab[CurMode].ElemIdx >= 0 Then
+      CurMode := ModeTab[CurMode].ElemIdx
+    Else
+      CurMode := TY_IDX_INT;
+    SK := ModeKindOf(CurMode);
+    If CurMode = DstMode Then Exit;
+  End;
+
+  { 3. Elargissement (widening) }
+  If ModeCanCoerce(CurMode, DstMode) And (DK <> MK_VOID) And
+     (DK <> MK_ROW) And (DK <> MK_UNION) Then
+  Begin
+    CoerceWiden(CurMode, DstMode);
+    Exit;
+  End;
+
+  { 4. Mise en rangee (rowing) : M -> ROW M }
+  If DK = MK_ROW Then
+  Begin
+    CoerceRow(CurMode);
+    Exit;
+  End;
+
+  { 5. Unification (uniting) : M -> UNION }
+  If DK = MK_UNION Then
+  Begin
+    CoerceUnite(CurMode, DstMode);
+    Exit;
+  End;
+
+  { 6. Vidage (voiding) : M -> VOID }
+  If DK = MK_VOID Then
+  Begin
+    CoerceVoid;
+  End;
+End;
+
+{ ---- ApplyCoercion : point d entree principal ---------------- }
+{ Applique la coercition de SrcMode vers DstMode.                 }
+{ Verifie d abord si la coercition est possible, puis delegue    }
+{ a CoerceChain pour appliquer la chaine canonique.               }
+
 Procedure ApplyCoercion(SrcMode, DstMode : Integer);
 Begin
-  { TODO 07 }
+  { Meme mode : rien a faire }
+  If SrcMode = DstMode Then Exit;
+  { UNKNOWN : pas de coercition possible }
+  If (SrcMode = TY_IDX_UNKNOWN) Or (DstMode = TY_IDX_UNKNOWN) Then Exit;
+  { Verifier la compatibilite }
+  If Not ModeCanCoerce(SrcMode, DstMode) Then
+  Begin
+    WarnMsg('coercition impossible de mode ' + IntToStr(SrcMode) +
+            ' vers mode ' + IntToStr(DstMode));
+    Exit;
+  End;
+  CoerceChain(SrcMode, DstMode);
 End;
 
 Function LabelGen : TString;
