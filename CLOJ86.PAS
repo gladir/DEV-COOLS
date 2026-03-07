@@ -113,7 +113,7 @@
             TypeInfer : deduction de type depuis TExprVal
             TypeLookupName : recherche par nom dans TypeTab
 
-  TODO 07 - EMETTEUR DE CODE ASM
+  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -713,6 +713,8 @@ Procedure EmitBlankLine; Forward;
 Procedure EmitComment(Const S : TString); Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
 Procedure EmitInstr(Const Mnem, Ops : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
 Procedure EmitProlog; Forward;
 Procedure EmitEpilog; Forward;
 Procedure EmitOpen;    Forward;
@@ -2653,6 +2655,11 @@ Begin
   TypeCount := TY_PRIM_COUNT;
 End;
 
+(* ============================================================
+   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+   ============================================================ *)
+
+(* LabelGen : generer un label unique _CL_NNNNN *)
 Function LabelGen : TString;
 Var S : TString;
 Begin
@@ -2661,28 +2668,33 @@ Begin
   LabelGen := CL_LBL_PFX + S;
 End;
 
+(* EmitRaw : ecrire une ligne brute dans le fichier de sortie *)
 Procedure EmitRaw(Const S : TString);
 Begin
   If OutFOpen Then
     WriteLn(OutF, S);
 End;
 
+(* EmitBlankLine : ligne vide *)
 Procedure EmitBlankLine;
 Begin
   If OutFOpen Then
     WriteLn(OutF);
 End;
 
+(* EmitComment : commentaire ASM '; texte' *)
 Procedure EmitComment(Const S : TString);
 Begin
   EmitRaw('; ' + S);
 End;
 
+(* EmitLabel : label ASM suivi de ':' en colonne 0 *)
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   EmitRaw(Lbl + ':');
 End;
 
+(* EmitInstr : instruction avec mnemonique + operandes (8 espaces) *)
 Procedure EmitInstr(Const Mnem, Ops : TString);
 Begin
   If Ops = '' Then
@@ -2691,28 +2703,47 @@ Begin
     EmitRaw('        ' + Mnem + ' ' + Ops);
 End;
 
-Procedure EmitProlog;
+(* EmitInstrA : instruction + un operande *)
+Procedure EmitInstrA(Const Mnem, A1 : TString);
 Begin
-  EmitInstr('PUSH', 'BP');
-  EmitInstr('MOV', 'BP,SP');
+  EmitRaw('        ' + Mnem + ' ' + A1);
 End;
 
+(* EmitInstrAB : instruction + deux operandes separes par virgule *)
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + ' ' + A1 + ',' + A2);
+End;
+
+(* EmitProlog : preambule de fonction (BP frame) *)
+Procedure EmitProlog;
+Begin
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+End;
+
+(* EmitEpilog : epilogue de fonction (restaurer SP/BP et retourner) *)
 Procedure EmitEpilog;
 Begin
-  EmitInstr('MOV', 'SP,BP');
-  EmitInstr('POP', 'BP');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
   EmitInstr('RET', '');
 End;
 
+(* EmitOpen : ouvrir le fichier de sortie ASM *)
 Procedure EmitOpen;
 Begin
+  {$I-}
   Assign(OutF, Opts.OutFile);
   Rewrite(OutF);
+  {$I+}
   If IOResult <> 0 Then
     FatalError('impossible de creer ' + Opts.OutFile);
   OutFOpen := True;
 End;
 
+(* EmitHeader : en-tete du fichier ASM (.MODEL SMALL, _TEXT SEGMENT, *)
+(*   point d entree _CLF_main avec initialisation DS)                *)
 Procedure EmitHeader;
 Begin
   EmitComment('=========================================================');
@@ -2721,28 +2752,39 @@ Begin
   EmitComment('Cible   : MASM 8086, modele SMALL');
   EmitComment('=========================================================');
   EmitBlankLine;
-  EmitRaw('        .8086');
-  EmitRaw('        DOSSEG');
-  EmitRaw('        .MODEL  SMALL');
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
-  EmitRaw('        .STACK  ' + IntToStr(STACK_SIZE));
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:NOTHING');
   EmitBlankLine;
-  EmitRaw('_TEXT   SEGMENT PUBLIC ''CODE''');
-  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA, SS:STACK');
+  (* Point d entree principal *)
+  EmitLabel('_CLF_main');
+  EmitComment('--- initialisation DS ---');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
   EmitBlankLine;
 End;
 
+(* EmitDataSeg : emettre le segment de donnees _DATA *)
+(* Inclut les chaines predefinies Clojure et les donnees utilisateur *)
 Procedure EmitDataSeg;
-Var I : Integer;
-    S : TString;
+Var
+  I, J  : Integer;
+  S, Tmp: TString;
+  Ch    : Char;
+  InQ   : Boolean;
+  Need  : Boolean;
 Begin
   EmitBlankLine;
   EmitRaw('_DATA   SEGMENT PUBLIC ''DATA''');
   EmitBlankLine;
   (* Chaines predefinies Clojure *)
-  EmitRaw(CL_NIL_LBL   + '        DB ''nil'',0');
-  EmitRaw(CL_TRUE_LBL  + '        DB ''true'',0');
-  EmitRaw(CL_FALSE_LBL + '        DB ''false'',0');
+  EmitRaw(CL_NIL_LBL   + '  DB ''nil'',0');
+  EmitRaw(CL_TRUE_LBL  + '  DB ''true'',0');
+  EmitRaw(CL_FALSE_LBL + '  DB ''false'',0');
+  EmitRaw('_CL_CRLF    DB 13,10,0');
+  EmitRaw('_CL_STRBUF  DB 256 DUP(0)');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -2754,24 +2796,74 @@ Begin
           S := DataTab[I].StrVal
         Else
           Str(DataTab[I].IntVal, S);
-        EmitRaw(DataTab[I].LblName + '        DW ' + S);
+        EmitRaw(DataTab[I].LblName + '  DW ' + S);
       End;
       DK_BYTE :
-        EmitRaw(DataTab[I].LblName + '        DB ' + DataTab[I].StrVal);
+        EmitRaw(DataTab[I].LblName + '  DB ' + DataTab[I].StrVal);
       DK_STR :
-        EmitRaw(DataTab[I].LblName + '        DB ''' + DataTab[I].StrVal + ''',0');
+      Begin
+        (* Emettre la chaine avec gestion des caracteres de controle *)
+        S := DataTab[I].LblName + '  DB ';
+        InQ  := False;
+        Need := False;
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          Ch := DataTab[I].StrVal[J];
+          If (Ord(Ch) >= 32) And (Ord(Ch) <= 126) And (Ch <> '''') Then
+          Begin
+            (* Caractere imprimable normal *)
+            If Not InQ Then
+            Begin
+              If Need Then S := S + ',';
+              S   := S + '''';
+              InQ := True;
+              Need := False;
+            End;
+            S := S + Ch;
+          End
+          Else
+          Begin
+            (* Caractere de controle ou apostrophe -> valeur decimale *)
+            If InQ Then
+            Begin
+              S := S + '''';
+              InQ := False;
+            End;
+            If Need Then S := S + ',';
+            Str(Ord(Ch), Tmp);
+            S := S + Tmp;
+            Need := True;
+          End;
+        End;
+        If InQ Then S := S + '''';
+        If Need Or InQ Then
+          S := S + ',0'
+        Else
+          S := S + '0';
+        EmitRaw(S);
+      End;
     Else
-      EmitRaw(DataTab[I].LblName + '        DW 0');
+      EmitRaw(DataTab[I].LblName + '  DW 0');
     End;
   End;
   EmitBlankLine;
   EmitRaw('_DATA   ENDS');
 End;
 
+(* EmitClose : terminer le fichier ASM *)
+(* Emettre la sortie DOS, le runtime, _TEXT ENDS, le segment DATA, END *)
 Procedure EmitClose;
 Begin
   EmitBlankLine;
+  EmitComment('--- sortie DOS ---');
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT', '21h');
+  EmitBlankLine;
+  (* Routines runtime *)
+  EmitRuntime;
+  EmitBlankLine;
   EmitRaw('_TEXT   ENDS');
+  (* Segment de donnees *)
   EmitDataSeg;
   EmitBlankLine;
   EmitRaw('        END _CLF_main');
