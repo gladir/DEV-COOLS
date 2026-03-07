@@ -136,7 +136,7 @@
             Vecteurs litteraux : blocs contigus DW dans DATA
             Maps litterales : paires cle/valeur DW dans DATA
 
-  TODO 09 - VARIABLES GLOBALES (def / defonce)
+  TODO 09 - VARIABLES GLOBALES (def / defonce) [IMPLEMENTE]
             (def nom valeur) : declarer une variable globale
               Emission : calcul de valeur -> MOV [_CLV_nom], AX
             (def nom) : declaration sans valeur initiale -> nil
@@ -730,6 +730,13 @@ Function  DataAddList(AElemCount : Integer) : TString; Forward;
 Function  DataAddVec(AElemCount : Integer) : TString; Forward;
 Function  DataAddMap(APairCount : Integer) : TString; Forward;
 Procedure DataInit; Forward;
+(* TODO 09 *)
+Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
+Procedure ExprStore(SIdx : Integer); Forward;
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Function  DeclAllocGlobal(Const Name : TString) : Integer; Forward;
+Procedure ParseDef(Var Res : TExprVal); Forward;
+Procedure ParseDefonce(Var Res : TExprVal); Forward;
 (* TODO 10 *)
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
 Procedure ParseForm(Var Res : TExprVal); Forward;
@@ -2975,29 +2982,372 @@ Begin
   DataAdd('_CL_NUMBUF',  DK_BYTE, 0, '12 DUP(0)');
 End;
 
+(* ============================================================
+   TODO 09 - VARIABLES GLOBALES (def / defonce) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ExprAddrOf : retourne la chaine d adressage MASM d un symbole *)
+Function ExprAddrOf(SIdx : Integer) : TString;
+Var Ofs : Integer;
+    S   : TString;
+Begin
+  Ofs := SymTab[SIdx].Offset;
+  If Ofs < 0 Then
+  Begin
+    Str(-Ofs, S);
+    ExprAddrOf := 'WORD PTR [BP-' + S + ']';
+  End
+  Else If Ofs > 0 Then
+  Begin
+    Str(Ofs, S);
+    ExprAddrOf := 'WORD PTR [BP+' + S + ']';
+  End
+  Else
+    ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']';
+End;
+
+(* ExprStore : stocker AX dans le symbole SIdx *)
+Procedure ExprStore(SIdx : Integer);
+Var Addr : TString;
+Begin
+  If SIdx < 0 Then Exit;
+  If SymTab[SIdx].IsConst Then
+  Begin
+    CompileError('impossible de reassigner la constante "' +
+                 SymTab[SIdx].Name + '"');
+    Exit;
+  End;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', Addr, 'AX');
+End;
+
+(* ExprLoad : charger le symbole SIdx dans AX et initialiser Res *)
+Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Var Addr : TString;
+Begin
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.ImmVal  := 0;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
+  Addr := ExprAddrOf(SIdx);
+  EmitInstrAB('MOV', 'AX', Addr);
+End;
+
+(* DeclAllocGlobal : creer un symbole variable globale SK_VAR *)
+(* et enregistrer une entree DK_WORD dans le segment de donnees *)
+Function DeclAllocGlobal(Const Name : TString) : Integer;
+Var SIdx : Integer;
+Begin
+  SIdx := SymFind(Name);
+  If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_VAR) Then
+  Begin
+    If Opts.Warnings Then
+      WarnMsg('redefinition de "' + Name + '"');
+    DeclAllocGlobal := SIdx;
+    Exit;
+  End;
+  SIdx := SymAdd(Name, SK_VAR, TY_UNKNOWN, 0);
+  If SIdx >= 0 Then
+    DataAddWord(SymTab[SIdx].MangledName, 0);
+  DeclAllocGlobal := SIdx;
+End;
+
+(* ParseDef : traiter (def nom [valeur]) *)
+(* Syntaxe : (def nom)                   *)
+(*           (def nom valeur)             *)
+(*           (def ^:const nom valeur)     *)
+(*           (def ^:dynamic nom valeur)   *)
+(*           (def ^:private nom valeur)   *)
+Procedure ParseDef(Var Res : TExprVal);
+Var
+  Name    : TString;
+  SIdx    : Integer;
+  ValRes  : TExprVal;
+  HasMeta : Boolean;
+  IsCon   : Boolean;
+  IsDyn   : Boolean;
+  IsPriv  : Boolean;
+  MetaKW  : TString;
+Begin
+  HasMeta := False;
+  IsCon   := False;
+  IsDyn   := False;
+  IsPriv  := False;
+  (* Detecter les metadata ^:keyword *)
+  While CurToken.Kind = TK_META Do
+  Begin
+    HasMeta := True;
+    LexNextToken;  (* consomme ^ *)
+    If CurToken.Kind = TK_KEYWORD Then
+    Begin
+      MetaKW := CurToken.Val;
+      If MetaKW = 'const' Then
+        IsCon := True
+      Else If MetaKW = 'dynamic' Then
+        IsDyn := True
+      Else If MetaKW = 'private' Then
+        IsPriv := True
+      Else If Opts.Warnings Then
+        WarnMsg('metadata "' + MetaKW + '" ignoree sur def');
+      LexNextToken;
+    End
+    Else
+    Begin
+      CompileError('keyword attendu apres ^');
+      ExprMakeNone(Res);
+      Exit;
+    End;
+  End;
+  (* Lire le nom du symbole *)
+  If CurToken.Kind <> TK_SYMBOL Then
+  Begin
+    CompileError('symbole attendu apres def');
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  Name := CurToken.Val;
+  LexNextToken;
+  (* Allouer la variable globale *)
+  SIdx := DeclAllocGlobal(Name);
+  If SIdx < 0 Then
+  Begin
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  (* Metadata dynamic/private : avertissements *)
+  If IsDyn Then
+  Begin
+    If Opts.Warnings Then
+      WarnMsg('"^:dynamic ' + Name + '" : dynamic vars non supportees');
+  End;
+  If IsPriv Then
+  Begin
+    If Opts.DebugMode Then
+      WriteLn('  DEF ^:private ', Name);
+  End;
+  (* Emission du commentaire *)
+  EmitComment('(def ' + Name + ')');
+  (* Verifier si constante deja definie (redefinition interdite) *)
+  If SymTab[SIdx].IsConst And (Not IsCon) Then
+  Begin
+    CompileError('impossible de reassigner la constante "' + Name + '"');
+    (* Consommer la valeur si presente *)
+    If CurToken.Kind <> TK_RPAREN Then
+      ParseForm(ValRes);
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  (* Verifier s il y a une valeur initiale *)
+  If CurToken.Kind = TK_RPAREN Then
+  Begin
+    (* (def nom) -> initialiser a nil = 0 *)
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrAB('MOV', ExprAddrOf(SIdx), 'AX');
+    SymTab[SIdx].TypeIdx := TY_IDX_NIL;
+  End
+  Else
+  Begin
+    (* (def nom valeur) -> evaluer la valeur *)
+    ParseForm(ValRes);
+    ExprFlushToAX(ValRes);
+    EmitInstrAB('MOV', ExprAddrOf(SIdx), 'AX');
+    SymTab[SIdx].TypeIdx := ValRes.TypeIdx;
+  End;
+  (* Appliquer ^:const APRES l affectation initiale *)
+  If IsCon Then
+    SymTab[SIdx].IsConst := True;
+  ExprMakeNone(Res);
+End;
+
+(* ParseDefonce : traiter (defonce nom valeur) *)
+(* Comme def mais ne reassigne pas si la var existe deja *)
+Procedure ParseDefonce(Var Res : TExprVal);
+Var
+  Name    : TString;
+  SIdx    : Integer;
+  ValRes  : TExprVal;
+  LblSkip : TString;
+Begin
+  If CurToken.Kind <> TK_SYMBOL Then
+  Begin
+    CompileError('symbole attendu apres defonce');
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  Name := CurToken.Val;
+  LexNextToken;
+  EmitComment('(defonce ' + Name + ')');
+  (* Verifier si deja defini *)
+  SIdx := SymFind(Name);
+  If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_VAR) Then
+  Begin
+    (* Variable existe deja : sauter l initialisation *)
+    LblSkip := LabelGen;
+    EmitInstrAB('CMP', ExprAddrOf(SIdx), '0');
+    EmitInstrA('JNE', LblSkip);
+    (* Evaluer la valeur *)
+    If CurToken.Kind <> TK_RPAREN Then
+    Begin
+      ParseForm(ValRes);
+      ExprFlushToAX(ValRes);
+      ExprStore(SIdx);
+      SymTab[SIdx].TypeIdx := ValRes.TypeIdx;
+    End;
+    EmitLabel(LblSkip);
+  End
+  Else
+  Begin
+    (* Premiere definition *)
+    SIdx := DeclAllocGlobal(Name);
+    If SIdx < 0 Then
+    Begin
+      ExprMakeNone(Res);
+      Exit;
+    End;
+    If CurToken.Kind = TK_RPAREN Then
+    Begin
+      EmitInstrAB('XOR', 'AX', 'AX');
+      ExprStore(SIdx);
+      SymTab[SIdx].TypeIdx := TY_IDX_NIL;
+    End
+    Else
+    Begin
+      ParseForm(ValRes);
+      ExprFlushToAX(ValRes);
+      ExprStore(SIdx);
+      SymTab[SIdx].TypeIdx := ValRes.TypeIdx;
+    End;
+  End;
+  ExprMakeNone(Res);
+End;
+
 Procedure ExprFlushToAX(Const E : TExprVal);
-Var S : TString;
+Var S    : TString;
+    Addr : TString;
 Begin
   Case E.Kind Of
     EK_IMM :
     Begin
       Str(E.ImmVal, S);
-      EmitInstr('MOV', 'AX,' + S);
+      EmitInstrAB('MOV', 'AX', S);
     End;
     EK_MEM :
     Begin
-      Str(E.Offset, S);
-      EmitInstr('MOV', 'AX,[BP-' + S + ']');
+      If E.SymIdx >= 0 Then
+      Begin
+        Addr := ExprAddrOf(E.SymIdx);
+        EmitInstrAB('MOV', 'AX', Addr);
+      End
+      Else
+      Begin
+        Str(E.Offset, S);
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+      End;
     End;
     EK_AX  : ;  (* deja dans AX *)
-    EK_NONE : EmitInstr('XOR', 'AX,AX');  (* nil = 0 *)
+    EK_NONE : EmitInstrAB('XOR', 'AX', 'AX');  (* nil = 0 *)
   End;
 End;
 
 Procedure ParseForm(Var Res : TExprVal);
+Var HeadSym : TString;
+    Depth   : Integer;
 Begin
-  (* TODO 10 - stub *)
   ExprMakeNone(Res);
+  (* TODO 10 - dispatch partiel pour TODO 09 *)
+  Case CurToken.Kind Of
+    TK_INTEGER :
+    Begin
+      LitEvalInt(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_CHAR :
+    Begin
+      LitEvalChar(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_KEYWORD :
+    Begin
+      LitEvalKW(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_TRUE :
+    Begin
+      ExprMakeBool(1, Res);
+      LexNextToken;
+    End;
+    TK_FALSE :
+    Begin
+      ExprMakeBool(0, Res);
+      LexNextToken;
+    End;
+    TK_NIL :
+    Begin
+      ExprMakeNone(Res);
+      LexNextToken;
+    End;
+    TK_SYMBOL :
+    Begin
+      (* Acces variable : resolution dans la table des symboles *)
+      HeadSym := CurToken.Val;
+      Depth := SymFind(HeadSym);
+      If Depth >= 0 Then
+        ExprLoad(Depth, Res)
+      Else
+      Begin
+        WarnMsg('symbole non defini "' + HeadSym + '"');
+        ExprMakeNone(Res);
+      End;
+      LexNextToken;
+    End;
+    TK_LPAREN :
+    Begin
+      LexNextToken;  (* consomme '(' *)
+      If CurToken.Kind = TK_SYMBOL Then
+      Begin
+        HeadSym := CurToken.Val;
+        If HeadSym = 'def' Then
+        Begin
+          LexNextToken;  (* consomme 'def' *)
+          ParseDef(Res);
+          If CurToken.Kind = TK_RPAREN Then
+            LexNextToken
+          Else
+            CompileError(') attendue apres def');
+          Exit;
+        End
+        Else If HeadSym = 'defonce' Then
+        Begin
+          LexNextToken;  (* consomme 'defonce' *)
+          ParseDefonce(Res);
+          If CurToken.Kind = TK_RPAREN Then
+            LexNextToken
+          Else
+            CompileError(') attendue apres defonce');
+          Exit;
+        End;
+      End;
+      (* Forme non geree : sauter jusqu a ')' correspondante *)
+      Depth := 1;
+      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_LPAREN Then Inc(Depth);
+        If CurToken.Kind = TK_RPAREN Then Dec(Depth);
+      End;
+      If CurToken.Kind = TK_RPAREN Then
+        LexNextToken;
+    End;
+  Else
+    (* Token non gere : avancer *)
+    LexNextToken;
+  End;
 End;
 
 Procedure EmitRuntime;
@@ -3018,6 +3368,7 @@ Begin
   (* Formes speciales Clojure *)
   SymAdd('def',        SK_SPECIAL, TY_UNKNOWN, 0);
   SymAdd('defn',       SK_SPECIAL, TY_UNKNOWN, 0);
+  SymAdd('defonce',    SK_SPECIAL, TY_UNKNOWN, 0);
   SymAdd('defmacro',   SK_SPECIAL, TY_UNKNOWN, 0);
   SymAdd('fn',         SK_SPECIAL, TY_IDX_FN,  0);
   SymAdd('fn*',        SK_SPECIAL, TY_IDX_FN,  0);
@@ -3122,7 +3473,6 @@ Begin
   While CurToken.Kind <> TK_EOF Do
   Begin
     ParseForm(GExprDummy);
-    LexNextToken;
   End;
 End;
 
