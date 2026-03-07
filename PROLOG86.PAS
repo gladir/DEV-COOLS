@@ -1,0 +1,1855 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @description: Compilateur Prolog vers assembleur 8086
+}
+
+(* ============================================================
+  PROLOG86.PAS - Compilateur Prolog vers assembleur 8086
+  Turbo Pascal / Free Pascal (-Mtp)
+  Cible : MASM .MODEL SMALL, DOS 16 bits
+
+  FEUILLE DE ROUTE - 25 TODOS
+  ============================================================
+
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
+            ParseArgs : analyser argv (source.pl [sortie.asm] [-v] [-d] [-w])
+            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+            Detecter l extension .pl ou .pro (programme Prolog)
+            Programme principal : validation des arguments et appel Run
+            Version, Date, aide en ligne (option -h)
+
+  TODO 02 - LEXEUR (TOKENS PROLOG) [IMPLEMENTE]
+            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_ATOM,
+              TK_VARIABLE, TK_STRING, TK_OP, TK_PUNCT,
+              TK_LPAREN, TK_RPAREN, TK_LBRACKET, TK_RBRACKET,
+              TK_DOT, TK_PIPE, TK_UNDERSCORE, TK_CUT
+            LexInit, LexClose, LexNextToken, LexScanAtom, LexScanNumber
+            LexScanString : chaine entre apostrophes 'abc' ou guillemets "abc"
+              Sequences d echappement : \n \t \r \\ \' \"
+            LexScanVariable : commence par majuscule ou underscore _
+              Variable anonyme : _ (underscore seul)
+            Commentaires : % jusqu a fin de ligne, /* ... */ multi-lignes
+            Atomes quotees : 'hello world' -> atome avec espaces
+            Operateurs : :- ?- , ; | . ! + - * / // mod
+              =  \= == \== is < > =< >= =:= =\= @< @> @=< @>=
+            Mode debug -d : affichage de chaque token avec PrintToken
+
+  TODO 03 - LITTERAUX ET CONSTANTES
+            Entiers decimaux : 0..65535 ou -32768..32767
+            Entiers hexadecimaux : 0xFF -> conversion en entier
+            Entiers octaux : 0o77, caractere : 0'A (code ASCII de A)
+            Flottants : reconnus par le lexeur, traites comme entiers (trunc)
+            Atomes : identificateurs minuscules (hello, foo_bar)
+              Atomes quotees : 'Hello World', '+', 'don''t'
+            Chaines : "abc" -> liste de codes ASCII [97,98,99]
+              ou atome selon le drapeau double_quotes (atom/codes/chars)
+            Variables : commencent par majuscule ou _ (X, Var, _Temp)
+            Variable anonyme : _ (chaque occurrence est independante)
+            Termes speciaux : [] (liste vide), ! (cut)
+            true : atome predefini -> succes immediat
+            fail : atome predefini -> echec immediat
+
+  TODO 04 - OPERATEURS ET PRECEDENCE
+            Notation prefixe, infixe, postfixe : fx, fy, xfx, xfy, yfx, xf, yf
+            Priorites standard (du plus faible au plus fort) :
+              1200 : :- (directive), ?- (requete), --> (DCG)
+              1100 : ; (disjonction)
+              1050 : -> (if-then)
+              1000 : , (conjonction)
+              900  : \+ (negation par echec)
+              700  : is, =, \=, ==, \==, <, >, =<, >=, =:=, =\=
+                     @<, @>, @=<, @>=, =.., copy_term
+              500  : +, -, /\, \/ (binaires)
+              400  : *, /, //, rem, mod, <<, >>
+              200  : ** (puissance), ^ (existentiel)
+              200  : - (unaire, fy)
+            ParseExprPrec(MaxPrec) : boucle de precedence (Pratt/operateur)
+            op(Priorite, Type, Nom) : declaration d operateurs utilisateur
+
+  TODO 05 - TABLE DES SYMBOLES (PREDICATS ET FONCTEURS)
+            TSymKind : SK_ATOM, SK_FUNCTOR, SK_PREDICATE, SK_BUILTIN,
+              SK_OPERATOR, SK_MODULE
+            TSymRec : Name, MangledName, Kind, Arity, ClauseHead,
+              ClauseCount, IsBuiltin, IsDynamic, IsExported
+            SymAdd, SymFind, SymFindPredicate(Name, Arity)
+            Table des atomes : chaque atome unique a un index (intern)
+            Table des foncteurs : couple (atome, arite) -> index unique
+            Table des predicats : liste chainee de clauses par predicat
+            Foncteurs systeme : '.'/2 (cons), []/0 (nil), ','/2 (conjonction)
+
+  TODO 06 - REPRESENTATION DES TERMES (TAGS)
+            Representation WAM simplifiee sur 16 bits :
+              Tag 3 bits + Valeur 13 bits dans un Word
+              TAG_REF  = 0 : variable non liee (valeur = adresse)
+              TAG_ATOM = 1 : atome (valeur = index table des atomes)
+              TAG_INT  = 2 : entier 13 bits signe (-4096..4095)
+              TAG_STR  = 3 : structure/foncteur (valeur = adresse heap)
+              TAG_LIST = 4 : paire de liste (valeur = adresse heap)
+            MakeRef, MakeAtom, MakeInt, MakeStr, MakeList : constructeurs
+            GetTag, GetVal : extraction du tag et de la valeur
+            Deref(addr) : suivre les chaines de references -> terme final
+            Heap : _PL_HEAP DW 2048 DUP(0), _PL_HTOP DW 0
+            Stack (environnements) : _PL_STACK DW 1024 DUP(0), _PL_STOP DW 0
+            Trail (historique des liaisons) : _PL_TRAIL DW 512 DUP(0), _PL_TTOP DW 0
+
+  TODO 07 - EMETTEUR DE CODE ASM
+            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
+            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
+            EmitComment, EmitBlankLine
+            LabelGen global (compteur unique _PL_L_NNNNN)
+            Prefixes : _PLV_ (variable globale), _PLP_ (predicat),
+              _PLK_ (chaine/atome const), _PLRT_ (runtime),
+              _PL_L_ (label), _PLA_ (table des atomes),
+              _PLF_ (table des foncteurs)
+            EmitHeader : .MODEL SMALL / .STACK 2048 / _TEXT SEGMENT
+            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
+            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
+
+  TODO 08 - SEGMENT DE DONNEES ET TABLES STATIQUES
+            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_TABLE),
+              IntVal, StrVal, ElemCount
+            DataTab[0..MAX_DATA-1], DataCount
+            DataAdd, DataAddStr, DataAddAtomTable
+            Table des atomes : _PLA_TABLE DW offset de chaque chaine atome
+              Chaque atome : _PLA_N DB 'nom_atome',0
+            Table des foncteurs : _PLF_TABLE, paires (atome_index, arite)
+            Chaines litterales : DB 'abc',0 dans DATA avec label _PLK_N
+            Heap statique : _PL_HEAP DW 2048 DUP(0) + _PL_HTOP DW 0
+            Stack WAM : _PL_STACK DW 1024 DUP(0) + _PL_STOP DW 0
+            Trail : _PL_TRAIL DW 512 DUP(0) + _PL_TTOP DW 0
+
+  TODO 09 - UNIFICATION
+            Unify(addr1, addr2) : algorithme d unification recursif
+              Deref les deux termes
+              Si les deux sont REF : lier la plus recente a l autre
+              Si un seul est REF : lier la variable au terme
+              Si deux atomes : comparer les index -> succes ou echec
+              Si deux entiers : comparer les valeurs -> succes ou echec
+              Si deux structures : comparer foncteur/arite, unifier chaque argument
+              Si deux listes : unifier tete puis queue recursivement
+            Bind(ref_addr, term) : lier une variable et empiler sur le trail
+            Trail(addr) : enregistrer la liaison pour le retour arriere
+            Emission ASM :
+              CALL _PLRT_UNIFY (AX=terme1, BX=terme2) -> CF=echec
+              CALL _PLRT_DEREF (AX=addr) -> AX=terme dereferance
+              CALL _PLRT_BIND  (AX=ref, BX=terme) -> empile sur trail
+
+  TODO 10 - COMPILATION DES FAITS
+            ParseFact : atome. ou foncteur(arg1, arg2, ...).
+            Fait sans arguments : predicat/0
+              Emission : label _PLP_nom_0, succes immediat (RET)
+            Fait avec arguments : predicat/N
+              Allouer les arguments sur le heap
+              Pour chaque argument : put_value ou put_atom ou put_int
+              Emission : label _PLP_nom_N_clauseK
+              Unifier chaque argument avec le registre Ai correspondant
+              Succes : RET (continuer)
+            Indexation premier argument : table de saut selon le type/valeur
+              du premier argument pour selection rapide de la clause
+
+  TODO 11 - COMPILATION DES REGLES
+            ParseRule : tete :- corps.
+            Tete : comme un fait, unification des arguments
+            Corps : sequence de buts separes par , (conjonction)
+            Pour chaque but du corps :
+              Charger les arguments dans les registres A1..AN
+              CALL _PLP_predicat_N (appel du predicat)
+              JC label_echec (si echec -> retour arriere)
+            Allocation d environnement :
+              allocate(N) : reserver N variables locales sur la pile
+              deallocate : liberer l environnement avant le dernier appel
+            Dernier appel (last call) : optimisation d appel terminal
+              deallocate + JMP au lieu de CALL + RET
+
+  TODO 12 - RETOUR ARRIERE (BACKTRACKING)
+            Points de choix (choice points) sur la pile :
+              Sauvegarder : BP, HTOP, TTOP, adresse clause suivante
+              try_me_else(Label) : creer point de choix
+              retry_me_else(Label) : restaurer et essayer clause suivante
+              trust_me : dernier choix, supprimer le point de choix
+            Restauration :
+              Defaire les liaisons du trail (untrail) jusqu au TTOP sauvegarde
+              Restaurer HTOP (liberer le heap alloue depuis le choix)
+              Sauter a la clause suivante ou echouer au point precedent
+            Emission ASM :
+              CALL _PLRT_TRY(BX=label_next) : creer choice point
+              CALL _PLRT_RETRY(BX=label_next) : restaurer + nouveau choix
+              CALL _PLRT_TRUST : restaurer + supprimer choice point
+              JC _PL_L_FAIL : echec si plus de choix
+
+  TODO 13 - LISTES
+            Notation : [H|T] -> foncteur '.'/2 (H=tete, T=queue)
+            Liste vide : [] -> atome special (index 0)
+            Notation sucre : [a,b,c] -> '.'(a,'.'(b,'.'(c,[])))
+            Construction sur le heap :
+              push_list : allouer 2 cellules (Head, Tail)
+              put_list(AX=head, BX=tail) -> AX=ptr liste
+            Decomposition :
+              get_list(AX=liste) -> BX=head, CX=tail
+              Echec si AX n est pas un terme LIST
+            Predicats de liste (runtime) :
+              _PLRT_LENGTH(AX=liste) -> AX=longueur
+              _PLRT_APPEND(AX=l1, BX=l2, CX=result)
+              _PLRT_MEMBER(AX=elem, BX=liste) -> CF=echec
+              _PLRT_NTH(AX=index, BX=liste) -> AX=element
+              _PLRT_LAST(AX=liste) -> AX=dernier element
+
+  TODO 14 - ARITHMETIQUE (IS ET EVALUATION)
+            ParseIsExpr : Var is Expression
+            Evaluation d expression arithmetique (cote droit de is) :
+              Entiers : valeur directe -> AX
+              Variables : Deref + extraction valeur entiere
+              Operateurs : + - * / // mod rem
+              Fonctions : abs(X), max(X,Y), min(X,Y), sign(X)
+                succ(X), plus(X,Y), msb(X)
+            Emission ASM pour chaque operateur :
+              + -> ADD AX,BX
+              - -> SUB AX,BX
+              * -> IMUL BX
+              / et // -> IDIV BX (quotient dans AX)
+              mod -> IDIV BX (reste dans DX)
+            Resultat : lier la variable gauche a l entier resultat
+            Erreur si le cote droit contient une variable non liee
+            Comparaisons arithmetiques : =:= =\= < > =< >=
+              Evaluer les deux cotes + CMP + Jcc
+
+  TODO 15 - COMPARAISON ET TESTS DE TYPE
+            Unification : =(X,Y) -> CALL _PLRT_UNIFY
+            Non-unification : \=(X,Y) -> CALL _PLRT_UNIFY + NOT CF
+            Egalite structurelle : ==(X,Y) -> comparaison sans liaison
+            Inegalite structurelle : \==(X,Y) -> NOT ==
+            Ordre standard des termes : @< @> @=< @>=
+              Var < Nombre < Atome < Chaine < Structure
+              CALL _PLRT_COMPARE(AX,BX) -> drapeaux ZF/CF
+            Tests de type :
+              var(X) -> tester TAG_REF apres Deref
+              nonvar(X) -> NOT var(X)
+              atom(X) -> tester TAG_ATOM
+              number(X) -> tester TAG_INT
+              integer(X) -> tester TAG_INT
+              compound(X) -> tester TAG_STR ou TAG_LIST
+              is_list(X) -> tester TAG_LIST ou atome []
+              callable(X) -> atom(X) ou compound(X)
+            Decomposition : =..(Term, [Functor|Args]) (univ)
+              functor(Term, Name, Arity) : extraire foncteur et arite
+              arg(N, Term, Arg) : extraire le Nieme argument
+              copy_term(Original, Copie) : copie avec nouvelles variables
+
+  TODO 16 - CONTROLE : CUT, IF-THEN-ELSE, NEGATION
+            Cut (!) : supprimer tous les points de choix jusqu au parent
+              Emission : MOV [_PL_CUT_BARRIER], saved_choice_point
+              Couper : restaurer la pile de choix au niveau sauvegarde
+            If-Then-Else : ( Cond -> Action ; Alternative )
+              Emission : essayer Cond, si succes -> Action, sinon Alternative
+              Labels : _PL_L_THEN_N, _PL_L_ELSE_N, _PL_L_ENDIF_N
+            If-Then (sans Else) : ( Cond -> Action )
+              Si Cond echoue -> echec du but entier
+            Disjonction : ( A ; B )
+              Creer point de choix pour A, si echec essayer B
+            Negation par echec : \+(Goal)
+              Essayer Goal; si succes -> echec; si echec -> succes
+              Emission : try Goal, si succes JMP fail_neg, sinon JMP succ_neg
+            true : succes immediat (RET)
+            fail : echec immediat (STC + RET, carry flag = echec)
+            halt : MOV AX,4C00h / INT 21h
+            halt(Code) : MOV AL,Code / MOV AH,4Ch / INT 21h
+
+  TODO 17 - ENTREES/SORTIES
+            Flux standard : user_input (STDIN), user_output (STDOUT)
+            write(X) : ecrire un terme Prolog
+              Atome -> INT 21h AH=40h BX=1 (STDOUT)
+              Entier -> CALL _PLRT_NUMTOSTR + ecriture
+              Liste -> ecrire [elem1,elem2,...|Queue]
+              Structure -> ecrire foncteur(arg1,arg2,...)
+              Variable -> ecrire _G<adresse>
+            writeln(X) : write(X) + nl
+            nl : ecrire CR+LF -> INT 21h AH=02h DL=13 + DL=10
+            print(X) : comme write mais utilise portray si defini
+            write_canonical(X) : forme standard relisible par read
+            tab(N) : ecrire N espaces
+            put_char(C) : ecrire un caractere -> INT 21h AH=02h DL=C
+            read(X) : lire un terme depuis STDIN
+              INT 21h AH=0Ah (lecture ligne) -> buffer
+              Appeler le lexeur + parseur sur le buffer
+              Unifier X avec le terme lu
+            get_char(C) : lire un caractere -> INT 21h AH=01h -> AL
+            char_code(Char, Code) : conversion caractere/code ASCII
+            atom_chars(Atom, Chars) : conversion atome/liste de caracteres
+            atom_codes(Atom, Codes) : conversion atome/liste de codes
+            number_chars(Num, Chars) : conversion nombre/liste de caracteres
+            number_codes(Num, Codes) : conversion nombre/liste de codes
+            atom_length(Atom, Len) : longueur d un atome
+            atom_concat(A, B, C) : concatenation d atomes
+            sub_atom(Atom, Before, Length, After, Sub) : sous-atome
+
+  TODO 18 - PREDICATS PREDEFINIS (BUILT-IN)
+            Controle : true, fail, halt, halt/1, !/0 (cut)
+            Logique : ','/2 (conjonction), ';'/2 (disjonction), '->'/2 (if-then)
+            Unification : =/2, \=/2, unify_with_occurs_check/2
+            Comparaison : ==/2, \==/2, @</2, @>/2, @=</2, @>=/2
+            Arithmetique : is/2, =:=/2, =\=/2, </2, >/2, =</2, >=/2
+            Type : var/1, nonvar/1, atom/1, number/1, integer/1,
+              compound/1, is_list/1, callable/1, ground/1
+            Termes : functor/3, arg/3, =../2, copy_term/2
+            Listes : append/3, member/2, length/2, nth0/3, nth1/3,
+              last/2, reverse/2, msort/2, sort/2
+            Atomes : atom_chars/2, atom_codes/2, atom_length/2,
+              atom_concat/3, sub_atom/5, char_code/2,
+              number_chars/2, number_codes/2
+            Entrees/sorties : read/1, write/1, writeln/1, nl/0,
+              print/1, write_canonical/1, put_char/1, get_char/1, tab/1
+            Meta : call/1, call/N (appel de but dynamique)
+              CALL _PLRT_CALL(AX=terme_but) : resoudre et executer
+            Tous les predicats : enregistrement dans la table des symboles
+              avec flag IsBuiltin = True et un code (BIF_xxx)
+
+  TODO 19 - ASSERT ET RETRACT (BASE DE DONNEES DYNAMIQUE)
+            asserta(Clause) : ajouter une clause en tete du predicat
+              Marquer le predicat comme IsDynamic
+              Copier la clause dans le heap permanent
+              Inserer en tete de la liste chainee de clauses
+            assertz(Clause) : ajouter une clause en queue du predicat
+              Comme asserta mais insertion en fin de liste
+            retract(Clause) : retirer la premiere clause unifiable
+              Parcourir les clauses du predicat
+              Unifier chaque clause avec Clause
+              Si succes : retirer de la liste chainee
+              Si echec : retour arriere vers la clause suivante
+            abolish(Pred/Arity) : supprimer toutes les clauses d un predicat
+            Limitation : nombre fixe de clauses dynamiques (MAX_DYN_CLAUSES)
+            Emission : les clauses dynamiques sont stockees dans le heap
+              et interpretees au lieu d etre compilees en code natif
+
+  TODO 20 - FINDALL, BAGOF, SETOF (COLLECTE DE SOLUTIONS)
+            findall(Template, Goal, Bag) :
+              Collecter toutes les instances de Template satisfaisant Goal
+              Creer un point de choix pour Goal
+              A chaque succes : copier Template dans un buffer temporaire
+              Forcer le retour arriere pour trouver la solution suivante
+              Quand Goal echoue : construire la liste Bag depuis le buffer
+              Bag = [] si aucune solution
+            bagof(Template, Goal, Bag) :
+              Comme findall mais echoue si aucune solution
+              Respect des variables libres dans Goal (quantification ^)
+              X^Goal : X est quantifie existentiellement
+            setof(Template, Goal, Set) :
+              Comme bagof mais le resultat est trie et sans doublons
+              CALL _PLRT_SORT + suppression des duplicats
+            Emission ASM :
+              Buffer temporaire : _PL_COLLECT DW 256 DUP(0)
+              _PLRT_FINDALL : boucle try/fail sur Goal + collecte
+              _PLRT_MAKELIST : construire la liste depuis le buffer
+
+  TODO 21 - OPERATEURS UTILISATEUR (OP/3)
+            op(Priorite, Type, Nom) : definir un operateur
+              Priorite : 1..1200
+              Type : xf, yf, xfx, xfy, yfx, fy, fx
+            current_op(Priorite, Type, Nom) : interroger les operateurs
+            OpTab[0..MAX_OP-1] : table des operateurs
+            OpAdd(Prio, Spec, Name) : ajouter ou modifier un operateur
+            OpFind(Name) : chercher un operateur par nom
+            Operateurs predefinis : toute la table standard ISO
+              :- (fx 1200), ?- (fx 1200), ; (xfy 1100),
+              -> (xfy 1050), , (xfy 1000), \+ (fy 900),
+              is (xfx 700), = \= == \== (xfx 700), < > =< >= (xfx 700),
+              + - (yfx 500), * / // mod (yfx 400), ** (xfx 200)
+            Integration avec le parseur : ParseExprPrec consulte OpTab
+              pour determiner la priorite et l associativite
+
+  TODO 22 - DIRECTIVES ET CHARGEMENT
+            :- directive. : directive executee au chargement
+            :- module(Nom, ListeExports). : declaration de module
+            :- use_module(Module). : importation d un module
+            :- dynamic(Pred/Arity). : declarer un predicat dynamique
+            :- discontiguous(Pred/Arity). : clauses non contigues permises
+            :- ensure_loaded(Fichier). : charger un fichier si pas deja charge
+            :- op(Prio, Type, Nom). : definir un operateur
+            :- initialization(Goal). : but execute apres le chargement
+            Traitement : le parseur detecte :- en debut de clause
+              et execute la directive au lieu de compiler une clause
+
+  TODO 23 - CHAINES ET CARACTERES
+            Chaines double-quotees : "abc" -> liste de codes ou atome
+              Drapeau double_quotes : atom (defaut), codes, chars
+            Chaines simple-quotees : 'abc' -> atome
+            char_type(Char, Type) : classification de caractere
+              alpha, alnum, digit, space, upper, lower, punct, ascii
+            upcase_atom(Atom, Upper) : conversion en majuscules
+            downcase_atom(Atom, Lower) : conversion en minuscules
+            atom_string(Atom, String) : conversion atome/chaine
+            number_string(Number, String) : conversion nombre/chaine
+            string_concat(A, B, C) : concatenation de chaines
+            string_length(String, Len) : longueur de chaine
+            Emission : les chaines sont stockees dans le segment DATA
+              comme des suites d octets DB 'abc',0 avec label _PLK_N
+            Conversion runtime : CALL _PLRT_ATOMCHARS, _PLRT_ATOMCODES
+
+  TODO 24 - RUNTIME MINIMAL (MACHINE WAM SIMPLIFIEE)
+            _PLRT_DEREF(AX=addr) : suivre les chaines de references -> AX
+            _PLRT_UNIFY(AX=t1, BX=t2) : unification -> CF=echec
+            _PLRT_BIND(AX=ref, BX=terme) : lier variable + trail
+            _PLRT_UNTRAIL(AX=saved_ttop) : defaire les liaisons
+            _PLRT_TRY(BX=label_next) : creer un point de choix
+            _PLRT_RETRY(BX=label_next) : restaurer + nouveau choix
+            _PLRT_TRUST : restaurer + supprimer le point de choix
+            _PLRT_CALL(AX=terme_but) : resoudre et executer un but
+            _PLRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
+            _PLRT_PRINTLN : _PLRT_PRINT + CR+LF via _PL_CRLF DB 13,10,0
+            _PLRT_WRITETERM(AX=terme) : ecrire un terme Prolog complet
+            _PLRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
+            _PLRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
+            _PLRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
+            _PLRT_COMPARE(AX=t1, BX=t2) : ordre standard -> drapeaux ZF/CF
+            _PLRT_HEAPALLOC(CX=nb_mots) : allouer sur le heap -> AX=ptr
+            _PLRT_FINDALL : boucle de collecte de solutions
+            _PLRT_MAKELIST(SI=buffer, CX=count) : construire liste -> AX
+            _PLRT_SORT(AX=liste) : trier une liste -> AX=liste triee
+            _PLRT_PANIC(SI=msg) : affiche message + MOV AX,4C01h + INT 21h
+            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
+            Heap : _PL_HEAP DW 2048 DUP(0) + _PL_HTOP DW 0
+            Stack : _PL_STACK DW 1024 DUP(0) + _PL_STOP DW 0
+            Trail : _PL_TRAIL DW 512 DUP(0) + _PL_TTOP DW 0
+
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+            EmitClose : END _PLP_Main dans _TEXT ENDS / DATA ENDS
+            Run : pipeline complet LexInit -> ParseProgram ->
+              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _PLP_Main
+            Point d entree : _PLP_Main correspond a la requete ?- main.
+              ou au premier goal du fichier si pas de main/0
+            Fichiers SAMPLES\PROLOG\ a creer :
+              hello.pl    (write, nl, atomes, variables)
+              math.pl     (arithmetique, is, predicats recursifs)
+              lists.pl    (listes, append, member, reverse, tri)
+              family.pl   (faits, regles, requetes, retour arriere)
+              hanoi.pl    (tours de Hanoi, recursion, cut)
+              queens.pl   (N-reines, generate-and-test, findall)
+              peano.pl    (arithmetique de Peano, unification)
+              meta.pl     (assert, retract, call, findall, bagof)
+            Smoke tests : PROLOG86.EXE -v SAMPLES\PROLOG\*.pl
+
+  ============================================================ *)
+
+Program PROLOG86;
+
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  PL86_VERSION = '1.0';
+  PL86_DATE    = '2026-03-06';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}32{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ATOM      = {$IFDEF FPC}1024{$ELSE}256{$ENDIF};
+  MAX_CLAUSE    = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_FUNCTOR   = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
+  MAX_OP        = {$IFDEF FPC}128{$ELSE}64{$ENDIF};
+  MAX_DYN       = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  HEAP_SIZE     = 2048;
+  STACK_SIZE    = 1024;
+  TRAIL_SIZE    = 512;
+
+  { Prefixes de nommage ASM }
+  PL_VAR_PFX  = '_PLV_';    { variable globale               }
+  PL_PRED_PFX = '_PLP_';    { predicat                       }
+  PL_STR_PFX  = '_PLK_';    { constante chaine/atome         }
+  PL_RT_PFX   = '_PLRT_';   { routine runtime                }
+  PL_LBL_PFX  = '_PL_L_';   { label de saut interne          }
+  PL_ATOM_PFX = '_PLA_';    { table des atomes               }
+  PL_FUN_PFX  = '_PLF_';    { table des foncteurs            }
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.pl ou .pro)         }
+    OutFile   : TString;   { fichier assembleur de sortie (.asm)  }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : activer les avertissements      }
+  End;
+
+  { ---- Tokens Prolog (TODO 02) ----------------------------- }
+  TTokenKind = (
+    TK_EOF,        { fin de fichier                          }
+    TK_INTEGER,    { litteral entier 42 0xFF 0o77 0'A        }
+    TK_FLOAT,      { litteral flottant 3.14 1.5e3            }
+    TK_ATOM,       { atome : minuscule ou quote 'abc'        }
+    TK_VARIABLE,   { variable : majuscule ou _ (X, _Temp)    }
+    TK_STRING,     { chaine double-quote "abc"               }
+    TK_OP,         { operateur :- ?- + - * / = < > etc.      }
+    TK_PUNCT,      { ponctuation , ;                         }
+    TK_LPAREN,     { (                                       }
+    TK_RPAREN,     { )                                       }
+    TK_LBRACKET,   { [                                       }
+    TK_RBRACKET,   { ]                                       }
+    TK_DOT,        { . (terminaison de clause)               }
+    TK_PIPE,       { | (separateur tete/queue de liste)      }
+    TK_UNDERSCORE, { _ (variable anonyme seule)              }
+    TK_CUT         { ! (cut)                                 }
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;     { valeur textuelle brute          }
+    IntVal   : LongInt;     { valeur entiere (TK_INTEGER)     }
+    FloatVal : Real;        { valeur flottante (TK_FLOAT)     }
+    Line     : Integer;     { ligne source (1-base)           }
+    Col      : Integer;     { colonne source (1-base)         }
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  CurLine    : Integer;    { ligne source courante (maj par le lexeur) }
+
+  { Emetteur ASM }
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+  { Lexeur (TODO 02) }
+  LexSrcF   : Text;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  LexOpened : Boolean;
+  CurToken  : TToken;
+
+{ ============================================================
+  FORWARD DECLARATIONS
+  ============================================================ }
+{ Utilitaires chaines (TODO 01) }
+Function  StrLowerCase(Const S : TString) : TString; Forward;
+Function  StrUpperCase(Const S : TString) : TString; Forward;
+Function  IntToStr(N : LongInt) : TString; Forward;
+{ Messages (TODO 01) }
+Procedure FatalError(Const Msg : TString); Forward;
+Procedure CompileError(Const Msg : TString); Forward;
+Procedure WarnMsg(Const Msg : TString); Forward;
+{ Lexeur (TODO 02) }
+Procedure LexInit;             Forward;
+Procedure LexClose;            Forward;
+Procedure LexNextLine;         Forward;
+Procedure LexSkipBlockComment; Forward;
+Function  IsIdentStart(Ch : Char) : Boolean; Forward;
+Function  IsIdentCont(Ch : Char) : Boolean; Forward;
+Function  IsHexDigit(Ch : Char) : Boolean; Forward;
+Function  HexVal(Ch : Char) : Integer; Forward;
+Procedure LexScanAtom;         Forward;
+Procedure LexScanQuotedAtom;   Forward;
+Procedure LexScanVariable;     Forward;
+Procedure LexScanNumber;       Forward;
+Procedure LexScanString;       Forward;
+Function  LexScanEscChar : Char; Forward;
+Procedure LexNextToken;        Forward;
+Procedure PrintToken(Const T : TToken); Forward;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Utilitaires chaines ------------------------------------ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ ---- Messages d erreur et d avertissement ---------------- }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('PROLOG86: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  Write('PROLOG86:');
+  If CurLine > 0 Then
+    Write(Opts.SrcFile, ':', CurLine, ': ');
+  WriteLn('error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  Write('PROLOG86:');
+  If CurLine > 0 Then
+    Write(Opts.SrcFile, ':', CurLine, ': ');
+  WriteLn('warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ---- Banniere ---------------------------------------------- }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('PROLOG86 v', PL86_VERSION, ' (', PL86_DATE, ')');
+  WriteLn('Compilateur Prolog -> assembleur 8086 (MASM .MODEL SMALL)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: PROLOG86 <source.pl> [sortie.asm] [-v] [-d] [-w]');
+  WriteLn;
+  WriteLn('  source.pl  : fichier Prolog source (.pl ou .pro)');
+  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  ShowBanner;
+  ShowUsage;
+End;
+
+{ ---- Initialisation des options ----------------------------- }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+End;
+
+{ ---- Analyse des arguments de la ligne de commande --------- }
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowHelp
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('PROLOG86: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('PROLOG86: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('PROLOG86: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier l extension .pl ou .pro }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.pl') And (Ext <> '.pro') Then
+    WarnMsg('extension attendue: .pl ou .pro, trouvee: ' + Ext);
+
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.asm');
+End;
+
+{ ---- Nettoyage -------------------------------------------- }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ---- Initialisation generale des variables globales -------- }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  CurLine    := 0;
+  OutFOpen   := False;
+  LexOpened  := False;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  CurToken.Kind     := TK_EOF;
+  CurToken.Val      := '';
+  CurToken.IntVal   := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line     := 0;
+  CurToken.Col      := 0;
+End;
+
+{ ---- Statistiques ------------------------------------------ }
+
+Procedure ShowStats;
+Begin
+  WriteLn('--- Bilan PROLOG86 ---');
+  WriteLn('Source         : ', Opts.SrcFile);
+  WriteLn('Sortie         : ', Opts.OutFile);
+  WriteLn('Lignes lues    : ', TotalLines);
+  WriteLn('Erreurs        : ', ErrorCount);
+  WriteLn('Avertissements : ', WarnCount);
+End;
+
+{ ============================================================
+  TODO 02 - LEXEUR (TOKENS PROLOG) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Fonctions de test sur les caracteres ------------------- }
+
+Function IsIdentStart(Ch : Char) : Boolean;
+Begin
+  IsIdentStart := ((Ch >= 'a') And (Ch <= 'z')) Or (Ch = '_');
+End;
+
+Function IsIdentCont(Ch : Char) : Boolean;
+Begin
+  IsIdentCont := ((Ch >= 'a') And (Ch <= 'z')) Or
+                 ((Ch >= 'A') And (Ch <= 'Z')) Or
+                 ((Ch >= '0') And (Ch <= '9')) Or
+                 (Ch = '_');
+End;
+
+Function IsHexDigit(Ch : Char) : Boolean;
+Begin
+  IsHexDigit := ((Ch >= '0') And (Ch <= '9')) Or
+                ((Ch >= 'A') And (Ch <= 'F')) Or
+                ((Ch >= 'a') And (Ch <= 'f'));
+End;
+
+Function HexVal(Ch : Char) : Integer;
+Begin
+  If (Ch >= '0') And (Ch <= '9') Then HexVal := Ord(Ch) - Ord('0')
+  Else If (Ch >= 'A') And (Ch <= 'F') Then HexVal := Ord(Ch) - Ord('A') + 10
+  Else HexVal := Ord(Ch) - Ord('a') + 10;
+End;
+
+{ ---- PrintToken : affichage debug d un token --------------- }
+Procedure PrintToken(Const T : TToken);
+Begin
+  If Not Opts.DebugMode Then Exit;
+  Write('  [', T.Line, ',', T.Col, '] ');
+  Case T.Kind Of
+    TK_EOF        : Write('EOF');
+    TK_INTEGER    : Write('INT(', T.IntVal, ')');
+    TK_FLOAT      : Write('FLOAT(', T.Val, ')');
+    TK_ATOM       : Write('ATOM(', T.Val, ')');
+    TK_VARIABLE   : Write('VAR(', T.Val, ')');
+    TK_STRING     : Write('STR("', T.Val, '")');
+    TK_OP         : Write('OP(', T.Val, ')');
+    TK_PUNCT      : Write('PUNCT(', T.Val, ')');
+    TK_LPAREN     : Write('LPAREN');
+    TK_RPAREN     : Write('RPAREN');
+    TK_LBRACKET   : Write('LBRACKET');
+    TK_RBRACKET   : Write('RBRACKET');
+    TK_DOT        : Write('DOT');
+    TK_PIPE       : Write('PIPE');
+    TK_UNDERSCORE : Write('ANON(_)');
+    TK_CUT        : Write('CUT(!)');
+  End;
+  WriteLn;
+End;
+
+{ ---- LexNextLine : lire la prochaine ligne source ----------- }
+Procedure LexNextLine;
+Begin
+  If LexEOF Then Exit;
+  If EOF(LexSrcF) Then
+  Begin
+    LexEOF   := True;
+    LexLine  := '';
+    LexColNo := 1;
+  End
+  Else
+  Begin
+    ReadLn(LexSrcF, LexLine);
+    Inc(LexLineNo);
+    Inc(TotalLines);
+    LexColNo := 1;
+  End;
+End;
+
+{ ---- LexSkipBlockComment : sauter /* ... */ (pas imbrique) -- }
+Procedure LexSkipBlockComment;
+Var
+  Done : Boolean;
+Begin
+  Inc(LexColNo); Inc(LexColNo); { sauter '/' et '*' }
+  Done := False;
+  While (Not LexEOF) And (Not Done) Do
+  Begin
+    If LexColNo > Length(LexLine) Then
+    Begin
+      LexNextLine;
+    End
+    Else If (LexLine[LexColNo] = '*') And
+            (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '/') Then
+    Begin
+      Inc(LexColNo); Inc(LexColNo);
+      Done := True;
+    End
+    Else
+      Inc(LexColNo);
+  End;
+  If Not Done Then
+    CompileError('commentaire /* non ferme');
+End;
+
+{ ---- LexScanEscChar : traiter une sequence d echappement --- }
+Function LexScanEscChar : Char;
+Var
+  Ch : Char;
+Begin
+  If LexColNo > Length(LexLine) Then
+  Begin
+    LexScanEscChar := '\';
+    Exit;
+  End;
+  Ch := LexLine[LexColNo];
+  Inc(LexColNo);
+  Case Ch Of
+    'n'  : LexScanEscChar := #10;
+    't'  : LexScanEscChar := #9;
+    'r'  : LexScanEscChar := #13;
+    'a'  : LexScanEscChar := #7;
+    'b'  : LexScanEscChar := #8;
+    'f'  : LexScanEscChar := #12;
+    '\'  : LexScanEscChar := '\';
+    '''' : LexScanEscChar := '''';
+    '"'  : LexScanEscChar := '"';
+  Else
+    LexScanEscChar := Ch;
+  End;
+End;
+
+{ ---- LexScanAtom : scanner un atome non-quote (minuscule) --- }
+Procedure LexScanAtom;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+  CurToken.Kind   := TK_ATOM;
+End;
+
+{ ---- LexScanQuotedAtom : scanner un atome entre apostrophes - }
+Procedure LexScanQuotedAtom;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter apostrophe ouvrante }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '''' Then
+    Begin
+      Inc(LexColNo);
+      { Doublement d apostrophe '' -> ' }
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '''') Then
+      Begin
+        If Length(S) < MAX_STR Then
+          S := S + '''';
+        Inc(LexColNo);
+      End
+      Else
+        Break;
+    End
+    Else If Ch = '\' Then
+    Begin
+      Inc(LexColNo);
+      Ch := LexScanEscChar;
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind   := TK_ATOM;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+{ ---- LexScanVariable : scanner une variable Prolog ---------- }
+Procedure LexScanVariable;
+Var
+  S : TString;
+Begin
+  S := '';
+  While (LexColNo <= Length(LexLine)) And IsIdentCont(LexLine[LexColNo]) Do
+  Begin
+    If Length(S) < MAX_STR Then
+      S := S + LexLine[LexColNo];
+    Inc(LexColNo);
+  End;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+  { Variable anonyme _ vs variable nommee }
+  If S = '_' Then
+    CurToken.Kind := TK_UNDERSCORE
+  Else
+    CurToken.Kind := TK_VARIABLE;
+End;
+
+{ ---- LexScanNumber : scanner un litteral numerique ---------- }
+{ Formats : decimal 42, hexadecimal 0xFF, octal 0o77,          }
+{           caractere 0'A (code ASCII), flottant 3.14           }
+Procedure LexScanNumber;
+Var
+  N        : LongInt;
+  Base     : Integer;
+  IsFloat  : Boolean;
+  NegExp   : Boolean;
+  Ch       : Char;
+  FracDiv  : Real;
+  FracVal  : Real;
+  ExpVal   : Integer;
+  FltVal   : Real;
+Begin
+  N       := 0;
+  Base    := 10;
+  IsFloat := False;
+  NegExp  := False;
+  FracVal := 0.0;
+  FracDiv := 10.0;
+  ExpVal  := 0;
+  Ch      := LexLine[LexColNo];
+
+  { Detecter prefixe 0x, 0o, 0b, ou 0'A (character code) }
+  If (Ch = '0') And (LexColNo < Length(LexLine)) Then
+  Begin
+    Ch := LexLine[LexColNo + 1];
+    If (Ch = 'x') Or (Ch = 'X') Then
+    Begin
+      Base := 16;
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else If (Ch = 'o') Or (Ch = 'O') Then
+    Begin
+      Base := 8;
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else If (Ch = 'b') Or (Ch = 'B') Then
+    Begin
+      Base := 2;
+      Inc(LexColNo); Inc(LexColNo);
+    End
+    Else If Ch = '''' Then
+    Begin
+      { 0'A -> code ASCII du caractere suivant }
+      Inc(LexColNo); Inc(LexColNo); { sauter 0 et ' }
+      If LexColNo <= Length(LexLine) Then
+      Begin
+        N := Ord(LexLine[LexColNo]);
+        Inc(LexColNo);
+      End;
+      CurToken.Kind   := TK_INTEGER;
+      CurToken.IntVal := N;
+      Str(N, CurToken.Val);
+      Exit;
+    End;
+  End;
+
+  { Scanner la partie entiere }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If (Base = 16) And IsHexDigit(Ch) Then
+    Begin
+      N := N * 16 + HexVal(Ch);
+      Inc(LexColNo);
+    End
+    Else If (Base = 8) And (Ch >= '0') And (Ch <= '7') Then
+    Begin
+      N := N * 8 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else If (Base = 2) And ((Ch = '0') Or (Ch = '1')) Then
+    Begin
+      N := N * 2 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else If (Base = 10) And (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      N := N * 10 + (Ord(Ch) - Ord('0'));
+      Inc(LexColNo);
+    End
+    Else
+      Break;
+  End;
+
+  { Partie decimale .ddd (seulement en base 10) }
+  If (Base = 10) And (LexColNo <= Length(LexLine)) And
+     (LexLine[LexColNo] = '.') And
+     (LexColNo < Length(LexLine)) And
+     (LexLine[LexColNo + 1] >= '0') And (LexLine[LexColNo + 1] <= '9') Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo); { sauter '.' }
+    FracDiv := 10.0;
+    FracVal := 0.0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      FracVal := FracVal + (Ord(LexLine[LexColNo]) - Ord('0')) / FracDiv;
+      FracDiv := FracDiv * 10.0;
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Exposant e/E [+-]ddd }
+  If (Base = 10) And (LexColNo <= Length(LexLine)) And
+     ((LexLine[LexColNo] = 'e') Or (LexLine[LexColNo] = 'E')) Then
+  Begin
+    IsFloat := True;
+    Inc(LexColNo);
+    NegExp := False;
+    If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+    Begin
+      NegExp := True;
+      Inc(LexColNo);
+    End
+    Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '+') Then
+      Inc(LexColNo);
+    ExpVal := 0;
+    While (LexColNo <= Length(LexLine)) And
+          (LexLine[LexColNo] >= '0') And (LexLine[LexColNo] <= '9') Do
+    Begin
+      ExpVal := ExpVal * 10 + (Ord(LexLine[LexColNo]) - Ord('0'));
+      Inc(LexColNo);
+    End;
+  End;
+
+  { Calculer la valeur finale }
+  If IsFloat Then
+  Begin
+    FltVal := N + FracVal;
+    While ExpVal > 0 Do
+    Begin
+      If NegExp Then FltVal := FltVal / 10.0
+      Else           FltVal := FltVal * 10.0;
+      Dec(ExpVal);
+    End;
+    CurToken.Kind     := TK_FLOAT;
+    CurToken.FloatVal := FltVal;
+    { IntVal = partie entiere tronquee, clampee a 16 bits }
+    If FltVal > 32767.0 Then N := 32767
+    Else If FltVal < -32768.0 Then N := -32768
+    Else N := Trunc(FltVal);
+    CurToken.IntVal := N;
+    Str(FltVal:0:6, CurToken.Val);
+  End
+  Else
+  Begin
+    CurToken.Kind   := TK_INTEGER;
+    CurToken.IntVal := N;
+    Str(N, CurToken.Val);
+  End;
+End;
+
+{ ---- LexScanString : scanner une chaine double-quote "abc" -- }
+Procedure LexScanString;
+Var
+  S  : TString;
+  Ch : Char;
+Begin
+  S := '';
+  Inc(LexColNo); { sauter guillemet ouvrant }
+  While LexColNo <= Length(LexLine) Do
+  Begin
+    Ch := LexLine[LexColNo];
+    If Ch = '"' Then
+    Begin
+      Inc(LexColNo);
+      Break;
+    End
+    Else If Ch = '\' Then
+    Begin
+      Inc(LexColNo);
+      Ch := LexScanEscChar;
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+    End
+    Else
+    Begin
+      If Length(S) < MAX_STR Then
+        S := S + Ch;
+      Inc(LexColNo);
+    End;
+  End;
+  CurToken.Kind   := TK_STRING;
+  CurToken.Val    := S;
+  CurToken.IntVal := 0;
+End;
+
+{ ---- LexInit : initialiser le lexeur ----------------------- }
+Procedure LexInit;
+Begin
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexEOF     := False;
+  LexLine    := '';
+  CurToken.Kind     := TK_EOF;
+  CurToken.Val      := '';
+  CurToken.IntVal   := 0;
+  CurToken.FloatVal := 0.0;
+  CurToken.Line     := 0;
+  CurToken.Col      := 0;
+  { Lire la premiere ligne }
+  LexNextLine;
+End;
+
+{ ---- LexClose : fermer le fichier source -------------------- }
+Procedure LexClose;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+End;
+
+{ ---- LexNextToken : scanner principal ----------------------- }
+Procedure LexNextToken;
+Var
+  Ch, Ch2  : Char;
+  Scanning : Boolean;
+  OpS      : TString;
+Begin
+  CurToken.IntVal   := 0;
+  CurToken.FloatVal := 0.0;
+
+  Scanning := True;
+  While Scanning Do
+  Begin
+    { Avancer jusqu a la prochaine ligne si fin de ligne }
+    While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+      LexNextLine;
+
+    { Fin de fichier }
+    If LexEOF Then
+    Begin
+      CurToken.Kind := TK_EOF;
+      CurToken.Val  := '';
+      CurToken.Line := LexLineNo;
+      CurToken.Col  := LexColNo;
+      Scanning      := False;
+      Break;
+    End;
+
+    CurToken.Line := LexLineNo;
+    CurToken.Col  := LexColNo;
+    CurLine       := LexLineNo;
+    Ch            := LexLine[LexColNo];
+
+    { Espaces blancs }
+    If (Ch = ' ') Or (Ch = #9) Or (Ch = #13) Or (Ch = #12) Then
+    Begin
+      Inc(LexColNo);
+    End
+
+    { Commentaire % jusqu a fin de ligne }
+    Else If Ch = '%' Then
+    Begin
+      LexColNo := Length(LexLine) + 1;
+    End
+
+    { Commentaire bloc /* ... */ }
+    Else If (Ch = '/') And (LexColNo < Length(LexLine)) And
+            (LexLine[LexColNo + 1] = '*') Then
+    Begin
+      LexSkipBlockComment;
+    End
+
+    { Variable : commence par majuscule }
+    Else If (Ch >= 'A') And (Ch <= 'Z') Then
+    Begin
+      LexScanVariable;
+      Scanning := False;
+    End
+
+    { Underscore : variable anonyme ou variable _Xxx }
+    Else If Ch = '_' Then
+    Begin
+      { Regarder le caractere suivant }
+      If (LexColNo < Length(LexLine)) And
+         IsIdentCont(LexLine[LexColNo + 1]) Then
+      Begin
+        { Variable nommee _Quelque_chose }
+        LexScanVariable;
+      End
+      Else
+      Begin
+        { Variable anonyme _ seule }
+        CurToken.Kind := TK_UNDERSCORE;
+        CurToken.Val  := '_';
+        Inc(LexColNo);
+      End;
+      Scanning := False;
+    End
+
+    { Atome ou mot-cle : commence par minuscule }
+    Else If (Ch >= 'a') And (Ch <= 'z') Then
+    Begin
+      LexScanAtom;
+      Scanning := False;
+    End
+
+    { Atome entre apostrophes 'abc' }
+    Else If Ch = '''' Then
+    Begin
+      LexScanQuotedAtom;
+      Scanning := False;
+    End
+
+    { Chaine double-quote "abc" }
+    Else If Ch = '"' Then
+    Begin
+      LexScanString;
+      Scanning := False;
+    End
+
+    { Nombre }
+    Else If (Ch >= '0') And (Ch <= '9') Then
+    Begin
+      LexScanNumber;
+      Scanning := False;
+    End
+
+    { Parentheses }
+    Else If Ch = '(' Then
+    Begin
+      CurToken.Kind := TK_LPAREN;
+      CurToken.Val  := '(';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+    Else If Ch = ')' Then
+    Begin
+      CurToken.Kind := TK_RPAREN;
+      CurToken.Val  := ')';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Crochets }
+    Else If Ch = '[' Then
+    Begin
+      CurToken.Kind := TK_LBRACKET;
+      CurToken.Val  := '[';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+    Else If Ch = ']' Then
+    Begin
+      CurToken.Kind := TK_RBRACKET;
+      CurToken.Val  := ']';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Pipe | }
+    Else If Ch = '|' Then
+    Begin
+      CurToken.Kind := TK_PIPE;
+      CurToken.Val  := '|';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Cut ! }
+    Else If Ch = '!' Then
+    Begin
+      CurToken.Kind := TK_CUT;
+      CurToken.Val  := '!';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Point . (terminaison de clause) }
+    { Un point suivi d un espace/tab/fin de ligne/commentaire = fin de clause }
+    Else If Ch = '.' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo > Length(LexLine)) Or
+         (LexLine[LexColNo] = ' ') Or (LexLine[LexColNo] = #9) Or
+         (LexLine[LexColNo] = '%') Then
+      Begin
+        CurToken.Kind := TK_DOT;
+        CurToken.Val  := '.';
+      End
+      Else
+      Begin
+        { Peut etre l operateur =.. (univ) ou juste un point dans un nombre }
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '.';
+      End;
+      Scanning := False;
+    End
+
+    { Virgule , }
+    Else If Ch = ',' Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := ',';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Point-virgule ; }
+    Else If Ch = ';' Then
+    Begin
+      CurToken.Kind := TK_PUNCT;
+      CurToken.Val  := ';';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Operateur :- ou : }
+    Else If Ch = ':' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := ':-';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := ':';
+      End;
+      Scanning := False;
+    End
+
+    { Operateur ?- ou ? }
+    Else If Ch = '?' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '-') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '?-';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP;
+        CurToken.Val  := '?';
+      End;
+      Scanning := False;
+    End
+
+    { Operateurs commencant par = : =, ==, =.., =:=, =\=, =< }
+    Else If Ch = '=' Then
+    Begin
+      Inc(LexColNo);
+      Ch2 := #0;
+      If LexColNo <= Length(LexLine) Then
+        Ch2 := LexLine[LexColNo];
+      If Ch2 = '=' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '==';
+      End
+      Else If (Ch2 = '.') And (LexColNo < Length(LexLine)) And
+              (LexLine[LexColNo + 1] = '.') Then
+      Begin
+        Inc(LexColNo); Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '=..';
+      End
+      Else If Ch2 = ':' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '=:=';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP; CurToken.Val := '=:';
+        End;
+      End
+      Else If Ch2 = '\' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '=\=';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP; CurToken.Val := '=\';
+        End;
+      End
+      Else If Ch2 = '<' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '=<';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '=';
+      End;
+      Scanning := False;
+    End
+
+    { Operateurs commencant par \ : \=, \==, \+, \ }
+    Else If Ch = '\' Then
+    Begin
+      Inc(LexColNo);
+      Ch2 := #0;
+      If LexColNo <= Length(LexLine) Then
+        Ch2 := LexLine[LexColNo];
+      If Ch2 = '=' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '\==';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP; CurToken.Val := '\=';
+        End;
+      End
+      Else If Ch2 = '+' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '\+';
+      End
+      Else If Ch2 = '/' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '\/';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '\';
+      End;
+      Scanning := False;
+    End
+
+    { Operateurs commencant par @ : @<, @>, @=<, @>= }
+    Else If Ch = '@' Then
+    Begin
+      Inc(LexColNo);
+      Ch2 := #0;
+      If LexColNo <= Length(LexLine) Then
+        Ch2 := LexLine[LexColNo];
+      If Ch2 = '<' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '@<';
+      End
+      Else If Ch2 = '>' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '=') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '@>=';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP; CurToken.Val := '@>';
+        End;
+      End
+      Else If Ch2 = '=' Then
+      Begin
+        Inc(LexColNo);
+        If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '<') Then
+        Begin
+          Inc(LexColNo);
+          CurToken.Kind := TK_OP; CurToken.Val := '@=<';
+        End
+        Else
+        Begin
+          CurToken.Kind := TK_OP; CurToken.Val := '@=';
+        End;
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '@';
+      End;
+      Scanning := False;
+    End
+
+    { < ou << }
+    Else If Ch = '<' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '<') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '<<';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '<';
+      End;
+      Scanning := False;
+    End
+
+    { > ou >= ou >> }
+    Else If Ch = '>' Then
+    Begin
+      Inc(LexColNo);
+      Ch2 := #0;
+      If LexColNo <= Length(LexLine) Then
+        Ch2 := LexLine[LexColNo];
+      If Ch2 = '=' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '>=';
+      End
+      Else If Ch2 = '>' Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '>>';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '>';
+      End;
+      Scanning := False;
+    End
+
+    { + }
+    Else If Ch = '+' Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '+';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { - ou -> }
+    Else If Ch = '-' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '>') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '->';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '-';
+      End;
+      Scanning := False;
+    End
+
+    { * ou ** }
+    Else If Ch = '*' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '*') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '**';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '*';
+      End;
+      Scanning := False;
+    End
+
+    { / ou // }
+    Else If Ch = '/' Then
+    Begin
+      Inc(LexColNo);
+      If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '/') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '//';
+      End
+      Else If (LexColNo <= Length(LexLine)) And (LexLine[LexColNo] = '\') Then
+      Begin
+        Inc(LexColNo);
+        CurToken.Kind := TK_OP; CurToken.Val := '/\';
+      End
+      Else
+      Begin
+        CurToken.Kind := TK_OP; CurToken.Val := '/';
+      End;
+      Scanning := False;
+    End
+
+    { ^ (existentiel) }
+    Else If Ch = '^' Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '^';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { # (non standard, mais parfois utilise) }
+    Else If Ch = '#' Then
+    Begin
+      CurToken.Kind := TK_OP;
+      CurToken.Val  := '#';
+      Inc(LexColNo);
+      Scanning := False;
+    End
+
+    { Caractere inconnu }
+    Else
+    Begin
+      OpS := Ch;
+      CompileError('caractere inattendu: ' + OpS);
+      Inc(LexColNo);
+    End;
+  End; { While Scanning }
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (03..25)
+  ============================================================ }
+
+Procedure Run;
+Var
+  TokCount : LongInt;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then
+    ShowBanner;
+  LexInit;
+  TokCount := 0;
+  LexNextToken;
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    PrintToken(CurToken);
+    Inc(TokCount);
+    LexNextToken;
+  End;
+  PrintToken(CurToken); { afficher le EOF }
+  LexClose;
+  If Opts.Verbose Then
+  Begin
+    WriteLn('PROLOG86: ', TotalLines, ' ligne(s) lues, ',
+            TokCount, ' token(s)');
+    ShowStats;
+  End;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+BEGIN
+ If(ParamStr(1)='/?')or(ParamStr(1)='--help')or(ParamStr(1)='-h')or
+   (ParamStr(1)='/h')or(ParamStr(1)='/H')Then Begin
+  ShowHelp;
+  Halt(0);
+ End;
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  ParseArgs;
+  Run;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+END.
