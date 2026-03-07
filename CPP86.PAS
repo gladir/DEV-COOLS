@@ -56,7 +56,7 @@
             Constantes enum : valeurs entieres auto-incrementees ou explicites
             sizeof(type) : constante a la compilation
 
-  TODO 04 - PREPROCESSEUR SIMPLIFIE
+  TODO 04 - PREPROCESSEUR SIMPLIFIE [IMPLEMENTE]
             #include "fichier" : inclusion textuelle (une passe)
             #include <iostream> : header standard (stubs integres)
             #define NOM valeur : substitution textuelle simple
@@ -381,6 +381,9 @@ Const
   MAX_CLASS     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
   MAX_VTBL      = 16;
   MAX_MACRO     = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_DEFINE    = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_COND      = 16;     (* profondeur max #ifdef/#ifndef imbriques  *)
+  MAX_INCLUDE_DEPTH = 8;  (* profondeur max d inclusion #include      *)
   STACK_SIZE    = 1024;
 
   (* Prefixes de nommage ASM *)
@@ -534,6 +537,14 @@ Type
     ElemCount : Integer;
   End;
 
+  (* ---- Preprocesseur (TODO 04) ----------------------------- *)
+  TDefineRec = Record
+    Name   : TString;   (* nom du macro #define NOM              *)
+    Value  : TString;   (* valeur de substitution                *)
+  End;
+
+  TCondState = (CS_ACTIVE, CS_SKIPPING, CS_DONE);
+
 (* ============================================================
   VARIABLES GLOBALES
   ============================================================ *)
@@ -591,6 +602,13 @@ Var
   (* Etat general *)
   RuntimeEmitted : Boolean;
 
+  (* Preprocesseur (TODO 04) *)
+  DefineTab   : Array[0..MAX_DEFINE - 1] Of TDefineRec;
+  DefineCount : Integer;
+  CondStack   : Array[0..MAX_COND - 1] Of TCondState;
+  CondTop     : Integer;     (* -1 = pas de condition active *)
+  IncludeDepth : Integer;    (* profondeur courante d inclusion *)
+
 (* ============================================================
   FORWARD DECLARATIONS
   ============================================================ *)
@@ -619,6 +637,14 @@ Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
 Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+(* TODO 04 - Preprocesseur *)
+Function  DefineFind(Const Name : TString) : Integer; Forward;
+Function  DefineAdd(Const Name, Value : TString) : Boolean; Forward;
+Procedure DefineRemove(Const Name : TString); Forward;
+Function  PreprocExpand(Const S : TString) : TString; Forward;
+Function  CondIsActive : Boolean; Forward;
+Procedure PreprocProcess(Const Line : TString); Forward;
+Procedure PreprocInit; Forward;
 (* TODO 05 - Operateurs *)
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
@@ -2012,6 +2038,426 @@ Begin
 End;
 
 (* ============================================================
+  TODO 04 - PREPROCESSEUR SIMPLIFIE [IMPLEMENTE]
+  ============================================================ *)
+
+(* ---- DefineFind : chercher un #define par nom --------------- *)
+(* Retourne l index dans DefineTab ou -1 si non trouve.         *)
+Function DefineFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := DefineCount - 1 DownTo 0 Do
+    If DefineTab[I].Name = Name Then
+    Begin
+      DefineFind := I;
+      Exit;
+    End;
+  DefineFind := -1;
+End;
+
+(* ---- DefineAdd : ajouter ou mettre a jour un #define -------- *)
+(* Retourne True si ajoute/mis-a-jour, False si table pleine.    *)
+Function DefineAdd(Const Name, Value : TString) : Boolean;
+Var
+  Idx : Integer;
+Begin
+  Idx := DefineFind(Name);
+  If Idx >= 0 Then
+  Begin
+    DefineTab[Idx].Value := Value;
+    DefineAdd := True;
+    Exit;
+  End;
+  If DefineCount >= MAX_DEFINE Then
+  Begin
+    CompileError('table des #define pleine (max=' + IntToStr(MAX_DEFINE) + ')');
+    DefineAdd := False;
+    Exit;
+  End;
+  DefineTab[DefineCount].Name  := Name;
+  DefineTab[DefineCount].Value := Value;
+  Inc(DefineCount);
+  DefineAdd := True;
+End;
+
+(* ---- DefineRemove : supprimer un #define (#undef) ----------- *)
+Procedure DefineRemove(Const Name : TString);
+Var
+  Idx, I : Integer;
+Begin
+  Idx := DefineFind(Name);
+  If Idx < 0 Then Exit;
+  For I := Idx To DefineCount - 2 Do
+    DefineTab[I] := DefineTab[I + 1];
+  Dec(DefineCount);
+End;
+
+(* ---- PreprocExpand : substituer les macros dans un ident ---- *)
+(* Si Name est un macro defini, retourne sa valeur.              *)
+(* __LINE__ et __FILE__ sont des macros predefinies speciales.   *)
+Function PreprocExpand(Const S : TString) : TString;
+Var
+  Idx : Integer;
+Begin
+  If S = '__LINE__' Then
+  Begin
+    PreprocExpand := IntToStr(LexLineNo);
+    Exit;
+  End;
+  If S = '__FILE__' Then
+  Begin
+    PreprocExpand := '"' + Opts.SrcFile + '"';
+    Exit;
+  End;
+  Idx := DefineFind(S);
+  If Idx >= 0 Then
+    PreprocExpand := DefineTab[Idx].Value
+  Else
+    PreprocExpand := S;
+End;
+
+(* ---- CondIsActive : verifier si le code doit etre compile --- *)
+(* Si la pile de conditions est vide, on est actif.              *)
+(* Sinon, on est actif ssi le sommet est CS_ACTIVE.              *)
+Function CondIsActive : Boolean;
+Begin
+  If CondTop < 0 Then
+    CondIsActive := True
+  Else
+    CondIsActive := (CondStack[CondTop] = CS_ACTIVE);
+End;
+
+(* ---- PreprocTrimLine : extraire et nettoyer la directive ---- *)
+(* Supprime les espaces en tete et les commentaires // en fin.   *)
+Function PreprocTrimLine(Const S : TString) : TString;
+Var
+  R : TString;
+  I : Integer;
+Begin
+  R := S;
+  (* Supprimer espaces en tete *)
+  While (Length(R) > 0) And (R[1] = ' ') Do
+    Delete(R, 1, 1);
+  (* Supprimer commentaire // en fin *)
+  I := 1;
+  While I < Length(R) Do
+  Begin
+    If (R[I] = '/') And (R[I + 1] = '/') Then
+    Begin
+      R := Copy(R, 1, I - 1);
+      (* Supprimer espaces en fin *)
+      While (Length(R) > 0) And (R[Length(R)] = ' ') Do
+        Delete(R, Length(R), 1);
+      Break;
+    End;
+    Inc(I);
+  End;
+  PreprocTrimLine := R;
+End;
+
+(* ---- PreprocExtractWord : extraire le premier mot ----------- *)
+(* Avance Pos_ au-dela du mot et des espaces suivants.           *)
+Function PreprocExtractWord(Const S : TString; Var Pos_ : Integer) : TString;
+Var
+  W : TString;
+Begin
+  W := '';
+  (* Sauter les espaces *)
+  While (Pos_ <= Length(S)) And (S[Pos_] = ' ') Do
+    Inc(Pos_);
+  (* Extraire le mot *)
+  While (Pos_ <= Length(S)) And (S[Pos_] <> ' ') Do
+  Begin
+    W := W + S[Pos_];
+    Inc(Pos_);
+  End;
+  (* Sauter les espaces apres le mot *)
+  While (Pos_ <= Length(S)) And (S[Pos_] = ' ') Do
+    Inc(Pos_);
+  PreprocExtractWord := W;
+End;
+
+(* ---- PreprocProcess : traiter une directive preprocesseur --- *)
+(* Line contient la directive complete commencant par #.         *)
+(* Directives gerees : #include, #define, #undef, #ifdef,        *)
+(* #ifndef, #else, #endif, #pragma, #if, #elif, #error, #warning *)
+Procedure PreprocProcess(Const Line : TString);
+Var
+  Clean   : TString;
+  Dir     : TString;
+  P       : Integer;
+  Name    : TString;
+  Value   : TString;
+  IncFile : TString;
+  Defined : Boolean;
+Begin
+  Clean := PreprocTrimLine(Line);
+  (* Retirer le # initial *)
+  If (Length(Clean) > 0) And (Clean[1] = '#') Then
+    Delete(Clean, 1, 1);
+  Clean := PreprocTrimLine(Clean);
+
+  (* Extraire la directive *)
+  P := 1;
+  Dir := PreprocExtractWord(Clean, P);
+
+  (* --- Directives conditionnelles (toujours traitees) --- *)
+  If Dir = 'ifdef' Then
+  Begin
+    Name := PreprocExtractWord(Clean, P);
+    If CondTop >= MAX_COND - 1 Then
+    Begin
+      CompileError('#ifdef imbrique trop profondement');
+      Exit;
+    End;
+    Inc(CondTop);
+    If Not CondIsActive Then
+    Begin
+      (* Le parent saute deja : on saute aussi *)
+      CondStack[CondTop] := CS_SKIPPING;
+      Exit;
+    End;
+    (* Verifier le parent (CondTop-1) *)
+    If (CondTop > 0) And (CondStack[CondTop - 1] <> CS_ACTIVE) Then
+    Begin
+      CondStack[CondTop] := CS_SKIPPING;
+      Exit;
+    End;
+    Defined := (DefineFind(Name) >= 0);
+    If Defined Then
+      CondStack[CondTop] := CS_ACTIVE
+    Else
+      CondStack[CondTop] := CS_SKIPPING;
+    Exit;
+  End;
+
+  If Dir = 'ifndef' Then
+  Begin
+    Name := PreprocExtractWord(Clean, P);
+    If CondTop >= MAX_COND - 1 Then
+    Begin
+      CompileError('#ifndef imbrique trop profondement');
+      Exit;
+    End;
+    Inc(CondTop);
+    If (CondTop > 0) And (CondStack[CondTop - 1] <> CS_ACTIVE) Then
+    Begin
+      CondStack[CondTop] := CS_SKIPPING;
+      Exit;
+    End;
+    Defined := (DefineFind(Name) >= 0);
+    If Not Defined Then
+      CondStack[CondTop] := CS_ACTIVE
+    Else
+      CondStack[CondTop] := CS_SKIPPING;
+    Exit;
+  End;
+
+  If Dir = 'else' Then
+  Begin
+    If CondTop < 0 Then
+    Begin
+      CompileError('#else sans #ifdef/#ifndef correspondant');
+      Exit;
+    End;
+    Case CondStack[CondTop] Of
+      CS_ACTIVE   : CondStack[CondTop] := CS_DONE;
+      CS_SKIPPING :
+      Begin
+        (* Verifier si le parent est actif *)
+        If (CondTop = 0) Or (CondStack[CondTop - 1] = CS_ACTIVE) Then
+          CondStack[CondTop] := CS_ACTIVE;
+      End;
+      CS_DONE : ; (* reste CS_DONE *)
+    End;
+    Exit;
+  End;
+
+  If Dir = 'endif' Then
+  Begin
+    If CondTop < 0 Then
+    Begin
+      CompileError('#endif sans #ifdef/#ifndef correspondant');
+      Exit;
+    End;
+    Dec(CondTop);
+    Exit;
+  End;
+
+  (* --- Si on saute (compilation conditionnelle), ignorer le reste --- *)
+  If Not CondIsActive Then Exit;
+
+  (* --- #define NOM [valeur] --- *)
+  If Dir = 'define' Then
+  Begin
+    Name := PreprocExtractWord(Clean, P);
+    If Name = '' Then
+    Begin
+      CompileError('#define: nom manquant');
+      Exit;
+    End;
+    (* Verifier si c est un macro avec parametres (stub simplifie) *)
+    If (Length(Name) > 0) And (P <= Length(Clean)) And (Clean[P] = '(') Then
+    Begin
+      (* Macro avec parametres : avertissement et stockage du texte brut *)
+      WarnMsg('#define avec parametres non supporte, traite comme texte');
+    End;
+    (* Extraire la valeur (tout le reste de la ligne) *)
+    Value := '';
+    If P <= Length(Clean) Then
+      Value := Copy(Clean, P, Length(Clean) - P + 1);
+    (* Supprimer espaces en fin *)
+    While (Length(Value) > 0) And (Value[Length(Value)] = ' ') Do
+      Delete(Value, Length(Value), 1);
+    DefineAdd(Name, Value);
+    If Opts.DebugMode Then
+      WriteLn('  [PP] #define ', Name, ' = "', Value, '"');
+    Exit;
+  End;
+
+  (* --- #undef NOM --- *)
+  If Dir = 'undef' Then
+  Begin
+    Name := PreprocExtractWord(Clean, P);
+    If Name = '' Then
+    Begin
+      CompileError('#undef: nom manquant');
+      Exit;
+    End;
+    DefineRemove(Name);
+    If Opts.DebugMode Then
+      WriteLn('  [PP] #undef ', Name);
+    Exit;
+  End;
+
+  (* --- #include "fichier" ou <header> --- *)
+  If Dir = 'include' Then
+  Begin
+    (* Extraire le chemin *)
+    IncFile := '';
+    While (P <= Length(Clean)) And (Clean[P] = ' ') Do Inc(P);
+    If P > Length(Clean) Then
+    Begin
+      CompileError('#include: fichier manquant');
+      Exit;
+    End;
+    If Clean[P] = '"' Then
+    Begin
+      (* #include "fichier" *)
+      Inc(P);
+      While (P <= Length(Clean)) And (Clean[P] <> '"') Do
+      Begin
+        IncFile := IncFile + Clean[P];
+        Inc(P);
+      End;
+    End
+    Else If Clean[P] = '<' Then
+    Begin
+      (* #include <header> : header standard, stub *)
+      Inc(P);
+      While (P <= Length(Clean)) And (Clean[P] <> '>') Do
+      Begin
+        IncFile := IncFile + Clean[P];
+        Inc(P);
+      End;
+      (* Headers standard : avertissement et ignorance *)
+      If Opts.DebugMode Then
+        WriteLn('  [PP] #include <', IncFile, '> (header standard ignore)');
+      WarnMsg('#include <' + IncFile + '> : header standard ignore (stub)');
+      Exit;
+    End
+    Else
+    Begin
+      CompileError('#include: syntaxe invalide, attendu " ou <');
+      Exit;
+    End;
+    (* Inclusion de fichier local : stub simplifie *)
+    If IncludeDepth >= MAX_INCLUDE_DEPTH Then
+    Begin
+      CompileError('#include imbrique trop profondement (max=' +
+                   IntToStr(MAX_INCLUDE_DEPTH) + ')');
+      Exit;
+    End;
+    If Opts.DebugMode Then
+      WriteLn('  [PP] #include "', IncFile, '" (stub : fichier non inclus)');
+    WarnMsg('#include "' + IncFile + '" : inclusion non implementee (stub)');
+    Exit;
+  End;
+
+  (* --- #pragma --- *)
+  If Dir = 'pragma' Then
+  Begin
+    Name := PreprocExtractWord(Clean, P);
+    If Name = 'once' Then
+    Begin
+      If Opts.DebugMode Then
+        WriteLn('  [PP] #pragma once (ignore)');
+    End
+    Else
+      WarnMsg('#pragma ' + Name + ' : directive inconnue, ignoree');
+    Exit;
+  End;
+
+  (* --- #if / #elif : compilation conditionnelle complexe (stub) --- *)
+  If (Dir = 'if') Or (Dir = 'elif') Then
+  Begin
+    WarnMsg('#' + Dir + ' : directive non completement supportee (stub)');
+    If Dir = 'if' Then
+    Begin
+      If CondTop >= MAX_COND - 1 Then
+      Begin
+        CompileError('#if imbrique trop profondement');
+        Exit;
+      End;
+      Inc(CondTop);
+      CondStack[CondTop] := CS_ACTIVE;  (* defaut : actif *)
+    End;
+    Exit;
+  End;
+
+  (* --- #error : erreur de compilation --- *)
+  If Dir = 'error' Then
+  Begin
+    Value := '';
+    If P <= Length(Clean) Then
+      Value := Copy(Clean, P, Length(Clean) - P + 1);
+    CompileError('#error ' + Value);
+    Exit;
+  End;
+
+  (* --- #warning : avertissement --- *)
+  If Dir = 'warning' Then
+  Begin
+    Value := '';
+    If P <= Length(Clean) Then
+      Value := Copy(Clean, P, Length(Clean) - P + 1);
+    WarnMsg('#warning ' + Value);
+    Exit;
+  End;
+
+  (* --- Directive inconnue --- *)
+  WarnMsg('directive preprocesseur inconnue : #' + Dir);
+End;
+
+(* ---- PreprocInit : initialiser le preprocesseur ------------- *)
+(* Ajoute les macros predefinies __cplusplus, __STDC__, etc.     *)
+Procedure PreprocInit;
+Begin
+  DefineCount  := 0;
+  CondTop      := -1;
+  IncludeDepth := 0;
+  (* Macros predefinies C++ *)
+  DefineAdd('__cplusplus', '199711');
+  DefineAdd('__STDC__', '1');
+  DefineAdd('__STDC_HOSTED__', '1');
+  DefineAdd('__CPP86__', '1');
+  DefineAdd('NULL', '0');
+  DefineAdd('true', '1');
+  DefineAdd('false', '0');
+End;
+
+(* ============================================================
   STUBS POUR TODO 04..25
   (a implementer dans les prochaines etapes)
   ============================================================ *)
@@ -2304,9 +2750,38 @@ Begin
 End;
 
 Procedure ParserAdvance;
+Var
+  MacVal : TString;
 Begin
-  LexNextToken;
-  If Opts.DebugMode Then
+  Repeat
+    LexNextToken;
+    (* Traiter les directives preprocesseur *)
+    If CurToken.Kind = TK_PREPROC Then
+    Begin
+      PreprocProcess(CurToken.Val);
+      Continue;
+    End;
+    (* En mode conditionnel, sauter les tokens si pas actif *)
+    If Not CondIsActive Then Continue;
+    (* Substitution des macros dans les identifiants *)
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      MacVal := PreprocExpand(CurToken.Val);
+      If MacVal <> CurToken.Val Then
+      Begin
+        (* Macro defini : substituer la valeur *)
+        CurToken.Val := MacVal;
+        (* Essayer de re-evaluer comme nombre *)
+        If (Length(MacVal) > 0) And (MacVal[1] >= '0') And (MacVal[1] <= '9') Then
+        Begin
+          CurToken.Kind   := TK_INTEGER;
+          CurToken.IntVal := StrToIntDef(MacVal, 0);
+        End;
+      End;
+    End;
+    Break;
+  Until CurToken.Kind = TK_EOF;
+  If Opts.DebugMode And (CurToken.Kind <> TK_PREPROC) Then
     PrintToken(CurToken);
 End;
 
@@ -2337,6 +2812,7 @@ Begin
 
   TypeInit;
   SymInit;
+  PreprocInit;
   EmitOpen;
   EmitHeader;
   LexInit;
