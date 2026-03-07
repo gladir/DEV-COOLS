@@ -109,7 +109,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET TABLES STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET TABLES STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_TABLE),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -710,6 +710,10 @@ Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
 Function  IsSpecialAtom(Const S : TString) : Boolean; Forward;
+{ Segment de donnees et tables statiques (TODO 08) }
+Function  DataAddAtomTable : Integer; Forward;
+Function  DataAddFunctorTable : Integer; Forward;
+Procedure DataInit; Forward;
 { Operateurs et precedence (TODO 04) }
 Procedure ParserAdvance; Forward;
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
@@ -1056,6 +1060,8 @@ Begin
   SymInit;
   { TODO 06 }
   TermInit;
+  { TODO 08 }
+  DataInit;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -1068,6 +1074,7 @@ Begin
   WriteLn('Lignes lues    : ', TotalLines);
   WriteLn('Atomes internes: ', AtomCount);
   WriteLn('Foncteurs      : ', FunctorCount);
+  WriteLn('Donnees DATA   : ', DataCount, '/', MAX_DATA, ' entrees');
   WriteLn('Symboles       : ', SymCount, ' (total cumul: ', TotalSyms, ')');
   WriteLn('Heap WAM       : ', HTop, '/', HEAP_SIZE, ' cellules');
   WriteLn('Stack WAM      : ', STop, '/', STACK_SIZE, ' cellules');
@@ -3558,16 +3565,66 @@ Begin
             EmitRaw('        DB  0');
         End;
       DK_ATOM_TBL :
-        EmitRaw(DataTab[I].LblName + '  DW  ' +
-                IntToStr(DataTab[I].ElemCount) +
-                '   ; table (' + IntToStr(DataTab[I].ElemCount) +
-                ' entrees)');
+        Begin
+          { Table des atomes : DW avec offsets des chaines atomes }
+          If DataTab[I].LblName = PL_ATOM_PFX + 'TABLE' Then
+          Begin
+            EmitComment('--- Table des atomes (' +
+                        IntToStr(DataTab[I].ElemCount) + ' entrees) ---');
+            If DataTab[I].ElemCount = 0 Then
+              EmitRaw(DataTab[I].LblName + '  DW  0   ; table vide')
+            Else
+            Begin
+              { Emettre les offsets par groupes de 8 pour lisibilite }
+              J := 0;
+              While J < DataTab[I].ElemCount Do
+              Begin
+                If J = 0 Then
+                  S := DataTab[I].LblName + '  DW  '
+                Else
+                  S := '        DW  ';
+                S := S + PL_ATOM_PFX + IntToStr(J);
+                Inc(J);
+                While (J < DataTab[I].ElemCount) And
+                      ((J Mod 8) <> 0) Do
+                Begin
+                  S := S + ', ' + PL_ATOM_PFX + IntToStr(J);
+                  Inc(J);
+                End;
+                EmitRaw(S);
+              End;
+            End;
+            EmitRaw(PL_ATOM_PFX + 'COUNT  DW  ' +
+                    IntToStr(DataTab[I].ElemCount));
+          End
+          { Table des foncteurs : paires (atome_index, arite) }
+          Else If DataTab[I].LblName = PL_FUN_PFX + 'TABLE' Then
+          Begin
+            EmitComment('--- Table des foncteurs (' +
+                        IntToStr(DataTab[I].ElemCount) + ' entrees) ---');
+            For J := 0 To DataTab[I].ElemCount - 1 Do
+            Begin
+              EmitRaw(PL_FUN_PFX + IntToStr(J) + '  DW  ' +
+                      IntToStr(FunctorTab[J].AtomIdx) + ', ' +
+                      IntToStr(FunctorTab[J].Arity) +
+                      '   ; ' + AtomTab[FunctorTab[J].AtomIdx].Name +
+                      '/' + IntToStr(FunctorTab[J].Arity));
+            End;
+            EmitRaw(PL_FUN_PFX + 'COUNT  DW  ' +
+                    IntToStr(DataTab[I].ElemCount));
+          End
+          Else
+            EmitRaw(DataTab[I].LblName + '  DW  ' +
+                    IntToStr(DataTab[I].ElemCount) +
+                    '   ; table (' + IntToStr(DataTab[I].ElemCount) +
+                    ' entrees)');
+        End;
     End; { Case }
   End;
 
   EmitBlankLine;
 
-  { Zones WAM statiques (seront remplies par TODO 08) }
+  { Zones WAM statiques }
   EmitComment('--- Zones memoire WAM ---');
   EmitRaw('_PL_HEAP    DW  ' + IntToStr(HEAP_SIZE) + ' DUP(0)');
   EmitRaw('_PL_HTOP    DW  0');
@@ -3627,7 +3684,71 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (08..25)
+  TODO 08 - SEGMENT DE DONNEES ET TABLES STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- DataAddAtomTable : ajouter la table des atomes --------- }
+{ Cree les entrees DATA pour chaque atome interne :              }
+{   _PLA_0 DB 'nom_atome',0                                     }
+{   _PLA_1 DB 'autre_atome',0                                   }
+{   ...                                                          }
+{   _PLA_TABLE DW _PLA_0, _PLA_1, ...  (offsets des chaines)    }
+{ Retourne l index de l entree _PLA_TABLE dans DataTab.          }
+Function DataAddAtomTable : Integer;
+Var
+  I   : Integer;
+  Lbl : TString;
+  Idx : Integer;
+Begin
+  { D abord creer une entree DK_STR pour chaque atome }
+  For I := 0 To AtomCount - 1 Do
+  Begin
+    Lbl := PL_ATOM_PFX + IntToStr(I);
+    DataAdd(Lbl, DK_STR, 0, AtomTab[I].Name);
+  End;
+  { Puis creer l entree de la table d offsets }
+  Idx := DataAdd(PL_ATOM_PFX + 'TABLE', DK_ATOM_TBL, 0, '');
+  DataTab[Idx].ElemCount := AtomCount;
+  DataAddAtomTable := Idx;
+End;
+
+{ ---- DataAddFunctorTable : ajouter la table des foncteurs --- }
+{ Cree les entrees DATA pour la table des foncteurs :            }
+{   _PLF_TABLE : paires (atome_index, arite) pour chaque foncteur}
+{   DW atom_idx_0, arity_0, atom_idx_1, arity_1, ...            }
+{ Retourne l index de l entree _PLF_TABLE dans DataTab.          }
+Function DataAddFunctorTable : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(PL_FUN_PFX + 'TABLE', DK_ATOM_TBL, 0, '');
+  DataTab[Idx].ElemCount := FunctorCount;
+  DataAddFunctorTable := Idx;
+End;
+
+{ ---- DataInit : pre-populer le segment de donnees ------------ }
+{ Appele apres SymInit et TermInit pour generer les tables        }
+{ statiques des atomes et foncteurs internes dans le segment DATA.}
+{ Ajoute aussi les constantes predefinies Prolog.                 }
+Procedure DataInit;
+Begin
+  { Constantes predefinies Prolog }
+  DataAdd('_PL_TRUE_S',  DK_STR, 0, 'true');
+  DataAdd('_PL_FAIL_S',  DK_STR, 0, 'fail');
+  DataAdd('_PL_CUT_S',   DK_STR, 0, '!');
+  DataAdd('_PL_NIL_S',   DK_STR, 0, '[]');
+  DataAdd('_PL_YES_S',   DK_STR, 0, 'yes');
+  DataAdd('_PL_NO_S',    DK_STR, 0, 'no');
+
+  { Table des atomes internes }
+  DataAddAtomTable;
+
+  { Table des foncteurs }
+  DataAddFunctorTable;
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (09..25)
   ============================================================ }
 
 Procedure Run;
