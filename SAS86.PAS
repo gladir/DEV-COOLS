@@ -114,11 +114,14 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_RECORD),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
             DataAdd, DataAddStr, DataAddObs : variantes d ajout
+            DataAddObs : ajouter bloc observation DK_RECORD_BLK
+            DataInit : enregistre les entrees predefinies dans DataTab
+              PDV, compteurs, CRLF
             Variables globales du DATA step : entrees dans DATA segment
             Chaines litterales : DB 'abc',0 dans DATA avec label _SASK_N
             PDV (Program Data Vector) : zone memoire pour une observation
@@ -127,6 +130,7 @@
               _SASD_nom DB nb_obs * obs_size DUP(0)
             Compteurs internes : _SAS_N DW 0 (compteur _N_)
               _SAS_ERROR DW 0 (indicateur _ERROR_)
+            EmitDataSeg mis a jour : PDV + compteurs + CRLF + DataTab
 
   TODO 09 - VARIABLES ET AFFECTATIONS
             Variables numeriques : 2 octets (entier 16 bits signe)
@@ -724,6 +728,9 @@ Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : Integer; Forward;
 Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+(* TODO 08 - Forward declarations segment de donnees *)
+Function  DataAddObs(Const Lbl : TString; ObsSize : Integer) : Integer; Forward;
+Procedure DataInit; Forward;
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
@@ -1801,6 +1808,52 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
+{ ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- DataAddObs : ajouter un bloc observation/dataset ------- *)
+(* Cree une entree DK_RECORD_BLK de taille ObsSize octets.      *)
+(* Utilise pour les datasets en memoire (_SASD_nom).             *)
+Function DataAddObs(Const Lbl : TString; ObsSize : Integer) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAddObs := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := DK_RECORD_BLK;
+  DataTab[DataCount].IntVal    := 0;
+  DataTab[DataCount].StrVal    := '';
+  DataTab[DataCount].ElemCount := ObsSize;
+  DataAddObs := DataCount;
+  Inc(DataCount);
+End;
+
+(* ---- DataInit : initialiser le segment de donnees ----------- *)
+(* Enregistre les entrees predefinies dans DataTab :              *)
+(*   _SAS_MISSING : valeur sentinelle manquante (8000h)          *)
+(*   _SAS_N       : compteur d observation (DW 0)                *)
+(*   _SAS_ERROR   : indicateur d erreur (DW 0)                   *)
+(*   _SAS_PDV     : Program Data Vector (MAX_OBS_SIZE octets)    *)
+(*   _SAS_CRLF    : retour chariot pour sortie console           *)
+Procedure DataInit;
+Begin
+  DataCount := 0;
+  (* Valeur manquante SAS (.) = sentinelle 8000h *)
+  DataAddWord('_SAS_MISSING', MISSING_VAL);
+  (* Compteur d observation _N_ *)
+  DataAddWord('_SAS_N', 0);
+  (* Indicateur d erreur _ERROR_ *)
+  DataAddWord('_SAS_ERROR', 0);
+  (* Program Data Vector : zone de travail pour une observation *)
+  DataAddObs('_SAS_PDV', MAX_OBS_SIZE);
+  (* Retour chariot pour sortie console *)
+  DataAdd('_SAS_CRLF', DK_STR, 0, #13#10);
+End;
+
 (* ---- ExprMakeImm : construire une valeur immediate ---------- *)
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal);
@@ -2870,20 +2923,19 @@ Begin
 End;
 
 (* ---- EmitDataSeg : emettre _DATA SEGMENT avec DataTab ------ *)
-(* Ecrit _SAS_MISSING + toutes les entrees de DataTab +          *)
+(* Ecrit les entrees predefinies (PDV, compteurs, CRLF) +        *)
+(* toutes les entrees ajoutees pendant la compilation +           *)
 (* _DATA ENDS                                                     *)
 Procedure EmitDataSeg;
 Var
   I, J : Integer;
   S    : TString;
+  B    : Byte;
 Begin
   EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
   EmitBlankLine;
-  (* Constante sentinelle valeur manquante *)
-  EmitComment('Valeur manquante SAS (.)');
-  EmitRaw('_SAS_MISSING  DW  8000h');
-  EmitBlankLine;
-  (* Emettre les entrees DataTab *)
+  EmitComment('--- Donnees predefinies SAS86 ---');
+  (* Emettre toutes les entrees DataTab *)
   For I := 0 To DataCount - 1 Do
   Begin
     Case DataTab[I].Kind Of
@@ -2895,16 +2947,37 @@ Begin
                 IntToStr(DataTab[I].IntVal));
       DK_STR :
       Begin
-        (* Doubler les apostrophes pour syntaxe MASM *)
+        (* Construire une ligne DB unique avec segments 'text' et numeriques *)
+        (* Format MASM : 'abc',13,10,'def',0                                *)
         S := '';
         For J := 1 To Length(DataTab[I].StrVal) Do
         Begin
-          If DataTab[I].StrVal[J] = '''' Then
-            S := S + ''''''
+          B := Ord(DataTab[I].StrVal[J]);
+          If (B < 32) Or (B = Ord('''')) Then
+          Begin
+            (* Fermer le segment texte en cours si ouvert *)
+            If (Length(S) > 0) And (S[Length(S)] <> ',') Then
+              S := S + ''',';
+            (* Emettre la valeur numerique *)
+            S := S + IntToStr(B) + ',';
+          End
           Else
+          Begin
+            (* Ouvrir un segment texte si necessaire *)
+            If (S = '') Or (S[Length(S)] = ',') Then
+              S := S + '''';
             S := S + DataTab[I].StrVal[J];
+          End;
         End;
-        EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+        (* Fermer le dernier segment texte si ouvert *)
+        If (Length(S) > 0) And (S[Length(S)] <> ',') Then
+          S := S + ''',';
+        (* Ajouter terminateur zero *)
+        If S = '' Then
+          S := '0'
+        Else
+          S := S + '0';
+        EmitRaw(DataTab[I].LblName + '  DB  ' + S);
       End;
       DK_ARRAY_BLK :
         EmitRaw(DataTab[I].LblName + '  DB  ' +
@@ -2956,7 +3029,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 09..25 (a implementer)
+  STUBS POUR TODO 10..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
@@ -3029,6 +3102,7 @@ Begin
   GlobalInit;
   TypeInit;
   SymInit;
+  DataInit;
   EmitOpen;
   If ErrorCount > 0 Then
   Begin
