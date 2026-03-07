@@ -86,15 +86,28 @@
               11. Spread *arr (dans appel de fonction)
               12. Affectation = += -= *= /= %=
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAL, SK_VAR, SK_PARAM, SK_FUN, SK_CLASS,
               SK_OBJECT, SK_ENUM, SK_INTERFACE, SK_COMPANION, SK_PROP
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
               Scope, IsConst, IsNullable, IsLateinit, Visibility
-            SymAdd, SymFind, SymFindInScope, SymMangle
+            SymNameClean : nettoyer les caracteres non-MASM (_)
+            SymMangle : SK_FUN->_KTF_, SK_CLASS->_KTC_, SK_OBJECT->_KTO_,
+              SK_ENUM->_KTE_, SK_INTERFACE->_KTI_, autres->_KTV_
+            SymFind : recherche MRU (du plus recent au plus ancien)
+            SymFindInScope : recherche dans une portee specifique
+            SymAdd : ajouter un symbole (debug trace si -d)
             CurScope : compteur de portee imbriquee (max MAX_SCOPE)
             SymEnterScope / SymLeaveScope : gestion des portees imbriquees
+              avec sauvegarde/restauration de SymCount et debug trace
             Visibilite : public (defaut), private, protected, internal
+            SymInit : nettoyer la table + predeclarer les fonctions
+              stdlib Kotlin : println, print, readLine, readln,
+              toString, toInt, toDouble, toFloat, toLong, toByte, toShort,
+              toChar, toBoolean, hashCode, equals, compareTo,
+              arrayOf, intArrayOf, listOf, mutableListOf, mapOf, setOf,
+              maxOf, minOf, repeat, require, check, error,
+              TODO, run, let, also, apply, with, takeIf, takeUnless
             Smart cast : marquer le type affine apres un test is
             Qualificateurs : Package.Classe.membre -> recherche chainee
 
@@ -791,8 +804,11 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
 { TODO 05 - Symboles }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
 Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                 Level : Integer) : Integer; Forward;
 Function  SymAdd(Const Name : TString; Kind : TSymKind;
                  TypeIdx, Offset : Integer) : Integer; Forward;
 Procedure SymEnterScope; Forward;
@@ -2640,20 +2656,63 @@ Begin
   ParseExprPrec(1, Res);
 End;
 
-{ --- TODO 05 : Symboles ------------------------------------ }
-Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- SymNameClean : nettoyer un nom pour label ASM MASM ---- *)
+(* Remplace les caracteres non alphanumeriques par '_'.          *)
+(* $ est courant dans les identifiants Kotlin decompiles.        *)
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  Ch : Char;
 Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    Ch := Name[I];
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or
+       ((Ch >= '0') And (Ch <= '9')) Or
+       (Ch = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + Ch;
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+(* ---- SymMangle : generer un label ASM depuis un symbole ---- *)
+(* Prefixes : SK_FUN->_KTF_, SK_CLASS->_KTC_, SK_OBJECT->_KTO_, *)
+(*   SK_ENUM->_KTE_, SK_INTERFACE->_KTI_, autres->_KTV_          *)
+Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
   Case Kind Of
-    SK_FUN      : SymMangle := KT_FN_PFX + Name;
-    SK_CLASS    : SymMangle := KT_CLS_PFX + Name;
-    SK_OBJECT   : SymMangle := KT_OBJ_PFX + Name;
-    SK_ENUM     : SymMangle := KT_ENM_PFX + Name;
-    SK_INTERFACE: SymMangle := KT_ITF_PFX + Name;
+    SK_FUN      : SymMangle := KT_FN_PFX  + Clean;
+    SK_CLASS    : SymMangle := KT_CLS_PFX + Clean;
+    SK_OBJECT   : SymMangle := KT_OBJ_PFX + Clean;
+    SK_ENUM     : SymMangle := KT_ENM_PFX + Clean;
+    SK_INTERFACE: SymMangle := KT_ITF_PFX + Clean;
   Else
-    SymMangle := KT_VAR_PFX + Name;
+    SymMangle := KT_VAR_PFX + Clean;
   End;
 End;
 
+(* ---- SymFind : chercher un symbole par nom (MRU) ----------- *)
+(* Recherche du plus recent au plus ancien pour respecter le      *)
+(* shadowing lexical des portees imbriquees.                      *)
 Function SymFind(Const Name : TString) : Integer;
 Var
   I : Integer;
@@ -2667,43 +2726,79 @@ Begin
   SymFind := -1;
 End;
 
+(* ---- SymFindInScope : chercher dans une portee specifique -- *)
+(* Retourne l indice du symbole ou -1 si non trouve.             *)
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Level) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+(* ---- SymAdd : ajouter un symbole dans la table ------------- *)
+(* Retourne l indice du symbole (0-base) ou -1 en cas d erreur.  *)
+(* Affiche une trace de debug si l option -d est active.          *)
 Function SymAdd(Const Name : TString; Kind : TSymKind;
                 TypeIdx, Offset : Integer) : Integer;
+Var
+  Idx : Integer;
 Begin
   If SymCount >= MAX_SYM Then
   Begin
-    FatalError('table des symboles pleine');
+    FatalError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
     SymAdd := -1;
     Exit;
   End;
-  SymTab[SymCount].Name        := Name;
-  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
-  SymTab[SymCount].Kind        := Kind;
-  SymTab[SymCount].TypeIdx     := TypeIdx;
-  SymTab[SymCount].ScopeLevel  := CurScope;
-  SymTab[SymCount].Offset      := Offset;
-  SymTab[SymCount].IsConst     := False;
-  SymTab[SymCount].IsNullable  := False;
-  SymTab[SymCount].IsLateinit  := False;
-  SymTab[SymCount].Visibility  := 0;
-  SymTab[SymCount].DeclLine    := CurToken.Line;
-  SymAdd := SymCount;
+  Idx := SymCount;
+  SymTab[Idx].Name        := Name;
+  SymTab[Idx].MangledName := SymMangle(Name, Kind);
+  SymTab[Idx].Kind        := Kind;
+  SymTab[Idx].TypeIdx     := TypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := Offset;
+  SymTab[Idx].IsConst     := False;
+  SymTab[Idx].IsNullable  := False;
+  SymTab[Idx].IsLateinit  := False;
+  SymTab[Idx].Visibility  := 0;   { 0=public par defaut }
+  SymTab[Idx].DeclLine    := CurToken.Line;
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Name,
+            ' kind=', Ord(Kind),
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+  SymAdd := Idx;
   Inc(SymCount);
   Inc(TotalSyms);
 End;
 
+(* ---- SymEnterScope : entrer dans une nouvelle portee ------- *)
+(* Sauvegarde SymCount dans ScopeStack pour pouvoir restaurer    *)
+(* lors de SymLeaveScope (retrait des symboles locaux).           *)
 Procedure SymEnterScope;
 Begin
   If ScopeTop >= MAX_SCOPE Then
-    FatalError('profondeur de portee max atteinte')
-  Else
   Begin
-    ScopeStack[ScopeTop] := SymCount;
-    Inc(ScopeTop);
-    Inc(CurScope);
+    FatalError('profondeur de portee max atteinte (max='
+               + IntToStr(MAX_SCOPE) + ')');
+    Exit;
   End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScope);
 End;
 
+(* ---- SymLeaveScope : quitter la portee courante ------------ *)
+(* Retire tous les symboles ajoutes dans cette portee.            *)
 Procedure SymLeaveScope;
 Begin
   If ScopeTop > 0 Then
@@ -2711,13 +2806,85 @@ Begin
     Dec(ScopeTop);
     SymCount := ScopeStack[ScopeTop];
     Dec(CurScope);
+    If Opts.DebugMode Then
+      WriteLn('  SCOPE_LEAVE: level=', CurScope);
   End;
 End;
 
+(* ---- SymNextOffset : calculer le prochain offset [BP-n] ---- *)
 Function SymNextOffset : Integer;
 Begin
   Inc(CurFrameSize);
   SymNextOffset := CurFrameSize * 2;
+End;
+
+(* ---- SymInit : initialiser la table des symboles ----------- *)
+(* Nettoie la table et predeclare les fonctions standard Kotlin   *)
+(* qui seront implementees comme appels runtime _KTRT_.           *)
+Procedure SymInit;
+Var
+  I : Integer;
+Begin
+  SymCount := 0;
+  ScopeTop := 0;
+  CurScope := 0;
+  { Nettoyer toute la table }
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_VAL;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsConst     := False;
+    SymTab[I].IsNullable  := False;
+    SymTab[I].IsLateinit  := False;
+    SymTab[I].Visibility  := 0;
+    SymTab[I].DeclLine    := 0;
+  End;
+  { Fonctions d entree/sortie standard }
+  SymAdd('println',     SK_FUN, TY_IDX_UNIT,    0);
+  SymAdd('print',       SK_FUN, TY_IDX_UNIT,    0);
+  SymAdd('readLine',    SK_FUN, TY_IDX_STRING,  0);
+  SymAdd('readln',      SK_FUN, TY_IDX_STRING,  0);
+  { Fonctions de conversion }
+  SymAdd('toString',    SK_FUN, TY_IDX_STRING,  0);
+  SymAdd('toInt',       SK_FUN, TY_IDX_INT,     0);
+  SymAdd('toDouble',    SK_FUN, TY_IDX_DOUBLE,  0);
+  SymAdd('toFloat',     SK_FUN, TY_IDX_FLOAT,   0);
+  SymAdd('toLong',      SK_FUN, TY_IDX_LONG,    0);
+  SymAdd('toByte',      SK_FUN, TY_IDX_BYTE,    0);
+  SymAdd('toShort',     SK_FUN, TY_IDX_SHORT,   0);
+  SymAdd('toChar',      SK_FUN, TY_IDX_CHAR,    0);
+  SymAdd('toBoolean',   SK_FUN, TY_IDX_BOOLEAN, 0);
+  { Fonctions Any : hashCode, equals, compareTo }
+  SymAdd('hashCode',    SK_FUN, TY_IDX_INT,     0);
+  SymAdd('equals',      SK_FUN, TY_IDX_BOOLEAN, 0);
+  SymAdd('compareTo',   SK_FUN, TY_IDX_INT,     0);
+  { Constructeurs de collections }
+  SymAdd('arrayOf',     SK_FUN, TY_IDX_ARRAY,   0);
+  SymAdd('intArrayOf',  SK_FUN, TY_IDX_INTARRAY,0);
+  SymAdd('listOf',      SK_FUN, TY_IDX_ARRAY,   0);
+  SymAdd('mutableListOf', SK_FUN, TY_IDX_ARRAY, 0);
+  SymAdd('mapOf',       SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('setOf',       SK_FUN, TY_IDX_ANY,     0);
+  { Fonctions utilitaires }
+  SymAdd('maxOf',       SK_FUN, TY_IDX_INT,     0);
+  SymAdd('minOf',       SK_FUN, TY_IDX_INT,     0);
+  SymAdd('repeat',      SK_FUN, TY_IDX_UNIT,    0);
+  SymAdd('require',     SK_FUN, TY_IDX_UNIT,    0);
+  SymAdd('check',       SK_FUN, TY_IDX_UNIT,    0);
+  SymAdd('error',       SK_FUN, TY_IDX_NOTHING, 0);
+  SymAdd('TODO',        SK_FUN, TY_IDX_NOTHING, 0);
+  { Fonctions de portee (scope functions) }
+  SymAdd('run',         SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('let',         SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('also',        SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('apply',       SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('with',        SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('takeIf',      SK_FUN, TY_IDX_ANY,     0);
+  SymAdd('takeUnless',  SK_FUN, TY_IDX_ANY,     0);
 End;
 
 { --- TODO 07 : Emetteur ASM -------------------------------- }
@@ -2828,13 +2995,6 @@ Begin
   AddType('Nothing',  TYK_NOTHING,  0);  { TY_IDX_NOTHING  = 12 }
   AddType('Any',      TYK_ANY,      2);  { TY_IDX_ANY      = 13 }
   AddType('Lambda',   TYK_LAMBDA,   2);  { TY_IDX_LAMBDA   = 14 }
-End;
-
-Procedure SymInit;
-Begin
-  SymCount := 0;
-  ScopeTop := 0;
-  CurScope := 0;
 End;
 
 Procedure EmitOpen;
