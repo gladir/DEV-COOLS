@@ -121,7 +121,7 @@
             Tables de structures : paires cle/valeur dans DATA
             Contenu texte brut (hors balises) : DB dans DATA pour affichage
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             <cfset nomVariable = expression>
               Variables non declarees : creation implicite dans scope variables
               Scope explicite : <cfset local.x = 5> ou <cfset variables.x = 5>
@@ -729,6 +729,13 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
                            Const Op : TString) : Integer; Forward;
 Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
 Function  TypeLookupName(Const Name : TString) : Integer; Forward;
+{ TODO 09 }
+Function  VarAlloc(Const AName : TString; ATypeIdx : Integer) : Integer; Forward;
+Function  VarAddrOf(SIdx : Integer) : TString; Forward;
+Procedure VarLoad(SIdx : Integer); Forward;
+Procedure VarStore(SIdx : Integer); Forward;
+Procedure ParseCfSet; Forward;
+Procedure ParseVarDecl; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -3059,11 +3066,442 @@ Begin
   OutFOpen := False;
 End;
 
-Procedure ParsePage;
+{ ============================================================ }
+{  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]            }
+{ ============================================================ }
+
+{ ---- VarAlloc : allouer une variable dans la table ---------- }
+(* Si CurFnDepth > 0, la variable est locale (pile BP).        *)
+(* Sinon, la variable est globale (segment DATA, DK_WORD).     *)
+(* Retourne l index du symbole ou -1 si erreur.                *)
+Function VarAlloc(Const AName : TString; ATypeIdx : Integer) : Integer;
+Var
+  Idx  : Integer;
+  Off  : Integer;
+  DIdx : Integer;
+  Cat  : TSymCat;
 Begin
-  { stub : consommer tous les tokens }
-  While CurToken.Kind <> TK_EOF Do
+  If CurFnDepth > 0 Then
+  Begin
+    { Variable locale : allouee sur la pile [BP-n] }
+    Cat := SC_LOCAL;
+    Off := SymNextOffset;
+    Idx := SymAdd(AName, Cat, ATypeIdx, Off);
+    If (Idx >= 0) And (ATypeIdx = TY_IDX_STRING) Then
+    Begin
+      { Reservons aussi un buffer statique DATA pour les chaines locales }
+      DIdx := DataAddWord(SymTab[Idx].MangledName, 0);
+      If DIdx >= 0 Then
+        DataTab[DIdx].Kind := DK_WORD;
+    End;
+  End
+  Else
+  Begin
+    { Variable globale : allouee dans le segment DATA }
+    Cat := SC_VAR;
+    Off := 0;
+    Idx := SymAdd(AName, Cat, ATypeIdx, Off);
+    If Idx >= 0 Then
+    Begin
+      { Creer une entree DK_WORD dans DATA pour stocker la valeur }
+      DIdx := DataAddWord(SymTab[Idx].MangledName, 0);
+      If (DIdx < 0) Then
+        CompileError('impossible d''allouer variable DATA : ' + AName);
+    End;
+  End;
+  VarAlloc := Idx;
+End;
+
+{ ---- VarAddrOf : retourner la reference ASM d une variable - }
+(* Variables locales : [BP-n]                                   *)
+(* Variables globales/parametres : [_CFV_nom]                   *)
+Function VarAddrOf(SIdx : Integer) : TString;
+Var
+  S : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    VarAddrOf := '[0]';
+    Exit;
+  End;
+  If SymTab[SIdx].IsLocal And (SymTab[SIdx].Offset < 0) Then
+  Begin
+    Str(-SymTab[SIdx].Offset, S);
+    VarAddrOf := '[BP-' + S + ']';
+  End
+  Else If SymTab[SIdx].IsArgument And (SymTab[SIdx].Offset > 0) Then
+  Begin
+    Str(SymTab[SIdx].Offset, S);
+    VarAddrOf := '[BP+' + S + ']';
+  End
+  Else
+    VarAddrOf := '[' + SymTab[SIdx].MangledName + ']';
+End;
+
+{ ---- VarLoad : charger la valeur d une variable dans AX ---- }
+(* Numeriques et booleens : MOV AX, [addr]                     *)
+(* Strings et pointeurs   : MOV AX, OFFSET label (global)      *)
+(*                          ou LEA AX, [addr] (si pointeur)    *)
+Procedure VarLoad(SIdx : Integer);
+Var
+  Addr : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    EmitInstr('XOR', 'AX, AX');
+    Exit;
+  End;
+  Addr := VarAddrOf(SIdx);
+  If TypeIsPtr(SymTab[SIdx].TypeIdx) And
+     (Not SymTab[SIdx].IsLocal) Then
+    EmitInstr('MOV', 'AX, OFFSET ' + SymTab[SIdx].MangledName)
+  Else
+    EmitInstr('MOV', 'AX, ' + Addr);
+End;
+
+{ ---- VarStore : stocker AX dans une variable ---------------- }
+(* AX contient la valeur a affecter.                            *)
+(* Numeriques : MOV [addr], AX                                 *)
+(* Strings    : CALL _CFRT_STRCPY (copie de reference)         *)
+Procedure VarStore(SIdx : Integer);
+Var
+  Addr : TString;
+  TK   : TTypeKind;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Addr := VarAddrOf(SIdx);
+  TK := TypeKindOf(SymTab[SIdx].TypeIdx);
+  If TK = TKC_STRING Then
+  Begin
+    { Copie par reference pour les chaines : stocker le pointeur }
+    EmitInstr('MOV', Addr + ', AX');
+  End
+  Else
+    EmitInstr('MOV', Addr + ', AX');
+End;
+
+{ ---- ParseScopePrefix : extraire le prefixe de portee ------- }
+(* Detecte variables.nom, local.nom, arguments.nom              *)
+(* Retourne le nom sans prefixe et positionne la categorie.     *)
+(* Si pas de prefixe reconnu, retourne le nom tel quel.         *)
+Function ParseScopePrefix(Const FullName : TString;
+                          Var OutCat : TSymCat) : TString;
+Var
+  DotPos : Integer;
+  Pfx    : TString;
+  Rest   : TString;
+  I      : Integer;
+Begin
+  DotPos := 0;
+  For I := 1 To Length(FullName) Do
+    If FullName[I] = '.' Then
+    Begin
+      DotPos := I;
+      Break;
+    End;
+
+  If DotPos > 1 Then
+  Begin
+    Pfx  := StrLowerCase(Copy(FullName, 1, DotPos - 1));
+    Rest := Copy(FullName, DotPos + 1, Length(FullName) - DotPos);
+    If Pfx = 'variables' Then
+    Begin
+      OutCat := SC_VAR;
+      ParseScopePrefix := Rest;
+      Exit;
+    End
+    Else If Pfx = 'local' Then
+    Begin
+      OutCat := SC_LOCAL;
+      ParseScopePrefix := Rest;
+      Exit;
+    End
+    Else If Pfx = 'arguments' Then
+    Begin
+      OutCat := SC_PARAM;
+      ParseScopePrefix := Rest;
+      Exit;
+    End
+    Else If (Pfx = 'form') Or (Pfx = 'url') Or (Pfx = 'cgi') Or
+            (Pfx = 'application') Or (Pfx = 'session') Or
+            (Pfx = 'request') Then
+    Begin
+      WarnMsg('portee ' + Pfx + ' non supportee en mode DOS, traite comme variables');
+      OutCat := SC_VAR;
+      ParseScopePrefix := Rest;
+      Exit;
+    End;
+  End;
+
+  { Pas de prefixe de portee reconnu }
+  OutCat := SC_VAR;
+  ParseScopePrefix := FullName;
+End;
+
+{ ---- ParseCfSet : traiter <cfset variable = expression> ----- }
+(* Format : <cfset nomVariable = expression>                    *)
+(* ou      <cfset variables.nom = expression>                   *)
+(* ou      <cfset local.nom = expression>                       *)
+(* La variable est creee implicitement si elle n existe pas.     *)
+Procedure ParseCfSet;
+Var
+  VarName   : TString;
+  CleanName : TString;
+  SIdx      : Integer;
+  Res       : TExprVal;
+  Cat       : TSymCat;
+  FullIdent : TString;
+Begin
+  EmitComment('---- CFSET ----');
+
+  { Le token courant doit etre un identifiant (nom de variable) }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identifiant attendu apres <cfset>');
+    { Consommer jusqu a la fin de la balise }
+    While (CurToken.Kind <> TK_TAG_CLOSE) And
+          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_TAG_CLOSE) Or
+       (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  FullIdent := CurToken.Val;
+  ParserAdvance;
+
+  { Gerer la notation par point : scope.variable }
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '.') Do
+  Begin
     ParserAdvance;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      FullIdent := FullIdent + '.' + CurToken.Val;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('identifiant attendu apres le point');
+      Break;
+    End;
+  End;
+
+  { Extraire le scope et le nom reel }
+  Cat := SC_VAR;
+  CleanName := ParseScopePrefix(FullIdent, Cat);
+  VarName := CleanName;
+
+  { Verifier l operateur d affectation = }
+  If (CurToken.Kind <> TK_OP) Or (CurToken.Val <> '=') Then
+  Begin
+    CompileError('"=" attendu dans <cfset>');
+    While (CurToken.Kind <> TK_TAG_CLOSE) And
+          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_TAG_CLOSE) Or
+       (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+      ParserAdvance;
+    Exit;
+  End;
+  ParserAdvance;  { consommer = }
+
+  { Evaluer l expression a droite du = }
+  { Stub simplifie : consommer un literal ou identifiant }
+  ExprMakeNone(Res);
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_FLOAT Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_STRING Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And IsBoolKeyword(CurToken.Val) Then
+  Begin
+    LitEval(CurToken, Res);
+    ParserAdvance;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    { Charger une variable existante }
+    SIdx := SymFind(CurToken.Val);
+    If SIdx >= 0 Then
+    Begin
+      VarLoad(SIdx);
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := SymTab[SIdx].TypeIdx;
+      Res.SymIdx  := SIdx;
+    End
+    Else
+    Begin
+      { Variable non trouvee : traiter comme 0 + warning }
+      WarnMsg('variable non definie : ' + CurToken.Val);
+      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    End;
+    ParserAdvance;
+  End
+  Else
+  Begin
+    { Expression non reconnue - stocker 0 par defaut }
+    WarnMsg('expression non supportee dans cfset (stub)');
+    ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    { Consommer jusqu a la fin de la balise }
+    While (CurToken.Kind <> TK_TAG_CLOSE) And
+          (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+          (CurToken.Kind <> TK_EOF) Do
+      ParserAdvance;
+  End;
+
+  { Chercher ou creer la variable cible }
+  SIdx := SymFind(VarName);
+  If SIdx < 0 Then
+  Begin
+    { Creation implicite de la variable }
+    If (Cat = SC_LOCAL) And (CurFnDepth > 0) Then
+      SIdx := VarAlloc(VarName, TypeInfer(Res))
+    Else
+      SIdx := VarAlloc(VarName, TypeInfer(Res));
+  End;
+
+  { Generer l affectation }
+  If SIdx >= 0 Then
+  Begin
+    ExprFlushToAX(Res);
+    VarStore(SIdx);
+  End;
+
+  { Consommer la balise fermante si presente }
+  If (CurToken.Kind = TK_TAG_CLOSE) Or
+     (CurToken.Kind = TK_TAG_SELFCLOSE) Then
+    ParserAdvance;
+End;
+
+{ ---- ParseVarDecl : traiter var nom = expr (cfscript) ------- }
+(* Syntaxe cfscript : var nomVariable = expression;             *)
+(* Cree une variable locale dans la portee courante.            *)
+Procedure ParseVarDecl;
+Var
+  VarName : TString;
+  SIdx    : Integer;
+  Res     : TExprVal;
+Begin
+  EmitComment('---- VAR (local) ----');
+  { Le token courant est un identifiant (nom de variable) }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    CompileError('identifiant attendu apres var');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  ParserAdvance;
+
+  { Allocation de variable locale }
+  ExprMakeNone(Res);
+
+  { Verifier si affectation avec = }
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+  Begin
+    ParserAdvance;  { consommer = }
+    { Evaluer l expression a droite }
+    If CurToken.Kind = TK_INTEGER Then
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_FLOAT Then
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_STRING Then
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And IsBoolKeyword(CurToken.Val) Then
+    Begin
+      LitEval(CurToken, Res);
+      ParserAdvance;
+    End
+    Else If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx >= 0 Then
+      Begin
+        VarLoad(SIdx);
+        Res.Kind    := EK_AX;
+        Res.TypeIdx := SymTab[SIdx].TypeIdx;
+        Res.SymIdx  := SIdx;
+      End
+      Else
+      Begin
+        WarnMsg('variable non definie : ' + CurToken.Val);
+        ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+      End;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      WarnMsg('expression non supportee dans var (stub)');
+      ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+    End;
+  End
+  Else
+    ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+
+  { Creer la variable locale }
+  SIdx := VarAlloc(VarName, TypeInfer(Res));
+
+  { Generer l affectation initiale }
+  If SIdx >= 0 Then
+  Begin
+    ExprFlushToAX(Res);
+    VarStore(SIdx);
+  End;
+
+  { Consommer le point-virgule si present }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+Procedure ParsePage;
+Var
+  TagLower : TString;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { Balise CF ouvrante }
+    If CurToken.Kind = TK_TAG_OPEN Then
+    Begin
+      TagLower := StrLowerCase(CurToken.Val);
+      If TagLower = 'cfset' Then
+      Begin
+        ParserAdvance;  { consommer <cfset }
+        ParseCfSet;
+      End
+      Else
+        ParserAdvance;  { balise non reconnue - passer }
+    End
+    { Mot-cle var en mode cfscript }
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'var') Then
+    Begin
+      ParserAdvance;  { consommer var }
+      ParseVarDecl;
+    End
+    Else
+      ParserAdvance;  { token non traite - avancer }
+  End;
 End;
 
 { ============================================================
