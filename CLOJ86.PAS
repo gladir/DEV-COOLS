@@ -146,7 +146,7 @@
             Acces a une variable : MOV AX, [_CLV_nom]
             Pas de redefinition en mode strict (option -w avertissement)
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParseForm : dispatcher selon le type de token lu
             Litteraux : nombre, chaine, true, false, nil, keyword, caractere
             Symboles : resolution dans l environnement courant
@@ -739,6 +739,12 @@ Procedure ParseDef(Var Res : TExprVal); Forward;
 Procedure ParseDefonce(Var Res : TExprVal); Forward;
 (* TODO 10 *)
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
+Procedure ParseQuote(Var Res : TExprVal); Forward;
+Procedure ParseDo(Var Res : TExprVal); Forward;
+Procedure ParseIf(Var Res : TExprVal); Forward;
+Procedure ParseLet(Var Res : TExprVal); Forward;
+Procedure ParseFnCall(Const FnName : TString; FnSIdx : Integer;
+                      Var Res : TExprVal); Forward;
 Procedure ParseForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
@@ -3229,19 +3235,32 @@ Begin
   Case E.Kind Of
     EK_IMM :
     Begin
-      Str(E.ImmVal, S);
-      EmitInstrAB('MOV', 'AX', S);
+      If E.ImmVal = 0 Then
+        EmitInstrAB('XOR', 'AX', 'AX')
+      Else
+      Begin
+        Str(E.ImmVal, S);
+        EmitInstrAB('MOV', 'AX', S);
+      End;
     End;
     EK_MEM :
     Begin
       If E.SymIdx >= 0 Then
       Begin
         Addr := ExprAddrOf(E.SymIdx);
-        EmitInstrAB('MOV', 'AX', Addr);
+        If TypeIsPtr(E.TypeIdx) Then
+          EmitInstrAB('LEA', 'AX', Addr)
+        Else
+          EmitInstrAB('MOV', 'AX', Addr);
+      End
+      Else If E.Offset >= 0 Then
+      Begin
+        (* Donnee DATA : chaine, vecteur, etc. - adresse via OFFSET *)
+        EmitInstrAB('MOV', 'AX', 'OFFSET ' + DataTab[E.Offset].LblName);
       End
       Else
       Begin
-        Str(E.Offset, S);
+        Str(-E.Offset, S);
         EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
       End;
     End;
@@ -3250,12 +3269,18 @@ Begin
   End;
 End;
 
-Procedure ParseForm(Var Res : TExprVal);
-Var HeadSym : TString;
-    Depth   : Integer;
+(* ============================================================
+   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseQuote : (quote x) -> retourne x sans evaluation --- *)
+(* En Clojure, (quote x) retourne x tel quel.                   *)
+(* Pour un entier/chaine/nil/bool, c est le litteral.            *)
+(* Pour un symbole, on retourne l index du symbole comme valeur. *)
+Procedure ParseQuote(Var Res : TExprVal);
+Var StrLbl : TString;
 Begin
   ExprMakeNone(Res);
-  (* TODO 10 - dispatch partiel pour TODO 09 *)
   Case CurToken.Kind Of
     TK_INTEGER :
     Begin
@@ -3294,11 +3319,285 @@ Begin
     End;
     TK_SYMBOL :
     Begin
-      (* Acces variable : resolution dans la table des symboles *)
+      (* Symbole quote : retourner comme chaine *)
+      StrLbl := DataAddStr(CurToken.Val);
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_SYM;
+      Res.Offset  := DataCount - 1;
+      Res.SymIdx  := -1;
+      LexNextToken;
+    End;
+  Else
+    Begin
+      (* Forme complexe quotee : skip et retourner nil *)
+      If CurToken.Kind = TK_LPAREN Then
+        SkipForm
+      Else
+        LexNextToken;
+    End;
+  End;
+End;
+
+(* ---- ParseDo : (do expr1 expr2 ... exprN) ------------------- *)
+(* Evalue toutes les expressions en sequence.                    *)
+(* Retourne la valeur de la derniere expression.                 *)
+Procedure ParseDo(Var Res : TExprVal);
+Var Sub : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(do ...)');
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+  (* La derniere valeur est dans AX *)
+  If Res.Kind <> EK_NONE Then
+  Begin
+    Res.Kind := EK_AX;
+  End;
+End;
+
+(* ---- ParseIf : (if test then else?) ------------------------- *)
+(* Evalue test. Si vrai (non-nil, non-false), evalue then.       *)
+(* Sinon, evalue else (ou retourne nil si absent).               *)
+Procedure ParseIf(Var Res : TExprVal);
+Var
+  TestRes, ThenRes, ElseRes : TExprVal;
+  LblElse, LblEnd : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(if ...)');
+  LblElse := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* Evaluer la condition *)
+  ParseForm(TestRes);
+  ExprFlushToAX(TestRes);
+
+  (* Test de verite Clojure : nil(0) et false(0) sont faux *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblElse);
+
+  (* Branche THEN *)
+  ParseForm(ThenRes);
+  ExprFlushToAX(ThenRes);
+  EmitInstrA('JMP', LblEnd);
+
+  (* Branche ELSE *)
+  EmitLabel(LblElse);
+  If (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ParseForm(ElseRes);
+    ExprFlushToAX(ElseRes);
+  End
+  Else
+  Begin
+    (* Pas de branche else : retourner nil *)
+    EmitInstrAB('XOR', 'AX', 'AX');
+  End;
+
+  EmitLabel(LblEnd);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseLet : (let [x val y val2 ...] body ...) ----------- *)
+(* Cree un nouvel environnement lexical avec les liaisons.       *)
+(* Evalue le body dans ce contexte et retourne la derniere val.  *)
+Procedure ParseLet(Var Res : TExprVal);
+Var
+  VarName   : TString;
+  VarSIdx   : Integer;
+  ValRes    : TExprVal;
+  Sub       : TExprVal;
+  SaveFrame : Integer;
+  Ofs       : Integer;
+  S         : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(let [...] ...)');
+
+  (* On attend un vecteur de liaisons [ ... ] *)
+  If CurToken.Kind <> TK_LBRACKET Then
+  Begin
+    CompileError('vecteur de liaisons attendu apres let');
+    Exit;
+  End;
+  LexNextToken;  (* consomme '[' *)
+
+  SymEnterScope;
+  SaveFrame := CurFrameSize;
+
+  (* Traiter les paires nom/valeur *)
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_SYMBOL Then
+    Begin
+      CompileError('symbole attendu dans les liaisons let');
+      LexNextToken;
+      Continue;
+    End;
+    VarName := CurToken.Val;
+    LexNextToken;
+
+    (* Evaluer la valeur de la liaison *)
+    ParseForm(ValRes);
+    ExprFlushToAX(ValRes);
+
+    (* Allouer un emplacement local sur la pile *)
+    Inc(CurFrameSize, 2);
+    Ofs := CurFrameSize;
+    VarSIdx := SymAdd(VarName, SK_LOCAL, ValRes.TypeIdx, -Ofs);
+    If VarSIdx >= 0 Then
+    Begin
+      (* Stocker AX dans [BP-Ofs] *)
+      Str(Ofs, S);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+    End;
+  End;
+
+  If CurToken.Kind = TK_RBRACKET Then
+    LexNextToken  (* consomme ']' *)
+  Else
+    CompileError('] attendu en fin de liaisons let');
+
+  (* Reserver l espace sur la pile pour les locales *)
+  If CurFrameSize > SaveFrame Then
+  Begin
+    Str(CurFrameSize - SaveFrame, S);
+    EmitInstrAB('SUB', 'SP', S);
+  End;
+
+  (* Evaluer le body *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+  If Res.Kind <> EK_NONE Then
+    Res.Kind := EK_AX;
+
+  (* Liberer l espace pile *)
+  If CurFrameSize > SaveFrame Then
+  Begin
+    Str(CurFrameSize - SaveFrame, S);
+    EmitInstrAB('ADD', 'SP', S);
+  End;
+
+  CurFrameSize := SaveFrame;
+  SymLeaveScope;
+End;
+
+(* ---- ParseFnCall : (f arg1 arg2 ...) -> CALL _CLF_f --------- *)
+(* Evalue chaque argument, le pousse sur la pile, puis CALL.      *)
+(* Resultat dans AX apres le retour.                              *)
+Procedure ParseFnCall(Const FnName : TString; FnSIdx : Integer;
+                      Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  ArgRes   : TExprVal;
+  S        : TString;
+  Lbl      : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(' + FnName + ' ...)');
+  ArgCount := 0;
+
+  (* Evaluer et empiler les arguments *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  (* Appel de la fonction *)
+  If FnSIdx >= 0 Then
+    Lbl := SymTab[FnSIdx].MangledName
+  Else
+    Lbl := CL_FN_PFX + SymNameClean(FnName);
+  EmitInstrA('CALL', Lbl);
+
+  (* Nettoyer la pile des arguments *)
+  If ArgCount > 0 Then
+  Begin
+    Str(ArgCount * 2, S);
+    EmitInstrAB('ADD', 'SP', S);
+  End;
+
+  (* Resultat dans AX *)
+  Res.Kind    := EK_AX;
+  If FnSIdx >= 0 Then
+    Res.TypeIdx := SymTab[FnSIdx].TypeIdx
+  Else
+    Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseForm : dispatcher principal de compilation --------- *)
+(* Lit une forme Clojure et genere le code ASM correspondant.     *)
+(* C est le point d entree de toute evaluation d expression.      *)
+Procedure ParseForm(Var Res : TExprVal);
+Var HeadSym : TString;
+    SIdx    : Integer;
+    Depth   : Integer;
+Begin
+  ExprMakeNone(Res);
+  Case CurToken.Kind Of
+    (* --- Litteraux --- *)
+    TK_INTEGER :
+    Begin
+      LitEvalInt(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_CHAR :
+    Begin
+      LitEvalChar(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_KEYWORD :
+    Begin
+      LitEvalKW(CurToken, Res);
+      LexNextToken;
+    End;
+    TK_TRUE :
+    Begin
+      ExprMakeBool(1, Res);
+      LexNextToken;
+    End;
+    TK_FALSE :
+    Begin
+      ExprMakeBool(0, Res);
+      LexNextToken;
+    End;
+    TK_NIL :
+    Begin
+      ExprMakeNone(Res);
+      LexNextToken;
+    End;
+
+    (* --- Acces a une variable (symbole) --- *)
+    TK_SYMBOL :
+    Begin
       HeadSym := CurToken.Val;
-      Depth := SymFind(HeadSym);
-      If Depth >= 0 Then
-        ExprLoad(Depth, Res)
+      SIdx := SymFind(HeadSym);
+      If SIdx >= 0 Then
+        ExprLoad(SIdx, Res)
       Else
       Begin
         WarnMsg('symbole non defini "' + HeadSym + '"');
@@ -3306,44 +3605,157 @@ Begin
       End;
       LexNextToken;
     End;
+
+    (* --- Forme parenthesee (forme speciale ou appel de fn) --- *)
     TK_LPAREN :
     Begin
       LexNextToken;  (* consomme '(' *)
       If CurToken.Kind = TK_SYMBOL Then
       Begin
         HeadSym := CurToken.Val;
+
+        (* -- def -- *)
         If HeadSym = 'def' Then
         Begin
-          LexNextToken;  (* consomme 'def' *)
+          LexNextToken;
           ParseDef(Res);
-          If CurToken.Kind = TK_RPAREN Then
-            LexNextToken
-          Else
-            CompileError(') attendue apres def');
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres def');
           Exit;
         End
+
+        (* -- defonce -- *)
         Else If HeadSym = 'defonce' Then
         Begin
-          LexNextToken;  (* consomme 'defonce' *)
+          LexNextToken;
           ParseDefonce(Res);
-          If CurToken.Kind = TK_RPAREN Then
-            LexNextToken
-          Else
-            CompileError(') attendue apres defonce');
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres defonce');
           Exit;
+        End
+
+        (* -- quote -- *)
+        Else If HeadSym = 'quote' Then
+        Begin
+          LexNextToken;
+          ParseQuote(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres quote');
+          Exit;
+        End
+
+        (* -- do -- *)
+        Else If HeadSym = 'do' Then
+        Begin
+          LexNextToken;
+          ParseDo(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres do');
+          Exit;
+        End
+
+        (* -- if -- *)
+        Else If HeadSym = 'if' Then
+        Begin
+          LexNextToken;
+          ParseIf(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres if');
+          Exit;
+        End
+
+        (* -- when : (when test body...) comme (if test (do body...)) -- *)
+        Else If HeadSym = 'when' Then
+        Begin
+          LexNextToken;
+          EmitComment('(when ...)');
+          ParseIf(Res);  (* when = if sans else *)
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres when');
+          Exit;
+        End
+
+        (* -- let / let* -- *)
+        Else If (HeadSym = 'let') Or (HeadSym = 'let*') Then
+        Begin
+          LexNextToken;
+          ParseLet(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres let');
+          Exit;
+        End
+
+        (* -- Appel de fonction (symbole connu ou inconnu) -- *)
+        Else
+        Begin
+          SIdx := SymFind(HeadSym);
+          LexNextToken;  (* consomme le nom de la fonction *)
+          If (SIdx >= 0) And
+             ((SymTab[SIdx].Kind = SK_FN) Or
+              (SymTab[SIdx].Kind = SK_VAR)) Then
+          Begin
+            ParseFnCall(HeadSym, SIdx, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres appel de fonction');
+            Exit;
+          End
+          Else
+          Begin
+            (* Symbole non reconnu : tenter un appel quand meme *)
+            ParseFnCall(HeadSym, SIdx, Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres appel');
+            Exit;
+          End;
         End;
-      End;
-      (* Forme non geree : sauter jusqu a ')' correspondante *)
-      Depth := 1;
-      While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+      End
+      Else
       Begin
-        LexNextToken;
-        If CurToken.Kind = TK_LPAREN Then Inc(Depth);
-        If CurToken.Kind = TK_RPAREN Then Dec(Depth);
+        (* Liste dont la tete n est pas un symbole : sauter *)
+        Depth := 1;
+        While (Depth > 0) And (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If CurToken.Kind = TK_LPAREN Then Inc(Depth);
+          If CurToken.Kind = TK_RPAREN Then Dec(Depth);
+          If Depth > 0 Then LexNextToken;
+        End;
+        If CurToken.Kind = TK_RPAREN Then
+          LexNextToken;
       End;
-      If CurToken.Kind = TK_RPAREN Then
-        LexNextToken;
     End;
+
+    (* --- Reader macro : quote --- *)
+    TK_QUOTE :
+    Begin
+      LexNextToken;  (* consomme ' *)
+      ParseQuote(Res);
+    End;
+
+    (* --- Vecteur litteral [a b c] --- *)
+    TK_LBRACKET :
+    Begin
+      LexNextToken;  (* consomme '[' *)
+      (* Pour l instant, sauter le contenu *)
+      While (CurToken.Kind <> TK_RBRACKET) And
+            (CurToken.Kind <> TK_EOF) Do
+        LexNextToken;
+      If CurToken.Kind = TK_RBRACKET Then
+        LexNextToken;
+      ExprMakeNone(Res);
+    End;
+
+    (* --- Map litteral {:a 1 :b 2} --- *)
+    TK_LBRACE :
+    Begin
+      LexNextToken;  (* consomme accolade ouvrante *)
+      While (CurToken.Kind <> TK_RBRACE) And
+            (CurToken.Kind <> TK_EOF) Do
+        LexNextToken;
+      If CurToken.Kind = TK_RBRACE Then
+        LexNextToken;
+      ExprMakeNone(Res);
+    End;
+
   Else
     (* Token non gere : avancer *)
     LexNextToken;
