@@ -40,7 +40,7 @@
             Pragmats : PR ... PR, PRAGMAT ... PRAGMAT
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - DENOTATIONS (LITTERAUX)
+  TODO 03 - DENOTATIONS (LITTERAUX) [IMPLEMENTE]
             Entiers (INT denotation) : 0..65535 (suite de chiffres)
               Bases : 2r1010, 4r123, 8r77, 16rFF (radix r digits)
             Reels (REAL denotation) : 3.14, 1.5e-3, .5e2
@@ -52,6 +52,11 @@
               Concatenation implicite de chaines adjacentes
             VOID : pas de valeur, denotation SKIP ou EMPTY
             NIL : reference nulle -> AX=0
+            ExprMakeImm, ExprMakeNone, ExprMakeBool, ExprMakeVoid, ExprMakeNil
+            LitEvalInt, LitEvalFloat, LitEval (dispatcher)
+            DataAdd, DataAddStr, DataAddWord (segment DATA avec dedup)
+            EmitDataSeg : emission _DATA SEGMENT avec donnees predefinies
+            Indices de mode : TY_IDX_INT/REAL/BOOL/CHAR/BITS/STRING/VOID/REF
 
   TODO 04 - OPERATEURS ET PRIORITES
             Niveaux de priorite standard (1 a 9, 9 = plus fort) :
@@ -457,6 +462,19 @@ Const
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
 
+  { Indices de mode primitifs dans ModeTab (TODO 03/06) }
+  TY_IDX_INT     = 0;   { INT  : entier 16 bits signe           }
+  TY_IDX_REAL    = 1;   { REAL : reel (stub -> entier tronque)  }
+  TY_IDX_BOOL    = 2;   { BOOL : booleen 8 bits                 }
+  TY_IDX_CHAR    = 3;   { CHAR : caractere 8 bits               }
+  TY_IDX_BITS    = 4;   { BITS : mot binaire 16 bits            }
+  TY_IDX_STRING  = 5;   { STRING : chaine dynamique (ptr)       }
+  TY_IDX_VOID    = 6;   { VOID : pas de valeur                  }
+  TY_IDX_REF     = 7;   { REF (reference / pointeur)            }
+  TY_IDX_COMPL   = 8;   { COMPL : paire re+im                   }
+  TY_IDX_BYTES   = 9;   { BYTES : tableau d octets              }
+  TY_IDX_UNKNOWN = -1;  { mode inconnu                          }
+
 { ============================================================
   TYPES
   ============================================================ }
@@ -671,7 +689,17 @@ Procedure LexSkipHashComment;  Forward;
 Procedure LexSkipPragmat(Const Closer : TString); Forward;
 
 { TODO 03 - Denotations }
+Procedure ExprMakeImm(AVal : LongInt; AModeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
+Procedure ExprMakeVoid(Var Res : TExprVal); Forward;
+Procedure ExprMakeNil(Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Function  DataAddWord(Const Lbl : TString;
+                      AIntVal : LongInt) : Integer; Forward;
 
 { TODO 04 - Operateurs }
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
@@ -2020,10 +2048,257 @@ Begin
   End;
 End;
 
-Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+{ ============================================================
+  TODO 03 - DENOTATIONS (LITTERAUX) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ExprMakeImm : construire une valeur immediate ---------- }
+
+Procedure ExprMakeImm(AVal : LongInt; AModeIdx : Integer;
+                      Var Res : TExprVal);
 Begin
-  { TODO 03 }
-  Res := GExprDummy;
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.ModeIdx := AModeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNone : valeur invalide (void/erreur) ----------- }
+
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.ModeIdx := TY_IDX_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeBool : valeur booleenne (0 ou 1) --------------- }
+
+Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  If AVal <> 0 Then Res.ImmVal := 1 Else Res.ImmVal := 0;
+  Res.ModeIdx := TY_IDX_BOOL;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeVoid : valeur VOID (SKIP / EMPTY) -------------- }
+
+Procedure ExprMakeVoid(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.ModeIdx := TY_IDX_VOID;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- ExprMakeNil : reference nulle (NIL) -> AX=0 ------------ }
+
+Procedure ExprMakeNil(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := 0;
+  Res.ModeIdx := TY_IDX_REF;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+{ ---- LitEvalInt : denotation entiere -> valeur immediate ----- }
+{ IntVal est deja calcule par LexScanNumber (base 10 ou Nr).    }
+
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_INT, Res);
+End;
+
+{ ---- LitEvalFloat : denotation reelle -> entier tronque ------ }
+{ 8086 n a pas de FPU ; les REAL sont tronques en INT.          }
+
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_REAL, Res);
+  WarnMsg('denotation reelle tronquee a ' + IntToStr(T.IntVal) +
+          ' (pas de FPU sur 8086)');
+End;
+
+{ ---- DataAdd : ajouter une entree dans le segment DATA ------- }
+{ Retourne l index dans DataTab ou -1 si plein.                  }
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label _A68K_N et stocker la chaine }
+{ Reutilise les doublons (meme contenu -> meme label).          }
+{ Retourne le label genere.                                      }
+
+Function DataAddStr(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Lbl : TString;
+Begin
+  { Recherche de doublon }
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataAddStr := DataTab[I].LblName;
+      Exit;
+    End;
+  Inc(LabelGenSeq);
+  Lbl := A68_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddWord : ajouter un mot 16 bits dans le segment DATA }
+
+Function DataAddWord(Const Lbl : TString;
+                     AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+{ ---- EmitDataSeg : ecrire _DATA SEGMENT complet -------------- }
+{ Emet les chaines predefinies et toutes les entrees DataTab.    }
+
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  NS   : TString;
+  B    : Byte;
+Begin
+  If Not OutFOpen Then Exit;
+  WriteLn(OutF);
+  WriteLn(OutF, '_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  WriteLn(OutF, '        ASSUME  DS:_DATA');
+  { Chaines predefinies pour print(TRUE/FALSE) }
+  WriteLn(OutF, '_A68_TRUE_S:');
+  WriteLn(OutF, '        DB      ''TRUE'',0');
+  WriteLn(OutF, '_A68_FALSE_S:');
+  WriteLn(OutF, '        DB      ''FALSE'',0');
+  WriteLn(OutF, '_A68_NIL_S:');
+  WriteLn(OutF, '        DB      ''NIL'',0');
+  WriteLn(OutF, '_A68_CRLF:');
+  WriteLn(OutF, '        DB      13,10,0');
+  WriteLn(OutF, '_A68_STRBUF:');
+  WriteLn(OutF, '        DB      128 DUP(0)');
+  { Entrees DataTab }
+  For I := 0 To DataCount - 1 Do
+  Begin
+    WriteLn(OutF, DataTab[I].LblName, ':');
+    Case DataTab[I].Kind Of
+      DK_WORD :
+      Begin
+        Str(DataTab[I].IntVal, NS);
+        WriteLn(OutF, '        DW      ', NS);
+      End;
+      DK_BYTE :
+      Begin
+        Str(DataTab[I].IntVal And $FF, NS);
+        WriteLn(OutF, '        DB      ', NS);
+      End;
+      DK_STR :
+      Begin
+        Write(OutF, '        DB      ');
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          B := Ord(DataTab[I].StrVal[J]);
+          Str(B, NS);
+          If J > 1 Then Write(OutF, ',');
+          Write(OutF, NS);
+        End;
+        WriteLn(OutF, ',0');
+      End;
+      DK_ARRAY_BLK :
+      Begin
+        { Descripteur de tableau : lwb, upb, elem_size, offset_data }
+        WriteLn(OutF, '        DW      0,0,0,0  ; stub array descriptor');
+      End;
+      DK_STRUCT_BLK :
+      Begin
+        { Bloc de structure : stub }
+        WriteLn(OutF, '        DW      0  ; stub struct block');
+      End;
+    End;
+  End;
+  WriteLn(OutF, '_DATA   ENDS');
+End;
+
+{ ---- LitEval : dispatcher principal pour les denotations ----- }
+{ Types de tokens Algol 68 acceptes :                             }
+{   TK_INT_DEN    -> EK_IMM, ModeIdx = TY_IDX_INT                }
+{   TK_REAL_DEN   -> EK_IMM, ModeIdx = TY_IDX_REAL (tronque)     }
+{   TK_BOOL_DEN   -> EK_IMM, ModeIdx = TY_IDX_BOOL (0 ou 1)     }
+{   TK_CHAR_DEN   -> EK_IMM, ModeIdx = TY_IDX_CHAR (Ord)         }
+{   TK_STRING_DEN -> EK_MEM, ModeIdx = TY_IDX_STRING (DataAddStr) }
+{   TK_BOLD SKIP/EMPTY -> EK_NONE, ModeIdx = TY_IDX_VOID         }
+{   TK_BOLD NIL        -> EK_IMM(0), ModeIdx = TY_IDX_REF        }
+
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  I          : Integer;
+  LitStrLbl  : TString;
+  LitStrIdx  : Integer;
+Begin
+  ExprMakeNone(Res); { valeur par defaut }
+  Case T.Kind Of
+    TK_INT_DEN :
+      LitEvalInt(T, Res);
+    TK_REAL_DEN :
+      LitEvalFloat(T, Res);
+    TK_BOOL_DEN :
+      ExprMakeBool(T.IntVal, Res);
+    TK_CHAR_DEN :
+      ExprMakeImm(T.IntVal, TY_IDX_CHAR, Res);
+    TK_STRING_DEN :
+    Begin
+      { Stocker la chaine dans DataTab (avec dedup) }
+      LitStrLbl := DataAddStr(T.Val);
+      { Trouver l index dans DataTab par le label }
+      LitStrIdx := -1;
+      For I := 0 To DataCount - 1 Do
+        If DataTab[I].LblName = LitStrLbl Then
+        Begin
+          LitStrIdx := I;
+          Break;
+        End;
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.ModeIdx := TY_IDX_STRING;
+      Res.Offset  := LitStrIdx;
+      Res.SymIdx  := -1;
+    End;
+    TK_BOLD :
+    Begin
+      If (T.Val = 'SKIP') Or (T.Val = 'EMPTY') Then
+        ExprMakeVoid(Res)
+      Else If T.Val = 'NIL' Then
+        ExprMakeNil(Res)
+      Else
+        ExprMakeNone(Res);
+    End;
+  Else
+    ExprMakeNone(Res);
+  End;
 End;
 
 Function BinOpPrec(Const Op : TString) : Integer;
@@ -2135,27 +2410,11 @@ Begin
   { TODO 08 }
 End;
 
-Procedure EmitDataSeg;
-Begin
-  { TODO 09 }
-End;
+{ DataAdd, DataAddStr, EmitDataSeg : implementes dans TODO 03 ci-dessus }
 
 Procedure EmitRuntime;
 Begin
   { TODO 24 }
-End;
-
-Function DataAdd(Const Lbl : TString; Kind : TDataKind;
-                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
-Begin
-  { TODO 09 }
-  DataAdd := -1;
-End;
-
-Function DataAddStr(Const S : TString) : TString;
-Begin
-  { TODO 09 }
-  DataAddStr := '';
 End;
 
 Procedure ParseDeclStmt;
