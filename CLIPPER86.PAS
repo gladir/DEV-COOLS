@@ -73,7 +73,7 @@
               8. .OR.
               9. := += -= *= /=
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_LOCAL, SK_STATIC, SK_PRIVATE, SK_PUBLIC,
               SK_PARAM, SK_FIELD, SK_MEMVAR, SK_FUNC, SK_PROC, SK_ALIAS
             TSymRec : Name, MangledName, Kind, TypeTag, Offset,
@@ -519,6 +519,8 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
   MAX_DATA      = {$IFDEF FPC}256{$ELSE}128{$ENDIF};
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
   STACK_SIZE    = 1024;
 
   { Indices de types primitifs Clipper }
@@ -541,6 +543,7 @@ Const
   CL_LBL_PFX   = '_CLL_';    { label de saut interne                }
   CL_GLB_PFX   = '_CLG_';    { variable PUBLIC globale              }
   CL_STAT_PFX  = '_CLS_';    { variable STATIC                      }
+  CL_FLD_PFX   = '_CLF_';    { champ FIELD de base de donnees       }
   CL_ALIAS_PFX = '_CLA_';    { alias DBF                            }
   CL_BLK_PFX   = '_CLB_';    { code block                           }
 
@@ -612,6 +615,32 @@ Type
     StrVal  : TString;     { contenu chaine (DK_STR)              }
   End;
 
+  { ---- Table des symboles (TODO 05) ------------------------- }
+  TSymCat = (
+    SC_LOCAL,      { variable LOCAL (pile, [BP-n])                 }
+    SC_STATIC,     { variable STATIC (DATA, persiste entre appels) }
+    SC_PRIVATE,    { variable PRIVATE (visible dans sous-routines) }
+    SC_PUBLIC,     { variable PUBLIC (globale, prefixe _CLG_)      }
+    SC_PARAM,      { parametre de FUNCTION/PROCEDURE ([BP+n])      }
+    SC_FIELD,      { champ de base de donnees (FIELD->nom)         }
+    SC_MEMVAR,     { variable memoire explicite (MEMVAR->nom)      }
+    SC_FUNC,       { declaration FUNCTION                          }
+    SC_PROC,       { declaration PROCEDURE                         }
+    SC_ALIAS       { alias DBF (USE ... ALIAS nom)                 }
+  );
+
+  TSymRec = Record
+    Name        : TString;   { nom Clipper (UPPER interne)          }
+    MangledName : TString;   { label ASM genere                     }
+    Cat         : TSymCat;   { categorie du symbole                 }
+    TypeIdx     : Integer;   { indice type TY_IDX_*                 }
+    ScopeLevel  : Integer;   { profondeur de portee (0 = global)    }
+    Offset      : Integer;   { [BP-n] locals, [BP+n] params, DATA  }
+    IsInit      : Boolean;   { variable deja initialisee            }
+    ArraySize   : Integer;   { taille si tableau (0 = scalaire)     }
+    DeclLine    : Integer;   { ligne de declaration (source)        }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -641,6 +670,14 @@ Var
   DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount  : Integer;    { nombre d entrees dans DataTab         }
   LabelSeq   : Integer;    { compteur unique pour generation labels }
+
+  { Table des symboles (TODO 05) }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;    { nombre d entrees dans SymTab           }
+  ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
+  ScopeTop   : Integer;    { sommet de pile des portees             }
+  CurScope   : Integer;    { profondeur de portee courante          }
+  TotalSyms  : Integer;    { nombre total de symboles declares      }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -692,6 +729,16 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ Table des symboles (TODO 05) }
+Function  SymNameClean(Const Name : TString) : TString; Forward;
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString) : Integer; Forward;
+Function  SymAdd(Const Name : TString; Cat : TSymCat;
+                 ATypeIdx, AOffset : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Procedure SymInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -933,6 +980,7 @@ Begin
   OutFOpen   := False;
   DataCount  := 0;
   LabelSeq   := 0;
+  SymInit;
 End;
 
 { ---- Affichage des statistiques ----------------------------- }
@@ -942,6 +990,7 @@ Begin
   WriteLn;
   WriteLn('--- Statistiques ---');
   WriteLn('  Lignes sources : ', TotalLines);
+  WriteLn('  Symboles       : ', TotalSyms);
   WriteLn('  Erreurs        : ', ErrorCount);
   WriteLn('  Avertissements : ', WarnCount);
 End;
@@ -2713,6 +2762,341 @@ End;
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
   ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- StrUpper : convertir une chaine en majuscules ----------- }
+(* Clipper est case-insensitive : les noms sont stockes en UPPER. *)
+
+Function StrUpper(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpper := R;
+End;
+
+{ ---- SymNameClean : nettoyer un nom pour label ASM ----------- }
+(* Remplace les caracteres non alphanumeriques par '_'.
+   En Clipper les noms sont case-insensitive (UPPER interne).    *)
+
+Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  Ch : Char;
+Begin
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    Ch := Name[I];
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or
+       ((Ch >= '0') And (Ch <= '9')) Or
+       (Ch = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + Ch;
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
+End;
+
+{ ---- SymMangle : construire l etiquette ASM d un symbole ----- }
+(* Associe un prefixe ASM selon la categorie :
+     SC_LOCAL   : _CLV_ + nom  (variable locale, acces [BP-n])
+     SC_STATIC  : _CLS_ + nom  (STATIC, persiste en DATA)
+     SC_PRIVATE : _CLV_ + nom  (PRIVATE, comme locale)
+     SC_PUBLIC  : _CLG_ + nom  (PUBLIC, globale)
+     SC_PARAM   : ''           (parametre, acces [BP+n])
+     SC_FIELD   : _CLF_ + nom  (champ FIELD de base de donnees)
+     SC_MEMVAR  : _CLV_ + nom  (variable memoire explicite)
+     SC_FUNC    : _CLP_ + nom  (FUNCTION)
+     SC_PROC    : _CLP_ + nom  (PROCEDURE)
+     SC_ALIAS   : _CLA_ + nom  (alias DBF)                      *)
+
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Clean : TString;
+Begin
+  Clean := SymNameClean(Name);
+  Case Cat Of
+    SC_LOCAL   : SymMangle := CL_VAR_PFX  + Clean;
+    SC_STATIC  : SymMangle := CL_STAT_PFX + Clean;
+    SC_PRIVATE : SymMangle := CL_VAR_PFX  + Clean;
+    SC_PUBLIC  : SymMangle := CL_GLB_PFX  + Clean;
+    SC_PARAM   : SymMangle := '';
+    SC_FIELD   : SymMangle := CL_FLD_PFX   + Clean;
+    SC_MEMVAR  : SymMangle := CL_VAR_PFX  + Clean;
+    SC_FUNC    : SymMangle := CL_FN_PFX   + Clean;
+    SC_PROC    : SymMangle := CL_FN_PFX   + Clean;
+    SC_ALIAS   : SymMangle := CL_ALIAS_PFX + Clean;
+  Else
+    SymMangle := CL_LBL_PFX + Clean;
+  End;
+End;
+
+{ ---- SymFind : rechercher un symbole (interne -> global) ----- }
+(* Parcourt la table du plus recent au plus ancien (MRU-first).
+   Retourne l indice ou -1 si non trouve.
+   Clipper est case-insensitive : on compare les noms UPPER.     *)
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
+  UName : TString;
+Begin
+  UName := StrUpper(Name);
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = UName Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : rechercher dans la portee courante ----- }
+(* Recherche uniquement parmi les symboles ajoutes dans le scope
+   courant (depuis le dernier SymEnterScope).                    *)
+
+Function SymFindInScope(Const Name : TString) : Integer;
+Var
+  I     : Integer;
+  Start : Integer;
+  UName : TString;
+Begin
+  UName := StrUpper(Name);
+  If ScopeTop > 0 Then
+    Start := ScopeStack[ScopeTop - 1]
+  Else
+    Start := 0;
+  For I := SymCount - 1 DownTo Start Do
+    If SymTab[I].Name = UName Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+(* Ajoute une entree, applique le mangling, retourne l indice.
+   Le nom est stocke en UPPER (convention Clipper).
+   Trace de debug si option -d activee.                          *)
+
+Function SymAdd(Const Name : TString; Cat : TSymCat;
+                ATypeIdx, AOffset : Integer) : Integer;
+Var
+  Idx   : Integer;
+  UName : TString;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  { Convertir en UPPER (Clipper est case-insensitive) }
+  UName := StrUpper(Name);
+
+  Idx := SymCount;
+  SymTab[Idx].Name        := UName;
+  SymTab[Idx].MangledName := SymMangle(UName, Cat);
+  SymTab[Idx].Cat         := Cat;
+  SymTab[Idx].TypeIdx     := ATypeIdx;
+  SymTab[Idx].ScopeLevel  := CurScope;
+  SymTab[Idx].Offset      := AOffset;
+  SymTab[Idx].IsInit      := False;
+  SymTab[Idx].ArraySize   := 0;
+  SymTab[Idx].DeclLine    := CurToken.Line;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', UName,
+            ' cat=', Ord(Cat),
+            ' scope=', CurScope,
+            ' -> ', SymTab[Idx].MangledName);
+
+  Inc(SymCount);
+  Inc(TotalSyms);
+  SymAdd := Idx;
+End;
+
+{ ---- SymEnterScope : entrer dans une nouvelle portee --------- }
+(* Empile le nombre courant de symboles pour pouvoir restaurer
+   lors du SymLeaveScope.  Utilise par FUNCTION/PROCEDURE/DO.    *)
+
+Procedure SymEnterScope;
+Begin
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' + IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante -------------- }
+(* Restaure SymCount a la valeur sauvegardee, retirant tous les
+   symboles locaux de cette portee.                              *)
+
+Procedure SymLeaveScope;
+Begin
+  If ScopeTop <= 0 Then
+  Begin
+    CompileError('desequilibre de portees : LeaveScope sans EnterScope');
+    Exit;
+  End;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+End;
+
+{ ---- SymInit : initialiser la table et predeclarer les builtins }
+(* Remet la table a zero puis ajoute les symboles predeclares
+   de Clipper : fonctions standard, variables predefinies.
+   Portees Clipper :
+     PUBLIC  : visible partout (prefixe _CLG_)
+     PRIVATE : visible dans la routine courante et sous-routines
+     LOCAL   : visible uniquement dans la routine courante (pile)
+     STATIC  : visible dans la routine, persiste entre appels (DATA)
+     FIELD   : acces champ de la base de donnees courante
+     MEMVAR  : variable memoire explicite (MEMVAR->nom)           *)
+
+Procedure SymInit;
+Begin
+  SymCount  := 0;
+  ScopeTop  := 0;
+  CurScope  := 0;
+  TotalSyms := 0;
+
+  { --- Fonctions standard Clipper --- }
+  { Sortie ecran }
+  SymAdd('QOUT',     SC_FUNC, TY_IDX_NIL, 0);   { ? }
+  SymAdd('QQOUT',    SC_FUNC, TY_IDX_NIL, 0);   { ?? }
+  SymAdd('OUTSTD',   SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('OUTERR',   SC_FUNC, TY_IDX_NIL, 0);
+
+  { Conversion et types }
+  SymAdd('VALTYPE',  SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('TYPE',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('STR',      SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('VAL',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('CTOD',     SC_FUNC, TY_IDX_DATE, 0);
+  SymAdd('DTOC',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('DTOS',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('CHR',      SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('ASC',      SC_FUNC, TY_IDX_NUM, 0);
+
+  { Chaines }
+  SymAdd('LEN',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('SUBSTR',   SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('LEFT',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('RIGHT',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('AT',       SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('TRIM',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('RTRIM',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('LTRIM',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('ALLTRIM',  SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('UPPER',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('LOWER',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('STRTRAN',  SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('REPLICATE',SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('SPACE',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('PADR',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('PADL',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('PADC',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('STUFF',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('EMPTY',    SC_FUNC, TY_IDX_LOGIC, 0);
+
+  { Mathematiques }
+  SymAdd('ABS',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('INT',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('ROUND',    SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('MAX',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('MIN',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('MOD',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('SQRT',     SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('LOG',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('EXP',      SC_FUNC, TY_IDX_NUM, 0);
+
+  { Tableaux }
+  SymAdd('ARRAY',    SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('AADD',     SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ASIZE',    SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ADEL',     SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('AINS',     SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ASORT',    SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ASCAN',    SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('AEVAL',    SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ACOPY',    SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('AFILL',    SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ACLONE',   SC_FUNC, TY_IDX_ARRAY, 0);
+  SymAdd('ATAIL',    SC_FUNC, TY_IDX_NIL, 0);
+
+  { Code blocks }
+  SymAdd('EVAL',     SC_FUNC, TY_IDX_NIL, 0);
+
+  { Base de donnees }
+  SymAdd('DBEVAL',   SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('RECNO',    SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('RECCOUNT', SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('BOF',      SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('EOF',      SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('FOUND',    SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('DELETED',  SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('LASTREC',  SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('FIELDNAME',SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('FCOUNT',   SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('SELECT',   SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('ALIAS',    SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('USED',     SC_FUNC, TY_IDX_LOGIC, 0);
+
+  { Date et heure }
+  SymAdd('DATE',     SC_FUNC, TY_IDX_DATE, 0);
+  SymAdd('TIME',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('DAY',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('MONTH',    SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('YEAR',     SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('DOW',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('CDOW',     SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('CMONTH',   SC_FUNC, TY_IDX_CHAR, 0);
+
+  { Divers }
+  SymAdd('INKEY',    SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('ROW',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('COL',      SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('SETPOS',   SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('DEVPOS',   SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('SCROLL',   SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('TONE',     SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('ERRORBLOCK',SC_FUNC, TY_IDX_BLOCK, 0);
+  SymAdd('BREAK',    SC_FUNC, TY_IDX_NIL, 0);
+  SymAdd('QUIT',     SC_PROC, TY_IDX_NIL, 0);
+  SymAdd('ISPRINTER',SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('DOSERROR', SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('NETERR',   SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('FILE',     SC_FUNC, TY_IDX_LOGIC, 0);
+  SymAdd('CURDIR',   SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('MEMORY',   SC_FUNC, TY_IDX_NUM, 0);
+  SymAdd('OS',       SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('VERSION',  SC_FUNC, TY_IDX_CHAR, 0);
+  SymAdd('CLIPPER',  SC_FUNC, TY_IDX_CHAR, 0);
 End;
 
 { ============================================================
