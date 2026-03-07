@@ -995,7 +995,6 @@ Begin
     '\'  : LexScanEscChar := '\';
     '''' : LexScanEscChar := '''';
     '"'  : LexScanEscChar := '"';
-    '`'  : LexScanEscChar := '`';
   Else
     LexScanEscChar := Ch;
   End;
@@ -1223,6 +1222,7 @@ Begin
     End;
     CurToken.Kind     := TK_FLOAT;
     CurToken.FloatVal := FltVal;
+    { IntVal = partie entiere tronquee, clampee a 16 bits }
     If FltVal > 32767.0 Then N := 32767
     Else If FltVal < -32768.0 Then N := -32768
     Else N := Trunc(FltVal);
