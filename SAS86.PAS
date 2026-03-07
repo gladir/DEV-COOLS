@@ -41,7 +41,7 @@
             Le point-virgule ; est le delimiteur d instruction en SAS
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..65535 (non signe) ou -32768..32767 (signe)
             Reels : reconnus par le lexeur, traites comme entiers (trunc)
               Notation scientifique : 1.5E3 -> 1500 (trunc)
@@ -719,6 +719,19 @@ Function  HexVal(Ch : Char) : Integer; Forward;
 Procedure LexScanIdent;        Forward;
 Procedure LexScanNumber;       Forward;
 Procedure LexScanString(Quote : Char); Forward;
+(* TODO 03 - Forward declarations litteraux et constantes *)
+Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
+                  AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
+Function  DataAddStr(Const S : TString) : Integer; Forward;
+Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal); Forward;
+Procedure ExprMakeNone(Var Res : TExprVal); Forward;
+Procedure ExprMakeMissing(Var Res : TExprVal); Forward;
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal); Forward;
+Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
+Function  IsMissingDot : Boolean; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1719,7 +1732,143 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 03..25 (a implementer)
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- DataAdd : ajouter une entree dans le segment DATA ----- *)
+(* Retourne l index dans DataTab ou -1 si plein.                *)
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    CompileError('segment DATA plein (max=' + IntToStr(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+(* ---- DataAddStr : creer un label _SASK_N et stocker chaine -- *)
+(* Retourne l index dans DataTab.                                *)
+Function DataAddStr(Const S : TString) : Integer;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := SAS_STR_PFX + IntToStr(LabelGenSeq);
+  DataAddStr := DataAdd(Lbl, DK_STR, 0, S);
+End;
+
+(* ---- DataAddWord : ajouter variable/constante DW ------------ *)
+Function DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
+End;
+
+(* ---- ExprMakeImm : construire une valeur immediate ---------- *)
+Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
+                      Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := AVal;
+  Res.TypeIdx := ATypeIdx;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeNone : valeur invalide (void/erreur) ----------- *)
+Procedure ExprMakeNone(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ExprMakeMissing : valeur manquante SAS (. = 8000h) ---- *)
+(* En SAS, une valeur manquante numerique est representee par    *)
+(* la sentinelle MISSING_VAL = -32768 = 8000h.                  *)
+Procedure ExprMakeMissing(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_IMM;
+  Res.ImmVal  := MISSING_VAL;
+  Res.TypeIdx := TY_IDX_NUMERIC;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- LitEvalInt : evaluer un token TK_INTEGER --------------- *)
+(* IntVal est deja calcule par LexScanNumber.                    *)
+Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeImm(T.IntVal, TY_IDX_NUMERIC, Res);
+End;
+
+(* ---- LitEvalFloat : evaluer un token TK_FLOAT (trunc) ------ *)
+(* SAS utilise des reels en interne (8 octets) ; en 16 bits on   *)
+(* tronque a l entier. Avertissement si perte de precision.      *)
+Procedure LitEvalFloat(Const T : TToken; Var Res : TExprVal);
+Var
+  IV : LongInt;
+Begin
+  IV := Trunc(T.FloatVal);
+  If IV > 32767 Then IV := 32767;
+  If IV < -32768 Then IV := -32768;
+  WarnMsg('reel ' + T.Val + ' tronque a entier ' + IntToStr(IV));
+  ExprMakeImm(IV, TY_IDX_NUMERIC, Res);
+End;
+
+(* ---- IsMissingDot : teste si le token courant est un . ------ *)
+(* seul (valeur manquante numerique) et non partie d un nombre   *)
+(* ou d un format. Retourne True si CurToken = TK_PUNCT '.'     *)
+Function IsMissingDot : Boolean;
+Begin
+  IsMissingDot := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.');
+End;
+
+(* ---- LitEval : dispatcher principal pour les litteraux ------ *)
+(* Types de tokens acceptes : TK_INTEGER, TK_FLOAT, TK_STRING,  *)
+(* TK_PUNCT '.' (valeur manquante).                              *)
+(* Pour TK_STRING : le lexeur a deja traite les suffixes         *)
+(* 'd (date), 't (time), 'x (hex) dans LexScanString.           *)
+(* Les constantes hexadecimales 'xx'x produisent TK_INTEGER      *)
+(* via LexScanString. Les dates 'd et heures 't produisent       *)
+(* TK_INTEGER avec la valeur convertie par le lexeur.            *)
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Begin
+  ExprMakeNone(Res);  (* valeur par defaut *)
+  Case T.Kind Of
+    TK_INTEGER :
+      LitEvalInt(T, Res);
+    TK_FLOAT :
+      LitEvalFloat(T, Res);
+    TK_STRING :
+    Begin
+      Res.Kind    := EK_MEM;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_CHARACTER;
+      Res.Offset  := DataAddStr(T.Val);
+      Res.SymIdx  := -1;
+    End;
+    TK_PUNCT :
+    Begin
+      (* . (point seul) = valeur manquante numerique *)
+      If T.Val = '.' Then
+        ExprMakeMissing(Res);
+    End;
+  End;
+End;
+
+{ ============================================================
+  STUBS POUR TODO 04..25 (a implementer)
   ============================================================ }
 
 Procedure ParseExpr(Var Res : TExprVal);
@@ -1828,10 +1977,47 @@ Begin
 End;
 
 Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
 Begin
   EmitRaw('_DATA SEGMENT PUBLIC ''DATA''');
   EmitBlankLine;
-  (* TODO 08 : emettre les entrees DataTab ici *)
+  (* Constante sentinelle valeur manquante *)
+  EmitComment('Valeur manquante SAS (.)');
+  EmitRaw('_SAS_MISSING  DW  8000h');
+  EmitBlankLine;
+  (* Emettre les entrees DataTab *)
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        (* Doubler les apostrophes pour syntaxe MASM *)
+        S := '';
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          If DataTab[I].StrVal[J] = '''' Then
+            S := S + ''''''
+          Else
+            S := S + DataTab[I].StrVal[J];
+        End;
+        EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+      End;
+      DK_ARRAY_BLK :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+      DK_RECORD_BLK :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
+    End;
+  End;
   EmitBlankLine;
   EmitRaw('_DATA ENDS');
 End;
