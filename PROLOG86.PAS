@@ -81,7 +81,7 @@
             Table des predicats : liste chainee de clauses par predicat
             Foncteurs systeme : '.'/2 (cons), []/0 (nil), ','/2 (conjonction)
 
-  TODO 06 - REPRESENTATION DES TERMES (TAGS)
+  TODO 06 - REPRESENTATION DES TERMES (TAGS) [IMPLEMENTE]
             Representation WAM simplifiee sur 16 bits :
               Tag 3 bits + Valeur 13 bits dans un Word
               TAG_REF  = 0 : variable non liee (valeur = adresse)
@@ -467,6 +467,19 @@ Const
   STACK_SIZE    = 1024;
   TRAIL_SIZE    = 512;
 
+  { Tags WAM 16 bits (TODO 06) }
+  { Word = Tag (3 bits hauts) + Valeur (13 bits bas)             }
+  TAG_SHIFT = 13;            { nombre de bits pour la valeur     }
+  VAL_MASK  = $1FFF;         { masque 13 bits (8191)             }
+  TAG_MASK  = $E000;         { masque 3 bits hauts               }
+  TAG_REF   = 0;             { variable non liee (val=adresse)   }
+  TAG_ATOM  = 1;             { atome (val=index AtomTab)         }
+  TAG_INT   = 2;             { entier 13 bits signe              }
+  TAG_STR   = 3;             { structure/foncteur (val=adr heap) }
+  TAG_LIST  = 4;             { paire de liste (val=adr heap)     }
+  INT_MAX_VAL = 4095;        { valeur max entier 13 bits signe   }
+  INT_MIN_VAL = -4096;       { valeur min entier 13 bits signe   }
+
   { Prefixes de nommage ASM }
   PL_VAR_PFX  = '_PLV_';    { variable globale               }
   PL_PRED_PFX = '_PLP_';    { predicat                       }
@@ -648,6 +661,14 @@ Var
   FunctorCount : Integer;
   TotalSyms  : Integer;  { compteur cumulatif de symboles ajoutes }
 
+  { Representation des termes WAM (TODO 06) }
+  Heap       : Array[0..HEAP_SIZE - 1] Of Integer;  { tas WAM             }
+  HTop       : Integer;                              { sommet du tas       }
+  Stack      : Array[0..STACK_SIZE - 1] Of Integer;  { pile environnements }
+  STop       : Integer;                              { sommet de la pile   }
+  Trail      : Array[0..TRAIL_SIZE - 1] Of Integer;  { historique liaisons }
+  TTop       : Integer;                              { sommet du trail     }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -714,6 +735,30 @@ Function  AtomIntern(Const Name : TString) : Integer; Forward;
 Function  AtomName(Idx : Integer) : TString; Forward;
 Function  FunctorIntern(AAtomIdx, AArity : Integer) : Integer; Forward;
 Procedure SymInit; Forward;
+{ Representation des termes WAM (TODO 06) }
+Function  MakeRef(Addr : Integer) : Integer; Forward;
+Function  MakeAtom(AIdx : Integer) : Integer; Forward;
+Function  MakeInt(Val : Integer) : Integer; Forward;
+Function  MakeStr(Addr : Integer) : Integer; Forward;
+Function  MakeList(Addr : Integer) : Integer; Forward;
+Function  GetTag(Cell : Integer) : Integer; Forward;
+Function  GetVal(Cell : Integer) : Integer; Forward;
+Function  IsRef(Cell : Integer) : Boolean; Forward;
+Function  IsAtom(Cell : Integer) : Boolean; Forward;
+Function  IsInt(Cell : Integer) : Boolean; Forward;
+Function  IsStr(Cell : Integer) : Boolean; Forward;
+Function  IsList(Cell : Integer) : Boolean; Forward;
+Function  Deref(Addr : Integer) : Integer; Forward;
+Function  HeapPush(Cell : Integer) : Integer; Forward;
+Function  HeapTop : Integer; Forward;
+Procedure HeapReset; Forward;
+Function  StackPush(Cell : Integer) : Integer; Forward;
+Function  StackTop : Integer; Forward;
+Procedure StackReset; Forward;
+Procedure TrailPush(Addr : Integer); Forward;
+Function  TrailTop : Integer; Forward;
+Procedure TrailReset; Forward;
+Procedure TermInit; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -994,6 +1039,8 @@ Begin
   LabelGenSeq := 0;
   { TODO 05 }
   SymInit;
+  { TODO 06 }
+  TermInit;
 End;
 
 { ---- Statistiques ------------------------------------------ }
@@ -1007,6 +1054,9 @@ Begin
   WriteLn('Atomes internes: ', AtomCount);
   WriteLn('Foncteurs      : ', FunctorCount);
   WriteLn('Symboles       : ', SymCount, ' (total cumul: ', TotalSyms, ')');
+  WriteLn('Heap WAM       : ', HTop, '/', HEAP_SIZE, ' cellules');
+  WriteLn('Stack WAM      : ', STop, '/', STACK_SIZE, ' cellules');
+  WriteLn('Trail WAM      : ', TTop, '/', TRAIL_SIZE, ' cellules');
   WriteLn('Erreurs        : ', ErrorCount);
   WriteLn('Avertissements : ', WarnCount);
 End;
@@ -3090,7 +3140,246 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR LES TODOS RESTANTS (06..25)
+  TODO 06 - REPRESENTATION DES TERMES (TAGS) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Constructeurs de cellules taggees ----------------------- }
+{ Chaque cellule WAM est un Word 16 bits :                       }
+{   Bits 15..13 = Tag (0..7)                                     }
+{   Bits 12..0  = Valeur (0..8191 non signe, ou signe pour INT)  }
+
+{ MakeRef : creer une cellule REF (variable non liee)            }
+{ La valeur est l adresse dans le heap ou la variable pointe.    }
+{ Une variable libre pointe sur elle-meme : MakeRef(addr) a addr.}
+Function MakeRef(Addr : Integer) : Integer;
+Begin
+  MakeRef := (TAG_REF Shl TAG_SHIFT) Or (Addr And VAL_MASK);
+End;
+
+{ MakeAtom : creer une cellule ATOM                              }
+{ La valeur est l index dans la table des atomes (AtomTab).      }
+Function MakeAtom(AIdx : Integer) : Integer;
+Begin
+  MakeAtom := (TAG_ATOM Shl TAG_SHIFT) Or (AIdx And VAL_MASK);
+End;
+
+{ MakeInt : creer une cellule INT (entier 13 bits signe)         }
+{ Les entiers sont stockes en complement a deux sur 13 bits.     }
+{ Plage valide : -4096..4095.                                    }
+Function MakeInt(Val : Integer) : Integer;
+Begin
+  If Val < INT_MIN_VAL Then
+    Val := INT_MIN_VAL
+  Else If Val > INT_MAX_VAL Then
+    Val := INT_MAX_VAL;
+  MakeInt := (TAG_INT Shl TAG_SHIFT) Or (Val And VAL_MASK);
+End;
+
+{ MakeStr : creer une cellule STR (structure/foncteur)           }
+{ La valeur est l adresse dans le heap du debut de la structure. }
+{ Le premier word du heap a cette adresse contient l index du    }
+{ foncteur dans FunctorTab, suivi des arguments.                 }
+Function MakeStr(Addr : Integer) : Integer;
+Begin
+  MakeStr := (TAG_STR Shl TAG_SHIFT) Or (Addr And VAL_MASK);
+End;
+
+{ MakeList : creer une cellule LIST (paire de liste)             }
+{ La valeur est l adresse dans le heap de la paire [Head|Tail].  }
+{ head = Heap[addr], tail = Heap[addr+1].                        }
+Function MakeList(Addr : Integer) : Integer;
+Begin
+  MakeList := (TAG_LIST Shl TAG_SHIFT) Or (Addr And VAL_MASK);
+End;
+
+{ ---- Extraction du tag et de la valeur ----------------------- }
+
+{ GetTag : extraire le tag (3 bits hauts) d une cellule          }
+Function GetTag(Cell : Integer) : Integer;
+Begin
+  GetTag := (Cell Shr TAG_SHIFT) And 7;
+End;
+
+{ GetVal : extraire la valeur (13 bits bas) d une cellule        }
+{ Pour TAG_INT, la valeur est signee (extension de signe).       }
+{ Pour les autres tags, la valeur est non signee.                }
+Function GetVal(Cell : Integer) : Integer;
+Var
+  V : Integer;
+Begin
+  V := Cell And VAL_MASK;
+  If (GetTag(Cell) = TAG_INT) And ((V And $1000) <> 0) Then
+    { Extension de signe : bit 12 est le signe, propager aux bits 13..15 }
+    V := V Or (Not VAL_MASK);
+  { Sinon V reste non signe (deja masque par VAL_MASK) }
+  GetVal := V;
+End;
+
+{ ---- Predicats de type sur les cellules ---------------------- }
+
+Function IsRef(Cell : Integer) : Boolean;
+Begin
+  IsRef := (GetTag(Cell) = TAG_REF);
+End;
+
+Function IsAtom(Cell : Integer) : Boolean;
+Begin
+  IsAtom := (GetTag(Cell) = TAG_ATOM);
+End;
+
+Function IsInt(Cell : Integer) : Boolean;
+Begin
+  IsInt := (GetTag(Cell) = TAG_INT);
+End;
+
+Function IsStr(Cell : Integer) : Boolean;
+Begin
+  IsStr := (GetTag(Cell) = TAG_STR);
+End;
+
+Function IsList(Cell : Integer) : Boolean;
+Begin
+  IsList := (GetTag(Cell) = TAG_LIST);
+End;
+
+{ ---- Dereferencement ----------------------------------------- }
+{ Deref suit les chaines de references REF jusqu au terme final. }
+{ Si une variable REF pointe sur elle-meme, elle est non liee.   }
+{ Sinon, on suit recursivement la chaine de liaisons.            }
+{ Retourne l adresse de la cellule finale dans le heap.          }
+
+Function Deref(Addr : Integer) : Integer;
+Var
+  Cell : Integer;
+  V    : Integer;
+Begin
+  While True Do
+  Begin
+    If (Addr < 0) Or (Addr >= HTop) Then
+    Begin
+      Deref := Addr;
+      Exit;
+    End;
+    Cell := Heap[Addr];
+    If GetTag(Cell) <> TAG_REF Then
+    Begin
+      { Pas une reference, c est le terme final }
+      Deref := Addr;
+      Exit;
+    End;
+    V := GetVal(Cell);
+    If V = Addr Then
+    Begin
+      { Variable libre : pointe sur elle-meme }
+      Deref := Addr;
+      Exit;
+    End;
+    { Suivre la chaine }
+    Addr := V;
+  End;
+End;
+
+{ ---- Gestion du Heap (tas WAM) ------------------------------- }
+{ Le heap contient les termes construits : atomes, entiers,      }
+{ structures, listes, et les variables.                          }
+
+{ HeapPush : empiler une cellule sur le heap, retourne l adresse }
+Function HeapPush(Cell : Integer) : Integer;
+Begin
+  If HTop >= HEAP_SIZE Then
+  Begin
+    CompileError('heap WAM plein (max=' + IntToStr(HEAP_SIZE) + ')');
+    HeapPush := -1;
+    Exit;
+  End;
+  Heap[HTop] := Cell;
+  HeapPush := HTop;
+  Inc(HTop);
+End;
+
+{ HeapTop : retourner le sommet courant du heap (prochain libre) }
+Function HeapTop : Integer;
+Begin
+  HeapTop := HTop;
+End;
+
+{ HeapReset : reinitialiser le heap (vider toutes les cellules)  }
+Procedure HeapReset;
+Begin
+  HTop := 0;
+End;
+
+{ ---- Gestion de la pile d environnements (Stack) ------------- }
+{ La pile contient les frames d appel : variables locales,       }
+{ pointeurs de continuation, choix, etc.                         }
+
+{ StackPush : empiler une cellule sur la pile, retourne l adresse}
+Function StackPush(Cell : Integer) : Integer;
+Begin
+  If STop >= STACK_SIZE Then
+  Begin
+    CompileError('pile WAM pleine (max=' + IntToStr(STACK_SIZE) + ')');
+    StackPush := -1;
+    Exit;
+  End;
+  Stack[STop] := Cell;
+  StackPush := STop;
+  Inc(STop);
+End;
+
+{ StackTop : retourner le sommet courant de la pile              }
+Function StackTop : Integer;
+Begin
+  StackTop := STop;
+End;
+
+{ StackReset : reinitialiser la pile                             }
+Procedure StackReset;
+Begin
+  STop := 0;
+End;
+
+{ ---- Gestion du Trail (historique des liaisons) --------------- }
+{ Le trail enregistre les adresses des variables liees pour      }
+{ pouvoir defaire les liaisons lors du backtracking.             }
+
+{ TrailPush : enregistrer une adresse dans le trail              }
+Procedure TrailPush(Addr : Integer);
+Begin
+  If TTop >= TRAIL_SIZE Then
+  Begin
+    CompileError('trail WAM plein (max=' + IntToStr(TRAIL_SIZE) + ')');
+    Exit;
+  End;
+  Trail[TTop] := Addr;
+  Inc(TTop);
+End;
+
+{ TrailTop : retourner le sommet courant du trail                }
+Function TrailTop : Integer;
+Begin
+  TrailTop := TTop;
+End;
+
+{ TrailReset : reinitialiser le trail                            }
+Procedure TrailReset;
+Begin
+  TTop := 0;
+End;
+
+{ ---- Initialisation des structures WAM ----------------------- }
+Procedure TermInit;
+Begin
+  HTop := 0;
+  STop := 0;
+  TTop := 0;
+  FillChar(Heap,  SizeOf(Heap),  0);
+  FillChar(Stack, SizeOf(Stack), 0);
+  FillChar(Trail, SizeOf(Trail), 0);
+End;
+
+{ ============================================================
+  STUBS POUR LES TODOS RESTANTS (07..25)
   ============================================================ }
 
 Procedure Run;
