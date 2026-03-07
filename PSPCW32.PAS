@@ -262,7 +262,7 @@
               Imbrication max : MAX_WITH niveaux
             Passage de records en parametre : par adresse (pointeur)
 
-  TODO 17 - ENUMERATIONS ET SOUS-INTERVALLES
+  TODO 17 - ENUMERATIONS ET SOUS-INTERVALLES [IMPLEMENTE]
             TYPE TEnum = (Val1, Val2, Val3, ...);
               Valeurs ordinales automatiques 0, 1, 2, ...
               Chaque valeur ajoutee a la table des symboles (SC_ENUM_VAL)
@@ -7013,6 +7013,10 @@ Var
   BaseTIdx : Integer;
   BaseStr  : TString;
   Idx      : Integer;
+  OrdVal   : LongInt;
+  EnName   : TString;
+  LoVal    : LongInt;
+  Ev       : TExprVal;
 Begin
   While (CurToken.Kind <> TK_EOF) And
         (CurToken.Kind = TK_IDENT) Do
@@ -7115,18 +7119,180 @@ Begin
                 ' fields=', TypeTab[NewTIdx].FieldCount);
     End
     Else
+    { --- Enumeration : (val1, val2, ...) --- }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
-      { Alias de type : TYPE T2 = T1 }
+      TplNextToken;
+      If TypeCount >= MAX_TYPE Then
+      Begin
+        WarnMsg('nombre maximal de types atteint');
+        Break;
+      End;
+      NewTIdx := TypeCount;
+      Inc(TypeCount);
+      TypeTab[NewTIdx].Kind        := TKP_ENUM;
+      TypeTab[NewTIdx].Size        := 4;
+      TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_INTEGER;
+      TypeTab[NewTIdx].Lo          := 0;
+      TypeTab[NewTIdx].Hi          := 0;
+      TypeTab[NewTIdx].FieldCount  := 0;
+      TypeTab[NewTIdx].EnumCount   := 0;
+
+      Idx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Idx >= 0 Then
+        SymTab[Idx].MangledName := PSP_ENUM_PFX + StrUpperCase(TName);
+
+      OrdVal := 0;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      Begin
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          EnName := CurToken.Val;
+          TplNextToken;
+
+          Idx := SymAdd(EnName, SC_ENUM_VAL, NewTIdx);
+          If Idx >= 0 Then
+          Begin
+            SymTab[Idx].ImmVal      := OrdVal;
+            SymTab[Idx].MangledName := PSP_ENUM_PFX +
+                                         StrUpperCase(EnName);
+          End;
+
+          If TypeTab[NewTIdx].EnumCount < MAX_ENUM Then
+          Begin
+            TypeTab[NewTIdx].Enums[
+              TypeTab[NewTIdx].EnumCount].Name := EnName;
+            TypeTab[NewTIdx].Enums[
+              TypeTab[NewTIdx].EnumCount].Value := OrdVal;
+            Inc(TypeTab[NewTIdx].EnumCount);
+          End;
+
+          If Opts.DebugMode Then
+            WriteLn('  ENUM: ', TName, '.', EnName, ' = ', OrdVal);
+
+          Inc(OrdVal);
+        End
+        Else
+        Begin
+          WarnMsg('identificateur attendu dans enumeration');
+          TplNextToken;
+        End;
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          TplNextToken;
+      End;
+
+      If OrdVal > 0 Then
+        TypeTab[NewTIdx].Hi := OrdVal - 1;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        TplNextToken;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        TplNextToken;
+
+      Continue;
+    End
+    Else
+    { --- Sous-plage avec litteral entier : lo..hi --- }
+    If (CurToken.Kind = TK_INTEGER) Then
+    Begin
+      LoVal := CurToken.IntVal;
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+      Begin
+        TplNextToken;
+        ParseExpr(Ev);
+        If TypeCount >= MAX_TYPE Then
+        Begin
+          WarnMsg('nombre maximal de types atteint');
+          Break;
+        End;
+        NewTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewTIdx].Kind        := TKP_SUBRANGE;
+        TypeTab[NewTIdx].Size        := 4;
+        TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_INTEGER;
+        TypeTab[NewTIdx].Lo          := LoVal;
+        TypeTab[NewTIdx].Hi          := Ev.ImmVal;
+        TypeTab[NewTIdx].FieldCount  := 0;
+        TypeTab[NewTIdx].EnumCount   := 0;
+
+        Idx := SymAdd(TName, SC_TYPE, NewTIdx);
+        If Idx >= 0 Then
+          SymTab[Idx].MangledName := StrUpperCase(TName);
+
+        If Opts.DebugMode Then
+          WriteLn('  TYPE_SUBRANGE: ', TName, ' = ',
+                  LoVal, '..', Ev.ImmVal);
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+
+        Continue;
+      End
+      Else
+      Begin
+        WarnMsg('declaration de type inattendue pour ' + TName);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          TplNextToken;
+        Continue;
+      End;
+    End
+    Else
+    Begin
+      { Alias de type ou sous-plage avec ident }
       If (CurToken.Kind = TK_KEYWORD) Or
          (CurToken.Kind = TK_IDENT) Then
       Begin
-        BaseTIdx := TypeResolve(CurToken.Val);
+        BaseStr := CurToken.Val;
+        BaseTIdx := TypeResolve(BaseStr);
         If BaseTIdx = TY_UNKNOWN Then
-        Begin
-          WarnMsg('type inconnu: ' + CurToken.Val);
           BaseTIdx := TY_IDX_INTEGER;
-        End;
         TplNextToken;
+
+        { Verifier si c est un sous-intervalle ident..hi }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+        Begin
+          Idx := SymFind(BaseStr);
+          If (Idx >= 0) And
+             (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            LoVal := SymTab[Idx].ImmVal
+          Else
+            LoVal := 0;
+          TplNextToken;
+          ParseExpr(Ev);
+          If TypeCount >= MAX_TYPE Then
+          Begin
+            WarnMsg('nombre maximal de types atteint');
+            Break;
+          End;
+          NewTIdx := TypeCount;
+          Inc(TypeCount);
+          TypeTab[NewTIdx].Kind        := TKP_SUBRANGE;
+          TypeTab[NewTIdx].Size        := 4;
+          TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_INTEGER;
+          TypeTab[NewTIdx].Lo          := LoVal;
+          TypeTab[NewTIdx].Hi          := Ev.ImmVal;
+          TypeTab[NewTIdx].FieldCount  := 0;
+          TypeTab[NewTIdx].EnumCount   := 0;
+
+          Idx := SymAdd(TName, SC_TYPE, NewTIdx);
+          If Idx >= 0 Then
+            SymTab[Idx].MangledName := StrUpperCase(TName);
+
+          If Opts.DebugMode Then
+            WriteLn('  TYPE_SUBRANGE: ', TName, ' = ',
+                    LoVal, '..', Ev.ImmVal);
+
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            TplNextToken;
+
+          Continue;
+        End;
+
+        { Alias de type simple : TYPE T2 = T1 }
         Idx := SymAdd(TName, SC_TYPE, BaseTIdx);
         If Idx >= 0 Then
           SymTab[Idx].MangledName := StrUpperCase(TName);
@@ -7143,6 +7309,22 @@ Begin
   End;
 End;
 Procedure ParseIncDecStmt(IsInc : Boolean); Begin End;
+
+{ ============================================================
+  TODO 17 - ENUMERATIONS ET SOUS-INTERVALLES [IMPLEMENTE]
+  ============================================================ }
+{ Le parsing des enumerations TYPE T = (Val1, Val2, ...) et
+  des sous-intervalles TYPE T = lo..hi est integre dans
+  ParseTypeDecl ci-dessus.
+  - Enumeration : detecte '(' apres '=', cree type TKP_ENUM,
+    ajoute chaque valeur comme SC_ENUM_VAL avec ordinal auto.
+  - Sous-intervalle entier : detecte TK_INTEGER suivi de '..',
+    cree type TKP_SUBRANGE avec Lo/Hi.
+  - Sous-intervalle ident : detecte ident suivi de '..',
+    resout constante/enum_val pour Lo.
+  Les builtins Succ, Pred, Low, High sont deja dans ParsePrimary.
+  Les valeurs d enumeration sont resolues dans ParsePrimary
+  via SC_ENUM_VAL -> EK_IMM.                                    }
 
 { ============================================================
   TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
