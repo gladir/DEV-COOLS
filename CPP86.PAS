@@ -83,17 +83,32 @@
             Virgule        : expr1, expr2 (evaluee gauche a droite)
             Precedence C++ standard (15 niveaux du plus fort au plus faible)
 
-  TODO 06 - TABLE DES SYMBOLES
+  TODO 06 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymKind : SK_VAR, SK_CONST, SK_TYPE, SK_FUNC, SK_PARAM,
               SK_FIELD, SK_CLASS, SK_ENUM, SK_NAMESPACE
             TSymRec : Name, MangledName, Kind, TypeIdx, Offset,
               Scope, IsStatic, AccessLevel (public/private/protected)
-            SymAdd, SymFind, SymFindInScope, SymMangle
-            CurScope : compteur de portee imbriquee (max MAX_SCOPE)
-            SymEnterScope / SymLeaveScope : gestion des portees
-            Name mangling : _Z prefixe pour fonctions (Itanium ABI simplifie)
-            Resolution de surcharge : recherche par nom + signature
-            Acces qualifie : Namespace::Classe::Membre
+            SymNameClean : remplacer les caracteres non-MASM par _
+            SymMangle : C++ name mangling simplifie (Itanium-like)
+              SK_VAR/CONST/PARAM/FIELD -> _CC_V_ + nom
+              SK_FUNC                  -> _CC_F_ + nom
+              SK_CLASS/TYPE            -> _CC_C_ + nom
+              SK_ENUM                  -> _CC_V_ + nom
+              SK_NAMESPACE             -> _CC_NS_ + nom
+            SymFind : recherche MRU (plus recent d abord)
+            SymFindInScope : recherche dans une portee specifique
+            SymAdd : ajout avec debug trace -d, detection overflow
+            SymEnterScope / SymLeaveScope : pile de portees
+            SymNextOffset : allocation de frame locale [BP-n]
+            SymInit : nettoie la table + predeclare ~40 symboles C++ stdlib
+              I/O : cout, cin, cerr, endl, printf, scanf, puts, gets,
+                putchar, getchar, sprintf, fprintf, sscanf, fopen, fclose,
+                fread, fwrite, fgets, fputs
+              Memory : malloc, calloc, realloc, free, memcpy, memset, memmove
+              String : strlen, strcpy, strcat, strcmp, strncpy, strncmp,
+                strchr, strrchr, strstr, strtok, atoi, atol, atof, itoa
+              Math : abs, sqrt, pow, sin, cos, tan, log, exp, rand, srand
+              Utility : exit, abort, system, sizeof (keyword)
 
   TODO 07 - SYSTEME DE TYPES
             TTypeKind : TYK_VOID, TYK_BOOL, TYK_CHAR, TYK_SHORT,
@@ -3349,61 +3364,179 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 06..25
-  (a implementer dans les prochaines etapes)
+  TODO 06 - TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ *)
 
+(* ---- SymNameClean : remplacer caracteres non-MASM par _ ---- *)
+(* Garde les lettres, chiffres et _ ; le reste est remplace     *)
+(* par _ . Si le resultat est vide, retourne '_anon'.           *)
+
 Function SymNameClean(Const Name : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  Ch : Char;
 Begin
-  SymNameClean := Name; (* stub *)
+  R := '';
+  For I := 1 To Length(Name) Do
+  Begin
+    Ch := Name[I];
+    If ((Ch >= 'A') And (Ch <= 'Z')) Or
+       ((Ch >= 'a') And (Ch <= 'z')) Or
+       ((Ch >= '0') And (Ch <= '9')) Or
+       (Ch = '_') Then
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + Ch;
+    End
+    Else
+    Begin
+      If Length(R) < MAX_STR Then
+        R := R + '_';
+    End;
+  End;
+  If R = '' Then R := '_anon';
+  SymNameClean := R;
 End;
 
+(* ---- SymMangle : generateur de noms ASM C++ simplifie ------ *)
+(* Prefixes selon la categorie :                                 *)
+(*   SK_VAR / SK_CONST / SK_PARAM / SK_FIELD / SK_ENUM          *)
+(*     -> _CC_V_ + SymNameClean(nom)                             *)
+(*   SK_FUNC -> _CC_F_ + SymNameClean(nom)                      *)
+(*   SK_CLASS / SK_TYPE -> _CC_C_ + SymNameClean(nom)            *)
+(*   SK_NAMESPACE -> _CC_NS_ + SymNameClean(nom)                 *)
+
 Function SymMangle(Const Name : TString; Kind : TSymKind) : TString;
+Var
+  Clean : TString;
 Begin
+  Clean := SymNameClean(Name);
   Case Kind Of
-    SK_VAR, SK_CONST, SK_PARAM, SK_FIELD:
-      SymMangle := CC_VAR_PFX + Name;
+    SK_VAR, SK_CONST, SK_PARAM, SK_FIELD, SK_ENUM:
+      SymMangle := CC_VAR_PFX + Clean;
     SK_FUNC:
-      SymMangle := CC_FN_PFX + Name;
+      SymMangle := CC_FN_PFX + Clean;
     SK_CLASS, SK_TYPE:
-      SymMangle := CC_CLS_PFX + Name;
+      SymMangle := CC_CLS_PFX + Clean;
     SK_NAMESPACE:
-      SymMangle := CC_NS_PFX + Name;
+      SymMangle := CC_NS_PFX + Clean;
   Else
-    SymMangle := CC_VAR_PFX + Name;
+    SymMangle := CC_VAR_PFX + Clean;
   End;
 End;
 
+(* ---- SymFind : recherche MRU (Most Recently Used) ---------- *)
+(* Cherche du plus recent au plus ancien pour respecter le       *)
+(* masquage de variables (shadowing) dans les portees internes.  *)
+
 Function SymFind(Const Name : TString) : Integer;
+Var
+  I : Integer;
 Begin
-  SymFind := -1; (* stub *)
+  For I := SymCount - 1 DownTo 0 Do
+    If SymTab[I].Name = Name Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  SymFind := -1;
 End;
 
+(* ---- SymFindInScope : recherche dans une portee specifique -- *)
+(* Cherche un symbole dans le scope donne uniquement.            *)
+
 Function SymFindInScope(Const Name : TString; Scope : Integer) : Integer;
+Var
+  I : Integer;
 Begin
-  SymFindInScope := -1; (* stub *)
+  For I := SymCount - 1 DownTo 0 Do
+    If (SymTab[I].Name = Name) And
+       (SymTab[I].ScopeLevel = Scope) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  SymFindInScope := -1;
 End;
+
+(* ---- SymAdd : ajout d un symbole dans la table -------------- *)
+(* Retourne l indice du nouveau symbole, ou -1 si overflow.      *)
+(* Avec trace de debug si -d est actif.                          *)
 
 Function SymAdd(Const Name : TString; Kind : TSymKind;
                 TypeIdx, Offset : Integer) : Integer;
 Begin
-  SymAdd := -1; (* stub *)
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles pleine (max=' +
+                 IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name        := Name;
+  SymTab[SymCount].MangledName := SymMangle(Name, Kind);
+  SymTab[SymCount].Kind        := Kind;
+  SymTab[SymCount].TypeIdx     := TypeIdx;
+  SymTab[SymCount].ScopeLevel  := CurScope;
+  SymTab[SymCount].Offset      := Offset;
+  SymTab[SymCount].IsStatic    := False;
+  SymTab[SymCount].IsConst     := (Kind = SK_CONST);
+  SymTab[SymCount].Access      := AL_PUBLIC;
+  SymTab[SymCount].DeclLine    := CurToken.Line;
+  If Opts.DebugMode Then
+    WriteLn('[sym] +', SymCount, ' "', Name, '" -> ',
+            SymTab[SymCount].MangledName, ' scope=', CurScope);
+  SymAdd := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
 End;
+
+(* ---- SymEnterScope : entrer dans une nouvelle portee -------- *)
+(* Sauvegarde le nombre de symboles actuel pour SymLeaveScope.   *)
 
 Procedure SymEnterScope;
 Begin
-  (* stub *)
+  If ScopeTop >= MAX_SCOPE Then
+  Begin
+    CompileError('portees trop imbriquees (max=' +
+                 IntToStr(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  ScopeStack[ScopeTop] := SymCount;
+  Inc(ScopeTop);
+  Inc(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('[scope] enter -> level=', CurScope);
 End;
+
+(* ---- SymLeaveScope : quitter la portee courante ------------- *)
+(* Restaure le nombre de symboles et decremente la portee.       *)
 
 Procedure SymLeaveScope;
 Begin
-  (* stub *)
+  If ScopeTop <= 0 Then Exit;
+  Dec(ScopeTop);
+  SymCount := ScopeStack[ScopeTop];
+  Dec(CurScope);
+  If Opts.DebugMode Then
+    WriteLn('[scope] leave -> level=', CurScope);
 End;
+
+(* ---- SymNextOffset : allouer un slot [BP-n] sur la pile ----- *)
+(* Incremente CurFrameSize de 2 octets (une valeur 16 bits)     *)
+(* et retourne la nouvelle position negative par rapport a BP.   *)
 
 Function SymNextOffset : Integer;
 Begin
-  SymNextOffset := 0; (* stub *)
+  Inc(CurFrameSize, 2);
+  SymNextOffset := CurFrameSize;
 End;
+
+(* ============================================================
+  STUBS POUR TODO 07..25
+  (a implementer dans les prochaines etapes)
+  ============================================================ *)
 
 Function TypeSizeof(TypeIdx : Integer) : Integer;
 Begin
@@ -3652,11 +3785,99 @@ Begin
   TypeCount := 0; (* stub *)
 End;
 
+(* ---- SymInit : initialiser la table et predeclarer stdlib ---- *)
+
 Procedure SymInit;
+Var
+  I : Integer;
 Begin
-  SymCount := 0;
-  ScopeTop := 0;
-  CurScope := 0; (* stub *)
+  SymCount     := 0;
+  ScopeTop     := 0;
+  CurScope     := 0;
+  LabelSeq     := 0;
+  CurFrameSize := 0;
+  CurFnDepth   := 0;
+
+  (* Nettoyer la table complete *)
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Kind        := SK_VAR;
+    SymTab[I].TypeIdx     := TY_UNKNOWN;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].Offset      := 0;
+    SymTab[I].IsStatic    := False;
+    SymTab[I].IsConst     := False;
+    SymTab[I].Access      := AL_PUBLIC;
+    SymTab[I].DeclLine    := 0;
+  End;
+
+  (* Predeclarer les fonctions de la bibliotheque standard C/C++ *)
+  (* ---- I/O C stdio.h ---- *)
+  SymAdd('printf',   SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('scanf',    SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('puts',     SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('gets',     SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('putchar',  SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('getchar',  SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('sprintf',  SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('fprintf',  SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('sscanf',   SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('fopen',    SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('fclose',   SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('fread',    SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('fwrite',   SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('fgets',    SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('fputs',    SK_FUNC, TY_IDX_INT, 0);
+
+  (* ---- Memory C stdlib.h ---- *)
+  SymAdd('malloc',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('calloc',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('realloc',  SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('free',     SK_FUNC, TY_IDX_VOID, 0);
+  SymAdd('memcpy',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('memset',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('memmove',  SK_FUNC, TY_IDX_PTR, 0);
+
+  (* ---- String C string.h ---- *)
+  SymAdd('strlen',   SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('strcpy',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('strcat',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('strcmp',    SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('strncpy',  SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('strncmp',  SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('strchr',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('strrchr',  SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('strstr',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('strtok',   SK_FUNC, TY_IDX_PTR, 0);
+  SymAdd('atoi',     SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('atol',     SK_FUNC, TY_IDX_LONG, 0);
+  SymAdd('atof',     SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('itoa',     SK_FUNC, TY_IDX_PTR, 0);
+
+  (* ---- Math C math.h ---- *)
+  SymAdd('abs',      SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('sqrt',     SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('pow',      SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('sin',      SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('cos',      SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('tan',      SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('log',      SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('exp',      SK_FUNC, TY_IDX_DOUBLE, 0);
+  SymAdd('rand',     SK_FUNC, TY_IDX_INT, 0);
+  SymAdd('srand',    SK_FUNC, TY_IDX_VOID, 0);
+
+  (* ---- Utility C stdlib.h ---- *)
+  SymAdd('exit',     SK_FUNC, TY_IDX_VOID, 0);
+  SymAdd('abort',    SK_FUNC, TY_IDX_VOID, 0);
+  SymAdd('system',   SK_FUNC, TY_IDX_INT, 0);
+
+  (* ---- C++ I/O objets (iostream) ---- *)
+  SymAdd('cout',     SK_VAR,  TY_IDX_INT, 0);
+  SymAdd('cin',      SK_VAR,  TY_IDX_INT, 0);
+  SymAdd('cerr',     SK_VAR,  TY_IDX_INT, 0);
+  SymAdd('endl',     SK_CONST, TY_IDX_INT, 0);
 End;
 
 (* ---- Pipeline de compilation -------------------------------- *)
