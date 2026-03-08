@@ -8975,16 +8975,17 @@ Begin
   If Pos('OPTION', StrUpperCase(S)) > 0 Then Exit;
   If Pos('END ', StrUpperCase(S)) = 1 Then Exit;
 
-  { PROC / ENDP : label de procedure/fonction }
+  { PROC / ENDP : label de procedure/fonction (PROC/ENDP en fin de ligne) }
   P := Pos(' PROC', StrUpperCase(S));
-  If P > 0 Then
+  If (P > 0) And (P + 4 = Length(S)) Then
   Begin
     Tmp := Copy(S, 1, P - 1);
     While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
     BinAddLabel(Tmp, True, BinCodeLen);
     Exit;
   End;
-  If Pos(' ENDP', StrUpperCase(S)) > 0 Then Exit;
+  P := Pos(' ENDP', StrUpperCase(S));
+  If (P > 0) And (P + 4 = Length(S)) Then Exit;
 
   { Data segment }
   If Not BinInCode Then
