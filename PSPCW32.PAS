@@ -334,7 +334,7 @@
             Commentaires avec directives : accolades peuvent contenir $directives
             Imbrication conditionnelle supportee
 
-  TODO 21 - EXCEPTIONS (TRY / EXCEPT / FINALLY / RAISE)
+  TODO 21 - EXCEPTIONS (TRY / EXCEPT / FINALLY / RAISE) [IMPLEMENTE]
             ParseTryStmt : TRY stmts EXCEPT [handler] [FINALLY stmts] END
               TRY : sauvegarder ancien handler, installer nouveau
                 MOV [_PSPX_HANDLER], OFFSET _PSPL_EXCEPT_N
@@ -3561,6 +3561,27 @@ Begin
     EmitLabel(PSP_RT_PFX + 'UPC_DN');
     EmitInstr('RET');
     EmitBlankLine;
+
+    { _PSPRT_PANIC : ESI = msg ASCIIZ -> afficher + ExitProcess(1) }
+    EmitLabel(PSP_RT_PFX + 'PANIC');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'CRLF');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PRINTSTR');
+    EmitInstrA('PUSH', '1');
+    EmitInstrA('CALL', '_ExitProcess@4');
+    EmitBlankLine;
+
+    { _PSPRT_PANIC_DIV0 : division par zero -> handler ou fatal }
+    EmitLabel(PSP_RT_PFX + 'PANIC_DIV0');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'DIV0MSG');
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'PANIC_DIV0_FATAL');
+    EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]');
+    EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]');
+    EmitInstrA('JMP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
+    EmitLabel(PSP_RT_PFX + 'PANIC_DIV0_FATAL');
+    EmitInstrA('CALL', PSP_RT_PFX + 'PANIC');
+    EmitBlankLine;
   End;
 
   EmitComment('--- Fin du segment de code ---');
@@ -6209,6 +6230,7 @@ Var
   SavedName : TString;
   SIdx      : Integer;
   HaltEv    : TExprVal;
+  RaiseEv   : TExprVal;
   ArrTIdx   : Integer;
   ArrLo     : LongInt;
   ElemSz    : Integer;
@@ -6443,6 +6465,30 @@ Begin
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'try') Then
   Begin
     ParseTryExcept;
+    Exit;
+  End;
+
+  { raise [expr] }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'raise') Then
+  Begin
+    EmitComment('raise');
+    TplNextToken;
+    { Optionnel : expression pour le code exception }
+    If (CurToken.Kind <> TK_PUNCT) Or (CurToken.Val <> ';') Then
+    Begin
+      ParseExpr(RaiseEv);
+      ExprFlushToEAX(RaiseEv);
+    End
+    Else
+      EmitInstrAB('MOV', 'EAX', '1');  { code par defaut }
+    { Si un handler est installe, sauter vers lui }
+    EmitInstrAB('CMP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'PANIC');
+    EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]');
+    EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]');
+    EmitInstrA('JMP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
     Exit;
   End;
 
@@ -7805,8 +7851,106 @@ Begin
     WarnMsg('identificateur attendu apres with');
 End;
 
-{ --- Stubs Exceptions (TODO 21) --- }
-Procedure ParseTryExcept; Begin End;
+{ ============================================================
+  TODO 21 - EXCEPTIONS (TRY / EXCEPT / FINALLY / RAISE)
+  ============================================================ }
+
+{ ---- ParseTryExcept : TRY stmts EXCEPT [stmts] [FINALLY stmts] END }
+Procedure ParseTryExcept;
+Var
+  LblExcept  : TString;
+  LblEnd     : TString;
+  LblFinally : TString;
+Begin
+  EmitComment('try');
+
+  { Consommer try }
+  TplNextToken;
+
+  { Generer les labels }
+  LblExcept := LabelGen;
+  LblEnd    := LabelGen;
+  LblFinally := LabelGen;
+
+  { Sauvegarder ancien handler sur la pile }
+  EmitInstrA('PUSH', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
+  EmitInstrA('PUSH', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]');
+  EmitInstrA('PUSH', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]');
+
+  { Installer nouveau handler }
+  EmitInstrAB('MOV', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]',
+              'OFFSET ' + LblExcept);
+  EmitInstrAB('MOV', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]', 'ESP');
+  EmitInstrAB('MOV', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]', 'EBP');
+
+  { Corps du try : instructions jusquа except ou finally }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             ((CurToken.Val = 'except') Or (CurToken.Val = 'finally'))) Do
+  Begin
+    ParseStatement;
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+      TplNextToken;
+  End;
+
+  { Succes : sauter le handler except }
+  EmitInstrA('JMP', LblEnd);
+
+  { Label except }
+  EmitLabel(LblExcept);
+  EmitComment('except handler');
+
+  { Restaurer ESP et EBP depuis sauvegardes }
+  EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]');
+  EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]');
+
+  { Si on a except }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'except') Then
+  Begin
+    TplNextToken;
+    { Corps du except : instructions jusquа finally ou end }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               ((CurToken.Val = 'finally') Or (CurToken.Val = 'end'))) Do
+    Begin
+      ParseStatement;
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+        TplNextToken;
+    End;
+  End;
+
+  { Label fin except / debut finally }
+  EmitLabel(LblEnd);
+
+  { Si on a finally }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'finally') Then
+  Begin
+    EmitComment('finally');
+    TplNextToken;
+    { Corps du finally : instructions jusquа end }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               (CurToken.Val = 'end')) Do
+    Begin
+      ParseStatement;
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+        TplNextToken;
+    End;
+  End;
+
+  { Restaurer ancien handler depuis la pile }
+  EmitInstrA('POP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]');
+  EmitInstrA('POP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]');
+  EmitInstrA('POP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
+
+  EmitLabel(LblFinally);
+
+  { Consommer end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
+    TplNextToken
+  Else
+    WarnMsg('''end'' attendu pour fermer try/except');
+End;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
