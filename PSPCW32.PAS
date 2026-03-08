@@ -1062,7 +1062,7 @@ Begin
     (L = 'writeln')    Or (L = 'read')      Or (L = 'readln')    Or
     (L = 'break')      Or (L = 'continue')  Or (L = 'exit')      Or
     (L = 'halt')       Or (L = 'try')       Or (L = 'except')    Or
-    (L = 'finally')    Or (L = 'raise')     Or (L = 'result');
+    (L = 'finally')    Or (L = 'raise');
 End;
 
 { ---- PrintToken : affichage debug d un token --------------- }
@@ -7179,9 +7179,7 @@ Begin
   End;
 
   { Identificateur : affectation ou appel de procedure }
-  If (CurToken.Kind = TK_IDENT) Or
-     ((CurToken.Kind = TK_KEYWORD) And
-      (CurToken.Val = 'result')) Then
+  If (CurToken.Kind = TK_IDENT) Then
   Begin
     SavedName := CurToken.Val;
     TplNextToken;
@@ -8102,6 +8100,11 @@ Begin
   { Emettre le code de la procedure }
   EmitBlankLine;
   EmitComment('--- ' + FuncName + ' ---');
+  { Sauter par-dessus le corps de la fonction (eviter le fall-through) }
+  VarMask := LabelGenSeq;
+  RetVarIdx := 0; { reutiliser temporairement }
+  EmitInstrA('JMP', '_PSPL_SKIP_' + IntToStr(LabelGenSeq));
+  Inc(LabelGenSeq);
   If FIdx >= 0 Then
     EmitRaw(SymTab[FIdx].MangledName + '   PROC')
   Else
@@ -8135,6 +8138,8 @@ Begin
     EmitRaw(SymTab[FIdx].MangledName + '   ENDP')
   Else
     EmitRaw(PSP_FN_PFX + StrUpperCase(FuncName) + '   ENDP');
+  { Label de destination du JMP qui saute par-dessus la fonction }
+  EmitLabel('_PSPL_SKIP_' + IntToStr(VarMask));
   EmitBlankLine;
 
   { Consommer le ; final apres end }
@@ -8847,10 +8852,40 @@ Function BinModRM(Mo, Reg, RM : Integer) : Byte;
 Begin BinModRM := Byte((Mo Shl 6) Or ((Reg And 7) Shl 3) Or (RM And 7)); End;
 
 Procedure BinEmitMemRef(RegField : Integer; Const LabelName : TString);
+Var PP : Integer; Lbl, OStr : TString; Ofs : LongInt;
 Begin
   BinCodeByte(BinModRM(0, RegField, 5));
-  BinAddFixup(BinCodeLen, BFK_ABS32, LabelName, True);
-  BinCodeDWord(0);
+  { Gerer label+offset et label-offset }
+  PP := Pos('+', LabelName);
+  If PP > 0 Then
+  Begin
+    Lbl := Copy(LabelName, 1, PP - 1);
+    While (Length(Lbl) > 0) And (Lbl[Length(Lbl)] = ' ') Do Delete(Lbl, Length(Lbl), 1);
+    OStr := Copy(LabelName, PP + 1, Length(LabelName) - PP);
+    While (Length(OStr) > 0) And (OStr[1] = ' ') Do Delete(OStr, 1, 1);
+    Ofs := BinParseImm(OStr);
+    BinAddFixup(BinCodeLen, BFK_ABS32, Lbl, True);
+    BinCodeDWord(Ofs);
+  End
+  Else
+  Begin
+    PP := Pos('-', LabelName);
+    If (PP > 1) Then
+    Begin
+      Lbl := Copy(LabelName, 1, PP - 1);
+      While (Length(Lbl) > 0) And (Lbl[Length(Lbl)] = ' ') Do Delete(Lbl, Length(Lbl), 1);
+      OStr := Copy(LabelName, PP + 1, Length(LabelName) - PP);
+      While (Length(OStr) > 0) And (OStr[1] = ' ') Do Delete(OStr, 1, 1);
+      Ofs := -BinParseImm(OStr);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Lbl, True);
+      BinCodeDWord(Ofs);
+    End
+    Else
+    Begin
+      BinAddFixup(BinCodeLen, BFK_ABS32, LabelName, True);
+      BinCodeDWord(0);
+    End;
+  End;
 End;
 
 Procedure BinEmitEBPRef(RegField : Integer; Ofs : LongInt);
@@ -8939,6 +8974,17 @@ Begin
   If Pos('EXTRN', StrUpperCase(S)) > 0 Then Exit;
   If Pos('OPTION', StrUpperCase(S)) > 0 Then Exit;
   If Pos('END ', StrUpperCase(S)) = 1 Then Exit;
+
+  { PROC / ENDP : label de procedure/fonction }
+  P := Pos(' PROC', StrUpperCase(S));
+  If P > 0 Then
+  Begin
+    Tmp := Copy(S, 1, P - 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
+    BinAddLabel(Tmp, True, BinCodeLen);
+    Exit;
+  End;
+  If Pos(' ENDP', StrUpperCase(S)) > 0 Then Exit;
 
   { Data segment }
   If Not BinInCode Then
