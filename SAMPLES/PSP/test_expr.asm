@@ -30,6 +30,10 @@ _PSPF_main:
         PUSH   -11
         CALL   _GetStdHandle@4
         MOV   DWORD PTR [_PSPRT_HSTDOUT], EAX
+; Obtenir le handle stdin
+        PUSH   -10
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_PSPRT_HSTDIN], EAX
 
         JMP   _PSPL_MAINBODY
 
@@ -53,7 +57,7 @@ _PSPL_MAINBODY:
         CALL   _ExitProcess@4
 
 ; ========================================
-;   ROUTINES RUNTIME 32 BITS
+;   ROUTINES RUNTIME 32 BITS (TODO 24)
 ; ========================================
 
 _PSPRT_PRINTSTR:
@@ -470,6 +474,16 @@ _PSPRT_RANDOMIZE:
         MOV   DWORD PTR [_PSPRT_SEED], EAX
         RET
 
+_PSPRT_FILLCHAR:
+        CLD
+        REP STOSB
+        RET
+
+_PSPRT_MOVE:
+        CLD
+        REP MOVSB
+        RET
+
 _PSPRT_PANIC:
         CALL   _PSPRT_PRINTSTR
         LEA   ESI, _PSPRT_CRLF
@@ -507,6 +521,7 @@ _PSPX_SAVEBP  DD  0
 _PSPRT_DIV0MSG DB  'Runtime error: Division by zero',0
 _PSPRT_PANICMSG DB 0
 _PSPRT_HSTDOUT DD  0
+_PSPRT_HSTDIN  DD  0
 _PSPRT_WRITTEN DD  0
 
 ; --- Donnees du programme ---

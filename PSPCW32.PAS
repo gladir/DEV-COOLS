@@ -422,7 +422,7 @@
               Fichier texte MASM compatible (.386 / .MODEL FLAT)
               Commentaires descriptifs pour chaque section
 
-  TODO 24 - RUNTIME MINIMAL WIN32
+  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
             Initialisation au demarrage (_PSPF_main) :
               CALL GetStdHandle(STD_OUTPUT_HANDLE=-11)
               MOV [_PSPRT_HSTDOUT], EAX
@@ -2351,8 +2351,9 @@ Begin
   EmitRaw(PSP_EX_PFX + 'SAVEBP  DD  0');
   EmitRaw(PSP_RT_PFX + 'DIV0MSG DB  ''Runtime error: Division by zero'',0');
   EmitRaw(PSP_RT_PFX + 'PANICMSG DB 0');
-  { Handle stdout Win32 }
+  { Handle stdout/stdin Win32 }
   EmitRaw(PSP_RT_PFX + 'HSTDOUT DD  0');
+  EmitRaw(PSP_RT_PFX + 'HSTDIN  DD  0');
   EmitRaw(PSP_RT_PFX + 'WRITTEN DD  0');
   EmitBlankLine;
 
@@ -3335,10 +3336,26 @@ Begin
   EmitInstrA('PUSH', '-11');
   EmitInstrA('CALL', '_GetStdHandle@4');
   EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDOUT]', 'EAX');
+  EmitComment('Obtenir le handle stdin');
+  EmitInstrA('PUSH', '-10');
+  EmitInstrA('CALL', '_GetStdHandle@4');
+  EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'HSTDIN]', 'EAX');
   EmitBlankLine;
   EmitInstrA('JMP', PSP_LBL_PFX + 'MAINBODY');
   EmitBlankLine;
 End;
+
+{ ============================================================
+  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
+  ============================================================ }
+{ EmitFooter emet le code de terminaison (ExitProcess) puis
+  les routines runtime 32 bits : PRINTSTR, NUMTOSTR, STRLEN,
+  CONCAT, STRCMP, WRITECRLF, CHR, STRTONUM, COPY, POS, UPCASE,
+  LOWERCASE, TRIM, DELETE, INSERT, SQRT, RANDOM, RANDOMIZE,
+  FILLCHAR, MOVE, PANIC, PANIC_DIV0.
+  Toutes les routines utilisent la convention Win32 (STDCALL),
+  les registres 32 bits (EAX/EBX/ECX/EDX/ESI/EDI), et les
+  appels systeme via WriteFile / ExitProcess / GetTickCount. }
 
 { ---- EmitFooter : pied de page ASM + runtime 32 bits --------- }
 Procedure EmitFooter;
@@ -3356,12 +3373,12 @@ Begin
   EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
 
-  { -- Routines runtime 32 bits -- }
+  { -- Routines runtime 32 bits (TODO 24) -- }
   If Not RuntimeEmitted Then
   Begin
     RuntimeEmitted := True;
     EmitComment('========================================');
-    EmitComment('  ROUTINES RUNTIME 32 BITS');
+    EmitComment('  ROUTINES RUNTIME 32 BITS (TODO 24)');
     EmitComment('========================================');
     EmitBlankLine;
 
@@ -3823,6 +3840,20 @@ Begin
     EmitLabel(PSP_RT_PFX + 'RANDOMIZE');
     EmitInstrA('CALL', '_GetTickCount@0');
     EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'SEED]', 'EAX');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_FILLCHAR : EDI=ptr, ECX=count, AL=val -> REP STOSB }
+    EmitLabel(PSP_RT_PFX + 'FILLCHAR');
+    EmitInstr('CLD');
+    EmitInstr('REP STOSB');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_MOVE : ESI=src, EDI=dst, ECX=count -> REP MOVSB }
+    EmitLabel(PSP_RT_PFX + 'MOVE');
+    EmitInstr('CLD');
+    EmitInstr('REP MOVSB');
     EmitInstr('RET');
     EmitBlankLine;
 
