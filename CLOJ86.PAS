@@ -5160,7 +5160,7 @@ Var
   FnLabel   : TString;
   SkipLbl   : TString;
   ParamCount: Integer;
-  ParamNames: Array[0..63] Of TString;
+  ParamNames: Array[0..MAX_PARAM - 1] Of TString;
   SaveFrame : Integer;
   SaveDepth : Integer;
   SaveRetLbl: TString;
@@ -5207,7 +5207,7 @@ Begin
       LexNextToken;
       Continue;
     End;
-    If ParamCount < 64 Then
+    If ParamCount < MAX_PARAM Then
     Begin
       ParamNames[ParamCount] := CurToken.Val;
       Inc(ParamCount);
@@ -5227,7 +5227,8 @@ Begin
 
   CurFrameSize := 0;
   Inc(CurFnDepth);
-  CurFnName := FnName;
+  CurFnName    := FnName;
+  CurFnRetLbl  := '';  (* pas de label de retour anticipe pour defn *)
 
   (* JMP par-dessus le corps de la fonction pour eviter l execution *)
   SkipLbl := LabelGen;
@@ -5250,6 +5251,7 @@ Begin
   End;
 
   (* Evaluer le corps (body) *)
+  (* En Clojure, la derniere expression du body est la valeur de retour *)
   While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
   Begin
     ParseForm(Sub);
@@ -5287,7 +5289,7 @@ Var
   FnLabel   : TString;
   SkipLbl   : TString;
   ParamCount: Integer;
-  ParamNames: Array[0..63] Of TString;
+  ParamNames: Array[0..MAX_PARAM - 1] Of TString;
   SaveFrame : Integer;
   SaveDepth : Integer;
   SaveRetLbl: TString;
@@ -5326,7 +5328,7 @@ Begin
       LexNextToken;
       Continue;
     End;
-    If ParamCount < 64 Then
+    If ParamCount < MAX_PARAM Then
     Begin
       ParamNames[ParamCount] := CurToken.Val;
       Inc(ParamCount);
@@ -5346,7 +5348,8 @@ Begin
 
   CurFrameSize := 0;
   Inc(CurFnDepth);
-  CurFnName := '(fn)';
+  CurFnName    := '(fn)';
+  CurFnRetLbl  := '';  (* pas de label de retour anticipe pour fn *)
 
   (* JMP par-dessus le corps de la lambda *)
   SkipLbl := LabelGen;
@@ -5367,6 +5370,7 @@ Begin
   End;
 
   (* Evaluer le corps (body) *)
+  (* En Clojure, la derniere expression du body est la valeur de retour *)
   While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
   Begin
     ParseForm(Sub);
