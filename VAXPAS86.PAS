@@ -4864,6 +4864,465 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
+  { ========== TODO 24 : ROUTINES RUNTIME MANQUANTES ========== }
+
+  { _VXPRT_PRINTINT : afficher entier signe AX sur stdout }
+  EmitComment('PRINTINT : affiche entier signe AX');
+  EmitLabel(VXP_RT_PFX + 'PRINTINT');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('LEA', 'SI', VXP_RT_PFX + 'NUMBUF');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTUINT : afficher entier non signe AX }
+  EmitComment('PRINTUINT : affiche entier non signe AX');
+  EmitLabel(VXP_RT_PFX + 'PRINTUINT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET ' + VXP_RT_PFX + 'NUMBUF');
+  EmitInstrAB('ADD', 'DI', '10');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstr('DEC    DI');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitRaw(VXP_RT_PFX + 'PU_LP:');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstrA('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstr('DEC    DI');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', VXP_RT_PFX + 'PU_LP');
+  EmitInstr('INC    DI');
+  EmitInstrAB('MOV', 'SI', 'DI');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTLN : afficher CRLF }
+  EmitComment('PRINTLN : affiche retour a la ligne CRLF');
+  EmitLabel(VXP_RT_PFX + 'PRINTLN');
+  EmitInstrAB('MOV', 'DL', '13');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstrAB('MOV', 'DL', '10');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTCHAR : afficher caractere dans AL }
+  EmitComment('PRINTCHAR : affiche caractere AL');
+  EmitLabel(VXP_RT_PFX + 'PRINTCHAR');
+  EmitInstrAB('MOV', 'DL', 'AL');
+  EmitInstrAB('MOV', 'AH', '02h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTBOOL : afficher True/False selon AX }
+  EmitComment('PRINTBOOL : affiche True si AX<>0, sinon False');
+  EmitLabel(VXP_RT_PFX + 'PRINTBOOL');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PB_F');
+  EmitInstrAB('LEA', 'SI', VXP_RT_PFX + 'TRUE_S');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PB_P');
+  EmitLabel(VXP_RT_PFX + 'PB_F');
+  EmitInstrAB('LEA', 'SI', VXP_RT_PFX + 'FALSE_S');
+  EmitLabel(VXP_RT_PFX + 'PB_P');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTREAL : afficher reel (stub entier - pas de FPU) }
+  EmitComment('PRINTREAL : stub - affiche AX comme entier');
+  EmitLabel(VXP_RT_PFX + 'PRINTREAL');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTINT');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_READINT : lire un entier signe depuis stdin = alias READNUM }
+  EmitComment('READINT : lire entier signe -> AX (alias READNUM)');
+  EmitLabel(VXP_RT_PFX + 'READINT');
+  EmitInstrA('JMP', VXP_RT_PFX + 'READNUM');
+  EmitBlankLine;
+
+  { _VXPRT_READLINE : lire une ligne complete depuis stdin -> STRBUF }
+  EmitComment('READLINE : lire ligne -> STRBUF, AX = pointeur');
+  EmitLabel(VXP_RT_PFX + 'READLINE');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrAB('MOV', 'BX', 'OFFSET ' + VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'RL_LP:');
+  EmitInstrAB('MOV', 'AH', '01h');
+  EmitInstr('INT    21h');
+  EmitInstrAB('CMP', 'AL', '13');
+  EmitInstrA('JE', VXP_RT_PFX + 'RL_DN');
+  EmitInstrAB('CMP', 'AL', '10');
+  EmitInstrA('JE', VXP_RT_PFX + 'RL_DN');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC    BX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'RL_LP');
+  EmitRaw(VXP_RT_PFX + 'RL_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrAB('LEA', 'AX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_READSTR : lire une chaine depuis stdin -> STRBUF = alias READLINE }
+  EmitComment('READSTR : alias READLINE');
+  EmitLabel(VXP_RT_PFX + 'READSTR');
+  EmitInstrA('JMP', VXP_RT_PFX + 'READLINE');
+  EmitBlankLine;
+
+  { _VXPRT_SEARCH : rechercher sous-chaine = alias INDEX }
+  EmitComment('SEARCH : alias INDEX');
+  EmitLabel(VXP_RT_PFX + 'SEARCH');
+  EmitInstrA('JMP', VXP_RT_PFX + 'INDEX');
+  EmitBlankLine;
+
+  { ---- Routines VARYING ---- }
+
+  { _VXPRT_VARY_ASSIGN : affecter ASCIIZ -> VARYING }
+  { SI = source ASCIIZ, DI = dest VARYING (WORD length + BODY) }
+  EmitComment('VARY_ASSIGN : copie ASCIIZ SI -> VARYING [DI]');
+  EmitLabel(VXP_RT_PFX + 'VARY_ASSIGN');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitInstrAB('LEA', 'BX', '[DI+2]');  { BX = debut du body }
+  EmitRaw(VXP_RT_PFX + 'VA_LP:');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VA_DN');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    BX');
+  EmitInstr('INC    CX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VA_LP');
+  EmitRaw(VXP_RT_PFX + 'VA_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrAB('MOV', 'WORD PTR [DI]', 'CX');  { stocker longueur }
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_VARY_CONCAT : concatener VARYING [SI] + VARYING [DI] -> STRBUF }
+  EmitComment('VARY_CONCAT : VARYING SI + VARYING DI -> STRBUF');
+  EmitLabel(VXP_RT_PFX + 'VARY_CONCAT');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'BX', 'OFFSET ' + VXP_RT_PFX + 'STRBUF');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [SI]');    { len1 }
+  EmitInstrAB('ADD', 'SI', '2');                 { body1 }
+  EmitRaw(VXP_RT_PFX + 'VC1:');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VC2S');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    BX');
+  EmitInstr('DEC    CX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VC1');
+  EmitRaw(VXP_RT_PFX + 'VC2S:');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [DI]');    { len2 }
+  EmitInstrAB('ADD', 'DI', '2');                 { body2 }
+  EmitRaw(VXP_RT_PFX + 'VC2:');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VCDN');
+  EmitInstrAB('MOV', 'AL', '[DI]');
+  EmitInstrAB('MOV', '[BX]', 'AL');
+  EmitInstr('INC    DI');
+  EmitInstr('INC    BX');
+  EmitInstr('DEC    CX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VC2');
+  EmitRaw(VXP_RT_PFX + 'VCDN:');
+  EmitInstrAB('MOV', 'BYTE PTR [BX]', '0');
+  EmitInstrAB('LEA', 'AX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_VARY_LENGTH : obtenir .LENGTH du VARYING pointe par SI -> AX }
+  EmitComment('VARY_LENGTH : VARYING [SI] -> AX = longueur');
+  EmitLabel(VXP_RT_PFX + 'VARY_LENGTH');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_VARY_BODY : obtenir .BODY du VARYING pointe par SI -> AX }
+  EmitComment('VARY_BODY : VARYING [SI] -> AX = pointeur body');
+  EmitLabel(VXP_RT_PFX + 'VARY_BODY');
+  EmitInstrAB('LEA', 'AX', '[SI+2]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_VARY_SUBSTR : sous-chaine de VARYING }
+  { SI = VARYING, BX = start (1-based), CX = len -> STRBUF }
+  EmitComment('VARY_SUBSTR : VARYING[SI], start BX, len CX -> STRBUF');
+  EmitLabel(VXP_RT_PFX + 'VARY_SUBSTR');
+  EmitInstrA('PUSH', 'DI');
+  EmitInstrAB('ADD', 'SI', '2');     { pointer vers body }
+  EmitInstr('DEC    BX');            { 0-based }
+  EmitInstrAB('ADD', 'SI', 'BX');
+  EmitInstrAB('MOV', 'DI', 'OFFSET ' + VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'VSB_LP:');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VSB_DN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('MOV', '[DI]', 'AL');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('DEC    CX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VSB_LP');
+  EmitRaw(VXP_RT_PFX + 'VSB_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('LEA', 'AX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'DI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_VARY_CMP : comparer deux VARYING }
+  { SI = VARYING1, DI = VARYING2 -> AX = 0 si egal, <0 ou >0 sinon }
+  EmitComment('VARY_CMP : compare VARYING [SI] vs [DI] -> AX');
+  EmitLabel(VXP_RT_PFX + 'VARY_CMP');
+  EmitInstrA('PUSH', 'BX');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrAB('MOV', 'CX', 'WORD PTR [SI]');   { len1 }
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [DI]');   { len2 }
+  EmitInstrAB('ADD', 'SI', '2');
+  EmitInstrAB('ADD', 'DI', '2');
+  EmitInstrAB('CMP', 'CX', 'BX');
+  EmitInstrA('JLE', VXP_RT_PFX + 'VCMP_MN');
+  EmitInstrAB('MOV', 'CX', 'BX');              { min(len1, len2) }
+  EmitRaw(VXP_RT_PFX + 'VCMP_MN:');
+  EmitRaw(VXP_RT_PFX + 'VCMP_LP:');
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VCMP_LN');
+  EmitInstrAB('MOV', 'AL', '[SI]');
+  EmitInstrAB('CMP', 'AL', '[DI]');
+  EmitInstrA('JNE', VXP_RT_PFX + 'VCMP_NE');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('DEC    CX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VCMP_LP');
+  EmitRaw(VXP_RT_PFX + 'VCMP_NE:');
+  EmitInstrAB('XOR', 'AH', 'AH');
+  EmitInstrAB('SUB', 'AL', '[DI]');
+  EmitInstr('CBW');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VCMP_RT');
+  EmitRaw(VXP_RT_PFX + 'VCMP_LN:');
+  { longueurs comparees }
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI-2]');  { recalculer len1 }
+  EmitInstrAB('SUB', 'SI', '2');
+  EmitInstrAB('SUB', 'DI', '2');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrAB('SUB', 'AX', 'WORD PTR [DI]');
+  EmitRaw(VXP_RT_PFX + 'VCMP_RT:');
+  EmitInstrA('POP', 'CX');
+  EmitInstrA('POP', 'BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---- Routines arithmetiques manquantes ---- }
+
+  { _VXPRT_POWI : AX ^ BX (exponentiation entiere) -> AX }
+  EmitComment('POWI : AX ^ BX -> AX');
+  EmitLabel(VXP_RT_PFX + 'POWI');
+  EmitInstrA('PUSH', 'CX');
+  EmitInstrA('PUSH', 'DX');
+  EmitInstrAB('MOV', 'CX', 'BX');    { exposant }
+  EmitInstrAB('MOV', 'DX', 'AX');    { base }
+  EmitInstrAB('MOV', 'AX', '1');     { resultat }
+  EmitInstrAB('CMP', 'CX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PWI_DN');
+  EmitRaw(VXP_RT_PFX + 'PWI_LP:');
+  EmitInstrA('MUL', 'DX');           { AX = AX * base }
+  EmitInstr('DEC    CX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'PWI_LP');
+  EmitRaw(VXP_RT_PFX + 'PWI_DN:');
+  EmitInstrA('POP', 'DX');
+  EmitInstrA('POP', 'CX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SETSEED : initialiser la graine du generateur aleatoire }
+  EmitComment('SETSEED : AX -> graine RANDOM');
+  EmitLabel(VXP_RT_PFX + 'SETSEED');
+  EmitInstrAB('MOV', 'WORD PTR [' + VXP_RT_PFX + 'SEED]', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_ABS : valeur absolue AX -> AX }
+  EmitComment('ABS : |AX| -> AX');
+  EmitLabel(VXP_RT_PFX + 'ABS');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JGE', VXP_RT_PFX + 'ABS_DN');
+  EmitInstr('NEG    AX');
+  EmitRaw(VXP_RT_PFX + 'ABS_DN:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SQR : carre AX -> AX }
+  EmitComment('SQR : AX*AX -> AX');
+  EmitLabel(VXP_RT_PFX + 'SQR');
+  EmitInstrA('IMUL', 'AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_MAX : max(AX, BX) -> AX }
+  EmitComment('MAX : max(AX, BX) -> AX');
+  EmitLabel(VXP_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JGE', VXP_RT_PFX + 'MAX_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitRaw(VXP_RT_PFX + 'MAX_DN:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_MIN : min(AX, BX) -> AX }
+  EmitComment('MIN : min(AX, BX) -> AX');
+  EmitLabel(VXP_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstrA('JLE', VXP_RT_PFX + 'MIN_DN');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitRaw(VXP_RT_PFX + 'MIN_DN:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---- Routines allocation manquantes ---- }
+
+  { _VXPRT_ZERO : mettre a zero CX octets a partir de DI }
+  EmitComment('ZERO : zero CX octets a [DI]');
+  EmitLabel(VXP_RT_PFX + 'ZERO');
+  EmitInstrAB('XOR', 'AL', 'AL');
+  EmitInstr('REP    STOSB');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_FILL : remplir CX octets a [DI] avec AL }
+  EmitComment('FILL : remplir CX octets a [DI] avec AL');
+  EmitLabel(VXP_RT_PFX + 'FILL');
+  EmitInstr('REP    STOSB');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---- Routines fichiers manquantes ---- }
+
+  { _VXPRT_FOPEN : ouvrir fichier, DX = nom ASCIIZ, AL = mode -> AX = handle }
+  EmitComment('FOPEN : DX = nom, AL = mode (0=lect,1=ecr,2=rw) -> AX handle');
+  EmitLabel(VXP_RT_PFX + 'FOPEN');
+  EmitInstrAB('MOV', 'AH', '3Dh');
+  EmitInstr('INT    21h');
+  EmitInstrA('JNC', VXP_RT_PFX + 'FO_OK');
+  EmitInstrAB('MOV', 'AX', '0FFFFh');   { erreur -> -1 }
+  EmitRaw(VXP_RT_PFX + 'FO_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_FCREATE : creer fichier, DX = nom ASCIIZ -> AX = handle }
+  EmitComment('FCREATE : DX = nom -> AX handle');
+  EmitLabel(VXP_RT_PFX + 'FCREATE');
+  EmitInstrAB('MOV', 'AH', '3Ch');
+  EmitInstrAB('XOR', 'CX', 'CX');       { attributs normaux }
+  EmitInstr('INT    21h');
+  EmitInstrA('JNC', VXP_RT_PFX + 'FC_OK');
+  EmitInstrAB('MOV', 'AX', '0FFFFh');
+  EmitRaw(VXP_RT_PFX + 'FC_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_FCLOSE : fermer fichier, BX = handle }
+  EmitComment('FCLOSE : BX = handle');
+  EmitLabel(VXP_RT_PFX + 'FCLOSE');
+  EmitInstrAB('MOV', 'AH', '3Eh');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_FREAD : lire depuis fichier }
+  { BX = handle, CX = taille max, DX = buffer -> AX = octets lus }
+  EmitComment('FREAD : BX=handle, CX=taille, DX=buffer -> AX=lus');
+  EmitLabel(VXP_RT_PFX + 'FREAD');
+  EmitInstrAB('MOV', 'AH', '3Fh');
+  EmitInstr('INT    21h');
+  EmitInstrA('JNC', VXP_RT_PFX + 'FR_OK');
+  EmitInstrAB('XOR', 'AX', 'AX');       { erreur -> 0 }
+  EmitRaw(VXP_RT_PFX + 'FR_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_FWRITE : ecrire dans fichier }
+  { BX = handle, CX = taille, DX = buffer -> AX = octets ecrits }
+  EmitComment('FWRITE : BX=handle, CX=taille, DX=buffer -> AX=ecrits');
+  EmitLabel(VXP_RT_PFX + 'FWRITE');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT    21h');
+  EmitInstrA('JNC', VXP_RT_PFX + 'FW_OK');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitRaw(VXP_RT_PFX + 'FW_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_FDELETE : supprimer fichier, DX = nom ASCIIZ }
+  EmitComment('FDELETE : DX = nom fichier ASCIIZ');
+  EmitLabel(VXP_RT_PFX + 'FDELETE');
+  EmitInstrAB('MOV', 'AH', '41h');
+  EmitInstr('INT    21h');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { ---- Routine erreur manquante ---- }
+
+  { _VXPRT_ASSERT : verifier assertion AX<>0, sinon panic }
+  EmitComment('ASSERT : AX<>0 ou panic avec message SI');
+  EmitLabel(VXP_RT_PFX + 'ASSERT');
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', VXP_RT_PFX + 'ASS_OK');
+  EmitInstrAB('LEA', 'SI', VXP_RT_PFX + 'ASSERTMSG');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTLN');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', '1');
+  EmitInstr('INT    21h');
+  EmitRaw(VXP_RT_PFX + 'ASS_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_RESIGNAL : propager condition au handler parent }
+  EmitComment('RESIGNAL : propager condition au handler parent');
+  EmitLabel(VXP_RT_PFX + 'RESIGNAL');
+  EmitInstrAB('CMP', 'WORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'RSG_PK');
+  EmitInstrAB('MOV', 'SP', 'WORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+  EmitInstrAB('MOV', 'BP', 'WORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+  EmitInstrA('JMP', 'WORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+  EmitRaw(VXP_RT_PFX + 'RSG_PK:');
+  EmitInstrAB('LEA', 'SI', VXP_RT_PFX + 'SIGMSG');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PANIC');
+  EmitBlankLine;
+
+  { ---- Stubs VMS ---- }
+
+  { _VXPRT_VMS_STUB : stub generique pour appels VMS }
+  { AX = pointeur vers nom de la routine (ASCIIZ) }
+  EmitComment('VMS_STUB : stub generique VMS (AX = nom)');
+  EmitLabel(VXP_RT_PFX + 'VMS_STUB');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTLN');
+  EmitInstrAB('MOV', 'AX', '1');    { SS$_NORMAL = 1 }
+  EmitInstr('RET');
+  EmitBlankLine;
+
   EmitRaw('_TEXT   ENDS');
 End;
 
@@ -5463,7 +5922,7 @@ Begin
   Idx := SymAdd('insert', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'INSERT';
   Idx := SymAdd('seed', SC_PROC, TY_UNKNOWN);
-  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SEED';
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SETSEED';
   Idx := SymAdd('zero', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ZERO';
   Idx := SymAdd('fill', SC_PROC, TY_UNKNOWN);
