@@ -216,7 +216,7 @@
             Verification : nombre pair d elements dans le vecteur de liaisons
             Shadowing : une liaison peut masquer une variable du scope parent
 
-  TODO 15 - FONCTIONS (defn / fn / apply)
+  TODO 15 - FONCTIONS (defn / fn / apply) [IMPLEMENTE]
             (defn nom [params] body ...) : ParseDefnForm
               Cree un label _CLF_nom, prologue PUSH BP / MOV BP,SP
               Parametres : [BP+4], [BP+6], ... (empiles droite a gauche)
@@ -769,6 +769,9 @@ Procedure ParseCond(Var Res : TExprVal); Forward;
 Procedure ParseCase(Var Res : TExprVal); Forward;
 Procedure ParseIfLet(Var Res : TExprVal); Forward;
 Procedure ParseWhenLet(Var Res : TExprVal); Forward;
+(* TODO 15 *)
+Procedure ParseDefnForm(Var Res : TExprVal); Forward;
+Procedure ParseFnForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -3761,6 +3764,24 @@ Begin
           Exit;
         End
 
+        (* -- TODO 15 : defn / fn -- *)
+        Else If HeadSym = 'defn' Then
+        Begin
+          LexNextToken;
+          ParseDefnForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres defn');
+          Exit;
+        End
+        Else If (HeadSym = 'fn') Or (HeadSym = 'fn*') Then
+        Begin
+          LexNextToken;
+          ParseFnForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres fn');
+          Exit;
+        End
+
         (* -- Appel de fonction (symbole connu ou inconnu) -- *)
         Else
         Begin
@@ -5121,6 +5142,261 @@ End;
 (*   - Verification du nombre pair d elements dans le vecteur     *)
 (*   - Liaisons sequentielles (chaque nom voit les precedents)    *)
 (*   - Shadowing supporte (une liaison masque le scope parent)    *)
+
+(* ============================================================
+   TODO 15 - FONCTIONS (defn / fn / apply) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseDefnForm : (defn nom [params] body ...) ------------ *)
+(* Cree un label _CLF_nom, prologue PUSH BP / MOV BP,SP           *)
+(* Parametres : [BP+4+2*(N-1-i)] pour le i-eme parametre          *)
+(*   (les arguments sont empiles de gauche a droite par l appelant,*)
+(*    donc le premier argument est le plus profond dans la pile)    *)
+(* Corps : evaluer le body, resultat dans AX                       *)
+(* Epilogue : MOV SP,BP / POP BP / RET                             *)
+Procedure ParseDefnForm(Var Res : TExprVal);
+Var
+  FnName    : TString;
+  FnLabel   : TString;
+  SkipLbl   : TString;
+  ParamCount: Integer;
+  ParamNames: Array[0..63] Of TString;
+  SaveFrame : Integer;
+  SaveDepth : Integer;
+  SaveRetLbl: TString;
+  SaveFnName: TString;
+  Sub       : TExprVal;
+  I         : Integer;
+  Ofs       : Integer;
+Begin
+  ExprMakeNone(Res);
+
+  (* Lire le nom de la fonction *)
+  If CurToken.Kind <> TK_SYMBOL Then
+  Begin
+    CompileError('nom de fonction attendu apres defn');
+    Exit;
+  End;
+  FnName := CurToken.Val;
+  FnLabel := CL_FN_PFX + SymNameClean(FnName);
+  LexNextToken;
+
+  EmitComment('(defn ' + FnName + ' ...)');
+
+  (* Enregistrer la fonction dans la table des symboles *)
+  SymAdd(FnName, SK_FN, TY_IDX_FN, 0);
+
+  (* Optionnel : docstring (si chaine avant le vecteur) *)
+  If CurToken.Kind = TK_STRING Then
+    LexNextToken;  (* ignorer la docstring *)
+
+  (* Lire le vecteur de parametres [p1 p2 ...] *)
+  If CurToken.Kind <> TK_LBRACKET Then
+  Begin
+    CompileError('vecteur de parametres attendu dans defn');
+    Exit;
+  End;
+  LexNextToken;  (* consomme '[' *)
+
+  ParamCount := 0;
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_SYMBOL Then
+    Begin
+      CompileError('symbole attendu dans la liste des parametres');
+      LexNextToken;
+      Continue;
+    End;
+    If ParamCount < 64 Then
+    Begin
+      ParamNames[ParamCount] := CurToken.Val;
+      Inc(ParamCount);
+    End;
+    LexNextToken;
+  End;
+  If CurToken.Kind = TK_RBRACKET Then
+    LexNextToken  (* consomme ']' *)
+  Else
+    CompileError('] attendu en fin de parametres defn');
+
+  (* Sauvegarder le contexte de la fonction englobante *)
+  SaveFrame  := CurFrameSize;
+  SaveDepth  := CurFnDepth;
+  SaveRetLbl := CurFnRetLbl;
+  SaveFnName := CurFnName;
+
+  CurFrameSize := 0;
+  Inc(CurFnDepth);
+  CurFnName := FnName;
+
+  (* JMP par-dessus le corps de la fonction pour eviter l execution *)
+  SkipLbl := LabelGen;
+  EmitInstrA('JMP', SkipLbl);
+
+  (* Label de la fonction *)
+  EmitLabel(FnLabel);
+  EmitProlog;
+
+  (* Entrer dans une nouvelle portee pour les parametres *)
+  SymEnterScope;
+
+  (* Enregistrer les parametres dans la table des symboles *)
+  (* Les arguments sont empiles de gauche a droite par l appelant, *)
+  (* donc le premier argument est a [BP+4+2*(N-1)].                *)
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Ofs := 4 + 2 * (ParamCount - 1 - I);
+    SymAdd(ParamNames[I], SK_LOCAL, TY_UNKNOWN, Ofs);
+  End;
+
+  (* Evaluer le corps (body) *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+
+  (* Epilogue de la fonction *)
+  EmitEpilog;
+
+  (* Quitter la portee des parametres *)
+  SymLeaveScope;
+
+  (* Label apres le corps de la fonction *)
+  EmitLabel(SkipLbl);
+
+  (* Restaurer le contexte de la fonction englobante *)
+  CurFrameSize := SaveFrame;
+  CurFnDepth   := SaveDepth;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+
+  (* defn retourne nil *)
+  ExprMakeNone(Res);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+  EmitInstrAB('XOR', 'AX', 'AX');
+End;
+
+(* ---- ParseFnForm : (fn [params] body ...) -------------------- *)
+(* Fonction anonyme (lambda). Meme convention d appel que defn.    *)
+(* Retourne l adresse du label de la fonction dans AX.             *)
+Procedure ParseFnForm(Var Res : TExprVal);
+Var
+  FnLabel   : TString;
+  SkipLbl   : TString;
+  ParamCount: Integer;
+  ParamNames: Array[0..63] Of TString;
+  SaveFrame : Integer;
+  SaveDepth : Integer;
+  SaveRetLbl: TString;
+  SaveFnName: TString;
+  Sub       : TExprVal;
+  I         : Integer;
+  Ofs       : Integer;
+Begin
+  ExprMakeNone(Res);
+
+  (* Generer un label unique pour la lambda *)
+  FnLabel := LabelGen;
+
+  EmitComment('(fn [...] ...)');
+
+  (* Optionnel : nom pour fn nomme (fn name [params] body) *)
+  (* Si le token courant est un symbole, c est un nom optionnel *)
+  (* car le vecteur de parametres sera TK_LBRACKET              *)
+  If (CurToken.Kind = TK_SYMBOL) Then
+    LexNextToken;  (* consomme le nom optionnel *)
+
+  (* Lire le vecteur de parametres [p1 p2 ...] *)
+  If CurToken.Kind <> TK_LBRACKET Then
+  Begin
+    CompileError('vecteur de parametres attendu dans fn');
+    Exit;
+  End;
+  LexNextToken;  (* consomme '[' *)
+
+  ParamCount := 0;
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_SYMBOL Then
+    Begin
+      CompileError('symbole attendu dans la liste des parametres fn');
+      LexNextToken;
+      Continue;
+    End;
+    If ParamCount < 64 Then
+    Begin
+      ParamNames[ParamCount] := CurToken.Val;
+      Inc(ParamCount);
+    End;
+    LexNextToken;
+  End;
+  If CurToken.Kind = TK_RBRACKET Then
+    LexNextToken  (* consomme ']' *)
+  Else
+    CompileError('] attendu en fin de parametres fn');
+
+  (* Sauvegarder le contexte *)
+  SaveFrame  := CurFrameSize;
+  SaveDepth  := CurFnDepth;
+  SaveRetLbl := CurFnRetLbl;
+  SaveFnName := CurFnName;
+
+  CurFrameSize := 0;
+  Inc(CurFnDepth);
+  CurFnName := '(fn)';
+
+  (* JMP par-dessus le corps de la lambda *)
+  SkipLbl := LabelGen;
+  EmitInstrA('JMP', SkipLbl);
+
+  (* Label de la lambda *)
+  EmitLabel(FnLabel);
+  EmitProlog;
+
+  (* Entrer dans une nouvelle portee pour les parametres *)
+  SymEnterScope;
+
+  (* Enregistrer les parametres dans la table des symboles *)
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Ofs := 4 + 2 * (ParamCount - 1 - I);
+    SymAdd(ParamNames[I], SK_LOCAL, TY_UNKNOWN, Ofs);
+  End;
+
+  (* Evaluer le corps (body) *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+
+  (* Epilogue de la lambda *)
+  EmitEpilog;
+
+  (* Quitter la portee des parametres *)
+  SymLeaveScope;
+
+  (* Label apres le corps de la lambda *)
+  EmitLabel(SkipLbl);
+
+  (* Restaurer le contexte *)
+  CurFrameSize := SaveFrame;
+  CurFnDepth   := SaveDepth;
+  CurFnRetLbl  := SaveRetLbl;
+  CurFnName    := SaveFnName;
+
+  (* Retourner l adresse de la lambda dans AX *)
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + FnLabel);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_FN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
 
 Procedure EmitRuntime;
 Begin
