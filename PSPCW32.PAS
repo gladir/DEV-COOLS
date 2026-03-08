@@ -357,7 +357,7 @@
               _PSPX_SAVEEBP DD 0 (EBP sauvegarde)
             _PSPRT_PANIC : affiche message d erreur + ExitProcess(1)
 
-  TODO 22 - FONCTIONS DE CHAINES ET RUNTIME STRING
+  TODO 22 - FONCTIONS DE CHAINES ET RUNTIME STRING [IMPLEMENTE]
             Fonctions de chaines (appels runtime 32 bits) :
               Length(s)         -> CALL _PSPRT_STRLEN(ESI=s) -> EAX
               Copy(s, pos, len) -> CALL _PSPRT_COPY(ESI,EBX,ECX) -> EAX
@@ -3263,6 +3263,7 @@ Begin
   EmitRaw('EXTRN   _GetProcessHeap@0    : PROC');
   EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
   EmitRaw('EXTRN   _HeapFree@12         : PROC');
+  EmitRaw('EXTRN   _GetTickCount@0      : PROC');
   EmitBlankLine;
   EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
@@ -3559,6 +3560,207 @@ Begin
     EmitInstrA('JA', PSP_RT_PFX + 'UPC_DN');
     EmitInstrAB('SUB', 'AL', '32');
     EmitLabel(PSP_RT_PFX + 'UPC_DN');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_LOWERCASE : ESI = str ASCIIZ -> EAX = ptr STRBUF copie }
+    EmitLabel(PSP_RT_PFX + 'LOWERCASE');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'STRBUF');
+    EmitInstrA('PUSH', 'EDI');
+    EmitLabel(PSP_RT_PFX + 'LC_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'LC_DN');
+    EmitInstrAB('CMP', 'AL', '''A''');
+    EmitInstrA('JB', PSP_RT_PFX + 'LC_SK');
+    EmitInstrAB('CMP', 'AL', '''Z''');
+    EmitInstrA('JA', PSP_RT_PFX + 'LC_SK');
+    EmitInstrAB('ADD', 'AL', '32');
+    EmitLabel(PSP_RT_PFX + 'LC_SK');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'LC_LP');
+    EmitLabel(PSP_RT_PFX + 'LC_DN');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('POP', 'EAX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_TRIM : ESI = str ASCIIZ -> EAX = ptr STRBUF (trim espaces) }
+    EmitLabel(PSP_RT_PFX + 'TRIM');
+    EmitInstrA('PUSH', 'EDI');
+    { Sauter les espaces en tete }
+    EmitLabel(PSP_RT_PFX + 'TR_LS');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '32');
+    EmitInstrA('JE', PSP_RT_PFX + 'TR_LN');
+    EmitInstrAB('CMP', 'AL', '9');
+    EmitInstrA('JNE', PSP_RT_PFX + 'TR_CP');
+    EmitLabel(PSP_RT_PFX + 'TR_LN');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'TR_LS');
+    { Copier dans STRBUF }
+    EmitLabel(PSP_RT_PFX + 'TR_CP');
+    EmitInstrAB('LEA', 'EDI', PSP_RT_PFX + 'STRBUF');
+    EmitInstrA('PUSH', 'EDI');
+    EmitLabel(PSP_RT_PFX + 'TR_C2');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'TR_TS');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'TR_C2');
+    { Retirer les espaces de queue }
+    EmitLabel(PSP_RT_PFX + 'TR_TS');
+    EmitInstrA('DEC', 'EDI');
+    EmitInstrA('POP', 'EAX');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrAB('CMP', 'EDI', 'EAX');
+    EmitInstrA('JB', PSP_RT_PFX + 'TR_DN');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '32');
+    EmitInstrA('JE', PSP_RT_PFX + 'TR_T2');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI]', '9');
+    EmitInstrA('JNE', PSP_RT_PFX + 'TR_DN');
+    EmitLabel(PSP_RT_PFX + 'TR_T2');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+    EmitInstrA('DEC', 'EDI');
+    EmitInstrA('POP', 'EAX');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrAB('CMP', 'EDI', 'EAX');
+    EmitInstrA('JAE', PSP_RT_PFX + 'TR_TS');
+    EmitLabel(PSP_RT_PFX + 'TR_DN');
+    EmitInstrA('POP', 'EAX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_DELETE : ESI=str (in-place), EBX=pos (1-based), ECX=count }
+    EmitLabel(PSP_RT_PFX + 'DELETE');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrA('DEC', 'EBX');
+    { Calculer l adresse de debut de suppression }
+    EmitInstrAB('LEA', 'EDI', '[ESI+EBX]');
+    { Trouver la fin de la zone a supprimer }
+    EmitInstrAB('LEA', 'ESI', '[EDI+ECX]');
+    { Copier le reste de la chaine }
+    EmitLabel(PSP_RT_PFX + 'DEL_LP');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'DEL_DN');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'DEL_LP');
+    EmitLabel(PSP_RT_PFX + 'DEL_DN');
+    EmitInstrA('POP', 'EDI');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_INSERT : ESI=sub, EDI=str (in-place), EBX=pos (1-based) }
+    EmitLabel(PSP_RT_PFX + 'INSERT');
+    EmitInstrA('PUSH', 'EBP');
+    EmitInstrAB('MOV', 'EBP', 'ESP');
+    { Calculer longueur sub -> ECX }
+    EmitInstrA('PUSH', 'ESI');
+    EmitInstrA('PUSH', 'EDI');
+    EmitInstrAB('XOR', 'ECX', 'ECX');
+    EmitLabel(PSP_RT_PFX + 'INS_SL');
+    EmitInstrAB('CMP', 'BYTE PTR [ESI+ECX]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'INS_S2');
+    EmitInstrA('INC', 'ECX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'INS_SL');
+    EmitLabel(PSP_RT_PFX + 'INS_S2');
+    { Calculer longueur str -> EDX }
+    EmitInstrAB('XOR', 'EDX', 'EDX');
+    EmitLabel(PSP_RT_PFX + 'INS_DL');
+    EmitInstrAB('CMP', 'BYTE PTR [EDI+EDX]', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'INS_D2');
+    EmitInstrA('INC', 'EDX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'INS_DL');
+    EmitLabel(PSP_RT_PFX + 'INS_D2');
+    { Decaler str[pos..] de ECX octets vers la droite }
+    EmitInstrA('DEC', 'EBX');
+    EmitInstrAB('LEA', 'ESI', '[EDI+EDX]');
+    EmitInstrAB('LEA', 'EDI', '[ESI+ECX]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI+1]', '0');
+    { Copier depuis la fin vers le debut }
+    EmitInstrAB('MOV', 'EAX', 'EDX');
+    EmitInstrAB('SUB', 'EAX', 'EBX');
+    EmitInstrA('INC', 'EAX');
+    EmitLabel(PSP_RT_PFX + 'INS_MV');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('JLE', PSP_RT_PFX + 'INS_CP');
+    EmitInstrAB('MOV', 'CL', 'BYTE PTR [ESI]');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'CL');
+    EmitInstrA('DEC', 'ESI');
+    EmitInstrA('DEC', 'EDI');
+    EmitInstrA('DEC', 'EAX');
+    EmitInstrA('JMP', PSP_RT_PFX + 'INS_MV');
+    EmitLabel(PSP_RT_PFX + 'INS_CP');
+    { Copier sub a la position d insertion }
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrAB('ADD', 'EDI', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'INS_C2');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+    EmitInstrAB('CMP', 'AL', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'INS_DN');
+    EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+    EmitInstrA('INC', 'ESI');
+    EmitInstrA('INC', 'EDI');
+    EmitInstrA('JMP', PSP_RT_PFX + 'INS_C2');
+    EmitLabel(PSP_RT_PFX + 'INS_DN');
+    EmitInstrAB('MOV', 'ESP', 'EBP');
+    EmitInstrA('POP', 'EBP');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_SQRT : EAX = n -> EAX = sqrt(n) (Newton-Raphson entier) }
+    EmitLabel(PSP_RT_PFX + 'SQRT');
+    EmitInstrAB('CMP', 'EAX', '1');
+    EmitInstrA('JBE', PSP_RT_PFX + 'SQ_DN');
+    EmitInstrA('PUSH', 'EBX');
+    EmitInstrA('PUSH', 'ECX');
+    EmitInstrA('PUSH', 'EDX');
+    EmitInstrAB('MOV', 'ECX', 'EAX');   { ECX = n (garder) }
+    EmitInstrAB('MOV', 'EBX', 'EAX');   { EBX = x = n (estimation) }
+    EmitLabel(PSP_RT_PFX + 'SQ_LP');
+    EmitInstrAB('MOV', 'EAX', 'ECX');   { EAX = n }
+    EmitInstrAB('XOR', 'EDX', 'EDX');
+    EmitInstrA('DIV', 'EBX');            { EAX = n/x }
+    EmitInstrAB('ADD', 'EAX', 'EBX');   { EAX = x + n/x }
+    EmitInstrAB('SHR', 'EAX', '1');     { EAX = (x + n/x) / 2 }
+    EmitInstrAB('CMP', 'EAX', 'EBX');   { nouvelle estimation < ancienne ? }
+    EmitInstrA('JAE', PSP_RT_PFX + 'SQ_OK');
+    EmitInstrAB('MOV', 'EBX', 'EAX');   { x = nouvelle estimation }
+    EmitInstrA('JMP', PSP_RT_PFX + 'SQ_LP');
+    EmitLabel(PSP_RT_PFX + 'SQ_OK');
+    EmitInstrAB('MOV', 'EAX', 'EBX');   { retourner x }
+    EmitInstrA('POP', 'EDX');
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EBX');
+    EmitLabel(PSP_RT_PFX + 'SQ_DN');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RANDOM : -> EAX = valeur pseudo-aleatoire (LCG 32 bits) }
+    EmitLabel(PSP_RT_PFX + 'RANDOM');
+    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + PSP_RT_PFX + 'SEED]');
+    EmitInstrAB('IMUL', 'EAX', '1103515245');
+    EmitInstrAB('ADD', 'EAX', '12345');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'SEED]', 'EAX');
+    EmitInstrAB('AND', 'EAX', '7FFFFFFFh');
+    EmitInstr('RET');
+    EmitBlankLine;
+
+    { _PSPRT_RANDOMIZE : initialiser SEED depuis GetTickCount }
+    EmitLabel(PSP_RT_PFX + 'RANDOMIZE');
+    EmitInstrA('CALL', '_GetTickCount@0');
+    EmitInstrAB('MOV', 'DWORD PTR [' + PSP_RT_PFX + 'SEED]', 'EAX');
     EmitInstr('RET');
     EmitBlankLine;
 
@@ -6243,6 +6445,7 @@ Var
   FI        : Integer;
   WIdx      : Integer;
   WI        : Integer;
+  Ev1, Ev2, Ev3 : TExprVal;
 Begin
   { Rien a faire si EOF }
   If CurToken.Kind = TK_EOF Then Exit;
@@ -6347,14 +6550,14 @@ Begin
   End;
 
   { Write / WriteLn }
-  If (CurToken.Kind = TK_IDENT) And
+  If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
      (StrLowerCase(CurToken.Val) = 'writeln') Then
   Begin
     TplNextToken;
     ParseWriteStmt(True);
     Exit;
   End;
-  If (CurToken.Kind = TK_IDENT) And
+  If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
      (StrLowerCase(CurToken.Val) = 'write') Then
   Begin
     TplNextToken;
@@ -6367,6 +6570,11 @@ Begin
   Begin
     TplNextToken;
     ParseVarDecl;
+    If HasPendingAssign Then
+    Begin
+      HasPendingAssign := False;
+      ParseAssignment(PendingAssignName);
+    End;
     Exit;
   End;
 
@@ -6402,6 +6610,361 @@ Begin
     Exit;
   End;
 
+  { ============================================================
+    TODO 22 - FONCTIONS DE CHAINES ET RUNTIME STRING [IMPLEMENTE]
+    ============================================================ }
+
+  { Str(n, s) : convertir entier en chaine }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'str') Then
+  Begin
+    TplNextToken;
+    EmitComment('str');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    { Evaluer l expression numerique }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('CALL', PSP_RT_PFX + 'NUMTOSTR');
+    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'NUMBUF');
+    { Consommer virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Lire la variable destination }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx >= 0 Then
+      Begin
+        EmitInstrAB('MOV', 'EAX', 'ESI');
+        ExprStore(SIdx);
+      End;
+      TplNextToken;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Val(s, n, code) : convertir chaine en entier avec code erreur }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'val') Then
+  Begin
+    TplNextToken;
+    EmitComment('val');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    { Evaluer la chaine source }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    EmitInstrA('CALL', PSP_RT_PFX + 'STRTONUM');
+    EmitInstrA('PUSH', 'EAX');
+    { Consommer virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Variable destination n }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx >= 0 Then
+      Begin
+        EmitInstrA('POP', 'EAX');
+        EmitInstrA('PUSH', 'EAX');
+        ExprStore(SIdx);
+      End;
+      TplNextToken;
+    End;
+    { Consommer virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Variable code : 0 = succes (simplifie) }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx >= 0 Then
+      Begin
+        EmitInstrAB('XOR', 'EAX', 'EAX');
+        ExprStore(SIdx);
+      End;
+      TplNextToken;
+    End;
+    EmitInstrA('POP', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Delete(s, pos, count) : suppression en place }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'delete') Then
+  Begin
+    TplNextToken;
+    EmitComment('delete');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    { Variable chaine (adresse) }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Position }
+    ParseExpr(Ev2);
+    ExprFlushToEAX(Ev2);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Count }
+    ParseExpr(Ev3);
+    ExprFlushToEAX(Ev3);
+    EmitInstrAB('MOV', 'ECX', 'EAX');
+    EmitInstrA('POP', 'EBX');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'DELETE');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Insert(sub, s, pos) : insertion en place }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'insert') Then
+  Begin
+    TplNextToken;
+    EmitComment('insert');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    { Sous-chaine a inserer }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Variable chaine destination }
+    ParseExpr(Ev2);
+    ExprFlushToEAX(Ev2);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Position }
+    ParseExpr(Ev3);
+    ExprFlushToEAX(Ev3);
+    EmitInstrAB('MOV', 'EBX', 'EAX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstrA('CALL', PSP_RT_PFX + 'INSERT');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { New(ptr) : allouer memoire (taille par defaut 256 octets) }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'new') Then
+  Begin
+    TplNextToken;
+    EmitComment('new');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    SIdx := -1;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      TplNextToken;
+    End;
+    { HeapAlloc(GetProcessHeap, 0, 256) }
+    EmitInstrA('PUSH', '256');            { dwBytes }
+    EmitInstrA('PUSH', '0');              { dwFlags }
+    EmitInstrA('CALL', '_GetProcessHeap@0');
+    EmitInstrA('PUSH', 'EAX');            { hHeap }
+    EmitInstrA('CALL', '_HeapAlloc@12');
+    If SIdx >= 0 Then
+      ExprStore(SIdx);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { GetMem(ptr, size) : allouer memoire }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'getmem') Then
+  Begin
+    TplNextToken;
+    EmitComment('getmem');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    SIdx := -1;
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      TplNextToken;
+    End;
+    { Consommer virgule }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Evaluer la taille }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('PUSH', 'EAX');            { dwBytes }
+    EmitInstrA('PUSH', '0');              { dwFlags }
+    EmitInstrA('CALL', '_GetProcessHeap@0');
+    EmitInstrA('PUSH', 'EAX');            { hHeap }
+    EmitInstrA('CALL', '_HeapAlloc@12');
+    If SIdx >= 0 Then
+      ExprStore(SIdx);
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Dispose(ptr) : liberer memoire }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'dispose') Then
+  Begin
+    TplNextToken;
+    EmitComment('dispose');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    { HeapFree(GetProcessHeap, 0, ptr) }
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('CALL', '_GetProcessHeap@0');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrA('CALL', '_HeapFree@12');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { FreeMem(ptr, size) : liberer memoire }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'freemem') Then
+  Begin
+    TplNextToken;
+    EmitComment('freemem');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('PUSH', 'EAX');
+    { Consommer virgule et taille (ignores pour HeapFree) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+    Begin
+      TplNextToken;
+      ParseExpr(Ev2);
+    End;
+    { HeapFree(GetProcessHeap, 0, ptr) }
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('CALL', '_GetProcessHeap@0');
+    EmitInstrA('PUSH', 'EAX');
+    EmitInstrA('CALL', '_HeapFree@12');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { FillChar(var, count, char) : remplissage memoire }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'fillchar') Then
+  Begin
+    TplNextToken;
+    EmitComment('fillchar');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    { Adresse variable }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Count }
+    ParseExpr(Ev2);
+    ExprFlushToEAX(Ev2);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Caractere / valeur }
+    ParseExpr(Ev3);
+    ExprFlushToEAX(Ev3);
+    { REP STOSB : EDI=dest, ECX=count, AL=val }
+    EmitInstrA('POP', 'ECX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstr('CLD');
+    EmitInstr('REP STOSB');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Move(src, dst, count) : copie memoire }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'move') Then
+  Begin
+    TplNextToken;
+    EmitComment('move');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      TplNextToken;
+    { Source }
+    ParseExpr(Ev1);
+    ExprFlushToEAX(Ev1);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Destination }
+    ParseExpr(Ev2);
+    ExprFlushToEAX(Ev2);
+    EmitInstrA('PUSH', 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      TplNextToken;
+    { Count }
+    ParseExpr(Ev3);
+    ExprFlushToEAX(Ev3);
+    { REP MOVSB : ESI=src, EDI=dst, ECX=count }
+    EmitInstrAB('MOV', 'ECX', 'EAX');
+    EmitInstrA('POP', 'EDI');
+    EmitInstrA('POP', 'ESI');
+    EmitInstr('CLD');
+    EmitInstr('REP MOVSB');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
+  { Randomize : initialiser le generateur aleatoire }
+  If (CurToken.Kind = TK_IDENT) And
+     (StrLowerCase(CurToken.Val) = 'randomize') Then
+  Begin
+    TplNextToken;
+    EmitComment('randomize');
+    EmitInstrA('CALL', PSP_RT_PFX + 'RANDOMIZE');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    Exit;
+  End;
+
   { function / procedure declarations }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function') Then
   Begin
@@ -6428,7 +6991,7 @@ Begin
   End;
 
   { halt / halt(code) }
-  If (CurToken.Kind = TK_IDENT) And
+  If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
      (StrLowerCase(CurToken.Val) = 'halt') Then
   Begin
     TplNextToken;
@@ -6493,7 +7056,9 @@ Begin
   End;
 
   { Identificateur : affectation ou appel de procedure }
-  If CurToken.Kind = TK_IDENT Then
+  If (CurToken.Kind = TK_IDENT) Or
+     ((CurToken.Kind = TK_KEYWORD) And
+      (CurToken.Val = 'result')) Then
   Begin
     SavedName := CurToken.Val;
     TplNextToken;
