@@ -7222,7 +7222,7 @@ Begin
          (SymTab[I].ScopeId = CurScopeId) And
          (SymTab[I].Cat In [SC_PARAM, SC_VARPARAM]) Then
       Begin
-        If SymTab[I].Cat = SC_VARPARAM Then
+        If (SymTab[I].Cat = SC_VARPARAM) And (PCnt < 31) Then
           VarMask := VarMask Or (LongInt(1) Shl PCnt);
         Inc(PCnt);
       End;
