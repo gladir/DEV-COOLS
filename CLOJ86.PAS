@@ -203,7 +203,7 @@
             (if-let [x expr] then else?) : let + test en une forme
             (when-let [x expr] body ...) : let + when en une forme
 
-  TODO 14 - LIAISONS LOCALES : LET
+  TODO 14 - LIAISONS LOCALES : LET [IMPLEMENTE]
             (let [x 1 y 2] body ...) : ParseLetForm
               Chaque liaison cree une variable locale sur la pile
               SUB SP,2 pour chaque liaison, acces [BP-offset]
@@ -3461,7 +3461,11 @@ Begin
   SymEnterScope;
   SaveFrame := CurFrameSize;
 
-  (* Traiter les paires nom/valeur *)
+  (* Traiter les paires nom/valeur avec allocation individuelle  *)
+  (* SUB SP,2 pour chaque liaison AVANT l evaluation de la valeur *)
+  (* afin de proteger l espace contre les PUSH temporaires.       *)
+  (* Les liaisons sont sequentielles : chaque nom voit les prec.  *)
+  (* Le shadowing est supporte naturellement par SymAdd.          *)
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
     If CurToken.Kind <> TK_SYMBOL Then
@@ -3473,13 +3477,23 @@ Begin
     VarName := CurToken.Val;
     LexNextToken;
 
+    (* Verification : nombre pair d elements dans le vecteur *)
+    If (CurToken.Kind = TK_RBRACKET) Or (CurToken.Kind = TK_EOF) Then
+    Begin
+      WarnMsg('nombre impair d''elements dans le vecteur de liaisons let');
+      Break;
+    End;
+
+    (* Allouer l emplacement local sur la pile AVANT l evaluation *)
+    Inc(CurFrameSize, 2);
+    Ofs := CurFrameSize;
+    EmitInstrAB('SUB', 'SP', '2');
+
     (* Evaluer la valeur de la liaison *)
     ParseForm(ValRes);
     ExprFlushToAX(ValRes);
 
-    (* Allouer un emplacement local sur la pile *)
-    Inc(CurFrameSize, 2);
-    Ofs := CurFrameSize;
+    (* Enregistrer le symbole et stocker la valeur *)
     VarSIdx := SymAdd(VarName, SK_LOCAL, ValRes.TypeIdx, -Ofs);
     If VarSIdx >= 0 Then
     Begin
@@ -3493,13 +3507,6 @@ Begin
     LexNextToken  (* consomme ']' *)
   Else
     CompileError('] attendu en fin de liaisons let');
-
-  (* Reserver l espace sur la pile pour les locales *)
-  If CurFrameSize > SaveFrame Then
-  Begin
-    Str(CurFrameSize - SaveFrame, S);
-    EmitInstrAB('SUB', 'SP', S);
-  End;
 
   (* Evaluer le body *)
   While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
@@ -5105,6 +5112,15 @@ Begin
     Res.SymIdx  := -1;
   End;
 End;
+
+(* ============================================================
+   TODO 14 - LIAISONS LOCALES : LET [IMPLEMENTE]
+   ============================================================ *)
+(* ParseLet ameliore dans la section TODO 10 :                    *)
+(*   - SUB SP,2 pour chaque liaison AVANT evaluation de la valeur *)
+(*   - Verification du nombre pair d elements dans le vecteur     *)
+(*   - Liaisons sequentielles (chaque nom voit les precedents)    *)
+(*   - Shadowing supporte (une liaison masque le scope parent)    *)
 
 Procedure EmitRuntime;
 Begin
