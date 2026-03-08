@@ -374,7 +374,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>PSPCW32.PAS</b></td>
-			<td>Cette commande permet de compiler du PSP (Pascal Server Pages) pour de l'assembleur deu microprocesseur 80386 (en véritable exécutable Windows 32 bits de format EXE PE Windows).</td>
+			<td>Cette commande permet de compiler du PSP (Pascal Server Pages) pour de l'assembleur du microprocesseur 80386 (en véritable exécutable Windows 32 bits de format EXE PE Windows).</td>
 		</tr>
 		<tr>
 			<td><b>QPUDEP.PAS</b></td>
