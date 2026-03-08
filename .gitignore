@@ -1,3 +1,4 @@
-*.o
 *.exe
+*.o
 PSPCW32
+PSPCW32.o

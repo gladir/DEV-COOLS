@@ -277,7 +277,7 @@
             Succ(x) : ADD EAX,1
             Pred(x) : SUB EAX,1
 
-  TODO 18 - PROCEDURES ET FONCTIONS
+  TODO 18 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
             ParseProcDecl / ParseFuncDecl :
               PROCEDURE nom[(params)]; [declarations] BEGIN stmts END;
               FUNCTION nom[(params)]: Type; [declarations] BEGIN stmts END;
@@ -958,6 +958,8 @@ Procedure ParseForStmt; Forward;
 Procedure ParseWhileStmt; Forward;
 Procedure ParseRepeatStmt; Forward;
 { Fonctions et procedures - TODO 18 }
+Function ParseParamList : Integer; Forward;
+Procedure ParseFuncOrProc(IsFunc : Boolean); Forward;
 Procedure ParseFuncDecl; Forward;
 Procedure ParseProcDecl; Forward;
 { Types definis et enumerations - TODO 06 / 17 }
@@ -6659,7 +6661,7 @@ Begin
       End;
     End;
 
-    { Appel de procedure : ident(...) }
+    { Appel de procedure : ident(...) ou ident sans args }
     SIdx := SymFind(SavedName);
     If SIdx >= 0 Then
     Begin
@@ -6667,16 +6669,8 @@ Begin
       Begin
         EmitComment('call ' + SavedName);
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
-        Begin
-          TplNextToken;
           ParseCallArgs(SIdx);
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
-            TplNextToken;
-        End;
         EmitCall(SymTab[SIdx].MangledName);
-        If SymTab[SIdx].ParamCnt > 0 Then
-          EmitInstrAB('ADD', 'ESP',
-            IntToStr(SymTab[SIdx].ParamCnt * 4));
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
           TplNextToken;
         Exit;
@@ -6999,9 +6993,424 @@ End;
    - EmitDataSeg : emission DK_ARRAY (DB n DUP(0) / DD n DUP(0))
    - TypeTab : Kind=TKP_ARRAY, Lo, Hi, BaseTypeIdx, Size *)
 
-{ --- Stubs Fonctions/Procedures (TODO 18) --- }
-Procedure ParseFuncDecl; Begin End;
-Procedure ParseProcDecl; Begin End;
+{ ============================================================
+  TODO 18 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
+  ============================================================ }
+{ ParseParamList : parser une liste de parametres formels.
+  Syntaxe : (a, b: Integer; var c: String; ...)
+  Chaque parametre occupe un DWORD (4 octets) sur la pile.
+  Retourne le nombre total d octets de parametres.
+  Les parametres sont ajoutes a la table des symboles (SC_PARAM
+  ou SC_VARPARAM) avec leur offset corrige [EBP+8+...].
+  Convention Pascal : args empiles gauche a droite,
+  premier param = [EBP+8+(ParamBytes-4)], dernier = [EBP+8].
+
+  ParseFuncOrProc(IsFunc) : declaration complete de fonction/procedure.
+  - Signature : nom, parametres, type de retour (fonctions)
+  - FORWARD : declaration anticipee (corps differe)
+  - Declarations locales (var, const, type, proc/func imbriquees)
+  - Prologue : PUSH EBP / MOV EBP,ESP / SUB ESP,n / PUSH ESI,EDI
+  - Corps : begin ... end (via ParseBlock)
+  - Label de retour pour Exit (JMP vers epilogue)
+  - Retour fonction : valeur en [EBP-4] chargee dans EAX
+  - Epilogue : POP EDI,ESI / MOV ESP,EBP / POP EBP / RET n
+  - PROC / ENDP directives MASM
+  - Contexte sauvegarde/restaure (CurFrameOffset, CurFuncName...)
+
+  ParseFuncDecl / ParseProcDecl : enveloppes appelant ParseFuncOrProc. }
+
+{ ---- ParseParamList ------------------------------------------- }
+Function ParseParamList : Integer;
+Var
+  Names      : Array[0..MAX_PARAM - 1] Of TString;
+  IsVar      : Array[0..MAX_PARAM - 1] Of Boolean;
+  NCount     : Integer;
+  TName      : TString;
+  TIdx       : Integer;
+  ParamBytes : Integer;
+  I, Idx     : Integer;
+  Cat        : TSymCat;
+Begin
+  ParamBytes := 0;
+
+  { Consommer ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    TplNextToken
+  Else
+  Begin
+    ParseParamList := 0;
+    Exit;
+  End;
+
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+  Begin
+    NCount := 0;
+
+    { Detecter var }
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'var') Then
+    Begin
+      For I := 0 To MAX_PARAM - 1 Do
+        IsVar[I] := True;
+      TplNextToken;
+    End
+    Else
+    Begin
+      For I := 0 To MAX_PARAM - 1 Do
+        IsVar[I] := False;
+    End;
+
+    { Collecter les noms de parametres }
+    While (CurToken.Kind = TK_IDENT) Do
+    Begin
+      If NCount < MAX_PARAM Then
+      Begin
+        Names[NCount] := CurToken.Val;
+        Inc(NCount);
+      End;
+      TplNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        TplNextToken
+      Else
+        Break;
+    End;
+
+    { Deux-points + type }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      TplNextToken
+    Else
+      WarnMsg(''':'' attendu dans liste de parametres');
+
+    TName := '';
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      TName := CurToken.Val;
+      TplNextToken;
+    End;
+
+    TIdx := TypeResolve(TName);
+    If TIdx = TY_UNKNOWN Then
+    Begin
+      WarnMsg('type de parametre inconnu: ' + TName);
+      TIdx := TY_IDX_INTEGER;
+    End;
+
+    { Enregistrer les parametres dans la table des symboles }
+    For I := 0 To NCount - 1 Do
+    Begin
+      If IsVar[I] Then
+        Cat := SC_VARPARAM
+      Else
+        Cat := SC_PARAM;
+      Idx := SymAdd(Names[I], Cat, TIdx);
+      If Idx >= 0 Then
+      Begin
+        { Offset provisoire = rang en octets, sera corrige plus bas }
+        SymTab[Idx].Offset  := ParamBytes;
+        SymTab[Idx].IsLocal := True;
+      End;
+      Inc(ParamBytes, 4);  { chaque parametre = 1 DWORD sur la pile }
+    End;
+
+    { Point-virgule entre groupes de parametres }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+  End;
+
+  { Consommer ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    TplNextToken;
+
+  { Corriger les offsets des parametres.
+    Convention Pascal, args empiles gauche a droite, callee cleanup.
+    Apres PUSH EBP / MOV EBP,ESP :
+      [EBP+0] = saved EBP
+      [EBP+4] = adresse de retour
+      params a partir de [EBP+8]
+    Premier param (rang 0) -> offset le plus haut
+    Dernier param (rang PB-4) -> offset le plus bas [EBP+8] }
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].ScopeLevel = CurScopeLevel) And
+       (SymTab[I].Cat In [SC_PARAM, SC_VARPARAM]) Then
+    Begin
+      SymTab[I].Offset := 8 + (ParamBytes - 4 - SymTab[I].Offset);
+      If Opts.DebugMode Then
+        WriteLn('  PARAM: ', SymTab[I].Name, ' [EBP+',
+                SymTab[I].Offset, ']');
+    End;
+  End;
+
+  ParseParamList := ParamBytes;
+End;
+
+{ ---- ParseFuncOrProc ------------------------------------------ }
+Procedure ParseFuncOrProc(IsFunc : Boolean);
+Var
+  FuncName     : TString;
+  RetTypeName  : TString;
+  RetTypeIdx   : Integer;
+  FIdx         : Integer;
+  ParamBytes   : Integer;
+  FrameSize    : Integer;
+  RetLabel     : TString;
+  SaveFrame    : Integer;
+  SaveFuncName : TString;
+  SaveRetOfs   : Integer;
+  SaveRetLabel : TString;
+  SaveParamB   : Integer;
+  Cat          : TSymCat;
+  RetVarIdx    : Integer;
+  VarMask      : LongInt;
+  PCnt         : Integer;
+  I            : Integer;
+Begin
+  { Consommer function/procedure }
+  TplNextToken;
+
+  { Nom de la fonction / procedure }
+  If CurToken.Kind <> TK_IDENT Then
+  Begin
+    WarnMsg('nom de fonction/procedure attendu');
+    Exit;
+  End;
+  FuncName := CurToken.Val;
+  TplNextToken;
+
+  { Categorie }
+  If IsFunc Then
+    Cat := SC_FUNC
+  Else
+    Cat := SC_PROC;
+
+  { Type de retour par defaut }
+  RetTypeIdx := TY_IDX_INTEGER;
+
+  { Verifier si c est une redeclaration (forward resolue) }
+  FIdx := SymFindInScope(FuncName, CurScopeLevel);
+  If (FIdx >= 0) And SymTab[FIdx].IsForward Then
+  Begin
+    { Forward resolue : on reutilise le symbole }
+    SymTab[FIdx].IsForward := False;
+  End
+  Else
+  Begin
+    { Nouvelle declaration }
+    FIdx := SymAdd(FuncName, Cat, RetTypeIdx);
+  End;
+
+  { Entrer dans le scope de la fonction }
+  SymEnterScope;
+  Inc(CurNestLevel);
+  If CurNestLevel > NEST_MAX Then
+    WarnMsg('imbrication de fonctions trop profonde (>' +
+            IntToStr(NEST_MAX) + ')');
+
+  { Parser les parametres }
+  ParamBytes := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParamBytes := ParseParamList;
+
+  { Construire le masque des parametres var }
+  If FIdx >= 0 Then
+  Begin
+    VarMask := 0;
+    PCnt    := 0;
+    For I := 0 To SymCount - 1 Do
+    Begin
+      If (SymTab[I].ScopeLevel = CurScopeLevel) And
+         (SymTab[I].ScopeId = CurScopeId) And
+         (SymTab[I].Cat In [SC_PARAM, SC_VARPARAM]) Then
+      Begin
+        If SymTab[I].Cat = SC_VARPARAM Then
+          VarMask := VarMask Or (LongInt(1) Shl PCnt);
+        Inc(PCnt);
+      End;
+    End;
+    SymTab[FIdx].ParamCnt     := PCnt;
+    SymTab[FIdx].VarParamMask := VarMask;
+    If Opts.DebugMode Then
+      WriteLn('  FUNC_PARAMS: ', FuncName, ' cnt=', PCnt,
+              ' varmask=', VarMask);
+  End;
+
+  { Type de retour pour les fonctions }
+  If IsFunc Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      TplNextToken;
+      RetTypeName := '';
+      If (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_IDENT) Then
+      Begin
+        RetTypeName := CurToken.Val;
+        TplNextToken;
+      End;
+      RetTypeIdx := TypeResolve(RetTypeName);
+      If RetTypeIdx = TY_UNKNOWN Then
+      Begin
+        WarnMsg('type de retour inconnu: ' + RetTypeName);
+        RetTypeIdx := TY_IDX_INTEGER;
+      End;
+    End;
+    If FIdx >= 0 Then
+      SymTab[FIdx].TypeIdx := RetTypeIdx;
+  End
+  Else
+  Begin
+    { Procedure : pas de valeur de retour }
+    RetTypeIdx := TY_UNKNOWN;
+    If FIdx >= 0 Then
+      SymTab[FIdx].TypeIdx := TY_UNKNOWN;
+  End;
+
+  { Point-virgule apres la signature }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+
+  { Verifier si forward }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'forward') Then
+  Begin
+    If FIdx >= 0 Then
+      SymTab[FIdx].IsForward := True;
+    TplNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      TplNextToken;
+    SymLeaveScope;
+    Dec(CurNestLevel);
+    Exit;
+  End;
+
+  { Sauvegarder le contexte du cadre parent }
+  SaveFrame    := CurFrameOffset;
+  SaveFuncName := CurFuncName;
+  SaveRetOfs   := CurFuncRetOfs;
+  SaveRetLabel := CurRetLabel;
+  SaveParamB   := CurParamBytes;
+
+  CurFrameOffset := 0;
+  CurParamBytes  := ParamBytes;
+  RetLabel       := LabelGen;
+  CurRetLabel    := RetLabel;
+
+  { Pour les fonctions : allouer une variable locale pour la valeur
+    de retour. On la stocke en [EBP-4] (DWORD). }
+  If IsFunc Then
+  Begin
+    Dec(CurFrameOffset, 4);
+    CurFuncName   := StrLowerCase(FuncName);
+    CurFuncRetOfs := CurFrameOffset;
+
+    { Ajouter "result" comme alias de la valeur de retour }
+    RetVarIdx := SymAdd('result', SC_VAR, RetTypeIdx);
+    If RetVarIdx >= 0 Then
+    Begin
+      SymTab[RetVarIdx].Offset  := CurFuncRetOfs;
+      SymTab[RetVarIdx].IsLocal := True;
+    End;
+  End
+  Else
+    CurFuncName := '';
+
+  { Declarations locales const/var/type et proc/func imbriquees }
+  While ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'const')) Or
+        ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'var')) Or
+        ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'type')) Or
+        ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'function')) Or
+        ((CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'procedure')) Do
+  Begin
+    If CurToken.Val = 'const' Then
+    Begin
+      TplNextToken;
+      ParseConstDecl;
+    End
+    Else If CurToken.Val = 'var' Then
+    Begin
+      TplNextToken;
+      ParseVarDecl;
+      If HasPendingAssign Then
+      Begin
+        HasPendingAssign := False;
+        ParseAssignment(PendingAssignName);
+      End;
+    End
+    Else If CurToken.Val = 'type' Then
+    Begin
+      TplNextToken;
+      ParseTypeDecl;
+    End
+    Else If CurToken.Val = 'function' Then
+      ParseFuncDecl
+    Else If CurToken.Val = 'procedure' Then
+      ParseProcDecl;
+  End;
+
+  { Calculer la taille du cadre local }
+  FrameSize := -CurFrameOffset;  { CurFrameOffset est negatif }
+
+  { Emettre le code de la procedure }
+  EmitBlankLine;
+  EmitComment('--- ' + FuncName + ' ---');
+  If FIdx >= 0 Then
+    EmitRaw(SymTab[FIdx].MangledName + '   PROC')
+  Else
+    EmitRaw(PSP_FN_PFX + StrUpperCase(FuncName) + '   PROC');
+
+  { Prologue }
+  EmitProlog(FrameSize);
+
+  { Initialiser la valeur de retour a 0 }
+  If IsFunc Then
+    EmitInstrAB('MOV', 'DWORD PTR ' + EBPOfs(CurFuncRetOfs), '0');
+
+  { Corps : begin ... end }
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'begin') Then
+    ParseBlock
+  Else
+    WarnMsg('''begin'' attendu dans le corps de ' + FuncName);
+
+  { Label de retour (pour Exit) }
+  EmitLabel(RetLabel);
+
+  { Charger la valeur de retour dans EAX (fonctions) }
+  If IsFunc Then
+    EmitInstrAB('MOV', 'EAX',
+      'DWORD PTR ' + EBPOfs(CurFuncRetOfs));
+
+  { Epilogue }
+  EmitEpilog(ParamBytes);
+
+  If FIdx >= 0 Then
+    EmitRaw(SymTab[FIdx].MangledName + '   ENDP')
+  Else
+    EmitRaw(PSP_FN_PFX + StrUpperCase(FuncName) + '   ENDP');
+  EmitBlankLine;
+
+  { Consommer le ; final apres end }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    TplNextToken;
+
+  { Restaurer le contexte }
+  SymLeaveScope;
+  Dec(CurNestLevel);
+  CurFrameOffset := SaveFrame;
+  CurFuncName    := SaveFuncName;
+  CurFuncRetOfs  := SaveRetOfs;
+  CurRetLabel    := SaveRetLabel;
+  CurParamBytes  := SaveParamB;
+End;
+
+{ ---- ParseFuncDecl / ParseProcDecl : enveloppes --------------- }
+Procedure ParseFuncDecl;
+Begin
+  ParseFuncOrProc(True);
+End;
+
+Procedure ParseProcDecl;
+Begin
+  ParseFuncOrProc(False);
+End;
 
 { --- Stubs Types/Enumerations (TODO 06 / 17) --- }
 { ParseTypeDecl : gere TYPE name = RECORD ... END (et aliases).
