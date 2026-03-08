@@ -1,885 +1,841 @@
 ; ========================================
-; Genere par PSP86 v1.0 (2026-03-06)
-; Source : samples\PSP\test_scope.psp
+; Genere par PSPCW32 v1.0 (2026-03-07)
+; Source : SAMPLES/PSP/test_scope.psp
+; Cible  : Win32 / 80386 / PE
 ; ========================================
 
-.MODEL SMALL
-.STACK 1024
+.386
+.MODEL FLAT, STDCALL
+OPTION CASEMAP:NONE
+
+; --- Declarations externes Win32 ---
+EXTRN   _ExitProcess@4       : PROC
+EXTRN   _GetStdHandle@4      : PROC
+EXTRN   _WriteFile@20        : PROC
+EXTRN   _ReadFile@20         : PROC
+EXTRN   _GetProcessHeap@0    : PROC
+EXTRN   _HeapAlloc@12        : PROC
+EXTRN   _HeapFree@12         : PROC
+EXTRN   _GetTickCount@0      : PROC
+
+.STACK 4096
 
 ; --- Segment de code ---
-_TEXT   SEGMENT WORD PUBLIC 'CODE'
-        ASSUME CS:_TEXT, DS:_DATA
+_TEXT   SEGMENT DWORD PUBLIC 'CODE'
+        ASSUME CS:_TEXT
 
 ; --- Point d entree principal ---
-_PSPF_MAIN:
-        MOV   AX, _DATA
-        MOV   DS, AX
+_PSPF_main:
+; Obtenir le handle stdout
+        PUSH   -11
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_PSPRT_HSTDOUT], EAX
+; Obtenir le handle stdin
+        PUSH   -10
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_PSPRT_HSTDIN], EAX
+
         JMP   _PSPL_MAINBODY
 
 _PSPL_MAINBODY:
 
 ; --- Swap ---
-_PSPF_SWAP   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        SUB   SP, 2
-        PUSH   SI
-        PUSH   DI
+_PSPF_SWAP   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        SUB   ESP, 4
+        PUSH   ESI
+        PUSH   EDI
 ; assign tmp
-        MOV   BX, WORD PTR [BP+6]
-        MOV   AX, WORD PTR [BX]
-        MOV   WORD PTR [BP-2], AX
+        MOV   EBX, DWORD PTR [EBP+12]
+        MOV   EAX, DWORD PTR [EBX]
+        MOV   DWORD PTR [EBP-4], EAX
 ; assign x
-        MOV   BX, WORD PTR [BP+4]
-        MOV   AX, WORD PTR [BX]
-        MOV   BX, WORD PTR [BP+6]
-        MOV   WORD PTR [BX], AX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   EAX, DWORD PTR [EBX]
+        MOV   EBX, DWORD PTR [EBP+12]
+        MOV   DWORD PTR [EBX], EAX
 ; assign y
-        MOV   AX, WORD PTR [BP-2]
-        MOV   BX, WORD PTR [BP+4]
-        MOV   WORD PTR [BX], AX
+        MOV   EAX, DWORD PTR [EBP-4]
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   DWORD PTR [EBX], EAX
 _PSPL_1:
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   4
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   8
 _PSPF_SWAP   ENDP
 
 ; assign a
-        MOV   AX, 10
-        MOV   WORD PTR [_PSP_A], AX
+        MOV   EAX, 10
+        MOV   DWORD PTR [_PSP_A], EAX
 ; assign b
-        MOV   AX, 20
-        MOV   WORD PTR [_PSP_B], AX
+        MOV   EAX, 20
+        MOV   DWORD PTR [_PSP_B], EAX
 ; call Swap
-        MOV   AX, OFFSET _PSP_A
-        PUSH   AX
-        MOV   AX, OFFSET _PSP_B
-        PUSH   AX
+        MOV   EAX, OFFSET _PSP_A
+        PUSH   EAX
+        MOV   EAX, OFFSET _PSP_B
+        PUSH   EAX
         CALL   _PSPF_SWAP
 ; write
-        MOV   AX, WORD PTR [_PSP_A]
+        MOV   EAX, DWORD PTR [_PSP_A]
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; write
-        LEA   AX, _PSPK_2
-        MOV   SI, AX
+        LEA   EAX, _PSPK_2
+        MOV   ESI, EAX
         CALL   _PSPRT_PRINTSTR
 ; write
-        MOV   AX, WORD PTR [_PSP_B]
+        MOV   EAX, DWORD PTR [_PSP_B]
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; writeln
-        MOV   SI, OFFSET _PSPRT_CRLF
+        MOV   ESI, OFFSET _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
 
 ; --- Inc10 ---
-_PSPF_INC10   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        PUSH   SI
-        PUSH   DI
+_PSPF_INC10   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        PUSH   ESI
+        PUSH   EDI
 ; assign v
-        MOV   BX, WORD PTR [BP+4]
-        MOV   AX, WORD PTR [BX]
-        PUSH   AX
-        MOV   AX, 10
-        MOV   BX, AX
-        POP   AX
-        ADD   AX, BX
-        MOV   BX, WORD PTR [BP+4]
-        MOV   WORD PTR [BX], AX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   EAX, DWORD PTR [EBX]
+        PUSH   EAX
+        MOV   EAX, 10
+        MOV   EBX, EAX
+        POP   EAX
+        ADD   EAX, EBX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   DWORD PTR [EBX], EAX
 _PSPL_3:
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   2
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   4
 _PSPF_INC10   ENDP
 
 ; assign c
-        MOV   AX, 5
-        MOV   WORD PTR [_PSP_C], AX
+        MOV   EAX, 5
+        MOV   DWORD PTR [_PSP_C], EAX
 ; call Inc10
-        MOV   AX, OFFSET _PSP_C
-        PUSH   AX
+        MOV   EAX, OFFSET _PSP_C
+        PUSH   EAX
         CALL   _PSPF_INC10
 ; write
-        MOV   AX, WORD PTR [_PSP_C]
+        MOV   EAX, DWORD PTR [_PSP_C]
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; writeln
-        MOV   SI, OFFSET _PSPRT_CRLF
+        MOV   ESI, OFFSET _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
 
 ; --- AddTo ---
-_PSPF_ADDTO   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        PUSH   SI
-        PUSH   DI
+_PSPF_ADDTO   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        PUSH   ESI
+        PUSH   EDI
 ; assign dest
-        MOV   BX, WORD PTR [BP+4]
-        MOV   AX, WORD PTR [BX]
-        PUSH   AX
-        MOV   AX, WORD PTR [BP+6]
-        MOV   BX, AX
-        POP   AX
-        ADD   AX, BX
-        MOV   BX, WORD PTR [BP+4]
-        MOV   WORD PTR [BX], AX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   EAX, DWORD PTR [EBX]
+        PUSH   EAX
+        MOV   EAX, DWORD PTR [EBP+12]
+        MOV   EBX, EAX
+        POP   EAX
+        ADD   EAX, EBX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   DWORD PTR [EBX], EAX
 _PSPL_4:
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   4
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   8
 _PSPF_ADDTO   ENDP
 
 ; assign d
-        MOV   AX, 100
-        MOV   WORD PTR [_PSP_D], AX
+        MOV   EAX, 100
+        MOV   DWORD PTR [_PSP_D], EAX
 ; call AddTo
-        MOV   AX, 50
-        PUSH   AX
-        MOV   AX, OFFSET _PSP_D
-        PUSH   AX
+        MOV   EAX, 50
+        PUSH   EAX
+        MOV   EAX, OFFSET _PSP_D
+        PUSH   EAX
         CALL   _PSPF_ADDTO
 ; write
-        MOV   AX, WORD PTR [_PSP_D]
+        MOV   EAX, DWORD PTR [_PSP_D]
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; writeln
-        MOV   SI, OFFSET _PSPRT_CRLF
+        MOV   ESI, OFFSET _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
 
 ; --- DoubleVar ---
-_PSPF_DOUBLEVAR   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        PUSH   SI
-        PUSH   DI
+_PSPF_DOUBLEVAR   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        PUSH   ESI
+        PUSH   EDI
 ; assign n
-        MOV   BX, WORD PTR [BP+4]
-        MOV   AX, WORD PTR [BX]
-        PUSH   AX
-        MOV   BX, WORD PTR [BP+4]
-        MOV   AX, WORD PTR [BX]
-        MOV   BX, AX
-        POP   AX
-        ADD   AX, BX
-        MOV   BX, WORD PTR [BP+4]
-        MOV   WORD PTR [BX], AX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   EAX, DWORD PTR [EBX]
+        PUSH   EAX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   EAX, DWORD PTR [EBX]
+        MOV   EBX, EAX
+        POP   EAX
+        ADD   EAX, EBX
+        MOV   EBX, DWORD PTR [EBP+8]
+        MOV   DWORD PTR [EBX], EAX
 _PSPL_5:
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   2
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   4
 _PSPF_DOUBLEVAR   ENDP
 
 
 ; --- CallDouble ---
-_PSPF_CALLDOUBLE   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        PUSH   SI
-        PUSH   DI
+_PSPF_CALLDOUBLE   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        PUSH   ESI
+        PUSH   EDI
 ; call DoubleVar
-        MOV   AX, WORD PTR [BP+4]
-        PUSH   AX
+        MOV   EAX, DWORD PTR [EBP+8]
+        PUSH   EAX
         CALL   _PSPF_DOUBLEVAR
 _PSPL_6:
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   2
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   4
 _PSPF_CALLDOUBLE   ENDP
 
 ; assign e
-        MOV   AX, 7
-        MOV   WORD PTR [_PSP_E], AX
+        MOV   EAX, 7
+        MOV   DWORD PTR [_PSP_E], EAX
 ; call CallDouble
-        MOV   AX, OFFSET _PSP_E
-        PUSH   AX
+        MOV   EAX, OFFSET _PSP_E
+        PUSH   EAX
         CALL   _PSPF_CALLDOUBLE
 ; write
-        MOV   AX, WORD PTR [_PSP_E]
+        MOV   EAX, DWORD PTR [_PSP_E]
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; writeln
-        MOV   SI, OFFSET _PSPRT_CRLF
+        MOV   ESI, OFFSET _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
 
 ; --- Fib ---
-_PSPF_FIB   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        SUB   SP, 10
-        PUSH   SI
-        PUSH   DI
-        MOV   WORD PTR [BP-2], 0
+_PSPF_FIB   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        SUB   ESP, 20
+        PUSH   ESI
+        PUSH   EDI
+        MOV   DWORD PTR [EBP-4], 0
 ; if
-        MOV   AX, WORD PTR [BP+4]
-        PUSH   AX
-        MOV   AX, 2
-        MOV   BX, AX
-        POP   AX
-        CMP   AX, BX
-        MOV   AX, 0
+        MOV   EAX, DWORD PTR [EBP+8]
+        PUSH   EAX
+        MOV   EAX, 2
+        MOV   EBX, EAX
+        POP   EAX
+        CMP   EAX, EBX
+        MOV   EAX, 0
         JGE   _PSPL_8
-        INC    AX
+        INC   EAX
 _PSPL_8:
-        TEST   AX, AX
+        TEST   EAX, EAX
         JZ   _PSPL_9
 ; assign retval Fib
-        MOV   AX, WORD PTR [BP+4]
-        MOV   WORD PTR [BP-2], AX
+        MOV   EAX, DWORD PTR [EBP+8]
+        MOV   DWORD PTR [EBP-4], EAX
         JMP   _PSPL_7
 _PSPL_9:
 ; assign fa
-        XOR   AX, AX
-        MOV   WORD PTR [BP-4], AX
+        XOR   EAX, EAX
+        MOV   DWORD PTR [EBP-8], EAX
 ; assign fb
-        MOV   AX, 1
-        MOV   WORD PTR [BP-6], AX
+        MOV   EAX, 1
+        MOV   DWORD PTR [EBP-12], EAX
 ; assign i
-        MOV   AX, 2
-        MOV   WORD PTR [BP-10], AX
+        MOV   EAX, 2
+        MOV   DWORD PTR [EBP-20], EAX
 ; while
 _PSPL_11:
-        MOV   AX, WORD PTR [BP-10]
-        PUSH   AX
-        MOV   AX, WORD PTR [BP+4]
-        MOV   BX, AX
-        POP   AX
-        CMP   AX, BX
-        MOV   AX, 0
+        MOV   EAX, DWORD PTR [EBP-20]
+        PUSH   EAX
+        MOV   EAX, DWORD PTR [EBP+8]
+        MOV   EBX, EAX
+        POP   EAX
+        CMP   EAX, EBX
+        MOV   EAX, 0
         JG   _PSPL_13
-        INC    AX
+        INC   EAX
 _PSPL_13:
-        TEST   AX, AX
+        TEST   EAX, EAX
         JZ   _PSPL_12
 ; assign fc
-        MOV   AX, WORD PTR [BP-4]
-        PUSH   AX
-        MOV   AX, WORD PTR [BP-6]
-        MOV   BX, AX
-        POP   AX
-        ADD   AX, BX
-        MOV   WORD PTR [BP-8], AX
+        MOV   EAX, DWORD PTR [EBP-8]
+        PUSH   EAX
+        MOV   EAX, DWORD PTR [EBP-12]
+        MOV   EBX, EAX
+        POP   EAX
+        ADD   EAX, EBX
+        MOV   DWORD PTR [EBP-16], EAX
 ; assign fa
-        MOV   AX, WORD PTR [BP-6]
-        MOV   WORD PTR [BP-4], AX
+        MOV   EAX, DWORD PTR [EBP-12]
+        MOV   DWORD PTR [EBP-8], EAX
 ; assign fb
-        MOV   AX, WORD PTR [BP-8]
-        MOV   WORD PTR [BP-6], AX
+        MOV   EAX, DWORD PTR [EBP-16]
+        MOV   DWORD PTR [EBP-12], EAX
 ; assign i
-        MOV   AX, WORD PTR [BP-10]
-        PUSH   AX
-        MOV   AX, 1
-        MOV   BX, AX
-        POP   AX
-        ADD   AX, BX
-        MOV   WORD PTR [BP-10], AX
+        MOV   EAX, DWORD PTR [EBP-20]
+        PUSH   EAX
+        MOV   EAX, 1
+        MOV   EBX, EAX
+        POP   EAX
+        ADD   EAX, EBX
+        MOV   DWORD PTR [EBP-20], EAX
         JMP   _PSPL_11
 _PSPL_12:
 ; assign retval Fib
-        MOV   AX, WORD PTR [BP-6]
-        MOV   WORD PTR [BP-2], AX
+        MOV   EAX, DWORD PTR [EBP-12]
+        MOV   DWORD PTR [EBP-4], EAX
 _PSPL_7:
-        MOV   AX, WORD PTR [BP-2]
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   2
+        MOV   EAX, DWORD PTR [EBP-4]
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   4
 _PSPF_FIB   ENDP
 
 ; write
 ; call fib
-        MOV   AX, 10
-        PUSH   AX
+        MOV   EAX, 10
+        PUSH   EAX
         CALL   _PSPF_FIB
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; writeln
-        MOV   SI, OFFSET _PSPRT_CRLF
+        MOV   ESI, OFFSET _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
 
 ; --- Hidden ---
-_PSPF_HIDDEN   PROC NEAR
-        PUSH   BP
-        MOV   BP, SP
-        SUB   SP, 4
-        PUSH   SI
-        PUSH   DI
-        MOV   WORD PTR [BP-2], 0
+_PSPF_HIDDEN   PROC
+        PUSH   EBP
+        MOV   EBP, ESP
+        SUB   ESP, 8
+        PUSH   ESI
+        PUSH   EDI
+        MOV   DWORD PTR [EBP-4], 0
 ; assign localvar
-        MOV   AX, WORD PTR [BP+4]
-        PUSH   AX
-        MOV   AX, 1
-        MOV   BX, AX
-        POP   AX
-        ADD   AX, BX
-        MOV   WORD PTR [BP-4], AX
+        MOV   EAX, DWORD PTR [EBP+8]
+        PUSH   EAX
+        MOV   EAX, 1
+        MOV   EBX, EAX
+        POP   EAX
+        ADD   EAX, EBX
+        MOV   DWORD PTR [EBP-8], EAX
 ; assign retval Hidden
-        MOV   AX, WORD PTR [BP-4]
-        MOV   WORD PTR [BP-2], AX
+        MOV   EAX, DWORD PTR [EBP-8]
+        MOV   DWORD PTR [EBP-4], EAX
 _PSPL_14:
-        MOV   AX, WORD PTR [BP-2]
-        POP   DI
-        POP   SI
-        MOV   SP, BP
-        POP   BP
-        RET   2
+        MOV   EAX, DWORD PTR [EBP-4]
+        POP   EDI
+        POP   ESI
+        MOV   ESP, EBP
+        POP   EBP
+        RET   4
 _PSPF_HIDDEN   ENDP
 
 ; assign f
 ; call hidden
-        MOV   AX, 41
-        PUSH   AX
+        MOV   EAX, 41
+        PUSH   EAX
         CALL   _PSPF_HIDDEN
-        MOV   WORD PTR [_PSP_F], AX
+        MOV   DWORD PTR [_PSP_F], EAX
 ; write
-        MOV   AX, WORD PTR [_PSP_F]
+        MOV   EAX, DWORD PTR [_PSP_F]
         CALL   _PSPRT_NUMTOSTR
-        MOV   SI, OFFSET _PSPRT_NUMBUF
+        MOV   ESI, OFFSET _PSPRT_NUMBUF
         CALL   _PSPRT_PRINTSTR
 ; writeln
-        MOV   SI, OFFSET _PSPRT_CRLF
+        MOV   ESI, OFFSET _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
 ; html fragment
-        MOV   SI, OFFSET _PSPK_HTML_15
+        MOV   ESI, OFFSET _PSPK_HTML_15
         CALL   _PSPRT_PRINTSTR
 
-; --- Sortie programme (DOS INT 21h) ---
-        MOV   AH, 4Ch
-        MOV   AL, 0
-        INT    21h
 
-; === Routines runtime ===
+; --- Sortie programme ---
+        PUSH   0
+        CALL   _ExitProcess@4
 
-; PRINTSTR : affiche chaine ASCIIZ (SI -> chaine)
+; ========================================
+;   ROUTINES RUNTIME 32 BITS (TODO 24)
+; ========================================
+
 _PSPRT_PRINTSTR:
-_PSPRT_PRINTSTR_LP:
-        LODSB
-        CMP   AL, 0
-        JE   _PSPRT_PRINTSTR_DONE
-        MOV   DL, AL
-        MOV   AH, 02h
-        INT    21h
-        JMP   _PSPRT_PRINTSTR_LP
-_PSPRT_PRINTSTR_DONE:
+        PUSH   ESI
+        MOV   EDI, ESI
+; calculer la longueur
+        XOR   ECX, ECX
+_PSPRT_PRINTSTR_L:
+        CMP   BYTE PTR [EDI], 0
+        JE   _PSPRT_PRINTSTR_W
+        INC   EDI
+        INC   ECX
+        JMP   _PSPRT_PRINTSTR_L
+_PSPRT_PRINTSTR_W:
+; WriteFile(hStdout, pStr, len, pWritten, 0)
+        PUSH   0
+        PUSH   OFFSET _PSPRT_WRITTEN
+        PUSH   ECX
+        PUSH   ESI
+        PUSH   DWORD PTR [_PSPRT_HSTDOUT]
+        CALL   _WriteFile@20
+        POP   ESI
         RET
 
-; NUMTOSTR : convertit AX (signe) -> NUMBUF (ASCIIZ)
 _PSPRT_NUMTOSTR:
-        PUSH   BX
-        PUSH   CX
-        PUSH   DX
-        PUSH   DI
-        MOV   DI, OFFSET _PSPRT_NUMBUF
-        MOV   CX, 0
-        CMP   AX, 0
+        PUSH   EBX
+        PUSH   ECX
+        PUSH   EDX
+        PUSH   EDI
+        LEA   EDI, _PSPRT_NUMBUF + 15
+        MOV   BYTE PTR [EDI], 0
+        MOV   ECX, 0
+        MOV   EBX, 10
+        CMP   EAX, 0
         JGE   _PSPRT_NTS_POS
-        MOV   BYTE PTR [DI], '-'
-        INC    DI
-        NEG    AX
+        NEG   EAX
+        MOV   ECX, 1
 _PSPRT_NTS_POS:
-        MOV   BX, 10
-_PSPRT_NTS_DIV:
-        XOR   DX, DX
-        DIV   BX
+        CMP   EAX, 0
+        JNE   _PSPRT_NTS_LOOP
+        DEC   EDI
+        MOV   BYTE PTR [EDI], '0'
+        JMP   _PSPRT_NTS_SIGN
+_PSPRT_NTS_LOOP:
+        CMP   EAX, 0
+        JE   _PSPRT_NTS_SIGN
+        XOR   EDX, EDX
+        DIV   EBX
         ADD   DL, '0'
-        PUSH   DX
-        INC    CX
-        CMP   AX, 0
-        JNE   _PSPRT_NTS_DIV
-_PSPRT_NTS_POP:
-        POP   AX
-        MOV   [DI], AL
-        INC    DI
-        LOOP   _PSPRT_NTS_POP
-        MOV   BYTE PTR [DI], 0
-        POP   DI
-        POP   DX
-        POP   CX
-        POP   BX
+        DEC   EDI
+        MOV   BYTE PTR [EDI], DL
+        JMP   _PSPRT_NTS_LOOP
+_PSPRT_NTS_SIGN:
+        CMP   ECX, 1
+        JNE   _PSPRT_NTS_DONE
+        DEC   EDI
+        MOV   BYTE PTR [EDI], '-'
+_PSPRT_NTS_DONE:
+        MOV   EAX, EDI
+        POP   EDI
+        POP   EDX
+        POP   ECX
+        POP   EBX
         RET
 
-; STRLEN : longueur chaine ASCIIZ (SI -> AX)
 _PSPRT_STRLEN:
-        PUSH   SI
-        XOR   AX, AX
-_PSPRT_STRLEN_LP:
-        CMP   BYTE PTR [SI], 0
-        JE   _PSPRT_STRLEN_DONE
-        INC    AX
-        INC    SI
-        JMP   _PSPRT_STRLEN_LP
-_PSPRT_STRLEN_DONE:
-        POP   SI
+        PUSH   EDI
+        MOV   EDI, ESI
+        XOR   EAX, EAX
+_PSPRT_STRLEN_L:
+        CMP   BYTE PTR [EDI], 0
+        JE   _PSPRT_STRLEN_D
+        INC   EDI
+        INC   EAX
+        JMP   _PSPRT_STRLEN_L
+_PSPRT_STRLEN_D:
+        POP   EDI
         RET
 
-; CONCAT : SI + DI -> AX = ptr STRBUF
 _PSPRT_CONCAT:
-        PUSH   BX
-        PUSH   CX
-        MOV   BX, OFFSET _PSPRT_STRBUF
-_PSPRT_CONCAT_S1:
-        MOV   AL, [SI]
+        PUSH   EBX
+        LEA   EBX, _PSPRT_STRBUF
+_PSPRT_CONC_L1:
+        MOV   AL, BYTE PTR [ESI]
+        MOV   BYTE PTR [EBX], AL
         CMP   AL, 0
-        JE   _PSPRT_CONCAT_S2
-        MOV   [BX], AL
-        INC    SI
-        INC    BX
-        JMP   _PSPRT_CONCAT_S1
-_PSPRT_CONCAT_S2:
-        MOV   AL, [DI]
+        JE   _PSPRT_CONC_L2
+        INC   ESI
+        INC   EBX
+        JMP   _PSPRT_CONC_L1
+_PSPRT_CONC_L2:
+        MOV   AL, BYTE PTR [EDI]
+        MOV   BYTE PTR [EBX], AL
         CMP   AL, 0
-        JE   _PSPRT_CONCAT_END
-        MOV   [BX], AL
-        INC    DI
-        INC    BX
-        JMP   _PSPRT_CONCAT_S2
-_PSPRT_CONCAT_END:
-        MOV   BYTE PTR [BX], 0
-        LEA   AX, _PSPRT_STRBUF
-        POP   CX
-        POP   BX
+        JE   _PSPRT_CONC_DN
+        INC   EDI
+        INC   EBX
+        JMP   _PSPRT_CONC_L2
+_PSPRT_CONC_DN:
+        LEA   EAX, _PSPRT_STRBUF
+        POP   EBX
         RET
 
-; STRCMP : SI vs DI -> AX (signe)
 _PSPRT_STRCMP:
-_PSPRT_STRCMP_LP:
-        MOV   AL, [SI]
-        MOV   AH, [DI]
-        CMP   AL, AH
-        JNE   _PSPRT_STRCMP_DIFF
+        PUSH   EBX
+_PSPRT_SCMP_L:
+        MOV   AL, BYTE PTR [ESI]
+        MOV   BL, BYTE PTR [EDI]
+        CMP   AL, BL
+        JB   _PSPRT_SCMP_LT
+        JA   _PSPRT_SCMP_GT
         CMP   AL, 0
-        JE   _PSPRT_STRCMP_EQ
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_STRCMP_LP
-_PSPRT_STRCMP_EQ:
-        XOR   AX, AX
-        RET
-_PSPRT_STRCMP_DIFF:
-        XOR   AH, AH
-        MOV   BL, [DI]
-        XOR   BH, BH
-        SUB   AX, BX
+        JE   _PSPRT_SCMP_EQ
+        INC   ESI
+        INC   EDI
+        JMP   _PSPRT_SCMP_L
+_PSPRT_SCMP_EQ:
+        XOR   EAX, EAX
+        JMP   _PSPRT_SCMP_DN
+_PSPRT_SCMP_LT:
+        MOV   EAX, -1
+        JMP   _PSPRT_SCMP_DN
+_PSPRT_SCMP_GT:
+        MOV   EAX, 1
+_PSPRT_SCMP_DN:
+        POP   EBX
         RET
 
-; CHR : AL -> AX = ptr chaine 1 car
+_PSPRT_WRITECRLF:
+        LEA   ESI, _PSPRT_CRLF
+        CALL   _PSPRT_PRINTSTR
+        RET
+
 _PSPRT_CHR:
         MOV   BYTE PTR [_PSPRT_CHRBUF], AL
-        MOV   BYTE PTR [_PSPRT_CHRBUF+1], 0
-        LEA   AX, _PSPRT_CHRBUF
+        MOV   BYTE PTR [_PSPRT_CHRBUF + 1], 0
+        LEA   EAX, _PSPRT_CHRBUF
         RET
 
-; STRTONUM : SI -> AX (entier signe)
 _PSPRT_STRTONUM:
-        PUSH   BX
-        PUSH   CX
-        XOR   AX, AX
-        XOR   CX, CX
-        CMP   BYTE PTR [SI], '-'
+        PUSH   EBX
+        PUSH   ECX
+        XOR   EAX, EAX
+        XOR   ECX, ECX
+        CMP   BYTE PTR [ESI], '-'
         JNE   _PSPRT_STN_LP
-        MOV   CX, 1
-        INC    SI
+        MOV   ECX, 1
+        INC   ESI
 _PSPRT_STN_LP:
-        MOV   BL, [SI]
-        CMP   BL, '0'
-        JB   _PSPRT_STN_DONE
-        CMP   BL, '9'
-        JA   _PSPRT_STN_DONE
-        SUB   BL, '0'
-        XOR   BH, BH
-        PUSH   BX
-        MOV   BX, 10
-        IMUL   BX
-        POP   BX
-        ADD   AX, BX
-        INC    SI
+        MOVZX   EBX, BYTE PTR [ESI]
+        CMP   EBX, '0'
+        JB   _PSPRT_STN_DN
+        CMP   EBX, '9'
+        JA   _PSPRT_STN_DN
+        SUB   EBX, '0'
+        IMUL   EAX, 10
+        ADD   EAX, EBX
+        INC   ESI
         JMP   _PSPRT_STN_LP
-_PSPRT_STN_DONE:
-        CMP   CX, 0
-        JE   _PSPRT_STN_RET
-        NEG    AX
-_PSPRT_STN_RET:
-        POP   CX
-        POP   BX
+_PSPRT_STN_DN:
+        CMP   ECX, 1
+        JNE   _PSPRT_STN_OK
+        NEG   EAX
+_PSPRT_STN_OK:
+        POP   ECX
+        POP   EBX
         RET
 
-; COPY : SI,BX,CX -> AX = ptr STRBUF
 _PSPRT_COPY:
-        PUSH   DI
-        MOV   DI, OFFSET _PSPRT_STRBUF
-        DEC   BX
-        ADD   SI, BX
-_PSPRT_COPY_LP:
-        CMP   CX, 0
-        JE   _PSPRT_COPY_END
-        MOV   AL, [SI]
+        PUSH   EBX
+        DEC   ECX
+        ADD   ESI, ECX
+        LEA   EBX, _PSPRT_STRBUF
+_PSPRT_COPY_L:
+        CMP   EDX, 0
+        JLE   _PSPRT_COPY_DN
+        MOV   AL, BYTE PTR [ESI]
         CMP   AL, 0
-        JE   _PSPRT_COPY_END
-        MOV   [DI], AL
-        INC    SI
-        INC    DI
-        DEC    CX
-        JMP   _PSPRT_COPY_LP
-_PSPRT_COPY_END:
-        MOV   BYTE PTR [DI], 0
-        LEA   AX, _PSPRT_STRBUF
-        POP   DI
+        JE   _PSPRT_COPY_DN
+        MOV   BYTE PTR [EBX], AL
+        INC   ESI
+        INC   EBX
+        DEC   EDX
+        JMP   _PSPRT_COPY_L
+_PSPRT_COPY_DN:
+        MOV   BYTE PTR [EBX], 0
+        LEA   EAX, _PSPRT_STRBUF
+        POP   EBX
         RET
 
-; POS : SI=sub, DI=str -> AX (1-base ou 0)
 _PSPRT_POS:
-        PUSH   BX
-        PUSH   CX
-        PUSH   DX
-        XOR   DX, DX
-_PSPRT_POS_OUTER:
-        CMP   BYTE PTR [DI], 0
-        JE   _PSPRT_POS_NOTFOUND
-        PUSH   SI
-        PUSH   DI
-        ADD   DI, DX
-_PSPRT_POS_CMP:
-        MOV   AL, [SI]
+        PUSH   EBX
+        PUSH   ECX
+        MOV   EBX, EDI
+        XOR   ECX, ECX
+_PSPRT_POS_NX:
+        CMP   BYTE PTR [EBX], 0
+        JE   _PSPRT_POS_NF
+        INC   ECX
+        PUSH   ESI
+        PUSH   EBX
+_PSPRT_POS_CM:
+        MOV   AL, BYTE PTR [ESI]
         CMP   AL, 0
-        JE   _PSPRT_POS_FOUND
-        CMP   AL, [DI]
-        JNE   _PSPRT_POS_NEXT
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_POS_CMP
-_PSPRT_POS_FOUND:
-        POP   DI
-        POP   SI
-        MOV   AX, DX
-        INC    AX
-        JMP   _PSPRT_POS_RET
-_PSPRT_POS_NEXT:
-        POP   DI
-        POP   SI
-        INC    DX
-        JMP   _PSPRT_POS_OUTER
-_PSPRT_POS_NOTFOUND:
-        XOR   AX, AX
-_PSPRT_POS_RET:
-        POP   DX
-        POP   CX
-        POP   BX
+        JE   _PSPRT_POS_FD
+        CMP   AL, BYTE PTR [EBX]
+        JNE   _PSPRT_POS_NM
+        INC   ESI
+        INC   EBX
+        JMP   _PSPRT_POS_CM
+_PSPRT_POS_FD:
+        POP   EBX
+        POP   ESI
+        MOV   EAX, ECX
+        JMP   _PSPRT_POS_DN
+_PSPRT_POS_NM:
+        POP   EBX
+        POP   ESI
+        INC   EBX
+        JMP   _PSPRT_POS_NX
+_PSPRT_POS_NF:
+        XOR   EAX, EAX
+_PSPRT_POS_DN:
+        POP   ECX
+        POP   EBX
         RET
 
-; FILLCHAR : DI=ptr, CX=n, AL=val -> REP STOSB
-_PSPRT_FILLCHAR:
-        REP    STOSB
+_PSPRT_UPCASE:
+        CMP   AL, 'a'
+        JB   _PSPRT_UPC_DN
+        CMP   AL, 'z'
+        JA   _PSPRT_UPC_DN
+        SUB   AL, 32
+_PSPRT_UPC_DN:
         RET
 
-; MOVE : SI=src, DI=dst, CX=n -> REP MOVSB
-_PSPRT_MOVE:
-        REP    MOVSB
-        RET
-
-; SQRT : AX=n -> AX=floor(sqrt(n))
-_PSPRT_SQRT:
-        PUSH   BX
-        PUSH   CX
-        PUSH   DX
-        CMP   AX, 0
-        JLE   _PSPRT_SQRT_RET0
-        MOV   BX, AX
-        SHR   AX, 1
-        CMP   AX, 0
-        JE   _PSPRT_SQRT_ONE
-_PSPRT_SQRT_LP:
-        MOV   CX, AX
-        MOV   AX, BX
-        XOR   DX, DX
-        DIV   CX
-        ADD   AX, CX
-        SHR   AX, 1
-        CMP   AX, CX
-        JB   _PSPRT_SQRT_LP
-        MOV   AX, CX
-        JMP   _PSPRT_SQRT_END
-_PSPRT_SQRT_RET0:
-        XOR   AX, AX
-        JMP   _PSPRT_SQRT_END
-_PSPRT_SQRT_ONE:
-        MOV   AX, 1
-_PSPRT_SQRT_END:
-        POP   DX
-        POP   CX
-        POP   BX
-        RET
-
-; RANDOM : AX = pseudo-aleatoire 0..32767
-_PSPRT_RANDOM:
-        MOV   AX, WORD PTR [_PSPRT_SEED]
-        MOV   CX, 25173
-        MUL    CX
-        ADD   AX, 13849
-        MOV   WORD PTR [_PSPRT_SEED], AX
-        AND   AX, 7FFFh
-        RET
-
-; RANDOMIZE : graine depuis horloge DOS
-_PSPRT_RANDOMIZE:
-        MOV   AH, 00h
-        INT    1Ah
-        MOV   WORD PTR [_PSPRT_SEED], DX
-        RET
-
-; ALLOC : CX=taille -> AX=ptr (bump alloc)
-_PSPRT_ALLOC:
-        MOV   AX, WORD PTR [_PSPRT_HEAPTOP]
-        ADD   WORD PTR [_PSPRT_HEAPTOP], CX
-        RET
-
-; READCHAR : AL = caractere clavier (INT 21h/01h)
-_PSPRT_READCHAR:
-        MOV   AH, 01h
-        INT    21h
-        RET
-
-; READNUM : AX = entier lu depuis clavier
-_PSPRT_READNUM:
-        PUSH   BX
-        PUSH   CX
-        PUSH   DI
-        MOV   DI, OFFSET _PSPRT_NUMBUF
-        XOR   CX, CX
-_PSPRT_RN_LP:
-        MOV   AH, 01h
-        INT    21h
-        CMP   AL, 13
-        JE   _PSPRT_RN_DONE
-        CMP   AL, 10
-        JE   _PSPRT_RN_DONE
-        MOV   [DI], AL
-        INC    DI
-        INC    CX
-        CMP   CX, 10
-        JB   _PSPRT_RN_LP
-_PSPRT_RN_DONE:
-        MOV   BYTE PTR [DI], 0
-        MOV   SI, OFFSET _PSPRT_NUMBUF
-        CALL   _PSPRT_STRTONUM
-        POP   DI
-        POP   CX
-        POP   BX
-        RET
-
-; PRINT : BX=handle, DX=buf, CX=len -> INT 21h/40h
-_PSPRT_PRINT:
-        MOV   AH, 40h
-        INT    21h
-        RET
-
-; PRINTLN : SI=chaine ASCIIZ -> affiche + CRLF
-_PSPRT_PRINTLN:
-        CALL   _PSPRT_PRINTSTR
-        MOV   SI, OFFSET _PSPRT_CRLF
-        CALL   _PSPRT_PRINTSTR
-        RET
-
-; DELETE : SI=str, BX=pos(1), CX=len -> modifie en place
-_PSPRT_DELETE:
-        PUSH   DI
-        PUSH   SI
-        DEC    BX
-        MOV   DI, OFFSET _PSPRT_STRBUF
-        PUSH   CX
-        MOV   CX, BX
-        CMP   CX, 0
-        JE   _PSPRT_DEL_SKIP1
-_PSPRT_DEL_CP1:
-        MOV   AL, [SI]
-        MOV   [DI], AL
-        INC    SI
-        INC    DI
-        LOOP   _PSPRT_DEL_CP1
-_PSPRT_DEL_SKIP1:
-        POP   CX
-_PSPRT_DEL_ADV:
-        CMP   CX, 0
-        JE   _PSPRT_DEL_TAIL
-        CMP   BYTE PTR [SI], 0
-        JE   _PSPRT_DEL_TAIL
-        INC    SI
-        DEC    CX
-        JMP   _PSPRT_DEL_ADV
-_PSPRT_DEL_TAIL:
-        MOV   AL, [SI]
-        MOV   [DI], AL
-        CMP   AL, 0
-        JE   _PSPRT_DEL_END
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_DEL_TAIL
-_PSPRT_DEL_END:
-        POP   DI
-        MOV   SI, OFFSET _PSPRT_STRBUF
-_PSPRT_DEL_BACK:
-        MOV   AL, [SI]
-        MOV   [DI], AL
-        CMP   AL, 0
-        JE   _PSPRT_DEL_RET
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_DEL_BACK
-_PSPRT_DEL_RET:
-        POP   DI
-        RET
-
-; INSERT : SI=sub, DI=str, BX=pos(1) -> modifie str
-_PSPRT_INSERT:
-        PUSH   DI
-        PUSH   SI
-        DEC    BX
-        MOV   SI, DI
-        MOV   DI, OFFSET _PSPRT_STRBUF
-        MOV   CX, BX
-        CMP   CX, 0
-        JE   _PSPRT_INS_SUB
-_PSPRT_INS_CP1:
-        MOV   AL, [SI]
-        CMP   AL, 0
-        JE   _PSPRT_INS_SUB
-        MOV   [DI], AL
-        INC    SI
-        INC    DI
-        LOOP   _PSPRT_INS_CP1
-_PSPRT_INS_SUB:
-        POP   AX
-        PUSH   SI
-        MOV   SI, AX
-_PSPRT_INS_CP2:
-        MOV   AL, [SI]
-        CMP   AL, 0
-        JE   _PSPRT_INS_REST
-        MOV   [DI], AL
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_INS_CP2
-_PSPRT_INS_REST:
-        POP   SI
-_PSPRT_INS_CP3:
-        MOV   AL, [SI]
-        MOV   [DI], AL
-        CMP   AL, 0
-        JE   _PSPRT_INS_DONE
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_INS_CP3
-_PSPRT_INS_DONE:
-        POP   DI
-        MOV   SI, OFFSET _PSPRT_STRBUF
-_PSPRT_INS_BACK:
-        MOV   AL, [SI]
-        MOV   [DI], AL
-        CMP   AL, 0
-        JE   _PSPRT_INS_RET
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_INS_BACK
-_PSPRT_INS_RET:
-        RET
-
-; LOWERCASE : SI=str -> AX=ptr STRBUF (minuscules)
 _PSPRT_LOWERCASE:
-        PUSH   DI
-        MOV   DI, OFFSET _PSPRT_STRBUF
+        PUSH   EDI
+        LEA   EDI, _PSPRT_STRBUF
+        PUSH   EDI
 _PSPRT_LC_LP:
-        MOV   AL, [SI]
+        MOV   AL, BYTE PTR [ESI]
         CMP   AL, 0
-        JE   _PSPRT_LC_END
+        JE   _PSPRT_LC_DN
         CMP   AL, 'A'
-        JB   _PSPRT_LC_STORE
+        JB   _PSPRT_LC_SK
         CMP   AL, 'Z'
-        JA   _PSPRT_LC_STORE
+        JA   _PSPRT_LC_SK
         ADD   AL, 32
-_PSPRT_LC_STORE:
-        MOV   [DI], AL
-        INC    SI
-        INC    DI
+_PSPRT_LC_SK:
+        MOV   BYTE PTR [EDI], AL
+        INC   ESI
+        INC   EDI
         JMP   _PSPRT_LC_LP
-_PSPRT_LC_END:
-        MOV   BYTE PTR [DI], 0
-        LEA   AX, _PSPRT_STRBUF
-        POP   DI
+_PSPRT_LC_DN:
+        MOV   BYTE PTR [EDI], 0
+        POP   EAX
+        POP   EDI
         RET
 
-; TRIM : SI=str -> AX=ptr STRBUF (sans espaces)
 _PSPRT_TRIM:
-        PUSH   DI
-_PSPRT_TRIM_L:
-        CMP   BYTE PTR [SI], 32
-        JNE   _PSPRT_TRIM_COPY
-        INC    SI
-        JMP   _PSPRT_TRIM_L
-_PSPRT_TRIM_COPY:
-        MOV   DI, OFFSET _PSPRT_STRBUF
-_PSPRT_TRIM_CP:
-        MOV   AL, [SI]
-        MOV   [DI], AL
+        PUSH   EDI
+_PSPRT_TR_LS:
+        MOV   AL, BYTE PTR [ESI]
+        CMP   AL, 32
+        JE   _PSPRT_TR_LN
+        CMP   AL, 9
+        JNE   _PSPRT_TR_CP
+_PSPRT_TR_LN:
+        INC   ESI
+        JMP   _PSPRT_TR_LS
+_PSPRT_TR_CP:
+        LEA   EDI, _PSPRT_STRBUF
+        PUSH   EDI
+_PSPRT_TR_C2:
+        MOV   AL, BYTE PTR [ESI]
+        MOV   BYTE PTR [EDI], AL
         CMP   AL, 0
-        JE   _PSPRT_TRIM_R
-        INC    SI
-        INC    DI
-        JMP   _PSPRT_TRIM_CP
-_PSPRT_TRIM_R:
-        DEC    DI
-        CMP   DI, OFFSET _PSPRT_STRBUF
-        JB   _PSPRT_TRIM_DONE
-        CMP   BYTE PTR [DI], 32
-        JNE   _PSPRT_TRIM_DONE
-        MOV   BYTE PTR [DI], 0
-        JMP   _PSPRT_TRIM_R
-_PSPRT_TRIM_DONE:
-        INC    DI
-        MOV   BYTE PTR [DI], 0
-        LEA   AX, _PSPRT_STRBUF
-        POP   DI
+        JE   _PSPRT_TR_TS
+        INC   ESI
+        INC   EDI
+        JMP   _PSPRT_TR_C2
+_PSPRT_TR_TS:
+        DEC   EDI
+        POP   EAX
+        PUSH   EAX
+        CMP   EDI, EAX
+        JB   _PSPRT_TR_DN
+        CMP   BYTE PTR [EDI], 32
+        JE   _PSPRT_TR_T2
+        CMP   BYTE PTR [EDI], 9
+        JNE   _PSPRT_TR_DN
+_PSPRT_TR_T2:
+        MOV   BYTE PTR [EDI], 0
+        DEC   EDI
+        POP   EAX
+        PUSH   EAX
+        CMP   EDI, EAX
+        JAE   _PSPRT_TR_TS
+_PSPRT_TR_DN:
+        POP   EAX
+        POP   EDI
         RET
 
-; PANIC : SI=msg ASCIIZ -> affiche + halt(1)
+_PSPRT_DELETE:
+        CMP   EBX, 0
+        JE   _PSPRT_DEL_DN
+        CMP   ECX, 0
+        JE   _PSPRT_DEL_DN
+        PUSH   EDI
+        DEC   EBX
+        LEA   EDI, [ESI+EBX]
+        LEA   ESI, [EDI+ECX]
+_PSPRT_DEL_LP:
+        MOV   AL, BYTE PTR [ESI]
+        MOV   BYTE PTR [EDI], AL
+        CMP   AL, 0
+        JE   _PSPRT_DEL_D2
+        INC   ESI
+        INC   EDI
+        JMP   _PSPRT_DEL_LP
+_PSPRT_DEL_D2:
+        POP   EDI
+_PSPRT_DEL_DN:
+        RET
+
+_PSPRT_INSERT:
+        PUSH   EBP
+        MOV   EBP, ESP
+        PUSH   ESI
+        PUSH   EDI
+        XOR   ECX, ECX
+_PSPRT_INS_SL:
+        CMP   BYTE PTR [ESI+ECX], 0
+        JE   _PSPRT_INS_S2
+        INC   ECX
+        JMP   _PSPRT_INS_SL
+_PSPRT_INS_S2:
+        XOR   EDX, EDX
+_PSPRT_INS_DL:
+        CMP   BYTE PTR [EDI+EDX], 0
+        JE   _PSPRT_INS_D2
+        INC   EDX
+        JMP   _PSPRT_INS_DL
+_PSPRT_INS_D2:
+        DEC   EBX
+        LEA   ESI, [EDI+EDX]
+        LEA   EDI, [ESI+ECX]
+        MOV   EAX, EDX
+        SUB   EAX, EBX
+        INC   EAX
+_PSPRT_INS_MV:
+        CMP   EAX, 0
+        JLE   _PSPRT_INS_CP
+        MOV   CL, BYTE PTR [ESI]
+        MOV   BYTE PTR [EDI], CL
+        DEC   ESI
+        DEC   EDI
+        DEC   EAX
+        JMP   _PSPRT_INS_MV
+_PSPRT_INS_CP:
+        POP   EDI
+        POP   ESI
+        ADD   EDI, EBX
+_PSPRT_INS_C2:
+        MOV   AL, BYTE PTR [ESI]
+        CMP   AL, 0
+        JE   _PSPRT_INS_DN
+        MOV   BYTE PTR [EDI], AL
+        INC   ESI
+        INC   EDI
+        JMP   _PSPRT_INS_C2
+_PSPRT_INS_DN:
+        MOV   ESP, EBP
+        POP   EBP
+        RET
+
+_PSPRT_SQRT:
+        CMP   EAX, 1
+        JBE   _PSPRT_SQ_DN
+        PUSH   EBX
+        PUSH   ECX
+        PUSH   EDX
+        MOV   ECX, EAX
+        MOV   EBX, EAX
+_PSPRT_SQ_LP:
+        MOV   EAX, ECX
+        XOR   EDX, EDX
+        DIV   EBX
+        ADD   EAX, EBX
+        SHR   EAX, 1
+        CMP   EAX, EBX
+        JAE   _PSPRT_SQ_OK
+        MOV   EBX, EAX
+        JMP   _PSPRT_SQ_LP
+_PSPRT_SQ_OK:
+        MOV   EAX, EBX
+        POP   EDX
+        POP   ECX
+        POP   EBX
+_PSPRT_SQ_DN:
+        RET
+
+_PSPRT_RANDOM:
+        MOV   EAX, DWORD PTR [_PSPRT_SEED]
+        IMUL   EAX, 1103515245
+        ADD   EAX, 12345
+        MOV   DWORD PTR [_PSPRT_SEED], EAX
+        AND   EAX, 7FFFFFFFh
+        RET
+
+_PSPRT_RANDOMIZE:
+        CALL   _GetTickCount@0
+        MOV   DWORD PTR [_PSPRT_SEED], EAX
+        RET
+
+_PSPRT_FILLCHAR:
+        CLD
+        REP STOSB
+        RET
+
+_PSPRT_MOVE:
+        CLD
+        REP MOVSB
+        RET
+
 _PSPRT_PANIC:
         CALL   _PSPRT_PRINTSTR
-; CRLF apres message
-        MOV   SI, OFFSET _PSPRT_CRLF
+        LEA   ESI, _PSPRT_CRLF
         CALL   _PSPRT_PRINTSTR
-        MOV   AX, 4C01h
-        INT    21h
+        PUSH   1
+        CALL   _ExitProcess@4
 
-; PANIC_DIV0 : Runtime error division by zero
 _PSPRT_PANIC_DIV0:
-        MOV   SI, OFFSET _PSPRT_DIV0MSG
-        CMP   WORD PTR [_PSPX_HANDLER], 0
+        LEA   ESI, _PSPRT_DIV0MSG
+        CMP   DWORD PTR [_PSPX_HANDLER], 0
         JE   _PSPRT_PANIC_DIV0_FATAL
-        MOV   SP, WORD PTR [_PSPX_SAVESP]
-        MOV   BP, WORD PTR [_PSPX_SAVEBP]
-        JMP   WORD PTR [_PSPX_HANDLER]
+        MOV   ESP, DWORD PTR [_PSPX_SAVESP]
+        MOV   EBP, DWORD PTR [_PSPX_SAVEBP]
+        JMP   DWORD PTR [_PSPX_HANDLER]
 _PSPRT_PANIC_DIV0_FATAL:
         CALL   _PSPRT_PANIC
 
+; --- Fin du segment de code ---
 _TEXT   ENDS
 
-_DATA   SEGMENT WORD PUBLIC 'DATA'
+_DATA   SEGMENT DWORD PUBLIC 'DATA'
 ; --- Buffers internes ---
 _PSPRT_CRLF    DB  13,10,0
 _PSPRT_STRBUF  DB  512 DUP(0)
@@ -888,22 +844,25 @@ _PSPRT_NUMBUF  DB  12 DUP(0)
 _PSPRT_TRUE_S  DB  'TRUE',0
 _PSPRT_FALSE_S DB  'FALSE',0
 _PSPRT_HEAP    DB  4096 DUP(0)
-_PSPRT_HEAPTOP DW  OFFSET _PSPRT_HEAP
-_PSPRT_SEED    DW  1
-_PSPX_HANDLER DW  0
-_PSPX_SAVESP  DW  0
-_PSPX_SAVEBP  DW  0
+_PSPRT_HEAPTOP DD  OFFSET _PSPRT_HEAP
+_PSPRT_SEED    DD  1
+_PSPX_HANDLER DD  0
+_PSPX_SAVESP  DD  0
+_PSPX_SAVEBP  DD  0
 _PSPRT_DIV0MSG DB  'Runtime error: Division by zero',0
 _PSPRT_PANICMSG DB 0
+_PSPRT_HSTDOUT DD  0
+_PSPRT_HSTDIN  DD  0
+_PSPRT_WRITTEN DD  0
 
 ; --- Donnees du programme ---
-_PSP_A  DW  0
-_PSP_B  DW  0
+_PSP_A  DD  0
+_PSP_B  DD  0
 _PSPK_2  DB  ' ',0
-_PSP_C  DW  0
-_PSP_D  DW  0
-_PSP_E  DW  0
-_PSP_F  DW  0
+_PSP_C  DD  0
+_PSP_D  DD  0
+_PSP_E  DD  0
+_PSP_F  DD  0
 _PSPK_HTML_15  DB  '
 ',0
 _DATA   ENDS
