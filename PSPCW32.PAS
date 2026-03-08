@@ -319,7 +319,7 @@
               Si pas de PROGRAM..BEGIN..END, le template est le programme
               Le code entre <% %> forme le corps du programme principal
 
-  TODO 20 - DIRECTIVES DE COMPILATION
+  TODO 20 - DIRECTIVES DE COMPILATION [IMPLEMENTE]
             [$I fichier] ou [$INCLUDE fichier] : inclusion de fichier
               Profondeur maximale : MAX_INCLUDE niveaux
               Sauvegarde/restauration de l etat du lexeur
@@ -1144,8 +1144,24 @@ Begin
 End;
 
 { ============================================================
-  DIRECTIVES PSP ET INCLUSIONS
+  TODO 20 - DIRECTIVES DE COMPILATION [IMPLEMENTE]
   ============================================================ }
+{ La totalite de ce TODO est implementee dans la section
+  TODO 02 (LexHandleDollarDirective, LexSkipCondFalse,
+  DefineDefined, DefineAdd, DefineRemove, IncludePush,
+  IncludePop).
+  - $I/$INCLUDE : IncludePush sauvegarde l etat du lexeur
+    (pile MAX_INCLUDE niveaux), ouvre le fichier inclus ;
+    IncludePop restaure le fichier parent.
+    LexNextLine depile automatiquement en fin de fichier inclus.
+  - $DEFINE/$UNDEF : DefineAdd/DefineRemove gerent
+    DefineTab[0..MAX_DEFINE-1] en majuscules.
+  - $IFDEF/$IFNDEF/$ELSE/$ENDIF : LexHandleDollarDirective
+    teste DefineDefined et appelle LexSkipCondFalse pour
+    sauter les branches fausses, avec imbrication supportee.
+  - $MODE TP|FPC : CompilerMode := Arg (reconnu, pas d effet).
+  - LexSkipBraceComment detecte les accolades commencant par
+    $ et dispatche vers LexHandleDollarDirective.            }
 
 { ---- DefineDefined : teste si un symbole est defini --------- }
 Function DefineDefined(Const Name : TString) : Boolean;
