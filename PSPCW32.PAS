@@ -3640,6 +3640,10 @@ Begin
 
     { _PSPRT_DELETE : ESI=str (in-place), EBX=pos (1-based), ECX=count }
     EmitLabel(PSP_RT_PFX + 'DELETE');
+    EmitInstrAB('CMP', 'EBX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'DEL_DN');
+    EmitInstrAB('CMP', 'ECX', '0');
+    EmitInstrA('JE', PSP_RT_PFX + 'DEL_DN');
     EmitInstrA('PUSH', 'EDI');
     EmitInstrA('DEC', 'EBX');
     { Calculer l adresse de debut de suppression }
@@ -3651,12 +3655,13 @@ Begin
     EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
     EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
     EmitInstrAB('CMP', 'AL', '0');
-    EmitInstrA('JE', PSP_RT_PFX + 'DEL_DN');
+    EmitInstrA('JE', PSP_RT_PFX + 'DEL_D2');
     EmitInstrA('INC', 'ESI');
     EmitInstrA('INC', 'EDI');
     EmitInstrA('JMP', PSP_RT_PFX + 'DEL_LP');
-    EmitLabel(PSP_RT_PFX + 'DEL_DN');
+    EmitLabel(PSP_RT_PFX + 'DEL_D2');
     EmitInstrA('POP', 'EDI');
+    EmitLabel(PSP_RT_PFX + 'DEL_DN');
     EmitInstr('RET');
     EmitBlankLine;
 
@@ -3686,7 +3691,6 @@ Begin
     EmitInstrA('DEC', 'EBX');
     EmitInstrAB('LEA', 'ESI', '[EDI+EDX]');
     EmitInstrAB('LEA', 'EDI', '[ESI+ECX]');
-    EmitInstrAB('MOV', 'BYTE PTR [EDI+1]', '0');
     { Copier depuis la fin vers le debut }
     EmitInstrAB('MOV', 'EAX', 'EDX');
     EmitInstrAB('SUB', 'EAX', 'EBX');
@@ -6661,7 +6665,6 @@ Begin
     ExprFlushToEAX(Ev1);
     EmitInstrAB('MOV', 'ESI', 'EAX');
     EmitInstrA('CALL', PSP_RT_PFX + 'STRTONUM');
-    EmitInstrA('PUSH', 'EAX');
     { Consommer virgule }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       TplNextToken;
@@ -6670,11 +6673,7 @@ Begin
     Begin
       SIdx := SymFind(CurToken.Val);
       If SIdx >= 0 Then
-      Begin
-        EmitInstrA('POP', 'EAX');
-        EmitInstrA('PUSH', 'EAX');
         ExprStore(SIdx);
-      End;
       TplNextToken;
     End;
     { Consommer virgule }
@@ -6691,7 +6690,6 @@ Begin
       End;
       TplNextToken;
     End;
-    EmitInstrA('POP', 'EAX');
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
       TplNextToken;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -6864,7 +6862,7 @@ Begin
     ParseExpr(Ev1);
     ExprFlushToEAX(Ev1);
     EmitInstrA('PUSH', 'EAX');
-    { Consommer virgule et taille (ignores pour HeapFree) }
+    { Consommer virgule et taille (ignoree pour HeapFree) }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
     Begin
       TplNextToken;
