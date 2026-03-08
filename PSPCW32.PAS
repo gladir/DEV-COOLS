@@ -298,7 +298,7 @@
             Procedures/fonctions imbriquees (max NEST_MAX niveaux)
               Acces au cadre englobant via lien statique
 
-  TODO 19 - TEMPLATE PSP (HTML / <%  %> / <%= %> / <%@ %>)
+  TODO 19 - TEMPLATE PSP (HTML / <%  %> / <%= %> / <%@ %>) [IMPLEMENTE]
             Mode template PSP : alternance HTML / code Pascal
             Texte HTML statique : accumule et emis via _PSPRT_PRINTSTR
               Chaque fragment recoit un label _PSPK_HTML_N dans .DATA
@@ -8160,7 +8160,17 @@ Begin
   SymInit;
 End;
 
-{ ---- Pipeline de compilation (stub) ------------------------- }
+{ ============================================================
+  TODO 19 - TEMPLATE PSP [IMPLEMENTE]
+  ============================================================ }
+{ Boucle principale du compilateur PSP : alternance HTML / code
+  Pascal via les balises <% %>, <%= %>, <%@ %>.
+  - TK_HTML         : fragment HTML statique -> EmitHtmlFragment
+  - TK_PSP_OPEN     : balise <% -> passer en mode code
+  - TK_PSP_EXPR_OPEN: balise <%= -> evaluer et imprimer expression
+  - TK_PSP_CLOSE    : balise %> -> retour mode HTML
+  - TK_PSP_DIRECTIVE: balise <%@ -> parser directive de page
+  - TK_KEYWORD/IDENT: instruction Pascal -> ParseStatement }
 
 Procedure Run;
 Begin
@@ -8182,27 +8192,74 @@ Begin
     FatalError('impossible de creer le fichier de sortie: ' + Opts.OutFile);
   OutFOpen := True;
 
-  { TODO 02+ : Initialiser le lexeur et l analyseur template }
+  { Initialiser le lexeur et l analyseur template }
   LexInit;
   TplInit;
   { Emettre l en-tete ASM }
   EmitHeader;
-  { TODO 19  : Boucle principale template PSP }
-  { Debug : scanner tous les tokens si -d est actif }
+
+  { Boucle principale : analyseur de template PSP }
+  TplNextToken;  { Lire le premier token }
   If Opts.DebugMode Then
   Begin
-    Repeat
+    { Debug : scanner et afficher tous les tokens }
+    While CurToken.Kind <> TK_EOF Do
       TplNextToken;
-    Until CurToken.Kind = TK_EOF;
+  End
+  Else
+  Begin
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      { --- Fragments HTML (hors <% %>) --- }
+      If CurToken.Kind = TK_HTML Then
+      Begin
+        EmitHtmlFragment(CurToken.Val);
+        TplNextToken;
+      End
+      { --- Balise ouvrante <% : passer en mode code --- }
+      Else If CurToken.Kind = TK_PSP_OPEN Then
+      Begin
+        TplNextToken;  { consommer <%, prochain token = code Pascal }
+      End
+      { --- Expression inline <%= expr %> --- }
+      Else If CurToken.Kind = TK_PSP_EXPR_OPEN Then
+      Begin
+        TplNextToken;  { consommer <%=, prochain token = debut expr }
+        EmitExprInline;
+      End
+      { --- Balise fermante %> : retour HTML --- }
+      Else If CurToken.Kind = TK_PSP_CLOSE Then
+      Begin
+        TplNextToken;  { consommer %>, retour en mode HTML }
+      End
+      { --- Directive <%@ ... %> : parser attributs --- }
+      Else If CurToken.Kind = TK_PSP_DIRECTIVE Then
+      Begin
+        ParsePSPDirective;
+      End
+      { --- Instructions Pascal (delegation a ParseStatement) --- }
+      Else If (CurToken.Kind = TK_KEYWORD) Or
+              (CurToken.Kind = TK_IDENT) Then
+      Begin
+        ParseStatement;
+        { Consommer les ; residuels }
+        While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+          TplNextToken;
+      End
+      Else
+        TplNextToken;  { Avancer seulement si aucun match }
+    End;
   End;
+
   { Emettre le pied de page ASM }
   EmitFooter;
+  { Fermer l analyseur template }
+  TplClose;
   { Emettre le segment de donnees }
   EmitDataSeg;
   { Directive END }
   If OutFOpen Then
     EmitRaw('        END     ' + PSP_FN_PFX + 'main');
-  TplClose;
 
 
   Cleanup;
