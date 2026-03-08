@@ -2337,6 +2337,7 @@ Var
   I, J : Integer;
   S    : TString;
   Sz   : Integer;
+  IsFirst : Boolean;
 Begin
   EmitRaw('_DATA   SEGMENT DWORD PUBLIC ''DATA''');
 
@@ -2345,7 +2346,7 @@ Begin
   EmitRaw(PSP_RT_PFX + 'CRLF    DB  13,10,0');
   EmitRaw(PSP_RT_PFX + 'STRBUF  DB  512 DUP(0)');
   EmitRaw(PSP_RT_PFX + 'CHRBUF  DB  2 DUP(0)');
-  EmitRaw(PSP_RT_PFX + 'NUMBUF  DB  12 DUP(0)');
+  EmitRaw(PSP_RT_PFX + 'NUMBUF  DB  16 DUP(0)');
   EmitRaw(PSP_RT_PFX + 'TRUE_S  DB  ''TRUE'',0');
   EmitRaw(PSP_RT_PFX + 'FALSE_S DB  ''FALSE'',0');
   EmitRaw(PSP_RT_PFX + 'HEAP    DB  4096 DUP(0)');
@@ -2380,16 +2381,47 @@ Begin
                 IntToStr(DataTab[I].IntVal));
       DK_STR :
         Begin
-          { Doubler les apostrophes pour syntaxe MASM }
+          { Emettre la chaine, en decoupant aux retours a la ligne
+            pour que chaque directive DB tienne sur une seule ligne }
           S := '';
+          IsFirst := True;
           For J := 1 To Length(DataTab[I].StrVal) Do
           Begin
-            If DataTab[I].StrVal[J] = '''' Then
+            If (DataTab[I].StrVal[J] = #13) Or
+               (DataTab[I].StrVal[J] = #10) Then
+            Begin
+              { Vider le tampon de texte avant le caractere de controle }
+              If Length(S) > 0 Then
+              Begin
+                If IsFirst Then
+                Begin EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''''); IsFirst := False; End
+                Else EmitRaw('  DB  ''' + S + '''');
+                S := '';
+              End;
+              If IsFirst Then
+              Begin EmitRaw(DataTab[I].LblName + '  DB  ' + IntToStr(Ord(DataTab[I].StrVal[J]))); IsFirst := False; End
+              Else EmitRaw('  DB  ' + IntToStr(Ord(DataTab[I].StrVal[J])));
+            End
+            Else If DataTab[I].StrVal[J] = '''' Then
               S := S + ''''''
             Else
               S := S + DataTab[I].StrVal[J];
           End;
-          EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0');
+          { Vider le restant + null terminator }
+          If Length(S) > 0 Then
+          Begin
+            If IsFirst Then
+              EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0')
+            Else
+              EmitRaw('  DB  ''' + S + ''',0');
+          End
+          Else
+          Begin
+            If IsFirst Then
+              EmitRaw(DataTab[I].LblName + '  DB  0')
+            Else
+              EmitRaw('  DB  0');
+          End;
         End;
       DK_ARRAY :
         Begin
@@ -4398,7 +4430,6 @@ Begin
         ParseExpr(Res);
         ExprFlushToEAX(Res);
         EmitInstrA('CALL', PSP_RT_PFX + 'NUMTOSTR');
-        EmitInstrAB('LEA', 'EAX', PSP_RT_PFX + 'NUMBUF');
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           TplNextToken;
         Res.Kind    := EK_AX;
@@ -6098,8 +6129,7 @@ Begin
   Begin
     { Integer/Word/Byte/Real -> convertir en chaine + afficher }
     EmitCall(PSP_RT_PFX + 'NUMTOSTR');
-    EmitInstrAB('MOV', 'ESI',
-      'OFFSET ' + PSP_RT_PFX + 'NUMBUF');
+    EmitInstrAB('MOV', 'ESI', 'EAX');
     EmitCall(PSP_RT_PFX + 'PRINTSTR');
   End;
 End;
@@ -6725,7 +6755,7 @@ Begin
     ParseExpr(Ev1);
     ExprFlushToEAX(Ev1);
     EmitInstrA('CALL', PSP_RT_PFX + 'NUMTOSTR');
-    EmitInstrAB('LEA', 'ESI', PSP_RT_PFX + 'NUMBUF');
+    EmitInstrAB('MOV', 'ESI', 'EAX');
     { Consommer virgule }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       TplNextToken;
@@ -8838,6 +8868,39 @@ Begin
   Else BinCodeByte(BinModRM(0, RegField, BaseReg));
 End;
 
+{ BinEmitMemOp : emettre ModR/M (+SIB/disp) pour un operande memoire.
+  Inner est le contenu entre crochets, par ex. 'EDI', 'ESI+ECX', 'EBP-4',
+  ou un nom de label. Gere registre indirect, SIB reg+reg, EBP+ofs, label. }
+Procedure BinEmitMemOp(RegField : Integer; Const Inner : TString);
+Var RBase, RIdx, PP : Integer; Tmp : TString; EbpOfs : LongInt;
+Begin
+  If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then
+  Begin BinEmitEBPRef(RegField, EbpOfs); Exit; End;
+  RBase := BinReg32(Inner);
+  If RBase >= 0 Then
+  Begin BinEmitRegIndirect(RegField, RBase); Exit; End;
+  PP := Pos('+', Inner);
+  If PP > 0 Then
+  Begin
+    Tmp := Copy(Inner, 1, PP - 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
+    RBase := BinReg32(Tmp);
+    If RBase >= 0 Then
+    Begin
+      Tmp := Copy(Inner, PP + 1, Length(Inner) - PP);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      RIdx := BinReg32(Tmp);
+      If RIdx >= 0 Then
+      Begin
+        BinCodeByte(BinModRM(0, RegField, 4));
+        BinCodeByte(Byte((RIdx Shl 3) Or RBase));
+        Exit;
+      End;
+    End;
+  End;
+  BinEmitMemRef(RegField, Inner);
+End;
+
 { --- BinAssembleLine : assembler une ligne ASM --- }
 Procedure BinAssembleLine(Const Line : String);
 Var
@@ -8889,7 +8952,15 @@ Begin
       BinAddLabel(Tmp, False, BinDataLen);
       Tmp := Copy(S, P + 1, Length(S) - P);
       While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
-      If Pos('DD', StrUpperCase(Tmp)) = 1 Then
+    End
+    Else If (Pos('DB', StrUpperCase(S)) = 1) Or (Pos('DD', StrUpperCase(S)) = 1) Then
+    Begin
+      { Ligne de continuation sans label }
+      Tmp := S;
+    End
+    Else Begin Exit; End;
+    { Traiter la directive DD ou DB }
+    If Pos('DD', StrUpperCase(Tmp)) = 1 Then
       Begin
         Delete(Tmp, 1, 2);
         While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
@@ -8947,7 +9018,6 @@ Begin
           End;
         End;
       End;
-    End;
     Exit;
   End;
 
@@ -9051,8 +9121,7 @@ Begin
       Inner := BinStripBrackets(Inner);
       If IsByte Then BinCodeByte($FE) Else BinCodeByte($FF);
       If Mnem = 'INC' Then R1 := 0 Else R1 := 1;
-      If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R1, EbpOfs)
-      Else BinEmitMemRef(R1, Inner);
+      BinEmitMemOp(R1, Inner);
     End;
     Exit;
   End;
@@ -9360,8 +9429,7 @@ Begin
       Begin
         Inner := BinStripBrackets(Inner);
         BinCodeByte(Byte($03 + (R8 Shl 3)));
-        If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R1, EbpOfs)
-        Else BinEmitMemRef(R1, Inner);
+        BinEmitMemOp(R1, Inner);
         Exit;
       End;
       Imm := BinParseImm(Op2);
@@ -9380,6 +9448,14 @@ Begin
     Begin
       R2 := BinReg8(Op2);
       If R2 >= 0 Then Begin BinCodeByte(Byte($00 + (R8 Shl 3))); BinCodeByte(BinModRM(3, R2, R1)); Exit; End;
+      Inner := BinStripSize(Op2, IsByte);
+      If (Length(Inner) > 0) And (Inner[1] = '[') Then
+      Begin
+        Inner := BinStripBrackets(Inner);
+        BinCodeByte(Byte($02 + (R8 Shl 3)));
+        BinEmitMemOp(R1, Inner);
+        Exit;
+      End;
       Imm := BinParseImm(Op2);
       If R1 = 0 Then BinCodeByte(Byte($04 + (R8 Shl 3)))
       Else Begin BinCodeByte($80); BinCodeByte(BinModRM(3, R8, R1)); End;
@@ -9393,15 +9469,13 @@ Begin
       If (Not IsByte) And (R2 >= 0) Then
       Begin
         BinCodeByte(Byte($01 + (R8 Shl 3)));
-        If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R2, EbpOfs)
-        Else BinEmitMemRef(R2, Inner); Exit;
+        BinEmitMemOp(R2, Inner); Exit;
       End;
       Imm := BinParseImm(Op2);
       If IsByte Then
       Begin
         BinCodeByte($80);
-        If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R8, EbpOfs)
-        Else BinEmitMemRef(R8, Inner);
+        BinEmitMemOp(R8, Inner);
         BinCodeByte(Byte(Imm And $FF));
       End
       Else
@@ -9409,13 +9483,13 @@ Begin
         If (Imm >= -128) And (Imm <= 127) Then
         Begin
           BinCodeByte($83);
-          If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R8, EbpOfs) Else BinEmitMemRef(R8, Inner);
+          BinEmitMemOp(R8, Inner);
           BinCodeByte(Byte(Imm And $FF));
         End
         Else
         Begin
           BinCodeByte($81);
-          If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R8, EbpOfs) Else BinEmitMemRef(R8, Inner);
+          BinEmitMemOp(R8, Inner);
           BinCodeDWord(Imm);
         End;
       End;
