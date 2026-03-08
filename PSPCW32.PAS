@@ -474,7 +474,7 @@
               _PSPRT_SEED DD 0 / _PSPRT_DIV0MSG DB '...',0
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : finaliser le fichier de sortie
               Mode ASM : END _PSPF_main dans _TEXT ENDS / .DATA ENDS
               Mode OBJ : ecrire les sections COFF et table des symboles
@@ -1273,6 +1273,7 @@ End;
 Procedure IncludePush(Const FileName : TString);
 Var
   FullPath : TString;
+  I : Integer;
 Begin
   If IncTop >= MAX_INCLUDE - 1 Then
   Begin
@@ -1291,6 +1292,11 @@ Begin
   Close(LexSrcF);
   { Ouvrir le fichier inclus }
   FullPath := FileName;
+{$IFDEF UNIX}
+  { Convertir les backslashes Windows en slashes Unix }
+  For I := 1 To Length(FullPath) Do
+    If FullPath[I] = '\' Then FullPath[I] := '/';
+{$ENDIF}
   {$I-}
   Assign(LexSrcF, FullPath);
   Reset(LexSrcF);
@@ -10021,6 +10027,31 @@ Begin
 End;
 
 { ============================================================
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+  ============================================================ }
+{ EmitClose : finaliser le fichier ASM de sortie.
+  Emettre le pied de page (EmitFooter), fermer l analyseur template,
+  ecrire le segment de donnees, ajouter la directive END, puis
+  fermer le fichier. En mode binaire (EXE/OBJ), lancer l assemblage
+  et la generation PE/COFF.
+  Statistiques : lignes lues, symboles, erreurs, avertissements. }
+
+Procedure EmitClose;
+Begin
+  { Emettre le pied de page ASM }
+  EmitFooter;
+  { Fermer l analyseur template }
+  TplClose;
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  { Directive END }
+  If OutFOpen Then
+    EmitRaw('        END     ' + PSP_FN_PFX + 'main');
+  { Fermer les fichiers ouverts }
+  Cleanup;
+End;
+
+{ ============================================================
   TODO 19 - TEMPLATE PSP [IMPLEMENTE]
   ============================================================ }
 { Boucle principale du compilateur PSP : alternance HTML / code
@@ -10128,18 +10159,8 @@ Begin
     End;
   End;
 
-  { Emettre le pied de page ASM }
-  EmitFooter;
-  { Fermer l analyseur template }
-  TplClose;
-  { Emettre le segment de donnees }
-  EmitDataSeg;
-  { Directive END }
-  If OutFOpen Then
-    EmitRaw('        END     ' + PSP_FN_PFX + 'main');
-
-
-  Cleanup;
+  { Finaliser le fichier de sortie (TODO 25) }
+  EmitClose;
 
 {$IFDEF FPC}
   { Generer le fichier binaire si necessaire (TODO 23) }
