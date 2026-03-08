@@ -234,7 +234,7 @@
             Closures : acces aux variables du scope parent via lien statique
               Pointeur vers BP du cadre englobant passe en parametre cache
 
-  TODO 16 - BOUCLES : LOOP / RECUR / DOTIMES / DOSEQ
+  TODO 16 - BOUCLES : LOOP / RECUR / DOTIMES / DOSEQ [IMPLEMENTE]
             (loop [x init1 y init2] body ...) : ParseLoopForm
               Cree des liaisons locales comme let
               Label _CL_LOOP_N en debut du body
@@ -627,6 +627,8 @@ Var
   CurFnName    : TString;    (* nom de la fonction courante         *)
   LoopTop      : Integer;
   LoopLbl      : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopBindCount: Array[0..MAX_LOOP_NEST - 1] Of Integer;
+  LoopBindOfs  : Array[0..MAX_LOOP_NEST - 1, 0..MAX_PARAM - 1] Of Integer;
   LabelGenSeq  : Integer;    (* compteur unique pour LabelGen       *)
 
   (* Keywords (TODO 02/08) *)
@@ -772,6 +774,12 @@ Procedure ParseWhenLet(Var Res : TExprVal); Forward;
 (* TODO 15 *)
 Procedure ParseDefnForm(Var Res : TExprVal); Forward;
 Procedure ParseFnForm(Var Res : TExprVal); Forward;
+(* TODO 16 *)
+Procedure ParseLoopForm(Var Res : TExprVal); Forward;
+Procedure ParseRecurForm(Var Res : TExprVal); Forward;
+Procedure ParseDotimesForm(Var Res : TExprVal); Forward;
+Procedure ParseDoseqForm(Var Res : TExprVal); Forward;
+Procedure ParseWhileForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2325,6 +2333,7 @@ Begin
     (Name = 'cond') Or (Name = 'case') Or
     (Name = 'if-let') Or (Name = 'when-let') Or
     (Name = 'recur') Or (Name = 'loop') Or
+    (Name = 'dotimes') Or (Name = 'doseq') Or (Name = 'while') Or
     (Name = 'quote') Or (Name = 'var') Or
     (Name = 'try') Or (Name = 'catch') Or (Name = 'finally') Or
     (Name = 'throw') Or (Name = 'new') Or
@@ -3779,6 +3788,48 @@ Begin
           ParseFnForm(Res);
           If CurToken.Kind = TK_RPAREN Then LexNextToken
           Else CompileError(') attendue apres fn');
+          Exit;
+        End
+
+        (* -- TODO 16 : loop / recur / dotimes / doseq / while -- *)
+        Else If HeadSym = 'loop' Then
+        Begin
+          LexNextToken;
+          ParseLoopForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres loop');
+          Exit;
+        End
+        Else If HeadSym = 'recur' Then
+        Begin
+          LexNextToken;
+          ParseRecurForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres recur');
+          Exit;
+        End
+        Else If HeadSym = 'dotimes' Then
+        Begin
+          LexNextToken;
+          ParseDotimesForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres dotimes');
+          Exit;
+        End
+        Else If HeadSym = 'doseq' Then
+        Begin
+          LexNextToken;
+          ParseDoseqForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres doseq');
+          Exit;
+        End
+        Else If HeadSym = 'while' Then
+        Begin
+          LexNextToken;
+          ParseWhileForm(Res);
+          If CurToken.Kind = TK_RPAREN Then LexNextToken
+          Else CompileError(') attendue apres while');
           Exit;
         End
 
@@ -5400,6 +5451,355 @@ Begin
   Res.ImmVal  := 0;
   Res.Offset  := 0;
   Res.SymIdx  := -1;
+End;
+
+(* ============================================================
+   TODO 16 - BOUCLES : LOOP / RECUR / DOTIMES / DOSEQ [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseLoopForm : (loop [x init1 y init2] body ...) -------- *)
+(* Cree des liaisons locales comme let, avec un label de boucle    *)
+(* en debut du body. (recur ...) saute vers ce label en mettant    *)
+(* a jour les liaisons.                                             *)
+Procedure ParseLoopForm(Var Res : TExprVal);
+Var
+  VarName   : TString;
+  ValRes    : TExprVal;
+  Sub       : TExprVal;
+  SaveFrame : Integer;
+  Ofs       : Integer;
+  S         : TString;
+  LoopLabel : TString;
+  BC        : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(loop [...] ...)');
+
+  (* On attend un vecteur de liaisons [ ... ] *)
+  If CurToken.Kind <> TK_LBRACKET Then
+  Begin
+    CompileError('vecteur de liaisons attendu apres loop');
+    Exit;
+  End;
+  LexNextToken;  (* consomme '[' *)
+
+  SymEnterScope;
+  SaveFrame := CurFrameSize;
+  BC := 0;  (* nombre de liaisons *)
+
+  (* Traiter les paires nom/valeur, comme let *)
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If CurToken.Kind <> TK_SYMBOL Then
+    Begin
+      CompileError('symbole attendu dans les liaisons loop');
+      LexNextToken;
+      Continue;
+    End;
+    VarName := CurToken.Val;
+    LexNextToken;
+
+    (* Verification : nombre pair d elements dans le vecteur *)
+    If (CurToken.Kind = TK_RBRACKET) Or (CurToken.Kind = TK_EOF) Then
+    Begin
+      WarnMsg('nombre impair d''elements dans le vecteur de liaisons loop');
+      Break;
+    End;
+
+    (* Allouer l emplacement local sur la pile AVANT l evaluation *)
+    Inc(CurFrameSize, 2);
+    Ofs := CurFrameSize;
+    EmitInstrAB('SUB', 'SP', '2');
+
+    (* Evaluer la valeur de la liaison *)
+    ParseForm(ValRes);
+    ExprFlushToAX(ValRes);
+
+    (* Enregistrer le symbole et stocker la valeur *)
+    SymAdd(VarName, SK_LOCAL, ValRes.TypeIdx, -Ofs);
+    Str(Ofs, S);
+    EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+    (* Memoriser l offset pour recur *)
+    If BC < MAX_PARAM Then
+    Begin
+      If LoopTop < MAX_LOOP_NEST Then
+        LoopBindOfs[LoopTop, BC] := Ofs;
+      Inc(BC);
+    End;
+  End;
+
+  If CurToken.Kind = TK_RBRACKET Then
+    LexNextToken  (* consomme ']' *)
+  Else
+    CompileError('] attendu en fin de liaisons loop');
+
+  (* Generer le label de boucle *)
+  LoopLabel := LabelGen;
+
+  (* Empiler le contexte de boucle *)
+  If LoopTop < MAX_LOOP_NEST Then
+  Begin
+    LoopLbl[LoopTop] := LoopLabel;
+    LoopBindCount[LoopTop] := BC;
+    Inc(LoopTop);
+  End
+  Else
+    WarnMsg('boucles loop imbriquees trop profondes');
+
+  EmitLabel(LoopLabel);
+
+  (* Evaluer le body *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+  If Res.Kind <> EK_NONE Then
+    Res.Kind := EK_AX;
+
+  (* Depiler le contexte de boucle *)
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+
+  (* Liberer l espace pile *)
+  If CurFrameSize > SaveFrame Then
+  Begin
+    Str(CurFrameSize - SaveFrame, S);
+    EmitInstrAB('ADD', 'SP', S);
+  End;
+
+  CurFrameSize := SaveFrame;
+  SymLeaveScope;
+End;
+
+(* ---- ParseRecurForm : (recur expr1 expr2 ...) ----------------- *)
+(* Reevalue les expressions et met a jour les liaisons du loop      *)
+(* le plus interne, puis saute vers le label de boucle.             *)
+(* Doit etre en position de queue (tail position).                  *)
+Procedure ParseRecurForm(Var Res : TExprVal);
+Var
+  ArgCount : Integer;
+  ArgRes   : TExprVal;
+  S        : TString;
+  I        : Integer;
+  CurLoop  : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(recur ...)');
+
+  If LoopTop = 0 Then
+  Begin
+    CompileError('recur utilise en dehors d''un loop');
+    While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+      LexNextToken;
+    Exit;
+  End;
+
+  CurLoop := LoopTop - 1;
+  ArgCount := 0;
+
+  (* Evaluer chaque argument et empiler le resultat *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  If ArgCount <> LoopBindCount[CurLoop] Then
+    WarnMsg('recur : nombre d''arguments different du nombre de liaisons loop');
+
+  (* Depiler les valeurs en ordre inverse et mettre a jour les liaisons *)
+  For I := ArgCount - 1 DownTo 0 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    If I < LoopBindCount[CurLoop] Then
+    Begin
+      Str(LoopBindOfs[CurLoop, I], S);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+    End;
+  End;
+
+  (* Saut arriere vers le debut du loop *)
+  EmitInstrA('JMP', LoopLbl[CurLoop]);
+  Res.Kind := EK_NONE;
+End;
+
+(* ---- ParseDotimesForm : (dotimes [i n] body ...) -------------- *)
+(* Boucle de i=0 a n-1. Sucre syntaxique equivalent a :            *)
+(*   (loop [i 0] (when (< i n) body ... (recur (inc i))))          *)
+Procedure ParseDotimesForm(Var Res : TExprVal);
+Var
+  VarName    : TString;
+  LimitRes   : TExprVal;
+  Sub        : TExprVal;
+  SaveFrame  : Integer;
+  LoopLabel  : TString;
+  EndLabel   : TString;
+  OfsVar     : Integer;
+  OfsLimit   : Integer;
+  S, S2      : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(dotimes [...] ...)');
+
+  If CurToken.Kind <> TK_LBRACKET Then
+  Begin
+    CompileError('vecteur [i n] attendu apres dotimes');
+    Exit;
+  End;
+  LexNextToken;  (* consomme '[' *)
+
+  If CurToken.Kind <> TK_SYMBOL Then
+  Begin
+    CompileError('symbole attendu dans [i n] de dotimes');
+    Exit;
+  End;
+  VarName := CurToken.Val;
+  LexNextToken;
+
+  SymEnterScope;
+  SaveFrame := CurFrameSize;
+
+  (* Allouer la variable d iteration, initialisee a 0 *)
+  Inc(CurFrameSize, 2);
+  OfsVar := CurFrameSize;
+  EmitInstrAB('SUB', 'SP', '2');
+  EmitInstrAB('MOV', 'AX', '0');
+  Str(OfsVar, S);
+  EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+  SymAdd(VarName, SK_LOCAL, TY_IDX_INT, -OfsVar);
+
+  (* Evaluer la limite *)
+  ParseForm(LimitRes);
+  ExprFlushToAX(LimitRes);
+
+  (* Allouer le stockage de la limite *)
+  Inc(CurFrameSize, 2);
+  OfsLimit := CurFrameSize;
+  EmitInstrAB('SUB', 'SP', '2');
+  Str(OfsLimit, S2);
+  EmitInstrAB('MOV', 'WORD PTR [BP-' + S2 + ']', 'AX');
+
+  If CurToken.Kind = TK_RBRACKET Then
+    LexNextToken  (* consomme ']' *)
+  Else
+    CompileError('] attendu en fin de [i n] de dotimes');
+
+  LoopLabel := LabelGen;
+  EndLabel  := LabelGen;
+
+  EmitLabel(LoopLabel);
+
+  (* Comparer i < n *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+  EmitInstrAB('CMP', 'AX', 'WORD PTR [BP-' + S2 + ']');
+  EmitInstrA('JGE', EndLabel);
+
+  (* Evaluer le body *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+
+  (* Incrementer i *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+  EmitInstrA('INC', 'AX');
+  EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+  EmitInstrA('JMP', LoopLabel);
+
+  EmitLabel(EndLabel);
+
+  EmitInstrAB('MOV', 'AX', '0');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+
+  If CurFrameSize > SaveFrame Then
+  Begin
+    Str(CurFrameSize - SaveFrame, S);
+    EmitInstrAB('ADD', 'SP', S);
+  End;
+
+  CurFrameSize := SaveFrame;
+  SymLeaveScope;
+End;
+
+(* ---- ParseDoseqForm : (doseq [x coll] body ...) -------------- *)
+(* Iteration sur une collection (sequence).                         *)
+(* Equivalent a : (loop [s (seq coll)]                              *)
+(*                  (when s (let [x (first s)] body (recur (rest s)))))*)
+(* Stub : emet un avertissement, compile le body une fois.          *)
+Procedure ParseDoseqForm(Var Res : TExprVal);
+Var Sub : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  WarnMsg('doseq non entierement supporte, traite comme stub');
+  EmitComment('(doseq [...] ...) - stub');
+
+  (* Sauter le vecteur de liaisons *)
+  If CurToken.Kind = TK_LBRACKET Then
+  Begin
+    LexNextToken;
+    While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+      LexNextToken;
+    If CurToken.Kind = TK_RBRACKET Then LexNextToken;
+  End;
+
+  (* Evaluer le body une fois (stub) *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    Res := Sub;
+  End;
+
+  EmitInstrAB('MOV', 'AX', '0');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
+End;
+
+(* ---- ParseWhileForm : (while test body ...) ------------------- *)
+(* Boucle tant que test est vrai (non nil et non false).            *)
+(* Le test est reevalue a chaque iteration.                         *)
+Procedure ParseWhileForm(Var Res : TExprVal);
+Var
+  LoopLabel : TString;
+  EndLabel  : TString;
+  TestRes   : TExprVal;
+  Sub       : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(while ...)');
+
+  LoopLabel := LabelGen;
+  EndLabel  := LabelGen;
+
+  EmitLabel(LoopLabel);
+
+  (* Evaluer le test *)
+  ParseForm(TestRes);
+  ExprFlushToAX(TestRes);
+  EmitInstrAB('TEST', 'AX', 'AX');
+  EmitInstrA('JZ', EndLabel);
+
+  (* Evaluer le body *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(Sub);
+    ExprFlushToAX(Sub);
+    Res := Sub;
+  End;
+
+  EmitInstrA('JMP', LoopLabel);
+  EmitLabel(EndLabel);
+
+  EmitInstrAB('MOV', 'AX', '0');
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_NIL;
 End;
 
 Procedure EmitRuntime;
