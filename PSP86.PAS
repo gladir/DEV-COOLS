@@ -6118,7 +6118,6 @@ Begin
   EmitLabel(PSP_FN_PFX + 'MAIN');
   EmitInstrAB('MOV', 'AX', '_DATA');
   EmitInstrAB('MOV', 'DS', 'AX');
-  EmitInstrA('JMP', PSP_LBL_PFX + 'MAINBODY');
   EmitBlankLine;
 End;
 
@@ -8935,6 +8934,14 @@ Begin
     Else If (CurToken.Kind = TK_KEYWORD) Or
             (CurToken.Kind = TK_IDENT) Then
     Begin
+      { Emettre JMP MAINBODY juste avant la premiere function/procedure }
+      If ((CurToken.Kind = TK_KEYWORD) And
+          ((CurToken.Val = 'function') Or (CurToken.Val = 'procedure'))) And
+         (Not MainBodyEmitted) Then
+      Begin
+        EmitInstrA('JMP', PSP_LBL_PFX + 'MAINBODY');
+        EmitBlankLine;
+      End;
       ParseStatement;
       { Consommer les ; residuels }
       While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
