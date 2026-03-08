@@ -7860,7 +7860,6 @@ Procedure ParseTryExcept;
 Var
   LblExcept  : TString;
   LblEnd     : TString;
-  LblFinally : TString;
 Begin
   EmitComment('try');
 
@@ -7870,7 +7869,6 @@ Begin
   { Generer les labels }
   LblExcept := LabelGen;
   LblEnd    := LabelGen;
-  LblFinally := LabelGen;
 
   { Sauvegarder ancien handler sur la pile }
   EmitInstrA('PUSH', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
@@ -7942,8 +7940,6 @@ Begin
   EmitInstrA('POP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVEBP]');
   EmitInstrA('POP', 'DWORD PTR [' + PSP_EX_PFX + 'SAVESP]');
   EmitInstrA('POP', 'DWORD PTR [' + PSP_EX_PFX + 'HANDLER]');
-
-  EmitLabel(LblFinally);
 
   { Consommer end }
   If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'end') Then
