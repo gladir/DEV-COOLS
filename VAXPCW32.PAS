@@ -233,7 +233,7 @@
               WriteFile(hStdOut, buf, len, written, nil)
               ReadFile(hStdIn, buf, len, read, nil)
 
-  TODO 13 - IF / CASE / OTHERS
+  TODO 13 - IF / CASE / OTHERS [IMPLEMENTE]
             ParseIfStmt : IF cond THEN stmt [ELSE stmt]
               Emission TEST EAX,EAX / JZ pour condition fausse
               Labels : _VXL_ELSE_N, _VXL_ENDIF_N
@@ -881,6 +881,9 @@ Procedure ParseAssignment(Const VarName : TString); Forward;
 Procedure ParseValueSection; Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
+{ Forward declarations TODO 13 }
+Procedure ParseIfStmt; Forward;
+Procedure ParseCaseStmt; Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -8135,6 +8138,194 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 13 - IF / CASE / OTHERS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseIfStmt : IF cond THEN stmt [ELSE stmt] ----------- *)
+Procedure ParseIfStmt;
+Var
+  Ev          : TExprVal;
+  LblElse     : TString;
+  LblEndIf    : TString;
+  HasElsePart : Boolean;
+Begin
+  EmitComment('if');
+
+  LexNextToken;  (* consommer if *)
+
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+
+  LblElse  := LabelGen;
+  LblEndIf := LabelGen;
+
+  EmitInstrAB('TEST', 'EAX', 'EAX');
+  EmitInstrA('JZ', LblElse);
+
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'then') Then
+    LexNextToken
+  Else
+    WarnMsg('''then'' attendu apres condition if');
+
+  ParseStatement;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    LexNextToken;
+
+  HasElsePart := (CurToken.Kind = TK_KEYWORD) And
+                 (StrLowerCase(CurToken.Val) = 'else');
+
+  If HasElsePart Then
+  Begin
+    EmitInstrA('JMP', LblEndIf);
+    EmitLabel(LblElse);
+    LexNextToken;  (* consommer else *)
+    ParseStatement;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    EmitLabel(LblEndIf);
+  End
+  Else
+    EmitLabel(LblElse);
+End;
+
+(* ---- ParseCaseStmt : CASE expr OF val: stmt; ... END -------- *)
+Procedure ParseCaseStmt;
+Var
+  Ev       : TExprVal;
+  CaseEv   : TExprVal;
+  LblEnd   : TString;
+  LblNext  : TString;
+  LblHit   : TString;
+  RangeHi  : LongInt;
+  L        : TString;
+Begin
+  EmitComment('case');
+  LexNextToken;  (* consommer case *)
+
+  ParseExpr(Ev);
+  ExprFlushToEAX(Ev);
+  EmitInstrA('PUSH', 'EAX');
+
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'of') Then
+    LexNextToken
+  Else
+    WarnMsg('''of'' attendu apres expression case');
+
+  LblEnd := LabelGen;
+
+  While (CurToken.Kind <> TK_EOF) Do
+  Begin
+    L := StrLowerCase(CurToken.Val);
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((L = 'end') Or (L = 'else') Or (L = 'others') Or
+        (L = 'otherwise')) Then
+      Break;
+
+    LblNext := LabelGen;
+    LblHit  := LabelGen;
+
+    (* Parse case values separated by commas *)
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':')) Do
+    Begin
+      ParseExpr(CaseEv);
+
+      EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
+
+      (* Detect range val1..val2 *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+      Begin
+        LexNextToken;
+        RangeHi := 0;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          RangeHi := CurToken.IntVal;
+          LexNextToken;
+        End
+        Else
+        Begin
+          ParseExpr(CaseEv);
+          RangeHi := CaseEv.ImmVal;
+        End;
+        EmitInstrAB('CMP', 'EAX', IntToStr(CaseEv.ImmVal));
+        EmitInstrA('JB', LblNext);
+        EmitInstrAB('CMP', 'EAX', IntToStr(RangeHi));
+        EmitInstrA('JBE', LblHit);
+        EmitInstrA('JMP', LblNext);
+      End
+      Else
+      Begin
+        If CaseEv.Kind = EK_IMM Then
+          EmitInstrAB('CMP', 'EAX', IntToStr(CaseEv.ImmVal))
+        Else
+        Begin
+          ExprFlushToEAX(CaseEv);
+          EmitInstrAB('MOV', 'EBX', 'EAX');
+          EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        End;
+        EmitInstrA('JE', LblHit);
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken
+      Else
+        Break;
+    End;
+
+    EmitInstrA('JMP', LblNext);
+    EmitLabel(LblHit);
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      LexNextToken
+    Else
+      WarnMsg(''':'' attendu apres valeur(s) case');
+
+    ParseStatement;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblNext);
+  End;
+
+  (* Handle OTHERS / OTHERWISE / ELSE default clause *)
+  L := StrLowerCase(CurToken.Val);
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((L = 'else') Or (L = 'others') Or (L = 'otherwise')) Then
+  Begin
+    LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      LexNextToken;
+    EmitComment('case default');
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               (StrLowerCase(CurToken.Val) = 'end')) Do
+    Begin
+      ParseStatement;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+    End;
+  End;
+
+  EmitLabel(LblEnd);
+  EmitInstrA('POP', 'EAX');
+
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'end') Then
+    LexNextToken
+  Else
+    WarnMsg('''end'' attendu pour fermer le case');
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    LexNextToken;
+End;
+
 (* ---- ParseStatement : analyser une instruction ---------------  *)
 Procedure ParseStatement;
 Var
@@ -8525,8 +8716,21 @@ Begin
       Exit;
     End;
 
-    (* Future TODO stubs: IF, CASE, FOR, WHILE, REPEAT, LOOP, WITH *)
-    If (StLw = 'if') Or (StLw = 'case') Or (StLw = 'for') Or
+    (* TODO 13 : IF / CASE *)
+    If StLw = 'if' Then
+    Begin
+      ParseIfStmt;
+      Exit;
+    End;
+
+    If StLw = 'case' Then
+    Begin
+      ParseCaseStmt;
+      Exit;
+    End;
+
+    (* Future TODO stubs: FOR, WHILE, REPEAT, LOOP, WITH *)
+    If (StLw = 'for') Or
        (StLw = 'while') Or (StLw = 'repeat') Or (StLw = 'loop') Or
        (StLw = 'with') Then
     Begin
