@@ -263,7 +263,7 @@
             (empty? coll) -> CMP AX,0 / JZ (test nil)
             (seq coll) -> retourne la collection comme sequence ou nil si vide
 
-  TODO 18 - VECTEURS (vector / nth / assoc / conj)
+  TODO 18 - VECTEURS (vector / nth / assoc / conj) [IMPLEMENTE]
             Representation : bloc contigu en heap [count, e0, e1, ..., eN-1]
               count = nombre d elements (1 Word), chaque element = 1 Word
             (vector a b c) -> CALL _CLRT_VECNEW(CX=count) allouer + remplir
@@ -790,6 +790,12 @@ Procedure ParseCountForm(Var Res : TExprVal); Forward;
 Procedure ParseNthForm(Var Res : TExprVal); Forward;
 Procedure ParseEmptyForm(Var Res : TExprVal); Forward;
 Procedure ParseSeqForm(Var Res : TExprVal); Forward;
+(* TODO 18 *)
+Procedure ParseVectorForm(Var Res : TExprVal); Forward;
+Procedure ParseVecLiteral(Var Res : TExprVal); Forward;
+Procedure ParseGetForm(Var Res : TExprVal); Forward;
+Procedure ParseAssocForm(Var Res : TExprVal); Forward;
+Procedure ParseSubvecForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2853,6 +2859,9 @@ Begin
   (* Heap pour cellules cons (TODO 17) *)
   EmitRaw('_CL_HEAP    DB 4096 DUP(0)');
   EmitRaw('_CL_HEAPTOP DW 0');
+  (* Variables temporaires pour operations vecteur (TODO 18) *)
+  EmitRaw('_CL_VTMP1   DW 0');
+  EmitRaw('_CL_VTMP2   DW 0');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -4030,6 +4039,36 @@ Begin
             Exit;
           End
 
+          (* TODO 18 : operations sur les vecteurs *)
+          Else If HeadSym = 'vector' Then
+          Begin
+            ParseVectorForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres vector');
+            Exit;
+          End
+          Else If HeadSym = 'get' Then
+          Begin
+            ParseGetForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres get');
+            Exit;
+          End
+          Else If HeadSym = 'assoc' Then
+          Begin
+            ParseAssocForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres assoc');
+            Exit;
+          End
+          Else If HeadSym = 'subvec' Then
+          Begin
+            ParseSubvecForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres subvec');
+            Exit;
+          End
+
           (* Appel de fonction generique *)
           Else If (SIdx >= 0) And
              ((SymTab[SIdx].Kind = SK_FN) Or
@@ -4076,13 +4115,7 @@ Begin
     TK_LBRACKET :
     Begin
       LexNextToken;  (* consomme '[' *)
-      (* Pour l instant, sauter le contenu *)
-      While (CurToken.Kind <> TK_RBRACKET) And
-            (CurToken.Kind <> TK_EOF) Do
-        LexNextToken;
-      If CurToken.Kind = TK_RBRACKET Then
-        LexNextToken;
-      ExprMakeNone(Res);
+      ParseVecLiteral(Res);
     End;
 
     (* --- Map litteral {:a 1 :b 2} --- *)
@@ -6168,6 +6201,251 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ============================================================
+   TODO 18 - VECTEURS : VECTOR / GET / ASSOC / SUBVEC [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseVectorForm : (vector a b c ...) ----------------------- *)
+(* Cree un vecteur contigu sur le heap : [count, e0, e1, ..., eN-1]  *)
+(* Chaque element = 1 Word, count = nombre d elements.               *)
+Procedure ParseVectorForm(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(vector ...)');
+  ArgCount := 0;
+
+  (* Empiler tous les arguments de gauche a droite *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  (* Allouer le vecteur sur le heap *)
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_CL_HEAPTOP]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CL_HEAP');
+  EmitInstrAB('ADD', 'BX', 'DI');
+
+  (* Stocker le nombre d elements *)
+  EmitInstrAB('MOV', 'WORD PTR [BX]', IntToStr(ArgCount));
+
+  (* Depiler les elements : la pile a [e_{n-1}, ..., e_0]        *)
+  (* e_{n-1} est au sommet -> va a [BX + 2*n]                    *)
+  (* e_0 est en bas        -> va a [BX + 2]                      *)
+  For I := ArgCount DownTo 1 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX+' + IntToStr(I * 2) + ']', 'AX');
+  End;
+
+  (* Resultat = pointeur vecteur *)
+  EmitInstrAB('MOV', 'AX', 'BX');
+
+  (* Mettre a jour heaptop *)
+  EmitInstrAB('ADD', 'DI', IntToStr((ArgCount + 1) * 2));
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HEAPTOP]', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_VEC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseVecLiteral : [a b c ...] ------------------------------ *)
+(* Litteral vecteur, meme mecanisme que (vector ...) mais ferme par ] *)
+Procedure ParseVecLiteral(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('[...] litteral vecteur');
+  ArgCount := 0;
+
+  (* Empiler tous les elements *)
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  If CurToken.Kind = TK_RBRACKET Then
+    LexNextToken;
+
+  (* Allouer le vecteur sur le heap *)
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_CL_HEAPTOP]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CL_HEAP');
+  EmitInstrAB('ADD', 'BX', 'DI');
+
+  (* Stocker le nombre d elements *)
+  EmitInstrAB('MOV', 'WORD PTR [BX]', IntToStr(ArgCount));
+
+  (* Depiler les elements en ordre inverse *)
+  For I := ArgCount DownTo 1 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX+' + IntToStr(I * 2) + ']', 'AX');
+  End;
+
+  (* Resultat = pointeur vecteur *)
+  EmitInstrAB('MOV', 'AX', 'BX');
+
+  (* Mettre a jour heaptop *)
+  EmitInstrAB('ADD', 'DI', IntToStr((ArgCount + 1) * 2));
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HEAPTOP]', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_VEC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseGetForm : (get vec n) ou (get vec n default) ---------- *)
+(* Acces indexe dans un vecteur avec retour nil si hors bornes.       *)
+(* AX = vecteur, BX = index -> CALL _CLRT_VECNTH -> AX              *)
+Procedure ParseGetForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    HasDef  : Boolean;
+    LblEnd  : TString;
+    LblDef  : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(get vec n)');
+
+  (* Evaluer la collection (vecteur) *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer l index *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Verifier s il y a un argument par defaut *)
+  HasDef := (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF);
+
+  If HasDef Then
+  Begin
+    EmitInstrA('PUSH', 'BX');
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');  (* default sur la pile *)
+    EmitInstrA('POP', 'CX');   (* CX = default *)
+    EmitInstrA('POP', 'BX');   (* BX = index *)
+  End;
+
+  (* Recuperer le vecteur *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+
+  If HasDef Then
+  Begin
+    LblDef := LabelGen;
+    LblEnd := LabelGen;
+    (* Si resultat = 0 (nil), utiliser default *)
+    EmitInstrAB('CMP', 'AX', '0');
+    EmitInstrA('JE', LblDef);
+    EmitInstrA('JMP', LblEnd);
+    EmitLabel(LblDef);
+    EmitInstrAB('MOV', 'AX', 'CX');
+    EmitLabel(LblEnd);
+  End;
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseAssocForm : (assoc vec n val) ------------------------- *)
+(* Cree une copie du vecteur avec l element a l index n remplace.     *)
+(* AX = vec, BX = index, CX = nouvelle valeur                        *)
+Procedure ParseAssocForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(assoc vec n val)');
+
+  (* Evaluer le vecteur *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer l index *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer la nouvelle valeur *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'CX', 'AX');
+
+  (* Recuperer index et vecteur *)
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime assoc *)
+  EmitInstrA('CALL', CL_RT_PFX + 'VECASSOC');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_VEC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseSubvecForm : (subvec vec start end) ------------------- *)
+(* Cree un sous-vecteur de start (inclus) a end (exclus).            *)
+(* AX = vec, BX = start, CX = end                                    *)
+Procedure ParseSubvecForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(subvec vec start end)');
+
+  (* Evaluer le vecteur *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer start *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer end *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'CX', 'AX');
+
+  (* Recuperer start et vecteur *)
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime subvec *)
+  EmitInstrA('CALL', CL_RT_PFX + 'SUBVEC');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_VEC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
 Procedure EmitRuntime;
 Begin
   (* TODO 24 - runtime minimal pour E/S *)
@@ -6475,6 +6753,167 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
+  (* --- TODO 18 : _CLRT_VECNTH : acces indexe dans un vecteur --- *)
+  (* Entree : AX = pointeur vecteur, BX = index (0-base)           *)
+  (* Sortie : AX = element ou 0 (nil) si hors bornes               *)
+  (* Layout vecteur : [count, e0, e1, ..., e_{count-1}]            *)
+  EmitRaw(CL_RT_PFX + 'VECNTH:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'VN_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        CMP     BX, WORD PTR [SI]');
+  EmitRaw('        JAE     ' + CL_RT_PFX + 'VN_OB');
+  EmitRaw('        SHL     BX, 1');
+  EmitRaw('        ADD     BX, 2');
+  EmitRaw('        ADD     SI, BX');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'VN_OB:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'VN_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 18 : _CLRT_VECCONJ : ajouter un element en fin --- *)
+  (* Entree : AX = pointeur vecteur, BX = nouvel element          *)
+  (* Sortie : AX = pointeur nouveau vecteur (copie + ajout)       *)
+  EmitRaw(CL_RT_PFX + 'VECCONJ:');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        MOV     WORD PTR [BX], AX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'VC_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'VC_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'VC_LP');
+  EmitRaw(CL_RT_PFX + 'VC_DN:');
+  EmitRaw('        POP     AX');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 18 : _CLRT_VECASSOC : copie avec remplacement --- *)
+  (* Entree : AX = vecteur, BX = index, CX = nouvelle valeur    *)
+  (* Sortie : AX = nouveau vecteur (copie avec element remplace) *)
+  (* Utilise _CL_VTMP1 (index) et _CL_VTMP2 (valeur) comme tmp *)
+  EmitRaw(CL_RT_PFX + 'VECASSOC:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     WORD PTR [_CL_VTMP1], BX');
+  EmitRaw('        MOV     WORD PTR [_CL_VTMP2], CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        XOR     DX, DX');
+  EmitRaw(CL_RT_PFX + 'VA_LP:');
+  EmitRaw('        CMP     DX, CX');
+  EmitRaw('        JAE     ' + CL_RT_PFX + 'VA_DN');
+  EmitRaw('        CMP     DX, WORD PTR [_CL_VTMP1]');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'VA_RP');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'VA_NX');
+  EmitRaw(CL_RT_PFX + 'VA_RP:');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_VTMP2]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw(CL_RT_PFX + 'VA_NX:');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        INC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'VA_LP');
+  EmitRaw(CL_RT_PFX + 'VA_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 18 : _CLRT_SUBVEC : sous-vecteur ------------------- *)
+  (* Entree : AX = vecteur, BX = start (inclus), CX = end (exclus) *)
+  (* Sortie : AX = nouveau sous-vecteur                             *)
+  EmitRaw(CL_RT_PFX + 'SUBVEC:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        SUB     DX, BX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], DX');
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     AX, 2');
+  EmitRaw('        ADD     SI, AX');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     CX, DX');
+  EmitRaw(CL_RT_PFX + 'SV_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SV_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SV_LP');
+  EmitRaw(CL_RT_PFX + 'SV_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
   EmitComment('=== FIN RUNTIME ===');
   EmitBlankLine;
 End;
@@ -6572,6 +7011,7 @@ Begin
   SymAdd('dissoc',     SK_FN, TY_UNKNOWN,  0);
   SymAdd('conj',       SK_FN, TY_UNKNOWN,  0);
   SymAdd('nth',        SK_FN, TY_UNKNOWN,  0);
+  SymAdd('subvec',     SK_FN, TY_IDX_VEC,  0);
   SymAdd('seq',        SK_FN, TY_IDX_LIST, 0);
 
   (* Fonctions predefinies - fonctions d ordre superieur *)
