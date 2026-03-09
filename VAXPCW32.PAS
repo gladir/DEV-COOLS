@@ -326,7 +326,7 @@
             Parametres nommes : Proc(Param1 := val1, Param2 := val2)
               (VAX Pascal extension)
 
-  TODO 19 - POINTEURS ET ALLOCATION DYNAMIQUE
+  TODO 19 - POINTEURS ET ALLOCATION DYNAMIQUE [IMPLEMENTE]
             TYPE PtrType = ^BaseType : declaration de pointeur
               Taille : 4 octets (DWORD, adresse 32 bits)
             NEW(p) : allocation dynamique
@@ -1332,6 +1332,7 @@ Begin
     (L = 'write')      Or (L = 'writeln')   Or (L = 'read')      Or
     (L = 'readln')     Or (L = 'break')     Or (L = 'continue')  Or
     (L = 'exit')       Or (L = 'halt')      Or (L = 'packed')    Or
+    (L = 'new')        Or (L = 'dispose')   Or
     { Mots-cles VAX Pascal supplementaires }
     (L = 'module')     Or (L = 'varying')   Or (L = 'return')    Or
     (L = 'loop')       Or (L = 'others')    Or (L = 'otherwise') Or
@@ -2679,10 +2680,11 @@ Begin
   EmitRaw(VXP_RT_PFX + 'DATEBUF DB  16 DUP(0)');
   EmitRaw(VXP_RT_PFX + 'TIMEBUF DB  12 DUP(0)');
   EmitRaw(VXP_RT_PFX + 'ASSERTMSG DB ''Assertion failed'',0');
-  { Handle stdout Win32 et buffer d ecriture }
+  { Handle stdout Win32, buffer d ecriture, heap Win32 }
   EmitRaw(VXP_RT_PFX + 'HSTDOUT DD  0');
   EmitRaw(VXP_RT_PFX + 'HSTDIN  DD  0');
   EmitRaw(VXP_RT_PFX + 'WRITTEN DD  0');
+  EmitRaw(VXP_RT_PFX + 'HHEAP   DD  0');
   EmitBlankLine;
 
   { --- FDB fichiers predefinis (32 bits : DD handle, DD mode) --- }
@@ -6404,6 +6406,49 @@ Begin
   EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
 
+  { ============================================================ }
+  {  POINTEURS ET ALLOCATION DYNAMIQUE (TODO 19)                  }
+  { ============================================================ }
+
+  (* ---- _VXPRT_NEW : allocation dynamique Win32 ------------------- *)
+  (* EAX = taille en octets a allouer                                 *)
+  (* Retour : EAX = pointeur vers le bloc alloue (ou 0 si echec)     *)
+  EmitComment('--- NEW : HeapAlloc Win32 (EAX=size -> EAX=ptr) ---');
+  EmitLabel(VXP_RT_PFX + 'NEW');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('MOV', 'EBX', 'EAX');           { EBX = taille }
+  EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]', '0');
+  EmitInstrA('JNE', VXP_RT_PFX + 'NEW_OK');
+  EmitInstrA('CALL', '_GetProcessHeap@0');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]', 'EAX');
+  EmitLabel(VXP_RT_PFX + 'NEW_OK');
+  EmitInstrA('PUSH', 'EBX');                  { dwBytes = taille }
+  EmitInstrA('PUSH', '8');                    { dwFlags = HEAP_ZERO_MEMORY }
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]');
+  EmitInstrA('CALL', '_HeapAlloc@12');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_DISPOSE : liberation memoire Win32 ----------------- *)
+  (* EAX = pointeur vers le bloc a liberer                            *)
+  EmitComment('--- DISPOSE : HeapFree Win32 (EAX=ptr) ---');
+  EmitLabel(VXP_RT_PFX + 'DISPOSE');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('MOV', 'EBX', 'EAX');           { EBX = pointeur }
+  EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]', '0');
+  EmitInstrA('JNE', VXP_RT_PFX + 'DISP_OK');
+  EmitInstrA('CALL', '_GetProcessHeap@0');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]', 'EAX');
+  EmitLabel(VXP_RT_PFX + 'DISP_OK');
+  EmitInstrA('PUSH', 'EBX');                  { lpMem = pointeur }
+  EmitInstrA('PUSH', '0');                    { dwFlags = 0 }
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]');
+  EmitInstrA('CALL', '_HeapFree@12');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
   EmitRaw('_TEXT   ENDS');
 End;
 
@@ -9932,6 +9977,7 @@ Var
   IoHasW   : Boolean;
   IoHasP   : Boolean;
   IoWLbl   : TString;
+  AllocSz  : Integer;
 Begin
   (* Empty statement *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -10287,17 +10333,55 @@ Begin
       Exit;
     End;
 
-    (* NEW / DISPOSE - heap stubs *)
+    (* NEW / DISPOSE - allocation dynamique Win32 (TODO 19) *)
     If (StLw = 'new') Or (StLw = 'dispose') Then
     Begin
-      WarnMsg(StLw + ' ignore (TODO ulterieur)');
       LexNextToken;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         LexNextToken;
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          IoVarNm := CurToken.Val;
           LexNextToken;
+          IoVarIdx := SymFind(IoVarNm);
+          If IoVarIdx >= 0 Then
+          Begin
+            If StLw = 'new' Then
+            Begin
+              (* Determiner la taille du type pointe *)
+              AllocSz := 4; { taille par defaut }
+              If (SymTab[IoVarIdx].TypeIdx >= 0) And
+                 (SymTab[IoVarIdx].TypeIdx < TypeCount) And
+                 (TypeTab[SymTab[IoVarIdx].TypeIdx].Kind = TKP_POINTER) Then
+                AllocSz := TypeSizeof(
+                  TypeTab[SymTab[IoVarIdx].TypeIdx].BaseTypeIdx);
+              If AllocSz < 4 Then AllocSz := 4;
+              EmitComment('new(' + IoVarNm + ') size=' + IntToStr(AllocSz));
+              EmitInstrAB('MOV', 'EAX', IntToStr(AllocSz));
+              EmitInstrA('CALL', VXP_RT_PFX + 'NEW');
+              If SymTab[IoVarIdx].IsLocal Then
+                EmitInstrAB('MOV',
+                  'DWORD PTR ' + EBPOfs(SymTab[IoVarIdx].Offset), 'EAX')
+              Else
+                EmitInstrAB('MOV',
+                  'DWORD PTR [' + SymTab[IoVarIdx].MangledName + ']', 'EAX');
+            End
+            Else
+            Begin
+              EmitComment('dispose(' + IoVarNm + ')');
+              If SymTab[IoVarIdx].IsLocal Then
+                EmitInstrAB('MOV', 'EAX',
+                  'DWORD PTR ' + EBPOfs(SymTab[IoVarIdx].Offset))
+              Else
+                EmitInstrAB('MOV', 'EAX',
+                  'DWORD PTR [' + SymTab[IoVarIdx].MangledName + ']');
+              EmitInstrA('CALL', VXP_RT_PFX + 'DISPOSE');
+            End;
+          End
+          Else
+            WarnMsg('variable inconnue : ' + IoVarNm);
+        End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           LexNextToken;
       End;
