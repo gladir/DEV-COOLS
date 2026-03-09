@@ -145,6 +145,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur Z80.</td>
 		</tr>
 		<tr>
+			<td><b>AWK86.PAS</b></td>td
+			<td>Cette commande permet de lancer le compilateur AWK vers l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>BASIC.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de langage de programmation BASIC.</td>
 		</tr>
