@@ -277,7 +277,7 @@
               -> donnees dans .DATA
             Verification de bornes optionnelle (CheckEnabled)
 
-  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH
+  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
             RECORD champ1: T1; champ2: T2; END
               Taille = somme des sizeof(Ti) avec alignement 32 bits
               Acces champ : offset fixe depuis debut du record
@@ -892,6 +892,10 @@ Procedure ParseLoopStmt; Forward;
 
 { Forward declarations TODO 15 }
 Procedure EmitBoundsCheck(Lo, Hi : LongInt); Forward;
+
+{ Forward declarations TODO 16 }
+Procedure ParseTypeDecl; Forward;
+Procedure ParseWithStmt; Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -8221,6 +8225,31 @@ Begin
         'OFFSET ' + SymTab[SIdx].MangledName);
     EmitInstrA('CALL', VXP_RT_PFX + 'SET_COPY');
   End
+  (* Record copy : REP MOVSD *)
+  Else If (SymTab[SIdx].TypeIdx >= 0) And
+          (SymTab[SIdx].TypeIdx < TypeCount) And
+          (TypeTab[SymTab[SIdx].TypeIdx].Kind = TKP_RECORD) Then
+  Begin
+    FTIdx := SymTab[SIdx].TypeIdx;
+    EmitComment('record copy ' + VarName);
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    If SymTab[SIdx].IsLocal Then
+      EmitInstrAB('LEA', 'EDI',
+        EBPOfs(SymTab[SIdx].Offset))
+    Else
+      EmitInstrAB('MOV', 'EDI',
+        'OFFSET ' + SymTab[SIdx].MangledName);
+    If (TypeTab[FTIdx].Size >= 4) And ((TypeTab[FTIdx].Size Mod 4) = 0) Then
+    Begin
+      EmitInstrAB('MOV', 'ECX', IntToStr(TypeTab[FTIdx].Size Div 4));
+      EmitInstr('REP MOVSD');
+    End
+    Else
+    Begin
+      EmitInstrAB('MOV', 'ECX', IntToStr(TypeTab[FTIdx].Size));
+      EmitInstr('REP MOVSB');
+    End;
+  End
   Else If SymTab[SIdx].IsLocal Then
   Begin
     If SymTab[SIdx].Cat = SC_VARPARAM Then
@@ -8907,6 +8936,676 @@ Begin
   EmitInstrA('JG', VXP_RT_PFX + 'PANIC_RANGE');
 End;
 
+{ ============================================================
+  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseTypeDecl : analyser le bloc TYPE -------------------- *)
+(* Syntaxe :                                                        *)
+(*   TYPE                                                           *)
+(*     TypeName = TypeDefinition;                                   *)
+(*     ...                                                          *)
+(* Supporte : RECORD, PACKED RECORD, ARRAY, pointeur, alias, enum. *)
+Procedure ParseTypeDecl;
+Var
+  TName     : TString;
+  TIdx      : Integer;
+  NewTIdx   : Integer;
+  IsPacked  : Boolean;
+  FieldOfs  : Integer;
+  FieldSz   : Integer;
+  FldName   : TString;
+  FldTName  : TString;
+  FldTIdx   : Integer;
+  FldCount  : Integer;
+  MaxVariant: Integer;
+  VarOfs    : Integer;
+  VarMax    : Integer;
+  ArrLo, ArrHi : LongInt;
+  ArrCount     : LongInt;
+  ArrElemTN    : TString;
+  ArrElemTI    : Integer;
+  ArrSz        : Integer;
+  MultiNames   : Array[0..MAX_FIELD - 1] Of TString;
+  MultiCount   : Integer;
+  MIdx         : Integer;
+  ParenDepth   : Integer;
+Begin
+  While (CurToken.Kind = TK_IDENT) Or
+        ((CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) <> 'var') And
+         (StrLowerCase(CurToken.Val) <> 'const') And
+         (StrLowerCase(CurToken.Val) <> 'begin') And
+         (StrLowerCase(CurToken.Val) <> 'function') And
+         (StrLowerCase(CurToken.Val) <> 'procedure') And
+         (StrLowerCase(CurToken.Val) <> 'end') And
+         (StrLowerCase(CurToken.Val) <> 'label') And
+         (StrLowerCase(CurToken.Val) <> 'static') And
+         (StrLowerCase(CurToken.Val) <> 'external') And
+         (StrLowerCase(CurToken.Val) <> 'global') And
+         (StrLowerCase(CurToken.Val) <> 'value') And
+         Not IsOpenBracket) Do
+  Begin
+    TName := CurToken.Val;
+    LexNextToken;
+
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg('''='' attendu apres nom de type');
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    IsPacked := False;
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'packed') Then
+    Begin
+      IsPacked := True;
+      LexNextToken;
+    End;
+
+    (* ---- RECORD type ---- *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'record') Then
+    Begin
+      LexNextToken;
+
+      If TypeCount >= MAX_TYPE Then
+      Begin
+        WarnMsg('nombre maximal de types atteint');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (StrLowerCase(CurToken.Val) = 'end')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'end') Then
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        Continue;
+      End;
+
+      NewTIdx := TypeCount;
+      Inc(TypeCount);
+      TypeTab[NewTIdx].Kind       := TKP_RECORD;
+      TypeTab[NewTIdx].FieldCount := 0;
+      TypeTab[NewTIdx].EnumCount  := 0;
+      TypeTab[NewTIdx].Packed_    := IsPacked;
+      TypeTab[NewTIdx].Lo         := 0;
+      TypeTab[NewTIdx].Hi         := 0;
+      TypeTab[NewTIdx].Size       := 0;
+
+      FieldOfs := 0;
+      FldCount := 0;
+
+      (* Parse fixed fields until END or CASE *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (StrLowerCase(CurToken.Val) = 'end')) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (StrLowerCase(CurToken.Val) = 'case')) Do
+      Begin
+        (* Skip VAX attributes [ALIGNED(n)] etc *)
+        If IsOpenBracket Then
+        Begin
+          While (CurToken.Kind <> TK_EOF) And Not IsCloseBracket Do
+            LexNextToken;
+          If IsCloseBracket Then LexNextToken;
+        End;
+
+        If (CurToken.Kind = TK_KEYWORD) And
+           ((StrLowerCase(CurToken.Val) = 'end') Or
+            (StrLowerCase(CurToken.Val) = 'case')) Then
+          Break;
+
+        If Not ((CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD)) Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            LexNextToken
+          Else
+            LexNextToken;
+          Continue;
+        End;
+
+        (* Collect field name(s) : f1, f2, ... : Type *)
+        MultiCount := 0;
+        MultiNames[0] := CurToken.Val;
+        MultiCount := 1;
+        LexNextToken;
+        While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+        Begin
+          LexNextToken;
+          If (CurToken.Kind = TK_IDENT) Or
+             (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            If MultiCount < MAX_FIELD Then
+            Begin
+              MultiNames[MultiCount] := CurToken.Val;
+              Inc(MultiCount);
+            End;
+            LexNextToken;
+          End;
+        End;
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+          LexNextToken
+        Else
+        Begin
+          WarnMsg(''':'' attendu apres nom de champ');
+          Continue;
+        End;
+
+        (* Field type *)
+        FldTName := '';
+        If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+        Begin
+          FldTName := CurToken.Val;
+          LexNextToken;
+        End;
+        FldTIdx := TypeResolve(FldTName);
+        If FldTIdx = TY_UNKNOWN Then
+          FldTIdx := TY_IDX_INTEGER;
+        FieldSz := TypeSizeof(FldTIdx);
+
+        For MIdx := 0 To MultiCount - 1 Do
+        Begin
+          (* Alignment for non-packed records *)
+          If (Not IsPacked) And (FieldSz >= 4) And
+             ((FieldOfs Mod 4) <> 0) Then
+            FieldOfs := (FieldOfs + 3) And (Not 3);
+
+          If FldCount < MAX_FIELD Then
+          Begin
+            TypeTab[NewTIdx].Fields[FldCount].Name    := MultiNames[MIdx];
+            TypeTab[NewTIdx].Fields[FldCount].TypeIdx  := FldTIdx;
+            TypeTab[NewTIdx].Fields[FldCount].Offset   := FieldOfs;
+            Inc(FldCount);
+            TypeTab[NewTIdx].FieldCount := FldCount;
+          End;
+          FieldOfs := FieldOfs + FieldSz;
+        End;
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+      End;
+
+      (* Handle CASE variant part *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'case') Then
+      Begin
+        LexNextToken;
+
+        (* tag [: type] OF *)
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        Begin
+          LexNextToken;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            FldTIdx := TypeResolve(CurToken.Val);
+            If FldTIdx <> TY_UNKNOWN Then
+            Begin
+              If (Not IsPacked) And (TypeSizeof(FldTIdx) >= 4) And
+                 ((FieldOfs Mod 4) <> 0) Then
+                FieldOfs := (FieldOfs + 3) And (Not 3);
+              If FldCount < MAX_FIELD Then
+              Begin
+                TypeTab[NewTIdx].Fields[FldCount].Name    := 'tag';
+                TypeTab[NewTIdx].Fields[FldCount].TypeIdx  := FldTIdx;
+                TypeTab[NewTIdx].Fields[FldCount].Offset   := FieldOfs;
+                Inc(FldCount);
+                TypeTab[NewTIdx].FieldCount := FldCount;
+                FieldOfs := FieldOfs + TypeSizeof(FldTIdx);
+              End;
+            End;
+            LexNextToken;
+          End;
+        End;
+
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'of') Then
+          LexNextToken;
+
+        MaxVariant := 0;
+        VarOfs := FieldOfs;
+
+        (* Parse variant clauses until END *)
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_KEYWORD) And
+                   (StrLowerCase(CurToken.Val) = 'end')) Do
+        Begin
+          (* OTHERS / OTHERWISE label *)
+          If (CurToken.Kind = TK_KEYWORD) And
+             ((StrLowerCase(CurToken.Val) = 'others') Or
+              (StrLowerCase(CurToken.Val) = 'otherwise')) Then
+          Begin
+            LexNextToken;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+              LexNextToken;
+          End
+          Else
+          Begin
+            (* Value label(s) : skip until : or ( *)
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':')) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Do
+            Begin
+              LexNextToken;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+                LexNextToken;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+              LexNextToken;
+          End;
+
+          (* Variant fields in parentheses *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            LexNextToken;
+            VarMax := 0;
+
+            While (CurToken.Kind <> TK_EOF) And
+                  Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+            Begin
+              If (CurToken.Kind = TK_IDENT) Or
+                 ((CurToken.Kind = TK_KEYWORD) And
+                  (StrLowerCase(CurToken.Val) <> 'end')) Then
+              Begin
+                (* Collect variant field name(s) *)
+                MultiCount := 0;
+                MultiNames[0] := CurToken.Val;
+                MultiCount := 1;
+                LexNextToken;
+                While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+                Begin
+                  LexNextToken;
+                  If (CurToken.Kind = TK_IDENT) Or
+                     (CurToken.Kind = TK_KEYWORD) Then
+                  Begin
+                    If MultiCount < MAX_FIELD Then
+                    Begin
+                      MultiNames[MultiCount] := CurToken.Val;
+                      Inc(MultiCount);
+                    End;
+                    LexNextToken;
+                  End;
+                End;
+
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+                  LexNextToken;
+                FldTName := '';
+                If (CurToken.Kind = TK_KEYWORD) Or
+                   (CurToken.Kind = TK_IDENT) Then
+                Begin
+                  FldTName := CurToken.Val;
+                  LexNextToken;
+                End;
+                FldTIdx := TypeResolve(FldTName);
+                If FldTIdx = TY_UNKNOWN Then
+                  FldTIdx := TY_IDX_INTEGER;
+                FieldSz := TypeSizeof(FldTIdx);
+
+                For MIdx := 0 To MultiCount - 1 Do
+                Begin
+                  If FldCount < MAX_FIELD Then
+                  Begin
+                    TypeTab[NewTIdx].Fields[FldCount].Name    := MultiNames[MIdx];
+                    TypeTab[NewTIdx].Fields[FldCount].TypeIdx  := FldTIdx;
+                    TypeTab[NewTIdx].Fields[FldCount].Offset   := VarOfs + VarMax;
+                    Inc(FldCount);
+                    TypeTab[NewTIdx].FieldCount := FldCount;
+                  End;
+                  VarMax := VarMax + FieldSz;
+                End;
+              End
+              Else
+              Begin
+                If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+                  LexNextToken
+                Else
+                  LexNextToken;
+              End;
+            End;
+
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              LexNextToken;
+
+            If VarMax > MaxVariant Then
+              MaxVariant := VarMax;
+          End;
+
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            LexNextToken;
+        End;
+
+        FieldOfs := VarOfs + MaxVariant;
+      End;
+
+      (* Align total size to DWORD for non-packed *)
+      If (Not IsPacked) And ((FieldOfs Mod 4) <> 0) Then
+        FieldOfs := (FieldOfs + 3) And (Not 3);
+
+      TypeTab[NewTIdx].Size := FieldOfs;
+      If TypeTab[NewTIdx].Size < 4 Then
+        TypeTab[NewTIdx].Size := 4;
+
+      (* Consume END *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'end') Then
+        LexNextToken;
+
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_RECORD: ', TName, ' size=', TypeTab[NewTIdx].Size,
+                ' fields=', TypeTab[NewTIdx].FieldCount);
+    End
+
+    (* ---- ARRAY type ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'array') Then
+    Begin
+      LexNextToken;
+      If IsOpenBracket Then LexNextToken;
+      ArrLo := 0;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrLo := CurToken.IntVal;
+        LexNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        TIdx := SymFind(CurToken.Val);
+        If (TIdx >= 0) And (SymTab[TIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrLo := SymTab[TIdx].ImmVal;
+        LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+        LexNextToken;
+      ArrHi := 0;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrHi := CurToken.IntVal;
+        LexNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        TIdx := SymFind(CurToken.Val);
+        If (TIdx >= 0) And (SymTab[TIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrHi := SymTab[TIdx].ImmVal;
+        LexNextToken;
+      End;
+      (* handle multi-dimensional: skip ", lo..hi" *)
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not IsCloseBracket And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',')) Do
+          LexNextToken;
+      End;
+      If IsCloseBracket Then LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        LexNextToken;
+      ArrElemTN := '';
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        ArrElemTN := CurToken.Val;
+        LexNextToken;
+      End;
+      ArrElemTI := TypeResolve(ArrElemTN);
+      If ArrElemTI = TY_UNKNOWN Then ArrElemTI := TY_IDX_INTEGER;
+      ArrCount := ArrHi - ArrLo + 1;
+      If ArrCount < 1 Then ArrCount := 1;
+      ArrSz := ArrCount * TypeSizeof(ArrElemTI);
+
+      NewTIdx := TY_IDX_INTEGER;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewTIdx].Kind        := TKP_ARRAY;
+        TypeTab[NewTIdx].Size        := ArrSz;
+        TypeTab[NewTIdx].BaseTypeIdx := ArrElemTI;
+        TypeTab[NewTIdx].Lo          := ArrLo;
+        TypeTab[NewTIdx].Hi          := ArrHi;
+        TypeTab[NewTIdx].FieldCount  := 0;
+        TypeTab[NewTIdx].EnumCount   := 0;
+        TypeTab[NewTIdx].Packed_     := IsPacked;
+      End;
+
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_ARRAY: ', TName, ' [', ArrLo, '..', ArrHi,
+                '] size=', ArrSz);
+    End
+
+    (* ---- Pointer type: ^TypeName ---- *)
+    Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
+    Begin
+      LexNextToken;
+      FldTName := '';
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        FldTName := CurToken.Val;
+        LexNextToken;
+      End;
+      FldTIdx := TypeResolve(FldTName);
+      If FldTIdx = TY_UNKNOWN Then
+        FldTIdx := TY_IDX_INTEGER;
+
+      NewTIdx := TY_IDX_POINTER;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewTIdx].Kind        := TKP_POINTER;
+        TypeTab[NewTIdx].Size        := 4;
+        TypeTab[NewTIdx].BaseTypeIdx := FldTIdx;
+        TypeTab[NewTIdx].Lo          := 0;
+        TypeTab[NewTIdx].Hi          := 0;
+        TypeTab[NewTIdx].FieldCount  := 0;
+        TypeTab[NewTIdx].EnumCount   := 0;
+        TypeTab[NewTIdx].Packed_     := False;
+      End;
+
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_POINTER: ', TName, ' -> ', FldTName);
+    End
+
+    (* ---- Enumeration: TYPE T = (A, B, C) ---- *)
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      LexNextToken;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      NewTIdx := TY_IDX_INTEGER;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- Subrange: lo..hi ---- *)
+    Else If (CurToken.Kind = TK_INTEGER) Or
+            ((CurToken.Kind = TK_OP) And (CurToken.Val = '-')) Then
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      NewTIdx := TY_IDX_INTEGER;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- SET OF ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'set') Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        LexNextToken;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      NewTIdx := TY_IDX_SET;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- VARYING [n] OF CHAR ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'varying') Then
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      NewTIdx := TY_IDX_VARYING;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- STRING [n] ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'string') Then
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      NewTIdx := TY_IDX_STRING;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- FILE OF ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'file') Then
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      NewTIdx := TY_IDX_TEXT;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- PROCEDURE / FUNCTION type ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((StrLowerCase(CurToken.Val) = 'procedure') Or
+             (StrLowerCase(CurToken.Val) = 'function')) Then
+    Begin
+      (* Skip procedural type definition *)
+      ParenDepth := 0;
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        ParenDepth := 1;
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And (ParenDepth > 0) Do
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Inc(ParenDepth)
+          Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            Dec(ParenDepth);
+          If ParenDepth > 0 Then LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      (* skip optional return type : Type *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        LexNextToken;
+        If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+          LexNextToken;
+      End;
+      NewTIdx := TY_IDX_INTEGER;
+      TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+    End
+
+    (* ---- Type alias: TMyInt = INTEGER ---- *)
+    Else If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      FldTName := CurToken.Val;
+      LexNextToken;
+      FldTIdx := TypeResolve(FldTName);
+      If FldTIdx = TY_UNKNOWN Then
+        FldTIdx := TY_IDX_INTEGER;
+
+      TIdx := SymAdd(TName, SC_TYPE, FldTIdx);
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_ALIAS: ', TName, ' = ', FldTName);
+    End
+
+    Else
+    Begin
+      WarnMsg('definition de type inattendue pour ' + TName);
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+  End;
+End;
+
+(* ---- ParseWithStmt : analyser l instruction WITH --------------- *)
+(* Syntaxe : WITH rec1 [, rec2, ...] DO statement                   *)
+(* Le mot-cle WITH a deja ete consomme.                              *)
+Procedure ParseWithStmt;
+Var
+  WCount : Integer;
+  WSIdx  : Integer;
+Begin
+  WCount := 0;
+
+  Repeat
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      WSIdx := SymFind(CurToken.Val);
+      LexNextToken;
+
+      If WSIdx >= 0 Then
+      Begin
+        If WithTop < MAX_WITH - 1 Then
+        Begin
+          Inc(WithTop);
+          WithSymIdx[WithTop] := WSIdx;
+          Inc(WCount);
+        End
+        Else
+          WarnMsg('trop de WITH imbriques');
+      End
+      Else
+        WarnMsg('variable inconnue dans WITH');
+    End
+    Else
+    Begin
+      WarnMsg('identificateur attendu apres WITH');
+      Break;
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      LexNextToken
+    Else
+      Break;
+  Until False;
+
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'do') Then
+    LexNextToken
+  Else
+    WarnMsg('''DO'' attendu apres WITH');
+
+  ParseStatement;
+
+  Dec(WithTop, WCount);
+  If WithTop < -1 Then WithTop := -1;
+End;
+
 (* ---- ParseStatement : analyser une instruction ---------------  *)
 Procedure ParseStatement;
 Var
@@ -9335,19 +10034,10 @@ Begin
       Exit;
     End;
 
-    (* Future TODO stubs: WITH *)
-    If (StLw = 'with') Then
+    (* TODO 16 : WITH *)
+    If StLw = 'with' Then
     Begin
-      WarnMsg(StLw + ' ignore (TODO ulterieur)');
-      LexNextToken;
-      (* Skip until ; or END *)
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
-            Not ((CurToken.Kind = TK_KEYWORD) And
-                 (StrLowerCase(CurToken.Val) = 'end')) Do
-        LexNextToken;
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-        LexNextToken;
+      ParseWithStmt;
       Exit;
     End;
 
@@ -9771,26 +10461,12 @@ Begin
       Continue;
     End;
 
-    (* TYPE block *)
+    (* TYPE block (TODO 16) *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'type') Then
     Begin
       LexNextToken;
-      WarnMsg('section TYPE ignoree (TODO ulterieur)');
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_KEYWORD) And
-                 ((StrLowerCase(CurToken.Val) = 'begin') Or
-                  (StrLowerCase(CurToken.Val) = 'var') Or
-                  (StrLowerCase(CurToken.Val) = 'const') Or
-                  (StrLowerCase(CurToken.Val) = 'function') Or
-                  (StrLowerCase(CurToken.Val) = 'procedure') Or
-                  (StrLowerCase(CurToken.Val) = 'end') Or
-                  (StrLowerCase(CurToken.Val) = 'static') Or
-                  (StrLowerCase(CurToken.Val) = 'external') Or
-                  (StrLowerCase(CurToken.Val) = 'global') Or
-                  (StrLowerCase(CurToken.Val) = 'label'))) And
-            Not IsOpenBracket Do
-        LexNextToken;
+      ParseTypeDecl;
       Continue;
     End;
 
