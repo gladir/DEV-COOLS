@@ -99,7 +99,7 @@
               6. ANDIF (AND court-circuit)
               7. ORIF (OR court-circuit)
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR, SC_CONST, SC_TYPED_CONST, SC_PARAM,
               SC_VARPARAM, SC_FUNC, SC_PROC, SC_TYPE, SC_FIELD,
               SC_ENUM_VAL, SC_LABEL, SC_STATIC, SC_EXTERNAL, SC_GLOBAL,
@@ -842,6 +842,16 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer;
                         Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ Forward declarations TODO 05 }
+Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
+Function  SymAdd(Const Name : TString; Cat : TSymCat;
+                TIdx : Integer) : Integer; Forward;
+Function  SymFind(Const Name : TString) : Integer; Forward;
+Function  SymFindInScope(Const Name : TString;
+                         Level : Integer) : Integer; Forward;
+Procedure SymEnterScope; Forward;
+Procedure SymLeaveScope; Forward;
+Procedure SymInit; Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -3579,6 +3589,456 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymMangle : generer le nom ASM mangled ------------------- }
+{ Produit l etiquette assembleur a partir du nom du symbole et de }
+{ sa categorie. Utilise les prefixes VXP_* definis dans les       }
+{ constantes pour la cible Win32/MASM .386.                       }
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Var
+  Pfx : TString;
+Begin
+  Case Cat Of
+    SC_VAR        : Pfx := VXP_VAR_PFX;
+    SC_CONST      : Pfx := VXP_VAR_PFX;
+    SC_TYPED_CONST: Pfx := VXP_VAR_PFX;
+    SC_PARAM      : Pfx := VXP_VAR_PFX;
+    SC_VARPARAM   : Pfx := VXP_VAR_PFX;
+    SC_FUNC       : Pfx := VXP_FN_PFX;
+    SC_PROC       : Pfx := VXP_FN_PFX;
+    SC_TYPE       : Pfx := '';
+    SC_FIELD      : Pfx := VXP_REC_PFX;
+    SC_ENUM_VAL   : Pfx := VXP_ENUM_PFX;
+    SC_LABEL      : Pfx := VXP_LBL_PFX;
+    SC_STATIC     : Pfx := VXP_VAR_PFX;
+    SC_EXTERNAL   : Pfx := VXP_FN_PFX;
+    SC_GLOBAL     : Pfx := VXP_FN_PFX;
+    SC_PUBLIC     : Pfx := VXP_FN_PFX;
+    SC_MODULE     : Pfx := VXP_MOD_PFX;
+    SC_CONDITION  : Pfx := VXP_VAR_PFX;
+  Else
+    Pfx := VXP_VAR_PFX;
+  End;
+  SymMangle := Pfx + StrUpperCase(Name);
+End;
+
+{ ---- SymAdd : ajouter un symbole dans la table --------------- }
+{ Retourne l indice du nouveau symbole dans SymTab[], ou -1 si   }
+{ la table est pleine. Verifie les doublons dans le scope courant }
+{ et gere les declarations forward.                                }
+Function SymAdd(Const Name : TString; Cat : TSymCat;
+               TIdx : Integer) : Integer;
+Var
+  Lw  : TString;
+  Idx : Integer;
+  Dup : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM=' + IntToStr(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Lw := StrLowerCase(Name);
+
+  { Verifier doublon dans le scope courant }
+  Dup := SymFindInScope(Lw, CurScopeLevel);
+  If Dup >= 0 Then
+  Begin
+    If SymTab[Dup].IsForward Then
+    Begin
+      SymTab[Dup].IsForward := False;
+      SymTab[Dup].TypeIdx   := TIdx;
+      SymAdd := Dup;
+      Exit;
+    End
+    Else
+    Begin
+      WarnMsg('symbole deja declare dans ce scope: ' + Name);
+      SymAdd := Dup;
+      Exit;
+    End;
+  End;
+
+  Idx := SymCount;
+  Inc(SymCount);
+  Inc(TotalSyms);
+
+  SymTab[Idx].Name        := Lw;
+  SymTab[Idx].MangledName := SymMangle(Lw, Cat);
+  SymTab[Idx].Cat         := Cat;
+  SymTab[Idx].TypeIdx     := TIdx;
+  SymTab[Idx].Offset      := 0;
+  SymTab[Idx].ScopeLevel  := CurScopeLevel;
+  SymTab[Idx].ScopeId     := CurScopeId;
+  SymTab[Idx].IsForward   := False;
+  SymTab[Idx].IsLocal     := (CurScopeLevel > 0);
+  SymTab[Idx].ImmVal      := 0;
+  SymTab[Idx].DataIdx     := -1;
+  SymTab[Idx].ParamCnt    := 0;
+  SymTab[Idx].VarParamMask := 0;
+
+  If Opts.DebugMode Then
+    WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
+            ' cat=', Ord(Cat),
+            ' scope=', CurScopeLevel,
+            ' -> ', SymTab[Idx].MangledName);
+
+  SymAdd := Idx;
+End;
+
+{ ---- SymFind : rechercher un symbole (interne -> global) ----- }
+{ Parcourt la table du plus recent au plus ancien, retourne le    }
+{ premier symbole dont le ScopeLevel est inferieur ou egal au     }
+{ scope courant. Retourne -1 si non trouve.                       }
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel <= CurScopeLevel) Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : rechercher dans un scope precis -------- }
+{ Retourne l indice du symbole portant ce nom dans ce niveau de  }
+{ scope exact, ou -1 si non trouve.                               }
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel = Level) And
+       ((Level = 0) Or (SymTab[I].ScopeId = CurScopeId)) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymEnterScope : entrer dans un nouveau scope ------------ }
+Procedure SymEnterScope;
+Begin
+  If CurScopeLevel >= MAX_SCOPE Then
+  Begin
+    WarnMsg('profondeur de scope maximale atteinte');
+    Exit;
+  End;
+  Inc(CurScopeLevel);
+  Inc(ScopeIdSeq);
+  CurScopeId := ScopeIdSeq;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScopeLevel,
+            ' id=', CurScopeId);
+End;
+
+{ ---- SymLeaveScope : quitter le scope courant ---------------- }
+Procedure SymLeaveScope;
+Begin
+  If CurScopeLevel <= 0 Then
+  Begin
+    WarnMsg('tentative de quitter le scope global');
+    Exit;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScopeLevel);
+  Dec(CurScopeLevel);
+  If CurScopeLevel = 0 Then
+    CurScopeId := 0
+  Else
+    CurScopeId := CurScopeLevel;
+End;
+
+{ ---- SymInit : predeclarer les types et symboles builtin ----- }
+{ Enregistre les types primitifs Pascal standard, les types VAX   }
+{ Pascal supplementaires, les constantes predefinies (true, false, }
+{ nil, maxint=2147483647 pour 32 bits), les variables I/O, les    }
+{ procedures et fonctions du runtime, et les conditions VMS.      }
+Procedure SymInit;
+Var
+  Idx : Integer;
+Begin
+  { Types primitifs Pascal standard }
+  Idx := SymAdd('integer', SC_TYPE, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'INTEGER';
+  Idx := SymAdd('word', SC_TYPE, TY_IDX_WORD);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'WORD';
+  Idx := SymAdd('byte', SC_TYPE, TY_IDX_BYTE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'BYTE';
+  Idx := SymAdd('char', SC_TYPE, TY_IDX_CHAR);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'CHAR';
+  Idx := SymAdd('boolean', SC_TYPE, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'BOOLEAN';
+  Idx := SymAdd('string', SC_TYPE, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'STRING';
+  Idx := SymAdd('real', SC_TYPE, TY_IDX_REAL);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'REAL';
+  Idx := SymAdd('double', SC_TYPE, TY_IDX_DOUBLE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'DOUBLE';
+  Idx := SymAdd('text', SC_TYPE, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'TEXT';
+
+  { Types VAX Pascal supplementaires }
+  Idx := SymAdd('unsigned', SC_TYPE, TY_IDX_UNSIGNED);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'UNSIGNED';
+  Idx := SymAdd('single', SC_TYPE, TY_IDX_REAL);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'SINGLE';
+  Idx := SymAdd('d_float', SC_TYPE, TY_IDX_DOUBLE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'D_FLOAT';
+  Idx := SymAdd('d_floating', SC_TYPE, TY_IDX_DOUBLE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'D_FLOATING';
+  Idx := SymAdd('g_float', SC_TYPE, TY_IDX_DOUBLE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'G_FLOAT';
+  Idx := SymAdd('g_floating', SC_TYPE, TY_IDX_DOUBLE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'G_FLOATING';
+  Idx := SymAdd('f_floating', SC_TYPE, TY_IDX_REAL);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'F_FLOATING';
+  Idx := SymAdd('integer16', SC_TYPE, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'INTEGER16';
+  Idx := SymAdd('integer32', SC_TYPE, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'INTEGER32';
+  Idx := SymAdd('machine_word', SC_TYPE, TY_IDX_WORD);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'MACHINE_WORD';
+  Idx := SymAdd('half_word', SC_TYPE, TY_IDX_BYTE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'HALF_WORD';
+  Idx := SymAdd('quadword', SC_TYPE, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := 'QUADWORD';
+
+  { Constantes predefinies (MAXINT = 2147483647 pour 32 bits) }
+  Idx := SymAdd('true', SC_CONST, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 1;
+    SymTab[Idx].MangledName := 'TRUE';
+  End;
+  Idx := SymAdd('false', SC_CONST, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 0;
+    SymTab[Idx].MangledName := 'FALSE';
+  End;
+  Idx := SymAdd('nil', SC_CONST, TY_IDX_NIL);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 0;
+    SymTab[Idx].MangledName := 'NIL';
+  End;
+  Idx := SymAdd('maxint', SC_CONST, TY_IDX_INTEGER);
+  If Idx >= 0 Then
+  Begin
+    SymTab[Idx].ImmVal := 2147483647;
+    SymTab[Idx].MangledName := 'MAXINT';
+  End;
+
+  { Variables predefinies I/O }
+  Idx := SymAdd('input', SC_VAR, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_VAR_PFX + 'INPUT';
+  Idx := SymAdd('output', SC_VAR, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_VAR_PFX + 'OUTPUT';
+  Idx := SymAdd('tty', SC_VAR, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_VAR_PFX + 'TTY';
+  Idx := SymAdd('ttyoutput', SC_VAR, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_VAR_PFX + 'TTYOUTPUT';
+  Idx := SymAdd('error', SC_VAR, TY_IDX_TEXT);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_VAR_PFX + 'ERROR';
+
+  { Procedures runtime predeclarees }
+  Idx := SymAdd('write', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WRITE';
+  Idx := SymAdd('writeln', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WRITELN';
+  Idx := SymAdd('read', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'READ';
+  Idx := SymAdd('readln', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'READLN';
+  Idx := SymAdd('writev', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WRITEV';
+  Idx := SymAdd('readv', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'READV';
+  Idx := SymAdd('halt', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'HALT';
+  Idx := SymAdd('stop', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'STOP';
+
+  { Procedures fichier }
+  Idx := SymAdd('assign', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ASSIGN';
+  Idx := SymAdd('reset', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'RESET';
+  Idx := SymAdd('rewrite', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'REWRITE';
+  Idx := SymAdd('close', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'CLOSE';
+  Idx := SymAdd('open', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'OPEN';
+  Idx := SymAdd('get', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'GET';
+  Idx := SymAdd('put', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'PUT';
+  Idx := SymAdd('find', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'FIND';
+  Idx := SymAdd('locate', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'LOCATE';
+  Idx := SymAdd('truncate', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'TRUNCATE';
+  Idx := SymAdd('readrn', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'READRN';
+  Idx := SymAdd('writern', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WRITERN';
+  Idx := SymAdd('update', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'UPDATE';
+
+  { Fonctions fichier }
+  Idx := SymAdd('status', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'STATUS';
+  Idx := SymAdd('cursor', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'CURSOR';
+  Idx := SymAdd('filename', SC_FUNC, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'FILENAME';
+  Idx := SymAdd('ufb', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'UFB';
+
+  { Fonctions standard }
+  Idx := SymAdd('ord', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ORD';
+  Idx := SymAdd('chr', SC_FUNC, TY_IDX_CHAR);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'CHR';
+  Idx := SymAdd('succ', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SUCC';
+  Idx := SymAdd('pred', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'PRED';
+  Idx := SymAdd('abs', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ABS';
+  Idx := SymAdd('sqr', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SQR';
+  Idx := SymAdd('odd', SC_FUNC, TY_IDX_BOOLEAN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ODD';
+  Idx := SymAdd('length', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'LENGTH';
+  Idx := SymAdd('sizeof', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SIZEOF';
+  Idx := SymAdd('new', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'NEW';
+  Idx := SymAdd('dispose', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'DISPOSE';
+
+  { Fonctions mathematiques et utilitaires }
+  Idx := SymAdd('sqrt', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SQRT';
+  Idx := SymAdd('sin', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SIN';
+  Idx := SymAdd('cos', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'COS';
+  Idx := SymAdd('arctan', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ARCTAN';
+  Idx := SymAdd('ln', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'LN';
+  Idx := SymAdd('exp', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'EXP';
+  Idx := SymAdd('trunc', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'TRUNC';
+  Idx := SymAdd('round', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ROUND';
+  Idx := SymAdd('max', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'MAX';
+  Idx := SymAdd('min', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'MIN';
+  Idx := SymAdd('random', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'RANDOM';
+  Idx := SymAdd('lo', SC_FUNC, TY_IDX_BYTE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'LO';
+  Idx := SymAdd('hi', SC_FUNC, TY_IDX_BYTE);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'HI';
+  Idx := SymAdd('swap', SC_FUNC, TY_IDX_WORD);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SWAP';
+  Idx := SymAdd('copy', SC_FUNC, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'COPY';
+  Idx := SymAdd('pos', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'POS';
+  Idx := SymAdd('trim', SC_FUNC, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'TRIM';
+  Idx := SymAdd('clock', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'CLOCK';
+  Idx := SymAdd('wallclock', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WALLCLOCK';
+
+  { Procedures standard }
+  Idx := SymAdd('assert', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ASSERT';
+  Idx := SymAdd('message', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'MESSAGE';
+  Idx := SymAdd('delete', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'DELETE';
+  Idx := SymAdd('insert', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'INSERT';
+  Idx := SymAdd('seed', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SETSEED';
+  Idx := SymAdd('zero', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ZERO';
+  Idx := SymAdd('fill', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'FILL';
+  Idx := SymAdd('str', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'STR';
+  Idx := SymAdd('val', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'VAL';
+  Idx := SymAdd('date', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'DATE';
+  Idx := SymAdd('time', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'TIME';
+  Idx := SymAdd('page', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'PAGE';
+  Idx := SymAdd('linelimit', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'LINELIMIT';
+
+  { Conditions predefinies VMS }
+  Idx := SymAdd('ss$_accvio', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '1'; SymTab[Idx].Offset := 1; End;
+  Idx := SymAdd('ss$_intovf', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '2'; SymTab[Idx].Offset := 2; End;
+  Idx := SymAdd('ss$_intdiv', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '3'; SymTab[Idx].Offset := 3; End;
+  Idx := SymAdd('ss$_fltovf', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '4'; SymTab[Idx].Offset := 4; End;
+  Idx := SymAdd('ss$_fltdiv', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '5'; SymTab[Idx].Offset := 5; End;
+  Idx := SymAdd('ss$_roprand', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '6'; SymTab[Idx].Offset := 6; End;
+  Idx := SymAdd('ss$_hparith', SC_CONDITION, TY_IDX_INTEGER);
+  If Idx >= 0 Then Begin SymTab[Idx].MangledName := '7'; SymTab[Idx].Offset := 7; End;
+
+  { Fonctions/variables d exception }
+  Idx := SymAdd('exception_message', SC_FUNC, TY_IDX_STRING);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'EXCMSG';
+  Idx := SymAdd('exception_value', SC_FUNC, TY_IDX_INTEGER);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'EXCVAL';
+
+  If Opts.DebugMode Then
+    WriteLn('  SymInit: ', SymCount, ' symboles predeclares');
+
+  { Sauvegarder le nombre de symboles predeclares (pour ENVIRONMENT) }
+  SymInitCount := SymCount;
+End;
+
+{ ============================================================
   PROCEDURE PRINCIPALE (Run)
   ============================================================ }
 
@@ -3606,7 +4066,7 @@ Begin
       LexNextToken;
   End;
 
-  { TODO 05+ : Parse, EmitHeader, ... }
+  { TODO 06+ : Parse, EmitHeader, ... }
 
   { Fermer le lexeur }
   LexClose;
