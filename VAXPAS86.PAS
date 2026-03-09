@@ -14010,6 +14010,44 @@ Begin
     Begin
       TName := CurToken.Val;
       LexNextToken;
+      (* Gerer VARYING [N] OF CHAR comme type de parametre *)
+      If (StrLowerCase(TName) = 'varying') Then
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          LexNextToken;  (* consommer [ *)
+          If CurToken.Kind = TK_INTEGER Then
+            LexNextToken;  (* consommer N *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            LexNextToken;  (* consommer ] *)
+          If (CurToken.Kind = TK_KEYWORD) And
+             (StrLowerCase(CurToken.Val) = 'of') Then
+            LexNextToken;  (* consommer OF *)
+          If (CurToken.Kind = TK_KEYWORD) Or
+             (CurToken.Kind = TK_IDENT) Then
+            LexNextToken;  (* consommer CHAR *)
+        End;
+      End
+      (* Gerer ARRAY [lo..hi] OF type comme type de parametre *)
+      Else If (StrLowerCase(TName) = 'array') Then
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
+        Begin
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Do
+            LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']') Then
+            LexNextToken;
+          If (CurToken.Kind = TK_KEYWORD) And
+             (StrLowerCase(CurToken.Val) = 'of') Then
+          Begin
+            LexNextToken;
+            If (CurToken.Kind = TK_KEYWORD) Or
+               (CurToken.Kind = TK_IDENT) Then
+              LexNextToken;
+          End;
+        End;
+      End;
     End;
 
     TIdx := TypeResolve(TName);
@@ -16059,6 +16097,7 @@ Begin
     End;
     If (GotoIdx >= 0) And (SymTab[GotoIdx].Cat = SC_PROC) Then
     Begin
+      LexNextToken;  (* consommer l identifiant de la procedure *)
       EmitComment('call ' + SavedName);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         ParseCallArgs(GotoIdx);
