@@ -135,7 +135,7 @@
             Types primitifs predefinis : INTEGER, UNSIGNED, WORD,
               BYTE, CHAR, BOOLEAN, REAL, DOUBLE, STRING, POINTER
 
-  TODO 07 - EMETTEUR DE CODE ASM 80386
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -852,6 +852,10 @@ Function  SymFindInScope(Const Name : TString;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymInit; Forward;
+{ Forward declarations TODO 07 }
+Procedure EmitOpen; Forward;
+Procedure EmitFooter; Forward;
+Procedure EmitClose; Forward;
 { Forward declarations TODO 06 }
 Procedure TypeInit; Forward;
 Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
@@ -4629,6 +4633,355 @@ Begin
     TypeResolve := TY_UNKNOWN;
 End;
 
+
+{ ============================================================
+  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- EmitOpen : ouvrir le fichier de sortie ASM -------------- }
+{ Cree le fichier ASM de sortie (ou un fichier intermediaire     }
+{ en mode binaire -exe/-obj). Initialise OutF et OutFOpen.       }
+Procedure EmitOpen;
+Begin
+  Assign(OutF, Opts.OutFile);
+  {$I-} Rewrite(OutF); {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer le fichier de sortie: ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+{ ---- EmitFooter : pied de page ASM + runtime Win32 32 bits --- }
+{ Emet le code de terminaison (ExitProcess) puis les routines    }
+{ runtime 32 bits : PRINTSTR, NUMTOSTR, STRLEN, CONCAT, STRCMP,  }
+{ NEWLINE, PRINTINT, PRINTBOOL, READLN, POWER, SET_IN, STRTONUM. }
+{ Toutes les routines utilisent EAX/EBX/ECX/EDX/ESI/EDI et les  }
+{ appels systeme Win32 via WriteFile / ReadFile / ExitProcess.   }
+Procedure EmitFooter;
+Begin
+  EmitBlankLine;
+  { Emettre le label MAINBODY si pas deja fait }
+  If Not MainBodyEmitted Then
+  Begin
+    EmitLabel(VXP_LBL_PFX + 'MAINBODY');
+    MainBodyEmitted := True;
+  End;
+  EmitBlankLine;
+  EmitComment('--- Sortie programme (Win32 ExitProcess) ---');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('CALL', '_ExitProcess@4');
+  EmitBlankLine;
+
+  { --- Routines runtime 32 bits --- }
+  If RuntimeEmitted Then
+  Begin
+    EmitRaw('_TEXT   ENDS');
+    Exit;
+  End;
+  RuntimeEmitted := True;
+  EmitComment('========================================');
+  EmitComment('  ROUTINES RUNTIME 32 BITS (Win32)');
+  EmitComment('========================================');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTSTR : afficher chaine ASCIIZ pointee par ESI }
+  EmitComment('PRINTSTR : affiche chaine ASCIIZ (ESI -> chaine)');
+  EmitLabel(VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrAB('MOV', 'EDI', 'ESI');
+  EmitComment('calculer la longueur');
+  EmitInstrAB('XOR', 'ECX', 'ECX');
+  EmitLabel(VXP_RT_PFX + 'PRINTSTR_L');
+  EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PRINTSTR_W');
+  EmitInstrA('INC', 'EDI');
+  EmitInstrA('INC', 'ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PRINTSTR_L');
+  EmitLabel(VXP_RT_PFX + 'PRINTSTR_W');
+  EmitComment('WriteFile(hStdout, pStr, len, pWritten, 0)');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'WRITTEN');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDOUT]');
+  EmitInstrA('CALL', '_WriteFile@20');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_NUMTOSTR : convertir EAX (signe) -> ASCIIZ dans NUMBUF }
+  EmitComment('NUMTOSTR : convertit EAX (signe) -> NUMBUF (ASCIIZ)');
+  EmitLabel(VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'NUMBUF + 15');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrAB('MOV', 'ECX', '0');
+  EmitInstrAB('MOV', 'EBX', '10');
+  EmitInstrAB('CMP', 'EAX', '0');
+  EmitInstrA('JGE', VXP_RT_PFX + 'NTS_POS');
+  EmitInstr('NEG    EAX');
+  EmitRaw(VXP_RT_PFX + 'NTS_POS:');
+  EmitRaw(VXP_RT_PFX + 'NTS_DIV:');
+  EmitInstrAB('XOR', 'EDX', 'EDX');
+  EmitInstrA('DIV', 'EBX');
+  EmitRaw('        ADD    DL, ' + Chr(39) + '0' + Chr(39));
+  EmitInstr('DEC    EDI');
+  EmitInstrAB('MOV', '[EDI]', 'DL');
+  EmitInstrA('INC', 'ECX');
+  EmitInstrAB('CMP', 'EAX', '0');
+  EmitInstrA('JNE', VXP_RT_PFX + 'NTS_DIV');
+  EmitComment('verifier le signe (valeur originale empilee)');
+  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
+  EmitInstrAB('CMP', 'EAX', '0');
+  EmitInstrA('JGE', VXP_RT_PFX + 'NTS_DONE');
+  EmitInstr('DEC    EDI');
+  EmitRaw('        MOV    BYTE PTR [EDI], ' + Chr(39) + '-' + Chr(39));
+  EmitRaw(VXP_RT_PFX + 'NTS_DONE:');
+  EmitInstrAB('MOV', 'EAX', 'EDI');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_STRLEN : longueur chaine ASCIIZ (ESI -> EAX) }
+  EmitComment('STRLEN : longueur chaine ASCIIZ (ESI -> EAX)');
+  EmitLabel(VXP_RT_PFX + 'STRLEN');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitRaw(VXP_RT_PFX + 'STRLEN_LP:');
+  EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'STRLEN_DONE');
+  EmitInstr('INC    EAX');
+  EmitInstr('INC    ESI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'STRLEN_LP');
+  EmitRaw(VXP_RT_PFX + 'STRLEN_DONE:');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_CONCAT : concatener deux chaines ASCIIZ }
+  EmitComment('CONCAT : ESI + EDI -> EAX = ptr STRBUF');
+  EmitLabel(VXP_RT_PFX + 'CONCAT');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'CONCAT_S1:');
+  EmitInstrAB('MOV', 'AL', '[ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'CONCAT_S2');
+  EmitInstrAB('MOV', '[EBX]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EBX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'CONCAT_S1');
+  EmitRaw(VXP_RT_PFX + 'CONCAT_S2:');
+  EmitInstrAB('MOV', 'AL', '[EDI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'CONCAT_END');
+  EmitInstrAB('MOV', '[EBX]', 'AL');
+  EmitInstr('INC    EDI');
+  EmitInstr('INC    EBX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'CONCAT_S2');
+  EmitRaw(VXP_RT_PFX + 'CONCAT_END:');
+  EmitInstrAB('MOV', 'BYTE PTR [EBX]', '0');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_STRCMP : comparer deux chaines ASCIIZ }
+  EmitComment('STRCMP : ESI vs EDI -> EAX (0=egal, <0 inf, >0 sup)');
+  EmitLabel(VXP_RT_PFX + 'STRCMP');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'STRCMP_LP:');
+  EmitInstrAB('MOV', 'AL', '[ESI]');
+  EmitInstrAB('MOV', 'AH', '[EDI]');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JNE', VXP_RT_PFX + 'STRCMP_DIFF');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'STRCMP_EQ');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'STRCMP_LP');
+  EmitRaw(VXP_RT_PFX + 'STRCMP_EQ:');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'STRCMP_RET');
+  EmitRaw(VXP_RT_PFX + 'STRCMP_DIFF:');
+  EmitInstrAB('MOVZX', 'EAX', 'AL');
+  EmitInstrAB('MOVZX', 'EDX', 'AH');
+  EmitInstrAB('SUB', 'EAX', 'EDX');
+  EmitRaw(VXP_RT_PFX + 'STRCMP_RET:');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_NEWLINE : ecrire CRLF }
+  EmitComment('NEWLINE : ecrire CR+LF sur stdout');
+  EmitLabel(VXP_RT_PFX + 'NEWLINE');
+  EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'CRLF');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTINT : afficher EAX comme entier signe }
+  EmitComment('PRINTINT : affiche EAX en decimal signe');
+  EmitLabel(VXP_RT_PFX + 'PRINTINT');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTBOOL : afficher EAX comme TRUE/FALSE }
+  EmitComment('PRINTBOOL : affiche TRUE ou FALSE (EAX)');
+  EmitLabel(VXP_RT_PFX + 'PRINTBOOL');
+  EmitInstrAB('CMP', 'EAX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PB_FALSE');
+  EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'TRUE_S');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PB_PRINT');
+  EmitRaw(VXP_RT_PFX + 'PB_FALSE:');
+  EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'FALSE_S');
+  EmitRaw(VXP_RT_PFX + 'PB_PRINT:');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_READLN : lire une ligne depuis stdin -> STRBUF, EAX=ptr }
+  EmitComment('READLN : lit une ligne stdin -> STRBUF (EAX=ptr)');
+  EmitLabel(VXP_RT_PFX + 'READLN');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitComment('ReadFile(hStdin, STRBUF, 255, WRITTEN, 0)');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'WRITTEN');
+  EmitInstrA('PUSH', '255');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDIN]');
+  EmitInstrA('CALL', '_ReadFile@20');
+  EmitComment('Supprimer CR/LF en fin de ligne');
+  EmitInstrAB('MOV', 'ECX', 'DWORD PTR [' + VXP_RT_PFX + 'WRITTEN]');
+  EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'RL_TRIM:');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'RL_DONE');
+  EmitInstr('DEC    ECX');
+  EmitInstrAB('CMP', 'BYTE PTR [EBX+ECX]', '10');
+  EmitInstrA('JE', VXP_RT_PFX + 'RL_ZERO');
+  EmitInstrAB('CMP', 'BYTE PTR [EBX+ECX]', '13');
+  EmitInstrA('JE', VXP_RT_PFX + 'RL_ZERO');
+  EmitInstr('INC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'RL_DONE');
+  EmitRaw(VXP_RT_PFX + 'RL_ZERO:');
+  EmitInstrAB('MOV', 'BYTE PTR [EBX+ECX]', '0');
+  EmitInstrA('JMP', VXP_RT_PFX + 'RL_TRIM');
+  EmitRaw(VXP_RT_PFX + 'RL_DONE:');
+  EmitInstrAB('MOV', 'BYTE PTR [EBX+ECX]', '0');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_POWER : exponentiation EAX^EBX -> EAX }
+  EmitComment('POWER : EAX ^ EBX -> EAX (entier)');
+  EmitLabel(VXP_RT_PFX + 'POWER');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ECX', 'EBX');
+  EmitInstrAB('MOV', 'EDX', 'EAX');
+  EmitInstrAB('MOV', 'EAX', '1');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'POW_DONE');
+  EmitRaw(VXP_RT_PFX + 'POW_LP:');
+  EmitInstrA('IMUL', 'EDX');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'POW_LP');
+  EmitRaw(VXP_RT_PFX + 'POW_DONE:');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_IN : test EAX IN ensemble pointe par ESI }
+  EmitComment('SET_IN : test EAX IN set[ESI] -> EAX (0 ou 1)');
+  EmitLabel(VXP_RT_PFX + 'SET_IN');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('MOV', 'ECX', 'EAX');
+  EmitInstrAB('SHR', 'ECX', '3');
+  EmitInstrAB('MOVZX', 'EBX', 'BYTE PTR [ESI+ECX]');
+  EmitInstrAB('MOV', 'ECX', 'EAX');
+  EmitInstrAB('AND', 'ECX', '7');
+  EmitInstrAB('SHR', 'EBX', 'CL');
+  EmitInstrAB('AND', 'EBX', '1');
+  EmitInstrAB('MOV', 'EAX', 'EBX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_STRTONUM : convertir chaine ASCIIZ (ESI) -> EAX entier }
+  EmitComment('STRTONUM : convertit chaine ESI -> EAX (entier signe)');
+  EmitLabel(VXP_RT_PFX + 'STRTONUM');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitInstrAB('XOR', 'ECX', 'ECX');
+  EmitInstrAB('MOV', 'EBX', '10');
+  EmitRaw('        CMP    BYTE PTR [ESI], ' + Chr(39) + '-' + Chr(39));
+  EmitInstrA('JNE', VXP_RT_PFX + 'STN_LP');
+  EmitInstr('INC    ESI');
+  EmitInstrAB('MOV', 'ECX', '1');
+  EmitRaw(VXP_RT_PFX + 'STN_LP:');
+  EmitInstrAB('MOVZX', 'EDX', 'BYTE PTR [ESI]');
+  EmitRaw('        CMP    EDX, ' + Chr(39) + '0' + Chr(39));
+  EmitInstrA('JB', VXP_RT_PFX + 'STN_END');
+  EmitRaw('        CMP    EDX, ' + Chr(39) + '9' + Chr(39));
+  EmitInstrA('JA', VXP_RT_PFX + 'STN_END');
+  EmitRaw('        SUB    EDX, ' + Chr(39) + '0' + Chr(39));
+  EmitInstrA('IMUL', 'EBX');
+  EmitInstrAB('ADD', 'EAX', 'EDX');
+  EmitInstr('INC    ESI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'STN_LP');
+  EmitRaw(VXP_RT_PFX + 'STN_END:');
+  EmitInstrAB('CMP', 'ECX', '1');
+  EmitInstrA('JNE', VXP_RT_PFX + 'STN_RET');
+  EmitInstr('NEG    EAX');
+  EmitRaw(VXP_RT_PFX + 'STN_RET:');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  EmitRaw('_TEXT   ENDS');
+End;
+
+{ ---- EmitClose : finaliser le fichier de sortie ASM ---------- }
+{ Emet le pied de page (EmitFooter), ecrit le segment de        }
+{ donnees (EmitDataSeg), ajoute la directive END, puis ferme     }
+{ le fichier.                                                    }
+Procedure EmitClose;
+Begin
+  { Emettre le pied de page ASM + runtime }
+  EmitFooter;
+  { Emettre le segment de donnees }
+  EmitDataSeg;
+  { Directive END }
+  If OutFOpen Then
+    EmitRaw('        END     ' + VXP_FN_PFX + 'MAIN');
+  { Fermer les fichiers ouverts }
+  Cleanup;
+End;
+
+
 { ============================================================
   PROCEDURE PRINCIPALE (Run)
   ============================================================ }
@@ -4646,21 +4999,45 @@ Begin
   LexOpened  := True;
   LexSrcFName := Opts.SrcFile;
 
+  { Ouvrir le fichier de sortie ASM }
+  EmitOpen;
+
+  { Emettre l en-tete ASM (.386 / .MODEL FLAT / EXTRN) }
+  EmitHeader;
+
+  { Initialiser la table des symboles }
+  SymInit;
+
+  { Initialiser le systeme de types }
+  TypeInit;
+
   { Initialiser le lexeur }
   LexInit;
 
-  { Mode debug -d : afficher tous les tokens }
+  { Mode debug -d : afficher tous les tokens et quitter }
   If Opts.DebugMode Then
   Begin
     LexNextToken;
     While CurToken.Kind <> TK_EOF Do
       LexNextToken;
+    LexClose;
+    EmitClose;
+    If ErrorCount > 0 Then
+      Halt(EXIT_ERROR)
+    Else
+      Halt(EXIT_OK);
+    Exit;
   End;
 
-  { TODO 07+ : Parse, EmitHeader, ... }
+  { TODO 08+ : Boucle principale de compilation }
+  { LexNextToken; }
+  { While CurToken.Kind <> TK_EOF Do ... }
 
   { Fermer le lexeur }
   LexClose;
+
+  { Finaliser le fichier de sortie (EmitFooter + EmitDataSeg + END) }
+  EmitClose;
 
   { Statistiques de compilation }
   If Opts.Verbose Then
@@ -4677,8 +5054,6 @@ Begin
     If Opts.EmitAsm Then
       WriteLn('  Listing ASM    : oui');
   End;
-
-  Cleanup;
 
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
