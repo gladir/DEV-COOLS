@@ -78,7 +78,7 @@
             Constantes typees : CONST x : Integer = 42; -> .DATA
             Constantes nommees : CONST x = 42; -> substitution immediate
 
-  TODO 04 - OPERATEURS ET PRECEDENCE
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             Arithmetiques  : + - * DIV MOD (entiers 32 bits)
             Concatenation  : || (VAX Pascal, appel _VXPRT_CONCAT)
             Exponentiation : ** (appel _VXPRT_POWER)
@@ -832,6 +832,16 @@ Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
 Procedure EmitHeader; Forward;
 Procedure EmitProlog(FrameSize : Integer); Forward;
 Procedure EmitEpilog(ParamBytes : Integer); Forward;
+{ Forward declarations TODO 04 }
+Function  OpPrec(Const Op : TString) : Integer; Forward;
+Procedure ExprMakeImm(V : LongInt; TIdx : Integer;
+                      Var R : TExprVal); Forward;
+Procedure ExprFlushToEAX(Var E : TExprVal); Forward;
+Procedure ParsePrimary(Var Res : TExprVal); Forward;
+Procedure ParseUnary(Var Res : TExprVal); Forward;
+Procedure ParseExprPrec(MinPrec : Integer;
+                        Var Res : TExprVal); Forward;
+Procedure ParseExpr(Var Res : TExprVal); Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -2884,6 +2894,694 @@ Begin
   EmitBlankLine;
 End;
 
+{ ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- OpPrec : priorite d un operateur binaire --------------- *)
+(* VAX Pascal utilise 7 niveaux de priorite :                     *)
+(*   1 : OR, ORIF, XOR                                           *)
+(*   2 : AND, ANDIF                                               *)
+(*   3 : (NOT unaire, gere dans ParseUnary)                       *)
+(*   4 : =, <>, <, >, <=, >=, IN                                  *)
+(*   5 : +, -, || (concatenation)                                  *)
+(*   6 : *, /, DIV, MOD, SHL, SHR                                 *)
+(*   7 : ** (exponentiation)                                       *)
+(*   8 : (unaires, gere dans ParseUnary)                           *)
+
+Function OpPrec(Const Op : TString) : Integer;
+Begin
+  If Op = '**' Then
+    OpPrec := 7
+  Else If (Op = '*') Or (Op = '/') Or (Op = 'div') Or
+          (Op = 'mod') Then
+    OpPrec := 6
+  Else If (Op = '+') Or (Op = '-') Or (Op = '||') Then
+    OpPrec := 5
+  Else If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
+          (Op = '<=') Or (Op = '>=') Or (Op = 'in') Then
+    OpPrec := 4
+  Else If (Op = 'and') Or (Op = 'andif') Then
+    OpPrec := 2
+  Else If (Op = 'or') Or (Op = 'orif') Or (Op = 'xor') Then
+    OpPrec := 1
+  Else If (Op = 'shl') Or (Op = 'shr') Then
+    OpPrec := 6
+  Else
+    OpPrec := 0;
+End;
+
+(* ---- ExprMakeImm : creer une valeur immediate --------------- *)
+Procedure ExprMakeImm(V : LongInt; TIdx : Integer; Var R : TExprVal);
+Begin
+  R.Kind    := EK_IMM;
+  R.ImmVal  := V;
+  R.TypeIdx := TIdx;
+  R.Offset  := 0;
+  R.SymIdx  := -1;
+End;
+
+(* ---- ExprFlushToEAX : materialiser une expression dans EAX --- *)
+(* Si deja EAX, ne rien faire. Si immediate, MOV EAX, imm.        *)
+(* Si memoire, charger depuis variable locale ou globale (32 bits).*)
+Procedure ExprFlushToEAX(Var E : TExprVal);
+Var
+  SIdx : Integer;
+Begin
+  Case E.Kind Of
+    EK_IMM :
+    Begin
+      If E.ImmVal = 0 Then
+        EmitInstrAB('XOR', 'EAX', 'EAX')
+      Else
+        EmitInstrAB('MOV', 'EAX', IntToStr(E.ImmVal));
+      E.Kind := EK_EAX;
+    End;
+    EK_EAX :
+      ; (* deja dans EAX *)
+    EK_MEM :
+    Begin
+      SIdx := E.SymIdx;
+      If (SIdx >= 0) And (SIdx < SymCount) Then
+      Begin
+        If SymTab[SIdx].IsLocal Then
+        Begin
+          (* Variable locale : MOV EAX, [EBP-n] *)
+          If SymTab[SIdx].Cat = SC_VARPARAM Then
+          Begin
+            (* Parametre var (reference) : MOV EBX,[EBP+n] / MOV EAX,[EBX] *)
+            EmitInstrAB('MOV', 'EBX',
+              'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset));
+            EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+          End
+          Else
+          Begin
+            EmitInstrAB('MOV', 'EAX',
+              'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset));
+          End;
+        End
+        Else
+        Begin
+          (* Variable globale : MOV EAX, [_VXP_xxx] *)
+          EmitInstrAB('MOV', 'EAX',
+            'DWORD PTR [' + SymTab[SIdx].MangledName + ']');
+        End;
+      End
+      Else
+      Begin
+        (* Symbole inconnu : XOR EAX,EAX par defaut *)
+        EmitInstrAB('XOR', 'EAX', 'EAX');
+      End;
+      E.Kind := EK_EAX;
+    End;
+    EK_NONE :
+    Begin
+      EmitInstrAB('XOR', 'EAX', 'EAX');
+      E.Kind := EK_EAX;
+    End;
+  End;
+End;
+
+(* ---- ParsePrimary : token primaire -> TExprVal --------------- *)
+(* Gere : litteraux (entier, reel, chaine, char, octal,            *)
+(*        true/false/nil/maxint),                                   *)
+(*        sous-expression parenthesee (expr),                      *)
+(*        identificateurs (stub pour futurs TODOs).                 *)
+Procedure ParsePrimary(Var Res : TExprVal);
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+
+  Case CurToken.Kind Of
+    (* --- Litteraux numeriques --- *)
+    TK_INTEGER, TK_REAL, TK_CHAR, TK_OCTAL :
+    Begin
+      LitEval(CurToken, Res);
+      LexNextToken;
+    End;
+
+    (* --- Chaine litterale --- *)
+    TK_STRING :
+    Begin
+      LitEval(CurToken, Res);
+      (* Emettre LEA EAX, label de la chaine *)
+      If (Res.SymIdx >= 0) And (Res.SymIdx < DataCount) Then
+        EmitInstrAB('LEA', 'EAX', DataTab[Res.SymIdx].LblName)
+      Else If DataCount > 0 Then
+        EmitInstrAB('LEA', 'EAX', DataTab[DataCount - 1].LblName);
+      Res.Kind := EK_EAX;
+      LexNextToken;
+    End;
+
+    (* --- Mots-cles speciaux --- *)
+    TK_KEYWORD :
+    Begin
+      If (CurToken.Val = 'true') Or (CurToken.Val = 'false') Or
+         (CurToken.Val = 'nil') Or (CurToken.Val = 'maxint') Then
+      Begin
+        LitEval(CurToken, Res);
+        LexNextToken;
+      End
+      Else
+      Begin
+        WarnMsg('mot-cle inattendu dans expression: ' + CurToken.Val);
+        LexNextToken;
+      End;
+    End;
+
+    (* --- Identificateurs (stub pour TODO 05+) --- *)
+    TK_IDENT :
+    Begin
+      WarnMsg('identificateur dans expression (TODO 05+): ' + CurToken.Val);
+      LexNextToken;
+    End;
+
+    (* --- Ponctuation ( ) --- *)
+    TK_PUNCT :
+    Begin
+      If CurToken.Val = '(' Then
+      Begin
+        LexNextToken;  (* consommer ( *)
+        ParseExpr(Res);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken  (* consommer ) *)
+        Else
+          WarnMsg(''')'' attendu dans sous-expression');
+      End
+      Else
+      Begin
+        WarnMsg('expression primaire attendue, trouve: ' + CurToken.Val);
+        LexNextToken;
+      End;
+    End;
+
+  Else
+    WarnMsg('expression primaire attendue');
+    LexNextToken;
+  End;
+End;
+
+(* ---- ParseUnary : operateurs unaires -------------------------*)
+(* Gere NOT, moins unaire -, plus unaire +, @ (adresse de).      *)
+Procedure ParseUnary(Var Res : TExprVal);
+Begin
+  (* not (logique ou bits selon type) *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'not') Then
+  Begin
+    LexNextToken;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+    Begin
+      If Res.TypeIdx = TY_IDX_BOOLEAN Then
+      Begin
+        If Res.ImmVal = 0 Then Res.ImmVal := 1
+        Else Res.ImmVal := 0;
+      End
+      Else
+        Res.ImmVal := Not Res.ImmVal;
+    End
+    Else
+    Begin
+      ExprFlushToEAX(Res);
+      If Res.TypeIdx = TY_IDX_BOOLEAN Then
+        EmitInstrAB('XOR', 'EAX', '1')
+      Else
+        EmitInstr('NOT    EAX');
+      Res.Kind   := EK_EAX;
+      Res.SymIdx := -1;
+    End;
+    Exit;
+  End;
+
+  (* Moins unaire *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+  Begin
+    LexNextToken;
+    ParseUnary(Res);
+    If Res.Kind = EK_IMM Then
+      Res.ImmVal := -Res.ImmVal
+    Else
+    Begin
+      ExprFlushToEAX(Res);
+      EmitInstr('NEG    EAX');
+      Res.Kind   := EK_EAX;
+      Res.SymIdx := -1;
+    End;
+    Exit;
+  End;
+
+  (* Plus unaire (no-op) *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '+') Then
+  Begin
+    LexNextToken;
+    ParseUnary(Res);
+    Exit;
+  End;
+
+  (* @ (adresse de) *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '@') Then
+  Begin
+    LexNextToken;
+    ParsePrimary(Res);
+    If (Res.SymIdx >= 0) And (Res.SymIdx < SymCount) Then
+    Begin
+      If SymTab[Res.SymIdx].IsLocal Then
+        EmitInstrAB('LEA', 'EAX',
+          EBPOfs(SymTab[Res.SymIdx].Offset))
+      Else
+        EmitInstrAB('MOV', 'EAX',
+          'OFFSET ' + SymTab[Res.SymIdx].MangledName);
+    End
+    Else
+    Begin
+      WarnMsg('@ requiert une variable ou un parametre');
+      EmitInstrAB('XOR', 'EAX', 'EAX');
+    End;
+    Res.Kind    := EK_EAX;
+    Res.TypeIdx := TY_IDX_POINTER;
+    Res.SymIdx  := -1;
+    Exit;
+  End;
+
+  (* Pas d operateur unaire : ParsePrimary *)
+  ParsePrimary(Res);
+End;
+
+(* ---- ParseExprPrec : Pratt parser pour operateurs binaires --- *)
+(* Boucle de montee de precedence. EAX=gauche, EBX=droite.        *)
+(* Gere || (concatenation), ** (exponentiation), ANDIF, ORIF.     *)
+Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
+Var
+  Op        : TString;
+  Prec      : Integer;
+  Right     : TExprVal;
+  LeftIsImm : Boolean;
+  LeftImm   : LongInt;
+  ResType   : Integer;
+  LblSkip   : TString;
+  LblPow    : TString;
+  LblPowEnd : TString;
+  PowAccum  : LongInt;
+  PowI      : Integer;
+Begin
+  ParseUnary(Res);
+
+  Repeat
+    Op   := '';
+    Prec := 0;
+
+    (* Detecter operateur binaire *)
+    If CurToken.Kind = TK_OP Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := OpPrec(Op);
+    End
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            ((CurToken.Val = 'div') Or (CurToken.Val = 'mod') Or
+             (CurToken.Val = 'and') Or (CurToken.Val = 'or') Or
+             (CurToken.Val = 'xor') Or (CurToken.Val = 'shl') Or
+             (CurToken.Val = 'shr') Or (CurToken.Val = 'in') Or
+             (CurToken.Val = 'andif') Or (CurToken.Val = 'orif')) Then
+    Begin
+      Op   := CurToken.Val;
+      Prec := OpPrec(Op);
+    End;
+
+    (* Arreter si pas operateur ou precedence insuffisante *)
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    LexNextToken;  (* consommer l operateur *)
+
+    (* ---- ANDIF : evaluation court-circuit ---- *)
+    If Op = 'andif' Then
+    Begin
+      ExprFlushToEAX(Res);
+      LblSkip := NewLabel;
+      EmitInstrAB('CMP', 'EAX', '0');
+      EmitInstrA('JE', LblSkip);
+      ParseExprPrec(Prec + 1, Right);
+      ExprFlushToEAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_EAX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+
+    (* ---- ORIF : evaluation court-circuit ---- *)
+    If Op = 'orif' Then
+    Begin
+      ExprFlushToEAX(Res);
+      LblSkip := NewLabel;
+      EmitInstrAB('CMP', 'EAX', '0');
+      EmitInstrA('JNE', LblSkip);
+      ParseExprPrec(Prec + 1, Right);
+      ExprFlushToEAX(Right);
+      EmitLabel(LblSkip);
+      Res.Kind    := EK_EAX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+      Res.SymIdx  := -1;
+      Continue;
+    End;
+
+    (* Sauvegarder operande gauche *)
+    LeftIsImm := (Res.Kind = EK_IMM);
+    LeftImm   := Res.ImmVal;
+    If Not LeftIsImm Then
+    Begin
+      ExprFlushToEAX(Res);
+      EmitInstrA('PUSH', 'EAX');
+    End;
+
+    (* Recurser cote droit (gauche-assoc : Prec + 1) *)
+    ParseExprPrec(Prec + 1, Right);
+
+    (* Pliage de constantes si les deux sont immediats *)
+    If LeftIsImm And (Right.Kind = EK_IMM) Then
+    Begin
+      If Op = '+' Then
+        ExprMakeImm(LeftImm + Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = '-' Then
+        ExprMakeImm(LeftImm - Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = '*' Then
+        ExprMakeImm(LeftImm * Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If (Op = '/') Or (Op = 'div') Then
+      Begin
+        If Right.ImmVal <> 0 Then
+          ExprMakeImm(LeftImm Div Right.ImmVal, TY_IDX_INTEGER, Res)
+        Else
+        Begin
+          WarnMsg('division par zero dans constante');
+          ExprMakeImm(0, TY_IDX_INTEGER, Res);
+        End;
+      End
+      Else If Op = 'mod' Then
+      Begin
+        If Right.ImmVal <> 0 Then
+          ExprMakeImm(LeftImm Mod Right.ImmVal, TY_IDX_INTEGER, Res)
+        Else
+        Begin
+          WarnMsg('modulo par zero dans constante');
+          ExprMakeImm(0, TY_IDX_INTEGER, Res);
+        End;
+      End
+      Else If Op = 'and' Then
+        ExprMakeImm(LeftImm And Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = 'or' Then
+        ExprMakeImm(LeftImm Or Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = 'xor' Then
+        ExprMakeImm(LeftImm Xor Right.ImmVal, TY_IDX_INTEGER, Res)
+      Else If Op = 'shl' Then
+        ExprMakeImm(LeftImm Shl Integer(Right.ImmVal And 31),
+                    TY_IDX_INTEGER, Res)
+      Else If Op = 'shr' Then
+        ExprMakeImm(LeftImm Shr Integer(Right.ImmVal And 31),
+                    TY_IDX_INTEGER, Res)
+      Else If Op = '**' Then
+      Begin
+        (* Exponentiation constante *)
+        If Right.ImmVal = 0 Then
+          ExprMakeImm(1, TY_IDX_INTEGER, Res)
+        Else If Right.ImmVal = 1 Then
+          ExprMakeImm(LeftImm, TY_IDX_INTEGER, Res)
+        Else
+        Begin
+          PowAccum := 1;
+          For PowI := 1 To Integer(Right.ImmVal) Do
+            PowAccum := PowAccum * LeftImm;
+          ExprMakeImm(PowAccum, TY_IDX_INTEGER, Res);
+        End;
+      End
+      (* Comparaisons -> booleen *)
+      Else If Op = '=' Then
+        ExprMakeImm(Ord(LeftImm = Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '<>' Then
+        ExprMakeImm(Ord(LeftImm <> Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '<' Then
+        ExprMakeImm(Ord(LeftImm < Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '>' Then
+        ExprMakeImm(Ord(LeftImm > Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '<=' Then
+        ExprMakeImm(Ord(LeftImm <= Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = '>=' Then
+        ExprMakeImm(Ord(LeftImm >= Right.ImmVal), TY_IDX_BOOLEAN, Res)
+      Else If Op = 'in' Then
+      Begin
+        WarnMsg('in : ensembles non supportes (constantes), retourne 0');
+        ExprMakeImm(0, TY_IDX_BOOLEAN, Res);
+      End
+      Else
+        ExprMakeImm(0, TY_IDX_INTEGER, Res);
+    End
+    Else
+    Begin
+      (* ---- Emission de code binaire 32 bits ---- *)
+      ResType := Res.TypeIdx;
+      If (Res.TypeIdx = TY_IDX_STRING) Or (Right.TypeIdx = TY_IDX_STRING) Then
+        ResType := TY_IDX_STRING
+      Else If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
+              (Op = '<=') Or (Op = '>=') Or (Op = 'in') Then
+        ResType := TY_IDX_BOOLEAN;
+
+      (* Charger droite dans EBX *)
+      ExprFlushToEAX(Right);
+      EmitInstrAB('MOV', 'EBX', 'EAX');
+
+      (* Restaurer gauche dans EAX *)
+      If LeftIsImm Then
+        EmitInstrAB('MOV', 'EAX', IntToStr(LeftImm))
+      Else
+        EmitInstrA('POP', 'EAX');
+
+      (* EAX = gauche, EBX = droite *)
+
+      (* --- Arithmetique 32 bits --- *)
+      If Op = '+' Then
+      Begin
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'CONCAT');
+        End
+        Else
+          EmitInstrAB('ADD', 'EAX', 'EBX');
+      End
+      Else If Op = '-' Then
+        EmitInstrAB('SUB', 'EAX', 'EBX')
+
+      Else If Op = '*' Then
+        EmitInstrA('IMUL', 'EBX')
+
+      Else If (Op = '/') Or (Op = 'div') Then
+      Begin
+        EmitInstrAB('TEST', 'EBX', 'EBX');
+        EmitInstrA('JZ', VXP_RT_PFX + 'PANIC_DIV0');
+        EmitInstr('CDQ');
+        EmitInstrA('IDIV', 'EBX');
+      End
+
+      Else If Op = 'mod' Then
+      Begin
+        EmitInstrAB('TEST', 'EBX', 'EBX');
+        EmitInstrA('JZ', VXP_RT_PFX + 'PANIC_DIV0');
+        EmitInstr('CDQ');
+        EmitInstrA('IDIV', 'EBX');
+        EmitInstrAB('MOV', 'EAX', 'EDX');
+      End
+
+      (* --- Concatenation || --- *)
+      Else If Op = '||' Then
+      Begin
+        EmitComment('|| concatenation');
+        EmitInstrAB('MOV', 'ESI', 'EAX');
+        EmitInstrAB('MOV', 'EDI', 'EBX');
+        EmitInstrA('CALL', VXP_RT_PFX + 'CONCAT');
+        ResType := TY_IDX_STRING;
+      End
+
+      (* --- Exponentiation ** --- *)
+      Else If Op = '**' Then
+      Begin
+        EmitComment('** exponentiation');
+        (* EAX = base, EBX = exposant *)
+        (* Boucle : ECX=exposant, EAX=resultat, EDX=base *)
+        EmitInstrAB('MOV', 'ECX', 'EBX');  (* ECX = exposant *)
+        EmitInstrAB('MOV', 'EDX', 'EAX');  (* EDX = base *)
+        EmitInstrAB('MOV', 'EAX', '1');    (* EAX = resultat = 1 *)
+        LblPow := NewLabel;
+        LblPowEnd := NewLabel;
+        EmitInstrAB('CMP', 'ECX', '0');
+        EmitInstrA('JLE', LblPowEnd);
+        EmitLabel(LblPow);
+        EmitInstrA('IMUL', 'EDX');          (* EAX = EAX * EDX *)
+        EmitInstr('DEC    ECX');
+        EmitInstrA('JNZ', LblPow);
+        EmitLabel(LblPowEnd);
+        ResType := TY_IDX_INTEGER;
+      End
+
+      (* --- Bits / Logiques --- *)
+      Else If Op = 'and' Then
+        EmitInstrAB('AND', 'EAX', 'EBX')
+
+      Else If Op = 'or' Then
+        EmitInstrAB('OR', 'EAX', 'EBX')
+
+      Else If Op = 'xor' Then
+        EmitInstrAB('XOR', 'EAX', 'EBX')
+
+      Else If Op = 'shl' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SHL', 'EAX', 'CL');
+      End
+
+      Else If Op = 'shr' Then
+      Begin
+        EmitInstrAB('MOV', 'CL', 'BL');
+        EmitInstrAB('SHR', 'EAX', 'CL');
+      End
+
+      (* --- Comparaisons : CMP + Jcc -> EAX = 0|1 --- *)
+      Else If Op = '=' Then
+      Begin
+        LblSkip := NewLabel;
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        EmitInstrAB('MOV', 'EAX', '0');
+        EmitInstrA('JNE', LblSkip);
+        EmitInstr('INC    EAX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '<>' Then
+      Begin
+        LblSkip := NewLabel;
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        EmitInstrAB('MOV', 'EAX', '0');
+        EmitInstrA('JE', LblSkip);
+        EmitInstr('INC    EAX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '<' Then
+      Begin
+        LblSkip := NewLabel;
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        EmitInstrAB('MOV', 'EAX', '0');
+        EmitInstrA('JGE', LblSkip);
+        EmitInstr('INC    EAX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '<=' Then
+      Begin
+        LblSkip := NewLabel;
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        EmitInstrAB('MOV', 'EAX', '0');
+        EmitInstrA('JG', LblSkip);
+        EmitInstr('INC    EAX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '>' Then
+      Begin
+        LblSkip := NewLabel;
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        EmitInstrAB('MOV', 'EAX', '0');
+        EmitInstrA('JLE', LblSkip);
+        EmitInstr('INC    EAX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = '>=' Then
+      Begin
+        LblSkip := NewLabel;
+        If ResType = TY_IDX_STRING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else
+          EmitInstrAB('CMP', 'EAX', 'EBX');
+        EmitInstrAB('MOV', 'EAX', '0');
+        EmitInstrA('JL', LblSkip);
+        EmitInstr('INC    EAX');
+        EmitLabel(LblSkip);
+      End
+
+      Else If Op = 'in' Then
+      Begin
+        EmitComment('element IN set');
+        (* EAX = element, EBX = set pointer *)
+        EmitInstrAB('MOV', 'ESI', 'EBX');
+        EmitInstrAB('MOV', 'EBX', 'EAX');
+        EmitInstrA('CALL', VXP_RT_PFX + 'SET_IN');
+        ResType := TY_IDX_BOOLEAN;
+      End;
+
+      Res.Kind    := EK_EAX;
+      Res.TypeIdx := ResType;
+      Res.SymIdx  := -1;
+    End;
+  Until False;
+End;
+
+(* ---- ParseExpr : point d entree pour les expressions --------- *)
+Procedure ParseExpr(Var Res : TExprVal);
+Begin
+  ParseExprPrec(1, Res);
+End;
+
+{ ============================================================
+  PROCEDURE PRINCIPALE (Run)
+  ============================================================ }
+
 Procedure Run;
 Begin
   GlobalInit;
@@ -2908,7 +3606,7 @@ Begin
       LexNextToken;
   End;
 
-  { TODO 04+ : Parse, EmitHeader, ... }
+  { TODO 05+ : Parse, EmitHeader, ... }
 
   { Fermer le lexeur }
   LexClose;
