@@ -361,7 +361,7 @@
             LENGTH(s) : longueur de chaine -> EAX
             SUBSTR(s, pos, len) : extraction de sous-chaine
 
-  TODO 21 - ENSEMBLES (SET)
+  TODO 21 - ENSEMBLES (SET) [IMPLEMENTE]
             SET OF T : ensemble de type ordinal (0..255 max)
               Representation : 32 octets (256 bits) en .DATA ou pile
             Constructeur : [val1, val2, lo..hi]
@@ -2678,6 +2678,8 @@ Begin
   EmitRaw(VXP_RT_PFX + 'HEAPTOP DD  OFFSET ' + VXP_RT_PFX + 'HEAP');
   EmitRaw(VXP_RT_PFX + 'SEED    DD  1');
   EmitRaw(VXP_RT_PFX + 'SETBUF  DB  32 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'STMP1   DB  32 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'STMP2   DB  32 DUP(0)');
   EmitRaw(VXP_RT_PFX + 'DATEBUF DB  16 DUP(0)');
   EmitRaw(VXP_RT_PFX + 'TIMEBUF DB  12 DUP(0)');
   EmitRaw(VXP_RT_PFX + 'ASSERTMSG DB ''Assertion failed'',0');
@@ -3105,6 +3107,8 @@ Var
   ArgCount2 : Integer;
   SubEv     : TExprVal;
   Lw2       : TString;
+  LblLoop2  : TString;
+  LblDone2  : TString;
 Begin
   Res.Kind    := EK_NONE;
   Res.ImmVal  := 0;
@@ -3480,7 +3484,8 @@ Begin
            (Lw2 = 'odd') Or (Lw2 = 'succ') Or (Lw2 = 'pred') Or
            (Lw2 = 'length') Or (Lw2 = 'sizeof') Or (Lw2 = 'size') Or
            (Lw2 = 'address') Or (Lw2 = 'iaddress') Or
-           (Lw2 = 'trunc') Or (Lw2 = 'round') Or (Lw2 = 'sqr') Then
+           (Lw2 = 'trunc') Or (Lw2 = 'round') Or (Lw2 = 'sqr') Or
+           (Lw2 = 'card') Then
         Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           Begin
@@ -3598,6 +3603,15 @@ Begin
               EmitInstrAB('XOR', 'EAX', 'EAX');
             Res.Kind    := EK_EAX;
             Res.TypeIdx := TY_IDX_POINTER;
+          End
+          Else If Lw2 = 'card' Then
+          Begin
+            ExprFlushToEAX(SubEv);
+            EmitComment('CARD(set)');
+            EmitInstrAB('MOV', 'ESI', 'EAX');
+            EmitInstrA('CALL', VXP_RT_PFX + 'SET_CARD');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_INTEGER;
           End
           Else
           Begin
@@ -4250,6 +4264,19 @@ Begin
                   EmitInstrAB('LEA', 'EAX',
                     '[' + SymTab[SIdx2].MangledName + '+2]');
               End
+              (* SET variables - load address (pointer to 32-byte buffer) *)
+              Else If IsSetTypeIdx(SymTab[SIdx2].TypeIdx) Then
+              Begin
+                If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                  EmitInstrAB('MOV', 'EAX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
+                Else If SymTab[SIdx2].IsLocal Then
+                  EmitInstrAB('LEA', 'EAX',
+                    EBPOfs(SymTab[SIdx2].Offset))
+                Else
+                  EmitInstrAB('MOV', 'EAX',
+                    'OFFSET ' + SymTab[SIdx2].MangledName);
+              End
               Else If SymTab[SIdx2].Cat = SC_VARPARAM Then
               Begin
                 EmitInstrAB('MOV', 'EBX',
@@ -4282,6 +4309,61 @@ Begin
             End;  (* simple variable access *)
           End;  (* variable symbol cases *)
         End;  (* else not builtin *)
+    End;
+
+    (* --- Constructeur d ensemble [ ] --- *)
+    TK_ATTR_OPEN :
+    Begin
+      LexNextToken;  (* consommer [ *)
+      EmitComment('set constructor');
+      (* Effacer STMP1 : 32 octets a zero *)
+      EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STMP1');
+      EmitInstrAB('XOR', 'EAX', 'EAX');
+      EmitInstrAB('MOV', 'ECX', '8');
+      EmitInstr('REP    STOSD');
+      (* Parser les elements si non vide *)
+      If CurToken.Kind <> TK_ATTR_CLOSE Then
+      Begin
+        Repeat
+          ParseExpr(SubEv);
+          ExprFlushToEAX(SubEv);
+          (* Verifier si plage lo..hi *)
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+          Begin
+            LexNextToken;  (* consommer .. *)
+            EmitInstrA('PUSH', 'EAX');  (* sauver lo *)
+            ParseExpr(SubEv);
+            ExprFlushToEAX(SubEv);
+            EmitInstrAB('MOV', 'ECX', 'EAX');  (* ECX = hi *)
+            EmitInstrA('POP', 'EAX');           (* EAX = lo *)
+            EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STMP1');
+            LblLoop2 := NewLabel;
+            LblDone2 := NewLabel;
+            EmitLabel(LblLoop2);
+            EmitInstrAB('CMP', 'EAX', 'ECX');
+            EmitInstrA('JG', LblDone2);
+            EmitInstrAB('BTS', 'DWORD PTR [EDI]', 'EAX');
+            EmitInstr('INC    EAX');
+            EmitInstrA('JMP', LblLoop2);
+            EmitLabel(LblDone2);
+          End
+          Else
+          Begin
+            EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STMP1');
+            EmitInstrAB('BTS', 'DWORD PTR [EDI]', 'EAX');
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken
+          Else
+            Break;
+        Until False;
+      End;
+      If CurToken.Kind = TK_ATTR_CLOSE Then
+        LexNextToken;  (* consommer ] *)
+      EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STMP1');
+      Res.Kind    := EK_EAX;
+      Res.TypeIdx := TY_IDX_SET;
+      Res.SymIdx  := -1;
     End;
 
     (* --- Ponctuation ( ) --- *)
@@ -4415,6 +4497,7 @@ Var
   LeftIsImm : Boolean;
   LeftImm   : LongInt;
   ResType   : Integer;
+  LeftIsSet : Boolean;
   LblSkip   : TString;
   LblPow    : TString;
   LblPowEnd : TString;
@@ -4574,6 +4657,7 @@ Begin
     Begin
       (* ---- Emission de code binaire 32 bits ---- *)
       ResType := Res.TypeIdx;
+      LeftIsSet := IsSetTypeIdx(Res.TypeIdx) Or IsSetTypeIdx(Right.TypeIdx);
       If IsVaryingTypeIdx(Res.TypeIdx) Or IsVaryingTypeIdx(Right.TypeIdx) Then
         ResType := TY_IDX_STRING
       Else If (Res.TypeIdx = TY_IDX_STRING) Or (Right.TypeIdx = TY_IDX_STRING) Then
@@ -4597,7 +4681,15 @@ Begin
       (* --- Arithmetique 32 bits --- *)
       If Op = '+' Then
       Begin
-        If (ResType = TY_IDX_STRING) Then
+        If LeftIsSet Then
+        Begin
+          EmitComment('set union');
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_UNION');
+          ResType := Res.TypeIdx;
+        End
+        Else If (ResType = TY_IDX_STRING) Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4607,10 +4699,32 @@ Begin
           EmitInstrAB('ADD', 'EAX', 'EBX');
       End
       Else If Op = '-' Then
-        EmitInstrAB('SUB', 'EAX', 'EBX')
+      Begin
+        If LeftIsSet Then
+        Begin
+          EmitComment('set difference');
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_DIFF');
+          ResType := Res.TypeIdx;
+        End
+        Else
+          EmitInstrAB('SUB', 'EAX', 'EBX');
+      End
 
       Else If Op = '*' Then
-        EmitInstrA('IMUL', 'EBX')
+      Begin
+        If LeftIsSet Then
+        Begin
+          EmitComment('set intersection');
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_INTER');
+          ResType := Res.TypeIdx;
+        End
+        Else
+          EmitInstrA('IMUL', 'EBX');
+      End
 
       Else If (Op = '/') Or (Op = 'div') Then
       Begin
@@ -4686,38 +4800,65 @@ Begin
       Else If Op = '=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If LeftIsSet Then
+        Begin
+          EmitComment('set equality');
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_EQ');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
           EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
           EmitInstrAB('CMP', 'EAX', '0');
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JNE', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
         End
         Else
+        Begin
           EmitInstrAB('CMP', 'EAX', 'EBX');
-        EmitInstrAB('MOV', 'EAX', '0');
-        EmitInstrA('JNE', LblSkip);
-        EmitInstr('INC    EAX');
-        EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JNE', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
+        End;
         ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = '<>' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If LeftIsSet Then
+        Begin
+          EmitComment('set inequality');
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_EQ');
+          EmitInstrAB('XOR', 'EAX', '1');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
           EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
           EmitInstrAB('CMP', 'EAX', '0');
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JE', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
         End
         Else
+        Begin
           EmitInstrAB('CMP', 'EAX', 'EBX');
-        EmitInstrAB('MOV', 'EAX', '0');
-        EmitInstrA('JE', LblSkip);
-        EmitInstr('INC    EAX');
-        EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JE', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
+        End;
         ResType := TY_IDX_BOOLEAN;
       End
 
@@ -4743,19 +4884,32 @@ Begin
       Else If Op = '<=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If LeftIsSet Then
+        Begin
+          EmitComment('set subset');
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_SUBSET');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
           EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
           EmitInstrAB('CMP', 'EAX', '0');
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JG', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
         End
         Else
+        Begin
           EmitInstrAB('CMP', 'EAX', 'EBX');
-        EmitInstrAB('MOV', 'EAX', '0');
-        EmitInstrA('JG', LblSkip);
-        EmitInstr('INC    EAX');
-        EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JG', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
+        End;
         ResType := TY_IDX_BOOLEAN;
       End
 
@@ -4781,19 +4935,32 @@ Begin
       Else If Op = '>=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If LeftIsSet Then
+        Begin
+          EmitComment('set superset');
+          EmitInstrAB('MOV', 'ESI', 'EBX');
+          EmitInstrAB('MOV', 'EDI', 'EAX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'SET_SUBSET');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
           EmitInstrA('CALL', VXP_RT_PFX + 'STRCMP');
           EmitInstrAB('CMP', 'EAX', '0');
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JL', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
         End
         Else
+        Begin
           EmitInstrAB('CMP', 'EAX', 'EBX');
-        EmitInstrAB('MOV', 'EAX', '0');
-        EmitInstrA('JL', LblSkip);
-        EmitInstr('INC    EAX');
-        EmitLabel(LblSkip);
+          EmitInstrAB('MOV', 'EAX', '0');
+          EmitInstrA('JL', LblSkip);
+          EmitInstr('INC    EAX');
+          EmitLabel(LblSkip);
+        End;
         ResType := TY_IDX_BOOLEAN;
       End
 
@@ -6220,6 +6387,172 @@ Begin
   EmitInstrAB('MOV', 'EAX', 'EBX');
   EmitInstrA('POP', 'ECX');
   EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_COPY : copier 32 octets ESI -> EDI }
+  EmitComment('SET_COPY : copier ensemble ESI -> EDI (32 octets)');
+  EmitLabel(VXP_RT_PFX + 'SET_COPY');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrAB('MOV', 'ECX', '8');
+  EmitInstr('REP    MOVSD');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_UNION : ESI=set1, EDI=set2 -> EAX=ptr STMP2 }
+  EmitComment('SET_UNION : ESI+EDI -> EAX=OFFSET STMP2');
+  EmitLabel(VXP_RT_PFX + 'SET_UNION');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STMP2');
+  EmitInstrAB('MOV', 'ECX', '8');
+  EmitLabel(VXP_RT_PFX + 'SET_UN_LP');
+  EmitInstrAB('MOV', 'EDX', 'DWORD PTR [ESI]');
+  EmitInstrAB('OR', 'EDX', 'DWORD PTR [EDI]');
+  EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EDX');
+  EmitInstrAB('ADD', 'ESI', '4');
+  EmitInstrAB('ADD', 'EDI', '4');
+  EmitInstrAB('ADD', 'EBX', '4');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_UN_LP');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STMP2');
+  EmitInstrA('POP', 'EBX');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_INTER : ESI=set1, EDI=set2 -> EAX=ptr STMP2 }
+  EmitComment('SET_INTER : ESI*EDI -> EAX=OFFSET STMP2');
+  EmitLabel(VXP_RT_PFX + 'SET_INTER');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STMP2');
+  EmitInstrAB('MOV', 'ECX', '8');
+  EmitLabel(VXP_RT_PFX + 'SET_IN_LP');
+  EmitInstrAB('MOV', 'EDX', 'DWORD PTR [ESI]');
+  EmitInstrAB('AND', 'EDX', 'DWORD PTR [EDI]');
+  EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EDX');
+  EmitInstrAB('ADD', 'ESI', '4');
+  EmitInstrAB('ADD', 'EDI', '4');
+  EmitInstrAB('ADD', 'EBX', '4');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_IN_LP');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STMP2');
+  EmitInstrA('POP', 'EBX');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_DIFF : ESI=set1, EDI=set2 -> EAX=ptr STMP2 }
+  EmitComment('SET_DIFF : ESI-EDI -> EAX=OFFSET STMP2');
+  EmitLabel(VXP_RT_PFX + 'SET_DIFF');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STMP2');
+  EmitInstrAB('MOV', 'ECX', '8');
+  EmitLabel(VXP_RT_PFX + 'SET_DF_LP');
+  EmitInstrAB('MOV', 'EDX', 'DWORD PTR [EDI]');
+  EmitInstr('NOT    EDX');
+  EmitInstrAB('AND', 'EDX', 'DWORD PTR [ESI]');
+  EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EDX');
+  EmitInstrAB('ADD', 'ESI', '4');
+  EmitInstrAB('ADD', 'EDI', '4');
+  EmitInstrAB('ADD', 'EBX', '4');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_DF_LP');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STMP2');
+  EmitInstrA('POP', 'EBX');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_EQ : ESI=set1, EDI=set2 -> EAX=1 si egaux, 0 sinon }
+  EmitComment('SET_EQ : ESI=EDI -> EAX=1/0');
+  EmitLabel(VXP_RT_PFX + 'SET_EQ');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ECX', '8');
+  EmitLabel(VXP_RT_PFX + 'SET_EQ_LP');
+  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESI]');
+  EmitInstrAB('CMP', 'EAX', 'DWORD PTR [EDI]');
+  EmitInstrA('JNE', VXP_RT_PFX + 'SET_EQ_NE');
+  EmitInstrAB('ADD', 'ESI', '4');
+  EmitInstrAB('ADD', 'EDI', '4');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_EQ_LP');
+  EmitInstrAB('MOV', 'EAX', '1');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SET_EQ_DN');
+  EmitLabel(VXP_RT_PFX + 'SET_EQ_NE');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitLabel(VXP_RT_PFX + 'SET_EQ_DN');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_SUBSET : ESI=A, EDI=B -> EAX=1 si A<=B }
+  EmitComment('SET_SUBSET : A<=B -> EAX=1/0');
+  EmitLabel(VXP_RT_PFX + 'SET_SUBSET');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ECX', '8');
+  EmitLabel(VXP_RT_PFX + 'SET_SB_LP');
+  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESI]');
+  EmitInstrAB('MOV', 'EDX', 'DWORD PTR [EDI]');
+  EmitInstr('NOT    EDX');
+  EmitInstrAB('AND', 'EAX', 'EDX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_SB_NO');
+  EmitInstrAB('ADD', 'ESI', '4');
+  EmitInstrAB('ADD', 'EDI', '4');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_SB_LP');
+  EmitInstrAB('MOV', 'EAX', '1');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SET_SB_DN');
+  EmitLabel(VXP_RT_PFX + 'SET_SB_NO');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitLabel(VXP_RT_PFX + 'SET_SB_DN');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SET_CARD : ESI=set -> EAX=nombre de bits a 1 }
+  EmitComment('SET_CARD : ESI=set -> EAX=popcount');
+  EmitLabel(VXP_RT_PFX + 'SET_CARD');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitInstrAB('MOV', 'ECX', '32');
+  EmitLabel(VXP_RT_PFX + 'SET_CD_LP');
+  EmitInstrAB('MOVZX', 'EDX', 'BYTE PTR [ESI]');
+  EmitLabel(VXP_RT_PFX + 'SET_CD_BT');
+  EmitInstrAB('TEST', 'EDX', 'EDX');
+  EmitInstrA('JZ', VXP_RT_PFX + 'SET_CD_NX');
+  EmitInstrAB('TEST', 'EDX', '1');
+  EmitInstrA('JZ', VXP_RT_PFX + 'SET_CD_SH');
+  EmitInstr('INC    EAX');
+  EmitLabel(VXP_RT_PFX + 'SET_CD_SH');
+  EmitInstrAB('SHR', 'EDX', '1');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SET_CD_BT');
+  EmitLabel(VXP_RT_PFX + 'SET_CD_NX');
+  EmitInstr('INC    ESI');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'SET_CD_LP');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
   EmitInstr('RET');
   EmitBlankLine;
 
