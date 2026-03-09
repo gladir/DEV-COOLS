@@ -1,4 +1,4 @@
-ï»¿{ @author: Sylvain Maltais
+{ @author: Sylvain Maltais
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
@@ -38,1010 +38,6 @@
     - Gestion d exceptions : CONDITION, EXCEPTION, ON..DO
 
   Fichiers exemples : SAMPLES\VAXPASCAL\*.PAS
-
-  ============================================================
-
-  PLAN D IMPLEMENTATION - 25 TODOS
-  ================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS DE LIGNE DE COMMANDE
-            Squelette du programme principal :
-              ParseArgs : analyser -v -d -w -o fichier.asm source.pas
-              ShowBanner : affiche le nom + version
-              ShowUsage  : affiche la syntaxe
-              GlobalInit : initialiser toutes les variables globales
-              Cleanup    : fermer les fichiers ouverts
-              Run        : pipeline principal (boucle de compilation)
-            Record TOptions :
-              SrcFile, OutFile, Verbose, DebugMode, Warnings
-            Fonctions utilitaires de chaines :
-              StrLowerCase, StrUpperCase, IntToStr, StrToIntDef
-              ExtractExt, ReplaceExt, BPOfs
-            Gestion des erreurs :
-              ErrorCount, WarnCount, FatalError, ErrorMsg, WarnMsg
-              Expect (token attendu), SkipTo (synchronisation)
-            Constantes internes :
-              MAX_SYM, MAX_DATA, MAX_TYPE, MAX_LABEL, MAX_SCOPE,
-              MAX_PARAM, MAX_ERRORS, MAX_STR, MAX_INCLUDE, MAX_DEFINE,
-              MAX_FIELD, MAX_ENUM, STACK_SIZE
-            Prefixes de nommage ASM :
-              VXP_VAR_PFX  = '_VXP_'   (variable globale)
-              VXP_FN_PFX   = '_VXPF_'  (fonction/procedure)
-              VXP_STR_PFX  = '_VXPK_'  (constante chaine)
-              VXP_RT_PFX   = '_VXPRT_' (routine runtime)
-              VXP_LBL_PFX  = '_VXPL_'  (label de saut interne)
-              VXP_ARR_PFX  = '_VXPA_'  (tableau)
-              VXP_REC_PFX  = '_VXPR_'  (record)
-              VXP_ENUM_PFX = '_VXPE_'  (enumeration)
-              VXP_MOD_PFX  = '_VXPM_'  (module)
-            Codes de sortie : EXIT_OK=0, EXIT_ERROR=1, EXIT_USAGE=2
-
-  TODO 02 - LEXEUR (TOKENS VAX PASCAL)
-            Analyse lexicale caractere par caractere :
-              LexInit, LexClose, LexNextLine, LexNextToken
-              LexScanIdent, LexScanNumber, LexScanString, LexScanCharLit
-            Token record : Kind, Val, IntVal, RealVal, Line, Col
-            Types de tokens :
-              TK_EOF, TK_INTEGER, TK_REAL, TK_STRING, TK_CHAR,
-              TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT, TK_OCTAL,
-              TK_ATTR_OPEN, TK_ATTR_CLOSE (crochets [ ] pour attributs)
-            Mots-cles VAX Pascal (en plus du standard) :
-              MODULE, VARYING, RETURN, LOOP, OTHERS, OTHERWISE,
-              ANDIF, ORIF, VALUE, STATIC, EXTERNAL, GLOBAL, PUBLIC,
-              CONDITION, EXCEPTION, STOP, ORIGIN, PACKED, PREC, BY,
-              LABEL, GOTO, SIGNAL, RESIGNAL
-            Mots-cles d attributs entre crochets :
-              INHERIT, ENVIRONMENT, EXTERNAL, GLOBAL, HIDDEN,
-              WORD, VOLATILE, READONLY, WRITEONLY, ALIGNED, UNSAFE,
-              UNBOUND, ASYNCHRONOUS, IMMEDIATE, LIST, NOLIST,
-              OPTIMIZE, NOOPTIMIZE, CHECK, NOCHECK, POS, IDENT,
-              TRUNCATE, FORTRAN, C, PASCAL
-            Operateurs supplementaires :
-              || (concatenation), ** (exponentiation)
-            Identifiants avec $ (VMS) :
-              SMG$Create_Virtual_Display, LIB$Signal, SYS$...
-              Le $ est un caractere valide dans les identifiants
-            Commentaires : { ... }, paren-etoile, (pas de // en VAX Pascal)
-            Litteraux octaux :
-              Suffixe B ou b : 777B, 377b
-              Prefixe #O : #O377
-            Litteraux hexadecimaux :
-              Prefixe #X ou #x : #XFF
-            Caracteres speciaux :
-              Apostrophe simple pour chaines : 'texte'
-              # pour caractere : #13, #O15
-            PrintToken : affichage debug d un token
-
-  TODO 03 - PREPROCESSEUR ($DIRECTIVES ET %DIRECTIVES)
-            Directives de compilation VAX Pascal (prefixe $) :
-              $INCLUDE 'fichier'    : inclusion de fichier source
-              $SYSTEM fichier       : inclusion systeme (TOPS-10/20)
-              $TITLE texte          : titre de listing (ignore)
-              $HEADER texte         : en-tete de listing (ignore)
-              $PAGE                 : saut de page listing (ignore)
-              $LENGTH=n             : longueur de page (ignore)
-              $WIDTH=n              : largeur de page (ignore)
-              $SOURCE               : activer le listing source (ignore)
-              $NOSOURCE             : desactiver le listing (ignore)
-              $OPTIONS directives   : options de compilation
-                SPECIAL, SPECIAL(COERCIONS), SPECIAL(WORD), SPECIAL(PTR),
-                NOCHECK, CHECK, CHECK(ASSERTIONS), ASSEMBLY,
-                DUMPST, DUMPIF, FORTRAN
-            Compilation conditionnelle :
-              $IF identifier        : si symbole defini
-              $IFNOT identifier     : si symbole non defini
-              $ELSE                 : branche alternative
-              $END                  : fin de bloc conditionnel
-              $ENDIF                : synonyme de $END
-              $DEFINE identifier    : definir un symbole
-            Directives VMS avec prefixe % :
-              %INCLUDE 'fichier'    : inclusion (syntaxe VMS native)
-              %DICTIONARY 'CDD_PATH' : charge definitions CDD (ignore)
-              %DESCR(param)         : passage par descripteur (appels VMS)
-              %REF(param)           : passage par reference (appels VMS)
-              %STDESCR(param)       : descripteur standard (appels VMS)
-              %IMMED(param)         : passage immediat (appels VMS)
-            Mecanisme d inclusion :
-              IncludePush(FileName) : empiler fichier courant, ouvrir include
-              IncludePop           : depiler et restaurer fichier precedent
-              IncSavedFName, IncSavedLine, IncSavedLineNo, etc.
-              Profondeur maximale : MAX_INCLUDE (8)
-
-  TODO 04 - LITTERAUX ET SEGMENT DE DONNEES
-            Table de donnees (DataTab, DataCount) :
-              DK_STR  : chaine ASCIIZ (DB 'texte',0)
-              DK_WORD : mot 16 bits (DW valeur)
-              DK_BYTE : octet (DB valeur)
-              DK_ARR  : tableau (DB count DUP(0))
-              DK_REC  : record (DB size DUP(0))
-            DataAdd, DataAddStr, DataAddWord, DataAddByte,
-            DataAddArray, DataAddRec
-            Evaluation de litteraux :
-              Decimaux : 123, -45
-              Octaux : 777B, #O377
-              Hexadecimaux : #XFF
-              Chaines : 'texte', 'l''apostrophe'
-              Caracteres : #65, #O101, #XFF
-              Reels : 3.14, 1.5E+3
-            Constantes nommees :
-              CONST name = valeur;
-              CONST name := valeur;  (syntaxe VAX := pour constantes)
-            LabelGen, LabelGenSeq : generateur de labels uniques
-            EmitRaw : ecriture directe dans le fichier de sortie
-            EmitDataSeg : emission du segment _DATA complet
-
-  TODO 05 - EMETTEUR DE CODE ASM
-            Instructions de base :
-              EmitComment, EmitLabel, EmitBlankLine
-              EmitInstr, EmitInstrA, EmitInstrAB
-              EmitPush, EmitPop, EmitMov, EmitCall
-              EmitJmp, EmitJmpCond
-            En-tete et pied de page :
-              EmitHeader : .MODEL SMALL, .STACK, _TEXT SEGMENT,
-                _VXPF_main PROC, MOV AX,_DATA / MOV DS,AX
-              EmitFooter : MOV AX,4C00h / INT 21h + runtime + _TEXT ENDS
-              EmitClose  : END _VXPF_main (apres _DATA ENDS)
-            Cadre de pile :
-              EmitProlog(FrameSize) : PUSH BP / MOV BP,SP / SUB SP,n
-              EmitEpilog(ParamBytes) : MOV SP,BP / POP BP / RET n
-            Coercitions de type :
-              EmitCoerce(SrcType, DstType) : CBW, etc.
-            NewLabel : generateur de labels internes
-
-  TODO 06 - TABLE DES SYMBOLES
-            Enregistrement TSymRec :
-              Name, MangledName, Cat (SC_VAR/SC_CONST/SC_FUNC/...),
-              TypeIdx, Offset, ScopeLevel, ScopeId,
-              IsForward, IsLocal, ImmVal, DataIdx,
-              ParamCnt, VarParamMask
-            Categories supplementaires VAX :
-              SC_STATIC    : variable static (persistente)
-              SC_EXTERNAL  : variable/procedure externe
-              SC_GLOBAL    : procedure globale (exportee)
-              SC_PUBLIC    : procedure publique
-              SC_MODULE    : nom de module
-            Table SymTab[0..MAX_SYM-1], SymCount
-            Operations :
-              SymAdd, SymFind, SymFindInScope, SymMangle
-            Portees (scopes) :
-              SymEnterScope, SymLeaveScope
-              CurScopeLevel, CurScopeId, ScopeIdSeq
-            SymInit : precharger les symboles builtin
-              (Integer, Boolean, Char, Real, String, Text,
-               True, False, Nil, MaxInt, Unsigned,
-               Input, Output, TTY, TTYOutput)
-
-  TODO 07 - SYSTEME DE TYPES
-            Enregistrement TTypeRec :
-              Name, Kind (TK_PRIM/TK_ENUM/TK_ARRAY/TK_RECORD/
-                TK_POINTER/TK_SUBRANGE/TK_SET/TK_FILE/TK_VARYING/
-                TK_SCHEMA/TK_PROCEDURAL),
-              Size, BaseType, Lo, Hi, FieldCount, Fields,
-              EnumCount, Enums, Packed, Precision
-            Types primitifs VAX Pascal :
-              TY_IDX_INTEGER  = 0   (entier 32 bits signe sur VAX,
-                                     tronque a 16 bits pour 8086)
-              TY_IDX_WORD     = 1   (entier 16 bits non signe)
-              TY_IDX_BYTE     = 2   (8 bits non signe)
-              TY_IDX_CHAR     = 3   (8 bits caractere)
-              TY_IDX_BOOLEAN  = 4   (0 ou 1)
-              TY_IDX_STRING   = 5   (pointeur ASCIIZ)
-              TY_IDX_REAL     = 6   (flottant simple precision)
-              TY_IDX_DOUBLE   = 7   (flottant double precision)
-              TY_IDX_POINTER  = 8   (pointeur generique)
-              TY_IDX_NIL      = 9   (pointeur nul)
-              TY_IDX_TEXT     = 10   (fichier texte)
-              TY_IDX_UNSIGNED = 11   (entier 16 bits non signe VAX)
-              TY_IDX_VARYING  = 12   (VARYING [n] OF CHAR)
-            Types predefinis VMS Pascal supplementaires :
-              MACHINE_WORD    : mot machine (16 bits sur 8086)
-              HALF_WORD       : demi-mot (8 bits sur 8086)
-              INTEGER16       : entier 16 bits explicite
-              INTEGER32       : entier 32 bits (emule en 16+16)
-              SINGLE, D_FLOAT, D_FLOATING : simple precision IEEE
-              DOUBLE, G_FLOAT, G_FLOATING : double precision IEEE
-              F_FLOATING      : simple precision VAX (= SINGLE)
-              H_FLOATING      : quadruple precision (non supporte)
-              QUADWORD        : 64 bits (emule en 4x16)
-              UNSIGNED        : 16 bits non signe
-              FILE_NAME       : STRING predefini pour noms de fichier
-              LINE            : STRING predefini (longueur standard)
-              IO_STATUS       : enumeration predefinie d etats d I/O
-                (IO_OK, IO_NOVF, IO_POVF, IO_DGIT, IO_GOVF,
-                 IO_INTR, IO_REWR, IO_EOF, IO_OUTF, IO_INPF,
-                 IO_SEEK, IO_ILLC, IO_NEPF, IO_OPNF)
-            Types proceduraux :
-              TYPE TProc = PROCEDURE(a: Integer);
-              TYPE TFunc = FUNCTION(a: Integer): Integer;
-              VAR callback : TProc;
-            TypeInit, TypeSizeof, TypeCompatible, TypeCoerce,
-            TypeResolve, TypeIsOrdinal, TypeIsNumeric, TypeIsPointer
-            Attribut [WORD] : forcer la taille a 16 bits
-            Attribut PACKED : compresser les champs
-            PREC n : precision flottante (=> REAL ou DOUBLE)
-
-  TODO 08 - OPERATEURS ET PRECEDENCES
-            Priorites (du plus faible au plus fort) :
-              1 : OR, ORIF
-              2 : AND, ANDIF
-              3 : NOT (unaire)
-              4 : =, <>, <, >, <=, >=, IN
-              5 : +, -, || (concatenation)
-              6 : *, /, DIV, MOD
-              7 : ** (exponentiation)
-              8 : unaires +, -, @, ^, NOT
-            Evaluation court-circuit :
-              ANDIF : si gauche = False, ne pas evaluer droite
-              ORIF  : si gauche = True, ne pas evaluer droite
-            Concatenation || :
-              Genere un appel runtime _VXPRT_CONCAT
-              Resultat dans un buffer temporaire
-            Exponentiation ** :
-              Entier ** Entier  : boucle de multiplication
-              Reel ** Entier    : appel _VXPRT_POWRI
-            Operateurs de bits : AND, OR, XOR, NOT, SHL, SHR
-            Expression record TExprVal :
-              Kind (EK_IMM/EK_REG/EK_MEM/EK_STR), TypeIdx, IntVal
-            ParseExpr, ParseExprPrec, ParseUnary, ParsePrimary
-
-  TODO 09 - DECLARATIONS DE VARIABLES ET AFFECTATIONS
-            ParseVarDecl : parser le bloc VAR
-              var x : Integer;
-              var a, b : Integer;
-              var s : VARYING [80] OF CHAR;
-              var p : ^Integer;
-            Attributs de variables VAX (entre crochets) :
-              [EXTERNAL] var x : Integer;  (importee d un autre module)
-              [GLOBAL]   var x : Integer;  (exportee vers autres modules)
-              [VOLATILE] var x : Integer;  (pas de cache registre)
-              [READONLY] var x : Integer;  (interdire affectation)
-              [WRITEONLY] var x : Integer;  (interdire lecture)
-              [ALIGNED(n)] var x : type;   (alignement memoire)
-              [WORD] var x : subrange;     (forcer 16 bits)
-              [UNSAFE] var x : type;       (pas de verification de type)
-              [HIDDEN] var x : type;       (non visible aux autres modules)
-              [UNBOUND] var x : type;      (pas lie a un module)
-              [POS(n)] dans record : position en bits du champ
-            STATIC VAR :
-              Persistance entre appels de procedure
-              Emis dans le segment _DATA au lieu de la pile
-              Initialisation possible : STATIC VAR x : Integer := 0;
-            EXTERNAL VAR :
-              Variable definie dans un autre module
-              Emis comme EXTRN _VXP_name:WORD dans l ASM
-            Section VALUE (VMS Pascal) :
-              VALUE
-                x := 10;
-                s := 'default';
-              Initialise des variables declarees dans VAR
-              Emis comme donnees initiales dans le segment _DATA
-            Affectation :
-              x := expr;
-              Record fields : r.field := expr;
-              Pointeur-champ : p^.field := expr;
-              Substring : s[pos:len] := expr; (VAX)
-              Tableau via pointeur : p^[i] := expr;
-            Initialisation dans const :
-              const x := valeur;  (syntaxe VAX avec :=)
-
-  TODO 10 - TYPES DEFINIS, ENUMERATIONS, SOUS-INTERVALLES
-            ParseTypeDecl : parser le bloc TYPE
-              type Color = (Red, Green, Blue);
-              type SmallInt = -32..31;
-              type Range = 0..777777B;  (litteral octal)
-              type Matrix = ARRAY[1..10, 1..20] OF Real;
-              type PInt = ^Integer;
-              type CharSet = SET OF Char;
-              type FlexRec = PACKED RECORD ... END;
-            Types VAX specifiques :
-              VARYING [n] OF CHAR :
-                Record interne avec champ .LENGTH (Word) + .BODY
-                Taille en memoire = 2 + n
-              Sous-intervalles avec precision :
-                -10E4..10E4 PREC 5   (simple precision)
-                -10E4..10E4 PREC 12  (double precision)
-            Attributs de types :
-              PACKED : compresser les champs du record
-              [WORD] : forcer la taille a 16 bits
-              [ALIGNED(n)] : alignement en memoire
-              [UNSAFE] : pas de verification de type dans les coercitions
-            Schema types et tableaux conformants :
-              ARRAY[1..*] OF type  (taille indeterminee)
-              STRING[*] : chaine de longueur indeterminee
-              Parametre conformant : VAR a: ARRAY[lo..*] OF type
-              PACKED ARRAY[*] OF type
-              DIMENSION(a, n), UPPERBOUND(a, n), LOWERBOUND(a, n)
-            Types proceduraux :
-              TYPE TProc = PROCEDURE(params);
-              TYPE TFunc = FUNCTION(params) : RetType;
-              Passage comme parametre, stockage dans variable
-            Alias de types avec attributs :
-              TYPE T = [WORD] lo..hi;
-              TYPE T = [ALIGNED(n)] BaseType;
-
-  TODO 11 - WRITE / WRITELN / READ / READLN
-            ParseWriteStmt(IsWriteLn) :
-              WriteLn(expr)         => appel _VXPRT_PRINTINT/_VXPRT_PRINTSTR
-              WriteLn(expr:width)   => format avec largeur
-              WriteLn(expr:w:d)     => format reel avec decimales
-              Write(tty, ...)       => ecriture sur TTY
-              WriteLn(ttyoutput,...)=> ecriture sur TTYOUTPUT
-            ParseReadStmt(IsReadLn) :
-              Read(x), ReadLn(x)
-              ReadLn(tty)           => lecture depuis TTY
-            Format d ecriture VAX :
-              expr:width:decimal    (standard)
-              expr:o                (octal, VAX extension)
-              expr:h                (hexadecimal, VAX extension)
-            WriteV / ReadV (VAX) :
-              WriteV(str, expr, ...) : ecrire dans une variable string
-              ReadV(str, var, ...)   : lire depuis une variable string
-            Fichiers predefinis :
-              Input, Output : stdin/stdout
-              TTY           : terminal (lecture interactive)
-              TTYOUTPUT     : terminal (ecriture)
-
-  TODO 12 - IF / THEN / ELSE + CASE / OF + LABEL / GOTO
-            ParseIfStmt :
-              IF expr THEN stmt
-              IF expr THEN stmt ELSE stmt
-              IF expr THEN BEGIN ... END ELSE BEGIN ... END
-            ParseCaseStmt :
-              CASE expr OF
-                val1 : stmt;
-                val2, val3 : stmt;
-                val4..val6 : stmt;
-                OTHERS : stmt;       (VAX Pascal, au lieu de ELSE)
-                OTHERWISE : stmt;    (synonyme de OTHERS)
-              END;
-            Emission :
-              CMP AX, val / JE label pour chaque cas
-              Branche OTHERS/OTHERWISE en dernier (fallthrough)
-            LABEL et GOTO (VAX et standard) :
-              LABEL 1, 100, sortie;  (declarations numeriques ou identifiant)
-              GOTO 1;                (saut a un label)
-              Goto non-local :       (saut dans une portee englobante)
-                Le goto non-local restaure le cadre de pile (BP)
-                via une sauvegarde/restauration dans _DATA
-            Variantes CASE dans records :
-              CASE tag : Type OF
-                val : (champs);
-                OTHERS : (champs);  (branche par defaut VMS)
-
-  TODO 13 - BOUCLES : FOR / WHILE / REPEAT / LOOP
-            ParseForStmt :
-              FOR i := lo TO hi DO stmt
-              FOR i := hi DOWNTO lo DO stmt
-              FOR c := lowerbound(a,1) TO upperbound(a,1) DO stmt
-              BY step (VAX extension) :
-                FOR i := 0 TO 100 BY 2 DO stmt
-            ParseWhileStmt :
-              WHILE expr DO stmt
-              WHILE expr DO BEGIN ... END
-            ParseRepeatStmt :
-              REPEAT stmt; ... UNTIL expr
-            ParseLoopStmt (VAX extension) :
-              LOOP
-                stmt;
-                EXIT IF expr;
-                stmt;
-              END;
-              Note : EXIT IF peut apparaitre n importe ou dans le LOOP
-              Plusieurs EXIT IF possibles dans un meme LOOP
-            Break et Continue (bouclage) :
-              BREAK  (quitter la boucle)
-              CONTINUE (passer a l iteration suivante)
-            NEXT (VMS Pascal) :
-              Synonyme de CONTINUE dans certaines versions
-            Pile de boucles : LoopBreakLbl, LoopContLbl, LoopTop
-
-  TODO 14 - FONCTIONS ET PROCEDURES
-            ParseFuncDecl :
-              FUNCTION name(params) : ReturnType;
-              FUNCTION name : ReturnType; FORWARD;
-              name := expr;  (affectation du resultat)
-            ParseProcDecl :
-              PROCEDURE name(params);
-              PROCEDURE name; FORWARD;
-            Parametres :
-              par valeur    : param : Type
-              par reference : VAR param : Type
-              Valeurs par defaut (VAX) : param : Type := default
-              Parametres conformants : VAR a : ARRAY[lo..*] OF Type
-              Parametres proceduraux : PROCEDURE p(PROCEDURE callback)
-              Parametres fonction   : FUNCTION f(FUNCTION g: Integer)
-            Parametres nommes dans les appels (VMS) :
-              LibCall(param1 := val1, param2 := val2)
-              SMG$Put_Line(Display, Msg, wrap_flag:=SMG$M_WRAP_WORD)
-            OPTIONS sur routines (VAX) :
-              PROCEDURE name OPTIONS SPECIAL(COERCIONS);
-              PROCEDURE name OPTIONS SPECIAL(WORD);
-              PROCEDURE name OPTIONS SPECIAL(PTR);
-              FUNCTION name OPTIONS ASSEMBLY;
-              FUNCTION name OPTIONS CHECK;
-              FUNCTION name OPTIONS NOCHECK;
-            Attributs de routines (VAX) :
-              [EXTERNAL] PROCEDURE name(...); EXTERNAL;
-              [GLOBAL] PROCEDURE name(...);
-              [ASYNCHRONOUS] PROCEDURE name(...);
-              [UNBOUND] PROCEDURE name(...);
-              PUBLIC PROCEDURE name(...);
-            Conventions d appel (VMS) :
-              Par defaut : convention Pascal (droite a gauche)
-              [FORTRAN] : convention Fortran (gauche a droite)
-              [C]       : convention C (droite a gauche, appelant nettoie)
-              [PASCAL]  : explicitement Pascal
-            RETURN (VAX) :
-              RETURN        : quitter procedure (equiv. EXIT en TP)
-              RETURN(expr)  : quitter fonction avec valeur
-            STOP (VAX) :
-              Arret immediat du programme (equiv. HALT)
-            Cadre local : PUSH BP / MOV BP,SP / SUB SP,framesize
-            Result dans AX (entier) ou buffer (string)
-
-  TODO 15 - ENREGISTREMENTS (RECORDS)
-            ParseRecordType :
-              TYPE rec = RECORD
-                field1 : Type1;
-                field2 : Type2;
-              END;
-            PACKED RECORD :
-              Champs compresses sans padding
-            Variant records :
-              CASE tag : Type OF
-                val1 : (fields);
-                val2 : (fields);
-                OTHERS : (fields);  (VMS : branche par defaut)
-              END;
-            Attributs de champs (VMS) :
-              [POS(n)]      : position en bits du champ dans le record
-              [ALIGNED(n)]  : alignement du champ
-              [READONLY]    : champ en lecture seule
-              [WRITEONLY]   : champ en ecriture seule
-            Acces aux champs :
-              r.field
-              p^.field (via pointeur)
-            WITH :
-              WITH r DO BEGIN ... END;
-              WITH r1, r2 DO stmt;  (with imbrique)
-            Constructeurs de records (VAX) :
-              TypeName(field1 := val1, field2 := val2)
-              Utilise dans les expressions et les affectations
-            SIZE avec variantes de tag (VMS) :
-              SIZE(RecType)         : taille du type
-              SIZE(RecType, tag)    : taille avec variant specifique
-              NEW(p, tag1, tag2)    : allocation avec tags de variant
-              DISPOSE(p, tag1)      : liberation avec tags
-
-  TODO 16 - TABLEAUX
-            ParseArrayType :
-              TYPE t = ARRAY[lo..hi] OF ElemType;
-              TYPE t = ARRAY[1..m, 1..n] OF ElemType;
-              TYPE t = PACKED ARRAY[range] OF type;
-            Acces aux elements :
-              a[i], a[i,j], a[expr]
-            Tableaux de constantes :
-              CONST tab : ARRAY[range] OF type = (v1, v2, ...);
-              CONST tab : ARRAY[io_status] OF STRING = (...);
-            Tableaux conformants (VAX) :
-              ARRAY[1..*] OF type (taille dynamique)
-              Allocation via NEW(p, size)
-            Fonctions sur tableaux :
-              DIMENSION(a, n) : nombre d elements de la dimension n
-              UPPERBOUND(a, n) : borne superieure de la dimension n
-              LOWERBOUND(a, n) : borne inferieure de la dimension n
-            Emission :
-              Acces par offset = (index - lo) * taille_element
-              LEA, base + index * taille
-
-  TODO 17 - CHAINES (STRING ET VARYING)
-            Chaines STRING standard :
-              VAR s : STRING;          (longueur max par defaut)
-              VAR s : STRING[80];      (longueur max explicite)
-              s := 'texte';
-              s := s1 + s2;            (concatenation avec +)
-              Length(s), Copy(s,i,n), Pos(sub,s)
-              Delete(s,i,n), Insert(sub,s,i)
-            Chaines VARYING [n] OF CHAR (VAX) :
-              Structure interne : .LENGTH (Word) + .BODY (n octets)
-              VAR s : VARYING [80] OF CHAR;
-              s := 'texte';
-              s.LENGTH                (propriete longueur, Word)
-              s.BODY                  (acces brut au corps, PACKED ARRAY)
-              s := s1 || s2;          (concatenation VAX avec double-pipe)
-              s := s1 + s2;           (concatenation aussi avec +)
-              Comparaisons : =, <>, <, >, <=, >= (lexicographiques)
-            PACKED ARRAY[1..n] OF CHAR (VMS) :
-              Litteral chaine implicitement PACKED ARRAY
-              Pad automatique avec espaces si longueur < n
-              Comparaison avec padding integre
-            STRING(n) (VMS) :
-              Synonyme de PACKED ARRAY[1..n] OF CHAR
-              STRING(n) := 'texte';
-            Sous-chaines (VAX) :
-              s[pos:len]              (extraction)
-              s[pos:len] := 'texte';  (affectation partielle)
-            Fonctions chaines VAX :
-              LENGTH(s)               : longueur
-              SUBSTR(s, pos, len)     : extraction
-              INDEX(s, sub)           : position de sous-chaine
-              VERIFY(s, charset)      : verification caracteres
-              SEARCH(s, sub)          : recherche
-              UPPERCASE(ch)           : majuscule (caractere)
-              LOWERCASE(ch)           : minuscule (caractere)
-              TRIM(s)                 : supprimer espaces de fin
-              PAD(s, ch, n)           : completer a n car avec ch
-              EQ(s1,s2)              : egalite case-insensitive
-              NE, LT, GT, LE, GE     : comparaisons case-insensitive
-            WriteV / ReadV :
-              WriteV(str, expr, ...)  : ecriture formatee dans string
-              ReadV(str, var, ...)    : lecture formatee depuis string
-              PutString(str, expr, ...): synonyme de WriteV
-              GetString(str, var, ...): synonyme de ReadV
-            Descripteurs de chaines (VMS) :
-              %DESCR(s) : passer par descripteur DSC$DESCRIPTOR_S
-              %REF(s)   : passer par reference brute
-              %STDESCR(s): passer par descripteur standard
-              %IMMED(n)  : passer par valeur immediate
-
-  TODO 18 - ENSEMBLES (SET OF)
-            ParseSetType :
-              TYPE cs = SET OF Char;
-              TYPE colors = SET OF Color;
-              TYPE digits = SET OF 0..9;
-              TYPE bits = SET OF 0..255;
-            Constructeurs :
-              s := [1, 3, 5..8];
-              s := ['A'..'Z', '_', '0'..'9'];
-              s := [];  (ensemble vide)
-            Operations :
-              + (union), - (difference), * (intersection)
-              IN (appartenance) : IF ch IN s THEN ...
-              =, <> (egalite)
-              <= (sous-ensemble), >= (sur-ensemble)
-            Fonctions sur ensembles (VMS) :
-              CARD(s)    : cardinalite (nombre d elements)
-              EMPTY(s)   : vrai si ensemble vide (equiv. s = [])
-            Implementation :
-              Bitmap sur 32 octets max (256 bits pour SET OF Char)
-              Operations par octets avec AND, OR, XOR, NOT
-              CARD : compter les bits a 1 avec lookup table
-
-  TODO 19 - POINTEURS ET ALLOCATION DYNAMIQUE
-            Declarations :
-              VAR p : ^Integer;
-              VAR p : ^record ... end;
-              VAR p : ^array[1..10] of Integer;
-              TYPE PInt = ^Integer;  (alias de type pointeur)
-              [UNSAFE] VAR p : ^anytype; (pointeur non type)
-            Operations :
-              New(p)       : allouer un element
-              New(p, n)    : allouer avec taille (VAX, conformant)
-              New(p, tag1, tag2) : allouer record variant (tags)
-              Dispose(p)   : liberer la memoire
-              Dispose(p, tag1) : liberer avec tags de variant
-              p^ := expr   : dereferencement et affectation
-              p^.field     : acces champ via pointeur
-              p^[i]        : acces tableau via pointeur
-              p := NIL     : pointeur nul
-              p := @x      : adresse de variable (standard)
-              p := ADDRESS(x) : adresse de variable (VAX)
-            Fonctions VAX :
-              ADDRESS(x)   : adresse (retourne pointeur type)
-              IADDRESS(x)  : adresse (retourne entier)
-              PTR(n)       : convertir entier en pointeur
-              ORD(ADDRESS(x)) : adresse en entier
-              BITNEXT(p)   : pointeur vers le bit suivant (packed)
-              UNDEFINED(x) : verifier si variable initialisee
-            Coercition de pointeurs (VMS) :
-              Type coercion : TypeName(ptr^)
-              [UNSAFE] permet conversions implicites
-              OPTIONS SPECIAL(COERCIONS) : idem par routine
-            Allocation : heap statique avec _VXP_HEAP et _VXP_HEAPTOP
-            Pointeurs de procedures et fonctions (VMS) :
-              VAR pf : PROCEDURE(params);
-              VAR pf : FUNCTION(params) : RetType;
-              pf := SomeProc;  (affectation)
-              pf(args);        (appel indirect)
-
-  TODO 20 - MODULES ET COMPILATION SEPAREE
-            MODULE (VAX Pascal) :
-              [Inherit('lib1','lib2')] MODULE name;
-                TYPE, VAR, PROCEDURE, FUNCTION declarations
-              END.
-            Vs PROGRAM :
-              PROGRAM name;
-                declarations
-              BEGIN
-                corps principal
-              END.
-            Vs PROGRAM avec parametre (VMS) :
-              PROGRAM name(Input, Output);
-              PROGRAM name(Input, Output, DataFile);
-              (parametres de programme = fichiers pre-ouverts)
-            Attribut [INHERIT] :
-              Charge les declarations exportees par d autres modules
-              [Inherit('SYS$LIBRARY:STARLET','LibRtl','Types')]
-              [Inherit('SYS$LIBRARY:PASCAL$SMG_ROUTINES')]
-              [Inherit('SYS$LIBRARY:PASCAL$LIB_ROUTINES')]
-              Pour 8086 : ignore ou charge un fichier .INC
-            Attribut [ENVIRONMENT] :
-              Exporte les declarations du module courant
-              [Environment('name')] MODULE name;
-              Pour 8086 : genere un fichier .INC avec EXTRN
-            Attribut [IDENT] :
-              [IDENT('V1.0')] MODULE name;
-              Identifiant de version du module (informatif)
-            Interface externe VMS (appels systeme) :
-              SMG$ : Screen Management (SMG$CREATE_VIRTUAL_DISPLAY,
-                SMG$CREATE_PASTEBOARD, SMG$PUT_LINE, SMG$PUT_CHARS,
-                SMG$READ_STRING, SMG$SET_CURSOR_ABS, etc.)
-              LIB$ : Library (LIB$GET_INPUT, LIB$PUT_OUTPUT,
-                LIB$GET_FOREIGN, LIB$SIGNAL, LIB$STOP, etc.)
-              SYS$ : System Services (SYS$ASSIGN, SYS$QIOW,
-                SYS$GETTIM, SYS$ASCTIM, SYS$BINTIM, etc.)
-              OTS$ : Object Time System (OTS$CVT_TU_L, etc.)
-              STR$ : String (STR$MATCH_WILD, STR$TRIM, etc.)
-              CLI$ : Command Line (CLI$GET_VALUE, CLI$PRESENT, etc.)
-              PPL$ : Parallel Processing (PPL$CREATE_SPIN_LOCK, etc.)
-              Pour 8086 : stubs EXTRN ou reimplementation minimale
-            EXTERNAL :
-              EXTERNAL VAR x : Integer;
-              [EXTERNAL] PROCEDURE name(...); EXTERNAL;
-              Genere EXTRN _VXPF_name:NEAR dans l ASM
-            GLOBAL :
-              [GLOBAL] PROCEDURE name(...);
-              Genere PUBLIC _VXPF_name dans l ASM
-            PUBLIC :
-              PUBLIC PROCEDURE name(...);
-              Synonyme de [GLOBAL]
-            Sections d initialisation et terminaison :
-              MODULE name;
-                (decls)
-              [INITIALIZE]
-                BEGIN (code) END;
-              [FINALIZE]
-                BEGIN (code) END;
-              END.
-
-  TODO 21 - FONCTIONS ET PROCEDURES STANDARD (INTRINSEQUES) [IMPLEMENTE]
-            Arithmetique :
-              Abs(x), Sqr(x), Sqrt(x), Odd(x)
-              Sin(x), Cos(x), ArcTan(x), ArcTan(x,y) (VAX : 2 args)
-              Ln(x), Exp(x), Log(x) (VAX), Log10(x) (VAX)
-              Trunc(x), Round(x), Round(x, n) (VAX : precision)
-              Max(a, b), Max(a, b, c) (VAX : N-aire)
-              Min(a, b), Min(a, b, c) (VAX : N-aire)
-              Maximum(a, b) (VAX : synonyme de Max)
-              Minimum(a, b) (VAX : synonyme de Min)
-              Random, Random(x) (VAX : avec graine), Seed(n)
-              Succ(x), Pred(x), Succ(x, n), Pred(x, n) (VAX : pas)
-              Lo(w), Hi(w), Swap(w)
-              Dble(x) (VAX : convertir en Double)
-              Sngl(x) (VAX : convertir en Single)
-              Int(x) (VAX : partie entiere comme reel)
-            Ordinaux :
-              Ord(x), Chr(n)
-              First(type) (VAX : premier element ordinal)
-              Last(type) (VAX : dernier element ordinal)
-              Next(x) (VAX : synonyme de Succ)
-              Prev(x) (VAX : synonyme de Pred)
-            Conversion et coercition :
-              Trunc(r), Round(r)
-              ORD(x) : ordinal d un type enumere ou Boolean
-              CHR(n) : caractere depuis ordinal
-              Coercition de type : TypeName(expr)
-              UINT(x) (VAX : convertir en UNSIGNED)
-              UAND, UOR, UNOT, UXOR (VAX : operations non signees)
-            Chaines :
-              Length(s), Concat(s1, s2, ...)
-              Copy(s, i, n), Pos(sub, s)
-              Delete(s, i, n), Insert(sub, s, i)
-              Uppercase(ch), Lowercase(ch) (VAX)
-              Substr(s, pos, len) (VAX)
-              Index(s, sub) (VAX)
-              Verify(s, charset) (VAX)
-              Search(s, sub) (VAX)
-              Trim(s) (VAX)
-              Pad(s, ch, n) (VAX)
-              EQ, NE, LT, GT, LE, GE(s1, s2) (VAX : comp case-blind)
-            Memoire :
-              New(p), New(p, n) (VAX)
-              Dispose(p), Dispose(p, tags) (VAX)
-              SizeOf(type) / Size(type) (VAX : SIZE avec variantes)
-              Size(type, tag1, tag2) (VAX : taille specifique variant)
-              Address(x) (VAX), IAddress(x) (VAX)
-              Ptr(n) (VAX)
-              Zero(x) (VAX : mettre variable a zero)
-              Fill(x, n, val) (VAX : remplir memoire)
-            Tableaux (VAX) :
-              Dimension(a, n), UpperBound(a, n), LowerBound(a, n)
-            Bit et logique (VMS) :
-              BIT_OFFSET(ident) : decalage en bits dans record
-              BITAND(a,b), BITOR(a,b), BITXOR(a,b), BITNOT(a)
-            Diagnostic et controle :
-              Assert(cond) (VAX : assertion)
-              Assert(cond, 'message') (VAX : avec message)
-              Halt, Halt(n)
-              Stop (VAX : arret immediat, pas de cleanup)
-              Return (VAX : quitter routine)
-              Return(expr) (VAX : quitter fonction avec valeur)
-            Date et heure (VMS) :
-              Date(s) (VAX : date courante en string DD-MMM-YYYY)
-              Time(s) (VAX : heure courante en string HH:MM:SS.CC)
-              Clock (VAX : centisecondes depuis minuit, Integer)
-              WallClock (VAX : secondes depuis minuit, Integer)
-              SysClock (VAX : horloge systeme haute resolution)
-            Fichiers :
-              Str(n, s), Val(s, n, code)
-              WriteLn, ReadLn, Write, Read
-              GetMem, FreeMem
-              Break(f) (VAX : flush fichier)
-              Scratch(f) (VAX : supprimer fichier)
-              LineLimit(f, n) (VAX : limiter lignes par page)
-              Page(f) (VAX : saut de page dans fichier texte)
-              Message(s) (VAX : ecrire sur SYS$ERROR / stderr)
-
-  TODO 22 - ENTREES/SORTIES (I/O)
-            Fichiers predefinis :
-              Input, Output       : stdin/stdout
-              TTY                 : terminal lecture (VAX)
-              TTYOUTPUT           : terminal ecriture (VAX)
-              Error               : stderr (VAX)
-            Types de fichiers :
-              TEXT                : fichier texte
-              FILE OF Type        : fichier type (records binaires)
-              FILE                : fichier non type (bloc I/O)
-            Organisations de fichiers (VMS) :
-              SEQUENTIAL          : acces sequentiel (defaut)
-              RELATIVE            : acces relatif par numero
-              INDEXED             : acces par cle (index)
-            Operations fichier :
-              Assign(f, nom)  (non-VAX, utilise pour DOS)
-              Reset(f)        : ouvrir en lecture
-              Reset(f, nom)   : ouvrir en lecture avec nom (VAX)
-              Rewrite(f)      : ouvrir en ecriture
-              Rewrite(f, nom) : ouvrir en ecriture avec nom (VAX)
-              Close(f)        : fermer
-              Open(f)         : ouvrir (VAX, mode par defaut)
-              Open(f, nom)    : ouvrir avec nom (VAX)
-              Open(f, nom, history) : ouvrir avec histo (NEW/OLD/ANY)
-              EOF(f), EOLN(f) : fin de fichier / fin de ligne
-              UFB(f)          : Ufo File Buffer (VAX, acces bas niveau)
-            Options d ouverture VMS :
-              OPEN(f, FILE_NAME:=nom)        : nom de fichier
-              OPEN(f, HISTORY:=OLD)           : fichier existant
-              OPEN(f, HISTORY:=NEW)           : nouveau fichier
-              OPEN(f, HISTORY:=READONLY)      : lecture seule
-              OPEN(f, ACCESS_METHOD:=DIRECT)  : acces direct
-              OPEN(f, ACCESS_METHOD:=KEYED)   : acces par cle
-              OPEN(f, RECORD_LENGTH:=n)       : taille record
-              OPEN(f, RECORD_TYPE:=FIXED)     : records fixes
-              OPEN(f, RECORD_TYPE:=VARIABLE)  : records variables
-              OPEN(f, ERROR:=CONTINUE)        : ne pas planter sur erreur
-              OPEN(f, SHARING:=READWRITE)     : partage du fichier
-              OPEN(f, USER_ACTION:=proc)      : callback utilisateur
-            Fonctions fichier VAX :
-              Cursor(f)       : position courante dans un fichier texte
-              Filename(f)     : nom du fichier associe (retourne string)
-              IO_STATUS       : type enumere d etat d I/O (VAX)
-              Status(f)       : statut du dernier I/O
-              LineLimit(f, n) : limiter nombre de lignes par page
-              Page(f)         : inserer saut de page (#12)
-            Write/Read formatte :
-              Write(f, expr:width)            : largeur minimale
-              Write(f, expr:width:decimals)   : decimales
-              WriteLn(f, expr, ...)            : avec saut de ligne
-              Read(f, var, ...)                : lecture
-              ReadLn(f, var, ...)              : lecture avec saut ligne
-              WriteV(str, expr, ...)           : ecrire dans string
-              ReadV(str, var, ...)             : lire depuis string
-            Acces direct (VAX) :
-              ReadRN(f, rec, n)  : lecture aleatoire au record n
-              WriteRN(f, rec, n) : ecriture aleatoire au record n
-              Find(f, n)         : positionner au record n
-              Locate(f, n)       : positionner pour ecriture
-              Delete(f)          : supprimer record courant (indexed)
-              Update(f)          : mettre a jour record courant
-              Truncate(f)        : tronquer fichier a position courante
-            Buffer variable :
-              f^     : valeur du buffer du fichier
-              Get(f) : avancer le buffer
-              Put(f) : ecrire le buffer
-            Gestion erreurs I/O (VMS) :
-              Status(f) retourne IO_STATUS
-              ERROR:=CONTINUE dans OPEN pour continuer sur erreur
-              $IO_STATUS constantes : IO_OK, IO_FILTER, IO_OVFL, etc.
-
-  TODO 23 - GESTION DES ERREURS ET EXCEPTIONS
-            Gestion des erreurs de compilation :
-              ErrorMsg(msg) : erreur non fatale
-              WarnMsg(msg)  : avertissement
-              Expect(token) : token attendu absent
-              SkipTo        : synchronisation apres erreur
-            Erreurs a l execution :
-              Division par zero : CALL _VXPRT_PANIC_DIV0
-              Depassement de pile : verification frame > STACK_SIZE
-              Pointeur nul : verification optionnelle ($OPTIONS CHECK)
-              Overflow entier : verification si $OPTIONS CHECK actif
-              Range check : verification bornes de sous-intervalles
-            Exceptions VAX Pascal :
-              CONDITION name;    : declarer une condition nommee
-              CONDITION name VALUE n; : condition avec valeur numerique
-              EXCEPTION          : bloc de traitement (debut)
-              ON condname DO stmt; : traiter une condition specifique
-              ANYOTHER           : traiter toute condition non captee
-              ALLCONDITIONS      : traiter TOUTES les conditions
-                (ALLCONDITIONS inclut meme les erreurs systeme,
-                 ANYOTHER n inclut que les erreurs non-fatales)
-              EXCEPTION_MESSAGE  : obtenir le message d erreur (string)
-              EXCEPTION_VALUE    : obtenir la valeur de la condition
-            Signalisation :
-              SIGNAL(condname)   : lever une condition
-              SIGNAL(condname, arg1, arg2) : lever avec arguments
-              SIGNAL_STOP(condname) : lever et arreter (non-continuable)
-              RESIGNAL           : re-propager la condition au handler parent
-                Usage : dans ON .. DO RESIGNAL; ou dans ANYOTHER
-            Structure du bloc TRY/EXCEPTION (VMS) :
-              BEGIN
-                (code protege)
-              EXCEPTION
-                ON cond1 DO stmt1;
-                ON cond2 DO stmt2;
-                ANYOTHER stmt3;
-              END;
-              Note : le bloc EXCEPTION est attache au BEGIN..END englobant
-            Conditions predefinies VMS :
-              SS$_ACCVIO       : access violation
-              SS$_INTOVF       : integer overflow
-              SS$_FLTOVF       : floating overflow
-              SS$_FLTDIV       : floating divide by zero
-              SS$_INTDIV       : integer divide by zero
-              SS$_ROPRAND      : reserved operand
-              SS$_HPARITH      : high performance arithmetic trap
-              (Pour 8086 : mapper sur des codes d erreur internes)
-            Implementation 8086 :
-              Handler save/restore via segment _DATA
-              Sauvegarder SP, BP, adresse retour dans _VXP_EXCFRAME
-              CALL/RET pour les blocs exception
-              RESIGNAL = JMP au handler parent dans la chaine
-              Runtime _VXPRT_PANIC pour les erreurs fatales
-              Runtime _VXPRT_SIGNAL pour lever une condition
-              Runtime _VXPRT_EXCMSG pour obtenir le message
-
-  TODO 24 - RUNTIME MINIMAL
-            Routines d affichage :
-              _VXPRT_PRINTSTR  : afficher chaine ASCIIZ (INT 21h/09h)
-              _VXPRT_PRINTINT  : afficher entier signe (AX)
-              _VXPRT_PRINTUINT : afficher entier non signe
-              _VXPRT_PRINTLN   : afficher CRLF
-              _VXPRT_PRINTCHAR : afficher un caractere (AL)
-              _VXPRT_PRINTBOOL : afficher True/False
-              _VXPRT_PRINTREAL : afficher reel (format d:w)
-            Routines de lecture :
-              _VXPRT_READCHAR  : lire un caractere (INT 21h/01h)
-              _VXPRT_READINT   : lire un entier depuis stdin
-              _VXPRT_READLINE  : lire une ligne complete
-              _VXPRT_READSTR   : lire une chaine
-            Routines de chaines :
-              _VXPRT_CONCAT    : concatener deux chaines (+, double-pipe)
-              _VXPRT_STRCPY    : copier chaine
-              _VXPRT_STRCMP    : comparer deux chaines
-              _VXPRT_STRLEN    : longueur d une chaine
-              _VXPRT_SUBSTR    : extraire sous-chaine (VAX)
-              _VXPRT_INDEX     : trouver position sous-chaine (VAX)
-              _VXPRT_VERIFY    : verifier caracteres (VAX)
-              _VXPRT_SEARCH    : rechercher dans chaine (VAX)
-              _VXPRT_UPPERCASE : convertir en majuscule
-              _VXPRT_LOWERCASE : convertir en minuscule
-              _VXPRT_DELETE    : supprimer partie de chaine
-              _VXPRT_INSERT    : inserer dans chaine
-              _VXPRT_TRIM      : supprimer espaces de fin
-              _VXPRT_PAD       : completer chaine avec caractere
-            Routines VARYING :
-              _VXPRT_VARY_ASSIGN : affecter string a VARYING
-              _VXPRT_VARY_CONCAT : concatener VARYING
-              _VXPRT_VARY_LENGTH : obtenir .LENGTH
-              _VXPRT_VARY_BODY   : obtenir .BODY
-              _VXPRT_VARY_SUBSTR : sous-chaine de VARYING
-              _VXPRT_VARY_CMP    : comparer deux VARYING
-            Routines arithmetiques :
-              _VXPRT_POWI      : exponentiation entiere
-              _VXPRT_RANDOM    : nombre pseudo-aleatoire
-              _VXPRT_SEED      : initialiser la graine
-              _VXPRT_ABS       : valeur absolue
-              _VXPRT_SQR       : carre
-              _VXPRT_MAX       : maximum de deux entiers
-              _VXPRT_MIN       : minimum de deux entiers
-            Routines d allocation :
-              _VXPRT_NEW       : allouer memoire sur le heap
-              _VXPRT_DISPOSE   : liberer memoire
-              _VXPRT_ZERO      : mettre a zero un bloc memoire
-              _VXPRT_FILL      : remplir un bloc memoire
-            Routines d erreur et exceptions :
-              _VXPRT_PANIC     : erreur fatale + arret
-              _VXPRT_PANIC_DIV0: division par zero
-              _VXPRT_PANIC_RNG : range check error
-              _VXPRT_PANIC_OVF : overflow error
-              _VXPRT_PANIC_NIL : nil pointer dereference
-              _VXPRT_SIGNAL    : lever une condition
-              _VXPRT_RESIGNAL  : propager condition au parent
-              _VXPRT_EXCMSG    : obtenir message d exception
-              _VXPRT_ASSERT    : verifier assertion
-            Routines de fichiers :
-              _VXPRT_FOPEN     : ouvrir fichier (INT 21h/3Dh)
-              _VXPRT_FCLOSE    : fermer fichier (INT 21h/3Eh)
-              _VXPRT_FREAD     : lire depuis fichier
-              _VXPRT_FWRITE    : ecrire dans fichier
-              _VXPRT_FCREATE   : creer fichier (INT 21h/3Ch)
-              _VXPRT_FDELETE   : supprimer fichier (INT 21h/41h)
-            Routines de date/heure :
-              _VXPRT_DATE      : date courante (INT 21h/2Ah)
-              _VXPRT_TIME      : heure courante (INT 21h/2Ch)
-              _VXPRT_CLOCK     : centisecondes depuis minuit
-            Routines d ensembles :
-              _VXPRT_SET_UNION : union de deux ensembles (OR)
-              _VXPRT_SET_INTER : intersection (AND)
-              _VXPRT_SET_DIFF  : difference (AND NOT)
-              _VXPRT_SET_IN    : test d appartenance (BT)
-              _VXPRT_SET_CARD  : cardinalite (count bits)
-              _VXPRT_SET_EQ    : egalite de deux ensembles
-              _VXPRT_SET_SUB   : sous-ensemble
-            Stubs appels VMS (SMG$/LIB$/SYS$) :
-              _VXPRT_VMS_STUB  : stub generique (affiche nom + retourne 1)
-              Chaque appel SMG$/LIB$/SYS$ genere EXTRN _VMS_name
-              ou un stub local qui simule le comportement
-            Donnees internes :
-              _VXP_HEAP, _VXP_HEAPTOP : tas statique
-              _VXP_SEED : graine pour RANDOM
-              _VXP_EXCFRAME : cadre d exception courant (SP,BP,IP)
-              _VXP_EXCCHAIN : chaine de handlers d exception
-              _VXPRT_CRLF, _VXPRT_STRBUF, _VXPRT_NUMBUF, etc.
-            RuntimeEmitted : flag pour n emettre qu une seule fois
-
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
-            EmitClose : END _VXPF_main apres _TEXT ENDS / _DATA ENDS
-            Run : pipeline complet :
-              1. ParseArgs et ouverture des fichiers
-              2. EmitHeader (_TEXT SEGMENT, _VXPF_main:, MOV AX,_DATA)
-              3. Boucle de parsing : PROGRAM/MODULE, declarations, corps
-              4. Emission MOV AX,4C00h / INT 21h (fin du programme)
-              5. EmitRuntime (routines _VXPRT_)
-              6. _TEXT ENDS
-              7. EmitDataSeg (_DATA SEGMENT, constantes, variables, _DATA ENDS)
-              8. END _VXPF_main
-            Fichiers exemples dans SAMPLES\VAXPASCAL\ :
-              hello.pas         (programme minimal WriteLn)
-              test_var.pas      (declarations de variables, types)
-              test_const.pas    (constantes, litteral octal)
-              test_expr.pas     (expressions, operateurs, exponentiation)
-              test_types.pas    (types, enumerations, subranges, PREC)
-              test_string.pas   (STRING, VARYING, double-pipe, SUBSTR)
-              test_func.pas     (functions, procedures, RETURN)
-              test_if.pas       (IF/THEN/ELSE, CASE/OTHERS)
-              test_loop.pas     (FOR, WHILE, REPEAT, LOOP..END, BY)
-              test_array.pas    (tableaux, DIMENSION, UPPERBOUND, conformants)
-              test_record.pas   (records, WITH, variant, POS, ALIGNED)
-              test_io.pas       (I/O, TTY, TTYOUTPUT, OPEN/CLOSE, status)
-              test_pointer.pas  (pointeurs, NEW, ADDRESS, PTR)
-              test_set.pas      (ensembles, IN, operations, CARD)
-              test_module.pas   (MODULE, [EXTERNAL], [GLOBAL], [INHERIT])
-              test_include.pas  ($INCLUDE, $TITLE, $PAGE, $SYSTEM)
-              test_except.pas   (EXCEPTION, ON, CONDITION, RESIGNAL)
-              test_static.pas   (STATIC VAR, persistance, VOLATILE)
-              test_varying.pas  (VARYING, .LENGTH, .BODY, concat)
-              test_preproc.pas  ($IF, $IFNOT, $DEFINE, $END, $ELSE)
-              test_label.pas    (LABEL, GOTO, GOTO non-local)
-              test_value.pas    (VALUE section, initialisations)
-              test_named.pas    (parametres nommes, SMG$ stubs)
-              test_fileorg.pas  (FILE OF, SEQUENTIAL, RELATIVE, acces direct)
-              test_coerce.pas   (coercitions, UNSAFE, SPECIAL(COERCIONS))
-              test_datetime.pas (DATE, TIME, CLOCK, WALLCLOCK)
-              test_assert.pas   (ASSERT, $OPTIONS CHECK, verifications)
-              test_procvar.pas  (types proceduraux, pointeurs de fonctions)
-              test_smg.pas      (appels SMG$, stubs VMS)
-              test_converge.pas (programme complet : toutes fonctionnalites)
-            Smoke tests : VAXPAS86.EXE -v SAMPLES\VAXPASCAL\test_*.pas
 
   ============================================================ *)
 
@@ -1373,7 +369,7 @@ Var
   VMSExternCount  : Integer;
   SymInitCount    : Integer;
 
-  { Gestion des exceptions (TODO 23) }
+  { Gestion des exceptions }
   ExcNestLevel    : Integer;   { niveau d imbrication exception courant }
   ExcHandlerLabel : TString;   { label du handler EXCEPTION courant }
   ExcEndLabel     : TString;   { label de fin du bloc BEGIN..EXCEPTION..END }
@@ -1731,7 +727,7 @@ Begin
 End;
 
 { ============================================================
-  LEXEUR - TODO 02 : ANALYSE LEXICALE VAX PASCAL
+  LEXEUR - ANALYSE LEXICALE VAX PASCAL
   ============================================================ }
 
 { Forward declarations pour references croisees }
@@ -2869,7 +1865,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - LITTERAUX ET SEGMENT DE DONNEES
+  LITTERAUX ET SEGMENT DE DONNEES
   ============================================================ }
 
 { ---- LabelGen : generateur de labels uniques ---------------- }
@@ -2985,7 +1981,7 @@ Begin
   EmitRaw(VXP_RT_PFX + 'ASSERTMSG DB ''Assertion failed'',0');
   EmitBlankLine;
 
-  { --- FDB fichiers predefinis (TODO 22) --- }
+  { --- FDB fichiers predefinis --- }
   EmitComment('--- File Descriptor Blocks predefinis ---');
   { Input : handle=0 (stdin), mode=1 (lecture) }
   EmitRaw(VXP_VAR_PFX + 'INPUT   DW  0');
@@ -3019,7 +2015,7 @@ Begin
   EmitRaw(VXP_RT_PFX + 'FRDCBUF DB  2 DUP(0)');
   EmitBlankLine;
 
-  { --- Exception frame et messages d erreur (TODO 23) --- }
+  { --- Exception frame et messages d erreur --- }
   EmitComment('--- Exception handler frame ---');
   EmitRaw(VXP_RT_PFX + 'EXCHDL  DW  0');      { adresse du handler courant }
   EmitRaw(VXP_RT_PFX + 'EXCSP   DW  0');      { SP sauvegarde }
@@ -3201,7 +2197,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - EMETTEUR DE CODE ASM
+  EMETTEUR DE CODE ASM
   ============================================================ }
 
 { ---- NewLabel : generer un label unique ---------------------- }
@@ -3929,7 +2925,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { ========== TODO 21 : Routines runtime standard ========== }
+  { ========== Routines runtime standard ========== }
 
   { _VXPRT_SQRT : racine carree entiere (AX -> AX) }
   EmitComment('SQRT : racine carree entiere AX -> AX');
@@ -4541,7 +3537,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { ========== TODO 22 : Routines I/O fichier ========== }
+  { ========== Routines d'entr‚e/sortie de fichier ========== }
 
   { _VXPRT_FWRSTR : ecrire chaine ASCIIZ pointee par SI vers handle CURHDL }
   EmitComment('FWRSTR : ecrire ASCIIZ [SI] vers fichier CURHDL');
@@ -4731,7 +3727,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { ========== TODO 23 : Routines d exception et panic ========== }
+  { ========== Routines d exception et panic ========== }
 
   { _VXPRT_PANIC : erreur fatale - affiche message [SI] et termine }
   EmitComment('PANIC : affiche msg [SI] et termine (INT 21h/4Ch)');
@@ -4864,7 +3860,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  { ========== TODO 24 : ROUTINES RUNTIME MANQUANTES ========== }
+  { ========== ROUTINES RUNTIME MANQUANTES ========== }
 
   { _VXPRT_PRINTINT : afficher entier signe AX sur stdout }
   EmitComment('PRINTINT : affiche entier signe AX');
@@ -5532,7 +4528,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - TABLE DES SYMBOLES
+  TABLE DES SYMBOLES
   ============================================================ }
 
 { Forward declarations }
@@ -5811,7 +4807,7 @@ Begin
   Idx := SymAdd('stop', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'STOP';
 
-  { Procedures fichier TODO 22 }
+  { Procedures fichier }
   Idx := SymAdd('assign', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ASSIGN';
   Idx := SymAdd('reset', SC_PROC, TY_UNKNOWN);
@@ -5839,7 +4835,7 @@ Begin
   Idx := SymAdd('update', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'UPDATE';
 
-  { Fonctions fichier TODO 22 }
+  { Fonctions fichier }
   Idx := SymAdd('status', SC_FUNC, TY_IDX_INTEGER);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'STATUS';
   Idx := SymAdd('cursor', SC_FUNC, TY_IDX_INTEGER);
@@ -5873,7 +4869,7 @@ Begin
   Idx := SymAdd('dispose', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'DISPOSE';
 
-  { Fonctions standard TODO 21 }
+  { Fonctions standard }
   Idx := SymAdd('sqrt', SC_FUNC, TY_IDX_INTEGER);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'SQRT';
   Idx := SymAdd('sin', SC_FUNC, TY_IDX_INTEGER);
@@ -5912,7 +4908,7 @@ Begin
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'CLOCK';
   Idx := SymAdd('wallclock', SC_FUNC, TY_IDX_INTEGER);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WALLCLOCK';
-  { Procedures standard TODO 21 }
+  { Procedures standard }
   Idx := SymAdd('assert', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'ASSERT';
   Idx := SymAdd('message', SC_PROC, TY_UNKNOWN);
@@ -5940,7 +4936,7 @@ Begin
   Idx := SymAdd('linelimit', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'LINELIMIT';
 
-  { Conditions predefinies VMS (TODO 23) }
+  { Conditions predefinies VMS }
   Idx := SymAdd('ss$_accvio', SC_CONDITION, TY_IDX_INTEGER);
   If Idx >= 0 Then Begin SymTab[Idx].MangledName := '1'; SymTab[Idx].Offset := 1; End;
   Idx := SymAdd('ss$_intovf', SC_CONDITION, TY_IDX_INTEGER);
@@ -5956,7 +4952,7 @@ Begin
   Idx := SymAdd('ss$_hparith', SC_CONDITION, TY_IDX_INTEGER);
   If Idx >= 0 Then Begin SymTab[Idx].MangledName := '7'; SymTab[Idx].Offset := 7; End;
 
-  { Fonctions/variables d exception (TODO 23) }
+  { Fonctions/variables d exception }
   Idx := SymAdd('exception_message', SC_FUNC, TY_IDX_STRING);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'EXCMSG';
   Idx := SymAdd('exception_value', SC_FUNC, TY_IDX_INTEGER);
@@ -6380,7 +5376,7 @@ Begin
 End;
 
 (* ---- TypeCoerce : emettre le code de conversion src -> dst ---- *)
-(* Delegue a EmitCoerce (deja implemente dans TODO 05) et retourne *)
+(* Delegue a EmitCoerce (deja implemente) et retourne *)
 (* le TypeIdx du resultat.                                          *)
 Function TypeCoerce(SrcType, DstType : Integer) : Integer;
 Begin
@@ -7341,7 +6337,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      (* ========== TODO 22 : Fonctions fichier VAX ========== *)
+      (* ========== Fonctions fichier VAX ========== *)
 
       (* STATUS(f) : retourne le statut I/O du dernier appel *)
       Else If StrLowerCase(CurToken.Val) = 'status' Then
@@ -7625,7 +6621,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      (* ========== TODO 21 : Fonctions standard intrinseques ========== *)
+      (* ========== Fonctions standard intrinseques ========== *)
 
       (* Sqrt(x) : racine carree entiere approximative *)
       Else If StrLowerCase(CurToken.Val) = 'sqrt' Then
@@ -12649,7 +11645,7 @@ Begin
           LexNextToken;
           If CurToken.Kind = TK_INTEGER Then
             LexNextToken;
-          (* TODO: utiliser Precision *)
+          (* utiliser Precision *)
         End;
 
         If TypeCount >= MAX_TYPE Then
@@ -14861,7 +13857,7 @@ Begin
     Exit;
   End;
 
-  { ========== TODO 23 : SIGNAL / SIGNAL_STOP / RESIGNAL ========== }
+  { ========== SIGNAL / SIGNAL_STOP / RESIGNAL ========== }
 
   (* SIGNAL(condition [, args]) : lever une condition *)
   If (CurToken.Kind = TK_KEYWORD) And
@@ -15079,7 +14075,7 @@ Begin
       Exit;
     End;
 
-    (* ========== TODO 21 : Procedures standard intrinseques ========== *)
+    (* ========== Procedures standard intrinseques ========== *)
 
     (* Assert(cond) / Assert(cond, 'message') *)
     If L = 'assert' Then
@@ -15530,7 +14526,7 @@ Begin
       Exit;
     End;
 
-    { ========== TODO 22 : Operations fichier ========== }
+    { ========== Operations fichier ========== }
 
     (* Assign(f, nom) : assigner un nom de fichier au FDB *)
     If L = 'assign' Then
@@ -16220,19 +15216,19 @@ Begin
     FatalError('impossible de creer le fichier de sortie: ' + Opts.OutFile);
   OutFOpen := True;
 
-  { -- TODO 05 : En-tete ASM -- }
+  { -- En-tete ASM -- }
   EmitHeader;
 
-  { -- TODO 06 : Initialiser la table des symboles -- }
+  { -- Initialiser la table des symboles -- }
   SymInit;
 
-  { -- TODO 07 : Initialiser le systeme de types -- }
+  { -- Initialiser le systeme de types -- }
   TypeInit;
 
-  { -- TODO 02 : Lexeur -- }
+  { -- Lexeur -- }
   LexInit;
 
-  { Boucle de tokenisation - TODO 09 : dispatch declarations }
+  { Boucle de tokenisation - dispatch declarations }
   LexNextToken;
   While CurToken.Kind <> TK_EOF Do
   Begin
@@ -16533,7 +15529,7 @@ Begin
       Continue;
     End;
 
-    (* CONDITION declaration (TODO 23) *)
+    (* CONDITION declaration *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'condition') Then
     Begin
@@ -16637,26 +15633,26 @@ Begin
 
   LexClose;
 
-  { -- TODO 05 : Label MAINBODY et code principal -- }
+  { -- Label MAINBODY et code principal -- }
   If Not MainBodyEmitted Then
   Begin
     MainBodyEmitted := True;
     EmitLabel(VXP_LBL_PFX + 'MAINBODY');
   End;
 
-  { -- TODO 05 : Pied de page et runtime -- }
+  { -- Pied de page et runtime -- }
   EmitFooter;
 
-  { -- TODO 04 : Segment de donnees -- }
+  { -- Segment de donnees -- }
   EmitDataSeg;
   EmitBlankLine;
 
-  { -- TODO 05 : Directive END finale -- }
+  { -- Directive END finale -- }
   EmitClose;
 
   Cleanup;
 
-  { -- TODO 20 : Generation du fichier .INC pour [ENVIRONMENT] -- }
+  { -- Generation du fichier .INC pour [ENVIRONMENT] -- }
   If EnvironmentName <> '' Then
   Begin
     EnvIncFName := EnvironmentName;

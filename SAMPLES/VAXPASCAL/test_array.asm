@@ -1,6 +1,6 @@
 ; ========================================
 ; Genere par VAXPAS86 v1.0 (2026-03-07)
-; Source : SAMPLES\VAXPASCAL\test_array.pas
+; Source : .\samples\VAXPASCAL\test_array.pas
 ; ========================================
 
 .MODEL SMALL
