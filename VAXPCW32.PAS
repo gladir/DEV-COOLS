@@ -6031,7 +6031,7 @@ Begin
           SymTab[CIdx].ImmVal := ConstEv.ImmVal;
       End
       Else
-        WarnMsg('constante attendue');
+        WarnMsg('constante attendue pour ' + CName);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
       Continue;
@@ -6055,7 +6055,7 @@ Begin
         End;
       End
       Else
-        WarnMsg('constante attendue pour const :=');
+        WarnMsg('constante attendue pour const := ' + CName);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
       Continue;
@@ -6269,7 +6269,7 @@ Begin
         End;
       End
       Else
-        WarnMsg('constante attendue pour typed const');
+        WarnMsg('constante attendue pour typed const ' + CName);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
       Continue;
