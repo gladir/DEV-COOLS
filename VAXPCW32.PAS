@@ -197,7 +197,7 @@
             Conversion de type : TypeName(expr) (coercition)
             Substring : S[pos:len] -> CALL _VXPRT_SUBSTR
 
-  TODO 11 - EXPRESSIONS BINAIRES
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique 32 bits : ADD/SUB/IMUL/IDIV pour +, -, *, DIV
             Modulo : IDIV -> resultat dans EDX (reste) pour MOD
@@ -4080,9 +4080,18 @@ Begin
   ParsePrimary(Res);
 End;
 
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  ParseExprPrec(MinPrec) : boucle Pratt pour operateurs binaires
+  Arithmetique, comparaisons (int/string/VARYING), logique,
+  court-circuit ANDIF/ORIF, concatenation ||, exponentiation **,
+  ensembles IN. Runtime: VARY_CMP, PANIC_DIV0, PANIC_NIL.
+  ============================================================ }
+
 (* ---- ParseExprPrec : Pratt parser pour operateurs binaires --- *)
 (* Boucle de montee de precedence. EAX=gauche, EBX=droite.        *)
 (* Gere || (concatenation), ** (exponentiation), ANDIF, ORIF.     *)
+(* Comparaison VARYING via CALL _VXPRT_VARY_CMP.                  *)
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal);
 Var
   Op        : TString;
@@ -4250,7 +4259,9 @@ Begin
     Begin
       (* ---- Emission de code binaire 32 bits ---- *)
       ResType := Res.TypeIdx;
-      If (Res.TypeIdx = TY_IDX_STRING) Or (Right.TypeIdx = TY_IDX_STRING) Then
+      If (Res.TypeIdx = TY_IDX_VARYING) Or (Right.TypeIdx = TY_IDX_VARYING) Then
+        ResType := TY_IDX_VARYING
+      Else If (Res.TypeIdx = TY_IDX_STRING) Or (Right.TypeIdx = TY_IDX_STRING) Then
         ResType := TY_IDX_STRING
       Else If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
               (Op = '<=') Or (Op = '>=') Or (Op = 'in') Then
@@ -4271,7 +4282,7 @@ Begin
       (* --- Arithmetique 32 bits --- *)
       If Op = '+' Then
       Begin
-        If ResType = TY_IDX_STRING Then
+        If (ResType = TY_IDX_STRING) Or (ResType = TY_IDX_VARYING) Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4360,7 +4371,14 @@ Begin
       Else If Op = '=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_VARYING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4373,12 +4391,20 @@ Begin
         EmitInstrA('JNE', LblSkip);
         EmitInstr('INC    EAX');
         EmitLabel(LblSkip);
+        ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = '<>' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_VARYING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4391,12 +4417,20 @@ Begin
         EmitInstrA('JE', LblSkip);
         EmitInstr('INC    EAX');
         EmitLabel(LblSkip);
+        ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = '<' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_VARYING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4409,12 +4443,20 @@ Begin
         EmitInstrA('JGE', LblSkip);
         EmitInstr('INC    EAX');
         EmitLabel(LblSkip);
+        ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = '<=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_VARYING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4427,12 +4469,20 @@ Begin
         EmitInstrA('JG', LblSkip);
         EmitInstr('INC    EAX');
         EmitLabel(LblSkip);
+        ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = '>' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_VARYING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4445,12 +4495,20 @@ Begin
         EmitInstrA('JLE', LblSkip);
         EmitInstr('INC    EAX');
         EmitLabel(LblSkip);
+        ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = '>=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_VARYING Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          EmitInstrAB('MOV', 'EDI', 'EBX');
+          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
+          EmitInstrAB('CMP', 'EAX', '0');
+        End
+        Else If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4463,6 +4521,7 @@ Begin
         EmitInstrA('JL', LblSkip);
         EmitInstr('INC    EAX');
         EmitLabel(LblSkip);
+        ResType := TY_IDX_BOOLEAN;
       End
 
       Else If Op = 'in' Then
@@ -5539,7 +5598,7 @@ End;
 { Emet le code de terminaison (ExitProcess) puis les routines    }
 { runtime 32 bits : PRINTSTR, NUMTOSTR, STRLEN, CONCAT, STRCMP,  }
 { NEWLINE, PRINTINT, PRINTBOOL, READLN, POWER, SET_IN, STRTONUM, }
-{ SUBSTR, SSLICE, INDEX.                                         }
+{ SUBSTR, SSLICE, INDEX, VARY_CMP, PANIC_DIV0, PANIC_NIL.      }
 { Toutes les routines utilisent EAX/EBX/ECX/EDX/ESI/EDI et les  }
 { appels systeme Win32 via WriteFile / ReadFile / ExitProcess.   }
 Procedure EmitFooter;
@@ -5960,6 +6019,78 @@ Begin
   EmitInstrA('POP', 'ECX');
   EmitInstrA('POP', 'EBX');
   EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_CMP : comparaison VARYING OF CHAR ---------- *)
+  (* ESI = ptr VARYING s1, EDI = ptr VARYING s2                     *)
+  (* Retourne dans EAX : <0 si s1<s2, 0 si s1=s2, >0 si s1>s2    *)
+  (* VARYING layout : WORD longueur + donnees                       *)
+  EmitComment('--- VARY_CMP : compare two VARYING strings ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_CMP');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  (* Charger longueurs *)
+  EmitInstrAB('MOVZX', 'ECX', 'WORD PTR [ESI]');   (* ECX = len1 *)
+  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [EDI]');   (* EDX = len2 *)
+  (* Pointer vers les donnees *)
+  EmitInstrAB('ADD', 'ESI', '2');
+  EmitInstrAB('ADD', 'EDI', '2');
+  (* Determiner longueur min a comparer *)
+  EmitInstrAB('MOV', 'EBX', 'ECX');
+  EmitInstrAB('CMP', 'EBX', 'EDX');
+  EmitInstrA('JLE', VXP_RT_PFX + 'VCMP_ML');
+  EmitInstrAB('MOV', 'EBX', 'EDX');
+  EmitRaw(VXP_RT_PFX + 'VCMP_ML:');
+  (* Comparer octet par octet *)
+  EmitInstrAB('TEST', 'EBX', 'EBX');
+  EmitInstrA('JZ', VXP_RT_PFX + 'VCMP_LN');
+  EmitRaw(VXP_RT_PFX + 'VCMP_LP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', 'BYTE PTR [EDI]');
+  EmitInstrA('JB', VXP_RT_PFX + 'VCMP_LT');
+  EmitInstrA('JA', VXP_RT_PFX + 'VCMP_GT');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    EBX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'VCMP_LP');
+  (* Tous les octets communs sont egaux, comparer longueurs *)
+  EmitRaw(VXP_RT_PFX + 'VCMP_LN:');
+  EmitInstrAB('MOV', 'EAX', 'ECX');
+  EmitInstrAB('SUB', 'EAX', 'EDX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VCMP_DN');
+  EmitRaw(VXP_RT_PFX + 'VCMP_LT:');
+  EmitInstrAB('MOV', 'EAX', '-1');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VCMP_DN');
+  EmitRaw(VXP_RT_PFX + 'VCMP_GT:');
+  EmitInstrAB('MOV', 'EAX', '1');
+  EmitRaw(VXP_RT_PFX + 'VCMP_DN:');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_PANIC_DIV0 : division par zero ------------------- *)
+  EmitComment('--- PANIC_DIV0 : division by zero ---');
+  EmitLabel(VXP_RT_PFX + 'PANIC_DIV0');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'DIV0MSG');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+  EmitInstrA('PUSH', '1');
+  EmitInstrA('CALL', '_ExitProcess@4');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_PANIC_NIL : nil pointer dereference --------------- *)
+  EmitComment('--- PANIC_NIL : nil pointer dereference ---');
+  EmitLabel(VXP_RT_PFX + 'PANIC_NIL');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'NILMSG');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+  EmitInstrA('PUSH', '1');
+  EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
 
   EmitRaw('_TEXT   ENDS');
