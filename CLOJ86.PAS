@@ -276,7 +276,7 @@
             (subvec vec start end) -> CALL _CLRT_SUBVEC sous-vecteur
             (get vec n) -> comme nth avec retour nil si hors bornes
 
-  TODO 19 - TABLES DE HACHAGE (hash-map / get / assoc / dissoc)
+  TODO 19 - TABLES DE HACHAGE (hash-map / get / assoc / dissoc) [IMPLEMENTE]
             Representation : liste de paires en heap [count, k0, v0, k1, v1, ...]
               count = nombre de paires, chaque paire = 2 Words (cle + valeur)
             (hash-map k1 v1 k2 v2 ...) -> CALL _CLRT_MAPNEW allouer + remplir
@@ -796,6 +796,14 @@ Procedure ParseVecLiteral(Var Res : TExprVal); Forward;
 Procedure ParseGetForm(Var Res : TExprVal); Forward;
 Procedure ParseAssocForm(Var Res : TExprVal); Forward;
 Procedure ParseSubvecForm(Var Res : TExprVal); Forward;
+(* TODO 19 *)
+Procedure ParseHashMapForm(Var Res : TExprVal); Forward;
+Procedure ParseMapLiteral(Var Res : TExprVal); Forward;
+Procedure ParseDissocForm(Var Res : TExprVal); Forward;
+Procedure ParseContainsForm(Var Res : TExprVal); Forward;
+Procedure ParseKeysForm(Var Res : TExprVal); Forward;
+Procedure ParseValsForm(Var Res : TExprVal); Forward;
+Procedure ParseMergeForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2862,6 +2870,9 @@ Begin
   (* Variables temporaires pour operations vecteur (TODO 18) *)
   EmitRaw('_CL_VTMP1   DW 0');
   EmitRaw('_CL_VTMP2   DW 0');
+  (* Variables temporaires pour operations map (TODO 19) *)
+  EmitRaw('_CL_MTMP1   DW 0');
+  EmitRaw('_CL_MTMP2   DW 0');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -4069,6 +4080,50 @@ Begin
             Exit;
           End
 
+          (* TODO 19 : operations sur les tables de hachage *)
+          Else If HeadSym = 'hash-map' Then
+          Begin
+            ParseHashMapForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres hash-map');
+            Exit;
+          End
+          Else If HeadSym = 'dissoc' Then
+          Begin
+            ParseDissocForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres dissoc');
+            Exit;
+          End
+          Else If HeadSym = 'contains?' Then
+          Begin
+            ParseContainsForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres contains?');
+            Exit;
+          End
+          Else If HeadSym = 'keys' Then
+          Begin
+            ParseKeysForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres keys');
+            Exit;
+          End
+          Else If HeadSym = 'vals' Then
+          Begin
+            ParseValsForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres vals');
+            Exit;
+          End
+          Else If HeadSym = 'merge' Then
+          Begin
+            ParseMergeForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres merge');
+            Exit;
+          End
+
           (* Appel de fonction generique *)
           Else If (SIdx >= 0) And
              ((SymTab[SIdx].Kind = SK_FN) Or
@@ -4122,12 +4177,7 @@ Begin
     TK_LBRACE :
     Begin
       LexNextToken;  (* consomme accolade ouvrante *)
-      While (CurToken.Kind <> TK_RBRACE) And
-            (CurToken.Kind <> TK_EOF) Do
-        LexNextToken;
-      If CurToken.Kind = TK_RBRACE Then
-        LexNextToken;
-      ExprMakeNone(Res);
+      ParseMapLiteral(Res);
     End;
 
   Else
@@ -6309,24 +6359,27 @@ Begin
   Res.SymIdx  := -1;
 End;
 
-(* ---- ParseGetForm : (get vec n) ou (get vec n default) ---------- *)
-(* Acces indexe dans un vecteur avec retour nil si hors bornes.       *)
-(* AX = vecteur, BX = index -> CALL _CLRT_VECNTH -> AX              *)
+(* ---- ParseGetForm : (get coll key) ou (get coll key default) ---- *)
+(* Polymorphe : si la collection est TY_IDX_MAP, utilise MAPGET,     *)
+(* sinon utilise VECNTH (acces indexe dans un vecteur).              *)
+(* AX = collection, BX = cle/index -> CALL runtime -> AX            *)
 Procedure ParseGetForm(Var Res : TExprVal);
 Var ArgRes  : TExprVal;
     HasDef  : Boolean;
     LblEnd  : TString;
     LblDef  : TString;
+    IsMap   : Boolean;
 Begin
   ExprMakeNone(Res);
-  EmitComment('(get vec n)');
+  EmitComment('(get coll key)');
 
-  (* Evaluer la collection (vecteur) *)
+  (* Evaluer la collection *)
   ParseForm(ArgRes);
+  IsMap := (ArgRes.TypeIdx = TY_IDX_MAP);
   ExprFlushToAX(ArgRes);
   EmitInstrA('PUSH', 'AX');
 
-  (* Evaluer l index *)
+  (* Evaluer la cle/index *)
   ParseForm(ArgRes);
   ExprFlushToAX(ArgRes);
   EmitInstrAB('MOV', 'BX', 'AX');
@@ -6340,14 +6393,17 @@ Begin
     ParseForm(ArgRes);
     ExprFlushToAX(ArgRes);
     EmitInstrAB('MOV', 'CX', 'AX');  (* CX = default *)
-    EmitInstrA('POP', 'BX');   (* BX = index *)
+    EmitInstrA('POP', 'BX');   (* BX = cle/index *)
   End;
 
-  (* Recuperer le vecteur *)
+  (* Recuperer la collection *)
   EmitInstrA('POP', 'AX');
 
-  (* Appel runtime *)
-  EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+  (* Appel runtime selon le type *)
+  If IsMap Then
+    EmitInstrA('CALL', CL_RT_PFX + 'MAPGET')
+  Else
+    EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
 
   If HasDef Then
   Begin
@@ -6369,21 +6425,24 @@ Begin
   Res.SymIdx  := -1;
 End;
 
-(* ---- ParseAssocForm : (assoc vec n val) ------------------------- *)
-(* Cree une copie du vecteur avec l element a l index n remplace.     *)
-(* AX = vec, BX = index, CX = nouvelle valeur                        *)
+(* ---- ParseAssocForm : (assoc coll key val) ---------------------- *)
+(* Polymorphe : si la collection est TY_IDX_MAP, utilise MAPASSOC,   *)
+(* sinon utilise VECASSOC.                                            *)
+(* AX = coll, BX = cle/index, CX = nouvelle valeur                   *)
 Procedure ParseAssocForm(Var Res : TExprVal);
 Var ArgRes : TExprVal;
+    IsMap  : Boolean;
 Begin
   ExprMakeNone(Res);
-  EmitComment('(assoc vec n val)');
+  EmitComment('(assoc coll key val)');
 
-  (* Evaluer le vecteur *)
+  (* Evaluer la collection *)
   ParseForm(ArgRes);
+  IsMap := (ArgRes.TypeIdx = TY_IDX_MAP);
   ExprFlushToAX(ArgRes);
   EmitInstrA('PUSH', 'AX');
 
-  (* Evaluer l index *)
+  (* Evaluer la cle/index *)
   ParseForm(ArgRes);
   ExprFlushToAX(ArgRes);
   EmitInstrA('PUSH', 'AX');
@@ -6393,15 +6452,23 @@ Begin
   ExprFlushToAX(ArgRes);
   EmitInstrAB('MOV', 'CX', 'AX');
 
-  (* Recuperer index et vecteur *)
+  (* Recuperer cle et collection *)
   EmitInstrA('POP', 'BX');
   EmitInstrA('POP', 'AX');
 
-  (* Appel runtime assoc *)
-  EmitInstrA('CALL', CL_RT_PFX + 'VECASSOC');
+  (* Appel runtime selon le type *)
+  If IsMap Then
+  Begin
+    EmitInstrA('CALL', CL_RT_PFX + 'MAPASSOC');
+    Res.TypeIdx := TY_IDX_MAP;
+  End
+  Else
+  Begin
+    EmitInstrA('CALL', CL_RT_PFX + 'VECASSOC');
+    Res.TypeIdx := TY_IDX_VEC;
+  End;
 
   Res.Kind    := EK_AX;
-  Res.TypeIdx := TY_IDX_VEC;
   Res.ImmVal  := 0;
   Res.Offset  := 0;
   Res.SymIdx  := -1;
@@ -6440,6 +6507,271 @@ Begin
 
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_IDX_VEC;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ============================================================
+   TODO 19 - TABLES DE HACHAGE : HASH-MAP / DISSOC / CONTAINS?
+             / KEYS / VALS / MERGE [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseHashMapForm : (hash-map k1 v1 k2 v2 ...) ------------- *)
+(* Cree une map sur le heap : [count_pairs, k0, v0, k1, v1, ...]    *)
+(* count = nombre de paires, chaque paire = 2 Words.                 *)
+Procedure ParseHashMapForm(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+    NPairs   : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(hash-map ...)');
+  ArgCount := 0;
+
+  (* Empiler tous les arguments : k1 v1 k2 v2 ... *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  If (ArgCount Mod 2) <> 0 Then
+    WarnMsg('hash-map : nombre impair d arguments');
+
+  NPairs := ArgCount Div 2;
+
+  (* Allouer la map sur le heap *)
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_CL_HEAPTOP]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CL_HEAP');
+  EmitInstrAB('ADD', 'BX', 'DI');
+
+  (* Stocker le nombre de paires *)
+  EmitInstrAB('MOV', 'WORD PTR [BX]', IntToStr(NPairs));
+
+  (* Depiler : la pile a [vN, kN, ..., v1, k1] (inverse) *)
+  (* Le dernier pousse (vN) est au sommet                  *)
+  (* On veut : [BX+2]=k1, [BX+4]=v1, [BX+6]=k2, ...      *)
+  (* Pile (sommet -> fond) : vN, kN, ..., v1, k1           *)
+  (* => depiler en ordre inverse : [BX + ArgCount*2] .. [BX+2] *)
+  For I := ArgCount DownTo 1 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX+' + IntToStr(I * 2) + ']', 'AX');
+  End;
+
+  (* Resultat = pointeur map *)
+  EmitInstrAB('MOV', 'AX', 'BX');
+
+  (* Mettre a jour heaptop : 1 Word (count) + ArgCount Words *)
+  EmitInstrAB('ADD', 'DI', IntToStr((ArgCount + 1) * 2));
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HEAPTOP]', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_MAP;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseMapLiteral : {:k1 v1 :k2 v2 ...} -------------------- *)
+(* Litteral map, meme mecanisme que (hash-map ...) ferme par }       *)
+Procedure ParseMapLiteral(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+    NPairs   : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('{...} litteral map');
+  ArgCount := 0;
+
+  (* Empiler tous les elements : k1 v1 k2 v2 ... *)
+  While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  If CurToken.Kind = TK_RBRACE Then
+    LexNextToken;
+
+  If (ArgCount Mod 2) <> 0 Then
+    WarnMsg('map literal : nombre impair d elements');
+
+  NPairs := ArgCount Div 2;
+
+  (* Allouer la map sur le heap *)
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_CL_HEAPTOP]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CL_HEAP');
+  EmitInstrAB('ADD', 'BX', 'DI');
+
+  (* Stocker le nombre de paires *)
+  EmitInstrAB('MOV', 'WORD PTR [BX]', IntToStr(NPairs));
+
+  (* Depiler en ordre inverse *)
+  For I := ArgCount DownTo 1 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX+' + IntToStr(I * 2) + ']', 'AX');
+  End;
+
+  (* Resultat = pointeur map *)
+  EmitInstrAB('MOV', 'AX', 'BX');
+
+  (* Mettre a jour heaptop *)
+  EmitInstrAB('ADD', 'DI', IntToStr((ArgCount + 1) * 2));
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HEAPTOP]', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_MAP;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseDissocForm : (dissoc m key) --------------------------- *)
+(* Cree une copie de la map sans la paire dont la cle est key.        *)
+(* AX = map, BX = cle a supprimer -> CALL _CLRT_MAPDISSOC -> AX     *)
+Procedure ParseDissocForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(dissoc m key)');
+
+  (* Evaluer la map *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer la cle *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer la map *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'MAPDISSOC');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_MAP;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseContainsForm : (contains? m key) ---------------------- *)
+(* Teste si la cle existe dans la map.                                *)
+(* AX = map, BX = cle -> CALL _CLRT_MAPHAS -> AX = 1|0              *)
+Procedure ParseContainsForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(contains? m key)');
+
+  (* Evaluer la map *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer la cle *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer la map *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'MAPHAS');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseKeysForm : (keys m) ----------------------------------- *)
+(* Retourne la liste des cles de la map.                              *)
+(* AX = map -> CALL _CLRT_MAPKEYS -> AX = liste des cles            *)
+Procedure ParseKeysForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(keys m)');
+
+  (* Evaluer la map *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'MAPKEYS');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseValsForm : (vals m) ----------------------------------- *)
+(* Retourne la liste des valeurs de la map.                           *)
+(* AX = map -> CALL _CLRT_MAPVALS -> AX = liste des valeurs         *)
+Procedure ParseValsForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(vals m)');
+
+  (* Evaluer la map *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'MAPVALS');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseMergeForm : (merge m1 m2) ----------------------------- *)
+(* Fusionne deux maps. Les cles de m2 ecrasent celles de m1.         *)
+(* AX = m1, BX = m2 -> CALL _CLRT_MAPMERGE -> AX = nouvelle map     *)
+Procedure ParseMergeForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(merge m1 m2)');
+
+  (* Evaluer m1 *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer m2 *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer m1 *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'MAPMERGE');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_MAP;
   Res.ImmVal  := 0;
   Res.Offset  := 0;
   Res.SymIdx  := -1;
@@ -6913,6 +7245,437 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
+  (* --- TODO 19 : _CLRT_MAPGET : recherche de cle dans une map --- *)
+  (* Entree : AX = pointeur map, BX = cle a chercher               *)
+  (* Sortie : AX = valeur associee ou 0 (nil) si absente            *)
+  (* Layout map : [count_pairs, k0, v0, k1, v1, ...]               *)
+  EmitRaw(CL_RT_PFX + 'MAPGET:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MG_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'MG_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MG_NF');
+  EmitRaw('        CMP     WORD PTR [SI], BX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MG_FN');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MG_LP');
+  EmitRaw(CL_RT_PFX + 'MG_FN:');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MG_NF:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MG_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 19 : _CLRT_MAPASSOC : copie map + ajout/remplacement --- *)
+  (* Entree : AX = map, BX = cle, CX = valeur                         *)
+  (* Sortie : AX = nouvelle map                                        *)
+  (* Si la cle existe, remplacer sa valeur. Sinon, ajouter la paire.   *)
+  (* Utilise _CL_MTMP1 (cle) et _CL_MTMP2 (valeur) comme temporaires  *)
+  EmitRaw(CL_RT_PFX + 'MAPASSOC:');
+  EmitRaw('        MOV     WORD PTR [_CL_MTMP1], BX');
+  EmitRaw('        MOV     WORD PTR [_CL_MTMP2], CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MA_NW');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  (* Chercher si la cle existe *)
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     BX, WORD PTR [_CL_MTMP1]');
+  EmitRaw(CL_RT_PFX + 'MA_SK:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MA_AD');
+  EmitRaw('        CMP     WORD PTR [SI], BX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MA_RP');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MA_SK');
+  (* Cle trouvee : copier avec remplacement, meme taille *)
+  EmitRaw(CL_RT_PFX + 'MA_RP:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     AX, 2');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw(CL_RT_PFX + 'MA_CL:');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MA_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        CMP     AX, WORD PTR [_CL_MTMP1]');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MA_RV');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        MOV     WORD PTR [DI+2], AX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MA_NX');
+  EmitRaw(CL_RT_PFX + 'MA_RV:');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_MTMP2]');
+  EmitRaw('        MOV     WORD PTR [DI+2], AX');
+  EmitRaw(CL_RT_PFX + 'MA_NX:');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        ADD     DI, 4');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MA_CL');
+  EmitRaw(CL_RT_PFX + 'MA_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  (* Cle non trouvee : copier tout + ajouter nouvelle paire *)
+  EmitRaw(CL_RT_PFX + 'MA_AD:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     AX, 2');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw(CL_RT_PFX + 'MA_C2:');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MA_AP');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        MOV     WORD PTR [DI+2], AX');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        ADD     DI, 4');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MA_C2');
+  EmitRaw(CL_RT_PFX + 'MA_AP:');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_MTMP1]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_MTMP2]');
+  EmitRaw('        MOV     WORD PTR [DI+2], AX');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  (* Map nil : creer nouvelle map a 1 paire *)
+  EmitRaw(CL_RT_PFX + 'MA_NW:');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], 1');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_MTMP1]');
+  EmitRaw('        MOV     WORD PTR [BX+2], AX');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_MTMP2]');
+  EmitRaw('        MOV     WORD PTR [BX+4], AX');
+  EmitRaw('        ADD     DI, 6');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 19 : _CLRT_MAPDISSOC : copie map sans la cle donnee --- *)
+  (* Entree : AX = map, BX = cle a supprimer                          *)
+  (* Sortie : AX = nouvelle map (copie sans la paire correspondante)   *)
+  EmitRaw(CL_RT_PFX + 'MAPDISSOC:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MD_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  (* Compter les paires a copier (exclure la cle) *)
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JL      ' + CL_RT_PFX + 'MD_E0');
+  EmitRaw('        MOV     WORD PTR [BX], DX');
+  (* Allouer : (new_count*2+1) words *)
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     AX, 2');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        POP     AX');
+  EmitRaw(CL_RT_PFX + 'MD_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MD_DN');
+  EmitRaw('        CMP     WORD PTR [SI], AX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MD_SP');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        MOV     WORD PTR [DI+2], AX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        ADD     DI, 4');
+  EmitRaw(CL_RT_PFX + 'MD_SP:');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MD_LP');
+  EmitRaw(CL_RT_PFX + 'MD_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MD_E0:');
+  EmitRaw('        POP     BX');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MD_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 19 : _CLRT_MAPHAS : test de presence d une cle --- *)
+  (* Entree : AX = map, BX = cle                                  *)
+  (* Sortie : AX = 1 (true) si trouvee, 0 (false) sinon           *)
+  EmitRaw(CL_RT_PFX + 'MAPHAS:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MH_NO');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'MH_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MH_NF');
+  EmitRaw('        CMP     WORD PTR [SI], BX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MH_FN');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MH_LP');
+  EmitRaw(CL_RT_PFX + 'MH_FN:');
+  EmitRaw('        MOV     AX, 1');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MH_NF:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MH_NO:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 19 : _CLRT_MAPKEYS : liste des cles d une map --- *)
+  (* Entree : AX = map                                            *)
+  (* Sortie : AX = vecteur des cles [count, k0, k1, ...]         *)
+  EmitRaw(CL_RT_PFX + 'MAPKEYS:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MK_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'MK_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MK_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MK_LP');
+  EmitRaw(CL_RT_PFX + 'MK_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MK_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 19 : _CLRT_MAPVALS : liste des valeurs d une map --- *)
+  (* Entree : AX = map                                               *)
+  (* Sortie : AX = vecteur des valeurs [count, v0, v1, ...]         *)
+  EmitRaw(CL_RT_PFX + 'MAPVALS:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MV_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'MV_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MV_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MV_LP');
+  EmitRaw(CL_RT_PFX + 'MV_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MV_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 19 : _CLRT_MAPMERGE : fusionner deux maps ------------ *)
+  (* Entree : AX = map1, BX = map2                                   *)
+  (* Sortie : AX = nouvelle map contenant toutes les paires           *)
+  (* Les cles de map2 ecrasent celles de map1.                        *)
+  (* Strategie : copier map1, puis assoc chaque paire de map2.        *)
+  EmitRaw(CL_RT_PFX + 'MAPMERGE:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MM_R2');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MM_R1');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  (* Copier map1 entierement *)
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     AX, DI');
+  EmitRaw('        ADD     AX, OFFSET _CL_HEAP');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        SHL     DX, 1');
+  EmitRaw('        SHL     DX, 1');
+  EmitRaw('        ADD     DX, 2');
+  EmitRaw('        ADD     DI, DX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     DI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        SHL     DX, 1');
+  EmitRaw('        INC     DX');
+  EmitRaw(CL_RT_PFX + 'MM_C1:');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MM_P2');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MM_C1');
+  (* Assoc chaque paire de map2 sur la copie *)
+  EmitRaw(CL_RT_PFX + 'MM_P2:');
+  EmitRaw('        MOV     SI, BX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'MM_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MM_DN');
+  EmitRaw('        MOV     BX, WORD PTR [SI]');
+  EmitRaw('        MOV     DX, WORD PTR [SI+2]');
+  EmitRaw('        POP     AX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     CX, DX');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'MAPASSOC');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        ADD     SI, 4');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MM_LP');
+  EmitRaw(CL_RT_PFX + 'MM_DN:');
+  EmitRaw('        POP     AX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MM_R1:');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'MM_R2:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
   EmitComment('=== FIN RUNTIME ===');
   EmitBlankLine;
 End;
@@ -7012,6 +7775,12 @@ Begin
   SymAdd('nth',        SK_FN, TY_UNKNOWN,  0);
   SymAdd('subvec',     SK_FN, TY_IDX_VEC,  0);
   SymAdd('seq',        SK_FN, TY_IDX_LIST, 0);
+
+  (* Fonctions predefinies - tables de hachage (TODO 19) *)
+  SymAdd('contains?',  SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('keys',       SK_FN, TY_IDX_LIST, 0);
+  SymAdd('vals',       SK_FN, TY_IDX_LIST, 0);
+  SymAdd('merge',      SK_FN, TY_IDX_MAP,  0);
 
   (* Fonctions predefinies - fonctions d ordre superieur *)
   SymAdd('apply',      SK_FN, TY_UNKNOWN, 0);
