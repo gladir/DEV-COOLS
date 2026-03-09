@@ -5598,7 +5598,7 @@ End;
 { Emet le code de terminaison (ExitProcess) puis les routines    }
 { runtime 32 bits : PRINTSTR, NUMTOSTR, STRLEN, CONCAT, STRCMP,  }
 { NEWLINE, PRINTINT, PRINTBOOL, READLN, POWER, SET_IN, STRTONUM, }
-{ SUBSTR, SSLICE, INDEX, VARY_CMP, PANIC_DIV0, PANIC_NIL.      }
+{ SUBSTR, SSLICE, INDEX, VARY_CMP, PANIC_DIV0, PANIC_NIL.       }
 { Toutes les routines utilisent EAX/EBX/ECX/EDX/ESI/EDI et les  }
 { appels systeme Win32 via WriteFile / ReadFile / ExitProcess.   }
 Procedure EmitFooter;
@@ -6023,7 +6023,7 @@ Begin
 
   (* ---- _VXPRT_VARY_CMP : comparaison VARYING OF CHAR ---------- *)
   (* ESI = ptr VARYING s1, EDI = ptr VARYING s2                     *)
-  (* Retourne dans EAX : <0 si s1<s2, 0 si s1=s2, >0 si s1>s2    *)
+  (* Retourne dans EAX : <0 si s1<s2, 0 si s1=s2, >0 si s1>s2     *)
   (* VARYING layout : WORD longueur + donnees                       *)
   EmitComment('--- VARY_CMP : compare two VARYING strings ---');
   EmitLabel(VXP_RT_PFX + 'VARY_CMP');
