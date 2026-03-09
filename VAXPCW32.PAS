@@ -213,7 +213,7 @@
             Exponentiation ** : CALL _VXPRT_POWER
             Ensembles IN : BT [set_addr], valeur / SETC AL
 
-  TODO 12 - ENTREES/SORTIES (WRITE / WRITELN / READ / READLN)
+  TODO 12 - ENTREES/SORTIES (WRITE / WRITELN / READ / READLN) [IMPLEMENTE]
             WRITE(items...) / WRITELN(items...) :
               WRITE('Hello')     -> CALL _VXPRT_PRINTSTR
               WRITE(42)          -> CALL _VXPRT_PRINTINT
@@ -5597,7 +5597,8 @@ End;
 { ---- EmitFooter : pied de page ASM + runtime Win32 32 bits --- }
 { Emet le code de terminaison (ExitProcess) puis les routines    }
 { runtime 32 bits : PRINTSTR, NUMTOSTR, STRLEN, CONCAT, STRCMP,  }
-{ NEWLINE, PRINTINT, PRINTBOOL, READLN, POWER, SET_IN, STRTONUM, }
+{ NEWLINE, PRINTINT, PRINTBOOL, READLN, PRINTCHAR, PRINTINT_W,  }
+{ READINT, READSTR, READCHAR, POWER, SET_IN, STRTONUM,          }
 { SUBSTR, SSLICE, INDEX, VARY_CMP, PANIC_DIV0, PANIC_NIL.       }
 { Toutes les routines utilisent EAX/EBX/ECX/EDX/ESI/EDI et les  }
 { appels systeme Win32 via WriteFile / ReadFile / ExitProcess.   }
@@ -5830,6 +5831,72 @@ Begin
   EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STRBUF');
   EmitInstrA('POP', 'ECX');
   EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTCHAR : afficher un caractere (EAX = code ASCII, byte bas) }
+  EmitComment('PRINTCHAR : affiche caractere dans AL');
+  EmitLabel(VXP_RT_PFX + 'PRINTCHAR');
+  EmitInstrAB('MOV', 'BYTE PTR [' + VXP_RT_PFX + 'CHRBUF]', 'AL');
+  EmitInstrAB('MOV', 'BYTE PTR [' + VXP_RT_PFX + 'CHRBUF + 1]', '0');
+  EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'CHRBUF');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_PRINTINT_W : afficher entier EAX avec largeur ECX (padding espaces) }
+  EmitComment('PRINTINT_W : affiche EAX en decimal, largeur minimum ECX');
+  EmitLabel(VXP_RT_PFX + 'PRINTINT_W');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'EDX', 'EAX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrAB('SUB', 'ECX', 'EAX');
+  EmitRaw(VXP_RT_PFX + 'PIW_PAD:');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'PIW_NUM');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'BYTE PTR [' + VXP_RT_PFX + 'CHRBUF]', '32');
+  EmitInstrAB('MOV', 'BYTE PTR [' + VXP_RT_PFX + 'CHRBUF + 1]', '0');
+  EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'CHRBUF');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PIW_PAD');
+  EmitRaw(VXP_RT_PFX + 'PIW_NUM:');
+  EmitInstrAB('MOV', 'ESI', 'EDX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_READINT : lire entier depuis stdin -> EAX }
+  EmitComment('READINT : lit un entier depuis stdin -> EAX');
+  EmitLabel(VXP_RT_PFX + 'READINT');
+  EmitInstrA('CALL', VXP_RT_PFX + 'READLN');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRTONUM');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_READSTR : lire chaine depuis stdin -> EAX = ptr STRBUF }
+  EmitComment('READSTR : lit une chaine depuis stdin -> EAX (ptr)');
+  EmitLabel(VXP_RT_PFX + 'READSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'READLN');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_READCHAR : lire un caractere depuis stdin -> EAX (AL) }
+  EmitComment('READCHAR : lit un caractere depuis stdin -> AL');
+  EmitLabel(VXP_RT_PFX + 'READCHAR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'READLN');
+  EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EAX]');
   EmitInstr('RET');
   EmitBlankLine;
 
@@ -8077,6 +8144,14 @@ Var
   StIdx    : Integer;
   StEv     : TExprVal;
   StArgCnt : Integer;
+  IoIsLn   : Boolean;
+  IoArgEv  : TExprVal;
+  IoWidEv  : TExprVal;
+  IoVarNm  : TString;
+  IoVarIdx : Integer;
+  IoHasW   : Boolean;
+  IoHasP   : Boolean;
+  IoWLbl   : TString;
 Begin
   (* Empty statement *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -8217,38 +8292,195 @@ Begin
       Exit;
     End;
 
-    (* WRITE / WRITELN - stub for TODO 12 *)
+    (* WRITE / WRITELN - TODO 12 *)
     If (StLw = 'write') Or (StLw = 'writeln') Then
     Begin
-      WarnMsg(StLw + ' ignore (TODO 12)');
+      IoIsLn := (StLw = 'writeln');
       LexNextToken;
+      EmitComment(StLw);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         LexNextToken;
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          LexNextToken;
+        (* Detecter parametre fichier (output, f : text) *)
+        If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          IoVarIdx := SymFind(CurToken.Val);
+          If (IoVarIdx >= 0) And (SymTab[IoVarIdx].TypeIdx = TY_IDX_TEXT) Then
+          Begin
+            LexNextToken;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              LexNextToken
+            Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            Begin
+              LexNextToken;
+              If IoIsLn Then
+                EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+                LexNextToken;
+              Exit;
+            End;
+          End;
+        End;
+        (* Boucle sur les arguments *)
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          ParseExpr(IoArgEv);
+          ExprFlushToEAX(IoArgEv);
+          (* Verifier format :largeur *)
+          IoHasW := False;
+          IoHasP := False;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+          Begin
+            IoHasW := True;
+            EmitPush('EAX');
+            LexNextToken;
+            ParseExpr(IoWidEv);
+            ExprFlushToEAX(IoWidEv);
+            EmitInstrAB('MOV', 'ECX', 'EAX');
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+            Begin
+              IoHasP := True;
+              LexNextToken;
+              ParseExpr(IoWidEv);
+              ExprFlushToEAX(IoWidEv);
+            End;
+            EmitPop('EAX');
+          End;
+          (* Emettre selon le type *)
+          If (IoArgEv.TypeIdx = TY_IDX_STRING) Or
+             (IoArgEv.TypeIdx = TY_IDX_VARYING) Then
+          Begin
+            EmitInstrAB('MOV', 'ESI', 'EAX');
+            EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+          End
+          Else If IoArgEv.TypeIdx = TY_IDX_BOOLEAN Then
+          Begin
+            EmitInstrA('CALL', VXP_RT_PFX + 'PRINTBOOL');
+          End
+          Else If IoArgEv.TypeIdx = TY_IDX_CHAR Then
+          Begin
+            EmitInstrA('CALL', VXP_RT_PFX + 'PRINTCHAR');
+          End
+          Else If (IoArgEv.TypeIdx = TY_IDX_REAL) Or
+                  (IoArgEv.TypeIdx = TY_IDX_DOUBLE) Then
+          Begin
+            If IoHasW Then
+              EmitInstrA('CALL', VXP_RT_PFX + 'PRINTINT_W')
+            Else
+              EmitInstrA('CALL', VXP_RT_PFX + 'PRINTINT');
+          End
+          Else
+          Begin
+            If IoHasW Then
+              EmitInstrA('CALL', VXP_RT_PFX + 'PRINTINT_W')
+            Else
+              EmitInstrA('CALL', VXP_RT_PFX + 'PRINTINT');
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken
+          Else
+            Break;
+        End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           LexNextToken;
       End;
+      If IoIsLn Then
+        EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
       Exit;
     End;
 
-    (* READ / READLN - stub for TODO 12 *)
+    (* READ / READLN - TODO 12 *)
     If (StLw = 'read') Or (StLw = 'readln') Then
     Begin
-      WarnMsg(StLw + ' ignore (TODO 12)');
+      IoIsLn := (StLw = 'readln');
       LexNextToken;
+      EmitComment(StLw);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         LexNextToken;
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-          LexNextToken;
+        (* Detecter parametre fichier (input, f : text) *)
+        If (CurToken.Kind = TK_IDENT) Then
+        Begin
+          IoVarIdx := SymFind(CurToken.Val);
+          If (IoVarIdx >= 0) And (SymTab[IoVarIdx].TypeIdx = TY_IDX_TEXT) Then
+          Begin
+            LexNextToken;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              LexNextToken
+            Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            Begin
+              LexNextToken;
+              If IoIsLn Then
+                EmitInstrA('CALL', VXP_RT_PFX + 'READLN');
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+                LexNextToken;
+              Exit;
+            End;
+          End;
+        End;
+        (* Boucle sur les variables a lire *)
+        While Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If CurToken.Kind = TK_IDENT Then
+          Begin
+            IoVarNm := CurToken.Val;
+            IoVarIdx := SymFind(IoVarNm);
+            LexNextToken;
+            If IoVarIdx >= 0 Then
+            Begin
+              If (SymTab[IoVarIdx].TypeIdx = TY_IDX_STRING) Or
+                 (SymTab[IoVarIdx].TypeIdx = TY_IDX_VARYING) Then
+              Begin
+                EmitInstrA('CALL', VXP_RT_PFX + 'READSTR');
+                If SymTab[IoVarIdx].IsLocal Then
+                  EmitInstrAB('MOV',
+                    'DWORD PTR ' + EBPOfs(SymTab[IoVarIdx].Offset), 'EAX')
+                Else
+                  EmitInstrAB('MOV',
+                    'DWORD PTR [' + SymTab[IoVarIdx].MangledName + ']', 'EAX');
+              End
+              Else If SymTab[IoVarIdx].TypeIdx = TY_IDX_CHAR Then
+              Begin
+                EmitInstrA('CALL', VXP_RT_PFX + 'READCHAR');
+                If SymTab[IoVarIdx].IsLocal Then
+                  EmitInstrAB('MOV',
+                    'BYTE PTR ' + EBPOfs(SymTab[IoVarIdx].Offset), 'AL')
+                Else
+                  EmitInstrAB('MOV',
+                    'BYTE PTR [' + SymTab[IoVarIdx].MangledName + ']', 'AL');
+              End
+              Else
+              Begin
+                EmitInstrA('CALL', VXP_RT_PFX + 'READINT');
+                If SymTab[IoVarIdx].IsLocal Then
+                  EmitInstrAB('MOV',
+                    'DWORD PTR ' + EBPOfs(SymTab[IoVarIdx].Offset), 'EAX')
+                Else
+                  EmitInstrAB('MOV',
+                    'DWORD PTR [' + SymTab[IoVarIdx].MangledName + ']', 'EAX');
+              End;
+            End
+            Else
+              WarnMsg('variable inconnue : ' + IoVarNm);
+          End
+          Else
+            LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken
+          Else
+            Break;
+        End;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           LexNextToken;
+      End
+      Else
+      Begin
+        If IoIsLn Then
+          EmitInstrA('CALL', VXP_RT_PFX + 'READLN');
       End;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
@@ -8259,7 +8491,7 @@ Begin
     If (StLw = 'open') Or (StLw = 'close') Or
        (StLw = 'reset') Or (StLw = 'rewrite') Then
     Begin
-      WarnMsg(StLw + ' ignore (TODO 12)');
+      WarnMsg(StLw + ' fichier ignore (stub)');
       LexNextToken;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
