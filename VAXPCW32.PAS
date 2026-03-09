@@ -63,7 +63,7 @@
             Attributs entre crochets : [ et ] pour TK_ATTR_OPEN / CLOSE
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - LITTERAUX ET CONSTANTES
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..4294967295 (32 bits) ou signes
             Entiers hexadecimaux : %X'FF' ou $FF -> valeur 32 bits
             Entiers octaux : %O'77' ou 777B -> valeur 32 bits
@@ -823,6 +823,15 @@ Procedure LexNextLine; Forward;
 Procedure IncludePop; Forward;
 Procedure LexHandleDollarDirective; Forward;
 Function  LexHandlePercentDirective : Boolean; Forward;
+{ Forward declarations TODO 03 }
+Procedure EmitDataSeg; Forward;
+Procedure EmitLabel(Const Lbl : TString); Forward;
+Procedure EmitInstr(Const Mnem : TString); Forward;
+Procedure EmitInstrA(Const Mnem, A1 : TString); Forward;
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
+Procedure EmitHeader; Forward;
+Procedure EmitProlog(FrameSize : Integer); Forward;
+Procedure EmitEpilog(ParamBytes : Integer); Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -2370,8 +2379,510 @@ Begin
 End;
 
 { ============================================================
-  PROCEDURE PRINCIPALE (Run)
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
   ============================================================ }
+
+{ ---- LabelGen : generateur de labels uniques ---------------- }
+Function LabelGen : TString;
+Begin
+  Inc(LabelGenSeq);
+  LabelGen := VXP_LBL_PFX + IntToStr(LabelGenSeq);
+End;
+
+{ ---- NewLabel : generer un label unique (alias) -------------- }
+Function NewLabel : TString;
+Begin
+  NewLabel := LabelGen;
+End;
+
+{ ---- EmitRaw : ecrire une ligne brute dans le fichier ASM --- }
+Procedure EmitRaw(Const S : String);
+Begin
+  WriteLn(OutF, S);
+End;
+
+{ ---- EmitComment : ecrire un commentaire ASM ---------------- }
+Procedure EmitComment(Const S : String);
+Begin
+  WriteLn(OutF, '; ' + S);
+End;
+
+{ ---- EmitBlankLine : ecrire une ligne vide ------------------- }
+Procedure EmitBlankLine;
+Begin
+  WriteLn(OutF);
+End;
+
+{ ---- EmitLabel : label ASM suivi de ':' en colonne 0 --------- }
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+{ ---- EmitInstr : instruction sans operande ------------------- }
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+{ ---- EmitInstrA : instruction avec un operande --------------- }
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '   ' + A1);
+End;
+
+{ ---- EmitInstrAB : instruction avec deux operandes ----------- }
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '   ' + A1 + ', ' + A2);
+End;
+
+{ ---- EmitPush : instruction PUSH ----------------------------- }
+Procedure EmitPush(Const Reg : TString);
+Begin
+  EmitInstrA('PUSH', Reg);
+End;
+
+{ ---- EmitPop : instruction POP ------------------------------- }
+Procedure EmitPop(Const Reg : TString);
+Begin
+  EmitInstrA('POP', Reg);
+End;
+
+{ ---- EmitMov : instruction MOV ------------------------------- }
+Procedure EmitMov(Const Dst, Src : TString);
+Begin
+  EmitInstrAB('MOV', Dst, Src);
+End;
+
+{ ---- EmitCall : instruction CALL ----------------------------- }
+Procedure EmitCall(Const Target : TString);
+Begin
+  EmitInstrA('CALL', Target);
+End;
+
+{ ---- EmitJmp : instruction JMP ------------------------------- }
+Procedure EmitJmp(Const Target : TString);
+Begin
+  EmitInstrA('JMP', Target);
+End;
+
+{ ---- EmitJmpCond : saut conditionnel (JE, JNE, JL, ...) ----- }
+Procedure EmitJmpCond(Const Cond, Target : TString);
+Begin
+  EmitInstrA(Cond, Target);
+End;
+
+{ ---- EmitProlog : prologue de procedure/fonction 32 bits ----- }
+Procedure EmitProlog(FrameSize : Integer);
+Begin
+  EmitPush('EBP');
+  EmitInstrAB('MOV', 'EBP', 'ESP');
+  If FrameSize > 0 Then
+  Begin
+    EmitInstrAB('SUB', 'ESP', IntToStr(FrameSize));
+    If (FrameSize > FRAME_WARN) And Opts.Warnings Then
+      WarnMsg('cadre de pile volumineux : ' + IntToStr(FrameSize) +
+              ' octets');
+  End;
+  EmitPush('ESI');
+  EmitPush('EDI');
+End;
+
+{ ---- EmitEpilog : epilogue de procedure/fonction 32 bits ----- }
+Procedure EmitEpilog(ParamBytes : Integer);
+Begin
+  EmitPop('EDI');
+  EmitPop('ESI');
+  EmitInstrAB('MOV', 'ESP', 'EBP');
+  EmitPop('EBP');
+  If ParamBytes > 0 Then
+    EmitInstrA('RET', IntToStr(ParamBytes))
+  Else
+    EmitInstr('RET');
+End;
+
+{ ---- DataAdd : ajouter une entree dans DataTab --------------- }
+Function DataAdd(Const Lbl : TString; AKind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+    FatalError('DataTab pleine (MAX_DATA atteint)');
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := AKind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := 0;
+  DataTab[DataCount].ElemSize  := 0;
+  DataTab[DataCount].RecSize   := 0;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ---- DataAddStr : creer un label et stocker une chaine ------- }
+Function DataAddStr(Const S : TString) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := VXP_STR_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S);
+  DataAddStr := Lbl;
+End;
+
+{ ---- DataAddDWord : ajouter un double-mot 32 bits dans DataTab }
+Function DataAddDWord(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddDWord := DataAdd(Lbl, DK_DWORD, AIntVal, '');
+End;
+
+{ ---- DataAddByte : ajouter un octet dans DataTab ------------- }
+Function DataAddByte(Const Lbl : TString; AIntVal : LongInt) : Integer;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, AIntVal, '');
+End;
+
+{ ---- DataAddArray : ajouter un tableau dans DataTab ---------- }
+Function DataAddArray(Const Lbl : TString;
+                      ECount, ESz : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ARRAY, 0, '');
+  DataTab[Idx].ElemCount := ECount;
+  DataTab[Idx].ElemSize  := ESz;
+  DataAddArray := Idx;
+End;
+
+{ ---- DataAddRec : ajouter un record dans DataTab ------------- }
+Function DataAddRec(Const Lbl : TString; RSz : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_REC, 0, '');
+  DataTab[Idx].RecSize := RSz;
+  DataAddRec := Idx;
+End;
+
+{ ---- EmitDataSeg : emettre le segment _DATA complet (32 bits) }
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S    : TString;
+  Sz   : Integer;
+  IsFirst : Boolean;
+Begin
+  EmitRaw('_DATA   SEGMENT DWORD PUBLIC ''DATA''');
+
+  { --- Buffers internes du runtime 32 bits --- }
+  EmitComment('--- Buffers internes ---');
+  EmitRaw(VXP_RT_PFX + 'CRLF    DB  13,10,0');
+  EmitRaw(VXP_RT_PFX + 'STRBUF  DB  512 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'CHRBUF  DB  2 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'NUMBUF  DB  16 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'TRUE_S  DB  ''TRUE'',0');
+  EmitRaw(VXP_RT_PFX + 'FALSE_S DB  ''FALSE'',0');
+  EmitRaw(VXP_RT_PFX + 'HEAP    DB  4096 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'HEAPTOP DD  OFFSET ' + VXP_RT_PFX + 'HEAP');
+  EmitRaw(VXP_RT_PFX + 'SEED    DD  1');
+  EmitRaw(VXP_RT_PFX + 'SETBUF  DB  32 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'DATEBUF DB  16 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'TIMEBUF DB  12 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'ASSERTMSG DB ''Assertion failed'',0');
+  { Handle stdout Win32 et buffer d ecriture }
+  EmitRaw(VXP_RT_PFX + 'HSTDOUT DD  0');
+  EmitRaw(VXP_RT_PFX + 'HSTDIN  DD  0');
+  EmitRaw(VXP_RT_PFX + 'WRITTEN DD  0');
+  EmitBlankLine;
+
+  { --- FDB fichiers predefinis (32 bits : DD handle, DD mode) --- }
+  EmitComment('--- File Descriptor Blocks predefinis ---');
+  { Input : handle obtenu via GetStdHandle, mode=1 (lecture) }
+  EmitRaw(VXP_VAR_PFX + 'INPUT   DD  0');
+  EmitRaw('        DD  1');
+  EmitRaw('        DB  ''CON'',0');
+  EmitRaw('        DB  120 DUP(0)');
+  { Output : handle obtenu via GetStdHandle, mode=2 (ecriture) }
+  EmitRaw(VXP_VAR_PFX + 'OUTPUT  DD  0');
+  EmitRaw('        DD  2');
+  EmitRaw('        DB  ''CON'',0');
+  EmitRaw('        DB  120 DUP(0)');
+  { TTY : handle=0 (stdin), mode=1 (lecture) }
+  EmitRaw(VXP_VAR_PFX + 'TTY     DD  0');
+  EmitRaw('        DD  1');
+  EmitRaw('        DB  ''CON'',0');
+  EmitRaw('        DB  120 DUP(0)');
+  { TTYOUTPUT : handle=0 (stdout), mode=2 (ecriture) }
+  EmitRaw(VXP_VAR_PFX + 'TTYOUTPUT DD  0');
+  EmitRaw('        DD  2');
+  EmitRaw('        DB  ''CON'',0');
+  EmitRaw('        DB  120 DUP(0)');
+  { Error : handle=0 (stderr), mode=2 (ecriture) }
+  EmitRaw(VXP_VAR_PFX + 'ERROR   DD  0');
+  EmitRaw('        DD  2');
+  EmitRaw('        DB  ''CON'',0');
+  EmitRaw('        DB  120 DUP(0)');
+  { Buffer handle courant pour Write/Read avec fichier }
+  EmitRaw(VXP_RT_PFX + 'CURHDL  DD  0');
+  EmitRaw(VXP_RT_PFX + 'IOSTATUS DD  0');
+  EmitRaw(VXP_RT_PFX + 'FNAMEBUF DB  128 DUP(0)');
+  EmitRaw(VXP_RT_PFX + 'FRDCBUF DB  2 DUP(0)');
+  EmitBlankLine;
+
+  { --- Exception frame et messages d erreur --- }
+  EmitComment('--- Exception handler frame ---');
+  EmitRaw(VXP_RT_PFX + 'EXCHDL  DD  0');      { adresse du handler courant }
+  EmitRaw(VXP_RT_PFX + 'EXCSP   DD  0');      { ESP sauvegarde }
+  EmitRaw(VXP_RT_PFX + 'EXCBP   DD  0');      { EBP sauvegarde }
+  EmitRaw(VXP_RT_PFX + 'EXCCODE DD  0');      { code de la condition }
+  EmitRaw(VXP_RT_PFX + 'EXCVAL  DD  0');      { valeur de la condition }
+  EmitRaw(VXP_RT_PFX + 'EXCPHDL DD  0');      { handler parent (chaine) }
+  EmitRaw(VXP_RT_PFX + 'EXCPSP  DD  0');      { ESP parent }
+  EmitRaw(VXP_RT_PFX + 'EXCPBP  DD  0');      { EBP parent }
+  EmitComment('--- Messages d erreur runtime ---');
+  EmitRaw(VXP_RT_PFX + 'DIV0MSG DB  ''Runtime error: Division by zero'',0');
+  EmitRaw(VXP_RT_PFX + 'OVFMSG  DB  ''Runtime error: Integer overflow'',0');
+  EmitRaw(VXP_RT_PFX + 'RNGMSG  DB  ''Runtime error: Range check error'',0');
+  EmitRaw(VXP_RT_PFX + 'NILMSG  DB  ''Runtime error: Nil pointer dereference'',0');
+  EmitRaw(VXP_RT_PFX + 'SIGMSG  DB  ''Runtime error: Unhandled condition'',0');
+  EmitBlankLine;
+
+  { --- Entrees dynamiques de DataTab --- }
+  If DataCount > 0 Then
+    EmitComment('--- Donnees du programme ---');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_DWORD :
+        If DataTab[I].StrVal <> '' Then
+          EmitRaw(DataTab[I].LblName + '  DD  OFFSET ' + DataTab[I].StrVal)
+        Else
+          EmitRaw(DataTab[I].LblName + '  DD  ' +
+                  IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+        Begin
+          { Emettre la chaine, en decoupant aux retours a la ligne }
+          S := '';
+          IsFirst := True;
+          For J := 1 To Length(DataTab[I].StrVal) Do
+          Begin
+            If (DataTab[I].StrVal[J] = #13) Or
+               (DataTab[I].StrVal[J] = #10) Then
+            Begin
+              If Length(S) > 0 Then
+              Begin
+                If IsFirst Then
+                Begin EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''''); IsFirst := False; End
+                Else EmitRaw('  DB  ''' + S + '''');
+                S := '';
+              End;
+              If IsFirst Then
+              Begin EmitRaw(DataTab[I].LblName + '  DB  ' + IntToStr(Ord(DataTab[I].StrVal[J]))); IsFirst := False; End
+              Else EmitRaw('  DB  ' + IntToStr(Ord(DataTab[I].StrVal[J])));
+            End
+            Else If DataTab[I].StrVal[J] = '''' Then
+              S := S + ''''''
+            Else
+              S := S + DataTab[I].StrVal[J];
+          End;
+          { Vider le restant + null terminator }
+          If Length(S) > 0 Then
+          Begin
+            If IsFirst Then
+              EmitRaw(DataTab[I].LblName + '  DB  ''' + S + ''',0')
+            Else
+              EmitRaw('  DB  ''' + S + ''',0');
+          End
+          Else
+          Begin
+            If IsFirst Then
+              EmitRaw(DataTab[I].LblName + '  DB  0')
+            Else
+              EmitRaw('  DB  0');
+          End;
+        End;
+      DK_ARRAY :
+        Begin
+          Sz := DataTab[I].ElemSize;
+          If Sz <= 1 Then
+            EmitRaw(DataTab[I].LblName + '  DB  ' +
+                    IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+          Else If Sz = 4 Then
+            EmitRaw(DataTab[I].LblName + '  DD  ' +
+                    IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+          Else
+            EmitRaw(DataTab[I].LblName + '  DB  ' +
+                    IntToStr(DataTab[I].ElemCount * Sz) + ' DUP(0)');
+        End;
+      DK_REC :
+        Begin
+          EmitRaw(DataTab[I].LblName + '  DB  ' +
+                  IntToStr(DataTab[I].RecSize) + ' DUP(0)');
+        End;
+      DK_ARRAY_INIT :
+        Begin
+          Sz := DataTab[I].ElemSize;
+          If Sz <= 1 Then
+            EmitRaw(DataTab[I].LblName + '  DB  ' + DataTab[I].StrVal)
+          Else
+            EmitRaw(DataTab[I].LblName + '  DD  ' + DataTab[I].StrVal);
+        End;
+      DK_SET :
+        EmitRaw(DataTab[I].LblName + '  DB  32 DUP(0)');
+    End;
+  End;
+
+  EmitRaw('_DATA   ENDS');
+End;
+
+{ ---- LitEval : evaluer un token litteral en TExprVal --------- }
+{ Gere : TK_INTEGER, TK_OCTAL, TK_REAL (tronque+warn),          }
+{        TK_STRING, TK_CHAR, TK_KEYWORD (true/false/nil/maxint). }
+Procedure LitEval(Const T : TToken; Var Res : TExprVal);
+Var
+  Lw : TString;
+Begin
+  Res.Kind    := EK_NONE;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+
+  Case T.Kind Of
+    { --- Entiers decimaux et hexadecimaux --- }
+    TK_INTEGER :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Octaux (suffixe B) --- }
+    TK_OCTAL :
+    Begin
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := T.IntVal;
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Reels : tronquer en entier + avertissement --- }
+    TK_REAL :
+    Begin
+      WarnMsg('reel ' + T.Val + ' tronque en entier');
+      Res.Kind    := EK_IMM;
+      Res.ImmVal  := Trunc(T.RealVal);
+      Res.TypeIdx := TY_IDX_INTEGER;
+    End;
+
+    { --- Chaines : stocker en DATA, retourner index DataTab --- }
+    TK_STRING :
+    Begin
+      DataAddStr(T.Val);
+      Res.Kind    := EK_EAX;
+      Res.ImmVal  := 0;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := DataCount - 1;
+    End;
+
+    { --- Caracteres : valeur ordinale dans ImmVal --- }
+    TK_CHAR :
+    Begin
+      If Length(T.Val) = 1 Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := Ord(T.Val[1]);
+        Res.TypeIdx := TY_IDX_CHAR;
+      End
+      Else
+      Begin
+        { Multi-caractere (#13#10 etc.) : traiter comme chaine }
+        DataAddStr(T.Val);
+        Res.Kind    := EK_EAX;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_STRING;
+        Res.SymIdx  := DataCount - 1;
+      End;
+    End;
+
+    { --- Mots-cles speciaux : true, false, nil, maxint --- }
+    TK_KEYWORD :
+    Begin
+      Lw := StrLowerCase(T.Val);
+      If Lw = 'true' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 1;
+        Res.TypeIdx := TY_IDX_BOOLEAN;
+      End
+      Else If Lw = 'false' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_BOOLEAN;
+      End
+      Else If Lw = 'nil' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 0;
+        Res.TypeIdx := TY_IDX_NIL;
+      End
+      Else If Lw = 'maxint' Then
+      Begin
+        Res.Kind    := EK_IMM;
+        Res.ImmVal  := 2147483647;
+        Res.TypeIdx := TY_IDX_INTEGER;
+      End;
+    End;
+  Else
+    Res.Kind := EK_NONE;
+  End;
+End;
+
+{ ---- EmitHeader : en-tete ASM Win32 FLAT --------------------- }
+Procedure EmitHeader;
+Begin
+  EmitComment('========================================');
+  EmitComment('Genere par VAXPCW32 v' + VXP_VERSION +
+              ' (' + VXP_DATE + ')');
+  EmitComment('Source : ' + Opts.SrcFile);
+  EmitComment('Cible  : Win32 / 80386 / PE');
+  EmitComment('========================================');
+  EmitBlankLine;
+  EmitRaw('.386');
+  EmitRaw('.MODEL FLAT, STDCALL');
+  EmitRaw('OPTION CASEMAP:NONE');
+  EmitBlankLine;
+  EmitComment('--- Declarations externes Win32 ---');
+  EmitRaw('EXTRN   _ExitProcess@4       : PROC');
+  EmitRaw('EXTRN   _GetStdHandle@4      : PROC');
+  EmitRaw('EXTRN   _WriteFile@20        : PROC');
+  EmitRaw('EXTRN   _ReadFile@20         : PROC');
+  EmitRaw('EXTRN   _GetProcessHeap@0    : PROC');
+  EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
+  EmitRaw('EXTRN   _HeapFree@12         : PROC');
+  EmitRaw('EXTRN   _GetTickCount@0      : PROC');
+  EmitBlankLine;
+  EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitComment('--- Segment de code ---');
+  EmitRaw('_TEXT   SEGMENT DWORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT');
+  EmitBlankLine;
+  EmitComment('--- Point d entree principal ---');
+  EmitLabel(VXP_FN_PFX + 'MAIN');
+  EmitComment('Obtenir le handle stdout');
+  EmitInstrA('PUSH', '-11');
+  EmitInstrA('CALL', '_GetStdHandle@4');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDOUT]', 'EAX');
+  EmitComment('Obtenir le handle stdin');
+  EmitInstrA('PUSH', '-10');
+  EmitInstrA('CALL', '_GetStdHandle@4');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDIN]', 'EAX');
+  EmitBlankLine;
+End;
 
 Procedure Run;
 Begin
@@ -2397,7 +2908,7 @@ Begin
       LexNextToken;
   End;
 
-  { TODO 03+ : Parse, EmitHeader, ... }
+  { TODO 04+ : Parse, EmitHeader, ... }
 
   { Fermer le lexeur }
   LexClose;
