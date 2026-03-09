@@ -3234,7 +3234,8 @@ Begin
              (SymTab[SIdx2].TypeIdx < TypeCount) Then
           Begin
             If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ENUM Then
-              EmitInstrAB('MOV', 'EAX', '0')
+              EmitInstrAB('MOV', 'EAX',
+                IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Lo))
             Else If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_SUBRANGE Then
               EmitInstrAB('MOV', 'EAX',
                 IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Lo))
