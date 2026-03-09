@@ -395,7 +395,7 @@
             [HIDDEN] : symbole non exportable
             Mangling de noms de module : _VXM_module_VXF_proc
 
-  TODO 23 - EXCEPTIONS (CONDITION / ON..DO) ET PREPROCESSEUR
+  TODO 23 - EXCEPTIONS (CONDITION / ON..DO) ET PREPROCESSEUR [IMPLEMENTE]
             Exceptions VAX Pascal :
               Conditions predefinies : ss$_accvio, ss$_intovf,
                 ss$_intdiv, ss$_fltovf, ss$_fltdiv, ss$_roprand
@@ -6818,8 +6818,16 @@ Begin
   EmitBlankLine;
 
   (* ---- _VXPRT_PANIC_DIV0 : division par zero ------------------- *)
+  (* TODO 23 : signale ss$_intdiv (3) si handler present           *)
   EmitComment('--- PANIC_DIV0 : division by zero ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_DIV0');
+  EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PANIC_DIV0_X');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCCODE]', '3');
+  EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+  EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+  EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+  EmitLabel(VXP_RT_PFX + 'PANIC_DIV0_X');
   EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'DIV0MSG');
   EmitInstrA('POP', 'ESI');
   EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
@@ -6829,8 +6837,16 @@ Begin
   EmitBlankLine;
 
   (* ---- _VXPRT_PANIC_NIL : nil pointer dereference --------------- *)
+  (* TODO 23 : signale ss$_accvio (1) si handler present             *)
   EmitComment('--- PANIC_NIL : nil pointer dereference ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_NIL');
+  EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PANIC_NIL_X');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCCODE]', '1');
+  EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+  EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+  EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+  EmitLabel(VXP_RT_PFX + 'PANIC_NIL_X');
   EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'NILMSG');
   EmitInstrA('POP', 'ESI');
   EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
@@ -6840,9 +6856,28 @@ Begin
   EmitBlankLine;
 
   (* ---- _VXPRT_PANIC_RANGE : array bounds check error --------------- *)
+  (* TODO 23 : signale ss$_intovf (2) si handler present               *)
   EmitComment('--- PANIC_RANGE : array index out of bounds ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_RANGE');
+  EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PANIC_RANGE_X');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCCODE]', '2');
+  EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+  EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+  EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+  EmitLabel(VXP_RT_PFX + 'PANIC_RANGE_X');
   EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'RNGMSG');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+  EmitInstrA('PUSH', '1');
+  EmitInstrA('CALL', '_ExitProcess@4');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_RSG_PK : signal non intercepte -> panique --------- *)
+  EmitComment('--- RSG_PK : unhandled signal (panic) ---');
+  EmitLabel(VXP_RT_PFX + 'RSG_PK');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'SIGMSG');
   EmitInstrA('POP', 'ESI');
   EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
   EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
@@ -10966,8 +11001,56 @@ Begin
     End;
 
     (* END - do not consume, let ParseBlock handle it *)
-    If StLw = 'end' Then
+    If (StLw = 'end') Or (StLw = 'exception') Then
       Exit;
+
+    (* TODO 23 : SIGNAL(condition) *)
+    If StLw = 'signal' Then
+    Begin
+      LexNextToken;  (* consommer SIGNAL *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          IoVarNm := CurToken.Val;
+          IoVarIdx := SymFind(IoVarNm);
+          LexNextToken;
+          EmitComment('signal(' + IoVarNm + ')');
+          If (IoVarIdx >= 0) And (SymTab[IoVarIdx].Cat = SC_CONDITION) Then
+          Begin
+            EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCCODE]',
+              IntToStr(SymTab[IoVarIdx].Offset));
+          End
+          Else
+          Begin
+            WarnMsg('condition inconnue : ' + IoVarNm);
+            EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCCODE]', '0');
+          End;
+          EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+          EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+          EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* TODO 23 : RESIGNAL *)
+    If StLw = 'resignal' Then
+    Begin
+      LexNextToken;  (* consommer RESIGNAL *)
+      EmitComment('resignal');
+      EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+      EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+      EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
 
     (* Keyword that is a known function/procedure: treat as call or assignment *)
     StIdx := SymFind(CurToken.Val);
@@ -11129,18 +11212,200 @@ Begin
 End;
 
 (* ---- ParseBlock : analyser un bloc BEGIN..END ---------------  *)
+(* TODO 23 : gere BEGIN ... EXCEPTION ON cond DO ... END         *)
 Procedure ParseBlock;
+Var
+  HasExc       : Boolean;
+  ExcHLbl      : TString;
+  ExcELbl      : TString;
+  SaveExcHLbl  : TString;
+  SaveExcELbl  : TString;
+  SaveExcNest  : Integer;
+  CondIdx      : Integer;
+  CondNm       : TString;
+  OnLbl        : TString;
+  HadAnyOther  : Boolean;
 Begin
   LexNextToken;  (* consommer BEGIN *)
+  HasExc := False;
+  SaveExcHLbl := ExcHandlerLabel;
+  SaveExcELbl := ExcEndLabel;
+  SaveExcNest := ExcNestLevel;
+
+  (* Regarder si le bloc contient EXCEPTION (peek-ahead simplifie :       *)
+  (* on le detecte au moment ou on rencontre le mot-cle dans la boucle)   *)
+  ExcHLbl := '';
+  ExcELbl := '';
+
+  (* Pre-emettre le cadre d exception a chaque BEGIN au cas ou            *)
+  (* on rencontrerait EXCEPTION plus tard. Pour eviter de generer du code *)
+  (* inutile, on ne le fait QUE si on rencontre EXCEPTION.               *)
+  (* Strategie : parser les statements ; si on tombe sur EXCEPTION,       *)
+  (* on sait que le bloc a des handlers.                                  *)
+  (* Mais le probleme est qu il faut emettre le frame AVANT le corps.     *)
+  (* On opte pour : emettre toujours le frame si ExcNestLevel permet.     *)
+  (* Pour simplifier, on emet le frame puis on verifie EXCEPTION apres.   *)
+
+  ExcHLbl := NewLabel;
+  ExcELbl := NewLabel;
+  ExcHandlerLabel := ExcHLbl;
+  ExcEndLabel := ExcELbl;
+  Inc(ExcNestLevel);
+
+  (* Emettre le cadre de sauvegarde du handler parent *)
+  EmitComment('exception: sauvegarder handler parent');
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+  EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]',
+    'OFFSET ' + ExcHLbl);
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]', 'ESP');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]', 'EBP');
+
+  (* Parser les instructions du corps *)
   While (CurToken.Kind <> TK_EOF) And
         Not ((CurToken.Kind = TK_KEYWORD) And
-             (StrLowerCase(CurToken.Val) = 'end')) Do
+             ((StrLowerCase(CurToken.Val) = 'end') Or
+              (StrLowerCase(CurToken.Val) = 'exception'))) Do
   Begin
     ParseStatement;
-    (* Skip extra semicolons *)
     While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
       LexNextToken;
   End;
+
+  (* Detecter EXCEPTION *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'exception') Then
+  Begin
+    HasExc := True;
+    (* Emettre le code de sortie normale : restaurer le handler parent *)
+    EmitComment('exception: pas d erreur, restaurer handler parent');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+    EmitInstrA('JMP', ExcELbl);
+
+    (* Emettre le handler d exception *)
+    EmitLabel(ExcHLbl);
+    EmitComment('exception handler');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+
+    LexNextToken;  (* consommer EXCEPTION *)
+
+    (* Parser les clauses ON cond DO / ANYOTHER / ALLCONDITIONS *)
+    HadAnyOther := False;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_KEYWORD) And
+               (StrLowerCase(CurToken.Val) = 'end')) Do
+    Begin
+      (* Skip semicolons *)
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+        LexNextToken;
+
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'end') Then
+        Break;
+
+      (* ON condition DO statement *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'on') Then
+      Begin
+        LexNextToken;  (* consommer ON *)
+        (* Lire le nom de la condition *)
+        CondNm := '';
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          CondNm := CurToken.Val;
+          LexNextToken;
+        End;
+        (* Consommer DO *)
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'do') Then
+          LexNextToken;
+
+        (* Chercher la condition dans la table des symboles *)
+        CondIdx := SymFind(CondNm);
+        OnLbl := NewLabel;
+        If (CondIdx >= 0) And (SymTab[CondIdx].Cat = SC_CONDITION) Then
+        Begin
+          EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCCODE]',
+            IntToStr(SymTab[CondIdx].Offset));
+          EmitInstrA('JNE', OnLbl);
+        End
+        Else
+        Begin
+          WarnMsg('condition inconnue : ' + CondNm);
+          EmitInstrA('JMP', OnLbl);
+        End;
+
+        (* Parser le statement du handler *)
+        ParseStatement;
+        EmitInstrA('JMP', ExcELbl);
+        EmitLabel(OnLbl);
+      End
+      (* ANYOTHER : attraper toutes les conditions restantes *)
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'anyother') Then
+      Begin
+        LexNextToken;  (* consommer ANYOTHER *)
+        HadAnyOther := True;
+        ParseStatement;
+        EmitInstrA('JMP', ExcELbl);
+      End
+      (* ALLCONDITIONS : attraper toutes les conditions *)
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'allconditions') Then
+      Begin
+        LexNextToken;  (* consommer ALLCONDITIONS *)
+        HadAnyOther := True;
+        ParseStatement;
+        EmitInstrA('JMP', ExcELbl);
+      End
+      Else
+      Begin
+        (* Instruction inattendue dans le handler - parser et continuer *)
+        ParseStatement;
+      End;
+
+      While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+        LexNextToken;
+    End;
+
+    (* Si pas de ANYOTHER/ALLCONDITIONS, RESIGNAL implicite *)
+    If Not HadAnyOther Then
+    Begin
+      EmitComment('resignal implicite (pas de ANYOTHER)');
+      EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+      EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+      EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+    End;
+
+    EmitLabel(ExcELbl);
+  End
+  Else
+  Begin
+    (* Pas d EXCEPTION : restaurer quand meme le handler parent *)
+    EmitComment('exception: pas d erreur, restaurer handler parent');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+    EmitInstrA('JMP', ExcELbl);
+    EmitLabel(ExcHLbl);
+    EmitComment('exception handler');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+    EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+    EmitLabel(ExcELbl);
+  End;
+
+  (* Restaurer le contexte d exception parent *)
+  ExcHandlerLabel := SaveExcHLbl;
+  ExcEndLabel := SaveExcELbl;
+  ExcNestLevel := SaveExcNest;
+
+  (* Consommer END *)
   If (CurToken.Kind = TK_KEYWORD) And
      (StrLowerCase(CurToken.Val) = 'end') Then
     LexNextToken;
