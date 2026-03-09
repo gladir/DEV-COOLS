@@ -377,7 +377,7 @@
             Ensemble vide : [] -> 32 octets a zero
             Affectation : copie des 32 octets (REP MOVSD)
 
-  TODO 22 - MODULES (MODULE / INHERIT / ENVIRONMENT)
+  TODO 22 - MODULES (MODULE / INHERIT / ENVIRONMENT) [IMPLEMENTE]
             MODULE nom; ... END. : unite de compilation separee
               Pas de programme principal, seulement declarations
               Toutes les declarations sont exportables
@@ -713,6 +713,7 @@ Type
     DataIdx     : Integer;
     ParamCnt    : Integer;
     VarParamMask: LongInt;
+    IsHidden    : Boolean;
   End;
 
 { ============================================================
@@ -2966,17 +2967,21 @@ Begin
   EmitRaw('_TEXT   SEGMENT DWORD PUBLIC ''CODE''');
   EmitRaw('        ASSUME CS:_TEXT');
   EmitBlankLine;
-  EmitComment('--- Point d entree principal ---');
-  EmitLabel(VXP_FN_PFX + 'MAIN');
-  EmitComment('Obtenir le handle stdout');
-  EmitInstrA('PUSH', '-11');
-  EmitInstrA('CALL', '_GetStdHandle@4');
-  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDOUT]', 'EAX');
-  EmitComment('Obtenir le handle stdin');
-  EmitInstrA('PUSH', '-10');
-  EmitInstrA('CALL', '_GetStdHandle@4');
-  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDIN]', 'EAX');
-  EmitBlankLine;
+  (* TODO 22 : pour un MODULE, pas de point d entree principal *)
+  If Not IsModule Then
+  Begin
+    EmitComment('--- Point d entree principal ---');
+    EmitLabel(VXP_FN_PFX + 'MAIN');
+    EmitComment('Obtenir le handle stdout');
+    EmitInstrA('PUSH', '-11');
+    EmitInstrA('CALL', '_GetStdHandle@4');
+    EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDOUT]', 'EAX');
+    EmitComment('Obtenir le handle stdin');
+    EmitInstrA('PUSH', '-10');
+    EmitInstrA('CALL', '_GetStdHandle@4');
+    EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDIN]', 'EAX');
+    EmitBlankLine;
+  End;
 End;
 
 { ============================================================
@@ -5084,6 +5089,7 @@ Begin
   SymTab[Idx].DataIdx     := -1;
   SymTab[Idx].ParamCnt    := 0;
   SymTab[Idx].VarParamMask := 0;
+  SymTab[Idx].IsHidden    := False;
 
   If Opts.DebugMode Then
     WriteLn('  SYM_ADD[', Idx, ']: ', Lw,
@@ -6058,17 +6064,21 @@ End;
 Procedure EmitFooter;
 Begin
   EmitBlankLine;
-  { Emettre le label MAINBODY si pas deja fait }
-  If Not MainBodyEmitted Then
+  (* TODO 22 : pour un MODULE, pas de MAINBODY ni ExitProcess *)
+  If Not IsModule Then
   Begin
-    EmitLabel(VXP_LBL_PFX + 'MAINBODY');
-    MainBodyEmitted := True;
+    { Emettre le label MAINBODY si pas deja fait }
+    If Not MainBodyEmitted Then
+    Begin
+      EmitLabel(VXP_LBL_PFX + 'MAINBODY');
+      MainBodyEmitted := True;
+    End;
+    EmitBlankLine;
+    EmitComment('--- Sortie programme (Win32 ExitProcess) ---');
+    EmitInstrA('PUSH', '0');
+    EmitInstrA('CALL', '_ExitProcess@4');
+    EmitBlankLine;
   End;
-  EmitBlankLine;
-  EmitComment('--- Sortie programme (Win32 ExitProcess) ---');
-  EmitInstrA('PUSH', '0');
-  EmitInstrA('CALL', '_ExitProcess@4');
-  EmitBlankLine;
 
   { --- Routines runtime 32 bits --- }
   If RuntimeEmitted Then
@@ -6898,7 +6908,13 @@ Begin
   EmitDataSeg;
   { Directive END }
   If OutFOpen Then
-    EmitRaw('        END     ' + VXP_FN_PFX + 'MAIN');
+  Begin
+    (* TODO 22 : pour un MODULE, END sans point d entree *)
+    If IsModule Then
+      EmitRaw('        END')
+    Else
+      EmitRaw('        END     ' + VXP_FN_PFX + 'MAIN');
+  End;
   { Fermer les fichiers ouverts }
   Cleanup;
 End;
@@ -7227,7 +7243,18 @@ Begin
       AttrExternal := True;
 
     (* First identifier *)
-    If CurToken.Kind <> TK_IDENT Then Break;
+    (* TODO 22 : si [global]/[external] a ete consomme par
+       ParseVarAttributes mais que le token suivant n est pas un
+       identificateur (ex: function/procedure), propager le flag
+       vers PendAttrGlobal/PendAttrExternal pour le prochain appel *)
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      If AttrGlobal Then
+        PendAttrGlobal := True;
+      If AttrExternal Then
+        PendAttrExternal := True;
+      Break;
+    End;
     Names[0] := CurToken.Val;
     NCount := 1;
     LexNextToken;
@@ -7325,6 +7352,7 @@ Begin
         Idx := SymAdd(Names[I], UseCat, TY_IDX_POINTER);
         If Idx >= 0 Then
         Begin
+          SymTab[Idx].IsHidden := AttrHidden;
           If (CurScopeLevel = 0) Or (UseCat = SC_STATIC) Or
              (UseCat = SC_GLOBAL) Or (UseCat = SC_EXTERNAL) Then
           Begin
@@ -7396,6 +7424,7 @@ Begin
         Idx := SymAdd(Names[I], UseCat, NewVaryTIdx);
         If Idx >= 0 Then
         Begin
+          SymTab[Idx].IsHidden := AttrHidden;
           If (UseCat = SC_EXTERNAL) Then
           Begin
             SymTab[Idx].IsLocal := False;
@@ -7472,6 +7501,7 @@ Begin
         Idx := SymAdd(Names[I], UseCat, NewPtrTIdx);
         If Idx >= 0 Then
         Begin
+          SymTab[Idx].IsHidden := AttrHidden;
           If (CurScopeLevel = 0) Or (UseCat = SC_STATIC) Or
              (UseCat = SC_GLOBAL) Then
           Begin
@@ -7703,6 +7733,7 @@ Begin
         Idx := SymAdd(Names[I], UseCat, NewArrTIdx);
         If Idx >= 0 Then
         Begin
+          SymTab[Idx].IsHidden := AttrHidden;
           If (UseCat = SC_EXTERNAL) Then
           Begin
             SymTab[Idx].IsLocal := False;
@@ -7792,6 +7823,7 @@ Begin
       Idx := SymAdd(Names[I], UseCat, TIdx);
       If Idx >= 0 Then
       Begin
+        SymTab[Idx].IsHidden := AttrHidden;
         (* EXTERNAL variable : declare EXTRN *)
         If (UseCat = SC_EXTERNAL) Then
         Begin
@@ -11391,6 +11423,9 @@ Begin
     MName := SymTab[FuncIdx].MangledName
   Else
     MName := VXP_FN_PFX + StrUpperCase(FuncName);
+  (* TODO 22 : emettre PUBLIC pour les fonctions/procedures [GLOBAL] *)
+  If PendAttrGlobal Then
+    EmitInstr('PUBLIC ' + MName);
   EmitComment('--- ' + FuncName + ' ---');
   EmitLabel(MName);
   EmitProlog(FrameSize);
@@ -11462,9 +11497,6 @@ Begin
   { Ouvrir le fichier de sortie ASM }
   EmitOpen;
 
-  { Emettre l en-tete ASM (.386 / .MODEL FLAT / EXTRN) }
-  EmitHeader;
-
   { Initialiser la table des symboles }
   SymInit;
 
@@ -11474,10 +11506,19 @@ Begin
   { Initialiser le lexeur }
   LexInit;
 
+  (* TODO 22 : detecter MODULE avant d emettre l en-tete
+     afin de savoir si on doit generer un point d entree principal *)
+  LexNextToken;
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'module') Then
+    IsModule := True;
+
+  { Emettre l en-tete ASM (.386 / .MODEL FLAT / EXTRN) }
+  EmitHeader;
+
   { Mode debug -d : afficher tous les tokens et quitter }
   If Opts.DebugMode Then
   Begin
-    LexNextToken;
     While CurToken.Kind <> TK_EOF Do
       LexNextToken;
     LexClose;
@@ -11490,7 +11531,6 @@ Begin
   End;
 
   { Boucle principale de compilation }
-  LexNextToken;
   While CurToken.Kind <> TK_EOF Do
   Begin
     (* PROGRAM header *)
@@ -11524,6 +11564,9 @@ Begin
         ModuleName := CurToken.Val;
         LexNextToken;
       End;
+      (* TODO 22 : enregistrer le module et emettre un commentaire *)
+      EmitComment('MODULE ' + ModuleName);
+      SymAdd(ModuleName, SC_MODULE, -1);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
       Continue;
@@ -11748,8 +11791,20 @@ Begin
         ParseAssignment(PendingAssignName);
         HasPendingAssign := False;
       End;
-      PendAttrGlobal   := False;
-      PendAttrExternal := False;
+      (* TODO 22 : si ParseVarDecl a re-positionne PendAttrGlobal
+         pour une function/procedure imminente, ne pas l effacer *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         ((StrLowerCase(CurToken.Val) = 'function') Or
+          (StrLowerCase(CurToken.Val) = 'procedure')) And
+         PendAttrGlobal Then
+      Begin
+        { conserver PendAttrGlobal pour le prochain tour de boucle }
+      End
+      Else
+      Begin
+        PendAttrGlobal   := False;
+        PendAttrExternal := False;
+      End;
       Continue;
     End;
 
@@ -11869,8 +11924,8 @@ Begin
   { Fermer le lexeur }
   LexClose;
 
-  { Emettre MAINBODY si pas encore fait }
-  If Not MainBodyEmitted Then
+  { Emettre MAINBODY si pas encore fait (pas pour les modules) }
+  If (Not MainBodyEmitted) And (Not IsModule) Then
   Begin
     MainBodyEmitted := True;
     EmitLabel(VXP_LBL_PFX + 'MAINBODY');
@@ -11897,6 +11952,9 @@ Begin
       WriteLn(EnvIncF, '');
       For EnvI := SymInitCount To SymCount - 1 Do
       Begin
+        (* TODO 22 : ne pas exporter les symboles [HIDDEN] *)
+        If SymTab[EnvI].IsHidden Then
+          Continue;
         If (SymTab[EnvI].ScopeLevel = 0) And
            (SymTab[EnvI].Cat In [SC_FUNC, SC_PROC, SC_GLOBAL,
              SC_PUBLIC]) Then
