@@ -341,7 +341,7 @@
             ADDRESS(x) : adresse d une variable -> LEA EAX,[var]
             IADDRESS(x) : adresse entiere (meme chose en 32 bits)
 
-  TODO 20 - CHAINES ET VARYING OF CHAR
+  TODO 20 - CHAINES ET VARYING OF CHAR [IMPLEMENTE]
             STRING : chaine terminee par 0 (ASCIIZ)
               Taille en .DATA : DB 'abc',0
               Acces par pointeur (EAX = adresse)
@@ -866,6 +866,7 @@ Function  TypeIsOrdinal(TIdx : Integer) : Boolean; Forward;
 Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
 Function  TypeIsPointer(TIdx : Integer) : Boolean; Forward;
 Function  IsSetTypeIdx(TIdx : Integer) : Boolean; Forward;
+Function  IsVaryingTypeIdx(TIdx : Integer) : Boolean; Forward;
 Procedure EmitCoerce(SrcType, DstType : Integer); Forward;
 { Forward declarations TODO 08 }
 Procedure ParseVarDecl; Forward;
@@ -3911,7 +3912,70 @@ Begin
               LexNextToken;
               FTIdx2 := SymTab[SIdx2].TypeIdx;
               FIdx2 := -1;
-              If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+
+              (* TODO 20: VARYING .LENGTH and .BODY accessors *)
+              If IsVaryingTypeIdx(FTIdx2) And
+                 (CurToken.Kind = TK_IDENT) Then
+              Begin
+                If StrLowerCase(CurToken.Val) = 'length' Then
+                Begin
+                  LexNextToken;
+                  EmitComment('varying .length');
+                  If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                    EmitInstrAB('MOV', 'ESI',
+                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
+                  Else If SymTab[SIdx2].IsLocal Then
+                    EmitInstrAB('LEA', 'ESI',
+                      EBPOfs(SymTab[SIdx2].Offset))
+                  Else
+                    EmitInstrAB('LEA', 'ESI',
+                      '[' + SymTab[SIdx2].MangledName + ']');
+                  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESI]');
+                  Res.Kind    := EK_EAX;
+                  Res.TypeIdx := TY_IDX_INTEGER;
+                  Res.SymIdx  := -1;
+                End
+                Else If StrLowerCase(CurToken.Val) = 'body' Then
+                Begin
+                  LexNextToken;
+                  EmitComment('varying .body');
+                  If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                  Begin
+                    EmitInstrAB('MOV', 'EAX',
+                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                    EmitInstrAB('ADD', 'EAX', '2');
+                  End
+                  Else If SymTab[SIdx2].IsLocal Then
+                    EmitInstrAB('LEA', 'EAX',
+                      EBPOfs(SymTab[SIdx2].Offset + 2))
+                  Else
+                    EmitInstrAB('LEA', 'EAX',
+                      '[' + SymTab[SIdx2].MangledName + '+2]');
+                  Res.Kind    := EK_EAX;
+                  Res.TypeIdx := TY_IDX_STRING;
+                  Res.SymIdx  := -1;
+                End
+                Else
+                Begin
+                  (* Unknown VARYING field - load body *)
+                  LexNextToken;
+                  If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                  Begin
+                    EmitInstrAB('MOV', 'EAX',
+                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                    EmitInstrAB('ADD', 'EAX', '2');
+                  End
+                  Else If SymTab[SIdx2].IsLocal Then
+                    EmitInstrAB('LEA', 'EAX',
+                      EBPOfs(SymTab[SIdx2].Offset + 2))
+                  Else
+                    EmitInstrAB('LEA', 'EAX',
+                      '[' + SymTab[SIdx2].MangledName + '+2]');
+                  Res.Kind   := EK_EAX;
+                  Res.SymIdx := SIdx2;
+                End;
+              End
+              Else If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_RECORD) And
                  (CurToken.Kind = TK_IDENT) Then
               Begin
@@ -4166,7 +4230,23 @@ Begin
             (* Simple variable access *)
             Else
             Begin
-              If SymTab[SIdx2].Cat = SC_VARPARAM Then
+              (* TODO 20: VARYING variables - load body pointer (ASCIIZ) *)
+              If IsVaryingTypeIdx(SymTab[SIdx2].TypeIdx) Then
+              Begin
+                If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                Begin
+                  EmitInstrAB('MOV', 'EAX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                  EmitInstrAB('ADD', 'EAX', '2');
+                End
+                Else If SymTab[SIdx2].IsLocal Then
+                  EmitInstrAB('LEA', 'EAX',
+                    EBPOfs(SymTab[SIdx2].Offset + 2))
+                Else
+                  EmitInstrAB('LEA', 'EAX',
+                    '[' + SymTab[SIdx2].MangledName + '+2]');
+              End
+              Else If SymTab[SIdx2].Cat = SC_VARPARAM Then
               Begin
                 EmitInstrAB('MOV', 'EBX',
                   'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
@@ -4490,8 +4570,8 @@ Begin
     Begin
       (* ---- Emission de code binaire 32 bits ---- *)
       ResType := Res.TypeIdx;
-      If (Res.TypeIdx = TY_IDX_VARYING) Or (Right.TypeIdx = TY_IDX_VARYING) Then
-        ResType := TY_IDX_VARYING
+      If IsVaryingTypeIdx(Res.TypeIdx) Or IsVaryingTypeIdx(Right.TypeIdx) Then
+        ResType := TY_IDX_STRING
       Else If (Res.TypeIdx = TY_IDX_STRING) Or (Right.TypeIdx = TY_IDX_STRING) Then
         ResType := TY_IDX_STRING
       Else If (Op = '=') Or (Op = '<>') Or (Op = '<') Or (Op = '>') Or
@@ -4513,7 +4593,7 @@ Begin
       (* --- Arithmetique 32 bits --- *)
       If Op = '+' Then
       Begin
-        If (ResType = TY_IDX_STRING) Or (ResType = TY_IDX_VARYING) Then
+        If (ResType = TY_IDX_STRING) Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4602,14 +4682,7 @@ Begin
       Else If Op = '=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_VARYING Then
-        Begin
-          EmitInstrAB('MOV', 'ESI', 'EAX');
-          EmitInstrAB('MOV', 'EDI', 'EBX');
-          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
-          EmitInstrAB('CMP', 'EAX', '0');
-        End
-        Else If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4628,14 +4701,7 @@ Begin
       Else If Op = '<>' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_VARYING Then
-        Begin
-          EmitInstrAB('MOV', 'ESI', 'EAX');
-          EmitInstrAB('MOV', 'EDI', 'EBX');
-          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
-          EmitInstrAB('CMP', 'EAX', '0');
-        End
-        Else If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4654,14 +4720,7 @@ Begin
       Else If Op = '<' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_VARYING Then
-        Begin
-          EmitInstrAB('MOV', 'ESI', 'EAX');
-          EmitInstrAB('MOV', 'EDI', 'EBX');
-          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
-          EmitInstrAB('CMP', 'EAX', '0');
-        End
-        Else If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4680,14 +4739,7 @@ Begin
       Else If Op = '<=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_VARYING Then
-        Begin
-          EmitInstrAB('MOV', 'ESI', 'EAX');
-          EmitInstrAB('MOV', 'EDI', 'EBX');
-          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
-          EmitInstrAB('CMP', 'EAX', '0');
-        End
-        Else If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4706,14 +4758,7 @@ Begin
       Else If Op = '>' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_VARYING Then
-        Begin
-          EmitInstrAB('MOV', 'ESI', 'EAX');
-          EmitInstrAB('MOV', 'EDI', 'EBX');
-          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
-          EmitInstrAB('CMP', 'EAX', '0');
-        End
-        Else If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -4732,14 +4777,7 @@ Begin
       Else If Op = '>=' Then
       Begin
         LblSkip := NewLabel;
-        If ResType = TY_IDX_VARYING Then
-        Begin
-          EmitInstrAB('MOV', 'ESI', 'EAX');
-          EmitInstrAB('MOV', 'EDI', 'EBX');
-          EmitInstrA('CALL', VXP_RT_PFX + 'VARY_CMP');
-          EmitInstrAB('CMP', 'EAX', '0');
-        End
-        Else If ResType = TY_IDX_STRING Then
+        If ResType = TY_IDX_STRING Then
         Begin
           EmitInstrAB('MOV', 'ESI', 'EAX');
           EmitInstrAB('MOV', 'EDI', 'EBX');
@@ -5419,6 +5457,14 @@ Function IsSetTypeIdx(TIdx : Integer) : Boolean;
 Begin
   IsSetTypeIdx := (TIdx >= 0) And (TIdx < TypeCount) And
                   (TypeTab[TIdx].Kind = TKP_SET);
+End;
+
+(* ---- IsVaryingTypeIdx : le type est-il VARYING OF CHAR ? ------ *)
+Function IsVaryingTypeIdx(TIdx : Integer) : Boolean;
+Begin
+  IsVaryingTypeIdx := (TIdx = TY_IDX_VARYING) Or
+    ((TIdx >= 0) And (TIdx < TypeCount) And
+     (TypeTab[TIdx].Kind = TKP_VARYING));
 End;
 
 (* ---- TypeIsOrdinal : le type est-il ordinal ? ----------------- *)
@@ -6370,6 +6416,57 @@ Begin
   EmitInstrA('POP', 'EDX');
   EmitInstrA('POP', 'ECX');
   EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_FROM_STR : copier ASCIIZ -> VARYING --------- *)
+  (* ESI = ptr ASCIIZ source, EDI = ptr VARYING destination          *)
+  (* Mesure la longueur de ESI, ecrit WORD len a [EDI], copie a      *)
+  (* [EDI+2], ajoute un zero terminal                                *)
+  EmitComment('--- VARY_FROM_STR : ASCIIZ -> VARYING ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_FROM_STR');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDI');
+  (* Calculer longueur de l ASCIIZ *)
+  EmitInstrAB('MOV', 'EBX', 'ESI');
+  EmitInstrAB('XOR', 'ECX', 'ECX');
+  EmitRaw(VXP_RT_PFX + 'VFS_LP:');
+  EmitInstrAB('CMP', 'BYTE PTR [EBX]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VFS_DN');
+  EmitInstr('INC    EBX');
+  EmitInstr('INC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VFS_LP');
+  EmitRaw(VXP_RT_PFX + 'VFS_DN:');
+  (* Ecrire WORD longueur a [EDI] *)
+  EmitInstrAB('MOV', 'WORD PTR [EDI]', 'CX');
+  EmitInstrAB('ADD', 'EDI', '2');
+  (* Copier ECX octets de ESI vers EDI *)
+  EmitInstrAB('MOV', 'EBX', 'ECX');
+  EmitRaw(VXP_RT_PFX + 'VFS_CP:');
+  EmitInstrAB('TEST', 'EBX', 'EBX');
+  EmitInstrA('JZ', VXP_RT_PFX + 'VFS_FN');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    EBX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VFS_CP');
+  EmitRaw(VXP_RT_PFX + 'VFS_FN:');
+  (* Ajouter zero terminal *)
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_ASSIGN : copier VARYING body -> VARYING ------ *)
+  (* ESI = ptr body source (ASCIIZ a offset+2), EDI = ptr VARYING dst *)
+  (* Equivalent a VARY_FROM_STR car le body est ASCIIZ               *)
+  EmitComment('--- VARY_ASSIGN : VARYING body -> VARYING ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_ASSIGN');
+  EmitInstrA('CALL', VXP_RT_PFX + 'VARY_FROM_STR');
   EmitInstr('RET');
   EmitBlankLine;
 
@@ -8467,6 +8564,25 @@ Begin
       EmitInstr('REP MOVSB');
     End;
   End
+  (* TODO 20: VARYING assignment - convert ASCIIZ to VARYING format *)
+  Else If IsVaryingTypeIdx(SymTab[SIdx].TypeIdx) Then
+  Begin
+    EmitComment('varying assign ' + VarName);
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    If SymTab[SIdx].Cat = SC_VARPARAM Then
+      EmitInstrAB('MOV', 'EDI',
+        'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset))
+    Else If SymTab[SIdx].IsLocal Then
+      EmitInstrAB('LEA', 'EDI',
+        EBPOfs(SymTab[SIdx].Offset))
+    Else
+      EmitInstrAB('MOV', 'EDI',
+        'OFFSET ' + SymTab[SIdx].MangledName);
+    If IsVaryingTypeIdx(Ev.TypeIdx) Then
+      EmitInstrA('CALL', VXP_RT_PFX + 'VARY_ASSIGN')
+    Else
+      EmitInstrA('CALL', VXP_RT_PFX + 'VARY_FROM_STR');
+  End
   Else If SymTab[SIdx].IsLocal Then
   Begin
     If SymTab[SIdx].Cat = SC_VARPARAM Then
@@ -9187,6 +9303,7 @@ Var
   MultiCount   : Integer;
   MIdx         : Integer;
   ParenDepth   : Integer;
+  VaryLen      : Integer;
 Begin
   While (CurToken.Kind = TK_IDENT) Or
         ((CurToken.Kind = TK_KEYWORD) And
@@ -9820,10 +9937,37 @@ Begin
     Else If (CurToken.Kind = TK_KEYWORD) And
             (StrLowerCase(CurToken.Val) = 'varying') Then
     Begin
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      VaryLen := 255;
+      LexNextToken;
+      If IsOpenBracket Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          VaryLen := CurToken.IntVal;
+          LexNextToken;
+        End;
+        If IsCloseBracket Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
         LexNextToken;
       NewTIdx := TY_IDX_VARYING;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewTIdx].Kind        := TKP_VARYING;
+        TypeTab[NewTIdx].Size        := 4 + VaryLen;
+        TypeTab[NewTIdx].Hi          := VaryLen;
+        TypeTab[NewTIdx].Lo          := 0;
+        TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_CHAR;
+        TypeTab[NewTIdx].FieldCount  := 0;
+        TypeTab[NewTIdx].EnumCount   := 0;
+      End;
       TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
     End
 
@@ -10175,7 +10319,8 @@ Begin
           End;
           (* Emettre selon le type *)
           If (IoArgEv.TypeIdx = TY_IDX_STRING) Or
-             (IoArgEv.TypeIdx = TY_IDX_VARYING) Then
+             (IoArgEv.TypeIdx = TY_IDX_VARYING) Or
+             IsVaryingTypeIdx(IoArgEv.TypeIdx) Then
           Begin
             EmitInstrAB('MOV', 'ESI', 'EAX');
             EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
@@ -10259,7 +10404,8 @@ Begin
             If IoVarIdx >= 0 Then
             Begin
               If (SymTab[IoVarIdx].TypeIdx = TY_IDX_STRING) Or
-                 (SymTab[IoVarIdx].TypeIdx = TY_IDX_VARYING) Then
+                 (SymTab[IoVarIdx].TypeIdx = TY_IDX_VARYING) Or
+                 IsVaryingTypeIdx(SymTab[IoVarIdx].TypeIdx) Then
               Begin
                 EmitInstrA('CALL', VXP_RT_PFX + 'READSTR');
                 If SymTab[IoVarIdx].IsLocal Then
