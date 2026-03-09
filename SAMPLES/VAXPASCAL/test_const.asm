@@ -1,6 +1,6 @@
 ; ========================================
 ; Genere par VAXPAS86 v1.0 (2026-03-07)
-; Source : SAMPLES\VAXPASCAL\test_const.pas
+; Source : SAMPLES/VAXPASCAL/test_const.pas
 ; ========================================
 
 .MODEL SMALL
