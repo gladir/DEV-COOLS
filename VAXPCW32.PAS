@@ -168,7 +168,7 @@
             Chaines litterales : DB 'abc',0 dans .DATA avec label _VXK_N
             Tampons VARYING : DB taille DUP(0) avec prefixe longueur
 
-  TODO 09 - VARIABLES ET AFFECTATIONS
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
             Variables globales : segment .DATA, acces par [_VXV_nom]
             Variables locales : pile EBP, acces [EBP-offset]
             Parametres : [EBP+8+...] (convention stdcall/cdecl 32 bits)
@@ -876,6 +876,11 @@ Procedure ParseVarAttributes(
       AHidden, AUnbound : Boolean;
   Var AAlignVal, APosVal : Integer); Forward;
 Procedure ParseDeclAttributes; Forward;
+{ Forward declarations TODO 09 }
+Procedure ParseAssignment(Const VarName : TString); Forward;
+Procedure ParseValueSection; Forward;
+Procedure ParseStatement; Forward;
+Procedure ParseBlock; Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -3061,6 +3066,20 @@ End;
 (*        sous-expression parenthesee (expr),                      *)
 (*        identificateurs (stub pour futurs TODOs).                 *)
 Procedure ParsePrimary(Var Res : TExprVal);
+Var
+  IdName    : TString;
+  SIdx2     : Integer;
+  FTIdx2    : Integer;
+  FI2       : Integer;
+  FIdx2     : Integer;
+  WI2       : Integer;
+  WIdx2     : Integer;
+  RecTI2    : Integer;
+  FldI2     : Integer;
+  ESize2    : Integer;
+  ArgCount2 : Integer;
+  SubEv     : TExprVal;
+  Lw2       : TString;
 Begin
   Res.Kind    := EK_NONE;
   Res.ImmVal  := 0;
@@ -3105,11 +3124,654 @@ Begin
       End;
     End;
 
-    (* --- Identificateurs (stub pour TODO 05+) --- *)
+    (* --- Identificateurs : acces variables, constantes, fonctions --- *)
     TK_IDENT :
     Begin
-      WarnMsg('identificateur dans expression (TODO 05+): ' + CurToken.Val);
+      IdName := CurToken.Val;
+      Lw2 := StrLowerCase(IdName);
       LexNextToken;
+
+        (* --- Built-in functions --- *)
+        If (Lw2 = 'ord') Or (Lw2 = 'chr') Or (Lw2 = 'abs') Or
+           (Lw2 = 'odd') Or (Lw2 = 'succ') Or (Lw2 = 'pred') Or
+           (Lw2 = 'length') Or (Lw2 = 'sizeof') Or (Lw2 = 'size') Or
+           (Lw2 = 'address') Or (Lw2 = 'iaddress') Or
+           (Lw2 = 'trunc') Or (Lw2 = 'round') Or (Lw2 = 'sqr') Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            LexNextToken;
+            ParseExpr(SubEv);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              LexNextToken;
+          End
+          Else
+            ParsePrimary(SubEv);
+
+          If Lw2 = 'ord' Then
+          Begin
+            ExprFlushToEAX(SubEv);
+            EmitInstrAB('MOVZX', 'EAX', 'AL');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_INTEGER;
+          End
+          Else If Lw2 = 'chr' Then
+          Begin
+            ExprFlushToEAX(SubEv);
+            EmitInstrAB('AND', 'EAX', '255');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_CHAR;
+          End
+          Else If Lw2 = 'abs' Then
+          Begin
+            If SubEv.Kind = EK_IMM Then
+            Begin
+              If SubEv.ImmVal < 0 Then
+                SubEv.ImmVal := -SubEv.ImmVal;
+              Res := SubEv;
+            End
+            Else
+            Begin
+              ExprFlushToEAX(SubEv);
+              EmitInstrAB('TEST', 'EAX', 'EAX');
+              EmitInstr('JNS    $+4');
+              EmitInstr('NEG    EAX');
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := SubEv.TypeIdx;
+            End;
+          End
+          Else If Lw2 = 'odd' Then
+          Begin
+            ExprFlushToEAX(SubEv);
+            EmitInstrAB('AND', 'EAX', '1');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_BOOLEAN;
+          End
+          Else If Lw2 = 'succ' Then
+          Begin
+            If SubEv.Kind = EK_IMM Then
+            Begin
+              Inc(SubEv.ImmVal);
+              Res := SubEv;
+            End
+            Else
+            Begin
+              ExprFlushToEAX(SubEv);
+              EmitInstr('INC    EAX');
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := SubEv.TypeIdx;
+            End;
+          End
+          Else If Lw2 = 'pred' Then
+          Begin
+            If SubEv.Kind = EK_IMM Then
+            Begin
+              Dec(SubEv.ImmVal);
+              Res := SubEv;
+            End
+            Else
+            Begin
+              ExprFlushToEAX(SubEv);
+              EmitInstr('DEC    EAX');
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := SubEv.TypeIdx;
+            End;
+          End
+          Else If Lw2 = 'sqr' Then
+          Begin
+            ExprFlushToEAX(SubEv);
+            EmitInstrAB('IMUL', 'EAX', 'EAX');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := SubEv.TypeIdx;
+          End
+          Else If Lw2 = 'length' Then
+          Begin
+            ExprFlushToEAX(SubEv);
+            EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_INTEGER;
+          End
+          Else If (Lw2 = 'sizeof') Or (Lw2 = 'size') Then
+          Begin
+            If (SubEv.SymIdx >= 0) And (SubEv.SymIdx < SymCount) Then
+              ExprMakeImm(TypeSizeof(SymTab[SubEv.SymIdx].TypeIdx),
+                TY_IDX_INTEGER, Res)
+            Else
+              ExprMakeImm(4, TY_IDX_INTEGER, Res);
+          End
+          Else If (Lw2 = 'address') Or (Lw2 = 'iaddress') Then
+          Begin
+            If (SubEv.SymIdx >= 0) And (SubEv.SymIdx < SymCount) Then
+            Begin
+              If SymTab[SubEv.SymIdx].IsLocal Then
+                EmitInstrAB('LEA', 'EAX',
+                  EBPOfs(SymTab[SubEv.SymIdx].Offset))
+              Else
+                EmitInstrAB('LEA', 'EAX',
+                  '[' + SymTab[SubEv.SymIdx].MangledName + ']');
+            End
+            Else
+              EmitInstrAB('XOR', 'EAX', 'EAX');
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_POINTER;
+          End
+          Else
+          Begin
+            (* trunc, round : identity for integer *)
+            ExprFlushToEAX(SubEv);
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := TY_IDX_INTEGER;
+          End;
+        End  (* built-in functions *)
+
+        Else
+        Begin
+          (* --- Symbol lookup --- *)
+          SIdx2 := SymFind(IdName);
+
+          (* --- WITH context : unqualified field resolution --- *)
+          If (SIdx2 < 0) And (WithTop >= 0) Then
+          Begin
+            WIdx2 := -1;
+            FldI2 := -1;
+            For WI2 := WithTop DownTo 0 Do
+            Begin
+              RecTI2 := SymTab[WithSymIdx[WI2]].TypeIdx;
+              If (RecTI2 >= 0) And (RecTI2 < TypeCount) And
+                 (TypeTab[RecTI2].Kind = TKP_RECORD) Then
+              Begin
+                For FI2 := 0 To TypeTab[RecTI2].FieldCount - 1 Do
+                  If StrLowerCase(TypeTab[RecTI2].Fields[FI2].Name) =
+                     Lw2 Then
+                  Begin
+                    WIdx2 := WI2;
+                    FldI2 := FI2;
+                    Break;
+                  End;
+              End;
+              If WIdx2 >= 0 Then Break;
+            End;
+            If (WIdx2 >= 0) And (FldI2 >= 0) Then
+            Begin
+              RecTI2 := SymTab[WithSymIdx[WIdx2]].TypeIdx;
+              EmitComment('with field ' + IdName);
+              If SymTab[WithSymIdx[WIdx2]].IsLocal Then
+                EmitInstrAB('LEA', 'EBX',
+                  EBPOfs(SymTab[WithSymIdx[WIdx2]].Offset))
+              Else
+                EmitInstrAB('MOV', 'EBX',
+                  'OFFSET ' + SymTab[WithSymIdx[WIdx2]].MangledName);
+              If TypeTab[RecTI2].Fields[FldI2].Offset > 0 Then
+                EmitInstrAB('ADD', 'EBX',
+                  IntToStr(TypeTab[RecTI2].Fields[FldI2].Offset));
+              FTIdx2 := TypeTab[RecTI2].Fields[FldI2].TypeIdx;
+              If TypeSizeof(FTIdx2) = 1 Then
+              Begin
+                EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]');
+              End
+              Else
+                EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := FTIdx2;
+              Res.SymIdx  := -1;
+            End
+            Else
+            Begin
+              WarnMsg('identificateur non declare: ' + IdName);
+              Res.Kind := EK_NONE;
+            End;
+          End  (* WITH resolution *)
+
+          (* --- Type cast : TypeName(expr) --- *)
+          Else If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_TYPE) Then
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              LexNextToken;
+              ParseExpr(SubEv);
+              ExprFlushToEAX(SubEv);
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                LexNextToken;
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := SymTab[SIdx2].TypeIdx;
+              Res.SymIdx  := -1;
+            End
+            Else
+            Begin
+              (* bare type name -> its size *)
+              ExprMakeImm(TypeSizeof(SymTab[SIdx2].TypeIdx),
+                TY_IDX_INTEGER, Res);
+            End;
+          End
+
+          Else If SIdx2 < 0 Then
+          Begin
+            WarnMsg('identificateur non declare: ' + IdName);
+            Res.Kind := EK_NONE;
+          End
+
+          (* --- SC_CONST: immediate value --- *)
+          Else If SymTab[SIdx2].Cat = SC_CONST Then
+          Begin
+            ExprMakeImm(SymTab[SIdx2].ImmVal,
+              SymTab[SIdx2].TypeIdx, Res);
+            Res.SymIdx := SIdx2;
+          End
+
+          (* --- SC_ENUM_VAL: enumeration value --- *)
+          Else If SymTab[SIdx2].Cat = SC_ENUM_VAL Then
+          Begin
+            ExprMakeImm(SymTab[SIdx2].ImmVal,
+              SymTab[SIdx2].TypeIdx, Res);
+            Res.SymIdx := SIdx2;
+          End
+
+          (* --- SC_FUNC: function call or function result variable --- *)
+          Else If SymTab[SIdx2].Cat = SC_FUNC Then
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              EmitComment('call func ' + IdName);
+              LexNextToken;
+              (* Push arguments *)
+              ArgCount2 := 0;
+              If Not ((CurToken.Kind = TK_PUNCT) And
+                      (CurToken.Val = ')')) Then
+              Begin
+                Repeat
+                  ParseExpr(SubEv);
+                  ExprFlushToEAX(SubEv);
+                  EmitPush('EAX');
+                  Inc(ArgCount2);
+                  If (CurToken.Kind = TK_PUNCT) And
+                     (CurToken.Val = ',') Then
+                    LexNextToken
+                  Else
+                    Break;
+                Until False;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                LexNextToken;
+              EmitInstrA('CALL', SymTab[SIdx2].MangledName);
+              If ArgCount2 > 0 Then
+                EmitInstrAB('ADD', 'ESP', IntToStr(ArgCount2 * 4));
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := SymTab[SIdx2].TypeIdx;
+              Res.SymIdx  := SIdx2;
+            End
+            Else
+            Begin
+              (* bare function name = result variable *)
+              EmitInstrAB('MOV', 'EAX',
+                'DWORD PTR ' + EBPOfs(CurFuncRetOfs));
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := SymTab[SIdx2].TypeIdx;
+              Res.SymIdx  := SIdx2;
+            End;
+          End
+
+          (* --- SC_PROC: procedure call (result ignored or in EAX) --- *)
+          Else If SymTab[SIdx2].Cat = SC_PROC Then
+          Begin
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            Begin
+              EmitComment('call proc ' + IdName);
+              LexNextToken;
+              ArgCount2 := 0;
+              If Not ((CurToken.Kind = TK_PUNCT) And
+                      (CurToken.Val = ')')) Then
+              Begin
+                Repeat
+                  ParseExpr(SubEv);
+                  ExprFlushToEAX(SubEv);
+                  EmitPush('EAX');
+                  Inc(ArgCount2);
+                  If (CurToken.Kind = TK_PUNCT) And
+                     (CurToken.Val = ',') Then
+                    LexNextToken
+                  Else
+                    Break;
+                Until False;
+              End;
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+                LexNextToken;
+              EmitInstrA('CALL', SymTab[SIdx2].MangledName);
+              If ArgCount2 > 0 Then
+                EmitInstrAB('ADD', 'ESP', IntToStr(ArgCount2 * 4));
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := TY_IDX_INTEGER;
+              Res.SymIdx  := SIdx2;
+            End
+            Else
+            Begin
+              (* bare procedure name as value = address *)
+              EmitInstrAB('MOV', 'EAX',
+                'OFFSET ' + SymTab[SIdx2].MangledName);
+              Res.Kind    := EK_EAX;
+              Res.TypeIdx := TY_IDX_POINTER;
+              Res.SymIdx  := SIdx2;
+            End;
+          End
+
+          (* --- SC_CONDITION: condition value --- *)
+          Else If SymTab[SIdx2].Cat = SC_CONDITION Then
+          Begin
+            ExprMakeImm(SymTab[SIdx2].Offset, TY_IDX_INTEGER, Res);
+            Res.SymIdx := SIdx2;
+          End
+
+          (* --- Variable access (SC_VAR, SC_TYPED_CONST, etc.) --- *)
+          Else
+          Begin
+            Res.SymIdx  := SIdx2;
+            Res.TypeIdx := SymTab[SIdx2].TypeIdx;
+
+            (* Handle pointer dereference: ident^ *)
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
+            Begin
+              LexNextToken;
+              EmitComment('deref ' + IdName + '^');
+              If SymTab[SIdx2].IsLocal Then
+              Begin
+                If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                Begin
+                  EmitInstrAB('MOV', 'EBX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                  EmitInstrAB('MOV', 'EBX', 'DWORD PTR [EBX]');
+                End
+                Else
+                  EmitInstrAB('MOV', 'EBX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+              End
+              Else
+                EmitInstrAB('MOV', 'EBX',
+                  'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
+              If Opts.CheckEnabled Then
+              Begin
+                EmitInstrAB('TEST', 'EBX', 'EBX');
+                EmitInstrA('JZ', VXP_RT_PFX + 'PANIC_NIL');
+              End;
+
+              (* p^.field *)
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+              Begin
+                LexNextToken;
+                FTIdx2 := SymTab[SIdx2].TypeIdx;
+                If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                   (TypeTab[FTIdx2].Kind = TKP_POINTER) Then
+                  FTIdx2 := TypeTab[FTIdx2].BaseTypeIdx;
+                FIdx2 := -1;
+                If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                   (TypeTab[FTIdx2].Kind = TKP_RECORD) And
+                   (CurToken.Kind = TK_IDENT) Then
+                Begin
+                  For FI2 := 0 To TypeTab[FTIdx2].FieldCount - 1 Do
+                    If StrLowerCase(TypeTab[FTIdx2].Fields[FI2].Name) =
+                       StrLowerCase(CurToken.Val) Then
+                    Begin
+                      FIdx2 := FI2;
+                      Break;
+                    End;
+                  LexNextToken;
+                End;
+                If FIdx2 >= 0 Then
+                Begin
+                  If TypeTab[FTIdx2].Fields[FIdx2].Offset > 0 Then
+                    EmitInstrAB('ADD', 'EBX',
+                      IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                  Res.TypeIdx := TypeTab[FTIdx2].Fields[FIdx2].TypeIdx;
+                  If TypeSizeof(Res.TypeIdx) = 1 Then
+                    EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                  Else
+                    EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                End
+                Else
+                Begin
+                  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                  FTIdx2 := SymTab[SIdx2].TypeIdx;
+                  If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                     (TypeTab[FTIdx2].Kind = TKP_POINTER) Then
+                    Res.TypeIdx := TypeTab[FTIdx2].BaseTypeIdx;
+                End;
+              End
+              (* p^[i] *)
+              Else If IsOpenBracket Then
+              Begin
+                LexNextToken;
+                ParseExpr(SubEv);
+                ExprFlushToEAX(SubEv);
+                EmitInstrAB('SHL', 'EAX', '2');
+                EmitInstrAB('ADD', 'EBX', 'EAX');
+                If IsCloseBracket Then LexNextToken;
+                EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                FTIdx2 := SymTab[SIdx2].TypeIdx;
+                If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                   (TypeTab[FTIdx2].Kind = TKP_POINTER) Then
+                  Res.TypeIdx := TypeTab[FTIdx2].BaseTypeIdx;
+              End
+              Else
+              Begin
+                (* simple p^ *)
+                EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                FTIdx2 := SymTab[SIdx2].TypeIdx;
+                If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                   (TypeTab[FTIdx2].Kind = TKP_POINTER) Then
+                  Res.TypeIdx := TypeTab[FTIdx2].BaseTypeIdx;
+              End;
+              Res.Kind   := EK_EAX;
+              Res.SymIdx := -1;
+            End  (* pointer dereference *)
+
+            (* Handle record field access: ident.field *)
+            Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+            Begin
+              LexNextToken;
+              FTIdx2 := SymTab[SIdx2].TypeIdx;
+              FIdx2 := -1;
+              If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_RECORD) And
+                 (CurToken.Kind = TK_IDENT) Then
+              Begin
+                For FI2 := 0 To TypeTab[FTIdx2].FieldCount - 1 Do
+                  If StrLowerCase(TypeTab[FTIdx2].Fields[FI2].Name) =
+                     StrLowerCase(CurToken.Val) Then
+                  Begin
+                    FIdx2 := FI2;
+                    Break;
+                  End;
+                LexNextToken;
+              End
+              Else If CurToken.Kind = TK_IDENT Then
+                LexNextToken;
+              EmitComment('field ' + IdName + '.*');
+              If FIdx2 >= 0 Then
+              Begin
+                Res.TypeIdx := TypeTab[FTIdx2].Fields[FIdx2].TypeIdx;
+                If SymTab[SIdx2].IsLocal Then
+                Begin
+                  If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                  Begin
+                    EmitInstrAB('MOV', 'EBX',
+                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                    If TypeTab[FTIdx2].Fields[FIdx2].Offset > 0 Then
+                      EmitInstrAB('ADD', 'EBX',
+                        IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                    If TypeSizeof(Res.TypeIdx) = 1 Then
+                      EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                    Else
+                      EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                  End
+                  Else
+                  Begin
+                    If TypeSizeof(Res.TypeIdx) = 1 Then
+                      EmitInstrAB('MOVZX', 'EAX',
+                        'BYTE PTR ' + EBPOfs(SymTab[SIdx2].Offset +
+                          TypeTab[FTIdx2].Fields[FIdx2].Offset))
+                    Else
+                      EmitInstrAB('MOV', 'EAX',
+                        'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset +
+                          TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                  End;
+                End
+                Else
+                Begin
+                  If TypeTab[FTIdx2].Fields[FIdx2].Offset = 0 Then
+                  Begin
+                    If TypeSizeof(Res.TypeIdx) = 1 Then
+                      EmitInstrAB('MOVZX', 'EAX',
+                        'BYTE PTR [' + SymTab[SIdx2].MangledName + ']')
+                    Else
+                      EmitInstrAB('MOV', 'EAX',
+                        'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
+                  End
+                  Else
+                  Begin
+                    EmitInstrAB('MOV', 'EBX',
+                      'OFFSET ' + SymTab[SIdx2].MangledName);
+                    EmitInstrAB('ADD', 'EBX',
+                      IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                    If TypeSizeof(Res.TypeIdx) = 1 Then
+                      EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                    Else
+                      EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                  End;
+                End;
+              End
+              Else
+              Begin
+                (* Unknown field - load base *)
+                If SymTab[SIdx2].IsLocal Then
+                  EmitInstrAB('MOV', 'EAX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
+                Else
+                  EmitInstrAB('MOV', 'EAX',
+                    'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
+              End;
+              Res.Kind   := EK_EAX;
+              Res.SymIdx := SIdx2;
+            End  (* record field *)
+
+            (* Handle array/string subscript: ident[index] *)
+            Else If IsOpenBracket Then
+            Begin
+              LexNextToken;
+              FTIdx2 := SymTab[SIdx2].TypeIdx;
+              EmitComment('index ' + IdName + '[i]');
+
+              ParseExpr(SubEv);
+              ExprFlushToEAX(SubEv);
+
+              (* Subtract lower bound for arrays *)
+              If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_ARRAY) And
+                 (TypeTab[FTIdx2].Lo <> 0) Then
+                EmitInstrAB('SUB', 'EAX', IntToStr(TypeTab[FTIdx2].Lo));
+
+              (* Multiply by element size *)
+              ESize2 := 4;
+              If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
+              Begin
+                ESize2 := TypeSizeof(TypeTab[FTIdx2].BaseTypeIdx);
+                If ESize2 = 4 Then
+                  EmitInstrAB('SHL', 'EAX', '2')
+                Else If ESize2 = 2 Then
+                  EmitInstrAB('SHL', 'EAX', '1')
+                Else If ESize2 > 4 Then
+                Begin
+                  EmitInstrAB('MOV', 'ECX', IntToStr(ESize2));
+                  EmitInstrAB('IMUL', 'EAX', 'ECX');
+                End;
+                (* ESize2 = 1 : no multiply needed *)
+              End
+              Else If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                      ((TypeTab[FTIdx2].Kind = TKP_STRING) Or
+                       (TypeTab[FTIdx2].Kind = TKP_VARYING)) Then
+              Begin
+                ESize2 := 1;
+                (* char access: no multiply needed *)
+              End
+              Else
+                EmitInstrAB('SHL', 'EAX', '2');
+
+              EmitInstrAB('MOV', 'EBX', 'EAX');
+
+              (* Calculate base address *)
+              If SymTab[SIdx2].IsLocal Then
+              Begin
+                If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                Begin
+                  EmitInstrAB('MOV', 'ECX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                  EmitInstrAB('ADD', 'EBX', 'ECX');
+                End
+                Else
+                Begin
+                  EmitInstrAB('LEA', 'ECX',
+                    EBPOfs(SymTab[SIdx2].Offset));
+                  EmitInstrAB('ADD', 'EBX', 'ECX');
+                End;
+              End
+              Else
+                EmitInstrAB('ADD', 'EBX',
+                  'OFFSET ' + SymTab[SIdx2].MangledName);
+
+              If IsCloseBracket Then LexNextToken;
+
+              (* Load the element *)
+              If ESize2 = 1 Then
+                EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+              Else
+                EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+
+              If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
+                Res.TypeIdx := TypeTab[FTIdx2].BaseTypeIdx
+              Else If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                      ((TypeTab[FTIdx2].Kind = TKP_STRING) Or
+                       (TypeTab[FTIdx2].Kind = TKP_VARYING)) Then
+                Res.TypeIdx := TY_IDX_CHAR
+              Else
+                Res.TypeIdx := TY_IDX_INTEGER;
+              Res.Kind   := EK_EAX;
+              Res.SymIdx := SIdx2;
+            End  (* array/string subscript *)
+
+            (* Simple variable access *)
+            Else
+            Begin
+              If SymTab[SIdx2].Cat = SC_VARPARAM Then
+              Begin
+                EmitInstrAB('MOV', 'EBX',
+                  'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                If TypeSizeof(SymTab[SIdx2].TypeIdx) = 1 Then
+                  EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                Else
+                  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+              End
+              Else If SymTab[SIdx2].IsLocal Then
+              Begin
+                If TypeSizeof(SymTab[SIdx2].TypeIdx) = 1 Then
+                  EmitInstrAB('MOVZX', 'EAX',
+                    'BYTE PTR ' + EBPOfs(SymTab[SIdx2].Offset))
+                Else
+                  EmitInstrAB('MOV', 'EAX',
+                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+              End
+              Else
+              Begin
+                If TypeSizeof(SymTab[SIdx2].TypeIdx) = 1 Then
+                  EmitInstrAB('MOVZX', 'EAX',
+                    'BYTE PTR [' + SymTab[SIdx2].MangledName + ']')
+                Else
+                  EmitInstrAB('MOV', 'EAX',
+                    'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
+              End;
+              Res.Kind    := EK_EAX;
+              Res.SymIdx  := SIdx2;
+            End;  (* simple variable access *)
+          End;  (* variable symbol cases *)
+        End;  (* else not builtin *)
     End;
 
     (* --- Ponctuation ( ) --- *)
@@ -6282,6 +6944,1084 @@ End;
 
 
 { ============================================================
+  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseAssignment : analyser une affectation --------------- *)
+(* Syntaxe : ident := expr ;                                       *)
+(* Le nom de la variable a ete lu par l appelant.                  *)
+(* CurToken est sur := ou . ou ^ ou [                              *)
+Procedure ParseAssignment(Const VarName : TString);
+Var
+  SIdx       : Integer;
+  Ev         : TExprVal;
+  FieldName  : TString;
+  FI, FIdx   : Integer;
+  FTIdx      : Integer;
+  ArrEv      : TExprVal;
+  WI         : Integer;
+  WIdx       : Integer;
+  RecTIdx    : Integer;
+  FldIdx     : Integer;
+  FldTIdx2   : Integer;
+  FldSz      : Integer;
+  HasSliceLen: Boolean;
+  ESize      : Integer;
+Begin
+  (* Affectation a la valeur de retour : FuncName := expr *)
+  If (CurFuncName <> '') And
+     ((StrLowerCase(VarName) = CurFuncName) Or
+      (StrLowerCase(VarName) = 'result')) Then
+  Begin
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(''':='' attendu pour l''affectation');
+      Exit;
+    End;
+
+    EmitComment('assign retval ' + VarName);
+    ParseExpr(Ev);
+    ExprFlushToEAX(Ev);
+    EmitInstrAB('MOV',
+      'DWORD PTR ' + EBPOfs(CurFuncRetOfs), 'EAX');
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    Exit;
+  End;
+
+  (* Rechercher la variable *)
+  SIdx := SymFind(VarName);
+  If SIdx < 0 Then
+  Begin
+    (* --- WITH : resolution de champ non qualifie pour affectation --- *)
+    If WithTop >= 0 Then
+    Begin
+      WIdx := -1;
+      FldIdx := -1;
+      For WI := WithTop DownTo 0 Do
+      Begin
+        RecTIdx := SymTab[WithSymIdx[WI]].TypeIdx;
+        If (RecTIdx >= 0) And (RecTIdx < TypeCount) And
+           (TypeTab[RecTIdx].Kind = TKP_RECORD) Then
+        Begin
+          For FI := 0 To TypeTab[RecTIdx].FieldCount - 1 Do
+            If StrLowerCase(TypeTab[RecTIdx].Fields[FI].Name) =
+               StrLowerCase(VarName) Then
+            Begin
+              WIdx := WI;
+              FldIdx := FI;
+              Break;
+            End;
+        End;
+        If WIdx >= 0 Then Break;
+      End;
+      If (WIdx >= 0) And (FldIdx >= 0) Then
+      Begin
+        (* Consommer := *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+          LexNextToken
+        Else
+        Begin
+          WarnMsg(''':='' attendu');
+          Exit;
+        End;
+        RecTIdx := SymTab[WithSymIdx[WIdx]].TypeIdx;
+        EmitComment('with assign ' + VarName);
+        ParseExpr(Ev);
+        ExprFlushToEAX(Ev);
+        If SymTab[WithSymIdx[WIdx]].IsLocal Then
+          EmitInstrAB('LEA', 'EBX',
+            EBPOfs(SymTab[WithSymIdx[WIdx]].Offset))
+        Else
+          EmitInstrAB('MOV', 'EBX',
+            'OFFSET ' + SymTab[WithSymIdx[WIdx]].MangledName);
+        If TypeTab[RecTIdx].Fields[FldIdx].Offset > 0 Then
+          EmitInstrAB('ADD', 'EBX',
+            IntToStr(TypeTab[RecTIdx].Fields[FldIdx].Offset));
+        FldTIdx2 := TypeTab[RecTIdx].Fields[FldIdx].TypeIdx;
+        FldSz := TypeSizeof(FldTIdx2);
+        If FldSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        Exit;
+      End;
+    End;
+    WarnMsg('variable non declaree: ' + VarName);
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    Exit;
+  End;
+
+  (* Verifier que c est bien une variable/param *)
+  If Not (SymTab[SIdx].Cat In [SC_VAR, SC_PARAM, SC_VARPARAM,
+                                  SC_TYPED_CONST, SC_STATIC,
+                                  SC_GLOBAL, SC_EXTERNAL]) Then
+  Begin
+    WarnMsg('cible d''affectation invalide: ' + VarName);
+  End;
+
+  (* --- Acces champ record : ident.field := expr --- *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+  Begin
+    LexNextToken;
+    FieldName := '';
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      FieldName := CurToken.Val;
+      LexNextToken;
+    End;
+
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(''':='' attendu pour l''affectation de champ');
+      Exit;
+    End;
+
+    EmitComment('assign ' + VarName + '.' + FieldName);
+    ParseExpr(Ev);
+    ExprFlushToEAX(Ev);
+
+    (* Calculer l offset du champ dans le record *)
+    FTIdx := SymTab[SIdx].TypeIdx;
+    FIdx := -1;
+    If (FTIdx >= 0) And (FTIdx < TypeCount) And
+       (TypeTab[FTIdx].Kind = TKP_RECORD) Then
+    Begin
+      For FI := 0 To TypeTab[FTIdx].FieldCount - 1 Do
+      Begin
+        If StrLowerCase(TypeTab[FTIdx].Fields[FI].Name) =
+           StrLowerCase(FieldName) Then
+        Begin
+          FIdx := FI;
+          Break;
+        End;
+      End;
+    End;
+
+    If FIdx < 0 Then
+    Begin
+      WarnMsg('champ inconnu: ' + FieldName);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* Emettre le store *)
+    If SymTab[SIdx].IsLocal Then
+    Begin
+      If SymTab[SIdx].Cat = SC_VARPARAM Then
+      Begin
+        EmitInstrAB('MOV', 'EBX',
+          'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset));
+        If TypeTab[FTIdx].Fields[FIdx].Offset > 0 Then
+          EmitInstrAB('ADD', 'EBX',
+            IntToStr(TypeTab[FTIdx].Fields[FIdx].Offset));
+        FldSz := TypeSizeof(TypeTab[FTIdx].Fields[FIdx].TypeIdx);
+        If FldSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+      End
+      Else
+      Begin
+        FldSz := TypeSizeof(TypeTab[FTIdx].Fields[FIdx].TypeIdx);
+        If FldSz = 1 Then
+          EmitInstrAB('MOV',
+            'BYTE PTR ' + EBPOfs(SymTab[SIdx].Offset +
+              TypeTab[FTIdx].Fields[FIdx].Offset), 'AL')
+        Else
+          EmitInstrAB('MOV',
+            'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset +
+              TypeTab[FTIdx].Fields[FIdx].Offset), 'EAX');
+      End;
+    End
+    Else
+    Begin
+      If TypeTab[FTIdx].Fields[FIdx].Offset = 0 Then
+      Begin
+        FldSz := TypeSizeof(TypeTab[FTIdx].Fields[FIdx].TypeIdx);
+        If FldSz = 1 Then
+          EmitInstrAB('MOV',
+            'BYTE PTR [' + SymTab[SIdx].MangledName + ']', 'AL')
+        Else
+          EmitInstrAB('MOV',
+            'DWORD PTR [' + SymTab[SIdx].MangledName + ']', 'EAX');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'EBX',
+          'OFFSET ' + SymTab[SIdx].MangledName);
+        EmitInstrAB('ADD', 'EBX',
+          IntToStr(TypeTab[FTIdx].Fields[FIdx].Offset));
+        FldSz := TypeSizeof(TypeTab[FTIdx].Fields[FIdx].TypeIdx);
+        If FldSz = 1 Then
+          EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+        Else
+          EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+      End;
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    Exit;
+  End;
+
+  (* --- Acces pointeur dereference : p^ := expr ou p^.f := expr --- *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
+  Begin
+    LexNextToken;
+
+    (* p^.field := expr *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+    Begin
+      LexNextToken;
+      FieldName := '';
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        FieldName := CurToken.Val;
+        LexNextToken;
+      End;
+
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        LexNextToken
+      Else
+      Begin
+        WarnMsg(''':='' attendu');
+        Exit;
+      End;
+
+      EmitComment('assign ' + VarName + '^.' + FieldName);
+      ParseExpr(Ev);
+      ExprFlushToEAX(Ev);
+
+      (* Charger le pointeur *)
+      If SymTab[SIdx].IsLocal Then
+        EmitInstrAB('MOV', 'EBX',
+          'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset))
+      Else
+        EmitInstrAB('MOV', 'EBX',
+          'DWORD PTR [' + SymTab[SIdx].MangledName + ']');
+      If Opts.CheckEnabled Then
+      Begin
+        EmitInstrAB('TEST', 'EBX', 'EBX');
+        EmitInstrA('JZ', VXP_RT_PFX + 'PANIC_NIL');
+      End;
+
+      (* Trouver l offset du champ dans le type pointe *)
+      FTIdx := SymTab[SIdx].TypeIdx;
+      If (FTIdx >= 0) And (FTIdx < TypeCount) And
+         (TypeTab[FTIdx].Kind = TKP_POINTER) Then
+        FTIdx := TypeTab[FTIdx].BaseTypeIdx;
+      FIdx := -1;
+      If (FTIdx >= 0) And (FTIdx < TypeCount) And
+         (TypeTab[FTIdx].Kind = TKP_RECORD) Then
+      Begin
+        For FI := 0 To TypeTab[FTIdx].FieldCount - 1 Do
+          If StrLowerCase(TypeTab[FTIdx].Fields[FI].Name) =
+             StrLowerCase(FieldName) Then
+          Begin
+            FIdx := FI;
+            Break;
+          End;
+      End;
+
+      If (FIdx >= 0) And (TypeTab[FTIdx].Fields[FIdx].Offset > 0) Then
+        EmitInstrAB('ADD', 'EBX',
+          IntToStr(TypeTab[FTIdx].Fields[FIdx].Offset));
+      EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* p^[i] := expr -- tableau via pointeur *)
+    If IsOpenBracket Then
+    Begin
+      LexNextToken;
+      EmitComment('assign ' + VarName + '^[i]');
+
+      ParseExpr(ArrEv);
+      ExprFlushToEAX(ArrEv);
+      EmitPush('EAX');
+
+      If IsCloseBracket Then
+        LexNextToken;
+
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        LexNextToken
+      Else
+        WarnMsg(''':='' attendu');
+
+      ParseExpr(Ev);
+      ExprFlushToEAX(Ev);
+      EmitPush('EAX');
+
+      (* Charger le pointeur *)
+      If SymTab[SIdx].IsLocal Then
+        EmitInstrAB('MOV', 'EBX',
+          'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset))
+      Else
+        EmitInstrAB('MOV', 'EBX',
+          'DWORD PTR [' + SymTab[SIdx].MangledName + ']');
+      If Opts.CheckEnabled Then
+      Begin
+        EmitInstrAB('TEST', 'EBX', 'EBX');
+        EmitInstrA('JZ', VXP_RT_PFX + 'PANIC_NIL');
+      End;
+
+      (* Calculer l adresse : EBX + index * 4 *)
+      EmitPop('ECX');
+      EmitPop('EAX');
+      EmitInstrAB('SHL', 'EAX', '2');
+      EmitInstrAB('ADD', 'EBX', 'EAX');
+      EmitInstrAB('MOV', 'EAX', 'ECX');
+      EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* p^ := expr -- simple dereference *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(''':='' attendu apres ^');
+      Exit;
+    End;
+
+    EmitComment('assign ' + VarName + '^');
+    ParseExpr(Ev);
+    ExprFlushToEAX(Ev);
+
+    If SymTab[SIdx].IsLocal Then
+      EmitInstrAB('MOV', 'EBX',
+        'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset))
+    Else
+      EmitInstrAB('MOV', 'EBX',
+        'DWORD PTR [' + SymTab[SIdx].MangledName + ']');
+    If Opts.CheckEnabled Then
+    Begin
+      EmitInstrAB('TEST', 'EBX', 'EBX');
+      EmitInstrA('JZ', VXP_RT_PFX + 'PANIC_NIL');
+    End;
+    EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    Exit;
+  End;
+
+  (* --- Acces tableau / sous-chaine : ident[index] := expr --- *)
+  If IsOpenBracket Then
+  Begin
+    LexNextToken;
+
+    FTIdx := SymTab[SIdx].TypeIdx;
+    (* --- Affectation sous-chaine VAX : s[pos:len] := expr ou s[pos] := ch --- *)
+    If (FTIdx >= 0) And (FTIdx < TypeCount) And
+       ((TypeTab[FTIdx].Kind = TKP_STRING) Or
+        (TypeTab[FTIdx].Kind = TKP_VARYING)) Then
+    Begin
+      EmitComment('assign ' + VarName + '[substring]');
+      ParseExpr(ArrEv);
+      ExprFlushToEAX(ArrEv);
+      EmitPush('EAX');
+
+      HasSliceLen := False;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        LexNextToken;
+        ParseExpr(ArrEv);
+        ExprFlushToEAX(ArrEv);
+        EmitPush('EAX');
+        HasSliceLen := True;
+      End;
+
+      If IsCloseBracket Then
+        LexNextToken
+      Else
+        WarnMsg(''']'' attendu apres substring');
+
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+        LexNextToken
+      Else
+      Begin
+        WarnMsg(''':='' attendu');
+        If HasSliceLen Then EmitPop('ECX');
+        EmitPop('EBX');
+        Exit;
+      End;
+
+      ParseExpr(Ev);
+      ExprFlushToEAX(Ev);
+
+      If HasSliceLen Then
+      Begin
+        EmitInstrAB('MOV', 'ESI', 'EAX');
+        EmitPop('ECX');
+        EmitPop('EBX');
+        If SymTab[SIdx].IsLocal Then
+          EmitInstrAB('LEA', 'EDI',
+            EBPOfs(SymTab[SIdx].Offset))
+        Else
+          EmitInstrAB('MOV', 'EDI',
+            'OFFSET ' + SymTab[SIdx].MangledName);
+        EmitInstrA('CALL', VXP_RT_PFX + 'SSLICE');
+      End
+      Else
+      Begin
+        EmitPop('EBX');
+        EmitInstr('DEC    EBX');
+        If SymTab[SIdx].IsLocal Then
+          EmitInstrAB('LEA', 'EDI',
+            EBPOfs(SymTab[SIdx].Offset))
+        Else
+          EmitInstrAB('MOV', 'EDI',
+            'OFFSET ' + SymTab[SIdx].MangledName);
+        EmitInstrAB('ADD', 'EDI', 'EBX');
+        EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* --- Acces tableau classique : arr[index] := expr --- *)
+    EmitComment('assign ' + VarName + '[i]');
+    ParseExpr(ArrEv);
+    ExprFlushToEAX(ArrEv);
+
+    (* Soustraire la borne inferieure *)
+    If (FTIdx >= 0) And (FTIdx < TypeCount) And
+       (TypeTab[FTIdx].Kind = TKP_ARRAY) And
+       (TypeTab[FTIdx].Lo <> 0) Then
+      EmitInstrAB('SUB', 'EAX', IntToStr(TypeTab[FTIdx].Lo));
+
+    (* Multiplier par la taille element *)
+    ESize := 4;
+    If (FTIdx >= 0) And (FTIdx < TypeCount) And
+       (TypeTab[FTIdx].Kind = TKP_ARRAY) Then
+    Begin
+      ESize := TypeSizeof(TypeTab[FTIdx].BaseTypeIdx);
+      If ESize = 4 Then
+        EmitInstrAB('SHL', 'EAX', '2')
+      Else If ESize = 2 Then
+        EmitInstrAB('SHL', 'EAX', '1')
+      Else If ESize > 4 Then
+      Begin
+        EmitInstrAB('MOV', 'ECX', IntToStr(ESize));
+        EmitInstrAB('IMUL', 'EAX', 'ECX');
+      End;
+      (* ESize = 1 : no multiply needed *)
+    End
+    Else
+      EmitInstrAB('SHL', 'EAX', '2');
+
+    EmitPush('EAX');
+
+    If IsCloseBracket Then
+      LexNextToken;
+
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(''':='' attendu');
+      EmitPop('EBX');
+      Exit;
+    End;
+
+    ParseExpr(Ev);
+    ExprFlushToEAX(Ev);
+
+    EmitPop('EBX');
+
+    (* Calculer adresse base + offset *)
+    If SymTab[SIdx].IsLocal Then
+    Begin
+      If SymTab[SIdx].Cat = SC_VARPARAM Then
+      Begin
+        EmitInstrAB('MOV', 'ECX',
+          'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset));
+        EmitInstrAB('ADD', 'EBX', 'ECX');
+      End
+      Else
+      Begin
+        EmitInstrAB('LEA', 'ESI',
+          EBPOfs(SymTab[SIdx].Offset));
+        EmitInstrAB('ADD', 'EBX', 'ESI');
+      End;
+    End
+    Else
+    Begin
+      EmitInstrAB('ADD', 'EBX',
+        'OFFSET ' + SymTab[SIdx].MangledName);
+    End;
+    (* Ecriture selon la taille de l element *)
+    If (FTIdx >= 0) And (FTIdx < TypeCount) And
+       (TypeTab[FTIdx].Kind = TKP_ARRAY) And
+       (TypeSizeof(TypeTab[FTIdx].BaseTypeIdx) = 1) Then
+      EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL')
+    Else
+      EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    Exit;
+  End;
+
+  (* --- Affectation simple : ident := expr --- *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    LexNextToken
+  Else
+  Begin
+    WarnMsg(''':='' attendu pour l''affectation');
+    Exit;
+  End;
+
+  EmitComment('assign ' + VarName);
+
+  ParseExpr(Ev);
+
+  (* Verification de compatibilite de type *)
+  If (SymTab[SIdx].TypeIdx <> TY_UNKNOWN) And
+     (Ev.TypeIdx <> TY_UNKNOWN) Then
+  Begin
+    If Not TypeCompatible(SymTab[SIdx].TypeIdx, Ev.TypeIdx) Then
+      WarnMsg('type incompatible dans l''affectation de ' + VarName);
+  End;
+
+  ExprFlushToEAX(Ev);
+
+  (* Stocker EAX dans la cible *)
+  If IsSetTypeIdx(SymTab[SIdx].TypeIdx) Then
+  Begin
+    (* Affectation ensemble : copier 32 octets via SET_COPY *)
+    EmitInstrAB('MOV', 'ESI', 'EAX');
+    If SymTab[SIdx].IsLocal Then
+      EmitInstrAB('LEA', 'EDI',
+        EBPOfs(SymTab[SIdx].Offset))
+    Else
+      EmitInstrAB('MOV', 'EDI',
+        'OFFSET ' + SymTab[SIdx].MangledName);
+    EmitInstrA('CALL', VXP_RT_PFX + 'SET_COPY');
+  End
+  Else If SymTab[SIdx].IsLocal Then
+  Begin
+    If SymTab[SIdx].Cat = SC_VARPARAM Then
+    Begin
+      EmitInstrAB('MOV', 'EBX',
+        'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset));
+      EmitInstrAB('MOV', 'DWORD PTR [EBX]', 'EAX');
+    End
+    Else
+    Begin
+      If TypeSizeof(SymTab[SIdx].TypeIdx) = 1 Then
+        EmitInstrAB('MOV',
+          'BYTE PTR ' + EBPOfs(SymTab[SIdx].Offset), 'AL')
+      Else
+        EmitInstrAB('MOV',
+          'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset), 'EAX');
+    End;
+  End
+  Else
+  Begin
+    If TypeSizeof(SymTab[SIdx].TypeIdx) = 1 Then
+      EmitInstrAB('MOV',
+        'BYTE PTR [' + SymTab[SIdx].MangledName + ']', 'AL')
+    Else
+      EmitInstrAB('MOV',
+        'DWORD PTR [' + SymTab[SIdx].MangledName + ']', 'EAX');
+  End;
+
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    LexNextToken;
+End;
+
+(* ---- ParseValueSection : analyser le bloc VALUE (VMS) --------- *)
+(* Syntaxe :                                                        *)
+(*   VALUE                                                          *)
+(*     x := 10;                                                     *)
+(*     s := 'default';                                              *)
+(* Initialise des variables declarees dans VAR.                     *)
+Procedure ParseValueSection;
+Var
+  VName : TString;
+  SIdx  : Integer;
+  Ev    : TExprVal;
+Begin
+  (* Le mot-cle VALUE a deja ete consomme *)
+  While CurToken.Kind = TK_IDENT Do
+  Begin
+    VName := CurToken.Val;
+    LexNextToken;
+
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(''':='' attendu dans la section VALUE');
+      Break;
+    End;
+
+    SIdx := SymFind(VName);
+    If SIdx < 0 Then
+    Begin
+      WarnMsg('variable non declaree dans VALUE: ' + VName);
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    EmitComment('value init ' + VName);
+    ParseExpr(Ev);
+
+    (* Si constante immediate et var globale, mettre dans DataTab *)
+    If Not SymTab[SIdx].IsLocal And (Ev.Kind = EK_IMM) Then
+    Begin
+      If SymTab[SIdx].DataIdx >= 0 Then
+        DataTab[SymTab[SIdx].DataIdx].IntVal := Ev.ImmVal;
+    End
+    Else
+    Begin
+      ExprFlushToEAX(Ev);
+      If SymTab[SIdx].IsLocal Then
+      Begin
+        If TypeSizeof(SymTab[SIdx].TypeIdx) = 1 Then
+          EmitInstrAB('MOV',
+            'BYTE PTR ' + EBPOfs(SymTab[SIdx].Offset), 'AL')
+        Else
+          EmitInstrAB('MOV',
+            'DWORD PTR ' + EBPOfs(SymTab[SIdx].Offset), 'EAX');
+      End
+      Else
+      Begin
+        If TypeSizeof(SymTab[SIdx].TypeIdx) = 1 Then
+          EmitInstrAB('MOV',
+            'BYTE PTR [' + SymTab[SIdx].MangledName + ']', 'AL')
+        Else
+          EmitInstrAB('MOV',
+            'DWORD PTR [' + SymTab[SIdx].MangledName + ']', 'EAX');
+      End;
+    End;
+
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+  End;
+End;
+
+(* ---- ParseStatement : analyser une instruction ---------------  *)
+Procedure ParseStatement;
+Var
+  StId     : TString;
+  StLw     : TString;
+  StIdx    : Integer;
+  StEv     : TExprVal;
+  StArgCnt : Integer;
+Begin
+  (* Empty statement *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    LexNextToken;
+    Exit;
+  End;
+
+  (* BEGIN..END block *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'begin') Then
+  Begin
+    ParseBlock;
+    Exit;
+  End;
+
+  (* Numeric label : 100: stmt *)
+  If CurToken.Kind = TK_INTEGER Then
+  Begin
+    StId := IntToStr(CurToken.IntVal);
+    LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      LexNextToken;
+      EmitLabel(VXP_LBL_PFX + 'USR_' + StId);
+    End;
+    Exit;
+  End;
+
+  (* Keyword statements *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    StLw := StrLowerCase(CurToken.Val);
+
+    (* EXIT *)
+    If StLw = 'exit' Then
+    Begin
+      LexNextToken;
+      If CurRetLabel <> '' Then
+        EmitInstrA('JMP', CurRetLabel)
+      Else
+        EmitInstrA('JMP', VXP_LBL_PFX + 'EXIT');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* BREAK *)
+    If StLw = 'break' Then
+    Begin
+      LexNextToken;
+      If (LoopTop > 0) And (LoopBreakLbl[LoopTop - 1] <> '') Then
+        EmitInstrA('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        WarnMsg('BREAK en dehors d''une boucle');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* CONTINUE *)
+    If StLw = 'continue' Then
+    Begin
+      LexNextToken;
+      If (LoopTop > 0) And (LoopContLbl[LoopTop - 1] <> '') Then
+        EmitInstrA('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        WarnMsg('CONTINUE en dehors d''une boucle');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* GOTO *)
+    If StLw = 'goto' Then
+    Begin
+      LexNextToken;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        EmitInstrA('JMP', VXP_LBL_PFX + 'USR_' + IntToStr(CurToken.IntVal));
+        LexNextToken;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        EmitInstrA('JMP', VXP_LBL_PFX + 'USR_' + CurToken.Val);
+        LexNextToken;
+      End
+      Else
+        WarnMsg('etiquette attendue apres GOTO');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* RETURN *)
+    If StLw = 'return' Then
+    Begin
+      LexNextToken;
+      (* Optional return value *)
+      If Not ((CurToken.Kind = TK_PUNCT) And
+              ((CurToken.Val = ';') Or (CurToken.Val = '}'))) And
+         Not ((CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'end')) Then
+      Begin
+        ParseExpr(StEv);
+        ExprFlushToEAX(StEv);
+      End;
+      If CurRetLabel <> '' Then
+        EmitInstrA('JMP', CurRetLabel)
+      Else
+        EmitInstrA('JMP', VXP_LBL_PFX + 'EXIT');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* HALT / STOP *)
+    If (StLw = 'halt') Or (StLw = 'stop') Then
+    Begin
+      LexNextToken;
+      (* Optional exit code *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        ParseExpr(StEv);
+        ExprFlushToEAX(StEv);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+        EmitPush('EAX');
+      End
+      Else
+      Begin
+        EmitPush('0');
+      End;
+      EmitInstrA('CALL', '_ExitProcess@4');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* WRITE / WRITELN - stub for TODO 12 *)
+    If (StLw = 'write') Or (StLw = 'writeln') Then
+    Begin
+      WarnMsg(StLw + ' ignore (TODO 12)');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* READ / READLN - stub for TODO 12 *)
+    If (StLw = 'read') Or (StLw = 'readln') Then
+    Begin
+      WarnMsg(StLw + ' ignore (TODO 12)');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* OPEN / CLOSE / RESET / REWRITE - stub for TODO 12 *)
+    If (StLw = 'open') Or (StLw = 'close') Or
+       (StLw = 'reset') Or (StLw = 'rewrite') Then
+    Begin
+      WarnMsg(StLw + ' ignore (TODO 12)');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* NEW / DISPOSE - heap stubs *)
+    If (StLw = 'new') Or (StLw = 'dispose') Then
+    Begin
+      WarnMsg(StLw + ' ignore (TODO ulterieur)');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* Future TODO stubs: IF, CASE, FOR, WHILE, REPEAT, LOOP, WITH *)
+    If (StLw = 'if') Or (StLw = 'case') Or (StLw = 'for') Or
+       (StLw = 'while') Or (StLw = 'repeat') Or (StLw = 'loop') Or
+       (StLw = 'with') Then
+    Begin
+      WarnMsg(StLw + ' ignore (TODO ulterieur)');
+      LexNextToken;
+      (* Skip until ; or END *)
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (StrLowerCase(CurToken.Val) = 'end')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* Other keywords : skip *)
+    If (StLw = 'function') Or (StLw = 'procedure') Or
+       (StLw = 'var') Or (StLw = 'const') Or (StLw = 'type') Or
+       (StLw = 'label') Then
+    Begin
+      WarnMsg('declaration ' + StLw + ' dans un bloc (ignore)');
+      LexNextToken;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* END - do not consume, let ParseBlock handle it *)
+    If StLw = 'end' Then
+      Exit;
+
+    (* Unknown keyword - skip *)
+    WarnMsg('instruction non geree: ' + CurToken.Val);
+    LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+    Exit;
+  End;
+
+  (* Identifier : could be label, procedure call, or assignment *)
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    StId := CurToken.Val;
+    LexNextToken;
+
+    (* Identifier label : ident: stmt *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      StIdx := SymFind(StId);
+      If (StIdx >= 0) And (SymTab[StIdx].Cat = SC_LABEL) Then
+      Begin
+        EmitLabel(VXP_LBL_PFX + 'USR_' + StId);
+        LexNextToken;
+        Exit;
+      End;
+      (* Could also be : after ident in other context,
+         fall through to assignment *)
+    End;
+
+    (* Assignment or procedure call *)
+    StIdx := SymFind(StId);
+
+    (* Procedure call without parens *)
+    If (StIdx >= 0) And (SymTab[StIdx].Cat = SC_PROC) And
+       Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':=')) And
+       Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.')) And
+       Not ((CurToken.Kind = TK_OP) And (CurToken.Val = '^')) And
+       Not IsOpenBracket Then
+    Begin
+      EmitComment('call ' + StId);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        StArgCnt := 0;
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+        Begin
+          Repeat
+            ParseExpr(StEv);
+            ExprFlushToEAX(StEv);
+            EmitPush('EAX');
+            Inc(StArgCnt);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              LexNextToken
+            Else
+              Break;
+          Until False;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+        EmitInstrA('CALL', SymTab[StIdx].MangledName);
+        If StArgCnt > 0 Then
+          EmitInstrAB('ADD', 'ESP', IntToStr(StArgCnt * 4));
+      End
+      Else
+        EmitInstrA('CALL', SymTab[StIdx].MangledName);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* Function call without parens *)
+    If (StIdx >= 0) And (SymTab[StIdx].Cat = SC_FUNC) And
+       (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('call func ' + StId);
+      LexNextToken;
+      StArgCnt := 0;
+      If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+      Begin
+        Repeat
+          ParseExpr(StEv);
+          ExprFlushToEAX(StEv);
+          EmitPush('EAX');
+          Inc(StArgCnt);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken
+          Else
+            Break;
+        Until False;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      EmitInstrA('CALL', SymTab[StIdx].MangledName);
+      If StArgCnt > 0 Then
+        EmitInstrAB('ADD', 'ESP', IntToStr(StArgCnt * 4));
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* Otherwise : assignment *)
+    ParseAssignment(StId);
+    Exit;
+  End;
+
+  (* Skip unknown token *)
+  If CurToken.Kind <> TK_EOF Then
+  Begin
+    LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+  End;
+End;
+
+(* ---- ParseBlock : analyser un bloc BEGIN..END ---------------  *)
+Procedure ParseBlock;
+Begin
+  LexNextToken;  (* consommer BEGIN *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_KEYWORD) And
+             (StrLowerCase(CurToken.Val) = 'end')) Do
+  Begin
+    ParseStatement;
+    (* Skip extra semicolons *)
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
+      LexNextToken;
+  End;
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'end') Then
+    LexNextToken;
+End;
+
+
+{ ============================================================
   PROCEDURE PRINCIPALE (Run)
   ============================================================ }
 
@@ -6381,13 +8121,7 @@ Begin
       ParseVarDecl;
       If HasPendingAssign Then
       Begin
-        (* Skip the pending assignment - will be handled later *)
-        WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
+        ParseAssignment(PendingAssignName);
         HasPendingAssign := False;
       End;
       Continue;
@@ -6405,12 +8139,7 @@ Begin
         ParseVarDecl;
         If HasPendingAssign Then
         Begin
-          WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-            LexNextToken;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-            LexNextToken;
+          ParseAssignment(PendingAssignName);
           HasPendingAssign := False;
         End;
       End
@@ -6431,12 +8160,7 @@ Begin
         ParseVarDecl;
         If HasPendingAssign Then
         Begin
-          WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-            LexNextToken;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-            LexNextToken;
+          ParseAssignment(PendingAssignName);
           HasPendingAssign := False;
         End;
       End
@@ -6505,12 +8229,7 @@ Begin
         ParseVarDecl;
         If HasPendingAssign Then
         Begin
-          WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-            LexNextToken;
-          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-            LexNextToken;
+          ParseAssignment(PendingAssignName);
           HasPendingAssign := False;
         End;
       End
@@ -6558,18 +8277,7 @@ Begin
        (StrLowerCase(CurToken.Val) = 'value') Then
     Begin
       LexNextToken;
-      WarnMsg('section VALUE ignoree (TODO ulterieur)');
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_KEYWORD) And
-                 ((StrLowerCase(CurToken.Val) = 'begin') Or
-                  (StrLowerCase(CurToken.Val) = 'var') Or
-                  (StrLowerCase(CurToken.Val) = 'const') Or
-                  (StrLowerCase(CurToken.Val) = 'type') Or
-                  (StrLowerCase(CurToken.Val) = 'function') Or
-                  (StrLowerCase(CurToken.Val) = 'procedure') Or
-                  (StrLowerCase(CurToken.Val) = 'end') Or
-                  (StrLowerCase(CurToken.Val) = 'label'))) Do
-        LexNextToken;
+      ParseValueSection;
       Continue;
     End;
 
@@ -6654,17 +8362,7 @@ Begin
         EmitComment('INITIALIZE');
         If (CurToken.Kind = TK_KEYWORD) And
            (StrLowerCase(CurToken.Val) = 'begin') Then
-        Begin
-          (* Skip BEGIN..END block for now *)
-          LexNextToken;
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_KEYWORD) And
-                     (StrLowerCase(CurToken.Val) = 'end')) Do
-            LexNextToken;
-          If (CurToken.Kind = TK_KEYWORD) And
-             (StrLowerCase(CurToken.Val) = 'end') Then
-            LexNextToken;
-        End;
+          ParseBlock;
         If (CurToken.Kind = TK_PUNCT) And
            ((CurToken.Val = ';') Or (CurToken.Val = '.')) Then
           LexNextToken;
@@ -6680,16 +8378,7 @@ Begin
         EmitComment('FINALIZE');
         If (CurToken.Kind = TK_KEYWORD) And
            (StrLowerCase(CurToken.Val) = 'begin') Then
-        Begin
-          LexNextToken;
-          While (CurToken.Kind <> TK_EOF) And
-                Not ((CurToken.Kind = TK_KEYWORD) And
-                     (StrLowerCase(CurToken.Val) = 'end')) Do
-            LexNextToken;
-          If (CurToken.Kind = TK_KEYWORD) And
-             (StrLowerCase(CurToken.Val) = 'end') Then
-            LexNextToken;
-        End;
+          ParseBlock;
         If (CurToken.Kind = TK_PUNCT) And
            ((CurToken.Val = ';') Or (CurToken.Val = '.')) Then
           LexNextToken;
@@ -6704,12 +8393,7 @@ Begin
       ParseVarDecl;
       If HasPendingAssign Then
       Begin
-        WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
+        ParseAssignment(PendingAssignName);
         HasPendingAssign := False;
       End;
       PendAttrGlobal   := False;
@@ -6819,15 +8503,7 @@ Begin
         MainBodyEmitted := True;
         EmitLabel(VXP_LBL_PFX + 'MAINBODY');
       End;
-      (* Skip BEGIN..END block for now - will be implemented later *)
-      LexNextToken;
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_KEYWORD) And
-                 (StrLowerCase(CurToken.Val) = 'end')) Do
-        LexNextToken;
-      If (CurToken.Kind = TK_KEYWORD) And
-         (StrLowerCase(CurToken.Val) = 'end') Then
-        LexNextToken;
+      ParseBlock;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
         LexNextToken;
       Continue;
