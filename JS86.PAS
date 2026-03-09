@@ -1,488 +1,17 @@
+{ @author: Sylvain Maltais
+  @created: 2026
+  @version: 1.0
+  @website(https://www.gladir.com/dev-cools)
+  @abstract(Target: Free Pascal 3.2)
+  @description: Compilateur JavaScript vers assembleur 8086
+  @license: MIT
+}
+
 (* ============================================================
   JS86.PAS - Compilateur JavaScript vers assembleur 8086
   Turbo Pascal / Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
-
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
-            TOptions (SrcFile, OutFile, Verbose, DebugMode, Strict, Warnings)
-            ParseArgs : analyser argv (script.js [sortie.asm] [-v] [-d] [-w])
-            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Shebang : ignorer la premiere ligne #!/usr/bin/env node si presente
-            UseStrict : detecter 'use strict'; en entete -> mode strict compile
-            Programme principal : validation des arguments et appel Run
-
-  TODO 02 - LEXEUR (TOKENS JAVASCRIPT) [IMPLEMENTE]
-            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
-              TK_TEMPLATE, TK_REGEXP, TK_IDENT, TK_KEYWORD,
-              TK_OP, TK_PUNCT, TK_NEWLINE (ASI - Automatic Semicolon Insertion)
-            LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
-            LexScanString : single-quote et double-quote (\n \t \r \0 \xNN \uNNNN)
-            LexScanTemplate : backtick `...${expr}...` -> sequence TK_TEMPLATE
-              interpolation de ${expr} : scanner jusqu a } imbriqu??
-            LexScanRegexp : /pattern/flags apres = ( [ ! & | ? : , ; { return
-              Distinction slash-division vs slash-regexp par contexte lexical
-            Commentaires : // jusqu a fin de ligne, /* ... */ multi-lignes
-            ASI (Automatic Semicolon Insertion) : insertion implicite de ;
-              avant } ou apres la derniere ligne si token precedent valide
-            IsKeyword : var let const function return if else
-              while do for of in break continue switch case default
-              new delete typeof instanceof void throw try catch finally
-              class extends super import export this null undefined true false
-              async await (stubs) yield (stub)
-            Mode debug -d : affichage de chaque token avec PrintToken
-
-  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
-            Entiers decimaux, hexadecimaux (0x), octaux (0o), binaires (0b)
-            Separateurs numeriques : 1_000_000 -> 1000000 (ES2021)
-            Flottants : reconnus par le lexeur, traites comme entiers (trunc)
-            Notation scientifique : 1.5e3 -> 1500 (trunc)
-            Chaines simple-quote : \\ \' \n \t \r \0 \xNN -> octet
-            Chaines double-quote : idem avec \"
-            Template literals : `texte ${expr} texte` -> concat runtime
-              Tags de template : nwl`...` -> avertissement + traite comme `...`
-            Regex litteraux : /pattern/flags -> TK_REGEXP
-              flags reconnus : g i m s (autres : avertissement)
-            null    : constante -> AX=0 (pointeur nul)
-            undefined : constante -> AX=0 (comme null dans l impl simplifiee)
-            true    : constante -> AX=1
-            false   : constante -> AX=0
-            NaN / Infinity : avertissement + AX=0 (non representables en 16 bits)
-
-  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
-            Arithmetiques   : + - * / % ** (pow, appel _JSRT_POW)
-            Concatenation   : + si l un des operandes est chaine (coercition)
-            Comparaison     : == != < <= > >= (coercition de type)
-            Egalite stricte : === !== (pas de coercition, comparaison directe)
-            Logiques        : && || ! (court-circuit -> labels _JSL_NNNN)
-            Nullish         : ?? (null/undefined-or, similaire // de Perl)
-            Logiques bits   : & | ^ ~ << >> >>> (unsigned right shift -> warn)
-            Ternaire        : cond ? a : b -> labels _JSL_TERN_N
-            Virgule         : (a, b, c) -> evalue chaque, retourne dernier
-            Optionnel       : ?. (optional chaining) -> stub + avertissement
-            Assignation     : = += -= *= /= %= **= &= |= ^= <<= >>= &&= ||= ??=
-            Prefixe unaire  : + (coerce nombre) - ! ~ ++ -- typeof void delete
-            Suffixe unaire  : ++ -- (post-increment/decrement)
-            typeof val      : retourne chaine du type -> _JSRT_TYPEOF -> AX=ptr
-            void expr       : evalue expr + AX=0 (undefined)
-            delete obj.key  : stub AX=1 (non pris en charge)
-            in              : AX=1 si cle presente (stub pour objets)
-            instanceof      : stub AX=0 + avertissement
-            BinOpPrec : table de precedences Pratt adaptee a JavaScript (ECMAScript)
-
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
-            TSymCat : SC_VAR (var), SC_LET, SC_CONST_JS, SC_PARAM,
-              SC_FUNCTION, SC_CLASS, SC_LABEL
-            TSymRec : Name, MangledName, Cat, TypeIdx, Offset,
-              IsHoisted (var), IsConst, IsParam
-            SymAdd, SymFind, SymFindCat, SymMangle
-            Hoisting : var declarations hissees en sommet de fonction
-              Scan pre-passe de la fonction pour collecter les var
-              let/const : portee de bloc (block-scoped) -> SymEnterScope/SymLeaveScope
-            CurScope : compteur de portee imbriquee (max SCOPE_MAX)
-            TempReg : allocation de registres temporaires (AX BX CX DX)
-              convention : AX = valeur de retour d expression
-            use strict : interdire var non declare + TK_IDENT non resolu -> erreur
-            LabelTab : table des labels de boucle pour break/continue etiquetes
-
-  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
-            TTypeKind : TKJ_NUMBER (entier 16 bits signe), TKJ_STRING (ptr),
-              TKJ_BOOLEAN (0/1 dans AX), TKJ_OBJECT (ptr struct DATA),
-              TKJ_ARRAY (ptr bloc DATA avec entete count), TKJ_FUNCTION (ptr code),
-              TKJ_NULL, TKJ_UNDEFINED, TKJ_UNKNOWN (polymorphe -> warn)
-            TypeTab, TypeInit : enregistrer les types primitifs
-            TypeSizeof : number=2o, ptr=2o (string/object/array/function)
-            Coercition de type a la compilation (quand types connus) :
-              number + string -> concat (appel _JSRT_NUMTOSTR + _JSRT_CONCAT)
-              boolean en contexte numerique -> AX tel quel (0 ou 1)
-              null/undefined en contexte numerique -> AX=0
-            TypeMangle : prefixe du type pour les labels ASM (_JSN_ _JSS_ _JSA_ ...)
-            JS_UNDEF_PTR : etiquette DATA speciale pointant vers chaine "undefined"
-
-  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
-            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
-            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
-            EmitComment, EmitBlankLine
-            LabelGen global (compteur unique _JSL_NNNNN)
-            Prefixes : _JSV_ (variable), _JSF_ (function), _JSK_ (chaine const),
-              _JSRT_ (runtime), _JSL_ (label), _JSO_ (objet literal DATA),
-              _JSA_ (tableau literal DATA), _JSC_ (classe prototype)
-            EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
-            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
-            EmitCoerce : emission de code de coercition selon types connus
-
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
-            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY/DK_OBJ),
-              IntVal, StrVal, ElemCount, PropCount
-            DataTab[0..MAX_DATA-1], DataCount
-            DataAdd, DataAddStr, DataAddObj, DataAddArr : variantes d ajout
-            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
-            Chaines litterales -> entree DK_STR (terminateur 0)
-            var/let/const globaux : entrees DK_WORD dans DataTab
-            const : entrees DK_WORD ou DK_STR (immuables a la compilation)
-            Objets litteraux globaux : bloc contigu cle1 val1 cle2 val2 0 dans DATA
-            Tableaux litteraux globaux : DW count, DW e0, DW e1, ... dans DATA
-            _JS_UNDEF : DB 'undefined',0 -- _JS_NULL_S : DB 'null',0
-            _JS_TRUE_S : DB 'true',0    -- _JS_FALSE_S : DB 'false',0
-            _JSRT_STRBUF[0..511] : buffer de travail pour concatenation / coercition
-
-  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
-            var $var : hoiste en sommet de fonction, alloue sur pile (SUB SP,2)
-              Premiere affectation = initialisation ; sinon MOV [BP-n], AX
-            let $var : alloue sur pile a la portee de bloc courante
-            const $var : alloue sur pile, marque IsConst (erreur si reassignation)
-            Affectation simple : var = expr -> ExprLoad + MOV [BP-n], AX
-            Operateurs composes : += -= *= etc. -> load / op / store
-            Destructuration de tableau : let [a, b] = arr -> acces par index
-              Elements manquants -> AX=0 (undefined) ; spread ... -> stub
-            Destructuration d objet : let {x, y} = obj -> acces par cle compilee
-              Alias : let {x: alias} = obj -> store sous alias
-            Affectation en chaine : a = b = expr -> associatif droite
-            Affectation avec optionnel : a ??= expr -> si a null/undef alors expr
-
-  TODO 10 - EXPRESSIONS PRIMAIRES
-            ParsePrimary : literal nombre, literal chaine, template, ident,
-              this -> avertissement + XOR AX,AX (contexte global = 0)
-              null -> XOR AX,AX
-              undefined -> XOR AX,AX
-              true -> MOV AX,1   false -> XOR AX,AX
-              new Ctor(args) -> CALL _JSRT_NEW + CALL _JSF_Ctor -> AX=ptr
-              typeof expr -> CALL _JSRT_TYPEOF -> AX=ptr chaine type
-              void expr -> evalue expr, XOR AX,AX
-              delete expr -> stub AX=1
-            Tableau litteral : [e0, e1, e2] -> DataAdd DK_ARRAY ou inline pile
-            Objet litteral : {k:v, ...} -> DataAdd DK_OBJ ou inline pile
-            Spread : ...arr dans tableau/objet -> stub + avertissement
-            Groupement parenthese : (expr) et operateur virgule (a, b)
-            Appel de fonction : nom(args) ou expr(args) -> CALL ou CALL AX
-            ExprMakeImm, ExprMakeNull, ExprMakeUndef : constructeurs TExprVal
-
-  TODO 11 - EXPRESSIONS BINAIRES (PRATT)
-            ParseExprPrec(MinPrec) : boucle Pratt complete
-            ExprEmitBinOp : ADD/SUB/IMUL/IDIV/REM, CMP+SETcc, AND/OR/XOR
-            Concatenation + : detection type chaine -> CALL _JSRT_CONCAT
-            Puissance ** : CALL _JSRT_POW(AX=base, BX=exp) -> AX
-            Egalite stricte === : CMP + SETE (meme type requis, warn si inconnu)
-            Inegalite stricte !== : CMP + SETNE
-            Operateur ?? : TEST AX,AX + JNZ skip (null/undefined-or)
-            Court-circuit && : JZ vers false-branch, || : JNZ vers true-branch
-            Ternaire ? : -> labels _JSL_TERNF_N / _JSL_TERNE_N
-            Operateur in : stub -> MOV AX,0 + avertissement
-            instanceof : stub -> MOV AX,0 + avertissement
-            Virgule : evalue gauche (resultat ignore), retourne droite
-            Optionnel ?. : stub -> copy AX + avertissement
-
-  TODO 12 - CONSOLE / PROCESS / SORTIES
-            console.log(args)   : affiche chaque arg converti en chaine + \n
-              Detection du type compile -> _JSRT_NUMTOSTR ou chaine directe
-              Separateur ' ' entre arguments ; \n final
-              -> INT 21h AH=40h BX=1 (STDOUT)
-            console.error(args) : idem -> BX=2 (STDERR)
-            console.warn(args)  : idem -> BX=2 avec prefixe 'Warning: '
-            process.exit(code)  : -> MOV AX,4C00h + code + INT 21h
-            process.stdout.write(s) : -> INT 21h AH=40h BX=1 sans \n final
-            process.stderr.write(s) : -> INT 21h AH=40h BX=2
-            alert(s)            : stub -> console.log (environnement DOS)
-            prompt(s)           : stub -> XOR AX,AX + avertissement
-            Format simplifie de console.log :
-              %d -> _JSRT_NUMTOSTR  %s -> chaine directe  %o -> stub
-
-  TODO 13 - IF / ELSE IF / ELSE + SWITCH / CASE / DEFAULT
-            ParseIfStmt : if (cond) stmt_ou_bloc [else if ...] [else bloc]
-              Condition verite JS : 0, '', null, undefined, NaN, false = faux
-              Emission TEST AX,AX / JZ pour falsy values numeriques
-              CALL _JSRT_STRTRUTHY pour chaines (AX=ptr) -> AX=0|1
-            Labels : _JSL_ELIF_N, _JSL_ELSE_N, _JSL_ENDIF_N
-            ParseSwitchStmt : switch (expr) { case v: stmts break; ... default: }
-              Calcul de l expression switch -> PUSH AX
-              Chaque case : POP BX / CMP BX,valeur / JE _JSL_CASE_N
-              break -> JMP _JSL_SWEND_N
-              Fallthrough : absence de break -> continuer execution
-              default : label apres tous les cases, JMP depuis echecs
-            Modificateurs de statement : expr if cond (non supporte en JS -> erreur)
-
-  TODO 14 - BOUCLES : while / do-while / for / for-of / for-in
-            ParseWhileStmt : while (cond) stmt_ou_bloc
-              Labels : _JSL_WTEST_N, _JSL_WEND_N
-            ParseDoWhileStmt : do stmt_ou_bloc while (cond) ;
-              Labels : _JSL_DOBEG_N, _JSL_DOTEST_N
-            ParseForStmt : for (init ; cond ; incr) stmt_ou_bloc
-              init : var/let/const decl ou expr ou vide
-              Labels : _JSL_FTEST_N, _JSL_FINCR_N, _JSL_FEND_N
-            ParseForOfStmt : for (let v of arr) stmt_ou_bloc
-              Tableaux uniquement : boucle index 0..count-1, charge elem
-              Chaines : iteration sur octets -> AX = char code
-              Autres iterables : avertissement + skip
-            ParseForInStmt : for (let k in obj) stmt_ou_bloc
-              Objets litteraux : iteration sur les cles compilees (constantes)
-              Avertissement si objet dynamique (non supporte)
-            LoopPush / LoopPop : pile de labels break/continue
-            break [label] -> JMP _JSL_END_N ; continue [label] -> JMP _JSL_INCR_N
-            Labels de boucle nommes : OUTER: for (...) { ... break OUTER; }
-
-  TODO 15 - TABLEAUX (Array)
-            Declaration : let arr = [e0, e1, e2] ; let arr = new Array(n)
-            Representation memoire : [count:word] [e0:word] [e1:word] ...
-              Taille fixe a la compilation (MAX_ARR_ELEM = 64 par defaut)
-            Acces arr[i] (i constant) : offset = 2 + i*2, MOV AX,[BX+SI]
-            Acces arr[i] (i variable) : SHL AX,1 / ADD AX,2 / MOV SI,AX / MOV AX,[BX+SI]
-            Acces arr[-1] : index negatif -> count+index (si connu a compile)
-            Affectation arr[i] = expr : calcul offset + MOV [BX+SI],AX
-            Methodes Array inline :
-              arr.push(v)    -> CALL _JSRT_ARRPUSH(SI=ptr, AX=val)
-              arr.pop()      -> CALL _JSRT_ARRPOP(SI=ptr) -> AX=val
-              arr.shift()    -> CALL _JSRT_ARRSHIFT(SI=ptr) -> AX=val
-              arr.unshift(v) -> CALL _JSRT_ARRUNSHIFT(SI=ptr, AX=val)
-              arr.length     -> MOV AX,[SI] (premier word = count)
-              arr.indexOf(v) -> CALL _JSRT_ARRIDXOF(SI=ptr, BX=val) -> AX
-              arr.join(sep)  -> CALL _JSRT_ARRJOIN(SI=ptr, DI=sep) -> AX=ptr
-              arr.reverse()  -> CALL _JSRT_ARRREV(SI=ptr)
-              arr.slice(a,b) -> stub AX=ptr arr original + avertissement
-              arr.sort()     -> CALL _JSRT_ARRSORT(SI=ptr) tri numerique ASC
-              arr.forEach(f) -> boucle inline CALL _JSF_f pour chaque element
-              arr.map/filter -> stub AX=ptr original + avertissement
-            Spread dans tableau : [...a, ...b] -> stub + avertissement
-
-  TODO 16 - OBJETS LITTERAUX ET ACCES PROPRIETES
-            Objet litteral : {k1: v1, k2: v2} -> bloc DATA cle/valeur paire
-              Cles constantes (chaines) : emises en DATA, offset precompile
-              Cles dynamiques ([expr]: val) : avertissement + ignore
-            Representation memoire objet fixe :
-              [n_props:word] [kptr0:word] [vptr0:word] [kptr1:word] [vptr1:word] ...
-            Acces obj.prop (prop constante) : CALL _JSRT_OBJGET(BX=ptr, DI=kptr)
-            Acces obj[expr] (cle variable) : CALL _JSRT_OBJGET(BX=ptr, SI=expr)
-            Affectation obj.prop = val : CALL _JSRT_OBJSET(BX=ptr, DI=kptr, AX=val)
-            Methodes Object :
-              Object.keys(obj)   -> CALL _JSRT_OBJKEYS(BX=ptr) -> AX=arr ptr
-              Object.assign(d,s) -> CALL _JSRT_OBJASSIGN(BX=d, SI=s)
-              Object.create(p)   -> CALL _JSRT_OBJCREATE(BX=proto) -> AX=ptr
-            Prototype chain (simplifiee) : chaque objet porte [proto:word]
-              Recherche propriete : obj courant puis prototype -> _JSRT_OBJGET
-            Spread dans objet : {...a, ...b} -> stub + avertissement
-            Methodes de l objet (shorthand) : { fn() {} } -> _JSRT_OBJSET + ptr fn
-
-  TODO 17 - FONCTIONS (function / arrow / return)
-            ParseFuncDecl : function nom(params) { bloc }
-              Hoisting : declarations hissees en debut du scope courant
-              CurFnName, CurFnRetLbl : nom et label de retour courants
-            ParseArrowFunc : (params) => expr ou (params) => { bloc }
-              Forme courte : (x) => x+1 -> retour automatique de l expression
-              Fermeture : capture des variables du scope parent par adresse
-              Emission comme function anonyme : label _JSF_ANON_N
-            ParseFuncExpr : let f = function(params) { bloc } -> ptr code
-            Parametres :
-              Valeurs par defaut : function f(x=42) -> TEST de AX sur pile
-              Rest params : function f(...args) -> stub + avertissement
-            Valeur de retour : return expr; -> MOV dans AX, JMP _JSL_RET_N
-              Absence de return -> AX=0 (undefined implicite)
-            Appel : nom(args) -> PUSH args de droite a gauche + CALL _JSF_nom
-              Expression : f(args) -> CALL AX (pointeur de fonction)
-              Methode : obj.method(args) -> charge ptr + CALL AX (this ignore)
-            ParseCallArgs : empilement des arguments sur la pile (cdecl 16 bits)
-            Fonctions d ordre superieur (callback) : CALL AX apres push args
-            Arguments object : non implemente -> warn si 'arguments' utilise
-            Generateurs / async-await : stubs + avertissements
-
-  TODO 18 - PORTEE, PILE ET CADRES
-            Convention d appel : cdecl 16 bits, args de gauche a droite sur pile
-            Prologue fonction : PUSH BP / MOV BP,SP
-            Epilogue : MOV SP,BP / POP BP / RET (cdecl : appelant nettoie pile)
-            Variables var : hoistees, allouees au prologue (SUB SP, total*2)
-            Variables let/const : allouees a la portee de bloc (SUB SP,2 a l entree)
-            Fermeture de portee de bloc : ADD SP,n*2
-            Closures (approximation) : variables capturees allouees sur le heap
-              Simulation : cellule DK_WORD dans DATA pour chaque var capturee
-              Avertissement si closure profonde (>1 niveau) non supportee
-            this : toujours XOR AX,AX en contexte global (DOS n a pas de this)
-            Sauvegarde registres : SI, DI preserves dans chaque fonction
-            CurFrameSize : taille courante du cadre local (nb de words)
-            MaxCallDepth : avertissement si recursion > CALL_DEPTH_WARN niveaux
-
-  TODO 19 - EXPRESSIONS REGULIERES (RegExp basique)
-            LexScanRegexp : /pattern/flags apres operateur de test
-            TK_REGEXP : Val = pattern + Chr(1) + flags
-            Methodes RegExp :
-              re.test(str)  -> CALL _JSRT_REMATCH(SI=str, DI=pat) -> AX=0|1
-              re.exec(str)  -> CALL _JSRT_REEXEC(SI=str, DI=pat) -> AX=arr|null
-              str.match(re) -> CALL _JSRT_REMATCH -> AX=0|1 (simplifie)
-              str.search(re)-> CALL _JSRT_REINDEX -> AX=pos|-1
-              str.replace(re,repl) -> CALL _JSRT_RESUB(SI,DI,BX) -> AX=ptr
-              str.split(re) -> stub AX=arr_vide + avertissement
-            Instance RegExp : new RegExp(pat, flags)
-              -> pat et flags comme chaines litterales -> TK_REGEXP synthetique
-            Flags reconnus : g (global repeat -> boucle), i (case-insensitive -> warn)
-              m s u : avertissement + ignore
-            Support minimal : pattern fixe (chaine litterale sans metacaracteres)
-            Metacaracteres . ^ $ * + ? [ ] { } \ | ( ) : avertissement compile
-            Captures (/(\w+)/) : non supportees -> avertissement
-            _JSCAP_1 .. _JSCAP_9 : DW 0 dans DATA (stubs)
-
-  TODO 20 - METHODES NATIVES (String / Number / Array / Math)
-            Methodes String (appelees sur AX=ptr chaine) :
-              s.length       -> CALL _JSRT_STRLEN(SI=AX) -> AX
-              s.indexOf(sub) -> CALL _JSRT_STRINDEXOF(SI=AX,DI=sub) -> AX
-              s.lastIndexOf  -> CALL _JSRT_STRLASTIDX -> AX
-              s.includes(sub)-> CALL _JSRT_STRINDEXOF -> AX != -1 -> bool
-              s.startsWith   -> CALL _JSRT_STRSTARTW -> AX
-              s.endsWith     -> CALL _JSRT_STRENDW -> AX
-              s.slice(a,b)   -> CALL _JSRT_STRSLICE(SI,BX,CX) -> AX=ptr buf
-              s.substring    -> idem _JSRT_STRSLICE (indices absolus)
-              s.toUpperCase  -> CALL _JSRT_STRTOUPPER(SI=AX) -> AX=buf
-              s.toLowerCase  -> CALL _JSRT_STRTOLOWER(SI=AX) -> AX=buf
-              s.trim()       -> CALL _JSRT_STRTRIM -> AX=buf
-              s.split(sep)   -> CALL _JSRT_STRSPLIT(SI,DI) -> AX=arr ptr
-              s.replace(a,b) -> CALL _JSRT_STRRPLS(SI,DI,BX) -> AX=buf
-              s.charAt(i)    -> CALL _JSRT_STRCHAR(SI,CX) -> AX=ptr char
-              s.charCodeAt(i)-> CALL _JSRT_STRORD(SI,CX) -> AX=code
-              s.repeat(n)    -> CALL _JSRT_STRREPEAT(DI=buf,SI,CX) -> AX=buf
-              s.padStart(n,c)-> CALL _JSRT_STRPADS -> AX=buf
-              String.fromCharCode(n) -> CALL _JSRT_CHR -> AX=ptr
-            Methodes Number :
-              Number(s)       -> CALL _JSRT_STRTONUM(SI=AX) -> AX
-              parseInt(s,r)   -> CALL _JSRT_STRTOINT(SI,CX=radix) -> AX
-              parseFloat(s)   -> CALL _JSRT_STRTOINT (trunc) -> AX
-              Number.isInteger(n) -> MOV AX,1 (tous les nombres sont entiers)
-              isNaN(v)        -> XOR AX,AX (jamais NaN en 16 bits entier)
-              isFinite(v)     -> MOV AX,1
-            Objet Math :
-              Math.abs(n)    -> CALL _JSRT_ABS -> AX
-              Math.max(a,b)  -> CMP + CMOVG (ou branchement) -> AX
-              Math.min(a,b)  -> CMP + CMOVL -> AX
-              Math.floor(n)  -> pass-through (entier)
-              Math.ceil(n)   -> pass-through
-              Math.round(n)  -> pass-through
-              Math.pow(a,b)  -> CALL _JSRT_POW -> AX
-              Math.sqrt(n)   -> CALL _JSRT_SQRT (Newton-Raphson entier) -> AX
-              Math.random()  -> CALL _JSRT_RAND (LCG 16 bits) -> AX
-              Math.PI        -> DW 3 (troncature, avec avertissement)
-              Math.trunc/sign-> CALL _JSRT_TRUNC / _JSRT_SIGN -> AX
-            JSON.stringify(v)-> CALL _JSRT_JSONSTR -> AX=ptr (simplifie)
-            JSON.parse(s)    -> stub AX=0 + avertissement
-
-  TODO 21 - CLASSES ET HERITAGE (basique)
-            ParseClassDecl : class Nom [extends Parent] { corps }
-              CurClassName : nom de classe courante pendant la compilation
-              Emission : label _JSC_Nom + zone prototype dans DATA
-            Corps de classe :
-              constructor(params) { bloc } -> _JSF_Nom_ctor PROC NEAR
-              method(params) { bloc } -> _JSF_Nom_method PROC NEAR
-              Methodes statiques : static m() -> _JSF_Nom_S_m PROC NEAR
-              Getters / Setters : get prop() / set prop(v) -> stubs
-              Champs publics : x = val -> init dans constructeur
-              Champs prives : #x = val -> masquage par prefixe (stub)
-            new Nom(args) :
-              CALL _JSRT_OBJCREATE(BX=ptr proto Nom) -> AX=ptr
-              PUSH AX (this sur pile) + CALL _JSF_Nom_ctor
-              Retour : AX=ptr objet cree
-            this dans methode : BX = ptr objet (passe en premier arg cache)
-            extends Parent :
-              Proto de Nom pointe vers proto de Parent
-              super() dans constructeur -> CALL _JSF_Parent_ctor
-              super.method() -> CALL _JSF_Parent_method
-            Chaine de prototypes : 2 niveaux MAX (Object a la racine)
-            instanceof : CMP proto ptrs -> AX=0|1
-
-  TODO 22 - CLOSURES ET REFERENCES
-            Analyse de capture en pre-passe :
-              Walker AST simplifie : reperer les identifiants libres dans une fn
-              Pour chaque var capturee : allouer une cellule DK_WORD dans DATA
-              Marquer IsCapture dans TSymRec
-            Emission :
-              Variable capturee en lecture : MOV AX, [_JSV_nom_cap]
-              Variable capturee en ecriture : MOV [_JSV_nom_cap], AX
-              Fermeture multiple : partage de la meme cellule DATA
-            Environnement de fermeture (approximation) :
-              Structure { cap0:word, cap1:word, ... } dans DATA par fn
-              Chaque appel de la fermeture lit/ecrit la structure partagee
-            Fonctions imbriquees : avertissement si plus de 2 niveaux
-            Fonctions retournees : ptr code dans AX, fermeture via DATA
-            this capture (arrow function) : this = 0 (contexte global DOS)
-            Operateur de reference :
-              &ident -> adresse d une fonction -> ptr code dans DATA/TEXT
-              Appel indirect -> CALL AX
-            Variables par reference (simulation) :
-              Passage par adresse : LEA AX,[BP-n] -> MOV [dernier param], AX
-              Lecture deref : MOV BX,AX / MOV AX,[BX]
-
-  TODO 23 - EXCEPTIONS : try / catch / finally / throw
-            ParseTryStmt : try { bloc } [catch (e) { bloc }] [finally { bloc }]
-              Emission sans OS support :
-              Vecteur d exception : _JSX_HANDLER DW 0 dans DATA
-                (pointeur vers le gestionnaire catch courant)
-              try block : MOV [_JSX_HANDLER], OFFSET _JSL_CATCH_N
-                Execution du bloc ; si terminaison normale JMP _JSL_TRY_OK_N
-              catch (e) : label _JSL_CATCH_N :
-                AX = pointeur vers l objet erreur (chaine ou objet Error)
-                Affectation a la variable e : MOV [BP-n], AX
-                Execution du bloc catch
-              finally : label _JSL_FINALLY_N :
-                Toujours execute (normal + exception)
-                Emission apres try-ok et apres catch
-              Restauration du handler : MOV [_JSX_HANDLER], ancien_handler
-            throw expr :
-              AX = ptr objet erreur (chaine ou new Error(...))
-              CMP WORD PTR [_JSX_HANDLER], 0 / JZ _JSL_UNHANDLED
-              MOV BX, [_JSX_HANDLER] / JMP BX
-              _JSL_UNHANDLED : affiche 'Uncaught: ' + msg + \n puis INT 21h 4C01h
-            new Error(msg) :
-              CALL _JSRT_MKERROR(SI=msg) -> AX=ptr struct {type:ptr, msg:ptr}
-            Types d erreur suppl??mentaires :
-              TypeError / RangeError / SyntaxError -> stub = new Error
-            Erreurs natives :
-              Division par zero -> JZ avant IDIV + throw _JS_ERR_DIV0
-              Index hors bornes -> CALL _JSRT_CHKIDX + throw si besoin
-
-  TODO 24 - RUNTIME MINIMAL
-            _JSRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
-            _JSRT_PRINTLN : _JSRT_PRINT + CR+LF via _JS_CRLF DB 13,10,0
-            _JSRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX et CX
-            _JSRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
-            _JSRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
-            _JSRT_CONCAT(DI=dst, SI=src) : strcat (src apres dst)
-            _JSRT_STRREPEAT(DI=dst, SI=src, CX=n) : repete n fois
-            _JSRT_TYPEOF(AX=val, BX=typeidx) : -> AX=ptr chaine type
-            _JSRT_TRUTHY(AX=val, BX=typeidx) : -> AX=0|1 (falsy/truthy)
-            _JSRT_STRTRUTHY(SI=ptr) : chaine -> AX=1 sauf '' et '0'
-            _JSRT_REMATCH(SI=str, DI=pat) : strstr basique -> AX=0|1
-            _JSRT_RESUB(SI=str, DI=pat, BX=repl) : substitution 1ere occ
-            _JSRT_ABS(AX=n) : valeur absolue -> AX
-            _JSRT_POW(AX=base, BX=exp) : puissance entiere -> AX
-            _JSRT_SQRT(AX=n) : racine carree entiere (Newton) -> AX
-            _JSRT_RAND : LCG 16 bits -> AX (graine _JSRT_SEED DW 1)
-            _JSRT_OBJCREATE(BX=proto) : alloue objet vide -> AX=ptr
-            _JSRT_OBJGET(BX=obj, DI=kptr) : cherche propriete -> AX=val
-            _JSRT_OBJSET(BX=obj, DI=kptr, AX=val) : ecriture propriete
-            _JSRT_ARRPUSH / ARRPOP / ARRSHIFT / ARRUNSHIFT : operations tableau
-            _JSRT_ARRSORT(SI=ptr) : tri a bulles numerique in-place
-            _JSRT_JSONSTR(AX=val, BX=typeidx) : serialisation simple -> ptr
-            _JSRT_MKERROR(SI=msg) : alloue struct Error -> AX=ptr
-            _JSRT_PANIC(SI=msg) : affiche + MOV AX,4C01h + INT 21h
-            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
-            Heap statique : _JS_HEAP DB 4096 DUP(0) + _JS_HEAPTOP DW 0
-              _JSRT_ALLOC(CX=nb_bytes) -> AX=ptr dans le heap statique
-
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
-            EmitClose : END _JSF_main dans _TEXT ENDS / DATA ENDS
-            Run : pipeline complet LexInit -> ParseStmt loop ->
-              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _JSF_main
-            Fichiers SAMPLES\JS\ a creer :
-              hello.js    (console.log, var/let/const, +, template literals)
-              math.js     (fonctions, recursion, return, Math.abs/pow)
-              control.js  (if/else if, switch/case, while, for, for-of)
-              arrays.js   (tableaux, push/pop, forEach, sort, indexOf)
-              objects.js  (objets litteraux, acces proprietes, Object.keys)
-              classes.js  (class, constructor, extends, super, new)
-            Smoke tests : JS86.EXE -v SAMPLES\JS\*.js
-
   ============================================================ *)
-
-{ ============================================================
-  JS86 - Compilateur JavaScript -> assembleur 8086
-  Version : 1.0  Date : 2026-03-05
-  Compilation : ppc386 -O2 -Mtp JS86.PAS
-  ============================================================ }
 
 Program JS86;
 
@@ -512,7 +41,7 @@ Const
   MAX_ARR_ELEM  = 64;   { elements max par tableau literal inline }
   MAX_OBJ_PROP  = 16;   { proprietes max par objet literal inline }
   STACK_SIZE    = 1024;
-  CALL_DEPTH_WARN = 32;  { seuil d avertissement profondeur appels (TODO 18) }
+  CALL_DEPTH_WARN = 32;  { seuil d avertissement profondeur appels }
 
   { Prefixes de nommage ASM }
   JS_VAR_PFX  = '_JSV_';    { variable scalaire / objet / tableau }
@@ -561,7 +90,7 @@ Type
     Warnings  : Boolean;   { -w : activer les avertissements      }
   End;
 
-  { ---- Tokens JavaScript (TODO 02) ----------------------- }
+  { ---- Tokens JavaScript ----------------------- }
   TTokenKind = (
     TK_EOF,       { fin de fichier                          }
     TK_INTEGER,   { literal entier 42 0xFF 0b101 0o17      }
@@ -584,7 +113,7 @@ Type
     Col      : Integer;     { colonne source (1-base)         }
   End;
 
-  { ---- Categories de symboles (TODO 05) ------------------ }
+  { ---- Categories de symboles ------------------ }
   TSymCat = (
     SC_VAR,        { var (hoist)                      }
     SC_LET,        { let (block-scope)                }
@@ -606,12 +135,12 @@ Type
     IsConst     : Boolean;   { const : erreur si reassigne     }
     IsParam     : Boolean;   { parametre de fonction           }
     IsCapture   : Boolean;   { variable capturee par closure   }
-    CaptureLabel: TString;    { label DATA pour var capturee (TODO 18) }
+    CaptureLabel: TString;    { label DATA pour var capturee }
     FnDepthLvl  : Integer;    { CurFnDepth au moment de la creation  }
     DeclLine    : Integer;
   End;
 
-  { ---- Types internes (TODO 06) -------------------------- }
+  { ---- Types internes -------------------------- }
   TTypeKind = (
     TKJ_NUMBER,
     TKJ_STRING,
@@ -630,7 +159,7 @@ Type
     Size    : Integer;   { octets : number=2, ptr=2 }
   End;
 
-  { ---- Valeurs d'expression (TODO 11) -------------------- }
+  { ---- Valeurs d'expression -------------------- }
   TExprKind = (
     EK_NONE,   { void / pas de valeur            }
     EK_IMM,    { immediate dans ImmVal           }
@@ -646,7 +175,7 @@ Type
     SymIdx  : Integer;   { indice dans SymTab (-1 = pas de lvalue) }
   End;
 
-  { ---- Segment de donnees (TODO 08) ---------------------- }
+  { ---- Segment de donnees ---------------------- }
   TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_OBJ_BLK);
 
   TDataRec = Record
@@ -657,7 +186,7 @@ Type
     ElemCount : Integer;  { DK_ARRAY_BLK : nb elements, DK_OBJ_BLK : nb props }
   End;
 
-  { Etat lexer sauvegardable pour lookahead speculatif (TODO 17) }
+  { Etat lexer sauvegardable pour lookahead speculatif }
   TLexState = Record
     Token     : TToken;
     Line      : TString;
@@ -686,7 +215,7 @@ Var
   { Valeur fictive pour ignorer un retour TExprVal }
   GExprDummy : TExprVal;
 
-  { Lexeur (TODO 02) }
+  { Lexeur }
   LexSrcF        : Text;
   LexLine        : String;
   LexLineNo      : Integer;
@@ -699,7 +228,7 @@ Var
   LexPrevKind    : TTokenKind; { type du token precedent pour ASI }
   LexPrevVal     : TString;    { valeur du token precedent pour ASI }
 
-  { Table des symboles (TODO 05) }
+  { Table des symboles }
   SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount   : Integer;
   ScopeStack      : Array[0..MAX_SCOPE - 1] Of Integer;
@@ -708,26 +237,26 @@ Var
   CurScope   : Integer;
   LabelSeq   : Integer;
 
-  { Table des types (TODO 06) }
+  { Table des types }
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;
 
-  { Emetteur ASM (TODO 07) }
+  { Emetteur ASM }
   OutF         : Text;
   OutFOpen     : Boolean;
   CurFrameSize : Integer;    { taille cadre local courant (words)   }
   CurFnDepth   : Integer;    { 0 = global, >0 = dans une function  }
   CurFnRetLbl  : TString;    { label epilogue de la function        }
   CurFnName    : TString;    { nom de la function courante          }
-  CurClassName : TString;    { nom de la classe courante (TODO 21)  }
-  CurParentClass : TString;  { nom de la classe parente (TODO 21)   }
+  CurClassName : TString;    { nom de la classe courante }
+  CurParentClass : TString;  { nom de la classe parente  }
   CurMethodThis  : Integer;  { offset BP du param cache this (0=no) }
   LoopTop      : Integer;
   LoopBreakLbl : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LoopContLbl  : Array[0..MAX_LOOP_NEST - 1] Of TString;
   LabelGenSeq  : Integer;    { compteur unique pour LabelGen        }
 
-  { Segment de donnees (TODO 08) }
+  { Segment de donnees }
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount : Integer;
 
@@ -758,7 +287,7 @@ Procedure LexScanString(Quote : Char); Forward;
 Procedure LexScanTemplate;     Forward;
 Procedure LexScanRegexp;       Forward;
 Procedure LexNextToken;        Forward;
-{ TODO 03 }
+
 Function  LexRegexpFlagOk(Ch : Char) : Boolean; Forward;
 Procedure LexCheckTagTemplate; Forward;
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
@@ -768,7 +297,7 @@ Procedure ExprMakeNull(Var Res : TExprVal); Forward;
 Procedure ExprMakeUndef(Var Res : TExprVal); Forward;
 Procedure ExprMakeBool(AVal : Integer; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
-{ TODO 04 }
+
 Function  BinOpPrec(Const Op : TString) : Integer; Forward;
 Function  BinOpIsRight(Const Op : TString) : Boolean; Forward;
 Function  IsAssignOp(Const Op : TString) : Boolean; Forward;
@@ -776,7 +305,7 @@ Procedure ParsePrimary(Var Res : TExprVal); Forward;
 Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
-{ TODO 05 }
+
 Function  SymNameClean(Const Name : TString) : TString; Forward;
 Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
@@ -788,7 +317,7 @@ Procedure SymLeaveScope; Forward;
 Function  SymNextOffset : Integer; Forward;
 Function  TempRegAcquire : TString; Forward;
 Procedure TempRegRelease(Const RegName : TString); Forward;
-{ TODO 07 }
+
 Function  LabelGen : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
 Procedure EmitBlankLine; Forward;
@@ -800,7 +329,7 @@ Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
 Procedure EmitProlog; Forward;
 Procedure EmitEpilog; Forward;
 Procedure EmitCoerce(SrcTypeIdx, DstTypeIdx : Integer); Forward;
-{ TODO 06 }
+
 Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
 Function  TypeMangle(TypeIdx : Integer) : TString; Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -812,7 +341,7 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
 Procedure EmitOpen;            Forward;
 Procedure EmitClose;     Forward;
 Procedure EmitDataSeg;   Forward;
-{ TODO 09 }
+
 Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
 Procedure ExprStore(SIdx : Integer); Forward;
@@ -820,35 +349,35 @@ Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
 Function  DeclAllocSym(Const Name : TString; Cat : TSymCat) : Integer; Forward;
 Procedure ParseDeclStmt(Const Kw : TString); Forward;
 Procedure ParseExprStmt; Forward;
-{ TODO 10 }
+
 Procedure ParseCallArgs(Var ArgCount : Integer); Forward;
 Procedure ParsePostfix(Var Res : TExprVal); Forward;
-{ TODO 14 }
+
 Procedure ParseWhileStmt; Forward;
 Procedure ParseDoWhileStmt; Forward;
 Procedure ParseForStmt; Forward;
-{ TODO 13 }
+
 Procedure ParseIfStmt; Forward;
 Procedure ParseSwitchStmt; Forward;
 Procedure ParseBlock; Forward;
 Procedure ParseStmtOrBlock; Forward;
-{ TODO 17 }
+
 Procedure ParseFuncDecl; Forward;
-{ TODO 21 }
+
 Procedure ParseClassDecl; Forward;
-{ TODO 22 }
+
 Procedure EmitCaptureSync(OuterDepth : Integer); Forward;
-{ TODO 23 }
+
 Procedure ParseTryStmt; Forward;
 Procedure LexSaveState(Var St : TLexState); Forward;
 Procedure LexRestoreState(Const St : TLexState); Forward;
-{ TODO 12 }
+
 Procedure EmitPrintAX(TIdx : Integer); Forward;
 Procedure EmitPrintAXFD(TIdx, FD : Integer); Forward;
 Procedure EmitPrintNewline(FD : Integer); Forward;
 Procedure EmitPrintStr(Const Lbl : TString; FD : Integer); Forward;
 Procedure EmitPrintSpace(FD : Integer); Forward;
-{ TODO 08 }
+
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
@@ -861,7 +390,7 @@ Procedure TypeInit;      Forward;
 Procedure SymInit;       Forward;
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
   ============================================================ }
 
 { ---- Messages d'erreur et d'avertissement ---------------- }
@@ -911,18 +440,20 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: JS86 <source.js> [sortie.asm] [-v] [-d] [-w] [-s]');
-  WriteLn;
-  WriteLn('  source.js  : fichier JavaScript source');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn('  -s         : mode strict (equivalent ''use strict'')');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('JS86 - Cette commande permet de lancer le compilateur JavaScript ',
+         'pour l''assembleur du microprocesseur 8086 ou 8088.');
+ WriteLn;
+ WriteLn('Syntaxe : JS86 <source.js> [sortie.asm] [-v] [-d] [-w] [-s]');
+ WriteLn;
+ WriteLn('  source.js  : fichier JavaScript source');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -s         : mode strict (equivalent ''use strict'')');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 { ---- Utilitaires chaines ------------------------------------ }
@@ -1151,8 +682,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LEXEUR (TOKENS JAVASCRIPT)
-  [IMPLEMENTE]
+  LEXEUR (TOKENS JAVASCRIPT)
   ============================================================ }
 
 { ---- IsKeyword : teste si S est un mot-cle JavaScript ------ }
@@ -2272,10 +1802,10 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  LITTERAUX ET CONSTANTES [IMPLEMENTE]
   ============================================================ }
 
-{ LexRegexpFlagOk : valider un flag de regexp JS (g i m s u) (TODO 19) }
+{ LexRegexpFlagOk : valider un flag de regexp JS (g i m s u) }
 Function LexRegexpFlagOk(Ch : Char) : Boolean;
 Begin
   LexRegexpFlagOk := (Ch = 'g') Or (Ch = 'i') Or (Ch = 'm') Or
@@ -2404,7 +1934,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  OPERATEURS ET PRECEDENCE [IMPLEMENTE]
   ============================================================ }
 
 { BinOpPrec : priorite d'un operateur binaire (plus grand = plus serre, 0=aucun) }
@@ -2447,7 +1977,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+  EXPRESSIONS PRIMAIRES [IMPLEMENTE]
   ============================================================ }
 
 { ParseCallArgs : parse (e1, e2, ...) et PUSH chaque arg. Retourne ArgCount. }
@@ -2494,7 +2024,7 @@ Var
   SubProp   : TString;
   I         : Integer;
   StrLbl    : TString;
-  ObjThisSaved : Boolean; { true si BX (this objet) empile - TODO 21 }
+  ObjThisSaved : Boolean; { true si BX (this objet) empile }
 Begin
   ObjThisSaved := False;
   While True Do
@@ -2503,7 +2033,7 @@ Begin
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
       FnIdx := Res.SymIdx;
-      { Intercepter alert(s) et prompt(s) (TODO 12) }
+      { Intercepter alert(s) et prompt(s) }
       If FnIdx >= 0 Then
         SymName := SymTab[FnIdx].Name
       Else
@@ -2543,7 +2073,7 @@ Begin
         Res.SymIdx  := -1;
         Continue;
       End
-      (* ---- Fonctions globales natives (TODO 20) ---- *)
+      (* ---- Fonctions globales natives ---- *)
       Else If SymName = 'parseInt' Then
       Begin
         ParserAdvance; { consomme '(' }
@@ -2618,7 +2148,7 @@ Begin
         EmitInstrA('PUSH', 'AX');  { sauver fn ptr sur pile }
       ParseCallArgs(ArgCount);
       GCallArgCount := ArgCount;
-      { Passer this pour les methodes d objet (TODO 21) }
+      { Passer this pour les methodes d objet }
       If ObjThisSaved Then
       Begin
         EmitInstrA('PUSH', 'WORD PTR [_JSRT_OBJTMP]');
@@ -2674,7 +2204,7 @@ Begin
       PropName := CurToken.Val;
       ParserAdvance;
 
-      { ---- console.log / console.error / console.warn (TODO 12) ---- }
+      { ---- console.log / console.error / console.warn ---- }
       If SymName = 'console' Then
       Begin
         If PropName = 'log' Then FD := 1
@@ -2812,7 +2342,7 @@ Begin
         Continue;
       End;
 
-      { ---- Object.keys / Object.assign / Object.create (TODO 16) ---- }
+      { ---- Object.keys / Object.assign / Object.create ---- }
       If SymName = 'Object' Then
       Begin
         If PropName = 'keys' Then
@@ -2870,7 +2400,7 @@ Begin
         Continue;
       End;
 
-      (* ---- Objet Math (TODO 20) ---- *)
+      (* ---- Objet Math ---- *)
       If SymName = 'Math' Then
       Begin
         If PropName = 'abs' Then
@@ -3011,7 +2541,7 @@ Begin
         Continue;
       End;
 
-      (* ---- Objet Number (TODO 20) ---- *)
+      (* ---- Objet Number ---- *)
       If SymName = 'Number' Then
       Begin
         If PropName = 'isInteger' Then
@@ -3035,7 +2565,7 @@ Begin
         Continue;
       End;
 
-      (* ---- Objet String (TODO 20) ---- *)
+      (* ---- Objet String ---- *)
       If SymName = 'String' Then
       Begin
         If PropName = 'fromCharCode' Then
@@ -3059,7 +2589,7 @@ Begin
         Continue;
       End;
 
-      (* ---- Objet JSON (TODO 20) ---- *)
+      (* ---- Objet JSON ---- *)
       If SymName = 'JSON' Then
       Begin
         If PropName = 'stringify' Then
@@ -3099,7 +2629,7 @@ Begin
       End;
 
       { ---- Proprietes speciales generiques ---- }
-      { ---- Proprietes / methodes de tableau (TODO 15) + string (TODO 20) ---- }
+      { ---- Proprietes / methodes de tableau + string ---- }
       If PropName = 'length' Then
       Begin
         ExprFlushToAX(Res);
@@ -3359,7 +2889,7 @@ Begin
           Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
         End;
       End
-      (* ---- Methodes RegExp : re.test(str), re.exec(str) (TODO 19) ---- *)
+      (* ---- Methodes RegExp : re.test(str), re.exec(str) ---- *)
       Else If PropName = 'test' Then
       Begin
         ExprFlushToAX(Res);
@@ -3394,7 +2924,7 @@ Begin
           ParserAdvance;
         Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
       End
-      (* ---- Methodes String sur regexp : .match .search .replace .split (TODO 19) ---- *)
+      (* ---- Methodes String sur regexp : .match .search .replace .split ---- *)
       Else If PropName = 'match' Then
       Begin
         ExprFlushToAX(Res);
@@ -3477,7 +3007,7 @@ Begin
           ParserAdvance;
         Res.Kind := EK_AX; Res.TypeIdx := TY_IDX_ARRAY; Res.SymIdx := -1;
       End
-      (* ---- Methodes String natives (TODO 20) ---- *)
+      (* ---- Methodes String natives ---- *)
       Else If PropName = 'charAt' Then
       Begin
         ExprFlushToAX(Res);
@@ -3698,7 +3228,7 @@ Begin
       End
       Else
       Begin
-        { ---- Acces / affectation propriete objet generique (TODO 16) ---- }
+        { ---- Acces / affectation propriete objet generique ---- }
         ExprFlushToAX(Res);
         StrLbl := DataAddStr(PropName);
         If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
@@ -3721,7 +3251,7 @@ Begin
           EmitInstrAB('MOV', 'BX', 'AX');
           EmitInstrAB('LEA', 'DI', StrLbl);
           EmitInstrA('CALL', '_JSRT_OBJGET');
-          { Si suivi de ( -> appel de methode, sauver this dans tmp (TODO 21) }
+          { Si suivi de ( -> appel de methode, sauver this dans tmp }
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           Begin
             EmitInstrAB('MOV', '[_JSRT_OBJTMP]', 'BX');
@@ -3756,7 +3286,7 @@ Begin
       Continue;
     End;
 
-    { ---- Acces index : expr[idx] / affectation arr[idx]=expr (TODO 15) ---- }
+    { ---- Acces index : expr[idx] / affectation arr[idx]=expr ---- }
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[') Then
     Begin
       ParserAdvance; { consomme '[' }
@@ -3811,7 +3341,7 @@ Begin
   End;
 End;
 
-{ ParsePrimary : evaluer un token primaire (TODO 10) }
+{ ParsePrimary : evaluer un token primaire }
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   StrLbl      : TString;
@@ -3828,12 +3358,12 @@ Var
   ObjValIsImm : Array[0..15] Of Boolean;
   SavedLex    : TLexState;
   IsArrowOk   : Boolean;
-  RegPat      : TString;    { pattern regexp (TODO 19) }
-  RegFlags    : TString;    { flags regexp   (TODO 19) }
+  RegPat      : TString;    { pattern regexp }
+  RegFlags    : TString;    { flags regexp   }
   RegSep      : Integer;    { position du Chr(1) separateur }
   RegI        : Integer;    { index boucle regexp }
-  SuperMethod : TString;    { nom methode parent (TODO 21) }
-  SaveThis    : Integer;    { sauvegarde CurMethodThis (TODO 22) }
+  SuperMethod : TString;    { nom methode parent }
+  SaveThis    : Integer;    { sauvegarde CurMethodThis }
 Begin
   Case CurToken.Kind Of
 
@@ -3870,7 +3400,7 @@ Begin
       ParserAdvance;
     End;
 
-    { ---- Regexp literal (TODO 19) ---- }
+    { ---- Regexp literal ---- }
     TK_REGEXP :
     Begin
       (* Analyser le pattern pour metacaracteres et captures *)
@@ -4068,7 +3598,7 @@ Begin
         Begin
           CtorName := CurToken.Val;
           ParserAdvance;
-          { new Array(n) -> allouer tableau en DATA (TODO 15) }
+          { new Array(n) -> allouer tableau en DATA }
           If CtorName = 'Array' Then
           Begin
             Inc(LabelGenSeq);
@@ -4120,7 +3650,7 @@ Begin
           End
           Else If CtorName = 'RegExp' Then
           Begin
-            (* new RegExp(pat, flags) -> synthetiser un TK_REGEXP (TODO 19) *)
+            (* new RegExp(pat, flags) -> synthetiser un TK_REGEXP *)
             RegPat := ''; RegFlags := '';
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
             Begin
@@ -4159,7 +3689,7 @@ Begin
                   (CtorName = 'RangeError') Or (CtorName = 'SyntaxError') Or
                   (CtorName = 'ReferenceError') Then
           Begin
-            { new Error(msg) -> CALL _JSRT_MKERROR (TODO 23) }
+            { new Error(msg) -> CALL _JSRT_MKERROR }
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
             Begin
               ParserAdvance; { consomme '(' }
@@ -4250,7 +3780,7 @@ Begin
       End
       Else If CurToken.Val = 'function' Then
       Begin
-        (* Expression function : function name?(params) { body } - TODO 17 *)
+        (* Expression function : function name?(params) { body } *)
         ParserAdvance; { consomme 'function' }
         { Generateur : function* }
         If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
@@ -4314,7 +3844,7 @@ Begin
         Inc(CurFnDepth);
         CurFnRetLbl := CtorName;
         FnIdx := CurFrameSize; { reuse FnIdx as save frame }
-        CurFrameSize := 2;  { 2 words pour SI/DI (TODO 18) }
+        CurFrameSize := 2;  { 2 words pour SI/DI }
         SymEnterScope;
         For I := 0 To ElemCnt - 1 Do
           SymAdd(ObjKeyLbls[I], SC_PARAM, TY_UNKNOWN,
@@ -4341,7 +3871,7 @@ Begin
         SymLeaveScope;
         CurFrameSize := FnIdx;
         EmitLabel(StrLbl);
-        { Sync des variables capturees (TODO 22) }
+        { Sync des variables capturees }
         EmitCaptureSync(CurFnDepth);
         EmitInstrAB('LEA', 'AX', ArrLbl);
         Res.Kind    := EK_AX;
@@ -4399,7 +3929,7 @@ Begin
       End
       Else
       Begin
-        { Verifier arrow function : ident => expr (TODO 17) }
+        { Verifier arrow function : ident => expr }
         ObjLbl := CurToken.Val; { sauver le nom de l identifiant }
         LexSaveState(SavedLex);
         ParserAdvance; { consommer l identifiant }
@@ -4420,11 +3950,11 @@ Begin
           EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
           ArgCount := CurFnDepth;
           Inc(CurFnDepth);
-          SaveThis := CurMethodThis;   { arrow : this = 0 (TODO 22) }
+          SaveThis := CurMethodThis;   { arrow : this = 0 }
           CurMethodThis := 0;
           CurFnRetLbl := CtorName;
           FnIdx := CurFrameSize;
-          CurFrameSize := 2;  { SI/DI (TODO 18) }
+          CurFrameSize := 2;  { SI/DI }
           SymEnterScope;
           SymAdd(ObjLbl, SC_PARAM, TY_UNKNOWN, 4);
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
@@ -4450,11 +3980,11 @@ Begin
           EmitInstrA('POP', 'BP');
           EmitInstr('RET');
           CurFnDepth := ArgCount;
-          CurMethodThis := SaveThis;   { restaurer (TODO 22) }
+          CurMethodThis := SaveThis;   { restaurer }
           SymLeaveScope;
           CurFrameSize := FnIdx;
           EmitLabel(StrLbl);
-          { Sync des variables capturees (TODO 22) }
+          { Sync des variables capturees }
           EmitCaptureSync(CurFnDepth);
           EmitInstrAB('LEA', 'AX', ArrLbl);
           Res.Kind := EK_AX; Res.ImmVal := 0;
@@ -4504,7 +4034,7 @@ Begin
       { Groupement parenthese / arrow function : (expr) ou (params) => ... }
       If CurToken.Val = '(' Then
       Begin
-        { Detection speculative d arrow function (TODO 17) }
+        { Detection speculative d arrow function }
         LexSaveState(SavedLex);
         ParserAdvance; { consomme '(' }
         IsArrowOk := True;
@@ -4551,7 +4081,7 @@ Begin
         End;
         If IsArrowOk And ((CurToken.Kind = TK_OP) And (CurToken.Val = '=>')) Then
         Begin
-          { ---- Arrow function multi-params (TODO 17) ---- }
+          { ---- Arrow function multi-params ---- }
           ParserAdvance; { consomme => }
           Inc(LabelGenSeq);
           ArrLbl := JS_FN_PFX + 'ANON_' + IntToStr(LabelGenSeq);
@@ -4566,11 +4096,11 @@ Begin
           EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
           ArgCount := CurFnDepth;
           Inc(CurFnDepth);
-          SaveThis := CurMethodThis;   { arrow : this = 0 (TODO 22) }
+          SaveThis := CurMethodThis;   { arrow : this = 0 }
           CurMethodThis := 0;
           CurFnRetLbl := CtorName;
           FnIdx := CurFrameSize;
-          CurFrameSize := 2;  { SI/DI (TODO 18) }
+          CurFrameSize := 2;  { SI/DI }
           SymEnterScope;
           For I := 0 To ElemCnt - 1 Do
             SymAdd(ObjKeyLbls[I], SC_PARAM, TY_UNKNOWN,
@@ -4598,11 +4128,11 @@ Begin
           EmitInstrA('POP', 'BP');
           EmitInstr('RET');
           CurFnDepth := ArgCount;
-          CurMethodThis := SaveThis;   { restaurer (TODO 22) }
+          CurMethodThis := SaveThis;   { restaurer }
           SymLeaveScope;
           CurFrameSize := FnIdx;
           EmitLabel(StrLbl);
-          { Sync des variables capturees (TODO 22) }
+          { Sync des variables capturees }
           EmitCaptureSync(CurFnDepth);
           EmitInstrAB('LEA', 'AX', ArrLbl);
           Res.Kind := EK_AX; Res.ImmVal := 0;
@@ -4689,7 +4219,7 @@ Begin
         Res.SymIdx  := -1;
       End
 
-      { Objet litteral : accolades k:v, ... (TODO 16) }
+      { Objet litteral : accolades k:v, ... }
       Else If CurToken.Val = '{' Then
       Begin
         ParserAdvance; { consomme '{' }
@@ -4823,7 +4353,7 @@ Var
   Op    : TString;
   Addr  : TString;
   TLbl  : TString;
-  FnIdx : Integer;   { pour & (TODO 22) }
+  FnIdx : Integer;   { pour & }
 Begin
   { Unaire prefixe sur TK_OP }
   If CurToken.Kind = TK_OP Then
@@ -4906,7 +4436,7 @@ Begin
       End;
       Exit;
     End;
-    { Operateur de reference & (TODO 22) : &ident -> adresse }
+    { Operateur de reference & : &ident -> adresse }
     If Op = '&' Then
     Begin
       ParserAdvance;
@@ -4946,7 +4476,7 @@ Begin
       Res.SymIdx  := -1;
       Exit;
     End;
-    { Operateur de dereference * (TODO 22) : *expr -> MOV BX,AX / MOV AX,[BX] }
+    { Operateur de dereference * : *expr -> MOV BX,AX / MOV AX,[BX] }
     If Op = '*' Then
     Begin
       ParserAdvance;
@@ -5078,7 +4608,7 @@ Begin
     { Arreter si fin ou priorite insuffisante ou assignation }
     If (Prec = 0) Or (Prec < MinPrec) Or IsAssignOp(Op) Then Break;
     ParserAdvance;
-    { Ternaire : cond ? vrai : faux (TODO 11) }
+    { Ternaire : cond ? vrai : faux }
     If Op = '?' Then
     Begin
       If Res.Kind = EK_IMM Then
@@ -5221,7 +4751,7 @@ Begin
     End
     Else
     Begin
-      { ---- Emission code binaire (TODO 11) ---- }
+      { ---- Emission code binaire ---- }
       ResType := TypeCoerceResult(Res.TypeIdx, Right.TypeIdx, Op);
       { Charger droite dans BX }
       ExprFlushToAX(Right);
@@ -5381,7 +4911,7 @@ Begin
       CompileError('cible d''affectation invalide');
       Exit;
     End;
-    { Emission du store si lvalue connue (TODO 09) }
+    { Emission du store si lvalue connue }
     If Res.SymIdx >= 0 Then
     Begin
       If SymTab[Res.SymIdx].IsConst Then
@@ -5522,7 +5052,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
 { SymNameClean : supprimer les caracteres invalides en MASM ($ etc.) }
@@ -5636,7 +5166,7 @@ Begin
   Dec(ScopeTop);
   SymCount := ScopeStack[ScopeTop];  { let/const de bloc effaces }
   Dec(CurScope);
-  { Liberer espace pile des locales de ce scope (TODO 17) }
+  { Liberer espace pile des locales de ce scope }
   If CurFnDepth > 0 Then
   Begin
     FrameDelta := CurFrameSize - ScopeFrameStack[ScopeTop];
@@ -5691,7 +5221,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
 
 { TypeKindOf : retourner le TTypeKind associe a un indice de type }
@@ -5851,7 +5381,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  EMETTEUR DE CODE ASM [IMPLEMENTE]
   ============================================================ }
 
 { LabelGen : generer un label unique _JSL_NNNNN }
@@ -5906,7 +5436,7 @@ Begin
   WriteLn(OutF, '        ', Mnem, '   ', A1, ', ', A2);
 End;
 
-{ EmitProlog : preambule de fonction (BP frame + SI/DI + profondeur) (TODO 18) }
+{ EmitProlog : preambule de fonction (BP frame + SI/DI + profondeur) }
 Procedure EmitProlog;
 Begin
   EmitInstrA('PUSH', 'BP');
@@ -5916,7 +5446,7 @@ Begin
   EmitInstrA('INC', 'WORD PTR [_JS_CALLDEPTH]');
 End;
 
-{ EmitEpilog : epilogue de fonction (restaurer SI/DI/SP/BP et retourner) (TODO 18) }
+{ EmitEpilog : epilogue de fonction (restaurer SI/DI/SP/BP et retourner) }
 Procedure EmitEpilog;
 Begin
   If CurFnRetLbl <> '' Then
@@ -5961,13 +5491,13 @@ Begin
     Exit;
   End;
   { tout -> UNKNOWN : rien ne garantit la coercition }
-  { on emet juste un commentaire pour le futur TODO 24 (runtime) }
+  { on emet juste un commentaire pour le futur (runtime) }
   EmitComment('  [coerce ' + IntToStr(SrcTypeIdx) +
-              ' -> ' + IntToStr(DstTypeIdx) + ' : runtime TODO 24]');
+              ' -> ' + IntToStr(DstTypeIdx) + ' : runtime]');
 End;
 
 { ============================================================
-  STUBS PREALABLES (seront implantes dans les TODOs suivants)
+  STUBS PREALABLES
   ============================================================ }
 
 Procedure TypeInit;
@@ -6095,7 +5625,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
   ============================================================ }
 
 { Ajoute une entree generique dans DataTab et retourne son index. }
@@ -6146,29 +5676,29 @@ Begin
   EmitRaw('_JS_FALSE   DB  ''false'',0');
   { Buffer de travail pour concatenation et coercition de chaines }
   EmitRaw('_JSRT_STRBUF DB 512 DUP(0)');
-  { Constantes console/IO (TODO 12) }
+  { Constantes console/IO }
   EmitRaw('_JS_CRLF    DB  13,10,0');
   EmitRaw('_JS_SPACE   DB  '' '',0');
   EmitRaw('_JS_WARNPFX DB  ''Warning: '',0');
-  { Buffer statique pour Object.keys() (TODO 16) }
+  { Buffer statique pour Object.keys() }
   EmitRaw('_JSRT_OKBUF  DW  ' + IntToStr(MAX_OBJ_PROP + 1) + ' DUP(0)');
-  (* Compteur profondeur d appels - TODO 18 *)
+  (* Compteur profondeur d appels *)
   EmitRaw('_JS_CALLDEPTH  DW  0');
-  (* Stubs de capture regexp _JSCAP_1.._JSCAP_9 - TODO 19 *)
+  (* Stubs de capture regexp _JSCAP_1.._JSCAP_9 *)
   For I := 1 To 9 Do
     EmitRaw('_JSCAP_' + Chr(Ord('0') + I) + '  DW  0');
-  (* Buffer temporaire pour _JSRT_RESUB - TODO 19 *)
+  (* Buffer temporaire pour _JSRT_RESUB *)
   EmitRaw('_JSRT_REBUF  DB  256 DUP(0)');
-  (* Buffers et donnees pour methodes natives - TODO 20 *)
+  (* Buffers et donnees pour methodes natives *)
   EmitRaw('_JSRT_CHRBUF DB  2 DUP(0)');
   EmitRaw('_JSRT_JSONBUF DB 256 DUP(0)');
   EmitRaw('_JSRT_SPLITBUF DW 64 DUP(0)');
   EmitRaw('_JS_RNDSEED  DW  12345');
-  (* Heap et compteur pour objets classes - TODO 21 *)
+  (* Heap et compteur pour objets classes *)
   EmitRaw('_JSRT_OBJHEAP DB 4096 DUP(0)');
   EmitRaw('_JSRT_HEAPTOP DW 0');
   EmitRaw('_JSRT_OBJTMP  DW 0');
-  (* Gestion des exceptions - TODO 23 *)
+  (* Gestion des exceptions *)
   EmitRaw('_JSX_HANDLER  DW  0');
   EmitRaw('_JSX_SAVESP   DW  0');
   EmitRaw('_JSX_SAVEBP   DW  0');
@@ -6176,7 +5706,7 @@ Begin
   EmitRaw('_JS_ERR_DIV0  DB  ''Division by zero'',0');
   EmitRaw('_JS_ERR_UNCAUGHT DB ''Uncaught: '',0');
   EmitRaw('_JSRT_ERRBUF  DB  64 DUP(0)');
-  (* Runtime core - TODO 24 *)
+  (* Runtime core *)
   EmitRaw('_JSRT_NUMBUF  DB  12 DUP(0)');
   EmitRaw('_JS_TYP_NUMBER  DB ''number'',0');
   EmitRaw('_JS_TYP_STRING  DB ''string'',0');
@@ -6226,7 +5756,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 12 - CONSOLE / PROCESS / SORTIES [IMPLEMENTE]
+  CONSOLE / PROCESS / SORTIES [IMPLEMENTE]
   ============================================================ }
 
 { EmitStrLen : emet code pour calculer longueur chaine ASCIIZ.
@@ -6377,7 +5907,7 @@ Begin
   RuntimeEmitted := True;
 
   EmitBlankLine;
-  EmitComment('--- runtime core routines (TODO 24) ---');
+  EmitComment('--- runtime core routines ---');
 
   { _JSRT_NUMTOSTR : entier signe -> ASCII (itoa)
     IN  : AX = nombre (signe 16 bits)
@@ -6583,7 +6113,7 @@ Begin
   EmitInstr('RET');
 
   EmitBlankLine;
-  EmitComment('--- runtime array routines (TODO 15) ---');
+  EmitComment('--- runtime array routines ---');
 
   { _JSRT_ARRPUSH : SI=ptr tableau, AX=valeur a ajouter }
   { Resultat : AX = nouveau count }
@@ -6765,10 +6295,10 @@ Begin
   EmitInstr('RET');
 
   { ============================================================
-    Routines runtime objet (TODO 16)
+    Routines runtime objet
     ============================================================ }
   EmitBlankLine;
-  EmitComment('--- runtime object routines (TODO 16) ---');
+  EmitComment('--- runtime object routines ---');
 
   { _JSRT_STRCMP : compare deux chaines ASCIIZ
     IN  : SI = chaine 1, DI = chaine 2
@@ -6950,9 +6480,9 @@ Begin
   EmitInstrA('POP', 'CX');
   EmitInstr('RET');
 
-  (* ---- routines regexp (TODO 19) ---- *)
+  (* ---- routines regexp ---- *)
   EmitBlankLine;
-  EmitComment('--- runtime regexp routines (TODO 19) ---');
+  EmitComment('--- runtime regexp routines ---');
 
   { _JSRT_REPARSE : utilitaire interne
     Extrait le pattern pur de DI (ptr regexp = pattern + Chr(1) + flags)
@@ -7213,7 +6743,7 @@ Begin
   EmitInstr('RET');
 
   EmitBlankLine;
-  EmitComment('--- runtime string / math / number routines (TODO 20) ---');
+  EmitComment('--- runtime string / math / number routines ---');
 
   { _JSRT_STRLEN : SI = ptr chaine ASCIIZ -> AX = longueur }
   EmitLabel('_JSRT_STRLEN');
@@ -7896,9 +7426,9 @@ Begin
   EmitInstrA('POP', 'DI');
   EmitInstr('RET');
 
-  (* ---- routines classes/heritage (TODO 21) ---- *)
+  (* ---- routines classes/heritage ---- *)
   EmitBlankLine;
-  EmitComment('--- runtime class routines (TODO 21) ---');
+  EmitComment('--- runtime class routines ---');
 
   { _JSRT_NEW : alloue un objet vide (bloc DW) dans _JSRT_OBJHEAP
     IN  : rien
@@ -7940,9 +7470,9 @@ Begin
   EmitInstrA('POP', 'DX');
   EmitInstr('RET');
 
-  (* ---- routines exceptions (TODO 23) ---- *)
+  (* ---- routines exceptions ---- *)
   EmitBlankLine;
-  EmitComment('--- runtime exception routines (TODO 23) ---');
+  EmitComment('--- runtime exception routines ---');
 
   { _JSRT_MKERROR : cree une struct Error minimale
     IN  : SI = ptr message (ASCIIZ)
@@ -8041,7 +7571,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  VARIABLES ET AFFECTATIONS [IMPLEMENTE]
   ============================================================ }
 
 { ExprAddrOf : retourne la chaine d'adressage MASM d'un symbole }
@@ -8051,13 +7581,13 @@ Var
   CapLbl : TString;
 Begin
   Ofs := SymTab[SIdx].Offset;
-  (* Si deja marque capture (TODO 22) : toujours utiliser cellule DATA *)
+  (* Si deja marque capture : toujours utiliser cellule DATA *)
   If SymTab[SIdx].IsCapture Then
   Begin
     ExprAddrOf := '[' + SymTab[SIdx].CaptureLabel + ']';
     Exit;
   End;
-  (* Detection de capture closure - TODO 18/22 *)
+  (* Detection de capture closure *)
   If (Ofs <> 0) And (SymTab[SIdx].FnDepthLvl < CurFnDepth) And
      (CurFnDepth > 0) Then
   Begin
@@ -8084,7 +7614,7 @@ Begin
     ExprAddrOf := '[' + SymTab[SIdx].MangledName + ']'; { global }
 End;
 
-{ EmitCaptureSync : sync captured stack vars -> DATA cells (TODO 22) }
+{ EmitCaptureSync : sync captured stack vars -> DATA cells }
 { Appele apres compilation d une fonction imbriquee, au skip label, pour
   copier la valeur actuelle des locales/params capturees dans la cellule DATA. }
 Procedure EmitCaptureSync(OuterDepth : Integer);
@@ -8186,7 +7716,7 @@ Begin
   Else
   Begin
     Offset := SymNextOffset; { local : [BP-n] }
-    EmitInstrAB('SUB', 'SP', '2'); { allouer pile pour locale (TODO 17) }
+    EmitInstrAB('SUB', 'SP', '2'); { allouer pile pour locale }
   End;
   SIdx := SymAdd(Name, Cat, TY_UNKNOWN, Offset);
   { Variable globale : entree dans le segment de donnees }
@@ -8500,7 +8030,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 17 - FONCTIONS (function / arrow / return) [IMPLEMENTE]
+  FONCTIONS (function / arrow / return) [IMPLEMENTE]
   ============================================================ }
 
 { LexSaveState : sauvegarder l etat complet du lexer pour lookahead }
@@ -8532,11 +8062,11 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - IF / ELSE IF / ELSE + SWITCH / CASE / DEFAULT
+  IF / ELSE IF / ELSE + SWITCH / CASE / DEFAULT
   ============================================================ }
 
 { ============================================================
-  TODO 14 - BOUCLES : while / do-while / for / for-of / for-in
+  BOUCLES : while / do-while / for / for-of / for-in
   ============================================================ }
 
 { LoopPush : empile les labels break/continue pour la boucle courante }
@@ -8898,7 +8428,7 @@ Begin
   SymLeaveScope;
 End;
 
-(* ParseTryStmt : try { bloc } [catch(e) { bloc }] [finally { bloc }] - TODO 23 *)
+(* ParseTryStmt : try { bloc } [catch(e) { bloc }] [finally { bloc }] *)
 Procedure ParseTryStmt;
 Var
   LblCatch    : TString;
@@ -9030,7 +8560,7 @@ Begin
   EmitLabel(LblEnd);
 End;
 
-(* ParseFuncDecl : function nom(params) bloc - TODO 17 *)
+(* ParseFuncDecl : function nom(params) bloc *)
 Procedure ParseFuncDecl;
 Var
   FnName     : TString;
@@ -9099,7 +8629,7 @@ Begin
   { Emettre JMP par-dessus le corps }
   EmitInstrA('JMP', SkipLabel);
   EmitLabel(FnLabel);
-  { Prologue (TODO 18 : sauvegarde SI/DI + profondeur appels) }
+  { Prologue (sauvegarde SI/DI + profondeur appels) }
   EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
   EmitInstrA('PUSH', 'SI');
@@ -9112,13 +8642,13 @@ Begin
   SaveFrame  := CurFrameSize;
   Inc(CurFnDepth);
   If CurFnDepth > 2 Then
-    WarnMsg('fonctions imbriquees > 2 niveaux : fermeture approximative (TODO 22)');
+    WarnMsg('fonctions imbriquees > 2 niveaux : fermeture approximative');
   If CurFnDepth >= CALL_DEPTH_WARN Then
     WarnMsg('imbrication de fonctions >= ' + IntToStr(CALL_DEPTH_WARN) +
             ' niveaux : risque de debordement de pile');
   CurFnRetLbl := RetLabel;
   CurFnName   := FnName;
-  CurFrameSize := 2;  { 2 words reserves pour SI/DI sauvegardes (TODO 18) }
+  CurFrameSize := 2;  { 2 words reserves pour SI/DI sauvegardes }
   { Scope et parametres }
   SymEnterScope;
   For I := 0 To ParamCount - 1 Do
@@ -9140,7 +8670,7 @@ Begin
     CompileError('"{" attendu apres parametres de fonction');
   { Retour par defaut : undefined }
   EmitInstrAB('XOR', 'AX', 'AX');
-  { Epilogue (TODO 18 : restauration SI/DI + profondeur appels) }
+  { Epilogue (restauration SI/DI + profondeur appels) }
   EmitLabel(RetLabel);
   EmitInstrA('DEC', 'WORD PTR [_JS_CALLDEPTH]');
   EmitInstrAB('MOV', 'SI', '[BP-2]');
@@ -9156,11 +8686,11 @@ Begin
   CurFrameSize := SaveFrame;
   { Label de saut apres la fonction }
   EmitLabel(SkipLabel);
-  { Sync des variables capturees vers cellules DATA (TODO 22) }
+  { Sync des variables capturees vers cellules DATA }
   EmitCaptureSync(CurFnDepth);
 End;
 
-(* ParseClassDecl : class Nom [extends Parent] { corps } - TODO 21 *)
+(* ParseClassDecl : class Nom [extends Parent] { corps } *)
 Procedure ParseClassDecl;
 Const
   MAX_CLASS_METH = 32;
@@ -9189,7 +8719,7 @@ Var
   DummyRes    : TExprVal;
   HasCtor     : Boolean;
   ClassSkip   : TString;
-  { Suivi des methodes pour init des instances (TODO 21) }
+  { Suivi des methodes pour init des instances }
   MethNames   : Array[0..MAX_CLASS_METH - 1] Of TString;
   MethLabels  : Array[0..MAX_CLASS_METH - 1] Of TString;
   MethKeyLbls : Array[0..MAX_CLASS_METH - 1] Of TString;
@@ -9452,7 +8982,7 @@ Begin
       SymLeaveScope;
       CurFrameSize := SaveFrame;
 
-      { Suivi des methodes non-statiques, non-constructeur (TODO 21) }
+      { Suivi des methodes non-statiques, non-constructeur }
       If (Not IsStatic) And (MethName <> 'constructor') Then
       Begin
         If MethCount < MAX_CLASS_METH Then
@@ -9781,7 +9311,7 @@ Begin
     ParserAdvance;
     Exit;
   End;
-  { async : stub, consommer et traiter le reste normalement (TODO 17) }
+  { async : stub, consommer et traiter le reste normalement }
   If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'async') Then
   Begin
     WarnMsg('async non supporte : stub');
@@ -9952,7 +9482,7 @@ Begin
   While CurToken.Kind <> TK_EOF Do
     ParseStmt;
 
-  { Terminaison propre du programme (TODO 25) }
+  { Terminaison propre du programme }
   EmitBlankLine;
   EmitComment('--- sortie programme ---');
   EmitInstrAB('MOV', 'AX', '4C00h');
@@ -9980,7 +9510,14 @@ End;
 { ============================================================
   PROGRAMME PRINCIPAL
   ============================================================ }
-Begin
-  ParseArgs;
-  Run;
-End.
+BEGIN
+ If (ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+    (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+    (ParamStr(1) = '/H') Then
+ Begin
+  ShowUsage;
+  Halt(0);
+ End;
+ ParseArgs;
+ Run;
+END.
