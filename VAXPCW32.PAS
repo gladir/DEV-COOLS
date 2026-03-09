@@ -181,7 +181,7 @@
             Affectation VARYING := : CALL _VXPRT_VARY_ASSIGN
             Coercition automatique lors de l affectation
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident, appel
             Acces variable globale : MOV EAX,[_VXV_nom]
             Acces variable locale : MOV EAX,[EBP-offset]
@@ -3131,8 +3131,167 @@ Begin
       Lw2 := StrLowerCase(IdName);
       LexNextToken;
 
-        (* --- Built-in functions --- *)
-        If (Lw2 = 'ord') Or (Lw2 = 'chr') Or (Lw2 = 'abs') Or
+        (* --- UPPERBOUND(a, d) : borne haute d un tableau --- *)
+        If Lw2 = 'upperbound' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken;
+          SIdx2 := -1;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            SIdx2 := SymFind(CurToken.Val);
+            LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            LexNextToken;
+            If CurToken.Kind = TK_INTEGER Then LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          If (SIdx2 >= 0) And (SymTab[SIdx2].TypeIdx >= 0) And
+             (SymTab[SIdx2].TypeIdx < TypeCount) And
+             (TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ARRAY) Then
+            EmitInstrAB('MOV', 'EAX',
+              IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Hi))
+          Else
+          Begin
+            WarnMsg('UPPERBOUND attend un tableau');
+            EmitInstrAB('XOR', 'EAX', 'EAX');
+          End;
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- LOWERBOUND(a, d) : borne basse d un tableau --- *)
+        Else If Lw2 = 'lowerbound' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken;
+          SIdx2 := -1;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            SIdx2 := SymFind(CurToken.Val);
+            LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            LexNextToken;
+            If CurToken.Kind = TK_INTEGER Then LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          If (SIdx2 >= 0) And (SymTab[SIdx2].TypeIdx >= 0) And
+             (SymTab[SIdx2].TypeIdx < TypeCount) And
+             (TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ARRAY) Then
+            EmitInstrAB('MOV', 'EAX',
+              IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Lo))
+          Else
+          Begin
+            WarnMsg('LOWERBOUND attend un tableau');
+            EmitInstrAB('XOR', 'EAX', 'EAX');
+          End;
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- DIMENSION(a, d) : nombre d elements --- *)
+        Else If Lw2 = 'dimension' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken;
+          SIdx2 := -1;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            SIdx2 := SymFind(CurToken.Val);
+            LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            LexNextToken;
+            If CurToken.Kind = TK_INTEGER Then LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          If (SIdx2 >= 0) And (SymTab[SIdx2].TypeIdx >= 0) And
+             (SymTab[SIdx2].TypeIdx < TypeCount) And
+             (TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ARRAY) Then
+            EmitInstrAB('MOV', 'EAX',
+              IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Hi -
+                       TypeTab[SymTab[SIdx2].TypeIdx].Lo + 1))
+          Else
+          Begin
+            WarnMsg('DIMENSION attend un tableau');
+            EmitInstrAB('XOR', 'EAX', 'EAX');
+          End;
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- INDEX(s, t) : position de t dans s (1-based, 0=absent) --- *)
+        Else If Lw2 = 'index' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken
+          Else
+            WarnMsg('''('' attendu apres Index');
+          ParseExpr(SubEv);
+          ExprFlushToEAX(SubEv);
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken
+          Else
+            WarnMsg(''','' attendu apres INDEX(s)');
+          ParseExpr(SubEv);
+          ExprFlushToEAX(SubEv);
+          EmitInstrAB('MOV', 'EDI', 'EAX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          EmitInstrA('CALL', VXP_RT_PFX + 'INDEX');
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- SUBSTR(s, pos, len) : sous-chaine --- *)
+        Else If Lw2 = 'substr' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken
+          Else
+            WarnMsg('''('' attendu apres Substr');
+          ParseExpr(SubEv);
+          ExprFlushToEAX(SubEv);
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken
+          Else
+            WarnMsg(''','' attendu apres SUBSTR(s)');
+          ParseExpr(SubEv);
+          ExprFlushToEAX(SubEv);
+          EmitInstrAB('MOV', 'EBX', 'EAX');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          Begin
+            LexNextToken;
+            ParseExpr(SubEv);
+            ExprFlushToEAX(SubEv);
+            EmitInstrAB('MOV', 'ECX', 'EAX');
+          End
+          Else
+            EmitInstrAB('MOV', 'ECX', '0FFFFFFFFh');
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          EmitInstrA('CALL', VXP_RT_PFX + 'SUBSTR');
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_STRING;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- Built-in functions (single argument) --- *)
+        Else If (Lw2 = 'ord') Or (Lw2 = 'chr') Or (Lw2 = 'abs') Or
            (Lw2 = 'odd') Or (Lw2 = 'succ') Or (Lw2 = 'pred') Or
            (Lw2 = 'length') Or (Lw2 = 'sizeof') Or (Lw2 = 'size') Or
            (Lw2 = 'address') Or (Lw2 = 'iaddress') Or
@@ -3651,7 +3810,7 @@ Begin
               Res.SymIdx := SIdx2;
             End  (* record field *)
 
-            (* Handle array/string subscript: ident[index] *)
+            (* Handle array/string subscript: ident[index] or S[pos:len] *)
             Else If IsOpenBracket Then
             Begin
               LexNextToken;
@@ -3661,6 +3820,41 @@ Begin
               ParseExpr(SubEv);
               ExprFlushToEAX(SubEv);
 
+              (* Check for S[pos:len] substring syntax *)
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') And
+                 (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 ((TypeTab[FTIdx2].Kind = TKP_STRING) Or
+                  (TypeTab[FTIdx2].Kind = TKP_VARYING)) Then
+              Begin
+                EmitComment('substring ' + IdName + '[pos:len]');
+                EmitInstrAB('MOV', 'EBX', 'EAX');
+                LexNextToken;
+                ParseExpr(SubEv);
+                ExprFlushToEAX(SubEv);
+                EmitInstrAB('MOV', 'ECX', 'EAX');
+                If IsCloseBracket Then
+                  LexNextToken
+                Else
+                  WarnMsg(''']'' attendu apres substring');
+                If SymTab[SIdx2].IsLocal Then
+                Begin
+                  If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                    EmitInstrAB('MOV', 'ESI',
+                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
+                  Else
+                    EmitInstrAB('LEA', 'ESI',
+                      EBPOfs(SymTab[SIdx2].Offset));
+                End
+                Else
+                  EmitInstrAB('MOV', 'ESI',
+                    'OFFSET ' + SymTab[SIdx2].MangledName);
+                EmitInstrA('CALL', VXP_RT_PFX + 'SUBSTR');
+                Res.Kind    := EK_EAX;
+                Res.TypeIdx := TY_IDX_STRING;
+                Res.SymIdx  := -1;
+              End
+              Else
+              Begin
               (* Subtract lower bound for arrays *)
               If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) And
@@ -3735,6 +3929,7 @@ Begin
                 Res.TypeIdx := TY_IDX_INTEGER;
               Res.Kind   := EK_EAX;
               Res.SymIdx := SIdx2;
+              End;  (* not substring *)
             End  (* array/string subscript *)
 
             (* Simple variable access *)
@@ -5343,7 +5538,8 @@ End;
 { ---- EmitFooter : pied de page ASM + runtime Win32 32 bits --- }
 { Emet le code de terminaison (ExitProcess) puis les routines    }
 { runtime 32 bits : PRINTSTR, NUMTOSTR, STRLEN, CONCAT, STRCMP,  }
-{ NEWLINE, PRINTINT, PRINTBOOL, READLN, POWER, SET_IN, STRTONUM. }
+{ NEWLINE, PRINTINT, PRINTBOOL, READLN, POWER, SET_IN, STRTONUM, }
+{ SUBSTR, SSLICE, INDEX.                                         }
 { Toutes les routines utilisent EAX/EBX/ECX/EDX/ESI/EDI et les  }
 { appels systeme Win32 via WriteFile / ReadFile / ExitProcess.   }
 Procedure EmitFooter;
@@ -5646,6 +5842,121 @@ Begin
   EmitInstr('NEG    EAX');
   EmitRaw(VXP_RT_PFX + 'STN_RET:');
   EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SUBSTR : extraire sous-chaine ASCIIZ (32-bit) }
+  EmitComment('SUBSTR : ESI=str, EBX=pos(1-base), ECX=len -> EAX=ptr STRBUF');
+  EmitLabel(VXP_RT_PFX + 'SUBSTR');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrAB('CMP', 'EBX', '1');
+  EmitInstrA('JGE', VXP_RT_PFX + 'SUBSTR_POSOK');
+  EmitInstrAB('MOV', 'EBX', '1');
+  EmitRaw(VXP_RT_PFX + 'SUBSTR_POSOK:');
+  EmitInstr('DEC    EBX');
+  EmitInstrAB('ADD', 'ESI', 'EBX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'SUBSTR_LP:');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SUBSTR_DONE');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SUBSTR_DONE');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SUBSTR_LP');
+  EmitRaw(VXP_RT_PFX + 'SUBSTR_DONE:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_SSLICE : affecter sous-chaine dans chaine cible (32-bit) }
+  EmitComment('SSLICE : EDI=target, ESI=source, EBX=pos(1-base), ECX=len');
+  EmitLabel(VXP_RT_PFX + 'SSLICE');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrAB('CMP', 'EBX', '1');
+  EmitInstrA('JGE', VXP_RT_PFX + 'SSLICE_POSOK');
+  EmitInstrAB('MOV', 'EBX', '1');
+  EmitRaw(VXP_RT_PFX + 'SSLICE_POSOK:');
+  EmitInstr('DEC    EBX');
+  EmitInstrAB('ADD', 'EDI', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'SSLICE_LP:');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SSLICE_DONE');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SSLICE_DONE');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SSLICE_LP');
+  EmitRaw(VXP_RT_PFX + 'SSLICE_DONE:');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _VXPRT_INDEX : position 1-base de sous-chaine dans chaine (32-bit) }
+  EmitComment('INDEX : ESI=str, EDI=sub -> EAX=position (1-based, 0=absent)');
+  EmitLabel(VXP_RT_PFX + 'INDEX');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('CMP', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('JNE', VXP_RT_PFX + 'INDEX_INIT');
+  EmitInstrAB('MOV', 'EAX', '1');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitRaw(VXP_RT_PFX + 'INDEX_INIT:');
+  EmitInstrAB('MOV', 'EBX', 'ESI');
+  EmitInstrAB('MOV', 'ECX', '1');
+  EmitRaw(VXP_RT_PFX + 'INDEX_LP:');
+  EmitInstrAB('CMP', 'BYTE PTR [EBX]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'INDEX_NF');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'INDEX_CM:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [EDI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'INDEX_FD');
+  EmitInstrAB('CMP', 'AL', 'BYTE PTR [EBX]');
+  EmitInstrA('JNE', VXP_RT_PFX + 'INDEX_NX');
+  EmitInstr('INC    EBX');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'INDEX_CM');
+  EmitRaw(VXP_RT_PFX + 'INDEX_FD:');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'EBX');
+  EmitInstrAB('MOV', 'EAX', 'ECX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitRaw(VXP_RT_PFX + 'INDEX_NX:');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('INC    EBX');
+  EmitInstr('INC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'INDEX_LP');
+  EmitRaw(VXP_RT_PFX + 'INDEX_NF:');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
   EmitInstrA('POP', 'ECX');
   EmitInstrA('POP', 'EBX');
   EmitInstr('RET');
