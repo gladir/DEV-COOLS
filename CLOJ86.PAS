@@ -6339,8 +6339,7 @@ Begin
     EmitInstrA('PUSH', 'BX');
     ParseForm(ArgRes);
     ExprFlushToAX(ArgRes);
-    EmitInstrA('PUSH', 'AX');  (* default sur la pile *)
-    EmitInstrA('POP', 'CX');   (* CX = default *)
+    EmitInstrAB('MOV', 'CX', 'AX');  (* CX = default *)
     EmitInstrA('POP', 'BX');   (* BX = index *)
   End;
 
