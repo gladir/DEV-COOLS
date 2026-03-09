@@ -1353,7 +1353,16 @@ Begin
     (L = 'double')     Or (L = 'unsigned')  Or (L = 'single')    Or
     (L = 'writev')     Or (L = 'readv')  Or (L = 'putstring') Or
     (L = 'getstring')  Or (L = 'next')  Or (L = 'initialize') Or
-    (L = 'finalize')   Or (L = 'inherit');
+    (L = 'finalize')   Or (L = 'inherit') Or
+    { Mots-cles supplementaires pour instructions }
+    (L = 'assert')     Or (L = 'message')  Or (L = 'delete')    Or
+    (L = 'insert')     Or (L = 'zero')     Or (L = 'fill')      Or
+    (L = 'seed')       Or (L = 'str')      Or (L = 'val')       Or
+    (L = 'page')       Or (L = 'get')      Or (L = 'put')       Or
+    (L = 'find')       Or (L = 'assign')   Or (L = 'locate')    Or
+    (L = 'truncate')   Or (L = 'scratch')  Or (L = 'readrn')    Or
+    (L = 'writern')    Or (L = 'update')   Or (L = 'linelimit') Or
+    (L = 'date')       Or (L = 'time');
 End;
 
 { ---- PrintToken : affichage debug d un token --------------- }
@@ -3494,7 +3503,7 @@ Begin
 
         (* --- Built-in functions (single argument) --- *)
         Else If (Lw2 = 'ord') Or (Lw2 = 'chr') Or (Lw2 = 'abs') Or
-           (Lw2 = 'odd') Or (Lw2 = 'succ') Or (Lw2 = 'pred') Or
+           (Lw2 = 'odd') Or (Lw2 = 'succ') Or (Lw2 = 'next') Or (Lw2 = 'pred') Or
            (Lw2 = 'length') Or (Lw2 = 'sizeof') Or (Lw2 = 'size') Or
            (Lw2 = 'address') Or (Lw2 = 'iaddress') Or
            (Lw2 = 'trunc') Or (Lw2 = 'round') Or (Lw2 = 'sqr') Or
@@ -3549,7 +3558,7 @@ Begin
             Res.Kind    := EK_EAX;
             Res.TypeIdx := TY_IDX_BOOLEAN;
           End
-          Else If Lw2 = 'succ' Then
+          Else If (Lw2 = 'succ') Or (Lw2 = 'next') Then
           Begin
             If SubEv.Kind = EK_IMM Then
             Begin
@@ -5292,6 +5301,10 @@ Begin
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'WRITEV';
   Idx := SymAdd('readv', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'READV';
+  Idx := SymAdd('putstring', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'PUTSTRING';
+  Idx := SymAdd('getstring', SC_PROC, TY_UNKNOWN);
+  If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'GETSTRING';
   Idx := SymAdd('halt', SC_PROC, TY_UNKNOWN);
   If Idx >= 0 Then SymTab[Idx].MangledName := VXP_RT_PFX + 'HALT';
   Idx := SymAdd('stop', SC_PROC, TY_UNKNOWN);
@@ -13756,6 +13769,8 @@ Var
   IoHasP   : Boolean;
   IoWLbl   : TString;
   AllocSz  : Integer;
+  NewSIdx  : Integer;
+  NewTSz   : Integer;
 Begin
   (* Empty statement *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -13816,8 +13831,8 @@ Begin
       Exit;
     End;
 
-    (* CONTINUE *)
-    If StLw = 'continue' Then
+    (* CONTINUE / NEXT *)
+    If (StLw = 'continue') Or (StLw = 'next') Then
     Begin
       LexNextToken;
       If (LoopTop >= 0) And (LoopContLbl[LoopTop] <> '') Then
@@ -13896,8 +13911,9 @@ Begin
       Exit;
     End;
 
-    (* WRITE / WRITELN - TODO 12 *)
-    If (StLw = 'write') Or (StLw = 'writeln') Then
+    (* WRITE / WRITELN / WRITEV / PUTSTRING - TODO 12 *)
+    If (StLw = 'write') Or (StLw = 'writeln') Or
+       (StLw = 'writev') Or (StLw = 'putstring') Then
     Begin
       IoIsLn := (StLw = 'writeln');
       LexNextToken;
@@ -13997,8 +14013,9 @@ Begin
       Exit;
     End;
 
-    (* READ / READLN - TODO 12 *)
-    If (StLw = 'read') Or (StLw = 'readln') Then
+    (* READ / READLN / READV / GETSTRING - TODO 12 *)
+    If (StLw = 'read') Or (StLw = 'readln') Or
+       (StLw = 'readv') Or (StLw = 'getstring') Then
     Begin
       IoIsLn := (StLw = 'readln');
       LexNextToken;
@@ -14108,6 +14125,439 @@ Begin
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           LexNextToken;
       End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* ASSIGN / LOCATE / TRUNCATE / FIND / SCRATCH - file I/O stubs *)
+    If (StLw = 'assign') Or (StLw = 'locate') Or
+       (StLw = 'truncate') Or (StLw = 'find') Or (StLw = 'scratch') Then
+    Begin
+      WarnMsg(StLw + ' fichier ignore (stub)');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* GET / PUT / READRN / WRITERN / UPDATE - file buffer stubs *)
+    If (StLw = 'get') Or (StLw = 'put') Or (StLw = 'readrn') Or
+       (StLw = 'writern') Or (StLw = 'update') Then
+    Begin
+      EmitComment(StLw + ' stub');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* LINELIMIT - stub *)
+    If StLw = 'linelimit' Then
+    Begin
+      EmitComment('linelimit stub');
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* ASSERT(expr [, message]) *)
+    If StLw = 'assert' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('assert');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('CMP', 'EAX', '0');
+      EmitInstrA('JNE', VXP_LBL_PFX + 'ASSOK_' + IntToStr(LabelGenSeq));
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        LexNextToken;
+        ParseExpr(StEv);
+        ExprFlushToEAX(StEv);
+        EmitInstrAB('MOV', 'ESI', 'EAX');
+        EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'ASSERTMSG');
+        EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+      End;
+      EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+      EmitInstrA('PUSH', '1');
+      EmitInstrA('CALL', '_ExitProcess@4');
+      EmitLabel(VXP_LBL_PFX + 'ASSOK_' + IntToStr(LabelGenSeq));
+      Inc(LabelGenSeq);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* MESSAGE(s) : ecrire sur stderr *)
+    If StLw = 'message' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('message -> stderr');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      EmitInstrA('CALL', VXP_RT_PFX + 'MESSAGE');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* DELETE(s, pos, len) : supprimer partie de chaine *)
+    If StLw = 'delete' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('delete');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken;
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'EBX', 'EAX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken;
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'ECX', 'EAX');
+      EmitInstrA('CALL', VXP_RT_PFX + 'DELETE');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* INSERT(sub, s, pos) : inserer sous-chaine *)
+    If StLw = 'insert' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('insert');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken;
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'EDI', 'EAX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken;
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'EBX', 'EAX');
+      EmitInstrA('CALL', VXP_RT_PFX + 'INSERT');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* ZERO(x) : mettre variable a zero *)
+    If StLw = 'zero' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('zero');
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        NewSIdx := SymFind(CurToken.Val);
+        If (NewSIdx >= 0) Then
+        Begin
+          NewTSz := TypeSizeof(SymTab[NewSIdx].TypeIdx);
+          If NewTSz < 1 Then NewTSz := 4;
+          If SymTab[NewSIdx].IsLocal Then
+            EmitInstrAB('LEA', 'EDI',
+              EBPOfs(SymTab[NewSIdx].Offset))
+          Else
+            EmitInstrAB('MOV', 'EDI',
+              'OFFSET ' + SymTab[NewSIdx].MangledName);
+          EmitInstrAB('MOV', 'ECX', IntToStr(NewTSz));
+          EmitInstrAB('XOR', 'AL', 'AL');
+          EmitInstr('REP    STOSB');
+        End
+        Else
+          WarnMsg('variable inconnue pour ZERO: ' + CurToken.Val);
+        LexNextToken;
+      End
+      Else
+      Begin
+        ParseExpr(StEv);
+        ExprFlushToEAX(StEv);
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* FILL(x, n, val) : remplir memoire *)
+    If StLw = 'fill' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('fill');
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        NewSIdx := SymFind(CurToken.Val);
+        If (NewSIdx >= 0) Then
+        Begin
+          If SymTab[NewSIdx].IsLocal Then
+            EmitInstrAB('LEA', 'EDI',
+              EBPOfs(SymTab[NewSIdx].Offset))
+          Else
+            EmitInstrAB('MOV', 'EDI',
+              'OFFSET ' + SymTab[NewSIdx].MangledName);
+        End
+        Else
+          EmitInstrAB('XOR', 'EDI', 'EDI');
+        LexNextToken;
+      End
+      Else
+      Begin
+        ParseExpr(StEv);
+        ExprFlushToEAX(StEv);
+        EmitInstrAB('MOV', 'EDI', 'EAX');
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken;
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'ECX', 'EAX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+        LexNextToken;
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstr('REP    STOSB');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* SEED(n) : initialiser graine aleatoire *)
+    If StLw = 'seed' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('seed');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'SEED]', 'EAX');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* STR(n, s) : convertir nombre en chaine *)
+    If StLw = 'str' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('str');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+      (* EAX = ptr chaine resultat *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          NewSIdx := SymFind(CurToken.Val);
+          If (NewSIdx >= 0) Then
+          Begin
+            EmitInstrAB('MOV', 'ESI', 'EAX');
+            If SymTab[NewSIdx].IsLocal Then
+              EmitInstrAB('LEA', 'EDI',
+                EBPOfs(SymTab[NewSIdx].Offset))
+            Else
+              EmitInstrAB('MOV', 'EDI',
+                'OFFSET ' + SymTab[NewSIdx].MangledName);
+            EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+          End;
+          LexNextToken;
+        End;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* VAL(s, n) : convertir chaine en nombre *)
+    If StLw = 'val' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('val');
+      ParseExpr(StEv);
+      ExprFlushToEAX(StEv);
+      EmitInstrAB('MOV', 'ESI', 'EAX');
+      EmitInstrA('CALL', VXP_RT_PFX + 'STRTONUM');
+      (* EAX = valeur numerique *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          NewSIdx := SymFind(CurToken.Val);
+          If (NewSIdx >= 0) Then
+          Begin
+            If SymTab[NewSIdx].IsLocal Then
+              EmitInstrAB('MOV',
+                'DWORD PTR ' + EBPOfs(SymTab[NewSIdx].Offset), 'EAX')
+            Else
+              EmitInstrAB('MOV',
+                'DWORD PTR [' + SymTab[NewSIdx].MangledName + ']', 'EAX');
+          End;
+          LexNextToken;
+        End;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* DATE(s) : obtenir la date courante *)
+    If StLw = 'date' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('date');
+      EmitInstrA('CALL', VXP_RT_PFX + 'DATE');
+      (* EAX = ptr DATEBUF, copier dans variable cible *)
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        NewSIdx := SymFind(CurToken.Val);
+        If (NewSIdx >= 0) Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          If SymTab[NewSIdx].IsLocal Then
+            EmitInstrAB('LEA', 'EDI',
+              EBPOfs(SymTab[NewSIdx].Offset))
+          Else
+            EmitInstrAB('MOV', 'EDI',
+              'OFFSET ' + SymTab[NewSIdx].MangledName);
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+        End;
+        LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* TIME(s) : obtenir l heure courante *)
+    If StLw = 'time' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        LexNextToken;
+      EmitComment('time');
+      EmitInstrA('CALL', VXP_RT_PFX + 'TIME');
+      (* EAX = ptr TIMEBUF, copier dans variable cible *)
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        NewSIdx := SymFind(CurToken.Val);
+        If (NewSIdx >= 0) Then
+        Begin
+          EmitInstrAB('MOV', 'ESI', 'EAX');
+          If SymTab[NewSIdx].IsLocal Then
+            EmitInstrAB('LEA', 'EDI',
+              EBPOfs(SymTab[NewSIdx].Offset))
+          Else
+            EmitInstrAB('MOV', 'EDI',
+              'OFFSET ' + SymTab[NewSIdx].MangledName);
+          EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+        End;
+        LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
+    (* PAGE(f) : saut de page - emet caractere 12 *)
+    If StLw = 'page' Then
+    Begin
+      LexNextToken;
+      EmitComment('page');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      EmitInstrAB('MOV', 'BYTE PTR [' + VXP_RT_PFX + 'CHRBUF]', '12');
+      EmitInstrAB('MOV', 'ESI', 'OFFSET ' + VXP_RT_PFX + 'CHRBUF');
+      EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
         LexNextToken;
       Exit;
