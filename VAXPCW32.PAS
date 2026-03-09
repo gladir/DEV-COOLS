@@ -3975,87 +3975,91 @@ Begin
                   Res.SymIdx := SIdx2;
                 End;
               End
-              Else If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
-                 (TypeTab[FTIdx2].Kind = TKP_RECORD) And
-                 (CurToken.Kind = TK_IDENT) Then
+              Else
               Begin
-                For FI2 := 0 To TypeTab[FTIdx2].FieldCount - 1 Do
-                  If StrLowerCase(TypeTab[FTIdx2].Fields[FI2].Name) =
-                     StrLowerCase(CurToken.Val) Then
-                  Begin
-                    FIdx2 := FI2;
-                    Break;
-                  End;
-                LexNextToken;
-              End
-              Else If CurToken.Kind = TK_IDENT Then
-                LexNextToken;
-              EmitComment('field ' + IdName + '.*');
-              If FIdx2 >= 0 Then
-              Begin
-                Res.TypeIdx := TypeTab[FTIdx2].Fields[FIdx2].TypeIdx;
-                If SymTab[SIdx2].IsLocal Then
+                (* Non-VARYING field access (record fields, etc.) *)
+                If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                   (TypeTab[FTIdx2].Kind = TKP_RECORD) And
+                   (CurToken.Kind = TK_IDENT) Then
                 Begin
-                  If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                  For FI2 := 0 To TypeTab[FTIdx2].FieldCount - 1 Do
+                    If StrLowerCase(TypeTab[FTIdx2].Fields[FI2].Name) =
+                       StrLowerCase(CurToken.Val) Then
+                    Begin
+                      FIdx2 := FI2;
+                      Break;
+                    End;
+                  LexNextToken;
+                End
+                Else If CurToken.Kind = TK_IDENT Then
+                  LexNextToken;
+                EmitComment('field ' + IdName + '.*');
+                If FIdx2 >= 0 Then
+                Begin
+                  Res.TypeIdx := TypeTab[FTIdx2].Fields[FIdx2].TypeIdx;
+                  If SymTab[SIdx2].IsLocal Then
                   Begin
-                    EmitInstrAB('MOV', 'EBX',
-                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
-                    If TypeTab[FTIdx2].Fields[FIdx2].Offset > 0 Then
-                      EmitInstrAB('ADD', 'EBX',
-                        IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
-                    If TypeSizeof(Res.TypeIdx) = 1 Then
-                      EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                    If SymTab[SIdx2].Cat = SC_VARPARAM Then
+                    Begin
+                      EmitInstrAB('MOV', 'EBX',
+                        'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset));
+                      If TypeTab[FTIdx2].Fields[FIdx2].Offset > 0 Then
+                        EmitInstrAB('ADD', 'EBX',
+                          IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                      If TypeSizeof(Res.TypeIdx) = 1 Then
+                        EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                      Else
+                        EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                    End
                     Else
-                      EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                    Begin
+                      If TypeSizeof(Res.TypeIdx) = 1 Then
+                        EmitInstrAB('MOVZX', 'EAX',
+                          'BYTE PTR ' + EBPOfs(SymTab[SIdx2].Offset +
+                            TypeTab[FTIdx2].Fields[FIdx2].Offset))
+                      Else
+                        EmitInstrAB('MOV', 'EAX',
+                          'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset +
+                            TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                    End;
                   End
                   Else
                   Begin
-                    If TypeSizeof(Res.TypeIdx) = 1 Then
-                      EmitInstrAB('MOVZX', 'EAX',
-                        'BYTE PTR ' + EBPOfs(SymTab[SIdx2].Offset +
-                          TypeTab[FTIdx2].Fields[FIdx2].Offset))
+                    If TypeTab[FTIdx2].Fields[FIdx2].Offset = 0 Then
+                    Begin
+                      If TypeSizeof(Res.TypeIdx) = 1 Then
+                        EmitInstrAB('MOVZX', 'EAX',
+                          'BYTE PTR [' + SymTab[SIdx2].MangledName + ']')
+                      Else
+                        EmitInstrAB('MOV', 'EAX',
+                          'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
+                    End
                     Else
-                      EmitInstrAB('MOV', 'EAX',
-                        'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset +
-                          TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                    Begin
+                      EmitInstrAB('MOV', 'EBX',
+                        'OFFSET ' + SymTab[SIdx2].MangledName);
+                      EmitInstrAB('ADD', 'EBX',
+                        IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
+                      If TypeSizeof(Res.TypeIdx) = 1 Then
+                        EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
+                      Else
+                        EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
+                    End;
                   End;
                 End
                 Else
                 Begin
-                  If TypeTab[FTIdx2].Fields[FIdx2].Offset = 0 Then
-                  Begin
-                    If TypeSizeof(Res.TypeIdx) = 1 Then
-                      EmitInstrAB('MOVZX', 'EAX',
-                        'BYTE PTR [' + SymTab[SIdx2].MangledName + ']')
-                    Else
-                      EmitInstrAB('MOV', 'EAX',
-                        'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
-                  End
+                  (* Unknown field - load base *)
+                  If SymTab[SIdx2].IsLocal Then
+                    EmitInstrAB('MOV', 'EAX',
+                      'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
                   Else
-                  Begin
-                    EmitInstrAB('MOV', 'EBX',
-                      'OFFSET ' + SymTab[SIdx2].MangledName);
-                    EmitInstrAB('ADD', 'EBX',
-                      IntToStr(TypeTab[FTIdx2].Fields[FIdx2].Offset));
-                    If TypeSizeof(Res.TypeIdx) = 1 Then
-                      EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
-                    Else
-                      EmitInstrAB('MOV', 'EAX', 'DWORD PTR [EBX]');
-                  End;
+                    EmitInstrAB('MOV', 'EAX',
+                      'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
                 End;
-              End
-              Else
-              Begin
-                (* Unknown field - load base *)
-                If SymTab[SIdx2].IsLocal Then
-                  EmitInstrAB('MOV', 'EAX',
-                    'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
-                Else
-                  EmitInstrAB('MOV', 'EAX',
-                    'DWORD PTR [' + SymTab[SIdx2].MangledName + ']');
-              End;
-              Res.Kind   := EK_EAX;
-              Res.SymIdx := SIdx2;
+                Res.Kind   := EK_EAX;
+                Res.SymIdx := SIdx2;
+              End;  (* non-VARYING field access *)
             End  (* record field *)
 
             (* Handle array/string subscript: ident[index] or S[pos:len] *)
