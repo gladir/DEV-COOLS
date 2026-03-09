@@ -5849,7 +5849,6 @@ Begin
   EmitLabel(VXP_RT_PFX + 'PRINTINT_W');
   EmitInstrA('PUSH', 'EBX');
   EmitInstrA('PUSH', 'ECX');
-  EmitInstrA('PUSH', 'EDX');
   EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
   EmitInstrAB('MOV', 'EDX', 'EAX');
   EmitInstrAB('MOV', 'ESI', 'EAX');

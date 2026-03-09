@@ -325,7 +325,6 @@ _VXPRT_PRINTCHAR:
 _VXPRT_PRINTINT_W:
         PUSH   EBX
         PUSH   ECX
-        PUSH   EDX
         CALL   _VXPRT_NUMTOSTR
         MOV   EDX, EAX
         MOV   ESI, EAX
