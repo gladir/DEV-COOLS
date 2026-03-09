@@ -314,7 +314,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>JS86.PAS</b></td>
-			<td>Cette commande pemet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
+			<td>Cette commande permet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
 			<td><b>LINK.PAS</b></td>
