@@ -262,7 +262,7 @@
             LoopPush / LoopPop : pile de labels pour break/continue
             LEAVE : sortie immediate de la boucle englobante
 
-  TODO 15 - TABLEAUX ET TABLEAUX CONFORMANTS
+  TODO 15 - TABLEAUX ET TABLEAUX CONFORMANTS [IMPLEMENTE]
             ARRAY[lo..hi] OF T : tableau a bornes fixes
               Taille = (hi-lo+1) * sizeof(T)
               Acces : base + (index-lo) * sizeof(T) -> adresse element
@@ -889,6 +889,9 @@ Procedure ParseForStmt; Forward;
 Procedure ParseWhileStmt; Forward;
 Procedure ParseRepeatStmt; Forward;
 Procedure ParseLoopStmt; Forward;
+
+{ Forward declarations TODO 15 }
+Procedure EmitBoundsCheck(Lo, Hi : LongInt); Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -3863,6 +3866,12 @@ Begin
               End
               Else
               Begin
+              (* TODO 15 : bounds check before subtraction *)
+              If Opts.CheckEnabled And
+                 (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
+                EmitBoundsCheck(TypeTab[FTIdx2].Lo, TypeTab[FTIdx2].Hi);
+
               (* Subtract lower bound for arrays *)
               If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) And
@@ -3918,7 +3927,48 @@ Begin
                 EmitInstrAB('ADD', 'EBX',
                   'OFFSET ' + SymTab[SIdx2].MangledName);
 
+              (* TODO 15 : multi-dimensional subscript arr[i,j] *)
+              If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
+                 (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_ARRAY) And
+                 (TypeTab[FTIdx2].BaseTypeIdx >= 0) And
+                 (TypeTab[FTIdx2].BaseTypeIdx < TypeCount) And
+                 (TypeTab[TypeTab[FTIdx2].BaseTypeIdx].Kind = TKP_ARRAY) Then
+              Begin
+                EmitComment('multi-dim subscript [i,j]');
+                EmitPush('EBX');
+                LexNextToken;  (* consume comma *)
+                ParseExpr(SubEv);
+                ExprFlushToEAX(SubEv);
+                FTIdx2 := TypeTab[FTIdx2].BaseTypeIdx;  (* inner array type *)
+                If Opts.CheckEnabled Then
+                  EmitBoundsCheck(TypeTab[FTIdx2].Lo, TypeTab[FTIdx2].Hi);
+                If TypeTab[FTIdx2].Lo <> 0 Then
+                  EmitInstrAB('SUB', 'EAX', IntToStr(TypeTab[FTIdx2].Lo));
+                ESize2 := TypeSizeof(TypeTab[FTIdx2].BaseTypeIdx);
+                If ESize2 = 4 Then
+                  EmitInstrAB('SHL', 'EAX', '2')
+                Else If ESize2 = 2 Then
+                  EmitInstrAB('SHL', 'EAX', '1')
+                Else If ESize2 > 4 Then
+                Begin
+                  EmitInstrAB('MOV', 'ECX', IntToStr(ESize2));
+                  EmitInstrAB('IMUL', 'EAX', 'ECX');
+                End;
+                EmitPop('EBX');
+                EmitInstrAB('ADD', 'EBX', 'EAX');
+              End;
+
               If IsCloseBracket Then LexNextToken;
+
+              (* Determine final element size for loading *)
+              If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                 (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
+                ESize2 := TypeSizeof(TypeTab[FTIdx2].BaseTypeIdx)
+              Else If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
+                      ((TypeTab[FTIdx2].Kind = TKP_STRING) Or
+                       (TypeTab[FTIdx2].Kind = TKP_VARYING)) Then
+                ESize2 := 1;
 
               (* Load the element *)
               If ESize2 = 1 Then
@@ -6167,6 +6217,17 @@ Begin
   EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
 
+  (* ---- _VXPRT_PANIC_RANGE : array bounds check error --------------- *)
+  EmitComment('--- PANIC_RANGE : array index out of bounds ---');
+  EmitLabel(VXP_RT_PFX + 'PANIC_RANGE');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'RNGMSG');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+  EmitInstrA('PUSH', '1');
+  EmitInstrA('CALL', '_ExitProcess@4');
+  EmitBlankLine;
+
   EmitRaw('_TEXT   ENDS');
 End;
 
@@ -6446,6 +6507,11 @@ Var
   NewPtrTIdx      : Integer;
   (* Initialisation *)
   InitEv          : TExprVal;
+  (* TODO 15 *)
+  IsPacked        : Boolean;
+  Dim2Lo, Dim2Hi  : LongInt;
+  Dim2Count       : LongInt;
+  InnerArrTIdx    : Integer;
 Begin
   HasPendingAssign := False;
 
@@ -6788,7 +6854,15 @@ Begin
       Continue;
     End;
 
-    (* --- ARRAY[lo..hi] OF type detection --- *)
+    (* --- PACKED ARRAY / ARRAY[lo..hi] OF type detection (TODO 15) --- *)
+    IsPacked := False;
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'packed') Then
+    Begin
+      IsPacked := True;
+      LexNextToken;
+    End;
+
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'array') Then
     Begin
@@ -6847,6 +6921,55 @@ Begin
         LexNextToken;
       End;
 
+      (* --- Multi-dimensional: check for comma before ] (TODO 15) --- *)
+      Dim2Lo := 0;
+      Dim2Hi := 0;
+      Dim2Count := 0;
+      InnerArrTIdx := -1;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      Begin
+        LexNextToken;  (* consume comma *)
+        (* Lower bound of 2nd dimension *)
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Dim2Lo := CurToken.IntVal;
+          LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          Idx := SymFind(CurToken.Val);
+          If (Idx >= 0) And
+             (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            Dim2Lo := SymTab[Idx].ImmVal
+          Else
+            WarnMsg('constante attendue pour borne inferieure dim2');
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+          LexNextToken
+        Else
+          WarnMsg('''..'' attendu dans dimension 2');
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Dim2Hi := CurToken.IntVal;
+          LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          Idx := SymFind(CurToken.Val);
+          If (Idx >= 0) And
+             (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            Dim2Hi := SymTab[Idx].ImmVal
+          Else
+            WarnMsg('constante attendue pour borne superieure dim2');
+          LexNextToken;
+        End;
+        Dim2Count := Dim2Hi - Dim2Lo + 1;
+        If Dim2Count < 1 Then Dim2Count := 1;
+      End;
+
       If IsCloseBracket Then
         LexNextToken
       Else
@@ -6878,6 +7001,29 @@ Begin
 
       ArrCount := ArrHi - ArrLo + 1;
       If ArrCount < 1 Then ArrCount := 1;
+
+      (* TODO 15 : multi-dimensional -> create inner array type first *)
+      If Dim2Count > 0 Then
+      Begin
+        (* Create inner array type for second dimension *)
+        InnerArrTIdx := TY_IDX_INTEGER;
+        If TypeCount < MAX_TYPE Then
+        Begin
+          InnerArrTIdx := TypeCount;
+          Inc(TypeCount);
+          TypeTab[InnerArrTIdx].Kind        := TKP_ARRAY;
+          TypeTab[InnerArrTIdx].Size        := Dim2Count * ElemSz;
+          TypeTab[InnerArrTIdx].BaseTypeIdx := ElemTIdx;
+          TypeTab[InnerArrTIdx].Lo          := Dim2Lo;
+          TypeTab[InnerArrTIdx].Hi          := Dim2Hi;
+          TypeTab[InnerArrTIdx].FieldCount  := 0;
+          TypeTab[InnerArrTIdx].EnumCount   := 0;
+          TypeTab[InnerArrTIdx].Packed_     := IsPacked;
+        End;
+        ElemTIdx := InnerArrTIdx;
+        ElemSz   := Dim2Count * TypeSizeof(TypeTab[InnerArrTIdx].BaseTypeIdx);
+      End;
+
       ArrSize := ArrCount * ElemSz;
 
       NewArrTIdx := TY_IDX_INTEGER;
@@ -6892,6 +7038,7 @@ Begin
         TypeTab[NewArrTIdx].Hi          := ArrHi;
         TypeTab[NewArrTIdx].FieldCount  := 0;
         TypeTab[NewArrTIdx].EnumCount   := 0;
+        TypeTab[NewArrTIdx].Packed_     := IsPacked;
       End
       Else
         WarnMsg('nombre maximal de types atteint');
@@ -7921,6 +8068,12 @@ Begin
     ParseExpr(ArrEv);
     ExprFlushToEAX(ArrEv);
 
+    (* TODO 15 : bounds check *)
+    If Opts.CheckEnabled And
+       (FTIdx >= 0) And (FTIdx < TypeCount) And
+       (TypeTab[FTIdx].Kind = TKP_ARRAY) Then
+      EmitBoundsCheck(TypeTab[FTIdx].Lo, TypeTab[FTIdx].Hi);
+
     (* Soustraire la borne inferieure *)
     If (FTIdx >= 0) And (FTIdx < TypeCount) And
        (TypeTab[FTIdx].Kind = TKP_ARRAY) And
@@ -7948,6 +8101,38 @@ Begin
       EmitInstrAB('SHL', 'EAX', '2');
 
     EmitPush('EAX');
+
+    (* TODO 15 : multi-dimensional arr[i,j] := val *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
+       (FTIdx >= 0) And (FTIdx < TypeCount) And
+       (TypeTab[FTIdx].Kind = TKP_ARRAY) And
+       (TypeTab[FTIdx].BaseTypeIdx >= 0) And
+       (TypeTab[FTIdx].BaseTypeIdx < TypeCount) And
+       (TypeTab[TypeTab[FTIdx].BaseTypeIdx].Kind = TKP_ARRAY) Then
+    Begin
+      EmitComment('multi-dim assign [i,j]');
+      LexNextToken;  (* consume comma *)
+      ParseExpr(ArrEv);
+      ExprFlushToEAX(ArrEv);
+      FTIdx := TypeTab[FTIdx].BaseTypeIdx;  (* inner array type *)
+      If Opts.CheckEnabled Then
+        EmitBoundsCheck(TypeTab[FTIdx].Lo, TypeTab[FTIdx].Hi);
+      If TypeTab[FTIdx].Lo <> 0 Then
+        EmitInstrAB('SUB', 'EAX', IntToStr(TypeTab[FTIdx].Lo));
+      ESize := TypeSizeof(TypeTab[FTIdx].BaseTypeIdx);
+      If ESize = 4 Then
+        EmitInstrAB('SHL', 'EAX', '2')
+      Else If ESize = 2 Then
+        EmitInstrAB('SHL', 'EAX', '1')
+      Else If ESize > 4 Then
+      Begin
+        EmitInstrAB('MOV', 'ECX', IntToStr(ESize));
+        EmitInstrAB('IMUL', 'EAX', 'ECX');
+      End;
+      EmitPop('EBX');
+      EmitInstrAB('ADD', 'EAX', 'EBX');
+      EmitPush('EAX');
+    End;
 
     If IsCloseBracket Then
       LexNextToken;
@@ -8704,6 +8889,22 @@ Begin
 
   (* Depiler le contexte de boucle *)
   LoopPop;
+End;
+
+{ ============================================================
+  TODO 15 - TABLEAUX ET TABLEAUX CONFORMANTS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- EmitBoundsCheck : verifier les bornes d un tableau ----- *)
+(* EAX contient l index original (avant soustraction de Lo).     *)
+(* Si l index est hors [Lo..Hi], sauter a PANIC_RANGE.          *)
+Procedure EmitBoundsCheck(Lo, Hi : LongInt);
+Begin
+  EmitComment('bounds check [' + IntToStr(Lo) + '..' + IntToStr(Hi) + ']');
+  EmitInstrAB('CMP', 'EAX', IntToStr(Lo));
+  EmitInstrA('JL', VXP_RT_PFX + 'PANIC_RANGE');
+  EmitInstrAB('CMP', 'EAX', IntToStr(Hi));
+  EmitInstrA('JG', VXP_RT_PFX + 'PANIC_RANGE');
 End;
 
 (* ---- ParseStatement : analyser une instruction ---------------  *)
