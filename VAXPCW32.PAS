@@ -2964,6 +2964,10 @@ Begin
   EmitRaw('EXTRN   _HeapAlloc@12        : PROC');
   EmitRaw('EXTRN   _HeapFree@12         : PROC');
   EmitRaw('EXTRN   _GetTickCount@0      : PROC');
+  EmitRaw('EXTRN   _GetLocalTime@4      : PROC');
+  EmitRaw('EXTRN   _CreateFileA@28      : PROC');
+  EmitRaw('EXTRN   _CloseHandle@4       : PROC');
+  EmitRaw('EXTRN   _DeleteFileA@4       : PROC');
   EmitBlankLine;
   EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
@@ -7078,6 +7082,732 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
+  (* ---- _VXPRT_RANDOM : nombre pseudo-aleatoire -> EAX ----------- *)
+  EmitComment('--- RANDOM : LCG 32-bit -> EAX (0..2^31-1) ---');
+  EmitLabel(VXP_RT_PFX + 'RANDOM');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + VXP_RT_PFX + 'SEED]');
+  EmitInstrAB('IMUL', 'EAX', '1103515245');
+  EmitInstrAB('ADD', 'EAX', '12345');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'SEED]', 'EAX');
+  EmitInstrAB('AND', 'EAX', '7FFFFFFFh');
+  EmitInstrA('POP', 'EDX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_SETSEED : initialiser la graine du generateur ----- *)
+  EmitComment('--- SETSEED : EAX=graine -> SEED ---');
+  EmitLabel(VXP_RT_PFX + 'SETSEED');
+  EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'SEED]', 'EAX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_ABS : valeur absolue -> EAX ---------------------- *)
+  EmitComment('--- ABS : EAX=val -> EAX=|val| ---');
+  EmitLabel(VXP_RT_PFX + 'ABS');
+  EmitInstrAB('TEST', 'EAX', 'EAX');
+  EmitInstrA('JNS', VXP_RT_PFX + 'ABS_OK');
+  EmitInstr('NEG    EAX');
+  EmitRaw(VXP_RT_PFX + 'ABS_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_SQR : carre -> EAX ------------------------------- *)
+  EmitComment('--- SQR : EAX=val -> EAX=val*val ---');
+  EmitLabel(VXP_RT_PFX + 'SQR');
+  EmitInstrAB('IMUL', 'EAX', 'EAX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_MIN : minimum de EAX, EBX -> EAX ----------------- *)
+  EmitComment('--- MIN : EAX=a, EBX=b -> EAX=min(a,b) ---');
+  EmitLabel(VXP_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'EAX', 'EBX');
+  EmitInstrA('JLE', VXP_RT_PFX + 'MIN_OK');
+  EmitInstrAB('MOV', 'EAX', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'MIN_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_MAX : maximum de EAX, EBX -> EAX ----------------- *)
+  EmitComment('--- MAX : EAX=a, EBX=b -> EAX=max(a,b) ---');
+  EmitLabel(VXP_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'EAX', 'EBX');
+  EmitInstrA('JGE', VXP_RT_PFX + 'MAX_OK');
+  EmitInstrAB('MOV', 'EAX', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'MAX_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_ASSERT : assertion EAX <> 0, sinon halt ----------- *)
+  EmitComment('--- ASSERT : EAX=cond, halt si 0 ---');
+  EmitLabel(VXP_RT_PFX + 'ASSERT');
+  EmitInstrAB('TEST', 'EAX', 'EAX');
+  EmitInstrA('JNZ', VXP_RT_PFX + 'ASSERT_OK');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'ASSERTMSG');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+  EmitInstrA('PUSH', '1');
+  EmitInstrA('CALL', 'ExitProcess');
+  EmitRaw(VXP_RT_PFX + 'ASSERT_OK:');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_UPPERCASE : convertir chaine en majuscules -------- *)
+  EmitComment('--- UPPERCASE : EAX=ptr ASCIIZ -> EAX=STRBUF en majuscules ---');
+  EmitLabel(VXP_RT_PFX + 'UPPERCASE');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'UC_LP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'UC_DONE');
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', VXP_RT_PFX + 'UC_STORE');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JA', VXP_RT_PFX + 'UC_STORE');
+  EmitInstrAB('AND', 'AL', '0DFh');
+  EmitRaw(VXP_RT_PFX + 'UC_STORE:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'UC_LP');
+  EmitRaw(VXP_RT_PFX + 'UC_DONE:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_LOWERCASE : convertir chaine en minuscules -------- *)
+  EmitComment('--- LOWERCASE : EAX=ptr ASCIIZ -> EAX=STRBUF en minuscules ---');
+  EmitLabel(VXP_RT_PFX + 'LOWERCASE');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'LC_LP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'LC_DONE');
+  EmitInstrAB('CMP', 'AL', '''A''');
+  EmitInstrA('JB', VXP_RT_PFX + 'LC_STORE');
+  EmitInstrAB('CMP', 'AL', '''Z''');
+  EmitInstrA('JA', VXP_RT_PFX + 'LC_STORE');
+  EmitInstrAB('OR', 'AL', '20h');
+  EmitRaw(VXP_RT_PFX + 'LC_STORE:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'LC_LP');
+  EmitRaw(VXP_RT_PFX + 'LC_DONE:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_TRIM : supprimer espaces de fin -------------------- *)
+  EmitComment('--- TRIM : EAX=ptr ASCIIZ -> EAX=STRBUF trimmed ---');
+  EmitLabel(VXP_RT_PFX + 'TRIM');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  (* copier la chaine dans STRBUF *)
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'TRIM_CP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'TRIM_RL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'TRIM_CP');
+  EmitRaw(VXP_RT_PFX + 'TRIM_RL:');
+  (* EDI pointe sur le 0 terminal, reculer *)
+  EmitInstr('DEC    EDI');
+  EmitRaw(VXP_RT_PFX + 'TRIM_LP:');
+  EmitInstrAB('LEA', 'ECX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrAB('CMP', 'EDI', 'ECX');
+  EmitInstrA('JB', VXP_RT_PFX + 'TRIM_DN');
+  EmitInstrAB('CMP', 'BYTE PTR [EDI]', '32');
+  EmitInstrA('JA', VXP_RT_PFX + 'TRIM_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstr('DEC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'TRIM_LP');
+  EmitRaw(VXP_RT_PFX + 'TRIM_DN:');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_PAD : remplir chaine avec caractere jusqu a taille - *)
+  EmitComment('--- PAD : EAX=ptr, EBX=char, ECX=taille -> EAX=STRBUF ---');
+  EmitLabel(VXP_RT_PFX + 'PAD');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'EDI');
+  (* copier la chaine originale *)
+  EmitRaw(VXP_RT_PFX + 'PAD_CP:');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'PAD_DN');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'PAD_FI');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PAD_CP');
+  EmitRaw(VXP_RT_PFX + 'PAD_FI:');
+  (* remplir le reste avec BL *)
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'PAD_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'BL');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'PAD_FI');
+  EmitRaw(VXP_RT_PFX + 'PAD_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FILL : remplir tampon avec un octet --------------- *)
+  EmitComment('--- FILL : EAX=ptr, EBX=byte, ECX=count ---');
+  EmitLabel(VXP_RT_PFX + 'FILL');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('MOV', 'EDI', 'EAX');
+  EmitInstrAB('MOV', 'AL', 'BL');
+  EmitInstr('REP    STOSB');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_ZERO : mettre a zero un tampon -------------------- *)
+  EmitComment('--- ZERO : EAX=ptr, ECX=count ---');
+  EmitLabel(VXP_RT_PFX + 'ZERO');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('MOV', 'EDI', 'EAX');
+  EmitInstrAB('XOR', 'AL', 'AL');
+  EmitInstr('REP    STOSB');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_STRCPY : copier chaine ASCIIZ ESI -> EDI ---------- *)
+  EmitComment('--- STRCPY : EAX=src -> EAX=STRBUF (copie ASCIIZ) ---');
+  EmitLabel(VXP_RT_PFX + 'STRCPY');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'SCPY_LP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SCPY_DN');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SCPY_LP');
+  EmitRaw(VXP_RT_PFX + 'SCPY_DN:');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_STRCMPI : comparaison case-insensitive ------------ *)
+  EmitComment('--- STRCMPI : EAX=s1, EBX=s2 -> EAX=diff (case-insensitive) ---');
+  EmitLabel(VXP_RT_PFX + 'STRCMPI');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('MOV', 'EDI', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'SCMPI_LP:');
+  EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOVZX', 'EBX', 'BYTE PTR [EDI]');
+  (* AL -> uppercase *)
+  EmitInstrAB('CMP', 'AL', '''a''');
+  EmitInstrA('JB', VXP_RT_PFX + 'SCMPI_A');
+  EmitInstrAB('CMP', 'AL', '''z''');
+  EmitInstrA('JA', VXP_RT_PFX + 'SCMPI_A');
+  EmitInstrAB('SUB', 'AL', '32');
+  EmitRaw(VXP_RT_PFX + 'SCMPI_A:');
+  (* BL -> uppercase *)
+  EmitInstrAB('CMP', 'BL', '''a''');
+  EmitInstrA('JB', VXP_RT_PFX + 'SCMPI_B');
+  EmitInstrAB('CMP', 'BL', '''z''');
+  EmitInstrA('JA', VXP_RT_PFX + 'SCMPI_B');
+  EmitInstrAB('SUB', 'BL', '32');
+  EmitRaw(VXP_RT_PFX + 'SCMPI_B:');
+  EmitInstrAB('CMP', 'AL', 'BL');
+  EmitInstrA('JNE', VXP_RT_PFX + 'SCMPI_NE');
+  EmitInstrAB('TEST', 'AL', 'AL');
+  EmitInstrA('JZ', VXP_RT_PFX + 'SCMPI_EQ');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SCMPI_LP');
+  EmitRaw(VXP_RT_PFX + 'SCMPI_EQ:');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SCMPI_DN');
+  EmitRaw(VXP_RT_PFX + 'SCMPI_NE:');
+  EmitInstrAB('SUB', 'EAX', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'SCMPI_DN:');
+  EmitInstrA('POP', 'EBX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_SEARCH : chercher sous-chaine --------------------- *)
+  EmitComment('--- SEARCH : EAX=haystack, EBX=needle -> EAX=pos (1-based, 0=absent) ---');
+  EmitLabel(VXP_RT_PFX + 'SEARCH');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('MOV', 'EDI', 'EBX');
+  EmitInstrAB('XOR', 'ECX', 'ECX');       (* position counter *)
+  EmitRaw(VXP_RT_PFX + 'SRCH_LP:');
+  EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SRCH_NF');
+  EmitInstr('INC    ECX');
+  (* comparer a partir de cette position *)
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'SRCH_CMP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [EDI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'SRCH_FD');
+  EmitInstrAB('CMP', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrA('JNE', VXP_RT_PFX + 'SRCH_NX');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SRCH_CMP');
+  EmitRaw(VXP_RT_PFX + 'SRCH_FD:');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstrAB('MOV', 'EAX', 'ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SRCH_DN');
+  EmitRaw(VXP_RT_PFX + 'SRCH_NX:');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('INC    ESI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'SRCH_LP');
+  EmitRaw(VXP_RT_PFX + 'SRCH_NF:');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitRaw(VXP_RT_PFX + 'SRCH_DN:');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VERIFY : position du 1er char absent du charset --- *)
+  EmitComment('--- VERIFY : EAX=str, EBX=charset -> EAX=pos (1-based, 0=all match) ---');
+  EmitLabel(VXP_RT_PFX + 'VERIFY');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('XOR', 'ECX', 'ECX');
+  EmitRaw(VXP_RT_PFX + 'VRFY_LP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VRFY_OK');
+  EmitInstr('INC    ECX');
+  (* chercher AL dans charset EBX *)
+  EmitInstrAB('MOV', 'EDI', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'VRFY_CS:');
+  EmitInstrAB('MOV', 'AH', 'BYTE PTR [EDI]');
+  EmitInstrAB('CMP', 'AH', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'VRFY_NF');
+  EmitInstrAB('CMP', 'AL', 'AH');
+  EmitInstrA('JE', VXP_RT_PFX + 'VRFY_NX');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VRFY_CS');
+  EmitRaw(VXP_RT_PFX + 'VRFY_NF:');
+  EmitInstrAB('MOV', 'EAX', 'ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VRFY_DN');
+  EmitRaw(VXP_RT_PFX + 'VRFY_NX:');
+  EmitInstr('INC    ESI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VRFY_LP');
+  EmitRaw(VXP_RT_PFX + 'VRFY_OK:');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitRaw(VXP_RT_PFX + 'VRFY_DN:');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_MESSAGE : ecrire un message sur stdout ------------ *)
+  EmitComment('--- MESSAGE : EAX=ptr ASCIIZ message ---');
+  EmitLabel(VXP_RT_PFX + 'MESSAGE');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'PRINTSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_DATE : retourner date du jour (ASCIIZ DD-MON-YYYY) *)
+  EmitComment('--- DATE : -> EAX=ptr DATEBUF ---');
+  EmitLabel(VXP_RT_PFX + 'DATE');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  (* Appel Win32 GetLocalTime -> SYSTEMTIME sur pile *)
+  EmitInstrAB('SUB', 'ESP', '16');
+  EmitInstrA('PUSH', 'ESP');
+  EmitInstrA('CALL', 'GetLocalTime');
+  (* SYSTEMTIME: WORD Year[0], Month[2], DayOfWeek[4], Day[6],
+     Hour[8], Minute[10], Second[12], Ms[14] *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+6]');   (* Day *)
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  (* copier dans DATEBUF *)
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'DATEBUF');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+  EmitInstrA('POP', 'EAX');
+  (* append '-' *)
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'DATEBUF');
+  EmitInstrAB('ADD', 'EDI', 'EAX');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''-''');
+  EmitInstr('INC    EDI');
+  (* Month number *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+2]');   (* Month *)
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+  (* append '-' *)
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'DATEBUF');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'DATEBUF');
+  EmitInstrAB('ADD', 'EDI', 'EAX');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''-''');
+  EmitInstr('INC    EDI');
+  (* Year *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP]');     (* Year *)
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+  EmitInstrAB('ADD', 'ESP', '16');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'DATEBUF');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_TIME : retourner heure courante (ASCIIZ HH:MM:SS) *)
+  EmitComment('--- TIME : -> EAX=ptr TIMEBUF ---');
+  EmitLabel(VXP_RT_PFX + 'TIME');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('SUB', 'ESP', '16');
+  EmitInstrA('PUSH', 'ESP');
+  EmitInstrA('CALL', 'GetLocalTime');
+  (* Hour *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+8]');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'TIMEBUF');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'TIMEBUF');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'TIMEBUF');
+  EmitInstrAB('ADD', 'EDI', 'EAX');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', ''':''');
+  EmitInstr('INC    EDI');
+  (* Minute *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+10]');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'TIMEBUF');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'TIMEBUF');
+  EmitInstrAB('ADD', 'EDI', 'EAX');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', ''':''');
+  EmitInstr('INC    EDI');
+  (* Second *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+12]');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
+  EmitInstrAB('ADD', 'ESP', '16');
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'TIMEBUF');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_CLOCK : retourner GetTickCount -> EAX ------------- *)
+  EmitComment('--- CLOCK : -> EAX=GetTickCount ms ---');
+  EmitLabel(VXP_RT_PFX + 'CLOCK');
+  EmitInstrA('CALL', 'GetTickCount');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_POWI : puissance entiere EAX^EBX -> EAX ---------- *)
+  EmitComment('--- POWI : EAX=base, EBX=exp -> EAX=base^exp ---');
+  EmitLabel(VXP_RT_PFX + 'POWI');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ECX', 'EBX');
+  EmitInstrAB('MOV', 'EDX', 'EAX');
+  EmitInstrAB('MOV', 'EAX', '1');
+  EmitRaw(VXP_RT_PFX + 'POWI_LP:');
+  EmitInstrAB('CMP', 'ECX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'POWI_DN');
+  EmitInstrAB('IMUL', 'EAX', 'EDX');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'POWI_LP');
+  EmitRaw(VXP_RT_PFX + 'POWI_DN:');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_DELETE : supprimer caracteres dans chaine --------- *)
+  EmitComment('--- DELETE : EAX=str, EBX=pos(1-based), ECX=count -> EAX=STRBUF ---');
+  EmitLabel(VXP_RT_PFX + 'DELETE');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrAB('MOV', 'EDX', 'EBX');
+  EmitInstr('DEC    EDX');               (* EDX = chars avant pos *)
+  (* copier chars avant pos *)
+  EmitRaw(VXP_RT_PFX + 'DEL_B:');
+  EmitInstrAB('CMP', 'EDX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'DEL_SK');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'DEL_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    EDX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'DEL_B');
+  EmitRaw(VXP_RT_PFX + 'DEL_SK:');
+  (* sauter ECX caracteres *)
+  EmitInstrAB('MOV', 'EDX', 'ECX');
+  EmitRaw(VXP_RT_PFX + 'DEL_S:');
+  EmitInstrAB('CMP', 'EDX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'DEL_CP');
+  EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'DEL_DN');
+  EmitInstr('INC    ESI');
+  EmitInstr('DEC    EDX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'DEL_S');
+  EmitRaw(VXP_RT_PFX + 'DEL_CP:');
+  (* copier le reste *)
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'DEL_DN');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'DEL_CP');
+  EmitRaw(VXP_RT_PFX + 'DEL_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_INSERT : inserer sous-chaine dans chaine ---------- *)
+  EmitComment('--- INSERT : EAX=dst, EBX=ins, ECX=pos(1-based) -> EAX=STRBUF ---');
+  EmitLabel(VXP_RT_PFX + 'INSERT');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrAB('MOV', 'ESI', 'EAX');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('PUSH', 'EDI');
+  EmitInstrAB('MOV', 'EDX', 'ECX');
+  EmitInstr('DEC    EDX');
+  (* copier chars avant pos *)
+  EmitRaw(VXP_RT_PFX + 'INS_B:');
+  EmitInstrAB('CMP', 'EDX', '0');
+  EmitInstrA('JLE', VXP_RT_PFX + 'INS_I');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'INS_I');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    EDX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'INS_B');
+  EmitRaw(VXP_RT_PFX + 'INS_I:');
+  (* inserer la sous-chaine EBX *)
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrAB('MOV', 'ESI', 'EBX');
+  EmitRaw(VXP_RT_PFX + 'INS_IL:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'INS_ID');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'INS_IL');
+  EmitRaw(VXP_RT_PFX + 'INS_ID:');
+  EmitInstrA('POP', 'ESI');
+  (* copier le reste *)
+  EmitRaw(VXP_RT_PFX + 'INS_CP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'INS_DN');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'INS_CP');
+  EmitRaw(VXP_RT_PFX + 'INS_DN:');
+  EmitInstrA('POP', 'EAX');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VAL : convertir chaine en entier (comme STRTONUM) *)
+  EmitComment('--- VAL : EAX=ptr ASCIIZ -> EAX=valeur entiere ---');
+  EmitLabel(VXP_RT_PFX + 'VAL');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', VXP_RT_PFX + 'STRTONUM');
+  EmitInstrAB('ADD', 'ESP', '4');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FOPEN : stub Win32 fichier lecture --------------- *)
+  EmitComment('--- FOPEN : EAX=filename ASCIIZ -> EAX=handle ---');
+  EmitLabel(VXP_RT_PFX + 'FOPEN');
+  EmitInstrA('PUSH', '0');               (* hTemplateFile *)
+  EmitInstrA('PUSH', '128');             (* FILE_ATTRIBUTE_NORMAL *)
+  EmitInstrA('PUSH', '3');               (* OPEN_EXISTING *)
+  EmitInstrA('PUSH', '0');               (* lpSecurityAttr *)
+  EmitInstrA('PUSH', '1');               (* FILE_SHARE_READ *)
+  EmitInstrA('PUSH', '80000000h');       (* GENERIC_READ *)
+  EmitInstrA('PUSH', 'EAX');             (* lpFileName *)
+  EmitInstrA('CALL', 'CreateFileA');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FCREATE : creer fichier ecriture ----------------- *)
+  EmitComment('--- FCREATE : EAX=filename -> EAX=handle ---');
+  EmitLabel(VXP_RT_PFX + 'FCREATE');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('PUSH', '128');
+  EmitInstrA('PUSH', '2');               (* CREATE_ALWAYS *)
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('PUSH', '40000000h');       (* GENERIC_WRITE *)
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', 'CreateFileA');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FCLOSE : fermer fichier -------------------------- *)
+  EmitComment('--- FCLOSE : EAX=handle ---');
+  EmitLabel(VXP_RT_PFX + 'FCLOSE');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', 'CloseHandle');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FREAD : lire depuis fichier ---------------------- *)
+  EmitComment('--- FREAD : EAX=handle, EBX=buf, ECX=count -> EAX=bytes_read ---');
+  EmitLabel(VXP_RT_PFX + 'FREAD');
+  EmitInstrA('PUSH', '0');               (* lpOverlapped *)
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'WRITTEN'); (* lpBytesRead *)
+  EmitInstrA('PUSH', 'ECX');             (* nNumberOfBytesToRead *)
+  EmitInstrA('PUSH', 'EBX');             (* lpBuffer *)
+  EmitInstrA('PUSH', 'EAX');             (* hFile *)
+  EmitInstrA('CALL', 'ReadFile');
+  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + VXP_RT_PFX + 'WRITTEN]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FWRITE : ecrire dans fichier --------------------- *)
+  EmitComment('--- FWRITE : EAX=handle, EBX=buf, ECX=count -> EAX=bytes_written ---');
+  EmitLabel(VXP_RT_PFX + 'FWRITE');
+  EmitInstrA('PUSH', '0');
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'WRITTEN');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', 'WriteFile');
+  EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + VXP_RT_PFX + 'WRITTEN]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_FDELETE : supprimer un fichier -------------------- *)
+  EmitComment('--- FDELETE : EAX=filename -> EAX=result ---');
+  EmitLabel(VXP_RT_PFX + 'FDELETE');
+  EmitInstrA('PUSH', 'EAX');
+  EmitInstrA('CALL', 'DeleteFileA');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VMS_STUB : stub pour appels VMS non supportes ---- *)
+  EmitComment('--- VMS_STUB : stub retourne 0 ---');
+  EmitLabel(VXP_RT_PFX + 'VMS_STUB');
+  EmitInstrAB('XOR', 'EAX', 'EAX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
   EmitRaw('_TEXT   ENDS');
 End;
 
@@ -7118,7 +7848,7 @@ Const
   PE_MAX_DATA    = {$IFDEF FPC}65536{$ELSE}8192{$ENDIF};
   PE_MAX_LABELS  = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
   PE_MAX_FIXUPS  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
-  PE_NUM_IMPORTS = 8;
+  PE_NUM_IMPORTS = 12;
   PE_MAX_LINES   = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
 
 Type
@@ -7172,6 +7902,10 @@ Begin
   PEImports[5].Name := 'HeapAlloc';
   PEImports[6].Name := 'HeapFree';
   PEImports[7].Name := 'GetTickCount';
+  PEImports[8].Name := 'GetLocalTime';
+  PEImports[9].Name := 'CreateFileA';
+  PEImports[10].Name := 'CloseHandle';
+  PEImports[11].Name := 'DeleteFileA';
   For I := 0 To PE_NUM_IMPORTS - 1 Do
     PEImports[I].IATOffset := 0;
 End;
@@ -7298,6 +8032,8 @@ Begin
     If S = '_' + PEImports[I].Name + '@12' Then
       Begin PEIsImport := True; Exit; End;
     If S = '_' + PEImports[I].Name + '@20' Then
+      Begin PEIsImport := True; Exit; End;
+    If S = '_' + PEImports[I].Name + '@28' Then
       Begin PEIsImport := True; Exit; End;
   End;
 End;
@@ -14245,6 +14981,10 @@ Var
   EnvIncFName : TString;
   EnvI        : Integer;
   Idx         : Integer;
+  AsmCopyName : TString;
+  AsmCopyIn   : Text;
+  AsmCopyOut  : Text;
+  AsmCopyLine : TString;
 Begin
   GlobalInit;
   If Opts.Verbose Then ShowBanner;
@@ -14696,6 +15436,36 @@ Begin
 
   { Finaliser le fichier de sortie (EmitFooter + EmitDataSeg + END) }
   EmitClose;
+
+  { Sauvegarder le fichier .ASM si demande par l option -asm }
+  If (ErrorCount = 0) And Opts.EmitAsm Then
+  Begin
+    AsmCopyName := ReplaceExt(Opts.SrcFile, '.asm');
+    If AsmCopyName <> Opts.OutFile Then
+    Begin
+      {$I-}
+      Assign(AsmCopyIn, Opts.OutFile);
+      Reset(AsmCopyIn);
+      {$I+}
+      If IOResult = 0 Then
+      Begin
+        {$I-}
+        Assign(AsmCopyOut, AsmCopyName);
+        Rewrite(AsmCopyOut);
+        {$I+}
+        If IOResult = 0 Then
+        Begin
+          While Not Eof(AsmCopyIn) Do
+          Begin
+            ReadLn(AsmCopyIn, AsmCopyLine);
+            WriteLn(AsmCopyOut, AsmCopyLine);
+          End;
+          Close(AsmCopyOut);
+        End;
+        Close(AsmCopyIn);
+      End;
+    End;
+  End;
 
   { TODO 25 : Generation PE/COFF binaire }
   If (ErrorCount = 0) And Opts.EmitExe And (Not IsModule) Then
