@@ -11386,17 +11386,21 @@ Begin
   End
   Else
   Begin
-    (* Pas d EXCEPTION : restaurer quand meme le handler parent *)
+    (* Pas d EXCEPTION : restaurer le handler parent et propager *)
     EmitComment('exception: pas d erreur, restaurer handler parent');
     EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
     EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
     EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
     EmitInstrA('JMP', ExcELbl);
     EmitLabel(ExcHLbl);
-    EmitComment('exception handler');
+    EmitComment('exception handler (propagate to parent)');
     EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
     EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
     EmitInstrA('POP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
+    (* Propager au handler parent *)
+    EmitInstrAB('MOV', 'ESP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCSP]');
+    EmitInstrAB('MOV', 'EBP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCBP]');
+    EmitInstrA('JMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]');
     EmitLabel(ExcELbl);
   End;
 
