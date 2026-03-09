@@ -443,7 +443,7 @@
             Heap Win32 : GetProcessHeap + HeapAlloc / HeapFree
             Handles : hStdOut, hStdIn via GetStdHandle
 
-  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
             Generation PE (.EXE Windows 32 bits) :
               DOS stub + signature PE + en-tete COFF + en-tete optionnel
               Sections : .text (code), .rdata (imports), .data (donnees)
@@ -905,6 +905,10 @@ Procedure ParseWithStmt; Forward;
 
 { Forward declarations TODO 18 }
 Procedure ParseFuncOrProc(IsFunction : Boolean); Forward;
+
+{ Forward declarations TODO 25 }
+Procedure GeneratePE(Const AsmFile, ExeFile : TString); Forward;
+Procedure GenerateCOFF(Const AsmFile, ObjFile : TString); Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -7102,6 +7106,2350 @@ End;
 
 
 { ============================================================
+  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
+  Mini-assembleur x86 + generation PE Win32 binaire
+  ============================================================ }
+
+Const
+  PE_FILE_ALIGN  = $200;
+  PE_SECT_ALIGN  = $1000;
+  PE_IMAGE_BASE  = $00400000;
+  PE_MAX_CODE    = {$IFDEF FPC}65536{$ELSE}8192{$ENDIF};
+  PE_MAX_DATA    = {$IFDEF FPC}65536{$ELSE}8192{$ENDIF};
+  PE_MAX_LABELS  = {$IFDEF FPC}2048{$ELSE}256{$ENDIF};
+  PE_MAX_FIXUPS  = {$IFDEF FPC}4096{$ELSE}512{$ENDIF};
+  PE_NUM_IMPORTS = 8;
+  PE_MAX_LINES   = {$IFDEF FPC}16384{$ELSE}2048{$ENDIF};
+
+Type
+  TPELabel = Record
+    Name   : TString;
+    Offset : LongInt;
+    InData : Boolean;
+  End;
+  TPEFixup = Record
+    Offset    : LongInt;
+    LabelName : TString;
+    IsRelative: Boolean;
+    IsImport  : Boolean;
+  End;
+  TPEImport = Record
+    Name      : TString;
+    IATOffset : LongInt;
+  End;
+
+Var
+  PECodeBuf   : Array[0..PE_MAX_CODE-1] of Byte;
+  PEDataBuf   : Array[0..PE_MAX_DATA-1] of Byte;
+  PECodePos   : LongInt;
+  PEDataPos   : LongInt;
+  PELabels    : Array[0..PE_MAX_LABELS-1] of TPELabel;
+  PELabelCount: LongInt;
+  PEFixups    : Array[0..PE_MAX_FIXUPS-1] of TPEFixup;
+  PEFixupCount: LongInt;
+  PEImports   : Array[0..PE_NUM_IMPORTS-1] of TPEImport;
+  PEInDataSeg : Boolean;
+  PEAsmLines  : Array[0..PE_MAX_LINES-1] of TString;
+  PEAsmCount  : LongInt;
+
+Procedure PEReset;
+Var I : LongInt;
+Begin
+  PECodePos := 0;
+  PEDataPos := 0;
+  PELabelCount := 0;
+  PEFixupCount := 0;
+  PEInDataSeg := False;
+  PEAsmCount := 0;
+  For I := 0 To PE_MAX_CODE - 1 Do PECodeBuf[I] := 0;
+  For I := 0 To PE_MAX_DATA - 1 Do PEDataBuf[I] := 0;
+  { Init imports }
+  PEImports[0].Name := 'ExitProcess';
+  PEImports[1].Name := 'GetStdHandle';
+  PEImports[2].Name := 'WriteFile';
+  PEImports[3].Name := 'ReadFile';
+  PEImports[4].Name := 'GetProcessHeap';
+  PEImports[5].Name := 'HeapAlloc';
+  PEImports[6].Name := 'HeapFree';
+  PEImports[7].Name := 'GetTickCount';
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+    PEImports[I].IATOffset := 0;
+End;
+
+Procedure PECodeByte(B : Byte);
+Begin
+  If PECodePos < PE_MAX_CODE Then
+  Begin
+    PECodeBuf[PECodePos] := B;
+    Inc(PECodePos);
+  End;
+End;
+
+Procedure PECodeWord(W : Word);
+Begin
+  PECodeByte(Byte(W And $FF));
+  PECodeByte(Byte((W Shr 8) And $FF));
+End;
+
+Procedure PECodeDWord(D : LongInt);
+Begin
+  PECodeByte(Byte(D And $FF));
+  PECodeByte(Byte((D Shr 8) And $FF));
+  PECodeByte(Byte((D Shr 16) And $FF));
+  PECodeByte(Byte((D Shr 24) And $FF));
+End;
+
+Procedure PEDataByte(B : Byte);
+Begin
+  If PEDataPos < PE_MAX_DATA Then
+  Begin
+    PEDataBuf[PEDataPos] := B;
+    Inc(PEDataPos);
+  End;
+End;
+
+Procedure PEDataWord(W : Word);
+Begin
+  PEDataByte(Byte(W And $FF));
+  PEDataByte(Byte((W Shr 8) And $FF));
+End;
+
+Procedure PEDataDWord(D : LongInt);
+Begin
+  PEDataByte(Byte(D And $FF));
+  PEDataByte(Byte((D Shr 8) And $FF));
+  PEDataByte(Byte((D Shr 16) And $FF));
+  PEDataByte(Byte((D Shr 24) And $FF));
+End;
+
+Procedure PEAddLabel(Const AName : TString; AOffset : LongInt;
+                     AInData : Boolean);
+Begin
+  If PELabelCount < PE_MAX_LABELS Then
+  Begin
+    PELabels[PELabelCount].Name := AName;
+    PELabels[PELabelCount].Offset := AOffset;
+    PELabels[PELabelCount].InData := AInData;
+    Inc(PELabelCount);
+  End;
+End;
+
+Function PEFindLabel(Const AName : TString;
+                     Var AOffset : LongInt;
+                     Var AInData : Boolean) : Boolean;
+Var I : LongInt;
+Begin
+  For I := 0 To PELabelCount - 1 Do
+    If PELabels[I].Name = AName Then
+    Begin
+      AOffset := PELabels[I].Offset;
+      AInData := PELabels[I].InData;
+      PEFindLabel := True;
+      Exit;
+    End;
+  AOffset := 0;
+  AInData := False;
+  PEFindLabel := False;
+End;
+
+Procedure PEAddFixup(AOffset : LongInt; Const ALabelName : TString;
+                     AIsRelative, AIsImport : Boolean);
+Begin
+  If PEFixupCount < PE_MAX_FIXUPS Then
+  Begin
+    PEFixups[PEFixupCount].Offset := AOffset;
+    PEFixups[PEFixupCount].LabelName := ALabelName;
+    PEFixups[PEFixupCount].IsRelative := AIsRelative;
+    PEFixups[PEFixupCount].IsImport := AIsImport;
+    Inc(PEFixupCount);
+  End;
+End;
+
+Function PERegNum(Const R : TString) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(R);
+  If U = 'EAX' Then PERegNum := 0
+  Else If U = 'ECX' Then PERegNum := 1
+  Else If U = 'EDX' Then PERegNum := 2
+  Else If U = 'EBX' Then PERegNum := 3
+  Else If U = 'ESP' Then PERegNum := 4
+  Else If U = 'EBP' Then PERegNum := 5
+  Else If U = 'ESI' Then PERegNum := 6
+  Else If U = 'EDI' Then PERegNum := 7
+  Else PERegNum := -1;
+End;
+
+Function PEIsReg32(Const S : TString) : Boolean;
+Begin
+  PEIsReg32 := (PERegNum(S) >= 0);
+End;
+
+Function PEIsImport(Const S : TString) : Boolean;
+Var I : Integer;
+Begin
+  PEIsImport := False;
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    If S = '_' + PEImports[I].Name + '@4' Then
+      Begin PEIsImport := True; Exit; End;
+    If S = '_' + PEImports[I].Name + '@0' Then
+      Begin PEIsImport := True; Exit; End;
+    If S = '_' + PEImports[I].Name + '@12' Then
+      Begin PEIsImport := True; Exit; End;
+    If S = '_' + PEImports[I].Name + '@20' Then
+      Begin PEIsImport := True; Exit; End;
+  End;
+End;
+
+Function PEImportName(Const S : TString) : TString;
+Var I, P : Integer;
+    Base : TString;
+Begin
+  Base := S;
+  If (Length(Base) > 1) And (Base[1] = '_') Then
+    Delete(Base, 1, 1);
+  P := Pos('@', Base);
+  If P > 0 Then
+    Base := Copy(Base, 1, P - 1);
+  PEImportName := Base;
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+    If PEImports[I].Name = Base Then
+    Begin
+      PEImportName := Base;
+      Exit;
+    End;
+End;
+
+Function PETrimLine(Const S : TString) : TString;
+Var I, J : Integer;
+    R : TString;
+Begin
+  I := 1;
+  While (I <= Length(S)) And ((S[I] = ' ') Or (S[I] = #9)) Do Inc(I);
+  J := Length(S);
+  While (J >= I) And ((S[J] = ' ') Or (S[J] = #9) Or (S[J] = #13)
+        Or (S[J] = #10)) Do Dec(J);
+  R := '';
+  While I <= J Do
+  Begin
+    R := R + S[I];
+    Inc(I);
+  End;
+  PETrimLine := R;
+End;
+
+Function PEStripComment(Const S : TString) : TString;
+Var P : Integer;
+Begin
+  P := Pos(';', S);
+  If P > 0 Then
+    PEStripComment := Copy(S, 1, P - 1)
+  Else
+    PEStripComment := S;
+End;
+
+Function PEExtractWord(Const S : TString; Var Pos2 : Integer) : TString;
+Var R : TString;
+Begin
+  R := '';
+  While (Pos2 <= Length(S)) And ((S[Pos2] = ' ') Or (S[Pos2] = #9)) Do
+    Inc(Pos2);
+  While (Pos2 <= Length(S)) And (S[Pos2] <> ' ') And (S[Pos2] <> #9)
+        And (S[Pos2] <> ',') Do
+  Begin
+    R := R + S[Pos2];
+    Inc(Pos2);
+  End;
+  PEExtractWord := R;
+End;
+
+Function PEParseImm(Const S : TString) : LongInt;
+Var V : LongInt;
+    C : Integer;
+    T : TString;
+Begin
+  T := PETrimLine(S);
+  If Length(T) = 0 Then Begin PEParseImm := 0; Exit; End;
+  { Character literal like '-' }
+  If (Length(T) >= 3) And (T[1] = '''') And (T[Length(T)] = '''') Then
+  Begin
+    PEParseImm := Ord(T[2]);
+    Exit;
+  End;
+  Val(T, V, C);
+  If C = 0 Then
+    PEParseImm := V
+  Else
+    PEParseImm := 0;
+End;
+
+Function PEParseHex(Const S : TString) : LongInt;
+Var V : LongInt;
+    C : Integer;
+Begin
+  Val('$' + S, V, C);
+  If C = 0 Then PEParseHex := V
+  Else PEParseHex := 0;
+End;
+
+{ Split 'oper1, oper2' into two operands }
+Procedure PESplitOps(Const S : TString; Var Op1, Op2 : TString);
+Var P : Integer;
+    T : TString;
+Begin
+  T := PETrimLine(S);
+  Op1 := '';
+  Op2 := '';
+  P := Pos(',', T);
+  If P = 0 Then
+  Begin
+    Op1 := T;
+    Exit;
+  End;
+  Op1 := PETrimLine(Copy(T, 1, P - 1));
+  Op2 := PETrimLine(Copy(T, P + 1, Length(T) - P));
+End;
+
+{ Check if string starts with prefix (case-insensitive) }
+Function PEStartsWith(Const S, Pfx : TString) : Boolean;
+Var I : Integer;
+Begin
+  If Length(Pfx) > Length(S) Then
+    Begin PEStartsWith := False; Exit; End;
+  For I := 1 To Length(Pfx) Do
+    If UpCase(S[I]) <> UpCase(Pfx[I]) Then
+      Begin PEStartsWith := False; Exit; End;
+  PEStartsWith := True;
+End;
+
+{ Extract symbol name from memory operand like 'DWORD PTR [_sym]' }
+Function PEExtractMemSym(Const S : TString) : TString;
+Var P1, P2 : Integer;
+    T : TString;
+Begin
+  T := S;
+  P1 := Pos('[', T);
+  P2 := Pos(']', T);
+  If (P1 > 0) And (P2 > P1) Then
+    T := Copy(T, P1 + 1, P2 - P1 - 1)
+  Else
+  Begin
+    PEExtractMemSym := T;
+    Exit;
+  End;
+  T := PETrimLine(T);
+  PEExtractMemSym := T;
+End;
+
+{ Parse OFFSET symbol or plain symbol from operand }
+Function PEExtractSymbol(Const S : TString) : TString;
+Var T : TString;
+    P : Integer;
+Begin
+  T := PETrimLine(S);
+  If PEStartsWith(T, 'OFFSET ') Then
+    T := PETrimLine(Copy(T, 8, Length(T) - 7));
+  { Strip 'DWORD PTR [' and ']' }
+  P := Pos('[', T);
+  If P > 0 Then
+  Begin
+    T := Copy(T, P + 1, Length(T) - P);
+    P := Pos(']', T);
+    If P > 0 Then T := Copy(T, 1, P - 1);
+    T := PETrimLine(T);
+  End;
+  PEExtractSymbol := T;
+End;
+
+{ Check if operand is DWORD PTR [symbol] form (not register-based) }
+Function PEIsDwordPtrMem(Const S : TString) : Boolean;
+Var T, Sym : TString;
+Begin
+  T := StrUpperCase(PETrimLine(S));
+  PEIsDwordPtrMem := False;
+  If Not PEStartsWith(T, 'DWORD PTR [') Then Exit;
+  Sym := PEExtractMemSym(S);
+  If (Length(Sym) > 0) And (Sym[1] = '_') Then
+    PEIsDwordPtrMem := True;
+End;
+
+{ Check if operand is BYTE PTR [symbol] (absolute, not reg-based) }
+Function PEIsBytePtrMem(Const S : TString) : Boolean;
+Var T, Sym : TString;
+Begin
+  T := StrUpperCase(PETrimLine(S));
+  PEIsBytePtrMem := False;
+  If Not PEStartsWith(T, 'BYTE PTR [') Then Exit;
+  Sym := PEExtractMemSym(S);
+  If (Length(Sym) > 0) And (Sym[1] = '_') Then
+    PEIsBytePtrMem := True;
+End;
+
+Function PEIsWordPtrMem(Const S : TString) : Boolean;
+Var T, Sym : TString;
+Begin
+  T := StrUpperCase(PETrimLine(S));
+  PEIsWordPtrMem := False;
+  If Not PEStartsWith(T, 'WORD PTR [') Then Exit;
+  Sym := PEExtractMemSym(S);
+  If (Length(Sym) > 0) And (Sym[1] = '_') Then
+    PEIsWordPtrMem := True;
+End;
+
+{ Check if sym has +disp like '_sym + 15' }
+Function PEHasDisp(Const S : TString) : Boolean;
+Begin
+  PEHasDisp := (Pos('+', S) > 0);
+End;
+
+{ Get base symbol and displacement from 'sym + disp' or 'sym+disp' }
+Procedure PESplitDisp(Const S : TString; Var Base : TString;
+                      Var Disp : LongInt);
+Var P : Integer;
+    DS : TString;
+Begin
+  P := Pos('+', S);
+  If P = 0 Then
+  Begin
+    Base := PETrimLine(S);
+    Disp := 0;
+    Exit;
+  End;
+  Base := PETrimLine(Copy(S, 1, P - 1));
+  DS := PETrimLine(Copy(S, P + 1, Length(S) - P));
+  Disp := PEParseImm(DS);
+End;
+
+{ Check if operand is a DWORD PTR [reg+disp] form }
+Function PEIsRegDispMem(Const S : TString; Var Reg : Integer;
+                        Var Disp : LongInt) : Boolean;
+Var T, Inner, RName : TString;
+    P, PP : Integer;
+Begin
+  T := StrUpperCase(PETrimLine(S));
+  PEIsRegDispMem := False;
+  Reg := -1;
+  Disp := 0;
+  { Accept: DWORD PTR [EBP-4], DWORD PTR [EBP+8], [EBX], etc }
+  P := Pos('[', T);
+  If P = 0 Then Exit;
+  PP := Pos(']', T);
+  If PP <= P Then Exit;
+  Inner := Copy(T, P + 1, PP - P - 1);
+  Inner := PETrimLine(Inner);
+  { Check for reg+disp or reg-disp }
+  P := Pos('+', Inner);
+  PP := Pos('-', Inner);
+  If (PP > 0) And ((P = 0) Or (PP < P)) Then P := PP;
+  If P > 0 Then
+  Begin
+    RName := PETrimLine(Copy(Inner, 1, P - 1));
+    Reg := PERegNum(RName);
+    If Reg < 0 Then Exit;
+    Disp := PEParseImm(Copy(Inner, P, Length(Inner) - P + 1));
+    PEIsRegDispMem := True;
+  End
+  Else
+  Begin
+    Reg := PERegNum(Inner);
+    If Reg >= 0 Then
+    Begin
+      Disp := 0;
+      PEIsRegDispMem := True;
+    End;
+  End;
+End;
+
+{ Check BYTE PTR [reg+disp] }
+Function PEIsByteRegDisp(Const S : TString; Var Reg : Integer;
+                         Var Disp : LongInt) : Boolean;
+Var T : TString;
+Begin
+  T := StrUpperCase(PETrimLine(S));
+  PEIsByteRegDisp := False;
+  If PEStartsWith(T, 'BYTE PTR ') Then
+  Begin
+    If PEIsRegDispMem(S, Reg, Disp) Then
+    Begin
+      If Reg < 0 Then PEIsByteRegDisp := False
+      Else PEIsByteRegDisp := True;
+    End;
+  End;
+End;
+
+{ Check DWORD PTR [reg+disp] (register-based, not absolute symbol) }
+Function PEIsDwordRegDisp(Const S : TString; Var Reg : Integer;
+                          Var Disp : LongInt) : Boolean;
+Var T : TString;
+Begin
+  T := StrUpperCase(PETrimLine(S));
+  PEIsDwordRegDisp := False;
+  If PEStartsWith(T, 'DWORD PTR ') Then
+  Begin
+    If PEIsRegDispMem(S, Reg, Disp) Then
+    Begin
+      If Reg < 0 Then PEIsDwordRegDisp := False
+      Else PEIsDwordRegDisp := True;
+    End;
+  End;
+End;
+
+{ Encode ModRM + SIB + displacement for [reg+disp] }
+Procedure PEEmitModRM(RegOp, BaseReg : Integer; Disp : LongInt);
+Begin
+  If (Disp = 0) And (BaseReg <> 5) Then
+  Begin
+    { [reg] - mod=00 }
+    If BaseReg = 4 Then
+    Begin
+      PECodeByte($00 Or (RegOp Shl 3) Or 4);
+      PECodeByte($24); { SIB: base=ESP, index=none }
+    End
+    Else
+      PECodeByte($00 Or (RegOp Shl 3) Or BaseReg);
+  End
+  Else If (Disp >= -128) And (Disp <= 127) Then
+  Begin
+    { [reg+disp8] - mod=01 }
+    If BaseReg = 4 Then
+    Begin
+      PECodeByte($40 Or (RegOp Shl 3) Or 4);
+      PECodeByte($24);
+    End
+    Else
+      PECodeByte($40 Or (RegOp Shl 3) Or BaseReg);
+    PECodeByte(Byte(Disp And $FF));
+  End
+  Else
+  Begin
+    { [reg+disp32] - mod=10 }
+    If BaseReg = 4 Then
+    Begin
+      PECodeByte($80 Or (RegOp Shl 3) Or 4);
+      PECodeByte($24);
+    End
+    Else
+      PECodeByte($80 Or (RegOp Shl 3) Or BaseReg);
+    PECodeDWord(Disp);
+  End;
+End;
+
+{ Emit code fixup for absolute symbol address (4 bytes placeholder) }
+Procedure PEEmitSymFixup(Const Sym : TString);
+Var BaseSym : TString;
+    D : LongInt;
+Begin
+  If PEHasDisp(Sym) Then
+  Begin
+    PESplitDisp(Sym, BaseSym, D);
+    PEAddFixup(PECodePos, BaseSym, False, PEIsImport(BaseSym));
+    PECodeDWord(D);
+  End
+  Else
+  Begin
+    PEAddFixup(PECodePos, Sym, False, PEIsImport(Sym));
+    PECodeDWord(0);
+  End;
+End;
+
+{ Emit relative fixup (for CALL/JMP/Jcc) }
+Procedure PEEmitRelFixup(Const Sym : TString);
+Begin
+  PEAddFixup(PECodePos, Sym, True, PEIsImport(Sym));
+  PECodeDWord(0);
+End;
+
+{ Check if a register name is 8-bit: AL, AH, BL, BH, CL, CH, DL, DH }
+Function PEIsReg8(Const S : TString) : Boolean;
+Var U : TString;
+Begin
+  U := StrUpperCase(PETrimLine(S));
+  PEIsReg8 := (U = 'AL') Or (U = 'AH') Or (U = 'BL') Or (U = 'BH')
+    Or (U = 'CL') Or (U = 'CH') Or (U = 'DL') Or (U = 'DH');
+End;
+
+Function PEReg8Num(Const S : TString) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(PETrimLine(S));
+  If U = 'AL' Then PEReg8Num := 0
+  Else If U = 'CL' Then PEReg8Num := 1
+  Else If U = 'DL' Then PEReg8Num := 2
+  Else If U = 'BL' Then PEReg8Num := 3
+  Else If U = 'AH' Then PEReg8Num := 4
+  Else If U = 'CH' Then PEReg8Num := 5
+  Else If U = 'DH' Then PEReg8Num := 6
+  Else If U = 'BH' Then PEReg8Num := 7
+  Else PEReg8Num := -1;
+End;
+
+Function PEIsReg16(Const S : TString) : Boolean;
+Var U : TString;
+Begin
+  U := StrUpperCase(PETrimLine(S));
+  PEIsReg16 := (U = 'AX') Or (U = 'CX') Or (U = 'DX') Or (U = 'BX')
+    Or (U = 'SP') Or (U = 'BP') Or (U = 'SI') Or (U = 'DI');
+End;
+
+Function PEReg16Num(Const S : TString) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(PETrimLine(S));
+  If U = 'AX' Then PEReg16Num := 0
+  Else If U = 'CX' Then PEReg16Num := 1
+  Else If U = 'DX' Then PEReg16Num := 2
+  Else If U = 'BX' Then PEReg16Num := 3
+  Else If U = 'SP' Then PEReg16Num := 4
+  Else If U = 'BP' Then PEReg16Num := 5
+  Else If U = 'SI' Then PEReg16Num := 6
+  Else If U = 'DI' Then PEReg16Num := 7
+  Else PEReg16Num := -1;
+End;
+
+{ ----------------------------------------------------------------
+  PEAssemble - read ASM text and encode x86 machine code
+  ---------------------------------------------------------------- }
+Procedure PEAssemble(Const AsmFile : TString);
+Var
+  F      : Text;
+  Line   : TString;
+  Raw    : TString;
+  Mnem   : TString;
+  Rest   : TString;
+  Op1    : TString;
+  Op2    : TString;
+  Sym    : TString;
+  BaseSym: TString;
+  LblName: TString;
+  P, I   : Integer;
+  R1, R2 : Integer;
+  Imm    : LongInt;
+  ImmD   : LongInt;
+  RegX   : Integer;
+  DispX  : LongInt;
+  Trimmed: TString;
+  ULine  : TString;
+  Ch     : Char;
+  InCode : Boolean;
+  N, J   : LongInt;
+  DataVals : TString;
+  ValStr : TString;
+Begin
+  { Read all lines from the ASM file }
+  {$I-}
+  Assign(F, AsmFile);
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+
+  PEAsmCount := 0;
+  While (Not Eof(F)) And (PEAsmCount < PE_MAX_LINES) Do
+  Begin
+    ReadLn(F, Line);
+    PEAsmLines[PEAsmCount] := Line;
+    Inc(PEAsmCount);
+  End;
+  Close(F);
+
+  PEInDataSeg := False;
+  InCode := False;
+
+  For I := 0 To PEAsmCount - 1 Do
+  Begin
+    Raw := PEAsmLines[I];
+    { Strip trailing CR/LF }
+    While (Length(Raw) > 0) And ((Raw[Length(Raw)] = #13)
+          Or (Raw[Length(Raw)] = #10)) Do
+      Delete(Raw, Length(Raw), 1);
+
+    { Strip comment }
+    Line := PEStripComment(Raw);
+    Trimmed := PETrimLine(Line);
+    ULine := StrUpperCase(Trimmed);
+
+    { Skip empty lines }
+    If Length(Trimmed) = 0 Then Continue;
+
+    { Track segments }
+    If PEStartsWith(ULine, '_DATA') And
+       (Pos('SEGMENT', ULine) > 0) Then
+    Begin
+      PEInDataSeg := True;
+      InCode := False;
+      Continue;
+    End;
+    If PEStartsWith(ULine, '_DATA') And
+       (Pos('ENDS', ULine) > 0) Then
+    Begin
+      PEInDataSeg := False;
+      Continue;
+    End;
+    If PEStartsWith(ULine, '_TEXT') And
+       (Pos('SEGMENT', ULine) > 0) Then
+    Begin
+      InCode := True;
+      PEInDataSeg := False;
+      Continue;
+    End;
+    If PEStartsWith(ULine, '_TEXT') And
+       (Pos('ENDS', ULine) > 0) Then
+    Begin
+      InCode := False;
+      Continue;
+    End;
+
+    { Skip directives }
+    If PEStartsWith(ULine, '.386') Then Continue;
+    If PEStartsWith(ULine, '.MODEL') Then Continue;
+    If PEStartsWith(ULine, '.STACK') Then Continue;
+    If PEStartsWith(ULine, 'OPTION ') Then Continue;
+    If PEStartsWith(ULine, 'EXTRN') Then Continue;
+    If PEStartsWith(ULine, 'ASSUME') Then Continue;
+    If ULine = 'END' Then Continue;
+    If PEStartsWith(ULine, 'END ') Then Continue;
+
+    { Data segment: parse labels and data directives }
+    If PEInDataSeg Then
+    Begin
+      { Check for label with data: _sym DD ..., _sym DB ... }
+      P := Pos(' DD ', ULine);
+      If P = 0 Then P := Pos(' DB ', ULine);
+      If P = 0 Then P := Pos(' DW ', ULine);
+
+      If (P > 0) And (Trimmed[1] = '_') Then
+      Begin
+        LblName := Copy(Trimmed, 1, P - 1);
+        LblName := PETrimLine(LblName);
+        PEAddLabel(LblName, PEDataPos, True);
+        Trimmed := PETrimLine(Copy(Trimmed, P + 1, Length(Trimmed) - P));
+        ULine := StrUpperCase(Trimmed);
+      End
+      Else If (Length(Trimmed) > 0) And (Trimmed[1] = '_') And
+              (Pos(':', Trimmed) > 0) Then
+      Begin
+        P := Pos(':', Trimmed);
+        LblName := Copy(Trimmed, 1, P - 1);
+        PEAddLabel(LblName, PEDataPos, True);
+        Continue;
+      End;
+
+      { Parse data directives }
+      If PEStartsWith(ULine, 'DD ') Then
+      Begin
+        Rest := PETrimLine(Copy(Trimmed, 4, Length(Trimmed) - 3));
+        { Check for DUP }
+        If Pos('DUP', StrUpperCase(Rest)) > 0 Then
+        Begin
+          P := Pos(' ', Rest);
+          If P = 0 Then P := Pos('D', StrUpperCase(Rest));
+          N := PEParseImm(Copy(Rest, 1, P - 1));
+          For J := 1 To N Do PEDataDWord(0);
+        End
+        Else If Pos(',', Rest) > 0 Then
+        Begin
+          { Multiple values: DD 2,3,5,7,11 }
+          DataVals := Rest + ',';
+          While Length(DataVals) > 0 Do
+          Begin
+            P := Pos(',', DataVals);
+            If P = 0 Then Break;
+            ValStr := PETrimLine(Copy(DataVals, 1, P - 1));
+            If Length(ValStr) > 0 Then
+            Begin
+              If PEStartsWith(StrUpperCase(ValStr), 'OFFSET ') Then
+              Begin
+                Sym := PETrimLine(Copy(ValStr, 8, Length(ValStr) - 7));
+                PEAddFixup(PEDataPos, Sym, False, False);
+                { Mark fixup as data-seg fixup by negative trick - 
+                  store as code fixup but offset is in data }
+                PEFixups[PEFixupCount - 1].Offset :=
+                  -(PEDataPos + 1);
+                PEDataDWord(0);
+              End
+              Else
+                PEDataDWord(PEParseImm(ValStr));
+            End;
+            Delete(DataVals, 1, P);
+          End;
+        End
+        Else
+        Begin
+          If PEStartsWith(StrUpperCase(Rest), 'OFFSET ') Then
+          Begin
+            Sym := PETrimLine(Copy(Rest, 8, Length(Rest) - 7));
+            PEAddFixup(PEDataPos, Sym, False, False);
+            PEFixups[PEFixupCount - 1].Offset := -(PEDataPos + 1);
+            PEDataDWord(0);
+          End
+          Else
+            PEDataDWord(PEParseImm(Rest));
+        End;
+      End
+      Else If PEStartsWith(ULine, 'DB ') Then
+      Begin
+        Rest := PETrimLine(Copy(Trimmed, 4, Length(Trimmed) - 3));
+        { Check for DUP }
+        If Pos('DUP', StrUpperCase(Rest)) > 0 Then
+        Begin
+          P := Pos(' ', Rest);
+          If P = 0 Then P := Pos('D', StrUpperCase(Rest));
+          N := PEParseImm(Copy(Rest, 1, P - 1));
+          For J := 1 To N Do PEDataByte(0);
+        End
+        Else If (Length(Rest) > 0) And (Rest[1] = '''') Then
+        Begin
+          { String literal: 'text',0 }
+          J := 2;
+          While (J <= Length(Rest)) And (Rest[J] <> '''') Do
+          Begin
+            PEDataByte(Byte(Ord(Rest[J])));
+            Inc(J);
+          End;
+          { Check for ,0 suffix }
+          If J < Length(Rest) Then
+          Begin
+            P := Pos(',', Copy(Rest, J, Length(Rest) - J + 1));
+            If P > 0 Then
+            Begin
+              ValStr := PETrimLine(Copy(Rest, J + P,
+                        Length(Rest) - J - P + 1));
+              PEDataByte(Byte(PEParseImm(ValStr)));
+            End;
+          End;
+        End
+        Else
+          PEDataByte(Byte(PEParseImm(Rest)));
+      End
+      Else If PEStartsWith(ULine, 'DW ') Then
+      Begin
+        Rest := PETrimLine(Copy(Trimmed, 4, Length(Trimmed) - 3));
+        PEDataWord(Word(PEParseImm(Rest)));
+      End;
+
+      Continue;
+    End; { PEInDataSeg }
+
+    { Code segment }
+    If Not InCode Then
+    Begin
+      { Could be before _TEXT SEGMENT - skip }
+      Continue;
+    End;
+
+    { Check for label (line starting with non-space, contains ':') }
+    If (Length(Raw) > 0) And (Raw[1] <> ' ') And (Raw[1] <> #9) Then
+    Begin
+      P := Pos(':', Trimmed);
+      If P > 0 Then
+      Begin
+        LblName := Copy(Trimmed, 1, P - 1);
+        PEAddLabel(LblName, PECodePos, False);
+      End;
+      Continue;
+    End;
+
+    { Parse instruction }
+    P := 1;
+    Mnem := PEExtractWord(Trimmed, P);
+    If Length(Mnem) = 0 Then Continue;
+    Mnem := StrUpperCase(Mnem);
+    { Skip comma after mnemonic if any }
+    If (P <= Length(Trimmed)) And (Trimmed[P] = ',') Then Inc(P);
+    Rest := '';
+    If P <= Length(Trimmed) Then
+      Rest := PETrimLine(Copy(Trimmed, P, Length(Trimmed) - P + 1));
+
+    PESplitOps(Rest, Op1, Op2);
+
+    { ---- Encode instructions ---- }
+
+    { NOP }
+    If Mnem = 'NOP' Then
+    Begin PECodeByte($90); Continue; End;
+
+    { CDQ }
+    If Mnem = 'CDQ' Then
+    Begin PECodeByte($99); Continue; End;
+
+    { CLD }
+    If Mnem = 'CLD' Then
+    Begin PECodeByte($FC); Continue; End;
+
+    { RET }
+    If Mnem = 'RET' Then
+    Begin
+      If Length(Op1) > 0 Then
+      Begin
+        PECodeByte($C2);
+        PECodeWord(Word(PEParseImm(Op1)));
+      End
+      Else
+        PECodeByte($C3);
+      Continue;
+    End;
+
+    { REP MOVSD / REP STOSD }
+    If Mnem = 'REP' Then
+    Begin
+      Op1 := StrUpperCase(Op1);
+      If (Op1 = 'MOVSD') Or (PETrimLine(Rest) = 'MOVSD') Then
+      Begin PECodeByte($F3); PECodeByte($A5); End
+      Else If (Op1 = 'STOSD') Or (PETrimLine(Rest) = 'STOSD') Then
+      Begin PECodeByte($F3); PECodeByte($AB); End;
+      Continue;
+    End;
+
+    { PUSH }
+    If Mnem = 'PUSH' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+        { PUSH reg32 }
+        PECodeByte($50 + R1)
+      Else If PEStartsWith(StrUpperCase(Op1), 'OFFSET ') Then
+      Begin
+        { PUSH OFFSET symbol }
+        Sym := PETrimLine(Copy(Op1, 8, Length(Op1) - 7));
+        PECodeByte($68);
+        PEEmitSymFixup(Sym);
+      End
+      Else If PEIsDwordPtrMem(Op1) Then
+      Begin
+        { PUSH DWORD PTR [symbol] }
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($FF);
+        PECodeByte($35);
+        PEEmitSymFixup(Sym);
+      End
+      Else
+      Begin
+        { PUSH imm }
+        Imm := PEParseImm(Op1);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($6A);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          PECodeByte($68);
+          PECodeDWord(Imm);
+        End;
+      End;
+      Continue;
+    End;
+
+    { POP }
+    If Mnem = 'POP' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+        PECodeByte($58 + R1)
+      Else If PEIsDwordPtrMem(Op1) Then
+      Begin
+        { POP DWORD PTR [symbol] }
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($8F);
+        PECodeByte($05);
+        PEEmitSymFixup(Sym);
+      End;
+      Continue;
+    End;
+
+    { CALL }
+    If Mnem = 'CALL' Then
+    Begin
+      If PEStartsWith(StrUpperCase(Op1), 'DWORD PTR') Then
+      Begin
+        { CALL DWORD PTR [symbol] - indirect via IAT }
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($FF);
+        PECodeByte($15);
+        PEEmitSymFixup(Sym);
+      End
+      Else
+      Begin
+        { CALL symbol - relative }
+        PECodeByte($E8);
+        PEEmitRelFixup(PETrimLine(Op1));
+      End;
+      Continue;
+    End;
+
+    { JMP }
+    If Mnem = 'JMP' Then
+    Begin
+      If PEStartsWith(StrUpperCase(Op1), 'DWORD PTR') Then
+      Begin
+        { JMP DWORD PTR [symbol] }
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($FF);
+        PECodeByte($25);
+        PEEmitSymFixup(Sym);
+      End
+      Else
+      Begin
+        { JMP label }
+        PECodeByte($E9);
+        PEEmitRelFixup(PETrimLine(Op1));
+      End;
+      Continue;
+    End;
+
+    { Jcc - conditional jumps (32-bit displacement) }
+    If Mnem = 'JZ' Then
+    Begin PECodeByte($0F); PECodeByte($84);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JE' Then
+    Begin PECodeByte($0F); PECodeByte($84);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JNZ' Then
+    Begin PECodeByte($0F); PECodeByte($85);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JNE' Then
+    Begin PECodeByte($0F); PECodeByte($85);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JG' Then
+    Begin PECodeByte($0F); PECodeByte($8F);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JGE' Then
+    Begin PECodeByte($0F); PECodeByte($8D);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JL' Then
+    Begin PECodeByte($0F); PECodeByte($8C);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JLE' Then
+    Begin PECodeByte($0F); PECodeByte($8E);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JA' Then
+    Begin PECodeByte($0F); PECodeByte($87);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JAE' Then
+    Begin PECodeByte($0F); PECodeByte($83);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JB' Then
+    Begin PECodeByte($0F); PECodeByte($82);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+    If Mnem = 'JBE' Then
+    Begin PECodeByte($0F); PECodeByte($86);
+          PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
+
+    { SETcc AL }
+    If Mnem = 'SETE' Then
+    Begin PECodeByte($0F); PECodeByte($94); PECodeByte($C0);
+          Continue; End;
+    If Mnem = 'SETNE' Then
+    Begin PECodeByte($0F); PECodeByte($95); PECodeByte($C0);
+          Continue; End;
+    If Mnem = 'SETL' Then
+    Begin PECodeByte($0F); PECodeByte($9C); PECodeByte($C0);
+          Continue; End;
+    If Mnem = 'SETG' Then
+    Begin PECodeByte($0F); PECodeByte($9F); PECodeByte($C0);
+          Continue; End;
+
+    { INC / DEC }
+    If Mnem = 'INC' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+        PECodeByte($40 + R1)
+      Else If PEIsDwordPtrMem(Op1) Then
+      Begin
+        { INC DWORD PTR [symbol] }
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($FF);
+        PECodeByte($05);
+        PEEmitSymFixup(Sym);
+      End;
+      Continue;
+    End;
+    If Mnem = 'DEC' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+        PECodeByte($48 + R1)
+      Else If PEIsDwordPtrMem(Op1) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($FF);
+        PECodeByte($0D);
+        PEEmitSymFixup(Sym);
+      End;
+      Continue;
+    End;
+
+    { NEG reg }
+    If Mnem = 'NEG' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+      Begin PECodeByte($F7); PECodeByte($D8 + R1); End;
+      Continue;
+    End;
+
+    { NOT reg }
+    If Mnem = 'NOT' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+      Begin PECodeByte($F7); PECodeByte($D0 + R1); End;
+      Continue;
+    End;
+
+    { IMUL reg (single-operand: EDX:EAX = EAX * reg) }
+    If Mnem = 'IMUL' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+      Begin PECodeByte($F7); PECodeByte($E8 + R1); End;
+      Continue;
+    End;
+
+    { IDIV reg }
+    If Mnem = 'IDIV' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+      Begin PECodeByte($F7); PECodeByte($F8 + R1); End;
+      Continue;
+    End;
+
+    { DIV reg }
+    If Mnem = 'DIV' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 >= 0 Then
+      Begin PECodeByte($F7); PECodeByte($F0 + R1); End;
+      Continue;
+    End;
+
+    { MOVZX }
+    If Mnem = 'MOVZX' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 < 0 Then Begin Continue; End;
+      { MOVZX reg, AL/BL/etc }
+      If PEIsReg8(Op2) Then
+      Begin
+        R2 := PEReg8Num(Op2);
+        PECodeByte($0F); PECodeByte($B6);
+        PECodeByte($C0 + R1 * 8 + R2);
+      End
+      { MOVZX reg, BYTE PTR [symbol] }
+      Else If PEIsBytePtrMem(Op2) Then
+      Begin
+        Sym := PEExtractMemSym(Op2);
+        PECodeByte($0F); PECodeByte($B6);
+        PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      { MOVZX reg, BYTE PTR [reg+disp] }
+      Else If PEIsByteRegDisp(Op2, RegX, DispX) Then
+      Begin
+        PECodeByte($0F); PECodeByte($B6);
+        PEEmitModRM(R1, RegX, DispX);
+      End
+      { MOVZX reg, WORD PTR [symbol] }
+      Else If PEIsWordPtrMem(Op2) Then
+      Begin
+        Sym := PEExtractMemSym(Op2);
+        PECodeByte($0F); PECodeByte($B7);
+        PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      { MOVZX reg, WORD PTR [reg+disp] }
+      Else If PEStartsWith(StrUpperCase(PETrimLine(Op2)), 'WORD PTR') Then
+      Begin
+        If PEIsRegDispMem(Op2, RegX, DispX) Then
+        Begin
+          PECodeByte($0F); PECodeByte($B7);
+          PEEmitModRM(R1, RegX, DispX);
+        End;
+      End;
+      Continue;
+    End;
+
+    { BTS }
+    If Mnem = 'BTS' Then
+    Begin
+      { BTS DWORD PTR [reg], reg2 or BTS DWORD PTR [symbol], reg }
+      R2 := PERegNum(Op2);
+      If R2 < 0 Then Begin Continue; End;
+      If PEIsDwordPtrMem(Op1) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($0F); PECodeByte($AB);
+        PECodeByte($05 + R2 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      Else If PEIsDwordRegDisp(Op1, RegX, DispX) Then
+      Begin
+        PECodeByte($0F); PECodeByte($AB);
+        PEEmitModRM(R2, RegX, DispX);
+      End;
+      Continue;
+    End;
+
+    { MOV }
+    If Mnem = 'MOV' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+
+      { MOV reg32, reg32 }
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($8B); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      { MOV reg32, imm32 or MOV reg32, OFFSET sym }
+      Else If (R1 >= 0) And (Length(Op2) > 0) Then
+      Begin
+        If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
+        Begin
+          Sym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
+          PECodeByte($B8 + R1);
+          PEEmitSymFixup(Sym);
+        End
+        Else If PEIsDwordPtrMem(Op2) Then
+        Begin
+          { MOV reg, DWORD PTR [symbol] }
+          Sym := PEExtractMemSym(Op2);
+          PECodeByte($8B);
+          PECodeByte($05 + R1 * 8);
+          PEEmitSymFixup(Sym);
+        End
+        Else If PEIsDwordRegDisp(Op2, RegX, DispX) Then
+        Begin
+          { MOV reg, DWORD PTR [reg+disp] }
+          PECodeByte($8B);
+          PEEmitModRM(R1, RegX, DispX);
+        End
+        Else If PEStartsWith(StrUpperCase(PETrimLine(Op2)),
+                 'BYTE PTR [') Then
+        Begin
+          { MOV AL, BYTE PTR [reg] -> 8A modrm }
+          R2 := PEReg8Num(Op1);
+          If R2 < 0 Then R2 := 0;
+          If PEIsBytePtrMem(Op2) Then
+          Begin
+            Sym := PEExtractMemSym(Op2);
+            PECodeByte($8A);
+            PECodeByte($05 + R2 * 8);
+            PEEmitSymFixup(Sym);
+          End
+          Else If PEIsByteRegDisp(Op2, RegX, DispX) Then
+          Begin
+            PECodeByte($8A);
+            PEEmitModRM(R2, RegX, DispX);
+          End;
+        End
+        Else If PEIsReg8(Op2) Then
+        Begin
+          { MOV CL, BL etc -> 8A mod }
+          R1 := PEReg8Num(Op1);
+          R2 := PEReg8Num(Op2);
+          If (R1 >= 0) And (R2 >= 0) Then
+          Begin PECodeByte($8A); PECodeByte($C0 + R1 * 8 + R2); End;
+        End
+        Else
+        Begin
+          { MOV reg32, imm32 }
+          Imm := PEParseImm(Op2);
+          PECodeByte($B8 + R1);
+          PECodeDWord(Imm);
+        End;
+      End
+      { MOV DWORD PTR [symbol], reg }
+      Else If PEIsDwordPtrMem(Op1) And (R2 >= 0) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        PECodeByte($89);
+        PECodeByte($05 + R2 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      { MOV DWORD PTR [symbol], imm32 }
+      Else If PEIsDwordPtrMem(Op1) And
+              Not PEIsReg32(Op2) And Not PEIsReg8(Op2) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
+        Begin
+          PECodeByte($C7);
+          PECodeByte($05);
+          PEEmitSymFixup(Sym);
+          BaseSym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
+          PEEmitSymFixup(BaseSym);
+        End
+        Else
+        Begin
+          Imm := PEParseImm(Op2);
+          PECodeByte($C7);
+          PECodeByte($05);
+          PEEmitSymFixup(Sym);
+          PECodeDWord(Imm);
+        End;
+      End
+      { MOV DWORD PTR [reg+disp], reg2 }
+      Else If PEIsDwordRegDisp(Op1, RegX, DispX) And (R2 >= 0) Then
+      Begin
+        PECodeByte($89);
+        PEEmitModRM(R2, RegX, DispX);
+      End
+      { MOV DWORD PTR [reg+disp], imm32 }
+      Else If PEIsDwordRegDisp(Op1, RegX, DispX) Then
+      Begin
+        If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
+        Begin
+          PECodeByte($C7);
+          PEEmitModRM(0, RegX, DispX);
+          BaseSym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
+          PEEmitSymFixup(BaseSym);
+        End
+        Else
+        Begin
+          Imm := PEParseImm(Op2);
+          PECodeByte($C7);
+          PEEmitModRM(0, RegX, DispX);
+          PECodeDWord(Imm);
+        End;
+      End
+      { MOV BYTE PTR [symbol], AL/imm }
+      Else If PEIsBytePtrMem(Op1) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        If PEIsReg8(Op2) Then
+        Begin
+          R2 := PEReg8Num(Op2);
+          PECodeByte($88);
+          PECodeByte($05 + R2 * 8);
+          PEEmitSymFixup(Sym);
+        End
+        Else
+        Begin
+          Imm := PEParseImm(Op2);
+          PECodeByte($C6);
+          PECodeByte($05);
+          PEEmitSymFixup(Sym);
+          PECodeByte(Byte(Imm And $FF));
+        End;
+      End
+      { MOV BYTE PTR [reg+disp], AL/imm }
+      Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
+      Begin
+        If PEIsReg8(Op2) Then
+        Begin
+          R2 := PEReg8Num(Op2);
+          PECodeByte($88);
+          PEEmitModRM(R2, RegX, DispX);
+        End
+        Else
+        Begin
+          Imm := PEParseImm(Op2);
+          PECodeByte($C6);
+          PEEmitModRM(0, RegX, DispX);
+          PECodeByte(Byte(Imm And $FF));
+        End;
+      End
+      { MOV WORD PTR [reg+disp], reg16 }
+      Else If PEStartsWith(StrUpperCase(PETrimLine(Op1)), 'WORD PTR') Then
+      Begin
+        If PEIsRegDispMem(Op1, RegX, DispX) And PEIsReg16(Op2) Then
+        Begin
+          R2 := PEReg16Num(Op2);
+          PECodeByte($66); { operand size prefix }
+          PECodeByte($89);
+          PEEmitModRM(R2, RegX, DispX);
+        End
+        Else If PEIsReg16(Op2) Then
+        Begin
+          { WORD PTR [symbol] }
+          Sym := PEExtractMemSym(Op1);
+          R2 := PEReg16Num(Op2);
+          PECodeByte($66);
+          PECodeByte($89);
+          PECodeByte($05 + R2 * 8);
+          PEEmitSymFixup(Sym);
+        End;
+      End
+      { MOV [reg], r8 like MOV [EBX], AL or MOV [EDI], DL }
+      Else If (Length(Op1) > 0) And (Op1[1] = '[') Then
+      Begin
+        If PEIsRegDispMem(Op1, RegX, DispX) Then
+        Begin
+          If PEIsReg8(Op2) Then
+          Begin
+            R2 := PEReg8Num(Op2);
+            PECodeByte($88);
+            PEEmitModRM(R2, RegX, DispX);
+          End
+          Else If PEIsReg32(Op2) Then
+          Begin
+            R2 := PERegNum(Op2);
+            PECodeByte($89);
+            PEEmitModRM(R2, RegX, DispX);
+          End;
+        End;
+      End
+      { MOV r8, [reg] like MOV AL, [ESI] }
+      Else If PEIsReg8(Op1) And (Length(Op2) > 0) And
+              (Op2[1] = '[') Then
+      Begin
+        R1 := PEReg8Num(Op1);
+        If PEIsRegDispMem(Op2, RegX, DispX) Then
+        Begin
+          PECodeByte($8A);
+          PEEmitModRM(R1, RegX, DispX);
+        End;
+      End
+      { MOV r8, r8 }
+      Else If PEIsReg8(Op1) And PEIsReg8(Op2) Then
+      Begin
+        R1 := PEReg8Num(Op1);
+        R2 := PEReg8Num(Op2);
+        PECodeByte($8A); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      { MOV r8, imm8 }
+      Else If PEIsReg8(Op1) Then
+      Begin
+        R1 := PEReg8Num(Op1);
+        PECodeByte($B0 + R1);
+        PECodeByte(Byte(PEParseImm(Op2) And $FF));
+      End;
+      Continue;
+    End; { MOV }
+
+    { LEA }
+    If Mnem = 'LEA' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 < 0 Then Begin Continue; End;
+      { LEA reg, [symbol+disp] or LEA reg, symbol }
+      Sym := PEExtractSymbol(Op2);
+      If PEIsRegDispMem(Op2, RegX, DispX) And (RegX >= 0) Then
+      Begin
+        { LEA reg, [reg+disp] like LEA EAX, [ESI+2] }
+        PECodeByte($8D);
+        PEEmitModRM(R1, RegX, DispX);
+      End
+      Else
+      Begin
+        { LEA reg, [symbol] or LEA reg, symbol or symbol+disp }
+        PECodeByte($8D);
+        PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End;
+      Continue;
+    End;
+
+    { ADD }
+    If Mnem = 'ADD' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        { ADD reg, reg }
+        PECodeByte($03); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) And PEIsDwordPtrMem(Op2) Then
+      Begin
+        { ADD reg, DWORD PTR [symbol] }
+        Sym := PEExtractMemSym(Op2);
+        PECodeByte($03); PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      Else If (R1 >= 0) And PEStartsWith(StrUpperCase(Op2),
+               'OFFSET ') Then
+      Begin
+        { ADD reg, OFFSET symbol }
+        Sym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
+        PECodeByte($81); PECodeByte($C0 + R1);
+        PEEmitSymFixup(Sym);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        { ADD reg, imm }
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($83); PECodeByte($C0 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          If R1 = 0 Then
+          Begin
+            PECodeByte($05); PECodeDWord(Imm);
+          End
+          Else
+          Begin
+            PECodeByte($81); PECodeByte($C0 + R1);
+            PECodeDWord(Imm);
+          End;
+        End;
+      End
+      { ADD r8, imm8: ADD DL, '0' }
+      Else If PEIsReg8(Op1) Then
+      Begin
+        R1 := PEReg8Num(Op1);
+        Imm := PEParseImm(Op2);
+        If R1 = 0 Then
+        Begin
+          PECodeByte($04); PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          PECodeByte($80); PECodeByte($C0 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End;
+      End;
+      Continue;
+    End;
+
+    { SUB }
+    If Mnem = 'SUB' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($2B); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($83); PECodeByte($E8 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          If R1 = 0 Then
+          Begin
+            PECodeByte($2D); PECodeDWord(Imm);
+          End
+          Else
+          Begin
+            PECodeByte($81); PECodeByte($E8 + R1);
+            PECodeDWord(Imm);
+          End;
+        End;
+      End
+      { SUB r8, imm8 }
+      Else If PEIsReg8(Op1) Then
+      Begin
+        R1 := PEReg8Num(Op1);
+        Imm := PEParseImm(Op2);
+        If R1 = 0 Then
+        Begin
+          PECodeByte($2C); PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          PECodeByte($80); PECodeByte($E8 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End;
+      End;
+      Continue;
+    End;
+
+    { CMP }
+    If Mnem = 'CMP' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($3B); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) And PEIsDwordPtrMem(Op2) Then
+      Begin
+        { CMP reg, DWORD PTR [symbol] }
+        Sym := PEExtractMemSym(Op2);
+        PECodeByte($3B); PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        { CMP reg, imm }
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($83); PECodeByte($F8 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          If R1 = 0 Then
+          Begin
+            PECodeByte($3D); PECodeDWord(Imm);
+          End
+          Else
+          Begin
+            PECodeByte($81); PECodeByte($F8 + R1);
+            PECodeDWord(Imm);
+          End;
+        End;
+      End
+      { CMP DWORD PTR [symbol], imm }
+      Else If PEIsDwordPtrMem(Op1) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($83); PECodeByte($3D);
+          PEEmitSymFixup(Sym);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          PECodeByte($81); PECodeByte($3D);
+          PEEmitSymFixup(Sym);
+          PECodeDWord(Imm);
+        End;
+      End
+      { CMP BYTE PTR [symbol], imm }
+      Else If PEIsBytePtrMem(Op1) Then
+      Begin
+        Sym := PEExtractMemSym(Op1);
+        Imm := PEParseImm(Op2);
+        PECodeByte($80); PECodeByte($3D);
+        PEEmitSymFixup(Sym);
+        PECodeByte(Byte(Imm And $FF));
+      End
+      { CMP BYTE PTR [reg+disp], imm }
+      Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        PECodeByte($80);
+        PEEmitModRM(7, RegX, DispX);
+        PECodeByte(Byte(Imm And $FF));
+      End
+      { CMP r8, imm8 or CMP r8, r8 }
+      Else If PEIsReg8(Op1) Then
+      Begin
+        R1 := PEReg8Num(Op1);
+        If PEIsReg8(Op2) Then
+        Begin
+          R2 := PEReg8Num(Op2);
+          PECodeByte($3A); PECodeByte($C0 + R1 * 8 + R2);
+        End
+        Else
+        Begin
+          Imm := PEParseImm(Op2);
+          If R1 = 0 Then
+          Begin
+            PECodeByte($3C); PECodeByte(Byte(Imm And $FF));
+          End
+          Else
+          Begin
+            PECodeByte($80); PECodeByte($F8 + R1);
+            PECodeByte(Byte(Imm And $FF));
+          End;
+        End;
+      End
+      { CMP EDX, '0' etc - reg, char literal }
+      Else If (R1 >= 0) And (Length(Op2) >= 3) And (Op2[1] = '''') Then
+      Begin
+        Imm := Ord(Op2[2]);
+        PECodeByte($83); PECodeByte($F8 + R1);
+        PECodeByte(Byte(Imm And $FF));
+      End;
+      Continue;
+    End;
+
+    { AND }
+    If Mnem = 'AND' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($23); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) And PEIsDwordPtrMem(Op2) Then
+      Begin
+        Sym := PEExtractMemSym(Op2);
+        PECodeByte($23); PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($83); PECodeByte($E0 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          If R1 = 0 Then
+          Begin
+            PECodeByte($25); PECodeDWord(Imm);
+          End
+          Else
+          Begin
+            PECodeByte($81); PECodeByte($E0 + R1);
+            PECodeDWord(Imm);
+          End;
+        End;
+      End;
+      Continue;
+    End;
+
+    { OR }
+    If Mnem = 'OR' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($0B); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) And PEIsDwordPtrMem(Op2) Then
+      Begin
+        Sym := PEExtractMemSym(Op2);
+        PECodeByte($0B); PECodeByte($05 + R1 * 8);
+        PEEmitSymFixup(Sym);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        If R1 = 0 Then
+        Begin
+          PECodeByte($0D); PECodeDWord(Imm);
+        End
+        Else
+        Begin
+          PECodeByte($81); PECodeByte($C8 + R1);
+          PECodeDWord(Imm);
+        End;
+      End;
+      Continue;
+    End;
+
+    { XOR }
+    If Mnem = 'XOR' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($33); PECodeByte($C0 + R1 * 8 + R2);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          PECodeByte($83); PECodeByte($F0 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          If R1 = 0 Then
+          Begin
+            PECodeByte($35); PECodeDWord(Imm);
+          End
+          Else
+          Begin
+            PECodeByte($81); PECodeByte($F0 + R1);
+            PECodeDWord(Imm);
+          End;
+        End;
+      End;
+      Continue;
+    End;
+
+    { TEST }
+    If Mnem = 'TEST' Then
+    Begin
+      R1 := PERegNum(Op1);
+      R2 := PERegNum(Op2);
+      If (R1 >= 0) And (R2 >= 0) Then
+      Begin
+        PECodeByte($85); PECodeByte($C0 + R2 * 8 + R1);
+      End
+      Else If (R1 >= 0) Then
+      Begin
+        Imm := PEParseImm(Op2);
+        If R1 = 0 Then
+        Begin
+          PECodeByte($A9); PECodeDWord(Imm);
+        End
+        Else
+        Begin
+          PECodeByte($F7); PECodeByte($C0 + R1);
+          PECodeDWord(Imm);
+        End;
+      End;
+      Continue;
+    End;
+
+    { SHL }
+    If Mnem = 'SHL' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 < 0 Then Begin Continue; End;
+      If StrUpperCase(PETrimLine(Op2)) = 'CL' Then
+      Begin
+        PECodeByte($D3); PECodeByte($E0 + R1);
+      End
+      Else
+      Begin
+        Imm := PEParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          PECodeByte($D1); PECodeByte($E0 + R1);
+        End
+        Else
+        Begin
+          PECodeByte($C1); PECodeByte($E0 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End;
+      End;
+      Continue;
+    End;
+
+    { SHR }
+    If Mnem = 'SHR' Then
+    Begin
+      R1 := PERegNum(Op1);
+      If R1 < 0 Then Begin Continue; End;
+      If StrUpperCase(PETrimLine(Op2)) = 'CL' Then
+      Begin
+        PECodeByte($D3); PECodeByte($E8 + R1);
+      End
+      Else
+      Begin
+        Imm := PEParseImm(Op2);
+        If Imm = 1 Then
+        Begin
+          PECodeByte($D1); PECodeByte($E8 + R1);
+        End
+        Else
+        Begin
+          PECodeByte($C1); PECodeByte($E8 + R1);
+          PECodeByte(Byte(Imm And $FF));
+        End;
+      End;
+      Continue;
+    End;
+
+    { Unrecognized instruction -> skip (NOP) }
+  End;
+End;
+
+{ ----------------------------------------------------------------
+  PEResolveFixups - resolve all fixups after assembly
+  ---------------------------------------------------------------- }
+Procedure PEResolveFixups;
+Var
+  I, J      : LongInt;
+  LblOff    : LongInt;
+  LblInData : Boolean;
+  TargetAddr: LongInt;
+  FixOff    : LongInt;
+  ImpName   : TString;
+  Found     : Boolean;
+  FixVal    : LongInt;
+  IsDataFix : Boolean;
+  DataFixOff: LongInt;
+Begin
+  For I := 0 To PEFixupCount - 1 Do
+  Begin
+    FixOff := PEFixups[I].Offset;
+    IsDataFix := (FixOff < 0);
+    If IsDataFix Then
+      DataFixOff := (-FixOff) - 1
+    Else
+      DataFixOff := 0;
+
+    { Check if import }
+    If PEFixups[I].IsImport Then
+    Begin
+      ImpName := PEImportName(PEFixups[I].LabelName);
+      Found := False;
+      For J := 0 To PE_NUM_IMPORTS - 1 Do
+        If PEImports[J].Name = ImpName Then
+        Begin
+          TargetAddr := PE_IMAGE_BASE + $2000 +
+                        PEImports[J].IATOffset;
+          Found := True;
+          Break;
+        End;
+      If Not Found Then TargetAddr := 0;
+    End
+    Else
+    Begin
+      { Look up label }
+      If PEFindLabel(PEFixups[I].LabelName, LblOff, LblInData) Then
+      Begin
+        If LblInData Then
+          TargetAddr := PE_IMAGE_BASE + $3000 + LblOff
+        Else
+          TargetAddr := PE_IMAGE_BASE + $1000 + LblOff;
+      End
+      Else
+        TargetAddr := 0;
+    End;
+
+    If IsDataFix Then
+    Begin
+      { Patch in data buffer }
+      FixVal := TargetAddr +
+                LongInt(PEDataBuf[DataFixOff]) Or
+                (LongInt(PEDataBuf[DataFixOff+1]) Shl 8) Or
+                (LongInt(PEDataBuf[DataFixOff+2]) Shl 16) Or
+                (LongInt(PEDataBuf[DataFixOff+3]) Shl 24);
+      PEDataBuf[DataFixOff] := Byte(FixVal And $FF);
+      PEDataBuf[DataFixOff+1] := Byte((FixVal Shr 8) And $FF);
+      PEDataBuf[DataFixOff+2] := Byte((FixVal Shr 16) And $FF);
+      PEDataBuf[DataFixOff+3] := Byte((FixVal Shr 24) And $FF);
+    End
+    Else If PEFixups[I].IsRelative Then
+    Begin
+      { Relative fixup: target - (fixup_addr + 4) }
+      { fixup_addr in image = IMAGE_BASE + $1000 + FixOff }
+      FixVal := TargetAddr -
+                (PE_IMAGE_BASE + $1000 + FixOff + 4);
+      PECodeBuf[FixOff] := Byte(FixVal And $FF);
+      PECodeBuf[FixOff+1] := Byte((FixVal Shr 8) And $FF);
+      PECodeBuf[FixOff+2] := Byte((FixVal Shr 16) And $FF);
+      PECodeBuf[FixOff+3] := Byte((FixVal Shr 24) And $FF);
+    End
+    Else
+    Begin
+      { Absolute fixup: add existing displacement }
+      FixVal := TargetAddr +
+                LongInt(PECodeBuf[FixOff]) Or
+                (LongInt(PECodeBuf[FixOff+1]) Shl 8) Or
+                (LongInt(PECodeBuf[FixOff+2]) Shl 16) Or
+                (LongInt(PECodeBuf[FixOff+3]) Shl 24);
+      PECodeBuf[FixOff] := Byte(FixVal And $FF);
+      PECodeBuf[FixOff+1] := Byte((FixVal Shr 8) And $FF);
+      PECodeBuf[FixOff+2] := Byte((FixVal Shr 16) And $FF);
+      PECodeBuf[FixOff+3] := Byte((FixVal Shr 24) And $FF);
+    End;
+  End;
+End;
+
+{ ----------------------------------------------------------------
+  PEAlignUp - align value to boundary
+  ---------------------------------------------------------------- }
+Function PEAlignUp(Value, Alignment : LongInt) : LongInt;
+Begin
+  If (Value Mod Alignment) = 0 Then
+    PEAlignUp := Value
+  Else
+    PEAlignUp := Value + Alignment - (Value Mod Alignment);
+End;
+
+{ ----------------------------------------------------------------
+  PEWriteByte / PEWriteDWord / PEWriteWord - write to file
+  ---------------------------------------------------------------- }
+Procedure PEWriteBuf(Var F : File; Var Buf; Size : LongInt);
+Begin
+  BlockWrite(F, Buf, Size);
+End;
+
+Procedure PEFileWriteByte(Var F : File; B : Byte);
+Begin
+  BlockWrite(F, B, 1);
+End;
+
+Procedure PEFileWriteWord(Var F : File; W : Word);
+Var Buf : Array[0..1] of Byte;
+Begin
+  Buf[0] := Byte(W And $FF);
+  Buf[1] := Byte((W Shr 8) And $FF);
+  BlockWrite(F, Buf, 2);
+End;
+
+Procedure PEFileWriteDWord(Var F : File; D : LongInt);
+Var Buf : Array[0..3] of Byte;
+Begin
+  Buf[0] := Byte(D And $FF);
+  Buf[1] := Byte((D Shr 8) And $FF);
+  Buf[2] := Byte((D Shr 16) And $FF);
+  Buf[3] := Byte((D Shr 24) And $FF);
+  BlockWrite(F, Buf, 4);
+End;
+
+Procedure PEFileWriteZeros(Var F : File; Count : LongInt);
+Var ZBuf : Byte;
+    K    : LongInt;
+Begin
+  ZBuf := 0;
+  For K := 1 To Count Do
+    BlockWrite(F, ZBuf, 1);
+End;
+
+Procedure PEFileWriteStr(Var F : File; Const S : TString);
+Var K : Integer;
+    B : Byte;
+Begin
+  For K := 1 To Length(S) Do
+  Begin
+    B := Byte(Ord(S[K]));
+    BlockWrite(F, B, 1);
+  End;
+End;
+
+{ ----------------------------------------------------------------
+  PEWritePE - generate a valid PE32 executable file
+  ---------------------------------------------------------------- }
+Procedure PEWritePE(Const ExeFile : TString);
+Var
+  F           : File;
+  TextRawSize : LongInt;
+  DataRawSize : LongInt;
+  RdataSize   : LongInt;
+  RdataRawSize: LongInt;
+  TextFileOff : LongInt;
+  RdataFileOff: LongInt;
+  DataFileOff : LongInt;
+  SizeOfImage : LongInt;
+  HdrPad      : LongInt;
+  ImportDirOff: LongInt;
+  ILTOff      : LongInt;
+  IATOff      : LongInt;
+  HintOff     : LongInt;
+  DLLNameOff  : LongInt;
+  CurOff      : LongInt;
+  I, K        : LongInt;
+  NameLen     : Integer;
+  SectHdrEnd  : LongInt;
+  PadNeeded   : LongInt;
+  TotalHdrSize: LongInt;
+  ZB          : Byte;
+Begin
+  { Calculate .rdata section (import tables) }
+  { Layout within .rdata:
+    Import Directory Table: 2 entries x 20 bytes = 40 bytes
+    ILT: (PE_NUM_IMPORTS + 1) x 4 = 36 bytes
+    IAT: (PE_NUM_IMPORTS + 1) x 4 = 36 bytes
+    Hint/Name entries: variable
+    DLL name: "kernel32.dll" + null
+  }
+  ImportDirOff := 0;
+  ILTOff := 40;
+  IATOff := ILTOff + (PE_NUM_IMPORTS + 1) * 4;
+  HintOff := IATOff + (PE_NUM_IMPORTS + 1) * 4;
+
+  { Calculate hint/name sizes }
+  CurOff := HintOff;
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    PEImports[I].IATOffset := IATOff + I * 4;
+    { Each hint/name: 2-byte hint + ASCIIZ name, padded to even }
+    NameLen := Length(PEImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    CurOff := CurOff + 2 + NameLen;
+  End;
+  DLLNameOff := CurOff;
+  CurOff := CurOff + 13; { "kernel32.dll" + null }
+  RdataSize := CurOff;
+  RdataRawSize := PEAlignUp(RdataSize, PE_FILE_ALIGN);
+
+  { Calculate section sizes }
+  TextRawSize := PEAlignUp(PECodePos, PE_FILE_ALIGN);
+  DataRawSize := PEAlignUp(PEDataPos, PE_FILE_ALIGN);
+
+  { File offsets }
+  TextFileOff := PE_FILE_ALIGN;   { $200 }
+  RdataFileOff := TextFileOff + TextRawSize;
+  DataFileOff := RdataFileOff + RdataRawSize;
+
+  { Image size (aligned) }
+  SizeOfImage := $1000             { headers }
+               + PEAlignUp(PECodePos, PE_SECT_ALIGN)   { .text }
+               + PEAlignUp(RdataSize, PE_SECT_ALIGN)    { .rdata }
+               + PEAlignUp(PEDataPos, PE_SECT_ALIGN);   { .data }
+
+  { Resolve fixups now that IAT offsets are known }
+  PEResolveFixups;
+
+  { Write the PE file }
+  {$I-}
+  Assign(F, ExeFile);
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+
+  { === DOS Header (64 bytes minimum, we use 128 bytes) === }
+  { e_magic = 'MZ' }
+  PEFileWriteByte(F, $4D); PEFileWriteByte(F, $5A);
+  { Rest of DOS header - mostly zeros, with e_lfanew at offset 0x3C }
+  PEFileWriteZeros(F, 58); { offset 0x02..0x3B }
+  { e_lfanew at offset 0x3C = $80 }
+  PEFileWriteDWord(F, $80);
+  { Padding to offset 0x80 }
+  PEFileWriteZeros(F, $80 - $40);
+
+  { === PE Signature === }
+  PEFileWriteByte(F, Ord('P'));
+  PEFileWriteByte(F, Ord('E'));
+  PEFileWriteByte(F, 0);
+  PEFileWriteByte(F, 0);
+
+  { === COFF File Header (20 bytes) === }
+  PEFileWriteWord(F, $014C);   { Machine: i386 }
+  PEFileWriteWord(F, 3);       { NumberOfSections }
+  PEFileWriteDWord(F, 0);      { TimeDateStamp }
+  PEFileWriteDWord(F, 0);      { PointerToSymbolTable }
+  PEFileWriteDWord(F, 0);      { NumberOfSymbols }
+  PEFileWriteWord(F, $E0);     { SizeOfOptionalHeader }
+  PEFileWriteWord(F, $0102);   { Characteristics: EXECUTABLE_IMAGE | 32BIT_MACHINE }
+
+  { === Optional Header (224 bytes = $E0) === }
+  PEFileWriteWord(F, $010B);   { Magic: PE32 }
+  PEFileWriteByte(F, 1);       { MajorLinkerVersion }
+  PEFileWriteByte(F, 0);       { MinorLinkerVersion }
+  PEFileWriteDWord(F, TextRawSize); { SizeOfCode }
+  PEFileWriteDWord(F, DataRawSize + RdataRawSize); { SizeOfInitializedData }
+  PEFileWriteDWord(F, 0);      { SizeOfUninitializedData }
+  PEFileWriteDWord(F, $1000);  { AddressOfEntryPoint = start of .text }
+  PEFileWriteDWord(F, $1000);  { BaseOfCode }
+  PEFileWriteDWord(F, $3000);  { BaseOfData }
+  PEFileWriteDWord(F, PE_IMAGE_BASE);  { ImageBase }
+  PEFileWriteDWord(F, PE_SECT_ALIGN);  { SectionAlignment }
+  PEFileWriteDWord(F, PE_FILE_ALIGN);  { FileAlignment }
+  PEFileWriteWord(F, 4);       { MajorOperatingSystemVersion }
+  PEFileWriteWord(F, 0);       { MinorOperatingSystemVersion }
+  PEFileWriteWord(F, 0);       { MajorImageVersion }
+  PEFileWriteWord(F, 0);       { MinorImageVersion }
+  PEFileWriteWord(F, 4);       { MajorSubsystemVersion }
+  PEFileWriteWord(F, 0);       { MinorSubsystemVersion }
+  PEFileWriteDWord(F, 0);      { Win32VersionValue }
+  PEFileWriteDWord(F, SizeOfImage); { SizeOfImage }
+  PEFileWriteDWord(F, PE_FILE_ALIGN); { SizeOfHeaders }
+  PEFileWriteDWord(F, 0);      { CheckSum }
+  PEFileWriteWord(F, 3);       { Subsystem: CONSOLE }
+  PEFileWriteWord(F, 0);       { DllCharacteristics }
+  PEFileWriteDWord(F, $100000);{ SizeOfStackReserve }
+  PEFileWriteDWord(F, $1000);  { SizeOfStackCommit }
+  PEFileWriteDWord(F, $100000);{ SizeOfHeapReserve }
+  PEFileWriteDWord(F, $1000);  { SizeOfHeapCommit }
+  PEFileWriteDWord(F, 0);      { LoaderFlags }
+  PEFileWriteDWord(F, 16);     { NumberOfRvaAndSizes }
+
+  { Data directories (16 entries x 8 bytes = 128 bytes) }
+  { [0] Export - empty }
+  PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0);
+  { [1] Import - points to .rdata }
+  PEFileWriteDWord(F, $2000 + ImportDirOff);
+  PEFileWriteDWord(F, 40); { size of import directory }
+  { [2..11] - empty }
+  For I := 2 To 11 Do
+  Begin PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0); End;
+  { [12] IAT }
+  PEFileWriteDWord(F, $2000 + IATOff);
+  PEFileWriteDWord(F, (PE_NUM_IMPORTS + 1) * 4);
+  { [13..15] - empty }
+  For I := 13 To 15 Do
+  Begin PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0); End;
+
+  { === Section Headers (3 x 40 bytes) === }
+  { .text }
+  PEFileWriteStr(F, '.text');
+  PEFileWriteZeros(F, 3); { pad name to 8 bytes }
+  PEFileWriteDWord(F, PECodePos); { VirtualSize }
+  PEFileWriteDWord(F, $1000);     { VirtualAddress }
+  PEFileWriteDWord(F, TextRawSize); { SizeOfRawData }
+  PEFileWriteDWord(F, TextFileOff); { PointerToRawData }
+  PEFileWriteDWord(F, 0);  { PointerToRelocations }
+  PEFileWriteDWord(F, 0);  { PointerToLineNumbers }
+  PEFileWriteWord(F, 0);   { NumberOfRelocations }
+  PEFileWriteWord(F, 0);   { NumberOfLineNumbers }
+  PEFileWriteDWord(F, $60000020); { Characteristics: CODE|EXECUTE|READ }
+
+  { .rdata }
+  PEFileWriteStr(F, '.rdata');
+  PEFileWriteZeros(F, 2);
+  PEFileWriteDWord(F, RdataSize);
+  PEFileWriteDWord(F, $2000);
+  PEFileWriteDWord(F, RdataRawSize);
+  PEFileWriteDWord(F, RdataFileOff);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteDWord(F, $40000040); { INITIALIZED_DATA|READ }
+
+  { .data }
+  PEFileWriteStr(F, '.data');
+  PEFileWriteZeros(F, 3);
+  PEFileWriteDWord(F, PEDataPos);
+  PEFileWriteDWord(F, $3000);
+  PEFileWriteDWord(F, DataRawSize);
+  PEFileWriteDWord(F, DataFileOff);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteDWord(F, LongInt($C0000040)); { INITIALIZED_DATA|READ|WRITE }
+
+  { Pad headers to PE_FILE_ALIGN }
+  { Current position: $80 + 4 + 20 + 224 + 3*40 = $80+4+20+224+120 = 500 = $1F4 }
+  { Actually: 128 + 4 + 20 + 224 + 120 = 496 = $1F0 }
+  TotalHdrSize := $80 + 4 + 20 + $E0 + 3 * 40;
+  PadNeeded := PE_FILE_ALIGN - TotalHdrSize;
+  If PadNeeded > 0 Then
+    PEFileWriteZeros(F, PadNeeded);
+
+  { === .text section === }
+  PEWriteBuf(F, PECodeBuf, PECodePos);
+  PadNeeded := TextRawSize - PECodePos;
+  If PadNeeded > 0 Then PEFileWriteZeros(F, PadNeeded);
+
+  { === .rdata section (import tables) === }
+  { Import Directory Table - entry 1: kernel32.dll }
+  PEFileWriteDWord(F, $2000 + ILTOff); { OriginalFirstThunk (ILT) }
+  PEFileWriteDWord(F, 0);              { TimeDateStamp }
+  PEFileWriteDWord(F, 0);              { ForwarderChain }
+  PEFileWriteDWord(F, $2000 + DLLNameOff); { Name RVA }
+  PEFileWriteDWord(F, $2000 + IATOff);     { FirstThunk (IAT) }
+  { Import Directory Table - null terminator entry }
+  PEFileWriteZeros(F, 20);
+
+  { Import Lookup Table (ILT) }
+  CurOff := HintOff;
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    PEFileWriteDWord(F, $2000 + CurOff); { RVA to Hint/Name }
+    NameLen := Length(PEImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    CurOff := CurOff + 2 + NameLen;
+  End;
+  PEFileWriteDWord(F, 0); { null terminator }
+
+  { Import Address Table (IAT) - same as ILT initially }
+  CurOff := HintOff;
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    PEFileWriteDWord(F, $2000 + CurOff);
+    NameLen := Length(PEImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
+    CurOff := CurOff + 2 + NameLen;
+  End;
+  PEFileWriteDWord(F, 0);
+
+  { Hint/Name entries }
+  For I := 0 To PE_NUM_IMPORTS - 1 Do
+  Begin
+    PEFileWriteWord(F, 0); { Hint }
+    PEFileWriteStr(F, PEImports[I].Name);
+    PEFileWriteByte(F, 0); { null terminator }
+    NameLen := Length(PEImports[I].Name) + 1;
+    If (NameLen + 2) Mod 2 <> 0 Then
+      PEFileWriteByte(F, 0); { pad to even }
+  End;
+
+  { DLL name }
+  PEFileWriteStr(F, 'kernel32.dll');
+  PEFileWriteByte(F, 0);
+
+  { Pad .rdata to alignment }
+  PadNeeded := RdataRawSize - RdataSize;
+  If PadNeeded > 0 Then PEFileWriteZeros(F, PadNeeded);
+
+  { === .data section === }
+  PEWriteBuf(F, PEDataBuf, PEDataPos);
+  PadNeeded := DataRawSize - PEDataPos;
+  If PadNeeded > 0 Then PEFileWriteZeros(F, PadNeeded);
+
+  Close(F);
+End;
+
+{ ----------------------------------------------------------------
+  GeneratePE - assemble and write PE file
+  ---------------------------------------------------------------- }
+Procedure GeneratePE(Const AsmFile, ExeFile : TString);
+Begin
+  PEReset;
+  PEAssemble(AsmFile);
+  PEWritePE(ExeFile);
+End;
+
+{ ----------------------------------------------------------------
+  GenerateCOFF - generate minimal COFF .obj file
+  ---------------------------------------------------------------- }
+Procedure GenerateCOFF(Const AsmFile, ObjFile : TString);
+Var
+  F : File;
+  TextRawSize, DataRawSize : LongInt;
+  SymTabOff : LongInt;
+  PadNeeded : LongInt;
+Begin
+  PEReset;
+  PEAssemble(AsmFile);
+
+  TextRawSize := PECodePos;
+  DataRawSize := PEDataPos;
+
+  { Symbol table offset = COFF header + 2 section headers + raw data }
+  SymTabOff := 20 + 2 * 40 + TextRawSize + DataRawSize;
+
+  {$I-}
+  Assign(F, ObjFile);
+  Rewrite(F, 1);
+  {$I+}
+  If IOResult <> 0 Then Exit;
+
+  { COFF Header }
+  PEFileWriteWord(F, $014C);       { Machine }
+  PEFileWriteWord(F, 2);           { NumberOfSections }
+  PEFileWriteDWord(F, 0);          { TimeDateStamp }
+  PEFileWriteDWord(F, SymTabOff);  { PointerToSymbolTable }
+  PEFileWriteDWord(F, 0);          { NumberOfSymbols }
+  PEFileWriteWord(F, 0);           { SizeOfOptionalHeader }
+  PEFileWriteWord(F, 0);           { Characteristics }
+
+  { Section header: .text }
+  PEFileWriteStr(F, '.text');
+  PEFileWriteZeros(F, 3);
+  PEFileWriteDWord(F, 0);            { VirtualSize }
+  PEFileWriteDWord(F, 0);            { VirtualAddress }
+  PEFileWriteDWord(F, TextRawSize);  { SizeOfRawData }
+  PEFileWriteDWord(F, 20 + 2 * 40); { PointerToRawData }
+  PEFileWriteDWord(F, 0);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteDWord(F, $60000020);
+
+  { Section header: .data }
+  PEFileWriteStr(F, '.data');
+  PEFileWriteZeros(F, 3);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteDWord(F, DataRawSize);
+  PEFileWriteDWord(F, 20 + 2 * 40 + TextRawSize);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteDWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteWord(F, 0);
+  PEFileWriteDWord(F, LongInt($C0000040));
+
+  { Raw data }
+  If TextRawSize > 0 Then
+    PEWriteBuf(F, PECodeBuf, TextRawSize);
+  If DataRawSize > 0 Then
+    PEWriteBuf(F, PEDataBuf, DataRawSize);
+
+  { String table (4 bytes = size, empty) }
+  PEFileWriteDWord(F, 4);
+
+  Close(F);
+End;
+
+
+{ ============================================================
   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
   ParseDeclAttributes, ParseVarAttributes, ParseVarDecl,
   ParseConstDecl
@@ -12348,6 +14696,12 @@ Begin
 
   { Finaliser le fichier de sortie (EmitFooter + EmitDataSeg + END) }
   EmitClose;
+
+  { TODO 25 : Generation PE/COFF binaire }
+  If (ErrorCount = 0) And Opts.EmitExe And (Not IsModule) Then
+    GeneratePE(Opts.OutFile, Opts.OutFile)
+  Else If (ErrorCount = 0) And Opts.EmitObj Then
+    GenerateCOFF(Opts.OutFile, ReplaceExt(Opts.OutFile, '.obj'));
 
   { Generation du fichier .INC pour [ENVIRONMENT] }
   If EnvironmentName <> '' Then
