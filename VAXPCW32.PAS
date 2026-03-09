@@ -291,7 +291,7 @@
             Constantes de record : CONST r = (x: 1; y: 2);
             Records imbriques : RECORD contenant RECORD
 
-  TODO 17 - ENUMERATIONS ET SOUS-INTERVALLES
+  TODO 17 - ENUMERATIONS ET SOUS-INTERVALLES [IMPLEMENTE]
             TYPE T = (Val1, Val2, Val3) : enumeration
               Chaque valeur = constante entiere (0, 1, 2, ...)
               Taille : 4 octets (DWORD 32 bits)
@@ -896,6 +896,10 @@ Procedure EmitBoundsCheck(Lo, Hi : LongInt); Forward;
 { Forward declarations TODO 16 }
 Procedure ParseTypeDecl; Forward;
 Procedure ParseWithStmt; Forward;
+
+{ Forward declarations TODO 17 }
+{ Enumerations et sous-intervalles: FIRST/LAST in ParsePrimary,  }
+{ TKP_ENUM/TKP_SUBRANGE in ParseTypeDecl.                        }
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -3205,6 +3209,83 @@ Begin
           Else
           Begin
             WarnMsg('LOWERBOUND attend un tableau');
+            EmitInstrAB('XOR', 'EAX', 'EAX');
+          End;
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- TODO 17 : FIRST(T) : borne basse d un type ordinal --- *)
+        Else If Lw2 = 'first' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken;
+          SIdx2 := -1;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            SIdx2 := SymFind(CurToken.Val);
+            LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_TYPE) And
+             (SymTab[SIdx2].TypeIdx >= 0) And
+             (SymTab[SIdx2].TypeIdx < TypeCount) Then
+          Begin
+            If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ENUM Then
+              EmitInstrAB('MOV', 'EAX', '0')
+            Else If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_SUBRANGE Then
+              EmitInstrAB('MOV', 'EAX',
+                IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Lo))
+            Else If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ARRAY Then
+              EmitInstrAB('MOV', 'EAX',
+                IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Lo))
+            Else
+              EmitInstrAB('XOR', 'EAX', 'EAX');
+          End
+          Else
+          Begin
+            WarnMsg('FIRST attend un type ordinal');
+            EmitInstrAB('XOR', 'EAX', 'EAX');
+          End;
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := -1;
+        End
+
+        (* --- TODO 17 : LAST(T) : borne haute d un type ordinal --- *)
+        Else If Lw2 = 'last' Then
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+            LexNextToken;
+          SIdx2 := -1;
+          If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+          Begin
+            SIdx2 := SymFind(CurToken.Val);
+            LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+          If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_TYPE) And
+             (SymTab[SIdx2].TypeIdx >= 0) And
+             (SymTab[SIdx2].TypeIdx < TypeCount) Then
+          Begin
+            If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ENUM Then
+              EmitInstrAB('MOV', 'EAX',
+                IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].EnumCount - 1))
+            Else If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_SUBRANGE Then
+              EmitInstrAB('MOV', 'EAX',
+                IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Hi))
+            Else If TypeTab[SymTab[SIdx2].TypeIdx].Kind = TKP_ARRAY Then
+              EmitInstrAB('MOV', 'EAX',
+                IntToStr(TypeTab[SymTab[SIdx2].TypeIdx].Hi))
+            Else
+              EmitInstrAB('XOR', 'EAX', 'EAX');
+          End
+          Else
+          Begin
+            WarnMsg('LAST attend un type ordinal');
             EmitInstrAB('XOR', 'EAX', 'EAX');
           End;
           Res.Kind    := EK_EAX;
@@ -9422,28 +9503,166 @@ Begin
         WriteLn('  TYPE_POINTER: ', TName, ' -> ', FldTName);
     End
 
-    (* ---- Enumeration: TYPE T = (A, B, C) ---- *)
+    (* ---- TODO 17 : Enumeration: TYPE T = (A, B, C) ---- *)
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
       LexNextToken;
+
+      If TypeCount >= MAX_TYPE Then
+      Begin
+        WarnMsg('nombre maximal de types atteint');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        Continue;
+      End;
+
+      NewTIdx := TypeCount;
+      Inc(TypeCount);
+      TypeTab[NewTIdx].Kind       := TKP_ENUM;
+      TypeTab[NewTIdx].Size       := 4;
+      TypeTab[NewTIdx].EnumCount  := 0;
+      TypeTab[NewTIdx].Lo         := 0;
+      TypeTab[NewTIdx].Hi         := 0;
+      TypeTab[NewTIdx].FieldCount := 0;
+      TypeTab[NewTIdx].Packed_    := False;
+      TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_INTEGER;
+
+      FldCount := 0;
       While (CurToken.Kind <> TK_EOF) And
             Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
-        LexNextToken;
+      Begin
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          FldName := CurToken.Val;
+          LexNextToken;
+
+          If FldCount < MAX_ENUM Then
+          Begin
+            TypeTab[NewTIdx].Enums[FldCount].Name  := FldName;
+            TypeTab[NewTIdx].Enums[FldCount].Value  := FldCount;
+            Inc(TypeTab[NewTIdx].EnumCount);
+
+            (* Register enum value as symbol *)
+            FldTIdx := SymAdd(FldName, SC_ENUM_VAL, NewTIdx);
+            If FldTIdx >= 0 Then
+            Begin
+              SymTab[FldTIdx].ImmVal := FldCount;
+              SymTab[FldTIdx].MangledName := VXP_ENUM_PFX +
+                StrUpperCase(FldName);
+            End;
+          End;
+          Inc(FldCount);
+        End
+        Else
+          LexNextToken;
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          LexNextToken;
+      End;
+
+      If FldCount > 0 Then
+        TypeTab[NewTIdx].Hi := FldCount - 1;
+
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
         LexNextToken;
-      NewTIdx := TY_IDX_INTEGER;
+
       TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_ENUM: ', TName, ' (', FldCount, ' values)');
     End
 
-    (* ---- Subrange: lo..hi ---- *)
+    (* ---- TODO 17 : Subrange: lo..hi ---- *)
     Else If (CurToken.Kind = TK_INTEGER) Or
             ((CurToken.Kind = TK_OP) And (CurToken.Val = '-')) Then
     Begin
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      (* Parse lower bound *)
+      ArrLo := 0;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Begin
         LexNextToken;
-      NewTIdx := TY_IDX_INTEGER;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          ArrLo := -CurToken.IntVal;
+          LexNextToken;
+        End;
+      End
+      Else
+      Begin
+        ArrLo := CurToken.IntVal;
+        LexNextToken;
+      End;
+
+      (* Expect '..' *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+        LexNextToken
+      Else
+      Begin
+        WarnMsg('''..'' attendu dans sous-intervalle');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        NewTIdx := TY_IDX_INTEGER;
+        TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        Continue;
+      End;
+
+      (* Parse upper bound *)
+      ArrHi := 0;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          ArrHi := -CurToken.IntVal;
+          LexNextToken;
+        End;
+      End
+      Else If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrHi := CurToken.IntVal;
+        LexNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        (* Upper bound could be an enum value or constant *)
+        FldTIdx := SymFind(CurToken.Val);
+        If (FldTIdx >= 0) And
+           (SymTab[FldTIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrHi := SymTab[FldTIdx].ImmVal
+        Else
+          ArrHi := ArrLo;
+        LexNextToken;
+      End;
+
+      If TypeCount >= MAX_TYPE Then
+      Begin
+        WarnMsg('nombre maximal de types atteint');
+        NewTIdx := TY_IDX_INTEGER;
+      End
+      Else
+      Begin
+        NewTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewTIdx].Kind        := TKP_SUBRANGE;
+        TypeTab[NewTIdx].Size        := 4;
+        TypeTab[NewTIdx].Lo          := ArrLo;
+        TypeTab[NewTIdx].Hi          := ArrHi;
+        TypeTab[NewTIdx].BaseTypeIdx := TY_IDX_INTEGER;
+        TypeTab[NewTIdx].FieldCount  := 0;
+        TypeTab[NewTIdx].EnumCount   := 0;
+        TypeTab[NewTIdx].Packed_     := False;
+      End;
+
       TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
+      If Opts.DebugMode Then
+        WriteLn('  TYPE_SUBRANGE: ', TName, ' = ', ArrLo, '..', ArrHi);
     End
 
     (* ---- SET OF ---- *)
