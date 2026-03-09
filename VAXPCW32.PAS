@@ -4741,7 +4741,7 @@ Begin
   EmitRaw('        MOV    BYTE PTR [EDI], ' + Chr(39) + '-' + Chr(39));
   EmitRaw(VXP_RT_PFX + 'NTS_DONE:');
   EmitInstrAB('MOV', 'EAX', 'EDI');
-  EmitInstrA('POP', 'EDI');
+  EmitInstrAB('ADD', 'ESP', '4');
   EmitInstrA('POP', 'EDI');
   EmitInstrA('POP', 'EDX');
   EmitInstrA('POP', 'ECX');
