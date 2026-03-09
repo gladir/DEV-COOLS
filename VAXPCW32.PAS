@@ -28,7 +28,7 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
               AsmOutput, ObjOnly)
             ParseArgs : analyser argv (source.pas [sortie.exe] [-v] [-d]
@@ -478,5 +478,806 @@
 
 Program VAXPCW32;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  VXP_VERSION = '1.0';
+  VXP_DATE    = '2026-03-09';
+
+  { Limites internes }
+  MAX_SYM       = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_LABEL     = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE     = {$IFDEF FPC}64{$ELSE}32{$ENDIF};
+  MAX_DATA      = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_TYPE      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_PARAM     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
+  MAX_LOOP_NEST = {$IFDEF FPC}16{$ELSE}8{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_INCLUDE   = {$IFDEF FPC}8{$ELSE}4{$ENDIF};
+  MAX_DEFINE    = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_FIELD     = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_ENUM      = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+  MAX_WITH      = 8;
+  STACK_SIZE    = 4096;  { taille pile Win32 }
+  FRAME_WARN    = 512;   { seuil avertissement taille cadre (octets) }
+  NEST_MAX      = 4;     { profondeur max imbrication proc/func }
+
+  { Prefixes de nommage ASM }
+  VXP_VAR_PFX   = '_VXP_';
+  VXP_FN_PFX    = '_VXPF_';
+  VXP_STR_PFX   = '_VXPK_';
+  VXP_RT_PFX    = '_VXPRT_';
+  VXP_LBL_PFX   = '_VXPL_';
+  VXP_ARR_PFX   = '_VXPA_';
+  VXP_REC_PFX   = '_VXPR_';
+  VXP_ENUM_PFX  = '_VXPE_';
+  VXP_MOD_PFX   = '_VXPM_';
+
+  { Codes de sortie }
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  { Indices de types primitifs }
+  TY_IDX_INTEGER  = 0;
+  TY_IDX_WORD     = 1;
+  TY_IDX_BYTE     = 2;
+  TY_IDX_CHAR     = 3;
+  TY_IDX_BOOLEAN  = 4;
+  TY_IDX_STRING   = 5;
+  TY_IDX_REAL     = 6;
+  TY_IDX_DOUBLE   = 7;
+  TY_IDX_POINTER  = 8;
+  TY_IDX_NIL      = 9;
+  TY_IDX_TEXT      = 10;
+  TY_IDX_UNSIGNED  = 11;
+  TY_IDX_VARYING   = 12;
+  TY_IDX_SET       = 13;
+  TY_PRIM_COUNT    = 14;
+  TY_UNKNOWN       = -1;
+
+  { Taille du File Descriptor Block (FDB) pour TEXT et FILE OF }
+  FILE_DESC_SIZE   = 132;  { 4 handle + 4 mode + 128 filename (32 bits) }
+  FDB_OFS_HANDLE   = 0;    { Offset du handle Win32 dans le FDB }
+  FDB_OFS_MODE     = 4;    { Offset du mode (0=ferme,1=lect,2=ecrit) }
+  FDB_OFS_NAME     = 8;    { Offset du buffer filename ASCIIZ }
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  { ---- Options de compilation ----------------------------- }
+  TOptions = Record
+    SrcFile      : TString;   { fichier source (.pas)                }
+    OutFile      : TString;   { fichier de sortie (.exe/.obj/.asm)   }
+    Verbose      : Boolean;   { -v : banniere et statistiques        }
+    DebugMode    : Boolean;   { -d : affichage de chaque token       }
+    Warnings     : Boolean;   { -w : activer les avertissements      }
+    CheckEnabled : Boolean;   { $OPTIONS CHECK : runtime checks      }
+    EmitExe      : Boolean;   { produire un .EXE PE (defaut)         }
+    EmitObj      : Boolean;   { -obj : produire uniquement un .OBJ   }
+    EmitAsm      : Boolean;   { -asm : produire un listing .ASM      }
+  End;
+
+  { ---- Tokens VAX Pascal ---------------------------------- }
+  TTokenKind = (
+    TK_EOF,
+    TK_INTEGER,
+    TK_REAL,
+    TK_STRING,
+    TK_CHAR,
+    TK_IDENT,
+    TK_KEYWORD,
+    TK_OP,
+    TK_PUNCT,
+    TK_OCTAL,
+    TK_ATTR_OPEN,
+    TK_ATTR_CLOSE
+  );
+
+  TToken = Record
+    Kind     : TTokenKind;
+    Val      : TString;
+    IntVal   : LongInt;
+    RealVal  : Real;
+    Line     : Integer;
+    Col      : Integer;
+  End;
+
+  { ---- Segment de donnees --------------------------------- }
+  TDataKind = (DK_DWORD, DK_BYTE, DK_STR, DK_ARRAY, DK_REC,
+               DK_ARRAY_INIT, DK_SET);
+
+  TDataRec = Record
+    LblName   : TString;
+    Kind      : TDataKind;
+    IntVal    : LongInt;
+    StrVal    : TString;
+    ElemCount : Integer;
+    ElemSize  : Integer;
+    RecSize   : Integer;
+  End;
+
+  { ---- Valeurs d expression ------------------------------- }
+  TExprKind = (
+    EK_NONE,
+    EK_IMM,
+    EK_EAX,
+    EK_MEM
+  );
+
+  TExprVal = Record
+    Kind    : TExprKind;
+    ImmVal  : LongInt;
+    TypeIdx : Integer;
+    Offset  : Integer;
+    SymIdx  : Integer;
+  End;
+
+  { ---- Genre de type -------------------------------------- }
+  TTypeKind = (
+    TKP_INTEGER,
+    TKP_WORD,
+    TKP_BYTE,
+    TKP_CHAR,
+    TKP_BOOLEAN,
+    TKP_STRING,
+    TKP_REAL,
+    TKP_DOUBLE,
+    TKP_ARRAY,
+    TKP_RECORD,
+    TKP_ENUM,
+    TKP_SUBRANGE,
+    TKP_POINTER,
+    TKP_NIL,
+    TKP_TEXT,
+    TKP_VARYING,
+    TKP_SET,
+    TKP_FILE,
+    TKP_SCHEMA,
+    TKP_PROCEDURAL,
+    TKP_VOID
+  );
+
+  { ---- Champ de record ----------------------------------- }
+  TFieldRec = Record
+    Name    : TString;
+    TypeIdx : Integer;
+    Offset  : Integer;
+  End;
+
+  { ---- Valeur d enumeration ------------------------------ }
+  TEnumValRec = Record
+    Name  : TString;
+    Value : Integer;
+  End;
+
+  { ---- Enregistrement de type ---------------------------- }
+  TTypeRec = Record
+    Kind        : TTypeKind;
+    Size        : Integer;
+    BaseTypeIdx : Integer;
+    Lo          : LongInt;
+    Hi          : LongInt;
+    FieldCount  : Integer;
+    Fields      : Array[0..MAX_FIELD - 1] Of TFieldRec;
+    EnumCount   : Integer;
+    Enums       : Array[0..MAX_ENUM - 1] Of TEnumValRec;
+    Packed_     : Boolean;
+    Precision   : Integer;
+  End;
+
+  { ---- Categorie de symbole ------------------------------ }
+  TSymCat = (
+    SC_VAR,
+    SC_CONST,
+    SC_TYPED_CONST,
+    SC_PARAM,
+    SC_VARPARAM,
+    SC_FUNC,
+    SC_PROC,
+    SC_TYPE,
+    SC_FIELD,
+    SC_ENUM_VAL,
+    SC_LABEL,
+    SC_STATIC,
+    SC_EXTERNAL,
+    SC_GLOBAL,
+    SC_PUBLIC,
+    SC_MODULE,
+    SC_CONDITION
+  );
+
+  { ---- Enregistrement symbole ---------------------------- }
+  TSymRec = Record
+    Name        : TString;
+    MangledName : TString;
+    Cat         : TSymCat;
+    TypeIdx     : Integer;
+    Offset      : Integer;
+    ScopeLevel  : Integer;
+    ScopeId     : Integer;
+    IsForward   : Boolean;
+    IsLocal     : Boolean;
+    ImmVal      : LongInt;
+    DataIdx     : Integer;
+    ParamCnt    : Integer;
+    VarParamMask: LongInt;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+  TotalSyms  : Integer;
+
+  { Emetteur ASM }
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+  { Lexeur }
+  LexSrcF   : Text;
+  LexOpened : Boolean;
+  LexLine   : String;
+  LexLineNo : Integer;
+  LexColNo  : Integer;
+  LexEOF    : Boolean;
+  CurToken  : TToken;
+  LexSrcFName : TString;
+
+  { Segment de donnees }
+  DataTab      : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount    : Integer;
+  LabelGenSeq  : Integer;
+
+  { Table des symboles }
+  SymTab        : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount      : Integer;
+  CurScopeLevel : Integer;
+  CurScopeId    : Integer;
+  ScopeIdSeq    : Integer;
+
+  { Table des types }
+  TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount : Integer;
+
+  { Variables et affectations }
+  CurFrameOffset    : Integer;
+  PendingAssignName : TString;
+  HasPendingAssign  : Boolean;
+
+  { Pile de boucles pour break/continue }
+  LoopBreakLbl    : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopContLbl     : Array[0..MAX_LOOP_NEST - 1] Of TString;
+  LoopTop         : Integer;
+
+  { Fonctions et procedures }
+  CurFuncName     : TString;
+  CurFuncRetOfs   : Integer;
+  CurRetLabel     : TString;
+  CurNestLevel    : Integer;
+  CurParamBytes   : Integer;
+  MainBodyEmitted : Boolean;
+  RuntimeEmitted  : Boolean;
+
+  { Pile with pour records }
+  WithSymIdx      : Array[0..MAX_WITH - 1] Of Integer;
+  WithTop         : Integer;
+
+  { Directives et inclusions }
+  IncSavedFName   : Array[0..MAX_INCLUDE - 1] Of TString;
+  IncSavedFLine   : Array[0..MAX_INCLUDE - 1] Of Integer;
+  IncSavedLine    : Array[0..MAX_INCLUDE - 1] Of String;
+  IncSavedLineNo  : Array[0..MAX_INCLUDE - 1] Of Integer;
+  IncSavedColNo   : Array[0..MAX_INCLUDE - 1] Of Integer;
+  IncSavedEOF     : Array[0..MAX_INCLUDE - 1] Of Boolean;
+  IncTop          : Integer;
+  DefineTab       : Array[0..MAX_DEFINE - 1] Of TString;
+  DefineCount     : Integer;
+
+  { Module ou Programme }
+  IsModule        : Boolean;
+  ModuleName      : TString;
+  ModuleIdent     : TString;
+  EnvironmentName : TString;
+
+  { Attributs pre-parses pour la prochaine declaration }
+  PendAttrGlobal   : Boolean;
+  PendAttrExternal : Boolean;
+
+  { Table des EXTRN VMS auto-generes (eviter doublons) }
+  VMSExternTab    : Array[0..255] Of TString;
+  VMSExternCount  : Integer;
+  SymInitCount    : Integer;
+
+  { Gestion des exceptions }
+  ExcNestLevel    : Integer;   { niveau d imbrication exception courant }
+  ExcHandlerLabel : TString;   { label du handler EXCEPTION courant }
+  ExcEndLabel     : TString;   { label de fin du bloc BEGIN..EXCEPTION..END }
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- Declarations Forward --------------------------------- }
+Procedure LexNextToken; Forward;
+Procedure Run; Forward;
+
+{ ============================================================
+  UTILITAIRES DE CHAINES
+  ============================================================ }
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
 Begin
-End.
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'a') And (R[I] <= 'z') Then
+      R[I] := Chr(Ord(R[I]) - 32);
+  StrUpperCase := R;
+End;
+
+Function IntToStr(N : LongInt) : TString;
+Var
+  S : TString;
+Begin
+  Str(N, S);
+  IntToStr := S;
+End;
+
+{ Retourne '[EBP+n]' ou '[EBP-n]' selon le signe }
+Function EBPOfs(Ofs : Integer) : TString;
+Begin
+  If Ofs >= 0 Then
+    EBPOfs := '[EBP+' + IntToStr(Ofs) + ']'
+  Else
+    EBPOfs := '[EBP' + IntToStr(Ofs) + ']';
+End;
+
+(* Helpers pour crochets - le lexeur peut emettre TK_PUNCT ou TK_ATTR *)
+Function IsOpenBracket : Boolean;
+Begin
+  IsOpenBracket := ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '[')) Or
+                   (CurToken.Kind = TK_ATTR_OPEN);
+End;
+
+Function IsCloseBracket : Boolean;
+Begin
+  IsCloseBracket := ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ']')) Or
+                    (CurToken.Kind = TK_ATTR_CLOSE);
+End;
+
+Function StrToIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  V : LongInt;
+  C : Integer;
+Begin
+  Val(S, V, C);
+  If C = 0 Then StrToIntDef := V
+  Else          StrToIntDef := Def;
+End;
+
+{ Extrait le nom de base d un chemin (sans extension) }
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne l extension d un chemin (avec le point) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot, Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ ============================================================
+  GESTION DES ERREURS ET MESSAGES
+  ============================================================ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('VAXPCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('VAXPCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure ErrorMsg(Const Msg : TString);
+Begin
+  WriteLn('VAXPCW32: erreur ligne ', LexLineNo, ' : ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs (' + IntToStr(MAX_ERRORS) + '), arret');
+End;
+
+{ ---- Expect : verifier et consommer un token attendu ---------- }
+Procedure Expect(Const ExpKind : TTokenKind; Const ExpVal : TString);
+Begin
+  If (CurToken.Kind = ExpKind) And
+     (StrLowerCase(CurToken.Val) = StrLowerCase(ExpVal)) Then
+    LexNextToken
+  Else
+    ErrorMsg('''' + ExpVal + ''' attendu, trouve ''' + CurToken.Val + '''');
+End;
+
+{ ---- SkipTo : synchroniser apres une erreur de syntaxe -------- }
+Procedure SkipTo(Const StopVal : TString);
+Var
+  SL : TString;
+Begin
+  SL := StrLowerCase(StopVal);
+  While (CurToken.Kind <> TK_EOF) And
+        (StrLowerCase(CurToken.Val) <> SL) Do
+    LexNextToken;
+  If StrLowerCase(CurToken.Val) = SL Then
+    LexNextToken;
+End;
+
+{ ============================================================
+  BANNIERE ET USAGE
+  ============================================================ }
+
+Procedure ShowBanner;
+Begin
+  WriteLn('VAXPCW32 v', VXP_VERSION, ' (', VXP_DATE, ')');
+  WriteLn('Compilateur VAX Pascal -> assembleur 80386 / Win32');
+  WriteLn('Free Pascal (-Mtp)  Cible: MASM .386 .MODEL FLAT');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('VAXPCW32 - Cette commande permet de lancer le compilateur de ',
+          'VAX Pascal pour l''assembleur du microprocesseur 80386 ',
+          '(en executable Windows 32 bits).');
+  WriteLn;
+  WriteLn('Syntaxe : VAXPCW32 <source.pas> [-o sortie] [-v] [-d] [-w] [-obj] [-asm]');
+  WriteLn;
+  WriteLn('  source.pas : fichier VAX Pascal source');
+  WriteLn('  -o nom     : specifier le nom du fichier de sortie');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -obj       : produire uniquement un .OBJ (format COFF 32 bits)');
+  WriteLn('  -asm       : produire egalement un listing assembleur .ASM');
+  WriteLn('  -h         : afficher cette aide');
+  WriteLn;
+  WriteLn('Par defaut, VAXPCW32 produit un fichier .EXE (PE Windows 32 bits).');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowHelp;
+Begin
+  ShowBanner;
+  ShowUsage;
+End;
+
+{ ============================================================
+  OPTIONS ET ARGUMENTS
+  ============================================================ }
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile      := '';
+  Opts.OutFile      := '';
+  Opts.Verbose      := False;
+  Opts.DebugMode    := False;
+  Opts.Warnings     := False;
+  Opts.CheckEnabled := False;
+  Opts.EmitExe      := True;    { par defaut : produire un .EXE }
+  Opts.EmitObj      := False;
+  Opts.EmitAsm      := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-obj' Then
+    Begin
+      Opts.EmitObj := True;
+      Opts.EmitExe := False;
+    End
+    Else If Arg = '-asm' Then
+      Opts.EmitAsm := True
+    Else If Arg = '-o' Then
+    Begin
+      If I < ParamCount Then
+      Begin
+        Inc(I);
+        Opts.OutFile := ParamStr(I);
+      End
+      Else
+      Begin
+        WriteLn('VAXPCW32: -o requiert un nom de fichier');
+        ShowUsage;
+      End;
+    End
+    Else If Arg[1] = '-' Then
+    Begin
+      WriteLn('VAXPCW32: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else
+    Begin
+      WriteLn('VAXPCW32: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+
+    Inc(I);
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('VAXPCW32: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier l extension .pas }
+  Ext := ExtractExt(Opts.SrcFile);
+  If (Ext <> '.pas') Then
+    WarnMsg('extension attendue .pas, trouvee: ' + Ext);
+
+  { Fichier de sortie par defaut selon le mode }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.EmitObj Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ============================================================
+  NETTOYAGE
+  ============================================================ }
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+  Begin
+    Close(LexSrcF);
+    LexOpened := False;
+  End;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================
+  INITIALISATION GENERALE
+  ============================================================ }
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  TotalSyms  := 0;
+  OutFOpen   := False;
+  LexOpened  := False;
+  LexEOF     := False;
+  LexLineNo  := 0;
+  LexColNo   := 1;
+  LexLine    := '';
+  LexSrcFName := '';
+  CurToken.Kind    := TK_EOF;
+  CurToken.Val     := '';
+  CurToken.IntVal  := 0;
+  CurToken.RealVal := 0.0;
+  CurToken.Line    := 0;
+  CurToken.Col     := 0;
+  DataCount   := 0;
+  LabelGenSeq := 0;
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+  TypeCount := 0;
+  CurFrameOffset    := 0;
+  HasPendingAssign  := False;
+  PendingAssignName := '';
+  LoopTop := -1;
+  CurFuncName   := '';
+  CurFuncRetOfs := 0;
+  CurRetLabel   := '';
+  CurNestLevel  := 0;
+  CurParamBytes := 0;
+  MainBodyEmitted := False;
+  RuntimeEmitted  := False;
+  WithTop := -1;
+  IncTop        := -1;
+  DefineCount   := 0;
+  IsModule      := False;
+  ModuleName    := '';
+  ModuleIdent   := '';
+  EnvironmentName := '';
+  PendAttrGlobal   := False;
+  PendAttrExternal := False;
+  VMSExternCount   := 0;
+  SymInitCount     := 0;
+  ExcNestLevel     := 0;
+  ExcHandlerLabel  := '';
+  ExcEndLabel      := '';
+End;
+
+{ ============================================================
+  STUBS (LexNextToken et Run - a implementer dans les TODOs suivants)
+  ============================================================ }
+
+Procedure LexNextToken;
+Begin
+  { Stub - sera implemente dans TODO 02 }
+  CurToken.Kind := TK_EOF;
+End;
+
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+
+  { Verifier que le fichier source existe }
+  Assign(LexSrcF, Opts.SrcFile);
+  Reset(LexSrcF);
+  If IOResult <> 0 Then
+    FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
+  LexOpened  := True;
+  LexSrcFName := Opts.SrcFile;
+
+  { TODO 02+ : LexInit, Parse, EmitHeader, ... }
+
+  { Statistiques de compilation }
+  If Opts.Verbose Then
+  Begin
+    WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+    WriteLn('  Lignes         : ', TotalLines);
+    WriteLn('  Symboles       : ', TotalSyms);
+    WriteLn('  Erreurs        : ', ErrorCount);
+    WriteLn('  Avertissements : ', WarnCount);
+    If Opts.EmitExe Then
+      WriteLn('  Mode           : EXE (PE Win32)')
+    Else If Opts.EmitObj Then
+      WriteLn('  Mode           : OBJ (COFF 32 bits)');
+    If Opts.EmitAsm Then
+      WriteLn('  Listing ASM    : oui');
+  End;
+
+  Cleanup;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+BEGIN
+  If (ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+     (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+     (ParamStr(1) = '/H') Then
+  Begin
+    ShowHelp;
+    Halt(0);
+  End;
+  ParseArgs;
+  Run;
+END.
