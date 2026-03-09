@@ -414,7 +414,7 @@
               $IF expr / $ELSE / $END (compilation conditionnelle)
               %DICTIONARY : consultation CDD (stub avec avertissement)
 
-  TODO 24 - RUNTIME MINIMAL WIN32
+  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
             _VXPRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut
             _VXPRT_PRINTINT(EAX=n) : conversion + WriteFile
             _VXPRT_PRINTCRLF : ecriture CR+LF
@@ -6924,6 +6924,152 @@ Begin
   EmitInstrA('PUSH', '0');                    { dwFlags = 0 }
   EmitInstrA('PUSH', 'DWORD PTR [' + VXP_RT_PFX + 'HHEAP]');
   EmitInstrA('CALL', '_HeapFree@12');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ================================================================ *)
+  (*  TODO 24 - RUNTIME MINIMAL WIN32 : routines complementaires      *)
+  (* ================================================================ *)
+
+  (* ---- _VXPRT_STRCOPY : copie chaine ASCIIZ ---------------------- *)
+  (* ESI = source, EDI = destination                                   *)
+  EmitComment('--- STRCOPY : copie chaine ASCIIZ (ESI->EDI) ---');
+  EmitLabel(VXP_RT_PFX + 'STRCOPY');
+  EmitInstrA('PUSH', 'ESI');
+  EmitInstrA('PUSH', 'EDI');
+  EmitRaw(VXP_RT_PFX + 'STRCPY_LP:');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstrAB('CMP', 'AL', '0');
+  EmitInstrA('JE', VXP_RT_PFX + 'STRCPY_DN');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstrA('JMP', VXP_RT_PFX + 'STRCPY_LP');
+  EmitRaw(VXP_RT_PFX + 'STRCPY_DN:');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_CHKIDX : verification bornes tableau --------------- *)
+  (* EAX = index, EBX = borne basse, ECX = borne haute                *)
+  (* Si hors bornes -> PANIC_RANGE                                    *)
+  EmitComment('--- CHKIDX : verif bornes (EAX=idx, EBX=lo, ECX=hi) ---');
+  EmitLabel(VXP_RT_PFX + 'CHKIDX');
+  EmitInstrAB('CMP', 'EAX', 'EBX');
+  EmitInstrA('JL', VXP_RT_PFX + 'PANIC_RANGE');
+  EmitInstrAB('CMP', 'EAX', 'ECX');
+  EmitInstrA('JG', VXP_RT_PFX + 'PANIC_RANGE');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_CONCAT : concatenation VARYING + VARYING ------ *)
+  (* ESI = ptr VARYING s1, EDI = ptr VARYING s2                        *)
+  (* Resultat dans STRBUF, retourne EAX = ptr STRBUF (ASCIIZ)         *)
+  EmitComment('--- VARY_CONCAT : VARYING || VARYING -> STRBUF ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_CONCAT');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  (* Charger longueurs *)
+  EmitInstrAB('MOVZX', 'ECX', 'WORD PTR [ESI]');   (* ECX = len1 *)
+  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [EDI]');   (* EDX = len2 *)
+  EmitInstrAB('ADD', 'ESI', '2');                    (* ESI -> body1 *)
+  EmitInstrAB('ADD', 'EDI', '2');                    (* EDI -> body2 *)
+  EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STRBUF');
+  (* Copier s1 body *)
+  EmitRaw(VXP_RT_PFX + 'VCAT_S1:');
+  EmitInstrAB('TEST', 'ECX', 'ECX');
+  EmitInstrA('JZ', VXP_RT_PFX + 'VCAT_S2');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EBX');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VCAT_S1');
+  (* Copier s2 body *)
+  EmitRaw(VXP_RT_PFX + 'VCAT_S2:');
+  EmitInstrAB('TEST', 'EDX', 'EDX');
+  EmitInstrA('JZ', VXP_RT_PFX + 'VCAT_DN');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [EDI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EBX]', 'AL');
+  EmitInstr('INC    EDI');
+  EmitInstr('INC    EBX');
+  EmitInstr('DEC    EDX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VCAT_S2');
+  EmitRaw(VXP_RT_PFX + 'VCAT_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [EBX]', '0');     (* zero terminal *)
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
+  EmitInstrA('POP', 'EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_LENGTH : longueur d un VARYING --------------- *)
+  (* ESI = ptr VARYING, retourne EAX = longueur (WORD a [ESI])       *)
+  EmitComment('--- VARY_LENGTH : VARYING -> longueur dans EAX ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_LENGTH');
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESI]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_BODY : pointeur corps VARYING ---------------- *)
+  (* ESI = ptr VARYING, retourne EAX = ptr body (ESI+2)              *)
+  EmitComment('--- VARY_BODY : VARYING -> ptr body dans EAX ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_BODY');
+  EmitInstrAB('LEA', 'EAX', '[ESI+2]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ---- _VXPRT_VARY_SUBSTR : sous-chaine d un VARYING ----------- *)
+  (* ESI = ptr VARYING, EBX = position (1-based), ECX = longueur     *)
+  (* Resultat dans STRBUF, retourne EAX = ptr STRBUF (ASCIIZ)       *)
+  EmitComment('--- VARY_SUBSTR : VARYING sous-chaine -> STRBUF ---');
+  EmitLabel(VXP_RT_PFX + 'VARY_SUBSTR');
+  EmitInstrA('PUSH', 'EBX');
+  EmitInstrA('PUSH', 'ECX');
+  EmitInstrA('PUSH', 'EDX');
+  EmitInstrA('PUSH', 'EDI');
+  (* Charger longueur du VARYING *)
+  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [ESI]');   (* EDX = len VARYING *)
+  EmitInstrAB('ADD', 'ESI', '2');                    (* ESI -> body *)
+  (* Ajuster position (1-based -> 0-based), min = 0 *)
+  EmitInstrAB('CMP', 'EBX', '1');
+  EmitInstrA('JGE', VXP_RT_PFX + 'VSUB_POK');
+  EmitInstrAB('MOV', 'EBX', '1');
+  EmitRaw(VXP_RT_PFX + 'VSUB_POK:');
+  EmitInstr('DEC    EBX');                           (* EBX = offset 0-based *)
+  (* Verifier que offset < len *)
+  EmitInstrAB('CMP', 'EBX', 'EDX');
+  EmitInstrA('JGE', VXP_RT_PFX + 'VSUB_EMP');
+  EmitInstrAB('ADD', 'ESI', 'EBX');                  (* ESI -> debut *)
+  EmitInstrAB('SUB', 'EDX', 'EBX');                  (* EDX = restant *)
+  (* Limiter ECX au restant *)
+  EmitInstrAB('CMP', 'ECX', 'EDX');
+  EmitInstrA('JLE', VXP_RT_PFX + 'VSUB_LOK');
+  EmitInstrAB('MOV', 'ECX', 'EDX');
+  EmitRaw(VXP_RT_PFX + 'VSUB_LOK:');
+  (* Copier ECX octets dans STRBUF *)
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'VSUB_LP:');
+  EmitInstrAB('TEST', 'ECX', 'ECX');
+  EmitInstrA('JZ', VXP_RT_PFX + 'VSUB_DN');
+  EmitInstrAB('MOV', 'AL', 'BYTE PTR [ESI]');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', 'AL');
+  EmitInstr('INC    ESI');
+  EmitInstr('INC    EDI');
+  EmitInstr('DEC    ECX');
+  EmitInstrA('JMP', VXP_RT_PFX + 'VSUB_LP');
+  EmitRaw(VXP_RT_PFX + 'VSUB_EMP:');
+  EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
+  EmitRaw(VXP_RT_PFX + 'VSUB_DN:');
+  EmitInstrAB('MOV', 'BYTE PTR [EDI]', '0');       (* zero terminal *)
+  EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'STRBUF');
+  EmitInstrA('POP', 'EDI');
+  EmitInstrA('POP', 'EDX');
+  EmitInstrA('POP', 'ECX');
   EmitInstrA('POP', 'EBX');
   EmitInstr('RET');
   EmitBlankLine;
