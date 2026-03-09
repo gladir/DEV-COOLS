@@ -291,7 +291,7 @@
             (merge m1 m2) -> CALL _CLRT_MAPMERGE fusionner deux maps
             (count m) -> MOV BX,AX / MOV AX,[BX] (premier Word = nb paires)
 
-  TODO 20 - ENSEMBLES (hash-set / contains? / conj / disj)
+  TODO 20 - ENSEMBLES (hash-set / contains? / conj / disj) [IMPLEMENTE]
             Representation : liste de valeurs en heap [count, e0, e1, ..., eN-1]
               count = nombre d elements (1 Word), chaque element = 1 Word
             (hash-set a b c) -> CALL _CLRT_SETNEW allouer + remplir (sans doublons)
@@ -804,6 +804,13 @@ Procedure ParseContainsForm(Var Res : TExprVal); Forward;
 Procedure ParseKeysForm(Var Res : TExprVal); Forward;
 Procedure ParseValsForm(Var Res : TExprVal); Forward;
 Procedure ParseMergeForm(Var Res : TExprVal); Forward;
+(* TODO 20 *)
+Procedure ParseHashSetForm(Var Res : TExprVal); Forward;
+Procedure ParseSetLiteral(Var Res : TExprVal); Forward;
+Procedure ParseDisjForm(Var Res : TExprVal); Forward;
+Procedure ParseUnionForm(Var Res : TExprVal); Forward;
+Procedure ParseInterForm(Var Res : TExprVal); Forward;
+Procedure ParseDiffForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2873,6 +2880,9 @@ Begin
   (* Variables temporaires pour operations map (TODO 19) *)
   EmitRaw('_CL_MTMP1   DW 0');
   EmitRaw('_CL_MTMP2   DW 0');
+  (* Variables temporaires pour operations set (TODO 20) *)
+  EmitRaw('_CL_STMP1   DW 0');
+  EmitRaw('_CL_STMP2   DW 0');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -4124,6 +4134,43 @@ Begin
             Exit;
           End
 
+          (* TODO 20 : operations sur les ensembles *)
+          Else If HeadSym = 'hash-set' Then
+          Begin
+            ParseHashSetForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres hash-set');
+            Exit;
+          End
+          Else If HeadSym = 'disj' Then
+          Begin
+            ParseDisjForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres disj');
+            Exit;
+          End
+          Else If HeadSym = 'union' Then
+          Begin
+            ParseUnionForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres union');
+            Exit;
+          End
+          Else If HeadSym = 'intersection' Then
+          Begin
+            ParseInterForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres intersection');
+            Exit;
+          End
+          Else If HeadSym = 'difference' Then
+          Begin
+            ParseDiffForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres difference');
+            Exit;
+          End
+
           (* Appel de fonction generique *)
           Else If (SIdx >= 0) And
              ((SymTab[SIdx].Kind = SK_FN) Or
@@ -4178,6 +4225,19 @@ Begin
     Begin
       LexNextToken;  (* consomme accolade ouvrante *)
       ParseMapLiteral(Res);
+    End;
+
+    (* --- Ensemble litteral #{a b c} --- *)
+    TK_DISPATCH :
+    Begin
+      If (Length(CurToken.Val) >= 2) And (CurToken.Val[2] = Chr(123)) Then
+      Begin
+        LexNextToken;  (* consomme le TK_DISPATCH *)
+        LexNextToken;  (* consomme l accolade ouvrante TK_LBRACE *)
+        ParseSetLiteral(Res);
+      End
+      Else
+        LexNextToken;  (* dispatch non gere *)
     End;
 
   Else
@@ -6115,15 +6175,18 @@ Begin
 End;
 
 (* ---- ParseConjListForm : (conj coll x) ------------------------- *)
-(* Pour les listes, conj ajoute en tete : (conj lst x) = (cons x lst) *)
+(* Polymorphe : pour les listes, ajoute en tete (cons x lst).        *)
+(* Pour les ensembles, ajoute si absent (SETCONJ).                   *)
 Procedure ParseConjListForm(Var Res : TExprVal);
 Var ArgRes : TExprVal;
+    IsSet  : Boolean;
 Begin
   ExprMakeNone(Res);
   EmitComment('(conj coll x)');
 
   (* Evaluer la collection (premier argument) *)
   ParseForm(ArgRes);
+  IsSet := (ArgRes.TypeIdx = TY_IDX_SET);
   ExprFlushToAX(ArgRes);
   EmitInstrA('PUSH', 'AX');
 
@@ -6131,15 +6194,29 @@ Begin
   ParseForm(ArgRes);
   ExprFlushToAX(ArgRes);
 
-  (* AX = x (car), POP -> BX = coll (cdr) *)
-  EmitInstrA('POP', 'BX');
-  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
-
-  Res.Kind    := EK_AX;
-  Res.TypeIdx := TY_IDX_LIST;
-  Res.ImmVal  := 0;
-  Res.Offset  := 0;
-  Res.SymIdx  := -1;
+  If IsSet Then
+  Begin
+    (* AX = val, POP -> set *)
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstrA('CALL', CL_RT_PFX + 'SETCONJ');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_SET;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End
+  Else
+  Begin
+    (* AX = x (car), POP -> BX = coll (cdr) *)
+    EmitInstrA('POP', 'BX');
+    EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+    Res.Kind    := EK_AX;
+    Res.TypeIdx := TY_IDX_LIST;
+    Res.ImmVal  := 0;
+    Res.Offset  := 0;
+    Res.SymIdx  := -1;
+  End;
 End;
 
 (* ---- ParseCountForm : (count coll) ----------------------------- *)
@@ -6667,30 +6744,36 @@ Begin
   Res.SymIdx  := -1;
 End;
 
-(* ---- ParseContainsForm : (contains? m key) ---------------------- *)
-(* Teste si la cle existe dans la map.                                *)
-(* AX = map, BX = cle -> CALL _CLRT_MAPHAS -> AX = 1|0              *)
+(* ---- ParseContainsForm : (contains? coll key) ------------------- *)
+(* Polymorphe : si la collection est TY_IDX_SET, utilise SETHAS,     *)
+(* sinon utilise MAPHAS (recherche par cle dans une map).             *)
+(* AX = coll, BX = cle/val -> CALL runtime -> AX = 1|0              *)
 Procedure ParseContainsForm(Var Res : TExprVal);
 Var ArgRes : TExprVal;
+    IsSet  : Boolean;
 Begin
   ExprMakeNone(Res);
-  EmitComment('(contains? m key)');
+  EmitComment('(contains? coll key)');
 
-  (* Evaluer la map *)
+  (* Evaluer la collection *)
   ParseForm(ArgRes);
+  IsSet := (ArgRes.TypeIdx = TY_IDX_SET);
   ExprFlushToAX(ArgRes);
   EmitInstrA('PUSH', 'AX');
 
-  (* Evaluer la cle *)
+  (* Evaluer la cle/valeur *)
   ParseForm(ArgRes);
   ExprFlushToAX(ArgRes);
   EmitInstrAB('MOV', 'BX', 'AX');
 
-  (* Recuperer la map *)
+  (* Recuperer la collection *)
   EmitInstrA('POP', 'AX');
 
-  (* Appel runtime *)
-  EmitInstrA('CALL', CL_RT_PFX + 'MAPHAS');
+  (* Appel runtime selon le type *)
+  If IsSet Then
+    EmitInstrA('CALL', CL_RT_PFX + 'SETHAS')
+  Else
+    EmitInstrA('CALL', CL_RT_PFX + 'MAPHAS');
 
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_IDX_BOOL;
@@ -6772,6 +6855,241 @@ Begin
 
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_IDX_MAP;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ============================================================
+   TODO 20 - ENSEMBLES : HASH-SET / CONTAINS? / CONJ / DISJ
+             / UNION / INTERSECTION / DIFFERENCE [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseHashSetForm : (hash-set a b c) ----------------------- *)
+(* Cree un ensemble sur le heap : [count, e0, e1, ..., eN-1]        *)
+(* Les doublons sont elimines a la compilation (comparaison naive).  *)
+Procedure ParseHashSetForm(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(hash-set ...)');
+  ArgCount := 0;
+
+  (* Empiler tous les arguments *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  (* Allouer l ensemble sur le heap *)
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_CL_HEAPTOP]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CL_HEAP');
+  EmitInstrAB('ADD', 'BX', 'DI');
+
+  (* Stocker le nombre d elements *)
+  EmitInstrAB('MOV', 'WORD PTR [BX]', IntToStr(ArgCount));
+
+  (* Depiler les elements en ordre inverse *)
+  For I := ArgCount DownTo 1 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX+' + IntToStr(I * 2) + ']', 'AX');
+  End;
+
+  (* Resultat = pointeur ensemble *)
+  EmitInstrAB('MOV', 'AX', 'BX');
+
+  (* Mettre a jour heaptop *)
+  EmitInstrAB('ADD', 'DI', IntToStr((ArgCount + 1) * 2));
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HEAPTOP]', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SET;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseSetLiteral : #{a b c} -------------------------------- *)
+(* Litteral ensemble, meme mecanisme que (hash-set ...) ferme par }  *)
+Procedure ParseSetLiteral(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('#{...} litteral ensemble');
+  ArgCount := 0;
+
+  (* Empiler tous les elements *)
+  While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  If CurToken.Kind = TK_RBRACE Then
+    LexNextToken;
+
+  (* Allouer l ensemble sur le heap *)
+  EmitInstrAB('MOV', 'DI', 'WORD PTR [_CL_HEAPTOP]');
+  EmitInstrAB('MOV', 'BX', 'OFFSET _CL_HEAP');
+  EmitInstrAB('ADD', 'BX', 'DI');
+
+  (* Stocker le nombre d elements *)
+  EmitInstrAB('MOV', 'WORD PTR [BX]', IntToStr(ArgCount));
+
+  (* Depiler les elements en ordre inverse *)
+  For I := ArgCount DownTo 1 Do
+  Begin
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [BX+' + IntToStr(I * 2) + ']', 'AX');
+  End;
+
+  (* Resultat = pointeur ensemble *)
+  EmitInstrAB('MOV', 'AX', 'BX');
+
+  (* Mettre a jour heaptop *)
+  EmitInstrAB('ADD', 'DI', IntToStr((ArgCount + 1) * 2));
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HEAPTOP]', 'DI');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SET;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseDisjForm : (disj s val) ------------------------------ *)
+(* Copie l ensemble sans l element val.                               *)
+(* AX = set, BX = val -> CALL _CLRT_SETDISJ -> AX = nouveau set     *)
+Procedure ParseDisjForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(disj s val)');
+
+  (* Evaluer l ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer la valeur a retirer *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer l ensemble *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'SETDISJ');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SET;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseUnionForm : (union s1 s2) ---------------------------- *)
+(* Fusionne deux ensembles sans doublons.                             *)
+(* AX = set1, BX = set2 -> CALL _CLRT_SETUNION -> AX = nouveau set  *)
+Procedure ParseUnionForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(union s1 s2)');
+
+  (* Evaluer le premier ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer le deuxieme ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer le premier ensemble *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'SETUNION');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SET;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseInterForm : (intersection s1 s2) --------------------- *)
+(* Retourne les elements communs aux deux ensembles.                  *)
+(* AX = set1, BX = set2 -> CALL _CLRT_SETINTER -> AX = nouveau set  *)
+Procedure ParseInterForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(intersection s1 s2)');
+
+  (* Evaluer le premier ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer le deuxieme ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer le premier ensemble *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'SETINTER');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SET;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseDiffForm : (difference s1 s2) ------------------------ *)
+(* Retourne les elements de s1 absents de s2.                         *)
+(* AX = set1, BX = set2 -> CALL _CLRT_SETDIFF -> AX = nouveau set   *)
+Procedure ParseDiffForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(difference s1 s2)');
+
+  (* Evaluer le premier ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer le deuxieme ensemble *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer le premier ensemble *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime *)
+  EmitInstrA('CALL', CL_RT_PFX + 'SETDIFF');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_SET;
   Res.ImmVal  := 0;
   Res.Offset  := 0;
   Res.SymIdx  := -1;
@@ -7676,6 +7994,469 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
+  (* --- TODO 20 : _CLRT_SETHAS : recherche lineaire dans un ensemble --- *)
+  (* Entree : AX = set, BX = valeur a chercher                            *)
+  (* Sortie : AX = 1 (true) si trouvee, 0 (false) sinon                   *)
+  EmitRaw(CL_RT_PFX + 'SETHAS:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SH_NO');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SH_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SH_NF');
+  EmitRaw('        CMP     WORD PTR [SI], BX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SH_FN');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SH_LP');
+  EmitRaw(CL_RT_PFX + 'SH_FN:');
+  EmitRaw('        MOV     AX, 1');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SH_NF:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SH_NO:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 20 : _CLRT_SETCONJ : copie ensemble + ajout si absent --- *)
+  (* Entree : AX = set, BX = valeur a ajouter                           *)
+  (* Sortie : AX = nouveau set (copie avec element ajoute si absent)     *)
+  EmitRaw(CL_RT_PFX + 'SETCONJ:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SC_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     WORD PTR [_CL_STMP1], BX');
+  (* Verifier si l element existe deja *)
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SC_CK:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SC_NF');
+  EmitRaw('        CMP     WORD PTR [SI], BX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SC_EX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SC_CK');
+  (* Element existe deja : copie identique *)
+  EmitRaw(CL_RT_PFX + 'SC_EX:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        INC     DX');
+  EmitRaw('        SHL     DX, 1');
+  EmitRaw('        ADD     DI, DX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        SHR     DX, 1');
+  EmitRaw(CL_RT_PFX + 'SC_CP:');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SC_D2');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SC_CP');
+  EmitRaw(CL_RT_PFX + 'SC_D2:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  (* Element absent : copie + ajout *)
+  EmitRaw(CL_RT_PFX + 'SC_NF:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        INC     DX');
+  EmitRaw('        MOV     WORD PTR [BX], DX');
+  (* Allouer (count+2) words *)
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  (* Copier les anciens elements *)
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SC_C2:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SC_AD');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SC_C2');
+  (* Ajouter le nouvel element *)
+  EmitRaw(CL_RT_PFX + 'SC_AD:');
+  EmitRaw('        MOV     AX, WORD PTR [_CL_STMP1]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  (* Set nil : creer un singleton *)
+  EmitRaw(CL_RT_PFX + 'SC_NL:');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     AX, DI');
+  EmitRaw('        ADD     AX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [AX], 1');
+  EmitRaw('        MOV     WORD PTR [AX+2], BX');
+  EmitRaw('        ADD     DI, 4');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     DI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 20 : _CLRT_SETDISJ : copie ensemble sans l element --- *)
+  (* Entree : AX = set, BX = valeur a retirer                         *)
+  (* Sortie : AX = nouveau set (copie sans l element)                  *)
+  EmitRaw(CL_RT_PFX + 'SETDISJ:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SD_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  (* Compter : new_count = old_count - 1 (si element present) *)
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JL      ' + CL_RT_PFX + 'SD_E0');
+  EmitRaw('        MOV     WORD PTR [BX], DX');
+  (* Allouer : (new_count+1) words *)
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        POP     AX');
+  EmitRaw(CL_RT_PFX + 'SD_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SD_DN');
+  EmitRaw('        CMP     WORD PTR [SI], AX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SD_SP');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        POP     AX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'SD_SP:');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SD_LP');
+  EmitRaw(CL_RT_PFX + 'SD_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SD_E0:');
+  EmitRaw('        POP     BX');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SD_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 20 : _CLRT_SETUNION : fusion de deux ensembles ---------- *)
+  (* Entree : AX = set1, BX = set2                                       *)
+  (* Sortie : AX = nouveau set (tous elements de s1 + ceux de s2 absents)*)
+  EmitRaw(CL_RT_PFX + 'SETUNION:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SU_R2');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SU_R1');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     WORD PTR [_CL_STMP1], AX');
+  EmitRaw('        MOV     WORD PTR [_CL_STMP2], BX');
+  (* Copier s1 entierement dans un nouveau set *)
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        INC     DX');
+  EmitRaw('        SHL     DX, 1');
+  EmitRaw('        ADD     DI, DX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        SHR     DX, 1');
+  EmitRaw(CL_RT_PFX + 'SU_C1:');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SU_P2');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SU_C1');
+  (* Parcourir s2 et ajouter chaque element absent de la copie *)
+  EmitRaw(CL_RT_PFX + 'SU_P2:');
+  EmitRaw('        MOV     SI, WORD PTR [_CL_STMP2]');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SU_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SU_DN');
+  EmitRaw('        MOV     DX, WORD PTR [SI]');
+  (* Chercher DX dans la copie *)
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        MOV     SI, BX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SU_SR:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SU_AB');
+  EmitRaw('        CMP     WORD PTR [SI], DX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SU_PR');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SU_SR');
+  (* Element deja present : ne pas ajouter *)
+  EmitRaw(CL_RT_PFX + 'SU_PR:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SU_LP');
+  (* Element absent : ajouter a la fin de la copie *)
+  EmitRaw(CL_RT_PFX + 'SU_AB:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  (* Ajouter DX en fin de set *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     AX, DI');
+  EmitRaw('        ADD     AX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [AX], DX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     AX');
+  (* Incrementer count dans la copie *)
+  EmitRaw('        INC     WORD PTR [BX]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SU_LP');
+  EmitRaw(CL_RT_PFX + 'SU_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SU_R1:');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SU_R2:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 20 : _CLRT_SETINTER : intersection de deux ensembles --- *)
+  (* Entree : AX = set1, BX = set2                                      *)
+  (* Sortie : AX = nouveau set (elements communs)                        *)
+  EmitRaw(CL_RT_PFX + 'SETINTER:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SI_NL');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SI_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     WORD PTR [_CL_STMP2], BX');
+  (* Allouer un nouveau set vide *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], 0');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  (* Parcourir s1 *)
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SI_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SI_DN');
+  EmitRaw('        MOV     DX, WORD PTR [SI]');
+  (* Chercher DX dans s2 *)
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, WORD PTR [_CL_STMP2]');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SI_SR:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SI_NP');
+  EmitRaw('        CMP     WORD PTR [SI], DX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SI_FD');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SI_SR');
+  (* Element trouve dans s2 : ajouter au resultat *)
+  EmitRaw(CL_RT_PFX + 'SI_FD:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     AX, DI');
+  EmitRaw('        ADD     AX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [AX], DX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     AX');
+  EmitRaw('        INC     WORD PTR [BX]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SI_LP');
+  (* Element absent de s2 : ignorer *)
+  EmitRaw(CL_RT_PFX + 'SI_NP:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SI_LP');
+  EmitRaw(CL_RT_PFX + 'SI_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SI_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 20 : _CLRT_SETDIFF : difference de deux ensembles ------ *)
+  (* Entree : AX = set1, BX = set2                                      *)
+  (* Sortie : AX = nouveau set (elements de s1 absents de s2)           *)
+  EmitRaw(CL_RT_PFX + 'SETDIFF:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_NL');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_R1');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     WORD PTR [_CL_STMP2], BX');
+  (* Allouer un nouveau set vide *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], 0');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  (* Parcourir s1 *)
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SF_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_DN');
+  EmitRaw('        MOV     DX, WORD PTR [SI]');
+  (* Chercher DX dans s2 *)
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, WORD PTR [_CL_STMP2]');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw(CL_RT_PFX + 'SF_SR:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_AB');
+  EmitRaw('        CMP     WORD PTR [SI], DX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_PR');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SF_SR');
+  (* Element present dans s2 : ignorer *)
+  EmitRaw(CL_RT_PFX + 'SF_PR:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SF_LP');
+  (* Element absent de s2 : ajouter au resultat *)
+  EmitRaw(CL_RT_PFX + 'SF_AB:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     AX, DI');
+  EmitRaw('        ADD     AX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [AX], DX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     AX');
+  EmitRaw('        INC     WORD PTR [BX]');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SF_LP');
+  EmitRaw(CL_RT_PFX + 'SF_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SF_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'SF_R1:');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
   EmitComment('=== FIN RUNTIME ===');
   EmitBlankLine;
 End;
@@ -7781,6 +8562,12 @@ Begin
   SymAdd('keys',       SK_FN, TY_IDX_LIST, 0);
   SymAdd('vals',       SK_FN, TY_IDX_LIST, 0);
   SymAdd('merge',      SK_FN, TY_IDX_MAP,  0);
+
+  (* Fonctions predefinies - ensembles (TODO 20) *)
+  SymAdd('disj',         SK_FN, TY_IDX_SET,  0);
+  SymAdd('union',        SK_FN, TY_IDX_SET,  0);
+  SymAdd('intersection', SK_FN, TY_IDX_SET,  0);
+  SymAdd('difference',   SK_FN, TY_IDX_SET,  0);
 
   (* Fonctions predefinies - fonctions d ordre superieur *)
   SymAdd('apply',      SK_FN, TY_UNKNOWN, 0);
