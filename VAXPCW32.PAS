@@ -306,7 +306,7 @@
             Fonctions intrinseques sur types ordinaux :
               ORD, CHR, SUCC, PRED, ODD
 
-  TODO 18 - PROCEDURES ET FONCTIONS
+  TODO 18 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
             ParseParamList : parametres formels 32 bits
               Parametres valeur : copie sur la pile (PUSH)
               Parametres VAR : passage par adresse (LEA + PUSH)
@@ -900,6 +900,9 @@ Procedure ParseWithStmt; Forward;
 { Forward declarations TODO 17 }
 { Enumerations et sous-intervalles: FIRST/LAST in ParsePrimary,  }
 { TKP_ENUM/TKP_SUBRANGE in ParseTypeDecl.                        }
+
+{ Forward declarations TODO 18 }
+Procedure ParseFuncOrProc(IsFunction : Boolean); Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -3138,8 +3141,90 @@ Begin
       End
       Else
       Begin
-        WarnMsg('mot-cle inattendu dans expression: ' + CurToken.Val);
-        LexNextToken;
+        { Check if keyword is a known function/procedure }
+        SIdx2 := SymFind(CurToken.Val);
+        If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_FUNC) Then
+        Begin
+          IdName := CurToken.Val;
+          LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            EmitComment('call func ' + IdName);
+            LexNextToken;
+            ArgCount2 := 0;
+            If Not ((CurToken.Kind = TK_PUNCT) And
+                    (CurToken.Val = ')')) Then
+            Begin
+              Repeat
+                ParseExpr(SubEv);
+                ExprFlushToEAX(SubEv);
+                EmitPush('EAX');
+                Inc(ArgCount2);
+                If (CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = ',') Then
+                  LexNextToken
+                Else
+                  Break;
+              Until False;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              LexNextToken;
+            EmitInstrA('CALL', SymTab[SIdx2].MangledName);
+            If ArgCount2 > 0 Then
+              EmitInstrAB('ADD', 'ESP', IntToStr(ArgCount2 * 4));
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := SymTab[SIdx2].TypeIdx;
+            Res.SymIdx  := SIdx2;
+          End
+          Else
+          Begin
+            EmitInstrA('CALL', SymTab[SIdx2].MangledName);
+            Res.Kind    := EK_EAX;
+            Res.TypeIdx := SymTab[SIdx2].TypeIdx;
+            Res.SymIdx  := SIdx2;
+          End;
+        End
+        Else If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_PROC) Then
+        Begin
+          IdName := CurToken.Val;
+          LexNextToken;
+          EmitComment('call proc ' + IdName);
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+          Begin
+            LexNextToken;
+            ArgCount2 := 0;
+            If Not ((CurToken.Kind = TK_PUNCT) And
+                    (CurToken.Val = ')')) Then
+            Begin
+              Repeat
+                ParseExpr(SubEv);
+                ExprFlushToEAX(SubEv);
+                EmitPush('EAX');
+                Inc(ArgCount2);
+                If (CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = ',') Then
+                  LexNextToken
+                Else
+                  Break;
+              Until False;
+            End;
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+              LexNextToken;
+            EmitInstrA('CALL', SymTab[SIdx2].MangledName);
+            If ArgCount2 > 0 Then
+              EmitInstrAB('ADD', 'ESP', IntToStr(ArgCount2 * 4));
+          End
+          Else
+            EmitInstrA('CALL', SymTab[SIdx2].MangledName);
+          Res.Kind    := EK_EAX;
+          Res.TypeIdx := TY_IDX_INTEGER;
+          Res.SymIdx  := SIdx2;
+        End
+        Else
+        Begin
+          WarnMsg('mot-cle inattendu dans expression: ' + CurToken.Val);
+          LexNextToken;
+        End;
       End;
     End;
 
@@ -4757,6 +4842,11 @@ Begin
       SymTab[Dup].TypeIdx   := TIdx;
       SymAdd := Dup;
       Exit;
+    End
+    Else If (SymTab[Dup].Cat = SC_TYPE) And
+            (Cat In [SC_FUNC, SC_PROC, SC_VAR]) Then
+    Begin
+      { Allow func/proc/var to shadow a predefined type name }
     End
     Else
     Begin
@@ -10280,6 +10370,52 @@ Begin
     If StLw = 'end' Then
       Exit;
 
+    (* Keyword that is a known function/procedure: treat as call or assignment *)
+    StIdx := SymFind(CurToken.Val);
+    If (StIdx >= 0) And
+       ((SymTab[StIdx].Cat = SC_FUNC) Or
+        (SymTab[StIdx].Cat = SC_PROC)) Then
+    Begin
+      StId := CurToken.Val;
+      LexNextToken;
+      { Check for assignment: FuncName := expr (return value) }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+      Begin
+        ParseAssignment(StId);
+        Exit;
+      End;
+      { Otherwise it's a call }
+      EmitComment('call ' + StId);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        StArgCnt := 0;
+        If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+        Begin
+          Repeat
+            ParseExpr(StEv);
+            ExprFlushToEAX(StEv);
+            EmitPush('EAX');
+            Inc(StArgCnt);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              LexNextToken
+            Else
+              Break;
+          Until False;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+        EmitInstrA('CALL', SymTab[StIdx].MangledName);
+        If StArgCnt > 0 Then
+          EmitInstrAB('ADD', 'ESP', IntToStr(StArgCnt * 4));
+      End
+      Else
+        EmitInstrA('CALL', SymTab[StIdx].MangledName);
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Exit;
+    End;
+
     (* Unknown keyword - skip *)
     WarnMsg('instruction non geree: ' + CurToken.Val);
     LexNextToken;
@@ -10409,6 +10545,328 @@ Begin
   If (CurToken.Kind = TK_KEYWORD) And
      (StrLowerCase(CurToken.Val) = 'end') Then
     LexNextToken;
+End;
+
+
+{ ============================================================
+  PROCEDURES ET FONCTIONS (TODO 18)
+  ParseFuncOrProc : declaration et corps des proc/func
+  ============================================================ }
+
+Procedure ParseFuncOrProc(IsFunction : Boolean);
+Var
+  FuncName      : TString;
+  RetTIdx       : Integer;
+  PTIdx         : Integer;
+  ParamNames    : Array[0..MAX_PARAM - 1] Of TString;
+  ParamIsVar    : Array[0..MAX_PARAM - 1] Of Boolean;
+  ParamTIdxArr  : Array[0..MAX_PARAM - 1] Of Integer;
+  ParamCount    : Integer;
+  GroupStart     : Integer;
+  I, Idx        : Integer;
+  FuncIdx       : Integer;
+  IsForward_    : Boolean;
+  IsExternal_   : Boolean;
+  VarMask       : LongInt;
+  ParamOfs      : Integer;
+  FrameSize     : Integer;
+  RetLabel      : TString;
+  MName         : TString;
+  TName         : TString;
+  IsVarGroup    : Boolean;
+  SaveFuncName  : TString;
+  SaveFuncRetOfs: Integer;
+  SaveRetLabel  : TString;
+  SaveParamBytes: Integer;
+  SaveFrameOfs  : Integer;
+  Cat           : TSymCat;
+  DeclKw        : TString;
+Begin
+  LexNextToken;  { consume FUNCTION/PROCEDURE keyword }
+
+  { Read function/procedure name }
+  If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
+  Begin
+    WarnMsg('identificateur attendu apres FUNCTION/PROCEDURE');
+    Exit;
+  End;
+  FuncName := CurToken.Val;
+  LexNextToken;
+
+  { Parse parameter list }
+  ParamCount := 0;
+  VarMask := 0;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+  Begin
+    LexNextToken;  { consume '(' }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    Begin
+      IsVarGroup := False;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'var') Then
+      Begin
+        IsVarGroup := True;
+        LexNextToken;
+      End;
+
+      If (CurToken.Kind <> TK_IDENT) And
+         (CurToken.Kind <> TK_KEYWORD) Then Break;
+      GroupStart := ParamCount;
+
+      Repeat
+        If ParamCount >= MAX_PARAM Then
+        Begin
+          WarnMsg('trop de parametres');
+          Break;
+        End;
+        ParamNames[ParamCount] := CurToken.Val;
+        ParamIsVar[ParamCount] := IsVarGroup;
+        If IsVarGroup Then
+          VarMask := VarMask Or (LongInt(1) Shl ParamCount);
+        ParamTIdxArr[ParamCount] := TY_IDX_INTEGER;
+        Inc(ParamCount);
+        LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          LexNextToken
+        Else
+          Break;
+      Until (CurToken.Kind <> TK_IDENT) And
+            (CurToken.Kind <> TK_KEYWORD);
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        LexNextToken;
+        If (CurToken.Kind = TK_KEYWORD) Or
+           (CurToken.Kind = TK_IDENT) Then
+        Begin
+          TName := CurToken.Val;
+          PTIdx := TypeResolve(TName);
+          If PTIdx = TY_UNKNOWN Then
+            PTIdx := TY_IDX_INTEGER;
+          For I := GroupStart To ParamCount - 1 Do
+            ParamTIdxArr[I] := PTIdx;
+          LexNextToken;
+        End;
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      LexNextToken;
+  End;
+
+  { Parse return type for functions }
+  RetTIdx := TY_IDX_INTEGER;
+  If IsFunction Then
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_IDENT) Then
+      Begin
+        TName := CurToken.Val;
+        RetTIdx := TypeResolve(TName);
+        If RetTIdx = TY_UNKNOWN Then
+          RetTIdx := TY_IDX_INTEGER;
+        LexNextToken;
+      End;
+    End;
+  End;
+
+  { Expect semicolon after signature }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    LexNextToken;
+
+  { Check for FORWARD or EXTERNAL directives }
+  IsForward_ := False;
+  IsExternal_ := PendAttrExternal;
+
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'forward') Then
+  Begin
+    IsForward_ := True;
+    LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+  End
+  Else If (CurToken.Kind = TK_KEYWORD) And
+          (StrLowerCase(CurToken.Val) = 'external') Then
+  Begin
+    IsExternal_ := True;
+    LexNextToken;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      LexNextToken;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+  End;
+
+  { Determine symbol category }
+  If IsFunction Then
+    Cat := SC_FUNC
+  Else
+    Cat := SC_PROC;
+
+  { Add or resolve symbol in table }
+  FuncIdx := SymAdd(FuncName, Cat, RetTIdx);
+  If FuncIdx >= 0 Then
+  Begin
+    SymTab[FuncIdx].ParamCnt     := ParamCount;
+    SymTab[FuncIdx].VarParamMask := VarMask;
+    SymTab[FuncIdx].IsLocal      := False;
+  End;
+
+  { Handle FORWARD declaration }
+  If IsForward_ Then
+  Begin
+    If FuncIdx >= 0 Then
+      SymTab[FuncIdx].IsForward := True;
+    PendAttrGlobal   := False;
+    PendAttrExternal := False;
+    Exit;
+  End;
+
+  { Handle EXTERNAL declaration }
+  If IsExternal_ Then
+  Begin
+    If FuncIdx >= 0 Then
+      EmitInstr('EXTRN  ' + SymTab[FuncIdx].MangledName + ':PROC');
+    PendAttrGlobal   := False;
+    PendAttrExternal := False;
+    Exit;
+  End;
+
+  { --- Parse function/procedure body --- }
+
+  { Save context }
+  SaveFuncName   := CurFuncName;
+  SaveFuncRetOfs := CurFuncRetOfs;
+  SaveRetLabel   := CurRetLabel;
+  SaveParamBytes := CurParamBytes;
+  SaveFrameOfs   := CurFrameOffset;
+
+  { Set up new function context }
+  If IsFunction Then
+    CurFuncName := StrLowerCase(FuncName)
+  Else
+    CurFuncName := '';
+  CurParamBytes  := ParamCount * 4;
+  RetLabel       := LabelGen;
+  CurRetLabel    := RetLabel;
+  CurFrameOffset := 0;
+  Inc(CurNestLevel);
+
+  { Enter new scope }
+  SymEnterScope;
+
+  { Register parameters as symbols in the new scope.
+    cdecl: caller pushes left-to-right, so first param is deepest:
+      param[0] = [EBP + 8 + (N-1)*4]
+      param[N-1] = [EBP + 8] }
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    ParamOfs := 8 + (ParamCount - 1 - I) * 4;
+    If ParamIsVar[I] Then
+      Idx := SymAdd(ParamNames[I], SC_VARPARAM, ParamTIdxArr[I])
+    Else
+      Idx := SymAdd(ParamNames[I], SC_PARAM, ParamTIdxArr[I]);
+    If Idx >= 0 Then
+    Begin
+      SymTab[Idx].Offset  := ParamOfs;
+      SymTab[Idx].IsLocal := True;
+    End;
+  End;
+
+  { Allocate return value slot for functions at [EBP-4] }
+  If IsFunction Then
+  Begin
+    Dec(CurFrameOffset, 4);
+    CurFuncRetOfs := CurFrameOffset;
+  End;
+
+  { Parse local declaration sections (VAR, CONST, TYPE, nested procs) }
+  While (CurToken.Kind = TK_KEYWORD) Do
+  Begin
+    DeclKw := StrLowerCase(CurToken.Val);
+    If DeclKw = 'var' Then
+    Begin
+      LexNextToken;
+      ParseVarDecl;
+      If HasPendingAssign Then
+        HasPendingAssign := False;
+    End
+    Else If DeclKw = 'const' Then
+    Begin
+      LexNextToken;
+      ParseConstDecl;
+    End
+    Else If DeclKw = 'type' Then
+    Begin
+      LexNextToken;
+      ParseTypeDecl;
+    End
+    Else If DeclKw = 'function' Then
+      ParseFuncOrProc(True)
+    Else If DeclKw = 'procedure' Then
+      ParseFuncOrProc(False)
+    Else
+      Break;
+  End;
+
+  { Calculate frame size from accumulated local allocations }
+  FrameSize := -CurFrameOffset;
+
+  { Emit function label and prolog }
+  If FuncIdx >= 0 Then
+    MName := SymTab[FuncIdx].MangledName
+  Else
+    MName := VXP_FN_PFX + StrUpperCase(FuncName);
+  EmitComment('--- ' + FuncName + ' ---');
+  EmitLabel(MName);
+  EmitProlog(FrameSize);
+
+  { Initialize return value slot to 0 for functions }
+  If IsFunction Then
+    EmitInstrAB('MOV', 'DWORD PTR ' + EBPOfs(CurFuncRetOfs), '0');
+
+  { Parse BEGIN..END block }
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'begin') Then
+    ParseBlock
+  Else
+    WarnMsg('BEGIN attendu dans le corps de ' + FuncName);
+
+  { Skip trailing semicolon after END }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    LexNextToken;
+
+  { Emit return label }
+  EmitLabel(RetLabel);
+
+  { Load return value into EAX for functions }
+  If IsFunction Then
+    EmitInstrAB('MOV', 'EAX',
+      'DWORD PTR ' + EBPOfs(CurFuncRetOfs));
+
+  { Emit epilog (cdecl: caller cleans up stack, so pass 0) }
+  EmitEpilog(0);
+
+  { Leave scope }
+  SymLeaveScope;
+  Dec(CurNestLevel);
+
+  { Restore context }
+  CurFuncName    := SaveFuncName;
+  CurFuncRetOfs  := SaveFuncRetOfs;
+  CurRetLabel    := SaveRetLabel;
+  CurParamBytes  := SaveParamBytes;
+  CurFrameOffset := SaveFrameOfs;
+
+  PendAttrGlobal   := False;
+  PendAttrExternal := False;
 End;
 
 
@@ -10559,25 +11017,13 @@ Begin
               (StrLowerCase(CurToken.Val) = 'function') Then
       Begin
         PendAttrExternal := True;
-        WarnMsg('EXTERNAL FUNCTION ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrExternal := False;
+        ParseFuncOrProc(True);
       End
       Else If (CurToken.Kind = TK_KEYWORD) And
               (StrLowerCase(CurToken.Val) = 'procedure') Then
       Begin
         PendAttrExternal := True;
-        WarnMsg('EXTERNAL PROCEDURE ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrExternal := False;
+        ParseFuncOrProc(False);
       End
       Else
         LexNextToken;
@@ -10593,25 +11039,13 @@ Begin
          (StrLowerCase(CurToken.Val) = 'function') Then
       Begin
         PendAttrGlobal := True;
-        WarnMsg('GLOBAL FUNCTION ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrGlobal := False;
+        ParseFuncOrProc(True);
       End
       Else If (CurToken.Kind = TK_KEYWORD) And
               (StrLowerCase(CurToken.Val) = 'procedure') Then
       Begin
         PendAttrGlobal := True;
-        WarnMsg('GLOBAL PROCEDURE ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrGlobal := False;
+        ParseFuncOrProc(False);
       End
       Else If (CurToken.Kind = TK_KEYWORD) And
               (StrLowerCase(CurToken.Val) = 'var') Then
@@ -10638,25 +11072,13 @@ Begin
          (StrLowerCase(CurToken.Val) = 'function') Then
       Begin
         PendAttrGlobal := True;
-        WarnMsg('PUBLIC FUNCTION ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrGlobal := False;
+        ParseFuncOrProc(True);
       End
       Else If (CurToken.Kind = TK_KEYWORD) And
               (StrLowerCase(CurToken.Val) = 'procedure') Then
       Begin
         PendAttrGlobal := True;
-        WarnMsg('PUBLIC PROCEDURE ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrGlobal := False;
+        ParseFuncOrProc(False);
       End
       Else
         LexNextToken;
@@ -10697,27 +11119,13 @@ Begin
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'function') Then
       Begin
-        WarnMsg('[attr] FUNCTION ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrGlobal   := False;
-        PendAttrExternal := False;
+        ParseFuncOrProc(True);
         Continue;
       End;
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'procedure') Then
       Begin
-        WarnMsg('[attr] PROCEDURE ignoree (TODO ulterieur)');
-        While (CurToken.Kind <> TK_EOF) And
-              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-          LexNextToken;
-        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-          LexNextToken;
-        PendAttrGlobal   := False;
-        PendAttrExternal := False;
+        ParseFuncOrProc(False);
         Continue;
       End;
       If (CurToken.Kind = TK_KEYWORD) And
@@ -10849,12 +11257,7 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'function') Then
     Begin
-      WarnMsg('FUNCTION ignoree (TODO ulterieur)');
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-        LexNextToken;
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-        LexNextToken;
+      ParseFuncOrProc(True);
       Continue;
     End;
 
@@ -10862,12 +11265,7 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'procedure') Then
     Begin
-      WarnMsg('PROCEDURE ignoree (TODO ulterieur)');
-      While (CurToken.Kind <> TK_EOF) And
-            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
-        LexNextToken;
-      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
-        LexNextToken;
+      ParseFuncOrProc(False);
       Continue;
     End;
 
