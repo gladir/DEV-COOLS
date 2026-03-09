@@ -115,7 +115,7 @@
               _VXA_ (tableau), _VXR_ (record), _VXE_ (enum),
               _VXM_ (module)
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKP_INTEGER (32 bits signe), TKP_WORD (32 bits
               non signe), TKP_BYTE (8 bits), TKP_CHAR (8 bits),
               TKP_BOOLEAN (8 bits), TKP_STRING (ptr chaine),
@@ -852,6 +852,17 @@ Function  SymFindInScope(Const Name : TString;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymInit; Forward;
+{ Forward declarations TODO 06 }
+Procedure TypeInit; Forward;
+Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
+Function  TypeCompatible(T1, T2 : Integer) : Boolean; Forward;
+Function  TypeCoerce(SrcType, DstType : Integer) : Integer; Forward;
+Function  TypeResolve(Const Name : TString) : Integer; Forward;
+Function  TypeIsOrdinal(TIdx : Integer) : Boolean; Forward;
+Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
+Function  TypeIsPointer(TIdx : Integer) : Boolean; Forward;
+Function  IsSetTypeIdx(TIdx : Integer) : Boolean; Forward;
+Procedure EmitCoerce(SrcType, DstType : Integer); Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -4038,6 +4049,586 @@ Begin
   SymInitCount := SymCount;
 End;
 
+
+{ ============================================================
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- TypeInit : initialiser les types primitifs 32 bits ----- *)
+(* 14 types primitifs (TY_PRIM_COUNT) + types predefinis VAX      *)
+(* supplementaires ajoutes comme alias ou types derives.          *)
+(* Mapping Win32 32 bits :                                        *)
+(*   Integer = 4 octets (32 bits signe, EAX)                     *)
+(*   Word    = 4 octets (32 bits non signe)                      *)
+(*   Byte    = 1 octet                                           *)
+(*   Char    = 1 octet                                           *)
+(*   Boolean = 1 octet (etendu dans EAX)                         *)
+(*   String  = 4 octets (pointeur near 32 bits)                  *)
+(*   Real    = 4 octets (tronque en entier 32 bits)              *)
+(*   Double  = 4 octets (tronque en entier 32 bits)              *)
+(*   Pointer = 4 octets (32 bits)                                *)
+(*   nil     = 4 octets                                          *)
+(*   Text    = FDB (File Descriptor Block, FILE_DESC_SIZE octets)*)
+(*   Unsigned= 4 octets (alias Word)                             *)
+(*   Varying = 4 octets (pointeur)                               *)
+(*   Set     = 32 octets (256 bits)                              *)
+
+Procedure TypeInit;
+
+  Procedure AddPrim(Idx : Integer; K : TTypeKind; Sz : Integer);
+  Begin
+    TypeTab[Idx].Kind        := K;
+    TypeTab[Idx].Size        := Sz;
+    TypeTab[Idx].BaseTypeIdx := TY_UNKNOWN;
+    TypeTab[Idx].Lo          := 0;
+    TypeTab[Idx].Hi          := 0;
+    TypeTab[Idx].FieldCount  := 0;
+    TypeTab[Idx].EnumCount   := 0;
+    TypeTab[Idx].Packed_     := False;
+    TypeTab[Idx].Precision   := 0;
+  End;
+
+  (* Ajouter un type supplementaire dans TypeTab *)
+  Function AddExtra(K : TTypeKind; Sz : Integer;
+                    Base : Integer) : Integer;
+  Var
+    Idx : Integer;
+  Begin
+    Idx := TypeCount;
+    If Idx >= MAX_TYPE Then
+    Begin
+      AddExtra := TY_UNKNOWN;
+      Exit;
+    End;
+    TypeTab[Idx].Kind        := K;
+    TypeTab[Idx].Size        := Sz;
+    TypeTab[Idx].BaseTypeIdx := Base;
+    TypeTab[Idx].Lo          := 0;
+    TypeTab[Idx].Hi          := 0;
+    TypeTab[Idx].FieldCount  := 0;
+    TypeTab[Idx].EnumCount   := 0;
+    TypeTab[Idx].Packed_     := False;
+    TypeTab[Idx].Precision   := 0;
+    Inc(TypeCount);
+    AddExtra := Idx;
+  End;
+
+  (* Enregistrer un alias de type dans la table des symboles *)
+  Procedure RegAlias(Const AName : TString; TIdx : Integer);
+  Var
+    SI : Integer;
+  Begin
+    SI := SymFind(AName);
+    If SI >= 0 Then
+    Begin
+      SymTab[SI].TypeIdx := TIdx;
+      Exit;
+    End;
+    SI := SymAdd(AName, SC_TYPE, TIdx);
+    If SI >= 0 Then
+      SymTab[SI].MangledName := '';
+  End;
+
+Var
+  Idx, EnIdx : Integer;
+Begin
+  { 1) Initialiser les 14 types primitifs (32 bits) }
+  TypeCount := TY_PRIM_COUNT;
+  AddPrim(TY_IDX_INTEGER,  TKP_INTEGER,  4);  { Integer  : 4 octets (32 bits signe)    }
+  AddPrim(TY_IDX_WORD,     TKP_WORD,     4);  { Word     : 4 octets (32 bits non signe) }
+  AddPrim(TY_IDX_BYTE,     TKP_BYTE,     1);  { Byte     : 1 octet                      }
+  AddPrim(TY_IDX_CHAR,     TKP_CHAR,     1);  { Char     : 1 octet                      }
+  AddPrim(TY_IDX_BOOLEAN,  TKP_BOOLEAN,  1);  { Boolean  : 1 octet (etendu EAX)         }
+  AddPrim(TY_IDX_STRING,   TKP_STRING,   4);  { String   : 4 octets (ptr ASCIIZ 32 bits)}
+  AddPrim(TY_IDX_REAL,     TKP_REAL,     4);  { Real     : 4 (tronque en entier 32 bits)}
+  AddPrim(TY_IDX_DOUBLE,   TKP_DOUBLE,   4);  { Double   : 4 (tronque en entier 32 bits)}
+  AddPrim(TY_IDX_POINTER,  TKP_POINTER,  4);  { Pointer  : 4 octets (32 bits)           }
+  AddPrim(TY_IDX_NIL,      TKP_NIL,      4);  { nil      : 4 octets                     }
+  AddPrim(TY_IDX_TEXT,     TKP_TEXT,     FILE_DESC_SIZE); { Text : FDB (132 oct) }
+  AddPrim(TY_IDX_UNSIGNED, TKP_WORD,     4);  { Unsigned : 4 octets (alias Word 32 bits)}
+  AddPrim(TY_IDX_VARYING,  TKP_VARYING,  4);  { Varying  : 4 octets (ptr)               }
+  AddPrim(TY_IDX_SET,      TKP_SET,     32);  { Set      : 32 octets (256 bits)          }
+
+  { 2) Types predefinis VMS Pascal supplementaires (alias) }
+  RegAlias('MACHINE_WORD', TY_IDX_WORD);
+  RegAlias('HALF_WORD',    TY_IDX_BYTE);
+  RegAlias('INTEGER16',    TY_IDX_INTEGER);
+  RegAlias('SINGLE',       TY_IDX_REAL);
+  RegAlias('D_FLOAT',      TY_IDX_REAL);
+  RegAlias('D_FLOATING',   TY_IDX_REAL);
+  RegAlias('F_FLOATING',   TY_IDX_REAL);
+  RegAlias('G_FLOAT',      TY_IDX_DOUBLE);
+  RegAlias('G_FLOATING',   TY_IDX_DOUBLE);
+  RegAlias('FILE_NAME',    TY_IDX_STRING);
+  RegAlias('LINE',         TY_IDX_STRING);
+
+  { INTEGER32 : natif 32 bits (4 octets) }
+  Idx := AddExtra(TKP_INTEGER, 4, TY_IDX_INTEGER);
+  RegAlias('INTEGER32', Idx);
+
+  { QUADWORD : 64 bits (8 octets, emule en 2x32) }
+  Idx := AddExtra(TKP_INTEGER, 8, TY_IDX_INTEGER);
+  RegAlias('QUADWORD', Idx);
+
+  { H_FLOATING : quadruple precision (non supporte, alias Double) }
+  RegAlias('H_FLOATING', TY_IDX_DOUBLE);
+
+  { 3) IO_STATUS : enumeration predefinie d etats d I/O }
+  Idx := TypeCount;
+  If Idx < MAX_TYPE Then
+  Begin
+    TypeTab[Idx].Kind        := TKP_ENUM;
+    TypeTab[Idx].Size        := 4;  { 4 octets en 32 bits }
+    TypeTab[Idx].BaseTypeIdx := TY_UNKNOWN;
+    TypeTab[Idx].Lo          := 0;
+    TypeTab[Idx].Hi          := 13;
+    TypeTab[Idx].FieldCount  := 0;
+    TypeTab[Idx].Packed_     := False;
+    TypeTab[Idx].Precision   := 0;
+    TypeTab[Idx].EnumCount   := 14;
+    TypeTab[Idx].Enums[0].Name  := 'IO_OK';    TypeTab[Idx].Enums[0].Value  := 0;
+    TypeTab[Idx].Enums[1].Name  := 'IO_NOVF';  TypeTab[Idx].Enums[1].Value  := 1;
+    TypeTab[Idx].Enums[2].Name  := 'IO_POVF';  TypeTab[Idx].Enums[2].Value  := 2;
+    TypeTab[Idx].Enums[3].Name  := 'IO_DGIT';  TypeTab[Idx].Enums[3].Value  := 3;
+    TypeTab[Idx].Enums[4].Name  := 'IO_GOVF';  TypeTab[Idx].Enums[4].Value  := 4;
+    TypeTab[Idx].Enums[5].Name  := 'IO_INTR';  TypeTab[Idx].Enums[5].Value  := 5;
+    TypeTab[Idx].Enums[6].Name  := 'IO_REWR';  TypeTab[Idx].Enums[6].Value  := 6;
+    TypeTab[Idx].Enums[7].Name  := 'IO_EOF';   TypeTab[Idx].Enums[7].Value  := 7;
+    TypeTab[Idx].Enums[8].Name  := 'IO_OUTF';  TypeTab[Idx].Enums[8].Value  := 8;
+    TypeTab[Idx].Enums[9].Name  := 'IO_INPF';  TypeTab[Idx].Enums[9].Value  := 9;
+    TypeTab[Idx].Enums[10].Name := 'IO_SEEK';  TypeTab[Idx].Enums[10].Value := 10;
+    TypeTab[Idx].Enums[11].Name := 'IO_ILLC';  TypeTab[Idx].Enums[11].Value := 11;
+    TypeTab[Idx].Enums[12].Name := 'IO_NEPF';  TypeTab[Idx].Enums[12].Value := 12;
+    TypeTab[Idx].Enums[13].Name := 'IO_OPNF';  TypeTab[Idx].Enums[13].Value := 13;
+    Inc(TypeCount);
+    RegAlias('IO_STATUS', Idx);
+
+    (* Enregistrer chaque valeur enum dans SymTab *)
+    For EnIdx := 0 To 13 Do
+    Begin
+      Idx := SymAdd(TypeTab[TypeCount - 1].Enums[EnIdx].Name,
+                     SC_ENUM_VAL, TypeCount - 1);
+      If Idx >= 0 Then
+      Begin
+        SymTab[Idx].ImmVal := EnIdx;
+        SymTab[Idx].MangledName := VXP_ENUM_PFX +
+          StrUpperCase(TypeTab[TypeCount - 1].Enums[EnIdx].Name);
+      End;
+    End;
+  End;
+
+  If Opts.DebugMode Then
+    WriteLn('  TypeInit: ', TypeCount, ' types initialises');
+End;
+
+(* ---- TypeSizeof : retourner la taille d un type en octets ---- *)
+Function TypeSizeof(TIdx : Integer) : Integer;
+Begin
+  If (TIdx >= 0) And (TIdx < TypeCount) Then
+    TypeSizeof := TypeTab[TIdx].Size
+  Else
+    TypeSizeof := 4;  (* taille par defaut = DWORD 32 bits *)
+End;
+
+(* ---- IsSetTypeIdx : le type est-il un ensemble ? -------------- *)
+Function IsSetTypeIdx(TIdx : Integer) : Boolean;
+Begin
+  IsSetTypeIdx := (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_SET);
+End;
+
+(* ---- TypeIsOrdinal : le type est-il ordinal ? ----------------- *)
+(* Integer, Word, Byte, Char, Boolean, Enum, Subrange, Unsigned    *)
+Function TypeIsOrdinal(TIdx : Integer) : Boolean;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then
+  Begin
+    TypeIsOrdinal := False;
+    Exit;
+  End;
+  Case TypeTab[TIdx].Kind Of
+    TKP_INTEGER, TKP_WORD, TKP_BYTE, TKP_CHAR,
+    TKP_BOOLEAN, TKP_ENUM, TKP_SUBRANGE :
+      TypeIsOrdinal := True;
+  Else
+    TypeIsOrdinal := False;
+  End;
+End;
+
+(* ---- TypeIsNumeric : le type est-il numerique ? --------------- *)
+(* Integer, Word, Byte, Real, Double                               *)
+Function TypeIsNumeric(TIdx : Integer) : Boolean;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then
+  Begin
+    TypeIsNumeric := False;
+    Exit;
+  End;
+  Case TypeTab[TIdx].Kind Of
+    TKP_INTEGER, TKP_WORD, TKP_BYTE, TKP_REAL, TKP_DOUBLE :
+      TypeIsNumeric := True;
+  Else
+    TypeIsNumeric := False;
+  End;
+End;
+
+(* ---- TypeIsPointer : le type est-il un pointeur ? ------------- *)
+Function TypeIsPointer(TIdx : Integer) : Boolean;
+Begin
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then
+  Begin
+    TypeIsPointer := False;
+    Exit;
+  End;
+  Case TypeTab[TIdx].Kind Of
+    TKP_POINTER, TKP_NIL, TKP_STRING :
+      TypeIsPointer := True;
+  Else
+    TypeIsPointer := False;
+  End;
+End;
+
+(* ---- TypeCompatible : deux types sont-ils compatibles ? ------- *)
+(* Retourne True si on peut affecter une valeur de type T2 a T1.   *)
+(* Couvre les promotions implicites et les extensions VAX Pascal.   *)
+Function TypeCompatible(T1, T2 : Integer) : Boolean;
+Var
+  K1, K2 : TTypeKind;
+Begin
+  (* Types identiques : toujours compatible *)
+  If T1 = T2 Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Si l un des deux est inconnu, accepter *)
+  If (T1 = TY_UNKNOWN) Or (T2 = TY_UNKNOWN) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Verifier les bornes *)
+  If (T1 < 0) Or (T1 >= TypeCount) Or
+     (T2 < 0) Or (T2 >= TypeCount) Then
+  Begin
+    TypeCompatible := False;
+    Exit;
+  End;
+
+  K1 := TypeTab[T1].Kind;
+  K2 := TypeTab[T2].Kind;
+
+  (* nil -> tout type pointeur ou string *)
+  If K2 = TKP_NIL Then
+  Begin
+    TypeCompatible := (K1 = TKP_POINTER) Or (K1 = TKP_STRING) Or
+                      (K1 = TKP_NIL);
+    Exit;
+  End;
+
+  (* Integer <-> Word (implicite) *)
+  If ((K1 = TKP_INTEGER) Or (K1 = TKP_WORD)) And
+     ((K2 = TKP_INTEGER) Or (K2 = TKP_WORD)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Byte -> Integer ou Word (promotion implicite) *)
+  If (K2 = TKP_BYTE) And
+     ((K1 = TKP_INTEGER) Or (K1 = TKP_WORD) Or (K1 = TKP_BYTE)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Integer/Word -> Byte (retrecissement implicite) *)
+  If (K1 = TKP_BYTE) And
+     ((K2 = TKP_INTEGER) Or (K2 = TKP_WORD)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Char <-> Integer (Ord/Chr) *)
+  If ((K1 = TKP_CHAR) And (K2 = TKP_INTEGER)) Or
+     ((K1 = TKP_INTEGER) And (K2 = TKP_CHAR)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Char <-> Byte *)
+  If ((K1 = TKP_CHAR) And (K2 = TKP_BYTE)) Or
+     ((K1 = TKP_BYTE) And (K2 = TKP_CHAR)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Char <-> String (1 caractere, conversion implicite) *)
+  If ((K1 = TKP_CHAR) And (K2 = TKP_STRING)) Or
+     ((K1 = TKP_STRING) And (K2 = TKP_CHAR)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Boolean -> Integer (0|1) *)
+  If (K2 = TKP_BOOLEAN) And
+     ((K1 = TKP_INTEGER) Or (K1 = TKP_WORD) Or (K1 = TKP_BYTE)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Integer -> Boolean (non-zero = true) *)
+  If (K1 = TKP_BOOLEAN) And
+     ((K2 = TKP_INTEGER) Or (K2 = TKP_WORD) Or (K2 = TKP_BYTE)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Enum -> Integer (Ord) *)
+  If (K2 = TKP_ENUM) And
+     ((K1 = TKP_INTEGER) Or (K1 = TKP_WORD)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Subrange -> son type de base *)
+  If (K2 = TKP_SUBRANGE) And
+     (TypeTab[T2].BaseTypeIdx = T1) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+  If (K1 = TKP_SUBRANGE) And
+     (TypeTab[T1].BaseTypeIdx = T2) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Real <-> Integer (tronquage implicite) *)
+  If ((K1 = TKP_REAL) And ((K2 = TKP_INTEGER) Or (K2 = TKP_WORD))) Or
+     (((K1 = TKP_INTEGER) Or (K1 = TKP_WORD)) And (K2 = TKP_REAL)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Pointer <-> tout type pointeur *)
+  If (K1 = TKP_POINTER) And (K2 = TKP_POINTER) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* --- Extensions VAX Pascal --- *)
+
+  (* Double <-> Real (promotion/retrecissement flottant) *)
+  If ((K1 = TKP_DOUBLE) And (K2 = TKP_REAL)) Or
+     ((K1 = TKP_REAL) And (K2 = TKP_DOUBLE)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Double <-> Integer/Word *)
+  If ((K1 = TKP_DOUBLE) And ((K2 = TKP_INTEGER) Or (K2 = TKP_WORD))) Or
+     (((K1 = TKP_INTEGER) Or (K1 = TKP_WORD)) And (K2 = TKP_DOUBLE)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Varying <-> String (interchangeables) *)
+  If ((K1 = TKP_VARYING) And (K2 = TKP_STRING)) Or
+     ((K1 = TKP_STRING) And (K2 = TKP_VARYING)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Varying <-> Char *)
+  If ((K1 = TKP_VARYING) And (K2 = TKP_CHAR)) Or
+     ((K1 = TKP_CHAR) And (K2 = TKP_VARYING)) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  (* Set <-> Set (meme genre) *)
+  If (K1 = TKP_SET) And (K2 = TKP_SET) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  TypeCompatible := False;
+End;
+
+(* ---- EmitCoerce : conversion de type inline 32 bits ----------- *)
+(* Emet le code x86-32 necessaire pour convertir la valeur dans    *)
+(* EAX du type SrcType vers DstType.                               *)
+Procedure EmitCoerce(SrcType, DstType : Integer);
+Var
+  Ks, Kd : TTypeKind;
+Begin
+  If SrcType = DstType Then Exit;
+  If (SrcType = TY_UNKNOWN) Or (DstType = TY_UNKNOWN) Then Exit;
+  If (SrcType < 0) Or (SrcType >= TypeCount) Or
+     (DstType < 0) Or (DstType >= TypeCount) Then Exit;
+
+  Ks := TypeTab[SrcType].Kind;
+  Kd := TypeTab[DstType].Kind;
+
+  { Byte -> Integer/Word : extension zero MOVZX EAX, AL }
+  If (Ks = TKP_BYTE) And ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
+  Begin
+    EmitComment('coerce byte -> dword');
+    EmitInstrAB('MOVZX', 'EAX', 'AL');
+    Exit;
+  End;
+
+  { Char -> Integer/Word : extension zero MOVZX EAX, AL }
+  If (Ks = TKP_CHAR) And ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
+  Begin
+    EmitComment('coerce char -> dword (Ord)');
+    EmitInstrAB('MOVZX', 'EAX', 'AL');
+    Exit;
+  End;
+
+  { Integer/Word -> Byte : troncature (prendre AL) }
+  If ((Ks = TKP_INTEGER) Or (Ks = TKP_WORD)) And (Kd = TKP_BYTE) Then
+  Begin
+    EmitComment('coerce dword -> byte (troncature)');
+    Exit;
+  End;
+
+  { Boolean -> Integer : extension zero MOVZX EAX, AL }
+  If (Ks = TKP_BOOLEAN) And
+     ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
+  Begin
+    EmitComment('coerce boolean -> dword');
+    EmitInstrAB('MOVZX', 'EAX', 'AL');
+    Exit;
+  End;
+
+  { Integer -> Boolean : CMP EAX,0 / SETNE AL / MOVZX EAX, AL }
+  If ((Ks = TKP_INTEGER) Or (Ks = TKP_WORD)) And
+     (Kd = TKP_BOOLEAN) Then
+  Begin
+    EmitComment('coerce dword -> boolean');
+    EmitInstrAB('CMP', 'EAX', '0');
+    EmitInstrA('SETNE', 'AL');
+    EmitInstrAB('MOVZX', 'EAX', 'AL');
+    Exit;
+  End;
+
+  { Char -> String : sera gere par le runtime (Chr) }
+  If (Ks = TKP_CHAR) And (Kd = TKP_STRING) Then
+  Begin
+    EmitComment('coerce char -> string (runtime)');
+    Exit;
+  End;
+
+  { nil -> Pointer/String : valeur deja 0 }
+  If (Ks = TKP_NIL) And ((Kd = TKP_POINTER) Or (Kd = TKP_STRING)) Then
+    Exit;
+
+  { Real -> Integer : tronquage (deja fait par le front-end) }
+  If (Ks = TKP_REAL) And ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
+  Begin
+    WarnMsg('reel tronque en entier');
+    Exit;
+  End;
+
+  { Integer -> Real : on garde la valeur entiere }
+  If ((Ks = TKP_INTEGER) Or (Ks = TKP_WORD)) And (Kd = TKP_REAL) Then
+    Exit;
+
+  { Enum -> Integer (Ord) }
+  If (Ks = TKP_ENUM) And ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
+  Begin
+    EmitComment('coerce enum -> dword (Ord)');
+    Exit;
+  End;
+
+  { Integer <-> Word : meme representation 32 bits, pas de code }
+  If ((Ks = TKP_INTEGER) And (Kd = TKP_WORD)) Or
+     ((Ks = TKP_WORD) And (Kd = TKP_INTEGER)) Then
+  Begin
+    If Opts.Warnings Then
+      WarnMsg('conversion implicite signe <-> non-signe');
+    Exit;
+  End;
+
+  { Double -> Integer : tronquage }
+  If (Ks = TKP_DOUBLE) And ((Kd = TKP_INTEGER) Or (Kd = TKP_WORD)) Then
+  Begin
+    WarnMsg('double tronque en entier');
+    Exit;
+  End;
+
+  { Varying -> String : on traite comme pointeur chaine }
+  If (Ks = TKP_VARYING) And (Kd = TKP_STRING) Then
+  Begin
+    EmitComment('coerce varying -> string');
+    Exit;
+  End;
+
+  { String -> Varying : inverse }
+  If (Ks = TKP_STRING) And (Kd = TKP_VARYING) Then
+  Begin
+    EmitComment('coerce string -> varying');
+    Exit;
+  End;
+
+  { Pas de conversion connue : avertissement }
+  If Opts.Warnings Then
+    WarnMsg('conversion de type implicite non supportee');
+End;
+
+(* ---- TypeCoerce : emettre le code de conversion src -> dst ---- *)
+(* Delegue a EmitCoerce et retourne le TypeIdx du resultat.        *)
+Function TypeCoerce(SrcType, DstType : Integer) : Integer;
+Begin
+  If SrcType = DstType Then
+  Begin
+    TypeCoerce := SrcType;
+    Exit;
+  End;
+  If (SrcType = TY_UNKNOWN) Or (DstType = TY_UNKNOWN) Then
+  Begin
+    If DstType <> TY_UNKNOWN Then
+      TypeCoerce := DstType
+    Else
+      TypeCoerce := SrcType;
+    Exit;
+  End;
+  EmitCoerce(SrcType, DstType);
+  TypeCoerce := DstType;
+End;
+
+(* ---- TypeResolve : resoudre un nom de type en indice ---------- *)
+(* Cherche dans SymTab (SC_TYPE), sinon retourne TY_UNKNOWN.       *)
+Function TypeResolve(Const Name : TString) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := SymFind(Name);
+  If (Idx >= 0) And (SymTab[Idx].Cat = SC_TYPE) Then
+    TypeResolve := SymTab[Idx].TypeIdx
+  Else
+    TypeResolve := TY_UNKNOWN;
+End;
+
 { ============================================================
   PROCEDURE PRINCIPALE (Run)
   ============================================================ }
@@ -4066,7 +4657,7 @@ Begin
       LexNextToken;
   End;
 
-  { TODO 06+ : Parse, EmitHeader, ... }
+  { TODO 07+ : Parse, EmitHeader, ... }
 
   { Fermer le lexeur }
   LexClose;
