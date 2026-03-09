@@ -155,7 +155,7 @@
             EmitEpilog : MOV ESP,EBP / POP EBP / RET
             EmitDataSeg : ecrire .DATA avec toutes les entrees DataTab
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
               DK_ARRAY/DK_REC/DK_ARRAY_INIT/DK_SET), IntVal, StrVal
             DataTab[0..MAX_DATA-1], DataCount
@@ -867,6 +867,15 @@ Function  TypeIsNumeric(TIdx : Integer) : Boolean; Forward;
 Function  TypeIsPointer(TIdx : Integer) : Boolean; Forward;
 Function  IsSetTypeIdx(TIdx : Integer) : Boolean; Forward;
 Procedure EmitCoerce(SrcType, DstType : Integer); Forward;
+{ Forward declarations TODO 08 }
+Procedure ParseVarDecl; Forward;
+Procedure ParseConstDecl; Forward;
+Procedure ParseVarAttributes(
+  Var AExternal, AGlobal, AVolatile,
+      AReadOnly, AWriteOnly, AWord, AUnsafe,
+      AHidden, AUnbound : Boolean;
+  Var AAlignVal, APosVal : Integer); Forward;
+Procedure ParseDeclAttributes; Forward;
 
 { ============================================================
   UTILITAIRES DE CHAINES
@@ -1403,11 +1412,9 @@ End;
 { ---- IncludePush / IncludePop ------------------------------ }
 
 Procedure IncludePush(Const FileName : TString);
-{$IFDEF UNIX}
 Var
   FN  : TString;
   FI  : Integer;
-{$ENDIF}
 Begin
   If IncTop >= MAX_INCLUDE - 1 Then
   Begin
@@ -1437,8 +1444,29 @@ Begin
   If IOResult <> 0 Then
   Begin
     WarnMsg('impossible d''ouvrir le fichier include: ' + FileName);
+    {$I-}
     Assign(LexSrcF, IncSavedFName[IncTop]);
     Reset(LexSrcF);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      Dec(IncTop);
+      LexEOF := True;
+      Exit;
+    End;
+    { Skip to the saved line position to avoid re-reading from start }
+    {$I-}
+    For FI := 1 To IncSavedFLine[IncTop] Do
+    Begin
+      If EOF(LexSrcF) Then Break;
+      ReadLn(LexSrcF, FN);
+    End;
+    {$I+}
+    LexSrcFName := IncSavedFName[IncTop];
+    LexLine     := IncSavedLine[IncTop];
+    LexLineNo   := IncSavedLineNo[IncTop];
+    LexColNo    := IncSavedColNo[IncTop];
+    LexEOF      := IncSavedEOF[IncTop];
     Dec(IncTop);
     Exit;
   End;
@@ -4983,10 +5011,1286 @@ End;
 
 
 { ============================================================
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  ParseDeclAttributes, ParseVarAttributes, ParseVarDecl,
+  ParseConstDecl
+  ============================================================ }
+
+(* ---- ParseDeclAttributes : lire les attributs de haut niveau --- *)
+(* Consomme [GLOBAL], [EXTERNAL], [INHERIT('file')],               *)
+(* [ENVIRONMENT('name')], [IDENT('name')], etc.                    *)
+(* Positionne PendAttrGlobal / PendAttrExternal.                   *)
+Procedure ParseDeclAttributes;
+Var
+  Attr : TString;
+  Arg  : TString;
+Begin
+  PendAttrGlobal   := False;
+  PendAttrExternal := False;
+
+  If Not IsOpenBracket Then
+    Exit;
+
+  LexNextToken;  (* consommer [ *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not IsCloseBracket Do
+  Begin
+    Attr := StrLowerCase(CurToken.Val);
+
+    If Attr = 'global' Then
+    Begin
+      PendAttrGlobal := True;
+      LexNextToken;
+    End
+    Else If Attr = 'external' Then
+    Begin
+      PendAttrExternal := True;
+      LexNextToken;
+    End
+    Else If Attr = 'inherit' Then
+    Begin
+      LexNextToken;  (* consommer INHERIT *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+        Begin
+          If CurToken.Kind = TK_STRING Then
+          Begin
+            Arg := CurToken.Val;
+            EmitComment('INHERIT: ' + Arg);
+            If (Pos('$', Arg) = 0) And (Pos(':', Arg) = 0) Then
+            Begin
+              If (Pos('.', Arg) = 0) Then
+                Arg := Arg + '.INC';
+              {$I-}
+              IncludePush(Arg);
+              {$I+}
+            End;
+            LexNextToken;
+          End
+          Else
+            LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+            LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+    End
+    Else If Attr = 'environment' Then
+    Begin
+      LexNextToken;  (* consommer ENVIRONMENT *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          EnvironmentName := CurToken.Val;
+          EmitComment('ENVIRONMENT: ' + EnvironmentName);
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+    End
+    Else If Attr = 'ident' Then
+    Begin
+      LexNextToken;  (* consommer IDENT *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          ModuleIdent := CurToken.Val;
+          EmitComment('IDENT: ' + ModuleIdent);
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+    End
+    Else
+    Begin
+      LexNextToken;
+    End;
+
+    (* virgule entre attributs *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      LexNextToken;
+  End;
+
+  (* consommer ] *)
+  If IsCloseBracket Then
+    LexNextToken;
+End;
+
+(* ---- ParseVarAttributes : lire les attributs VAX entre [] ---- *)
+(* Retourne les drapeaux via les parametres var.                   *)
+(* Attributs supportes : EXTERNAL, GLOBAL, VOLATILE, READONLY,    *)
+(*   WRITEONLY, ALIGNED(n), WORD, UNSAFE, HIDDEN, UNBOUND, POS(n) *)
+Procedure ParseVarAttributes(
+  Var AExternal, AGlobal, AVolatile,
+      AReadOnly, AWriteOnly, AWord, AUnsafe,
+      AHidden, AUnbound : Boolean;
+  Var AAlignVal, APosVal : Integer);
+Var
+  Attr : TString;
+Begin
+  AExternal  := False;
+  AGlobal    := False;
+  AVolatile  := False;
+  AReadOnly  := False;
+  AWriteOnly := False;
+  AWord      := False;
+  AUnsafe    := False;
+  AHidden    := False;
+  AUnbound   := False;
+  AAlignVal  := 0;
+  APosVal    := -1;
+
+  If Not IsOpenBracket Then
+    Exit;
+
+  LexNextToken;  (* consommer [ *)
+  While (CurToken.Kind <> TK_EOF) And
+        Not IsCloseBracket Do
+  Begin
+    Attr := StrLowerCase(CurToken.Val);
+
+    If Attr = 'external' Then
+      AExternal := True
+    Else If Attr = 'global' Then
+      AGlobal := True
+    Else If Attr = 'volatile' Then
+      AVolatile := True
+    Else If Attr = 'readonly' Then
+      AReadOnly := True
+    Else If Attr = 'writeonly' Then
+      AWriteOnly := True
+    Else If Attr = 'word' Then
+      AWord := True
+    Else If Attr = 'unsafe' Then
+      AUnsafe := True
+    Else If Attr = 'hidden' Then
+      AHidden := True
+    Else If Attr = 'unbound' Then
+      AUnbound := True
+    Else If Attr = 'aligned' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          AAlignVal := CurToken.IntVal;
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      Continue;
+    End
+    Else If Attr = 'pos' Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          APosVal := CurToken.IntVal;
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      Continue;
+    End
+    Else
+      WarnMsg('attribut VAX inconnu: ' + CurToken.Val);
+
+    LexNextToken;
+
+    (* virgule entre attributs *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      LexNextToken;
+  End;
+
+  (* consommer ] *)
+  If IsCloseBracket Then
+    LexNextToken;
+End;
+
+(* ---- ParseVarDecl : analyser un bloc VAR ---------------------- *)
+(* Syntaxe VAX Pascal :                                            *)
+(*   VAR a, b : Integer;                                           *)
+(*   VAR s : VARYING [80] OF CHAR;                                 *)
+(*   VAR p : ^Integer;                                             *)
+(*   [EXTERNAL] VAR x : Integer;                                   *)
+(*   [GLOBAL]   VAR x : Integer;                                   *)
+(*   STATIC VAR x : Integer := 0;                                  *)
+(*   EXTERNAL VAR x : Integer;                                     *)
+Procedure ParseVarDecl;
+Var
+  Names    : Array[0..MAX_PARAM - 1] Of TString;
+  NCount   : Integer;
+  TName    : TString;
+  TIdx     : Integer;
+  TSz      : Integer;
+  I, Idx   : Integer;
+  DIdx     : Integer;
+  (* VAX attributes *)
+  AttrExternal, AttrGlobal, AttrVolatile : Boolean;
+  AttrReadOnly, AttrWriteOnly : Boolean;
+  AttrWord, AttrUnsafe : Boolean;
+  AttrHidden, AttrUnbound : Boolean;
+  AttrAlignVal, AttrPosVal : Integer;
+  IsStaticVar   : Boolean;
+  IsExternalVar : Boolean;
+  UseCat        : TSymCat;
+  (* Tableaux *)
+  ArrLo, ArrHi   : LongInt;
+  ArrCount        : LongInt;
+  ArrSize         : LongInt;
+  ElemTIdx        : Integer;
+  NewArrTIdx      : Integer;
+  ElemTName       : TString;
+  ElemSz          : Integer;
+  (* VARYING *)
+  VaryLen         : Integer;
+  NewVaryTIdx     : Integer;
+  (* Pointeurs *)
+  IsPtr           : Boolean;
+  BaseTIdx        : Integer;
+  NewPtrTIdx      : Integer;
+  (* Initialisation *)
+  InitEv          : TExprVal;
+Begin
+  HasPendingAssign := False;
+
+  IsStaticVar   := False;
+  IsExternalVar := False;
+
+  While (CurToken.Kind = TK_IDENT) Or IsOpenBracket Do
+  Begin
+    AttrExternal  := False;
+    AttrGlobal    := False;
+    AttrVolatile  := False;
+    AttrReadOnly  := False;
+    AttrWriteOnly := False;
+    AttrWord      := False;
+    AttrUnsafe    := False;
+    AttrHidden    := False;
+    AttrUnbound   := False;
+    AttrAlignVal  := 0;
+    AttrPosVal    := -1;
+
+    If IsOpenBracket Then
+    Begin
+      ParseVarAttributes(AttrExternal, AttrGlobal, AttrVolatile,
+        AttrReadOnly, AttrWriteOnly, AttrWord, AttrUnsafe,
+        AttrHidden, AttrUnbound, AttrAlignVal, AttrPosVal);
+    End;
+
+    (* After VAX attributes, there may be the keyword VAR *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'var') Then
+      LexNextToken;
+
+    (* Detect STATIC or EXTERNAL after attributes *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'static') Then
+    Begin
+      IsStaticVar := True;
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'var') Then
+        LexNextToken;
+    End;
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'external') Then
+    Begin
+      AttrExternal := True;
+      IsExternalVar := True;
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'var') Then
+        LexNextToken;
+    End;
+
+    (* Propagate pending attributes from ParseDeclAttributes *)
+    If PendAttrGlobal Then
+      AttrGlobal := True;
+    If PendAttrExternal Then
+      AttrExternal := True;
+
+    (* First identifier *)
+    If CurToken.Kind <> TK_IDENT Then Break;
+    Names[0] := CurToken.Val;
+    NCount := 1;
+    LexNextToken;
+
+    (* If := follows, this is an assignment, not a var declaration *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      PendingAssignName := Names[0];
+      HasPendingAssign  := True;
+      Exit;
+    End;
+
+    (* Collect additional names separated by commas *)
+    While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
+    Begin
+      LexNextToken;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        If NCount < MAX_PARAM Then
+        Begin
+          Names[NCount] := CurToken.Val;
+          Inc(NCount);
+        End
+        Else
+          WarnMsg('trop de variables dans une declaration');
+        LexNextToken;
+      End
+      Else
+      Begin
+        WarnMsg('identificateur attendu apres virgule');
+        Break;
+      End;
+    End;
+
+    (* Colon + type name *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      LexNextToken
+    Else
+    Begin
+      WarnMsg(''':'' attendu apres le(s) nom(s) de variable');
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* Determine the symbol category *)
+    UseCat := SC_VAR;
+    If IsStaticVar Or AttrExternal Then
+    Begin
+      If AttrExternal Then
+        UseCat := SC_EXTERNAL
+      Else
+        UseCat := SC_STATIC;
+    End
+    Else If IsExternalVar Then
+      UseCat := SC_EXTERNAL
+    Else If AttrGlobal Then
+      UseCat := SC_GLOBAL;
+
+    (* --- Pointer ^Type detection --- *)
+    IsPtr := False;
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
+    Begin
+      IsPtr := True;
+      LexNextToken;
+    End;
+
+    (* --- Procedure/Function pointer variable --- *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((StrLowerCase(CurToken.Val) = 'procedure') Or
+        (StrLowerCase(CurToken.Val) = 'function')) Then
+    Begin
+      LexNextToken;  (* consume PROCEDURE/FUNCTION *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        LexNextToken;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And
+                   (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+      Begin
+        LexNextToken;
+        If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+          LexNextToken;
+      End;
+      For I := 0 To NCount - 1 Do
+      Begin
+        Idx := SymAdd(Names[I], UseCat, TY_IDX_POINTER);
+        If Idx >= 0 Then
+        Begin
+          If (CurScopeLevel = 0) Or (UseCat = SC_STATIC) Or
+             (UseCat = SC_GLOBAL) Or (UseCat = SC_EXTERNAL) Then
+          Begin
+            SymTab[Idx].IsLocal := False;
+            If UseCat = SC_EXTERNAL Then
+              EmitInstr('EXTRN  ' + SymTab[Idx].MangledName + ':DWORD')
+            Else
+            Begin
+              DIdx := DataAdd(SymTab[Idx].MangledName, DK_DWORD, 0, '');
+              SymTab[Idx].DataIdx := DIdx;
+            End;
+          End
+          Else
+          Begin
+            Dec(CurFrameOffset, 4);
+            If (CurFrameOffset And 3) <> 0 Then
+              CurFrameOffset := CurFrameOffset And (Not 3);
+            SymTab[Idx].Offset  := CurFrameOffset;
+            SymTab[Idx].IsLocal := True;
+          End;
+          If Opts.DebugMode Then
+            WriteLn('  VAR_PROCPTR: ', Names[I], ' -> pointer');
+        End;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* --- VARYING [n] OF CHAR detection --- *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'varying') Then
+    Begin
+      LexNextToken;  (* consume VARYING *)
+      VaryLen := 80;  (* default *)
+      If IsOpenBracket Then
+      Begin
+        LexNextToken;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          VaryLen := CurToken.IntVal;
+          LexNextToken;
+        End;
+        If IsCloseBracket Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+        LexNextToken;
+
+      NewVaryTIdx := TY_IDX_VARYING;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewVaryTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewVaryTIdx].Kind        := TKP_VARYING;
+        TypeTab[NewVaryTIdx].Size        := 4 + VaryLen;
+        TypeTab[NewVaryTIdx].Hi          := VaryLen;
+        TypeTab[NewVaryTIdx].Lo          := 0;
+        TypeTab[NewVaryTIdx].BaseTypeIdx := TY_IDX_CHAR;
+        TypeTab[NewVaryTIdx].FieldCount  := 0;
+        TypeTab[NewVaryTIdx].EnumCount   := 0;
+      End;
+
+      For I := 0 To NCount - 1 Do
+      Begin
+        Idx := SymAdd(Names[I], UseCat, NewVaryTIdx);
+        If Idx >= 0 Then
+        Begin
+          If (UseCat = SC_EXTERNAL) Then
+          Begin
+            SymTab[Idx].IsLocal := False;
+            EmitInstr('EXTRN  ' + SymTab[Idx].MangledName + ':DWORD');
+            If Opts.DebugMode Then
+              WriteLn('  VAR_EXTERNAL: ', Names[I],
+                      ' : VARYING[', VaryLen, ']');
+          End
+          Else If (CurScopeLevel = 0) Or (UseCat = SC_STATIC) Then
+          Begin
+            SymTab[Idx].IsLocal := False;
+            DIdx := DataAddArray(SymTab[Idx].MangledName,
+              4 + VaryLen, 1);
+            SymTab[Idx].DataIdx := DIdx;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_VARYING_GLOBAL: ', Names[I],
+                      ' VARYING[', VaryLen, '] -> ',
+                      SymTab[Idx].MangledName);
+          End
+          Else
+          Begin
+            Dec(CurFrameOffset, 4 + VaryLen);
+            If (CurFrameOffset And 3) <> 0 Then
+              CurFrameOffset := CurFrameOffset And (Not 3);
+            SymTab[Idx].Offset  := CurFrameOffset;
+            SymTab[Idx].IsLocal := True;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_VARYING_LOCAL: ', Names[I],
+                      ' VARYING[', VaryLen, '] -> [EBP',
+                      CurFrameOffset, ']');
+          End;
+        End;
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* --- SET OF type (inline) detection --- *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'set') Then
+    Begin
+      LexNextToken;  (* consume SET *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        LexNextToken;
+      TName := '';
+      If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+      Begin
+        TName := CurToken.Val;
+        LexNextToken;
+      End;
+      BaseTIdx := TypeResolve(TName);
+      If BaseTIdx = TY_UNKNOWN Then
+        BaseTIdx := TY_IDX_INTEGER;
+      NewPtrTIdx := TY_IDX_SET;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewPtrTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewPtrTIdx].Kind        := TKP_SET;
+        TypeTab[NewPtrTIdx].Size        := 32;
+        TypeTab[NewPtrTIdx].BaseTypeIdx := BaseTIdx;
+        TypeTab[NewPtrTIdx].Lo          := 0;
+        TypeTab[NewPtrTIdx].Hi          := 255;
+        TypeTab[NewPtrTIdx].FieldCount  := 0;
+        TypeTab[NewPtrTIdx].EnumCount   := 0;
+        TypeTab[NewPtrTIdx].Packed_     := False;
+        TypeTab[NewPtrTIdx].Precision   := 0;
+      End;
+      For I := 0 To NCount - 1 Do
+      Begin
+        Idx := SymAdd(Names[I], UseCat, NewPtrTIdx);
+        If Idx >= 0 Then
+        Begin
+          If (CurScopeLevel = 0) Or (UseCat = SC_STATIC) Or
+             (UseCat = SC_GLOBAL) Then
+          Begin
+            SymTab[Idx].IsLocal := False;
+            DIdx := DataAdd(SymTab[Idx].MangledName, DK_SET, 0, '');
+            SymTab[Idx].DataIdx := DIdx;
+            If UseCat = SC_GLOBAL Then
+              EmitInstr('PUBLIC ' + SymTab[Idx].MangledName);
+            If Opts.DebugMode Then
+              WriteLn('  VAR_SET_GLOBAL: ', Names[I],
+                      ' -> ', SymTab[Idx].MangledName);
+          End
+          Else If UseCat = SC_EXTERNAL Then
+          Begin
+            SymTab[Idx].IsLocal := False;
+            EmitInstr('EXTRN  ' + SymTab[Idx].MangledName + ':BYTE');
+            If Opts.DebugMode Then
+              WriteLn('  VAR_SET_EXTERNAL: ', Names[I]);
+          End
+          Else
+          Begin
+            Dec(CurFrameOffset, 32);
+            If (CurFrameOffset And 3) <> 0 Then
+              CurFrameOffset := CurFrameOffset And (Not 3);
+            SymTab[Idx].Offset  := CurFrameOffset;
+            SymTab[Idx].IsLocal := True;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_SET_LOCAL: ', Names[I],
+                      ' -> [EBP', CurFrameOffset, ']');
+          End;
+        End;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* --- ARRAY[lo..hi] OF type detection --- *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'array') Then
+    Begin
+      LexNextToken;  (* consume ARRAY *)
+
+      If IsOpenBracket Then
+        LexNextToken
+      Else
+        WarnMsg('''['' attendu apres ARRAY');
+
+      (* Lower bound *)
+      ArrLo := 0;
+      If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrLo := CurToken.IntVal;
+        LexNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or
+              (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        If (Idx >= 0) And
+           (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrLo := SymTab[Idx].ImmVal
+        Else
+          WarnMsg('constante attendue pour borne inferieure');
+        LexNextToken;
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+        LexNextToken
+      Else
+        WarnMsg('''..'' attendu dans declaration ARRAY');
+
+      (* Upper bound - support * for conformant arrays *)
+      ArrHi := 0;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+      Begin
+        ArrHi := 1;
+        LexNextToken;
+      End
+      Else If CurToken.Kind = TK_INTEGER Then
+      Begin
+        ArrHi := CurToken.IntVal;
+        LexNextToken;
+      End
+      Else If (CurToken.Kind = TK_IDENT) Or
+              (CurToken.Kind = TK_KEYWORD) Then
+      Begin
+        Idx := SymFind(CurToken.Val);
+        If (Idx >= 0) And
+           (SymTab[Idx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+          ArrHi := SymTab[Idx].ImmVal
+        Else
+          WarnMsg('constante attendue pour borne superieure');
+        LexNextToken;
+      End;
+
+      If IsCloseBracket Then
+        LexNextToken
+      Else
+        WarnMsg(''']'' attendu');
+
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'of') Then
+        LexNextToken
+      Else
+        WarnMsg('''OF'' attendu apres ARRAY[...]');
+
+      ElemTName := '';
+      If (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_IDENT) Then
+      Begin
+        ElemTName := CurToken.Val;
+        LexNextToken;
+      End
+      Else
+        WarnMsg('type element attendu');
+
+      ElemTIdx := TypeResolve(ElemTName);
+      If ElemTIdx = TY_UNKNOWN Then
+      Begin
+        WarnMsg('type element inconnu: ' + ElemTName);
+        ElemTIdx := TY_IDX_INTEGER;
+      End;
+      ElemSz := TypeSizeof(ElemTIdx);
+
+      ArrCount := ArrHi - ArrLo + 1;
+      If ArrCount < 1 Then ArrCount := 1;
+      ArrSize := ArrCount * ElemSz;
+
+      NewArrTIdx := TY_IDX_INTEGER;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewArrTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewArrTIdx].Kind        := TKP_ARRAY;
+        TypeTab[NewArrTIdx].Size        := ArrSize;
+        TypeTab[NewArrTIdx].BaseTypeIdx := ElemTIdx;
+        TypeTab[NewArrTIdx].Lo          := ArrLo;
+        TypeTab[NewArrTIdx].Hi          := ArrHi;
+        TypeTab[NewArrTIdx].FieldCount  := 0;
+        TypeTab[NewArrTIdx].EnumCount   := 0;
+      End
+      Else
+        WarnMsg('nombre maximal de types atteint');
+
+      For I := 0 To NCount - 1 Do
+      Begin
+        Idx := SymAdd(Names[I], UseCat, NewArrTIdx);
+        If Idx >= 0 Then
+        Begin
+          If (UseCat = SC_EXTERNAL) Then
+          Begin
+            SymTab[Idx].IsLocal := False;
+            EmitInstr('EXTRN  ' + SymTab[Idx].MangledName + ':DWORD');
+            If Opts.DebugMode Then
+              WriteLn('  VAR_ARRAY_EXTERNAL: ', Names[I],
+                      ' [', ArrLo, '..', ArrHi, '] of ',
+                      ElemTName);
+          End
+          Else If (CurScopeLevel = 0) Or (UseCat = SC_STATIC) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_ARR_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddArray(
+              SymTab[Idx].MangledName, ArrCount, ElemSz);
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_ARRAY_GLOBAL: ', Names[I],
+                      ' [', ArrLo, '..', ArrHi, '] of ',
+                      ElemTName, ' -> ',
+                      SymTab[Idx].MangledName);
+          End
+          Else
+          Begin
+            Dec(CurFrameOffset, ArrSize);
+            If (CurFrameOffset And 3) <> 0 Then
+              CurFrameOffset := CurFrameOffset And (Not 3);
+            SymTab[Idx].Offset  := CurFrameOffset;
+            SymTab[Idx].IsLocal := True;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_ARRAY_LOCAL: ', Names[I],
+                      ' [', ArrLo, '..', ArrHi, '] of ',
+                      ElemTName, ' -> [EBP',
+                      CurFrameOffset, ']');
+          End;
+        End;
+      End;
+
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* --- Read standard type or identifier --- *)
+    TName := '';
+    If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
+    Begin
+      TName := CurToken.Val;
+      LexNextToken;
+    End
+    Else
+      WarnMsg('nom de type attendu');
+
+    TIdx := TypeResolve(TName);
+    If TIdx = TY_UNKNOWN Then
+    Begin
+      WarnMsg('type inconnu: ' + TName);
+      TIdx := TY_IDX_INTEGER;
+    End;
+    TSz := TypeSizeof(TIdx);
+
+    (* If pointer, create a pointer type *)
+    If IsPtr Then
+    Begin
+      BaseTIdx := TIdx;
+      NewPtrTIdx := TY_IDX_POINTER;
+      If TypeCount < MAX_TYPE Then
+      Begin
+        NewPtrTIdx := TypeCount;
+        Inc(TypeCount);
+        TypeTab[NewPtrTIdx].Kind        := TKP_POINTER;
+        TypeTab[NewPtrTIdx].Size        := 4;
+        TypeTab[NewPtrTIdx].BaseTypeIdx := BaseTIdx;
+        TypeTab[NewPtrTIdx].FieldCount  := 0;
+        TypeTab[NewPtrTIdx].EnumCount   := 0;
+      End;
+      TIdx := NewPtrTIdx;
+      TSz  := 4;
+    End;
+
+    If AttrWord Then TSz := 4;
+
+    (* Register each variable *)
+    For I := 0 To NCount - 1 Do
+    Begin
+      Idx := SymAdd(Names[I], UseCat, TIdx);
+      If Idx >= 0 Then
+      Begin
+        (* EXTERNAL variable : declare EXTRN *)
+        If (UseCat = SC_EXTERNAL) Then
+        Begin
+          SymTab[Idx].IsLocal := False;
+          If TSz = 1 Then
+            EmitInstr('EXTRN  ' + SymTab[Idx].MangledName + ':BYTE')
+          Else
+            EmitInstr('EXTRN  ' + SymTab[Idx].MangledName + ':DWORD');
+          If Opts.DebugMode Then
+            WriteLn('  VAR_EXTERNAL: ', Names[I], ' : ', TName);
+        End
+        (* GLOBAL variable : mark PUBLIC *)
+        Else If (UseCat = SC_GLOBAL) Then
+        Begin
+          SymTab[Idx].IsLocal := False;
+          If (TIdx >= 0) And (TIdx < TypeCount) And
+             (TypeTab[TIdx].Kind = TKP_RECORD) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_REC_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddRec(SymTab[Idx].MangledName, TSz);
+          End
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_SET) Then
+            DIdx := DataAdd(SymTab[Idx].MangledName, DK_SET, 0, '')
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  ((TypeTab[TIdx].Kind = TKP_TEXT) Or
+                   (TypeTab[TIdx].Kind = TKP_FILE)) Then
+            DIdx := DataAddRec(SymTab[Idx].MangledName, FILE_DESC_SIZE)
+          Else If TSz = 1 Then
+            DIdx := DataAddByte(SymTab[Idx].MangledName, 0)
+          Else
+            DIdx := DataAddDWord(SymTab[Idx].MangledName, 0);
+          SymTab[Idx].DataIdx := DIdx;
+          EmitInstr('PUBLIC ' + SymTab[Idx].MangledName);
+          If Opts.DebugMode Then
+            WriteLn('  VAR_GLOBAL: ', Names[I], ' : ', TName,
+                    ' -> ', SymTab[Idx].MangledName);
+        End
+        (* STATIC variable : in .DATA *)
+        Else If (UseCat = SC_STATIC) Then
+        Begin
+          SymTab[Idx].IsLocal := False;
+          If (TIdx >= 0) And (TIdx < TypeCount) And
+             (TypeTab[TIdx].Kind = TKP_RECORD) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_REC_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddRec(SymTab[Idx].MangledName, TSz);
+          End
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_SET) Then
+            DIdx := DataAdd(SymTab[Idx].MangledName, DK_SET, 0, '')
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  ((TypeTab[TIdx].Kind = TKP_TEXT) Or
+                   (TypeTab[TIdx].Kind = TKP_FILE)) Then
+            DIdx := DataAddRec(SymTab[Idx].MangledName, FILE_DESC_SIZE)
+          Else If TSz = 1 Then
+            DIdx := DataAddByte(SymTab[Idx].MangledName, 0)
+          Else
+            DIdx := DataAddDWord(SymTab[Idx].MangledName, 0);
+          SymTab[Idx].DataIdx := DIdx;
+          If Opts.DebugMode Then
+            WriteLn('  VAR_STATIC: ', Names[I], ' : ', TName,
+                    ' -> ', SymTab[Idx].MangledName);
+        End
+        (* Standard global variable *)
+        Else If CurScopeLevel = 0 Then
+        Begin
+          If (TIdx >= 0) And (TIdx < TypeCount) And
+             (TypeTab[TIdx].Kind = TKP_RECORD) Then
+          Begin
+            SymTab[Idx].MangledName := VXP_REC_PFX +
+              StrUpperCase(Names[I]);
+            DIdx := DataAddRec(SymTab[Idx].MangledName, TSz);
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_REC_GLOBAL: ', Names[I], ' : ',
+                      TName, ' size=', TSz,
+                      ' -> ', SymTab[Idx].MangledName);
+          End
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  (TypeTab[TIdx].Kind = TKP_SET) Then
+          Begin
+            DIdx := DataAdd(SymTab[Idx].MangledName, DK_SET, 0, '');
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_SET_GLOBAL: ', Names[I], ' : ',
+                      TName, ' -> ', SymTab[Idx].MangledName);
+          End
+          Else If (TIdx >= 0) And (TIdx < TypeCount) And
+                  ((TypeTab[TIdx].Kind = TKP_TEXT) Or
+                   (TypeTab[TIdx].Kind = TKP_FILE)) Then
+          Begin
+            DIdx := DataAddRec(SymTab[Idx].MangledName, FILE_DESC_SIZE);
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_FILE_GLOBAL: ', Names[I], ' : ',
+                      TName, ' -> ', SymTab[Idx].MangledName);
+          End
+          Else If TSz = 1 Then
+          Begin
+            DIdx := DataAddByte(SymTab[Idx].MangledName, 0);
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_GLOBAL: ', Names[I], ' : ', TName,
+                      ' -> ', SymTab[Idx].MangledName);
+          End
+          Else
+          Begin
+            DIdx := DataAddDWord(SymTab[Idx].MangledName, 0);
+            SymTab[Idx].DataIdx := DIdx;
+            SymTab[Idx].IsLocal := False;
+            If Opts.DebugMode Then
+              WriteLn('  VAR_GLOBAL: ', Names[I], ' : ', TName,
+                      ' -> ', SymTab[Idx].MangledName);
+          End;
+        End
+        Else
+        Begin
+          (* Local variable : allocate on stack *)
+          If TSz < 4 Then TSz := 4;
+          Dec(CurFrameOffset, TSz);
+          If (CurFrameOffset And 3) <> 0 Then
+            CurFrameOffset := CurFrameOffset And (Not 3);
+          SymTab[Idx].Offset  := CurFrameOffset;
+          SymTab[Idx].IsLocal := True;
+          If Opts.DebugMode Then
+            WriteLn('  VAR_LOCAL: ', Names[I], ' : ', TName,
+                    ' -> [EBP', CurFrameOffset, ']');
+        End;
+      End;
+    End;
+
+    (* Optional initialization := value *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      LexNextToken;  (* consume := *)
+      ParseExpr(InitEv);
+      If (Idx >= 0) And Not SymTab[Idx].IsLocal Then
+      Begin
+        If (InitEv.Kind = EK_IMM) Then
+        Begin
+          If SymTab[Idx].DataIdx >= 0 Then
+            DataTab[SymTab[Idx].DataIdx].IntVal := InitEv.ImmVal;
+        End
+        Else
+        Begin
+          ExprFlushToEAX(InitEv);
+          If TypeSizeof(SymTab[Idx].TypeIdx) = 1 Then
+            EmitInstrAB('MOV',
+              'BYTE PTR [' + SymTab[Idx].MangledName + ']', 'AL')
+          Else
+            EmitInstrAB('MOV',
+              'DWORD PTR [' + SymTab[Idx].MangledName + ']', 'EAX');
+        End;
+      End
+      Else If (Idx >= 0) And SymTab[Idx].IsLocal Then
+      Begin
+        ExprFlushToEAX(InitEv);
+        If TypeSizeof(SymTab[Idx].TypeIdx) = 1 Then
+          EmitInstrAB('MOV',
+            'BYTE PTR ' + EBPOfs(SymTab[Idx].Offset), 'AL')
+        Else
+          EmitInstrAB('MOV',
+            'DWORD PTR ' + EBPOfs(SymTab[Idx].Offset), 'EAX');
+      End;
+    End;
+
+    (* Semicolon *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      LexNextToken;
+  End;
+End;
+
+(* ---- ParseConstDecl : analyser un bloc CONST ------------------- *)
+(* Supporte :                                                        *)
+(*   const x = 42;             (untyped constant)                    *)
+(*   const x := 42;            (VAX typed const with :=)             *)
+(*   const x : Type = value;   (typed constant)                      *)
+(*   const tab : ARRAY[lo..hi] OF type = (v1, v2, ...);             *)
+Procedure ParseConstDecl;
+Var
+  CName   : TString;
+  ConstEv : TExprVal;
+  CIdx    : Integer;
+  DIdx    : Integer;
+  (* Const ARRAY *)
+  ConstArrLo     : LongInt;
+  ConstArrHi     : LongInt;
+  ConstArrCount  : LongInt;
+  ConstArrTIdx   : Integer;
+  ConstElemTIdx  : Integer;
+  ConstElemSz    : Integer;
+  ConstElemTName : TString;
+  ConstInitStr   : TString;
+  ConstInitCount : Integer;
+Begin
+  While CurToken.Kind = TK_IDENT Do
+  Begin
+    CName := CurToken.Val;
+    LexNextToken;
+
+    (* const x = value (standard Pascal, untyped const) *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+    Begin
+      LexNextToken;
+      ParseExpr(ConstEv);
+      If ConstEv.Kind = EK_IMM Then
+      Begin
+        CIdx := SymAdd(CName, SC_CONST, ConstEv.TypeIdx);
+        If CIdx >= 0 Then
+          SymTab[CIdx].ImmVal := ConstEv.ImmVal;
+      End
+      Else
+        WarnMsg('constante attendue');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* const x := value (VAX Pascal typed const with :=) *)
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
+    Begin
+      LexNextToken;
+      ParseExpr(ConstEv);
+      If ConstEv.Kind = EK_IMM Then
+      Begin
+        CIdx := SymAdd(CName, SC_TYPED_CONST, ConstEv.TypeIdx);
+        If CIdx >= 0 Then
+        Begin
+          SymTab[CIdx].ImmVal := ConstEv.ImmVal;
+          SymTab[CIdx].IsLocal := False;
+          DIdx := DataAddDWord(SymTab[CIdx].MangledName,
+            ConstEv.ImmVal);
+          SymTab[CIdx].DataIdx := DIdx;
+        End;
+      End
+      Else
+        WarnMsg('constante attendue pour const :=');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* const x : type = value (typed const standard) *)
+    (* const tab : ARRAY[lo..hi] OF type = (v1, v2, ...); *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+    Begin
+      LexNextToken;
+
+      (* --- ARRAY[lo..hi] OF type = (values) detection --- *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'array') Then
+      Begin
+        LexNextToken;  (* consume ARRAY *)
+        If IsOpenBracket Then LexNextToken;
+        ConstArrLo := 0;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          ConstArrLo := CurToken.IntVal;
+          LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          CIdx := SymFind(CurToken.Val);
+          If (CIdx >= 0) And
+             (SymTab[CIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            ConstArrLo := SymTab[CIdx].ImmVal;
+          LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
+          LexNextToken;
+        ConstArrHi := 0;
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          ConstArrHi := CurToken.IntVal;
+          LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
+        Begin
+          ConstArrHi := 1;
+          LexNextToken;
+        End
+        Else If (CurToken.Kind = TK_IDENT) Or
+                (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          CIdx := SymFind(CurToken.Val);
+          If (CIdx >= 0) And
+             (SymTab[CIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
+            ConstArrHi := SymTab[CIdx].ImmVal;
+          LexNextToken;
+        End;
+        If IsCloseBracket Then LexNextToken;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'of') Then
+          LexNextToken;
+        ConstElemTName := '';
+        If (CurToken.Kind = TK_KEYWORD) Or
+           (CurToken.Kind = TK_IDENT) Then
+        Begin
+          ConstElemTName := CurToken.Val;
+          LexNextToken;
+        End;
+        ConstElemTIdx := TypeResolve(ConstElemTName);
+        If ConstElemTIdx = TY_UNKNOWN Then
+          ConstElemTIdx := TY_IDX_INTEGER;
+        ConstElemSz := TypeSizeof(ConstElemTIdx);
+        ConstArrCount := ConstArrHi - ConstArrLo + 1;
+        If ConstArrCount < 1 Then ConstArrCount := 1;
+
+        (* Create the array type *)
+        ConstArrTIdx := TY_IDX_INTEGER;
+        If TypeCount < MAX_TYPE Then
+        Begin
+          ConstArrTIdx := TypeCount;
+          Inc(TypeCount);
+          TypeTab[ConstArrTIdx].Kind        := TKP_ARRAY;
+          TypeTab[ConstArrTIdx].Size        := ConstArrCount * ConstElemSz;
+          TypeTab[ConstArrTIdx].BaseTypeIdx := ConstElemTIdx;
+          TypeTab[ConstArrTIdx].Lo          := ConstArrLo;
+          TypeTab[ConstArrTIdx].Hi          := ConstArrHi;
+          TypeTab[ConstArrTIdx].FieldCount  := 0;
+          TypeTab[ConstArrTIdx].EnumCount   := 0;
+        End;
+
+        (* Consume = *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+          LexNextToken;
+
+        (* Parse initial values (val1, val2, ...) *)
+        ConstInitStr := '';
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+        Begin
+          LexNextToken;
+          ConstInitCount := 0;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          Begin
+            If ConstInitCount > 0 Then
+              ConstInitStr := ConstInitStr + ',';
+            If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
+            Begin
+              LexNextToken;
+              If CurToken.Kind = TK_INTEGER Then
+              Begin
+                ConstInitStr := ConstInitStr + IntToStr(-CurToken.IntVal);
+                LexNextToken;
+              End
+              Else
+              Begin
+                ConstInitStr := ConstInitStr + '0';
+                LexNextToken;
+              End;
+            End
+            Else If CurToken.Kind = TK_INTEGER Then
+            Begin
+              ConstInitStr := ConstInitStr + IntToStr(CurToken.IntVal);
+              LexNextToken;
+            End
+            Else If CurToken.Kind = TK_STRING Then
+            Begin
+              If Length(CurToken.Val) = 1 Then
+                ConstInitStr := ConstInitStr + IntToStr(Ord(CurToken.Val[1]))
+              Else
+                ConstInitStr := ConstInitStr + '0';
+              LexNextToken;
+            End
+            Else If CurToken.Kind = TK_CHAR Then
+            Begin
+              ConstInitStr := ConstInitStr + IntToStr(Ord(CurToken.Val[1]));
+              LexNextToken;
+            End
+            Else If (CurToken.Kind = TK_IDENT) Or
+                    (CurToken.Kind = TK_KEYWORD) Then
+            Begin
+              CIdx := SymFind(CurToken.Val);
+              If (CIdx >= 0) And
+                 (SymTab[CIdx].Cat In [SC_CONST, SC_ENUM_VAL,
+                                        SC_TYPED_CONST]) Then
+                ConstInitStr := ConstInitStr + IntToStr(SymTab[CIdx].ImmVal)
+              Else
+                ConstInitStr := ConstInitStr + '0';
+              LexNextToken;
+            End
+            Else
+            Begin
+              ConstInitStr := ConstInitStr + '0';
+              LexNextToken;
+            End;
+            Inc(ConstInitCount);
+            If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+              LexNextToken;
+          End;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+            LexNextToken;
+        End
+        Else
+        Begin
+          ConstInitStr := '';
+          For ConstInitCount := 1 To ConstArrCount Do
+          Begin
+            If ConstInitCount > 1 Then
+              ConstInitStr := ConstInitStr + ',';
+            ConstInitStr := ConstInitStr + '0';
+          End;
+        End;
+
+        (* Create symbol and data entry *)
+        CIdx := SymAdd(CName, SC_TYPED_CONST, ConstArrTIdx);
+        If CIdx >= 0 Then
+        Begin
+          SymTab[CIdx].MangledName := VXP_ARR_PFX +
+            StrUpperCase(CName);
+          SymTab[CIdx].IsLocal := False;
+          DIdx := DataAdd(SymTab[CIdx].MangledName,
+            DK_ARRAY_INIT, 0, ConstInitStr);
+          DataTab[DIdx].ElemCount := ConstArrCount;
+          DataTab[DIdx].ElemSize  := ConstElemSz;
+          SymTab[CIdx].DataIdx   := DIdx;
+          If Opts.DebugMode Then
+            WriteLn('  CONST_ARRAY: ', CName,
+                    ' [', ConstArrLo, '..', ConstArrHi,
+                    '] of ', ConstElemTName,
+                    ' = (', ConstInitStr, ')');
+        End;
+
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        Continue;
+      End;
+
+      (* --- Typed const simple : type = value --- *)
+      If (CurToken.Kind = TK_KEYWORD) Or
+         (CurToken.Kind = TK_IDENT) Then
+        LexNextToken;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        LexNextToken;
+      ParseExpr(ConstEv);
+      If ConstEv.Kind = EK_IMM Then
+      Begin
+        CIdx := SymAdd(CName, SC_TYPED_CONST, ConstEv.TypeIdx);
+        If CIdx >= 0 Then
+        Begin
+          SymTab[CIdx].ImmVal := ConstEv.ImmVal;
+          SymTab[CIdx].IsLocal := False;
+          DIdx := DataAddDWord(SymTab[CIdx].MangledName,
+            ConstEv.ImmVal);
+          SymTab[CIdx].DataIdx := DIdx;
+        End;
+      End
+      Else
+        WarnMsg('constante attendue pour typed const');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* Unrecognized token in CONST block, exit *)
+    Break;
+  End;
+End;
+
+
+{ ============================================================
   PROCEDURE PRINCIPALE (Run)
   ============================================================ }
 
 Procedure Run;
+Var
+  EnvIncF     : Text;
+  EnvIncFName : TString;
+  EnvI        : Integer;
+  Idx         : Integer;
 Begin
   GlobalInit;
   If Opts.Verbose Then ShowBanner;
@@ -5029,15 +6333,575 @@ Begin
     Exit;
   End;
 
-  { TODO 08+ : Boucle principale de compilation }
-  { LexNextToken; }
-  { While CurToken.Kind <> TK_EOF Do ... }
+  { Boucle principale de compilation }
+  LexNextToken;
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* PROGRAM header *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'program') Then
+    Begin
+      LexNextToken;  (* consume PROGRAM *)
+      If CurToken.Kind = TK_IDENT Then
+        LexNextToken;  (* program name *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      Begin
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* MODULE header *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'module') Then
+    Begin
+      IsModule := True;
+      LexNextToken;
+      If CurToken.Kind = TK_IDENT Then
+      Begin
+        ModuleName := CurToken.Val;
+        LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* VAR block *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'var') Then
+    Begin
+      LexNextToken;  (* consume VAR *)
+      ParseVarDecl;
+      If HasPendingAssign Then
+      Begin
+        (* Skip the pending assignment - will be handled later *)
+        WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        HasPendingAssign := False;
+      End;
+      Continue;
+    End;
+
+    (* STATIC VAR *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'static') Then
+    Begin
+      LexNextToken;  (* consume STATIC *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'var') Then
+      Begin
+        LexNextToken;  (* consume VAR *)
+        ParseVarDecl;
+        If HasPendingAssign Then
+        Begin
+          WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+            LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            LexNextToken;
+          HasPendingAssign := False;
+        End;
+      End
+      Else
+        LexNextToken;
+      Continue;
+    End;
+
+    (* EXTERNAL VAR/PROCEDURE/FUNCTION *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'external') Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'var') Then
+      Begin
+        LexNextToken;
+        ParseVarDecl;
+        If HasPendingAssign Then
+        Begin
+          WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+            LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            LexNextToken;
+          HasPendingAssign := False;
+        End;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'function') Then
+      Begin
+        PendAttrExternal := True;
+        WarnMsg('EXTERNAL FUNCTION ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrExternal := False;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'procedure') Then
+      Begin
+        PendAttrExternal := True;
+        WarnMsg('EXTERNAL PROCEDURE ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrExternal := False;
+      End
+      Else
+        LexNextToken;
+      Continue;
+    End;
+
+    (* GLOBAL VAR/PROCEDURE/FUNCTION *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'global') Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'function') Then
+      Begin
+        PendAttrGlobal := True;
+        WarnMsg('GLOBAL FUNCTION ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrGlobal := False;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'procedure') Then
+      Begin
+        PendAttrGlobal := True;
+        WarnMsg('GLOBAL PROCEDURE ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrGlobal := False;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'var') Then
+      Begin
+        LexNextToken;
+        ParseVarDecl;
+        If HasPendingAssign Then
+        Begin
+          WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+            LexNextToken;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            LexNextToken;
+          HasPendingAssign := False;
+        End;
+      End
+      Else
+        LexNextToken;
+      Continue;
+    End;
+
+    (* PUBLIC PROCEDURE/FUNCTION *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'public') Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'function') Then
+      Begin
+        PendAttrGlobal := True;
+        WarnMsg('PUBLIC FUNCTION ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrGlobal := False;
+      End
+      Else If (CurToken.Kind = TK_KEYWORD) And
+              (StrLowerCase(CurToken.Val) = 'procedure') Then
+      Begin
+        PendAttrGlobal := True;
+        WarnMsg('PUBLIC PROCEDURE ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrGlobal := False;
+      End
+      Else
+        LexNextToken;
+      Continue;
+    End;
+
+    (* VALUE section *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'value') Then
+    Begin
+      LexNextToken;
+      WarnMsg('section VALUE ignoree (TODO ulterieur)');
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((StrLowerCase(CurToken.Val) = 'begin') Or
+                  (StrLowerCase(CurToken.Val) = 'var') Or
+                  (StrLowerCase(CurToken.Val) = 'const') Or
+                  (StrLowerCase(CurToken.Val) = 'type') Or
+                  (StrLowerCase(CurToken.Val) = 'function') Or
+                  (StrLowerCase(CurToken.Val) = 'procedure') Or
+                  (StrLowerCase(CurToken.Val) = 'end') Or
+                  (StrLowerCase(CurToken.Val) = 'label'))) Do
+        LexNextToken;
+      Continue;
+    End;
+
+    (* CONST block *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'const') Then
+    Begin
+      LexNextToken;
+      ParseConstDecl;
+      Continue;
+    End;
+
+    (* TYPE block *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'type') Then
+    Begin
+      LexNextToken;
+      WarnMsg('section TYPE ignoree (TODO ulterieur)');
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 ((StrLowerCase(CurToken.Val) = 'begin') Or
+                  (StrLowerCase(CurToken.Val) = 'var') Or
+                  (StrLowerCase(CurToken.Val) = 'const') Or
+                  (StrLowerCase(CurToken.Val) = 'function') Or
+                  (StrLowerCase(CurToken.Val) = 'procedure') Or
+                  (StrLowerCase(CurToken.Val) = 'end') Or
+                  (StrLowerCase(CurToken.Val) = 'static') Or
+                  (StrLowerCase(CurToken.Val) = 'external') Or
+                  (StrLowerCase(CurToken.Val) = 'global') Or
+                  (StrLowerCase(CurToken.Val) = 'label'))) And
+            Not IsOpenBracket Do
+        LexNextToken;
+      Continue;
+    End;
+
+    (* VAX attributes [...] before declarations *)
+    If IsOpenBracket Then
+    Begin
+      ParseDeclAttributes;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'function') Then
+      Begin
+        WarnMsg('[attr] FUNCTION ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrGlobal   := False;
+        PendAttrExternal := False;
+        Continue;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'procedure') Then
+      Begin
+        WarnMsg('[attr] PROCEDURE ignoree (TODO ulterieur)');
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        PendAttrGlobal   := False;
+        PendAttrExternal := False;
+        Continue;
+      End;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'module') Then
+        Continue;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'program') Then
+        Continue;
+      (* [INITIALIZE] : module init block *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'initialize') Then
+      Begin
+        LexNextToken;
+        If Not MainBodyEmitted Then
+        Begin
+          MainBodyEmitted := True;
+          EmitLabel(VXP_LBL_PFX + 'MAINBODY');
+        End;
+        EmitComment('INITIALIZE');
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'begin') Then
+        Begin
+          (* Skip BEGIN..END block for now *)
+          LexNextToken;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     (StrLowerCase(CurToken.Val) = 'end')) Do
+            LexNextToken;
+          If (CurToken.Kind = TK_KEYWORD) And
+             (StrLowerCase(CurToken.Val) = 'end') Then
+            LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And
+           ((CurToken.Val = ';') Or (CurToken.Val = '.')) Then
+          LexNextToken;
+        PendAttrGlobal   := False;
+        PendAttrExternal := False;
+        Continue;
+      End;
+      (* [FINALIZE] : module cleanup block *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'finalize') Then
+      Begin
+        LexNextToken;
+        EmitComment('FINALIZE');
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'begin') Then
+        Begin
+          LexNextToken;
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_KEYWORD) And
+                     (StrLowerCase(CurToken.Val) = 'end')) Do
+            LexNextToken;
+          If (CurToken.Kind = TK_KEYWORD) And
+             (StrLowerCase(CurToken.Val) = 'end') Then
+            LexNextToken;
+        End;
+        If (CurToken.Kind = TK_PUNCT) And
+           ((CurToken.Val = ';') Or (CurToken.Val = '.')) Then
+          LexNextToken;
+        PendAttrGlobal   := False;
+        PendAttrExternal := False;
+        Continue;
+      End;
+      (* Otherwise [EXTERNAL]/[GLOBAL] VAR *)
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'var') Then
+        LexNextToken;
+      ParseVarDecl;
+      If HasPendingAssign Then
+      Begin
+        WarnMsg('affectation ignoree (TODO 09+): ' + PendingAssignName);
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+          LexNextToken;
+        HasPendingAssign := False;
+      End;
+      PendAttrGlobal   := False;
+      PendAttrExternal := False;
+      Continue;
+    End;
+
+    (* LABEL declarations *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'label') Then
+    Begin
+      LexNextToken;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      Begin
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          SymAdd(IntToStr(CurToken.IntVal), SC_LABEL, TY_UNKNOWN);
+          LexNextToken;
+        End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin
+          SymAdd(CurToken.Val, SC_LABEL, TY_UNKNOWN);
+          LexNextToken;
+        End
+        Else
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* CONDITION declaration *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'condition') Then
+    Begin
+      LexNextToken;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+      Begin
+        If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+        Begin
+          Idx := SymAdd(CurToken.Val, SC_CONDITION, TY_IDX_INTEGER);
+          If Idx >= 0 Then
+          Begin
+            SymTab[Idx].Offset := 100 + Idx;
+            SymTab[Idx].MangledName := IntToStr(SymTab[Idx].Offset);
+          End;
+          LexNextToken;
+          If (CurToken.Kind = TK_KEYWORD) And
+             (StrLowerCase(CurToken.Val) = 'value') Then
+          Begin
+            LexNextToken;
+            If (Idx >= 0) And (CurToken.Kind = TK_INTEGER) Then
+            Begin
+              SymTab[Idx].Offset := CurToken.IntVal;
+              SymTab[Idx].MangledName := IntToStr(CurToken.IntVal);
+            End;
+            If CurToken.Kind = TK_INTEGER Then LexNextToken;
+          End;
+        End
+        Else
+          LexNextToken;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          LexNextToken;
+      End;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* FUNCTION declaration at global level *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'function') Then
+    Begin
+      WarnMsg('FUNCTION ignoree (TODO ulterieur)');
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* PROCEDURE declaration at global level *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'procedure') Then
+    Begin
+      WarnMsg('PROCEDURE ignoree (TODO ulterieur)');
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* BEGIN : enter main program block *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'begin') Then
+    Begin
+      If Not MainBodyEmitted Then
+      Begin
+        MainBodyEmitted := True;
+        EmitLabel(VXP_LBL_PFX + 'MAINBODY');
+      End;
+      (* Skip BEGIN..END block for now - will be implemented later *)
+      LexNextToken;
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_KEYWORD) And
+                 (StrLowerCase(CurToken.Val) = 'end')) Do
+        LexNextToken;
+      If (CurToken.Kind = TK_KEYWORD) And
+         (StrLowerCase(CurToken.Val) = 'end') Then
+        LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* END alone (end of module or implicit block) *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'end') Then
+    Begin
+      LexNextToken;
+      If (CurToken.Kind = TK_PUNCT) And
+         ((CurToken.Val = '.') Or (CurToken.Val = ';')) Then
+        LexNextToken;
+      Continue;
+    End;
+
+    (* Skip any other token *)
+    LexNextToken;
+  End;
 
   { Fermer le lexeur }
   LexClose;
 
+  { Emettre MAINBODY si pas encore fait }
+  If Not MainBodyEmitted Then
+  Begin
+    MainBodyEmitted := True;
+    EmitLabel(VXP_LBL_PFX + 'MAINBODY');
+  End;
+
   { Finaliser le fichier de sortie (EmitFooter + EmitDataSeg + END) }
   EmitClose;
+
+  { Generation du fichier .INC pour [ENVIRONMENT] }
+  If EnvironmentName <> '' Then
+  Begin
+    EnvIncFName := EnvironmentName;
+    If Pos('.', EnvIncFName) = 0 Then
+      EnvIncFName := EnvIncFName + '.INC';
+    {$I-}
+    Assign(EnvIncF, EnvIncFName);
+    Rewrite(EnvIncF);
+    {$I+}
+    If IOResult = 0 Then
+    Begin
+      WriteLn(EnvIncF, '; [ENVIRONMENT] export pour module : ',
+              ModuleName);
+      WriteLn(EnvIncF, '; Genere par VAXPCW32 v' + VXP_VERSION);
+      WriteLn(EnvIncF, '');
+      For EnvI := SymInitCount To SymCount - 1 Do
+      Begin
+        If (SymTab[EnvI].ScopeLevel = 0) And
+           (SymTab[EnvI].Cat In [SC_FUNC, SC_PROC, SC_GLOBAL,
+             SC_PUBLIC]) Then
+          WriteLn(EnvIncF, 'EXTRN  ' + SymTab[EnvI].MangledName + ':NEAR')
+        Else If (SymTab[EnvI].ScopeLevel = 0) And
+                (SymTab[EnvI].Cat In [SC_VAR, SC_STATIC, SC_TYPED_CONST]) And
+                (Not SymTab[EnvI].IsLocal) Then
+        Begin
+          If (SymTab[EnvI].TypeIdx >= 0) And
+             (SymTab[EnvI].TypeIdx < TypeCount) And
+             (TypeTab[SymTab[EnvI].TypeIdx].Size > 4) Then
+            WriteLn(EnvIncF, 'EXTRN  ' + SymTab[EnvI].MangledName + ':BYTE')
+          Else
+            WriteLn(EnvIncF, 'EXTRN  ' + SymTab[EnvI].MangledName + ':DWORD');
+        End;
+      End;
+      Close(EnvIncF);
+      If Opts.Verbose Then
+        WriteLn('Fichier ENVIRONMENT genere : ', EnvIncFName);
+    End
+    Else
+      WarnMsg('impossible de creer le fichier environment: ' + EnvIncFName);
+  End;
 
   { Statistiques de compilation }
   If Opts.Verbose Then
