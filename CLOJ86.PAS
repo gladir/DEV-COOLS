@@ -250,7 +250,7 @@
               Labels : _CL_DQST_N, _CL_DQEND_N
             (while test body ...) : boucle tant que test est vrai (macro)
 
-  TODO 17 - LISTES (cons / first / rest / conj)
+  TODO 17 - LISTES (cons / first / rest / conj) [IMPLEMENTE]
             Cellule cons : paire (car . cdr) = 2 Words sur le heap
               _CL_HEAP DB 4096 DUP(0), _CL_HEAPTOP DW 0
             (cons x coll) -> CALL _CLRT_CONS(AX=x, BX=coll) -> AX=ptr
@@ -780,6 +780,16 @@ Procedure ParseRecurForm(Var Res : TExprVal); Forward;
 Procedure ParseDotimesForm(Var Res : TExprVal); Forward;
 Procedure ParseDoseqForm(Var Res : TExprVal); Forward;
 Procedure ParseWhileForm(Var Res : TExprVal); Forward;
+(* TODO 17 *)
+Procedure ParseConsForm(Var Res : TExprVal); Forward;
+Procedure ParseFirstForm(Var Res : TExprVal); Forward;
+Procedure ParseRestForm(Var Res : TExprVal); Forward;
+Procedure ParseListForm(Var Res : TExprVal); Forward;
+Procedure ParseConjListForm(Var Res : TExprVal); Forward;
+Procedure ParseCountForm(Var Res : TExprVal); Forward;
+Procedure ParseNthForm(Var Res : TExprVal); Forward;
+Procedure ParseEmptyForm(Var Res : TExprVal); Forward;
+Procedure ParseSeqForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2840,6 +2850,9 @@ Begin
   EmitRaw(CL_FALSE_LBL + '  DB ''false'',0');
   EmitRaw('_CL_CRLF    DB 13,10,0');
   EmitRaw('_CL_STRBUF  DB 256 DUP(0)');
+  (* Heap pour cellules cons (TODO 17) *)
+  EmitRaw('_CL_HEAP    DB 4096 DUP(0)');
+  EmitRaw('_CL_HEAPTOP DW 0');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -3949,6 +3962,71 @@ Begin
             ParseFlush(Res);
             If CurToken.Kind = TK_RPAREN Then LexNextToken
             Else CompileError(') attendue apres flush');
+            Exit;
+          End
+
+          (* TODO 17 : operations sur les listes *)
+          Else If HeadSym = 'cons' Then
+          Begin
+            ParseConsForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres cons');
+            Exit;
+          End
+          Else If HeadSym = 'first' Then
+          Begin
+            ParseFirstForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres first');
+            Exit;
+          End
+          Else If HeadSym = 'rest' Then
+          Begin
+            ParseRestForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres rest');
+            Exit;
+          End
+          Else If HeadSym = 'list' Then
+          Begin
+            ParseListForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres list');
+            Exit;
+          End
+          Else If HeadSym = 'conj' Then
+          Begin
+            ParseConjListForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres conj');
+            Exit;
+          End
+          Else If HeadSym = 'count' Then
+          Begin
+            ParseCountForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres count');
+            Exit;
+          End
+          Else If HeadSym = 'nth' Then
+          Begin
+            ParseNthForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres nth');
+            Exit;
+          End
+          Else If (HeadSym = 'empty?') Then
+          Begin
+            ParseEmptyForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres empty?');
+            Exit;
+          End
+          Else If HeadSym = 'seq' Then
+          Begin
+            ParseSeqForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres seq');
             Exit;
           End
 
@@ -5802,6 +5880,294 @@ Begin
   Res.TypeIdx := TY_IDX_NIL;
 End;
 
+(* ============================================================
+   TODO 17 - LISTES : CONS / FIRST / REST / CONJ [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseConsForm : (cons x coll) ----------------------------- *)
+(* Alloue une cellule cons sur le heap : [car=x, cdr=coll]          *)
+(* AX = x (car), BX = coll (cdr) -> CALL _CLRT_CONS -> AX = ptr    *)
+Procedure ParseConsForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(cons x coll)');
+
+  (* Evaluer le premier argument (x = car) *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer le deuxieme argument (coll = cdr) *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer car dans AX *)
+  EmitInstrA('POP', 'AX');
+
+  (* Appel runtime cons *)
+  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseFirstForm : (first lst) ------------------------------ *)
+(* Retourne le car de la cellule cons pointee par lst.               *)
+(* Si lst = nil (0), retourne nil.                                   *)
+Procedure ParseFirstForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+    LblNil : TString;
+    LblEnd : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(first lst)');
+  LblNil := LabelGen;
+  LblEnd := LabelGen;
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* Si AX = 0 (nil), retourner nil *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblNil);
+
+  (* AX = pointeur cons -> car = [AX] *)
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX]');
+  EmitInstrA('JMP', LblEnd);
+
+  EmitLabel(LblNil);
+  EmitInstrAB('XOR', 'AX', 'AX');
+
+  EmitLabel(LblEnd);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseRestForm : (rest lst) -------------------------------- *)
+(* Retourne le cdr de la cellule cons pointee par lst.               *)
+(* Si lst = nil, retourne nil.                                       *)
+Procedure ParseRestForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+    LblNil : TString;
+    LblEnd : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(rest lst)');
+  LblNil := LabelGen;
+  LblEnd := LabelGen;
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* Si AX = 0 (nil), retourner nil *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblNil);
+
+  (* AX = pointeur cons -> cdr = [AX+2] *)
+  EmitInstrAB('MOV', 'BX', 'AX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BX+2]');
+  EmitInstrA('JMP', LblEnd);
+
+  EmitLabel(LblNil);
+  EmitInstrAB('XOR', 'AX', 'AX');
+
+  EmitLabel(LblEnd);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseListForm : (list a b c ...) -------------------------- *)
+(* Construit une liste par appels cons imbriques de droite a gauche. *)
+(* (list a b c) = (cons a (cons b (cons c nil)))                     *)
+(* On empile tous les arguments, puis on cons de droite a gauche.    *)
+Procedure ParseListForm(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    ArgCount : Integer;
+    I        : Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(list ...)');
+  ArgCount := 0;
+
+  (* Empiler tous les arguments de gauche a droite *)
+  While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrA('PUSH', 'AX');
+    Inc(ArgCount);
+  End;
+
+  (* Commencer avec nil (liste vide) *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+
+  (* Depiler et cons de droite a gauche *)
+  (* La pile contient [a, b, c] avec c au sommet *)
+  (* On veut : (cons a (cons b (cons c nil))) *)
+  (* Donc on depile c, cons c nil -> depile b, cons b result -> depile a, cons a result *)
+  For I := 1 To ArgCount Do
+  Begin
+    EmitInstrAB('MOV', 'BX', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+  End;
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseConjListForm : (conj coll x) ------------------------- *)
+(* Pour les listes, conj ajoute en tete : (conj lst x) = (cons x lst) *)
+Procedure ParseConjListForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(conj coll x)');
+
+  (* Evaluer la collection (premier argument) *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer l element a ajouter (deuxieme argument) *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* AX = x (car), POP -> BX = coll (cdr) *)
+  EmitInstrA('POP', 'BX');
+  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseCountForm : (count coll) ----------------------------- *)
+(* Parcourt la liste liee jusqu a nil et retourne le nombre          *)
+(* d elements dans AX.                                               *)
+Procedure ParseCountForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(count coll)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  EmitInstrA('CALL', CL_RT_PFX + 'LCOUNT');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_INT;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseNthForm : (nth coll n) ------------------------------- *)
+(* Parcourt la liste n fois (rest) puis retourne first.              *)
+(* AX = liste, BX = index -> CALL _CLRT_LNTH -> AX = element        *)
+Procedure ParseNthForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(nth coll n)');
+
+  (* Evaluer la collection *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer l index *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');
+
+  (* Recuperer la liste *)
+  EmitInstrA('POP', 'AX');
+
+  EmitInstrA('CALL', CL_RT_PFX + 'LNTH');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseEmptyForm : (empty? coll) ---------------------------- *)
+(* Retourne true (1) si coll est nil, false (0) sinon.               *)
+Procedure ParseEmptyForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+    LblT   : TString;
+    LblEnd : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(empty? coll)');
+  LblT   := LabelGen;
+  LblEnd := LabelGen;
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblT);
+
+  (* Non vide -> false *)
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('JMP', LblEnd);
+
+  (* Vide -> true *)
+  EmitLabel(LblT);
+  EmitInstrAB('MOV', 'AX', '1');
+
+  EmitLabel(LblEnd);
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseSeqForm : (seq coll) --------------------------------- *)
+(* Retourne la collection comme sequence, ou nil si vide.            *)
+(* Pour une liste : retourne la liste elle-meme, ou nil si nil.      *)
+Procedure ParseSeqForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(seq coll)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  (* AX contient deja le pointeur liste ou nil (0) *)
+  (* seq retourne nil si la collection est vide, sinon la seq elle-meme *)
+  (* Pour les listes, c est deja le cas : nil=0, non-nil=pointeur *)
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
 Procedure EmitRuntime;
 Begin
   (* TODO 24 - runtime minimal pour E/S *)
@@ -6036,6 +6402,76 @@ Begin
   EmitRaw('        POP     DX');
   EmitRaw('        POP     CX');
   EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 17 : _CLRT_CONS : allouer cellule cons sur le heap --- *)
+  (* Entree : AX = car (valeur), BX = cdr (liste/nil)               *)
+  (* Sortie : AX = pointeur vers la nouvelle cellule cons            *)
+  (* Cellule = 2 Words : [car, cdr] = 4 octets                      *)
+  EmitRaw(CL_RT_PFX + 'CONS:');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     CX, OFFSET _CL_HEAP');
+  EmitRaw('        ADD     CX, DI');
+  EmitRaw('        MOV     WORD PTR [CX], AX');
+  EmitRaw('        MOV     WORD PTR [CX+2], BX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        ADD     DI, 4');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 17 : _CLRT_LCOUNT : compter les elements d une liste --- *)
+  (* Entree : AX = pointeur liste (ou 0 pour nil)                      *)
+  (* Sortie : AX = nombre d elements                                    *)
+  EmitRaw(CL_RT_PFX + 'LCOUNT:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        XOR     BX, BX');
+  EmitRaw(CL_RT_PFX + 'LC_LP:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'LC_DN');
+  EmitRaw('        INC     BX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        POP     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'LC_LP');
+  EmitRaw(CL_RT_PFX + 'LC_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 17 : _CLRT_LNTH : obtenir le N-ieme element --- *)
+  (* Entree : AX = pointeur liste, BX = index (0-base)        *)
+  (* Sortie : AX = element (car) ou 0 si hors bornes          *)
+  EmitRaw(CL_RT_PFX + 'LNTH:');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     CX, BX');
+  EmitRaw(CL_RT_PFX + 'LN_LP:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'LN_NL');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'LN_OK');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI+2]');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'LN_LP');
+  EmitRaw(CL_RT_PFX + 'LN_OK:');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'LN_NL:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     CX');
   EmitRaw('        RET');
   EmitBlankLine;
 
