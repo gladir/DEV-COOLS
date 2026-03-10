@@ -7260,7 +7260,9 @@ End;
 { ------------------------------------------------------------ }
 { CollectArgs : scanner les arguments d un appel de fonction    }
 { Le '(' a deja ete consomme. Consomme le ')' final.           }
-{ Retourne le nombre d arguments et leurs bornes.               }
+{ ArgCount : nombre d arguments trouves (sortie)                }
+{ ArgStart : indices debut de chaque argument dans TokenPool    }
+{ ArgEndPos : indices fin de chaque argument dans TokenPool     }
 { ------------------------------------------------------------ }
 
 Procedure CollectArgs(Var ArgCount : Integer;
@@ -7309,6 +7311,7 @@ End;
 
 { ------------------------------------------------------------ }
 { EvalArg : evaluer un argument dans ses bornes token           }
+{ AStart, AEnd : indices debut/fin dans TokenPool               }
 { Sauvegarde/restaure EP/EPEnd. Resultat dans EAX.             }
 { ------------------------------------------------------------ }
 
@@ -7345,7 +7348,11 @@ Begin
   CollectArgs(ArgCount, ArgStart, ArgEndPos);
 
   { Le premier argument doit etre une chaine litterale }
-  If ArgCount < 1 Then Exit;
+  If ArgCount < 1 Then
+  Begin
+    WriteLn('CCW32: avertissement: printf() sans arguments');
+    Exit;
+  End;
   Fmt := TokenPool[ArgStart[0]].Val;
 
   ArgIdx := 1; { index du prochain argument variadique }
@@ -7508,7 +7515,11 @@ Begin
   EmitComment('scanf (TODO 21)');
   CollectArgs(ArgCount, ArgStart, ArgEndPos);
 
-  If ArgCount < 1 Then Exit;
+  If ArgCount < 1 Then
+  Begin
+    WriteLn('CCW32: avertissement: scanf() sans arguments');
+    Exit;
+  End;
   Fmt := TokenPool[ArgStart[0]].Val;
 
   ArgIdx := 1;
