@@ -10939,14 +10939,18 @@ Begin
   U := StrUpperCase(Cond); BinJccOpcode := -1;
   If (U='JE') Or (U='JZ') Then BinJccOpcode := $84
   Else If (U='JNE') Or (U='JNZ') Then BinJccOpcode := $85
-  Else If (U='JB') Or (U='JC') Then BinJccOpcode := $82
-  Else If (U='JAE') Or (U='JNB') Then BinJccOpcode := $83
-  Else If (U='JBE') Then BinJccOpcode := $86
-  Else If (U='JA') Then BinJccOpcode := $87
-  Else If (U='JL') Then BinJccOpcode := $8C
-  Else If (U='JGE') Then BinJccOpcode := $8D
-  Else If (U='JLE') Then BinJccOpcode := $8E
-  Else If (U='JG') Then BinJccOpcode := $8F;
+  Else If (U='JB') Or (U='JC') Or (U='JNAE') Then BinJccOpcode := $82
+  Else If (U='JAE') Or (U='JNB') Or (U='JNC') Then BinJccOpcode := $83
+  Else If (U='JBE') Or (U='JNA') Then BinJccOpcode := $86
+  Else If (U='JA') Or (U='JNBE') Then BinJccOpcode := $87
+  Else If (U='JS') Then BinJccOpcode := $88
+  Else If (U='JNS') Then BinJccOpcode := $89
+  Else If (U='JP') Or (U='JPE') Then BinJccOpcode := $8A
+  Else If (U='JNP') Or (U='JPO') Then BinJccOpcode := $8B
+  Else If (U='JL') Or (U='JNGE') Then BinJccOpcode := $8C
+  Else If (U='JGE') Or (U='JNL') Then BinJccOpcode := $8D
+  Else If (U='JLE') Or (U='JNG') Then BinJccOpcode := $8E
+  Else If (U='JG') Or (U='JNLE') Then BinJccOpcode := $8F;
 End;
 
 Function BinModRM(Mo, Reg, RM : Integer) : Byte;
