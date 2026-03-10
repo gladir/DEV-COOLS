@@ -1,3 +1,4 @@
 *.o
 *.ppu
 TP2JS
+SAMPLES/TURBOPASCAL/*.js
