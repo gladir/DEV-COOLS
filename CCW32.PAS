@@ -1910,7 +1910,7 @@ Var
   Name : TString;
   V    : LongInt;
   Idx  : Integer;
-  ErrC : Integer;
+  MacroPos : Integer;
   Neg  : Boolean;
   Invt : Boolean;
 Begin
@@ -2056,8 +2056,8 @@ Begin
       If Idx >= 0 Then
       Begin
         { Evaluer la valeur de la macro recursivement }
-        ErrC := 1;
-        V := PPEvalExprP(MacroTab[Idx].Value, ErrC);
+        MacroPos := 1;
+        V := PPEvalExprP(MacroTab[Idx].Value, MacroPos);
       End
       Else
         V := 0;
@@ -3269,9 +3269,11 @@ Var
   Neg  : Boolean;
   Id   : TString;
   Ch   : Char;
-  Paren: Integer;
+  Depth: Integer;
   TypeArg : TString;
   Size : Integer;
+  MacroIdx : Integer;
+  MacroPos : Integer;
 Begin
   N := 0;
 
@@ -3463,14 +3465,14 @@ Begin
         Inc(Pos);
         { Extraire l argument entre parentheses }
         TypeArg := '';
-        Paren := 1;
-        While (Pos <= Length(S)) And (Paren > 0) Do
+        Depth := 1;
+        While (Pos <= Length(S)) And (Depth > 0) Do
         Begin
-          If S[Pos] = '(' Then Inc(Paren)
+          If S[Pos] = '(' Then Inc(Depth)
           Else If S[Pos] = ')' Then
           Begin
-            Dec(Paren);
-            If Paren = 0 Then
+            Dec(Depth);
+            If Depth = 0 Then
             Begin
               Inc(Pos);
               Break;
@@ -3510,14 +3512,14 @@ Begin
       Begin
         Inc(Pos);
         TypeArg := '';
-        Paren := 1;
-        While (Pos <= Length(S)) And (Paren > 0) Do
+        Depth := 1;
+        While (Pos <= Length(S)) And (Depth > 0) Do
         Begin
-          If S[Pos] = '(' Then Inc(Paren)
+          If S[Pos] = '(' Then Inc(Depth)
           Else If S[Pos] = ')' Then
           Begin
-            Dec(Paren);
-            If Paren = 0 Then
+            Dec(Depth);
+            If Depth = 0 Then
             Begin
               Inc(Pos);
               Break;
@@ -3548,12 +3550,12 @@ Begin
 
     { Rechercher dans les macros #define }
     Begin
-      Paren := MacroFind(Id);
-      If Paren >= 0 Then
+      MacroIdx := MacroFind(Id);
+      If MacroIdx >= 0 Then
       Begin
         { Evaluer la valeur de la macro recursivement }
-        Size := 1;
-        N := ConstEvalExpr(MacroTab[Paren].Value, Size);
+        MacroPos := 1;
+        N := ConstEvalExpr(MacroTab[MacroIdx].Value, MacroPos);
       End
       Else
         N := 0;  { identifiant inconnu = 0 }
