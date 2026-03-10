@@ -1,53 +1,32 @@
-; Compilateur C V1.1
-; Processing: int main() {
-; Déclaration de fonction: main (type: int)
-main:
-; Corps de fonction main
-; Fin du corps de fonction main
-; Toutes les étiquettes goto sont correctement définies
-; Statement processed
-; Processing:     int i;
-; Variable déclarée: i
-: rmb (taille)
-; Taille de variable en octets
-; Statement processed
-; Processing:     for (i = 0; i < 5; i = i + 1) {
-; FOR loop start
-; FOR initialization
+; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
+; Genere automatiquement a partir de : SAMPLES/C/minimal_for.c
+
+.386
+.MODEL FLAT, STDCALL
+
+; --- Imports Win32 (kernel32.dll) ---
+EXTRN _ExitProcess@4:NEAR
+EXTRN _GetStdHandle@4:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _GetProcessHeap@0:NEAR
+EXTRN _HeapAlloc@12:NEAR
+EXTRN _HeapFree@12:NEAR
+
+; --- Segment de donnees ---
+.DATA
+
+HSTDOUT  DD 0
+HSTDIN   DD 0
+HHEAP    DD 0
+NUMBUF   DB 16 DUP(0)
+INBUF    DB 256 DUP(0)
+BYTESWR  DD 0
+BYTESRD  DD 0
+CRLF     DB 13,10,0
 
 
-; Assignment to variable: i
+; --- Segment de code ---
+.CODE
 
-L3:
-; FOR increment
-
-L2:
-; FOR condition check
-
-	tstd
-
-; FOR body
-; Compound statement start
-
-	pshs d
-
-	addd ,s++
-
-; Assignment to variable: i
-; Empty statement
-; Compound statement end
-
-L4:
-; End FOR
-; Statement processed
-; Processing:     return i;
-; RETURN statement
-
-	rts
-; Statement processed
-; Processing: }
-; Unknown: }
-;    .end
-; Cleared macro definitions from table
-; Freed symbols from heap
-; Libéré structures du tas
+END

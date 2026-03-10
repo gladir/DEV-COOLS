@@ -1,21 +1,32 @@
-; Compilateur C V1.1
-; Processing: static int internal_var;
-; Spécificateur de classe de stockage: static
-; Variable déclarée: internal
-: rmb (taille)
-; Variable statique: internal
-; Statement processed
-; Processing: extern int external_var;
-; Spécificateur de classe de stockage: extern
-; Variable déclarée: external
-; Variable externe: external (définie ailleurs)
-; Statement processed
-; Processing: int normal_var;
-; Variable déclarée: normal_v
-: rmb (taille)
-; Taille de variable en octets
-; Statement processed
-;    .end
-; Cleared macro definitions from table
-; Freed symbols from heap
-; Libéré structures du tas
+; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
+; Genere automatiquement a partir de : SAMPLES/C/storage_simple.c
+
+.386
+.MODEL FLAT, STDCALL
+
+; --- Imports Win32 (kernel32.dll) ---
+EXTRN _ExitProcess@4:NEAR
+EXTRN _GetStdHandle@4:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _GetProcessHeap@0:NEAR
+EXTRN _HeapAlloc@12:NEAR
+EXTRN _HeapFree@12:NEAR
+
+; --- Segment de donnees ---
+.DATA
+
+HSTDOUT  DD 0
+HSTDIN   DD 0
+HHEAP    DD 0
+NUMBUF   DB 16 DUP(0)
+INBUF    DB 256 DUP(0)
+BYTESWR  DD 0
+BYTESRD  DD 0
+CRLF     DB 13,10,0
+
+
+; --- Segment de code ---
+.CODE
+
+END

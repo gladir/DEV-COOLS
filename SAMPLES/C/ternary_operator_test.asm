@@ -1,0 +1,42 @@
+; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
+; Genere automatiquement a partir de : SAMPLES/C/ternary_operator_test.c
+
+.386
+.MODEL FLAT, STDCALL
+
+; --- Imports Win32 (kernel32.dll) ---
+EXTRN _ExitProcess@4:NEAR
+EXTRN _GetStdHandle@4:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _GetProcessHeap@0:NEAR
+EXTRN _HeapAlloc@12:NEAR
+EXTRN _HeapFree@12:NEAR
+
+; --- Segment de donnees ---
+.DATA
+
+HSTDOUT  DD 0
+HSTDIN   DD 0
+HHEAP    DD 0
+NUMBUF   DB 16 DUP(0)
+INBUF    DB 256 DUP(0)
+BYTESWR  DD 0
+BYTESRD  DD 0
+CRLF     DB 13,10,0
+
+_CCK_1  DB 'max(10, 5) = %d (devrait ',195,170,'tre 10)',10,0
+_CCK_2  DB 'condition fausse: %d (devrait ',195,170,'tre 5)',10,0
+_CCK_3  DB '1 ? 100 : 200 = %d (devrait ',195,170,'tre 100)',10,0
+_CCK_4  DB '0 ? 100 : 200 = %d (devrait ',195,170,'tre 200)',10,0
+_CCK_5  DB '(8 > 5) ? (3 + 2) : (3 - 2) = %d (devrait ',195,170,'tre 5)',10,0
+_CCK_6  DB '(8 < 5) ? (3 + 2) : (3 - 2) = %d (devrait ',195,170,'tre 1)',10,0
+_CCK_7  DB 'Ternaire imbriqu',195,169,': %d (devrait ',195,170,'tre 2)',10,0
+_CCK_8  DB '0 ? 42 : 99 = %d (devrait ',195,170,'tre 99)',10,0
+_CCK_9  DB '1 ? 42 : 99 = %d (devrait ',195,170,'tre 42)',10,0
+_CCK_10  DB '!7 ? 0 : 7 = %d (devrait ',195,170,'tre 7)',10,0
+
+; --- Segment de code ---
+.CODE
+
+END
