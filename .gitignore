@@ -8,3 +8,5 @@ CCW32
 *.rst
 link.res
 CCW32.o
+CCW32
+*.o
