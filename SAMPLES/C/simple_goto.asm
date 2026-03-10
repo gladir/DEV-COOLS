@@ -287,6 +287,7 @@ _CCF_main:
         SUB ESP,4
 ;   local x = [EBP-4]
         MOV DWORD PTR [EBP-4],10
+        JMP _CCL_USR_mylabel
         MOV EAX,10
         MOV DWORD PTR [EBP-4],EAX
 _CCL_USR_mylabel:

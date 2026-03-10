@@ -467,7 +467,7 @@
             getchar() : lire un caractere -> EAX
             puts(s) : ecrire chaine + newline
 
-  TODO 22 - GOTO, BREAK, CONTINUE, RETURN
+  TODO 22 - GOTO, BREAK, CONTINUE, RETURN [IMPLEMENTE]
             goto label; : saut inconditionnel vers label
               label: stmt; -> definition du label
               Verification : label defini dans la meme fonction
@@ -6769,6 +6769,10 @@ Var
   LoopTop         : Integer;  { Sommet de la pile de boucles (TODO 14)     }
   SwitchBreakLbl  : Array[0..31] Of TString; { Pile labels break switch (TODO 15) }
   SwitchTop       : Integer;  { Sommet de la pile de switch (TODO 15)      }
+  GotoLblDef      : Array[0..63] Of TString; { Labels goto definis (TODO 22) }
+  GotoLblDefCount : Integer;  { Nombre de labels goto definis (TODO 22)    }
+  GotoLblUse      : Array[0..63] Of TString; { Labels goto utilises (TODO 22) }
+  GotoLblUseCount : Integer;  { Nombre de labels goto utilises (TODO 22)   }
 
 { ------------------------------------------------------------ }
 { EPAtEnd : verifier si le curseur est en fin de zone           }
@@ -9510,10 +9514,37 @@ Begin
     Exit;
   End;
 
-  { --- Mots-cles de controle : sauter --- }
+  { --- goto label ; (TODO 22) --- }
   If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
-     ((TokenPool[EP].Val = 'else') Or
-      (TokenPool[EP].Val = 'goto')) Then
+     (TokenPool[EP].Val = 'goto') Then
+  Begin
+    Inc(EP); { sauter 'goto' }
+    If (EP < EPEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      Name := TokenPool[EP].Val;
+      EmitInstr('JMP ' + CC_LBL_PFX + 'USR_' + Name);
+      { Enregistrer le label utilise pour validation }
+      If GotoLblUseCount < 64 Then
+      Begin
+        GotoLblUse[GotoLblUseCount] := Name;
+        Inc(GotoLblUseCount);
+      End;
+      Inc(EP);
+    End
+    Else
+      EmitComment('WARNING: goto sans label');
+    { Avancer au ; }
+    While (EP < EPEnd) And
+          Not ((TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ';')) Do
+      Inc(EP);
+    If EP < EPEnd Then Inc(EP);
+    Exit;
+  End;
+
+  { --- Mots-cles de controle : sauter (else) --- }
+  If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+     (TokenPool[EP].Val = 'else') Then
   Begin
     While (EP < EPEnd) And
           Not ((TokenPool[EP].Kind = TK_PUNCT) And
@@ -9533,12 +9564,19 @@ Begin
     Exit;
   End;
 
-  { --- Labels (pour goto) : ident ':' --- }
+  { --- Labels (pour goto) : ident ':' (TODO 22) --- }
   If (EP + 1 < EPEnd) And (TokenPool[EP].Kind = TK_IDENT) And
      (TokenPool[EP + 1].Kind = TK_PUNCT) And
      (TokenPool[EP + 1].Val = ':') Then
   Begin
-    EmitLabel(CC_LBL_PFX + 'USR_' + TokenPool[EP].Val);
+    Name := TokenPool[EP].Val;
+    EmitLabel(CC_LBL_PFX + 'USR_' + Name);
+    { Enregistrer le label defini pour validation }
+    If GotoLblDefCount < 64 Then
+    Begin
+      GotoLblDef[GotoLblDefCount] := Name;
+      Inc(GotoLblDefCount);
+    End;
     Inc(EP, 2);
     Exit;
   End;
@@ -9833,6 +9871,8 @@ End;
 Procedure ParseBody(FI : Integer);
 Var
   OldFI : Integer;
+  I, J  : Integer;
+  Found : Boolean;
 Begin
   OldFI      := CurFuncIdx;
   CurFuncIdx := FI;
@@ -9843,9 +9883,21 @@ Begin
   RetLbl    := LabelGen;
   LoopTop   := 0;
   SwitchTop := 0;
+  GotoLblDefCount := 0;
+  GotoLblUseCount := 0;
 
   While EP < EPEnd Do
     ParseStmt;
+
+  { Verification des labels goto (TODO 22) }
+  For I := 0 To GotoLblUseCount - 1 Do
+  Begin
+    Found := False;
+    For J := 0 To GotoLblDefCount - 1 Do
+      If GotoLblUse[I] = GotoLblDef[J] Then Found := True;
+    If Not Found Then
+      EmitComment('WARNING: goto vers label non defini: ' + GotoLblUse[I]);
+  End;
 
   { Label de retour de la fonction }
   EmitLabel(RetLbl);

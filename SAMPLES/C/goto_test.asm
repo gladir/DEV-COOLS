@@ -303,6 +303,7 @@ _CCL_4:
 _CCL_5:
         TEST EAX,EAX
         JZ _CCL_2
+        JMP _CCL_USR_end_label
 _CCL_2:
         MOV EAX,20
         MOV DWORD PTR [EBP-4],EAX

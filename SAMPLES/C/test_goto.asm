@@ -1,5 +1,5 @@
 ; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
-; Genere automatiquement a partir de : SAMPLES/C/multi_goto.c
+; Genere automatiquement a partir de : SAMPLES/C/test_goto.c
 
 .386
 .MODEL FLAT, STDCALL
@@ -25,6 +25,12 @@ BYTESWR  DD 0
 BYTESRD  DD 0
 CRLF     DB 13,10,0
 
+_CCK_1  DB 'test_simple_goto = %d',10,0
+_CCK_2  DB 'test_goto_forward = %d',10,0
+_CCK_3  DB 'test_goto_in_if = %d',10,0
+_CCK_4  DB 'test_break_in_loop = %d',10,0
+_CCK_5  DB 'test_continue_in_loop = %d',10,0
+_CCK_6  DB 'test_return_expr = %d',10,0
 
 ; --- Segment de code ---
 .CODE
@@ -280,8 +286,8 @@ _CCRT_READCHAR:
 
 ; === Fin Runtime I/O ===
 
-; --- Fonction: main ---
-_CCF_main:
+; --- Fonction: test_simple_goto ---
+_CCF_test_simple_goto:
         PUSH EBP
         MOV EBP,ESP
         SUB ESP,4
@@ -289,10 +295,37 @@ _CCF_main:
         MOV DWORD PTR [EBP-4],1
         MOV EAX,1
         MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_USR_test1
+        JMP _CCL_USR_skip
         MOV EAX,99
         MOV DWORD PTR [EBP-4],EAX
-_CCL_USR_test1:
+_CCL_USR_skip:
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
+_CCL_1:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: test_goto_forward ---
+_CCF_test_goto_forward:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   local r = [EBP-4]
+        MOV DWORD PTR [EBP-4],0
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_USR_label2
+_CCL_USR_label1:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_USR_label3
+_CCL_USR_label2:
         MOV EAX,DWORD PTR [EBP-4]
         PUSH EAX
         MOV EAX,10
@@ -300,21 +333,253 @@ _CCL_USR_test1:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_USR_end
-        MOV EAX,88
+        JMP _CCL_USR_label1
+_CCL_USR_label3:
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_2
+_CCL_2:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: test_goto_in_if ---
+_CCF_test_goto_in_if:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   local v = [EBP-4]
+        MOV DWORD PTR [EBP-4],5
+        MOV EAX,5
         MOV DWORD PTR [EBP-4],EAX
-_CCL_USR_test2:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_6
+        XOR EAX,EAX
+        JMP _CCL_7
+_CCL_6:
+        MOV EAX,1
+_CCL_7:
+        TEST EAX,EAX
+        JZ _CCL_4
+        JMP _CCL_USR_done
+_CCL_4:
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_USR_done:
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_3
+_CCL_3:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: test_break_in_loop ---
+_CCF_test_break_in_loop:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,8
+;   local i = [EBP-4]
+        MOV DWORD PTR [EBP-4],0
+;   local s = [EBP-8]
+        MOV DWORD PTR [EBP-8],0
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_9:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_12
+        XOR EAX,EAX
+        JMP _CCL_13
+_CCL_12:
+        MOV EAX,1
+_CCL_13:
+        TEST EAX,EAX
+        JZ _CCL_11
         MOV EAX,DWORD PTR [EBP-4]
         PUSH EAX
         MOV EAX,5
         MOV EBX,EAX
         POP EAX
-        ADD EAX,EBX
-        MOV DWORD PTR [EBP-4],EAX
-_CCL_USR_end:
+        CMP EAX,EBX
+        JE _CCL_16
+        XOR EAX,EAX
+        JMP _CCL_17
+_CCL_16:
+        MOV EAX,1
+_CCL_17:
+        TEST EAX,EAX
+        JZ _CCL_14
+        JMP _CCL_11
+_CCL_14:
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
         MOV EAX,DWORD PTR [EBP-4]
-        JMP _CCL_1
-_CCL_1:
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-8],EAX
+_CCL_10:
+        MOV EAX,DWORD PTR [EBP-4]
+        INC EAX
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_9
+_CCL_11:
+        MOV EAX,DWORD PTR [EBP-8]
+        JMP _CCL_8
+_CCL_8:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: test_continue_in_loop ---
+_CCF_test_continue_in_loop:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,8
+;   local i = [EBP-4]
+        MOV DWORD PTR [EBP-4],0
+;   local s = [EBP-8]
+        MOV DWORD PTR [EBP-8],0
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_19:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_22
+        XOR EAX,EAX
+        JMP _CCL_23
+_CCL_22:
+        MOV EAX,1
+_CCL_23:
+        TEST EAX,EAX
+        JZ _CCL_21
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _CCL_26
+        XOR EAX,EAX
+        JMP _CCL_27
+_CCL_26:
+        MOV EAX,1
+_CCL_27:
+        TEST EAX,EAX
+        JZ _CCL_24
+        JMP _CCL_20
+_CCL_24:
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-8],EAX
+_CCL_20:
+        MOV EAX,DWORD PTR [EBP-4]
+        INC EAX
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_19
+_CCL_21:
+        MOV EAX,DWORD PTR [EBP-8]
+        JMP _CCL_18
+_CCL_18:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: test_return_void ---
+_CCF_test_return_void:
+        PUSH EBP
+        MOV EBP,ESP
+        XOR EAX,EAX
+        JMP _CCL_28
+_CCL_28:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: test_return_expr ---
+_CCF_test_return_expr:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,42
+        JMP _CCL_29
+_CCL_29:
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: main ---
+_CCF_main:
+        PUSH EBP
+        MOV EBP,ESP
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_7
+        CALL _CCRT_PRINTSTR
+        CALL _CCF_test_simple_goto
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_8
+        CALL _CCRT_PRINTSTR
+        CALL _CCF_test_goto_forward
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_9
+        CALL _CCRT_PRINTSTR
+        CALL _CCF_test_goto_in_if
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_10
+        CALL _CCRT_PRINTSTR
+        CALL _CCF_test_break_in_loop
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_11
+        CALL _CCRT_PRINTSTR
+        CALL _CCF_test_continue_in_loop
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_12
+        CALL _CCRT_PRINTSTR
+        CALL _CCF_test_return_expr
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+        MOV EAX,0
+        JMP _CCL_30
+_CCL_30:
         MOV ESP,EBP
         POP EBP
         RET
@@ -332,5 +597,18 @@ _main:
         CALL _CCF_main
         PUSH 0
         CALL _ExitProcess@4
+
+
+; --- Donnees supplementaires (TODO 21) ---
+.DATA
+
+_CCK_7  DB 'test_simple_goto = ',0
+_CCK_8  DB 'test_goto_forward = ',0
+_CCK_9  DB 'test_goto_in_if = ',0
+_CCK_10  DB 'test_break_in_loop = ',0
+_CCK_11  DB 'test_continue_in_loop = ',0
+_CCK_12  DB 'test_return_expr = ',0
+
+.CODE
 
 END _main

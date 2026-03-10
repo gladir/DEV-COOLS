@@ -284,8 +284,10 @@ _CCRT_READCHAR:
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        JMP _CCL_USR_missing
         MOV EAX,0
         JMP _CCL_1
+; WARNING: goto vers label non defini: missing
 _CCL_1:
         MOV ESP,EBP
         POP EBP
