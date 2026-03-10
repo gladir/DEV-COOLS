@@ -5176,7 +5176,7 @@ Begin
           { struct/union : parser la definition avec ParseStructDef }
           TypeIdx := ParseStructDef(I,
             TypeName,
-            (Copy(TypeName, 1, 5) = 'union'));
+            (TypeName = 'union') Or (Copy(TypeName, 1, 6) = 'union '));
         End;
       End;
 
@@ -5626,7 +5626,7 @@ Begin
       If (TName <> 'enum') And (Copy(TName, 1, 5) <> 'enum ') Then
       Begin
         TIdx := ParseStructDef(P, TName,
-          (Copy(TName, 1, 5) = 'union'));
+          (TName = 'union') Or (Copy(TName, 1, 6) = 'union '));
         ParseTypeFromTokens := TIdx;
         Exit;
       End
