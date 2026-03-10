@@ -3184,7 +3184,7 @@ Begin
   TypeTab[Idx].Low := -128;
   TypeTab[Idx].High := 127;
   Idx := TypeAdd(TYK_LONGINT,  'LongInt',  4, 'number', '0');
-  TypeTab[Idx].Low := -2147483647;
+  TypeTab[Idx].Low := -2147483647 - 1;
   TypeTab[Idx].High := 2147483647;
   Idx := TypeAdd(TYK_COMP,     'Comp',     8, 'number', '0');
 
