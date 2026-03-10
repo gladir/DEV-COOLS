@@ -17,16 +17,23 @@
    FEUILLE DE ROUTE - 25 TODOS
    ============================================================
 
-   TODO 01 - INFRASTRUCTURE ET OPTIONS
-             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
-             ParseArgs : analyser argv (source.pas [sortie.js] [-v] [-d] [-w])
-             FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
+   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
+               ModuleES6, Pretty)
+             ParseArgs : analyser argv (source.pas [sortie.js] [-v] [-d] [-w]
+               [-m] [-pretty] [-h])
+             FatalError, CompileError, WarnMsg
+             EXIT_OK / EXIT_ERROR / EXIT_USAGE
              Detecter l extension .pas du fichier source
              Sortie par defaut : meme nom avec extension .js
              Programme principal : validation des arguments et appel Run
              Version, Date, aide en ligne (option -h)
              Option -m (module ES6) : generer export/import au lieu de global
              Option -pretty : indentation du JavaScript genere
+             ShowBanner, ShowUsage, ShowStats
+             StrLowerCase, IntToStr_, BaseName, ReplaceExt
+             InitOptions, Cleanup, GlobalInit
+             Run (stub), programme principal ParseArgs + Run
 
    TODO 02 - LEXEUR (TOKENS TURBO PASCAL)
              TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_STRING,
@@ -611,8 +618,314 @@
 
 Program TP2JS;
 
+{$IFDEF FPC}
+  {$MODE TP}
+  {$H-}
+{$ENDIF}
+{$I-}
+
+{ ============================================================
+  CONSTANTES
+  ============================================================ }
+Const
+  TP2JS_VERSION = '1.0';
+  TP2JS_DATE    = '2026-03-10';
+
+  MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
+  MAX_ERRORS    = {$IFDEF FPC}30{$ELSE}3{$ENDIF};
+
+  TP_VAR_PFX  = '_TPV_';
+  TP_FN_PFX   = '_TPF_';
+  TP_CST_PFX  = '_TPC_';
+  TP_TYPE_PFX = '_TPT_';
+  TP_UNIT_PFX = '_TPU_';
+  TP_RT_PFX   = '_TPR_';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+{ ============================================================
+  TYPES
+  ============================================================ }
+Type
+  TString = String[MAX_STR];
+
+  TOptions = Record
+    SrcFile   : TString;
+    OutFile   : TString;
+    Verbose   : Boolean;
+    DebugMode : Boolean;
+    Warnings  : Boolean;
+    ModuleES6 : Boolean;
+    Pretty    : Boolean;
+  End;
+
+{ ============================================================
+  VARIABLES GLOBALES
+  ============================================================ }
+Var
+  Opts : TOptions;
+
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  OutF     : Text;
+  OutFOpen : Boolean;
+
+  LexOpened : Boolean;
+
+{ ============================================================
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  ============================================================ }
+
+Function IntToStr_(N : LongInt) : TString;
+Var
+  S : TString;
 Begin
- WriteLn('TP2JS - Compilateur Turbo Pascal vers JavaScript (.js)');
- WriteLn('Version 1.0');
- WriteLn('Aucun TODO implemente pour le moment.');
+  Str(N, S);
+  IntToStr_ := S;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+Begin
+  R := S;
+  For I := 1 To Length(R) Do
+    If (R[I] >= 'A') And (R[I] <= 'Z') Then
+      R[I] := Chr(Ord(R[I]) + 32);
+  StrLowerCase := R;
+End;
+
+Function BaseName(Const Path : TString) : TString;
+Var
+  I, LastSep, LastDot : Integer;
+  S : TString;
+Begin
+  LastSep := 0;
+  LastDot := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If LastDot > LastSep Then
+    S := Copy(Path, LastSep + 1, LastDot - LastSep - 1)
+  Else
+    S := Copy(Path, LastSep + 1, Length(Path));
+  BaseName := S;
+End;
+
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('TP2JS: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+    {$I-}
+    Assign(OutF, Opts.OutFile);
+    Erase(OutF);
+    {$I+}
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure CompileError(Const Msg : TString);
+Begin
+  WriteLn('TP2JS: error: ', Msg);
+  Inc(ErrorCount);
+  If ErrorCount >= MAX_ERRORS Then
+    FatalError('trop d''erreurs, compilation arretee');
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('TP2JS: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+Procedure ShowBanner;
+Begin
+  WriteLn('TP2JS v', TP2JS_VERSION, ' (', TP2JS_DATE, ')');
+  WriteLn('Compilateur Turbo Pascal -> JavaScript (.js)');
+  WriteLn('Turbo Pascal / Free Pascal (-Mtp)');
+  WriteLn;
+End;
+
+Procedure ShowUsage;
+Begin
+  WriteLn('Usage: TP2JS <source.pas> [sortie.js] [options]');
+  WriteLn;
+  WriteLn('  source.pas : fichier Turbo Pascal source');
+  WriteLn('  sortie.js  : fichier JavaScript de sortie (defaut: source.js)');
+  WriteLn;
+  WriteLn('Options:');
+  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+  WriteLn('  -d         : debug tokens (affiche chaque token)');
+  WriteLn('  -w         : activer les avertissements');
+  WriteLn('  -m         : generer module ES6 (export/import)');
+  WriteLn('  -pretty    : indentation du JavaScript genere');
+  WriteLn('  -h, --help : cette aide');
+  WriteLn;
+  Halt(EXIT_USAGE);
+End;
+
+Procedure ShowStats;
+Begin
+  WriteLn;
+  WriteLn('Compilation terminee : ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('  Lignes         : ', TotalLines);
+  WriteLn('  Erreurs        : ', ErrorCount);
+  WriteLn('  Avertissements : ', WarnCount);
+End;
+
+Procedure InitOptions;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.ModuleES6 := False;
+  Opts.Pretty    := False;
+End;
+
+Procedure ParseArgs;
+Var
+  I   : Integer;
+  Arg : TString;
+  Ext : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowUsage;
+
+  For I := 1 To ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Then
+      ShowUsage
+    Else If (Arg = '-v') Or (Arg = '--verbose') Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-m' Then
+      Opts.ModuleES6 := True
+    Else If Arg = '-pretty' Then
+      Opts.Pretty := True
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+    Begin
+      WriteLn('TP2JS: option inconnue: ', Arg);
+      ShowUsage;
+    End
+    Else If Opts.SrcFile = '' Then
+      Opts.SrcFile := Arg
+    Else If Opts.OutFile = '' Then
+      Opts.OutFile := Arg
+    Else
+    Begin
+      WriteLn('TP2JS: argument inattendu: ', Arg);
+      ShowUsage;
+    End;
+  End;
+
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('TP2JS: fichier source manquant');
+    ShowUsage;
+  End;
+
+  { Verifier extension .pas }
+  Ext := StrLowerCase(Opts.SrcFile);
+  If (Length(Ext) < 4) Or
+     (Copy(Ext, Length(Ext) - 3, 4) <> '.pas') Then
+  Begin
+    WriteLn('TP2JS: le fichier source doit avoir l''extension .pas');
+    ShowUsage;
+  End;
+
+  { Sortie par defaut : meme nom avec extension .js }
+  If Opts.OutFile = '' Then
+    Opts.OutFile := ReplaceExt(Opts.SrcFile, '.js');
+End;
+
+Procedure Cleanup;
+Begin
+  If LexOpened Then
+  Begin
+    { LexClose sera defini dans TODO 02 }
+    LexOpened := False;
+  End;
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+Procedure GlobalInit;
+Begin
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+  LexOpened  := False;
+End;
+
+{ ============================================================
+  Run : stub - sera complete dans les TODOs suivants
+  ============================================================ }
+Procedure Run;
+Begin
+  GlobalInit;
+  If Opts.Verbose Then ShowBanner;
+  WriteLn('TP2JS: compilation de ', Opts.SrcFile, ' -> ', Opts.OutFile);
+  WriteLn('TP2JS: TODO 02+ non implemente, rien a generer.');
+  If Opts.ModuleES6 Then
+    WriteLn('TP2JS: mode module ES6 actif');
+  If Opts.Pretty Then
+    WriteLn('TP2JS: mode pretty-print actif');
+  If Opts.Verbose Then ShowStats;
+  Cleanup;
+End;
+
+{ ============================================================
+  PROGRAMME PRINCIPAL
+  ============================================================ }
+Begin
+  ParseArgs;
+  Run;
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 End.
