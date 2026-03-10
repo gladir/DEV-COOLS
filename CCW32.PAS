@@ -11000,6 +11000,33 @@ Begin
   Begin BinCodeByte(BinModRM(2, RegField, 5)); BinCodeDWord(Ofs); End;
 End;
 
+Procedure BinEmitESPRef(RegField : Integer; Ofs : LongInt);
+Begin
+  If Ofs = 0 Then
+  Begin BinCodeByte(BinModRM(0, RegField, 4)); BinCodeByte($24); End
+  Else If (Ofs >= -128) And (Ofs <= 127) Then
+  Begin BinCodeByte(BinModRM(1, RegField, 4)); BinCodeByte($24); BinCodeByte(Byte(Ofs And $FF)); End
+  Else
+  Begin BinCodeByte(BinModRM(2, RegField, 4)); BinCodeByte($24); BinCodeDWord(Ofs); End;
+End;
+
+Function BinParseESPOfs(Const S : TString; Var Ofs : LongInt) : Boolean;
+Var Inner : TString; P, Code : Integer;
+Begin
+  Inner := BinStripBrackets(S);
+  BinParseESPOfs := False;
+  If Pos('ESP', StrUpperCase(Inner)) <> 1 Then Exit;
+  P := Pos('+', Inner);
+  If P > 0 Then
+  Begin System.Val(Copy(Inner, P + 1, Length(Inner) - P), Ofs, Code); BinParseESPOfs := True; End
+  Else Begin
+    P := Pos('-', Inner);
+    If P > 0 Then
+    Begin System.Val(Copy(Inner, P + 1, Length(Inner) - P), Ofs, Code); Ofs := -Ofs; BinParseESPOfs := True; End
+    Else Begin Ofs := 0; BinParseESPOfs := True; End;
+  End;
+End;
+
 Procedure BinEmitRegIndirect(RegField, BaseReg : Integer);
 Begin
   If BaseReg = 4 Then Begin BinCodeByte(BinModRM(0, RegField, 4)); BinCodeByte($24); End
@@ -11008,10 +11035,12 @@ Begin
 End;
 
 Procedure BinEmitMemOp(RegField : Integer; Const Inner : TString);
-Var RBase, RIdx, PP : Integer; Tmp : TString; EbpOfs : LongInt;
+Var RBase, RIdx, PP : Integer; Tmp : TString; EbpOfs, Imm : LongInt;
 Begin
   If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then
   Begin BinEmitEBPRef(RegField, EbpOfs); Exit; End;
+  If BinParseESPOfs('[' + Inner + ']', EbpOfs) Then
+  Begin BinEmitESPRef(RegField, EbpOfs); Exit; End;
   RBase := BinReg32(Inner);
   If RBase >= 0 Then
   Begin BinEmitRegIndirect(RegField, RBase); Exit; End;
@@ -11032,6 +11061,16 @@ Begin
         BinCodeByte(Byte((RIdx Shl 3) Or RBase));
         Exit;
       End;
+      { reg+imm : registre de base + deplacement immediat }
+      Imm := BinParseImm(Tmp);
+      If RBase = 4 Then { ESP a besoin du SIB }
+        BinEmitESPRef(RegField, Imm)
+      Else Begin
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin BinCodeByte(BinModRM(1, RegField, RBase)); BinCodeByte(Byte(Imm And $FF)); End
+        Else Begin BinCodeByte(BinModRM(2, RegField, RBase)); BinCodeDWord(Imm); End;
+      End;
+      Exit;
     End;
   End;
   BinEmitMemRef(RegField, Inner);
@@ -11065,16 +11104,16 @@ Begin
     Exit;
   End;
 
+  { .DATA / .CODE switching - doit etre traite AVANT les autres directives }
+  If StrUpperCase(S) = '.DATA' Then Begin BinInCode := False; Exit; End;
+  If StrUpperCase(S) = '.CODE' Then Begin BinInCode := True; Exit; End;
+
   { Directives }
   If S[1] = '.' Then Exit;
   If Pos('EXTRN', StrUpperCase(S)) > 0 Then Exit;
   If Pos('OPTION', StrUpperCase(S)) > 0 Then Exit;
   If Pos('END ', StrUpperCase(S)) = 1 Then Exit;
   If StrUpperCase(S) = 'END' Then Exit;
-
-  { .DATA / .CODE switching }
-  If StrUpperCase(S) = '.DATA' Then Begin BinInCode := False; Exit; End;
-  If StrUpperCase(S) = '.CODE' Then Begin BinInCode := True; Exit; End;
 
   { Data segment declarations }
   If Not BinInCode Then
@@ -11411,8 +11450,7 @@ Begin
         Exit;
       End;
     End;
-    BinCodeByte($8D); BinCodeByte(BinModRM(0, R1, 5));
-    BinAddFixup(BinCodeLen, BFK_ABS32, Op2, True); BinCodeDWord(0);
+    BinCodeByte($8D); BinEmitMemRef(R1, Inner);
     Exit;
   End;
 
@@ -11479,7 +11517,8 @@ Begin
         R2 := BinReg32(Inner);
         If R2 >= 0 Then Begin BinCodeByte($8B); BinEmitRegIndirect(R1, R2); Exit; End;
         If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then Begin BinCodeByte($8B); BinEmitEBPRef(R1, EbpOfs); Exit; End;
-        BinCodeByte($8B); BinEmitMemRef(R1, Inner); Exit;
+        If BinParseESPOfs('[' + Inner + ']', EbpOfs) Then Begin BinCodeByte($8B); BinEmitESPRef(R1, EbpOfs); Exit; End;
+        BinCodeByte($8B); BinEmitMemOp(R1, Inner); Exit;
       End;
       If Pos('OFFSET', StrUpperCase(Op2)) = 1 Then
       Begin
@@ -11502,7 +11541,8 @@ Begin
         R2 := BinReg32(Inner);
         If R2 >= 0 Then Begin BinCodeByte($8A); BinEmitRegIndirect(R1, R2); Exit; End;
         If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then Begin BinCodeByte($8A); BinEmitEBPRef(R1, EbpOfs); Exit; End;
-        BinCodeByte($8A); BinEmitMemRef(R1, Inner); Exit;
+        If BinParseESPOfs('[' + Inner + ']', EbpOfs) Then Begin BinCodeByte($8A); BinEmitESPRef(R1, EbpOfs); Exit; End;
+        BinCodeByte($8A); BinEmitMemOp(R1, Inner); Exit;
       End;
       Imm := BinParseImm(Op2);
       BinCodeByte($B0 + R1); BinCodeByte(Byte(Imm And $FF)); Exit;
@@ -11530,12 +11570,22 @@ Begin
       End
       Else
       Begin
+        { Detecter si Op2 est un registre 8 bits meme sans BYTE PTR }
+        If (R8 >= 0) And (R2 < 0) Then
+        Begin
+          BinCodeByte($88); R1 := BinReg32(Inner);
+          If R1 >= 0 Then BinEmitRegIndirect(R8, R1)
+          Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R8, EbpOfs)
+          Else If BinParseESPOfs('[' + Inner + ']', EbpOfs) Then BinEmitESPRef(R8, EbpOfs)
+          Else BinEmitMemOp(R8, Inner); Exit;
+        End;
         If R2 >= 0 Then
         Begin
           BinCodeByte($89); R1 := BinReg32(Inner);
           If R1 >= 0 Then BinEmitRegIndirect(R2, R1)
           Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R2, EbpOfs)
-          Else BinEmitMemRef(R2, Inner); Exit;
+          Else If BinParseESPOfs('[' + Inner + ']', EbpOfs) Then BinEmitESPRef(R2, EbpOfs)
+          Else BinEmitMemOp(R2, Inner); Exit;
         End;
         If Pos('OFFSET', StrUpperCase(Op2)) = 1 Then
         Begin
@@ -11773,6 +11823,8 @@ Var
   DName : String[16];
   SName : Array[0..7] of Byte;
   CoffChar : Word;
+  EntryRVA : LongInt;
+  MainIdx  : Integer;
 Begin
   DName := 'KERNEL32.DLL'#0;
   { COFF Characteristics : EXECUTABLE_IMAGE | 32BIT_MACHINE [| DLL] }
@@ -11801,6 +11853,11 @@ Begin
   DFSz := BinAlignTo(BinDataLen, PE_FILE_ALIGN);
   ImgSz := DRVA + BinAlignTo(BinDataLen, PE_SEC_ALIGN);
   BinResolveAll(TRVA, DRVA, RRVA, IATOf);
+  { Determiner le point d entree : chercher le label _MAIN }
+  EntryRVA := TRVA;
+  MainIdx := BinFindLabel('_MAIN');
+  If MainIdx >= 0 Then
+    EntryRVA := TRVA + BinLabels[MainIdx].Offset;
   Assign(F, FileName); Rewrite(F, 1);
   { DOS Header }
   WriteBinWord(F, PE_DOS_MAGIC); WriteBinPad(F, 58); WriteBinDWord(F, $80);
@@ -11814,7 +11871,7 @@ Begin
   { Opt Hdr }
   WriteBinWord(F, PE_MAGIC_32); WriteBinWord(F, $0100);
   WriteBinDWord(F, TFSz); WriteBinDWord(F, DFSz + RFSz); WriteBinDWord(F, 0);
-  WriteBinDWord(F, TRVA); WriteBinDWord(F, TRVA); WriteBinDWord(F, DRVA);
+  WriteBinDWord(F, EntryRVA); WriteBinDWord(F, TRVA); WriteBinDWord(F, DRVA);
   WriteBinDWord(F, PE_IMG_BASE); WriteBinDWord(F, PE_SEC_ALIGN); WriteBinDWord(F, PE_FILE_ALIGN);
   WriteBinWord(F, 4); WriteBinWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
   WriteBinWord(F, 4); WriteBinWord(F, 0);
