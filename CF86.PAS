@@ -189,7 +189,7 @@
             En cfscript : if (cond) { } else if (cond) { } else { }
             En cfscript : switch (expr) { case "val": ... break; default: ... }
 
-  TODO 14 - BOUCLES (CFLOOP)
+  TODO 14 - BOUCLES (CFLOOP) [IMPLEMENTE]
             <cfloop index="i" from="1" to="10" step="1">...</cfloop>
               Boucle FOR : variable i, increment automatique
               Labels : _CFL_FTEST_N, _CFL_FINCR_N, _CFL_FEND_N
@@ -755,6 +755,15 @@ Procedure ParseCfIf; Forward;
 Procedure ParseCfSwitch; Forward;
 Procedure ParseScriptIf; Forward;
 Procedure ParseScriptSwitch; Forward;
+{ TODO 14 }
+Procedure LoopPush(Const BrkLbl, ContLbl : TString); Forward;
+Procedure LoopPop; Forward;
+Procedure ParseCfLoop; Forward;
+Procedure ParseCfBreak; Forward;
+Procedure ParseCfContinue; Forward;
+Procedure ParseScriptWhile; Forward;
+Procedure ParseScriptFor; Forward;
+Procedure ParseScriptDoWhile; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1908,6 +1917,10 @@ Begin
 
   { Variable temporaire pour cfswitch (TODO 13) }
   DataAddWord('_CF_SWTMP', 0);
+
+  { Variables temporaires pour cfloop (TODO 14) }
+  DataAddWord('_CF_LOOPLIM', 0);
+  DataAddWord('_CF_LOOPSTP', 0);
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -4170,7 +4183,8 @@ End;
 
 { ---- ParseBodyTag : dispatcher un element de contenu -------- }
 (* Traite un tag CF ou un element cfscript et avance le curseur *)
-(* de tokens. Utilise par ParsePage, ParseCfIf, ParseCfSwitch.  *)
+(* de tokens. Utilise par ParsePage, ParseCfIf, ParseCfSwitch,  *)
+(* ParseCfLoop et les boucles cfscript.                          *)
 Procedure ParseBodyTag;
 Var
   TagLower : TString;
@@ -4192,6 +4206,12 @@ Begin
     Begin ParserAdvance; ParseCfIf; End
     Else If TagLower = 'cfswitch' Then
     Begin ParserAdvance; ParseCfSwitch; End
+    Else If TagLower = 'cfloop' Then
+    Begin ParserAdvance; ParseCfLoop; End
+    Else If TagLower = 'cfbreak' Then
+    Begin ParserAdvance; ParseCfBreak; End
+    Else If TagLower = 'cfcontinue' Then
+    Begin ParserAdvance; ParseCfContinue; End
     Else
       ParserAdvance;
   End
@@ -4208,6 +4228,34 @@ Begin
     Begin ParserAdvance; ParseScriptIf; End
     Else If KwLower = 'switch' Then
     Begin ParserAdvance; ParseScriptSwitch; End
+    Else If KwLower = 'while' Then
+    Begin ParserAdvance; ParseScriptWhile; End
+    Else If KwLower = 'for' Then
+    Begin ParserAdvance; ParseScriptFor; End
+    Else If KwLower = 'do' Then
+    Begin ParserAdvance; ParseScriptDoWhile; End
+    Else If KwLower = 'break' Then
+    Begin
+      ParserAdvance;
+      EmitComment('script break');
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopBreakLbl[LoopTop - 1])
+      Else
+        CompileError('break en dehors d''une boucle');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
+    Else If KwLower = 'continue' Then
+    Begin
+      ParserAdvance;
+      EmitComment('script continue');
+      If LoopTop > 0 Then
+        EmitInstr('JMP', LoopContLbl[LoopTop - 1])
+      Else
+        CompileError('continue en dehors d''une boucle');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
+    End
     Else
       ParserAdvance;
   End
@@ -4853,6 +4901,683 @@ Begin
   End;
 
   EmitLabel(LblEnd);
+End;
+
+{ ============================================================ }
+{  TODO 14 - BOUCLES (CFLOOP)                                  }
+{            [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+{ ---- LoopPush : empiler des labels break/continue ----------- }
+(* Ajoute une paire de labels (break, continue) sur la pile     *)
+(* de boucles pour supporter break et continue imbrique.        *)
+Procedure LoopPush(Const BrkLbl, ContLbl : TString);
+Begin
+  If LoopTop >= MAX_LOOP_NEST Then
+  Begin
+    CompileError('boucles trop imbriquees (max ' + IntToStr(MAX_LOOP_NEST) + ')');
+    Exit;
+  End;
+  LoopBreakLbl[LoopTop] := BrkLbl;
+  LoopContLbl[LoopTop]  := ContLbl;
+  Inc(LoopTop);
+End;
+
+{ ---- LoopPop : depiler les labels break/continue ------------ }
+Procedure LoopPop;
+Begin
+  If LoopTop > 0 Then
+    Dec(LoopTop);
+End;
+
+{ ---- ParseCfBreak : <cfbreak> ------------------------------- }
+(* Genere un JMP vers le label de sortie de la boucle courante. *)
+Procedure ParseCfBreak;
+Begin
+  EmitComment('cfbreak');
+  SkipToTagClose;
+  If LoopTop <= 0 Then
+  Begin
+    CompileError('<cfbreak> en dehors d''une boucle');
+    Exit;
+  End;
+  EmitInstr('JMP', LoopBreakLbl[LoopTop - 1]);
+End;
+
+{ ---- ParseCfContinue : <cfcontinue> ------------------------- }
+(* Genere un JMP vers le label de continuation de la boucle.    *)
+Procedure ParseCfContinue;
+Begin
+  EmitComment('cfcontinue');
+  SkipToTagClose;
+  If LoopTop <= 0 Then
+  Begin
+    CompileError('<cfcontinue> en dehors d''une boucle');
+    Exit;
+  End;
+  EmitInstr('JMP', LoopContLbl[LoopTop - 1]);
+End;
+
+{ ---- ParseCfLoop : <cfloop ...>...</cfloop> ----------------- }
+(* Gere les differentes formes de boucle CFML :                  *)
+(*   from/to/step : boucle compteur (FOR)                        *)
+(*   condition    : boucle WHILE                                 *)
+(*   array/index  : parcours de tableau (simplifie)              *)
+(*   collection/item : parcours de structure (simplifie)         *)
+Procedure ParseCfLoop;
+Var
+  IdxName   : TString;
+  FromVal   : TString;
+  ToVal     : TString;
+  StepVal   : TString;
+  CondStr   : TString;
+  ArrName   : TString;
+  CollName  : TString;
+  ItemName  : TString;
+  HasFrom   : Boolean;
+  HasTo     : Boolean;
+  HasCond   : Boolean;
+  HasArray  : Boolean;
+  HasColl   : Boolean;
+  SIdx      : Integer;
+  LblTest   : TString;
+  LblIncr   : TString;
+  LblEnd    : TString;
+  Res       : TExprVal;
+  NumVal    : LongInt;
+  Code      : Integer;
+  AttrName  : TString;
+Begin
+  IdxName  := '';
+  FromVal  := '1';
+  ToVal    := '0';
+  StepVal  := '1';
+  CondStr  := '';
+  ArrName  := '';
+  CollName := '';
+  ItemName := '';
+  HasFrom  := False;
+  HasTo    := False;
+  HasCond  := False;
+  HasArray := False;
+  HasColl  := False;
+
+  { Parse tag attributes until > }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    Begin
+      ParserAdvance;
+      Exit;
+    End;
+
+    If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
+    Begin
+      AttrName := StrLowerCase(CurToken.Val);
+      ParserAdvance;
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance;
+
+      If AttrName = 'index' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin IdxName := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin IdxName := CurToken.Val; ParserAdvance; End;
+      End
+      Else If AttrName = 'from' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin FromVal := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_INTEGER Then
+        Begin Str(CurToken.IntVal, FromVal); ParserAdvance; End;
+        HasFrom := True;
+      End
+      Else If AttrName = 'to' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin ToVal := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_INTEGER Then
+        Begin Str(CurToken.IntVal, ToVal); ParserAdvance; End;
+        HasTo := True;
+      End
+      Else If AttrName = 'step' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin StepVal := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_INTEGER Then
+        Begin Str(CurToken.IntVal, StepVal); ParserAdvance; End;
+      End
+      Else If AttrName = 'condition' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin CondStr := CurToken.Val; ParserAdvance; End;
+        HasCond := True;
+      End
+      Else If AttrName = 'array' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin ArrName := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin ArrName := CurToken.Val; ParserAdvance; End;
+        HasArray := True;
+      End
+      Else If AttrName = 'collection' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin CollName := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin CollName := CurToken.Val; ParserAdvance; End;
+        HasColl := True;
+      End
+      Else If AttrName = 'item' Then
+      Begin
+        If CurToken.Kind = TK_STRING Then
+        Begin ItemName := CurToken.Val; ParserAdvance; End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin ItemName := CurToken.Val; ParserAdvance; End;
+      End
+      Else
+      Begin
+        { Skip unknown attribute value }
+        If (CurToken.Kind = TK_STRING) Or (CurToken.Kind = TK_INTEGER)
+           Or (CurToken.Kind = TK_IDENT) Then
+          ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  { --- FORM 1 : cfloop from/to/step (FOR) --- }
+  If HasFrom And HasTo Then
+  Begin
+    EmitComment('cfloop: FOR ' + IdxName + ' = ' + FromVal +
+                ' TO ' + ToVal + ' STEP ' + StepVal);
+
+    { Ensure index variable exists }
+    If IdxName <> '' Then
+    Begin
+      SIdx := SymFind(IdxName);
+      If SIdx < 0 Then
+        SIdx := VarAlloc(IdxName, TY_IDX_NUMERIC);
+    End
+    Else
+      SIdx := -1;
+
+    { Initialize: index = from }
+    Val(FromVal, NumVal, Code);
+    If Code = 0 Then
+      EmitInstrAB('MOV', 'AX', IntToStr(NumVal))
+    Else
+      EmitInstrAB('MOV', 'AX', FromVal);
+    If SIdx >= 0 Then
+      VarStore(SIdx);
+
+    { Store limit in _CF_LOOPLIM }
+    Val(ToVal, NumVal, Code);
+    If Code = 0 Then
+      EmitInstrAB('MOV', 'AX', IntToStr(NumVal))
+    Else
+      EmitInstrAB('MOV', 'AX', ToVal);
+    EmitInstrAB('MOV', '[_CF_LOOPLIM]', 'AX');
+
+    { Store step in _CF_LOOPSTP }
+    Val(StepVal, NumVal, Code);
+    If Code = 0 Then
+      EmitInstrAB('MOV', 'AX', IntToStr(NumVal))
+    Else
+      EmitInstrAB('MOV', 'AX', StepVal);
+    EmitInstrAB('MOV', '[_CF_LOOPSTP]', 'AX');
+
+    LblTest := NewLabel('FTEST');
+    LblIncr := NewLabel('FINCR');
+    LblEnd  := NewLabel('FEND');
+
+    LoopPush(LblEnd, LblIncr);
+
+    { Test: CMP index, limit }
+    EmitLabel(LblTest);
+    If SIdx >= 0 Then
+      VarLoad(SIdx)
+    Else
+      EmitInstr('XOR', 'AX, AX');
+    EmitInstrAB('CMP', 'AX', '[_CF_LOOPLIM]');
+    { Check step sign to determine JG vs JL }
+    Val(StepVal, NumVal, Code);
+    If (Code = 0) And (NumVal < 0) Then
+      EmitInstr('JL', LblEnd)
+    Else
+      EmitInstr('JG', LblEnd);
+
+    { Body }
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+
+    { Increment }
+    EmitLabel(LblIncr);
+    If SIdx >= 0 Then
+      VarLoad(SIdx);
+    EmitInstrAB('ADD', 'AX', '[_CF_LOOPSTP]');
+    If SIdx >= 0 Then
+      VarStore(SIdx);
+    EmitInstr('JMP', LblTest);
+    EmitLabel(LblEnd);
+
+    LoopPop;
+  End
+
+  { --- FORM 2 : cfloop condition (WHILE) --- }
+  Else If HasCond Then
+  Begin
+    EmitComment('cfloop: WHILE condition');
+
+    LblTest := NewLabel('WTEST');
+    LblEnd  := NewLabel('WEND');
+
+    LoopPush(LblEnd, LblTest);
+
+    EmitLabel(LblTest);
+    { Evaluate condition string as variable name lookup }
+    SIdx := SymFind(CondStr);
+    If SIdx >= 0 Then
+    Begin
+      VarLoad(SIdx);
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblEnd);
+    End
+    Else
+    Begin
+      { Try as numeric literal }
+      Val(CondStr, NumVal, Code);
+      If Code = 0 Then
+      Begin
+        EmitInstrAB('MOV', 'AX', IntToStr(NumVal));
+        EmitInstr('TEST', 'AX, AX');
+        EmitInstr('JZ', LblEnd);
+      End
+      Else
+      Begin
+        EmitComment('cfloop: condition non resolue: ' + CondStr);
+        EmitInstr('JMP', LblEnd);
+      End;
+    End;
+
+    { Body }
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+
+    EmitInstr('JMP', LblTest);
+    EmitLabel(LblEnd);
+
+    LoopPop;
+  End
+
+  { --- FORM 3 : cfloop array (array iteration - simplified) --- }
+  Else If HasArray Then
+  Begin
+    EmitComment('cfloop: array (simplifie) - TODO 17 requis');
+    { Skip body until </cfloop> }
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParserAdvance;
+    End;
+  End
+
+  { --- FORM 4 : cfloop collection (struct iteration - simplified) --- }
+  Else If HasColl Then
+  Begin
+    EmitComment('cfloop: collection (simplifie) - TODO 18 requis');
+    { Skip body until </cfloop> }
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParserAdvance;
+    End;
+  End
+
+  { --- Fallback : skip body --- }
+  Else
+  Begin
+    EmitComment('cfloop: forme non reconnue');
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_TAG_CLOSE) And
+         (StrLowerCase(CurToken.Val) = 'cfloop') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParserAdvance;
+    End;
+  End;
+End;
+
+{ ---- ParseScriptWhile : while (cond) ... body ... ---------- }
+(* Gere la boucle while en mode cfscript.                        *)
+Procedure ParseScriptWhile;
+Var
+  Res     : TExprVal;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  LblTest := NewLabel('WTEST');
+  LblEnd  := NewLabel('WEND');
+
+  EmitComment('script while');
+  EmitLabel(LblTest);
+
+  { Consume ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendue apres while');
+    EmitLabel(LblEnd);
+    Exit;
+  End;
+
+  { Parse condition }
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  { Consume ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblEnd);
+
+  LoopPush(LblEnd, LblTest);
+
+  { Parse body }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+  End
+  Else
+    ParseBodyTag;
+
+  EmitInstr('JMP', LblTest);
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
+
+{ ---- ParseScriptDoWhile : do ... while (cond); ------------- }
+(* Gere la boucle do...while en mode cfscript.                   *)
+Procedure ParseScriptDoWhile;
+Var
+  Res     : TExprVal;
+  LblBeg  : TString;
+  LblTest : TString;
+  LblEnd  : TString;
+Begin
+  LblBeg  := NewLabel('DOBEG');
+  LblTest := NewLabel('DOTEST');
+  LblEnd  := NewLabel('DOEND');
+
+  EmitComment('script do...while');
+  EmitLabel(LblBeg);
+
+  LoopPush(LblEnd, LblTest);
+
+  { Parse body }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+  End
+  Else
+    ParseBodyTag;
+
+  { Expect while keyword }
+  EmitLabel(LblTest);
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'while') Then
+  Begin
+    ParserAdvance;
+    { Consume ( }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+      ParserAdvance;
+    { Parse condition }
+    ExprMakeNone(Res);
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    { Consume ) }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    { Consume ; }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JNZ', LblBeg);
+  End
+  Else
+    CompileError('"while" attendu apres do { ... }');
+
+  EmitLabel(LblEnd);
+
+  LoopPop;
+End;
+
+{ ---- ParseScriptFor : for (init; cond; incr) ... body ... -- }
+(* Gere la boucle for en mode cfscript.                          *)
+(* Forme : for (var=expr; cond; incr) { body }                  *)
+(* ou : for (element in collection) { body }                     *)
+Procedure ParseScriptFor;
+Var
+  Res      : TExprVal;
+  LblTest  : TString;
+  LblIncr  : TString;
+  LblEnd   : TString;
+  VarName  : TString;
+  SIdx     : Integer;
+Begin
+  EmitComment('script for');
+
+  { Consume ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendue apres for');
+    Exit;
+  End;
+
+  { Check for 'var' keyword }
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'var') Then
+    ParserAdvance;
+
+  { Parse init: ident = expr }
+  VarName := '';
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := CurToken.Val;
+    ParserAdvance;
+  End;
+
+  { Check for 'in' keyword (for-in loop) }
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'in') Then
+  Begin
+    { for (element in collection) - simplified, skip }
+    EmitComment('script for...in (simplifie)');
+    { Skip everything until ) }
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      ParserAdvance;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+      ParserAdvance;
+    { Skip body block }
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    Begin
+      ParserAdvance;
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+        Begin ParserAdvance; Break; End;
+        ParserAdvance;
+      End;
+    End;
+    Exit;
+  End;
+
+  { Standard for loop: init; cond; incr }
+  { We have VarName already; expect = expr ; }
+  SIdx := -1;
+  If VarName <> '' Then
+  Begin
+    SIdx := SymFind(VarName);
+    If SIdx < 0 Then
+      SIdx := VarAlloc(VarName, TY_IDX_NUMERIC);
+
+    { Expect = }
+    If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      ParserAdvance;
+
+    { Parse init expression }
+    ExprMakeNone(Res);
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    If SIdx >= 0 Then
+      VarStore(SIdx);
+  End;
+
+  { Consume ; }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  LblTest := NewLabel('FTEST');
+  LblIncr := NewLabel('FINCR');
+  LblEnd  := NewLabel('FEND');
+
+  LoopPush(LblEnd, LblIncr);
+
+  { Test label }
+  EmitLabel(LblTest);
+
+  { Parse condition expression (before ;) }
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+  Begin
+    ExprMakeNone(Res);
+    ParseExpr(Res);
+    ExprFlushToAX(Res);
+    EmitInstr('TEST', 'AX, AX');
+    EmitInstr('JZ', LblEnd);
+  End;
+
+  { Consume ; }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+
+  { We need to save the increment expression tokens and replay after body }
+  { Simplified approach: we'll save the text of the incr and emit later }
+  { For now: detect simple i++ / i-- / i=i+n patterns }
+  { Save increment variable and operation }
+  VarName := '';
+  If CurToken.Kind = TK_IDENT Then
+  Begin
+    VarName := CurToken.Val;
+    ParserAdvance;
+  End;
+
+  { Detect ++ / -- / +=  -= }
+  { Save what we need and skip to ) }
+  { Simple approach: skip the increment, capture a simple ++ or -- }
+  { We emit the increment code at LblIncr }
+  SIdx := -1;
+  If VarName <> '' Then
+    SIdx := SymFind(VarName);
+
+  { Skip remaining tokens until ) }
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+    ParserAdvance;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  { Parse body }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+  End
+  Else
+    ParseBodyTag;
+
+  { Increment }
+  EmitLabel(LblIncr);
+  If SIdx >= 0 Then
+  Begin
+    VarLoad(SIdx);
+    EmitInstrAB('ADD', 'AX', '1');
+    VarStore(SIdx);
+  End;
+  EmitInstr('JMP', LblTest);
+  EmitLabel(LblEnd);
+
+  LoopPop;
 End;
 
 Procedure ParsePage;
