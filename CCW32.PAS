@@ -67,6 +67,35 @@
             #undef NOM : suppression de macro
             #include "fichier" : inclusion de fichier local
             #include <fichier> : inclusion de fichier systeme (stub)
+            En-tetes C standard integres en built-in dans le compilateur
+              (pas de fichier externe necessaire, le compilateur reconnait
+              ces en-tetes et injecte les declarations correspondantes) :
+              assert.h  : macro assert()
+              ctype.h   : isalpha, isdigit, isalnum, isspace, toupper,
+                           tolower, isupper, islower, isprint, ...
+              errno.h   : variable errno, constantes EDOM, ERANGE
+              float.h   : constantes FLT_MAX, FLT_MIN, DBL_MAX, ...
+              limits.h  : constantes CHAR_BIT, CHAR_MAX, INT_MAX,
+                           INT_MIN, LONG_MAX, LONG_MIN, UINT_MAX, ...
+              locale.h  : struct lconv, setlocale, localeconv (stubs)
+              math.h    : sin, cos, tan, sqrt, pow, exp, log, fabs,
+                           ceil, floor, fmod, ... (stubs ou approx)
+              setjmp.h  : jmp_buf, setjmp, longjmp (stubs)
+              signal.h  : signal, raise, SIG_DFL, SIG_IGN, SIGINT,
+                           SIGTERM, SIGABRT, ... (stubs)
+              stdarg.h  : va_list, va_start, va_arg, va_end
+              stddef.h  : NULL, size_t, ptrdiff_t, offsetof
+              stdio.h   : printf, scanf, putchar, getchar, puts, gets,
+                           fopen, fclose, fread, fwrite, fprintf,
+                           fscanf, fgets, fputs, feof, FILE, stdin,
+                           stdout, stderr, EOF, ...
+              stdlib.h  : malloc, free, calloc, realloc, exit, abort,
+                           atoi, atol, rand, srand, abs, labs, ...
+              string.h  : strlen, strcpy, strcat, strcmp, strncpy,
+                           strncat, strncmp, memcpy, memset, memcmp,
+                           strchr, strrchr, strstr, ...
+              time.h    : time, clock, difftime, mktime, struct tm,
+                           time_t, clock_t, localtime, asctime, ...
             #ifdef NOM / #ifndef NOM : compilation conditionnelle
             #if expression : evaluation d expression constante
             #elif expression : branche alternative
