@@ -41,6 +41,9 @@
             Detecter l extension .c du fichier source
             Programme principal : validation des arguments et appel Run
             Version, Date, aide en ligne (option -h ou /?)
+            Supporter le linkage de fichiers .LIB et .OBJ externes
+              specifies dans les parametres de la ligne de commande
+              (ex: CCW32 source.c mylib.lib helper.obj)
 
   TODO 02 - LEXEUR (TOKENS C)
             TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
