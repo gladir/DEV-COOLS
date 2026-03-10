@@ -108,7 +108,7 @@
                Real, String, LongInt, ShortInt, Pointer, Text,
                Comp, Single, Double, Extended
 
-   TODO 06 - SYSTEME DE TYPES
+   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
              TTypeKind : TYK_INTEGER (16 bits signe), TYK_WORD (16 bits non signe),
                TYK_BYTE (8 bits non signe), TYK_SHORTINT (8 bits signe),
                TYK_LONGINT (32 bits signe), TYK_COMP (64 bits entier),
@@ -645,6 +645,8 @@ Const
   MAX_CONST   = 256;
   MAX_SYM     = {$IFDEF FPC}2048{$ELSE}512{$ENDIF};
   MAX_SCOPE   = 64;
+  MAX_TYPE    = {$IFDEF FPC}512{$ELSE}128{$ENDIF};
+  MAX_FIELD   = 64;
 
   EXIT_OK    = 0;
   EXIT_ERROR = 1;
@@ -726,6 +728,53 @@ Type
     IsExternal : Boolean;    { declaration External               }
   End;
 
+  TTypeKind = (
+    TYK_INTEGER,           { Integer : 16 bits signe              }
+    TYK_WORD,              { Word    : 16 bits non signe           }
+    TYK_BYTE,              { Byte    : 8 bits non signe            }
+    TYK_SHORTINT,          { ShortInt: 8 bits signe                }
+    TYK_LONGINT,           { LongInt : 32 bits signe               }
+    TYK_COMP,              { Comp    : 64 bits entier              }
+    TYK_BOOLEAN,           { Boolean : 8 bits                      }
+    TYK_CHAR,              { Char    : 8 bits                      }
+    TYK_REAL,              { Real    : 6 octets TP                 }
+    TYK_SINGLE,            { Single  : 4 octets IEEE               }
+    TYK_DOUBLE,            { Double  : 8 octets IEEE               }
+    TYK_EXTENDED,          { Extended: 10 octets                   }
+    TYK_STRING,            { String  : chaine courte 255 car       }
+    TYK_PCHAR,             { PChar   : pointeur vers char          }
+    TYK_ARRAY,             { Array   : tableau                     }
+    TYK_RECORD,            { Record  : enregistrement              }
+    TYK_SET,               { Set     : ensemble                    }
+    TYK_ENUM,              { Enum    : enumeration                 }
+    TYK_FILE,              { File    : fichier type                }
+    TYK_TEXT,              { Text    : fichier texte               }
+    TYK_POINTER,           { Pointer : pointeur generique          }
+    TYK_OBJECT,            { Object  : objet TP                    }
+    TYK_SUBRANGE,          { Subrange: sous-intervalle             }
+    TYK_PROCVAR            { ProcVar : variable procedurale        }
+  );
+
+  TFieldRec = Record
+    Name    : TString;     { nom du champ                         }
+    TypeIdx : Integer;     { index du type du champ               }
+  End;
+
+  TTypeRec = Record
+    Kind        : TTypeKind;   { categorie du type                }
+    Name        : TString;     { nom du type (Pascal)             }
+    Size        : Integer;     { taille en octets (TP)            }
+    JSType      : TString;     { type JavaScript correspondant    }
+    JSDefault   : TString;     { valeur par defaut en JS          }
+    BaseTypeIdx : Integer;     { type de base (array/pointer/set) }
+    ElemCount   : Integer;     { nombre d elements (array/enum)   }
+    FieldCount  : Integer;     { nombre de champs (record/object) }
+    Fields      : Array[0..MAX_FIELD - 1] Of TFieldRec;
+    Low         : LongInt;     { borne inf (subrange/array)       }
+    High        : LongInt;     { borne sup (subrange/array)       }
+    IsUnsigned  : Boolean;     { type non signe                   }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -763,11 +812,16 @@ Var
   CurScopeId : Integer;         { id unique de la portee courante     }
   SymJSSeq   : Integer;         { compteur pour noms JS uniques       }
 
+  { Table des types }
+  TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount  : Integer;
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
 Procedure LexClose; Forward;
 Function ParseExpr(Var P : Integer) : TString; Forward;
+Function TypeFindByName(Const AName : TString) : Integer; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2685,48 +2739,71 @@ End;
 
 { ---- SymRegisterBuiltins : types et symboles predefinis ----- }
 { Enregistre les types de base de Turbo Pascal dans la table     }
-{ des symboles. TypeIdx = -1 car le systeme de types (TODO 06)   }
-{ n est pas encore implemente.                                    }
+{ des symboles avec les vrais TypeIdx du systeme de types.       }
 Procedure SymRegisterBuiltins;
+Var
+  TI : Integer;
 Begin
   { Types entiers }
-  SymAdd('Integer',  SK_TYPE, -1);
-  SymAdd('Word',     SK_TYPE, -1);
-  SymAdd('Byte',     SK_TYPE, -1);
-  SymAdd('ShortInt', SK_TYPE, -1);
-  SymAdd('LongInt',  SK_TYPE, -1);
-  SymAdd('Comp',     SK_TYPE, -1);
+  TI := TypeFindByName('Integer');
+  SymAdd('Integer',  SK_TYPE, TI);
+  TI := TypeFindByName('Word');
+  SymAdd('Word',     SK_TYPE, TI);
+  TI := TypeFindByName('Byte');
+  SymAdd('Byte',     SK_TYPE, TI);
+  TI := TypeFindByName('ShortInt');
+  SymAdd('ShortInt', SK_TYPE, TI);
+  TI := TypeFindByName('LongInt');
+  SymAdd('LongInt',  SK_TYPE, TI);
+  TI := TypeFindByName('Comp');
+  SymAdd('Comp',     SK_TYPE, TI);
 
   { Types booleens }
-  SymAdd('Boolean',  SK_TYPE, -1);
+  TI := TypeFindByName('Boolean');
+  SymAdd('Boolean',  SK_TYPE, TI);
 
   { Types caractere }
-  SymAdd('Char',     SK_TYPE, -1);
+  TI := TypeFindByName('Char');
+  SymAdd('Char',     SK_TYPE, TI);
 
   { Types reels }
-  SymAdd('Real',     SK_TYPE, -1);
-  SymAdd('Single',   SK_TYPE, -1);
-  SymAdd('Double',   SK_TYPE, -1);
-  SymAdd('Extended', SK_TYPE, -1);
+  TI := TypeFindByName('Real');
+  SymAdd('Real',     SK_TYPE, TI);
+  TI := TypeFindByName('Single');
+  SymAdd('Single',   SK_TYPE, TI);
+  TI := TypeFindByName('Double');
+  SymAdd('Double',   SK_TYPE, TI);
+  TI := TypeFindByName('Extended');
+  SymAdd('Extended', SK_TYPE, TI);
 
   { Types chaine }
-  SymAdd('String',   SK_TYPE, -1);
-  SymAdd('PChar',    SK_TYPE, -1);
+  TI := TypeFindByName('String');
+  SymAdd('String',   SK_TYPE, TI);
+  TI := TypeFindByName('PChar');
+  SymAdd('PChar',    SK_TYPE, TI);
 
   { Types pointeur }
-  SymAdd('Pointer',  SK_TYPE, -1);
+  TI := TypeFindByName('Pointer');
+  SymAdd('Pointer',  SK_TYPE, TI);
 
   { Types fichier }
-  SymAdd('Text',     SK_TYPE, -1);
-  SymAdd('File',     SK_TYPE, -1);
+  TI := TypeFindByName('Text');
+  SymAdd('Text',     SK_TYPE, TI);
+  TI := TypeFindByName('File');
+  SymAdd('File',     SK_TYPE, TI);
 
   { Constantes predefinees }
-  SymAdd('True',         SK_CONST, -1);
-  SymAdd('False',        SK_CONST, -1);
-  SymAdd('nil',          SK_CONST, -1);
-  SymAdd('MaxInt',       SK_CONST, -1);
-  SymAdd('MaxLongInt',   SK_CONST, -1);
-  SymAdd('Pi',           SK_CONST, -1);
+  TI := TypeFindByName('Boolean');
+  SymAdd('True',         SK_CONST, TI);
+  SymAdd('False',        SK_CONST, TI);
+  TI := TypeFindByName('Pointer');
+  SymAdd('nil',          SK_CONST, TI);
+  TI := TypeFindByName('Integer');
+  SymAdd('MaxInt',       SK_CONST, TI);
+  TI := TypeFindByName('LongInt');
+  SymAdd('MaxLongInt',   SK_CONST, TI);
+  TI := TypeFindByName('Real');
+  SymAdd('Pi',           SK_CONST, TI);
 
   { Procedures/fonctions System predefinies }
   SymAdd('WriteLn',      SK_PROC,  -1);
@@ -2818,13 +2895,341 @@ Begin
   For I := 0 To SymCount - 1 Do
     WriteLn('  [', I, '] ', SymTab[I].Name, ' -> ',
             SymTab[I].JSName, ' (', SymKindStr(SymTab[I].Kind),
-            ', scope=', SymTab[I].Scope, ')');
+            ', scope=', SymTab[I].Scope,
+            ', type=', SymTab[I].TypeIdx, ')');
   WriteLn('--- Fin de la table des symboles ---');
 End;
 
 { ============================================================
-  Run : tokenise le fichier source et teste la conversion
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
+
+{ ---- TypeKindStr : nom textuel d un TTypeKind --------------- }
+Function TypeKindStr(K : TTypeKind) : TString;
+Begin
+  Case K Of
+    TYK_INTEGER  : TypeKindStr := 'INTEGER';
+    TYK_WORD     : TypeKindStr := 'WORD';
+    TYK_BYTE     : TypeKindStr := 'BYTE';
+    TYK_SHORTINT : TypeKindStr := 'SHORTINT';
+    TYK_LONGINT  : TypeKindStr := 'LONGINT';
+    TYK_COMP     : TypeKindStr := 'COMP';
+    TYK_BOOLEAN  : TypeKindStr := 'BOOLEAN';
+    TYK_CHAR     : TypeKindStr := 'CHAR';
+    TYK_REAL     : TypeKindStr := 'REAL';
+    TYK_SINGLE   : TypeKindStr := 'SINGLE';
+    TYK_DOUBLE   : TypeKindStr := 'DOUBLE';
+    TYK_EXTENDED : TypeKindStr := 'EXTENDED';
+    TYK_STRING   : TypeKindStr := 'STRING';
+    TYK_PCHAR    : TypeKindStr := 'PCHAR';
+    TYK_ARRAY    : TypeKindStr := 'ARRAY';
+    TYK_RECORD   : TypeKindStr := 'RECORD';
+    TYK_SET      : TypeKindStr := 'SET';
+    TYK_ENUM     : TypeKindStr := 'ENUM';
+    TYK_FILE     : TypeKindStr := 'FILE';
+    TYK_TEXT     : TypeKindStr := 'TEXT';
+    TYK_POINTER  : TypeKindStr := 'POINTER';
+    TYK_OBJECT   : TypeKindStr := 'OBJECT';
+    TYK_SUBRANGE : TypeKindStr := 'SUBRANGE';
+    TYK_PROCVAR  : TypeKindStr := 'PROCVAR';
+  Else
+    TypeKindStr := '?';
+  End;
+End;
+
+{ ---- TypeInit : initialiser la table des types -------------- }
+Procedure TypeInit;
+Begin
+  TypeCount := 0;
+End;
+
+{ ---- TypeAdd : ajouter un type a la table ------------------- }
+{ Retourne l index du nouveau type, ou -1 si table pleine.      }
+Function TypeAdd(AKind : TTypeKind; Const AName : TString;
+                 ASize : Integer; Const AJSType : TString;
+                 Const AJSDefault : TString) : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    CompileError('table des types saturee (MAX_TYPE=' +
+                 IntToStr_(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+  TypeTab[TypeCount].Kind        := AKind;
+  TypeTab[TypeCount].Name        := AName;
+  TypeTab[TypeCount].Size        := ASize;
+  TypeTab[TypeCount].JSType      := AJSType;
+  TypeTab[TypeCount].JSDefault   := AJSDefault;
+  TypeTab[TypeCount].BaseTypeIdx := -1;
+  TypeTab[TypeCount].ElemCount   := 0;
+  TypeTab[TypeCount].FieldCount  := 0;
+  TypeTab[TypeCount].Low         := 0;
+  TypeTab[TypeCount].High        := 0;
+  TypeTab[TypeCount].IsUnsigned  := False;
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ---- TypeFindByName : chercher un type par nom --------------- }
+{ Comparaison insensible a la casse. Retourne l index ou -1.     }
+Function TypeFindByName(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LT : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := 0 To TypeCount - 1 Do
+  Begin
+    LT := StrLowerCase(TypeTab[I].Name);
+    If LT = LN Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+  End;
+  TypeFindByName := -1;
+End;
+
+{ ---- TypeToJS : correspondance type Pascal -> type JS ------- }
+{ Retourne la chaine du type JavaScript correspondant.           }
+Function TypeToJS(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeToJS := 'any'
+  Else
+    TypeToJS := TypeTab[Idx].JSType;
+End;
+
+{ ---- TypeDefaultJS : valeur par defaut JS pour un type ------ }
+{ Retourne la valeur d initialisation par defaut en JS.          }
+Function TypeDefaultJS(Idx : Integer) : TString;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeDefaultJS := 'null'
+  Else
+    TypeDefaultJS := TypeTab[Idx].JSDefault;
+End;
+
+{ ---- TypeIsNumeric : teste si le type est numerique --------- }
+Function TypeIsNumeric(Idx : Integer) : Boolean;
+Begin
+  TypeIsNumeric := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_LONGINT, TYK_COMP, TYK_REAL, TYK_SINGLE,
+    TYK_DOUBLE, TYK_EXTENDED :
+      TypeIsNumeric := True;
+  End;
+End;
+
+{ ---- TypeIsOrdinal : teste si le type est ordinal ----------- }
+Function TypeIsOrdinal(Idx : Integer) : Boolean;
+Begin
+  TypeIsOrdinal := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_LONGINT, TYK_COMP, TYK_BOOLEAN, TYK_CHAR,
+    TYK_ENUM, TYK_SUBRANGE :
+      TypeIsOrdinal := True;
+  End;
+End;
+
+{ ---- TypeIsInteger : teste si le type est entier ------------ }
+Function TypeIsInteger(Idx : Integer) : Boolean;
+Begin
+  TypeIsInteger := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_INTEGER, TYK_WORD, TYK_BYTE, TYK_SHORTINT,
+    TYK_LONGINT, TYK_COMP :
+      TypeIsInteger := True;
+  End;
+End;
+
+{ ---- TypeIsReal : teste si le type est reel ----------------- }
+Function TypeIsReal(Idx : Integer) : Boolean;
+Begin
+  TypeIsReal := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_REAL, TYK_SINGLE, TYK_DOUBLE, TYK_EXTENDED :
+      TypeIsReal := True;
+  End;
+End;
+
+{ ---- TypeIsString : teste si le type est une chaine --------- }
+Function TypeIsString(Idx : Integer) : Boolean;
+Begin
+  TypeIsString := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_STRING, TYK_PCHAR :
+      TypeIsString := True;
+  End;
+End;
+
+{ ---- TypeIsBoolean : teste si le type est booleen ----------- }
+Function TypeIsBoolean(Idx : Integer) : Boolean;
+Begin
+  TypeIsBoolean := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  TypeIsBoolean := (TypeTab[Idx].Kind = TYK_BOOLEAN);
+End;
+
+{ ---- TypeIsPointer : teste si le type est un pointeur ------- }
+Function TypeIsPointer(Idx : Integer) : Boolean;
+Begin
+  TypeIsPointer := False;
+  If (Idx < 0) Or (Idx >= TypeCount) Then Exit;
+  Case TypeTab[Idx].Kind Of
+    TYK_POINTER, TYK_PCHAR :
+      TypeIsPointer := True;
+  End;
+End;
+
+{ ---- TypeIsCompatible : teste la compatibilite de types ----- }
+{ Retourne True si une valeur de type SrcIdx peut etre affectee  }
+{ a une variable de type DstIdx (regles simplifiees TP).         }
+Function TypeIsCompatible(DstIdx, SrcIdx : Integer) : Boolean;
+Begin
+  TypeIsCompatible := False;
+  If (DstIdx < 0) Or (SrcIdx < 0) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  If DstIdx = SrcIdx Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Numerique vers numerique : toujours compatible }
+  If TypeIsNumeric(DstIdx) And TypeIsNumeric(SrcIdx) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Chaine vers chaine }
+  If TypeIsString(DstIdx) And TypeIsString(SrcIdx) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Char vers String }
+  If TypeIsString(DstIdx) And
+     (TypeTab[SrcIdx].Kind = TYK_CHAR) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+  { Pointeur vers pointeur }
+  If TypeIsPointer(DstIdx) And TypeIsPointer(SrcIdx) Then
+  Begin
+    TypeIsCompatible := True;
+    Exit;
+  End;
+End;
+
+{ ---- TypeAddField : ajouter un champ a un type record ------- }
+Function TypeAddField(TIdx : Integer; Const FName : TString;
+                      FTypeIdx : Integer) : Integer;
+Begin
+  TypeAddField := -1;
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If TypeTab[TIdx].FieldCount >= MAX_FIELD Then
+  Begin
+    CompileError('trop de champs (MAX_FIELD=' +
+                 IntToStr_(MAX_FIELD) + ')');
+    Exit;
+  End;
+  TypeTab[TIdx].Fields[TypeTab[TIdx].FieldCount].Name    := FName;
+  TypeTab[TIdx].Fields[TypeTab[TIdx].FieldCount].TypeIdx := FTypeIdx;
+  TypeAddField := TypeTab[TIdx].FieldCount;
+  Inc(TypeTab[TIdx].FieldCount);
+End;
+
+{ ---- TypeRegisterBuiltins : types primitifs Turbo Pascal ---- }
+{ Enregistre les types de base dans la table des types et         }
+{ retourne les index pour les utiliser dans SymRegisterBuiltins.  }
+{ Correspondances JS :                                            }
+{   Integer/Word/Byte/ShortInt/LongInt/Comp -> number (entier)    }
+{   Real/Single/Double/Extended -> number (reel)                  }
+{   Boolean -> boolean                                            }
+{   Char -> string (1 car)                                        }
+{   String/PChar -> string                                        }
+{   Array -> Array, Record -> object, Set -> Array ou Set         }
+{   File/Text -> objet fichier, Pointer -> reference              }
+{   Object -> class, ProcVar -> function                          }
+Procedure TypeRegisterBuiltins;
+Var
+  Idx : Integer;
+Begin
+  { Types entiers }
+  Idx := TypeAdd(TYK_INTEGER,  'Integer',  2, 'number', '0');
+  TypeTab[Idx].Low := -32768;
+  TypeTab[Idx].High := 32767;
+  Idx := TypeAdd(TYK_WORD,     'Word',     2, 'number', '0');
+  TypeTab[Idx].IsUnsigned := True;
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 65535;
+  Idx := TypeAdd(TYK_BYTE,     'Byte',     1, 'number', '0');
+  TypeTab[Idx].IsUnsigned := True;
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 255;
+  Idx := TypeAdd(TYK_SHORTINT, 'ShortInt', 1, 'number', '0');
+  TypeTab[Idx].Low := -128;
+  TypeTab[Idx].High := 127;
+  Idx := TypeAdd(TYK_LONGINT,  'LongInt',  4, 'number', '0');
+  TypeTab[Idx].Low := -2147483647;
+  TypeTab[Idx].High := 2147483647;
+  Idx := TypeAdd(TYK_COMP,     'Comp',     8, 'number', '0');
+
+  { Types booleens }
+  Idx := TypeAdd(TYK_BOOLEAN,  'Boolean',  1, 'boolean', 'false');
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 1;
+
+  { Types caractere }
+  Idx := TypeAdd(TYK_CHAR,     'Char',     1, 'string', '""');
+  TypeTab[Idx].Low := 0;
+  TypeTab[Idx].High := 255;
+
+  { Types reels }
+  TypeAdd(TYK_REAL,     'Real',     6, 'number', '0.0');
+  TypeAdd(TYK_SINGLE,   'Single',   4, 'number', '0.0');
+  TypeAdd(TYK_DOUBLE,   'Double',   8, 'number', '0.0');
+  TypeAdd(TYK_EXTENDED, 'Extended', 10, 'number', '0.0');
+
+  { Types chaine }
+  TypeAdd(TYK_STRING,   'String',  256, 'string', '""');
+  TypeAdd(TYK_PCHAR,    'PChar',     4, 'string', 'null');
+
+  { Types pointeur }
+  TypeAdd(TYK_POINTER,  'Pointer',   4, 'object', 'null');
+
+  { Types fichier }
+  TypeAdd(TYK_TEXT,     'Text',      0, 'object', 'null');
+  TypeAdd(TYK_FILE,     'File',      0, 'object', 'null');
+End;
+
+{ ---- TypeDump : afficher la table des types (debug) --------- }
+Procedure TypeDump;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Table des types (', TypeCount, ' entrees) ---');
+  For I := 0 To TypeCount - 1 Do
+    WriteLn('  [', I, '] ', TypeTab[I].Name,
+            ' (', TypeKindStr(TypeTab[I].Kind),
+            ', size=', TypeTab[I].Size,
+            ', js=', TypeTab[I].JSType,
+            ', default=', TypeTab[I].JSDefault, ')');
+  WriteLn('--- Fin de la table des types ---');
+End;
 Procedure Run;
 Var
   I   : Integer;
@@ -2834,6 +3239,8 @@ Begin
   GlobalInit;
   ConstInit;
   ConstRegisterBuiltins;
+  TypeInit;
+  TypeRegisterBuiltins;
   SymInit;
   SymRegisterBuiltins;
   If Opts.Verbose Then ShowBanner;
@@ -2929,13 +3336,15 @@ Begin
 
     WriteLn('Tokens dans le pool : ', TokenCount);
     WriteLn('Constantes predefinies : ', ConstCount);
+    WriteLn('Types predefinis : ', TypeCount);
     WriteLn('Symboles predefinis : ', SymCount);
 
+    TypeDump;
     SymDump;
   End;
 
   WriteLn('TP2JS: compilation de ', Opts.SrcFile, ' -> ', Opts.OutFile);
-  WriteLn('TP2JS: TODO 06+ non implemente, rien a generer.');
+  WriteLn('TP2JS: TODO 07+ non implemente, rien a generer.');
   If Opts.ModuleES6 Then
     WriteLn('TP2JS: mode module ES6 actif');
   If Opts.Pretty Then
