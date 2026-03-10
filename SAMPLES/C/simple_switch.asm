@@ -38,6 +38,29 @@ _CCF_main:
         MOV DWORD PTR [EBP-4],2
         MOV EAX,2
         MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ECX,EAX
+; switch (valeur dans ECX)
+        CMP ECX,1
+        JE _CCL_3
+        CMP ECX,2
+        JE _CCL_4
+        JMP _CCL_5
+_CCL_3:
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_2
+_CCL_4:
+        MOV EAX,20
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_2
+_CCL_5:
+        MOV EAX,99
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_2
+_CCL_2:
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP

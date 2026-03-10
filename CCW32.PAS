@@ -342,9 +342,9 @@
             break : saut vers la fin de la boucle englobante
             continue : saut vers l increment/test de la boucle
 
-  TODO 15 - SWITCH / CASE / DEFAULT
+  TODO 15 - SWITCH / CASE / DEFAULT [IMPLEMENTE]
             ParseSwitchStmt : switch (expr) { case val: stmts }
-              Expression de controle : entier dans EAX
+              Expression de controle : entier dans EAX, sauvee sur pile
               case valeur : branche pour une valeur (CMP + JE)
               case val1 ... valN : valeurs multiples (CMP successifs)
               default : branche par defaut
@@ -352,7 +352,7 @@
               Fall-through : sans break, execution continue
               Labels : _CCL_CASE_N, _CCL_CDEF_N, _CCL_CEND_N
             SwitchPush / SwitchPop : pile pour switch imbriques
-              (max MAX_SWITCH_NEST niveaux d imbrication)
+              (max 32 niveaux d imbrication)
 
   TODO 16 - FONCTIONS ET PROTOTYPES
             ParseFuncDecl : prototype (declaration avancee)
@@ -6307,6 +6307,8 @@ Var
   LoopBreakLbl    : Array[0..31] Of TString; { Pile labels break (TODO 14)  }
   LoopContLbl     : Array[0..31] Of TString; { Pile labels continue (TODO 14)}
   LoopTop         : Integer;  { Sommet de la pile de boucles (TODO 14)     }
+  SwitchBreakLbl  : Array[0..31] Of TString; { Pile labels break switch (TODO 15) }
+  SwitchTop       : Integer;  { Sommet de la pile de switch (TODO 15)      }
 
 { ------------------------------------------------------------ }
 { EPAtEnd : verifier si le curseur est en fin de zone           }
@@ -7357,7 +7359,7 @@ End;
 { Gere les declarations, return, expression-statements, et     }
 { les instructions de controle if/else (TODO 13).              }
 { Les boucles for/while/do-while (TODO 14).                    }
-{ Le switch est saute (TODO 15).                               }
+{ Le switch/case/default (TODO 15).                            }
 { ------------------------------------------------------------ }
 
 { ============================================================ }
@@ -7373,6 +7375,7 @@ Procedure ParseWhileStmt; Forward;
 Procedure ParseDoWhileStmt; Forward;
 Procedure ParseForStmt; Forward;
 Procedure ParseSimpleExprStmt; Forward;
+Procedure ParseSwitchStmt; Forward;
 
 { ------------------------------------------------------------ }
 { ParseCompoundStmt : parser un bloc de code (accolades)        }
@@ -7792,10 +7795,260 @@ Begin
   LoopPop;
 End;
 
+{ ============================================================ }
+{ TODO 15 - SWITCH / CASE / DEFAULT                            }
+{ ParseSwitchStmt gere switch(expr) avec case val: stmts.     }
+{ SwitchPush/SwitchPop gerent la pile break pour switch.       }
+{ break dans un switch utilise SwitchBreakLbl en priorite.     }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ SwitchPush : empiler le label de fin du switch courant        }
+{ ------------------------------------------------------------ }
+
+Procedure SwitchPush(Const BrkLbl : TString);
+Begin
+  If SwitchTop >= 32 Then
+    FatalError('switch imbriques trop profonds (max 32)');
+  SwitchBreakLbl[SwitchTop] := BrkLbl;
+  Inc(SwitchTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ SwitchPop : depiler le label de fin du switch courant         }
+{ ------------------------------------------------------------ }
+
+Procedure SwitchPop;
+Begin
+  If SwitchTop > 0 Then
+    Dec(SwitchTop);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseSwitchStmt : parser switch (expr) avec case ... default  }
+{ Le mot-cle 'switch' a deja ete consomme.                     }
+{ Strategie en deux passes :                                    }
+{   Passe 1 : scanner les case/default, generer les labels,    }
+{             emettre la chaine de CMP/JE.                      }
+{   Passe 2 : revenir au debut, parser et emettre les corps.   }
+{ Fall-through : sans break, execution continue au case suivant.}
+{ ------------------------------------------------------------ }
+
+Procedure ParseSwitchStmt;
+Const
+  MAX_CASE = 64;
+Var
+  LblEnd     : TString;
+  LblDefault : TString;
+  CaseLbls   : Array[0..63] Of TString;
+  CaseVals   : Array[0..63] Of LongInt;
+  CaseCount  : Integer;
+  HasDefault : Boolean;
+  BodyStart  : Integer;
+  ScanEP     : Integer;
+  Depth      : Integer;
+  I          : Integer;
+  CaseVal    : LongInt;
+Begin
+  LblEnd     := LabelGen;
+  CaseCount  := 0;
+  HasDefault := False;
+  LblDefault := '';
+
+  { Parser '(' expression ')' }
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = '(') Then
+    Inc(EP);
+
+  ParseExpr;
+
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')') Then
+    Inc(EP);
+
+  { Sauvegarder la valeur de l expression dans ECX }
+  EmitInstr('MOV ECX,EAX');
+  EmitComment('switch (valeur dans ECX)');
+
+  { Empiler le label de fin pour break }
+  SwitchPush(LblEnd);
+
+  { Consommer l accolade ouvrante }
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = '{') Then
+    Inc(EP);
+
+  { Sauvegarder la position de debut du corps du switch }
+  BodyStart := EP;
+
+  { --- Passe 1 : scanner pour trouver tous les case/default --- }
+  ScanEP := EP;
+  Depth  := 0;
+  While (ScanEP < EPEnd) And
+        Not ((Depth = 0) And (TokenPool[ScanEP].Kind = TK_PUNCT) And
+             (TokenPool[ScanEP].Val = '}')) Do
+  Begin
+    If (TokenPool[ScanEP].Kind = TK_PUNCT) And
+       (TokenPool[ScanEP].Val = '{') Then
+      Inc(Depth)
+    Else If (TokenPool[ScanEP].Kind = TK_PUNCT) And
+            (TokenPool[ScanEP].Val = '}') Then
+      Dec(Depth);
+
+    { Detecter case/default au niveau 0 (pas dans un bloc imbrique) }
+    If Depth = 0 Then
+    Begin
+      If (TokenPool[ScanEP].Kind = TK_KEYWORD) And
+         (TokenPool[ScanEP].Val = 'case') Then
+      Begin
+        Inc(ScanEP); { sauter 'case' }
+        { Lire la valeur du case }
+        CaseVal := 0;
+        If ScanEP < EPEnd Then
+        Begin
+          If TokenPool[ScanEP].Kind = TK_INTEGER Then
+          Begin
+            CaseVal := TokenPool[ScanEP].IntVal;
+            Inc(ScanEP);
+          End
+          Else If TokenPool[ScanEP].Kind = TK_CHAR Then
+          Begin
+            CaseVal := Ord(TokenPool[ScanEP].Val[1]);
+            Inc(ScanEP);
+          End
+          Else If (TokenPool[ScanEP].Kind = TK_OP) And
+                  (TokenPool[ScanEP].Val = '-') And
+                  (ScanEP + 1 < EPEnd) And
+                  (TokenPool[ScanEP + 1].Kind = TK_INTEGER) Then
+          Begin
+            CaseVal := -TokenPool[ScanEP + 1].IntVal;
+            Inc(ScanEP, 2);
+          End
+          Else
+            Inc(ScanEP);
+        End;
+        { Sauter ':' }
+        If (ScanEP < EPEnd) And (TokenPool[ScanEP].Kind = TK_PUNCT) And
+           (TokenPool[ScanEP].Val = ':') Then
+          Inc(ScanEP);
+        { Enregistrer ce case }
+        If CaseCount < MAX_CASE Then
+        Begin
+          CaseVals[CaseCount] := CaseVal;
+          CaseLbls[CaseCount] := LabelGen;
+          Inc(CaseCount);
+        End;
+      End
+      Else If (TokenPool[ScanEP].Kind = TK_KEYWORD) And
+              (TokenPool[ScanEP].Val = 'default') Then
+      Begin
+        HasDefault := True;
+        LblDefault := LabelGen;
+        Inc(ScanEP); { sauter 'default' }
+        If (ScanEP < EPEnd) And (TokenPool[ScanEP].Kind = TK_PUNCT) And
+           (TokenPool[ScanEP].Val = ':') Then
+          Inc(ScanEP);
+      End
+      Else
+        Inc(ScanEP);
+    End
+    Else
+      Inc(ScanEP);
+  End;
+
+  { --- Emettre la chaine de comparaisons --- }
+  For I := 0 To CaseCount - 1 Do
+  Begin
+    EmitInstr('CMP ECX,' + IntToStr_(CaseVals[I]));
+    EmitInstr('JE ' + CaseLbls[I]);
+  End;
+  If HasDefault Then
+    EmitInstr('JMP ' + LblDefault)
+  Else
+    EmitInstr('JMP ' + LblEnd);
+
+  { --- Passe 2 : revenir au debut et parser les corps --- }
+  EP := BodyStart;
+  I  := 0;
+  While (EP < EPEnd) And
+        Not ((TokenPool[EP].Kind = TK_PUNCT) And
+             (TokenPool[EP].Val = '}')) Do
+  Begin
+    { --- case valeur : --- }
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (TokenPool[EP].Val = 'case') Then
+    Begin
+      Inc(EP); { consommer 'case' }
+      { Sauter la valeur du case }
+      If EP < EPEnd Then
+      Begin
+        If (TokenPool[EP].Kind = TK_OP) And
+           (TokenPool[EP].Val = '-') And
+           (EP + 1 < EPEnd) And
+           (TokenPool[EP + 1].Kind = TK_INTEGER) Then
+          Inc(EP, 2)
+        Else
+          Inc(EP);
+      End;
+      { Consommer ':' }
+      If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ':') Then
+        Inc(EP);
+      { Emettre le label du case }
+      If I < CaseCount Then
+      Begin
+        EmitLabel(CaseLbls[I]);
+        Inc(I);
+      End;
+      { Instructions du case (fall-through si pas de break) }
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_KEYWORD) And
+                 ((TokenPool[EP].Val = 'case') Or
+                  (TokenPool[EP].Val = 'default'))) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = '}')) Do
+        ParseStmt;
+    End
+
+    { --- default : --- }
+    Else If (TokenPool[EP].Kind = TK_KEYWORD) And
+            (TokenPool[EP].Val = 'default') Then
+    Begin
+      Inc(EP); { consommer 'default' }
+      { Consommer ':' }
+      If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ':') Then
+        Inc(EP);
+      EmitLabel(LblDefault);
+      { Instructions du default }
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_KEYWORD) And
+                 ((TokenPool[EP].Val = 'case') Or
+                  (TokenPool[EP].Val = 'default'))) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = '}')) Do
+        ParseStmt;
+    End
+
+    Else
+    Begin
+      { Inattendu dans le switch, avancer }
+      Inc(EP);
+    End;
+  End;
+
+  { Consommer l accolade fermante }
+  If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = '}') Then
+    Inc(EP);
+
+  EmitLabel(LblEnd);
+  SwitchPop;
+End;
+
 { ------------------------------------------------------------ }
 { ParseStmt : parser une instruction unique                      }
-{ Gere : vide, bloc, return, declaration, if, boucles, expr.   }
-{ Le switch est saute (TODO 15).                                }
+{ Gere : vide, bloc, return, declaration, if, boucles, switch. }
 { ------------------------------------------------------------ }
 
 Procedure ParseStmt;
@@ -8018,15 +8271,26 @@ Begin
     Exit;
   End;
 
+  { --- switch (expr) avec case ... default --- }
+  If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+     (TokenPool[EP].Val = 'switch') Then
+  Begin
+    Inc(EP);
+    ParseSwitchStmt;
+    Exit;
+  End;
+
   { --- break ; --- }
   If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
      (TokenPool[EP].Val = 'break') Then
   Begin
     Inc(EP);
-    If LoopTop > 0 Then
+    If SwitchTop > 0 Then
+      EmitInstr('JMP ' + SwitchBreakLbl[SwitchTop - 1])
+    Else If LoopTop > 0 Then
       EmitInstr('JMP ' + LoopBreakLbl[LoopTop - 1])
     Else
-      EmitComment('WARNING: break en dehors d''une boucle');
+      EmitComment('WARNING: break en dehors d''une boucle ou switch');
     While (EP < EPEnd) And
           Not ((TokenPool[EP].Kind = TK_PUNCT) And
                (TokenPool[EP].Val = ';')) Do
@@ -8052,11 +8316,9 @@ Begin
     Exit;
   End;
 
-  { --- Mots-cles de controle : sauter (TODO 15) --- }
+  { --- Mots-cles de controle : sauter --- }
   If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
      ((TokenPool[EP].Val = 'else') Or
-      (TokenPool[EP].Val = 'switch') Or
-      (TokenPool[EP].Val = 'case') Or (TokenPool[EP].Val = 'default') Or
       (TokenPool[EP].Val = 'goto')) Then
   Begin
     While (EP < EPEnd) And
@@ -8199,8 +8461,9 @@ Begin
   EPEnd      := FuncTab[FI].BodyEnd;
 
   { Generer un label de retour unique pour cette fonction }
-  RetLbl  := LabelGen;
-  LoopTop := 0;
+  RetLbl    := LabelGen;
+  LoopTop   := 0;
+  SwitchTop := 0;
 
   While EP < EPEnd Do
     ParseStmt;
