@@ -529,7 +529,7 @@
             Heap Win32 : GetProcessHeap + HeapAlloc / HeapFree
             Handles : hStdOut, hStdIn via GetStdHandle
 
-  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
             Generation PE (.EXE Windows 32 bits) :
               DOS stub + signature PE + en-tete COFF + en-tete optionnel
               Sections : .text (code), .rdata (imports), .data (donnees)
@@ -587,8 +587,43 @@ Const
   OPT_ADVANCED   = 2;   { -O2 : optimisations avancees          }
   OPT_AGGRESSIVE = 3;   { -O3 : optimisations agressives        }
 
+  { PE/COFF format constants (TODO 25) }
+  PE_DOS_MAGIC    = $5A4D;       { 'MZ'                              }
+  PE_PE_SIG       = $00004550;   { 'PE\0\0'                          }
+  PE_MACHINE_I386 = $014C;       { i386                               }
+  PE_OPT_SIZE     = 224;         { sizeof IMAGE_OPTIONAL_HEADER32     }
+  PE_MAGIC_32     = $010B;       { PE32                               }
+  PE_IMG_BASE     = $00400000;   { default image base                 }
+  PE_SEC_ALIGN    = $1000;       { section alignment (4KB)            }
+  PE_FILE_ALIGN   = $0200;       { file alignment (512)               }
+  PE_SUBSYS_CUI   = 3;           { console subsystem                  }
+  PE_SCN_TEXT     = $60000020;   { CODE | EXECUTE | READ              }
+  PE_SCN_RDATA    = $40000040;   { INIT_DATA | READ                   }
+  PE_SCN_BSS      = LongInt($C0000040);   { INIT_DATA | READ | WRITE }
+  MAX_BIN_CODE    = 65536;       { 64 KB max code section             }
+  MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
+  MAX_BIN_LBL     = 4096;        { max labels                         }
+  MAX_BIN_FIX     = 8192;        { max fixups                         }
+  PE_NUM_API      = 7;           { number of imported Win32 APIs      }
+  COFF_RELOC_DIR32  = 6;         { IMAGE_REL_I386_DIR32               }
+  COFF_RELOC_REL32  = 20;        { IMAGE_REL_I386_REL32               }
+
 Type
   TString = String;
+
+  { Types binaires (TODO 25) }
+  TBinFixKind = (BFK_ABS32, BFK_REL32, BFK_IAT32);
+  TBinFixup = Record
+    Offset : LongInt;
+    Kind   : TBinFixKind;
+    Target : TString;
+    InCode : Boolean;
+  End;
+  TBinLabel = Record
+    Name   : TString;
+    Offset : LongInt;
+    InCode : Boolean;
+  End;
 
   TOptions = Record
     SrcFile   : TString;   { fichier source (.c)                  }
@@ -619,6 +654,28 @@ Var
   { Fichier de sortie interne (pour future emission) }
   OutF       : Text;
   OutFOpen   : Boolean;
+
+  { Variables binaires (TODO 25) }
+  BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
+  BinCodeLen  : LongInt;
+  BinData     : Array[0..MAX_BIN_DATA - 1] of Byte;
+  BinDataLen  : LongInt;
+  BinLabels   : Array[0..MAX_BIN_LBL - 1] of TBinLabel;
+  BinLblCount : Integer;
+  BinFixups   : Array[0..MAX_BIN_FIX - 1] of TBinFixup;
+  BinFixCount : Integer;
+  BinInCode   : Boolean;
+
+Const
+  BinAPIDecorated : Array[0..PE_NUM_API - 1] Of String[32] = (
+    '_ExitProcess@4', '_GetStdHandle@4', '_WriteFile@20',
+    '_ReadFile@20', '_GetProcessHeap@0', '_HeapAlloc@12',
+    '_HeapFree@12'
+  );
+  BinAPIName : Array[0..PE_NUM_API - 1] Of String[20] = (
+    'ExitProcess', 'GetStdHandle', 'WriteFile', 'ReadFile',
+    'GetProcessHeap', 'HeapAlloc', 'HeapFree'
+  );
 
 { ------------------------------------------------------------ }
 { Fonctions utilitaires                                        }
@@ -10691,6 +10748,1175 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES            }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ Binary emission helpers                                      }
+{ ------------------------------------------------------------ }
+
+Procedure BinInit;
+Begin
+  BinCodeLen := 0; BinDataLen := 0;
+  BinLblCount := 0; BinFixCount := 0;
+  BinInCode := True;
+  FillChar(BinCode, SizeOf(BinCode), 0);
+  FillChar(BinData, SizeOf(BinData), 0);
+End;
+
+Procedure BinCodeByte(B : Byte);
+Begin
+  If BinCodeLen < MAX_BIN_CODE Then
+  Begin BinCode[BinCodeLen] := B; Inc(BinCodeLen); End;
+End;
+
+Procedure BinCodeDWord(D : LongInt);
+Begin
+  BinCodeByte(Byte(D And $FF));
+  BinCodeByte(Byte((D Shr 8) And $FF));
+  BinCodeByte(Byte((D Shr 16) And $FF));
+  BinCodeByte(Byte((D Shr 24) And $FF));
+End;
+
+Procedure BinCodeWord(W : Word);
+Begin BinCodeByte(Lo(W)); BinCodeByte(Hi(W)); End;
+
+Procedure BinDataByte(B : Byte);
+Begin
+  If BinDataLen < MAX_BIN_DATA Then
+  Begin BinData[BinDataLen] := B; Inc(BinDataLen); End;
+End;
+
+Procedure BinDataDWord(D : LongInt);
+Begin
+  BinDataByte(Byte(D And $FF));
+  BinDataByte(Byte((D Shr 8) And $FF));
+  BinDataByte(Byte((D Shr 16) And $FF));
+  BinDataByte(Byte((D Shr 24) And $FF));
+End;
+
+{ ------------------------------------------------------------ }
+{ Label and fixup management                                   }
+{ ------------------------------------------------------------ }
+
+Procedure BinAddLabel(Const Name : TString; IsCode : Boolean; Ofs : LongInt);
+Begin
+  If BinLblCount < MAX_BIN_LBL Then
+  Begin
+    BinLabels[BinLblCount].Name := StrUpperCase(Name);
+    BinLabels[BinLblCount].Offset := Ofs;
+    BinLabels[BinLblCount].InCode := IsCode;
+    Inc(BinLblCount);
+  End;
+End;
+
+Function BinFindLabel(Const Name : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := StrUpperCase(Name);
+  BinFindLabel := -1;
+  For I := BinLblCount - 1 DownTo 0 Do
+    If BinLabels[I].Name = U Then Begin BinFindLabel := I; Exit; End;
+End;
+
+Procedure BinAddFixup(Ofs : LongInt; Kind : TBinFixKind;
+                      Const Target : TString; IsCode : Boolean);
+Begin
+  If BinFixCount < MAX_BIN_FIX Then
+  Begin
+    BinFixups[BinFixCount].Offset := Ofs;
+    BinFixups[BinFixCount].Kind := Kind;
+    BinFixups[BinFixCount].Target := StrUpperCase(Target);
+    BinFixups[BinFixCount].InCode := IsCode;
+    Inc(BinFixCount);
+  End;
+End;
+
+Function BinIsExtern(Const Name : TString) : Integer;
+Var I : Integer; U : TString;
+Begin
+  U := StrUpperCase(Name);
+  BinIsExtern := -1;
+  For I := 0 To PE_NUM_API - 1 Do
+    If StrUpperCase(BinAPIDecorated[I]) = U Then
+    Begin BinIsExtern := I; Exit; End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Register mapping and parsing helpers                         }
+{ ------------------------------------------------------------ }
+
+Function BinReg32(Const S : TString) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(S);
+  If U = 'EAX' Then BinReg32 := 0
+  Else If U = 'ECX' Then BinReg32 := 1
+  Else If U = 'EDX' Then BinReg32 := 2
+  Else If U = 'EBX' Then BinReg32 := 3
+  Else If U = 'ESP' Then BinReg32 := 4
+  Else If U = 'EBP' Then BinReg32 := 5
+  Else If U = 'ESI' Then BinReg32 := 6
+  Else If U = 'EDI' Then BinReg32 := 7
+  Else BinReg32 := -1;
+End;
+
+Function BinReg8(Const S : TString) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(S);
+  If U = 'AL' Then BinReg8 := 0
+  Else If U = 'CL' Then BinReg8 := 1
+  Else If U = 'DL' Then BinReg8 := 2
+  Else If U = 'BL' Then BinReg8 := 3
+  Else If U = 'AH' Then BinReg8 := 4
+  Else BinReg8 := -1;
+End;
+
+Function BinParseImm(Const S : TString) : LongInt;
+Var V : LongInt; U : TString; Neg : Boolean; Code : Integer;
+Begin
+  U := S;
+  While (Length(U) > 0) And (U[1] = ' ') Do Delete(U, 1, 1);
+  While (Length(U) > 0) And (U[Length(U)] = ' ') Do Delete(U, Length(U), 1);
+  Neg := False;
+  If (Length(U) > 0) And (U[1] = '-') Then Begin Neg := True; Delete(U, 1, 1); End;
+  V := 0;
+  If (Length(U) >= 3) And (U[1] = Chr(39)) And (U[Length(U)] = Chr(39)) Then
+    V := Ord(U[2])
+  Else If (Length(U) > 1) And (UpCase(U[Length(U)]) = 'H') Then
+  Begin Delete(U, Length(U), 1); System.Val('$' + U, V, Code); End
+  Else If (Length(U) > 1) And (U[1] = '$') Then
+    System.Val(U, V, Code)
+  Else
+    System.Val(U, V, Code);
+  If Neg Then V := -V;
+  BinParseImm := V;
+End;
+
+Function BinStripSize(Const S : TString; Var SzByte : Boolean) : TString;
+Var U, R : TString;
+Begin
+  U := StrUpperCase(S); SzByte := False; R := S;
+  If Pos('DWORD PTR', U) = 1 Then R := Copy(S, 10, Length(S) - 9)
+  Else If Pos('BYTE PTR', U) = 1 Then Begin R := Copy(S, 9, Length(S) - 8); SzByte := True; End
+  Else If Pos('WORD PTR', U) = 1 Then R := Copy(S, 9, Length(S) - 8);
+  While (Length(R) > 0) And (R[1] = ' ') Do Delete(R, 1, 1);
+  BinStripSize := R;
+End;
+
+Function BinStripBrackets(Const S : TString) : TString;
+Var R : TString;
+Begin
+  R := S;
+  While (Length(R) > 0) And (R[1] = ' ') Do Delete(R, 1, 1);
+  If (Length(R) >= 2) And (R[1] = '[') And (R[Length(R)] = ']') Then
+    R := Copy(R, 2, Length(R) - 2);
+  BinStripBrackets := R;
+End;
+
+Function BinParseEBPOfs(Const S : TString; Var Ofs : LongInt) : Boolean;
+Var Inner : TString; P, Code : Integer;
+Begin
+  Inner := BinStripBrackets(S);
+  BinParseEBPOfs := False;
+  If Pos('EBP', StrUpperCase(Inner)) <> 1 Then Exit;
+  P := Pos('+', Inner);
+  If P > 0 Then
+  Begin System.Val(Copy(Inner, P + 1, Length(Inner) - P), Ofs, Code); BinParseEBPOfs := True; End
+  Else Begin
+    P := Pos('-', Inner);
+    If P > 0 Then
+    Begin System.Val(Copy(Inner, P + 1, Length(Inner) - P), Ofs, Code); Ofs := -Ofs; BinParseEBPOfs := True; End
+    Else Begin Ofs := 0; BinParseEBPOfs := True; End;
+  End;
+End;
+
+Function BinJccOpcode(Const Cond : TString) : Integer;
+Var U : TString;
+Begin
+  U := StrUpperCase(Cond); BinJccOpcode := -1;
+  If (U='JE') Or (U='JZ') Then BinJccOpcode := $84
+  Else If (U='JNE') Or (U='JNZ') Then BinJccOpcode := $85
+  Else If (U='JB') Or (U='JC') Then BinJccOpcode := $82
+  Else If (U='JAE') Or (U='JNB') Then BinJccOpcode := $83
+  Else If (U='JBE') Then BinJccOpcode := $86
+  Else If (U='JA') Then BinJccOpcode := $87
+  Else If (U='JL') Then BinJccOpcode := $8C
+  Else If (U='JGE') Then BinJccOpcode := $8D
+  Else If (U='JLE') Then BinJccOpcode := $8E
+  Else If (U='JG') Then BinJccOpcode := $8F;
+End;
+
+Function BinModRM(Mo, Reg, RM : Integer) : Byte;
+Begin BinModRM := Byte((Mo Shl 6) Or ((Reg And 7) Shl 3) Or (RM And 7)); End;
+
+{ ------------------------------------------------------------ }
+{ Memory operand emission helpers                              }
+{ ------------------------------------------------------------ }
+
+Procedure BinEmitMemRef(RegField : Integer; Const LabelName : TString);
+Var PP : Integer; Lbl, OStr : TString; Ofs : LongInt;
+Begin
+  BinCodeByte(BinModRM(0, RegField, 5));
+  PP := Pos('+', LabelName);
+  If PP > 0 Then
+  Begin
+    Lbl := Copy(LabelName, 1, PP - 1);
+    While (Length(Lbl) > 0) And (Lbl[Length(Lbl)] = ' ') Do Delete(Lbl, Length(Lbl), 1);
+    OStr := Copy(LabelName, PP + 1, Length(LabelName) - PP);
+    While (Length(OStr) > 0) And (OStr[1] = ' ') Do Delete(OStr, 1, 1);
+    Ofs := BinParseImm(OStr);
+    BinAddFixup(BinCodeLen, BFK_ABS32, Lbl, True);
+    BinCodeDWord(Ofs);
+  End
+  Else
+  Begin
+    PP := Pos('-', LabelName);
+    If (PP > 1) Then
+    Begin
+      Lbl := Copy(LabelName, 1, PP - 1);
+      While (Length(Lbl) > 0) And (Lbl[Length(Lbl)] = ' ') Do Delete(Lbl, Length(Lbl), 1);
+      OStr := Copy(LabelName, PP + 1, Length(LabelName) - PP);
+      While (Length(OStr) > 0) And (OStr[1] = ' ') Do Delete(OStr, 1, 1);
+      Ofs := -BinParseImm(OStr);
+      BinAddFixup(BinCodeLen, BFK_ABS32, Lbl, True);
+      BinCodeDWord(Ofs);
+    End
+    Else
+    Begin
+      BinAddFixup(BinCodeLen, BFK_ABS32, LabelName, True);
+      BinCodeDWord(0);
+    End;
+  End;
+End;
+
+Procedure BinEmitEBPRef(RegField : Integer; Ofs : LongInt);
+Begin
+  If (Ofs >= -128) And (Ofs <= 127) Then
+  Begin BinCodeByte(BinModRM(1, RegField, 5)); BinCodeByte(Byte(Ofs And $FF)); End
+  Else
+  Begin BinCodeByte(BinModRM(2, RegField, 5)); BinCodeDWord(Ofs); End;
+End;
+
+Procedure BinEmitRegIndirect(RegField, BaseReg : Integer);
+Begin
+  If BaseReg = 4 Then Begin BinCodeByte(BinModRM(0, RegField, 4)); BinCodeByte($24); End
+  Else If BaseReg = 5 Then Begin BinCodeByte(BinModRM(1, RegField, 5)); BinCodeByte(0); End
+  Else BinCodeByte(BinModRM(0, RegField, BaseReg));
+End;
+
+Procedure BinEmitMemOp(RegField : Integer; Const Inner : TString);
+Var RBase, RIdx, PP : Integer; Tmp : TString; EbpOfs : LongInt;
+Begin
+  If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then
+  Begin BinEmitEBPRef(RegField, EbpOfs); Exit; End;
+  RBase := BinReg32(Inner);
+  If RBase >= 0 Then
+  Begin BinEmitRegIndirect(RegField, RBase); Exit; End;
+  PP := Pos('+', Inner);
+  If PP > 0 Then
+  Begin
+    Tmp := Copy(Inner, 1, PP - 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
+    RBase := BinReg32(Tmp);
+    If RBase >= 0 Then
+    Begin
+      Tmp := Copy(Inner, PP + 1, Length(Inner) - PP);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      RIdx := BinReg32(Tmp);
+      If RIdx >= 0 Then
+      Begin
+        BinCodeByte(BinModRM(0, RegField, 4));
+        BinCodeByte(Byte((RIdx Shl 3) Or RBase));
+        Exit;
+      End;
+    End;
+  End;
+  BinEmitMemRef(RegField, Inner);
+End;
+
+{ ------------------------------------------------------------ }
+{ BinAssembleLine : mini-assembleur ASM x86-32 -> binaire      }
+{ ------------------------------------------------------------ }
+
+Procedure BinAssembleLine(Const Line : String);
+Var
+  S, Mnem, Op1, Op2, Inner, Tmp : TString;
+  I, P, R1, R2, R8, ApiIdx : Integer;
+  Imm, EbpOfs : LongInt;
+  IsByte, HasOp2 : Boolean;
+  BrkDepth : Integer;
+Begin
+  S := Line;
+  While (Length(S) > 0) And (S[1] = ' ') Do Delete(S, 1, 1);
+  While (Length(S) > 0) And (S[Length(S)] = ' ') Do Delete(S, Length(S), 1);
+  If Length(S) = 0 Then Exit;
+  If S[1] = ';' Then Exit;
+
+  { Label }
+  If (Length(S) >= 2) And (S[Length(S)] = ':') And (S[1] <> '.') Then
+  Begin
+    Tmp := Copy(S, 1, Length(S) - 1);
+    While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
+    If BinInCode Then BinAddLabel(Tmp, True, BinCodeLen)
+    Else BinAddLabel(Tmp, False, BinDataLen);
+    Exit;
+  End;
+
+  { Directives }
+  If S[1] = '.' Then Exit;
+  If Pos('EXTRN', StrUpperCase(S)) > 0 Then Exit;
+  If Pos('OPTION', StrUpperCase(S)) > 0 Then Exit;
+  If Pos('END ', StrUpperCase(S)) = 1 Then Exit;
+  If StrUpperCase(S) = 'END' Then Exit;
+
+  { .DATA / .CODE switching }
+  If StrUpperCase(S) = '.DATA' Then Begin BinInCode := False; Exit; End;
+  If StrUpperCase(S) = '.CODE' Then Begin BinInCode := True; Exit; End;
+
+  { Data segment declarations }
+  If Not BinInCode Then
+  Begin
+    P := Pos(' DD ', StrUpperCase(S));
+    If P = 0 Then P := Pos(' DB ', StrUpperCase(S));
+    If P > 0 Then
+    Begin
+      Tmp := Copy(S, 1, P - 1);
+      While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
+      BinAddLabel(Tmp, False, BinDataLen);
+      Tmp := Copy(S, P + 1, Length(S) - P);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    End
+    Else If (Pos('DB', StrUpperCase(S)) = 1) Or (Pos('DD', StrUpperCase(S)) = 1) Then
+      Tmp := S
+    Else Exit;
+    If Pos('DD', StrUpperCase(Tmp)) = 1 Then
+    Begin
+      Delete(Tmp, 1, 2);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      If Pos('OFFSET', StrUpperCase(Tmp)) = 1 Then
+      Begin
+        Delete(Tmp, 1, 6);
+        While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+        BinAddFixup(BinDataLen, BFK_ABS32, Tmp, False);
+        BinDataDWord(0);
+      End
+      Else If Pos('DUP', StrUpperCase(Tmp)) > 0 Then
+      Begin
+        P := Pos(' ', Tmp);
+        If P > 0 Then Imm := BinParseImm(Copy(Tmp, 1, P - 1))
+        Else Imm := BinParseImm(Tmp);
+        For I := 1 To Imm Do BinDataDWord(0);
+      End
+      Else BinDataDWord(BinParseImm(Tmp));
+    End
+    Else If Pos('DB', StrUpperCase(Tmp)) = 1 Then
+    Begin
+      Delete(Tmp, 1, 2);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      If Pos('DUP', StrUpperCase(Tmp)) > 0 Then
+      Begin
+        P := Pos(' ', Tmp);
+        If P > 0 Then Imm := BinParseImm(Copy(Tmp, 1, P - 1))
+        Else Imm := BinParseImm(Tmp);
+        For I := 1 To Imm Do BinDataByte(0);
+      End
+      Else If (Length(Tmp) > 0) And (Tmp[1] = Chr(39)) Then
+      Begin
+        Delete(Tmp, 1, 1); I := 1;
+        While I <= Length(Tmp) Do
+        Begin
+          If Tmp[I] = Chr(39) Then
+          Begin
+            If (I < Length(Tmp)) And (Tmp[I + 1] = Chr(39)) Then
+            Begin BinDataByte(Ord(Chr(39))); Inc(I, 2); End
+            Else Begin Inc(I); Break; End;
+          End
+          Else Begin BinDataByte(Ord(Tmp[I])); Inc(I); End;
+        End;
+        Inner := Copy(Tmp, I, Length(Tmp) - I + 1);
+        If Pos(',0', Inner) > 0 Then BinDataByte(0);
+      End
+      Else
+      Begin
+        While Length(Tmp) > 0 Do
+        Begin
+          P := Pos(',', Tmp);
+          If P > 0 Then
+          Begin BinDataByte(Byte(BinParseImm(Copy(Tmp, 1, P - 1)))); Delete(Tmp, 1, P); End
+          Else Begin BinDataByte(Byte(BinParseImm(Tmp))); Tmp := ''; End;
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { Parse mnemonic and operands }
+  P := 0;
+  For I := 1 To Length(S) Do
+    If (S[I] = ' ') Or (S[I] = #9) Then Begin P := I; Break; End;
+  If P = 0 Then Begin Mnem := StrUpperCase(S); Op1 := ''; Op2 := ''; HasOp2 := False; End
+  Else
+  Begin
+    Mnem := StrUpperCase(Copy(S, 1, P - 1));
+    Tmp := Copy(S, P + 1, Length(S) - P);
+    While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+    HasOp2 := False; P := 0; BrkDepth := 0;
+    For I := 1 To Length(Tmp) Do
+    Begin
+      If Tmp[I] = '[' Then Inc(BrkDepth)
+      Else If Tmp[I] = ']' Then Dec(BrkDepth)
+      Else If (Tmp[I] = ',') And (BrkDepth = 0) Then Begin P := I; Break; End;
+    End;
+    If P > 0 Then
+    Begin
+      Op1 := Copy(Tmp, 1, P - 1); Op2 := Copy(Tmp, P + 1, Length(Tmp) - P);
+      While (Length(Op1) > 0) And (Op1[Length(Op1)] = ' ') Do Delete(Op1, Length(Op1), 1);
+      While (Length(Op2) > 0) And (Op2[1] = ' ') Do Delete(Op2, 1, 1);
+      HasOp2 := True;
+    End
+    Else Begin Op1 := Tmp; Op2 := ''; End;
+  End;
+
+  { RET }
+  If Mnem = 'RET' Then
+  Begin
+    If Length(Op1) > 0 Then Begin BinCodeByte($C2); BinCodeWord(Word(BinParseImm(Op1))); End
+    Else BinCodeByte($C3);
+    Exit;
+  End;
+  If Mnem = 'CDQ' Then Begin BinCodeByte($99); Exit; End;
+  If Mnem = 'NOP' Then Begin BinCodeByte($90); Exit; End;
+  If Mnem = 'PUSHAD' Then Begin BinCodeByte($60); Exit; End;
+  If Mnem = 'POPAD' Then Begin BinCodeByte($61); Exit; End;
+  If Mnem = 'REP' Then
+  Begin
+    If StrUpperCase(Op1) = 'MOVSB' Then Begin BinCodeByte($F3); BinCodeByte($A4); End
+    Else If StrUpperCase(Op1) = 'STOSB' Then Begin BinCodeByte($F3); BinCodeByte($AA); End;
+    Exit;
+  End;
+  If Mnem = 'REPNE' Then
+  Begin
+    If StrUpperCase(Op1) = 'SCASB' Then Begin BinCodeByte($F2); BinCodeByte($AE); End;
+    Exit;
+  End;
+
+  { PUSH }
+  If Mnem = 'PUSH' Then
+  Begin
+    R1 := BinReg32(Op1);
+    If R1 >= 0 Then Begin BinCodeByte($50 + R1); Exit; End;
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin Inner := BinStripBrackets(Inner); BinCodeByte($FF); BinEmitMemOp(6, Inner); Exit; End;
+    If Pos('OFFSET', StrUpperCase(Op1)) = 1 Then
+    Begin
+      Tmp := Copy(Op1, 7, Length(Op1) - 6);
+      While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+      BinCodeByte($68); BinAddFixup(BinCodeLen, BFK_ABS32, Tmp, True); BinCodeDWord(0);
+      Exit;
+    End;
+    Imm := BinParseImm(Op1);
+    If (Imm >= -128) And (Imm <= 127) Then
+    Begin BinCodeByte($6A); BinCodeByte(Byte(Imm And $FF)); End
+    Else Begin BinCodeByte($68); BinCodeDWord(Imm); End;
+    Exit;
+  End;
+
+  { POP }
+  If Mnem = 'POP' Then
+  Begin
+    R1 := BinReg32(Op1);
+    If R1 >= 0 Then Begin BinCodeByte($58 + R1); Exit; End;
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin Inner := BinStripBrackets(Inner); BinCodeByte($8F); BinEmitMemOp(0, Inner); End;
+    Exit;
+  End;
+
+  { INC / DEC }
+  If (Mnem = 'INC') Or (Mnem = 'DEC') Then
+  Begin
+    R1 := BinReg32(Op1);
+    If R1 >= 0 Then
+    Begin If Mnem = 'INC' Then BinCodeByte($40 + R1) Else BinCodeByte($48 + R1); Exit; End;
+    R8 := BinReg8(Op1);
+    If R8 >= 0 Then
+    Begin
+      BinCodeByte($FE);
+      If Mnem = 'INC' Then BinCodeByte(BinModRM(3, 0, R8)) Else BinCodeByte(BinModRM(3, 1, R8));
+      Exit;
+    End;
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin
+      Inner := BinStripBrackets(Inner);
+      If IsByte Then BinCodeByte($FE) Else BinCodeByte($FF);
+      If Mnem = 'INC' Then R1 := 0 Else R1 := 1;
+      BinEmitMemOp(R1, Inner);
+    End;
+    Exit;
+  End;
+
+  { NEG / NOT / DIV / IDIV }
+  If (Mnem = 'NEG') Or (Mnem = 'NOT') Or (Mnem = 'DIV') Or (Mnem = 'IDIV') Then
+  Begin
+    R1 := BinReg32(Op1);
+    If R1 >= 0 Then
+    Begin
+      BinCodeByte($F7);
+      If Mnem = 'NEG' Then BinCodeByte(BinModRM(3, 3, R1))
+      Else If Mnem = 'NOT' Then BinCodeByte(BinModRM(3, 2, R1))
+      Else If Mnem = 'DIV' Then BinCodeByte(BinModRM(3, 6, R1))
+      Else BinCodeByte(BinModRM(3, 7, R1));
+    End;
+    Exit;
+  End;
+
+  { CALL }
+  If Mnem = 'CALL' Then
+  Begin
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin Inner := BinStripBrackets(Inner); BinCodeByte($FF); BinEmitMemRef(2, Inner); Exit; End;
+    ApiIdx := BinIsExtern(Op1);
+    If ApiIdx >= 0 Then
+    Begin BinCodeByte($FF); BinCodeByte($15); BinAddFixup(BinCodeLen, BFK_IAT32, Op1, True); BinCodeDWord(0); Exit; End;
+    BinCodeByte($E8); BinAddFixup(BinCodeLen, BFK_REL32, Op1, True); BinCodeDWord(0);
+    Exit;
+  End;
+
+  { JMP }
+  If Mnem = 'JMP' Then
+  Begin
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin Inner := BinStripBrackets(Inner); BinCodeByte($FF); BinEmitMemRef(4, Inner); Exit; End;
+    BinCodeByte($E9); BinAddFixup(BinCodeLen, BFK_REL32, Op1, True); BinCodeDWord(0);
+    Exit;
+  End;
+
+  { Jcc }
+  R1 := BinJccOpcode(Mnem);
+  If R1 >= 0 Then
+  Begin
+    BinCodeByte($0F); BinCodeByte(Byte(R1));
+    BinAddFixup(BinCodeLen, BFK_REL32, Op1, True); BinCodeDWord(0);
+    Exit;
+  End;
+
+  { SETE / SETNE / SETL / SETG / SETLE / SETGE / SETB / SETA / SETBE / SETAE }
+  If (Mnem = 'SETE') Or (Mnem = 'SETNE') Or (Mnem = 'SETL') Or
+     (Mnem = 'SETG') Or (Mnem = 'SETLE') Or (Mnem = 'SETGE') Or
+     (Mnem = 'SETB') Or (Mnem = 'SETA') Or (Mnem = 'SETBE') Or (Mnem = 'SETAE') Then
+  Begin
+    R8 := BinReg8(Op1);
+    If R8 >= 0 Then
+    Begin
+      BinCodeByte($0F);
+      If Mnem = 'SETE' Then BinCodeByte($94)
+      Else If Mnem = 'SETNE' Then BinCodeByte($95)
+      Else If Mnem = 'SETL' Then BinCodeByte($9C)
+      Else If Mnem = 'SETGE' Then BinCodeByte($9D)
+      Else If Mnem = 'SETLE' Then BinCodeByte($9E)
+      Else If Mnem = 'SETG' Then BinCodeByte($9F)
+      Else If Mnem = 'SETB' Then BinCodeByte($92)
+      Else If Mnem = 'SETAE' Then BinCodeByte($93)
+      Else If Mnem = 'SETBE' Then BinCodeByte($96)
+      Else If Mnem = 'SETA' Then BinCodeByte($97);
+      BinCodeByte(BinModRM(3, 0, R8));
+    End;
+    Exit;
+  End;
+
+  { TEST }
+  If Mnem = 'TEST' Then
+  Begin
+    If Not HasOp2 Then Exit;
+    R1 := BinReg32(Op1); R2 := BinReg32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin BinCodeByte($85); BinCodeByte(BinModRM(3, R2, R1)); Exit; End;
+    R8 := BinReg8(Op1);
+    If R8 >= 0 Then
+    Begin
+      Imm := BinParseImm(Op2);
+      If R8 = 0 Then Begin BinCodeByte($A8); BinCodeByte(Byte(Imm And $FF)); End
+      Else Begin BinCodeByte($F6); BinCodeByte(BinModRM(3, 0, R8)); BinCodeByte(Byte(Imm And $FF)); End;
+      Exit;
+    End;
+    If R1 >= 0 Then
+    Begin
+      Imm := BinParseImm(Op2);
+      If R1 = 0 Then Begin BinCodeByte($A9); BinCodeDWord(Imm); End
+      Else Begin BinCodeByte($F7); BinCodeByte(BinModRM(3, 0, R1)); BinCodeDWord(Imm); End;
+    End;
+    Exit;
+  End;
+
+  { MOVZX }
+  If Mnem = 'MOVZX' Then
+  Begin
+    If Not HasOp2 Then Exit;
+    R1 := BinReg32(Op1);
+    If R1 >= 0 Then
+    Begin
+      R8 := BinReg8(Op2);
+      If R8 >= 0 Then
+      Begin BinCodeByte($0F); BinCodeByte($B6); BinCodeByte(BinModRM(3, R1, R8)); Exit; End;
+      Inner := BinStripSize(Op2, IsByte);
+      If (Length(Inner) > 0) And (Inner[1] = '[') Then
+      Begin
+        Inner := BinStripBrackets(Inner);
+        BinCodeByte($0F); BinCodeByte($B6);
+        R2 := BinReg32(Inner);
+        If R2 >= 0 Then BinEmitRegIndirect(R1, R2)
+        Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R1, EbpOfs)
+        Else BinEmitMemRef(R1, Inner);
+      End;
+    End;
+    Exit;
+  End;
+
+  { LEA }
+  If Mnem = 'LEA' Then
+  Begin
+    If Not HasOp2 Then Exit;
+    R1 := BinReg32(Op1);
+    If R1 < 0 Then Exit;
+    If BinParseEBPOfs(Op2, EbpOfs) Then
+    Begin BinCodeByte($8D); BinEmitEBPRef(R1, EbpOfs); Exit; End;
+    Inner := BinStripBrackets(Op2);
+    R2 := BinReg32(Inner);
+    If R2 >= 0 Then Begin BinCodeByte($8D); BinEmitRegIndirect(R1, R2); Exit; End;
+    P := Pos('+', Inner);
+    If P > 0 Then
+    Begin
+      Tmp := Copy(Inner, 1, P - 1);
+      While (Length(Tmp) > 0) And (Tmp[Length(Tmp)] = ' ') Do Delete(Tmp, Length(Tmp), 1);
+      R2 := BinReg32(Tmp);
+      If R2 >= 0 Then
+      Begin
+        Tmp := Copy(Inner, P + 1, Length(Inner) - P);
+        While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+        R8 := BinReg32(Tmp);
+        If R8 >= 0 Then
+        Begin BinCodeByte($8D); BinCodeByte(BinModRM(0, R1, 4)); BinCodeByte(Byte((R8 Shl 3) Or R2)); Exit; End;
+        Imm := BinParseImm(Tmp);
+        BinCodeByte($8D);
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin BinCodeByte(BinModRM(1, R1, R2)); BinCodeByte(Byte(Imm And $FF)); End
+        Else Begin BinCodeByte(BinModRM(2, R1, R2)); BinCodeDWord(Imm); End;
+        Exit;
+      End;
+    End;
+    BinCodeByte($8D); BinCodeByte(BinModRM(0, R1, 5));
+    BinAddFixup(BinCodeLen, BFK_ABS32, Op2, True); BinCodeDWord(0);
+    Exit;
+  End;
+
+  { SHL / SHR / SAR }
+  If (Mnem = 'SHL') Or (Mnem = 'SHR') Or (Mnem = 'SAR') Then
+  Begin
+    If Not HasOp2 Then Exit;
+    R1 := BinReg32(Op1);
+    If R1 < 0 Then Exit;
+    If StrUpperCase(Op2) = 'CL' Then
+    Begin
+      BinCodeByte($D3);
+      If Mnem = 'SHL' Then BinCodeByte(BinModRM(3, 4, R1))
+      Else If Mnem = 'SHR' Then BinCodeByte(BinModRM(3, 5, R1))
+      Else BinCodeByte(BinModRM(3, 7, R1));
+    End
+    Else
+    Begin
+      Imm := BinParseImm(Op2);
+      If Imm = 1 Then
+      Begin
+        BinCodeByte($D1);
+        If Mnem = 'SHL' Then BinCodeByte(BinModRM(3, 4, R1))
+        Else If Mnem = 'SHR' Then BinCodeByte(BinModRM(3, 5, R1))
+        Else BinCodeByte(BinModRM(3, 7, R1));
+      End
+      Else
+      Begin
+        BinCodeByte($C1);
+        If Mnem = 'SHL' Then BinCodeByte(BinModRM(3, 4, R1))
+        Else If Mnem = 'SHR' Then BinCodeByte(BinModRM(3, 5, R1))
+        Else BinCodeByte(BinModRM(3, 7, R1));
+        BinCodeByte(Byte(Imm And $FF));
+      End;
+    End;
+    Exit;
+  End;
+
+  { IMUL }
+  If Mnem = 'IMUL' Then
+  Begin
+    If Not HasOp2 Then
+    Begin R1 := BinReg32(Op1); If R1 >= 0 Then Begin BinCodeByte($F7); BinCodeByte(BinModRM(3, 5, R1)); End; Exit; End;
+    R1 := BinReg32(Op1); If R1 < 0 Then Exit;
+    R2 := BinReg32(Op2);
+    If R2 >= 0 Then Begin BinCodeByte($0F); BinCodeByte($AF); BinCodeByte(BinModRM(3, R1, R2)); Exit; End;
+    Imm := BinParseImm(Op2);
+    BinCodeByte($69); BinCodeByte(BinModRM(3, R1, R1)); BinCodeDWord(Imm);
+    Exit;
+  End;
+
+  { MOV }
+  If Mnem = 'MOV' Then
+  Begin
+    If Not HasOp2 Then Exit;
+    R1 := BinReg32(Op1); R2 := BinReg32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then Begin BinCodeByte($89); BinCodeByte(BinModRM(3, R2, R1)); Exit; End;
+    If (R1 >= 0) Then
+    Begin
+      Inner := BinStripSize(Op2, IsByte);
+      If (Length(Inner) > 0) And (Inner[1] = '[') Then
+      Begin
+        Inner := BinStripBrackets(Inner);
+        R2 := BinReg32(Inner);
+        If R2 >= 0 Then Begin BinCodeByte($8B); BinEmitRegIndirect(R1, R2); Exit; End;
+        If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then Begin BinCodeByte($8B); BinEmitEBPRef(R1, EbpOfs); Exit; End;
+        BinCodeByte($8B); BinEmitMemRef(R1, Inner); Exit;
+      End;
+      If Pos('OFFSET', StrUpperCase(Op2)) = 1 Then
+      Begin
+        Tmp := Copy(Op2, 7, Length(Op2) - 6);
+        While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+        BinCodeByte($B8 + R1); BinAddFixup(BinCodeLen, BFK_ABS32, Tmp, True); BinCodeDWord(0); Exit;
+      End;
+      Imm := BinParseImm(Op2);
+      BinCodeByte($B8 + R1); BinCodeDWord(Imm); Exit;
+    End;
+    R1 := BinReg8(Op1);
+    If R1 >= 0 Then
+    Begin
+      R2 := BinReg8(Op2);
+      If R2 >= 0 Then Begin BinCodeByte($88); BinCodeByte(BinModRM(3, R2, R1)); Exit; End;
+      Inner := BinStripSize(Op2, IsByte);
+      If (Length(Inner) > 0) And (Inner[1] = '[') Then
+      Begin
+        Inner := BinStripBrackets(Inner);
+        R2 := BinReg32(Inner);
+        If R2 >= 0 Then Begin BinCodeByte($8A); BinEmitRegIndirect(R1, R2); Exit; End;
+        If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then Begin BinCodeByte($8A); BinEmitEBPRef(R1, EbpOfs); Exit; End;
+        BinCodeByte($8A); BinEmitMemRef(R1, Inner); Exit;
+      End;
+      Imm := BinParseImm(Op2);
+      BinCodeByte($B0 + R1); BinCodeByte(Byte(Imm And $FF)); Exit;
+    End;
+    { MOV [mem], src }
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin
+      Inner := BinStripBrackets(Inner);
+      R2 := BinReg32(Op2); R8 := BinReg8(Op2);
+      If IsByte Then
+      Begin
+        If R8 >= 0 Then
+        Begin
+          BinCodeByte($88); R1 := BinReg32(Inner);
+          If R1 >= 0 Then BinEmitRegIndirect(R8, R1)
+          Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R8, EbpOfs)
+          Else BinEmitMemRef(R8, Inner); Exit;
+        End;
+        Imm := BinParseImm(Op2); BinCodeByte($C6); R1 := BinReg32(Inner);
+        If R1 >= 0 Then BinEmitRegIndirect(0, R1)
+        Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(0, EbpOfs)
+        Else BinEmitMemRef(0, Inner);
+        BinCodeByte(Byte(Imm And $FF)); Exit;
+      End
+      Else
+      Begin
+        If R2 >= 0 Then
+        Begin
+          BinCodeByte($89); R1 := BinReg32(Inner);
+          If R1 >= 0 Then BinEmitRegIndirect(R2, R1)
+          Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(R2, EbpOfs)
+          Else BinEmitMemRef(R2, Inner); Exit;
+        End;
+        If Pos('OFFSET', StrUpperCase(Op2)) = 1 Then
+        Begin
+          Tmp := Copy(Op2, 7, Length(Op2) - 6);
+          While (Length(Tmp) > 0) And (Tmp[1] = ' ') Do Delete(Tmp, 1, 1);
+          BinCodeByte($C7); R1 := BinReg32(Inner);
+          If R1 >= 0 Then BinEmitRegIndirect(0, R1)
+          Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(0, EbpOfs)
+          Else BinEmitMemRef(0, Inner);
+          BinAddFixup(BinCodeLen, BFK_ABS32, Tmp, True); BinCodeDWord(0); Exit;
+        End;
+        Imm := BinParseImm(Op2); BinCodeByte($C7); R1 := BinReg32(Inner);
+        If R1 >= 0 Then BinEmitRegIndirect(0, R1)
+        Else If BinParseEBPOfs('[' + Inner + ']', EbpOfs) Then BinEmitEBPRef(0, EbpOfs)
+        Else BinEmitMemRef(0, Inner);
+        BinCodeDWord(Imm); Exit;
+      End;
+    End;
+    Exit;
+  End;
+
+  { ADD / SUB / CMP / AND / OR / XOR }
+  If (Mnem = 'ADD') Or (Mnem = 'SUB') Or (Mnem = 'CMP') Or
+     (Mnem = 'AND') Or (Mnem = 'OR') Or (Mnem = 'XOR') Then
+  Begin
+    If Not HasOp2 Then Exit;
+    If Mnem = 'ADD' Then R8 := 0
+    Else If Mnem = 'OR' Then R8 := 1
+    Else If Mnem = 'AND' Then R8 := 4
+    Else If Mnem = 'SUB' Then R8 := 5
+    Else If Mnem = 'XOR' Then R8 := 6
+    Else R8 := 7;
+    R1 := BinReg32(Op1); R2 := BinReg32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin BinCodeByte(Byte($01 + (R8 Shl 3))); BinCodeByte(BinModRM(3, R2, R1)); Exit; End;
+    If R1 >= 0 Then
+    Begin
+      Inner := BinStripSize(Op2, IsByte);
+      If (Length(Inner) > 0) And (Inner[1] = '[') Then
+      Begin
+        Inner := BinStripBrackets(Inner);
+        BinCodeByte(Byte($03 + (R8 Shl 3)));
+        BinEmitMemOp(R1, Inner);
+        Exit;
+      End;
+      Imm := BinParseImm(Op2);
+      If (Imm >= -128) And (Imm <= 127) Then
+      Begin BinCodeByte($83); BinCodeByte(BinModRM(3, R8, R1)); BinCodeByte(Byte(Imm And $FF)); End
+      Else
+      Begin
+        If R1 = 0 Then BinCodeByte(Byte($05 + (R8 Shl 3)))
+        Else Begin BinCodeByte($81); BinCodeByte(BinModRM(3, R8, R1)); End;
+        BinCodeDWord(Imm);
+      End;
+      Exit;
+    End;
+    R1 := BinReg8(Op1);
+    If R1 >= 0 Then
+    Begin
+      R2 := BinReg8(Op2);
+      If R2 >= 0 Then Begin BinCodeByte(Byte($00 + (R8 Shl 3))); BinCodeByte(BinModRM(3, R2, R1)); Exit; End;
+      Inner := BinStripSize(Op2, IsByte);
+      If (Length(Inner) > 0) And (Inner[1] = '[') Then
+      Begin
+        Inner := BinStripBrackets(Inner);
+        BinCodeByte(Byte($02 + (R8 Shl 3)));
+        BinEmitMemOp(R1, Inner);
+        Exit;
+      End;
+      Imm := BinParseImm(Op2);
+      If R1 = 0 Then BinCodeByte(Byte($04 + (R8 Shl 3)))
+      Else Begin BinCodeByte($80); BinCodeByte(BinModRM(3, R8, R1)); End;
+      BinCodeByte(Byte(Imm And $FF)); Exit;
+    End;
+    Inner := BinStripSize(Op1, IsByte);
+    If (Length(Inner) > 0) And (Inner[1] = '[') Then
+    Begin
+      Inner := BinStripBrackets(Inner);
+      R2 := BinReg32(Op2);
+      If (Not IsByte) And (R2 >= 0) Then
+      Begin
+        BinCodeByte(Byte($01 + (R8 Shl 3)));
+        BinEmitMemOp(R2, Inner); Exit;
+      End;
+      Imm := BinParseImm(Op2);
+      If IsByte Then
+      Begin
+        BinCodeByte($80);
+        BinEmitMemOp(R8, Inner);
+        BinCodeByte(Byte(Imm And $FF));
+      End
+      Else
+      Begin
+        If (Imm >= -128) And (Imm <= 127) Then
+        Begin
+          BinCodeByte($83);
+          BinEmitMemOp(R8, Inner);
+          BinCodeByte(Byte(Imm And $FF));
+        End
+        Else
+        Begin
+          BinCodeByte($81);
+          BinEmitMemOp(R8, Inner);
+          BinCodeDWord(Imm);
+        End;
+      End;
+    End;
+    Exit;
+  End;
+
+  { XCHG }
+  If Mnem = 'XCHG' Then
+  Begin
+    If Not HasOp2 Then Exit;
+    R1 := BinReg32(Op1); R2 := BinReg32(Op2);
+    If (R1 >= 0) And (R2 >= 0) Then
+    Begin
+      If R1 = 0 Then BinCodeByte($90 + R2)
+      Else If R2 = 0 Then BinCodeByte($90 + R1)
+      Else Begin BinCodeByte($87); BinCodeByte(BinModRM(3, R1, R2)); End;
+    End;
+    Exit;
+  End;
+
+  { Unknown instruction -> NOP }
+  BinCodeByte($90);
+End;
+
+{ ------------------------------------------------------------ }
+{ BinResolveAll : resoudre tous les fixups apres assemblage    }
+{ ------------------------------------------------------------ }
+
+Procedure BinResolveAll(TextRVA, DataRVA, RdataRVA, IATOfs : LongInt);
+Var
+  I, LblIdx, ApiIdx : Integer;
+  TargetAddr, FixAddr : LongInt;
+  P : ^Byte;
+  ExistOfs : LongInt;
+Begin
+  For I := 0 To BinFixCount - 1 Do
+  Begin
+    If BinFixups[I].Kind = BFK_IAT32 Then
+    Begin
+      ApiIdx := BinIsExtern(BinFixups[I].Target);
+      If ApiIdx >= 0 Then TargetAddr := PE_IMG_BASE + RdataRVA + IATOfs + ApiIdx * 4
+      Else TargetAddr := 0;
+      If BinFixups[I].InCode Then P := @BinCode[BinFixups[I].Offset]
+      Else P := @BinData[BinFixups[I].Offset];
+      P^ := Byte(TargetAddr And $FF); Inc(P);
+      P^ := Byte((TargetAddr Shr 8) And $FF); Inc(P);
+      P^ := Byte((TargetAddr Shr 16) And $FF); Inc(P);
+      P^ := Byte((TargetAddr Shr 24) And $FF);
+    End
+    Else
+    Begin
+      LblIdx := BinFindLabel(BinFixups[I].Target);
+      If LblIdx >= 0 Then
+      Begin
+        If BinLabels[LblIdx].InCode Then TargetAddr := PE_IMG_BASE + TextRVA + BinLabels[LblIdx].Offset
+        Else TargetAddr := PE_IMG_BASE + DataRVA + BinLabels[LblIdx].Offset;
+      End
+      Else TargetAddr := 0;
+      If BinFixups[I].InCode Then P := @BinCode[BinFixups[I].Offset]
+      Else P := @BinData[BinFixups[I].Offset];
+      If BinFixups[I].Kind = BFK_REL32 Then
+      Begin
+        If BinFixups[I].InCode Then FixAddr := PE_IMG_BASE + TextRVA + BinFixups[I].Offset + 4
+        Else FixAddr := PE_IMG_BASE + DataRVA + BinFixups[I].Offset + 4;
+        TargetAddr := TargetAddr - FixAddr;
+        P^ := Byte(TargetAddr And $FF); Inc(P);
+        P^ := Byte((TargetAddr Shr 8) And $FF); Inc(P);
+        P^ := Byte((TargetAddr Shr 16) And $FF); Inc(P);
+        P^ := Byte((TargetAddr Shr 24) And $FF);
+      End
+      Else
+      Begin
+        If BinFixups[I].InCode Then
+          ExistOfs := LongInt(BinCode[BinFixups[I].Offset]) Or
+                     (LongInt(BinCode[BinFixups[I].Offset + 1]) Shl 8) Or
+                     (LongInt(BinCode[BinFixups[I].Offset + 2]) Shl 16) Or
+                     (LongInt(BinCode[BinFixups[I].Offset + 3]) Shl 24)
+        Else
+          ExistOfs := LongInt(BinData[BinFixups[I].Offset]) Or
+                     (LongInt(BinData[BinFixups[I].Offset + 1]) Shl 8) Or
+                     (LongInt(BinData[BinFixups[I].Offset + 2]) Shl 16) Or
+                     (LongInt(BinData[BinFixups[I].Offset + 3]) Shl 24);
+        TargetAddr := TargetAddr + ExistOfs;
+        P^ := Byte(TargetAddr And $FF); Inc(P);
+        P^ := Byte((TargetAddr Shr 8) And $FF); Inc(P);
+        P^ := Byte((TargetAddr Shr 16) And $FF); Inc(P);
+        P^ := Byte((TargetAddr Shr 24) And $FF);
+      End;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ File writing helpers                                         }
+{ ------------------------------------------------------------ }
+
+Function BinAlignTo(Size, Align : LongInt) : LongInt;
+Begin
+  If (Size Mod Align) = 0 Then BinAlignTo := Size
+  Else BinAlignTo := Size + Align - (Size Mod Align);
+End;
+
+Procedure WriteBinPad(Var F : File; Count : LongInt);
+Var ZB : Array[0..511] of Byte; N : LongInt;
+Begin
+  FillChar(ZB, SizeOf(ZB), 0);
+  While Count > 0 Do
+  Begin If Count > 512 Then N := 512 Else N := Count; BlockWrite(F, ZB, N); Dec(Count, N); End;
+End;
+
+Procedure WriteBinWord(Var F : File; W : Word);
+Begin BlockWrite(F, W, 2); End;
+
+Procedure WriteBinDWord(Var F : File; D : LongInt);
+Begin BlockWrite(F, D, 4); End;
+
+{ ------------------------------------------------------------ }
+{ WritePEFile : generer un fichier PE (.EXE) Win32             }
+{ ------------------------------------------------------------ }
+
+Procedure WritePEFile(Const FileName : TString);
+Var
+  F : File;
+  HSz, TFSz, RFSz, DFSz, TRVA, RRVA, DRVA, ImgSz, RSz : LongInt;
+  IATOf, ILTOf, HNOf, DNOf, IDTOf : LongInt;
+  I, ANL : Integer;
+  HNBuf : Array[0..1023] of Byte;
+  HNLen, Pad : LongInt;
+  DName : String[16];
+  SName : Array[0..7] of Byte;
+Begin
+  DName := 'KERNEL32.DLL'#0;
+  IDTOf := 0; ILTOf := 40;
+  IATOf := ILTOf + (PE_NUM_API + 1) * 4;
+  HNOf := IATOf + (PE_NUM_API + 1) * 4;
+  HNLen := 0;
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin
+    HNBuf[HNLen] := 0; Inc(HNLen); HNBuf[HNLen] := 0; Inc(HNLen);
+    ANL := Length(BinAPIName[I]);
+    Move(BinAPIName[I][1], HNBuf[HNLen], ANL); Inc(HNLen, ANL);
+    HNBuf[HNLen] := 0; Inc(HNLen);
+    If (HNLen And 1) <> 0 Then Begin HNBuf[HNLen] := 0; Inc(HNLen); End;
+  End;
+  DNOf := HNOf + HNLen;
+  RSz := BinAlignTo(DNOf + Length(DName), 4);
+  HSz := BinAlignTo($200, PE_FILE_ALIGN);
+  TRVA := PE_SEC_ALIGN;
+  TFSz := BinAlignTo(BinCodeLen, PE_FILE_ALIGN);
+  RRVA := TRVA + BinAlignTo(BinCodeLen, PE_SEC_ALIGN);
+  RFSz := BinAlignTo(RSz, PE_FILE_ALIGN);
+  DRVA := RRVA + BinAlignTo(RSz, PE_SEC_ALIGN);
+  DFSz := BinAlignTo(BinDataLen, PE_FILE_ALIGN);
+  ImgSz := DRVA + BinAlignTo(BinDataLen, PE_SEC_ALIGN);
+  BinResolveAll(TRVA, DRVA, RRVA, IATOf);
+  Assign(F, FileName); Rewrite(F, 1);
+  { DOS Header }
+  WriteBinWord(F, PE_DOS_MAGIC); WriteBinPad(F, 58); WriteBinDWord(F, $80);
+  WriteBinPad(F, $80 - 64);
+  { PE Sig }
+  WriteBinDWord(F, PE_PE_SIG);
+  { COFF Hdr }
+  WriteBinWord(F, PE_MACHINE_I386); WriteBinWord(F, 3);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  WriteBinWord(F, PE_OPT_SIZE); WriteBinWord(F, $0102);
+  { Opt Hdr }
+  WriteBinWord(F, PE_MAGIC_32); WriteBinWord(F, $0100);
+  WriteBinDWord(F, TFSz); WriteBinDWord(F, DFSz + RFSz); WriteBinDWord(F, 0);
+  WriteBinDWord(F, TRVA); WriteBinDWord(F, TRVA); WriteBinDWord(F, DRVA);
+  WriteBinDWord(F, PE_IMG_BASE); WriteBinDWord(F, PE_SEC_ALIGN); WriteBinDWord(F, PE_FILE_ALIGN);
+  WriteBinWord(F, 4); WriteBinWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  WriteBinWord(F, 4); WriteBinWord(F, 0);
+  WriteBinDWord(F, 0); WriteBinDWord(F, ImgSz); WriteBinDWord(F, HSz); WriteBinDWord(F, 0);
+  WriteBinWord(F, PE_SUBSYS_CUI); WriteBinWord(F, 0);
+  WriteBinDWord(F, $100000); WriteBinDWord(F, $1000);
+  WriteBinDWord(F, $100000); WriteBinDWord(F, $1000);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 16);
+  { Data dirs }
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  WriteBinDWord(F, RRVA + IDTOf); WriteBinDWord(F, 40);
+  For I := 2 To 11 Do Begin WriteBinDWord(F, 0); WriteBinDWord(F, 0); End;
+  WriteBinDWord(F, RRVA + IATOf); WriteBinDWord(F, (PE_NUM_API + 1) * 4);
+  For I := 13 To 15 Do Begin WriteBinDWord(F, 0); WriteBinDWord(F, 0); End;
+  { Section Hdrs }
+  FillChar(SName, 8, 0); Move('.text'#0, SName, 6); BlockWrite(F, SName, 8);
+  WriteBinDWord(F, BinCodeLen); WriteBinDWord(F, TRVA);
+  WriteBinDWord(F, TFSz); WriteBinDWord(F, HSz);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_TEXT);
+  FillChar(SName, 8, 0); Move('.rdata', SName, 6); BlockWrite(F, SName, 8);
+  WriteBinDWord(F, RSz); WriteBinDWord(F, RRVA);
+  WriteBinDWord(F, RFSz); WriteBinDWord(F, HSz + TFSz);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_RDATA);
+  FillChar(SName, 8, 0); Move('.data'#0, SName, 6); BlockWrite(F, SName, 8);
+  WriteBinDWord(F, BinDataLen); WriteBinDWord(F, DRVA);
+  WriteBinDWord(F, DFSz); WriteBinDWord(F, HSz + TFSz + RFSz);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_BSS);
+  { Pad headers }
+  Pad := HSz - (64 + ($80 - 64) + 4 + 20 + 224 + 120);
+  If Pad > 0 Then WriteBinPad(F, Pad);
+  { .text }
+  BlockWrite(F, BinCode, BinCodeLen);
+  Pad := TFSz - BinCodeLen; If Pad > 0 Then WriteBinPad(F, Pad);
+  { .rdata }
+  WriteBinDWord(F, RRVA + ILTOf); WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  WriteBinDWord(F, RRVA + DNOf); WriteBinDWord(F, RRVA + IATOf);
+  WriteBinPad(F, 20);
+  Pad := HNOf;
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin WriteBinDWord(F, RRVA + Pad); Pad := Pad + 2 + Length(BinAPIName[I]) + 1;
+    If ((2 + Length(BinAPIName[I]) + 1) And 1) <> 0 Then Inc(Pad); End;
+  WriteBinDWord(F, 0);
+  Pad := HNOf;
+  For I := 0 To PE_NUM_API - 1 Do
+  Begin WriteBinDWord(F, RRVA + Pad); Pad := Pad + 2 + Length(BinAPIName[I]) + 1;
+    If ((2 + Length(BinAPIName[I]) + 1) And 1) <> 0 Then Inc(Pad); End;
+  WriteBinDWord(F, 0);
+  BlockWrite(F, HNBuf, HNLen);
+  BlockWrite(F, DName[1], Length(DName));
+  Pad := RFSz - (40 + (PE_NUM_API + 1) * 4 + (PE_NUM_API + 1) * 4 + HNLen + Length(DName));
+  If Pad > 0 Then WriteBinPad(F, Pad);
+  { .data }
+  BlockWrite(F, BinData, BinDataLen);
+  Pad := DFSz - BinDataLen; If Pad > 0 Then WriteBinPad(F, Pad);
+  Close(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ WriteCOFFFile : generer un fichier COFF (.OBJ)               }
+{ ------------------------------------------------------------ }
+
+Procedure WriteCOFFFile(Const FileName : TString);
+Var F : File; TOfs, DOfs : LongInt; SN : Array[0..7] of Byte;
+Begin
+  TOfs := 20 + 80; DOfs := TOfs + BinCodeLen;
+  Assign(F, FileName); Rewrite(F, 1);
+  WriteBinWord(F, PE_MACHINE_I386); WriteBinWord(F, 2);
+  WriteBinDWord(F, 0); WriteBinDWord(F, DOfs + BinDataLen);
+  WriteBinDWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  FillChar(SN, 8, 0); Move('.text'#0, SN, 6); BlockWrite(F, SN, 8);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  WriteBinDWord(F, BinCodeLen); WriteBinDWord(F, TOfs);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_TEXT);
+  FillChar(SN, 8, 0); Move('.data'#0, SN, 6); BlockWrite(F, SN, 8);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0);
+  WriteBinDWord(F, BinDataLen); WriteBinDWord(F, DOfs);
+  WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinWord(F, 0); WriteBinWord(F, 0);
+  WriteBinDWord(F, PE_SCN_BSS);
+  BlockWrite(F, BinCode, BinCodeLen);
+  BlockWrite(F, BinData, BinDataLen);
+  WriteBinDWord(F, 4);
+  Close(F);
+End;
+
+{ ------------------------------------------------------------ }
+{ AssembleAndWriteBinary : lire ASM et generer PE/COFF         }
+{ ------------------------------------------------------------ }
+
+Procedure AssembleAndWriteBinary(Const AsmFile, BinFile : TString;
+                                IsObj : Boolean);
+Var AsmF : Text; Line : String;
+Begin
+  BinInit; BinInCode := True;
+  Assign(AsmF, AsmFile);
+  {$I-} Reset(AsmF); {$I+}
+  If IOResult <> 0 Then Begin
+    WarnMsg('impossible d''ouvrir le fichier ASM intermediaire: ' + AsmFile);
+    Exit;
+  End;
+  While Not EOF(AsmF) Do Begin ReadLn(AsmF, Line); BinAssembleLine(Line); End;
+  Close(AsmF);
+  If IsObj Then WriteCOFFFile(BinFile) Else WritePEFile(BinFile);
+End;
+
 { ------------------------------------------------------------ }
 { Run : ouvre le fichier source, lexe et affiche les tokens     }
 { avec support du preprocesseur, des litteraux et symboles     }
@@ -10755,20 +11981,44 @@ Begin
     TypeCount, ' types, ', FuncCount, ' fonctions)');
 
   { --- Emetteur ASM (TODO 07) --- }
-  { Generer le fichier .ASM si option -asm demandee }
+  { Toujours generer le fichier .ASM (intermediaire ou final) }
+  AsmFile := ReplaceExt(Opts.SrcFile, '.asm');
+  EmitOpen(AsmFile);
+  EmitHeader;
+  EmitExternFuncs;
+  EmitDataSeg;
+  EmitCodeSeg;
+  EmitRuntime;
+  EmitFunctions;
+  EmitLateData;
+  EmitClose;
   If Opts.AsmOutput Then
-  Begin
-    AsmFile := ReplaceExt(Opts.SrcFile, '.asm');
-    EmitOpen(AsmFile);
-    EmitHeader;
-    EmitExternFuncs;
-    EmitDataSeg;
-    EmitCodeSeg;
-    EmitRuntime;
-    EmitFunctions;
-    EmitLateData;
-    EmitClose;
     WriteLn('CCW32: ASM genere -> ', AsmFile);
+
+  { --- Generation binaire (TODO 25) --- }
+  If Opts.ObjOnly Then
+  Begin
+    { Generer un fichier COFF .OBJ }
+    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.obj'), True);
+    WriteLn('CCW32: OBJ genere -> ', ReplaceExt(Opts.SrcFile, '.obj'));
+    If Not Opts.AsmOutput Then
+    Begin
+      Assign(OutF, AsmFile);
+      {$I-} Erase(OutF); {$I+}
+      If IOResult <> 0 Then { ignorer };
+    End;
+  End
+  Else
+  Begin
+    { Generer un fichier PE .EXE (defaut) }
+    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.exe'), False);
+    WriteLn('CCW32: EXE genere -> ', ReplaceExt(Opts.SrcFile, '.exe'));
+    If Not Opts.AsmOutput Then
+    Begin
+      Assign(OutF, AsmFile);
+      {$I-} Erase(OutF); {$I+}
+      If IOResult <> 0 Then { ignorer };
+    End;
   End;
 End;
 
