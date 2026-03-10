@@ -44,6 +44,13 @@
             Supporter le linkage de fichiers .LIB et .OBJ externes
               specifies dans les parametres de la ligne de commande
               (ex: CCW32 source.c mylib.lib helper.obj)
+            Parametre de norme C : supporter les differentes normes
+              du langage C via un parametre de ligne de commande :
+              C (1972), K&R C (1978), C POSIX (1988),
+              ANSI C / ANSI X3.159-1989 / C89 (1989), C90 /
+              ISO/IEC 9899:1990 (1990), C95 /
+              ISO/IEC 9899:1990/AMD 1:1995 (1995),
+              C99 (1999), C11 (2011), C18 (2018)
 
   TODO 02 - LEXEUR (TOKENS C)
             TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
