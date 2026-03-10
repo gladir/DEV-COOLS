@@ -210,7 +210,7 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		</tr>
 		<tr>
 			<td><b>CCW32.PAS</b></td>
-			<td>Cette commande permet de lancer le compilateur C pour l'assembleur du microprocesseur 80386 (en ex´┐¢cutable Windows 32 bits).</td>
+			<td>Cette commande permet de lancer le compilateur C pour l'assembleur du microprocesseur 80386 (en exécutable Windows 32 bits).</td>
 		</tr>
 		<tr>
 			<td><b>CLOJ86.PAS</b></td>
