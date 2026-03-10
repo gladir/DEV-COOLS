@@ -31,4 +31,40 @@ _CCV_temporary_var  DD 0
 ; --- Segment de code ---
 .CODE
 
-END
+; --- Fonction: test_function ---
+_CCF_test_function:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,12
+;   local local_extern_var = [EBP-4]
+;   local local_extern_char = [EBP-8]
+;   local local_extern_ptr = [EBP-12]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: main ---
+_CCF_main:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   local main_extern_var = [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Point d'entree Win32 ---
+_main:
+        PUSH -11
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDOUT],EAX
+        PUSH -10
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDIN],EAX
+        CALL _GetProcessHeap@0
+        MOV DWORD PTR [HHEAP],EAX
+        CALL _CCF_main
+        PUSH 0
+        CALL _ExitProcess@4
+
+END _main

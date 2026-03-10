@@ -29,4 +29,17 @@ CRLF     DB 13,10,0
 ; --- Segment de code ---
 .CODE
 
+; --- Fonction: test_function ---
+_CCF_test_function:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,8
+;   local x = [EBP-4]
+        MOV DWORD PTR [EBP-4],42
+;   local y = [EBP-8]
+        MOV DWORD PTR [EBP-8],0
+        MOV ESP,EBP
+        POP EBP
+        RET
+
 END

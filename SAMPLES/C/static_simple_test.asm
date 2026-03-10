@@ -26,8 +26,32 @@ BYTESRD  DD 0
 CRLF     DB 13,10,0
 
 _CCV_global_var  DD 0
+_CCST_1  DD 0
 
 ; --- Segment de code ---
 .CODE
 
-END
+; --- Fonction: main ---
+_CCF_main:
+        PUSH EBP
+        MOV EBP,ESP
+;   static local_var = [_CCST_1]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Point d'entree Win32 ---
+_main:
+        PUSH -11
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDOUT],EAX
+        PUSH -10
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDIN],EAX
+        CALL _GetProcessHeap@0
+        MOV DWORD PTR [HHEAP],EAX
+        CALL _CCF_main
+        PUSH 0
+        CALL _ExitProcess@4
+
+END _main

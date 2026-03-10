@@ -29,4 +29,29 @@ CRLF     DB 13,10,0
 ; --- Segment de code ---
 .CODE
 
+; --- Fonction: test_switch ---
+_CCF_test_switch:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   param x = [EBP+8]
+;   local result = [EBP-4]
+        MOV DWORD PTR [EBP-4],0
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: nested_switch ---
+_CCF_nested_switch:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   param a = [EBP+8]
+;   param b = [EBP+12]
+;   local result = [EBP-4]
+        MOV DWORD PTR [EBP-4],0
+        MOV ESP,EBP
+        POP EBP
+        RET
+
 END

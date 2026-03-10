@@ -29,4 +29,14 @@ CRLF     DB 13,10,0
 ; --- Segment de code ---
 .CODE
 
+; --- Fonction: f ---
+_CCF_f:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   local x = [EBP-4]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
 END

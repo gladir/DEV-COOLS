@@ -30,4 +30,12 @@ _CCV_i  DD 0
 ; --- Segment de code ---
 .CODE
 
+; --- Fonction: test ---
+_CCF_test:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV ESP,EBP
+        POP EBP
+        RET
+
 END

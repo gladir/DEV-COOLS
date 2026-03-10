@@ -30,4 +30,26 @@ _CCK_1  DB 'Hello 8086!',0
 ; --- Segment de code ---
 .CODE
 
-END
+; --- Fonction: main ---
+_CCF_main:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Point d'entree Win32 ---
+_main:
+        PUSH -11
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDOUT],EAX
+        PUSH -10
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDIN],EAX
+        CALL _GetProcessHeap@0
+        MOV DWORD PTR [HHEAP],EAX
+        CALL _CCF_main
+        PUSH 0
+        CALL _ExitProcess@4
+
+END _main

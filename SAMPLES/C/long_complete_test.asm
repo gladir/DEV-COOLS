@@ -29,4 +29,43 @@ CRLF     DB 13,10,0
 ; --- Segment de code ---
 .CODE
 
-END
+; --- Fonction: main ---
+_CCF_main:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,32
+;   local local_long = [EBP-4]
+        MOV DWORD PTR [EBP-4],-50000
+;   local local_ulong = [EBP-8]
+        MOV DWORD PTR [EBP-8],-294967296
+;   local from_long = [EBP-12]
+        MOV DWORD PTR [EBP-12],0
+;   local from_long_to_char = [EBP-16]
+        MOV DWORD PTR [EBP-16],0
+;   local from_int = [EBP-20]
+        MOV DWORD PTR [EBP-20],0
+;   local sum = [EBP-24]
+        MOV DWORD PTR [EBP-24],0
+;   local diff = [EBP-28]
+        MOV DWORD PTR [EBP-28],0
+;   local prod = [EBP-32]
+        MOV DWORD PTR [EBP-32],0
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Point d'entree Win32 ---
+_main:
+        PUSH -11
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDOUT],EAX
+        PUSH -10
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDIN],EAX
+        CALL _GetProcessHeap@0
+        MOV DWORD PTR [HHEAP],EAX
+        CALL _CCF_main
+        PUSH 0
+        CALL _ExitProcess@4
+
+END _main

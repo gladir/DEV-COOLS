@@ -27,8 +27,58 @@ CRLF     DB 13,10,0
 
 _CCV_global_counter  DD 0
 _CCV_normal_var  DD 42
+_CCST_1  DD 0
+_CCST_2  DD 10
+_CCST_3  DD 100
 
 ; --- Segment de code ---
 .CODE
 
-END
+; --- Fonction: internal_function ---
+_CCF_internal_function:
+        PUSH EBP
+        MOV EBP,ESP
+;   static call_count = [_CCST_1]
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: public_function ---
+_CCF_public_function:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   static local_static = [_CCST_2]
+;   local local_auto = [EBP-4]
+        MOV DWORD PTR [EBP-4],20
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Fonction: main ---
+_CCF_main:
+        PUSH EBP
+        MOV EBP,ESP
+        SUB ESP,4
+;   static main_static = [_CCST_3]
+;   local main_auto = [EBP-4]
+        MOV DWORD PTR [EBP-4],200
+        MOV ESP,EBP
+        POP EBP
+        RET
+
+; --- Point d'entree Win32 ---
+_main:
+        PUSH -11
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDOUT],EAX
+        PUSH -10
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDIN],EAX
+        CALL _GetProcessHeap@0
+        MOV DWORD PTR [HHEAP],EAX
+        CALL _CCF_main
+        PUSH 0
+        CALL _ExitProcess@4
+
+END _main
