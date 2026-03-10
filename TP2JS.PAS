@@ -93,7 +93,7 @@
                3. + - OR XOR
                4. = <> < > <= >= IN
 
-   TODO 05 - TABLE DES SYMBOLES
+   TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
              TSymKind : SK_CONST, SK_TYPE, SK_VAR, SK_PARAM, SK_FUNC,
                SK_PROC, SK_FIELD, SK_METHOD, SK_PROPERTY, SK_UNIT,
                SK_LABEL, SK_ENUMVAL
@@ -643,6 +643,8 @@ Const
 
   MAX_TOKEN   = {$IFDEF FPC}16384{$ELSE}4096{$ENDIF};
   MAX_CONST   = 256;
+  MAX_SYM     = {$IFDEF FPC}2048{$ELSE}512{$ENDIF};
+  MAX_SCOPE   = 64;
 
   EXIT_OK    = 0;
   EXIT_ERROR = 1;
@@ -696,6 +698,34 @@ Type
     IsTyped : Boolean;     { constante typee (const X: T = V)   }
   End;
 
+  TSymKind = (
+    SK_CONST,            { constante                            }
+    SK_TYPE,             { type (Integer, Boolean, record, etc) }
+    SK_VAR,              { variable                             }
+    SK_PARAM,            { parametre de procedure/fonction      }
+    SK_FUNC,             { fonction                             }
+    SK_PROC,             { procedure                            }
+    SK_FIELD,            { champ de record/object               }
+    SK_METHOD,           { methode d objet                      }
+    SK_PROPERTY,         { propriete d objet                    }
+    SK_UNIT,             { unite (uses)                         }
+    SK_LABEL,            { label (goto)                         }
+    SK_ENUMVAL           { valeur d enumeration                 }
+  );
+
+  TSymRec = Record
+    Name       : TString;    { nom Pascal (original)             }
+    JSName     : TString;    { nom JavaScript genere              }
+    Kind       : TSymKind;   { categorie du symbole               }
+    TypeIdx    : Integer;    { index dans table des types (-1=NA) }
+    Scope      : Integer;    { niveau de portee (0=global)        }
+    ScopeId    : Integer;    { id unique de la portee             }
+    IsPublic   : Boolean;    { visible dans INTERFACE             }
+    IsPrivate  : Boolean;    { prive (PRIVATE dans objet)         }
+    IsForward  : Boolean;    { declaration Forward                }
+    IsExternal : Boolean;    { declaration External               }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -725,6 +755,13 @@ Var
   { Table des constantes }
   ConstTab   : Array[0..MAX_CONST - 1] Of TConstRec;
   ConstCount : Integer;
+
+  { Table des symboles }
+  SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount   : Integer;
+  CurScope   : Integer;         { niveau de portee courant (0=global) }
+  CurScopeId : Integer;         { id unique de la portee courante     }
+  SymJSSeq   : Integer;         { compteur pour noms JS uniques       }
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -2494,6 +2531,298 @@ Begin
 End;
 
 { ============================================================
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- SymKindStr : nom textuel d un TSymKind ----------------- }
+Function SymKindStr(K : TSymKind) : TString;
+Begin
+  Case K Of
+    SK_CONST    : SymKindStr := 'CONST';
+    SK_TYPE     : SymKindStr := 'TYPE';
+    SK_VAR      : SymKindStr := 'VAR';
+    SK_PARAM    : SymKindStr := 'PARAM';
+    SK_FUNC     : SymKindStr := 'FUNC';
+    SK_PROC     : SymKindStr := 'PROC';
+    SK_FIELD    : SymKindStr := 'FIELD';
+    SK_METHOD   : SymKindStr := 'METHOD';
+    SK_PROPERTY : SymKindStr := 'PROPERTY';
+    SK_UNIT     : SymKindStr := 'UNIT';
+    SK_LABEL    : SymKindStr := 'LABEL';
+    SK_ENUMVAL  : SymKindStr := 'ENUMVAL';
+  Else
+    SymKindStr := '?';
+  End;
+End;
+
+{ ---- SymInit : initialiser la table des symboles ------------ }
+Procedure SymInit;
+Begin
+  SymCount   := 0;
+  CurScope   := 0;
+  CurScopeId := 0;
+  SymJSSeq   := 0;
+End;
+
+{ ---- SymGenJSName : generer un nom JavaScript unique -------- }
+{ Prefixe selon le type du symbole, suffixe le nom Pascal.      }
+{ Variables -> _TPV_name, fonctions -> _TPF_name, etc.          }
+Function SymGenJSName(Const AName : TString; AKind : TSymKind) : TString;
+Begin
+  Case AKind Of
+    SK_CONST   : SymGenJSName := TP_CST_PFX + AName;
+    SK_TYPE    : SymGenJSName := TP_TYPE_PFX + AName;
+    SK_VAR     : SymGenJSName := TP_VAR_PFX + AName;
+    SK_PARAM   : SymGenJSName := AName;
+    SK_FUNC    : SymGenJSName := TP_FN_PFX + AName;
+    SK_PROC    : SymGenJSName := TP_FN_PFX + AName;
+    SK_FIELD   : SymGenJSName := AName;
+    SK_METHOD  : SymGenJSName := AName;
+    SK_PROPERTY: SymGenJSName := AName;
+    SK_UNIT    : SymGenJSName := TP_UNIT_PFX + AName;
+    SK_LABEL   : SymGenJSName := '_TPL_' + AName;
+    SK_ENUMVAL : SymGenJSName := TP_CST_PFX + AName;
+  Else
+    SymGenJSName := AName;
+  End;
+End;
+
+{ ---- SymAdd : ajouter un symbole a la table ----------------- }
+{ Retourne l index du nouveau symbole, ou -1 si table pleine.   }
+Function SymAdd(Const AName : TString; AKind : TSymKind;
+                ATypeIdx : Integer) : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    CompileError('table des symboles saturee (MAX_SYM=' +
+                 IntToStr_(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+  SymTab[SymCount].Name       := AName;
+  SymTab[SymCount].JSName     := SymGenJSName(AName, AKind);
+  SymTab[SymCount].Kind       := AKind;
+  SymTab[SymCount].TypeIdx    := ATypeIdx;
+  SymTab[SymCount].Scope      := CurScope;
+  SymTab[SymCount].ScopeId    := CurScopeId;
+  SymTab[SymCount].IsPublic   := False;
+  SymTab[SymCount].IsPrivate  := False;
+  SymTab[SymCount].IsForward  := False;
+  SymTab[SymCount].IsExternal := False;
+  SymAdd := SymCount;
+  Inc(SymCount);
+End;
+
+{ ---- SymFind : chercher un symbole par nom (insensible) ----- }
+{ Parcourt la table du plus recent au plus ancien (portee        }
+{ la plus interne en premier). Retourne l index ou -1.           }
+Function SymFind(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LS : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    LS := StrLowerCase(SymTab[I].Name);
+    If LS = LN Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ---- SymFindInScope : chercher dans une portee specifique --- }
+{ Recherche un symbole par nom dans le scope donne seulement.   }
+Function SymFindInScope(Const AName : TString;
+                        AScope : Integer) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LS : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If SymTab[I].Scope = AScope Then
+    Begin
+      LS := StrLowerCase(SymTab[I].Name);
+      If LS = LN Then
+      Begin
+        SymFindInScope := I;
+        Exit;
+      End;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ---- SymEnterScope : entrer dans une portee imbriquee ------- }
+Procedure SymEnterScope;
+Begin
+  If CurScope >= MAX_SCOPE Then
+  Begin
+    CompileError('portees imbriquees max atteint (MAX_SCOPE=' +
+                 IntToStr_(MAX_SCOPE) + ')');
+    Exit;
+  End;
+  Inc(CurScope);
+  Inc(CurScopeId);
+End;
+
+{ ---- SymLeaveScope : quitter la portee courante ------------- }
+{ Les symboles de la portee quittee restent dans la table mais   }
+{ ne seront plus trouves par SymFind en priorite (portees        }
+{ plus recentes sont cherchees en premier).                      }
+Procedure SymLeaveScope;
+Begin
+  If CurScope > 0 Then
+    Dec(CurScope);
+End;
+
+{ ---- SymRegisterBuiltins : types et symboles predefinis ----- }
+{ Enregistre les types de base de Turbo Pascal dans la table     }
+{ des symboles. TypeIdx = -1 car le systeme de types (TODO 06)   }
+{ n est pas encore implemente.                                    }
+Procedure SymRegisterBuiltins;
+Begin
+  { Types entiers }
+  SymAdd('Integer',  SK_TYPE, -1);
+  SymAdd('Word',     SK_TYPE, -1);
+  SymAdd('Byte',     SK_TYPE, -1);
+  SymAdd('ShortInt', SK_TYPE, -1);
+  SymAdd('LongInt',  SK_TYPE, -1);
+  SymAdd('Comp',     SK_TYPE, -1);
+
+  { Types booleens }
+  SymAdd('Boolean',  SK_TYPE, -1);
+
+  { Types caractere }
+  SymAdd('Char',     SK_TYPE, -1);
+
+  { Types reels }
+  SymAdd('Real',     SK_TYPE, -1);
+  SymAdd('Single',   SK_TYPE, -1);
+  SymAdd('Double',   SK_TYPE, -1);
+  SymAdd('Extended', SK_TYPE, -1);
+
+  { Types chaine }
+  SymAdd('String',   SK_TYPE, -1);
+  SymAdd('PChar',    SK_TYPE, -1);
+
+  { Types pointeur }
+  SymAdd('Pointer',  SK_TYPE, -1);
+
+  { Types fichier }
+  SymAdd('Text',     SK_TYPE, -1);
+  SymAdd('File',     SK_TYPE, -1);
+
+  { Constantes predefinees }
+  SymAdd('True',         SK_CONST, -1);
+  SymAdd('False',        SK_CONST, -1);
+  SymAdd('nil',          SK_CONST, -1);
+  SymAdd('MaxInt',       SK_CONST, -1);
+  SymAdd('MaxLongInt',   SK_CONST, -1);
+  SymAdd('Pi',           SK_CONST, -1);
+
+  { Procedures/fonctions System predefinies }
+  SymAdd('WriteLn',      SK_PROC,  -1);
+  SymAdd('Write',        SK_PROC,  -1);
+  SymAdd('ReadLn',       SK_PROC,  -1);
+  SymAdd('Read',         SK_PROC,  -1);
+  SymAdd('Inc',          SK_PROC,  -1);
+  SymAdd('Dec',          SK_PROC,  -1);
+  SymAdd('Halt',         SK_PROC,  -1);
+  SymAdd('Exit',         SK_PROC,  -1);
+  SymAdd('New',          SK_PROC,  -1);
+  SymAdd('Dispose',      SK_PROC,  -1);
+  SymAdd('GetMem',       SK_PROC,  -1);
+  SymAdd('FreeMem',      SK_PROC,  -1);
+  SymAdd('FillChar',     SK_PROC,  -1);
+  SymAdd('Move',         SK_PROC,  -1);
+  SymAdd('Assign',       SK_PROC,  -1);
+  SymAdd('Reset',        SK_PROC,  -1);
+  SymAdd('Rewrite',      SK_PROC,  -1);
+  SymAdd('Close',        SK_PROC,  -1);
+  SymAdd('Append',       SK_PROC,  -1);
+  SymAdd('Str',          SK_PROC,  -1);
+  SymAdd('Val',          SK_PROC,  -1);
+  SymAdd('Delete',       SK_PROC,  -1);
+  SymAdd('Insert',       SK_PROC,  -1);
+  SymAdd('Randomize',    SK_PROC,  -1);
+  SymAdd('SetLength',    SK_PROC,  -1);
+  SymAdd('BlockRead',    SK_PROC,  -1);
+  SymAdd('BlockWrite',   SK_PROC,  -1);
+  SymAdd('Seek',         SK_PROC,  -1);
+  SymAdd('Erase',        SK_PROC,  -1);
+  SymAdd('Rename',       SK_PROC,  -1);
+  SymAdd('ClrScr',       SK_PROC,  -1);
+  SymAdd('GotoXY',       SK_PROC,  -1);
+  SymAdd('TextColor',    SK_PROC,  -1);
+  SymAdd('TextBackground', SK_PROC,  -1);
+  SymAdd('Delay',        SK_PROC,  -1);
+  SymAdd('Sound',        SK_PROC,  -1);
+  SymAdd('NoSound',      SK_PROC,  -1);
+
+  SymAdd('Ord',          SK_FUNC,  -1);
+  SymAdd('Chr',          SK_FUNC,  -1);
+  SymAdd('Abs',          SK_FUNC,  -1);
+  SymAdd('Sqr',          SK_FUNC,  -1);
+  SymAdd('Sqrt',         SK_FUNC,  -1);
+  SymAdd('Sin',          SK_FUNC,  -1);
+  SymAdd('Cos',          SK_FUNC,  -1);
+  SymAdd('ArcTan',       SK_FUNC,  -1);
+  SymAdd('Exp',          SK_FUNC,  -1);
+  SymAdd('Ln',           SK_FUNC,  -1);
+  SymAdd('Int',          SK_FUNC,  -1);
+  SymAdd('Frac',         SK_FUNC,  -1);
+  SymAdd('Round',        SK_FUNC,  -1);
+  SymAdd('Trunc',        SK_FUNC,  -1);
+  SymAdd('Succ',         SK_FUNC,  -1);
+  SymAdd('Pred',         SK_FUNC,  -1);
+  SymAdd('Odd',          SK_FUNC,  -1);
+  SymAdd('Lo',           SK_FUNC,  -1);
+  SymAdd('Hi',           SK_FUNC,  -1);
+  SymAdd('Swap',         SK_FUNC,  -1);
+  SymAdd('SizeOf',       SK_FUNC,  -1);
+  SymAdd('Length',        SK_FUNC,  -1);
+  SymAdd('Copy',         SK_FUNC,  -1);
+  SymAdd('Pos',          SK_FUNC,  -1);
+  SymAdd('Concat',       SK_FUNC,  -1);
+  SymAdd('UpCase',       SK_FUNC,  -1);
+  SymAdd('Random',       SK_FUNC,  -1);
+  SymAdd('ParamCount',   SK_FUNC,  -1);
+  SymAdd('ParamStr',     SK_FUNC,  -1);
+  SymAdd('IOResult',     SK_FUNC,  -1);
+  SymAdd('Eof',          SK_FUNC,  -1);
+  SymAdd('Eoln',         SK_FUNC,  -1);
+  SymAdd('FilePos',      SK_FUNC,  -1);
+  SymAdd('FileSize',     SK_FUNC,  -1);
+  SymAdd('Addr',         SK_FUNC,  -1);
+  SymAdd('Assigned',     SK_FUNC,  -1);
+  SymAdd('KeyPressed',   SK_FUNC,  -1);
+  SymAdd('ReadKey',      SK_FUNC,  -1);
+  SymAdd('WhereX',       SK_FUNC,  -1);
+  SymAdd('WhereY',       SK_FUNC,  -1);
+End;
+
+{ ---- SymDump : afficher le contenu de la table (debug) ------ }
+Procedure SymDump;
+Var
+  I : Integer;
+Begin
+  WriteLn('--- Table des symboles (', SymCount, ' entrees) ---');
+  For I := 0 To SymCount - 1 Do
+    WriteLn('  [', I, '] ', SymTab[I].Name, ' -> ',
+            SymTab[I].JSName, ' (', SymKindStr(SymTab[I].Kind),
+            ', scope=', SymTab[I].Scope, ')');
+  WriteLn('--- Fin de la table des symboles ---');
+End;
+
+{ ============================================================
   Run : tokenise le fichier source et teste la conversion
   ============================================================ }
 Procedure Run;
@@ -2505,6 +2834,8 @@ Begin
   GlobalInit;
   ConstInit;
   ConstRegisterBuiltins;
+  SymInit;
+  SymRegisterBuiltins;
   If Opts.Verbose Then ShowBanner;
 
   { Ouvrir le fichier source }
@@ -2598,10 +2929,13 @@ Begin
 
     WriteLn('Tokens dans le pool : ', TokenCount);
     WriteLn('Constantes predefinies : ', ConstCount);
+    WriteLn('Symboles predefinis : ', SymCount);
+
+    SymDump;
   End;
 
   WriteLn('TP2JS: compilation de ', Opts.SrcFile, ' -> ', Opts.OutFile);
-  WriteLn('TP2JS: TODO 05+ non implemente, rien a generer.');
+  WriteLn('TP2JS: TODO 06+ non implemente, rien a generer.');
   If Opts.ModuleES6 Then
     WriteLn('TP2JS: mode module ES6 actif');
   If Opts.Pretty Then
