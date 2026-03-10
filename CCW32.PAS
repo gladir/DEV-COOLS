@@ -291,7 +291,7 @@ Procedure ShowHelp;Begin
   WriteLn('CCW32 v', CCW32_VERSION, ' (', CCW32_DATE,
           ') - Compilateur C vers 80386 (Windows PE 32 bits)');
   WriteLn('CCW32 - Cette commande permet de lancer le compilateur C ',
-          'pour l''assembleur du microprocesseur 80386 (en ex‚cutable ',
+          'pour l''assembleur du microprocesseur 80386 (en exï¿½cutable ',
           'Windows 32 bits).');
   WriteLn;
   WriteLn('Syntaxe : CCW32 <source.c> [sortie] [options] ',
@@ -864,7 +864,7 @@ End;
 
 Procedure LexScanNumber;
 Var
-  N       : LongInt;
+  N       : Int64;
   Ch      : Char;
   NumStr  : TString;
   IsFloat : Boolean;
@@ -894,7 +894,7 @@ Begin
       Inc(LexColNo);
     CurToken.Kind   := TK_INTEGER;
     CurToken.Val    := NumStr;
-    CurToken.IntVal := N;
+    CurToken.IntVal := LongInt(N);
     Exit;
   End;
 
@@ -918,7 +918,7 @@ Begin
       Inc(LexColNo);
     CurToken.Kind   := TK_INTEGER;
     CurToken.Val    := NumStr;
-    CurToken.IntVal := N;
+    CurToken.IntVal := LongInt(N);
     Exit;
   End;
 
@@ -978,13 +978,13 @@ Begin
   Begin
     CurToken.Kind   := TK_FLOAT;
     CurToken.Val    := NumStr;
-    CurToken.IntVal := N;  { partie entiere tronquee }
+    CurToken.IntVal := LongInt(N);  { partie entiere tronquee }
   End
   Else
   Begin
     CurToken.Kind   := TK_INTEGER;
     CurToken.Val    := NumStr;
-    CurToken.IntVal := N;
+    CurToken.IntVal := LongInt(N);
   End;
 End;
 
