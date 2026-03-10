@@ -1,0 +1,59 @@
+<html>
+<body>
+<%
+const
+  MAX = 100;
+  PI_APPROX = 314;
+
+var
+  x, y: Integer;
+  flag: Boolean;
+  b: Byte;
+
+{ Test affectations simples }
+x := 42;
+y := MAX - x;
+
+{ Test expression complexe avec precedence }
+x := 2 + 3 * 4;
+y := (2 + 3) * 4;
+
+{ Test operateurs de comparaison }
+flag := x > y;
+flag := x = 20;
+
+{ Test operateurs logiques }
+flag := (x > 10) and (y < 100);
+flag := not flag;
+
+{ Test operateurs bit a bit }
+x := $FF and $0F;
+y := x or $F0;
+x := 1 shl 3;
+y := 16 shr 2;
+
+{ Test div et mod }
+x := 100 div 7;
+y := 100 mod 7;
+
+{ Test transtypage }
+b := Byte(x);
+x := Integer(b);
+b := Byte(256 + 10);
+
+{ Test adresse de }
+x := 42;
+
+{ Test moins unaire et plus unaire }
+x := -10;
+y := +x;
+x := -(-5);
+
+{ Test not entier }
+x := not 0;
+y := not $FF00;
+%>
+<h1>Expression Test TODO 11</h1>
+<%= x %>
+</body>
+</html>

@@ -145,6 +145,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur de langage de programmation assembleur pour les microprocesseur Z80.</td>
 		</tr>
 		<tr>
+			<td><b>AWK86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur AWK vers l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>BASIC.PAS</b></td>
 			<td>Cette commande permet de lancer l'interpréteur de langage de programmation BASIC.</td>
 		</tr>
@@ -313,6 +317,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur Jovial 73 pour l'assembleur du microprocesseur 8086.</td>
 		</tr>
 		<tr>
+			<td><b>JS86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur JavaScript pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
 			<td><b>LINK.PAS</b></td>
 			<td>Cette commande permet de lancer le fabricant de liaison.</td>
 		</tr>
@@ -369,6 +377,14 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de retourner les informations de version d'une unité Free Pascal.</td>
 		</tr>
 		<tr>
+			<td><b>PSP86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur de PSP (Pascal Server Pages) pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>PSPCW32.PAS</b></td>
+			<td>Cette commande permet de compiler du PSP (Pascal Server Pages) pour de l'assembleur du microprocesseur 80386 (en véritable exécutable Windows 32 bits de format EXE PE Windows).</td>
+		</tr>
+		<tr>
 			<td><b>QPUDEP.PAS</b></td>
 			<td>Cette commande permet d'afficher les dépendances d'un unité QPU de QuickPascal.</td>
 		</tr>
@@ -415,6 +431,14 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>TXT2INC.PAS</b></td>
 			<td>Cette commande permet de convertir un texte en chaine de caractères entre guillemet pour Pascal.</td>
+		</tr>
+		<tr>
+			<td><b>VAXPAS86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur VAX Pascal pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>VAXPCW32.PAS</b></td>
+			<td> Cette commande permet de lancer le compilateur de VAX Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 	</table>
 
