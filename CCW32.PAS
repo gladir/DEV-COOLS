@@ -297,7 +297,7 @@
               14. = += -= *= /= %= &= |= ^= <<= >>= (affectation)
               15. , (virgule)
 
-  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES
+  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES [IMPLEMENTE]
             Affectation simple : var = expr -> MOV [var], EAX
             Affectation composee += : var += expr -> ADD [var], EAX
             Affectation composee -= : var -= expr -> SUB [var], EAX
@@ -6299,9 +6299,10 @@ End;
 { ============================================================ }
 
 Var
-  EP         : Integer;    { Position curseur dans TokenPool pour expressions }
-  CurFuncIdx : Integer;    { Index de la fonction en cours de compilation     }
-  EPEnd      : Integer;    { Borne fin pour le parsage d expressions          }
+  EP              : Integer;  { Position curseur dans TokenPool pour expressions }
+  CurFuncIdx      : Integer;  { Index de la fonction en cours de compilation     }
+  EPEnd           : Integer;  { Borne fin pour le parsage d expressions          }
+  LastPrimaryName : TString;  { Dernier ident charge par ParsePrimary (TODO 12)  }
 
 { ------------------------------------------------------------ }
 { EPAtEnd : verifier si le curseur est en fin de zone           }
@@ -6594,6 +6595,8 @@ Var
   SzVal   : Integer;
   SaveEP  : Integer;
 Begin
+  LastPrimaryName := '';
+
   If EPAtEnd Then
   Begin
     EmitInstr('XOR EAX,EAX');
@@ -6640,6 +6643,7 @@ Begin
       Begin
         { Acces variable : globale, locale ou parametre }
         GenLoadVar(Name);
+        LastPrimaryName := Name; { TODO 12 : memoriser pour post-inc/dec }
       End;
     End;
 
@@ -6746,24 +6750,45 @@ Begin
   Done := False;
   While Not Done And Not EPAtEnd Do
   Begin
-    { Post-increment ++ }
+    { Post-increment ++ (TODO 12 : stockage via LastPrimaryName) }
     If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
     Begin
       Inc(EP);
-      EmitInstr('PUSH EAX');
-      EmitInstr('INC EAX');
-      { Pour stocker, il faudrait connaitre la variable - sera ameliore }
-      EmitComment('; post-increment');
-      EmitInstr('POP EAX');
+      If LastPrimaryName <> '' Then
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('INC EAX');
+        GenStoreVar(LastPrimaryName);
+        EmitInstr('POP EAX');
+      End
+      Else
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('INC EAX');
+        EmitComment('; post-increment (expression, pas de stockage)');
+        EmitInstr('POP EAX');
+      End;
+      LastPrimaryName := '';
     End
-    { Post-decrement -- }
+    { Post-decrement -- (TODO 12 : stockage via LastPrimaryName) }
     Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
     Begin
       Inc(EP);
-      EmitInstr('PUSH EAX');
-      EmitInstr('DEC EAX');
-      EmitComment('; post-decrement');
-      EmitInstr('POP EAX');
+      If LastPrimaryName <> '' Then
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('DEC EAX');
+        GenStoreVar(LastPrimaryName);
+        EmitInstr('POP EAX');
+      End
+      Else
+      Begin
+        EmitInstr('PUSH EAX');
+        EmitInstr('DEC EAX');
+        EmitComment('; post-decrement (expression, pas de stockage)');
+        EmitInstr('POP EAX');
+      End;
+      LastPrimaryName := '';
     End
     { Acces tableau [index] }
     Else If (TokenPool[EP].Kind = TK_PUNCT) And
@@ -7315,6 +7340,14 @@ Begin
   ParseExprPrec(1);
 End;
 
+{ ============================================================ }
+{ TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES               }
+{ Les affectations composees (op=) et les increments/decrements }
+{ sont geres dans ParseBody comme cas speciaux au niveau        }
+{ statement. ParsePostfix utilise LastPrimaryName pour stocker  }
+{ correctement les post-increment/decrement.                    }
+{ ============================================================ }
+
 { ------------------------------------------------------------ }
 { ParseBody : parser et emettre le code du corps d une fonction }
 { Gere les declarations, return, expression-statements, et     }
@@ -7325,6 +7358,7 @@ Procedure ParseBody(FI : Integer);
 Var
   OldFI   : Integer;
   Name    : TString;
+  Op      : TString;
   Depth   : Integer;
   TIdx    : Integer;
   SaveEP  : Integer;
@@ -7565,16 +7599,24 @@ Begin
       Continue;
     End;
 
-    { --- Expression statement : [ident = expr] | expr ; --- }
-    { Cas special : affectation simple ident = expr }
+    { --- Expression statement : affectation et operateurs (TODO 12) --- }
+
+    { Cas special : ident++ ; et ident-- ; (post-increment/decrement) }
     If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
        (TokenPool[EP + 1].Kind = TK_OP) And
-       (TokenPool[EP + 1].Val = '=') Then
+       ((TokenPool[EP + 1].Val = '++') Or (TokenPool[EP + 1].Val = '--')) And
+       ((EP + 2 >= EPEnd) Or
+        ((TokenPool[EP + 2].Kind = TK_PUNCT) And
+         (TokenPool[EP + 2].Val = ';'))) Then
     Begin
       Name := TokenPool[EP].Val;
-      Inc(EP, 2); { sauter ident et '=' }
-      ParseExpr;
+      GenLoadVar(Name);
+      If TokenPool[EP + 1].Val = '++' Then
+        EmitInstr('INC EAX')
+      Else
+        EmitInstr('DEC EAX');
       GenStoreVar(Name);
+      Inc(EP, 2);
       { Avancer au ; }
       While (EP < EPEnd) And
             Not ((TokenPool[EP].Kind = TK_PUNCT) And
@@ -7584,18 +7626,56 @@ Begin
       Continue;
     End;
 
-    { Cas special : dereferencement + affectation *ident = expr }
+    { Cas special : affectation simple et composee ident op= expr }
+    If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_OP) And
+       IsAssignOp(TokenPool[EP + 1].Val) Then
+    Begin
+      Name := TokenPool[EP].Val;
+      Op   := TokenPool[EP + 1].Val;
+      Inc(EP, 2); { sauter ident et op= }
+      ParseExpr;
+      If Op = '=' Then
+        GenStoreVar(Name)
+      Else
+        GenStoreVarCompound(Name, Op);
+      { Avancer au ; }
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = ';')) Do
+        Inc(EP);
+      If EP < EPEnd Then Inc(EP);
+      Continue;
+    End;
+
+    { Cas special : dereferencement + affectation *ident op= expr }
     If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '*') And
        (EP + 2 < EPEnd) And (TokenPool[EP + 1].Kind = TK_IDENT) And
        (TokenPool[EP + 2].Kind = TK_OP) And
-       (TokenPool[EP + 2].Val = '=') Then
+       IsAssignOp(TokenPool[EP + 2].Val) Then
     Begin
       Name := TokenPool[EP + 1].Val;
-      Inc(EP, 3); { sauter * ident = }
+      Op   := TokenPool[EP + 2].Val;
+      Inc(EP, 3); { sauter * ident op= }
       ParseExpr;
-      EmitInstr('PUSH EAX');
-      GenLoadVar(Name);
-      EmitInstr('POP DWORD PTR [EAX]');
+      If Op = '=' Then
+      Begin
+        { *ident = expr : stocker la valeur a l adresse pointee }
+        EmitInstr('PUSH EAX');
+        GenLoadVar(Name);
+        EmitInstr('POP DWORD PTR [EAX]');
+      End
+      Else
+      Begin
+        { *ident op= expr : charger la valeur pointee, appliquer op, stocker }
+        EmitInstr('MOV EBX,EAX');      { EBX = valeur droite }
+        GenLoadVar(Name);              { EAX = adresse (valeur du pointeur) }
+        EmitInstr('PUSH EAX');         { sauver adresse }
+        EmitInstr('MOV EAX,DWORD PTR [EAX]'); { EAX = valeur pointee }
+        EmitCompoundOp(Op);            { EAX = resultat de l operation }
+        EmitInstr('POP ECX');          { ECX = adresse }
+        EmitInstr('MOV DWORD PTR [ECX],EAX'); { stocker resultat }
+      End;
       { Avancer au ; }
       While (EP < EPEnd) And
             Not ((TokenPool[EP].Kind = TK_PUNCT) And

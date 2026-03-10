@@ -42,10 +42,8 @@ _CCF_internal_function:
         MOV EAX,0
         MOV DWORD PTR [_CCST_1],EAX
         MOV EAX,DWORD PTR [_CCST_1]
-        PUSH EAX
         INC EAX
-; ; post-increment
-        POP EAX
+        MOV DWORD PTR [_CCST_1],EAX
 _CCL_1:
         MOV ESP,EBP
         POP EBP
@@ -64,10 +62,8 @@ _CCF_public_function:
         MOV EAX,20
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [_CCST_2]
-        PUSH EAX
         INC EAX
-; ; post-increment
-        POP EAX
+        MOV DWORD PTR [_CCST_2],EAX
 _CCL_2:
         MOV ESP,EBP
         POP EBP

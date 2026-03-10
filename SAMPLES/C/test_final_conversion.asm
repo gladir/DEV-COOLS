@@ -59,7 +59,7 @@ _CCL_3:
         XOR EAX,EAX
         PUSH EAX
         INC EAX
-; ; post-increment
+; WARNING: variable non trouvee pour stockage: i
         POP EAX
 ; WARNING: ponctuation inattendue: }
         XOR EAX,EAX
