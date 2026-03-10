@@ -33,45 +33,50 @@ CRLF     DB 13,10,0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
-        SUB ESP,4
-;   local value = [EBP-4]
-        MOV DWORD PTR [EBP-4],100
-; WARNING: variable non trouvee: byte
-        XOR EAX,EAX
-; WARNING: variable non trouvee: word
-        XOR EAX,EAX
-; WARNING: variable non trouvee: size_type
-        XOR EAX,EAX
-        MOV EAX,100
+        SUB ESP,24
+;   local b = [EBP-4]
+        MOV DWORD PTR [EBP-4],255
+;   local w = [EBP-8]
+        MOV DWORD PTR [EBP-8],65535
+;   local s = [EBP-12]
+        MOV DWORD PTR [EBP-12],42
+;   local value = [EBP-16]
+        MOV DWORD PTR [EBP-16],100
+;   local ip = [EBP-20]
+        MOV DWORD PTR [EBP-20],0
+;   local size = [EBP-24]
+        MOV DWORD PTR [EBP-24],1024
+        MOV EAX,255
         MOV DWORD PTR [EBP-4],EAX
-; WARNING: variable non trouvee: int_pointer
-        XOR EAX,EAX
-; WARNING: variable non trouvee: big_size
-        XOR EAX,EAX
-; WARNING: variable non trouvee: b
-        XOR EAX,EAX
+        MOV EAX,65535
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,42
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,100
+        MOV DWORD PTR [EBP-16],EAX
+        LEA EAX,[EBP-16]
+        MOV DWORD PTR [EBP-20],EAX
+        MOV EAX,1024
+        MOV DWORD PTR [EBP-24],EAX
+        MOV EAX,DWORD PTR [EBP-4]
         PUSH EAX
-; WARNING: variable non trouvee: w
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-8]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX
         PUSH EAX
-; WARNING: variable non trouvee: s
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-12]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX
         PUSH EAX
-; WARNING: variable non trouvee: ip
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-20]
         MOV EAX,DWORD PTR [EAX]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX
         PUSH EAX
-; WARNING: variable non trouvee: size
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-24]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX

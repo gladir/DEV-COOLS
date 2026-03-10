@@ -1,5 +1,5 @@
 ; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
-; Genere automatiquement a partir de : SAMPLES/C/enum_test.c
+; Genere automatiquement a partir de : SAMPLES/C/test_switch_enum.c
 
 .386
 .MODEL FLAT, STDCALL
@@ -33,12 +33,35 @@ CRLF     DB 13,10,0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
-        SUB ESP,4
+        SUB ESP,8
 ;   local c = [EBP-4]
-        MOV DWORD PTR [EBP-4],0
-        MOV EAX,0
+;   local r = [EBP-8]
+        MOV EAX,1
         MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,0
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV ECX,EAX
+; switch (valeur dans ECX)
+        CMP ECX,0
+        JE _CCL_3
+        CMP ECX,1
+        JE _CCL_4
+        CMP ECX,2
+        JE _CCL_5
+        JMP _CCL_2
+_CCL_3:
+        MOV EAX,10
+        MOV DWORD PTR [EBP-8],EAX
+        JMP _CCL_2
+_CCL_4:
+        MOV EAX,20
+        MOV DWORD PTR [EBP-8],EAX
+        JMP _CCL_2
+_CCL_5:
+        MOV EAX,30
+        MOV DWORD PTR [EBP-8],EAX
+        JMP _CCL_2
+_CCL_2:
+        MOV EAX,DWORD PTR [EBP-8]
         JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP

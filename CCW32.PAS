@@ -431,7 +431,7 @@
             Pointeur vers struct : struct point *pp;
               Acces : pp->x equivalent deref pp.x
 
-  TODO 20 - ENUMERATIONS ET TYPEDEF
+  TODO 20 - ENUMERATIONS ET TYPEDEF [IMPLEMENTE]
             enum nom { VAL1, VAL2, VAL3 };
               Chaque valeur = constante entiere (0, 1, 2, ...)
               Valeurs explicites : enum { A=5, B=10, C };
@@ -5023,6 +5023,13 @@ Function ParseStructDef(Var P : Integer;
                         Const TypeName : TString;
                         IsUnion : Boolean) : Integer; Forward;
 
+{ Forward declaration pour ParseEnumDef (TODO 20) }
+Function ParseEnumDef(Var P : Integer;
+                      Const TypeName : TString) : Integer; Forward;
+
+{ Forward declaration pour ParseTypeFromTokens (TODO 20) }
+Function ParseTypeFromTokens(Var P : Integer) : Integer; Forward;
+
 Procedure ParseDataDecls;
 Var
   I         : Integer;
@@ -5089,7 +5096,69 @@ Begin
         IsExtern := True
       Else If TokenPool[I].Val = 'typedef' Then
       Begin
-        { Ignorer la declaration typedef : avancer jusqu au ; }
+        { Parser le typedef : typedef <type> <nom> ; (TODO 20) }
+        Inc(I); { sauter 'typedef' }
+        If I >= TokenCount Then Break;
+        { Sauter les qualificateurs apres typedef }
+        While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+              IsQualifier(TokenPool[I].Val) Do
+          Inc(I);
+        If I >= TokenCount Then Break;
+        { Parser le type source }
+        TypeIdx := ParseTypeFromTokens(I);
+        If TypeIdx < 0 Then TypeIdx := TypeFindByName('int');
+        { Sauter les qualificateurs apres le type }
+        While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+              IsQualifier(TokenPool[I].Val) Do
+          Inc(I);
+        { Gerer les pointeurs }
+        While (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+              (TokenPool[I].Val = '*') Do
+        Begin
+          { Creer un type pointeur }
+          TypeIdx := TypeAdd(TKP_POINTER, '', 4, 4, False, TypeIdx);
+          Inc(I);
+        End;
+        { Nom du nouveau type (alias) }
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_IDENT) Then
+        Begin
+          VarName := TokenPool[I].Val;
+          Inc(I);
+          { Enregistrer le typedef dans TypeTab }
+          { Creer un type alias dont BaseTypeIdx pointe vers le type source }
+          TypeSize := TypeSizeofIdx(TypeIdx);
+          If (TypeIdx >= 0) And (TypeIdx < TypeCount) Then
+          Begin
+            If TypeTab[TypeIdx].Kind In [TKP_STRUCT, TKP_UNION, TKP_ENUM,
+               TKP_POINTER, TKP_ARRAY, TKP_FUNC] Then
+              { Pour struct/union/enum/ptr/array/func, le type est direct }
+              SymIdx := TypeAdd(TypeTab[TypeIdx].Kind, VarName, TypeSize,
+                TypeTab[TypeIdx].Align, TypeTab[TypeIdx].IsUnsigned,
+                TypeTab[TypeIdx].BaseTypeIdx)
+            Else
+              { Pour les types de base, creer un alias via BaseTypeIdx }
+              SymIdx := TypeAdd(TypeTab[TypeIdx].Kind, VarName, TypeSize,
+                TypeTab[TypeIdx].Align, TypeTab[TypeIdx].IsUnsigned,
+                TypeIdx);
+            If SymIdx >= 0 Then
+            Begin
+              { Copier les champs pour struct/union }
+              If TypeTab[TypeIdx].Kind In [TKP_STRUCT, TKP_UNION] Then
+              Begin
+                TypeTab[SymIdx].FieldCount := TypeTab[TypeIdx].FieldCount;
+                TypeTab[SymIdx].Fields     := TypeTab[TypeIdx].Fields;
+              End;
+              { Copier EnumCount pour enum }
+              If TypeTab[TypeIdx].Kind = TKP_ENUM Then
+                TypeTab[SymIdx].EnumCount := TypeTab[TypeIdx].EnumCount;
+            End;
+          End
+          Else
+            SymIdx := TypeAdd(TKP_INT, VarName, 4, 4, False, TypeIdx);
+          { Enregistrer dans SymTab aussi }
+          SymAdd(VarName, SC_TYPEDEF, TypeIdx);
+        End;
+        { Avancer au ; }
         While (I < TokenCount) And
               Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
           Inc(I);
@@ -5118,7 +5187,12 @@ Begin
 
     { --- Verifier si c est un type de base --- }
     If Not ((TokenPool[I].Kind = TK_KEYWORD) And
-            IsTypeSpecifier(TokenPool[I].Val)) Then
+            IsTypeSpecifier(TokenPool[I].Val)) And
+       Not ((TokenPool[I].Kind = TK_KEYWORD) And
+            ((TokenPool[I].Val = 'struct') Or (TokenPool[I].Val = 'union') Or
+             (TokenPool[I].Val = 'enum'))) And
+       Not ((TokenPool[I].Kind = TK_IDENT) And
+            (TypeFindByName(TokenPool[I].Val) >= 0)) Then
     Begin
       { Pas un type connu : peut etre un typedef ou autre -> avancer }
       { Chercher le prochain ';' ou '{' au niveau 0 }
@@ -5158,17 +5232,8 @@ Begin
       Begin
         If (TypeName = 'enum') Or (Copy(TypeName, 1, 5) = 'enum ') Then
         Begin
-          { Enum : avancer au-dela de la definition }
-          Inc(Depth);
-          Inc(I);
-          While (I < TokenCount) And (Depth > 0) Do
-          Begin
-            If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
-              Inc(Depth)
-            Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '}') Then
-              Dec(Depth);
-            Inc(I);
-          End;
+          { Enum : parser la definition avec ParseEnumDef (TODO 20) }
+          TypeIdx := ParseEnumDef(I, TypeName);
           If I >= TokenCount Then Break;
         End
         Else
@@ -5632,19 +5697,13 @@ Begin
       End
       Else
       Begin
-        { Enum : sauter le bloc }
-        TIdx := 1;
-        Inc(P);
-        While (P < TokenCount) And (TIdx > 0) Do
+        { Enum : parser la definition avec ParseEnumDef (TODO 20) }
+        TIdx := ParseEnumDef(P, TName);
+        If TIdx < 0 Then
         Begin
-          If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '{') Then
-            Inc(TIdx)
-          Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '}') Then
-            Dec(TIdx);
-          Inc(P);
+          TIdx := TypeFindByName(TName);
+          If TIdx < 0 Then TIdx := TypeFindByName('int');
         End;
-        TIdx := TypeFindByName(TName);
-        If TIdx < 0 Then TIdx := TypeFindByName('int');
         ParseTypeFromTokens := TIdx;
         Exit;
       End;
@@ -5938,9 +5997,130 @@ Begin
     End;
 End;
 
+{ ============================================================ }
+{ TODO 20 - ENUMERATIONS ET TYPEDEF                            }
+{ ParseEnumDef                                                  }
+{ ============================================================ }
+
 { ------------------------------------------------------------ }
-{ ParseFuncDecls : parser les declarations/definitions de       }
-{ fonctions au niveau global du fichier                         }
+{ ParseEnumDef : parser la definition d une enumeration         }
+{ P pointe sur l accolade d ouverture '{'.                     }
+{ TypeName est le nom du type (ex: 'enum color').              }
+{ Enregistre chaque valeur comme SC_ENUM_VAL dans SymTab.      }
+{ Retourne l index dans TypeTab ou -1 en cas d erreur.         }
+{ ------------------------------------------------------------ }
+
+Function ParseEnumDef(Var P : Integer;
+                      Const TypeName : TString) : Integer;
+Var
+  TIdx     : Integer;
+  CurVal   : LongInt;
+  ValName  : TString;
+  SI       : Integer;
+  ECount   : Integer;
+Begin
+  ParseEnumDef := -1;
+  If (P >= TokenCount) Or
+     Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '{')) Then
+    Exit;
+
+  { Verifier si le type existe deja }
+  TIdx := TypeFindByName(TypeName);
+  If TIdx < 0 Then
+  Begin
+    { Creer le type enum : taille 4 octets (DWORD 32 bits) }
+    TIdx := TypeAdd(TKP_ENUM, TypeName, 4, 4, False, -1);
+    If TIdx < 0 Then Exit;
+  End
+  Else
+  Begin
+    TypeTab[TIdx].Kind := TKP_ENUM;
+    TypeTab[TIdx].Size := 4;
+  End;
+
+  Inc(P); { sauter le '{' }
+
+  CurVal := 0;
+  ECount := 0;
+
+  { Parser les valeurs : IDENT [= expr], IDENT [= expr], ... }
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '}')) Do
+  Begin
+    { Sauter les virgules }
+    If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    { Attendre un identifiant }
+    If TokenPool[P].Kind <> TK_IDENT Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    ValName := TokenPool[P].Val;
+    Inc(P);
+
+    { Valeur explicite ? IDENT = constante }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '=') Then
+    Begin
+      Inc(P); { sauter le '=' }
+      { Evaluer l expression constante }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+      Begin
+        CurVal := TokenPool[P].IntVal;
+        Inc(P);
+      End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_CHAR) Then
+      Begin
+        CurVal := TokenPool[P].IntVal;
+        Inc(P);
+      End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+              (TokenPool[P].Val = '-') Then
+      Begin
+        { Nombre negatif }
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+        Begin
+          CurVal := -TokenPool[P].IntVal;
+          Inc(P);
+        End;
+      End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        { Reference a une autre valeur enum ? }
+        SI := SymFind(TokenPool[P].Val);
+        If (SI >= 0) And (SymTab[SI].Cat = SC_ENUM_VAL) Then
+          CurVal := SymTab[SI].ImmVal
+        Else
+          CurVal := 0;
+        Inc(P);
+      End;
+    End;
+
+    { Enregistrer la valeur dans SymTab }
+    SI := SymAdd(ValName, SC_ENUM_VAL, TIdx);
+    If SI >= 0 Then
+      SymTab[SI].ImmVal := CurVal;
+
+    Inc(ECount);
+    Inc(CurVal); { auto-increment pour la prochaine valeur }
+  End;
+
+  (* Sauter le accolade fermante *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '}') Then
+    Inc(P);
+
+  TypeTab[TIdx].EnumCount := ECount;
+  ParseEnumDef := TIdx;
+End;
+
 { ------------------------------------------------------------ }
 
 Procedure ParseFuncDecls;
@@ -6772,6 +6952,12 @@ Begin
   SI := SymFind(Name);
   If SI >= 0 Then
   Begin
+    { TODO 20 : si c est une constante enum, charger la valeur immediate }
+    If SymTab[SI].Cat = SC_ENUM_VAL Then
+    Begin
+      EmitInstr('MOV EAX,' + IntToStr_(SymTab[SI].ImmVal));
+      Exit;
+    End;
     { TODO 19 : si le type est struct/union, charger l adresse }
     TI := SymTab[SI].TypeIdx;
     If (TI >= 0) And (TI < TypeCount) And
@@ -8437,6 +8623,7 @@ Var
   ScanEP     : Integer;
   Depth      : Integer;
   I          : Integer;
+  K          : Integer;
   CaseVal    : LongInt;
 Begin
   LblEnd     := LabelGen;
@@ -8512,6 +8699,14 @@ Begin
           Begin
             CaseVal := -TokenPool[ScanEP + 1].IntVal;
             Inc(ScanEP, 2);
+          End
+          Else If (TokenPool[ScanEP].Kind = TK_IDENT) Then
+          Begin
+            { Constante enum ? (TODO 20) }
+            K := SymFind(TokenPool[ScanEP].Val);
+            If (K >= 0) And (SymTab[K].Cat = SC_ENUM_VAL) Then
+              CaseVal := SymTab[K].ImmVal;
+            Inc(ScanEP);
           End
           Else
             Inc(ScanEP);
@@ -8703,7 +8898,9 @@ Begin
       ((TokenPool[EP].Kind = TK_KEYWORD) And
        ((TokenPool[EP].Val = 'struct') Or
         (TokenPool[EP].Val = 'union') Or
-        (TokenPool[EP].Val = 'enum')))) Then
+        (TokenPool[EP].Val = 'enum'))) Or
+      ((TokenPool[EP].Kind = TK_IDENT) And
+       (TypeFindByName(TokenPool[EP].Val) >= 0))) Then
   Begin
     TIdx := ParseTypeFromTokens(EP);
     If TIdx >= 0 Then

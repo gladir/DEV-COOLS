@@ -25,6 +25,8 @@ BYTESWR  DD 0
 BYTESRD  DD 0
 CRLF     DB 13,10,0
 
+_CCV_global_long  DD 123456
+_CCV_global_ulong  DD 987654
 
 ; --- Segment de code ---
 .CODE
@@ -61,24 +63,21 @@ _CCF_main:
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-12]
         MOV DWORD PTR [EBP-20],EAX
-; WARNING: variable non trouvee: global_long
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [_CCV_global_long]
         PUSH EAX
         MOV EAX,DWORD PTR [EBP-4]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [EBP-24],EAX
-; WARNING: variable non trouvee: global_long
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [_CCV_global_long]
         PUSH EAX
         MOV EAX,DWORD PTR [EBP-4]
         MOV EBX,EAX
         POP EAX
         SUB EAX,EBX
         MOV DWORD PTR [EBP-28],EAX
-; WARNING: variable non trouvee: global_long
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [_CCV_global_long]
         PUSH EAX
         MOV EAX,2
         MOV EBX,EAX

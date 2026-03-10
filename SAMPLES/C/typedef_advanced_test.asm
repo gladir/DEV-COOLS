@@ -26,7 +26,6 @@ BYTESRD  DD 0
 CRLF     DB 13,10,0
 
 _CCK_1  DB 'test',0
-_CCV_y  DD 0
 
 ; --- Segment de code ---
 .CODE
@@ -35,33 +34,32 @@ _CCV_y  DD 0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
-        SUB ESP,4
-;   local value = [EBP-4]
-        MOV DWORD PTR [EBP-4],100
-; WARNING: variable non trouvee: int_ptr
-        XOR EAX,EAX
-; WARNING: variable non trouvee: string
-        XOR EAX,EAX
-; WARNING: variable non trouvee: point_t
-        XOR EAX,EAX
+        SUB ESP,20
+;   local ptr = [EBP-4]
+;   local name = [EBP-8]
+        MOV DWORD PTR [EBP-8],0
+;   local origin = [EBP-16]
+        MOV DWORD PTR [EBP-16],0
+;   local value = [EBP-20]
+        MOV DWORD PTR [EBP-20],100
+        MOV EAX,OFFSET _CCK_1
+        MOV DWORD PTR [EBP-8],EAX
         MOV EAX,100
+        MOV DWORD PTR [EBP-20],EAX
+        LEA EAX,[EBP-20]
         MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-4]
-; WARNING: variable non trouvee pour stockage: ptr
-; WARNING: variable non trouvee: ptr
-        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-4]
         MOV EAX,DWORD PTR [EAX]
         PUSH EAX
-; WARNING: variable non trouvee: origin
-        XOR EAX,EAX
-; ; WARNING: champ non trouve: .x
+        LEA EAX,[EBP-16]
+        MOV EAX,DWORD PTR [EAX]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX
         PUSH EAX
-; WARNING: variable non trouvee: origin
-        XOR EAX,EAX
-; ; WARNING: champ non trouve: .y
+        LEA EAX,[EBP-16]
+        ADD EAX,4
+        MOV EAX,DWORD PTR [EAX]
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX
