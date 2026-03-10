@@ -6355,14 +6355,14 @@ Begin
     { Obtenir les handles standard }
     EmitInstr('PUSH -11');
     EmitInstr('CALL _GetStdHandle@4');
-    EmitInstr('MOV DWORD PTR [_CCV_hstdout],EAX');
+    EmitInstr('MOV DWORD PTR [HSTDOUT],EAX');
 
     EmitInstr('PUSH -10');
     EmitInstr('CALL _GetStdHandle@4');
-    EmitInstr('MOV DWORD PTR [_CCV_hstdin],EAX');
+    EmitInstr('MOV DWORD PTR [HSTDIN],EAX');
 
     EmitInstr('CALL _GetProcessHeap@0');
-    EmitInstr('MOV DWORD PTR [_CCV_hheap],EAX');
+    EmitInstr('MOV DWORD PTR [HHEAP],EAX');
 
     { Appeler main() }
     EmitInstr('CALL ' + CC_FUNC_PFX + 'main');
