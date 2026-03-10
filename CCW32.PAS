@@ -136,7 +136,7 @@
             Constantes entieres : enum et #define
             Expressions constantes : sizeof, alignof, ternaire const
 
-  TODO 05 - TABLE DES SYMBOLES
+  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
             TSymCat : SC_VAR, SC_PARAM, SC_FUNC, SC_TYPE,
               SC_FIELD, SC_ENUM_VAL, SC_LABEL, SC_STATIC,
               SC_EXTERNAL, SC_TYPEDEF, SC_GLOBAL
@@ -3037,6 +3037,10 @@ Const
   CC_FUNC_PFX = '_CCF_';   { functions                                }
   CC_LBL_PFX  = '_CCL_';   { labels internes                          }
   CC_RT_PFX   = '_CCRT_';  { runtime routines                         }
+  CC_ARR_PFX  = '_CCA_';   { arrays                                   }
+  CC_STR_PFX2 = '_CCS_';   { structs                                  }
+  CC_UNI_PFX  = '_CCU_';   { unions                                   }
+  CC_ENM_PFX  = '_CCE_';   { enums                                    }
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -3782,9 +3786,355 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 05 - TABLE DES SYMBOLES                                 }
+{ ============================================================ }
+
+Const
+  MAX_SYM   = {$IFDEF FPC}2048{$ELSE}100{$ENDIF};
+  MAX_SCOPE = 64;   { profondeur max de scopes imbriques          }
+
+Type
+  TSymCat = (
+    SC_VAR,         { variable locale ou globale                   }
+    SC_PARAM,       { parametre de fonction                        }
+    SC_FUNC,        { fonction                                     }
+    SC_TYPE,        { type defini (typedef, struct tag, enum tag)   }
+    SC_FIELD,       { champ de struct/union                        }
+    SC_ENUM_VAL,    { valeur d enumeration                         }
+    SC_LABEL,       { label (goto)                                 }
+    SC_STATIC,      { variable static locale                       }
+    SC_EXTERNAL,    { declaration extern                            }
+    SC_TYPEDEF,     { alias de type (typedef)                      }
+    SC_GLOBAL       { variable globale explicitement exportee       }
+  );
+
+  TSymRec = Record
+    Name        : TString;     { nom original (minuscules)              }
+    MangledName : TString;     { nom mangled pour emission ASM          }
+    Cat         : TSymCat;     { categorie du symbole                   }
+    TypeIdx     : Integer;     { index du type (pour future TODO 06)    }
+    Offset      : Integer;     { offset stack ou data segment           }
+    ScopeLevel  : Integer;     { niveau de scope (0 = global)           }
+    ScopeId     : Integer;     { id unique du scope                     }
+    IsGlobal    : Boolean;     { visible globalement ?                  }
+    IsExternal  : Boolean;     { declare extern ?                       }
+    IsStatic    : Boolean;     { stockage statique ?                    }
+    ImmVal      : LongInt;     { valeur immediate (enum, const)         }
+    ParamCount  : Integer;     { nombre de parametres (fonctions)       }
+  End;
+
+Var
+  { Table des symboles }
+  SymTab      : Array[0..MAX_SYM - 1] Of TSymRec;
+  SymCount    : Integer;
+
+  { Gestion des portees }
+  CurScopeLevel : Integer;   { niveau de scope courant (0 = global)    }
+  CurScopeId    : Integer;   { id du scope courant                     }
+  ScopeIdSeq    : Integer;   { sequence pour generer des ids uniques    }
+
+{ ------------------------------------------------------------ }
+{ SymInit : initialiser la table des symboles                  }
+{ ------------------------------------------------------------ }
+
+Procedure SymRegisterBuiltins; Forward;
+
+Procedure SymInit;
+Var I : Integer;
+Begin
+  SymCount      := 0;
+  CurScopeLevel := 0;
+  CurScopeId    := 0;
+  ScopeIdSeq    := 0;
+  For I := 0 To MAX_SYM - 1 Do
+  Begin
+    SymTab[I].Name        := '';
+    SymTab[I].MangledName := '';
+    SymTab[I].Cat         := SC_VAR;
+    SymTab[I].TypeIdx     := -1;
+    SymTab[I].Offset      := 0;
+    SymTab[I].ScopeLevel  := 0;
+    SymTab[I].ScopeId     := 0;
+    SymTab[I].IsGlobal    := False;
+    SymTab[I].IsExternal  := False;
+    SymTab[I].IsStatic    := False;
+    SymTab[I].ImmVal      := 0;
+    SymTab[I].ParamCount  := 0;
+  End;
+  SymRegisterBuiltins;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymMangle : generer un nom mangled pour un symbole            }
+{ selon sa categorie                                           }
+{ ------------------------------------------------------------ }
+
+Function SymMangle(Const Name : TString; Cat : TSymCat) : TString;
+Begin
+  Case Cat Of
+    SC_VAR      : SymMangle := CC_VAR_PFX + Name;
+    SC_PARAM    : SymMangle := CC_VAR_PFX + Name;
+    SC_FUNC     : SymMangle := CC_FUNC_PFX + Name;
+    SC_TYPE     : SymMangle := Name;
+    SC_FIELD    : SymMangle := Name;
+    SC_ENUM_VAL : SymMangle := CC_ENM_PFX + Name;
+    SC_LABEL    : SymMangle := CC_LBL_PFX + Name;
+    SC_STATIC   : SymMangle := CC_VAR_PFX + Name;
+    SC_EXTERNAL : SymMangle := '_' + Name;
+    SC_TYPEDEF  : SymMangle := Name;
+    SC_GLOBAL   : SymMangle := '_' + Name;
+  Else
+    SymMangle := CC_VAR_PFX + Name;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFindInScope : chercher un symbole dans un scope precis    }
+{ ------------------------------------------------------------ }
+
+Function SymFindInScope(Const Name : TString;
+                        Level : Integer) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel = Level) And
+       ((Level = 0) Or (SymTab[I].ScopeId = CurScopeId)) Then
+    Begin
+      SymFindInScope := I;
+      Exit;
+    End;
+  End;
+  SymFindInScope := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymFind : chercher un symbole du scope courant vers global   }
+{ ------------------------------------------------------------ }
+
+Function SymFind(Const Name : TString) : Integer;
+Var
+  I  : Integer;
+  Lw : TString;
+Begin
+  Lw := StrLowerCase(Name);
+  For I := SymCount - 1 DownTo 0 Do
+  Begin
+    If (SymTab[I].Name = Lw) And
+       (SymTab[I].ScopeLevel <= CurScopeLevel) Then
+    Begin
+      SymFind := I;
+      Exit;
+    End;
+  End;
+  SymFind := -1;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymAdd : ajouter un symbole dans la table                    }
+{ Retourne l index du symbole ajoute, ou -1 si erreur          }
+{ ------------------------------------------------------------ }
+
+Function SymAdd(Const Name : TString; Cat : TSymCat;
+                TIdx : Integer) : Integer;
+Var
+  Lw  : TString;
+  Dup : Integer;
+Begin
+  If SymCount >= MAX_SYM Then
+  Begin
+    WarnMsg('table des symboles pleine (MAX_SYM=' +
+      IntToStr_(MAX_SYM) + ')');
+    SymAdd := -1;
+    Exit;
+  End;
+
+  Lw := StrLowerCase(Name);
+
+  { Verifier doublon dans le scope courant }
+  Dup := SymFindInScope(Lw, CurScopeLevel);
+  If Dup >= 0 Then
+  Begin
+    { Permettre la redefinition d un extern par une definition }
+    If (SymTab[Dup].Cat = SC_EXTERNAL) And
+       (Cat In [SC_FUNC, SC_VAR, SC_GLOBAL]) Then
+    Begin
+      SymTab[Dup].Cat       := Cat;
+      SymTab[Dup].TypeIdx   := TIdx;
+      SymTab[Dup].IsExternal := False;
+      SymAdd := Dup;
+      Exit;
+    End
+    { Permettre que func/var masque un type pre-declare }
+    Else If (SymTab[Dup].Cat = SC_TYPE) And
+            (Cat In [SC_FUNC, SC_VAR, SC_GLOBAL]) Then
+    Begin
+      { On laisse passer, le nouveau symbole sera ajoute }
+    End
+    Else
+    Begin
+      WarnMsg('symbole deja defini dans ce scope: ' + Lw);
+      SymAdd := Dup;
+      Exit;
+    End;
+  End;
+
+  { Ajouter le symbole }
+  SymTab[SymCount].Name        := Lw;
+  SymTab[SymCount].MangledName := SymMangle(Lw, Cat);
+  SymTab[SymCount].Cat         := Cat;
+  SymTab[SymCount].TypeIdx     := TIdx;
+  SymTab[SymCount].Offset      := 0;
+  SymTab[SymCount].ScopeLevel  := CurScopeLevel;
+  SymTab[SymCount].ScopeId     := CurScopeId;
+  SymTab[SymCount].IsGlobal    := (CurScopeLevel = 0);
+  SymTab[SymCount].IsExternal  := (Cat = SC_EXTERNAL);
+  SymTab[SymCount].IsStatic    := (Cat = SC_STATIC);
+  SymTab[SymCount].ImmVal      := 0;
+  SymTab[SymCount].ParamCount  := 0;
+
+  SymAdd := SymCount;
+  Inc(SymCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ SymEnterScope / SymLeaveScope : gestion des portees           }
+{ ------------------------------------------------------------ }
+
+Procedure SymEnterScope;
+Begin
+  If CurScopeLevel >= MAX_SCOPE Then
+  Begin
+    WarnMsg('profondeur de scope maximale atteinte');
+    Exit;
+  End;
+  Inc(CurScopeLevel);
+  Inc(ScopeIdSeq);
+  CurScopeId := ScopeIdSeq;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_ENTER: level=', CurScopeLevel,
+            ' id=', CurScopeId);
+End;
+
+Procedure SymLeaveScope;
+Begin
+  If CurScopeLevel <= 0 Then
+  Begin
+    WarnMsg('tentative de quitter le scope global');
+    Exit;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('  SCOPE_LEAVE: level=', CurScopeLevel);
+  Dec(CurScopeLevel);
+  If CurScopeLevel = 0 Then
+    CurScopeId := 0
+  Else
+    CurScopeId := CurScopeLevel;
+End;
+
+{ ------------------------------------------------------------ }
+{ SymRegisterBuiltins : pre-enregistrer les fonctions standard }
+{ C en tant que built-in dans la table des symboles            }
+{ Le compilateur les reconnait automatiquement sans qu elles   }
+{ soient declarees explicitement dans le code source.          }
+{ ------------------------------------------------------------ }
+
+Procedure SymRegisterBuiltins;
+Var Idx : Integer;
+
+  Procedure RegFunc(Const Name : TString);
+  Var R : Integer;
+  Begin
+    R := SymAdd(Name, SC_FUNC, -1);
+    If R >= 0 Then
+    Begin
+      SymTab[R].MangledName := '_' + Name;
+      SymTab[R].IsExternal  := True;
+    End;
+  End;
+
+Begin
+  { stdio.h }
+  RegFunc('clearerr'); RegFunc('fclose');  RegFunc('feof');
+  RegFunc('ferror');   RegFunc('fflush');  RegFunc('fgetc');
+  RegFunc('fgetpos');  RegFunc('fgets');   RegFunc('fopen');
+  RegFunc('fprintf');  RegFunc('fputc');   RegFunc('fputs');
+  RegFunc('fread');    RegFunc('freopen'); RegFunc('fscanf');
+  RegFunc('fseek');    RegFunc('fsetpos'); RegFunc('ftell');
+  RegFunc('fwrite');   RegFunc('getc');    RegFunc('getchar');
+  RegFunc('gets');     RegFunc('perror');  RegFunc('printf');
+  RegFunc('putc');     RegFunc('putchar'); RegFunc('puts');
+  RegFunc('remove');   RegFunc('rename');  RegFunc('rewind');
+  RegFunc('scanf');    RegFunc('setbuf');  RegFunc('setvbuf');
+  RegFunc('sprintf');  RegFunc('sscanf');  RegFunc('tmpfile');
+  RegFunc('tmpnam');   RegFunc('ungetc');  RegFunc('vfprintf');
+  RegFunc('vprintf');  RegFunc('vsprintf');
+
+  { stdlib.h }
+  RegFunc('abort');    RegFunc('abs');     RegFunc('atexit');
+  RegFunc('atof');     RegFunc('atoi');    RegFunc('atol');
+  RegFunc('bsearch');  RegFunc('calloc');  RegFunc('div');
+  RegFunc('exit');     RegFunc('free');    RegFunc('getenv');
+  RegFunc('labs');     RegFunc('ldiv');    RegFunc('malloc');
+  RegFunc('qsort');    RegFunc('rand');    RegFunc('realloc');
+  RegFunc('srand');    RegFunc('strtod');  RegFunc('strtol');
+  RegFunc('strtoul');  RegFunc('system');
+
+  { string.h }
+  RegFunc('memchr');   RegFunc('memcmp');  RegFunc('memcpy');
+  RegFunc('memmove');  RegFunc('memset');  RegFunc('strcat');
+  RegFunc('strchr');   RegFunc('strcmp');   RegFunc('strcpy');
+  RegFunc('strcspn');  RegFunc('strerror');RegFunc('strlen');
+  RegFunc('strncat');  RegFunc('strncmp'); RegFunc('strncpy');
+  RegFunc('strpbrk');  RegFunc('strrchr'); RegFunc('strspn');
+  RegFunc('strstr');   RegFunc('strtok');
+
+  { math.h }
+  RegFunc('acos');     RegFunc('asin');    RegFunc('atan');
+  RegFunc('atan2');    RegFunc('ceil');    RegFunc('cos');
+  RegFunc('cosh');     RegFunc('exp');     RegFunc('fabs');
+  RegFunc('floor');    RegFunc('fmod');    RegFunc('frexp');
+  RegFunc('ldexp');    RegFunc('log');     RegFunc('log10');
+  RegFunc('modf');     RegFunc('pow');     RegFunc('sin');
+  RegFunc('sinh');     RegFunc('sqrt');    RegFunc('tan');
+  RegFunc('tanh');
+
+  { time.h }
+  RegFunc('asctime');  RegFunc('clock');   RegFunc('ctime');
+  RegFunc('difftime'); RegFunc('gmtime');  RegFunc('localtime');
+  RegFunc('mktime');   RegFunc('strftime');RegFunc('time');
+
+  { ctype.h }
+  RegFunc('isalnum');  RegFunc('isalpha'); RegFunc('iscntrl');
+  RegFunc('isdigit');  RegFunc('isgraph'); RegFunc('islower');
+  RegFunc('isprint');  RegFunc('ispunct'); RegFunc('isspace');
+  RegFunc('isupper');  RegFunc('isxdigit');RegFunc('tolower');
+  RegFunc('toupper');
+
+  { signal.h }
+  RegFunc('raise');    RegFunc('signal');
+
+  { setjmp.h }
+  RegFunc('longjmp');  RegFunc('setjmp');
+
+  { assert.h }
+  RegFunc('assert');
+
+  { stdarg.h }
+  RegFunc('va_start'); RegFunc('va_arg');  RegFunc('va_end');
+
+  Idx := 0;
+  Idx := Idx; { eviter avertissement variable non utilisee }
+End;
+
 { ------------------------------------------------------------ }
 { Run : ouvre le fichier source, lexe et affiche les tokens     }
-{ avec support du preprocesseur et des litteraux               }
+{ avec support du preprocesseur, des litteraux et symboles     }
 { ------------------------------------------------------------ }
 
 Procedure Run;
@@ -3801,9 +4151,10 @@ Begin
   LexOpened := True;
   CurFileName := Opts.SrcFile;
 
-  { Initialiser le pool de donnees et le pool de tokens }
+  { Initialiser le pool de donnees, le pool de tokens et la table des symboles }
   DataInit;
   TokenPoolInit;
+  SymInit;
 
   { Initialiser le preprocesseur et le lexeur }
   PPInit;
@@ -3833,7 +4184,7 @@ Begin
   { Afficher le resultat }
   WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
     MacroCount, ' macros, ', TokenCount, ' tokens, ',
-    DataCount, ' data)');
+    DataCount, ' data, ', SymCount, ' symboles)');
 End;
 
 { ------------------------------------------------------------ }
