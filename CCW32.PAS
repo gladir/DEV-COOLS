@@ -5097,6 +5097,21 @@ Procedure ParsePutsCall; Forward;
 Procedure ParsePutcharCall; Forward;
 Procedure ParseGetcharCall; Forward;
 
+{ Forward declarations pour les fonctions C standard (runtime) }
+Procedure ParseMallocCall; Forward;
+Procedure ParseFreeCall; Forward;
+Procedure ParseCallocCall; Forward;
+Procedure ParseReallocCall; Forward;
+Procedure ParseStrlenCall; Forward;
+Procedure ParseStrcmpCall; Forward;
+Procedure ParseStrcpyCall; Forward;
+Procedure ParseStrcatCall; Forward;
+Procedure ParseMemcpyCall; Forward;
+Procedure ParseMemsetCall; Forward;
+Procedure ParseAtoiCall; Forward;
+Procedure ParseAbsCall; Forward;
+Procedure ParseExitCall; Forward;
+
 Procedure ParseDataDecls;
 Var
   I         : Integer;
@@ -7701,6 +7716,249 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ Implementations des fonctions C standard routees vers le     }
+{ runtime interne CCW32 (_CCRT_*)                              }
+{ ------------------------------------------------------------ }
+
+Procedure ParseMallocCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('malloc (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 1 Then EvalArg(ArgStart[0], ArgEndPos[0]);
+  EmitInstr('CALL _CCRT_MALLOC');
+End;
+
+Procedure ParseFreeCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('free (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 1 Then EvalArg(ArgStart[0], ArgEndPos[0]);
+  EmitInstr('CALL _CCRT_FREE');
+End;
+
+Procedure ParseCallocCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('calloc (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  { calloc(count, size) : allouer count*size octets mis a zero }
+  If ArgCount >= 2 Then
+  Begin
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('PUSH EAX');
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('POP ECX');
+    EmitInstr('IMUL EAX,ECX');
+  End
+  Else If ArgCount >= 1 Then
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+  EmitInstr('CALL _CCRT_MALLOC');
+End;
+
+Procedure ParseReallocCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('realloc (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  { realloc(ptr, size) : liberer ancien, allouer nouveau, copier }
+  If ArgCount >= 2 Then
+  Begin
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('PUSH EAX');         { sauvegarder size }
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('PUSH EAX');         { sauvegarder ptr }
+    { Allouer nouveau bloc }
+    EmitInstr('MOV EAX,[ESP+4]');  { size }
+    EmitInstr('CALL _CCRT_MALLOC');
+    EmitInstr('MOV EDI,EAX');      { EDI = nouveau ptr }
+    { Copier ancien contenu }
+    EmitInstr('POP ESI');          { ESI = ancien ptr }
+    EmitInstr('POP ECX');          { ECX = size }
+    EmitInstr('PUSH EDI');
+    EmitInstr('PUSH ECX');
+    EmitInstr('CALL _CCRT_MEMCPY');
+    EmitInstr('POP ECX');
+    EmitInstr('POP EDI');
+    { Liberer ancien bloc }
+    EmitInstr('MOV EAX,ESI');
+    EmitInstr('CALL _CCRT_FREE');
+    EmitInstr('MOV EAX,EDI');      { retourner nouveau ptr }
+  End
+  Else If ArgCount >= 1 Then
+  Begin
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('CALL _CCRT_MALLOC');
+  End;
+End;
+
+Procedure ParseStrlenCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('strlen (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 1 Then EvalArg(ArgStart[0], ArgEndPos[0]);
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('CALL _CCRT_STRLEN');
+End;
+
+Procedure ParseStrcmpCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+    LblBelow, LblEnd : TString;
+Begin
+  EmitComment('strcmp (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 2 Then
+  Begin
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('MOV EDI,EAX');
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('MOV ESI,EAX');
+  End;
+  EmitInstr('CALL _CCRT_STRCMP');
+  { Convertir les drapeaux en valeur de retour }
+  LblBelow := LabelGen;
+  LblEnd := LabelGen;
+  EmitInstr('MOV EAX,0');
+  EmitInstr('JE ' + LblEnd);
+  EmitInstr('JB ' + LblBelow);
+  EmitInstr('MOV EAX,1');
+  EmitInstr('JMP ' + LblEnd);
+  EmitLabel(LblBelow);
+  EmitInstr('MOV EAX,-1');
+  EmitLabel(LblEnd);
+End;
+
+Procedure ParseStrcpyCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('strcpy (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 2 Then
+  Begin
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('MOV ESI,EAX');
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('MOV EDI,EAX');
+    EmitInstr('PUSH EAX');
+  End;
+  EmitInstr('CALL _CCRT_STRCPY');
+  If ArgCount >= 2 Then
+    EmitInstr('POP EAX');
+End;
+
+Procedure ParseStrcatCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('strcat (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 2 Then
+  Begin
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('MOV EDI,EAX');
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('MOV ESI,EAX');
+  End;
+  EmitInstr('CALL _CCRT_STRCAT');
+End;
+
+Procedure ParseMemcpyCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('memcpy (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 3 Then
+  Begin
+    EvalArg(ArgStart[2], ArgEndPos[2]);
+    EmitInstr('MOV ECX,EAX');
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('MOV ESI,EAX');
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('MOV EDI,EAX');
+  End;
+  EmitInstr('CALL _CCRT_MEMCPY');
+End;
+
+Procedure ParseMemsetCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('memset (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 3 Then
+  Begin
+    EvalArg(ArgStart[2], ArgEndPos[2]);
+    EmitInstr('MOV ECX,EAX');
+    EvalArg(ArgStart[1], ArgEndPos[1]);
+    EmitInstr('PUSH EAX');
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+    EmitInstr('MOV EDI,EAX');
+    EmitInstr('POP EAX');
+  End;
+  EmitInstr('CALL _CCRT_MEMSET');
+End;
+
+Procedure ParseAtoiCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('atoi (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 1 Then EvalArg(ArgStart[0], ArgEndPos[0]);
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('CALL _CCRT_STRTONUM');
+End;
+
+Procedure ParseAbsCall;
+Var LblEnd : TString;
+    ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('abs (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 1 Then EvalArg(ArgStart[0], ArgEndPos[0]);
+  LblEnd := LabelGen;
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNS ' + LblEnd);
+  EmitInstr('NEG EAX');
+  EmitLabel(LblEnd);
+End;
+
+Procedure ParseExitCall;
+Var ArgCount : Integer;
+    ArgStart : Array[0..MAX_PARAMS - 1] Of Integer;
+    ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('exit (runtime)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+  If ArgCount >= 1 Then EvalArg(ArgStart[0], ArgEndPos[0]);
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _ExitProcess@4');
+End;
+
+{ ------------------------------------------------------------ }
 { ParsePrimary : parser une expression primaire                 }
 { Litteral entier, chaine, char, ident, appel, parentheses,    }
 { sizeof, cast.                                                }
@@ -7771,6 +8029,33 @@ Begin
           ParsePutcharCall
         Else If Name = 'getchar' Then
           ParseGetcharCall
+        { Fonctions C standard routees vers le runtime interne }
+        Else If Name = 'malloc' Then
+          ParseMallocCall
+        Else If Name = 'free' Then
+          ParseFreeCall
+        Else If Name = 'calloc' Then
+          ParseCallocCall
+        Else If Name = 'realloc' Then
+          ParseReallocCall
+        Else If Name = 'strlen' Then
+          ParseStrlenCall
+        Else If Name = 'strcmp' Then
+          ParseStrcmpCall
+        Else If Name = 'strcpy' Then
+          ParseStrcpyCall
+        Else If Name = 'strcat' Then
+          ParseStrcatCall
+        Else If Name = 'memcpy' Then
+          ParseMemcpyCall
+        Else If Name = 'memset' Then
+          ParseMemsetCall
+        Else If Name = 'atoi' Then
+          ParseAtoiCall
+        Else If Name = 'abs' Then
+          ParseAbsCall
+        Else If Name = 'exit' Then
+          ParseExitCall
         Else If IsFuncName(Name) Then
           ParseFuncCall(Name)         { appel direct (TODO 16) }
         Else
