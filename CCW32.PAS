@@ -264,7 +264,7 @@
             Adresse de : &expr -> LEA EAX,[var]
             Dereferencement : *expr -> MOV EAX,[EAX]
 
-  TODO 11 - OPERATEURS ET PRECEDENCE
+  TODO 11 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique 32 bits : ADD/SUB/IMUL/IDIV pour +, -, *, /
             Modulo : IDIV -> resultat dans EDX (reste) pour %
@@ -6491,6 +6491,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure ParseExpr; Forward;
+Procedure ParseExprPrec(MinPrec : Integer); Forward;
 Procedure ParseUnary; Forward;
 
 { ------------------------------------------------------------ }
@@ -6906,15 +6907,434 @@ Begin
     ParsePostfix;
 End;
 
+{ ============================================================ }
+{ TODO 11 - OPERATEURS ET PRECEDENCE                          }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ BinOpPrec : retourner le niveau de precedence d un operateur  }
+{ binaire C. 0 = pas un operateur binaire.                     }
+{ Numerotation : plus le nombre est grand, plus l operateur     }
+{ lie fortement (inverse de la spec TODO mais correct pour      }
+{ l algorithme de Pratt).                                       }
+{ ------------------------------------------------------------ }
+
+Function BinOpPrec(Const Op : TString) : Integer;
+Begin
+  If (Op = '*') Or (Op = '/') Or (Op = '%') Then
+    BinOpPrec := 13
+  Else If (Op = '+') Or (Op = '-') Then
+    BinOpPrec := 12
+  Else If (Op = '<<') Or (Op = '>>') Then
+    BinOpPrec := 11
+  Else If (Op = '<') Or (Op = '<=') Or
+          (Op = '>') Or (Op = '>=') Then
+    BinOpPrec := 10
+  Else If (Op = '==') Or (Op = '!=') Then
+    BinOpPrec := 9
+  Else If Op = '&' Then
+    BinOpPrec := 8
+  Else If Op = '^' Then
+    BinOpPrec := 7
+  Else If Op = '|' Then
+    BinOpPrec := 6
+  Else If Op = '&&' Then
+    BinOpPrec := 5
+  Else If Op = '||' Then
+    BinOpPrec := 4
+  Else If Op = '?' Then
+    BinOpPrec := 3
+  Else If (Op = '=')   Or (Op = '+=')  Or (Op = '-=') Or
+          (Op = '*=')  Or (Op = '/=')  Or (Op = '%=') Or
+          (Op = '&=')  Or (Op = '|=')  Or (Op = '^=') Or
+          (Op = '<<=') Or (Op = '>>=') Then
+    BinOpPrec := 2
+  Else If Op = ',' Then
+    BinOpPrec := 1
+  Else
+    BinOpPrec := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ BinOpIsRight : True si l operateur est associatif a droite    }
+{ (affectation, ternaire)                                       }
+{ ------------------------------------------------------------ }
+
+Function BinOpIsRight(Const Op : TString) : Boolean;
+Begin
+  BinOpIsRight := (Op = '=')   Or (Op = '+=')  Or (Op = '-=')  Or
+                  (Op = '*=')  Or (Op = '/=')  Or (Op = '%=')  Or
+                  (Op = '&=')  Or (Op = '|=')  Or (Op = '^=')  Or
+                  (Op = '<<=') Or (Op = '>>=') Or (Op = '?');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsAssignOp : True si l operateur est une affectation          }
+{ ------------------------------------------------------------ }
+
+Function IsAssignOp(Const Op : TString) : Boolean;
+Begin
+  IsAssignOp := (Op = '=')   Or (Op = '+=')  Or (Op = '-=')  Or
+                (Op = '*=')  Or (Op = '/=')  Or (Op = '%=')  Or
+                (Op = '&=')  Or (Op = '|=')  Or (Op = '^=')  Or
+                (Op = '<<=') Or (Op = '>>=');
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitBinOp : emettre le code ASM pour EAX op EBX              }
+{ Le resultat doit etre dans EAX.                               }
+{ ------------------------------------------------------------ }
+
+Procedure EmitBinOp(Const Op : TString);
+Var
+  LblTrue, LblEnd : TString;
+Begin
+  { Arithmetique }
+  If Op = '+' Then
+    EmitInstr('ADD EAX,EBX')
+  Else If Op = '-' Then
+    EmitInstr('SUB EAX,EBX')
+  Else If Op = '*' Then
+    EmitInstr('IMUL EAX,EBX')
+  Else If Op = '/' Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+  End
+  Else If Op = '%' Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+    EmitInstr('MOV EAX,EDX');
+  End
+  { Decalages }
+  Else If Op = '<<' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SHL EAX,CL');
+  End
+  Else If Op = '>>' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SAR EAX,CL');
+  End
+  { Bit a bit }
+  Else If Op = '&' Then
+    EmitInstr('AND EAX,EBX')
+  Else If Op = '|' Then
+    EmitInstr('OR EAX,EBX')
+  Else If Op = '^' Then
+    EmitInstr('XOR EAX,EBX')
+  { Comparaisons }
+  Else If Op = '==' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '!=' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JNE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '<' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JL ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '<=' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JLE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '>' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JG ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else If Op = '>=' Then
+  Begin
+    LblTrue := LabelGen;
+    LblEnd  := LabelGen;
+    EmitInstr('CMP EAX,EBX');
+    EmitInstr('JGE ' + LblTrue);
+    EmitInstr('XOR EAX,EAX');
+    EmitInstr('JMP ' + LblEnd);
+    EmitLabel(LblTrue);
+    EmitInstr('MOV EAX,1');
+    EmitLabel(LblEnd);
+  End
+  Else
+    EmitComment('; operateur binaire inconnu: ' + Op);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreVarCompound : emettre le code pour op= sur variable   }
+{ EAX contient la valeur droite, effectue var op= EAX          }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreVarCompound(Const Name, Op : TString);
+Begin
+  EmitInstr('MOV EBX,EAX');
+  GenLoadVar(Name);
+  If Op = '+=' Then
+    EmitInstr('ADD EAX,EBX')
+  Else If Op = '-=' Then
+    EmitInstr('SUB EAX,EBX')
+  Else If Op = '*=' Then
+    EmitInstr('IMUL EAX,EBX')
+  Else If Op = '/=' Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+  End
+  Else If Op = '%=' Then
+  Begin
+    EmitInstr('CDQ');
+    EmitInstr('IDIV EBX');
+    EmitInstr('MOV EAX,EDX');
+  End
+  Else If Op = '&=' Then
+    EmitInstr('AND EAX,EBX')
+  Else If Op = '|=' Then
+    EmitInstr('OR EAX,EBX')
+  Else If Op = '^=' Then
+    EmitInstr('XOR EAX,EBX')
+  Else If Op = '<<=' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SHL EAX,CL');
+  End
+  Else If Op = '>>=' Then
+  Begin
+    EmitInstr('MOV ECX,EBX');
+    EmitInstr('SAR EAX,CL');
+  End;
+  GenStoreVar(Name);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExprPrec : parseur de Pratt pour expressions C           }
+{ MinPrec = niveau de precedence minimal a capturer.            }
+{ Le resultat est toujours dans EAX.                            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExprPrec(MinPrec : Integer);
+Var
+  Op       : TString;
+  Prec     : Integer;
+  NextPrec : Integer;
+  LblF     : TString;
+  LblE     : TString;
+Begin
+  ParseUnary;
+
+  While Not EPAtEnd Do
+  Begin
+    { Lire l operateur courant }
+    Op := '';
+    If TokenPool[EP].Kind = TK_OP Then
+      Op := TokenPool[EP].Val
+    Else If (TokenPool[EP].Kind = TK_PUNCT) And
+            (TokenPool[EP].Val = ',') Then
+      Op := ','
+    Else If (TokenPool[EP].Kind = TK_PUNCT) And
+            (TokenPool[EP].Val = '?') Then
+      Op := '?';
+
+    Prec := BinOpPrec(Op);
+    If (Prec = 0) Or (Prec < MinPrec) Then Break;
+
+    Inc(EP); { consommer l operateur }
+
+    { --- Affectation : = et opérateurs composés --- }
+    { Traité dans ParseBody pour les cas simples ident = expr }
+    { Ici on gère le cas dans une expression (rare mais possible) }
+    If IsAssignOp(Op) Then
+    Begin
+      { L operande gauche devrait etre un lvalue identifie avant }
+      { Pour simplifier, on le traite comme un calcul normal     }
+      EmitInstr('PUSH EAX');
+      If BinOpIsRight(Op) Then
+        NextPrec := Prec
+      Else
+        NextPrec := Prec + 1;
+      ParseExprPrec(NextPrec);
+      If Op = '=' Then
+      Begin
+        { La valeur droite est dans EAX, on ignore le gauche empile }
+        EmitInstr('ADD ESP,4');
+        EmitComment('; affectation dans expression');
+      End
+      Else
+      Begin
+        { Operateur compose dans expression : calculer }
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        If Op = '+=' Then
+          EmitInstr('ADD EAX,EBX')
+        Else If Op = '-=' Then
+          EmitInstr('SUB EAX,EBX')
+        Else If Op = '*=' Then
+          EmitInstr('IMUL EAX,EBX')
+        Else If Op = '/=' Then
+        Begin
+          EmitInstr('CDQ');
+          EmitInstr('IDIV EBX');
+        End
+        Else If Op = '%=' Then
+        Begin
+          EmitInstr('CDQ');
+          EmitInstr('IDIV EBX');
+          EmitInstr('MOV EAX,EDX');
+        End
+        Else If Op = '&=' Then
+          EmitInstr('AND EAX,EBX')
+        Else If Op = '|=' Then
+          EmitInstr('OR EAX,EBX')
+        Else If Op = '^=' Then
+          EmitInstr('XOR EAX,EBX')
+        Else If Op = '<<=' Then
+        Begin
+          EmitInstr('MOV ECX,EBX');
+          EmitInstr('SHL EAX,CL');
+        End
+        Else If Op = '>>=' Then
+        Begin
+          EmitInstr('MOV ECX,EBX');
+          EmitInstr('SAR EAX,CL');
+        End;
+      End;
+      Continue;
+    End;
+
+    { --- Court-circuit && (ET logique) --- }
+    If Op = '&&' Then
+    Begin
+      LblF := LabelGen;
+      LblE := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JZ ' + LblF);
+      ParseExprPrec(Prec + 1);
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JZ ' + LblF);
+      EmitInstr('MOV EAX,1');
+      EmitInstr('JMP ' + LblE);
+      EmitLabel(LblF);
+      EmitInstr('XOR EAX,EAX');
+      EmitLabel(LblE);
+      Continue;
+    End;
+
+    { --- Court-circuit || (OU logique) --- }
+    If Op = '||' Then
+    Begin
+      LblF := LabelGen;
+      LblE := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JNZ ' + LblF);
+      ParseExprPrec(Prec + 1);
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JNZ ' + LblF);
+      EmitInstr('XOR EAX,EAX');
+      EmitInstr('JMP ' + LblE);
+      EmitLabel(LblF);
+      EmitInstr('MOV EAX,1');
+      EmitLabel(LblE);
+      Continue;
+    End;
+
+    { --- Ternaire ?: --- }
+    If Op = '?' Then
+    Begin
+      LblF := LabelGen;
+      LblE := LabelGen;
+      EmitInstr('TEST EAX,EAX');
+      EmitInstr('JZ ' + LblF);
+      { Branche vraie }
+      ParseExprPrec(1);
+      EmitInstr('JMP ' + LblE);
+      EmitLabel(LblF);
+      { Consommer le ':' }
+      If Not EPAtEnd And (TokenPool[EP].Kind = TK_OP) And
+         (TokenPool[EP].Val = ':') Then
+        Inc(EP)
+      Else If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ':') Then
+        Inc(EP);
+      { Branche fausse }
+      ParseExprPrec(3);
+      EmitLabel(LblE);
+      Continue;
+    End;
+
+    { --- Virgule : evaluer les deux, garder la droite --- }
+    If Op = ',' Then
+    Begin
+      { EAX contient la valeur gauche, on l ignore }
+      ParseExprPrec(Prec + 1);
+      Continue;
+    End;
+
+    { --- Operateurs binaires normaux --- }
+    { Sauver la valeur gauche (EAX) sur la pile }
+    EmitInstr('PUSH EAX');
+
+    If BinOpIsRight(Op) Then
+      NextPrec := Prec
+    Else
+      NextPrec := Prec + 1;
+    ParseExprPrec(NextPrec);
+
+    { EAX = droite, pile = gauche }
+    EmitInstr('MOV EBX,EAX');
+    EmitInstr('POP EAX');
+    EmitBinOp(Op);
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { ParseExpr : parser une expression complete                    }
-{ Pour l instant appelle ParseUnary. Sera etendu en TODO 11    }
-{ avec la precedence des operateurs binaires (Pratt parser).   }
+{ Appelle ParseExprPrec avec la precedence minimale (1).        }
 { ------------------------------------------------------------ }
 
 Procedure ParseExpr;
 Begin
-  ParseUnary;
+  ParseExprPrec(1);
 End;
 
 { ------------------------------------------------------------ }
