@@ -33,12 +33,12 @@ CRLF     DB 13,10,0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
-        SUB ESP,52
+        SUB ESP,56
 ;   local result = [EBP-4]
 ;   local arr = [EBP-24]
-;   local p = [EBP-28]
-;   local ptr = [EBP-32]
-;   local str = [EBP-52]
+;   local p = [EBP-32]
+;   local ptr = [EBP-36]
+;   local str = [EBP-56]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,1
@@ -48,18 +48,18 @@ _CCF_main:
         LEA EAX,[EBP-24]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-52]
+        LEA EAX,[EBP-56]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,8
+        MOV DWORD PTR [EBP-4],EAX
+        LEA EAX,[EBP-32]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-28]
+        MOV EAX,DWORD PTR [EBP-36]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-32]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-32]
+        MOV EAX,DWORD PTR [EBP-36]
         MOV EAX,DWORD PTR [EAX]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
@@ -72,7 +72,8 @@ _CCF_main:
         MOV EAX,DWORD PTR [EAX]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-28]
+        LEA EAX,[EBP-32]
+        MOV EAX,DWORD PTR [EAX]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,1
@@ -83,7 +84,7 @@ _CCF_main:
         ADD EAX,EBX
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-32]
+        MOV EAX,DWORD PTR [EBP-36]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]

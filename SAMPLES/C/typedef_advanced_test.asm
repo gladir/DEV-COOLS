@@ -54,6 +54,14 @@ _CCF_main:
         PUSH EAX
 ; WARNING: variable non trouvee: origin
         XOR EAX,EAX
+; ; WARNING: champ non trouve: .x
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        PUSH EAX
+; WARNING: variable non trouvee: origin
+        XOR EAX,EAX
+; ; WARNING: champ non trouve: .y
         MOV EBX,EAX
         POP EAX
         ADD EAX,EBX

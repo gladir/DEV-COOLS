@@ -412,7 +412,7 @@
             Acces tableau via pointeur : *(p+i) equivalent p[i]
             sizeof(tableau) : taille totale en octets
 
-  TODO 19 - STRUCTURES ET UNIONS
+  TODO 19 - STRUCTURES ET UNIONS [IMPLEMENTE]
             struct nom { type1 champ1; type2 champ2; };
               Taille = somme des sizeof(Ti) avec alignement
               Acces champ : offset fixe depuis debut du struct
@@ -5018,6 +5018,11 @@ End;
 {   4. Ajouter les variables trouvees dans DataTab et SymTab   }
 { ------------------------------------------------------------ }
 
+{ Forward declaration pour ParseStructDef (TODO 19) }
+Function ParseStructDef(Var P : Integer;
+                        Const TypeName : TString;
+                        IsUnion : Boolean) : Integer; Forward;
+
 Procedure ParseDataDecls;
 Var
   I         : Integer;
@@ -5148,26 +5153,36 @@ Begin
         If I >= TokenCount Then Break;
       End;
 
-      { Definition avec accolades ? }
+      { Definition avec accolades ? (TODO 19 : parser les champs) }
       If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
       Begin
-        { Avancer au-dela de la definition de struct/union/enum }
-        Inc(Depth);
-        Inc(I);
-        { Attendre que Depth revienne a 0 (accolade fermante) }
-        While (I < TokenCount) And (Depth > 0) Do
+        If (TypeName = 'enum') Or (Copy(TypeName, 1, 5) = 'enum ') Then
         Begin
-          If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
-            Inc(Depth)
-          Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '}') Then
-            Dec(Depth);
+          { Enum : avancer au-dela de la definition }
+          Inc(Depth);
           Inc(I);
+          While (I < TokenCount) And (Depth > 0) Do
+          Begin
+            If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+              Inc(Depth)
+            Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '}') Then
+              Dec(Depth);
+            Inc(I);
+          End;
+          If I >= TokenCount Then Break;
+        End
+        Else
+        Begin
+          { struct/union : parser la definition avec ParseStructDef }
+          TypeIdx := ParseStructDef(I,
+            TypeName,
+            (Copy(TypeName, 1, 5) = 'union'));
         End;
-        If I >= TokenCount Then Break;
       End;
 
       { Chercher le type dans TypeTab }
-      TypeIdx := TypeFindByName(TypeName);
+      If TypeIdx < 0 Then
+        TypeIdx := TypeFindByName(TypeName);
       If TypeIdx < 0 Then
         TypeIdx := TypeFindByName('int'); { fallback }
 
@@ -5604,6 +5619,36 @@ Begin
       TName := TName + ' ' + TokenPool[P].Val;
       Inc(P);
     End;
+    { Definition inline avec accolades ? (TODO 19) }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '{') Then
+    Begin
+      If (TName <> 'enum') And (Copy(TName, 1, 5) <> 'enum ') Then
+      Begin
+        TIdx := ParseStructDef(P, TName,
+          (Copy(TName, 1, 5) = 'union'));
+        ParseTypeFromTokens := TIdx;
+        Exit;
+      End
+      Else
+      Begin
+        { Enum : sauter le bloc }
+        TIdx := 1;
+        Inc(P);
+        While (P < TokenCount) And (TIdx > 0) Do
+        Begin
+          If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '{') Then
+            Inc(TIdx)
+          Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '}') Then
+            Dec(TIdx);
+          Inc(P);
+        End;
+        TIdx := TypeFindByName(TName);
+        If TIdx < 0 Then TIdx := TypeFindByName('int');
+        ParseTypeFromTokens := TIdx;
+        Exit;
+      End;
+    End;
     TIdx := TypeFindByName(TName);
     If TIdx < 0 Then
       TIdx := TypeFindByName('int');
@@ -5669,6 +5714,228 @@ Begin
     If D > 0 Then Inc(J);
   End;
   SkipToMatchingBrace := J;
+End;
+
+{ ============================================================ }
+{ TODO 19 - STRUCTURES ET UNIONS                               }
+{ ParseStructDef, StructFieldFind, VarTypeIdx                  }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ ParseStructDef : parser la definition d une struct ou union   }
+{ P pointe sur le accolade d ouverture. Avance P apres.       }
+{ TypeName est le nom du type (ex: struct Point).              }
+{ IsUnion = True pour union (tous les champs a offset 0).      }
+{ Retourne l index dans TypeTab ou -1 en cas d erreur.         }
+{ ------------------------------------------------------------ }
+
+Function ParseStructDef(Var P : Integer;
+                        Const TypeName : TString;
+                        IsUnion : Boolean) : Integer;
+Var
+  TIdx     : Integer;
+  FIdx     : Integer;
+  FTIdx    : Integer;
+  FName    : TString;
+  FIsPtr   : Boolean;
+  FIsArr   : Boolean;
+  FArrSz   : Integer;
+  FSz      : Integer;
+  CurOfs   : Integer;
+  MaxSz    : Integer;
+  TotalSz  : Integer;
+  Depth    : Integer;
+  Kind     : TTypeKind;
+Begin
+  ParseStructDef := -1;
+  If (P >= TokenCount) Or
+     Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '{')) Then
+    Exit;
+
+  { Determiner la categorie }
+  If IsUnion Then Kind := TKP_UNION
+  Else Kind := TKP_STRUCT;
+
+  { Verifier si le type existe deja }
+  TIdx := TypeFindByName(TypeName);
+  If TIdx < 0 Then
+  Begin
+    { Creer le type avec taille 0, on la calculera apres }
+    TIdx := TypeAdd(Kind, TypeName, 0, 4, False, -1);
+    If TIdx < 0 Then Exit;
+  End
+  Else
+  Begin
+    { Mettre a jour le kind }
+    TypeTab[TIdx].Kind := Kind;
+    TypeTab[TIdx].FieldCount := 0;
+  End;
+
+  Inc(P); { sauter le '{' }
+
+  CurOfs := 0;
+  MaxSz  := 0;
+  FIdx   := 0;
+
+  { Parser les champs : type [*] nom [[ taille ]]; }
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '}')) Do
+  Begin
+    If FIdx >= MAX_FIELDS Then
+    Begin
+      WarnMsg('trop de champs dans ' + TypeName);
+      Break;
+    End;
+
+    { Sauter les qualificateurs }
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+          IsQualifier(TokenPool[P].Val) Do
+      Inc(P);
+
+    { Parser le type du champ }
+    FTIdx := ParseTypeFromTokens(P);
+    If FTIdx < 0 Then
+    Begin
+      (* Pas un type : avancer au ; ou accolade fermante *)
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 ((TokenPool[P].Val = ';') Or (TokenPool[P].Val = '}'))) Do
+        Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Val = ';') Then Inc(P);
+      Continue;
+    End;
+
+    { Sauter les qualificateurs apres le type }
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+          IsQualifier(TokenPool[P].Val) Do
+      Inc(P);
+
+    { Boucle pour declaration multiples (int x, y;) }
+    Repeat
+      FIsPtr := False;
+      FIsArr := False;
+      FArrSz := 0;
+
+      { Pointeur ? }
+      While (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+            (TokenPool[P].Val = '*') Do
+      Begin
+        FIsPtr := True;
+        Inc(P);
+      End;
+
+      { Nom du champ }
+      If (P >= TokenCount) Or (TokenPool[P].Kind <> TK_IDENT) Then Break;
+      FName := TokenPool[P].Val;
+      Inc(P);
+
+      { Tableau ? champ[taille] }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = '[') Then
+      Begin
+        FIsArr := True;
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_INTEGER) Then
+        Begin
+          FArrSz := TokenPool[P].IntVal;
+          Inc(P);
+        End
+        Else
+          FArrSz := 1;
+        While (P < TokenCount) And
+              Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ']')) Do
+          Inc(P);
+        If P < TokenCount Then Inc(P);
+      End;
+
+      { Calculer la taille du champ }
+      If FIsPtr Then
+        FSz := 4
+      Else If FIsArr Then
+        FSz := TypeSizeofIdx(FTIdx) * FArrSz
+      Else
+        FSz := TypeSizeofIdx(FTIdx);
+      If FSz < 1 Then FSz := 4;
+
+      { Enregistrer le champ }
+      TypeTab[TIdx].Fields[FIdx].Name    := FName;
+      TypeTab[TIdx].Fields[FIdx].TypeIdx := FTIdx;
+
+      If IsUnion Then
+        TypeTab[TIdx].Fields[FIdx].Offset := 0
+      Else
+        TypeTab[TIdx].Fields[FIdx].Offset := CurOfs;
+
+      Inc(FIdx);
+
+      { Avancer l offset pour struct }
+      If Not IsUnion Then
+      Begin
+        CurOfs := CurOfs + FSz;
+        { Aligner a 4 octets }
+        CurOfs := ((CurOfs + 3) Div 4) * 4;
+      End;
+
+      { Suivi du max pour union }
+      If FSz > MaxSz Then MaxSz := FSz;
+
+      { Virgule -> champ suivant du meme type }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+
+      Break;
+    Until False;
+
+    { Avancer au ';' }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               ((TokenPool[P].Val = ';') Or (TokenPool[P].Val = '}'))) Do
+      Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Val = ';') Then Inc(P);
+  End;
+
+  (* Sauter le accolade fermante *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '}') Then
+    Inc(P);
+
+  { Calculer la taille totale }
+  If IsUnion Then
+    TotalSz := MaxSz
+  Else
+    TotalSz := CurOfs;
+  { Aligner a 4 octets minimum }
+  If TotalSz < 4 Then TotalSz := 4;
+  TotalSz := ((TotalSz + 3) Div 4) * 4;
+
+  TypeTab[TIdx].FieldCount := FIdx;
+  TypeTab[TIdx].Size       := TotalSz;
+  TypeTab[TIdx].Align      := 4;
+
+  ParseStructDef := TIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ StructFieldFind : chercher un champ par nom dans un type      }
+{ struct/union. Retourne l index dans Fields[] ou -1.          }
+{ ------------------------------------------------------------ }
+
+Function StructFieldFind(TIdx : Integer; Const FName : TString) : Integer;
+Var K : Integer;
+Begin
+  StructFieldFind := -1;
+  If (TIdx < 0) Or (TIdx >= TypeCount) Then Exit;
+  If Not (TypeTab[TIdx].Kind In [TKP_STRUCT, TKP_UNION]) Then Exit;
+  For K := 0 To TypeTab[TIdx].FieldCount - 1 Do
+    If TypeTab[TIdx].Fields[K].Name = FName Then
+    Begin
+      StructFieldFind := K;
+      Exit;
+    End;
 End;
 
 { ------------------------------------------------------------ }
@@ -6412,13 +6679,60 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ VarTypeIdx : retourner le TypeIdx d une variable (TODO 19)    }
+{ Cherche dans locales, parametres et globales.                 }
+{ ------------------------------------------------------------ }
+
+Function VarTypeIdx(Const Name : TString) : Integer;
+Var
+  LI, PI, SI : Integer;
+Begin
+  VarTypeIdx := -1;
+
+  { Locales }
+  LI := FindLocal(CurFuncIdx, Name);
+  If LI >= 0 Then
+  Begin
+    VarTypeIdx := FuncTab[CurFuncIdx].Locals[LI].TypeIdx;
+    Exit;
+  End;
+
+  { Parametres }
+  PI := FindParam(CurFuncIdx, Name);
+  If PI >= 0 Then
+  Begin
+    VarTypeIdx := FuncTab[CurFuncIdx].ParamTypes[PI];
+    Exit;
+  End;
+
+  { Globales }
+  SI := SymFind(Name);
+  If SI >= 0 Then
+    VarTypeIdx := SymTab[SI].TypeIdx;
+End;
+
+{ ------------------------------------------------------------ }
+{ VarIsStruct : verifier si une variable est struct/union       }
+{ (TODO 19)                                                     }
+{ ------------------------------------------------------------ }
+
+Function VarIsStruct(Const Name : TString) : Boolean;
+Var TI : Integer;
+Begin
+  VarIsStruct := False;
+  TI := VarTypeIdx(Name);
+  If (TI >= 0) And (TI < TypeCount) Then
+    VarIsStruct := TypeTab[TI].Kind In [TKP_STRUCT, TKP_UNION];
+End;
+
+{ ------------------------------------------------------------ }
 { GenLoadVar : emettre le code pour charger une variable dans   }
 { EAX (globale, locale, parametre)                             }
 { ------------------------------------------------------------ }
 
 Procedure GenLoadVar(Const Name : TString);
 Var
-  LI, PI, SI : Integer;
+  LI, PI, SI, TI : Integer;
 Begin
   { Chercher dans les locales de la fonction courante }
   LI := FindLocal(CurFuncIdx, Name);
@@ -6431,8 +6745,17 @@ Begin
       EmitInstr('LEA EAX,[EBP' +
         IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']')
     Else
-      EmitInstr('MOV EAX,DWORD PTR [EBP' +
-        IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']');
+    Begin
+      { TODO 19 : si le type est struct/union, charger l adresse (LEA) }
+      TI := FuncTab[CurFuncIdx].Locals[LI].TypeIdx;
+      If (TI >= 0) And (TI < TypeCount) And
+         (TypeTab[TI].Kind In [TKP_STRUCT, TKP_UNION]) Then
+        EmitInstr('LEA EAX,[EBP' +
+          IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']')
+      Else
+        EmitInstr('MOV EAX,DWORD PTR [EBP' +
+          IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']');
+    End;
     Exit;
   End;
 
@@ -6449,7 +6772,13 @@ Begin
   SI := SymFind(Name);
   If SI >= 0 Then
   Begin
-    EmitInstr('MOV EAX,' + GenVarRef(SI));
+    { TODO 19 : si le type est struct/union, charger l adresse }
+    TI := SymTab[SI].TypeIdx;
+    If (TI >= 0) And (TI < TypeCount) And
+       (TypeTab[TI].Kind In [TKP_STRUCT, TKP_UNION]) Then
+      EmitInstr('MOV EAX,OFFSET ' + SymTab[SI].MangledName)
+    Else
+      EmitInstr('MOV EAX,' + GenVarRef(SI));
     Exit;
   End;
 
@@ -6895,8 +7224,11 @@ End;
 
 Procedure ParsePostfix;
 Var
-  Done : Boolean;
-  Name : TString;
+  Done   : Boolean;
+  Name   : TString;
+  MbrTI  : Integer;  { TypeIdx du struct pour acces membre (TODO 19) }
+  MbrFI  : Integer;  { Index du champ dans Fields[] (TODO 19) }
+  MbrOfs : Integer;  { Offset du champ (TODO 19) }
 Begin
   ParsePrimary;
 
@@ -6962,28 +7294,58 @@ Begin
       EmitInstr('MOV EAX,DWORD PTR [EAX]');
       EPMatch(']');
     End
-    { Acces membre struct . }
-    Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '.') Then
+    { Acces membre struct . (TODO 19) }
+    Else If ((TokenPool[EP].Kind = TK_PUNCT) Or (TokenPool[EP].Kind = TK_OP)) And
+            (TokenPool[EP].Val = '.') Then
     Begin
       Inc(EP);
       If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
       Begin
         Name := TokenPool[EP].Val;
         Inc(EP);
-        EmitComment('; acces membre struct: .' + Name);
+        { EAX = adresse de la struct. Chercher le champ. }
+        { Determiner le type de la struct via LastPrimaryName }
+        MbrTI := VarTypeIdx(LastPrimaryName);
+        MbrFI := StructFieldFind(MbrTI, Name);
+        If MbrFI >= 0 Then
+        Begin
+          MbrOfs := TypeTab[MbrTI].Fields[MbrFI].Offset;
+          If MbrOfs > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(MbrOfs));
+          EmitInstr('MOV EAX,DWORD PTR [EAX]');
+        End
+        Else
+          EmitComment('; WARNING: champ non trouve: .' + Name);
       End;
+      LastPrimaryName := '';
     End
-    { Acces membre via pointeur -> }
+    { Acces membre via pointeur -> (TODO 19) }
     Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '->') Then
     Begin
       Inc(EP);
+      { EAX = pointeur vers struct : dereferencer pour obtenir adresse struct }
       EmitInstr('MOV EAX,DWORD PTR [EAX]');
       If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
       Begin
         Name := TokenPool[EP].Val;
         Inc(EP);
-        EmitComment('; acces membre ptr: ->' + Name);
+        { Chercher le type pointe }
+        MbrTI := VarTypeIdx(LastPrimaryName);
+        If (MbrTI >= 0) And (MbrTI < TypeCount) And
+           (TypeTab[MbrTI].Kind = TKP_POINTER) Then
+          MbrTI := TypeTab[MbrTI].BaseTypeIdx;
+        MbrFI := StructFieldFind(MbrTI, Name);
+        If MbrFI >= 0 Then
+        Begin
+          MbrOfs := TypeTab[MbrTI].Fields[MbrFI].Offset;
+          If MbrOfs > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(MbrOfs));
+          EmitInstr('MOV EAX,DWORD PTR [EAX]');
+        End
+        Else
+          EmitComment('; WARNING: champ non trouve: ->' + Name);
       End;
+      LastPrimaryName := '';
     End
     Else
       Done := True;
@@ -8739,6 +9101,112 @@ Begin
         Inc(EP);
       If EP < EPEnd Then Inc(EP);
       Exit;
+    End;
+  End;
+
+  { Cas special : affectation membre struct ident.field = expr (TODO 19) }
+  If (TokenPool[EP].Kind = TK_IDENT) And (EP + 2 < EPEnd) And
+     ((TokenPool[EP + 1].Kind = TK_OP) Or (TokenPool[EP + 1].Kind = TK_PUNCT)) And
+     (TokenPool[EP + 1].Val = '.') And
+     (TokenPool[EP + 2].Kind = TK_IDENT) Then
+  Begin
+    Name := TokenPool[EP].Val;
+    TIdx := VarTypeIdx(Name);
+    If (TIdx >= 0) And (TIdx < TypeCount) And
+       (TypeTab[TIdx].Kind In [TKP_STRUCT, TKP_UNION]) Then
+    Begin
+      K := StructFieldFind(TIdx, TokenPool[EP + 2].Val);
+      If (K >= 0) And (EP + 3 < EPEnd) And
+         (TokenPool[EP + 3].Kind = TK_OP) And
+         IsAssignOp(TokenPool[EP + 3].Val) Then
+      Begin
+        Op := TokenPool[EP + 3].Val;
+        Inc(EP, 4); { sauter ident . field op= }
+        If Op = '=' Then
+        Begin
+          ParseExpr;
+          EmitInstr('PUSH EAX');
+          GenLoadAddr(Name);
+          If TypeTab[TIdx].Fields[K].Offset > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(TypeTab[TIdx].Fields[K].Offset));
+          EmitInstr('POP DWORD PTR [EAX]');
+        End
+        Else
+        Begin
+          { ident.field op= expr }
+          ParseExpr;
+          EmitInstr('MOV EBX,EAX');
+          GenLoadAddr(Name);
+          If TypeTab[TIdx].Fields[K].Offset > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(TypeTab[TIdx].Fields[K].Offset));
+          EmitInstr('PUSH EAX');
+          EmitInstr('MOV EAX,DWORD PTR [EAX]');
+          EmitCompoundOp(Op);
+          EmitInstr('POP ECX');
+          EmitInstr('MOV DWORD PTR [ECX],EAX');
+        End;
+        { Avancer au ; }
+        While (EP < EPEnd) And
+              Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                   (TokenPool[EP].Val = ';')) Do
+          Inc(EP);
+        If EP < EPEnd Then Inc(EP);
+        Exit;
+      End;
+    End;
+  End;
+
+  { Cas special : affectation via ptr->field = expr (TODO 19) }
+  If (TokenPool[EP].Kind = TK_IDENT) And (EP + 2 < EPEnd) And
+     (TokenPool[EP + 1].Kind = TK_OP) And (TokenPool[EP + 1].Val = '->') And
+     (TokenPool[EP + 2].Kind = TK_IDENT) Then
+  Begin
+    Name := TokenPool[EP].Val;
+    TIdx := VarTypeIdx(Name);
+    { Dereferencer le type pointeur pour obtenir le type struct }
+    If (TIdx >= 0) And (TIdx < TypeCount) And
+       (TypeTab[TIdx].Kind = TKP_POINTER) Then
+      TIdx := TypeTab[TIdx].BaseTypeIdx;
+    If (TIdx >= 0) And (TIdx < TypeCount) And
+       (TypeTab[TIdx].Kind In [TKP_STRUCT, TKP_UNION]) Then
+    Begin
+      K := StructFieldFind(TIdx, TokenPool[EP + 2].Val);
+      If (K >= 0) And (EP + 3 < EPEnd) And
+         (TokenPool[EP + 3].Kind = TK_OP) And
+         IsAssignOp(TokenPool[EP + 3].Val) Then
+      Begin
+        Op := TokenPool[EP + 3].Val;
+        Inc(EP, 4); { sauter ident -> field op= }
+        If Op = '=' Then
+        Begin
+          ParseExpr;
+          EmitInstr('PUSH EAX');
+          GenLoadVar(Name);  { EAX = pointeur }
+          If TypeTab[TIdx].Fields[K].Offset > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(TypeTab[TIdx].Fields[K].Offset));
+          EmitInstr('POP DWORD PTR [EAX]');
+        End
+        Else
+        Begin
+          ParseExpr;
+          EmitInstr('MOV EBX,EAX');
+          GenLoadVar(Name);
+          If TypeTab[TIdx].Fields[K].Offset > 0 Then
+            EmitInstr('ADD EAX,' + IntToStr_(TypeTab[TIdx].Fields[K].Offset));
+          EmitInstr('PUSH EAX');
+          EmitInstr('MOV EAX,DWORD PTR [EAX]');
+          EmitCompoundOp(Op);
+          EmitInstr('POP ECX');
+          EmitInstr('MOV DWORD PTR [ECX],EAX');
+        End;
+        { Avancer au ; }
+        While (EP < EPEnd) And
+              Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                   (TokenPool[EP].Val = ';')) Do
+          Inc(EP);
+        If EP < EPEnd Then Inc(EP);
+        Exit;
+      End;
     End;
   End;
 

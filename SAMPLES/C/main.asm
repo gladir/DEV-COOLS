@@ -38,19 +38,27 @@ _CCF_main:
 ;   local y = [EBP-8]
 ; WARNING: variable non trouvee: Point
         XOR EAX,EAX
-; WARNING: mot-cle inattendu dans expression: typedef
-        XOR EAX,EAX
-; WARNING: ponctuation inattendue: }
-        XOR EAX,EAX
 ; WARNING: variable non trouvee: p
         XOR EAX,EAX
+; ; WARNING: champ non trouve: .x
+        PUSH EAX
+        MOV EAX,10
+        ADD ESP,4
+; ; affectation dans expression
 ; WARNING: variable non trouvee: p
         XOR EAX,EAX
+; ; WARNING: champ non trouve: .y
+        PUSH EAX
+        MOV EAX,20
+        ADD ESP,4
+; ; affectation dans expression
 ; WARNING: variable non trouvee: p
         XOR EAX,EAX
+; ; WARNING: champ non trouve: .y
         PUSH EAX
 ; WARNING: variable non trouvee: p
         XOR EAX,EAX
+; ; WARNING: champ non trouve: .x
         PUSH EAX
         CALL _CCF_multiply
         ADD ESP,8

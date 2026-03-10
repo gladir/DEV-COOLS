@@ -1,5 +1,5 @@
 ; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
-; Genere automatiquement a partir de : SAMPLES/C/struct_test.c
+; Genere automatiquement a partir de : SAMPLES/C/test_struct.c
 
 .386
 .MODEL FLAT, STDCALL
@@ -25,6 +25,7 @@ BYTESWR  DD 0
 BYTESRD  DD 0
 CRLF     DB 13,10,0
 
+_CCV_g_pt  DB 8 DUP(0)
 
 ; --- Segment de code ---
 .CODE
@@ -33,8 +34,11 @@ CRLF     DB 13,10,0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
-        SUB ESP,8
+        SUB ESP,24
 ;   local p = [EBP-8]
+;   local q = [EBP-16]
+;   local u = [EBP-20]
+;   local r = [EBP-24]
         MOV EAX,10
         PUSH EAX
         LEA EAX,[EBP-8]
@@ -42,6 +46,39 @@ _CCF_main:
         MOV EAX,20
         PUSH EAX
         LEA EAX,[EBP-8]
+        ADD EAX,4
+        POP DWORD PTR [EAX]
+        LEA EAX,[EBP-8]
+        MOV EAX,DWORD PTR [EAX]
+        MOV DWORD PTR [EBP-24],EAX
+        LEA EAX,[EBP-8]
+        ADD EAX,4
+        MOV EAX,DWORD PTR [EAX]
+        MOV DWORD PTR [EBP-24],EAX
+        LEA EAX,[EBP-8]
+        MOV EAX,DWORD PTR [EAX]
+        PUSH EAX
+        LEA EAX,[EBP-16]
+        POP DWORD PTR [EAX]
+        MOV EAX,42
+        PUSH EAX
+        LEA EAX,[EBP-16]
+        ADD EAX,4
+        POP DWORD PTR [EAX]
+        MOV EAX,100
+        PUSH EAX
+        LEA EAX,[EBP-20]
+        POP DWORD PTR [EAX]
+        LEA EAX,[EBP-20]
+        MOV EAX,DWORD PTR [EAX]
+        MOV DWORD PTR [EBP-24],EAX
+        MOV EAX,7
+        PUSH EAX
+        MOV EAX,OFFSET _CCV_g_pt
+        POP DWORD PTR [EAX]
+        MOV EAX,8
+        PUSH EAX
+        MOV EAX,OFFSET _CCV_g_pt
         ADD EAX,4
         POP DWORD PTR [EAX]
         MOV EAX,0
