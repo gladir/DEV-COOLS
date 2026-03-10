@@ -70,7 +70,7 @@
              Constantes typees : const X: Integer = 42 -> var X = 42
              Constantes ensembles : [1, 3..5] -> Set ou tableau JS
 
-   TODO 04 - OPERATEURS ET PRECEDENCE
+   TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
              Arithmetiques  : + - * / DIV MOD (entiers et reels)
                / -> division reelle en JS
                DIV -> Math.trunc(a / b) en JS
@@ -730,6 +730,7 @@ Var
   FORWARD DECLARATIONS
   ============================================================ }
 Procedure LexClose; Forward;
+Function ParseExpr(Var P : Integer) : TString; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -2102,11 +2103,404 @@ Begin
 End;
 
 { ============================================================
+  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- OpToJS : convertir operateur Pascal en JavaScript ------ }
+{ Retourne la representation JavaScript de l operateur Pascal.  }
+{ DIV -> Math.trunc(a / b), MOD -> %, = -> ===, <> -> !==,     }
+{ AND -> &&, OR -> ||, NOT -> !, XOR -> ^, SHL -> <<, SHR -> >>}
+{ := -> =                                                        }
+Function OpToJS(Const Op : TString) : TString;
+Var
+  L : TString;
+Begin
+  L := StrLowerCase(Op);
+  If L = ':='       Then OpToJS := ' = '
+  Else If L = '='   Then OpToJS := ' === '
+  Else If L = '<>'  Then OpToJS := ' !== '
+  Else If L = '<'   Then OpToJS := ' < '
+  Else If L = '>'   Then OpToJS := ' > '
+  Else If L = '<='  Then OpToJS := ' <= '
+  Else If L = '>='  Then OpToJS := ' >= '
+  Else If L = '+'   Then OpToJS := ' + '
+  Else If L = '-'   Then OpToJS := ' - '
+  Else If L = '*'   Then OpToJS := ' * '
+  Else If L = '/'   Then OpToJS := ' / '
+  Else If L = 'div' Then OpToJS := ' div '
+  Else If L = 'mod' Then OpToJS := ' % '
+  Else If L = 'and' Then OpToJS := ' && '
+  Else If L = 'or'  Then OpToJS := ' || '
+  Else If L = 'not' Then OpToJS := '!'
+  Else If L = 'xor' Then OpToJS := ' ^ '
+  Else If L = 'shl' Then OpToJS := ' << '
+  Else If L = 'shr' Then OpToJS := ' >> '
+  Else If L = 'in'  Then OpToJS := ' in '
+  Else If L = '@'   Then OpToJS := '@'
+  Else OpToJS := ' ' + Op + ' ';
+End;
+
+{ ---- IsLevel2Op : niveau 2 de precedence Pascal ------------- }
+{ Operateurs multiplicatifs : * / DIV MOD AND SHL SHR           }
+Function IsLevel2Op(Const T : TToken) : Boolean;
+Var
+  L : TString;
+Begin
+  IsLevel2Op := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '*') Or (T.Val = '/') Then
+      IsLevel2Op := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(T.Val);
+    If (L = 'div') Or (L = 'mod') Or (L = 'and') Or
+       (L = 'shl') Or (L = 'shr') Then
+      IsLevel2Op := True;
+  End;
+End;
+
+{ ---- IsLevel3Op : niveau 3 de precedence Pascal ------------- }
+{ Operateurs additifs : + - OR XOR                               }
+Function IsLevel3Op(Const T : TToken) : Boolean;
+Var
+  L : TString;
+Begin
+  IsLevel3Op := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '+') Or (T.Val = '-') Then
+      IsLevel3Op := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(T.Val);
+    If (L = 'or') Or (L = 'xor') Then
+      IsLevel3Op := True;
+  End;
+End;
+
+{ ---- IsLevel4Op : niveau 4 de precedence Pascal ------------- }
+{ Operateurs relationnels : = <> < > <= >= IN                    }
+Function IsLevel4Op(Const T : TToken) : Boolean;
+Var
+  L : TString;
+Begin
+  IsLevel4Op := False;
+  If T.Kind = TK_OP Then
+  Begin
+    If (T.Val = '=') Or (T.Val = '<>') Or (T.Val = '<') Or
+       (T.Val = '>') Or (T.Val = '<=') Or (T.Val = '>=') Then
+      IsLevel4Op := True;
+  End
+  Else If T.Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(T.Val);
+    If L = 'in' Then
+      IsLevel4Op := True;
+  End;
+End;
+
+{ ---- ParseExprFactor : niveau 1 (le plus fort) -------------- }
+{ NOT, @, unaire +/-, atomes (litteraux, idents, parentheses)   }
+Function ParseExprFactor(Var P : Integer) : TString;
+Var
+  Tmp  : TString;
+  Idx  : Integer;
+  L    : TString;
+  Tmp2 : TString;
+Begin
+  ParseExprFactor := '0';
+  If P >= TokenCount Then Exit;
+
+  { NOT unaire }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'not') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := '(!' + Tmp + ')';
+    Exit;
+  End;
+
+  { @ operateur d adresse -> reference en JS }
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '@') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Unaire - }
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '-') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := '(-' + Tmp + ')';
+    Exit;
+  End;
+
+  { Unaire + }
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '+') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExprFactor(P);
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Parentheses }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P);
+    Tmp := ParseExpr(P);
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P);
+    ParseExprFactor := '(' + Tmp + ')';
+    Exit;
+  End;
+
+  { Litteral entier }
+  If TokenPool[P].Kind = TK_INTEGER Then
+  Begin
+    ParseExprFactor := IntToJS(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral reel }
+  If TokenPool[P].Kind = TK_REAL Then
+  Begin
+    ParseExprFactor := RealToJS(TokenPool[P].RealVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral chaine }
+  If TokenPool[P].Kind = TK_STRING Then
+  Begin
+    ParseExprFactor := StrToJS(TokenPool[P].Val);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral caractere }
+  If TokenPool[P].Kind = TK_CHAR Then
+  Begin
+    ParseExprFactor := CharToJS(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Mot-cle : true/false/nil }
+  If TokenPool[P].Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'true'  Then Begin ParseExprFactor := 'true';  Inc(P); Exit; End;
+    If L = 'false' Then Begin ParseExprFactor := 'false'; Inc(P); Exit; End;
+    If L = 'nil'   Then Begin ParseExprFactor := 'null';  Inc(P); Exit; End;
+    ParseExprFactor := TokenPool[P].Val;
+    Inc(P);
+    Exit;
+  End;
+
+  { Ensemble [elem, elem..elem] }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
+  Begin
+    Tmp := '[';
+    Inc(P);
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ']')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Tmp := Tmp + ', ';
+        Inc(P);
+      End
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '..') Then
+      Begin
+        Tmp := Tmp + '/*..*/';
+        Inc(P);
+      End
+      Else
+      Begin
+        Tmp2 := LitToJS(TokenPool[P]);
+        Tmp := Tmp + Tmp2;
+        Inc(P);
+      End;
+    End;
+    Tmp := Tmp + ']';
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P);
+    ParseExprFactor := Tmp;
+    Exit;
+  End;
+
+  { Identificateur }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    Idx := ConstFind(TokenPool[P].Val);
+    If Idx >= 0 Then
+      ParseExprFactor := ConstTab[Idx].JSVal
+    Else
+    Begin
+      L := StrLowerCase(TokenPool[P].Val);
+      If L = 'true'  Then ParseExprFactor := 'true'
+      Else If L = 'false' Then ParseExprFactor := 'false'
+      Else If L = 'nil'   Then ParseExprFactor := 'null'
+      Else If L = 'maxint' Then ParseExprFactor := '32767'
+      Else If L = 'maxlongint' Then ParseExprFactor := '2147483647'
+      Else
+        ParseExprFactor := TokenPool[P].Val;
+    End;
+    Inc(P);
+    Exit;
+  End;
+
+  { Token non reconnu : retourner tel quel }
+  ParseExprFactor := TokenPool[P].Val;
+  Inc(P);
+End;
+
+{ ---- ParseExprTerm : niveau 2 (multiplicatif) --------------- }
+{ * / DIV MOD AND SHL SHR                                       }
+Function ParseExprTerm(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ParseExprFactor(P);
+
+  While (P < TokenCount) And IsLevel2Op(TokenPool[P]) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ParseExprFactor(P);
+
+    If Op = 'div' Then
+      Left := 'Math.trunc(' + Left + ' / ' + Rght + ')'
+    Else If Op = '*' Then
+      Left := Left + ' * ' + Rght
+    Else If Op = '/' Then
+      Left := Left + ' / ' + Rght
+    Else If Op = 'mod' Then
+      Left := Left + ' % ' + Rght
+    Else If Op = 'and' Then
+      Left := Left + ' && ' + Rght
+    Else If Op = 'shl' Then
+      Left := Left + ' << ' + Rght
+    Else If Op = 'shr' Then
+      Left := Left + ' >> ' + Rght;
+  End;
+
+  ParseExprTerm := Left;
+End;
+
+{ ---- ParseExprSimple : niveau 3 (additif) ------------------- }
+{ + - OR XOR                                                     }
+Function ParseExprSimple(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ParseExprTerm(P);
+
+  While (P < TokenCount) And IsLevel3Op(TokenPool[P]) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ParseExprTerm(P);
+
+    If Op = '+' Then
+      Left := Left + ' + ' + Rght
+    Else If Op = '-' Then
+      Left := Left + ' - ' + Rght
+    Else If Op = 'or' Then
+      Left := Left + ' || ' + Rght
+    Else If Op = 'xor' Then
+      Left := Left + ' ^ ' + Rght;
+  End;
+
+  ParseExprSimple := Left;
+End;
+
+{ ---- ParseExpr : niveau 4 (relationnel, le plus faible) ----- }
+{ = <> < > <= >= IN                                              }
+Function ParseExpr;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ParseExprSimple(P);
+
+  While (P < TokenCount) And IsLevel4Op(TokenPool[P]) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ParseExprSimple(P);
+
+    If Op = '=' Then
+      Left := Left + ' === ' + Rght
+    Else If Op = '<>' Then
+      Left := Left + ' !== ' + Rght
+    Else If Op = '<' Then
+      Left := Left + ' < ' + Rght
+    Else If Op = '>' Then
+      Left := Left + ' > ' + Rght
+    Else If Op = '<=' Then
+      Left := Left + ' <= ' + Rght
+    Else If Op = '>=' Then
+      Left := Left + ' >= ' + Rght
+    Else If Op = 'in' Then
+      Left := Rght + '.indexOf(' + Left + ') >= 0';
+  End;
+
+  ParseExpr := Left;
+End;
+
+{ ---- ParseAssign : gere l affectation := -------------------- }
+{ Detecte l operateur := et genere lhs = rhs en JavaScript.     }
+{ Si pas d affectation, retourne simplement l expression.        }
+Function ParseAssign(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Rght : TString;
+Begin
+  Left := ParseExpr(P);
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+     (TokenPool[P].Val = ':=') Then
+  Begin
+    Inc(P);
+    Rght := ParseExpr(P);
+    ParseAssign := Left + ' = ' + Rght;
+  End
+  Else
+    ParseAssign := Left;
+End;
+
+{ ---- ExprToJS : point d entree pour convertir expressions ---- }
+{ Convertit une expression Pascal a la position P dans           }
+{ TokenPool en representation JavaScript. Gere l affectation.    }
+Function ExprToJS(Var P : Integer) : TString;
+Begin
+  ExprToJS := ParseAssign(P);
+End;
+
+{ ============================================================
   Run : tokenise le fichier source et teste la conversion
   ============================================================ }
 Procedure Run;
 Var
-  I : Integer;
+  I   : Integer;
+  P   : Integer;
+  JS  : TString;
 Begin
   GlobalInit;
   ConstInit;
@@ -2149,12 +2543,65 @@ Begin
         WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]));
     End;
     WriteLn('--- Fin des litteraux ---');
+
+    { Afficher les conversions d operateurs }
+    WriteLn('--- Operateurs -> JavaScript ---');
+    WriteLn('  :=  -> ', OpToJS(':='));
+    WriteLn('  =   -> ', OpToJS('='));
+    WriteLn('  <>  -> ', OpToJS('<>'));
+    WriteLn('  DIV -> ', OpToJS('DIV'));
+    WriteLn('  MOD -> ', OpToJS('MOD'));
+    WriteLn('  AND -> ', OpToJS('AND'));
+    WriteLn('  OR  -> ', OpToJS('OR'));
+    WriteLn('  NOT -> ', OpToJS('NOT'));
+    WriteLn('  XOR -> ', OpToJS('XOR'));
+    WriteLn('  SHL -> ', OpToJS('SHL'));
+    WriteLn('  SHR -> ', OpToJS('SHR'));
+    WriteLn('  IN  -> ', OpToJS('IN'));
+    WriteLn('--- Fin des operateurs ---');
+
+    { Tester le parseur d expressions sur les expressions trouvees }
+    { Chercher les patterns ident := expr ; et ident = expr ;      }
+    WriteLn('--- Expressions -> JavaScript ---');
+    I := 0;
+    While I < TokenCount - 2 Do
+    Begin
+      { Pattern: ident := expr ; }
+      If (TokenPool[I].Kind = TK_IDENT) And
+         (I + 1 < TokenCount) And
+         (TokenPool[I + 1].Kind = TK_OP) And
+         (TokenPool[I + 1].Val = ':=') Then
+      Begin
+        P := I;
+        JS := ExprToJS(P);
+        WriteLn('  ', TokenPool[I].Val, ' := ... -> ', JS);
+        I := P;
+      End
+      { Pattern: ident = expr ; (constante) }
+      Else If (TokenPool[I].Kind = TK_IDENT) And
+              (I + 1 < TokenCount) And
+              (TokenPool[I + 1].Kind = TK_OP) And
+              (TokenPool[I + 1].Val = '=') And
+              (I >= 1) And
+              Not ((TokenPool[I - 1].Kind = TK_OP) Or
+                   (TokenPool[I - 1].Kind = TK_KEYWORD)) Then
+      Begin
+        P := I;
+        JS := ExprToJS(P);
+        WriteLn('  ', TokenPool[I].Val, ' = ... -> ', JS);
+        I := P;
+      End
+      Else
+        Inc(I);
+    End;
+    WriteLn('--- Fin des expressions ---');
+
     WriteLn('Tokens dans le pool : ', TokenCount);
     WriteLn('Constantes predefinies : ', ConstCount);
   End;
 
   WriteLn('TP2JS: compilation de ', Opts.SrcFile, ' -> ', Opts.OutFile);
-  WriteLn('TP2JS: TODO 04+ non implemente, rien a generer.');
+  WriteLn('TP2JS: TODO 05+ non implemente, rien a generer.');
   If Opts.ModuleES6 Then
     WriteLn('TP2JS: mode module ES6 actif');
   If Opts.Pretty Then
