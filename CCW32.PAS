@@ -9894,7 +9894,13 @@ Begin
   Begin
     Found := False;
     For J := 0 To GotoLblDefCount - 1 Do
-      If GotoLblUse[I] = GotoLblDef[J] Then Found := True;
+    Begin
+      If GotoLblUse[I] = GotoLblDef[J] Then
+      Begin
+        Found := True;
+        Break;
+      End;
+    End;
     If Not Found Then
       EmitComment('WARNING: goto vers label non defini: ' + GotoLblUse[I]);
   End;
