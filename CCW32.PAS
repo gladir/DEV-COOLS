@@ -29,11 +29,13 @@
   FEUILLE DE ROUTE - 25 TODOS
   ============================================================
 
-  TODO 01 - INFRASTRUCTURE ET OPTIONS
+  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
             TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
-              AsmOutput, ObjOnly)
+              AsmOutput, ObjOnly, OptLevel, OptSpeed, OptSize,
+              CStandard, DLLMode, LinkFiles, LinkCount)
             ParseArgs : analyser argv (source.c [sortie.exe] [-v] [-d]
-              [-w] [-obj] [-asm])
+              [-w] [-obj] [-asm] [-dll] [-O0..-O3] [-Ot] [-Os]
+              [-std=...] [fichier.lib] [fichier.obj])
             -obj : produire uniquement un fichier .OBJ (COFF)
             -asm : produire egalement un fichier .ASM lisible
             Par defaut : produire un .EXE (PE Windows 32 bits)
@@ -556,5 +558,447 @@ Program CCW32;
 {$ENDIF}
 {$I-}
 
+{ ============================================================ }
+{ TODO 01 - INFRASTRUCTURE ET OPTIONS                          }
+{ ============================================================ }
+
+Const
+  CCW32_VERSION = '0.1';
+  CCW32_DATE    = '2026';
+
+  EXIT_OK    = 0;
+  EXIT_ERROR = 1;
+  EXIT_USAGE = 2;
+
+  MAX_LINK_FILES = 20;
+
+  { Niveaux d optimisation }
+  OPT_NONE       = 0;   { -O0 : aucune optimisation             }
+  OPT_BASIC      = 1;   { -O1 : optimisations de base           }
+  OPT_ADVANCED   = 2;   { -O2 : optimisations avancees          }
+  OPT_AGGRESSIVE = 3;   { -O3 : optimisations agressives        }
+
+Type
+  TString = String;
+
+  TOptions = Record
+    SrcFile   : TString;   { fichier source (.c)                  }
+    OutFile   : TString;   { fichier sortie (.exe, .obj, .dll)    }
+    Verbose   : Boolean;   { -v : banniere et statistiques        }
+    DebugMode : Boolean;   { -d : affichage de chaque token       }
+    Warnings  : Boolean;   { -w : afficher les avertissements     }
+    AsmOutput : Boolean;   { -asm : produire aussi un .ASM        }
+    ObjOnly   : Boolean;   { -obj : produire seulement un .OBJ    }
+    DLLMode   : Boolean;   { -dll : produire un .DLL              }
+    OptLevel  : Integer;   { 0..3 : niveau d optimisation         }
+    OptSpeed  : Boolean;   { -Ot : optimiser pour la vitesse      }
+    OptSize   : Boolean;   { -Os : optimiser pour la taille       }
+    CStandard : TString;   { norme C cible (C89, C99, C11, C18)   }
+    LinkFiles : Array[0..MAX_LINK_FILES - 1] Of TString;
+    LinkCount : Integer;   { nombre de fichiers .LIB/.OBJ a lier  }
+  End;
+
+Var
+  { Options }
+  Opts : TOptions;
+
+  { Compteurs generaux }
+  ErrorCount : Integer;
+  WarnCount  : Integer;
+  TotalLines : LongInt;
+
+  { Fichier de sortie interne (pour future emission) }
+  OutF       : Text;
+  OutFOpen   : Boolean;
+
+{ ------------------------------------------------------------ }
+{ Fonctions utilitaires                                        }
+{ ------------------------------------------------------------ }
+
+Function IntToStr_(V : LongInt) : TString;
+Var S : TString;
 Begin
+  Str(V, S);
+  IntToStr_ := S;
+End;
+
+Function StrUpperCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'a') And (Tmp[I] <= 'z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) - 32);
+  StrUpperCase := Tmp;
+End;
+
+Function StrLowerCase(Const S : TString) : TString;
+Var
+  I   : Integer;
+  Tmp : TString;
+Begin
+  Tmp := S;
+  For I := 1 To Length(Tmp) Do
+    If (Tmp[I] >= 'A') And (Tmp[I] <= 'Z') Then
+      Tmp[I] := Chr(Ord(Tmp[I]) + 32);
+  StrLowerCase := Tmp;
+End;
+
+{ Retourne l extension d un chemin (avec le point, en minuscules) }
+Function ExtractExt(Const Path : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ExtractExt := StrLowerCase(Copy(Path, LastDot,
+                     Length(Path) - LastDot + 1))
+  Else
+    ExtractExt := '';
+End;
+
+{ Remplace l extension d un chemin }
+Function ReplaceExt(Const Path, NewExt : TString) : TString;
+Var
+  I, LastDot, LastSep : Integer;
+Begin
+  LastDot := 0;
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+  Begin
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+    If Path[I] = '.' Then
+      LastDot := I;
+  End;
+  If (LastDot > 0) And (LastDot > LastSep) Then
+    ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
+  Else
+    ReplaceExt := Path + NewExt;
+End;
+
+{ ------------------------------------------------------------ }
+{ FatalError / WarnMsg                                         }
+{ ------------------------------------------------------------ }
+
+Procedure FatalError(Const Msg : TString);
+Begin
+  WriteLn('CCW32: FATAL: ', Msg);
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+  Halt(EXIT_ERROR);
+End;
+
+Procedure WarnMsg(Const Msg : TString);
+Begin
+  If Not Opts.Warnings Then Exit;
+  WriteLn('CCW32: warning: ', Msg);
+  Inc(WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ InitOptions                                                  }
+{ ------------------------------------------------------------ }
+
+Procedure InitOptions;
+Var J : Integer;
+Begin
+  Opts.SrcFile   := '';
+  Opts.OutFile   := '';
+  Opts.Verbose   := False;
+  Opts.DebugMode := False;
+  Opts.Warnings  := False;
+  Opts.AsmOutput := False;
+  Opts.ObjOnly   := False;
+  Opts.DLLMode   := False;
+  Opts.OptLevel  := OPT_NONE;
+  Opts.OptSpeed  := False;
+  Opts.OptSize   := False;
+  Opts.CStandard := 'C99';
+  Opts.LinkCount := 0;
+  For J := 0 To MAX_LINK_FILES - 1 Do
+    Opts.LinkFiles[J] := '';
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowHelp                                                     }
+{ ------------------------------------------------------------ }
+
+Procedure ShowHelp;
+Begin
+  WriteLn('CCW32 v', CCW32_VERSION, ' (', CCW32_DATE,
+          ') - Compilateur C vers 80386 (Windows PE 32 bits)');
+  WriteLn;
+  WriteLn('Syntaxe : CCW32 <source.c> [sortie] [options] ',
+          '[fichier.lib ...] [fichier.obj ...]');
+  WriteLn;
+  WriteLn('Sortie :');
+  WriteLn('  Par defaut un .EXE (PE Windows 32 bits)');
+  WriteLn('  -obj           Produire seulement un fichier .OBJ (COFF)');
+  WriteLn('  -asm           Produire egalement un fichier .ASM lisible');
+  WriteLn('  -dll           Produire un .DLL au lieu d''un .EXE');
+  WriteLn;
+  WriteLn('Optimisation :');
+  WriteLn('  -O0            Pas d''optimisation (valeur par defaut)');
+  WriteLn('  -O1            Optimisations de base');
+  WriteLn('  -O2            Optimisations avancees');
+  WriteLn('  -O3            Optimisations agressives (toutes)');
+  WriteLn('  -Ot            Optimiser pour la vitesse');
+  WriteLn('  -Os            Optimiser pour la taille');
+  WriteLn;
+  WriteLn('Norme C :');
+  WriteLn('  -std=<norme>   Norme C cible : c89, c90, c95, c99 (defaut),');
+  WriteLn('                 c11, c18, kr, posix');
+  WriteLn;
+  WriteLn('General :');
+  WriteLn('  -v             Mode verbeux (banniere + statistiques)');
+  WriteLn('  -d             Debug tokens (affiche chaque token)');
+  WriteLn('  -w             Afficher les avertissements');
+  WriteLn('  -h, --help, /? Afficher cette aide');
+  WriteLn;
+  WriteLn('Linkage :');
+  WriteLn('  fichier.lib    Fichier de bibliotheque a lier');
+  WriteLn('  fichier.obj    Fichier objet externe a lier');
+  WriteLn;
+  WriteLn('Exemples :');
+  WriteLn('  CCW32 hello.c');
+  WriteLn('  CCW32 hello.c hello.exe -v');
+  WriteLn('  CCW32 main.c -asm -O2');
+  WriteLn('  CCW32 plugin.c -dll -Os');
+  WriteLn('  CCW32 app.c mylib.lib helper.obj');
+  WriteLn('  CCW32 projet.c -std=c11 -O2 -Ot');
+  Halt(EXIT_OK);
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseArgs                                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseArgs;
+Var
+  I    : Integer;
+  Arg  : TString;
+  Ext  : TString;
+  UArg : TString;
+Begin
+  InitOptions;
+  If ParamCount = 0 Then
+    ShowHelp;
+
+  I := 1;
+  While I <= ParamCount Do
+  Begin
+    Arg := ParamStr(I);
+
+    If (Arg = '-h') Or (Arg = '--help') Or (Arg = '/?') Or
+       (Arg = '/h') Or (Arg = '/H') Then
+      ShowHelp
+    Else If Arg = '-v' Then
+      Opts.Verbose := True
+    Else If Arg = '-d' Then
+      Opts.DebugMode := True
+    Else If Arg = '-w' Then
+      Opts.Warnings := True
+    Else If Arg = '-asm' Then
+      Opts.AsmOutput := True
+    Else If Arg = '-obj' Then
+      Opts.ObjOnly := True
+    Else If Arg = '-dll' Then
+      Opts.DLLMode := True
+    Else If Arg = '-O0' Then
+      Opts.OptLevel := OPT_NONE
+    Else If Arg = '-O1' Then
+      Opts.OptLevel := OPT_BASIC
+    Else If Arg = '-O2' Then
+      Opts.OptLevel := OPT_ADVANCED
+    Else If Arg = '-O3' Then
+      Opts.OptLevel := OPT_AGGRESSIVE
+    Else If Arg = '-Ot' Then
+      Opts.OptSpeed := True
+    Else If Arg = '-Os' Then
+      Opts.OptSize := True
+    Else If Copy(Arg, 1, 5) = '-std=' Then
+    Begin
+      UArg := StrUpperCase(Copy(Arg, 6, Length(Arg) - 5));
+      If (UArg = 'C89') Or (UArg = 'ANSI') Then
+        Opts.CStandard := 'C89'
+      Else If UArg = 'C90' Then
+        Opts.CStandard := 'C90'
+      Else If UArg = 'C95' Then
+        Opts.CStandard := 'C95'
+      Else If UArg = 'C99' Then
+        Opts.CStandard := 'C99'
+      Else If UArg = 'C11' Then
+        Opts.CStandard := 'C11'
+      Else If UArg = 'C18' Then
+        Opts.CStandard := 'C18'
+      Else If (UArg = 'KR') Or (UArg = 'K&R') Then
+        Opts.CStandard := 'KR'
+      Else If UArg = 'POSIX' Then
+        Opts.CStandard := 'POSIX'
+      Else
+        FatalError('Norme C inconnue: ' + Copy(Arg, 6, Length(Arg) - 5)
+          + ' (valeurs: c89 c90 c95 c99 c11 c18 kr posix)');
+    End
+    Else If (Length(Arg) > 0) And (Arg[1] = '-') Then
+      FatalError('Option inconnue: ' + Arg)
+    Else
+    Begin
+      { Argument positionnel : fichier source, sortie, ou linkage }
+      Ext := ExtractExt(Arg);
+      If (Ext = '.lib') Or (Ext = '.obj') Then
+      Begin
+        If Opts.LinkCount >= MAX_LINK_FILES Then
+          FatalError('Trop de fichiers de linkage (max '
+            + IntToStr_(MAX_LINK_FILES) + ')');
+        Opts.LinkFiles[Opts.LinkCount] := Arg;
+        Inc(Opts.LinkCount);
+      End
+      Else If Opts.SrcFile = '' Then
+        Opts.SrcFile := Arg
+      Else If Opts.OutFile = '' Then
+        Opts.OutFile := Arg
+      Else
+        FatalError('Argument inattendu: ' + Arg);
+    End;
+
+    Inc(I);
+  End;
+
+  { Validation : fichier source requis }
+  If Opts.SrcFile = '' Then
+  Begin
+    WriteLn('CCW32: fichier source manquant');
+    ShowHelp;
+  End;
+
+  { Verifier l extension .c }
+  Ext := ExtractExt(Opts.SrcFile);
+  If Ext <> '.c' Then
+    WarnMsg('extension attendue .c, trouvee: ' + Ext);
+
+  { -Ot et -Os sont mutuellement exclusifs }
+  If Opts.OptSpeed And Opts.OptSize Then
+    FatalError('-Ot et -Os sont mutuellement exclusifs');
+
+  { -obj et -dll sont mutuellement exclusifs }
+  If Opts.ObjOnly And Opts.DLLMode Then
+    FatalError('-obj et -dll sont mutuellement exclusifs');
+
+  { Fichier de sortie par defaut }
+  If Opts.OutFile = '' Then
+  Begin
+    If Opts.ObjOnly Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.obj')
+    Else If Opts.DLLMode Then
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.dll')
+    Else
+      Opts.OutFile := ReplaceExt(Opts.SrcFile, '.exe');
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ShowBanner / ShowStats                                       }
+{ ------------------------------------------------------------ }
+
+Procedure ShowBanner;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn('CCW32 v', CCW32_VERSION, ' (', CCW32_DATE,
+          ') - Compilateur C -> 80386 PE Win32');
+  WriteLn('Source   : ', Opts.SrcFile);
+  WriteLn('Sortie   : ', Opts.OutFile);
+  If Opts.AsmOutput Then
+    WriteLn('ASM      : ', ReplaceExt(Opts.OutFile, '.asm'));
+  WriteLn('Norme    : ', Opts.CStandard);
+  If Opts.OptLevel > OPT_NONE Then
+    WriteLn('Optim    : -O', IntToStr_(Opts.OptLevel));
+  If Opts.OptSpeed Then
+    WriteLn('Strategie: vitesse (-Ot)');
+  If Opts.OptSize Then
+    WriteLn('Strategie: taille (-Os)');
+  If Opts.DLLMode Then
+    WriteLn('Format   : DLL');
+  If Opts.LinkCount > 0 Then
+    WriteLn('Linkage  : ', Opts.LinkCount, ' fichier(s) externe(s)');
+  WriteLn;
+End;
+
+Procedure ShowStats;
+Begin
+  If Not Opts.Verbose Then Exit;
+  WriteLn;
+  WriteLn('--- Statistiques ---');
+  WriteLn('Lignes analysees : ', TotalLines);
+  WriteLn('Erreurs          : ', ErrorCount);
+  WriteLn('Avertissements   : ', WarnCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ Run (stub - sera implemente dans les TODOs suivants)         }
+{ ------------------------------------------------------------ }
+
+Procedure Run;
+Begin
+  { TODO 02+ : LexInit, Parse, Emit, Binary }
+  WriteLn('CCW32: Compilation de ', Opts.SrcFile, ' ...');
+  WriteLn('CCW32: (stub) Le compilateur n''est pas encore implemente.');
+  WriteLn('CCW32: Les TODOs 02 a 25 restent a implementer.');
+End;
+
+{ ------------------------------------------------------------ }
+{ Cleanup                                                      }
+{ ------------------------------------------------------------ }
+
+Procedure Cleanup;
+Begin
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
+{ ============================================================ }
+{ Programme principal                                          }
+{ ============================================================ }
+
+Begin
+  If (ParamCount > 0) And
+     ((ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
+      (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
+      (ParamStr(1) = '/H')) Then
+  Begin
+    ShowHelp;
+    Halt(EXIT_OK);
+  End;
+
+  ErrorCount := 0;
+  WarnCount  := 0;
+  TotalLines := 0;
+  OutFOpen   := False;
+
+  ParseArgs;
+  ShowBanner;
+  Run;
+  Cleanup;
+  If Opts.Verbose Then ShowStats;
+
+  If ErrorCount > 0 Then
+    Halt(EXIT_ERROR)
+  Else
+    Halt(EXIT_OK);
 End.
