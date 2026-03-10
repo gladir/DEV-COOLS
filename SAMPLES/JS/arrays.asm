@@ -1,4 +1,4 @@
-; Genere par JS86 v1.0 - SAMPLES\JS\arrays.js
+; Genere par JS86 v1.0 - .\samples\JS\arrays.js
 
         .MODEL SMALL
         .STACK 1024
@@ -425,7 +425,7 @@ _JSL_34:
         MOV   AX, 4C00h
         INT    21h
 
-; --- runtime core routines (TODO 24) ---
+; --- runtime core routines ---
 _JSRT_NUMTOSTR:
         PUSH   BX
         PUSH   CX
@@ -575,7 +575,7 @@ _JSRT_ALLOC:
         POP   BX
         RET
 
-; --- runtime array routines (TODO 15) ---
+; --- runtime array routines ---
 _JSRT_ARRPUSH:
         MOV   BX, [SI]
         MOV   DI, BX
@@ -719,7 +719,7 @@ _JSL_66:
         POP   AX
         RET
 
-; --- runtime object routines (TODO 16) ---
+; --- runtime object routines ---
 _JSRT_STRCMP:
         PUSH   SI
         PUSH   DI
@@ -865,7 +865,7 @@ _JSL_79:
         POP   CX
         RET
 
-; --- runtime regexp routines (TODO 19) ---
+; --- runtime regexp routines ---
 _JSRT_REPARSE:
         PUSH   BX
         MOV   BX, DI
@@ -1078,7 +1078,7 @@ _JSL_94:
         LEA   AX, _JSRT_REBUF
         RET
 
-; --- runtime string / math / number routines (TODO 20) ---
+; --- runtime string / math / number routines ---
 _JSRT_STRLEN:
         PUSH   SI
         XOR   AX, AX
@@ -1646,7 +1646,7 @@ _JSRT_JSONSTR:
         POP   DI
         RET
 
-; --- runtime class routines (TODO 21) ---
+; --- runtime class routines ---
 _JSRT_NEW:
         PUSH   BX
         MOV   BX, [_JSRT_HEAPTOP]
@@ -1678,7 +1678,7 @@ _JSRT_OBJCREATE:
         POP   DX
         RET
 
-; --- runtime exception routines (TODO 23) ---
+; --- runtime exception routines ---
 _JSRT_MKERROR:
         MOV   AX, SI
         RET

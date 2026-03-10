@@ -25,455 +25,6 @@
   .PAS en dialecte VAX Pascal et produit de l assembleur 80386
   compatible MASM pour Windows 32 bits (PE).
 
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
-            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
-              AsmOutput, ObjOnly)
-            ParseArgs : analyser argv (source.pas [sortie.exe] [-v] [-d]
-              [-w] [-obj] [-asm])
-            -obj : produire uniquement un fichier .OBJ (COFF)
-            -asm : produire egalement un fichier .ASM lisible
-            Par defaut : produire un .EXE (PE Windows 32 bits)
-            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Detecter l extension .pas du fichier source
-            Programme principal : validation des arguments et appel Run
-            Version, Date, aide en ligne (option -h ou /?)
-
-  TODO 02 - LEXEUR (TOKENS VAX PASCAL) [IMPLEMENTE]
-            TTokenKind : TK_EOF, TK_INTEGER, TK_REAL, TK_STRING,
-              TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT,
-              TK_OCTAL, TK_ATTR_OPEN, TK_ATTR_CLOSE
-            LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
-            LexScanString : chaine entre apostrophes 'abc'
-              Apostrophe doublee : 'it''s' -> it's
-            LexScanCharLit : caractere entre apostrophes 'A'
-            LexScanHexNumber : entiers hexadecimaux %X'FF' ou $FF
-            LexScanOctalNumber : entiers octaux %O'77' ou 777B
-            Commentaires : accolades et parentheses-etoile imbriques
-            Mots-cles : AND ARRAY BEGIN BOOLEAN CASE CHAR CONST
-              DIV DO DOWNTO ELSE END FILE FOR FUNCTION GOTO IF
-              IN INTEGER LABEL MOD MODULE NIL NOT OF OR OTHERWISE
-              PACKED PROCEDURE PROGRAM RECORD REPEAT SET THEN TO
-              TYPE UNTIL VAR VARYING WHILE WITH
-            Mots-cles VAX etendus : DOUBLE EXTERNAL GLOBAL INHERIT
-              ENVIRONMENT STATIC VALUE ANDIF ORIF LOOP EXIT
-              CONDITION EXCEPTION ON READONLY VOLATILE WORD HIDDEN
-            Attributs entre crochets : [ et ] pour TK_ATTR_OPEN / CLOSE
-            Mode debug -d : affichage de chaque token avec PrintToken
-
-  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
-            Entiers decimaux : 0..4294967295 (32 bits) ou signes
-            Entiers hexadecimaux : %X'FF' ou $FF -> valeur 32 bits
-            Entiers octaux : %O'77' ou 777B -> valeur 32 bits
-            Reels : reconnus par le lexeur, traites comme entiers (trunc)
-              DOUBLE : reconnu, tronque en entier avec avertissement
-            Caracteres : 'A' -> valeur ordinale 32 bits
-            Chaines : 'abc' -> pointeur vers donnees .DATA avec label
-            NIL : constante pointeur nul -> EAX=0
-            TRUE : constante booleenne -> EAX=1
-            FALSE : constante booleenne -> EAX=0
-            MAXINT : constante predeclaree -> 2147483647 (32 bits)
-            Constantes typees : CONST x : Integer = 42; -> .DATA
-            Constantes nommees : CONST x = 42; -> substitution immediate
-
-  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
-            Arithmetiques  : + - * DIV MOD (entiers 32 bits)
-            Concatenation  : || (VAX Pascal, appel _VXPRT_CONCAT)
-            Exponentiation : ** (appel _VXPRT_POWER)
-            Comparaison    : = <> < <= > >=
-            Logiques       : AND OR NOT
-            Court-circuit  : ANDIF ORIF (evaluation court-circuit)
-            Ensemblistes   : + (union) * (intersection) - (difference)
-            Appartenance   : IN (element IN ensemble)
-            Affectation    : := (assignation)
-            Unaire         : + - (signe) NOT (negation logique)
-            Adresse        : @ (adresse de variable)
-            Precedence (du plus fort au plus faible) :
-              1. NOT, unaire +/-, @
-              2. ** (exponentiation)
-              3. * DIV MOD / AND
-              4. + - OR || (concatenation)
-              5. = <> < <= > >= IN
-              6. ANDIF (AND court-circuit)
-              7. ORIF (OR court-circuit)
-
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
-            TSymCat : SC_VAR, SC_CONST, SC_TYPED_CONST, SC_PARAM,
-              SC_VARPARAM, SC_FUNC, SC_PROC, SC_TYPE, SC_FIELD,
-              SC_ENUM_VAL, SC_LABEL, SC_STATIC, SC_EXTERNAL, SC_GLOBAL,
-              SC_PUBLIC, SC_MODULE, SC_CONDITION
-            TSymRec : Name, MangledName, Cat, TypeIdx, Offset,
-              Scope, ScopeId, IsGlobal, IsExternal, IsStatic
-            SymAdd, SymFind, SymFindInScope, SymMangle
-            CurScope : compteur de portee imbriquee (max MAX_SCOPE)
-            SymEnterScope / SymLeaveScope : gestion des portees
-            Qualificateurs de module : Module.Ident recherche dans portee
-            Prefixes de mangling : _VXV_ (var), _VXF_ (func/proc),
-              _VXK_ (chaine const), _VXRT_ (runtime), _VXL_ (label),
-              _VXA_ (tableau), _VXR_ (record), _VXE_ (enum),
-              _VXM_ (module)
-
-  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
-            TTypeKind : TKP_INTEGER (32 bits signe), TKP_WORD (32 bits
-              non signe), TKP_BYTE (8 bits), TKP_CHAR (8 bits),
-              TKP_BOOLEAN (8 bits), TKP_STRING (ptr chaine),
-              TKP_REAL (stub entier), TKP_DOUBLE (stub entier),
-              TKP_ARRAY, TKP_RECORD, TKP_ENUM, TKP_SUBRANGE,
-              TKP_POINTER, TKP_NIL, TKP_TEXT (fichier texte),
-              TKP_VARYING (chaine longueur variable),
-              TKP_SET (ensemble), TKP_FILE (fichier binaire),
-              TKP_SCHEMA (type schema), TKP_PROCEDURAL (var procedurale),
-              TKP_VOID
-            TypeTab, TypeInit : enregistrer types primitifs et utilisateur
-            TypeSizeof : Integer=4, Word=4, Byte=1, Char=1, Bool=1,
-              String=4 (ptr), Pointer=4, Varying=4+n (len+data)
-            TypeCompatible : verification de compatibilite d affectation
-            TypeCoerce : coercition automatique (Byte->Integer, etc.)
-            TypeResolve : resolution de types nommes
-            Types primitifs predefinis : INTEGER, UNSIGNED, WORD,
-              BYTE, CHAR, BOOLEAN, REAL, DOUBLE, STRING, POINTER
-
-  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
-            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
-            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
-            EmitComment, EmitBlankLine
-            LabelGen global (compteur unique _VXL_NNNNN)
-            Prefixes 32 bits : _VXV_ (variable), _VXF_ (fonction),
-              _VXK_ (chaine const), _VXRT_ (runtime), _VXL_ (label)
-            EmitHeader : .386 / .MODEL FLAT, STDCALL
-              EXTRN _ExitProcess@4:NEAR
-              EXTRN _GetStdHandle@4:NEAR
-              EXTRN _WriteFile@20:NEAR
-              EXTRN _ReadFile@20:NEAR
-              EXTRN _GetProcessHeap@0:NEAR
-              EXTRN _HeapAlloc@12:NEAR
-              EXTRN _HeapFree@12:NEAR
-              .DATA section et .CODE section
-            EmitProlog : PUSH EBP / MOV EBP,ESP / SUB ESP,locals
-            EmitEpilog : MOV ESP,EBP / POP EBP / RET
-            EmitDataSeg : ecrire .DATA avec toutes les entrees DataTab
-
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
-            TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
-              DK_ARRAY/DK_REC/DK_ARRAY_INIT/DK_SET), IntVal, StrVal
-            DataTab[0..MAX_DATA-1], DataCount
-            DataAdd, DataAddStr, DataAddDWord, DataAddByte,
-              DataAddArray, DataAddRec : variantes d ajout
-            Variables globales (VAR au niveau programme) :
-              DD dans .DATA avec label _VXV_nom
-            Variables STATIC : DD dans .DATA, persistantes entre appels
-            Constantes typees : DD/DB dans .DATA (immuables)
-            Chaines litterales : DB 'abc',0 dans .DATA avec label _VXK_N
-            Tampons VARYING : DB taille DUP(0) avec prefixe longueur
-
-  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
-            Variables globales : segment .DATA, acces par [_VXV_nom]
-            Variables locales : pile EBP, acces [EBP-offset]
-            Parametres : [EBP+8+...] (convention stdcall/cdecl 32 bits)
-            Declaration VAR : allocation espace pile (SUB ESP,n) ou DATA
-            Declaration STATIC VAR : allocation en .DATA, persistante
-            Affectation := : ExprFlushToEAX + MOV destination, EAX
-            Affectation de chaines : CALL _VXPRT_STRCOPY
-            Affectation de records : copie champ par champ ou REP MOVSD
-            Affectation de tableaux : copie par REP MOVSD
-            Affectation VARYING := : CALL _VXPRT_VARY_ASSIGN
-            Coercition automatique lors de l affectation
-
-  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
-            ParsePrimary : literal entier, literal chaine, ident, appel
-            Acces variable globale : MOV EAX,[_VXV_nom]
-            Acces variable locale : MOV EAX,[EBP-offset]
-            Acces parametre : MOV EAX,[EBP+offset]
-            Appel de fonction : CALL _VXF_nom -> resultat dans EAX
-            Fonctions intrinseques VAX Pascal :
-              ORD(x), CHR(x), ABS(x), SQR(x), ODD(x)
-              SUCC(x), PRED(x), TRUNC(x), ROUND(x)
-              SIZE(x), ADDRESS(x), IADDRESS(x)
-              UPPERBOUND(a,d), LOWERBOUND(a,d), DIMENSION(a,d)
-              LENGTH(s), INDEX(s,t), SUBSTR(s,pos,len)
-            Parentheses : (expr) pour forcer la precedence
-            Conversion de type : TypeName(expr) (coercition)
-            Substring : S[pos:len] -> CALL _VXPRT_SUBSTR
-
-  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
-            ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
-            Arithmetique 32 bits : ADD/SUB/IMUL/IDIV pour +, -, *, DIV
-            Modulo : IDIV -> resultat dans EDX (reste) pour MOD
-            Comparaison : CMP + Jcc pour =, <>, <, <=, >, >=
-            Comparaison String : CALL _VXPRT_STRCMP -> drapeaux
-            Comparaison VARYING : CALL _VXPRT_VARY_CMP -> drapeaux
-            Logique AND : AND EAX, valeur (bit a bit si entier)
-            Logique OR  : OR EAX, valeur
-            Logique NOT : XOR EAX,1 (booleen)
-            Court-circuit ANDIF : TEST EAX,EAX / JZ vers false
-            Court-circuit ORIF : TEST EAX,EAX / JNZ vers true
-            Concatenation || : CALL _VXPRT_CONCAT
-            Exponentiation ** : CALL _VXPRT_POWER
-            Ensembles IN : BT [set_addr], valeur / SETC AL
-
-  TODO 12 - ENTREES/SORTIES (WRITE / WRITELN / READ / READLN) [IMPLEMENTE]
-            WRITE(items...) / WRITELN(items...) :
-              WRITE('Hello')     -> CALL _VXPRT_PRINTSTR
-              WRITE(42)          -> CALL _VXPRT_PRINTINT
-              WRITE(x:10)        -> CALL _VXPRT_PRINTINT_W (largeur)
-              WRITE(r:10:2)      -> CALL _VXPRT_PRINTREAL_WD (stub)
-              WRITE(b)           -> CALL _VXPRT_PRINTBOOL
-              WRITE(c)           -> CALL _VXPRT_PRINTCHAR
-              WRITELN            -> CALL _VXPRT_PRINTCRLF
-            READ(vars...) / READLN(vars...) :
-              READ(i)            -> CALL _VXPRT_READINT
-              READ(s)            -> CALL _VXPRT_READSTR
-              READ(c)            -> CALL _VXPRT_READCHAR
-              READLN             -> CALL _VXPRT_READLN
-            WRITE(f, ...) / READ(f, ...) : I/O sur fichier (variable f)
-            OPEN, CLOSE : ouverture / fermeture de fichier
-            Emission bas niveau Win32 :
-              WriteFile(hStdOut, buf, len, written, nil)
-              ReadFile(hStdIn, buf, len, read, nil)
-
-  TODO 13 - IF / CASE / OTHERS [IMPLEMENTE]
-            ParseIfStmt : IF cond THEN stmt [ELSE stmt]
-              Emission TEST EAX,EAX / JZ pour condition fausse
-              Labels : _VXL_ELSE_N, _VXL_ENDIF_N
-              IF imbriques : ELSE IF cond THEN ...
-            ParseCaseStmt : CASE expr OF val1: stmt; val2: stmt;
-              [OTHERWISE stmt;] END
-              OTHERWISE (ou OTHERS) : branche par defaut VAX Pascal
-              Emission : CMP EAX, valeur + JE pour chaque branche
-              Intervalles : val1..val2 : stmt (comparaison de bornes)
-              Listes de valeurs : val1, val2, val3 : stmt
-              Labels : _VXL_CASE_N, _VXL_CDEF_N, _VXL_CEND_N
-
-  TODO 14 - BOUCLES (FOR / WHILE / REPEAT / LOOP..EXIT IF..END) [IMPLEMENTE]
-            ParseForStmt : FOR i := lo TO|DOWNTO hi DO stmt
-              Variable de boucle locale ou globale 32 bits
-              Labels : _VXL_FTEST_N, _VXL_FINCR_N, _VXL_FEND_N
-              TO : INC + CMP + JLE / DOWNTO : DEC + CMP + JGE
-            ParseWhileStmt : WHILE cond DO stmt
-              Labels : _VXL_WTEST_N, _VXL_WEND_N
-            ParseRepeatStmt : REPEAT stmts UNTIL cond
-              Labels : _VXL_RBEG_N, _VXL_REND_N
-            ParseLoopStmt : LOOP stmts [EXIT IF cond;] END (VAX)
-              Boucle infinie avec sortie conditionnelle
-              EXIT IF cond : TEST EAX,EAX / JNZ -> fin de boucle
-              Labels : _VXL_LBEG_N, _VXL_LEND_N
-            LoopPush / LoopPop : pile de labels pour break/continue
-            LEAVE : sortie immediate de la boucle englobante
-
-  TODO 15 - TABLEAUX ET TABLEAUX CONFORMANTS [IMPLEMENTE]
-            ARRAY[lo..hi] OF T : tableau a bornes fixes
-              Taille = (hi-lo+1) * sizeof(T)
-              Acces : base + (index-lo) * sizeof(T) -> adresse element
-            ARRAY[lo..hi, lo2..hi2] OF T : tableaux multi-dimensionnels
-              Linearisation : (i-lo1)*dim2 + (j-lo2)
-            PACKED ARRAY : compactage (1 octet par CHAR, etc.)
-            Tableaux conformants : ARRAY[1..*] OF T (VAX Pascal)
-              Borne superieure passee comme parametre cache
-              Acces via descripteur (ptr + bornes)
-            ARRAY OF CHAR : traitement special comme chaine
-            Constantes de tableau : CONST a = (1, 2, 3);
-              -> donnees dans .DATA
-            Verification de bornes optionnelle (CheckEnabled)
-
-  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
-            RECORD champ1: T1; champ2: T2; END
-              Taille = somme des sizeof(Ti) avec alignement 32 bits
-              Acces champ : offset fixe depuis debut du record
-            RECORD CASE tag OF ... END : variantes (unions)
-              Partie fixe + partie variante (taille = max des variantes)
-            PACKED RECORD : compactage sans alignement
-            WITH rec DO stmt : acces direct aux champs
-              WithSymIdx : pile de records en cours (max MAX_WITH)
-              Recherche de champs dans les records englobants
-            Affectation de records : copie complete (REP MOVSD)
-            Constantes de record : CONST r = (x: 1; y: 2);
-            Records imbriques : RECORD contenant RECORD
-
-  TODO 17 - ENUMERATIONS ET SOUS-INTERVALLES [IMPLEMENTE]
-            TYPE T = (Val1, Val2, Val3) : enumeration
-              Chaque valeur = constante entiere (0, 1, 2, ...)
-              Taille : 4 octets (DWORD 32 bits)
-              ORD(val) : valeur ordinale
-              SUCC(val), PRED(val) : successeur, predecesseur
-            TYPE T = lo..hi : sous-intervalle
-              Bornes entieres ou valeurs d enumeration
-              Taille : 4 octets (DWORD)
-              Verification de bornes optionnelle
-            FIRST(T), LAST(T) : bornes du type ordinal
-              FIRST -> valeur minimale, LAST -> valeur maximale
-            Fonctions intrinseques sur types ordinaux :
-              ORD, CHR, SUCC, PRED, ODD
-
-  TODO 18 - PROCEDURES ET FONCTIONS [IMPLEMENTE]
-            ParseParamList : parametres formels 32 bits
-              Parametres valeur : copie sur la pile (PUSH)
-              Parametres VAR : passage par adresse (LEA + PUSH)
-              Offsets : [EBP+8], [EBP+12], [EBP+16], ...
-            ParseFuncOrProc : declaration complete
-              Attributs : [GLOBAL], [EXTERNAL], [HIDDEN]
-              FORWARD : declaration avancee
-              Variables locales : [EBP-4], [EBP-8], ...
-              Prologue : PUSH EBP / MOV EBP,ESP / SUB ESP,n
-              Epilogue : MOV ESP,EBP / POP EBP / RET n
-              Valeur de retour (fonction) : resultat dans EAX
-              Nom de fonction := valeur (assignation du resultat)
-            Variables procedurales : TYPE ProcType = PROCEDURE(...)
-              Stockage : DWORD contenant adresse de la procedure
-              Appel indirect : CALL DWORD PTR [var]
-            Procedures et fonctions imbriquees
-            Parametres nommes : Proc(Param1 := val1, Param2 := val2)
-              (VAX Pascal extension)
-
-  TODO 19 - POINTEURS ET ALLOCATION DYNAMIQUE [IMPLEMENTE]
-            TYPE PtrType = ^BaseType : declaration de pointeur
-              Taille : 4 octets (DWORD, adresse 32 bits)
-            NEW(p) : allocation dynamique
-              CALL _VXPRT_NEW -> HeapAlloc Win32
-            DISPOSE(p) : liberation memoire
-              CALL _VXPRT_DISPOSE -> HeapFree Win32
-            Dereferencement : p^ -> MOV EAX,[EAX]
-            Acces champ via pointeur : p^.champ -> offset
-            Affectation de pointeurs : copie d adresse (MOV)
-            NIL : pointeur nul (EAX=0)
-            Test de pointeur : IF p <> NIL THEN ...
-            ADDRESS(x) : adresse d une variable -> LEA EAX,[var]
-            IADDRESS(x) : adresse entiere (meme chose en 32 bits)
-
-  TODO 20 - CHAINES ET VARYING OF CHAR [IMPLEMENTE]
-            STRING : chaine terminee par 0 (ASCIIZ)
-              Taille en .DATA : DB 'abc',0
-              Acces par pointeur (EAX = adresse)
-            VARYING [n] OF CHAR : chaine de longueur variable (VAX)
-              Structure : WORD longueur + n octets de donnees
-              .LENGTH : lire le mot de longueur
-              .BODY : pointeur vers les donnees
-            Routines runtime VARYING :
-              _VXPRT_VARY_ASSIGN(ESI=src, EDI=dst) : copie
-              _VXPRT_VARY_CONCAT(ESI=s1, EDI=s2) : concatenation
-              _VXPRT_VARY_LENGTH(ESI=s) -> EAX : longueur
-              _VXPRT_VARY_BODY(ESI=s) -> EAX : ptr donnees
-              _VXPRT_VARY_SUBSTR(ESI=s, EBX=pos, ECX=len) : extraction
-              _VXPRT_VARY_CMP(ESI=s1, EDI=s2) : comparaison
-            Concatenation || : chaine || chaine -> resultat VARYING
-            INDEX(s, t) : position de t dans s -> EAX (0 si absent)
-            LENGTH(s) : longueur de chaine -> EAX
-            SUBSTR(s, pos, len) : extraction de sous-chaine
-
-  TODO 21 - ENSEMBLES (SET) [IMPLEMENTE]
-            SET OF T : ensemble de type ordinal (0..255 max)
-              Representation : 32 octets (256 bits) en .DATA ou pile
-            Constructeur : [val1, val2, lo..hi]
-              BTS [set_addr], valeur pour chaque element
-            Operations ensemblistes :
-              + (union)        : OR octet par octet
-              * (intersection) : AND octet par octet
-              - (difference)   : AND NOT octet par octet
-            IN : test d appartenance -> BT [set_addr], valeur / SETC
-            Comparaison : = <> <= >= entre ensembles
-              = : comparaison octet par octet (REPE CMPSB)
-              <= : sous-ensemble (A-B = vide)
-            Ensemble vide : [] -> 32 octets a zero
-            Affectation : copie des 32 octets (REP MOVSD)
-
-  TODO 22 - MODULES (MODULE / INHERIT / ENVIRONMENT) [IMPLEMENTE]
-            MODULE nom; ... END. : unite de compilation separee
-              Pas de programme principal, seulement declarations
-              Toutes les declarations sont exportables
-            [ENVIRONMENT('nom')] : generer fichier .INC d export
-              Ecriture des EXTRN pour chaque symbole exporte
-              Symboles exportes : SC_FUNC, SC_PROC, SC_GLOBAL,
-                SC_PUBLIC, SC_VAR, SC_STATIC, SC_TYPED_CONST
-            [INHERIT('nom')] : charger definitions d un module
-              Lire le fichier .INC genere par ENVIRONMENT
-              Ajouter les symboles externes a la table
-            [GLOBAL] : procedure/fonction visible depuis d autres modules
-              Generer PUBLIC dans l assembleur
-            [EXTERNAL] : procedure/fonction definie dans un autre module
-              Generer EXTRN dans l assembleur
-            [HIDDEN] : symbole non exportable
-            Mangling de noms de module : _VXM_module_VXF_proc
-
-  TODO 23 - EXCEPTIONS (CONDITION / ON..DO) ET PREPROCESSEUR [IMPLEMENTE]
-            Exceptions VAX Pascal :
-              Conditions predefinies : ss$_accvio, ss$_intovf,
-                ss$_intdiv, ss$_fltovf, ss$_fltdiv, ss$_roprand
-              CONDITION : declaration de condition utilisateur
-              BEGIN ... EXCEPTION
-                ON cond DO stmt;
-                [ANYOTHER stmt;]
-                [ALLCONDITIONS stmt;]
-              END
-              Mecanisme : sauvegarde ESP/EBP + handler address
-              SIGNAL(cond) : lever une exception -> JMP handler
-              RESIGNAL : propager au handler englobant
-            Directives de pretraitement :
-              $INCLUDE 'fichier' ou %INCLUDE 'fichier'
-              $TITLE 'titre', $PAGE, $OPTIONS
-              $IF expr / $ELSE / $END (compilation conditionnelle)
-              %DICTIONARY : consultation CDD (stub avec avertissement)
-
-  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
-            _VXPRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut
-            _VXPRT_PRINTINT(EAX=n) : conversion + WriteFile
-            _VXPRT_PRINTCRLF : ecriture CR+LF
-            _VXPRT_PRINTBOOL(EAX=b) : afficher TRUE/FALSE
-            _VXPRT_PRINTCHAR(EAX=c) : afficher un caractere
-            _VXPRT_PRINTINT_W(EAX=n, ECX=w) : entier avec largeur
-            _VXPRT_NUMTOSTR(EAX=n, EDI=buf) : entier -> ASCII (itoa)
-            _VXPRT_STRTONUM(ESI=str) : ASCII -> entier -> EAX (atoi)
-            _VXPRT_STRLEN(ESI=str) : longueur ASCIIZ -> EAX
-            _VXPRT_STRCMP(ESI=s1, EDI=s2) : comparaison -> drapeaux
-            _VXPRT_STRCOPY(ESI=src, EDI=dst) : copie de chaine
-            _VXPRT_CONCAT(ESI=s1, EDI=s2) : concatenation -> EAX=ptr
-            _VXPRT_SUBSTR(ESI=s, EBX=pos, ECX=len) : sous-chaine
-            _VXPRT_READINT -> EAX : lire entier depuis stdin
-            _VXPRT_READSTR(EDI=buf) : lire ligne depuis stdin
-            _VXPRT_READCHAR -> EAX : lire un caractere
-            _VXPRT_READLN : consommer jusqu au prochain CR+LF
-            _VXPRT_POWER(EAX=base, ECX=exp) : exponentiation -> EAX
-            _VXPRT_NEW(ECX=taille) : HeapAlloc -> EAX=ptr
-            _VXPRT_DISPOSE(EAX=ptr) : HeapFree
-            _VXPRT_VARY_ASSIGN, _VXPRT_VARY_CONCAT,
-              _VXPRT_VARY_LENGTH, _VXPRT_VARY_BODY,
-              _VXPRT_VARY_SUBSTR, _VXPRT_VARY_CMP : runtime VARYING
-            _VXPRT_PANIC(ESI=msg) : affiche message + ExitProcess(1)
-            _VXPRT_CHKIDX(EAX=idx, EBX=lo, ECX=hi) : verif bornes
-            Heap Win32 : GetProcessHeap + HeapAlloc / HeapFree
-            Handles : hStdOut, hStdIn via GetStdHandle
-
-  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
-            Generation PE (.EXE Windows 32 bits) :
-              DOS stub + signature PE + en-tete COFF + en-tete optionnel
-              Sections : .text (code), .rdata (imports), .data (donnees)
-              Table d imports : kernel32.dll (ExitProcess, GetStdHandle,
-                WriteFile, ReadFile, GetProcessHeap, HeapAlloc,
-                HeapFree, GetTickCount)
-              Point d entree : _VXF_main ou _VXPL_MAINBODY
-            Generation COFF (.OBJ) : option -obj
-              En-tete COFF + sections .text/.data + table symboles
-              Relocations pour les references externes
-            Generation ASM (.ASM) : option -asm
-              Fichier assembleur MASM lisible en plus du binaire
-            EmitClose : finalisation du fichier de sortie
-            Run : pipeline complet LexInit -> Parse -> Emit -> Binary
-            Fichiers SAMPLES\VAXPASCAL\*.PAS existants :
-              test_array.pas, test_arrays.pas, test_assert.pas,
-              test_coerce.pas, test_const.pas, test_converge.pas,
-              test_datetime.pas, test_except.pas, test_expr.pas,
-              test_fileorg.pas, test_func.pas, test_funcproc.pas,
-              test_if.pas, test_ifcase.pas, test_include.pas,
-              test_io.pas, test_label.pas, test_lex.pas,
-              test_loop.pas, test_loops.pas, test_module.pas,
-              test_named.pas, test_percent.pas, test_pointer.pas,
-              test_preproc.pas, test_procvar.pas, test_record.pas,
-              test_records.pas, test_set.pas, test_smg.pas,
-              test_static.pas, test_string.pas, test_typedecl.pas,
-              test_types.pas, test_value.pas, test_var.pas,
-              test_vardecl.pas, test_varying.pas, test_writeread.pas
-            Smoke tests : VAXPCW32.EXE -v SAMPLES\VAXPASCAL\*.pas
-
   ============================================================ *)
 
 Program VAXPCW32;
@@ -814,7 +365,7 @@ Var
   ExcEndLabel     : TString;   { label de fin du bloc BEGIN..EXCEPTION..END }
 
 { ============================================================
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+  INFRASTRUCTURE ET OPTIONS
   ============================================================ }
 
 { ---- Declarations Forward --------------------------------- }
@@ -824,7 +375,6 @@ Procedure LexNextLine; Forward;
 Procedure IncludePop; Forward;
 Procedure LexHandleDollarDirective; Forward;
 Function  LexHandlePercentDirective : Boolean; Forward;
-{ Forward declarations TODO 03 }
 Procedure EmitDataSeg; Forward;
 Procedure EmitLabel(Const Lbl : TString); Forward;
 Procedure EmitInstr(Const Mnem : TString); Forward;
@@ -833,7 +383,6 @@ Procedure EmitInstrAB(Const Mnem, A1, A2 : TString); Forward;
 Procedure EmitHeader; Forward;
 Procedure EmitProlog(FrameSize : Integer); Forward;
 Procedure EmitEpilog(ParamBytes : Integer); Forward;
-{ Forward declarations TODO 04 }
 Function  OpPrec(Const Op : TString) : Integer; Forward;
 Procedure ExprMakeImm(V : LongInt; TIdx : Integer;
                       Var R : TExprVal); Forward;
@@ -843,7 +392,6 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 Procedure ParseExprPrec(MinPrec : Integer;
                         Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
-{ Forward declarations TODO 05 }
 Function  SymMangle(Const Name : TString; Cat : TSymCat) : TString; Forward;
 Function  SymAdd(Const Name : TString; Cat : TSymCat;
                 TIdx : Integer) : Integer; Forward;
@@ -853,11 +401,9 @@ Function  SymFindInScope(Const Name : TString;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Procedure SymInit; Forward;
-{ Forward declarations TODO 07 }
 Procedure EmitOpen; Forward;
 Procedure EmitFooter; Forward;
 Procedure EmitClose; Forward;
-{ Forward declarations TODO 06 }
 Procedure TypeInit; Forward;
 Function  TypeSizeof(TIdx : Integer) : Integer; Forward;
 Function  TypeCompatible(T1, T2 : Integer) : Boolean; Forward;
@@ -869,7 +415,6 @@ Function  TypeIsPointer(TIdx : Integer) : Boolean; Forward;
 Function  IsSetTypeIdx(TIdx : Integer) : Boolean; Forward;
 Function  IsVaryingTypeIdx(TIdx : Integer) : Boolean; Forward;
 Procedure EmitCoerce(SrcType, DstType : Integer); Forward;
-{ Forward declarations TODO 08 }
 Procedure ParseVarDecl; Forward;
 Procedure ParseConstDecl; Forward;
 Procedure ParseVarAttributes(
@@ -878,35 +423,27 @@ Procedure ParseVarAttributes(
       AHidden, AUnbound : Boolean;
   Var AAlignVal, APosVal : Integer); Forward;
 Procedure ParseDeclAttributes; Forward;
-{ Forward declarations TODO 09 }
 Procedure ParseAssignment(Const VarName : TString); Forward;
 Procedure ParseValueSection; Forward;
 Procedure ParseStatement; Forward;
 Procedure ParseBlock; Forward;
-{ Forward declarations TODO 13 }
 Procedure ParseIfStmt; Forward;
 Procedure ParseCaseStmt; Forward;
-{ Forward declarations TODO 14 }
 Procedure ParseForStmt; Forward;
 Procedure ParseWhileStmt; Forward;
 Procedure ParseRepeatStmt; Forward;
 Procedure ParseLoopStmt; Forward;
 
-{ Forward declarations TODO 15 }
 Procedure EmitBoundsCheck(Lo, Hi : LongInt); Forward;
 
-{ Forward declarations TODO 16 }
 Procedure ParseTypeDecl; Forward;
 Procedure ParseWithStmt; Forward;
 
-{ Forward declarations TODO 17 }
 { Enumerations et sous-intervalles: FIRST/LAST in ParsePrimary,  }
 { TKP_ENUM/TKP_SUBRANGE in ParseTypeDecl.                        }
 
-{ Forward declarations TODO 18 }
 Procedure ParseFuncOrProc(IsFunction : Boolean); Forward;
 
-{ Forward declarations TODO 25 }
 Procedure GeneratePE(Const AsmFile, ExeFile : TString); Forward;
 Procedure GenerateCOFF(Const AsmFile, ObjFile : TString); Forward;
 
@@ -1309,7 +846,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 02 - LEXEUR (TOKENS VAX PASCAL) [IMPLEMENTE]
+  LEXEUR (TOKENS VAX PASCAL) [IMPLEMENTE]
   ============================================================ }
 
 { ---- IsKeyword : teste si un identifiant est un mot-cle ----- }
@@ -2485,7 +2022,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  LITTERAUX ET CONSTANTES
   ============================================================ }
 
 { ---- LabelGen : generateur de labels uniques ---------------- }
@@ -2984,7 +2521,7 @@ Begin
   EmitRaw('_TEXT   SEGMENT DWORD PUBLIC ''CODE''');
   EmitRaw('        ASSUME CS:_TEXT');
   EmitBlankLine;
-  (* TODO 22 : pour un MODULE, pas de point d entree principal *)
+  (* Pour un MODULE, pas de point d entree principal *)
   If Not IsModule Then
   Begin
     EmitComment('--- Point d entree principal ---');
@@ -3004,7 +2541,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 04 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
+  OPERATEURS ET PRECEDENCE
   ============================================================ }
 
 (* ---- OpPrec : priorite d un operateur binaire --------------- *)
@@ -3112,10 +2649,10 @@ Begin
 End;
 
 (* ---- ParsePrimary : token primaire -> TExprVal --------------- *)
-(* Gere : litteraux (entier, reel, chaine, char, octal,            *)
-(*        true/false/nil/maxint),                                   *)
-(*        sous-expression parenthesee (expr),                      *)
-(*        identificateurs (stub pour futurs TODOs).                 *)
+(* Gere : litteraux (entier, reel, chaine, char, octal,           *)
+(*        true/false/nil/maxint),                                 *)
+(*        sous-expression parenthesee (expr),                     *)
+(*        identificateurs (stub pour futurs TODOs).               *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   IdName    : TString;
@@ -3332,7 +2869,7 @@ Begin
           Res.SymIdx  := -1;
         End
 
-        (* --- TODO 17 : FIRST(T) : borne basse d un type ordinal --- *)
+        (* --- FIRST(T) : borne basse d un type ordinal --- *)
         Else If Lw2 = 'first' Then
         Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -3371,7 +2908,7 @@ Begin
           Res.SymIdx  := -1;
         End
 
-        (* --- TODO 17 : LAST(T) : borne haute d un type ordinal --- *)
+        (* --- LAST(T) : borne haute d un type ordinal --- *)
         Else If Lw2 = 'last' Then
         Begin
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -3951,7 +3488,7 @@ Begin
               FTIdx2 := SymTab[SIdx2].TypeIdx;
               FIdx2 := -1;
 
-              (* TODO 20: VARYING .LENGTH and .BODY accessors *)
+              (* VARYING .LENGTH and .BODY accessors *)
               If IsVaryingTypeIdx(FTIdx2) And
                  (CurToken.Kind = TK_IDENT) Then
               Begin
@@ -4145,7 +3682,7 @@ Begin
               End
               Else
               Begin
-              (* TODO 15 : bounds check before subtraction *)
+              (* v‚rifications de limites avant la soustraction *)
               If Opts.CheckEnabled And
                  (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
@@ -4205,8 +3742,7 @@ Begin
               Else
                 EmitInstrAB('ADD', 'EBX',
                   'OFFSET ' + SymTab[SIdx2].MangledName);
-
-              (* TODO 15 : multi-dimensional subscript arr[i,j] *)
+              (* indice de multi-dimensionnel arr[i,j] *)
               If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
                  (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) And
@@ -4272,7 +3808,7 @@ Begin
             (* Simple variable access *)
             Else
             Begin
-              (* TODO 20: VARYING variables - load body pointer (ASCIIZ) *)
+              (* VARYING variables - load body pointer (ASCIIZ) *)
               If IsVaryingTypeIdx(SymTab[SIdx2].TypeIdx) Then
               Begin
                 If SymTab[SIdx2].Cat = SC_VARPARAM Then
@@ -4502,7 +4038,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+  EXPRESSIONS BINAIRES [IMPLEMENTE]
   ParseExprPrec(MinPrec) : boucle Pratt pour operateurs binaires
   Arithmetique, comparaisons (int/string/VARYING), logique,
   court-circuit ANDIF/ORIF, concatenation ||, exponentiation **,
@@ -5012,7 +4548,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
+  TABLE DES SYMBOLES [IMPLEMENTE]
   ============================================================ }
 
 { ---- SymMangle : generer le nom ASM mangled ------------------- }
@@ -5473,7 +5009,7 @@ End;
 
 
 { ============================================================
-  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
+  SYSTEME DE TYPES [IMPLEMENTE]
   ============================================================ }
 
 (* ---- TypeInit : initialiser les types primitifs 32 bits ----- *)
@@ -6061,7 +5597,7 @@ End;
 
 
 { ============================================================
-  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
+  EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
   ============================================================ }
 
 { ---- EmitOpen : ouvrir le fichier de sortie ASM -------------- }
@@ -6087,7 +5623,7 @@ End;
 Procedure EmitFooter;
 Begin
   EmitBlankLine;
-  (* TODO 22 : pour un MODULE, pas de MAINBODY ni ExitProcess *)
+  (* pour un MODULE, pas de MAINBODY ni ExitProcess *)
   If Not IsModule Then
   Begin
     { Emettre le label MAINBODY si pas deja fait }
@@ -6842,7 +6378,7 @@ Begin
   EmitBlankLine;
 
   (* ---- _VXPRT_PANIC_DIV0 : division par zero ------------------- *)
-  (* TODO 23 : signale ss$_intdiv (3) si handler present           *)
+  (* signale ss$_intdiv (3) si handler present           *)
   EmitComment('--- PANIC_DIV0 : division by zero ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_DIV0');
   EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
@@ -6861,7 +6397,7 @@ Begin
   EmitBlankLine;
 
   (* ---- _VXPRT_PANIC_NIL : nil pointer dereference --------------- *)
-  (* TODO 23 : signale ss$_accvio (1) si handler present             *)
+  (* signale ss$_accvio (1) si handler present             *)
   EmitComment('--- PANIC_NIL : nil pointer dereference ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_NIL');
   EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
@@ -6880,7 +6416,7 @@ Begin
   EmitBlankLine;
 
   (* ---- _VXPRT_PANIC_RANGE : array bounds check error --------------- *)
-  (* TODO 23 : signale ss$_intovf (2) si handler present               *)
+  (* signale ss$_intovf (2) si handler present               *)
   EmitComment('--- PANIC_RANGE : array index out of bounds ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_RANGE');
   EmitInstrAB('CMP', 'DWORD PTR [' + VXP_RT_PFX + 'EXCHDL]', '0');
@@ -6910,7 +6446,7 @@ Begin
   EmitBlankLine;
 
   { ============================================================ }
-  {  POINTEURS ET ALLOCATION DYNAMIQUE (TODO 19)                  }
+  {  POINTEURS ET ALLOCATION DYNAMIQUE                           }
   { ============================================================ }
 
   (* ---- _VXPRT_NEW : allocation dynamique Win32 ------------------- *)
@@ -6953,7 +6489,7 @@ Begin
   EmitBlankLine;
 
   (* ================================================================ *)
-  (*  TODO 24 - RUNTIME MINIMAL WIN32 : routines complementaires      *)
+  (*  RUNTIME MINIMAL WIN32 : routines complementaires      *)
   (* ================================================================ *)
 
   (* ---- _VXPRT_STRCOPY : copie chaine ASCIIZ ---------------------- *)
@@ -7840,7 +7376,7 @@ Begin
   { Directive END }
   If OutFOpen Then
   Begin
-    (* TODO 22 : pour un MODULE, END sans point d entree *)
+    (* pour un MODULE, END sans point d entree *)
     If IsModule Then
       EmitRaw('        END')
     Else
@@ -7852,7 +7388,7 @@ End;
 
 
 { ============================================================
-  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
+  GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
   Mini-assembleur x86 + generation PE Win32 binaire
   ============================================================ }
 
@@ -8616,7 +8152,7 @@ Begin
               Begin
                 Sym := PETrimLine(Copy(ValStr, 8, Length(ValStr) - 7));
                 PEAddFixup(PEDataPos, Sym, False, False);
-                { Mark fixup as data-seg fixup by negative trick - 
+                { Mark fixup as data-seg fixup by negative trick -
                   store as code fixup but offset is in data }
                 PEFixups[PEFixupCount - 1].Offset :=
                   -(PEDataPos + 1);
@@ -10243,7 +9779,7 @@ End;
 
 
 { ============================================================
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+  SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
   ParseDeclAttributes, ParseVarAttributes, ParseVarDecl,
   ParseConstDecl
   ============================================================ }
@@ -10500,7 +10036,6 @@ Var
   NewPtrTIdx      : Integer;
   (* Initialisation *)
   InitEv          : TExprVal;
-  (* TODO 15 *)
   IsPacked        : Boolean;
   Dim2Lo, Dim2Hi  : LongInt;
   Dim2Count       : LongInt;
@@ -10565,7 +10100,7 @@ Begin
       AttrExternal := True;
 
     (* First identifier *)
-    (* TODO 22 : si [global]/[external] a ete consomme par
+    (* si [global]/[external] a ete consomme par
        ParseVarAttributes mais que le token suivant n est pas un
        identificateur (ex: function/procedure), propager le flag
        vers PendAttrGlobal/PendAttrExternal pour le prochain appel *)
@@ -10861,7 +10396,7 @@ Begin
       Continue;
     End;
 
-    (* --- PACKED ARRAY / ARRAY[lo..hi] OF type detection (TODO 15) --- *)
+    (* --- PACKED ARRAY / ARRAY[lo..hi] OF type detection --- *)
     IsPacked := False;
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'packed') Then
@@ -10928,7 +10463,7 @@ Begin
         LexNextToken;
       End;
 
-      (* --- Multi-dimensional: check for comma before ] (TODO 15) --- *)
+      (* --- Multi-dimensional: check for comma before ] --- *)
       Dim2Lo := 0;
       Dim2Hi := 0;
       Dim2Count := 0;
@@ -11009,7 +10544,7 @@ Begin
       ArrCount := ArrHi - ArrLo + 1;
       If ArrCount < 1 Then ArrCount := 1;
 
-      (* TODO 15 : multi-dimensional -> create inner array type first *)
+      (* multi-dimensional -> create inner array type first *)
       If Dim2Count > 0 Then
       Begin
         (* Create inner array type for second dimension *)
@@ -11616,7 +11151,7 @@ End;
 
 
 { ============================================================
-  TODO 09 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+  VARIABLES ET AFFECTATIONS [IMPLEMENTE]
   ============================================================ }
 
 (* ---- ParseAssignment : analyser une affectation --------------- *)
@@ -12077,7 +11612,7 @@ Begin
     ParseExpr(ArrEv);
     ExprFlushToEAX(ArrEv);
 
-    (* TODO 15 : bounds check *)
+    (* bounds check *)
     If Opts.CheckEnabled And
        (FTIdx >= 0) And (FTIdx < TypeCount) And
        (TypeTab[FTIdx].Kind = TKP_ARRAY) Then
@@ -12111,7 +11646,7 @@ Begin
 
     EmitPush('EAX');
 
-    (* TODO 15 : multi-dimensional arr[i,j] := val *)
+    (* multi-dimensional arr[i,j] := val *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') And
        (FTIdx >= 0) And (FTIdx < TypeCount) And
        (TypeTab[FTIdx].Kind = TKP_ARRAY) And
@@ -12255,7 +11790,7 @@ Begin
       EmitInstr('REP MOVSB');
     End;
   End
-  (* TODO 20: VARYING assignment - convert ASCIIZ to VARYING format *)
+  (* VARYING assignment - convert ASCIIZ to VARYING format *)
   Else If IsVaryingTypeIdx(SymTab[SIdx].TypeIdx) Then
   Begin
     EmitComment('varying assign ' + VarName);
@@ -12382,7 +11917,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 13 - IF / CASE / OTHERS [IMPLEMENTE]
+  IF / CASE / OTHERS [IMPLEMENTE]
   ============================================================ }
 
 (* ---- ParseIfStmt : IF cond THEN stmt [ELSE stmt] ----------- *)
@@ -12570,7 +12105,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 14 - BOUCLES (FOR / WHILE / REPEAT / LOOP) [IMPLEMENTE]
+  BOUCLES (FOR / WHILE / REPEAT / LOOP) [IMPLEMENTE]
   ============================================================ }
 
 (* ---- LoopPush : empiler un contexte de boucle ---------------- *)
@@ -12945,7 +12480,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 15 - TABLEAUX ET TABLEAUX CONFORMANTS [IMPLEMENTE]
+  TABLEAUX ET TABLEAUX CONFORMANTS [IMPLEMENTE]
   ============================================================ }
 
 (* ---- EmitBoundsCheck : verifier les bornes d un tableau ----- *)
@@ -12961,7 +12496,7 @@ Begin
 End;
 
 { ============================================================
-  TODO 16 - ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
+  ENREGISTREMENTS (RECORD) ET WITH [IMPLEMENTE]
   ============================================================ }
 
 (* ---- ParseTypeDecl : analyser le bloc TYPE -------------------- *)
@@ -13447,7 +12982,7 @@ Begin
         WriteLn('  TYPE_POINTER: ', TName, ' -> ', FldTName);
     End
 
-    (* ---- TODO 17 : Enumeration: TYPE T = (A, B, C) ---- *)
+    (* ---- Enumeration: TYPE T = (A, B, C) ---- *)
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
       LexNextToken;
@@ -13520,7 +13055,7 @@ Begin
         WriteLn('  TYPE_ENUM: ', TName, ' (', FldCount, ' values)');
     End
 
-    (* ---- TODO 17 : Subrange: lo..hi ---- *)
+    (* ---- Subrange: lo..hi ---- *)
     Else If (CurToken.Kind = TK_INTEGER) Or
             ((CurToken.Kind = TK_OP) And (CurToken.Val = '-')) Then
     Begin
@@ -13955,7 +13490,7 @@ Begin
       Exit;
     End;
 
-    (* WRITE / WRITELN / WRITEV / PUTSTRING - TODO 12 *)
+    (* WRITE / WRITELN / WRITEV / PUTSTRING *)
     If (StLw = 'write') Or (StLw = 'writeln') Or
        (StLw = 'writev') Or (StLw = 'putstring') Then
     Begin
@@ -14057,7 +13592,7 @@ Begin
       Exit;
     End;
 
-    (* READ / READLN / READV / GETSTRING - TODO 12 *)
+    (* READ / READLN / READV / GETSTRING *)
     If (StLw = 'read') Or (StLw = 'readln') Or
        (StLw = 'readv') Or (StLw = 'getstring') Then
     Begin
@@ -14154,7 +13689,7 @@ Begin
       Exit;
     End;
 
-    (* OPEN / CLOSE / RESET / REWRITE - stub for TODO 12 *)
+    (* OPEN / CLOSE / RESET / REWRITE *)
     If (StLw = 'open') Or (StLw = 'close') Or
        (StLw = 'reset') Or (StLw = 'rewrite') Then
     Begin
@@ -14607,7 +14142,7 @@ Begin
       Exit;
     End;
 
-    (* NEW / DISPOSE - allocation dynamique Win32 (TODO 19) *)
+    (* NEW / DISPOSE - allocation dynamique Win32 *)
     If (StLw = 'new') Or (StLw = 'dispose') Then
     Begin
       LexNextToken;
@@ -14664,7 +14199,7 @@ Begin
       Exit;
     End;
 
-    (* TODO 13 : IF / CASE *)
+    (* IF / CASE *)
     If StLw = 'if' Then
     Begin
       ParseIfStmt;
@@ -14677,7 +14212,7 @@ Begin
       Exit;
     End;
 
-    (* TODO 14 : FOR / WHILE / REPEAT / LOOP *)
+    (* FOR / WHILE / REPEAT / LOOP *)
     If StLw = 'for' Then
     Begin
       ParseForStmt;
@@ -14702,7 +14237,7 @@ Begin
       Exit;
     End;
 
-    (* TODO 16 : WITH *)
+    (* WITH *)
     If StLw = 'with' Then
     Begin
       ParseWithStmt;
@@ -14728,7 +14263,7 @@ Begin
     If (StLw = 'end') Or (StLw = 'exception') Then
       Exit;
 
-    (* TODO 23 : SIGNAL(condition) *)
+    (* SIGNAL(condition) *)
     If StLw = 'signal' Then
     Begin
       LexNextToken;  (* consommer SIGNAL *)
@@ -14763,7 +14298,7 @@ Begin
       Exit;
     End;
 
-    (* TODO 23 : RESIGNAL *)
+    (* RESIGNAL *)
     If StLw = 'resignal' Then
     Begin
       LexNextToken;  (* consommer RESIGNAL *)
@@ -14936,7 +14471,7 @@ Begin
 End;
 
 (* ---- ParseBlock : analyser un bloc BEGIN..END ---------------  *)
-(* TODO 23 : gere BEGIN ... EXCEPTION ON cond DO ... END         *)
+(* gere BEGIN ... EXCEPTION ON cond DO ... END         *)
 Procedure ParseBlock;
 Var
   HasExc       : Boolean;
@@ -15141,7 +14676,7 @@ End;
 
 
 { ============================================================
-  PROCEDURES ET FONCTIONS (TODO 18)
+  PROCEDURES ET FONCTIONS
   ParseFuncOrProc : declaration et corps des proc/func
   ============================================================ }
 
@@ -15416,7 +14951,7 @@ Begin
     MName := SymTab[FuncIdx].MangledName
   Else
     MName := VXP_FN_PFX + StrUpperCase(FuncName);
-  (* TODO 22 : emettre PUBLIC pour les fonctions/procedures [GLOBAL] *)
+  (* emettre PUBLIC pour les fonctions/procedures [GLOBAL] *)
   If PendAttrGlobal Then
     EmitInstr('PUBLIC ' + MName);
   EmitComment('--- ' + FuncName + ' ---');
@@ -15503,7 +15038,7 @@ Begin
   { Initialiser le lexeur }
   LexInit;
 
-  (* TODO 22 : detecter MODULE avant d emettre l en-tete
+  (* detecter MODULE avant d emettre l en-tete
      afin de savoir si on doit generer un point d entree principal *)
   LexNextToken;
   If (CurToken.Kind = TK_KEYWORD) And
@@ -15561,7 +15096,7 @@ Begin
         ModuleName := CurToken.Val;
         LexNextToken;
       End;
-      (* TODO 22 : enregistrer le module et emettre un commentaire *)
+      (* enregistrer le module et emettre un commentaire *)
       EmitComment('MODULE ' + ModuleName);
       SymAdd(ModuleName, SC_MODULE, -1);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -15710,7 +15245,7 @@ Begin
       Continue;
     End;
 
-    (* TYPE block (TODO 16) *)
+    (* TYPE block *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'type') Then
     Begin
@@ -15788,7 +15323,7 @@ Begin
         ParseAssignment(PendingAssignName);
         HasPendingAssign := False;
       End;
-      (* TODO 22 : si ParseVarDecl a re-positionne PendAttrGlobal
+      (* si ParseVarDecl a re-positionne PendAttrGlobal
          pour une function/procedure imminente, ne pas l effacer *)
       If (CurToken.Kind = TK_KEYWORD) And
          ((StrLowerCase(CurToken.Val) = 'function') Or
@@ -15961,7 +15496,7 @@ Begin
     End;
   End;
 
-  { TODO 25 : Generation PE/COFF binaire }
+  { Generation PE/COFF binaire }
   If (ErrorCount = 0) And Opts.EmitExe And (Not IsModule) Then
     GeneratePE(Opts.OutFile, Opts.OutFile)
   Else If (ErrorCount = 0) And Opts.EmitObj Then
@@ -15985,7 +15520,7 @@ Begin
       WriteLn(EnvIncF, '');
       For EnvI := SymInitCount To SymCount - 1 Do
       Begin
-        (* TODO 22 : ne pas exporter les symboles [HIDDEN] *)
+        (* ne pas exporter les symboles [HIDDEN] *)
         If SymTab[EnvI].IsHidden Then
           Continue;
         If (SymTab[EnvI].ScopeLevel = 0) And
