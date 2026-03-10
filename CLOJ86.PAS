@@ -319,7 +319,7 @@
               (loop [[x & xs] coll] ...) -> liaison destructuree
             Imbrication : destructuration recursive sur structures imbriquees
 
-  TODO 22 - FONCTIONS D ORDRE SUPERIEUR (map / filter / reduce)
+  TODO 22 - FONCTIONS D ORDRE SUPERIEUR (map / filter / reduce) [IMPLEMENTE]
             (map f coll) -> CALL _CLRT_MAP appliquer f a chaque element
               Resultat : nouvelle liste (cons de chaque (f elem))
             (filter pred coll) -> CALL _CLRT_FILTER garder si (pred elem) vrai
@@ -816,6 +816,18 @@ Procedure ParseDiffForm(Var Res : TExprVal); Forward;
 Procedure EmitDestrucVec(ValOfs : Integer); Forward;
 Procedure EmitDestrucMap(ValOfs : Integer); Forward;
 Procedure EmitDestrucBind(ValOfs : Integer); Forward;
+(* TODO 22 *)
+Procedure ParseMapHOFForm(Var Res : TExprVal); Forward;
+Procedure ParseFilterForm(Var Res : TExprVal); Forward;
+Procedure ParseReduceForm(Var Res : TExprVal); Forward;
+Procedure ParseRemoveForm(Var Res : TExprVal); Forward;
+Procedure ParseSomeForm(Var Res : TExprVal); Forward;
+Procedure ParseEveryForm(Var Res : TExprVal); Forward;
+Procedure ParseIntoForm(Var Res : TExprVal); Forward;
+Procedure ParseCompForm(Var Res : TExprVal); Forward;
+Procedure ParsePartialForm(Var Res : TExprVal); Forward;
+Procedure ParseConstantlyForm(Var Res : TExprVal); Forward;
+Procedure ParseIdentityForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2888,6 +2900,10 @@ Begin
   (* Variables temporaires pour operations set (TODO 20) *)
   EmitRaw('_CL_STMP1   DW 0');
   EmitRaw('_CL_STMP2   DW 0');
+  (* Variables temporaires pour fonctions d ordre superieur (TODO 22) *)
+  EmitRaw('_CL_HFTMP1  DW 0');
+  EmitRaw('_CL_HFTMP2  DW 0');
+  EmitRaw('_CL_HFTMP3  DW 0');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -4476,6 +4492,85 @@ Begin
             ParseDiffForm(Res);
             If CurToken.Kind = TK_RPAREN Then LexNextToken
             Else CompileError(') attendue apres difference');
+            Exit;
+          End
+
+          (* TODO 22 : fonctions d ordre superieur *)
+          Else If HeadSym = 'map' Then
+          Begin
+            ParseMapHOFForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres map');
+            Exit;
+          End
+          Else If HeadSym = 'filter' Then
+          Begin
+            ParseFilterForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres filter');
+            Exit;
+          End
+          Else If HeadSym = 'reduce' Then
+          Begin
+            ParseReduceForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres reduce');
+            Exit;
+          End
+          Else If HeadSym = 'remove' Then
+          Begin
+            ParseRemoveForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres remove');
+            Exit;
+          End
+          Else If HeadSym = 'some' Then
+          Begin
+            ParseSomeForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres some');
+            Exit;
+          End
+          Else If HeadSym = 'every?' Then
+          Begin
+            ParseEveryForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres every?');
+            Exit;
+          End
+          Else If HeadSym = 'into' Then
+          Begin
+            ParseIntoForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres into');
+            Exit;
+          End
+          Else If HeadSym = 'comp' Then
+          Begin
+            ParseCompForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres comp');
+            Exit;
+          End
+          Else If HeadSym = 'partial' Then
+          Begin
+            ParsePartialForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres partial');
+            Exit;
+          End
+          Else If HeadSym = 'constantly' Then
+          Begin
+            ParseConstantlyForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres constantly');
+            Exit;
+          End
+          Else If HeadSym = 'identity' Then
+          Begin
+            ParseIdentityForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres identity');
             Exit;
           End
 
@@ -8266,6 +8361,661 @@ Begin
     CompileError('[ ou { attendu pour destructuration');
 End;
 
+(* ============================================================
+   TODO 22 - FONCTIONS D ORDRE SUPERIEUR (map / filter / reduce)
+             [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseMapHOFForm : (map f coll) ----------------------------- *)
+(* Applique la fonction f a chaque element de coll (liste).           *)
+(* Resultat : nouvelle liste des (f elem).                            *)
+(* Strategie : parcourir la liste, appeler f via CALL indirect,       *)
+(*   accumuler par cons en ordre inverse, puis renverser.             *)
+Procedure ParseMapHOFForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    LblLoop : TString;
+    LblDone : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(map f coll)');
+
+  (* Evaluer f -> adresse de fonction *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer coll -> pointeur liste *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  (* Initialiser le resultat a nil *)
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', '0');
+
+  LblLoop := LabelGen;
+  LblDone := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblDone);
+
+  (* Appeler f(car(current)) *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  (* Cons resultat sur la liste accumulee *)
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblDone);
+  (* Renverser la liste accumulee *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'LREV');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseFilterForm : (filter pred coll) ----------------------- *)
+(* Garde les elements pour lesquels (pred elem) est vrai (non nil).  *)
+Procedure ParseFilterForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    LblLoop : TString;
+    LblDone : TString;
+    LblSkip : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(filter pred coll)');
+
+  (* Evaluer pred -> adresse de fonction *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer coll -> pointeur liste *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  (* Initialiser le resultat a nil *)
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', '0');
+
+  LblLoop := LabelGen;
+  LblDone := LabelGen;
+  LblSkip := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblDone);
+
+  (* Appeler pred(car(current)) *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  (* Si resultat = 0 (false/nil), sauter *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblSkip);
+
+  (* Cons l element original sur la liste accumulee *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+
+  EmitLabel(LblSkip);
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblDone);
+  (* Renverser la liste accumulee *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'LREV');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseReduceForm : (reduce f init coll) ou (reduce f coll) -- *)
+(* Forme 3 args : acc=init, boucle (f acc elem) sur coll.            *)
+(* Forme 2 args : acc=first(coll), boucle sur rest(coll).            *)
+Procedure ParseReduceForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    LblLoop : TString;
+    LblDone : TString;
+    ArgCount: Integer;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(reduce f ...)');
+
+  (* Evaluer f -> adresse de fonction *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer le deuxieme argument *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Determiner si on a 2 ou 3 args *)
+  ArgCount := 2;
+  If (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Then
+  Begin
+    ArgCount := 3;
+    (* 3 args : le 2eme est init, le 3eme est coll *)
+    (* AX (empile) = init *)
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    (* AX = coll *)
+    EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+  End
+  Else
+  Begin
+    (* 2 args : le 2eme est coll, init = first(coll), iterate rest *)
+    EmitInstrA('POP', 'AX');
+    EmitInstrAB('CMP', 'AX', '0');
+    LblDone := LabelGen;
+    EmitInstrA('JE', LblDone);
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('MOV', 'BX', 'WORD PTR [SI]');
+    EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'BX');
+    EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+    EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  End;
+
+  LblLoop := LabelGen;
+  If ArgCount = 3 Then
+    LblDone := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblDone);
+
+  (* Appeler f(acc, car(current)) *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('PUSH', 'AX');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '4');
+
+  (* Mettre a jour l accumulateur *)
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblDone);
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseRemoveForm : (remove pred coll) ----------------------- *)
+(* Comme filter mais garde les elements pour lesquels pred est faux. *)
+Procedure ParseRemoveForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    LblLoop : TString;
+    LblDone : TString;
+    LblSkip : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(remove pred coll)');
+
+  (* Evaluer pred -> adresse de fonction *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer coll -> pointeur liste *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  (* Initialiser le resultat a nil *)
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', '0');
+
+  LblLoop := LabelGen;
+  LblDone := LabelGen;
+  LblSkip := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblDone);
+
+  (* Appeler pred(car(current)) *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  (* Si resultat != 0 (true), sauter (remove = inverse de filter) *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', LblSkip);
+
+  (* Cons l element original sur la liste accumulee *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+
+  EmitLabel(LblSkip);
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblDone);
+  (* Renverser la liste accumulee *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'LREV');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseSomeForm : (some pred coll) --------------------------- *)
+(* Retourne la premiere valeur (pred elem) non nil/false, ou nil.    *)
+Procedure ParseSomeForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    LblLoop : TString;
+    LblDone : TString;
+    LblNil  : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(some pred coll)');
+
+  (* Evaluer pred *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer coll *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  LblLoop := LabelGen;
+  LblDone := LabelGen;
+  LblNil  := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblNil);
+
+  (* Appeler pred(car(current)) *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  (* Si resultat != 0 -> retourner ce resultat *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JNE', LblDone);
+
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblNil);
+  EmitInstrAB('XOR', 'AX', 'AX');
+
+  EmitLabel(LblDone);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseEveryForm : (every? pred coll) ------------------------ *)
+(* Retourne true si (pred elem) est vrai pour tous les elements,     *)
+(* false des qu un element ne satisfait pas le predicat.              *)
+Procedure ParseEveryForm(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    LblLoop  : TString;
+    LblTrue  : TString;
+    LblFalse : TString;
+    LblEnd   : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(every? pred coll)');
+
+  (* Evaluer pred *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer coll *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  LblLoop  := LabelGen;
+  LblTrue  := LabelGen;
+  LblFalse := LabelGen;
+  LblEnd   := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblTrue);
+
+  (* Appeler pred(car(current)) *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  (* Si resultat = 0 -> false *)
+  EmitInstrAB('CMP', 'AX', '0');
+  EmitInstrA('JE', LblFalse);
+
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblFalse);
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstrA('JMP', LblEnd);
+
+  EmitLabel(LblTrue);
+  EmitInstrAB('MOV', 'AX', '1');
+
+  EmitLabel(LblEnd);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseIntoForm : (into to from) ----------------------------- *)
+(* Equivalent a (reduce conj to from).                                *)
+(* Pour les listes : cons chaque element de from sur to.              *)
+Procedure ParseIntoForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    LblLoop : TString;
+    LblDone : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(into to from)');
+
+  (* Evaluer to -> accumulateur *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+
+  (* Evaluer from -> liste source *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  LblLoop := LabelGen;
+  LblDone := LabelGen;
+
+  EmitLabel(LblLoop);
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('CMP', 'SI', '0');
+  EmitInstrA('JE', LblDone);
+
+  (* Conj car(current) sur l accumulateur *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  EmitInstrAB('MOV', 'BX', 'WORD PTR [_CL_HFTMP3]');
+  EmitInstrA('CALL', CL_RT_PFX + 'CONS');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+
+  (* Avancer au cdr *)
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('MOV', 'SI', 'WORD PTR [SI+2]');
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'SI');
+  EmitInstrA('JMP', LblLoop);
+
+  EmitLabel(LblDone);
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseCompForm : (comp f g) --------------------------------- *)
+(* Retourne une fonction qui applique g puis f.                       *)
+(* Genere une lambda inline : (fn [x] (f (g x)))                     *)
+(* Limitation : utilise des variables globales, un seul comp actif.   *)
+Procedure ParseCompForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    FnLabel : TString;
+    SkipLbl : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(comp f g)');
+
+  (* Evaluer f *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer g *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  (* Generer la lambda inline *)
+  FnLabel := LabelGen;
+  SkipLbl := LabelGen;
+  EmitInstrA('JMP', SkipLbl);
+
+  EmitLabel(FnLabel);
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  (* Appeler g(x) : x = [BP+4] *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+4]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP2]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  (* Appeler f(g(x)) *)
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  EmitInstrAB('ADD', 'SP', '2');
+
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('RET', '');
+
+  EmitLabel(SkipLbl);
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + FnLabel);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_FN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParsePartialForm : (partial f arg1 ...) -------------------- *)
+(* Application partielle. Retourne une fonction qui appelle f         *)
+(* avec les arguments stockes + un argument supplementaire.           *)
+(* Supporte 1 ou 2 arguments partiels.                                *)
+(* Limitation : utilise des variables globales, un seul partial actif. *)
+Procedure ParsePartialForm(Var Res : TExprVal);
+Var ArgRes   : TExprVal;
+    FnLabel  : TString;
+    SkipLbl  : TString;
+    HasArg2  : Boolean;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(partial f args...)');
+
+  (* Evaluer f *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Evaluer premier argument partiel *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP2]', 'AX');
+
+  (* Verifier s il y a un deuxieme argument partiel *)
+  HasArg2 := (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF);
+  If HasArg2 Then
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP3]', 'AX');
+  End;
+
+  (* Generer la lambda inline *)
+  FnLabel := LabelGen;
+  SkipLbl := LabelGen;
+  EmitInstrA('JMP', SkipLbl);
+
+  EmitLabel(FnLabel);
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  (* Appeler f(stored_args..., x) *)
+  (* Empiler dans l ordre inverse : x d abord, puis arg2, puis arg1 *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+4]');
+  EmitInstrA('PUSH', 'AX');
+  If HasArg2 Then
+  Begin
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP3]');
+    EmitInstrA('PUSH', 'AX');
+  End;
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP2]');
+  EmitInstrA('PUSH', 'AX');
+  EmitRaw('        CALL    WORD PTR [_CL_HFTMP1]');
+  If HasArg2 Then
+    EmitInstrAB('ADD', 'SP', '6')
+  Else
+    EmitInstrAB('ADD', 'SP', '4');
+
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('RET', '');
+
+  EmitLabel(SkipLbl);
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + FnLabel);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_FN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseConstantlyForm : (constantly x) ----------------------- *)
+(* Retourne une fonction qui ignore ses arguments et retourne x.      *)
+(* Limitation : utilise une variable globale, un seul constantly actif. *)
+Procedure ParseConstantlyForm(Var Res : TExprVal);
+Var ArgRes  : TExprVal;
+    FnLabel : TString;
+    SkipLbl : TString;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(constantly x)');
+
+  (* Evaluer x *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_HFTMP1]', 'AX');
+
+  (* Generer la lambda inline *)
+  FnLabel := LabelGen;
+  SkipLbl := LabelGen;
+  EmitInstrA('JMP', SkipLbl);
+
+  EmitLabel(FnLabel);
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+
+  (* Retourner la valeur stockee *)
+  EmitInstrAB('MOV', 'AX', 'WORD PTR [_CL_HFTMP1]');
+
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  EmitInstr('RET', '');
+
+  EmitLabel(SkipLbl);
+  EmitInstrAB('MOV', 'AX', 'OFFSET ' + FnLabel);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_FN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseIdentityForm : (identity x) --------------------------- *)
+(* Retourne simplement x.                                             *)
+Procedure ParseIdentityForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(identity x)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_UNKNOWN;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
 Procedure EmitRuntime;
 Begin
   (* TODO 24 - runtime minimal pour E/S *)
@@ -9699,6 +10449,30 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
+  (* --- TODO 22 : _CLRT_LREV : renverser une liste cons --- *)
+  (* Entree : AX = pointeur liste (cons cells)               *)
+  (* Sortie : AX = nouvelle liste renversee (cons cells)     *)
+  (* Construit une nouvelle liste par cons successifs.        *)
+  EmitRaw(CL_RT_PFX + 'LREV:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        XOR     BX, BX');
+  EmitRaw(CL_RT_PFX + 'LR_LP:');
+  EmitRaw('        CMP     SI, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'LR_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'CONS');
+  EmitRaw('        MOV     BX, AX');
+  EmitRaw('        MOV     SI, WORD PTR [SI+2]');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'LR_LP');
+  EmitRaw(CL_RT_PFX + 'LR_DN:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
   EmitComment('=== FIN RUNTIME ===');
   EmitBlankLine;
 End;
@@ -9816,6 +10590,14 @@ Begin
   SymAdd('map',        SK_FN, TY_IDX_LIST, 0);
   SymAdd('filter',     SK_FN, TY_IDX_LIST, 0);
   SymAdd('reduce',     SK_FN, TY_UNKNOWN,  0);
+  SymAdd('remove',     SK_FN, TY_IDX_LIST, 0);
+  SymAdd('some',       SK_FN, TY_UNKNOWN,  0);
+  SymAdd('every?',     SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('into',       SK_FN, TY_IDX_LIST, 0);
+  SymAdd('comp',       SK_FN, TY_IDX_FN,   0);
+  SymAdd('partial',    SK_FN, TY_IDX_FN,   0);
+  SymAdd('constantly', SK_FN, TY_IDX_FN,   0);
+  SymAdd('identity',   SK_FN, TY_UNKNOWN,  0);
 
   (* Fonctions predefinies - atomes *)
   SymAdd('atom',       SK_FN, TY_UNKNOWN, 0);

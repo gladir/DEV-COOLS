@@ -1,6 +1,6 @@
 ; =========================================================
 ; Genere par CLOJ86 v1.0 (2026-03-07)
-; Source  : SAMPLES/CLOJURE/test_destr.clj
+; Source  : SAMPLES/CLOJURE/test_hof.clj
 ; Cible   : MASM 8086, modele SMALL
 ; =========================================================
 
@@ -15,258 +15,15 @@ _CLF_main:
         MOV AX,_DATA
         MOV DS,AX
 
-; (let [...] ...)
-        SUB SP,2
-; (vector ...)
-        MOV AX,1
-        PUSH AX
-        MOV AX,2
-        PUSH AX
-        MOV AX,3
-        PUSH AX
-        MOV DI,WORD PTR [_CL_HEAPTOP]
-        MOV BX,OFFSET _CL_HEAP
-        ADD BX,DI
-        MOV WORD PTR [BX],3
-        POP AX
-        MOV WORD PTR [BX+6],AX
-        POP AX
-        MOV WORD PTR [BX+4],AX
-        POP AX
-        MOV WORD PTR [BX+2],AX
-        MOV AX,BX
-        ADD DI,8
-        MOV WORD PTR [_CL_HEAPTOP],DI
-        MOV WORD PTR [BP-2],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,0
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-4],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,1
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-6],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,2
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-8],AX
-; (println ...)
-        MOV AX,WORD PTR [BP-4]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-; (println ...)
-        MOV AX,WORD PTR [BP-6]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-; (println ...)
-        MOV AX,WORD PTR [BP-8]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-        ADD SP,8
-; (let [...] ...)
-        SUB SP,2
-; (vector ...)
-        MOV AX,10
-        PUSH AX
-        MOV AX,20
-        PUSH AX
-        MOV AX,30
-        PUSH AX
-        MOV DI,WORD PTR [_CL_HEAPTOP]
-        MOV BX,OFFSET _CL_HEAP
-        ADD BX,DI
-        MOV WORD PTR [BX],3
-        POP AX
-        MOV WORD PTR [BX+6],AX
-        POP AX
-        MOV WORD PTR [BX+4],AX
-        POP AX
-        MOV WORD PTR [BX+2],AX
-        MOV AX,BX
-        ADD DI,8
-        MOV WORD PTR [_CL_HEAPTOP],DI
-        MOV WORD PTR [BP-2],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,0
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-4],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,2
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-6],AX
-; (println ...)
-        MOV AX,WORD PTR [BP-4]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-; (println ...)
-        MOV AX,WORD PTR [BP-6]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-        ADD SP,6
-; (let [...] ...)
-        SUB SP,2
-; (hash-map ...)
-        XOR AX,AX
-        PUSH AX
-        MOV AX,42
-        PUSH AX
-        MOV AX,1
-        PUSH AX
-        MOV AX,25
-        PUSH AX
-        MOV DI,WORD PTR [_CL_HEAPTOP]
-        MOV BX,OFFSET _CL_HEAP
-        ADD BX,DI
-        MOV WORD PTR [BX],2
-        POP AX
-        MOV WORD PTR [BX+8],AX
-        POP AX
-        MOV WORD PTR [BX+6],AX
-        POP AX
-        MOV WORD PTR [BX+4],AX
-        POP AX
-        MOV WORD PTR [BX+2],AX
-        MOV AX,BX
-        ADD DI,10
-        MOV WORD PTR [_CL_HEAPTOP],DI
-        MOV WORD PTR [BP-2],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,0
-        CALL _CLRT_MAPGET
-        MOV WORD PTR [BP-4],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,1
-        CALL _CLRT_MAPGET
-        MOV WORD PTR [BP-6],AX
-; (println ...)
-        MOV AX,WORD PTR [BP-4]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-; (println ...)
-        MOV AX,WORD PTR [BP-6]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-        ADD SP,6
-; (let [...] ...)
-        SUB SP,2
-; (hash-map ...)
-        XOR AX,AX
-        PUSH AX
-        MOV AX,42
-        PUSH AX
-        MOV AX,1
-        PUSH AX
-        MOV AX,25
-        PUSH AX
-        MOV DI,WORD PTR [_CL_HEAPTOP]
-        MOV BX,OFFSET _CL_HEAP
-        ADD BX,DI
-        MOV WORD PTR [BX],2
-        POP AX
-        MOV WORD PTR [BX+8],AX
-        POP AX
-        MOV WORD PTR [BX+6],AX
-        POP AX
-        MOV WORD PTR [BX+4],AX
-        POP AX
-        MOV WORD PTR [BX+2],AX
-        MOV AX,BX
-        ADD DI,10
-        MOV WORD PTR [_CL_HEAPTOP],DI
-        MOV WORD PTR [BP-2],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,0
-        CALL _CLRT_MAPGET
-        MOV WORD PTR [BP-4],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP-2]
-        MOV BX,1
-        CALL _CLRT_MAPGET
-        MOV WORD PTR [BP-6],AX
-; (println ...)
-        MOV AX,WORD PTR [BP-4]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-; (println ...)
-        MOV AX,WORD PTR [BP-6]
-        MOV DI,OFFSET _CL_NUMBUF
-        CALL _CLRT_NUMTOSTR
-        MOV SI,DI
-        CALL _CLRT_PRINTSTR
-        CALL _CLRT_WRITECRLF
-        XOR AX,AX
-        ADD SP,6
-; (defn somme-vec ...)
+; (defn double ...)
         JMP _CL_1
-_CLF_somme_vec:
+_CLF_double:
         PUSH BP
         MOV BP,SP
-; destrVec param __dp0
-        SUB SP,2
-        MOV AX,WORD PTR [BP+4]
-        MOV BX,0
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-2],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP+4]
-        MOV BX,1
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-4],AX
-        SUB SP,2
-        MOV AX,WORD PTR [BP+4]
-        MOV BX,2
-        CALL _CLRT_VECNTH
-        MOV WORD PTR [BP-6],AX
 ; (+ ...)
-        MOV AX,WORD PTR [BP-2]
+        MOV AX,WORD PTR [BP+4]
         PUSH AX
-; (+ ...)
-        MOV AX,WORD PTR [BP-4]
-        PUSH AX
-        MOV AX,WORD PTR [BP-6]
-        MOV BX,AX
-        POP AX
-        ADD AX,BX
+        MOV AX,WORD PTR [BP+4]
         MOV BX,AX
         POP AX
         ADD AX,BX
@@ -275,32 +32,565 @@ _CLF_somme_vec:
         RET
 _CL_1:
         XOR AX,AX
+; (defn is-pos ...)
+        JMP _CL_2
+_CLF_is_pos:
+        PUSH BP
+        MOV BP,SP
+; (> a b)
+        MOV AX,WORD PTR [BP+4]
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CMP AX,BX
+        JG _CL_3
+        XOR AX,AX
+        JMP _CL_4
+_CL_3:
+        MOV AX,1
+_CL_4:
+        MOV SP,BP
+        POP BP
+        RET
+_CL_2:
+        XOR AX,AX
+; (defn add ...)
+        JMP _CL_5
+_CLF_add:
+        PUSH BP
+        MOV BP,SP
+; (+ ...)
+        MOV AX,WORD PTR [BP+6]
+        PUSH AX
+        MOV AX,WORD PTR [BP+4]
+        MOV BX,AX
+        POP AX
+        ADD AX,BX
+        MOV SP,BP
+        POP BP
+        RET
+_CL_5:
+        XOR AX,AX
+; (defn inc1 ...)
+        JMP _CL_6
+_CLF_inc1:
+        PUSH BP
+        MOV BP,SP
+; (+ ...)
+        MOV AX,WORD PTR [BP+4]
+        PUSH AX
+        MOV AX,1
+        MOV BX,AX
+        POP AX
+        ADD AX,BX
+        MOV SP,BP
+        POP BP
+        RET
+_CL_6:
+        XOR AX,AX
+; (defn dec1 ...)
+        JMP _CL_7
+_CLF_dec1:
+        PUSH BP
+        MOV BP,SP
+; (- ...)
+        MOV AX,WORD PTR [BP+4]
+        PUSH AX
+        MOV AX,1
+        MOV BX,AX
+        POP AX
+        SUB AX,BX
+        MOV SP,BP
+        POP BP
+        RET
+_CL_7:
+        XOR AX,AX
 ; (println ...)
-; (somme-vec ...)
-; (vector ...)
+; (count coll)
+; (map f coll)
+        MOV AX,[_CLF_double]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
         MOV AX,1
         PUSH AX
         MOV AX,2
         PUSH AX
         MOV AX,3
         PUSH AX
-        MOV DI,WORD PTR [_CL_HEAPTOP]
-        MOV BX,OFFSET _CL_HEAP
-        ADD BX,DI
-        MOV WORD PTR [BX],3
+        XOR AX,AX
+        MOV BX,AX
         POP AX
-        MOV WORD PTR [BX+6],AX
+        CALL _CLRT_CONS
+        MOV BX,AX
         POP AX
-        MOV WORD PTR [BX+4],AX
+        CALL _CLRT_CONS
+        MOV BX,AX
         POP AX
-        MOV WORD PTR [BX+2],AX
-        MOV AX,BX
-        ADD DI,8
-        MOV WORD PTR [_CL_HEAPTOP],DI
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+        MOV WORD PTR [_CL_HFTMP3],0
+_CL_8:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_9
+        MOV AX,WORD PTR [SI]
         PUSH AX
-        CALL _CLF_somme_vec
+        CALL    WORD PTR [_CL_HFTMP1]
         ADD SP,2
+        MOV BX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP3],AX
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_8
+_CL_9:
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_LREV
+        CALL _CLRT_LCOUNT
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (count coll)
+; (filter pred coll)
+        MOV AX,[_CLF_is_pos]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
+        MOV AX,1
+        PUSH AX
+        MOV AX,-2
+        PUSH AX
+        MOV AX,3
+        PUSH AX
+        MOV AX,-4
+        PUSH AX
+        MOV AX,5
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+        MOV WORD PTR [_CL_HFTMP3],0
+_CL_10:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_11
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,2
+        CMP AX,0
+        JE _CL_12
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV AX,WORD PTR [SI]
+        MOV BX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP3],AX
+_CL_12:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_10
+_CL_11:
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_LREV
+        CALL _CLRT_LCOUNT
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (reduce f ...)
+        MOV AX,[_CLF_add]
+        MOV WORD PTR [_CL_HFTMP1],AX
+        XOR AX,AX
+        PUSH AX
+; (list ...)
+        MOV AX,1
+        PUSH AX
+        MOV AX,2
+        PUSH AX
+        MOV AX,3
+        PUSH AX
+        MOV AX,4
+        PUSH AX
+        MOV AX,5
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+        POP AX
+        MOV WORD PTR [_CL_HFTMP3],AX
+_CL_13:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_14
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        PUSH AX
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,4
+        MOV WORD PTR [_CL_HFTMP3],AX
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_13
+_CL_14:
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (reduce f ...)
+        MOV AX,[_CLF_add]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
+        MOV AX,10
+        PUSH AX
+        MOV AX,20
+        PUSH AX
+        MOV AX,30
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        PUSH AX
+        POP AX
+        CMP AX,0
+        JE _CL_15
         MOV SI,AX
+        MOV BX,WORD PTR [SI]
+        MOV WORD PTR [_CL_HFTMP3],BX
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+_CL_16:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_15
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        PUSH AX
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,4
+        MOV WORD PTR [_CL_HFTMP3],AX
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_16
+_CL_15:
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (count coll)
+; (remove pred coll)
+        MOV AX,[_CLF_is_pos]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
+        MOV AX,1
+        PUSH AX
+        MOV AX,-2
+        PUSH AX
+        MOV AX,3
+        PUSH AX
+        MOV AX,-4
+        PUSH AX
+        MOV AX,5
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+        MOV WORD PTR [_CL_HFTMP3],0
+_CL_17:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_18
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,2
+        CMP AX,0
+        JNE _CL_19
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV AX,WORD PTR [SI]
+        MOV BX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP3],AX
+_CL_19:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_17
+_CL_18:
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_LREV
+        CALL _CLRT_LCOUNT
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (identity x)
+        MOV AX,42
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (every? pred coll)
+        MOV AX,[_CLF_is_pos]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
+        MOV AX,1
+        PUSH AX
+        MOV AX,2
+        PUSH AX
+        MOV AX,-3
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+_CL_20:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_21
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,2
+        CMP AX,0
+        JE _CL_22
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_20
+_CL_22:
+        XOR AX,AX
+        JMP _CL_23
+_CL_21:
+        MOV AX,1
+_CL_23:
+        CALL _CLRT_PRINTBOOL
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (every? pred coll)
+        MOV AX,[_CLF_is_pos]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
+        MOV AX,1
+        PUSH AX
+        MOV AX,2
+        PUSH AX
+        MOV AX,3
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+_CL_24:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_25
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,2
+        CMP AX,0
+        JE _CL_26
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_24
+_CL_26:
+        XOR AX,AX
+        JMP _CL_27
+_CL_25:
+        MOV AX,1
+_CL_27:
+        CALL _CLRT_PRINTBOOL
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (some pred coll)
+        MOV AX,[_CLF_is_pos]
+        MOV WORD PTR [_CL_HFTMP1],AX
+; (list ...)
+        MOV AX,-1
+        PUSH AX
+        MOV AX,-2
+        PUSH AX
+        MOV AX,3
+        PUSH AX
+        MOV AX,4
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+_CL_28:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_30
+        MOV AX,WORD PTR [SI]
+        PUSH AX
+        CALL    WORD PTR [_CL_HFTMP1]
+        ADD SP,2
+        CMP AX,0
+        JNE _CL_29
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_28
+_CL_30:
+        XOR AX,AX
+_CL_29:
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
+        CALL _CLRT_PRINTSTR
+        CALL _CLRT_WRITECRLF
+        XOR AX,AX
+; (println ...)
+; (count coll)
+; (into to from)
+; (list ...)
+        MOV AX,10
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP3],AX
+; (list ...)
+        MOV AX,1
+        PUSH AX
+        MOV AX,2
+        PUSH AX
+        MOV AX,3
+        PUSH AX
+        XOR AX,AX
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV BX,AX
+        POP AX
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP2],AX
+_CL_31:
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        CMP SI,0
+        JE _CL_32
+        MOV AX,WORD PTR [SI]
+        MOV BX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_CONS
+        MOV WORD PTR [_CL_HFTMP3],AX
+        MOV SI,WORD PTR [_CL_HFTMP2]
+        MOV SI,WORD PTR [SI+2]
+        MOV WORD PTR [_CL_HFTMP2],SI
+        JMP _CL_31
+_CL_32:
+        MOV AX,WORD PTR [_CL_HFTMP3]
+        CALL _CLRT_LCOUNT
+        MOV DI,OFFSET _CL_NUMBUF
+        CALL _CLRT_NUMTOSTR
+        MOV SI,DI
         CALL _CLRT_PRINTSTR
         CALL _CLRT_WRITECRLF
         XOR AX,AX
