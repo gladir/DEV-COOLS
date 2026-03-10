@@ -214,12 +214,18 @@
             EmitEpilog : MOV ESP,EBP / POP EBP / RET
             EmitDataSeg : ecrire .DATA avec toutes les entrees DataTab
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
               DK_ARRAY/DK_STRUCT/DK_ZERO), IntVal, StrVal
             DataTab[0..MAX_DATA-1], DataCount
             DataAdd, DataAddStr, DataAddDWord, DataAddByte,
-              DataAddArray, DataAddStruct : variantes d ajout
+              DataAddArray, DataAddStruct, DataAddZero : variantes d ajout
+            DataAddGlobalVar(nom, typeIdx) : cree _CCV_nom dans .DATA
+            DataAddStaticVar(func, var, typeIdx) : cree _CCST_N dans .DATA
+            ParseDataDecls : parcourt le TokenPool au niveau global
+              (profondeur 0 de braces), identifie les declarations de
+              variables globales et statiques, les ajoute au DataTab et
+              au SymTab. Ignore les fonctions, typedef, struct/union/enum.
             Variables globales (hors de toute fonction) :
               DD/DB dans .DATA avec label _CCV_nom
             Variables static : DD dans .DATA, persistantes entre appels
@@ -3041,6 +3047,7 @@ Const
   CC_STR_PFX2 = '_CCS_';   { structs                                  }
   CC_UNI_PFX  = '_CCU_';   { unions                                   }
   CC_ENM_PFX  = '_CCE_';   { enums                                    }
+  CC_STA_PFX  = '_CCST_';  { static variables                         }
 
 Type
   { Types d entrees dans le pool de donnees }
@@ -3049,7 +3056,9 @@ Type
     DK_DWORD,   { valeur 32 bits (DD nnn)                             }
     DK_BYTE,    { valeur 8 bits (DB nnn)                              }
     DK_ARRAY,   { tableau (DB ElemCount DUP(0))                       }
-    DK_RES      { espace reserve (DB Size DUP(0))                     }
+    DK_RES,     { espace reserve (DB Size DUP(0))                     }
+    DK_STRUCT,  { structure (DB Size DUP(0))                          }
+    DK_ZERO     { espace initialise a zero (DB Size DUP(0))          }
   );
 
   { Un enregistrement du pool de donnees }
@@ -3202,6 +3211,24 @@ End;
 Function DataAddRes(Const Lbl : TString; Size : Integer) : Integer;
 Begin
   DataAddRes := DataAdd(Lbl, DK_RES, Size, '', 0, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStruct : ajouter une structure (DB Size DUP(0))       }
+{ ------------------------------------------------------------ }
+
+Function DataAddStruct(Const Lbl : TString; Size : Integer) : Integer;
+Begin
+  DataAddStruct := DataAdd(Lbl, DK_STRUCT, Size, '', 0, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddZero : ajouter un espace initialise a zero            }
+{ ------------------------------------------------------------ }
+
+Function DataAddZero(Const Lbl : TString; Size : Integer) : Integer;
+Begin
+  DataAddZero := DataAdd(Lbl, DK_ZERO, Size, '', 0, 0);
 End;
 
 { ------------------------------------------------------------ }
@@ -4821,6 +4848,26 @@ Begin
         EmitRaw(DataTab[I].LblName + '  DB ' +
                 IntToStr_(DataTab[I].IntVal) + ' DUP(0)');
       End;
+
+      DK_STRUCT:
+      Begin
+        { Structure : DB Size DUP(0) }
+        If DataTab[I].IntVal > 0 Then
+          EmitRaw(DataTab[I].LblName + '  DB ' +
+                  IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DD 0');
+      End;
+
+      DK_ZERO:
+      Begin
+        { Espace initialise a zero : DB Size DUP(0) }
+        If DataTab[I].IntVal > 0 Then
+          EmitRaw(DataTab[I].LblName + '  DB ' +
+                  IntToStr_(DataTab[I].IntVal) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DD 0');
+      End;
     End; { case }
   End;
   EmitBlankLine;
@@ -4860,6 +4907,615 @@ Begin
   EmitInstr('MOV ESP,EBP');
   EmitInstr('POP EBP');
   EmitInstr('RET');
+End;
+
+{ ============================================================ }
+{ TODO 08 - SEGMENT DE DONNEES ET STATIQUES                    }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ DataAddGlobalVar : ajouter une variable globale dans .DATA   }
+{ Cree une entree _CCV_nom selon la taille du type             }
+{ Retourne l index dans DataTab ou -1                          }
+{ ------------------------------------------------------------ }
+
+Function DataAddGlobalVar(Const VarName : TString;
+                          TIdx : Integer;
+                          InitVal : LongInt) : Integer;
+Var
+  Lbl  : TString;
+  Size : Integer;
+Begin
+  Lbl  := CC_VAR_PFX + VarName;
+  Size := TypeSizeofIdx(TIdx);
+  If Size <= 1 Then
+    DataAddGlobalVar := DataAdd(Lbl, DK_BYTE, InitVal, '', 0, 0)
+  Else If Size <= 4 Then
+    DataAddGlobalVar := DataAdd(Lbl, DK_DWORD, InitVal, '', 0, 0)
+  Else
+    DataAddGlobalVar := DataAdd(Lbl, DK_ZERO, Size, '', 0, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStaticVar : ajouter une variable static dans .DATA    }
+{ Cree une entree _CCST_N avec label unique                    }
+{ Retourne le label genere                                     }
+{ ------------------------------------------------------------ }
+
+Function DataAddStaticVar(Const VarName : TString;
+                          TIdx : Integer;
+                          InitVal : LongInt) : TString;
+Var
+  Lbl  : TString;
+  Size : Integer;
+Begin
+  Inc(LabelGenSeq);
+  Lbl  := CC_STA_PFX + IntToStr_(LabelGenSeq);
+  Size := TypeSizeofIdx(TIdx);
+  If Size <= 1 Then
+    DataAdd(Lbl, DK_BYTE, InitVal, '', 0, 0)
+  Else If Size <= 4 Then
+    DataAdd(Lbl, DK_DWORD, InitVal, '', 0, 0)
+  Else
+    DataAdd(Lbl, DK_ZERO, Size, '', 0, 0);
+  DataAddStaticVar := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ IsTypeSpecifier : verifie si un token est un specificateur    }
+{ de type C (int, char, short, long, float, double, void, etc) }
+{ ------------------------------------------------------------ }
+
+Function IsTypeSpecifier(Const S : TString) : Boolean;
+Begin
+  IsTypeSpecifier :=
+    (S = 'int') Or (S = 'char') Or (S = 'short') Or (S = 'long') Or
+    (S = 'float') Or (S = 'double') Or (S = 'void') Or
+    (S = 'signed') Or (S = 'unsigned') Or
+    (S = 'struct') Or (S = 'union') Or (S = 'enum');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsStorageClass : verifie si un token est une classe de       }
+{ stockage C (static, extern, register, auto, typedef)         }
+{ ------------------------------------------------------------ }
+
+Function IsStorageClass(Const S : TString) : Boolean;
+Begin
+  IsStorageClass :=
+    (S = 'static') Or (S = 'extern') Or (S = 'register') Or
+    (S = 'auto') Or (S = 'typedef');
+End;
+
+{ ------------------------------------------------------------ }
+{ IsQualifier : verifie si un token est un qualificateur       }
+{ (const, volatile)                                            }
+{ ------------------------------------------------------------ }
+
+Function IsQualifier(Const S : TString) : Boolean;
+Begin
+  IsQualifier :=
+    (S = 'const') Or (S = 'volatile');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDataDecls : parcourir le token pool et identifier les   }
+{ declarations de variables globales et statiques au niveau 0  }
+{                                                              }
+{ Algorithme :                                                 }
+{   1. Parcourir les tokens en suivant la profondeur de braces }
+{   2. Au niveau 0, detecter les patterns de declaration       }
+{      [storage-class] [qualificateur] type ident [= val] ;   }
+{   3. Ignorer typedef, struct/union/enum definitions, et      }
+{      declarations de fonctions (ident suivi de '(')          }
+{   4. Ajouter les variables trouvees dans DataTab et SymTab   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDataDecls;
+Var
+  I         : Integer;
+  Depth     : Integer;   { profondeur de braces }
+  IsStatic  : Boolean;
+  IsExtern  : Boolean;
+  TypeIdx   : Integer;
+  TypeName  : TString;
+  VarName   : TString;
+  InitVal   : LongInt;
+  HasInit   : Boolean;
+  SymIdx    : Integer;
+  Lbl       : TString;
+  TypeSize  : Integer;
+  IsPointer : Boolean;
+  ArraySize : Integer;
+  IsArray   : Boolean;
+Begin
+  Depth     := 0;
+  I         := 0;
+
+  While I < TokenCount Do
+  Begin
+    { --- Suivre la profondeur des accolades --- }
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+    Begin
+      Inc(Depth);
+      Inc(I);
+      Continue;
+    End;
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '}') Then
+    Begin
+      If Depth > 0 Then
+        Dec(Depth);
+      Inc(I);
+      Continue;
+    End;
+
+    { --- Seules les declarations au niveau 0 nous interessent --- }
+    If Depth > 0 Then
+    Begin
+      Inc(I);
+      Continue;
+    End;
+
+    { === Niveau global (Depth = 0) === }
+    { Verifier si c est le debut d une declaration potentielle }
+
+    { --- Collecter les modificateurs --- }
+    IsStatic   := False;
+    IsExtern   := False;
+    IsPointer  := False;
+    IsArray    := False;
+    ArraySize  := 0;
+    TypeName   := '';
+    TypeIdx    := -1;
+
+    { Sauter les classes de stockage et qualificateurs }
+    If (TokenPool[I].Kind = TK_KEYWORD) And IsStorageClass(TokenPool[I].Val) Then
+    Begin
+      If TokenPool[I].Val = 'static' Then
+        IsStatic := True
+      Else If TokenPool[I].Val = 'extern' Then
+        IsExtern := True
+      Else If TokenPool[I].Val = 'typedef' Then
+      Begin
+        { Ignorer la declaration typedef : avancer jusqu au ; }
+        While (I < TokenCount) And
+              Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+          Inc(I);
+        If I < TokenCount Then Inc(I);
+        Continue;
+      End
+      Else If TokenPool[I].Val = 'auto' Then
+        { auto au niveau global : ignorer le mot-cle }
+      Else If TokenPool[I].Val = 'register' Then
+        { register au niveau global : ignorer le mot-cle }
+      ;
+      Inc(I);
+      If I >= TokenCount Then Break;
+    End;
+
+    { Sauter les qualificateurs (const, volatile) }
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+          IsQualifier(TokenPool[I].Val) Do
+    Begin
+      Inc(I);
+    End;
+    If I >= TokenCount Then Break;
+
+    { --- Verifier si c est un type de base --- }
+    If Not ((TokenPool[I].Kind = TK_KEYWORD) And
+            IsTypeSpecifier(TokenPool[I].Val)) Then
+    Begin
+      { Pas un type connu : peut etre un typedef ou autre -> avancer }
+      { Chercher le prochain ';' ou '{' au niveau 0 }
+      While (I < TokenCount) Do
+      Begin
+        If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';') Then
+        Begin
+          Inc(I);
+          Break;
+        End;
+        If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+          Break;
+        Inc(I);
+      End;
+      Continue;
+    End;
+
+    { --- Parser le type de base --- }
+    { Gerer struct/union/enum : avancer au-dela du tag et de la definition }
+    If (TokenPool[I].Val = 'struct') Or (TokenPool[I].Val = 'union') Or
+       (TokenPool[I].Val = 'enum') Then
+    Begin
+      TypeName := TokenPool[I].Val;
+      Inc(I);
+      If I >= TokenCount Then Break;
+
+      { Tag optionnel }
+      If TokenPool[I].Kind = TK_IDENT Then
+      Begin
+        TypeName := TypeName + ' ' + TokenPool[I].Val;
+        Inc(I);
+        If I >= TokenCount Then Break;
+      End;
+
+      { Definition avec accolades ? }
+      If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+      Begin
+        { Avancer au-dela de la definition de struct/union/enum }
+        Inc(Depth);
+        Inc(I);
+        { Attendre que Depth revienne a 0 (accolade fermante) }
+        While (I < TokenCount) And (Depth > 0) Do
+        Begin
+          If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+            Inc(Depth)
+          Else If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '}') Then
+            Dec(Depth);
+          Inc(I);
+        End;
+        If I >= TokenCount Then Break;
+      End;
+
+      { Chercher le type dans TypeTab }
+      TypeIdx := TypeFindByName(TypeName);
+      If TypeIdx < 0 Then
+        TypeIdx := TypeFindByName('int'); { fallback }
+
+      { Verifier s il y a un declarateur apres la definition }
+      { Si on a directement ';' c est juste une definition sans variable }
+      If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+         (TokenPool[I].Val = ';') Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
+
+      { Sinon, on continue pour parser la variable declaree apres }
+    End
+    Else
+    Begin
+      { Type de base simple : int, char, short, long, etc. }
+      TypeName := TokenPool[I].Val;
+      Inc(I);
+      If I >= TokenCount Then Break;
+
+      { Gerer les combinaisons : unsigned int, long int, etc. }
+      If (TokenPool[I].Kind = TK_KEYWORD) And
+         IsTypeSpecifier(TokenPool[I].Val) Then
+      Begin
+        { Ex: unsigned int, signed char, long int, short int, long double }
+        TypeName := TypeName + ' ' + TokenPool[I].Val;
+        Inc(I);
+        If I >= TokenCount Then Break;
+
+        { Encore un ? (ex: unsigned long int) }
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+           IsTypeSpecifier(TokenPool[I].Val) Then
+        Begin
+          TypeName := TypeName + ' ' + TokenPool[I].Val;
+          Inc(I);
+          If I >= TokenCount Then Break;
+        End;
+      End;
+
+      { Chercher le type dans TypeTab }
+      TypeIdx := TypeFindByName(TypeName);
+      If TypeIdx < 0 Then
+      Begin
+        { Essayer sans le prefix (ex: 'unsigned int' -> chercher 'unsigned') }
+        TypeIdx := TypeFindByName('int'); { fallback a int }
+      End;
+    End;
+
+    { --- Sauter les qualificateurs apres le type --- }
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+          IsQualifier(TokenPool[I].Val) Do
+    Begin
+      Inc(I);
+    End;
+    If I >= TokenCount Then Break;
+
+    { --- Verifier les pointeurs (*) --- }
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+          (TokenPool[I].Val = '*') Do
+    Begin
+      IsPointer := True;
+      Inc(I);
+    End;
+    If I >= TokenCount Then Break;
+
+    { --- Le prochain token doit etre un identifiant --- }
+    If TokenPool[I].Kind <> TK_IDENT Then
+    Begin
+      { Pas un identifiant : avancer au prochain ';' }
+      While (I < TokenCount) And
+            Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+        Inc(I);
+      If I < TokenCount Then Inc(I);
+      Continue;
+    End;
+
+    VarName := TokenPool[I].Val;
+    Inc(I);
+    If I >= TokenCount Then Break;
+
+    { --- Verifier si c est une fonction (suivi de '(') --- }
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(') Then
+    Begin
+      { C est une declaration/definition de fonction, pas une variable }
+      { Avancer au-dela de la fonction }
+      While (I < TokenCount) And
+            Not ((TokenPool[I].Kind = TK_PUNCT) And
+                 ((TokenPool[I].Val = ';') Or (TokenPool[I].Val = '{'))) Do
+        Inc(I);
+      If (I < TokenCount) And (TokenPool[I].Val = '{') Then
+      Begin
+        Inc(Depth);
+        Inc(I);
+      End
+      Else If I < TokenCount Then
+        Inc(I);
+      Continue;
+    End;
+
+    { --- Verifier si c est un tableau (suivi de '[') --- }
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '[') Then
+    Begin
+      IsArray := True;
+      Inc(I);
+      If I >= TokenCount Then Break;
+      { Lire la taille du tableau }
+      If TokenPool[I].Kind = TK_INTEGER Then
+      Begin
+        ArraySize := TokenPool[I].IntVal;
+        Inc(I);
+      End
+      Else
+        ArraySize := 1; { taille par defaut }
+      { Avancer au ']' }
+      While (I < TokenCount) And
+            Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ']')) Do
+        Inc(I);
+      If I < TokenCount Then Inc(I);
+    End;
+
+    { --- Verifier l initialiseur (= valeur) --- }
+    InitVal := 0;
+    HasInit := False;
+    If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+       (TokenPool[I].Val = '=') Then
+    Begin
+      HasInit := True;
+      Inc(I);
+      If I >= TokenCount Then Break;
+      { Lire la valeur d initialisation (simple constante) }
+      If TokenPool[I].Kind = TK_INTEGER Then
+      Begin
+        InitVal := TokenPool[I].IntVal;
+        Inc(I);
+      End
+      Else If (TokenPool[I].Kind = TK_OP) And (TokenPool[I].Val = '-') Then
+      Begin
+        Inc(I);
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+        Begin
+          InitVal := -TokenPool[I].IntVal;
+          Inc(I);
+        End;
+      End
+      Else If TokenPool[I].Kind = TK_CHAR Then
+      Begin
+        InitVal := TokenPool[I].IntVal;
+        Inc(I);
+      End
+      Else
+      Begin
+        { Initialiseur complexe : avancer jusqu au ';' ou ',' }
+        While (I < TokenCount) And
+              Not ((TokenPool[I].Kind = TK_PUNCT) And
+                   ((TokenPool[I].Val = ';') Or (TokenPool[I].Val = ','))) Do
+          Inc(I);
+      End;
+    End;
+
+    { --- Ignorer les extern (pas d emission dans .DATA) --- }
+    If IsExtern Then
+    Begin
+      { extern : enregistrer le symbole mais pas de donnee }
+      SymIdx := SymFind(VarName);
+      If SymIdx < 0 Then
+      Begin
+        SymIdx := SymAdd(VarName, SC_EXTERNAL, TypeIdx);
+        If SymIdx >= 0 Then
+        Begin
+          SymTab[SymIdx].IsExternal := True;
+          SymTab[SymIdx].IsGlobal   := True;
+        End;
+      End;
+      { Avancer au prochain ';' }
+      While (I < TokenCount) And
+            Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+        Inc(I);
+      If I < TokenCount Then Inc(I);
+      Continue;
+    End;
+
+    { --- Ajouter la variable dans le DataTab et SymTab --- }
+    If IsArray Then
+    Begin
+      TypeSize := TypeSizeofIdx(TypeIdx);
+      If IsPointer Then TypeSize := 4;
+      Lbl := CC_VAR_PFX + VarName;
+      DataAddArray(Lbl, ArraySize, TypeSize);
+      SymIdx := SymFind(VarName);
+      If SymIdx < 0 Then
+      Begin
+        SymIdx := SymAdd(VarName, SC_VAR, TypeIdx);
+        If SymIdx >= 0 Then
+        Begin
+          SymTab[SymIdx].MangledName := Lbl;
+          SymTab[SymIdx].IsGlobal := True;
+          SymTab[SymIdx].IsStatic := IsStatic;
+        End;
+      End;
+    End
+    Else If IsPointer Then
+    Begin
+      { Pointeur : toujours 4 octets (DD) }
+      Lbl := CC_VAR_PFX + VarName;
+      DataAddDWord(Lbl, InitVal);
+      SymIdx := SymFind(VarName);
+      If SymIdx < 0 Then
+      Begin
+        SymIdx := SymAdd(VarName, SC_VAR, TypeIdx);
+        If SymIdx >= 0 Then
+        Begin
+          SymTab[SymIdx].MangledName := Lbl;
+          SymTab[SymIdx].IsGlobal := True;
+          SymTab[SymIdx].IsStatic := IsStatic;
+        End;
+      End;
+    End
+    Else
+    Begin
+      { Variable simple }
+      Lbl := CC_VAR_PFX + VarName;
+      DataAddGlobalVar(VarName, TypeIdx, InitVal);
+      SymIdx := SymFind(VarName);
+      If SymIdx < 0 Then
+      Begin
+        If IsStatic Then
+          SymIdx := SymAdd(VarName, SC_STATIC, TypeIdx)
+        Else
+          SymIdx := SymAdd(VarName, SC_GLOBAL, TypeIdx);
+        If SymIdx >= 0 Then
+        Begin
+          SymTab[SymIdx].MangledName := Lbl;
+          SymTab[SymIdx].IsGlobal := Not IsStatic;
+          SymTab[SymIdx].IsStatic := IsStatic;
+          If HasInit Then
+            SymTab[SymIdx].ImmVal := InitVal;
+        End;
+      End;
+    End;
+
+    { --- Gerer les declarations multiples (int a, b, c;) --- }
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+          (TokenPool[I].Val = ',') Do
+    Begin
+      Inc(I);
+      If I >= TokenCount Then Break;
+
+      { Sauter les qualificateurs et pointeurs }
+      IsPointer := False;
+      While (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+            (TokenPool[I].Val = '*') Do
+      Begin
+        IsPointer := True;
+        Inc(I);
+      End;
+      If I >= TokenCount Then Break;
+
+      If TokenPool[I].Kind <> TK_IDENT Then Break;
+      VarName := TokenPool[I].Val;
+      Inc(I);
+      If I >= TokenCount Then Break;
+
+      { Tableau ? }
+      IsArray   := False;
+      ArraySize := 0;
+      If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '[') Then
+      Begin
+        IsArray := True;
+        Inc(I);
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+        Begin
+          ArraySize := TokenPool[I].IntVal;
+          Inc(I);
+        End
+        Else
+          ArraySize := 1;
+        While (I < TokenCount) And
+              Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ']')) Do
+          Inc(I);
+        If I < TokenCount Then Inc(I);
+      End;
+
+      { Initialiseur ? }
+      InitVal := 0;
+      HasInit := False;
+      If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+         (TokenPool[I].Val = '=') Then
+      Begin
+        HasInit := True;
+        Inc(I);
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+        Begin
+          InitVal := TokenPool[I].IntVal;
+          Inc(I);
+        End
+        Else If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+                (TokenPool[I].Val = '-') Then
+        Begin
+          Inc(I);
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+          Begin
+            InitVal := -TokenPool[I].IntVal;
+            Inc(I);
+          End;
+        End
+        Else
+        Begin
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     ((TokenPool[I].Val = ';') Or (TokenPool[I].Val = ','))) Do
+            Inc(I);
+        End;
+      End;
+
+      { Ajouter cette variable aussi }
+      If IsArray Then
+      Begin
+        TypeSize := TypeSizeofIdx(TypeIdx);
+        If IsPointer Then TypeSize := 4;
+        Lbl := CC_VAR_PFX + VarName;
+        DataAddArray(Lbl, ArraySize, TypeSize);
+      End
+      Else If IsPointer Then
+      Begin
+        Lbl := CC_VAR_PFX + VarName;
+        DataAddDWord(Lbl, InitVal);
+      End
+      Else
+      Begin
+        Lbl := CC_VAR_PFX + VarName;
+        DataAddGlobalVar(VarName, TypeIdx, InitVal);
+      End;
+
+      SymIdx := SymFind(VarName);
+      If SymIdx < 0 Then
+      Begin
+        If IsStatic Then
+          SymIdx := SymAdd(VarName, SC_STATIC, TypeIdx)
+        Else
+          SymIdx := SymAdd(VarName, SC_GLOBAL, TypeIdx);
+        If SymIdx >= 0 Then
+        Begin
+          SymTab[SymIdx].MangledName := Lbl;
+          SymTab[SymIdx].IsGlobal := Not IsStatic;
+          SymTab[SymIdx].IsStatic := IsStatic;
+          If HasInit Then
+            SymTab[SymIdx].ImmVal := InitVal;
+        End;
+      End;
+    End;
+
+    { --- Avancer au ';' --- }
+    While (I < TokenCount) And
+          Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';')) Do
+      Inc(I);
+    If I < TokenCount Then Inc(I);
+  End;
 End;
 
 { ------------------------------------------------------------ }
@@ -4913,6 +5569,9 @@ Begin
 
   { Enregistrer toutes les chaines dans le pool de donnees }
   TokenPoolRegisterStrings;
+
+  { --- Analyse des declarations globales (TODO 08) --- }
+  ParseDataDecls;
 
   WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
     MacroCount, ' macros, ', TokenCount, ' tokens, ',

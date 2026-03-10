@@ -26,6 +26,7 @@ BYTESRD  DD 0
 CRLF     DB 13,10,0
 
 _CCK_1  DB 'test',0
+_CCV_y  DD 0
 
 ; --- Segment de code ---
 .CODE

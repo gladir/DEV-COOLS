@@ -25,6 +25,9 @@ BYTESWR  DD 0
 BYTESRD  DD 0
 CRLF     DB 13,10,0
 
+_CCV_var1  DD 0
+_CCV_var2  DD 100
+_CCV_var3  DD 42
 
 ; --- Segment de code ---
 .CODE
