@@ -109,6 +109,11 @@ _CCF_main:
         CALL _printf
         ADD ESP,8
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV EAX,4
         MOV DWORD PTR [EBP-56],EAX
         MOV EAX,DWORD PTR [EBP-56]

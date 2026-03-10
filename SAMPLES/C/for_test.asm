@@ -39,7 +39,23 @@ _CCF_test_for_basic:
         MOV EAX,0
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _CCL_2
+        XOR EAX,EAX
+        JMP _CCL_3
+_CCL_2:
+        MOV EAX,1
+_CCL_3:
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
 ; WARNING: ponctuation inattendue: }
         XOR EAX,EAX
@@ -59,14 +75,46 @@ _CCF_test_for_complex:
         MOV EAX,0
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_5
+        XOR EAX,EAX
+        JMP _CCL_6
+_CCL_5:
+        MOV EAX,1
+_CCL_6:
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_7
+        XOR EAX,EAX
+        JMP _CCL_8
+_CCL_7:
+        MOV EAX,1
+_CCL_8:
         MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-8],EAX
 ; WARNING: ponctuation inattendue: }
         XOR EAX,EAX
-_CCL_2:
+_CCL_4:
         MOV ESP,EBP
         POP EBP
         RET
@@ -83,8 +131,13 @@ _CCF_main:
         CALL _CCF_test_for_complex
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
-        JMP _CCL_3
-_CCL_3:
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        JMP _CCL_9
+_CCL_9:
         MOV ESP,EBP
         POP EBP
         RET

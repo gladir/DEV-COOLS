@@ -42,11 +42,21 @@ _CCF_main:
         MOV DWORD PTR [EBP-4],EAX
 _CCL_USR_test1:
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,88
         MOV DWORD PTR [EBP-4],EAX
 _CCL_USR_test2:
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
 _CCL_USR_end:
         MOV EAX,DWORD PTR [EBP-4]

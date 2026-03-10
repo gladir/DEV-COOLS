@@ -45,6 +45,11 @@ _CCF_main:
         MOV EAX,3
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        AND EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-12]
         PUSH EAX
@@ -53,6 +58,11 @@ _CCF_main:
         CALL _printf
         ADD ESP,8
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        OR EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-12]
         PUSH EAX
@@ -61,6 +71,11 @@ _CCF_main:
         CALL _printf
         ADD ESP,8
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        XOR EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-12]
         PUSH EAX

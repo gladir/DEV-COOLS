@@ -44,20 +44,68 @@ _CCF_main:
         MOV EAX,7
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        CDQ
+        IDIV EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        CDQ
+        IDIV EBX
+        MOV EAX,EDX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,100
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-12]
         JMP _CCL_1

@@ -43,6 +43,10 @@ _CCF_main:
         POP EBX
         ADD EAX,EBX
         MOV EAX,DWORD PTR [EAX]
+        PUSH EAX
+        MOV EAX,10
+        ADD ESP,4
+; ; affectation dans expression
         LEA EAX,[EBP-20]
         PUSH EAX
         MOV EAX,1
@@ -50,6 +54,10 @@ _CCF_main:
         POP EBX
         ADD EAX,EBX
         MOV EAX,DWORD PTR [EAX]
+        PUSH EAX
+        MOV EAX,20
+        ADD ESP,4
+; ; affectation dans expression
         LEA EAX,[EBP-20]
         PUSH EAX
         MOV EAX,2
@@ -57,6 +65,10 @@ _CCF_main:
         POP EBX
         ADD EAX,EBX
         MOV EAX,DWORD PTR [EAX]
+        PUSH EAX
+        MOV EAX,30
+        ADD ESP,4
+; ; affectation dans expression
         LEA EAX,[EBP-20]
         PUSH EAX
         MOV EAX,3
@@ -64,6 +76,10 @@ _CCF_main:
         POP EBX
         ADD EAX,EBX
         MOV EAX,DWORD PTR [EAX]
+        PUSH EAX
+        MOV EAX,40
+        ADD ESP,4
+; ; affectation dans expression
         LEA EAX,[EBP-20]
         PUSH EAX
         MOV EAX,4
@@ -71,6 +87,10 @@ _CCF_main:
         POP EBX
         ADD EAX,EBX
         MOV EAX,DWORD PTR [EAX]
+        PUSH EAX
+        MOV EAX,50
+        ADD ESP,4
+; ; affectation dans expression
         LEA EAX,[EBP-20]
         PUSH EAX
         MOV EAX,2

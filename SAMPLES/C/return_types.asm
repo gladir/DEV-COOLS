@@ -50,6 +50,11 @@ _CCF_test_expr:
         MOV EAX,10
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         JMP _CCL_2
 _CCL_2:
         MOV ESP,EBP

@@ -44,6 +44,17 @@ _CCF_test_function:
         MOV DWORD PTR [EBP-8],EAX
 ; WARNING: variable non trouvee: i
         XOR EAX,EAX
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_2
+        XOR EAX,EAX
+        JMP _CCL_3
+_CCL_2:
+        MOV EAX,1
+_CCL_3:
 ; WARNING: variable non trouvee: i
         XOR EAX,EAX
         PUSH EAX

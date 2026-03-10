@@ -64,6 +64,11 @@ _CCF_main:
         MOV EAX,65
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_global_var]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-16],EAX
 _CCL_2:
         MOV ESP,EBP

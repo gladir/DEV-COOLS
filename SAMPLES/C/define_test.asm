@@ -43,6 +43,11 @@ _CCF_main:
         MOV EAX,10
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
         JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP

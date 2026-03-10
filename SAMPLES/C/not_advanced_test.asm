@@ -76,36 +76,95 @@ _CCF_main:
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_2
+        XOR EAX,EAX
+        JMP _CCL_3
+_CCL_2:
+        MOV EAX,1
+_CCL_3:
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_4
+        XOR EAX,EAX
+        JMP _CCL_5
+_CCL_4:
+        MOV EAX,1
+_CCL_5:
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _CCL_6
+        XOR EAX,EAX
+        JMP _CCL_7
+_CCL_6:
+        MOV EAX,1
+_CCL_7:
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _CCL_8
+        XOR EAX,EAX
+        JMP _CCL_9
+_CCL_8:
+        MOV EAX,1
+_CCL_9:
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
@@ -127,6 +186,17 @@ _CCF_main:
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_10
+        XOR EAX,EAX
+        JMP _CCL_11
+_CCL_10:
+        MOV EAX,1
+_CCL_11:
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
@@ -135,16 +205,41 @@ _CCF_main:
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        JZ _CCL_12
+        MOV EAX,DWORD PTR [EBP-8]
+        TEST EAX,EAX
+        JZ _CCL_12
+        MOV EAX,1
+        JMP _CCL_13
+_CCL_12:
+        XOR EAX,EAX
+_CCL_13:
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-12]
         TEST EAX,EAX
+        JNZ _CCL_14
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        JNZ _CCL_14
+        XOR EAX,EAX
+        JMP _CCL_15
+_CCL_14:
+        MOV EAX,1
+_CCL_15:
+        TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EBX,EAX
+        POP EAX
+        AND EAX,EBX
         TEST EAX,EAX
         SETZ AL
         MOVZX EAX,AL

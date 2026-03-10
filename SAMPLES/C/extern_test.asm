@@ -40,6 +40,11 @@ _CCF_test_extern:
         SUB ESP,4
 ;   local result = [EBP-4]
         MOV EAX,DWORD PTR [_global_counter]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_local_var]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]
         JMP _CCL_1
@@ -57,6 +62,11 @@ _CCF_main:
         CALL _CCF_test_extern
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_static_var]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]
         JMP _CCL_2

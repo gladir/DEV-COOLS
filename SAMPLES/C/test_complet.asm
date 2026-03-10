@@ -67,6 +67,11 @@ _CCF_main:
         LEA EAX,[EBP-4]
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_global_var]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-16]
         PUSH EAX

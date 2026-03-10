@@ -39,7 +39,23 @@ _CCF_test_for_with_control:
         MOV EAX,0
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _CCL_2
+        XOR EAX,EAX
+        JMP _CCL_3
+_CCL_2:
+        MOV EAX,1
+_CCL_3:
         MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
 ; WARNING: ponctuation inattendue: }
         XOR EAX,EAX
@@ -57,8 +73,8 @@ _CCF_main:
         PUSH EBP
         MOV EBP,ESP
         CALL _CCF_test_for_with_control
-        JMP _CCL_2
-_CCL_2:
+        JMP _CCL_4
+_CCL_4:
         MOV ESP,EBP
         POP EBP
         RET

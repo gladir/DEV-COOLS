@@ -76,10 +76,21 @@ _CCF_main:
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,1
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
 ; WARNING: mot-cle inattendu dans expression: char
         XOR EAX,EAX
+        PUSH EAX
+; WARNING: ponctuation inattendue: )
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]

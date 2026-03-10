@@ -36,6 +36,11 @@ _CCF_add_long:
 ;   param x = [EBP+8]
 ;   param y = [EBP+12]
         MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+12]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
@@ -49,6 +54,11 @@ _CCF_multiply_long:
 ;   param a = [EBP+8]
 ;   param b = [EBP+12]
         MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+12]
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         JMP _CCL_2
 _CCL_2:
         MOV ESP,EBP

@@ -63,12 +63,27 @@ _CCF_main:
         MOV DWORD PTR [EBP-20],EAX
 ; WARNING: variable non trouvee: global_long
         XOR EAX,EAX
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         MOV DWORD PTR [EBP-24],EAX
 ; WARNING: variable non trouvee: global_long
         XOR EAX,EAX
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
         MOV DWORD PTR [EBP-28],EAX
 ; WARNING: variable non trouvee: global_long
         XOR EAX,EAX
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        IMUL EAX,EBX
         MOV DWORD PTR [EBP-32],EAX
 _CCL_1:
         MOV ESP,EBP

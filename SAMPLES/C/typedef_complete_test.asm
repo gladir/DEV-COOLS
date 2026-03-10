@@ -50,6 +50,31 @@ _CCF_main:
         XOR EAX,EAX
 ; WARNING: variable non trouvee: b
         XOR EAX,EAX
+        PUSH EAX
+; WARNING: variable non trouvee: w
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        PUSH EAX
+; WARNING: variable non trouvee: s
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        PUSH EAX
+; WARNING: variable non trouvee: ip
+        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EAX]
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        PUSH EAX
+; WARNING: variable non trouvee: size
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
         JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
