@@ -1909,6 +1909,7 @@ Var
   Name : TString;
   V    : LongInt;
   Idx  : Integer;
+  ErrC : Integer;
   Neg  : Boolean;
   Invt : Boolean;
 Begin
@@ -1984,8 +1985,8 @@ Begin
       Idx := MacroFind(Name);
       If Idx >= 0 Then
       Begin
-        Val(MacroTab[Idx].Value, V, Idx);
-        If Idx <> 0 Then V := 0;
+        Val(MacroTab[Idx].Value, V, ErrC);
+        If ErrC <> 0 Then V := 0;
       End
       Else
         V := 0;
@@ -2012,7 +2013,7 @@ Var
 Begin
   P := 1;
 
-  { Fonction interne recursice - on parse gauche-a-droite }
+  { Evaluation gauche-a-droite des operateurs binaires }
   Left := PPEvalAtom(S, P);
 
   While P <= Length(S) Do
@@ -2190,11 +2191,6 @@ Begin
         Begin
           Name := Name + Result_[I];
           Inc(I);
-        End;
-        { Chercher dans les macros }
-        If (Not MacroTab[0].HasArgs) Then
-        Begin
-          { eviter recursion infinie }
         End;
         { Rechercher la macro }
         If MacroFind(Name) >= 0 Then
@@ -2469,7 +2465,7 @@ Begin
     If Active Then
     Begin
       CondStack[CondTop].Active  := MacroIsDefined(Name);
-      CondStack[CondTop].WasTrue := MacroIsDefined(Name);
+      CondStack[CondTop].WasTrue := CondStack[CondTop].Active;
     End
     Else
     Begin
@@ -2495,7 +2491,7 @@ Begin
     If Active Then
     Begin
       CondStack[CondTop].Active  := Not MacroIsDefined(Name);
-      CondStack[CondTop].WasTrue := Not MacroIsDefined(Name);
+      CondStack[CondTop].WasTrue := CondStack[CondTop].Active;
     End
     Else
     Begin
@@ -2521,7 +2517,7 @@ Begin
     If Active Then
     Begin
       CondStack[CondTop].Active  := PPEvalExpr(Expr) <> 0;
-      CondStack[CondTop].WasTrue := PPEvalExpr(Expr) <> 0;
+      CondStack[CondTop].WasTrue := CondStack[CondTop].Active;
     End
     Else
     Begin
@@ -2551,14 +2547,8 @@ Begin
     Else
     Begin
       Active := True;
-      { Check all parent frames }
-      If CondTop > 0 Then
-      Begin
-        Active := True;
-        { Use a simple check of parent }
-        If Not CondStack[CondTop - 1].Active Then
-          Active := False;
-      End;
+      If Not CondStack[CondTop - 1].Active Then
+        Active := False;
     End;
     If Active And (Not CondStack[CondTop].WasTrue) And
        (PPEvalExpr(Expr) <> 0) Then
