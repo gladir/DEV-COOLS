@@ -26,570 +26,6 @@
   MASM pour Windows 32 bits (PE). Toutes les donnees entieres
   sont 32 bits (int = 4 octets, pointeurs = 4 octets).
 
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
-            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings,
-              AsmOutput, ObjOnly, OptLevel, OptSpeed, OptSize,
-              CStandard, DLLMode, LinkFiles, LinkCount)
-            ParseArgs : analyser argv (source.c [sortie.exe] [-v] [-d]
-              [-w] [-obj] [-asm] [-dll] [-O0..-O3] [-Ot] [-Os]
-              [-std=...] [fichier.lib] [fichier.obj])
-            -obj : produire uniquement un fichier .OBJ (COFF)
-            -asm : produire egalement un fichier .ASM lisible
-            Par defaut : produire un .EXE (PE Windows 32 bits)
-            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Detecter l extension .c du fichier source
-            Programme principal : validation des arguments et appel Run
-            Version, Date, aide en ligne (option -h ou /?)
-            Supporter le linkage de fichiers .LIB et .OBJ externes
-              specifies dans les parametres de la ligne de commande
-              (ex: CCW32 source.c mylib.lib helper.obj)
-            Parametre de norme C : supporter les differentes normes
-              du langage C via un parametre de ligne de commande :
-              C (1972), K&R C (1978), C POSIX (1988),
-              ANSI C / ANSI X3.159-1989 / C89 (1989), C90 /
-              ISO/IEC 9899:1990 (1990), C95 /
-              ISO/IEC 9899:1990/AMD 1:1995 (1995),
-              C99 (1999), C11 (2011), C18 (2018)
-            Parametres d optimisation : niveau d optimisation
-              (ex: -O0, -O1, -O2, -O3) et choix entre optimiser
-              pour la vitesse (-Ot) ou reduire la taille (-Os)
-            Parametre -dll : permettre de creer des .DLL en plus
-              de .EXE (par defaut : .EXE)
-
-  TODO 02 - LEXEUR (TOKENS C) [IMPLEMENTE]
-            TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
-              TK_CHAR, TK_IDENT, TK_KEYWORD, TK_OP, TK_PUNCT
-            LexInit, LexClose, LexNextToken, LexScanIdent, LexScanNumber
-            LexScanString : chaine entre guillemets "abc"
-              Sequences d echappement : \n \t \r \0 \\ \" \' \x41
-            LexScanCharLit : caractere entre apostrophes 'A' '\n' '\0'
-            LexScanHexNumber : entiers hexadecimaux 0xFF 0XAB
-            LexScanOctalNumber : entiers octaux 077
-            Commentaires : /* ... */ (multi-lignes) et // (ligne)
-            Mots-cles : auto break case char const continue default
-              do double else enum extern float for goto if int long
-              register return short signed sizeof static struct
-              switch typedef union unsigned void volatile while
-            Operateurs multi-caracteres : ++ -- += -= *= /= %= &=
-              |= ^= <<= >>= == != <= >= && || << >> -> ##
-            Ponctuation : ( ) [ ] { } ; , . : ? ~ ! # ...
-            Mode debug -d : affichage de chaque token avec PrintToken
-
-  TODO 03 - PREPROCESSEUR (#define, #include, #if) [IMPLEMENTE]
-            #define NOM valeur : definition de macro simple
-            #define NOM(args) valeur : macro avec parametres (optionnel)
-            #undef NOM : suppression de macro
-            #include "fichier" : inclusion de fichier local
-            #include <fichier> : inclusion de fichier systeme (stub)
-            En-tetes C standard integres en built-in dans le compilateur
-              (pas de fichier externe necessaire, le compilateur reconnait
-              ces en-tetes et injecte les declarations correspondantes) :
-              assert.h  : macro assert()
-              complex.h : _Complex, I, _Complex_I, CMPLX (C99)
-                           cabs, cacos, cacosh, carg, casin, casinh,
-                           catan, catanh, ccos, ccosh, cexp, cimag,
-                           clog, conj, cpow, cproj, creal, csin,
-                           csinh, csqrt, ctan, ctanh (+ variantes f/l)
-              ctype.h   : isalpha, isdigit, isalnum, isspace, toupper,
-                           tolower, isupper, islower, isprint, ...
-              errno.h   : variable errno, constantes EDOM, ERANGE
-              fenv.h    : feclearexcept, fegetround, fesetround, ... (C99)
-              float.h   : constantes FLT_MAX, FLT_MIN, DBL_MAX, ...
-              inttypes.h: PRId32, PRIx32, imaxabs, strtoimax, ... (C99)
-              iso646.h  : and, or, not, xor, compl, ... (C95)
-              limits.h  : constantes CHAR_BIT, CHAR_MAX, INT_MAX,
-                           INT_MIN, LONG_MAX, LONG_MIN, UINT_MAX, ...
-              locale.h  : struct lconv, setlocale, localeconv (stubs)
-              math.h    : sin, cos, tan, sqrt, pow, exp, log, fabs,
-                           ceil, floor, fmod, round, trunc, cbrt,
-                           hypot, erf, tgamma, ... (+ variantes f C99)
-              setjmp.h  : jmp_buf, setjmp, longjmp (stubs)
-              signal.h  : signal, raise, SIG_DFL, SIG_IGN, SIGINT,
-                           SIGTERM, SIGABRT, ... (stubs)
-              stdarg.h  : va_list, va_start, va_arg, va_end
-              stdbool.h : bool, true, false (C99)
-              stddef.h  : NULL, size_t, ptrdiff_t, offsetof
-              stdint.h  : INT8_MAX, INT32_MAX, UINT32_MAX, ... (C99)
-              stdio.h   : printf, scanf, putchar, getchar, puts, gets,
-                           fopen, fclose, fread, fwrite, fprintf,
-                           fscanf, fgets, fputs, feof, snprintf, FILE,
-                           stdin, stdout, stderr, EOF, ...
-              stdlib.h  : malloc, free, calloc, realloc, exit, abort,
-                           atoi, atol, rand, srand, abs, labs, _Exit, ...
-              string.h  : strlen, strcpy, strcat, strcmp, strncpy,
-                           strncat, strncmp, memcpy, memset, memcmp,
-                           strchr, strrchr, strstr, strdup, ...
-              tgmath.h  : type-generic math macros (C99)
-              time.h    : time, clock, difftime, mktime, struct tm,
-                           time_t, clock_t, localtime, asctime, ...
-              wchar.h   : fgetwc, fputwc, wcslen, wcscpy, wprintf, ...
-              wctype.h  : iswalpha, iswdigit, towlower, towupper, ...
-            #ifdef NOM / #ifndef NOM : compilation conditionnelle
-            #if expression : evaluation d expression constante
-            #elif expression : branche alternative
-            #else : branche par defaut
-            #endif : fin de bloc conditionnel
-            Expansion de macros dans le code source
-            Protection contre les inclusions circulaires
-            Pile d inclusions (max MAX_INCLUDE_DEPTH)
-
-  TODO 04 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
-            Entiers decimaux : 0..4294967295 (32 bits non signe)
-            Entiers hexadecimaux : 0xFF -> valeur 32 bits
-            Entiers octaux : 077 -> valeur 32 bits
-            Suffixes entiers : u/U (unsigned), l/L (long), ul/UL
-            Flottants : 3.14, 1.0e10 (reconnus, tronques en entier)
-            Caracteres : 'A' -> valeur ordinale 32 bits
-              Echappement : '\n'=10, '\t'=9, '\r'=13, '\0'=0,
-                '\\'=92, '\''=39, '\"'=34, '\x41'=65
-            Chaines : "abc" -> pointeur vers donnees .DATA avec label
-              Concatenation implicite : "abc" "def" -> "abcdef"
-            Constantes entieres : enum et #define
-            Expressions constantes : sizeof, alignof, ternaire const
-
-  TODO 05 - TABLE DES SYMBOLES [IMPLEMENTE]
-            TSymCat : SC_VAR, SC_PARAM, SC_FUNC, SC_TYPE,
-              SC_FIELD, SC_ENUM_VAL, SC_LABEL, SC_STATIC,
-              SC_EXTERNAL, SC_TYPEDEF, SC_GLOBAL
-            TSymRec : Name, MangledName, Cat, TypeIdx, Offset,
-              Scope, ScopeId, IsGlobal, IsExternal, IsStatic
-            SymAdd, SymFind, SymFindInScope, SymMangle
-            CurScope : compteur de portee imbriquee (max MAX_SCOPE)
-            SymEnterScope / SymLeaveScope : gestion des portees
-            Portees : globale (fichier), locale (fonction), bloc {}
-            Prefixes de mangling : _CCV_ (var), _CCF_ (func),
-              _CCK_ (chaine const), _CCRT_ (runtime), _CCL_ (label),
-              _CCA_ (tableau), _CCS_ (struct), _CCU_ (union),
-              _CCE_ (enum)
-            Fonctions standard C pre-enregistrees en built-in dans
-              la table des symboles (le compilateur les reconnait
-              automatiquement lorsqu elles apparaissent dans le
-              code source C, sans declaration explicite requise) :
-              394 fonctions couvrant C89/C90, C95, C99 :
-              stdio.h (43) : clearerr, fclose, feof, ferror, fflush,
-                fgetc, fgetpos, fgets, fopen, fprintf, fputc, fputs,
-                fread, freopen, fscanf, fseek, fsetpos, ftell, fwrite,
-                getc, getchar, gets, perror, printf, putc, putchar,
-                puts, remove, rename, rewind, scanf, setbuf, setvbuf,
-                sprintf, sscanf, tmpfile, tmpnam, ungetc, vfprintf,
-                vprintf, vsprintf, snprintf, vsnprintf (C99),
-                vfscanf, vscanf, vsscanf (C99)
-              stdlib.h (30) : abort, abs, atexit, atof, atoi, atol,
-                bsearch, calloc, div, exit, free, getenv, labs, ldiv,
-                malloc, qsort, rand, realloc, srand, strtod, strtol,
-                strtoul, system, _Exit (C99), llabs (C99),
-                lldiv (C99), strtof (C99), strtold (C99),
-                strtoll (C99), strtoull (C99)
-              string.h (23) : memchr, memcmp, memcpy, memmove, memset,
-                strcat, strchr, strcmp, strcpy, strcspn, strerror,
-                strlen, strncat, strncmp, strncpy, strpbrk, strrchr,
-                strspn, strstr, strtok, strnlen, strndup, strdup
-              math.h (83) : acos, asin, atan, atan2, ceil, cos, cosh,
-                exp, fabs, floor, fmod, frexp, ldexp, log, log10,
-                modf, pow, sin, sinh, sqrt, tan, tanh,
-                acosh..trunc (38 C99), acosf..truncf (22+16 C99 f)
-              complex.h (78 C99) : cabs..ctanh, cabsf..ctanhf,
-                cabsl..ctanhl (26 fonctions * 3 variantes)
-              time.h (9) : asctime, clock, ctime, difftime, gmtime,
-                localtime, mktime, strftime, time
-              ctype.h (13) : isalnum, isalpha, iscntrl, isdigit,
-                isgraph, islower, isprint, ispunct, isspace, isupper,
-                isxdigit, tolower, toupper
-              signal.h (2) : raise, signal
-              setjmp.h (2) : longjmp, setjmp
-              assert.h (1) : assert
-              stdarg.h (3) : va_start, va_arg, va_end
-              locale.h (2) : setlocale, localeconv
-              wchar.h (52) : btowc..wscanf (manipulation wide chars)
-              wctype.h (18) : iswalnum..wctype (classification wchar)
-              fenv.h (11 C99) : feclearexcept..feupdateenv
-              inttypes.h (6 C99) : imaxabs..wcstoumax
-
-  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
-            TTypeKind : TKP_VOID, TKP_CHAR (8 bits signe),
-              TKP_UCHAR (8 bits non signe), TKP_SHORT (16 bits),
-              TKP_USHORT (16 bits non signe), TKP_INT (32 bits signe),
-              TKP_UINT (32 bits non signe), TKP_LONG (32 bits signe),
-              TKP_ULONG (32 bits non signe), TKP_FLOAT (stub entier),
-              TKP_DOUBLE (stub entier), TKP_POINTER (32 bits),
-              TKP_ARRAY, TKP_STRUCT, TKP_UNION, TKP_ENUM,
-              TKP_FUNC (pointeur de fonction)
-            TypeTab, TypeInit : enregistrer types primitifs et utilisateur
-            TypeSizeof : void=0, char=1, short=2, int=4, long=4,
-              float=4, double=8, pointer=4
-            TypeCompatible : verification de compatibilite d affectation
-            TypeCoerce : conversions implicites (char->int, short->int)
-            TypeResolve : resolution de typedef
-            Qualificateurs : const, volatile, signed, unsigned
-            Types primitifs predefinis : char, short, int, long,
-              float, double, void, unsigned char/short/int/long
-
-  TODO 07 - EMETTEUR DE CODE ASM 80386 [IMPLEMENTE]
-            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
-            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
-            EmitComment, EmitBlankLine
-            LabelGen global (compteur unique _CCL_NNNNN)
-            Prefixes 32 bits : _CCV_ (variable), _CCF_ (fonction),
-              _CCK_ (chaine const), _CCRT_ (runtime), _CCL_ (label)
-            EmitHeader : .386 / .MODEL FLAT, STDCALL
-              EXTRN _ExitProcess@4:NEAR
-              EXTRN _GetStdHandle@4:NEAR
-              EXTRN _WriteFile@20:NEAR
-              EXTRN _ReadFile@20:NEAR
-              EXTRN _GetProcessHeap@0:NEAR
-              EXTRN _HeapAlloc@12:NEAR
-              EXTRN _HeapFree@12:NEAR
-              .DATA section et .CODE section
-            EmitProlog : PUSH EBP / MOV EBP,ESP / SUB ESP,locals
-            EmitEpilog : MOV ESP,EBP / POP EBP / RET
-            EmitDataSeg : ecrire .DATA avec toutes les entrees DataTab
-
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
-            TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
-              DK_ARRAY/DK_STRUCT/DK_ZERO), IntVal, StrVal
-            DataTab[0..MAX_DATA-1], DataCount
-            DataAdd, DataAddStr, DataAddDWord, DataAddByte,
-              DataAddArray, DataAddStruct, DataAddZero : variantes d ajout
-            DataAddGlobalVar(nom, typeIdx) : cree _CCV_nom dans .DATA
-            DataAddStaticVar(func, var, typeIdx) : cree _CCST_N dans .DATA
-            ParseDataDecls : parcourt le TokenPool au niveau global
-              (profondeur 0 de braces), identifie les declarations de
-              variables globales et statiques, les ajoute au DataTab et
-              au SymTab. Ignore les fonctions, typedef, struct/union/enum.
-            Variables globales (hors de toute fonction) :
-              DD/DB dans .DATA avec label _CCV_nom
-            Variables static : DD dans .DATA, persistantes entre appels
-            Constantes chaines : DB "abc",0 dans .DATA avec label _CCK_N
-            Tampons I/O : INBUF (256 octets), NUMBUF (16 octets)
-            Variables de handles : HSTDOUT, HSTDIN, HHEAP (DWORD)
-
-  TODO 09 - VARIABLES ET DECLARATIONS [IMPLEMENTE]
-            Variables globales : segment .DATA, acces par [_CCV_nom]
-            Variables locales : pile EBP, acces [EBP-offset]
-            Parametres de fonction : [EBP+8+...] (convention cdecl)
-            Declaration : type nom [= init]; (avec initialiseur opt.)
-            Declarations multiples : int a, b, c;
-            Classes d entreposage : auto, static, extern, register
-            Qualificateurs : const, volatile
-            Portee de bloc : { int x = 0; ... } (variable locale au bloc)
-            Initialisation globale : donnees dans .DATA
-            Initialisation locale : MOV [EBP-offset], valeur
-
-  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
-            ParsePrimary : literal entier, literal chaine, ident, appel
-            Acces variable globale : MOV EAX,[_CCV_nom]
-            Acces variable locale : MOV EAX,[EBP-offset]
-            Acces parametre : MOV EAX,[EBP+offset]
-            Appel de fonction : CALL _CCF_nom -> resultat dans EAX
-              Convention cdecl : appelant nettoie la pile (ADD ESP,n)
-            Parentheses : (expr) pour forcer la precedence
-            Conversion de type : (type)expr (cast explicite)
-            sizeof(type) : taille du type en octets -> constante
-            sizeof(expr) : taille du type de l expression
-            Acces membre struct : expr.membre -> offset fixe
-            Acces membre via pointeur : expr->membre -> deref + offset
-            Acces tableau : expr[index] -> base + index*sizeof(elem)
-            Post-increment/decrement : expr++ expr--
-            Pre-increment/decrement : ++expr --expr
-            Adresse de : &expr -> LEA EAX,[var]
-            Dereferencement : *expr -> MOV EAX,[EAX]
-
-  TODO 11 - OPERATEURS ET PRECEDENCE [IMPLEMENTE]
-            ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
-            Arithmetique 32 bits : ADD/SUB/IMUL/IDIV pour +, -, *, /
-            Modulo : IDIV -> resultat dans EDX (reste) pour %
-            Decalages : SHL/SHR pour << >>
-            Comparaison : CMP + SETcc pour == != < <= > >=
-            Logique AND : && (court-circuit, JZ vers false)
-            Logique OR  : || (court-circuit, JNZ vers true)
-            Logique NOT : !expr -> TEST EAX,EAX / SETZ AL / MOVZX
-            Complement bit a bit : ~expr -> NOT EAX
-            ET bit a bit : & -> AND EAX, valeur
-            OU bit a bit : | -> OR EAX, valeur
-            OU exclusif   : ^ -> XOR EAX, valeur
-            Negation unaire : -expr -> NEG EAX
-            Ternaire : cond ? expr1 : expr2 (labels + JZ)
-            Virgule : expr1, expr2 -> evaluer les deux, garder expr2
-            Precedence (du plus fort au plus faible) :
-              1. () [] -> . ++ -- (postfixe)
-              2. ++ -- + - ! ~ * & sizeof (type) (prefixe/unaire)
-              3. * / % (multiplicatif)
-              4. + - (additif)
-              5. << >> (decalage)
-              6. < <= > >= (relationnel)
-              7. == != (egalite)
-              8. & (ET bit a bit)
-              9. ^ (OU exclusif)
-              10. | (OU bit a bit)
-              11. && (ET logique)
-              12. || (OU logique)
-              13. ?: (ternaire)
-              14. = += -= *= /= %= &= |= ^= <<= >>= (affectation)
-              15. , (virgule)
-
-  TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES [IMPLEMENTE]
-            Affectation simple : var = expr -> MOV [var], EAX
-            Affectation composee += : var += expr -> ADD [var], EAX
-            Affectation composee -= : var -= expr -> SUB [var], EAX
-            Affectation composee *= : var *= expr -> IMUL + MOV
-            Affectation composee /= : var /= expr -> IDIV + MOV
-            Affectation composee %= : var %= expr -> IDIV + MOV EDX
-            Affectation composee &= : var &= expr -> AND [var], EAX
-            Affectation composee |= : var |= expr -> OR [var], EAX
-            Affectation composee ^= : var ^= expr -> XOR [var], EAX
-            Affectation composee <<= : var <<= expr -> SHL [var], CL
-            Affectation composee >>= : var >>= expr -> SHR [var], CL
-            Post-increment ++ : val = var; var += 1 -> MOV + INC
-            Post-decrement -- : val = var; var -= 1 -> MOV + DEC
-            Pre-increment ++ : var += 1; val = var -> INC + MOV
-            Pre-decrement -- : var -= 1; val = var -> DEC + MOV
-            Affectation de struct : copie par REP MOVSD
-            Affectation de pointeur : copie d adresse (MOV)
-
-  TODO 13 - INSTRUCTIONS DE CONTROLE (if / else) [IMPLEMENTE]
-            ParseIfStmt : if (cond) stmt [else stmt]
-              Emission TEST EAX,EAX / JZ pour condition fausse
-              Labels : _CCL_ELSE_N, _CCL_ENDIF_N
-              if imbriques : else if (cond) stmt ...
-            ParseCompoundStmt : { stmt; stmt; ... }
-              Bloc d instructions avec portee locale
-              SymEnterScope / SymLeaveScope pour variables de bloc
-            ParseExprStmt : expr; (expression comme instruction)
-            Instruction vide : ; (no-op)
-
-  TODO 14 - BOUCLES (for / while / do-while) [IMPLEMENTE]
-            ParseForStmt : for (init; cond; incr) stmt
-              Trois expressions optionnelles separees par ;
-              init : declaration ou expression
-              cond : expression booleenne (boucle infinie si absente)
-              incr : expression d increment
-              Labels : _CCL_FTEST_N, _CCL_FINCR_N, _CCL_FEND_N
-            ParseWhileStmt : while (cond) stmt
-              Labels : _CCL_WTEST_N, _CCL_WEND_N
-            ParseDoWhileStmt : do stmt while (cond);
-              Labels : _CCL_DBEG_N, _CCL_DEND_N
-            LoopPush / LoopPop : pile de labels pour break/continue
-            break : saut vers la fin de la boucle englobante
-            continue : saut vers l increment/test de la boucle
-
-  TODO 15 - SWITCH / CASE / DEFAULT [IMPLEMENTE]
-            ParseSwitchStmt : switch (expr) { case val: stmts }
-              Expression de controle : entier dans EAX, sauvee sur pile
-              case valeur : branche pour une valeur (CMP + JE)
-              case val1 ... valN : valeurs multiples (CMP successifs)
-              default : branche par defaut
-              break : sortie du switch (JMP vers fin)
-              Fall-through : sans break, execution continue
-              Labels : _CCL_CASE_N, _CCL_CDEF_N, _CCL_CEND_N
-            SwitchPush / SwitchPop : pile pour switch imbriques
-              (max 32 niveaux d imbrication)
-
-  TODO 16 - FONCTIONS ET PROTOTYPES [IMPLEMENTE]
-            ParseFuncDecl : prototype (declaration avancee)
-              type nom(type1 param1, type2 param2, ...);
-            ParseFuncDef : definition complete avec corps
-              type nom(type1 param1, type2 param2, ...) { corps }
-            Convention cdecl : appelant nettoie la pile
-              Parametres empiles de droite a gauche (PUSH)
-              Offsets : [EBP+8], [EBP+12], [EBP+16], ...
-              Valeur de retour dans EAX
-            Variables locales : [EBP-4], [EBP-8], ...
-            Prologue : PUSH EBP / MOV EBP,ESP / SUB ESP,n
-            Epilogue : MOV ESP,EBP / POP EBP / RET
-            main() : point d entree du programme (_CCF_main)
-            Appel de fonction : evaluer args, PUSH, CALL, ADD ESP,n
-            Fonctions void : pas de valeur de retour
-            Fonctions extern : declaration sans corps (EXTRN dans asm)
-            Fonctions static : visibles uniquement dans le fichier
-            EmitExternFuncs : emettre EXTRN pour les fonctions extern
-              Parcourt FuncTab et SymTab apres ParseFuncDecls
-              Emet EXTRN _nom:NEAR pour chaque extern utilisateur
-
-  TODO 17 - POINTEURS ET ADRESSES [IMPLEMENTE]
-            Declaration : type *nom; (pointeur vers type)
-              Taille : 4 octets (DWORD, adresse 32 bits)
-            Dereferencement : *p -> MOV EAX,[EAX]
-            Adresse de : &var -> LEA EAX,[var]
-            Arithmetique de pointeurs :
-              p + n -> ADD EAX, n * taille_elem
-              p - n -> SUB EAX, n * taille_elem
-              p1 - p2 -> SUB + division par taille_elem
-              p++ -> ADD [var], taille_elem
-              p-- -> SUB [var], taille_elem
-            Affectation : p = &var ou p = malloc(...)
-            Pointeur NULL : void-ptr 0 -> EAX=0
-            Pointeur void-ptr : pointeur generique (cast implicite)
-            Pointeurs de fonction : type ptr-func(args)
-              Appel indirect : CALL DWORD PTR [pf]
-            Comparaison de pointeurs : == != < > <= >=
-            Acces via pointeur : p->membre (deref + offset)
-
-  TODO 18 - TABLEAUX [IMPLEMENTE]
-            Declaration : type nom[taille]; (tableau a taille fixe)
-              Taille = nombre_elements * sizeof(type)
-              Acces : base + index * sizeof(type) -> adresse element
-            Tableaux multi-dimensionnels : type nom[dim1][dim2];
-              Linearisation : (i*dim2 + j) * sizeof(type)
-            Initialisation : int a[] = {1, 2, 3};
-              Taille deduite du nombre d elements
-              Donnees dans .DATA pour variables globales
-            Initialisation partielle : int a[10] = {1, 2};
-              Elements manquants initialises a zero
-            Chaines comme tableaux : char s[] = "hello";
-              Equivalent a char s[] = {'h','e','l','l','o','\0'};
-            Passage de tableau a fonction : decay en pointeur
-              nom equivalent a &nom[0]
-            Acces tableau via pointeur : *(p+i) equivalent p[i]
-            sizeof(tableau) : taille totale en octets
-
-  TODO 19 - STRUCTURES ET UNIONS [IMPLEMENTE]
-            struct nom { type1 champ1; type2 champ2; };
-              Taille = somme des sizeof(Ti) avec alignement
-              Acces champ : offset fixe depuis debut du struct
-            union nom { type1 champ1; type2 champ2; };
-              Taille = max des sizeof(Ti) (chevauchement memoire)
-              Acces champ : offset 0 pour tous les champs
-            struct anonyme : struct { ... } var;
-            Structures imbriquees : struct contenant struct
-            Membres tableaux : struct { int tab[10]; };
-            Membres pointeurs : struct { struct node *next; };
-            Declaration et definition combinees :
-              struct point { int x, y; } p1;
-            Affectation de struct : copie complete (REP MOVSD)
-            Passage de struct a fonction : copie sur la pile
-            Retour de struct : copie dans zone appelant
-            Pointeur vers struct : struct point *pp;
-              Acces : pp->x equivalent deref pp.x
-
-  TODO 20 - ENUMERATIONS ET TYPEDEF [IMPLEMENTE]
-            enum nom { VAL1, VAL2, VAL3 };
-              Chaque valeur = constante entiere (0, 1, 2, ...)
-              Valeurs explicites : enum { A=5, B=10, C };
-                C prend la valeur suivante (11)
-              Taille : 4 octets (DWORD 32 bits)
-              Utilisable dans switch/case et expressions
-            enum anonyme : enum { ... } var;
-            typedef ancien_type nouveau_nom;
-              typedef int BOOL;
-              typedef struct point Point;
-              typedef int *IntPtr;
-              typedef void FuncPtrType(int, int);
-            TypeResolve : resolution recursive de typedef
-            find_typedef, add_typedef : gestion de la table typedef
-
-  TODO 21 - CHAINES ET ENTREES/SORTIES (printf, scanf) [IMPLEMENTE]
-            Chaines C : terminaison par '\0' (ASCIIZ)
-              Stockage : DB "abc",0 dans .DATA
-              Variable char* : pointeur vers chaine
-            printf(fmt, ...) : sortie formatee vers stdout
-              %d : entier signe (CALL _CCRT_PRINTINT)
-              %u : entier non signe
-              %x : entier hexadecimal
-              %c : caractere (CALL _CCRT_PRINTCHAR)
-              %s : chaine (CALL _CCRT_PRINTSTR)
-              %% : caractere % litteral
-              \n : nouvelle ligne (CALL _CCRT_PRINTCRLF)
-            scanf(fmt, ...) : entree formatee depuis stdin
-              %d : lire entier (CALL _CCRT_READINT)
-              %s : lire chaine (CALL _CCRT_READSTR)
-              %c : lire caractere (CALL _CCRT_READCHAR)
-            putchar(c) : ecrire un caractere (CALL _CCRT_PRINTCHAR)
-            getchar() : lire un caractere -> EAX
-            puts(s) : ecrire chaine + newline
-
-  TODO 22 - GOTO, BREAK, CONTINUE, RETURN [IMPLEMENTE]
-            goto label; : saut inconditionnel vers label
-              label: stmt; -> definition du label
-              Verification : label defini dans la meme fonction
-              Table de labels (max MAX_GOTO_LABELS par fonction)
-            break; : sortie de la boucle ou switch englobant
-              JMP vers label de fin de boucle/switch
-              Erreur si utilise hors d une boucle ou switch
-            continue; : passage a l iteration suivante
-              JMP vers label d increment/test de la boucle
-              Erreur si utilise hors d une boucle
-            return expr; : retour de fonction avec valeur
-              MOV EAX, valeur -> JMP vers epilogue
-            return; : retour de fonction void (sans valeur)
-              JMP vers epilogue
-
-  TODO 23 - OPERATEUR TERNAIRE, CAST ET SIZEOF [IMPLEMENTE]
-            Operateur ternaire : cond ? expr1 : expr2
-              TEST EAX,EAX / JZ vers faux
-              Evaluer expr1 -> JMP vers fin
-              Label faux : evaluer expr2
-              Label fin : resultat dans EAX
-              Ternaire imbrique : a ? b ? c : d : e
-            Cast explicite : (type)expr
-              (int)c : promotion char -> int (MOVSX)
-              (char)i : troncature int -> char (AND 0xFF)
-              void-ptr p : conversion pointeur generique
-              (unsigned)i : reinterpretation signe -> non signe
-              Casts entre pointeurs de types differents
-            sizeof : taille en octets d un type ou expression
-              sizeof(int) -> 4
-              sizeof(char) -> 1
-              sizeof(struct point) -> taille totale
-              sizeof(tableau) -> nombre_elements * sizeof(elem)
-              sizeof(pointeur) -> 4
-              Evalue a la compilation (constante)
-
-  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
-            _CCRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut
-            _CCRT_PRINTINT(EAX=n) : conversion + WriteFile
-            _CCRT_PRINTCRLF : ecriture CR+LF
-            _CCRT_PRINTCHAR(EAX=c) : afficher un caractere
-            _CCRT_PRINTUINT(EAX=n) : afficher entier non signe
-            _CCRT_PRINTHEX(EAX=n) : afficher entier en hexadecimal
-            _CCRT_NUMTOSTR(EAX=n, EDI=buf) : entier -> ASCII (itoa)
-            _CCRT_STRTONUM(ESI=str) : ASCII -> entier -> EAX (atoi)
-            _CCRT_STRLEN(ESI=str) : longueur ASCIIZ -> EAX
-            _CCRT_STRCMP(ESI=s1, EDI=s2) : comparaison -> drapeaux
-            _CCRT_STRCPY(ESI=src, EDI=dst) : copie de chaine
-            _CCRT_STRCAT(ESI=s1, EDI=s2) : concatenation -> EAX=ptr
-            _CCRT_READINT -> EAX : lire entier depuis stdin
-            _CCRT_READSTR(EDI=buf) : lire ligne depuis stdin
-            _CCRT_READCHAR -> EAX : lire un caractere
-            _CCRT_READLN : consommer jusqu au prochain CR+LF
-            _CCRT_MALLOC(EAX=taille) : HeapAlloc -> EAX=ptr
-            _CCRT_FREE(EAX=ptr) : HeapFree
-            _CCRT_MEMCPY(ESI=src, EDI=dst, ECX=len) : copie memoire
-            _CCRT_MEMSET(EDI=dst, EAX=val, ECX=len) : remplissage
-            _CCRT_PANIC(ESI=msg) : affiche message + ExitProcess(1)
-            Heap Win32 : GetProcessHeap + HeapAlloc / HeapFree
-            Handles : hStdOut, hStdIn via GetStdHandle
-
-  TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES [IMPLEMENTE]
-            Generation PE (.EXE Windows 32 bits) :
-              DOS stub + signature PE + en-tete COFF + en-tete optionnel
-              Sections : .text (code), .rdata (imports), .data (donnees)
-              Table d imports : kernel32.dll (ExitProcess, GetStdHandle,
-                WriteFile, ReadFile, GetProcessHeap, HeapAlloc,
-                HeapFree)
-              Point d entree : _CCF_main
-            Generation COFF (.OBJ) : option -obj
-              En-tete COFF + sections .text/.data + table symboles
-              Relocations pour les references externes
-            Generation ASM (.ASM) : option -asm
-              Fichier assembleur MASM lisible en plus du binaire
-            EmitClose : finalisation du fichier de sortie
-            Run : pipeline complet LexInit -> Parse -> Emit -> Binary
-            Fichiers SAMPLES\C\*.c existants :
-              hello8086.c, simple8086.c, basic_test.c, simple_test.c,
-              minimal_test.c, if_test.c, for_test.c, while_zero.c,
-              switch_test.c, function_test.c, return_test.c,
-              pointer_test.c, struct_test.c, enum_test.c,
-              typedef_complete_test.c, extern_test.c, define_test.c,
-              include_test.c, array_test.c, goto_test.c,
-              sizeof_test.c, bitwise_test.c, ternary_operator_test.c,
-              break_continue_test.c, expression_test.c,
-              static_test.c, volatile_test.c, address_test.c,
-              dereference_test.c, long_types_test.c
-            Smoke tests : CCW32.EXE -v SAMPLES\C\*.c
-
   ============================================================ *)
 
 Program CCW32;
@@ -601,7 +37,7 @@ Program CCW32;
 {$I-}
 
 { ============================================================ }
-{ TODO 01 - INFRASTRUCTURE ET OPTIONS                          }
+{ INFRASTRUCTURE ET OPTIONS                                    }
 { ============================================================ }
 
 Const
@@ -620,7 +56,7 @@ Const
   OPT_ADVANCED   = 2;   { -O2 : optimisations avancees          }
   OPT_AGGRESSIVE = 3;   { -O3 : optimisations agressives        }
 
-  { PE/COFF format constants (TODO 25) }
+  { PE/COFF format constants }
   PE_DOS_MAGIC    = $5A4D;       { 'MZ'                              }
   PE_PE_SIG       = $00004550;   { 'PE\0\0'                          }
   PE_MACHINE_I386 = $014C;       { i386                               }
@@ -644,7 +80,7 @@ Const
 Type
   TString = String;
 
-  { Types binaires (TODO 25) }
+  { Types binaires }
   TBinFixKind = (BFK_ABS32, BFK_REL32, BFK_IAT32);
   TBinFixup = Record
     Offset : LongInt;
@@ -688,7 +124,7 @@ Var
   OutF       : Text;
   OutFOpen   : Boolean;
 
-  { Variables binaires (TODO 25) }
+  { Variables binaires }
   BinCode     : Array[0..MAX_BIN_CODE - 1] of Byte;
   BinCodeLen  : LongInt;
   BinData     : Array[0..MAX_BIN_DATA - 1] of Byte;
@@ -851,10 +287,12 @@ End;
 { ShowHelp                                                     }
 { ------------------------------------------------------------ }
 
-Procedure ShowHelp;
-Begin
+Procedure ShowHelp;Begin
   WriteLn('CCW32 v', CCW32_VERSION, ' (', CCW32_DATE,
           ') - Compilateur C vers 80386 (Windows PE 32 bits)');
+  WriteLn('CCW32 - Cette commande permet de lancer le compilateur C ',
+          'pour l''assembleur du microprocesseur 80386 (en ex‚cutable ',
+          'Windows 32 bits).');
   WriteLn;
   WriteLn('Syntaxe : CCW32 <source.c> [sortie] [options] ',
           '[fichier.lib ...] [fichier.obj ...]');
@@ -1062,7 +500,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 02 - LEXEUR (TOKENS C)                                 }
+{ LEXEUR (TOKENS C)                                            }
 { ============================================================ }
 
 Const
@@ -1853,7 +1291,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 03 - PREPROCESSEUR (#define, #include, #if)             }
+{ PREPROCESSEUR (#define, #include, #if)                       }
 { ============================================================ }
 
 Const
@@ -3254,7 +2692,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 04 - LITTERAUX ET CONSTANTES                            }
+{ LITTERAUX ET CONSTANTES                                      }
 { ============================================================ }
 
 Const
@@ -3305,7 +2743,7 @@ Var
   { Pool de donnees (segment .DATA) }
   DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount  : Integer;
-  DataEmittedCount : Integer; { nombre d entrees deja emises (TODO 21) }
+  DataEmittedCount : Integer; { nombre d entrees deja emises }
 
   { Compteur de labels auto-generes }
   LabelGenSeq : Integer;
@@ -4048,7 +3486,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 05 - TABLE DES SYMBOLES                                 }
+{ TABLE DES SYMBOLES                                           }
 { ============================================================ }
 
 Const
@@ -4074,7 +3512,7 @@ Type
     Name        : TString;     { nom original (minuscules)              }
     MangledName : TString;     { nom mangled pour emission ASM          }
     Cat         : TSymCat;     { categorie du symbole                   }
-    TypeIdx     : Integer;     { index du type dans TypeTab (TODO 06)   }
+    TypeIdx     : Integer;     { index du type dans TypeTab             }
     Offset      : Integer;     { offset stack ou data segment           }
     ScopeLevel  : Integer;     { niveau de scope (0 = global)           }
     ScopeId     : Integer;     { id unique du scope                     }
@@ -4505,7 +3943,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 06 - SYSTEME DE TYPES                                   }
+{ SYSTEME DE TYPES                                             }
 { ============================================================ }
 
 Const
@@ -4993,7 +4431,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 07 - EMETTEUR DE CODE ASM 80386                         }
+{ EMETTEUR DE CODE ASM 80386                                   }
 { ============================================================ }
 
 Var
@@ -5289,7 +4727,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 08 - SEGMENT DE DONNEES ET STATIQUES                    }
+{ SEGMENT DE DONNEES ET STATIQUES                              }
 { ============================================================ }
 
 { ------------------------------------------------------------ }
@@ -5394,19 +4832,19 @@ End;
 {   4. Ajouter les variables trouvees dans DataTab et SymTab   }
 { ------------------------------------------------------------ }
 
-{ Forward declaration pour ParseStructDef (TODO 19) }
+{ Forward declaration pour ParseStructDef }
 Function ParseStructDef(Var P : Integer;
                         Const TypeName : TString;
                         IsUnion : Boolean) : Integer; Forward;
 
-{ Forward declaration pour ParseEnumDef (TODO 20) }
+{ Forward declaration pour ParseEnumDef }
 Function ParseEnumDef(Var P : Integer;
                       Const TypeName : TString) : Integer; Forward;
 
-{ Forward declaration pour ParseTypeFromTokens (TODO 20) }
+{ Forward declaration pour ParseTypeFromTokens }
 Function ParseTypeFromTokens(Var P : Integer) : Integer; Forward;
 
-{ Forward declarations pour les fonctions d E/S (TODO 21) }
+{ Forward declarations pour les fonctions d E/S }
 Procedure ParsePrintfCall; Forward;
 Procedure ParseScanfCall; Forward;
 Procedure ParsePutsCall; Forward;
@@ -5494,7 +4932,7 @@ Begin
         IsExtern := True
       Else If TokenPool[I].Val = 'typedef' Then
       Begin
-        { Parser le typedef : typedef <type> <nom> ; (TODO 20) }
+        { Parser le typedef : typedef <type> <nom> ; }
         Inc(I); { sauter 'typedef' }
         If I >= TokenCount Then Break;
         { Sauter les qualificateurs apres typedef }
@@ -5625,12 +5063,12 @@ Begin
         If I >= TokenCount Then Break;
       End;
 
-      { Definition avec accolades ? (TODO 19 : parser les champs) }
+      { Definition avec accolades ? (parser les champs) }
       If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
       Begin
         If (TypeName = 'enum') Or (Copy(TypeName, 1, 5) = 'enum ') Then
         Begin
-          { Enum : parser la definition avec ParseEnumDef (TODO 20) }
+          { Enum : parser la definition avec ParseEnumDef }
           TypeIdx := ParseEnumDef(I, TypeName);
           If I >= TokenCount Then Break;
         End
@@ -6007,7 +5445,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 09 - VARIABLES ET DECLARATIONS                          }
+{ VARIABLES ET DECLARATIONS                                    }
 { ============================================================ }
 
 Const
@@ -6082,7 +5520,7 @@ Begin
       TName := TName + ' ' + TokenPool[P].Val;
       Inc(P);
     End;
-    { Definition inline avec accolades ? (TODO 19) }
+    { Definition inline avec accolades ? }
     If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
        (TokenPool[P].Val = '{') Then
     Begin
@@ -6095,7 +5533,7 @@ Begin
       End
       Else
       Begin
-        { Enum : parser la definition avec ParseEnumDef (TODO 20) }
+        { Enum : parser la definition avec ParseEnumDef }
         TIdx := ParseEnumDef(P, TName);
         If TIdx < 0 Then
         Begin
@@ -6174,13 +5612,13 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 19 - STRUCTURES ET UNIONS                               }
+{ STRUCTURES ET UNIONS                                         }
 { ParseStructDef, StructFieldFind, VarTypeIdx                  }
 { ============================================================ }
 
 { ------------------------------------------------------------ }
-{ ParseStructDef : parser la definition d une struct ou union   }
-{ P pointe sur le accolade d ouverture. Avance P apres.       }
+{ ParseStructDef : parser la definition d une struct ou union  }
+{ P pointe sur le accolade d ouverture. Avance P apres.        }
 { TypeName est le nom du type (ex: struct Point).              }
 { IsUnion = True pour union (tous les champs a offset 0).      }
 { Retourne l index dans TypeTab ou -1 en cas d erreur.         }
@@ -6396,8 +5834,8 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 20 - ENUMERATIONS ET TYPEDEF                            }
-{ ParseEnumDef                                                  }
+{ ENUMERATIONS ET TYPEDEF                                      }
+{ ParseEnumDef                                                 }
 { ============================================================ }
 
 { ------------------------------------------------------------ }
@@ -7143,24 +6581,24 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 10 - EXPRESSIONS PRIMAIRES                              }
+{ EXPRESSIONS PRIMAIRES                                        }
 { ============================================================ }
 
 Var
   EP              : Integer;  { Position curseur dans TokenPool pour expressions }
   CurFuncIdx      : Integer;  { Index de la fonction en cours de compilation     }
   EPEnd           : Integer;  { Borne fin pour le parsage d expressions          }
-  LastPrimaryName : TString;  { Dernier ident charge par ParsePrimary (TODO 12)  }
-  RetLbl          : TString;  { Label de retour de la fonction courante (TODO 13) }
-  LoopBreakLbl    : Array[0..31] Of TString; { Pile labels break (TODO 14)  }
-  LoopContLbl     : Array[0..31] Of TString; { Pile labels continue (TODO 14)}
-  LoopTop         : Integer;  { Sommet de la pile de boucles (TODO 14)     }
-  SwitchBreakLbl  : Array[0..31] Of TString; { Pile labels break switch (TODO 15) }
-  SwitchTop       : Integer;  { Sommet de la pile de switch (TODO 15)      }
-  GotoLblDef      : Array[0..63] Of TString; { Labels goto definis (TODO 22) }
-  GotoLblDefCount : Integer;  { Nombre de labels goto definis (TODO 22)    }
-  GotoLblUse      : Array[0..63] Of TString; { Labels goto utilises (TODO 22) }
-  GotoLblUseCount : Integer;  { Nombre de labels goto utilises (TODO 22)   }
+  LastPrimaryName : TString;  { Dernier ident charge par ParsePrimary }
+  RetLbl          : TString;  { Label de retour de la fonction courante }
+  LoopBreakLbl    : Array[0..31] Of TString; { Pile labels break  }
+  LoopContLbl     : Array[0..31] Of TString; { Pile labels continue }
+  LoopTop         : Integer;  { Sommet de la pile de boucles  }
+  SwitchBreakLbl  : Array[0..31] Of TString; { Pile labels break switch }
+  SwitchTop       : Integer;  { Sommet de la pile de switch  }
+  GotoLblDef      : Array[0..63] Of TString; { Labels goto definis }
+  GotoLblDefCount : Integer;  { Nombre de labels goto definis  }
+  GotoLblUse      : Array[0..63] Of TString; { Labels goto utilises }
+  GotoLblUseCount : Integer;  { Nombre de labels goto utilises  }
 
 { ------------------------------------------------------------ }
 { EPAtEnd : verifier si le curseur est en fin de zone           }
@@ -7223,7 +6661,7 @@ End;
 
 { ------------------------------------------------------------ }
 { VarIsPointer : verifier si une variable est un pointeur      }
-{ (TODO 17). Cherche dans les locales, parametres et globales. }
+{ Cherche dans les locales, parametres et globales.            }
 { ------------------------------------------------------------ }
 
 Function VarIsPointer(Const Name : TString) : Boolean;
@@ -7261,8 +6699,8 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ VarTypeIdx : retourner le TypeIdx d une variable (TODO 19)    }
-{ Cherche dans locales, parametres et globales.                 }
+{ VarTypeIdx : retourner le TypeIdx d une variable             }
+{ Cherche dans locales, parametres et globales.                }
 { ------------------------------------------------------------ }
 
 Function VarTypeIdx(Const Name : TString) : Integer;
@@ -7294,8 +6732,8 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ VarIsStruct : verifier si une variable est struct/union       }
-{ (TODO 19)                                                     }
+{ VarIsStruct : verifier si une variable est struct/union      }
+{                                                              }
 { ------------------------------------------------------------ }
 
 Function VarIsStruct(Const Name : TString) : Boolean;
@@ -7328,7 +6766,7 @@ Begin
         IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']')
     Else
     Begin
-      { TODO 19 : si le type est struct/union, charger l adresse (LEA) }
+      { si le type est struct/union, charger l adresse (LEA) }
       TI := FuncTab[CurFuncIdx].Locals[LI].TypeIdx;
       If (TI >= 0) And (TI < TypeCount) And
          (TypeTab[TI].Kind In [TKP_STRUCT, TKP_UNION]) Then
@@ -7354,13 +6792,13 @@ Begin
   SI := SymFind(Name);
   If SI >= 0 Then
   Begin
-    { TODO 20 : si c est une constante enum, charger la valeur immediate }
+    { si c est une constante enum, charger la valeur immediate }
     If SymTab[SI].Cat = SC_ENUM_VAL Then
     Begin
       EmitInstr('MOV EAX,' + IntToStr_(SymTab[SI].ImmVal));
       Exit;
     End;
-    { TODO 19 : si le type est struct/union, charger l adresse }
+    { si le type est struct/union, charger l adresse }
     TI := SymTab[SI].TypeIdx;
     If (TI >= 0) And (TI < TypeCount) And
        (TypeTab[TI].Kind In [TKP_STRUCT, TKP_UNION]) Then
@@ -7461,8 +6899,8 @@ Procedure ParseExprPrec(MinPrec : Integer); Forward;
 Procedure ParseUnary; Forward;
 
 { ------------------------------------------------------------ }
-{ IsFuncName : verifier si un nom est celui d une fonction      }
-{ connue dans FuncTab (TODO 17 : distinguer fonctions et       }
+{ IsFuncName : verifier si un nom est celui d une fonction     }
+{ connue dans FuncTab (distinguer fonctions et                 }
 { pointeurs de fonction).                                      }
 { ------------------------------------------------------------ }
 
@@ -7483,9 +6921,9 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ ParseFuncPtrCall : parser un appel indirect via pointeur de   }
+{ ParseFuncPtrCall : parser un appel indirect via pointeur de  }
 { fonction. Charge le pointeur, parse les arguments, et emet   }
-{ CALL EAX (TODO 17).                                          }
+{ CALL EAX.                                                    }
 { Le '(' a deja ete consomme.                                  }
 { ------------------------------------------------------------ }
 
@@ -7646,15 +7084,15 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 21 - CHAINES ET ENTREES/SORTIES (printf, scanf, etc.)   }
+{ CHAINES ET ENTREES/SORTIES (printf, scanf, etc.)             }
 { ============================================================ }
 
 { ------------------------------------------------------------ }
-{ CollectArgs : scanner les arguments d un appel de fonction    }
+{ CollectArgs : scanner les arguments d un appel de fonction   }
 { Le '(' a deja ete consomme. Consomme le ')' final.           }
-{ ArgCount : nombre d arguments trouves (sortie)                }
-{ ArgStart : indices debut de chaque argument dans TokenPool    }
-{ ArgEndPos : indices fin de chaque argument dans TokenPool     }
+{ ArgCount : nombre d arguments trouves (sortie)               }
+{ ArgStart : indices debut de chaque argument dans TokenPool   }
+{ ArgEndPos : indices fin de chaque argument dans TokenPool    }
 { ------------------------------------------------------------ }
 
 Procedure CollectArgs(Var ArgCount : Integer;
@@ -7736,7 +7174,7 @@ Var
   I, ArgIdx : Integer;
   C         : Char;
 Begin
-  EmitComment('printf (TODO 21)');
+  EmitComment('printf');
   CollectArgs(ArgCount, ArgStart, ArgEndPos);
 
   { Le premier argument doit etre une chaine litterale }
@@ -7904,7 +7342,7 @@ Var
   I, ArgIdx : Integer;
   C         : Char;
 Begin
-  EmitComment('scanf (TODO 21)');
+  EmitComment('scanf');
   CollectArgs(ArgCount, ArgStart, ArgEndPos);
 
   If ArgCount < 1 Then
@@ -7983,7 +7421,7 @@ Var
   ArgStart  : Array[0..MAX_PARAMS - 1] Of Integer;
   ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
 Begin
-  EmitComment('puts (TODO 21)');
+  EmitComment('puts');
   CollectArgs(ArgCount, ArgStart, ArgEndPos);
 
   If ArgCount >= 1 Then
@@ -8006,7 +7444,7 @@ Var
   ArgStart  : Array[0..MAX_PARAMS - 1] Of Integer;
   ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
 Begin
-  EmitComment('putchar (TODO 21)');
+  EmitComment('putchar');
   CollectArgs(ArgCount, ArgStart, ArgEndPos);
 
   If ArgCount >= 1 Then
@@ -8022,7 +7460,7 @@ End;
 
 Procedure ParseGetcharCall;
 Begin
-  EmitComment('getchar (TODO 21)');
+  EmitComment('getchar');
   { Consommer le ')' }
   If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
      (TokenPool[EP].Val = ')') Then
@@ -8288,9 +7726,9 @@ Var
   TIdx     : Integer;
   SzVal    : Integer;
   SaveEP   : Integer;
-  CastIdx  : Integer;   { TODO 23 : index du type cible pour cast }
-  CastKind : TTypeKind; { TODO 23 : kind du type cible pour cast  }
-  IsPtr    : Boolean;    { TODO 23 : True si cast vers pointeur    }
+  CastIdx  : Integer;   { index du type cible pour cast }
+  CastKind : TTypeKind; { kind du type cible pour cast  }
+  IsPtr    : Boolean;    { True si cast vers pointeur    }
 Begin
   LastPrimaryName := '';
 
@@ -8334,7 +7772,7 @@ Begin
          (TokenPool[EP].Val = '(') Then
       Begin
         Inc(EP); { consommer '(' }
-        { TODO 21 : fonctions d E/S speciales }
+        { fonctions d E/S speciales }
         If Name = 'printf' Then
           ParsePrintfCall
         Else If Name = 'scanf' Then
@@ -8373,15 +7811,15 @@ Begin
         Else If Name = 'exit' Then
           ParseExitCall
         Else If IsFuncName(Name) Then
-          ParseFuncCall(Name)         { appel direct (TODO 16) }
+          ParseFuncCall(Name)         { appel direct }
         Else
-          ParseFuncPtrCall(Name);     { appel indirect via pointeur (TODO 17) }
+          ParseFuncPtrCall(Name);     { appel indirect via pointeur }
       End
       Else
       Begin
         { Acces variable : globale, locale ou parametre }
         GenLoadVar(Name);
-        LastPrimaryName := Name; { TODO 12 : memoriser pour post-inc/dec }
+        LastPrimaryName := Name; { memoriser pour post-inc/dec }
       End;
     End;
 
@@ -8435,7 +7873,7 @@ Begin
       Begin
         Inc(EP);
 
-        { Verifier si c est un cast : (type) ou (type *) expr (TODO 23) }
+        { Verifier si c est un cast : (type) ou (type *) expr }
         SaveEP := EP;
         TIdx := ParseTypeFromTokens(EP);
         { Consommer les * de pointeur avant le ')' }
@@ -8451,7 +7889,7 @@ Begin
            (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ')') Then
         Begin
-          { Cast : (type)expr ou (type *)expr (TODO 23) }
+          { Cast : (type)expr ou (type *)expr }
           CastIdx := TypeResolve(TIdx);
           Inc(EP); { consommer ')' }
           ParseUnary;
@@ -8526,16 +7964,16 @@ Procedure ParsePostfix;
 Var
   Done   : Boolean;
   Name   : TString;
-  MbrTI  : Integer;  { TypeIdx du struct pour acces membre (TODO 19) }
-  MbrFI  : Integer;  { Index du champ dans Fields[] (TODO 19) }
-  MbrOfs : Integer;  { Offset du champ (TODO 19) }
+  MbrTI  : Integer;  { TypeIdx du struct pour acces membre }
+  MbrFI  : Integer;  { Index du champ dans Fields[] }
+  MbrOfs : Integer;  { Offset du champ }
 Begin
   ParsePrimary;
 
   Done := False;
   While Not Done And Not EPAtEnd Do
   Begin
-    { Post-increment ++ (TODO 12/17 : stockage via LastPrimaryName, mise a l echelle pour pointeurs) }
+    { Post-increment ++ (stockage via LastPrimaryName, mise a l echelle pour pointeurs) }
     If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
     Begin
       Inc(EP);
@@ -8558,7 +7996,7 @@ Begin
       End;
       LastPrimaryName := '';
     End
-    { Post-decrement -- (TODO 12/17 : stockage via LastPrimaryName, mise a l echelle pour pointeurs) }
+    { Post-decrement -- (stockage via LastPrimaryName, mise a l echelle pour pointeurs) }
     Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
     Begin
       Inc(EP);
@@ -8594,7 +8032,7 @@ Begin
       EmitInstr('MOV EAX,DWORD PTR [EAX]');
       EPMatch(']');
     End
-    { Acces membre struct . (TODO 19) }
+    { Acces membre struct . }
     Else If ((TokenPool[EP].Kind = TK_PUNCT) Or (TokenPool[EP].Kind = TK_OP)) And
             (TokenPool[EP].Val = '.') Then
     Begin
@@ -8619,7 +8057,7 @@ Begin
       End;
       LastPrimaryName := '';
     End
-    { Acces membre via pointeur -> (TODO 19) }
+    { Acces membre via pointeur -> }
     Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '->') Then
     Begin
       Inc(EP);
@@ -8667,7 +8105,7 @@ Begin
     Exit;
   End;
 
-  { Pre-increment ++ (TODO 17 : mise a l echelle pour pointeurs) }
+  { Pre-increment ++ (mise a l echelle pour pointeurs) }
   If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
   Begin
     Inc(EP);
@@ -8685,7 +8123,7 @@ Begin
     Else
       ParseUnary;
   End
-  { Pre-decrement -- (TODO 17 : mise a l echelle pour pointeurs) }
+  { Pre-decrement -- (mise a l echelle pour pointeurs) }
   Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
   Begin
     Inc(EP);
@@ -8760,7 +8198,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 11 - OPERATEURS ET PRECEDENCE                          }
+{ OPERATEURS ET PRECEDENCE                                     }
 { ============================================================ }
 
 { ------------------------------------------------------------ }
@@ -9168,7 +8606,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 12 - AFFECTATIONS ET OPERATEURS COMPOSES               }
+{ AFFECTATIONS ET OPERATEURS COMPOSES                           }
 { Les affectations composees (op=) et les increments/decrements }
 { sont geres dans ParseBody comme cas speciaux au niveau        }
 { statement. ParsePostfix utilise LastPrimaryName pour stocker  }
@@ -9178,13 +8616,13 @@ End;
 { ------------------------------------------------------------ }
 { ParseBody : parser et emettre le code du corps d une fonction }
 { Gere les declarations, return, expression-statements, et     }
-{ les instructions de controle if/else (TODO 13).              }
-{ Les boucles for/while/do-while (TODO 14).                    }
-{ Le switch/case/default (TODO 15).                            }
+{ les instructions de controle if/else.                        }
+{ Les boucles for/while/do-while.                              }
+{ Le switch/case/default.                                      }
 { ------------------------------------------------------------ }
 
 { ============================================================ }
-{ TODO 13 - INSTRUCTIONS DE CONTROLE (if / else)               }
+{ INSTRUCTIONS DE CONTROLE (if / else)                         }
 { ParseStmt parse une instruction unique. ParseCompoundStmt    }
 { parse un bloc d instructions. ParseIfStmt gere if/else.      }
 { ============================================================ }
@@ -9275,7 +8713,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 14 - BOUCLES (for / while / do-while)                   }
+{ BOUCLES (for / while / do-while)                             }
 { ParseWhileStmt, ParseDoWhileStmt, ParseForStmt.             }
 { LoopPush/LoopPop gerent la pile break/continue.             }
 { ParseSimpleExprStmt gere les assignations simples sans ';'. }
@@ -9318,7 +8756,7 @@ Var
 Begin
   If EPAtEnd Then Exit;
 
-  { ident++ / ident-- (TODO 17 : mise a l echelle pour pointeurs) }
+  { ident++ / ident-- (mise a l echelle pour pointeurs) }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_OP) And
      ((TokenPool[EP + 1].Val = '++') Or
@@ -9390,7 +8828,7 @@ Begin
     Exit;
   End;
 
-  { ident[expr] = expr / ident[expr] op= expr (TODO 18) }
+  { ident[expr] = expr / ident[expr] op= expr }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_PUNCT) And
      (TokenPool[EP + 1].Val = '[') Then
@@ -9685,8 +9123,8 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 15 - SWITCH / CASE / DEFAULT                            }
-{ ParseSwitchStmt gere switch(expr) avec case val: stmts.     }
+{ SWITCH / CASE / DEFAULT                                      }
+{ ParseSwitchStmt gere switch(expr) avec case val: stmts.      }
 { SwitchPush/SwitchPop gerent la pile break pour switch.       }
 { break dans un switch utilise SwitchBreakLbl en priorite.     }
 { ============================================================ }
@@ -9816,7 +9254,7 @@ Begin
           End
           Else If (TokenPool[ScanEP].Kind = TK_IDENT) Then
           Begin
-            { Constante enum ? (TODO 20) }
+            { Constante enum ? }
             K := SymFind(TokenPool[ScanEP].Val);
             If (K >= 0) And (SymTab[K].Cat = SC_ENUM_VAL) Then
               CaseVal := SymTab[K].ImmVal;
@@ -9956,7 +9394,7 @@ Var
   Depth   : Integer;
   TIdx    : Integer;
   SaveEP  : Integer;
-  K       : Integer;  { pour scan ahead ident[...] = expr (TODO 18) }
+  K       : Integer;  { pour scan ahead ident[...] = expr }
 Begin
   If EP >= EPEnd Then Exit;
 
@@ -10217,7 +9655,7 @@ Begin
     Exit;
   End;
 
-  { --- goto label ; (TODO 22) --- }
+  { --- goto label ; --- }
   If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
      (TokenPool[EP].Val = 'goto') Then
   Begin
@@ -10267,7 +9705,7 @@ Begin
     Exit;
   End;
 
-  { --- Labels (pour goto) : ident ':' (TODO 22) --- }
+  { --- Labels (pour goto) : ident ':' --- }
   If (EP + 1 < EPEnd) And (TokenPool[EP].Kind = TK_IDENT) And
      (TokenPool[EP + 1].Kind = TK_PUNCT) And
      (TokenPool[EP + 1].Val = ':') Then
@@ -10284,9 +9722,9 @@ Begin
     Exit;
   End;
 
-  { --- Expression statement : affectation et operateurs (TODO 12) --- }
+  { --- Expression statement : affectation et operateurs --- }
 
-  { Cas special : ident++ ; et ident-- ; (post-increment/decrement) (TODO 17) }
+  { Cas special : ident++ ; et ident-- ; (post-increment/decrement) }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_OP) And
      ((TokenPool[EP + 1].Val = '++') Or (TokenPool[EP + 1].Val = '--')) And
@@ -10380,7 +9818,7 @@ Begin
     Exit;
   End;
 
-  { Cas special : affectation element de tableau ident[expr] = expr (TODO 18) }
+  { Cas special : affectation element de tableau ident[expr] = expr }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_PUNCT) And
      (TokenPool[EP + 1].Val = '[') Then
@@ -10449,7 +9887,7 @@ Begin
     End;
   End;
 
-  { Cas special : affectation membre struct ident.field = expr (TODO 19) }
+  { Cas special : affectation membre struct ident.field = expr }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 2 < EPEnd) And
      ((TokenPool[EP + 1].Kind = TK_OP) Or (TokenPool[EP + 1].Kind = TK_PUNCT)) And
      (TokenPool[EP + 1].Val = '.') And
@@ -10501,7 +9939,7 @@ Begin
     End;
   End;
 
-  { Cas special : affectation via ptr->field = expr (TODO 19) }
+  { Cas special : affectation via ptr->field = expr }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 2 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_OP) And (TokenPool[EP + 1].Val = '->') And
      (TokenPool[EP + 2].Kind = TK_IDENT) Then
@@ -10592,7 +10030,7 @@ Begin
   While EP < EPEnd Do
     ParseStmt;
 
-  { Verification des labels goto (TODO 22) }
+  { Verification des labels goto }
   For I := 0 To GotoLblUseCount - 1 Do
   Begin
     Found := False;
@@ -10615,7 +10053,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 16 - FONCTIONS ET PROTOTYPES                            }
+{ FONCTIONS ET PROTOTYPES                                      }
 { EmitExternFuncs emet les EXTRN pour les fonctions extern     }
 { utilisateur (declarations sans corps).                       }
 { ============================================================ }
@@ -10665,7 +10103,7 @@ Begin
   If DataCount <= DataEmittedCount Then Exit;
 
   EmitBlankLine;
-  EmitComment('--- Donnees supplementaires (TODO 21) ---');
+  EmitComment('--- Donnees supplementaires ---');
   EmitRaw('.DATA');
   EmitBlankLine;
 
@@ -10736,7 +10174,7 @@ End;
 Procedure EmitRuntime;
 Begin
   EmitBlankLine;
-  EmitComment('=== Runtime I/O (TODO 21) ===');
+  EmitComment('=== Runtime I/O ===');
   EmitBlankLine;
 
   { _CCRT_PRINTSTR : ESI = pointeur vers chaine ASCIIZ }
@@ -11011,7 +10449,7 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  EmitComment('=== Runtime supplementaire (TODO 24) ===');
+  EmitComment('=== Runtime supplementaire ===');
   EmitBlankLine;
 
   { _CCRT_NUMTOSTR : EAX = entier signe, EDI = buffer dest -> ASCIIZ }
@@ -11264,7 +10702,7 @@ Begin
   EmitInstr('CALL _ExitProcess@4');
   EmitBlankLine;
 
-  EmitComment('=== Fin Runtime (TODO 24) ===');
+  EmitComment('=== Fin Runtime ===');
   EmitBlankLine;
 End;
 
@@ -11314,7 +10752,7 @@ Begin
       End;
     End;
 
-    { Emettre le corps de la fonction (TODO 10) }
+    { Emettre le corps de la fonction }
     ParseBody(FI);
 
     EmitEpilog;
@@ -11350,7 +10788,7 @@ Begin
 End;
 
 { ============================================================ }
-{ TODO 25 - GENERATION PE/COFF ET FICHIERS EXEMPLES            }
+{ GENERATION PE/COFF ET FICHIERS EXEMPLES                      }
 { ============================================================ }
 
 { ------------------------------------------------------------ }
@@ -12638,10 +12076,10 @@ Begin
   { Enregistrer toutes les chaines dans le pool de donnees }
   TokenPoolRegisterStrings;
 
-  { --- Analyse des declarations globales (TODO 08) --- }
+  { --- Analyse des declarations globales --- }
   ParseDataDecls;
 
-  { --- Analyse des fonctions (TODO 09) --- }
+  { --- Analyse des fonctions --- }
   ParseFuncDecls;
 
   WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
@@ -12649,7 +12087,7 @@ Begin
     DataCount, ' data, ', SymCount, ' symboles, ',
     TypeCount, ' types, ', FuncCount, ' fonctions)');
 
-  { --- Emetteur ASM (TODO 07) --- }
+  { --- Emetteur ASM --- }
   { Toujours generer le fichier .ASM (intermediaire ou final) }
   AsmFile := ReplaceExt(Opts.SrcFile, '.asm');
   EmitOpen(AsmFile);
@@ -12664,7 +12102,7 @@ Begin
   If Opts.AsmOutput Then
     WriteLn('CCW32: ASM genere -> ', AsmFile);
 
-  { --- Generation binaire (TODO 25) --- }
+  { --- Generation binaire --- }
   If Opts.ObjOnly Then
   Begin
     { Generer un fichier COFF .OBJ }
@@ -12720,7 +12158,7 @@ End;
 { Programme principal                                          }
 { ============================================================ }
 
-Begin
+BEGIN
   If (ParamCount > 0) And
      ((ParamStr(1) = '/?') Or (ParamStr(1) = '--help') Or
       (ParamStr(1) = '-h') Or (ParamStr(1) = '/h') Or
@@ -12745,4 +12183,4 @@ Begin
     Halt(EXIT_ERROR)
   Else
     Halt(EXIT_OK);
-End.
+END.
