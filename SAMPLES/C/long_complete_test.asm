@@ -311,6 +311,8 @@ _CCF_main:
         MOV EAX,DWORD PTR [EBP-4]
         MOV DWORD PTR [EBP-12],EAX
         MOV EAX,DWORD PTR [EBP-4]
+        MOVSX EAX,AL
+; cast (char)
         MOV DWORD PTR [EBP-16],EAX
         MOV EAX,DWORD PTR [EBP-12]
         MOV DWORD PTR [EBP-20],EAX

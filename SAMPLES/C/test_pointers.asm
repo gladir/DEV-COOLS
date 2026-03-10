@@ -436,6 +436,7 @@ _CCL_12:
         POP ECX
         MOV DWORD PTR [ECX],EAX
         MOV EAX,OFFSET _CCF_add_one
+; cast vers pointeur (no-op)
         MOV DWORD PTR [EBP-28],EAX
         MOV EAX,10
         PUSH EAX
@@ -444,6 +445,7 @@ _CCL_12:
         ADD ESP,4
         MOV DWORD PTR [EBP-8],EAX
         MOV EAX,OFFSET _CCF_double_val
+; cast vers pointeur (no-op)
         MOV DWORD PTR [EBP-28],EAX
         MOV EAX,5
         PUSH EAX

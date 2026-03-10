@@ -1,5 +1,5 @@
 ; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
-; Genere automatiquement a partir de : SAMPLES/C/sizeof_advanced_test.c
+; Genere automatiquement a partir de : SAMPLES/C/test_cast.c
 
 .386
 .MODEL FLAT, STDCALL
@@ -284,66 +284,141 @@ _CCRT_READCHAR:
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
-        SUB ESP,56
-;   local result = [EBP-4]
-;   local arr = [EBP-24]
-;   local p = [EBP-32]
-;   local ptr = [EBP-36]
-;   local str = [EBP-56]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,1
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-24]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-56]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,8
-        MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-32]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-36]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-36]
-        MOV EAX,DWORD PTR [EAX]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-24]
-        PUSH EAX
-        MOV EAX,0
-        SHL EAX,2
-        POP EBX
-        ADD EAX,EBX
-        MOV EAX,DWORD PTR [EAX]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        LEA EAX,[EBP-32]
-        MOV EAX,DWORD PTR [EAX]
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,1
-        PUSH EAX
-        MOV EAX,2
-        MOV EBX,EAX
-        POP EAX
-        ADD EAX,EBX
-        MOV EAX,4
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP-36]
-; cast vers pointeur (no-op)
-        MOV EAX,4
+        SUB ESP,16
+;   local i = [EBP-4]
+;   local c = [EBP-8]
+;   local result = [EBP-12]
+;   local ptr = [EBP-16]
+        MOV EAX,321
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]
         MOVSX EAX,AL
 ; cast (char)
-        MOV EAX,4
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,65
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-8]
         MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,256
+        PUSH EAX
+        MOV EAX,42
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        AND EAX,0FFh
+; cast (unsigned char)
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,1000
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOVSX EAX,AX
+; cast (short)
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,65536
+        PUSH EAX
+        MOV EAX,100
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        AND EAX,0FFFFh
+; cast (unsigned short)
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,42
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+; cast vers pointeur (no-op)
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_2
+        XOR EAX,EAX
+        JMP _CCL_3
+_CCL_2:
+        MOV EAX,1
+_CCL_3:
+        TEST EAX,EAX
+        JZ _CCL_4
+        MOV EAX,1
+        JMP _CCL_5
+_CCL_4:
+        MOV EAX,0
+_CCL_5:
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,0
+        TEST EAX,EAX
+        JZ _CCL_6
+        MOV EAX,100
+        JMP _CCL_7
+_CCL_6:
+        MOV EAX,200
+_CCL_7:
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,1
+        TEST EAX,EAX
+        JZ _CCL_8
+        MOV EAX,300
+        JMP _CCL_9
+_CCL_8:
+        MOV EAX,400
+_CCL_9:
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,3
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,5
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_10
+        XOR EAX,EAX
+        JMP _CCL_11
+_CCL_10:
+        MOV EAX,1
+_CCL_11:
+        TEST EAX,EAX
+        JZ _CCL_12
+        MOV EAX,10
+        JMP _CCL_13
+_CCL_12:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,2
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_14
+        XOR EAX,EAX
+        JMP _CCL_15
+_CCL_14:
+        MOV EAX,1
+_CCL_15:
+        TEST EAX,EAX
+        JZ _CCL_16
+        MOV EAX,20
+        JMP _CCL_17
+_CCL_16:
+        MOV EAX,30
+_CCL_17:
+_CCL_13:
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,4
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,1
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-12],EAX
         MOV EAX,0
         JMP _CCL_1
 _CCL_1:

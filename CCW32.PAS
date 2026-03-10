@@ -483,7 +483,7 @@
             return; : retour de fonction void (sans valeur)
               JMP vers epilogue
 
-  TODO 23 - OPERATEUR TERNAIRE, CAST ET SIZEOF
+  TODO 23 - OPERATEUR TERNAIRE, CAST ET SIZEOF [IMPLEMENTE]
             Operateur ternaire : cond ? expr1 : expr2
               TEST EAX,EAX / JZ vers faux
               Evaluer expr1 -> JMP vers fin
@@ -7652,11 +7652,14 @@ End;
 
 Procedure ParsePrimary;
 Var
-  Name    : TString;
-  DataLbl : TString;
-  TIdx    : Integer;
-  SzVal   : Integer;
-  SaveEP  : Integer;
+  Name     : TString;
+  DataLbl  : TString;
+  TIdx     : Integer;
+  SzVal    : Integer;
+  SaveEP   : Integer;
+  CastIdx  : Integer;   { TODO 23 : index du type cible pour cast }
+  CastKind : TTypeKind; { TODO 23 : kind du type cible pour cast  }
+  IsPtr    : Boolean;    { TODO 23 : True si cast vers pointeur    }
 Begin
   LastPrimaryName := '';
 
@@ -7774,21 +7777,63 @@ Begin
       Begin
         Inc(EP);
 
-        { Verifier si c est un cast : (type) ou (type *) expr (TODO 17) }
+        { Verifier si c est un cast : (type) ou (type *) expr (TODO 23) }
         SaveEP := EP;
         TIdx := ParseTypeFromTokens(EP);
         { Consommer les * de pointeur avant le ')' }
+        IsPtr := False;
         While (TIdx >= 0) And Not EPAtEnd And
               (TokenPool[EP].Kind = TK_OP) And
               (TokenPool[EP].Val = '*') Do
+        Begin
           Inc(EP);
+          IsPtr := True;
+        End;
         If (TIdx >= 0) And Not EPAtEnd And
            (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ')') Then
         Begin
-          { Cast : (type)expr ou (type *)expr - evaluer expr, cast est no-op en 32 bits }
+          { Cast : (type)expr ou (type *)expr (TODO 23) }
+          CastIdx := TypeResolve(TIdx);
           Inc(EP); { consommer ')' }
           ParseUnary;
+          { Emettre le code de conversion selon le type cible }
+          If IsPtr Then
+          Begin
+            { Cast vers pointeur : no-op en 32 bits }
+            EmitComment('cast vers pointeur (no-op)');
+          End
+          Else If (CastIdx >= 0) And (CastIdx < TypeCount) Then
+          Begin
+            CastKind := TypeTab[CastIdx].Kind;
+            Case CastKind Of
+              TKP_CHAR:
+              Begin
+                { (char)expr : extension signe 8 bits -> 32 bits }
+                EmitInstr('MOVSX EAX,AL');
+                EmitComment('cast (char)');
+              End;
+              TKP_UCHAR:
+              Begin
+                { (unsigned char)expr : troncature a 8 bits }
+                EmitInstr('AND EAX,0FFh');
+                EmitComment('cast (unsigned char)');
+              End;
+              TKP_SHORT:
+              Begin
+                { (short)expr : extension signe 16 bits -> 32 bits }
+                EmitInstr('MOVSX EAX,AX');
+                EmitComment('cast (short)');
+              End;
+              TKP_USHORT:
+              Begin
+                { (unsigned short)expr : troncature a 16 bits }
+                EmitInstr('AND EAX,0FFFFh');
+                EmitComment('cast (unsigned short)');
+              End;
+              { int, uint, long, ulong, void, pointer : no-op en 32 bits }
+            End;
+          End;
         End
         Else
         Begin
