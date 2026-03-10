@@ -5085,10 +5085,13 @@ Begin
         Continue;
       End
       Else If TokenPool[I].Val = 'auto' Then
-        { auto au niveau global : ignorer le mot-cle }
+      Begin
+        { auto au niveau global : pas de stockage special, on continue }
+      End
       Else If TokenPool[I].Val = 'register' Then
-        { register au niveau global : ignorer le mot-cle }
-      ;
+      Begin
+        { register au niveau global : traite comme auto, on continue }
+      End;
       Inc(I);
       If I >= TokenCount Then Break;
     End;
@@ -5354,7 +5357,7 @@ Begin
         If SymIdx >= 0 Then
         Begin
           SymTab[SymIdx].MangledName := Lbl;
-          SymTab[SymIdx].IsGlobal := True;
+          SymTab[SymIdx].IsGlobal := Not IsStatic;
           SymTab[SymIdx].IsStatic := IsStatic;
         End;
       End;
@@ -5371,7 +5374,7 @@ Begin
         If SymIdx >= 0 Then
         Begin
           SymTab[SymIdx].MangledName := Lbl;
-          SymTab[SymIdx].IsGlobal := True;
+          SymTab[SymIdx].IsGlobal := Not IsStatic;
           SymTab[SymIdx].IsStatic := IsStatic;
         End;
       End;
