@@ -88,31 +88,45 @@
               (pas de fichier externe necessaire, le compilateur reconnait
               ces en-tetes et injecte les declarations correspondantes) :
               assert.h  : macro assert()
+              complex.h : _Complex, I, _Complex_I, CMPLX (C99)
+                           cabs, cacos, cacosh, carg, casin, casinh,
+                           catan, catanh, ccos, ccosh, cexp, cimag,
+                           clog, conj, cpow, cproj, creal, csin,
+                           csinh, csqrt, ctan, ctanh (+ variantes f/l)
               ctype.h   : isalpha, isdigit, isalnum, isspace, toupper,
                            tolower, isupper, islower, isprint, ...
               errno.h   : variable errno, constantes EDOM, ERANGE
+              fenv.h    : feclearexcept, fegetround, fesetround, ... (C99)
               float.h   : constantes FLT_MAX, FLT_MIN, DBL_MAX, ...
+              inttypes.h: PRId32, PRIx32, imaxabs, strtoimax, ... (C99)
+              iso646.h  : and, or, not, xor, compl, ... (C95)
               limits.h  : constantes CHAR_BIT, CHAR_MAX, INT_MAX,
                            INT_MIN, LONG_MAX, LONG_MIN, UINT_MAX, ...
               locale.h  : struct lconv, setlocale, localeconv (stubs)
               math.h    : sin, cos, tan, sqrt, pow, exp, log, fabs,
-                           ceil, floor, fmod, ... (stubs ou approx)
+                           ceil, floor, fmod, round, trunc, cbrt,
+                           hypot, erf, tgamma, ... (+ variantes f C99)
               setjmp.h  : jmp_buf, setjmp, longjmp (stubs)
               signal.h  : signal, raise, SIG_DFL, SIG_IGN, SIGINT,
                            SIGTERM, SIGABRT, ... (stubs)
               stdarg.h  : va_list, va_start, va_arg, va_end
+              stdbool.h : bool, true, false (C99)
               stddef.h  : NULL, size_t, ptrdiff_t, offsetof
+              stdint.h  : INT8_MAX, INT32_MAX, UINT32_MAX, ... (C99)
               stdio.h   : printf, scanf, putchar, getchar, puts, gets,
                            fopen, fclose, fread, fwrite, fprintf,
-                           fscanf, fgets, fputs, feof, FILE, stdin,
-                           stdout, stderr, EOF, ...
+                           fscanf, fgets, fputs, feof, snprintf, FILE,
+                           stdin, stdout, stderr, EOF, ...
               stdlib.h  : malloc, free, calloc, realloc, exit, abort,
-                           atoi, atol, rand, srand, abs, labs, ...
+                           atoi, atol, rand, srand, abs, labs, _Exit, ...
               string.h  : strlen, strcpy, strcat, strcmp, strncpy,
                            strncat, strncmp, memcpy, memset, memcmp,
-                           strchr, strrchr, strstr, ...
+                           strchr, strrchr, strstr, strdup, ...
+              tgmath.h  : type-generic math macros (C99)
               time.h    : time, clock, difftime, mktime, struct tm,
                            time_t, clock_t, localtime, asctime, ...
+              wchar.h   : fgetwc, fputwc, wcslen, wcscpy, wprintf, ...
+              wctype.h  : iswalpha, iswdigit, towlower, towupper, ...
             #ifdef NOM / #ifndef NOM : compilation conditionnelle
             #if expression : evaluation d expression constante
             #elif expression : branche alternative
@@ -154,26 +168,45 @@
               la table des symboles (le compilateur les reconnait
               automatiquement lorsqu elles apparaissent dans le
               code source C, sans declaration explicite requise) :
-              abort, abs, acos, asctime, asin, assert, atan, atan2,
-              atexit, atof, atoi, atol, bsearch, calloc, ceil,
-              clearerr, clock, cos, cosh, ctime, difftime, div,
-              exit, exp, fabs, fclose, feof, ferror, fflush, fgetc,
-              fgetpos, fgets, floor, fmod, fopen, fprintf, fputc,
-              fputs, fread, free, freopen, frexp, fscanf, fseek,
-              fsetpos, ftell, fwrite, getc, getchar, getenv, gets,
-              gmtime, isalnum, isalpha, iscntrl, isdigit, isgraph,
-              islower, isprint, ispunct, isspace, isupper, isxdigit,
-              labs, ldexp, ldiv, localtime, log, log10, longjmp,
-              malloc, memchr, memcmp, memcpy, memmove, memset,
-              mktime, modf, perror, pow, printf, putc, putchar,
-              puts, qsort, raise, rand, realloc, remove, rename,
-              rewind, scanf, setbuf, setjmp, setvbuf, signal, sin,
-              sinh, sprintf, sqrt, srand, sscanf, strcat, strchr,
-              strcmp, strcpy, strcspn, strerror, strftime, strlen,
-              strncat, strncmp, strncpy, strpbrk, strrchr, strspn,
-              strstr, strtod, strtok, strtol, strtoul, system, tan,
-              tanh, time, tmpfile, tmpnam, tolower, toupper, ungetc,
-              va_arg, va_end, va_start, vfprintf, vprintf, vsprintf
+              394 fonctions couvrant C89/C90, C95, C99 :
+              stdio.h (43) : clearerr, fclose, feof, ferror, fflush,
+                fgetc, fgetpos, fgets, fopen, fprintf, fputc, fputs,
+                fread, freopen, fscanf, fseek, fsetpos, ftell, fwrite,
+                getc, getchar, gets, perror, printf, putc, putchar,
+                puts, remove, rename, rewind, scanf, setbuf, setvbuf,
+                sprintf, sscanf, tmpfile, tmpnam, ungetc, vfprintf,
+                vprintf, vsprintf, snprintf, vsnprintf (C99),
+                vfscanf, vscanf, vsscanf (C99)
+              stdlib.h (30) : abort, abs, atexit, atof, atoi, atol,
+                bsearch, calloc, div, exit, free, getenv, labs, ldiv,
+                malloc, qsort, rand, realloc, srand, strtod, strtol,
+                strtoul, system, _Exit (C99), llabs (C99),
+                lldiv (C99), strtof (C99), strtold (C99),
+                strtoll (C99), strtoull (C99)
+              string.h (23) : memchr, memcmp, memcpy, memmove, memset,
+                strcat, strchr, strcmp, strcpy, strcspn, strerror,
+                strlen, strncat, strncmp, strncpy, strpbrk, strrchr,
+                strspn, strstr, strtok, strnlen, strndup, strdup
+              math.h (83) : acos, asin, atan, atan2, ceil, cos, cosh,
+                exp, fabs, floor, fmod, frexp, ldexp, log, log10,
+                modf, pow, sin, sinh, sqrt, tan, tanh,
+                acosh..trunc (38 C99), acosf..truncf (22+16 C99 f)
+              complex.h (78 C99) : cabs..ctanh, cabsf..ctanhf,
+                cabsl..ctanhl (26 fonctions * 3 variantes)
+              time.h (9) : asctime, clock, ctime, difftime, gmtime,
+                localtime, mktime, strftime, time
+              ctype.h (13) : isalnum, isalpha, iscntrl, isdigit,
+                isgraph, islower, isprint, ispunct, isspace, isupper,
+                isxdigit, tolower, toupper
+              signal.h (2) : raise, signal
+              setjmp.h (2) : longjmp, setjmp
+              assert.h (1) : assert
+              stdarg.h (3) : va_start, va_arg, va_end
+              locale.h (2) : setlocale, localeconv
+              wchar.h (52) : btowc..wscanf (manipulation wide chars)
+              wctype.h (18) : iswalnum..wctype (classification wchar)
+              fenv.h (11 C99) : feclearexcept..feupdateenv
+              inttypes.h (6 C99) : imaxabs..wcstoumax
 
   TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKP_VOID, TKP_CHAR (8 bits signe),
@@ -2526,6 +2559,134 @@ Begin
     MacroDefine('CLOCKS_PER_SEC', '1000');
     MacroDefine('NULL', '((void*)0)');
     MacroDefine('_TIME_H', '1');
+  End
+  Else If (Header = 'complex.h') Or (Header = '<complex.h>') Then
+  Begin
+    MacroDefine('complex', '_Complex');
+    MacroDefine('_Complex_I', '(__extension__ 1.0fi)');
+    MacroDefine('I', '_Complex_I');
+    MacroDefine('_Imaginary_I', '(__extension__ 1.0fi)');
+    MacroDefine('CMPLX', '__builtin_complex');
+    MacroDefine('CMPLXF', '__builtin_complex');
+    MacroDefine('CMPLXL', '__builtin_complex');
+    MacroDefine('_COMPLEX_H', '1');
+  End
+  Else If (Header = 'stdbool.h') Or (Header = '<stdbool.h>') Then
+  Begin
+    MacroDefine('bool', '_Bool');
+    MacroDefine('true', '1');
+    MacroDefine('false', '0');
+    MacroDefine('__bool_true_false_are_defined', '1');
+    MacroDefine('_STDBOOL_H', '1');
+  End
+  Else If (Header = 'stdint.h') Or (Header = '<stdint.h>') Then
+  Begin
+    MacroDefine('INT8_MIN', '(-128)');
+    MacroDefine('INT8_MAX', '127');
+    MacroDefine('UINT8_MAX', '255');
+    MacroDefine('INT16_MIN', '(-32768)');
+    MacroDefine('INT16_MAX', '32767');
+    MacroDefine('UINT16_MAX', '65535');
+    MacroDefine('INT32_MIN', '(-2147483647-1)');
+    MacroDefine('INT32_MAX', '2147483647');
+    MacroDefine('UINT32_MAX', '4294967295U');
+    MacroDefine('INT_LEAST8_MIN', '(-128)');
+    MacroDefine('INT_LEAST8_MAX', '127');
+    MacroDefine('UINT_LEAST8_MAX', '255');
+    MacroDefine('INT_LEAST16_MIN', '(-32768)');
+    MacroDefine('INT_LEAST16_MAX', '32767');
+    MacroDefine('UINT_LEAST16_MAX', '65535');
+    MacroDefine('INT_LEAST32_MIN', '(-2147483647-1)');
+    MacroDefine('INT_LEAST32_MAX', '2147483647');
+    MacroDefine('UINT_LEAST32_MAX', '4294967295U');
+    MacroDefine('INT_FAST8_MIN', '(-128)');
+    MacroDefine('INT_FAST8_MAX', '127');
+    MacroDefine('UINT_FAST8_MAX', '255');
+    MacroDefine('INT_FAST16_MIN', '(-2147483647-1)');
+    MacroDefine('INT_FAST16_MAX', '2147483647');
+    MacroDefine('UINT_FAST16_MAX', '4294967295U');
+    MacroDefine('INT_FAST32_MIN', '(-2147483647-1)');
+    MacroDefine('INT_FAST32_MAX', '2147483647');
+    MacroDefine('UINT_FAST32_MAX', '4294967295U');
+    MacroDefine('INTPTR_MIN', '(-2147483647-1)');
+    MacroDefine('INTPTR_MAX', '2147483647');
+    MacroDefine('UINTPTR_MAX', '4294967295U');
+    MacroDefine('INTMAX_MIN', '(-2147483647-1)');
+    MacroDefine('INTMAX_MAX', '2147483647');
+    MacroDefine('UINTMAX_MAX', '4294967295U');
+    MacroDefine('PTRDIFF_MIN', '(-2147483647-1)');
+    MacroDefine('PTRDIFF_MAX', '2147483647');
+    MacroDefine('SIZE_MAX', '4294967295U');
+    MacroDefine('_STDINT_H', '1');
+  End
+  Else If (Header = 'inttypes.h') Or (Header = '<inttypes.h>') Then
+  Begin
+    MacroDefine('PRId8', '"d"');
+    MacroDefine('PRId16', '"d"');
+    MacroDefine('PRId32', '"d"');
+    MacroDefine('PRIi8', '"i"');
+    MacroDefine('PRIi16', '"i"');
+    MacroDefine('PRIi32', '"i"');
+    MacroDefine('PRIo8', '"o"');
+    MacroDefine('PRIo16', '"o"');
+    MacroDefine('PRIo32', '"o"');
+    MacroDefine('PRIu8', '"u"');
+    MacroDefine('PRIu16', '"u"');
+    MacroDefine('PRIu32', '"u"');
+    MacroDefine('PRIx8', '"x"');
+    MacroDefine('PRIx16', '"x"');
+    MacroDefine('PRIx32', '"x"');
+    MacroDefine('PRIX8', '"X"');
+    MacroDefine('PRIX16', '"X"');
+    MacroDefine('PRIX32', '"X"');
+    MacroDefine('_INTTYPES_H', '1');
+  End
+  Else If (Header = 'iso646.h') Or (Header = '<iso646.h>') Then
+  Begin
+    MacroDefine('and', '&&');
+    MacroDefine('and_eq', '&=');
+    MacroDefine('bitand', '&');
+    MacroDefine('bitor', '|');
+    MacroDefine('compl', '~');
+    MacroDefine('not', '!');
+    MacroDefine('not_eq', '!=');
+    MacroDefine('or', '||');
+    MacroDefine('or_eq', '|=');
+    MacroDefine('xor', '^');
+    MacroDefine('xor_eq', '^=');
+    MacroDefine('_ISO646_H', '1');
+  End
+  Else If (Header = 'wchar.h') Or (Header = '<wchar.h>') Then
+  Begin
+    MacroDefine('NULL', '((void*)0)');
+    MacroDefine('WEOF', '(0xFFFF)');
+    MacroDefine('WCHAR_MIN', '0');
+    MacroDefine('WCHAR_MAX', '65535');
+    MacroDefine('_WCHAR_H', '1');
+  End
+  Else If (Header = 'wctype.h') Or (Header = '<wctype.h>') Then
+  Begin
+    MacroDefine('WEOF', '(0xFFFF)');
+    MacroDefine('_WCTYPE_H', '1');
+  End
+  Else If (Header = 'fenv.h') Or (Header = '<fenv.h>') Then
+  Begin
+    MacroDefine('FE_DIVBYZERO', '4');
+    MacroDefine('FE_INEXACT', '32');
+    MacroDefine('FE_INVALID', '1');
+    MacroDefine('FE_OVERFLOW', '8');
+    MacroDefine('FE_UNDERFLOW', '16');
+    MacroDefine('FE_ALL_EXCEPT', '61');
+    MacroDefine('FE_TONEAREST', '0');
+    MacroDefine('FE_DOWNWARD', '1024');
+    MacroDefine('FE_UPWARD', '2048');
+    MacroDefine('FE_TOWARDZERO', '3072');
+    MacroDefine('FE_DFL_ENV', '((void*)0)');
+    MacroDefine('_FENV_H', '1');
+  End
+  Else If (Header = 'tgmath.h') Or (Header = '<tgmath.h>') Then
+  Begin
+    MacroDefine('_TGMATH_H', '1');
   End;
   { En-tetes inconnus : ignorer silencieusement }
 End;
@@ -4215,6 +4376,121 @@ Begin
 
   { stdarg.h }
   RegFunc('va_start'); RegFunc('va_arg');  RegFunc('va_end');
+
+  { locale.h }
+  RegFunc('setlocale'); RegFunc('localeconv');
+
+  { complex.h (C99) }
+  RegFunc('cabs');     RegFunc('cabsf');    RegFunc('cabsl');
+  RegFunc('cacos');    RegFunc('cacosf');   RegFunc('cacosl');
+  RegFunc('cacosh');   RegFunc('cacoshf');  RegFunc('cacoshl');
+  RegFunc('carg');     RegFunc('cargf');    RegFunc('cargl');
+  RegFunc('casin');    RegFunc('casinf');   RegFunc('casinl');
+  RegFunc('casinh');   RegFunc('casinhf');  RegFunc('casinhl');
+  RegFunc('catan');    RegFunc('catanf');   RegFunc('catanl');
+  RegFunc('catanh');   RegFunc('catanhf'); RegFunc('catanhl');
+  RegFunc('ccos');     RegFunc('ccosf');    RegFunc('ccosl');
+  RegFunc('ccosh');    RegFunc('ccoshf');   RegFunc('ccoshl');
+  RegFunc('cexp');     RegFunc('cexpf');    RegFunc('cexpl');
+  RegFunc('cimag');    RegFunc('cimagf');   RegFunc('cimagl');
+  RegFunc('clog');     RegFunc('clogf');    RegFunc('clogl');
+  RegFunc('conj');     RegFunc('conjf');    RegFunc('conjl');
+  RegFunc('cpow');     RegFunc('cpowf');    RegFunc('cpowl');
+  RegFunc('cproj');    RegFunc('cprojf');   RegFunc('cprojl');
+  RegFunc('creal');    RegFunc('crealf');   RegFunc('creall');
+  RegFunc('csin');     RegFunc('csinf');    RegFunc('csinl');
+  RegFunc('csinh');    RegFunc('csinhf');   RegFunc('csinhl');
+  RegFunc('csqrt');    RegFunc('csqrtf');   RegFunc('csqrtl');
+  RegFunc('ctan');     RegFunc('ctanf');    RegFunc('ctanl');
+  RegFunc('ctanh');    RegFunc('ctanhf');   RegFunc('ctanhl');
+
+  { math.h C99 additions }
+  RegFunc('acosh');    RegFunc('asinh');    RegFunc('atanh');
+  RegFunc('cbrt');     RegFunc('copysign'); RegFunc('erf');
+  RegFunc('erfc');     RegFunc('exp2');     RegFunc('expm1');
+  RegFunc('fdim');     RegFunc('fma');      RegFunc('fmax');
+  RegFunc('fmin');     RegFunc('hypot');    RegFunc('ilogb');
+  RegFunc('lgamma');   RegFunc('llrint');   RegFunc('llround');
+  RegFunc('log1p');    RegFunc('log2');     RegFunc('logb');
+  RegFunc('lrint');    RegFunc('lround');   RegFunc('nan');
+  RegFunc('nearbyint');RegFunc('nextafter');RegFunc('nexttoward');
+  RegFunc('remainder');RegFunc('remquo');   RegFunc('rint');
+  RegFunc('round');    RegFunc('scalbln');  RegFunc('scalbn');
+  RegFunc('tgamma');   RegFunc('trunc');
+
+  { math.h float variants (C99) }
+  RegFunc('acosf');    RegFunc('asinf');    RegFunc('atanf');
+  RegFunc('atan2f');   RegFunc('ceilf');    RegFunc('cosf');
+  RegFunc('coshf');    RegFunc('expf');     RegFunc('fabsf');
+  RegFunc('floorf');   RegFunc('fmodf');    RegFunc('frexpf');
+  RegFunc('ldexpf');   RegFunc('logf');     RegFunc('log10f');
+  RegFunc('modff');    RegFunc('powf');     RegFunc('sinf');
+  RegFunc('sinhf');    RegFunc('sqrtf');    RegFunc('tanf');
+  RegFunc('tanhf');
+  RegFunc('acoshf');   RegFunc('asinhf');   RegFunc('atanhf');
+  RegFunc('cbrtf');    RegFunc('copysignf');RegFunc('erff');
+  RegFunc('erfcf');    RegFunc('exp2f');    RegFunc('expm1f');
+  RegFunc('fdimf');    RegFunc('fmaf');     RegFunc('fmaxf');
+  RegFunc('fminf');    RegFunc('hypotf');   RegFunc('ilogbf');
+  RegFunc('lgammaf');  RegFunc('log1pf');   RegFunc('log2f');
+  RegFunc('logbf');    RegFunc('lrintf');   RegFunc('lroundf');
+  RegFunc('nearbyintf');RegFunc('nextafterf');RegFunc('remainderf');
+  RegFunc('remquof');  RegFunc('rintf');    RegFunc('roundf');
+  RegFunc('scalblnf'); RegFunc('scalbnf'); RegFunc('tgammaf');
+  RegFunc('truncf');
+
+  { stdlib.h C99 additions }
+  RegFunc('_Exit');    RegFunc('llabs');    RegFunc('lldiv');
+  RegFunc('strtof');   RegFunc('strtold');  RegFunc('strtoll');
+  RegFunc('strtoull');
+
+  { stdio.h C99 additions }
+  RegFunc('snprintf'); RegFunc('vsnprintf');RegFunc('vfscanf');
+  RegFunc('vscanf');   RegFunc('vsscanf');
+
+  { string.h C99 additions }
+  RegFunc('strnlen');  RegFunc('strndup');  RegFunc('strdup');
+
+  { wchar.h }
+  RegFunc('btowc');    RegFunc('fgetwc');   RegFunc('fgetws');
+  RegFunc('fputwc');   RegFunc('fputws');   RegFunc('fwide');
+  RegFunc('fwprintf'); RegFunc('fwscanf');  RegFunc('getwc');
+  RegFunc('getwchar'); RegFunc('mbrlen');   RegFunc('mbrtowc');
+  RegFunc('mbsinit');  RegFunc('mbsrtowcs');RegFunc('putwc');
+  RegFunc('putwchar'); RegFunc('swprintf'); RegFunc('swscanf');
+  RegFunc('ungetwc');  RegFunc('vfwprintf');RegFunc('vswprintf');
+  RegFunc('vwprintf'); RegFunc('wcrtomb');  RegFunc('wcscat');
+  RegFunc('wcschr');   RegFunc('wcscmp');   RegFunc('wcscoll');
+  RegFunc('wcscpy');   RegFunc('wcscspn'); RegFunc('wcsftime');
+  RegFunc('wcslen');   RegFunc('wcsncat'); RegFunc('wcsncmp');
+  RegFunc('wcsncpy');  RegFunc('wcspbrk'); RegFunc('wcsrchr');
+  RegFunc('wcsrtombs');RegFunc('wcsspn');  RegFunc('wcsstr');
+  RegFunc('wcstod');   RegFunc('wcstok');  RegFunc('wcstol');
+  RegFunc('wcstoul');  RegFunc('wcsxfrm'); RegFunc('wctob');
+  RegFunc('wmemchr');  RegFunc('wmemcmp'); RegFunc('wmemcpy');
+  RegFunc('wmemmove'); RegFunc('wmemset'); RegFunc('wprintf');
+  RegFunc('wscanf');
+
+  { wctype.h }
+  RegFunc('iswalnum'); RegFunc('iswalpha'); RegFunc('iswblank');
+  RegFunc('iswcntrl'); RegFunc('iswdigit'); RegFunc('iswgraph');
+  RegFunc('iswlower'); RegFunc('iswprint'); RegFunc('iswpunct');
+  RegFunc('iswspace'); RegFunc('iswupper'); RegFunc('iswxdigit');
+  RegFunc('iswctype'); RegFunc('towlower'); RegFunc('towupper');
+  RegFunc('towctrans');RegFunc('wctrans');  RegFunc('wctype');
+
+  { fenv.h (C99) }
+  RegFunc('feclearexcept');  RegFunc('fegetexceptflag');
+  RegFunc('feraiseexcept');  RegFunc('fesetexceptflag');
+  RegFunc('fetestexcept');   RegFunc('fegetround');
+  RegFunc('fesetround');     RegFunc('fegetenv');
+  RegFunc('feholdexcept');   RegFunc('fesetenv');
+  RegFunc('feupdateenv');
+
+  { inttypes.h (C99) }
+  RegFunc('imaxabs');  RegFunc('imaxdiv');
+  RegFunc('strtoimax');RegFunc('strtoumax');
+  RegFunc('wcstoimax');RegFunc('wcstoumax');
 End;
 
 { ============================================================ }
