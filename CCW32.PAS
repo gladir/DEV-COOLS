@@ -4388,7 +4388,7 @@ Begin
   RegFunc('casin');    RegFunc('casinf');   RegFunc('casinl');
   RegFunc('casinh');   RegFunc('casinhf');  RegFunc('casinhl');
   RegFunc('catan');    RegFunc('catanf');   RegFunc('catanl');
-  RegFunc('catanh');   RegFunc('catanhf'); RegFunc('catanhl');
+  RegFunc('catanh');   RegFunc('catanhf');  RegFunc('catanhl');
   RegFunc('ccos');     RegFunc('ccosf');    RegFunc('ccosl');
   RegFunc('ccosh');    RegFunc('ccoshf');   RegFunc('ccoshl');
   RegFunc('cexp');     RegFunc('cexpf');    RegFunc('cexpl');
@@ -4458,17 +4458,17 @@ Begin
   RegFunc('getwchar'); RegFunc('mbrlen');   RegFunc('mbrtowc');
   RegFunc('mbsinit');  RegFunc('mbsrtowcs');RegFunc('putwc');
   RegFunc('putwchar'); RegFunc('swprintf'); RegFunc('swscanf');
-  RegFunc('ungetwc');  RegFunc('vfwprintf');RegFunc('vswprintf');
-  RegFunc('vwprintf'); RegFunc('wcrtomb');  RegFunc('wcscat');
-  RegFunc('wcschr');   RegFunc('wcscmp');   RegFunc('wcscoll');
-  RegFunc('wcscpy');   RegFunc('wcscspn'); RegFunc('wcsftime');
-  RegFunc('wcslen');   RegFunc('wcsncat'); RegFunc('wcsncmp');
-  RegFunc('wcsncpy');  RegFunc('wcspbrk'); RegFunc('wcsrchr');
-  RegFunc('wcsrtombs');RegFunc('wcsspn');  RegFunc('wcsstr');
-  RegFunc('wcstod');   RegFunc('wcstok');  RegFunc('wcstol');
-  RegFunc('wcstoul');  RegFunc('wcsxfrm'); RegFunc('wctob');
-  RegFunc('wmemchr');  RegFunc('wmemcmp'); RegFunc('wmemcpy');
-  RegFunc('wmemmove'); RegFunc('wmemset'); RegFunc('wprintf');
+  RegFunc('ungetwc');  RegFunc('vfwprintf'); RegFunc('vswprintf');
+  RegFunc('vwprintf'); RegFunc('wcrtomb');   RegFunc('wcscat');
+  RegFunc('wcschr');   RegFunc('wcscmp');    RegFunc('wcscoll');
+  RegFunc('wcscpy');   RegFunc('wcscspn');   RegFunc('wcsftime');
+  RegFunc('wcslen');   RegFunc('wcsncat');   RegFunc('wcsncmp');
+  RegFunc('wcsncpy');  RegFunc('wcspbrk');   RegFunc('wcsrchr');
+  RegFunc('wcsrtombs');RegFunc('wcsspn');    RegFunc('wcsstr');
+  RegFunc('wcstod');   RegFunc('wcstok');    RegFunc('wcstol');
+  RegFunc('wcstoul');  RegFunc('wcsxfrm');   RegFunc('wctob');
+  RegFunc('wmemchr');  RegFunc('wmemcmp');   RegFunc('wmemcpy');
+  RegFunc('wmemmove'); RegFunc('wmemset');  RegFunc('wprintf');
   RegFunc('wscanf');
 
   { wctype.h }
