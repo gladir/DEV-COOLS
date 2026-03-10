@@ -141,7 +141,7 @@
              EmitModuleHeader : si option -m, generer en-tete module ES6
              EmitFooter : fermer les blocs ouverts, appel du programme principal
 
-   TODO 08 - PROGRAMME PRINCIPAL (PROGRAM)
+   TODO 08 - PROGRAMME PRINCIPAL (PROGRAM) [IMPLEMENTE]
              ParseProgram : PROGRAM nom [(params)]; uses; decls; BEGIN stmts END.
              Emission : function _main() { ... } en JS
                Appel automatique : _main(); a la fin du fichier
@@ -819,6 +819,9 @@ Var
   { Emetteur de code JavaScript (TODO 07) }
   IndentLevel : Integer;          { niveau d indentation courant (0=gauche) }
 
+  { Parseur de programme (TODO 08) }
+  ProgName    : TString;          { nom du programme PROGRAM xxx            }
+
 { ============================================================
   FORWARD DECLARATIONS
   ============================================================ }
@@ -1058,6 +1061,7 @@ Begin
   CurToken.Col     := 0;
   TokenCount := 0;
   ConstCount := 0;
+  ProgName   := 'main';
 End;
 
 { ============================================================
@@ -3346,6 +3350,709 @@ Begin
   EmitLine('_main();');
 End;
 
+{ ============================================================
+  TODO 08 - PROGRAMME PRINCIPAL (PROGRAM) [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseUsesClause : parser la clause USES ---------------- }
+{ USES unit1, unit2, ..., unitN;                                 }
+{ Genere des commentaires /* uses unit1 */ en JS.                }
+Procedure ParseUsesClause(Var P : Integer);
+Var
+  UnitName : TString;
+  Idx      : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'uses') Then Exit;
+  Inc(P); { consommer USES }
+  EmitComment('uses');
+  While P < TokenCount Do
+  Begin
+    If TokenPool[P].Kind = TK_IDENT Then
+    Begin
+      UnitName := TokenPool[P].Val;
+      EmitComment('  ' + UnitName);
+      { Enregistrer l unite dans la table des symboles }
+      Idx := SymAdd(UnitName, SK_UNIT, -1);
+      Inc(P);
+    End
+    Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Inc(P)
+    Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';') Then
+    Begin
+      Inc(P);
+      Exit;
+    End
+    Else
+    Begin
+      { Token inattendu, avancer }
+      Inc(P);
+    End;
+  End;
+End;
+
+{ ---- ParseConstSection : parser une section CONST ----------- }
+{ CONST nom = expr; nom = expr; ...                              }
+{ Genere : const nom = valeur; en JS.                            }
+Procedure ParseConstSection(Var P : Integer);
+Var
+  CName   : TString;
+  JSVal   : TString;
+  IsTyped : Boolean;
+  TypeName: TString;
+  TIdx    : Integer;
+  Idx     : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'const') Then Exit;
+  Inc(P); { consommer CONST }
+
+  { Boucle sur les declarations de constantes }
+  While P < TokenCount Do
+  Begin
+    { Verifier si on est sur un autre mot-cle de section ou BEGIN }
+    If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      If (StrLowerCase(TokenPool[P].Val) = 'const') Or
+         (StrLowerCase(TokenPool[P].Val) = 'var') Or
+         (StrLowerCase(TokenPool[P].Val) = 'type') Or
+         (StrLowerCase(TokenPool[P].Val) = 'label') Or
+         (StrLowerCase(TokenPool[P].Val) = 'begin') Or
+         (StrLowerCase(TokenPool[P].Val) = 'procedure') Or
+         (StrLowerCase(TokenPool[P].Val) = 'function') Then
+        Exit;
+    End;
+
+    { Attendre un identificateur }
+    If TokenPool[P].Kind <> TK_IDENT Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    CName := TokenPool[P].Val;
+    Inc(P);
+    IsTyped := False;
+    TIdx := -1;
+
+    { Constante typee : nom : Type = valeur }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      IsTyped := True;
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        TypeName := TokenPool[P].Val;
+        TIdx := TypeFindByName(TypeName);
+        Inc(P);
+      End
+      Else If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Then
+      Begin
+        TypeName := TokenPool[P].Val;
+        TIdx := TypeFindByName(TypeName);
+        Inc(P);
+      End;
+    End;
+
+    { Attendre = }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '=') Then
+    Begin
+      Inc(P); { consommer = }
+      JSVal := ConstEvalExpr(P);
+
+      { Enregistrer dans la table des constantes }
+      ConstAdd(CName, JSVal, TK_INTEGER, 0, 0.0, '', IsTyped);
+      { Enregistrer dans la table des symboles }
+      Idx := SymAdd(CName, SK_CONST, TIdx);
+
+      { Emettre en JavaScript }
+      If IsTyped Then
+        EmitLine('var ' + CName + ' = ' + JSVal + ';')
+      Else
+        EmitLine('const ' + CName + ' = ' + JSVal + ';');
+    End;
+
+    { Consommer le point-virgule si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+End;
+
+{ ---- ParseVarSection : parser une section VAR --------------- }
+{ VAR nom1, nom2 : Type; nom3 : Type;                           }
+{ Genere : var nom1 = default; var nom2 = default; en JS.       }
+Procedure ParseVarSection(Var P : Integer);
+Var
+  VarNames : Array[0..63] Of TString;
+  VarCount : Integer;
+  TypeName : TString;
+  TIdx     : Integer;
+  DefVal   : TString;
+  I        : Integer;
+  Idx      : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'var') Then Exit;
+  Inc(P); { consommer VAR }
+
+  { Boucle sur les declarations de variables }
+  While P < TokenCount Do
+  Begin
+    { Verifier si on est sur un autre mot-cle de section ou BEGIN }
+    If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      If (StrLowerCase(TokenPool[P].Val) = 'const') Or
+         (StrLowerCase(TokenPool[P].Val) = 'var') Or
+         (StrLowerCase(TokenPool[P].Val) = 'type') Or
+         (StrLowerCase(TokenPool[P].Val) = 'label') Or
+         (StrLowerCase(TokenPool[P].Val) = 'begin') Or
+         (StrLowerCase(TokenPool[P].Val) = 'procedure') Or
+         (StrLowerCase(TokenPool[P].Val) = 'function') Then
+        Exit;
+    End;
+
+    { Attendre un identificateur }
+    If TokenPool[P].Kind <> TK_IDENT Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    { Collecter les noms de variables separes par des virgules }
+    VarCount := 0;
+    While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+    Begin
+      If VarCount < 64 Then
+      Begin
+        VarNames[VarCount] := TokenPool[P].Val;
+        Inc(VarCount);
+      End;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+        Inc(P)
+      Else
+        Break;
+    End;
+
+    { Attendre : Type }
+    TIdx := -1;
+    DefVal := 'null';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P); { consommer : }
+      { Lire le nom du type }
+      If P < TokenCount Then
+      Begin
+        If (TokenPool[P].Kind = TK_IDENT) Or
+           (TokenPool[P].Kind = TK_KEYWORD) Then
+        Begin
+          TypeName := TokenPool[P].Val;
+          TIdx := TypeFindByName(TypeName);
+          DefVal := TypeDefaultJS(TIdx);
+          Inc(P);
+        End;
+        { Sauter Array [...] of ... }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = '[') Then
+        Begin
+          DefVal := '[]';
+          While (P < TokenCount) And
+                Not ((TokenPool[P].Kind = TK_PUNCT) And
+                     (TokenPool[P].Val = ';')) Do
+            Inc(P);
+        End;
+      End;
+    End;
+
+    { Emettre les variables en JavaScript }
+    For I := 0 To VarCount - 1 Do
+    Begin
+      Idx := SymAdd(VarNames[I], SK_VAR, TIdx);
+      EmitLine('var ' + VarNames[I] + ' = ' + DefVal + ';');
+    End;
+
+    { Consommer le point-virgule si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+End;
+
+{ ---- ParseTypeSection : parser une section TYPE ------------- }
+{ TYPE nom = definition;                                         }
+{ Emet un commentaire JS pour chaque type declare.               }
+Procedure ParseTypeSection(Var P : Integer);
+Var
+  TName : TString;
+  Depth : Integer;
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'type') Then Exit;
+  Inc(P); { consommer TYPE }
+
+  While P < TokenCount Do
+  Begin
+    { Verifier si on est sur un autre mot-cle de section ou BEGIN }
+    If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      If (StrLowerCase(TokenPool[P].Val) = 'const') Or
+         (StrLowerCase(TokenPool[P].Val) = 'var') Or
+         (StrLowerCase(TokenPool[P].Val) = 'type') Or
+         (StrLowerCase(TokenPool[P].Val) = 'label') Or
+         (StrLowerCase(TokenPool[P].Val) = 'begin') Or
+         (StrLowerCase(TokenPool[P].Val) = 'procedure') Or
+         (StrLowerCase(TokenPool[P].Val) = 'function') Then
+        Exit;
+    End;
+
+    { Attendre un identificateur }
+    If TokenPool[P].Kind <> TK_IDENT Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+
+    TName := TokenPool[P].Val;
+    Inc(P);
+
+    { Attendre = }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+       (TokenPool[P].Val = '=') Then
+    Begin
+      Inc(P);
+      EmitComment('type ' + TName + ' = ...');
+      { Enregistrer dans la table des symboles }
+      SymAdd(TName, SK_TYPE, -1);
+      { Sauter la definition du type jusqu au ; }
+      Depth := 0;
+      While P < TokenCount Do
+      Begin
+        If (TokenPool[P].Kind = TK_KEYWORD) And
+           ((StrLowerCase(TokenPool[P].Val) = 'record') Or
+            (StrLowerCase(TokenPool[P].Val) = 'object')) Then
+          Inc(Depth)
+        Else If (TokenPool[P].Kind = TK_KEYWORD) And
+                (StrLowerCase(TokenPool[P].Val) = 'end') Then
+        Begin
+          If Depth > 0 Then
+            Dec(Depth);
+        End;
+        If (Depth = 0) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+        Begin
+          Inc(P);
+          Break;
+        End;
+        Inc(P);
+      End;
+    End
+    Else
+    Begin
+      { Pas de = : erreur de syntaxe, avancer jusqu au ; }
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ';')) Do
+        Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+  End;
+End;
+
+{ ---- ParseLabelSection : parser une section LABEL ----------- }
+{ LABEL label1, label2, ...;                                     }
+{ Les labels sont ignores en JavaScript.                         }
+Procedure ParseLabelSection(Var P : Integer);
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'label') Then Exit;
+  Inc(P); { consommer LABEL }
+  EmitComment('label section (ignored)');
+  { Avancer jusqu au point-virgule }
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ';')) Do
+    Inc(P);
+  If P < TokenCount Then Inc(P);
+End;
+
+{ ---- ParseDeclSections : parser les sections de declaration - }
+{ Boucle sur CONST, TYPE, VAR, LABEL dans un ordre libre.       }
+{ Plusieurs sections de chaque type autorisees.                  }
+Procedure ParseDeclSections(Var P : Integer);
+Var
+  L : TString;
+Begin
+  While P < TokenCount Do
+  Begin
+    If TokenPool[P].Kind <> TK_KEYWORD Then Exit;
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else
+      Exit; { mot-cle non reconnu comme section de declaration }
+  End;
+End;
+
+{ ---- ParseBeginEnd : parser BEGIN ... END. ------------------- }
+{ Corps principal du programme -> contenu de _main()             }
+{ Emet les instructions du corps principal en JavaScript.        }
+
+{ Forward declaration pour recursion mutuelle }
+Procedure ParseStmt(Var P : Integer); Forward;
+
+{ ---- ParseStmtBlock : parser un bloc BEGIN...END ------------- }
+Procedure ParseStmtBlock(Var P : Integer);
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      { Consommer ; si present }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End
+  Else
+    { Une seule instruction }
+    ParseStmt(P);
+End;
+
+{ ---- ParseStmt : parser une instruction unique --------------- }
+Procedure ParseStmt;
+Var
+  L   : TString;
+  JS  : TString;
+Begin
+  If P >= TokenCount Then Exit;
+
+  { Point-virgule seul : instruction vide }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';') Then
+    Exit;
+
+  { END : fin de bloc - ne pas consommer }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Exit;
+
+  { ELSE : ne pas consommer }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'else') Then
+    Exit;
+
+  { UNTIL : ne pas consommer }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'until') Then
+    Exit;
+
+  { BEGIN ... END : bloc d instructions }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+    Exit;
+  End;
+
+  { WriteLn / Write }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     ((StrLowerCase(TokenPool[P].Val) = 'writeln') Or
+      (StrLowerCase(TokenPool[P].Val) = 'write')) Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    JS := '';
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { consommer ( }
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ')')) Do
+      Begin
+        If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+        Begin
+          JS := JS + ' + ';
+          Inc(P);
+        End
+        Else
+          JS := JS + ExprToJS(P);
+      End;
+      If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+        Inc(P);
+    End;
+    If L = 'writeln' Then
+      EmitLine('console.log(' + JS + ');')
+    Else
+      EmitLine('process.stdout.write(String(' + JS + '));');
+    Exit;
+  End;
+
+  { ReadLn / Read }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     ((StrLowerCase(TokenPool[P].Val) = 'readln') Or
+      (StrLowerCase(TokenPool[P].Val) = 'read')) Then
+  Begin
+    EmitComment(TokenPool[P].Val + '(...)');
+    Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ')')) Do
+        Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+    Exit;
+  End;
+
+  { IF ... THEN ... [ELSE ...] }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'if') Then
+  Begin
+    Inc(P);
+    JS := ExprToJS(P);
+    { Consommer THEN }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'then') Then
+      Inc(P);
+    EmitLine('if (' + JS + ') {');
+    IndentPush;
+    ParseStmtBlock(P);
+    IndentPop;
+    { Consommer ; optionnel avant ELSE }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+    Begin
+      { Verifier si ELSE suit }
+      If (P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[P + 1].Val) = 'else') Then
+        Inc(P) { consommer ; avant else }
+    End;
+    { ELSE optionnel }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'else') Then
+    Begin
+      Inc(P);
+      EmitLine('} else {');
+      IndentPush;
+      ParseStmtBlock(P);
+      IndentPop;
+    End;
+    EmitLine('}');
+    Exit;
+  End;
+
+  { FOR ... TO/DOWNTO ... DO ... }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'for') Then
+  Begin
+    EmitComment('for loop (TODO 09+)');
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'do')) Do
+      Inc(P);
+    If P < TokenCount Then Inc(P);
+    { Parser le corps du for }
+    ParseStmtBlock(P);
+    Exit;
+  End;
+
+  { WHILE ... DO ... }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'while') Then
+  Begin
+    EmitComment('while loop (TODO 09+)');
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'do')) Do
+      Inc(P);
+    If P < TokenCount Then Inc(P);
+    ParseStmtBlock(P);
+    Exit;
+  End;
+
+  { REPEAT ... UNTIL expr }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'repeat') Then
+  Begin
+    EmitComment('repeat loop (TODO 09+)');
+    Inc(P);
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'until')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    { Consommer UNTIL et l expression }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'until') Then
+    Begin
+      Inc(P);
+      JS := ExprToJS(P);
+    End;
+    Exit;
+  End;
+
+  { CASE ... OF (simplifie) }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'case') Then
+  Begin
+    EmitComment('case statement (TODO 09+)');
+    { Sauter jusqu au END correspondant }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+      Inc(P);
+    If P < TokenCount Then Inc(P);
+    Exit;
+  End;
+
+  { Affectation ou appel de procedure : ident [:= expr] }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    JS := ExprToJS(P);
+    EmitLine(JS + ';');
+    Exit;
+  End;
+
+  { Token non reconnu : avancer }
+  Inc(P);
+End;
+
+{ ---- ParseBeginEndMain : parser le bloc principal ------------ }
+{ BEGIN ... END. du programme principal                           }
+Procedure ParseBeginEndMain(Var P : Integer);
+Begin
+  If P >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Or
+     (StrLowerCase(TokenPool[P].Val) <> 'begin') Then Exit;
+  Inc(P); { consommer BEGIN }
+
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_KEYWORD) And
+             (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+  Begin
+    ParseStmt(P);
+    { Consommer ; si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  { Consommer END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Inc(P);
+  { Consommer le point final . }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '.') Then
+    Inc(P);
+End;
+
+{ ---- ParseProgram : parser un programme Pascal complet ------ }
+{ PROGRAM nom [(params)]; [USES ...;] [decls] BEGIN ... END.    }
+{ Genere le fichier JavaScript complet.                          }
+Procedure ParseProgram(Var P : Integer);
+Begin
+  ProgName := 'main';
+
+  { PROGRAM nom ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'program') Then
+  Begin
+    Inc(P); { consommer PROGRAM }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      ProgName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    { Sauter les parametres de programme (output, input) }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      While (P < TokenCount) And
+            Not ((TokenPool[P].Kind = TK_PUNCT) And
+                 (TokenPool[P].Val = ')')) Do
+        Inc(P);
+      If P < TokenCount Then Inc(P);
+    End;
+    { Consommer ; }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+
+  EmitComment('Program ' + ProgName);
+  EmitBlankLine;
+
+  { Section USES optionnelle }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'uses') Then
+  Begin
+    ParseUsesClause(P);
+    EmitBlankLine;
+  End;
+
+  { Sections de declaration (CONST, TYPE, VAR, LABEL) }
+  ParseDeclSections(P);
+  EmitBlankLine;
+
+  { Corps principal : BEGIN ... END. }
+  EmitComment('Corps principal');
+  EmitLine('function _main() {');
+  IndentPush;
+
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+    ParseBeginEndMain(P)
+  Else
+    EmitComment('pas de corps principal trouve');
+
+  IndentPop;
+  EmitLine('}');
+End;
+
 Procedure Run;
 Var
   I   : Integer;
@@ -3466,15 +4173,16 @@ Begin
   EmitHeader;
   EmitModuleHeader;
 
-  { TODO 08+ : ParseProgram/ParseUnit ici }
-  EmitComment('TODO 08+ : parseur non implemente');
+  { Parser le programme Pascal et generer le JavaScript }
+  P := 0;
+  ParseProgram(P);
 
   { Emettre le pied de page et fermer }
   EmitFooter;
   EmitClose;
 
   WriteLn('TP2JS: fichier genere: ', Opts.OutFile);
-  WriteLn('TP2JS: TODO 08+ non implemente, squelette JS genere.');
+  WriteLn('TP2JS: programme "', ProgName, '" compile.');
   If Opts.ModuleES6 Then
     WriteLn('TP2JS: mode module ES6 actif');
   If Opts.Pretty Then
