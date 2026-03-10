@@ -174,7 +174,7 @@
               _CFRT_PRINT(SI=msg, CX=len) : INT 21h AH=40h BX=1
               _CFRT_PRINTLN : _CFRT_PRINT + CR+LF via _CF_CRLF DB 13,10,0
 
-  TODO 13 - STRUCTURES CONDITIONNELLES (CFIF / CFSWITCH)
+  TODO 13 - STRUCTURES CONDITIONNELLES (CFIF / CFSWITCH) [IMPLEMENTE]
             <cfif condition>...</cfif>
             <cfif condition>...<cfelseif condition>...<cfelse>...</cfif>
               Emission TEST AX,AX / JZ pour condition fausse
@@ -748,6 +748,13 @@ Procedure ParseCfOutput; Forward;
 Procedure ParseWriteOutput; Forward;
 Procedure ParseCfAbort; Forward;
 Procedure ParseCfDump; Forward;
+{ TODO 13 }
+Procedure SkipToTagClose; Forward;
+Procedure ParseBodyTag; Forward;
+Procedure ParseCfIf; Forward;
+Procedure ParseCfSwitch; Forward;
+Procedure ParseScriptIf; Forward;
+Procedure ParseScriptSwitch; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1898,6 +1905,9 @@ Begin
   Idx := DataAdd('_CF_NUMBUF', DK_ARRAY_BLK, 0, '');
   If Idx >= 0 Then
     DataTab[Idx].ElemCount := 12;
+
+  { Variable temporaire pour cfswitch (TODO 13) }
+  DataAddWord('_CF_SWTMP', 0);
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -4133,60 +4143,723 @@ Begin
   End;
 End;
 
-Procedure ParsePage;
-Var
-  TagLower : TString;
+{ ============================================================ }
+{  TODO 13 - STRUCTURES CONDITIONNELLES (CFIF/CFSWITCH)        }
+{            [IMPLEMENTE]                                       }
+{ ============================================================ }
+
+{ ---- SkipToTagClose : consommer les attributs restants ------ }
+(* Avance jusqu au > ou /> de fermeture de la balise courante.  *)
+Procedure SkipToTagClose;
 Begin
   While CurToken.Kind <> TK_EOF Do
   Begin
-    { Balise CF ouvrante }
-    If CurToken.Kind = TK_TAG_OPEN Then
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
     Begin
-      TagLower := StrLowerCase(CurToken.Val);
-      If TagLower = 'cfset' Then
+      ParserAdvance;
+      Exit;
+    End;
+    If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    Begin
+      ParserAdvance;
+      Exit;
+    End;
+    ParserAdvance;
+  End;
+End;
+
+{ ---- ParseBodyTag : dispatcher un element de contenu -------- }
+(* Traite un tag CF ou un element cfscript et avance le curseur *)
+(* de tokens. Utilise par ParsePage, ParseCfIf, ParseCfSwitch.  *)
+Procedure ParseBodyTag;
+Var
+  TagLower : TString;
+  KwLower  : TString;
+Begin
+  { Balise CF ouvrante }
+  If CurToken.Kind = TK_TAG_OPEN Then
+  Begin
+    TagLower := StrLowerCase(CurToken.Val);
+    If TagLower = 'cfset' Then
+    Begin ParserAdvance; ParseCfSet; End
+    Else If TagLower = 'cfoutput' Then
+    Begin ParserAdvance; ParseCfOutput; End
+    Else If TagLower = 'cfabort' Then
+    Begin ParserAdvance; ParseCfAbort; End
+    Else If TagLower = 'cfdump' Then
+    Begin ParserAdvance; ParseCfDump; End
+    Else If TagLower = 'cfif' Then
+    Begin ParserAdvance; ParseCfIf; End
+    Else If TagLower = 'cfswitch' Then
+    Begin ParserAdvance; ParseCfSwitch; End
+    Else
+      ParserAdvance;
+  End
+  { Balise fermante : ignorer }
+  Else If CurToken.Kind = TK_TAG_CLOSE Then
+    ParserAdvance
+  { Mot-cle cfscript }
+  Else If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    KwLower := StrLowerCase(CurToken.Val);
+    If KwLower = 'var' Then
+    Begin ParserAdvance; ParseVarDecl; End
+    Else If KwLower = 'if' Then
+    Begin ParserAdvance; ParseScriptIf; End
+    Else If KwLower = 'switch' Then
+    Begin ParserAdvance; ParseScriptSwitch; End
+    Else
+      ParserAdvance;
+  End
+  { WriteOutput en mode cfscript }
+  Else If (CurToken.Kind = TK_IDENT) And
+          (StrLowerCase(CurToken.Val) = 'writeoutput') Then
+  Begin ParserAdvance; ParseWriteOutput; End
+  { Texte brut ou autre token : passer }
+  Else
+    ParserAdvance;
+End;
+
+{ ---- ParseCfIf : <cfif>...<cfelseif>...<cfelse>...</cfif> -- }
+(* Gere les structures conditionnelles CFML :                    *)
+(*   <cfif condition>body</cfif>                                 *)
+(*   <cfif cond1>body1<cfelseif cond2>body2<cfelse>body3</cfif>  *)
+(* Genere TEST AX,AX / JZ LblNext, JMP LblEnd.                  *)
+Procedure ParseCfIf;
+Var
+  Res       : TExprVal;
+  LblNext   : TString;
+  LblEnd    : TString;
+  HadElse   : Boolean;
+Begin
+  LblEnd  := NewLabel('ENDIF');
+  HadElse := False;
+
+  { Parse condition expression (tag <cfif already consumed) }
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  { Consume remaining attributes and > }
+  SkipToTagClose;
+
+  { Emit condition test }
+  LblNext := NewLabel('ELSE');
+  EmitComment('cfif: test condition');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblNext);
+
+  { Body loop : parse content until /cfif, cfelseif, or cfelse }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { </cfif> : end of construct }
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cfif') Then
+    Begin
+      ParserAdvance;
+      If Not HadElse Then
+        EmitLabel(LblNext);
+      Break;
+    End
+
+    { <cfelseif> : new conditional branch }
+    Else If (CurToken.Kind = TK_TAG_OPEN) And
+            (StrLowerCase(CurToken.Val) = 'cfelseif') Then
+    Begin
+      EmitInstr('JMP', LblEnd);
+      EmitLabel(LblNext);
+      ParserAdvance;
+
+      { Parse new condition }
+      ExprMakeNone(Res);
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      SkipToTagClose;
+
+      LblNext := NewLabel('ELSE');
+      EmitComment('cfelseif: test condition');
+      EmitInstr('TEST', 'AX, AX');
+      EmitInstr('JZ', LblNext);
+    End
+
+    { <cfelse> : unconditional else branch }
+    Else If (CurToken.Kind = TK_TAG_OPEN) And
+            (StrLowerCase(CurToken.Val) = 'cfelse') Then
+    Begin
+      EmitInstr('JMP', LblEnd);
+      EmitLabel(LblNext);
+      HadElse := True;
+      ParserAdvance;
+      SkipToTagClose;
+      EmitComment('cfelse');
+    End
+
+    { Dispatch body content }
+    Else
+      ParseBodyTag;
+  End;
+
+  EmitLabel(LblEnd);
+End;
+
+{ ---- ParseCfSwitch : <cfswitch>...<cfcase>...</cfswitch> ---- }
+(* Gere la structure switch CFML :                               *)
+(*   <cfswitch expression="expr">                                *)
+(*     <cfcase value="val1">body1</cfcase>                       *)
+(*     <cfcase value="val2,val3">body2</cfcase>                  *)
+(*     <cfdefaultcase>body3</cfdefaultcase>                      *)
+(*   </cfswitch>                                                 *)
+(* Evalue l expression, la sauvegarde dans _CF_SWTMP.            *)
+(* Pour chaque case : CMP + JNE/JE selon le nombre de valeurs.  *)
+Procedure ParseCfSwitch;
+Var
+  Res       : TExprVal;
+  LblEnd    : TString;
+  LblBody   : TString;
+  LblSkip   : TString;
+  CaseVals  : TString;
+  OneVal    : TString;
+  I, J      : Integer;
+  DIdx      : Integer;
+  Lbl       : TString;
+  NumVal    : LongInt;
+  Code      : Integer;
+  MultiVal  : Boolean;
+  HasExpr   : Boolean;
+Begin
+  LblEnd  := NewLabel('CSEND');
+  HasExpr := False;
+
+  { Parse tag attributes until > }
+  { Looking for expression="..." }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    Begin
+      ParserAdvance;
+      EmitLabel(LblEnd);
+      Exit;
+    End;
+
+    { Detect expression= attribute }
+    If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+       (StrLowerCase(CurToken.Val) = 'expression') Then
+    Begin
+      ParserAdvance; { consume expression }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance; { consume = }
+      { The value is typically "#expr#" : a string with hash expression }
+      If CurToken.Kind = TK_STRING Then
       Begin
-        ParserAdvance;  { consommer <cfset }
-        ParseCfSet;
-      End
-      Else If TagLower = 'cfoutput' Then
+        { Simple approach: treat the string as a variable name }
+        { If it contains only a variable name (common case) }
+        OneVal := CurToken.Val;
+        ParserAdvance;
+        { Try to find it as a variable }
+        I := SymFind(OneVal);
+        If I >= 0 Then
+        Begin
+          VarLoad(I);
+          HasExpr := True;
+        End
+        Else
+        Begin
+          { Try to evaluate as expression literal }
+          ExprMakeNone(Res);
+          ExprMakeImm(0, TY_IDX_NUMERIC, Res);
+          Val(OneVal, NumVal, Code);
+          If Code = 0 Then
+            ExprMakeImm(NumVal, TY_IDX_NUMERIC, Res);
+          ExprFlushToAX(Res);
+          HasExpr := True;
+        End;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  If Not HasExpr Then
+  Begin
+    EmitComment('cfswitch: expression manquante');
+    EmitInstr('XOR', 'AX, AX');
+  End;
+
+  { Save switch expression to temp }
+  EmitComment('cfswitch: sauvegarde expression');
+  EmitInstrAB('MOV', '[_CF_SWTMP]', 'AX');
+
+  { Process <cfcase>, <cfdefaultcase>, </cfswitch> }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { </cfswitch> : end }
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cfswitch') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End
+
+    { <cfcase value="..."> }
+    Else If (CurToken.Kind = TK_TAG_OPEN) And
+            (StrLowerCase(CurToken.Val) = 'cfcase') Then
+    Begin
+      ParserAdvance; { consume <cfcase }
+
+      { Parse value="..." attribute }
+      CaseVals := '';
+      While CurToken.Kind <> TK_EOF Do
       Begin
-        ParserAdvance;  { consommer <cfoutput }
-        ParseCfOutput;
-      End
-      Else If TagLower = 'cfabort' Then
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+        Begin ParserAdvance; Break; End;
+        If CurToken.Kind = TK_TAG_SELFCLOSE Then
+        Begin ParserAdvance; Break; End;
+        If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+           (StrLowerCase(CurToken.Val) = 'value') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+            ParserAdvance;
+          If CurToken.Kind = TK_STRING Then
+          Begin
+            CaseVals := CurToken.Val;
+            ParserAdvance;
+          End;
+        End
+        Else
+          ParserAdvance;
+      End;
+
+      { Check if multiple values (comma-separated) }
+      MultiVal := False;
+      For I := 1 To Length(CaseVals) Do
+        If CaseVals[I] = ',' Then
+        Begin
+          MultiVal := True;
+          Break;
+        End;
+
+      LblSkip := NewLabel('CSKIP');
+
+      If Not MultiVal Then
       Begin
-        ParserAdvance;  { consommer <cfabort }
-        ParseCfAbort;
-      End
-      Else If TagLower = 'cfdump' Then
-      Begin
-        ParserAdvance;  { consommer <cfdump }
-        ParseCfDump;
+        { Single value: CMP + JNE skip }
+        EmitComment('cfcase: value=' + CaseVals);
+        EmitInstrAB('MOV', 'AX', '[_CF_SWTMP]');
+        Val(CaseVals, NumVal, Code);
+        If Code = 0 Then
+        Begin
+          { Numeric comparison }
+          EmitInstrAB('CMP', 'AX', IntToStr(NumVal));
+          EmitInstr('JNE', LblSkip);
+        End
+        Else
+        Begin
+          { String comparison }
+          DIdx := DataAddStr(CaseVals);
+          If DIdx >= 0 Then
+          Begin
+            Lbl := DataTab[DIdx].LblName;
+            EmitInstrAB('MOV', 'SI', 'AX');
+            EmitInstrAB('MOV', 'DI', 'OFFSET ' + Lbl);
+            EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+            EmitInstr('JNE', LblSkip);
+          End;
+        End;
       End
       Else
-        ParserAdvance;  { balise non reconnue - passer }
+      Begin
+        { Multiple values: CMP + JE body for each, then JMP skip }
+        EmitComment('cfcase: values=' + CaseVals);
+        LblBody := NewLabel('CBODY');
+
+        { Split on comma and generate comparison for each }
+        J := 1;
+        While J <= Length(CaseVals) Do
+        Begin
+          OneVal := '';
+          While (J <= Length(CaseVals)) And (CaseVals[J] <> ',') Do
+          Begin
+            If CaseVals[J] <> ' ' Then
+              OneVal := OneVal + CaseVals[J];
+            Inc(J);
+          End;
+          If J <= Length(CaseVals) Then
+            Inc(J); { skip comma }
+
+          If OneVal <> '' Then
+          Begin
+            EmitInstrAB('MOV', 'AX', '[_CF_SWTMP]');
+            Val(OneVal, NumVal, Code);
+            If Code = 0 Then
+            Begin
+              EmitInstrAB('CMP', 'AX', IntToStr(NumVal));
+              EmitInstr('JE', LblBody);
+            End
+            Else
+            Begin
+              DIdx := DataAddStr(OneVal);
+              If DIdx >= 0 Then
+              Begin
+                Lbl := DataTab[DIdx].LblName;
+                EmitInstrAB('MOV', 'SI', 'AX');
+                EmitInstrAB('MOV', 'DI', 'OFFSET ' + Lbl);
+                EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+                EmitInstr('JE', LblBody);
+              End;
+            End;
+          End;
+        End;
+        EmitInstr('JMP', LblSkip);
+        EmitLabel(LblBody);
+      End;
+
+      { Parse case body until </cfcase> }
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_TAG_CLOSE) And
+           (StrLowerCase(CurToken.Val) = 'cfcase') Then
+        Begin
+          ParserAdvance;
+          Break;
+        End;
+        ParseBodyTag;
+      End;
+      EmitInstr('JMP', LblEnd);
+      EmitLabel(LblSkip);
     End
-    { Balise fermante : ignorer }
-    Else If CurToken.Kind = TK_TAG_CLOSE Then
-      ParserAdvance
-    { Mot-cle var en mode cfscript }
-    Else If (CurToken.Kind = TK_KEYWORD) And
-            (StrLowerCase(CurToken.Val) = 'var') Then
+
+    { <cfdefaultcase> }
+    Else If (CurToken.Kind = TK_TAG_OPEN) And
+            (StrLowerCase(CurToken.Val) = 'cfdefaultcase') Then
     Begin
-      ParserAdvance;  { consommer var }
-      ParseVarDecl;
+      ParserAdvance;
+      SkipToTagClose;
+      EmitComment('cfdefaultcase');
+
+      { Parse default body until </cfdefaultcase> }
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_TAG_CLOSE) And
+           (StrLowerCase(CurToken.Val) = 'cfdefaultcase') Then
+        Begin
+          ParserAdvance;
+          Break;
+        End;
+        ParseBodyTag;
+      End;
+      EmitInstr('JMP', LblEnd);
     End
-    { WriteOutput en mode cfscript }
-    Else If (CurToken.Kind = TK_IDENT) And
-            (StrLowerCase(CurToken.Val) = 'writeoutput') Then
-    Begin
-      ParserAdvance;  { consommer WriteOutput }
-      ParseWriteOutput;
-    End
-    { Texte brut hors cfoutput : ignorer silencieusement }
+
+    { Skip text/whitespace between cases }
     Else
-      ParserAdvance;  { token non traite - avancer }
+      ParserAdvance;
   End;
+
+  EmitLabel(LblEnd);
+End;
+
+(* ---- ParseScriptIf : if (cond) ... else if ... else ...  -- *)
+(* Gere les structures conditionnelles en mode cfscript :        *)
+(*   if (condition) { body } else if (cond) { body } else { body } *)
+(* Genere TEST AX,AX / JZ pour chaque branche.                  *)
+Procedure ParseScriptIf;
+Var
+  Res     : TExprVal;
+  LblNext : TString;
+  LblEnd  : TString;
+Begin
+  LblEnd  := NewLabel('ENDIF');
+
+  { Consume ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendue apres if');
+    EmitLabel(LblEnd);
+    Exit;
+  End;
+
+  { Parse condition expression }
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  { Consume ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  LblNext := NewLabel('ELSE');
+  EmitComment('script if: test condition');
+  EmitInstr('TEST', 'AX, AX');
+  EmitInstr('JZ', LblNext);
+
+  (* Parse body block ... *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    While CurToken.Kind <> TK_EOF Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      Begin
+        ParserAdvance;
+        Break;
+      End;
+      ParseBodyTag;
+    End;
+  End
+  Else
+    ParseBodyTag; { single statement }
+
+  { Check for else / else if }
+  If (CurToken.Kind = TK_KEYWORD) And
+     (StrLowerCase(CurToken.Val) = 'else') Then
+  Begin
+    EmitInstr('JMP', LblEnd);
+    EmitLabel(LblNext);
+    ParserAdvance; { consume else }
+
+    { else if }
+    If (CurToken.Kind = TK_KEYWORD) And
+       (StrLowerCase(CurToken.Val) = 'if') Then
+    Begin
+      ParserAdvance; { consume if }
+      { Recursively handle as another if - but we share LblEnd }
+      { Simple approach: call ParseScriptIf recursively }
+      { We need to emit the end label separately }
+      ParseScriptIf;
+    End
+    Else
+    Begin
+      (* else body *)
+      EmitComment('script else');
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        ParserAdvance;
+        While CurToken.Kind <> TK_EOF Do
+        Begin
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          Begin
+            ParserAdvance;
+            Break;
+          End;
+          ParseBodyTag;
+        End;
+      End
+      Else
+        ParseBodyTag; { single statement }
+    End;
+  End
+  Else
+  Begin
+    { No else : emit next label }
+    EmitLabel(LblNext);
+  End;
+
+  EmitLabel(LblEnd);
+End;
+
+(* ---- ParseScriptSwitch : switch (expr) case: ...  ---------- *)
+(* Gere la structure switch en mode cfscript :                    *)
+(*   switch (expression) {                                        *)
+(*     case val1: body1 break;                                    *)
+(*     case val2: case val3: body2 break;                         *)
+(*     default: body3                                             *)
+(*   }                                                            *)
+Procedure ParseScriptSwitch;
+Var
+  Res      : TExprVal;
+  LblEnd   : TString;
+  LblSkip  : TString;
+  LblBody  : TString;
+  CaseVal  : TString;
+  NumVal   : LongInt;
+  Code     : Integer;
+  DIdx     : Integer;
+  Lbl      : TString;
+Begin
+  LblEnd := NewLabel('CSEND');
+
+  { Consume ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"(" attendue apres switch');
+    EmitLabel(LblEnd);
+    Exit;
+  End;
+
+  { Parse expression }
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  { Consume ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  { Save switch expression }
+  EmitComment('script switch: sauvegarde expression');
+  EmitInstrAB('MOV', '[_CF_SWTMP]', 'AX');
+
+  (* Consume opening brace *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('"{" attendue apres switch(expr)');
+    EmitLabel(LblEnd);
+    Exit;
+  End;
+
+    (* Process case/default/closing brace *)
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    (* Closing brace *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End
+
+    { case value: [case value2:] body break; }
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'case') Then
+    Begin
+      LblSkip := NewLabel('CSKIP');
+      LblBody := NewLabel('CBODY');
+
+      { Parse one or more case labels }
+      While (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'case') Do
+      Begin
+        ParserAdvance; { consume case }
+
+        { Get case value (string or number) }
+        CaseVal := '';
+        If CurToken.Kind = TK_STRING Then
+        Begin
+          CaseVal := CurToken.Val;
+          ParserAdvance;
+        End
+        Else If CurToken.Kind = TK_INTEGER Then
+        Begin
+          Str(CurToken.IntVal, CaseVal);
+          ParserAdvance;
+        End
+        Else If CurToken.Kind = TK_IDENT Then
+        Begin
+          CaseVal := CurToken.Val;
+          ParserAdvance;
+        End;
+
+        { Consume : }
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+          ParserAdvance;
+
+        { Generate comparison }
+        If CaseVal <> '' Then
+        Begin
+          EmitInstrAB('MOV', 'AX', '[_CF_SWTMP]');
+          Val(CaseVal, NumVal, Code);
+          If Code = 0 Then
+          Begin
+            EmitComment('script case: ' + CaseVal);
+            EmitInstrAB('CMP', 'AX', IntToStr(NumVal));
+            EmitInstr('JE', LblBody);
+          End
+          Else
+          Begin
+            DIdx := DataAddStr(CaseVal);
+            If DIdx >= 0 Then
+            Begin
+              Lbl := DataTab[DIdx].LblName;
+              EmitComment('script case: "' + CaseVal + '"');
+              EmitInstrAB('MOV', 'SI', 'AX');
+              EmitInstrAB('MOV', 'DI', 'OFFSET ' + Lbl);
+              EmitInstr('CALL', CF_RT_PFX + 'STRCMP');
+              EmitInstr('JE', LblBody);
+            End;
+          End;
+        End;
+      End;
+
+      EmitInstr('JMP', LblSkip);
+      EmitLabel(LblBody);
+
+      (* Parse case body until break or next case/default *)
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          Break; { end of switch, don't consume }
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'case') Then
+          Break; { next case }
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'default') Then
+          Break; { default case }
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'break') Then
+        Begin
+          ParserAdvance;
+          { Consume ; }
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            ParserAdvance;
+          Break;
+        End;
+        ParseBodyTag;
+      End;
+      EmitInstr('JMP', LblEnd);
+      EmitLabel(LblSkip);
+    End
+
+    { default: body }
+    Else If (CurToken.Kind = TK_KEYWORD) And
+            (StrLowerCase(CurToken.Val) = 'default') Then
+    Begin
+      ParserAdvance; { consume default }
+      { Consume : }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
+        ParserAdvance;
+      EmitComment('script default');
+
+      (* Parse default body until break or end *)
+      While CurToken.Kind <> TK_EOF Do
+      Begin
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          Break;
+        If (CurToken.Kind = TK_KEYWORD) And
+           (StrLowerCase(CurToken.Val) = 'break') Then
+        Begin
+          ParserAdvance;
+          If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+            ParserAdvance;
+          Break;
+        End;
+        ParseBodyTag;
+      End;
+      EmitInstr('JMP', LblEnd);
+    End
+
+    { Skip other tokens (whitespace, etc.) }
+    Else
+      ParserAdvance;
+  End;
+
+  EmitLabel(LblEnd);
+End;
+
+Procedure ParsePage;
+Begin
+  While CurToken.Kind <> TK_EOF Do
+    ParseBodyTag;
 End;
 
 { ============================================================
