@@ -161,7 +161,7 @@
             Logique NOT : XOR AX,1
             Logique XOR : XOR AX, BX apres evaluation des deux operandes
 
-  TODO 12 - ENTREES/SORTIES (CFOUTPUT / WRITEOUTPUT)
+  TODO 12 - ENTREES/SORTIES (CFOUTPUT / WRITEOUTPUT) [IMPLEMENTE]
             <cfoutput>texte #expr#</cfoutput> :
               Emettre le texte brut via INT 21h AH=40h BX=1 (STDOUT)
               Evaluer chaque #expr# et afficher le resultat
@@ -743,6 +743,11 @@ Procedure ParseUnary(Var Res : TExprVal); Forward;
 { TODO 11 }
 Procedure ParseExprPrec(MinPrec : Integer; Var Res : TExprVal); Forward;
 Procedure ParseExpr(Var Res : TExprVal); Forward;
+{ TODO 12 }
+Procedure ParseCfOutput; Forward;
+Procedure ParseWriteOutput; Forward;
+Procedure ParseCfAbort; Forward;
+Procedure ParseCfDump; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1888,6 +1893,11 @@ Begin
   Idx := DataAdd('_CF_TXTBUF', DK_ARRAY_BLK, 0, '');
   If Idx >= 0 Then
     DataTab[Idx].ElemCount := 512;
+
+  { Buffer pour conversion numerique (itoa) }
+  Idx := DataAdd('_CF_NUMBUF', DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := 12;
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -3076,7 +3086,101 @@ Begin
   RuntimeEmitted := True;
   EmitBlankLine;
   EmitComment('--- Runtime minimal CF86 ---');
-  (* TODO 22 : emettre les routines runtime ici *)
+  EmitBlankLine;
+
+  { ---- _CFRT_STRLEN : longueur chaine ASCIIZ ---- }
+  { Entree : SI = ptr chaine ASCIIZ                  }
+  { Sortie : CX = longueur                           }
+  EmitLabel(CF_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('XOR', 'CX', 'CX');
+  EmitLabel(CF_RT_PFX + 'STRLEN_L');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'STRLEN_E');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'STRLEN_L');
+  EmitLabel(CF_RT_PFX + 'STRLEN_E');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_PRINT : afficher chaine ASCIIZ ---- }
+  { Entree : SI = ptr chaine ASCIIZ                 }
+  { Utilise INT 21h AH=40h BX=1 (STDOUT)            }
+  EmitLabel(CF_RT_PFX + 'PRINT');
+  EmitInstr('PUSH', 'AX');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('CALL', CF_RT_PFX + 'STRLEN');
+  EmitInstrAB('MOV', 'DX', 'SI');
+  EmitInstrAB('MOV', 'BX', '1');
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstr('INT', '21h');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('POP', 'AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_PRINTLN : afficher chaine + CR/LF ---- }
+  { Entree : SI = ptr chaine ASCIIZ                    }
+  EmitLabel(CF_RT_PFX + 'PRINTLN');
+  EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  EmitInstrAB('MOV', 'SI', 'OFFSET _CF_CRLF');
+  EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_NUMTOSTR : conversion entier -> ASCIIZ ---- }
+  { Entree : AX = entier signe 16 bits                      }
+  { Sortie : AX = pointeur vers chaine ASCIIZ (_CF_NUMBUF)   }
+  EmitLabel(CF_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH', 'BX');
+  EmitInstr('PUSH', 'CX');
+  EmitInstr('PUSH', 'DX');
+  EmitInstr('PUSH', 'DI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_NUMBUF');
+  EmitInstrAB('ADD', 'DI', '11');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstr('DEC', 'DI');
+  EmitInstrAB('MOV', 'CX', 'AX');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JNS', CF_RT_PFX + 'NTS_POS');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(CF_RT_PFX + 'NTS_POS');
+  EmitInstrAB('MOV', 'BX', '10');
+  EmitLabel(CF_RT_PFX + 'NTS_LP');
+  EmitInstrAB('XOR', 'DX', 'DX');
+  EmitInstr('DIV', 'BX');
+  EmitInstrAB('ADD', 'DL', '''0''');
+  EmitInstrAB('MOV', '[DI]', 'DL');
+  EmitInstr('DEC', 'DI');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JNZ', CF_RT_PFX + 'NTS_LP');
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JNS', CF_RT_PFX + 'NTS_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '''-''');
+  EmitInstr('DEC', 'DI');
+  EmitLabel(CF_RT_PFX + 'NTS_DN');
+  EmitInstr('INC', 'DI');
+  EmitInstrAB('MOV', 'AX', 'DI');
+  EmitInstr('POP', 'DI');
+  EmitInstr('POP', 'DX');
+  EmitInstr('POP', 'CX');
+  EmitInstr('POP', 'BX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_PRINTNUM : afficher un entier ---- }
+  { Entree : AX = entier signe 16 bits             }
+  EmitLabel(CF_RT_PFX + 'PRINTNUM');
+  EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  EmitInstr('RET', '');
   EmitBlankLine;
 End;
 
@@ -3774,6 +3878,261 @@ Begin
   ParseExprPrec(1, Res);
 End;
 
+{ ============================================================ }
+{  TODO 12 - ENTREES/SORTIES (CFOUTPUT / WRITEOUTPUT) [IMPLEMENTE] }
+{ ============================================================ }
+
+{ ---- ParseCfOutput : <cfoutput>texte #expr#</cfoutput> ------ }
+(* Emet le texte brut via _CFRT_PRINT et evalue les expressions  *)
+(* #expr# intercalees dans le contenu.                           *)
+Procedure ParseCfOutput;
+Var
+  Res  : TExprVal;
+  DIdx : Integer;
+  Lbl  : TString;
+Begin
+  { Le tag <cfoutput a deja ete consomme. Consommer les attributs }
+  { restants et le > de fermeture de la balise ouvrante.          }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  { Consommer le > ou /> }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  { Boucle sur le contenu entre <cfoutput> et </cfoutput> }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    { Balise fermante </cfoutput> }
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cfoutput') Then
+    Begin
+      ParserAdvance;
+      Exit;
+    End;
+
+    { Texte brut : emettre via _CFRT_PRINT }
+    If CurToken.Kind = TK_TEXT Then
+    Begin
+      If CurToken.Val <> '' Then
+      Begin
+        DIdx := DataAddStr(CurToken.Val);
+        If DIdx >= 0 Then
+        Begin
+          Lbl := DataTab[DIdx].LblName;
+          EmitComment('cfoutput: texte brut');
+          EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
+          EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+        End;
+      End;
+      ParserAdvance;
+    End
+
+    { Hash # : debut d expression #expr# }
+    Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '#') Then
+    Begin
+      ParserAdvance;  { consommer # ouvrant }
+      ExprMakeNone(Res);
+      ParseExpr(Res);
+      ExprFlushToAX(Res);
+      { Afficher le resultat selon le type }
+      If Res.TypeIdx = TY_IDX_STRING Then
+      Begin
+        EmitComment('cfoutput: expr chaine');
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+      End
+      Else
+      Begin
+        EmitComment('cfoutput: expr numerique');
+        EmitInstr('CALL', CF_RT_PFX + 'PRINTNUM');
+      End;
+      { Consommer # fermant s il est present }
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '#') Then
+        ParserAdvance;
+    End
+
+    { Autre token (balise imbriquee, etc.) : passer }
+    Else
+      ParserAdvance;
+  End;
+End;
+
+{ ---- ParseWriteOutput : WriteOutput(expr) en cfscript ------- }
+(* Affiche la valeur de l expression passee en argument.         *)
+(* Syntaxe : WriteOutput(expression) ;                           *)
+Procedure ParseWriteOutput;
+Var
+  Res : TExprVal;
+Begin
+  { Le mot-cle WriteOutput a deja ete consomme }
+  { Attendre ( }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance
+  Else
+  Begin
+    CompileError('( attendue apres WriteOutput');
+    Exit;
+  End;
+
+  { Evaluer l expression argument }
+  ExprMakeNone(Res);
+  ParseExpr(Res);
+  ExprFlushToAX(Res);
+
+  { Afficher selon le type }
+  If Res.TypeIdx = TY_IDX_STRING Then
+  Begin
+    EmitComment('WriteOutput: chaine');
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+  End
+  Else
+  Begin
+    EmitComment('WriteOutput: numerique');
+    EmitInstr('CALL', CF_RT_PFX + 'PRINTNUM');
+  End;
+
+  { Consommer ) }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  { Consommer ; optionnel }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ---- ParseCfAbort : <cfabort> ------------------------------- }
+(* Arret immediat du programme : MOV AX,4C00h / INT 21h         *)
+Procedure ParseCfAbort;
+Begin
+  { Le tag <cfabort a deja ete consomme. Consommer jusqu au > }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  EmitComment('cfabort: arret immediat');
+  EmitInstrAB('MOV', 'AX', '4C00h');
+  EmitInstr('INT', '21h');
+End;
+
+{ ---- ParseCfDump : <cfdump var="#variable#"> ---------------- }
+(* Affichage simplifie de debogage : affiche la valeur de la     *)
+(* variable indiquee dans l attribut var.                         *)
+Procedure ParseCfDump;
+Var
+  Res    : TExprVal;
+  SIdx   : Integer;
+  DIdx   : Integer;
+  VName  : TString;
+  Lbl    : TString;
+Begin
+  VName := '';
+  { Parser les attributs var="..." }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+
+    { Detecter var= (peut etre TK_IDENT ou TK_KEYWORD) }
+    If ((CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD)) And
+       (StrLowerCase(CurToken.Val) = 'var') Then
+    Begin
+      ParserAdvance;  { consommer var }
+      { Consommer = }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance;
+      { Lire la valeur : "..." ou #expr# }
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        VName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else
+      Begin
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+
+  { Consommer > ou /> }
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+
+  { Emettre le dump simplifie }
+  EmitComment('cfdump: debug dump');
+  { Afficher le nom de variable }
+  If VName <> '' Then
+  Begin
+    DIdx := DataAddStr('[cfdump] ' + VName + ' = ');
+    If DIdx >= 0 Then
+    Begin
+      Lbl := DataTab[DIdx].LblName;
+      EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
+      EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+    End;
+    { Chercher la variable et afficher sa valeur }
+    SIdx := SymFind(VName);
+    If SIdx >= 0 Then
+    Begin
+      VarLoad(SIdx);
+      If SymTab[SIdx].TypeIdx = TY_IDX_STRING Then
+      Begin
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstr('CALL', CF_RT_PFX + 'PRINTLN');
+      End
+      Else
+      Begin
+        EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstr('CALL', CF_RT_PFX + 'PRINTLN');
+      End;
+    End
+    Else
+    Begin
+      DIdx := DataAddStr('(undefined)');
+      If DIdx >= 0 Then
+      Begin
+        Lbl := DataTab[DIdx].LblName;
+        EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
+        EmitInstr('CALL', CF_RT_PFX + 'PRINTLN');
+      End;
+    End;
+  End
+  Else
+  Begin
+    DIdx := DataAddStr('[cfdump] (aucune variable specifiee)');
+    If DIdx >= 0 Then
+    Begin
+      Lbl := DataTab[DIdx].LblName;
+      EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
+      EmitInstr('CALL', CF_RT_PFX + 'PRINTLN');
+    End;
+  End;
+End;
+
 Procedure ParsePage;
 Var
   TagLower : TString;
@@ -3789,9 +4148,27 @@ Begin
         ParserAdvance;  { consommer <cfset }
         ParseCfSet;
       End
+      Else If TagLower = 'cfoutput' Then
+      Begin
+        ParserAdvance;  { consommer <cfoutput }
+        ParseCfOutput;
+      End
+      Else If TagLower = 'cfabort' Then
+      Begin
+        ParserAdvance;  { consommer <cfabort }
+        ParseCfAbort;
+      End
+      Else If TagLower = 'cfdump' Then
+      Begin
+        ParserAdvance;  { consommer <cfdump }
+        ParseCfDump;
+      End
       Else
         ParserAdvance;  { balise non reconnue - passer }
     End
+    { Balise fermante : ignorer }
+    Else If CurToken.Kind = TK_TAG_CLOSE Then
+      ParserAdvance
     { Mot-cle var en mode cfscript }
     Else If (CurToken.Kind = TK_KEYWORD) And
             (StrLowerCase(CurToken.Val) = 'var') Then
@@ -3799,6 +4176,14 @@ Begin
       ParserAdvance;  { consommer var }
       ParseVarDecl;
     End
+    { WriteOutput en mode cfscript }
+    Else If (CurToken.Kind = TK_IDENT) And
+            (StrLowerCase(CurToken.Val) = 'writeoutput') Then
+    Begin
+      ParserAdvance;  { consommer WriteOutput }
+      ParseWriteOutput;
+    End
+    { Texte brut hors cfoutput : ignorer silencieusement }
     Else
       ParserAdvance;  { token non traite - avancer }
   End;
