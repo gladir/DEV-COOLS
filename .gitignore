@@ -7,3 +7,5 @@ CCW32
 *.ppu
 *.rst
 link.res
+CCW32
+CCW32.o

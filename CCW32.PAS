@@ -122,7 +122,7 @@
             Protection contre les inclusions circulaires
             Pile d inclusions (max MAX_INCLUDE_DEPTH)
 
-  TODO 04 - LITTERAUX ET CONSTANTES
+  TODO 04 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
             Entiers decimaux : 0..4294967295 (32 bits non signe)
             Entiers hexadecimaux : 0xFF -> valeur 32 bits
             Entiers octaux : 077 -> valeur 32 bits
@@ -1898,10 +1898,11 @@ Begin
 End;
 
 { Evaluer une expression constante entiere simple pour #if     }
-{ Supporte : nombres decimaux, identifiants (defined(X), ou   }
-{ macro -> 0 si indéfinie), operateurs ! && || == != < > <= >= }
-{ + - * / % , parentheses                                      }
-Function PPEvalExpr(Const S : TString) : LongInt;  Forward;
+{ Supporte : nombres decimaux, hex (0x), identifiants          }
+{ (defined(X), ou macro -> 0 si indéfinie), operateurs         }
+{ ! ~ && || == != < > <= >= << >> + - * / % & | ^, parentheses}
+Function PPEvalExprP(Const S : TString; Var P : Integer) : LongInt;
+  Forward;
 
 { Evaluer un atome (nombre, defined(), ident, parenthese) }
 Function PPEvalAtom(Const S : TString; Var P : Integer) : LongInt;
@@ -1925,6 +1926,13 @@ Begin
     PPSkipBlanks(S, P);
   End;
 
+  { Operateur unaire + }
+  If (P <= Length(S)) And (S[P] = '+') Then
+  Begin
+    Inc(P);
+    PPSkipBlanks(S, P);
+  End;
+
   { Operateur unaire ! }
   If (P <= Length(S)) And (S[P] = '!') Then
   Begin
@@ -1933,14 +1941,75 @@ Begin
     PPSkipBlanks(S, P);
   End;
 
+  { Operateur unaire ~ (NOT bitwise) }
+  If (P <= Length(S)) And (S[P] = '~') Then
+  Begin
+    Inc(P);
+    V := PPEvalAtom(S, P);
+    V := Not V;
+    If Neg Then V := -V;
+    PPEvalAtom := V;
+    Exit;
+  End;
+
   V := 0;
 
   If (P <= Length(S)) And (S[P] = '(') Then
   Begin
     Inc(P);
-    V := PPEvalExpr(S);
+    V := PPEvalExprP(S, P);
     PPSkipBlanks(S, P);
     If (P <= Length(S)) And (S[P] = ')') Then Inc(P);
+  End
+  { Caractere 'x' ou '\n' }
+  Else If (P <= Length(S)) And (S[P] = '''') Then
+  Begin
+    Inc(P);
+    If (P <= Length(S)) And (S[P] = '\') Then
+    Begin
+      Inc(P);
+      If P <= Length(S) Then
+      Begin
+        Case S[P] Of
+          'n'  : V := 10;
+          't'  : V := 9;
+          'r'  : V := 13;
+          '0'  : V := 0;
+          '\' : V := 92;
+          '''' : V := 39;
+          '"'  : V := 34;
+          'a'  : V := 7;
+          'b'  : V := 8;
+          'f'  : V := 12;
+          'v'  : V := 11;
+        Else
+          V := Ord(S[P]);
+        End;
+        Inc(P);
+      End;
+    End
+    Else If P <= Length(S) Then
+    Begin
+      V := Ord(S[P]);
+      Inc(P);
+    End;
+    If (P <= Length(S)) And (S[P] = '''') Then Inc(P);
+  End
+  { Entier hexadecimal 0x... }
+  Else If (P <= Length(S)) And (S[P] = '0') And
+          (P < Length(S)) And
+          ((S[P + 1] = 'x') Or (S[P + 1] = 'X')) Then
+  Begin
+    Inc(P, 2);
+    While (P <= Length(S)) And IsHexDigit(S[P]) Do
+    Begin
+      V := V * 16 + HexVal(S[P]);
+      Inc(P);
+    End;
+    While (P <= Length(S)) And
+          ((S[P] = 'L') Or (S[P] = 'l') Or
+           (S[P] = 'U') Or (S[P] = 'u')) Do
+      Inc(P);
   End
   Else If (P <= Length(S)) And (S[P] >= '0') And (S[P] <= '9') Then
   Begin
@@ -1950,10 +2019,11 @@ Begin
       V := V * 10 + (Ord(S[P]) - Ord('0'));
       Inc(P);
     End;
-    { Skip suffixes L/U }
+    { Skip suffixes L/U/f/F }
     While (P <= Length(S)) And
           ((S[P] = 'L') Or (S[P] = 'l') Or
-           (S[P] = 'U') Or (S[P] = 'u')) Do
+           (S[P] = 'U') Or (S[P] = 'u') Or
+           (S[P] = 'F') Or (S[P] = 'f')) Do
       Inc(P);
   End
   Else If (P <= Length(S)) And
@@ -1985,8 +2055,9 @@ Begin
       Idx := MacroFind(Name);
       If Idx >= 0 Then
       Begin
-        Val(MacroTab[Idx].Value, V, ErrC);
-        If ErrC <> 0 Then V := 0;
+        { Evaluer la valeur de la macro recursivement }
+        ErrC := 1;
+        V := PPEvalExprP(MacroTab[Idx].Value, ErrC);
       End
       Else
         V := 0;
@@ -2002,17 +2073,14 @@ Begin
   PPEvalAtom := V;
 End;
 
-{ Evaluer les operateurs binaires (simplifies) }
-Function PPEvalExpr(Const S : TString) : LongInt;
+{ Evaluer les operateurs binaires avec position de lecture }
+Function PPEvalExprP(Const S : TString; Var P : Integer) : LongInt;
 Var
-  P      : Integer;
   Left   : LongInt;
   Right  : LongInt;
   Op     : Char;
   Op2    : Char;
 Begin
-  P := 1;
-
   { Evaluation gauche-a-droite des operateurs binaires }
   Left := PPEvalAtom(S, P);
 
@@ -2022,6 +2090,7 @@ Begin
     If P > Length(S) Then Break;
 
     Op := S[P];
+    If Op = ')' Then Break;  { fin de sous-expression parenthesee }
     Op2 := #0;
     If P < Length(S) Then Op2 := S[P + 1];
 
@@ -2051,6 +2120,18 @@ Begin
       Inc(P, 2);
       Right := PPEvalAtom(S, P);
       If Left <> Right Then Left := 1 Else Left := 0;
+    End
+    Else If (Op = '<') And (Op2 = '<') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      Left := Left Shl Right;
+    End
+    Else If (Op = '>') And (Op2 = '>') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      Left := Left Shr Right;
     End
     Else If (Op = '<') And (Op2 = '=') Then
     Begin
@@ -2109,11 +2190,37 @@ Begin
       If Right <> 0 Then Left := Left Mod Right
       Else Left := 0;
     End
+    Else If (Op = '&') And (Op2 <> '&') Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      Left := Left And Right;
+    End
+    Else If (Op = '|') And (Op2 <> '|') Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      Left := Left Or Right;
+    End
+    Else If Op = '^' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      Left := Left Xor Right;
+    End
     Else
       Break;
   End;
 
-  PPEvalExpr := Left;
+  PPEvalExprP := Left;
+End;
+
+{ Wrapper : evaluer une expression PP depuis le debut d une chaine }
+Function PPEvalExpr(Const S : TString) : LongInt;
+Var P : Integer;
+Begin
+  P := 1;
+  PPEvalExpr := PPEvalExprP(S, P);
 End;
 
 { ------------------------------------------------------------ }
@@ -2916,9 +3023,766 @@ Begin
   Until False;
 End;
 
+{ ============================================================ }
+{ TODO 04 - LITTERAUX ET CONSTANTES                            }
+{ ============================================================ }
+
+Const
+  MAX_DATA     = 512;   { nombre max d entrees dans le pool de donnees }
+  MAX_TOKENS   = 16384; { nombre max de tokens stockes                  }
+
+  { Prefixes de mangling pour les labels generes }
+  CC_STR_PFX  = '_CCK_';   { string constants                         }
+  CC_VAR_PFX  = '_CCV_';   { variables                                }
+  CC_FUNC_PFX = '_CCF_';   { functions                                }
+  CC_LBL_PFX  = '_CCL_';   { labels internes                          }
+  CC_RT_PFX   = '_CCRT_';  { runtime routines                         }
+
+Type
+  { Types d entrees dans le pool de donnees }
+  TDataKind = (
+    DK_STR,     { chaine ASCIIZ (DB 'xxx',0)                         }
+    DK_DWORD,   { valeur 32 bits (DD nnn)                             }
+    DK_BYTE,    { valeur 8 bits (DB nnn)                              }
+    DK_ARRAY,   { tableau (DB ElemCount DUP(0))                       }
+    DK_RES      { espace reserve (DB Size DUP(0))                     }
+  );
+
+  { Un enregistrement du pool de donnees }
+  TDataRec = Record
+    LblName   : TString;    { label ASM (ex: _CCK_1, _CCV_x)         }
+    Kind      : TDataKind;  { type de donnee                           }
+    IntVal    : LongInt;     { valeur entiere (pour DK_DWORD, DK_BYTE) }
+    StrVal    : TString;     { contenu chaine (pour DK_STR)            }
+    ElemCount : Integer;     { nombre d elements (pour DK_ARRAY)       }
+    ElemSize  : Integer;     { taille d un element (pour DK_ARRAY)     }
+  End;
+
+  { Taille connue d un type C de base }
+  TCSizeInfo = Record
+    Name : TString;         { nom du type (int, char, long, etc.)      }
+    Size : Integer;         { taille en octets                          }
+  End;
+
+Var
+  { Pool de donnees (segment .DATA) }
+  DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
+  DataCount  : Integer;
+
+  { Compteur de labels auto-generes }
+  LabelGenSeq : Integer;
+
+  { Pool de tokens (pour le parseur futur) }
+  TokenPool  : Array[0..MAX_TOKENS - 1] Of TToken;
+  TokenCount : Integer;
+
+{ ------------------------------------------------------------ }
+{ Table des tailles de types C de base (Win32, 32 bits)        }
+{ ------------------------------------------------------------ }
+
+Const
+  MAX_CTYPE_SIZES = 18;
+  CTypeSizes : Array[0..MAX_CTYPE_SIZES - 1] Of TCSizeInfo = (
+    (Name: 'char';              Size: 1),
+    (Name: 'signed char';       Size: 1),
+    (Name: 'unsigned char';     Size: 1),
+    (Name: 'short';             Size: 2),
+    (Name: 'signed short';      Size: 2),
+    (Name: 'unsigned short';    Size: 2),
+    (Name: 'int';               Size: 4),
+    (Name: 'signed int';        Size: 4),
+    (Name: 'unsigned int';      Size: 4),
+    (Name: 'signed';            Size: 4),
+    (Name: 'unsigned';          Size: 4),
+    (Name: 'long';              Size: 4),
+    (Name: 'signed long';       Size: 4),
+    (Name: 'unsigned long';     Size: 4),
+    (Name: 'float';             Size: 4),
+    (Name: 'double';            Size: 8),
+    (Name: 'long double';       Size: 8),
+    (Name: 'void';              Size: 0)
+  );
+
+{ ------------------------------------------------------------ }
+{ DataInit : initialiser le pool de donnees                    }
+{ ------------------------------------------------------------ }
+
+Procedure DataInit;
+Var I : Integer;
+Begin
+  DataCount   := 0;
+  LabelGenSeq := 0;
+  TokenCount  := 0;
+  For I := 0 To MAX_DATA - 1 Do
+  Begin
+    DataTab[I].LblName   := '';
+    DataTab[I].Kind      := DK_STR;
+    DataTab[I].IntVal    := 0;
+    DataTab[I].StrVal    := '';
+    DataTab[I].ElemCount := 0;
+    DataTab[I].ElemSize  := 0;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAdd : ajouter une entree generique dans le pool          }
+{ ------------------------------------------------------------ }
+
+Function DataAdd(Const Lbl : TString; Kind : TDataKind;
+                 AIntVal : LongInt; Const AStrVal : TString;
+                 AElemCount : Integer; AElemSize : Integer) : Integer;
+Begin
+  If DataCount >= MAX_DATA Then
+  Begin
+    WarnMsg('pool de donnees plein (MAX_DATA=' + IntToStr_(MAX_DATA) + ')');
+    DataAdd := -1;
+    Exit;
+  End;
+  DataTab[DataCount].LblName   := Lbl;
+  DataTab[DataCount].Kind      := Kind;
+  DataTab[DataCount].IntVal    := AIntVal;
+  DataTab[DataCount].StrVal    := AStrVal;
+  DataTab[DataCount].ElemCount := AElemCount;
+  DataTab[DataCount].ElemSize  := AElemSize;
+  DataAdd := DataCount;
+  Inc(DataCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStr : ajouter une chaine avec label auto-genere       }
+{ Retourne le label (ex: _CCK_1)                               }
+{ ------------------------------------------------------------ }
+
+Function DataAddStr(Const S : TString) : TString;
+Var Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := CC_STR_PFX + IntToStr_(LabelGenSeq);
+  DataAdd(Lbl, DK_STR, 0, S, 0, 0);
+  DataAddStr := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddDWord : ajouter une valeur DWORD avec label           }
+{ ------------------------------------------------------------ }
+
+Function DataAddDWord(Const Lbl : TString; Val : LongInt) : Integer;
+Begin
+  DataAddDWord := DataAdd(Lbl, DK_DWORD, Val, '', 0, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddByte : ajouter une valeur BYTE avec label             }
+{ ------------------------------------------------------------ }
+
+Function DataAddByte(Const Lbl : TString; Val : Integer) : Integer;
+Begin
+  DataAddByte := DataAdd(Lbl, DK_BYTE, Val, '', 0, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddArray : ajouter un tableau avec label                 }
+{ ------------------------------------------------------------ }
+
+Function DataAddArray(Const Lbl : TString;
+                      AElemCount : Integer;
+                      AElemSize : Integer) : Integer;
+Begin
+  DataAddArray := DataAdd(Lbl, DK_ARRAY, 0, '', AElemCount, AElemSize);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddRes : ajouter un espace reserve avec label            }
+{ ------------------------------------------------------------ }
+
+Function DataAddRes(Const Lbl : TString; Size : Integer) : Integer;
+Begin
+  DataAddRes := DataAdd(Lbl, DK_RES, Size, '', 0, 0);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataFindStr : rechercher si une chaine est deja dans le pool }
+{ Retourne l index ou -1 si absente                            }
+{ ------------------------------------------------------------ }
+
+Function DataFindStr(Const S : TString) : Integer;
+Var I : Integer;
+Begin
+  DataFindStr := -1;
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataFindStr := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ DataGetOrAddStr : retourne le label d une chaine existante   }
+{ ou l ajoute si elle n existe pas encore                      }
+{ ------------------------------------------------------------ }
+
+Function DataGetOrAddStr(Const S : TString) : TString;
+Var Idx : Integer;
+Begin
+  Idx := DataFindStr(S);
+  If Idx >= 0 Then
+    DataGetOrAddStr := DataTab[Idx].LblName
+  Else
+    DataGetOrAddStr := DataAddStr(S);
+End;
+
+{ ------------------------------------------------------------ }
+{ CTypeSizeof : retourne la taille d un type C de base         }
+{ Retourne -1 si le type est inconnu                           }
+{ ------------------------------------------------------------ }
+
+Function CTypeSizeof(Const TypeName : TString) : Integer;
+Var I : Integer;
+Begin
+  CTypeSizeof := -1;
+  For I := 0 To MAX_CTYPE_SIZES - 1 Do
+    If CTypeSizes[I].Name = TypeName Then
+    Begin
+      CTypeSizeof := CTypeSizes[I].Size;
+      Exit;
+    End;
+  { Pointeurs : tout type suivi de * a la taille d un pointeur }
+  If (Length(TypeName) > 1) And (TypeName[Length(TypeName)] = '*') Then
+  Begin
+    CTypeSizeof := 4;  { 32 bits }
+    Exit;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ConstEvalAtom : evaluer un atome dans une expression const   }
+{ Supporte : entiers, sizeof(type), sizeof(expr), caracteres   }
+{ ------------------------------------------------------------ }
+
+Function ConstEvalExpr(Const S : TString; Var Pos : Integer) : LongInt;
+  Forward;
+
+Function ConstEvalAtom(Const S : TString; Var Pos : Integer) : LongInt;
+Var
+  N    : LongInt;
+  Neg  : Boolean;
+  Id   : TString;
+  Ch   : Char;
+  Paren: Integer;
+  TypeArg : TString;
+  Size : Integer;
+Begin
+  N := 0;
+
+  { Sauter les blancs }
+  While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+    Inc(Pos);
+
+  If Pos > Length(S) Then
+  Begin
+    ConstEvalAtom := 0;
+    Exit;
+  End;
+
+  { Operateur unaire - }
+  Neg := False;
+  If (Pos <= Length(S)) And (S[Pos] = '-') Then
+  Begin
+    Neg := True;
+    Inc(Pos);
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+  End;
+
+  { Operateur unaire + }
+  If (Pos <= Length(S)) And (S[Pos] = '+') Then
+  Begin
+    Inc(Pos);
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+  End;
+
+  { Operateur unaire ! (NOT logique) }
+  If (Pos <= Length(S)) And (S[Pos] = '!') Then
+  Begin
+    Inc(Pos);
+    N := ConstEvalAtom(S, Pos);
+    If N = 0 Then N := 1 Else N := 0;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Operateur unaire ~ (NOT bitwise) }
+  If (Pos <= Length(S)) And (S[Pos] = '~') Then
+  Begin
+    Inc(Pos);
+    N := ConstEvalAtom(S, Pos);
+    N := Not N;
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Parentheses }
+  If (Pos <= Length(S)) And (S[Pos] = '(') Then
+  Begin
+    Inc(Pos);
+    N := ConstEvalExpr(S, Pos);
+    If (Pos <= Length(S)) And (S[Pos] = ')') Then
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Caractere 'x' ou '\n' }
+  If (Pos <= Length(S)) And (S[Pos] = '''') Then
+  Begin
+    Inc(Pos);
+    If (Pos <= Length(S)) And (S[Pos] = '\') Then
+    Begin
+      Inc(Pos);
+      If Pos <= Length(S) Then
+      Begin
+        Ch := S[Pos];
+        Inc(Pos);
+        Case Ch Of
+          'n'  : N := 10;
+          't'  : N := 9;
+          'r'  : N := 13;
+          '0'  : N := 0;
+          '\' : N := 92;
+          '''' : N := 39;
+          '"'  : N := 34;
+          'a'  : N := 7;
+          'b'  : N := 8;
+          'f'  : N := 12;
+          'v'  : N := 11;
+        Else
+          N := Ord(Ch);
+        End;
+      End;
+    End
+    Else If Pos <= Length(S) Then
+    Begin
+      N := Ord(S[Pos]);
+      Inc(Pos);
+    End;
+    { Sauter le ' fermant }
+    If (Pos <= Length(S)) And (S[Pos] = '''') Then
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Entier hexadecimal 0x... }
+  If (Pos < Length(S)) And (S[Pos] = '0') And
+     ((S[Pos + 1] = 'x') Or (S[Pos + 1] = 'X')) Then
+  Begin
+    Inc(Pos, 2);
+    While (Pos <= Length(S)) And IsHexDigit(S[Pos]) Do
+    Begin
+      N := N * 16 + HexVal(S[Pos]);
+      Inc(Pos);
+    End;
+    { Sauter les suffixes }
+    While (Pos <= Length(S)) And
+          ((S[Pos] = 'u') Or (S[Pos] = 'U') Or
+           (S[Pos] = 'l') Or (S[Pos] = 'L')) Do
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Entier octal 0... }
+  If (Pos <= Length(S)) And (S[Pos] = '0') And
+     (Pos < Length(S)) And IsOctDigit(S[Pos + 1]) Then
+  Begin
+    Inc(Pos);
+    While (Pos <= Length(S)) And IsOctDigit(S[Pos]) Do
+    Begin
+      N := N * 8 + (Ord(S[Pos]) - Ord('0'));
+      Inc(Pos);
+    End;
+    { Sauter les suffixes }
+    While (Pos <= Length(S)) And
+          ((S[Pos] = 'u') Or (S[Pos] = 'U') Or
+           (S[Pos] = 'l') Or (S[Pos] = 'L')) Do
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Entier decimal }
+  If (Pos <= Length(S)) And IsDigit(S[Pos]) Then
+  Begin
+    While (Pos <= Length(S)) And IsDigit(S[Pos]) Do
+    Begin
+      N := N * 10 + (Ord(S[Pos]) - Ord('0'));
+      Inc(Pos);
+    End;
+    { Sauter la partie flottante si present (tronquer) }
+    If (Pos <= Length(S)) And (S[Pos] = '.') Then
+    Begin
+      Inc(Pos);
+      While (Pos <= Length(S)) And IsDigit(S[Pos]) Do
+        Inc(Pos);
+    End;
+    { Sauter les suffixes }
+    While (Pos <= Length(S)) And
+          ((S[Pos] = 'u') Or (S[Pos] = 'U') Or
+           (S[Pos] = 'l') Or (S[Pos] = 'L') Or
+           (S[Pos] = 'f') Or (S[Pos] = 'F')) Do
+      Inc(Pos);
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Identificateur : sizeof, alignof, ou constante definie }
+  If (Pos <= Length(S)) And IsIdentStart(S[Pos]) Then
+  Begin
+    Id := '';
+    While (Pos <= Length(S)) And IsIdentCont(S[Pos]) Do
+    Begin
+      Id := Id + S[Pos];
+      Inc(Pos);
+    End;
+
+    { sizeof(type) ou sizeof(expr) }
+    If Id = 'sizeof' Then
+    Begin
+      While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+        Inc(Pos);
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        { Extraire l argument entre parentheses }
+        TypeArg := '';
+        Paren := 1;
+        While (Pos <= Length(S)) And (Paren > 0) Do
+        Begin
+          If S[Pos] = '(' Then Inc(Paren)
+          Else If S[Pos] = ')' Then
+          Begin
+            Dec(Paren);
+            If Paren = 0 Then
+            Begin
+              Inc(Pos);
+              Break;
+            End;
+          End;
+          TypeArg := TypeArg + S[Pos];
+          Inc(Pos);
+        End;
+        { Supprimer les espaces en tete et en queue }
+        While (Length(TypeArg) > 0) And
+              ((TypeArg[1] = ' ') Or (TypeArg[1] = #9)) Do
+          Delete(TypeArg, 1, 1);
+        While (Length(TypeArg) > 0) And
+              ((TypeArg[Length(TypeArg)] = ' ') Or
+               (TypeArg[Length(TypeArg)] = #9)) Do
+          Delete(TypeArg, Length(TypeArg), 1);
+        { Rechercher la taille du type }
+        Size := CTypeSizeof(TypeArg);
+        If Size >= 0 Then
+          N := Size
+        Else
+          N := 4;  { par defaut : int = 4 octets sur Win32 }
+      End
+      Else
+        N := 4;  { sizeof sans parentheses : taille par defaut }
+      If Neg Then N := -N;
+      ConstEvalAtom := N;
+      Exit;
+    End;
+
+    { alignof / _Alignof }
+    If (Id = 'alignof') Or (Id = '_Alignof') Then
+    Begin
+      While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+        Inc(Pos);
+      If (Pos <= Length(S)) And (S[Pos] = '(') Then
+      Begin
+        Inc(Pos);
+        TypeArg := '';
+        Paren := 1;
+        While (Pos <= Length(S)) And (Paren > 0) Do
+        Begin
+          If S[Pos] = '(' Then Inc(Paren)
+          Else If S[Pos] = ')' Then
+          Begin
+            Dec(Paren);
+            If Paren = 0 Then
+            Begin
+              Inc(Pos);
+              Break;
+            End;
+          End;
+          TypeArg := TypeArg + S[Pos];
+          Inc(Pos);
+        End;
+        { Pour Win32/x86, l alignement est egal a la taille (max 4) }
+        While (Length(TypeArg) > 0) And
+              ((TypeArg[1] = ' ') Or (TypeArg[1] = #9)) Do
+          Delete(TypeArg, 1, 1);
+        While (Length(TypeArg) > 0) And
+              ((TypeArg[Length(TypeArg)] = ' ') Or
+               (TypeArg[Length(TypeArg)] = #9)) Do
+          Delete(TypeArg, Length(TypeArg), 1);
+        Size := CTypeSizeof(TypeArg);
+        If Size < 0 Then Size := 4;
+        If Size > 4 Then Size := 4;  { alignement max 4 sur x86 }
+        N := Size;
+      End
+      Else
+        N := 4;
+      If Neg Then N := -N;
+      ConstEvalAtom := N;
+      Exit;
+    End;
+
+    { Rechercher dans les macros #define }
+    Begin
+      Paren := MacroFind(Id);
+      If Paren >= 0 Then
+      Begin
+        { Evaluer la valeur de la macro recursivement }
+        Size := 1;
+        N := ConstEvalExpr(MacroTab[Paren].Value, Size);
+      End
+      Else
+        N := 0;  { identifiant inconnu = 0 }
+    End;
+    If Neg Then N := -N;
+    ConstEvalAtom := N;
+    Exit;
+  End;
+
+  { Rien trouve }
+  If Neg Then N := -N;
+  ConstEvalAtom := N;
+End;
+
+{ ------------------------------------------------------------ }
+{ ConstEvalExpr : evaluer une expression constante complete    }
+{ Supporte : +, -, *, /, %, <<, >>, &, |, ^, ==, !=, <, >,    }
+{   <=, >=, &&, ||, ternaire ? :                               }
+{ ------------------------------------------------------------ }
+
+Function ConstEvalExpr(Const S : TString; Var Pos : Integer) : LongInt;
+Var
+  Left, Right : LongInt;
+  Op : TString;
+Begin
+  Left := ConstEvalAtom(S, Pos);
+
+  While Pos <= Length(S) Do
+  Begin
+    { Sauter les blancs }
+    While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+      Inc(Pos);
+    If Pos > Length(S) Then Break;
+
+    { Detecter l operateur }
+    Op := '';
+    If S[Pos] = ')' Then Break;  { fin de sous-expression }
+    If S[Pos] = ':' Then Break;  { partie ternaire }
+    If S[Pos] = ',' Then Break;  { separateur }
+
+    { Ternaire ? : }
+    If S[Pos] = '?' Then
+    Begin
+      Inc(Pos);
+      Right := ConstEvalExpr(S, Pos);
+      { Sauter le : }
+      While (Pos <= Length(S)) And ((S[Pos] = ' ') Or (S[Pos] = #9)) Do
+        Inc(Pos);
+      If (Pos <= Length(S)) And (S[Pos] = ':') Then
+        Inc(Pos);
+      If Left <> 0 Then
+        Left := Right
+      Else
+        Left := ConstEvalExpr(S, Pos);
+      Continue;
+    End;
+
+    { Operateurs a 2 caracteres }
+    If Pos < Length(S) Then
+    Begin
+      Op := S[Pos];
+      Op := Op + S[Pos + 1];
+      If (Op = '<<') Or (Op = '>>') Or (Op = '==') Or (Op = '!=') Or
+         (Op = '<=') Or (Op = '>=') Or (Op = '&&') Or (Op = '||') Then
+      Begin
+        Inc(Pos, 2);
+        Right := ConstEvalAtom(S, Pos);
+        If Op = '<<' Then Left := Left Shl Right
+        Else If Op = '>>' Then Left := Left Shr Right
+        Else If Op = '==' Then Begin If Left = Right Then Left := 1
+                                     Else Left := 0; End
+        Else If Op = '!=' Then Begin If Left <> Right Then Left := 1
+                                     Else Left := 0; End
+        Else If Op = '<=' Then Begin If Left <= Right Then Left := 1
+                                     Else Left := 0; End
+        Else If Op = '>=' Then Begin If Left >= Right Then Left := 1
+                                     Else Left := 0; End
+        Else If Op = '&&' Then Begin If (Left <> 0) And (Right <> 0) Then
+                                       Left := 1
+                                     Else Left := 0; End
+        Else If Op = '||' Then Begin If (Left <> 0) Or (Right <> 0) Then
+                                       Left := 1
+                                     Else Left := 0; End;
+        Continue;
+      End;
+    End;
+
+    { Operateurs a 1 caractere }
+    Op := S[Pos];
+    If (Op = '+') Or (Op = '-') Or (Op = '*') Or (Op = '/') Or
+       (Op = '%') Or (Op = '&') Or (Op = '|') Or (Op = '^') Or
+       (Op = '<') Or (Op = '>') Then
+    Begin
+      Inc(Pos);
+      Right := ConstEvalAtom(S, Pos);
+      If Op = '+' Then Left := Left + Right
+      Else If Op = '-' Then Left := Left - Right
+      Else If Op = '*' Then Left := Left * Right
+      Else If Op = '/' Then
+      Begin
+        If Right <> 0 Then Left := Left Div Right
+        Else Begin WarnMsg('division par zero dans expression constante');
+                   Left := 0; End;
+      End
+      Else If Op = '%' Then
+      Begin
+        If Right <> 0 Then Left := Left Mod Right
+        Else Begin WarnMsg('modulo par zero dans expression constante');
+                   Left := 0; End;
+      End
+      Else If Op = '&' Then Left := Left And Right
+      Else If Op = '|' Then Left := Left Or Right
+      Else If Op = '^' Then Left := Left Xor Right
+      Else If Op = '<' Then
+      Begin If Left < Right Then Left := 1 Else Left := 0; End
+      Else If Op = '>' Then
+      Begin If Left > Right Then Left := 1 Else Left := 0; End;
+      Continue;
+    End;
+
+    { Pas un operateur reconnu -> fin de l expression }
+    Break;
+  End;
+
+  ConstEvalExpr := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ ConstEval : evaluer une expression constante depuis une       }
+{ chaine (point d entree principal)                            }
+{ ------------------------------------------------------------ }
+
+Function ConstEval(Const S : TString) : LongInt;
+Var P : Integer;
+Begin
+  P := 1;
+  ConstEval := ConstEvalExpr(S, P);
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenPoolInit : initialiser le pool de tokens                }
+{ ------------------------------------------------------------ }
+
+Procedure TokenPoolInit;
+Begin
+  TokenCount := 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenPoolAdd : ajouter un token dans le pool                 }
+{ ------------------------------------------------------------ }
+
+Procedure TokenPoolAdd(Const T : TToken);
+Begin
+  If TokenCount >= MAX_TOKENS Then
+  Begin
+    WarnMsg('pool de tokens plein');
+    Exit;
+  End;
+  TokenPool[TokenCount] := T;
+  Inc(TokenCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenPoolConcatStrings : concatener les chaines adjacentes   }
+{ "abc" "def" -> "abcdef"                                      }
+{ Parcourt le pool et fusionne les TK_STRING consecutifs       }
+{ ------------------------------------------------------------ }
+
+Procedure TokenPoolConcatStrings;
+Var
+  I, J, Dst : Integer;
+  CatStr    : TString;
+Begin
+  If TokenCount <= 1 Then Exit;
+  Dst := 0;
+  I := 0;
+  While I < TokenCount Do
+  Begin
+    If TokenPool[I].Kind = TK_STRING Then
+    Begin
+      { Debut d une sequence de chaines }
+      CatStr := TokenPool[I].Val;
+      J := I + 1;
+      While (J < TokenCount) And (TokenPool[J].Kind = TK_STRING) Do
+      Begin
+        { Concatener les chaines adjacentes }
+        If Length(CatStr) + Length(TokenPool[J].Val) <= MAX_STR Then
+          CatStr := CatStr + TokenPool[J].Val
+        Else
+          WarnMsg('chaine concatenee trop longue, tronquee');
+        Inc(J);
+      End;
+      { Enregistrer la chaine concatenee dans le pool de donnees }
+      TokenPool[Dst] := TokenPool[I];
+      TokenPool[Dst].Val := CatStr;
+      Inc(Dst);
+      I := J;
+    End
+    Else
+    Begin
+      If Dst <> I Then
+        TokenPool[Dst] := TokenPool[I];
+      Inc(Dst);
+      Inc(I);
+    End;
+  End;
+  TokenCount := Dst;
+End;
+
+{ ------------------------------------------------------------ }
+{ TokenPoolRegisterStrings : enregistrer toutes les chaines du }
+{ pool de tokens dans le pool de donnees, en leur attribuant   }
+{ un label unique (_CCK_N) et en evitant les doublons          }
+{ ------------------------------------------------------------ }
+
+Procedure TokenPoolRegisterStrings;
+Var I : Integer;
+Begin
+  For I := 0 To TokenCount - 1 Do
+  Begin
+    If TokenPool[I].Kind = TK_STRING Then
+      DataGetOrAddStr(TokenPool[I].Val);
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { Run : ouvre le fichier source, lexe et affiche les tokens     }
-{ avec support du preprocesseur                                }
+{ avec support du preprocesseur et des litteraux               }
 { ------------------------------------------------------------ }
 
 Procedure Run;
@@ -2935,13 +3799,19 @@ Begin
   LexOpened := True;
   CurFileName := Opts.SrcFile;
 
+  { Initialiser le pool de donnees et le pool de tokens }
+  DataInit;
+  TokenPoolInit;
+
   { Initialiser le preprocesseur et le lexeur }
   PPInit;
   LexInit;
 
-  { Scanner tous les tokens via le preprocesseur }
+  { Scanner tous les tokens via le preprocesseur et les stocker }
   Repeat
     LexNextTokenPP;
+    If CurToken.Kind <> TK_EOF Then
+      TokenPoolAdd(CurToken);
   Until CurToken.Kind = TK_EOF;
 
   { Verifier les conditionnels non fermes }
@@ -2952,9 +3822,16 @@ Begin
   { Fermer le fichier source }
   LexClose;
 
-  { TODO 04+ : Parse, Emit, Binary }
+  { Concatener les chaines adjacentes ("abc" "def" -> "abcdef") }
+  TokenPoolConcatStrings;
+
+  { Enregistrer toutes les chaines dans le pool de donnees }
+  TokenPoolRegisterStrings;
+
+  { Afficher le resultat }
   WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
-    MacroCount, ' macros)');
+    MacroCount, ' macros, ', TokenCount, ' tokens, ',
+    DataCount, ' data)');
 End;
 
 { ------------------------------------------------------------ }
