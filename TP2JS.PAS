@@ -55,7 +55,7 @@
                NEAR PRIVATE PUBLIC VIRTUAL
              Mode debug -d : affichage de chaque token avec PrintToken
 
-   TODO 03 - LITTERAUX ET CONSTANTES
+   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
              Entiers decimaux : 0..2147483647 (LongInt)
              Entiers hexadecimaux : $FF, $FFFF, $7FFFFFFF
              Reels : 3.14, 1.5E10, 2.0E-3 -> number en JavaScript
@@ -641,6 +641,9 @@ Const
   TP_UNIT_PFX = '_TPU_';
   TP_RT_PFX   = '_TPR_';
 
+  MAX_TOKEN   = {$IFDEF FPC}16384{$ELSE}4096{$ENDIF};
+  MAX_CONST   = 256;
+
   EXIT_OK    = 0;
   EXIT_ERROR = 1;
   EXIT_USAGE = 2;
@@ -683,6 +686,16 @@ Type
     Col      : Integer;     { colonne source (1-base)          }
   End;
 
+  TConstRec = Record
+    Name    : TString;     { nom de la constante Pascal         }
+    JSVal   : TString;     { valeur JavaScript generee          }
+    Kind    : TTokenKind;  { type du litteral (INT/REAL/STR...) }
+    IntVal  : LongInt;     { valeur entiere si applicable       }
+    RealVal : Real;        { valeur reelle si applicable        }
+    StrVal  : TString;     { valeur chaine si applicable        }
+    IsTyped : Boolean;     { constante typee (const X: T = V)   }
+  End;
+
 { ============================================================
   VARIABLES GLOBALES
   ============================================================ }
@@ -704,6 +717,14 @@ Var
   LexColNo  : Integer;
   LexEOF    : Boolean;
   CurToken  : TToken;
+
+  { Token pool pour traitement multi-passe }
+  TokenPool  : Array[0..MAX_TOKEN - 1] Of TToken;
+  TokenCount : Integer;
+
+  { Table des constantes }
+  ConstTab   : Array[0..MAX_CONST - 1] Of TConstRec;
+  ConstCount : Integer;
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -940,6 +961,8 @@ Begin
   CurToken.RealVal := 0.0;
   CurToken.Line    := 0;
   CurToken.Col     := 0;
+  TokenCount := 0;
+  ConstCount := 0;
 End;
 
 { ============================================================
@@ -1632,11 +1655,462 @@ Begin
 End;
 
 { ============================================================
-  Run : utilise le lexeur pour tokeniser le fichier source
+  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- HexByte : octet -> 2 chiffres hexa -------------------- }
+Function HexByte(B : Integer) : TString;
+Const
+  HX : String[16] = '0123456789ABCDEF';
+Begin
+  HexByte := HX[(B Shr 4) And $F + 1] + HX[B And $F + 1];
+End;
+
+{ ---- StrToJS : convertir chaine Pascal -> litteral JS ------- }
+{ 'abc' -> "abc"  /  'l''arbre' -> "l'arbre"                   }
+{ Caracteres speciaux : #13 -> \r, #10 -> \n, #9 -> \t etc.    }
+Function StrToJS(Const S : TString) : TString;
+Var
+  I : Integer;
+  R : TString;
+  Ch : Char;
+Begin
+  R := '"';
+  For I := 1 To Length(S) Do
+  Begin
+    Ch := S[I];
+    Case Ch Of
+      '"'  : If Length(R) < MAX_STR - 2 Then R := R + '\"';
+      '\'  : If Length(R) < MAX_STR - 2 Then R := R + '\\';
+      #8   : If Length(R) < MAX_STR - 2 Then R := R + '\b';
+      #9   : If Length(R) < MAX_STR - 2 Then R := R + '\t';
+      #10  : If Length(R) < MAX_STR - 2 Then R := R + '\n';
+      #12  : If Length(R) < MAX_STR - 2 Then R := R + '\f';
+      #13  : If Length(R) < MAX_STR - 2 Then R := R + '\r';
+      #0   : If Length(R) < MAX_STR - 4 Then R := R + '\x00';
+      #26  : If Length(R) < MAX_STR - 4 Then R := R + '\x1A';
+    Else
+      If (Ord(Ch) < 32) Or (Ord(Ch) > 126) Then
+      Begin
+        If Length(R) < MAX_STR - 4 Then
+          R := R + '\x' + HexByte(Ord(Ch));
+      End
+      Else
+      Begin
+        If Length(R) < MAX_STR - 1 Then
+          R := R + Ch;
+      End;
+    End;
+  End;
+  If Length(R) < MAX_STR Then
+    R := R + '"';
+  StrToJS := R;
+End;
+
+{ ---- CharToJS : convertir code ASCII -> representation JS --- }
+{ Caracteres courants retournes comme chaine JS d un caractere  }
+{ Caracteres speciaux : #13 -> "\r", #10 -> "\n", etc.         }
+Function CharToJS(Code : Integer) : TString;
+Begin
+  Case Code Of
+    8  : CharToJS := '"\b"';
+    9  : CharToJS := '"\t"';
+    10 : CharToJS := '"\n"';
+    12 : CharToJS := '"\f"';
+    13 : CharToJS := '"\r"';
+    0  : CharToJS := '"\x00"';
+    26 : CharToJS := '"\x1A"';
+    34 : CharToJS := '"\""';
+    92 : CharToJS := '"\\\\"';
+  Else
+    If (Code >= 32) And (Code <= 126) Then
+      CharToJS := '"' + Chr(Code) + '"'
+    Else
+      CharToJS := 'String.fromCharCode(' + IntToStr_(Code) + ')';
+  End;
+End;
+
+{ ---- IntToJS : entier -> JavaScript ------------------------- }
+Function IntToJS(N : LongInt) : TString;
+Begin
+  IntToJS := IntToStr_(N);
+End;
+
+{ ---- RealToJS : reel -> JavaScript -------------------------- }
+Function RealToJS(R : Real) : TString;
+Var
+  S : TString;
+Begin
+  Str(R:0:10, S);
+  { Supprimer les zeros inutiles a la fin }
+  While (Length(S) > 1) And (S[Length(S)] = '0') And
+        (S[Length(S) - 1] <> '.') Do
+    Delete(S, Length(S), 1);
+  RealToJS := S;
+End;
+
+{ ---- LitToJS : convertir un token litteral en JavaScript ---- }
+{ Dispatche selon le type de token                              }
+Function LitToJS(Const T : TToken) : TString;
+Var
+  L : TString;
+Begin
+  Case T.Kind Of
+    TK_INTEGER : LitToJS := IntToJS(T.IntVal);
+    TK_REAL    : LitToJS := RealToJS(T.RealVal);
+    TK_STRING  : LitToJS := StrToJS(T.Val);
+    TK_CHAR    : LitToJS := CharToJS(T.IntVal);
+    TK_KEYWORD :
+    Begin
+      L := StrLowerCase(T.Val);
+      If L = 'true'  Then LitToJS := 'true'
+      Else If L = 'false' Then LitToJS := 'false'
+      Else If L = 'nil'   Then LitToJS := 'null'
+      Else LitToJS := T.Val;
+    End;
+    TK_IDENT :
+    Begin
+      L := StrLowerCase(T.Val);
+      If L = 'true'  Then LitToJS := 'true'
+      Else If L = 'false' Then LitToJS := 'false'
+      Else If L = 'nil'   Then LitToJS := 'null'
+      Else If L = 'maxint' Then LitToJS := '32767'
+      Else If L = 'maxlongint' Then LitToJS := '2147483647'
+      Else LitToJS := T.Val;
+    End;
+  Else
+    LitToJS := T.Val;
+  End;
+End;
+
+{ ---- TokenPoolInit : initialiser le pool de tokens ---------- }
+Procedure TokenPoolInit;
+Begin
+  TokenCount := 0;
+End;
+
+{ ---- TokenPoolAdd : ajouter un token au pool ---------------- }
+Procedure TokenPoolAdd(Const T : TToken);
+Begin
+  If TokenCount >= MAX_TOKEN Then
+  Begin
+    FatalError('pool de tokens sature (MAX_TOKEN=' +
+               IntToStr_(MAX_TOKEN) + ')');
+    Exit;
+  End;
+  TokenPool[TokenCount] := T;
+  Inc(TokenCount);
+End;
+
+{ ---- TokenPoolFill : remplir le pool depuis le lexeur ------- }
+{ Lex tous les tokens du fichier et les stocke dans TokenPool.  }
+Procedure TokenPoolFill;
+Begin
+  TokenPoolInit;
+  LexNextToken;
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    TokenPoolAdd(CurToken);
+    LexNextToken;
+  End;
+  { Ajouter le EOF final }
+  TokenPoolAdd(CurToken);
+End;
+
+{ ---- ConstInit : initialiser la table des constantes -------- }
+Procedure ConstInit;
+Begin
+  ConstCount := 0;
+End;
+
+{ ---- ConstAdd : ajouter une constante a la table ------------ }
+Procedure ConstAdd(Const AName, AJSVal : TString;
+                   AKind : TTokenKind;
+                   AIntVal : LongInt; ARealVal : Real;
+                   Const AStrVal : TString;
+                   AIsTyped : Boolean);
+Begin
+  If ConstCount >= MAX_CONST Then
+  Begin
+    CompileError('table des constantes saturee (MAX_CONST=' +
+                 IntToStr_(MAX_CONST) + ')');
+    Exit;
+  End;
+  ConstTab[ConstCount].Name    := AName;
+  ConstTab[ConstCount].JSVal   := AJSVal;
+  ConstTab[ConstCount].Kind    := AKind;
+  ConstTab[ConstCount].IntVal  := AIntVal;
+  ConstTab[ConstCount].RealVal := ARealVal;
+  ConstTab[ConstCount].StrVal  := AStrVal;
+  ConstTab[ConstCount].IsTyped := AIsTyped;
+  Inc(ConstCount);
+End;
+
+{ ---- ConstFind : chercher une constante par nom (insensible) }
+{ Retourne l index dans ConstTab ou -1 si introuvable          }
+Function ConstFind(Const AName : TString) : Integer;
+Var
+  I  : Integer;
+  LN : TString;
+  LC : TString;
+Begin
+  LN := StrLowerCase(AName);
+  For I := 0 To ConstCount - 1 Do
+  Begin
+    LC := StrLowerCase(ConstTab[I].Name);
+    If LC = LN Then
+    Begin
+      ConstFind := I;
+      Exit;
+    End;
+  End;
+  ConstFind := -1;
+End;
+
+{ ---- ConstRegisterBuiltins : constantes predefinies --------- }
+{ True, False, MaxInt, MaxLongInt, nil                          }
+Procedure ConstRegisterBuiltins;
+Begin
+  ConstAdd('True',       'true',          TK_KEYWORD, 1, 0.0, '', False);
+  ConstAdd('False',      'false',         TK_KEYWORD, 0, 0.0, '', False);
+  ConstAdd('MaxInt',     '32767',         TK_INTEGER, 32767, 0.0, '', False);
+  ConstAdd('MaxLongInt', '2147483647',    TK_INTEGER, 2147483647, 0.0, '', False);
+  ConstAdd('nil',        'null',          TK_KEYWORD, 0, 0.0, '', False);
+  ConstAdd('Pi',         'Math.PI',       TK_REAL,    3, 3.14159265358979, '', False);
+End;
+
+{ ---- ConstEvalAtom : evaluer un atome constant -------------- }
+{ Lit un token a la position P dans le TokenPool et retourne    }
+{ sa valeur JavaScript. Avance P.                                }
+Function ConstEvalAtom(Var P : Integer) : TString;
+Var
+  Neg  : Boolean;
+  Idx  : Integer;
+  L    : TString;
+  Tmp  : TString;
+  Tmp2 : TString;
+Begin
+  ConstEvalAtom := '0';
+  If P >= TokenCount Then Exit;
+
+  { Signe unaire + ou - }
+  Neg := False;
+  If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '-') Then
+  Begin
+    Neg := True;
+    Inc(P);
+    If P >= TokenCount Then Exit;
+  End
+  Else If (TokenPool[P].Kind = TK_OP) And (TokenPool[P].Val = '+') Then
+  Begin
+    Inc(P);
+    If P >= TokenCount Then Exit;
+  End;
+
+  { NOT unaire }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'not') Then
+  Begin
+    Inc(P);
+    Tmp := ConstEvalAtom(P);
+    ConstEvalAtom := '!' + Tmp;
+    Exit;
+  End;
+
+  { Parentheses }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P);
+    Tmp := ConstEvalAtom(P);
+    { Consommer ')' }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P);
+    If Neg Then
+      ConstEvalAtom := '-(' + Tmp + ')'
+    Else
+      ConstEvalAtom := Tmp;
+    Exit;
+  End;
+
+  { Litteral entier }
+  If TokenPool[P].Kind = TK_INTEGER Then
+  Begin
+    If Neg Then
+      ConstEvalAtom := IntToStr_(-TokenPool[P].IntVal)
+    Else
+      ConstEvalAtom := IntToStr_(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral reel }
+  If TokenPool[P].Kind = TK_REAL Then
+  Begin
+    If Neg Then
+      ConstEvalAtom := '-' + RealToJS(TokenPool[P].RealVal)
+    Else
+      ConstEvalAtom := RealToJS(TokenPool[P].RealVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral chaine }
+  If TokenPool[P].Kind = TK_STRING Then
+  Begin
+    ConstEvalAtom := StrToJS(TokenPool[P].Val);
+    Inc(P);
+    Exit;
+  End;
+
+  { Litteral caractere }
+  If TokenPool[P].Kind = TK_CHAR Then
+  Begin
+    ConstEvalAtom := CharToJS(TokenPool[P].IntVal);
+    Inc(P);
+    Exit;
+  End;
+
+  { Mot-cle booleens / nil }
+  If TokenPool[P].Kind = TK_KEYWORD Then
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'true'  Then Begin ConstEvalAtom := 'true';  Inc(P); Exit; End;
+    If L = 'false' Then Begin ConstEvalAtom := 'false'; Inc(P); Exit; End;
+    If L = 'nil'   Then Begin ConstEvalAtom := 'null';  Inc(P); Exit; End;
+    { ORD, CHR, etc. traites dans les TODOs suivants }
+    ConstEvalAtom := TokenPool[P].Val;
+    Inc(P);
+    Exit;
+  End;
+
+  { Identificateur : chercher dans la table des constantes }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    Idx := ConstFind(TokenPool[P].Val);
+    If Idx >= 0 Then
+    Begin
+      If Neg Then
+        ConstEvalAtom := '-' + ConstTab[Idx].JSVal
+      Else
+        ConstEvalAtom := ConstTab[Idx].JSVal;
+    End
+    Else
+    Begin
+      If Neg Then
+        ConstEvalAtom := '-' + TokenPool[P].Val
+      Else
+        ConstEvalAtom := TokenPool[P].Val;
+    End;
+    Inc(P);
+    Exit;
+  End;
+
+  { Ensemble [elem, elem..elem] }
+  If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '[') Then
+  Begin
+    Tmp := '[';
+    Inc(P);
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ']')) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Tmp := Tmp + ', ';
+        Inc(P);
+      End
+      Else If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '..') Then
+      Begin
+        Tmp := Tmp + '/*..*/';
+        Inc(P);
+      End
+      Else
+      Begin
+        Tmp2 := LitToJS(TokenPool[P]);
+        Tmp := Tmp + Tmp2;
+        Inc(P);
+      End;
+    End;
+    Tmp := Tmp + ']';
+    If (P < TokenCount) And (TokenPool[P].Val = ']') Then
+      Inc(P);
+    ConstEvalAtom := Tmp;
+    Exit;
+  End;
+
+  { Token non reconnu : retourner tel quel }
+  ConstEvalAtom := TokenPool[P].Val;
+  Inc(P);
+End;
+
+{ ---- ConstEvalExpr : evaluer une expression constante ------- }
+{ Gere les operateurs +, -, *, /, DIV, MOD, AND, OR, XOR,      }
+{ SHL, SHR, =, <>, <, >, <=, >= sur des constantes             }
+{ Retourne la representation JavaScript de l expression          }
+Function ConstEvalExpr(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+Begin
+  Left := ConstEvalAtom(P);
+
+  While (P < TokenCount) And
+        ((TokenPool[P].Kind = TK_OP) Or
+         ((TokenPool[P].Kind = TK_KEYWORD) And
+          ((StrLowerCase(TokenPool[P].Val) = 'div') Or
+           (StrLowerCase(TokenPool[P].Val) = 'mod') Or
+           (StrLowerCase(TokenPool[P].Val) = 'and') Or
+           (StrLowerCase(TokenPool[P].Val) = 'or')  Or
+           (StrLowerCase(TokenPool[P].Val) = 'xor') Or
+           (StrLowerCase(TokenPool[P].Val) = 'shl') Or
+           (StrLowerCase(TokenPool[P].Val) = 'shr') Or
+           (StrLowerCase(TokenPool[P].Val) = 'not') Or
+           (StrLowerCase(TokenPool[P].Val) = 'in')))) Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+
+    { Convertir l operateur Pascal en JavaScript }
+    If Op = ':=' Then Break  { fin d expression constante }
+    Else
+    Begin
+      Rght := ConstEvalAtom(P);
+      If Op = '+'        Then Left := Left + ' + '   + Rght
+      Else If Op = '-'   Then Left := Left + ' - '   + Rght
+      Else If Op = '*'   Then Left := Left + ' * '   + Rght
+      Else If Op = '/'   Then Left := Left + ' / '   + Rght
+      Else If Op = '='   Then Left := Left + ' === '  + Rght
+      Else If Op = '<>'  Then Left := Left + ' !== '  + Rght
+      Else If Op = '<'   Then Left := Left + ' < '   + Rght
+      Else If Op = '>'   Then Left := Left + ' > '   + Rght
+      Else If Op = '<='  Then Left := Left + ' <= '  + Rght
+      Else If Op = '>='  Then Left := Left + ' >= '  + Rght
+      Else If Op = 'div' Then Left := 'Math.trunc(' + Left + ' / ' + Rght + ')'
+      Else If Op = 'mod' Then Left := Left + ' % '   + Rght
+      Else If Op = 'and' Then Left := Left + ' && '  + Rght
+      Else If Op = 'or'  Then Left := Left + ' || '  + Rght
+      Else If Op = 'xor' Then Left := Left + ' ^ '   + Rght
+      Else If Op = 'shl' Then Left := Left + ' << '  + Rght
+      Else If Op = 'shr' Then Left := Left + ' >> '  + Rght
+      Else If Op = 'in'  Then Left := Rght + '.indexOf(' + Left + ') >= 0'
+      Else Break;
+    End;
+  End;
+
+  ConstEvalExpr := Left;
+End;
+
+{ ============================================================
+  Run : tokenise le fichier source et teste la conversion
   ============================================================ }
 Procedure Run;
+Var
+  I : Integer;
 Begin
   GlobalInit;
+  ConstInit;
+  ConstRegisterBuiltins;
   If Opts.Verbose Then ShowBanner;
 
   { Ouvrir le fichier source }
@@ -1650,13 +2124,37 @@ Begin
 
   LexInit;
 
-  { Boucle principale : tokeniser tout le fichier }
-  LexNextToken;
-  While CurToken.Kind <> TK_EOF Do
-    LexNextToken;
+  { Remplir le token pool avec tous les tokens }
+  TokenPoolFill;
+
+  { Afficher les conversions JS des litteraux en mode debug }
+  If Opts.DebugMode Then
+  Begin
+    WriteLn('--- Litteraux -> JavaScript ---');
+    For I := 0 To TokenCount - 1 Do
+    Begin
+      If (TokenPool[I].Kind = TK_INTEGER) Or
+         (TokenPool[I].Kind = TK_REAL) Or
+         (TokenPool[I].Kind = TK_STRING) Or
+         (TokenPool[I].Kind = TK_CHAR) Then
+        WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]))
+      Else If (TokenPool[I].Kind = TK_KEYWORD) And
+              ((StrLowerCase(TokenPool[I].Val) = 'true') Or
+               (StrLowerCase(TokenPool[I].Val) = 'false') Or
+               (StrLowerCase(TokenPool[I].Val) = 'nil')) Then
+        WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]))
+      Else If (TokenPool[I].Kind = TK_IDENT) And
+              ((StrLowerCase(TokenPool[I].Val) = 'true') Or
+               (StrLowerCase(TokenPool[I].Val) = 'false')) Then
+        WriteLn('  ', TokenPool[I].Val, ' -> ', LitToJS(TokenPool[I]));
+    End;
+    WriteLn('--- Fin des litteraux ---');
+    WriteLn('Tokens dans le pool : ', TokenCount);
+    WriteLn('Constantes predefinies : ', ConstCount);
+  End;
 
   WriteLn('TP2JS: compilation de ', Opts.SrcFile, ' -> ', Opts.OutFile);
-  WriteLn('TP2JS: TODO 03+ non implemente, rien a generer.');
+  WriteLn('TP2JS: TODO 04+ non implemente, rien a generer.');
   If Opts.ModuleES6 Then
     WriteLn('TP2JS: mode module ES6 actif');
   If Opts.Pretty Then
