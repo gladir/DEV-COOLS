@@ -39,6 +39,30 @@ _CCF_main:
 ; WARNING: variable non trouvee: MAX_SIZE
         XOR EAX,EAX
         MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+; WARNING: variable non trouvee: MIN_SIZE
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_4
+        XOR EAX,EAX
+        JMP _CCL_5
+_CCL_4:
+        MOV EAX,1
+_CCL_5:
+        TEST EAX,EAX
+        JZ _CCL_2
+        MOV EAX,1
+        MOV DWORD PTR [EBP-8],EAX
+        JMP _CCL_3
+_CCL_2:
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+_CCL_3:
+        MOV EAX,DWORD PTR [EBP-8]
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP

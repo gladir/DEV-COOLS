@@ -43,6 +43,148 @@ _CCF_main:
         MOV DWORD PTR [_CCV_b],EAX
         MOV EAX,15
         MOV DWORD PTR [_CCV_c],EAX
+        MOV EAX,DWORD PTR [_CCV_a]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_b]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_4
+        XOR EAX,EAX
+        JMP _CCL_5
+_CCL_4:
+        MOV EAX,1
+_CCL_5:
+        TEST EAX,EAX
+        JZ _CCL_2
+        MOV EAX,1
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_2:
+        MOV EAX,DWORD PTR [_CCV_b]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_c]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_8
+        XOR EAX,EAX
+        JMP _CCL_9
+_CCL_8:
+        MOV EAX,1
+_CCL_9:
+        TEST EAX,EAX
+        JZ _CCL_6
+        MOV EAX,2
+        MOV DWORD PTR [_CCV_result],EAX
+        JMP _CCL_7
+_CCL_6:
+        MOV EAX,3
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_7:
+        MOV EAX,DWORD PTR [_CCV_a]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_b]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_12
+        XOR EAX,EAX
+        JMP _CCL_13
+_CCL_12:
+        MOV EAX,1
+_CCL_13:
+        TEST EAX,EAX
+        JZ _CCL_10
+        MOV EAX,DWORD PTR [_CCV_c]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_CCV_a]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_16
+        XOR EAX,EAX
+        JMP _CCL_17
+_CCL_16:
+        MOV EAX,1
+_CCL_17:
+        TEST EAX,EAX
+        JZ _CCL_14
+        MOV EAX,4
+        MOV DWORD PTR [_CCV_result],EAX
+        JMP _CCL_15
+_CCL_14:
+        MOV EAX,5
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_15:
+_CCL_10:
+        MOV EAX,DWORD PTR [_CCV_a]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _CCL_20
+        XOR EAX,EAX
+        JMP _CCL_21
+_CCL_20:
+        MOV EAX,1
+_CCL_21:
+        TEST EAX,EAX
+        JZ _CCL_18
+        MOV EAX,6
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_18:
+        MOV EAX,DWORD PTR [_CCV_b]
+        PUSH EAX
+        MOV EAX,3
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JNE _CCL_24
+        XOR EAX,EAX
+        JMP _CCL_25
+_CCL_24:
+        MOV EAX,1
+_CCL_25:
+        TEST EAX,EAX
+        JZ _CCL_22
+        MOV EAX,7
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_22:
+        MOV EAX,DWORD PTR [_CCV_c]
+        PUSH EAX
+        MOV EAX,15
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JGE _CCL_28
+        XOR EAX,EAX
+        JMP _CCL_29
+_CCL_28:
+        MOV EAX,1
+_CCL_29:
+        TEST EAX,EAX
+        JZ _CCL_26
+        MOV EAX,8
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_26:
+        MOV EAX,DWORD PTR [_CCV_b]
+        PUSH EAX
+        MOV EAX,10
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JLE _CCL_32
+        XOR EAX,EAX
+        JMP _CCL_33
+_CCL_32:
+        MOV EAX,1
+_CCL_33:
+        TEST EAX,EAX
+        JZ _CCL_30
+        MOV EAX,9
+        MOV DWORD PTR [_CCV_result],EAX
+_CCL_30:
 _CCL_1:
         MOV ESP,EBP
         POP EBP

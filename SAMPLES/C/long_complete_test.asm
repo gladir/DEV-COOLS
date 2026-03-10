@@ -85,6 +85,42 @@ _CCF_main:
         POP EAX
         IMUL EAX,EBX
         MOV DWORD PTR [EBP-32],EAX
+        MOV EAX,DWORD PTR [EBP-24]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-28]
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_4
+        XOR EAX,EAX
+        JMP _CCL_5
+_CCL_4:
+        MOV EAX,1
+_CCL_5:
+        TEST EAX,EAX
+        JZ _CCL_2
+        MOV EAX,1
+        JMP _CCL_1
+_CCL_2:
+        MOV EAX,DWORD PTR [EBP-32]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JL _CCL_8
+        XOR EAX,EAX
+        JMP _CCL_9
+_CCL_8:
+        MOV EAX,1
+_CCL_9:
+        TEST EAX,EAX
+        JZ _CCL_6
+        MOV EAX,2
+        JMP _CCL_1
+_CCL_6:
+        MOV EAX,0
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP

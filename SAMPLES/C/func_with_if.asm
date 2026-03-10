@@ -33,6 +33,10 @@ CRLF     DB 13,10,0
 _CCF_f:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,1
+        TEST EAX,EAX
+        JZ _CCL_2
+_CCL_2:
 _CCL_1:
         MOV ESP,EBP
         POP EBP

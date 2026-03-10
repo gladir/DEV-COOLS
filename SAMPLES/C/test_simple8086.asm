@@ -70,6 +70,30 @@ _CCF_main:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_5
+        XOR EAX,EAX
+        JMP _CCL_6
+_CCL_5:
+        MOV EAX,1
+_CCL_6:
+        TEST EAX,EAX
+        JZ _CCL_3
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_3:
+        MOV EAX,DWORD PTR [EBP-16]
+        JMP _CCL_2
 _CCL_2:
         MOV ESP,EBP
         POP EBP

@@ -244,6 +244,37 @@ _CCL_15:
         SETZ AL
         MOVZX EAX,AL
         MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        JZ _CCL_16
+        MOV EAX,99
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_16:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,100
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_20
+        XOR EAX,EAX
+        JMP _CCL_21
+_CCL_20:
+        MOV EAX,1
+_CCL_21:
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        JZ _CCL_18
+        MOV EAX,88
+        MOV DWORD PTR [EBP-8],EAX
+_CCL_18:
+        MOV EAX,0
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP

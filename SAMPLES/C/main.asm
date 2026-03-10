@@ -55,6 +55,26 @@ _CCF_main:
         CALL _CCF_multiply
         ADD ESP,8
         MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+; WARNING: variable non trouvee: MAX_SIZE
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_4
+        XOR EAX,EAX
+        JMP _CCL_5
+_CCL_4:
+        MOV EAX,1
+_CCL_5:
+        TEST EAX,EAX
+        JZ _CCL_2
+        MOV EAX,1
+        JMP _CCL_1
+_CCL_2:
+        MOV EAX,0
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP
@@ -72,8 +92,8 @@ _CCF_multiply:
         MOV EBX,EAX
         POP EAX
         IMUL EAX,EBX
-        JMP _CCL_2
-_CCL_2:
+        JMP _CCL_6
+_CCL_6:
         MOV ESP,EBP
         POP EBP
         RET

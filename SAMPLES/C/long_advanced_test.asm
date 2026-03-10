@@ -93,6 +93,25 @@ _CCF_main:
         CALL _CCF_multiply_long
         ADD ESP,8
         MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,100000
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_6
+        XOR EAX,EAX
+        JMP _CCL_7
+_CCL_6:
+        MOV EAX,1
+_CCL_7:
+        TEST EAX,EAX
+        JZ _CCL_4
+        MOV EAX,1
+        JMP _CCL_3
+_CCL_4:
+        MOV EAX,0
+        JMP _CCL_3
 _CCL_3:
         MOV ESP,EBP
         POP EBP
