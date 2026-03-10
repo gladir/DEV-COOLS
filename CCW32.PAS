@@ -78,7 +78,7 @@
             Ponctuation : ( ) [ ] { } ; , . : ? ~ ! # ...
             Mode debug -d : affichage de chaque token avec PrintToken
 
-  TODO 03 - PREPROCESSEUR (#define, #include, #if)
+  TODO 03 - PREPROCESSEUR (#define, #include, #if) [IMPLEMENTE]
             #define NOM valeur : definition de macro simple
             #define NOM(args) valeur : macro avec parametres (optionnel)
             #undef NOM : suppression de macro
@@ -685,6 +685,21 @@ Begin
     ReplaceExt := Copy(Path, 1, LastDot - 1) + NewExt
   Else
     ReplaceExt := Path + NewExt;
+End;
+
+{ Retourne le repertoire d un chemin (avec le separateur final) }
+Function ExtractDir(Const Path : TString) : TString;
+Var
+  I, LastSep : Integer;
+Begin
+  LastSep := 0;
+  For I := 1 To Length(Path) Do
+    If (Path[I] = '\') Or (Path[I] = '/') Or (Path[I] = ':') Then
+      LastSep := I;
+  If LastSep > 0 Then
+    ExtractDir := Copy(Path, 1, LastSep)
+  Else
+    ExtractDir := '';
 End;
 
 { ------------------------------------------------------------ }
@@ -1733,13 +1748,1187 @@ Begin
       Inc(LexColNo);
     End;
   End;
+End;
 
-  PrintToken(CurToken);
+{ ============================================================ }
+{ TODO 03 - PREPROCESSEUR (#define, #include, #if)             }
+{ ============================================================ }
+
+Const
+  MAX_MACROS        = 512;   { nombre max de macros definies       }
+  MAX_INCLUDE_DEPTH = 16;    { profondeur max d inclusions         }
+  MAX_COND_DEPTH    = 32;    { profondeur max de #if imbriques     }
+  MAX_MACRO_PARAMS  = 16;    { nombre max de parametres de macro   }
+
+Type
+  TMacro = Record
+    Name    : TString;       { nom de la macro                     }
+    Value   : TString;       { valeur de remplacement               }
+    Defined : Boolean;       { macro active ?                       }
+    HasArgs : Boolean;       { macro fonctionnelle ?                }
+    NArgs   : Integer;       { nombre de parametres                 }
+    Args    : Array[0..MAX_MACRO_PARAMS - 1] Of TString;
+  End;
+
+  TCondFrame = Record
+    Active   : Boolean;      { branche courante active ?            }
+    WasTrue  : Boolean;      { une branche a-t-elle ete active ?    }
+    HadElse  : Boolean;      { #else deja rencontre ?               }
+  End;
+
+Const
+  MAX_INC_LINES = 4096;      { nombre max de lignes injectees       }
+
+Var
+  { Table des macros }
+  MacroTab   : Array[0..MAX_MACROS - 1] Of TMacro;
+  MacroCount : Integer;
+
+  { Buffer de lignes injectees (inclusions) }
+  IncBuf     : Array[0..MAX_INC_LINES - 1] Of TString;
+  IncBufCount : Integer;     { nombre de lignes dans le buffer      }
+  IncBufPos  : Integer;      { position courante dans le buffer     }
+  IncBufActive : Boolean;    { on lit du buffer au lieu du fichier   }
+
+  { Pile de conditionnels }
+  CondStack  : Array[0..MAX_COND_DEPTH - 1] Of TCondFrame;
+  CondTop    : Integer;      { -1 = pas de conditionnel en cours    }
+
+  { Nom du fichier source courant (pour messages d erreur) }
+  CurFileName : TString;
+
+{ ------------------------------------------------------------ }
+{ Gestion des macros                                           }
+{ ------------------------------------------------------------ }
+
+Function MacroFind(Const Name : TString) : Integer;
+Var I : Integer;
+Begin
+  MacroFind := -1;
+  For I := 0 To MacroCount - 1 Do
+    If MacroTab[I].Defined And (MacroTab[I].Name = Name) Then
+    Begin
+      MacroFind := I;
+      Exit;
+    End;
+End;
+
+Procedure MacroDefine(Const Name, Value : TString);
+Var Idx : Integer;
+Begin
+  Idx := MacroFind(Name);
+  If Idx >= 0 Then
+  Begin
+    MacroTab[Idx].Value   := Value;
+    MacroTab[Idx].HasArgs := False;
+    MacroTab[Idx].NArgs   := 0;
+    Exit;
+  End;
+  If MacroCount >= MAX_MACROS Then
+  Begin
+    WarnMsg('trop de macros definies (max ' +
+      IntToStr_(MAX_MACROS) + ')');
+    Exit;
+  End;
+  MacroTab[MacroCount].Name    := Name;
+  MacroTab[MacroCount].Value   := Value;
+  MacroTab[MacroCount].Defined := True;
+  MacroTab[MacroCount].HasArgs := False;
+  MacroTab[MacroCount].NArgs   := 0;
+  Inc(MacroCount);
+End;
+
+Procedure MacroUndef(Const Name : TString);
+Var Idx : Integer;
+Begin
+  Idx := MacroFind(Name);
+  If Idx >= 0 Then
+    MacroTab[Idx].Defined := False;
+End;
+
+Function MacroIsDefined(Const Name : TString) : Boolean;
+Begin
+  MacroIsDefined := MacroFind(Name) >= 0;
+End;
+
+{ ------------------------------------------------------------ }
+{ Fonctions auxiliaires pour le preprocesseur                   }
+{ ------------------------------------------------------------ }
+
+{ Sauter les espaces dans une chaine a partir de la position P }
+Procedure PPSkipBlanks(Const S : TString; Var P : Integer);
+Begin
+  While (P <= Length(S)) And
+        ((S[P] = ' ') Or (S[P] = #9)) Do
+    Inc(P);
+End;
+
+{ Extraire un identificateur a partir de la position P }
+Function PPReadIdent(Const S : TString; Var P : Integer) : TString;
+Var R : TString;
+Begin
+  R := '';
+  While (P <= Length(S)) And
+        (((S[P] >= 'A') And (S[P] <= 'Z')) Or
+         ((S[P] >= 'a') And (S[P] <= 'z')) Or
+         ((S[P] >= '0') And (S[P] <= '9')) Or
+         (S[P] = '_')) Do
+  Begin
+    If Length(R) < MAX_STR Then
+      R := R + S[P];
+    Inc(P);
+  End;
+  PPReadIdent := R;
+End;
+
+{ Extraire le reste de la ligne (valeur de macro) }
+Function PPReadRest(Const S : TString; P : Integer) : TString;
+Var R : TString;
+    L : Integer;
+Begin
+  { Trim trailing whitespace }
+  L := Length(S);
+  While (L >= P) And ((S[L] = ' ') Or (S[L] = #9)) Do
+    Dec(L);
+  If P > L Then
+    R := ''
+  Else
+    R := Copy(S, P, L - P + 1);
+  PPReadRest := R;
+End;
+
+{ Evaluer une expression constante entiere simple pour #if     }
+{ Supporte : nombres decimaux, identifiants (defined(X), ou   }
+{ macro -> 0 si indéfinie), operateurs ! && || == != < > <= >= }
+{ + - * / % , parentheses                                      }
+Function PPEvalExpr(Const S : TString) : LongInt;  Forward;
+
+{ Evaluer un atome (nombre, defined(), ident, parenthese) }
+Function PPEvalAtom(Const S : TString; Var P : Integer) : LongInt;
+Var
+  Name : TString;
+  V    : LongInt;
+  Idx  : Integer;
+  Neg  : Boolean;
+  Invt : Boolean;
+Begin
+  PPSkipBlanks(S, P);
+  Neg  := False;
+  Invt := False;
+
+  { Operateur unaire - }
+  If (P <= Length(S)) And (S[P] = '-') Then
+  Begin
+    Neg := True;
+    Inc(P);
+    PPSkipBlanks(S, P);
+  End;
+
+  { Operateur unaire ! }
+  If (P <= Length(S)) And (S[P] = '!') Then
+  Begin
+    Invt := True;
+    Inc(P);
+    PPSkipBlanks(S, P);
+  End;
+
+  V := 0;
+
+  If (P <= Length(S)) And (S[P] = '(') Then
+  Begin
+    Inc(P);
+    V := PPEvalExpr(S);
+    PPSkipBlanks(S, P);
+    If (P <= Length(S)) And (S[P] = ')') Then Inc(P);
+  End
+  Else If (P <= Length(S)) And (S[P] >= '0') And (S[P] <= '9') Then
+  Begin
+    V := 0;
+    While (P <= Length(S)) And (S[P] >= '0') And (S[P] <= '9') Do
+    Begin
+      V := V * 10 + (Ord(S[P]) - Ord('0'));
+      Inc(P);
+    End;
+    { Skip suffixes L/U }
+    While (P <= Length(S)) And
+          ((S[P] = 'L') Or (S[P] = 'l') Or
+           (S[P] = 'U') Or (S[P] = 'u')) Do
+      Inc(P);
+  End
+  Else If (P <= Length(S)) And
+          (((S[P] >= 'A') And (S[P] <= 'Z')) Or
+           ((S[P] >= 'a') And (S[P] <= 'z')) Or
+           (S[P] = '_')) Then
+  Begin
+    Name := PPReadIdent(S, P);
+    If Name = 'defined' Then
+    Begin
+      PPSkipBlanks(S, P);
+      If (P <= Length(S)) And (S[P] = '(') Then
+      Begin
+        Inc(P);
+        PPSkipBlanks(S, P);
+        Name := PPReadIdent(S, P);
+        PPSkipBlanks(S, P);
+        If (P <= Length(S)) And (S[P] = ')') Then Inc(P);
+      End
+      Else
+      Begin
+        PPSkipBlanks(S, P);
+        Name := PPReadIdent(S, P);
+      End;
+      If MacroIsDefined(Name) Then V := 1 Else V := 0;
+    End
+    Else
+    Begin
+      Idx := MacroFind(Name);
+      If Idx >= 0 Then
+      Begin
+        Val(MacroTab[Idx].Value, V, Idx);
+        If Idx <> 0 Then V := 0;
+      End
+      Else
+        V := 0;
+    End;
+  End;
+
+  If Neg Then V := -V;
+  If Invt Then
+  Begin
+    If V = 0 Then V := 1 Else V := 0;
+  End;
+
+  PPEvalAtom := V;
+End;
+
+{ Evaluer les operateurs binaires (simplifies) }
+Function PPEvalExpr(Const S : TString) : LongInt;
+Var
+  P      : Integer;
+  Left   : LongInt;
+  Right  : LongInt;
+  Op     : Char;
+  Op2    : Char;
+Begin
+  P := 1;
+
+  { Fonction interne recursice - on parse gauche-a-droite }
+  Left := PPEvalAtom(S, P);
+
+  While P <= Length(S) Do
+  Begin
+    PPSkipBlanks(S, P);
+    If P > Length(S) Then Break;
+
+    Op := S[P];
+    Op2 := #0;
+    If P < Length(S) Then Op2 := S[P + 1];
+
+    { Operateurs a 2 caracteres }
+    If (Op = '&') And (Op2 = '&') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      If (Left <> 0) And (Right <> 0) Then Left := 1
+      Else Left := 0;
+    End
+    Else If (Op = '|') And (Op2 = '|') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      If (Left <> 0) Or (Right <> 0) Then Left := 1
+      Else Left := 0;
+    End
+    Else If (Op = '=') And (Op2 = '=') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      If Left = Right Then Left := 1 Else Left := 0;
+    End
+    Else If (Op = '!') And (Op2 = '=') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      If Left <> Right Then Left := 1 Else Left := 0;
+    End
+    Else If (Op = '<') And (Op2 = '=') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      If Left <= Right Then Left := 1 Else Left := 0;
+    End
+    Else If (Op = '>') And (Op2 = '=') Then
+    Begin
+      Inc(P, 2);
+      Right := PPEvalAtom(S, P);
+      If Left >= Right Then Left := 1 Else Left := 0;
+    End
+    { Operateurs a 1 caractere }
+    Else If Op = '<' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      If Left < Right Then Left := 1 Else Left := 0;
+    End
+    Else If Op = '>' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      If Left > Right Then Left := 1 Else Left := 0;
+    End
+    Else If Op = '+' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      Left := Left + Right;
+    End
+    Else If Op = '-' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      Left := Left - Right;
+    End
+    Else If Op = '*' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      Left := Left * Right;
+    End
+    Else If Op = '/' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      If Right <> 0 Then Left := Left Div Right
+      Else Left := 0;
+    End
+    Else If Op = '%' Then
+    Begin
+      Inc(P);
+      Right := PPEvalAtom(S, P);
+      If Right <> 0 Then Left := Left Mod Right
+      Else Left := 0;
+    End
+    Else
+      Break;
+  End;
+
+  PPEvalExpr := Left;
+End;
+
+{ ------------------------------------------------------------ }
+{ Etat conditionnel : sommes-nous dans une branche active ?    }
+{ ------------------------------------------------------------ }
+
+Function PPIsActive : Boolean;
+Var I : Integer;
+Begin
+  PPIsActive := True;
+  For I := 0 To CondTop Do
+    If Not CondStack[I].Active Then
+    Begin
+      PPIsActive := False;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ Expansion de macros dans une ligne                           }
+{ ------------------------------------------------------------ }
+
+Function PPExpandMacros(Const S : TString) : TString;
+Var
+  Result_ : TString;
+  I       : Integer;
+  Idx     : Integer;
+  Name    : TString;
+  Expanded : Boolean;
+Begin
+  Result_ := S;
+  { Simple pass : chercher des identifiants et les remplacer   }
+  { Note : on ne fait qu un seul passage pour eviter les       }
+  { boucles infinies                                            }
+  Expanded := True;
+  While Expanded Do
+  Begin
+    Expanded := False;
+    I := 1;
+    While I <= Length(Result_) Do
+    Begin
+      { Sauter les chaines et caracteres }
+      If (Result_[I] = '"') Then
+      Begin
+        Inc(I);
+        While (I <= Length(Result_)) And (Result_[I] <> '"') Do
+        Begin
+          If Result_[I] = '\' Then Inc(I);
+          Inc(I);
+        End;
+        If I <= Length(Result_) Then Inc(I);
+      End
+      Else If (Result_[I] = '''') Then
+      Begin
+        Inc(I);
+        While (I <= Length(Result_)) And (Result_[I] <> '''') Do
+        Begin
+          If Result_[I] = '\' Then Inc(I);
+          Inc(I);
+        End;
+        If I <= Length(Result_) Then Inc(I);
+      End
+      { Identifier ? }
+      Else If ((Result_[I] >= 'A') And (Result_[I] <= 'Z')) Or
+              ((Result_[I] >= 'a') And (Result_[I] <= 'z')) Or
+              (Result_[I] = '_') Then
+      Begin
+        Name := '';
+        Idx := I;
+        While (I <= Length(Result_)) And
+              (((Result_[I] >= 'A') And (Result_[I] <= 'Z')) Or
+               ((Result_[I] >= 'a') And (Result_[I] <= 'z')) Or
+               ((Result_[I] >= '0') And (Result_[I] <= '9')) Or
+               (Result_[I] = '_')) Do
+        Begin
+          Name := Name + Result_[I];
+          Inc(I);
+        End;
+        { Chercher dans les macros }
+        If (Not MacroTab[0].HasArgs) Then
+        Begin
+          { eviter recursion infinie }
+        End;
+        { Rechercher la macro }
+        If MacroFind(Name) >= 0 Then
+        Begin
+          { Ne pas expander dans defined() }
+          If Name = 'defined' Then
+          Begin
+            { skip }
+          End
+          Else
+          Begin
+            Result_ := Copy(Result_, 1, Idx - 1) +
+                        MacroTab[MacroFind(Name)].Value +
+                        Copy(Result_, I, Length(Result_) - I + 1);
+            Expanded := True;
+            Break;  { recommencer depuis le debut }
+          End;
+        End;
+      End
+      Else
+        Inc(I);
+    End;
+  End;
+  PPExpandMacros := Result_;
+End;
+
+{ ------------------------------------------------------------ }
+{ En-tetes standard C built-in (stubs)                         }
+{ On definit simplement des macros pour les constantes          }
+{ ------------------------------------------------------------ }
+
+Procedure PPIncludeBuiltin(Const Header : TString);
+Begin
+  If (Header = 'stdio.h') Or (Header = '<stdio.h>') Then
+  Begin
+    MacroDefine('EOF', '(-1)');
+    MacroDefine('NULL', '((void*)0)');
+    MacroDefine('BUFSIZ', '512');
+    MacroDefine('FILENAME_MAX', '260');
+    MacroDefine('FOPEN_MAX', '20');
+    MacroDefine('_IOFBF', '0');
+    MacroDefine('_IOLBF', '1');
+    MacroDefine('_IONBF', '2');
+    MacroDefine('SEEK_SET', '0');
+    MacroDefine('SEEK_CUR', '1');
+    MacroDefine('SEEK_END', '2');
+    MacroDefine('stdin', '(&__stdin)');
+    MacroDefine('stdout', '(&__stdout)');
+    MacroDefine('stderr', '(&__stderr)');
+    MacroDefine('_STDIO_H', '1');
+  End
+  Else If (Header = 'stdlib.h') Or (Header = '<stdlib.h>') Then
+  Begin
+    MacroDefine('NULL', '((void*)0)');
+    MacroDefine('EXIT_SUCCESS', '0');
+    MacroDefine('EXIT_FAILURE', '1');
+    MacroDefine('RAND_MAX', '32767');
+    MacroDefine('MB_CUR_MAX', '1');
+    MacroDefine('_STDLIB_H', '1');
+  End
+  Else If (Header = 'string.h') Or (Header = '<string.h>') Then
+  Begin
+    MacroDefine('NULL', '((void*)0)');
+    MacroDefine('_STRING_H', '1');
+  End
+  Else If (Header = 'stddef.h') Or (Header = '<stddef.h>') Then
+  Begin
+    MacroDefine('NULL', '((void*)0)');
+    MacroDefine('offsetof', '__builtin_offsetof');
+    MacroDefine('_STDDEF_H', '1');
+  End
+  Else If (Header = 'limits.h') Or (Header = '<limits.h>') Then
+  Begin
+    MacroDefine('CHAR_BIT', '8');
+    MacroDefine('SCHAR_MIN', '(-128)');
+    MacroDefine('SCHAR_MAX', '127');
+    MacroDefine('UCHAR_MAX', '255');
+    MacroDefine('CHAR_MIN', '(-128)');
+    MacroDefine('CHAR_MAX', '127');
+    MacroDefine('MB_LEN_MAX', '1');
+    MacroDefine('SHRT_MIN', '(-32768)');
+    MacroDefine('SHRT_MAX', '32767');
+    MacroDefine('USHRT_MAX', '65535');
+    MacroDefine('INT_MIN', '(-2147483647-1)');
+    MacroDefine('INT_MAX', '2147483647');
+    MacroDefine('UINT_MAX', '4294967295');
+    MacroDefine('LONG_MIN', '(-2147483647L-1)');
+    MacroDefine('LONG_MAX', '2147483647L');
+    MacroDefine('ULONG_MAX', '4294967295UL');
+    MacroDefine('_LIMITS_H', '1');
+  End
+  Else If (Header = 'float.h') Or (Header = '<float.h>') Then
+  Begin
+    MacroDefine('FLT_RADIX', '2');
+    MacroDefine('FLT_DIG', '6');
+    MacroDefine('FLT_MANT_DIG', '24');
+    MacroDefine('FLT_MAX_EXP', '128');
+    MacroDefine('FLT_MIN_EXP', '(-125)');
+    MacroDefine('DBL_DIG', '15');
+    MacroDefine('DBL_MANT_DIG', '53');
+    MacroDefine('DBL_MAX_EXP', '1024');
+    MacroDefine('DBL_MIN_EXP', '(-1021)');
+    MacroDefine('_FLOAT_H', '1');
+  End
+  Else If (Header = 'errno.h') Or (Header = '<errno.h>') Then
+  Begin
+    MacroDefine('EDOM', '33');
+    MacroDefine('ERANGE', '34');
+    MacroDefine('errno', '(*__errno_location())');
+    MacroDefine('_ERRNO_H', '1');
+  End
+  Else If (Header = 'assert.h') Or (Header = '<assert.h>') Then
+  Begin
+    MacroDefine('_ASSERT_H', '1');
+  End
+  Else If (Header = 'ctype.h') Or (Header = '<ctype.h>') Then
+  Begin
+    MacroDefine('_CTYPE_H', '1');
+  End
+  Else If (Header = 'math.h') Or (Header = '<math.h>') Then
+  Begin
+    MacroDefine('HUGE_VAL', '1e308');
+    MacroDefine('M_PI', '3.14159265358979323846');
+    MacroDefine('M_E', '2.71828182845904523536');
+    MacroDefine('_MATH_H', '1');
+  End
+  Else If (Header = 'stdarg.h') Or (Header = '<stdarg.h>') Then
+  Begin
+    MacroDefine('_STDARG_H', '1');
+  End
+  Else If (Header = 'signal.h') Or (Header = '<signal.h>') Then
+  Begin
+    MacroDefine('SIGINT', '2');
+    MacroDefine('SIGILL', '4');
+    MacroDefine('SIGABRT', '6');
+    MacroDefine('SIGFPE', '8');
+    MacroDefine('SIGSEGV', '11');
+    MacroDefine('SIGTERM', '15');
+    MacroDefine('SIG_DFL', '0');
+    MacroDefine('SIG_IGN', '1');
+    MacroDefine('SIG_ERR', '(-1)');
+    MacroDefine('_SIGNAL_H', '1');
+  End
+  Else If (Header = 'setjmp.h') Or (Header = '<setjmp.h>') Then
+  Begin
+    MacroDefine('_SETJMP_H', '1');
+  End
+  Else If (Header = 'locale.h') Or (Header = '<locale.h>') Then
+  Begin
+    MacroDefine('LC_ALL', '0');
+    MacroDefine('LC_COLLATE', '1');
+    MacroDefine('LC_CTYPE', '2');
+    MacroDefine('LC_MONETARY', '3');
+    MacroDefine('LC_NUMERIC', '4');
+    MacroDefine('LC_TIME', '5');
+    MacroDefine('_LOCALE_H', '1');
+  End
+  Else If (Header = 'time.h') Or (Header = '<time.h>') Then
+  Begin
+    MacroDefine('CLOCKS_PER_SEC', '1000');
+    MacroDefine('NULL', '((void*)0)');
+    MacroDefine('_TIME_H', '1');
+  End;
+  { En-tetes inconnus : ignorer silencieusement }
+End;
+
+{ ------------------------------------------------------------ }
+{ Inclusion de fichier (#include "file")                       }
+{ ------------------------------------------------------------ }
+
+Procedure PPPushInclude(Const FileName : TString);
+Var
+  FullPath : TString;
+  F        : Text;
+  L        : TString;
+Begin
+  { Essayer le chemin tel quel d abord }
+  FullPath := FileName;
+  Assign(F, FullPath);
+  {$I-}
+  Reset(F);
+  {$I+}
+  If IOResult <> 0 Then
+  Begin
+    { Essayer dans le repertoire du fichier source courant }
+    FullPath := ExtractDir(CurFileName) + FileName;
+    Assign(F, FullPath);
+    {$I-}
+    Reset(F);
+    {$I+}
+    If IOResult <> 0 Then
+    Begin
+      { Essayer dans le repertoire du fichier source principal }
+      FullPath := ExtractDir(Opts.SrcFile) + FileName;
+      Assign(F, FullPath);
+      {$I-}
+      Reset(F);
+      {$I+}
+      If IOResult <> 0 Then
+      Begin
+        WarnMsg('impossible d''ouvrir le fichier inclus: ' + FileName);
+        Exit;
+      End;
+    End;
+  End;
+
+  { Lire tout le fichier dans le buffer }
+  IncBufCount := 0;
+  While (Not EOF(F)) And (IncBufCount < MAX_INC_LINES) Do
+  Begin
+    {$I-}
+    ReadLn(F, L);
+    {$I+}
+    If IOResult <> 0 Then Break;
+    IncBuf[IncBufCount] := L;
+    Inc(IncBufCount);
+  End;
+  {$I-}
+  Close(F);
+  {$I+}
+  If IOResult <> 0 Then ; { ignorer erreur }
+
+  If IncBufCount = 0 Then Exit;
+
+  { Activer la lecture depuis le buffer }
+  IncBufPos    := 0;
+  IncBufActive := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ Traitement des directives preprocesseur                      }
+{ Retourne True si la ligne a ete traitee (et le lexeur doit   }
+{ passer a la ligne suivante)                                  }
+{ ------------------------------------------------------------ }
+
+Function PPHandleDirective : Boolean;
+Var
+  P        : Integer;
+  Dir      : TString;
+  Name     : TString;
+  Value    : TString;
+  Expr     : TString;
+  FileName : TString;
+  Ch       : Char;
+  Active   : Boolean;
+Begin
+  PPHandleDirective := False;
+
+  { La ligne commence par # (apres des espaces) }
+  P := 1;
+  PPSkipBlanks(LexLine, P);
+  If (P > Length(LexLine)) Or (LexLine[P] <> '#') Then Exit;
+  Inc(P);  { sauter le # }
+  PPSkipBlanks(LexLine, P);
+  Dir := PPReadIdent(LexLine, P);
+
+  Active := PPIsActive;
+
+  { --- Directives conditionnelles (toujours traitees) --- }
+
+  If Dir = 'ifdef' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    Name := PPReadIdent(LexLine, P);
+    If CondTop >= MAX_COND_DEPTH - 1 Then
+    Begin
+      WarnMsg('imbrication conditionnelle trop profonde');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    Inc(CondTop);
+    If Active Then
+    Begin
+      CondStack[CondTop].Active  := MacroIsDefined(Name);
+      CondStack[CondTop].WasTrue := MacroIsDefined(Name);
+    End
+    Else
+    Begin
+      CondStack[CondTop].Active  := False;
+      CondStack[CondTop].WasTrue := True;
+    End;
+    CondStack[CondTop].HadElse := False;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  If Dir = 'ifndef' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    Name := PPReadIdent(LexLine, P);
+    If CondTop >= MAX_COND_DEPTH - 1 Then
+    Begin
+      WarnMsg('imbrication conditionnelle trop profonde');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    Inc(CondTop);
+    If Active Then
+    Begin
+      CondStack[CondTop].Active  := Not MacroIsDefined(Name);
+      CondStack[CondTop].WasTrue := Not MacroIsDefined(Name);
+    End
+    Else
+    Begin
+      CondStack[CondTop].Active  := False;
+      CondStack[CondTop].WasTrue := True;
+    End;
+    CondStack[CondTop].HadElse := False;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  If Dir = 'if' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    Expr := PPExpandMacros(PPReadRest(LexLine, P));
+    If CondTop >= MAX_COND_DEPTH - 1 Then
+    Begin
+      WarnMsg('imbrication conditionnelle trop profonde');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    Inc(CondTop);
+    If Active Then
+    Begin
+      CondStack[CondTop].Active  := PPEvalExpr(Expr) <> 0;
+      CondStack[CondTop].WasTrue := PPEvalExpr(Expr) <> 0;
+    End
+    Else
+    Begin
+      CondStack[CondTop].Active  := False;
+      CondStack[CondTop].WasTrue := True;
+    End;
+    CondStack[CondTop].HadElse := False;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  If Dir = 'elif' Then
+  Begin
+    If CondTop < 0 Then
+    Begin
+      WarnMsg('#elif sans #if correspondant');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    If CondStack[CondTop].HadElse Then
+      WarnMsg('#elif apres #else');
+    PPSkipBlanks(LexLine, P);
+    Expr := PPExpandMacros(PPReadRest(LexLine, P));
+    { Verifier si le parent est actif }
+    If CondTop = 0 Then
+      Active := True
+    Else
+    Begin
+      Active := True;
+      { Check all parent frames }
+      If CondTop > 0 Then
+      Begin
+        Active := True;
+        { Use a simple check of parent }
+        If Not CondStack[CondTop - 1].Active Then
+          Active := False;
+      End;
+    End;
+    If Active And (Not CondStack[CondTop].WasTrue) And
+       (PPEvalExpr(Expr) <> 0) Then
+    Begin
+      CondStack[CondTop].Active  := True;
+      CondStack[CondTop].WasTrue := True;
+    End
+    Else
+      CondStack[CondTop].Active := False;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  If Dir = 'else' Then
+  Begin
+    If CondTop < 0 Then
+    Begin
+      WarnMsg('#else sans #if correspondant');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    If CondStack[CondTop].HadElse Then
+      WarnMsg('#else en double');
+    CondStack[CondTop].HadElse := True;
+    { Verifier si le parent est actif }
+    If CondTop = 0 Then
+      Active := True
+    Else
+    Begin
+      Active := True;
+      If Not CondStack[CondTop - 1].Active Then
+        Active := False;
+    End;
+    If Active And (Not CondStack[CondTop].WasTrue) Then
+      CondStack[CondTop].Active := True
+    Else
+      CondStack[CondTop].Active := False;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  If Dir = 'endif' Then
+  Begin
+    If CondTop < 0 Then
+      WarnMsg('#endif sans #if correspondant')
+    Else
+      Dec(CondTop);
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { --- Les directives suivantes ne sont traitees que si actives --- }
+
+  If Not Active Then
+  Begin
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #define }
+  If Dir = 'define' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    Name := PPReadIdent(LexLine, P);
+    If Name = '' Then
+    Begin
+      WarnMsg('#define sans nom de macro');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    { Verifier si macro fonctionnelle (parenthese sans espace) }
+    If (P <= Length(LexLine)) And (LexLine[P] = '(') Then
+    Begin
+      { Macro fonctionnelle - on stocke la definition complete }
+      { Pour simplifier, on traite comme une macro simple       }
+      { en incluant les parametres dans la valeur               }
+      Value := Copy(LexLine, P, Length(LexLine) - P + 1);
+      { Trim trailing whitespace }
+      While (Length(Value) > 0) And
+            ((Value[Length(Value)] = ' ') Or
+             (Value[Length(Value)] = #9)) Do
+        Value := Copy(Value, 1, Length(Value) - 1);
+      MacroDefine(Name, Value);
+    End
+    Else
+    Begin
+      PPSkipBlanks(LexLine, P);
+      Value := PPReadRest(LexLine, P);
+      MacroDefine(Name, Value);
+    End;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #undef }
+  If Dir = 'undef' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    Name := PPReadIdent(LexLine, P);
+    If Name <> '' Then
+      MacroUndef(Name);
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #include }
+  If Dir = 'include' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    If P > Length(LexLine) Then
+    Begin
+      WarnMsg('#include sans nom de fichier');
+      PPHandleDirective := True;
+      Exit;
+    End;
+    Ch := LexLine[P];
+    If Ch = '"' Then
+    Begin
+      { Inclusion locale : #include "fichier" }
+      Inc(P);
+      FileName := '';
+      While (P <= Length(LexLine)) And (LexLine[P] <> '"') Do
+      Begin
+        FileName := FileName + LexLine[P];
+        Inc(P);
+      End;
+      { Essayer d ouvrir le fichier localement }
+      PPPushInclude(FileName);
+    End
+    Else If Ch = '<' Then
+    Begin
+      { Inclusion systeme : #include <fichier> }
+      Inc(P);
+      FileName := '';
+      While (P <= Length(LexLine)) And (LexLine[P] <> '>') Do
+      Begin
+        FileName := FileName + LexLine[P];
+        Inc(P);
+      End;
+      { Utiliser les en-tetes built-in }
+      PPIncludeBuiltin(FileName);
+    End
+    Else
+    Begin
+      WarnMsg('#include: format inattendu');
+    End;
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #pragma - ignorer silencieusement }
+  If Dir = 'pragma' Then
+  Begin
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #error }
+  If Dir = 'error' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    FatalError('#error: ' + PPReadRest(LexLine, P));
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #warning }
+  If Dir = 'warning' Then
+  Begin
+    PPSkipBlanks(LexLine, P);
+    WarnMsg('#warning: ' + PPReadRest(LexLine, P));
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { #line - ignorer }
+  If Dir = 'line' Then
+  Begin
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  { Directive vide (#) ou inconnue }
+  If Dir = '' Then
+  Begin
+    PPHandleDirective := True;
+    Exit;
+  End;
+
+  WarnMsg('directive preprocesseur inconnue: #' + Dir);
+  PPHandleDirective := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ Initialisation du preprocesseur                              }
+{ ------------------------------------------------------------ }
+
+Procedure PPInit;
+Var I : Integer;
+Begin
+  MacroCount  := 0;
+  For I := 0 To MAX_MACROS - 1 Do
+    MacroTab[I].Defined := False;
+  CondTop      := -1;
+  IncBufCount  := 0;
+  IncBufPos    := 0;
+  IncBufActive := False;
+
+  { Macros predefinies standard }
+  MacroDefine('__CCW32__', '1');
+  MacroDefine('__STDC__', '1');
+  MacroDefine('__STDC_VERSION__', '199901L');
+  MacroDefine('__i386__', '1');
+  MacroDefine('__WIN32__', '1');
+  MacroDefine('_WIN32', '1');
+End;
+
+{ ------------------------------------------------------------ }
+{ LexNextTokenPP : wrapper autour de LexNextToken qui gere     }
+{ le preprocesseur (directives et expansion de macros)         }
+{ ------------------------------------------------------------ }
+
+Procedure LexNextTokenPP;
+Var
+  P           : Integer;
+  PPLineDone  : Boolean;
+  SaveLine    : Integer;
+Begin
+  Repeat
+    { === Si on est en mode buffer d inclusion === }
+    If IncBufActive Then
+    Begin
+      { Si la ligne courante est epuisee, charger la suivante }
+      While LexColNo > Length(LexLine) Do
+      Begin
+        If IncBufPos >= IncBufCount Then
+        Begin
+          { Buffer epuise }
+          IncBufActive := False;
+          Break;
+        End;
+
+        LexLine := IncBuf[IncBufPos];
+        Inc(IncBufPos);
+        Inc(TotalLines);
+        LexColNo := 1;
+
+        { Verifier si c est une directive preprocesseur }
+        P := 1;
+        PPSkipBlanks(LexLine, P);
+        If (P <= Length(LexLine)) And (LexLine[P] = '#') Then
+        Begin
+          If PPHandleDirective Then
+          Begin
+            LexColNo := Length(LexLine) + 1;
+            Continue;
+          End;
+        End;
+
+        { Si branche inactive, sauter la ligne }
+        If Not PPIsActive Then
+        Begin
+          LexColNo := Length(LexLine) + 1;
+          Continue;
+        End;
+
+        { Expansion de macros }
+        LexLine := PPExpandMacros(LexLine);
+      End;
+
+      { Si le buffer est epuise, retourner en mode fichier }
+      If Not IncBufActive Then Continue;
+
+      { Scanner un token depuis la ligne courante }
+      LexNextToken;
+      If CurToken.Kind <> TK_EOF Then
+      Begin
+        PrintToken(CurToken);
+        Exit;
+      End;
+      { TK_EOF dans le buffer : forcer passage a la prochaine ligne }
+      LexColNo := Length(LexLine) + 1;
+      Continue;
+    End;
+
+    { === Mode normal : lecture du fichier === }
+    PPLineDone := False;
+    Repeat
+      { Avancer a la prochaine ligne si fin de ligne atteinte }
+      While (Not LexEOF) And (LexColNo > Length(LexLine)) Do
+        LexNextLine;
+
+      If LexEOF Then
+      Begin
+        CurToken.Kind := TK_EOF;
+        CurToken.Val  := '';
+        CurToken.Line := LexLineNo;
+        CurToken.Col  := LexColNo;
+        Exit;
+      End;
+
+      { On est au debut d une ligne (LexColNo = 1) ? }
+      If LexColNo = 1 Then
+      Begin
+        { Verifier si c est une directive preprocesseur }
+        P := 1;
+        PPSkipBlanks(LexLine, P);
+        If (P <= Length(LexLine)) And (LexLine[P] = '#') Then
+        Begin
+          If PPHandleDirective Then
+          Begin
+            LexColNo := Length(LexLine) + 1;
+            { Si une inclusion a ete activee, traiter le buffer }
+            If IncBufActive Then
+            Begin
+              PPLineDone := True;
+              Continue;
+            End;
+            Continue;
+          End;
+        End;
+
+        { Si branche inactive, sauter toute la ligne }
+        If Not PPIsActive Then
+        Begin
+          LexColNo := Length(LexLine) + 1;
+          Continue;
+        End;
+
+        { Expansion de macros dans la ligne courante }
+        LexLine := PPExpandMacros(LexLine);
+      End;
+
+      PPLineDone := True;
+    Until PPLineDone;
+
+    { Si une inclusion buffer est active, retourner en haut }
+    If IncBufActive Then Continue;
+
+    { Sauvegarder le numero de ligne avant le scan }
+    SaveLine := LexLineNo;
+
+    { Scanner le prochain token }
+    LexNextToken;
+
+    { Si le lexeur a change de ligne (commentaire multi-lignes),   }
+    { verifier si la nouvelle ligne est une directive               }
+    If (CurToken.Kind <> TK_EOF) And (LexLineNo <> SaveLine) Then
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '#') Then
+      Begin
+        LexColNo := 1;
+        Continue;
+      End;
+    End;
+
+    If CurToken.Kind = TK_EOF Then
+    Begin
+      PrintToken(CurToken);
+      Exit;
+    End;
+
+    PrintToken(CurToken);
+    Exit;
+  Until False;
 End;
 
 { ------------------------------------------------------------ }
 { Run : ouvre le fichier source, lexe et affiche les tokens     }
-{ (sera etendu dans les TODOs suivants)                        }
+{ avec support du preprocesseur                                }
 { ------------------------------------------------------------ }
 
 Procedure Run;
@@ -1754,18 +2943,28 @@ Begin
   If IOResult <> 0 Then
     FatalError('impossible d''ouvrir le fichier source: ' + Opts.SrcFile);
   LexOpened := True;
+  CurFileName := Opts.SrcFile;
 
-  { Initialiser le lexeur et scanner tous les tokens }
+  { Initialiser le preprocesseur et le lexeur }
+  PPInit;
   LexInit;
+
+  { Scanner tous les tokens via le preprocesseur }
   Repeat
-    LexNextToken;
+    LexNextTokenPP;
   Until CurToken.Kind = TK_EOF;
+
+  { Verifier les conditionnels non fermes }
+  If CondTop >= 0 Then
+    WarnMsg(IntToStr_(CondTop + 1) +
+      ' directive(s) #if/#ifdef non fermee(s)');
 
   { Fermer le fichier source }
   LexClose;
 
-  { TODO 03+ : Parse, Emit, Binary }
-  WriteLn('CCW32: Lexer OK (', TotalLines, ' lignes)');
+  { TODO 04+ : Parse, Emit, Binary }
+  WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
+    MacroCount, ' macros)');
 End;
 
 { ------------------------------------------------------------ }
