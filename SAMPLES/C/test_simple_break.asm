@@ -34,6 +34,13 @@ _CCV_i  DD 0
 _CCF_test:
         PUSH EBP
         MOV EBP,ESP
+_CCL_2:
+        MOV EAX,1
+        TEST EAX,EAX
+        JZ _CCL_3
+        JMP _CCL_3
+        JMP _CCL_2
+_CCL_3:
 _CCL_1:
         MOV ESP,EBP
         POP EBP

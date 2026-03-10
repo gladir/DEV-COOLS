@@ -64,6 +64,32 @@ _CCL_2:
         MOV EAX,0
         MOV DWORD PTR [EBP-8],EAX
 _CCL_3:
+_CCL_6:
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JG _CCL_8
+        XOR EAX,EAX
+        JMP _CCL_9
+_CCL_8:
+        MOV EAX,1
+_CCL_9:
+        TEST EAX,EAX
+        JZ _CCL_7
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
+        JMP _CCL_6
+_CCL_7:
+        MOV EAX,DWORD PTR [EBP-8]
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP

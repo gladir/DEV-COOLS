@@ -64,6 +64,9 @@ _CCL_5:
         IMUL EAX,EBX
         MOV DWORD PTR [EBP-8],EAX
 _CCL_2:
+        MOV EAX,0
+; WARNING: variable non trouvee pour stockage: i
+_CCL_6:
 ; WARNING: variable non trouvee: i
         XOR EAX,EAX
         PUSH EAX
@@ -71,37 +74,71 @@ _CCL_2:
         MOV EBX,EAX
         POP EAX
         CMP EAX,EBX
-        JL _CCL_6
+        JL _CCL_9
         XOR EAX,EAX
-        JMP _CCL_7
-_CCL_6:
+        JMP _CCL_10
+_CCL_9:
         MOV EAX,1
+_CCL_10:
+        TEST EAX,EAX
+        JZ _CCL_8
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+; WARNING: variable non trouvee: i
+        XOR EAX,EAX
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-8],EAX
 _CCL_7:
 ; WARNING: variable non trouvee: i
         XOR EAX,EAX
-        PUSH EAX
         INC EAX
 ; WARNING: variable non trouvee pour stockage: i
+        JMP _CCL_6
+_CCL_8:
+_CCL_11:
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
         POP EAX
-; WARNING: ponctuation inattendue: }
+        CMP EAX,EBX
+        JG _CCL_13
         XOR EAX,EAX
+        JMP _CCL_14
+_CCL_13:
+        MOV EAX,1
+_CCL_14:
+        TEST EAX,EAX
+        JZ _CCL_12
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,1
+        MOV EBX,EAX
+        POP EAX
+        SUB EAX,EBX
+        MOV DWORD PTR [EBP-8],EAX
         MOV EAX,DWORD PTR [EBP-8]
         PUSH EAX
         MOV EAX,25
         MOV EBX,EAX
         POP EAX
         CMP EAX,EBX
-        JE _CCL_10
+        JE _CCL_17
         XOR EAX,EAX
-        JMP _CCL_11
-_CCL_10:
+        JMP _CCL_18
+_CCL_17:
         MOV EAX,1
-_CCL_11:
+_CCL_18:
         TEST EAX,EAX
-        JZ _CCL_8
-_CCL_8:
-; WARNING: ponctuation inattendue: }
-        XOR EAX,EAX
+        JZ _CCL_15
+        JMP _CCL_12
+_CCL_15:
+        JMP _CCL_11
+_CCL_12:
+        MOV EAX,DWORD PTR [EBP-8]
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP

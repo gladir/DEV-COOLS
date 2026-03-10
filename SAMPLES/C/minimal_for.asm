@@ -35,17 +35,30 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,4
 ;   local i = [EBP-4]
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_2:
         MOV EAX,DWORD PTR [EBP-4]
         PUSH EAX
         MOV EAX,5
         MOV EBX,EAX
         POP EAX
         CMP EAX,EBX
-        JL _CCL_2
+        JL _CCL_5
         XOR EAX,EAX
-        JMP _CCL_3
-_CCL_2:
+        JMP _CCL_6
+_CCL_5:
         MOV EAX,1
+_CCL_6:
+        TEST EAX,EAX
+        JZ _CCL_4
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        ADD EAX,EBX
+        MOV DWORD PTR [EBP-4],EAX
 _CCL_3:
         MOV EAX,DWORD PTR [EBP-4]
         PUSH EAX
@@ -54,8 +67,10 @@ _CCL_3:
         POP EAX
         ADD EAX,EBX
         MOV DWORD PTR [EBP-4],EAX
-; WARNING: ponctuation inattendue: }
-        XOR EAX,EAX
+        JMP _CCL_2
+_CCL_4:
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP
