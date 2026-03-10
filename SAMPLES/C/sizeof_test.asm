@@ -48,6 +48,88 @@ _CCF_main:
 ;   local arr = [EBP-48]
 ;   local ptr = [EBP-52]
 ;   local result = [EBP-56]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_1
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,1
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_2
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_3
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_4
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_5
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        LEA EAX,[EBP-48]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_6
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-52]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_7
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_8
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-52]
+        MOV EAX,DWORD PTR [EAX]
+        MOV EAX,4
+        MOV DWORD PTR [EBP-56],EAX
+        MOV EAX,DWORD PTR [EBP-56]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_9
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

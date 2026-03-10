@@ -38,6 +38,13 @@ _CCF_main:
 ;   static counter = [_CCST_1]
 ;   local timer = [EBP-4]
         MOV DWORD PTR [EBP-4],100
+        MOV EAX,0
+        MOV DWORD PTR [_CCST_1],EAX
+        MOV EAX,100
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [_CCST_1]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

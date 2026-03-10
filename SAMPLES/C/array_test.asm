@@ -36,6 +36,52 @@ _CCF_main:
         SUB ESP,24
 ;   local arr = [EBP-20]
 ;   local i = [EBP-24]
+        LEA EAX,[EBP-20]
+        PUSH EAX
+        MOV EAX,0
+        SHL EAX,2
+        POP EBX
+        ADD EAX,EBX
+        MOV EAX,DWORD PTR [EAX]
+        LEA EAX,[EBP-20]
+        PUSH EAX
+        MOV EAX,1
+        SHL EAX,2
+        POP EBX
+        ADD EAX,EBX
+        MOV EAX,DWORD PTR [EAX]
+        LEA EAX,[EBP-20]
+        PUSH EAX
+        MOV EAX,2
+        SHL EAX,2
+        POP EBX
+        ADD EAX,EBX
+        MOV EAX,DWORD PTR [EAX]
+        LEA EAX,[EBP-20]
+        PUSH EAX
+        MOV EAX,3
+        SHL EAX,2
+        POP EBX
+        ADD EAX,EBX
+        MOV EAX,DWORD PTR [EAX]
+        LEA EAX,[EBP-20]
+        PUSH EAX
+        MOV EAX,4
+        SHL EAX,2
+        POP EBX
+        ADD EAX,EBX
+        MOV EAX,DWORD PTR [EAX]
+        LEA EAX,[EBP-20]
+        PUSH EAX
+        MOV EAX,2
+        SHL EAX,2
+        POP EBX
+        ADD EAX,EBX
+        MOV EAX,DWORD PTR [EAX]
+        MOV DWORD PTR [EBP-24],EAX
+        MOV EAX,DWORD PTR [EBP-24]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -34,6 +34,9 @@ _CCV_x  DD 5
 _CCF_test:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,10
+        MOV DWORD PTR [_CCV_x],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -36,6 +36,22 @@ _CCF_main:
         SUB ESP,4
 ;   local value = [EBP-4]
         MOV DWORD PTR [EBP-4],100
+; WARNING: variable non trouvee: byte
+        XOR EAX,EAX
+; WARNING: variable non trouvee: word
+        XOR EAX,EAX
+; WARNING: variable non trouvee: size_type
+        XOR EAX,EAX
+        MOV EAX,100
+        MOV DWORD PTR [EBP-4],EAX
+; WARNING: variable non trouvee: int_pointer
+        XOR EAX,EAX
+; WARNING: variable non trouvee: big_size
+        XOR EAX,EAX
+; WARNING: variable non trouvee: b
+        XOR EAX,EAX
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

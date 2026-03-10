@@ -35,6 +35,9 @@ _CCF_add:
         MOV EBP,ESP
 ;   param a = [EBP+8]
 ;   param b = [EBP+12]
+        MOV EAX,DWORD PTR [EBP+8]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -51,6 +54,20 @@ _CCF_main:
 ;   local result = [EBP-12]
         MOV DWORD PTR [EBP-12],0
 ;   local y = [EBP-16]
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,3
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        PUSH EAX
+        CALL _CCF_add
+        ADD ESP,8
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

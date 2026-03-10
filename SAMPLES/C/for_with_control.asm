@@ -36,6 +36,18 @@ _CCF_test_for_with_control:
         SUB ESP,8
 ;   local i = [EBP-4]
 ;   local sum = [EBP-8]
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -44,6 +56,9 @@ _CCF_test_for_with_control:
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        CALL _CCF_test_for_with_control
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

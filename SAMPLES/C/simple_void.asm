@@ -33,6 +33,9 @@ CRLF     DB 13,10,0
 _CCF_test:
         PUSH EBP
         MOV EBP,ESP
+        XOR EAX,EAX
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -41,6 +44,9 @@ _CCF_test:
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,0
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

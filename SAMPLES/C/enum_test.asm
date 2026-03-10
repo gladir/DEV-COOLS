@@ -36,6 +36,12 @@ _CCF_main:
         SUB ESP,4
 ;   local c = [EBP-4]
         MOV DWORD PTR [EBP-4],0
+; WARNING: variable non trouvee: RED
+        XOR EAX,EAX
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -36,6 +36,14 @@ _CCF_test_for_basic:
         SUB ESP,8
 ;   local i = [EBP-4]
 ;   local sum = [EBP-8]
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -48,6 +56,17 @@ _CCF_test_for_complex:
 ;   local i = [EBP-4]
 ;   local j = [EBP-8]
 ;   local result = [EBP-12]
+        MOV EAX,0
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV DWORD PTR [EBP-8],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET
@@ -59,6 +78,13 @@ _CCF_main:
         SUB ESP,8
 ;   local a = [EBP-4]
 ;   local b = [EBP-8]
+        CALL _CCF_test_for_basic
+        MOV DWORD PTR [EBP-4],EAX
+        CALL _CCF_test_for_complex
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_3
+_CCL_3:
         MOV ESP,EBP
         POP EBP
         RET

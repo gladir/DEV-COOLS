@@ -50,6 +50,27 @@ _CCF_main:
         MOV DWORD PTR [EBP-28],0
 ;   local prod = [EBP-32]
         MOV DWORD PTR [EBP-32],0
+        MOV EAX,50000
+        NEG EAX
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,-294967296
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        MOV DWORD PTR [EBP-20],EAX
+; WARNING: variable non trouvee: global_long
+        XOR EAX,EAX
+        MOV DWORD PTR [EBP-24],EAX
+; WARNING: variable non trouvee: global_long
+        XOR EAX,EAX
+        MOV DWORD PTR [EBP-28],EAX
+; WARNING: variable non trouvee: global_long
+        XOR EAX,EAX
+        MOV DWORD PTR [EBP-32],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

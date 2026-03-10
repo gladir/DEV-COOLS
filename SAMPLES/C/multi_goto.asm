@@ -36,6 +36,22 @@ _CCF_main:
         SUB ESP,4
 ;   local x = [EBP-4]
         MOV DWORD PTR [EBP-4],1
+        MOV EAX,1
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,99
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_USR_test1:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,88
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_USR_test2:
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_USR_end:
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

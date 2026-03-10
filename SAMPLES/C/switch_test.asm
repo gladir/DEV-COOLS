@@ -37,6 +37,9 @@ _CCF_test_switch:
 ;   param x = [EBP+8]
 ;   local result = [EBP-4]
         MOV DWORD PTR [EBP-4],0
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -50,6 +53,9 @@ _CCF_nested_switch:
 ;   param b = [EBP+12]
 ;   local result = [EBP-4]
         MOV DWORD PTR [EBP-4],0
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

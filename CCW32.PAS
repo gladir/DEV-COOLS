@@ -245,7 +245,7 @@
             Initialisation globale : donnees dans .DATA
             Initialisation locale : MOV [EBP-offset], valeur
 
-  TODO 10 - EXPRESSIONS PRIMAIRES
+  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
             ParsePrimary : literal entier, literal chaine, ident, appel
             Acces variable globale : MOV EAX,[_CCV_nom]
             Acces variable locale : MOV EAX,[EBP-offset]
@@ -6294,6 +6294,936 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 10 - EXPRESSIONS PRIMAIRES                              }
+{ ============================================================ }
+
+Var
+  EP         : Integer;    { Position curseur dans TokenPool pour expressions }
+  CurFuncIdx : Integer;    { Index de la fonction en cours de compilation     }
+  EPEnd      : Integer;    { Borne fin pour le parsage d expressions          }
+
+{ ------------------------------------------------------------ }
+{ EPAtEnd : verifier si le curseur est en fin de zone           }
+{ ------------------------------------------------------------ }
+
+Function EPAtEnd : Boolean;
+Begin
+  EPAtEnd := (EP >= EPEnd);
+End;
+
+{ ------------------------------------------------------------ }
+{ EPMatch : verifier et consommer un token ponctuation/op      }
+{ ------------------------------------------------------------ }
+
+Function EPMatch(Const S : TString) : Boolean;
+Begin
+  EPMatch := False;
+  If EP >= EPEnd Then Exit;
+  If ((TokenPool[EP].Kind = TK_PUNCT) Or (TokenPool[EP].Kind = TK_OP)) And
+     (TokenPool[EP].Val = S) Then
+  Begin
+    Inc(EP);
+    EPMatch := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindLocal : chercher une variable locale par nom              }
+{ Retourne l index dans Locals[] ou -1                         }
+{ ------------------------------------------------------------ }
+
+Function FindLocal(FI : Integer; Const Name : TString) : Integer;
+Var K : Integer;
+Begin
+  FindLocal := -1;
+  For K := 0 To FuncTab[FI].LocalCount - 1 Do
+    If FuncTab[FI].Locals[K].Name = Name Then
+    Begin
+      FindLocal := K;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ FindParam : chercher un parametre par nom                     }
+{ Retourne l index dans ParamNames[] ou -1                     }
+{ ------------------------------------------------------------ }
+
+Function FindParam(FI : Integer; Const Name : TString) : Integer;
+Var K : Integer;
+Begin
+  FindParam := -1;
+  For K := 0 To FuncTab[FI].ParamCount - 1 Do
+    If FuncTab[FI].ParamNames[K] = Name Then
+    Begin
+      FindParam := K;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadVar : emettre le code pour charger une variable dans   }
+{ EAX (globale, locale, parametre)                             }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadVar(Const Name : TString);
+Var
+  LI, PI, SI : Integer;
+Begin
+  { Chercher dans les locales de la fonction courante }
+  LI := FindLocal(CurFuncIdx, Name);
+  If LI >= 0 Then
+  Begin
+    If FuncTab[CurFuncIdx].Locals[LI].IsStatic Then
+      EmitInstr('MOV EAX,DWORD PTR [' +
+        FuncTab[CurFuncIdx].Locals[LI].StaticLbl + ']')
+    Else If FuncTab[CurFuncIdx].Locals[LI].IsArray Then
+      EmitInstr('LEA EAX,[EBP' +
+        IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']')
+    Else
+      EmitInstr('MOV EAX,DWORD PTR [EBP' +
+        IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']');
+    Exit;
+  End;
+
+  { Chercher dans les parametres }
+  PI := FindParam(CurFuncIdx, Name);
+  If PI >= 0 Then
+  Begin
+    EmitInstr('MOV EAX,DWORD PTR [EBP+' +
+      IntToStr_(FuncTab[CurFuncIdx].ParamOfs[PI]) + ']');
+    Exit;
+  End;
+
+  { Chercher dans les symboles globaux }
+  SI := SymFind(Name);
+  If SI >= 0 Then
+  Begin
+    EmitInstr('MOV EAX,' + GenVarRef(SI));
+    Exit;
+  End;
+
+  { Variable non trouvee }
+  EmitComment('WARNING: variable non trouvee: ' + Name);
+  EmitInstr('XOR EAX,EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreVar : emettre le code pour stocker EAX dans une var   }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreVar(Const Name : TString);
+Var
+  LI, PI, SI : Integer;
+Begin
+  LI := FindLocal(CurFuncIdx, Name);
+  If LI >= 0 Then
+  Begin
+    If FuncTab[CurFuncIdx].Locals[LI].IsStatic Then
+      EmitInstr('MOV DWORD PTR [' +
+        FuncTab[CurFuncIdx].Locals[LI].StaticLbl + '],EAX')
+    Else
+      EmitInstr('MOV DWORD PTR [EBP' +
+        IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + '],EAX');
+    Exit;
+  End;
+
+  PI := FindParam(CurFuncIdx, Name);
+  If PI >= 0 Then
+  Begin
+    EmitInstr('MOV DWORD PTR [EBP+' +
+      IntToStr_(FuncTab[CurFuncIdx].ParamOfs[PI]) + '],EAX');
+    Exit;
+  End;
+
+  SI := SymFind(Name);
+  If SI >= 0 Then
+  Begin
+    EmitInstr('MOV DWORD PTR [' + SymTab[SI].MangledName + '],EAX');
+    Exit;
+  End;
+
+  EmitComment('WARNING: variable non trouvee pour stockage: ' + Name);
+End;
+
+{ ------------------------------------------------------------ }
+{ GenLoadAddr : emettre LEA EAX pour l adresse d une variable   }
+{ ------------------------------------------------------------ }
+
+Procedure GenLoadAddr(Const Name : TString);
+Var
+  LI, PI, SI : Integer;
+Begin
+  LI := FindLocal(CurFuncIdx, Name);
+  If LI >= 0 Then
+  Begin
+    If FuncTab[CurFuncIdx].Locals[LI].IsStatic Then
+      EmitInstr('MOV EAX,OFFSET ' +
+        FuncTab[CurFuncIdx].Locals[LI].StaticLbl)
+    Else
+      EmitInstr('LEA EAX,[EBP' +
+        IntToStr_(FuncTab[CurFuncIdx].Locals[LI].Offset) + ']');
+    Exit;
+  End;
+
+  PI := FindParam(CurFuncIdx, Name);
+  If PI >= 0 Then
+  Begin
+    EmitInstr('LEA EAX,[EBP+' +
+      IntToStr_(FuncTab[CurFuncIdx].ParamOfs[PI]) + ']');
+    Exit;
+  End;
+
+  SI := SymFind(Name);
+  If SI >= 0 Then
+  Begin
+    EmitInstr('MOV EAX,OFFSET ' + SymTab[SI].MangledName);
+    Exit;
+  End;
+
+  EmitComment('WARNING: variable non trouvee pour adresse: ' + Name);
+  EmitInstr('XOR EAX,EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ Declarations Forward pour les expressions                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExpr; Forward;
+Procedure ParseUnary; Forward;
+
+{ ------------------------------------------------------------ }
+{ ParseFuncCall : parser un appel de fonction f(args)           }
+{ Le '(' a deja ete consomme. Convention cdecl : arguments     }
+{ pousses droite a gauche, appelant nettoie la pile.           }
+{ Resultat dans EAX.                                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFuncCall(Const FuncName : TString);
+Var
+  ArgCount    : Integer;
+  ArgStart    : Array[0..MAX_PARAMS - 1] Of Integer;
+  ArgEndPos   : Array[0..MAX_PARAMS - 1] Of Integer;
+  Depth       : Integer;
+  SaveEP      : Integer;
+  SaveEnd     : Integer;
+  K           : Integer;
+  MangledName : TString;
+  SymI        : Integer;
+Begin
+  { Scanner les arguments pour trouver leurs bornes }
+  ArgCount := 0;
+  If Not EPAtEnd And Not ((TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')')) Then
+  Begin
+    ArgStart[0] := EP;
+    Depth := 0;
+    While Not EPAtEnd Do
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(') Then
+        Inc(Depth)
+      Else If (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ')') Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          ArgEndPos[ArgCount] := EP - 1;
+          Inc(ArgCount);
+          Break;
+        End;
+        Dec(Depth);
+      End
+      Else If (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ',') And (Depth = 0) Then
+      Begin
+        ArgEndPos[ArgCount] := EP - 1;
+        Inc(ArgCount);
+        If ArgCount < MAX_PARAMS Then
+          ArgStart[ArgCount] := EP + 1;
+      End;
+      Inc(EP);
+    End;
+  End;
+
+  { Consommer le ')' }
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')') Then
+    Inc(EP);
+
+  { Evaluer et pousser les arguments de droite a gauche (cdecl) }
+  SaveEP  := EP;
+  SaveEnd := EPEnd;
+  For K := ArgCount - 1 DownTo 0 Do
+  Begin
+    EP    := ArgStart[K];
+    EPEnd := ArgEndPos[K] + 1;
+    ParseExpr;
+    EmitInstr('PUSH EAX');
+  End;
+  EP    := SaveEP;
+  EPEnd := SaveEnd;
+
+  { Determiner le nom MASM de la fonction }
+  SymI := SymFind(FuncName);
+  If (SymI >= 0) And SymTab[SymI].IsExternal Then
+    MangledName := '_' + FuncName
+  Else
+    MangledName := CC_FUNC_PFX + FuncName;
+
+  EmitInstr('CALL ' + MangledName);
+
+  { Nettoyer la pile (convention cdecl : appelant nettoie) }
+  If ArgCount > 0 Then
+    EmitInstr('ADD ESP,' + IntToStr_(ArgCount * 4));
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrimary : parser une expression primaire                 }
+{ Litteral entier, chaine, char, ident, appel, parentheses,    }
+{ sizeof, cast.                                                }
+{ Resultat dans EAX.                                           }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrimary;
+Var
+  Name    : TString;
+  DataLbl : TString;
+  TIdx    : Integer;
+  SzVal   : Integer;
+  SaveEP  : Integer;
+Begin
+  If EPAtEnd Then
+  Begin
+    EmitInstr('XOR EAX,EAX');
+    Exit;
+  End;
+
+  Case TokenPool[EP].Kind Of
+    { --- Litteral entier --- }
+    TK_INTEGER:
+    Begin
+      EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
+      Inc(EP);
+    End;
+
+    { --- Litteral caractere --- }
+    TK_CHAR:
+    Begin
+      EmitInstr('MOV EAX,' + IntToStr_(TokenPool[EP].IntVal));
+      Inc(EP);
+    End;
+
+    { --- Litteral chaine -> adresse de la constante --- }
+    TK_STRING:
+    Begin
+      DataLbl := DataGetOrAddStr(TokenPool[EP].Val);
+      EmitInstr('MOV EAX,OFFSET ' + DataLbl);
+      Inc(EP);
+    End;
+
+    { --- Identifiant ou appel de fonction --- }
+    TK_IDENT:
+    Begin
+      Name := TokenPool[EP].Val;
+      Inc(EP);
+
+      { Appel de fonction si suivi de '(' }
+      If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = '(') Then
+      Begin
+        Inc(EP); { consommer '(' }
+        ParseFuncCall(Name);
+      End
+      Else
+      Begin
+        { Acces variable : globale, locale ou parametre }
+        GenLoadVar(Name);
+      End;
+    End;
+
+    { --- Mot-cle (sizeof) --- }
+    TK_KEYWORD:
+    Begin
+      If TokenPool[EP].Val = 'sizeof' Then
+      Begin
+        Inc(EP);
+        SzVal := 4; { defaut : taille d un int }
+        If EPMatch('(') Then
+        Begin
+          SaveEP := EP;
+          TIdx := ParseTypeFromTokens(EP);
+          If TIdx >= 0 Then
+          Begin
+            { sizeof(type) }
+            While Not EPAtEnd And (TokenPool[EP].Kind = TK_OP) And
+                  (TokenPool[EP].Val = '*') Do
+            Begin
+              Inc(EP);
+              TIdx := TypeFindByName('int'); { pointeur = 4 }
+            End;
+            SzVal := TypeSizeofIdx(TIdx);
+          End
+          Else
+          Begin
+            { sizeof(expr) : taille du type de l expression }
+            EP := SaveEP;
+            ParseExpr;
+            SzVal := 4; { par defaut int = 4 octets }
+          End;
+          EPMatch(')');
+        End;
+        EmitInstr('MOV EAX,' + IntToStr_(SzVal));
+      End
+      Else
+      Begin
+        { Mot-cle inconnu dans expression : ignorer }
+        EmitComment('WARNING: mot-cle inattendu dans expression: ' +
+          TokenPool[EP].Val);
+        EmitInstr('XOR EAX,EAX');
+        Inc(EP);
+      End;
+    End;
+
+    { --- Ponctuation : parentheses ou cast --- }
+    TK_PUNCT:
+    Begin
+      If TokenPool[EP].Val = '(' Then
+      Begin
+        Inc(EP);
+
+        { Verifier si c est un cast : (type) expr }
+        SaveEP := EP;
+        TIdx := ParseTypeFromTokens(EP);
+        If (TIdx >= 0) And Not EPAtEnd And
+           (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ')') Then
+        Begin
+          { Cast : (type)expr - evaluer expr, cast est no-op en 32 bits }
+          While Not EPAtEnd And (TokenPool[EP].Kind = TK_OP) And
+                (TokenPool[EP].Val = '*') Do
+            Inc(EP);
+          Inc(EP); { consommer ')' }
+          ParseUnary;
+        End
+        Else
+        Begin
+          { Parentheses normales : (expr) }
+          EP := SaveEP;
+          ParseExpr;
+          EPMatch(')');
+        End;
+      End
+      Else
+      Begin
+        EmitComment('WARNING: ponctuation inattendue: ' +
+          TokenPool[EP].Val);
+        EmitInstr('XOR EAX,EAX');
+        Inc(EP);
+      End;
+    End;
+
+  Else
+    EmitComment('WARNING: token inattendu dans expression');
+    EmitInstr('XOR EAX,EAX');
+    Inc(EP);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePostfix : parser les operateurs postfixes apres un      }
+{ primary : [] . -> ++ --                                      }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePostfix;
+Var
+  Done : Boolean;
+  Name : TString;
+Begin
+  ParsePrimary;
+
+  Done := False;
+  While Not Done And Not EPAtEnd Do
+  Begin
+    { Post-increment ++ }
+    If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
+    Begin
+      Inc(EP);
+      EmitInstr('PUSH EAX');
+      EmitInstr('INC EAX');
+      { Pour stocker, il faudrait connaitre la variable - sera ameliore }
+      EmitComment('; post-increment');
+      EmitInstr('POP EAX');
+    End
+    { Post-decrement -- }
+    Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
+    Begin
+      Inc(EP);
+      EmitInstr('PUSH EAX');
+      EmitInstr('DEC EAX');
+      EmitComment('; post-decrement');
+      EmitInstr('POP EAX');
+    End
+    { Acces tableau [index] }
+    Else If (TokenPool[EP].Kind = TK_PUNCT) And
+            (TokenPool[EP].Val = '[') Then
+    Begin
+      Inc(EP);
+      EmitInstr('PUSH EAX');
+      ParseExpr;
+      EmitInstr('SHL EAX,2');
+      EmitInstr('POP EBX');
+      EmitInstr('ADD EAX,EBX');
+      EmitInstr('MOV EAX,DWORD PTR [EAX]');
+      EPMatch(']');
+    End
+    { Acces membre struct . }
+    Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '.') Then
+    Begin
+      Inc(EP);
+      If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
+      Begin
+        Name := TokenPool[EP].Val;
+        Inc(EP);
+        EmitComment('; acces membre struct: .' + Name);
+      End;
+    End
+    { Acces membre via pointeur -> }
+    Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '->') Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [EAX]');
+      If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
+      Begin
+        Name := TokenPool[EP].Val;
+        Inc(EP);
+        EmitComment('; acces membre ptr: ->' + Name);
+      End;
+    End
+    Else
+      Done := True;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseUnary : parser les operateurs unaires prefixes           }
+{ ++ -- + - ! ~ * & sizeof (cast)                             }
+{ ------------------------------------------------------------ }
+
+Procedure ParseUnary;
+Var
+  Name : TString;
+Begin
+  If EPAtEnd Then
+  Begin
+    EmitInstr('XOR EAX,EAX');
+    Exit;
+  End;
+
+  { Pre-increment ++ }
+  If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
+  Begin
+    Inc(EP);
+    If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      Name := TokenPool[EP].Val;
+      Inc(EP);
+      GenLoadVar(Name);
+      EmitInstr('INC EAX');
+      GenStoreVar(Name);
+    End
+    Else
+      ParseUnary;
+  End
+  { Pre-decrement -- }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
+  Begin
+    Inc(EP);
+    If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      Name := TokenPool[EP].Val;
+      Inc(EP);
+      GenLoadVar(Name);
+      EmitInstr('DEC EAX');
+      GenStoreVar(Name);
+    End
+    Else
+      ParseUnary;
+  End
+  { Negation unaire - }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '-') Then
+  Begin
+    Inc(EP);
+    ParseUnary;
+    EmitInstr('NEG EAX');
+  End
+  { Plus unaire + (no-op) }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '+') Then
+  Begin
+    Inc(EP);
+    ParseUnary;
+  End
+  { NOT logique ! }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '!') Then
+  Begin
+    Inc(EP);
+    ParseUnary;
+    EmitInstr('TEST EAX,EAX');
+    EmitInstr('SETZ AL');
+    EmitInstr('MOVZX EAX,AL');
+  End
+  { NOT bit a bit ~ }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '~') Then
+  Begin
+    Inc(EP);
+    ParseUnary;
+    EmitInstr('NOT EAX');
+  End
+  { Dereferencement * }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '*') Then
+  Begin
+    Inc(EP);
+    ParseUnary;
+    EmitInstr('MOV EAX,DWORD PTR [EAX]');
+  End
+  { Adresse de & }
+  Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '&') Then
+  Begin
+    Inc(EP);
+    If Not EPAtEnd And (TokenPool[EP].Kind = TK_IDENT) Then
+    Begin
+      Name := TokenPool[EP].Val;
+      Inc(EP);
+      GenLoadAddr(Name);
+    End
+    Else
+    Begin
+      ParseUnary;
+      EmitComment('; & sur expression non-lvalue');
+    End;
+  End
+  Else
+    ParsePostfix;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseExpr : parser une expression complete                    }
+{ Pour l instant appelle ParseUnary. Sera etendu en TODO 11    }
+{ avec la precedence des operateurs binaires (Pratt parser).   }
+{ ------------------------------------------------------------ }
+
+Procedure ParseExpr;
+Begin
+  ParseUnary;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseBody : parser et emettre le code du corps d une fonction }
+{ Gere les declarations, return, expression-statements, et     }
+{ saute les constructions de controle (TODO 13-15).            }
+{ ------------------------------------------------------------ }
+
+Procedure ParseBody(FI : Integer);
+Var
+  OldFI   : Integer;
+  Name    : TString;
+  Depth   : Integer;
+  TIdx    : Integer;
+  SaveEP  : Integer;
+  RetLbl  : TString;
+Begin
+  OldFI      := CurFuncIdx;
+  CurFuncIdx := FI;
+  EP         := FuncTab[FI].BodyStart + 1;
+  EPEnd      := FuncTab[FI].BodyEnd;
+
+  { Generer un label de retour unique pour cette fonction }
+  RetLbl := LabelGen;
+
+  While EP < EPEnd Do
+  Begin
+    { Sauter les points-virgules vides }
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = ';') Then
+    Begin
+      Inc(EP);
+      Continue;
+    End;
+
+    (* Bloc imbrique *)
+
+    If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '{') Then
+    Begin
+      Depth := 1;
+      Inc(EP);
+      While (EP < EPEnd) And (Depth > 0) Do
+      Begin
+        If (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = '{') Then
+          Inc(Depth)
+        Else If (TokenPool[EP].Kind = TK_PUNCT) And
+                (TokenPool[EP].Val = '}') Then
+          Dec(Depth);
+        If Depth > 0 Then Inc(EP)
+        Else Inc(EP);
+      End;
+      Continue;
+    End;
+
+    { --- return [expr] ; --- }
+    If (TokenPool[EP].Kind = TK_KEYWORD) And
+       (TokenPool[EP].Val = 'return') Then
+    Begin
+      Inc(EP);
+      If Not EPAtEnd And Not ((TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';')) Then
+        ParseExpr
+      Else
+        EmitInstr('XOR EAX,EAX');
+      EmitInstr('JMP ' + RetLbl);
+      { Avancer au ; }
+      While (EP < EPEnd) And Not ((TokenPool[EP].Kind = TK_PUNCT) And
+            (TokenPool[EP].Val = ';')) Do
+        Inc(EP);
+      If EP < EPEnd Then Inc(EP);
+      Continue;
+    End;
+
+    { --- Declarations de variables : deja traitees, les sauter --- }
+    SaveEP := EP;
+
+    { Sauter les classes de stockage }
+    While (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+          IsStorageClass(TokenPool[EP].Val) Do
+      Inc(EP);
+
+    { Sauter les qualificateurs }
+    While (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+          IsQualifier(TokenPool[EP].Val) Do
+      Inc(EP);
+
+    { Verifier si c est une declaration de type }
+    If (EP < EPEnd) And
+       (((TokenPool[EP].Kind = TK_KEYWORD) And
+         IsTypeSpecifier(TokenPool[EP].Val)) Or
+        ((TokenPool[EP].Kind = TK_KEYWORD) And
+         ((TokenPool[EP].Val = 'struct') Or
+          (TokenPool[EP].Val = 'union') Or
+          (TokenPool[EP].Val = 'enum')))) Then
+    Begin
+      TIdx := ParseTypeFromTokens(EP);
+      If TIdx >= 0 Then
+      Begin
+        { Sauter les pointeurs }
+        While (EP < EPEnd) And (TokenPool[EP].Kind = TK_OP) And
+              (TokenPool[EP].Val = '*') Do
+          Inc(EP);
+
+        { Verifier que c est suivi d un identifiant -> declaration }
+        If (EP < EPEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+        Begin
+          Name := TokenPool[EP].Val;
+          Inc(EP);
+
+          { Sauter les tableau declarators [] }
+          If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+             (TokenPool[EP].Val = '[') Then
+          Begin
+            While (EP < EPEnd) And
+                  Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                       (TokenPool[EP].Val = ']')) Do
+              Inc(EP);
+            If EP < EPEnd Then Inc(EP);
+          End;
+
+          { Si suivi de '=' : initialiser avec l expression }
+          If (EP < EPEnd) And (TokenPool[EP].Kind = TK_OP) And
+             (TokenPool[EP].Val = '=') Then
+          Begin
+            Inc(EP); { sauter le '=' }
+            (* Verifier si c est un initialiseur de bloc *)
+            If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = '{') Then
+            Begin
+              { Initialiseur complexe : sauter }
+              Depth := 1;
+              Inc(EP);
+              While (EP < EPEnd) And (Depth > 0) Do
+              Begin
+                If (TokenPool[EP].Kind = TK_PUNCT) And
+                   (TokenPool[EP].Val = '{') Then Inc(Depth)
+                Else If (TokenPool[EP].Kind = TK_PUNCT) And
+                        (TokenPool[EP].Val = '}') Then Dec(Depth);
+                Inc(EP);
+              End;
+            End
+            Else
+            Begin
+              ParseExpr;
+              GenStoreVar(Name);
+            End;
+          End;
+
+          { Gerer les declarations multiples (int a=1, b=2;) }
+          While (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+                (TokenPool[EP].Val = ',') Do
+          Begin
+            Inc(EP); { sauter la ',' }
+            { Sauter les pointeurs }
+            While (EP < EPEnd) And (TokenPool[EP].Kind = TK_OP) And
+                  (TokenPool[EP].Val = '*') Do
+              Inc(EP);
+            If (EP < EPEnd) And (TokenPool[EP].Kind = TK_IDENT) Then
+            Begin
+              Name := TokenPool[EP].Val;
+              Inc(EP);
+              { Tableau ? }
+              If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = '[') Then
+              Begin
+                While (EP < EPEnd) And
+                      Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                           (TokenPool[EP].Val = ']')) Do
+                  Inc(EP);
+                If EP < EPEnd Then Inc(EP);
+              End;
+              { Initialiseur ? }
+              If (EP < EPEnd) And (TokenPool[EP].Kind = TK_OP) And
+                 (TokenPool[EP].Val = '=') Then
+              Begin
+                Inc(EP);
+                If (EP < EPEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+                   (TokenPool[EP].Val = '{') Then
+                Begin
+                  Depth := 1;
+                  Inc(EP);
+                  While (EP < EPEnd) And (Depth > 0) Do
+                  Begin
+                    If (TokenPool[EP].Kind = TK_PUNCT) And
+                       (TokenPool[EP].Val = '{') Then Inc(Depth)
+                    Else If (TokenPool[EP].Kind = TK_PUNCT) And
+                            (TokenPool[EP].Val = '}') Then Dec(Depth);
+                    Inc(EP);
+                  End;
+                End
+                Else
+                Begin
+                  ParseExpr;
+                  GenStoreVar(Name);
+                End;
+              End;
+            End;
+          End;
+
+          { Avancer au ; }
+          While (EP < EPEnd) And
+                Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                     (TokenPool[EP].Val = ';')) Do
+            Inc(EP);
+          If EP < EPEnd Then Inc(EP);
+          Continue;
+        End;
+      End;
+
+      { Pas une declaration finalement, revenir }
+      EP := SaveEP;
+    End
+    Else
+      EP := SaveEP;
+
+    { --- Mots-cles de controle : sauter (TODO 13-15) --- }
+    If (EP < EPEnd) And (TokenPool[EP].Kind = TK_KEYWORD) And
+       ((TokenPool[EP].Val = 'if') Or (TokenPool[EP].Val = 'else') Or
+        (TokenPool[EP].Val = 'for') Or (TokenPool[EP].Val = 'while') Or
+        (TokenPool[EP].Val = 'do') Or (TokenPool[EP].Val = 'switch') Or
+        (TokenPool[EP].Val = 'case') Or (TokenPool[EP].Val = 'default') Or
+        (TokenPool[EP].Val = 'break') Or (TokenPool[EP].Val = 'continue') Or
+        (TokenPool[EP].Val = 'goto')) Then
+    Begin
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 ((TokenPool[EP].Val = ';') Or
+                  (TokenPool[EP].Val = '}'))) Do
+      Begin
+        If (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = '{') Then
+        Begin
+          EP := SkipToMatchingBrace(EP);
+          If EP < EPEnd Then Inc(EP);
+        End
+        Else
+          Inc(EP);
+      End;
+      If (EP < EPEnd) And (TokenPool[EP].Val = ';') Then Inc(EP);
+      Continue;
+    End;
+
+    { --- Labels (pour goto) : ident ':' --- }
+    If (EP + 1 < EPEnd) And (TokenPool[EP].Kind = TK_IDENT) And
+       (TokenPool[EP + 1].Kind = TK_PUNCT) And
+       (TokenPool[EP + 1].Val = ':') Then
+    Begin
+      EmitLabel(CC_LBL_PFX + 'USR_' + TokenPool[EP].Val);
+      Inc(EP, 2);
+      Continue;
+    End;
+
+    { --- Expression statement : [ident = expr] | expr ; --- }
+    { Cas special : affectation simple ident = expr }
+    If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
+       (TokenPool[EP + 1].Kind = TK_OP) And
+       (TokenPool[EP + 1].Val = '=') Then
+    Begin
+      Name := TokenPool[EP].Val;
+      Inc(EP, 2); { sauter ident et '=' }
+      ParseExpr;
+      GenStoreVar(Name);
+      { Avancer au ; }
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = ';')) Do
+        Inc(EP);
+      If EP < EPEnd Then Inc(EP);
+      Continue;
+    End;
+
+    { Cas special : dereferencement + affectation *ident = expr }
+    If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '*') And
+       (EP + 2 < EPEnd) And (TokenPool[EP + 1].Kind = TK_IDENT) And
+       (TokenPool[EP + 2].Kind = TK_OP) And
+       (TokenPool[EP + 2].Val = '=') Then
+    Begin
+      Name := TokenPool[EP + 1].Val;
+      Inc(EP, 3); { sauter * ident = }
+      ParseExpr;
+      EmitInstr('PUSH EAX');
+      GenLoadVar(Name);
+      EmitInstr('POP DWORD PTR [EAX]');
+      { Avancer au ; }
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = ';')) Do
+        Inc(EP);
+      If EP < EPEnd Then Inc(EP);
+      Continue;
+    End;
+
+    { Expression statement generale }
+    ParseExpr;
+
+    { Avancer au ; }
+    While (EP < EPEnd) And
+          Not ((TokenPool[EP].Kind = TK_PUNCT) And
+               (TokenPool[EP].Val = ';')) Do
+      Inc(EP);
+    If EP < EPEnd Then Inc(EP);
+  End;
+
+  { Label de retour de la fonction }
+  EmitLabel(RetLbl);
+
+  CurFuncIdx := OldFI;
+End;
+
 { ------------------------------------------------------------ }
 { EmitFunctions : emettre le code ASM pour toutes les fonctions}
 { ------------------------------------------------------------ }
@@ -6340,7 +7270,8 @@ Begin
       End;
     End;
 
-    { TODO futur : emettre le corps de la fonction }
+    { Emettre le corps de la fonction (TODO 10) }
+    ParseBody(FI);
 
     EmitEpilog;
     EmitBlankLine;

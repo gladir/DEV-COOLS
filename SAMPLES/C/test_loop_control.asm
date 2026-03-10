@@ -36,6 +36,33 @@ _CCF_main:
         SUB ESP,8
 ;   local i = [EBP-4]
 ;   local j = [EBP-8]
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV EAX,DWORD PTR [EBP-8]
+        MOV DWORD PTR [EBP-8],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

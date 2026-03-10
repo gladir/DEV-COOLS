@@ -35,6 +35,7 @@ _CCF_f:
         MOV EBP,ESP
         SUB ESP,4
 ;   local x = [EBP-4]
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

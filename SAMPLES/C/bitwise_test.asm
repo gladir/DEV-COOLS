@@ -40,6 +40,37 @@ _CCF_main:
 ;   local a = [EBP-4]
 ;   local b = [EBP-8]
 ;   local result = [EBP-12]
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,3
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_1
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_2
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_3
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -36,6 +36,10 @@ _CCF_main:
         SUB ESP,8
 ;   local size = [EBP-4]
 ;   local result = [EBP-8]
+; WARNING: variable non trouvee: MAX_SIZE
+        XOR EAX,EAX
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

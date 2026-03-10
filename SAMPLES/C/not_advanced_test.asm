@@ -38,6 +38,118 @@ _CCF_main:
 ;   local b = [EBP-8]
 ;   local c = [EBP-12]
 ;   local result = [EBP-16]
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,5
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,0
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,1
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,42
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,5
+        NEG EAX
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-8]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

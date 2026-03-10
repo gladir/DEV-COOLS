@@ -39,6 +39,15 @@ _CCF_test_function:
 ;   local local_extern_var = [EBP-4]
 ;   local local_extern_char = [EBP-8]
 ;   local local_extern_ptr = [EBP-12]
+        MOV EAX,42
+        MOV DWORD PTR [_global_counter],EAX
+        MOV EAX,65
+        MOV DWORD PTR [_status_flag],EAX
+        MOV EAX,DWORD PTR [_global_counter]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_data_buffer]
+        POP DWORD PTR [EAX]
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -49,6 +58,9 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,4
 ;   local main_extern_var = [EBP-4]
+        MOV EAX,0
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

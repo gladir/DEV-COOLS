@@ -45,6 +45,120 @@ _CCF_main:
 ;   local a = [EBP-4]
 ;   local b = [EBP-8]
 ;   local result = [EBP-12]
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_1
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,1
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_2
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_3
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,3
+        NEG EAX
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_4
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,5
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_5
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_6
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_7
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,7
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-12]
+        PUSH EAX
+        MOV EAX,OFFSET _CCK_8
+        PUSH EAX
+        CALL _printf
+        ADD ESP,8
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -39,6 +39,11 @@ _CCF_test_extern:
         MOV EBP,ESP
         SUB ESP,4
 ;   local result = [EBP-4]
+        MOV EAX,DWORD PTR [_global_counter]
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -49,6 +54,13 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,4
 ;   local total = [EBP-4]
+        CALL _CCF_test_extern
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

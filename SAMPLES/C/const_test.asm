@@ -38,6 +38,15 @@ _CCF_test:
         MOV DWORD PTR [EBP-4],5
 ;   local y = [EBP-8]
         MOV DWORD PTR [EBP-8],10
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,10
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,20
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,30
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

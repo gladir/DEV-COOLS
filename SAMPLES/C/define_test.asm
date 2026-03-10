@@ -38,6 +38,13 @@ _CCF_main:
         MOV DWORD PTR [EBP-4],100
 ;   local min_val = [EBP-8]
         MOV DWORD PTR [EBP-8],10
+        MOV EAX,100
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,10
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

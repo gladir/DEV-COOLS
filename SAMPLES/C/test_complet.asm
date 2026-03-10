@@ -38,6 +38,11 @@ _CCF_simple_function:
 ;   param param = [EBP+8]
 ;   local local_var = [EBP-4]
         MOV DWORD PTR [EBP-4],10
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        XOR EAX,EAX
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -55,6 +60,19 @@ _CCF_main:
         MOV DWORD PTR [EBP-12],0
 ;   local result = [EBP-16]
         MOV DWORD PTR [EBP-16],0
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,65
+        MOV DWORD PTR [EBP-8],EAX
+        LEA EAX,[EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-16]
+        PUSH EAX
+        CALL _CCF_simple_function
+        ADD ESP,4
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

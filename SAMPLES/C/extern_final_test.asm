@@ -37,6 +37,7 @@ _CCF_main:
         SUB ESP,8
 ;   local local_extern_var = [EBP-4]
 ;   local local_extern_char = [EBP-8]
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

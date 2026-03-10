@@ -36,6 +36,13 @@ _CCF_main:
         PUSH EBP
         MOV EBP,ESP
 ;   static local_var = [_CCST_1]
+        MOV EAX,10
+        MOV DWORD PTR [_CCV_global_var],EAX
+        MOV EAX,20
+        MOV DWORD PTR [_CCST_1],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

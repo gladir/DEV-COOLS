@@ -36,6 +36,12 @@ _CCF_main:
         SUB ESP,4
 ;   local value = [EBP-4]
         MOV DWORD PTR [EBP-4],0
+; WARNING: variable non trouvee: HEADER_VALUE
+        XOR EAX,EAX
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

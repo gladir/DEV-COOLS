@@ -35,6 +35,9 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,400
 ;   local array = [EBP-400]
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

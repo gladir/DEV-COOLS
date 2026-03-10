@@ -33,6 +33,9 @@ CRLF     DB 13,10,0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -43,6 +46,9 @@ _CCF_add:
         MOV EBP,ESP
 ;   param a = [EBP+8]
 ;   param b = [EBP+12]
+        MOV EAX,DWORD PTR [EBP+8]
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET

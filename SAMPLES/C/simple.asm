@@ -33,6 +33,11 @@ CRLF     DB 13,10,0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,42
+; WARNING: variable non trouvee pour stockage: test_value
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

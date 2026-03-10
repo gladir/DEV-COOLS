@@ -35,6 +35,12 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,4
 ;   local i = [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-4],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

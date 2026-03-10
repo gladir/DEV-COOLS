@@ -35,6 +35,17 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,4
 ;   local y = [EBP-4]
+; WARNING: mot-cle inattendu dans expression: struct
+        XOR EAX,EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+; WARNING: variable non trouvee: p
+        XOR EAX,EAX
+; WARNING: variable non trouvee: p
+        XOR EAX,EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -39,6 +39,14 @@ _CCF_internal_function:
         PUSH EBP
         MOV EBP,ESP
 ;   static call_count = [_CCST_1]
+        MOV EAX,0
+        MOV DWORD PTR [_CCST_1],EAX
+        MOV EAX,DWORD PTR [_CCST_1]
+        PUSH EAX
+        INC EAX
+; ; post-increment
+        POP EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -51,6 +59,16 @@ _CCF_public_function:
 ;   static local_static = [_CCST_2]
 ;   local local_auto = [EBP-4]
         MOV DWORD PTR [EBP-4],20
+        MOV EAX,10
+        MOV DWORD PTR [_CCST_2],EAX
+        MOV EAX,20
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [_CCST_2]
+        PUSH EAX
+        INC EAX
+; ; post-increment
+        POP EAX
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET
@@ -63,6 +81,19 @@ _CCF_main:
 ;   static main_static = [_CCST_3]
 ;   local main_auto = [EBP-4]
         MOV DWORD PTR [EBP-4],200
+        MOV EAX,100
+        MOV DWORD PTR [_CCST_3],EAX
+        MOV EAX,200
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,5
+        MOV DWORD PTR [_CCV_global_counter],EAX
+        MOV EAX,150
+        MOV DWORD PTR [_CCST_3],EAX
+        CALL _CCF_public_function
+        CALL _CCF_internal_function
+        MOV EAX,0
+        JMP _CCL_3
+_CCL_3:
         MOV ESP,EBP
         POP EBP
         RET

@@ -35,6 +35,11 @@ _CCV_ptr  DD 0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,10
+        MOV DWORD PTR [_CCV_x],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

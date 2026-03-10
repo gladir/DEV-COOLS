@@ -36,6 +36,11 @@ _CCF_test:
         SUB ESP,4
 ;   local x = [EBP-4]
         MOV DWORD PTR [EBP-4],5
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

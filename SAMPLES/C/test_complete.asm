@@ -36,6 +36,9 @@ _CCF_main:
         SUB ESP,8
 ;   local x = [EBP-4]
 ;   local y = [EBP-8]
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

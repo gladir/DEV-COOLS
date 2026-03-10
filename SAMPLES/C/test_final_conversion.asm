@@ -38,6 +38,23 @@ _CCF_test_function:
         MOV DWORD PTR [EBP-4],42
 ;   local y = [EBP-8]
         MOV DWORD PTR [EBP-8],0
+        MOV EAX,42
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+; WARNING: variable non trouvee: i
+        XOR EAX,EAX
+; WARNING: variable non trouvee: i
+        XOR EAX,EAX
+        PUSH EAX
+        INC EAX
+; ; post-increment
+        POP EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

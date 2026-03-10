@@ -38,6 +38,44 @@ _CCF_main:
 ;   local y = [EBP-8]
 ;   local z = [EBP-12]
 ;   local result = [EBP-16]
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,20
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,30
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,15
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,15
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        TEST EAX,EAX
+        SETZ AL
+        MOVZX EAX,AL
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,3
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

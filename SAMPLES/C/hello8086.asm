@@ -34,6 +34,11 @@ _CCK_1  DB 'Hello 8086!',0
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,OFFSET _CCK_1
+        PUSH EAX
+        CALL _printf
+        ADD ESP,4
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

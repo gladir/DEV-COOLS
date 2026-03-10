@@ -36,6 +36,11 @@ _CCF_test_function:
         SUB ESP,4
 ;   local x = [EBP-4]
         MOV DWORD PTR [EBP-4],42
+        MOV EAX,42
+        MOV DWORD PTR [EBP-4],EAX
+        XOR EAX,EAX
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -44,6 +49,9 @@ _CCF_test_function:
 _CCF_another_void:
         PUSH EBP
         MOV EBP,ESP
+        XOR EAX,EAX
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET
@@ -52,6 +60,11 @@ _CCF_another_void:
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        CALL _CCF_test_function
+        CALL _CCF_another_void
+        MOV EAX,0
+        JMP _CCL_3
+_CCL_3:
         MOV ESP,EBP
         POP EBP
         RET

@@ -42,6 +42,17 @@ _CCF_main:
         MOV DWORD PTR [EBP-12],15
 ;   local result = [EBP-16]
         MOV DWORD PTR [EBP-16],0
+        MOV EAX,5
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,10
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,15
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-16],EAX
+        MOV EAX,DWORD PTR [EBP-16]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

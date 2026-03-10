@@ -42,6 +42,30 @@ _CCF_main:
         MOV DWORD PTR [EBP-12],0
 ;   local i = [EBP-16]
         MOV DWORD PTR [EBP-16],0
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,20
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,0
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+        MOV EAX,DWORD PTR [EBP-16]
+        MOV EAX,DWORD PTR [EBP-16]
+        MOV DWORD PTR [EBP-16],EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

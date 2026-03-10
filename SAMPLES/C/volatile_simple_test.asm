@@ -36,6 +36,13 @@ _CCF_main:
         MOV EBP,ESP
         SUB ESP,4
 ;   local local_var = [EBP-4]
+        MOV EAX,10
+        MOV DWORD PTR [_CCV_global_var],EAX
+        MOV EAX,20
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

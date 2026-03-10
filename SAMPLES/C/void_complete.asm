@@ -36,6 +36,11 @@ _CCF_print_message:
         SUB ESP,4
 ;   local msg = [EBP-4]
         MOV DWORD PTR [EBP-4],100
+        MOV EAX,100
+        MOV DWORD PTR [EBP-4],EAX
+        XOR EAX,EAX
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -44,6 +49,9 @@ _CCF_print_message:
 _CCF_another_func:
         PUSH EBP
         MOV EBP,ESP
+        XOR EAX,EAX
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET
@@ -52,6 +60,11 @@ _CCF_another_func:
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        CALL _CCF_print_message
+        CALL _CCF_another_func
+        MOV EAX,42
+        JMP _CCL_3
+_CCL_3:
         MOV ESP,EBP
         POP EBP
         RET

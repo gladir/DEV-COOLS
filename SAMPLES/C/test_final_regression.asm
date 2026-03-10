@@ -40,6 +40,13 @@ _CCF_main:
         MOV DWORD PTR [EBP-8],5
 ;   local c = [EBP-12]
         MOV DWORD PTR [EBP-12],0
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,5
+        MOV DWORD PTR [EBP-8],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        MOV DWORD PTR [EBP-12],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

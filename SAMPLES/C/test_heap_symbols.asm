@@ -36,6 +36,11 @@ _CCV_var3  DD 42
 _CCF_main:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,DWORD PTR [_CCV_var3]
+        MOV DWORD PTR [_CCV_var1],EAX
+        MOV EAX,DWORD PTR [_CCV_var1]
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

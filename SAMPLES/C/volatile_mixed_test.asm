@@ -40,6 +40,11 @@ _CCF_main:
 ;   local local_mixed = [EBP-4]
 ;   local local_vol = [EBP-8]
 ;   local local_const = [EBP-12]
+        MOV EAX,10
+        MOV DWORD PTR [_CCV_vol_var],EAX
+        MOV EAX,0
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET

@@ -33,6 +33,9 @@ CRLF     DB 13,10,0
 _CCF_test_return_value:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,42
+        JMP _CCL_1
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -44,6 +47,11 @@ _CCF_test_return_expr:
         SUB ESP,4
 ;   local x = [EBP-4]
         MOV DWORD PTR [EBP-4],10
+        MOV EAX,10
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP-4]
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET
@@ -55,6 +63,11 @@ _CCF_test_return_void:
         SUB ESP,4
 ;   local y = [EBP-4]
         MOV DWORD PTR [EBP-4],20
+        MOV EAX,20
+        MOV DWORD PTR [EBP-4],EAX
+        XOR EAX,EAX
+        JMP _CCL_3
+_CCL_3:
         MOV ESP,EBP
         POP EBP
         RET
@@ -68,6 +81,14 @@ _CCF_main:
         MOV DWORD PTR [EBP-4],0
 ;   local result2 = [EBP-8]
         MOV DWORD PTR [EBP-8],0
+        CALL _CCF_test_return_value
+        MOV DWORD PTR [EBP-4],EAX
+        CALL _CCF_test_return_expr
+        MOV DWORD PTR [EBP-8],EAX
+        CALL _CCF_test_return_void
+        MOV EAX,0
+        JMP _CCL_4
+_CCL_4:
         MOV ESP,EBP
         POP EBP
         RET

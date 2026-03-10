@@ -36,6 +36,26 @@ _CCF_main:
         SUB ESP,8
 ;   local result = [EBP-4]
 ;   local y = [EBP-8]
+; WARNING: variable non trouvee: Point
+        XOR EAX,EAX
+; WARNING: mot-cle inattendu dans expression: typedef
+        XOR EAX,EAX
+; WARNING: ponctuation inattendue: }
+        XOR EAX,EAX
+; WARNING: variable non trouvee: p
+        XOR EAX,EAX
+; WARNING: variable non trouvee: p
+        XOR EAX,EAX
+; WARNING: variable non trouvee: p
+        XOR EAX,EAX
+        PUSH EAX
+; WARNING: variable non trouvee: p
+        XOR EAX,EAX
+        PUSH EAX
+        CALL _CCF_multiply
+        ADD ESP,8
+        MOV DWORD PTR [EBP-4],EAX
+_CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
@@ -46,6 +66,9 @@ _CCF_multiply:
         MOV EBP,ESP
 ;   param a = [EBP+8]
 ;   param b = [EBP+12]
+        MOV EAX,DWORD PTR [EBP+8]
+        JMP _CCL_2
+_CCL_2:
         MOV ESP,EBP
         POP EBP
         RET
