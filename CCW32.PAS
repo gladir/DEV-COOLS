@@ -11759,10 +11759,10 @@ Procedure WriteBinDWord(Var F : File; D : LongInt);
 Begin BlockWrite(F, D, 4); End;
 
 { ------------------------------------------------------------ }
-{ WritePEFile : generer un fichier PE (.EXE) Win32             }
+{ WritePEFile : generer un fichier PE (.EXE ou .DLL) Win32     }
 { ------------------------------------------------------------ }
 
-Procedure WritePEFile(Const FileName : TString);
+Procedure WritePEFile(Const FileName : TString; IsDLL : Boolean);
 Var
   F : File;
   HSz, TFSz, RFSz, DFSz, TRVA, RRVA, DRVA, ImgSz, RSz : LongInt;
@@ -11772,8 +11772,12 @@ Var
   HNLen, Pad : LongInt;
   DName : String[16];
   SName : Array[0..7] of Byte;
+  CoffChar : Word;
 Begin
   DName := 'KERNEL32.DLL'#0;
+  { COFF Characteristics : EXECUTABLE_IMAGE | 32BIT_MACHINE [| DLL] }
+  CoffChar := $0102;
+  If IsDLL Then CoffChar := CoffChar Or $2000;
   IDTOf := 0; ILTOf := 40;
   IATOf := ILTOf + (PE_NUM_API + 1) * 4;
   HNOf := IATOf + (PE_NUM_API + 1) * 4;
@@ -11806,7 +11810,7 @@ Begin
   { COFF Hdr }
   WriteBinWord(F, PE_MACHINE_I386); WriteBinWord(F, 3);
   WriteBinDWord(F, 0); WriteBinDWord(F, 0); WriteBinDWord(F, 0);
-  WriteBinWord(F, PE_OPT_SIZE); WriteBinWord(F, $0102);
+  WriteBinWord(F, PE_OPT_SIZE); WriteBinWord(F, CoffChar);
   { Opt Hdr }
   WriteBinWord(F, PE_MAGIC_32); WriteBinWord(F, $0100);
   WriteBinDWord(F, TFSz); WriteBinDWord(F, DFSz + RFSz); WriteBinDWord(F, 0);
@@ -11904,7 +11908,7 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure AssembleAndWriteBinary(Const AsmFile, BinFile : TString;
-                                IsObj : Boolean);
+                                IsObj, IsDLL : Boolean);
 Var AsmF : Text; Line : String;
 Begin
   BinInit; BinInCode := True;
@@ -11916,7 +11920,8 @@ Begin
   End;
   While Not EOF(AsmF) Do Begin ReadLn(AsmF, Line); BinAssembleLine(Line); End;
   Close(AsmF);
-  If IsObj Then WriteCOFFFile(BinFile) Else WritePEFile(BinFile);
+  If IsObj Then WriteCOFFFile(BinFile)
+  Else WritePEFile(BinFile, IsDLL);
 End;
 
 { ------------------------------------------------------------ }
@@ -12001,8 +12006,20 @@ Begin
   If Opts.ObjOnly Then
   Begin
     { Generer un fichier COFF .OBJ }
-    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.obj'), True);
+    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.obj'), True, False);
     WriteLn('CCW32: OBJ genere -> ', ReplaceExt(Opts.SrcFile, '.obj'));
+    If Not Opts.AsmOutput Then
+    Begin
+      Assign(OutF, AsmFile);
+      {$I-} Erase(OutF); {$I+}
+      If IOResult <> 0 Then { ignorer };
+    End;
+  End
+  Else If Opts.DLLMode Then
+  Begin
+    { Generer un fichier PE .DLL }
+    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.dll'), False, True);
+    WriteLn('CCW32: DLL genere -> ', ReplaceExt(Opts.SrcFile, '.dll'));
     If Not Opts.AsmOutput Then
     Begin
       Assign(OutF, AsmFile);
@@ -12013,7 +12030,7 @@ Begin
   Else
   Begin
     { Generer un fichier PE .EXE (defaut) }
-    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.exe'), False);
+    AssembleAndWriteBinary(AsmFile, ReplaceExt(Opts.SrcFile, '.exe'), False, False);
     WriteLn('CCW32: EXE genere -> ', ReplaceExt(Opts.SrcFile, '.exe'));
     If Not Opts.AsmOutput Then
     Begin
