@@ -1,1 +1,8 @@
 *.o
+*.obj
+*.exe
+VAXPCW32
+VAXPCW32.compiled
+*.ppu
+*.rst
+link.res

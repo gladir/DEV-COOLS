@@ -1,6 +1,6 @@
 ; ========================================
 ; Genere par VAXPCW32 v1.0 (2026-03-09)
-; Source : SAMPLES/VAXPASCAL/test_module.pas
+; Source : SAMPLES/VAXPASCAL/test_records.pas
 ; Cible  : Win32 / 80386 / PE
 ; ========================================
 
@@ -28,97 +28,95 @@ EXTRN   _DeleteFileA@4       : PROC
 _TEXT   SEGMENT DWORD PUBLIC 'CODE'
         ASSUME CS:_TEXT
 
-; MODULE test_module
-        PUBLIC _VXPF_SHARED_COUNTER
-        PUBLIC _VXPF_GET_COUNTER
-; --- get_counter ---
-_VXPF_GET_COUNTER:
-        PUSH   EBP
-        MOV   EBP, ESP
-        SUB   ESP, 4
-        PUSH   ESI
-        PUSH   EDI
-        MOV   DWORD PTR [EBP-4], 0
+; --- Point d entree principal ---
+_VXPF_MAIN:
+; Obtenir le handle stdout
+        PUSH   -11
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_VXPRT_HSTDOUT], EAX
+; Obtenir le handle stdin
+        PUSH   -10
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_VXPRT_HSTDIN], EAX
+        JMP   _VXPL_MAINBODY
+
+_VXPL_MAINBODY:
 ; exception: sauvegarder handler parent
         PUSH   DWORD PTR [_VXPRT_EXCHDL]
         PUSH   DWORD PTR [_VXPRT_EXCSP]
         PUSH   DWORD PTR [_VXPRT_EXCBP]
-        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_2
+        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_1
         MOV   DWORD PTR [_VXPRT_EXCSP], ESP
         MOV   DWORD PTR [_VXPRT_EXCBP], EBP
-; assign retval get_counter
-        MOV   EAX, DWORD PTR [_VXPF_SHARED_COUNTER]
-        MOV   DWORD PTR [EBP-4], EAX
-; exception: pas d erreur, restaurer handler parent
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        JMP   _VXPL_3
-_VXPL_2:
-; exception handler (propagate to parent)
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
-        MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
-        JMP   DWORD PTR [_VXPRT_EXCHDL]
-_VXPL_3:
-_VXPL_1:
-        MOV   EAX, DWORD PTR [EBP-4]
-        POP   EDI
-        POP   ESI
-        MOV   ESP, EBP
-        POP   EBP
-        RET
-        PUBLIC _VXPF_INC_COUNTER
-; --- inc_counter ---
-_VXPF_INC_COUNTER:
-        PUSH   EBP
-        MOV   EBP, ESP
-        PUSH   ESI
-        PUSH   EDI
-; exception: sauvegarder handler parent
-        PUSH   DWORD PTR [_VXPRT_EXCHDL]
-        PUSH   DWORD PTR [_VXPRT_EXCSP]
-        PUSH   DWORD PTR [_VXPRT_EXCBP]
-        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_5
-        MOV   DWORD PTR [_VXPRT_EXCSP], ESP
-        MOV   DWORD PTR [_VXPRT_EXCBP], EBP
-; assign shared_counter
-        MOV   EAX, DWORD PTR [_VXPF_SHARED_COUNTER]
-        PUSH   EAX
-        MOV   EAX, 1
-        MOV   EBX, EAX
-        POP   EAX
-        ADD   EAX, EBX
-        MOV   DWORD PTR [_VXPF_SHARED_COUNTER], EAX
-; exception: pas d erreur, restaurer handler parent
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        JMP   _VXPL_6
-_VXPL_5:
-; exception handler (propagate to parent)
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
-        MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
-        JMP   DWORD PTR [_VXPRT_EXCHDL]
-_VXPL_6:
-_VXPL_4:
-        POP   EDI
-        POP   ESI
-        MOV   ESP, EBP
-        POP   EBP
-        RET
-        PUBLIC _VXPF_SET_COUNTER
-; --- set_counter ---
-_VXPF_SET_COUNTER:
-        PUSH   EBP
-        MOV   EBP, ESP
-        PUSH   ESI
-        PUSH   EDI
+; assign p1.x
+        MOV   EAX, 10
+        MOV   DWORD PTR [_VXPR_P1], EAX
+; assign p1.y
+        MOV   EAX, 20
+        MOV   EBX, OFFSET _VXPR_P1
+        ADD   EBX, 4
+        MOV   DWORD PTR [EBX], EAX
+; writeln
+        LEA   EAX, _VXPK_3
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field p1.*
+        MOV   EAX, DWORD PTR [_VXPR_P1]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; writeln
+        LEA   EAX, _VXPK_4
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field p1.*
+        MOV   EBX, OFFSET _VXPR_P1
+        ADD   EBX, 4
+        MOV   EAX, DWORD PTR [EBX]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign p2.x
+; field p1.*
+        MOV   EAX, DWORD PTR [_VXPR_P1]
+        MOV   DWORD PTR [_VXPR_P2], EAX
+; assign p2.y
+; field p1.*
+        MOV   EBX, OFFSET _VXPR_P1
+        ADD   EBX, 4
+        MOV   EAX, DWORD PTR [EBX]
+        MOV   EBX, OFFSET _VXPR_P2
+        ADD   EBX, 4
+        MOV   DWORD PTR [EBX], EAX
+; writeln
+        LEA   EAX, _VXPK_5
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field p2.*
+        MOV   EAX, DWORD PTR [_VXPR_P2]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign r.Color
+        MOV   EAX, 7
+        MOV   EBX, OFFSET _VXPR_R
+        ADD   EBX, 16
+        MOV   DWORD PTR [EBX], EAX
+; writeln
+        LEA   EAX, _VXPK_6
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field r.*
+        MOV   EBX, OFFSET _VXPR_R
+        ADD   EBX, 16
+        MOV   EAX, DWORD PTR [EBX]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; writeln
+        LEA   EAX, _VXPK_7
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field pk.*
+        MOV   EAX, DWORD PTR [_VXPR_PK]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
 ; exception: sauvegarder handler parent
         PUSH   DWORD PTR [_VXPRT_EXCHDL]
         PUSH   DWORD PTR [_VXPRT_EXCSP]
@@ -126,9 +124,6 @@ _VXPF_SET_COUNTER:
         MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_8
         MOV   DWORD PTR [_VXPRT_EXCSP], ESP
         MOV   DWORD PTR [_VXPRT_EXCBP], EBP
-; assign shared_counter
-        XOR   EAX, EAX
-        MOV   DWORD PTR [_VXPF_SHARED_COUNTER], EAX
 ; exception: pas d erreur, restaurer handler parent
         POP   DWORD PTR [_VXPRT_EXCBP]
         POP   DWORD PTR [_VXPRT_EXCSP]
@@ -143,12 +138,104 @@ _VXPL_8:
         MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
         JMP   DWORD PTR [_VXPRT_EXCHDL]
 _VXPL_9:
-_VXPL_7:
-        POP   EDI
-        POP   ESI
-        MOV   ESP, EBP
-        POP   EBP
-        RET
+; writeln
+        LEA   EAX, _VXPK_10
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field p1.*
+        MOV   EAX, DWORD PTR [_VXPR_P1]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; writeln
+        LEA   EAX, _VXPK_11
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field p1.*
+        MOV   EBX, OFFSET _VXPR_P1
+        ADD   EBX, 4
+        MOV   EAX, DWORD PTR [EBX]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; exception: sauvegarder handler parent
+        PUSH   DWORD PTR [_VXPRT_EXCHDL]
+        PUSH   DWORD PTR [_VXPRT_EXCSP]
+        PUSH   DWORD PTR [_VXPRT_EXCBP]
+        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_12
+        MOV   DWORD PTR [_VXPRT_EXCSP], ESP
+        MOV   DWORD PTR [_VXPRT_EXCBP], EBP
+; exception: pas d erreur, restaurer handler parent
+        POP   DWORD PTR [_VXPRT_EXCBP]
+        POP   DWORD PTR [_VXPRT_EXCSP]
+        POP   DWORD PTR [_VXPRT_EXCHDL]
+        JMP   _VXPL_13
+_VXPL_12:
+; exception handler (propagate to parent)
+        POP   DWORD PTR [_VXPRT_EXCBP]
+        POP   DWORD PTR [_VXPRT_EXCSP]
+        POP   DWORD PTR [_VXPRT_EXCHDL]
+        MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
+        MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
+        JMP   DWORD PTR [_VXPRT_EXCHDL]
+_VXPL_13:
+; assign sh.Kind
+        MOV   EAX, 1
+        MOV   DWORD PTR [_VXPR_SH], EAX
+; writeln
+        LEA   EAX, _VXPK_14
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field sh.*
+        MOV   EAX, DWORD PTR [_VXPR_SH]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign al.First
+        MOV   EAX, 1
+        MOV   DWORD PTR [_VXPR_AL], EAX
+; assign al.Status
+        XOR   EAX, EAX
+        MOV   EBX, OFFSET _VXPR_AL
+        ADD   EBX, 4
+        MOV   DWORD PTR [EBX], EAX
+; assign al.Data
+        MOV   EAX, 99
+        MOV   EBX, OFFSET _VXPR_AL
+        ADD   EBX, 8
+        MOV   DWORD PTR [EBX], EAX
+; writeln
+        LEA   EAX, _VXPK_15
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+; field al.*
+        MOV   EBX, OFFSET _VXPR_AL
+        ADD   EBX, 8
+        MOV   EAX, DWORD PTR [EBX]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; writeln
+        LEA   EAX, _VXPK_16
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        CALL   _VXPRT_NEWLINE
+; exception: pas d erreur, restaurer handler parent
+        POP   DWORD PTR [_VXPRT_EXCBP]
+        POP   DWORD PTR [_VXPRT_EXCSP]
+        POP   DWORD PTR [_VXPRT_EXCHDL]
+        JMP   _VXPL_2
+_VXPL_1:
+; exception handler (propagate to parent)
+        POP   DWORD PTR [_VXPRT_EXCBP]
+        POP   DWORD PTR [_VXPRT_EXCSP]
+        POP   DWORD PTR [_VXPRT_EXCHDL]
+        MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
+        MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
+        JMP   DWORD PTR [_VXPRT_EXCHDL]
+_VXPL_2:
+
+
+; --- Sortie programme (Win32 ExitProcess) ---
+_VXPL_EXIT:
+        PUSH   0
+        CALL   _ExitProcess@4
 
 ; ========================================
 ;   ROUTINES RUNTIME 32 BITS (Win32)
@@ -1707,6 +1794,22 @@ _VXPRT_NILMSG  DB  'Runtime error: Nil pointer dereference',0
 _VXPRT_SIGMSG  DB  'Runtime error: Unhandled condition',0
 
 ; --- Donnees du programme ---
-_VXPF_SHARED_COUNTER  DD  0
+_VXPR_P1  DB  8 DUP(0)
+_VXPR_P2  DB  8 DUP(0)
+_VXPR_R  DB  20 DUP(0)
+_VXPR_PK  DB  5 DUP(0)
+_VXPR_SH  DB  20 DUP(0)
+_VXPR_V  DB  12 DUP(0)
+_VXPR_AL  DB  12 DUP(0)
+_VXPK_3  DB  'p1.x = ',0
+_VXPK_4  DB  'p1.y = ',0
+_VXPK_5  DB  'p2.x = ',0
+_VXPK_6  DB  'r.Color = ',0
+_VXPK_7  DB  'pk.Value = ',0
+_VXPK_10  DB  'After WITH: p1.x = ',0
+_VXPK_11  DB  'After WITH: p1.y = ',0
+_VXPK_14  DB  'sh.Kind = ',0
+_VXPK_15  DB  'al.Data = ',0
+_VXPK_16  DB  'Records test OK',0
 _DATA   ENDS
-        END
+        END     _VXPF_MAIN

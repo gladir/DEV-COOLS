@@ -1,6 +1,6 @@
 ; ========================================
 ; Genere par VAXPCW32 v1.0 (2026-03-09)
-; Source : SAMPLES/VAXPASCAL/test_module.pas
+; Source : SAMPLES/VAXPASCAL/test_enum.pas
 ; Cible  : Win32 / 80386 / PE
 ; ========================================
 
@@ -28,113 +28,202 @@ EXTRN   _DeleteFileA@4       : PROC
 _TEXT   SEGMENT DWORD PUBLIC 'CODE'
         ASSUME CS:_TEXT
 
-; MODULE test_module
-        PUBLIC _VXPF_SHARED_COUNTER
-        PUBLIC _VXPF_GET_COUNTER
-; --- get_counter ---
-_VXPF_GET_COUNTER:
-        PUSH   EBP
-        MOV   EBP, ESP
-        SUB   ESP, 4
-        PUSH   ESI
-        PUSH   EDI
-        MOV   DWORD PTR [EBP-4], 0
+; --- Point d entree principal ---
+_VXPF_MAIN:
+; Obtenir le handle stdout
+        PUSH   -11
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_VXPRT_HSTDOUT], EAX
+; Obtenir le handle stdin
+        PUSH   -10
+        CALL   _GetStdHandle@4
+        MOV   DWORD PTR [_VXPRT_HSTDIN], EAX
+        JMP   _VXPL_MAINBODY
+
+_VXPL_MAINBODY:
 ; exception: sauvegarder handler parent
         PUSH   DWORD PTR [_VXPRT_EXCHDL]
         PUSH   DWORD PTR [_VXPRT_EXCSP]
         PUSH   DWORD PTR [_VXPRT_EXCBP]
-        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_2
+        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_1
         MOV   DWORD PTR [_VXPRT_EXCSP], ESP
         MOV   DWORD PTR [_VXPRT_EXCBP], EBP
-; assign retval get_counter
-        MOV   EAX, DWORD PTR [_VXPF_SHARED_COUNTER]
-        MOV   DWORD PTR [EBP-4], EAX
-; exception: pas d erreur, restaurer handler parent
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        JMP   _VXPL_3
-_VXPL_2:
-; exception handler (propagate to parent)
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
-        MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
-        JMP   DWORD PTR [_VXPRT_EXCHDL]
-_VXPL_3:
-_VXPL_1:
-        MOV   EAX, DWORD PTR [EBP-4]
-        POP   EDI
-        POP   ESI
-        MOV   ESP, EBP
-        POP   EBP
-        RET
-        PUBLIC _VXPF_INC_COUNTER
-; --- inc_counter ---
-_VXPF_INC_COUNTER:
-        PUSH   EBP
-        MOV   EBP, ESP
-        PUSH   ESI
-        PUSH   EDI
-; exception: sauvegarder handler parent
-        PUSH   DWORD PTR [_VXPRT_EXCHDL]
-        PUSH   DWORD PTR [_VXPRT_EXCSP]
-        PUSH   DWORD PTR [_VXPRT_EXCBP]
-        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_5
-        MOV   DWORD PTR [_VXPRT_EXCSP], ESP
-        MOV   DWORD PTR [_VXPRT_EXCBP], EBP
-; assign shared_counter
-        MOV   EAX, DWORD PTR [_VXPF_SHARED_COUNTER]
-        PUSH   EAX
-        MOV   EAX, 1
-        MOV   EBX, EAX
-        POP   EAX
-        ADD   EAX, EBX
-        MOV   DWORD PTR [_VXPF_SHARED_COUNTER], EAX
-; exception: pas d erreur, restaurer handler parent
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        JMP   _VXPL_6
-_VXPL_5:
-; exception handler (propagate to parent)
-        POP   DWORD PTR [_VXPRT_EXCBP]
-        POP   DWORD PTR [_VXPRT_EXCSP]
-        POP   DWORD PTR [_VXPRT_EXCHDL]
-        MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
-        MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
-        JMP   DWORD PTR [_VXPRT_EXCHDL]
-_VXPL_6:
-_VXPL_4:
-        POP   EDI
-        POP   ESI
-        MOV   ESP, EBP
-        POP   EBP
-        RET
-        PUBLIC _VXPF_SET_COUNTER
-; --- set_counter ---
-_VXPF_SET_COUNTER:
-        PUSH   EBP
-        MOV   EBP, ESP
-        PUSH   ESI
-        PUSH   EDI
-; exception: sauvegarder handler parent
-        PUSH   DWORD PTR [_VXPRT_EXCHDL]
-        PUSH   DWORD PTR [_VXPRT_EXCSP]
-        PUSH   DWORD PTR [_VXPRT_EXCBP]
-        MOV   DWORD PTR [_VXPRT_EXCHDL], OFFSET _VXPL_8
-        MOV   DWORD PTR [_VXPRT_EXCSP], ESP
-        MOV   DWORD PTR [_VXPRT_EXCBP], EBP
-; assign shared_counter
+; assign c
         XOR   EAX, EAX
-        MOV   DWORD PTR [_VXPF_SHARED_COUNTER], EAX
+        MOV   DWORD PTR [_VXP_C], EAX
+; writeln
+        LEA   EAX, _VXPK_3
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_C]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign c
+        MOV   EAX, 2
+        MOV   DWORD PTR [_VXP_C], EAX
+; writeln
+        LEA   EAX, _VXPK_4
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_C]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign c
+        MOV   EAX, DWORD PTR [_VXP_C]
+        INC    EAX
+        MOV   DWORD PTR [_VXP_C], EAX
+; writeln
+        LEA   EAX, _VXPK_5
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_C]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign c
+        MOV   EAX, DWORD PTR [_VXP_C]
+        DEC    EAX
+        MOV   DWORD PTR [_VXP_C], EAX
+; writeln
+        LEA   EAX, _VXPK_6
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_C]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign d
+        XOR   EAX, EAX
+        MOV   DWORD PTR [_VXP_D], EAX
+; writeln
+        LEA   EAX, _VXPK_7
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_D]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign d
+        MOV   EAX, 3
+        MOV   DWORD PTR [_VXP_D], EAX
+; writeln
+        LEA   EAX, _VXPK_8
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_D]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign n
+        MOV   EAX, 42
+        MOV   DWORD PTR [_VXP_N], EAX
+; writeln
+        LEA   EAX, _VXPK_9
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_N]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign r
+        MOV   EAX, 5
+        MOV   DWORD PTR [_VXP_R], EAX
+; writeln
+        LEA   EAX, _VXPK_10
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_R]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign i
+        MOV   EAX, 0
+        MOV   DWORD PTR [_VXP_I], EAX
+; writeln
+        LEA   EAX, _VXPK_11
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_I]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign i
+        MOV   EAX, 4
+        MOV   DWORD PTR [_VXP_I], EAX
+; writeln
+        LEA   EAX, _VXPK_12
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_I]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign i
+        MOV   EAX, 0
+        MOV   DWORD PTR [_VXP_I], EAX
+; writeln
+        LEA   EAX, _VXPK_13
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_I]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign i
+        MOV   EAX, 255
+        MOV   DWORD PTR [_VXP_I], EAX
+; writeln
+        LEA   EAX, _VXPK_14
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_I]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign i
+        MOV   EAX, -10
+        MOV   DWORD PTR [_VXP_I], EAX
+; writeln
+        LEA   EAX, _VXPK_15
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_I]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign i
+        MOV   EAX, 10
+        MOV   DWORD PTR [_VXP_I], EAX
+; writeln
+        LEA   EAX, _VXPK_16
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_I]
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign day
+        XOR   EAX, EAX
+        MOV   DWORD PTR [_VXP_DAY], EAX
+; writeln
+        LEA   EAX, _VXPK_17
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_DAY]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
+; assign day
+        MOV   EAX, 6
+        MOV   DWORD PTR [_VXP_DAY], EAX
+; writeln
+        LEA   EAX, _VXPK_18
+        MOV   ESI, EAX
+        CALL   _VXPRT_PRINTSTR
+        MOV   EAX, DWORD PTR [_VXP_DAY]
+        MOVZX   EAX, AL
+        CALL   _VXPRT_PRINTINT
+        CALL   _VXPRT_NEWLINE
 ; exception: pas d erreur, restaurer handler parent
         POP   DWORD PTR [_VXPRT_EXCBP]
         POP   DWORD PTR [_VXPRT_EXCSP]
         POP   DWORD PTR [_VXPRT_EXCHDL]
-        JMP   _VXPL_9
-_VXPL_8:
+        JMP   _VXPL_2
+_VXPL_1:
 ; exception handler (propagate to parent)
         POP   DWORD PTR [_VXPRT_EXCBP]
         POP   DWORD PTR [_VXPRT_EXCSP]
@@ -142,13 +231,13 @@ _VXPL_8:
         MOV   ESP, DWORD PTR [_VXPRT_EXCSP]
         MOV   EBP, DWORD PTR [_VXPRT_EXCBP]
         JMP   DWORD PTR [_VXPRT_EXCHDL]
-_VXPL_9:
-_VXPL_7:
-        POP   EDI
-        POP   ESI
-        MOV   ESP, EBP
-        POP   EBP
-        RET
+_VXPL_2:
+
+
+; --- Sortie programme (Win32 ExitProcess) ---
+_VXPL_EXIT:
+        PUSH   0
+        CALL   _ExitProcess@4
 
 ; ========================================
 ;   ROUTINES RUNTIME 32 BITS (Win32)
@@ -1707,6 +1796,27 @@ _VXPRT_NILMSG  DB  'Runtime error: Nil pointer dereference',0
 _VXPRT_SIGMSG  DB  'Runtime error: Unhandled condition',0
 
 ; --- Donnees du programme ---
-_VXPF_SHARED_COUNTER  DD  0
+_VXP_C  DD  0
+_VXP_D  DD  0
+_VXP_N  DD  0
+_VXP_R  DD  0
+_VXP_DAY  DD  0
+_VXP_I  DD  0
+_VXPK_3  DB  'Red = ',0
+_VXPK_4  DB  'Blue = ',0
+_VXPK_5  DB  'After Blue = ',0
+_VXPK_6  DB  'Back to Blue = ',0
+_VXPK_7  DB  'North = ',0
+_VXPK_8  DB  'West = ',0
+_VXPK_9  DB  'n = ',0
+_VXPK_10  DB  'r = ',0
+_VXPK_11  DB  'FIRST(Color) = ',0
+_VXPK_12  DB  'LAST(Color) = ',0
+_VXPK_13  DB  'FIRST(SmallInt) = ',0
+_VXPK_14  DB  'LAST(SmallInt) = ',0
+_VXPK_15  DB  'FIRST(SignedRange) = ',0
+_VXPK_16  DB  'LAST(SignedRange) = ',0
+_VXPK_17  DB  'Monday = ',0
+_VXPK_18  DB  'Sunday = ',0
 _DATA   ENDS
-        END
+        END     _VXPF_MAIN
