@@ -375,7 +375,7 @@
             _CLRT_EQUAL(AX=a, BX=b) : egalite structurelle -> AX=true|false
             RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
 
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
             EmitClose : END _CLF_main dans _TEXT ENDS / DATA ENDS
             Run : pipeline complet LexInit -> ParseProgram ->
               EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _CLF_main
@@ -642,6 +642,7 @@ Var
 
   (* Etat general *)
   RuntimeEmitted : Boolean;
+  MainFnFound    : Boolean;   (* (defn -main ...) detectee? (TODO 25) *)
 
 (* ============================================================
    FORWARD DECLARATIONS
@@ -1069,6 +1070,7 @@ Begin
   CurFnName      := '';
   LoopTop        := 0;
   RuntimeEmitted := False;
+  MainFnFound    := False;
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
   GExprDummy.Kind    := EK_NONE;
@@ -2989,9 +2991,16 @@ End;
 
 (* EmitClose : terminer le fichier ASM *)
 (* Emettre la sortie DOS, le runtime, _TEXT ENDS, le segment DATA, END *)
+(* TODO 25 : si (defn -main ...) a ete definie, on la CALL avant exit *)
 Procedure EmitClose;
 Begin
   EmitBlankLine;
+  (* TODO 25 : appeler -main si elle a ete definie *)
+  If MainFnFound Then
+  Begin
+    EmitComment('--- appel -main (TODO 25) ---');
+    EmitInstr('CALL', CL_FN_PFX + SymNameClean('-main'));
+  End;
   EmitComment('--- sortie DOS ---');
   EmitInstrAB('MOV', 'AX', '4C00h');
   EmitInstr('INT', '21h');
@@ -5950,6 +5959,10 @@ Begin
   LexNextToken;
 
   EmitComment('(defn ' + FnName + ' ...)');
+
+  (* TODO 25 : detecter (defn -main ...) *)
+  If FnName = '-main' Then
+    MainFnFound := True;
 
   (* Enregistrer la fonction dans la table des symboles *)
   SymAdd(FnName, SK_FN, TY_IDX_FN, 0);
@@ -11642,7 +11655,7 @@ End;
 
 Procedure ParseProgram;
 Begin
-  (* TODO 25 - stub : lire le premier token et boucler *)
+  (* TODO 25 : lecture et compilation de toutes les formes de niveau superieur *)
   LexNextToken;
   While CurToken.Kind <> TK_EOF Do
   Begin
