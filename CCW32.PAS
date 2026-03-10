@@ -233,7 +233,7 @@
             Tampons I/O : INBUF (256 octets), NUMBUF (16 octets)
             Variables de handles : HSTDOUT, HSTDIN, HHEAP (DWORD)
 
-  TODO 09 - VARIABLES ET DECLARATIONS
+  TODO 09 - VARIABLES ET DECLARATIONS [IMPLEMENTE]
             Variables globales : segment .DATA, acces par [_CCV_nom]
             Variables locales : pile EBP, acces [EBP-offset]
             Parametres de fonction : [EBP+8+...] (convention cdecl)
@@ -4625,6 +4625,7 @@ End;
 Var
   { Compteur global de labels auto-generes }
   EmitLabelSeq : Integer;
+  HasMainFunc  : Boolean;     { True si la fonction main() existe       }
 
 { ------------------------------------------------------------ }
 { EmitOpen : ouvrir le fichier .ASM de sortie                  }
@@ -4650,7 +4651,10 @@ Procedure EmitClose;
 Begin
   If OutFOpen Then
   Begin
-    WriteLn(OutF, 'END');
+    If HasMainFunc Then
+      WriteLn(OutF, 'END _main')
+    Else
+      WriteLn(OutF, 'END');
     Close(OutF);
     OutFOpen := False;
   End;
@@ -5521,6 +5525,855 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 09 - VARIABLES ET DECLARATIONS                          }
+{ ============================================================ }
+
+Const
+  MAX_FUNC  = {$IFDEF FPC}256{$ELSE}32{$ENDIF};
+  MAX_LOCAL = {$IFDEF FPC}64{$ELSE}16{$ENDIF};
+
+Type
+  TLocalVar = Record
+    Name      : TString;
+    TypeIdx   : Integer;
+    Offset    : Integer;     { offset base EBP (negatif pour locales) }
+    Size      : Integer;
+    IsStatic  : Boolean;
+    StaticLbl : TString;
+    InitVal   : LongInt;
+    HasInit   : Boolean;
+    IsPointer : Boolean;
+    IsArray   : Boolean;
+    ArraySize : Integer;
+  End;
+
+  TFuncInfo = Record
+    Name       : TString;
+    MangledName: TString;
+    RetTypeIdx : Integer;
+    ParamCount : Integer;
+    ParamNames : Array[0..MAX_PARAMS - 1] Of TString;
+    ParamTypes : Array[0..MAX_PARAMS - 1] Of Integer;
+    ParamOfs   : Array[0..MAX_PARAMS - 1] Of Integer;
+    LocalCount : Integer;
+    Locals     : Array[0..MAX_LOCAL - 1] Of TLocalVar;
+    LocalSize  : Integer;
+    BodyStart  : Integer;
+    BodyEnd    : Integer;
+    IsStatic   : Boolean;
+    IsForward  : Boolean;
+    SymIdx     : Integer;
+  End;
+
+Var
+  FuncTab   : Array[0..MAX_FUNC - 1] Of TFuncInfo;
+  FuncCount : Integer;
+
+{ ------------------------------------------------------------ }
+{ ParseTypeFromTokens : parser un type C a partir du pool      }
+{ Retourne l index dans TypeTab ou -1 si echec                 }
+{ ------------------------------------------------------------ }
+
+Function ParseTypeFromTokens(Var P : Integer) : Integer;
+Var
+  TName : TString;
+  TIdx  : Integer;
+Begin
+  ParseTypeFromTokens := -1;
+  If P >= TokenCount Then Exit;
+
+  { Sauter les qualificateurs (const, volatile) }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+        IsQualifier(TokenPool[P].Val) Do
+    Inc(P);
+  If P >= TokenCount Then Exit;
+
+  { struct / union / enum }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     ((TokenPool[P].Val = 'struct') Or (TokenPool[P].Val = 'union') Or
+      (TokenPool[P].Val = 'enum')) Then
+  Begin
+    TName := TokenPool[P].Val;
+    Inc(P);
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      TName := TName + ' ' + TokenPool[P].Val;
+      Inc(P);
+    End;
+    TIdx := TypeFindByName(TName);
+    If TIdx < 0 Then
+      TIdx := TypeFindByName('int');
+    ParseTypeFromTokens := TIdx;
+    Exit;
+  End;
+
+  { Type de base (int, char, short, long, void, float, double, signed, unsigned) }
+  If (TokenPool[P].Kind = TK_KEYWORD) And IsTypeSpecifier(TokenPool[P].Val) Then
+  Begin
+    TName := TokenPool[P].Val;
+    Inc(P);
+    { Combinaisons : unsigned int, long int, unsigned long int, etc. }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       IsTypeSpecifier(TokenPool[P].Val) Then
+    Begin
+      TName := TName + ' ' + TokenPool[P].Val;
+      Inc(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+         IsTypeSpecifier(TokenPool[P].Val) Then
+      Begin
+        TName := TName + ' ' + TokenPool[P].Val;
+        Inc(P);
+      End;
+    End;
+    TIdx := TypeFindByName(TName);
+    If TIdx < 0 Then
+      TIdx := TypeFindByName('int');
+    ParseTypeFromTokens := TIdx;
+    Exit;
+  End;
+
+  { Typedef : identifiant qui correspond a un type connu }
+  If TokenPool[P].Kind = TK_IDENT Then
+  Begin
+    TIdx := TypeFindByName(TokenPool[P].Val);
+    If TIdx >= 0 Then
+    Begin
+      Inc(P);
+      ParseTypeFromTokens := TIdx;
+      Exit;
+    End;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ SkipToMatchingBrace : trouver accolade fermante              }
+{ Retourne l index de l accolade fermante ou TokenCount        }
+{ ------------------------------------------------------------ }
+
+Function SkipToMatchingBrace(StartIdx : Integer) : Integer;
+Var
+  D, J : Integer;
+Begin
+  D := 1;
+  J := StartIdx + 1;
+  While (J < TokenCount) And (D > 0) Do
+  Begin
+    If (TokenPool[J].Kind = TK_PUNCT) And (TokenPool[J].Val = '{') Then
+      Inc(D)
+    Else If (TokenPool[J].Kind = TK_PUNCT) And (TokenPool[J].Val = '}') Then
+      Dec(D);
+    If D > 0 Then Inc(J);
+  End;
+  SkipToMatchingBrace := J;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFuncDecls : parser les declarations/definitions de       }
+{ fonctions au niveau global du fichier                         }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFuncDecls;
+Var
+  I, J       : Integer;
+  Depth      : Integer;
+  FStatic    : Boolean;
+  FExtern    : Boolean;
+  RetTIdx    : Integer;
+  FName      : TString;
+  SaveI      : Integer;
+  ParamOfs   : Integer;
+  PCount     : Integer;
+  PName      : TString;
+  PTIdx      : Integer;
+  BodyOpen   : Integer;
+  BodyClose  : Integer;
+  LSize      : Integer;
+  LCount     : Integer;
+  LStat      : Boolean;
+  LTIdx      : Integer;
+  LName      : TString;
+  LInit      : LongInt;
+  LHasInit   : Boolean;
+  LIsPtr     : Boolean;
+  LIsArr     : Boolean;
+  LArrSz     : Integer;
+  SymIdx     : Integer;
+  FI         : Integer;
+  SzAlign    : Integer;
+Begin
+  HasMainFunc := False;
+  FuncCount   := 0;
+  Depth       := 0;
+  I           := 0;
+
+  While I < TokenCount Do
+  Begin
+    { Suivre la profondeur des accolades }
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+    Begin
+      Inc(Depth); Inc(I); Continue;
+    End;
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '}') Then
+    Begin
+      If Depth > 0 Then Dec(Depth);
+      Inc(I); Continue;
+    End;
+    If Depth > 0 Then Begin Inc(I); Continue; End;
+
+    { Sauvegarder la position pour reculer si ce n est pas une fonction }
+    SaveI := I;
+
+    { --- Collecter les classes de stockage --- }
+    FStatic := False;
+    FExtern := False;
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+          IsStorageClass(TokenPool[I].Val) Do
+    Begin
+      If TokenPool[I].Val = 'static' Then FStatic := True
+      Else If TokenPool[I].Val = 'extern' Then FExtern := True;
+      Inc(I);
+    End;
+    If I >= TokenCount Then Break;
+
+    { --- Parser le type de retour --- }
+    RetTIdx := ParseTypeFromTokens(I);
+    If RetTIdx < 0 Then
+    Begin
+      I := SaveI; Inc(I); Continue;
+    End;
+
+    { Sauter les qualificateurs apres le type }
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+          IsQualifier(TokenPool[I].Val) Do
+      Inc(I);
+    If I >= TokenCount Then Break;
+
+    { Sauter les pointeurs (*) sur le type de retour }
+    While (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+          (TokenPool[I].Val = '*') Do
+      Inc(I);
+    If I >= TokenCount Then Break;
+
+    { --- Identifiant de la fonction --- }
+    If TokenPool[I].Kind <> TK_IDENT Then
+    Begin
+      I := SaveI; Inc(I); Continue;
+    End;
+    FName := TokenPool[I].Val;
+    Inc(I);
+    If I >= TokenCount Then Break;
+
+    { --- Doit etre suivi de '(' --- }
+    If Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '(')) Then
+    Begin
+      I := SaveI; Inc(I); Continue;
+    End;
+    Inc(I); { passer le '(' }
+
+    { --- Parser la liste de parametres --- }
+    PCount   := 0;
+    ParamOfs := 8; { cdecl : premier parametre a EBP+8 }
+
+    If FuncCount >= MAX_FUNC Then
+    Begin
+      WarnMsg('table des fonctions pleine');
+      Break;
+    End;
+    FI := FuncCount;
+
+    { Verifier (void) ou () }
+    If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+       (TokenPool[I].Val = ')') Then
+    Begin
+      Inc(I); { liste vide }
+    End
+    Else If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+            (TokenPool[I].Val = 'void') And
+            (I + 1 < TokenCount) And (TokenPool[I + 1].Kind = TK_PUNCT) And
+            (TokenPool[I + 1].Val = ')') Then
+    Begin
+      Inc(I, 2); { (void) }
+    End
+    Else
+    Begin
+      { Parser les parametres type [*] nom, ... }
+      While (I < TokenCount) And (PCount < MAX_PARAMS) Do
+      Begin
+        { Sauter les qualificateurs }
+        While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+              IsQualifier(TokenPool[I].Val) Do
+          Inc(I);
+
+        PTIdx := ParseTypeFromTokens(I);
+        If PTIdx < 0 Then PTIdx := TypeFindByName('int');
+
+        { Sauter les qualificateurs apres le type }
+        While (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+              IsQualifier(TokenPool[I].Val) Do
+          Inc(I);
+
+        { Sauter les pointeurs }
+        While (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+              (TokenPool[I].Val = '*') Do
+          Inc(I);
+
+        { Nom du parametre (optionnel dans les prototypes) }
+        PName := '';
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_IDENT) Then
+        Begin
+          PName := TokenPool[I].Val;
+          Inc(I);
+        End;
+
+        { Sauter les array declarators [] dans les parametres }
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+           (TokenPool[I].Val = '[') Then
+        Begin
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ']')) Do
+            Inc(I);
+          If I < TokenCount Then Inc(I);
+        End;
+
+        FuncTab[FI].ParamNames[PCount] := PName;
+        FuncTab[FI].ParamTypes[PCount] := PTIdx;
+        FuncTab[FI].ParamOfs[PCount]   := ParamOfs;
+        Inc(ParamOfs, 4); { tous les params sont alignes a 4 octets }
+        Inc(PCount);
+
+        { Virgule ou ')' }
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+           (TokenPool[I].Val = ',') Then
+        Begin
+          Inc(I); Continue;
+        End;
+
+        { Gerer ... (varargs) }
+        If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+           (TokenPool[I].Val = '.') Then
+        Begin
+          While (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                (TokenPool[I].Val = '.') Do
+            Inc(I);
+          Continue;
+        End;
+
+        Break;
+      End;
+
+      { Avancer au ')' }
+      While (I < TokenCount) And
+            Not ((TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ')')) Do
+        Inc(I);
+      If I < TokenCount Then Inc(I);
+    End;
+
+    { --- Prototype ou definition ? --- }
+    If I >= TokenCount Then Break;
+
+    FuncTab[FI].Name       := FName;
+    FuncTab[FI].MangledName:= CC_FUNC_PFX + FName;
+    FuncTab[FI].RetTypeIdx := RetTIdx;
+    FuncTab[FI].ParamCount := PCount;
+    FuncTab[FI].IsStatic   := FStatic;
+    FuncTab[FI].LocalCount := 0;
+    FuncTab[FI].LocalSize  := 0;
+    FuncTab[FI].BodyStart  := 0;
+    FuncTab[FI].BodyEnd    := 0;
+    FuncTab[FI].IsForward  := True;
+    FuncTab[FI].SymIdx     := -1;
+
+    { Prototype (;) }
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = ';') Then
+    Begin
+      FuncTab[FI].IsForward := True;
+
+      { Enregistrer dans SymTab }
+      SymIdx := SymFind(FName);
+      If SymIdx < 0 Then
+      Begin
+        If FExtern Then
+          SymIdx := SymAdd(FName, SC_EXTERNAL, RetTIdx)
+        Else
+          SymIdx := SymAdd(FName, SC_FUNC, RetTIdx);
+      End;
+      If SymIdx >= 0 Then
+      Begin
+        FuncTab[FI].SymIdx := SymIdx;
+        SymTab[SymIdx].ParamCount := PCount;
+        SymTab[SymIdx].MangledName := CC_FUNC_PFX + FName;
+        If FExtern Then
+        Begin
+          SymTab[SymIdx].IsExternal := True;
+          SymTab[SymIdx].MangledName := '_' + FName;
+        End;
+      End;
+
+      Inc(FuncCount);
+      Inc(I);
+      If FName = 'main' Then HasMainFunc := True;
+      Continue;
+    End;
+
+    { Definition (corps de la fonction) }
+    If (TokenPool[I].Kind = TK_PUNCT) And (TokenPool[I].Val = '{') Then
+    Begin
+      BodyOpen  := I;
+      BodyClose := SkipToMatchingBrace(I);
+
+      FuncTab[FI].IsForward := False;
+      FuncTab[FI].BodyStart := BodyOpen;
+      FuncTab[FI].BodyEnd   := BodyClose;
+
+      { Scanner le corps pour les declarations de variables locales }
+      LSize  := 0;
+      LCount := 0;
+      J := BodyOpen + 1;
+
+      While (J < BodyClose) And (LCount < MAX_LOCAL) Do
+      Begin
+        { Sauter les tokens non-declaration }
+        { Une declaration locale commence par un storage-class, qualificateur,  }
+        { type-specifier ou typedef-name en debut d instruction                 }
+
+        { Detecter le debut d une declaration potentielle }
+        LStat    := False;
+        LIsPtr   := False;
+        LIsArr   := False;
+        LArrSz   := 0;
+        LHasInit := False;
+        LInit    := 0;
+
+        { Sauter les classes de stockage }
+        If (J < BodyClose) And (TokenPool[J].Kind = TK_KEYWORD) And
+           IsStorageClass(TokenPool[J].Val) Then
+        Begin
+          If TokenPool[J].Val = 'static' Then LStat := True
+          Else If TokenPool[J].Val = 'typedef' Then
+          Begin
+            { Sauter le typedef }
+            While (J < BodyClose) And
+                  Not ((TokenPool[J].Kind = TK_PUNCT) And
+                       (TokenPool[J].Val = ';')) Do
+              Inc(J);
+            If J < BodyClose Then Inc(J);
+            Continue;
+          End;
+          Inc(J);
+          If J >= BodyClose Then Break;
+        End;
+
+        { Sauter les qualificateurs }
+        While (J < BodyClose) And (TokenPool[J].Kind = TK_KEYWORD) And
+              IsQualifier(TokenPool[J].Val) Do
+          Inc(J);
+        If J >= BodyClose Then Break;
+
+        { Verifier si c est un type }
+        If Not (((TokenPool[J].Kind = TK_KEYWORD) And
+                 IsTypeSpecifier(TokenPool[J].Val)) Or
+                ((TokenPool[J].Kind = TK_IDENT) And
+                 (TypeFindByName(TokenPool[J].Val) >= 0))) Then
+        Begin
+          (* Pas une declaration : avancer au prochain ponctuation *)
+          While (J < BodyClose) And
+                Not ((TokenPool[J].Kind = TK_PUNCT) And
+                     ((TokenPool[J].Val = ';') Or (TokenPool[J].Val = '{') Or
+                      (TokenPool[J].Val = '}'))) Do
+            Inc(J);
+          If (J < BodyClose) And (TokenPool[J].Val = '{') Then
+          Begin
+            { Bloc imbrique : sauter }
+            J := SkipToMatchingBrace(J);
+            If J < BodyClose Then Inc(J);
+          End
+          Else If J < BodyClose Then
+            Inc(J);
+          Continue;
+        End;
+
+        { Parser le type }
+        LTIdx := ParseTypeFromTokens(J);
+        If LTIdx < 0 Then
+        Begin
+          { Pas un type valide, avancer }
+          While (J < BodyClose) And
+                Not ((TokenPool[J].Kind = TK_PUNCT) And
+                     (TokenPool[J].Val = ';')) Do
+            Inc(J);
+          If J < BodyClose Then Inc(J);
+          Continue;
+        End;
+
+        { Sauter les qualificateurs apres le type }
+        While (J < BodyClose) And (TokenPool[J].Kind = TK_KEYWORD) And
+              IsQualifier(TokenPool[J].Val) Do
+          Inc(J);
+        If J >= BodyClose Then Break;
+
+        { Sauter les pointeurs }
+        LIsPtr := False;
+        While (J < BodyClose) And (TokenPool[J].Kind = TK_OP) And
+              (TokenPool[J].Val = '*') Do
+        Begin
+          LIsPtr := True;
+          Inc(J);
+        End;
+        If J >= BodyClose Then Break;
+
+        { Identifiant }
+        If TokenPool[J].Kind <> TK_IDENT Then
+        Begin
+          While (J < BodyClose) And
+                Not ((TokenPool[J].Kind = TK_PUNCT) And
+                     (TokenPool[J].Val = ';')) Do
+            Inc(J);
+          If J < BodyClose Then Inc(J);
+          Continue;
+        End;
+
+        { Verifier que ce n est pas un appel de fonction (ident suivi de '(') }
+        If (J + 1 < BodyClose) And (TokenPool[J + 1].Kind = TK_PUNCT) And
+           (TokenPool[J + 1].Val = '(') Then
+        Begin
+          { C est un appel ou definition de sous-fonction, pas une decl locale }
+          While (J < BodyClose) And
+                Not ((TokenPool[J].Kind = TK_PUNCT) And
+                     (TokenPool[J].Val = ';')) Do
+            Inc(J);
+          If J < BodyClose Then Inc(J);
+          Continue;
+        End;
+
+        { --- Boucle pour declarations multiples (int a, b, c;) --- }
+        Repeat
+          LIsArr   := False;
+          LArrSz   := 0;
+          LHasInit := False;
+          LInit    := 0;
+
+          If (J >= BodyClose) Or (TokenPool[J].Kind <> TK_IDENT) Then Break;
+          LName := TokenPool[J].Val;
+          Inc(J);
+
+          { Tableau ? }
+          If (J < BodyClose) And (TokenPool[J].Kind = TK_PUNCT) And
+             (TokenPool[J].Val = '[') Then
+          Begin
+            LIsArr := True;
+            Inc(J);
+            If (J < BodyClose) And (TokenPool[J].Kind = TK_INTEGER) Then
+            Begin
+              LArrSz := TokenPool[J].IntVal;
+              Inc(J);
+            End
+            Else
+              LArrSz := 1;
+            While (J < BodyClose) And
+                  Not ((TokenPool[J].Kind = TK_PUNCT) And
+                       (TokenPool[J].Val = ']')) Do
+              Inc(J);
+            If J < BodyClose Then Inc(J);
+          End;
+
+          { Initialiseur ? }
+          If (J < BodyClose) And (TokenPool[J].Kind = TK_OP) And
+             (TokenPool[J].Val = '=') Then
+          Begin
+            LHasInit := True;
+            Inc(J);
+            If (J < BodyClose) And (TokenPool[J].Kind = TK_INTEGER) Then
+            Begin
+              LInit := TokenPool[J].IntVal;
+              Inc(J);
+            End
+            Else If (J < BodyClose) And (TokenPool[J].Kind = TK_OP) And
+                    (TokenPool[J].Val = '-') Then
+            Begin
+              Inc(J);
+              If (J < BodyClose) And (TokenPool[J].Kind = TK_INTEGER) Then
+              Begin
+                LInit := -TokenPool[J].IntVal;
+                Inc(J);
+              End;
+            End
+            Else If (J < BodyClose) And (TokenPool[J].Kind = TK_CHAR) Then
+            Begin
+              LInit := TokenPool[J].IntVal;
+              Inc(J);
+            End
+            Else
+            Begin
+              { Initialiseur complexe : avancer au ',' ou ';' }
+              While (J < BodyClose) And
+                    Not ((TokenPool[J].Kind = TK_PUNCT) And
+                         ((TokenPool[J].Val = ';') Or
+                          (TokenPool[J].Val = ','))) Do
+                Inc(J);
+            End;
+          End;
+
+          { Calculer la taille et l offset }
+          If LCount < MAX_LOCAL Then
+          Begin
+            If LIsArr Then
+            Begin
+              If LIsPtr Then
+                SzAlign := 4 * LArrSz
+              Else
+                SzAlign := TypeSizeofIdx(LTIdx) * LArrSz;
+            End
+            Else If LIsPtr Then
+              SzAlign := 4
+            Else
+              SzAlign := TypeSizeofIdx(LTIdx);
+            { Aligner a 4 octets minimum }
+            If SzAlign < 4 Then SzAlign := 4;
+            SzAlign := ((SzAlign + 3) Div 4) * 4;
+
+            FuncTab[FI].Locals[LCount].Name      := LName;
+            FuncTab[FI].Locals[LCount].TypeIdx    := LTIdx;
+            FuncTab[FI].Locals[LCount].IsPointer  := LIsPtr;
+            FuncTab[FI].Locals[LCount].IsArray    := LIsArr;
+            FuncTab[FI].Locals[LCount].ArraySize  := LArrSz;
+            FuncTab[FI].Locals[LCount].HasInit    := LHasInit;
+            FuncTab[FI].Locals[LCount].InitVal    := LInit;
+            FuncTab[FI].Locals[LCount].IsStatic   := LStat;
+
+            If LStat Then
+            Begin
+              { Variable statique : allouee dans .DATA }
+              FuncTab[FI].Locals[LCount].StaticLbl :=
+                DataAddStaticVar(FName + '_' + LName, LTIdx, LInit);
+              FuncTab[FI].Locals[LCount].Offset := 0;
+              FuncTab[FI].Locals[LCount].Size   := SzAlign;
+            End
+            Else
+            Begin
+              LSize := LSize + SzAlign;
+              FuncTab[FI].Locals[LCount].Offset := -LSize;
+              FuncTab[FI].Locals[LCount].Size   := SzAlign;
+              FuncTab[FI].Locals[LCount].StaticLbl := '';
+            End;
+
+            Inc(LCount);
+          End;
+
+          { Virgule -> declarateur suivant }
+          If (J < BodyClose) And (TokenPool[J].Kind = TK_PUNCT) And
+             (TokenPool[J].Val = ',') Then
+          Begin
+            Inc(J);
+            { Sauter pointeurs pour le declarateur suivant }
+            LIsPtr := False;
+            While (J < BodyClose) And (TokenPool[J].Kind = TK_OP) And
+                  (TokenPool[J].Val = '*') Do
+            Begin
+              LIsPtr := True;
+              Inc(J);
+            End;
+            Continue;
+          End;
+
+          Break;
+        Until False;
+
+        { Avancer au ';' }
+        While (J < BodyClose) And
+              Not ((TokenPool[J].Kind = TK_PUNCT) And
+                   (TokenPool[J].Val = ';')) Do
+          Inc(J);
+        If J < BodyClose Then Inc(J);
+      End;
+
+      FuncTab[FI].LocalCount := LCount;
+      FuncTab[FI].LocalSize  := LSize;
+
+      { Enregistrer dans SymTab }
+      SymIdx := SymFind(FName);
+      If SymIdx < 0 Then
+        SymIdx := SymAdd(FName, SC_FUNC, RetTIdx);
+      If SymIdx >= 0 Then
+      Begin
+        FuncTab[FI].SymIdx := SymIdx;
+        SymTab[SymIdx].ParamCount  := PCount;
+        SymTab[SymIdx].MangledName := CC_FUNC_PFX + FName;
+        SymTab[SymIdx].Cat         := SC_FUNC;
+        SymTab[SymIdx].IsStatic    := FStatic;
+        SymTab[SymIdx].IsExternal  := False;
+        SymTab[SymIdx].IsGlobal    := Not FStatic;
+      End;
+
+      Inc(FuncCount);
+      If FName = 'main' Then HasMainFunc := True;
+
+      { Sauter le corps dans le parcours principal }
+      I := BodyClose + 1;
+      Continue;
+    End;
+
+    { Ni ';' ni '{' : pas une fonction, avancer }
+    Inc(I);
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVarRef : generer l operande MASM pour acceder a la valeur }
+{ d une variable via son index dans SymTab                     }
+{ ------------------------------------------------------------ }
+
+Function GenVarRef(SIdx : Integer) : TString;
+Var
+  Sz   : Integer;
+  Pfx  : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    GenVarRef := 'DWORD PTR [0]';
+    Exit;
+  End;
+
+  Sz := TypeSizeofIdx(SymTab[SIdx].TypeIdx);
+  If Sz <= 1 Then
+    Pfx := 'BYTE PTR '
+  Else If Sz <= 2 Then
+    Pfx := 'WORD PTR '
+  Else
+    Pfx := 'DWORD PTR ';
+
+  Case SymTab[SIdx].Cat Of
+    SC_GLOBAL, SC_EXTERNAL, SC_STATIC:
+      GenVarRef := Pfx + '[' + SymTab[SIdx].MangledName + ']';
+    SC_VAR:
+    Begin
+      If SymTab[SIdx].IsGlobal Or (SymTab[SIdx].ScopeLevel = 0) Then
+        GenVarRef := Pfx + '[' + SymTab[SIdx].MangledName + ']'
+      Else If SymTab[SIdx].Offset < 0 Then
+        GenVarRef := Pfx + '[EBP' + IntToStr_(SymTab[SIdx].Offset) + ']'
+      Else
+        GenVarRef := Pfx + '[EBP+' + IntToStr_(SymTab[SIdx].Offset) + ']';
+    End;
+    SC_PARAM:
+      GenVarRef := Pfx + '[EBP+' + IntToStr_(SymTab[SIdx].Offset) + ']';
+  Else
+    GenVarRef := Pfx + '[' + SymTab[SIdx].MangledName + ']';
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenVarAddr : generer l operande MASM pour l adresse d une    }
+{ variable via son index dans SymTab                           }
+{ ------------------------------------------------------------ }
+
+Function GenVarAddr(SIdx : Integer) : TString;
+Begin
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    GenVarAddr := 'OFFSET 0';
+    Exit;
+  End;
+
+  Case SymTab[SIdx].Cat Of
+    SC_GLOBAL, SC_EXTERNAL, SC_STATIC:
+      GenVarAddr := 'OFFSET ' + SymTab[SIdx].MangledName;
+    SC_VAR:
+    Begin
+      If SymTab[SIdx].IsGlobal Or (SymTab[SIdx].ScopeLevel = 0) Then
+        GenVarAddr := 'OFFSET ' + SymTab[SIdx].MangledName
+      Else If SymTab[SIdx].Offset < 0 Then
+        GenVarAddr := 'EBP' + IntToStr_(SymTab[SIdx].Offset)
+      Else
+        GenVarAddr := 'EBP+' + IntToStr_(SymTab[SIdx].Offset);
+    End;
+    SC_PARAM:
+      GenVarAddr := 'EBP+' + IntToStr_(SymTab[SIdx].Offset);
+  Else
+    GenVarAddr := 'OFFSET ' + SymTab[SIdx].MangledName;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitFunctions : emettre le code ASM pour toutes les fonctions}
+{ ------------------------------------------------------------ }
+
+Procedure EmitFunctions;
+Var
+  FI, LI  : Integer;
+  OfsStr  : TString;
+Begin
+  For FI := 0 To FuncCount - 1 Do
+  Begin
+    If FuncTab[FI].IsForward Then Continue;
+
+    EmitComment('--- Fonction: ' + FuncTab[FI].Name + ' ---');
+    EmitLabel(FuncTab[FI].MangledName);
+    EmitProlog(FuncTab[FI].LocalSize);
+
+    { Commentaires descriptifs pour les parametres }
+    For LI := 0 To FuncTab[FI].ParamCount - 1 Do
+    Begin
+      EmitComment('  param ' + FuncTab[FI].ParamNames[LI] +
+                  ' = [EBP+' + IntToStr_(FuncTab[FI].ParamOfs[LI]) + ']');
+    End;
+
+    { Commentaires descriptifs et initialisation des variables locales }
+    For LI := 0 To FuncTab[FI].LocalCount - 1 Do
+    Begin
+      If FuncTab[FI].Locals[LI].IsStatic Then
+      Begin
+        EmitComment('  static ' + FuncTab[FI].Locals[LI].Name +
+                    ' = [' + FuncTab[FI].Locals[LI].StaticLbl + ']');
+      End
+      Else
+      Begin
+        OfsStr := IntToStr_(FuncTab[FI].Locals[LI].Offset);
+        EmitComment('  local ' + FuncTab[FI].Locals[LI].Name +
+                    ' = [EBP' + OfsStr + ']');
+        { Emettre l initialisation si necessaire }
+        If FuncTab[FI].Locals[LI].HasInit Then
+        Begin
+          EmitInstr('MOV DWORD PTR [EBP' + OfsStr + '],' +
+                    IntToStr_(FuncTab[FI].Locals[LI].InitVal));
+        End;
+      End;
+    End;
+
+    { TODO futur : emettre le corps de la fonction }
+
+    EmitEpilog;
+    EmitBlankLine;
+  End;
+
+  { --- Point d entree Win32 si main() existe --- }
+  If HasMainFunc Then
+  Begin
+    EmitComment('--- Point d''entree Win32 ---');
+    EmitLabel('_main');
+
+    { Obtenir les handles standard }
+    EmitInstr('PUSH -11');
+    EmitInstr('CALL _GetStdHandle@4');
+    EmitInstr('MOV DWORD PTR [_CCV_hstdout],EAX');
+
+    EmitInstr('PUSH -10');
+    EmitInstr('CALL _GetStdHandle@4');
+    EmitInstr('MOV DWORD PTR [_CCV_hstdin],EAX');
+
+    EmitInstr('CALL _GetProcessHeap@0');
+    EmitInstr('MOV DWORD PTR [_CCV_hheap],EAX');
+
+    { Appeler main() }
+    EmitInstr('CALL ' + CC_FUNC_PFX + 'main');
+
+    { Quitter le processus }
+    EmitInstr('PUSH 0');
+    EmitInstr('CALL _ExitProcess@4');
+    EmitBlankLine;
+  End;
+End;
+
 { ------------------------------------------------------------ }
 { Run : ouvre le fichier source, lexe et affiche les tokens     }
 { avec support du preprocesseur, des litteraux et symboles     }
@@ -5576,10 +6429,13 @@ Begin
   { --- Analyse des declarations globales (TODO 08) --- }
   ParseDataDecls;
 
+  { --- Analyse des fonctions (TODO 09) --- }
+  ParseFuncDecls;
+
   WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
     MacroCount, ' macros, ', TokenCount, ' tokens, ',
     DataCount, ' data, ', SymCount, ' symboles, ',
-    TypeCount, ' types)');
+    TypeCount, ' types, ', FuncCount, ' fonctions)');
 
   { --- Emetteur ASM (TODO 07) --- }
   { Generer le fichier .ASM si option -asm demandee }
@@ -5590,6 +6446,7 @@ Begin
     EmitHeader;
     EmitDataSeg;
     EmitCodeSeg;
+    EmitFunctions;
     EmitClose;
     WriteLn('CCW32: ASM genere -> ', AsmFile);
   End;
