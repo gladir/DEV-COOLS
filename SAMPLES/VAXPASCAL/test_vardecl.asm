@@ -38,6 +38,7 @@ _VXPF_MAIN:
         PUSH   -10
         CALL   _GetStdHandle@4
         MOV   DWORD PTR [_VXPRT_HSTDIN], EAX
+        JMP   _VXPL_MAINBODY
 
         PUBLIC _VXPF_SHARED_COUNT
 ; value init x

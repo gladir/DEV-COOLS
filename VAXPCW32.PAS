@@ -2997,6 +2997,8 @@ Begin
     EmitInstrA('PUSH', '-10');
     EmitInstrA('CALL', '_GetStdHandle@4');
     EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDIN]', 'EAX');
+    { Jump over function/procedure definitions to main body }
+    EmitInstrA('JMP', VXP_LBL_PFX + 'MAINBODY');
     EmitBlankLine;
   End;
 End;
@@ -8646,29 +8648,51 @@ Begin
           N := PEParseImm(Copy(Rest, 1, P - 1));
           For J := 1 To N Do PEDataByte(0);
         End
-        Else If (Length(Rest) > 0) And (Rest[1] = '''') Then
+        Else
         Begin
-          { String literal: 'text',0 }
-          J := 2;
-          While (J <= Length(Rest)) And (Rest[J] <> '''') Do
+          { Parse comma-separated DB values (strings and numerics) }
+          DataVals := Rest;
+          While Length(DataVals) > 0 Do
           Begin
-            PEDataByte(Byte(Ord(Rest[J])));
-            Inc(J);
-          End;
-          { Check for ,0 suffix }
-          If J < Length(Rest) Then
-          Begin
-            P := Pos(',', Copy(Rest, J, Length(Rest) - J + 1));
-            If P > 0 Then
+            DataVals := PETrimLine(DataVals);
+            If Length(DataVals) = 0 Then Break;
+            If DataVals[1] = '''' Then
             Begin
-              ValStr := PETrimLine(Copy(Rest, J + P,
-                        Length(Rest) - J - P + 1));
-              PEDataByte(Byte(PEParseImm(ValStr)));
+              { String literal }
+              J := 2;
+              While (J <= Length(DataVals)) And (DataVals[J] <> '''') Do
+              Begin
+                PEDataByte(Byte(Ord(DataVals[J])));
+                Inc(J);
+              End;
+              { Skip closing quote }
+              Inc(J);
+              { Skip comma after string if present }
+              While (J <= Length(DataVals)) And
+                    ((DataVals[J] = ',') Or (DataVals[J] = ' ')) Do
+                Inc(J);
+              DataVals := Copy(DataVals, J, Length(DataVals) - J + 1);
+            End
+            Else
+            Begin
+              { Numeric value - find next comma }
+              P := Pos(',', DataVals);
+              If P > 0 Then
+              Begin
+                ValStr := PETrimLine(Copy(DataVals, 1, P - 1));
+                DataVals := PETrimLine(
+                  Copy(DataVals, P + 1, Length(DataVals) - P));
+              End
+              Else
+              Begin
+                ValStr := PETrimLine(DataVals);
+                DataVals := '';
+              End;
+              If Length(ValStr) > 0 Then
+                PEDataByte(Byte(PEParseImm(ValStr)));
             End;
           End;
-        End
-        Else
-          PEDataByte(Byte(PEParseImm(Rest)));
+        End;
       End
       Else If PEStartsWith(ULine, 'DW ') Then
       Begin
@@ -8817,6 +8841,13 @@ Begin
         PECodeByte($15);
         PEEmitSymFixup(Sym);
       End
+      Else If PEIsImport(PETrimLine(Op1)) Then
+      Begin
+        { CALL import - indirect via IAT (FF 15) }
+        PECodeByte($FF);
+        PECodeByte($15);
+        PEEmitSymFixup(PETrimLine(Op1));
+      End
       Else
       Begin
         { CALL symbol - relative }
@@ -8836,6 +8867,13 @@ Begin
         PECodeByte($FF);
         PECodeByte($25);
         PEEmitSymFixup(Sym);
+      End
+      Else If PEIsImport(PETrimLine(Op1)) Then
+      Begin
+        { JMP import - indirect via IAT (FF 25) }
+        PECodeByte($FF);
+        PECodeByte($25);
+        PEEmitSymFixup(PETrimLine(Op1));
       End
       Else
       Begin

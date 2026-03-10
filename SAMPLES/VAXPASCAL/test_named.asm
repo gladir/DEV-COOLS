@@ -38,6 +38,7 @@ _VXPF_MAIN:
         PUSH   -10
         CALL   _GetStdHandle@4
         MOV   DWORD PTR [_VXPRT_HSTDIN], EAX
+        JMP   _VXPL_MAINBODY
 
 ; --- display ---
 _VXPF_DISPLAY:
