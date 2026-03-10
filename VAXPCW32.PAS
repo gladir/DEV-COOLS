@@ -7897,6 +7897,9 @@ Var
   PEInDataSeg : Boolean;
   PEAsmLines  : Array[0..PE_MAX_LINES-1] of TString;
   PEAsmCount  : LongInt;
+  PETextVA    : LongInt;
+  PERdataVA   : LongInt;
+  PEDataVA    : LongInt;
 
 Procedure PEReset;
 Var I : LongInt;
@@ -9765,7 +9768,7 @@ Begin
       For J := 0 To PE_NUM_IMPORTS - 1 Do
         If PEImports[J].Name = ImpName Then
         Begin
-          TargetAddr := PE_IMAGE_BASE + $2000 +
+          TargetAddr := PE_IMAGE_BASE + PERdataVA +
                         PEImports[J].IATOffset;
           Found := True;
           Break;
@@ -9778,9 +9781,9 @@ Begin
       If PEFindLabel(PEFixups[I].LabelName, LblOff, LblInData) Then
       Begin
         If LblInData Then
-          TargetAddr := PE_IMAGE_BASE + $3000 + LblOff
+          TargetAddr := PE_IMAGE_BASE + PEDataVA + LblOff
         Else
-          TargetAddr := PE_IMAGE_BASE + $1000 + LblOff;
+          TargetAddr := PE_IMAGE_BASE + PETextVA + LblOff;
       End
       Else
         TargetAddr := 0;
@@ -9804,7 +9807,7 @@ Begin
       { Relative fixup: target - (fixup_addr + 4) }
       { fixup_addr in image = IMAGE_BASE + $1000 + FixOff }
       FixVal := TargetAddr -
-                (PE_IMAGE_BASE + $1000 + FixOff + 4);
+                (PE_IMAGE_BASE + PETextVA + FixOff + 4);
       PECodeBuf[FixOff] := Byte(FixVal And $FF);
       PECodeBuf[FixOff+1] := Byte((FixVal Shr 8) And $FF);
       PECodeBuf[FixOff+2] := Byte((FixVal Shr 16) And $FF);
@@ -9953,11 +9956,13 @@ Begin
   RdataFileOff := TextFileOff + TextRawSize;
   DataFileOff := RdataFileOff + RdataRawSize;
 
+  { Compute section virtual addresses dynamically }
+  PETextVA  := $1000;
+  PERdataVA := PETextVA  + PEAlignUp(PECodePos,  PE_SECT_ALIGN);
+  PEDataVA  := PERdataVA + PEAlignUp(RdataSize,  PE_SECT_ALIGN);
+
   { Image size (aligned) }
-  SizeOfImage := $1000             { headers }
-               + PEAlignUp(PECodePos, PE_SECT_ALIGN)   { .text }
-               + PEAlignUp(RdataSize, PE_SECT_ALIGN)    { .rdata }
-               + PEAlignUp(PEDataPos, PE_SECT_ALIGN);   { .data }
+  SizeOfImage := PEDataVA + PEAlignUp(PEDataPos, PE_SECT_ALIGN);
 
   { Resolve fixups now that IAT offsets are known }
   PEResolveFixups;
@@ -10001,9 +10006,9 @@ Begin
   PEFileWriteDWord(F, TextRawSize); { SizeOfCode }
   PEFileWriteDWord(F, DataRawSize + RdataRawSize); { SizeOfInitializedData }
   PEFileWriteDWord(F, 0);      { SizeOfUninitializedData }
-  PEFileWriteDWord(F, $1000);  { AddressOfEntryPoint = start of .text }
-  PEFileWriteDWord(F, $1000);  { BaseOfCode }
-  PEFileWriteDWord(F, $3000);  { BaseOfData }
+  PEFileWriteDWord(F, PETextVA);  { AddressOfEntryPoint = start of .text }
+  PEFileWriteDWord(F, PETextVA);  { BaseOfCode }
+  PEFileWriteDWord(F, PEDataVA);  { BaseOfData }
   PEFileWriteDWord(F, PE_IMAGE_BASE);  { ImageBase }
   PEFileWriteDWord(F, PE_SECT_ALIGN);  { SectionAlignment }
   PEFileWriteDWord(F, PE_FILE_ALIGN);  { FileAlignment }
@@ -10030,13 +10035,13 @@ Begin
   { [0] Export - empty }
   PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0);
   { [1] Import - points to .rdata }
-  PEFileWriteDWord(F, $2000 + ImportDirOff);
+  PEFileWriteDWord(F, PERdataVA + ImportDirOff);
   PEFileWriteDWord(F, 40); { size of import directory }
   { [2..11] - empty }
   For I := 2 To 11 Do
   Begin PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0); End;
   { [12] IAT }
-  PEFileWriteDWord(F, $2000 + IATOff);
+  PEFileWriteDWord(F, PERdataVA + IATOff);
   PEFileWriteDWord(F, (PE_NUM_IMPORTS + 1) * 4);
   { [13..15] - empty }
   For I := 13 To 15 Do
@@ -10047,7 +10052,7 @@ Begin
   PEFileWriteStr(F, '.text');
   PEFileWriteZeros(F, 3); { pad name to 8 bytes }
   PEFileWriteDWord(F, PECodePos); { VirtualSize }
-  PEFileWriteDWord(F, $1000);     { VirtualAddress }
+  PEFileWriteDWord(F, PETextVA);     { VirtualAddress }
   PEFileWriteDWord(F, TextRawSize); { SizeOfRawData }
   PEFileWriteDWord(F, TextFileOff); { PointerToRawData }
   PEFileWriteDWord(F, 0);  { PointerToRelocations }
@@ -10060,7 +10065,7 @@ Begin
   PEFileWriteStr(F, '.rdata');
   PEFileWriteZeros(F, 2);
   PEFileWriteDWord(F, RdataSize);
-  PEFileWriteDWord(F, $2000);
+  PEFileWriteDWord(F, PERdataVA);
   PEFileWriteDWord(F, RdataRawSize);
   PEFileWriteDWord(F, RdataFileOff);
   PEFileWriteDWord(F, 0);
@@ -10073,7 +10078,7 @@ Begin
   PEFileWriteStr(F, '.data');
   PEFileWriteZeros(F, 3);
   PEFileWriteDWord(F, PEDataPos);
-  PEFileWriteDWord(F, $3000);
+  PEFileWriteDWord(F, PEDataVA);
   PEFileWriteDWord(F, DataRawSize);
   PEFileWriteDWord(F, DataFileOff);
   PEFileWriteDWord(F, 0);
@@ -10097,11 +10102,11 @@ Begin
 
   { === .rdata section (import tables) === }
   { Import Directory Table - entry 1: kernel32.dll }
-  PEFileWriteDWord(F, $2000 + ILTOff); { OriginalFirstThunk (ILT) }
+  PEFileWriteDWord(F, PERdataVA + ILTOff); { OriginalFirstThunk (ILT) }
   PEFileWriteDWord(F, 0);              { TimeDateStamp }
   PEFileWriteDWord(F, 0);              { ForwarderChain }
-  PEFileWriteDWord(F, $2000 + DLLNameOff); { Name RVA }
-  PEFileWriteDWord(F, $2000 + IATOff);     { FirstThunk (IAT) }
+  PEFileWriteDWord(F, PERdataVA + DLLNameOff); { Name RVA }
+  PEFileWriteDWord(F, PERdataVA + IATOff);     { FirstThunk (IAT) }
   { Import Directory Table - null terminator entry }
   PEFileWriteZeros(F, 20);
 
@@ -10109,7 +10114,7 @@ Begin
   CurOff := HintOff;
   For I := 0 To PE_NUM_IMPORTS - 1 Do
   Begin
-    PEFileWriteDWord(F, $2000 + CurOff); { RVA to Hint/Name }
+    PEFileWriteDWord(F, PERdataVA + CurOff); { RVA to Hint/Name }
     NameLen := Length(PEImports[I].Name) + 1;
     If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
     CurOff := CurOff + 2 + NameLen;
@@ -10120,7 +10125,7 @@ Begin
   CurOff := HintOff;
   For I := 0 To PE_NUM_IMPORTS - 1 Do
   Begin
-    PEFileWriteDWord(F, $2000 + CurOff);
+    PEFileWriteDWord(F, PERdataVA + CurOff);
     NameLen := Length(PEImports[I].Name) + 1;
     If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
     CurOff := CurOff + 2 + NameLen;
