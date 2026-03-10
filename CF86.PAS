@@ -4356,8 +4356,7 @@ Begin
       { The value is typically "#expr#" : a string with hash expression }
       If CurToken.Kind = TK_STRING Then
       Begin
-        { Simple approach: treat the string as a variable name }
-        { If it contains only a variable name (common case) }
+        { Attempt variable lookup, fallback to numeric literal }
         OneVal := CurToken.Val;
         ParserAdvance;
         { Try to find it as a variable }
