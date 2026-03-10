@@ -6914,9 +6914,8 @@ End;
 { ------------------------------------------------------------ }
 { BinOpPrec : retourner le niveau de precedence d un operateur  }
 { binaire C. 0 = pas un operateur binaire.                     }
-{ Numerotation : plus le nombre est grand, plus l operateur     }
-{ lie fortement (inverse de la spec TODO mais correct pour      }
-{ l algorithme de Pratt).                                       }
+{ Plus le nombre est eleve, plus l operateur lie fortement      }
+{ (ex: * = 13 > + = 12, donc * s applique avant +).            }
 { ------------------------------------------------------------ }
 
 Function BinOpPrec(Const Op : TString) : Integer;
@@ -7103,14 +7102,12 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
-{ GenStoreVarCompound : emettre le code pour op= sur variable   }
-{ EAX contient la valeur droite, effectue var op= EAX          }
+{ EmitCompoundOp : emettre les instructions pour l operateur    }
+{ compose sur EAX (gauche) et EBX (droite). Resultat dans EAX. }
 { ------------------------------------------------------------ }
 
-Procedure GenStoreVarCompound(Const Name, Op : TString);
+Procedure EmitCompoundOp(Const Op : TString);
 Begin
-  EmitInstr('MOV EBX,EAX');
-  GenLoadVar(Name);
   If Op = '+=' Then
     EmitInstr('ADD EAX,EBX')
   Else If Op = '-=' Then
@@ -7144,6 +7141,18 @@ Begin
     EmitInstr('MOV ECX,EBX');
     EmitInstr('SAR EAX,CL');
   End;
+End;
+
+{ ------------------------------------------------------------ }
+{ GenStoreVarCompound : emettre le code pour op= sur variable   }
+{ EAX contient la valeur droite, effectue var op= EAX          }
+{ ------------------------------------------------------------ }
+
+Procedure GenStoreVarCompound(Const Name, Op : TString);
+Begin
+  EmitInstr('MOV EBX,EAX');
+  GenLoadVar(Name);
+  EmitCompoundOp(Op);
   GenStoreVar(Name);
 End;
 
@@ -7186,8 +7195,10 @@ Begin
     { Ici on gère le cas dans une expression (rare mais possible) }
     If IsAssignOp(Op) Then
     Begin
-      { L operande gauche devrait etre un lvalue identifie avant }
-      { Pour simplifier, on le traite comme un calcul normal     }
+      { Note : les affectations simples (ident = expr) sont traitees   }
+      { directement dans ParseBody. Ici on gere le cas ou une          }
+      { affectation apparait dans une sous-expression. La verification }
+      { de lvalue n est pas effectuee (limitation connue).             }
       EmitInstr('PUSH EAX');
       If BinOpIsRight(Op) Then
         NextPrec := Prec
@@ -7205,39 +7216,7 @@ Begin
         { Operateur compose dans expression : calculer }
         EmitInstr('MOV EBX,EAX');
         EmitInstr('POP EAX');
-        If Op = '+=' Then
-          EmitInstr('ADD EAX,EBX')
-        Else If Op = '-=' Then
-          EmitInstr('SUB EAX,EBX')
-        Else If Op = '*=' Then
-          EmitInstr('IMUL EAX,EBX')
-        Else If Op = '/=' Then
-        Begin
-          EmitInstr('CDQ');
-          EmitInstr('IDIV EBX');
-        End
-        Else If Op = '%=' Then
-        Begin
-          EmitInstr('CDQ');
-          EmitInstr('IDIV EBX');
-          EmitInstr('MOV EAX,EDX');
-        End
-        Else If Op = '&=' Then
-          EmitInstr('AND EAX,EBX')
-        Else If Op = '|=' Then
-          EmitInstr('OR EAX,EBX')
-        Else If Op = '^=' Then
-          EmitInstr('XOR EAX,EBX')
-        Else If Op = '<<=' Then
-        Begin
-          EmitInstr('MOV ECX,EBX');
-          EmitInstr('SHL EAX,CL');
-        End
-        Else If Op = '>>=' Then
-        Begin
-          EmitInstr('MOV ECX,EBX');
-          EmitInstr('SAR EAX,CL');
-        End;
+        EmitCompoundOp(Op);
       End;
       Continue;
     End;
@@ -7290,11 +7269,10 @@ Begin
       EmitInstr('JMP ' + LblE);
       EmitLabel(LblF);
       { Consommer le ':' }
-      If Not EPAtEnd And (TokenPool[EP].Kind = TK_OP) And
+      If Not EPAtEnd And
+         ((TokenPool[EP].Kind = TK_OP) Or
+          (TokenPool[EP].Kind = TK_PUNCT)) And
          (TokenPool[EP].Val = ':') Then
-        Inc(EP)
-      Else If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
-              (TokenPool[EP].Val = ':') Then
         Inc(EP);
       { Branche fausse }
       ParseExprPrec(3);
