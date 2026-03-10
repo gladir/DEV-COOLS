@@ -504,7 +504,7 @@
               sizeof(pointeur) -> 4
               Evalue a la compilation (constante)
 
-  TODO 24 - RUNTIME MINIMAL WIN32
+  TODO 24 - RUNTIME MINIMAL WIN32 [IMPLEMENTE]
             _CCRT_PRINTSTR(ESI=msg) : WriteFile sur hStdOut
             _CCRT_PRINTINT(EAX=n) : conversion + WriteFile
             _CCRT_PRINTCRLF : ecriture CR+LF
@@ -10353,7 +10353,260 @@ Begin
   EmitInstr('RET');
   EmitBlankLine;
 
-  EmitComment('=== Fin Runtime I/O ===');
+  EmitComment('=== Runtime supplementaire (TODO 24) ===');
+  EmitBlankLine;
+
+  { _CCRT_NUMTOSTR : EAX = entier signe, EDI = buffer dest -> ASCIIZ }
+  EmitComment('--- _CCRT_NUMTOSTR : entier (EAX) -> ASCII (EDI=buf) ---');
+  EmitLabel('_CCRT_NUMTOSTR');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,EDI');       { sauver debut du buffer }
+  EmitInstr('MOV ECX,EAX');       { sauver la valeur }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNS _CCRT_NT_POS');
+  EmitInstr('MOV BYTE PTR [EDI],45'); { '-' }
+  EmitInstr('INC EDI');
+  EmitInstr('NEG EAX');
+  EmitLabel('_CCRT_NT_POS');
+  { Ecrire les chiffres dans l ordre inverse via la pile }
+  EmitInstr('XOR ECX,ECX');       { compteur de chiffres }
+  EmitInstr('MOV EBX,10');
+  EmitLabel('_CCRT_NT_PUSH');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV EBX');
+  EmitInstr('ADD DL,48');
+  EmitInstr('PUSH EDX');
+  EmitInstr('INC ECX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ _CCRT_NT_PUSH');
+  { Depiler dans l ordre correct }
+  EmitLabel('_CCRT_NT_POP');
+  EmitInstr('POP EAX');
+  EmitInstr('MOV [EDI],AL');
+  EmitInstr('INC EDI');
+  EmitInstr('DEC ECX');
+  EmitInstr('JNZ _CCRT_NT_POP');
+  EmitInstr('MOV BYTE PTR [EDI],0'); { terminateur nul }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_STRTONUM : ESI = chaine ASCIIZ -> EAX = entier (atoi) }
+  EmitComment('--- _CCRT_STRTONUM : ASCII (ESI) -> entier (EAX) ---');
+  EmitLabel('_CCRT_STRTONUM');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('XOR EDX,EDX');       { signe : 0=positif }
+  { Sauter les espaces }
+  EmitLabel('_CCRT_SN_SKIP');
+  EmitInstr('MOV CL,[ESI]');
+  EmitInstr('CMP CL,32');
+  EmitInstr('JE _CCRT_SN_SKIPN');
+  EmitInstr('CMP CL,9');
+  EmitInstr('JNE _CCRT_SN_SIGN');
+  EmitLabel('_CCRT_SN_SKIPN');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP _CCRT_SN_SKIP');
+  { Verifier le signe }
+  EmitLabel('_CCRT_SN_SIGN');
+  EmitInstr('CMP CL,45');         { '-' }
+  EmitInstr('JNE _CCRT_SN_PLUS');
+  EmitInstr('MOV EDX,1');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP _CCRT_SN_LOOP');
+  EmitLabel('_CCRT_SN_PLUS');
+  EmitInstr('CMP CL,43');         { '+' }
+  EmitInstr('JNE _CCRT_SN_LOOP');
+  EmitInstr('INC ESI');
+  { Boucle de conversion }
+  EmitLabel('_CCRT_SN_LOOP');
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');
+  EmitInstr('CMP ECX,48');
+  EmitInstr('JB _CCRT_SN_DONE');
+  EmitInstr('CMP ECX,57');
+  EmitInstr('JA _CCRT_SN_DONE');
+  EmitInstr('SUB ECX,48');
+  EmitInstr('IMUL EAX,10');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP _CCRT_SN_LOOP');
+  EmitLabel('_CCRT_SN_DONE');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JZ _CCRT_SN_RET');
+  EmitInstr('NEG EAX');
+  EmitLabel('_CCRT_SN_RET');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_STRLEN : ESI = chaine ASCIIZ -> EAX = longueur }
+  EmitComment('--- _CCRT_STRLEN : longueur ASCIIZ (ESI) -> EAX ---');
+  EmitLabel('_CCRT_STRLEN');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV EDI,ESI');
+  EmitInstr('XOR EAX,EAX');
+  EmitLabel('_CCRT_SL_LOOP');
+  EmitInstr('CMP BYTE PTR [EDI],0');
+  EmitInstr('JE _CCRT_SL_DONE');
+  EmitInstr('INC EDI');
+  EmitInstr('INC EAX');
+  EmitInstr('JMP _CCRT_SL_LOOP');
+  EmitLabel('_CCRT_SL_DONE');
+  EmitInstr('POP EDI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_STRCMP : ESI = s1, EDI = s2 -> drapeaux (ZF si egal) }
+  EmitComment('--- _CCRT_STRCMP : comparer (ESI) et (EDI) -> drapeaux ---');
+  EmitLabel('_CCRT_STRCMP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitLabel('_CCRT_SC_LOOP');
+  EmitInstr('MOV AL,[ESI]');
+  EmitInstr('MOV AH,[EDI]');
+  EmitInstr('CMP AL,AH');
+  EmitInstr('JNE _CCRT_SC_DONE');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ _CCRT_SC_DONE');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('JMP _CCRT_SC_LOOP');
+  EmitLabel('_CCRT_SC_DONE');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_STRCPY : ESI = src, EDI = dst -> copie chaine }
+  EmitComment('--- _CCRT_STRCPY : copier (ESI) -> (EDI) ---');
+  EmitLabel('_CCRT_STRCPY');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitLabel('_CCRT_SCP_LOOP');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ _CCRT_SCP_LOOP');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_STRCAT : ESI = s1, EDI = s2 -> EAX = ptr concat (INBUF) }
+  EmitComment('--- _CCRT_STRCAT : concatener (ESI)+(EDI) -> EAX=INBUF ---');
+  EmitLabel('_CCRT_STRCAT');
+  EmitInstr('PUSHAD');
+  { Copier s1 dans INBUF }
+  EmitInstr('LEA EDI,[INBUF]');
+  EmitInstr('MOV EBX,[ESP+4]');   { EDI original = s2 }
+  EmitLabel('_CCRT_CAT_CP1');
+  EmitInstr('LODSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ _CCRT_CAT_S2');
+  EmitInstr('STOSB');
+  EmitInstr('JMP _CCRT_CAT_CP1');
+  { Copier s2 apres }
+  EmitLabel('_CCRT_CAT_S2');
+  EmitInstr('MOV ESI,EBX');
+  EmitLabel('_CCRT_CAT_CP2');
+  EmitInstr('LODSB');
+  EmitInstr('STOSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JNZ _CCRT_CAT_CP2');
+  EmitInstr('POPAD');
+  EmitInstr('LEA EAX,[INBUF]');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_READLN : consommer stdin jusqu au prochain CR+LF }
+  EmitComment('--- _CCRT_READLN : consommer jusqu a CR+LF ---');
+  EmitLabel('_CCRT_READLN');
+  EmitInstr('PUSHAD');
+  EmitLabel('_CCRT_RL_LOOP');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESRD');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET NUMBUF');
+  EmitInstr('PUSH [HSTDIN]');
+  EmitInstr('CALL _ReadFile@20');
+  EmitInstr('CMP DWORD PTR [BYTESRD],0');
+  EmitInstr('JE _CCRT_RL_END');
+  EmitInstr('CMP BYTE PTR [NUMBUF],10');
+  EmitInstr('JE _CCRT_RL_END');
+  EmitInstr('JMP _CCRT_RL_LOOP');
+  EmitLabel('_CCRT_RL_END');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_MALLOC : EAX = taille -> EAX = pointeur (HeapAlloc) }
+  EmitComment('--- _CCRT_MALLOC : allouer EAX octets -> EAX=ptr ---');
+  EmitLabel('_CCRT_MALLOC');
+  EmitInstr('PUSH EAX');          { taille }
+  EmitInstr('PUSH 8');            { HEAP_ZERO_MEMORY = 0x08 }
+  EmitInstr('PUSH [HHEAP]');
+  EmitInstr('CALL _HeapAlloc@12');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_FREE : EAX = pointeur -> HeapFree }
+  EmitComment('--- _CCRT_FREE : liberer (EAX) ---');
+  EmitLabel('_CCRT_FREE');
+  EmitInstr('PUSH EAX');          { pointeur }
+  EmitInstr('PUSH 0');            { flags }
+  EmitInstr('PUSH [HHEAP]');
+  EmitInstr('CALL _HeapFree@12');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_MEMCPY : ESI = src, EDI = dst, ECX = len }
+  EmitComment('--- _CCRT_MEMCPY : copier ECX octets (ESI)->(EDI) ---');
+  EmitLabel('_CCRT_MEMCPY');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ECX');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_MEMSET : EDI = dst, EAX = val (byte), ECX = len }
+  EmitComment('--- _CCRT_MEMSET : remplir ECX octets (EDI) avec AL ---');
+  EmitLabel('_CCRT_MEMSET');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH ECX');
+  EmitInstr('REP STOSB');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EDI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_PANIC : ESI = message -> affiche + ExitProcess(1) }
+  EmitComment('--- _CCRT_PANIC : afficher ESI + ExitProcess(1) ---');
+  EmitLabel('_CCRT_PANIC');
+  EmitInstr('CALL _CCRT_PRINTSTR');
+  EmitInstr('CALL _CCRT_PRINTCRLF');
+  EmitInstr('PUSH 1');
+  EmitInstr('CALL _ExitProcess@4');
+  EmitBlankLine;
+
+  EmitComment('=== Fin Runtime (TODO 24) ===');
   EmitBlankLine;
 End;
 
