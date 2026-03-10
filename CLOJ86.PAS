@@ -304,7 +304,7 @@
             (intersection s1 s2) -> CALL _CLRT_SETINTER elements communs
             (difference s1 s2) -> CALL _CLRT_SETDIFF elements de s1 absents de s2
 
-  TODO 21 - DESTRUCTURATION (DESTRUCTURING)
+  TODO 21 - DESTRUCTURATION (DESTRUCTURING) [IMPLEMENTE]
             Destructuration sequentielle (vecteur) :
               (let [[a b c] vec] ...) -> nth 0, nth 1, nth 2
               (let [[a b & rest] vec] ...) -> a=nth 0, b=nth 1, rest=drop 2
@@ -422,6 +422,7 @@ Const
   MAX_STR       = {$IFDEF FPC}255{$ELSE}80{$ENDIF};
   MAX_KW        = {$IFDEF FPC}256{$ELSE}64{$ENDIF};
   STACK_SIZE    = 1024;
+  MAX_DESTR     = {$IFDEF FPC}32{$ELSE}8{$ENDIF};
 
   (* Prefixes de nommage ASM *)
   CL_VAR_PFX  = '_CLV_';     (* variable globale (def)              *)
@@ -811,6 +812,10 @@ Procedure ParseDisjForm(Var Res : TExprVal); Forward;
 Procedure ParseUnionForm(Var Res : TExprVal); Forward;
 Procedure ParseInterForm(Var Res : TExprVal); Forward;
 Procedure ParseDiffForm(Var Res : TExprVal); Forward;
+(* TODO 21 *)
+Procedure EmitDestrucVec(ValOfs : Integer); Forward;
+Procedure EmitDestrucMap(ValOfs : Integer); Forward;
+Procedure EmitDestrucBind(ValOfs : Integer); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -3501,6 +3506,17 @@ Var
   SaveFrame : Integer;
   Ofs       : Integer;
   S         : TString;
+  (* TODO 21 : destructuration *)
+  DestrucNames    : Array[0..MAX_DESTR - 1] Of TString;
+  DestrucKinds    : Array[0..MAX_DESTR - 1] Of Integer;
+  DestrucKwIdx    : Array[0..MAX_DESTR - 1] Of Integer;
+  DestrucDefaults : Array[0..MAX_DESTR - 1] Of LongInt;
+  DestrucCount    : Integer;
+  HasDestrucRest  : Boolean;
+  HasDestrucOr    : Boolean;
+  I, J            : Integer;
+  DOfs            : Integer;
+  LblDef, LblEnd  : TString;
 Begin
   ExprMakeNone(Res);
   EmitComment('(let [...] ...)');
@@ -3521,8 +3537,300 @@ Begin
   (* afin de proteger l espace contre les PUSH temporaires.       *)
   (* Les liaisons sont sequentielles : chaque nom voit les prec.  *)
   (* Le shadowing est supporte naturellement par SymAdd.          *)
+  (* TODO 21 : support destructuration [vec] et {map} en plus de  *)
+  (*           symboles simples.                                   *)
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
+    (* TODO 21 : destructuration vecteur ou map *)
+    If (CurToken.Kind = TK_LBRACKET) Or (CurToken.Kind = TK_LBRACE) Then
+    Begin
+      (* On doit d abord lire le pattern, puis la valeur *)
+      (* Sauvegarder le type de pattern *)
+
+      (* Verification : la valeur doit suivre *)
+      (* Consommer le pattern complet, puis evaluer la valeur *)
+      (* Strategie : stocker la valeur dans un local temporaire, *)
+      (* puis appeler EmitDestrucBind avec ce local.             *)
+
+      (* Allouer un local pour la valeur a destructurer *)
+      Inc(CurFrameSize, 2);
+      Ofs := CurFrameSize;
+      EmitInstrAB('SUB', 'SP', '2');
+
+      (* On doit d abord sauter le pattern pour lire la valeur *)
+      (* Mais le lexeur est sequentiel. On va plutot lire le    *)
+      (* pattern et la valeur ensemble.                          *)
+      (* Approche : lire et stocker le pattern, evaluer la val   *)
+      (* puis generer le code de destructuration.                *)
+      (* Simplification : on lit le pattern token par token      *)
+      (* grace a EmitDestrucBind qui consomme les tokens.        *)
+
+      (* PROBLEME : En Clojure, (let [[a b] expr] ...) signifie *)
+      (* que [a b] est le pattern et expr est la valeur.         *)
+      (* Le pattern vient AVANT la valeur.                       *)
+      (* Il faut donc : 1) sauter le pattern (compter brackets)  *)
+      (*                2) evaluer la valeur                      *)
+      (*                3) revenir au pattern pour destructurer   *)
+      (* MAIS on n a pas de backtracking dans le lexeur.          *)
+      (*                                                          *)
+      (* Alternative : on lit le pattern, on memorise les noms,  *)
+      (* PUIS on evalue la valeur, PUIS on bind les noms.        *)
+      (*                                                          *)
+      (* Approche retenue : On saute d abord le pattern en       *)
+      (* comptant la profondeur, puis on evalue la valeur, puis  *)
+      (* on rejouera le pattern. MAIS pas de replay possible.    *)
+      (*                                                          *)
+      (* Approche finale utilisee : lire d abord les noms du     *)
+      (* pattern dans un tableau, evaluer la valeur, puis         *)
+      (* generer les bindings.                                    *)
+      (*                                                          *)
+      (* MAIS pour rester simple et compatible avec le lexeur     *)
+      (* sans backtracking, on change l'ordre:                    *)
+      (* Le pattern et la valeur arrivent dans cet ordre:         *)
+      (*   [a b c] expr                                           *)
+      (* On NE peut PAS evaluer expr avant d'avoir lu [a b c].   *)
+      (* Donc on lit d abord le pattern en memorisant les noms,   *)
+      (* puis on evalue expr, puis on genere le code.             *)
+
+      If CurToken.Kind = TK_LBRACKET Then
+      Begin
+        (* Destructuration sequentielle *)
+        LexNextToken;  (* consomme '[' *)
+        I := 0;
+        HasDestrucRest := False;
+        While (CurToken.Kind <> TK_RBRACKET) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If (CurToken.Kind = TK_SYMBOL) And (CurToken.Val = '&') Then
+          Begin
+            LexNextToken; (* consomme '&' *)
+            HasDestrucRest := True;
+            If CurToken.Kind = TK_SYMBOL Then
+            Begin
+              If I < MAX_DESTR Then
+              Begin
+                DestrucNames[I] := CurToken.Val;
+                DestrucKinds[I] := 2; (* rest *)
+                Inc(I);
+              End;
+              LexNextToken;
+            End;
+            Continue;
+          End;
+          If CurToken.Kind = TK_SYMBOL Then
+          Begin
+            If I < MAX_DESTR Then
+            Begin
+              DestrucNames[I] := CurToken.Val;
+              If CurToken.Val = '_' Then
+                DestrucKinds[I] := 1 (* skip *)
+              Else
+                DestrucKinds[I] := 0; (* normal *)
+            End;
+            Inc(I);
+            LexNextToken;
+          End
+          Else
+          Begin
+            (* Nested destructuring not supported in this path *)
+            CompileError('symbole attendu dans destructuration let');
+            LexNextToken;
+          End;
+        End;
+        DestrucCount := I;
+        If CurToken.Kind = TK_RBRACKET Then
+          LexNextToken; (* consomme ']' *)
+
+        (* Maintenant evaluer la valeur *)
+        If (CurToken.Kind = TK_RBRACKET) Or (CurToken.Kind = TK_EOF) Then
+        Begin
+          WarnMsg('valeur manquante pour destructuration let');
+          Break;
+        End;
+        ParseForm(ValRes);
+        ExprFlushToAX(ValRes);
+        Str(Ofs, S);
+        EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+        (* Generer le code de destructuration *)
+        For J := 0 To DestrucCount - 1 Do
+        Begin
+          If DestrucKinds[J] = 1 Then
+            Continue;  (* _ : skip *)
+          Inc(CurFrameSize, 2);
+          DOfs := CurFrameSize;
+          EmitInstrAB('SUB', 'SP', '2');
+
+          If DestrucKinds[J] = 2 Then
+          Begin
+            (* & rest : sous-vecteur a partir de l'index J *)
+            Str(Ofs, S);
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+            Str(J, S);
+            EmitInstrAB('MOV', 'BX', S);
+            EmitInstrA('CALL', CL_RT_PFX + 'VECDROP');
+            Str(DOfs, S);
+            EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+            SymAdd(DestrucNames[J], SK_LOCAL, TY_IDX_VEC, -DOfs);
+          End
+          Else
+          Begin
+            (* Normal : nth *)
+            Str(Ofs, S);
+            EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+            Str(J, S);
+            EmitInstrAB('MOV', 'BX', S);
+            EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+            Str(DOfs, S);
+            EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+            SymAdd(DestrucNames[J], SK_LOCAL, TY_UNKNOWN, -DOfs);
+          End;
+        End;
+      End
+      Else
+      Begin
+        (* Destructuration associative {map} *)
+        LexNextToken;  (* consomme '{' *)
+        I := 0;
+        HasDestrucOr := False;
+        While (CurToken.Kind <> TK_RBRACE) And
+              (CurToken.Kind <> TK_EOF) Do
+        Begin
+          (* :keys [a b c] *)
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'keys') Then
+          Begin
+            LexNextToken;  (* consomme :keys *)
+            If CurToken.Kind = TK_LBRACKET Then
+            Begin
+              LexNextToken;  (* consomme '[' *)
+              While (CurToken.Kind <> TK_RBRACKET) And
+                    (CurToken.Kind <> TK_EOF) Do
+              Begin
+                If (CurToken.Kind = TK_SYMBOL) And (I < MAX_DESTR) Then
+                Begin
+                  DestrucNames[I] := CurToken.Val;
+                  DestrucKinds[I] := 0;  (* :keys mode *)
+                  DestrucKwIdx[I] := KwAdd(CurToken.Val);
+                  DestrucDefaults[I] := 0;
+                  Inc(I);
+                End;
+                LexNextToken;
+              End;
+              If CurToken.Kind = TK_RBRACKET Then
+                LexNextToken; (* consomme ']' *)
+            End;
+            Continue;
+          End;
+          (* :or {a 0 b 1} *)
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'or') Then
+          Begin
+            LexNextToken;  (* consomme :or *)
+            HasDestrucOr := True;
+            If CurToken.Kind = TK_LBRACE Then
+            Begin
+              LexNextToken;  (* consomme '{' *)
+              While (CurToken.Kind <> TK_RBRACE) And
+                    (CurToken.Kind <> TK_EOF) Do
+              Begin
+                If CurToken.Kind = TK_SYMBOL Then
+                Begin
+                  VarName := CurToken.Val;
+                  LexNextToken;
+                  If CurToken.Kind = TK_INTEGER Then
+                  Begin
+                    For J := 0 To I - 1 Do
+                    Begin
+                      If DestrucNames[J] = VarName Then
+                        DestrucDefaults[J] := CurToken.IntVal;
+                    End;
+                    LexNextToken;
+                  End;
+                End
+                Else
+                  LexNextToken;
+              End;
+              If CurToken.Kind = TK_RBRACE Then
+                LexNextToken; (* consomme '}' *)
+            End;
+            Continue;
+          End;
+          (* Forme explicite : {x :nom y :age} *)
+          If CurToken.Kind = TK_SYMBOL Then
+          Begin
+            If I < MAX_DESTR Then
+            Begin
+              DestrucNames[I] := CurToken.Val;
+              DestrucKinds[I] := 3; (* explicit key binding *)
+            End;
+            LexNextToken;
+            If CurToken.Kind = TK_KEYWORD Then
+            Begin
+              If I < MAX_DESTR Then
+                DestrucKwIdx[I] := KwAdd(CurToken.Val);
+              LexNextToken;
+              If I < MAX_DESTR Then
+              Begin
+                DestrucDefaults[I] := 0;
+                Inc(I);
+              End;
+            End
+            Else
+            Begin
+              CompileError('keyword attendu apres symbole dans {map}');
+            End;
+            Continue;
+          End;
+          LexNextToken;
+        End;
+        DestrucCount := I;
+        If CurToken.Kind = TK_RBRACE Then
+          LexNextToken; (* consomme '}' *)
+
+        (* Evaluer la valeur *)
+        If (CurToken.Kind = TK_RBRACKET) Or (CurToken.Kind = TK_EOF) Then
+        Begin
+          WarnMsg('valeur manquante pour destructuration let');
+          Break;
+        End;
+        ParseForm(ValRes);
+        ExprFlushToAX(ValRes);
+        Str(Ofs, S);
+        EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+        (* Generer le code de destructuration map *)
+        For J := 0 To DestrucCount - 1 Do
+        Begin
+          Inc(CurFrameSize, 2);
+          DOfs := CurFrameSize;
+          EmitInstrAB('SUB', 'SP', '2');
+
+          Str(Ofs, S);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+          Str(DestrucKwIdx[J], S);
+          EmitInstrAB('MOV', 'BX', S);
+          EmitInstrA('CALL', CL_RT_PFX + 'MAPGET');
+
+          (* Appliquer default si :or present et valeur = nil *)
+          If HasDestrucOr And (DestrucDefaults[J] <> 0) Then
+          Begin
+            LblDef := LabelGen;
+            LblEnd := LabelGen;
+            EmitInstrAB('CMP', 'AX', '0');
+            EmitInstrA('JNE', LblEnd);
+            Str(DestrucDefaults[J], S);
+            EmitInstrAB('MOV', 'AX', S);
+            EmitLabel(LblEnd);
+          End;
+
+          Str(DOfs, S);
+          EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+          SymAdd(DestrucNames[J], SK_LOCAL, TY_UNKNOWN, -DOfs);
+        End;
+      End;
+
+      Continue;
+    End;
+
     If CurToken.Kind <> TK_SYMBOL Then
     Begin
       CompileError('symbole attendu dans les liaisons let');
@@ -5433,13 +5741,27 @@ Var
   SkipLbl   : TString;
   ParamCount: Integer;
   ParamNames: Array[0..MAX_PARAM - 1] Of TString;
+  ParamDestr: Array[0..MAX_PARAM - 1] Of Integer;
+    (* 0 = simple symbol, 1 = vec destr, 2 = map destr *)
+  ParamDestrNames  : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of TString;
+  ParamDestrKinds  : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of Integer;
+  ParamDestrKwIdx  : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of Integer;
+  ParamDestrDefaults: Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of LongInt;
+  ParamDestrCount  : Array[0..MAX_PARAM - 1] Of Integer;
+  ParamDestrHasOr  : Array[0..MAX_PARAM - 1] Of Boolean;
   SaveFrame : Integer;
   SaveDepth : Integer;
   SaveRetLbl: TString;
   SaveFnName: TString;
   Sub       : TExprVal;
-  I         : Integer;
+  I, J      : Integer;
   Ofs       : Integer;
+  DOfs      : Integer;
+  S, SV     : TString;
+  TmpName   : TString;
+  PIdx      : Integer;
+  DC        : Integer;
+  LblEnd    : TString;
 Begin
   ExprMakeNone(Res);
 
@@ -5473,6 +5795,155 @@ Begin
   ParamCount := 0;
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
+    (* TODO 21 : support destructuration dans les parametres *)
+    If CurToken.Kind = TK_LBRACKET Then
+    Begin
+      (* Destructuration sequentielle : [a b c] *)
+      LexNextToken;  (* consomme '[' *)
+      If ParamCount < MAX_PARAM Then
+      Begin
+        Str(ParamCount, S);
+        ParamNames[ParamCount] := '__dp' + S;
+        ParamDestr[ParamCount] := 1;
+        DC := 0;
+        While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If (CurToken.Kind = TK_SYMBOL) And (CurToken.Val = '&') Then
+          Begin
+            LexNextToken;
+            If (CurToken.Kind = TK_SYMBOL) And (DC < MAX_DESTR) Then
+            Begin
+              ParamDestrNames[ParamCount, DC] := CurToken.Val;
+              ParamDestrKinds[ParamCount, DC] := 2; (* rest *)
+              Inc(DC);
+              LexNextToken;
+            End;
+            Continue;
+          End;
+          If (CurToken.Kind = TK_SYMBOL) And (DC < MAX_DESTR) Then
+          Begin
+            ParamDestrNames[ParamCount, DC] := CurToken.Val;
+            If CurToken.Val = '_' Then
+              ParamDestrKinds[ParamCount, DC] := 1
+            Else
+              ParamDestrKinds[ParamCount, DC] := 0;
+            Inc(DC);
+          End;
+          LexNextToken;
+        End;
+        ParamDestrCount[ParamCount] := DC;
+        ParamDestrHasOr[ParamCount] := False;
+        If CurToken.Kind = TK_RBRACKET Then
+          LexNextToken;
+        Inc(ParamCount);
+      End
+      Else
+      Begin
+        (* Trop de parametres - sauter *)
+        While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+          LexNextToken;
+        If CurToken.Kind = TK_RBRACKET Then LexNextToken;
+      End;
+      Continue;
+    End;
+
+    If CurToken.Kind = TK_LBRACE Then
+    Begin
+      (* Destructuration associative : {:keys [a b]} *)
+      LexNextToken;  (* consomme '{' *)
+      If ParamCount < MAX_PARAM Then
+      Begin
+        Str(ParamCount, S);
+        ParamNames[ParamCount] := '__dp' + S;
+        ParamDestr[ParamCount] := 2;
+        DC := 0;
+        ParamDestrHasOr[ParamCount] := False;
+        While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+        Begin
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'keys') Then
+          Begin
+            LexNextToken;
+            If CurToken.Kind = TK_LBRACKET Then
+            Begin
+              LexNextToken;
+              While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+              Begin
+                If (CurToken.Kind = TK_SYMBOL) And (DC < MAX_DESTR) Then
+                Begin
+                  ParamDestrNames[ParamCount, DC] := CurToken.Val;
+                  ParamDestrKinds[ParamCount, DC] := 0;
+                  ParamDestrKwIdx[ParamCount, DC] := KwAdd(CurToken.Val);
+                  ParamDestrDefaults[ParamCount, DC] := 0;
+                  Inc(DC);
+                End;
+                LexNextToken;
+              End;
+              If CurToken.Kind = TK_RBRACKET Then LexNextToken;
+            End;
+            Continue;
+          End;
+          If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'or') Then
+          Begin
+            LexNextToken;
+            ParamDestrHasOr[ParamCount] := True;
+            If CurToken.Kind = TK_LBRACE Then
+            Begin
+              LexNextToken;
+              While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+              Begin
+                If CurToken.Kind = TK_SYMBOL Then
+                Begin
+                  TmpName := CurToken.Val;
+                  LexNextToken;
+                  If CurToken.Kind = TK_INTEGER Then
+                  Begin
+                    For J := 0 To DC - 1 Do
+                      If ParamDestrNames[ParamCount, J] = TmpName Then
+                        ParamDestrDefaults[ParamCount, J] := CurToken.IntVal;
+                    LexNextToken;
+                  End;
+                End
+                Else
+                  LexNextToken;
+              End;
+              If CurToken.Kind = TK_RBRACE Then LexNextToken;
+            End;
+            Continue;
+          End;
+          (* Forme explicite {x :nom} *)
+          If CurToken.Kind = TK_SYMBOL Then
+          Begin
+            If DC < MAX_DESTR Then
+              ParamDestrNames[ParamCount, DC] := CurToken.Val;
+            LexNextToken;
+            If CurToken.Kind = TK_KEYWORD Then
+            Begin
+              If DC < MAX_DESTR Then
+              Begin
+                ParamDestrKinds[ParamCount, DC] := 3;
+                ParamDestrKwIdx[ParamCount, DC] := KwAdd(CurToken.Val);
+                ParamDestrDefaults[ParamCount, DC] := 0;
+                Inc(DC);
+              End;
+              LexNextToken;
+            End;
+            Continue;
+          End;
+          LexNextToken;
+        End;
+        ParamDestrCount[ParamCount] := DC;
+        If CurToken.Kind = TK_RBRACE Then LexNextToken;
+        Inc(ParamCount);
+      End
+      Else
+      Begin
+        While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+          LexNextToken;
+        If CurToken.Kind = TK_RBRACE Then LexNextToken;
+      End;
+      Continue;
+    End;
+
     If CurToken.Kind <> TK_SYMBOL Then
     Begin
       CompileError('symbole attendu dans la liste des parametres');
@@ -5482,6 +5953,7 @@ Begin
     If ParamCount < MAX_PARAM Then
     Begin
       ParamNames[ParamCount] := CurToken.Val;
+      ParamDestr[ParamCount] := 0;
       Inc(ParamCount);
     End;
     LexNextToken;
@@ -5520,6 +5992,83 @@ Begin
   Begin
     Ofs := 4 + 2 * (ParamCount - 1 - I);
     SymAdd(ParamNames[I], SK_LOCAL, TY_UNKNOWN, Ofs);
+  End;
+
+  (* TODO 21 : destructuration des parametres apres le prolog *)
+  For PIdx := 0 To ParamCount - 1 Do
+  Begin
+    If ParamDestr[PIdx] = 0 Then
+      Continue;  (* parametre simple, deja lie *)
+
+    Ofs := 4 + 2 * (ParamCount - 1 - PIdx);
+
+    If ParamDestr[PIdx] = 1 Then
+    Begin
+      (* Destructuration sequentielle *)
+      EmitComment('destrVec param ' + ParamNames[PIdx]);
+      For J := 0 To ParamDestrCount[PIdx] - 1 Do
+      Begin
+        If ParamDestrKinds[PIdx, J] = 1 Then
+          Continue;  (* _ : skip *)
+        Inc(CurFrameSize, 2);
+        DOfs := CurFrameSize;
+        EmitInstrAB('SUB', 'SP', '2');
+
+        If ParamDestrKinds[PIdx, J] = 2 Then
+        Begin
+          Str(Ofs, S);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + S + ']');
+          Str(J, S);
+          EmitInstrAB('MOV', 'BX', S);
+          EmitInstrA('CALL', CL_RT_PFX + 'VECDROP');
+          Str(DOfs, S);
+          EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+          SymAdd(ParamDestrNames[PIdx, J], SK_LOCAL, TY_IDX_VEC, -DOfs);
+        End
+        Else
+        Begin
+          Str(Ofs, S);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + S + ']');
+          Str(J, S);
+          EmitInstrAB('MOV', 'BX', S);
+          EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+          Str(DOfs, S);
+          EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+          SymAdd(ParamDestrNames[PIdx, J], SK_LOCAL, TY_UNKNOWN, -DOfs);
+        End;
+      End;
+    End
+    Else If ParamDestr[PIdx] = 2 Then
+    Begin
+      (* Destructuration associative *)
+      EmitComment('destrMap param ' + ParamNames[PIdx]);
+      For J := 0 To ParamDestrCount[PIdx] - 1 Do
+      Begin
+        Inc(CurFrameSize, 2);
+        DOfs := CurFrameSize;
+        EmitInstrAB('SUB', 'SP', '2');
+
+        Str(Ofs, S);
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [BP+' + S + ']');
+        Str(ParamDestrKwIdx[PIdx, J], S);
+        EmitInstrAB('MOV', 'BX', S);
+        EmitInstrA('CALL', CL_RT_PFX + 'MAPGET');
+
+        If ParamDestrHasOr[PIdx] And (ParamDestrDefaults[PIdx, J] <> 0) Then
+        Begin
+          LblEnd := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JNE', LblEnd);
+          Str(ParamDestrDefaults[PIdx, J], S);
+          EmitInstrAB('MOV', 'AX', S);
+          EmitLabel(LblEnd);
+        End;
+
+        Str(DOfs, S);
+        EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+        SymAdd(ParamDestrNames[PIdx, J], SK_LOCAL, TY_UNKNOWN, -DOfs);
+      End;
+    End;
   End;
 
   (* Evaluer le corps (body) *)
@@ -5692,6 +6241,20 @@ Var
   S         : TString;
   LoopLabel : TString;
   BC        : Integer;
+  (* TODO 21 : destructuration dans loop *)
+  IsDestruc        : Array[0..MAX_PARAM - 1] Of Integer; (* 0=simple,1=vec,2=map *)
+  DestrucNames     : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of TString;
+  DestrucKinds     : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of Integer;
+  DestrucKwIdx     : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of Integer;
+  DestrucDefaults  : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of LongInt;
+  DestrucCounts    : Array[0..MAX_PARAM - 1] Of Integer;
+  DestrucHasOr     : Array[0..MAX_PARAM - 1] Of Boolean;
+  BindOfs          : Array[0..MAX_PARAM - 1] Of Integer;
+  J, K             : Integer;
+  DOfs             : Integer;
+  DC               : Integer;
+  LblEnd           : TString;
+  TmpName          : TString;
 Begin
   ExprMakeNone(Res);
   EmitComment('(loop [...] ...)');
@@ -5711,6 +6274,172 @@ Begin
   (* Traiter les paires nom/valeur, comme let *)
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
+    (* TODO 21 : detecter destructuration *)
+    If (CurToken.Kind = TK_LBRACKET) Or (CurToken.Kind = TK_LBRACE) Then
+    Begin
+      (* Lire le pattern de destructuration *)
+      If BC < MAX_PARAM Then
+      Begin
+        DC := 0;
+        DestrucHasOr[BC] := False;
+        If CurToken.Kind = TK_LBRACKET Then
+        Begin
+          IsDestruc[BC] := 1;
+          LexNextToken; (* consomme '[' *)
+          While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+          Begin
+            If (CurToken.Kind = TK_SYMBOL) And (CurToken.Val = '&') Then
+            Begin
+              LexNextToken;
+              If (CurToken.Kind = TK_SYMBOL) And (DC < MAX_DESTR) Then
+              Begin
+                DestrucNames[BC, DC] := CurToken.Val;
+                DestrucKinds[BC, DC] := 2;
+                Inc(DC);
+                LexNextToken;
+              End;
+              Continue;
+            End;
+            If (CurToken.Kind = TK_SYMBOL) And (DC < MAX_DESTR) Then
+            Begin
+              DestrucNames[BC, DC] := CurToken.Val;
+              If CurToken.Val = '_' Then
+                DestrucKinds[BC, DC] := 1
+              Else
+                DestrucKinds[BC, DC] := 0;
+              Inc(DC);
+            End;
+            LexNextToken;
+          End;
+          If CurToken.Kind = TK_RBRACKET Then LexNextToken;
+        End
+        Else
+        Begin
+          IsDestruc[BC] := 2;
+          LexNextToken; (* consomme '{' *)
+          While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+          Begin
+            If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'keys') Then
+            Begin
+              LexNextToken;
+              If CurToken.Kind = TK_LBRACKET Then
+              Begin
+                LexNextToken;
+                While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+                Begin
+                  If (CurToken.Kind = TK_SYMBOL) And (DC < MAX_DESTR) Then
+                  Begin
+                    DestrucNames[BC, DC] := CurToken.Val;
+                    DestrucKinds[BC, DC] := 0;
+                    DestrucKwIdx[BC, DC] := KwAdd(CurToken.Val);
+                    DestrucDefaults[BC, DC] := 0;
+                    Inc(DC);
+                  End;
+                  LexNextToken;
+                End;
+                If CurToken.Kind = TK_RBRACKET Then LexNextToken;
+              End;
+              Continue;
+            End;
+            If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'or') Then
+            Begin
+              LexNextToken;
+              DestrucHasOr[BC] := True;
+              If CurToken.Kind = TK_LBRACE Then
+              Begin
+                LexNextToken;
+                While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+                Begin
+                  If CurToken.Kind = TK_SYMBOL Then
+                  Begin
+                    TmpName := CurToken.Val;
+                    LexNextToken;
+                    If CurToken.Kind = TK_INTEGER Then
+                    Begin
+                      For J := 0 To DC - 1 Do
+                        If DestrucNames[BC, J] = TmpName Then
+                          DestrucDefaults[BC, J] := CurToken.IntVal;
+                      LexNextToken;
+                    End;
+                  End
+                  Else
+                    LexNextToken;
+                End;
+                If CurToken.Kind = TK_RBRACE Then LexNextToken;
+              End;
+              Continue;
+            End;
+            If CurToken.Kind = TK_SYMBOL Then
+            Begin
+              If DC < MAX_DESTR Then
+                DestrucNames[BC, DC] := CurToken.Val;
+              LexNextToken;
+              If CurToken.Kind = TK_KEYWORD Then
+              Begin
+                If DC < MAX_DESTR Then
+                Begin
+                  DestrucKinds[BC, DC] := 3;
+                  DestrucKwIdx[BC, DC] := KwAdd(CurToken.Val);
+                  DestrucDefaults[BC, DC] := 0;
+                  Inc(DC);
+                End;
+                LexNextToken;
+              End;
+              Continue;
+            End;
+            LexNextToken;
+          End;
+          If CurToken.Kind = TK_RBRACE Then LexNextToken;
+        End;
+        DestrucCounts[BC] := DC;
+      End
+      Else
+      Begin
+        (* Skip the pattern *)
+        If CurToken.Kind = TK_LBRACKET Then
+        Begin
+          LexNextToken;
+          While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+            LexNextToken;
+          If CurToken.Kind = TK_RBRACKET Then LexNextToken;
+        End
+        Else
+        Begin
+          LexNextToken;
+          While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+            LexNextToken;
+          If CurToken.Kind = TK_RBRACE Then LexNextToken;
+        End;
+      End;
+
+      (* Verification : la valeur doit suivre *)
+      If (CurToken.Kind = TK_RBRACKET) Or (CurToken.Kind = TK_EOF) Then
+      Begin
+        WarnMsg('valeur manquante pour destructuration loop');
+        Break;
+      End;
+
+      (* Allouer un local pour la valeur brute *)
+      Inc(CurFrameSize, 2);
+      Ofs := CurFrameSize;
+      EmitInstrAB('SUB', 'SP', '2');
+
+      ParseForm(ValRes);
+      ExprFlushToAX(ValRes);
+      Str(Ofs, S);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+      If BC < MAX_PARAM Then
+      Begin
+        BindOfs[BC] := Ofs;
+        If LoopTop < MAX_LOOP_NEST Then
+          LoopBindOfs[LoopTop, BC] := Ofs;
+        Inc(BC);
+      End;
+
+      Continue;
+    End;
+
     If CurToken.Kind <> TK_SYMBOL Then
     Begin
       CompileError('symbole attendu dans les liaisons loop');
@@ -5744,6 +6473,8 @@ Begin
     (* Memoriser l offset pour recur *)
     If BC < MAX_PARAM Then
     Begin
+      IsDestruc[BC] := 0;
+      BindOfs[BC] := Ofs;
       If LoopTop < MAX_LOOP_NEST Then
         LoopBindOfs[LoopTop, BC] := Ofs;
       Inc(BC);
@@ -5769,6 +6500,72 @@ Begin
     WarnMsg('boucles loop imbriquees trop profondes');
 
   EmitLabel(LoopLabel);
+
+  (* TODO 21 : generer le code de destructuration apres le label *)
+  (* pour que recur re-declenche la destructuration               *)
+  For K := 0 To BC - 1 Do
+  Begin
+    If IsDestruc[K] = 1 Then
+    Begin
+      EmitComment('destrVec loop binding');
+      For J := 0 To DestrucCounts[K] - 1 Do
+      Begin
+        If DestrucKinds[K, J] = 1 Then Continue;
+        Inc(CurFrameSize, 2);
+        DOfs := CurFrameSize;
+        EmitInstrAB('SUB', 'SP', '2');
+        If DestrucKinds[K, J] = 2 Then
+        Begin
+          Str(BindOfs[K], S);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+          Str(J, S);
+          EmitInstrAB('MOV', 'BX', S);
+          EmitInstrA('CALL', CL_RT_PFX + 'VECDROP');
+          Str(DOfs, S);
+          EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+          SymAdd(DestrucNames[K, J], SK_LOCAL, TY_IDX_VEC, -DOfs);
+        End
+        Else
+        Begin
+          Str(BindOfs[K], S);
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+          Str(J, S);
+          EmitInstrAB('MOV', 'BX', S);
+          EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+          Str(DOfs, S);
+          EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+          SymAdd(DestrucNames[K, J], SK_LOCAL, TY_UNKNOWN, -DOfs);
+        End;
+      End;
+    End
+    Else If IsDestruc[K] = 2 Then
+    Begin
+      EmitComment('destrMap loop binding');
+      For J := 0 To DestrucCounts[K] - 1 Do
+      Begin
+        Inc(CurFrameSize, 2);
+        DOfs := CurFrameSize;
+        EmitInstrAB('SUB', 'SP', '2');
+        Str(BindOfs[K], S);
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + S + ']');
+        Str(DestrucKwIdx[K, J], S);
+        EmitInstrAB('MOV', 'BX', S);
+        EmitInstrA('CALL', CL_RT_PFX + 'MAPGET');
+        If DestrucHasOr[K] And (DestrucDefaults[K, J] <> 0) Then
+        Begin
+          LblEnd := LabelGen;
+          EmitInstrAB('CMP', 'AX', '0');
+          EmitInstrA('JNE', LblEnd);
+          Str(DestrucDefaults[K, J], S);
+          EmitInstrAB('MOV', 'AX', S);
+          EmitLabel(LblEnd);
+        End;
+        Str(DOfs, S);
+        EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+        SymAdd(DestrucNames[K, J], SK_LOCAL, TY_UNKNOWN, -DOfs);
+      End;
+    End;
+  End;
 
   (* Evaluer le body *)
   While (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF) Do
@@ -7093,6 +7890,380 @@ Begin
   Res.ImmVal  := 0;
   Res.Offset  := 0;
   Res.SymIdx  := -1;
+End;
+
+(* ============================================================
+   TODO 21 - DESTRUCTURATION (DESTRUCTURING) [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- EmitDestrucVec : destructuration sequentielle (vecteur) --- *)
+(* La valeur a destructurer est dans [BP-ValOfs].                    *)
+(* Le token courant est juste apres le '[' consomme par l appelant.  *)
+(* Pour chaque symbole, on genere :                                  *)
+(*   AX = [BP-ValOfs]                                                *)
+(*   BX = index                                                      *)
+(*   CALL _CLRT_VECNTH                                               *)
+(*   MOV [BP-Ofs], AX                                                *)
+(* Le symbole _ est ignore (pas de liaison).                         *)
+(* & rest : genere un appel _CLRT_VECDROP pour le reste du vecteur. *)
+Procedure EmitDestrucVec(ValOfs : Integer);
+Var
+  Idx       : Integer;
+  VarName   : TString;
+  Ofs       : Integer;
+  S         : TString;
+  SV        : TString;
+  HasRest   : Boolean;
+  RestName  : TString;
+  SubOfs    : Integer;
+Begin
+  EmitComment('destrVec [...]');
+  Idx := 0;
+  HasRest := False;
+  RestName := '';
+
+  While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* Detecter & rest *)
+    If (CurToken.Kind = TK_SYMBOL) And (CurToken.Val = '&') Then
+    Begin
+      LexNextToken;  (* consomme '&' *)
+      HasRest := True;
+      If CurToken.Kind = TK_SYMBOL Then
+      Begin
+        RestName := CurToken.Val;
+        LexNextToken;  (* consomme le nom du rest *)
+      End
+      Else
+        CompileError('symbole attendu apres & dans destructuration');
+      Continue;
+    End;
+
+    (* Detecter destructuration imbriquee : [a [b c] d] *)
+    If CurToken.Kind = TK_LBRACKET Then
+    Begin
+      (* Evaluer nth d abord, stocker dans un local temporaire *)
+      Inc(CurFrameSize, 2);
+      SubOfs := CurFrameSize;
+      EmitInstrAB('SUB', 'SP', '2');
+
+      Str(ValOfs, SV);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + SV + ']');
+      Str(Idx, S);
+      EmitInstrAB('MOV', 'BX', S);
+      EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+      Str(SubOfs, S);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+      LexNextToken;  (* consomme '[' *)
+      EmitDestrucVec(SubOfs);
+      If CurToken.Kind = TK_RBRACKET Then
+        LexNextToken  (* consomme ']' *)
+      Else
+        CompileError('] attendu en fin de destructuration imbriquee');
+      Inc(Idx);
+      Continue;
+    End;
+
+    (* Detecter destructuration imbriquee map : [a {b :x} d] *)
+    If CurToken.Kind = TK_LBRACE Then
+    Begin
+      Inc(CurFrameSize, 2);
+      SubOfs := CurFrameSize;
+      EmitInstrAB('SUB', 'SP', '2');
+
+      Str(ValOfs, SV);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + SV + ']');
+      Str(Idx, S);
+      EmitInstrAB('MOV', 'BX', S);
+      EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+      Str(SubOfs, S);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+      LexNextToken;  (* consomme '{' *)
+      EmitDestrucMap(SubOfs);
+      If CurToken.Kind = TK_RBRACE Then
+        LexNextToken  (* consomme '}' *)
+      Else
+        CompileError('} attendu en fin de destructuration imbriquee');
+      Inc(Idx);
+      Continue;
+    End;
+
+    If CurToken.Kind <> TK_SYMBOL Then
+    Begin
+      CompileError('symbole attendu dans destructuration vecteur');
+      LexNextToken;
+      Continue;
+    End;
+    VarName := CurToken.Val;
+    LexNextToken;
+
+    (* _ ignore l element *)
+    If VarName = '_' Then
+    Begin
+      Inc(Idx);
+      Continue;
+    End;
+
+    (* Allouer un local *)
+    Inc(CurFrameSize, 2);
+    Ofs := CurFrameSize;
+    EmitInstrAB('SUB', 'SP', '2');
+
+    (* AX = collection, BX = index, CALL VECNTH *)
+    Str(ValOfs, SV);
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + SV + ']');
+    Str(Idx, S);
+    EmitInstrAB('MOV', 'BX', S);
+    EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
+
+    (* Stocker *)
+    Str(Ofs, S);
+    EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+
+    (* Enregistrer le symbole *)
+    SymAdd(VarName, SK_LOCAL, TY_UNKNOWN, -Ofs);
+
+    Inc(Idx);
+  End;
+
+  (* & rest : generer le sous-vecteur a partir de l index Idx *)
+  If HasRest And (RestName <> '') Then
+  Begin
+    Inc(CurFrameSize, 2);
+    Ofs := CurFrameSize;
+    EmitInstrAB('SUB', 'SP', '2');
+
+    Str(ValOfs, SV);
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + SV + ']');
+    Str(Idx, S);
+    EmitInstrAB('MOV', 'BX', S);
+    EmitInstrA('CALL', CL_RT_PFX + 'VECDROP');
+
+    Str(Ofs, S);
+    EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+    SymAdd(RestName, SK_LOCAL, TY_IDX_VEC, -Ofs);
+  End;
+End;
+
+(* ---- EmitDestrucMap : destructuration associative (map) --------- *)
+(* La valeur a destructurer est dans [BP-ValOfs].                     *)
+(* Le token courant est juste apres le '{' consomme par l appelant.   *)
+(* Formes supportees :                                                *)
+(*   {:keys [a b c]} -> a=(get m :a), b=(get m :b), c=(get m :c)     *)
+(*   {x :nom y :age} -> x=(get m :nom), y=(get m :age)               *)
+(*   {:keys [a] :or {a 0}} -> valeur par defaut si get retourne nil   *)
+Procedure EmitDestrucMap(ValOfs : Integer);
+Var
+  VarName   : TString;
+  Ofs       : Integer;
+  S         : TString;
+  SV        : TString;
+  KIdx      : Integer;
+  HasOr     : Boolean;
+  OrNames   : Array[0..MAX_PARAM - 1] Of TString;
+  OrVals    : Array[0..MAX_PARAM - 1] Of LongInt;
+  OrCount   : Integer;
+  OrOfs     : Array[0..MAX_PARAM - 1] Of Integer;
+  I         : Integer;
+  LblDef    : TString;
+  LblEnd    : TString;
+Begin
+  EmitComment('destrMap {...}');
+  HasOr   := False;
+  OrCount := 0;
+
+  While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+  Begin
+    (* :keys [a b c] *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'keys') Then
+    Begin
+      LexNextToken;  (* consomme :keys *)
+
+      If CurToken.Kind <> TK_LBRACKET Then
+      Begin
+        CompileError('[ attendu apres :keys');
+        Continue;
+      End;
+      LexNextToken;  (* consomme '[' *)
+
+      While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If CurToken.Kind <> TK_SYMBOL Then
+        Begin
+          CompileError('symbole attendu dans :keys');
+          LexNextToken;
+          Continue;
+        End;
+        VarName := CurToken.Val;
+        LexNextToken;
+
+        (* Allouer un local *)
+        Inc(CurFrameSize, 2);
+        Ofs := CurFrameSize;
+        EmitInstrAB('SUB', 'SP', '2');
+
+        (* AX = map, BX = keyword index pour :VarName *)
+        KIdx := KwAdd(VarName);
+        Str(ValOfs, SV);
+        EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + SV + ']');
+        Str(KIdx, S);
+        EmitInstrAB('MOV', 'BX', S);
+        EmitInstrA('CALL', CL_RT_PFX + 'MAPGET');
+
+        Str(Ofs, S);
+        EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+        SymAdd(VarName, SK_LOCAL, TY_UNKNOWN, -Ofs);
+
+        (* Memoriser pour :or *)
+        If OrCount < MAX_PARAM Then
+        Begin
+          OrNames[OrCount] := VarName;
+          OrVals[OrCount]  := 0;
+          OrOfs[OrCount]   := Ofs;
+          Inc(OrCount);
+        End;
+      End;
+
+      If CurToken.Kind = TK_RBRACKET Then
+        LexNextToken  (* consomme ']' *)
+      Else
+        CompileError('] attendu apres :keys [...]');
+
+      Continue;
+    End;
+
+    (* :or {a default-val b default-val} *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'or') Then
+    Begin
+      LexNextToken;  (* consomme :or *)
+      HasOr := True;
+
+      If CurToken.Kind <> TK_LBRACE Then
+      Begin
+        CompileError('{ attendu apres :or');
+        Continue;
+      End;
+      LexNextToken;  (* consomme '{' *)
+
+      While (CurToken.Kind <> TK_RBRACE) And (CurToken.Kind <> TK_EOF) Do
+      Begin
+        If CurToken.Kind <> TK_SYMBOL Then
+        Begin
+          LexNextToken;
+          Continue;
+        End;
+        VarName := CurToken.Val;
+        LexNextToken;
+
+        (* Lire la valeur par defaut (entier attendu) *)
+        If CurToken.Kind = TK_INTEGER Then
+        Begin
+          For I := 0 To OrCount - 1 Do
+          Begin
+            If OrNames[I] = VarName Then
+              OrVals[I] := CurToken.IntVal;
+          End;
+          LexNextToken;
+        End
+        Else
+        Begin
+          (* Valeur par defaut non-entiere : ignorer *)
+          LexNextToken;
+        End;
+      End;
+
+      If CurToken.Kind = TK_RBRACE Then
+        LexNextToken  (* consomme '}' *)
+      Else
+        CompileError('} attendu apres :or {...}');
+
+      Continue;
+    End;
+
+    (* Forme explicite : {x :nom y :age} *)
+    (* symbole suivi de keyword *)
+    If CurToken.Kind = TK_SYMBOL Then
+    Begin
+      VarName := CurToken.Val;
+      LexNextToken;
+
+      If CurToken.Kind <> TK_KEYWORD Then
+      Begin
+        CompileError('keyword attendu apres symbole dans destructuration map');
+        Continue;
+      End;
+
+      KIdx := KwAdd(CurToken.Val);
+      LexNextToken;
+
+      (* Allouer un local *)
+      Inc(CurFrameSize, 2);
+      Ofs := CurFrameSize;
+      EmitInstrAB('SUB', 'SP', '2');
+
+      Str(ValOfs, SV);
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [BP-' + SV + ']');
+      Str(KIdx, S);
+      EmitInstrAB('MOV', 'BX', S);
+      EmitInstrA('CALL', CL_RT_PFX + 'MAPGET');
+
+      Str(Ofs, S);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', 'AX');
+      SymAdd(VarName, SK_LOCAL, TY_UNKNOWN, -Ofs);
+
+      Continue;
+    End;
+
+    (* Token non reconnu dans destructuration map *)
+    LexNextToken;
+  End;
+
+  (* Appliquer les valeurs par defaut :or si HasOr *)
+  If HasOr Then
+  Begin
+    For I := 0 To OrCount - 1 Do
+    Begin
+      LblDef := LabelGen;
+      LblEnd := LabelGen;
+      Str(OrOfs[I], S);
+      EmitInstrAB('CMP', 'WORD PTR [BP-' + S + ']', '0');
+      EmitInstrA('JNE', LblEnd);
+      EmitLabel(LblDef);
+      Str(OrVals[I], SV);
+      EmitInstrAB('MOV', 'WORD PTR [BP-' + S + ']', SV);
+      EmitLabel(LblEnd);
+    End;
+  End;
+End;
+
+(* ---- EmitDestrucBind : dispatcher de destructuration ------------ *)
+(* La valeur a destructurer est dans [BP-ValOfs].                     *)
+(* Le token courant est '[' ou '{'.                                   *)
+(* Detecte le type et appelle le bon helper.                          *)
+Procedure EmitDestrucBind(ValOfs : Integer);
+Begin
+  If CurToken.Kind = TK_LBRACKET Then
+  Begin
+    LexNextToken;  (* consomme '[' *)
+    EmitDestrucVec(ValOfs);
+    If CurToken.Kind = TK_RBRACKET Then
+      LexNextToken  (* consomme ']' *)
+    Else
+      CompileError('] attendu en fin de destructuration vecteur');
+  End
+  Else If CurToken.Kind = TK_LBRACE Then
+  Begin
+    LexNextToken;  (* consomme '{' *)
+    EmitDestrucMap(ValOfs);
+    If CurToken.Kind = TK_RBRACE Then
+      LexNextToken  (* consomme '}' *)
+    Else
+      CompileError('} attendu en fin de destructuration map');
+  End
+  Else
+    CompileError('[ ou { attendu pour destructuration');
 End;
 
 Procedure EmitRuntime;
@@ -8454,6 +9625,77 @@ Begin
   EmitRaw('        XOR     AX, AX');
   EmitRaw('        RET');
   EmitRaw(CL_RT_PFX + 'SF_R1:');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 21 : _CLRT_VECDROP : sous-vecteur a partir de l index --- *)
+  (* Entree : AX = pointeur vecteur, BX = start index (0-base)          *)
+  (* Sortie : AX = nouveau vecteur contenant elements[BX..count-1]      *)
+  (* Equivalent a (subvec vec start (count vec))                         *)
+  (* Layout vecteur : [count, e0, e1, ..., e_{count-1}]                 *)
+  EmitRaw(CL_RT_PFX + 'VECDROP:');
+  EmitRaw('        CMP     AX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'VD_NL');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     CX, WORD PTR [SI]');
+  (* CX = count total, BX = start *)
+  EmitRaw('        CMP     BX, CX');
+  EmitRaw('        JAE     ' + CL_RT_PFX + 'VD_EM');
+  (* newcount = CX - BX *)
+  EmitRaw('        SUB     CX, BX');
+  (* Allouer le nouveau vecteur sur le heap *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     DX, DI');
+  EmitRaw('        ADD     DX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [DX], CX');
+  (* Avancer heaptop : (CX+1)*2 octets *)
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  (* Copier les elements de SI+2+BX*2 vers DX+2 *)
+  EmitRaw('        SHL     BX, 1');
+  EmitRaw('        ADD     BX, 2');
+  EmitRaw('        ADD     SI, BX');
+  EmitRaw('        MOV     DI, DX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'VD_LP:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'VD_DN');
+  EmitRaw('        MOV     AX, WORD PTR [SI]');
+  EmitRaw('        MOV     WORD PTR [DI], AX');
+  EmitRaw('        ADD     SI, 2');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'VD_LP');
+  EmitRaw(CL_RT_PFX + 'VD_DN:');
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'VD_EM:');
+  (* start >= count : retourner vecteur vide *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     DX, DI');
+  EmitRaw('        ADD     DX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [DX], 0');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'VD_NL:');
+  EmitRaw('        XOR     AX, AX');
   EmitRaw('        RET');
   EmitBlankLine;
 
