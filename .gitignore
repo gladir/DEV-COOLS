@@ -1,12 +1,2 @@
 *.o
-*.obj
-*.exe
-VAXPCW32
-VAXPCW32.compiled
-CCW32
 *.ppu
-*.rst
-link.res
-CCW32.o
-CCW32
-*.o

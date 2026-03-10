@@ -209,6 +209,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C pour le JASMIN (JVM).</td>
 		</tr>
 		<tr>
+			<td><b>CLOJ86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur Clojure pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
+		</tr>
+		<tr>
 			<td><b>COBOL86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur COBOL pour 8086/8088.</td>
 		</tr>
@@ -435,6 +439,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 		<tr>
 			<td><b>VAXPAS86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur VAX Pascal pour l'assembleur du microprocesseur 8086.</td>
+		</tr>
+		<tr>
+			<td><b>VAXPCW32.PAS</b></td>
+			<td> Cette commande permet de lancer le compilateur de VAX Pascal pour l'assembleur du microprocesseur 80386 (en executable Windows 32 bits).</td>
 		</tr>
 	</table>
 
