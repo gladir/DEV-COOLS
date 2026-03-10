@@ -175,7 +175,7 @@
               tanh, time, tmpfile, tmpnam, tolower, toupper, ungetc,
               va_arg, va_end, va_start, vfprintf, vprintf, vsprintf
 
-  TODO 06 - SYSTEME DE TYPES
+  TODO 06 - SYSTEME DE TYPES [IMPLEMENTE]
             TTypeKind : TKP_VOID, TKP_CHAR (8 bits signe),
               TKP_UCHAR (8 bits non signe), TKP_SHORT (16 bits),
               TKP_USHORT (16 bits non signe), TKP_INT (32 bits signe),
@@ -3813,7 +3813,7 @@ Type
     Name        : TString;     { nom original (minuscules)              }
     MangledName : TString;     { nom mangled pour emission ASM          }
     Cat         : TSymCat;     { categorie du symbole                   }
-    TypeIdx     : Integer;     { index du type (pour future TODO 06)    }
+    TypeIdx     : Integer;     { index du type dans TypeTab (TODO 06)   }
     Offset      : Integer;     { offset stack ou data segment           }
     ScopeLevel  : Integer;     { niveau de scope (0 = global)           }
     ScopeId     : Integer;     { id unique du scope                     }
@@ -4128,6 +4128,469 @@ Begin
   RegFunc('va_start'); RegFunc('va_arg');  RegFunc('va_end');
 End;
 
+{ ============================================================ }
+{ TODO 06 - SYSTEME DE TYPES                                   }
+{ ============================================================ }
+
+Const
+  MAX_TYPE    = {$IFDEF FPC}512{$ELSE}64{$ENDIF};
+  MAX_FIELDS  = 64;    { nombre max de champs par struct/union       }
+  MAX_PARAMS  = 16;    { nombre max de parametres par type fonction   }
+
+Type
+  TTypeKind = (
+    TKP_VOID,       { void : taille 0                              }
+    TKP_CHAR,        { char : 8 bits signe                          }
+    TKP_UCHAR,       { unsigned char : 8 bits non signe             }
+    TKP_SHORT,       { short : 16 bits signe                        }
+    TKP_USHORT,      { unsigned short : 16 bits non signe           }
+    TKP_INT,         { int : 32 bits signe                          }
+    TKP_UINT,        { unsigned int : 32 bits non signe             }
+    TKP_LONG,        { long : 32 bits signe                         }
+    TKP_ULONG,       { unsigned long : 32 bits non signe            }
+    TKP_FLOAT,       { float : 32 bits (stub traite en entier)      }
+    TKP_DOUBLE,      { double : 64 bits (stub traite en entier)     }
+    TKP_POINTER,     { pointeur : 32 bits                           }
+    TKP_ARRAY,       { tableau : BaseTypeIdx + ElemCount             }
+    TKP_STRUCT,      { structure                                     }
+    TKP_UNION,       { union                                         }
+    TKP_ENUM,        { enumeration                                   }
+    TKP_FUNC         { pointeur de fonction                          }
+  );
+
+  TFieldRec = Record
+    Name     : TString;    { nom du champ                            }
+    TypeIdx  : Integer;    { index du type du champ                   }
+    Offset   : Integer;    { offset dans la struct/union               }
+  End;
+
+  TTypeRec = Record
+    Kind        : TTypeKind;   { categorie du type                    }
+    Name        : TString;     { nom du type (ex: 'int', 'myStruct')  }
+    Size        : Integer;     { taille en octets                      }
+    Align       : Integer;     { alignement en octets                  }
+    IsUnsigned  : Boolean;     { type non signe ?                      }
+    IsConst     : Boolean;     { qualificateur const ?                 }
+    IsVolatile  : Boolean;     { qualificateur volatile ?              }
+    BaseTypeIdx : Integer;     { type de base (pointeur, tableau, typedef) }
+    ElemCount   : Integer;     { nombre d elements (tableau)            }
+    Fields      : Array[0..MAX_FIELDS - 1] Of TFieldRec;
+    FieldCount  : Integer;     { nombre de champs (struct/union)        }
+    EnumCount   : Integer;     { nombre de valeurs (enum)               }
+    ParamCount  : Integer;     { nombre de parametres (func)            }
+    ParamTypes  : Array[0..MAX_PARAMS - 1] Of Integer;
+    RetTypeIdx  : Integer;     { type de retour (func)                  }
+  End;
+
+Var
+  { Table des types }
+  TypeTab    : Array[0..MAX_TYPE - 1] Of TTypeRec;
+  TypeCount  : Integer;
+
+{ ------------------------------------------------------------ }
+{ TypeAdd : ajouter un type dans TypeTab, retourne l index     }
+{ ------------------------------------------------------------ }
+
+Function TypeAdd(AKind : TTypeKind; Const AName : TString;
+                 ASize : Integer; AAlign : Integer;
+                 AIsUnsigned : Boolean;
+                 ABaseTypeIdx : Integer) : Integer;
+Var I : Integer;
+Begin
+  If TypeCount >= MAX_TYPE Then
+  Begin
+    WarnMsg('table des types pleine (MAX_TYPE=' + IntToStr_(MAX_TYPE) + ')');
+    TypeAdd := -1;
+    Exit;
+  End;
+  TypeTab[TypeCount].Kind        := AKind;
+  TypeTab[TypeCount].Name        := AName;
+  TypeTab[TypeCount].Size        := ASize;
+  TypeTab[TypeCount].Align       := AAlign;
+  TypeTab[TypeCount].IsUnsigned  := AIsUnsigned;
+  TypeTab[TypeCount].IsConst     := False;
+  TypeTab[TypeCount].IsVolatile  := False;
+  TypeTab[TypeCount].BaseTypeIdx := ABaseTypeIdx;
+  TypeTab[TypeCount].ElemCount   := 0;
+  TypeTab[TypeCount].FieldCount  := 0;
+  TypeTab[TypeCount].EnumCount   := 0;
+  TypeTab[TypeCount].ParamCount  := 0;
+  TypeTab[TypeCount].RetTypeIdx  := -1;
+  For I := 0 To MAX_FIELDS - 1 Do
+  Begin
+    TypeTab[TypeCount].Fields[I].Name    := '';
+    TypeTab[TypeCount].Fields[I].TypeIdx := -1;
+    TypeTab[TypeCount].Fields[I].Offset  := 0;
+  End;
+  For I := 0 To MAX_PARAMS - 1 Do
+    TypeTab[TypeCount].ParamTypes[I] := -1;
+  TypeAdd := TypeCount;
+  Inc(TypeCount);
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeInit : initialiser la table et enregistrer les types      }
+{ primitifs de C (Win32 32 bits)                                }
+{ ------------------------------------------------------------ }
+
+Procedure TypeInit;
+Var I : Integer;
+Begin
+  TypeCount := 0;
+  For I := 0 To MAX_TYPE - 1 Do
+  Begin
+    TypeTab[I].Kind        := TKP_VOID;
+    TypeTab[I].Name        := '';
+    TypeTab[I].Size        := 0;
+    TypeTab[I].Align       := 0;
+    TypeTab[I].IsUnsigned  := False;
+    TypeTab[I].IsConst     := False;
+    TypeTab[I].IsVolatile  := False;
+    TypeTab[I].BaseTypeIdx := -1;
+    TypeTab[I].ElemCount   := 0;
+    TypeTab[I].FieldCount  := 0;
+    TypeTab[I].EnumCount   := 0;
+    TypeTab[I].ParamCount  := 0;
+    TypeTab[I].RetTypeIdx  := -1;
+  End;
+
+  { Index 0 : void (taille 0, align 0) }
+  TypeAdd(TKP_VOID,   'void',           0, 0, False, -1);   { idx 0  }
+
+  { Index 1 : char (8 bits signe) }
+  TypeAdd(TKP_CHAR,   'char',           1, 1, False, -1);   { idx 1  }
+
+  { Index 2 : signed char (8 bits signe, alias) }
+  TypeAdd(TKP_CHAR,   'signed char',    1, 1, False, -1);   { idx 2  }
+
+  { Index 3 : unsigned char (8 bits non signe) }
+  TypeAdd(TKP_UCHAR,  'unsigned char',  1, 1, True,  -1);   { idx 3  }
+
+  { Index 4 : short (16 bits signe) }
+  TypeAdd(TKP_SHORT,  'short',          2, 2, False, -1);   { idx 4  }
+
+  { Index 5 : signed short (alias) }
+  TypeAdd(TKP_SHORT,  'signed short',   2, 2, False, -1);   { idx 5  }
+
+  { Index 6 : unsigned short (16 bits non signe) }
+  TypeAdd(TKP_USHORT, 'unsigned short', 2, 2, True,  -1);   { idx 6  }
+
+  { Index 7 : int (32 bits signe) }
+  TypeAdd(TKP_INT,    'int',            4, 4, False, -1);   { idx 7  }
+
+  { Index 8 : signed int (alias) }
+  TypeAdd(TKP_INT,    'signed int',     4, 4, False, -1);   { idx 8  }
+
+  { Index 9 : unsigned int (32 bits non signe) }
+  TypeAdd(TKP_UINT,   'unsigned int',   4, 4, True,  -1);   { idx 9  }
+
+  { Index 10 : signed (alias de int) }
+  TypeAdd(TKP_INT,    'signed',         4, 4, False, -1);   { idx 10 }
+
+  { Index 11 : unsigned (alias de unsigned int) }
+  TypeAdd(TKP_UINT,   'unsigned',       4, 4, True,  -1);   { idx 11 }
+
+  { Index 12 : long (32 bits signe sous Win32) }
+  TypeAdd(TKP_LONG,   'long',           4, 4, False, -1);   { idx 12 }
+
+  { Index 13 : signed long (alias) }
+  TypeAdd(TKP_LONG,   'signed long',    4, 4, False, -1);   { idx 13 }
+
+  { Index 14 : unsigned long (32 bits non signe) }
+  TypeAdd(TKP_ULONG,  'unsigned long',  4, 4, True,  -1);   { idx 14 }
+
+  { Index 15 : float (32 bits, stub traite comme entier) }
+  TypeAdd(TKP_FLOAT,  'float',          4, 4, False, -1);   { idx 15 }
+
+  { Index 16 : double (64 bits, stub traite comme entier) }
+  TypeAdd(TKP_DOUBLE, 'double',         8, 8, False, -1);   { idx 16 }
+
+  { Index 17 : long double (alias double sous Win32) }
+  TypeAdd(TKP_DOUBLE, 'long double',    8, 8, False, -1);   { idx 17 }
+
+  { Index 18 : void* (pointeur generique) }
+  TypeAdd(TKP_POINTER, 'void *',        4, 4, False, 0);    { idx 18 }
+
+  { Index 19 : char* (pointeur vers char, courant en C) }
+  TypeAdd(TKP_POINTER, 'char *',        4, 4, False, 1);    { idx 19 }
+
+  If Opts.DebugMode Then
+    WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeFindByName : trouver un type par son nom exact           }
+{ Retourne l index ou -1 si non trouve                         }
+{ ------------------------------------------------------------ }
+
+Function TypeFindByName(Const AName : TString) : Integer;
+Var I : Integer;
+Begin
+  TypeFindByName := -1;
+  For I := 0 To TypeCount - 1 Do
+    If TypeTab[I].Name = AName Then
+    Begin
+      TypeFindByName := I;
+      Exit;
+    End;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeSizeofIdx : retourne la taille d un type par son index   }
+{ ------------------------------------------------------------ }
+
+Function TypeSizeofIdx(Idx : Integer) : Integer;
+Begin
+  If (Idx < 0) Or (Idx >= TypeCount) Then
+    TypeSizeofIdx := 4   { taille par defaut = int (32 bits) }
+  Else
+    TypeSizeofIdx := TypeTab[Idx].Size;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeResolve : resoudre les typedef en suivant BaseTypeIdx     }
+{ Retourne l index du type final (non-typedef)                 }
+{ ------------------------------------------------------------ }
+
+Function TypeResolve(Idx : Integer) : Integer;
+Var Depth : Integer;
+    Cur   : Integer;
+Begin
+  Cur   := Idx;
+  Depth := 0;
+  While (Cur >= 0) And (Cur < TypeCount) And (Depth < 32) Do
+  Begin
+    { Si ce n est pas un typedef (BaseTypeIdx pointe vers le type cible }
+    { et Kind est le meme que le type original), on est arrive          }
+    If TypeTab[Cur].BaseTypeIdx < 0 Then Break;
+    { Si le type est un pointeur, array, struct, union, enum, func }
+    { alors BaseTypeIdx designe le type element, pas un typedef     }
+    If TypeTab[Cur].Kind In [TKP_POINTER, TKP_ARRAY, TKP_STRUCT,
+       TKP_UNION, TKP_ENUM, TKP_FUNC] Then Break;
+    { Sinon c est un typedef : suivre le lien }
+    Cur := TypeTab[Cur].BaseTypeIdx;
+    Inc(Depth);
+  End;
+  TypeResolve := Cur;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsInteger : retourne True si le type est un type entier  }
+{ (char, short, int, long, unsigned variants, enum)            }
+{ ------------------------------------------------------------ }
+
+Function TypeIsInteger(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+    TypeIsInteger := False
+  Else
+    TypeIsInteger := TypeTab[R].Kind In [TKP_CHAR, TKP_UCHAR,
+      TKP_SHORT, TKP_USHORT, TKP_INT, TKP_UINT, TKP_LONG,
+      TKP_ULONG, TKP_ENUM];
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsArithmetic : entier ou flottant                        }
+{ ------------------------------------------------------------ }
+
+Function TypeIsArithmetic(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+    TypeIsArithmetic := False
+  Else
+    TypeIsArithmetic := TypeTab[R].Kind In [TKP_CHAR, TKP_UCHAR,
+      TKP_SHORT, TKP_USHORT, TKP_INT, TKP_UINT, TKP_LONG,
+      TKP_ULONG, TKP_FLOAT, TKP_DOUBLE, TKP_ENUM];
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeIsPointer : retourne True si le type est un pointeur     }
+{ ------------------------------------------------------------ }
+
+Function TypeIsPointer(Idx : Integer) : Boolean;
+Var R : Integer;
+Begin
+  R := TypeResolve(Idx);
+  If (R < 0) Or (R >= TypeCount) Then
+    TypeIsPointer := False
+  Else
+    TypeIsPointer := TypeTab[R].Kind = TKP_POINTER;
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCoerce : determine le type resultat d une conversion     }
+{ implicite entre deux types (promotion C standard)            }
+{ Retourne l index du type promu                               }
+{ ------------------------------------------------------------ }
+
+Function TypeCoerce(IdxA, IdxB : Integer) : Integer;
+Var RA, RB  : Integer;
+    KA, KB  : TTypeKind;
+    SA, SB  : Integer;
+Begin
+  RA := TypeResolve(IdxA);
+  RB := TypeResolve(IdxB);
+
+  { Si l un est invalide, retourner l autre }
+  If (RA < 0) Or (RA >= TypeCount) Then Begin TypeCoerce := RB; Exit; End;
+  If (RB < 0) Or (RB >= TypeCount) Then Begin TypeCoerce := RA; Exit; End;
+
+  KA := TypeTab[RA].Kind;
+  KB := TypeTab[RB].Kind;
+
+  { double absorbe tout }
+  If (KA = TKP_DOUBLE) Or (KB = TKP_DOUBLE) Then
+  Begin
+    TypeCoerce := TypeFindByName('double');
+    Exit;
+  End;
+
+  { float absorbe les entiers }
+  If (KA = TKP_FLOAT) Or (KB = TKP_FLOAT) Then
+  Begin
+    TypeCoerce := TypeFindByName('float');
+    Exit;
+  End;
+
+  { Si un des deux est un pointeur, le resultat est un pointeur }
+  If (KA = TKP_POINTER) Then Begin TypeCoerce := RA; Exit; End;
+  If (KB = TKP_POINTER) Then Begin TypeCoerce := RB; Exit; End;
+
+  { Promotion entiere standard C : tout ce qui est plus petit    }
+  { que int est promu en int (char, short, enum)                 }
+  SA := TypeTab[RA].Size;
+  SB := TypeTab[RB].Size;
+
+  { unsigned long + tout = unsigned long }
+  If (KA = TKP_ULONG) Or (KB = TKP_ULONG) Then
+  Begin
+    TypeCoerce := TypeFindByName('unsigned long');
+    Exit;
+  End;
+
+  { long + tout = long }
+  If (KA = TKP_LONG) Or (KB = TKP_LONG) Then
+  Begin
+    { Si l autre est unsigned int, resultat = unsigned long }
+    If (KA = TKP_UINT) Or (KB = TKP_UINT) Then
+      TypeCoerce := TypeFindByName('unsigned long')
+    Else
+      TypeCoerce := TypeFindByName('long');
+    Exit;
+  End;
+
+  { unsigned int + tout = unsigned int }
+  If (KA = TKP_UINT) Or (KB = TKP_UINT) Then
+  Begin
+    TypeCoerce := TypeFindByName('unsigned int');
+    Exit;
+  End;
+
+  { Sinon, promotion vers int }
+  If (SA >= 4) And (SB >= 4) Then
+  Begin
+    { Les deux sont au moins int, garder le plus grand }
+    If SA >= SB Then TypeCoerce := RA
+    Else TypeCoerce := RB;
+  End
+  Else
+    TypeCoerce := TypeFindByName('int');  { promotion vers int }
+End;
+
+{ ------------------------------------------------------------ }
+{ TypeCompatible : verifie si une affectation dest := src est   }
+{ compatible (au sens C : memes types ou conversion implicite) }
+{ Retourne True si compatible                                  }
+{ ------------------------------------------------------------ }
+
+Function TypeCompatible(IdxDest, IdxSrc : Integer) : Boolean;
+Var RD, RS : Integer;
+    KD, KS : TTypeKind;
+Begin
+  RD := TypeResolve(IdxDest);
+  RS := TypeResolve(IdxSrc);
+
+  { Types invalides : on accepte pour ne pas bloquer }
+  If (RD < 0) Or (RD >= TypeCount) Or
+     (RS < 0) Or (RS >= TypeCount) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  KD := TypeTab[RD].Kind;
+  KS := TypeTab[RS].Kind;
+
+  { Meme type exact : toujours compatible }
+  If RD = RS Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { void est compatible avec rien sauf void }
+  If (KD = TKP_VOID) Or (KS = TKP_VOID) Then
+  Begin
+    TypeCompatible := (KD = TKP_VOID) And (KS = TKP_VOID);
+    Exit;
+  End;
+
+  { Arithmetique vers arithmetique : toujours OK (avec conversion) }
+  If TypeIsArithmetic(RD) And TypeIsArithmetic(RS) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Pointeur vers pointeur : compatible (void* accepte tout) }
+  If (KD = TKP_POINTER) And (KS = TKP_POINTER) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Pointeur vers entier : acceptable en C (avec warning) }
+  If (KD = TKP_POINTER) And TypeIsInteger(RS) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Entier vers pointeur : acceptable en C (avec warning) }
+  If TypeIsInteger(RD) And (KS = TKP_POINTER) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Array vers pointeur : decay standard en C }
+  If (KD = TKP_POINTER) And (KS = TKP_ARRAY) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Fonction vers pointeur de fonction }
+  If (KD = TKP_POINTER) And (KS = TKP_FUNC) Then
+  Begin
+    TypeCompatible := True;
+    Exit;
+  End;
+
+  { Struct/Union : compatibles seulement si meme type exact }
+  If (KD In [TKP_STRUCT, TKP_UNION]) And (KD = KS) Then
+  Begin
+    TypeCompatible := (TypeTab[RD].Name = TypeTab[RS].Name);
+    Exit;
+  End;
+
+  TypeCompatible := False;
+End;
+
 { ------------------------------------------------------------ }
 { Run : ouvre le fichier source, lexe et affiche les tokens     }
 { avec support du preprocesseur, des litteraux et symboles     }
@@ -4147,10 +4610,11 @@ Begin
   LexOpened := True;
   CurFileName := Opts.SrcFile;
 
-  { Initialiser le pool de donnees, le pool de tokens et la table des symboles }
+  { Initialiser le pool de donnees, le pool de tokens, la table des symboles et des types }
   DataInit;
   TokenPoolInit;
   SymInit;
+  TypeInit;
 
   { Initialiser le preprocesseur et le lexeur }
   PPInit;
@@ -4180,7 +4644,8 @@ Begin
   { Afficher le resultat }
   WriteLn('CCW32: Lexer+PP OK (', TotalLines, ' lignes, ',
     MacroCount, ' macros, ', TokenCount, ' tokens, ',
-    DataCount, ' data, ', SymCount, ' symboles)');
+    DataCount, ' data, ', SymCount, ' symboles, ',
+    TypeCount, ' types)');
 End;
 
 { ------------------------------------------------------------ }
