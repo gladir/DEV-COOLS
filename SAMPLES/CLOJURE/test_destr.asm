@@ -1585,6 +1585,319 @@ _CLRT_LR_DN:
         POP     SI
         RET
 
+_CLRT_SUBS:
+        PUSH    DI
+        PUSH    DX
+        MOV     DI, OFFSET _CL_STRBUF2
+        ADD     SI, BX
+        XOR     DX, DX
+        ADD     DX, BX
+_CLRT_SB_LP:
+        CMP     BYTE PTR [SI], 0
+        JE      _CLRT_SB_DN
+        CMP     DX, CX
+        JAE     _CLRT_SB_DN
+        MOV     AL, [SI]
+        MOV     [DI], AL
+        INC     SI
+        INC     DI
+        INC     DX
+        JMP     _CLRT_SB_LP
+_CLRT_SB_DN:
+        MOV     BYTE PTR [DI], 0
+        MOV     AX, OFFSET _CL_STRBUF2
+        POP     DX
+        POP     DI
+        RET
+
+_CLRT_STRUPPER:
+        PUSH    SI
+        PUSH    DI
+        MOV     DI, OFFSET _CL_STRBUF2
+_CLRT_SU_LP:
+        MOV     AL, [SI]
+        TEST    AL, AL
+        JZ      _CLRT_SU_DN
+        CMP     AL, 97
+        JB      _CLRT_SU_SK
+        CMP     AL, 122
+        JA      _CLRT_SU_SK
+        SUB     AL, 32
+_CLRT_SU_SK:
+        MOV     [DI], AL
+        INC     SI
+        INC     DI
+        JMP     _CLRT_SU_LP
+_CLRT_SU_DN:
+        MOV     BYTE PTR [DI], 0
+        MOV     AX, OFFSET _CL_STRBUF2
+        POP     DI
+        POP     SI
+        RET
+
+_CLRT_STRLOWER:
+        PUSH    SI
+        PUSH    DI
+        MOV     DI, OFFSET _CL_STRBUF2
+_CLRT_SL2_LP:
+        MOV     AL, [SI]
+        TEST    AL, AL
+        JZ      _CLRT_SL2_DN
+        CMP     AL, 65
+        JB      _CLRT_SL2_SK
+        CMP     AL, 90
+        JA      _CLRT_SL2_SK
+        ADD     AL, 32
+_CLRT_SL2_SK:
+        MOV     [DI], AL
+        INC     SI
+        INC     DI
+        JMP     _CLRT_SL2_LP
+_CLRT_SL2_DN:
+        MOV     BYTE PTR [DI], 0
+        MOV     AX, OFFSET _CL_STRBUF2
+        POP     DI
+        POP     SI
+        RET
+
+_CLRT_STRTRIM:
+        PUSH    SI
+        PUSH    DI
+        PUSH    CX
+_CLRT_ST_LS:
+        CMP     BYTE PTR [SI], 32
+        JE      _CLRT_ST_LS2
+        CMP     BYTE PTR [SI], 9
+        JE      _CLRT_ST_LS2
+        JMP     _CLRT_ST_CP
+_CLRT_ST_LS2:
+        INC     SI
+        JMP     _CLRT_ST_LS
+_CLRT_ST_CP:
+        MOV     DI, OFFSET _CL_STRBUF2
+        XOR     CX, CX
+_CLRT_ST_CL:
+        MOV     AL, [SI]
+        MOV     [DI], AL
+        TEST    AL, AL
+        JZ      _CLRT_ST_TR
+        INC     SI
+        INC     DI
+        INC     CX
+        JMP     _CLRT_ST_CL
+_CLRT_ST_TR:
+        TEST    CX, CX
+        JZ      _CLRT_ST_DN
+        DEC     DI
+        CMP     BYTE PTR [DI], 32
+        JE      _CLRT_ST_T2
+        CMP     BYTE PTR [DI], 9
+        JE      _CLRT_ST_T2
+        INC     DI
+        MOV     BYTE PTR [DI], 0
+        JMP     _CLRT_ST_DN
+_CLRT_ST_T2:
+        MOV     BYTE PTR [DI], 0
+        DEC     CX
+        JMP     _CLRT_ST_TR
+_CLRT_ST_DN:
+        MOV     AX, OFFSET _CL_STRBUF2
+        POP     CX
+        POP     DI
+        POP     SI
+        RET
+
+_CLRT_STRFIND:
+        PUSH    SI
+        PUSH    DI
+        PUSH    BX
+        PUSH    CX
+        MOV     BX, DI
+_CLRT_SF_OL:
+        CMP     BYTE PTR [SI], 0
+        JE      _CLRT_SF_NF
+        MOV     DI, BX
+        MOV     CX, SI
+_CLRT_SF_IL:
+        CMP     BYTE PTR [DI], 0
+        JE      _CLRT_SF_FD
+        CMP     BYTE PTR [CX], 0
+        JE      _CLRT_SF_NF
+        MOV     AL, [CX]
+        CMP     AL, [DI]
+        JNE     _CLRT_SF_NX
+        INC     CX
+        INC     DI
+        JMP     _CLRT_SF_IL
+_CLRT_SF_NX:
+        INC     SI
+        JMP     _CLRT_SF_OL
+_CLRT_SF_FD:
+        MOV     AX, 1
+        JMP     _CLRT_SF_EX
+_CLRT_SF_NF:
+        XOR     AX, AX
+_CLRT_SF_EX:
+        POP     CX
+        POP     BX
+        POP     DI
+        POP     SI
+        RET
+
+_CLRT_STRREPL:
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    SI
+        PUSH    DI
+        MOV     WORD PTR [_CL_SCTMP1], DI
+        XOR     CX, CX
+_CLRT_SR_ML:
+        CMP     BYTE PTR [DI], 0
+        JE      _CLRT_SR_MS
+        INC     DI
+        INC     CX
+        JMP     _CLRT_SR_ML
+_CLRT_SR_MS:
+        MOV     WORD PTR [_CL_SCTMP2], CX
+        MOV     BX, OFFSET _CL_STRBUF2
+_CLRT_SR_OL:
+        CMP     BYTE PTR [SI], 0
+        JE      _CLRT_SR_DN
+        MOV     DI, WORD PTR [_CL_SCTMP1]
+        MOV     DX, SI
+_CLRT_SR_CK:
+        CMP     BYTE PTR [DI], 0
+        JE      _CLRT_SR_MT
+        CMP     BYTE PTR [DX], 0
+        JE      _CLRT_SR_NM
+        MOV     AL, [DX]
+        CMP     AL, [DI]
+        JNE     _CLRT_SR_NM
+        INC     DX
+        INC     DI
+        JMP     _CLRT_SR_CK
+_CLRT_SR_MT:
+        MOV     DI, WORD PTR [_CL_SCTMP3]
+_CLRT_SR_CR:
+        CMP     BYTE PTR [DI], 0
+        JE      _CLRT_SR_CA
+        MOV     AL, [DI]
+        MOV     [BX], AL
+        INC     BX
+        INC     DI
+        JMP     _CLRT_SR_CR
+_CLRT_SR_CA:
+        ADD     SI, WORD PTR [_CL_SCTMP2]
+        JMP     _CLRT_SR_OL
+_CLRT_SR_NM:
+        MOV     AL, [SI]
+        MOV     [BX], AL
+        INC     BX
+        INC     SI
+        JMP     _CLRT_SR_OL
+_CLRT_SR_DN:
+        MOV     BYTE PTR [BX], 0
+        MOV     AX, OFFSET _CL_STRBUF2
+        POP     DI
+        POP     SI
+        POP     DX
+        POP     CX
+        POP     BX
+        RET
+
+_CLRT_STRSPLIT:
+        PUSH    CX
+        PUSH    DI
+        PUSH    DX
+        MOV     WORD PTR [_CL_SCTMP1], BX
+        XOR     DX, DX
+_CLRT_SS_OL:
+        CMP     BYTE PTR [SI], 0
+        JE      _CLRT_SS_DN
+        MOV     DI, WORD PTR [_CL_HEAPTOP]
+        MOV     CX, DI
+        ADD     CX, OFFSET _CL_HEAP
+        PUSH    CX
+_CLRT_SS_IL:
+        MOV     AL, [SI]
+        TEST    AL, AL
+        JZ      _CLRT_SS_ES
+        CMP     AL, BYTE PTR [_CL_SCTMP1]
+        JE      _CLRT_SS_ES
+        MOV     BYTE PTR [CX], AL
+        INC     SI
+        INC     CX
+        INC     DI
+        JMP     _CLRT_SS_IL
+_CLRT_SS_ES:
+        MOV     BYTE PTR [CX], 0
+        INC     DI
+        MOV     WORD PTR [_CL_HEAPTOP], DI
+        CMP     BYTE PTR [SI], 0
+        JE      _CLRT_SS_NC
+        INC     SI
+_CLRT_SS_NC:
+        POP     AX
+        MOV     BX, DX
+        CALL    _CLRT_CONS
+        MOV     DX, AX
+        MOV     BX, WORD PTR [_CL_SCTMP1]
+        JMP     _CLRT_SS_OL
+_CLRT_SS_DN:
+        MOV     AX, DX
+        CALL    _CLRT_LREV
+        POP     DX
+        POP     DI
+        POP     CX
+        RET
+
+_CLRT_STRJOIN:
+        PUSH    CX
+        PUSH    DI
+        PUSH    DX
+        MOV     WORD PTR [_CL_SCTMP1], SI
+        MOV     DI, OFFSET _CL_STRBUF2
+        MOV     BYTE PTR [DI], 0
+        XOR     CX, CX
+_CLRT_SJ_LP:
+        CMP     BX, 0
+        JE      _CLRT_SJ_DN
+        TEST    CX, CX
+        JZ      _CLRT_SJ_NS
+        MOV     SI, WORD PTR [_CL_SCTMP1]
+_CLRT_SJ_CS:
+        MOV     AL, [SI]
+        TEST    AL, AL
+        JZ      _CLRT_SJ_NS
+        MOV     [DI], AL
+        INC     DI
+        INC     SI
+        JMP     _CLRT_SJ_CS
+_CLRT_SJ_NS:
+        PUSH    BX
+        MOV     SI, WORD PTR [BX]
+_CLRT_SJ_CE:
+        MOV     AL, [SI]
+        TEST    AL, AL
+        JZ      _CLRT_SJ_NX
+        MOV     [DI], AL
+        INC     DI
+        INC     SI
+        JMP     _CLRT_SJ_CE
+_CLRT_SJ_NX:
+        POP     BX
+        MOV     BX, WORD PTR [BX+2]
+        INC     CX
+        JMP     _CLRT_SJ_LP
+_CLRT_SJ_DN:
+        MOV     BYTE PTR [DI], 0
+        MOV     AX, OFFSET _CL_STRBUF2
+        POP     DX
+        POP     DI
+        POP     CX
+        RET
+
 ; === FIN RUNTIME ===
 
 
@@ -1613,6 +1926,10 @@ _CL_STMP2   DW 0
 _CL_HFTMP1  DW 0
 _CL_HFTMP2  DW 0
 _CL_HFTMP3  DW 0
+_CL_SCTMP1  DW 0
+_CL_SCTMP2  DW 0
+_CL_SCTMP3  DW 0
+_CL_STRBUF2 DB 256 DUP(0)
 
 _CL_NIL_S  DB 'nil',0
 _CL_TRUE_S  DB 'true',0

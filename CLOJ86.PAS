@@ -336,7 +336,7 @@
             (constantly x) -> (fn [& _] x)
             (identity x) -> x
 
-  TODO 23 - CHAINES DE CARACTERES (str / subs / count)
+  TODO 23 - CHAINES DE CARACTERES (str / subs / count) [IMPLEMENTE]
             (str a b c ...) : concatenation en chaine de tous les arguments
               CALL _CLRT_TOSTR pour chaque argument + _CLRT_CONCAT
             (subs s start) / (subs s start end) : sous-chaine
@@ -828,6 +828,15 @@ Procedure ParseCompForm(Var Res : TExprVal); Forward;
 Procedure ParsePartialForm(Var Res : TExprVal); Forward;
 Procedure ParseConstantlyForm(Var Res : TExprVal); Forward;
 Procedure ParseIdentityForm(Var Res : TExprVal); Forward;
+(* TODO 23 *)
+Procedure ParseSubsForm(Var Res : TExprVal); Forward;
+Procedure ParseUpperCaseForm(Var Res : TExprVal); Forward;
+Procedure ParseLowerCaseForm(Var Res : TExprVal); Forward;
+Procedure ParseTrimForm(Var Res : TExprVal); Forward;
+Procedure ParseIncludesForm(Var Res : TExprVal); Forward;
+Procedure ParseStrReplaceForm(Var Res : TExprVal); Forward;
+Procedure ParseSplitForm(Var Res : TExprVal); Forward;
+Procedure ParseJoinForm(Var Res : TExprVal); Forward;
 (* TODO 24 *)
 Procedure EmitRuntime;   Forward;
 (* TODO 25 *)
@@ -2904,6 +2913,11 @@ Begin
   EmitRaw('_CL_HFTMP1  DW 0');
   EmitRaw('_CL_HFTMP2  DW 0');
   EmitRaw('_CL_HFTMP3  DW 0');
+  (* Variables temporaires pour operations sur chaines (TODO 23) *)
+  EmitRaw('_CL_SCTMP1  DW 0');
+  EmitRaw('_CL_SCTMP2  DW 0');
+  EmitRaw('_CL_SCTMP3  DW 0');
+  EmitRaw('_CL_STRBUF2 DB 256 DUP(0)');
   EmitBlankLine;
   (* Donnees utilisateur *)
   For I := 0 To DataCount - 1 Do
@@ -4571,6 +4585,71 @@ Begin
             ParseIdentityForm(Res);
             If CurToken.Kind = TK_RPAREN Then LexNextToken
             Else CompileError(') attendue apres identity');
+            Exit;
+          End
+
+          (* TODO 23 : operations sur les chaines *)
+          Else If HeadSym = 'subs' Then
+          Begin
+            ParseSubsForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres subs');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/upper-case') Or
+                  (HeadSym = 'upper-case') Then
+          Begin
+            ParseUpperCaseForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres upper-case');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/lower-case') Or
+                  (HeadSym = 'lower-case') Then
+          Begin
+            ParseLowerCaseForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres lower-case');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/trim') Or
+                  (HeadSym = 'string/trim') Then
+          Begin
+            ParseTrimForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres trim');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/includes?') Or
+                  (HeadSym = 'string/includes?') Then
+          Begin
+            ParseIncludesForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres includes?');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/replace') Or
+                  (HeadSym = 'string/replace') Then
+          Begin
+            ParseStrReplaceForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres replace');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/split') Or
+                  (HeadSym = 'string/split') Then
+          Begin
+            ParseSplitForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres split');
+            Exit;
+          End
+          Else If (HeadSym = 'clojure.string/join') Or
+                  (HeadSym = 'string/join') Then
+          Begin
+            ParseJoinForm(Res);
+            If CurToken.Kind = TK_RPAREN Then LexNextToken
+            Else CompileError(') attendue apres join');
             Exit;
           End
 
@@ -7112,8 +7191,8 @@ Begin
 End;
 
 (* ---- ParseCountForm : (count coll) ----------------------------- *)
-(* Parcourt la liste liee jusqu a nil et retourne le nombre          *)
-(* d elements dans AX.                                               *)
+(* Polymorphe : chaines -> STRLEN, vecteurs -> [count],              *)
+(* maps/sets -> [count], listes -> LCOUNT.                           *)
 Procedure ParseCountForm(Var Res : TExprVal);
 Var ArgRes : TExprVal;
 Begin
@@ -7123,7 +7202,22 @@ Begin
   ParseForm(ArgRes);
   ExprFlushToAX(ArgRes);
 
-  EmitInstrA('CALL', CL_RT_PFX + 'LCOUNT');
+  (* TODO 23 : dispatch polymorphe selon le type *)
+  If ArgRes.TypeIdx = TY_IDX_STR Then
+  Begin
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrA('CALL', CL_RT_PFX + 'STRLEN');
+  End
+  Else If (ArgRes.TypeIdx = TY_IDX_VEC) Or
+          (ArgRes.TypeIdx = TY_IDX_MAP) Or
+          (ArgRes.TypeIdx = TY_IDX_SET) Then
+  Begin
+    (* Layout : [count, ...] -> premier mot = nombre d elements *)
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('MOV', 'AX', 'WORD PTR [SI]');
+  End
+  Else
+    EmitInstrA('CALL', CL_RT_PFX + 'LCOUNT');
 
   Res.Kind    := EK_AX;
   Res.TypeIdx := TY_IDX_INT;
@@ -7329,8 +7423,8 @@ Begin
 End;
 
 (* ---- ParseGetForm : (get coll key) ou (get coll key default) ---- *)
-(* Polymorphe : si la collection est TY_IDX_MAP, utilise MAPGET,     *)
-(* sinon utilise VECNTH (acces indexe dans un vecteur).              *)
+(* Polymorphe : TY_IDX_MAP -> MAPGET, TY_IDX_STR -> char a index,   *)
+(* sinon VECNTH (acces indexe dans un vecteur).                      *)
 (* AX = collection, BX = cle/index -> CALL runtime -> AX            *)
 Procedure ParseGetForm(Var Res : TExprVal);
 Var ArgRes  : TExprVal;
@@ -7338,6 +7432,7 @@ Var ArgRes  : TExprVal;
     LblEnd  : TString;
     LblDef  : TString;
     IsMap   : Boolean;
+    IsStr   : Boolean;
 Begin
   ExprMakeNone(Res);
   EmitComment('(get coll key)');
@@ -7345,6 +7440,7 @@ Begin
   (* Evaluer la collection *)
   ParseForm(ArgRes);
   IsMap := (ArgRes.TypeIdx = TY_IDX_MAP);
+  IsStr := (ArgRes.TypeIdx = TY_IDX_STR);
   ExprFlushToAX(ArgRes);
   EmitInstrA('PUSH', 'AX');
 
@@ -7371,6 +7467,14 @@ Begin
   (* Appel runtime selon le type *)
   If IsMap Then
     EmitInstrA('CALL', CL_RT_PFX + 'MAPGET')
+  Else If IsStr Then
+  Begin
+    (* TODO 23 : (get "abc" 1) -> code ASCII du caractere *)
+    EmitInstrAB('MOV', 'SI', 'AX');
+    EmitInstrAB('ADD', 'SI', 'BX');
+    EmitInstrAB('XOR', 'AX', 'AX');
+    EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+  End
   Else
     EmitInstrA('CALL', CL_RT_PFX + 'VECNTH');
 
@@ -9016,6 +9120,238 @@ Begin
   Res.SymIdx  := -1;
 End;
 
+(* ============================================================
+   TODO 23 - CHAINES DE CARACTERES (str / subs / count)
+             [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- ParseSubsForm : (subs s start) / (subs s start end) ------- *)
+(* Extrait une sous-chaine.                                          *)
+(* (subs s start) : de start jusqu a la fin.                         *)
+(* (subs s start end) : de start (inclus) a end (exclus).            *)
+(* Resultat alloue dans _CL_STRBUF2, retourne AX=ptr.               *)
+Procedure ParseSubsForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+    HasEnd : Boolean;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(subs s start [end])');
+
+  (* Evaluer la chaine source *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer start *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Verifier s il y a un argument end *)
+  HasEnd := (CurToken.Kind <> TK_RPAREN) And (CurToken.Kind <> TK_EOF);
+
+  If HasEnd Then
+  Begin
+    ParseForm(ArgRes);
+    ExprFlushToAX(ArgRes);
+    EmitInstrAB('MOV', 'CX', 'AX');   (* CX = end *)
+  End
+  Else
+    EmitInstrAB('MOV', 'CX', '0FFFFh');  (* sentinel : jusqu a la fin *)
+
+  EmitInstrA('POP', 'BX');   (* BX = start *)
+  EmitInstrA('POP', 'SI');   (* SI = source *)
+  EmitInstrA('CALL', CL_RT_PFX + 'SUBS');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseUpperCaseForm : (clojure.string/upper-case s) --------- *)
+(* Convertit la chaine en majuscules. Resultat dans _CL_STRBUF2.     *)
+Procedure ParseUpperCaseForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/upper-case s)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', CL_RT_PFX + 'STRUPPER');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseLowerCaseForm : (clojure.string/lower-case s) --------- *)
+(* Convertit la chaine en minuscules. Resultat dans _CL_STRBUF2.     *)
+Procedure ParseLowerCaseForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/lower-case s)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', CL_RT_PFX + 'STRLOWER');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseTrimForm : (clojure.string/trim s) -------------------- *)
+(* Supprime les espaces en debut et fin de chaine.                    *)
+Procedure ParseTrimForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/trim s)');
+
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrA('CALL', CL_RT_PFX + 'STRTRIM');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseIncludesForm : (clojure.string/includes? s sub) ------- *)
+(* Retourne true si sub est trouvee dans s, false sinon.              *)
+Procedure ParseIncludesForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/includes? s sub)');
+
+  (* Evaluer la chaine source *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer la sous-chaine *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'DI', 'AX');
+
+  EmitInstrA('POP', 'SI');   (* SI = chaine source *)
+  EmitInstrA('CALL', CL_RT_PFX + 'STRFIND');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_BOOL;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseStrReplaceForm : (clojure.string/replace s match repl) *)
+(* Remplace toutes les occurrences de match par repl dans s.         *)
+Procedure ParseStrReplaceForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/replace s match repl)');
+
+  (* Evaluer la chaine source *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer match *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer repl *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'WORD PTR [_CL_SCTMP3]', 'AX');  (* repl *)
+
+  EmitInstrA('POP', 'DI');   (* DI = match *)
+  EmitInstrA('POP', 'SI');   (* SI = source *)
+  EmitInstrA('CALL', CL_RT_PFX + 'STRREPL');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseSplitForm : (clojure.string/split s delim) ------------ *)
+(* Split simplifie : delimiteur est le premier caractere de la        *)
+(* chaine delim. Retourne une liste de sous-chaines.                  *)
+Procedure ParseSplitForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/split s delim)');
+
+  (* Evaluer la chaine source *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer le delimiteur *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  (* Premier caractere du delimiteur ou caractere directement *)
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstrAB('XOR', 'BX', 'BX');
+  EmitInstrAB('MOV', 'BL', 'BYTE PTR [SI]');
+
+  EmitInstrA('POP', 'SI');   (* SI = source *)
+  EmitInstrA('CALL', CL_RT_PFX + 'STRSPLIT');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_LIST;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
+(* ---- ParseJoinForm : (clojure.string/join sep coll) ------------- *)
+(* Concatene les elements de coll separes par sep.                    *)
+Procedure ParseJoinForm(Var Res : TExprVal);
+Var ArgRes : TExprVal;
+Begin
+  ExprMakeNone(Res);
+  EmitComment('(clojure.string/join sep coll)');
+
+  (* Evaluer le separateur *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrA('PUSH', 'AX');
+
+  (* Evaluer la collection *)
+  ParseForm(ArgRes);
+  ExprFlushToAX(ArgRes);
+  EmitInstrAB('MOV', 'BX', 'AX');  (* BX = liste *)
+
+  EmitInstrA('POP', 'SI');   (* SI = separateur *)
+  EmitInstrA('CALL', CL_RT_PFX + 'STRJOIN');
+
+  Res.Kind    := EK_AX;
+  Res.TypeIdx := TY_IDX_STR;
+  Res.ImmVal  := 0;
+  Res.Offset  := 0;
+  Res.SymIdx  := -1;
+End;
+
 Procedure EmitRuntime;
 Begin
   (* TODO 24 - runtime minimal pour E/S *)
@@ -10473,6 +10809,368 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
+  (* --- TODO 23 : _CLRT_SUBS : sous-chaine ----------------------- *)
+  (* Entree : SI = source ASCIIZ, BX = start, CX = end (ou FFFFh)   *)
+  (* Sortie : AX = pointeur vers _CL_STRBUF2 (sous-chaine)          *)
+  EmitRaw(CL_RT_PFX + 'SUBS:');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     DI, OFFSET _CL_STRBUF2');
+  EmitRaw('        ADD     SI, BX');
+  EmitRaw('        XOR     DX, DX');
+  EmitRaw('        ADD     DX, BX');
+  EmitRaw(CL_RT_PFX + 'SB_LP:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SB_DN');
+  EmitRaw('        CMP     DX, CX');
+  EmitRaw('        JAE     ' + CL_RT_PFX + 'SB_DN');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        INC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SB_LP');
+  EmitRaw(CL_RT_PFX + 'SB_DN:');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        MOV     AX, OFFSET _CL_STRBUF2');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRUPPER : majuscules --------------------- *)
+  (* Entree : SI = source ASCIIZ                                     *)
+  (* Sortie : AX = pointeur vers _CL_STRBUF2 (copie en majuscules)  *)
+  EmitRaw(CL_RT_PFX + 'STRUPPER:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, OFFSET _CL_STRBUF2');
+  EmitRaw(CL_RT_PFX + 'SU_LP:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SU_DN');
+  EmitRaw('        CMP     AL, 97');
+  EmitRaw('        JB      ' + CL_RT_PFX + 'SU_SK');
+  EmitRaw('        CMP     AL, 122');
+  EmitRaw('        JA      ' + CL_RT_PFX + 'SU_SK');
+  EmitRaw('        SUB     AL, 32');
+  EmitRaw(CL_RT_PFX + 'SU_SK:');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SU_LP');
+  EmitRaw(CL_RT_PFX + 'SU_DN:');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        MOV     AX, OFFSET _CL_STRBUF2');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRLOWER : minuscules --------------------- *)
+  (* Entree : SI = source ASCIIZ                                     *)
+  (* Sortie : AX = pointeur vers _CL_STRBUF2 (copie en minuscules)  *)
+  EmitRaw(CL_RT_PFX + 'STRLOWER:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, OFFSET _CL_STRBUF2');
+  EmitRaw(CL_RT_PFX + 'SL2_LP:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SL2_DN');
+  EmitRaw('        CMP     AL, 65');
+  EmitRaw('        JB      ' + CL_RT_PFX + 'SL2_SK');
+  EmitRaw('        CMP     AL, 90');
+  EmitRaw('        JA      ' + CL_RT_PFX + 'SL2_SK');
+  EmitRaw('        ADD     AL, 32');
+  EmitRaw(CL_RT_PFX + 'SL2_SK:');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SL2_LP');
+  EmitRaw(CL_RT_PFX + 'SL2_DN:');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        MOV     AX, OFFSET _CL_STRBUF2');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRTRIM : supprimer espaces debut/fin ---- *)
+  (* Entree : SI = source ASCIIZ                                     *)
+  (* Sortie : AX = pointeur vers _CL_STRBUF2 (copie trim)           *)
+  EmitRaw(CL_RT_PFX + 'STRTRIM:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    CX');
+  (* Avancer SI au-dela des espaces initiaux *)
+  EmitRaw(CL_RT_PFX + 'ST_LS:');
+  EmitRaw('        CMP     BYTE PTR [SI], 32');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'ST_LS2');
+  EmitRaw('        CMP     BYTE PTR [SI], 9');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'ST_LS2');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'ST_CP');
+  EmitRaw(CL_RT_PFX + 'ST_LS2:');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'ST_LS');
+  (* Copier dans _CL_STRBUF2 *)
+  EmitRaw(CL_RT_PFX + 'ST_CP:');
+  EmitRaw('        MOV     DI, OFFSET _CL_STRBUF2');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw(CL_RT_PFX + 'ST_CL:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'ST_TR');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        INC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'ST_CL');
+  (* Trim trailing: recul depuis la fin *)
+  EmitRaw(CL_RT_PFX + 'ST_TR:');
+  EmitRaw('        TEST    CX, CX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'ST_DN');
+  EmitRaw('        DEC     DI');
+  EmitRaw('        CMP     BYTE PTR [DI], 32');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'ST_T2');
+  EmitRaw('        CMP     BYTE PTR [DI], 9');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'ST_T2');
+  EmitRaw('        INC     DI');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'ST_DN');
+  EmitRaw(CL_RT_PFX + 'ST_T2:');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'ST_TR');
+  EmitRaw(CL_RT_PFX + 'ST_DN:');
+  EmitRaw('        MOV     AX, OFFSET _CL_STRBUF2');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRFIND : chercher sous-chaine ----------- *)
+  (* Entree : SI = chaine source, DI = sous-chaine a chercher       *)
+  (* Sortie : AX = 1 (true) si trouvee, 0 (false) sinon             *)
+  EmitRaw(CL_RT_PFX + 'STRFIND:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw(CL_RT_PFX + 'SF_OL:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_NF');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        MOV     CX, SI');
+  EmitRaw(CL_RT_PFX + 'SF_IL:');
+  EmitRaw('        CMP     BYTE PTR [DI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_FD');
+  EmitRaw('        CMP     BYTE PTR [CX], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SF_NF');
+  EmitRaw('        MOV     AL, [CX]');
+  EmitRaw('        CMP     AL, [DI]');
+  EmitRaw('        JNE     ' + CL_RT_PFX + 'SF_NX');
+  EmitRaw('        INC     CX');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SF_IL');
+  EmitRaw(CL_RT_PFX + 'SF_NX:');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SF_OL');
+  EmitRaw(CL_RT_PFX + 'SF_FD:');
+  EmitRaw('        MOV     AX, 1');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SF_EX');
+  EmitRaw(CL_RT_PFX + 'SF_NF:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw(CL_RT_PFX + 'SF_EX:');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRREPL : remplacer occurrences ---------- *)
+  (* Entree : SI = source, DI = match, _CL_SCTMP3 = replacement     *)
+  (* Sortie : AX = pointeur vers _CL_STRBUF2 (resultat)             *)
+  EmitRaw(CL_RT_PFX + 'STRREPL:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  (* Calculer la longueur de match *)
+  EmitRaw('        MOV     WORD PTR [_CL_SCTMP1], DI');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw(CL_RT_PFX + 'SR_ML:');
+  EmitRaw('        CMP     BYTE PTR [DI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SR_MS');
+  EmitRaw('        INC     DI');
+  EmitRaw('        INC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SR_ML');
+  EmitRaw(CL_RT_PFX + 'SR_MS:');
+  EmitRaw('        MOV     WORD PTR [_CL_SCTMP2], CX');
+  EmitRaw('        MOV     BX, OFFSET _CL_STRBUF2');
+  (* Boucle principale *)
+  EmitRaw(CL_RT_PFX + 'SR_OL:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SR_DN');
+  (* Verifier si match commence ici *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_SCTMP1]');
+  EmitRaw('        MOV     DX, SI');
+  EmitRaw(CL_RT_PFX + 'SR_CK:');
+  EmitRaw('        CMP     BYTE PTR [DI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SR_MT');
+  EmitRaw('        CMP     BYTE PTR [DX], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SR_NM');
+  EmitRaw('        MOV     AL, [DX]');
+  EmitRaw('        CMP     AL, [DI]');
+  EmitRaw('        JNE     ' + CL_RT_PFX + 'SR_NM');
+  EmitRaw('        INC     DX');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SR_CK');
+  (* Match trouve : copier replacement *)
+  EmitRaw(CL_RT_PFX + 'SR_MT:');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_SCTMP3]');
+  EmitRaw(CL_RT_PFX + 'SR_CR:');
+  EmitRaw('        CMP     BYTE PTR [DI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SR_CA');
+  EmitRaw('        MOV     AL, [DI]');
+  EmitRaw('        MOV     [BX], AL');
+  EmitRaw('        INC     BX');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SR_CR');
+  EmitRaw(CL_RT_PFX + 'SR_CA:');
+  EmitRaw('        ADD     SI, WORD PTR [_CL_SCTMP2]');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SR_OL');
+  (* Pas de match : copier le caractere courant *)
+  EmitRaw(CL_RT_PFX + 'SR_NM:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        MOV     [BX], AL');
+  EmitRaw('        INC     BX');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SR_OL');
+  EmitRaw(CL_RT_PFX + 'SR_DN:');
+  EmitRaw('        MOV     BYTE PTR [BX], 0');
+  EmitRaw('        MOV     AX, OFFSET _CL_STRBUF2');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRSPLIT : split sur un delimiteur -------- *)
+  (* Entree : SI = source ASCIIZ, BL = caractere delimiteur          *)
+  (* Sortie : AX = liste (cons cells) de pointeurs chaines heap      *)
+  EmitRaw(CL_RT_PFX + 'STRSPLIT:');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     WORD PTR [_CL_SCTMP1], BX');
+  EmitRaw('        XOR     DX, DX');
+  (* DX = resultat liste (nil) *)
+  (* Boucle externe : trouver le prochain token *)
+  EmitRaw(CL_RT_PFX + 'SS_OL:');
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SS_DN');
+  (* Copier le segment dans le heap *)
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     CX, DI');
+  EmitRaw('        ADD     CX, OFFSET _CL_HEAP');
+  EmitRaw('        PUSH    CX');
+  EmitRaw(CL_RT_PFX + 'SS_IL:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SS_ES');
+  EmitRaw('        CMP     AL, BYTE PTR [_CL_SCTMP1]');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SS_ES');
+  EmitRaw('        MOV     BYTE PTR [CX], AL');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     CX');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SS_IL');
+  EmitRaw(CL_RT_PFX + 'SS_ES:');
+  EmitRaw('        MOV     BYTE PTR [CX], 0');
+  EmitRaw('        INC     DI');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  (* Sauter le delimiteur *)
+  EmitRaw('        CMP     BYTE PTR [SI], 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SS_NC');
+  EmitRaw('        INC     SI');
+  EmitRaw(CL_RT_PFX + 'SS_NC:');
+  (* Cons le segment sur la liste *)
+  EmitRaw('        POP     AX');
+  EmitRaw('        MOV     BX, DX');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'CONS');
+  EmitRaw('        MOV     DX, AX');
+  EmitRaw('        MOV     BX, WORD PTR [_CL_SCTMP1]');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SS_OL');
+  EmitRaw(CL_RT_PFX + 'SS_DN:');
+  (* Renverser la liste pour l ordre correct *)
+  EmitRaw('        MOV     AX, DX');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'LREV');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 23 : _CLRT_STRJOIN : joindre avec separateur --------- *)
+  (* Entree : SI = separateur ASCIIZ, BX = liste (cons cells)        *)
+  (* Les elements de la liste sont des pointeurs chaines.             *)
+  (* Sortie : AX = pointeur vers _CL_STRBUF2 (resultat)              *)
+  EmitRaw(CL_RT_PFX + 'STRJOIN:');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     WORD PTR [_CL_SCTMP1], SI');
+  EmitRaw('        MOV     DI, OFFSET _CL_STRBUF2');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw(CL_RT_PFX + 'SJ_LP:');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SJ_DN');
+  (* Si ce n est pas le premier element, ajouter le sep *)
+  EmitRaw('        TEST    CX, CX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SJ_NS');
+  EmitRaw('        MOV     SI, WORD PTR [_CL_SCTMP1]');
+  EmitRaw(CL_RT_PFX + 'SJ_CS:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SJ_NS');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        INC     DI');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SJ_CS');
+  (* Copier l element courant *)
+  EmitRaw(CL_RT_PFX + 'SJ_NS:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     SI, WORD PTR [BX]');
+  EmitRaw(CL_RT_PFX + 'SJ_CE:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SJ_NX');
+  EmitRaw('        MOV     [DI], AL');
+  EmitRaw('        INC     DI');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SJ_CE');
+  EmitRaw(CL_RT_PFX + 'SJ_NX:');
+  EmitRaw('        POP     BX');
+  EmitRaw('        MOV     BX, WORD PTR [BX+2]');
+  EmitRaw('        INC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SJ_LP');
+  EmitRaw(CL_RT_PFX + 'SJ_DN:');
+  EmitRaw('        MOV     BYTE PTR [DI], 0');
+  EmitRaw('        MOV     AX, OFFSET _CL_STRBUF2');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
   EmitComment('=== FIN RUNTIME ===');
   EmitBlankLine;
 End;
@@ -10556,6 +11254,23 @@ Begin
   (* Fonctions predefinies - chaines *)
   SymAdd('str',        SK_FN, TY_IDX_STR, 0);
   SymAdd('count',      SK_FN, TY_IDX_INT, 0);
+
+  (* Fonctions predefinies - chaines (TODO 23) *)
+  SymAdd('subs',       SK_FN, TY_IDX_STR, 0);
+  SymAdd('clojure.string/upper-case', SK_FN, TY_IDX_STR, 0);
+  SymAdd('clojure.string/lower-case', SK_FN, TY_IDX_STR, 0);
+  SymAdd('clojure.string/trim',       SK_FN, TY_IDX_STR, 0);
+  SymAdd('clojure.string/includes?',  SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('clojure.string/replace',    SK_FN, TY_IDX_STR, 0);
+  SymAdd('clojure.string/split',      SK_FN, TY_IDX_LIST, 0);
+  SymAdd('clojure.string/join',       SK_FN, TY_IDX_STR, 0);
+  SymAdd('upper-case', SK_FN, TY_IDX_STR, 0);
+  SymAdd('lower-case', SK_FN, TY_IDX_STR, 0);
+  SymAdd('string/trim', SK_FN, TY_IDX_STR, 0);
+  SymAdd('string/includes?', SK_FN, TY_IDX_BOOL, 0);
+  SymAdd('string/replace', SK_FN, TY_IDX_STR, 0);
+  SymAdd('string/split', SK_FN, TY_IDX_LIST, 0);
+  SymAdd('string/join', SK_FN, TY_IDX_STR, 0);
 
   (* Fonctions predefinies - collections *)
   SymAdd('cons',       SK_FN, TY_IDX_LIST, 0);
