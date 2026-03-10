@@ -394,7 +394,7 @@
             Comparaison de pointeurs : == != < > <= >=
             Acces via pointeur : p->membre (deref + offset)
 
-  TODO 18 - TABLEAUX
+  TODO 18 - TABLEAUX [IMPLEMENTE]
             Declaration : type nom[taille]; (tableau a taille fixe)
               Taille = nombre_elements * sizeof(type)
               Acces : base + index * sizeof(type) -> adresse element
@@ -7651,6 +7651,8 @@ End;
 Procedure ParseSimpleExprStmt;
 Var
   Name, Op : TString;
+  K, Depth : Integer;
+  SaveEnd  : Integer;
 Begin
   If EPAtEnd Then Exit;
 
@@ -7724,6 +7726,62 @@ Begin
       EmitInstr('MOV DWORD PTR [ECX],EAX');
     End;
     Exit;
+  End;
+
+  { ident[expr] = expr / ident[expr] op= expr (TODO 18) }
+  If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
+     (TokenPool[EP + 1].Kind = TK_PUNCT) And
+     (TokenPool[EP + 1].Val = '[') Then
+  Begin
+    Name := TokenPool[EP].Val;
+    K := EP + 2;
+    Depth := 1;
+    While (K < EPEnd) And (Depth > 0) Do
+    Begin
+      If (TokenPool[K].Kind = TK_PUNCT) And (TokenPool[K].Val = '[') Then
+        Inc(Depth)
+      Else If (TokenPool[K].Kind = TK_PUNCT) And (TokenPool[K].Val = ']') Then
+        Dec(Depth);
+      If Depth > 0 Then Inc(K);
+    End;
+    If (Depth = 0) And (K + 1 < EPEnd) And
+       (TokenPool[K + 1].Kind = TK_OP) And
+       IsAssignOp(TokenPool[K + 1].Val) Then
+    Begin
+      Op := TokenPool[K + 1].Val;
+      Inc(EP, 2);
+      SaveEnd := EPEnd;
+      EPEnd   := K;
+      ParseExpr;
+      EPEnd   := SaveEnd;
+      EmitInstr('SHL EAX,2');
+      EmitInstr('PUSH EAX');
+      GenLoadVar(Name);
+      EmitInstr('POP EBX');
+      EmitInstr('ADD EAX,EBX');
+      EmitInstr('PUSH EAX');
+      EP := K + 2;
+      If Op = '=' Then
+      Begin
+        ParseExpr;
+        EmitInstr('POP ECX');
+        EmitInstr('MOV DWORD PTR [ECX],EAX');
+      End
+      Else
+      Begin
+        EmitInstr('POP ECX');
+        EmitInstr('PUSH ECX');
+        EmitInstr('MOV EAX,DWORD PTR [ECX]');
+        EmitInstr('PUSH EAX');
+        ParseExpr;
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        EmitCompoundOp(Op);
+        EmitInstr('POP ECX');
+        EmitInstr('MOV DWORD PTR [ECX],EAX');
+      End;
+      Exit;
+    End;
   End;
 
   { Expression generale }
@@ -8227,6 +8285,7 @@ Var
   Depth   : Integer;
   TIdx    : Integer;
   SaveEP  : Integer;
+  K       : Integer;  { pour scan ahead ident[...] = expr (TODO 18) }
 Begin
   If EP >= EPEnd Then Exit;
 
@@ -8612,6 +8671,75 @@ Begin
       Inc(EP);
     If EP < EPEnd Then Inc(EP);
     Exit;
+  End;
+
+  { Cas special : affectation element de tableau ident[expr] = expr (TODO 18) }
+  If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
+     (TokenPool[EP + 1].Kind = TK_PUNCT) And
+     (TokenPool[EP + 1].Val = '[') Then
+  Begin
+    { Scanner pour trouver le ']' suivi d un operateur d affectation }
+    Name := TokenPool[EP].Val;
+    K := EP + 2;
+    Depth := 1;
+    While (K < EPEnd) And (Depth > 0) Do
+    Begin
+      If (TokenPool[K].Kind = TK_PUNCT) And (TokenPool[K].Val = '[') Then
+        Inc(Depth)
+      Else If (TokenPool[K].Kind = TK_PUNCT) And (TokenPool[K].Val = ']') Then
+        Dec(Depth);
+      If Depth > 0 Then Inc(K);
+    End;
+    { K pointe sur ']', K+1 devrait etre op= }
+    If (Depth = 0) And (K + 1 < EPEnd) And
+       (TokenPool[K + 1].Kind = TK_OP) And
+       IsAssignOp(TokenPool[K + 1].Val) Then
+    Begin
+      Op := TokenPool[K + 1].Val;
+      { Evaluer l index }
+      Inc(EP, 2); { sauter ident et '[' }
+      SaveEP  := EPEnd;
+      EPEnd   := K; { borner a ']' }
+      ParseExpr;
+      EPEnd   := SaveEP;
+      EmitInstr('SHL EAX,2');    { index * 4 (DWORD) }
+      EmitInstr('PUSH EAX');     { sauver index * 4 }
+      { Charger adresse base du tableau }
+      GenLoadVar(Name);
+      EmitInstr('POP EBX');      { EBX = index * 4 }
+      EmitInstr('ADD EAX,EBX');  { EAX = adresse element }
+      EmitInstr('PUSH EAX');     { sauver adresse element }
+      { Sauter ']' et op= }
+      EP := K + 2;
+      If Op = '=' Then
+      Begin
+        { ident[expr] = expr : affecter a l element }
+        ParseExpr;
+        EmitInstr('POP ECX');
+        EmitInstr('MOV DWORD PTR [ECX],EAX');
+      End
+      Else
+      Begin
+        { ident[expr] op= expr : lire, appliquer, stocker }
+        EmitInstr('POP ECX');
+        EmitInstr('PUSH ECX');
+        EmitInstr('MOV EAX,DWORD PTR [ECX]'); { valeur actuelle }
+        EmitInstr('PUSH EAX');
+        ParseExpr;
+        EmitInstr('MOV EBX,EAX');
+        EmitInstr('POP EAX');
+        EmitCompoundOp(Op);
+        EmitInstr('POP ECX');
+        EmitInstr('MOV DWORD PTR [ECX],EAX');
+      End;
+      { Avancer au ; }
+      While (EP < EPEnd) And
+            Not ((TokenPool[EP].Kind = TK_PUNCT) And
+                 (TokenPool[EP].Val = ';')) Do
+        Inc(EP);
+      If EP < EPEnd Then Inc(EP);
+      Exit;
+    End;
   End;
 
   { Expression statement generale }

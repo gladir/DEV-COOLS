@@ -36,61 +36,56 @@ _CCF_main:
         SUB ESP,24
 ;   local arr = [EBP-20]
 ;   local i = [EBP-24]
-        LEA EAX,[EBP-20]
-        PUSH EAX
         MOV EAX,0
         SHL EAX,2
+        PUSH EAX
+        LEA EAX,[EBP-20]
         POP EBX
         ADD EAX,EBX
-        MOV EAX,DWORD PTR [EAX]
         PUSH EAX
         MOV EAX,10
-        ADD ESP,4
-; ; affectation dans expression
-        LEA EAX,[EBP-20]
-        PUSH EAX
+        POP ECX
+        MOV DWORD PTR [ECX],EAX
         MOV EAX,1
         SHL EAX,2
+        PUSH EAX
+        LEA EAX,[EBP-20]
         POP EBX
         ADD EAX,EBX
-        MOV EAX,DWORD PTR [EAX]
         PUSH EAX
         MOV EAX,20
-        ADD ESP,4
-; ; affectation dans expression
-        LEA EAX,[EBP-20]
-        PUSH EAX
+        POP ECX
+        MOV DWORD PTR [ECX],EAX
         MOV EAX,2
         SHL EAX,2
+        PUSH EAX
+        LEA EAX,[EBP-20]
         POP EBX
         ADD EAX,EBX
-        MOV EAX,DWORD PTR [EAX]
         PUSH EAX
         MOV EAX,30
-        ADD ESP,4
-; ; affectation dans expression
-        LEA EAX,[EBP-20]
-        PUSH EAX
+        POP ECX
+        MOV DWORD PTR [ECX],EAX
         MOV EAX,3
         SHL EAX,2
+        PUSH EAX
+        LEA EAX,[EBP-20]
         POP EBX
         ADD EAX,EBX
-        MOV EAX,DWORD PTR [EAX]
         PUSH EAX
         MOV EAX,40
-        ADD ESP,4
-; ; affectation dans expression
-        LEA EAX,[EBP-20]
-        PUSH EAX
+        POP ECX
+        MOV DWORD PTR [ECX],EAX
         MOV EAX,4
         SHL EAX,2
+        PUSH EAX
+        LEA EAX,[EBP-20]
         POP EBX
         ADD EAX,EBX
-        MOV EAX,DWORD PTR [EAX]
         PUSH EAX
         MOV EAX,50
-        ADD ESP,4
-; ; affectation dans expression
+        POP ECX
+        MOV DWORD PTR [ECX],EAX
         LEA EAX,[EBP-20]
         PUSH EAX
         MOV EAX,2
