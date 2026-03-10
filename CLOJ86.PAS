@@ -2,7 +2,7 @@
   @created: 2026
   @version: 1.0
   @website(https://www.gladir.com/dev-cools)
-  @abstract(Target: Turbo Pascal 7, Free Pascal 3.2)
+  @abstract(Target: Free Pascal 3.2)
   @description: Compilateur Clojure vers assembleur 8086
 }
 
@@ -10,389 +10,6 @@
   CLOJ86.PAS - Compilateur Clojure vers assembleur 8086
   Turbo Pascal / Free Pascal (-Mtp)
   Cible : MASM .MODEL SMALL, DOS 16 bits
-
-  FEUILLE DE ROUTE - 25 TODOS
-  ============================================================
-
-  TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
-            TOptions (SrcFile, OutFile, Verbose, DebugMode, Warnings)
-            ParseArgs : analyser argv (source.clj [sortie.asm] [-v] [-d] [-w])
-            FatalError, WarnMsg, EXIT_OK / EXIT_ERROR / EXIT_USAGE
-            Detecter l extension .clj (source Clojure)
-            Programme principal : validation des arguments et appel Run
-            Version, Date, aide en ligne (option -h)
-
-  TODO 02 - LECTEUR / TOKENISEUR (READER) [IMPLEMENTE]
-            TTokenKind : TK_EOF, TK_INTEGER, TK_STRING, TK_SYMBOL,
-              TK_KEYWORD, TK_LPAREN, TK_RPAREN, TK_LBRACKET, TK_RBRACKET,
-              TK_LBRACE, TK_RBRACE, TK_QUOTE, TK_DEREF, TK_META,
-              TK_SYNTAX_QUOTE, TK_UNQUOTE, TK_UNQUOTE_SPLICE,
-              TK_DISPATCH, TK_TRUE, TK_FALSE, TK_NIL, TK_CHAR
-            LexInit, LexClose, LexNextToken, LexScanSymbol, LexScanNumber
-            LexScanString : chaine entre guillemets doubles "abc"
-              Sequences d echappement : \n \t \r \\ \" \newline
-            LexScanKeyword : :mot-cle ou ::mot-cle-qualifie
-            Commentaires : ; jusqu a fin de ligne
-              #_ ignore la forme suivante (comment macro)
-              (comment ...) forme speciale ignoree
-            Mode debug -d : affichage de chaque token avec PrintToken
-
-  TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
-            Entiers decimaux : 0..65535 (positifs) ou -32768..32767 (signes)
-            Entiers hexadecimaux : 0xFF -> reconnaissance et conversion
-            Entiers octaux : 0377 -> reconnaissance et conversion
-            Chaines : "abc" -> pointeur vers donnees DATA
-              Concatenation via (str a b c) -> appel runtime
-            nil : valeur nulle -> AX=0
-            true : valeur booleenne vraie -> AX=1
-            false : valeur booleenne fausse -> AX=0
-            Caracteres : \a \b \newline \space \tab -> code ASCII
-            Mots-cles (keywords) : :nom -> entier unique dans une table
-            Ratios et BigDecimal : avertissement + troncature entiere
-
-  TODO 04 - READER MACROS ET FORMES SPECIALES DE LECTURE [IMPLEMENTE]
-            Quote : 'expr -> (quote expr)
-            Syntax-quote : `expr -> (quasiquote expr)
-            Unquote : ~expr -> (unquote expr)
-            Unquote-splice : ~@expr -> (unquote-splice expr)
-            Deref : @expr -> (deref expr)
-            Metadata : ^{...} ou ^:tag -> annotation (ignoree a la compilation)
-            Dispatch : #"regex" (avertissement, non supporte)
-              #{} -> ensemble litteral (hash-set)
-              #(...) -> fonction anonyme courte #(% %2 %&)
-              #' -> var quote
-            Lecture de listes : (a b c) -> liste chainee
-            Lecture de vecteurs : [a b c] -> vecteur
-            Lecture de maps : {:a 1 :b 2} -> table de hachage
-            Lecture d ensembles : #{1 2 3} -> ensemble
-
-  TODO 05 - TABLE DES SYMBOLES ET ENVIRONNEMENTS [IMPLEMENTE]
-            TSymKind : SK_VAR, SK_FN, SK_MACRO, SK_SPECIAL, SK_LOCAL,
-              SK_KEYWORD, SK_NS
-            TSymRec : Name, MangledName, Kind, TypeTag, Offset,
-              ScopeLevel, IsConst, Namespace
-            SymNameClean : nettoyer les caracteres non-MASM (tirets etc.)
-            SymMangle : prefixer selon Kind (SK_VAR->_CLV_, SK_FN->_CLF_,
-              SK_MACRO->_CLV_, SK_LOCAL->_CLV_, SK_NS->_CLV_)
-            SymFind : recherche MRU (du plus recent au plus ancien)
-            SymFindInScope : recherche dans un niveau de portee specifique
-            SymAdd : ajout (debug trace en -d, Namespace, DeclLine)
-            CurScope : compteur de portee imbriquee (let, fn, loop)
-            SymEnterScope / SymLeaveScope : gestion des portees imbriquees
-            IsSpecialForm : detecte def/defn/defmacro/fn/let/if/do/
-              when/cond/case/recur/loop/quote/var/try/catch/finally/
-              throw/new/set!/monitor-enter/monitor-exit
-            SymInit : enregistre les formes speciales + symboles predefinis
-              def, defn, defmacro, fn, let, if, do, when, cond, case,
-              recur, loop, quote, var, try, catch, finally, throw,
-              new, set!, nil, true, false, not, and, or, println,
-              print, pr, prn, str, +, -, mod, rem, inc, dec,
-              =, <, >, <=, >=, ==, not=, cons, first, rest, list,
-              vector, hash-map, hash-set, get, assoc, dissoc, conj,
-              count, nth, seq, empty?, nil?, zero?, pos?, neg?,
-              even?, odd?, apply, map, filter, reduce, atom, deref,
-              reset!, swap!, compare-and-set!
-
-  TODO 06 - SYSTEME DE TYPES INTERNES (TAGS) [IMPLEMENTE]
-            Tags de valeurs Clojure (3 bits hauts d un Word) :
-              TAG_NIL (0), TAG_TRUE (1), TAG_FALSE (2),
-              TAG_INT (3), TAG_SYM (4), TAG_KW (5),
-              TAG_CONS (6), TAG_VEC (7), TAG_MAP (8),
-              TAG_SET (9), TAG_STR (10), TAG_FN (11), TAG_ATOM (12)
-            Encodage compact : tag sur 4 bits + payload sur 12 bits
-              ou tag dans un champ separe pour les objets heap
-            TypeTab, TypeInit : enregistrer les 12 types primitifs
-            TypeKindOf : retourner le TTypeKind d un indice de type
-            TypeSizeof : taille en octets (2 en 16-bit pour tous)
-            TypeMangle : prefixe ASM selon le tag (_CLI_/_CLS_/_CLB_ etc.)
-            TypeIsNumeric : int et char sont numeriques
-            TypeIsPtr : string/list/vector/map/set/function
-            TypeIsTruthy : nil et false faux, tout le reste vrai
-            TypeCanCoerce : coercitions dynamiques Clojure
-            TypeCoerceResult : type resultat d une operation
-            TypeInfer : deduction de type depuis TExprVal
-            TypeLookupName : recherche par nom dans TypeTab
-
-  TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
-            TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
-            EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
-            EmitComment, EmitBlankLine
-            LabelGen global (compteur unique _CL_NNNNN)
-            Prefixes : _CLV_ (variable), _CLF_ (fonction), _CLK_ (chaine const),
-              _CLRT_ (runtime), _CL_ (label), _CLKW_ (keyword),
-              _CLVEC_ (vecteur data), _CLMAP_ (map data)
-            EmitHeader : .MODEL SMALL / .STACK 1024 / _TEXT SEGMENT
-            EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
-            EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
-
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
-            TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_LIST/DK_VEC/DK_MAP),
-              IntVal, StrVal, ElemCount
-            DataTab[0..MAX_DATA-1], DataCount
-            DataAdd, DataAddStr, DataAddList, DataAddVec : variantes d ajout
-            Variables globales (def) : entrees DK_WORD dans DATA
-            Chaines litterales : DB 'abc',0 dans DATA avec label _CLK_N
-            Keywords : table globale des mots-cles, chaque :kw -> index unique
-            Vecteurs litteraux : blocs contigus DW dans DATA
-            Maps litterales : paires cle/valeur DW dans DATA
-
-  TODO 09 - VARIABLES GLOBALES (def / defonce) [IMPLEMENTE]
-            (def nom valeur) : declarer une variable globale
-              Emission : calcul de valeur -> MOV [_CLV_nom], AX
-            (def nom) : declaration sans valeur initiale -> nil
-            (defonce nom valeur) : comme def mais n ecrase pas si deja defini
-            Metadata sur les vars : ^:dynamic, ^:private (avertissements)
-            (def ^:const nom valeur) : constante, inlining a la compilation
-            Acces a une variable : MOV AX, [_CLV_nom]
-            Pas de redefinition en mode strict (option -w avertissement)
-
-  TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
-            ParseForm : dispatcher selon le type de token lu
-            Litteraux : nombre, chaine, true, false, nil, keyword, caractere
-            Symboles : resolution dans l environnement courant
-            Appel de fonction : (f arg1 arg2 ...) -> evaluation args + CALL
-            Formes speciales : if, do, let, fn, def, quote, recur, loop, etc.
-            Acces a une variable locale : MOV AX, [BP-offset]
-            Acces a une variable globale : MOV AX, [_CLV_nom]
-            Forme quote : (quote x) -> retourne x sans evaluation
-            Forme do : (do expr1 expr2 ... exprN) -> evalue tout, retourne exprN
-
-  TODO 11 - EXPRESSIONS ARITHMETIQUES ET COMPARAISONS [IMPLEMENTE]
-            Arithmetique : (+ a b ...) (- a b ...) (* a b ...) (/ a b ...)
-              Variadic : (+ a b c) -> a+b puis +c via boucle ou depliage
-              ADD/SUB/IMUL/IDIV pour les operations entieres
-            (mod a b) -> IDIV, resultat dans DX (reste)
-            (inc x) -> ADD AX,1 / (dec x) -> SUB AX,1
-            Comparaisons : (= a b) (not= a b) (< a b) (<= a b) (> a b) (>= a b)
-              CMP + Jcc pour chaque operateur
-              Chaines : CALL _CLRT_STRCMP pour comparaison
-            Logique : (and a b ...) -> court-circuit, retourne derniere valeur vraie
-              (or a b ...) -> court-circuit, retourne premiere valeur vraie
-              (not x) -> si nil ou false alors true, sinon false
-            (min a b ...) (max a b ...) -> comparaison iteree
-
-  TODO 12 - ENTREES/SORTIES (println / print / read-line) [IMPLEMENTE]
-            (println expr ...) : afficher les arguments separes par espace + CR+LF
-              Evaluation de chaque argument, conversion en chaine
-              INT 21h AH=40h BX=1 (STDOUT) pour chaque partie
-              _CLRT_PRVAL(AX=val) : afficher une valeur selon son tag
-            (print expr ...) : comme println sans saut de ligne final
-            (newline) : ecriture CR+LF seul
-            (read-line) : INT 21h AH=0Ah lecture ligne -> AX=ptr chaine
-            (pr-str expr) : convertir en chaine lisible -> AX=ptr
-            (str expr ...) : concatener les representations en chaine
-              -> CALL _CLRT_TOSTR pour chaque argument + _CLRT_CONCAT
-            (flush) : stub (pas de buffering sur DOS)
-            *out* / *err* : handles STDOUT (1) et STDERR (2)
-
-  TODO 13 - FORMES SPECIALES : IF / DO / WHEN / COND / CASE [IMPLEMENTE]
-            (if test then else?) : ParseIfForm
-              Emission : evaluation test, TEST AX,AX / JZ label_else
-              Labels : _CL_ELSE_N, _CL_ENDIF_N
-              Truthiness : nil et false sont faux, tout le reste est vrai
-            (do expr1 expr2 ... exprN) : evaluer sequentiellement
-              Retourne la valeur de la derniere expression
-            (when test expr ...) : sucre pour (if test (do expr ...) nil)
-            (when-not test expr ...) : inverse de when
-            (cond test1 expr1 test2 expr2 ... :else exprN) :
-              Cascade de if/elsif, :else comme branche par defaut
-              Labels : _CL_COND_N, _CL_CEND_N
-            (case expr val1 result1 val2 result2 ... default) :
-              CMP + JE pour chaque valeur, saut vers resultat
-              Labels : _CL_CASE_N, _CL_CASEEND_N
-            (if-let [x expr] then else?) : let + test en une forme
-            (when-let [x expr] body ...) : let + when en une forme
-
-  TODO 14 - LIAISONS LOCALES : LET [IMPLEMENTE]
-            (let [x 1 y 2] body ...) : ParseLetForm
-              Chaque liaison cree une variable locale sur la pile
-              SUB SP,2 pour chaque liaison, acces [BP-offset]
-              Les liaisons sont sequentielles (chaque nom voit les precedents)
-              Retourne la valeur de la derniere expression du body
-            Portee : les variables let ne sont visibles que dans le body
-              SymEnterScope avant les liaisons, SymLeaveScope apres le body
-            (let [x 1 y (+ x 1)] ...) : y peut utiliser x
-            Nombre variable de liaisons : boucle sur les paires nom/valeur
-            Verification : nombre pair d elements dans le vecteur de liaisons
-            Shadowing : une liaison peut masquer une variable du scope parent
-
-  TODO 15 - FONCTIONS (defn / fn / apply) [IMPLEMENTE]
-            (defn nom [params] body ...) : ParseDefnForm
-              Cree un label _CLF_nom, prologue PUSH BP / MOV BP,SP
-              Parametres : [BP+4], [BP+6], ... (empiles droite a gauche)
-              Corps : evaluer body, resultat dans AX
-              Epilogue : MOV SP,BP / POP BP / RET
-            (fn [params] body ...) : fonction anonyme (lambda)
-              Label genere _CL_FN_N, meme convention d appel
-            Appel de fonction : (f a1 a2 ...) ->
-              Evaluer a1..aN, PUSH chaque argument, CALL _CLF_f, ADD SP,2*N
-            (apply f args) : appel avec liste d arguments
-              Depiler la liste args sur la pile, puis CALL
-            Arite variable : (defn f [x & rest] ...) ->
-              rest = pointeur vers liste des arguments restants
-            Fonctions predefinies : +, -, *, /, =, <, >, str, println, etc.
-            Closures : acces aux variables du scope parent via lien statique
-              Pointeur vers BP du cadre englobant passe en parametre cache
-
-  TODO 16 - BOUCLES : LOOP / RECUR / DOTIMES / DOSEQ [IMPLEMENTE]
-            (loop [x init1 y init2] body ...) : ParseLoopForm
-              Cree des liaisons locales comme let
-              Label _CL_LOOP_N en debut du body
-            (recur expr1 expr2 ...) : saut arriere vers loop
-              Reevalue les expressions et met a jour les liaisons
-              JMP _CL_LOOP_N (doit etre en position de queue)
-              Verification : recur uniquement en tail position
-            (dotimes [i n] body ...) : boucle de 0 a n-1
-              Sucre pour (loop [i 0] (when (< i n) body (recur (inc i))))
-              Labels : _CL_DTST_N, _CL_DTEND_N
-            (doseq [x coll] body ...) : iteration sur une collection
-              Sucre pour (loop [s (seq coll)] (when s body (recur (rest s))))
-              Labels : _CL_DQST_N, _CL_DQEND_N
-            (while test body ...) : boucle tant que test est vrai (macro)
-
-  TODO 17 - LISTES (cons / first / rest / conj) [IMPLEMENTE]
-            Cellule cons : paire (car . cdr) = 2 Words sur le heap
-              _CL_HEAP DB 4096 DUP(0), _CL_HEAPTOP DW 0
-            (cons x coll) -> CALL _CLRT_CONS(AX=x, BX=coll) -> AX=ptr
-            (first lst) -> MOV BX,AX / MOV AX,[BX] (car)
-            (rest lst) -> MOV BX,AX / MOV AX,[BX+2] (cdr)
-            (list a b c ...) -> appels cons imbriques (cons a (cons b (cons c nil)))
-            (conj lst x) -> (cons x lst) (ajout en tete pour les listes)
-            (count lst) -> CALL _CLRT_LCOUNT parcours jusqu a nil -> AX
-            (nth lst n) -> CALL _CLRT_LNTH parcours n fois rest -> AX
-            (empty? coll) -> CMP AX,0 / JZ (test nil)
-            (seq coll) -> retourne la collection comme sequence ou nil si vide
-
-  TODO 18 - VECTEURS (vector / nth / assoc / conj) [IMPLEMENTE]
-            Representation : bloc contigu en heap [count, e0, e1, ..., eN-1]
-              count = nombre d elements (1 Word), chaque element = 1 Word
-            (vector a b c) -> CALL _CLRT_VECNEW(CX=count) allouer + remplir
-            [a b c] -> litteral vecteur, meme mecanisme
-            (nth vec n) -> CALL _CLRT_VECNTH(BX=vec, CX=n) -> AX
-              Verification de bornes : CMP n, [BX] / JAE erreur
-            (count vec) -> MOV BX,AX / MOV AX,[BX] (premier Word = taille)
-            (conj vec x) -> CALL _CLRT_VECCONJ allouer nouveau vecteur + copie + ajout
-            (assoc vec n val) -> CALL _CLRT_VECASSOC copie avec remplacement index n
-            (subvec vec start end) -> CALL _CLRT_SUBVEC sous-vecteur
-            (get vec n) -> comme nth avec retour nil si hors bornes
-
-  TODO 19 - TABLES DE HACHAGE (hash-map / get / assoc / dissoc) [IMPLEMENTE]
-            Representation : liste de paires en heap [count, k0, v0, k1, v1, ...]
-              count = nombre de paires, chaque paire = 2 Words (cle + valeur)
-            (hash-map k1 v1 k2 v2 ...) -> CALL _CLRT_MAPNEW allouer + remplir
-            {:k1 v1 :k2 v2} -> litteral map, meme mecanisme
-            (get m key) -> CALL _CLRT_MAPGET(BX=map, CX=key) -> AX (nil si absent)
-            (get m key default) -> comme get avec valeur par defaut
-            (assoc m k v) -> CALL _CLRT_MAPASSOC copie avec ajout/remplacement
-            (dissoc m k) -> CALL _CLRT_MAPDISSOC copie sans la cle k
-            (contains? m key) -> CALL _CLRT_MAPHAS -> AX=true|false
-            (keys m) -> CALL _CLRT_MAPKEYS -> AX=liste des cles
-            (vals m) -> CALL _CLRT_MAPVALS -> AX=liste des valeurs
-            (merge m1 m2) -> CALL _CLRT_MAPMERGE fusionner deux maps
-            (count m) -> MOV BX,AX / MOV AX,[BX] (premier Word = nb paires)
-
-  TODO 20 - ENSEMBLES (hash-set / contains? / conj / disj) [IMPLEMENTE]
-            Representation : liste de valeurs en heap [count, e0, e1, ..., eN-1]
-              count = nombre d elements (1 Word), chaque element = 1 Word
-            (hash-set a b c) -> CALL _CLRT_SETNEW allouer + remplir (sans doublons)
-            #{a b c} -> litteral ensemble, meme mecanisme
-            (contains? s val) -> CALL _CLRT_SETHAS recherche lineaire -> AX=true|false
-            (conj s val) -> CALL _CLRT_SETCONJ copie avec ajout si absent
-            (disj s val) -> CALL _CLRT_SETDISJ copie sans l element val
-            (count s) -> MOV BX,AX / MOV AX,[BX] (premier Word = taille)
-            (union s1 s2) -> CALL _CLRT_SETUNION fusion sans doublons
-            (intersection s1 s2) -> CALL _CLRT_SETINTER elements communs
-            (difference s1 s2) -> CALL _CLRT_SETDIFF elements de s1 absents de s2
-
-  TODO 21 - DESTRUCTURATION (DESTRUCTURING) [IMPLEMENTE]
-            Destructuration sequentielle (vecteur) :
-              (let [[a b c] vec] ...) -> nth 0, nth 1, nth 2
-              (let [[a b & rest] vec] ...) -> a=nth 0, b=nth 1, rest=drop 2
-              (let [[a _ c] vec] ...) -> _ ignore l element
-            Destructuration associative (map) :
-              (let [{:keys [a b]} m] ...) -> a=(get m :a), b=(get m :b)
-              (let [{x :nom y :age} m] ...) -> x=(get m :nom), y=(get m :age)
-              (let [{:keys [a] :or {a 0}} m] ...) -> valeur par defaut si absent
-            Destructuration dans defn :
-              (defn f [[a b] m] ...) -> destructuration des parametres
-            Destructuration dans loop :
-              (loop [[x & xs] coll] ...) -> liaison destructuree
-            Imbrication : destructuration recursive sur structures imbriquees
-
-  TODO 22 - FONCTIONS D ORDRE SUPERIEUR (map / filter / reduce) [IMPLEMENTE]
-            (map f coll) -> CALL _CLRT_MAP appliquer f a chaque element
-              Resultat : nouvelle liste (cons de chaque (f elem))
-            (filter pred coll) -> CALL _CLRT_FILTER garder si (pred elem) vrai
-              Resultat : nouvelle liste des elements satisfaisant pred
-            (reduce f init coll) -> CALL _CLRT_REDUCE accumuler (f acc elem)
-              Boucle : acc = (f acc (first s)), s = (rest s)
-            (map f c1 c2) -> application avec deux collections en parallele
-            (remove pred coll) -> comme filter avec predicat inverse
-            (some pred coll) -> retourne premier (pred elem) vrai ou nil
-            (every? pred coll) -> true si (pred elem) vrai pour tous
-            (into to from) -> (reduce conj to from) verser from dans to
-            (comp f g) -> composition de fonctions (fn [x] (f (g x)))
-            (partial f args...) -> application partielle (fn [& more] (apply f args more))
-            (constantly x) -> (fn [& _] x)
-            (identity x) -> x
-
-  TODO 23 - CHAINES DE CARACTERES (str / subs / count) [IMPLEMENTE]
-            (str a b c ...) : concatenation en chaine de tous les arguments
-              CALL _CLRT_TOSTR pour chaque argument + _CLRT_CONCAT
-            (subs s start) / (subs s start end) : sous-chaine
-              CALL _CLRT_SUBS(SI=str, BX=start, CX=end) -> AX=ptr
-            (count s) : longueur de la chaine
-              CALL _CLRT_STRLEN(SI=str) -> AX
-            (get s n) : caractere a l index n -> code ASCII
-            (clojure.string/upper-case s) -> CALL _CLRT_STRUPPER
-            (clojure.string/lower-case s) -> CALL _CLRT_STRLOWER
-            (clojure.string/trim s) -> CALL _CLRT_STRTRIM
-            (clojure.string/includes? s sub) -> CALL _CLRT_STRFIND -> AX=true|false
-            (clojure.string/replace s match replacement) -> CALL _CLRT_STRREPL
-            (clojure.string/split s re) -> avertissement regex non supporte
-              Variante simplifiee : split sur un caractere delimiteur
-            (clojure.string/join sep coll) -> CALL _CLRT_STRJOIN
-
-  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
-            _CLRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
-            _CLRT_PRINTLN : _CLRT_PRINT + CR+LF via _CL_CRLF DB 13,10,0
-            _CLRT_PRVAL(AX=val) : afficher une valeur selon son tag
-            _CLRT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
-            _CLRT_NUMTOSTR(AX=n, DI=buf) : entier signe -> ASCII (itoa)
-            _CLRT_STRTONUM(SI=str) : ASCII -> entier -> AX (atoi)
-            _CLRT_TOSTR(AX=val) : convertir valeur en chaine selon tag -> AX=ptr
-            _CLRT_CONCAT(SI=str1, DI=str2) : concatenation -> AX=ptr buf
-            _CLRT_STRCMP(SI=str1, DI=str2) : comparaison -> drapeaux ZF/CF
-            _CLRT_CONS(AX=car, BX=cdr) : allouer cons cell -> AX=ptr
-            _CLRT_VECNEW(CX=count) : allouer vecteur -> AX=ptr
-            _CLRT_VECNTH(BX=vec, CX=idx) : acces element -> AX
-            _CLRT_MAPNEW(CX=pairs) : allouer map -> AX=ptr
-            _CLRT_MAPGET(BX=map, CX=key) : recherche cle -> AX (nil si absent)
-            _CLRT_SETNEW(CX=count) : allouer ensemble -> AX=ptr
-            _CLRT_ALLOC(CX=nb_octets) : allocation heap -> AX=ptr
-              _CL_HEAP DB 4096 DUP(0) + _CL_HEAPTOP DW 0
-            _CLRT_PANIC(SI=msg) : affiche message + MOV AX,4C01h + INT 21h
-            _CLRT_EQUAL(AX=a, BX=b) : egalite structurelle -> AX=true|false
-            RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
-
-  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
-            EmitClose : END _CLF_main dans _TEXT ENDS / DATA ENDS
-            Run : pipeline complet LexInit -> ParseProgram ->
-              EmitRuntime -> _TEXT ENDS / EmitDataSeg / END _CLF_main
-            Point d entree : la derniere expression de niveau superieur
-              ou (defn -main [] ...) si presente -> _CLF_main
-            Fichiers SAMPLES\CLOJURE\ a creer :
-              hello.clj    (println, def, str, variables globales)
-              math.clj     (defn, fn, +, -, *, /, mod, comparaisons)
-              control.clj  (if, when, cond, case, do, let)
-              loops.clj    (loop/recur, dotimes, doseq, while)
-              lists.clj    (list, cons, first, rest, conj, nth)
-              vectors.clj  (vector, nth, assoc, conj, subvec)
-              maps.clj     (hash-map, get, assoc, dissoc, keys, vals)
-              higher.clj   (map, filter, reduce, apply, comp, partial)
-              strings.clj  (str, subs, upper-case, lower-case, trim)
-              destruct.clj (destructuration sequentielle et associative)
-            Smoke tests : CLOJ86.EXE -v SAMPLES\CLOJURE\*.clj
 
   ============================================================ *)
 
@@ -475,7 +92,7 @@ Type
     Warnings  : Boolean;   (* -w : activer les avertissements      *)
   End;
 
-  (* ---- Tokens Clojure (TODO 02) -------------------------- *)
+  (* ---- Tokens Clojure -------------------------- *)
   TTokenKind = (
     TK_EOF,              (* fin de fichier                       *)
     TK_INTEGER,          (* literal entier 42 0xFF 0377          *)
@@ -509,7 +126,7 @@ Type
     Col    : Integer;      (* colonne source (1-base)             *)
   End;
 
-  (* ---- Categories de symboles (TODO 05) ------------------- *)
+  (* ---- Categories de symboles ------------------- *)
   TSymKind = (
     SK_VAR,       (* variable globale (def)               *)
     SK_FN,        (* fonction (defn)                      *)
@@ -532,7 +149,7 @@ Type
     DeclLine    : Integer;
   End;
 
-  (* ---- Types internes (TODO 06) --------------------------- *)
+  (* ---- Types internes --------------------------- *)
   TTypeKind = (
     TKC_NIL,
     TKC_INT,
@@ -555,7 +172,7 @@ Type
     Size : Integer;   (* octets : int=2, ptr=2             *)
   End;
 
-  (* ---- Valeurs d expression (TODO 10) --------------------- *)
+  (* ---- Valeurs d expression --------------------- *)
   TExprKind = (
     EK_NONE,   (* void / pas de valeur                      *)
     EK_IMM,    (* immediate dans ImmVal                     *)
@@ -571,7 +188,7 @@ Type
     SymIdx  : Integer;   (* indice dans SymTab (-1 = pas de lvalue) *)
   End;
 
-  (* ---- Segment de donnees (TODO 08) ----------------------- *)
+  (* ---- Segment de donnees ----------------------- *)
   TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_LIST, DK_VEC, DK_MAP);
 
   TDataRec = Record
@@ -598,7 +215,7 @@ Var
   (* Valeur fictive pour ignorer un retour TExprVal *)
   GExprDummy : TExprVal;
 
-  (* Lexeur (TODO 02) *)
+  (* Lexeur *)
   LexSrcF   : Text;
   LexLine   : String;
   LexLineNo : Integer;
@@ -607,7 +224,7 @@ Var
   LexOpened : Boolean;
   CurToken  : TToken;
 
-  (* Table des symboles (TODO 05) *)
+  (* Table des symboles *)
   SymTab     : Array[0..MAX_SYM - 1] Of TSymRec;
   SymCount   : Integer;
   ScopeStack : Array[0..MAX_SCOPE - 1] Of Integer;
@@ -615,11 +232,11 @@ Var
   CurScope   : Integer;
   LabelSeq   : Integer;
 
-  (* Table des types (TODO 06) *)
+  (* Table des types *)
   TypeTab   : Array[0..MAX_TYPE - 1] Of TTypeRec;
   TypeCount : Integer;
 
-  (* Emetteur ASM (TODO 07) *)
+  (* Emetteur ASM *)
   OutF         : Text;
   OutFOpen     : Boolean;
   CurFrameSize : Integer;    (* taille cadre local courant (words)  *)
@@ -632,17 +249,17 @@ Var
   LoopBindOfs  : Array[0..MAX_LOOP_NEST - 1, 0..MAX_PARAM - 1] Of Integer;
   LabelGenSeq  : Integer;    (* compteur unique pour LabelGen       *)
 
-  (* Keywords (TODO 02/08) *)
+  (* Keywords *)
   KwTab   : Array[0..MAX_KW - 1] Of TString;
   KwCount : Integer;
 
-  (* Segment de donnees (TODO 08) *)
+  (* Segment de donnees *)
   DataTab   : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount : Integer;
 
   (* Etat general *)
   RuntimeEmitted : Boolean;
-  MainFnFound    : Boolean;   (* (defn -main ...) detectee? (TODO 25) *)
+  MainFnFound    : Boolean;   (* (defn -main ...) detectee? *)
 
 (* ============================================================
    FORWARD DECLARATIONS
@@ -661,7 +278,6 @@ Procedure LexScanKeyword;      Forward;
 Procedure LexScanChar;         Forward;
 Procedure LexNextToken;        Forward;
 Procedure PrintToken(Const T : TToken); Forward;
-(* TODO 03 *)
 Procedure ExprMakeImm(AVal : LongInt; ATypeIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ExprMakeNone(Var Res : TExprVal); Forward;
@@ -674,7 +290,6 @@ Procedure LitEvalInt(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalChar(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEvalKW(Const T : TToken; Var Res : TExprVal); Forward;
 Procedure LitEval(Const T : TToken; Var Res : TExprVal); Forward;
-(* TODO 04 *)
 Procedure SkipForm; Forward;
 Procedure ReadList(Var ECount : Integer); Forward;
 Procedure ReadVector(Var ECount : Integer); Forward;
@@ -687,7 +302,6 @@ Procedure ReadDeref; Forward;
 Procedure ReadMeta; Forward;
 Procedure ReadDispatch; Forward;
 Procedure ReadForm(Var Res : TExprVal); Forward;
-(* TODO 05 *)
 Function  SymNameClean(Const Name : TString) : TString; Forward;
 Function  SymMangle(Const Name : TString; Kind : TSymKind) : TString; Forward;
 Function  SymFind(Const Name : TString) : Integer; Forward;
@@ -698,7 +312,6 @@ Function  SymAdd(Const Name : TString; Kind : TSymKind;
 Procedure SymEnterScope; Forward;
 Procedure SymLeaveScope; Forward;
 Function  IsSpecialForm(Const Name : TString) : Boolean; Forward;
-(* TODO 06 *)
 Procedure TypeInit;      Forward;
 Function  TypeSizeof(TypeIdx : Integer) : Integer; Forward;
 Function  TypeKindOf(TypeIdx : Integer) : TTypeKind; Forward;
@@ -711,7 +324,6 @@ Function  TypeCoerceResult(LeftIdx, RightIdx : Integer;
                            Const Op : TString) : Integer; Forward;
 Function  TypeInfer(Const E : TExprVal) : Integer; Forward;
 Function  TypeLookupName(Const Name : TString) : Integer; Forward;
-(* TODO 07 *)
 Function  LabelGen : TString; Forward;
 Procedure EmitRaw(Const S : TString); Forward;
 Procedure EmitBlankLine; Forward;
@@ -726,7 +338,6 @@ Procedure EmitOpen;    Forward;
 Procedure EmitClose;   Forward;
 Procedure EmitHeader;  Forward;
 Procedure EmitDataSeg; Forward;
-(* TODO 08 *)
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
@@ -734,14 +345,12 @@ Function  DataAddList(AElemCount : Integer) : TString; Forward;
 Function  DataAddVec(AElemCount : Integer) : TString; Forward;
 Function  DataAddMap(APairCount : Integer) : TString; Forward;
 Procedure DataInit; Forward;
-(* TODO 09 *)
 Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
 Procedure ExprStore(SIdx : Integer); Forward;
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
 Function  DeclAllocGlobal(Const Name : TString) : Integer; Forward;
 Procedure ParseDef(Var Res : TExprVal); Forward;
 Procedure ParseDefonce(Var Res : TExprVal); Forward;
-(* TODO 10 *)
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
 Procedure ParseQuote(Var Res : TExprVal); Forward;
 Procedure ParseDo(Var Res : TExprVal); Forward;
@@ -750,7 +359,6 @@ Procedure ParseLet(Var Res : TExprVal); Forward;
 Procedure ParseFnCall(Const FnName : TString; FnSIdx : Integer;
                       Var Res : TExprVal); Forward;
 Procedure ParseForm(Var Res : TExprVal); Forward;
-(* TODO 11 *)
 Procedure ParseArith(Const Op : TString; Var Res : TExprVal); Forward;
 Procedure ParseMod(Const Op : TString; Var Res : TExprVal); Forward;
 Procedure ParseIncDec(Const Op : TString; Var Res : TExprVal); Forward;
@@ -759,7 +367,6 @@ Procedure ParseAnd(Var Res : TExprVal); Forward;
 Procedure ParseOr(Var Res : TExprVal); Forward;
 Procedure ParseNot(Var Res : TExprVal); Forward;
 Procedure ParseMinMax(Const Op : TString; Var Res : TExprVal); Forward;
-(* TODO 12 *)
 Procedure ParsePrintln(Var Res : TExprVal); Forward;
 Procedure ParsePrint(Var Res : TExprVal); Forward;
 Procedure ParseNewline(Var Res : TExprVal); Forward;
@@ -767,22 +374,18 @@ Procedure ParseReadLine(Var Res : TExprVal); Forward;
 Procedure ParseStr(Var Res : TExprVal); Forward;
 Procedure ParsePrStr(Var Res : TExprVal); Forward;
 Procedure ParseFlush(Var Res : TExprVal); Forward;
-(* TODO 13 *)
 Procedure ParseWhenNot(Var Res : TExprVal); Forward;
 Procedure ParseCond(Var Res : TExprVal); Forward;
 Procedure ParseCase(Var Res : TExprVal); Forward;
 Procedure ParseIfLet(Var Res : TExprVal); Forward;
 Procedure ParseWhenLet(Var Res : TExprVal); Forward;
-(* TODO 15 *)
 Procedure ParseDefnForm(Var Res : TExprVal); Forward;
 Procedure ParseFnForm(Var Res : TExprVal); Forward;
-(* TODO 16 *)
 Procedure ParseLoopForm(Var Res : TExprVal); Forward;
 Procedure ParseRecurForm(Var Res : TExprVal); Forward;
 Procedure ParseDotimesForm(Var Res : TExprVal); Forward;
 Procedure ParseDoseqForm(Var Res : TExprVal); Forward;
 Procedure ParseWhileForm(Var Res : TExprVal); Forward;
-(* TODO 17 *)
 Procedure ParseConsForm(Var Res : TExprVal); Forward;
 Procedure ParseFirstForm(Var Res : TExprVal); Forward;
 Procedure ParseRestForm(Var Res : TExprVal); Forward;
@@ -792,13 +395,11 @@ Procedure ParseCountForm(Var Res : TExprVal); Forward;
 Procedure ParseNthForm(Var Res : TExprVal); Forward;
 Procedure ParseEmptyForm(Var Res : TExprVal); Forward;
 Procedure ParseSeqForm(Var Res : TExprVal); Forward;
-(* TODO 18 *)
 Procedure ParseVectorForm(Var Res : TExprVal); Forward;
 Procedure ParseVecLiteral(Var Res : TExprVal); Forward;
 Procedure ParseGetForm(Var Res : TExprVal); Forward;
 Procedure ParseAssocForm(Var Res : TExprVal); Forward;
 Procedure ParseSubvecForm(Var Res : TExprVal); Forward;
-(* TODO 19 *)
 Procedure ParseHashMapForm(Var Res : TExprVal); Forward;
 Procedure ParseMapLiteral(Var Res : TExprVal); Forward;
 Procedure ParseDissocForm(Var Res : TExprVal); Forward;
@@ -806,18 +407,15 @@ Procedure ParseContainsForm(Var Res : TExprVal); Forward;
 Procedure ParseKeysForm(Var Res : TExprVal); Forward;
 Procedure ParseValsForm(Var Res : TExprVal); Forward;
 Procedure ParseMergeForm(Var Res : TExprVal); Forward;
-(* TODO 20 *)
 Procedure ParseHashSetForm(Var Res : TExprVal); Forward;
 Procedure ParseSetLiteral(Var Res : TExprVal); Forward;
 Procedure ParseDisjForm(Var Res : TExprVal); Forward;
 Procedure ParseUnionForm(Var Res : TExprVal); Forward;
 Procedure ParseInterForm(Var Res : TExprVal); Forward;
 Procedure ParseDiffForm(Var Res : TExprVal); Forward;
-(* TODO 21 *)
 Procedure EmitDestrucVec(ValOfs : Integer); Forward;
 Procedure EmitDestrucMap(ValOfs : Integer); Forward;
 Procedure EmitDestrucBind(ValOfs : Integer); Forward;
-(* TODO 22 *)
 Procedure ParseMapHOFForm(Var Res : TExprVal); Forward;
 Procedure ParseFilterForm(Var Res : TExprVal); Forward;
 Procedure ParseReduceForm(Var Res : TExprVal); Forward;
@@ -829,7 +427,6 @@ Procedure ParseCompForm(Var Res : TExprVal); Forward;
 Procedure ParsePartialForm(Var Res : TExprVal); Forward;
 Procedure ParseConstantlyForm(Var Res : TExprVal); Forward;
 Procedure ParseIdentityForm(Var Res : TExprVal); Forward;
-(* TODO 23 *)
 Procedure ParseSubsForm(Var Res : TExprVal); Forward;
 Procedure ParseUpperCaseForm(Var Res : TExprVal); Forward;
 Procedure ParseLowerCaseForm(Var Res : TExprVal); Forward;
@@ -838,14 +435,12 @@ Procedure ParseIncludesForm(Var Res : TExprVal); Forward;
 Procedure ParseStrReplaceForm(Var Res : TExprVal); Forward;
 Procedure ParseSplitForm(Var Res : TExprVal); Forward;
 Procedure ParseJoinForm(Var Res : TExprVal); Forward;
-(* TODO 24 *)
 Procedure EmitRuntime;   Forward;
-(* TODO 25 *)
 Procedure SymInit;       Forward;
 Procedure ParseProgram;  Forward;
 
 (* ============================================================
-   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
+   INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- Messages d erreur et d avertissement ----------------- *)
@@ -894,17 +489,19 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: CLOJ86 <source.clj> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.clj : fichier Clojure source');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('CLOJ86 - Cette commande permet de lancer le compilateur Clojure ',
+         'pour de l''assembleur de microprocesseur 8086 ou 8088.');
+ WriteLn;
+ WriteLn('Syntxe: CLOJ86 <source.clj> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.clj : fichier Clojure source');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 (* ---- Fonctions utilitaires sur les chaines ----------------- *)
@@ -1097,7 +694,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 02 - LECTEUR / TOKENISEUR (READER) [IMPLEMENTE]
+   LECTEUR / TOKENISEUR (READER) [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- LexNextLine : lire la prochaine ligne source ---------- *)
@@ -1732,7 +1329,7 @@ Begin
       ShouldSkipForm := False;
       SaveDebug := Opts.DebugMode;
       Opts.DebugMode := False;
-      (* Skip recursif : sauter la forme complete (TODO 04) *)
+      (* Skip recursif : sauter la forme complete *)
       (* Pour les formes composees, compter la profondeur    *)
       If CurToken.Kind = TK_LPAREN Then
       Begin
@@ -1775,7 +1372,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 03 - LITTERAUX ET CONSTANTES [IMPLEMENTE]
+   LITTERAUX ET CONSTANTES [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ExprMakeImm : valeur immediate constante ------------- *)
@@ -1916,7 +1513,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 04 - READER MACROS ET FORMES SPECIALES DE LECTURE [IMPLEMENTE]
+   READER MACROS ET FORMES SPECIALES DE LECTURE [IMPLEMENTE]
    ============================================================
    Fonctions exposees :
      SkipForm        -- sauter recursivement une forme Clojure (pour #_)
@@ -2061,7 +1658,7 @@ Begin
   LexNextToken;  (* consommer le ' *)
   ReadForm(Sub);
   (* Pour l instant, quote retourne la valeur litterale          *)
-  (* Le traitement complet (liste quotee etc.) sera dans TODO 10 *)
+  (* Le traitement complet (liste quotee etc.) *)
 End;
 
 (* ---- ReadSyntaxQuote : `expr -> (quasiquote expr) ----------- *)
@@ -2095,7 +1692,7 @@ Var Sub : TExprVal;
 Begin
   LexNextToken;  (* consommer le @ *)
   ReadForm(Sub);
-  (* Le code de deref sera genere dans TODO 10/17 *)
+  (* Le code de deref sera genere *)
 End;
 
 (* ---- ReadMeta : ^annotation forme -> lire et ignorer le meta *)
@@ -2134,7 +1731,7 @@ Begin
   Begin
     (* #{...} -> hash-set *)
     ReadSet(ECnt);
-    (* Le set sera construit dans DATA par TODO 20 *)
+    (* Le set sera construit dans DATA *)
   End
   Else If CurToken.Kind = TK_LPAREN Then
   Begin
@@ -2154,7 +1751,7 @@ Begin
     (* #'sym -> var quote *)
     LexNextToken;  (* consommer ' apres # *)
     ReadForm(Sub);
-    (* Traitement var quote dans TODO 10 *)
+    (* Traitement var quote *)
   End
   Else
   Begin
@@ -2191,7 +1788,7 @@ Begin
     TK_SYMBOL :
     Begin
       (* Pour l instant on ne resout pas les symboles ; *)
-      (* Le lookup et le codegen viendront dans TODO 10 *)
+      (* Le lookup et le codegen viendront plus loin *)
       Res.Kind    := EK_NONE;
       Res.ImmVal  := 0;
       Res.TypeIdx := TY_IDX_SYM;
@@ -2225,7 +1822,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 05 - TABLE DES SYMBOLES ET ENVIRONNEMENTS [IMPLEMENTE]
+   TABLE DES SYMBOLES ET ENVIRONNEMENTS [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- SymNameClean : nettoyer les caracteres non valides en MASM --- *)
@@ -2402,7 +1999,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 06 - SYSTEME DE TYPES INTERNES (TAGS) [IMPLEMENTE]
+   SYSTEME DE TYPES INTERNES (TAGS) [IMPLEMENTE]
    ============================================================ *)
 
 (* TypeKindOf : retourner le TTypeKind associe a un indice de type *)
@@ -2770,7 +2367,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+   EMETTEUR DE CODE ASM [IMPLEMENTE]
    ============================================================ *)
 
 (* LabelGen : generer un label unique _CL_NNNNN *)
@@ -2899,23 +2496,23 @@ Begin
   EmitRaw(CL_FALSE_LBL + '  DB ''false'',0');
   EmitRaw('_CL_CRLF    DB 13,10,0');
   EmitRaw('_CL_STRBUF  DB 256 DUP(0)');
-  (* Heap pour cellules cons (TODO 17) *)
+  (* Heap pour cellules cons *)
   EmitRaw('_CL_HEAP    DB 4096 DUP(0)');
   EmitRaw('_CL_HEAPTOP DW 0');
-  (* Variables temporaires pour operations vecteur (TODO 18) *)
+  (* Variables temporaires pour operations vecteur *)
   EmitRaw('_CL_VTMP1   DW 0');
   EmitRaw('_CL_VTMP2   DW 0');
-  (* Variables temporaires pour operations map (TODO 19) *)
+  (* Variables temporaires pour operations map *)
   EmitRaw('_CL_MTMP1   DW 0');
   EmitRaw('_CL_MTMP2   DW 0');
-  (* Variables temporaires pour operations set (TODO 20) *)
+  (* Variables temporaires pour operations set *)
   EmitRaw('_CL_STMP1   DW 0');
   EmitRaw('_CL_STMP2   DW 0');
-  (* Variables temporaires pour fonctions d ordre superieur (TODO 22) *)
+  (* Variables temporaires pour fonctions d ordre superieur *)
   EmitRaw('_CL_HFTMP1  DW 0');
   EmitRaw('_CL_HFTMP2  DW 0');
   EmitRaw('_CL_HFTMP3  DW 0');
-  (* Variables temporaires pour operations sur chaines (TODO 23) *)
+  (* Variables temporaires pour operations sur chaines *)
   EmitRaw('_CL_SCTMP1  DW 0');
   EmitRaw('_CL_SCTMP2  DW 0');
   EmitRaw('_CL_SCTMP3  DW 0');
@@ -2991,14 +2588,14 @@ End;
 
 (* EmitClose : terminer le fichier ASM *)
 (* Emettre la sortie DOS, le runtime, _TEXT ENDS, le segment DATA, END *)
-(* TODO 25 : si (defn -main ...) a ete definie, on la CALL avant exit *)
+(* Si (defn -main ...) a ete definie, on la CALL avant exit *)
 Procedure EmitClose;
 Begin
   EmitBlankLine;
-  (* TODO 25 : appeler -main si elle a ete definie *)
+  (* Appeler -main si elle a ete definie *)
   If MainFnFound Then
   Begin
-    EmitComment('--- appel -main (TODO 25) ---');
+    EmitComment('--- appel -main ---');
     EmitInstr('CALL', CL_FN_PFX + SymNameClean('-main'));
   End;
   EmitComment('--- sortie DOS ---');
@@ -3050,7 +2647,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 08 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
+   SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
    ============================================================ *)
 
 (* DataAddList : ajouter un bloc liste (ElemCount mots DW contigus) *)
@@ -3115,7 +2712,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 09 - VARIABLES GLOBALES (def / defonce) [IMPLEMENTE]
+   VARIABLES GLOBALES (def / defonce) [IMPLEMENTE]
    ============================================================ *)
 
 (* ExprAddrOf : retourne la chaine d adressage MASM d un symbole *)
@@ -3396,7 +2993,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 10 - EXPRESSIONS PRIMAIRES [IMPLEMENTE]
+   EXPRESSIONS PRIMAIRES [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseQuote : (quote x) -> retourne x sans evaluation --- *)
@@ -3545,7 +3142,7 @@ Var
   SaveFrame : Integer;
   Ofs       : Integer;
   S         : TString;
-  (* TODO 21 : destructuration *)
+  (* Destructuration *)
   DestrucNames    : Array[0..MAX_DESTR - 1] Of TString;
   DestrucKinds    : Array[0..MAX_DESTR - 1] Of Integer;
   DestrucKwIdx    : Array[0..MAX_DESTR - 1] Of Integer;
@@ -3576,11 +3173,11 @@ Begin
   (* afin de proteger l espace contre les PUSH temporaires.       *)
   (* Les liaisons sont sequentielles : chaque nom voit les prec.  *)
   (* Le shadowing est supporte naturellement par SymAdd.          *)
-  (* TODO 21 : support destructuration [vec] et {map} en plus de  *)
+  (* Support destructuration [vec] et {map} en plus de  *)
   (*           symboles simples.                                   *)
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
-    (* TODO 21 : destructuration vecteur ou map *)
+    (* Destructuration vecteur ou map *)
     If (CurToken.Kind = TK_LBRACKET) Or (CurToken.Kind = TK_LBRACE) Then
     Begin
       (* On doit d abord lire le pattern, puis la valeur *)
@@ -4111,7 +3708,7 @@ Begin
           Exit;
         End
 
-        (* -- TODO 13 : when-not / cond / case / if-let / when-let -- *)
+        (* -- when-not / cond / case / if-let / when-let -- *)
         Else If HeadSym = 'when-not' Then
         Begin
           LexNextToken;
@@ -4163,7 +3760,7 @@ Begin
           Exit;
         End
 
-        (* -- TODO 15 : defn / fn -- *)
+        (* -- defn / fn -- *)
         Else If HeadSym = 'defn' Then
         Begin
           LexNextToken;
@@ -4181,7 +3778,7 @@ Begin
           Exit;
         End
 
-        (* -- TODO 16 : loop / recur / dotimes / doseq / while -- *)
+        (* -- loop / recur / dotimes / doseq / while -- *)
         Else If HeadSym = 'loop' Then
         Begin
           LexNextToken;
@@ -4229,7 +3826,7 @@ Begin
           SIdx := SymFind(HeadSym);
           LexNextToken;  (* consomme le nom de la fonction *)
 
-          (* TODO 11 : dispatcher les operateurs arithmetiques *)
+          (* Dispatcher les operateurs arithmetiques *)
           If (HeadSym = '+') Or (HeadSym = '-') Or
              (HeadSym = '*') Or (HeadSym = '/') Then
           Begin
@@ -4291,7 +3888,7 @@ Begin
             Exit;
           End
 
-          (* TODO 12 : dispatcher les fonctions d E/S *)
+          (* Dispatcher les fonctions d'entree/sortie *)
           Else If (HeadSym = 'println') Or (HeadSym = 'prn') Then
           Begin
             ParsePrintln(Res);
@@ -4342,7 +3939,7 @@ Begin
             Exit;
           End
 
-          (* TODO 17 : operations sur les listes *)
+          (* operations sur les listes *)
           Else If HeadSym = 'cons' Then
           Begin
             ParseConsForm(Res);
@@ -4407,7 +4004,7 @@ Begin
             Exit;
           End
 
-          (* TODO 18 : operations sur les vecteurs *)
+          (* operations sur les vecteurs *)
           Else If HeadSym = 'vector' Then
           Begin
             ParseVectorForm(Res);
@@ -4437,7 +4034,7 @@ Begin
             Exit;
           End
 
-          (* TODO 19 : operations sur les tables de hachage *)
+          (* operations sur les tables de hachage *)
           Else If HeadSym = 'hash-map' Then
           Begin
             ParseHashMapForm(Res);
@@ -4481,7 +4078,7 @@ Begin
             Exit;
           End
 
-          (* TODO 20 : operations sur les ensembles *)
+          (* operations sur les ensembles *)
           Else If HeadSym = 'hash-set' Then
           Begin
             ParseHashSetForm(Res);
@@ -4518,7 +4115,7 @@ Begin
             Exit;
           End
 
-          (* TODO 22 : fonctions d ordre superieur *)
+          (* Fonctions d ordre superieur *)
           Else If HeadSym = 'map' Then
           Begin
             ParseMapHOFForm(Res);
@@ -4597,7 +4194,7 @@ Begin
             Exit;
           End
 
-          (* TODO 23 : operations sur les chaines *)
+          (* operations sur les chaines *)
           Else If HeadSym = 'subs' Then
           Begin
             ParseSubsForm(Res);
@@ -4738,7 +4335,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 11 - EXPRESSIONS ARITHMETIQUES ET COMPARAISONS [IMPLEMENTE]
+   EXPRESSIONS ARITHMETIQUES ET COMPARAISONS [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseArith : (+ a b) (- a b) (mul a b) (/ a b) -------- *)
@@ -5124,7 +4721,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 12 - ENTREES/SORTIES (println / print / read-line) [IMPLEMENTE]
+   ENTREES/SORTIES (println / print / read-line) [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- EmitPrintVal : emettre le code pour afficher AX ---------- *)
@@ -5408,7 +5005,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 13 - FORMES SPECIALES : IF / DO / WHEN / COND / CASE [IMPLEMENTE]
+   FORMES SPECIALES : IF / DO / WHEN / COND / CASE [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseWhenNot : (when-not test body...) -------------------- *)
@@ -5898,16 +5495,16 @@ Begin
 End;
 
 (* ============================================================
-   TODO 14 - LIAISONS LOCALES : LET [IMPLEMENTE]
+   LIAISONS LOCALES : LET [IMPLEMENTE]
    ============================================================ *)
-(* ParseLet ameliore dans la section TODO 10 :                    *)
+(* ParseLet ameliore dans les sections suivantes :                *)
 (*   - SUB SP,2 pour chaque liaison AVANT evaluation de la valeur *)
 (*   - Verification du nombre pair d elements dans le vecteur     *)
 (*   - Liaisons sequentielles (chaque nom voit les precedents)    *)
 (*   - Shadowing supporte (une liaison masque le scope parent)    *)
 
 (* ============================================================
-   TODO 15 - FONCTIONS (defn / fn / apply) [IMPLEMENTE]
+   FONCTIONS (defn / fn / apply) [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseDefnForm : (defn nom [params] body ...) ------------ *)
@@ -5960,7 +5557,7 @@ Begin
 
   EmitComment('(defn ' + FnName + ' ...)');
 
-  (* TODO 25 : detecter (defn -main ...) *)
+  (* detecter (defn -main ...) *)
   If FnName = '-main' Then
     MainFnFound := True;
 
@@ -5982,7 +5579,7 @@ Begin
   ParamCount := 0;
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
-    (* TODO 21 : support destructuration dans les parametres *)
+    (* support destructuration dans les parametres *)
     If CurToken.Kind = TK_LBRACKET Then
     Begin
       (* Destructuration sequentielle : [a b c] *)
@@ -6181,7 +5778,7 @@ Begin
     SymAdd(ParamNames[I], SK_LOCAL, TY_UNKNOWN, Ofs);
   End;
 
-  (* TODO 21 : destructuration des parametres apres le prolog *)
+  (* destructuration des parametres apres le prolog *)
   For PIdx := 0 To ParamCount - 1 Do
   Begin
     If ParamDestr[PIdx] = 0 Then
@@ -6411,7 +6008,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 16 - BOUCLES : LOOP / RECUR / DOTIMES / DOSEQ [IMPLEMENTE]
+   BOUCLES : LOOP / RECUR / DOTIMES / DOSEQ [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseLoopForm : (loop [x init1 y init2] body ...) -------- *)
@@ -6428,7 +6025,7 @@ Var
   S         : TString;
   LoopLabel : TString;
   BC        : Integer;
-  (* TODO 21 : destructuration dans loop *)
+  (* destructuration dans loop *)
   IsDestruc        : Array[0..MAX_PARAM - 1] Of Integer; (* 0=simple,1=vec,2=map *)
   DestrucNames     : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of TString;
   DestrucKinds     : Array[0..MAX_PARAM - 1, 0..MAX_DESTR - 1] Of Integer;
@@ -6461,7 +6058,7 @@ Begin
   (* Traiter les paires nom/valeur, comme let *)
   While (CurToken.Kind <> TK_RBRACKET) And (CurToken.Kind <> TK_EOF) Do
   Begin
-    (* TODO 21 : detecter destructuration *)
+    (* detecter destructuration *)
     If (CurToken.Kind = TK_LBRACKET) Or (CurToken.Kind = TK_LBRACE) Then
     Begin
       (* Lire le pattern de destructuration *)
@@ -6688,7 +6285,7 @@ Begin
 
   EmitLabel(LoopLabel);
 
-  (* TODO 21 : generer le code de destructuration apres le label *)
+  (* generer le code de destructuration apres le label *)
   (* pour que recur re-declenche la destructuration               *)
   For K := 0 To BC - 1 Do
   Begin
@@ -7008,7 +6605,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 17 - LISTES : CONS / FIRST / REST / CONJ [IMPLEMENTE]
+   LISTES : CONS / FIRST / REST / CONJ [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseConsForm : (cons x coll) ----------------------------- *)
@@ -7215,7 +6812,7 @@ Begin
   ParseForm(ArgRes);
   ExprFlushToAX(ArgRes);
 
-  (* TODO 23 : dispatch polymorphe selon le type *)
+  (* dispatch polymorphe selon le type *)
   If ArgRes.TypeIdx = TY_IDX_STR Then
   Begin
     EmitInstrAB('MOV', 'SI', 'AX');
@@ -7328,7 +6925,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 18 - VECTEURS : VECTOR / GET / ASSOC / SUBVEC [IMPLEMENTE]
+   VECTEURS : VECTOR / GET / ASSOC / SUBVEC [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- ParseVectorForm : (vector a b c ...) ----------------------- *)
@@ -7482,7 +7079,7 @@ Begin
     EmitInstrA('CALL', CL_RT_PFX + 'MAPGET')
   Else If IsStr Then
   Begin
-    (* TODO 23 : (get "abc" 1) -> code ASCII du caractere *)
+    (* (get "abc" 1) -> code ASCII du caractere *)
     EmitInstrAB('MOV', 'SI', 'AX');
     EmitInstrAB('ADD', 'SI', 'BX');
     EmitInstrAB('XOR', 'AX', 'AX');
@@ -7599,7 +7196,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 19 - TABLES DE HACHAGE : HASH-MAP / DISSOC / CONTAINS?
+   TABLES DE HACHAGE : HASH-MAP / DISSOC / CONTAINS?
              / KEYS / VALS / MERGE [IMPLEMENTE]
    ============================================================ *)
 
@@ -7870,7 +7467,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 20 - ENSEMBLES : HASH-SET / CONTAINS? / CONJ / DISJ
+   ENSEMBLES : HASH-SET / CONTAINS? / CONJ / DISJ
              / UNION / INTERSECTION / DIFFERENCE [IMPLEMENTE]
    ============================================================ *)
 
@@ -8105,7 +7702,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 21 - DESTRUCTURATION (DESTRUCTURING) [IMPLEMENTE]
+   DESTRUCTURATION (DESTRUCTURING) [IMPLEMENTE]
    ============================================================ *)
 
 (* ---- EmitDestrucVec : destructuration sequentielle (vecteur) --- *)
@@ -8479,7 +8076,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 22 - FONCTIONS D ORDRE SUPERIEUR (map / filter / reduce)
+   FONCTIONS D ORDRE SUPERIEUR (map / filter / reduce)
              [IMPLEMENTE]
    ============================================================ *)
 
@@ -9134,7 +8731,7 @@ Begin
 End;
 
 (* ============================================================
-   TODO 23 - CHAINES DE CARACTERES (str / subs / count)
+   CHAINES DE CARACTERES (str / subs / count)
              [IMPLEMENTE]
    ============================================================ *)
 
@@ -9367,7 +8964,7 @@ End;
 
 Procedure EmitRuntime;
 Begin
-  (* TODO 24 - runtime minimal pour E/S *)
+  (* runtime minimal pour E/S *)
   If RuntimeEmitted Then Exit;
   RuntimeEmitted := True;
   EmitBlankLine;
@@ -9602,7 +9199,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 17 : _CLRT_CONS : allouer cellule cons sur le heap --- *)
+  (* --- _CLRT_CONS : allouer cellule cons sur le heap --- *)
   (* Entree : AX = car (valeur), BX = cdr (liste/nil)               *)
   (* Sortie : AX = pointeur vers la nouvelle cellule cons            *)
   (* Cellule = 2 Words : [car, cdr] = 4 octets                      *)
@@ -9622,7 +9219,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 17 : _CLRT_LCOUNT : compter les elements d une liste --- *)
+  (* --- _CLRT_LCOUNT : compter les elements d une liste --- *)
   (* Entree : AX = pointeur liste (ou 0 pour nil)                      *)
   (* Sortie : AX = nombre d elements                                    *)
   EmitRaw(CL_RT_PFX + 'LCOUNT:');
@@ -9643,7 +9240,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 17 : _CLRT_LNTH : obtenir le N-ieme element --- *)
+  (* --- _CLRT_LNTH : obtenir le N-ieme element --- *)
   (* Entree : AX = pointeur liste, BX = index (0-base)        *)
   (* Sortie : AX = element (car) ou 0 si hors bornes          *)
   EmitRaw(CL_RT_PFX + 'LNTH:');
@@ -9672,7 +9269,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 18 : _CLRT_VECNTH : acces indexe dans un vecteur --- *)
+  (* --- _CLRT_VECNTH : acces indexe dans un vecteur --- *)
   (* Entree : AX = pointeur vecteur, BX = index (0-base)           *)
   (* Sortie : AX = element ou 0 (nil) si hors bornes               *)
   (* Layout vecteur : [count, e0, e1, ..., e_{count-1}]            *)
@@ -9698,7 +9295,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 18 : _CLRT_VECCONJ : ajouter un element en fin --- *)
+  (* --- _CLRT_VECCONJ : ajouter un element en fin --- *)
   (* Entree : AX = pointeur vecteur, BX = nouvel element          *)
   (* Sortie : AX = pointeur nouveau vecteur (copie + ajout)       *)
   EmitRaw(CL_RT_PFX + 'VECCONJ:');
@@ -9740,7 +9337,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 18 : _CLRT_VECASSOC : copie avec remplacement --- *)
+  (* --- _CLRT_VECASSOC : copie avec remplacement --- *)
   (* Entree : AX = vecteur, BX = index, CX = nouvelle valeur    *)
   (* Sortie : AX = nouveau vecteur (copie avec element remplace) *)
   (* Utilise _CL_VTMP1 (index) et _CL_VTMP2 (valeur) comme tmp *)
@@ -9789,7 +9386,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 18 : _CLRT_SUBVEC : sous-vecteur ------------------- *)
+  (* --- _CLRT_SUBVEC : sous-vecteur ------------------- *)
   (* Entree : AX = vecteur, BX = start (inclus), CX = end (exclus) *)
   (* Sortie : AX = nouveau sous-vecteur                             *)
   EmitRaw(CL_RT_PFX + 'SUBVEC:');
@@ -9833,7 +9430,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPGET : recherche de cle dans une map --- *)
+  (* --- _CLRT_MAPGET : recherche de cle dans une map --- *)
   (* Entree : AX = pointeur map, BX = cle a chercher               *)
   (* Sortie : AX = valeur associee ou 0 (nil) si absente            *)
   (* Layout map : [count_pairs, k0, v0, k1, v1, ...]               *)
@@ -9868,7 +9465,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPASSOC : copie map + ajout/remplacement --- *)
+  (* --- _CLRT_MAPASSOC : copie map + ajout/remplacement --- *)
   (* Entree : AX = map, BX = cle, CX = valeur                         *)
   (* Sortie : AX = nouvelle map                                        *)
   (* Si la cle existe, remplacer sa valeur. Sinon, ajouter la paire.   *)
@@ -9997,7 +9594,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPDISSOC : copie map sans la cle donnee --- *)
+  (* --- _CLRT_MAPDISSOC : copie map sans la cle donnee --- *)
   (* Entree : AX = map, BX = cle a supprimer                          *)
   (* Sortie : AX = nouvelle map (copie sans la paire correspondante)   *)
   EmitRaw(CL_RT_PFX + 'MAPDISSOC:');
@@ -10066,7 +9663,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPHAS : test de presence d une cle --- *)
+  (* --- _CLRT_MAPHAS : test de presence d une cle --- *)
   (* Entree : AX = map, BX = cle                                  *)
   (* Sortie : AX = 1 (true) si trouvee, 0 (false) sinon           *)
   EmitRaw(CL_RT_PFX + 'MAPHAS:');
@@ -10100,7 +9697,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPKEYS : liste des cles d une map --- *)
+  (* --- _CLRT_MAPKEYS : liste des cles d une map --- *)
   (* Entree : AX = map                                            *)
   (* Sortie : AX = vecteur des cles [count, k0, k1, ...]         *)
   EmitRaw(CL_RT_PFX + 'MAPKEYS:');
@@ -10143,7 +9740,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPVALS : liste des valeurs d une map --- *)
+  (* --- _CLRT_MAPVALS : liste des valeurs d une map --- *)
   (* Entree : AX = map                                               *)
   (* Sortie : AX = vecteur des valeurs [count, v0, v1, ...]         *)
   EmitRaw(CL_RT_PFX + 'MAPVALS:');
@@ -10186,7 +9783,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 19 : _CLRT_MAPMERGE : fusionner deux maps ------------ *)
+  (* --- _CLRT_MAPMERGE : fusionner deux maps ------------ *)
   (* Entree : AX = map1, BX = map2                                   *)
   (* Sortie : AX = nouvelle map contenant toutes les paires           *)
   (* Les cles de map2 ecrasent celles de map1.                        *)
@@ -10264,7 +9861,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 20 : _CLRT_SETHAS : recherche lineaire dans un ensemble --- *)
+  (* --- _CLRT_SETHAS : recherche lineaire dans un ensemble --- *)
   (* Entree : AX = set, BX = valeur a chercher                            *)
   (* Sortie : AX = 1 (true) si trouvee, 0 (false) sinon                   *)
   EmitRaw(CL_RT_PFX + 'SETHAS:');
@@ -10298,7 +9895,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 20 : _CLRT_SETCONJ : copie ensemble + ajout si absent --- *)
+  (* --- _CLRT_SETCONJ : copie ensemble + ajout si absent --- *)
   (* Entree : AX = set, BX = valeur a ajouter                           *)
   (* Sortie : AX = nouveau set (copie avec element ajoute si absent)     *)
   EmitRaw(CL_RT_PFX + 'SETCONJ:');
@@ -10406,7 +10003,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 20 : _CLRT_SETDISJ : copie ensemble sans l element --- *)
+  (* --- _CLRT_SETDISJ : copie ensemble sans l element --- *)
   (* Entree : AX = set, BX = valeur a retirer                         *)
   (* Sortie : AX = nouveau set (copie sans l element)                  *)
   EmitRaw(CL_RT_PFX + 'SETDISJ:');
@@ -10472,7 +10069,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 20 : _CLRT_SETUNION : fusion de deux ensembles ---------- *)
+  (* --- _CLRT_SETUNION : fusion de deux ensembles ---------- *)
   (* Entree : AX = set1, BX = set2                                       *)
   (* Sortie : AX = nouveau set (tous elements de s1 + ceux de s2 absents)*)
   EmitRaw(CL_RT_PFX + 'SETUNION:');
@@ -10571,7 +10168,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 20 : _CLRT_SETINTER : intersection de deux ensembles --- *)
+  (* --- _CLRT_SETINTER : intersection de deux ensembles --- *)
   (* Entree : AX = set1, BX = set2                                      *)
   (* Sortie : AX = nouveau set (elements communs)                        *)
   EmitRaw(CL_RT_PFX + 'SETINTER:');
@@ -10648,7 +10245,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 20 : _CLRT_SETDIFF : difference de deux ensembles ------ *)
+  (* --- _CLRT_SETDIFF : difference de deux ensembles ------ *)
   (* Entree : AX = set1, BX = set2                                      *)
   (* Sortie : AX = nouveau set (elements de s1 absents de s2)           *)
   EmitRaw(CL_RT_PFX + 'SETDIFF:');
@@ -10727,7 +10324,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 21 : _CLRT_VECDROP : sous-vecteur a partir de l index --- *)
+  (* --- _CLRT_VECDROP : sous-vecteur a partir de l index --- *)
   (* Entree : AX = pointeur vecteur, BX = start index (0-base)          *)
   (* Sortie : AX = nouveau vecteur contenant elements[BX..count-1]      *)
   (* Equivalent a (subvec vec start (count vec))                         *)
@@ -10798,7 +10395,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 22 : _CLRT_LREV : renverser une liste cons --- *)
+  (* --- _CLRT_LREV : renverser une liste cons --- *)
   (* Entree : AX = pointeur liste (cons cells)               *)
   (* Sortie : AX = nouvelle liste renversee (cons cells)     *)
   (* Construit une nouvelle liste par cons successifs.        *)
@@ -10822,7 +10419,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_SUBS : sous-chaine ----------------------- *)
+  (* --- _CLRT_SUBS : sous-chaine ----------------------- *)
   (* Entree : SI = source ASCIIZ, BX = start, CX = end (ou FFFFh)   *)
   (* Sortie : AX = pointeur vers _CL_STRBUF2 (sous-chaine)          *)
   EmitRaw(CL_RT_PFX + 'SUBS:');
@@ -10851,7 +10448,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRUPPER : majuscules --------------------- *)
+  (* --- _CLRT_STRUPPER : majuscules --------------------- *)
   (* Entree : SI = source ASCIIZ                                     *)
   (* Sortie : AX = pointeur vers _CL_STRBUF2 (copie en majuscules)  *)
   EmitRaw(CL_RT_PFX + 'STRUPPER:');
@@ -10880,7 +10477,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRLOWER : minuscules --------------------- *)
+  (* --- _CLRT_STRLOWER : minuscules --------------------- *)
   (* Entree : SI = source ASCIIZ                                     *)
   (* Sortie : AX = pointeur vers _CL_STRBUF2 (copie en minuscules)  *)
   EmitRaw(CL_RT_PFX + 'STRLOWER:');
@@ -10909,7 +10506,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRTRIM : supprimer espaces debut/fin ---- *)
+  (* --- _CLRT_STRTRIM : supprimer espaces debut/fin ---- *)
   (* Entree : SI = source ASCIIZ                                     *)
   (* Sortie : AX = pointeur vers _CL_STRBUF2 (copie trim)           *)
   EmitRaw(CL_RT_PFX + 'STRTRIM:');
@@ -10963,7 +10560,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRFIND : chercher sous-chaine ----------- *)
+  (* --- _CLRT_STRFIND : chercher sous-chaine ----------- *)
   (* Entree : SI = chaine source, DI = sous-chaine a chercher       *)
   (* Sortie : AX = 1 (true) si trouvee, 0 (false) sinon             *)
   EmitRaw(CL_RT_PFX + 'STRFIND:');
@@ -11004,7 +10601,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRREPL : remplacer occurrences ---------- *)
+  (* --- _CLRT_STRREPL : remplacer occurrences ---------- *)
   (* Entree : SI = source, DI = match, _CL_SCTMP3 = replacement     *)
   (* Sortie : AX = pointeur vers _CL_STRBUF2 (resultat)             *)
   EmitRaw(CL_RT_PFX + 'STRREPL:');
@@ -11075,7 +10672,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRSPLIT : split sur un delimiteur -------- *)
+  (* --- _CLRT_STRSPLIT : split sur un delimiteur -------- *)
   (* Entree : SI = source ASCIIZ, BL = caractere delimiteur          *)
   (* Sortie : AX = liste (cons cells) de pointeurs chaines heap      *)
   EmitRaw(CL_RT_PFX + 'STRSPLIT:');
@@ -11131,7 +10728,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 23 : _CLRT_STRJOIN : joindre avec separateur --------- *)
+  (* --- _CLRT_STRJOIN : joindre avec separateur --------- *)
   (* Entree : SI = separateur ASCIIZ, BX = liste (cons cells)        *)
   (* Les elements de la liste sont des pointeurs chaines.             *)
   (* Sortie : AX = pointeur vers _CL_STRBUF2 (resultat)              *)
@@ -11184,7 +10781,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_PRINT : ecriture brute sur handle ---------- *)
+  (* --- _CLRT_PRINT : ecriture brute sur handle ---------- *)
   (* Entree : BX = handle fichier, DX = adresse message, CX = longueur *)
   EmitRaw(CL_RT_PFX + 'PRINT:');
   EmitRaw('        PUSH    AX');
@@ -11194,7 +10791,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_PRINTLN : afficher chaine + CR+LF ---------- *)
+  (* --- _CLRT_PRINTLN : afficher chaine + CR+LF ---------- *)
   (* Entree : SI = chaine ASCIIZ a afficher                           *)
   EmitRaw(CL_RT_PFX + 'PRINTLN:');
   EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
@@ -11202,7 +10799,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_PRVAL : afficher valeur selon son tag ------ *)
+  (* --- _CLRT_PRVAL : afficher valeur selon son tag ------ *)
   (* Entree : AX = valeur, BX = index de type (TY_IDX_xxx)            *)
   EmitRaw(CL_RT_PFX + 'PRVAL:');
   EmitRaw('        CMP     BX, 0');
@@ -11251,7 +10848,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_STRTONUM : ASCII -> entier (atoi) ---------- *)
+  (* --- _CLRT_STRTONUM : ASCII -> entier (atoi) ---------- *)
   (* Entree : SI = chaine ASCIIZ                                       *)
   (* Sortie : AX = entier signe                                        *)
   EmitRaw(CL_RT_PFX + 'STRTONUM:');
@@ -11293,7 +10890,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_TOSTR : valeur -> chaine selon tag --------- *)
+  (* --- _CLRT_TOSTR : valeur -> chaine selon tag --------- *)
   (* Entree : AX = valeur, BX = index de type                         *)
   (* Sortie : AX = pointeur chaine ASCIIZ                             *)
   EmitRaw(CL_RT_PFX + 'TOSTR:');
@@ -11334,7 +10931,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_VECNEW : allouer vecteur vide -------------- *)
+  (* --- _CLRT_VECNEW : allouer vecteur vide -------------- *)
   (* Entree : CX = nombre d elements (slots a 0)                      *)
   (* Sortie : AX = pointeur vers le nouveau vecteur [count,0,0,...]   *)
   EmitRaw(CL_RT_PFX + 'VECNEW:');
@@ -11367,7 +10964,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_MAPNEW : allouer map vide ------------------- *)
+  (* --- _CLRT_MAPNEW : allouer map vide ------------------- *)
   (* Entree : CX = nombre de paires (slots a 0)                        *)
   (* Sortie : AX = pointeur vers la map [count, k0,v0, k1,v1, ...]     *)
   EmitRaw(CL_RT_PFX + 'MAPNEW:');
@@ -11402,7 +10999,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_SETNEW : allouer ensemble vide --------------- *)
+  (* --- _CLRT_SETNEW : allouer ensemble vide --------------- *)
   (* Entree : CX = nombre d elements (slots a 0)                        *)
   (* Sortie : AX = pointeur vers le set [count, e0, e1, ...]            *)
   (* Layout identique au vecteur                                         *)
@@ -11436,7 +11033,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_ALLOC : allocation generique sur le heap ---- *)
+  (* --- _CLRT_ALLOC : allocation generique sur le heap ---- *)
   (* Entree : CX = nombre d octets a allouer                           *)
   (* Sortie : AX = pointeur vers le bloc alloue                        *)
   EmitRaw(CL_RT_PFX + 'ALLOC:');
@@ -11450,7 +11047,7 @@ Begin
   EmitRaw('        RET');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_PANIC : erreur fatale + sortie DOS ---------- *)
+  (* --- _CLRT_PANIC : erreur fatale + sortie DOS ---------- *)
   (* Entree : SI = message d erreur (ASCIIZ)                           *)
   EmitRaw(CL_RT_PFX + 'PANIC:');
   EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
@@ -11459,7 +11056,7 @@ Begin
   EmitRaw('        INT     21h');
   EmitBlankLine;
 
-  (* --- TODO 24 : _CLRT_EQUAL : egalite structurelle ----------------- *)
+  (* --- _CLRT_EQUAL : egalite structurelle ----------------- *)
   (* Entree : AX = valeur a, BX = valeur b                              *)
   (* Sortie : AX = 1 (true) si egaux, 0 (false) sinon                   *)
   (* Comparaison simple (valeur directe). Pour les chaines,              *)
@@ -11508,7 +11105,7 @@ End;
 
 Procedure SymInit;
 Begin
-  (* TODO 05 - initialiser la table des symboles *)
+  (* initialiser la table des symboles *)
   SymCount  := 0;
   ScopeTop  := 0;
   CurScope  := 0;
@@ -11586,7 +11183,7 @@ Begin
   SymAdd('str',        SK_FN, TY_IDX_STR, 0);
   SymAdd('count',      SK_FN, TY_IDX_INT, 0);
 
-  (* Fonctions predefinies - chaines (TODO 23) *)
+  (* Fonctions predefinies - chaines *)
   SymAdd('subs',       SK_FN, TY_IDX_STR, 0);
   SymAdd('clojure.string/upper-case', SK_FN, TY_IDX_STR, 0);
   SymAdd('clojure.string/lower-case', SK_FN, TY_IDX_STR, 0);
@@ -11619,13 +11216,13 @@ Begin
   SymAdd('subvec',     SK_FN, TY_IDX_VEC,  0);
   SymAdd('seq',        SK_FN, TY_IDX_LIST, 0);
 
-  (* Fonctions predefinies - tables de hachage (TODO 19) *)
+  (* Fonctions predefinies - tables de hachage *)
   SymAdd('contains?',  SK_FN, TY_IDX_BOOL, 0);
   SymAdd('keys',       SK_FN, TY_IDX_LIST, 0);
   SymAdd('vals',       SK_FN, TY_IDX_LIST, 0);
   SymAdd('merge',      SK_FN, TY_IDX_MAP,  0);
 
-  (* Fonctions predefinies - ensembles (TODO 20) *)
+  (* Fonctions predefinies - ensembles *)
   SymAdd('disj',         SK_FN, TY_IDX_SET,  0);
   SymAdd('union',        SK_FN, TY_IDX_SET,  0);
   SymAdd('intersection', SK_FN, TY_IDX_SET,  0);
@@ -11655,7 +11252,7 @@ End;
 
 Procedure ParseProgram;
 Begin
-  (* TODO 25 : lecture et compilation de toutes les formes de niveau superieur *)
+  (* lecture et compilation de toutes les formes de niveau superieur *)
   LexNextToken;
   While CurToken.Kind <> TK_EOF Do
   Begin
@@ -11685,9 +11282,7 @@ Begin
   LexClose;
   EmitRuntime;
   EmitClose;
-
   If Opts.Verbose Then ShowStats;
-
   If ErrorCount > 0 Then
     Halt(EXIT_ERROR)
   Else
@@ -11697,7 +11292,7 @@ End;
 (* ============================================================
    PROGRAMME PRINCIPAL
    ============================================================ *)
-Begin
+BEGIN
   ParseArgs;
   Run;
-End.
+END.

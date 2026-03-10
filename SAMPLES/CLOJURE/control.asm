@@ -1,6 +1,6 @@
 ; =========================================================
 ; Genere par CLOJ86 v1.0 (2026-03-07)
-; Source  : SAMPLES/CLOJURE/control.clj
+; Source  : .\SAMPLES\CLOJURE\control.clj
 ; Cible   : MASM 8086, modele SMALL
 ; =========================================================
 
