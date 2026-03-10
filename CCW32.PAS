@@ -51,6 +51,11 @@
               ISO/IEC 9899:1990 (1990), C95 /
               ISO/IEC 9899:1990/AMD 1:1995 (1995),
               C99 (1999), C11 (2011), C18 (2018)
+            Parametres d optimisation : niveau d optimisation
+              (ex: -O0, -O1, -O2, -O3) et choix entre optimiser
+              pour la vitesse (-Ot) ou reduire la taille (-Os)
+            Parametre -dll : permettre de creer des .DLL en plus
+              de .EXE (par defaut : .EXE)
 
   TODO 02 - LEXEUR (TOKENS C)
             TTokenKind : TK_EOF, TK_INTEGER, TK_FLOAT, TK_STRING,
