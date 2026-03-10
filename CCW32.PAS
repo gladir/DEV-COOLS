@@ -4045,7 +4045,6 @@ End;
 { ------------------------------------------------------------ }
 
 Procedure SymRegisterBuiltins;
-Var Idx : Integer;
 
   Procedure RegFunc(Const Name : TString);
   Var R : Integer;
@@ -4127,9 +4126,6 @@ Begin
 
   { stdarg.h }
   RegFunc('va_start'); RegFunc('va_arg');  RegFunc('va_end');
-
-  Idx := 0;
-  Idx := Idx; { eviter avertissement variable non utilisee }
 End;
 
 { ------------------------------------------------------------ }
