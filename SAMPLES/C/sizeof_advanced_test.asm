@@ -83,14 +83,7 @@ _CCF_main:
         ADD EAX,EBX
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
-; WARNING: mot-cle inattendu dans expression: char
-        XOR EAX,EAX
-        PUSH EAX
-; WARNING: ponctuation inattendue: )
-        XOR EAX,EAX
-        MOV EBX,EAX
-        POP EAX
-        IMUL EAX,EBX
+        MOV EAX,DWORD PTR [EBP-32]
         MOV EAX,4
         MOV DWORD PTR [EBP-4],EAX
         MOV EAX,DWORD PTR [EBP-4]

@@ -375,7 +375,7 @@
               Parcourt FuncTab et SymTab apres ParseFuncDecls
               Emet EXTRN _nom:NEAR pour chaque extern utilisateur
 
-  TODO 17 - POINTEURS ET ADRESSES
+  TODO 17 - POINTEURS ET ADRESSES [IMPLEMENTE]
             Declaration : type *nom; (pointeur vers type)
               Taille : 4 octets (DWORD, adresse 32 bits)
             Dereferencement : *p -> MOV EAX,[EAX]
@@ -6373,6 +6373,45 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ VarIsPointer : verifier si une variable est un pointeur      }
+{ (TODO 17). Cherche dans les locales, parametres et globales. }
+{ ------------------------------------------------------------ }
+
+Function VarIsPointer(Const Name : TString) : Boolean;
+Var
+  LI, PI, SI, TI : Integer;
+Begin
+  VarIsPointer := False;
+
+  { Chercher dans les locales }
+  LI := FindLocal(CurFuncIdx, Name);
+  If LI >= 0 Then
+  Begin
+    VarIsPointer := FuncTab[CurFuncIdx].Locals[LI].IsPointer;
+    Exit;
+  End;
+
+  { Chercher dans les parametres }
+  PI := FindParam(CurFuncIdx, Name);
+  If PI >= 0 Then
+  Begin
+    TI := FuncTab[CurFuncIdx].ParamTypes[PI];
+    If (TI >= 0) And (TI < TypeCount) Then
+      VarIsPointer := TypeTab[TI].Kind = TKP_POINTER;
+    Exit;
+  End;
+
+  { Chercher dans les symboles globaux }
+  SI := SymFind(Name);
+  If SI >= 0 Then
+  Begin
+    TI := SymTab[SI].TypeIdx;
+    If (TI >= 0) And (TI < TypeCount) Then
+      VarIsPointer := TypeTab[TI].Kind = TKP_POINTER;
+  End;
+End;
+
+{ ------------------------------------------------------------ }
 { GenLoadVar : emettre le code pour charger une variable dans   }
 { EAX (globale, locale, parametre)                             }
 { ------------------------------------------------------------ }
@@ -6505,6 +6544,106 @@ Procedure ParseExprPrec(MinPrec : Integer); Forward;
 Procedure ParseUnary; Forward;
 
 { ------------------------------------------------------------ }
+{ IsFuncName : verifier si un nom est celui d une fonction      }
+{ connue dans FuncTab (TODO 17 : distinguer fonctions et       }
+{ pointeurs de fonction).                                      }
+{ ------------------------------------------------------------ }
+
+Function IsFuncName(Const Name : TString) : Boolean;
+Var K : Integer;
+Begin
+  IsFuncName := False;
+  For K := 0 To FuncCount - 1 Do
+    If FuncTab[K].Name = Name Then
+    Begin
+      IsFuncName := True;
+      Exit;
+    End;
+  { Verifier aussi dans SymTab pour les fonctions externes }
+  K := SymFind(Name);
+  If (K >= 0) And (SymTab[K].Cat = SC_FUNC) Then
+    IsFuncName := True;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseFuncPtrCall : parser un appel indirect via pointeur de   }
+{ fonction. Charge le pointeur, parse les arguments, et emet   }
+{ CALL EAX (TODO 17).                                          }
+{ Le '(' a deja ete consomme.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseFuncPtrCall(Const PtrName : TString);
+Var
+  ArgCount    : Integer;
+  ArgStart    : Array[0..MAX_PARAMS - 1] Of Integer;
+  ArgEndPos   : Array[0..MAX_PARAMS - 1] Of Integer;
+  Depth       : Integer;
+  SaveEP      : Integer;
+  SaveEnd     : Integer;
+  K           : Integer;
+Begin
+  { Scanner les arguments pour trouver leurs bornes }
+  ArgCount := 0;
+  If Not EPAtEnd And Not ((TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')')) Then
+  Begin
+    ArgStart[0] := EP;
+    Depth := 0;
+    While Not EPAtEnd Do
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(') Then
+        Inc(Depth)
+      Else If (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ')') Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          ArgEndPos[ArgCount] := EP - 1;
+          Inc(ArgCount);
+          Break;
+        End;
+        Dec(Depth);
+      End
+      Else If (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ',') And (Depth = 0) Then
+      Begin
+        ArgEndPos[ArgCount] := EP - 1;
+        Inc(ArgCount);
+        If ArgCount < MAX_PARAMS Then
+          ArgStart[ArgCount] := EP + 1;
+      End;
+      Inc(EP);
+    End;
+  End;
+
+  { Consommer le ')' }
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')') Then
+    Inc(EP);
+
+  { Evaluer et pousser les arguments de droite a gauche (cdecl) }
+  SaveEP  := EP;
+  SaveEnd := EPEnd;
+  For K := ArgCount - 1 DownTo 0 Do
+  Begin
+    EP    := ArgStart[K];
+    EPEnd := ArgEndPos[K] + 1;
+    ParseExpr;
+    EmitInstr('PUSH EAX');
+  End;
+  EP    := SaveEP;
+  EPEnd := SaveEnd;
+
+  { Charger le pointeur de fonction et appeler indirectement }
+  GenLoadVar(PtrName);
+  EmitInstr('CALL EAX');
+
+  { Nettoyer la pile (convention cdecl) }
+  If ArgCount > 0 Then
+    EmitInstr('ADD ESP,' + IntToStr_(ArgCount * 4));
+End;
+
+{ ------------------------------------------------------------ }
 { ParseFuncCall : parser un appel de fonction f(args)           }
 { Le '(' a deja ete consomme. Convention cdecl : arguments     }
 { pousses droite a gauche, appelant nettoie la pile.           }
@@ -6635,18 +6774,21 @@ Begin
       Inc(EP);
     End;
 
-    { --- Identifiant ou appel de fonction --- }
+    { --- Identifiant ou appel de fonction / pointeur de fonction --- }
     TK_IDENT:
     Begin
       Name := TokenPool[EP].Val;
       Inc(EP);
 
-      { Appel de fonction si suivi de '(' }
+      { Appel de fonction ou pointeur de fonction si suivi de '(' }
       If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
          (TokenPool[EP].Val = '(') Then
       Begin
         Inc(EP); { consommer '(' }
-        ParseFuncCall(Name);
+        If IsFuncName(Name) Then
+          ParseFuncCall(Name)         { appel direct (TODO 16) }
+        Else
+          ParseFuncPtrCall(Name);     { appel indirect via pointeur (TODO 17) }
       End
       Else
       Begin
@@ -6706,17 +6848,19 @@ Begin
       Begin
         Inc(EP);
 
-        { Verifier si c est un cast : (type) expr }
+        { Verifier si c est un cast : (type) ou (type *) expr (TODO 17) }
         SaveEP := EP;
         TIdx := ParseTypeFromTokens(EP);
+        { Consommer les * de pointeur avant le ')' }
+        While (TIdx >= 0) And Not EPAtEnd And
+              (TokenPool[EP].Kind = TK_OP) And
+              (TokenPool[EP].Val = '*') Do
+          Inc(EP);
         If (TIdx >= 0) And Not EPAtEnd And
            (TokenPool[EP].Kind = TK_PUNCT) And
            (TokenPool[EP].Val = ')') Then
         Begin
-          { Cast : (type)expr - evaluer expr, cast est no-op en 32 bits }
-          While Not EPAtEnd And (TokenPool[EP].Kind = TK_OP) And
-                (TokenPool[EP].Val = '*') Do
-            Inc(EP);
+          { Cast : (type)expr ou (type *)expr - evaluer expr, cast est no-op en 32 bits }
           Inc(EP); { consommer ')' }
           ParseUnary;
         End
@@ -6759,14 +6903,17 @@ Begin
   Done := False;
   While Not Done And Not EPAtEnd Do
   Begin
-    { Post-increment ++ (TODO 12 : stockage via LastPrimaryName) }
+    { Post-increment ++ (TODO 12/17 : stockage via LastPrimaryName, mise a l echelle pour pointeurs) }
     If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
     Begin
       Inc(EP);
       If LastPrimaryName <> '' Then
       Begin
         EmitInstr('PUSH EAX');
-        EmitInstr('INC EAX');
+        If VarIsPointer(LastPrimaryName) Then
+          EmitInstr('ADD EAX,4')
+        Else
+          EmitInstr('INC EAX');
         GenStoreVar(LastPrimaryName);
         EmitInstr('POP EAX');
       End
@@ -6779,14 +6926,17 @@ Begin
       End;
       LastPrimaryName := '';
     End
-    { Post-decrement -- (TODO 12 : stockage via LastPrimaryName) }
+    { Post-decrement -- (TODO 12/17 : stockage via LastPrimaryName, mise a l echelle pour pointeurs) }
     Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
     Begin
       Inc(EP);
       If LastPrimaryName <> '' Then
       Begin
         EmitInstr('PUSH EAX');
-        EmitInstr('DEC EAX');
+        If VarIsPointer(LastPrimaryName) Then
+          EmitInstr('SUB EAX,4')
+        Else
+          EmitInstr('DEC EAX');
         GenStoreVar(LastPrimaryName);
         EmitInstr('POP EAX');
       End
@@ -6855,7 +7005,7 @@ Begin
     Exit;
   End;
 
-  { Pre-increment ++ }
+  { Pre-increment ++ (TODO 17 : mise a l echelle pour pointeurs) }
   If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '++') Then
   Begin
     Inc(EP);
@@ -6864,13 +7014,16 @@ Begin
       Name := TokenPool[EP].Val;
       Inc(EP);
       GenLoadVar(Name);
-      EmitInstr('INC EAX');
+      If VarIsPointer(Name) Then
+        EmitInstr('ADD EAX,4')
+      Else
+        EmitInstr('INC EAX');
       GenStoreVar(Name);
     End
     Else
       ParseUnary;
   End
-  { Pre-decrement -- }
+  { Pre-decrement -- (TODO 17 : mise a l echelle pour pointeurs) }
   Else If (TokenPool[EP].Kind = TK_OP) And (TokenPool[EP].Val = '--') Then
   Begin
     Inc(EP);
@@ -6879,7 +7032,10 @@ Begin
       Name := TokenPool[EP].Val;
       Inc(EP);
       GenLoadVar(Name);
-      EmitInstr('DEC EAX');
+      If VarIsPointer(Name) Then
+        EmitInstr('SUB EAX,4')
+      Else
+        EmitInstr('DEC EAX');
       GenStoreVar(Name);
     End
     Else
@@ -7498,7 +7654,7 @@ Var
 Begin
   If EPAtEnd Then Exit;
 
-  { ident++ / ident-- }
+  { ident++ / ident-- (TODO 17 : mise a l echelle pour pointeurs) }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_OP) And
      ((TokenPool[EP + 1].Val = '++') Or
@@ -7506,10 +7662,20 @@ Begin
   Begin
     Name := TokenPool[EP].Val;
     GenLoadVar(Name);
-    If TokenPool[EP + 1].Val = '++' Then
-      EmitInstr('INC EAX')
+    If VarIsPointer(Name) Then
+    Begin
+      If TokenPool[EP + 1].Val = '++' Then
+        EmitInstr('ADD EAX,4')
+      Else
+        EmitInstr('SUB EAX,4');
+    End
     Else
-      EmitInstr('DEC EAX');
+    Begin
+      If TokenPool[EP + 1].Val = '++' Then
+        EmitInstr('INC EAX')
+      Else
+        EmitInstr('DEC EAX');
+    End;
     GenStoreVar(Name);
     Inc(EP, 2);
     Exit;
@@ -8354,7 +8520,7 @@ Begin
 
   { --- Expression statement : affectation et operateurs (TODO 12) --- }
 
-  { Cas special : ident++ ; et ident-- ; (post-increment/decrement) }
+  { Cas special : ident++ ; et ident-- ; (post-increment/decrement) (TODO 17) }
   If (TokenPool[EP].Kind = TK_IDENT) And (EP + 1 < EPEnd) And
      (TokenPool[EP + 1].Kind = TK_OP) And
      ((TokenPool[EP + 1].Val = '++') Or (TokenPool[EP + 1].Val = '--')) And
@@ -8364,10 +8530,20 @@ Begin
   Begin
     Name := TokenPool[EP].Val;
     GenLoadVar(Name);
-    If TokenPool[EP + 1].Val = '++' Then
-      EmitInstr('INC EAX')
+    If VarIsPointer(Name) Then
+    Begin
+      If TokenPool[EP + 1].Val = '++' Then
+        EmitInstr('ADD EAX,4')
+      Else
+        EmitInstr('SUB EAX,4');
+    End
     Else
-      EmitInstr('DEC EAX');
+    Begin
+      If TokenPool[EP + 1].Val = '++' Then
+        EmitInstr('INC EAX')
+      Else
+        EmitInstr('DEC EAX');
+    End;
     GenStoreVar(Name);
     Inc(EP, 2);
     { Avancer au ; }
