@@ -1827,6 +1827,277 @@ _CLRT_SJ_DN:
         POP     CX
         RET
 
+_CLRT_PRINT:
+        PUSH    AX
+        MOV     AH, 40h
+        INT     21h
+        POP     AX
+        RET
+
+_CLRT_PRINTLN:
+        CALL    _CLRT_PRINTSTR
+        CALL    _CLRT_WRITECRLF
+        RET
+
+_CLRT_PRVAL:
+        CMP     BX, 0
+        JE      _CLRT_PV_NIL
+        CMP     BX, 1
+        JE      _CLRT_PV_INT
+        CMP     BX, 2
+        JE      _CLRT_PV_STR
+        CMP     BX, 3
+        JE      _CLRT_PV_BOL
+        CMP     BX, 11
+        JE      _CLRT_PV_CHR
+        JMP     _CLRT_PV_INT
+_CLRT_PV_NIL:
+        PUSH    SI
+        MOV     SI, OFFSET _CL_NIL
+        CALL    _CLRT_PRINTSTR
+        POP     SI
+        RET
+_CLRT_PV_INT:
+        PUSH    DI
+        PUSH    SI
+        MOV     DI, OFFSET _CL_NUMBUF
+        CALL    _CLRT_NUMTOSTR
+        MOV     SI, OFFSET _CL_NUMBUF
+        CALL    _CLRT_PRINTSTR
+        POP     SI
+        POP     DI
+        RET
+_CLRT_PV_STR:
+        PUSH    SI
+        MOV     SI, AX
+        CALL    _CLRT_PRINTSTR
+        POP     SI
+        RET
+_CLRT_PV_BOL:
+        CALL    _CLRT_PRINTBOOL
+        RET
+_CLRT_PV_CHR:
+        PUSH    DX
+        MOV     DL, AL
+        MOV     AH, 02h
+        INT     21h
+        POP     DX
+        RET
+
+_CLRT_STRTONUM:
+        PUSH    BX
+        PUSH    CX
+        PUSH    DX
+        PUSH    SI
+        XOR     AX, AX
+        XOR     CX, CX
+        CMP     BYTE PTR [SI], '-'
+        JNE     _CLRT_SN_DG
+        INC     CX
+        INC     SI
+_CLRT_SN_DG:
+        MOV     BL, [SI]
+        CMP     BL, '0'
+        JB      _CLRT_SN_DN
+        CMP     BL, '9'
+        JA      _CLRT_SN_DN
+        SUB     BL, '0'
+        XOR     BH, BH
+        PUSH    BX
+        MOV     BX, 10
+        XOR     DX, DX
+        MUL     BX
+        POP     BX
+        ADD     AX, BX
+        INC     SI
+        JMP     _CLRT_SN_DG
+_CLRT_SN_DN:
+        TEST    CX, CX
+        JZ      _CLRT_SN_OK
+        NEG     AX
+_CLRT_SN_OK:
+        POP     SI
+        POP     DX
+        POP     CX
+        POP     BX
+        RET
+
+_CLRT_TOSTR:
+        CMP     BX, 0
+        JE      _CLRT_TS_NIL
+        CMP     BX, 1
+        JE      _CLRT_TS_INT
+        CMP     BX, 2
+        JE      _CLRT_TS_STR
+        CMP     BX, 3
+        JE      _CLRT_TS_BOL
+        CMP     BX, 11
+        JE      _CLRT_TS_CHR
+        JMP     _CLRT_TS_INT
+_CLRT_TS_NIL:
+        MOV     AX, OFFSET _CL_NIL
+        RET
+_CLRT_TS_INT:
+        PUSH    DI
+        MOV     DI, OFFSET _CL_TMPBUF
+        CALL    _CLRT_NUMTOSTR
+        MOV     AX, OFFSET _CL_TMPBUF
+        POP     DI
+        RET
+_CLRT_TS_STR:
+        RET
+_CLRT_TS_BOL:
+        CALL    _CLRT_BOOLTOSTR
+        RET
+_CLRT_TS_CHR:
+        PUSH    DI
+        MOV     DI, OFFSET _CL_TMPBUF
+        MOV     BYTE PTR [DI], AL
+        MOV     BYTE PTR [DI+1], 0
+        MOV     AX, OFFSET _CL_TMPBUF
+        POP     DI
+        RET
+
+_CLRT_VECNEW:
+        PUSH    BX
+        PUSH    DI
+        PUSH    CX
+        MOV     DI, WORD PTR [_CL_HEAPTOP]
+        MOV     BX, DI
+        ADD     BX, OFFSET _CL_HEAP
+        MOV     WORD PTR [BX], CX
+        MOV     AX, CX
+        INC     AX
+        SHL     AX, 1
+        ADD     DI, AX
+        MOV     WORD PTR [_CL_HEAPTOP], DI
+        MOV     DI, BX
+        ADD     DI, 2
+_CLRT_VNW_Z:
+        CMP     CX, 0
+        JE      _CLRT_VNW_D
+        MOV     WORD PTR [DI], 0
+        ADD     DI, 2
+        DEC     CX
+        JMP     _CLRT_VNW_Z
+_CLRT_VNW_D:
+        MOV     AX, BX
+        POP     CX
+        POP     DI
+        POP     BX
+        RET
+
+_CLRT_MAPNEW:
+        PUSH    BX
+        PUSH    DI
+        PUSH    DX
+        MOV     DI, WORD PTR [_CL_HEAPTOP]
+        MOV     BX, DI
+        ADD     BX, OFFSET _CL_HEAP
+        MOV     WORD PTR [BX], CX
+        MOV     AX, CX
+        SHL     AX, 2
+        ADD     AX, 2
+        ADD     DI, AX
+        MOV     WORD PTR [_CL_HEAPTOP], DI
+        MOV     DI, BX
+        ADD     DI, 2
+        MOV     DX, CX
+        SHL     DX, 1
+_CLRT_MNW_Z:
+        CMP     DX, 0
+        JE      _CLRT_MNW_D
+        MOV     WORD PTR [DI], 0
+        ADD     DI, 2
+        DEC     DX
+        JMP     _CLRT_MNW_Z
+_CLRT_MNW_D:
+        MOV     AX, BX
+        POP     DX
+        POP     DI
+        POP     BX
+        RET
+
+_CLRT_SETNEW:
+        PUSH    BX
+        PUSH    DI
+        PUSH    CX
+        MOV     DI, WORD PTR [_CL_HEAPTOP]
+        MOV     BX, DI
+        ADD     BX, OFFSET _CL_HEAP
+        MOV     WORD PTR [BX], CX
+        MOV     AX, CX
+        INC     AX
+        SHL     AX, 1
+        ADD     DI, AX
+        MOV     WORD PTR [_CL_HEAPTOP], DI
+        MOV     DI, BX
+        ADD     DI, 2
+_CLRT_SNW_Z:
+        CMP     CX, 0
+        JE      _CLRT_SNW_D
+        MOV     WORD PTR [DI], 0
+        ADD     DI, 2
+        DEC     CX
+        JMP     _CLRT_SNW_Z
+_CLRT_SNW_D:
+        MOV     AX, BX
+        POP     CX
+        POP     DI
+        POP     BX
+        RET
+
+_CLRT_ALLOC:
+        PUSH    DI
+        MOV     DI, WORD PTR [_CL_HEAPTOP]
+        MOV     AX, DI
+        ADD     AX, OFFSET _CL_HEAP
+        ADD     DI, CX
+        MOV     WORD PTR [_CL_HEAPTOP], DI
+        POP     DI
+        RET
+
+_CLRT_PANIC:
+        CALL    _CLRT_PRINTSTR
+        CALL    _CLRT_WRITECRLF
+        MOV     AX, 4C01h
+        INT     21h
+
+_CLRT_EQUAL:
+        CMP     AX, BX
+        JE      _CLRT_EQ_T
+        TEST    AX, AX
+        JZ      _CLRT_EQ_F
+        TEST    BX, BX
+        JZ      _CLRT_EQ_F
+        PUSH    SI
+        PUSH    DI
+        MOV     SI, AX
+        MOV     DI, BX
+_CLRT_EQ_CL:
+        MOV     AL, [SI]
+        CMP     AL, [DI]
+        JNE     _CLRT_EQ_NE
+        TEST    AL, AL
+        JZ      _CLRT_EQ_YS
+        INC     SI
+        INC     DI
+        JMP     _CLRT_EQ_CL
+_CLRT_EQ_YS:
+        POP     DI
+        POP     SI
+        MOV     AX, 1
+        RET
+_CLRT_EQ_NE:
+        POP     DI
+        POP     SI
+_CLRT_EQ_F:
+        XOR     AX, AX
+        RET
+_CLRT_EQ_T:
+        MOV     AX, 1
+        RET
+
 ; === FIN RUNTIME ===
 
 

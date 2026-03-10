@@ -353,7 +353,7 @@
               Variante simplifiee : split sur un caractere delimiteur
             (clojure.string/join sep coll) -> CALL _CLRT_STRJOIN
 
-  TODO 24 - RUNTIME MINIMAL
+  TODO 24 - RUNTIME MINIMAL [IMPLEMENTE]
             _CLRT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _CLRT_PRINTLN : _CLRT_PRINT + CR+LF via _CL_CRLF DB 13,10,0
             _CLRT_PRVAL(AX=val) : afficher une valeur selon son tag
@@ -11168,6 +11168,324 @@ Begin
   EmitRaw('        POP     DX');
   EmitRaw('        POP     DI');
   EmitRaw('        POP     CX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_PRINT : ecriture brute sur handle ---------- *)
+  (* Entree : BX = handle fichier, DX = adresse message, CX = longueur *)
+  EmitRaw(CL_RT_PFX + 'PRINT:');
+  EmitRaw('        PUSH    AX');
+  EmitRaw('        MOV     AH, 40h');
+  EmitRaw('        INT     21h');
+  EmitRaw('        POP     AX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_PRINTLN : afficher chaine + CR+LF ---------- *)
+  (* Entree : SI = chaine ASCIIZ a afficher                           *)
+  EmitRaw(CL_RT_PFX + 'PRINTLN:');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'WRITECRLF');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_PRVAL : afficher valeur selon son tag ------ *)
+  (* Entree : AX = valeur, BX = index de type (TY_IDX_xxx)            *)
+  EmitRaw(CL_RT_PFX + 'PRVAL:');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'PV_NIL');
+  EmitRaw('        CMP     BX, 1');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'PV_INT');
+  EmitRaw('        CMP     BX, 2');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'PV_STR');
+  EmitRaw('        CMP     BX, 3');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'PV_BOL');
+  EmitRaw('        CMP     BX, 11');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'PV_CHR');
+  (* types inconnus ou composites : afficher comme entier *)
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'PV_INT');
+  EmitRaw(CL_RT_PFX + 'PV_NIL:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, OFFSET ' + CL_NIL_LBL);
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'PV_INT:');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     DI, OFFSET _CL_NUMBUF');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'NUMTOSTR');
+  EmitRaw('        MOV     SI, OFFSET _CL_NUMBUF');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'PV_STR:');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
+  EmitRaw('        POP     SI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'PV_BOL:');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTBOOL');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'PV_CHR:');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     DL, AL');
+  EmitRaw('        MOV     AH, 02h');
+  EmitRaw('        INT     21h');
+  EmitRaw('        POP     DX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_STRTONUM : ASCII -> entier (atoi) ---------- *)
+  (* Entree : SI = chaine ASCIIZ                                       *)
+  (* Sortie : AX = entier signe                                        *)
+  EmitRaw(CL_RT_PFX + 'STRTONUM:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        XOR     CX, CX');
+  EmitRaw('        CMP     BYTE PTR [SI], ''-''');
+  EmitRaw('        JNE     ' + CL_RT_PFX + 'SN_DG');
+  EmitRaw('        INC     CX');
+  EmitRaw('        INC     SI');
+  EmitRaw(CL_RT_PFX + 'SN_DG:');
+  EmitRaw('        MOV     BL, [SI]');
+  EmitRaw('        CMP     BL, ''0''');
+  EmitRaw('        JB      ' + CL_RT_PFX + 'SN_DN');
+  EmitRaw('        CMP     BL, ''9''');
+  EmitRaw('        JA      ' + CL_RT_PFX + 'SN_DN');
+  EmitRaw('        SUB     BL, ''0''');
+  EmitRaw('        XOR     BH, BH');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        MOV     BX, 10');
+  EmitRaw('        XOR     DX, DX');
+  EmitRaw('        MUL     BX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        ADD     AX, BX');
+  EmitRaw('        INC     SI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SN_DG');
+  EmitRaw(CL_RT_PFX + 'SN_DN:');
+  EmitRaw('        TEST    CX, CX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'SN_OK');
+  EmitRaw('        NEG     AX');
+  EmitRaw(CL_RT_PFX + 'SN_OK:');
+  EmitRaw('        POP     SI');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_TOSTR : valeur -> chaine selon tag --------- *)
+  (* Entree : AX = valeur, BX = index de type                         *)
+  (* Sortie : AX = pointeur chaine ASCIIZ                             *)
+  EmitRaw(CL_RT_PFX + 'TOSTR:');
+  EmitRaw('        CMP     BX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'TS_NIL');
+  EmitRaw('        CMP     BX, 1');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'TS_INT');
+  EmitRaw('        CMP     BX, 2');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'TS_STR');
+  EmitRaw('        CMP     BX, 3');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'TS_BOL');
+  EmitRaw('        CMP     BX, 11');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'TS_CHR');
+  (* par defaut : convertir comme entier *)
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'TS_INT');
+  EmitRaw(CL_RT_PFX + 'TS_NIL:');
+  EmitRaw('        MOV     AX, OFFSET ' + CL_NIL_LBL);
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'TS_INT:');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, OFFSET _CL_TMPBUF');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'NUMTOSTR');
+  EmitRaw('        MOV     AX, OFFSET _CL_TMPBUF');
+  EmitRaw('        POP     DI');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'TS_STR:');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'TS_BOL:');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'BOOLTOSTR');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'TS_CHR:');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, OFFSET _CL_TMPBUF');
+  EmitRaw('        MOV     BYTE PTR [DI], AL');
+  EmitRaw('        MOV     BYTE PTR [DI+1], 0');
+  EmitRaw('        MOV     AX, OFFSET _CL_TMPBUF');
+  EmitRaw('        POP     DI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_VECNEW : allouer vecteur vide -------------- *)
+  (* Entree : CX = nombre d elements (slots a 0)                      *)
+  (* Sortie : AX = pointeur vers le nouveau vecteur [count,0,0,...]   *)
+  EmitRaw(CL_RT_PFX + 'VECNEW:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'VNW_Z:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'VNW_D');
+  EmitRaw('        MOV     WORD PTR [DI], 0');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'VNW_Z');
+  EmitRaw(CL_RT_PFX + 'VNW_D:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_MAPNEW : allouer map vide ------------------- *)
+  (* Entree : CX = nombre de paires (slots a 0)                        *)
+  (* Sortie : AX = pointeur vers la map [count, k0,v0, k1,v1, ...]     *)
+  EmitRaw(CL_RT_PFX + 'MAPNEW:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    DX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        SHL     AX, 2');
+  EmitRaw('        ADD     AX, 2');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        MOV     DX, CX');
+  EmitRaw('        SHL     DX, 1');
+  EmitRaw(CL_RT_PFX + 'MNW_Z:');
+  EmitRaw('        CMP     DX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'MNW_D');
+  EmitRaw('        MOV     WORD PTR [DI], 0');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     DX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'MNW_Z');
+  EmitRaw(CL_RT_PFX + 'MNW_D:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     DX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_SETNEW : allouer ensemble vide --------------- *)
+  (* Entree : CX = nombre d elements (slots a 0)                        *)
+  (* Sortie : AX = pointeur vers le set [count, e0, e1, ...]            *)
+  (* Layout identique au vecteur                                         *)
+  EmitRaw(CL_RT_PFX + 'SETNEW:');
+  EmitRaw('        PUSH    BX');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        PUSH    CX');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     BX, DI');
+  EmitRaw('        ADD     BX, OFFSET _CL_HEAP');
+  EmitRaw('        MOV     WORD PTR [BX], CX');
+  EmitRaw('        MOV     AX, CX');
+  EmitRaw('        INC     AX');
+  EmitRaw('        SHL     AX, 1');
+  EmitRaw('        ADD     DI, AX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw(CL_RT_PFX + 'SNW_Z:');
+  EmitRaw('        CMP     CX, 0');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'SNW_D');
+  EmitRaw('        MOV     WORD PTR [DI], 0');
+  EmitRaw('        ADD     DI, 2');
+  EmitRaw('        DEC     CX');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'SNW_Z');
+  EmitRaw(CL_RT_PFX + 'SNW_D:');
+  EmitRaw('        MOV     AX, BX');
+  EmitRaw('        POP     CX');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     BX');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_ALLOC : allocation generique sur le heap ---- *)
+  (* Entree : CX = nombre d octets a allouer                           *)
+  (* Sortie : AX = pointeur vers le bloc alloue                        *)
+  EmitRaw(CL_RT_PFX + 'ALLOC:');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     DI, WORD PTR [_CL_HEAPTOP]');
+  EmitRaw('        MOV     AX, DI');
+  EmitRaw('        ADD     AX, OFFSET _CL_HEAP');
+  EmitRaw('        ADD     DI, CX');
+  EmitRaw('        MOV     WORD PTR [_CL_HEAPTOP], DI');
+  EmitRaw('        POP     DI');
+  EmitRaw('        RET');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_PANIC : erreur fatale + sortie DOS ---------- *)
+  (* Entree : SI = message d erreur (ASCIIZ)                           *)
+  EmitRaw(CL_RT_PFX + 'PANIC:');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'PRINTSTR');
+  EmitRaw('        CALL    ' + CL_RT_PFX + 'WRITECRLF');
+  EmitRaw('        MOV     AX, 4C01h');
+  EmitRaw('        INT     21h');
+  EmitBlankLine;
+
+  (* --- TODO 24 : _CLRT_EQUAL : egalite structurelle ----------------- *)
+  (* Entree : AX = valeur a, BX = valeur b                              *)
+  (* Sortie : AX = 1 (true) si egaux, 0 (false) sinon                   *)
+  (* Comparaison simple (valeur directe). Pour les chaines,              *)
+  (* les deux pointeurs sont compares (meme chaine DATA => egal).        *)
+  (* Pour les listes/vecs, comparaison recursive non supportee ici.      *)
+  EmitRaw(CL_RT_PFX + 'EQUAL:');
+  EmitRaw('        CMP     AX, BX');
+  EmitRaw('        JE      ' + CL_RT_PFX + 'EQ_T');
+  (* Si les deux sont des chaines (non nul), comparer contenu *)
+  EmitRaw('        TEST    AX, AX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'EQ_F');
+  EmitRaw('        TEST    BX, BX');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'EQ_F');
+  EmitRaw('        PUSH    SI');
+  EmitRaw('        PUSH    DI');
+  EmitRaw('        MOV     SI, AX');
+  EmitRaw('        MOV     DI, BX');
+  EmitRaw(CL_RT_PFX + 'EQ_CL:');
+  EmitRaw('        MOV     AL, [SI]');
+  EmitRaw('        CMP     AL, [DI]');
+  EmitRaw('        JNE     ' + CL_RT_PFX + 'EQ_NE');
+  EmitRaw('        TEST    AL, AL');
+  EmitRaw('        JZ      ' + CL_RT_PFX + 'EQ_YS');
+  EmitRaw('        INC     SI');
+  EmitRaw('        INC     DI');
+  EmitRaw('        JMP     ' + CL_RT_PFX + 'EQ_CL');
+  EmitRaw(CL_RT_PFX + 'EQ_YS:');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw('        MOV     AX, 1');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'EQ_NE:');
+  EmitRaw('        POP     DI');
+  EmitRaw('        POP     SI');
+  EmitRaw(CL_RT_PFX + 'EQ_F:');
+  EmitRaw('        XOR     AX, AX');
+  EmitRaw('        RET');
+  EmitRaw(CL_RT_PFX + 'EQ_T:');
+  EmitRaw('        MOV     AX, 1');
   EmitRaw('        RET');
   EmitBlankLine;
 
