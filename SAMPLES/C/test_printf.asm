@@ -1,5 +1,5 @@
 ; CCW32 - Compilateur C vers ASM 80386 pour Windows 32 bits
-; Genere automatiquement a partir de : SAMPLES/C/switch_test.c
+; Genere automatiquement a partir de : SAMPLES/C/test_printf.c
 
 .386
 .MODEL FLAT, STDCALL
@@ -25,6 +25,13 @@ BYTESWR  DD 0
 BYTESRD  DD 0
 CRLF     DB 13,10,0
 
+_CCK_1  DB 'Hello World!',10,0
+_CCK_2  DB 'Number: %d',10,0
+_CCK_3  DB 'Char: %c',10,0
+_CCK_4  DB 'Two values: %d and %d',10,0
+_CCK_5  DB 'Percent: %%',10,0
+_CCK_6  DB 'x = %d',10,0
+_CCK_7  DB 'This is puts',0
 
 ; --- Segment de code ---
 .CODE
@@ -280,109 +287,105 @@ _CCRT_READCHAR:
 
 ; === Fin Runtime I/O ===
 
-; --- Fonction: test_switch ---
-_CCF_test_switch:
+; --- Fonction: main ---
+_CCF_main:
         PUSH EBP
         MOV EBP,ESP
         SUB ESP,4
-;   param x = [EBP+8]
-;   local result = [EBP-4]
-        MOV DWORD PTR [EBP-4],0
-        MOV EAX,0
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP+8]
-        MOV ECX,EAX
-; switch (valeur dans ECX)
-        CMP ECX,1
-        JE _CCL_3
-        CMP ECX,2
-        JE _CCL_4
-        CMP ECX,3
-        JE _CCL_5
-        CMP ECX,4
-        JE _CCL_6
-        JMP _CCL_7
-_CCL_3:
+;   local x = [EBP-4]
+        MOV DWORD PTR [EBP-4],100
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_8
+        CALL _CCRT_PRINTSTR
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_9
+        CALL _CCRT_PRINTSTR
+        MOV EAX,42
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_10
+        CALL _CCRT_PRINTSTR
+        MOV EAX,65
+        CALL _CCRT_PRINTCHAR
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_11
+        CALL _CCRT_PRINTSTR
         MOV EAX,10
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_2
-_CCL_4:
+        CALL _CCRT_PRINTINT
+        MOV ESI,OFFSET _CCK_12
+        CALL _CCRT_PRINTSTR
         MOV EAX,20
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_13
+        CALL _CCRT_PRINTSTR
+        MOV ESI,OFFSET _CCK_14
+        CALL _CCRT_PRINTSTR
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+        MOV EAX,100
         MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_2
-_CCL_5:
-_CCL_6:
-        MOV EAX,30
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_2
-_CCL_7:
-        MOV EAX,99
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_2
-_CCL_2:
+; printf (TODO 21)
+        MOV ESI,OFFSET _CCK_15
+        CALL _CCRT_PRINTSTR
         MOV EAX,DWORD PTR [EBP-4]
+        CALL _CCRT_PRINTINT
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; puts (TODO 21)
+        MOV EAX,OFFSET _CCK_7
+        MOV ESI,EAX
+        CALL _CCRT_PRINTSTR
+        CALL _CCRT_PRINTCRLF
+        XOR EAX,EAX
+; putchar (TODO 21)
+        MOV EAX,65
+        CALL _CCRT_PRINTCHAR
+; putchar (TODO 21)
+        MOV EAX,10
+        CALL _CCRT_PRINTCHAR
+        MOV EAX,0
         JMP _CCL_1
 _CCL_1:
         MOV ESP,EBP
         POP EBP
         RET
 
-; --- Fonction: nested_switch ---
-_CCF_nested_switch:
-        PUSH EBP
-        MOV EBP,ESP
-        SUB ESP,4
-;   param a = [EBP+8]
-;   param b = [EBP+12]
-;   local result = [EBP-4]
-        MOV DWORD PTR [EBP-4],0
-        MOV EAX,0
-        MOV DWORD PTR [EBP-4],EAX
-        MOV EAX,DWORD PTR [EBP+8]
-        MOV ECX,EAX
-; switch (valeur dans ECX)
-        CMP ECX,1
-        JE _CCL_10
-        CMP ECX,2
-        JE _CCL_11
-        JMP _CCL_12
-_CCL_10:
-        MOV EAX,DWORD PTR [EBP+12]
-        MOV ECX,EAX
-; switch (valeur dans ECX)
-        CMP ECX,10
-        JE _CCL_14
-        CMP ECX,20
-        JE _CCL_15
-        JMP _CCL_16
-_CCL_14:
-        MOV EAX,100
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_13
-_CCL_15:
-        MOV EAX,200
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_13
-_CCL_16:
-        MOV EAX,999
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_13
-_CCL_13:
-        JMP _CCL_9
-_CCL_11:
-        MOV EAX,2000
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_9
-_CCL_12:
-        MOV EAX,9999
-        MOV DWORD PTR [EBP-4],EAX
-        JMP _CCL_9
-_CCL_9:
-        MOV EAX,DWORD PTR [EBP-4]
-        JMP _CCL_8
-_CCL_8:
-        MOV ESP,EBP
-        POP EBP
-        RET
+; --- Point d'entree Win32 ---
+_main:
+        PUSH -11
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDOUT],EAX
+        PUSH -10
+        CALL _GetStdHandle@4
+        MOV DWORD PTR [HSTDIN],EAX
+        CALL _GetProcessHeap@0
+        MOV DWORD PTR [HHEAP],EAX
+        CALL _CCF_main
+        PUSH 0
+        CALL _ExitProcess@4
 
-END
+
+; --- Donnees supplementaires (TODO 21) ---
+.DATA
+
+_CCK_8  DB 'Hello World!',0
+_CCK_9  DB 'Number: ',0
+_CCK_10  DB 'Char: ',0
+_CCK_11  DB 'Two values: ',0
+_CCK_12  DB ' and ',0
+_CCK_13  DB 'Percent: ',0
+_CCK_14  DB '%',0
+_CCK_15  DB 'x = ',0
+
+.CODE
+
+END _main

@@ -447,7 +447,7 @@
             TypeResolve : resolution recursive de typedef
             find_typedef, add_typedef : gestion de la table typedef
 
-  TODO 21 - CHAINES ET ENTREES/SORTIES (printf, scanf)
+  TODO 21 - CHAINES ET ENTREES/SORTIES (printf, scanf) [IMPLEMENTE]
             Chaines C : terminaison par '\0' (ASCIIZ)
               Stockage : DB "abc",0 dans .DATA
               Variable char* : pointeur vers chaine
@@ -3084,6 +3084,7 @@ Var
   { Pool de donnees (segment .DATA) }
   DataTab    : Array[0..MAX_DATA - 1] Of TDataRec;
   DataCount  : Integer;
+  DataEmittedCount : Integer; { nombre d entrees deja emises (TODO 21) }
 
   { Compteur de labels auto-generes }
   LabelGenSeq : Integer;
@@ -3127,6 +3128,7 @@ Procedure DataInit;
 Var I : Integer;
 Begin
   DataCount   := 0;
+  DataEmittedCount := 0;
   LabelGenSeq := 0;
   TokenCount  := 0;
   For I := 0 To MAX_DATA - 1 Do
@@ -4878,6 +4880,7 @@ Begin
     End; { case }
   End;
   EmitBlankLine;
+  DataEmittedCount := DataCount;
 End;
 
 { ------------------------------------------------------------ }
@@ -5029,6 +5032,13 @@ Function ParseEnumDef(Var P : Integer;
 
 { Forward declaration pour ParseTypeFromTokens (TODO 20) }
 Function ParseTypeFromTokens(Var P : Integer) : Integer; Forward;
+
+{ Forward declarations pour les fonctions d E/S (TODO 21) }
+Procedure ParsePrintfCall; Forward;
+Procedure ParseScanfCall; Forward;
+Procedure ParsePutsCall; Forward;
+Procedure ParsePutcharCall; Forward;
+Procedure ParseGetcharCall; Forward;
 
 Procedure ParseDataDecls;
 Var
@@ -7243,6 +7253,381 @@ Begin
     EmitInstr('ADD ESP,' + IntToStr_(ArgCount * 4));
 End;
 
+{ ============================================================ }
+{ TODO 21 - CHAINES ET ENTREES/SORTIES (printf, scanf, etc.)   }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ CollectArgs : scanner les arguments d un appel de fonction    }
+{ Le '(' a deja ete consomme. Consomme le ')' final.           }
+{ Retourne le nombre d arguments et leurs bornes.               }
+{ ------------------------------------------------------------ }
+
+Procedure CollectArgs(Var ArgCount : Integer;
+                      Var ArgStart : Array Of Integer;
+                      Var ArgEndPos : Array Of Integer);
+Var
+  Depth : Integer;
+Begin
+  ArgCount := 0;
+  If Not EPAtEnd And Not ((TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')')) Then
+  Begin
+    ArgStart[0] := EP;
+    Depth := 0;
+    While Not EPAtEnd Do
+    Begin
+      If (TokenPool[EP].Kind = TK_PUNCT) And (TokenPool[EP].Val = '(') Then
+        Inc(Depth)
+      Else If (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ')') Then
+      Begin
+        If Depth = 0 Then
+        Begin
+          ArgEndPos[ArgCount] := EP - 1;
+          Inc(ArgCount);
+          Break;
+        End;
+        Dec(Depth);
+      End
+      Else If (TokenPool[EP].Kind = TK_PUNCT) And
+              (TokenPool[EP].Val = ',') And (Depth = 0) Then
+      Begin
+        ArgEndPos[ArgCount] := EP - 1;
+        Inc(ArgCount);
+        If ArgCount < MAX_PARAMS Then
+          ArgStart[ArgCount] := EP + 1;
+      End;
+      Inc(EP);
+    End;
+  End;
+  { Consommer le ')' }
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')') Then
+    Inc(EP);
+End;
+
+{ ------------------------------------------------------------ }
+{ EvalArg : evaluer un argument dans ses bornes token           }
+{ Sauvegarde/restaure EP/EPEnd. Resultat dans EAX.             }
+{ ------------------------------------------------------------ }
+
+Procedure EvalArg(AStart, AEnd : Integer);
+Var
+  SaveEP, SaveEnd : Integer;
+Begin
+  SaveEP  := EP;
+  SaveEnd := EPEnd;
+  EP    := AStart;
+  EPEnd := AEnd + 1;
+  ParseExpr;
+  EP    := SaveEP;
+  EPEnd := SaveEnd;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePrintfCall : gerer printf(fmt, ...)                     }
+{ Le '(' a deja ete consomme.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePrintfCall;
+Var
+  ArgCount  : Integer;
+  ArgStart  : Array[0..MAX_PARAMS - 1] Of Integer;
+  ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+  Fmt       : TString;
+  Lbl       : TString;
+  Buf       : TString;
+  I, ArgIdx : Integer;
+  C         : Char;
+Begin
+  EmitComment('printf (TODO 21)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+
+  { Le premier argument doit etre une chaine litterale }
+  If ArgCount < 1 Then Exit;
+  Fmt := TokenPool[ArgStart[0]].Val;
+
+  ArgIdx := 1; { index du prochain argument variadique }
+  I := 1;
+  Buf := '';
+  While I <= Length(Fmt) Do
+  Begin
+    C := Fmt[I];
+
+    { Newline : chr(10) deja converti par le lexer }
+    If C = Chr(10) Then
+    Begin
+      { Emettre le tampon accumule }
+      If Buf <> '' Then
+      Begin
+        Lbl := DataGetOrAddStr(Buf);
+        EmitInstr('MOV ESI,OFFSET ' + Lbl);
+        EmitInstr('CALL _CCRT_PRINTSTR');
+        Buf := '';
+      End;
+      EmitInstr('CALL _CCRT_PRINTCRLF');
+      Inc(I);
+    End
+
+    { Tabulation : chr(9) deja converti par le lexer }
+    Else If C = Chr(9) Then
+    Begin
+      If Buf <> '' Then
+      Begin
+        Lbl := DataGetOrAddStr(Buf);
+        EmitInstr('MOV ESI,OFFSET ' + Lbl);
+        EmitInstr('CALL _CCRT_PRINTSTR');
+        Buf := '';
+      End;
+      Lbl := DataGetOrAddStr(Chr(9));
+      EmitInstr('MOV ESI,OFFSET ' + Lbl);
+      EmitInstr('CALL _CCRT_PRINTSTR');
+      Inc(I);
+    End
+
+    { Retour chariot : chr(13) ignorer }
+    Else If C = Chr(13) Then
+    Begin
+      Inc(I);
+    End
+
+    { Specificateur de format }
+    Else If (C = '%') And (I < Length(Fmt)) Then
+    Begin
+      { Emettre le tampon accumule }
+      If Buf <> '' Then
+      Begin
+        Lbl := DataGetOrAddStr(Buf);
+        EmitInstr('MOV ESI,OFFSET ' + Lbl);
+        EmitInstr('CALL _CCRT_PRINTSTR');
+        Buf := '';
+      End;
+
+      Inc(I);
+      C := Fmt[I];
+      Case C Of
+        'd':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('CALL _CCRT_PRINTINT');
+          Inc(I);
+        End;
+        'u':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('CALL _CCRT_PRINTUINT');
+          Inc(I);
+        End;
+        'x':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('CALL _CCRT_PRINTHEX');
+          Inc(I);
+        End;
+        'c':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('CALL _CCRT_PRINTCHAR');
+          Inc(I);
+        End;
+        's':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('MOV ESI,EAX');
+          EmitInstr('CALL _CCRT_PRINTSTR');
+          Inc(I);
+        End;
+        '%':
+        Begin
+          Lbl := DataGetOrAddStr('%');
+          EmitInstr('MOV ESI,OFFSET ' + Lbl);
+          EmitInstr('CALL _CCRT_PRINTSTR');
+          Inc(I);
+        End;
+      Else
+        { Specificateur inconnu : ignorer }
+        Inc(I);
+      End;
+    End
+
+    { Caractere litteral ordinaire }
+    Else
+    Begin
+      Buf := Buf + C;
+      Inc(I);
+    End;
+  End;
+
+  { Emettre le reste du tampon }
+  If Buf <> '' Then
+  Begin
+    Lbl := DataGetOrAddStr(Buf);
+    EmitInstr('MOV ESI,OFFSET ' + Lbl);
+    EmitInstr('CALL _CCRT_PRINTSTR');
+  End;
+
+  { Valeur de retour = 0 }
+  EmitInstr('XOR EAX,EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseScanfCall : gerer scanf(fmt, ...)                       }
+{ Le '(' a deja ete consomme.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseScanfCall;
+Var
+  ArgCount  : Integer;
+  ArgStart  : Array[0..MAX_PARAMS - 1] Of Integer;
+  ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+  Fmt       : TString;
+  I, ArgIdx : Integer;
+  C         : Char;
+Begin
+  EmitComment('scanf (TODO 21)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+
+  If ArgCount < 1 Then Exit;
+  Fmt := TokenPool[ArgStart[0]].Val;
+
+  ArgIdx := 1;
+  I := 1;
+  While I <= Length(Fmt) Do
+  Begin
+    C := Fmt[I];
+    If (C = '%') And (I < Length(Fmt)) Then
+    Begin
+      Inc(I);
+      C := Fmt[I];
+      Case C Of
+        'd':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL _CCRT_READINT');
+          EmitInstr('POP EDI');
+          EmitInstr('MOV [EDI],EAX');
+          Inc(I);
+        End;
+        's':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('MOV EDI,EAX');
+          EmitInstr('CALL _CCRT_READSTR');
+          Inc(I);
+        End;
+        'c':
+        Begin
+          If ArgIdx < ArgCount Then
+          Begin
+            EvalArg(ArgStart[ArgIdx], ArgEndPos[ArgIdx]);
+            Inc(ArgIdx);
+          End;
+          EmitInstr('PUSH EAX');
+          EmitInstr('CALL _CCRT_READCHAR');
+          EmitInstr('POP EDI');
+          EmitInstr('MOV BYTE PTR [EDI],AL');
+          Inc(I);
+        End;
+      Else
+        Inc(I);
+      End;
+    End
+    Else
+      Inc(I);
+  End;
+
+  EmitInstr('XOR EAX,EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePutsCall : gerer puts(s)                                }
+{ Le '(' a deja ete consomme.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePutsCall;
+Var
+  ArgCount  : Integer;
+  ArgStart  : Array[0..MAX_PARAMS - 1] Of Integer;
+  ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('puts (TODO 21)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+
+  If ArgCount >= 1 Then
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('CALL _CCRT_PRINTSTR');
+  EmitInstr('CALL _CCRT_PRINTCRLF');
+  EmitInstr('XOR EAX,EAX');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParsePutcharCall : gerer putchar(c)                          }
+{ Le '(' a deja ete consomme.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParsePutcharCall;
+Var
+  ArgCount  : Integer;
+  ArgStart  : Array[0..MAX_PARAMS - 1] Of Integer;
+  ArgEndPos : Array[0..MAX_PARAMS - 1] Of Integer;
+Begin
+  EmitComment('putchar (TODO 21)');
+  CollectArgs(ArgCount, ArgStart, ArgEndPos);
+
+  If ArgCount >= 1 Then
+    EvalArg(ArgStart[0], ArgEndPos[0]);
+
+  EmitInstr('CALL _CCRT_PRINTCHAR');
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseGetcharCall : gerer getchar()                           }
+{ Le '(' a deja ete consomme.                                  }
+{ ------------------------------------------------------------ }
+
+Procedure ParseGetcharCall;
+Begin
+  EmitComment('getchar (TODO 21)');
+  { Consommer le ')' }
+  If Not EPAtEnd And (TokenPool[EP].Kind = TK_PUNCT) And
+     (TokenPool[EP].Val = ')') Then
+    Inc(EP);
+
+  EmitInstr('CALL _CCRT_READCHAR');
+End;
+
 { ------------------------------------------------------------ }
 { ParsePrimary : parser une expression primaire                 }
 { Litteral entier, chaine, char, ident, appel, parentheses,    }
@@ -7300,7 +7685,18 @@ Begin
          (TokenPool[EP].Val = '(') Then
       Begin
         Inc(EP); { consommer '(' }
-        If IsFuncName(Name) Then
+        { TODO 21 : fonctions d E/S speciales }
+        If Name = 'printf' Then
+          ParsePrintfCall
+        Else If Name = 'scanf' Then
+          ParseScanfCall
+        Else If Name = 'puts' Then
+          ParsePutsCall
+        Else If Name = 'putchar' Then
+          ParsePutcharCall
+        Else If Name = 'getchar' Then
+          ParseGetcharCall
+        Else If IsFuncName(Name) Then
           ParseFuncCall(Name)         { appel direct (TODO 16) }
         Else
           ParseFuncPtrCall(Name);     { appel indirect via pointeur (TODO 17) }
@@ -9484,6 +9880,370 @@ Begin
 End;
 
 { ------------------------------------------------------------ }
+{ EmitLateData : emettre les donnees ajoutees apres le         }
+{ segment .DATA principal (chaines creees par printf, etc.)    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitLateData;
+Var
+  I, J : Integer;
+  S    : TString;
+  C    : Char;
+Begin
+  If DataCount <= DataEmittedCount Then Exit;
+
+  EmitBlankLine;
+  EmitComment('--- Donnees supplementaires (TODO 21) ---');
+  EmitRaw('.DATA');
+  EmitBlankLine;
+
+  For I := DataEmittedCount To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_STR:
+      Begin
+        S := '';
+        J := 1;
+        While J <= Length(DataTab[I].StrVal) Do
+        Begin
+          C := DataTab[I].StrVal[J];
+          If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+          Begin
+            If S <> '' Then
+              S := S + ',';
+            S := S + '''';
+            While (J <= Length(DataTab[I].StrVal)) Do
+            Begin
+              C := DataTab[I].StrVal[J];
+              If (Ord(C) >= 32) And (Ord(C) < 127) And (C <> '''') Then
+              Begin
+                S := S + C;
+                Inc(J);
+              End
+              Else
+                Break;
+            End;
+            S := S + '''';
+          End
+          Else
+          Begin
+            If S <> '' Then
+              S := S + ',';
+            S := S + IntToStr_(Ord(C));
+            Inc(J);
+          End;
+        End;
+        If S = '' Then
+          S := '0'
+        Else
+          S := S + ',0';
+        EmitRaw(DataTab[I].LblName + '  DB ' + S);
+      End;
+
+      DK_DWORD:
+        EmitRaw(DataTab[I].LblName + '  DD ' +
+                IntToStr_(DataTab[I].IntVal));
+
+      DK_BYTE:
+        EmitRaw(DataTab[I].LblName + '  DB ' +
+                IntToStr_(DataTab[I].IntVal));
+    End;
+  End;
+
+  EmitBlankLine;
+  EmitRaw('.CODE');
+  EmitBlankLine;
+  DataEmittedCount := DataCount;
+End;
+
+{ ------------------------------------------------------------ }
+{ EmitRuntime : emettre les routines runtime _CCRT_*           }
+{ Routines inline ASM pour printf/scanf/putchar/getchar/puts   }
+{ ------------------------------------------------------------ }
+
+Procedure EmitRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('=== Runtime I/O (TODO 21) ===');
+  EmitBlankLine;
+
+  { _CCRT_PRINTSTR : ESI = pointeur vers chaine ASCIIZ }
+  EmitComment('--- _CCRT_PRINTSTR : afficher chaine ASCIIZ (ESI) ---');
+  EmitLabel('_CCRT_PRINTSTR');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EDI,ESI');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel('_CCRT_PS_LEN');
+  EmitInstr('CMP BYTE PTR [EDI],0');
+  EmitInstr('JE _CCRT_PS_GO');
+  EmitInstr('INC EDI');
+  EmitInstr('INC ECX');
+  EmitInstr('JMP _CCRT_PS_LEN');
+  EmitLabel('_CCRT_PS_GO');
+  EmitInstr('CMP ECX,0');
+  EmitInstr('JE _CCRT_PS_END');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitLabel('_CCRT_PS_END');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_PRINTINT : EAX = entier signe }
+  EmitComment('--- _CCRT_PRINTINT : afficher entier signe (EAX) ---');
+  EmitLabel('_CCRT_PRINTINT');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV ESI,EAX');
+  EmitInstr('LEA EDI,[NUMBUF+15]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV EBX,10');
+  EmitInstr('TEST ESI,ESI');
+  EmitInstr('JNS _CCRT_PI_POS');
+  EmitInstr('NEG ESI');
+  EmitLabel('_CCRT_PI_POS');
+  EmitInstr('MOV EAX,ESI');
+  EmitLabel('_CCRT_PI_LOOP');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV EBX');
+  EmitInstr('ADD DL,48');
+  EmitInstr('DEC EDI');
+  EmitInstr('MOV [EDI],DL');
+  EmitInstr('INC ECX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ _CCRT_PI_LOOP');
+  { Ajouter le signe negatif si necessaire }
+  EmitInstr('MOV EAX,[ESP+28]'); { EAX original depuis PUSHAD }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNS _CCRT_PI_PRINT');
+  EmitInstr('DEC EDI');
+  EmitInstr('MOV BYTE PTR [EDI],45');
+  EmitInstr('INC ECX');
+  EmitLabel('_CCRT_PI_PRINT');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_PRINTUINT : EAX = entier non signe }
+  EmitComment('--- _CCRT_PRINTUINT : afficher entier non signe (EAX) ---');
+  EmitLabel('_CCRT_PRINTUINT');
+  EmitInstr('PUSHAD');
+  EmitInstr('LEA EDI,[NUMBUF+15]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV EBX,10');
+  EmitLabel('_CCRT_PU_LOOP');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV EBX');
+  EmitInstr('ADD DL,48');
+  EmitInstr('DEC EDI');
+  EmitInstr('MOV [EDI],DL');
+  EmitInstr('INC ECX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ _CCRT_PU_LOOP');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_PRINTHEX : EAX = entier en hexadecimal }
+  EmitComment('--- _CCRT_PRINTHEX : afficher entier en hexa (EAX) ---');
+  EmitLabel('_CCRT_PRINTHEX');
+  EmitInstr('PUSHAD');
+  EmitInstr('LEA EDI,[NUMBUF+15]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV EBX,16');
+  EmitLabel('_CCRT_PH_LOOP');
+  EmitInstr('XOR EDX,EDX');
+  EmitInstr('DIV EBX');
+  EmitInstr('CMP DL,10');
+  EmitInstr('JB _CCRT_PH_DIG');
+  EmitInstr('ADD DL,87'); { 'a' - 10 = 87 }
+  EmitInstr('JMP _CCRT_PH_STORE');
+  EmitLabel('_CCRT_PH_DIG');
+  EmitInstr('ADD DL,48');
+  EmitLabel('_CCRT_PH_STORE');
+  EmitInstr('DEC EDI');
+  EmitInstr('MOV [EDI],DL');
+  EmitInstr('INC ECX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JNZ _CCRT_PH_LOOP');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDI');
+  EmitInstr('PUSH [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_PRINTCHAR : AL = caractere }
+  EmitComment('--- _CCRT_PRINTCHAR : afficher un caractere (AL) ---');
+  EmitLabel('_CCRT_PRINTCHAR');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV [NUMBUF],AL');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET NUMBUF');
+  EmitInstr('PUSH [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_PRINTCRLF : ecrire CR+LF }
+  EmitComment('--- _CCRT_PRINTCRLF : afficher retour a la ligne ---');
+  EmitLabel('_CCRT_PRINTCRLF');
+  EmitInstr('PUSHAD');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH 2');
+  EmitInstr('PUSH OFFSET CRLF');
+  EmitInstr('PUSH [HSTDOUT]');
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_READINT : lire un entier depuis stdin -> EAX }
+  EmitComment('--- _CCRT_READINT : lire entier depuis stdin -> EAX ---');
+  EmitLabel('_CCRT_READINT');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  { Lire une ligne dans INBUF }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESRD');
+  EmitInstr('PUSH 255');
+  EmitInstr('PUSH OFFSET INBUF');
+  EmitInstr('PUSH [HSTDIN]');
+  EmitInstr('CALL _ReadFile@20');
+  { Convertir ASCII -> entier }
+  EmitInstr('LEA ESI,[INBUF]');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('XOR EDX,EDX'); { signe : 0=positif }
+  { Sauter les espaces }
+  EmitLabel('_CCRT_RI_SKIP');
+  EmitInstr('MOV CL,[ESI]');
+  EmitInstr('CMP CL,32');
+  EmitInstr('JE _CCRT_RI_SKIPN');
+  EmitInstr('CMP CL,9');
+  EmitInstr('JNE _CCRT_RI_SIGN');
+  EmitLabel('_CCRT_RI_SKIPN');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP _CCRT_RI_SKIP');
+  { Verifier le signe }
+  EmitLabel('_CCRT_RI_SIGN');
+  EmitInstr('CMP CL,45'); { '-' }
+  EmitInstr('JNE _CCRT_RI_PLUS');
+  EmitInstr('MOV EDX,1');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP _CCRT_RI_DLOOP');
+  EmitLabel('_CCRT_RI_PLUS');
+  EmitInstr('CMP CL,43'); { '+' }
+  EmitInstr('JNE _CCRT_RI_DLOOP');
+  EmitInstr('INC ESI');
+  { Boucle de conversion }
+  EmitLabel('_CCRT_RI_DLOOP');
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');
+  EmitInstr('CMP ECX,48');
+  EmitInstr('JB _CCRT_RI_DONE');
+  EmitInstr('CMP ECX,57');
+  EmitInstr('JA _CCRT_RI_DONE');
+  EmitInstr('SUB ECX,48');
+  EmitInstr('IMUL EAX,10');
+  EmitInstr('ADD EAX,ECX');
+  EmitInstr('INC ESI');
+  EmitInstr('JMP _CCRT_RI_DLOOP');
+  EmitLabel('_CCRT_RI_DONE');
+  EmitInstr('TEST EDX,EDX');
+  EmitInstr('JZ _CCRT_RI_RET');
+  EmitInstr('NEG EAX');
+  EmitLabel('_CCRT_RI_RET');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_READSTR : EDI = buffer dest, lire une ligne }
+  EmitComment('--- _CCRT_READSTR : lire chaine depuis stdin (EDI=buf) ---');
+  EmitLabel('_CCRT_READSTR');
+  EmitInstr('PUSHAD');
+  { Lire dans INBUF }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESRD');
+  EmitInstr('PUSH 255');
+  EmitInstr('PUSH OFFSET INBUF');
+  EmitInstr('PUSH [HSTDIN]');
+  EmitInstr('CALL _ReadFile@20');
+  { Copier INBUF -> EDI sans CR/LF }
+  EmitInstr('LEA ESI,[INBUF]');
+  EmitInstr('MOV EDI,[ESP+4]'); { EDI original depuis PUSHAD }
+  EmitLabel('_CCRT_RS_COPY');
+  EmitInstr('LODSB');
+  EmitInstr('CMP AL,13');
+  EmitInstr('JE _CCRT_RS_END');
+  EmitInstr('CMP AL,10');
+  EmitInstr('JE _CCRT_RS_END');
+  EmitInstr('CMP AL,0');
+  EmitInstr('JE _CCRT_RS_END');
+  EmitInstr('STOSB');
+  EmitInstr('JMP _CCRT_RS_COPY');
+  EmitLabel('_CCRT_RS_END');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('POPAD');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  { _CCRT_READCHAR : lire un caractere depuis stdin -> EAX }
+  EmitComment('--- _CCRT_READCHAR : lire un caractere -> EAX ---');
+  EmitLabel('_CCRT_READCHAR');
+  EmitInstr('PUSH EBX');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV BYTE PTR [NUMBUF],0');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH OFFSET BYTESRD');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET NUMBUF');
+  EmitInstr('PUSH [HSTDIN]');
+  EmitInstr('CALL _ReadFile@20');
+  EmitInstr('MOVZX EAX,BYTE PTR [NUMBUF]');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  EmitComment('=== Fin Runtime I/O ===');
+  EmitBlankLine;
+End;
+
+{ ------------------------------------------------------------ }
 { EmitFunctions : emettre le code ASM pour toutes les fonctions}
 { ------------------------------------------------------------ }
 
@@ -9637,7 +10397,9 @@ Begin
     EmitExternFuncs;
     EmitDataSeg;
     EmitCodeSeg;
+    EmitRuntime;
     EmitFunctions;
+    EmitLateData;
     EmitClose;
     WriteLn('CCW32: ASM genere -> ', AsmFile);
   End;
