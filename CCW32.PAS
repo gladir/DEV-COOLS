@@ -599,7 +599,7 @@ Const
   PE_SUBSYS_CUI   = 3;           { console subsystem                  }
   PE_SCN_TEXT     = $60000020;   { CODE | EXECUTE | READ              }
   PE_SCN_RDATA    = $40000040;   { INIT_DATA | READ                   }
-  PE_SCN_BSS      = LongInt($C0000040);   { INIT_DATA | READ | WRITE }
+  PE_SCN_BSS      = LongInt($C0000040);   { INIT_DATA | READ | WRITE (data section) }
   MAX_BIN_CODE    = 65536;       { 64 KB max code section             }
   MAX_BIN_DATA    = 65536;       { 64 KB max data section             }
   MAX_BIN_LBL     = 4096;        { max labels                         }
@@ -11660,7 +11660,9 @@ Begin
     Exit;
   End;
 
-  { Unknown instruction -> NOP }
+  { Unknown instruction -> NOP with warning }
+  If Opts.Verbose Then
+    WarnMsg('instruction ASM inconnue ignoree: ' + Mnem);
   BinCodeByte($90);
 End;
 
