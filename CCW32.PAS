@@ -354,7 +354,7 @@
             SwitchPush / SwitchPop : pile pour switch imbriques
               (max 32 niveaux d imbrication)
 
-  TODO 16 - FONCTIONS ET PROTOTYPES
+  TODO 16 - FONCTIONS ET PROTOTYPES [IMPLEMENTE]
             ParseFuncDecl : prototype (declaration avancee)
               type nom(type1 param1, type2 param2, ...);
             ParseFuncDef : definition complete avec corps
@@ -371,6 +371,9 @@
             Fonctions void : pas de valeur de retour
             Fonctions extern : declaration sans corps (EXTRN dans asm)
             Fonctions static : visibles uniquement dans le fichier
+            EmitExternFuncs : emettre EXTRN pour les fonctions extern
+              Parcourt FuncTab et SymTab apres ParseFuncDecls
+              Emet EXTRN _nom:NEAR pour chaque extern utilisateur
 
   TODO 17 - POINTEURS ET ADRESSES
             Declaration : type *nom; (pointeur vers type)
@@ -8474,6 +8477,43 @@ Begin
   CurFuncIdx := OldFI;
 End;
 
+{ ============================================================ }
+{ TODO 16 - FONCTIONS ET PROTOTYPES                            }
+{ EmitExternFuncs emet les EXTRN pour les fonctions extern     }
+{ utilisateur (declarations sans corps).                       }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ EmitExternFuncs : emettre EXTRN pour les fonctions extern    }
+{ utilisateur declarees avec 'extern' et sans corps.           }
+{ Parcourt FuncTab a la recherche de fonctions avec IsForward   }
+{ et IsExternal dans SymTab.                                    }
+{ ------------------------------------------------------------ }
+
+Procedure EmitExternFuncs;
+Var
+  FI, SI : Integer;
+  HasExtern : Boolean;
+Begin
+  HasExtern := False;
+  For FI := 0 To FuncCount - 1 Do
+  Begin
+    If Not FuncTab[FI].IsForward Then Continue;
+    SI := FuncTab[FI].SymIdx;
+    If (SI >= 0) And SymTab[SI].IsExternal Then
+    Begin
+      If Not HasExtern Then
+      Begin
+        EmitComment('--- Imports utilisateur (extern) ---');
+        HasExtern := True;
+      End;
+      EmitRaw('EXTRN _' + FuncTab[FI].Name + ':NEAR');
+    End;
+  End;
+  If HasExtern Then
+    EmitBlankLine;
+End;
+
 { ------------------------------------------------------------ }
 { EmitFunctions : emettre le code ASM pour toutes les fonctions}
 { ------------------------------------------------------------ }
@@ -8625,6 +8665,7 @@ Begin
     AsmFile := ReplaceExt(Opts.SrcFile, '.asm');
     EmitOpen(AsmFile);
     EmitHeader;
+    EmitExternFuncs;
     EmitDataSeg;
     EmitCodeSeg;
     EmitFunctions;

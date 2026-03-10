@@ -13,6 +13,11 @@ EXTRN _GetProcessHeap@0:NEAR
 EXTRN _HeapAlloc@12:NEAR
 EXTRN _HeapFree@12:NEAR
 
+; --- Imports utilisateur (extern) ---
+EXTRN _calculate_sum:NEAR
+EXTRN _print_message:NEAR
+EXTRN _get_input_string:NEAR
+
 ; --- Segment de donnees ---
 .DATA
 
