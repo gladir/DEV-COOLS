@@ -1034,7 +1034,7 @@ Begin
       LexEOF := True;
       Exit;
     End;
-    { Skip to the saved line position to avoid re-reading from start }
+    { Avancer jusqu a la position de ligne sauvegardee pour eviter de relire depuis le debut }
     {$I-}
     For FI := 1 To IncSavedFLine[IncTop] Do
     Begin
@@ -2534,7 +2534,7 @@ Begin
     EmitInstrA('PUSH', '-10');
     EmitInstrA('CALL', '_GetStdHandle@4');
     EmitInstrAB('MOV', 'DWORD PTR [' + VXP_RT_PFX + 'HSTDIN]', 'EAX');
-    { Jump over function/procedure definitions to main body }
+    { Sauter par-dessus les definitions de fonctions/procedures vers le corps principal }
     EmitInstrA('JMP', VXP_LBL_PFX + 'MAINBODY');
     EmitBlankLine;
   End;
@@ -2709,7 +2709,7 @@ Begin
       End
       Else
       Begin
-        { Check if keyword is a known function/procedure }
+        { Verifier si le mot-cle est une fonction/procedure connue }
         SIdx2 := SymFind(CurToken.Val);
         If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_FUNC) Then
         Begin
@@ -3176,19 +3176,19 @@ Begin
           End
           Else
           Begin
-            (* trunc, round : identity for integer *)
+            (* trunc, round : identite pour entier *)
             ExprFlushToEAX(SubEv);
             Res.Kind    := EK_EAX;
             Res.TypeIdx := TY_IDX_INTEGER;
           End;
-        End  (* built-in functions *)
+        End  (* fonctions internes *)
 
         Else
         Begin
-          (* --- Symbol lookup --- *)
+          (* --- Recherche de symbole --- *)
           SIdx2 := SymFind(IdName);
 
-          (* --- WITH context : unqualified field resolution --- *)
+          (* --- Contexte WITH : resolution de champ non qualifie --- *)
           If (SIdx2 < 0) And (WithTop >= 0) Then
           Begin
             WIdx2 := -1;
@@ -3239,9 +3239,9 @@ Begin
               WarnMsg('identificateur non declare: ' + IdName);
               Res.Kind := EK_NONE;
             End;
-          End  (* WITH resolution *)
+          End  (* resolution WITH *)
 
-          (* --- Type cast : TypeName(expr) --- *)
+          (* --- Conversion de type : NomType(expr) --- *)
           Else If (SIdx2 >= 0) And (SymTab[SIdx2].Cat = SC_TYPE) Then
           Begin
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -3257,7 +3257,7 @@ Begin
             End
             Else
             Begin
-              (* bare type name -> its size *)
+              (* nom de type seul -> sa taille *)
               ExprMakeImm(TypeSizeof(SymTab[SIdx2].TypeIdx),
                 TY_IDX_INTEGER, Res);
             End;
@@ -3269,7 +3269,7 @@ Begin
             Res.Kind := EK_NONE;
           End
 
-          (* --- SC_CONST: immediate value --- *)
+          (* --- SC_CONST : valeur immediate --- *)
           Else If SymTab[SIdx2].Cat = SC_CONST Then
           Begin
             ExprMakeImm(SymTab[SIdx2].ImmVal,
@@ -3277,7 +3277,7 @@ Begin
             Res.SymIdx := SIdx2;
           End
 
-          (* --- SC_ENUM_VAL: enumeration value --- *)
+          (* --- SC_ENUM_VAL : valeur d enumeration --- *)
           Else If SymTab[SIdx2].Cat = SC_ENUM_VAL Then
           Begin
             ExprMakeImm(SymTab[SIdx2].ImmVal,
@@ -3285,14 +3285,14 @@ Begin
             Res.SymIdx := SIdx2;
           End
 
-          (* --- SC_FUNC: function call or function result variable --- *)
+          (* --- SC_FUNC : appel de fonction ou variable resultat --- *)
           Else If SymTab[SIdx2].Cat = SC_FUNC Then
           Begin
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
             Begin
               EmitComment('call func ' + IdName);
               LexNextToken;
-              (* Push arguments *)
+              (* Empiler les arguments *)
               ArgCount2 := 0;
               If Not ((CurToken.Kind = TK_PUNCT) And
                       (CurToken.Val = ')')) Then
@@ -3320,7 +3320,7 @@ Begin
             End
             Else
             Begin
-              (* bare function name = result variable *)
+              (* nom de fonction seul = variable resultat *)
               EmitInstrAB('MOV', 'EAX',
                 'DWORD PTR ' + EBPOfs(CurFuncRetOfs));
               Res.Kind    := EK_EAX;
@@ -3329,7 +3329,7 @@ Begin
             End;
           End
 
-          (* --- SC_PROC: procedure call (result ignored or in EAX) --- *)
+          (* --- SC_PROC : appel de procedure (resultat ignore ou dans EAX) --- *)
           Else If SymTab[SIdx2].Cat = SC_PROC Then
           Begin
             If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -3363,7 +3363,7 @@ Begin
             End
             Else
             Begin
-              (* bare procedure name as value = address *)
+              (* nom de procedure seul comme valeur = adresse *)
               EmitInstrAB('MOV', 'EAX',
                 'OFFSET ' + SymTab[SIdx2].MangledName);
               Res.Kind    := EK_EAX;
@@ -3372,20 +3372,20 @@ Begin
             End;
           End
 
-          (* --- SC_CONDITION: condition value --- *)
+          (* --- SC_CONDITION : valeur de condition --- *)
           Else If SymTab[SIdx2].Cat = SC_CONDITION Then
           Begin
             ExprMakeImm(SymTab[SIdx2].Offset, TY_IDX_INTEGER, Res);
             Res.SymIdx := SIdx2;
           End
 
-          (* --- Variable access (SC_VAR, SC_TYPED_CONST, etc.) --- *)
+          (* --- Acces variable (SC_VAR, SC_TYPED_CONST, etc.) --- *)
           Else
           Begin
             Res.SymIdx  := SIdx2;
             Res.TypeIdx := SymTab[SIdx2].TypeIdx;
 
-            (* Handle pointer dereference: ident^ *)
+            (* Gerer le dereferencement de pointeur : ident^ *)
             If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
             Begin
               LexNextToken;
@@ -3479,16 +3479,16 @@ Begin
               End;
               Res.Kind   := EK_EAX;
               Res.SymIdx := -1;
-            End  (* pointer dereference *)
+            End  (* dereferencement de pointeur *)
 
-            (* Handle record field access: ident.field *)
+            (* Gerer l acces aux champs d enregistrement : ident.champ *)
             Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.') Then
             Begin
               LexNextToken;
               FTIdx2 := SymTab[SIdx2].TypeIdx;
               FIdx2 := -1;
 
-              (* VARYING .LENGTH and .BODY accessors *)
+              (* Accesseurs VARYING .LENGTH et .BODY *)
               If IsVaryingTypeIdx(FTIdx2) And
                  (CurToken.Kind = TK_IDENT) Then
               Begin
@@ -3532,7 +3532,7 @@ Begin
                 End
                 Else
                 Begin
-                  (* Unknown VARYING field - load body *)
+                  (* Champ VARYING inconnu - charger le corps *)
                   LexNextToken;
                   If SymTab[SIdx2].Cat = SC_VARPARAM Then
                   Begin
@@ -3552,7 +3552,7 @@ Begin
               End
               Else
               Begin
-                (* Non-VARYING field access (record fields, etc.) *)
+                (* Acces champ non-VARYING (champs d enregistrement, etc.) *)
                 If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                    (TypeTab[FTIdx2].Kind = TKP_RECORD) And
                    (CurToken.Kind = TK_IDENT) Then
@@ -3624,7 +3624,7 @@ Begin
                 End
                 Else
                 Begin
-                  (* Unknown field - load base *)
+                  (* Champ inconnu - charger la base *)
                   If SymTab[SIdx2].IsLocal Then
                     EmitInstrAB('MOV', 'EAX',
                       'DWORD PTR ' + EBPOfs(SymTab[SIdx2].Offset))
@@ -3634,10 +3634,10 @@ Begin
                 End;
                 Res.Kind   := EK_EAX;
                 Res.SymIdx := SIdx2;
-              End;  (* non-VARYING field access *)
-            End  (* record field *)
+              End;  (* acces champ non-VARYING *)
+            End  (* champ d enregistrement *)
 
-            (* Handle array/string subscript: ident[index] or S[pos:len] *)
+            (* Gerer l indexation tableau/chaine : ident[index] ou S[pos:len] *)
             Else If IsOpenBracket Then
             Begin
               LexNextToken;
@@ -3647,7 +3647,7 @@ Begin
               ParseExpr(SubEv);
               ExprFlushToEAX(SubEv);
 
-              (* Check for S[pos:len] substring syntax *)
+              (* Verifier la syntaxe de sous-chaine S[pos:len] *)
               If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') And
                  (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  ((TypeTab[FTIdx2].Kind = TKP_STRING) Or
@@ -3682,19 +3682,19 @@ Begin
               End
               Else
               Begin
-              (* v‚rifications de limites avant la soustraction *)
+              (* vï¿½rifications de limites avant la soustraction *)
               If Opts.CheckEnabled And
                  (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
                 EmitBoundsCheck(TypeTab[FTIdx2].Lo, TypeTab[FTIdx2].Hi);
 
-              (* Subtract lower bound for arrays *)
+              (* Soustraire la borne inferieure pour les tableaux *)
               If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) And
                  (TypeTab[FTIdx2].Lo <> 0) Then
                 EmitInstrAB('SUB', 'EAX', IntToStr(TypeTab[FTIdx2].Lo));
 
-              (* Multiply by element size *)
+              (* Multiplier par la taille de l element *)
               ESize2 := 4;
               If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
@@ -3709,21 +3709,21 @@ Begin
                   EmitInstrAB('MOV', 'ECX', IntToStr(ESize2));
                   EmitInstrAB('IMUL', 'EAX', 'ECX');
                 End;
-                (* ESize2 = 1 : no multiply needed *)
+                (* ESize2 = 1 : pas de multiplication necessaire *)
               End
               Else If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                       ((TypeTab[FTIdx2].Kind = TKP_STRING) Or
                        (TypeTab[FTIdx2].Kind = TKP_VARYING)) Then
               Begin
                 ESize2 := 1;
-                (* char access: no multiply needed *)
+                (* acces caractere : pas de multiplication necessaire *)
               End
               Else
                 EmitInstrAB('SHL', 'EAX', '2');
 
               EmitInstrAB('MOV', 'EBX', 'EAX');
 
-              (* Calculate base address *)
+              (* Calculer l adresse de base *)
               If SymTab[SIdx2].IsLocal Then
               Begin
                 If SymTab[SIdx2].Cat = SC_VARPARAM Then
@@ -3752,10 +3752,10 @@ Begin
               Begin
                 EmitComment('multi-dim subscript [i,j]');
                 EmitPush('EBX');
-                LexNextToken;  (* consume comma *)
+                LexNextToken;  (* consommer la virgule *)
                 ParseExpr(SubEv);
                 ExprFlushToEAX(SubEv);
-                FTIdx2 := TypeTab[FTIdx2].BaseTypeIdx;  (* inner array type *)
+                FTIdx2 := TypeTab[FTIdx2].BaseTypeIdx;  (* type du tableau interne *)
                 If Opts.CheckEnabled Then
                   EmitBoundsCheck(TypeTab[FTIdx2].Lo, TypeTab[FTIdx2].Hi);
                 If TypeTab[FTIdx2].Lo <> 0 Then
@@ -3776,7 +3776,7 @@ Begin
 
               If IsCloseBracket Then LexNextToken;
 
-              (* Determine final element size for loading *)
+              (* Determiner la taille finale de l element pour le chargement *)
               If (FTIdx2 >= 0) And (FTIdx2 < TypeCount) And
                  (TypeTab[FTIdx2].Kind = TKP_ARRAY) Then
                 ESize2 := TypeSizeof(TypeTab[FTIdx2].BaseTypeIdx)
@@ -3785,7 +3785,7 @@ Begin
                        (TypeTab[FTIdx2].Kind = TKP_VARYING)) Then
                 ESize2 := 1;
 
-              (* Load the element *)
+              (* Charger l element *)
               If ESize2 = 1 Then
                 EmitInstrAB('MOVZX', 'EAX', 'BYTE PTR [EBX]')
               Else
@@ -3802,13 +3802,13 @@ Begin
                 Res.TypeIdx := TY_IDX_INTEGER;
               Res.Kind   := EK_EAX;
               Res.SymIdx := SIdx2;
-              End;  (* not substring *)
-            End  (* array/string subscript *)
+              End;  (* pas de sous-chaine *)
+            End  (* indexation tableau/chaine *)
 
-            (* Simple variable access *)
+            (* Acces variable simple *)
             Else
             Begin
-              (* VARYING variables - load body pointer (ASCIIZ) *)
+              (* Variables VARYING - charger le pointeur corps (ASCIIZ) *)
               If IsVaryingTypeIdx(SymTab[SIdx2].TypeIdx) Then
               Begin
                 If SymTab[SIdx2].Cat = SC_VARPARAM Then
@@ -3824,7 +3824,7 @@ Begin
                   EmitInstrAB('LEA', 'EAX',
                     '[' + SymTab[SIdx2].MangledName + '+2]');
               End
-              (* SET variables - load address (pointer to 32-byte buffer) *)
+              (* Variables SET - charger l adresse (pointeur vers tampon 32 octets) *)
               Else If IsSetTypeIdx(SymTab[SIdx2].TypeIdx) Then
               Begin
                 If SymTab[SIdx2].Cat = SC_VARPARAM Then
@@ -3866,9 +3866,9 @@ Begin
               End;
               Res.Kind    := EK_EAX;
               Res.SymIdx  := SIdx2;
-            End;  (* simple variable access *)
-          End;  (* variable symbol cases *)
-        End;  (* else not builtin *)
+            End;  (* acces variable simple *)
+          End;  (* cas de symboles variables *)
+        End;  (* sinon pas une fonction interne *)
     End;
 
     (* --- Constructeur d ensemble [ ] --- *)
@@ -4527,7 +4527,7 @@ Begin
       Else If Op = 'in' Then
       Begin
         EmitComment('element IN set');
-        (* EAX = element, EBX = set pointer *)
+        (* EAX = element, EBX = pointeur ensemble *)
         EmitInstrAB('MOV', 'ESI', 'EBX');
         EmitInstrAB('MOV', 'EBX', 'EAX');
         EmitInstrA('CALL', VXP_RT_PFX + 'SET_IN');
@@ -4617,7 +4617,7 @@ Begin
     Else If (SymTab[Dup].Cat = SC_TYPE) And
             (Cat In [SC_FUNC, SC_PROC, SC_VAR]) Then
     Begin
-      { Allow func/proc/var to shadow a predefined type name }
+      { Permettre a func/proc/var de masquer un nom de type predefini }
     End
     Else
     Begin
@@ -6286,8 +6286,8 @@ Begin
   EmitInstrA('PUSH', 'ECX');
   EmitInstrA('PUSH', 'EDX');
   (* Charger longueurs *)
-  EmitInstrAB('MOVZX', 'ECX', 'WORD PTR [ESI]');   (* ECX = len1 *)
-  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [EDI]');   (* EDX = len2 *)
+  EmitInstrAB('MOVZX', 'ECX', 'WORD PTR [ESI]');   (* ECX = long1 *)
+  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [EDI]');   (* EDX = long2 *)
   (* Pointer vers les donnees *)
   EmitInstrAB('ADD', 'ESI', '2');
   EmitInstrAB('ADD', 'EDI', '2');
@@ -6396,7 +6396,7 @@ Begin
   EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
 
-  (* ---- _VXPRT_PANIC_NIL : nil pointer dereference --------------- *)
+  (* ---- _VXPRT_PANIC_NIL : dereferencement de pointeur nil ------- *)
   (* signale ss$_accvio (1) si handler present             *)
   EmitComment('--- PANIC_NIL : nil pointer dereference ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_NIL');
@@ -6415,7 +6415,7 @@ Begin
   EmitInstrA('CALL', '_ExitProcess@4');
   EmitBlankLine;
 
-  (* ---- _VXPRT_PANIC_RANGE : array bounds check error --------------- *)
+  (* ---- _VXPRT_PANIC_RANGE : erreur de verification de bornes tableau -- *)
   (* signale ss$_intovf (2) si handler present               *)
   EmitComment('--- PANIC_RANGE : array index out of bounds ---');
   EmitLabel(VXP_RT_PFX + 'PANIC_RANGE');
@@ -6533,8 +6533,8 @@ Begin
   EmitInstrA('PUSH', 'ECX');
   EmitInstrA('PUSH', 'EDX');
   (* Charger longueurs *)
-  EmitInstrAB('MOVZX', 'ECX', 'WORD PTR [ESI]');   (* ECX = len1 *)
-  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [EDI]');   (* EDX = len2 *)
+  EmitInstrAB('MOVZX', 'ECX', 'WORD PTR [ESI]');   (* ECX = long1 *)
+  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [EDI]');   (* EDX = long2 *)
   EmitInstrAB('ADD', 'ESI', '2');                    (* ESI -> body1 *)
   EmitInstrAB('ADD', 'EDI', '2');                    (* EDI -> body2 *)
   EmitInstrAB('LEA', 'EBX', VXP_RT_PFX + 'STRBUF');
@@ -6593,15 +6593,15 @@ Begin
   EmitInstrA('PUSH', 'EDX');
   EmitInstrA('PUSH', 'EDI');
   (* Charger longueur du VARYING *)
-  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [ESI]');   (* EDX = len VARYING *)
-  EmitInstrAB('ADD', 'ESI', '2');                    (* ESI -> body *)
+  EmitInstrAB('MOVZX', 'EDX', 'WORD PTR [ESI]');   (* EDX = long VARYING *)
+  EmitInstrAB('ADD', 'ESI', '2');                    (* ESI -> corps *)
   (* Ajuster position (1-based -> 0-based), min = 0 *)
   EmitInstrAB('CMP', 'EBX', '1');
   EmitInstrA('JGE', VXP_RT_PFX + 'VSUB_POK');
   EmitInstrAB('MOV', 'EBX', '1');
   EmitRaw(VXP_RT_PFX + 'VSUB_POK:');
-  EmitInstr('DEC    EBX');                           (* EBX = offset 0-based *)
-  (* Verifier que offset < len *)
+  EmitInstr('DEC    EBX');                           (* EBX = offset base-0 *)
+  (* Verifier que offset < longueur *)
   EmitInstrAB('CMP', 'EBX', 'EDX');
   EmitInstrA('JGE', VXP_RT_PFX + 'VSUB_EMP');
   EmitInstrAB('ADD', 'ESI', 'EBX');                  (* ESI -> debut *)
@@ -6944,7 +6944,7 @@ Begin
   EmitInstrA('PUSH', 'EDX');
   EmitInstrAB('MOV', 'ESI', 'EAX');
   EmitInstrAB('MOV', 'EDI', 'EBX');
-  EmitInstrAB('XOR', 'ECX', 'ECX');       (* position counter *)
+  EmitInstrAB('XOR', 'ECX', 'ECX');       (* compteur de position *)
   EmitRaw(VXP_RT_PFX + 'SRCH_LP:');
   EmitInstrAB('CMP', 'BYTE PTR [ESI]', '0');
   EmitInstrA('JE', VXP_RT_PFX + 'SRCH_NF');
@@ -7038,9 +7038,9 @@ Begin
   EmitInstrAB('SUB', 'ESP', '16');
   EmitInstrA('PUSH', 'ESP');
   EmitInstrA('CALL', '_GetLocalTime@4');
-  (* SYSTEMTIME: WORD Year[0], Month[2], DayOfWeek[4], Day[6],
+  (* SYSTEMTIME : WORD Annee[0], Mois[2], JourSemaine[4], Jour[6],
      Hour[8], Minute[10], Second[12], Ms[14] *)
-  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+6]');   (* Day *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+6]');   (* Jour *)
   EmitInstrA('PUSH', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
   EmitInstrAB('ADD', 'ESP', '4');
@@ -7050,7 +7050,7 @@ Begin
   EmitInstrAB('MOV', 'ESI', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
   EmitInstrA('POP', 'EAX');
-  (* append '-' *)
+  (* ajouter '-' *)
   EmitInstrA('PUSH', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
   EmitInstrAB('ADD', 'ESP', '4');
@@ -7058,14 +7058,14 @@ Begin
   EmitInstrAB('ADD', 'EDI', 'EAX');
   EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''-''');
   EmitInstr('INC    EDI');
-  (* Month number *)
-  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+2]');   (* Month *)
+  (* Numero de mois *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+2]');   (* Mois *)
   EmitInstrA('PUSH', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
   EmitInstrAB('ADD', 'ESP', '4');
   EmitInstrAB('MOV', 'ESI', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'STRCOPY');
-  (* append '-' *)
+  (* ajouter '-' *)
   EmitInstrAB('LEA', 'EAX', VXP_RT_PFX + 'DATEBUF');
   EmitInstrA('PUSH', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'STRLEN');
@@ -7074,8 +7074,8 @@ Begin
   EmitInstrAB('ADD', 'EDI', 'EAX');
   EmitInstrAB('MOV', 'BYTE PTR [EDI]', '''-''');
   EmitInstr('INC    EDI');
-  (* Year *)
-  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP]');     (* Year *)
+  (* Annee *)
+  EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP]');     (* Annee *)
   EmitInstrA('PUSH', 'EAX');
   EmitInstrA('CALL', VXP_RT_PFX + 'NUMTOSTR');
   EmitInstrAB('ADD', 'ESP', '4');
@@ -7178,7 +7178,7 @@ Begin
   EmitInstrAB('LEA', 'EDI', VXP_RT_PFX + 'STRBUF');
   EmitInstrA('PUSH', 'EDI');
   EmitInstrAB('MOV', 'EDX', 'EBX');
-  EmitInstr('DEC    EDX');               (* EDX = chars avant pos *)
+  EmitInstr('DEC    EDX');               (* EDX = caracteres avant pos *)
   (* copier chars avant pos *)
   EmitRaw(VXP_RT_PFX + 'DEL_B:');
   EmitInstrAB('CMP', 'EDX', '0');
@@ -7286,13 +7286,13 @@ Begin
   (* ---- _VXPRT_FOPEN : stub Win32 fichier lecture --------------- *)
   EmitComment('--- FOPEN : EAX=filename ASCIIZ -> EAX=handle ---');
   EmitLabel(VXP_RT_PFX + 'FOPEN');
-  EmitInstrA('PUSH', '0');               (* hTemplateFile *)
+  EmitInstrA('PUSH', '0');               (* hFichierModele *)
   EmitInstrA('PUSH', '128');             (* FILE_ATTRIBUTE_NORMAL *)
-  EmitInstrA('PUSH', '3');               (* OPEN_EXISTING *)
-  EmitInstrA('PUSH', '0');               (* lpSecurityAttr *)
+  EmitInstrA('PUSH', '3');               (* OUVRIR_EXISTANT *)
+  EmitInstrA('PUSH', '0');               (* lpAttrSecurite *)
   EmitInstrA('PUSH', '1');               (* FILE_SHARE_READ *)
   EmitInstrA('PUSH', '80000000h');       (* GENERIC_READ *)
-  EmitInstrA('PUSH', 'EAX');             (* lpFileName *)
+  EmitInstrA('PUSH', 'EAX');             (* lpNomFichier *)
   EmitInstrA('CALL', '_CreateFileA@28');
   EmitInstr('RET');
   EmitBlankLine;
@@ -7302,7 +7302,7 @@ Begin
   EmitLabel(VXP_RT_PFX + 'FCREATE');
   EmitInstrA('PUSH', '0');
   EmitInstrA('PUSH', '128');
-  EmitInstrA('PUSH', '2');               (* CREATE_ALWAYS *)
+  EmitInstrA('PUSH', '2');               (* CREER_TOUJOURS *)
   EmitInstrA('PUSH', '0');
   EmitInstrA('PUSH', '0');
   EmitInstrA('PUSH', '40000000h');       (* GENERIC_WRITE *)
@@ -7322,11 +7322,11 @@ Begin
   (* ---- _VXPRT_FREAD : lire depuis fichier ---------------------- *)
   EmitComment('--- FREAD : EAX=handle, EBX=buf, ECX=count -> EAX=bytes_read ---');
   EmitLabel(VXP_RT_PFX + 'FREAD');
-  EmitInstrA('PUSH', '0');               (* lpOverlapped *)
-  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'WRITTEN'); (* lpBytesRead *)
-  EmitInstrA('PUSH', 'ECX');             (* nNumberOfBytesToRead *)
-  EmitInstrA('PUSH', 'EBX');             (* lpBuffer *)
-  EmitInstrA('PUSH', 'EAX');             (* hFile *)
+  EmitInstrA('PUSH', '0');               (* lpChevauche *)
+  EmitInstrA('PUSH', 'OFFSET ' + VXP_RT_PFX + 'WRITTEN'); (* lpOctetsLus *)
+  EmitInstrA('PUSH', 'ECX');             (* nNombreOctetsALire *)
+  EmitInstrA('PUSH', 'EBX');             (* lpTampon *)
+  EmitInstrA('PUSH', 'EAX');             (* hFichier *)
   EmitInstrA('CALL', '_ReadFile@20');
   EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + VXP_RT_PFX + 'WRITTEN]');
   EmitInstr('RET');
@@ -7448,7 +7448,7 @@ Begin
   PEAsmCount := 0;
   For I := 0 To PE_MAX_CODE - 1 Do PECodeBuf[I] := 0;
   For I := 0 To PE_MAX_DATA - 1 Do PEDataBuf[I] := 0;
-  { Init imports }
+  { Initialiser imports }
   PEImports[0].Name := 'ExitProcess';
   PEImports[1].Name := 'GetStdHandle';
   PEImports[2].Name := 'WriteFile';
@@ -7662,7 +7662,7 @@ Var V : LongInt;
 Begin
   T := PETrimLine(S);
   If Length(T) = 0 Then Begin PEParseImm := 0; Exit; End;
-  { Character literal like '-' }
+  { Litteral caractere comme '-' }
   If (Length(T) >= 3) And (T[1] = '''') And (T[Length(T)] = '''') Then
   Begin
     PEParseImm := Ord(T[2]);
@@ -7684,7 +7684,7 @@ Begin
   Else PEParseHex := 0;
 End;
 
-{ Split 'oper1, oper2' into two operands }
+{ Separer 'oper1, oper2' en deux operandes }
 Procedure PESplitOps(Const S : TString; Var Op1, Op2 : TString);
 Var P : Integer;
     T : TString;
@@ -7702,7 +7702,7 @@ Begin
   Op2 := PETrimLine(Copy(T, P + 1, Length(T) - P));
 End;
 
-{ Check if string starts with prefix (case-insensitive) }
+{ Verifier si la chaine commence par le prefixe (insensible a la casse) }
 Function PEStartsWith(Const S, Pfx : TString) : Boolean;
 Var I : Integer;
 Begin
@@ -7714,7 +7714,7 @@ Begin
   PEStartsWith := True;
 End;
 
-{ Extract symbol name from memory operand like 'DWORD PTR [_sym]' }
+{ Extraire le nom de symbole d un operande memoire comme 'DWORD PTR [_sym]' }
 Function PEExtractMemSym(Const S : TString) : TString;
 Var P1, P2 : Integer;
     T : TString;
@@ -7733,7 +7733,7 @@ Begin
   PEExtractMemSym := T;
 End;
 
-{ Parse OFFSET symbol or plain symbol from operand }
+{ Analyser OFFSET symbole ou symbole simple depuis l operande }
 Function PEExtractSymbol(Const S : TString) : TString;
 Var T : TString;
     P : Integer;
@@ -7741,7 +7741,7 @@ Begin
   T := PETrimLine(S);
   If PEStartsWith(T, 'OFFSET ') Then
     T := PETrimLine(Copy(T, 8, Length(T) - 7));
-  { Strip 'DWORD PTR [' and ']' }
+  { Retirer 'DWORD PTR [' et ']' }
   P := Pos('[', T);
   If P > 0 Then
   Begin
@@ -7753,7 +7753,7 @@ Begin
   PEExtractSymbol := T;
 End;
 
-{ Check if operand is DWORD PTR [symbol] form (not register-based) }
+{ Verifier si l operande est de la forme DWORD PTR [symbole] (pas base registre) }
 Function PEIsDwordPtrMem(Const S : TString) : Boolean;
 Var T, Sym : TString;
 Begin
@@ -7765,7 +7765,7 @@ Begin
     PEIsDwordPtrMem := True;
 End;
 
-{ Check if operand is BYTE PTR [symbol] (absolute, not reg-based) }
+{ Verifier si l operande est BYTE PTR [symbole] (absolu, pas base registre) }
 Function PEIsBytePtrMem(Const S : TString) : Boolean;
 Var T, Sym : TString;
 Begin
@@ -7788,13 +7788,13 @@ Begin
     PEIsWordPtrMem := True;
 End;
 
-{ Check if sym has +disp like '_sym + 15' }
+{ Verifier si le symbole a +depl comme '_sym + 15' }
 Function PEHasDisp(Const S : TString) : Boolean;
 Begin
   PEHasDisp := (Pos('+', S) > 0);
 End;
 
-{ Get base symbol and displacement from 'sym + disp' or 'sym+disp' }
+{ Obtenir le symbole de base et le deplacement depuis 'sym + disp' ou 'sym+disp' }
 Procedure PESplitDisp(Const S : TString; Var Base : TString;
                       Var Disp : LongInt);
 Var P : Integer;
@@ -7812,7 +7812,7 @@ Begin
   Disp := PEParseImm(DS);
 End;
 
-{ Check if operand is a DWORD PTR [reg+disp] form }
+{ Verifier si l operande est de la forme DWORD PTR [reg+depl] }
 Function PEIsRegDispMem(Const S : TString; Var Reg : Integer;
                         Var Disp : LongInt) : Boolean;
 Var T, Inner, RName : TString;
@@ -7822,14 +7822,14 @@ Begin
   PEIsRegDispMem := False;
   Reg := -1;
   Disp := 0;
-  { Accept: DWORD PTR [EBP-4], DWORD PTR [EBP+8], [EBX], etc }
+  { Accepte : DWORD PTR [EBP-4], DWORD PTR [EBP+8], [EBX], etc }
   P := Pos('[', T);
   If P = 0 Then Exit;
   PP := Pos(']', T);
   If PP <= P Then Exit;
   Inner := Copy(T, P + 1, PP - P - 1);
   Inner := PETrimLine(Inner);
-  { Check for reg+disp or reg-disp }
+  { Verifier reg+depl ou reg-depl }
   P := Pos('+', Inner);
   PP := Pos('-', Inner);
   If (PP > 0) And ((P = 0) Or (PP < P)) Then P := PP;
@@ -7852,7 +7852,7 @@ Begin
   End;
 End;
 
-{ Check BYTE PTR [reg+disp] }
+{ Verifier BYTE PTR [reg+depl] }
 Function PEIsByteRegDisp(Const S : TString; Var Reg : Integer;
                          Var Disp : LongInt) : Boolean;
 Var T : TString;
@@ -7869,7 +7869,7 @@ Begin
   End;
 End;
 
-{ Check DWORD PTR [reg+disp] (register-based, not absolute symbol) }
+{ Verifier DWORD PTR [reg+depl] (base registre, pas symbole absolu) }
 Function PEIsDwordRegDisp(Const S : TString; Var Reg : Integer;
                           Var Disp : LongInt) : Boolean;
 Var T : TString;
@@ -7886,7 +7886,7 @@ Begin
   End;
 End;
 
-{ Encode ModRM + SIB + displacement for [reg+disp] }
+{ Encoder ModRM + SIB + deplacement pour [reg+depl] }
 Procedure PEEmitModRM(RegOp, BaseReg : Integer; Disp : LongInt);
 Begin
   If (Disp = 0) And (BaseReg <> 5) Then
@@ -7895,7 +7895,7 @@ Begin
     If BaseReg = 4 Then
     Begin
       PECodeByte($00 Or (RegOp Shl 3) Or 4);
-      PECodeByte($24); { SIB: base=ESP, index=none }
+      PECodeByte($24); { SIB : base=ESP, index=aucun }
     End
     Else
       PECodeByte($00 Or (RegOp Shl 3) Or BaseReg);
@@ -7926,7 +7926,7 @@ Begin
   End;
 End;
 
-{ Emit code fixup for absolute symbol address (4 bytes placeholder) }
+{ Emettre un correctif de code pour adresse de symbole absolu (4 octets temporaires) }
 Procedure PEEmitSymFixup(Const Sym : TString);
 Var BaseSym : TString;
     D : LongInt;
@@ -7944,14 +7944,14 @@ Begin
   End;
 End;
 
-{ Emit relative fixup (for CALL/JMP/Jcc) }
+{ Emettre un correctif relatif (pour CALL/JMP/Jcc) }
 Procedure PEEmitRelFixup(Const Sym : TString);
 Begin
   PEAddFixup(PECodePos, Sym, True, PEIsImport(Sym));
   PECodeDWord(0);
 End;
 
-{ Check if a register name is 8-bit: AL, AH, BL, BH, CL, CH, DL, DH }
+{ Verifier si un nom de registre est 8 bits : AL, AH, BL, BH, CL, CH, DL, DH }
 Function PEIsReg8(Const S : TString) : Boolean;
 Var U : TString;
 Begin
@@ -8027,7 +8027,7 @@ Var
   DataVals : TString;
   ValStr : TString;
 Begin
-  { Read all lines from the ASM file }
+  { Lire toutes les lignes du fichier ASM }
   {$I-}
   Assign(F, AsmFile);
   Reset(F);
@@ -8049,20 +8049,20 @@ Begin
   For I := 0 To PEAsmCount - 1 Do
   Begin
     Raw := PEAsmLines[I];
-    { Strip trailing CR/LF }
+    { Retirer CR/LF de fin }
     While (Length(Raw) > 0) And ((Raw[Length(Raw)] = #13)
           Or (Raw[Length(Raw)] = #10)) Do
       Delete(Raw, Length(Raw), 1);
 
-    { Strip comment }
+    { Retirer le commentaire }
     Line := PEStripComment(Raw);
     Trimmed := PETrimLine(Line);
     ULine := StrUpperCase(Trimmed);
 
-    { Skip empty lines }
+    { Sauter les lignes vides }
     If Length(Trimmed) = 0 Then Continue;
 
-    { Track segments }
+    { Suivre les segments }
     If PEStartsWith(ULine, '_DATA') And
        (Pos('SEGMENT', ULine) > 0) Then
     Begin
@@ -8090,7 +8090,7 @@ Begin
       Continue;
     End;
 
-    { Skip directives }
+    { Sauter les directives }
     If PEStartsWith(ULine, '.386') Then Continue;
     If PEStartsWith(ULine, '.MODEL') Then Continue;
     If PEStartsWith(ULine, '.STACK') Then Continue;
@@ -8100,10 +8100,10 @@ Begin
     If ULine = 'END' Then Continue;
     If PEStartsWith(ULine, 'END ') Then Continue;
 
-    { Data segment: parse labels and data directives }
+    { Segment de donnees : analyser les etiquettes et directives de donnees }
     If PEInDataSeg Then
     Begin
-      { Check for label with data: _sym DD ..., _sym DB ... }
+      { Verifier etiquette avec donnees : _sym DD ..., _sym DB ... }
       P := Pos(' DD ', ULine);
       If P = 0 Then P := Pos(' DB ', ULine);
       If P = 0 Then P := Pos(' DW ', ULine);
@@ -8125,11 +8125,11 @@ Begin
         Continue;
       End;
 
-      { Parse data directives }
+      { Analyser les directives de donnees }
       If PEStartsWith(ULine, 'DD ') Then
       Begin
         Rest := PETrimLine(Copy(Trimmed, 4, Length(Trimmed) - 3));
-        { Check for DUP }
+        { Verifier DUP }
         If Pos('DUP', StrUpperCase(Rest)) > 0 Then
         Begin
           P := Pos(' ', Rest);
@@ -8139,7 +8139,7 @@ Begin
         End
         Else If Pos(',', Rest) > 0 Then
         Begin
-          { Multiple values: DD 2,3,5,7,11 }
+          { Valeurs multiples : DD 2,3,5,7,11 }
           DataVals := Rest + ',';
           While Length(DataVals) > 0 Do
           Begin
@@ -8152,7 +8152,7 @@ Begin
               Begin
                 Sym := PETrimLine(Copy(ValStr, 8, Length(ValStr) - 7));
                 PEAddFixup(PEDataPos, Sym, False, False);
-                { Mark fixup as data-seg fixup by negative trick -
+                { Marquer le correctif comme correctif segment de donnees par astuce negative -
                   store as code fixup but offset is in data }
                 PEFixups[PEFixupCount - 1].Offset :=
                   -(PEDataPos + 1);
@@ -8180,7 +8180,7 @@ Begin
       Else If PEStartsWith(ULine, 'DB ') Then
       Begin
         Rest := PETrimLine(Copy(Trimmed, 4, Length(Trimmed) - 3));
-        { Check for DUP }
+        { Verifier DUP }
         If Pos('DUP', StrUpperCase(Rest)) > 0 Then
         Begin
           P := Pos(' ', Rest);
@@ -8190,7 +8190,7 @@ Begin
         End
         Else
         Begin
-          { Parse comma-separated DB values (strings and numerics) }
+          { Analyser les valeurs DB separees par virgules (chaines et numeriques) }
           DataVals := Rest;
           While Length(DataVals) > 0 Do
           Begin
@@ -8198,16 +8198,16 @@ Begin
             If Length(DataVals) = 0 Then Break;
             If DataVals[1] = '''' Then
             Begin
-              { String literal }
+              { Litteral chaine }
               J := 2;
               While (J <= Length(DataVals)) And (DataVals[J] <> '''') Do
               Begin
                 PEDataByte(Byte(Ord(DataVals[J])));
                 Inc(J);
               End;
-              { Skip closing quote }
+              { Sauter le guillemet fermant }
               Inc(J);
-              { Skip comma after string if present }
+              { Sauter la virgule apres la chaine si presente }
               While (J <= Length(DataVals)) And
                     ((DataVals[J] = ',') Or (DataVals[J] = ' ')) Do
                 Inc(J);
@@ -8215,7 +8215,7 @@ Begin
             End
             Else
             Begin
-              { Numeric value - find next comma }
+              { Valeur numerique - trouver la virgule suivante }
               P := Pos(',', DataVals);
               If P > 0 Then
               Begin
@@ -8243,14 +8243,14 @@ Begin
       Continue;
     End; { PEInDataSeg }
 
-    { Code segment }
+    { Segment de code }
     If Not InCode Then
     Begin
-      { Could be before _TEXT SEGMENT - skip }
+      { Peut etre avant _TEXT SEGMENT - sauter }
       Continue;
     End;
 
-    { Check for label (line starting with non-space, contains ':') }
+    { Verifier si etiquette (ligne commencant par non-espace, contient ':') }
     If (Length(Raw) > 0) And (Raw[1] <> ' ') And (Raw[1] <> #9) Then
     Begin
       P := Pos(':', Trimmed);
@@ -8262,12 +8262,12 @@ Begin
       Continue;
     End;
 
-    { Parse instruction }
+    { Analyser l instruction }
     P := 1;
     Mnem := PEExtractWord(Trimmed, P);
     If Length(Mnem) = 0 Then Continue;
     Mnem := StrUpperCase(Mnem);
-    { Skip comma after mnemonic if any }
+    { Sauter la virgule apres le mnemonique si presente }
     If (P <= Length(Trimmed)) And (Trimmed[P] = ',') Then Inc(P);
     Rest := '';
     If P <= Length(Trimmed) Then
@@ -8275,7 +8275,7 @@ Begin
 
     PESplitOps(Rest, Op1, Op2);
 
-    { ---- Encode instructions ---- }
+    { ---- Encodage des instructions ---- }
 
     { NOP }
     If Mnem = 'NOP' Then
@@ -8322,14 +8322,14 @@ Begin
         PECodeByte($50 + R1)
       Else If PEStartsWith(StrUpperCase(Op1), 'OFFSET ') Then
       Begin
-        { PUSH OFFSET symbol }
+        { PUSH OFFSET symbole }
         Sym := PETrimLine(Copy(Op1, 8, Length(Op1) - 7));
         PECodeByte($68);
         PEEmitSymFixup(Sym);
       End
       Else If PEIsDwordPtrMem(Op1) Then
       Begin
-        { PUSH DWORD PTR [symbol] }
+        { PUSH DWORD PTR [symbole] }
         Sym := PEExtractMemSym(Op1);
         PECodeByte($FF);
         PECodeByte($35);
@@ -8361,7 +8361,7 @@ Begin
         PECodeByte($58 + R1)
       Else If PEIsDwordPtrMem(Op1) Then
       Begin
-        { POP DWORD PTR [symbol] }
+        { POP DWORD PTR [symbole] }
         Sym := PEExtractMemSym(Op1);
         PECodeByte($8F);
         PECodeByte($05);
@@ -8375,7 +8375,7 @@ Begin
     Begin
       If PEStartsWith(StrUpperCase(Op1), 'DWORD PTR') Then
       Begin
-        { CALL DWORD PTR [symbol] - indirect via IAT }
+        { CALL DWORD PTR [symbole] - indirect via IAT }
         Sym := PEExtractMemSym(Op1);
         PECodeByte($FF);
         PECodeByte($15);
@@ -8390,7 +8390,7 @@ Begin
       End
       Else
       Begin
-        { CALL symbol - relative }
+        { CALL symbole - relatif }
         PECodeByte($E8);
         PEEmitRelFixup(PETrimLine(Op1));
       End;
@@ -8402,7 +8402,7 @@ Begin
     Begin
       If PEStartsWith(StrUpperCase(Op1), 'DWORD PTR') Then
       Begin
-        { JMP DWORD PTR [symbol] }
+        { JMP DWORD PTR [symbole] }
         Sym := PEExtractMemSym(Op1);
         PECodeByte($FF);
         PECodeByte($25);
@@ -8417,14 +8417,14 @@ Begin
       End
       Else
       Begin
-        { JMP label }
+        { JMP etiquette }
         PECodeByte($E9);
         PEEmitRelFixup(PETrimLine(Op1));
       End;
       Continue;
     End;
 
-    { Jcc - conditional jumps (32-bit displacement) }
+    { Jcc - sauts conditionnels (deplacement 32 bits) }
     If Mnem = 'JZ' Then
     Begin PECodeByte($0F); PECodeByte($84);
           PEEmitRelFixup(PETrimLine(Op1)); Continue; End;
@@ -8484,7 +8484,7 @@ Begin
         PECodeByte($40 + R1)
       Else If PEIsDwordPtrMem(Op1) Then
       Begin
-        { INC DWORD PTR [symbol] }
+        { INC DWORD PTR [symbole] }
         Sym := PEExtractMemSym(Op1);
         PECodeByte($FF);
         PECodeByte($05);
@@ -8525,7 +8525,7 @@ Begin
       Continue;
     End;
 
-    { IMUL reg (single-operand: EDX:EAX = EAX * reg) }
+    { IMUL reg (operande unique : EDX:EAX = EAX * reg) }
     If Mnem = 'IMUL' Then
     Begin
       R1 := PERegNum(Op1);
@@ -8564,7 +8564,7 @@ Begin
         PECodeByte($0F); PECodeByte($B6);
         PECodeByte($C0 + R1 * 8 + R2);
       End
-      { MOVZX reg, BYTE PTR [symbol] }
+      { MOVZX reg, BYTE PTR [symbole] }
       Else If PEIsBytePtrMem(Op2) Then
       Begin
         Sym := PEExtractMemSym(Op2);
@@ -8572,13 +8572,13 @@ Begin
         PECodeByte($05 + R1 * 8);
         PEEmitSymFixup(Sym);
       End
-      { MOVZX reg, BYTE PTR [reg+disp] }
+      { MOVZX reg, BYTE PTR [reg+depl] }
       Else If PEIsByteRegDisp(Op2, RegX, DispX) Then
       Begin
         PECodeByte($0F); PECodeByte($B6);
         PEEmitModRM(R1, RegX, DispX);
       End
-      { MOVZX reg, WORD PTR [symbol] }
+      { MOVZX reg, WORD PTR [symbole] }
       Else If PEIsWordPtrMem(Op2) Then
       Begin
         Sym := PEExtractMemSym(Op2);
@@ -8586,7 +8586,7 @@ Begin
         PECodeByte($05 + R1 * 8);
         PEEmitSymFixup(Sym);
       End
-      { MOVZX reg, WORD PTR [reg+disp] }
+      { MOVZX reg, WORD PTR [reg+depl] }
       Else If PEStartsWith(StrUpperCase(PETrimLine(Op2)), 'WORD PTR') Then
       Begin
         If PEIsRegDispMem(Op2, RegX, DispX) Then
@@ -8601,7 +8601,7 @@ Begin
     { BTS }
     If Mnem = 'BTS' Then
     Begin
-      { BTS DWORD PTR [reg], reg2 or BTS DWORD PTR [symbol], reg }
+      { BTS DWORD PTR [reg], reg2 ou BTS DWORD PTR [symbole], reg }
       R2 := PERegNum(Op2);
       If R2 < 0 Then Begin Continue; End;
       If PEIsDwordPtrMem(Op1) Then
@@ -8630,7 +8630,7 @@ Begin
       Begin
         PECodeByte($8B); PECodeByte($C0 + R1 * 8 + R2);
       End
-      { MOV reg32, imm32 or MOV reg32, OFFSET sym }
+      { MOV reg32, imm32 ou MOV reg32, OFFSET sym }
       Else If (R1 >= 0) And (Length(Op2) > 0) Then
       Begin
         If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
@@ -8641,7 +8641,7 @@ Begin
         End
         Else If PEIsDwordPtrMem(Op2) Then
         Begin
-          { MOV reg, DWORD PTR [symbol] }
+          { MOV reg, DWORD PTR [symbole] }
           Sym := PEExtractMemSym(Op2);
           PECodeByte($8B);
           PECodeByte($05 + R1 * 8);
@@ -8649,7 +8649,7 @@ Begin
         End
         Else If PEIsDwordRegDisp(Op2, RegX, DispX) Then
         Begin
-          { MOV reg, DWORD PTR [reg+disp] }
+          { MOV reg, DWORD PTR [reg+depl] }
           PECodeByte($8B);
           PEEmitModRM(R1, RegX, DispX);
         End
@@ -8688,7 +8688,7 @@ Begin
           PECodeDWord(Imm);
         End;
       End
-      { MOV DWORD PTR [symbol], reg }
+      { MOV DWORD PTR [symbole], reg }
       Else If PEIsDwordPtrMem(Op1) And (R2 >= 0) Then
       Begin
         Sym := PEExtractMemSym(Op1);
@@ -8696,7 +8696,7 @@ Begin
         PECodeByte($05 + R2 * 8);
         PEEmitSymFixup(Sym);
       End
-      { MOV DWORD PTR [symbol], imm32 }
+      { MOV DWORD PTR [symbole], imm32 }
       Else If PEIsDwordPtrMem(Op1) And
               Not PEIsReg32(Op2) And Not PEIsReg8(Op2) Then
       Begin
@@ -8718,13 +8718,13 @@ Begin
           PECodeDWord(Imm);
         End;
       End
-      { MOV DWORD PTR [reg+disp], reg2 }
+      { MOV DWORD PTR [reg+depl], reg2 }
       Else If PEIsDwordRegDisp(Op1, RegX, DispX) And (R2 >= 0) Then
       Begin
         PECodeByte($89);
         PEEmitModRM(R2, RegX, DispX);
       End
-      { MOV DWORD PTR [reg+disp], imm32 }
+      { MOV DWORD PTR [reg+depl], imm32 }
       Else If PEIsDwordRegDisp(Op1, RegX, DispX) Then
       Begin
         If PEStartsWith(StrUpperCase(Op2), 'OFFSET ') Then
@@ -8742,7 +8742,7 @@ Begin
           PECodeDWord(Imm);
         End;
       End
-      { MOV BYTE PTR [symbol], AL/imm }
+      { MOV BYTE PTR [symbole], AL/imm }
       Else If PEIsBytePtrMem(Op1) Then
       Begin
         Sym := PEExtractMemSym(Op1);
@@ -8762,7 +8762,7 @@ Begin
           PECodeByte(Byte(Imm And $FF));
         End;
       End
-      { MOV BYTE PTR [reg+disp], AL/imm }
+      { MOV BYTE PTR [reg+depl], AL/imm }
       Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
       Begin
         If PEIsReg8(Op2) Then
@@ -8779,19 +8779,19 @@ Begin
           PECodeByte(Byte(Imm And $FF));
         End;
       End
-      { MOV WORD PTR [reg+disp], reg16 }
+      { MOV WORD PTR [reg+depl], reg16 }
       Else If PEStartsWith(StrUpperCase(PETrimLine(Op1)), 'WORD PTR') Then
       Begin
         If PEIsRegDispMem(Op1, RegX, DispX) And PEIsReg16(Op2) Then
         Begin
           R2 := PEReg16Num(Op2);
-          PECodeByte($66); { operand size prefix }
+          PECodeByte($66); { prefixe taille d operande }
           PECodeByte($89);
           PEEmitModRM(R2, RegX, DispX);
         End
         Else If PEIsReg16(Op2) Then
         Begin
-          { WORD PTR [symbol] }
+          { WORD PTR [symbole] }
           Sym := PEExtractMemSym(Op1);
           R2 := PEReg16Num(Op2);
           PECodeByte($66);
@@ -8852,7 +8852,7 @@ Begin
     Begin
       R1 := PERegNum(Op1);
       If R1 < 0 Then Begin Continue; End;
-      { LEA reg, [symbol+disp] or LEA reg, symbol }
+      { LEA reg, [symbole+depl] ou LEA reg, symbole }
       Sym := PEExtractSymbol(Op2);
       If PEIsRegDispMem(Op2, RegX, DispX) And (RegX >= 0) Then
       Begin
@@ -8862,7 +8862,7 @@ Begin
       End
       Else
       Begin
-        { LEA reg, [symbol] or LEA reg, symbol or symbol+disp }
+        { LEA reg, [symbole] ou LEA reg, symbole ou symbole+depl }
         PECodeByte($8D);
         PECodeByte($05 + R1 * 8);
         PEEmitSymFixup(Sym);
@@ -8882,7 +8882,7 @@ Begin
       End
       Else If (R1 >= 0) And PEIsDwordPtrMem(Op2) Then
       Begin
-        { ADD reg, DWORD PTR [symbol] }
+        { ADD reg, DWORD PTR [symbole] }
         Sym := PEExtractMemSym(Op2);
         PECodeByte($03); PECodeByte($05 + R1 * 8);
         PEEmitSymFixup(Sym);
@@ -8890,7 +8890,7 @@ Begin
       Else If (R1 >= 0) And PEStartsWith(StrUpperCase(Op2),
                'OFFSET ') Then
       Begin
-        { ADD reg, OFFSET symbol }
+        { ADD reg, OFFSET symbole }
         Sym := PETrimLine(Copy(Op2, 8, Length(Op2) - 7));
         PECodeByte($81); PECodeByte($C0 + R1);
         PEEmitSymFixup(Sym);
@@ -8917,7 +8917,7 @@ Begin
           End;
         End;
       End
-      { ADD r8, imm8: ADD DL, '0' }
+      { ADD r8, imm8 : ADD DL, '0' }
       Else If PEIsReg8(Op1) Then
       Begin
         R1 := PEReg8Num(Op1);
@@ -8994,7 +8994,7 @@ Begin
       End
       Else If (R1 >= 0) And PEIsDwordPtrMem(Op2) Then
       Begin
-        { CMP reg, DWORD PTR [symbol] }
+        { CMP reg, DWORD PTR [symbole] }
         Sym := PEExtractMemSym(Op2);
         PECodeByte($3B); PECodeByte($05 + R1 * 8);
         PEEmitSymFixup(Sym);
@@ -9021,7 +9021,7 @@ Begin
           End;
         End;
       End
-      { CMP DWORD PTR [symbol], imm }
+      { CMP DWORD PTR [symbole], imm }
       Else If PEIsDwordPtrMem(Op1) Then
       Begin
         Sym := PEExtractMemSym(Op1);
@@ -9039,7 +9039,7 @@ Begin
           PECodeDWord(Imm);
         End;
       End
-      { CMP BYTE PTR [symbol], imm }
+      { CMP BYTE PTR [symbole], imm }
       Else If PEIsBytePtrMem(Op1) Then
       Begin
         Sym := PEExtractMemSym(Op1);
@@ -9048,7 +9048,7 @@ Begin
         PEEmitSymFixup(Sym);
         PECodeByte(Byte(Imm And $FF));
       End
-      { CMP BYTE PTR [reg+disp], imm }
+      { CMP BYTE PTR [reg+depl], imm }
       Else If PEIsByteRegDisp(Op1, RegX, DispX) Then
       Begin
         Imm := PEParseImm(Op2);
@@ -9079,7 +9079,7 @@ Begin
           End;
         End;
       End
-      { CMP EDX, '0' etc - reg, char literal }
+      { CMP EDX, '0' etc - reg, litteral caractere }
       Else If (R1 >= 0) And (Length(Op2) >= 3) And (Op2[1] = '''') Then
       Begin
         Imm := Ord(Op2[2]);
@@ -9267,7 +9267,7 @@ Begin
       Continue;
     End;
 
-    { Unrecognized instruction -> skip (NOP) }
+    { Instruction non reconnue -> sauter (NOP) }
   End;
 End;
 
@@ -9296,7 +9296,7 @@ Begin
     Else
       DataFixOff := 0;
 
-    { Check if import }
+    { Verifier si import }
     If PEFixups[I].IsImport Then
     Begin
       ImpName := PEImportName(PEFixups[I].LabelName);
@@ -9313,7 +9313,7 @@ Begin
     End
     Else
     Begin
-      { Look up label }
+      { Rechercher l etiquette }
       If PEFindLabel(PEFixups[I].LabelName, LblOff, LblInData) Then
       Begin
         If LblInData Then
@@ -9327,7 +9327,7 @@ Begin
 
     If IsDataFix Then
     Begin
-      { Patch in data buffer }
+      { Corriger dans le tampon de donnees }
       FixVal := TargetAddr +
                 LongInt(PEDataBuf[DataFixOff]) Or
                 (LongInt(PEDataBuf[DataFixOff+1]) Shl 8) Or
@@ -9340,8 +9340,8 @@ Begin
     End
     Else If PEFixups[I].IsRelative Then
     Begin
-      { Relative fixup: target - (fixup_addr + 4) }
-      { fixup_addr in image = IMAGE_BASE + $1000 + FixOff }
+      { Correctif relatif : cible - (adresse_correctif + 4) }
+      { adresse_correctif dans l image = IMAGE_BASE + $1000 + FixOff }
       FixVal := TargetAddr -
                 (PE_IMAGE_BASE + PETextVA + FixOff + 4);
       PECodeBuf[FixOff] := Byte(FixVal And $FF);
@@ -9351,7 +9351,7 @@ Begin
     End
     Else
     Begin
-      { Absolute fixup: add existing displacement }
+      { Correctif absolu : ajouter le deplacement existant }
       FixVal := TargetAddr +
                 LongInt(PECodeBuf[FixOff]) Or
                 (LongInt(PECodeBuf[FixOff+1]) Shl 8) Or
@@ -9455,69 +9455,69 @@ Var
   TotalHdrSize: LongInt;
   ZB          : Byte;
 Begin
-  { Calculate .rdata section (import tables) }
-  { Layout within .rdata:
-    Import Directory Table: 2 entries x 20 bytes = 40 bytes
-    ILT: (PE_NUM_IMPORTS + 1) x 4 = 36 bytes
-    IAT: (PE_NUM_IMPORTS + 1) x 4 = 36 bytes
-    Hint/Name entries: variable
-    DLL name: "kernel32.dll" + null
+  { Calculer la section .rdata (tables d import) }
+  { Disposition dans .rdata :
+    Table du repertoire d import : 2 entrees x 20 octets = 40 octets
+    ILT : (PE_NUM_IMPORTS + 1) x 4 = 36 octets
+    IAT : (PE_NUM_IMPORTS + 1) x 4 = 36 octets
+    Entrees Indice/Nom : variable
+    Nom DLL : "kernel32.dll" + nul
   }
   ImportDirOff := 0;
   ILTOff := 40;
   IATOff := ILTOff + (PE_NUM_IMPORTS + 1) * 4;
   HintOff := IATOff + (PE_NUM_IMPORTS + 1) * 4;
 
-  { Calculate hint/name sizes }
+  { Calculer les tailles indice/nom }
   CurOff := HintOff;
   For I := 0 To PE_NUM_IMPORTS - 1 Do
   Begin
     PEImports[I].IATOffset := IATOff + I * 4;
-    { Each hint/name: 2-byte hint + ASCIIZ name, padded to even }
+    { Chaque indice/nom : 2 octets indice + nom ASCIIZ, aligne sur pair }
     NameLen := Length(PEImports[I].Name) + 1;
     If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
     CurOff := CurOff + 2 + NameLen;
   End;
   DLLNameOff := CurOff;
-  CurOff := CurOff + 13; { "kernel32.dll" + null }
+  CurOff := CurOff + 13; { "kernel32.dll" + nul }
   RdataSize := CurOff;
   RdataRawSize := PEAlignUp(RdataSize, PE_FILE_ALIGN);
 
-  { Calculate section sizes }
+  { Calculer les tailles de sections }
   TextRawSize := PEAlignUp(PECodePos, PE_FILE_ALIGN);
   DataRawSize := PEAlignUp(PEDataPos, PE_FILE_ALIGN);
 
-  { File offsets }
+  { Offsets de fichier }
   TextFileOff := PE_FILE_ALIGN;   { $200 }
   RdataFileOff := TextFileOff + TextRawSize;
   DataFileOff := RdataFileOff + RdataRawSize;
 
-  { Compute section virtual addresses dynamically }
+  { Calculer les adresses virtuelles de section dynamiquement }
   PETextVA  := $1000;
   PERdataVA := PETextVA  + PEAlignUp(PECodePos,  PE_SECT_ALIGN);
   PEDataVA  := PERdataVA + PEAlignUp(RdataSize,  PE_SECT_ALIGN);
 
-  { Image size (aligned) }
+  { Taille de l image (alignee) }
   SizeOfImage := PEDataVA + PEAlignUp(PEDataPos, PE_SECT_ALIGN);
 
-  { Resolve fixups now that IAT offsets are known }
+  { Resoudre les correctifs maintenant que les offsets IAT sont connus }
   PEResolveFixups;
 
-  { Write the PE file }
+  { Ecrire le fichier PE }
   {$I-}
   Assign(F, ExeFile);
   Rewrite(F, 1);
   {$I+}
   If IOResult <> 0 Then Exit;
 
-  { === DOS Header (64 bytes minimum, we use 128 bytes) === }
+  { === En-tete DOS (64 octets minimum, on utilise 128 octets) === }
   { e_magic = 'MZ' }
   PEFileWriteByte(F, $4D); PEFileWriteByte(F, $5A);
-  { Rest of DOS header - mostly zeros, with e_lfanew at offset 0x3C }
+  { Reste de l en-tete DOS - principalement des zeros, avec e_lfanew a l offset 0x3C }
   PEFileWriteZeros(F, 58); { offset 0x02..0x3B }
-  { e_lfanew at offset 0x3C = $80 }
+  { e_lfanew a l offset 0x3C = $80 }
   PEFileWriteDWord(F, $80);
-  { Padding to offset 0x80 }
+  { Remplissage jusqu a l offset 0x80 }
   PEFileWriteZeros(F, $80 - $40);
 
   { === PE Signature === }
@@ -9526,76 +9526,76 @@ Begin
   PEFileWriteByte(F, 0);
   PEFileWriteByte(F, 0);
 
-  { === COFF File Header (20 bytes) === }
-  PEFileWriteWord(F, $014C);   { Machine: i386 }
-  PEFileWriteWord(F, 3);       { NumberOfSections }
-  PEFileWriteDWord(F, 0);      { TimeDateStamp }
-  PEFileWriteDWord(F, 0);      { PointerToSymbolTable }
-  PEFileWriteDWord(F, 0);      { NumberOfSymbols }
-  PEFileWriteWord(F, $E0);     { SizeOfOptionalHeader }
-  PEFileWriteWord(F, $0102);   { Characteristics: EXECUTABLE_IMAGE | 32BIT_MACHINE }
+  { === En-tete de fichier COFF (20 octets) === }
+  PEFileWriteWord(F, $014C);   { Machine : i386 }
+  PEFileWriteWord(F, 3);       { NombreDeSections }
+  PEFileWriteDWord(F, 0);      { HorodatageDateHeure }
+  PEFileWriteDWord(F, 0);      { PointeurTableSymboles }
+  PEFileWriteDWord(F, 0);      { NombreDeSymboles }
+  PEFileWriteWord(F, $E0);     { TailleEnTeteOptionnel }
+  PEFileWriteWord(F, $0102);   { Caracteristiques : EXECUTABLE_IMAGE | 32BIT_MACHINE }
 
-  { === Optional Header (224 bytes = $E0) === }
-  PEFileWriteWord(F, $010B);   { Magic: PE32 }
-  PEFileWriteByte(F, 1);       { MajorLinkerVersion }
-  PEFileWriteByte(F, 0);       { MinorLinkerVersion }
-  PEFileWriteDWord(F, TextRawSize); { SizeOfCode }
-  PEFileWriteDWord(F, DataRawSize + RdataRawSize); { SizeOfInitializedData }
-  PEFileWriteDWord(F, 0);      { SizeOfUninitializedData }
-  PEFileWriteDWord(F, PETextVA);  { AddressOfEntryPoint = start of .text }
-  PEFileWriteDWord(F, PETextVA);  { BaseOfCode }
-  PEFileWriteDWord(F, PEDataVA);  { BaseOfData }
-  PEFileWriteDWord(F, PE_IMAGE_BASE);  { ImageBase }
-  PEFileWriteDWord(F, PE_SECT_ALIGN);  { SectionAlignment }
-  PEFileWriteDWord(F, PE_FILE_ALIGN);  { FileAlignment }
-  PEFileWriteWord(F, 4);       { MajorOperatingSystemVersion }
-  PEFileWriteWord(F, 0);       { MinorOperatingSystemVersion }
-  PEFileWriteWord(F, 0);       { MajorImageVersion }
-  PEFileWriteWord(F, 0);       { MinorImageVersion }
-  PEFileWriteWord(F, 4);       { MajorSubsystemVersion }
-  PEFileWriteWord(F, 0);       { MinorSubsystemVersion }
-  PEFileWriteDWord(F, 0);      { Win32VersionValue }
-  PEFileWriteDWord(F, SizeOfImage); { SizeOfImage }
-  PEFileWriteDWord(F, PE_FILE_ALIGN); { SizeOfHeaders }
-  PEFileWriteDWord(F, 0);      { CheckSum }
-  PEFileWriteWord(F, 3);       { Subsystem: CONSOLE }
-  PEFileWriteWord(F, 0);       { DllCharacteristics }
-  PEFileWriteDWord(F, $100000);{ SizeOfStackReserve }
-  PEFileWriteDWord(F, $1000);  { SizeOfStackCommit }
-  PEFileWriteDWord(F, $100000);{ SizeOfHeapReserve }
-  PEFileWriteDWord(F, $1000);  { SizeOfHeapCommit }
-  PEFileWriteDWord(F, 0);      { LoaderFlags }
-  PEFileWriteDWord(F, 16);     { NumberOfRvaAndSizes }
+  { === En-tete optionnel (224 octets = $E0) === }
+  PEFileWriteWord(F, $010B);   { Magique : PE32 }
+  PEFileWriteByte(F, 1);       { VersionMajeureEditeurLiens }
+  PEFileWriteByte(F, 0);       { VersionMineureEditeurLiens }
+  PEFileWriteDWord(F, TextRawSize); { TailleDeCode }
+  PEFileWriteDWord(F, DataRawSize + RdataRawSize); { TailleDonneesInitialisees }
+  PEFileWriteDWord(F, 0);      { TailleDonneesNonInitialisees }
+  PEFileWriteDWord(F, PETextVA);  { AdressePointEntree = debut de .text }
+  PEFileWriteDWord(F, PETextVA);  { BaseDeCode }
+  PEFileWriteDWord(F, PEDataVA);  { BaseDeDonnees }
+  PEFileWriteDWord(F, PE_IMAGE_BASE);  { BaseImage }
+  PEFileWriteDWord(F, PE_SECT_ALIGN);  { AlignementSection }
+  PEFileWriteDWord(F, PE_FILE_ALIGN);  { AlignementFichier }
+  PEFileWriteWord(F, 4);       { VersionMajeureSE }
+  PEFileWriteWord(F, 0);       { VersionMineureSE }
+  PEFileWriteWord(F, 0);       { VersionMajeureImage }
+  PEFileWriteWord(F, 0);       { VersionMineureImage }
+  PEFileWriteWord(F, 4);       { VersionMajeureSousSysteme }
+  PEFileWriteWord(F, 0);       { VersionMineureSousSysteme }
+  PEFileWriteDWord(F, 0);      { ValeurVersionWin32 }
+  PEFileWriteDWord(F, SizeOfImage); { TailleImage }
+  PEFileWriteDWord(F, PE_FILE_ALIGN); { TailleEnTetes }
+  PEFileWriteDWord(F, 0);      { SommeControle }
+  PEFileWriteWord(F, 3);       { SousSysteme : CONSOLE }
+  PEFileWriteWord(F, 0);       { CaracteristiquesDLL }
+  PEFileWriteDWord(F, $100000);{ TaillePileReservee }
+  PEFileWriteDWord(F, $1000);  { TaillePileEngagee }
+  PEFileWriteDWord(F, $100000);{ TailleTasReserve }
+  PEFileWriteDWord(F, $1000);  { TailleTasEngage }
+  PEFileWriteDWord(F, 0);      { DrapeauxChargeur }
+  PEFileWriteDWord(F, 16);     { NombreRvaEtTailles }
 
-  { Data directories (16 entries x 8 bytes = 128 bytes) }
-  { [0] Export - empty }
+  { Repertoires de donnees (16 entrees x 8 octets = 128 octets) }
+  { [0] Export - vide }
   PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0);
-  { [1] Import - points to .rdata }
+  { [1] Import - pointe vers .rdata }
   PEFileWriteDWord(F, PERdataVA + ImportDirOff);
-  PEFileWriteDWord(F, 40); { size of import directory }
-  { [2..11] - empty }
+  PEFileWriteDWord(F, 40); { taille du repertoire d import }
+  { [2..11] - vide }
   For I := 2 To 11 Do
   Begin PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0); End;
   { [12] IAT }
   PEFileWriteDWord(F, PERdataVA + IATOff);
   PEFileWriteDWord(F, (PE_NUM_IMPORTS + 1) * 4);
-  { [13..15] - empty }
+  { [13..15] - vide }
   For I := 13 To 15 Do
   Begin PEFileWriteDWord(F, 0); PEFileWriteDWord(F, 0); End;
 
-  { === Section Headers (3 x 40 bytes) === }
+  { === En-tetes de section (3 x 40 octets) === }
   { .text }
   PEFileWriteStr(F, '.text');
-  PEFileWriteZeros(F, 3); { pad name to 8 bytes }
-  PEFileWriteDWord(F, PECodePos); { VirtualSize }
-  PEFileWriteDWord(F, PETextVA);     { VirtualAddress }
-  PEFileWriteDWord(F, TextRawSize); { SizeOfRawData }
-  PEFileWriteDWord(F, TextFileOff); { PointerToRawData }
-  PEFileWriteDWord(F, 0);  { PointerToRelocations }
-  PEFileWriteDWord(F, 0);  { PointerToLineNumbers }
-  PEFileWriteWord(F, 0);   { NumberOfRelocations }
-  PEFileWriteWord(F, 0);   { NumberOfLineNumbers }
-  PEFileWriteDWord(F, $60000020); { Characteristics: CODE|EXECUTE|READ }
+  PEFileWriteZeros(F, 3); { remplir le nom a 8 octets }
+  PEFileWriteDWord(F, PECodePos); { TailleVirtuelle }
+  PEFileWriteDWord(F, PETextVA);     { AdresseVirtuelle }
+  PEFileWriteDWord(F, TextRawSize); { TailleDonneesBrutes }
+  PEFileWriteDWord(F, TextFileOff); { PointeurDonneesBrutes }
+  PEFileWriteDWord(F, 0);  { PointeurRelocalisations }
+  PEFileWriteDWord(F, 0);  { PointeurNumerosLigne }
+  PEFileWriteWord(F, 0);   { NombreRelocalisations }
+  PEFileWriteWord(F, 0);   { NombreNumerosLigne }
+  PEFileWriteDWord(F, $60000020); { Caracteristiques : CODE|EXECUTE|LECTURE }
 
   { .rdata }
   PEFileWriteStr(F, '.rdata');
@@ -9608,7 +9608,7 @@ Begin
   PEFileWriteDWord(F, 0);
   PEFileWriteWord(F, 0);
   PEFileWriteWord(F, 0);
-  PEFileWriteDWord(F, $40000040); { INITIALIZED_DATA|READ }
+  PEFileWriteDWord(F, $40000040); { DONNEES_INITIALISEES|LECTURE }
 
   { .data }
   PEFileWriteStr(F, '.data');
@@ -9621,43 +9621,43 @@ Begin
   PEFileWriteDWord(F, 0);
   PEFileWriteWord(F, 0);
   PEFileWriteWord(F, 0);
-  PEFileWriteDWord(F, LongInt($C0000040)); { INITIALIZED_DATA|READ|WRITE }
+  PEFileWriteDWord(F, LongInt($C0000040)); { DONNEES_INITIALISEES|LECTURE|ECRITURE }
 
-  { Pad headers to PE_FILE_ALIGN }
-  { Current position: $80 + 4 + 20 + 224 + 3*40 = $80+4+20+224+120 = 500 = $1F4 }
-  { Actually: 128 + 4 + 20 + 224 + 120 = 496 = $1F0 }
+  { Remplir les en-tetes jusqu a PE_FILE_ALIGN }
+  { Position courante : $80 + 4 + 20 + 224 + 3*40 = $80+4+20+224+120 = 500 = $1F4 }
+  { En fait : 128 + 4 + 20 + 224 + 120 = 496 = $1F0 }
   TotalHdrSize := $80 + 4 + 20 + $E0 + 3 * 40;
   PadNeeded := PE_FILE_ALIGN - TotalHdrSize;
   If PadNeeded > 0 Then
     PEFileWriteZeros(F, PadNeeded);
 
-  { === .text section === }
+  { === section .text === }
   PEWriteBuf(F, PECodeBuf, PECodePos);
   PadNeeded := TextRawSize - PECodePos;
   If PadNeeded > 0 Then PEFileWriteZeros(F, PadNeeded);
 
-  { === .rdata section (import tables) === }
-  { Import Directory Table - entry 1: kernel32.dll }
+  { === section .rdata (tables d import) === }
+  { Table du repertoire d import - entree 1 : kernel32.dll }
   PEFileWriteDWord(F, PERdataVA + ILTOff); { OriginalFirstThunk (ILT) }
-  PEFileWriteDWord(F, 0);              { TimeDateStamp }
-  PEFileWriteDWord(F, 0);              { ForwarderChain }
-  PEFileWriteDWord(F, PERdataVA + DLLNameOff); { Name RVA }
+  PEFileWriteDWord(F, 0);              { HorodatageDateHeure }
+  PEFileWriteDWord(F, 0);              { ChaineTransfert }
+  PEFileWriteDWord(F, PERdataVA + DLLNameOff); { RVA du nom }
   PEFileWriteDWord(F, PERdataVA + IATOff);     { FirstThunk (IAT) }
-  { Import Directory Table - null terminator entry }
+  { Table du repertoire d import - entree terminateur nul }
   PEFileWriteZeros(F, 20);
 
-  { Import Lookup Table (ILT) }
+  { Table de recherche d import (ILT) }
   CurOff := HintOff;
   For I := 0 To PE_NUM_IMPORTS - 1 Do
   Begin
-    PEFileWriteDWord(F, PERdataVA + CurOff); { RVA to Hint/Name }
+    PEFileWriteDWord(F, PERdataVA + CurOff); { RVA vers Indice/Nom }
     NameLen := Length(PEImports[I].Name) + 1;
     If (NameLen + 2) Mod 2 <> 0 Then Inc(NameLen);
     CurOff := CurOff + 2 + NameLen;
   End;
-  PEFileWriteDWord(F, 0); { null terminator }
+  PEFileWriteDWord(F, 0); { terminateur nul }
 
-  { Import Address Table (IAT) - same as ILT initially }
+  { Table d adresses d import (IAT) - identique a ILT initialement }
   CurOff := HintOff;
   For I := 0 To PE_NUM_IMPORTS - 1 Do
   Begin
@@ -9668,26 +9668,26 @@ Begin
   End;
   PEFileWriteDWord(F, 0);
 
-  { Hint/Name entries }
+  { Entrees Indice/Nom }
   For I := 0 To PE_NUM_IMPORTS - 1 Do
   Begin
-    PEFileWriteWord(F, 0); { Hint }
+    PEFileWriteWord(F, 0); { Indice }
     PEFileWriteStr(F, PEImports[I].Name);
-    PEFileWriteByte(F, 0); { null terminator }
+    PEFileWriteByte(F, 0); { terminateur nul }
     NameLen := Length(PEImports[I].Name) + 1;
     If (NameLen + 2) Mod 2 <> 0 Then
-      PEFileWriteByte(F, 0); { pad to even }
+      PEFileWriteByte(F, 0); { aligner sur pair }
   End;
 
-  { DLL name }
+  { Nom de la DLL }
   PEFileWriteStr(F, 'kernel32.dll');
   PEFileWriteByte(F, 0);
 
-  { Pad .rdata to alignment }
+  { Remplir .rdata jusqu a l alignement }
   PadNeeded := RdataRawSize - RdataSize;
   If PadNeeded > 0 Then PEFileWriteZeros(F, PadNeeded);
 
-  { === .data section === }
+  { === section .data === }
   PEWriteBuf(F, PEDataBuf, PEDataPos);
   PadNeeded := DataRawSize - PEDataPos;
   If PadNeeded > 0 Then PEFileWriteZeros(F, PadNeeded);
@@ -9721,7 +9721,7 @@ Begin
   TextRawSize := PECodePos;
   DataRawSize := PEDataPos;
 
-  { Symbol table offset = COFF header + 2 section headers + raw data }
+  { Offset table des symboles = en-tete COFF + 2 en-tetes de section + donnees brutes }
   SymTabOff := 20 + 2 * 40 + TextRawSize + DataRawSize;
 
   {$I-}
@@ -9730,29 +9730,29 @@ Begin
   {$I+}
   If IOResult <> 0 Then Exit;
 
-  { COFF Header }
+  { En-tete COFF }
   PEFileWriteWord(F, $014C);       { Machine }
-  PEFileWriteWord(F, 2);           { NumberOfSections }
-  PEFileWriteDWord(F, 0);          { TimeDateStamp }
-  PEFileWriteDWord(F, SymTabOff);  { PointerToSymbolTable }
-  PEFileWriteDWord(F, 0);          { NumberOfSymbols }
-  PEFileWriteWord(F, 0);           { SizeOfOptionalHeader }
-  PEFileWriteWord(F, 0);           { Characteristics }
+  PEFileWriteWord(F, 2);           { NombreDeSections }
+  PEFileWriteDWord(F, 0);          { HorodatageDateHeure }
+  PEFileWriteDWord(F, SymTabOff);  { PointeurTableSymboles }
+  PEFileWriteDWord(F, 0);          { NombreDeSymboles }
+  PEFileWriteWord(F, 0);           { TailleEnTeteOptionnel }
+  PEFileWriteWord(F, 0);           { Caracteristiques }
 
-  { Section header: .text }
+  { En-tete de section : .text }
   PEFileWriteStr(F, '.text');
   PEFileWriteZeros(F, 3);
-  PEFileWriteDWord(F, 0);            { VirtualSize }
-  PEFileWriteDWord(F, 0);            { VirtualAddress }
-  PEFileWriteDWord(F, TextRawSize);  { SizeOfRawData }
-  PEFileWriteDWord(F, 20 + 2 * 40); { PointerToRawData }
+  PEFileWriteDWord(F, 0);            { TailleVirtuelle }
+  PEFileWriteDWord(F, 0);            { AdresseVirtuelle }
+  PEFileWriteDWord(F, TextRawSize);  { TailleDonneesBrutes }
+  PEFileWriteDWord(F, 20 + 2 * 40); { PointeurDonneesBrutes }
   PEFileWriteDWord(F, 0);
   PEFileWriteDWord(F, 0);
   PEFileWriteWord(F, 0);
   PEFileWriteWord(F, 0);
   PEFileWriteDWord(F, $60000020);
 
-  { Section header: .data }
+  { En-tete de section : .data }
   PEFileWriteStr(F, '.data');
   PEFileWriteZeros(F, 3);
   PEFileWriteDWord(F, 0);
@@ -9765,13 +9765,13 @@ Begin
   PEFileWriteWord(F, 0);
   PEFileWriteDWord(F, LongInt($C0000040));
 
-  { Raw data }
+  { Donnees brutes }
   If TextRawSize > 0 Then
     PEWriteBuf(F, PECodeBuf, TextRawSize);
   If DataRawSize > 0 Then
     PEWriteBuf(F, PEDataBuf, DataRawSize);
 
-  { String table (4 bytes = size, empty) }
+  { Table des chaines (4 octets = taille, vide) }
   PEFileWriteDWord(F, 4);
 
   Close(F);
@@ -10067,12 +10067,12 @@ Begin
         AttrHidden, AttrUnbound, AttrAlignVal, AttrPosVal);
     End;
 
-    (* After VAX attributes, there may be the keyword VAR *)
+    (* Apres les attributs VAX, il peut y avoir le mot-cle VAR *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'var') Then
       LexNextToken;
 
-    (* Detect STATIC or EXTERNAL after attributes *)
+    (* Detecter STATIC ou EXTERNAL apres les attributs *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'static') Then
     Begin
@@ -10093,13 +10093,13 @@ Begin
         LexNextToken;
     End;
 
-    (* Propagate pending attributes from ParseDeclAttributes *)
+    (* Propager les attributs en attente depuis ParseDeclAttributes *)
     If PendAttrGlobal Then
       AttrGlobal := True;
     If PendAttrExternal Then
       AttrExternal := True;
 
-    (* First identifier *)
+    (* Premier identificateur *)
     (* si [global]/[external] a ete consomme par
        ParseVarAttributes mais que le token suivant n est pas un
        identificateur (ex: function/procedure), propager le flag
@@ -10116,7 +10116,7 @@ Begin
     NCount := 1;
     LexNextToken;
 
-    (* If := follows, this is an assignment, not a var declaration *)
+    (* Si := suit, c est une affectation, pas une declaration de variable *)
     If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
     Begin
       PendingAssignName := Names[0];
@@ -10124,7 +10124,7 @@ Begin
       Exit;
     End;
 
-    (* Collect additional names separated by commas *)
+    (* Collecter les noms supplementaires separes par des virgules *)
     While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
     Begin
       LexNextToken;
@@ -10146,7 +10146,7 @@ Begin
       End;
     End;
 
-    (* Colon + type name *)
+    (* Deux-points + nom de type *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
       LexNextToken
     Else
@@ -10160,7 +10160,7 @@ Begin
       Continue;
     End;
 
-    (* Determine the symbol category *)
+    (* Determiner la categorie du symbole *)
     UseCat := SC_VAR;
     If IsStaticVar Or AttrExternal Then
     Begin
@@ -10174,7 +10174,7 @@ Begin
     Else If AttrGlobal Then
       UseCat := SC_GLOBAL;
 
-    (* --- Pointer ^Type detection --- *)
+    (* --- Detection de pointeur ^Type --- *)
     IsPtr := False;
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
     Begin
@@ -10182,12 +10182,12 @@ Begin
       LexNextToken;
     End;
 
-    (* --- Procedure/Function pointer variable --- *)
+    (* --- Variable pointeur de Procedure/Fonction --- *)
     If (CurToken.Kind = TK_KEYWORD) And
        ((StrLowerCase(CurToken.Val) = 'procedure') Or
         (StrLowerCase(CurToken.Val) = 'function')) Then
     Begin
-      LexNextToken;  (* consume PROCEDURE/FUNCTION *)
+      LexNextToken;  (* consommer PROCEDURE/FUNCTION *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         LexNextToken;
@@ -10239,12 +10239,12 @@ Begin
       Continue;
     End;
 
-    (* --- VARYING [n] OF CHAR detection --- *)
+    (* --- Detection VARYING [n] OF CHAR --- *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'varying') Then
     Begin
-      LexNextToken;  (* consume VARYING *)
-      VaryLen := 80;  (* default *)
+      LexNextToken;  (* consommer VARYING *)
+      VaryLen := 80;  (* defaut *)
       If IsOpenBracket Then
       Begin
         LexNextToken;
@@ -10321,11 +10321,11 @@ Begin
       Continue;
     End;
 
-    (* --- SET OF type (inline) detection --- *)
+    (* --- Detection SET OF type (en ligne) --- *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'set') Then
     Begin
-      LexNextToken;  (* consume SET *)
+      LexNextToken;  (* consommer SET *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'of') Then
         LexNextToken;
@@ -10396,7 +10396,7 @@ Begin
       Continue;
     End;
 
-    (* --- PACKED ARRAY / ARRAY[lo..hi] OF type detection --- *)
+    (* --- Detection PACKED ARRAY / ARRAY[lo..hi] OF type --- *)
     IsPacked := False;
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'packed') Then
@@ -10408,7 +10408,7 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'array') Then
     Begin
-      LexNextToken;  (* consume ARRAY *)
+      LexNextToken;  (* consommer ARRAY *)
 
       If IsOpenBracket Then
         LexNextToken
@@ -10439,7 +10439,7 @@ Begin
       Else
         WarnMsg('''..'' attendu dans declaration ARRAY');
 
-      (* Upper bound - support * for conformant arrays *)
+      (* Borne superieure - supporte * pour les tableaux conformants *)
       ArrHi := 0;
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Then
       Begin
@@ -10463,14 +10463,14 @@ Begin
         LexNextToken;
       End;
 
-      (* --- Multi-dimensional: check for comma before ] --- *)
+      (* --- Multi-dimensionnel : verifier la virgule avant ] --- *)
       Dim2Lo := 0;
       Dim2Hi := 0;
       Dim2Count := 0;
       InnerArrTIdx := -1;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
       Begin
-        LexNextToken;  (* consume comma *)
+        LexNextToken;  (* consommer la virgule *)
         (* Lower bound of 2nd dimension *)
         If CurToken.Kind = TK_INTEGER Then
         Begin
@@ -10544,10 +10544,10 @@ Begin
       ArrCount := ArrHi - ArrLo + 1;
       If ArrCount < 1 Then ArrCount := 1;
 
-      (* multi-dimensional -> create inner array type first *)
+      (* multi-dimensionnel -> creer d abord le type tableau interne *)
       If Dim2Count > 0 Then
       Begin
-        (* Create inner array type for second dimension *)
+        (* Creer le type tableau interne pour la deuxieme dimension *)
         InnerArrTIdx := TY_IDX_INTEGER;
         If TypeCount < MAX_TYPE Then
         Begin
@@ -10635,7 +10635,7 @@ Begin
       Continue;
     End;
 
-    (* --- Read standard type or identifier --- *)
+    (* --- Lire le type standard ou l identificateur --- *)
     TName := '';
     If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
     Begin
@@ -10653,7 +10653,7 @@ Begin
     End;
     TSz := TypeSizeof(TIdx);
 
-    (* If pointer, create a pointer type *)
+    (* Si pointeur, creer un type pointeur *)
     If IsPtr Then
     Begin
       BaseTIdx := TIdx;
@@ -10674,14 +10674,14 @@ Begin
 
     If AttrWord Then TSz := 4;
 
-    (* Register each variable *)
+    (* Enregistrer chaque variable *)
     For I := 0 To NCount - 1 Do
     Begin
       Idx := SymAdd(Names[I], UseCat, TIdx);
       If Idx >= 0 Then
       Begin
         SymTab[Idx].IsHidden := AttrHidden;
-        (* EXTERNAL variable : declare EXTRN *)
+        (* Variable EXTERNAL : declarer EXTRN *)
         If (UseCat = SC_EXTERNAL) Then
         Begin
           SymTab[Idx].IsLocal := False;
@@ -10692,7 +10692,7 @@ Begin
           If Opts.DebugMode Then
             WriteLn('  VAR_EXTERNAL: ', Names[I], ' : ', TName);
         End
-        (* GLOBAL variable : mark PUBLIC *)
+        (* Variable GLOBAL : marquer PUBLIC *)
         Else If (UseCat = SC_GLOBAL) Then
         Begin
           SymTab[Idx].IsLocal := False;
@@ -10720,7 +10720,7 @@ Begin
             WriteLn('  VAR_GLOBAL: ', Names[I], ' : ', TName,
                     ' -> ', SymTab[Idx].MangledName);
         End
-        (* STATIC variable : in .DATA *)
+        (* Variable STATIC : dans .DATA *)
         Else If (UseCat = SC_STATIC) Then
         Begin
           SymTab[Idx].IsLocal := False;
@@ -10747,7 +10747,7 @@ Begin
             WriteLn('  VAR_STATIC: ', Names[I], ' : ', TName,
                     ' -> ', SymTab[Idx].MangledName);
         End
-        (* Standard global variable *)
+        (* Variable globale standard *)
         Else If CurScopeLevel = 0 Then
         Begin
           If (TIdx >= 0) And (TIdx < TypeCount) And
@@ -10805,7 +10805,7 @@ Begin
         End
         Else
         Begin
-          (* Local variable : allocate on stack *)
+          (* Variable locale : allouer sur la pile *)
           If TSz < 4 Then TSz := 4;
           Dec(CurFrameOffset, TSz);
           If (CurFrameOffset And 3) <> 0 Then
@@ -10819,10 +10819,10 @@ Begin
       End;
     End;
 
-    (* Optional initialization := value *)
+    (* Initialisation optionnelle := valeur *)
     If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
     Begin
-      LexNextToken;  (* consume := *)
+      LexNextToken;  (* consommer := *)
       ParseExpr(InitEv);
       If (Idx >= 0) And Not SymTab[Idx].IsLocal Then
       Begin
@@ -10862,9 +10862,9 @@ End;
 
 (* ---- ParseConstDecl : analyser un bloc CONST ------------------- *)
 (* Supporte :                                                        *)
-(*   const x = 42;             (untyped constant)                    *)
-(*   const x := 42;            (VAX typed const with :=)             *)
-(*   const x : Type = value;   (typed constant)                      *)
+(*   const x = 42;             (constante non typee)                 *)
+(*   const x := 42;            (constante typee VAX avec :=)         *)
+(*   const x : Type = valeur;  (constante typee)                     *)
 (*   const tab : ARRAY[lo..hi] OF type = (v1, v2, ...);             *)
 Procedure ParseConstDecl;
 Var
@@ -10872,7 +10872,7 @@ Var
   ConstEv : TExprVal;
   CIdx    : Integer;
   DIdx    : Integer;
-  (* Const ARRAY *)
+  (* Constante ARRAY *)
   ConstArrLo     : LongInt;
   ConstArrHi     : LongInt;
   ConstArrCount  : LongInt;
@@ -10888,7 +10888,7 @@ Begin
     CName := CurToken.Val;
     LexNextToken;
 
-    (* const x = value (standard Pascal, untyped const) *)
+    (* const x = valeur (Pascal standard, constante non typee) *)
     If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
     Begin
       LexNextToken;
@@ -10906,7 +10906,7 @@ Begin
       Continue;
     End;
 
-    (* const x := value (VAX Pascal typed const with :=) *)
+    (* const x := valeur (constante typee VAX Pascal avec :=) *)
     If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
     Begin
       LexNextToken;
@@ -10930,17 +10930,17 @@ Begin
       Continue;
     End;
 
-    (* const x : type = value (typed const standard) *)
+    (* const x : type = valeur (constante typee standard) *)
     (* const tab : ARRAY[lo..hi] OF type = (v1, v2, ...); *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
     Begin
       LexNextToken;
 
-      (* --- ARRAY[lo..hi] OF type = (values) detection --- *)
+      (* --- Detection ARRAY[lo..hi] OF type = (valeurs) --- *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'array') Then
       Begin
-        LexNextToken;  (* consume ARRAY *)
+        LexNextToken;  (* consommer ARRAY *)
         If IsOpenBracket Then LexNextToken;
         ConstArrLo := 0;
         If CurToken.Kind = TK_INTEGER Then
@@ -10997,7 +10997,7 @@ Begin
         ConstArrCount := ConstArrHi - ConstArrLo + 1;
         If ConstArrCount < 1 Then ConstArrCount := 1;
 
-        (* Create the array type *)
+        (* Creer le type tableau *)
         ConstArrTIdx := TY_IDX_INTEGER;
         If TypeCount < MAX_TYPE Then
         Begin
@@ -11012,11 +11012,11 @@ Begin
           TypeTab[ConstArrTIdx].EnumCount   := 0;
         End;
 
-        (* Consume = *)
+        (* Consommer = *)
         If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
           LexNextToken;
 
-        (* Parse initial values (val1, val2, ...) *)
+        (* Analyser les valeurs initiales (val1, val2, ...) *)
         ConstInitStr := '';
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
         Begin
@@ -11094,7 +11094,7 @@ Begin
           End;
         End;
 
-        (* Create symbol and data entry *)
+        (* Creer le symbole et l entree de donnees *)
         CIdx := SymAdd(CName, SC_TYPED_CONST, ConstArrTIdx);
         If CIdx >= 0 Then
         Begin
@@ -11118,7 +11118,7 @@ Begin
         Continue;
       End;
 
-      (* --- Typed const simple : type = value --- *)
+      (* --- Constante typee simple : type = valeur --- *)
       If (CurToken.Kind = TK_KEYWORD) Or
          (CurToken.Kind = TK_IDENT) Then
         LexNextToken;
@@ -11144,7 +11144,7 @@ Begin
       Continue;
     End;
 
-    (* Unrecognized token in CONST block, exit *)
+    (* Jeton non reconnu dans le bloc CONST, sortir *)
     Break;
   End;
 End;
@@ -11612,7 +11612,7 @@ Begin
     ParseExpr(ArrEv);
     ExprFlushToEAX(ArrEv);
 
-    (* bounds check *)
+    (* verification de bornes *)
     If Opts.CheckEnabled And
        (FTIdx >= 0) And (FTIdx < TypeCount) And
        (TypeTab[FTIdx].Kind = TKP_ARRAY) Then
@@ -11639,7 +11639,7 @@ Begin
         EmitInstrAB('MOV', 'ECX', IntToStr(ESize));
         EmitInstrAB('IMUL', 'EAX', 'ECX');
       End;
-      (* ESize = 1 : no multiply needed *)
+      (* ESize = 1 : pas de multiplication necessaire *)
     End
     Else
       EmitInstrAB('SHL', 'EAX', '2');
@@ -11655,10 +11655,10 @@ Begin
        (TypeTab[TypeTab[FTIdx].BaseTypeIdx].Kind = TKP_ARRAY) Then
     Begin
       EmitComment('multi-dim assign [i,j]');
-      LexNextToken;  (* consume comma *)
+      LexNextToken;  (* consommer la virgule *)
       ParseExpr(ArrEv);
       ExprFlushToEAX(ArrEv);
-      FTIdx := TypeTab[FTIdx].BaseTypeIdx;  (* inner array type *)
+      FTIdx := TypeTab[FTIdx].BaseTypeIdx;  (* type du tableau interne *)
       If Opts.CheckEnabled Then
         EmitBoundsCheck(TypeTab[FTIdx].Lo, TypeTab[FTIdx].Hi);
       If TypeTab[FTIdx].Lo <> 0 Then
@@ -11765,7 +11765,7 @@ Begin
         'OFFSET ' + SymTab[SIdx].MangledName);
     EmitInstrA('CALL', VXP_RT_PFX + 'SET_COPY');
   End
-  (* Record copy : REP MOVSD *)
+  (* Copie d enregistrement : REP MOVSD *)
   Else If (SymTab[SIdx].TypeIdx >= 0) And
           (SymTab[SIdx].TypeIdx < TypeCount) And
           (TypeTab[SymTab[SIdx].TypeIdx].Kind = TKP_RECORD) Then
@@ -11790,7 +11790,7 @@ Begin
       EmitInstr('REP MOVSB');
     End;
   End
-  (* VARYING assignment - convert ASCIIZ to VARYING format *)
+  (* Affectation VARYING - convertir ASCIIZ en format VARYING *)
   Else If IsVaryingTypeIdx(SymTab[SIdx].TypeIdx) Then
   Begin
     EmitComment('varying assign ' + VarName);
@@ -12006,7 +12006,7 @@ Begin
     LblNext := LabelGen;
     LblHit  := LabelGen;
 
-    (* Parse case values separated by commas *)
+    (* Analyser les valeurs de cas separees par virgules *)
     While (CurToken.Kind <> TK_EOF) And
           Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':')) Do
     Begin
@@ -12014,7 +12014,7 @@ Begin
 
       EmitInstrAB('MOV', 'EAX', 'DWORD PTR [ESP]');
 
-      (* Detect range val1..val2 *)
+      (* Detecter plage val1..val2 *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '..') Then
       Begin
         LexNextToken;
@@ -12072,7 +12072,7 @@ Begin
     EmitLabel(LblNext);
   End;
 
-  (* Handle OTHERS / OTHERWISE / ELSE default clause *)
+  (* Gerer la clause par defaut OTHERS / OTHERWISE / ELSE *)
   L := StrLowerCase(CurToken.Val);
   If (CurToken.Kind = TK_KEYWORD) And
      ((L = 'else') Or (L = 'others') Or (L = 'otherwise')) Then
@@ -12570,7 +12570,7 @@ Begin
       LexNextToken;
     End;
 
-    (* ---- RECORD type ---- *)
+    (* ---- Type RECORD ---- *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'record') Then
     Begin
@@ -12604,14 +12604,14 @@ Begin
       FieldOfs := 0;
       FldCount := 0;
 
-      (* Parse fixed fields until END or CASE *)
+      (* Analyser les champs fixes jusqu a END ou CASE *)
       While (CurToken.Kind <> TK_EOF) And
             Not ((CurToken.Kind = TK_KEYWORD) And
                  (StrLowerCase(CurToken.Val) = 'end')) And
             Not ((CurToken.Kind = TK_KEYWORD) And
                  (StrLowerCase(CurToken.Val) = 'case')) Do
       Begin
-        (* Skip VAX attributes [ALIGNED(n)] etc *)
+        (* Sauter les attributs VAX [ALIGNED(n)] etc *)
         If IsOpenBracket Then
         Begin
           While (CurToken.Kind <> TK_EOF) And Not IsCloseBracket Do
@@ -12634,7 +12634,7 @@ Begin
           Continue;
         End;
 
-        (* Collect field name(s) : f1, f2, ... : Type *)
+        (* Collecter les noms de champ : f1, f2, ... : Type *)
         MultiCount := 0;
         MultiNames[0] := CurToken.Val;
         MultiCount := 1;
@@ -12662,7 +12662,7 @@ Begin
           Continue;
         End;
 
-        (* Field type *)
+        (* Type de champ *)
         FldTName := '';
         If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
         Begin
@@ -12676,7 +12676,7 @@ Begin
 
         For MIdx := 0 To MultiCount - 1 Do
         Begin
-          (* Alignment for non-packed records *)
+          (* Alignement pour les enregistrements non compactes *)
           If (Not IsPacked) And (FieldSz >= 4) And
              ((FieldOfs Mod 4) <> 0) Then
             FieldOfs := (FieldOfs + 3) And (Not 3);
@@ -12696,13 +12696,13 @@ Begin
           LexNextToken;
       End;
 
-      (* Handle CASE variant part *)
+      (* Gerer la partie variante CASE *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'case') Then
       Begin
         LexNextToken;
 
-        (* tag [: type] OF *)
+        (* etiquette [: type] OF *)
         If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
           LexNextToken;
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
@@ -12737,12 +12737,12 @@ Begin
         MaxVariant := 0;
         VarOfs := FieldOfs;
 
-        (* Parse variant clauses until END *)
+        (* Analyser les clauses variantes jusqu a END *)
         While (CurToken.Kind <> TK_EOF) And
               Not ((CurToken.Kind = TK_KEYWORD) And
                    (StrLowerCase(CurToken.Val) = 'end')) Do
         Begin
-          (* OTHERS / OTHERWISE label *)
+          (* Etiquette OTHERS / OTHERWISE *)
           If (CurToken.Kind = TK_KEYWORD) And
              ((StrLowerCase(CurToken.Val) = 'others') Or
               (StrLowerCase(CurToken.Val) = 'otherwise')) Then
@@ -12753,7 +12753,7 @@ Begin
           End
           Else
           Begin
-            (* Value label(s) : skip until : or ( *)
+            (* Etiquette(s) de valeur : sauter jusqu a : ou ( *)
             While (CurToken.Kind <> TK_EOF) And
                   Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':')) And
                   Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(')) Do
@@ -12766,7 +12766,7 @@ Begin
               LexNextToken;
           End;
 
-          (* Variant fields in parentheses *)
+          (* Champs variantes entre parentheses *)
           If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
           Begin
             LexNextToken;
@@ -12779,7 +12779,7 @@ Begin
                  ((CurToken.Kind = TK_KEYWORD) And
                   (StrLowerCase(CurToken.Val) <> 'end')) Then
               Begin
-                (* Collect variant field name(s) *)
+                (* Collecter les noms de champs variantes *)
                 MultiCount := 0;
                 MultiNames[0] := CurToken.Val;
                 MultiCount := 1;
@@ -12849,7 +12849,7 @@ Begin
         FieldOfs := VarOfs + MaxVariant;
       End;
 
-      (* Align total size to DWORD for non-packed *)
+      (* Aligner la taille totale sur DWORD pour non compacte *)
       If (Not IsPacked) And ((FieldOfs Mod 4) <> 0) Then
         FieldOfs := (FieldOfs + 3) And (Not 3);
 
@@ -12857,7 +12857,7 @@ Begin
       If TypeTab[NewTIdx].Size < 4 Then
         TypeTab[NewTIdx].Size := 4;
 
-      (* Consume END *)
+      (* Consommer END *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'end') Then
         LexNextToken;
@@ -12868,7 +12868,7 @@ Begin
                 ' fields=', TypeTab[NewTIdx].FieldCount);
     End
 
-    (* ---- ARRAY type ---- *)
+    (* ---- Type ARRAY ---- *)
     Else If (CurToken.Kind = TK_KEYWORD) And
             (StrLowerCase(CurToken.Val) = 'array') Then
     Begin
@@ -12902,7 +12902,7 @@ Begin
           ArrHi := SymTab[TIdx].ImmVal;
         LexNextToken;
       End;
-      (* handle multi-dimensional: skip ", lo..hi" *)
+      (* gerer multi-dimensionnel : sauter ", lo..hi" *)
       While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Do
       Begin
         LexNextToken;
@@ -12948,7 +12948,7 @@ Begin
                 '] size=', ArrSz);
     End
 
-    (* ---- Pointer type: ^TypeName ---- *)
+    (* ---- Type pointeur : ^NomType ---- *)
     Else If (CurToken.Kind = TK_OP) And (CurToken.Val = '^') Then
     Begin
       LexNextToken;
@@ -12982,7 +12982,7 @@ Begin
         WriteLn('  TYPE_POINTER: ', TName, ' -> ', FldTName);
     End
 
-    (* ---- Enumeration: TYPE T = (A, B, C) ---- *)
+    (* ---- Enumeration : TYPE T = (A, B, C) ---- *)
     Else If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
       LexNextToken;
@@ -13026,7 +13026,7 @@ Begin
             TypeTab[NewTIdx].Enums[FldCount].Value  := FldCount;
             Inc(TypeTab[NewTIdx].EnumCount);
 
-            (* Register enum value as symbol *)
+            (* Enregistrer la valeur enum comme symbole *)
             FldTIdx := SymAdd(FldName, SC_ENUM_VAL, NewTIdx);
             If FldTIdx >= 0 Then
             Begin
@@ -13059,7 +13059,7 @@ Begin
     Else If (CurToken.Kind = TK_INTEGER) Or
             ((CurToken.Kind = TK_OP) And (CurToken.Val = '-')) Then
     Begin
-      (* Parse lower bound *)
+      (* Analyser la borne inferieure *)
       ArrLo := 0;
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
       Begin
@@ -13092,7 +13092,7 @@ Begin
         Continue;
       End;
 
-      (* Parse upper bound *)
+      (* Analyser la borne superieure *)
       ArrHi := 0;
       If (CurToken.Kind = TK_OP) And (CurToken.Val = '-') Then
       Begin
@@ -13110,7 +13110,7 @@ Begin
       End
       Else If (CurToken.Kind = TK_IDENT) Or (CurToken.Kind = TK_KEYWORD) Then
       Begin
-        (* Upper bound could be an enum value or constant *)
+        (* La borne superieure peut etre une valeur enum ou constante *)
         FldTIdx := SymFind(CurToken.Val);
         If (FldTIdx >= 0) And
            (SymTab[FldTIdx].Cat In [SC_CONST, SC_ENUM_VAL]) Then
@@ -13219,12 +13219,12 @@ Begin
       TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
     End
 
-    (* ---- PROCEDURE / FUNCTION type ---- *)
+    (* ---- Type PROCEDURE / FUNCTION ---- *)
     Else If (CurToken.Kind = TK_KEYWORD) And
             ((StrLowerCase(CurToken.Val) = 'procedure') Or
              (StrLowerCase(CurToken.Val) = 'function')) Then
     Begin
-      (* Skip procedural type definition *)
+      (* Sauter la definition de type procedural *)
       ParenDepth := 0;
       LexNextToken;
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -13242,7 +13242,7 @@ Begin
         If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
           LexNextToken;
       End;
-      (* skip optional return type : Type *)
+      (* sauter le type de retour optionnel : Type *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
       Begin
         LexNextToken;
@@ -13253,7 +13253,7 @@ Begin
       TIdx := SymAdd(TName, SC_TYPE, NewTIdx);
     End
 
-    (* ---- Type alias: TMyInt = INTEGER ---- *)
+    (* ---- Alias de type : TMyInt = INTEGER ---- *)
     Else If (CurToken.Kind = TK_KEYWORD) Or (CurToken.Kind = TK_IDENT) Then
     Begin
       FldTName := CurToken.Val;
@@ -13351,14 +13351,14 @@ Var
   NewSIdx  : Integer;
   NewTSz   : Integer;
 Begin
-  (* Empty statement *)
+  (* Instruction vide *)
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
   Begin
     LexNextToken;
     Exit;
   End;
 
-  (* BEGIN..END block *)
+  (* Bloc BEGIN..END *)
   If (CurToken.Kind = TK_KEYWORD) And
      (StrLowerCase(CurToken.Val) = 'begin') Then
   Begin
@@ -13366,7 +13366,7 @@ Begin
     Exit;
   End;
 
-  (* Numeric label : 100: stmt *)
+  (* Etiquette numerique : 100: instr *)
   If CurToken.Kind = TK_INTEGER Then
   Begin
     StId := IntToStr(CurToken.IntVal);
@@ -13379,7 +13379,7 @@ Begin
     Exit;
   End;
 
-  (* Keyword statements *)
+  (* Instructions par mot-cle *)
   If CurToken.Kind = TK_KEYWORD Then
   Begin
     StLw := StrLowerCase(CurToken.Val);
@@ -13448,7 +13448,7 @@ Begin
     If StLw = 'return' Then
     Begin
       LexNextToken;
-      (* Optional return value *)
+      (* Valeur de retour optionnelle *)
       If Not ((CurToken.Kind = TK_PUNCT) And
               ((CurToken.Val = ';') Or (CurToken.Val = '}'))) And
          Not ((CurToken.Kind = TK_KEYWORD) And
@@ -13470,7 +13470,7 @@ Begin
     If (StLw = 'halt') Or (StLw = 'stop') Then
     Begin
       LexNextToken;
-      (* Optional exit code *)
+      (* Code de sortie optionnel *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         LexNextToken;
@@ -13709,7 +13709,7 @@ Begin
       Exit;
     End;
 
-    (* ASSIGN / LOCATE / TRUNCATE / FIND / SCRATCH - file I/O stubs *)
+    (* ASSIGN / LOCATE / TRUNCATE / FIND / SCRATCH - stubs E/S fichier *)
     If (StLw = 'assign') Or (StLw = 'locate') Or
        (StLw = 'truncate') Or (StLw = 'find') Or (StLw = 'scratch') Then
     Begin
@@ -13729,7 +13729,7 @@ Begin
       Exit;
     End;
 
-    (* GET / PUT / READRN / WRITERN / UPDATE - file buffer stubs *)
+    (* GET / PUT / READRN / WRITERN / UPDATE - stubs tampon fichier *)
     If (StLw = 'get') Or (StLw = 'put') Or (StLw = 'readrn') Or
        (StLw = 'writern') Or (StLw = 'update') Then
     Begin
@@ -14244,7 +14244,7 @@ Begin
       Exit;
     End;
 
-    (* Other keywords : skip *)
+    (* Autres mots-cles : sauter *)
     If (StLw = 'function') Or (StLw = 'procedure') Or
        (StLw = 'var') Or (StLw = 'const') Or (StLw = 'type') Or
        (StLw = 'label') Then
@@ -14259,7 +14259,7 @@ Begin
       Exit;
     End;
 
-    (* END - do not consume, let ParseBlock handle it *)
+    (* END - ne pas consommer, laisser ParseBlock le gerer *)
     If (StLw = 'end') Or (StLw = 'exception') Then
       Exit;
 
@@ -14311,7 +14311,7 @@ Begin
       Exit;
     End;
 
-    (* Keyword that is a known function/procedure: treat as call or assignment *)
+    (* Mot-cle qui est une fonction/procedure connue : traiter comme appel ou affectation *)
     StIdx := SymFind(CurToken.Val);
     If (StIdx >= 0) And
        ((SymTab[StIdx].Cat = SC_FUNC) Or
@@ -14319,13 +14319,13 @@ Begin
     Begin
       StId := CurToken.Val;
       LexNextToken;
-      { Check for assignment: FuncName := expr (return value) }
+      { Verifier si affectation : NomFonc := expr (valeur de retour) }
       If (CurToken.Kind = TK_OP) And (CurToken.Val = ':=') Then
       Begin
         ParseAssignment(StId);
         Exit;
       End;
-      { Otherwise it's a call }
+      { Sinon c est un appel }
       EmitComment('call ' + StId);
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
@@ -14357,7 +14357,7 @@ Begin
       Exit;
     End;
 
-    (* Unknown keyword - skip *)
+    (* Mot-cle inconnu - sauter *)
     WarnMsg('instruction non geree: ' + CurToken.Val);
     LexNextToken;
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
@@ -14365,13 +14365,13 @@ Begin
     Exit;
   End;
 
-  (* Identifier : could be label, procedure call, or assignment *)
+  (* Identificateur : peut etre etiquette, appel de procedure ou affectation *)
   If CurToken.Kind = TK_IDENT Then
   Begin
     StId := CurToken.Val;
     LexNextToken;
 
-    (* Identifier label : ident: stmt *)
+    (* Etiquette d identificateur : ident: instr *)
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ':') Then
     Begin
       StIdx := SymFind(StId);
@@ -14385,10 +14385,10 @@ Begin
          fall through to assignment *)
     End;
 
-    (* Assignment or procedure call *)
+    (* Affectation ou appel de procedure *)
     StIdx := SymFind(StId);
 
-    (* Procedure call without parens *)
+    (* Appel de procedure sans parentheses *)
     If (StIdx >= 0) And (SymTab[StIdx].Cat = SC_PROC) And
        Not ((CurToken.Kind = TK_OP) And (CurToken.Val = ':=')) And
        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '.')) And
@@ -14426,7 +14426,7 @@ Begin
       Exit;
     End;
 
-    (* Function call without parens *)
+    (* Appel de fonction sans parentheses *)
     If (StIdx >= 0) And (SymTab[StIdx].Cat = SC_FUNC) And
        (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
@@ -14456,12 +14456,12 @@ Begin
       Exit;
     End;
 
-    (* Otherwise : assignment *)
+    (* Sinon : affectation *)
     ParseAssignment(StId);
     Exit;
   End;
 
-  (* Skip unknown token *)
+  (* Sauter le jeton inconnu *)
   If CurToken.Kind <> TK_EOF Then
   Begin
     LexNextToken;
@@ -14559,7 +14559,7 @@ Begin
           Not ((CurToken.Kind = TK_KEYWORD) And
                (StrLowerCase(CurToken.Val) = 'end')) Do
     Begin
-      (* Skip semicolons *)
+      (* Sauter les points-virgules *)
       While (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Do
         LexNextToken;
 
@@ -14709,9 +14709,9 @@ Var
   Cat           : TSymCat;
   DeclKw        : TString;
 Begin
-  LexNextToken;  { consume FUNCTION/PROCEDURE keyword }
+  LexNextToken;  { consommer le mot-cle FUNCTION/PROCEDURE }
 
-  { Read function/procedure name }
+  { Lire le nom de la fonction/procedure }
   If (CurToken.Kind <> TK_IDENT) And (CurToken.Kind <> TK_KEYWORD) Then
   Begin
     WarnMsg('identificateur attendu apres FUNCTION/PROCEDURE');
@@ -14720,12 +14720,12 @@ Begin
   FuncName := CurToken.Val;
   LexNextToken;
 
-  { Parse parameter list }
+  { Analyser la liste des parametres }
   ParamCount := 0;
   VarMask := 0;
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
   Begin
-    LexNextToken;  { consume '(' }
+    LexNextToken;  { consommer '(' }
     While (CurToken.Kind <> TK_EOF) And
           Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
     Begin
@@ -14784,7 +14784,7 @@ Begin
       LexNextToken;
   End;
 
-  { Parse return type for functions }
+  { Analyser le type de retour pour les fonctions }
   RetTIdx := TY_IDX_INTEGER;
   If IsFunction Then
   Begin
@@ -14803,11 +14803,11 @@ Begin
     End;
   End;
 
-  { Expect semicolon after signature }
+  { Attendre un point-virgule apres la signature }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     LexNextToken;
 
-  { Check for FORWARD or EXTERNAL directives }
+  { Verifier les directives FORWARD ou EXTERNAL }
   IsForward_ := False;
   IsExternal_ := PendAttrExternal;
 
@@ -14831,13 +14831,13 @@ Begin
       LexNextToken;
   End;
 
-  { Determine symbol category }
+  { Determiner la categorie du symbole }
   If IsFunction Then
     Cat := SC_FUNC
   Else
     Cat := SC_PROC;
 
-  { Add or resolve symbol in table }
+  { Ajouter ou resoudre le symbole dans la table }
   FuncIdx := SymAdd(FuncName, Cat, RetTIdx);
   If FuncIdx >= 0 Then
   Begin
@@ -14846,7 +14846,7 @@ Begin
     SymTab[FuncIdx].IsLocal      := False;
   End;
 
-  { Handle FORWARD declaration }
+  { Gerer la declaration FORWARD }
   If IsForward_ Then
   Begin
     If FuncIdx >= 0 Then
@@ -14856,7 +14856,7 @@ Begin
     Exit;
   End;
 
-  { Handle EXTERNAL declaration }
+  { Gerer la declaration EXTERNAL }
   If IsExternal_ Then
   Begin
     If FuncIdx >= 0 Then
@@ -14866,16 +14866,16 @@ Begin
     Exit;
   End;
 
-  { --- Parse function/procedure body --- }
+  { --- Analyser le corps de la fonction/procedure --- }
 
-  { Save context }
+  { Sauvegarder le contexte }
   SaveFuncName   := CurFuncName;
   SaveFuncRetOfs := CurFuncRetOfs;
   SaveRetLabel   := CurRetLabel;
   SaveParamBytes := CurParamBytes;
   SaveFrameOfs   := CurFrameOffset;
 
-  { Set up new function context }
+  { Configurer le nouveau contexte de fonction }
   If IsFunction Then
     CurFuncName := StrLowerCase(FuncName)
   Else
@@ -14886,10 +14886,10 @@ Begin
   CurFrameOffset := 0;
   Inc(CurNestLevel);
 
-  { Enter new scope }
+  { Entrer dans une nouvelle portee }
   SymEnterScope;
 
-  { Register parameters as symbols in the new scope.
+  { Enregistrer les parametres comme symboles dans la nouvelle portee.
     cdecl: caller pushes left-to-right, so first param is deepest:
       param[0] = [EBP + 8 + (N-1)*4]
       param[N-1] = [EBP + 8] }
@@ -14907,14 +14907,14 @@ Begin
     End;
   End;
 
-  { Allocate return value slot for functions at [EBP-4] }
+  { Allouer l emplacement de valeur de retour pour les fonctions a [EBP-4] }
   If IsFunction Then
   Begin
     Dec(CurFrameOffset, 4);
     CurFuncRetOfs := CurFrameOffset;
   End;
 
-  { Parse local declaration sections (VAR, CONST, TYPE, nested procs) }
+  { Analyser les sections de declaration locales (VAR, CONST, TYPE, procs imbriquees) }
   While (CurToken.Kind = TK_KEYWORD) Do
   Begin
     DeclKw := StrLowerCase(CurToken.Val);
@@ -14943,10 +14943,10 @@ Begin
       Break;
   End;
 
-  { Calculate frame size from accumulated local allocations }
+  { Calculer la taille du cadre a partir des allocations locales accumulees }
   FrameSize := -CurFrameOffset;
 
-  { Emit function label and prolog }
+  { Emettre l etiquette de fonction et le prologue }
   If FuncIdx >= 0 Then
     MName := SymTab[FuncIdx].MangledName
   Else
@@ -14958,37 +14958,37 @@ Begin
   EmitLabel(MName);
   EmitProlog(FrameSize);
 
-  { Initialize return value slot to 0 for functions }
+  { Initialiser l emplacement de valeur de retour a 0 pour les fonctions }
   If IsFunction Then
     EmitInstrAB('MOV', 'DWORD PTR ' + EBPOfs(CurFuncRetOfs), '0');
 
-  { Parse BEGIN..END block }
+  { Analyser le bloc BEGIN..END }
   If (CurToken.Kind = TK_KEYWORD) And
      (StrLowerCase(CurToken.Val) = 'begin') Then
     ParseBlock
   Else
     WarnMsg('BEGIN attendu dans le corps de ' + FuncName);
 
-  { Skip trailing semicolon after END }
+  { Sauter le point-virgule de fin apres END }
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
     LexNextToken;
 
-  { Emit return label }
+  { Emettre l etiquette de retour }
   EmitLabel(RetLabel);
 
-  { Load return value into EAX for functions }
+  { Charger la valeur de retour dans EAX pour les fonctions }
   If IsFunction Then
     EmitInstrAB('MOV', 'EAX',
       'DWORD PTR ' + EBPOfs(CurFuncRetOfs));
 
-  { Emit epilog (cdecl: caller cleans up stack, so pass 0) }
+  { Emettre l epilogue (cdecl : l appelant nettoie la pile, donc passer 0) }
   EmitEpilog(0);
 
   { Leave scope }
   SymLeaveScope;
   Dec(CurNestLevel);
 
-  { Restore context }
+  { Restaurer le contexte }
   CurFuncName    := SaveFuncName;
   CurFuncRetOfs  := SaveFuncRetOfs;
   CurRetLabel    := SaveRetLabel;
@@ -15065,13 +15065,13 @@ Begin
   { Boucle principale de compilation }
   While CurToken.Kind <> TK_EOF Do
   Begin
-    (* PROGRAM header *)
+    (* En-tete PROGRAM *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'program') Then
     Begin
-      LexNextToken;  (* consume PROGRAM *)
+      LexNextToken;  (* consommer PROGRAM *)
       If CurToken.Kind = TK_IDENT Then
-        LexNextToken;  (* program name *)
+        LexNextToken;  (* nom du programme *)
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
       Begin
         While (CurToken.Kind <> TK_EOF) And
@@ -15085,7 +15085,7 @@ Begin
       Continue;
     End;
 
-    (* MODULE header *)
+    (* En-tete MODULE *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'module') Then
     Begin
@@ -15104,11 +15104,11 @@ Begin
       Continue;
     End;
 
-    (* VAR block *)
+    (* Bloc VAR *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'var') Then
     Begin
-      LexNextToken;  (* consume VAR *)
+      LexNextToken;  (* consommer VAR *)
       ParseVarDecl;
       If HasPendingAssign Then
       Begin
@@ -15122,11 +15122,11 @@ Begin
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'static') Then
     Begin
-      LexNextToken;  (* consume STATIC *)
+      LexNextToken;  (* consommer STATIC *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'var') Then
       Begin
-        LexNextToken;  (* consume VAR *)
+        LexNextToken;  (* consommer VAR *)
         ParseVarDecl;
         If HasPendingAssign Then
         Begin
@@ -15227,7 +15227,7 @@ Begin
       Continue;
     End;
 
-    (* VALUE section *)
+    (* Section VALUE *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'value') Then
     Begin
@@ -15236,7 +15236,7 @@ Begin
       Continue;
     End;
 
-    (* CONST block *)
+    (* Bloc CONST *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'const') Then
     Begin
@@ -15245,7 +15245,7 @@ Begin
       Continue;
     End;
 
-    (* TYPE block *)
+    (* Bloc TYPE *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'type') Then
     Begin
@@ -15254,7 +15254,7 @@ Begin
       Continue;
     End;
 
-    (* VAX attributes [...] before declarations *)
+    (* Attributs VAX [...] avant les declarations *)
     If IsOpenBracket Then
     Begin
       ParseDeclAttributes;
@@ -15276,7 +15276,7 @@ Begin
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'program') Then
         Continue;
-      (* [INITIALIZE] : module init block *)
+      (* [INITIALIZE] : bloc d initialisation du module *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'initialize') Then
       Begin
@@ -15297,7 +15297,7 @@ Begin
         PendAttrExternal := False;
         Continue;
       End;
-      (* [FINALIZE] : module cleanup block *)
+      (* [FINALIZE] : bloc de nettoyage du module *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'finalize') Then
       Begin
@@ -15313,7 +15313,7 @@ Begin
         PendAttrExternal := False;
         Continue;
       End;
-      (* Otherwise [EXTERNAL]/[GLOBAL] VAR *)
+      (* Sinon [EXTERNAL]/[GLOBAL] VAR *)
       If (CurToken.Kind = TK_KEYWORD) And
          (StrLowerCase(CurToken.Val) = 'var') Then
         LexNextToken;
@@ -15340,7 +15340,7 @@ Begin
       Continue;
     End;
 
-    (* LABEL declarations *)
+    (* Declarations LABEL *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'label') Then
     Begin
@@ -15407,7 +15407,7 @@ Begin
       Continue;
     End;
 
-    (* FUNCTION declaration at global level *)
+    (* Declaration FUNCTION au niveau global *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'function') Then
     Begin
@@ -15415,7 +15415,7 @@ Begin
       Continue;
     End;
 
-    (* PROCEDURE declaration at global level *)
+    (* Declaration PROCEDURE au niveau global *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'procedure') Then
     Begin
@@ -15423,7 +15423,7 @@ Begin
       Continue;
     End;
 
-    (* BEGIN : enter main program block *)
+    (* BEGIN : entrer dans le bloc programme principal *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'begin') Then
     Begin
@@ -15438,7 +15438,7 @@ Begin
       Continue;
     End;
 
-    (* END alone (end of module or implicit block) *)
+    (* END seul (fin du module ou bloc implicite) *)
     If (CurToken.Kind = TK_KEYWORD) And
        (StrLowerCase(CurToken.Val) = 'end') Then
     Begin
@@ -15449,7 +15449,7 @@ Begin
       Continue;
     End;
 
-    (* Skip any other token *)
+    (* Sauter tout autre jeton *)
     LexNextToken;
   End;
 
