@@ -6098,6 +6098,7 @@ Begin
     End;
     EmitBlankLine;
     EmitComment('--- Sortie programme (Win32 ExitProcess) ---');
+    EmitLabel(VXP_LBL_PFX + 'EXIT');
     EmitInstrA('PUSH', '0');
     EmitInstrA('CALL', '_ExitProcess@4');
     EmitBlankLine;
@@ -7164,7 +7165,7 @@ Begin
   EmitInstrAB('ADD', 'ESP', '4');
   EmitInstrA('CALL', VXP_RT_PFX + 'NEWLINE');
   EmitInstrA('PUSH', '1');
-  EmitInstrA('CALL', 'ExitProcess');
+  EmitInstrA('CALL', '_ExitProcess@4');
   EmitRaw(VXP_RT_PFX + 'ASSERT_OK:');
   EmitInstr('RET');
   EmitBlankLine;
@@ -7500,7 +7501,7 @@ Begin
   (* Appel Win32 GetLocalTime -> SYSTEMTIME sur pile *)
   EmitInstrAB('SUB', 'ESP', '16');
   EmitInstrA('PUSH', 'ESP');
-  EmitInstrA('CALL', 'GetLocalTime');
+  EmitInstrA('CALL', '_GetLocalTime@4');
   (* SYSTEMTIME: WORD Year[0], Month[2], DayOfWeek[4], Day[6],
      Hour[8], Minute[10], Second[12], Ms[14] *)
   EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+6]');   (* Day *)
@@ -7558,7 +7559,7 @@ Begin
   EmitInstrA('PUSH', 'EDX');
   EmitInstrAB('SUB', 'ESP', '16');
   EmitInstrA('PUSH', 'ESP');
-  EmitInstrA('CALL', 'GetLocalTime');
+  EmitInstrA('CALL', '_GetLocalTime@4');
   (* Hour *)
   EmitInstrAB('MOVZX', 'EAX', 'WORD PTR [ESP+8]');
   EmitInstrA('PUSH', 'EAX');
@@ -7607,7 +7608,7 @@ Begin
   (* ---- _VXPRT_CLOCK : retourner GetTickCount -> EAX ------------- *)
   EmitComment('--- CLOCK : -> EAX=GetTickCount ms ---');
   EmitLabel(VXP_RT_PFX + 'CLOCK');
-  EmitInstrA('CALL', 'GetTickCount');
+  EmitInstrA('CALL', '_GetTickCount@0');
   EmitInstr('RET');
   EmitBlankLine;
 
@@ -7756,7 +7757,7 @@ Begin
   EmitInstrA('PUSH', '1');               (* FILE_SHARE_READ *)
   EmitInstrA('PUSH', '80000000h');       (* GENERIC_READ *)
   EmitInstrA('PUSH', 'EAX');             (* lpFileName *)
-  EmitInstrA('CALL', 'CreateFileA');
+  EmitInstrA('CALL', '_CreateFileA@28');
   EmitInstr('RET');
   EmitBlankLine;
 
@@ -7770,7 +7771,7 @@ Begin
   EmitInstrA('PUSH', '0');
   EmitInstrA('PUSH', '40000000h');       (* GENERIC_WRITE *)
   EmitInstrA('PUSH', 'EAX');
-  EmitInstrA('CALL', 'CreateFileA');
+  EmitInstrA('CALL', '_CreateFileA@28');
   EmitInstr('RET');
   EmitBlankLine;
 
@@ -7778,7 +7779,7 @@ Begin
   EmitComment('--- FCLOSE : EAX=handle ---');
   EmitLabel(VXP_RT_PFX + 'FCLOSE');
   EmitInstrA('PUSH', 'EAX');
-  EmitInstrA('CALL', 'CloseHandle');
+  EmitInstrA('CALL', '_CloseHandle@4');
   EmitInstr('RET');
   EmitBlankLine;
 
@@ -7790,7 +7791,7 @@ Begin
   EmitInstrA('PUSH', 'ECX');             (* nNumberOfBytesToRead *)
   EmitInstrA('PUSH', 'EBX');             (* lpBuffer *)
   EmitInstrA('PUSH', 'EAX');             (* hFile *)
-  EmitInstrA('CALL', 'ReadFile');
+  EmitInstrA('CALL', '_ReadFile@20');
   EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + VXP_RT_PFX + 'WRITTEN]');
   EmitInstr('RET');
   EmitBlankLine;
@@ -7803,7 +7804,7 @@ Begin
   EmitInstrA('PUSH', 'ECX');
   EmitInstrA('PUSH', 'EBX');
   EmitInstrA('PUSH', 'EAX');
-  EmitInstrA('CALL', 'WriteFile');
+  EmitInstrA('CALL', '_WriteFile@20');
   EmitInstrAB('MOV', 'EAX', 'DWORD PTR [' + VXP_RT_PFX + 'WRITTEN]');
   EmitInstr('RET');
   EmitBlankLine;
@@ -7812,7 +7813,7 @@ Begin
   EmitComment('--- FDELETE : EAX=filename -> EAX=result ---');
   EmitLabel(VXP_RT_PFX + 'FDELETE');
   EmitInstrA('PUSH', 'EAX');
-  EmitInstrA('CALL', 'DeleteFileA');
+  EmitInstrA('CALL', '_DeleteFileA@4');
   EmitInstr('RET');
   EmitBlankLine;
 

@@ -87,6 +87,7 @@ _VXPL_2:
 
 
 ; --- Sortie programme (Win32 ExitProcess) ---
+_VXPL_EXIT:
         PUSH   0
         CALL   _ExitProcess@4
 
@@ -998,7 +999,7 @@ _VXPRT_ASSERT:
         ADD   ESP, 4
         CALL   _VXPRT_NEWLINE
         PUSH   1
-        CALL   ExitProcess
+        CALL   _ExitProcess@4
 _VXPRT_ASSERT_OK:
         RET
 
@@ -1301,7 +1302,7 @@ _VXPRT_DATE:
         PUSH   EDX
         SUB   ESP, 16
         PUSH   ESP
-        CALL   GetLocalTime
+        CALL   _GetLocalTime@4
         MOVZX   EAX, WORD PTR [ESP+6]
         PUSH   EAX
         CALL   _VXPRT_NUMTOSTR
@@ -1350,7 +1351,7 @@ _VXPRT_TIME:
         PUSH   EDX
         SUB   ESP, 16
         PUSH   ESP
-        CALL   GetLocalTime
+        CALL   _GetLocalTime@4
         MOVZX   EAX, WORD PTR [ESP+8]
         PUSH   EAX
         CALL   _VXPRT_NUMTOSTR
@@ -1394,7 +1395,7 @@ _VXPRT_TIME:
 
 ; --- CLOCK : -> EAX=GetTickCount ms ---
 _VXPRT_CLOCK:
-        CALL   GetTickCount
+        CALL   _GetTickCount@0
         RET
 
 ; --- POWI : EAX=base, EBX=exp -> EAX=base^exp ---
@@ -1527,7 +1528,7 @@ _VXPRT_FOPEN:
         PUSH   1
         PUSH   80000000h
         PUSH   EAX
-        CALL   CreateFileA
+        CALL   _CreateFileA@28
         RET
 
 ; --- FCREATE : EAX=filename -> EAX=handle ---
@@ -1539,13 +1540,13 @@ _VXPRT_FCREATE:
         PUSH   0
         PUSH   40000000h
         PUSH   EAX
-        CALL   CreateFileA
+        CALL   _CreateFileA@28
         RET
 
 ; --- FCLOSE : EAX=handle ---
 _VXPRT_FCLOSE:
         PUSH   EAX
-        CALL   CloseHandle
+        CALL   _CloseHandle@4
         RET
 
 ; --- FREAD : EAX=handle, EBX=buf, ECX=count -> EAX=bytes_read ---
@@ -1555,7 +1556,7 @@ _VXPRT_FREAD:
         PUSH   ECX
         PUSH   EBX
         PUSH   EAX
-        CALL   ReadFile
+        CALL   _ReadFile@20
         MOV   EAX, DWORD PTR [_VXPRT_WRITTEN]
         RET
 
@@ -1566,14 +1567,14 @@ _VXPRT_FWRITE:
         PUSH   ECX
         PUSH   EBX
         PUSH   EAX
-        CALL   WriteFile
+        CALL   _WriteFile@20
         MOV   EAX, DWORD PTR [_VXPRT_WRITTEN]
         RET
 
 ; --- FDELETE : EAX=filename -> EAX=result ---
 _VXPRT_FDELETE:
         PUSH   EAX
-        CALL   DeleteFileA
+        CALL   _DeleteFileA@4
         RET
 
 ; --- VMS_STUB : stub retourne 0 ---
