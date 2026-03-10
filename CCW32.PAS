@@ -1160,7 +1160,10 @@ Begin
     (S = 'signed')   Or (S = 'sizeof')   Or (S = 'static')   Or
     (S = 'struct')   Or (S = 'switch')   Or (S = 'typedef')  Or
     (S = 'union')    Or (S = 'unsigned') Or (S = 'void')     Or
-    (S = 'volatile') Or (S = 'while');
+    (S = 'volatile') Or (S = 'while')    Or
+    { C99 keywords }
+    (S = '_Bool')    Or (S = '_Complex') Or (S = '_Imaginary') Or
+    (S = 'inline')   Or (S = 'restrict');
 End;
 
 { ------------------------------------------------------------ }
@@ -3316,7 +3319,7 @@ Var
 { ------------------------------------------------------------ }
 
 Const
-  MAX_CTYPE_SIZES = 18;
+  MAX_CTYPE_SIZES = 25;
   CTypeSizes : Array[0..MAX_CTYPE_SIZES - 1] Of TCSizeInfo = (
     (Name: 'char';              Size: 1),
     (Name: 'signed char';       Size: 1),
@@ -3335,7 +3338,15 @@ Const
     (Name: 'float';             Size: 4),
     (Name: 'double';            Size: 8),
     (Name: 'long double';       Size: 8),
-    (Name: 'void';              Size: 0)
+    (Name: 'void';              Size: 0),
+    { C99 types }
+    (Name: '_Bool';             Size: 1),
+    (Name: 'wchar_t';           Size: 2),
+    (Name: 'float _Complex';    Size: 8),
+    (Name: 'double _Complex';   Size: 16),
+    (Name: 'long _Complex';     Size: 16),
+    (Name: 'long double _Complex'; Size: 16),
+    (Name: '_Complex';          Size: 16)
   );
 
 { ------------------------------------------------------------ }
@@ -4679,6 +4690,31 @@ Begin
   { Index 19 : char* (pointeur vers char, courant en C) }
   TypeAdd(TKP_POINTER, 'char *',        4, 4, False, 1);    { idx 19 }
 
+  { C99 types }
+  { Index 20 : _Bool (1 byte, unsigned) }
+  TypeAdd(TKP_CHAR,   '_Bool',          1, 1, True,  -1);   { idx 20 }
+
+  { Index 21 : wchar_t (2 bytes unsigned, Win32 = unsigned short) }
+  TypeAdd(TKP_USHORT, 'wchar_t',        2, 2, True,  -1);   { idx 21 }
+
+  { Index 22 : float _Complex (8 bytes: 4 real + 4 imag) }
+  TypeAdd(TKP_STRUCT, 'float _Complex',  8, 4, False, -1);  { idx 22 }
+
+  { Index 23 : double _Complex (16 bytes: 8 real + 8 imag) }
+  TypeAdd(TKP_STRUCT, 'double _Complex', 16, 8, False, -1); { idx 23 }
+
+  { Index 24 : long double _Complex (16 bytes) }
+  TypeAdd(TKP_STRUCT, 'long double _Complex', 16, 8, False, -1); { idx 24 }
+
+  { Index 25 : _Complex (alias de double _Complex par defaut) }
+  TypeAdd(TKP_STRUCT, '_Complex',        16, 8, False, -1); { idx 25 }
+
+  { Index 26 : long _Complex (alias de long double _Complex) }
+  TypeAdd(TKP_STRUCT, 'long _Complex',   16, 8, False, -1); { idx 26 }
+
+  { Index 27 : wchar_t* (pointeur vers wchar_t) }
+  TypeAdd(TKP_POINTER, 'wchar_t *',     4, 4, False, 21);   { idx 27 }
+
   If Opts.DebugMode Then
     WriteLn('  [TypeInit] ', TypeCount, ' types primitifs enregistres');
 End;
@@ -5315,7 +5351,9 @@ Begin
     (S = 'int') Or (S = 'char') Or (S = 'short') Or (S = 'long') Or
     (S = 'float') Or (S = 'double') Or (S = 'void') Or
     (S = 'signed') Or (S = 'unsigned') Or
-    (S = 'struct') Or (S = 'union') Or (S = 'enum');
+    (S = 'struct') Or (S = 'union') Or (S = 'enum') Or
+    { C99 type specifiers }
+    (S = '_Bool') Or (S = '_Complex') Or (S = '_Imaginary');
 End;
 
 { ------------------------------------------------------------ }
@@ -5338,7 +5376,9 @@ End;
 Function IsQualifier(Const S : TString) : Boolean;
 Begin
   IsQualifier :=
-    (S = 'const') Or (S = 'volatile');
+    (S = 'const') Or (S = 'volatile') Or
+    { C99 qualifiers }
+    (S = 'restrict') Or (S = 'inline');
 End;
 
 { ------------------------------------------------------------ }
