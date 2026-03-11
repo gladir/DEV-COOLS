@@ -12,6 +12,12 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
+
+; Fonction : main
+PUBLIC _main
+_main:
+        PUSH BP
+        MOV BP,SP
         MOV WORD PTR [BP-4],10
         MOV WORD PTR [BP-2],20
 ; cout/cerr << ...
@@ -101,6 +107,13 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         CALL _CC_RT_WRITENUM
         MOV BX,1
         CALL _CC_RT_WRITECRLF
+        MOV AX,0
+        JMP _CC_L_1
+_CC_L_1:
+        MOV SP,BP
+        POP BP
+        RET
+
 
 ; === Runtime library ===
 

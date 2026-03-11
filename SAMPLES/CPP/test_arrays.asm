@@ -12,6 +12,12 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
+
+; Fonction : main
+PUBLIC _main
+_main:
+        PUSH BP
+        MOV BP,SP
         LEA AX,[BP-10]
         PUSH   AX
         MOV AX,0
@@ -145,21 +151,21 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         MOV AX,0
         MOV WORD PTR [BP-28],AX
 ; while
-_CC_L_1:
+_CC_L_2:
         MOV AX,WORD PTR [BP-28]
         PUSH   AX
         MOV AX,5
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JL _CC_L_3
+        JL _CC_L_4
         XOR AX,AX
-        JMP _CC_L_4
-_CC_L_3:
-        MOV AX,1
+        JMP _CC_L_5
 _CC_L_4:
+        MOV AX,1
+_CC_L_5:
         TEST AX,AX
-        JZ _CC_L_2
+        JZ _CC_L_3
         LEA AX,[BP-10]
         PUSH   AX
         MOV AX,WORD PTR [BP-28]
@@ -180,8 +186,8 @@ _CC_L_4:
         INC    AX
         MOV WORD PTR [BP-28],AX
         POP    AX
-        JMP _CC_L_1
-_CC_L_2:
+        JMP _CC_L_2
+_CC_L_3:
 ; cout/cerr << ...
         MOV AX,WORD PTR [BP-26]
         MOV BX,1
@@ -198,6 +204,13 @@ _CC_L_2:
         CALL _CC_RT_WRITENUM
         MOV BX,1
         CALL _CC_RT_WRITECRLF
+        MOV AX,0
+        JMP _CC_L_1
+_CC_L_1:
+        MOV SP,BP
+        POP BP
+        RET
+
 
 ; === Runtime library ===
 

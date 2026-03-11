@@ -12,6 +12,12 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
+
+; Fonction : main
+PUBLIC _main
+_main:
+        PUSH BP
+        MOV BP,SP
         MOV AX,100
         MOV WORD PTR [BP-2],AX
         MOV AX,3
@@ -37,26 +43,26 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         MOV BX,AX
         MOV AX,WORD PTR [BP-4]
         CMP BX,0
-        JE _CC_L_1
+        JE _CC_L_2
         CWD
         IDIV BX
-        JMP _CC_L_2
-_CC_L_1:
-        XOR AX,AX
+        JMP _CC_L_3
 _CC_L_2:
+        XOR AX,AX
+_CC_L_3:
         MOV WORD PTR [BP-4],AX
         MOV AX,7
         MOV BX,AX
         MOV AX,WORD PTR [BP-6]
         CMP BX,0
-        JE _CC_L_3
+        JE _CC_L_4
         CWD
         IDIV BX
         MOV AX,DX
-        JMP _CC_L_4
-_CC_L_3:
-        XOR AX,AX
+        JMP _CC_L_5
 _CC_L_4:
+        XOR AX,AX
+_CC_L_5:
         MOV WORD PTR [BP-6],AX
         MOV AX,WORD PTR [BP-2]
         PUSH   AX
@@ -113,6 +119,13 @@ _CC_L_4:
         MOV WORD PTR [BP-16],AX
         MOV AX,3
         MOV WORD PTR [BP-18],AX
+        MOV AX,0
+        JMP _CC_L_1
+_CC_L_1:
+        MOV SP,BP
+        POP BP
+        RET
+
 
 ; === Runtime library ===
 

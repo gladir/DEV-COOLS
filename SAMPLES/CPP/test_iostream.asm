@@ -12,8 +12,14 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
+
+; Fonction : main
+PUBLIC _main
+_main:
+        PUSH BP
+        MOV BP,SP
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_1
+        MOV DX,OFFSET _CC_K_2
         MOV BX,1
         CALL _CC_RT_WRITESTR
 ; cout/cerr << ...
@@ -29,7 +35,7 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         MOV BX,1
         CALL _CC_RT_WRITECRLF
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_2
+        MOV DX,OFFSET _CC_K_3
         MOV BX,1
         CALL _CC_RT_WRITESTR
 ; cout/cerr << ...
@@ -40,7 +46,7 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         MOV BX,1
         CALL _CC_RT_WRITECRLF
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_3
+        MOV DX,OFFSET _CC_K_4
         MOV BX,1
         CALL _CC_RT_WRITESTR
         MOV AX,123
@@ -53,7 +59,7 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
         MOV AX,3
         MOV WORD PTR [BP-6],AX
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_4
+        MOV DX,OFFSET _CC_K_5
         MOV BX,1
         CALL _CC_RT_WRITESTR
 ; cout/cerr << ...
@@ -91,6 +97,13 @@ _TEXT   SEGMENT WORD PUBLIC 'CODE'
 ; cout/cerr << ...
         MOV BX,1
         CALL _CC_RT_WRITECRLF
+        MOV AX,0
+        JMP _CC_L_1
+_CC_L_1:
+        MOV SP,BP
+        POP BP
+        RET
+
 
 ; === Runtime library ===
 
@@ -280,10 +293,10 @@ _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
 _CC_RT_ATMP     DW  0
-_CC_K_1  DB  'Hello, World!',0
-_CC_K_2  DB  'Valeur de x = ',0
-_CC_K_3  DB  'Test: ',0
-_CC_K_4  DB  'a + b = ',0
+_CC_K_2  DB  'Hello, World!',0
+_CC_K_3  DB  'Valeur de x = ',0
+_CC_K_4  DB  'Test: ',0
+_CC_K_5  DB  'a + b = ',0
 _DATA   ENDS
 
 END _main

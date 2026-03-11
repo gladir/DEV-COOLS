@@ -12,26 +12,32 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
+
+; Fonction : main
+PUBLIC _main
+_main:
+        PUSH BP
+        MOV BP,SP
         MOV AX,0
         MOV WORD PTR [BP-2],AX
         MOV AX,1
         MOV WORD PTR [BP-4],AX
 ; while
-_CC_L_1:
+_CC_L_2:
         MOV AX,WORD PTR [BP-4]
         PUSH   AX
         MOV AX,5
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JLE _CC_L_3
+        JLE _CC_L_4
         XOR AX,AX
-        JMP _CC_L_4
-_CC_L_3:
-        MOV AX,1
+        JMP _CC_L_5
 _CC_L_4:
+        MOV AX,1
+_CC_L_5:
         TEST AX,AX
-        JZ _CC_L_2
+        JZ _CC_L_3
         MOV AX,WORD PTR [BP-2]
         PUSH   AX
         MOV AX,WORD PTR [BP-4]
@@ -46,10 +52,10 @@ _CC_L_4:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-4],AX
-        JMP _CC_L_1
-_CC_L_2:
+        JMP _CC_L_2
+_CC_L_3:
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_5
+        MOV DX,OFFSET _CC_K_6
         MOV BX,1
         CALL _CC_RT_WRITESTR
         MOV AX,WORD PTR [BP-2]
@@ -62,7 +68,7 @@ _CC_L_2:
         MOV AX,1
         MOV WORD PTR [BP-8],AX
 ; do-while
-_CC_L_6:
+_CC_L_7:
         MOV AX,WORD PTR [BP-6]
         PUSH   AX
         MOV AX,WORD PTR [BP-8]
@@ -77,24 +83,24 @@ _CC_L_6:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-8],AX
-_CC_L_7:
+_CC_L_8:
         MOV AX,WORD PTR [BP-8]
         PUSH   AX
         MOV AX,3
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JLE _CC_L_9
+        JLE _CC_L_10
         XOR AX,AX
-        JMP _CC_L_10
-_CC_L_9:
-        MOV AX,1
+        JMP _CC_L_11
 _CC_L_10:
+        MOV AX,1
+_CC_L_11:
         TEST AX,AX
-        JNZ _CC_L_6
-_CC_L_8:
+        JNZ _CC_L_7
+_CC_L_9:
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_11
+        MOV DX,OFFSET _CC_K_12
         MOV BX,1
         CALL _CC_RT_WRITESTR
         MOV AX,WORD PTR [BP-6]
@@ -107,23 +113,23 @@ _CC_L_8:
 ; for
         MOV AX,0
         MOV WORD PTR [BP-12],AX
-_CC_L_12:
+_CC_L_13:
         MOV AX,WORD PTR [BP-12]
         PUSH   AX
         MOV AX,5
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JL _CC_L_16
+        JL _CC_L_17
         XOR AX,AX
-        JMP _CC_L_17
-_CC_L_16:
-        MOV AX,1
+        JMP _CC_L_18
 _CC_L_17:
+        MOV AX,1
+_CC_L_18:
         TEST AX,AX
-        JZ _CC_L_14
-        JMP _CC_L_15
-_CC_L_13:
+        JZ _CC_L_15
+        JMP _CC_L_16
+_CC_L_14:
         MOV AX,WORD PTR [BP-12]
         PUSH   AX
         MOV AX,1
@@ -131,8 +137,8 @@ _CC_L_13:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-12],AX
-        JMP _CC_L_12
-_CC_L_15:
+        JMP _CC_L_13
+_CC_L_16:
         MOV AX,WORD PTR [BP-10]
         PUSH   AX
         MOV AX,WORD PTR [BP-12]
@@ -140,10 +146,10 @@ _CC_L_15:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-10],AX
-        JMP _CC_L_13
-_CC_L_14:
+        JMP _CC_L_14
+_CC_L_15:
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_18
+        MOV DX,OFFSET _CC_K_19
         MOV BX,1
         CALL _CC_RT_WRITESTR
         MOV AX,WORD PTR [BP-10]
@@ -156,21 +162,21 @@ _CC_L_14:
         MOV AX,0
         MOV WORD PTR [BP-16],AX
 ; while
-_CC_L_19:
+_CC_L_20:
         MOV AX,WORD PTR [BP-16]
         PUSH   AX
         MOV AX,100
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JL _CC_L_21
+        JL _CC_L_22
         XOR AX,AX
-        JMP _CC_L_22
-_CC_L_21:
-        MOV AX,1
+        JMP _CC_L_23
 _CC_L_22:
+        MOV AX,1
+_CC_L_23:
         TEST AX,AX
-        JZ _CC_L_20
+        JZ _CC_L_21
 ; if
         MOV AX,WORD PTR [BP-16]
         PUSH   AX
@@ -178,17 +184,17 @@ _CC_L_22:
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JGE _CC_L_23
+        JGE _CC_L_24
         XOR AX,AX
-        JMP _CC_L_24
-_CC_L_23:
-        MOV AX,1
+        JMP _CC_L_25
 _CC_L_24:
-        TEST AX,AX
-        JZ _CC_L_25
-; break
-        JMP _CC_L_20
+        MOV AX,1
 _CC_L_25:
+        TEST AX,AX
+        JZ _CC_L_26
+; break
+        JMP _CC_L_21
+_CC_L_26:
         MOV AX,WORD PTR [BP-14]
         PUSH   AX
         MOV AX,WORD PTR [BP-16]
@@ -203,10 +209,10 @@ _CC_L_25:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-16],AX
-        JMP _CC_L_19
-_CC_L_20:
+        JMP _CC_L_20
+_CC_L_21:
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_27
+        MOV DX,OFFSET _CC_K_28
         MOV BX,1
         CALL _CC_RT_WRITESTR
         MOV AX,WORD PTR [BP-14]
@@ -219,23 +225,23 @@ _CC_L_20:
 ; for
         MOV AX,0
         MOV WORD PTR [BP-20],AX
-_CC_L_28:
+_CC_L_29:
         MOV AX,WORD PTR [BP-20]
         PUSH   AX
         MOV AX,5
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JL _CC_L_32
+        JL _CC_L_33
         XOR AX,AX
-        JMP _CC_L_33
-_CC_L_32:
-        MOV AX,1
+        JMP _CC_L_34
 _CC_L_33:
+        MOV AX,1
+_CC_L_34:
         TEST AX,AX
-        JZ _CC_L_30
-        JMP _CC_L_31
-_CC_L_29:
+        JZ _CC_L_31
+        JMP _CC_L_32
+_CC_L_30:
         MOV AX,WORD PTR [BP-20]
         PUSH   AX
         MOV AX,1
@@ -243,8 +249,8 @@ _CC_L_29:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-20],AX
-        JMP _CC_L_28
-_CC_L_31:
+        JMP _CC_L_29
+_CC_L_32:
 ; if
         MOV AX,WORD PTR [BP-20]
         PUSH   AX
@@ -252,17 +258,17 @@ _CC_L_31:
         MOV BX,AX
         POP    AX
         CMP AX,BX
-        JE _CC_L_34
+        JE _CC_L_35
         XOR AX,AX
-        JMP _CC_L_35
-_CC_L_34:
-        MOV AX,1
+        JMP _CC_L_36
 _CC_L_35:
-        TEST AX,AX
-        JZ _CC_L_36
-; continue
-        JMP _CC_L_29
+        MOV AX,1
 _CC_L_36:
+        TEST AX,AX
+        JZ _CC_L_37
+; continue
+        JMP _CC_L_30
+_CC_L_37:
         MOV AX,WORD PTR [BP-18]
         PUSH   AX
         MOV AX,WORD PTR [BP-20]
@@ -270,10 +276,10 @@ _CC_L_36:
         POP    AX
         ADD AX,BX
         MOV WORD PTR [BP-18],AX
-        JMP _CC_L_29
-_CC_L_30:
+        JMP _CC_L_30
+_CC_L_31:
 ; cout/cerr << ...
-        MOV DX,OFFSET _CC_K_38
+        MOV DX,OFFSET _CC_K_39
         MOV BX,1
         CALL _CC_RT_WRITESTR
         MOV AX,WORD PTR [BP-18]
@@ -281,6 +287,13 @@ _CC_L_30:
         CALL _CC_RT_WRITENUM
         MOV BX,1
         CALL _CC_RT_WRITECRLF
+        MOV AX,0
+        JMP _CC_L_1
+_CC_L_1:
+        MOV SP,BP
+        POP BP
+        RET
+
 
 ; === Runtime library ===
 
@@ -470,11 +483,11 @@ _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
 _CC_RT_ATMP     DW  0
-_CC_K_5  DB  'while sum = ',0
-_CC_K_11  DB  'do-while sum = ',0
-_CC_K_18  DB  'for sum = ',0
-_CC_K_27  DB  'break sum = ',0
-_CC_K_38  DB  'continue sum = ',0
+_CC_K_6  DB  'while sum = ',0
+_CC_K_12  DB  'do-while sum = ',0
+_CC_K_19  DB  'for sum = ',0
+_CC_K_28  DB  'break sum = ',0
+_CC_K_39  DB  'continue sum = ',0
 _DATA   ENDS
 
 END _main
