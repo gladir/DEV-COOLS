@@ -318,7 +318,7 @@
               -> PUSH instance (this) + CALL _CFC_NomComp_methode
             Vtable simplifiee : table DW des offsets methode dans DATA
 
-  TODO 21 - BALISES DE SORTIE ET FORMATAGE
+  TODO 21 - BALISES DE SORTIE ET FORMATAGE [IMPLEMENTE]
             <cfoutput query="nomQuery"> : boucle sur resultats (stub)
               -> parcourir les lignes du query et afficher
             <cfoutput group="colonne"> : regroupement (stub + avertissement)
@@ -669,6 +669,8 @@ Var
   { Etat general }
   RuntimeEmitted : Boolean;
   InSilentMode   : Boolean;  { True dans <cfsilent> }
+  InSaveContentMode : Boolean;  { True dans <cfsavecontent> }
+  SaveContentVar    : TString;  { nom de la variable cible savecontent }
 
   { Composants CFC (TODO 20) }
   CompTab    : Array[0..MAX_COMP - 1] Of TCompInfo;
@@ -810,6 +812,13 @@ Procedure ParseCfComponent; Forward;
 Procedure ParseCfProperty; Forward;
 Procedure ParseScriptComponent; Forward;
 Procedure ParseScriptProperty; Forward;
+{ TODO 21 }
+Procedure ParseCfSilent; Forward;
+Procedure ParseCfSaveContent; Forward;
+Procedure ParseCfFlush; Forward;
+Procedure ParseCfHeader; Forward;
+Procedure ParseCfContent; Forward;
+Procedure ParseCfLog; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1094,6 +1103,8 @@ Begin
   LoopTop        := 0;
   RuntimeEmitted := False;
   InSilentMode   := False;
+  InSaveContentMode := False;
+  SaveContentVar    := '';
   CurFrameSize   := 0;
   LabelGenSeq    := 0;
   CompCount      := 0;
@@ -2002,6 +2013,12 @@ Begin
   Idx := DataAdd('_CF_STRBUF2', DK_ARRAY_BLK, 0, '');
   If Idx >= 0 Then
     DataTab[Idx].ElemCount := 256;
+
+  { Buffer et position pour cfsavecontent (TODO 21) }
+  Idx := DataAdd('_CF_SCBUF', DK_ARRAY_BLK, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := 512;
+  DataAddWord('_CF_SCPOS', 0);
 End;
 
 { ---- ExprMakeImm : construire une valeur immediate --------- }
@@ -4572,6 +4589,47 @@ Begin
   EmitInstr('RET', '');
   EmitBlankLine;
 
+  { ---- _CFRT_SCSTART : initialiser le buffer savecontent ----- }
+  { Entree : rien                                                 }
+  { Sortie : buffer _CF_SCBUF vide, _CF_SCPOS = 0                }
+  EmitLabel(CF_RT_PFX + 'SCSTART');
+  EmitInstrAB('MOV', 'WORD PTR [_CF_SCPOS]', '0');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_SCBUF');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_SCAPPEND : ajouter chaine au buffer savecontent - }
+  { Entree : SI = ptr chaine ASCIIZ a ajouter                    }
+  { Sortie : contenu concatene dans _CF_SCBUF                    }
+  EmitLabel(CF_RT_PFX + 'SCAPPEND');
+  EmitInstr('PUSH', 'SI');
+  EmitInstrAB('MOV', 'DI', 'OFFSET _CF_SCBUF');
+  EmitInstrAB('ADD', 'DI', '[_CF_SCPOS]');
+  EmitLabel(CF_RT_PFX + 'SCA_LP');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'SCA_DN');
+  EmitInstr('STOSB', '');
+  EmitInstr('JMP', CF_RT_PFX + 'SCA_LP');
+  EmitLabel(CF_RT_PFX + 'SCA_DN');
+  EmitInstrAB('MOV', 'BYTE PTR [DI]', '0');
+  EmitInstrAB('SUB', 'DI', 'OFFSET _CF_SCBUF');
+  EmitInstrAB('MOV', '[_CF_SCPOS]', 'DI');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_SCAPPNUM : ajouter nombre au buffer savecontent - }
+  { Entree : AX = nombre                                          }
+  { Sortie : nombre converti et ajoute a _CF_SCBUF                }
+  EmitLabel(CF_RT_PFX + 'SCAPPNUM');
+  EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+  EmitInstrAB('MOV', 'SI', 'AX');
+  EmitInstr('CALL', CF_RT_PFX + 'SCAPPEND');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
 End;
 
 (* ---- EmitClose : fermer le fichier assembleur --------------- *)
@@ -5646,6 +5704,58 @@ Begin
       Res.SymIdx  := -1;
     End
 
+    { ============================================================ }
+    { TODO 21 - Fonctions de formatage (stubs)                     }
+    { ============================================================ }
+
+    { -- Fonction integree : DateFormat(date [, mask]) ------------ }
+    Else If (U = 'DATEFORMAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      WarnMsg('DateFormat: stub, retourne la valeur brute en chaine');
+      EmitComment('DateFormat() (stub: retourne valeur brute)');
+      ArgCount := ParseCallArgs;
+      If ArgCount >= 2 Then
+        EmitInstr('POP', 'BX');  { mask (ignore) }
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : TimeFormat(time [, mask]) ------------ }
+    Else If (U = 'TIMEFORMAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      WarnMsg('TimeFormat: stub, retourne la valeur brute en chaine');
+      EmitComment('TimeFormat() (stub: retourne valeur brute)');
+      ArgCount := ParseCallArgs;
+      If ArgCount >= 2 Then
+        EmitInstr('POP', 'BX');  { mask (ignore) }
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : LSCurrencyFormat(n [, locale]) ------- }
+    Else If (U = 'LSCURRENCYFORMAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      WarnMsg('LSCurrencyFormat: stub, retourne la valeur brute en chaine');
+      EmitComment('LSCurrencyFormat() (stub: retourne valeur brute)');
+      ArgCount := ParseCallArgs;
+      If ArgCount >= 2 Then
+        EmitInstr('POP', 'BX');  { locale (ignore) }
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
     { -- Fonction integree : IsNumeric(val) -------------------- }
     Else If (U = 'ISNUMERIC') And
             (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
@@ -6346,12 +6456,18 @@ End;
 { ---- ParseCfOutput : <cfoutput>texte #expr#</cfoutput> ------ }
 (* Emet le texte brut via _CFRT_PRINT et evalue les expressions  *)
 (* #expr# intercalees dans le contenu.                           *)
+(* TODO 21 : attributs query et group (stubs).                   *)
 Procedure ParseCfOutput;
 Var
-  Res  : TExprVal;
-  DIdx : Integer;
-  Lbl  : TString;
+  Res      : TExprVal;
+  DIdx     : Integer;
+  Lbl      : TString;
+  AttrName : TString;
+  HasQuery : Boolean;
+  HasGroup : Boolean;
 Begin
+  HasQuery := False;
+  HasGroup := False;
   { Le tag <cfoutput a deja ete consomme. Consommer les attributs }
   { restants et le > de fermeture de la balise ouvrante.          }
   While (CurToken.Kind <> TK_PUNCT) And
@@ -6359,6 +6475,13 @@ Begin
         (CurToken.Kind <> TK_EOF) Do
   Begin
     If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    { Detecter attributs query et group (TODO 21) }
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      AttrName := StrUpperCase(CurToken.Val);
+      If AttrName = 'QUERY' Then HasQuery := True;
+      If AttrName = 'GROUP' Then HasGroup := True;
+    End;
     ParserAdvance;
   End;
   { Consommer le > ou /> }
@@ -6369,6 +6492,12 @@ Begin
     ParserAdvance;
     Exit;
   End;
+
+  { TODO 21 : avertissements pour query / group }
+  If HasQuery Then
+    WarnMsg('cfoutput query= : stub, parcours simple sans query');
+  If HasGroup Then
+    WarnMsg('cfoutput group= : regroupement non supporte (stub)');
 
   { Boucle sur le contenu entre <cfoutput> et </cfoutput> }
   While CurToken.Kind <> TK_EOF Do
@@ -6384,15 +6513,23 @@ Begin
     { Texte brut : emettre via _CFRT_PRINT }
     If CurToken.Kind = TK_TEXT Then
     Begin
-      If CurToken.Val <> '' Then
+      If (CurToken.Val <> '') And (Not InSilentMode) Then
       Begin
         DIdx := DataAddStr(CurToken.Val);
         If DIdx >= 0 Then
         Begin
           Lbl := DataTab[DIdx].LblName;
           EmitComment('cfoutput: texte brut');
-          EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
-          EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+          If InSaveContentMode Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
+            EmitInstr('CALL', CF_RT_PFX + 'SCAPPEND');
+          End
+          Else
+          Begin
+            EmitInstrAB('MOV', 'SI', 'OFFSET ' + Lbl);
+            EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+          End;
         End;
       End;
       ParserAdvance;
@@ -6405,32 +6542,47 @@ Begin
       ExprMakeNone(Res);
       ParseExpr(Res);
       ExprFlushToAX(Res);
-      { Afficher le resultat selon le type }
-      If Res.TypeIdx = TY_IDX_STRING Then
+      If Not InSilentMode Then
       Begin
-        EmitComment('cfoutput: expr chaine');
-        EmitInstrAB('MOV', 'SI', 'AX');
-        EmitInstr('CALL', CF_RT_PFX + 'PRINT');
-      End
-      Else
-      Begin
-        EmitComment('cfoutput: expr numerique');
-        EmitInstr('CALL', CF_RT_PFX + 'PRINTNUM');
+        { Afficher le resultat selon le type }
+        If Res.TypeIdx = TY_IDX_STRING Then
+        Begin
+          EmitComment('cfoutput: expr chaine');
+          If InSaveContentMode Then
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            EmitInstr('CALL', CF_RT_PFX + 'SCAPPEND');
+          End
+          Else
+          Begin
+            EmitInstrAB('MOV', 'SI', 'AX');
+            EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+          End;
+        End
+        Else
+        Begin
+          EmitComment('cfoutput: expr numerique');
+          If InSaveContentMode Then
+            EmitInstr('CALL', CF_RT_PFX + 'SCAPPNUM')
+          Else
+            EmitInstr('CALL', CF_RT_PFX + 'PRINTNUM');
+        End;
       End;
       { Consommer # fermant s il est present }
       If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '#') Then
         ParserAdvance;
     End
 
-    { Autre token (balise imbriquee, etc.) : passer }
+    { Autre token (balise imbriquee, etc.) : dispatcher }
     Else
-      ParserAdvance;
+      ParseBodyTag;
   End;
 End;
 
 { ---- ParseWriteOutput : WriteOutput(expr) en cfscript ------- }
 (* Affiche la valeur de l expression passee en argument.         *)
 (* Syntaxe : WriteOutput(expression) ;                           *)
+(* TODO 21 : respect InSilentMode et InSaveContentMode.          *)
 Procedure ParseWriteOutput;
 Var
   Res : TExprVal;
@@ -6450,17 +6602,31 @@ Begin
   ParseExpr(Res);
   ExprFlushToAX(Res);
 
-  { Afficher selon le type }
-  If Res.TypeIdx = TY_IDX_STRING Then
+  { Afficher selon le type (sauf si mode silent) }
+  If Not InSilentMode Then
   Begin
-    EmitComment('WriteOutput: chaine');
-    EmitInstrAB('MOV', 'SI', 'AX');
-    EmitInstr('CALL', CF_RT_PFX + 'PRINT');
-  End
-  Else
-  Begin
-    EmitComment('WriteOutput: numerique');
-    EmitInstr('CALL', CF_RT_PFX + 'PRINTNUM');
+    If Res.TypeIdx = TY_IDX_STRING Then
+    Begin
+      EmitComment('WriteOutput: chaine');
+      If InSaveContentMode Then
+      Begin
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstr('CALL', CF_RT_PFX + 'SCAPPEND');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'SI', 'AX');
+        EmitInstr('CALL', CF_RT_PFX + 'PRINT');
+      End;
+    End
+    Else
+    Begin
+      EmitComment('WriteOutput: numerique');
+      If InSaveContentMode Then
+        EmitInstr('CALL', CF_RT_PFX + 'SCAPPNUM')
+      Else
+        EmitInstr('CALL', CF_RT_PFX + 'PRINTNUM');
+    End;
   End;
 
   { Consommer ) }
@@ -6658,6 +6824,19 @@ Begin
     Begin ParserAdvance; ParseCfComponent; End
     Else If TagLower = 'cfproperty' Then
     Begin ParserAdvance; ParseCfProperty; End
+    { TODO 21 - Balises de sortie et formatage }
+    Else If TagLower = 'cfsilent' Then
+    Begin ParserAdvance; ParseCfSilent; End
+    Else If TagLower = 'cfsavecontent' Then
+    Begin ParserAdvance; ParseCfSaveContent; End
+    Else If TagLower = 'cfflush' Then
+    Begin ParserAdvance; ParseCfFlush; End
+    Else If TagLower = 'cfheader' Then
+    Begin ParserAdvance; ParseCfHeader; End
+    Else If TagLower = 'cfcontent' Then
+    Begin ParserAdvance; ParseCfContent; End
+    Else If TagLower = 'cflog' Then
+    Begin ParserAdvance; ParseCfLog; End
     Else
       ParserAdvance;
   End
@@ -8549,6 +8728,224 @@ Begin
   EmitInstr('JMP', CurFnRetLbl);
 
   If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
+End;
+
+{ ============================================================
+  TODO 21 - BALISES DE SORTIE ET FORMATAGE [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- ParseCfSilent : <cfsilent>...</cfsilent> --------------- }
+(* Supprime toute sortie entre les balises. Le contenu est       *)
+(* parse normalement (effets de bord, cfset, etc.) mais          *)
+(* aucun code d affichage n est emis.                            *)
+Procedure ParseCfSilent;
+Var
+  OldSilent : Boolean;
+Begin
+  { Consommer les attributs restants et le > }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  EmitComment('cfsilent: debut suppression sortie');
+  OldSilent := InSilentMode;
+  InSilentMode := True;
+
+  { Parser le contenu normalement }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cfsilent') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    ParseBodyTag;
+  End;
+
+  InSilentMode := OldSilent;
+  EmitComment('cfsilent: fin suppression sortie');
+End;
+
+{ ---- ParseCfSaveContent : <cfsavecontent variable="x">...</cfsavecontent> }
+(* Redirige toute la sortie du contenu dans une variable chaine.  *)
+(* Utilise le buffer _CF_SCBUF et les routines _CFRT_SC*.         *)
+Procedure ParseCfSaveContent;
+Var
+  VarName    : TString;
+  OldSCMode  : Boolean;
+  OldSCVar   : TString;
+  SIdx       : Integer;
+Begin
+  VarName := '';
+  { Consommer les attributs et detecter variable="nomVar" }
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    If (CurToken.Kind = TK_IDENT) And
+       (StrUpperCase(CurToken.Val) = 'VARIABLE') Then
+    Begin
+      ParserAdvance;  { consommer 'variable' }
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        ParserAdvance;  { consommer '=' }
+      If CurToken.Kind = TK_STRING Then
+      Begin
+        VarName := CurToken.Val;
+        ParserAdvance;
+      End
+      Else If CurToken.Kind = TK_IDENT Then
+      Begin
+        VarName := CurToken.Val;
+        ParserAdvance;
+      End;
+    End
+    Else
+      ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  If VarName = '' Then
+  Begin
+    CompileError('cfsavecontent: attribut variable= requis');
+    Exit;
+  End;
+
+  { Initialiser le buffer savecontent }
+  EmitComment('cfsavecontent: debut redirection -> ' + VarName);
+  EmitInstr('CALL', CF_RT_PFX + 'SCSTART');
+
+  OldSCMode := InSaveContentMode;
+  OldSCVar  := SaveContentVar;
+  InSaveContentMode := True;
+  SaveContentVar    := VarName;
+
+  { Parser le contenu normalement }
+  While CurToken.Kind <> TK_EOF Do
+  Begin
+    If (CurToken.Kind = TK_TAG_CLOSE) And
+       (StrLowerCase(CurToken.Val) = 'cfsavecontent') Then
+    Begin
+      ParserAdvance;
+      Break;
+    End;
+    ParseBodyTag;
+  End;
+
+  InSaveContentMode := OldSCMode;
+  SaveContentVar    := OldSCVar;
+
+  { Copier le contenu du buffer dans la variable }
+  EmitComment('cfsavecontent: stocker buffer dans ' + VarName);
+  EmitInstrAB('MOV', 'AX', 'OFFSET _CF_SCBUF');
+
+  { Enregistrer la variable si elle n existe pas encore }
+  SIdx := SymFind(VarName);
+  If SIdx < 0 Then
+  Begin
+    SIdx := SymAdd(VarName, SC_VAR, TY_IDX_STRING, 0);
+    If SIdx >= 0 Then
+    Begin
+      DataAddWord(CF_VAR_PFX + SymTab[SIdx].MangledName, 0);
+    End;
+  End;
+  If SIdx >= 0 Then
+    EmitInstrAB('MOV', '[' + CF_VAR_PFX + SymTab[SIdx].MangledName + ']', 'AX');
+  EmitComment('cfsavecontent: fin');
+End;
+
+{ ---- ParseCfFlush : <cfflush> ------------------------------- }
+(* Stub : vider le tampon de sortie. Pas de buffer HTTP sous DOS *)
+Procedure ParseCfFlush;
+Begin
+  WarnMsg('cfflush: stub, pas de buffer HTTP sous DOS');
+  EmitComment('cfflush (stub)');
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+End;
+
+{ ---- ParseCfHeader : <cfheader ...> -------------------------- }
+(* Stub : en-tete HTTP non applicable en mode DOS.               *)
+Procedure ParseCfHeader;
+Begin
+  WarnMsg('cfheader: stub, contexte HTTP non applicable');
+  EmitComment('cfheader (stub)');
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+End;
+
+{ ---- ParseCfContent : <cfcontent ...> ------------------------ }
+(* Stub : type MIME non applicable en mode DOS.                  *)
+Procedure ParseCfContent;
+Begin
+  WarnMsg('cfcontent: stub, contexte HTTP non applicable');
+  EmitComment('cfcontent (stub)');
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
+    ParserAdvance;
+End;
+
+{ ---- ParseCfLog : <cflog text="message"> -------------------- }
+(* Stub : ecriture dans un fichier log (non implemente).         *)
+Procedure ParseCfLog;
+Begin
+  WarnMsg('cflog: stub, ecriture log non implementee');
+  EmitComment('cflog (stub)');
+  While (CurToken.Kind <> TK_PUNCT) And
+        (CurToken.Kind <> TK_TAG_SELFCLOSE) And
+        (CurToken.Kind <> TK_EOF) Do
+  Begin
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then Break;
+    ParserAdvance;
+  End;
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '>') Then
+    ParserAdvance
+  Else If CurToken.Kind = TK_TAG_SELFCLOSE Then
     ParserAdvance;
 End;
 
