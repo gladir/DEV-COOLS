@@ -230,7 +230,7 @@
             Reverse(str)           -> CALL _CFRT_REVERSE -> AX=ptr
             ListLen / ListGetAt / ListAppend : fonctions de listes (delimiteur virgule)
 
-  TODO 16 - FONCTIONS INTEGREES NUMERIQUES ET MATHEMATIQUES
+  TODO 16 - FONCTIONS INTEGREES NUMERIQUES ET MATHEMATIQUES [IMPLEMENTE]
             Int(n)          -> troncature -> AX
             Round(n)        -> arrondi -> AX (simplifie : meme que Int pour entiers)
             Abs(n)          -> CALL _CFRT_ABS -> AX (valeur absolue)
@@ -3811,6 +3811,116 @@ Begin
   EmitInstr('POP', 'BX');
   EmitInstr('RET', '');
   EmitBlankLine;
+
+  { ============================================================ }
+  { TODO 16 - Routines runtime pour fonctions numeriques          }
+  { ============================================================ }
+
+  { ---- _CFRT_ABS : valeur absolue ---- }
+  { Entree : AX = entier signe 16 bits   }
+  { Sortie : AX = |AX|                   }
+  EmitLabel(CF_RT_PFX + 'ABS');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JNS', CF_RT_PFX + 'ABS_OK');
+  EmitInstr('NEG', 'AX');
+  EmitLabel(CF_RT_PFX + 'ABS_OK');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_MAX : maximum de deux entiers ---- }
+  { Entree : AX = a, BX = b                       }
+  { Sortie : AX = max(a, b)                       }
+  EmitLabel(CF_RT_PFX + 'MAX');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstr('JGE', CF_RT_PFX + 'MAX_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(CF_RT_PFX + 'MAX_OK');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_MIN : minimum de deux entiers ---- }
+  { Entree : AX = a, BX = b                       }
+  { Sortie : AX = min(a, b)                       }
+  EmitLabel(CF_RT_PFX + 'MIN');
+  EmitInstrAB('CMP', 'AX', 'BX');
+  EmitInstr('JLE', CF_RT_PFX + 'MIN_OK');
+  EmitInstrAB('MOV', 'AX', 'BX');
+  EmitLabel(CF_RT_PFX + 'MIN_OK');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_SGN : signe d un entier ---- }
+  { Entree : AX = entier signe              }
+  { Sortie : AX = -1, 0 ou 1               }
+  EmitLabel(CF_RT_PFX + 'SGN');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'SGN_Z');
+  EmitInstr('JS', CF_RT_PFX + 'SGN_N');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET', '');
+  EmitLabel(CF_RT_PFX + 'SGN_N');
+  EmitInstrAB('MOV', 'AX', '-1');
+  EmitInstr('RET', '');
+  EmitLabel(CF_RT_PFX + 'SGN_Z');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ISNUMERIC : test si chaine est numerique ---- }
+  { Entree : SI = ptr chaine ASCIIZ                          }
+  { Sortie : AX = 1 si numerique, 0 sinon                    }
+  EmitLabel(CF_RT_PFX + 'ISNUMERIC');
+  EmitInstr('PUSH', 'SI');
+  { Sauter les espaces initiaux }
+  EmitLabel(CF_RT_PFX + 'ISNUM_SK');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('CMP', 'AL', '32');
+  EmitInstr('JE', CF_RT_PFX + 'ISNUM_SK');
+  { Accepter un signe optionnel }
+  EmitInstrAB('CMP', 'AL', '''+''');
+  EmitInstr('JE', CF_RT_PFX + 'ISNUM_DG');
+  EmitInstrAB('CMP', 'AL', '''-''');
+  EmitInstr('JE', CF_RT_PFX + 'ISNUM_DG');
+  EmitInstr('DEC', 'SI');  { reculer si pas de signe }
+  EmitLabel(CF_RT_PFX + 'ISNUM_DG');
+  EmitInstrAB('XOR', 'CX', 'CX');  { compteur de chiffres }
+  EmitLabel(CF_RT_PFX + 'ISNUM_LP');
+  EmitInstr('LODSB', '');
+  EmitInstrAB('OR', 'AL', 'AL');
+  EmitInstr('JZ', CF_RT_PFX + 'ISNUM_OK');
+  EmitInstrAB('CMP', 'AL', '''0''');
+  EmitInstr('JB', CF_RT_PFX + 'ISNUM_NO');
+  EmitInstrAB('CMP', 'AL', '''9''');
+  EmitInstr('JA', CF_RT_PFX + 'ISNUM_NO');
+  EmitInstr('INC', 'CX');
+  EmitInstr('JMP', CF_RT_PFX + 'ISNUM_LP');
+  EmitLabel(CF_RT_PFX + 'ISNUM_OK');
+  { CX > 0 si au moins un chiffre }
+  EmitInstrAB('OR', 'CX', 'CX');
+  EmitInstr('JZ', CF_RT_PFX + 'ISNUM_NO');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitLabel(CF_RT_PFX + 'ISNUM_NO');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('POP', 'SI');
+  EmitInstr('RET', '');
+  EmitBlankLine;
+
+  { ---- _CFRT_ISBOOLEAN : test si valeur est booleenne ---- }
+  { Entree : AX = valeur                                     }
+  { Sortie : AX = 1 si 0 ou 1, 0 sinon                      }
+  EmitLabel(CF_RT_PFX + 'ISBOOLEAN');
+  EmitInstrAB('OR', 'AX', 'AX');
+  EmitInstr('JZ', CF_RT_PFX + 'ISBL_Y');
+  EmitInstrAB('CMP', 'AX', '1');
+  EmitInstr('JE', CF_RT_PFX + 'ISBL_Y');
+  EmitInstrAB('XOR', 'AX', 'AX');
+  EmitInstr('RET', '');
+  EmitLabel(CF_RT_PFX + 'ISBL_Y');
+  EmitInstrAB('MOV', 'AX', '1');
+  EmitInstr('RET', '');
+  EmitBlankLine;
 End;
 
 (* ---- EmitClose : fermer le fichier assembleur --------------- *)
@@ -4196,6 +4306,9 @@ End;
 (*   - TODO 15 : Left Right Mid Trim LTrim RTrim UCase LCase  *)
 (*     Find FindNoCase Replace Chr Asc Val RepeatString        *)
 (*     Reverse ListLen ListGetAt ListAppend                    *)
+(*   - TODO 16 : Int Round Abs Max Min Sgn IncrementValue     *)
+(*     DecrementValue NumberFormat IsNumeric IsBoolean          *)
+(*     IsNull IsSimpleValue RandRange                          *)
 Procedure ParsePrimary(Var Res : TExprVal);
 Var
   Name     : TString;
@@ -4569,6 +4682,198 @@ Begin
       EmitInstr('CALL', CF_RT_PFX + 'LISTAPPEND');
       Res.Kind    := EK_AX;
       Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { ============================================================ }
+    { TODO 16 - Fonctions integrees numeriques et mathematiques     }
+    { ============================================================ }
+
+    { -- Fonction integree : Int(n) ----------------------------- }
+    Else If (U = 'INT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Int()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { valeur entiere (deja tronquee en 16 bits) }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Round(n) --------------------------- }
+    Else If (U = 'ROUND') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Round() (simplifie: entier)');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { simplifie : meme que Int pour entiers }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Abs(n) ----------------------------- }
+    Else If (U = 'ABS') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Abs()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'ABS');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Max(a, b) ------------------------- }
+    Else If (U = 'MAX') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Max()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'BX');  { second argument }
+      EmitInstr('POP', 'AX');  { premier argument }
+      EmitInstr('CALL', CF_RT_PFX + 'MAX');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Min(a, b) ------------------------- }
+    Else If (U = 'MIN') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Min()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'BX');  { second argument }
+      EmitInstr('POP', 'AX');  { premier argument }
+      EmitInstr('CALL', CF_RT_PFX + 'MIN');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : Sgn(n) ----------------------------- }
+    Else If (U = 'SGN') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('Sgn()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'SGN');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : IncrementValue(n) ----------------- }
+    Else If (U = 'INCREMENTVALUE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('IncrementValue()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');
+      EmitInstr('INC', 'AX');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : DecrementValue(n) ----------------- }
+    Else If (U = 'DECREMENTVALUE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('DecrementValue()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');
+      EmitInstr('DEC', 'AX');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : NumberFormat(n [, mask]) ----------- }
+    Else If (U = 'NUMBERFORMAT') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('NumberFormat() (simplifie: NUMTOSTR)');
+      ArgCount := ParseCallArgs;
+      If ArgCount >= 2 Then
+        EmitInstr('POP', 'BX');  { mask (ignore, simplifie) }
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'NUMTOSTR');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_STRING;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : IsNumeric(val) -------------------- }
+    Else If (U = 'ISNUMERIC') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('IsNumeric()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'SI');
+      EmitInstr('CALL', CF_RT_PFX + 'ISNUMERIC');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : IsBoolean(val) -------------------- }
+    Else If (U = 'ISBOOLEAN') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('IsBoolean()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');
+      EmitInstr('CALL', CF_RT_PFX + 'ISBOOLEAN');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : IsNull(val) ----------------------- }
+    Else If (U = 'ISNULL') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('IsNull()');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');
+      EmitInstrAB('OR', 'AX', 'AX');
+      EmitInstr('JNZ', CF_RT_PFX + 'ISNL_N');
+      EmitInstrAB('MOV', 'AX', '1');
+      EmitInstr('JMP', CF_RT_PFX + 'ISNL_E');
+      EmitLabel(CF_RT_PFX + 'ISNL_N');
+      EmitInstrAB('XOR', 'AX', 'AX');
+      EmitLabel(CF_RT_PFX + 'ISNL_E');
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_BOOLEAN;
+      Res.SymIdx  := -1;
+    End
+
+    { -- Fonction integree : IsSimpleValue(val) ---------------- }
+    Else If (U = 'ISSIMPLEVALUE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      EmitComment('IsSimpleValue() (simplifie: toujours true)');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'AX');  { consommer l argument }
+      ExprMakeImm(1, TY_IDX_BOOLEAN, Res);
+    End
+
+    { -- Fonction integree : RandRange(lo, hi) ----------------- }
+    Else If (U = 'RANDRANGE') And
+            (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      WarnMsg('RandRange: pas de generateur aleatoire sur DOS, retourne lo');
+      EmitComment('RandRange() (stub: retourne lo)');
+      ArgCount := ParseCallArgs;
+      EmitInstr('POP', 'BX');  { hi (ignore) }
+      EmitInstr('POP', 'AX');  { lo -> resultat }
+      Res.Kind    := EK_AX;
+      Res.TypeIdx := TY_IDX_NUMERIC;
       Res.SymIdx  := -1;
     End
 
