@@ -273,7 +273,7 @@
             Pointeur vers struct : Nom* ptr -> acces via ptr->champ
             struct imbriquees : struct contenant d autres struct
 
-  TODO 18 - FONCTIONS ET PROTOTYPES
+  TODO 18 - FONCTIONS ET PROTOTYPES [IMPLEMENTE]
             ParseFuncDecl : type nom(params) { corps }
             Prototypes : type nom(params); (declaration forward)
             Parametres par valeur : copie sur pile
@@ -683,6 +683,11 @@ Var
   (* TODO 17 - Structures *)
   StructTab   : Array[0..MAX_STRUCT-1] Of TStructInfo;
   StructCount : Integer;
+
+  (* TODO 18 - Fonctions *)
+  DeclFnName      : TString;   (* nom de la fonction en cours de parsing *)
+  DeclFnRetTypeIdx: Integer;   (* type de retour *)
+  InFuncBody      : Boolean;   (* true si on est dans le corps d une fonction *)
 
 (* ============================================================
   FORWARD DECLARATIONS
@@ -1101,6 +1106,9 @@ Begin
   LabelGenSeq    := 0;
   LastArraySubIdx := -1;
   StructCount    := 0;
+  DeclFnName     := '';
+  DeclFnRetTypeIdx := TY_UNKNOWN;
+  InFuncBody     := False;
   GExprDummy.Kind    := EK_NONE;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
@@ -5284,6 +5292,8 @@ Begin
     (* Verifier si c est une declaration de fonction : ident( *)
     If (Not IsArrayDecl) And (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
     Begin
+      DeclFnName := VarName;
+      DeclFnRetTypeIdx := TypeIdx;
       ParseFuncDecl;
       Exit;
     End;
@@ -6104,9 +6114,203 @@ Begin
   LoopPop;
 End;
 
+(* ============================================================
+   TODO 18 - FONCTIONS ET PROTOTYPES [IMPLEMENTE]
+   ParseFuncDecl : parser type nom(params) { corps } ou prototype
+   Convention cdecl 16 bits : arguments pousses gauche-a-droite,
+     appelant nettoie la pile. Parametres a [BP+4+n*2].
+   Prologue : PUSH BP / MOV BP,SP / SUB SP,N
+   Epilogue : MOV SP,BP / POP BP / RET
+   return expr -> MOV AX,valeur + JMP epilogue
+   main() -> label PUBLIC _main
+   ============================================================ *)
+
 Procedure ParseFuncDecl;
+Var
+  FnName       : TString;
+  RetTypeIdx   : Integer;
+  FnLabel      : TString;
+  ParamNames   : Array[0..MAX_PARAM-1] Of TString;
+  ParamTypes   : Array[0..MAX_PARAM-1] Of Integer;
+  ParamIsRef   : Array[0..MAX_PARAM-1] Of Boolean;
+  ParamCount   : Integer;
+  PIsConst     : Boolean;
+  PIsStatic    : Boolean;
+  PTIdx        : Integer;
+  PName        : TString;
+  IsRef        : Boolean;
+  IsPrototype  : Boolean;
+  SIdx         : Integer;
+  I            : Integer;
+  SaveFrameSize: Integer;
+  SaveFnRetLbl : TString;
+  SaveFnName   : TString;
+  SaveFnDepth  : Integer;
+  SaveInFunc   : Boolean;
+  RetLbl       : TString;
+  Ofs          : Integer;
 Begin
-  (* stub *)
+  FnName     := DeclFnName;
+  RetTypeIdx := DeclFnRetTypeIdx;
+
+  If FnName = 'main' Then
+    FnLabel := '_main'
+  Else
+    FnLabel := CC_FN_PFX + SymNameClean(FnName);
+
+  (* Consommer '(' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    ParserAdvance;
+
+  (* Parser la liste de parametres *)
+  ParamCount := 0;
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Then
+  Begin
+    (* Cas special : void comme seul parametre *)
+    If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'void') Then
+    Begin
+      ParserAdvance;
+    End
+    Else
+    Begin
+      While (CurToken.Kind <> TK_EOF) And
+            Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')')) Do
+      Begin
+        IsRef := False;
+        PTIdx := ParseTypeSpec(PIsConst, PIsStatic);
+        (* Reference : T& *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+        Begin
+          IsRef := True;
+          ParserAdvance;
+        End;
+        PName := '';
+        If CurToken.Kind = TK_IDENT Then
+        Begin
+          PName := CurToken.Val;
+          ParserAdvance;
+        End;
+        (* Parametre par defaut : = valeur (on ignore la valeur) *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          (* Consommer la valeur par defaut *)
+          While (CurToken.Kind <> TK_EOF) And
+                Not ((CurToken.Kind = TK_PUNCT) And
+                     ((CurToken.Val = ',') Or (CurToken.Val = ')'))) Do
+            ParserAdvance;
+        End;
+        If ParamCount < MAX_PARAM Then
+        Begin
+          ParamNames[ParamCount] := PName;
+          ParamTypes[ParamCount] := PTIdx;
+          ParamIsRef[ParamCount] := IsRef;
+          Inc(ParamCount);
+        End;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+          ParserAdvance;
+      End;
+    End;
+  End;
+
+  (* Consommer ')' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ')') Then
+    ParserAdvance;
+
+  (* Detecter prototype vs definition *)
+  IsPrototype := (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';');
+
+  (* Enregistrer la fonction dans la table des symboles *)
+  SIdx := SymFind(FnName);
+  If (SIdx < 0) Or (SymTab[SIdx].Kind <> SK_FUNC) Then
+  Begin
+    SIdx := SymAdd(FnName, SK_FUNC, RetTypeIdx, 0);
+    If SIdx >= 0 Then
+      SymTab[SIdx].MangledName := FnLabel;
+  End;
+
+  If IsPrototype Then
+  Begin
+    ParserAdvance; (* consomme ';' *)
+    Exit;
+  End;
+
+  (* ---- Definition de fonction : { corps } ---- *)
+  If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{')) Then
+  Begin
+    (* Pas un prototype ni une definition -> erreur *)
+    CompileError('attendu "{" ou ";" apres la declaration de ' + FnName);
+    Exit;
+  End;
+
+  (* Sauvegarder le contexte courant *)
+  SaveFrameSize := CurFrameSize;
+  SaveFnRetLbl  := CurFnRetLbl;
+  SaveFnName    := CurFnName;
+  SaveFnDepth   := CurFnDepth;
+  SaveInFunc    := InFuncBody;
+
+  (* Preparer le nouveau contexte *)
+  CurFrameSize := 0;
+  CurFnName    := FnName;
+  RetLbl       := LabelGen;
+  CurFnRetLbl  := RetLbl;
+  Inc(CurFnDepth);
+  InFuncBody   := True;
+
+  (* Emettre le label et un commentaire *)
+  EmitBlankLine;
+  EmitComment('Fonction : ' + FnName);
+  If FnName = 'main' Then
+    EmitRaw('PUBLIC _main');
+  EmitLabel(FnLabel);
+
+  (* Entrer dans la portee de la fonction *)
+  SymEnterScope;
+
+  (* Enregistrer les parametres comme symboles locaux *)
+  (* Convention : args pousses gauche-a-droite par l appelant.  *)
+  (* Premier arg a [BP+4], deuxieme a [BP+6], etc.              *)
+  (* [BP+0] = ancien BP sauvegarde, [BP+2] = adresse de retour *)
+  For I := 0 To ParamCount - 1 Do
+  Begin
+    Ofs := 4 + I * 2;
+    SIdx := SymAdd(ParamNames[I], SK_PARAM, ParamTypes[I], Ofs);
+  End;
+
+  (* Consommer '{' *)
+  ParserAdvance;
+
+  (* Parser le corps de la fonction *)
+  (* On ne genere pas le prologue tout de suite car on ne connait *)
+  (* pas encore CurFrameSize. On le fera apres le parsing.       *)
+  (* MAIS en 16-bit simple, on emet le prologue maintenant avec  *)
+  (* une taille estimee, puis on fixe avec SUB SP apres.         *)
+  (* Strategie simple : emettre prologue, parser body, epilogue. *)
+  EmitProlog;
+
+  While (CurToken.Kind <> TK_EOF) And
+        Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+    ParseStmt;
+
+  (* Label de retour (pour les return dans le corps) *)
+  EmitLabel(RetLbl);
+  EmitEpilog;
+  EmitBlankLine;
+
+  (* Consommer '}' *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+    ParserAdvance;
+
+  (* Quitter la portee de la fonction *)
+  SymLeaveScope;
+
+  (* Restaurer le contexte *)
+  CurFrameSize := SaveFrameSize;
+  CurFnRetLbl  := SaveFnRetLbl;
+  CurFnName    := SaveFnName;
+  CurFnDepth   := SaveFnDepth;
+  InFuncBody   := SaveInFunc;
 End;
 
 Procedure ParserAdvance;
@@ -6146,6 +6350,8 @@ Begin
 End;
 
 Procedure ParseStmt;
+Var
+  RetExpr : TExprVal;
 Begin
   (* Token vide : rien a faire *)
   If CurToken.Kind = TK_EOF Then Exit;
@@ -6177,11 +6383,17 @@ Begin
     ParserAdvance;
     If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
     Begin
-      ParseExprStmt;
-      (* AX contient la valeur de retour *)
+      ParseExpr(RetExpr);
+      ExprFlushToAX(RetExpr);
+      (* Consommer ; *)
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+        ParserAdvance;
     End
     Else
       ParserAdvance; (* consomme le ; *)
+    (* Si dans une fonction, sauter vers l epilogue *)
+    If InFuncBody And (CurFnRetLbl <> '') Then
+      EmitInstrA('JMP', CurFnRetLbl);
     Exit;
   End;
 
