@@ -195,7 +195,7 @@
             static_cast<T>(expr) : conversion de type
             Appel de fonction : ParseCallExpr -> PUSH args + CALL label
 
-  TODO 12 - EXPRESSIONS BINAIRES
+  TODO 12 - EXPRESSIONS BINAIRES [IMPLEMENTE]
             ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
             Arithmetique entiere : ADD/SUB/IMUL/IDIV pour + - * /
             Modulo % : IDIV -> resultat dans DX (reste)
@@ -3292,6 +3292,14 @@ Begin
     ParserAdvance;
   End;
 End;
+
+(* ============================================================
+   TODO 12 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+   ParseExprPrec : Pratt parser pour expressions binaires C++.
+   Operateurs : + - * / % & | ^ << >> == != < <= > >= && || ? :
+   Court-circuit && et ||, ternaire ? :, virgule, affectation.
+   Pliage de constantes pour les expressions immediates.
+   ============================================================ *)
 
 (* ---- ParseExprPrec : Pratt parser pour C++ ------------------ *)
 (* Boucle de montee de precedence pour operateurs binaires.      *)
