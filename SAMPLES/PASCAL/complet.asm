@@ -1,132 +1,58 @@
-; Programme: TEST
-; Compilé par PC8086 - Compilateur Pascal vers 8086
-; Date: 2026-02-28
+; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
+; Genere automatiquement a partir de : SAMPLES/PASCAL/complet.pas
 
-.MODEL SMALL
-.STACK 100h
+.386
+.MODEL FLAT, STDCALL
 
+; --- Imports Win32 (kernel32.dll) ---
+EXTRN _ExitProcess@4:NEAR
+EXTRN _GetStdHandle@4:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _WriteConsoleA@20:NEAR
+EXTRN _ReadConsoleA@20:NEAR
+EXTRN _SetConsoleCursorPosition@8:NEAR
+EXTRN _GetConsoleScreenBufferInfo@8:NEAR
+EXTRN _SetConsoleTextAttribute@8:NEAR
+EXTRN _FillConsoleOutputCharacterA@20:NEAR
+EXTRN _FillConsoleOutputAttribute@20:NEAR
+EXTRN _GetConsoleMode@8:NEAR
+EXTRN _SetConsoleMode@8:NEAR
+EXTRN _GetProcessHeap@0:NEAR
+EXTRN _HeapAlloc@12:NEAR
+EXTRN _HeapFree@12:NEAR
+EXTRN _CreateFileA@28:NEAR
+EXTRN _CloseHandle@4:NEAR
+EXTRN _SetFilePointer@16:NEAR
+EXTRN _GetFileSize@8:NEAR
+EXTRN _DeleteFileA@4:NEAR
+EXTRN _CreateDirectoryA@8:NEAR
+EXTRN _RemoveDirectoryA@4:NEAR
+EXTRN _SetCurrentDirectoryA@4:NEAR
+EXTRN _GetCurrentDirectoryA@8:NEAR
+EXTRN _GetTickCount@0:NEAR
+EXTRN _Sleep@4:NEAR
+EXTRN _GetCommandLineA@0:NEAR
+
+; --- Segment de donnees ---
 .DATA
-X DW ?
-Y DW ?
-MESSAGE DB 256 DUP(?)
 
+; --- Variables runtime TPCW32 ---
+HSTDOUT   DD 0
+HSTDIN    DD 0
+HHEAP     DD 0
+NUMBUF    DB 32 DUP(0)
+INBUF     DB 256 DUP(0)
+BYTESWR   DD 0
+BYTESRD   DD 0
+CRLF      DB 13,10,0
+STRTMP    DB 256 DUP(0)
+
+; --- Constantes et donnees utilisateur ---
+_TPK_1  DB 'Programme de test',0
+_TPK_2  DB 'Fin du test',0
+
+; --- Segment de code ---
 .CODE
-MAIN PROC
-    mov ax, @data
-    mov ds, ax
 
-; Affichage de: Programme de test
-    mov dl, 80
-    mov ah, 02h
-    int 21h
-    mov dl, 114
-    mov ah, 02h
-    int 21h
-    mov dl, 111
-    mov ah, 02h
-    int 21h
-    mov dl, 103
-    mov ah, 02h
-    int 21h
-    mov dl, 114
-    mov ah, 02h
-    int 21h
-    mov dl, 97
-    mov ah, 02h
-    int 21h
-    mov dl, 109
-    mov ah, 02h
-    int 21h
-    mov dl, 109
-    mov ah, 02h
-    int 21h
-    mov dl, 101
-    mov ah, 02h
-    int 21h
-    mov dl, 32
-    mov ah, 02h
-    int 21h
-    mov dl, 100
-    mov ah, 02h
-    int 21h
-    mov dl, 101
-    mov ah, 02h
-    int 21h
-    mov dl, 32
-    mov ah, 02h
-    int 21h
-    mov dl, 116
-    mov ah, 02h
-    int 21h
-    mov dl, 101
-    mov ah, 02h
-    int 21h
-    mov dl, 115
-    mov ah, 02h
-    int 21h
-    mov dl, 116
-    mov ah, 02h
-    int 21h
-    mov dl, 13
-    mov ah, 02h
-    int 21h
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-; Affichage de: Fin du test
-    mov dl, 70
-    mov ah, 02h
-    int 21h
-    mov dl, 105
-    mov ah, 02h
-    int 21h
-    mov dl, 110
-    mov ah, 02h
-    int 21h
-    mov dl, 32
-    mov ah, 02h
-    int 21h
-    mov dl, 100
-    mov ah, 02h
-    int 21h
-    mov dl, 117
-    mov ah, 02h
-    int 21h
-    mov dl, 32
-    mov ah, 02h
-    int 21h
-    mov dl, 116
-    mov ah, 02h
-    int 21h
-    mov dl, 101
-    mov ah, 02h
-    int 21h
-    mov dl, 115
-    mov ah, 02h
-    int 21h
-    mov dl, 116
-    mov ah, 02h
-    int 21h
-    mov dl, 13
-    mov ah, 02h
-    int 21h
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-
-    mov ax, 4C00h
-    int 21h
-MAIN ENDP
-END MAIN
-
-; Procédures d'aide pour l'affichage
-PRINT_NUM PROC
-; Affiche le nombre dans AX
-    ; Implémentation simplifiée pour afficher un nombre
-    ; (code complet requis pour conversion décimale)
-    mov dx, ax
-    add dl, 48  ; Convertir en ASCII (pour chiffres 0-9 seulement)
-    mov ah, 02h
-    int 21h
-    ret
-PRINT_NUM ENDP
+END

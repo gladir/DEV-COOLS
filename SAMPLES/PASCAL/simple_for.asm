@@ -1,89 +1,56 @@
-; Programme: SIMPLE_FOR
-; Compilé par PC8086 - Compilateur Pascal vers 8086
-; Date: 2026-02-28 20:26:04
+; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
+; Genere automatiquement a partir de : SAMPLES/PASCAL/simple_for.pas
 
-.MODEL SMALL
-.STACK 100h
+.386
+.MODEL FLAT, STDCALL
 
+; --- Imports Win32 (kernel32.dll) ---
+EXTRN _ExitProcess@4:NEAR
+EXTRN _GetStdHandle@4:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _WriteConsoleA@20:NEAR
+EXTRN _ReadConsoleA@20:NEAR
+EXTRN _SetConsoleCursorPosition@8:NEAR
+EXTRN _GetConsoleScreenBufferInfo@8:NEAR
+EXTRN _SetConsoleTextAttribute@8:NEAR
+EXTRN _FillConsoleOutputCharacterA@20:NEAR
+EXTRN _FillConsoleOutputAttribute@20:NEAR
+EXTRN _GetConsoleMode@8:NEAR
+EXTRN _SetConsoleMode@8:NEAR
+EXTRN _GetProcessHeap@0:NEAR
+EXTRN _HeapAlloc@12:NEAR
+EXTRN _HeapFree@12:NEAR
+EXTRN _CreateFileA@28:NEAR
+EXTRN _CloseHandle@4:NEAR
+EXTRN _SetFilePointer@16:NEAR
+EXTRN _GetFileSize@8:NEAR
+EXTRN _DeleteFileA@4:NEAR
+EXTRN _CreateDirectoryA@8:NEAR
+EXTRN _RemoveDirectoryA@4:NEAR
+EXTRN _SetCurrentDirectoryA@4:NEAR
+EXTRN _GetCurrentDirectoryA@8:NEAR
+EXTRN _GetTickCount@0:NEAR
+EXTRN _Sleep@4:NEAR
+EXTRN _GetCommandLineA@0:NEAR
+
+; --- Segment de donnees ---
 .DATA
-TRUE_STR  DB 'TRUE$'
-FALSE_STR DB 'FALSE$'
 
-I DW ?
+; --- Variables runtime TPCW32 ---
+HSTDOUT   DD 0
+HSTDIN    DD 0
+HHEAP     DD 0
+NUMBUF    DB 32 DUP(0)
+INBUF     DB 256 DUP(0)
+BYTESWR   DD 0
+BYTESRD   DD 0
+CRLF      DB 13,10,0
+STRTMP    DB 256 DUP(0)
 
+; --- Constantes et donnees utilisateur ---
+
+; --- Segment de code ---
 .CODE
-MAIN PROC
-    mov ax, @data
-    mov ds, ax
 
-    mov ax, 1
-    mov [I], ax
-    mov ax, 3
-    mov bx, ax
-L1:
-    mov ax, [I]
-    cmp ax, bx
-    jg L3
-; Affichage variable: I
-    mov ax, I
-    call PRINT_NUM
-    mov dl, 13
-    mov ah, 02h
-    int 21h
-    mov dl, 10
-    mov ah, 02h
-    int 21h
-L2:
-    mov ax, [I]
-    inc ax
-    mov [I], ax
-    jmp L1
-L3:
-
-    mov ax, 4C00h
-    int 21h
-MAIN ENDP
-END MAIN
-
-; Procédures d'aide pour l'affichage
-PRINT_NUM PROC
-; Affiche le nombre dans AX en décimal
-    push ax
-    push bx
-    push cx
-    push dx
-
-; Traiter le signe négatif
-    cmp ax, 0
-    jge PRINT_POSITIVE
-    mov dl, '-'
-    mov ah, 02h
-    int 21h
-    neg ax
-
-PRINT_POSITIVE:
-; Conversion en décimal et affichage
-    mov cx, 0    ; Compteur de chiffres
-    mov bx, 10   ; Diviseur
-
-PUSH_DIGITS:
-    mov dx, 0
-    div bx       ; AX = AX / 10, DX = reste
-    add dl, 48   ; Convertir en ASCII
-    push dx      ; Empiler le chiffre
-    inc cx       ; Incrémenter compteur
-    cmp ax, 0
-    jne PUSH_DIGITS
-
-POP_DIGITS:
-    pop dx       ; Dépiler et afficher
-    mov ah, 02h
-    int 21h
-    loop POP_DIGITS
-
-    pop dx
-    pop cx
-    pop bx
-    pop ax
-    ret
-PRINT_NUM ENDP
+END
