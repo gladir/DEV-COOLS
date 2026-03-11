@@ -153,7 +153,7 @@
             EmitProlog / EmitEpilog : PUSH BP / MOV BP,SP et MOV SP,BP / POP BP
             EmitDataSeg : ecrire _DATA SEGMENT ... _DATA ENDS
 
-  TODO 09 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 09 - SEGMENT DE DONNEES ET STATIQUES [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_WORD/DK_BYTE/DK_STR/DK_ARRAY),
               IntVal, StrVal, ElemCount
             DataTab[0..MAX_DATA-1], DataCount
@@ -427,6 +427,7 @@ Const
   CC_LBL_PFX  = '_CC_L_';     (* label de saut interne                *)
   CC_CLS_PFX  = '_CC_C_';     (* classe / vtable                      *)
   CC_NS_PFX   = '_CC_NS_';    (* namespace                            *)
+  CC_STA_PFX  = '_CC_STA_';   (* variable statique de classe           *)
 
   (* Codes de sortie *)
   EXIT_OK    = 0;
@@ -560,7 +561,7 @@ Type
   End;
 
   (* ---- Segment de donnees (TODO 09) ----------------------- *)
-  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK);
+  TDataKind = (DK_WORD, DK_BYTE, DK_STR, DK_ARRAY_BLK, DK_ZERO);
 
   TDataRec = Record
     LblName   : TString;
@@ -722,11 +723,29 @@ Procedure EmitOpen;  Forward;
 Procedure EmitClose; Forward;
 Procedure EmitDataSeg; Forward;
 Procedure EmitHeader; Forward;
-(* TODO 09 - Donnees *)
+(* TODO 09 - Donnees et statiques *)
 Function  DataAdd(Const Lbl : TString; Kind : TDataKind;
                   AIntVal : LongInt; Const AStrVal : TString) : Integer; Forward;
 Function  DataAddStr(Const S : TString) : TString; Forward;
 Function  DataAddWord(Const Lbl : TString; AIntVal : LongInt) : Integer; Forward;
+Function  DataFindStr(Const S : TString) : Integer; Forward;
+Function  DataGetOrAddStr(Const S : TString) : TString; Forward;
+Function  DataAddGlobalVar(Const Name : TString;
+                           TypeIdx : Integer;
+                           InitVal : LongInt) : Integer; Forward;
+Function  DataAddStaticVar(Const Name : TString;
+                           TypeIdx : Integer;
+                           InitVal : LongInt) : TString; Forward;
+Function  DataAddConst(Const Name : TString;
+                       TypeIdx : Integer;
+                       InitVal : LongInt) : Integer; Forward;
+Function  DataAddZero(Const Lbl : TString;
+                      ASize : Integer) : Integer; Forward;
+Function  DataAddVTable(Const ClassName : TString;
+                        NSlots : Integer) : Integer; Forward;
+Function  IsTypeSpecifier(Const S : TString) : Boolean; Forward;
+Function  IsStorageClass(Const S : TString) : Boolean; Forward;
+Function  IsQualifier(Const S : TString) : Boolean; Forward;
 Procedure EmitRuntime; Forward;
 (* TODO 10 - Variables *)
 Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
@@ -2025,8 +2044,159 @@ Begin
   DataAddWord := DataAdd(Lbl, DK_WORD, AIntVal, '');
 End;
 
+(* ---- DataFindStr : chercher chaine existante (dedup) -------- *)
+(* Retourne l index dans DataTab ou -1 si pas trouvee.           *)
+Function DataFindStr(Const S : TString) : Integer;
+Var
+  I : Integer;
+Begin
+  For I := 0 To DataCount - 1 Do
+    If (DataTab[I].Kind = DK_STR) And (DataTab[I].StrVal = S) Then
+    Begin
+      DataFindStr := I;
+      Exit;
+    End;
+  DataFindStr := -1;
+End;
+
+(* ---- DataGetOrAddStr : dedup chaines litterales ------------- *)
+(* Retourne le label de la chaine existante ou en cree une.      *)
+Function DataGetOrAddStr(Const S : TString) : TString;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataFindStr(S);
+  If Idx >= 0 Then
+    DataGetOrAddStr := DataTab[Idx].LblName
+  Else
+    DataGetOrAddStr := DataAddStr(S);
+End;
+
+(* ---- DataAddGlobalVar : variable globale C++ dans DATA ------ *)
+(* Cree une entree _CC_V_nom DW initVal + enregistre dans SymTab *)
+(* Retourne l index dans SymTab ou -1.                           *)
+Function DataAddGlobalVar(Const Name : TString;
+                          TypeIdx : Integer;
+                          InitVal : LongInt) : Integer;
+Var
+  Lbl : TString;
+  SIdx : Integer;
+Begin
+  Lbl := CC_VAR_PFX + SymNameClean(Name);
+  DataAdd(Lbl, DK_WORD, InitVal, '');
+  SIdx := SymAdd(Name, SK_VAR, TypeIdx, 0);
+  If SIdx >= 0 Then
+  Begin
+    SymTab[SIdx].MangledName := Lbl;
+    SymTab[SIdx].ScopeLevel  := 0;   (* global *)
+  End;
+  If Opts.DebugMode Then
+    WriteLn('[data] global var "', Name, '" -> ', Lbl, ' = ', InitVal);
+  DataAddGlobalVar := SIdx;
+End;
+
+(* ---- DataAddStaticVar : variable static de classe dans DATA - *)
+(* Cree une entree _CC_STA_N avec label unique.                  *)
+(* Retourne le label genere.                                     *)
+Function DataAddStaticVar(Const Name : TString;
+                          TypeIdx : Integer;
+                          InitVal : LongInt) : TString;
+Var
+  Lbl : TString;
+Begin
+  Inc(LabelGenSeq);
+  Lbl := CC_STA_PFX + IntToStr(LabelGenSeq);
+  DataAdd(Lbl, DK_WORD, InitVal, '');
+  If Opts.DebugMode Then
+    WriteLn('[data] static var "', Name, '" -> ', Lbl, ' = ', InitVal);
+  DataAddStaticVar := Lbl;
+End;
+
+(* ---- DataAddConst : constante dans DATA --------------------- *)
+(* Comme DataAddGlobalVar mais avec IsConst=True dans SymTab.    *)
+(* Retourne l index dans SymTab ou -1.                           *)
+Function DataAddConst(Const Name : TString;
+                      TypeIdx : Integer;
+                      InitVal : LongInt) : Integer;
+Var
+  Lbl : TString;
+  SIdx : Integer;
+Begin
+  Lbl := CC_VAR_PFX + SymNameClean(Name);
+  DataAdd(Lbl, DK_WORD, InitVal, '');
+  SIdx := SymAdd(Name, SK_CONST, TypeIdx, 0);
+  If SIdx >= 0 Then
+  Begin
+    SymTab[SIdx].MangledName := Lbl;
+    SymTab[SIdx].IsConst     := True;
+    SymTab[SIdx].ScopeLevel  := 0;
+  End;
+  If Opts.DebugMode Then
+    WriteLn('[data] const "', Name, '" -> ', Lbl, ' = ', InitVal);
+  DataAddConst := SIdx;
+End;
+
+(* ---- DataAddZero : bloc initialise a zero ------------------- *)
+(* DB ASize DUP(0) - pour tableaux, structs, classes.            *)
+(* Retourne l index dans DataTab ou -1.                          *)
+Function DataAddZero(Const Lbl : TString; ASize : Integer) : Integer;
+Var
+  Idx : Integer;
+Begin
+  Idx := DataAdd(Lbl, DK_ZERO, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := ASize;
+  DataAddZero := Idx;
+End;
+
+(* ---- DataAddVTable : entree vtable pour classe -------------- *)
+(* Cree _CC_C_Classe_VT DW NSlots DUP(0).                       *)
+(* Retourne l index dans DataTab ou -1.                          *)
+Function DataAddVTable(Const ClassName : TString;
+                       NSlots : Integer) : Integer;
+Var
+  Lbl : TString;
+  Idx : Integer;
+Begin
+  Lbl := CC_CLS_PFX + SymNameClean(ClassName) + '_VT';
+  Idx := DataAdd(Lbl, DK_ZERO, 0, '');
+  If Idx >= 0 Then
+    DataTab[Idx].ElemCount := NSlots * 2;  (* 2 octets par slot DW *)
+  If Opts.DebugMode Then
+    WriteLn('[data] vtable "', ClassName, '" -> ', Lbl,
+            ' (', NSlots, ' slots)');
+  DataAddVTable := Idx;
+End;
+
+(* ---- IsTypeSpecifier : identifie mots-cles type C++ --------- *)
+Function IsTypeSpecifier(Const S : TString) : Boolean;
+Begin
+  IsTypeSpecifier :=
+    (S = 'void') Or (S = 'bool') Or (S = 'char') Or
+    (S = 'short') Or (S = 'int') Or (S = 'long') Or
+    (S = 'unsigned') Or (S = 'signed') Or
+    (S = 'float') Or (S = 'double') Or
+    (S = 'auto') Or (S = 'wchar_t');
+End;
+
+(* ---- IsStorageClass : identifie classes de stockage C++ ------ *)
+Function IsStorageClass(Const S : TString) : Boolean;
+Begin
+  IsStorageClass :=
+    (S = 'static') Or (S = 'extern') Or
+    (S = 'register') Or (S = 'mutable') Or
+    (S = 'thread_local');
+End;
+
+(* ---- IsQualifier : identifie qualificateurs C++ -------------- *)
+Function IsQualifier(Const S : TString) : Boolean;
+Begin
+  IsQualifier :=
+    (S = 'const') Or (S = 'volatile') Or (S = 'constexpr');
+End;
+
 (* ---- EmitDataSeg : ecrire _DATA SEGMENT complet ------------ *)
-(* Constantes C++ predefinies + DataTab (DK_WORD/DK_BYTE/DK_STR) *)
+(* Constantes C++ + DataTab (DK_WORD/DK_BYTE/DK_STR/DK_ZERO)   *)
 Procedure EmitDataSeg;
 Var
   I : Integer;
@@ -2069,6 +2239,9 @@ Begin
         EmitRaw(DataTab[I].LblName + '  DW  ' +
                 IntToStr(DataTab[I].ElemCount) +
                 '   ; tableau (' + IntToStr(DataTab[I].ElemCount) + ' elem)');
+      DK_ZERO :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].ElemCount) + ' DUP(0)');
     End;
   End;
   EmitRaw('_DATA   ENDS');
@@ -3989,7 +4162,7 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 09..25
+  STUBS POUR TODO 10..25
   (a implementer dans les prochaines etapes)
   ============================================================ *)
 
