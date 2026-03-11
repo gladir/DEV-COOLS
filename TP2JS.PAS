@@ -191,7 +191,7 @@
                Succ, Round, Trunc, Odd, UpCase, Lo, Hi, Pos, Copy, Concat,
                Inc, Dec, Sizeof
 
-   TODO 11 - EXPRESSIONS BINAIRES ET UNAIRES
+   TODO 11 - EXPRESSIONS BINAIRES ET UNAIRES [IMPLEMENTE]
              ParseExprPrec(MinPrec) : boucle de precedence (Pratt parser)
              Arithmetique : + - * / -> +, -, *, / en JS
                DIV -> Math.trunc(a / b)
@@ -830,6 +830,8 @@ Var
   ============================================================ }
 Procedure LexClose; Forward;
 Function ParseExpr(Var P : Integer) : TString; Forward;
+Function ConstEvalExpr(Var P : Integer) : TString; Forward;
+Function IsBooleanExpr(Const S : TString) : Boolean; Forward;
 Function TypeFindByName(Const AName : TString) : Integer; Forward;
 Function SymFind(Const AName : TString) : Integer; Forward;
 
@@ -2024,7 +2026,7 @@ Begin
   If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = '(') Then
   Begin
     Inc(P);
-    Tmp := ConstEvalAtom(P);
+    Tmp := ConstEvalExpr(P);
     { Consommer ')' }
     If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
        (TokenPool[P].Val = ')') Then
@@ -2032,7 +2034,7 @@ Begin
     If Neg Then
       ConstEvalAtom := '-(' + Tmp + ')'
     Else
-      ConstEvalAtom := Tmp;
+      ConstEvalAtom := '(' + Tmp + ')';
     Exit;
   End;
 
@@ -2146,61 +2148,150 @@ Begin
   Inc(P);
 End;
 
-{ ---- ConstEvalExpr : evaluer une expression constante ------- }
-{ Gere les operateurs +, -, *, /, DIV, MOD, AND, OR, XOR,      }
-{ SHL, SHR, =, <>, <, >, <=, >= sur des constantes             }
-{ Retourne la representation JavaScript de l expression          }
-Function ConstEvalExpr(Var P : Integer) : TString;
+{ ---- ConstEvalTerm : niveau 2 (multiplicatif) pour constantes }
+{ Gere les operateurs *, /, DIV, MOD, AND, SHL, SHR            }
+Function ConstEvalTerm(Var P : Integer) : TString;
 Var
   Left : TString;
   Op   : TString;
   Rght : TString;
-Begin
-  Left := ConstEvalAtom(P);
 
-  While (P < TokenCount) And
-        ((TokenPool[P].Kind = TK_OP) Or
-         ((TokenPool[P].Kind = TK_KEYWORD) And
-          ((StrLowerCase(TokenPool[P].Val) = 'div') Or
-           (StrLowerCase(TokenPool[P].Val) = 'mod') Or
-           (StrLowerCase(TokenPool[P].Val) = 'and') Or
-           (StrLowerCase(TokenPool[P].Val) = 'or')  Or
-           (StrLowerCase(TokenPool[P].Val) = 'xor') Or
-           (StrLowerCase(TokenPool[P].Val) = 'shl') Or
-           (StrLowerCase(TokenPool[P].Val) = 'shr') Or
-           (StrLowerCase(TokenPool[P].Val) = 'not') Or
-           (StrLowerCase(TokenPool[P].Val) = 'in')))) Do
+  Function IsConstLevel2 : Boolean;
+  Var LL : TString;
   Begin
-    Op := StrLowerCase(TokenPool[P].Val);
-    Inc(P);
-
-    { Convertir l operateur Pascal en JavaScript }
-    If Op = ':=' Then Break  { fin d expression constante }
-    Else
+    IsConstLevel2 := False;
+    If P >= TokenCount Then Exit;
+    If TokenPool[P].Kind = TK_OP Then
     Begin
-      Rght := ConstEvalAtom(P);
-      If Op = '+'        Then Left := Left + ' + '   + Rght
-      Else If Op = '-'   Then Left := Left + ' - '   + Rght
-      Else If Op = '*'   Then Left := Left + ' * '   + Rght
-      Else If Op = '/'   Then Left := Left + ' / '   + Rght
-      Else If Op = '='   Then Left := Left + ' === '  + Rght
-      Else If Op = '<>'  Then Left := Left + ' !== '  + Rght
-      Else If Op = '<'   Then Left := Left + ' < '   + Rght
-      Else If Op = '>'   Then Left := Left + ' > '   + Rght
-      Else If Op = '<='  Then Left := Left + ' <= '  + Rght
-      Else If Op = '>='  Then Left := Left + ' >= '  + Rght
-      Else If Op = 'div' Then Left := 'Math.trunc(' + Left + ' / ' + Rght + ')'
-      Else If Op = 'mod' Then Left := Left + ' % '   + Rght
-      Else If Op = 'and' Then Left := Left + ' && '  + Rght
-      Else If Op = 'or'  Then Left := Left + ' || '  + Rght
-      Else If Op = 'xor' Then Left := Left + ' ^ '   + Rght
-      Else If Op = 'shl' Then Left := Left + ' << '  + Rght
-      Else If Op = 'shr' Then Left := Left + ' >> '  + Rght
-      Else If Op = 'in'  Then Left := Rght + '.indexOf(' + Left + ') >= 0'
-      Else Break;
+      If (TokenPool[P].Val = '*') Or (TokenPool[P].Val = '/') Then
+        IsConstLevel2 := True;
+    End
+    Else If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      LL := StrLowerCase(TokenPool[P].Val);
+      If (LL = 'div') Or (LL = 'mod') Or (LL = 'and') Or
+         (LL = 'shl') Or (LL = 'shr') Then
+        IsConstLevel2 := True;
     End;
   End;
 
+Begin
+  Left := ConstEvalAtom(P);
+  While (P < TokenCount) And IsConstLevel2 Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ConstEvalAtom(P);
+
+    If Op = '*'        Then Left := Left + ' * '  + Rght
+    Else If Op = '/'   Then Left := Left + ' / '  + Rght
+    Else If Op = 'div' Then Left := 'Math.trunc(' + Left + ' / ' + Rght + ')'
+    Else If Op = 'mod' Then Left := Left + ' % '  + Rght
+    Else If Op = 'and' Then
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' && ' + Rght
+      Else
+        Left := '(' + Left + ' & ' + Rght + ')';
+    End
+    Else If Op = 'shl' Then Left := Left + ' << ' + Rght
+    Else If Op = 'shr' Then Left := Left + ' >> ' + Rght;
+  End;
+  ConstEvalTerm := Left;
+End;
+
+{ ---- ConstEvalSimple : niveau 3 (additif) pour constantes --- }
+{ Gere les operateurs +, -, OR, XOR                             }
+Function ConstEvalSimple(Var P : Integer) : TString;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+
+  Function IsConstLevel3 : Boolean;
+  Var LL : TString;
+  Begin
+    IsConstLevel3 := False;
+    If P >= TokenCount Then Exit;
+    If TokenPool[P].Kind = TK_OP Then
+    Begin
+      If (TokenPool[P].Val = '+') Or (TokenPool[P].Val = '-') Then
+        IsConstLevel3 := True;
+    End
+    Else If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      LL := StrLowerCase(TokenPool[P].Val);
+      If (LL = 'or') Or (LL = 'xor') Then
+        IsConstLevel3 := True;
+    End;
+  End;
+
+Begin
+  Left := ConstEvalTerm(P);
+  While (P < TokenCount) And IsConstLevel3 Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ConstEvalTerm(P);
+
+    If Op = '+'        Then Left := Left + ' + ' + Rght
+    Else If Op = '-'   Then Left := Left + ' - ' + Rght
+    Else If Op = 'or' Then
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' || ' + Rght
+      Else
+        Left := '(' + Left + ' | ' + Rght + ')';
+    End
+    Else If Op = 'xor' Then Left := Left + ' ^ ' + Rght;
+  End;
+  ConstEvalSimple := Left;
+End;
+
+{ ---- ConstEvalExpr : niveau 4 (relationnel) pour constantes -- }
+{ Gere les operateurs =, <>, <, >, <=, >=, IN                   }
+{ Retourne la representation JavaScript de l expression          }
+Function ConstEvalExpr;
+Var
+  Left : TString;
+  Op   : TString;
+  Rght : TString;
+
+  Function IsConstLevel4 : Boolean;
+  Var LL : TString;
+  Begin
+    IsConstLevel4 := False;
+    If P >= TokenCount Then Exit;
+    If TokenPool[P].Kind = TK_OP Then
+    Begin
+      If (TokenPool[P].Val = '=') Or (TokenPool[P].Val = '<>') Or
+         (TokenPool[P].Val = '<') Or (TokenPool[P].Val = '>') Or
+         (TokenPool[P].Val = '<=') Or (TokenPool[P].Val = '>=') Then
+        IsConstLevel4 := True;
+    End
+    Else If TokenPool[P].Kind = TK_KEYWORD Then
+    Begin
+      LL := StrLowerCase(TokenPool[P].Val);
+      If LL = 'in' Then IsConstLevel4 := True;
+    End;
+  End;
+
+Begin
+  Left := ConstEvalSimple(P);
+  While (P < TokenCount) And IsConstLevel4 Do
+  Begin
+    Op := StrLowerCase(TokenPool[P].Val);
+    Inc(P);
+    Rght := ConstEvalSimple(P);
+
+    If Op = '='        Then Left := Left + ' === ' + Rght
+    Else If Op = '<>'  Then Left := Left + ' !== ' + Rght
+    Else If Op = '<'   Then Left := Left + ' < '   + Rght
+    Else If Op = '>'   Then Left := Left + ' > '   + Rght
+    Else If Op = '<='  Then Left := Left + ' <= '  + Rght
+    Else If Op = '>='  Then Left := Left + ' >= '  + Rght
+    Else If Op = 'in'  Then Left := Rght + '.indexOf(' + Left + ') >= 0';
+  End;
   ConstEvalExpr := Left;
 End;
 
@@ -2240,6 +2331,47 @@ Begin
   Else If L = 'in'  Then OpToJS := ' in '
   Else If L = '@'   Then OpToJS := '@'
   Else OpToJS := ' ' + Op + ' ';
+End;
+
+{ ============================================================
+  TODO 11 - EXPRESSIONS BINAIRES ET UNAIRES [IMPLEMENTE]
+  ============================================================ }
+{ Distinction bitwise vs logique pour AND/OR/NOT.               }
+{ IsBooleanExpr : heuristique detectant si une expression       }
+{ generee est booleenne. Utilise pour choisir entre && et &,    }
+{ || et |, ! et ~ selon le contexte.                            }
+{ Correction du bug ConstEvalAtom : parentheses utilisant       }
+{ ConstEvalExpr pour evaluer les sous-expressions completes.    }
+{ Ajout de l operateur AS pour le typage objet Turbo Pascal.    }
+
+{ ---- IsBooleanExpr : detecte si l expression JS est booleenne }
+{ Retourne True si l expression semble etre une comparaison,    }
+{ un litteral booleen, ou contient des operateurs logiques.     }
+{ Utilise pour choisir && vs & et || vs | dans AND/OR.          }
+Function IsBooleanExpr(Const S : TString) : Boolean;
+Var
+  R : Boolean;
+Begin
+  R :=
+    (Pos(' === ', S) > 0) Or
+    (Pos(' !== ', S) > 0) Or
+    (Pos(' >= ', S) > 0) Or
+    (Pos(' <= ', S) > 0) Or
+    (Pos(' && ', S) > 0) Or
+    (Pos(' || ', S) > 0) Or
+    (S = 'true') Or (S = 'false') Or
+    ((Length(S) >= 2) And (S[1] = '(') And (S[2] = '!'));
+  { Detecter < et > simples (sans << et >>) }
+  If Not R Then
+    If (Pos(' > ', S) > 0) And (Pos(' >> ', S) = 0) Then
+      R := True;
+  If Not R Then
+    If (Pos(' < ', S) > 0) And (Pos(' << ', S) = 0) Then
+      R := True;
+  If Not R Then
+    If (Pos('.indexOf(', S) > 0) And (Pos(') >= 0', S) > 0) Then
+      R := True;
+  IsBooleanExpr := R;
 End;
 
 { ---- IsLevel2Op : niveau 2 de precedence Pascal ------------- }
@@ -2299,7 +2431,7 @@ Begin
   Else If T.Kind = TK_KEYWORD Then
   Begin
     L := StrLowerCase(T.Val);
-    If L = 'in' Then
+    If (L = 'in') Or (L = 'as') Then
       IsLevel4Op := True;
   End;
 End;
@@ -2825,13 +2957,20 @@ Begin
   ParseExprFactor := '0';
   If P >= TokenCount Then Exit;
 
-  { NOT unaire }
+  { NOT unaire : ! (logique) ou ~ (bitwise) selon le contexte }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'not') Then
   Begin
     Inc(P);
+    { Pre-detection du contexte : variable Boolean ? }
+    VTK := TYK_INTEGER;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      VTK := GetVarTypeKind(TokenPool[P].Val);
     Tmp := ParseExprFactor(P);
-    ParseExprFactor := '(!' + Tmp + ')';
+    If (VTK = TYK_BOOLEAN) Or IsBooleanExpr(Tmp) Then
+      ParseExprFactor := '(!' + Tmp + ')'
+    Else
+      ParseExprFactor := '(~' + Tmp + ')';
     Exit;
   End;
 
@@ -3114,7 +3253,12 @@ Begin
     Else If Op = 'mod' Then
       Left := Left + ' % ' + Rght
     Else If Op = 'and' Then
-      Left := Left + ' && ' + Rght
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' && ' + Rght
+      Else
+        Left := '(' + Left + ' & ' + Rght + ')';
+    End
     Else If Op = 'shl' Then
       Left := Left + ' << ' + Rght
     Else If Op = 'shr' Then
@@ -3145,7 +3289,12 @@ Begin
     Else If Op = '-' Then
       Left := Left + ' - ' + Rght
     Else If Op = 'or' Then
-      Left := Left + ' || ' + Rght
+    Begin
+      If IsBooleanExpr(Left) Or IsBooleanExpr(Rght) Then
+        Left := Left + ' || ' + Rght
+      Else
+        Left := '(' + Left + ' | ' + Rght + ')';
+    End
     Else If Op = 'xor' Then
       Left := Left + ' ^ ' + Rght;
   End;
@@ -3182,7 +3331,9 @@ Begin
     Else If Op = '>=' Then
       Left := Left + ' >= ' + Rght
     Else If Op = 'in' Then
-      Left := Rght + '.indexOf(' + Left + ') >= 0';
+      Left := Rght + '.indexOf(' + Left + ') >= 0'
+    Else If Op = 'as' Then
+      Left := '/* as ' + Rght + ' */ ' + Left;
   End;
 
   ParseExpr := Left;
