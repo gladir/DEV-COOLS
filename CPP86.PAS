@@ -207,18 +207,21 @@
             Ternaire ? : evaluer condition, JZ vers false-branch
             Virgule : evaluer gauche, ignorer, evaluer droite -> AX
 
-  TODO 13 - ENTREES/SORTIES (iostream)
+  TODO 13 - ENTREES/SORTIES (iostream) [IMPLEMENTE]
             cout << expr : ecriture sur stdout
               cout << "texte" -> INT 21h AH=40h BX=1 (STDOUT)
               cout << nombre -> CALL _CC_RT_NUMTOSTR + ecriture
               cout << endl   -> ecriture CR+LF
-              cout << '\n'   -> ecriture LF
+              cout << '\n'   -> ecriture CR+LF
             cin >> var : lecture depuis stdin
               cin >> nombre -> INT 21h AH=0Ah + CALL _CC_RT_STRTONUM
               cin >> chaine -> INT 21h AH=0Ah (lecture ligne)
             cerr << expr : ecriture sur stderr (handle 2)
-            printf / scanf (stubs C) : avertissement + delegation au runtime
-            #include <iostream> : activer les stubs cout / cin / cerr
+            ParseCoutStmt : parse cout/cerr << expr1 << expr2 ... ;
+            ParseCinStmt  : parse cin >> var1 >> var2 ... ;
+            Runtime : _CC_RT_WRITESTR, _CC_RT_WRITECRLF, _CC_RT_NUMTOSTR,
+                      _CC_RT_WRITENUM, _CC_RT_STRTONUM, _CC_RT_READLINE
+            Data    : _CC_RT_CRLF, _CC_RT_NUMBUF, _CC_RT_INBUF
 
   TODO 14 - IF / ELSE / SWITCH
             ParseIfStmt : if (cond) stmt [else stmt]
@@ -2226,6 +2229,10 @@ Begin
   EmitRaw('_CC_NULL_S   DB  ''(null)'',0');
   (* Buffer de travail pour concatenation de chaines *)
   EmitRaw('_CC_STRBUF   DB  256 DUP(0)');
+  (* TODO 13 : Buffers pour les entrees/sorties *)
+  EmitRaw(CC_RT_PFX + 'CRLF     DB  13,10');
+  EmitRaw(CC_RT_PFX + 'NUMBUF   DB  8 DUP(0)');
+  EmitRaw(CC_RT_PFX + 'INBUF    DB  80,0,80 DUP(0)');
   (* Entrees dynamiques de DataTab *)
   For I := 0 To DataCount - 1 Do
   Begin
@@ -4397,6 +4404,179 @@ Begin
   EmitInstr('POP    ES');
   EmitInstr('RET');
   EmitBlankLine;
+
+  (* ============================================================ *)
+  (* TODO 13 : Routines runtime pour les entrees/sorties          *)
+  (* ============================================================ *)
+
+  (* _CC_RT_WRITESTR : ecrire une chaine ASCIIZ vers un handle    *)
+  (* Entree : DX = OFFSET chaine ASCIIZ, BX = handle fichier      *)
+  EmitLabel(CC_RT_PFX + 'WRITESTR');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('MOV    SI,DX');
+  EmitInstr('XOR    CX,CX');
+  EmitLabel(CC_RT_PFX + 'WSTRL');
+  EmitInstr('CMP    BYTE PTR [SI],0');
+  EmitInstr('JE     ' + CC_RT_PFX + 'WSTRD');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    CX');
+  EmitInstr('JMP    ' + CC_RT_PFX + 'WSTRL');
+  EmitLabel(CC_RT_PFX + 'WSTRD');
+  EmitInstr('MOV    AH,40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_WRITECRLF : ecrire CR+LF vers un handle              *)
+  (* Entree : BX = handle fichier                                  *)
+  EmitLabel(CC_RT_PFX + 'WRITECRLF');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX,OFFSET ' + CC_RT_PFX + 'CRLF');
+  EmitInstr('MOV    CX,2');
+  EmitInstr('MOV    AH,40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_NUMTOSTR : convertir AX en chaine decimale ASCIIZ     *)
+  (* Entree : AX = entier signe 16 bits                            *)
+  (* Sortie : _CC_RT_NUMBUF contient la chaine                     *)
+  EmitLabel(CC_RT_PFX + 'NUMTOSTR');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   DI');
+  EmitInstr('MOV    DI,OFFSET ' + CC_RT_PFX + 'NUMBUF');
+  EmitInstr('XOR    CX,CX');
+  EmitInstr('OR     AX,AX');
+  EmitInstr('JNS    ' + CC_RT_PFX + 'NTPOS');
+  EmitInstr('MOV    BYTE PTR [DI],45');    (* 45 = '-' *)
+  EmitInstr('INC    DI');
+  EmitInstr('NEG    AX');
+  EmitLabel(CC_RT_PFX + 'NTPOS');
+  EmitInstr('MOV    BX,10');
+  EmitLabel(CC_RT_PFX + 'NTLP');
+  EmitInstr('XOR    DX,DX');
+  EmitInstr('DIV    BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('INC    CX');
+  EmitInstr('OR     AX,AX');
+  EmitInstr('JNZ    ' + CC_RT_PFX + 'NTLP');
+  EmitLabel(CC_RT_PFX + 'NTPOP');
+  EmitInstr('POP    DX');
+  EmitInstr('ADD    DL,30h');
+  EmitInstr('MOV    [DI],DL');
+  EmitInstr('INC    DI');
+  EmitInstr('DEC    CX');
+  EmitInstr('JNZ    ' + CC_RT_PFX + 'NTPOP');
+  EmitInstr('MOV    BYTE PTR [DI],0');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_WRITENUM : ecrire un entier signe en decimal           *)
+  (* Entree : AX = valeur, BX = handle fichier                     *)
+  EmitLabel(CC_RT_PFX + 'WRITENUM');
+  EmitInstr('PUSH   BX');
+  EmitInstr('CALL   ' + CC_RT_PFX + 'NUMTOSTR');
+  EmitInstr('POP    BX');
+  EmitInstr('MOV    DX,OFFSET ' + CC_RT_PFX + 'NUMBUF');
+  EmitInstr('CALL   ' + CC_RT_PFX + 'WRITESTR');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_STRTONUM : convertir chaine ASCIIZ en entier           *)
+  (* Entree : SI = OFFSET chaine decimale                           *)
+  (* Sortie : AX = valeur entiere signee                            *)
+  EmitLabel(CC_RT_PFX + 'STRTONUM');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('XOR    AX,AX');
+  EmitInstr('XOR    CX,CX');
+  EmitLabel(CC_RT_PFX + 'SNSKP');
+  EmitInstr('CMP    BYTE PTR [SI],32');     (* espace *)
+  EmitInstr('JNE    ' + CC_RT_PFX + 'SNSGN');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + CC_RT_PFX + 'SNSKP');
+  EmitLabel(CC_RT_PFX + 'SNSGN');
+  EmitInstr('CMP    BYTE PTR [SI],45');     (* '-' *)
+  EmitInstr('JNE    ' + CC_RT_PFX + 'SNCHK');
+  EmitInstr('MOV    CX,1');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + CC_RT_PFX + 'SNLP');
+  EmitLabel(CC_RT_PFX + 'SNCHK');
+  EmitInstr('CMP    BYTE PTR [SI],43');     (* '+' *)
+  EmitInstr('JNE    ' + CC_RT_PFX + 'SNLP');
+  EmitInstr('INC    SI');
+  EmitLabel(CC_RT_PFX + 'SNLP');
+  EmitInstr('MOV    BL,[SI]');
+  EmitInstr('CMP    BL,48');                (* '0' *)
+  EmitInstr('JB     ' + CC_RT_PFX + 'SNDN');
+  EmitInstr('CMP    BL,57');                (* '9' *)
+  EmitInstr('JA     ' + CC_RT_PFX + 'SNDN');
+  EmitInstr('SUB    BL,48');
+  EmitInstr('XOR    BH,BH');
+  EmitInstr('PUSH   BX');
+  EmitInstr('MOV    BX,10');
+  EmitInstr('MUL    BX');
+  EmitInstr('POP    BX');
+  EmitInstr('ADD    AX,BX');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + CC_RT_PFX + 'SNLP');
+  EmitLabel(CC_RT_PFX + 'SNDN');
+  EmitInstr('OR     CX,CX');
+  EmitInstr('JZ     ' + CC_RT_PFX + 'SNEX');
+  EmitInstr('NEG    AX');
+  EmitLabel(CC_RT_PFX + 'SNEX');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_READLINE : lire une ligne depuis stdin                  *)
+  (* Utilise INT 21h AH=0Ah (saisie bufferisee)                    *)
+  (* La chaine est disponible a _CC_RT_INBUF+2 (null-terminee)     *)
+  EmitLabel(CC_RT_PFX + 'READLINE');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('MOV    DX,OFFSET ' + CC_RT_PFX + 'INBUF');
+  EmitInstr('MOV    AH,0Ah');
+  EmitInstr('INT    21h');
+  (* Null-terminer la saisie *)
+  EmitInstr('MOV    SI,OFFSET ' + CC_RT_PFX + 'INBUF');
+  EmitInstr('XOR    BX,BX');
+  EmitInstr('MOV    BL,[SI+1]');
+  EmitInstr('MOV    BYTE PTR [SI+BX+2],0');
+  (* Retour a la ligne apres la saisie *)
+  EmitInstr('MOV    DL,13');
+  EmitInstr('MOV    AH,02h');
+  EmitInstr('INT    21h');
+  EmitInstr('MOV    DL,10');
+  EmitInstr('MOV    AH,02h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
 End;
 
 (* ============================================================
@@ -4785,18 +4965,146 @@ Begin
 End;
 
 (* ============================================================
-   STUBS POUR TODO 11..25
+   STUBS POUR TODO 14..25
    (a implementer dans les prochaines etapes)
    ============================================================ *)
 
+(* ============================================================
+   TODO 13 - ENTREES/SORTIES (iostream) [IMPLEMENTE]
+   ParseCoutStmt : parse cout/cerr << expr1 << expr2 << ... ;
+     Gere : chaines, nombres, endl, caracteres, expressions.
+     Detecte automatiquement cout (handle 1) et cerr (handle 2).
+   ParseCinStmt  : parse cin >> var1 >> var2 >> ... ;
+     Lit une ligne depuis stdin, convertit en entier si necessaire.
+   ============================================================ *)
+
+(* ---- ParseCoutStmt : cout/cerr << ... ; --------------------- *)
+(* Appele quand CurToken.Val = 'cout' ou 'cerr'.                  *)
+(* Emet du code ASM pour chaque operande de <<.                    *)
+(* Handle 1 = stdout (cout), Handle 2 = stderr (cerr).             *)
 Procedure ParseCoutStmt;
+Var
+  Handle : TString;
+  StrLbl : TString;
+  Res    : TExprVal;
 Begin
-  (* stub *)
+  (* Determiner le handle : cout=1, cerr=2 *)
+  If CurToken.Val = 'cerr' Then
+    Handle := '2'
+  Else
+    Handle := '1';
+  ParserAdvance; (* consommer cout/cerr *)
+
+  EmitComment('cout/cerr << ...');
+
+  (* Boucle sur les << *)
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '<<') Do
+  Begin
+    ParserAdvance; (* consommer << *)
+
+    (* --- endl : ecrire CR+LF --- *)
+    If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'endl') Then
+    Begin
+      EmitInstrAB('MOV', 'BX', Handle);
+      EmitInstrA('CALL', CC_RT_PFX + 'WRITECRLF');
+      ParserAdvance;
+    End
+    (* --- chaine litterale : ecrire directement --- *)
+    Else If CurToken.Kind = TK_STRING Then
+    Begin
+      StrLbl := DataGetOrAddStr(CurToken.Val);
+      EmitInstrAB('MOV', 'DX', 'OFFSET ' + StrLbl);
+      EmitInstrAB('MOV', 'BX', Handle);
+      EmitInstrA('CALL', CC_RT_PFX + 'WRITESTR');
+      ParserAdvance;
+    End
+    (* --- caractere litteral : '\n' -> CRLF, autre -> INT 21h --- *)
+    Else If CurToken.Kind = TK_CHAR Then
+    Begin
+      If CurToken.IntVal = 10 Then (* '\n' *)
+      Begin
+        EmitInstrAB('MOV', 'BX', Handle);
+        EmitInstrA('CALL', CC_RT_PFX + 'WRITECRLF');
+      End
+      Else
+      Begin
+        EmitInstrAB('MOV', 'DL', IntToStr(CurToken.IntVal));
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstr('INT    21h');
+      End;
+      ParserAdvance;
+    End
+    (* --- expression generale : evaluer et ecrire comme nombre --- *)
+    Else
+    Begin
+      ParseExprPrec(12, Res); (* prec 12 pour s arreter avant << *)
+      ExprFlushToAX(Res);
+      EmitInstrAB('MOV', 'BX', Handle);
+      EmitInstrA('CALL', CC_RT_PFX + 'WRITENUM');
+    End;
+  End;
+
+  (* Consommer le ; terminal *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
+(* ---- ParseCinStmt : cin >> var1 >> var2 >> ... ; ------------ *)
+(* Appele quand CurToken.Val = 'cin'.                              *)
+(* Pour chaque variable apres >>, lit une ligne depuis stdin        *)
+(* et convertit en entier (ou stocke le premier caractere pour     *)
+(* les variables de type char).                                    *)
 Procedure ParseCinStmt;
+Var
+  SIdx : Integer;
 Begin
-  (* stub *)
+  ParserAdvance; (* consommer cin *)
+
+  EmitComment('cin >> ...');
+
+  (* Boucle sur les >> *)
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '>>') Do
+  Begin
+    ParserAdvance; (* consommer >> *)
+
+    If CurToken.Kind = TK_IDENT Then
+    Begin
+      SIdx := SymFind(CurToken.Val);
+      If SIdx < 0 Then
+        CompileError('variable inconnue: "' + CurToken.Val + '"')
+      Else
+      Begin
+        (* Lire une ligne depuis stdin *)
+        EmitInstrA('CALL', CC_RT_PFX + 'READLINE');
+        (* Verifier le type de la variable *)
+        If SymTab[SIdx].TypeIdx = TY_IDX_CHAR Then
+        Begin
+          (* Type char : prendre le premier caractere *)
+          EmitInstrAB('MOV', 'SI', 'OFFSET ' + CC_RT_PFX + 'INBUF+2');
+          EmitInstrAB('XOR', 'AX', 'AX');
+          EmitInstrAB('MOV', 'AL', 'BYTE PTR [SI]');
+          ExprStore(SIdx);
+        End
+        Else
+        Begin
+          (* Type entier : convertir la saisie en nombre *)
+          EmitInstrAB('MOV', 'SI', 'OFFSET ' + CC_RT_PFX + 'INBUF+2');
+          EmitInstrA('CALL', CC_RT_PFX + 'STRTONUM');
+          ExprStore(SIdx);
+        End;
+      End;
+      ParserAdvance;
+    End
+    Else
+    Begin
+      CompileError('cin >> attend un identificateur');
+      ParserAdvance;
+    End;
+  End;
+
+  (* Consommer le ; terminal *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
 Procedure ParseIfStmt;
@@ -4973,6 +5281,13 @@ Begin
 
   (* cout << ... *)
   If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'cout') Then
+  Begin
+    ParseCoutStmt;
+    Exit;
+  End;
+
+  (* cerr << ... *)
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'cerr') Then
   Begin
     ParseCoutStmt;
     Exit;

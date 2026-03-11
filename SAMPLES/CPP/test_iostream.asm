@@ -12,107 +12,85 @@ _DATA   ENDS
 _TEXT   SEGMENT WORD PUBLIC 'CODE'
         ASSUME CS:_TEXT, DS:_DATA, SS:STACK
 
-        MOV AX,100
+; cout/cerr << ...
+        MOV DX,OFFSET _CC_K_1
+        MOV BX,1
+        CALL _CC_RT_WRITESTR
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
+        MOV AX,42
         MOV WORD PTR [BP-2],AX
-        MOV AX,3
-        MOV WORD PTR [BP-4],AX
+; cout/cerr << ...
         MOV AX,WORD PTR [BP-2]
-        MOV WORD PTR [BP-6],AX
+        MOV BX,1
+        CALL _CC_RT_WRITENUM
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
+; cout/cerr << ...
+        MOV DX,OFFSET _CC_K_2
+        MOV BX,1
+        CALL _CC_RT_WRITESTR
+; cout/cerr << ...
+        MOV AX,WORD PTR [BP-2]
+        MOV BX,1
+        CALL _CC_RT_WRITENUM
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
+; cout/cerr << ...
+        MOV DX,OFFSET _CC_K_3
+        MOV BX,1
+        CALL _CC_RT_WRITESTR
+        MOV AX,123
+        MOV BX,1
+        CALL _CC_RT_WRITENUM
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
         MOV AX,10
+        MOV WORD PTR [BP-4],AX
+        MOV AX,3
+        MOV WORD PTR [BP-6],AX
+; cout/cerr << ...
+        MOV DX,OFFSET _CC_K_4
+        MOV BX,1
+        CALL _CC_RT_WRITESTR
+; cout/cerr << ...
+        MOV AX,WORD PTR [BP-4]
+        PUSH   AX
+        MOV AX,WORD PTR [BP-6]
         MOV BX,AX
-        MOV AX,WORD PTR [BP-2]
+        POP    AX
         ADD AX,BX
-        MOV WORD PTR [BP-2],AX
-        MOV AX,1
-        MOV BX,AX
-        MOV AX,WORD PTR [BP-4]
-        SUB AX,BX
-        MOV WORD PTR [BP-4],AX
-        MOV AX,2
-        MOV BX,AX
-        MOV AX,WORD PTR [BP-2]
-        IMUL BX
-        MOV WORD PTR [BP-2],AX
-        MOV AX,2
-        MOV BX,AX
-        MOV AX,WORD PTR [BP-4]
-        CMP BX,0
-        JE _CC_L_1
-        CWD
-        IDIV BX
-        JMP _CC_L_2
-_CC_L_1:
-        XOR AX,AX
-_CC_L_2:
-        MOV WORD PTR [BP-4],AX
-        MOV AX,7
-        MOV BX,AX
-        MOV AX,WORD PTR [BP-6]
-        CMP BX,0
-        JE _CC_L_3
-        CWD
-        IDIV BX
-        MOV AX,DX
-        JMP _CC_L_4
-_CC_L_3:
-        XOR AX,AX
-_CC_L_4:
-        MOV WORD PTR [BP-6],AX
-        MOV AX,WORD PTR [BP-2]
-        PUSH   AX
-        MOV AX,255
-        MOV BX,AX
-        POP    AX
-        AND AX,BX
+        MOV BX,1
+        CALL _CC_RT_WRITENUM
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
+; cout/cerr << ...
+        MOV DL,42
+        MOV AH,02h
+        INT    21h
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
+; cout/cerr << ...
+        MOV AX,0
+        MOV BX,1
+        CALL _CC_RT_WRITENUM
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
+        MOV AX,-42
         MOV WORD PTR [BP-8],AX
-        MOV AX,WORD PTR [BP-4]
-        PUSH   AX
-        MOV AX,16
-        MOV BX,AX
-        POP    AX
-        OR AX,BX
-        MOV WORD PTR [BP-10],AX
-        MOV AX,WORD PTR [BP-6]
-        PUSH   AX
-        MOV AX,3
-        MOV BX,AX
-        POP    AX
-        XOR AX,BX
-        MOV WORD PTR [BP-12],AX
-        MOV AX,2
-        MOV BX,AX
+; cout/cerr << ...
         MOV AX,WORD PTR [BP-8]
-        MOV CL,BL
-        SAL AX,CL
-        MOV WORD PTR [BP-8],AX
-        MOV AX,1
-        MOV BX,AX
-        MOV AX,WORD PTR [BP-10]
-        MOV CL,BL
-        SAR AX,CL
-        MOV WORD PTR [BP-10],AX
-        MOV AX,WORD PTR [BP-2]
-        PUSH   AX
-        INC    AX
-        MOV WORD PTR [BP-2],AX
-        POP    AX
-        MOV AX,WORD PTR [BP-4]
-        PUSH   AX
-        DEC    AX
-        MOV WORD PTR [BP-4],AX
-        POP    AX
-        MOV AX,WORD PTR [BP-6]
-        INC    AX
-        MOV WORD PTR [BP-6],AX
-        MOV AX,WORD PTR [BP-8]
-        DEC    AX
-        MOV WORD PTR [BP-8],AX
-        MOV AX,1
-        MOV WORD PTR [BP-14],AX
-        MOV AX,2
-        MOV WORD PTR [BP-16],AX
-        MOV AX,3
-        MOV WORD PTR [BP-18],AX
+        MOV BX,1
+        CALL _CC_RT_WRITENUM
+; cout/cerr << ...
+        MOV BX,1
+        CALL _CC_RT_WRITECRLF
 
 ; === Runtime library ===
 
@@ -301,8 +279,10 @@ _CC_STRBUF   DB  256 DUP(0)
 _CC_RT_CRLF     DB  13,10
 _CC_RT_NUMBUF   DB  8 DUP(0)
 _CC_RT_INBUF    DB  80,0,80 DUP(0)
-_CC_V_counter  DW  0
-_CC_V_LIMIT  DW  255
+_CC_K_1  DB  'Hello, World!',0
+_CC_K_2  DB  'Valeur de x = ',0
+_CC_K_3  DB  'Test: ',0
+_CC_K_4  DB  'a + b = ',0
 _DATA   ENDS
 
 END _main

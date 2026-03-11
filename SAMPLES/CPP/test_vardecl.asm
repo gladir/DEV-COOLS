@@ -92,6 +92,152 @@ _CC_RT_DELETE:
         POP    ES
         RET
 
+_CC_RT_WRITESTR:
+        PUSH   AX
+        PUSH   CX
+        PUSH   SI
+        MOV    SI,DX
+        XOR    CX,CX
+_CC_RT_WSTRL:
+        CMP    BYTE PTR [SI],0
+        JE     _CC_RT_WSTRD
+        INC    SI
+        INC    CX
+        JMP    _CC_RT_WSTRL
+_CC_RT_WSTRD:
+        MOV    AH,40h
+        INT    21h
+        POP    SI
+        POP    CX
+        POP    AX
+        RET
+
+_CC_RT_WRITECRLF:
+        PUSH   AX
+        PUSH   CX
+        PUSH   DX
+        MOV    DX,OFFSET _CC_RT_CRLF
+        MOV    CX,2
+        MOV    AH,40h
+        INT    21h
+        POP    DX
+        POP    CX
+        POP    AX
+        RET
+
+_CC_RT_NUMTOSTR:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        PUSH   DI
+        MOV    DI,OFFSET _CC_RT_NUMBUF
+        XOR    CX,CX
+        OR     AX,AX
+        JNS    _CC_RT_NTPOS
+        MOV    BYTE PTR [DI],45
+        INC    DI
+        NEG    AX
+_CC_RT_NTPOS:
+        MOV    BX,10
+_CC_RT_NTLP:
+        XOR    DX,DX
+        DIV    BX
+        PUSH   DX
+        INC    CX
+        OR     AX,AX
+        JNZ    _CC_RT_NTLP
+_CC_RT_NTPOP:
+        POP    DX
+        ADD    DL,30h
+        MOV    [DI],DL
+        INC    DI
+        DEC    CX
+        JNZ    _CC_RT_NTPOP
+        MOV    BYTE PTR [DI],0
+        POP    DI
+        POP    DX
+        POP    CX
+        POP    BX
+        RET
+
+_CC_RT_WRITENUM:
+        PUSH   BX
+        CALL   _CC_RT_NUMTOSTR
+        POP    BX
+        MOV    DX,OFFSET _CC_RT_NUMBUF
+        CALL   _CC_RT_WRITESTR
+        RET
+
+_CC_RT_STRTONUM:
+        PUSH   BX
+        PUSH   CX
+        PUSH   DX
+        XOR    AX,AX
+        XOR    CX,CX
+_CC_RT_SNSKP:
+        CMP    BYTE PTR [SI],32
+        JNE    _CC_RT_SNSGN
+        INC    SI
+        JMP    _CC_RT_SNSKP
+_CC_RT_SNSGN:
+        CMP    BYTE PTR [SI],45
+        JNE    _CC_RT_SNCHK
+        MOV    CX,1
+        INC    SI
+        JMP    _CC_RT_SNLP
+_CC_RT_SNCHK:
+        CMP    BYTE PTR [SI],43
+        JNE    _CC_RT_SNLP
+        INC    SI
+_CC_RT_SNLP:
+        MOV    BL,[SI]
+        CMP    BL,48
+        JB     _CC_RT_SNDN
+        CMP    BL,57
+        JA     _CC_RT_SNDN
+        SUB    BL,48
+        XOR    BH,BH
+        PUSH   BX
+        MOV    BX,10
+        MUL    BX
+        POP    BX
+        ADD    AX,BX
+        INC    SI
+        JMP    _CC_RT_SNLP
+_CC_RT_SNDN:
+        OR     CX,CX
+        JZ     _CC_RT_SNEX
+        NEG    AX
+_CC_RT_SNEX:
+        POP    DX
+        POP    CX
+        POP    BX
+        RET
+
+_CC_RT_READLINE:
+        PUSH   AX
+        PUSH   BX
+        PUSH   DX
+        PUSH   SI
+        MOV    DX,OFFSET _CC_RT_INBUF
+        MOV    AH,0Ah
+        INT    21h
+        MOV    SI,OFFSET _CC_RT_INBUF
+        XOR    BX,BX
+        MOV    BL,[SI+1]
+        MOV    BYTE PTR [SI+BX+2],0
+        MOV    DL,13
+        MOV    AH,02h
+        INT    21h
+        MOV    DL,10
+        MOV    AH,02h
+        INT    21h
+        POP    SI
+        POP    DX
+        POP    BX
+        POP    AX
+        RET
+
 
 _TEXT   ENDS
 
@@ -100,6 +246,9 @@ _CC_TRUE_S   DB  'true',0
 _CC_FALSE_S  DB  'false',0
 _CC_NULL_S   DB  '(null)',0
 _CC_STRBUF   DB  256 DUP(0)
+_CC_RT_CRLF     DB  13,10
+_CC_RT_NUMBUF   DB  8 DUP(0)
+_CC_RT_INBUF    DB  80,0,80 DUP(0)
 _CC_V_g  DW  42
 _CC_V_h  DW  0
 _CC_V_MAX  DW  100
