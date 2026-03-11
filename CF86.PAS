@@ -5030,6 +5030,9 @@ Var
   U        : TString;
   SubExpr  : TExprVal;
   InnerStr : TString;
+  PI       : Integer;    { indice propriete dans boucle (TODO 20) }
+  DIdx     : Integer;    { resultat DataAddStr (TODO 20)          }
+  CI       : Integer;    { indice composant (TODO 20)             }
 Begin
   ExprMakeNone(Res);
 
@@ -5078,21 +5081,21 @@ Begin
         EmitInstrAB('MOV', 'SI', 'OFFSET ' + Name);
         EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
         { Inserer les proprietes par defaut du composant }
-        For SIdx := 0 To CompCount - 1 Do
-          If StrUpperCase(CompTab[SIdx].Name) =
+        For CI := 0 To CompCount - 1 Do
+          If StrUpperCase(CompTab[CI].Name) =
              StrUpperCase(InnerStr) Then
           Begin
-            For ArgCount := 0 To CompTab[SIdx].PropCount - 1 Do
+            For PI := 0 To CompTab[CI].PropCount - 1 Do
             Begin
               EmitInstr('PUSH', 'SI');
-              ArgCount := DataAddStr(CompTab[SIdx].Props[ArgCount].Name);
+              DIdx := DataAddStr(CompTab[CI].Props[PI].Name);
               EmitInstrAB('MOV', 'DI', 'OFFSET ' +
-                          DataTab[ArgCount].LblName);
-              If CompTab[SIdx].Props[ArgCount].DefVal <> '' Then
+                          DataTab[DIdx].LblName);
+              If CompTab[CI].Props[PI].DefVal <> '' Then
               Begin
-                ArgCount := DataAddStr(CompTab[SIdx].Props[ArgCount].DefVal);
+                DIdx := DataAddStr(CompTab[CI].Props[PI].DefVal);
                 EmitInstrAB('MOV', 'AX', 'OFFSET ' +
-                            DataTab[ArgCount].LblName);
+                            DataTab[DIdx].LblName);
               End
               Else
                 EmitInstr('XOR', 'AX, AX');
@@ -5969,21 +5972,21 @@ Begin
       EmitInstrAB('MOV', 'SI', 'OFFSET ' + Name);
       EmitInstrAB('MOV', 'WORD PTR [SI]', '0');
       { Inserer les proprietes par defaut du composant }
-      For SIdx := 0 To CompCount - 1 Do
-        If StrUpperCase(CompTab[SIdx].Name) =
+      For CI := 0 To CompCount - 1 Do
+        If StrUpperCase(CompTab[CI].Name) =
            StrUpperCase(InnerStr) Then
         Begin
-          For ArgCount := 0 To CompTab[SIdx].PropCount - 1 Do
+          For PI := 0 To CompTab[CI].PropCount - 1 Do
           Begin
             EmitInstr('PUSH', 'SI');
-            SIdx := DataAddStr(CompTab[SIdx].Props[ArgCount].Name);
+            DIdx := DataAddStr(CompTab[CI].Props[PI].Name);
             EmitInstrAB('MOV', 'DI', 'OFFSET ' +
-                        DataTab[SIdx].LblName);
-            If CompTab[SIdx].Props[ArgCount].DefVal <> '' Then
+                        DataTab[DIdx].LblName);
+            If CompTab[CI].Props[PI].DefVal <> '' Then
             Begin
-              SIdx := DataAddStr(CompTab[SIdx].Props[ArgCount].DefVal);
+              DIdx := DataAddStr(CompTab[CI].Props[PI].DefVal);
               EmitInstrAB('MOV', 'AX', 'OFFSET ' +
-                          DataTab[SIdx].LblName);
+                          DataTab[DIdx].LblName);
             End
             Else
               EmitInstr('XOR', 'AX, AX');

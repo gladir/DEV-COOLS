@@ -121,7 +121,7 @@ _CFL_13:
         CALL   _CFRT_STINSERT
         POP   SI
         PUSH   SI
-        MOV   DI, OFFSET _CF_NULL_STR
+        MOV   DI, OFFSET _CFK_12
         XOR   AX, AX
         CALL   _CFRT_STINSERT
         POP   SI
@@ -244,6 +244,16 @@ _CFL_26:
         MOV   WORD PTR [SI], 0
         PUSH   SI
         MOV   DI, OFFSET _CFK_9
+        XOR   AX, AX
+        CALL   _CFRT_STINSERT
+        POP   SI
+        PUSH   SI
+        MOV   DI, OFFSET _CFK_12
+        XOR   AX, AX
+        CALL   _CFRT_STINSERT
+        POP   SI
+        PUSH   SI
+        MOV   DI, OFFSET _CFK_25
         XOR   AX, AX
         CALL   _CFRT_STINSERT
         POP   SI
