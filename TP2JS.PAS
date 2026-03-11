@@ -301,7 +301,7 @@
                S[i] -> S.charAt(i - 1) ou S[i - 1] (base 0 en JS)
                Copy, Pos, Concat, Delete, Insert -> methodes String JS
 
-   TODO 17 - OBJETS ET HERITAGE (OBJECT)
+   TODO 17 - OBJETS ET HERITAGE (OBJECT) [IMPLEMENTE]
              TYPE TNom = OBJECT [(TParent)]
                champ1: T1;
                CONSTRUCTOR Init(params);
@@ -3122,6 +3122,46 @@ Begin
     If L = 'false' Then Begin ParseExprFactor := 'false'; Inc(P); Exit; End;
     If L = 'nil'   Then Begin ParseExprFactor := 'null';  Inc(P); Exit; End;
 
+    { INHERITED : appel methode parent -> super.method() (TODO 17) }
+    If L = 'inherited' Then
+    Begin
+      Inc(P); { consommer INHERITED }
+      Tmp := 'super';
+      { Verifier si un nom de methode suit }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        Tmp := Tmp + '.' + TokenPool[P].Val;
+        Inc(P);
+        { Verifier si des arguments suivent }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = '(') Then
+        Begin
+          Inc(P); { consommer ( }
+          Tmp2 := '';
+          While (P < TokenCount) And
+                Not ((TokenPool[P].Kind = TK_PUNCT) And
+                     (TokenPool[P].Val = ')')) Do
+          Begin
+            If (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ',') Then
+            Begin
+              Tmp2 := Tmp2 + ', ';
+              Inc(P);
+            End
+            Else
+              Tmp2 := Tmp2 + ParseExpr(P);
+          End;
+          If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+            Inc(P);
+          Tmp := Tmp + '(' + Tmp2 + ')';
+        End
+        Else
+          Tmp := Tmp + '()';
+      End;
+      ParseExprFactor := Tmp;
+      Exit;
+    End;
+
     { Mot-cle String utilise comme transtypage : String(expr) }
     If L = 'string' Then
     Begin
@@ -3484,9 +3524,10 @@ Begin
     Else If (TIdx >= 0) And (TIdx < TypeCount) And
             (TypeTab[TIdx].Kind = TYK_ARRAY) Then
       ParseAssign := Left + ' = ' + Rght + '.slice()'
-    { Affectation au nom de fonction -> Result = valeur (TODO 15) }
+    { Affectation au nom de fonction -> Result = valeur (TODO 15/17) }
     Else If (Not IsElemAccess) And (TokenPool[SaveP].Kind = TK_IDENT) And
-            (SymIdx >= 0) And (SymTab[SymIdx].Kind = SK_FUNC) Then
+            (SymIdx >= 0) And ((SymTab[SymIdx].Kind = SK_FUNC) Or
+                               (SymTab[SymIdx].Kind = SK_METHOD)) Then
       ParseAssign := 'Result = ' + Rght
     { Affectation normale (y compris elements de tableau/record) }
     Else
@@ -4335,18 +4376,11 @@ Begin
          (StrLowerCase(TokenPool[P].Val) = 'label') Or
          (StrLowerCase(TokenPool[P].Val) = 'begin') Or
          (StrLowerCase(TokenPool[P].Val) = 'procedure') Or
-         (StrLowerCase(TokenPool[P].Val) = 'function') Then
+         (StrLowerCase(TokenPool[P].Val) = 'function') Or
+         (StrLowerCase(TokenPool[P].Val) = 'constructor') Or
+         (StrLowerCase(TokenPool[P].Val) = 'destructor') Then
         Exit;
     End;
-
-    { Attendre un identificateur }
-    If TokenPool[P].Kind <> TK_IDENT Then
-    Begin
-      Inc(P);
-      Continue;
-    End;
-
-    CName := TokenPool[P].Val;
     Inc(P);
     IsTyped := False;
     TIdx := -1;
@@ -4431,7 +4465,8 @@ Begin
       L := StrLowerCase(TokenPool[P].Val);
       If (L = 'const') Or (L = 'var') Or (L = 'type') Or
          (L = 'label') Or (L = 'begin') Or
-         (L = 'procedure') Or (L = 'function') Then
+         (L = 'procedure') Or (L = 'function') Or
+         (L = 'constructor') Or (L = 'destructor') Then
         Exit;
     End;
 
@@ -4992,6 +5027,366 @@ Begin
   ParseTypeString := TIdx;
 End;
 
+{ ============================================================
+  TODO 17 - OBJETS ET HERITAGE (OBJECT) [IMPLEMENTE]
+  ============================================================ }
+{ Types OBJECT Turbo Pascal -> classes JavaScript ES6.           }
+{ TYPE TNom = OBJECT [(TParent)]                                 }
+{   champ1: T1;                                                  }
+{   CONSTRUCTOR Init(params);                                    }
+{   DESTRUCTOR Done; VIRTUAL;                                    }
+{   PROCEDURE Method(params); VIRTUAL;                           }
+{   FUNCTION Func(params): T; VIRTUAL;                           }
+{ END;                                                           }
+(* -> class TNom [extends TParent] { constructor() ... }          *)
+(* INHERITED -> super.method() en JS                              *)
+(* NEW(Ptr, Init(args)) -> Ptr = new TNom(args)                  *)
+(* DISPOSE(Ptr, Done) -> Ptr.Done(); Ptr = null                  *)
+
+{ ---- ParseTypeObject : parser OBJECT [(TParent)] ... END ---- }
+{ P pointe sur le token suivant OBJECT.                          }
+{ Retourne l index du type cree dans TypeTab.                    }
+Function ParseTypeObject(Var P : Integer; Const TName : TString) : Integer;
+Var
+  TIdx       : Integer;
+  ParentName : TString;
+  FNames     : Array[0..MAX_FIELD - 1] Of TString;
+  FTypes     : Array[0..MAX_FIELD - 1] Of Integer;
+  FCount     : Integer;
+  MNames     : Array[0..MAX_FIELD - 1] Of TString;
+  MKinds     : Array[0..MAX_FIELD - 1] Of TString;
+  MParams    : Array[0..MAX_FIELD - 1] Of TString;
+  MRetTypes  : Array[0..MAX_FIELD - 1] Of TString;
+  MCount     : Integer;
+  Depth      : Integer;
+  L          : TString;
+  FName      : TString;
+  FTIdx      : Integer;
+  FTypeName  : TString;
+  MethName   : TString;
+  MethKind   : TString;
+  ParamStr_  : TString;
+  RetType    : TString;
+  I          : Integer;
+  JSFields   : TString;
+  InPrivate  : Boolean;
+Begin
+  ParentName := '';
+  FCount := 0;
+  MCount := 0;
+  InPrivate := False;
+
+  { Parser le parent optionnel : OBJECT(TParent) }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '(') Then
+  Begin
+    Inc(P); { consommer ( }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      ParentName := TokenPool[P].Val;
+      Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ')') Then
+      Inc(P); { consommer ) }
+  End;
+
+  { Parser les membres de l objet jusqu au END }
+  Depth := 1;
+  While (P < TokenCount) And (Depth > 0) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+
+    { Verifier END }
+    If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'end') Then
+    Begin
+      Dec(Depth);
+      Inc(P);
+      Continue;
+    End;
+
+    { Verifier PRIVATE }
+    If ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+        (TokenPool[P].Kind = TK_IDENT)) And (L = 'private') Then
+    Begin
+      InPrivate := True;
+      Inc(P);
+      Continue;
+    End;
+    { Verifier PUBLIC }
+    If ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+        (TokenPool[P].Kind = TK_IDENT)) And (L = 'public') Then
+    Begin
+      InPrivate := False;
+      Inc(P);
+      Continue;
+    End;
+
+    { CONSTRUCTOR / DESTRUCTOR / PROCEDURE / FUNCTION }
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       ((L = 'constructor') Or (L = 'destructor') Or
+        (L = 'procedure') Or (L = 'function')) Then
+    Begin
+      MethKind := L;
+      Inc(P);
+      { Lire le nom de la methode }
+      MethName := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        MethName := TokenPool[P].Val;
+        Inc(P);
+      End;
+      { Lire les parametres optionnels }
+      ParamStr_ := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = '(') Then
+      Begin
+        Inc(P); { consommer ( }
+        While (P < TokenCount) And
+              Not ((TokenPool[P].Kind = TK_PUNCT) And
+                   (TokenPool[P].Val = ')')) Do
+        Begin
+          { Sauter les qualificateurs VAR / CONST }
+          If (TokenPool[P].Kind = TK_KEYWORD) And
+             ((StrLowerCase(TokenPool[P].Val) = 'var') Or
+              (StrLowerCase(TokenPool[P].Val) = 'const')) Then
+          Begin
+            Inc(P);
+            Continue;
+          End;
+          { Collecter les noms de parametres (ident avant , ou :) }
+          If (TokenPool[P].Kind = TK_IDENT) And
+             (P + 1 < TokenCount) And
+             ((TokenPool[P + 1].Val = ',') Or
+              (TokenPool[P + 1].Val = ':') Or
+              (TokenPool[P + 1].Val = ')')) Then
+          Begin
+            If ParamStr_ <> '' Then ParamStr_ := ParamStr_ + ', ';
+            ParamStr_ := ParamStr_ + TokenPool[P].Val;
+            Inc(P);
+            { Consommer , si present }
+            If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ',') Then
+              Inc(P);
+          End
+          { Sauter : Type et ; separateur }
+          Else If (TokenPool[P].Kind = TK_PUNCT) And
+                  (TokenPool[P].Val = ':') Then
+          Begin
+            Inc(P); { consommer : }
+            { Sauter le nom du type }
+            If (P < TokenCount) And
+               ((TokenPool[P].Kind = TK_IDENT) Or
+                (TokenPool[P].Kind = TK_KEYWORD)) Then
+              Inc(P);
+          End
+          Else If (TokenPool[P].Kind = TK_PUNCT) And
+                  (TokenPool[P].Val = ';') Then
+            Inc(P)
+          Else
+            Inc(P);
+        End;
+        If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+          Inc(P); { consommer ) }
+      End;
+      { Lire le type de retour pour FUNCTION }
+      RetType := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ':') Then
+      Begin
+        Inc(P); { consommer : }
+        If (P < TokenCount) And
+           ((TokenPool[P].Kind = TK_IDENT) Or
+            (TokenPool[P].Kind = TK_KEYWORD)) Then
+        Begin
+          RetType := TokenPool[P].Val;
+          Inc(P);
+        End;
+      End;
+      { Consommer ; }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+      { Consommer VIRTUAL; si present (TK_DIRECTIVE ou TK_IDENT) }
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+          (TokenPool[P].Kind = TK_IDENT)) And
+         (StrLowerCase(TokenPool[P].Val) = 'virtual') Then
+      Begin
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End;
+      { Consommer ABSTRACT; si present }
+      If (P < TokenCount) And
+         ((TokenPool[P].Kind = TK_DIRECTIVE) Or
+          (TokenPool[P].Kind = TK_IDENT)) And
+         (StrLowerCase(TokenPool[P].Val) = 'abstract') Then
+      Begin
+        Inc(P);
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+      End;
+      { Enregistrer la methode }
+      If MCount < MAX_FIELD Then
+      Begin
+        MNames[MCount] := MethName;
+        MKinds[MCount] := MethKind;
+        MParams[MCount] := ParamStr_;
+        MRetTypes[MCount] := RetType;
+        Inc(MCount);
+      End;
+      Continue;
+    End;
+
+    { Champs de donnees : nom1, nom2 : Type }
+    If (TokenPool[P].Kind = TK_IDENT) And (Depth = 1) Then
+    Begin
+      If (P + 1 < TokenCount) And
+         ((TokenPool[P + 1].Val = ',') Or (TokenPool[P + 1].Val = ':')) Then
+      Begin
+        { Collecter les noms }
+        While (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Do
+        Begin
+          If FCount < MAX_FIELD Then
+          Begin
+            FNames[FCount] := TokenPool[P].Val;
+            FTypes[FCount] := -1;
+            Inc(FCount);
+          End;
+          Inc(P);
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = ',') Then
+            Inc(P)
+          Else
+            Break;
+        End;
+        { Attendre : Type }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ':') Then
+        Begin
+          Inc(P); { consommer : }
+          FTIdx := -1;
+          If (P < TokenCount) And
+             ((TokenPool[P].Kind = TK_IDENT) Or
+              (TokenPool[P].Kind = TK_KEYWORD)) Then
+          Begin
+            FTypeName := TokenPool[P].Val;
+            FTIdx := TypeFindByName(FTypeName);
+            Inc(P);
+          End;
+          For I := FCount - 1 DownTo 0 Do
+          Begin
+            If FTypes[I] = -1 Then
+              FTypes[I] := FTIdx;
+          End;
+        End;
+        { Consommer ; }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ';') Then
+          Inc(P);
+        Continue;
+      End;
+    End;
+
+    { Token non reconnu : avancer }
+    Inc(P);
+  End;
+
+  { Creer le type dans la table }
+  TIdx := TypeAdd(TYK_OBJECT, TName, FCount * 2, 'class', 'null');
+  If TIdx >= 0 Then
+  Begin
+    For I := 0 To FCount - 1 Do
+      TypeAddField(TIdx, FNames[I], FTypes[I]);
+    If ParentName <> '' Then
+      TypeTab[TIdx].BaseTypeIdx := TypeFindByName(ParentName);
+  End;
+
+  { Emettre la classe JavaScript }
+  If ParentName <> '' Then
+    EmitLine('class ' + TName + ' extends ' + ParentName + ' {')
+  Else
+    EmitLine('class ' + TName + ' {');
+  IndentPush;
+
+  { Emettre un constructeur par defaut si aucun constructor declare }
+  { Ce constructeur initialise les champs avec les valeurs par defaut }
+  JSFields := '';
+  For I := 0 To FCount - 1 Do
+  Begin
+    If I > 0 Then JSFields := JSFields + ' ';
+    JSFields := JSFields + 'this.' + FNames[I] + ' = ' +
+                TypeDefaultJS(FTypes[I]) + ';';
+  End;
+
+  { Verifier si un constructeur est declare }
+  FTIdx := -1;
+  For I := 0 To MCount - 1 Do
+  Begin
+    If MKinds[I] = 'constructor' Then
+    Begin
+      FTIdx := I;
+      Break;
+    End;
+  End;
+
+  If FTIdx < 0 Then
+  Begin
+    { Pas de constructeur declare : generer un constructeur par defaut }
+    EmitLine('constructor() {');
+    IndentPush;
+    If ParentName <> '' Then
+      EmitLine('super();');
+    For I := 0 To FCount - 1 Do
+      EmitLine('this.' + FNames[I] + ' = ' + TypeDefaultJS(FTypes[I]) + ';');
+    IndentPop;
+    EmitLine('}');
+  End;
+
+  { Emettre les stubs de methodes (le corps sera genere dans           }
+  { les implementations TypeName.MethodName)                            }
+  For I := 0 To MCount - 1 Do
+  Begin
+    If MKinds[I] = 'constructor' Then
+    Begin
+      { Le constructeur sera emis lors de l implementation }
+      EmitComment('constructor ' + MNames[I] +
+                  '(' + MParams[I] + ') - implementation attendue');
+    End
+    Else If MKinds[I] = 'destructor' Then
+    Begin
+      EmitComment('destructor ' + MNames[I] + ' - implementation attendue');
+    End
+    Else If MKinds[I] = 'function' Then
+    Begin
+      EmitComment('method ' + MNames[I] +
+                  '(' + MParams[I] + '): ' + MRetTypes[I] +
+                  ' - implementation attendue');
+    End
+    Else
+    Begin
+      EmitComment('method ' + MNames[I] +
+                  '(' + MParams[I] + ') - implementation attendue');
+    End;
+    { Enregistrer la methode dans la table des symboles }
+    SymAdd(TName + '.' + MNames[I], SK_METHOD, TIdx);
+  End;
+
+  IndentPop;
+  EmitLine('}');
+  EmitBlankLine;
+
+  ParseTypeObject := TIdx;
+End;
+
+
+{ Forward declarations pour methodes d objets (TODO 17) }
+Procedure ParseMethodImpl(Var P : Integer; IsFunc : Boolean); Forward;
+Function IsMethodImpl(P : Integer) : Boolean; Forward;
+
 { ---- ParseTypeSection : parser une section TYPE ------------- }
 { TYPE nom = definition;                                         }
 { Genere du code JS pour les types structures (TODO 16).         }
@@ -5016,7 +5411,8 @@ Begin
       L := StrLowerCase(TokenPool[P].Val);
       If (L = 'const') Or (L = 'var') Or (L = 'type') Or
          (L = 'label') Or (L = 'begin') Or
-         (L = 'procedure') Or (L = 'function') Then
+         (L = 'procedure') Or (L = 'function') Or
+         (L = 'constructor') Or (L = 'destructor') Then
         Exit;
     End;
 
@@ -5065,6 +5461,13 @@ Begin
       Begin
         Inc(P); { consommer STRING }
         TIdx := ParseTypeString(P, TName);
+        SymAdd(TName, SK_TYPE, TIdx);
+      End
+      { OBJECT [(TParent)] ... END (TODO 17) }
+      Else If (TokenPool[P].Kind = TK_KEYWORD) And (L = 'object') Then
+      Begin
+        Inc(P); { consommer OBJECT }
+        TIdx := ParseTypeObject(P, TName);
         SymAdd(TName, SK_TYPE, TIdx);
       End
       { ^BaseType (pointeur) }
@@ -5209,10 +5612,21 @@ Begin
       ParseTypeSection(P)
     Else If L = 'label' Then
       ParseLabelSection(P)
-    Else If L = 'procedure' Then
-      ParseProcDecl(P)
-    Else If L = 'function' Then
-      ParseFuncDecl(P)
+    Else If (L = 'procedure') Or (L = 'function') Or
+            (L = 'constructor') Or (L = 'destructor') Then
+    Begin
+      { Verifier si c est une implementation de methode (TODO 17) }
+      If IsMethodImpl(P) Then
+        ParseMethodImpl(P, (L = 'function'))
+      Else If L = 'procedure' Then
+        ParseProcDecl(P)
+      Else If L = 'function' Then
+        ParseFuncDecl(P)
+      Else If L = 'constructor' Then
+        ParseMethodImpl(P, False)
+      Else If L = 'destructor' Then
+        ParseMethodImpl(P, False);
+    End
     Else
       Exit; { mot-cle non reconnu comme section de declaration }
   End;
@@ -5857,6 +6271,139 @@ Begin
     Exit;
   End;
 
+  { ---- TODO 17 : OBJETS ET HERITAGE ----------------------------- }
+
+  { NEW(Ptr, Init(args)) -> Ptr = new TypeName(args) (TODO 17) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'new') Then
+  Begin
+    Inc(P); { consommer NEW }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { consommer ( }
+      L := '';
+      { Lire le premier argument : le pointeur }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        L := TokenPool[P].Val;
+        Inc(P);
+      End;
+      { Verifier s il y a un deuxieme argument apres la virgule }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P); { consommer , }
+        { Deuxieme argument : Init(args) }
+        JS := '';
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          JS := TokenPool[P].Val;
+          Inc(P);
+          { Lire les arguments du constructeur }
+          If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+             (TokenPool[P].Val = '(') Then
+          Begin
+            Inc(P); { consommer ( }
+            JS := '(';
+            While (P < TokenCount) And
+                  Not ((TokenPool[P].Kind = TK_PUNCT) And
+                       (TokenPool[P].Val = ')')) Do
+            Begin
+              JS := JS + TokenPool[P].Val;
+              Inc(P);
+            End;
+            JS := JS + ')';
+            If (P < TokenCount) And (TokenPool[P].Val = ')') Then
+              Inc(P);
+          End
+          Else
+            JS := '()';
+        End;
+        { Consommer ) externe }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        { Deduire le type depuis le symbole du pointeur }
+        { Chercher le type de base du pointeur pour le new }
+        EmitLine(L + ' = new Object' + JS + ';');
+        EmitLine(L + '.' + StrLowerCase(Copy(JS, 1, Pos('(', JS) - 1)) + ';');
+      End
+      Else
+      Begin
+        (* NEW(Ptr) simple -> Ptr = empty object *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        EmitLine(L + ' = {};');
+      End;
+    End
+    Else
+    Begin
+      { new sans parentheses - traiter comme expression }
+      JS := 'new ' + ExprToJS(P);
+      EmitLine(JS + ';');
+    End;
+    Exit;
+  End;
+
+  { DISPOSE(Ptr, Done) -> Ptr.Done(); Ptr = null (TODO 17) }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (StrLowerCase(TokenPool[P].Val) = 'dispose') Then
+  Begin
+    Inc(P); { consommer DISPOSE }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = '(') Then
+    Begin
+      Inc(P); { consommer ( }
+      L := '';
+      { Lire le premier argument : le pointeur }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        L := TokenPool[P].Val;
+        Inc(P);
+      End;
+      { Verifier s il y a un deuxieme argument : le destructeur }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P); { consommer , }
+        JS := '';
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          JS := TokenPool[P].Val;
+          Inc(P);
+        End;
+        { Consommer ) }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        { Emettre l appel au destructeur puis la mise a null }
+        If JS <> '' Then
+          EmitLine(L + '.' + JS + '();');
+        EmitLine(L + ' = null;');
+      End
+      Else
+      Begin
+        { DISPOSE(Ptr) simple -> Ptr = null }
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+           (TokenPool[P].Val = ')') Then
+          Inc(P);
+        EmitLine(L + ' = null;');
+      End;
+    End;
+    Exit;
+  End;
+
+  { INHERITED comme instruction (sans valeur de retour) (TODO 17) }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'inherited') Then
+  Begin
+    JS := ExprToJS(P);
+    EmitLine(JS + ';');
+    Exit;
+  End;
+
   { Affectation ou appel de procedure : ident [:= expr] }
   If TokenPool[P].Kind = TK_IDENT Then
   Begin
@@ -6253,6 +6800,178 @@ Begin
   EmitLine('return Result;');
   IndentPop;
   EmitLine('}');
+  EmitBlankLine;
+
+  { Consommer ; final }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Quitter la portee }
+  SymLeaveScope;
+End;
+
+{ ============================================================
+  TODO 17 - IMPLEMENTATIONS DE METHODES D OBJETS
+  ============================================================ }
+
+{ ---- IsMethodImpl : detecte si on est sur TypeName.MethodName }
+{ Regarde si la sequence courante est PROCEDURE/FUNCTION ident.  }
+{ ident, ce qui indique une implementation de methode d objet.   }
+Function IsMethodImpl;
+Begin
+  IsMethodImpl := False;
+  If P + 2 >= TokenCount Then Exit;
+  If (TokenPool[P].Kind <> TK_KEYWORD) Then Exit;
+  If (StrLowerCase(TokenPool[P].Val) <> 'procedure') And
+     (StrLowerCase(TokenPool[P].Val) <> 'function') And
+     (StrLowerCase(TokenPool[P].Val) <> 'constructor') And
+     (StrLowerCase(TokenPool[P].Val) <> 'destructor') Then Exit;
+  { Verifier ident . ident }
+  If (TokenPool[P + 1].Kind = TK_IDENT) And
+     (P + 2 < TokenCount) And
+     (TokenPool[P + 2].Kind = TK_PUNCT) And
+     (TokenPool[P + 2].Val = '.') Then
+    IsMethodImpl := True;
+End;
+
+{ ---- ParseMethodImpl : parser une implementation de methode -- }
+{ TypeName.MethodName[(params)][: RetType]; [directives;]        }
+{ [decls] BEGIN ... END;                                         }
+{ Insere la methode dans le prototype de la classe JS.           }
+Procedure ParseMethodImpl;
+Var
+  TypeName : TString;
+  MethName : TString;
+  Params   : TString;
+  RetType  : TString;
+  L        : TString;
+  IsCtor   : Boolean;
+  IsDtor   : Boolean;
+  TIdx     : Integer;
+Begin
+  { Sauvegarder le mot-cle pour savoir si c est constructor/destructor }
+  L := StrLowerCase(TokenPool[P].Val);
+  IsCtor := (L = 'constructor');
+  IsDtor := (L = 'destructor');
+  Inc(P); { consommer PROCEDURE/FUNCTION/CONSTRUCTOR/DESTRUCTOR }
+
+  { Lire TypeName.MethodName }
+  TypeName := '';
+  MethName := '';
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    TypeName := TokenPool[P].Val;
+    Inc(P);
+  End;
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = '.') Then
+  Begin
+    Inc(P); { consommer . }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      MethName := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End
+  Else
+  Begin
+    { Pas de point : c est une proc/func normale, pas une methode }
+    { Rembobiner et laisser ParseProcDecl/ParseFuncDecl gerer }
+    P := P - 2; { revenir avant le nom }
+    Exit;
+  End;
+
+  { Entrer dans la portee }
+  SymEnterScope;
+
+  { Parser les parametres }
+  Params := ParseParamList(P);
+
+  { Parser le type de retour pour les fonctions }
+  RetType := '';
+  If IsFunc And (P < TokenCount) And
+     (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ':') Then
+  Begin
+    Inc(P); { consommer : }
+    If (P < TokenCount) And
+       ((TokenPool[P].Kind = TK_IDENT) Or
+        (TokenPool[P].Kind = TK_KEYWORD)) Then
+    Begin
+      RetType := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+
+  { Consommer ; }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+     (TokenPool[P].Val = ';') Then
+    Inc(P);
+
+  { Sauter les directives (VIRTUAL, FAR, etc.) }
+  SkipDirectives(P);
+
+  TIdx := TypeFindByName(TypeName);
+
+  { Emettre la methode dans le prototype JS }
+  EmitLine(TypeName + '.prototype.' + MethName + ' = function(' +
+           Params + ') {');
+  IndentPush;
+
+  If IsCtor Then
+    EmitComment('constructor implementation');
+  If IsDtor Then
+    EmitComment('destructor implementation');
+
+  { Variable Result pour les fonctions }
+  If IsFunc Then
+  Begin
+    EmitLine('var Result = null;');
+    SymAdd('Result', SK_VAR, TypeFindByName(RetType));
+    { Enregistrer le nom de la methode comme SK_METHOD dans la portee }
+    { pour que l affectation MethName := valeur devienne Result = valeur }
+    SymAdd(MethName, SK_METHOD, TypeFindByName(RetType));
+  End;
+
+  { Parser les declarations locales }
+  While (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) Do
+  Begin
+    L := StrLowerCase(TokenPool[P].Val);
+    If L = 'const' Then
+      ParseConstSection(P)
+    Else If L = 'var' Then
+      ParseVarSection(P)
+    Else If L = 'type' Then
+      ParseTypeSection(P)
+    Else If L = 'label' Then
+      ParseLabelSection(P)
+    Else
+      Break;
+  End;
+
+  { Parser le corps BEGIN...END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'begin') Then
+  Begin
+    Inc(P); { consommer BEGIN }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'end') Then
+      Inc(P);
+  End;
+
+  If IsFunc Then
+    EmitLine('return Result;');
+  IndentPop;
+  EmitLine('};');
   EmitBlankLine;
 
   { Consommer ; final }
