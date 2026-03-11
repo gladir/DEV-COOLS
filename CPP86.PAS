@@ -249,7 +249,7 @@
             continue : JMP vers test/increment de boucle englobante
             LoopPush / LoopPop : pile de labels pour break/continue
 
-  TODO 16 - TABLEAUX ET POINTEURS
+  TODO 16 - TABLEAUX ET POINTEURS [IMPLEMENTE]
             Tableaux statiques : int arr[10] -> 20 octets dans DATA ou pile
               Acces : arr[i] -> base + i*sizeof(T)
               Multidimensionnel : int mat[3][4] -> 24 octets
@@ -523,6 +523,8 @@ Type
     Offset      : Integer;   (* [BP-n] pour locaux             *)
     IsStatic    : Boolean;   (* static qualifier                *)
     IsConst     : Boolean;   (* const qualifier                 *)
+    IsArray     : Boolean;   (* true si tableau (TODO 16)       *)
+    ArraySize   : Integer;   (* nombre d elements du tableau    *)
     Access      : TAccessLevel;
     DeclLine    : Integer;
   End;
