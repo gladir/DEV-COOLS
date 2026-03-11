@@ -655,6 +655,31 @@
               EmitMemPortRuntime : ajout $0040:$0013 (640 Ko)
             Test : test_absolute.pas
 
+  TODO 29 - SUPPORT FORMAT QPU (QUICK PASCAL UNIT)  [IMPLEMENTE]
+            Lecture et validation des fichiers QPU (Quick Pascal Unit)
+            de Microsoft Quick Pascal 1.0 dans la clause Uses.
+            Format :
+              Signature "MSQP" (4D 53 51 50) aux offsets 0x00-0x03
+              HeaderSize a l offset 0x0C (Word LE)
+              SymRawSize a l offset 0x0E (Word LE)
+              CodeSize   a l offset 0x12 (Word LE)
+              FixupSize  a l offset 0x14 (Word LE)
+              DepCount   a l offset 0x0A (Word LE)
+              Table de dependances de 0x20 a HeaderSize-1
+              Nom d unite extrait de la table de dependances (1ere entree)
+            Constantes ajoutees :
+              QPU_MAGIC_0..3 ('M','S','Q','P'), QPU_HDR_FIXED ($20)
+            Champ ajoute dans TTPUInfo :
+              IsQPU : True si c est un fichier QPU
+            Procedures ajoutees :
+              QPUSearchFile : recherche du fichier QPU
+              LoadQPUHeader : lecture et validation du header QPU
+            Procedures modifiees :
+              IsKnownUnit : ajout MSGRUTIL, MSGRAPH (unites QPU)
+              ParseUsesClause : tente QPU si TPU introuvable
+            Documentation : DOC/QPU_FORMAT.txt
+            Test : test_qpu.pas
+
   ============================================================ *)
 
 Program TPCW32;
@@ -1302,6 +1327,13 @@ Const
   TPU6_HDR_SIZE  = $40;     { taille header TP6 (TPU9)               }
   TPU7_HDR_SIZE  = $60;     { taille header TP7 (TPUQ)               }
 
+  { Constantes QPU (TODO 29) }
+  QPU_MAGIC_0    = $4D;     { 'M' - premier octet signature MSQP     }
+  QPU_MAGIC_1    = $53;     { 'S' - deuxieme octet                   }
+  QPU_MAGIC_2    = $51;     { 'Q' - troisieme octet                  }
+  QPU_MAGIC_3    = $50;     { 'P' - quatrieme octet                  }
+  QPU_HDR_FIXED  = $20;     { partie fixe de l en-tete QPU (32 octets) }
+
   { Table des tailles de types Turbo Pascal (Win32, 32 bits) }
   MAX_TP_TYPE_SIZES = 18;
 
@@ -1393,13 +1425,14 @@ Type
     AbsOfs      : LongInt;     { offset absolute (ex: $0013)            }
   End;
 
-  { Info sur une unite importee (TODO 26) }
+  { Info sur une unite importee (TODO 26, TODO 29) }
   TTPUInfo = Record
     Name      : TString;    { nom de l unite (majuscules)             }
-    FileName  : TString;    { chemin complet du fichier TPU            }
+    FileName  : TString;    { chemin complet du fichier TPU/QPU       }
     Version   : Byte;       { version TPU detectee (octet 4)           }
-    Loaded    : Boolean;    { True si le fichier TPU a ete lu          }
+    Loaded    : Boolean;    { True si le fichier TPU/QPU a ete lu     }
     IsKnown   : Boolean;    { True si c est une unite connue (Crt...) }
+    IsQPU     : Boolean;    { True si c est un fichier QPU (Quick Pascal) }
   End;
 
 Var
@@ -18154,7 +18187,8 @@ Begin
   IsKnownUnit := (Up = 'SYSTEM') Or (Up = 'CRT') Or (Up = 'DOS') Or
     (Up = 'GRAPH') Or (Up = 'GRAPH3') Or (Up = 'STRINGS') Or
     (Up = 'OVERLAY') Or (Up = 'PRINTER') Or (Up = 'WINDOS') Or
-    (Up = 'TURBO3') Or (Up = 'OBJECTS');
+    (Up = 'TURBO3') Or (Up = 'OBJECTS') Or
+    (Up = 'MSGRUTIL') Or (Up = 'MSGRAPH');  { Quick Pascal units (TODO 29) }
 End;
 
 Procedure MarkUnitSymbols(Const UName : TString);
@@ -18235,6 +18269,103 @@ Begin
   End;
 End;
 
+{ ============================================================ }
+{ TODO 29 - SUPPORT FORMAT QPU (QUICK PASCAL UNIT) [IMPLEMENTE] }
+{ ============================================================ }
+
+Function QPUSearchFile(Const UnitName : TString) : TString;
+{ Search for .QPU file in current dir, UnitDirs, and TurboDir }
+Var
+  FName : TString;
+  TF    : File;
+  Dirs  : TString;
+  P     : Integer;
+  Dir   : TString;
+  IORes : Integer;
+Begin
+  FName := UnitName + '.QPU';
+  { 1. Current directory }
+  {$I-} Assign(TF, FName); Reset(TF, 1); IORes := IOResult; {$I+}
+  If IORes = 0 Then Begin Close(TF); QPUSearchFile := FName; Exit End;
+  { 2. UnitDirs (semicolon-separated) }
+  Dirs := Opts.UnitDirs;
+  While Length(Dirs) > 0 Do Begin
+    P := Pos(';', Dirs);
+    If P > 0 Then Begin Dir := Copy(Dirs, 1, P - 1); Dirs := Copy(Dirs, P + 1, Length(Dirs) - P) End
+    Else Begin Dir := Dirs; Dirs := '' End;
+    If Length(Dir) > 0 Then Begin
+      If (Dir[Length(Dir)] <> '\') And (Dir[Length(Dir)] <> '/') Then Dir := Dir + '/';
+      FName := Dir + UnitName + '.QPU';
+      {$I-} Assign(TF, FName); Reset(TF, 1); IORes := IOResult; {$I+}
+      If IORes = 0 Then Begin Close(TF); QPUSearchFile := FName; Exit End;
+    End;
+  End;
+  { 3. TurboDir }
+  If Opts.TurboDir <> '' Then Begin
+    Dir := Opts.TurboDir;
+    If (Dir[Length(Dir)] <> '\') And (Dir[Length(Dir)] <> '/') Then Dir := Dir + '/';
+    FName := Dir + UnitName + '.QPU';
+    {$I-} Assign(TF, FName); Reset(TF, 1); IORes := IOResult; {$I+}
+    If IORes = 0 Then Begin Close(TF); QPUSearchFile := FName; Exit End;
+  End;
+  QPUSearchFile := '';
+End;
+
+Function LoadQPUHeader(Const FileName : TString;
+                       Var UnitNameOut : TString;
+                       Var SymSize : Word;
+                       Var CodeSize : Word;
+                       Var FixupSize : Word;
+                       Var DepCount : Word) : Boolean;
+{ Read and validate QPU header (Quick Pascal Unit).
+  Signature: "MSQP" (4D 53 51 50).
+  Extracts unit name from the first entry in dependency table. }
+Var
+  TF    : File;
+  Hdr   : Array[0..95] Of Byte;  { max header bytes to read }
+  NRead : {$IFDEF FPC}LongInt{$ELSE}Word{$ENDIF};
+  IORes : Integer;
+  HdrSz : Word;
+  DepOfs: Word;
+  NameLen: Byte;
+  J     : Integer;
+Begin
+  LoadQPUHeader := False;
+  UnitNameOut := ''; SymSize := 0; CodeSize := 0; FixupSize := 0; DepCount := 0;
+  {$I-} Assign(TF, FileName); Reset(TF, 1); IORes := IOResult; {$I+}
+  If IORes <> 0 Then Begin WarnMsg('impossible d''ouvrir: ' + FileName); Exit End;
+  {$I-} BlockRead(TF, Hdr, 96, NRead); IORes := IOResult; {$I+}
+  If (IORes <> 0) Or (NRead < QPU_HDR_FIXED) Then
+  Begin Close(TF); WarnMsg('fichier QPU trop court: ' + FileName); Exit End;
+  { Check signature: M S Q P }
+  If (Hdr[0] <> QPU_MAGIC_0) Or (Hdr[1] <> QPU_MAGIC_1) Or
+     (Hdr[2] <> QPU_MAGIC_2) Or (Hdr[3] <> QPU_MAGIC_3) Then
+  Begin Close(TF); WarnMsg('fichier QPU invalide (signature): ' + FileName); Exit End;
+  { Extract header fields (all words, little-endian) }
+  DepCount := Hdr[$0A] + Hdr[$0B] * 256;
+  HdrSz    := Hdr[$0C] + Hdr[$0D] * 256;
+  SymSize  := Hdr[$0E] + Hdr[$0F] * 256;
+  CodeSize := Hdr[$12] + Hdr[$13] * 256;
+  FixupSize:= Hdr[$14] + Hdr[$15] * 256;
+  { Read unit name from first entry in dependency table at offset 0x20 }
+  { Format: Hash(2) + Flags(1) + NameLen(1) + Name(N) }
+  DepOfs := QPU_HDR_FIXED;  { 0x20 }
+  If (DepOfs + 4 < NRead) Then
+  Begin
+    { Skip Hash(2) + Flags(1), read NameLen }
+    NameLen := Hdr[DepOfs + 3];
+    If NameLen > 63 Then NameLen := 63;
+    UnitNameOut := '';
+    For J := 0 To NameLen - 1 Do
+    Begin
+      If (DepOfs + 4 + J) < NRead Then
+        UnitNameOut := UnitNameOut + Chr(Hdr[DepOfs + 4 + J]);
+    End;
+  End;
+  Close(TF);
+  LoadQPUHeader := True;
+End;
+
 Procedure ParseUsesClause;
 Var
   I, SI      : Integer;
@@ -18247,6 +18378,12 @@ Var
   TPUHash    : Word;
   TPUUList   : Word;
   TPUSrc     : Word;
+  QPUPath    : TString;              { chemin du fichier QPU (TODO 29) }
+  QPUUName   : TString;              { nom d unite extrait du QPU      }
+  QPUSymSz   : Word;                 { taille symboles QPU             }
+  QPUCodeSz  : Word;                 { taille code QPU                 }
+  QPUFixSz   : Word;                 { taille fixup QPU                }
+  QPUDeps    : Word;                 { nombre de dependances QPU       }
 Begin
   UsesCount := 0;
   IsUnitSource := False;
@@ -18255,7 +18392,7 @@ Begin
   Begin
     UsesUnits[I].Name := ''; UsesUnits[I].FileName := '';
     UsesUnits[I].Version := 0; UsesUnits[I].Loaded := False;
-    UsesUnits[I].IsKnown := False;
+    UsesUnits[I].IsKnown := False; UsesUnits[I].IsQPU := False;
   End;
   InUses := False;
   I := 0;
@@ -18328,8 +18465,25 @@ Begin
                           ', sym=', TPUSymSz, ', nom=', TPUUName, ')');
               End;
             End
-            Else If Not UsesUnits[UsesCount].IsKnown Then
-              WarnMsg('fichier TPU introuvable: ' + UName);
+            Else Begin
+              { TPU introuvable : tenter QPU (Quick Pascal) (TODO 29) }
+              QPUPath := QPUSearchFile(UName);
+              If QPUPath <> '' Then
+              Begin
+                UsesUnits[UsesCount].FileName := QPUPath;
+                If LoadQPUHeader(QPUPath, QPUUName, QPUSymSz, QPUCodeSz, QPUFixSz, QPUDeps) Then
+                Begin
+                  UsesUnits[UsesCount].Loaded := True;
+                  UsesUnits[UsesCount].IsQPU := True;
+                  If Opts.Verbose Then
+                    WriteLn('  QPU charge: ', UName, ' (', QPUPath,
+                            ', sym=', QPUSymSz, ', code=', QPUCodeSz,
+                            ', deps=', QPUDeps, ', nom=', QPUUName, ')');
+                End;
+              End
+              Else If Not UsesUnits[UsesCount].IsKnown Then
+                WarnMsg('fichier TPU/QPU introuvable: ' + UName);
+            End;
           End;
           Inc(UsesCount); Inc(I);
           If I < TokenCount Then
@@ -18358,7 +18512,13 @@ Begin
     Begin
       If I > 0 Then Write(', ');
       Write(UsesUnits[I].Name);
-      If UsesUnits[I].Loaded Then Write(' [TPU v', TPUVersionStr(UsesUnits[I].Version), ']');
+      If UsesUnits[I].Loaded Then
+      Begin
+        If UsesUnits[I].IsQPU Then
+          Write(' [QPU]')
+        Else
+          Write(' [TPU v', TPUVersionStr(UsesUnits[I].Version), ']');
+      End;
     End;
     WriteLn;
   End;
