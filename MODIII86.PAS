@@ -152,7 +152,7 @@
              ABS(x), MAX(a,b), MIN(a,b), FLOAT(x), TRUNC(x)
              INC(x), DEC(x), INC(x,n), DEC(x,n) : procedures predefinies
 
-   TODO 11 - EXPRESSIONS BINAIRES
+   TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
              ParseExprPrec(MinPrec) : boucle de precedence (Pratt)
              Arithmetique entiere : ADD/SUB/IMUL/IDIV pour +, -, *, DIV
              MOD : IDIV -> resultat dans DX (reste)
@@ -4856,14 +4856,83 @@ Begin
   Inc(EP);
 End;
 
+(* ============================================================
+   TODO 11 - EXPRESSIONS BINAIRES [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- EmitBinOpText : comparaison de chaines TEXT ------------- *)
+(* SI=gauche, DI=droite. Appelle _M3RT_STRCMP qui positionne les *)
+(* drapeaux (ZF/CF). Puis utilise la condition Jcc appropriee.    *)
+
+Procedure EmitBinOpText(Const Op : TString);
+Var
+  LblTrue, LblEnd : TString;
+Begin
+  LblTrue := LabelGen;
+  LblEnd  := LabelGen;
+
+  (* Preparer les arguments : SI=gauche(AX), DI=droite(BX) *)
+  WriteLn(OutF, '        MOV     SI, AX');
+  WriteLn(OutF, '        MOV     DI, BX');
+  WriteLn(OutF, '        CALL    ', M3_RT_PFX, 'STRCMP');
+
+  (* _M3RT_STRCMP : positionne ZF si egal, CF si gauche < droite *)
+  If Op = '=' Then
+    WriteLn(OutF, '        JE      ', LblTrue)
+  Else If Op = '#' Then
+    WriteLn(OutF, '        JNE     ', LblTrue)
+  Else If Op = '<' Then
+    WriteLn(OutF, '        JB      ', LblTrue)
+  Else If Op = '>' Then
+    WriteLn(OutF, '        JA      ', LblTrue)
+  Else If Op = '<=' Then
+    WriteLn(OutF, '        JBE     ', LblTrue)
+  Else If Op = '>=' Then
+    WriteLn(OutF, '        JAE     ', LblTrue);
+
+  WriteLn(OutF, '        XOR     AX, AX');
+  WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+  WriteLn(OutF, LblTrue, ':');
+  WriteLn(OutF, '        MOV     AX, 1');
+  WriteLn(OutF, LblEnd, ':');
+End;
+
+(* ---- EmitSetOp : operations ensemblistes -------------------- *)
+(* AX = ensemble gauche (masque de bits 16 bits)                  *)
+(* BX = ensemble droite                                           *)
+(* Resultat dans AX.                                              *)
+(* Union : +            -> OR  AX, BX                             *)
+(* Intersection : star  -> AND AX, BX                             *)
+(* Difference : -       -> NOT BX / AND AX, BX                   *)
+(* Diff. symetrique : / -> XOR AX, BX                            *)
+
+Procedure EmitSetOp(Const Op : TString);
+Begin
+  If Op = '+' Then
+    WriteLn(OutF, '        OR      AX, BX')
+  Else If Op = '*' Then
+    WriteLn(OutF, '        AND     AX, BX')
+  Else If Op = '-' Then
+  Begin
+    WriteLn(OutF, '        NOT     BX');
+    WriteLn(OutF, '        AND     AX, BX');
+  End
+  Else If Op = '/' Then
+    WriteLn(OutF, '        XOR     AX, BX');
+End;
+
 (* ---- ParseExprPrec : parseur Pratt pour expressions binaires -- *)
 (* MinPrec = niveau de precedence minimum a accepter.              *)
 (* Resultat dans AX.                                               *)
+(* Court-circuit : AND evalue droite seulement si gauche <> 0.     *)
+(*                 OR evalue droite seulement si gauche = 0.       *)
 
 Procedure ParseExprPrec(MinPrec : Integer);
 Var
-  Op   : TString;
-  Prec : Integer;
+  Op       : TString;
+  Prec     : Integer;
+  LblSkip  : TString;
+  LblEnd   : TString;
 Begin
   ParsePrimary;
 
@@ -4880,18 +4949,56 @@ Begin
 
     Inc(EP); (* passer l operateur *)
 
-    (* Sauver le cote gauche *)
-    EmitInstrA('PUSH', 'AX');
+    (* Court-circuit pour AND *)
+    If Op = 'AND' Then
+    Begin
+      LblSkip := LabelGen;
+      LblEnd  := LabelGen;
+      WriteLn(OutF, '        TEST    AX, AX');
+      WriteLn(OutF, '        JZ      ', LblSkip);
+      ParseExprPrec(Prec + 1);
+      WriteLn(OutF, '        TEST    AX, AX');
+      WriteLn(OutF, '        JZ      ', LblSkip);
+      WriteLn(OutF, '        MOV     AX, 1');
+      WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+      WriteLn(OutF, LblSkip, ':');
+      WriteLn(OutF, '        XOR     AX, AX');
+      WriteLn(OutF, LblEnd, ':');
+    End
 
-    (* Parser le cote droit avec precedence superieure *)
-    ParseExprPrec(Prec + 1);
+    (* Court-circuit pour OR *)
+    Else If Op = 'OR' Then
+    Begin
+      LblSkip := LabelGen;
+      LblEnd  := LabelGen;
+      WriteLn(OutF, '        TEST    AX, AX');
+      WriteLn(OutF, '        JNZ     ', LblSkip);
+      ParseExprPrec(Prec + 1);
+      WriteLn(OutF, '        TEST    AX, AX');
+      WriteLn(OutF, '        JNZ     ', LblSkip);
+      WriteLn(OutF, '        XOR     AX, AX');
+      WriteLn(OutF, '        JMP     SHORT ', LblEnd);
+      WriteLn(OutF, LblSkip, ':');
+      WriteLn(OutF, '        MOV     AX, 1');
+      WriteLn(OutF, LblEnd, ':');
+    End
 
-    (* Restaurer le cote gauche *)
-    EmitInstrAB('MOV', 'BX', 'AX');
-    EmitInstrA('POP', 'AX');
+    (* Operateurs standards *)
+    Else
+    Begin
+      (* Sauver le cote gauche *)
+      EmitInstrA('PUSH', 'AX');
 
-    (* Emettre l operation *)
-    EmitBinOp(Op);
+      (* Parser le cote droit avec precedence superieure *)
+      ParseExprPrec(Prec + 1);
+
+      (* Restaurer le cote gauche *)
+      EmitInstrAB('MOV', 'BX', 'AX');
+      EmitInstrA('POP', 'AX');
+
+      (* Emettre l operation *)
+      EmitBinOp(Op);
+    End;
   End;
 End;
 
@@ -5845,7 +5952,7 @@ Begin
     WriteLn('  Procedures     : ', ProcCount);
   End;
 
-  (* TODO 11+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 12+ : ParseCompilationUnit, EmitRuntime, etc. *)
 
   (* Phase 3 : emettre le fichier assembleur *)
   EmitOpen;
