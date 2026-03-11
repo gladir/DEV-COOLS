@@ -597,7 +597,7 @@
                -> process.argv.slice(2) (Node.js)
              RuntimeEmitted : flag pour n emettre le runtime qu une seule fois
 
-   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES
+   TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
              EmitClose : ecrire l appel _main() a la fin du fichier .js
              Run : pipeline complet LexInit -> ParseProgram ou ParseUnit ->
                EmitRuntime -> EmitFooter -> fermeture du fichier
@@ -10222,6 +10222,146 @@ Begin
   WriteLn('TP2JS: unite "', UnitName, '" compilee.');
 End;
 
+{ ============================================================
+  TODO 25 - GENERATION FINALE ET FICHIERS EXEMPLES [IMPLEMENTE]
+  ============================================================ }
+
+{ ---- OptWarnUnusedVars : detecter les variables non utilisees - }
+{ Parcourt la table des symboles pour trouver les variables       }
+{ declarees par le programmeur (apres BuiltinSymEnd) qui ne       }
+{ sont jamais referencees dans les tokens du code source.          }
+{ Emet un avertissement pour chaque variable non utilisee.         }
+Procedure OptWarnUnusedVars;
+Var
+  I, J    : Integer;
+  VName   : TString;
+  Found   : Boolean;
+Begin
+  If Not Opts.Warnings Then Exit;
+  For I := BuiltinSymEnd To SymCount - 1 Do
+  Begin
+    If SymTab[I].Kind <> SK_VAR Then Continue;
+    VName := StrLowerCase(SymTab[I].Name);
+    Found := False;
+    { Chercher si le nom de la variable apparait dans les tokens }
+    { au-dela d une simple declaration (au moins 2 occurrences)  }
+    { car la premiere occurrence est la declaration elle-meme     }
+    J := 0;
+    While (J < TokenCount) And (Not Found) Do
+    Begin
+      If (TokenPool[J].Kind = TK_IDENT) And
+         (StrLowerCase(TokenPool[J].Val) = VName) Then
+      Begin
+        { Verifier que ce n est pas juste la declaration VAR }
+        If (J > 0) And (TokenPool[J - 1].Kind = TK_OP) And
+           (TokenPool[J - 1].Val = ':=') Then
+        Begin
+          Found := True;
+        End
+        Else If (J + 1 < TokenCount) And
+                (TokenPool[J + 1].Kind = TK_OP) And
+                (TokenPool[J + 1].Val = ':=') Then
+        Begin
+          Found := True;
+        End
+        Else If (J > 0) And (TokenPool[J - 1].Kind = TK_KEYWORD) And
+                (StrLowerCase(TokenPool[J - 1].Val) <> 'var') Then
+        Begin
+          Found := True;
+        End
+        Else If (J > 0) And (TokenPool[J - 1].Kind = TK_PUNCT) And
+                ((TokenPool[J - 1].Val = '(') Or
+                 (TokenPool[J - 1].Val = ',') Or
+                 (TokenPool[J - 1].Val = '[')) Then
+        Begin
+          Found := True;
+        End;
+      End;
+      Inc(J);
+    End;
+    If Not Found Then
+      WarnMsg('variable "' + SymTab[I].Name + '" declaree mais jamais utilisee');
+  End;
+End;
+
+{ ---- OptConstFold : replier les expressions constantes -------- }
+{ Parcourt les tokens pour detecter les patterns entier op entier  }
+{ et les remplace par le resultat evalue a la compilation.          }
+{ Supporte : +, -, *, DIV, MOD sur des entiers litteraux.          }
+Procedure OptConstFold;
+Var
+  I       : Integer;
+  A, B, R : LongInt;
+  Op      : TString;
+  Code    : Integer;
+Begin
+  I := 1;
+  While I < TokenCount - 1 Do
+  Begin
+    If (TokenPool[I].Kind = TK_OP) And
+       (TokenPool[I - 1].Kind = TK_INTEGER) And
+       (TokenPool[I + 1].Kind = TK_INTEGER) Then
+    Begin
+      Op := TokenPool[I].Val;
+      Val(TokenPool[I - 1].Val, A, Code);
+      If Code <> 0 Then Begin Inc(I); Continue; End;
+      Val(TokenPool[I + 1].Val, B, Code);
+      If Code <> 0 Then Begin Inc(I); Continue; End;
+
+      R := 0;
+      If Op = '+' Then R := A + B
+      Else If Op = '-' Then R := A - B
+      Else If Op = '*' Then R := A * B
+      Else If (StrLowerCase(Op) = 'div') And (B <> 0) Then R := A Div B
+      Else If (StrLowerCase(Op) = 'mod') And (B <> 0) Then R := A Mod B
+      Else Begin Inc(I); Continue; End;
+
+      { Remplacer les 3 tokens par le resultat }
+      TokenPool[I - 1].Val := IntToStr_(R);
+      TokenPool[I - 1].IntVal := R;
+      { Decaler les tokens }
+      Move(TokenPool[I + 2], TokenPool[I],
+           (TokenCount - I - 2) * SizeOf(TToken));
+      Dec(TokenCount, 2);
+      { Ne pas avancer, re-evaluer au meme index }
+    End
+    Else
+      Inc(I);
+  End;
+End;
+
+{ ---- OptDeadCode : detecter le code mort ---------------------- }
+{ Detecte les patterns IF FALSE THEN et IF 0 THEN dans le code    }
+{ source et emet un avertissement.                                  }
+Procedure OptDeadCode;
+Var
+  I : Integer;
+Begin
+  If Not Opts.Warnings Then Exit;
+  For I := 0 To TokenCount - 3 Do
+  Begin
+    If (TokenPool[I].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[I].Val) = 'if') Then
+    Begin
+      { IF FALSE THEN -> code mort }
+      If ((TokenPool[I + 1].Kind = TK_KEYWORD) Or
+          (TokenPool[I + 1].Kind = TK_IDENT)) And
+         (StrLowerCase(TokenPool[I + 1].Val) = 'false') And
+         (TokenPool[I + 2].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[I + 2].Val) = 'then') Then
+        WarnMsg('code mort detecte: IF FALSE THEN (ligne ' +
+                IntToStr_(TokenPool[I].Line) + ')');
+      { IF 0 THEN -> code mort }
+      If (TokenPool[I + 1].Kind = TK_INTEGER) And
+         (TokenPool[I + 1].Val = '0') And
+         (TokenPool[I + 2].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[I + 2].Val) = 'then') Then
+        WarnMsg('code mort detecte: IF 0 THEN (ligne ' +
+                IntToStr_(TokenPool[I].Line) + ')');
+    End;
+  End;
+End;
+
 { ---- ParseProgram : parser un programme Pascal complet ------ }
 { PROGRAM nom [(params)]; [USES ...;] [decls] BEGIN ... END.    }
 { Genere le fichier JavaScript complet.                          }
@@ -10314,6 +10454,10 @@ Begin
 
   { Remplir le token pool avec tous les tokens }
   TokenPoolFill;
+
+  { TODO 25 : optimisations simples }
+  OptConstFold;
+  OptDeadCode;
 
   { Afficher les conversions JS des litteraux en mode debug }
   If Opts.DebugMode Then
@@ -10422,6 +10566,9 @@ Begin
     { Compiler comme programme }
     ParseProgram(P);
   End;
+
+  { TODO 25 : avertissements variables non utilisees }
+  OptWarnUnusedVars;
 
   { TODO 24 : emettre le runtime JavaScript minimal }
   EmitRuntime;
