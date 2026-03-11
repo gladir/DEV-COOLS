@@ -229,7 +229,7 @@
              Val(S, X, Code) : conversion chaine vers nombre
                -> X = Number(S), Code = isNaN(X) ? 1 : 0
 
-   TODO 13 - IF / CASE / GOTO
+   TODO 13 - IF / CASE / GOTO [IMPLEMENTE]
              ParseIfStmt : IF cond THEN stmt [ELSE stmt]
                -> if (cond) { stmt } else { stmt } en JS
                IF imbrique : else if (cond) { ... }
@@ -847,6 +847,19 @@ Var
 Begin
   Str(N, S);
   IntToStr_ := S;
+End;
+
+{ StrToLongIntDef : convertir une chaine en LongInt avec defaut }
+Function StrToLongIntDef(Const S : TString; Def : LongInt) : LongInt;
+Var
+  N    : LongInt;
+  Code : Integer;
+Begin
+  Val(S, N, Code);
+  If Code = 0 Then
+    StrToLongIntDef := N
+  Else
+    StrToLongIntDef := Def;
 End;
 
 Function StrLowerCase(Const S : TString) : TString;
@@ -4635,19 +4648,36 @@ End;
 
 { ---- ParseLabelSection : parser une section LABEL ----------- }
 { LABEL label1, label2, ...;                                     }
-{ Les labels sont ignores en JavaScript.                         }
+{ Enregistre les labels dans la table des symboles (TODO 13).    }
 Procedure ParseLabelSection(Var P : Integer);
+Var
+  LblName : TString;
 Begin
   If P >= TokenCount Then Exit;
   If (TokenPool[P].Kind <> TK_KEYWORD) Or
      (StrLowerCase(TokenPool[P].Val) <> 'label') Then Exit;
   Inc(P); { consommer LABEL }
-  EmitComment('label section (ignored)');
-  { Avancer jusqu au point-virgule }
+  EmitComment('label section');
+  { Parser les noms de labels separes par des virgules }
   While (P < TokenCount) And
         Not ((TokenPool[P].Kind = TK_PUNCT) And
              (TokenPool[P].Val = ';')) Do
-    Inc(P);
+  Begin
+    If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+    Begin
+      Inc(P);
+      Continue;
+    End;
+    If (TokenPool[P].Kind = TK_IDENT) Or
+       (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      LblName := TokenPool[P].Val;
+      SymAdd(LblName, SK_LABEL, -1);
+      Inc(P);
+    End
+    Else
+      Inc(P);
+  End;
   If P < TokenCount Then Inc(P);
 End;
 
@@ -4849,6 +4879,14 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 13 - IF / CASE / GOTO [IMPLEMENTE]
+  ============================================================ }
+{ ParseIfStmt : IF cond THEN stmt [ELSE [IF ...]] avec chaines }
+{ ParseCaseStmt : CASE expr OF ... END avec intervalles lo..hi  }
+{ ParseGotoStmt : GOTO label (traduction limitee en JS)         }
+{ Labels en corps : ident: reconnu et emis en commentaire JS    }
+
 { ---- ParseBeginEnd : parser BEGIN ... END. ------------------- }
 { Corps principal du programme -> contenu de _main()             }
 { Emet les instructions du corps principal en JavaScript.        }
@@ -4881,6 +4919,197 @@ Begin
   Else
     { Une seule instruction }
     ParseStmt(P);
+End;
+
+{ ---- ParseIfStmt : parser IF...THEN...ELSE [IF...] --------- }
+{ Gere les chaines ELSE IF sans imbrication excessive.           }
+{ Genere: if (cond) ... else if (cond) ... else ...             }
+Procedure ParseIfStmt(Var P : Integer);
+Var
+  JS    : TString;
+  First : Boolean;
+Begin
+  First := True;
+  While P < TokenCount Do
+  Begin
+    Inc(P); { consommer IF }
+    JS := ExprToJS(P);
+    { Consommer THEN }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'then') Then
+      Inc(P);
+    If First Then
+    Begin
+      EmitLine('if (' + JS + ') {');
+      First := False;
+    End
+    Else
+      EmitLine('} else if (' + JS + ') {');
+    IndentPush;
+    ParseStmtBlock(P);
+    IndentPop;
+    { Consommer ; optionnel avant ELSE }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+    Begin
+      { Verifier si ELSE suit }
+      If (P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[P + 1].Val) = 'else') Then
+        Inc(P) { consommer ; avant else }
+    End;
+    { ELSE optionnel }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+       (StrLowerCase(TokenPool[P].Val) = 'else') Then
+    Begin
+      Inc(P); { consommer ELSE }
+      { ELSE IF chaine }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+         (StrLowerCase(TokenPool[P].Val) = 'if') Then
+        Continue { boucler pour parser le IF suivant }
+      Else
+      Begin
+        { ELSE simple }
+        EmitLine('} else {');
+        IndentPush;
+        ParseStmtBlock(P);
+        IndentPop;
+        Break;
+      End;
+    End
+    Else
+      Break;
+  End;
+  EmitLine('}');
+End;
+
+{ ---- ParseCaseStmt : parser CASE...OF...END avec intervalles - }
+{ Gere les valeurs multiples (val1, val2) et intervalles (lo..hi) }
+{ Genere: switch (expr) case val: ... break; default: ...       }
+Procedure ParseCaseStmt(Var P : Integer);
+Var
+  JS   : TString;
+  L    : TString;
+  Lo   : LongInt;
+  Hi   : LongInt;
+  I    : LongInt;
+Begin
+  Inc(P); { consommer CASE }
+  JS := ExprToJS(P);
+  { Consommer OF }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'of') Then
+    Inc(P);
+  EmitLine('switch (' + JS + ') {');
+  IndentPush;
+  { Parser les branches du case }
+  While (P < TokenCount) And
+        Not ((TokenPool[P].Kind = TK_KEYWORD) And
+             ((StrLowerCase(TokenPool[P].Val) = 'end') Or
+              (StrLowerCase(TokenPool[P].Val) = 'else'))) Do
+  Begin
+    { Lire les valeurs du case (val1, val2, lo..hi) }
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_PUNCT) And
+               (TokenPool[P].Val = ':')) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               ((StrLowerCase(TokenPool[P].Val) = 'end') Or
+                (StrLowerCase(TokenPool[P].Val) = 'else'))) Do
+    Begin
+      If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
+      Begin
+        Inc(P);
+        Continue;
+      End;
+      { Lire la valeur }
+      L := ExprToJS(P);
+      { Verifier si c est un intervalle lo..hi }
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = '..') Then
+      Begin
+        Inc(P); { consommer .. }
+        { Lo est deja dans L, lire Hi }
+        Lo := StrToLongIntDef(L, 0);
+        Hi := StrToLongIntDef(ExprToJS(P), 0);
+        { Generer case pour chaque valeur de l intervalle }
+        If (Hi - Lo <= 256) And (Hi >= Lo) Then
+        Begin
+          I := Lo;
+          While I <= Hi Do
+          Begin
+            EmitLine('case ' + IntToStr_(I) + ':');
+            Inc(I);
+          End;
+        End
+        Else
+        Begin
+          { Intervalle trop grand : generer un commentaire }
+          EmitLine('case ' + L + ': /* .. ' + IntToStr_(Hi) + ' */');
+        End;
+      End
+      Else
+        EmitLine('case ' + L + ':');
+    End;
+    { Consommer : }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ':') Then
+    Begin
+      Inc(P);
+      IndentPush;
+      ParseStmtBlock(P);
+      EmitLine('break;');
+      IndentPop;
+    End;
+    { Consommer ; si present }
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+       (TokenPool[P].Val = ';') Then
+      Inc(P);
+  End;
+  { ELSE optionnel du case }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'else') Then
+  Begin
+    Inc(P);
+    EmitLine('default:');
+    IndentPush;
+    While (P < TokenCount) And
+          Not ((TokenPool[P].Kind = TK_KEYWORD) And
+               (StrLowerCase(TokenPool[P].Val) = 'end')) Do
+    Begin
+      ParseStmt(P);
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
+         (TokenPool[P].Val = ';') Then
+        Inc(P);
+    End;
+    EmitLine('break;');
+    IndentPop;
+  End;
+  IndentPop;
+  EmitLine('}');
+  { Consommer END }
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'end') Then
+    Inc(P);
+End;
+
+{ ---- ParseGotoStmt : parser GOTO label ----------------------- }
+{ GOTO est deconseille et la traduction en JS est limitee.        }
+{ Genere un commentaire d avertissement en JavaScript.            }
+Procedure ParseGotoStmt(Var P : Integer);
+Var
+  LblName : TString;
+Begin
+  Inc(P); { consommer GOTO }
+  LblName := '';
+  If P < TokenCount Then
+  Begin
+    If (TokenPool[P].Kind = TK_IDENT) Or
+       (TokenPool[P].Kind = TK_INTEGER) Then
+    Begin
+      LblName := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+  EmitComment('GOTO ' + LblName + ' - requires manual restructuring');
 End;
 
 { ---- ParseStmt : parser une instruction unique --------------- }
@@ -4950,40 +5179,11 @@ Begin
     Exit;
   End;
 
-  { IF ... THEN ... [ELSE ...] }
+  { IF ... THEN ... [ELSE [IF ...]] (TODO 13) }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'if') Then
   Begin
-    Inc(P);
-    JS := ExprToJS(P);
-    { Consommer THEN }
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
-       (StrLowerCase(TokenPool[P].Val) = 'then') Then
-      Inc(P);
-    EmitLine('if (' + JS + ') {');
-    IndentPush;
-    ParseStmtBlock(P);
-    IndentPop;
-    { Consommer ; optionnel avant ELSE }
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-       (TokenPool[P].Val = ';') Then
-    Begin
-      { Verifier si ELSE suit }
-      If (P + 1 < TokenCount) And (TokenPool[P + 1].Kind = TK_KEYWORD) And
-         (StrLowerCase(TokenPool[P + 1].Val) = 'else') Then
-        Inc(P) { consommer ; avant else }
-    End;
-    { ELSE optionnel }
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
-       (StrLowerCase(TokenPool[P].Val) = 'else') Then
-    Begin
-      Inc(P);
-      EmitLine('} else {');
-      IndentPush;
-      ParseStmtBlock(P);
-      IndentPop;
-    End;
-    EmitLine('}');
+    ParseIfStmt(P);
     Exit;
   End;
 
@@ -5081,80 +5281,46 @@ Begin
     Exit;
   End;
 
-  { CASE expr OF ... END }
+  { CASE expr OF ... END (TODO 13) }
   If (TokenPool[P].Kind = TK_KEYWORD) And
      (StrLowerCase(TokenPool[P].Val) = 'case') Then
   Begin
-    Inc(P); { consommer CASE }
-    JS := ExprToJS(P);
-    { Consommer OF }
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
-       (StrLowerCase(TokenPool[P].Val) = 'of') Then
-      Inc(P);
-    EmitLine('switch (' + JS + ') {');
-    IndentPush;
-    { Parser les branches du case }
-    While (P < TokenCount) And
-          Not ((TokenPool[P].Kind = TK_KEYWORD) And
-               ((StrLowerCase(TokenPool[P].Val) = 'end') Or
-                (StrLowerCase(TokenPool[P].Val) = 'else'))) Do
+    ParseCaseStmt(P);
+    Exit;
+  End;
+
+  { GOTO label (TODO 13) }
+  If (TokenPool[P].Kind = TK_KEYWORD) And
+     (StrLowerCase(TokenPool[P].Val) = 'goto') Then
+  Begin
+    ParseGotoStmt(P);
+    Exit;
+  End;
+
+  { Label definition : ident: (TODO 13) }
+  { Detecter label: quand ident est suivi de : et non de := }
+  If (TokenPool[P].Kind = TK_IDENT) And
+     (P + 1 < TokenCount) And
+     (TokenPool[P + 1].Kind = TK_PUNCT) And
+     (TokenPool[P + 1].Val = ':') Then
+  Begin
+    L := TokenPool[P].Val;
+    If SymFind(L) >= 0 Then
     Begin
-      { Lire les valeurs du case (val1, val2, val3) }
-      While (P < TokenCount) And
-            Not ((TokenPool[P].Kind = TK_PUNCT) And
-                 (TokenPool[P].Val = ':')) And
-            Not ((TokenPool[P].Kind = TK_KEYWORD) And
-                 ((StrLowerCase(TokenPool[P].Val) = 'end') Or
-                  (StrLowerCase(TokenPool[P].Val) = 'else'))) Do
-      Begin
-        If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
-        Begin
-          Inc(P);
-          Continue;
-        End;
-        L := ExprToJS(P);
-        EmitLine('case ' + L + ':');
-      End;
-      { Consommer : }
-      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-         (TokenPool[P].Val = ':') Then
-      Begin
-        Inc(P);
-        IndentPush;
-        ParseStmtBlock(P);
-        EmitLine('break;');
-        IndentPop;
-      End;
-      { Consommer ; si present }
-      If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-         (TokenPool[P].Val = ';') Then
-        Inc(P);
+      EmitComment('label: ' + L);
+      Inc(P, 2); { consommer ident et : }
+      Exit;
     End;
-    { ELSE optionnel du case }
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
-       (StrLowerCase(TokenPool[P].Val) = 'else') Then
-    Begin
-      Inc(P);
-      EmitLine('default:');
-      IndentPush;
-      While (P < TokenCount) And
-            Not ((TokenPool[P].Kind = TK_KEYWORD) And
-                 (StrLowerCase(TokenPool[P].Val) = 'end')) Do
-      Begin
-        ParseStmt(P);
-        If (P < TokenCount) And (TokenPool[P].Kind = TK_PUNCT) And
-           (TokenPool[P].Val = ';') Then
-          Inc(P);
-      End;
-      EmitLine('break;');
-      IndentPop;
-    End;
-    IndentPop;
-    EmitLine('}');
-    { Consommer END }
-    If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
-       (StrLowerCase(TokenPool[P].Val) = 'end') Then
-      Inc(P);
+  End;
+  { Label definition numerique : 123: }
+  If (TokenPool[P].Kind = TK_INTEGER) And
+     (P + 1 < TokenCount) And
+     (TokenPool[P + 1].Kind = TK_PUNCT) And
+     (TokenPool[P + 1].Val = ':') Then
+  Begin
+    L := TokenPool[P].Val;
+    EmitComment('label: ' + L);
+    Inc(P, 2);
     Exit;
   End;
 
