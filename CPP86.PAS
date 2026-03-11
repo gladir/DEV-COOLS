@@ -369,7 +369,7 @@
             Resolution : Nom::symbole -> recherche dans la table du namespace
             Name mangling : prefixe _CC_NS_Nom_ pour les symboles du namespace
 
-  TODO 25 - RUNTIME MINIMAL ET GENERATION FINALE
+  TODO 25 - RUNTIME MINIMAL ET GENERATION FINALE [IMPLEMENTE]
             _CC_RT_PRINT(BX=handle, SI=msg, CX=len) : INT 21h AH=40h
             _CC_RT_PRINTLN : _CC_RT_PRINT + CR+LF via _CC_CRLF DB 13,10,0
             _CC_RT_STRLEN(SI=str) : compte octets jusqu a 0 -> AX
@@ -2441,6 +2441,9 @@ Begin
   EmitRaw('_CC_EXCCODE  DW  0');
   EmitRaw('_CC_EXCVAL   DW  0');
   EmitRaw('_CC_EXCMSG   DB  ''Unhandled exception'',13,10,''$''');
+  (* TODO 25 : Heap statique pour allocation simplifiee *)
+  EmitRaw('_CC_HEAP     DB  4096 DUP(0)');
+  EmitRaw('_CC_HEAPTOP  DW  0');
   (* TODO 16 : Adresse temporaire pour acces tableau/struct *)
   EmitRaw(CC_RT_PFX + 'ATMP     DW  0');
   (* Entrees dynamiques de DataTab *)
@@ -6852,9 +6855,11 @@ End;
 
 (* ---- EmitRuntime : emettre les routines runtime ------------- *)
 (* TODO 11 : _CC_RT_NEW et _CC_RT_DELETE pour new/delete         *)
-(* TODO 25 : sera complete avec les routines runtime avancees    *)
+(* TODO 25 : routines runtime completes                          *)
 Procedure EmitRuntime;
 Begin
+  If RuntimeEmitted Then Exit;
+  RuntimeEmitted := True;
   EmitBlankLine;
   EmitComment('=== Runtime library ===');
   EmitBlankLine;
@@ -7066,6 +7071,100 @@ Begin
   EmitInstr('POP    BX');
   EmitInstr('POP    AX');
   EmitInstr('RET');
+  EmitBlankLine;
+
+  (* ============================================================ *)
+  (* TODO 25 : Routines runtime avancees                          *)
+  (* ============================================================ *)
+
+  (* _CC_RT_PRINT : ecrire CX octets depuis DS:SI vers handle BX  *)
+  (* Entree : BX=handle, SI=ptr msg, CX=longueur                  *)
+  EmitLabel(CC_RT_PFX + 'PRINT');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX,SI');
+  EmitInstr('MOV    AH,40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_PRINTLN : ecrire ASCIIZ depuis DS:SI vers stdout + CRLF *)
+  (* Entree : SI=ptr msg (ASCIIZ)                                    *)
+  EmitLabel(CC_RT_PFX + 'PRINTLN');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   BX');
+  EmitInstr('PUSH   CX');
+  EmitInstr('PUSH   DX');
+  EmitInstr('MOV    DX,SI');
+  EmitInstr('MOV    BX,1');             (* stdout *)
+  EmitInstr('CALL   ' + CC_RT_PFX + 'STRLEN');
+  EmitInstr('MOV    CX,AX');
+  EmitInstr('MOV    AH,40h');
+  EmitInstr('INT    21h');
+  EmitInstr('MOV    DX,OFFSET ' + CC_RT_PFX + 'CRLF');
+  EmitInstr('MOV    CX,2');
+  EmitInstr('MOV    AH,40h');
+  EmitInstr('INT    21h');
+  EmitInstr('POP    DX');
+  EmitInstr('POP    CX');
+  EmitInstr('POP    BX');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_STRLEN : compter octets non-nuls depuis DS:SI -> AX    *)
+  (* Entree : SI=ptr chaine ASCIIZ                                  *)
+  (* Sortie : AX=longueur                                           *)
+  EmitLabel(CC_RT_PFX + 'STRLEN');
+  EmitInstr('PUSH   SI');
+  EmitInstr('XOR    AX,AX');
+  EmitLabel(CC_RT_PFX + 'SL_LP');
+  EmitInstr('CMP    BYTE PTR [SI],0');
+  EmitInstr('JE     ' + CC_RT_PFX + 'SL_DN');
+  EmitInstr('INC    AX');
+  EmitInstr('INC    SI');
+  EmitInstr('JMP    ' + CC_RT_PFX + 'SL_LP');
+  EmitLabel(CC_RT_PFX + 'SL_DN');
+  EmitInstr('POP    SI');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_STRCMP : comparer deux chaines ASCIIZ                  *)
+  (* Entree : SI=str1, DI=str2                                     *)
+  (* Sortie : drapeaux ZF (egal) et CF (str1 < str2)               *)
+  EmitLabel(CC_RT_PFX + 'STRCMP');
+  EmitInstr('PUSH   AX');
+  EmitInstr('PUSH   SI');
+  EmitInstr('PUSH   DI');
+  EmitLabel(CC_RT_PFX + 'SC_LP');
+  EmitInstr('MOV    AL,[SI]');
+  EmitInstr('CMP    AL,[DI]');
+  EmitInstr('JNE    ' + CC_RT_PFX + 'SC_DN');
+  EmitInstr('OR     AL,AL');
+  EmitInstr('JZ     ' + CC_RT_PFX + 'SC_DN');
+  EmitInstr('INC    SI');
+  EmitInstr('INC    DI');
+  EmitInstr('JMP    ' + CC_RT_PFX + 'SC_LP');
+  EmitLabel(CC_RT_PFX + 'SC_DN');
+  EmitInstr('POP    DI');
+  EmitInstr('POP    SI');
+  EmitInstr('POP    AX');
+  EmitInstr('RET');
+  EmitBlankLine;
+
+  (* _CC_RT_PANIC : affiche message ASCIIZ depuis SI puis Halt(1) *)
+  (* Entree : SI=ptr message ASCIIZ                                 *)
+  EmitLabel(CC_RT_PFX + 'PANIC');
+  EmitInstr('MOV    DX,SI');
+  EmitInstr('MOV    BX,2');             (* stderr *)
+  EmitInstr('CALL   ' + CC_RT_PFX + 'STRLEN');
+  EmitInstr('MOV    CX,AX');
+  EmitInstr('MOV    AH,40h');
+  EmitInstr('INT    21h');
+  EmitInstr('MOV    AX,4C01h');
+  EmitInstr('INT    21h');
   EmitBlankLine;
 
   (* TODO 23 - Exception runtime *)
