@@ -1,6 +1,6 @@
 ; CF86 v1.0 - 2026-03-06
 ; Compilateur ColdFusion -> assembleur 8086
-; Source: SAMPLES/CF/arrays.cfm
+; Source: .\samples\CF\arrays.cfm
 
 .MODEL SMALL
 .STACK 1024

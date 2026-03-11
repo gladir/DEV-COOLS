@@ -577,19 +577,21 @@ Begin
   WriteLn;
 End;
 
-Procedure ShowUsage;
-Begin
-  WriteLn('Usage: CF86 <source.cfm|.cfc> [sortie.asm] [-v] [-d] [-w]');
-  WriteLn;
-  WriteLn('  source.cfm : page ColdFusion source');
-  WriteLn('  source.cfc : composant ColdFusion source');
-  WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
-  WriteLn('  -v         : mode verbeux (banniere + statistiques)');
-  WriteLn('  -d         : debug tokens (affiche chaque token)');
-  WriteLn('  -w         : activer les avertissements');
-  WriteLn('  -h         : afficher cette aide');
-  WriteLn;
-  Halt(EXIT_USAGE);
+Procedure ShowUsage;Begin
+ WriteLn('CF86 - Cette commande permet de lancer le compilateur ColdFusion ',
+         'pour l''assembleur du microprocesseur 8086 ou 8088.');
+ WriteLn;
+ WriteLn('Syntaxe : CF86 <source.cfm|.cfc> [sortie.asm] [-v] [-d] [-w]');
+ WriteLn;
+ WriteLn('  source.cfm : page ColdFusion source');
+ WriteLn('  source.cfc : composant ColdFusion source');
+ WriteLn('  sortie.asm : fichier assembleur de sortie (defaut: source.asm)');
+ WriteLn('  -v         : mode verbeux (banniere + statistiques)');
+ WriteLn('  -d         : debug tokens (affiche chaque token)');
+ WriteLn('  -w         : activer les avertissements');
+ WriteLn('  -h         : afficher cette aide');
+ WriteLn;
+ Halt(EXIT_USAGE);
 End;
 
 { ---- Initialisation des options ----------------------------- }
