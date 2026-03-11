@@ -3873,6 +3873,7 @@ End;
 (* normaux. Le niveau virgule est gere dans ParseExprPrec.       *)
 Procedure ParseExpr(Var Res : TExprVal);
 Begin
+  LastArraySubIdx := -1;
   ParseExprPrec(2, Res);
 End;
 
@@ -5175,8 +5176,6 @@ Begin
         If TIdx = TY_UNKNOWN Then TIdx := TY_IDX_INT;
         ParserAdvance;
       End;
-      (* Skip to pointer/ref handling below *)
-      ParseTypeSpec := TIdx;
       (* Pointeurs : type* *)
       While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
       Begin
@@ -6168,8 +6167,7 @@ Begin
 
   (* Mot-cle de portee C++ : class, enum, namespace, typedef, using *)
   If (CurToken.Kind = TK_KEYWORD) And
-     ((CurToken.Val = 'class') Or (CurToken.Val = 'struct') Or
-      (CurToken.Val = 'union') Or (CurToken.Val = 'enum') Or
+     ((CurToken.Val = 'class') Or (CurToken.Val = 'enum') Or
       (CurToken.Val = 'namespace') Or (CurToken.Val = 'typedef') Or
       (CurToken.Val = 'using') Or (CurToken.Val = 'template') Or
       (CurToken.Val = 'extern') Or (CurToken.Val = 'friend') Or
