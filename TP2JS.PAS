@@ -1168,7 +1168,7 @@ Begin
     (L = 'then')           Or (L = 'to')         Or (L = 'type')      Or
     (L = 'unit')           Or (L = 'until')      Or (L = 'uses')      Or
     (L = 'var')            Or (L = 'while')      Or (L = 'with')      Or
-    (L = 'xor');
+    (L = 'xor')            Or (L = 'otherwise');
 End;
 
 Function IsDirective(Const S : TString) : Boolean;
@@ -7417,6 +7417,7 @@ Begin
          (StrLowerCase(TokenPool[P].Val) = 'destructor') Then
         Exit;
     End;
+    CName := TokenPool[P].Val;
     Inc(P);
     IsTyped := False;
     TIdx := -1;
@@ -8968,7 +8969,8 @@ Begin
   While (P < TokenCount) And
         Not ((TokenPool[P].Kind = TK_KEYWORD) And
              ((StrLowerCase(TokenPool[P].Val) = 'end') Or
-              (StrLowerCase(TokenPool[P].Val) = 'else'))) Do
+              (StrLowerCase(TokenPool[P].Val) = 'else') Or
+              (StrLowerCase(TokenPool[P].Val) = 'otherwise'))) Do
   Begin
     { Lire les valeurs du case (val1, val2, lo..hi) }
     While (P < TokenCount) And
@@ -8976,7 +8978,8 @@ Begin
                (TokenPool[P].Val = ':')) And
           Not ((TokenPool[P].Kind = TK_KEYWORD) And
                ((StrLowerCase(TokenPool[P].Val) = 'end') Or
-                (StrLowerCase(TokenPool[P].Val) = 'else'))) Do
+                (StrLowerCase(TokenPool[P].Val) = 'else') Or
+                (StrLowerCase(TokenPool[P].Val) = 'otherwise'))) Do
     Begin
       If (TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ',') Then
       Begin
@@ -9027,9 +9030,10 @@ Begin
        (TokenPool[P].Val = ';') Then
       Inc(P);
   End;
-  { ELSE optionnel du case }
+  { ELSE / OTHERWISE optionnel du case }
   If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
-     (StrLowerCase(TokenPool[P].Val) = 'else') Then
+     ((StrLowerCase(TokenPool[P].Val) = 'else') Or
+      (StrLowerCase(TokenPool[P].Val) = 'otherwise')) Then
   Begin
     Inc(P);
     EmitLine('default:');
@@ -9270,12 +9274,9 @@ Begin
      (TokenPool[P + 1].Val = ':') Then
   Begin
     L := TokenPool[P].Val;
-    If SymFind(L) >= 0 Then
-    Begin
-      EmitComment('label: ' + L);
-      Inc(P, 2); { consommer ident et : }
-      Exit;
-    End;
+    EmitComment('label: ' + L);
+    Inc(P, 2); { consommer ident et : }
+    Exit;
   End;
   { Label definition numerique : 123: }
   If (TokenPool[P].Kind = TK_INTEGER) And

@@ -307,5 +307,164 @@ function _main() {
   console.log("=== Fin test Graph ===");
 }
 
+// === TP2JS Runtime Library (TODO 24) ===
+
+// IOResult global variable
+var _TPR_IOResult = 0;
+
+// Command-line arguments (Node.js)
+var _TPR_Args = (typeof process !== "undefined") ? process.argv.slice(2) : [];
+
+// Write: output to stdout without newline
+function _TPR_Write(s) {
+  if (typeof process !== "undefined" && process.stdout) {
+    process.stdout.write(String(s));
+  } else if (typeof document !== "undefined") {
+    document.write(String(s));
+  }
+}
+
+// WriteLn: output to stdout with newline
+function _TPR_WriteLn(s) {
+  if (arguments.length === 0) { console.log(""); return; }
+  console.log(String(s));
+}
+
+// ReadLn: read a line from stdin
+function _TPR_ReadLn() {
+  if (typeof require !== "undefined") {
+    try {
+      var fs = require("fs");
+      var buf = Buffer.alloc(256);
+      var n = fs.readSync(0, buf, 0, 256);
+      return buf.toString("utf8", 0, n).replace(/[\r\n]+$/, "");
+    } catch(e) { return ""; }
+  }
+  if (typeof prompt !== "undefined") return prompt() || "";
+  return "";
+}
+
+// WriteF: write to a file (Node.js)
+function _TPR_WriteF(f, s) {
+  if (typeof require !== "undefined") {
+    try {
+      var fs = require("fs");
+      fs.appendFileSync(f.name, String(s));
+      _TPR_IOResult = 0;
+    } catch(e) { _TPR_IOResult = 5; }
+  }
+}
+
+// Halt: stop program execution
+function _TPR_Halt(code) {
+  if (typeof process !== "undefined") process.exit(code || 0);
+  else throw new Error("Halt(" + (code || 0) + ")");
+}
+
+// IntToStr: integer to formatted string
+function _TPR_IntToStr(n, width) {
+  var s = String(n);
+  if (typeof width === "number" && width > 0) {
+    while (s.length < width) s = " " + s;
+  }
+  return s;
+}
+
+// RealToStr: real to formatted string
+function _TPR_RealToStr(r, width, dec) {
+  var s;
+  if (typeof dec === "number" && dec >= 0) s = r.toFixed(dec);
+  else s = String(r);
+  if (typeof width === "number" && width > 0) {
+    while (s.length < width) s = " " + s;
+  }
+  return s;
+}
+
+// StrToInt: string to integer
+function _TPR_StrToInt(s) {
+  var v = parseInt(s, 10);
+  return isNaN(v) ? 0 : v;
+}
+
+// StrToReal: string to real
+function _TPR_StrToReal(s) {
+  var v = parseFloat(s);
+  return isNaN(v) ? 0.0 : v;
+}
+
+// Set operations
+function _TPR_SetUnion(a, b) {
+  var r = a.slice();
+  for (var i = 0; i < b.length; i++) {
+    if (r.indexOf(b[i]) < 0) r.push(b[i]);
+  }
+  return r;
+}
+
+function _TPR_SetInter(a, b) {
+  var r = [];
+  for (var i = 0; i < a.length; i++) {
+    if (b.indexOf(a[i]) >= 0) r.push(a[i]);
+  }
+  return r;
+}
+
+function _TPR_SetDiff(a, b) {
+  var r = [];
+  for (var i = 0; i < a.length; i++) {
+    if (b.indexOf(a[i]) < 0) r.push(a[i]);
+  }
+  return r;
+}
+
+function _TPR_SetIn(elem, s) {
+  return s.indexOf(elem) >= 0;
+}
+
+// String operations (base-1 to base-0 conversion)
+function _TPR_Copy(s, pos, len) {
+  return String(s).substr(pos - 1, len);
+}
+
+function _TPR_Pos(sub, s) {
+  var i = String(s).indexOf(sub);
+  return (i >= 0) ? i + 1 : 0;
+}
+
+function _TPR_Delete(obj, pos, len) {
+  var s = String(obj.v !== undefined ? obj.v : obj);
+  var r = s.substring(0, pos - 1) + s.substring(pos - 1 + len);
+  if (obj.v !== undefined) obj.v = r;
+  return r;
+}
+
+function _TPR_Insert(src, obj, pos) {
+  var s = String(obj.v !== undefined ? obj.v : obj);
+  var r = s.substring(0, pos - 1) + src + s.substring(pos - 1);
+  if (obj.v !== undefined) obj.v = r;
+  return r;
+}
+
+// Memory operations
+function _TPR_FillChar(buf, count, val) {
+  var c = (typeof val === "string") ? val.charCodeAt(0) : val;
+  for (var i = 0; i < count; i++) buf[i] = c;
+}
+
+function _TPR_Move(src, dest, count) {
+  for (var i = 0; i < count; i++) dest[i] = src[i];
+}
+
+// Random: pseudo-random number
+function _TPR_Random(n) {
+  if (typeof n === "number" && n > 0)
+    return Math.floor(Math.random() * n);
+  return Math.random();
+}
+
+// === End of TP2JS Runtime Library ===
+
+
 // Programme principal
 _main();

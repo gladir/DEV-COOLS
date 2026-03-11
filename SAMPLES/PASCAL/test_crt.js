@@ -38,6 +38,223 @@ function _TPR_FSplit(path, dirRef, nameRef, extRef) {
   return { dir: d, name: n, ext: e };
 }
 
+// Overlay unit helpers (stubs)
+var OvrResult = 0;
+
+// Graph unit helpers (canvas)
+var _GR_Canvas = null, _GR_Ctx = null;
+var _GR_Width = 640, _GR_Height = 480;
+var _GR_CP = {x:0, y:0};
+var _GR_Color = 15, _GR_BkColor = 0;
+var _GR_FillColor = 15, _GR_FillPattern = 1;
+var _GR_MaxColor = 15, _GR_Result = 0;
+var _GR_WriteMode = 0;
+var _GR_Palette = [
+  "#000000","#0000AA","#00AA00","#00AAAA",
+  "#AA0000","#AA00AA","#AA5500","#AAAAAA",
+  "#555555","#5555FF","#55FF55","#55FFFF",
+  "#FF5555","#FF55FF","#FFFF55","#FFFFFF"
+];
+function _GR_PalRGB(c) {
+  return (c >= 0 && c < _GR_Palette.length) ? _GR_Palette[c] : "#FFFFFF";
+}
+function _GR_Init(drv, mode, path) {
+  if (typeof document !== "undefined") {
+    _GR_Canvas = document.createElement("canvas");
+    _GR_Canvas.width = _GR_Width; _GR_Canvas.height = _GR_Height;
+    document.body.appendChild(_GR_Canvas);
+    _GR_Ctx = _GR_Canvas.getContext("2d");
+  } else { _GR_Ctx = { fillRect:function(){}, strokeRect:function(){},
+    beginPath:function(){}, moveTo:function(){}, lineTo:function(){},
+    arc:function(){}, ellipse:function(){}, stroke:function(){},
+    fill:function(){}, closePath:function(){}, fillText:function(){},
+    clearRect:function(){}, measureText:function(){return{width:0};},
+    save:function(){}, restore:function(){}, clip:function(){},
+    getImageData:function(){return{data:[0,0,0,0]};},
+    putImageData:function(){}, setLineDash:function(){} }; }
+  _GR_Result = 0; _GR_CP = {x:0, y:0};
+}
+function _GR_Close() {
+  if (_GR_Canvas && _GR_Canvas.parentNode) _GR_Canvas.parentNode.removeChild(_GR_Canvas);
+  _GR_Ctx = null; _GR_Canvas = null;
+}
+function _GR_GetMaxX() { return _GR_Width - 1; }
+function _GR_GetMaxY() { return _GR_Height - 1; }
+function _GR_ErrorMsg(c) {
+  var m = {"0":"No error","-1":"No InitGraph","-2":"Not detected",
+    "-3":"File not found","-4":"Invalid driver","-5":"No load mem"};
+  return m[c] || "Unknown error " + c;
+}
+function _GR_SetColor(c) {
+  _GR_Color = c;
+  if (_GR_Ctx) _GR_Ctx.strokeStyle = _GR_PalRGB(c);
+}
+function _GR_SetBkColor(c) {
+  _GR_BkColor = c;
+}
+function _GR_SetFillStyle(p, c) {
+  _GR_FillPattern = p; _GR_FillColor = c;
+  if (_GR_Ctx) _GR_Ctx.fillStyle = _GR_PalRGB(c);
+}
+function _GR_SetLineStyle(st, pat, thick) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.lineWidth = thick || 1;
+  if (st === 1) _GR_Ctx.setLineDash([2,2]);
+  else if (st === 2) _GR_Ctx.setLineDash([4,2,2,2]);
+  else if (st === 3) _GR_Ctx.setLineDash([4,4]);
+  else _GR_Ctx.setLineDash([]);
+}
+function _GR_PutPixel(x, y, c) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.fillStyle = _GR_PalRGB(c);
+  _GR_Ctx.fillRect(x, y, 1, 1);
+  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);
+}
+function _GR_GetPixel(x, y) {
+  if (!_GR_Ctx) return 0;
+  var d = _GR_Ctx.getImageData(x, y, 1, 1).data;
+  return (d[0] > 128 ? 4 : 0) | (d[1] > 128 ? 2 : 0) | (d[2] > 128 ? 1 : 0);
+}
+function _GR_Line(x1, y1, x2, y2) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x1+0.5,y1+0.5);
+  _GR_Ctx.lineTo(x2+0.5,y2+0.5); _GR_Ctx.stroke();
+  _GR_CP.x = x2; _GR_CP.y = y2;
+}
+function _GR_LineTo(x, y) {
+  _GR_Line(_GR_CP.x, _GR_CP.y, x, y);
+}
+function _GR_LineRel(dx, dy) {
+  _GR_Line(_GR_CP.x, _GR_CP.y, _GR_CP.x+dx, _GR_CP.y+dy);
+}
+function _GR_MoveTo(x, y) { _GR_CP.x = x; _GR_CP.y = y; }
+function _GR_MoveRel(dx, dy) { _GR_CP.x += dx; _GR_CP.y += dy; }
+function _GR_Circle(x, y, r) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath(); _GR_Ctx.arc(x, y, r, 0, 2*Math.PI);
+  _GR_Ctx.stroke();
+}
+function _GR_Arc(x, y, sa, ea, r) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath();
+  _GR_Ctx.arc(x, y, r, -ea*Math.PI/180, -sa*Math.PI/180);
+  _GR_Ctx.stroke();
+}
+function _GR_Ellipse(x, y, sa, ea, xr, yr) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath();
+  _GR_Ctx.ellipse(x, y, xr, yr, 0, -ea*Math.PI/180, -sa*Math.PI/180);
+  _GR_Ctx.stroke();
+}
+function _GR_FillEllipse(x, y, xr, yr) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath();
+  _GR_Ctx.ellipse(x, y, xr, yr, 0, 0, 2*Math.PI);
+  _GR_Ctx.fill(); _GR_Ctx.stroke();
+}
+function _GR_Rectangle(x1, y1, x2, y2) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+}
+function _GR_Bar(x1, y1, x2, y2) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.fillRect(x1, y1, x2-x1, y2-y1);
+}
+function _GR_Bar3D(x1, y1, x2, y2, depth, top) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.fillRect(x1, y1, x2-x1, y2-y1);
+  _GR_Ctx.strokeRect(x1, y1, x2-x1, y2-y1);
+  _GR_Ctx.beginPath();
+  _GR_Ctx.moveTo(x2,y2); _GR_Ctx.lineTo(x2+depth,y2-depth);
+  _GR_Ctx.lineTo(x2+depth,y1-depth); _GR_Ctx.lineTo(x2,y1);
+  _GR_Ctx.stroke();
+  if (top) {
+    _GR_Ctx.beginPath();
+    _GR_Ctx.moveTo(x1,y1); _GR_Ctx.lineTo(x1+depth,y1-depth);
+    _GR_Ctx.lineTo(x2+depth,y1-depth); _GR_Ctx.lineTo(x2,y1);
+    _GR_Ctx.stroke();
+  }
+}
+function _GR_PieSlice(x, y, sa, ea, r) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x, y);
+  _GR_Ctx.arc(x, y, r, -ea*Math.PI/180, -sa*Math.PI/180);
+  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();
+}
+function _GR_Sector(x, y, sa, ea, xr, yr) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(x, y);
+  _GR_Ctx.ellipse(x, y, xr, yr, 0, -ea*Math.PI/180, -sa*Math.PI/180);
+  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();
+}
+function _GR_FloodFill(x, y, border) {
+  /* FloodFill: simplified stub - fills canvas background */
+  if (!_GR_Ctx) return;
+  _GR_Ctx.fillRect(0, 0, _GR_Width, _GR_Height);
+}
+function _GR_FillPoly(n, pts) {
+  if (!_GR_Ctx || n < 2) return;
+  _GR_Ctx.beginPath(); _GR_Ctx.moveTo(pts[0], pts[1]);
+  for (var i = 1; i < n; i++) _GR_Ctx.lineTo(pts[i*2], pts[i*2+1]);
+  _GR_Ctx.closePath(); _GR_Ctx.fill(); _GR_Ctx.stroke();
+}
+function _GR_OutText(s) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_Color);
+  _GR_Ctx.fillText(s, _GR_CP.x, _GR_CP.y);
+  _GR_CP.x += _GR_Ctx.measureText(s).width;
+  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);
+}
+function _GR_OutTextXY(x, y, s) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_Color);
+  _GR_Ctx.fillText(s, x, y);
+  _GR_Ctx.fillStyle = _GR_PalRGB(_GR_FillColor);
+}
+function _GR_SetTextStyle(font, dir, size) {
+  if (!_GR_Ctx) return;
+  var f = ["serif","serif","sans-serif","sans-serif","fantasy"];
+  _GR_Ctx.font = (size * 8) + "px " + (f[font] || "serif");
+}
+function _GR_SetTextJustify(h, v) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.textAlign = (h===1) ? "center" : (h===2) ? "right" : "left";
+  _GR_Ctx.textBaseline = (v===2) ? "top" : (v===0) ? "bottom" : "middle";
+}
+function _GR_TextWidth(s) {
+  if (!_GR_Ctx) return 0;
+  return Math.round(_GR_Ctx.measureText(s).width);
+}
+function _GR_TextHeight(s) {
+  if (!_GR_Ctx) return 8;
+  return parseInt(_GR_Ctx.font) || 8;
+}
+function _GR_ClearDevice() {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.clearRect(0, 0, _GR_Width, _GR_Height);
+  _GR_CP = {x:0, y:0};
+}
+function _GR_ClearViewPort() {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.clearRect(0, 0, _GR_Width, _GR_Height);
+}
+function _GR_SetViewPort(x1, y1, x2, y2, clip) {
+  if (!_GR_Ctx) return;
+  _GR_Ctx.save();
+  if (clip) {
+    _GR_Ctx.beginPath();
+    _GR_Ctx.rect(x1, y1, x2-x1, y2-y1);
+    _GR_Ctx.clip();
+  }
+}
+function _GR_ImageSize(x1, y1, x2, y2) {
+  return (Math.abs(x2-x1)+1) * (Math.abs(y2-y1)+1) * 4 + 4;
+}
+function _GR_SetRGBPalette(idx, r, g, b) {
+  if (idx >= 0 && idx < _GR_Palette.length)
+    _GR_Palette[idx] = "rgb("+((r&63)*4)+","+((g&63)*4)+","+((b&63)*4)+")";
+}
+
 // Program test_crt
 
 // uses
@@ -93,6 +310,165 @@ function _main() {
   /* TextMode(3) */;
   console.log("=== Fin test CRT ===");
 }
+
+// === TP2JS Runtime Library (TODO 24) ===
+
+// IOResult global variable
+var _TPR_IOResult = 0;
+
+// Command-line arguments (Node.js)
+var _TPR_Args = (typeof process !== "undefined") ? process.argv.slice(2) : [];
+
+// Write: output to stdout without newline
+function _TPR_Write(s) {
+  if (typeof process !== "undefined" && process.stdout) {
+    process.stdout.write(String(s));
+  } else if (typeof document !== "undefined") {
+    document.write(String(s));
+  }
+}
+
+// WriteLn: output to stdout with newline
+function _TPR_WriteLn(s) {
+  if (arguments.length === 0) { console.log(""); return; }
+  console.log(String(s));
+}
+
+// ReadLn: read a line from stdin
+function _TPR_ReadLn() {
+  if (typeof require !== "undefined") {
+    try {
+      var fs = require("fs");
+      var buf = Buffer.alloc(256);
+      var n = fs.readSync(0, buf, 0, 256);
+      return buf.toString("utf8", 0, n).replace(/[\r\n]+$/, "");
+    } catch(e) { return ""; }
+  }
+  if (typeof prompt !== "undefined") return prompt() || "";
+  return "";
+}
+
+// WriteF: write to a file (Node.js)
+function _TPR_WriteF(f, s) {
+  if (typeof require !== "undefined") {
+    try {
+      var fs = require("fs");
+      fs.appendFileSync(f.name, String(s));
+      _TPR_IOResult = 0;
+    } catch(e) { _TPR_IOResult = 5; }
+  }
+}
+
+// Halt: stop program execution
+function _TPR_Halt(code) {
+  if (typeof process !== "undefined") process.exit(code || 0);
+  else throw new Error("Halt(" + (code || 0) + ")");
+}
+
+// IntToStr: integer to formatted string
+function _TPR_IntToStr(n, width) {
+  var s = String(n);
+  if (typeof width === "number" && width > 0) {
+    while (s.length < width) s = " " + s;
+  }
+  return s;
+}
+
+// RealToStr: real to formatted string
+function _TPR_RealToStr(r, width, dec) {
+  var s;
+  if (typeof dec === "number" && dec >= 0) s = r.toFixed(dec);
+  else s = String(r);
+  if (typeof width === "number" && width > 0) {
+    while (s.length < width) s = " " + s;
+  }
+  return s;
+}
+
+// StrToInt: string to integer
+function _TPR_StrToInt(s) {
+  var v = parseInt(s, 10);
+  return isNaN(v) ? 0 : v;
+}
+
+// StrToReal: string to real
+function _TPR_StrToReal(s) {
+  var v = parseFloat(s);
+  return isNaN(v) ? 0.0 : v;
+}
+
+// Set operations
+function _TPR_SetUnion(a, b) {
+  var r = a.slice();
+  for (var i = 0; i < b.length; i++) {
+    if (r.indexOf(b[i]) < 0) r.push(b[i]);
+  }
+  return r;
+}
+
+function _TPR_SetInter(a, b) {
+  var r = [];
+  for (var i = 0; i < a.length; i++) {
+    if (b.indexOf(a[i]) >= 0) r.push(a[i]);
+  }
+  return r;
+}
+
+function _TPR_SetDiff(a, b) {
+  var r = [];
+  for (var i = 0; i < a.length; i++) {
+    if (b.indexOf(a[i]) < 0) r.push(a[i]);
+  }
+  return r;
+}
+
+function _TPR_SetIn(elem, s) {
+  return s.indexOf(elem) >= 0;
+}
+
+// String operations (base-1 to base-0 conversion)
+function _TPR_Copy(s, pos, len) {
+  return String(s).substr(pos - 1, len);
+}
+
+function _TPR_Pos(sub, s) {
+  var i = String(s).indexOf(sub);
+  return (i >= 0) ? i + 1 : 0;
+}
+
+function _TPR_Delete(obj, pos, len) {
+  var s = String(obj.v !== undefined ? obj.v : obj);
+  var r = s.substring(0, pos - 1) + s.substring(pos - 1 + len);
+  if (obj.v !== undefined) obj.v = r;
+  return r;
+}
+
+function _TPR_Insert(src, obj, pos) {
+  var s = String(obj.v !== undefined ? obj.v : obj);
+  var r = s.substring(0, pos - 1) + src + s.substring(pos - 1);
+  if (obj.v !== undefined) obj.v = r;
+  return r;
+}
+
+// Memory operations
+function _TPR_FillChar(buf, count, val) {
+  var c = (typeof val === "string") ? val.charCodeAt(0) : val;
+  for (var i = 0; i < count; i++) buf[i] = c;
+}
+
+function _TPR_Move(src, dest, count) {
+  for (var i = 0; i < count; i++) dest[i] = src[i];
+}
+
+// Random: pseudo-random number
+function _TPR_Random(n) {
+  if (typeof n === "number" && n > 0)
+    return Math.floor(Math.random() * n);
+  return Math.random();
+}
+
+// === End of TP2JS Runtime Library ===
+
 
 // Programme principal
 _main();
