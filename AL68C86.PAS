@@ -4180,8 +4180,8 @@ Begin
   EmitBlankLine;
   EmitComment('--- point d''entree ---');
   EmitLabel(A68_PROC_PFX + 'main');
-  EmitInstr('MOV    AX, _DATA');
-  EmitInstr('MOV    DS, AX');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
   EmitBlankLine;
 End;
 
