@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/test_oneline.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_dos.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -101,6 +101,33 @@ DOS_STARTINFO DB 68 DUP(0)
 DOS_EXITVAL DD 0
 
 ; --- Constantes et donnees utilisateur ---
+_TPK_1  DB '=== Test unite DOS ===',0
+_TPK_2  DB 'DosVersion = ',0
+_TPK_3  DB 'Date : ',0
+_TPK_4  DB '-',0
+_TPK_5  DB ' (jour ',0
+_TPK_6  DB ')',0
+_TPK_7  DB 'Heure : ',0
+_TPK_8  DB ':',0
+_TPK_9  DB '.',0
+_TPK_10  DB 'PATH',0
+_TPK_11  DB 'PATH = ',0
+_TPK_12  DB 'DiskFree(0) = ',0
+_TPK_13  DB 'DiskSize(0) = ',0
+_TPK_14  DB '*.pas',0
+_TPK_15  DB 'Premier fichier : ',0
+_TPK_16  DB 'Aucun fichier .pas trouve',0
+_TPK_17  DB 'Done.',0
+_TPV_Y  DD 0
+_TPV_M  DD 0
+_TPV_D  DD 0
+_TPV_DW  DD 0
+_TPV_H  DD 0
+_TPV_MI  DD 0
+_TPV_S  DD 0
+_TPV_S100  DD 0
+_TPV_SR  DD 0
+_TPV_ENVPATH  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE
@@ -121,6 +148,226 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+; writeln
+        LEA EAX,[_TPK_1]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; writeln
+        LEA EAX,[_TPK_2]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        CALL _TPRT_DOSVERSION
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        PUSH OFFSET DOS_SYSTIME
+        CALL GetLocalTime
+        MOV EAX,DWORD PTR [_TPV_Y]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+0]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+        MOV EAX,DWORD PTR [_TPV_M]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+2]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+        MOV EAX,DWORD PTR [_TPV_D]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+6]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+        MOV EAX,DWORD PTR [_TPV_DW]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+4]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+; writeln
+        LEA EAX,[_TPK_3]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_Y]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_4]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_M]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_4]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_D]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_5]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_DW]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_6]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        PUSH OFFSET DOS_SYSTIME
+        CALL GetLocalTime
+        MOV EAX,DWORD PTR [_TPV_H]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+8]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+        MOV EAX,DWORD PTR [_TPV_MI]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+10]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+        MOV EAX,DWORD PTR [_TPV_S]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+12]
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+        MOV EAX,DWORD PTR [_TPV_S100]
+        PUSH EAX
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+14]
+        XOR EDX,EDX
+        MOV ECX,10
+        DIV ECX
+        POP EDX
+        MOV DWORD PTR [EDX],EAX
+; writeln
+        LEA EAX,[_TPK_7]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_H]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_8]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_MI]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_8]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_S]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_9]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_S100]
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_10]
+        PUSH EAX
+        CALL _TPRT_GETENV
+        ADD ESP,4
+        MOV ESI,EAX
+        LEA EDI,[_TPV_ENVPATH]
+        CALL _TPRT_STRCPY
+; writeln
+        LEA EAX,[_TPK_11]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPV_ENVPATH]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; writeln
+        LEA EAX,[_TPK_12]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,0
+        PUSH EAX
+        CALL _TPRT_DISKFREE
+        ADD ESP,4
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; writeln
+        LEA EAX,[_TPK_13]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,0
+        PUSH EAX
+        CALL _TPRT_DISKSIZE
+        ADD ESP,4
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_14]
+        PUSH EAX
+        MOV EAX,63
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_SR]
+        PUSH EAX
+        CALL _TPRT_FINDFIRST
+        ADD ESP,12
+; if
+        MOV EAX,DWORD PTR [_TPV_DOSERROR]
+        PUSH EAX
+        MOV EAX,0
+        MOV EBX,EAX
+        POP EAX
+        CMP EAX,EBX
+        JE _TPL_2
+        XOR EAX,EAX
+        JMP _TPL_3
+_TPL_2:
+        MOV EAX,1
+_TPL_3:
+        TEST EAX,EAX
+        JZ _TPL_4
+; writeln
+        LEA EAX,[_TPK_15]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        MOV EAX,DWORD PTR [_TPV_SR]
+; champ inconnu: NAME
+        CALL _TPRT_NUMTOSTR
+        LEA ESI,[NUMBUF]
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        JMP _TPL_5
+_TPL_4:
+; writeln
+        LEA EAX,[_TPK_16]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+_TPL_5:
+; SwapVectors (stub - non applicable Win32)
+; writeln
+        LEA EAX,[_TPK_17]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
 _TPL_1:
         PUSH 0
         CALL ExitProcess

@@ -39,6 +39,20 @@ EXTRN _GetNumberOfConsoleInputEvents@8:NEAR
 EXTRN _Beep@8:NEAR
 EXTRN _ScrollConsoleScreenBufferA@20:NEAR
 EXTRN _FlushConsoleInputBuffer@4:NEAR
+; --- Imports Win32 pour unite DOS (TODO 19) ---
+EXTRN _GetLocalTime@4:NEAR
+EXTRN _SetLocalTime@4:NEAR
+EXTRN _GetFileAttributesA@4:NEAR
+EXTRN _SetFileAttributesA@8:NEAR
+EXTRN _FindFirstFileA@8:NEAR
+EXTRN _FindNextFileA@8:NEAR
+EXTRN _FindClose@4:NEAR
+EXTRN _GetDiskFreeSpaceA@20:NEAR
+EXTRN _GetEnvironmentVariableA@12:NEAR
+EXTRN _CreateProcessA@40:NEAR
+EXTRN _WaitForSingleObject@8:NEAR
+EXTRN _GetExitCodeProcess@8:NEAR
+EXTRN _GetFullPathNameA@16:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -71,6 +85,20 @@ CRT_CSBI  DB 22 DUP(0)
 CRT_INREC DB 20 DUP(0)
 CRT_NEVT  DD 0
 CRT_NWRT  DD 0
+
+; --- Variables DOS (emulation unite DOS) ---
+DOSERROR  DD 0
+DOSEXITCODE DD 0
+DOS_SYSTIME DB 16 DUP(0)
+DOS_FATTR DD 0
+DOS_ENVBUF DB 256 DUP(0)
+DOS_PATHBUF DB 260 DUP(0)
+DOS_DKFREE DD 4 DUP(0)
+DOS_FINDDATA DB 320 DUP(0)
+DOS_FINDHDL DD -1
+DOS_PROCINFO DB 16 DUP(0)
+DOS_STARTINFO DB 68 DUP(0)
+DOS_EXITVAL DD 0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Un',0
@@ -663,6 +691,369 @@ _TPRT_SOUND:
         PUSH 200
         PUSH DWORD PTR [EBP+8]
         CALL Beep
+        POP EBP
+        RET
+
+_TPRT_DOSVERSION:
+        MOV EAX,7
+        RET
+
+_TPRT_DISKFREE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV EAX,DWORD PTR [EBP+8]
+        TEST EAX,EAX
+        JZ _TPRT_DF_CUR
+        ADD AL,64
+        MOV BYTE PTR [DOS_PATHBUF],AL
+        MOV BYTE PTR [DOS_PATHBUF+1],':'
+        MOV BYTE PTR [DOS_PATHBUF+2],'\'
+        MOV BYTE PTR [DOS_PATHBUF+3],0
+        PUSH OFFSET DOS_PATHBUF
+        JMP _TPRT_DF_GO
+_TPRT_DF_CUR:
+        PUSH 0
+_TPRT_DF_GO:
+        PUSH OFFSET DOS_DKFREE+12
+        PUSH OFFSET DOS_DKFREE+8
+        PUSH OFFSET DOS_DKFREE+4
+        PUSH OFFSET DOS_DKFREE+0
+        CALL GetDiskFreeSpaceA
+        MOV EAX,DWORD PTR [DOS_DKFREE+8]
+        IMUL EAX,DWORD PTR [DOS_DKFREE+0]
+        IMUL EAX,DWORD PTR [DOS_DKFREE+4]
+        MOV DWORD PTR [EBP-4],EAX
+        POPAD
+        MOV EAX,DWORD PTR [EBP-4]
+        POP EBP
+        RET
+
+_TPRT_DISKSIZE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV EAX,DWORD PTR [EBP+8]
+        TEST EAX,EAX
+        JZ _TPRT_DS_CUR
+        ADD AL,64
+        MOV BYTE PTR [DOS_PATHBUF],AL
+        MOV BYTE PTR [DOS_PATHBUF+1],':'
+        MOV BYTE PTR [DOS_PATHBUF+2],'\'
+        MOV BYTE PTR [DOS_PATHBUF+3],0
+        PUSH OFFSET DOS_PATHBUF
+        JMP _TPRT_DS_GO
+_TPRT_DS_CUR:
+        PUSH 0
+_TPRT_DS_GO:
+        PUSH OFFSET DOS_DKFREE+12
+        PUSH OFFSET DOS_DKFREE+8
+        PUSH OFFSET DOS_DKFREE+4
+        PUSH OFFSET DOS_DKFREE+0
+        CALL GetDiskFreeSpaceA
+        MOV EAX,DWORD PTR [DOS_DKFREE+12]
+        IMUL EAX,DWORD PTR [DOS_DKFREE+0]
+        IMUL EAX,DWORD PTR [DOS_DKFREE+4]
+        MOV DWORD PTR [EBP-4],EAX
+        POPAD
+        MOV EAX,DWORD PTR [EBP-4]
+        POP EBP
+        RET
+
+_TPRT_GETENV:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ECX
+        PUSH EDX
+        MOV EAX,DWORD PTR [EBP+8]
+        INC EAX
+        PUSH 255
+        PUSH OFFSET DOS_ENVBUF
+        PUSH EAX
+        CALL GetEnvironmentVariableA
+        MOV BYTE PTR [STRBUF],AL
+        TEST EAX,EAX
+        JZ _TPRT_GE_DN
+        MOV ECX,EAX
+        PUSH ESI
+        PUSH EDI
+        LEA ESI,[DOS_ENVBUF]
+        LEA EDI,[STRBUF+1]
+        REP MOVSB
+        POP EDI
+        POP ESI
+_TPRT_GE_DN:
+        LEA EAX,[STRBUF]
+        POP EDX
+        POP ECX
+        POP EBP
+        RET
+
+_TPRT_FEXPAND:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ECX
+        PUSH EDX
+        MOV EAX,DWORD PTR [EBP+8]
+        INC EAX
+        PUSH 0
+        PUSH OFFSET DOS_PATHBUF
+        PUSH 259
+        PUSH EAX
+        CALL GetFullPathNameA
+        MOV BYTE PTR [STRBUF2],AL
+        TEST EAX,EAX
+        JZ _TPRT_FE_DN
+        MOV ECX,EAX
+        PUSH ESI
+        PUSH EDI
+        LEA ESI,[DOS_PATHBUF]
+        LEA EDI,[STRBUF2+1]
+        REP MOVSB
+        POP EDI
+        POP ESI
+_TPRT_FE_DN:
+        LEA EAX,[STRBUF2]
+        POP EDX
+        POP ECX
+        POP EBP
+        RET
+
+_TPRT_FSEARCH:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ECX
+        MOV EAX,DWORD PTR [EBP+8]
+        INC EAX
+        PUSH EAX
+        CALL GetFileAttributesA
+        CMP EAX,-1
+        JE _TPRT_FS_NF
+        MOV EAX,DWORD PTR [EBP+8]
+        JMP _TPRT_FS_DN
+_TPRT_FS_NF:
+        MOV BYTE PTR [STRBUF],0
+        LEA EAX,[STRBUF]
+_TPRT_FS_DN:
+        POP ECX
+        POP EBP
+        RET
+
+_TPRT_FSPLIT:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV ESI,DWORD PTR [EBP+8]
+        MOV EDI,DWORD PTR [EBP+12]
+        MOVZX ECX,BYTE PTR [ESI]
+        MOV BYTE PTR [EDI],CL
+        INC ESI
+        INC EDI
+        REP MOVSB
+        MOV EDI,DWORD PTR [EBP+16]
+        MOV BYTE PTR [EDI],0
+        MOV EDI,DWORD PTR [EBP+20]
+        MOV BYTE PTR [EDI],0
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_FINDFIRST:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        MOV EAX,DWORD PTR [EBP+8]
+        INC EAX
+        PUSH OFFSET DOS_FINDDATA
+        PUSH EAX
+        CALL FindFirstFileA
+        MOV DWORD PTR [DOS_FINDHDL],EAX
+        CMP EAX,-1
+        JE _TPRT_FF_NF
+        MOV EDI,DWORD PTR [EBP+16]
+        MOV EAX,DWORD PTR [DOS_FINDDATA]
+        MOV WORD PTR [EDI],AX
+        MOV DWORD PTR [EDI+4],0
+        MOV EAX,DWORD PTR [DOS_FINDDATA+32]
+        MOV DWORD PTR [EDI+8],EAX
+        LEA ESI,[DOS_FINDDATA+44]
+        LEA EDI,[EDI+12]
+        PUSH EDI
+        INC EDI
+        XOR ECX,ECX
+_TPRT_FF_CP:
+        LODSB
+        TEST AL,AL
+        JZ _TPRT_FF_CE
+        STOSB
+        INC ECX
+        CMP ECX,79
+        JB _TPRT_FF_CP
+_TPRT_FF_CE:
+        POP EDI
+        MOV BYTE PTR [EDI],CL
+        MOV DWORD PTR [DOSERROR],0
+        JMP _TPRT_FF_DN
+_TPRT_FF_NF:
+        MOV DWORD PTR [DOSERROR],18
+_TPRT_FF_DN:
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_FINDNEXT:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        PUSH OFFSET DOS_FINDDATA
+        PUSH DWORD PTR [DOS_FINDHDL]
+        CALL FindNextFileA
+        TEST EAX,EAX
+        JZ _TPRT_FN_NF
+        MOV EDI,DWORD PTR [EBP+8]
+        MOV EAX,DWORD PTR [DOS_FINDDATA]
+        MOV WORD PTR [EDI],AX
+        MOV DWORD PTR [EDI+4],0
+        MOV EAX,DWORD PTR [DOS_FINDDATA+32]
+        MOV DWORD PTR [EDI+8],EAX
+        LEA ESI,[DOS_FINDDATA+44]
+        LEA EDI,[EDI+12]
+        PUSH EDI
+        INC EDI
+        XOR ECX,ECX
+_TPRT_FN_CP:
+        LODSB
+        TEST AL,AL
+        JZ _TPRT_FN_CE
+        STOSB
+        INC ECX
+        CMP ECX,79
+        JB _TPRT_FN_CP
+_TPRT_FN_CE:
+        POP EDI
+        MOV BYTE PTR [EDI],CL
+        MOV DWORD PTR [DOSERROR],0
+        JMP _TPRT_FN_DN
+_TPRT_FN_NF:
+        MOV DWORD PTR [DOSERROR],18
+        PUSH DWORD PTR [DOS_FINDHDL]
+        CALL FindClose
+        MOV DWORD PTR [DOS_FINDHDL],-1
+_TPRT_FN_DN:
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_EXEC:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSHAD
+        LEA EDI,[DOS_STARTINFO]
+        MOV ECX,68
+        XOR AL,AL
+        REP STOSB
+        MOV DWORD PTR [DOS_STARTINFO],68
+        PUSH OFFSET DOS_PROCINFO
+        PUSH OFFSET DOS_STARTINFO
+        PUSH 0
+        PUSH 0
+        PUSH 0
+        PUSH 0
+        PUSH 0
+        PUSH 0
+        MOV EAX,DWORD PTR [EBP+12]
+        INC EAX
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        INC EAX
+        PUSH EAX
+        CALL CreateProcessA
+        TEST EAX,EAX
+        JZ _TPRT_EX_ER
+        PUSH -1
+        PUSH DWORD PTR [DOS_PROCINFO]
+        CALL WaitForSingleObject
+        PUSH OFFSET DOS_EXITVAL
+        PUSH DWORD PTR [DOS_PROCINFO]
+        CALL GetExitCodeProcess
+        MOV EAX,DWORD PTR [DOS_EXITVAL]
+        MOV DWORD PTR [DOSEXITCODE],EAX
+        PUSH DWORD PTR [DOS_PROCINFO+4]
+        CALL CloseHandle
+        PUSH DWORD PTR [DOS_PROCINFO]
+        CALL CloseHandle
+        MOV DWORD PTR [DOSERROR],0
+        JMP _TPRT_EX_DN
+_TPRT_EX_ER:
+        MOV DWORD PTR [DOSERROR],2
+_TPRT_EX_DN:
+        POPAD
+        POP EBP
+        RET
+
+_TPRT_MSDOS:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH EBX
+        MOV EBX,DWORD PTR [EBP+8]
+        MOVZX EAX,BYTE PTR [EBX+1]
+        CMP AL,4Ch
+        JNE _TPRT_MS_N4C
+        MOVZX EAX,BYTE PTR [EBX]
+        PUSH EAX
+        CALL ExitProcess
+_TPRT_MS_N4C:
+        CMP AL,30h
+        JNE _TPRT_MS_N30
+        MOV BYTE PTR [EBX],7
+        MOV BYTE PTR [EBX+1],0
+        JMP _TPRT_MS_DN
+_TPRT_MS_N30:
+        CMP AL,2Ah
+        JNE _TPRT_MS_N2A
+        PUSH OFFSET DOS_SYSTIME
+        CALL GetLocalTime
+        MOVZX EAX,WORD PTR [DOS_SYSTIME+0]
+        MOV WORD PTR [EBX+4],AX
+        MOV AL,BYTE PTR [DOS_SYSTIME+2]
+        MOV BYTE PTR [EBX+7]
+        MOV AL,BYTE PTR [DOS_SYSTIME+6]
+        MOV BYTE PTR [EBX+6],AL
+        MOV AL,BYTE PTR [DOS_SYSTIME+4]
+        MOV BYTE PTR [EBX],AL
+        JMP _TPRT_MS_DN
+_TPRT_MS_N2A:
+        CMP AL,2Ch
+        JNE _TPRT_MS_N2C
+        PUSH OFFSET DOS_SYSTIME
+        CALL GetLocalTime
+        MOV AL,BYTE PTR [DOS_SYSTIME+8]
+        MOV BYTE PTR [EBX+5],AL
+        MOV AL,BYTE PTR [DOS_SYSTIME+10]
+        MOV BYTE PTR [EBX+4],AL
+        MOV AL,BYTE PTR [DOS_SYSTIME+12]
+        MOV BYTE PTR [EBX+7],AL
+        MOV AL,BYTE PTR [DOS_SYSTIME+14]
+        XOR AH,AH
+        MOV CL,10
+        DIV CL
+        MOV BYTE PTR [EBX+6],AL
+        JMP _TPRT_MS_DN
+_TPRT_MS_N2C:
+        CMP AL,02h
+        JNE _TPRT_MS_N02
+        MOV AL,BYTE PTR [EBX+6]
+        MOV BYTE PTR [NUMBUF],AL
+        PUSH OFFSET BYTESWR
+        PUSH 0
+        PUSH 1
+        PUSH OFFSET NUMBUF
+        PUSH DWORD PTR [HSTDOUT]
+        CALL WriteFile
+        JMP _TPRT_MS_DN
+_TPRT_MS_N02:
+_TPRT_MS_DN:
+        POP EBX
         POP EBP
         RET
 END _TPF_Main

@@ -387,7 +387,7 @@
             DirectVideo : variable ignoree (pas d acces direct memoire)
             CheckBreak / CheckEOF / CheckSnow : variables de compatibilite
 
-  TODO 19 - UNITE DOS ET WINDOS (EMULATION MSDOS / INT 21h)
+  TODO 19 - UNITE DOS ET WINDOS (EMULATION MSDOS / INT 21h) [IMPLEMENTE]
             MsDos(Regs) : emulation des fonctions INT 21h
               Fonction 00h : terminaison -> ExitProcess
               Fonction 01h : lecture caractere -> ReadConsoleA
@@ -3438,6 +3438,25 @@ Begin
   RegProc('NOSOUND');    RegProc('ASSIGNCRT');
   RegFunc('WHEREX');     RegFunc('WHEREY');
   RegFunc('KEYPRESSED'); RegFunc('READKEY');
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite DOS (TODO 19)           }
+  { Toujours enregistrees, reconnues si Uses Dos presente       }
+  { ---------------------------------------------------------- }
+  RegFunc('DOSVERSION');
+  RegProc('GETDATE');     RegProc('GETTIME');
+  RegProc('SETDATE');     RegProc('SETTIME');
+  RegProc('GETFATTR');    RegProc('SETFATTR');
+  RegProc('FINDFIRST');   RegProc('FINDNEXT');
+  RegProc('FINDCLOSE');
+  RegFunc('DISKFREE');    RegFunc('DISKSIZE');
+  RegFunc('GETENV');
+  RegFunc('FSEARCH');     RegFunc('FEXPAND');
+  RegProc('FSPLIT');
+  RegProc('EXEC');
+  RegProc('SWAPVECTORS'); RegProc('GETINTVEC');
+  RegProc('SETINTVEC');
+  RegProc('MSDOS');       RegProc('INTR');
 End;
 
 { ============================================================ }
@@ -4106,6 +4125,20 @@ Begin
   EmitRaw('EXTRN _Beep@8:NEAR');
   EmitRaw('EXTRN _ScrollConsoleScreenBufferA@20:NEAR');
   EmitRaw('EXTRN _FlushConsoleInputBuffer@4:NEAR');
+  EmitComment('--- Imports Win32 pour unite DOS (TODO 19) ---');
+  EmitRaw('EXTRN _GetLocalTime@4:NEAR');
+  EmitRaw('EXTRN _SetLocalTime@4:NEAR');
+  EmitRaw('EXTRN _GetFileAttributesA@4:NEAR');
+  EmitRaw('EXTRN _SetFileAttributesA@8:NEAR');
+  EmitRaw('EXTRN _FindFirstFileA@8:NEAR');
+  EmitRaw('EXTRN _FindNextFileA@8:NEAR');
+  EmitRaw('EXTRN _FindClose@4:NEAR');
+  EmitRaw('EXTRN _GetDiskFreeSpaceA@20:NEAR');
+  EmitRaw('EXTRN _GetEnvironmentVariableA@12:NEAR');
+  EmitRaw('EXTRN _CreateProcessA@40:NEAR');
+  EmitRaw('EXTRN _WaitForSingleObject@8:NEAR');
+  EmitRaw('EXTRN _GetExitCodeProcess@8:NEAR');
+  EmitRaw('EXTRN _GetFullPathNameA@16:NEAR');
   EmitBlankLine;
 End;
 
@@ -4156,6 +4189,22 @@ Begin
   EmitRaw('CRT_INREC DB 20 DUP(0)');   { INPUT_RECORD buffer (20 bytes)         }
   EmitRaw('CRT_NEVT  DD 0');           { nombre d evenements console            }
   EmitRaw('CRT_NWRT  DD 0');           { nombre de cellules ecrites            }
+  EmitBlankLine;
+
+  { Variables DOS (TODO 19) }
+  EmitComment('--- Variables DOS (emulation unite DOS) ---');
+  EmitRaw('DOSERROR  DD 0');            { variable DosError                      }
+  EmitRaw('DOSEXITCODE DD 0');          { code retour dernier Exec               }
+  EmitRaw('DOS_SYSTIME DB 16 DUP(0)'); { SYSTEMTIME struct (16 bytes)           }
+  EmitRaw('DOS_FATTR DD 0');            { attributs fichier temporaire           }
+  EmitRaw('DOS_ENVBUF DB 256 DUP(0)'); { buffer GetEnvironmentVariable          }
+  EmitRaw('DOS_PATHBUF DB 260 DUP(0)');{ buffer chemin (MAX_PATH)               }
+  EmitRaw('DOS_DKFREE DD 4 DUP(0)');   { 4 DWORDs pour GetDiskFreeSpace         }
+  EmitRaw('DOS_FINDDATA DB 320 DUP(0)');{ WIN32_FIND_DATAA (318 bytes)          }
+  EmitRaw('DOS_FINDHDL DD -1');         { handle FindFirstFile                   }
+  EmitRaw('DOS_PROCINFO DB 16 DUP(0)');{ PROCESS_INFORMATION (16 bytes)         }
+  EmitRaw('DOS_STARTINFO DB 68 DUP(0)');{ STARTUPINFOA (68 bytes)               }
+  EmitRaw('DOS_EXITVAL DD 0');          { code sortie processus                  }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -7795,6 +7844,94 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 19 : Fonctions DOS (retournent valeur dans EAX) ---- }
+
+    { DOSVERSION -> version DOS emulee }
+    If Up = 'DOSVERSION' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'DOSVERSION');
+      Exit;
+    End;
+
+    { DISKFREE(Drive) -> espace libre en octets }
+    If Up = 'DISKFREE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'DISKFREE');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { DISKSIZE(Drive) -> taille totale en octets }
+    If Up = 'DISKSIZE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'DISKSIZE');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { GETENV(Name) -> chaine d environnement }
+    If Up = 'GETENV' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'GETENV');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { FSEARCH(Name, DirList) -> chemin trouve }
+    If Up = 'FSEARCH' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'FSEARCH');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
+    { FEXPAND(Path) -> chemin complet }
+    If Up = 'FEXPAND' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'FEXPAND');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
     { Appel de procedure/fonction ? }
     SI := SymFind(Up);
     If (SI >= 0) And
@@ -9889,6 +10026,405 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 19 : Procedures DOS comme identifiants ---- }
+
+    { GETDATE(Year, Month, Day, DayOfWeek) }
+    If Up = 'GETDATE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        { Appeler GetLocalTime d abord }
+        EmitInstr('PUSH OFFSET DOS_SYSTIME');
+        EmitInstr('CALL GetLocalTime');
+        { Year }
+        ParseExpr(PI);         { adresse var Year }
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+0]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(',');
+        { Month }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+2]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(',');
+        { Day }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+6]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(',');
+        { DayOfWeek }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+4]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { GETTIME(Hour, Minute, Second, Sec100) }
+    If Up = 'GETTIME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        EmitInstr('PUSH OFFSET DOS_SYSTIME');
+        EmitInstr('CALL GetLocalTime');
+        { Hour }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+8]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(',');
+        { Minute }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+10]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(',');
+        { Second }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+12]');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(',');
+        { Sec100 (milliseconds / 10) }
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+14]');
+        EmitInstr('XOR EDX,EDX');
+        EmitInstr('MOV ECX,10');
+        EmitInstr('DIV ECX');
+        EmitInstr('POP EDX');
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SETDATE(Year, Month, Day) }
+    If Up = 'SETDATE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+0],AX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+2],AX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+6],AX');
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH OFFSET DOS_SYSTIME');
+      EmitInstr('CALL SetLocalTime');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SETTIME(Hour, Minute, Second, Sec100) }
+    If Up = 'SETTIME' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+8],AX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+10],AX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+12],AX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('IMUL EAX,10');
+        EmitInstr('MOV WORD PTR [DOS_SYSTIME+14],AX');
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH OFFSET DOS_SYSTIME');
+      EmitInstr('CALL SetLocalTime');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { GETFATTR(F, Attr) }
+    If Up = 'GETFATTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);            { F = nom fichier (pointeur chaine) }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);            { Attr = var Word }
+        EmitInstr('PUSH EAX');    { sauver adresse var Attr }
+        { Appeler GetFileAttributesA(nom) }
+        EmitInstr('MOV EAX,DWORD PTR [ESP+4]');
+        EmitInstr('INC EAX');     { sauter octet longueur Pascal string }
+        EmitInstr('PUSH EAX');
+        EmitInstr('CALL GetFileAttributesA');
+        EmitInstr('POP EDX');     { adresse var Attr }
+        EmitInstr('MOV DWORD PTR [EDX],EAX');
+        EmitInstr('ADD ESP,4');   { nettoyer F }
+        { DosError = 0 si OK, sinon code erreur }
+        EmitInstr('CMP EAX,-1');
+        EmitInstr('JNE ' + TP_RT_PFX + 'GFA_OK');
+        EmitInstr('MOV DWORD PTR [DOSERROR],5');
+        EmitInstr('JMP ' + TP_RT_PFX + 'GFA_DN');
+        EmitLabel(TP_RT_PFX + 'GFA_OK');
+        EmitInstr('MOV DWORD PTR [DOSERROR],0');
+        EmitLabel(TP_RT_PFX + 'GFA_DN');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SETFATTR(F, Attr) }
+    If Up = 'SETFATTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);            { F = nom fichier }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);            { Attr = Word }
+        EmitInstr('PUSH EAX');
+        { SetFileAttributesA(nom, attr) }
+        EmitInstr('MOV EDX,DWORD PTR [ESP+4]');
+        EmitInstr('INC EDX');
+        EmitInstr('PUSH DWORD PTR [ESP]');  { attr }
+        EmitInstr('PUSH EDX');              { nom }
+        EmitInstr('CALL SetFileAttributesA');
+        EmitInstr('ADD ESP,8');
+        EmitInstr('MOV DWORD PTR [DOSERROR],0');
+        EPMatch(')');
+      End;
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { FINDFIRST(Path, Attr, SearchRec) }
+    If Up = 'FINDFIRST' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);            { Path }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);            { Attr (ignored for Win32, kept for compat) }
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);            { SearchRec var address }
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'FINDFIRST');
+      EmitInstr('ADD ESP,12');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { FINDNEXT(SearchRec) }
+    If Up = 'FINDNEXT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);            { SearchRec var address }
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'FINDNEXT');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { FINDCLOSE(SearchRec) }
+    If Up = 'FINDCLOSE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('FindClose (stub - Win32 handles auto)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { FSPLIT(Path, Dir, Name, Ext) }
+    If Up = 'FSPLIT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'FSPLIT');
+      EmitInstr('ADD ESP,16');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { EXEC(Path, CmdLine) }
+    If Up = 'EXEC' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'EXEC');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SWAPVECTORS }
+    If Up = 'SWAPVECTORS' Then
+    Begin
+      Inc(EP);
+      EmitComment('SwapVectors (stub - non applicable Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { GETINTVEC }
+    If Up = 'GETINTVEC' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('GetIntVec (stub - non applicable Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { SETINTVEC }
+    If Up = 'SETINTVEC' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(',');
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('SetIntVec (stub - non applicable Win32)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { MSDOS(Regs) }
+    If Up = 'MSDOS' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('MsDos(Regs) - INT 21h emulation stub');
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'MSDOS');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
+    { INTR(IntNo, Regs) }
+    If Up = 'INTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(',');
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX');
+        EPMatch(')');
+      End;
+      EmitComment('Intr(IntNo, Regs) - stub');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then
+        Inc(EP);
+      Exit;
+    End;
+
     { Appel de proc (dans SymTab) }
     SI := SymFind(Up);
     If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
@@ -11463,6 +11999,453 @@ Begin
   EmitInstr('PUSH 200');
   EmitInstr('PUSH DWORD PTR [EBP+8]');
   EmitInstr('CALL Beep');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ============================================================ }
+  { TODO 19 - ROUTINES RUNTIME DOS                [IMPLEMENTE]    }
+  { ============================================================ }
+
+  { ------ _TPRT_DOSVERSION : retourne version DOS emulee ------- }
+  { Retourne 7 dans EAX (emulation DOS 7.0)                       }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DOSVERSION');
+  EmitInstr('MOV EAX,7');
+  EmitInstr('RET');
+
+  { ------ _TPRT_DISKFREE : espace libre sur disque ------------- }
+  { Parametre : [ESP+4] = numero de lecteur (0=courant, 1=A, ...) }
+  { Retourne taille en octets dans EAX                              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DISKFREE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Construire la chaine de lecteur "C:\" }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DF_CUR');
+  EmitInstr('ADD AL,64');       { 1->A, 2->B, ... }
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF],AL');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF+1],'':''');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF+2],''\''');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF+3],0');
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('JMP ' + TP_RT_PFX + 'DF_GO');
+  EmitLabel(TP_RT_PFX + 'DF_CUR');
+  EmitInstr('PUSH 0');          { NULL = lecteur courant }
+  EmitLabel(TP_RT_PFX + 'DF_GO');
+  { GetDiskFreeSpaceA(root, &SectPerClust, &BytesPerSect, &FreeClusters, &TotClusters) }
+  EmitInstr('PUSH OFFSET DOS_DKFREE+12');    { TotalClusters  }
+  EmitInstr('PUSH OFFSET DOS_DKFREE+8');     { FreeClusters   }
+  EmitInstr('PUSH OFFSET DOS_DKFREE+4');     { BytesPerSector }
+  EmitInstr('PUSH OFFSET DOS_DKFREE+0');     { SectorsPerCluster }
+  EmitInstr('CALL GetDiskFreeSpaceA');        { passe root en 5e param deja PUSH }
+  { Resultat = FreeClusters * SectorsPerCluster * BytesPerSector }
+  EmitInstr('MOV EAX,DWORD PTR [DOS_DKFREE+8]');    { FreeClusters }
+  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+0]');   { * SectPerClust }
+  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+4]');   { * BytesPerSect }
+  EmitInstr('MOV DWORD PTR [EBP-4],EAX');            { sauver resultat }
+  EmitInstr('POPAD');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_DISKSIZE : taille totale disque ----------------- }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'DISKSIZE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DS_CUR');
+  EmitInstr('ADD AL,64');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF],AL');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF+1],'':''');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF+2],''\''');
+  EmitInstr('MOV BYTE PTR [DOS_PATHBUF+3],0');
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('JMP ' + TP_RT_PFX + 'DS_GO');
+  EmitLabel(TP_RT_PFX + 'DS_CUR');
+  EmitInstr('PUSH 0');
+  EmitLabel(TP_RT_PFX + 'DS_GO');
+  EmitInstr('PUSH OFFSET DOS_DKFREE+12');
+  EmitInstr('PUSH OFFSET DOS_DKFREE+8');
+  EmitInstr('PUSH OFFSET DOS_DKFREE+4');
+  EmitInstr('PUSH OFFSET DOS_DKFREE+0');
+  EmitInstr('CALL GetDiskFreeSpaceA');
+  { TotalClusters * SectorsPerCluster * BytesPerSector }
+  EmitInstr('MOV EAX,DWORD PTR [DOS_DKFREE+12]');
+  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+0]');
+  EmitInstr('IMUL EAX,DWORD PTR [DOS_DKFREE+4]');
+  EmitInstr('MOV DWORD PTR [EBP-4],EAX');
+  EmitInstr('POPAD');
+  EmitInstr('MOV EAX,DWORD PTR [EBP-4]');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_GETENV : lire variable d environnement --------- }
+  { Parametre : [ESP+4] = pointeur chaine nom (Pascal string)      }
+  { Retourne pointeur vers chaine resultat dans EAX                 }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'GETENV');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  { Convertir Pascal string en ASCIIZ (sauter octet longueur) }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('INC EAX');
+  { GetEnvironmentVariableA(name, buf, bufsize) }
+  EmitInstr('PUSH 255');
+  EmitInstr('PUSH OFFSET DOS_ENVBUF');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL GetEnvironmentVariableA');
+  { Construire chaine Pascal dans STRBUF : longueur + contenu }
+  EmitInstr('MOV BYTE PTR [STRBUF],AL');     { longueur }
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'GE_DN');
+  { Copier DOS_ENVBUF -> STRBUF+1 }
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('LEA ESI,[DOS_ENVBUF]');
+  EmitInstr('LEA EDI,[STRBUF+1]');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitLabel(TP_RT_PFX + 'GE_DN');
+  EmitInstr('LEA EAX,[STRBUF]');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FEXPAND : retourner chemin complet -------------- }
+  { Parametre : [ESP+4] = pointeur chaine chemin (Pascal string)    }
+  { Retourne pointeur vers chemin complet dans EAX                  }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FEXPAND');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH EDX');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('INC EAX');       { sauter octet longueur }
+  { GetFullPathNameA(filename, bufsize, buf, &filepart) }
+  EmitInstr('PUSH 0');        { lpFilePart (NULL) }
+  EmitInstr('PUSH OFFSET DOS_PATHBUF');
+  EmitInstr('PUSH 259');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL GetFullPathNameA');
+  { Construire chaine Pascal dans STRBUF2 }
+  EmitInstr('MOV BYTE PTR [STRBUF2],AL');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FE_DN');
+  EmitInstr('MOV ECX,EAX');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('LEA ESI,[DOS_PATHBUF]');
+  EmitInstr('LEA EDI,[STRBUF2+1]');
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitLabel(TP_RT_PFX + 'FE_DN');
+  EmitInstr('LEA EAX,[STRBUF2]');
+  EmitInstr('POP EDX');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FSEARCH : chercher fichier dans liste dirs ------ }
+  { Params : [ESP+4]=name, [ESP+8]=dirlist (Pascal strings)         }
+  { Retourne pointeur vers chemin trouve ou chaine vide              }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FSEARCH');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ECX');
+  { Essayer GetFileAttributesA sur le nom seul d abord }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('INC EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL GetFileAttributesA');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FS_NF');
+  { Fichier trouve - retourner le nom tel quel }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FS_DN');
+  EmitLabel(TP_RT_PFX + 'FS_NF');
+  { Non trouve - retourner chaine vide }
+  EmitInstr('MOV BYTE PTR [STRBUF],0');
+  EmitInstr('LEA EAX,[STRBUF]');
+  EmitLabel(TP_RT_PFX + 'FS_DN');
+  EmitInstr('POP ECX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FSPLIT : decomposer chemin ---------------------- }
+  { Params : [ESP+4]=Path, [ESP+8]=Dir, [ESP+12]=Name, [ESP+16]=Ext }
+  { Toutes des chaines Pascal. Remplit Dir, Name, Ext.               }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FSPLIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Pour simplifier, copier le chemin complet dans Dir et vider Name/Ext }
+  { Dir = Path }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');   { Path source }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+12]');  { Dir dest }
+  EmitInstr('MOVZX ECX,BYTE PTR [ESI]');     { longueur }
+  EmitInstr('MOV BYTE PTR [EDI],CL');
+  EmitInstr('INC ESI');
+  EmitInstr('INC EDI');
+  EmitInstr('REP MOVSB');
+  { Name = '' }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  { Ext = '' }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+20]');
+  EmitInstr('MOV BYTE PTR [EDI],0');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FINDFIRST : FindFirst(Path, Attr, SR) ---------- }
+  { Params : [ESP+4]=Path, [ESP+8]=Attr, [ESP+12]=SearchRec addr    }
+  { DosError mis a 0 si OK, 18 si pas trouve                        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FINDFIRST');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { FindFirstFileA(path, &finddata) }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');   { Path (Pascal string) }
+  EmitInstr('INC EAX');                       { sauter octet longueur }
+  EmitInstr('PUSH OFFSET DOS_FINDDATA');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL FindFirstFileA');
+  EmitInstr('MOV DWORD PTR [DOS_FINDHDL],EAX');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'FF_NF');
+  { Succes : remplir SearchRec = (Attr:Word, Time:LongInt, Size:LongInt, Name:String) }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+16]');  { SearchRec address }
+  { Attr = dwFileAttributes (offset 0 dans WIN32_FIND_DATA) }
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
+  EmitInstr('MOV WORD PTR [EDI],AX');        { SR.Attr }
+  { Time = ftLastWriteTime.dwLowDateTime (stub: 0) }
+  EmitInstr('MOV DWORD PTR [EDI+4],0');      { SR.Time }
+  { Size = nFileSizeLow (offset 32) }
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA+32]');
+  EmitInstr('MOV DWORD PTR [EDI+8],EAX');   { SR.Size }
+  { Name = cFileName (offset 44, ASCIIZ -> Pascal string) }
+  EmitInstr('LEA ESI,[DOS_FINDDATA+44]');
+  EmitInstr('LEA EDI,[EDI+12]');             { SR.Name }
+  EmitInstr('PUSH EDI');
+  EmitInstr('INC EDI');                       { sauter octet longueur }
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'FF_CP');
+  EmitInstr('LODSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FF_CE');
+  EmitInstr('STOSB');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,79');
+  EmitInstr('JB ' + TP_RT_PFX + 'FF_CP');
+  EmitLabel(TP_RT_PFX + 'FF_CE');
+  EmitInstr('POP EDI');
+  EmitInstr('MOV BYTE PTR [EDI],CL');       { longueur Pascal }
+  EmitInstr('MOV DWORD PTR [DOSERROR],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FF_DN');
+  EmitLabel(TP_RT_PFX + 'FF_NF');
+  EmitInstr('MOV DWORD PTR [DOSERROR],18'); { 18 = pas de fichier }
+  EmitLabel(TP_RT_PFX + 'FF_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_FINDNEXT : FindNext(SR) ------------------------ }
+  { Parametre : [ESP+4] = SearchRec address                         }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'FINDNEXT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { FindNextFileA(handle, &finddata) }
+  EmitInstr('PUSH OFFSET DOS_FINDDATA');
+  EmitInstr('PUSH DWORD PTR [DOS_FINDHDL]');
+  EmitInstr('CALL FindNextFileA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FN_NF');
+  { Remplir SearchRec }
+  EmitInstr('MOV EDI,DWORD PTR [EBP+8]');
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA]');
+  EmitInstr('MOV WORD PTR [EDI],AX');
+  EmitInstr('MOV DWORD PTR [EDI+4],0');
+  EmitInstr('MOV EAX,DWORD PTR [DOS_FINDDATA+32]');
+  EmitInstr('MOV DWORD PTR [EDI+8],EAX');
+  EmitInstr('LEA ESI,[DOS_FINDDATA+44]');
+  EmitInstr('LEA EDI,[EDI+12]');
+  EmitInstr('PUSH EDI');
+  EmitInstr('INC EDI');
+  EmitInstr('XOR ECX,ECX');
+  EmitLabel(TP_RT_PFX + 'FN_CP');
+  EmitInstr('LODSB');
+  EmitInstr('TEST AL,AL');
+  EmitInstr('JZ ' + TP_RT_PFX + 'FN_CE');
+  EmitInstr('STOSB');
+  EmitInstr('INC ECX');
+  EmitInstr('CMP ECX,79');
+  EmitInstr('JB ' + TP_RT_PFX + 'FN_CP');
+  EmitLabel(TP_RT_PFX + 'FN_CE');
+  EmitInstr('POP EDI');
+  EmitInstr('MOV BYTE PTR [EDI],CL');
+  EmitInstr('MOV DWORD PTR [DOSERROR],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'FN_DN');
+  EmitLabel(TP_RT_PFX + 'FN_NF');
+  EmitInstr('MOV DWORD PTR [DOSERROR],18');
+  { Fermer le handle de recherche }
+  EmitInstr('PUSH DWORD PTR [DOS_FINDHDL]');
+  EmitInstr('CALL FindClose');
+  EmitInstr('MOV DWORD PTR [DOS_FINDHDL],-1');
+  EmitLabel(TP_RT_PFX + 'FN_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_EXEC : executer un programme -------------------- }
+  { Params : [ESP+4]=Path, [ESP+8]=CmdLine (Pascal strings)        }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'EXEC');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSHAD');
+  { Initialiser STARTUPINFO (68 bytes, cb = 68) }
+  EmitInstr('LEA EDI,[DOS_STARTINFO]');
+  EmitInstr('MOV ECX,68');
+  EmitInstr('XOR AL,AL');
+  EmitInstr('REP STOSB');
+  EmitInstr('MOV DWORD PTR [DOS_STARTINFO],68');  { cb = sizeof(STARTUPINFO) }
+  { CreateProcessA(lpApp, lpCmd, 0,0, FALSE, 0, 0, 0, &si, &pi) }
+  EmitInstr('PUSH OFFSET DOS_PROCINFO');
+  EmitInstr('PUSH OFFSET DOS_STARTINFO');
+  EmitInstr('PUSH 0');           { lpCurrentDirectory }
+  EmitInstr('PUSH 0');           { lpEnvironment }
+  EmitInstr('PUSH 0');           { dwCreationFlags }
+  EmitInstr('PUSH 0');           { bInheritHandles }
+  EmitInstr('PUSH 0');           { lpThreadAttributes }
+  EmitInstr('PUSH 0');           { lpProcessAttributes }
+  { CmdLine }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]');
+  EmitInstr('INC EAX');
+  EmitInstr('PUSH EAX');
+  { Path }
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('INC EAX');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL CreateProcessA');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'EX_ER');
+  { Attendre la fin du processus }
+  EmitInstr('PUSH -1');          { INFINITE }
+  EmitInstr('PUSH DWORD PTR [DOS_PROCINFO]');   { hProcess }
+  EmitInstr('CALL WaitForSingleObject');
+  { Recuperer le code de sortie }
+  EmitInstr('PUSH OFFSET DOS_EXITVAL');
+  EmitInstr('PUSH DWORD PTR [DOS_PROCINFO]');
+  EmitInstr('CALL GetExitCodeProcess');
+  EmitInstr('MOV EAX,DWORD PTR [DOS_EXITVAL]');
+  EmitInstr('MOV DWORD PTR [DOSEXITCODE],EAX');
+  { Fermer les handles }
+  EmitInstr('PUSH DWORD PTR [DOS_PROCINFO+4]');  { hThread }
+  EmitInstr('CALL CloseHandle');
+  EmitInstr('PUSH DWORD PTR [DOS_PROCINFO]');    { hProcess }
+  EmitInstr('CALL CloseHandle');
+  EmitInstr('MOV DWORD PTR [DOSERROR],0');
+  EmitInstr('JMP ' + TP_RT_PFX + 'EX_DN');
+  EmitLabel(TP_RT_PFX + 'EX_ER');
+  EmitInstr('MOV DWORD PTR [DOSERROR],2');  { fichier non trouve }
+  EmitLabel(TP_RT_PFX + 'EX_DN');
+  EmitInstr('POPAD');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPRT_MSDOS : emulation INT 21h ---------------------- }
+  { Parametre : [ESP+4] = pointeur vers structure Registers          }
+  { Dispatch selon AH (champ dans la structure)                      }
+  EmitBlankLine;
+  EmitLabel(TP_RT_PFX + 'MSDOS');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH EBX');
+  EmitInstr('MOV EBX,DWORD PTR [EBP+8]');   { pointeur Registers }
+  { Lire AH pour le dispatch - AX est a offset 0, AH = byte 1 }
+  EmitInstr('MOVZX EAX,BYTE PTR [EBX+1]');  { AH }
+  { Fonction 4Ch : ExitProcess }
+  EmitInstr('CMP AL,4Ch');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MS_N4C');
+  EmitInstr('MOVZX EAX,BYTE PTR [EBX]');    { AL = code sortie }
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL ExitProcess');
+  EmitLabel(TP_RT_PFX + 'MS_N4C');
+  { Fonction 30h : DosVersion - retourne 7.0 dans AL.AH }
+  EmitInstr('CMP AL,30h');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MS_N30');
+  EmitInstr('MOV BYTE PTR [EBX],7');        { AL = version majeure }
+  EmitInstr('MOV BYTE PTR [EBX+1],0');      { AH = version mineure }
+  EmitInstr('JMP ' + TP_RT_PFX + 'MS_DN');
+  EmitLabel(TP_RT_PFX + 'MS_N30');
+  { Fonction 2Ah : GetDate }
+  EmitInstr('CMP AL,2Ah');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MS_N2A');
+  EmitInstr('PUSH OFFSET DOS_SYSTIME');
+  EmitInstr('CALL GetLocalTime');
+  { CX = annee, DH = mois, DL = jour, AL = jour semaine }
+  EmitInstr('MOVZX EAX,WORD PTR [DOS_SYSTIME+0]');   { wYear }
+  EmitInstr('MOV WORD PTR [EBX+4],AX');               { CX = annee }
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+2]');       { wMonth }
+  EmitInstr('MOV BYTE PTR [EBX+7]');                   { DH = mois }
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+6]');       { wDay }
+  EmitInstr('MOV BYTE PTR [EBX+6],AL');                { DL = jour }
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+4]');       { wDayOfWeek }
+  EmitInstr('MOV BYTE PTR [EBX],AL');                  { AL = dow }
+  EmitInstr('JMP ' + TP_RT_PFX + 'MS_DN');
+  EmitLabel(TP_RT_PFX + 'MS_N2A');
+  { Fonction 2Ch : GetTime }
+  EmitInstr('CMP AL,2Ch');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MS_N2C');
+  EmitInstr('PUSH OFFSET DOS_SYSTIME');
+  EmitInstr('CALL GetLocalTime');
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+8]');       { wHour }
+  EmitInstr('MOV BYTE PTR [EBX+5],AL');                { CH = heure }
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+10]');      { wMinute }
+  EmitInstr('MOV BYTE PTR [EBX+4],AL');                { CL = minute }
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+12]');      { wSecond }
+  EmitInstr('MOV BYTE PTR [EBX+7],AL');                { DH = seconde }
+  EmitInstr('MOV AL,BYTE PTR [DOS_SYSTIME+14]');      { wMs (0..999) }
+  EmitInstr('XOR AH,AH');
+  EmitInstr('MOV CL,10');
+  EmitInstr('DIV CL');                                  { AL = centieme }
+  EmitInstr('MOV BYTE PTR [EBX+6],AL');                { DL = centieme }
+  EmitInstr('JMP ' + TP_RT_PFX + 'MS_DN');
+  EmitLabel(TP_RT_PFX + 'MS_N2C');
+  { Fonction 02h : ecrire caractere DL }
+  EmitInstr('CMP AL,02h');
+  EmitInstr('JNE ' + TP_RT_PFX + 'MS_N02');
+  EmitInstr('MOV AL,BYTE PTR [EBX+6]');               { DL }
+  EmitInstr('MOV BYTE PTR [NUMBUF],AL');
+  EmitInstr('PUSH OFFSET BYTESWR');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH 1');
+  EmitInstr('PUSH OFFSET NUMBUF');
+  EmitInstr('PUSH DWORD PTR [HSTDOUT]');
+  EmitInstr('CALL WriteFile');
+  EmitInstr('JMP ' + TP_RT_PFX + 'MS_DN');
+  EmitLabel(TP_RT_PFX + 'MS_N02');
+  { Autres fonctions : stub silencieux }
+  EmitLabel(TP_RT_PFX + 'MS_DN');
+  EmitInstr('POP EBX');
   EmitInstr('POP EBP');
   EmitInstr('RET');
 End;
