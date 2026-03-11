@@ -2742,7 +2742,9 @@ Begin
           Begin
             FName := FName + '.' + StrUpperCase(CurToken.Val);
             ParserAdvance;
-          End;
+          End
+          Else
+            WarnMsg(FName + '. doit etre suivi d''un nom de variable');
         End;
 
         (* Variable simple : rechercher dans SymTab *)
@@ -9810,26 +9812,23 @@ Begin
         Continue;
       End;
 
-      (* Nom de dataset *)
-      If (KW <> 'POINT') And (KW <> 'NOBS') And (KW <> 'END') Then
+      (* Nom de dataset : tout identifiant non reconnu comme option *)
+      SetDS := KW;
+      If DSSetCount < MAX_MERGE_DS Then
       Begin
-        SetDS := KW;
-        If DSSetCount < MAX_MERGE_DS Then
-        Begin
-          DSSetList[DSSetCount] := SetDS;
-          DSSetLblList[DSSetCount] := SAS_DS_PFX + SetDS;
-          Inc(DSSetCount);
-        End;
-        EmitComment('SET source=' + SetDS);
-        (* Maintenir la compatibilite avec le champ unique *)
-        If DSSetCount = 1 Then
-        Begin
-          DSSetName  := SetDS;
-          DSSetLabel := SAS_DS_PFX + SetDS;
-        End;
-        ParserAdvance;
-        Continue;
+        DSSetList[DSSetCount] := SetDS;
+        DSSetLblList[DSSetCount] := SAS_DS_PFX + SetDS;
+        Inc(DSSetCount);
       End;
+      EmitComment('SET source=' + SetDS);
+      (* Maintenir la compatibilite avec le champ unique *)
+      If DSSetCount = 1 Then
+      Begin
+        DSSetName  := SetDS;
+        DSSetLabel := SAS_DS_PFX + SetDS;
+      End;
+      ParserAdvance;
+      Continue;
     End;
 
     ParserAdvance;
@@ -10073,7 +10072,7 @@ Begin
 End;
 
 { ============================================================
-  STUBS POUR TODO 23..25 (a implementer)
+  STUBS POUR TODO 24..25 (a implementer)
   ============================================================ }
 
 Procedure ParseStmt;
