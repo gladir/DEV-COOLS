@@ -141,7 +141,7 @@
             Pointeur et reference : T*, T& -> 2 octets (near pointer)
             typedef / using : alias de type
 
-  TODO 08 - EMETTEUR DE CODE ASM
+  TODO 08 - EMETTEUR DE CODE ASM [IMPLEMENTE]
             TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
             EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
             EmitComment, EmitBlankLine
@@ -3840,10 +3840,26 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 08..25
-  (a implementer dans les prochaines etapes)
+  TODO 08 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+  LabelGen       : generateur de labels uniques _CC_L_N
+  EmitRaw        : ecriture brute d une ligne ASM
+  EmitBlankLine  : ligne vide
+  EmitComment    : commentaire ; texte
+  EmitLabel      : label L:
+  EmitInstr      : instruction avec indentation 8 espaces
+  EmitInstrA     : instruction a 1 operande
+  EmitInstrAB    : instruction a 2 operandes
+  EmitProlog     : PUSH BP / MOV BP,SP / SUB SP,N
+  EmitEpilog     : MOV SP,BP / POP BP / RET
+  EmitOpen       : ouvrir le fichier .ASM en ecriture
+  EmitClose      : fermer le fichier (_TEXT ENDS / EmitDataSeg / END _main)
+  EmitHeader     : en-tete MASM (.MODEL SMALL / .STACK / segments)
+  Prefixes ASM   : _CC_V_ (var), _CC_F_ (func), _CC_K_ (string),
+                   _CC_RT_ (runtime), _CC_L_ (label), _CC_C_ (class),
+                   _CC_NS_ (namespace)
   ============================================================ *)
 
+(* ---- LabelGen : genere un label unique _CC_L_N ------------ *)
 Function LabelGen : TString;
 Var
   S : TString;
@@ -3853,54 +3869,68 @@ Begin
   LabelGen := CC_LBL_PFX + S;
 End;
 
+(* ---- EmitRaw : ecrire une ligne brute dans le .ASM -------- *)
 Procedure EmitRaw(Const S : TString);
 Begin
   If OutFOpen Then WriteLn(OutF, S);
 End;
 
+(* ---- EmitBlankLine : ligne vide dans le .ASM --------------- *)
 Procedure EmitBlankLine;
 Begin
   If OutFOpen Then WriteLn(OutF);
 End;
 
+(* ---- EmitComment : commentaire ASM ('; texte') ------------- *)
 Procedure EmitComment(Const S : TString);
 Begin
   If OutFOpen Then WriteLn(OutF, '; ', S);
 End;
 
+(* ---- EmitLabel : ecrire un label (Label:) ------------------- *)
 Procedure EmitLabel(Const Lbl : TString);
 Begin
   If OutFOpen Then WriteLn(OutF, Lbl, ':');
 End;
 
+(* ---- EmitInstr : instruction sans operande (8 espaces) ----- *)
 Procedure EmitInstr(Const Mnem : TString);
 Begin
   If OutFOpen Then WriteLn(OutF, '        ', Mnem);
 End;
 
+(* ---- EmitInstrA : instruction a 1 operande ----------------- *)
 Procedure EmitInstrA(Const Mnem, A1 : TString);
 Begin
   If OutFOpen Then WriteLn(OutF, '        ', Mnem, ' ', A1);
 End;
 
+(* ---- EmitInstrAB : instruction a 2 operandes --------------- *)
 Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
 Begin
   If OutFOpen Then WriteLn(OutF, '        ', Mnem, ' ', A1, ',', A2);
 End;
 
+(* ---- EmitProlog : prologue de fonction ---------------------- *)
+(* PUSH BP / MOV BP,SP / SUB SP,CurFrameSize (si > 0)          *)
 Procedure EmitProlog;
 Begin
-  EmitInstr('PUSH BP');
+  EmitInstrA('PUSH', 'BP');
   EmitInstrAB('MOV', 'BP', 'SP');
+  If CurFrameSize > 0 Then
+    EmitInstrAB('SUB', 'SP', IntToStr(CurFrameSize));
 End;
 
+(* ---- EmitEpilog : epilogue de fonction ---------------------- *)
+(* MOV SP,BP / POP BP / RET                                     *)
 Procedure EmitEpilog;
 Begin
   EmitInstrAB('MOV', 'SP', 'BP');
-  EmitInstr('POP BP');
+  EmitInstrA('POP', 'BP');
   EmitInstr('RET');
 End;
 
+(* ---- EmitOpen : ouvrir le fichier .ASM ---------------------- *)
 Procedure EmitOpen;
 Begin
   Assign(OutF, Opts.OutFile);
@@ -3908,41 +3938,60 @@ Begin
   If IOResult <> 0 Then
     FatalError('impossible de creer ' + Opts.OutFile);
   OutFOpen := True;
+  If Opts.DebugMode Then
+    WriteLn('[emit] fichier ouvert : ', Opts.OutFile);
 End;
 
+(* ---- EmitClose : fermer le fichier .ASM -------------------- *)
+(* Ecrit _TEXT ENDS, segment DATA complet, END _main             *)
 Procedure EmitClose;
 Begin
   If OutFOpen Then
   Begin
     EmitBlankLine;
-    EmitRaw('_TEXT ENDS');
+    EmitRaw('_TEXT   ENDS');
     EmitBlankLine;
     EmitDataSeg;
     EmitBlankLine;
     EmitRaw('END _main');
     Close(OutF);
     OutFOpen := False;
+    If Opts.DebugMode Then
+      WriteLn('[emit] fichier ferme : ', Opts.OutFile);
   End;
 End;
 
+(* ---- EmitHeader : en-tete MASM complet ---------------------- *)
+(* .MODEL SMALL / .STACK / segments DATA+TEXT / ASSUME           *)
 Procedure EmitHeader;
 Begin
   EmitComment('Genere par CPP86 v' + CPP86_VERSION);
+  EmitComment('Compilateur C++ -> ASM 8086 (MASM .MODEL SMALL)');
+  EmitBlankLine;
   EmitRaw('.MODEL SMALL');
   EmitRaw('.STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
-  EmitRaw('_DATA SEGMENT WORD PUBLIC ''DATA''');
-  EmitRaw('_DATA ENDS');
+  EmitComment('Declaration anticipee du segment de donnees');
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitRaw('_DATA   ENDS');
   EmitBlankLine;
-  EmitRaw('_TEXT SEGMENT WORD PUBLIC ''CODE''');
-  EmitRaw('ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
+  EmitComment('Segment de code');
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME CS:_TEXT, DS:_DATA, SS:STACK');
   EmitBlankLine;
 End;
 
+(* ---- EmitRuntime : emettre les routines runtime ------------- *)
+(* Stub pour TODO 25 : sera complete avec les routines runtime   *)
 Procedure EmitRuntime;
 Begin
-  (* stub *)
+  (* stub - sera implemente dans une TODO ulterieure *)
 End;
+
+(* ============================================================
+  STUBS POUR TODO 09..25
+  (a implementer dans les prochaines etapes)
+  ============================================================ *)
 
 Function ExprAddrOf(SIdx : Integer) : TString;
 Begin
