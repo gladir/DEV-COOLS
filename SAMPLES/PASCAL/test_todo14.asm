@@ -104,6 +104,16 @@ EXTRN _lstrcpyA@8:NEAR
 EXTRN _lstrcatA@8:NEAR
 EXTRN _lstrcmpA@8:NEAR
 EXTRN _lstrcmpiA@8:NEAR
+; --- Imports Win32 pour unite Objects (TODO 21) ---
+; --- kernel32.dll (fichiers pour TDosStream/TBufStream) ---
+EXTRN _CreateFileA@28:NEAR
+EXTRN _ReadFile@20:NEAR
+EXTRN _WriteFile@20:NEAR
+EXTRN _SetFilePointer@16:NEAR
+EXTRN _GetFileSize@8:NEAR
+EXTRN _CloseHandle@4:NEAR
+EXTRN _SetEndOfFile@4:NEAR
+EXTRN _FlushFileBuffers@4:NEAR
 
 ; --- Segment de donnees ---
 .DATA
@@ -220,6 +230,14 @@ PRN_FNAME   DB 'NUL',0
 ; --- Variables Overlay (stubs) ---
 OVR_RESULT  DD 0
 OVR_BUFSIZE DD 0
+; --- Variables Objects (unite Objects emulation TODO 21) ---
+OBJ_STATUS  DD 0
+OBJ_STRBUF  DB 256 DUP(0)
+OBJ_TMPHDL  DD -1
+OBJ_TMPPOS  DD 0
+OBJ_TMPSIZ  DD 0
+OBJ_TMPBUF  DB 1024 DUP(0)
+OBJ_BYTESRW DD 0
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Hello from SayHello!',0
@@ -2494,5 +2512,158 @@ _TPRT_LI_DN:
         POP EDI
         POP ESI
         POP EBP
+        RET
+
+; ============================================================
+;  RUNTIME OBJECTS : routines unite Objects (TStream, etc.)    
+; ============================================================
+_TPRT_NEWSTR:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH ESI
+        PUSH EDI
+        MOV ESI,DWORD PTR [EBP+8]
+        XOR ECX,ECX
+        MOV CL,BYTE PTR [ESI]
+        TEST ECX,ECX
+        JZ _TPRT_NEWSTR_NIL
+        ADD ECX,2
+        PUSH ECX
+        PUSH 8
+        PUSH DWORD PTR [HHEAP]
+        CALL _HeapAlloc@12
+        POP ECX
+        TEST EAX,EAX
+        JZ _TPRT_NEWSTR_NIL
+        MOV EDI,EAX
+        PUSH EAX
+        MOV ESI,DWORD PTR [EBP+8]
+        XOR ECX,ECX
+        MOV CL,BYTE PTR [ESI]
+        INC ECX
+        REP MOVSB
+        POP EAX
+        POP EDI
+        POP ESI
+        POP EBP
+        RET
+_TPRT_NEWSTR_NIL:
+        XOR EAX,EAX
+        POP EDI
+        POP ESI
+        POP EBP
+        RET
+_TPRT_DISPOSESTR:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+8]
+        TEST EAX,EAX
+        JZ _TPRT_DISPOSESTR_END
+        PUSH EAX
+        PUSH 0
+        PUSH DWORD PTR [HHEAP]
+        CALL _HeapFree@12
+_TPRT_DISPOSESTR_END:
+        POP EBP
+        RET
+_TPRT_DOSSTREAM_INIT:
+        PUSH EBP
+        MOV EBP,ESP
+        MOV EAX,DWORD PTR [EBP+12]
+        CMP EAX,1
+        JE _TPRT_DS_CREATE
+        PUSH 0
+        PUSH 128
+        PUSH 3
+        PUSH 0
+        PUSH 1
+        PUSH 80000000h
+        PUSH DWORD PTR [EBP+8]
+        CALL _CreateFileA@28
+        JMP _TPRT_DS_STORE
+_TPRT_DS_CREATE:
+        PUSH 0
+        PUSH 128
+        PUSH 2
+        PUSH 0
+        PUSH 0
+        PUSH 40000000h
+        PUSH DWORD PTR [EBP+8]
+        CALL _CreateFileA@28
+_TPRT_DS_STORE:
+        MOV DWORD PTR [OBJ_TMPHDL],EAX
+        MOV DWORD PTR [OBJ_TMPPOS],0
+        MOV DWORD PTR [OBJ_STATUS],0
+        PUSH 0
+        PUSH EAX
+        CALL _GetFileSize@8
+        MOV DWORD PTR [OBJ_TMPSIZ],EAX
+        POP EBP
+        RET
+_TPRT_DOSSTREAM_DONE:
+        MOV EAX,DWORD PTR [OBJ_TMPHDL]
+        CMP EAX,-1
+        JE _TPRT_DS_DONE_END
+        PUSH EAX
+        CALL _CloseHandle@4
+        MOV DWORD PTR [OBJ_TMPHDL],-1
+_TPRT_DS_DONE_END:
+        RET
+_TPRT_STREAM_READ:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 0
+        LEA EAX,DWORD PTR [OBJ_BYTESRW]
+        PUSH EAX
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [OBJ_TMPHDL]
+        CALL _ReadFile@20
+        MOV EAX,DWORD PTR [OBJ_BYTESRW]
+        ADD DWORD PTR [OBJ_TMPPOS],EAX
+        POP EBP
+        RET
+_TPRT_STREAM_WRITE:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 0
+        LEA EAX,DWORD PTR [OBJ_BYTESRW]
+        PUSH EAX
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [EBP+12]
+        PUSH DWORD PTR [OBJ_TMPHDL]
+        CALL _WriteFile@20
+        MOV EAX,DWORD PTR [OBJ_BYTESRW]
+        ADD DWORD PTR [OBJ_TMPPOS],EAX
+        POP EBP
+        RET
+_TPRT_STREAM_SEEK:
+        PUSH EBP
+        MOV EBP,ESP
+        PUSH 0
+        PUSH 0
+        PUSH DWORD PTR [EBP+8]
+        PUSH DWORD PTR [OBJ_TMPHDL]
+        CALL _SetFilePointer@16
+        MOV DWORD PTR [OBJ_TMPPOS],EAX
+        POP EBP
+        RET
+_TPRT_STREAM_FLUSH:
+        MOV EAX,DWORD PTR [OBJ_TMPHDL]
+        CMP EAX,-1
+        JE _TPRT_SF_END
+        PUSH EAX
+        CALL _FlushFileBuffers@4
+_TPRT_SF_END:
+        RET
+_TPRT_STREAM_TRUNCATE:
+        MOV EAX,DWORD PTR [OBJ_TMPHDL]
+        CMP EAX,-1
+        JE _TPRT_ST_END
+        PUSH EAX
+        CALL _SetEndOfFile@4
+        MOV EAX,DWORD PTR [OBJ_TMPPOS]
+        MOV DWORD PTR [OBJ_TMPSIZ],EAX
+_TPRT_ST_END:
         RET
 END _TPF_Main

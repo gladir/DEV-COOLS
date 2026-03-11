@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/testcomplet.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_objects.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -240,14 +240,17 @@ OBJ_TMPBUF  DB 1024 DUP(0)
 OBJ_BYTESRW DD 0
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Z',0
-_TPK_2  DB '=== Test du Compilateur PC8086 ===',0
-_TPK_3  DB 'Nombre: ',0
-_TPK_4  DB 'Lettre: ',0
-_TPK_5  DB 'Compilation r',195,169,'ussie !',0
-_TPV_NOMBRE  DD 0
-_TPV_LETTRE  DB 0
-_TPV_NOM  DB 256 DUP(0)
+_TPK_1  DB '=== Test unite Objects (TODO 21) ===',0
+_TPK_2  DB 'Hello Objects',0
+_TPK_3  DB 'NewStr OK',0
+_TPK_4  DB 'DisposeStr OK',0
+_TPK_5  DB 'RegisterType OK',0
+_TPK_6  DB 'TObject.Init OK',0
+_TPK_7  DB 'TObject.Done OK',0
+_TPK_8  DB 'TObject.Free OK',0
+_TPK_9  DB 'Done.',0
+_TPV_P  DD 0
+_TPV_S  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE
@@ -268,44 +271,68 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
-        MOV EAX,123
-        MOV DWORD PTR [_TPV_NOMBRE],EAX
-        LEA EAX,[_TPK_1]
-        MOV BYTE PTR [_TPV_LETTRE],AL
 ; writeln
-        LEA EAX,[_TPK_2]
+        LEA EAX,[_TPK_1]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        LEA EAX,[_TPK_2]
+        MOV ESI,EAX
+        LEA EDI,[_TPV_S]
+        CALL _TPRT_STRCPY
+        LEA EAX,[_TPV_S]
+        PUSH EAX
+        CALL _TPRT_NEWSTR
+        ADD ESP,4
+        MOV DWORD PTR [_TPV_P],EAX
 ; writeln
-        LEA ESI,[CRLF]
-        CALL _TPRT_PRINTSTR
-; write
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
-; writeln
-        MOV EAX,DWORD PTR [_TPV_NOMBRE]
-        CALL _TPRT_NUMTOSTR
-        LEA ESI,[NUMBUF]
-        CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
-; write
+        MOV EAX,DWORD PTR [_TPV_P]
+        PUSH EAX
+        CALL _TPRT_DISPOSESTR
+        ADD ESP,4
+; writeln
         LEA EAX,[_TPK_4]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        XOR EAX,EAX
+; RegisterType (Objects unit stub)
 ; writeln
-        MOVZX EAX,BYTE PTR [_TPV_LETTRE]
-        MOV BYTE PTR [STRTMP],AL
-        MOV BYTE PTR [STRTMP+1],0
-        LEA ESI,[STRTMP]
+        LEA EAX,[_TPK_5]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; TObject.Init (Objects unit stub)
+; writeln
+        LEA EAX,[_TPK_6]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; TObject.Done (Objects unit stub)
+; writeln
+        LEA EAX,[_TPK_7]
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+; TObject.Free (Objects unit stub)
+; writeln
+        LEA EAX,[_TPK_8]
+        MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
 ; writeln
-        LEA EAX,[_TPK_5]
+        LEA EAX,[_TPK_9]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]

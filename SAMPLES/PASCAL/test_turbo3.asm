@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/testcomplet.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_turbo3.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -240,14 +240,12 @@ OBJ_TMPBUF  DB 1024 DUP(0)
 OBJ_BYTESRW DD 0
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Z',0
-_TPK_2  DB '=== Test du Compilateur PC8086 ===',0
-_TPK_3  DB 'Nombre: ',0
-_TPK_4  DB 'Lettre: ',0
-_TPK_5  DB 'Compilation r',195,169,'ussie !',0
-_TPV_NOMBRE  DD 0
-_TPV_LETTRE  DB 0
-_TPV_NOM  DB 256 DUP(0)
+_TPK_1  DB '=== Test unite Turbo3 (TODO 21) ===',0
+_TPK_2  DB 'GotoXY OK',0
+_TPK_3  DB 'ClrScr OK',0
+_TPK_4  DB 'ClrEol OK',0
+_TPK_5  DB 'Delay OK',0
+_TPK_6  DB 'Done.',0
 
 ; --- Segment de code ---
 .CODE
@@ -268,44 +266,49 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
-        MOV EAX,123
-        MOV DWORD PTR [_TPV_NOMBRE],EAX
+; writeln
         LEA EAX,[_TPK_1]
-        MOV BYTE PTR [_TPV_LETTRE],AL
+        MOV ESI,EAX
+        CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,1
+        PUSH EAX
+        MOV EAX,1
+        PUSH EAX
+        CALL _TPRT_GOTOXY
+        ADD ESP,8
 ; writeln
         LEA EAX,[_TPK_2]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
+        CALL _TPRT_CLRSCR
 ; writeln
-        LEA ESI,[CRLF]
-        CALL _TPRT_PRINTSTR
-; write
         LEA EAX,[_TPK_3]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
-; writeln
-        MOV EAX,DWORD PTR [_TPV_NOMBRE]
-        CALL _TPRT_NUMTOSTR
-        LEA ESI,[NUMBUF]
-        CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
-; write
+        CALL _TPRT_CLREOL
+; writeln
         LEA EAX,[_TPK_4]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
+        LEA ESI,[CRLF]
+        CALL _TPRT_PRINTSTR
+        MOV EAX,100
+        PUSH EAX
+        CALL Sleep
 ; writeln
-        MOVZX EAX,BYTE PTR [_TPV_LETTRE]
-        MOV BYTE PTR [STRTMP],AL
-        MOV BYTE PTR [STRTMP+1],0
-        LEA ESI,[STRTMP]
+        LEA EAX,[_TPK_5]
+        MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]
         CALL _TPRT_PRINTSTR
 ; writeln
-        LEA EAX,[_TPK_5]
+        LEA EAX,[_TPK_6]
         MOV ESI,EAX
         CALL _TPRT_PRINTSTR
         LEA ESI,[CRLF]

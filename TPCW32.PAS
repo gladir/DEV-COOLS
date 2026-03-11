@@ -3532,6 +3532,49 @@ Begin
   RegProc('OVRSETBUF');   RegProc('OVRCLEARBUF');
   RegProc('OVRSETRETRY');
   RegFunc('OVRGETBUF');   RegFunc('OVRGETRETURNCODE');
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite Turbo3 (TODO 21)        }
+  { Compatibilite Turbo Pascal 3 : console -> redirige vers    }
+  { implementations CRT, graphique -> redirige vers Graph3.    }
+  { GotoXY, ClrScr, ClrEol, LowVideo, NormVideo, Delay deja   }
+  { registres via CRT. Plot, Draw, ColorTable, GraphBackground,}
+  { GraphColorMode, GraphMode, GraphWindow, HiRes, HiResColor, }
+  { Palette deja registres via Graph3.                          }
+  { ---------------------------------------------------------- }
+  { Constantes Turbo3 specifiques }
+  RegFunc('GRAPHCOLORMODE');  { -> mode graphique couleur }
+  RegFunc('GRAPHMODE');       { -> mode graphique mono }
+
+  { ---------------------------------------------------------- }
+  { Procedures et fonctions de l unite Objects (TODO 21)       }
+  { TP7 : TObject, TStream, TCollection et derives.            }
+  { Emulation minimale : stubs pour constructeurs/destructeurs, }
+  { methodes TStream via API fichiers Windows.                  }
+  { ---------------------------------------------------------- }
+  { TObject }
+  RegProc('TOBJECT_INIT');    RegProc('TOBJECT_DONE');
+  RegProc('TOBJECT_FREE');
+  { TStream }
+  RegFunc('TSTREAM_GET');     RegFunc('TSTREAM_GETPOS');
+  RegFunc('TSTREAM_GETSIZE'); RegFunc('TSTREAM_READ');
+  RegProc('TSTREAM_WRITE');   RegProc('TSTREAM_SEEK');
+  RegProc('TSTREAM_RESET');   RegProc('TSTREAM_FLUSH');
+  RegProc('TSTREAM_TRUNCATE');
+  { TDosStream }
+  RegProc('TDOSSTREAM_INIT'); RegProc('TDOSSTREAM_DONE');
+  { TBufStream }
+  RegProc('TBUFSTREAM_INIT'); RegProc('TBUFSTREAM_DONE');
+  RegProc('TBUFSTREAM_FLUSH');
+  { TCollection }
+  RegProc('TCOLLECTION_INIT'); RegProc('TCOLLECTION_DONE');
+  RegProc('TCOLLECTION_INSERT'); RegProc('TCOLLECTION_DELETE');
+  RegFunc('TCOLLECTION_AT');   RegFunc('TCOLLECTION_COUNT');
+  RegFunc('TCOLLECTION_INDEXOF');
+  { RegisterType / NewStr / DisposeStr }
+  RegProc('REGISTERTYPE');
+  RegFunc('NEWSTR');
+  RegProc('DISPOSESTR');
 End;
 
 { ============================================================ }
@@ -4265,6 +4308,16 @@ Begin
   EmitRaw('EXTRN _lstrcatA@8:NEAR');
   EmitRaw('EXTRN _lstrcmpA@8:NEAR');
   EmitRaw('EXTRN _lstrcmpiA@8:NEAR');
+  EmitComment('--- Imports Win32 pour unite Objects (TODO 21) ---');
+  EmitComment('--- kernel32.dll (fichiers pour TDosStream/TBufStream) ---');
+  EmitRaw('EXTRN _CreateFileA@28:NEAR');
+  EmitRaw('EXTRN _ReadFile@20:NEAR');
+  EmitRaw('EXTRN _WriteFile@20:NEAR');
+  EmitRaw('EXTRN _SetFilePointer@16:NEAR');
+  EmitRaw('EXTRN _GetFileSize@8:NEAR');
+  EmitRaw('EXTRN _CloseHandle@4:NEAR');
+  EmitRaw('EXTRN _SetEndOfFile@4:NEAR');
+  EmitRaw('EXTRN _FlushFileBuffers@4:NEAR');
   EmitBlankLine;
 End;
 
@@ -4406,6 +4459,14 @@ Begin
   EmitComment('--- Variables Overlay (stubs) ---');
   EmitRaw('OVR_RESULT  DD 0');           { ovrOk = 0                              }
   EmitRaw('OVR_BUFSIZE DD 0');           { taille buffer overlay                  }
+  EmitComment('--- Variables Objects (unite Objects emulation TODO 21) ---');
+  EmitRaw('OBJ_STATUS  DD 0');           { stOk = 0, stError, etc.               }
+  EmitRaw('OBJ_STRBUF  DB 256 DUP(0)'); { buffer pour NewStr                    }
+  EmitRaw('OBJ_TMPHDL  DD -1');          { handle fichier temporaire             }
+  EmitRaw('OBJ_TMPPOS  DD 0');           { position courante stream              }
+  EmitRaw('OBJ_TMPSIZ  DD 0');           { taille courante stream                }
+  EmitRaw('OBJ_TMPBUF  DB 1024 DUP(0)');{ buffer TBufStream                     }
+  EmitRaw('OBJ_BYTESRW DD 0');           { octets lus/ecrits                     }
   EmitBlankLine;
 
   { Emettre toutes les entrees du pool de donnees }
@@ -8661,6 +8722,124 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 21 : Fonctions Turbo3 (retournent valeur dans EAX) ---- }
+    { GraphColorMode et GraphMode comme fonctions retournent mode }
+    If Up = 'GRAPHCOLORMODE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      EmitInstr('MOV AL,4');  { mode 4 : 320x200x4 couleurs }
+      EmitComment('GraphColorMode (Turbo3 compat) -> 4');
+      Exit;
+    End;
+
+    If Up = 'GRAPHMODE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      EmitInstr('MOV AL,6');  { mode 6 : 640x200 mono }
+      EmitComment('GraphMode (Turbo3 compat) -> 6');
+      Exit;
+    End;
+
+    { ---- TODO 21 : Fonctions Objects (retournent valeur dans EAX) ---- }
+
+    { NEWSTR(S) : allouer copie chaine sur le tas -> PString }
+    If Up = 'NEWSTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'NEWSTR');
+      EmitInstr('ADD ESP,4');
+      Exit;
+    End;
+
+    { TCOLLECTION_COUNT -> retourne le nombre d elements }
+    If Up = 'TCOLLECTION_COUNT' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      EmitComment('TCollection.Count (stub) -> 0');
+      Exit;
+    End;
+
+    { TCOLLECTION_AT(Index) -> retourne element a l index }
+    If Up = 'TCOLLECTION_AT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('XOR EAX,EAX');
+      EmitComment('TCollection.At (stub) -> NIL');
+      Exit;
+    End;
+
+    { TCOLLECTION_INDEXOF(Item) -> retourne index ou -1 }
+    If Up = 'TCOLLECTION_INDEXOF' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('MOV EAX,-1');
+      EmitComment('TCollection.IndexOf (stub) -> -1');
+      Exit;
+    End;
+
+    { TSTREAM_GETPOS -> retourne position courante }
+    If Up = 'TSTREAM_GETPOS' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [OBJ_TMPPOS]');
+      Exit;
+    End;
+
+    { TSTREAM_GETSIZE -> retourne taille du stream }
+    If Up = 'TSTREAM_GETSIZE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV EAX,DWORD PTR [OBJ_TMPSIZ]');
+      Exit;
+    End;
+
+    { TSTREAM_GET -> lire objet depuis stream (stub -> NIL) }
+    If Up = 'TSTREAM_GET' Then
+    Begin
+      Inc(EP);
+      EmitInstr('XOR EAX,EAX');
+      EmitComment('TStream.Get (stub) -> NIL');
+      Exit;
+    End;
+
+    { TSTREAM_READ(Buf, Count) -> lire octets }
+    If Up = 'TSTREAM_READ' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { Buf }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then Inc(EP);
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { Count }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREAM_READ');
+      EmitInstr('ADD ESP,8');
+      Exit;
+    End;
+
     { Appel de procedure/fonction ? }
     SI := SymFind(Up);
     If (SI >= 0) And
@@ -12139,6 +12318,300 @@ Begin
       Exit;
     End;
 
+    { ---- TODO 21 : Procedures Turbo3 comme identifiants ---- }
+    { Note : GotoXY, ClrScr, ClrEol, LowVideo, NormVideo,     }
+    { Delay sont traites par les handlers CRT (TODO 18).       }
+    { Plot, Draw, ColorTable, GraphBackground, HiRes, etc.     }
+    { sont traites par les handlers Graph3 (TODO 20).          }
+    { GraphColorMode / GraphMode : stubs (mode graphique TP3)  }
+
+    If Up = 'GRAPHCOLORMODE' Then
+    Begin
+      Inc(EP);
+      EmitComment('GraphColorMode (Turbo3 compat -> stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    If Up = 'GRAPHMODE' Then
+    Begin
+      Inc(EP);
+      EmitComment('GraphMode (Turbo3 compat -> stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { ---- TODO 21 : Procedures Objects comme identifiants ---- }
+
+    { REGISTERTYPE(TypeRec) : enregistrer un type pour Get/Put }
+    If Up = 'REGISTERTYPE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('RegisterType (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { DISPOSESTR(S) : liberer chaine allouee par NewStr }
+    If Up = 'DISPOSESTR' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'DISPOSESTR');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { ---- TODO 21 : Procedures Objects comme identifiants ---- }
+
+    { TOBJECT_INIT : constructeur de base (stub) }
+    If Up = 'TOBJECT_INIT' Then
+    Begin
+      Inc(EP);
+      EmitComment('TObject.Init (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TOBJECT_DONE : destructeur de base (stub) }
+    If Up = 'TOBJECT_DONE' Then
+    Begin
+      Inc(EP);
+      EmitComment('TObject.Done (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TOBJECT_FREE : liberer objet (stub) }
+    If Up = 'TOBJECT_FREE' Then
+    Begin
+      Inc(EP);
+      EmitComment('TObject.Free (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TDOSSTREAM_INIT(FileName, Mode) : ouvrir fichier stream }
+    If Up = 'TDOSSTREAM_INIT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { FileName }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then Inc(EP);
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { Mode }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'DOSSTREAM_INIT');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TDOSSTREAM_DONE : fermer fichier stream }
+    If Up = 'TDOSSTREAM_DONE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'DOSSTREAM_DONE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TBUFSTREAM_INIT(FileName, Mode, BufSize) }
+    If Up = 'TBUFSTREAM_INIT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { FileName }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then Inc(EP);
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { Mode }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then Inc(EP);
+        ParseExpr(PI);
+        EmitComment('BufSize ignored - using default');
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'DOSSTREAM_INIT');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TBUFSTREAM_DONE : fermer fichier stream bufferise }
+    If Up = 'TBUFSTREAM_DONE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'DOSSTREAM_DONE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TBUFSTREAM_FLUSH : vider buffer stream }
+    If Up = 'TBUFSTREAM_FLUSH' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREAM_FLUSH');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TCOLLECTION_INIT(Limit, Delta) }
+    If Up = 'TCOLLECTION_INIT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then Inc(EP);
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('TCollection.Init (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TCOLLECTION_DONE }
+    If Up = 'TCOLLECTION_DONE' Then
+    Begin
+      Inc(EP);
+      EmitComment('TCollection.Done (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TCOLLECTION_INSERT(Item) }
+    If Up = 'TCOLLECTION_INSERT' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('TCollection.Insert (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TCOLLECTION_DELETE(Item) }
+    If Up = 'TCOLLECTION_DELETE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitComment('TCollection.Delete (Objects unit stub)');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TSTREAM_WRITE(Buf, Count) }
+    If Up = 'TSTREAM_WRITE' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { Buf }
+        If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+           (TokenPool[EP].Val = ',') Then Inc(EP);
+        ParseExpr(PI);
+        EmitInstr('PUSH EAX'); { Count }
+        EPMatch(')');
+      End;
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREAM_WRITE');
+      EmitInstr('ADD ESP,8');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TSTREAM_SEEK(Pos) }
+    If Up = 'TSTREAM_SEEK' Then
+    Begin
+      Inc(EP);
+      If EPMatch('(') Then
+      Begin
+        ParseExpr(PI);
+        EPMatch(')');
+      End;
+      EmitInstr('PUSH EAX');
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREAM_SEEK');
+      EmitInstr('ADD ESP,4');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TSTREAM_RESET }
+    If Up = 'TSTREAM_RESET' Then
+    Begin
+      Inc(EP);
+      EmitInstr('MOV DWORD PTR [OBJ_STATUS],0');
+      EmitComment('TStream.Reset -> stOk');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TSTREAM_FLUSH }
+    If Up = 'TSTREAM_FLUSH' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREAM_FLUSH');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
+    { TSTREAM_TRUNCATE }
+    If Up = 'TSTREAM_TRUNCATE' Then
+    Begin
+      Inc(EP);
+      EmitInstr('CALL ' + TP_RT_PFX + 'STREAM_TRUNCATE');
+      If (Not EPAtEnd) And (TokenPool[EP].Kind = TK_PUNCT) And
+         (TokenPool[EP].Val = ';') Then Inc(EP);
+      Exit;
+    End;
+
     { Appel de proc (dans SymTab) }
     SI := SymFind(Up);
     If (SI >= 0) And (SymTab[SI].Kind = SK_PROC) Then
@@ -15384,6 +15857,200 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================ }
+{ TODO 21 - ROUTINES RUNTIME OBJECTS              [IMPLEMENTE] }
+{ ============================================================ }
+
+Procedure EmitObjectsRuntime;
+Begin
+  EmitBlankLine;
+  EmitComment('============================================================');
+  EmitComment(' RUNTIME OBJECTS : routines unite Objects (TStream, etc.)    ');
+  EmitComment('============================================================');
+
+  { ------ _TPR_NEWSTR : allouer copie de chaine Pascal -------- }
+  { Parametre : [ESP+4] = pointeur vers ShortString source       }
+  { Retourne dans EAX : pointeur vers nouvelle ShortString (tas) }
+  { ou NIL si chaine vide                                         }
+  EmitLabel(TP_RT_PFX + 'NEWSTR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH ESI');
+  EmitInstr('PUSH EDI');
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');  { source string ptr }
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV CL,BYTE PTR [ESI]');       { longueur }
+  EmitInstr('TEST ECX,ECX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'NEWSTR_NIL');
+  EmitInstr('ADD ECX,2');                    { longueur + 1 (len byte) + 1 (securite) }
+  { Allouer memoire via HeapAlloc }
+  EmitInstr('PUSH ECX');
+  EmitInstr('PUSH 8');                       { HEAP_ZERO_MEMORY }
+  EmitInstr('PUSH DWORD PTR [HHEAP]');
+  EmitInstr('CALL _HeapAlloc@12');
+  EmitInstr('POP ECX');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'NEWSTR_NIL');
+  { Copier la chaine }
+  EmitInstr('MOV EDI,EAX');
+  EmitInstr('PUSH EAX');                     { sauver resultat }
+  EmitInstr('MOV ESI,DWORD PTR [EBP+8]');
+  EmitInstr('XOR ECX,ECX');
+  EmitInstr('MOV CL,BYTE PTR [ESI]');
+  EmitInstr('INC ECX');                      { copier len byte aussi }
+  EmitInstr('REP MOVSB');
+  EmitInstr('POP EAX');                      { restaurer resultat }
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+  EmitLabel(TP_RT_PFX + 'NEWSTR_NIL');
+  EmitInstr('XOR EAX,EAX');
+  EmitInstr('POP EDI');
+  EmitInstr('POP ESI');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_DISPOSESTR : liberer chaine allouee par NewStr - }
+  { Parametre : [ESP+4] = pointeur vers PString                  }
+  EmitLabel(TP_RT_PFX + 'DISPOSESTR');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+8]');
+  EmitInstr('TEST EAX,EAX');
+  EmitInstr('JZ ' + TP_RT_PFX + 'DISPOSESTR_END');
+  EmitInstr('PUSH EAX');
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH DWORD PTR [HHEAP]');
+  EmitInstr('CALL _HeapFree@12');
+  EmitLabel(TP_RT_PFX + 'DISPOSESTR_END');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_DOSSTREAM_INIT : ouvrir fichier pour TDosStream  }
+  { Parametres : [ESP+4]=FileName (PChar), [ESP+8]=Mode          }
+  { Mode: stCreate=1 -> creer, stOpenRead=0 -> lire              }
+  EmitLabel(TP_RT_PFX + 'DOSSTREAM_INIT');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('MOV EAX,DWORD PTR [EBP+12]'); { Mode }
+  EmitInstr('CMP EAX,1');
+  EmitInstr('JE ' + TP_RT_PFX + 'DS_CREATE');
+  { stOpenRead : ouvrir en lecture }
+  EmitInstr('PUSH 0');                      { hTemplateFile = NULL }
+  EmitInstr('PUSH 128');                    { FILE_ATTRIBUTE_NORMAL }
+  EmitInstr('PUSH 3');                      { OPEN_EXISTING }
+  EmitInstr('PUSH 0');                      { lpSecurityAttributes }
+  EmitInstr('PUSH 1');                      { FILE_SHARE_READ }
+  EmitInstr('PUSH 80000000h');              { GENERIC_READ }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { lpFileName }
+  EmitInstr('CALL _CreateFileA@28');
+  EmitInstr('JMP ' + TP_RT_PFX + 'DS_STORE');
+  EmitLabel(TP_RT_PFX + 'DS_CREATE');
+  { stCreate : creer en ecriture }
+  EmitInstr('PUSH 0');                      { hTemplateFile = NULL }
+  EmitInstr('PUSH 128');                    { FILE_ATTRIBUTE_NORMAL }
+  EmitInstr('PUSH 2');                      { CREATE_ALWAYS }
+  EmitInstr('PUSH 0');                      { lpSecurityAttributes }
+  EmitInstr('PUSH 0');                      { dwShareMode }
+  EmitInstr('PUSH 40000000h');              { GENERIC_WRITE }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');     { lpFileName }
+  EmitInstr('CALL _CreateFileA@28');
+  EmitLabel(TP_RT_PFX + 'DS_STORE');
+  EmitInstr('MOV DWORD PTR [OBJ_TMPHDL],EAX');
+  EmitInstr('MOV DWORD PTR [OBJ_TMPPOS],0');
+  EmitInstr('MOV DWORD PTR [OBJ_STATUS],0');
+  { Obtenir la taille du fichier }
+  EmitInstr('PUSH 0');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _GetFileSize@8');
+  EmitInstr('MOV DWORD PTR [OBJ_TMPSIZ],EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_DOSSTREAM_DONE : fermer fichier TDosStream ------ }
+  EmitLabel(TP_RT_PFX + 'DOSSTREAM_DONE');
+  EmitInstr('MOV EAX,DWORD PTR [OBJ_TMPHDL]');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'DS_DONE_END');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _CloseHandle@4');
+  EmitInstr('MOV DWORD PTR [OBJ_TMPHDL],-1');
+  EmitLabel(TP_RT_PFX + 'DS_DONE_END');
+  EmitInstr('RET');
+
+  { ------ _TPR_STREAM_READ : lire depuis le stream ------------ }
+  { Parametres : [ESP+4]=Buffer, [ESP+8]=Count                   }
+  { Retourne dans EAX : nombre d octets lus                      }
+  EmitLabel(TP_RT_PFX + 'STREAM_READ');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH 0');                       { lpOverlapped }
+  EmitInstr('LEA EAX,DWORD PTR [OBJ_BYTESRW]');
+  EmitInstr('PUSH EAX');                     { lpNumberOfBytesRead }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');      { nNumberOfBytesToRead (Count) }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');     { lpBuffer (Buf) }
+  EmitInstr('PUSH DWORD PTR [OBJ_TMPHDL]'); { hFile }
+  EmitInstr('CALL _ReadFile@20');
+  EmitInstr('MOV EAX,DWORD PTR [OBJ_BYTESRW]');
+  EmitInstr('ADD DWORD PTR [OBJ_TMPPOS],EAX'); { mettre a jour position }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STREAM_WRITE : ecrire dans le stream ----------- }
+  { Parametres : [ESP+4]=Buffer, [ESP+8]=Count                   }
+  EmitLabel(TP_RT_PFX + 'STREAM_WRITE');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH 0');                       { lpOverlapped }
+  EmitInstr('LEA EAX,DWORD PTR [OBJ_BYTESRW]');
+  EmitInstr('PUSH EAX');                     { lpNumberOfBytesWritten }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');      { nNumberOfBytesToWrite (Count) }
+  EmitInstr('PUSH DWORD PTR [EBP+12]');     { lpBuffer (Buf) }
+  EmitInstr('PUSH DWORD PTR [OBJ_TMPHDL]'); { hFile }
+  EmitInstr('CALL _WriteFile@20');
+  EmitInstr('MOV EAX,DWORD PTR [OBJ_BYTESRW]');
+  EmitInstr('ADD DWORD PTR [OBJ_TMPPOS],EAX'); { mettre a jour position }
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STREAM_SEEK : positionner dans le stream ------- }
+  { Parametre : [ESP+4]=Position                                  }
+  EmitLabel(TP_RT_PFX + 'STREAM_SEEK');
+  EmitInstr('PUSH EBP');
+  EmitInstr('MOV EBP,ESP');
+  EmitInstr('PUSH 0');                       { FILE_BEGIN }
+  EmitInstr('PUSH 0');                       { lpDistanceToMoveHigh }
+  EmitInstr('PUSH DWORD PTR [EBP+8]');      { lDistanceToMove (Pos) }
+  EmitInstr('PUSH DWORD PTR [OBJ_TMPHDL]'); { hFile }
+  EmitInstr('CALL _SetFilePointer@16');
+  EmitInstr('MOV DWORD PTR [OBJ_TMPPOS],EAX');
+  EmitInstr('POP EBP');
+  EmitInstr('RET');
+
+  { ------ _TPR_STREAM_FLUSH : vider les buffers --------------- }
+  EmitLabel(TP_RT_PFX + 'STREAM_FLUSH');
+  EmitInstr('MOV EAX,DWORD PTR [OBJ_TMPHDL]');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'SF_END');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _FlushFileBuffers@4');
+  EmitLabel(TP_RT_PFX + 'SF_END');
+  EmitInstr('RET');
+
+  { ------ _TPR_STREAM_TRUNCATE : tronquer a la position ------- }
+  EmitLabel(TP_RT_PFX + 'STREAM_TRUNCATE');
+  EmitInstr('MOV EAX,DWORD PTR [OBJ_TMPHDL]');
+  EmitInstr('CMP EAX,-1');
+  EmitInstr('JE ' + TP_RT_PFX + 'ST_END');
+  EmitInstr('PUSH EAX');
+  EmitInstr('CALL _SetEndOfFile@4');
+  EmitInstr('MOV EAX,DWORD PTR [OBJ_TMPPOS]');
+  EmitInstr('MOV DWORD PTR [OBJ_TMPSIZ],EAX');
+  EmitLabel(TP_RT_PFX + 'ST_END');
+  EmitInstr('RET');
+End;
+
 Procedure Run;
 Begin
   ShowBanner;
@@ -15471,6 +16138,9 @@ Begin
 
     { Emettre les routines runtime Strings/Overlay (TODO 21) }
     EmitStringsRuntime;
+
+    { Emettre les routines runtime Objects (TODO 21) }
+    EmitObjectsRuntime;
 
     { TODO 13..25 : compilation complete }
 
