@@ -261,7 +261,7 @@
              Types PROCEDURE : variables de type procedural -> pointeur de code
                Appel indirect : CALL AX
 
-   TODO 18 - INTERFACES ET MODULES (INTERFACE / MODULE)
+   TODO 18 - INTERFACES ET MODULES (INTERFACE / MODULE) [IMPLEMENTE]
              INTERFACE Nom; ... END Nom.
                Declarations exportees : types, constantes, variables, procedures
                Pas de corps d implementation dans INTERFACE
@@ -666,6 +666,14 @@ Type
     ParentIdx  : Integer;    (* index du parent (-1=aucun) TODO 17  *)
   End;
 
+  (* ---- Imports et Modules (TODO 18) ----------------------------- *)
+  TImportEntry = Record
+    ModName    : TString;     (* nom du module importe                  *)
+    IsFrom     : Boolean;     (* True si FROM Mod IMPORT sym            *)
+    SymNames   : Array[0..MAX_PARAM - 1] Of TString;
+    SymCount   : Integer;     (* nombre de symboles (FROM ... IMPORT)   *)
+  End;
+
 (* ============================================================
    VARIABLES GLOBALES
    ============================================================ *)
@@ -691,6 +699,12 @@ Var
   LexEOF    : Boolean;
   LexOpened : Boolean;
   CurToken  : TToken;
+
+  (* Imports et Modules (TODO 18) *)
+  ImportTab    : Array[0..MAX_IMPORT - 1] Of TImportEntry;
+  ImportCount  : Integer;
+  ModuleName   : TString;   (* nom du MODULE ou INTERFACE courant *)
+  ExportsName  : TString;   (* nom de l interface exportee (EXPORTS) *)
 
   (* Segment de donnees (TODO 03) *)
   DataTab    : Array[0..MAX_DATA-1] Of TDataRec;
@@ -3231,17 +3245,60 @@ End;
 (* principal avec initialisation de DS.                          *)
 
 Procedure EmitHeader;
+Var
+  I, J : Integer;
 Begin
   EmitComment('=========================================================');
   EmitComment('Genere par MODIII86 v' + MODIII86_VERSION +
               ' (' + MODIII86_DATE + ')');
   EmitComment('Source  : ' + Opts.SrcFile);
+  If ModuleName <> '' Then
+  Begin
+    If Opts.IsIface Then
+      EmitComment('Interface : ' + ModuleName)
+    Else
+      EmitComment('Module  : ' + ModuleName);
+  End;
   EmitComment('Cible   : MASM 8086, modele SMALL');
   EmitComment('=========================================================');
   EmitBlankLine;
   EmitRaw('        .MODEL SMALL');
   EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
   EmitBlankLine;
+
+  (* --- EXTRN : symboles importes depuis d autres modules (TODO 18) --- *)
+  If ImportCount > 0 Then
+  Begin
+    EmitComment('--- Symboles externes (IMPORT) ---');
+    For I := 0 To ImportCount - 1 Do
+    Begin
+      If ImportTab[I].IsFrom Then
+      Begin
+        (* FROM Mod IMPORT sym1, sym2 : declarer chaque symbole *)
+        For J := 0 To ImportTab[I].SymCount - 1 Do
+          EmitRaw('        EXTRN ' + M3_VAR_PFX +
+                  ImportTab[I].ModName + '_' +
+                  ImportTab[I].SymNames[J] + ':NEAR');
+      End
+      Else
+      Begin
+        (* IMPORT Mod : declarer le module comme externe *)
+        EmitRaw('        EXTRN ' + M3_PROC_PFX +
+                ImportTab[I].ModName + '_INIT:NEAR');
+      End;
+    End;
+    EmitBlankLine;
+  End;
+
+  (* --- PUBLIC : symboles exportes par ce module (TODO 18) --- *)
+  If (Not Opts.IsIface) And (ExportsName <> '') Then
+  Begin
+    EmitComment('--- Symboles publics (EXPORTS ' + ExportsName + ') ---');
+    For I := 0 To ProcCount - 1 Do
+      EmitRaw('        PUBLIC ' + ProcTab[I].MangledName);
+    EmitBlankLine;
+  End;
+
   EmitComment('--- Segment de code ---');
   EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
   EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA');
@@ -3387,11 +3444,22 @@ End;
 
 Procedure EmitClose;
 Begin
-  EmitBlankLine;
-  EmitComment('--- Sortie programme (DOS INT 21h) ---');
-  EmitInstrAB('MOV', 'AH', '4Ch');
-  EmitInstrAB('MOV', 'AL', '0');
-  EmitInstr('INT    21h');
+  If Not Opts.IsIface Then
+  Begin
+    (* Mode MODULE : sortie DOS normale *)
+    EmitBlankLine;
+    EmitComment('--- Sortie programme (DOS INT 21h) ---');
+    EmitInstrAB('MOV', 'AH', '4Ch');
+    EmitInstrAB('MOV', 'AL', '0');
+    EmitInstr('INT    21h');
+  End
+  Else
+  Begin
+    (* Mode INTERFACE : pas de code executable, seulement RET *)
+    EmitBlankLine;
+    EmitComment('--- INTERFACE : pas de point d''entree ---');
+    EmitInstr('RET');
+  End;
   EmitBlankLine;
   EmitRaw('_TEXT   ENDS');
   (* Segment de donnees *)
@@ -3784,27 +3852,77 @@ Begin
   InVar   := False;
   InConst := False;
   InType  := False;
+  ImportCount := 0;
+  ModuleName  := '';
+  ExportsName := '';
 
-  (* Chercher le mot-cle MODULE pour commencer *)
+  (* Chercher le mot-cle MODULE ou INTERFACE pour commencer - TODO 18 *)
   While (P < TokenCount) And Not
-        ((TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'MODULE'))
+        ((TokenPool[P].Kind = TK_KEYWORD) And
+         ((TokenPool[P].Val = 'MODULE') Or
+          (TokenPool[P].Val = 'INTERFACE')))
   Do
     Inc(P);
   If P >= TokenCount Then Exit;
-  Inc(P); (* passer MODULE *)
 
-  (* Avancer au-dela du nom de module et du ';' *)
+  (* Detecter INTERFACE vs MODULE - TODO 18 *)
+  If TokenPool[P].Val = 'INTERFACE' Then
+    Opts.IsIface := True;
+  Inc(P); (* passer MODULE/INTERFACE *)
+
+  (* Lire le nom du module/interface *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+  Begin
+    ModuleName := TokenPool[P].Val;
+    Inc(P);
+  End;
+
+  (* Detecter EXPORTS InterfaceName - TODO 18 *)
+  If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+     (TokenPool[P].Val = 'EXPORTS') Then
+  Begin
+    Inc(P); (* passer EXPORTS *)
+    If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+    Begin
+      ExportsName := TokenPool[P].Val;
+      Inc(P);
+    End;
+  End;
+
+  (* Avancer au-dela du ';' *)
   While (P < TokenCount) And Not
         ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
   Do
     Inc(P);
   If P < TokenCount Then Inc(P); (* passer le ';' *)
 
-  (* Scanner les declarations entre MODULE ...; et BEGIN *)
+  If Opts.DebugMode Then
+  Begin
+    If Opts.IsIface Then
+      WriteLn('  INTERFACE ', ModuleName)
+    Else
+      WriteLn('  MODULE ', ModuleName);
+    If ExportsName <> '' Then
+      WriteLn('  EXPORTS ', ExportsName);
+  End;
+
+  (* Enregistrer le module/interface dans SymTab *)
+  If (ModuleName <> '') And (SymFind(ModuleName) < 0) Then
+  Begin
+    SymAdd(ModuleName, SK_MODULE, TY_UNKNOWN, 0);
+    If Opts.IsIface Then
+      SymTab[SymCount - 1].IsExported := True;
+  End;
+
+  (* Scanner les declarations entre MODULE/INTERFACE ...; et BEGIN/END *)
   While P < TokenCount Do
   Begin
     (* Si on atteint BEGIN, on arrete *)
     If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'BEGIN') Then
+      Break;
+
+    (* Si on atteint END (pour INTERFACE sans BEGIN) - TODO 18 *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And (TokenPool[P].Val = 'END') Then
       Break;
 
     (* Si on atteint PROCEDURE, on arrete (declarations de proc) *)
@@ -3844,16 +3962,137 @@ Begin
 
     (* Detecter un autre mot-cle de section (EXCEPTION, etc) *)
     If (TokenPool[P].Kind = TK_KEYWORD) And
-       ((TokenPool[P].Val = 'EXCEPTION') Or
-        (TokenPool[P].Val = 'IMPORT') Or
-        (TokenPool[P].Val = 'FROM') Or
-        (TokenPool[P].Val = 'REVEAL')) Then
+       (TokenPool[P].Val = 'EXCEPTION') Then
     Begin
       InVar   := False;
       InConst := False;
       InType  := False;
-      (* Sauter jusqu a la fin de la section *)
       Inc(P);
+      Continue;
+    End;
+
+    (* Detecter IMPORT Mod1, Mod2; -- TODO 18 *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'IMPORT') Then
+    Begin
+      InVar   := False;
+      InConst := False;
+      InType  := False;
+      Inc(P); (* passer IMPORT *)
+      While (P < TokenCount) And Not
+            ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
+      Do
+      Begin
+        If (TokenPool[P].Kind = TK_IDENT) Then
+        Begin
+          Name := TokenPool[P].Val;
+          (* Enregistrer le module dans la table d imports *)
+          If ImportCount < MAX_IMPORT Then
+          Begin
+            ImportTab[ImportCount].ModName  := Name;
+            ImportTab[ImportCount].IsFrom   := False;
+            ImportTab[ImportCount].SymCount := 0;
+            Inc(ImportCount);
+          End;
+          (* Enregistrer comme symbole SK_MODULE si pas deja connu *)
+          If SymFind(Name) < 0 Then
+          Begin
+            SymAdd(Name, SK_MODULE, TY_UNKNOWN, 0);
+            SymTab[SymCount - 1].IsImported := True;
+          End;
+        End;
+        Inc(P);
+      End;
+      If (P < TokenCount) Then Inc(P); (* passer ';' *)
+      Continue;
+    End;
+
+    (* Detecter FROM Mod IMPORT sym1, sym2; -- TODO 18 *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'FROM') Then
+    Begin
+      InVar   := False;
+      InConst := False;
+      InType  := False;
+      Inc(P); (* passer FROM *)
+      Name := '';
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        Name := TokenPool[P].Val;
+        Inc(P);
+      End;
+      (* Passer le mot-cle IMPORT *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_KEYWORD) And
+         (TokenPool[P].Val = 'IMPORT') Then
+        Inc(P);
+      (* Enregistrer l entree d import *)
+      If (Name <> '') And (ImportCount < MAX_IMPORT) Then
+      Begin
+        ImportTab[ImportCount].ModName  := Name;
+        ImportTab[ImportCount].IsFrom   := True;
+        ImportTab[ImportCount].SymCount := 0;
+        (* Lire les symboles importes *)
+        While (P < TokenCount) And Not
+              ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
+        Do
+        Begin
+          If (TokenPool[P].Kind = TK_IDENT) And
+             (ImportTab[ImportCount].SymCount < MAX_PARAM) Then
+          Begin
+            ImportTab[ImportCount].SymNames[
+              ImportTab[ImportCount].SymCount] := TokenPool[P].Val;
+            Inc(ImportTab[ImportCount].SymCount);
+            (* Enregistrer le symbole comme importe *)
+            If SymFind(TokenPool[P].Val) < 0 Then
+            Begin
+              SymAdd(TokenPool[P].Val, SK_VAR, TY_UNKNOWN, 0);
+              SymTab[SymCount - 1].IsImported := True;
+              SymTab[SymCount - 1].MangledName :=
+                M3_VAR_PFX + Name + '_' + TokenPool[P].Val;
+            End;
+          End;
+          Inc(P);
+        End;
+        Inc(ImportCount);
+      End;
+      (* Enregistrer le module si pas deja connu *)
+      If (Name <> '') And (SymFind(Name) < 0) Then
+      Begin
+        SymAdd(Name, SK_MODULE, TY_UNKNOWN, 0);
+        SymTab[SymCount - 1].IsImported := True;
+      End;
+      If (P < TokenCount) Then Inc(P); (* passer ';' *)
+      Continue;
+    End;
+
+    (* Detecter REVEAL T = ... -- TODO 18 *)
+    If (TokenPool[P].Kind = TK_KEYWORD) And
+       (TokenPool[P].Val = 'REVEAL') Then
+    Begin
+      InVar   := False;
+      InConst := False;
+      InType  := False;
+      Inc(P); (* passer REVEAL *)
+      (* REVEAL TypeName = definition *)
+      If (P < TokenCount) And (TokenPool[P].Kind = TK_IDENT) Then
+      Begin
+        Name := TokenPool[P].Val;
+        Inc(P);
+        (* Passer '=' et la definition (simplifiee) *)
+        If (P < TokenCount) And (TokenPool[P].Kind = TK_OP) And
+           (TokenPool[P].Val = '=') Then
+        Begin
+          Inc(P);
+          (* Sauter la definition jusqu au ';' *)
+          While (P < TokenCount) And Not
+                ((TokenPool[P].Kind = TK_PUNCT) And (TokenPool[P].Val = ';'))
+          Do
+            Inc(P);
+          If (P < TokenCount) Then Inc(P); (* passer ';' *)
+        End;
+        If Opts.DebugMode Then
+          WriteLn('  REVEAL ', Name, ' (stub)');
+      End;
       Continue;
     End;
 
@@ -6939,6 +7178,9 @@ Begin
     Begin
       SymTab[SI].MangledName := ProcTab[PI].MangledName;
       ProcTab[PI].SymIdx     := SI;
+      (* Marquer comme exportee si INTERFACE ou MODULE EXPORTS - TODO 18 *)
+      If Opts.IsIface Or (ExportsName <> '') Then
+        SymTab[SI].IsExported := True;
     End;
 
     (* ---- Parser la liste de parametres '(' ... ')' ---- *)
@@ -7622,11 +7864,21 @@ Begin
 
   If Opts.Verbose Then
   Begin
+    If ModuleName <> '' Then
+    Begin
+      If Opts.IsIface Then
+        WriteLn('  Interface      : ', ModuleName)
+      Else
+        WriteLn('  Module         : ', ModuleName);
+      If ExportsName <> '' Then
+        WriteLn('  Exports        : ', ExportsName);
+    End;
     WriteLn('  Tokens         : ', TokenCount);
     WriteLn('  Donnees (DATA) : ', DataCount);
     WriteLn('  Types          : ', TypeCount);
     WriteLn('  Symboles       : ', SymCount);
     WriteLn('  Procedures     : ', ProcCount);
+    WriteLn('  Imports        : ', ImportCount);
   End;
 
   (* Phase 3 : emettre le fichier assembleur *)
