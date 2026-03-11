@@ -164,7 +164,14 @@
             Tables virtuelles (vtable) : DW offset par methode virtuelle
             Variables static de classe : dans DATA avec label _CC_V_Classe_Membre
 
-  TODO 10 - VARIABLES ET AFFECTATIONS
+  TODO 10 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+            ExprAddrOf    : adresse MASM d une variable (global ou locale)
+            ExprFlushToAX : mettre une valeur d expression dans AX
+            ExprStore     : stocker AX dans une variable
+            ExprLoad      : charger une variable dans AX
+            ParseDeclStmt : int x; int x=42; const int c=10; static int s;
+            ParseExprStmt : expression-instruction (x=1; x++; f(); etc.)
+            ParseStmt mis a jour : dispatch sur decl / return / expr / {}
             Variables globales : segment DATA, acces par label _CC_V_nom
             Variables locales : pile BP, acces [BP-offset]
             Parametres par valeur : copie sur pile (acces [BP+offset])
@@ -752,6 +759,7 @@ Function  ExprAddrOf(SIdx : Integer) : TString; Forward;
 Procedure ExprFlushToAX(Const E : TExprVal); Forward;
 Procedure ExprStore(SIdx : Integer); Forward;
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal); Forward;
+Function  ParseTypeSpec(Var AIsConst, AIsStatic : Boolean) : Integer; Forward;
 Procedure ParseDeclStmt; Forward;
 Procedure ParseExprStmt; Forward;
 (* TODO 13 - I/O *)
@@ -4165,39 +4173,332 @@ Begin
 End;
 
 (* ============================================================
-  STUBS POUR TODO 10..25
-  (a implementer dans les prochaines etapes)
-  ============================================================ *)
+   TODO 10 - VARIABLES ET AFFECTATIONS [IMPLEMENTE]
+   ExprAddrOf     : adresse MASM (WORD PTR [...]) pour un symbole
+   ExprFlushToAX  : emettre le code pour mettre une expr dans AX
+   ExprStore      : stocker AX dans la variable SymTab[SIdx]
+   ExprLoad       : charger une variable dans AX + remplir TExprVal
+   ParseTypeSpec  : parser un specif. de type C++ et retourner TypeIdx
+   ParseDeclStmt  : int x; int x=42; const int c=10; static int s;
+   ParseExprStmt  : expression-instruction (x=1; x++; f(); etc.)
+   ============================================================ *)
 
+(* ---- ExprAddrOf : adresse MASM d un symbole SymTab[SIdx] ---- *)
+(* Variables globales  : WORD PTR [_CC_V_nom]                      *)
+(* Variables locales   : WORD PTR [BP-N]                           *)
+(* Parametres          : WORD PTR [BP+N]                           *)
+(* Retourne '' si SIdx invalide.                                   *)
 Function ExprAddrOf(SIdx : Integer) : TString;
+Var
+  OfsStr : TString;
 Begin
-  ExprAddrOf := ''; (* stub *)
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    ExprAddrOf := '';
+    Exit;
+  End;
+  (* Variable globale ou constante : scope 0, offset 0 *)
+  If (SymTab[SIdx].ScopeLevel = 0) And (SymTab[SIdx].Offset = 0) Then
+  Begin
+    ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']';
+    Exit;
+  End;
+  (* Variable locale ou parametre : acces via [BP+/-offset] *)
+  If SymTab[SIdx].Offset > 0 Then
+  Begin
+    Str(SymTab[SIdx].Offset, OfsStr);
+    ExprAddrOf := 'WORD PTR [BP+' + OfsStr + ']';
+  End
+  Else If SymTab[SIdx].Offset < 0 Then
+  Begin
+    Str(-SymTab[SIdx].Offset, OfsStr);
+    ExprAddrOf := 'WORD PTR [BP-' + OfsStr + ']';
+  End
+  Else
+  Begin
+    (* Offset=0, scope>0 : acces par label *)
+    ExprAddrOf := 'WORD PTR [' + SymTab[SIdx].MangledName + ']';
+  End;
 End;
 
+(* ---- ExprFlushToAX : emettre le code pour mettre E dans AX -- *)
+(* EK_IMM -> MOV AX, immediate                                   *)
+(* EK_AX  -> deja dans AX (rien a faire)                         *)
+(* EK_MEM -> MOV AX, adresse memoire                             *)
+(* EK_NONE -> XOR AX,AX (void -> 0)                              *)
 Procedure ExprFlushToAX(Const E : TExprVal);
+Var
+  Addr : TString;
 Begin
-  (* stub *)
+  Case E.Kind Of
+    EK_IMM :
+      EmitInstrAB('MOV', 'AX', IntToStr(E.ImmVal));
+    EK_AX :
+      ; (* deja dans AX *)
+    EK_MEM :
+    Begin
+      If E.SymIdx >= 0 Then
+      Begin
+        Addr := ExprAddrOf(E.SymIdx);
+        If Length(Addr) > 0 Then
+          EmitInstrAB('MOV', 'AX', Addr)
+        Else
+          EmitInstrAB('XOR', 'AX', 'AX');
+      End
+      Else
+        EmitInstrAB('XOR', 'AX', 'AX');
+    End;
+    EK_NONE :
+      EmitInstrAB('XOR', 'AX', 'AX');
+  End;
 End;
 
+(* ---- ExprStore : stocker AX dans la variable SymTab[SIdx] ---- *)
+(* Emet MOV adresse, AX                                           *)
 Procedure ExprStore(SIdx : Integer);
+Var
+  Addr : TString;
 Begin
-  (* stub *)
+  If (SIdx < 0) Or (SIdx >= SymCount) Then Exit;
+  Addr := ExprAddrOf(SIdx);
+  If Length(Addr) > 0 Then
+    EmitInstrAB('MOV', Addr, 'AX');
 End;
 
+(* ---- ExprLoad : charger une variable dans AX + remplir Res --- *)
+(* Emet MOV AX, adresse et remplit Res avec Kind=EK_AX.           *)
 Procedure ExprLoad(SIdx : Integer; Var Res : TExprVal);
+Var
+  Addr : TString;
 Begin
-  ExprMakeNone(Res); (* stub *)
+  If (SIdx < 0) Or (SIdx >= SymCount) Then
+  Begin
+    ExprMakeNone(Res);
+    Exit;
+  End;
+  Addr := ExprAddrOf(SIdx);
+  If Length(Addr) > 0 Then
+    EmitInstrAB('MOV', 'AX', Addr)
+  Else
+    EmitInstrAB('XOR', 'AX', 'AX');
+  Res.Kind    := EK_AX;
+  Res.ImmVal  := 0;
+  Res.TypeIdx := SymTab[SIdx].TypeIdx;
+  Res.Offset  := SymTab[SIdx].Offset;
+  Res.SymIdx  := SIdx;
 End;
 
+(* ---- ParseTypeSpec : parser un type C++ et retourner TypeIdx - *)
+(* Gere : const, static, unsigned, signed, types simples,        *)
+(*        pointeurs, references, types composes.                  *)
+(* Met a jour les flags IsConst et IsStatic.                      *)
+(* Le token courant apres appel est le premier token apres type. *)
+Function ParseTypeSpec(Var AIsConst, AIsStatic : Boolean) : Integer;
+Var
+  TIdx : Integer;
+Begin
+  AIsConst  := False;
+  AIsStatic := False;
+  TIdx      := TY_IDX_INT; (* defaut *)
+
+  (* Consommer const / static / extern / register / volatile *)
+  While (CurToken.Kind = TK_KEYWORD) And
+        (IsStorageClass(CurToken.Val) Or IsQualifier(CurToken.Val)) Do
+  Begin
+    If (CurToken.Val = 'const') Or (CurToken.Val = 'constexpr') Then
+      AIsConst := True
+    Else If CurToken.Val = 'static' Then
+      AIsStatic := True;
+    ParserAdvance;
+  End;
+
+  (* Parser le type de base *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If CurToken.Val = 'void' Then TIdx := TY_IDX_VOID
+    Else If CurToken.Val = 'bool' Then TIdx := TY_IDX_BOOL
+    Else If CurToken.Val = 'char' Then TIdx := TY_IDX_CHAR
+    Else If CurToken.Val = 'short' Then TIdx := TY_IDX_SHORT
+    Else If CurToken.Val = 'int' Then TIdx := TY_IDX_INT
+    Else If CurToken.Val = 'long' Then TIdx := TY_IDX_LONG
+    Else If CurToken.Val = 'unsigned' Then TIdx := TY_IDX_UNSIGNED
+    Else If CurToken.Val = 'signed' Then TIdx := TY_IDX_INT
+    Else If CurToken.Val = 'float' Then TIdx := TY_IDX_FLOAT
+    Else If CurToken.Val = 'double' Then TIdx := TY_IDX_DOUBLE
+    Else If CurToken.Val = 'auto' Then TIdx := TY_IDX_INT;
+    ParserAdvance;
+    (* Types composes : unsigned int, long int, short int, etc. *)
+    If (CurToken.Kind = TK_KEYWORD) And
+       ((CurToken.Val = 'int') Or (CurToken.Val = 'char') Or
+        (CurToken.Val = 'long') Or (CurToken.Val = 'short')) Then
+    Begin
+      If CurToken.Val = 'long' Then TIdx := TY_IDX_LONG;
+      ParserAdvance;
+    End;
+  End
+  Else If CurToken.Kind = TK_IDENT Then
+  Begin
+    (* Type utilisateur : struct, class, typedef *)
+    TIdx := TypeLookupName(CurToken.Val);
+    If TIdx = TY_UNKNOWN Then TIdx := TY_IDX_INT;
+    ParserAdvance;
+  End;
+
+  (* Pointeurs : type* *)
+  While (CurToken.Kind = TK_OP) And (CurToken.Val = '*') Do
+  Begin
+    TIdx := TY_IDX_PTR;
+    ParserAdvance;
+  End;
+
+  (* References : type& *)
+  If (CurToken.Kind = TK_OP) And (CurToken.Val = '&') Then
+  Begin
+    TIdx := TY_IDX_REF;
+    ParserAdvance;
+  End;
+
+  (* Qualificateur const apres le type : int const x *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'const') Or (CurToken.Val = 'constexpr')) Then
+  Begin
+    AIsConst := True;
+    ParserAdvance;
+  End;
+
+  ParseTypeSpec := TIdx;
+End;
+
+(* ---- ParseDeclStmt : parser une declaration de variable C++ -- *)
+(* Syntaxe : [const] [static] type ident [= expr] [, ident ...] ; *)
+(* A scope 0 -> variable globale dans DATA.                       *)
+(* A scope > 0 -> variable locale sur la pile [BP-N].             *)
 Procedure ParseDeclStmt;
+Var
+  TypeIdx   : Integer;
+  IsConst   : Boolean;
+  IsStatic  : Boolean;
+  VarName   : TString;
+  SIdx      : Integer;
+  InitExpr  : TExprVal;
+  Ofs       : Integer;
 Begin
-  (* stub *)
+  TypeIdx := ParseTypeSpec(IsConst, IsStatic);
+
+  (* Boucle pour les declarations multiples : int a, b, c; *)
+  Repeat
+    If CurToken.Kind <> TK_IDENT Then
+    Begin
+      (* Possible declaration de type seul ou erreur *)
+      Exit;
+    End;
+    VarName := CurToken.Val;
+    ParserAdvance;
+
+    (* Verifier si c est une declaration de fonction : ident( *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '(') Then
+    Begin
+      (* C est un prototype/definition de fonction -> stub TODO 18 *)
+      ParseFuncDecl;
+      Exit;
+    End;
+
+    (* Declaration de variable *)
+    If CurScope = 0 Then
+    Begin
+      (* Variable globale : dans segment DATA *)
+      If IsConst Then
+      Begin
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(InitExpr);
+          If InitExpr.Kind = EK_IMM Then
+            DataAddConst(VarName, TypeIdx, InitExpr.ImmVal)
+          Else
+          Begin
+            SIdx := DataAddConst(VarName, TypeIdx, 0);
+            If SIdx >= 0 Then
+            Begin
+              ExprFlushToAX(InitExpr);
+              EmitInstrAB('MOV', ExprAddrOf(SIdx), 'AX');
+            End;
+          End;
+        End
+        Else
+          DataAddConst(VarName, TypeIdx, 0);
+      End
+      Else
+      Begin
+        (* Variable globale normale ou statique *)
+        If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+        Begin
+          ParserAdvance;
+          ParseExpr(InitExpr);
+          SIdx := DataAddGlobalVar(VarName, TypeIdx, InitExpr.ImmVal);
+          If (SIdx >= 0) And (InitExpr.Kind <> EK_IMM) Then
+          Begin
+            ExprFlushToAX(InitExpr);
+            EmitInstrAB('MOV', ExprAddrOf(SIdx), 'AX');
+          End;
+        End
+        Else
+          DataAddGlobalVar(VarName, TypeIdx, 0);
+      End;
+    End
+    Else
+    Begin
+      (* Variable locale : allouer sur la pile [BP-N] *)
+      Ofs := SymNextOffset;
+      If IsConst Then
+        SIdx := SymAdd(VarName, SK_CONST, TypeIdx, -Ofs)
+      Else
+        SIdx := SymAdd(VarName, SK_VAR, TypeIdx, -Ofs);
+      If SIdx >= 0 Then
+      Begin
+        SymTab[SIdx].IsConst  := IsConst;
+        SymTab[SIdx].IsStatic := IsStatic;
+      End;
+      (* Initialisation optionnelle *)
+      If (CurToken.Kind = TK_OP) And (CurToken.Val = '=') Then
+      Begin
+        ParserAdvance;
+        ParseExpr(InitExpr);
+        ExprFlushToAX(InitExpr);
+        If SIdx >= 0 Then
+          ExprStore(SIdx);
+      End;
+    End;
+
+    (* Virgule -> declaration suivante *)
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ',') Then
+      ParserAdvance
+    Else
+      Break;
+  Until CurToken.Kind = TK_EOF;
+
+  (* Point-virgule terminal *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
 
+(* ---- ParseExprStmt : parser une expression-instruction -------- *)
+(* Parse une expression complete suivie de ;                       *)
+(* Exemples : x = 42; x++; f(1,2); a += b;                       *)
 Procedure ParseExprStmt;
+Var
+  Res : TExprVal;
 Begin
-  (* stub *)
+  ParseExpr(Res);
+  (* Le point-virgule terminal *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+    ParserAdvance;
 End;
+
+(* ============================================================
+   STUBS POUR TODO 11..25
+   (a implementer dans les prochaines etapes)
+   ============================================================ *)
 
 Procedure ParseCoutStmt;
 Begin
@@ -4277,8 +4578,126 @@ End;
 
 Procedure ParseStmt;
 Begin
-  If CurToken.Kind <> TK_EOF Then
-    ParserAdvance; (* stub : consomme un token *)
+  (* Token vide : rien a faire *)
+  If CurToken.Kind = TK_EOF Then Exit;
+
+  (* Instruction vide : ; *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+  Begin
+    ParserAdvance;
+    Exit;
+  End;
+
+  (* Bloc : { ... } *)
+  If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+  Begin
+    ParserAdvance;
+    SymEnterScope;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+      ParseStmt;
+    SymLeaveScope;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* return [expr] ; *)
+  If (CurToken.Kind = TK_KEYWORD) And (CurToken.Val = 'return') Then
+  Begin
+    ParserAdvance;
+    If Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';')) Then
+    Begin
+      ParseExprStmt;
+      (* AX contient la valeur de retour *)
+    End
+    Else
+      ParserAdvance; (* consomme le ; *)
+    Exit;
+  End;
+
+  (* Mot-cle de controle : if/else/switch/while/do/for/break/continue *)
+  (* Stubs TODO 14-15 : consommer et ignorer pour ne pas bloquer *)
+  If CurToken.Kind = TK_KEYWORD Then
+  Begin
+    If CurToken.Val = 'if' Then Begin ParseIfStmt; Exit; End;
+    If CurToken.Val = 'switch' Then Begin ParseSwitchStmt; Exit; End;
+    If CurToken.Val = 'while' Then Begin ParseWhileStmt; Exit; End;
+    If CurToken.Val = 'do' Then Begin ParseDoWhileStmt; Exit; End;
+    If CurToken.Val = 'for' Then Begin ParseForStmt; Exit; End;
+    If CurToken.Val = 'break' Then Begin ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit; End;
+    If CurToken.Val = 'continue' Then Begin ParserAdvance;
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then ParserAdvance;
+      Exit; End;
+  End;
+
+  (* #include et autres directives preprocesseur deja gerees par ParserAdvance *)
+
+  (* Declaration : mot-cle type ou qualificateur suivi d un ident *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     (IsTypeSpecifier(CurToken.Val) Or IsStorageClass(CurToken.Val) Or
+      IsQualifier(CurToken.Val)) Then
+  Begin
+    ParseDeclStmt;
+    Exit;
+  End;
+
+  (* Mot-cle de portee C++ : class, struct, union, enum, namespace, typedef, using *)
+  If (CurToken.Kind = TK_KEYWORD) And
+     ((CurToken.Val = 'class') Or (CurToken.Val = 'struct') Or
+      (CurToken.Val = 'union') Or (CurToken.Val = 'enum') Or
+      (CurToken.Val = 'namespace') Or (CurToken.Val = 'typedef') Or
+      (CurToken.Val = 'using') Or (CurToken.Val = 'template') Or
+      (CurToken.Val = 'extern') Or (CurToken.Val = 'friend') Or
+      (CurToken.Val = 'inline') Or (CurToken.Val = 'virtual') Or
+      (CurToken.Val = 'explicit') Or (CurToken.Val = 'operator') Or
+      (CurToken.Val = 'try') Or (CurToken.Val = 'catch') Or
+      (CurToken.Val = 'throw') Or (CurToken.Val = 'public') Or
+      (CurToken.Val = 'private') Or (CurToken.Val = 'protected') Or
+      (CurToken.Val = 'case') Or (CurToken.Val = 'default') Or
+      (CurToken.Val = 'goto')) Then
+  Begin
+    (* Stub : consommer jusqu au ; ou { } *)
+    ParserAdvance;
+    While (CurToken.Kind <> TK_EOF) And
+          Not ((CurToken.Kind = TK_PUNCT) And
+               ((CurToken.Val = ';') Or (CurToken.Val = '}'))) Do
+    Begin
+      If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '{') Then
+      Begin
+        ParserAdvance;
+        While (CurToken.Kind <> TK_EOF) And
+              Not ((CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}')) Do
+          ParseStmt;
+        If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = '}') Then
+          ParserAdvance;
+        Exit;
+      End;
+      ParserAdvance;
+    End;
+    If (CurToken.Kind = TK_PUNCT) And (CurToken.Val = ';') Then
+      ParserAdvance;
+    Exit;
+  End;
+
+  (* cout << ... *)
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'cout') Then
+  Begin
+    ParseCoutStmt;
+    Exit;
+  End;
+
+  (* cin >> ... *)
+  If (CurToken.Kind = TK_IDENT) And (CurToken.Val = 'cin') Then
+  Begin
+    ParseCinStmt;
+    Exit;
+  End;
+
+  (* Expression-instruction par defaut *)
+  ParseExprStmt;
 End;
 
 (* ---- TypeInit : initialiser la table des types C++ ---------- *)
