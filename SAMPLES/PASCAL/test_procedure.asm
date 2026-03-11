@@ -62,6 +62,10 @@ _TPV_X  DD 0
 _TPF_SAYHELLO:
         PUSH EBP
         MOV EBP,ESP
+        LEA EAX,[_TPK_1]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
 _TPL_1:
         MOV ESP,EBP
         POP EBP
@@ -82,6 +86,20 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        MOV EAX,42
+        MOV DWORD PTR [_TPV_X],EAX
+        LEA EAX,[_TPK_2]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_X]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,8
+        CALL _TPF_SAYHELLO
+        LEA EAX,[_TPK_3]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+_TPL_2:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

@@ -61,6 +61,10 @@ _TPK_3  DB 'After procedure call',0
 _TPF_SHOWMESSAGE:
         PUSH EBP
         MOV EBP,ESP
+        LEA EAX,[_TPK_1]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
 _TPL_1:
         MOV ESP,EBP
         POP EBP
@@ -81,6 +85,16 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        LEA EAX,[_TPK_2]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        CALL _TPF_SHOWMESSAGE
+        LEA EAX,[_TPK_3]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+_TPL_2:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

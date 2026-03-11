@@ -62,6 +62,17 @@ _TPF_CALCULATEFIBONACCI:
         MOV EBP,ESP
         SUB ESP,4
         MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL _TPF_CALCULATEFIBONACCI
+        ADD ESP,4
+        MOV DWORD PTR [EBP-4],EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL _TPF_CALCULATEFIBONACCI
+        ADD ESP,4
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP
@@ -72,6 +83,14 @@ _TPL_1:
 _TPF_DISPLAYRESULT:
         PUSH EBP
         MOV EBP,ESP
+        LEA EAX,[_TPK_1]
+        PUSH EAX
+        CALL _TPF_WRITE
+        ADD ESP,4
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
 _TPL_2:
         MOV ESP,EBP
         POP EBP
@@ -92,6 +111,18 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        LEA EAX,[_TPK_2]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,5
+        PUSH EAX
+        CALL _TPF_CALCULATEFIBONACCI
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_DISPLAYRESULT
+        ADD ESP,4
+_TPL_3:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

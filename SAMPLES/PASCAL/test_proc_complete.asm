@@ -60,6 +60,8 @@ _TPV_COUNTER  DD 0
 _TPF_INCREMENTCOUNTER:
         PUSH EBP
         MOV EBP,ESP
+        MOV EAX,DWORD PTR [_TPV_COUNTER]
+        MOV DWORD PTR [_TPV_COUNTER],EAX
 _TPL_1:
         MOV ESP,EBP
         POP EBP
@@ -69,6 +71,12 @@ _TPL_1:
 _TPF_SHOWCOUNTER:
         PUSH EBP
         MOV EBP,ESP
+        LEA EAX,[_TPK_1]
+        PUSH EAX
+        MOV EAX,DWORD PTR [_TPV_COUNTER]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,8
 _TPL_2:
         MOV ESP,EBP
         POP EBP
@@ -89,6 +97,14 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        MOV EAX,0
+        MOV DWORD PTR [_TPV_COUNTER],EAX
+        CALL _TPF_SHOWCOUNTER
+        CALL _TPF_INCREMENTCOUNTER
+        CALL _TPF_SHOWCOUNTER
+        CALL _TPF_INCREMENTCOUNTER
+        CALL _TPF_SHOWCOUNTER
+_TPL_3:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

@@ -79,6 +79,44 @@ _TPF_CONVERT_TO_JASMIN:
         MOV EBP,ESP
         SUB ESP,260
         MOV DWORD PTR [EBP-4],0
+        MOV EAX,DWORD PTR [EBP+8]
+        MOV DWORD PTR [EBP-260],EAX
+        LEA EAX,[_TPK_1]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        LEA EAX,[_TPK_2]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP+8]
+        PUSH EAX
+        CALL _TPF_LENGTH
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,16
+        LEA EAX,[_TPK_3]
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-260]
+        PUSH EAX
+        CALL _TPF_POS
+        ADD ESP,8
+        LEA EAX,[_TPK_4]
+        MOV DWORD PTR [EBP-260],EAX
+        MOV EAX,DWORD PTR [EBP-260]
+        PUSH EAX
+        MOV EAX,7
+        PUSH EAX
+        MOV EAX,DWORD PTR [EBP-260]
+        PUSH EAX
+        CALL _TPF_LENGTH
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_COPY
+        ADD ESP,12
+        LEA EAX,[_TPK_5]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP
@@ -100,6 +138,28 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        LEA EAX,[_TPK_17]
+        PUSH EAX
+        CALL _TPF_CONVERT_TO_JASMIN
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        LEA EAX,[_TPK_18]
+        PUSH EAX
+        CALL _TPF_CONVERT_TO_JASMIN
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        LEA EAX,[_TPK_19]
+        PUSH EAX
+        CALL _TPF_CONVERT_TO_JASMIN
+        ADD ESP,4
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+_TPL_2:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

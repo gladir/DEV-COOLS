@@ -80,6 +80,79 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        LEA EAX,[_TPK_1]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,15
+        MOV DWORD PTR [_TPV_NUM1],EAX
+        MOV EAX,7
+        MOV DWORD PTR [_TPV_NUM2],EAX
+        LEA EAX,[_TPK_2]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_NUM1]
+        MOV DWORD PTR [_TPV_RESULT],EAX
+        LEA EAX,[_TPK_3]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_RESULT]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_NUM1]
+        MOV DWORD PTR [_TPV_RESULT],EAX
+        LEA EAX,[_TPK_4]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_RESULT]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_NUM1]
+        MOV DWORD PTR [_TPV_RESULT],EAX
+        LEA EAX,[_TPK_5]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_RESULT]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,12
+        MOV DWORD PTR [_TPV_RESULT],EAX
+        LEA EAX,[_TPK_6]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_RESULT]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,12
+        MOV DWORD PTR [_TPV_RESULT],EAX
+        LEA EAX,[_TPK_7]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_RESULT]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,12
+        MOV DWORD PTR [_TPV_RESULT],EAX
+        LEA EAX,[_TPK_8]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+        MOV EAX,DWORD PTR [_TPV_RESULT]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+_TPL_1:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

@@ -71,6 +71,13 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        LEA EAX,[_TPK_1]
+        MOV DWORD PTR [_TPV_MSG],EAX
+        MOV EAX,DWORD PTR [_TPV_MSG]
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+_TPL_1:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP

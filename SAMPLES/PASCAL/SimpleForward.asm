@@ -60,6 +60,8 @@ _TPF_TEST:
         MOV EBP,ESP
         SUB ESP,4
         MOV DWORD PTR [EBP-4],0
+        MOV EAX,42
+        MOV DWORD PTR [EBP-4],EAX
 _TPL_1:
         MOV EAX,DWORD PTR [EBP-4]
         MOV ESP,EBP
@@ -81,6 +83,11 @@ _TPF_Main:
 ; Obtenir le tas du processus
         CALL GetProcessHeap
         MOV [HHEAP],EAX
+        CALL _TPF_TEST
+        PUSH EAX
+        CALL _TPF_WRITELN
+        ADD ESP,4
+_TPL_2:
         PUSH 0
         CALL ExitProcess
         MOV ESP,EBP
