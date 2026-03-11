@@ -55,6 +55,11 @@ _TPK_3  DB 'Lettre: ',0
 _TPK_4  DB 'Flag: ',0
 _TPK_5  DB 'Octet: ',0
 _TPK_6  DB 'Test des variables termine',0
+_TPV_NOMBRE  DD 0
+_TPV_LETTRE  DB 0
+_TPV_MOT  DB 256 DUP(0)
+_TPV_FLAG  DB 0
+_TPV_OCTET  DB 0
 
 ; --- Segment de code ---
 .CODE

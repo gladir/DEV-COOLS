@@ -52,6 +52,7 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB '=== Test simple REPEAT UNTIL ===',0
 _TPK_2  DB 'Compteur: ',0
 _TPK_3  DB 'Boucle termin',195,169,'e',0
+_TPV_COMPTEUR  DD 0
 
 ; --- Segment de code ---
 .CODE

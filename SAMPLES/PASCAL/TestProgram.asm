@@ -51,6 +51,7 @@ STRTMP    DB 256 DUP(0)
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Result: ',0
 _TPK_2  DB 'Global value: ',0
+_TPV_RESULT  DD 0
 
 ; --- Segment de code ---
 .CODE

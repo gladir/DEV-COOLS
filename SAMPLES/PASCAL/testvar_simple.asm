@@ -52,6 +52,10 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB 'A',0
 _TPK_2  DB 'Resultat:',0
 _TPK_3  DB 'Lettre:',0
+_TPV_X  DD 0
+_TPV_Y  DD 0
+_TPV_Z  DD 0
+_TPV_LETTRE  DB 0
 
 ; --- Segment de code ---
 .CODE

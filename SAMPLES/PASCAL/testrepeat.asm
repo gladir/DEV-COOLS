@@ -56,6 +56,8 @@ _TPK_4  DB 'Fin du comptage',0
 _TPK_5  DB 'D',195,169,'compte de 10 ',195,160,' 0:',0
 _TPK_6  DB 'Valeur: ',0
 _TPK_7  DB 'Tous les tests termin',195,169,'s !',0
+_TPV_COMPTEUR  DD 0
+_TPV_NOMBRE  DD 0
 
 ; --- Segment de code ---
 .CODE

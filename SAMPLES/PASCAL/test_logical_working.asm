@@ -57,6 +57,9 @@ _TPK_5  DB 'XOR result:',0
 _TPK_6  DB '12 AND 10:',0
 _TPK_7  DB '12 OR 10:',0
 _TPK_8  DB '12 XOR 10:',0
+_TPV_NUM1  DD 0
+_TPV_NUM2  DD 0
+_TPV_RESULT  DD 0
 
 ; --- Segment de code ---
 .CODE

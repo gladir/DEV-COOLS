@@ -49,6 +49,11 @@ CRLF      DB 13,10,0
 STRTMP    DB 256 DUP(0)
 
 ; --- Constantes et donnees utilisateur ---
+_TPV_SYMBOL_TABLE  DB 4 DUP(0)
+_TPV_COUNTS  DB 256 DUP(0)
+_TPV_NAMES  DB 2560 DUP(0)
+_TPV_FIXED  DB 20 DUP(0)
+_TPV_COUNT  DD 0
 
 ; --- Segment de code ---
 .CODE

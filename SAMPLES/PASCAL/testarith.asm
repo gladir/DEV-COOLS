@@ -53,6 +53,8 @@ _TPK_1  DB '=== Test des op',195,169,'rations arithm',195,169,'tiques ===',0
 _TPK_2  DB '1 + 5 = ',0
 _TPK_3  DB '6 - 3 = ',0
 _TPK_4  DB 'Fin des tests arithm',195,169,'tiques',0
+_TPV_COMPTEUR  DD 0
+_TPV_RESULTAT  DD 0
 
 ; --- Segment de code ---
 .CODE

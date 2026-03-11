@@ -191,12 +191,15 @@
             EmitProlog / EmitEpilog : PUSH EBP / MOV EBP,ESP ...
             Generation conditionnelle selon -asm (fichier .ASM)
 
-  TODO 08 - SEGMENT DE DONNEES ET STATIQUES
+  TODO 08 - SEGMENT DE DONNEES ET STATIQUES       [IMPLEMENTE]
             TDataRec : LblName, Kind (DK_DWORD/DK_BYTE/DK_STR/
               DK_ARRAY/DK_RECORD/DK_ZERO), IntVal, StrVal,
               ElemCount
             DataTab[0..MAX_DATA-1], DataCount
             DataAdd, DataAddStr, DataAddRecord
+            DataAddGlobalVar, DataAddTypedConst, DataAddStaticVar
+            ParseDataDecls : scanner TokenPool pour sections VAR
+              et CONST globales
             Variables globales : entrees DD/DB dans .DATA
             Constantes typees : CONST x: Integer = 42 -> DD 42
             Chaines litterales : DB 'Hello',0 avec label _TPK_N
@@ -4254,6 +4257,623 @@ Begin
   EmitInstr('RET');
 End;
 
+{ ============================================================ }
+{ TODO 08 - SEGMENT DE DONNEES ET STATIQUES    [IMPLEMENTE]    }
+{ ============================================================ }
+
+{ ------------------------------------------------------------ }
+{ StaticVarSeq : compteur pour generer des labels statiques    }
+{ uniques de la forme _TPST_1, _TPST_2, ...                   }
+{ ------------------------------------------------------------ }
+
+Var
+  StaticVarSeq : Integer;
+
+{ ------------------------------------------------------------ }
+{ DataAddGlobalVar : creer une entree dans le DataTab pour une }
+{ variable globale Pascal avec label _TPV_nom                  }
+{ TypeName est le nom du type (INTEGER, CHAR, etc.)            }
+{ Retourne l index dans DataTab ou -1                          }
+{ ------------------------------------------------------------ }
+
+Function DataAddGlobalVar(Const Name : TString;
+                          Const TypeName : TString;
+                          InitVal : LongInt) : Integer;
+Var
+  Lbl : TString;
+  Up  : TString;
+  Sz  : Integer;
+Begin
+  Lbl := TP_VAR_PFX + StrUpperCase(Name);
+  Up  := StrUpperCase(TypeName);
+  Sz  := TPTypeSizeof(Up);
+  If Sz < 0 Then Sz := 4; { defaut : 32 bits }
+
+  { Chaine (STRING) : DB 256 DUP(0) }
+  If Up = 'STRING' Then
+  Begin
+    DataAddGlobalVar := DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1);
+    Exit;
+  End;
+
+  { Type 1 octet : CHAR, BOOLEAN, BYTE, SHORTINT }
+  If Sz = 1 Then
+  Begin
+    DataAddGlobalVar := DataAddByte(Lbl, InitVal);
+    Exit;
+  End;
+
+  { Type 2 octets : WORD (en 16-bit, mais Win32 = 4 en general) }
+  { Type 4 octets : INTEGER, LONGINT, POINTER, PCHAR, TEXT }
+  { Type 8 octets : DOUBLE, COMP }
+  { Type 10 octets : EXTENDED }
+  If Sz <= 4 Then
+    DataAddGlobalVar := DataAddDWord(Lbl, InitVal)
+  Else
+    DataAddGlobalVar := DataAddRes(Lbl, Sz);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddTypedConst : creer une entree dans le DataTab pour    }
+{ une constante typee (CONST x: Integer = 42)                 }
+{ avec label _TPV_nom et valeur initiale                      }
+{ Retourne l index dans DataTab ou -1                          }
+{ ------------------------------------------------------------ }
+
+Function DataAddTypedConst(Const Name : TString;
+                           Const TypeName : TString;
+                           InitVal : LongInt;
+                           Const InitStr : TString) : Integer;
+Var
+  Lbl : TString;
+  Up  : TString;
+  Sz  : Integer;
+Begin
+  Lbl := TP_VAR_PFX + StrUpperCase(Name);
+  Up  := StrUpperCase(TypeName);
+  Sz  := TPTypeSizeof(Up);
+  If Sz < 0 Then Sz := 4;
+
+  { Chaine (STRING) : DB 'contenu',0 }
+  If (Up = 'STRING') Or (Up = 'PCHAR') Then
+  Begin
+    If InitStr <> '' Then
+      DataAddTypedConst := DataAdd(Lbl, DK_STR, 0, InitStr, 0, 0)
+    Else
+      DataAddTypedConst := DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1);
+    Exit;
+  End;
+
+  { Type 1 octet : CHAR, BOOLEAN, BYTE, SHORTINT }
+  If Sz = 1 Then
+  Begin
+    DataAddTypedConst := DataAddByte(Lbl, InitVal);
+    Exit;
+  End;
+
+  { Type 4 octets et plus }
+  If Sz <= 4 Then
+    DataAddTypedConst := DataAddDWord(Lbl, InitVal)
+  Else
+    DataAddTypedConst := DataAddRes(Lbl, Sz);
+End;
+
+{ ------------------------------------------------------------ }
+{ DataAddStaticVar : creer une variable statique avec un label }
+{ unique _TPST_N (pour variables locales statiques)            }
+{ Retourne le label genere                                     }
+{ ------------------------------------------------------------ }
+
+Function DataAddStaticVar(Const TypeName : TString;
+                          InitVal : LongInt) : TString;
+Var
+  Lbl : TString;
+  Up  : TString;
+  Sz  : Integer;
+Begin
+  Inc(StaticVarSeq);
+  Lbl := TP_STA_PFX + IntToStr_(StaticVarSeq);
+  Up  := StrUpperCase(TypeName);
+  Sz  := TPTypeSizeof(Up);
+  If Sz < 0 Then Sz := 4;
+
+  If Up = 'STRING' Then
+    DataAdd(Lbl, DK_ARRAY, 0, '', 256, 1)
+  Else If Sz = 1 Then
+    DataAddByte(Lbl, InitVal)
+  Else If Sz <= 4 Then
+    DataAddDWord(Lbl, InitVal)
+  Else
+    DataAddRes(Lbl, Sz);
+
+  DataAddStaticVar := Lbl;
+End;
+
+{ ------------------------------------------------------------ }
+{ ParseDataDecls : scanner le TokenPool pour trouver les       }
+{ sections VAR et CONST au niveau global (scope 0).            }
+{ Cree les entrees DataTab et enregistre les symboles.         }
+{ Appele avant EmitDataSeg.                                    }
+{ ------------------------------------------------------------ }
+
+Procedure ParseDataDecls;
+Var
+  I       : Integer;
+  Depth   : Integer;  { profondeur BEGIN/END }
+  Names   : Array[0..63] Of TString;
+  NCount  : Integer;
+  TName   : TString;
+  TIdx    : Integer;
+  DIdx    : Integer;
+  SIdx    : Integer;
+  J       : Integer;
+  InitVal : LongInt;
+  InitStr : TString;
+  VName   : TString;
+  Up      : TString;
+  ArrLo   : LongInt;
+  ArrHi   : LongInt;
+  ArrElem : LongInt;
+  ElemType: TString;
+  ElemSz  : Integer;
+Begin
+  I := 0;
+  Depth := 0;
+
+  While I < TokenCount Do
+  Begin
+    { Suivre la profondeur BEGIN/END pour rester au niveau global }
+    If (TokenPool[I].Kind = TK_KEYWORD) Then
+    Begin
+      Up := StrUpperCase(TokenPool[I].Val);
+
+      { Incrémenter depth sur BEGIN, RECORD, CASE, REPEAT }
+      If (Up = 'BEGIN') Or (Up = 'RECORD') Or (Up = 'REPEAT') Then
+      Begin
+        Inc(Depth);
+        Inc(I);
+        Continue;
+      End;
+
+      { Décrémenter depth sur END }
+      If Up = 'END' Then
+      Begin
+        If Depth > 0 Then
+          Dec(Depth);
+        Inc(I);
+        Continue;
+      End;
+
+      { UNTIL ne change pas le depth mais c'est la fin d'un REPEAT }
+      If Up = 'UNTIL' Then
+      Begin
+        If Depth > 0 Then
+          Dec(Depth);
+        Inc(I);
+        Continue;
+      End;
+
+      { Si on est dans un bloc imbrique, avancer sans traiter }
+      If Depth > 0 Then
+      Begin
+        Inc(I);
+        Continue;
+      End;
+
+      { ====== Traitement au niveau global (Depth = 0) ====== }
+
+      { --- Section VAR --- }
+      If Up = 'VAR' Then
+      Begin
+        Inc(I); { sauter 'VAR' }
+
+        { Parser les declarations de variables }
+        { Format: name1, name2 : TypeName; name3 : TypeName; ... }
+        While I < TokenCount Do
+        Begin
+          { Si on rencontre un mot-cle de section ou BEGIN, sortir }
+          If (TokenPool[I].Kind = TK_KEYWORD) Then
+          Begin
+            Up := StrUpperCase(TokenPool[I].Val);
+            If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+               (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+               (Up = 'BEGIN') Or (Up = 'LABEL') Or
+               (Up = 'USES') Or (Up = 'PROGRAM') Then
+              Break;
+          End;
+
+          { Collecter les noms de variables (separes par des virgules) }
+          NCount := 0;
+          While (I < TokenCount) And
+                (TokenPool[I].Kind = TK_IDENT) Do
+          Begin
+            If NCount < 64 Then
+            Begin
+              Names[NCount] := StrUpperCase(TokenPool[I].Val);
+              Inc(NCount);
+            End;
+            Inc(I);
+            { Si virgule, continuer a collecter }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = ',') Then
+              Inc(I)  { sauter la virgule }
+            Else
+              Break;
+          End;
+
+          { Si aucun nom collecte, avancer et essayer encore }
+          If NCount = 0 Then
+          Begin
+            Inc(I);
+            Continue;
+          End;
+
+          { Attendre ':' }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+             (TokenPool[I].Val = ':') Then
+            Inc(I) { sauter ':' }
+          Else
+          Begin
+            { Pas de ':' -> erreur de syntaxe, avancer au ';' }
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { Lire le type }
+          TName := '';
+          TIdx  := -1;
+
+          { Verifier si c'est ARRAY[lo..hi] OF TypeElem }
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+             (StrUpperCase(TokenPool[I].Val) = 'ARRAY') Then
+          Begin
+            Inc(I); { sauter 'ARRAY' }
+            ArrLo := 0;
+            ArrHi := 0;
+            ElemType := 'INTEGER';
+
+            { Attendre '[' }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+               (TokenPool[I].Val = '[') Then
+            Begin
+              Inc(I); { sauter '[' }
+              { Lire borne basse }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                ArrLo := TokenPool[I].IntVal;
+                Inc(I);
+              End;
+              { Attendre '..' }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = '..') Then
+                Inc(I);
+              { Lire borne haute }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                ArrHi := TokenPool[I].IntVal;
+                Inc(I);
+              End;
+              { Attendre ']' }
+              If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+                 (TokenPool[I].Val = ']') Then
+                Inc(I);
+            End;
+            { Attendre 'OF' }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_KEYWORD) And
+               (StrUpperCase(TokenPool[I].Val) = 'OF') Then
+              Inc(I);
+            { Lire le type d element }
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              ElemType := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+            End;
+
+            ArrElem := ArrHi - ArrLo + 1;
+            If ArrElem < 1 Then ArrElem := 1;
+            ElemSz := TPTypeSizeof(ElemType);
+            If ElemSz < 0 Then ElemSz := 4;
+
+            { Creer une entree tableau pour chaque variable }
+            For J := 0 To NCount - 1 Do
+            Begin
+              DIdx := DataAddArray(TP_VAR_PFX + Names[J],
+                                    ArrElem, ElemSz);
+              SIdx := SymAdd(Names[J], SK_VAR, -1);
+              If SIdx >= 0 Then
+              Begin
+                SymTab[SIdx].IsGlobal := True;
+                SymTab[SIdx].Offset   := DIdx;
+              End;
+            End;
+
+            { Avancer au ';' }
+            While (I < TokenCount) And
+                  Not ((TokenPool[I].Kind = TK_PUNCT) And
+                       (TokenPool[I].Val = ';')) Do
+              Inc(I);
+            If I < TokenCount Then Inc(I);
+            Continue;
+          End;
+
+          { Type simple : lire un identifiant ou mot-cle }
+          If (I < TokenCount) And
+             ((TokenPool[I].Kind = TK_IDENT) Or
+              (TokenPool[I].Kind = TK_KEYWORD)) Then
+          Begin
+            TName := StrUpperCase(TokenPool[I].Val);
+            Inc(I);
+          End;
+
+          { Verifier type pointeur ^Type }
+          If (I < TokenCount) And (TName = '') And
+             (TokenPool[I].Kind = TK_OP) And
+             (TokenPool[I].Val = '^') Then
+          Begin
+            Inc(I); { sauter '^' }
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              TName := '^' + StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+            End
+            Else
+              TName := 'POINTER';
+          End;
+
+          If TName = '' Then TName := 'INTEGER';
+
+          { Trouver le type dans TypeTab }
+          TIdx := TypeFindByName(TName);
+
+          { Creer les entrees DataTab et SymTab pour chaque variable }
+          For J := 0 To NCount - 1 Do
+          Begin
+            DIdx := DataAddGlobalVar(Names[J], TName, 0);
+            SIdx := SymAdd(Names[J], SK_VAR, TIdx);
+            If SIdx >= 0 Then
+            Begin
+              SymTab[SIdx].IsGlobal := True;
+              SymTab[SIdx].Offset   := DIdx;
+            End;
+          End;
+
+          { Avancer au ';' }
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ';')) Do
+            Inc(I);
+          If I < TokenCount Then Inc(I);
+        End; { while parsing VAR block }
+        Continue;
+      End; { VAR }
+
+      { --- Section CONST --- }
+      If Up = 'CONST' Then
+      Begin
+        Inc(I); { sauter 'CONST' }
+
+        { Parser les declarations de constantes }
+        While I < TokenCount Do
+        Begin
+          { Si on rencontre un mot-cle de section, sortir }
+          If (TokenPool[I].Kind = TK_KEYWORD) Then
+          Begin
+            Up := StrUpperCase(TokenPool[I].Val);
+            If (Up = 'VAR') Or (Up = 'CONST') Or (Up = 'TYPE') Or
+               (Up = 'PROCEDURE') Or (Up = 'FUNCTION') Or
+               (Up = 'BEGIN') Or (Up = 'LABEL') Or
+               (Up = 'USES') Or (Up = 'PROGRAM') Then
+              Break;
+          End;
+
+          { Lire le nom de la constante }
+          If (TokenPool[I].Kind <> TK_IDENT) Then
+          Begin
+            Inc(I);
+            Continue;
+          End;
+          VName := StrUpperCase(TokenPool[I].Val);
+          Inc(I);
+
+          { Determiner si c est une constante typee (nom : Type = val) }
+          { ou non-typee (nom = val) }
+          TName := '';
+          InitVal := 0;
+          InitStr := '';
+
+          If (I < TokenCount) And (TokenPool[I].Kind = TK_PUNCT) And
+             (TokenPool[I].Val = ':') Then
+          Begin
+            { Constante typee : nom : Type = val }
+            Inc(I); { sauter ':' }
+
+            { Lire le type }
+            If (I < TokenCount) And
+               ((TokenPool[I].Kind = TK_IDENT) Or
+                (TokenPool[I].Kind = TK_KEYWORD)) Then
+            Begin
+              TName := StrUpperCase(TokenPool[I].Val);
+              Inc(I);
+            End;
+
+            { Attendre '=' }
+            If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+               (TokenPool[I].Val = '=') Then
+              Inc(I);
+
+            { Lire la valeur }
+            If (I < TokenCount) Then
+            Begin
+              If (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                InitVal := TokenPool[I].IntVal;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_CHAR) Then
+              Begin
+                InitVal := TokenPool[I].IntVal;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_STRING) Then
+              Begin
+                InitStr := TokenPool[I].Val;
+                { Si le type est CHAR et la valeur est un seul caractere }
+                If (TName = 'CHAR') And (Length(InitStr) = 1) Then
+                Begin
+                  InitVal := Ord(InitStr[1]);
+                  InitStr := '';
+                End;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_KEYWORD) Then
+              Begin
+                Up := StrUpperCase(TokenPool[I].Val);
+                If Up = 'TRUE' Then
+                  InitVal := 1
+                Else If Up = 'FALSE' Then
+                  InitVal := 0
+                Else If Up = 'NIL' Then
+                  InitVal := 0;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_IDENT) Then
+              Begin
+                { Peut etre une constante nommee deja definie }
+                SIdx := SymFind(TokenPool[I].Val);
+                If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_CONST) Then
+                  InitVal := SymTab[SIdx].ImmVal;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_OP) And
+                      (TokenPool[I].Val = '-') Then
+              Begin
+                { Valeur negative }
+                Inc(I);
+                If (I < TokenCount) And
+                   (TokenPool[I].Kind = TK_INTEGER) Then
+                Begin
+                  InitVal := -TokenPool[I].IntVal;
+                  Inc(I);
+                End;
+              End;
+            End;
+
+            TIdx := TypeFindByName(TName);
+
+            { Creer l entree DataTab }
+            If InitStr <> '' Then
+              DIdx := DataAddTypedConst(VName, TName, InitVal, InitStr)
+            Else
+              DIdx := DataAddTypedConst(VName, TName, InitVal, '');
+
+            { Enregistrer dans SymTab comme SK_CONST }
+            SIdx := SymAdd(VName, SK_CONST, TIdx);
+            If SIdx >= 0 Then
+            Begin
+              SymTab[SIdx].IsGlobal := True;
+              SymTab[SIdx].ImmVal   := InitVal;
+              SymTab[SIdx].Offset   := DIdx;
+            End;
+          End
+          Else If (I < TokenCount) And (TokenPool[I].Kind = TK_OP) And
+                  (TokenPool[I].Val = '=') Then
+          Begin
+            { Constante non-typee : nom = val }
+            Inc(I); { sauter '=' }
+            InitVal := 0;
+            InitStr := '';
+
+            If (I < TokenCount) Then
+            Begin
+              If (TokenPool[I].Kind = TK_INTEGER) Then
+              Begin
+                InitVal := TokenPool[I].IntVal;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_CHAR) Then
+              Begin
+                InitVal := TokenPool[I].IntVal;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_STRING) Then
+              Begin
+                InitStr := TokenPool[I].Val;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_KEYWORD) Then
+              Begin
+                Up := StrUpperCase(TokenPool[I].Val);
+                If Up = 'TRUE' Then
+                  InitVal := 1
+                Else If Up = 'FALSE' Then
+                  InitVal := 0
+                Else If Up = 'NIL' Then
+                  InitVal := 0
+                Else If Up = 'MAXINT' Then
+                  InitVal := 2147483647;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_IDENT) Then
+              Begin
+                { Peut etre une constante nommee }
+                SIdx := SymFind(TokenPool[I].Val);
+                If (SIdx >= 0) And (SymTab[SIdx].Kind = SK_CONST) Then
+                  InitVal := SymTab[SIdx].ImmVal;
+                Inc(I);
+              End
+              Else If (TokenPool[I].Kind = TK_OP) And
+                      (TokenPool[I].Val = '-') Then
+              Begin
+                Inc(I);
+                If (I < TokenCount) And
+                   (TokenPool[I].Kind = TK_INTEGER) Then
+                Begin
+                  InitVal := -TokenPool[I].IntVal;
+                  Inc(I);
+                End;
+              End
+              Else If (TokenPool[I].Kind = TK_REAL) Then
+              Begin
+                { Constante reelle : stocker la partie entiere }
+                InitVal := Trunc(TokenPool[I].RealVal);
+                Inc(I);
+              End;
+            End;
+
+            { Constante non-typee : juste registrer dans SymTab }
+            SIdx := SymAdd(VName, SK_CONST, -1);
+            If SIdx >= 0 Then
+            Begin
+              SymTab[SIdx].IsGlobal := True;
+              SymTab[SIdx].ImmVal   := InitVal;
+            End;
+          End;
+
+          { Avancer au ';' }
+          While (I < TokenCount) And
+                Not ((TokenPool[I].Kind = TK_PUNCT) And
+                     (TokenPool[I].Val = ';')) Do
+            Inc(I);
+          If I < TokenCount Then Inc(I);
+        End; { while parsing CONST block }
+        Continue;
+      End; { CONST }
+
+    End; { if keyword }
+
+    { Avancer au token suivant }
+    Inc(I);
+  End; { while I < TokenCount }
+End;
+
 { ------------------------------------------------------------ }
 { Run                                                          }
 { ------------------------------------------------------------ }
@@ -4304,6 +4924,14 @@ Begin
   HasProgram := False;
   DataEmittedCount := 0;
   EmitLabelSeq := 0;
+  StaticVarSeq := 0;
+
+  { Analyser les declarations globales VAR et CONST (TODO 08) }
+  ParseDataDecls;
+
+  If Opts.Verbose Then
+    WriteLn('  Apres ParseDataDecls: Donnees=', DataCount,
+            '  Symboles=', SymCount);
 
   { Generation du fichier .ASM si demande (TODO 07) }
   If Opts.AsmOutput Then
@@ -4313,7 +4941,7 @@ Begin
     EmitDataSeg;
     EmitCodeSeg;
 
-    { TODO 08..25 : compilation complete }
+    { TODO 09..25 : compilation complete }
 
     EmitClose;
     If Opts.Verbose Then

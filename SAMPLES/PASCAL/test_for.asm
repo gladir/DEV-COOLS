@@ -52,6 +52,7 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB 'Test boucle FOR TO:',0
 _TPK_2  DB 'Test boucle FOR DOWNTO:',0
 _TPK_3  DB 'Fin du programme',0
+_TPV_I  DD 0
 
 ; --- Segment de code ---
 .CODE

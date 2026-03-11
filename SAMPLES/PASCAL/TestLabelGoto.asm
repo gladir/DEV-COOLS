@@ -54,6 +54,7 @@ _TPK_2  DB 'Counter: ',0
 _TPK_3  DB 'Fin normale',0
 _TPK_4  DB 'Erreur: compteur trop ',195,169,'lev',195,169,0
 _TPK_5  DB 'Programme termin',195,169,0
+_TPV_COUNTER  DD 0
 
 ; --- Segment de code ---
 .CODE

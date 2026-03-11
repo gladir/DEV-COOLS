@@ -50,6 +50,7 @@ STRTMP    DB 256 DUP(0)
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Programme sans PROGRAM, x = ',0
+_TPV_X  DD 0
 
 ; --- Segment de code ---
 .CODE

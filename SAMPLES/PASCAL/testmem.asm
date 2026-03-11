@@ -51,6 +51,14 @@ STRTMP    DB 256 DUP(0)
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Test allocation dynamique',0
 _TPK_2  DB 'Variables cr',195,169,195,169,'es avec succ',195,168,'s',0
+_TPV_A  DD 0
+_TPV_B  DD 0
+_TPV_C  DD 0
+_TPV_D  DD 0
+_TPV_E  DD 0
+_TPV_NOM1  DB 256 DUP(0)
+_TPV_NOM2  DB 256 DUP(0)
+_TPV_NOM3  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

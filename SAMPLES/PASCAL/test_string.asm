@@ -57,6 +57,9 @@ _TPK_5  DB 'msg2 = ',0
 _TPK_6  DB ' ',0
 _TPK_7  DB 'Concat',195,169,'nation: ',0
 _TPK_8  DB 'Cha',195,174,'ne litt',195,169,'rale: ',39,'Bonjour Pascal!',39,0
+_TPV_MSG1  DB 256 DUP(0)
+_TPV_MSG2  DB 256 DUP(0)
+_TPV_RESULT  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

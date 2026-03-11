@@ -52,6 +52,9 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB 'AND result: ',0
 _TPK_2  DB 'OR result: ',0
 _TPK_3  DB 'XOR result: ',0
+_TPV_VAL1  DD 0
+_TPV_VAL2  DD 0
+_TPV_RES  DD 0
 
 ; --- Segment de code ---
 .CODE

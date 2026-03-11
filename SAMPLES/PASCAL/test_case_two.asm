@@ -51,6 +51,7 @@ STRTMP    DB 256 DUP(0)
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Un',0
 _TPK_2  DB 'Deux',0
+_TPV_N  DD 0
 
 ; --- Segment de code ---
 .CODE

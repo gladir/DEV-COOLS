@@ -56,6 +56,7 @@ _TPK_4  DB 'Deuxi',195,168,'me cas',0
 _TPK_5  DB 'Troisi',195,168,'me cas',0
 _TPK_6  DB 'Cas par d',195,169,'faut',0
 _TPK_7  DB 'Fin du test CASE',0
+_TPV_CHOICE  DD 0
 
 ; --- Segment de code ---
 .CODE

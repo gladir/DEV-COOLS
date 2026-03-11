@@ -53,6 +53,8 @@ _TPK_1  DB 'Programme de test complet',0
 _TPK_2  DB 'Support de PROGRAM avec param',195,168,'tres',0
 _TPK_3  DB 'Support de USES',0
 _TPK_4  DB 'Nombre: ',0
+_TPV_MESSAGE  DB 256 DUP(0)
+_TPV_COUNT  DD 0
 
 ; --- Segment de code ---
 .CODE

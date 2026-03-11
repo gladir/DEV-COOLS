@@ -50,6 +50,7 @@ STRTMP    DB 256 DUP(0)
 
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Hello',0
+_TPV_MSG  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

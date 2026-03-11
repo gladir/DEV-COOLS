@@ -57,6 +57,9 @@ _TPK_5  DB 'Somme finale: ',0
 _TPK_6  DB '=== Test 3: Condition complexe ===',0
 _TPK_7  DB 'Decompte: ',0
 _TPK_8  DB 'Fini! i = ',0
+_TPV_I  DD 0
+_TPV_SOMME  DD 0
+_TPV_LIMITE  DD 0
 
 ; --- Segment de code ---
 .CODE

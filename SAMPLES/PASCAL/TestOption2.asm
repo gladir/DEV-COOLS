@@ -52,6 +52,7 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB 'Test option /2 - Uses Crt,DOS',0
 _TPK_2  DB 'Programme compil',195,169,' avec support partiel des unit',195,169,'s',0
 _TPK_3  DB 'Appuyez sur une touche...',0
+_TPV_CH  DB 0
 
 ; --- Segment de code ---
 .CODE

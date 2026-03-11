@@ -1,5 +1,5 @@
 ; TPCW32 - Compilateur Turbo Pascal -> ASM 80386 Win32
-; Genere automatiquement a partir de : SAMPLES/PASCAL/test_function.pas
+; Genere automatiquement a partir de : SAMPLES/PASCAL/test_data.pas
 
 .386
 .MODEL FLAT, STDCALL
@@ -49,12 +49,29 @@ CRLF      DB 13,10,0
 STRTMP    DB 256 DUP(0)
 
 ; --- Constantes et donnees utilisateur ---
-_TPK_1  DB 'Square de ',0
-_TPK_2  DB ' = ',0
-_TPK_3  DB 'Add5 de ',0
-_TPV_RESULT  DD 0
+_TPK_1  DB 'My Application',0
+_TPK_2  DB '-',0
+_TPK_3  DB 'Hello World',0
+_TPK_4  DB 'Test des donnees termine',0
+_TPV_MAXITEMS  DD 100
+_TPV_MINITEMS  DD 0
+_TPV_APPVERSION  DB 3
+_TPV_DEBUGFLAG  DB 1
+_TPV_APPNAME  DB 'My Application',0
+_TPV_SEPARATOR  DB 45
+_TPV_COUNTER  DD 0
+_TPV_TOTAL  DD 0
+_TPV_NAME  DB 256 DUP(0)
+_TPV_INITIAL  DB 0
+_TPV_FLAG  DB 0
+_TPV_VALUE  DB 0
+_TPV_ITEMS  DB 40 DUP(0)
+_TPV_MSG  DB 256 DUP(0)
 _TPV_A  DD 0
 _TPV_B  DD 0
+_TPV_C  DD 0
+_TPV_X  DB 0
+_TPV_Y  DB 0
 
 ; --- Segment de code ---
 .CODE

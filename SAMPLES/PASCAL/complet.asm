@@ -51,6 +51,9 @@ STRTMP    DB 256 DUP(0)
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Programme de test',0
 _TPK_2  DB 'Fin du test',0
+_TPV_X  DD 0
+_TPV_Y  DD 0
+_TPV_MESSAGE  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

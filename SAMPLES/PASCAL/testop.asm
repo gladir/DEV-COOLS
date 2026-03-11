@@ -61,6 +61,8 @@ _TPK_9  DB 'a >= 10 : FAUX',0
 _TPK_10  DB 'b <= 10 : VRAI',0
 _TPK_11  DB 'b <= 10 : FAUX',0
 _TPK_12  DB 'Tous les tests termin',195,169,'s !',0
+_TPV_A  DD 0
+_TPV_B  DD 0
 
 ; --- Segment de code ---
 .CODE

@@ -52,6 +52,7 @@ STRTMP    DB 256 DUP(0)
 _TPK_1  DB 'Hello from procedure!',0
 _TPK_2  DB 'x = ',0
 _TPK_3  DB 'Done!',0
+_TPV_X  DD 0
 
 ; --- Segment de code ---
 .CODE

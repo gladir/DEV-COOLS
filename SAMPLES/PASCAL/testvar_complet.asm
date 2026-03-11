@@ -56,6 +56,12 @@ _TPK_4  DB 'y = ',0
 _TPK_5  DB 'z = x + y = ',0
 _TPK_6  DB 'Message: ',0
 _TPK_7  DB 'Actif: ',0
+_TPV_X  DD 0
+_TPV_Y  DD 0
+_TPV_Z  DD 0
+_TPV_A  DB 0
+_TPV_B  DB 0
+_TPV_ACTIF  DB 0
 
 ; --- Segment de code ---
 .CODE

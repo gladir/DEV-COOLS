@@ -51,6 +51,8 @@ STRTMP    DB 256 DUP(0)
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Test du support des cha',195,174,'nes',0
 _TPK_2  DB 'Cha',195,174,'ne litt',195,169,'rale: Hello Pascal',0
+_TPV_S1  DB 256 DUP(0)
+_TPV_S2  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

@@ -55,6 +55,7 @@ _TPK_3  DB 'WHILE termine, i = 10',0
 _TPK_4  DB '=== Test REPEAT ===',0
 _TPK_5  DB 'Ceci s affiche au moins une fois',0
 _TPK_6  DB 'REPEAT termine',0
+_TPV_I  DD 0
 
 ; --- Segment de code ---
 .CODE

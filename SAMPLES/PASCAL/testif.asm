@@ -58,6 +58,8 @@ _TPK_6  DB 'Et sup',195,169,'rieur ',195,160,' 5',0
 _TPK_7  DB 'Et inf',195,169,'rieur ou ',195,169,'gal ',195,160,' 5',0
 _TPK_8  DB 'Nombre sup',195,169,'rieur ou ',195,169,'gal ',195,160,' 20',0
 _TPK_9  DB 'Fin des tests',0
+_TPV_NOMBRE  DD 0
+_TPV_AGE  DD 0
 
 ; --- Segment de code ---
 .CODE

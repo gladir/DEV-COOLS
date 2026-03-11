@@ -57,6 +57,8 @@ _TPK_5  DB 'REPEAT (condition test',195,169,'e APR',195,136,'S):',0
 _TPK_6  DB 'Cette ligne sera affich',195,169,'e une fois',0
 _TPK_7  DB 'REPEAT termin',195,169,' (une it',195,169,'ration)',0
 _TPK_8  DB 'Fin de la d',195,169,'monstration',0
+_TPV_I  DD 0
+_TPV_J  DD 0
 
 ; --- Segment de code ---
 .CODE

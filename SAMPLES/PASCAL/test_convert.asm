@@ -68,6 +68,7 @@ _TPK_16  DB ']',0
 _TPK_17  DB 'ldd  # 5',0
 _TPK_18  DB 'std   x',0
 _TPK_19  DB 'ldd   x',0
+_TPV_RESULT  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

@@ -53,6 +53,10 @@ _TPK_1  DB 'A',0
 _TPK_2  DB 'x:',0
 _TPK_3  DB 'y:',0
 _TPK_4  DB 'z:',0
+_TPV_X  DD 0
+_TPV_Y  DD 0
+_TPV_Z  DD 0
+_TPV_LETTRE  DB 0
 
 ; --- Segment de code ---
 .CODE

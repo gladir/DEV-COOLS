@@ -55,6 +55,8 @@ _TPK_3  DB 'Max value is: ',0
 _TPK_4  DB 'Min value is: ',0
 _TPK_5  DB 'Version: ',0
 _TPK_6  DB 'Debug mode is enabled',0
+_TPV_COUNTER  DD 0
+_TPV_NAME  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

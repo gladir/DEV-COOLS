@@ -53,6 +53,9 @@ _TPK_1  DB 'a AND b = ',0
 _TPK_2  DB 'a OR b = ',0
 _TPK_3  DB 'a XOR b = ',0
 _TPK_4  DB 'Test termine',0
+_TPV_A  DD 0
+_TPV_B  DD 0
+_TPV_RESULT  DD 0
 
 ; --- Segment de code ---
 .CODE

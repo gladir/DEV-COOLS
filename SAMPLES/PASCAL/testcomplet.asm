@@ -54,6 +54,9 @@ _TPK_2  DB '=== Test du Compilateur PC8086 ===',0
 _TPK_3  DB 'Nombre: ',0
 _TPK_4  DB 'Lettre: ',0
 _TPK_5  DB 'Compilation r',195,169,'ussie !',0
+_TPV_NOMBRE  DD 0
+_TPV_LETTRE  DB 0
+_TPV_NOM  DB 256 DUP(0)
 
 ; --- Segment de code ---
 .CODE

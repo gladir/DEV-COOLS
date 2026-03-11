@@ -53,6 +53,7 @@ _TPK_1  DB 'Un',0
 _TPK_2  DB 'Deux',0
 _TPK_3  DB 'Trois',0
 _TPK_4  DB 'Autre',0
+_TPV_N  DD 0
 
 ; --- Segment de code ---
 .CODE

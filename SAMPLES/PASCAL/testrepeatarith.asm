@@ -53,6 +53,7 @@ _TPK_1  DB '=== Test REPEAT UNTIL avec arithm',195,169,'tique ===',0
 _TPK_2  DB 'Comptage de 0 ',195,160,' 4:',0
 _TPK_3  DB 'Compteur: ',0
 _TPK_4  DB 'Boucle termin',195,169,'e !',0
+_TPV_COMPTEUR  DD 0
 
 ; --- Segment de code ---
 .CODE

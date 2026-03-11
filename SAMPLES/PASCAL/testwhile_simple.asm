@@ -53,6 +53,8 @@ _TPK_1  DB 'Test WHILE avec operations arithmetiques',0
 _TPK_2  DB 'i = ',0
 _TPK_3  DB 'somme = ',0
 _TPK_4  DB 'Resultat final: ',0
+_TPV_I  DD 0
+_TPV_SOMME  DD 0
 
 ; --- Segment de code ---
 .CODE

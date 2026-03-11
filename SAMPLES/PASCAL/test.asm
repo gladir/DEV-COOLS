@@ -49,6 +49,9 @@ CRLF      DB 13,10,0
 STRTMP    DB 256 DUP(0)
 
 ; --- Constantes et donnees utilisateur ---
+_TPV_X  DD 0
+_TPV_Y  DD 0
+_TPV_RESULT  DD 0
 
 ; --- Segment de code ---
 .CODE

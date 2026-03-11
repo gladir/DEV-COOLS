@@ -51,6 +51,7 @@ STRTMP    DB 256 DUP(0)
 ; --- Constantes et donnees utilisateur ---
 _TPK_1  DB 'Sup',195,169,'rieur ',195,160,' 10',0
 _TPK_2  DB 'Inf',195,169,'rieur ou ',195,169,'gal ',195,160,' 10',0
+_TPV_NOMBRE  DD 0
 
 ; --- Segment de code ---
 .CODE
