@@ -101,7 +101,7 @@
              BRANDED "tag" REF T : type reference unique (distinction nominale)
              ROOT : type objet racine de la hierarchie
 
-   TODO 07 - EMETTEUR DE CODE ASM
+   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
              TEmitter : OutF (Text), OutFOpen, EmitOpen, EmitClose
              EmitRaw, EmitLabel, EmitInstr (formatage 8 espaces)
              EmitComment, EmitBlankLine
@@ -3098,6 +3098,253 @@ Begin
     TypeResolve := TY_UNKNOWN;
 End;
 
+(* ============================================================
+   TODO 07 - EMETTEUR DE CODE ASM [IMPLEMENTE]
+   ============================================================ *)
+
+(* ---- EmitRaw : ecrire une ligne brute dans le fichier ASM --- *)
+
+Procedure EmitRaw(Const S : TString);
+Begin
+  If OutFOpen Then
+    WriteLn(OutF, S);
+End;
+
+(* ---- EmitBlankLine : ligne vide dans la sortie ASM ---------- *)
+
+Procedure EmitBlankLine;
+Begin
+  If OutFOpen Then
+    WriteLn(OutF);
+End;
+
+(* ---- EmitComment : ecrire un commentaire ASM ('; texte') ----- *)
+
+Procedure EmitComment(Const S : TString);
+Begin
+  EmitRaw('; ' + S);
+End;
+
+(* ---- EmitLabel : ecrire un label ASM ('LBL:') --------------- *)
+
+Procedure EmitLabel(Const Lbl : TString);
+Begin
+  EmitRaw(Lbl + ':');
+End;
+
+(* ---- EmitInstr : emettre une instruction sans operande ------- *)
+
+Procedure EmitInstr(Const Mnem : TString);
+Begin
+  EmitRaw('        ' + Mnem);
+End;
+
+(* ---- EmitInstrA : emettre une instruction avec 1 operande ---- *)
+
+Procedure EmitInstrA(Const Mnem, A1 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '   ' + A1);
+End;
+
+(* ---- EmitInstrAB : emettre une instruction avec 2 operandes -- *)
+
+Procedure EmitInstrAB(Const Mnem, A1, A2 : TString);
+Begin
+  EmitRaw('        ' + Mnem + '   ' + A1 + ', ' + A2);
+End;
+
+(* ---- EmitOpen : ouvrir le fichier de sortie ASM ------------- *)
+
+Procedure EmitOpen;
+Begin
+  {$I-}
+  Assign(OutF, Opts.OutFile);
+  Rewrite(OutF);
+  {$I+}
+  If IOResult <> 0 Then
+    FatalError('impossible de creer ' + Opts.OutFile);
+  OutFOpen := True;
+End;
+
+(* ---- EmitHeader : en-tete du fichier ASM -------------------- *)
+(* Genere .MODEL SMALL, .STACK, _TEXT SEGMENT, point d entree    *)
+(* principal avec initialisation de DS.                          *)
+
+Procedure EmitHeader;
+Begin
+  EmitComment('=========================================================');
+  EmitComment('Genere par MODIII86 v' + MODIII86_VERSION +
+              ' (' + MODIII86_DATE + ')');
+  EmitComment('Source  : ' + Opts.SrcFile);
+  EmitComment('Cible   : MASM 8086, modele SMALL');
+  EmitComment('=========================================================');
+  EmitBlankLine;
+  EmitRaw('        .MODEL SMALL');
+  EmitRaw('        .STACK ' + IntToStr(STACK_SIZE));
+  EmitBlankLine;
+  EmitComment('--- Segment de code ---');
+  EmitRaw('_TEXT   SEGMENT WORD PUBLIC ''CODE''');
+  EmitRaw('        ASSUME  CS:_TEXT, DS:_DATA');
+  EmitBlankLine;
+  EmitComment('--- Point d''entree principal ---');
+  EmitLabel(M3_PROC_PFX + 'Main');
+  EmitInstrAB('MOV', 'AX', '_DATA');
+  EmitInstrAB('MOV', 'DS', 'AX');
+  EmitBlankLine;
+End;
+
+(* ---- EmitProlog : prologue de procedure/fonction ------------ *)
+(* Cree le cadre de pile : PUSH BP / MOV BP,SP / SUB SP,n        *)
+(* Sauvegarde SI et DI.                                          *)
+
+Procedure EmitProlog(FrameSize : Integer);
+Begin
+  EmitInstrA('PUSH', 'BP');
+  EmitInstrAB('MOV', 'BP', 'SP');
+  If FrameSize > 0 Then
+    EmitInstrAB('SUB', 'SP', IntToStr(FrameSize));
+  EmitInstrA('PUSH', 'SI');
+  EmitInstrA('PUSH', 'DI');
+End;
+
+(* ---- EmitEpilog : epilogue de procedure/fonction ------------ *)
+(* Restaure DI/SI, detruit le cadre de pile, retour.             *)
+
+Procedure EmitEpilog(ParamBytes : Integer);
+Begin
+  EmitInstrA('POP', 'DI');
+  EmitInstrA('POP', 'SI');
+  EmitInstrAB('MOV', 'SP', 'BP');
+  EmitInstrA('POP', 'BP');
+  If ParamBytes > 0 Then
+    EmitInstrA('RET', IntToStr(ParamBytes))
+  Else
+    EmitInstr('RET');
+End;
+
+(* ---- EmitDataSeg : emettre le segment de donnees ------------ *)
+(* Genere _DATA SEGMENT avec les buffers internes, les donnees   *)
+(* du programme (chaines, variables globales, records, arrays)    *)
+(* et ferme avec _DATA ENDS.                                     *)
+
+Procedure EmitDataSeg;
+Var
+  I, J : Integer;
+  S, Tmp : TString;
+  Ch   : Char;
+  InQ  : Boolean;
+  Need : Boolean;
+  Sz   : Integer;
+Begin
+  EmitBlankLine;
+  EmitRaw('_DATA   SEGMENT WORD PUBLIC ''DATA''');
+  EmitBlankLine;
+  EmitComment('--- Buffers internes Modula-3 ---');
+  EmitRaw(M3_RT_PFX + 'CRLF    DB  13,10,0');
+  EmitRaw(M3_RT_PFX + 'STRBUF  DB  512 DUP(0)');
+  EmitRaw(M3_RT_PFX + 'NUMBUF  DB  12 DUP(0)');
+  EmitRaw(M3_RT_PFX + 'TRUE_S  DB  ''TRUE'',0');
+  EmitRaw(M3_RT_PFX + 'FALSE_S DB  ''FALSE'',0');
+  EmitRaw(M3_RT_PFX + 'HEAP    DB  4096 DUP(0)');
+  EmitRaw(M3_RT_PFX + 'HEAPTOP DW  OFFSET ' + M3_RT_PFX + 'HEAP');
+  EmitBlankLine;
+
+  (* Donnees du programme depuis DataTab *)
+  If DataCount > 0 Then
+    EmitComment('--- Donnees du programme ---');
+  For I := 0 To DataCount - 1 Do
+  Begin
+    Case DataTab[I].Kind Of
+      DK_WORD :
+        EmitRaw(DataTab[I].LblName + '  DW  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_BYTE :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].IntVal));
+      DK_STR :
+      Begin
+        (* Emettre la chaine avec gestion des caracteres speciaux *)
+        S := DataTab[I].LblName + '  DB  ';
+        InQ  := False;
+        Need := False;
+        For J := 1 To Length(DataTab[I].StrVal) Do
+        Begin
+          Ch := DataTab[I].StrVal[J];
+          If (Ord(Ch) >= 32) And (Ord(Ch) <= 126) And (Ch <> '''') Then
+          Begin
+            If Not InQ Then
+            Begin
+              If Need Then S := S + ',';
+              S := S + '''';
+              InQ := True;
+              Need := False;
+            End;
+            S := S + Ch;
+          End
+          Else
+          Begin
+            If InQ Then
+            Begin
+              S := S + '''';
+              InQ := False;
+            End;
+            If Need Then S := S + ',';
+            Str(Ord(Ch), Tmp);
+            S := S + Tmp;
+            Need := True;
+          End;
+        End;
+        If InQ Then S := S + '''';
+        If Need Or InQ Then S := S + ',';
+        S := S + '0';
+        EmitRaw(S);
+      End;
+      DK_ARRAY :
+      Begin
+        Sz := DataTab[I].ElemSize;
+        If Sz <= 1 Then
+          EmitRaw(DataTab[I].LblName + '  DB  ' +
+                  IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+        Else If Sz = 2 Then
+          EmitRaw(DataTab[I].LblName + '  DW  ' +
+                  IntToStr(DataTab[I].ElemCount) + ' DUP(0)')
+        Else
+          EmitRaw(DataTab[I].LblName + '  DB  ' +
+                  IntToStr(DataTab[I].ElemCount * Sz) + ' DUP(0)');
+      End;
+      DK_REC :
+        EmitRaw(DataTab[I].LblName + '  DB  ' +
+                IntToStr(DataTab[I].RecSize) + ' DUP(0)');
+    End;
+  End;
+  EmitBlankLine;
+  EmitRaw('_DATA   ENDS');
+End;
+
+(* ---- EmitClose : terminer et fermer le fichier ASM ---------- *)
+(* Emet la sortie DOS (INT 21h/4Ch), ferme _TEXT SEGMENT,        *)
+(* genere le segment de donnees, et ecrit END _M3P_Main.         *)
+
+Procedure EmitClose;
+Begin
+  EmitBlankLine;
+  EmitComment('--- Sortie programme (DOS INT 21h) ---');
+  EmitInstrAB('MOV', 'AH', '4Ch');
+  EmitInstrAB('MOV', 'AL', '0');
+  EmitInstr('INT    21h');
+  EmitBlankLine;
+  EmitRaw('_TEXT   ENDS');
+  (* Segment de donnees *)
+  EmitDataSeg;
+  EmitBlankLine;
+  EmitRaw('        END ' + M3_PROC_PFX + 'Main');
+  If OutFOpen Then
+  Begin
+    Close(OutF);
+    OutFOpen := False;
+  End;
+End;
+
 (* ---- Statistiques ----------------------------------------- *)
 
 Procedure ShowStats;
@@ -3155,7 +3402,12 @@ Begin
     WriteLn('  Symboles       : ', SymCount);
   End;
 
-  (* TODO 06+ : ParseCompilationUnit, EmitRuntime, etc. *)
+  (* TODO 07+ : ParseCompilationUnit, EmitRuntime, etc. *)
+
+  (* Phase 3 : emettre le fichier assembleur *)
+  EmitOpen;
+  EmitHeader;
+  EmitClose;
 
   If Opts.Verbose Then ShowStats;
   Cleanup;
