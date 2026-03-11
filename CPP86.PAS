@@ -5617,7 +5617,7 @@ Begin
   End;
 
   (* Mot-cle de controle : if/else/switch/while/do/for/break/continue *)
-  (* Stubs TODO 14-15 : consommer et ignorer pour ne pas bloquer *)
+  (* TODO 14-15 : instructions de controle et boucles *)
   If CurToken.Kind = TK_KEYWORD Then
   Begin
     If CurToken.Val = 'if' Then Begin ParseIfStmt; Exit; End;
