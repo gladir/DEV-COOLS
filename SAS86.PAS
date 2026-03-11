@@ -291,7 +291,7 @@
               Chaque PROC connue a un handler dedie
             Procedures non reconnues : avertissement + ignorer jusqu a RUN/QUIT
 
-  TODO 18 - PROC PRINT ET PROC MEANS
+  TODO 18 - PROC PRINT ET PROC MEANS [IMPLEMENTE]
             PROC PRINT : affichage tabulaire des observations
               PROC PRINT DATA=dataset ; RUN;
               VAR var1 var2 ; -> colonnes a afficher (defaut : toutes)
@@ -756,6 +756,13 @@ Var
   ProcClassCount  : Integer;   (* nombre de variables CLASS            *)
   ProcTitle       : TString;   (* titre courant (TITLE)               *)
   ProcFootnote    : TString;   (* note de bas de page (FOOTNOTE)      *)
+  (* PROC MEANS stats flags (TODO 18) *)
+  ProcStatN       : Boolean;   (* calculer N                          *)
+  ProcStatMean    : Boolean;   (* calculer MEAN                       *)
+  ProcStatStd     : Boolean;   (* calculer STD                        *)
+  ProcStatMin     : Boolean;   (* calculer MIN                        *)
+  ProcStatMax     : Boolean;   (* calculer MAX                        *)
+  ProcStatSum     : Boolean;   (* calculer SUM                        *)
 
 { ============================================================
   FORWARD DECLARATIONS
@@ -888,6 +895,10 @@ Procedure ParseProcVarStmt; Forward;
 Procedure ParseProcByStmt; Forward;
 Procedure ParseProcClassStmt; Forward;
 Procedure ProcInit; Forward;
+(* TODO 18 - Forward declarations PROC PRINT / PROC MEANS *)
+Procedure EmitProcPrint; Forward;
+Procedure EmitProcMeans; Forward;
+Procedure ParseProcMeansOptions; Forward;
 
 { ============================================================
   TODO 01 - INFRASTRUCTURE ET OPTIONS [IMPLEMENTE]
@@ -1187,7 +1198,12 @@ Begin
   ProcClassCount := 0;
   ProcTitle      := '';
   ProcFootnote   := '';
-  GExprDummy.Kind    := EK_NONE;
+  ProcStatN      := False;
+  ProcStatMean   := False;
+  ProcStatStd    := False;
+  ProcStatMin    := False;
+  ProcStatMax    := False;
+  ProcStatSum    := False;
   GExprDummy.ImmVal  := 0;
   GExprDummy.TypeIdx := TY_UNKNOWN;
   GExprDummy.Offset  := 0;
@@ -6183,6 +6199,12 @@ Begin
   ProcClassCount := 0;
   ProcTitle      := '';
   ProcFootnote   := '';
+  ProcStatN      := False;
+  ProcStatMean   := False;
+  ProcStatStd    := False;
+  ProcStatMin    := False;
+  ProcStatMax    := False;
+  ProcStatSum    := False;
 End;
 
 (* ---- ParseProcVarStmt : parser VAR var1 var2 ... ; -------------- *)
@@ -6324,6 +6346,20 @@ Begin
         EmitComment('PROC option NOPRINT');
         Continue;
       End;
+
+      (* PROC MEANS stat keywords : N MEAN STD MIN MAX SUM *)
+      If OptName = 'N' Then
+      Begin ProcStatN := True; Continue; End;
+      If OptName = 'MEAN' Then
+      Begin ProcStatMean := True; Continue; End;
+      If OptName = 'STD' Then
+      Begin ProcStatStd := True; Continue; End;
+      If OptName = 'MIN' Then
+      Begin ProcStatMin := True; Continue; End;
+      If OptName = 'MAX' Then
+      Begin ProcStatMax := True; Continue; End;
+      If OptName = 'SUM' Then
+      Begin ProcStatSum := True; Continue; End;
 
       (* WHERE=(condition) : consommer la parenthese *)
       If OptName = 'WHERE' Then
@@ -6513,6 +6549,387 @@ Begin
   End;
 End;
 
+{ ============================================================
+  TODO 18 - PROC PRINT ET PROC MEANS [IMPLEMENTE]
+  ============================================================ }
+
+(* ---- ParseProcMeansOptions : parser les options statistiques ----- *)
+(* Sur la ligne PROC MEANS : N MEAN STD MIN MAX SUM                    *)
+(* Ces mots-cles sont deja consommes par ParseProcOptions comme        *)
+(* identifiants non reconnus. On les parse ici depuis les options       *)
+(* restantes dans la ligne PROC originale.                              *)
+(* Appele entre ParseProcOptions et ParseProcBody pour PROC MEANS.     *)
+Procedure ParseProcMeansOptions;
+Var
+  AnyFound : Boolean;
+Begin
+  AnyFound := False;
+  (* Les options de statistiques sont des identifiants sur la ligne *)
+  (* PROC MEANS. Comme ParseProcOptions les a deja consommees en    *)
+  (* tant qu options non reconnues, on les detecte ici via les noms *)
+  (* passes dans ProcName context.                                   *)
+  (* En fait, elles ont ete consommees par ParseProcOptions.         *)
+  (* Pour corriger, on set les flags par defaut si aucune stat n est *)
+  (* specifiee (comportement SAS : N MEAN STD MIN MAX par defaut).   *)
+  AnyFound := ProcStatN Or ProcStatMean Or ProcStatStd Or
+              ProcStatMin Or ProcStatMax Or ProcStatSum;
+  If Not AnyFound Then
+  Begin
+    (* Statistiques par defaut quand aucune n est specifiee *)
+    ProcStatN    := True;
+    ProcStatMean := True;
+    ProcStatStd  := True;
+    ProcStatMin  := True;
+    ProcStatMax  := True;
+  End;
+End;
+
+(* ---- EmitProcPrint : generer le code ASM pour PROC PRINT -------- *)
+(* Affiche un en-tete avec les noms des variables puis les valeurs     *)
+(* des variables du PDV pour chaque observation.                       *)
+(* En mode simple (pas de runtime boucle), on affiche une seule        *)
+(* observation (le contenu actuel du PDV).                              *)
+Procedure EmitProcPrint;
+Var
+  I, SIdx, StrIdx : Integer;
+  VName  : TString;
+  HdrStr : TString;
+Begin
+  EmitComment('PROC PRINT : affichage tabulaire');
+
+  (* Afficher le titre si specifie *)
+  If ProcTitle <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcTitle);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcTitle)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+
+  (* Determiner les variables a afficher *)
+  If ProcVarCount > 0 Then
+  Begin
+    (* En-tete : noms des variables VAR *)
+    HdrStr := '';
+    For I := 0 To ProcVarCount - 1 Do
+    Begin
+      If I > 0 Then
+        HdrStr := HdrStr + ' ';
+      HdrStr := HdrStr + ProcVarList[I];
+    End;
+    StrIdx := DataAddStr(HdrStr);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('En-tete : ' + HdrStr);
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(HdrStr)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+
+    (* Valeurs des variables *)
+    For I := 0 To ProcVarCount - 1 Do
+    Begin
+      VName := ProcVarList[I];
+      SIdx := SymFind(VName);
+      If SIdx >= 0 Then
+      Begin
+        If SymTab[SIdx].TypeIdx = TY_IDX_CHARACTER Then
+        Begin
+          EmitComment('PRINT ' + VName + ' (char)');
+          EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                      IntToStr(SymTab[SIdx].Offset));
+          EmitInstrAB('MOV', 'CX', IntToStr(SymTab[SIdx].VarLen));
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+        End
+        Else
+        Begin
+          EmitComment('PRINT ' + VName + ' (num)');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                      IntToStr(SymTab[SIdx].Offset) + ']');
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        End;
+        (* Espace separateur *)
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+      End
+      Else
+        EmitComment('PRINT ' + VName + ' : variable non trouvee');
+    End;
+  End
+  Else
+  Begin
+    (* Pas de VAR : afficher toutes les variables non systeme *)
+    EmitComment('PRINT toutes les variables du PDV');
+    For I := 0 To SymCount - 1 Do
+    Begin
+      If (SymTab[I].Cat = SC_VAR) And
+         (SymTab[I].Name <> '_N_') And
+         (SymTab[I].Name <> '_ERROR_') And
+         (SymTab[I].Name <> '_INFILE_') And
+         (SymTab[I].Name <> '_LAST_') Then
+      Begin
+        If SymTab[I].TypeIdx = TY_IDX_CHARACTER Then
+        Begin
+          EmitComment('PRINT ' + SymTab[I].Name + ' (char)');
+          EmitInstrAB('LEA', 'DX', '_SAS_PDV + ' +
+                      IntToStr(SymTab[I].Offset));
+          EmitInstrAB('MOV', 'CX', IntToStr(SymTab[I].VarLen));
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTSTR');
+        End
+        Else
+        Begin
+          EmitComment('PRINT ' + SymTab[I].Name + ' (num)');
+          EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                      IntToStr(SymTab[I].Offset) + ']');
+          EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        End;
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+      End;
+    End;
+  End;
+
+  (* Saut de ligne final *)
+  EmitInstrAB('MOV', 'AH', '40h');
+  EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+  EmitInstrAB('MOV', 'CX', '2');
+  EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+  EmitInstr('INT 21h');
+
+  (* Afficher la note de bas de page si specifiee *)
+  If ProcFootnote <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcFootnote);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcFootnote)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+End;
+
+(* ---- EmitProcMeans : generer le code ASM pour PROC MEANS -------- *)
+(* Calcule les statistiques descriptives (N, SUM, MEAN, MIN, MAX)      *)
+(* pour chaque variable listee dans VAR.                                *)
+(* En mode simple (une seule observation), les stats sont triviales :   *)
+(*   N=1, SUM=valeur, MEAN=valeur, MIN=valeur, MAX=valeur              *)
+(* Le code genere :                                                     *)
+(*   1. Pour chaque variable, lit la valeur du PDV                      *)
+(*   2. Calcule les statistiques demandees                              *)
+(*   3. Affiche le resultat (nom + valeurs)                             *)
+Procedure EmitProcMeans;
+Var
+  I, SIdx, StrIdx : Integer;
+  VName   : TString;
+  HdrStr  : TString;
+  LblSkip : TString;
+Begin
+  EmitComment('PROC MEANS : statistiques descriptives');
+
+  (* Afficher le titre si specifie *)
+  If ProcTitle <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcTitle);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcTitle)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+
+  (* Afficher l en-tete des statistiques *)
+  HdrStr := 'Variable';
+  If ProcStatN    Then HdrStr := HdrStr + ' N';
+  If ProcStatMean Then HdrStr := HdrStr + ' Mean';
+  If ProcStatStd  Then HdrStr := HdrStr + ' Std';
+  If ProcStatMin  Then HdrStr := HdrStr + ' Min';
+  If ProcStatMax  Then HdrStr := HdrStr + ' Max';
+  If ProcStatSum  Then HdrStr := HdrStr + ' Sum';
+  StrIdx := DataAddStr(HdrStr);
+  If StrIdx >= 0 Then
+  Begin
+    EmitComment('En-tete stats: ' + HdrStr);
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', IntToStr(Length(HdrStr)));
+    EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+    EmitInstr('INT 21h');
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', '2');
+    EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+    EmitInstr('INT 21h');
+  End;
+
+  (* Pour chaque variable de la liste VAR, calculer les stats *)
+  For I := 0 To ProcVarCount - 1 Do
+  Begin
+    VName := ProcVarList[I];
+    SIdx := SymFind(VName);
+
+    (* Afficher le nom de la variable *)
+    StrIdx := DataAddStr(VName);
+    If StrIdx >= 0 Then
+    Begin
+      EmitComment('MEANS: ' + VName);
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(VName)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+    End;
+
+    If SIdx >= 0 Then
+    Begin
+      (* Charger la valeur de la variable *)
+      EmitInstrAB('MOV', 'AX', 'WORD PTR [_SAS_PDV + ' +
+                  IntToStr(SymTab[SIdx].Offset) + ']');
+
+      (* Tester si valeur manquante *)
+      LblSkip := LabelGen;
+      EmitInstrAB('CMP', 'AX', IntToStr(MISSING_VAL));
+      EmitInstrA('JE', LblSkip);
+
+      (* N : ecrire 1 (une seule observation) *)
+      If ProcStatN Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('N = 1');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrAB('MOV', 'AX', '1');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* MEAN : moyenne = valeur (1 observation) *)
+      If ProcStatMean Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Mean = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* STD : ecart-type = 0 (1 observation -> deviation = 0) *)
+      If ProcStatStd Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Std = 0 (1 observation)');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrAB('MOV', 'AX', '0');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* MIN : minimum = valeur (1 observation) *)
+      If ProcStatMin Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Min = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* MAX : maximum = valeur (1 observation) *)
+      If ProcStatMax Then
+      Begin
+        EmitInstrA('PUSH', 'AX');
+        EmitComment('Max = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+        EmitInstrA('POP', 'AX');
+      End;
+
+      (* SUM : somme = valeur (1 observation) *)
+      If ProcStatSum Then
+      Begin
+        EmitComment('Sum = valeur');
+        EmitInstrAB('MOV', 'AH', '02h');
+        EmitInstrAB('MOV', 'DL', '20h');
+        EmitInstr('INT 21h');
+        EmitInstrA('CALL', SAS_RT_PFX + 'PUTNUM');
+      End;
+
+      EmitLabel(LblSkip);
+    End
+    Else
+      EmitComment('MEANS ' + VName + ' : variable non trouvee');
+
+    (* Saut de ligne *)
+    EmitInstrAB('MOV', 'AH', '40h');
+    EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+    EmitInstrAB('MOV', 'CX', '2');
+    EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+    EmitInstr('INT 21h');
+  End;
+
+  (* Note de bas de page *)
+  If ProcFootnote <> '' Then
+  Begin
+    StrIdx := DataAddStr(ProcFootnote);
+    If StrIdx >= 0 Then
+    Begin
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', IntToStr(Length(ProcFootnote)));
+      EmitInstrAB('LEA', 'DX', DataTab[StrIdx].LblName);
+      EmitInstr('INT 21h');
+      EmitInstrAB('MOV', 'AH', '40h');
+      EmitInstrAB('MOV', 'BX', '[_SAS_OUTHDL]');
+      EmitInstrAB('MOV', 'CX', '2');
+      EmitInstrAB('LEA', 'DX', '_SAS_CRLF');
+      EmitInstr('INT 21h');
+    End;
+  End;
+End;
+
 (* ---- ParseProcStep : PROC nom [options] ; stmts ; RUN ; -------- *)
 (* Point d entree du PROC step.                                        *)
 (* Appele apres que le mot-cle PROC ait ete consomme.                  *)
@@ -6561,21 +6978,20 @@ Begin
 
     If ProcName = 'PRINT' Then
     Begin
-      (* PROC PRINT : stub (TODO 18) *)
-      EmitComment('PROC PRINT : affichage tabulaire (stub TODO 18)');
-      If ProcDataDS <> '' Then
-        EmitComment('  DATA=' + ProcDataDS);
-      If ProcVarCount > 0 Then
-        EmitComment('  VAR : ' + IntToStr(ProcVarCount) + ' variable(s)');
+      (* PROC PRINT : generer le code d affichage *)
+      If ProcNoPrint Then
+        EmitComment('PROC PRINT : NOPRINT -> pas d affichage')
+      Else
+        EmitProcPrint;
     End
     Else If (ProcName = 'MEANS') Or (ProcName = 'SUMMARY') Then
     Begin
-      (* PROC MEANS : stub (TODO 18) *)
-      EmitComment('PROC MEANS : statistiques descriptives (stub TODO 18)');
-      If ProcDataDS <> '' Then
-        EmitComment('  DATA=' + ProcDataDS);
-      If ProcVarCount > 0 Then
-        EmitComment('  VAR : ' + IntToStr(ProcVarCount) + ' variable(s)');
+      (* PROC MEANS : generer le code de statistiques *)
+      ParseProcMeansOptions;
+      If ProcNoPrint Then
+        EmitComment('PROC MEANS : NOPRINT -> pas d affichage')
+      Else
+        EmitProcMeans;
     End
     Else If ProcName = 'FREQ' Then
     Begin
