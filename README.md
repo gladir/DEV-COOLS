@@ -213,6 +213,10 @@ Voici la liste des différents fichiers proposés dans DEV-COOLS :
 			<td>Cette commande permet de lancer le compilateur C pour l'assembleur du microprocesseur 80386 (en exécutable Windows 32 bits).</td>
 		</tr>
 		<tr>
+			<td><b>CF86.PAS</b></td>
+			<td>Cette commande permet de lancer le compilateur ColdFusion pour l'assembleur du microprocesseur 8086 ou 8088.</td>
+		</tr>
+		<tr>
 			<td><b>CLOJ86.PAS</b></td>
 			<td>Cette commande permet de lancer le compilateur Clojure pour de l'assembleur de microprocesseur 8086 ou 8088.</td>
 		</tr>
